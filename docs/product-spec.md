@@ -111,8 +111,9 @@
 
 Go/Ebitengine の Wasm は最小構成でも未圧縮 8〜12MB 前後になる。Go ランタイム（GC・スケジューラ）を同梱するためであり、ゲーム内容を減らしても下限は変わらない。以下を仕様として固定する。
 
-1. **R2 へは Brotli 事前圧縮した `.wasm.br` を置き、`Content-Encoding: br` で返す。** wasm への自動圧縮は当てにしない。圧縮後 2〜3MB。
+1. **R2 へは Brotli 事前圧縮した `.wasm.br` を置き、`Content-Type: application/wasm` と `Content-Encoding: br` の両方を付けて返す。** wasm への自動圧縮は当てにしない。圧縮後 2〜3MB。
 2. **`WebAssembly.instantiateStreaming` を使う。** `wasm_exec.js` の同梱例は非ストリーミングのことがあり、ダウンロード完了まで待つ実装になっていると体感が悪化する。
+   **`Content-Type: application/wasm` は必須**である。`instantiateStreaming` は MIME type を検証し、一致しなければストリーミング経路に入れない。`Content-Encoding` だけを設定して `Content-Type` を落とすと、圧縮は効いているのにストリーミングだけが黙って失われる。R2 のオブジェクトメタデータに両方を設定すること。
 3. **ビルドフラグは `-ldflags="-s -w"`。** TinyGo は Ebitengine 非対応のため選択肢に入らない。
 4. **プロンプト制約に「`fmt` と `reflect` を使わせない」を含める**（6.1）。バイナリサイズに効く。
 5. **ロード中の画面に OGP スクリーンショット・作者名・親ゲーム名・「改造する」ボタンを先に表示する。** 数秒を「待ち」ではなく「文脈の提示」に変える。
@@ -308,17 +309,37 @@ D1 は読み取りより**書き込みの無料枠が桁で小さい**（概ね�
 ```
 CGO_ENABLED=0
 GOFLAGS=-mod=vendor
+GOCACHE=/cache/go-build
+GOMODCACHE=/cache/go-mod
+GOTMPDIR=/tmp
 
 docker run --rm \
   --network=none \
   --read-only \
-  --user nobody \
+  --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+  --tmpfs /work:rw,nosuid,nodev,size=256m \
+  -v go-cache-vol:/cache \
+  --user 65534:65534 \
   --pids-limit=64 \
   --memory=512m \
   --cpus=1 \
   --security-opt no-new-privileges \
   ...
 ```
+
+**`--read-only` だけでは `go build` は動かない。** ビルドは一時ファイルとキャッシュを書くため、書き込み可能な領域を明示的に与える必要がある。上記は「ルートファイルシステムは読み取り専用のまま、書き込みを3か所（`/tmp`・作業ディレクトリ・キャッシュ）に限定して許す」形である。
+
+この構成が成立するには、**イメージ側に次の2つの前提が必要**である。どちらも欠けると確定で失敗するため、Dockerfile と `docker run` は必ずセットで設計すること。
+
+1. **vendor 済みテンプレートは `/work` ではなく `/src` に焼き込む。** `--tmpfs /work` は空のファイルシステムをその位置にかぶせるため、`/work` に vendor を置くと**マウント時に隠れて見えなくなり**、`--network=none` 下で依存を解決できずビルドが必ず失敗する。エントリポイントで `/src` から `/work` へコピーし、そこへ生成コードを置いてビルドする。`/src` は読み取り専用のルートファイルシステム上にあってよい（`go build` はソースツリーへ書き込まない）。
+2. **`/cache` はイメージビルド時に作成し、実行ユーザーへ chown しておく。** named volume はマウント先がイメージ内に存在しない場合 `root:root` 0755 で作られるため、非 root 実行では書き込めず `permission denied` になる。Dockerfile に `RUN mkdir -p /cache && chown 65534:65534 /cache` を含める。
+
+その他の設計意図:
+
+- `/tmp` と `/work` は **tmpfs**（コンテナ終了時に消え、ホストに残らない）。
+- キャッシュのみ永続ボリューム（3.8 の `GOCACHE` / `GOMODCACHE` 永続化）。**ここだけがリクエストをまたいで残る領域**なので、汚染の影響範囲として意識すること。
+- `--user` は数値 UID/GID で指定する（`nobody` は名前解決がイメージ依存）。`GOCACHE` を `/root/.cache` に置く一般的な例は非 root 実行と両立しないため、`/cache` へ移している。
+- **上記は形であって検証済みのコマンドではない。** 着手時に実際にビルドを通し、`size` の値と tmpfs のマウントオプションを実測で確定すること。
 
 - **1リクエスト1コンテナ使い捨て。**
 - **`--network=none` にするため、Ebitengine は vendor 済みでイメージに焼き込む**（3.8）。

@@ -45,7 +45,7 @@ M1 以降のすべてに先行する土台。**M0 が「決定」の milestone �
 - **goal:** 既存 Control Tower landing zone から Dev / Prod を振り出し、各アカウントで Claude Platform on AWS の組織を開設して spend limit を設定する。
 - **scope.in:** Control Tower での 2 アカウント振り出し。各アカウントからの Claude Platform on AWS サインアップ。**member アカウントから AWS Marketplace のサブスクリプションが作れるかの確認**（Control Tower 配下は管理アカウント側の設定が要る場合がある）。workspace ID の確認。spend limit の設定（Prod = 1万円＋為替バッファ、Dev = 小さい枠）。Dev の API キー発行と `.env` に書かない読み込み経路の確定。
 - **scope.out:** Prod の API キー配置（Workers が未存在のため M2-2 で行う）。
-- **acceptance:** Dev / Prod 両組織が開設され workspace ID が確認できる / 両組織の spend limit が設定済み / Dev のキーで `count_tokens` が 200 を返す / `check-no-secrets.sh` が PASS。
+- **acceptance:** Dev / Prod 両組織が開設され workspace ID が確認できる / 両組織の spend limit が設定済み / Dev のキーで `count_tokens` が 200 を返す / `bash scripts/check-no-secrets.sh` が `SECRETS_PASS`。
 - **priority:** high（M0-4 を直接ブロックする）
 - **参照:** 確定19 / 確定21 / 9.2 / 4.3
 
@@ -53,7 +53,7 @@ M1 以降のすべてに先行する土台。**M0 が「決定」の milestone �
 - **goal:** `game-forge.ojos.jp` を Prod アカウントの Route53 ホストゾーンとして作り、さくらから NS 委譲して以降を Terraform で管理する。
 - **scope.in:** `terraform/` への AWS プロバイダと `aws_route53_zone` の追加。さくらでの NS レコード登録（手動・初回のみ）。`scripts/acceptance-remote.sh` への Route53 外部層検証の追加。Terraform 実行時の AWS 資格情報の管理方法の確定。
 - **constraints:** さくら側の NS 登録だけは手動。さくらのドメインが DNS の API を持たないための例外であり、理由を記録する。委譲後は Route53 側が宣言の対象になる。
-- **acceptance:** `terraform plan` が差分なし / `dig NS game-forge.ojos.jp` が Route53 の NS を返す / `VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh` が PASS。
+- **acceptance:** `terraform plan` が差分なし / `dig NS game-forge.ojos.jp` が Route53 の NS を返す / `VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh` が `VERIFY_PASS`。
 - **priority:** high（M4-3 の CSP・オリジン設計と M4-1 の公開 URL をブロックする）
 - **参照:** 確定17 / 9.2 / 9.3
 - **依存:** M0.5-1
@@ -142,7 +142,7 @@ M1 以降のすべてに先行する土台。**M0 が「決定」の milestone �
 ### M1-2 Google OAuth ログインと署名付き Cookie セッション
 - **goal:** Google OAuth のみでログインでき、Workers 側で署名付き Cookie のセッションを維持する。
 - **scope.in:** OAuth コールバック、`users` 行の作成（`google_sub` 一意）、Cookie（`HttpOnly` / `Secure` / `SameSite=Lax`）の発行・検証、ログアウト。
-- **acceptance:** 署名検証を含むセッションの単体テストが通る / 改竄した Cookie が拒否される / クライアントシークレットがリポジトリに存在しない（`check-no-secrets.sh` が PASS）。
+- **acceptance:** 署名検証を含むセッションの単体テストが通る / 改竄した Cookie が拒否される / クライアントシークレットがリポジトリに存在しない（`bash scripts/check-no-secrets.sh` が `SECRETS_PASS`）。
 - **priority:** high
 - **参照:** 8.1 / 確定9
 

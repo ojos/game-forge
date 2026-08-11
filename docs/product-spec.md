@@ -103,7 +103,7 @@
   │     (別オリジンの iframe)             - sandbox.game-forge.ojos.jp（親と別オリジン）
   │                                      - R2 から .wasm.br を配信（エグレス無料）
   │                                      - Strict CSP / sandbox 属性（7.2）
-  │                                      - CSP: sandbox ヘッダ必須（7.2。同一サイトのため）
+  │                                      - CSP: sandbox ヘッダ必須（7.2）
   │
   ├─③ メタデータ・系統・クォータ ─────► [ Cloudflare Workers ] ──► [ D1 ]
   │                                      - 認証（Google OAuth / 招待コード検証）
@@ -484,13 +484,22 @@ docker run --rm \
 | 経路 | 危険性 |
 |---|---|
 | iframe 内（`sandbox="allow-scripts"`、`allow-same-origin` なし） | **安全。** 不透明オリジンになり cookie に触れない |
-| **サンドボックス URL への直接アクセス** | **危険。** 実オリジンで動くため、`Domain=ojos.jp` の cookie を**書ける**（cookie tossing / セッション固定）し、同スコープの cookie を**読める** |
+| **サンドボックス URL への直接アクセス** | **危険。** 実オリジンで動く（下表） |
+
+直接アクセスされたときに何ができるかを分解する。**セッション cookie は `HttpOnly` なので「盗み読まれる」わけではない。**危険なのは書き込みと、同一サイトであるがゆえの資格情報付きリクエストである。
+
+| 攻撃 | 成立するか | 理由 |
+|---|---|---|
+| セッション cookie の読み取り | **しない** | `HttpOnly` のため `document.cookie` から参照できない |
+| `Domain=ojos.jp` の cookie を書く | **する** | cookie tossing / セッション固定。`__Host-` 接頭辞の cookie は上書きできないが、接頭辞なしの cookie は上書きされる |
+| `HttpOnly` でない cookie の読み取り | **する** | 同スコープに置けば読めてしまう。**`Domain=ojos.jp` の cookie をどこにも置かない**理由 |
+| 資格情報付きリクエストの送信 | **する** | 同一サイトのため **`SameSite=Lax` が効かない。** レスポンスは CORS で読めなくても、状態を変える要求は届く |
 
 **次の 3 つを必須要件とする。1 つでも欠けると直接アクセスの穴が開く。**
 
-1. **配信レスポンスに `Content-Security-Policy: sandbox allow-scripts` をヘッダとして付ける。** iframe 属性と違い、ドキュメント自身が不透明オリジンになるため、直接アクセスでも cookie 経路が閉じる。
-2. **セッション cookie は `__Host-` 接頭辞にする。** サブドメインからの上書きを防ぐ（8.1）。
-3. **`Domain=ojos.jp` の cookie をどこにも置かない。**
+1. **配信レスポンスに `Content-Security-Policy: sandbox allow-scripts` をヘッダとして付ける。** iframe 属性と違い、ドキュメント自身が不透明オリジンになるため、**直接アクセスでも上表の 3 つがすべて塞がる**（cookie を持たず、リクエストは `Origin: null` の cross-site 扱いになる）。
+2. **セッション cookie は `__Host-` 接頭辞にする。** サブドメインからの上書きを防ぐ（8.1）。1 が破れたときの二段目。
+3. **`Domain=ojos.jp` の cookie をどこにも置かない。** 読み取りの経路を最初から作らない。
 
 **塞げないのはレピュテーションである。** 悪意ある UGC が `*.ojos.jp` で配信されると、Safe Browsing やスパムフィルタの評価は `ojos.jp` 単位で下がりうる。5.5 の改造通知メール（Resend）の送信ドメインが ojos.jp 系である以上、**到達性に影響しうる**。GitHub が `githubusercontent.com` を別の登録可能ドメインにしているのはこの問題を避けるためであり、**将来 UGC を別の登録可能ドメインへ移す判断は残しておく**（移行時は公開済み URL がすべて変わるため、招待制を外す前に決める）。
 - CSP は **`connect-src 'none'`** まで絞る。6.1 により生成物に外部通信は一切不要であり、これでマイニング・DDoS 踏み台・情報送出をまとめて塞げる。

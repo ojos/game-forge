@@ -16,7 +16,7 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 管理対象外:
 
 - Actions の Secrets の値（`COPILOT_REVIEW_TOKEN` 等）。値が tfstate へ平文で残るため宣言しません。必要になった時点で GitHub 側へ直接設定します。
-- リモート state backend。当面はローカル state（`terraform/terraform.tfstate`）を使います。
+- リモート state backend。ローカル state（`terraform/terraform.tfstate`）を使い続けます（2026-08-11 決定）。適用者が単一で state を共有する必要が無いためで、複数人・複数環境から適用するようになった時点で再検討します。
 
 ## 認証
 

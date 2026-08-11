@@ -18,5 +18,7 @@ terraform {
   # backend は宣言しない。既定の local backend（terraform/terraform.tfstate）を使う。
   #
   # tfstate は機密を平文で保持するため .gitignore の Terraform 節で追跡から外している。
-  # リモート backend への移行は別タスクとして扱う。
+  #
+  # リモート backend へは移行しない方針（2026-08-11 決定）。適用者が単一で、state を
+  # 共有する必要が無いため。複数人・複数環境から適用するようになった時点で再検討する。
 }

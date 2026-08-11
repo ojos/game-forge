@@ -103,6 +103,19 @@ jobs:
       #   - run: npm ci
       #   - run: sudo apt-get update && sudo apt-get install -y shellcheck
 
+      # scripts/acceptance.sh が terraform/ に対して fmt -check を実行する。
+      # ツールが無い場合、acceptance.sh は「スキップ」ではなく失敗させる規約なので、
+      # ランナー側へ terraform を用意する。
+      #
+      # terraform_wrapper は無効にする。有効だと terraform がラッパスクリプトへ
+      # 置き換わり、fmt -check の終了コードが素通りしない構成がある。合否は
+      # terraform 自身の終了コードで判定したい。
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.15.8'
+          terraform_wrapper: false
+
       - name: Verify acceptance
         env:
           # CI には .env が無いため、リポジトリ変数がここでの唯一の供給元になる。

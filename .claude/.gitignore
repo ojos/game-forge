@@ -1,0 +1,7 @@
+# settings.local.json は対話中に許可した操作の一覧を持つ。追跡すると、その場の判断で
+# 許可した強い操作が clone した全員へ配られる。.env と同じ理由で共有しない。
+#
+# ルートの .gitignore（devcontainer-bootstrap managed section）ではなくここへ置くのは、
+# .claude/ の中で閉じる除外を .claude/ を配る側の責務にするため。同じ除外を 2 か所に
+# 持つと、片方だけ直したときにどちらが効いているのか読めなくなる。
+settings.local.json

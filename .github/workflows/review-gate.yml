@@ -1,0 +1,322 @@
+name: review-gate
+
+# リモート最終ゲート（Copilot code review）が**要求されないまま PR が通ること**を塞ぐ。
+# 規範: .ai-playbook/review-workflow.md「リモート最終ゲート」。
+#
+# **要求はしない。確かめるだけである。** 要求するのは copilot-review.yml で、
+# あちらは `opened` に限って 1 回だけ動く（規範の「1 回だけ要求する」）。ここが
+# 要求まで行うと、2 か所から要求が出て「1 回だけ」が壊れる。
+#
+# **なぜ別のワークフローが要るか。** `pull_request` の `opened` が届かないことが
+# ある（ある利用プロジェクトの実運用では、連続する 2 日間に開いた 6 本のうち 2 本で
+# 起動しなかった）。届かなければ copilot-review.yml は起動せず、しかし他のチェックは
+# 緑なので、最終ゲートだけが黙って抜ける。
+#
+# **`opened` を見る 2 本目を足しても解決しない。** 届いていないのはイベントそのもの
+# なので、同じ契機を見る側も同じように起動しない。**別の契機が要る**というのが
+# このワークフローの設計上の核で、次の 3 つを張っている。
+#
+#   1. opened          —— 通常はここで片が付く（猶予を置いてから見る。下記）
+#   2. synchronize 等  —— 1 が不発でも、次の push で拾う
+#   3. schedule        —— 1 も 2 も来ない PR（開いたきり触っていない）を拾う
+#
+# **判定は commit status として head SHA へ付ける。** ジョブが落ちるだけでは、
+# schedule から見た PR に何も現れない（実行がその PR に紐づかないため）。status に
+# すれば、どの契機から判定しても同じ場所（PR の checks 欄）に出る。
+#
+# **required check にはしない。** レビュー機構側の遅延や障害でマージが止まる副作用が
+# あるため。ここで止めたいのは「要求されていないことに気づかないまま通ること」だけ
+# である。
+
+on:
+  pull_request:
+    # opened を入れているのは、届いたときに早く出したいからで、
+    # 届かない場合の担保は下の schedule 側にある。
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    # 20 分ごと。opened も synchronize も来なかった PR を拾うための掃き寄せで、
+    # 通常経路の速さはこれに依存しない。
+    - cron: '*/20 * * * *'
+  # 詰まったときに手で 1 回流せるようにしておく（受け入れ確認でも使う）。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  # timeline（`/issues/{n}/timeline`）を読む。**呼んでいる先の権限は宣言する。**
+  # PR は issue でもあるため `pull-requests: read` だけでも読めることは実測されて
+  # いるが、宣言を省くと、GitHub 側の扱いが変わった日に判定が全 PR で出なくなる。
+  issues: read
+  # commit status を書く。これが判定の出力先である。
+  statuses: write
+
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # フォークからの PR は copilot-review.yml が対象外にしている。要求されない
+    # ものを「要求されていない」と落とすと、恒常的に赤いだけの状態になる。
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Check that the remote final gate was actually requested
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          # **式を run の中へ直接書かない。** GitHub は run を渡す前に文字列として
+          # 置換するので、値に引用符が混ざればシェルの構文ごと変わりうる。加えて
+          # `bash -n` は `${{ ... }}` を通してしまう（展開しないため）ので、
+          # ワークフローの構文検査でも気づけない —— 実行して初めて
+          # `bad substitution` になる。
+          ACTION: ${{ github.event.action }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # copilot-review.yml が要求を出し切るまでの猶予（秒）。
+          #
+          # **opened では両方が同時に走る。** 猶予を置かないと、要求が届く前に
+          # ここが見て「要求されていない」と落とす。落ちた status は次の契機まで
+          # 赤いままなので、偽の赤を作らない側へ倒す。
+          GRACE_SEC=120
+
+          # PR が開かれてからこの秒数が経つまで、schedule では判定しない。
+          # 上と同じ理由（開いた直後の PR を掃き寄せが追い越さないようにする）。
+          SWEEP_MIN_AGE_SEC=180
+
+          # status の名前。**変えると過去の PR に付いた status と別物になる。**
+          CONTEXT="review-gate"
+
+          # レビューが要求されているか、あるいは既に付いているかを見る。
+          #
+          #   0 — 要求済みか投稿済み
+          #   1 — どちらでもない（＝ 落とす）
+          #   2 — **確かめられなかった**（API から読めない）
+          #
+          # **2 を 1 に混ぜない。** 読めなかったことを「要求されていない」として
+          # 扱うと、GitHub が一時的に不調なだけで赤が出る。逆に握り潰して緑にすると、
+          # 確かめていないものを通したことになる。どちらでもない第 3 の答えが要る。
+          #
+          # **`gh pr view --json reviewRequests` を使わない。** Copilot はそこに
+          # 出ない（実測）。REST の 3 つを見る。
+          #
+          # **3 つ目（timeline）が要る理由。** requested_reviewers と reviews は
+          # どちらも「いまの状態」を返すもので、**その 2 つがともに空になる窓が
+          # ある。** Copilot はレビューを開始した時点で requested_reviewers から
+          # 消え、投稿するまで reviews に現れない。ある利用プロジェクトの実運用
+          # では、要求の 7 秒後に requested_reviewers から消え、投稿までの約 3 分間
+          # どちらにも現れなかった。同じ日に開いた PR 2 本がともにこの窓の中で
+          # 判定され、要求は成功しているのに failure が出ている。
+          #
+          # **GRACE_SEC を延ばしても抜けられない。** あの猶予が待っているのは
+          # 「要求がまだ出ていない」場合で、この窓は要求が出た**後**にある。
+          # 延ばすほど窓の中で判定することになる。
+          #
+          # timeline が返すのは「起きたこと」である。**要求されたという出来事は、
+          # レビューがどこまで進んでも消えない**ため、進行状態に左右されない。
+          has_review() {
+            local pr="$1" requested reviews timeline
+            # **終了コードで見る。`|| echo ''` で流さない。** gh は 404 のとき
+            # エラー本文を stdout に出すため、握り潰すと `{"message":"Not Found",
+            # "documentation_url":"..."}` がそのまま判定対象の文字列に入る。実際に
+            # 混入することを実行して確認した。いまは偶然どの綴りにも当たらないが、
+            # **本文に copilot の語が現れれば緑になる。**
+            if ! requested="$(gh api "repos/${REPO}/pulls/${pr}/requested_reviewers" \
+                 --jq '[.users[].login] | join(" ")' 2>/dev/null)"; then
+              return 2
+            fi
+            if ! reviews="$(gh api --paginate "repos/${REPO}/pulls/${pr}/reviews" \
+                 --jq '[.[].user.login] | join(" ")' 2>/dev/null)"; then
+              return 2
+            fi
+
+            # 要求中（requested_reviewers に残っている）と、投稿済み（reviews に
+            # 現れ、requested からは消えている）の**両方を通す**。片方だけ見ると、
+            # レビューが付いた瞬間に赤へ変わる（実測: 投稿されると requested は
+            # 空になり、reviews に現れる）。
+            local name
+            for name in $requested $reviews; do
+              is_copilot "$name" && return 0
+            done
+
+            # ここまでで答えが出なかったときだけ timeline を読む。掃き寄せは open な
+            # PR を全件見るので、既に答えの出ている PR にまで 1 本余計な呼び出しを
+            # 払わせない。
+            #
+            # **ここでも終了コードで見る。読めなかったら 2 を返す。** 読めなかった
+            # ことを「要求されていない」と同じに扱うと、上の 2 つで作らないように
+            # している偽の赤を、3 つ目から作り直すことになる。
+            #
+            # チーム宛の要求（`requested_team`）は落とす。Copilot は利用者として
+            # 要求されるため、`requested_reviewer` が null の出来事は判定材料に
+            # ならない（`.requested_reviewer.login` を無条件に取ると null が
+            # 空文字として並び、行の対応がずれる）。
+            if ! timeline="$(gh api --paginate \
+                 "repos/${REPO}/issues/${pr}/timeline?per_page=100" \
+                 --jq '.[] | select(.event == "review_requested" or .event == "review_request_removed")
+                           | select(.requested_reviewer != null)
+                           | "\(.event) \(.requested_reviewer.login)"' 2>/dev/null)"; then
+              return 2
+            fi
+
+            # **取り消しを勘定に入れる。** 出来事が残っていることだけを見ると、
+            # 要求してすぐ取り消した PR も「要求された」になり、**要求を出して消す
+            # だけでゲートが外れる。** timeline は時系列で返るので、同じ相手の
+            # 最後の 1 件が review_requested のときだけ、要求が生きていると見る。
+            #
+            # なお **Copilot がレビューを始めて requested_reviewers から消えるとき
+            # review_request_removed は出ない**（実測。上記 2 本で確認した）。
+            # 進行中の窓と取り消しは、ここで別物として扱える。
+            local ev login last=""
+            while read -r ev login; do
+              [ -n "${ev:-}" ] || continue
+              is_copilot "$login" || continue
+              last="$ev"
+            done <<< "$timeline"
+            if [ "$last" = "review_requested" ]; then
+              return 0
+            fi
+
+            return 1
+          }
+
+          # 名前が Copilot のものか。**部分一致で見ない。**
+          #
+          # `*copilot*` で見ると、`copilot-fan` のような無関係な利用者がレビュアーに
+          # 付いただけで「要求済み」になり、ゲートをすり抜ける。
+          #
+          # 綴りは 2 通りある（実測）。要求側は `Copilot`、投稿側は
+          # `copilot-pull-request-reviewer[bot]`。**将来 GitHub が綴りを変えたら
+          # 赤になる**が、それは安全側である —— 緑に倒れると、確かめていないものを
+          # 通したことになる。
+          is_copilot() {
+            case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+              copilot|"copilot-pull-request-reviewer[bot]") return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          # 判定を head SHA へ書く。**ジョブの成否ではなくこれが出力である。**
+          #
+          # **書けなかったら失敗を返す。`set -e` に任せない。** この関数は最終的に
+          # `judge ... || failed=1` の左辺から呼ばれるが、`||` の左辺で呼ばれた関数の
+          # 内側では `set -e` が無効になる（実測）。任せると、`gh api` が権限不足や
+          # レート制限で落ちても次の `echo` が成功し、**status を書けていないのに緑**
+          # になる。それはこのワークフローが塞ごうとしている失敗の仕方そのものである。
+          report() {
+            local sha="$1" state="$2" desc="$3"
+            if ! gh api --method POST "repos/${REPO}/statuses/${sha}" \
+              -f "state=${state}" \
+              -f "context=${CONTEXT}" \
+              -f "description=${desc}" \
+              -f "target_url=${RUN_URL}" >/dev/null; then
+              echo "::error::PR の head ${sha:0:7} へ status を書けませんでした。判定（${state}）は PR 上に出ていません。"
+              return 1
+            fi
+            echo "  status=${state} sha=${sha:0:7} (${desc})"
+          }
+
+          # 1 本を判定する。通らなければ 1 を返す（呼び出し側が集計する）。
+          judge() {
+            local pr="$1" sha="$2" verdict=0
+            # set -e に掛からない形で終了コードを取る。
+            has_review "$pr" || verdict=$?
+
+            case "$verdict" in
+              0)
+                # report の失敗をそのまま返す。**書けたことまで含めて「通った」で
+                # ある。**
+                report "$sha" success "Copilot code review is requested or posted" || return 1
+                return 0
+                ;;
+              1)
+                # **書けなかったなら、そこで止める。** 続けて「レビューが要求されて
+                # いません」と案内すると、原因が権限やレート制限（＝ status を書け
+                # なかったこと）であるときに、**間違った診断と間違った手順を出す**
+                # ことになる。report が既に何が起きたかを出しているので、重ねない。
+                report "$sha" failure "Copilot code review was never requested (workflow misfire?)" || return 1
+                echo "::error::PR #${pr}: リモート最終ゲート（Copilot code review）が要求されていません。pull_request の opened が届かなかった可能性があります。マージ前に 1 回だけ手で要求してください: gh api --method POST repos/${REPO}/pulls/${pr}/requested_reviewers -f 'reviewers[]=copilot-pull-request-reviewer[bot]'"
+                return 1
+                ;;
+              *)
+                # **status を付けない。** 緑も赤も、確かめた結果として出すもので
+                # ある。確かめられなかったときに赤を出すと、GitHub の一時的な不調が
+                # 「レビューが無い」として記録される。実行だけを落とし、判定は
+                # 次の契機（20 分後の掃き寄せ）へ持ち越す。
+                echo "::error::PR #${pr}: レビューの有無を確かめられませんでした（GitHub API から読めない）。status は付けていません。次の定期実行で再判定します。"
+                return 1
+                ;;
+            esac
+          }
+
+          failed=0
+
+          if [ "$EVENT" = "pull_request" ]; then
+            # **猶予を置くのは opened のときだけ。** そこだけが
+            # copilot-review.yml と同時に走るので、待たずに見ると必ず
+            # 「要求されていない」になる。synchronize 以降は要求がとうに済んで
+            # いる（か、済んでいないことが確定している）ので待つ理由が無く、
+            # 待てば push のたびに待ち時間ぶんの実行時間を払うことになる。
+            if [ "${ACTION:-}" = "opened" ]; then
+              echo "PR #${PR_NUMBER} を判定します（要求が届くまで ${GRACE_SEC} 秒待ちます）"
+              sleep "$GRACE_SEC"
+            else
+              echo "PR #${PR_NUMBER} を判定します"
+            fi
+            sha="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq .head.sha)"
+            judge "$PR_NUMBER" "$sha" || failed=1
+          else
+            echo "open な PR を掃き寄せます"
+            now="$(date -u +%s)"
+            # **全件を見る。件数で打ち切らない。** ここは最後の担保なので、上限で
+            # 切れた分は「判定されないまま status も付かない」＝ PR 上に何も現れない
+            # という、この仕組みが塞ごうとしている状態そのものになる。しかも切り捨ては
+            # 静かに起きる。
+            #
+            # `gh pr list --limit N` ではなく `gh api --paginate` を使うのは、前者が
+            # 上限を要求するのに対し、後者は最後のページまで辿るためである。
+            #
+            # リポジトリ名は jq の `env` 経由で渡す（`gh api` に `--arg` は無く、
+            # フィルタへ文字列連結で埋めると引用の扱いが 1 つ増える）。
+            #
+            # フォークからの PR は除く（copilot-review.yml と同じ扱い）。
+            #
+            # `.head.repo` の null を明示的に除く。**フォーク元のリポジトリが削除
+            # されると null になる。** jq は null への参照をエラーにしないので
+            # （`null | .full_name` は null、実測）書かなくても除外されるが、
+            # 「そういう PR がありうる」ことが読み取れないと、次に触る人が
+            # `.head.repo.full_name` を安全だと思って別の場所へ写す。
+            if ! prs="$(gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" \
+              --jq '.[] | select(.head.repo != null and .head.repo.full_name == env.REPO)
+                        | "\(.number) \(.head.sha) \(.created_at)"' 2>/dev/null)"; then
+              echo "::error::open な PR の一覧を取得できませんでした。今回は何も判定していません。"
+              exit 1
+            fi
+
+            if [ -z "$prs" ]; then
+              echo "  対象なし"
+            fi
+
+            while read -r pr sha created; do
+              [ -n "${pr:-}" ] || continue
+              age=$(( now - $(date -u -d "$created" +%s) ))
+              if [ "$age" -lt "$SWEEP_MIN_AGE_SEC" ]; then
+                echo "  PR #${pr}: 開いてから ${age} 秒。まだ判定しません"
+                continue
+              fi
+              echo "  PR #${pr}:"
+              # **掃き寄せでは 1 本の失敗で打ち切らない。** 残りが判定されないと、
+              # その PR には status が付かないまま（＝ 何も出ない）になる。
+              judge "$pr" "$sha" || failed=1
+            done <<< "$prs"
+          fi
+
+          # **失敗を握り潰さない。** 判定が赤なら実行も赤にする。緑のまま status
+          # だけ赤にすると、Actions の一覧から異常が読めなくなる。
+          exit "$failed"

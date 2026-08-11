@@ -1,0 +1,55 @@
+name: copilot-review
+
+# PR 作成時に一度だけ GitHub Copilot へコードレビューを自動要求する（リモート最終ゲート）。
+# 規範: .ai-playbook/review-workflow.md（リモート最終ゲートは 1 回だけ要求する）。
+#
+# 一度だけ: types を opened に限定し、PR 更新（synchronize）では再要求しない。
+# これが「1 回だけ」を運用者の記憶に頼らず機構で保証している実体。
+#
+# 前提:
+#   - リポジトリ所有者の Copilot サブスクリプションで「Copilot code review」が有効なこと。
+#     無効だと reviewers 要求が 422 で失敗する。
+#   - 既定の GITHUB_TOKEN で要求できない場合は、リポジトリ Secrets に COPILOT_REVIEW_TOKEN
+#     （pull-requests 書き込み権限を持つ PAT）を設定すれば自動で切り替わる。
+#
+# 要求したことの確認は review-gate.yml が別の契機から行う。あちらは要求せず、
+# 確かめるだけである（規範の「1 回だけ要求する」を 2 か所から壊さないため）。
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  request-copilot-review:
+    runs-on: ubuntu-latest
+    # フォークからの PR は書き込みトークンを持たないためスキップする。
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Request a review from Copilot
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_REVIEW_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # 素の 422 だけでは「所有者側で Copilot code review が無効」なのか
+          # 「トークン権限不足」なのかが PR 上から判別できず、放置される。切り分け
+          # 手順まで ::error:: へ出す。
+          #
+          # **失敗を握り潰してスキップにはしない。** リモート最終ゲートが実行されて
+          # いないのに緑を出すと、偽の緑と通過の区別が付かなくなる。それは
+          # review-gate.yml が塞ごうとしている状態と同じものを、こちら側で作ることに
+          # あたる。
+          if out="$(gh api --method POST \
+            "repos/${REPO}/pulls/${PR_NUMBER}/requested_reviewers" \
+            -f 'reviewers[]=copilot-pull-request-reviewer[bot]' 2>&1)"; then
+            echo "requested Copilot code review (once, on PR opened)"
+            exit 0
+          fi
+
+          echo "$out"
+          echo "::error::Copilot code review の要求に失敗しました。次の順に切り分けてください: (1) リポジトリ所有者側で Copilot code review が有効か（無効だと 422 になります）。(2) 既定の GITHUB_TOKEN で要求できない場合は、リポジトリ Secrets に COPILOT_REVIEW_TOKEN（pull-requests 書き込み権限を持つ PAT）を設定する。(3) リモート最終ゲートを機構で要求しない方針へ変えるなら、プロジェクト層の規範（リモート最終ゲート）を先に更新する。"
+          exit 1

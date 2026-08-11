@@ -1,0 +1,17 @@
+services:
+  app:
+    image: mcr.microsoft.com/devcontainers/base:ubuntu
+    volumes:
+      - ..:/workspaces/game-forge:cached
+      # docker-outside-of-docker feature 用（compose 利用時は feature 側の mounts が適用されないため明示）
+      - /var/run/docker.sock:/var/run/docker-host.sock
+      - gh-storage:/home/vscode/.config/gh
+      - aws-storage:/home/vscode/.aws
+      - claude-storage:/home/vscode/.claude
+      - gemini-storage:/home/vscode/.gemini
+    command: sleep infinity
+volumes:
+  gh-storage:
+  aws-storage:
+  claude-storage:
+  gemini-storage:

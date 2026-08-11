@@ -1,0 +1,43 @@
+{
+  "name": "game-forge",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/game-forge",
+  "shutdownAction": "stopCompose",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:1": {
+      "configureZsh": true
+    },
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "version": "latest",
+      "moby": false,
+      "dockerDashComposeVersion": "latest",
+      "installDockerComposeSwitch": true,
+      "installDockerBuildx": true
+    },
+    "ghcr.io/devcontainers-extra/features/ripgrep:1": {},
+    "ghcr.io/devcontainers-extra/features/shellcheck:1": {},
+    "ghcr.io/devcontainers-extra/features/tmux-apt-get:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/devcontainers/features/go:1": {},
+    "ghcr.io/devcontainers/features/aws-cli:1": {},
+    "ghcr.io/devcontainers/features/terraform:1": {}
+  },
+  "remoteEnv": {
+    "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
+  },
+  "postCreateCommand": "bash scripts/fix-mount-owner.sh && bash scripts/install-ai-tools.sh",
+  "postAttachCommand": "bash scripts/on-attach.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "amazonwebservices.aws-toolkit-vscode",
+        "hashicorp.terraform",
+        "anthropic.claude-code",
+        "ms-azuretools.vscode-containers"
+      ]
+    }
+  }
+}

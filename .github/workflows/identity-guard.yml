@@ -1,0 +1,52 @@
+name: identity-guard
+
+# コミット identity の検証ゲート。
+#
+# git identity の適用漏れにより、別アカウントの identity のコミットが main に
+# 直接入り、GitHub の Contributors に意図しないアカウントが現れる事故を防ぐ。
+# 適用漏れそのものは scripts/setup-git-identity.sh が塞ぎ、ここはその検知層。
+#
+# 判定ロジックは scripts/verify-commit-identity.sh に置く。CI と手元で同じ
+# コードを走らせ、push 前にローカルで先に落とせるようにするため。
+#
+# 許可 author email は生成物に焼き込まず、リポジトリ変数から渡す:
+#   利用側リポジトリの Settings > Secrets and variables > Actions > Variables に
+#   ALLOWED_AUTHOR_EMAILS を作成し、許可する author email を設定する
+#   （複数はカンマまたは空白区切り。例: "you@example.com"）。
+#
+# 2 系統を張る:
+#   - pull_request: PR に含まれる全コミットを検査する（通常経路）
+#   - push(main):   main の全履歴を検査する（PR を経由しない直接 push を捕捉）
+#                   直接 push こそが混入の原因なので、こちらを省略しない。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-commit-identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 範囲指定で履歴を辿るため全履歴が要る。
+          fetch-depth: 0
+
+      - name: Verify commit identity
+        env:
+          # 固有 email を焼き込まず、リポジトリ変数から許可 author email を渡す。
+          ALLOWED_AUTHOR_EMAILS: ${{ vars.ALLOWED_AUTHOR_EMAILS }}
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            bash scripts/verify-commit-identity.sh "${BASE_SHA}..${HEAD_SHA}"
+          else
+            bash scripts/verify-commit-identity.sh --full
+          fi

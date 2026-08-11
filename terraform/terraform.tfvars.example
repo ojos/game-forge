@@ -1,0 +1,15 @@
+# terraform.tfvars の雛形。
+#
+# 使い方: このファイルを terraform.tfvars へコピーし、値を各自の環境に合わせて設定する。
+# terraform.tfvars は .gitignore（*.tfvars）で追跡から外れている。
+#
+# 機密（GitHub トークン等）はここへ書かない。トークンは環境変数で渡す。
+#   export GITHUB_TOKEN="$(gh auth token)"
+
+# Actions 変数 ALLOWED_AUTHOR_EMAILS の値。カンマ区切りで複数指定できる。
+# 例: "your-name@example.com,another@example.com"
+allowed_author_emails = ""
+
+# 既定値から変える場合のみ指定する。
+# github_owner    = "ojos"
+# repository_name = "game-forge"

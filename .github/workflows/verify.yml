@@ -1,0 +1,115 @@
+name: verify
+
+# 受け入れ検証（scripts/verify.sh）を CI で回すゲート。
+#
+# verify.sh / loop-gate.sh は手元で走らせる前提の実行体で、回し忘れても何も
+# 起きない。ローカル事前ゲートを通していない PR は、受け入れ条件を満たさないまま
+# レビューへ届く。ゲートを整備しても実行を忘れられるなら、守られている外観だけが
+# 残る。ここが担うのは判定ではなく「実行されること」の側である。
+#
+# 判定ロジックはこのファイルへ書き写さない。scripts/verify.sh を呼ぶだけにして、
+# 手元と CI が同じコードで判定するようにする。書き写すと、手元で緑・CI で赤に
+# なったときにどちらが正しいのかを決められなくなる。
+#
+# 2 系統を張る:
+#   - pull_request: マージ前に落とす（通常経路）
+#   - push(main):   PR を経由しない直接 push と、マージ後の統合状態を検査する。
+#                   並列に進む PR は互いの変更を見ないまま緑になるため、統合して
+#                   初めて壊れる組み合わせがある。こちらを省略しない。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# 同じ PR への連続 push で古い実行を積み残さない。
+#
+# main では取り消さない。push(main) が見ているのはマージ後の統合状態そのもので、
+# 続く push で前の実行を消すと「どのコミットから壊れたか」を追えなくなる。
+# pull_request では最新の head だけが関心の対象なので取り消す。
+#
+# 取り消さないことと直列化しないことは別の要求である。push 側のグループ鍵に
+# github.ref を使うと、main への push はどのコミットでも同じ ref
+# （refs/heads/main）になるため、cancel-in-progress: false と組み合わさって
+# 「取り消されない代わりに同じグループで直列にキュー待ちする」状態になる。
+# 連続してマージしたときに後続の実行が待たされ、統合状態を素早く追うという
+# 目的に反する。github.sha を使い、push はコミットごとに別グループへ分ける
+# ことで、取り消しも待ちも起きないようにする。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    # fork からの PR の扱い: この雛形はスキップしない。
+    #
+    # scripts/verify.sh 自体は Secrets を必要とせず、permissions: contents: read で
+    # 足りる。これは fork からの PR に既に与えられている権限であり、走らせられない
+    # 理由が無い。スキップすれば、最も検証が要る外部からの変更にだけゲートが
+    # 掛からなくなる。スキップの根拠は「その権限では実行できない」ことに限り、
+    # 「赤くなりうるから」では外さない。
+    #
+    # ただし fork からの PR には Secrets もリポジトリ変数（vars）も渡らない。
+    # scripts/acceptance.sh へ vars / Secrets に依存する検査を足すと、その検査は
+    # fork からの PR でだけ供給元を失う。fail-closed な検査であれば常に赤くなり、
+    # 赤が定常状態のゲートは誰も見なくなる。足す側で次のどちらかを選ぶこと。
+    #   - 供給元を要する検査を acceptance.sh へ入れず、それ専用のワークフローに
+    #     置く（例: 許可 author email を要するコミット identity の検査）。
+    #   - fork からの PR を受け付けないリポジトリなら、次の 1 行を有効にする。
+    #
+    # 条件は fork の真偽で書く。よく使われる
+    # `head.repo.full_name == github.repository` の形は、push では
+    # github.event.pull_request が無く左辺が空になるため、push(main) の系統まで
+    # 丸ごとスキップされる（あちらの形が成り立つのは pull_request だけを契機に
+    # 持つワークフロー）。
+    # if: github.event.pull_request.head.repo.fork != true
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 全履歴・全 ref を取る。
+          #
+          # 既定（fetch-depth: 1）は対象の ref 1 本を深さ 1 で取るだけで、既定
+          # ブランチの追跡枝（origin/main）が作られない。ここで起きるのは「範囲が
+          # 解決できずに落ちる」ことではなく、範囲を HEAD の全履歴へ落としたうえで、
+          # その全履歴が 1 コミットしか無い状態で通過することである。落ちるなら
+          # 気づけるが、これは偽の緑になる。
+          #
+          # 実測（許可外 author を 1 件含む 2 コミットの PR に対する identity 検証）:
+          #   深さ 1 -> 検査対象 1 件 / exit 0 で通過
+          #   全履歴 -> 検査対象 2 件 / exit 1 で検出
+          #
+          # acceptance.sh へ履歴を見る検査を足した時点でこの差が効くため、雛形の
+          # 側で全履歴を取っておく。
+          fetch-depth: 0
+
+      # ── プロジェクトの前提はここへ足す ──────────────────────────────────────
+      #
+      # 言語ランタイムの用意・ツール（静的解析器など）の導入・依存のインストールは
+      # この雛形が持たない。何が必要かは scripts/acceptance.sh が何を検査するかに
+      # 従属し、プロジェクトごとに違う。雛形が中途半端に決め打つと、使わない手順を
+      # 毎回消す作業をさせることになる。
+      #
+      # 例（そのまま貼らず、実態に合わせて書く）:
+      #   - uses: actions/setup-node@v4
+      #     with:
+      #       node-version: '20'
+      #   - run: npm ci
+      #   - run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Verify acceptance
+        env:
+          # CI には .env が無いため、リポジトリ変数がここでの唯一の供給元になる。
+          # acceptance.sh が許可 author email を要する検査を持つ構成のために渡す。
+          # 要らない構成では空のまま渡り、何も起きない。
+          #   利用側リポジトリの Settings > Secrets and variables > Actions >
+          #   Variables に ALLOWED_AUTHOR_EMAILS を作成する
+          #   （複数はカンマまたは空白区切り。例: "you@example.com"）。
+          ALLOWED_AUTHOR_EMAILS: ${{ vars.ALLOWED_AUTHOR_EMAILS }}
+        run: bash scripts/verify.sh

@@ -205,8 +205,142 @@ stderr_file="$work_dir/stderr"
 trap 'rm -rf "$work_dir"' EXIT
 printf '%s\n' "$diff_text" > "$diff_file"
 
+# 単一引数に載せられるバイト数の上限。
+#
+# **`getconf ARG_MAX` ではない。** ARG_MAX は「引数と環境変数の合計」の上限で、
+# Linux にはそれとは別に **1 引数あたり `MAX_ARG_STRLEN` = 32 ページ = 131,072 バイト**
+# という固定の上限がある。差分をまるごと 1 つの `-p` 引数へ載せる以上、効くのは後者。
+#
+# 実測（Linux 6.10 / bash 5）: 単一引数 131,000 バイトは通り、131,073 バイトは E2BIG。
+# 一方、10 万バイトの引数を 20 個（合計 200 万バイト）並べても通る。合計ではなく
+# 1 引数あたりが制約であることの裏づけ。
+#
+# ARG_MAX と比較していた版では、190KB の差分がガードを素通りしてから
+# `Argument list too long` で落ち、原因が読めないまま赤になった。
+SINGLE_ARG_LIMIT=131072
+
+# バイト数を数える。`${#var}` は**文字数**であり、ロケールによってはバイト数と一致
+# しない。日本語を含む差分では 1 文字 3 バイトになり、上限判定が最大 3 倍甘くなる。
+byte_len() {
+  printf '%s' "$1" | wc -c | tr -d '[:space:]'
+}
+
+# 差分を、1 回の呼び出しで渡せる大きさの断片（チャンク）へ分ける。
+#
+# 上限超過を「範囲を分けてください」と拒否するだけでは、生成物（ロックファイル等）を
+# 含む差分が永久にレビューできない。分割して全体を見る。
+#
+# 単位はファイル単位を基本とし、1 ファイルの差分だけで上限を超える場合に限り
+# ハンク（`@@` で始まる塊）単位へ落とす。ハンク単位にしたときはファイルヘッダを
+# 毎回付け直す。付けないと、モデルはどのファイルの変更かを判断できない。
+#
+# 1 ハンクだけで上限を超える場合は分割できない。**黙って切り詰めない**
+# （レビューされていない部分を緑として報告することになる）。名指しして失敗させる。
+split_diff_into_chunks() {
+  local src="$1" outdir="$2" limit="$3"
+
+  LC_ALL=C awk -v limit="$limit" -v outdir="$outdir" '
+    function write_chunk() {
+      if (curlen > 0) {
+        n++
+        f = sprintf("%s/%04d.diff", outdir, n)
+        printf "%s", cur > f
+        close(f)
+        cur = ""
+        curlen = 0
+      }
+    }
+    function add_unit(u,   ulen, where) {
+      ulen = length(u)
+      if (ulen > limit) {
+        where = (fname != "" ? fname : "(最初の diff --git より前の行)")
+        printf "error: これ以上分割できない単位が上限を超えています: %s (%d > %d バイト)\n", \
+          where, ulen, limit > "/dev/stderr"
+        failed = 1
+        return
+      }
+      if (curlen + ulen > limit) write_chunk()
+      cur = cur u
+      curlen += ulen
+    }
+    function flush_file(   whole, i) {
+      # 判定は fname ではなく中身で行う。最初の `diff --git` より前に行があると
+      # （git diff では通常出ないが）fname が空のまま捨てられ、黙って欠落する。
+      if (hdr == "" && nhunks == 0) return
+      whole = hdr
+      for (i = 1; i <= nhunks; i++) whole = whole hunks[i]
+      if (length(whole) <= limit || nhunks == 0) {
+        # ハンクが無い差分（バイナリ、モード変更のみ等）は分割しようがない。
+        # 上限を超えていても add_unit へ渡す。else 側の for は nhunks == 0 だと
+        # 一度も回らず、**上限超過の検出も行われないまま黙って落ちる**。
+        add_unit(whole)
+      } else {
+        # ファイル単位で入らないので、ヘッダを付け直しつつハンク単位へ落とす。
+        for (i = 1; i <= nhunks; i++) add_unit(hdr hunks[i])
+      }
+      fname = ""; hdr = ""; nhunks = 0; inhunk = 0
+    }
+    /^diff --git / {
+      flush_file()
+      fname = $0
+      hdr = $0 "\n"
+      nhunks = 0
+      inhunk = 0
+      next
+    }
+    /^@@ / {
+      nhunks++
+      hunks[nhunks] = $0 "\n"
+      inhunk = 1
+      next
+    }
+    {
+      if (inhunk) hunks[nhunks] = hunks[nhunks] $0 "\n"
+      else hdr = hdr $0 "\n"
+    }
+    END {
+      flush_file()
+      write_chunk()
+      if (failed) exit 3
+      if (n == 0) {
+        print "error: 差分からチャンクを 1 つも生成できませんでした" > "/dev/stderr"
+        exit 4
+      }
+    }
+  ' "$src"
+}
+
+# チャンク 1 件分の CLI 引数を組み立てる。$args を設定する。
+#
+# 末尾を `[[ -n "$MODEL" ]] && args=(...)` の形にしないこと。MODEL が空だと関数の
+# 戻り値が 1 になり、`set -e` の下では**呼び出し元ごと無音で終了する**
+# （実測: 分割の告知だけを出して exit 1。どのチャンクで何が起きたのか一切出ない）。
+# 明示的に if で書き、最後に return 0 を置く。
+build_args() {
+  local chunk="$1"
+  case "$ENGINE" in
+    gemini)
+      args=(--skip-trust --include-directories "$work_dir" -p "@$chunk
+$PROMPT")
+      if [[ -n "$MODEL" ]]; then
+        args=(-m "$MODEL" "${args[@]}")
+      fi
+      ;;
+    antigravity)
+      args=(-p "$(cat "$chunk")
+$PROMPT")
+      if [[ -n "$MODEL" ]]; then
+        args=(--model "$MODEL" "${args[@]}")
+      fi
+      ;;
+  esac
+  return 0
+}
+
 # 差分の渡し方はエンジンごとに違う。**どちらも「差分が加工されずモデルへ届くこと」を
 # 実測で確かめたうえで選んでいる。** 片方の作法をもう片方へ流用しない。
+chunk_files=()
+
 case "$ENGINE" in
   gemini)
     # 差分を CLI の解釈対象へ載せない。stdin や -p へ差分本文を混ぜると、gemini CLI が
@@ -223,9 +357,8 @@ case "$ENGINE" in
     # モデルにツール実行は不要。信頼済みフォルダの確認は対話を要求するため、
     # 非対話実行では明示的に読み取り専用として扱う。
     CLI="gemini"
-    args=(--skip-trust --include-directories "$work_dir" -p "@$diff_file
-$PROMPT")
-    [[ -n "$MODEL" ]] && args=(-m "$MODEL" "${args[@]}")
+    # ファイル参照で渡すため引数長の制限を受けない。分割せず 1 チャンクで扱う。
+    chunk_files=("$diff_file")
     ;;
   antigravity)
     # agy は @<パス> をファイル参照として展開しない（実測: `@scripts/verify.sh` /
@@ -235,20 +368,32 @@ $PROMPT")
     # 流用すると、agy にはファイル参照の手段が無いためモデルは差分を見ないまま
     # 「差分が空だ」と答える。
     #
-    # 引数へ載せる以上、差分の大きさが実行可能性に直結する。E2BIG は
-    # 「Argument list too long」としか出ず、原因が読み取れないまま赤になる。
-    # 手前で止めて、範囲を絞る指示を出す。黙って切り詰めない（レビューされて
-    # いない部分を緑として報告することになる）。
-    arg_limit="$(getconf ARG_MAX 2>/dev/null || echo 131072)"
-    arg_limit=$((arg_limit / 2))
-    if [[ "${#diff_text}" -gt "$arg_limit" ]]; then
-      echo "error: 差分が大きすぎて $ENGINE へ渡せません（${#diff_text} > $arg_limit）。--range で範囲を分けてください" >&2
+    # 引数へ載せる以上、差分の大きさが実行可能性に直結する。上限を超える分は
+    # 拒否せず分割してすべてレビューする（SINGLE_ARG_LIMIT の注記）。
+    CLI="agy"
+
+    # プロンプトも同じ引数へ載る。差分に使える分はその残り。余裕を 1KB 見る。
+    prompt_bytes="$(byte_len "$PROMPT")"
+    chunk_limit=$((SINGLE_ARG_LIMIT - prompt_bytes - 1024))
+    if [[ "$chunk_limit" -le 0 ]]; then
+      echo "error: プロンプトだけで単一引数の上限（$SINGLE_ARG_LIMIT バイト）を超えます" >&2
       exit 1
     fi
-    CLI="agy"
-    args=(-p "$diff_text
-$PROMPT")
-    [[ -n "$MODEL" ]] && args=(--model "$MODEL" "${args[@]}")
+
+    chunk_dir="$work_dir/chunks"
+    mkdir -p "$chunk_dir"
+    if ! split_diff_into_chunks "$diff_file" "$chunk_dir" "$chunk_limit"; then
+      echo "error: 差分を $ENGINE へ渡せる大きさへ分割できませんでした" >&2
+      exit 1
+    fi
+    while IFS= read -r chunk_path; do
+      chunk_files+=("$chunk_path")
+    done < <(find "$chunk_dir" -maxdepth 1 -name '*.diff' | sort)
+
+    if [[ "${#chunk_files[@]}" -eq 0 ]]; then
+      echo "error: 分割結果が空です。検査が成立しないため失敗させます。" >&2
+      exit 1
+    fi
     ;;
 esac
 
@@ -305,60 +450,95 @@ has_verdict_token() {
     | grep -qiE '^VERDICT:(LGTM|FINDINGS)$'
 }
 
-findings=0
-run=0
-while [[ "$run" -lt "$RUNS" ]]; do
-  run=$((run + 1))
-
-  # CLI の警告や進捗表示は「回答」ではない。判定へ混ぜると、警告が 1 行出ただけで
-  # LGTM が指摘ありに化け、ゲートが常に赤くなる（実測: 端末の色数や ripgrep 不在の
-  # 警告が stderr に出る）。判定はモデルの回答（stdout）だけで行い、stderr は失敗
-  # したときの診断に回す。標準入力は渡さない（差分は引数で渡している）。
-  output="$($CLI "${args[@]}" </dev/null 2>"$stderr_file")" || {
-    echo "error: second opinion failed (engine=$ENGINE, run $run/$RUNS)" >&2
-    cat "$stderr_file" >&2
-    printf '%s\n' "$output" >&2
-    exit 1
-  }
-
-  # 回答が空でも終了コードが 0 になる経路がある。実測では、agy がツールの実行許可を
-  # 求めて非対話では承認できず自動拒否し、「回答なし」を stderr へ書いて 0 で終えた。
-  # このとき判定は（判定トークンが無いので）指摘あり側へ倒れるが、指摘本文が無いため
-  # 画面には何も出ず、原因が分からないまま赤になる。CLI の診断をここで見せる。
-  if [[ -z "${output//[[:space:]]/}" && -s "$stderr_file" ]]; then
-    echo "[second-opinion] run $run/$RUNS: モデルの回答が空です。CLI の診断:" >&2
-    cat "$stderr_file" >&2
-  fi
-
-  # どの run が何を報告したかを追えるようにする。集約結果だけを出すと、
-  # 過半数に届かなかった指摘が消えて確認できなくなる。
-  if is_lgtm "$output"; then
-    echo "[second-opinion] run $run/$RUNS: LGTM"
-  else
-    findings=$((findings + 1))
-    if has_verdict_token "$output"; then
-      echo "[second-opinion] run $run/$RUNS: findings"
-    else
-      # 判定トークンが無い出力を黙って「指摘あり」に数えると、モデルが形式に
-      # 従わなかっただけの赤と、実在の指摘による赤が区別できない。
-      echo "[second-opinion] run $run/$RUNS: findings (判定トークンが見つかりません。最後の行に VERDICT: LGTM または VERDICT: FINDINGS が必要です)"
-    fi
-    printf '%s\n' "$output"
-  fi
-done
-
 # 過半数。N=1 なら 1、N=2 なら 2、N=3 なら 2、N=4 なら 3。
 threshold=$((RUNS / 2 + 1))
 
-if [[ "$findings" -lt "$threshold" ]]; then
-  echo "[second-opinion] LGTM ($findings/$RUNS runs reported findings; threshold $threshold)"
+chunk_total="${#chunk_files[@]}"
+chunk_index=0
+chunks_with_findings=0
+minority_findings=0
+
+if [[ "$chunk_total" -gt 1 ]]; then
+  echo "[second-opinion] 差分が単一引数の上限を超えるため $chunk_total 個へ分割してレビューします"
+fi
+
+for chunk_file in "${chunk_files[@]}"; do
+  chunk_index=$((chunk_index + 1))
+  build_args "$chunk_file"
+
+  # 分割していないときは従来どおりの表示にする。無条件に「1/1」を出すと、
+  # 分割が起きたかどうかがログから読み取れなくなる。
+  if [[ "$chunk_total" -gt 1 ]]; then
+    chunk_label=" chunk $chunk_index/$chunk_total"
+  else
+    chunk_label=""
+  fi
+
+  findings=0
+  run=0
+  while [[ "$run" -lt "$RUNS" ]]; do
+    run=$((run + 1))
+
+    # CLI の警告や進捗表示は「回答」ではない。判定へ混ぜると、警告が 1 行出ただけで
+    # LGTM が指摘ありに化け、ゲートが常に赤くなる（実測: 端末の色数や ripgrep 不在の
+    # 警告が stderr に出る）。判定はモデルの回答（stdout）だけで行い、stderr は失敗
+    # したときの診断に回す。標準入力は渡さない（差分は引数で渡している）。
+    output="$($CLI "${args[@]}" </dev/null 2>"$stderr_file")" || {
+      echo "error: second opinion failed (engine=$ENGINE,$chunk_label run $run/$RUNS)" >&2
+      cat "$stderr_file" >&2
+      printf '%s\n' "$output" >&2
+      exit 1
+    }
+
+    # 回答が空でも終了コードが 0 になる経路がある。実測では、agy がツールの実行許可を
+    # 求めて非対話では承認できず自動拒否し、「回答なし」を stderr へ書いて 0 で終えた。
+    # このとき判定は（判定トークンが無いので）指摘あり側へ倒れるが、指摘本文が無いため
+    # 画面には何も出ず、原因が分からないまま赤になる。CLI の診断をここで見せる。
+    if [[ -z "${output//[[:space:]]/}" && -s "$stderr_file" ]]; then
+      echo "[second-opinion]$chunk_label run $run/$RUNS: モデルの回答が空です。CLI の診断:" >&2
+      cat "$stderr_file" >&2
+    fi
+
+    # どの run が何を報告したかを追えるようにする。集約結果だけを出すと、
+    # 過半数に届かなかった指摘が消えて確認できなくなる。
+    if is_lgtm "$output"; then
+      echo "[second-opinion]$chunk_label run $run/$RUNS: LGTM"
+    else
+      findings=$((findings + 1))
+      if has_verdict_token "$output"; then
+        echo "[second-opinion]$chunk_label run $run/$RUNS: findings"
+      else
+        # 判定トークンが無い出力を黙って「指摘あり」に数えると、モデルが形式に
+        # 従わなかっただけの赤と、実在の指摘による赤が区別できない。
+        echo "[second-opinion]$chunk_label run $run/$RUNS: findings (判定トークンが見つかりません。最後の行に VERDICT: LGTM または VERDICT: FINDINGS が必要です)"
+      fi
+      printf '%s\n' "$output"
+    fi
+  done
+
+  # 判定はチャンクごとに過半数で行い、1 つでも指摘ありなら全体を指摘ありとする。
+  # 全チャンクの run を合算して過半数を取ると、片方のチャンクだけが確実に指摘を
+  # 出していても、他方の LGTM に薄められて通過しうる。
+  if [[ "$findings" -ge "$threshold" ]]; then
+    chunks_with_findings=$((chunks_with_findings + 1))
+  elif [[ "$findings" -gt 0 ]]; then
+    minority_findings=$((minority_findings + 1))
+  fi
+done
+
+if [[ "$chunks_with_findings" -eq 0 ]]; then
+  if [[ "$chunk_total" -gt 1 ]]; then
+    echo "[second-opinion] LGTM ($chunk_total チャンクすべてが閾値 $threshold/$RUNS 未満)"
+  else
+    echo "[second-opinion] LGTM ($findings/$RUNS runs reported findings; threshold $threshold)"
+  fi
   # 過半数に届かなくても、指摘があった事実は伏せない。誤検出とは限らない。
-  if [[ "$findings" -gt 0 ]]; then
+  if [[ "$minority_findings" -gt 0 ]]; then
     echo "[second-opinion] note: 少数の run が指摘しています。内容は上に出ています。" >&2
   fi
   exit 0
 fi
 
-echo "[second-opinion] findings reported by $findings/$RUNS runs (threshold $threshold)." >&2
+echo "[second-opinion] findings reported in $chunks_with_findings/$chunk_total chunk(s) (threshold $threshold/$RUNS runs)." >&2
 echo "[second-opinion] fix them in a single iteration before push." >&2
 exit 1

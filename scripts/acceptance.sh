@@ -94,6 +94,33 @@ else
   echo "[acceptance] (terraform) skip: terraform/ not found"
 fi
 
+# 仕様書の版表記の一致。
+#
+# docs/product-spec.md は版を 2 か所に書いている（H1 タイトルの "(vX.Y)" と
+# 本文の "- 版: vX.Y"）。実際に片方だけ更新して不整合を出したことがあるため、
+# 呼びかけではなく機械照合で塞ぐ（shared-ai-rules.md 12 章「一覧の複製は
+# 機械照合で担保する」）。
+#
+# 「更新したか」ではなく「一致しているか」を見るので、空更新では通過しない。
+# ネットワークも外部認証も要さないためローカル層に置く。
+SPEC="docs/product-spec.md"
+if [[ -f "$SPEC" ]]; then
+  echo "[acceptance] (docs) spec version consistency"
+  spec_title_ver="$(sed -n '1s/.*(\(v[0-9][0-9.]*\)).*/\1/p' "$SPEC")"
+  spec_body_ver="$(sed -n 's/^- 版: \(v[0-9][0-9.]*\).*/\1/p' "$SPEC" | head -1)"
+  if [[ -z "$spec_title_ver" || -z "$spec_body_ver" ]]; then
+    echo "[acceptance] (docs) $SPEC から版表記を取得できません（H1 の (vX.Y) と '- 版: vX.Y' の両方が必要）。" >&2
+    exit 1
+  fi
+  if [[ "$spec_title_ver" != "$spec_body_ver" ]]; then
+    echo "[acceptance] (docs) $SPEC の版表記が一致しません: タイトル=${spec_title_ver} 本文=${spec_body_ver}" >&2
+    exit 1
+  fi
+  ran_any=1
+else
+  echo "[acceptance] (docs) skip: $SPEC not found"
+fi
+
 if [[ "$ran_any" -eq 0 ]]; then
   echo "[acceptance] 受け入れ条件が未定義です。検証対象のマニフェストが 1 つも見つかりません。" >&2
   echo "[acceptance] このプロジェクトの受け入れ条件（テスト等）を scripts/acceptance.sh に定義してください。" >&2

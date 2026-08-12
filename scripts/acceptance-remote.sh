@@ -96,7 +96,13 @@ TF_DIR="terraform"
 
 # 前提の確認を最初に置く。未認証やオフラインでの失敗は「宣言と外部状態の乖離」では
 # ないため、乖離の検査より前に、前提の不成立として先に見えるようにする。
+#
+# AWS の確認も必ず terraform plan より前に置くこと。plan は AWS プロバイダを通るため、
+# 資格情報が失効していると plan 側が先に落ちる。そのときのメッセージはプロバイダ由来で
+# 読み解きにくく、「宣言と実状態が食い違っている」のか「単に SSO が切れている」のかを
+# 切り分けられない。前提を先に見せることが、この並び順の目的である。
 run "prerequisite: gh authenticated" gh auth status
+run "prerequisite: aws authenticated" aws sts get-caller-identity
 
 # terraform 自身も外部（プロバイダレジストリ）へ出る。init 済みでなければ plan は
 # 実行できないため、ここで冪等に通す。
@@ -272,16 +278,34 @@ check_dns_delegation() {
     return 1
   fi
 
-  parent_ns="$(dig +short NS "$parent_zone" 2>/dev/null | head -1)"
-  if [[ -z "$parent_ns" ]]; then
+  # 親ゾーンの権威サーバは複数ある。1 台に固定すると、その 1 台が一時的に応答しない
+  # だけで委譲が正しくても偽陰性になる。応答した最初の 1 台の結果で判定する。
+  local -a parent_ns_list=()
+  mapfile -t parent_ns_list < <(dig +short NS "$parent_zone" 2>/dev/null)
+  if [[ "${#parent_ns_list[@]}" -eq 0 ]]; then
     echo "親ゾーン ${parent_zone} の権威サーバを取得できません。ネットワークを確認すること。"
     return 1
   fi
 
-  actual_ns="$(dig +noall +authority +answer NS "$zone_name" @"$parent_ns" 2>/dev/null \
-    | awk '$4 == "NS" { print $5 }' | sed 's/\.$//' | tr 'A-Z' 'a-z' | sort)"
+  # 「どのサーバも応答しなかった」と「応答したが委譲が無い」を区別する。前者は前提の
+  # 不成立、後者は本当に未委譲であり、取るべき行動が違う。dig は応答があれば 0 を返し、
+  # サーバから返事が無いときだけ 9 を返すので、終了コードで見分ける。
+  local answered="" raw
+  for parent_ns in "${parent_ns_list[@]}"; do
+    if raw="$(dig +noall +authority +answer NS "$zone_name" @"$parent_ns" 2>/dev/null)"; then
+      answered="$parent_ns"
+      break
+    fi
+  done
+  if [[ -z "$answered" ]]; then
+    echo "親ゾーン ${parent_zone} のどの権威サーバからも応答がありません（${#parent_ns_list[@]} 台試行）。"
+    echo "委譲の有無は判定できていません。ネットワークを確認すること。"
+    return 1
+  fi
+
+  actual_ns="$(awk '$4 == "NS" { print $5 }' <<<"$raw" | sed 's/\.$//' | tr 'A-Z' 'a-z' | sort)"
   if [[ -z "$actual_ns" ]]; then
-    echo "委譲がまだ効いていません（${parent_ns} に ${zone_name} の NS がありません）。"
+    echo "委譲がまだ効いていません（${answered} に ${zone_name} の NS がありません）。"
     echo "さくらの ${parent_zone} ゾーンへ NS レコードを登録してください。"
     echo "登録する値: terraform -chdir=terraform output dns_zone_name_servers"
     return 1
@@ -295,7 +319,6 @@ check_dns_delegation() {
   echo "delegation for ${zone_name} is in place"
 }
 
-run "prerequisite: aws authenticated" aws sts get-caller-identity
 run "repository exists and visibility matches" check_repository
 run "default branch matches" check_default_branch
 run "branch protection matches" check_branch_protection

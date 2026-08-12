@@ -1,6 +1,11 @@
 import { SELF, env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { DEV_SESSION_COOKIE, HEALTH_OBJECT_KEY, cookieNames } from '../src/app.js';
+import {
+  DEV_SESSION_COOKIE,
+  HEALTH_OBJECT_KEY,
+  cookieNames,
+  handleAppRequest,
+} from '../src/app.js';
 import { SANDBOX_CSP } from '../src/sandbox.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
@@ -33,21 +38,30 @@ describe('バインディングの疎通（#51 acceptance 1）', () => {
   it('ローカル D1 が DDL と DML を受け付ける', async () => {
     // スキーマ本体は M1-1 の所有物なので、ここでは使い捨てのテーブルで
     // 「書けること」だけを確かめ、5.1 のテーブル名には一切触れない。
+    //
+    // 後片付けは finally に置く。ローカル D1 の状態は .wrangler 配下に残るため、
+    // 途中の assert が落ちるとテーブルが残り、以降のテストや手動確認へ影響する。
     await env.DB.exec('create table if not exists __dev_probe (id integer primary key, note text)');
-    await env.DB.prepare('insert into __dev_probe (note) values (?)').bind('m0.5-3').run();
-    const row = await env.DB.prepare('select note from __dev_probe order by id desc limit 1').first<{
-      note: string;
-    }>();
-    expect(row?.note).toBe('m0.5-3');
-    await env.DB.exec('drop table __dev_probe');
+    try {
+      await env.DB.prepare('insert into __dev_probe (note) values (?)').bind('m0.5-3').run();
+      const row = await env.DB.prepare(
+        'select note from __dev_probe order by id desc limit 1',
+      ).first<{ note: string }>();
+      expect(row?.note).toBe('m0.5-3');
+    } finally {
+      await env.DB.exec('drop table __dev_probe');
+    }
   });
 
   it('ローカル R2 へ書き込んだ内容を読み出せる', async () => {
     await env.BUCKET.put('__dev/probe.txt', 'hello');
-    const object = await env.BUCKET.get('__dev/probe.txt');
-    expect(object).not.toBeNull();
-    expect(await object!.text()).toBe('hello');
-    await env.BUCKET.delete('__dev/probe.txt');
+    try {
+      const object = await env.BUCKET.get('__dev/probe.txt');
+      expect(object).not.toBeNull();
+      expect(await object!.text()).toBe('hello');
+    } finally {
+      await env.BUCKET.delete('__dev/probe.txt');
+    }
     expect(await env.BUCKET.get('__dev/probe.txt')).toBeNull();
   });
 
@@ -68,6 +82,34 @@ describe('バインディングの疎通（#51 acceptance 1）', () => {
   it('health の R2 検査が後片付けをしている', async () => {
     await SELF.fetch(`${APP_ORIGIN}/__dev/health`);
     expect(await env.BUCKET.get(HEALTH_OBJECT_KEY)).toBeNull();
+  });
+
+  it('R2 の疎通が途中で失敗しても後片付けする', async () => {
+    // 上のテストは成功経路しか通らないため、put のあとで失敗する経路を注入する。
+    // 後片付けを成功経路にだけ書くと、get が null を返した場合や text() が投げた
+    // 場合にオブジェクトが残り、次回以降の判定を誤らせる。
+    const deleted: string[] = [];
+    const failingEnv = {
+      APP_HOST: env.APP_HOST,
+      SANDBOX_HOST: env.SANDBOX_HOST,
+      DB: env.DB,
+      BUCKET: {
+        put: async () => undefined,
+        // put した直後の get が null を返す（実際に起こりうる失敗経路）
+        get: async () => null,
+        delete: async (key: string) => {
+          deleted.push(key);
+        },
+      },
+    } as unknown as Env;
+
+    const response = await handleAppRequest(
+      new Request(`${APP_ORIGIN}/__dev/health`),
+      failingEnv,
+    );
+
+    expect(response.status).toBe(503);
+    expect(deleted).toContain(HEALTH_OBJECT_KEY);
   });
 });
 

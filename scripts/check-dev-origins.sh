@@ -26,6 +26,7 @@ cd "$(dirname "$HERE")"
 PORT="${PORT:-8799}"
 FAILURES=0
 SERVER_PID=""
+SERVER_USES_PGID=0
 WORKDIR=""
 
 ng() {
@@ -47,8 +48,18 @@ fatal() {
 # shellcheck disable=SC2329
 cleanup() {
   if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    # wrangler は子プロセス（workerd）を持つのでプロセスグループごと止める。
-    kill -- "-$SERVER_PID" 2>/dev/null || kill "$SERVER_PID" 2>/dev/null || true
+    # wrangler は子プロセス（workerd）を持つ。setsid で起動できていれば
+    # プロセスグループごと止められる。落とせていない場合は、親を止める前に
+    # 子を明示的に止める（親だけ殺すと workerd がポートを掴んだまま残り、
+    # 次回の起動が「ポート使用中」で失敗する）。
+    if [[ "${SERVER_USES_PGID:-0}" -eq 1 ]]; then
+      kill -- "-$SERVER_PID" 2>/dev/null || kill "$SERVER_PID" 2>/dev/null || true
+    else
+      if command -v pkill >/dev/null 2>&1; then
+        pkill -P "$SERVER_PID" 2>/dev/null || true
+      fi
+      kill "$SERVER_PID" 2>/dev/null || true
+    fi
     wait "$SERVER_PID" 2>/dev/null || true
   fi
   [[ -n "$WORKDIR" ]] && rm -rf -- "$WORKDIR"
@@ -71,8 +82,28 @@ SERVER_LOG="$WORKDIR/server.log"
 #
 # 解決できないと以降がすべて接続エラーになり、「同一サイトでない」のか
 # 「名前が引けない」のかが読み分けられなくなる。先に切り分ける。
+# getent は glibc 付属で、macOS には無い。無い環境で `getent hosts` が失敗すると、
+# 「名前が引けない」と「getent が無い」を区別できないまま赤になる。Node は
+# 手順書が前提として挙げているので、無いときはそちらの DNS 解決へ回す。
+resolve_host() {
+  local host="$1"
+  if command -v getent >/dev/null 2>&1; then
+    getent hosts "$host" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v node >/dev/null 2>&1; then
+    node -e '
+      const dns = require("node:dns");
+      dns.lookup(process.argv[1], (err) => process.exit(err ? 1 : 0));
+    ' "$host" >/dev/null 2>&1
+    return $?
+  fi
+  echo "[origins] 名前解決を確認する手段がありません（getent も node も見つかりません）" >&2
+  return 2
+}
+
 for host in "$APP_HOST" "$SANDBOX_HOST"; do
-  if ! getent hosts "$host" >/dev/null 2>&1; then
+  if ! resolve_host "$host"; then
     ng "ホスト名を解決できません: $host（*.localtest.me は公開 DNS が 127.0.0.1 を返す。オフラインなら /etc/hosts に足す）"
   fi
 done
@@ -99,12 +130,28 @@ bash scripts/dev-certs.sh >/dev/null
 
 echo "[origins] wrangler dev を起動します（port $PORT）"
 # setsid でプロセスグループを分け、後片付けで workerd ごと確実に止める。
-setsid env CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
-  npx wrangler dev \
-  --ip 127.0.0.1 --port "$PORT" \
-  --local-protocol https \
-  --https-key-path certs/dev.key --https-cert-path certs/dev.crt \
-  >"$SERVER_LOG" 2>&1 &
+#
+# setsid は util-linux 付属で macOS には無い。無い環境で必須にすると、ここで
+# 即失敗して検査そのものが成立しない。無ければ通常起動へ落とす。その場合は
+# プロセスグループが分かれないため、後片付けは子プロセスを個別に止める
+# （cleanup() が両方を扱う）。
+if command -v setsid >/dev/null 2>&1; then
+  SERVER_USES_PGID=1
+  setsid env CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+    npx wrangler dev \
+    --ip 127.0.0.1 --port "$PORT" \
+    --local-protocol https \
+    --https-key-path certs/dev.key --https-cert-path certs/dev.crt \
+    >"$SERVER_LOG" 2>&1 &
+else
+  SERVER_USES_PGID=0
+  env CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+    npx wrangler dev \
+    --ip 127.0.0.1 --port "$PORT" \
+    --local-protocol https \
+    --https-key-path certs/dev.key --https-cert-path certs/dev.crt \
+    >"$SERVER_LOG" 2>&1 &
+fi
 SERVER_PID=$!
 
 for _ in $(seq 1 60); do

@@ -46,6 +46,50 @@ trap cleanup EXIT
 command -v docker >/dev/null 2>&1 || fatal "docker が見つかりません。"
 docker info >/dev/null 2>&1 || fatal "Docker デーモンへ接続できません。"
 
+# base64 の復号と sha256 の算出は、GNU 版と BSD 版でオプションが違う
+# （GNU: `base64 -d` / `sha256sum`、BSD/macOS: `base64 -D` / `shasum -a 256`）。
+# GNU 版を決め打つと、macOS では `set -e` の下でコマンド不在やオプション不正の
+# まま検査が落ち、原因が読めない。openssl はどちらの環境にもあり、手順書も前提
+# として挙げているので、最後の受け皿に使う。
+#
+# どれも無ければ、検査が成立しないので黙って通さず落とす。
+#
+# なお docker/isolated-build/entrypoint.sh 側は `base64 -w0` / `sha256sum` を
+# 直接使ってよい。あちらが動くのは golang:1.26.5（Debian）の中だけで、
+# GNU coreutils があることがイメージによって保証されている。
+decode_base64() {
+  local src="$1" dst="$2"
+  if base64 -d <"$src" >"$dst" 2>/dev/null; then return 0; fi
+  if base64 -D <"$src" >"$dst" 2>/dev/null; then return 0; fi
+  if command -v openssl >/dev/null 2>&1 && openssl base64 -d -A -in "$src" -out "$dst" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+sha256_of() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | cut -d' ' -f1
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | cut -d' ' -f1
+    return 0
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$path" | awk '{print $NF}'
+    return 0
+  fi
+  return 1
+}
+
+if ! command -v openssl >/dev/null 2>&1 \
+   && ! command -v sha256sum >/dev/null 2>&1 \
+   && ! command -v shasum >/dev/null 2>&1; then
+  fatal "sha256 を算出する手段がありません（sha256sum / shasum / openssl のいずれかが要ります）。"
+fi
+
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/isolated-build.XXXXXX")" || fatal "一時ディレクトリを作成できませんでした。"
 
 # 7.1 の docker run オプション一式。ここを配列で 1 か所に持ち、すべての検査で使う。
@@ -112,9 +156,9 @@ else
   reported_bytes="${reported%% *}"
   reported_sha="${reported##* }"
 
-  if base64 -d <"$WORKDIR/game.b64" >"$WORKDIR/game.wasm" 2>/dev/null; then
-    actual_bytes="$(wc -c <"$WORKDIR/game.wasm")"
-    actual_sha="$(sha256sum "$WORKDIR/game.wasm" | cut -d' ' -f1)"
+  if decode_base64 "$WORKDIR/game.b64" "$WORKDIR/game.wasm"; then
+    actual_bytes="$(wc -c <"$WORKDIR/game.wasm" | tr -d '[:space:]')"
+    actual_sha="$(sha256_of "$WORKDIR/game.wasm")"
     actual_magic="$(head -c 4 "$WORKDIR/game.wasm" | od -An -tx1 | tr -d ' \n')"
 
     if [[ "$actual_bytes" == "$reported_bytes" && "$actual_sha" == "$reported_sha" ]]; then

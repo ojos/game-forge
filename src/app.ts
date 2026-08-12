@@ -81,15 +81,16 @@ async function checkD1(db: D1Database): Promise<BindingCheck> {
  * @returns 検査結果
  */
 async function checkR2(bucket: R2Bucket): Promise<BindingCheck> {
+  let wrote = false;
   try {
     const payload = `healthcheck ${new Date().toISOString()}`;
     await bucket.put(HEALTH_OBJECT_KEY, payload);
+    wrote = true;
     const object = await bucket.get(HEALTH_OBJECT_KEY);
     if (object === null) {
       return { ok: false, detail: 'put した直後の get が null を返しました' };
     }
     const readBack = await object.text();
-    await bucket.delete(HEALTH_OBJECT_KEY);
     if (readBack !== payload) {
       return { ok: false, detail: '書き込んだ内容と読み出した内容が一致しません' };
     }
@@ -97,6 +98,19 @@ async function checkR2(bucket: R2Bucket): Promise<BindingCheck> {
   } catch (error) {
     console.error('[health] R2 への疎通に失敗しました', error);
     return { ok: false, detail: describeError(error) };
+  } finally {
+    // 後片付けは finally に置く。成功経路にだけ delete を書くと、get が null を
+    // 返した場合や text() が投げた場合にオブジェクトが残る。この検査は繰り返し
+    // 呼ばれるうえ、「後片付けができている」こと自体をテストが見ているため、
+    // 残骸があると次の判定を誤らせる。
+    if (wrote) {
+      try {
+        await bucket.delete(HEALTH_OBJECT_KEY);
+      } catch (cleanupError) {
+        // 後片付けの失敗で疎通の判定を上書きしない。事実だけ記録する。
+        console.error('[health] R2 の後片付けに失敗しました', cleanupError);
+      }
+    }
   }
 }
 

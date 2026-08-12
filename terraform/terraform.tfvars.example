@@ -13,3 +13,13 @@ allowed_author_emails = ""
 # 既定値から変える場合のみ指定する。
 # github_owner    = "ojos"
 # repository_name = "game-forge"
+
+# 本番 AWS アカウント（game-forge-prod）のアカウント ID。12 桁の数字。
+# provider "aws" の allowed_account_ids に渡り、別アカウントのプロファイルで
+# 適用しようとしたときに apply を失敗させる。
+# 機密ではないが、このリポジトリは公開のため宣言側には書かない。
+aws_account_id_prod = "000000000000"
+
+# 既定値から変える場合のみ指定する。
+# aws_region    = "ap-northeast-1"
+# dns_zone_name = "game-forge.ojos.jp"

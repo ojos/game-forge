@@ -1,0 +1,23 @@
+# .dev.vars — Worker から見えるシークレットの雛形（値は書かない）。
+#
+# 使い方: このファイルを .dev.vars へコピーし、各自が値を入れる。
+#   cp .dev.vars.example .dev.vars
+#
+# なぜ .env ではなくこのファイルか:
+#   .env はこのリポジトリの「開発ツール」向け（gh の GH_TOKEN、第二意見の
+#   GEMINI_API_KEY など）で、アプリケーションが読むべきものではない。wrangler は
+#   既定で .env をシークレットとして Worker へ流し込むが、その経路は
+#   CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false で止めてある
+#   （scripts/dev-server.sh / package.json）。アプリ向けの値はこちらへ置く。
+#
+# 追跡除外: .dev.vars は .gitignore で除外済み。値を入れたままコミットされない。
+
+# Claude Platform on AWS の **Dev 組織**で発行した API キー（確定19 / 9.2）。
+#
+# 本番の組織とは別枠であることが 4.3 の判定基準（プロバイダ層が先に発火したら
+# アプリ層のバグ）を成立させる前提なので、ここへ Prod のキーを入れないこと。
+#
+# 空のままでも `wrangler dev` は起動する。実キーの発行は M0.5-1（#49）の範囲で、
+# 2026-08-12 時点では Claude Platform on AWS のサインアップが AWS 側の理由で
+# 未完了のため、まだ入れられない。
+ANTHROPIC_API_KEY=

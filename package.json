@@ -1,0 +1,30 @@
+{
+  "name": "game-forge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "prepare": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false wrangler types",
+    "dev": "bash scripts/dev-server.sh",
+    "test": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false vitest run",
+    "test:watch": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false vitest",
+    "typecheck": "tsc --noEmit",
+    "types": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false wrangler types",
+    "check:worker-types": "bash scripts/check-worker-types.sh",
+    "check:origins": "bash scripts/check-dev-origins.sh",
+    "check:isolated-build": "bash scripts/check-isolated-build.sh"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.21.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.121.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260804.1": true
+  }
+}

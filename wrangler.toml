@@ -1,0 +1,34 @@
+# Cloudflare Workers の構成宣言。
+#
+# 位置づけ: この段階（M0.5-3）はローカル開発環境の骨組みだけを扱う。
+# 本番へのデプロイ設定（routes / custom domain / 本物の D1 database_id）は、
+# 対応する issue が来た時点で足す。ここで先に書くと、9.3 が「API を
+# Pages Functions に置くかは M2-1 で確定する」としている判断を先取りしてしまう。
+
+name = "game-forge"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+# 開発用ホスト名。src/index.ts は Host ヘッダでアプリ側とサンドボックス側を出し分ける。
+#
+# `*.localtest.me` は公開 DNS が 127.0.0.1 を返すワイルドカードで、hosts ファイルの
+# 編集を要しない。`localtest.me` は PSL の public suffix ではないため登録可能ドメイン
+# （eTLD+1）は `localtest.me` であり、下の 2 つは **別オリジン・同一サイト**になる。
+# これは本番（`game-forge.ojos.jp` と `sandbox.game-forge.ojos.jp` が eTLD+1
+# `ojos.jp` の下で同一サイト）と同じ関係で、7.2 の検証に必要な構造を再現する。
+[vars]
+APP_HOST = "game-forge.localtest.me"
+SANDBOX_HOST = "sandbox.game-forge.localtest.me"
+
+# ローカル D1。`--local` 実行では database_id は参照されず、Miniflare が
+# .wrangler/state 配下の SQLite を使う。本番の ID は D1 を実際に作る時点で入れる
+# （それまで実在しない ID を書いておくと、宣言が外部状態を指しているように読める）。
+[[d1_databases]]
+binding = "DB"
+database_name = "game-forge-local"
+database_id = "local-only-placeholder"
+
+# ローカル R2。同じく `--local` では実際のバケットを参照しない。
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "game-forge-local"

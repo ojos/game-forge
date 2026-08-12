@@ -26,9 +26,50 @@ if [[ -f package.json ]]; then
   command -v npm >/dev/null 2>&1 || { echo "[acceptance] (node) npm not found. install Node.js (npm) to run this acceptance check." >&2; exit 1; }
   echo "[acceptance] (node) npm test"
   npm test
+  echo "[acceptance] (node) npm run typecheck"
+  npm run --silent typecheck
   ran_any=1
 else
   echo "[acceptance] (node) skip: package.json not found"
+fi
+
+# Worker のバインディング一覧の機械照合（shared-ai-rules 12 章）。
+# worker-configuration.d.ts は wrangler.toml から生成される一覧の複製であり、
+# 追随漏れは「書かれていない行」として現れるため文書を読んでも気づけない。
+# ネットワークも外部認証も要さないのでローカル層に置く。
+if [[ -f wrangler.toml ]]; then
+  echo "[acceptance] (worker) scripts/check-worker-types.sh"
+  bash scripts/check-worker-types.sh
+  ran_any=1
+else
+  echo "[acceptance] (worker) skip: wrangler.toml not found"
+fi
+
+# .dev.vars（Worker から見えるシークレット）の衛生検査。
+#
+# scripts/check-no-secrets.sh は名前で機密を判定するが、そのパターンは .dev.vars を
+# 拾わない（.env や *.key と違い、名前から機密と判定できない）。共通規範が
+# 「一次の対策は .gitignore での除外」としている以上、除外が実際に効いていることを
+# 機械で確かめる。あわせて、共有する雛形に値が入っていないことも見る
+# （check-no-secrets.sh の値検査は .env.example しか対象にしない）。
+if [[ -f .dev.vars.example ]]; then
+  echo "[acceptance] (dev-vars) .dev.vars が追跡除外されていること"
+  if ! git check-ignore -q .dev.vars; then
+    echo "[acceptance] .dev.vars が .gitignore で除外されていません。" >&2
+    echo "[acceptance] Worker のシークレットが追跡対象へ入る経路が開いています。" >&2
+    exit 1
+  fi
+
+  echo "[acceptance] (dev-vars) .dev.vars.example に値が入っていないこと"
+  if grep -qE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[^[:space:]]' .dev.vars.example; then
+    echo "[acceptance] .dev.vars.example に値が入っています（雛形はキー名だけを共有する）。" >&2
+    grep -nE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[^[:space:]]' .dev.vars.example \
+      | cut -d= -f1 >&2
+    exit 1
+  fi
+  ran_any=1
+else
+  echo "[acceptance] (dev-vars) skip: .dev.vars.example not found"
 fi
 if [[ -f go.mod ]]; then
   command -v go >/dev/null 2>&1 || { echo "[acceptance] (go) go not found. install the Go toolchain to run this acceptance check." >&2; exit 1; }

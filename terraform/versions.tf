@@ -13,6 +13,10 @@ terraform {
       source  = "integrations/github"
       version = "~> 6.0"
     }
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
   }
 
   # backend は宣言しない。既定の local backend（terraform/terraform.tfstate）を使う。

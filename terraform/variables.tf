@@ -66,3 +66,43 @@ variable "allowed_author_emails" {
     error_message = "allowed_author_emails を空にはできません。ワークフローの照合が全件不一致になります。"
   }
 }
+
+variable "aws_region" {
+  description = <<-EOT
+    AWS プロバイダのリージョン。
+
+    Route53 はグローバルサービスだがプロバイダはリージョンを要求する。SSO の
+    設定（~/.aws/config）と揃えておくと、CLI から手で確認するときに食い違わない。
+  EOT
+  type        = string
+  default     = "ap-northeast-1"
+}
+
+variable "aws_account_id_prod" {
+  description = <<-EOT
+    本番 AWS アカウント（game-forge-prod）のアカウント ID。
+
+    provider "aws" の allowed_account_ids に渡し、別アカウントのプロファイルで
+    この宣言を適用しようとしたときに apply を失敗させる。
+
+    機密ではないが、このリポジトリは公開であり公開する必要も無いため、宣言へ
+    直接書かず terraform.tfvars（*.tfvars は追跡外）から受ける。既定値は置かない。
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]{12}$", var.aws_account_id_prod))
+    error_message = "aws_account_id_prod は 12 桁の数字である必要があります。"
+  }
+}
+
+variable "dns_zone_name" {
+  description = <<-EOT
+    Route53 で管理する DNS ゾーン名（確定16 / 確定17）。
+
+    さくらのドメイン（ojos.jp）からこのゾーンへ NS 委譲する。さくら側の NS 登録だけは
+    API が無いため手動だが、委譲後の恒久的な状態は Route53 側＝この宣言が持つ。
+  EOT
+  type        = string
+  default     = "game-forge.ojos.jp"
+}

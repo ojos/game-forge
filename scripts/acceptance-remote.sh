@@ -214,10 +214,94 @@ check_actions_variable() {
   echo "actions variable ALLOWED_AUTHOR_EMAILS matches the declaration"
 }
 
+##
+# 宣言した Route53 ホストゾーンが実在し、ネームサーバが宣言と一致することを確認する。
+#
+# ゾーン ID と期待する NS は terraform output から取る。ここへ書き写すと、宣言を
+# 変えたときに検査だけが古い値を見続ける（shared-ai-rules.md 12 章）。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_dns_zone() {
+  local zone_id zone_name expected_ns actual_ns
+  zone_id="$(tf_output dns_zone_id)" || return 1
+  zone_name="$(tf_output dns_zone_name)" || return 1
+  if [[ -z "$zone_id" || -z "$zone_name" ]]; then
+    echo "terraform output から DNS ゾーンの識別子を取得できません。apply 済みか確認すること。"
+    return 1
+  fi
+
+  expected_ns="$(terraform -chdir="$TF_DIR" output -json dns_zone_name_servers | jq -S 'map(ascii_downcase) | sort')" || return 1
+  actual_ns="$(aws route53 get-hosted-zone --id "$zone_id" --query 'DelegationSet.NameServers' --output json | jq -S 'map(ascii_downcase) | sort')" || return 1
+  if [[ "$expected_ns" != "$actual_ns" ]]; then
+    echo "ホストゾーンのネームサーバが宣言と一致しません: expected=${expected_ns} actual=${actual_ns}"
+    return 1
+  fi
+  echo "hosted zone ${zone_name} exists (${zone_id})"
+}
+
+##
+# 委譲元（さくらの ojos.jp ゾーン）から Route53 へ NS 委譲が効いていることを確認する。
+#
+# これは terraform の宣言対象ではない。さくらのドメインは DNS の API を持たず、NS の
+# 登録が手動になるためである（terraform/dns.tf 参照）。宣言できないものを検査だけは
+# 置くのは、手動の 1 回が抜けたまま「宣言は正しいのに名前が引けない」状態を、
+# 実装のバグと切り分けられるようにするため。
+#
+# 期待する NS は宣言から取り、親ゾーンの権威サーバへ直接問い合わせて委譲そのものを見る。
+# ローカルリゾルバのキャッシュ越しに見ると、委譲前の応答を掴んで誤判定しうる。
+#
+# 委譲済みサブドメインの NS を親の権威サーバへ問い合わせると、応答はリファラルになり
+# NS は ANSWER ではなく AUTHORITY セクションに入る（実測: ANSWER: 0, AUTHORITY: 4）。
+# `dig +short` は ANSWER しか出さないため、正常な委譲を「未委譲」と誤判定する。
+# +noall +authority +answer で両方を拾い、レコード型で絞る。
+#
+# 親ゾーン名はゾーン名の先頭ラベルを落として導く。ここへ ojos.jp と書き写すと、
+# ゾーン名を変えたときに検査だけが古い親を見続ける（shared-ai-rules.md 12 章）。
+#
+# 戻り値: 0 = 委譲済み / 1 = 未委譲または取得失敗
+##
+check_dns_delegation() {
+  local zone_name parent_zone parent_ns expected_ns actual_ns
+  zone_name="$(tf_output dns_zone_name)" || return 1
+  expected_ns="$(terraform -chdir="$TF_DIR" output -json dns_zone_name_servers | jq -r '.[]' | sed 's/\.$//' | tr 'A-Z' 'a-z' | sort)" || return 1
+
+  parent_zone="${zone_name#*.}"
+  if [[ -z "$parent_zone" || "$parent_zone" == "$zone_name" ]]; then
+    echo "親ゾーン名を導けません: zone=${zone_name}"
+    return 1
+  fi
+
+  parent_ns="$(dig +short NS "$parent_zone" 2>/dev/null | head -1)"
+  if [[ -z "$parent_ns" ]]; then
+    echo "親ゾーン ${parent_zone} の権威サーバを取得できません。ネットワークを確認すること。"
+    return 1
+  fi
+
+  actual_ns="$(dig +noall +authority +answer NS "$zone_name" @"$parent_ns" 2>/dev/null \
+    | awk '$4 == "NS" { print $5 }' | sed 's/\.$//' | tr 'A-Z' 'a-z' | sort)"
+  if [[ -z "$actual_ns" ]]; then
+    echo "委譲がまだ効いていません（${parent_ns} に ${zone_name} の NS がありません）。"
+    echo "さくらの ${parent_zone} ゾーンへ NS レコードを登録してください。"
+    echo "登録する値: terraform -chdir=terraform output dns_zone_name_servers"
+    return 1
+  fi
+  if [[ "$expected_ns" != "$actual_ns" ]]; then
+    echo "委譲先の NS が宣言と一致しません:"
+    echo "  expected: $(tr '\n' ' ' <<<"$expected_ns")"
+    echo "  actual:   $(tr '\n' ' ' <<<"$actual_ns")"
+    return 1
+  fi
+  echo "delegation for ${zone_name} is in place"
+}
+
+run "prerequisite: aws authenticated" aws sts get-caller-identity
 run "repository exists and visibility matches" check_repository
 run "default branch matches" check_default_branch
 run "branch protection matches" check_branch_protection
 run "actions variable matches" check_actions_variable
+run "dns hosted zone matches" check_dns_zone
+run "dns delegation from sakura is in place" check_dns_delegation
 
 if [[ "$ran_any" -eq 0 ]]; then
   echo "[acceptance-remote] 外部層の受け入れ条件が未定義です。検査を 1 つも実行していません。" >&2

@@ -275,3 +275,29 @@ override.tf.json
 terraform.rc
 # .terraform.lock.hcl はプロバイダ版の固定に必要なため、意図して除外しない。
 # <<< devcontainer-bootstrap managed section <<<
+
+# ── Cloudflare Workers ローカル開発（M0.5-3） ───────────────────────────────
+# wrangler / miniflare のローカル状態（D1 の SQLite、R2 のオブジェクト、キャッシュ）。
+# 生成物であり再現手順は docs/local-dev.md にある。
+.wrangler/
+
+# Worker から見えるシークレット。wrangler が自動で読み込む名前であり、
+# Dev 組織の API キーはここに置く。scripts/check-no-secrets.sh のパターンは
+# この名前を拾わない（.env や *.key と違い、名前から機密と判定できない）ため、
+# 追跡除外が一次の対策になる。値のない雛形は .dev.vars.example を共有する。
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# ローカル HTTPS 用の自己署名証明書。__Host- cookie は Secure を要求し、
+# Secure は HTTPS を要求するため、7.2 の検証にはローカルでも証明書が要る。
+# 秘密鍵を含むので追跡しない（scripts/dev-certs.sh でいつでも作り直せる）。
+certs/
+
+# check-worker-types.sh が照合のために一時生成する。正常終了時は消える。
+.worker-configuration.check.d.ts
+
+# `wrangler types` が wrangler.toml から生成する。14,000 行超の生成物であり、
+# 共通規範「再生成できる大容量の生成物はコミットしない」に従って追跡しない。
+# npm ci の prepare で生成され、宣言との一致は scripts/check-worker-types.sh が検査する。
+worker-configuration.d.ts

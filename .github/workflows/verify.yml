@@ -96,12 +96,23 @@ jobs:
       # 従属し、プロジェクトごとに違う。雛形が中途半端に決め打つと、使わない手順を
       # 毎回消す作業をさせることになる。
       #
-      # 例（そのまま貼らず、実態に合わせて書く）:
-      #   - uses: actions/setup-node@v4
-      #     with:
-      #       node-version: '20'
-      #   - run: npm ci
-      #   - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      # scripts/acceptance.sh は package.json があるとき npm test（vitest）と
+      # npm run typecheck（tsc）を実行し、wrangler.toml があるとき
+      # scripts/check-worker-types.sh（npx wrangler types）を実行する。
+      # いずれも node_modules を要するため、ランナー側で用意する。
+      #
+      # 版は package.json の engines（>=22）に合わせ、手元の devcontainer と同じ
+      # 24 系を使う。手元と CI で版が割れると、片方でだけ再現する不具合が出る。
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # npm ci は package.json の prepare を走らせ、worker-configuration.d.ts を
+      # 生成する。この生成物は追跡していない（共通規範「再生成できる大容量の
+      # 生成物はコミットしない」）ため、これが無いと型検査が成立しない。
+      - run: npm ci
 
       # scripts/acceptance.sh が terraform/ に対して fmt -check を実行する。
       # ツールが無い場合、acceptance.sh は「スキップ」ではなく失敗させる規約なので、

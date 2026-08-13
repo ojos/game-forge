@@ -5,6 +5,8 @@
  * M1-1 が所有するため、ここでは**スキーマに依存しない疎通確認**だけを行う。
  */
 import { describeOriginRelation } from './origins.js';
+import type { Route } from './routes.js';
+import { dispatch, html, json } from './routes.js';
 
 /**
  * 開発用セッション cookie の名前。
@@ -125,18 +127,18 @@ function describeError(error: unknown): string {
 }
 
 /**
- * アプリ用ホストへのリクエストを処理する。
+ * ローカル開発用の経路（`/` と `/__dev/*`）。
  *
- * @param request 受信したリクエスト
- * @param env バインディングと環境変数
- * @returns レスポンス
+ * M0.5-3 が所有する範囲であり、M1 以降が足す経路とは別の配列に置く。機能ごとに
+ * `Route[]` を分けておくと、`appRoutes` への連結が 1 行で済み、並行する PR が
+ * 互いのハンドラ本文を触らずに済む。
  */
-export async function handleAppRequest(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url);
-
-  switch (url.pathname) {
-    case '/':
-      return html(`<!doctype html>
+const devRoutes: readonly Route[] = [
+  {
+    method: 'GET',
+    path: '/',
+    handler: () =>
+      html(`<!doctype html>
 <meta charset="utf-8">
 <title>Game Forge (local dev)</title>
 <h1>app origin</h1>
@@ -145,9 +147,12 @@ export async function handleAppRequest(request: Request, env: Env): Promise<Resp
   <li><a href="/__dev/health">/__dev/health</a> — D1 / R2 の疎通</li>
   <li><a href="/__dev/session">/__dev/session</a> — <code>${DEV_SESSION_COOKIE}</code> を発行</li>
   <li><a href="/__dev/cookies">/__dev/cookies</a> — 届いた cookie 名の一覧</li>
-</ul>`);
-
-    case '/__dev/health': {
+</ul>`),
+  },
+  {
+    method: 'GET',
+    path: '/__dev/health',
+    handler: async (_request, env) => {
       const [d1, r2] = await Promise.all([checkD1(env.DB), checkR2(env.BUCKET)]);
       const relation = describeOriginRelation(env.APP_HOST, env.SANDBOX_HOST);
       const report: HealthReport = {
@@ -163,9 +168,12 @@ export async function handleAppRequest(request: Request, env: Env): Promise<Resp
       };
       const healthy = d1.ok && r2.ok && relation.differentOrigin && relation.sameSite;
       return json(report, healthy ? 200 : 503);
-    }
-
-    case '/__dev/session': {
+    },
+  },
+  {
+    method: 'GET',
+    path: '/__dev/session',
+    handler: () => {
       // `__Host-` の受理条件をすべて満たす形で発行する。1 つでも欠けるとブラウザは
       // 黙って捨てるため、検証にならない（Domain を書かない / Path=/ / Secure）。
       const cookie = [
@@ -176,24 +184,35 @@ export async function handleAppRequest(request: Request, env: Env): Promise<Resp
         'SameSite=Lax',
         'Max-Age=3600',
       ].join('; ');
-      return new Response(JSON.stringify({ issued: DEV_SESSION_COOKIE }, null, 2), {
-        status: 200,
-        headers: {
-          'content-type': 'application/json; charset=utf-8',
-          'set-cookie': cookie,
-          'cache-control': 'no-store',
-        },
-      });
-    }
+      return json({ issued: DEV_SESSION_COOKIE }, 200, { 'set-cookie': cookie });
+    },
+  },
+  {
+    method: 'GET',
+    path: '/__dev/cookies',
+    // 値は返さない。名前だけで「届いたか」は判定でき、値を返すと将来この経路が
+    // 本物のセッションを覗く穴になる。
+    handler: (request) => json({ cookieNames: cookieNames(request.headers.get('cookie')) }),
+  },
+];
 
-    case '/__dev/cookies':
-      // 値は返さない。名前だけで「届いたか」は判定でき、値を返すと将来この経路が
-      // 本物のセッションを覗く穴になる。
-      return json({ cookieNames: cookieNames(request.headers.get('cookie')) });
+/**
+ * アプリ用ホストの経路表。
+ *
+ * M1 以降で経路を足すときは、機能ごとの `Route[]` を別ファイルに置き、この配列へ
+ * 連結する。ここへハンドラ本文を書き足さないこと（並行する PR が同じ行を取り合う）。
+ */
+export const appRoutes: readonly Route[] = [...devRoutes];
 
-    default:
-      return json({ error: 'not found', path: url.pathname }, 404);
-  }
+/**
+ * アプリ用ホストへのリクエストを処理する。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+export async function handleAppRequest(request: Request, env: Env): Promise<Response> {
+  return await dispatch(appRoutes, request, env);
 }
 
 /**
@@ -215,31 +234,4 @@ export function cookieNames(header: string | null): string[] {
       return separator === -1 ? pair : pair.slice(0, separator);
     })
     .filter((name) => name !== '');
-}
-
-/**
- * JSON レスポンスを組み立てる。
- *
- * @param body シリアライズする値
- * @param status HTTP ステータス
- * @returns レスポンス
- */
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body, null, 2), {
-    status,
-    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
-  });
-}
-
-/**
- * HTML レスポンスを組み立てる。
- *
- * @param body HTML 本文
- * @returns レスポンス
- */
-function html(body: string): Response {
-  return new Response(body, {
-    status: 200,
-    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
-  });
 }

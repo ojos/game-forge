@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { defaultExclude, defineConfig } from 'vitest/config';
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers';
 
 /**
@@ -32,4 +32,23 @@ export default defineConfig({
       miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
     }),
   ],
+  test: {
+    /**
+     * 並列実装用の作業ツリー（`.claude/worktrees/`）を探索対象から外す。
+     *
+     * 中身はリポジトリ全体のチェックアウトそのもので、他レーンの作業中ブランチが
+     * 入っている。除外しないと vitest がそれらのテストまで拾い、しかも
+     * `configPath: './wrangler.toml'` の解決はこの設定ファイルの位置が基準なので、
+     * **他ブランチのテストがルートの `wrangler.toml` と `migrations/` で走る**。
+     * 他レーンが足したテーブルやバインディングは当然ルートに無いため、そのレーンの
+     * 作業が正しくても落ちる。
+     *
+     * 結果として `scripts/verify.sh`（ループの接地信号）が、検証対象の変更とは
+     * 無関係な理由で赤になる。接地信号は迂回できないことに意味があるので、
+     * 偽陽性を出す経路は塞ぐ（shared-ai-rules.md 12 章）。
+     *
+     * 既定の除外を捨てないよう defaultExclude を展開してから足す。
+     */
+    exclude: [...defaultExclude, '**/.claude/worktrees/**'],
+  },
 });

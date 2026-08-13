@@ -1,11 +1,11 @@
 # MVP マイルストーンと issue 一覧（起票草案）
 
-- 版: draft-3（M0.5-3 に scope.out / constraints を追加し、M1-1・M2-4・M2-5 との境界を明示）
+- 版: draft-4（M0.5-4（#71）と M2-8（#72）を追加。M1-1 の scope.in に waitlist とテスト用スキーマ適用ヘルパを追記済み）
 - 作成日: 2026-08-11
-- 更新日: 2026-08-12
+- 更新日: 2026-08-13
 - 位置づけ: [product-spec.md](product-spec.md) を実行単位へ分解した文書。仕様の正本は product-spec.md であり、本文書は仕様を上書きしない。
-- 粒度: 1 issue = 1 PR。全 **44 件**。
-- 起票状況: **起票済み。** milestone `M0`〜`M7`（`M0.5` を含む）と issue 44 件を `gh` CLI で作成済み（Terraform の宣言管理対象外）。本文書は起票内容の正本であり、issue 側を変更したときはこちらも更新する。
+- 粒度: 1 issue = 1 PR。全 **46 件**。
+- 起票状況: **起票済み。** milestone `M0`〜`M7`（`M0.5` を含む）と issue 46 件を `gh` CLI で作成済み（Terraform の宣言管理対象外）。本文書は起票内容の正本であり、issue 側を変更したときはこちらも更新する。
 
 ---
 
@@ -130,6 +130,15 @@ M1 以降のすべてに先行する土台。**M0 が「決定」の milestone �
 - **priority:** medium
 - **参照:** 12-#8 / 5.6 / 10.1
 
+### M0.5-4 アプリと API を Pages Functions へ移す（確定22）
+- **goal:** 確定22 に従い、アプリと API を Cloudflare Pages Functions で配備できる形にする。現状は Workers のままで、ゾーンが Route53 にある以上（確定17）`game-forge.ojos.jp` にカスタムドメインを張れない。
+- **scope.in:** エントリの付け替え（`src/index.ts` の Host 振り分け）、Pages 用の配備設定、**API のパスを `/api/*` へ寄せる**（`/waitlist` → `/api/waitlist`、`src/signup.ts` のフォーム `action` も追随）、外部 DNS のまま CNAME 1 本で張る手順の文書化、`sandbox.game-forge.ojos.jp` の扱いの確認。
+- **scope.out:** 本番への実配備（外部状態の変更。宣言と手順まで）。Next.js / React のフロント（MVP の画面は SSR HTML のまま）。
+- **constraints:** 7.2 の別オリジン・同一サイト構造を壊さないこと（`__Host-` cookie と CSP `sandbox`）。Pages Functions は Workers と同じランタイムなので `src/` はそのまま使えるはずだが、動くことを検証で示す。
+- **acceptance:** `bash scripts/verify.sh` が `VERIFY_PASS` / `npm run check:origins` が Pages Functions の起動形態でも通る / `/api/waitlist` が動き、`/waitlist` への参照が残っていないことを機械照合する。
+- **priority:** high
+- **参照:** 確定22 / 9.3 / 7.2 / 確定17
+
 ---
 
 ## M1 認証と招待
@@ -216,6 +225,15 @@ M1 以降のすべてに先行する土台。**M0 が「決定」の milestone �
 - **acceptance:** R2 認証情報が VPS 側のみに存在し、ブラウザ・コンテナへ渡らないことを確認する / 書き込んだオブジェクトの両ヘッダが取得できる / `games` 行が `status='draft'` で作成される。
 - **priority:** high
 - **参照:** 3.3-6 / 3.4-1 / 5.1
+
+### M2-8 6.1 と 8.3 の食い違い（文字描画の可否）を決着させる
+- **goal:** 生成物で文字描画を許すかを決め、6.1 と 8.3 のどちらかを直して仕様書を一貫させる。6.1 は描画を「`vector` と算術ピクセルに限定する」とし、8.3 は `text` 描画を前提に出力側モデレーションを設計している。
+- **scope.in:** どちらを正とするか決める、仕様書 6.1 / 8.3 の修正、許可パッケージ一覧（`src/go-import-allowlist.ts`）と 6.1 の表の追随、12 章へ載せるか付録へ入れるかの判断。
+- **scope.out:** 出力側モデレーションの実装（M6-2）。
+- **constraints:** 一覧はコード側が正で、テストが 6.1 の表と機械照合している。片方だけ直すと落ちる。
+- **acceptance:** 6.1 と 8.3 が矛盾しない記述になっている / `bash scripts/verify.sh` が `VERIFY_PASS` / 禁じる決着なら `text/v2` と `basicfont` が一覧から落ちている、許す決着なら 6.1 の「限定する」が改められている。
+- **priority:** medium
+- **参照:** 6.1 / 8.3 / 3.4
 
 ---
 

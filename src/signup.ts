@@ -28,7 +28,7 @@ import type { AuthDependencies } from './auth/google.js';
 import { startInvitedLogin } from './auth/google.js';
 import { normalizeInviteCode } from './invite-code.js';
 import { checkInvite } from './invites.js';
-import { SIGNUP_PATH, WAITLIST_THANKS_PATH } from './paths.js';
+import { SIGNUP_PATH, WAITLIST_PATH, WAITLIST_THANKS_PATH } from './paths.js';
 import { countWaitlist, coarsenWaitlistCount } from './waitlist.js';
 
 /** フォームの `Content-Type`。素の `<form method="post">` はこれで送る。 */
@@ -128,7 +128,7 @@ ${error}
 
 <h2>招待コードをお持ちでない方</h2>
 ${waiting}
-<form method="post" action="/waitlist">
+<form method="post" action="${WAITLIST_PATH}">
   <label for="email">メールアドレス</label>
   <input id="email" name="email" type="email" autocomplete="email" required>
   <input type="hidden" name="source" value="signup">

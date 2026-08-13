@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createAuthRoutes } from '../src/auth/google.js';
 import type { TokenExchange } from '../src/auth/google.js';
 import { normalizeInviteCode } from '../src/invite-code.js';
-import { SIGNUP_PATH, WAITLIST_THANKS_PATH } from '../src/paths.js';
+import { SIGNUP_PATH, WAITLIST_PATH, WAITLIST_THANKS_PATH } from '../src/paths.js';
 import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, verifySession } from '../src/session.js';
@@ -393,7 +393,7 @@ describe('登録画面', () => {
     expect(response.headers.get('content-type')).toContain('text/html');
     const body = await response.text();
     expect(body).toContain(`action="${SIGNUP_PATH}"`);
-    expect(body).toContain('action="/waitlist"');
+    expect(body).toContain(`action="${WAITLIST_PATH}"`);
     expect(body).toContain('name="code"');
     expect(body).toContain('name="email"');
   });
@@ -501,7 +501,7 @@ describe('待機リストの no-JS 送信（#14 acceptance 2）', () => {
   async function submitForm(email: string): Promise<Response> {
     return await dispatch(
       routes,
-      new Request(`${APP_ORIGIN}/waitlist`, {
+      new Request(`${APP_ORIGIN}${WAITLIST_PATH}`, {
         method: 'POST',
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
@@ -544,7 +544,7 @@ describe('待機リストの no-JS 送信（#14 acceptance 2）', () => {
     // `Accept` を明示しない fetch の既定（*/*）を HTML と取り違えないこと。
     const response = await dispatch(
       routes,
-      new Request(`${APP_ORIGIN}/waitlist`, {
+      new Request(`${APP_ORIGIN}${WAITLIST_PATH}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ email: 'fetch@example.com', source: 'signup' }),

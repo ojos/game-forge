@@ -73,11 +73,11 @@ cp .dev.vars.example .dev.vars
 
 **Dev 組織の API キーは 2026-08-12 時点でまだ発行できない。** M0.5-1（#49）で
 Claude Platform on AWS のサインアップが AWS 側の理由で完了していないため。
-`ANTHROPIC_AWS_API_KEY` は空のままでよく、`wrangler dev` は起動する（キーは AWS コンソールで発行する。仕様書 4.1 の認証方式）。
+`ANTHROPIC_AWS_API_KEY` は空のままでよく、`wrangler pages dev` は起動する（キーは AWS コンソールで発行する。仕様書 4.1 の認証方式）。
 
 **ログインを手元で試すには `SESSION_SECRET` と Google の OAuth クライアントが要る**
 （#12 / 8.1）。値の作り方は `.dev.vars.example` のコメントに書いてある。空のままでも
-`wrangler dev` は起動し、`/auth/google/start` と `/auth/google/callback` が 503 を
+`wrangler pages dev` は起動し、`/auth/google/start` と `/auth/google/callback` が 503 を
 返すだけになる（設定が無いときに認証を素通しさせないため）。ログアウト
 （`POST /auth/logout`）は cookie を消すだけなので、設定が無くても動く。
 
@@ -110,6 +110,10 @@ npm run db:migrate:list   # 未適用のマイグレーションを確認
 ```bash
 npm run dev
 ```
+
+中身は `wrangler pages dev` です（確定22 / #71）。**`wrangler dev` は使えません** —
+Pages 構成に対して「Workers 用のコマンドです」と言って落ちます。配備先を Pages に
+した理由は [pages-deploy.md](pages-deploy.md) にあります。
 
 - アプリ: <https://game-forge.localtest.me:8787/>
 - 登録画面: <https://game-forge.localtest.me:8787/signup>
@@ -147,6 +151,22 @@ npm run dev
 **`*.localtest.me` は該当しない。** 同一サイトの再現に `localtest.me` を使う以上、
 証明書は避けて通れない。
 
+### 経路の構成
+
+```
+functions/[[path]].ts   Pages Functions の入口。src/index.ts の default export を呼ぶだけ
+public/                 出力ディレクトリ。空（.gitkeep のみ）
+src/index.ts            Host ヘッダでアプリ側とサンドボックス側を出し分ける
+src/routes.ts           経路表。各機能が Route[] を持ち寄る
+```
+
+**`public/` に静的ファイルを置かないこと。** Pages は静的ファイルを Functions より先に
+解決するため、`index.html` を置くと `/` の経路が隠れます。画面はすべて Worker が
+生成します。
+
+API のパスは `/api/*` を正とします（確定22）。`scripts/acceptance.sh` が、旧綴りの
+`/waitlist` が `src/` と `test/` に残っていないことを毎回検査します。
+
 ### なぜ 1 プロセスで 2 つのホストなのか
 
 オリジンはスキーム・**ホスト**・ポートで決まる。同じポートでもホスト名が違えば
@@ -177,7 +197,7 @@ npm run dev
 
 ### `npm run check:origins` が確かめること
 
-自己署名証明書で `wrangler dev` を起動し、自分で止める。起動済みのサーバへ相乗りしない
+自己署名証明書で `wrangler pages dev` を起動し、自分で止める。起動済みのサーバへ相乗りしない
 （相乗りすると、古いコードのまま緑になる経路ができる）。
 
 - 両ホストが解決し、**別オリジン**かつ**同一サイト**であること

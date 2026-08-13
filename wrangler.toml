@@ -1,12 +1,19 @@
-# Cloudflare Workers の構成宣言。
+# Cloudflare Pages の構成宣言。
 #
-# 位置づけ: この段階（M0.5-3）はローカル開発環境の骨組みだけを扱う。
-# 本番へのデプロイ設定（routes / custom domain / 本物の D1 database_id）は、
-# 対応する issue が来た時点で足す。ここで先に書くと、9.3 が「API を
-# Pages Functions に置くかは M2-1 で確定する」としている判断を先取りしてしまう。
-
+# **Workers ではなく Pages である**（確定22 / #71）。ゾーンは確定17 で Route53 へ
+# 委譲済みで Cloudflare 上に無く、Workers のカスタムドメインはゾーンが Cloudflare に
+# あることを要求するため `game-forge.ojos.jp` に張れない。Pages のカスタムドメインは
+# サブドメインなら外部 DNS のまま CNAME 1 本で足りる（docs/pages-deploy.md）。
+#
+# 本番向けの設定（custom domain / 本物の D1 database_id）は、対応する issue が来た
+# 時点で足す。実在しない ID を先に書くと、宣言が外部状態を指しているように読める。
 name = "game-forge"
-main = "src/index.ts"
+# Pages の出力ディレクトリ。**静的ファイルを置かない。**
+#
+# Pages は静的ファイルを Functions より先に解決するため、ここに index.html を置くと
+# functions/[[path]].ts の `/` が隠れる（実測で確認）。画面はすべて Worker が生成する
+# ので、このディレクトリは空のまま（.gitkeep だけ）にしておく。
+pages_build_output_dir = "public"
 compatibility_date = "2026-08-01"
 
 # 開発用ホスト名。src/index.ts は Host ヘッダでアプリ側とサンドボックス側を出し分ける。

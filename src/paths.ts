@@ -17,3 +17,14 @@ export const SIGNUP_PATH = '/signup';
 
 /** 待機リスト登録後の受け皿（POST-redirect-GET の GET 側）。 */
 export const WAITLIST_THANKS_PATH = '/signup/waitlist/thanks';
+
+/**
+ * 待機リストへの登録（API）。
+ *
+ * `/api/*` は確定22 で正とした綴りである。M1 の時点では 9.3 が「API を `/api/*` に
+ * 置くなら Pages Functions を使う。ここは M2-1 の実装時に確定する」としていたため
+ * `/waitlist` に置いていた（#63）。確定22 でその制約が解けたので寄せた。
+ *
+ * 登録フォームの `action` と経路の登録が同じ値を指すよう、定数を 1 か所に置く。
+ */
+export const WAITLIST_PATH = '/api/waitlist';

@@ -22,6 +22,7 @@
     "ghcr.io/devcontainers/features/node:1": {},
     "ghcr.io/devcontainers/features/go:1": {},
     "ghcr.io/devcontainers/features/aws-cli:1": {},
+    "ghcr.io/dhoeric/features/google-cloud-cli:1": {},
     "ghcr.io/devcontainers/features/terraform:1": {}
   },
   "remoteEnv": {
@@ -34,6 +35,7 @@
       "extensions": [
         "golang.go",
         "amazonwebservices.aws-toolkit-vscode",
+        "GoogleCloudTools.cloudcode",
         "hashicorp.terraform",
         "anthropic.claude-code",
         "ms-azuretools.vscode-containers"

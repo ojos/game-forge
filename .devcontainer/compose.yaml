@@ -7,11 +7,13 @@ services:
       - /var/run/docker.sock:/var/run/docker-host.sock
       - gh-storage:/home/vscode/.config/gh
       - aws-storage:/home/vscode/.aws
+      - gcloud-storage:/home/vscode/.config/gcloud
       - claude-storage:/home/vscode/.claude
       - gemini-storage:/home/vscode/.gemini
     command: sleep infinity
 volumes:
   gh-storage:
   aws-storage:
+  gcloud-storage:
   claude-storage:
   gemini-storage:

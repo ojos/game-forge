@@ -26,11 +26,13 @@ check_mounted() {
 }
 check_mounted "/home/vscode/.config/gh" "gh-storage"
 check_mounted "/home/vscode/.aws" "aws-storage"
+check_mounted "/home/vscode/.config/gcloud" "gcloud-storage"
 check_mounted "/home/vscode/.claude" "claude-storage"
 check_mounted "/home/vscode/.gemini" "gemini-storage"
 command -v node >/dev/null 2>&1 && echo "[check] node OK" || echo "[check] node missing"
 command -v go >/dev/null 2>&1 && echo "[check] go OK" || echo "[check] go missing"
 command -v aws >/dev/null 2>&1 && echo "[check] aws OK" || echo "[check] aws missing"
+command -v gcloud >/dev/null 2>&1 && echo "[check] gcloud OK" || echo "[check] gcloud missing"
 command -v terraform >/dev/null 2>&1 && echo "[check] terraform OK" || echo "[check] terraform missing"
 command -v claude >/dev/null 2>&1 && echo "[check] claude OK" || echo "[check] claude missing"
 command -v agy >/dev/null 2>&1 && echo "[check] agy OK" || echo "[check] agy missing"

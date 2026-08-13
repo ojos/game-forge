@@ -52,6 +52,11 @@
       "dependsOn": [
         "ghcr.io/devcontainers/features/github-cli:1"
       ]
+    },
+    "ghcr.io/dhoeric/features/google-cloud-cli:1": {
+      "version": "1.0.1",
+      "resolved": "ghcr.io/dhoeric/features/google-cloud-cli@sha256:fa5d894718825c5ad8009ac8f2c9f0cea3d1661eb108a9d465cba9f3fc48965f",
+      "integrity": "sha256:fa5d894718825c5ad8009ac8f2c9f0cea3d1661eb108a9d465cba9f3fc48965f"
     }
   }
 }

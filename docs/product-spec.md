@@ -1,6 +1,6 @@
-# プロダクト企画書 兼 システム仕様書 (v0.7)
+# プロダクト企画書 兼 システム仕様書 (v0.8)
 
-- 版: v0.7（5.1 に `waitlist` を追加し、時刻の列の型を規約として明記。未確定は 3 件）
+- 版: v0.8（9.3 の配置先を Pages Functions に確定（確定22）。未確定は 3 件）
 - 作成日: 2026-08-11
 - 更新日: 2026-08-13
 - 位置づけ: MVP 着手前の正本。未確定事項は 12 章に明示する。
@@ -54,6 +54,12 @@
 | 1 | 「Claude Platform on AWS では Workspace 単位の spend limit / rate limit は設定できない（組織単位のみ）」 | **事実誤認につき訂正。** Workspace 単位で設定できないのは **rate limit だけ**で、**spend limit は設定できる**（4.3） |
 | 2 | 4.3 のプロバイダ層＝組織の spend limit | **Workspace の spend limit を本体**とし、組織の spend limit をその外側の総枠とする（4.3） |
 | 3 | 9.2 の Dev/Prod 分割の根拠＝「Workspace 単位で分離できないから」 | **根拠を差し替え。** 分離だけなら Workspace で足りる。分割の根拠は blast radius・IAM・請求行の分離という通常のマルチアカウント衛生（9.2 / 確定21）。**分割の判断自体は維持する** |
+
+### 1.2.5 v0.7 からの主要な変更
+
+| # | v0.7 の記述 | v0.8 での扱い |
+|---|---|---|
+| 1 | 「API を `/api/*` に置くなら Pages Functions を使う。ここは M2-1 の実装時に確定する」 | **確定22 として Pages Functions に確定**（9.3）。制約は `/api/*` に限らず、ゾーンが Cloudflare に無い以上 Workers ではカスタムドメインを張れないため、アプリ全体が対象 |
 
 ### 1.2.4 v0.6 からの主要な変更
 
@@ -648,7 +654,15 @@ docker run --rm \
 - **DNS:** `game-forge.ojos.jp` をさくらのドメインから **AWS Route53 へ NS 委譲**し、以降は `hashicorp/aws` プロバイダで Terraform 管理する（確定17）。さくら側の作業は NS レコードを 1 組置く初回のみ。
   - **さくらのドメインは DNS の API を持たない**ため、委譲しない限り恒久的な状態変更が手動になり、shared-ai-rules 4 章「UI やアドホックな CLI での直接作成・変更を、恒久的な状態変更の手段にしない」に反する。委譲はこの規範を満たすための手段である。
   - Cloudflare へのサブドメイン委譲（subdomain setup）は **Enterprise プラン限定**のため使えない。
-  - **Cloudflare Pages のカスタムドメインは、サブドメインであれば外部 DNS のままで CNAME 1 本でよい。** ただし **Workers のカスタムドメインはゾーンが Cloudflare 上にあることを要求する**ため、API を `game-forge.ojos.jp/api/*` に置くなら Pages Functions を使う。ここは M2-1 の実装時に確定する。
+  - **Cloudflare Pages のカスタムドメインは、サブドメインであれば外部 DNS のままで CNAME 1 本でよい。** ただし **Workers のカスタムドメインはゾーンが Cloudflare 上にあることを要求する**ため、API を `game-forge.ojos.jp/api/*` に置くなら Pages Functions を使う。
+
+#### 確定22: 配置先は Cloudflare Pages Functions とする（M2-1 で確定）
+
+**アプリと API はどちらも Pages Functions に置く。** 上の制約は `/api/*` だけの問題ではない。ゾーンは確定17 に従って Route53 へ委譲済みで Cloudflare 上に無いため、**Workers のままでは `game-forge.ojos.jp` にカスタムドメインを張れない**。M1 で作った登録画面・OAuth・待機リストも同じ制約を受ける。
+
+- ゾーンを Cloudflare へ戻す案は採らない。確定17 の NS 委譲と 9.2 の AWS アカウント設計を巻き戻すことになり、DNS を Terraform で宣言的に管理する目的（さくらに DNS の API が無いことへの対処）を捨てることになる。
+- **Pages Functions は Workers と同じランタイムである。** 経路の実装（`src/` 配下）はそのまま使える。付け替えが要るのはエントリと配備の構成であり、アプリのロジックではない。M0.5-3 で `wrangler.toml` を最小構成に留めておいた判断がここで効いている。
+- API のパスは `/api/*` を正とする。M1 で置いた `/waitlist` はこの確定より前の綴りであり、移行の対象とする。
 - **Go バージョン更新時の手順を 3.5 と連動させる**（`wasm_exec.js` の出し分け）。
 - 本リポジトリの既存機構（`scripts/verify.sh`、`scripts/check-no-secrets.sh`、Copilot code review ワークフロー）に従う。
 
@@ -755,3 +769,4 @@ v0.3 の #1（プロダクト名）は確定16、#2（30KB 超過時の挙動）
 | 19 | LLM の接続先は **Claude Platform on AWS**。単価は第一者 API と同一で導入価格も効く。Bedrock は別料金体系のため採らない（4.1） |
 | 20 | **クラウド環境は本番のみ。開発はローカルで完結する**（`wrangler dev` ＋ ローカル Docker。9.1） |
 | 21 | AWS アカウントは **Dev / Prod の 2 つ**を既存 Control Tower landing zone から振り出す。根拠は blast radius・IAM・請求行の分離という**通常のマルチアカウント衛生**であり、コスト分離の要請ではない（9.2）。Dev にはリソースを置かない |
+| 22 | アプリと API の配置先は **Cloudflare Pages Functions**。ゾーンが Route53 にある以上（確定17）Workers ではカスタムドメインを張れないため、`/api/*` に限らずアプリ全体が対象。API のパスは `/api/*` を正とする（9.3 / M2-1 で確定） |

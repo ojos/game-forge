@@ -11,8 +11,40 @@ import { SANDBOX_CSP } from '../src/sandbox.js';
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 const SANDBOX_ORIGIN = `https://${env.SANDBOX_HOST}`;
 
+/**
+ * `.dev.vars.example` から、文書化されている秘密のキー名を取り出す。
+ *
+ * 一覧をテストへ書き写さないための関数。雛形（`vitest.config.ts` が
+ * `TEST_DEV_VARS_EXAMPLE` として渡す）を毎回解析するので、鍵を足しても
+ * 追随の作業が要らず、削った鍵は自動的に許容されなくなる。
+ *
+ * `KEY=` の形の行だけを拾う。コメント行（`#` 始まり）は拾わない。ここを
+ * 緩めると、コメントに書いただけの名前まで env への混入が許されてしまう。
+ *
+ * @param text `.dev.vars.example` の中身
+ * @returns キー名の配列
+ */
+function documentedSecretNames(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => /^[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=/.exec(line))
+    .filter((matched): matched is RegExpExecArray => matched !== null)
+    .map((matched) => matched[1]!);
+}
+
 describe('Worker の env に宣言外の値が混入しない', () => {
-  it('env のキーが wrangler.toml の宣言と完全に一致する', () => {
+  it('文書化された秘密名の抽出が KEY= の行だけを拾う', () => {
+    // この抽出が緩むと、下の検査が「宣言外の値の混入」を通すようになる。
+    expect(
+      documentedSecretNames(
+        ['# COMMENTED_KEY=', '# 説明の中の A_KEY= も拾わない', 'REAL_KEY=', '\tTABBED_KEY = ', '', 'no-key-here'].join(
+          '\n',
+        ),
+      ),
+    ).toEqual(['REAL_KEY', 'TABBED_KEY']);
+  });
+
+  it('env のキーが wrangler.toml と .dev.vars.example の宣言だけで構成される', () => {
     // 検知層。wrangler は既定（CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=true）で
     // リポジトリ直下の .env を「シークレット」として読み、Worker の env へ流し込む。
     // このリポジトリの .env には開発ツール用の GH_TOKEN / GEMINI_API_KEY が入っており、
@@ -23,14 +55,29 @@ describe('Worker の env に宣言外の値が混入しない', () => {
     // `__VITEST_POOL_WORKERS_*` はテストランナー自身が注入する結線用のバインディングで、
     // wrangler.toml 由来ではないため除外する（実行時には存在しない）。
     //
-    // `TEST_MIGRATIONS` も同じ理由で除外する。vitest.config.ts が Node 側で
-    // `migrations/` を読んで注入するもので、workerd 内にファイルシステムが無い以上
-    // これが唯一の経路になる。**除外は名前を明示した 1 件に限る。** 前方一致や
-    // 正規表現で緩めると、この検査が見ている「.env の混入」まで通してしまう。
-    const injectedByRunner = ['TEST_MIGRATIONS'];
+    // `TEST_MIGRATIONS` と `TEST_DEV_VARS_EXAMPLE` も同じ理由で除外する。どちらも
+    // vitest.config.ts が Node 側で読んで注入するもので、workerd 内にファイル
+    // システムが無い以上これが唯一の経路になる。**除外は名前を明示したものに限る。**
+    // 前方一致や正規表現で緩めると、この検査が見ている「.env の混入」まで通してしまう。
+    const injectedByRunner = ['TEST_MIGRATIONS', 'TEST_DEV_VARS_EXAMPLE'];
+
+    // `.dev.vars.example` に**書かれている**秘密名は許容する。
+    //
+    // 緩める理由: .dev.vars.example をコピーした開発者の環境では、wrangler が
+    // .dev.vars を読んでアプリの env へ渡すため、これらのキーは正当に現れる
+    // （むしろ現れないと #12 の認証が動かない）。許容しないと、雛形どおりに
+    // 環境を作った開発者の手元だけがこのテストで落ちる。
+    //
+    // 緩めても検知の目的は保たれる: 許容するのは雛形に書かれた名前だけで、
+    // .env 側のキー（GH_TOKEN / GEMINI_API_KEY など）は雛形に無いため、
+    // 混入すれば従来どおり落ちる。一覧はテストへ書き写さず、雛形そのものから
+    // 取り出す（shared-ai-rules.md 12 章「一覧の複製は機械照合で担保する」）。
+    const documented = documentedSecretNames(env.TEST_DEV_VARS_EXAMPLE);
+
     const declared = Object.keys(env)
       .filter((key) => !key.startsWith('__VITEST_POOL_WORKERS_'))
       .filter((key) => !injectedByRunner.includes(key))
+      .filter((key) => !documented.includes(key))
       .sort();
     expect(declared).toEqual(['APP_HOST', 'BUCKET', 'DB', 'SANDBOX_HOST']);
   });

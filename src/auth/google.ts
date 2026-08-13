@@ -20,6 +20,10 @@
 import type { Route } from '../routes.js';
 import { json } from '../routes.js';
 import { buildSessionCookie, clearSessionCookie, signSession } from '../session.js';
+import { normalizeInviteCode } from '../invite-code.js';
+import { SIGNUP_PATH } from '../paths.js';
+import type { InviteRejection } from '../invites.js';
+import { consumeInvite } from '../invites.js';
 
 /** 認可エンドポイント（ここへ利用者をリダイレクトする）。 */
 const GOOGLE_AUTHORIZE_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -83,7 +87,16 @@ const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
  * 2 要素、こちらは 4 要素）ので実際には混同しにくいが、鍵を共有する以上、
  * 分離は署名側で明示しておく。
  */
-const OAUTH_STATE_DOMAIN = 'gf-oauth-state.v1';
+const OAUTH_STATE_DOMAIN = 'gf-oauth-state.v2';
+
+/**
+ * 招待コードを持たないことを表す、一時 cookie 上の印。
+ *
+ * 空文字にしない。`a..b` のように区切りが連続する形は、要素数の数え方を実装ごとに
+ * ぶれさせる。招待コードの文字集合（Crockford Base32）に `-` は含まれないため、
+ * 正規形のコードと取り違えられない。
+ */
+const NO_INVITE_MARK = '-';
 
 /** 認証で必要になる秘密の名前。不足を報告するときは**名前だけ**を出す（値は決して出さない）。 */
 const REQUIRED_SECRETS = ['SESSION_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'] as const;
@@ -146,12 +159,35 @@ export type IdTokenVerification =
   | { readonly ok: true; readonly identity: GoogleIdentity }
   | { readonly ok: false; readonly reason: IdTokenRejection };
 
+/**
+ * コールバックでの利用者の解決結果。
+ *
+ * 失敗の理由は**分類だけ**を持つ。登録画面が文言を出し分けるのに要るのはここまでで、
+ * どのコードがどう駄目だったかを URL に載せると、そのまま総当たりの手がかりになる。
+ */
+export type UserResolution =
+  | { readonly ok: true; readonly id: string; readonly banned: boolean }
+  | { readonly ok: false; readonly reason: 'invite-required' | InviteRejection };
+
 /** 一時 cookie に載せる値。 */
 interface OAuthState {
   readonly state: string;
   readonly codeVerifier: string;
   /** 失効時刻（UNIX 秒）。この時刻を過ぎたものは検証で落ちる。 */
   readonly expiresAt: number;
+  /**
+   * 検証済みの招待コード（正規形）。既存利用者のログインでは null。
+   *
+   * 8.1 は登録フローを「招待コードの検証が先、Google OAuth が後」と定めるため、
+   * **検証した事実を OAuth の往復の向こう側まで運ぶ必要がある。** 別の cookie を
+   * 立てず、この cookie へ相乗りさせる。寿命・署名・破棄の契機が 1 つで済み、
+   * 「state は生きているが招待コードだけ失効している」という状態が作れない。
+   *
+   * サーバ側に「検証待ち」の行を作らない理由は、D1 の書き込み枠が読み取りより
+   * 桁で小さいこと（3.6）と、登録を試みるだけで書き込みが発生する経路を
+   * 外部へ晒さないこと（7.3）の両方による。
+   */
+  readonly inviteCode: string | null;
 }
 
 /**
@@ -222,12 +258,7 @@ export async function exchangeCodeWithGoogle(
  * @returns 経路表へ連結する `Route[]`
  */
 export function createAuthRoutes(overrides: Partial<AuthDependencies> = {}): readonly Route[] {
-  const deps: AuthDependencies = {
-    exchange: exchangeCodeWithGoogle,
-    now: () => Math.floor(Date.now() / 1000),
-    randomToken: generateRandomToken,
-    ...overrides,
-  };
+  const deps = resolveAuthDependencies(overrides);
 
   return [
     { method: 'GET', path: LOGIN_PATH, handler: (request, env) => startLogin(request, env, deps) },
@@ -248,6 +279,46 @@ export function createAuthRoutes(overrides: Partial<AuthDependencies> = {}): rea
 export const authRoutes: readonly Route[] = createAuthRoutes();
 
 /**
+ * 差し替えられた依存へ既定値を補う。
+ *
+ * @param overrides 差し替える依存
+ * @returns すべての項目が埋まった依存
+ */
+function resolveAuthDependencies(overrides: Partial<AuthDependencies>): AuthDependencies {
+  return {
+    exchange: exchangeCodeWithGoogle,
+    now: () => Math.floor(Date.now() / 1000),
+    randomToken: generateRandomToken,
+    ...overrides,
+  };
+}
+
+/**
+ * 検証済みの招待コードを携えてログインを開始する。
+ *
+ * 登録画面（#14 の T7）から呼ぶ。**招待コードの検証は呼び出し側の責務**で、ここは
+ * 「検証済みである」という前提を OAuth の往復へ運ぶだけを受け持つ。未検証の値を
+ * 渡すと、コールバックで消費に失敗して登録が中断する（アカウントは作られない）。
+ *
+ * `LOGIN_PATH` の経路と実装を共有するのは、認可要求の組み立て（PKCE・state・
+ * リダイレクト先）が 2 か所に分かれると、片方だけ直る事故が起きるためである。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param inviteCode 検証済みの招待コード（正規形）
+ * @param overrides 差し替える依存（テスト用）
+ * @returns Google の認可エンドポイントへのリダイレクト
+ */
+export async function startInvitedLogin(
+  request: Request,
+  env: Env,
+  inviteCode: string,
+  overrides: Partial<AuthDependencies> = {},
+): Promise<Response> {
+  return await startLogin(request, env, resolveAuthDependencies(overrides), inviteCode);
+}
+
+/**
  * ログインを開始する。
  *
  * `state`（CSRF 対策）と `code_verifier`（PKCE）を作り、署名付きの一時 cookie に
@@ -264,6 +335,7 @@ async function startLogin(
   request: Request,
   env: Env,
   deps: AuthDependencies,
+  inviteCode: string | null = null,
 ): Promise<Response> {
   const missing = missingSecrets(env);
   if (missing.length > 0) {
@@ -274,7 +346,10 @@ async function startLogin(
     const state = deps.randomToken();
     const codeVerifier = deps.randomToken();
     const expiresAt = deps.now() + OAUTH_COOKIE_MAX_AGE;
-    const cookie = await signOAuthState({ state, codeVerifier, expiresAt }, env.SESSION_SECRET);
+    const cookie = await signOAuthState(
+      { state, codeVerifier, expiresAt, inviteCode },
+      env.SESSION_SECRET,
+    );
 
     const authorize = new URL(GOOGLE_AUTHORIZE_ENDPOINT);
     authorize.searchParams.set('client_id', env.GOOGLE_CLIENT_ID);
@@ -374,7 +449,12 @@ async function handleCallback(
       return withCookies(json({ error: 'oauth identity invalid' }, 401), [discardOAuthCookie]);
     }
 
-    const user = await upsertUser(env.DB, identity.identity, deps.now());
+    const user = await resolveUser(env.DB, identity.identity, verified.inviteCode, deps.now());
+    if (!user.ok) {
+      // 招待が無い / 使えない場合はアカウントを作らないまま登録画面へ戻す。理由を
+      // query に載せるのは、登録画面が文言を出し分けるため（値ではなく分類のみ）。
+      return redirect(`${SIGNUP_PATH}?reason=${user.reason}`, [discardOAuthCookie]);
+    }
     if (user.banned) {
       // BAN は google_sub 単位（7.3）。行を消さないため、ここで毎回はじく。
       console.error('[auth] BAN された利用者のログインを拒否しました');
@@ -407,45 +487,112 @@ function handleLogout(): Response {
 }
 
 /**
- * `users` 行を作る、または既存行を更新する。
+ * ログインしてきた利用者を解決する。既存なら引き当て、新規なら招待を消費して作る。
  *
- * **1 文の `INSERT ... ON CONFLICT` で行う。** 先に `SELECT` して有無を確かめてから
- * `INSERT` する形は、同じ利用者の同時ログインで両方が「無い」と判断し、UNIQUE 制約
- * 違反で片方が落ちる。1 文なら D1（SQLite）側が原子的に解決する。
+ * **ここが 8.1 の「生成は招待コード保有者のみ」を機構にしている箇所である。**
+ * 招待の検証は登録画面（`POST /signup`）が先に行うが、そこを通らずコールバックへ
+ * 直接来る経路（`GET /auth/google/start` からの素のログイン）が常にあるため、
+ * *アカウントを作る側*でも招待の有無を条件にする。画面側の検査だけに頼ると、
+ * 画面を経由しない要求で登録できてしまう。
  *
- * 衝突時に `DO NOTHING` ではなく `DO UPDATE` を使うのは、`RETURNING` が
- * `DO NOTHING` では行を返さないため。既存ユーザーの再ログインで `id` を得られない。
- * あわせて email と表示名を更新する（Google 側で変わりうる。同一性の判定は
- * `google_sub` なので、更新しても別人になることはない）。
+ * @param db D1 バインディング
+ * @param identity ID トークンから取り出した同一性
+ * @param inviteCode 一時 cookie が運んできた検証済みの招待コード（無ければ null）
+ * @param nowSeconds 現在時刻（UNIX 秒）
+ * @returns 解決結果
+ */
+async function resolveUser(
+  db: D1Database,
+  identity: GoogleIdentity,
+  inviteCode: string | null,
+  nowSeconds: number,
+): Promise<UserResolution> {
+  const existing = await refreshExistingUser(db, identity);
+  if (existing !== null) {
+    // 既存利用者は招待を消費しない。再ログインのたびに枠が減ると、招待が
+    // 「1 人を呼ぶ権利」ではなく「1 回ログインする権利」になってしまう。
+    return { ok: true, id: existing.id, banned: existing.banned };
+  }
+
+  if (inviteCode === null) {
+    return { ok: false, reason: 'invite-required' };
+  }
+
+  // 招待の消費は `users` 行が存在してからでないと `invited_by` を書けない（#13 の
+  // `consumeInvite` は `users` を条件付き UPDATE する）。そのため
+  // 「作る → 消費する → 失敗したら作った行を消す」という補償の形を採る。
+  //
+  // 逆順（消費してから作る）にすると、作成が落ちたときに**誰も使っていない
+  // 使用済みの招待**が残る。招待は希少な資源で、人手で戻すしかない。こちらの
+  // 順序なら、残骸は「今この瞬間に作られたばかりで、まだ何も紐づいていない
+  // `users` 行」だけであり、安全に消せる。
+  const created = await createUser(db, identity, nowSeconds);
+  const consumed = await consumeInvite(db, inviteCode, created.id, nowSeconds);
+  if (!consumed.ok) {
+    await db.prepare('delete from users where id = ?').bind(created.id).run();
+    console.error('[auth] 招待を消費できなかったため作成した利用者を取り消しました');
+    return { ok: false, reason: consumed.reason };
+  }
+
+  return { ok: true, id: created.id, banned: false };
+}
+
+/**
+ * 既存の `users` 行を引き当て、Google 側で変わりうる項目を更新する。
  *
- * `invited_by` は**書かない**。誰が招待したかの記録は #14（T7）が持つ。
+ * 更新も同じ 1 文で行う。`SELECT` してから `UPDATE` する形にすると、同じ利用者の
+ * 同時ログインで読み取りと書き込みが交錯する。同一性の判定は `google_sub` なので、
+ * email と表示名を更新しても別人になることはない。
+ *
+ * @param db D1 バインディング
+ * @param identity ID トークンから取り出した同一性
+ * @returns 既存行、または存在しなければ null
+ */
+async function refreshExistingUser(
+  db: D1Database,
+  identity: GoogleIdentity,
+): Promise<{ readonly id: string; readonly banned: boolean } | null> {
+  const row = await db
+    .prepare(
+      `update users set email = ?, display_name = ?
+       where google_sub = ?
+       returning id, banned_at`,
+    )
+    .bind(identity.email, identity.displayName, identity.sub)
+    .first<{ id: string; banned_at: number | null }>();
+
+  return row === null ? null : { id: row.id, banned: row.banned_at !== null };
+}
+
+/**
+ * `users` 行を作る。
+ *
+ * `invited_by` は書かない。招待者の記録は #13 の `consumeInvite` が、招待を
+ * 使用済みにできた場合にだけ行う（2 か所で書くと食い違う）。
  *
  * @param db D1 バインディング
  * @param identity ID トークンから取り出した同一性
  * @param nowSeconds 現在時刻（UNIX 秒）
- * @returns 利用者の id と BAN 状態
+ * @returns 作成した利用者の id
  */
-async function upsertUser(
+async function createUser(
   db: D1Database,
   identity: GoogleIdentity,
   nowSeconds: number,
-): Promise<{ readonly id: string; readonly banned: boolean }> {
+): Promise<{ readonly id: string }> {
   const row = await db
     .prepare(
       `insert into users (id, google_sub, email, display_name, created_at)
        values (?, ?, ?, ?, ?)
-       on conflict(google_sub) do update set
-         email = excluded.email,
-         display_name = excluded.display_name
-       returning id, banned_at`,
+       returning id`,
     )
     .bind(crypto.randomUUID(), identity.sub, identity.email, identity.displayName, nowSeconds)
-    .first<{ id: string; banned_at: number | null }>();
+    .first<{ id: string }>();
 
   if (row === null) {
-    throw new Error('users の upsert が行を返しませんでした。');
+    throw new Error('users の作成が行を返しませんでした。');
   }
-  return { id: row.id, banned: row.banned_at !== null };
+  return { id: row.id };
 }
 
 /**
@@ -544,7 +691,9 @@ export function parseGoogleIdToken(
  * @returns cookie に載せる文字列
  */
 async function signOAuthState(value: OAuthState, secret: string): Promise<string> {
-  const body = `${value.state}.${value.codeVerifier}.${value.expiresAt}`;
+  const body = `${value.state}.${value.codeVerifier}.${value.expiresAt}.${
+    value.inviteCode ?? NO_INVITE_MARK
+  }`;
   const key = await importKey(secret);
   const signature = await crypto.subtle.sign(
     'HMAC',
@@ -568,12 +717,13 @@ async function verifyOAuthState(
   nowSeconds: number,
 ): Promise<OAuthState | null> {
   const parts = cookie.split('.');
-  const [state, codeVerifier, expiresText, signatureText] = parts;
+  const [state, codeVerifier, expiresText, inviteText, signatureText] = parts;
   if (
-    parts.length !== 4 ||
+    parts.length !== 5 ||
     state === undefined ||
     codeVerifier === undefined ||
     expiresText === undefined ||
+    inviteText === undefined ||
     signatureText === undefined
   ) {
     return null;
@@ -583,12 +733,18 @@ async function verifyOAuthState(
   if (!isBase64Url(state) || !isBase64Url(codeVerifier) || !/^[0-9]{1,15}$/.test(expiresText)) {
     return null;
   }
+  // 招待コードは正規形そのものであることを要求する。署名が通っていても形は信用しない
+  // （この値は後段で `consumeInvite` へ渡り、DB を引く鍵になる）。
+  const inviteCode = inviteText === NO_INVITE_MARK ? null : normalizeInviteCode(inviteText);
+  if (inviteText !== NO_INVITE_MARK && inviteCode !== inviteText) {
+    return null;
+  }
   const signature = decodeBase64Url(signatureText);
   if (signature === null) {
     return null;
   }
 
-  const body = `${state}.${codeVerifier}.${expiresText}`;
+  const body = `${state}.${codeVerifier}.${expiresText}.${inviteText}`;
   const key = await importKey(secret);
   const valid = await crypto.subtle.verify(
     'HMAC',
@@ -604,7 +760,7 @@ async function verifyOAuthState(
   if (expiresAt <= nowSeconds) {
     return null;
   }
-  return { state, codeVerifier, expiresAt };
+  return { state, codeVerifier, expiresAt, inviteCode };
 }
 
 /**

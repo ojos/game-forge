@@ -112,6 +112,7 @@ npm run dev
 ```
 
 - アプリ: <https://game-forge.localtest.me:8787/>
+- 登録画面: <https://game-forge.localtest.me:8787/signup>
 - サンドボックス: <https://sandbox.game-forge.localtest.me:8787/>
 
 ポートを変えるときは `PORT=9000 npm run dev`。
@@ -119,6 +120,24 @@ npm run dev
 初回は `scripts/dev-certs.sh` が自己署名証明書を `certs/` に作る（冪等。既存の
 証明書が有効で必要な SAN を含んでいれば作り直さない）。**自己署名なのでブラウザは
 初回に警告を出す。** `curl` からは `--cacert certs/dev.crt` で検証できる。
+
+### ログインを試す
+
+1. `.dev.vars` に `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`（[gcp-oauth-setup.md](gcp-oauth-setup.md)）と
+   `SESSION_SECRET`（32 文字以上の乱数。`openssl rand -base64 48` など）を入れる。
+2. **招待コードを 1 枚用意する。** 8.1 の「生成は招待コード保有者のみ」を機構にしているため、
+   招待の無い新規アカウントは作られない（`/signup` へ戻される）。
+
+   ```bash
+   npx wrangler d1 execute DB --local --command \
+     "insert into invites (code, issued_by) values ('SMKETEST0001', '<既存の users.id>')"
+   ```
+
+   **コードの文字集合は Crockford Base32 で、`I` `L` `O` `U` を含められない**（`src/invite-code.ts`）。
+   含むと正規化で別の文字へ寄り、入力したコードが保存した行に一致しない。
+3. <https://game-forge.localtest.me:8787/signup> でコードを入れる。検証を通ると Google の同意画面へ進む。
+
+最初の 1 人だけは招待の発行元が存在しないため、`users` 行を直接入れて起点にする。
 
 ### なぜ HTTPS が要るか
 

@@ -35,6 +35,7 @@
  * その計数のために毎リクエスト書き込む本末転倒になる。
  */
 import type { Route, RouteHandler } from './routes.js';
+import { SIGNUP_PATH, WAITLIST_THANKS_PATH } from './paths.js';
 import { json } from './routes.js';
 
 /**
@@ -413,21 +414,47 @@ export function coarsenWaitlistCount(exactCount: number): number {
  * @returns レスポンス
  */
 const handleWaitlistRegistration: RouteHandler = async (request, env) => {
+  // 素の `<form method="post">` から来た要求には HTML を返す（#14 T7）。JSON を
+  // 返すとブラウザが本文をそのまま表示してしまい、JavaScript を要求しない導線に
+  // ならない。判定は `Accept` で行う。ブラウザのナビゲーションは `text/html` を
+  // 明示するが、`fetch` の既定（`*/*`）は明示しないため、両者を取り違えない。
+  const wantsHtml = (request.headers.get('accept') ?? '').includes('text/html');
+
   const parsed = await parseWaitlistRequest(request);
   if (!parsed.ok) {
-    return json({ error: parsed.reason }, 400);
+    return wantsHtml ? redirectTo(`${SIGNUP_PATH}?reason=waitlist-${parsed.reason}`) : json({ error: parsed.reason }, 400);
   }
 
   try {
     await registerWaitlist(env.DB, parsed.registration);
+    // 成功は 303 で GET へ逃がす（POST-redirect-GET）。同じ URL に POST の結果を
+    // 描くと、再読み込みで再送信の確認が出て、利用者が二重に送ることになる。
+    if (wantsHtml) {
+      return redirectTo(WAITLIST_THANKS_PATH);
+    }
     const waitingCount = coarsenWaitlistCount(await countWaitlist(env.DB));
     return json({ registered: true, waitingCount });
   } catch (error) {
     // 応答にもログにも例外の中身をそのまま出さない（`describeWaitlistError` の理由）。
     console.error(`[waitlist] 待機リストへの登録に失敗しました: ${describeWaitlistError(error)}`);
-    return json({ error: 'internal error' }, 500);
+    return wantsHtml
+      ? redirectTo(`${SIGNUP_PATH}?reason=waitlist-failed`)
+      : json({ error: 'internal error' }, 500);
   }
 };
+
+/**
+ * 303 See Other を返す。
+ *
+ * 302 ではなく 303 を使う。302 に対するブラウザの実装は POST を POST のまま
+ * 追う余地があり、リダイレクト先で同じ本文が再送されうる。
+ *
+ * @param location 遷移先
+ * @returns レスポンス
+ */
+function redirectTo(location: string): Response {
+  return new Response(null, { status: 303, headers: { location, 'cache-control': 'no-store' } });
+}
 
 /**
  * 待機リストの経路。

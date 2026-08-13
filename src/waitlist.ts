@@ -11,12 +11,24 @@
  * 保存が #12（OAuth）/ #13（招待）のどちらにも依存せず、単独で検証できるためで、
  * M1 の並列作業の前提でもある。
  *
+ * **応答は常に JSON である。** 素の HTML フォーム（JavaScript 無し）からの送信も
+ * 受け付けるが（下記 `parseWaitlistRequest`）、それに対する HTML の応答や
+ * POST-redirect-GET は**ここでは行わない**。転送先のパスを決めることは、まだ存在
+ * しない登録画面の設計を先取りすることであり、画面を所有する T7 の判断である。
+ * T7 は、この経路の JSON をそのまま fetch から使ってもよいし、HTML を返す薄い
+ * ラッパを自分の側に置いてもよい。**どちらを選んでも、検証と保存はここ 1 か所に
+ * 残る**ようにしてある（経路ごとに検証を書き分けると、片方だけ緩い入口ができる）。
+ *
  * **一覧・列挙の経路は置かない。** メールアドレスの束は個人情報で、認証機構が
  * まだ無い段階で読み出せる経路を開ける理由がない。外へ出すのは件数だけとする。
  *
  * **投稿量の制限はここに置いていない。** 誰でも叩ける POST であり、他人のアドレスの
  * 登録も、架空のアドレスでの水増しも防げない（後者は D1 の書き込み枠（3.6）を
- * 削る）。1 リクエストで書くのが 1 行以下であることは下記で保証しているが、
+ * 削る）。素の HTML フォームの形式を受け付ける以上、他サイトのフォームからも
+ * 送れる（`application/x-www-form-urlencoded` は単純リクエストで、プリフライトを
+ * 伴わない）。ただしこの経路はセッションを見ないため、他サイト経由で送れることは
+ * 攻撃者に新しい能力を与えない（自分で直接叩けば同じことができる）。効くのは
+ * 回数の制限だけである。1 リクエストで書くのが 1 行以下であることは下記で保証しているが、
  * 回数そのものを絞るのはアプリ層の仕事ではなく、エッジのレート制限や
  * Turnstile のような手前の層で受ける。7.3 が費用 DoS の防御を二層（招待制と
  * 月次上限）で組み立てているのと同じ考え方で、ここへ独自の計数を持ち込むと、
@@ -53,9 +65,16 @@ export const MAX_EMAIL_LENGTH = 254;
  * 受け付けるリクエスト本文の最大バイト数。
  *
  * 本文は 254 文字のアドレスと導線名だけであり、1 KiB あれば JSON の空白込みでも余る。
- * 上限を置かないと、本文を読み切るまでメモリを積む形になる。
+ * 上限を置かないと、本文を読み切るまでメモリを積む形になる。**形式によらず同じ上限**
+ * を適用する（形式ごとに変えると、緩いほうだけを使われる）。
  */
 const MAX_BODY_BYTES = 1024;
+
+/** fetch から送る形式。 */
+const JSON_MEDIA_TYPE = 'application/json';
+
+/** 素の HTML フォーム（JavaScript 無し）が送る形式。 */
+const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
 
 /**
  * 外へ出す件数の丸め幅（下記 `coarsenWaitlistCount` の理由）。
@@ -81,12 +100,28 @@ export type WaitlistRejection =
   | 'body-too-large'
   | 'unreadable-body'
   | 'malformed-json'
+  | 'duplicated-field'
   | 'invalid-email'
   | 'unknown-source';
 
 /** リクエスト本文の解析結果。 */
 export type WaitlistParseResult =
   | { readonly ok: true; readonly registration: WaitlistRegistration }
+  | { readonly ok: false; readonly reason: WaitlistRejection };
+
+/**
+ * 本文から取り出しただけの値。**まだ何も検証していない。**
+ *
+ * 形式（JSON / urlencoded）ごとに違うのはここまでで、この後の検証は 1 か所を通す。
+ */
+interface WaitlistFields {
+  readonly email: unknown;
+  readonly source: unknown;
+}
+
+/** 本文から値を取り出した結果。 */
+type WaitlistFieldsResult =
+  | { readonly ok: true; readonly fields: WaitlistFields }
   | { readonly ok: false; readonly reason: WaitlistRejection };
 
 /**
@@ -110,12 +145,25 @@ export function normalizeEmail(input: string): string | null {
     return null;
   }
 
-  // 制御文字を弾く。CR / LF を通すと、将来このアドレスをメールヘッダへ載せたときに
-  // ヘッダ挿入になる（2.2-6 は改造されたことを作者へメールで知らせる）。
-  // 保存の時点で入り口を閉じておくほうが、送信側の実装ごとに気をつけるより確実である。
+  // 途中の空白を弾く。CR / LF を通すと、将来このアドレスをメールヘッダへ載せたときに
+  // ヘッダ挿入になる（2.2-6 は改造されたことを作者へメールで知らせる）。保存の時点で
+  // 入り口を閉じておくほうが、送信側の実装ごとに気をつけるより確実である。
+  //
+  // 空白全般を弾くのは、`application/x-www-form-urlencoded` が `+` を空白へ復号する
+  // ためでもある（`a+b@example.com` は `a b@example.com` として届く）。ここを通すと、
+  // 送れないアドレスがそのまま行になる。引用符で囲んだローカル部の空白
+  // （`"a b"@example.com`）まで落とすが、実運用でまず現れない形と引き換えに、
+  // 壊れた入力を確実に落とすほうを採る。
+  //
+  // 空白でない制御文字（NUL 等）と、置換文字（U+FFFD）も弾く。U+FFFD は入力そのもの
+  // ではなく**復号に失敗した跡**である。壊れたパーセントエンコード（`%FF`）や不正な
+  // UTF-8 は、URL 標準も TextDecoder も例外を投げずにこの文字へ潰す。
+  if (/\s/u.test(normalized)) {
+    return null;
+  }
   for (const character of normalized) {
     const code = character.codePointAt(0) ?? 0;
-    if (code < 0x20 || code === 0x7f) {
+    if (code < 0x20 || code === 0x7f || code === 0xfffd) {
       return null;
     }
   }
@@ -143,9 +191,15 @@ export function isWaitlistSource(value: string): value is WaitlistSource {
 /**
  * リクエスト本文を解析して、保存する内容を取り出す。
  *
- * **この関数は例外を投げない。** 壊れた JSON、`Content-Type` 違い、巨大な本文は
- * すべて理由付きの失敗として返す。投げると経路の外側（`src/index.ts` の catch）で
- * 500 になり、利用者の入力の誤りがサーバの障害として記録される。
+ * `application/json`（fetch）と `application/x-www-form-urlencoded`（素の HTML
+ * フォーム）の**両方**を受け付ける。それ以外の `Content-Type` は受け付けない。
+ * **どちらの形式でも、検証・正規化・上限・失敗時のステータスは同一**である
+ * （形式ごとに書き分けると、片方だけ緩い入口ができる）。
+ *
+ * **この関数は例外を投げない。** 壊れた JSON、`Content-Type` 違い、巨大な本文、
+ * 壊れたパーセントエンコードは、すべて理由付きの失敗として返す。投げると経路の外側
+ * （`src/index.ts` の catch）で 500 になり、利用者の入力の誤りがサーバの障害として
+ * 記録される。
  *
  * @param request 受信したリクエスト
  * @returns 解析結果
@@ -153,14 +207,8 @@ export function isWaitlistSource(value: string): value is WaitlistSource {
 export async function parseWaitlistRequest(request: Request): Promise<WaitlistParseResult> {
   // メディアタイプだけを見る。`application/json; charset=utf-8` のようにパラメータが
   // 付く形は正当なので、完全一致で判定すると正しいリクエストを弾く。
-  //
-  // JSON に限ることは、他サイトのフォームから勝手に登録される経路も同時に塞ぐ。
-  // `application/x-www-form-urlencoded` は単純リクエストとしてプリフライトなしに
-  // 送れるが、`application/json` は必ずプリフライトを伴い、こちらが CORS の許可を
-  // 返さない以上ブラウザは本体を送らない。T7 の登録フォームは同一オリジンの
-  // fetch から叩くため、この制限で困らない。
   const mediaType = (request.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase();
-  if (mediaType !== 'application/json') {
+  if (mediaType !== JSON_MEDIA_TYPE && mediaType !== FORM_MEDIA_TYPE) {
     return { ok: false, reason: 'unsupported-content-type' };
   }
 
@@ -169,9 +217,27 @@ export async function parseWaitlistRequest(request: Request): Promise<WaitlistPa
     return body;
   }
 
+  // **本文の形をほどく所だけを分け、検証はこの先の 1 か所へ集める。** 形式ごとに
+  // 検証を書き分けると、片方だけ緩い入口ができ、そちらが素通しになる。上限
+  // （`MAX_BODY_BYTES`）を形式より手前に置いているのも同じ理由である。
+  const fields =
+    mediaType === JSON_MEDIA_TYPE ? parseJsonFields(body.text) : parseFormFields(body.text);
+  if (!fields.ok) {
+    return fields;
+  }
+  return buildRegistration(fields.fields);
+}
+
+/**
+ * JSON の本文から `email` / `source` を取り出す。
+ *
+ * @param text 本文
+ * @returns 取り出した値、または解析できない理由
+ */
+function parseJsonFields(text: string): WaitlistFieldsResult {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(body.text);
+    parsed = JSON.parse(text);
   } catch {
     return { ok: false, reason: 'malformed-json' };
   }
@@ -179,8 +245,55 @@ export async function parseWaitlistRequest(request: Request): Promise<WaitlistPa
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return { ok: false, reason: 'malformed-json' };
   }
-
   const { email, source } = parsed as Record<string, unknown>;
+  return { ok: true, fields: { email, source } };
+}
+
+/**
+ * `application/x-www-form-urlencoded` の本文から `email` / `source` を取り出す。
+ *
+ * 素の HTML フォーム（JavaScript 無し）の送信はこの形式で届く。JSON だけを受け付けると
+ * T7 の登録画面が fetch 前提になり、Worker の SSR HTML を選んだ理由（フレームワークに
+ * 依存しない）と噛み合わない。
+ *
+ * **同じキーが 2 回以上現れる本文は弾く。** `URLSearchParams` は先頭を返すが、黙って
+ * 先頭を採ると、利用者が意図していないほうのアドレスを登録して「成功」と返しうる。
+ * どちらが本人の入力かをこちらでは決められない以上、弾くのが正しい。
+ *
+ * `URLSearchParams` は壊れたパーセントエンコード（`%ZZ` や UTF-8 として不正な並び）でも
+ * **例外を投げない**。URL 標準の復号が非可逆に定義されているためで、不正な並びは
+ * 置換文字 U+FFFD になるか、そのままの文字として残る。したがって「壊れた入力」は
+ * ここではなく、この先のアドレス検証（`normalizeEmail`）で落ちる。
+ *
+ * @param text 本文
+ * @returns 取り出した値、または解析できない理由
+ */
+function parseFormFields(text: string): WaitlistFieldsResult {
+  const params = new URLSearchParams(text);
+  for (const key of ['email', 'source'] as const) {
+    if (params.getAll(key).length > 1) {
+      return { ok: false, reason: 'duplicated-field' };
+    }
+  }
+  // 未指定は `null` で返るため `undefined` へ寄せる。JSON 側でキーが無い場合と同じ形に
+  // しておかないと、この先の 1 か所へ集めた判定が形式ごとに分岐する。
+  return {
+    ok: true,
+    fields: { email: params.get('email') ?? undefined, source: params.get('source') ?? undefined },
+  };
+}
+
+/**
+ * 取り出した値を検証して、保存する内容へ組み立てる。
+ *
+ * **JSON と urlencoded の両方がここを通る。** 検証・正規化・導線の判定は形式によらず
+ * 同一である。
+ *
+ * @param fields 本文から取り出した値（型は信用しない）
+ * @returns 解析結果
+ */
+function buildRegistration(fields: WaitlistFields): WaitlistParseResult {
+  const { email, source } = fields;
   if (typeof email !== 'string') {
     return { ok: false, reason: 'invalid-email' };
   }
@@ -191,6 +304,8 @@ export async function parseWaitlistRequest(request: Request): Promise<WaitlistPa
 
   // 導線は任意とする。未指定を 400 で弾くと、UI 側の付け忘れ 1 つで**登録そのもの**を
   // 落とすことになる。失うのが「登録」か「導線の内訳」かの取引であり、後者を選ぶ。
+  // 空文字を未指定と同じに扱うのは、HTML フォームが選択されなかった項目を
+  // `source=` の形で送るためで、これを未知の値として弾くと登録を落とす。
   if (source === undefined || source === null || source === '') {
     return { ok: true, registration: { email: normalizedEmail, source: null } };
   }
@@ -246,12 +361,22 @@ export async function registerWaitlist(
  * 書き込みの 1/1000（3.6）なので、集計用のカウンタ行を別に持って**毎回書く**ほうが
  * 高くつく。
  *
+ * `first<T>()` の型引数は**こちらの宣言でしかない**（実行時には検査されない）。数値で
+ * 返らなかった場合に 0 として流すと、10.2 の集計の分子が黙って 0 になり、
+ * 「登録が無い」ことと区別できなくなる。壊れた値を通すより、ここで落とすほうが良い。
+ * `src/app.ts` の `checkD1` が `typeof row?.tables !== 'number'` を検知しているのと
+ * 同じ理由である。
+ *
  * @param db D1 バインディング
  * @returns 登録数
+ * @throws 集計が数値で返らなかった場合
  */
 export async function countWaitlist(db: D1Database): Promise<number> {
   const row = await db.prepare('select count(*) as total from waitlist').first<{ total: number }>();
-  return row?.total ?? 0;
+  if (typeof row?.total !== 'number' || !Number.isFinite(row.total)) {
+    throw new Error('waitlist の件数を数えられませんでした（count(*) が数値を返しませんでした）');
+  }
+  return row.total;
 }
 
 /**
@@ -298,8 +423,8 @@ const handleWaitlistRegistration: RouteHandler = async (request, env) => {
     const waitingCount = coarsenWaitlistCount(await countWaitlist(env.DB));
     return json({ registered: true, waitingCount });
   } catch (error) {
-    // 例外の中身は返さない。SQL のエラーメッセージには保存しようとした値が入りうる。
-    console.error('[waitlist] 待機リストへの登録に失敗しました', error);
+    // 応答にもログにも例外の中身をそのまま出さない（`describeWaitlistError` の理由）。
+    console.error(`[waitlist] 待機リストへの登録に失敗しました: ${describeWaitlistError(error)}`);
     return json({ error: 'internal error' }, 500);
   }
 };
@@ -319,6 +444,40 @@ const handleWaitlistRegistration: RouteHandler = async (request, env) => {
 export const waitlistRoutes: readonly Route[] = [
   { method: 'POST', path: '/waitlist', handler: handleWaitlistRegistration },
 ];
+
+/**
+ * 例外を、ログへ出してよい 1 行の文字列へ落とす。
+ *
+ * **「1 行へ落とすこと」と「値を落とすこと」は別である。** ここで線を引く。
+ *
+ * - 残してよい: SQLite の結果コード・制約名・テーブル名と列名。障害の切り分け
+ *   （制約違反なのか、接続できていないのか）に要る。
+ * - 残してはいけない: 登録しようとしたメールアドレス。ログは応答より寿命が長く、
+ *   保管場所も違うため、応答から隠した値をログへ書けば隠した意味がなくなる。
+ *
+ * **実測（このリポジトリの D1 で確認）**: 束縛値は例外へ現れない。重複登録を
+ * `on conflict` なしで起こしたときのメッセージは
+ * `D1_ERROR: UNIQUE constraint failed: waitlist.email: SQLITE_CONSTRAINT (extended:
+ * SQLITE_CONSTRAINT_UNIQUE)` で、束縛したアドレスを含まなかった（`cause` も同文、
+ * 独自プロパティなし）。**値を SQL 文へ埋め込まず、必ず `bind` で渡している**ことが
+ * この前提を支えている。文字列連結で SQL を組み立てる書き方へ変えたら、この方針は
+ * 同時に破れる。
+ *
+ * それでも生の `error` を `console.error` へ渡さないのは、渡す情報の範囲が
+ * **こちら側で決まらない**ためである。ランタイムがスタックや `cause` の連鎖、将来の
+ * 独自プロパティまで展開するため、D1 が例外へ値を付けた日に、こちらのコードを 1 行も
+ * 変えないままログへ値が入る。1 行へ落としておけば、入る情報は上の 2 項目に限られる。
+ *
+ * `src/app.ts` にも同じ形の `describeError` があるが、あちらは非公開であり、
+ * `src/app.ts` は #14 T6 の担当範囲外（`appRoutes` への 1 行連結のみ）なので、
+ * 共通化のために触らない。並列作業中に共有シームを増やす取引としても割に合わない。
+ *
+ * @param error catch した値（型は unknown）
+ * @returns ログに残してよい 1 行
+ */
+function describeWaitlistError(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
 
 /** 本文の読み出し結果。 */
 type BodyReadResult =
@@ -364,8 +523,11 @@ async function readLimitedText(request: Request, limit: number): Promise<BodyRea
     }
   } catch (error) {
     // 通信の切断など。利用者の入力の問題ではないが、こちらから見えるのは
-    // 「本文が読めなかった」ことだけなので、400 として扱う。
-    console.error('[waitlist] リクエスト本文の読み出しに失敗しました', error);
+    // 「本文が読めなかった」ことだけなので、400 として扱う。ログは 1 行へ落とす
+    // （`describeWaitlistError` の理由。ここは本文そのものが例外へ入りうる位置である）。
+    console.error(
+      `[waitlist] リクエスト本文の読み出しに失敗しました: ${describeWaitlistError(error)}`,
+    );
     return { ok: false, reason: 'unreadable-body' };
   }
 

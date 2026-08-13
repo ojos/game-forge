@@ -1,6 +1,6 @@
 # プロダクト企画書 兼 システム仕様書 (v0.8)
 
-- 版: v0.8（9.3 の配置先を Pages Functions に確定（確定22）。6.1 に許可パッケージの一覧を追記。未確定は 3 件 ＋ 6.1/8.3 の食い違い）
+- 版: v0.8（9.3 の配置先を Pages Functions に確定（確定22）。6.1 に許可パッケージの一覧、4.1 に Claude Platform on AWS の認証方式を追記。未確定は 3 件 ＋ 6.1/8.3 の食い違い）
 - 作成日: 2026-08-11
 - 更新日: 2026-08-13
 - 位置づけ: MVP 着手前の正本。未確定事項は 12 章に明示する。
@@ -279,6 +279,32 @@ D1 は読み取りより**書き込みの無料枠が桁で小さい**。実値�
 - **Amazon Bedrock は採らない。** Bedrock はパートナー運営で**別の料金体系**であり、上表の導入価格が適用されない。加えて SigV4 署名が必須（API キー認証がない）で、`anthropic-beta` ヘッダも使えない。Bedrock の強み（FedRAMP / HIPAA / AWS が唯一のデータ処理者）は本プロダクトでは効かない。
 - **支払いは後払いのみ**（arrears）。第一者 API の前払いクレジットのような「残高が尽きれば物理的に止まる」ハードキャップは存在しない。**上限は 4.3 の二層で担保する。**
 - `inference_geo: "us"` を指定すると単価が 1.1 倍になる。既定の `global` を使う。
+
+#### 認証方式と Workers からの呼び出し（M2-2 の前提。実測で確認）
+
+**API キー方式を使う。SigV4 は使わない。** Claude Platform on AWS は SigV4 と API キーの 2 通りを受け付け、**どちらも同じベース URL とリクエスト形式**である。Workers / Pages Functions（確定22）から呼ぶ以上、AWS の資格情報チェーン（環境変数・共有クレデンシャル・IMDS）は使えないので、API キーを渡す形にする。
+
+| 項目 | 値 |
+|---|---|
+| ベース URL | `https://aws-external-anthropic.{region}.api.aws` |
+| 認証 | `x-api-key` ヘッダ |
+| 追加の必須ヘッダ | `anthropic-version` / `anthropic-workspace-id` |
+| 必要な IAM アクション | `aws-external-anthropic:CreateInference` ＋ `aws-external-anthropic:CallWithBearerToken` |
+
+- **キーは AWS コンソールで発行する**（Claude Platform on AWS → API keys）。**Claude Console で作ったキーはこのエンドポイントでは動かない。** 名前が紛らわしいため、環境変数は `ANTHROPIC_AWS_API_KEY` とする。
+- **リージョンと Workspace ID も必須である。** キーだけでは呼べない。
+- **短期 API キー（最長 12 時間）は要らない。** あれは「AWS 資格情報を持つプロセスと API を叩くプロセスが別」の場合の仕組みで、コンソール発行の長命キーを使うこちらには当てはまらない。**寿命 12 時間の更新機構を作る必要はない。**
+- **4.3 の二層構造に影響しない。** Workspace の spend limit は認証方式と独立である。
+
+**実測（2026-08-13、workerd 上）**
+
+| 試したもの | 結果 |
+|---|---|
+| `@anthropic-ai/aws-sdk` を import | **失敗**（`No such module ".../@aws-sdk/util-utf8-browser/dist-es/pureJs"`）。SigV4 と AWS SDK の依存を抱えるため、そのままでは Workers ランタイムで読めない |
+| `@anthropic-ai/sdk` を `baseURL` ＋ `defaultHeaders` で構成 | **成功**。API キー方式なら AWS 用クライアントは不要 |
+| 生の `fetch` で上表のヘッダを組む | **成功** |
+
+M2-2 は `@anthropic-ai/sdk` か素の `fetch` のどちらかで実装する。`@anthropic-ai/aws-sdk` は使わない。
 
 ### 4.1.1 トークンの実測方法（`count_tokens` の限界）
 

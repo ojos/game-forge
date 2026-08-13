@@ -44,7 +44,13 @@ export default defineConfig({
         // `bindings` ではなく `textBlobBindings` を使うのは、ファイルの読み込みを
         // miniflare 側へ任せるため。この設定ファイルは tsc の検査対象で、
         // `@types/node` が入っていないため `node:fs` を import すると型検査が落ちる。
-        textBlobBindings: { TEST_DEV_VARS_EXAMPLE: '.dev.vars.example' },
+        textBlobBindings: {
+          TEST_DEV_VARS_EXAMPLE: '.dev.vars.example',
+          // 仕様書 6.1 の許可パッケージ一覧を、コード側の一覧と機械照合するために渡す
+          // （#17 / shared-ai-rules 12 章）。一覧をテストへ書き写すと、照合したい
+          // 二重管理そのものをテスト側で作り直すことになる。
+          TEST_PRODUCT_SPEC: 'docs/product-spec.md',
+        },
       },
     }),
   ],

@@ -62,7 +62,11 @@ cp .dev.vars.example .dev.vars
   止めないと `GH_TOKEN` がアプリのコードから読める状態になり、`wrangler deploy` では
   本番の secret としてアップロードされうる。
 - 止め忘れは `npm test` が落として知らせる（`test/worker.test.ts` の
-  「env のキーが wrangler.toml の宣言と完全に一致する」）。
+  「env のキーが wrangler.toml と `.dev.vars.example` の宣言だけで構成される」）。
+  この検査が許容するのは、`wrangler.toml` の `[vars]` / バインディングと、
+  **`.dev.vars.example` に書かれている名前**だけ。許容する一覧はテストへ書き写さず、
+  雛形そのものを読んで判定する（雛形に鍵を足せば自動で追随し、`.env` 側のキーは
+  雛形に無いため従来どおり落ちる）。
 
 `.dev.vars` は `.gitignore` で除外済みで、除外が効いていることは
 `scripts/acceptance.sh` が毎回検査する。
@@ -70,6 +74,12 @@ cp .dev.vars.example .dev.vars
 **Dev 組織の API キーは 2026-08-12 時点でまだ発行できない。** M0.5-1（#49）で
 Claude Platform on AWS のサインアップが AWS 側の理由で完了していないため。
 `ANTHROPIC_API_KEY` は空のままでよく、`wrangler dev` は起動する。
+
+**ログインを手元で試すには `SESSION_SECRET` と Google の OAuth クライアントが要る**
+（#12 / 8.1）。値の作り方は `.dev.vars.example` のコメントに書いてある。空のままでも
+`wrangler dev` は起動し、`/auth/google/start` と `/auth/google/callback` が 503 を
+返すだけになる（設定が無いときに認証を素通しさせないため）。ログアウト
+（`POST /auth/logout`）は cookie を消すだけなので、設定が無くても動く。
 
 ---
 

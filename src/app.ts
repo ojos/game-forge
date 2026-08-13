@@ -4,6 +4,7 @@
  * M0.5-3 の範囲は「環境が動くこと」の確認に限る。D1 のスキーマ（5.1 の 5 テーブル）は
  * M1-1 が所有するため、ここでは**スキーマに依存しない疎通確認**だけを行う。
  */
+import { authRoutes } from './auth/google.js';
 import { describeOriginRelation } from './origins.js';
 import type { Route } from './routes.js';
 import { dispatch, html, json } from './routes.js';
@@ -203,7 +204,7 @@ const devRoutes: readonly Route[] = [
  * M1 以降で経路を足すときは、機能ごとの `Route[]` を別ファイルに置き、この配列へ
  * 連結する。ここへハンドラ本文を書き足さないこと（並行する PR が同じ行を取り合う）。
  */
-export const appRoutes: readonly Route[] = [...devRoutes, ...waitlistRoutes];
+export const appRoutes: readonly Route[] = [...devRoutes, ...authRoutes, ...waitlistRoutes];
 
 /**
  * アプリ用ホストへのリクエストを処理する。

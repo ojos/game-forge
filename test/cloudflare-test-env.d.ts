@@ -13,6 +13,13 @@ declare global {
     interface Env {
       /** `vitest.config.ts` が Node 側で読み込んだマイグレーション。 */
       readonly TEST_MIGRATIONS: D1Migration[];
+      /**
+       * `.dev.vars.example` の中身（`vitest.config.ts` の `textBlobBindings`）。
+       *
+       * 文書化された秘密の名前を、書き写さずにテストから引くために渡している
+       * （test/worker.test.ts の env キー検査）。
+       */
+      readonly TEST_DEV_VARS_EXAMPLE: string;
     }
   }
 }

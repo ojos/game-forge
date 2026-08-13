@@ -60,3 +60,20 @@ output "dns_zone_name_servers" {
   EOT
   value       = aws_route53_zone.game_forge.name_servers
 }
+
+output "gcp_project_id" {
+  description = <<-EOT
+    GCP プロジェクト ID。OAuth クライアントの発行先。
+
+    他の output と違い、外部層の検査（scripts/acceptance-remote.sh）はこれを見ていない。
+    同意画面と OAuth クライアントが API から列挙できず、プロジェクト単体を照合しても
+    検証したいこと（クライアントが正しく発行されているか）に届かないためである
+    （docs/gcp-oauth-setup.md 7 章）。用途は手順書とコマンドが参照する識別子。
+  EOT
+  value       = google_project.game_forge.project_id
+}
+
+output "gcp_project_number" {
+  description = "GCP プロジェクト番号。コンソールの URL や API の一部が ID ではなくこちらを要求する。"
+  value       = google_project.game_forge.number
+}

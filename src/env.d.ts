@@ -1,0 +1,38 @@
+/**
+ * `.dev.vars`（本番では `wrangler secret`）が供給する秘密の型。
+ *
+ * `worker-configuration.d.ts` へ書かない。あれは `wrangler types` の生成物で、
+ * **手元に `.dev.vars` があるかどうかで中身が変わる**（wrangler は `.dev.vars` の
+ * キーも `Env` へ書き出す）。あちらへ手で足すと、次の生成で消えるうえ、
+ * `scripts/check-worker-types.sh` の照合（生成物と `wrangler.toml` の一致）が
+ * 壊れる。`test/cloudflare-test-env.d.ts` と同じく、宣言のマージでこちら側から足す。
+ *
+ * `.dev.vars` を置いた環境では同じキーが生成物側にも `string` として現れるが、
+ * ここでも `string` として宣言しているため、宣言のマージで矛盾しない。
+ *
+ * **値は実行時に `undefined` になりうる。** `.dev.vars` を置いていない環境では
+ * キー自体が存在しない。型が `string` であることを根拠に素通しせず、認証の入口で
+ * 未設定を検査すること（`src/auth/google.ts` の `missingSecrets`）。
+ */
+/** `.dev.vars` / `wrangler secret` が供給する、このアプリの秘密。 */
+interface AppSecrets {
+  /** 署名付きセッション cookie の HMAC 鍵（8.1 / 確定9）。32 文字以上。 */
+  SESSION_SECRET: string;
+  /** Google OAuth のクライアント ID。ID トークンの `aud` の照合にも使う。 */
+  GOOGLE_CLIENT_ID: string;
+  /** Google OAuth のクライアントシークレット。トークンエンドポイントへのみ送る。 */
+  GOOGLE_CLIENT_SECRET: string;
+}
+
+declare global {
+  // 生成物が `Env`（Worker 側）と `Cloudflare.Env`（`cloudflare:test` 側）の 2 つを
+  // 別々に宣言しているため、両方へ足す。片方だけにすると、テストが受け取る env を
+  // ハンドラへ渡せない（型が食い違う）。メンバの定義は 1 か所（`AppSecrets`）に
+  // 置き、書き写しを作らない。
+  interface Env extends AppSecrets {}
+  namespace Cloudflare {
+    interface Env extends AppSecrets {}
+  }
+}
+
+export {};

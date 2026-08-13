@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { defaultExclude, defineConfig } from 'vitest/config';
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers';
 
 /**
@@ -29,7 +29,42 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: './wrangler.toml' },
-      miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
+      miniflare: {
+        bindings: { TEST_MIGRATIONS: migrations },
+        // `.dev.vars.example` の中身をテキストとして渡す。
+        //
+        // test/worker.test.ts の「env のキーが宣言と一致する」検査は、`.dev.vars` を
+        // 置いた開発者の環境ではアプリ向けの秘密が env に現れるため、そのままでは
+        // 落ちる。文書化された秘密名だけを許容したいが、その一覧をテスト側へ書き写すと
+        // 「文書が実装の一覧を書き写している」構造そのものになり、
+        // `.dev.vars.example` に鍵を足した日から静かにずれる
+        // （shared-ai-rules.md 12 章）。雛形そのものを渡し、テスト側で名前を
+        // 取り出せば、複製は生まれない。
+        //
+        // `bindings` ではなく `textBlobBindings` を使うのは、ファイルの読み込みを
+        // miniflare 側へ任せるため。この設定ファイルは tsc の検査対象で、
+        // `@types/node` が入っていないため `node:fs` を import すると型検査が落ちる。
+        textBlobBindings: { TEST_DEV_VARS_EXAMPLE: '.dev.vars.example' },
+      },
     }),
   ],
+  test: {
+    /**
+     * 並列実装用の作業ツリー（`.claude/worktrees/`）を探索対象から外す。
+     *
+     * 中身はリポジトリ全体のチェックアウトそのもので、他レーンの作業中ブランチが
+     * 入っている。除外しないと vitest がそれらのテストまで拾い、しかも
+     * `configPath: './wrangler.toml'` の解決はこの設定ファイルの位置が基準なので、
+     * **他ブランチのテストがルートの `wrangler.toml` と `migrations/` で走る**。
+     * 他レーンが足したテーブルやバインディングは当然ルートに無いため、そのレーンの
+     * 作業が正しくても落ちる。
+     *
+     * 結果として `scripts/verify.sh`（ループの接地信号）が、検証対象の変更とは
+     * 無関係な理由で赤になる。接地信号は迂回できないことに意味があるので、
+     * 偽陽性を出す経路は塞ぐ（shared-ai-rules.md 12 章）。
+     *
+     * 既定の除外を捨てないよう defaultExclude を展開してから足す。
+     */
+    exclude: [...defaultExclude, '**/.claude/worktrees/**'],
+  },
 });

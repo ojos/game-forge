@@ -35,6 +35,28 @@ RUN mkdir -p /cache/go-build /cache/go-mod && chown -R 65534:65534 /cache
 # マウント時に隠れて見えなくなり、--network=none 下で依存を解決できない。
 COPY template/ /src/
 
+# Ebitengine と許可パッケージを vendor へ焼き込む（M2-4 / #18）。
+#
+# **ネットワークが要るのはここだけである。** イメージのビルド時に解決して焼き込み、
+# 実行時は --network=none で回す。実行時に依存を取りに行く経路を作らない。
+#
+# vendor ディレクトリをリポジトリへ入れない理由: Ebitengine の vendor は数 MB・
+# 数千ファイルになり、差分もレビューも埋もれる。代わりに go.mod で版を固定し、
+# go.sum で完全性を担保する（再現性はそちらが持つ）。
+#
+# vendor-deps.go は `vendordeps` タグ付きでのみ見えるファイルで、許可パッケージを
+# 一度 import して vendor の対象にするためだけに存在する。焼き込んだあとに消すのは、
+# 生成物へ不要なパッケージが連結されないようにするため（3.4 のバイナリサイズ削減）。
+# タグで通常ビルドから外れているので消さなくても連結はされないが、/work へ複製されて
+# 生成コードと同じパッケージに同居する意味が無いため置かない。
+# `go mod tidy` は走らせない。版はリポジトリの go.mod / go.sum が正であり、ここで
+# tidy すると**イメージをビルドした日の最新版**へ動きうる。差分が出ないまま生成物だけ
+# が変わる状態を作らない。go.sum があるので `go mod vendor` は完全性も検証する。
+RUN cd /src \
+ && GOFLAGS= GOOS=js GOARCH=wasm go mod vendor \
+ && rm -f /src/vendor-deps.go \
+ && chown -R 65534:65534 /src
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod 0555 /entrypoint.sh
 

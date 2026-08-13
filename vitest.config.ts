@@ -55,6 +55,10 @@ export default defineConfig({
           // （#17 / shared-ai-rules 12 章）。一覧をテストへ書き写すと、照合したい
           // 二重管理そのものをテスト側で作り直すことになる。
           TEST_PRODUCT_SPEC: 'docs/product-spec.md',
+          // 隔離ビルドの vendor 焼き込み対象と、それを実際にビルドする検査用サンプル。
+          // どちらも許可パッケージ一覧の複製にあたるため機械照合する（#18）。
+          TEST_VENDOR_DEPS: 'docker/isolated-build/template/vendor-deps.go',
+          TEST_BUILD_SAMPLE: 'docker/isolated-build/sample/ebitengine.go',
         },
       },
     }),

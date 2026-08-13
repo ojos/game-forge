@@ -24,7 +24,12 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$(dirname "$HERE")"
 
-IMAGE="game-forge/isolated-build:local"
+# 検査するイメージ。既定はローカル用のタグで、その場合はこのスクリプトが自分で
+# ビルドする。**外から IMAGE を渡したときはビルドしない。** CI では、レジストリへ
+# 配る現物そのものを検査したい。ここで作り直すと、同じ Dockerfile から作った
+# 「別のイメージ」を検査することになり、配られた版が検査を通った保証にならない。
+IMAGE_EXTERNAL="${IMAGE:-}"
+IMAGE="${IMAGE:-game-forge/isolated-build:local}"
 CACHE_VOLUME="game-forge-go-cache"
 BUILD_TIMEOUT="${BUILD_TIMEOUT:-60}"
 FAILURES=0
@@ -108,12 +113,20 @@ CONTAIN_OPTS=(
   --security-opt no-new-privileges
 )
 
-echo "[isolated-build] イメージをビルドします: $IMAGE"
-if ! docker build -q -t "$IMAGE" docker/isolated-build >"$WORKDIR/build.log" 2>&1; then
-  sed 's/^/    /' "$WORKDIR/build.log" >&2
-  fatal "イメージのビルドに失敗しました。"
+if [[ -n "$IMAGE_EXTERNAL" ]]; then
+  # 外から指定されたイメージを検査する。作り直さない（上の IMAGE の注記）。
+  echo "[isolated-build] 指定されたイメージを検査します: $IMAGE"
+  docker image inspect "$IMAGE" >/dev/null 2>&1 \
+    || fatal "指定されたイメージがローカルにありません: $IMAGE"
+  ok "指定されたイメージが存在する"
+else
+  echo "[isolated-build] イメージをビルドします: $IMAGE"
+  if ! docker build -q -t "$IMAGE" docker/isolated-build >"$WORKDIR/build.log" 2>&1; then
+    sed 's/^/    /' "$WORKDIR/build.log" >&2
+    fatal "イメージのビルドに失敗しました。"
+  fi
+  ok "イメージをビルドできた"
 fi
-ok "イメージをビルドできた"
 
 # ── 1. 封じ込め下でのビルド ──────────────────────────────────────────────────
 cat >"$WORKDIR/main.go" <<'EOF'
@@ -255,6 +268,44 @@ if printf 'package main\nfunc main() { this is not go }\n' \
   ng "壊れたソースのビルドが成功しました（検査が成立していません）"
 else
   ok "壊れたソースのビルドは失敗する"
+fi
+
+# ── 6. Ebitengine が vendor から解決できる（M2-4 / #18） ─────────────────────
+#
+# ここまでの検査は標準ライブラリだけのサンプルを使う。速いが、**vendor が空でも
+# 通ってしまう**。焼き込みが効いているかは、許可パッケージの外部モジュールを
+# すべて使うサンプルを --network=none でビルドして初めて分かる。
+#
+# 実測: このビルドはキャッシュが温まっていても数十秒かかる（成果物は約 11 MB）。
+# 上の検査と同じ暖機が要るのも同じ理由（コンテナの標準出力が無音で失われる）。
+EBITEN_TIMEOUT="${EBITEN_TIMEOUT:-600}"
+echo "[isolated-build] Ebitengine のサンプルをビルドします（最大 ${EBITEN_TIMEOUT} 秒）"
+
+timeout "$EBITEN_TIMEOUT" docker run -i "${CONTAIN_OPTS[@]}" "$IMAGE" \
+  < docker/isolated-build/sample/ebitengine.go >/dev/null 2>/dev/null || true
+
+if timeout "$EBITEN_TIMEOUT" docker run -i "${CONTAIN_OPTS[@]}" "$IMAGE" \
+   < docker/isolated-build/sample/ebitengine.go \
+   >"$WORKDIR/ebiten.b64" 2>"$WORKDIR/ebiten.log"; then
+  ebiten_reported="$(sed -nE 's/^\[build\] bytes=([0-9]+) sha256=([0-9a-f]+)$/\1 \2/p' "$WORKDIR/ebiten.log" | tail -1)"
+  if [[ -z "$ebiten_reported" ]]; then
+    ng "Ebitengine のビルドが申告行を出しませんでした（標準エラーが失われた可能性）"
+  else
+    if decode_base64 "$WORKDIR/ebiten.b64" "$WORKDIR/ebiten.wasm"; then
+      ebiten_bytes="$(wc -c <"$WORKDIR/ebiten.wasm" | tr -d '[:space:]')"
+      ebiten_sha="$(sha256_of "$WORKDIR/ebiten.wasm")"
+      if [[ "$ebiten_bytes $ebiten_sha" == "$ebiten_reported" ]]; then
+        ok "Ebitengine のサンプルが --network=none でビルドできた（${ebiten_bytes} バイト）"
+      else
+        ng "Ebitengine の成果物が申告と一致しません（申告 ${ebiten_reported} ≠ 受領 ${ebiten_bytes} ${ebiten_sha}）"
+      fi
+    else
+      ng "Ebitengine の成果物を復号できませんでした"
+    fi
+  fi
+else
+  sed 's/^/    /' "$WORKDIR/ebiten.log" >&2
+  ng "Ebitengine のサンプルがビルドできませんでした（vendor の焼き込みを確認）"
 fi
 
 if [[ "$FAILURES" -gt 0 ]]; then

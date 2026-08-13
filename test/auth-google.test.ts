@@ -8,11 +8,13 @@ import {
   OAUTH_COOKIE,
   createAuthRoutes,
   parseGoogleIdToken,
+  startInvitedLogin,
 } from '../src/auth/google.js';
 import type { TokenExchange, TokenExchangeParams } from '../src/auth/google.js';
 import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, verifySession } from '../src/session.js';
+import { normalizeInviteCode } from '../src/invite-code.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -215,6 +217,64 @@ async function startLogin(routes: readonly Route[], target: Env): Promise<Starte
 }
 
 /**
+ * 招待を 1 枚用意する。
+ *
+ * 8.1 の「生成は招待コード保有者のみ」を機構にした結果、**新規登録には必ず招待が要る**。
+ * 登録の往復を書くテストは、まず発行者と招待コードを用意する。
+ *
+ * @param code 正規形の招待コード（12 桁）。文字集合は Crockford Base32 で、
+ *   `I` `L` `O` `U` を含められない（含めると正規化で別の文字へ寄り、正規形でなくなる）
+ * @returns 発行者の id
+ */
+async function seedInvite(code: string): Promise<string> {
+  // 正規形でないコードをそのまま挿入させない。ここを素通しにすると、誤りは
+  // 一時 cookie の形式検査（`I` `L` `O` `U` を含む値は正規形にならない）で落ち、
+  // 「state cookie の検証に失敗」という無関係な症状として現れる。
+  expect(normalizeInviteCode(code), code).toBe(code);
+  const issuerId = `issuer-${code}`;
+  await env.DB.prepare(
+    'insert into users (id, google_sub, email, display_name, created_at) values (?, ?, ?, ?, 1)',
+  )
+    .bind(issuerId, `sub-${issuerId}`, `${issuerId}@example.com`, '発行者')
+    .run();
+  await env.DB.prepare('insert into invites (code, issued_by) values (?, ?)')
+    .bind(code, issuerId)
+    .run();
+  return issuerId;
+}
+
+/**
+ * 検証済みの招待コードを携えてログインを開始する。
+ *
+ * 登録画面（`POST /signup`）が通す経路と同じものを、画面を介さずに叩く。
+ *
+ * @param overrides 差し替える依存
+ * @param target 対象の env
+ * @param inviteCode 招待コード
+ * @returns 開始の結果
+ */
+async function startLoginWithInvite(
+  overrides: Parameters<typeof createAuthRoutes>[0],
+  target: Env,
+  inviteCode: string,
+): Promise<StartedLogin> {
+  const response = await startInvitedLogin(
+    new Request(`${APP_ORIGIN}${LOGIN_PATH}`),
+    target,
+    inviteCode,
+    overrides,
+  );
+  expect(response.status).toBe(303);
+  const cookie = findCookie(response, OAUTH_COOKIE);
+  expect(cookie).toBeDefined();
+  return {
+    response,
+    authorize: new URL(response.headers.get('location')!),
+    cookieHeader: toCookieHeader(cookie!),
+  };
+}
+
+/**
  * コールバックを叩く。
  *
  * @param routes 経路表
@@ -381,13 +441,16 @@ describe('ログインの開始（8.1）', () => {
 describe('コールバックと users 行の作成（#12 scope.in）', () => {
   it('初回ログインで users 行を作り、セッション cookie を発行する', async () => {
     const sub = 'google-sub-first-login';
+    // 新規登録には招待が要る（8.1）。登録画面が通す経路と同じ形で開始する。
+    const issuerId = await seedInvite('FRSTGN012345');
     const exchanged = recordExchange(buildIdToken({ sub, email: 'first@example.com', name: '最初の人' }));
-    const routes = createAuthRoutes({
+    const overrides = {
       exchange: exchanged.exchange,
       now: () => NOW,
       randomToken: fixedRandomToken(),
-    });
-    const started = await startLogin(routes, testEnv());
+    };
+    const routes = createAuthRoutes(overrides);
+    const started = await startLoginWithInvite(overrides, testEnv(), 'FRSTGN012345');
 
     const response = await callback(
       routes,
@@ -403,8 +466,9 @@ describe('コールバックと users 行の作成（#12 scope.in）', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.email).toBe('first@example.com');
     expect(rows[0]!.display_name).toBe('最初の人');
-    // 招待との結線は #14（T7）が持つ。ここで埋めない。
-    expect(rows[0]!.invited_by).toBeNull();
+    // 招待を消費した結果として招待者が記録される（8.1「誰が誰を呼んだか」）。
+    // 記録するのは #13 の consumeInvite で、ここはそれを呼ぶ順序を固定している。
+    expect(rows[0]!.invited_by).toBe(issuerId);
 
     const session = findCookie(response, SESSION_COOKIE);
     expect(session).toBeDefined();
@@ -438,13 +502,16 @@ describe('コールバックと users 行の作成（#12 scope.in）', () => {
     // 同一性の判定は google_sub（users.google_sub は UNIQUE）。email は変わりうる
     // ため使わない。email が変わっても同じ行が更新されることまで見る。
     const sub = 'google-sub-relogin';
+    await seedInvite('RETRYN012345');
     const first = recordExchange(buildIdToken({ sub, email: 'old@example.com', name: '旧名' }));
-    const routesFirst = createAuthRoutes({
+    const overridesFirst = {
       exchange: first.exchange,
       now: () => NOW,
       randomToken: fixedRandomToken(),
-    });
-    const startedFirst = await startLogin(routesFirst, testEnv());
+    };
+    const routesFirst = createAuthRoutes(overridesFirst);
+    // 1 回目は登録なので招待が要る。
+    const startedFirst = await startLoginWithInvite(overridesFirst, testEnv(), 'RETRYN012345');
     await callback(
       routesFirst,
       testEnv(),
@@ -459,6 +526,7 @@ describe('コールバックと users 行の作成（#12 scope.in）', () => {
       now: () => NOW,
       randomToken: fixedRandomToken(),
     });
+    // 2 回目は既存利用者なので招待は要らない。招待を消費しないことも含めて見る。
     const startedSecond = await startLogin(routesSecond, testEnv());
     const response = await callback(
       routesSecond,
@@ -477,13 +545,15 @@ describe('コールバックと users 行の作成（#12 scope.in）', () => {
 
   it('成功しても一時 cookie を消す', async () => {
     // 使い切りにする。残すと、期限内に同じ state で何度でも試せる。
+    await seedInvite('DSCARD012345');
     const exchanged = recordExchange(buildIdToken({ sub: 'google-sub-discard' }));
-    const routes = createAuthRoutes({
+    const overrides = {
       exchange: exchanged.exchange,
       now: () => NOW,
       randomToken: fixedRandomToken(),
-    });
-    const started = await startLogin(routes, testEnv());
+    };
+    const routes = createAuthRoutes(overrides);
+    const started = await startLoginWithInvite(overrides, testEnv(), 'DSCARD012345');
     const response = await callback(
       routes,
       testEnv(),

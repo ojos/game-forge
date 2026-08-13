@@ -35,7 +35,8 @@
  * その計数のために毎リクエスト書き込む本末転倒になる。
  */
 import type { Route, RouteHandler } from './routes.js';
-import { json } from './routes.js';
+import { SIGNUP_PATH, WAITLIST_THANKS_PATH } from './paths.js';
+import { json, readLimitedText } from './routes.js';
 
 /**
  * 登録経路。10.2 が導線ごとの登録率を補助指標に挙げているため、区別できる形で持つ。
@@ -413,21 +414,47 @@ export function coarsenWaitlistCount(exactCount: number): number {
  * @returns レスポンス
  */
 const handleWaitlistRegistration: RouteHandler = async (request, env) => {
+  // 素の `<form method="post">` から来た要求には HTML を返す（#14 T7）。JSON を
+  // 返すとブラウザが本文をそのまま表示してしまい、JavaScript を要求しない導線に
+  // ならない。判定は `Accept` で行う。ブラウザのナビゲーションは `text/html` を
+  // 明示するが、`fetch` の既定（`*/*`）は明示しないため、両者を取り違えない。
+  const wantsHtml = (request.headers.get('accept') ?? '').includes('text/html');
+
   const parsed = await parseWaitlistRequest(request);
   if (!parsed.ok) {
-    return json({ error: parsed.reason }, 400);
+    return wantsHtml ? redirectTo(`${SIGNUP_PATH}?reason=waitlist-${parsed.reason}`) : json({ error: parsed.reason }, 400);
   }
 
   try {
     await registerWaitlist(env.DB, parsed.registration);
+    // 成功は 303 で GET へ逃がす（POST-redirect-GET）。同じ URL に POST の結果を
+    // 描くと、再読み込みで再送信の確認が出て、利用者が二重に送ることになる。
+    if (wantsHtml) {
+      return redirectTo(WAITLIST_THANKS_PATH);
+    }
     const waitingCount = coarsenWaitlistCount(await countWaitlist(env.DB));
     return json({ registered: true, waitingCount });
   } catch (error) {
     // 応答にもログにも例外の中身をそのまま出さない（`describeWaitlistError` の理由）。
     console.error(`[waitlist] 待機リストへの登録に失敗しました: ${describeWaitlistError(error)}`);
-    return json({ error: 'internal error' }, 500);
+    return wantsHtml
+      ? redirectTo(`${SIGNUP_PATH}?reason=waitlist-failed`)
+      : json({ error: 'internal error' }, 500);
   }
 };
+
+/**
+ * 303 See Other を返す。
+ *
+ * 302 ではなく 303 を使う。302 に対するブラウザの実装は POST を POST のまま
+ * 追う余地があり、リダイレクト先で同じ本文が再送されうる。
+ *
+ * @param location 遷移先
+ * @returns レスポンス
+ */
+function redirectTo(location: string): Response {
+  return new Response(null, { status: 303, headers: { location, 'cache-control': 'no-store' } });
+}
 
 /**
  * 待機リストの経路。
@@ -479,64 +506,3 @@ function describeWaitlistError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
-/** 本文の読み出し結果。 */
-type BodyReadResult =
-  | { readonly ok: true; readonly text: string }
-  | { readonly ok: false; readonly reason: 'body-too-large' | 'unreadable-body' };
-
-/**
- * リクエスト本文を、上限を超えたら打ち切りながら読む。
- *
- * `request.text()` を使わないのは、上限を超えたかどうかが**読み切ったあと**にしか
- * 分からないためである。`Content-Length` を先に見る形も、ヘッダは省略できる
- * （chunked）うえ実際の本文と一致する保証がない。読みながら数えるのが、
- * 上限を実際に効かせられる唯一の形になる。
- *
- * @param request 受信したリクエスト
- * @param limit 受け付ける最大バイト数
- * @returns 本文の文字列、または打ち切り・読み出し失敗の理由
- */
-async function readLimitedText(request: Request, limit: number): Promise<BodyReadResult> {
-  const body: ReadableStream<Uint8Array> | null = request.body;
-  if (body === null) {
-    // 本文なしの POST。JSON として不正なので、この後の解析で落ちる。
-    return { ok: true, text: '' };
-  }
-
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      total += value.byteLength;
-      if (total > limit) {
-        // 残りを受け取らずに切る。読み捨てても上限を超えた分の転送は続くため、
-        // ここで止めないと上限を置いた意味が薄れる。
-        await reader.cancel();
-        return { ok: false, reason: 'body-too-large' };
-      }
-      chunks.push(value);
-    }
-  } catch (error) {
-    // 通信の切断など。利用者の入力の問題ではないが、こちらから見えるのは
-    // 「本文が読めなかった」ことだけなので、400 として扱う。ログは 1 行へ落とす
-    // （`describeWaitlistError` の理由。ここは本文そのものが例外へ入りうる位置である）。
-    console.error(
-      `[waitlist] リクエスト本文の読み出しに失敗しました: ${describeWaitlistError(error)}`,
-    );
-    return { ok: false, reason: 'unreadable-body' };
-  }
-
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  // 不正なバイト列は置換文字になる（投げない）。JSON として壊れていれば解析側で落ちる。
-  return { ok: true, text: new TextDecoder().decode(merged) };
-}

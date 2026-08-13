@@ -59,7 +59,7 @@
 
 | # | v0.7 の記述 | v0.8 での扱い |
 |---|---|---|
-| 1 | 「API を `/api/*` に置くなら Pages Functions を使う。ここは M2-1 の実装時に確定する」 | **確定22 として Pages Functions に確定**（9.3）。制約は `/api/*` に限らず、ゾーンが Cloudflare に無い以上 Workers ではカスタムドメインを張れないため、アプリ全体が対象 |
+| 1 | 「API を `/api/*` に置くなら Pages Functions を使う。ここは M2-1 の実装時に確定する」 | **確定22 として Pages Functions に確定**（9.3）。あわせて 9.1 の表と確定20 の記述を `wrangler pages dev` へ読み替えた（#71）。制約は `/api/*` に限らず、ゾーンが Cloudflare に無い以上 Workers ではカスタムドメインを張れないため、アプリ全体が対象 |
 | 2 | 6.1 は「許可パッケージのホワイトリストを明示し、AST 検査と一致させる」とするだけで**実体を列挙していなかった** | **一覧を 6.1 へ追記**（M2-3 / #17）。正は `src/go-import-allowlist.ts` で、仕様書との一致はテストで機械照合する。あわせて **6.1 と 8.3 の食い違い**（6.1 は描画を図形と算術ピクセルに限定、8.3 は `text` 描画を前提に出力側モデレーションを設計）を未決事項として明記した |
 
 ### 1.2.4 v0.6 からの主要な変更
@@ -643,7 +643,7 @@ docker run --rm \
 
 | 構成要素 | 開発 | 本番 |
 |---|---|---|
-| Workers / D1 / R2 / Pages | **ローカル**（`wrangler dev`。実ランタイム workerd とローカル SQLite / R2 エミュレーション） | Cloudflare |
+| Pages Functions / D1 / R2 | **ローカル**（`wrangler pages dev`。実ランタイム workerd とローカル SQLite / R2 エミュレーション） | Cloudflare |
 | Go/Ebitengine の隔離ビルド | **ローカル Docker** | さくらのVPS |
 | DNS | 不要 | Route53（Prod アカウント） |
 | LLM | **Dev の Anthropic 組織**（9.2） | Prod の Anthropic 組織 |
@@ -813,6 +813,6 @@ v0.3 の #1（プロダクト名）は確定16、#2（30KB 超過時の挙動）
 | 17 | `game-forge.ojos.jp` の DNS は **AWS Route53 へ NS 委譲**し、Terraform で管理（9 章） |
 | 18 | ソース 30KB 超過時は、**作者の選択で LLM に整理させる**（4 条件つき。5.3） |
 | 19 | LLM の接続先は **Claude Platform on AWS**。単価は第一者 API と同一で導入価格も効く。Bedrock は別料金体系のため採らない（4.1） |
-| 20 | **クラウド環境は本番のみ。開発はローカルで完結する**（`wrangler dev` ＋ ローカル Docker。9.1） |
+| 20 | **クラウド環境は本番のみ。開発はローカルで完結する**（`wrangler pages dev` ＋ ローカル Docker。9.1。確定22 で Pages になったため、当初の `wrangler dev` から読み替える） |
 | 21 | AWS アカウントは **Dev / Prod の 2 つ**を既存 Control Tower landing zone から振り出す。根拠は blast radius・IAM・請求行の分離という**通常のマルチアカウント衛生**であり、コスト分離の要請ではない（9.2）。Dev にはリソースを置かない |
 | 22 | アプリと API の配置先は **Cloudflare Pages Functions**。ゾーンが Route53 にある以上（確定17）Workers ではカスタムドメインを張れないため、`/api/*` に限らずアプリ全体が対象。API のパスは `/api/*` を正とする（9.3 / M2-1 で確定） |

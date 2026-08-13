@@ -73,11 +73,11 @@ cp .dev.vars.example .dev.vars
 
 **Dev 組織の API キーは 2026-08-12 時点でまだ発行できない。** M0.5-1（#49）で
 Claude Platform on AWS のサインアップが AWS 側の理由で完了していないため。
-`ANTHROPIC_AWS_API_KEY` は空のままでよく、`wrangler dev` は起動する（キーは AWS コンソールで発行する。仕様書 4.1 の認証方式）。
+`ANTHROPIC_AWS_API_KEY` は空のままでよく、`wrangler pages dev` は起動する（キーは AWS コンソールで発行する。仕様書 4.1 の認証方式）。
 
 **ログインを手元で試すには `SESSION_SECRET` と Google の OAuth クライアントが要る**
 （#12 / 8.1）。値の作り方は `.dev.vars.example` のコメントに書いてある。空のままでも
-`wrangler dev` は起動し、`/auth/google/start` と `/auth/google/callback` が 503 を
+`wrangler pages dev` は起動し、`/auth/google/start` と `/auth/google/callback` が 503 を
 返すだけになる（設定が無いときに認証を素通しさせないため）。ログアウト
 （`POST /auth/logout`）は cookie を消すだけなので、設定が無くても動く。
 
@@ -197,7 +197,7 @@ API のパスは `/api/*` を正とします（確定22）。`scripts/acceptance
 
 ### `npm run check:origins` が確かめること
 
-自己署名証明書で `wrangler dev` を起動し、自分で止める。起動済みのサーバへ相乗りしない
+自己署名証明書で `wrangler pages dev` を起動し、自分で止める。起動済みのサーバへ相乗りしない
 （相乗りすると、古いコードのまま緑になる経路ができる）。
 
 - 両ホストが解決し、**別オリジン**かつ**同一サイト**であること

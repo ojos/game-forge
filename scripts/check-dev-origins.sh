@@ -160,14 +160,14 @@ for _ in $(seq 1 60); do
   fi
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then
     sed 's/^/    /' "$SERVER_LOG" >&2
-    fatal "wrangler dev が起動しませんでした。"
+    fatal "wrangler pages dev が起動しませんでした。"
   fi
   sleep 1
 done
 
 if ! curl -sk --max-time 5 "https://${APP_HOST}:${PORT}/" -o /dev/null; then
   sed 's/^/    /' "$SERVER_LOG" >&2
-  fatal "wrangler dev が応答しません（60 秒待機）。"
+  fatal "wrangler pages dev が応答しません（60 秒待機）。"
 fi
 ok "wrangler pages dev が HTTPS で応答した"
 

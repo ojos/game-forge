@@ -106,3 +106,45 @@ variable "dns_zone_name" {
   type        = string
   default     = "game-forge.ojos.jp"
 }
+
+variable "gcp_org_id" {
+  description = <<-EOT
+    GCP 組織（ojos.jp）の ID。数字のみ。
+
+    google_project の org_id に渡し、作成するプロジェクトを組織配下へ置く。組織を
+    指定しないプロジェクトは所有者個人に紐づき、退職・アカウント削除で失われる。
+
+    機密ではないが、このリポジトリは公開であり公開する必要も無いため、aws_account_id_prod
+    と同じ扱いで宣言へ直接書かず terraform.tfvars（*.tfvars は追跡外）から受ける。
+
+    確認方法: gcloud organizations list
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]+$", var.gcp_org_id))
+    error_message = "gcp_org_id は数字のみである必要があります（組織名ではなく ID）。"
+  }
+}
+
+variable "gcp_project_id" {
+  description = <<-EOT
+    GCP プロジェクト ID。全世界で一意、かつ作成後は変更できない。
+
+    変更して apply すると、既存プロジェクトの改名ではなく別プロジェクトの新規作成に
+    なる。配下の OAuth クライアントは移動しないため、実機のログインが壊れる。
+  EOT
+  type        = string
+  default     = "ojos-game-forge"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.gcp_project_id))
+    error_message = "gcp_project_id は小文字英字で始まり、小文字英数字とハイフンのみ、6〜30 文字である必要があります。"
+  }
+}
+
+variable "gcp_project_name" {
+  description = "GCP プロジェクトの表示名。ID と違い後から変更できる。"
+  type        = string
+  default     = "game-forge"
+}

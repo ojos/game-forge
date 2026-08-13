@@ -329,14 +329,20 @@ async function handleGenerate(
 /**
  * 例外を、ログへ出してよい 1 行の文字列へ落とす。
  *
- * 生の `error` を渡さない理由は `src/waitlist.ts` の `describeWaitlistError` と同じで、
- * ここは**利用者のプロンプトが例外へ入りうる位置**である。
+ * **`message` を出さない。** ここは各段が投げた例外を受ける位置であり、中身は
+ * こちらで決まらない。利用者のプロンプトは 8.2 のモデレーション対象になる入力で、
+ * `generations.prompt` として D1 に持つのとは保管場所も寿命も違うログへ、段の実装
+ * しだいで流れてよいものではない。
+ *
+ * 「段はプロンプトを例外へ入れないこと」という呼びかけで担保しない
+ * （shared-ai-rules 12 章）。**段の診断情報は段自身が、何が安全か知っている場所で
+ * ログに出す。** ここが出すのは「どの種類の例外で落ちたか」だけでよい。
  *
  * @param error catch した値（型は unknown）
  * @returns ログに残してよい 1 行
  */
 function describeGenerateError(error: unknown): string {
-  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  return error instanceof Error ? error.name : typeof error;
 }
 
 /**

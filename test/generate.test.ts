@@ -17,7 +17,6 @@ import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 const SECRET = 'test-secret-value-for-generate-endpoint-1';
-const NOW = 1_790_000_000;
 
 /**
  * テスト用の env。
@@ -52,10 +51,11 @@ async function seedUser(suffix: string, options: { banned?: boolean } = {}): Pro
  * @returns `Cookie` ヘッダの値
  */
 async function sessionCookie(userId: string): Promise<string> {
-  const token = await signSession(
-    { userId, issuedAt: NOW, expiresAt: NOW + 3600 },
-    SECRET,
-  );
+  // 失効時刻は**実時刻から取る**。`resolveSessionUser` は `verifySession` を既定の
+  // 現在時刻で呼ぶため、固定値にすると「その時刻を過ぎた日からテストが壊れる」
+  // 時限式になる（レビューで指摘された。固定値は将来の日付だったので今は通っていた）。
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const token = await signSession({ userId, issuedAt, expiresAt: issuedAt + 3600 }, SECRET);
   return buildSessionCookie(token, 3600).split(';')[0]!;
 }
 
@@ -143,8 +143,9 @@ describe('未認証リクエストを拒否する（#15 acceptance 1）', () => 
   });
 
   it('別の鍵で署名した cookie は 401', async () => {
+    const issuedAt = Math.floor(Date.now() / 1000);
     const token = await signSession(
-      { userId: 'someone', issuedAt: NOW, expiresAt: NOW + 3600 },
+      { userId: 'someone', issuedAt, expiresAt: issuedAt + 3600 },
       'another-secret-value-of-sufficient-length',
     );
     const response = await post(
@@ -339,9 +340,11 @@ describe('オーケストレーションの骨組み（3.3 の順序）', () => 
     expect(await response.json()).toEqual({ gameId: 'game-1' });
   });
 
-  it('段が投げた例外を 500 にし、プロンプトを応答へ漏らさない', async () => {
+  it('段が投げた例外を 500 にし、プロンプトを応答にもログにも漏らさない', async () => {
+    // 段が投げる例外の中身はこちらで決まらない。8.2 のモデレーション対象になる入力を、
+    // 保管場所も寿命も違うログへ段の実装しだいで流してよい理由がない。
     const { pipeline } = recordingPipeline();
-    const secret = 'この文字列は応答に出てはいけない';
+    const secret = 'この文字列は応答にもログにも出てはいけない';
     const routes = createGenerateRoutes({
       ...pipeline,
       generateSource: async (_env, request) => {
@@ -349,9 +352,24 @@ describe('オーケストレーションの骨組み（3.3 の順序）', () => 
       },
     });
     const cookie = await sessionCookie(await seedUser('boom'));
-    const response = await post(routes, { prompt: secret }, cookie);
+
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args.map((value) => String(value)).join(' '));
+    };
+    let response: Response;
+    try {
+      response = await post(routes, { prompt: secret }, cookie);
+    } finally {
+      console.error = original;
+    }
+
     expect(response.status).toBe(500);
     expect(await response.text()).not.toContain(secret);
+    expect(logged.join('\n')).not.toContain(secret);
+    // 種類だけは残す。何も出さないと、落ちたことすら分からなくなる。
+    expect(logged.join('\n')).toContain('Error');
   });
 });
 

@@ -95,9 +95,14 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
+        # **4 つすべてを見る。** ホスト鍵を落とすと、3 つ揃った時点で deploy が走り、
+        # 空の known_hosts でホスト鍵の検証に失敗する。「未設定なので skip」と
+        # 「設定したのに壊れている」を区別できなくなる。
         run: |
-          if [[ -z "${VPS_HOST}" || -z "${VPS_USER}" || -z "${VPS_SSH_KEY}" ]]; then
+          if [[ -z "${VPS_HOST}" || -z "${VPS_USER}" || -z "${VPS_SSH_KEY}" || -z "${VPS_HOST_KEY}" ]]; then
             echo "[deploy] VPS の secret が未設定のため skip します（VPS は M2-5 の前提）。"
+            echo "[deploy] 必要なのは VPS_HOST / VPS_USER / VPS_SSH_KEY / VPS_HOST_KEY の 4 つです。"
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
@@ -116,7 +121,7 @@ jobs:
           printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
           # ホスト鍵は事前に登録したものだけを信用する。StrictHostKeyChecking=no は
-          # 中間者を黙って受け入れるので使わない。VPS_HOST_KEY が無ければここで落ちる。
+          # 中間者を黙って受け入れるので使わない。未設定なら上の guard で skip 済み。
           printf '%s\n' "${{ secrets.VPS_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
           ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes \

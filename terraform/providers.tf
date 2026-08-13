@@ -38,3 +38,22 @@ provider "aws" {
   region              = var.aws_region
   allowed_account_ids = [var.aws_account_id_prod]
 }
+
+/**
+ * Google Cloud プロバイダの設定。
+ *
+ * 資格情報はこのファイルにも変数にも書かない。プロバイダが Application Default
+ * Credentials（ADC）を読む。GitHub / AWS と同じ理由である（機密を Terraform 変数で
+ * 受け取ると tfstate や plan ファイルへ平文で落ちる経路ができる）。
+ *
+ *   gcloud auth application-default login --no-launch-browser
+ *
+ * --no-launch-browser を付けるのは、devcontainer 内にブラウザが無いため。
+ * gcloud auth login（CLI 用）とは別の資格情報で、Terraform が読むのは後者だけである。
+ *
+ * project は既定値を置かない。この宣言が作るのはプロジェクトそのもの（gcp.tf）で、
+ * 適用の時点では既定にすべきプロジェクトが存在しないためである。プロジェクト配下の
+ * リソースを足す段階で、リソース側に project を明示するか、ここへ既定を書く。
+ */
+provider "google" {
+}

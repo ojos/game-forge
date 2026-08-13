@@ -23,3 +23,12 @@ aws_account_id_prod = "000000000000"
 # 既定値から変える場合のみ指定する。
 # aws_region    = "ap-northeast-1"
 # dns_zone_name = "game-forge.ojos.jp"
+
+# GCP 組織（ojos.jp）の ID。数字のみ。
+# 確認方法: gcloud organizations list
+# 機密ではないが、このリポジトリは公開のため宣言側には書かない。
+gcp_org_id = "000000000000"
+
+# 既定値から変える場合のみ指定する。
+# gcp_project_id   = "ojos-game-forge"
+# gcp_project_name = "game-forge"

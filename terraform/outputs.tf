@@ -60,3 +60,13 @@ output "dns_zone_name_servers" {
   EOT
   value       = aws_route53_zone.game_forge.name_servers
 }
+
+output "gcp_project_id" {
+  description = "GCP プロジェクト ID。OAuth クライアントの発行先。外部層の検査が実状態と突き合わせる。"
+  value       = google_project.game_forge.project_id
+}
+
+output "gcp_project_number" {
+  description = "GCP プロジェクト番号。コンソールの URL や API の一部が ID ではなくこちらを要求する。"
+  value       = google_project.game_forge.number
+}

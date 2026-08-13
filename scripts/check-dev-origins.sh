@@ -128,7 +128,7 @@ fi
 # ── 2. サーバの起動 ──────────────────────────────────────────────────────────
 bash scripts/dev-certs.sh >/dev/null
 
-echo "[origins] wrangler dev を起動します（port $PORT）"
+echo "[origins] wrangler pages dev を起動します（port $PORT）"
 # setsid でプロセスグループを分け、後片付けで workerd ごと確実に止める。
 #
 # setsid は util-linux 付属で macOS には無い。無い環境で必須にすると、ここで
@@ -138,7 +138,7 @@ echo "[origins] wrangler dev を起動します（port $PORT）"
 if command -v setsid >/dev/null 2>&1; then
   SERVER_USES_PGID=1
   setsid env CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
-    npx wrangler dev \
+    npx wrangler pages dev \
     --ip 127.0.0.1 --port "$PORT" \
     --local-protocol https \
     --https-key-path certs/dev.key --https-cert-path certs/dev.crt \
@@ -146,7 +146,7 @@ if command -v setsid >/dev/null 2>&1; then
 else
   SERVER_USES_PGID=0
   env CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
-    npx wrangler dev \
+    npx wrangler pages dev \
     --ip 127.0.0.1 --port "$PORT" \
     --local-protocol https \
     --https-key-path certs/dev.key --https-cert-path certs/dev.crt \
@@ -169,7 +169,7 @@ if ! curl -sk --max-time 5 "https://${APP_HOST}:${PORT}/" -o /dev/null; then
   sed 's/^/    /' "$SERVER_LOG" >&2
   fatal "wrangler dev が応答しません（60 秒待機）。"
 fi
-ok "wrangler dev が HTTPS で応答した"
+ok "wrangler pages dev が HTTPS で応答した"
 
 # ── 3. 証明書が両ホストをカバーしている ──────────────────────────────────────
 #

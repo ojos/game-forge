@@ -111,6 +111,10 @@ npm run db:migrate:list   # 未適用のマイグレーションを確認
 npm run dev
 ```
 
+中身は `wrangler pages dev` です（確定22 / #71）。**`wrangler dev` は使えません** —
+Pages 構成に対して「Workers 用のコマンドです」と言って落ちます。配備先を Pages に
+した理由は [pages-deploy.md](pages-deploy.md) にあります。
+
 - アプリ: <https://game-forge.localtest.me:8787/>
 - 登録画面: <https://game-forge.localtest.me:8787/signup>
 - サンドボックス: <https://sandbox.game-forge.localtest.me:8787/>
@@ -146,6 +150,22 @@ npm run dev
 `http://localhost` は例外的に安全なコンテキストとして扱われるが、
 **`*.localtest.me` は該当しない。** 同一サイトの再現に `localtest.me` を使う以上、
 証明書は避けて通れない。
+
+### 経路の構成
+
+```
+functions/[[path]].ts   Pages Functions の入口。src/index.ts の default export を呼ぶだけ
+public/                 出力ディレクトリ。空（.gitkeep のみ）
+src/index.ts            Host ヘッダでアプリ側とサンドボックス側を出し分ける
+src/routes.ts           経路表。各機能が Route[] を持ち寄る
+```
+
+**`public/` に静的ファイルを置かないこと。** Pages は静的ファイルを Functions より先に
+解決するため、`index.html` を置くと `/` の経路が隠れます。画面はすべて Worker が
+生成します。
+
+API のパスは `/api/*` を正とします（確定22）。`scripts/acceptance.sh` が、旧綴りの
+`/waitlist` が `src/` と `test/` に残っていないことを毎回検査します。
 
 ### なぜ 1 プロセスで 2 つのホストなのか
 

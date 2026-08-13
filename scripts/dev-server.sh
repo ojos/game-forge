@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# dev-server.sh — ローカル開発サーバ（wrangler dev）を HTTPS で起動する。
+# dev-server.sh — ローカル開発サーバ（wrangler pages dev）を HTTPS で起動する。
+#
+# Pages Functions を使う（確定22）。ゾーンが Route53 にある以上（確定17）Workers の
+# カスタムドメインは張れないため、本番は Pages になる。開発も同じ起動形態に揃える。
+# `wrangler dev` は Pages 構成に対して「Workers 用のコマンドです」と言って落ちる。
 #
 # 1 プロセスでアプリ用ホストとサンドボックス用ホストの両方を提供する。オリジンは
 # スキーム・ホスト・ポートで決まるため、同じポートでもホスト名が違えば別オリジンに
@@ -36,7 +40,7 @@ echo
 # アプリ向けのシークレットは .dev.vars（追跡除外）に置く。こちらはこのフラグと
 # 無関係に読み込まれるため、止めても Dev 組織の API キーの経路は失われない。
 exec env CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
-  npx wrangler dev \
+  npx wrangler pages dev \
   --ip 127.0.0.1 \
   --port "$PORT" \
   --local-protocol https \

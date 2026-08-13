@@ -1,5 +1,6 @@
 import { SELF, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { WAITLIST_PATH } from '../src/paths.js';
 import { dispatch } from '../src/routes.js';
 import {
   MAX_EMAIL_LENGTH,
@@ -55,7 +56,7 @@ function uniqueEmail(suffix: string): string {
  * @returns リクエスト
  */
 function postRaw(body: string, contentType: string): Request {
-  return new Request(`${APP_ORIGIN}/waitlist`, {
+  return new Request(`${APP_ORIGIN}${WAITLIST_PATH}`, {
     method: 'POST',
     headers: { 'content-type': contentType },
     body,
@@ -225,7 +226,7 @@ describe.each(CONTENT_TYPES)('リクエスト本文の解析（%s）', (label, c
   });
 
   it('本文なしの POST を投げずに弾く', async () => {
-    const request = new Request(`${APP_ORIGIN}/waitlist`, {
+    const request = new Request(`${APP_ORIGIN}${WAITLIST_PATH}`, {
       method: 'POST',
       headers: { 'content-type': contentType },
     });
@@ -412,7 +413,7 @@ describe('外へ返す件数の丸め', () => {
   });
 });
 
-describe.each(CONTENT_TYPES)('POST /waitlist（%s）', (label, contentType) => {
+describe.each(CONTENT_TYPES)('POST /api/waitlist（%s）', (label, contentType) => {
   it('登録に成功し、丸めた件数を JSON で返す', async () => {
     const email = uniqueEmail(`${label}-http`);
     const response = await SELF.fetch(postFields({ email, source: 'signup' }, contentType));
@@ -497,7 +498,7 @@ describe.each(CONTENT_TYPES)('POST /waitlist（%s）', (label, contentType) => {
   });
 });
 
-describe('POST /waitlist（形式によらない）', () => {
+describe('POST /api/waitlist（形式によらない）', () => {
   it('未対応の Content-Type を 400 で返し、行を書かない', async () => {
     const before = await countWaitlist(env.DB);
     const response = await SELF.fetch(
@@ -547,7 +548,7 @@ describe('POST /waitlist（形式によらない）', () => {
 
   it('GET は 405 を返す（一覧の経路を作らない）', async () => {
     // メールアドレスの束は個人情報で、認証機構が無い段階で読み出せる経路を開けない。
-    const response = await SELF.fetch(`${APP_ORIGIN}/waitlist`);
+    const response = await SELF.fetch(`${APP_ORIGIN}${WAITLIST_PATH}`);
     expect(response.status).toBe(405);
     expect(response.headers.get('allow')).toBe('POST');
   });

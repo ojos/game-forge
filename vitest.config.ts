@@ -28,6 +28,11 @@ const migrations = await readD1Migrations('./migrations');
 export default defineConfig({
   plugins: [
     cloudflareTest({
+      // エントリを明示する。**Pages の構成には `main` が無い**（`functions/` を
+      // wrangler が束ねる）ため、`SELF.fetch` を使うテストが
+      // 「service bindings to the current worker requires main」で落ちる（実測）。
+      // 本番で `functions/[[path]].ts` が呼ぶのと同じモジュールをここでも指す。
+      main: './src/index.ts',
       wrangler: { configPath: './wrangler.toml' },
       miniflare: {
         bindings: { TEST_MIGRATIONS: migrations },

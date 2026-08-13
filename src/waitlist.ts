@@ -35,7 +35,7 @@
  * その計数のために毎リクエスト書き込む本末転倒になる。
  */
 import type { Route, RouteHandler } from './routes.js';
-import { SIGNUP_PATH, WAITLIST_THANKS_PATH } from './paths.js';
+import { SIGNUP_PATH, WAITLIST_PATH, WAITLIST_THANKS_PATH } from './paths.js';
 import { json, readLimitedText } from './routes.js';
 
 /**
@@ -464,12 +464,11 @@ function redirectTo(location: string): Response {
  * 必要がない。置けば認証なしで叩ける読み取りが 1 つ増え、D1 の読み取りを外から
  * いくらでも起こせる面（3.6）が広がるだけになる。
  *
- * パスを `/api/waitlist` にしないのは、9.3 が「API を `/api/*` に置くなら
- * Pages Functions を使う。ここは M2-1 の実装時に確定する」としているためである。
- * M1 でこの綴りを使うと、その判断を先取りしたことになる。
+ * パスは `/api/waitlist`（`src/paths.ts` の `WAITLIST_PATH`）。M1 の時点では 9.3 が
+ * 未確定だったため旧綴りに置いていたが、確定22 で `/api/*` を正としたので寄せた（#71）。
  */
 export const waitlistRoutes: readonly Route[] = [
-  { method: 'POST', path: '/waitlist', handler: handleWaitlistRegistration },
+  { method: 'POST', path: WAITLIST_PATH, handler: handleWaitlistRegistration },
 ];
 
 /**

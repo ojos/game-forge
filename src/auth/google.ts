@@ -167,7 +167,7 @@ export type IdTokenVerification =
  */
 export type UserResolution =
   | { readonly ok: true; readonly id: string; readonly banned: boolean }
-  | { readonly ok: false; readonly reason: 'invite-required' | InviteRejection };
+  | { readonly ok: false; readonly reason: 'invite-required' | 'retry' | InviteRejection };
 
 /** 一時 cookie に載せる値。 */
 interface OAuthState {
@@ -527,6 +527,22 @@ async function resolveUser(
   // 順序なら、残骸は「今この瞬間に作られたばかりで、まだ何も紐づいていない
   // `users` 行」だけであり、安全に消せる。
   const created = await createUser(db, identity, nowSeconds);
+  if (created === null) {
+    // 引き当てと作成の間に、同じ `google_sub` の登録が別のリクエストで進んでいる。
+    //
+    // **その行を引き当てて成功として返さない。** 先行するリクエストは、まだ招待を
+    // 消費できるかどうかが決まっておらず、失敗すれば下の補償で自分が作った行を消す。
+    // こちらが先にその行を掴んでセッションを発行すると、直後に消えた `users.id` を
+    // 指すセッションが残る。招待も消費されないまま登録が済んだことになる。
+    //
+    // やり直しを促すほうを採る。**こちらの招待は消費していない**ので何も失われず、
+    // 再試行の時点では先行の成否が確定している（成功なら既存として引き当たり、
+    // 失敗なら行が無いので新規に作れる）。同時登録は同じ人がタブを 2 つ開いた場合に
+    // 起きるもので、稀であり、やり直しで必ず解ける。
+    console.error('[auth] 同じ google_sub の登録が競合したため、やり直しを求めました');
+    return { ok: false, reason: 'retry' };
+  }
+
   const consumed = await consumeInvite(db, inviteCode, created.id, nowSeconds);
   if (!consumed.ok) {
     await db.prepare('delete from users where id = ?').bind(created.id).run();
@@ -565,7 +581,13 @@ async function refreshExistingUser(
 }
 
 /**
- * `users` 行を作る。
+ * `users` 行を作る。既に同じ `google_sub` があれば作らない。
+ *
+ * **`ON CONFLICT DO NOTHING` を付けて、競合を例外にしない。** 引き当てと作成の間に
+ * 同じ利用者の別のログインが完了すると、素の `INSERT` は UNIQUE 制約違反で投げ、
+ * コールバックが 500 になる。同時ログインは利用者の操作として普通に起こる（タブを
+ * 2 つ開くなど）ので、障害として扱わない。衝突したかどうかは、`RETURNING` が行を
+ * 返したかで分かる（`DO NOTHING` は衝突時に行を返さない）。
  *
  * `invited_by` は書かない。招待者の記録は #13 の `consumeInvite` が、招待を
  * 使用済みにできた場合にだけ行う（2 か所で書くと食い違う）。
@@ -573,26 +595,24 @@ async function refreshExistingUser(
  * @param db D1 バインディング
  * @param identity ID トークンから取り出した同一性
  * @param nowSeconds 現在時刻（UNIX 秒）
- * @returns 作成した利用者の id
+ * @returns 作成した利用者の id。既に存在して作らなかった場合は null
  */
 async function createUser(
   db: D1Database,
   identity: GoogleIdentity,
   nowSeconds: number,
-): Promise<{ readonly id: string }> {
+): Promise<{ readonly id: string } | null> {
   const row = await db
     .prepare(
       `insert into users (id, google_sub, email, display_name, created_at)
        values (?, ?, ?, ?, ?)
+       on conflict(google_sub) do nothing
        returning id`,
     )
     .bind(crypto.randomUUID(), identity.sub, identity.email, identity.displayName, nowSeconds)
     .first<{ id: string }>();
 
-  if (row === null) {
-    throw new Error('users の作成が行を返しませんでした。');
-  }
-  return { id: row.id };
+  return row === null ? null : { id: row.id };
 }
 
 /**

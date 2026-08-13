@@ -23,7 +23,7 @@
  * 実行環境の都合で塞がらないようにしておく。
  */
 import type { Route, RouteHandler } from './routes.js';
-import { html } from './routes.js';
+import { html, readLimitedText } from './routes.js';
 import type { AuthDependencies } from './auth/google.js';
 import { startInvitedLogin } from './auth/google.js';
 import { normalizeInviteCode } from './invite-code.js';
@@ -53,10 +53,44 @@ const REASON_MESSAGES: Readonly<Record<string, string>> = {
   used: 'この招待コードは使えません。',
   expired: 'この招待コードは使えません。',
   'self-use': '自分で発行した招待コードは使えません。',
+  // 同じアカウントの登録が同時に進んでいた場合（`resolveUser` の 'retry'）。
+  // 招待は消費していないので、そのままやり直せる。
+  retry: '登録が完了しませんでした。もう一度お試しください。',
+  // 待機リストの登録が失敗して戻ってきた場合（`src/waitlist.ts` の no-JS 経路）。
+  // 招待コードの文言を出すと、待機リストの失敗を「コードが使えない」と誤解させる。
+  // 分類は `waitlist-` を接頭辞にして持ち、下の `reasonMessage` が前方一致で拾う。
+  'waitlist-invalid-email': 'メールアドレスの形式が正しくありません。',
+  'waitlist-failed': '待機リストへの登録に失敗しました。時間をおいて試してください。',
 };
+
+/** 待機リストの失敗を表す分類の接頭辞。 */
+const WAITLIST_REASON_PREFIX = 'waitlist-';
+
+/** 待機リストの失敗で、個別の文言を持たないものに使う文言。 */
+const DEFAULT_WAITLIST_MESSAGE = '待機リストへの登録を受け付けられませんでした。';
 
 /** 既定の文言。未知の `reason` を受けたときに使う。 */
 const DEFAULT_REASON_MESSAGE = 'この招待コードは使えません。';
+
+/**
+ * 分類から画面に出す文言を選ぶ。
+ *
+ * **`reason` を画面へそのまま流さない。** 表に無いものは、待機リスト由来かどうかで
+ * 既定を分ける。分けないと、待機リストの失敗に「招待コードは使えません」が出て、
+ * 利用者が直すべき場所を誤る。
+ *
+ * @param reason query から受け取った分類
+ * @returns 画面に出す文言
+ */
+function reasonMessage(reason: string): string {
+  const known = REASON_MESSAGES[reason];
+  if (known !== undefined) {
+    return known;
+  }
+  return reason.startsWith(WAITLIST_REASON_PREFIX)
+    ? DEFAULT_WAITLIST_MESSAGE
+    : DEFAULT_REASON_MESSAGE;
+}
 
 /**
  * 登録画面を組み立てる。
@@ -129,7 +163,7 @@ function waitlistThanksPage(): string {
  */
 const showSignupPage: RouteHandler = async (request, env) => {
   const reason = new URL(request.url).searchParams.get('reason');
-  const message = reason === null ? null : (REASON_MESSAGES[reason] ?? DEFAULT_REASON_MESSAGE);
+  const message = reason === null ? null : reasonMessage(reason);
   const waitingCount = coarsenWaitlistCount(await countWaitlist(env.DB));
   return html(signupPage(message, waitingCount), reason === null ? 200 : 400);
 };
@@ -186,7 +220,7 @@ async function submitInviteCode(
  */
 async function signupError(env: Env, reason: string): Promise<Response> {
   const waitingCount = coarsenWaitlistCount(await countWaitlist(env.DB));
-  return html(signupPage(REASON_MESSAGES[reason] ?? DEFAULT_REASON_MESSAGE, waitingCount), 400);
+  return html(signupPage(reasonMessage(reason), waitingCount), 400);
 }
 
 /**
@@ -204,14 +238,16 @@ async function readCodeField(request: Request): Promise<string | null> {
     return null;
   }
 
-  const body = await readBoundedText(request);
-  if (body === null) {
+  // 上限を超えた本文は**読み切らずに打ち切る**（`readLimitedText` の理由）。
+  // 全量を読んでから長さを見る形は、上限を置いた意味を満たさない。
+  const body = await readLimitedText(request, MAX_BODY_BYTES);
+  if (!body.ok) {
     return null;
   }
 
   let fields: URLSearchParams;
   try {
-    fields = new URLSearchParams(body);
+    fields = new URLSearchParams(body.text);
   } catch {
     return null;
   }
@@ -221,26 +257,6 @@ async function readCodeField(request: Request): Promise<string | null> {
     return null;
   }
   return fields.get('code');
-}
-
-/**
- * 本文を上限つきで読む。
- *
- * 上限を置かないと、本文を読み切るまでメモリを積む形になる。
- *
- * @param request 受信したリクエスト
- * @returns 本文、または上限を超えた場合は null
- */
-async function readBoundedText(request: Request): Promise<string | null> {
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_BODY_BYTES) {
-    return null;
-  }
-  try {
-    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(body);
-  } catch {
-    return null;
-  }
 }
 
 /**

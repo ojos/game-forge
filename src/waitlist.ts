@@ -36,7 +36,7 @@
  */
 import type { Route, RouteHandler } from './routes.js';
 import { SIGNUP_PATH, WAITLIST_THANKS_PATH } from './paths.js';
-import { json } from './routes.js';
+import { json, readLimitedText } from './routes.js';
 
 /**
  * 登録経路。10.2 が導線ごとの登録率を補助指標に挙げているため、区別できる形で持つ。
@@ -506,64 +506,3 @@ function describeWaitlistError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
-/** 本文の読み出し結果。 */
-type BodyReadResult =
-  | { readonly ok: true; readonly text: string }
-  | { readonly ok: false; readonly reason: 'body-too-large' | 'unreadable-body' };
-
-/**
- * リクエスト本文を、上限を超えたら打ち切りながら読む。
- *
- * `request.text()` を使わないのは、上限を超えたかどうかが**読み切ったあと**にしか
- * 分からないためである。`Content-Length` を先に見る形も、ヘッダは省略できる
- * （chunked）うえ実際の本文と一致する保証がない。読みながら数えるのが、
- * 上限を実際に効かせられる唯一の形になる。
- *
- * @param request 受信したリクエスト
- * @param limit 受け付ける最大バイト数
- * @returns 本文の文字列、または打ち切り・読み出し失敗の理由
- */
-async function readLimitedText(request: Request, limit: number): Promise<BodyReadResult> {
-  const body: ReadableStream<Uint8Array> | null = request.body;
-  if (body === null) {
-    // 本文なしの POST。JSON として不正なので、この後の解析で落ちる。
-    return { ok: true, text: '' };
-  }
-
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      total += value.byteLength;
-      if (total > limit) {
-        // 残りを受け取らずに切る。読み捨てても上限を超えた分の転送は続くため、
-        // ここで止めないと上限を置いた意味が薄れる。
-        await reader.cancel();
-        return { ok: false, reason: 'body-too-large' };
-      }
-      chunks.push(value);
-    }
-  } catch (error) {
-    // 通信の切断など。利用者の入力の問題ではないが、こちらから見えるのは
-    // 「本文が読めなかった」ことだけなので、400 として扱う。ログは 1 行へ落とす
-    // （`describeWaitlistError` の理由。ここは本文そのものが例外へ入りうる位置である）。
-    console.error(
-      `[waitlist] リクエスト本文の読み出しに失敗しました: ${describeWaitlistError(error)}`,
-    );
-    return { ok: false, reason: 'unreadable-body' };
-  }
-
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  // 不正なバイト列は置換文字になる（投げない）。JSON として壊れていれば解析側で落ちる。
-  return { ok: true, text: new TextDecoder().decode(merged) };
-}

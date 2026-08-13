@@ -272,6 +272,77 @@ describe('招待を経由した登録が完了する（8.1 の順序）', () => 
     expect(row).toBeNull();
   });
 
+  it('同じ google_sub の同時登録で 500 にならず招待も 1 枚しか減らない', async () => {
+    // 引き当てと作成の間に別のリクエストが同じ利用者を作る状況。素の INSERT だと
+    // UNIQUE 制約違反で 500 になり、利用者にはタブを 2 つ開いただけに見える。
+    await seedInvite('RACESAME0001');
+    await seedInvite('RACESAME0002');
+    const exchange: TokenExchange = async () => ({
+      ok: true,
+      idToken: buildIdToken('google-sub-same-race'),
+    });
+    const overrides = { exchange, now: () => NOW };
+    const signup = createSignupRoutes(overrides);
+    const auth = createAuthRoutes(overrides);
+
+    /**
+     * 招待コードから、コールバックまで到達する要求を組み立てる。
+     *
+     * @param code 招待コード
+     * @returns コールバックの Request
+     */
+    async function preparedCallback(code: string): Promise<Request> {
+      const started = await submitCode(signup, code);
+      const state = new URL(started.headers.get('location')!).searchParams.get('state')!;
+      const cookie = started.headers.get('set-cookie')!.split(';')[0]!;
+      return new Request(`${APP_ORIGIN}/auth/google/callback?code=c&state=${state}`, {
+        headers: { cookie },
+      });
+    }
+
+    const requests = await Promise.all([
+      preparedCallback('RACESAME0001'),
+      preparedCallback('RACESAME0002'),
+    ]);
+    const responses = await Promise.all(
+      requests.map((request) => dispatch(auth, request, testEnv())),
+    );
+
+    for (const response of responses) {
+      expect(response.status).not.toBe(500);
+    }
+    const rows = await env.DB.prepare('select count(*) as n from users where google_sub = ?')
+      .bind('google-sub-same-race')
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(1);
+
+    // 負けた側は招待を消費しない。先行の成否が決まる前にその行を掴んで
+    // セッションを出すと、直後に消えた users.id を指すセッションが残る。
+    const used = await env.DB.prepare(
+      "select count(*) as n from invites where code in ('RACESAME0001', 'RACESAME0002') and used_by is not null",
+    ).first<{ n: number }>();
+    expect(used?.n).toBe(1);
+
+    // 負けた側に発行されたセッションが、存在しない利用者を指していないこと。
+    for (const response of responses) {
+      const setCookie = response.headers.get('set-cookie') ?? '';
+      if (!setCookie.includes(`${SESSION_COOKIE}=`)) {
+        continue;
+      }
+      const token = setCookie
+        .split(', ')
+        .find((value) => value.startsWith(`${SESSION_COOKIE}=`))!
+        .split(';')[0]!
+        .slice(`${SESSION_COOKIE}=`.length);
+      const verified = await verifySession(token, SECRET, NOW);
+      expect(verified.ok).toBe(true);
+      const row = await env.DB.prepare('select id from users where id = ?')
+        .bind(verified.ok ? verified.payload.userId : '')
+        .first();
+      expect(row).not.toBeNull();
+    }
+  });
+
   it('招待の消費に失敗したら作った users 行を残さない', async () => {
     // 検証から同意までの間に、同じコードが他所で使われた場合。補償で取り消す。
     const issuerId = await seedInvite('RACETRACK001');
@@ -362,6 +433,44 @@ describe('登録画面', () => {
     );
     expect(response.status).toBe(400);
     expect(reachesGoogle(response)).toBe(false);
+  });
+
+  it('上限を超える本文を読み切らずに拒否する', async () => {
+    // 全量を読んでから長さを見る形では、上限を置いた意味を満たさない。
+    const response = await dispatch(
+      routes,
+      new Request(`${APP_ORIGIN}${SIGNUP_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: `code=${'A'.repeat(4096)}`,
+      }),
+      testEnv(),
+    );
+    expect(response.status).toBe(400);
+    expect(reachesGoogle(response)).toBe(false);
+  });
+
+  it('待機リストの失敗に招待コードの文言を出さない', async () => {
+    // 分類ごとに直すべき場所が違う。ここを共通の文言にすると、利用者が
+    // メールアドレスではなく招待コードを直そうとする。
+    const invalid = await dispatch(
+      routes,
+      new Request(`${APP_ORIGIN}${SIGNUP_PATH}?reason=waitlist-invalid-email`),
+      testEnv(),
+    );
+    const invalidBody = await invalid.text();
+    expect(invalidBody).toContain('メールアドレスの形式が正しくありません。');
+    expect(invalidBody).not.toContain('この招待コードは使えません。');
+
+    // 個別の文言を持たない waitlist- 由来の分類も、招待コードの文言へ落ちない。
+    const other = await dispatch(
+      routes,
+      new Request(`${APP_ORIGIN}${SIGNUP_PATH}?reason=waitlist-body-too-large`),
+      testEnv(),
+    );
+    const otherBody = await other.text();
+    expect(otherBody).toContain('待機リスト');
+    expect(otherBody).not.toContain('この招待コードは使えません。');
   });
 
   it('code が複数回現れる本文を拒否する', async () => {

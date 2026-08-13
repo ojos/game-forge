@@ -17,6 +17,10 @@ declare global {
       readonly TEST_DEV_VARS_EXAMPLE: string;
       /** `vitest.config.ts` が Node 側で読み込んだ仕様書の中身。 */
       readonly TEST_PRODUCT_SPEC: string;
+      /** 隔離ビルドの vendor 焼き込み対象（`docker/isolated-build/template/vendor-deps.go`）。 */
+      readonly TEST_VENDOR_DEPS: string;
+      /** 隔離ビルドの検査用サンプル（`docker/isolated-build/sample/ebitengine.go`）。 */
+      readonly TEST_BUILD_SAMPLE: string;
       /**
        * `.dev.vars.example` の中身（`vitest.config.ts` の `textBlobBindings`）。
        *

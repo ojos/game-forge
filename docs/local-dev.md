@@ -189,7 +189,7 @@ API のパスは `/api/*` を正とします（確定22）。`scripts/acceptance
 |---|---|---|---|
 | `bash scripts/verify.sh` | ローカル層の受け入れ条件すべて（機密検査・テスト・型・型定義の照合） | 数秒 | なし |
 | `npm run check:origins` | 別オリジン・同一サイト・`__Host-`・CSP を**実際に起動して**確認 | 約 20 秒 | なし |
-| `npm run check:isolated-build` | 7.1 の封じ込め下で隔離ビルドが通ること | 約 6 秒（`golang:1.26.5` 取得済みの場合）。未取得なら取得時間が乗る | Docker（`golang:1.26.5` の取得にネットワーク） |
+| `npm run check:isolated-build` | 7.1 の封じ込め下で隔離ビルドが通ること ＋ **Ebitengine が vendor から解決できること** | **約 1〜2 分**（Ebitengine のサンプルビルドを含む。キャッシュが冷えていればさらに数分） | Docker（イメージのビルドにネットワーク。**実行時は `--network=none`**） |
 
 `npm run check:origins` と `npm run check:isolated-build` は `scripts/verify.sh` には
 含めない。前者は約 20 秒かかり反復の信号としては重く、後者は Docker とイメージ取得を
@@ -220,6 +220,15 @@ API のパスは `/api/*` を正とします（確定22）。`scripts/acceptance
 - `/tmp`・`/work`・`/cache` の 3 か所は書けること
 - vendor が `/src` に焼かれ `/work` へ複製されていること（7.1 の前提 1）
 - 壊れたソースが**失敗すること**
+- **Ebitengine のサンプルが `--network=none` でビルドできること**（M2-4 / #18）
+
+最後の 1 つが vendor 焼き込みの検証にあたります。他の検査は標準ライブラリだけの
+サンプルを使うため速い代わりに、**vendor が空でも通ってしまいます**。許可パッケージの
+うち外部モジュール 5 つをすべて使うサンプル（`docker/isolated-build/sample/`）を
+実際にビルドして初めて、焼き込みが効いているか分かります。
+
+一覧は 3 か所に現れます（許可パッケージ・vendor 焼き込み・検査用サンプル）。
+`test/go-imports.test.ts` が機械照合するので、ずれたら落ちます。
 
 ---
 
@@ -304,7 +313,7 @@ M1 以降が所有する。ここで先に作らない。
 
 | 対象 | 所有する issue |
 |---|---|
-| Next.js / Cloudflare Pages の雛形 | 未起票（9.3 が「API を Pages Functions に置くかは M2-1 で確定する」としているため、構成が決まってから） |
-| Ebitengine の vendor 焼き込みと VPS への自動デプロイ | M2-4 |
+| Next.js / React のフロント | 未起票。確定22 で配置先は Pages Functions に決まったが、MVP の画面は SSR HTML で足りているため、必要になった時点で起票する |
+| VPS への自動デプロイの実行（イメージの GHCR への push までは M2-4 で済んでいる） | M2-5 の前提となる VPS が要る |
 | ビルドの同時実行制御・タイムアウト・結果キャッシュ | M2-5 |
-| 本番向けの `wrangler.toml`（routes / custom domain / 実際の D1 database_id） | 対応する issue が来た時点 |
+| 本番の D1 / R2 と Pages プロジェクトの宣言 | 未決。手順は [pages-deploy.md](pages-deploy.md) にあるが、Terraform で宣言するかが決まっていない |

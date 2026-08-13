@@ -60,7 +60,13 @@ describe('Worker の env に宣言外の値が混入しない', () => {
     // 唯一の経路になる。**除外は名前を明示したものに限る。** 前方一致や正規表現で
     // （たとえば `TEST_` の接頭辞で）緩めると、この検査が見ている「.env の混入」まで
     // 通してしまう。足すたびにこの配列へ 1 行書くのは、その明示の代償である。
-    const injectedByRunner = ['TEST_MIGRATIONS', 'TEST_DEV_VARS_EXAMPLE', 'TEST_PRODUCT_SPEC'];
+    const injectedByRunner = [
+      'TEST_MIGRATIONS',
+      'TEST_DEV_VARS_EXAMPLE',
+      'TEST_PRODUCT_SPEC',
+      'TEST_VENDOR_DEPS',
+      'TEST_BUILD_SAMPLE',
+    ];
 
     // `.dev.vars.example` に**書かれている**秘密名は許容する。
     //

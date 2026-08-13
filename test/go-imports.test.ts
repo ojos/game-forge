@@ -255,6 +255,45 @@ describe('一覧の機械照合（#17 acceptance 2）', () => {
     expect(renderAllowlistSection()).not.toMatch(/\d{4}-\d{2}-\d{2}|\d{10,}/u);
   });
 
+  /**
+   * Go のソースから import パスを取り出す。
+   *
+   * `_ "path"` の形も拾う。vendor 焼き込み用のファイルは全部この形である。
+   *
+   * @param source Go のソース
+   * @returns import パスの配列
+   */
+  function importsOf(source: string): string[] {
+    return [...source.matchAll(/^\t(?:_ )?"([^"]+)"$/gmu)].map((matched) => matched[1]!);
+  }
+
+  /** 一覧のうち標準ライブラリでないもの。vendor へ焼き込む対象はこれだけ。 */
+  const externalPaths = GO_IMPORT_ALLOWLIST.map((entry) => entry.path).filter((path) =>
+    path.split('/')[0]!.includes('.'),
+  );
+
+  it('vendor 焼き込みの対象が一覧の外部パッケージと一致する', () => {
+    // ずれると「プロンプトと AST 検査は許すが、vendor に無いのでビルドが落ちる」
+    // 状態になる。--network=none で回す以上、実行時に取りに行くことはできない。
+    expect(importsOf(env.TEST_VENDOR_DEPS).sort()).toEqual([...externalPaths].sort());
+  });
+
+  it('隔離ビルドの検査用サンプルが外部パッケージをすべて使う', () => {
+    // 標準ライブラリだけのサンプルでは vendor が空でもビルドが通る。焼き込みが
+    // 効いているかを見るには、外部パッケージを実際に import する必要がある。
+    const sample = importsOf(env.TEST_BUILD_SAMPLE);
+    for (const path of externalPaths) {
+      expect(sample, path).toContain(path);
+    }
+  });
+
+  it('標準ライブラリを vendor 焼き込みの対象に含めない', () => {
+    // 標準ライブラリは vendor されない。混ぜると go mod vendor が落ちる。
+    expect(importsOf(env.TEST_VENDOR_DEPS).every((path) => path.split('/')[0]!.includes('.'))).toBe(
+      true,
+    );
+  });
+
   it('一覧に重複が無い', () => {
     const paths = GO_IMPORT_ALLOWLIST.map((entry) => entry.path);
     expect(new Set(paths).size).toBe(paths.length);

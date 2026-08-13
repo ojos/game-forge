@@ -49,7 +49,10 @@ provider "aws" {
  *   gcloud auth application-default login --no-launch-browser
  *
  * --no-launch-browser を付けるのは、devcontainer 内にブラウザが無いため。
- * gcloud auth login（CLI 用）とは別の資格情報で、Terraform が読むのは後者だけである。
+ *
+ * これは gcloud コマンド自身が使う認証（gcloud auth login）とは別の資格情報である。
+ * Terraform が読むのは ADC だけで、gcloud auth login だけを済ませても apply は
+ * 認証エラーになる。逆も同じで、両方を実行する必要がある。
  *
  * project は既定値を置かない。この宣言が作るのはプロジェクトそのもの（gcp.tf）で、
  * 適用の時点では既定にすべきプロジェクトが存在しないためである。プロジェクト配下の

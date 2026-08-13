@@ -55,11 +55,12 @@ describe('Worker の env に宣言外の値が混入しない', () => {
     // `__VITEST_POOL_WORKERS_*` はテストランナー自身が注入する結線用のバインディングで、
     // wrangler.toml 由来ではないため除外する（実行時には存在しない）。
     //
-    // `TEST_MIGRATIONS` と `TEST_DEV_VARS_EXAMPLE` も同じ理由で除外する。どちらも
-    // vitest.config.ts が Node 側で読んで注入するもので、workerd 内にファイル
-    // システムが無い以上これが唯一の経路になる。**除外は名前を明示したものに限る。**
-    // 前方一致や正規表現で緩めると、この検査が見ている「.env の混入」まで通してしまう。
-    const injectedByRunner = ['TEST_MIGRATIONS', 'TEST_DEV_VARS_EXAMPLE'];
+    // `TEST_` で始まる 3 つも同じ理由で除外する。いずれも vitest.config.ts が
+    // Node 側で読んで注入するもので、workerd 内にファイルシステムが無い以上これが
+    // 唯一の経路になる。**除外は名前を明示したものに限る。** 前方一致や正規表現で
+    // （たとえば `TEST_` の接頭辞で）緩めると、この検査が見ている「.env の混入」まで
+    // 通してしまう。足すたびにこの配列へ 1 行書くのは、その明示の代償である。
+    const injectedByRunner = ['TEST_MIGRATIONS', 'TEST_DEV_VARS_EXAMPLE', 'TEST_PRODUCT_SPEC'];
 
     // `.dev.vars.example` に**書かれている**秘密名は許容する。
     //

@@ -75,6 +75,28 @@ Claude Platform on AWS のサインアップが AWS 側の理由で完了して�
 
 ## 3. 起動
 
+### D1 スキーマの適用
+
+初回と、`migrations/` を更新したときに実行します。
+
+```bash
+npm run db:migrate        # migrations/ をローカル D1 へ適用
+npm run db:migrate:list   # 未適用のマイグレーションを確認
+```
+
+- **冪等です。** 適用済みの一覧は D1 側の `d1_migrations` テーブルに記録され、
+  2 回目以降は `No migrations to apply!` を返します。SQL 側に `IF NOT EXISTS` を
+  書いていないのは、途中で中断したマイグレーションの再実行を「成功」として
+  通さないためです（`migrations/0001_init.sql` の冒頭）。
+- `--local` 固定です。リモートの D1 はまだ作っていません（`wrangler.toml` の
+  `database_id` は placeholder）。
+- **テストは別経路です。** `npm test` は `vitest.config.ts` が Node 側で読んだ
+  マイグレーションを `TEST_MIGRATIONS` として注入し、`test/helpers/schema.ts` の
+  `applySchema()` が適用します。ここで `npm run db:migrate` を先に実行する必要は
+  ありません（workerd 内にファイルシステムが無いため、値として渡すのが唯一の経路）。
+
+### 起動
+
 ```bash
 npm run dev
 ```
@@ -233,7 +255,6 @@ M1 以降が所有する。ここで先に作らない。
 
 | 対象 | 所有する issue |
 |---|---|
-| D1 のスキーマ（5.1 の 5 テーブル）とマイグレーション機構 | M1-1 |
 | Next.js / Cloudflare Pages の雛形 | 未起票（9.3 が「API を Pages Functions に置くかは M2-1 で確定する」としているため、構成が決まってから） |
 | Ebitengine の vendor 焼き込みと VPS への自動デプロイ | M2-4 |
 | ビルドの同時実行制御・タイムアウト・結果キャッシュ | M2-5 |

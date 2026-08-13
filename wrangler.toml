@@ -27,6 +27,10 @@ SANDBOX_HOST = "sandbox.game-forge.localtest.me"
 binding = "DB"
 database_name = "game-forge-local"
 database_id = "local-only-placeholder"
+# マイグレーションの置き場所。`wrangler d1 migrations apply DB --local` がここを読み、
+# 適用済みの一覧を D1 側の `d1_migrations` テーブルへ記録する。冪等性はこの台帳が
+# 担保するため、SQL 側に `IF NOT EXISTS` を書かない（migrations/0001_init.sql の冒頭）。
+migrations_dir = "migrations"
 
 # ローカル R2。同じく `--local` では実際のバケットを参照しない。
 [[r2_buckets]]

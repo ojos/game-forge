@@ -12,6 +12,8 @@
     "test": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false vitest run",
     "test:watch": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false vitest",
     "typecheck": "tsc --noEmit",
+    "db:migrate": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false wrangler d1 migrations apply DB --local",
+    "db:migrate:list": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false wrangler d1 migrations list DB --local",
     "types": "CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false wrangler types",
     "check:worker-types": "bash scripts/check-worker-types.sh",
     "check:origins": "bash scripts/check-dev-origins.sh",

@@ -1,8 +1,8 @@
-# プロダクト企画書 兼 システム仕様書 (v0.6)
+# プロダクト企画書 兼 システム仕様書 (v0.7)
 
-- 版: v0.6（Workspace 単位の spend limit に関する v0.5 の事実誤認を訂正。未確定は 3 件）
+- 版: v0.7（5.1 に `waitlist` を追加し、時刻の列の型を規約として明記。未確定は 3 件）
 - 作成日: 2026-08-11
-- 更新日: 2026-08-11
+- 更新日: 2026-08-13
 - 位置づけ: MVP 着手前の正本。未確定事項は 12 章に明示する。
 
 ---
@@ -54,6 +54,13 @@
 | 1 | 「Claude Platform on AWS では Workspace 単位の spend limit / rate limit は設定できない（組織単位のみ）」 | **事実誤認につき訂正。** Workspace 単位で設定できないのは **rate limit だけ**で、**spend limit は設定できる**（4.3） |
 | 2 | 4.3 のプロバイダ層＝組織の spend limit | **Workspace の spend limit を本体**とし、組織の spend limit をその外側の総枠とする（4.3） |
 | 3 | 9.2 の Dev/Prod 分割の根拠＝「Workspace 単位で分離できないから」 | **根拠を差し替え。** 分離だけなら Workspace で足りる。分割の根拠は blast radius・IAM・請求行の分離という通常のマルチアカウント衛生（9.2 / 確定21）。**分割の判断自体は維持する** |
+
+### 1.2.4 v0.6 からの主要な変更
+
+| # | v0.6 の記述 | v0.7 での扱い |
+|---|---|---|
+| 1 | 5.1 の主要テーブルは 5 つ | **`waitlist` を追加**（M1-1 / #11）。8.1 と 2.2-4 が未招待ユーザーの待機リスト登録を要求しており、その保存先が 5.1 に無かった。マイグレーションを 1 本に集約するため #11 が所有する |
+| 2 | 時刻の列の型は未規定 | **UNIX 秒の INTEGER で揃える**ことを明記（5.1）。文字列の日時は比較のたびに変換が要り、境界の扱いが実装ごとにぶれる |
 
 ### 1.2.2 v0.4 からの主要な変更
 
@@ -363,8 +370,13 @@ Claude Platform on AWS では、spend limit を**組織単位と Workspace 単�
 | `games` | `id`、`author_id`、`parent_id`、`status`（draft/published/removed）、`title`、`go_version`、`source_key`、`wasm_key`、`fork_count`、`created_at`、`published_at` |
 | `generations` | `id`、`game_id`、`user_id`、`prompt`、`model`、`input_tokens`、`output_tokens`、`cache_*_tokens`、`cost_jpy`、`succeeded`、`created_at` |
 | `reports` | `id`、`game_id`、`reporter_id`、`reason`、`created_at` |
+| `waitlist` | `id`、`email`（一意）、`source`、`created_at` |
 
 `games.parent_id` にインデックスを張る。`fork_count` は非正規化して一覧を軽くする。
+
+`waitlist` は未招待ユーザーの導線（8.1 / 2.2-4）の保存先である。`email` を一意にするのは、同じ人が繰り返し登録しても 10.2 の「待機リスト登録率」の分子が増えないようにするため。`source` はどの導線から来たかを区別し、同じく 10.2 の補助指標に使う。
+
+時刻の列はすべて **UNIX 秒の INTEGER** で持つ。文字列の日時にすると比較のたびに変換が要り、境界の扱いが実装ごとにぶれる。招待コードとセッションの失効判定も UNIX 秒で揃える。
 
 ### 5.2 生成フロー（新規作成）
 

@@ -20,7 +20,21 @@
 # 空のままでも `wrangler dev` は起動する。実キーの発行は M0.5-1（#49）の範囲で、
 # 2026-08-12 時点では Claude Platform on AWS のサインアップが AWS 側の理由で
 # 未完了のため、まだ入れられない。
-ANTHROPIC_API_KEY=
+#
+# **キーは AWS コンソール（Claude Platform on AWS → API keys）で発行する。**
+# Claude Console で作ったキーはこのエンドポイントでは動かない。名前が紛らわしいので
+# ANTHROPIC_ ではなく ANTHROPIC_AWS_ を接頭辞にしている（4.1 の認証方式）。
+ANTHROPIC_AWS_API_KEY=
+
+# Claude Platform on AWS のリージョンと Workspace ID（4.1 の認証方式）。
+#
+# **キーだけでは呼べない。** ベース URL がリージョンから決まり
+# （https://aws-external-anthropic.{region}.api.aws）、リクエストには
+# anthropic-workspace-id ヘッダが要る。どちらも機密ではないが、環境ごとに違う値なので
+# ここへ置く。Workspace を分ける理由は 4.3（開発の実験が本番の spend limit に
+# 混ざると「先に発火したらアプリ層のバグ」という判定基準が壊れる）。
+ANTHROPIC_AWS_REGION=
+ANTHROPIC_AWS_WORKSPACE_ID=
 
 # 署名付きセッション cookie の HMAC 鍵（8.1 / 確定9 / #12）。
 #

@@ -21,3 +21,25 @@
 # 2026-08-12 時点では Claude Platform on AWS のサインアップが AWS 側の理由で
 # 未完了のため、まだ入れられない。
 ANTHROPIC_API_KEY=
+
+# 署名付きセッション cookie の HMAC 鍵（8.1 / 確定9 / #12）。
+#
+# **32 文字以上**を入れること。短い鍵は実行時エラーとして表面化せず、総当たりの
+# 容易さとしてだけ現れるため、src/session.ts が下限で弾く。空のままだと
+# /auth/google/* は 503 を返す（認証を素通しさせないため）。
+#
+# 生成例:
+#   openssl rand -base64 48
+SESSION_SECRET=
+
+# Google OAuth のクライアント ID とシークレット（8.1 / #12）。
+#
+# Google Cloud コンソールの「OAuth 2.0 クライアント ID」（種別: ウェブ アプリケーション）
+# で発行する。承認済みのリダイレクト URI には、開発なら
+#   https://game-forge.localtest.me:8787/auth/google/callback
+# を登録する（ホストは wrangler.toml の APP_HOST、ポートは wrangler dev のもの）。
+#
+# シークレットはこのファイル（.dev.vars.example）へ決して書かないこと。値は各自の
+# .dev.vars にだけ置く（.dev.vars は .gitignore で除外済み）。
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=

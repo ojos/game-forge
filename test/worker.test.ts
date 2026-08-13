@@ -22,8 +22,15 @@ describe('Worker の env に宣言外の値が混入しない', () => {
     //
     // `__VITEST_POOL_WORKERS_*` はテストランナー自身が注入する結線用のバインディングで、
     // wrangler.toml 由来ではないため除外する（実行時には存在しない）。
+    //
+    // `TEST_MIGRATIONS` も同じ理由で除外する。vitest.config.ts が Node 側で
+    // `migrations/` を読んで注入するもので、workerd 内にファイルシステムが無い以上
+    // これが唯一の経路になる。**除外は名前を明示した 1 件に限る。** 前方一致や
+    // 正規表現で緩めると、この検査が見ている「.env の混入」まで通してしまう。
+    const injectedByRunner = ['TEST_MIGRATIONS'];
     const declared = Object.keys(env)
       .filter((key) => !key.startsWith('__VITEST_POOL_WORKERS_'))
+      .filter((key) => !injectedByRunner.includes(key))
       .sort();
     expect(declared).toEqual(['APP_HOST', 'BUCKET', 'DB', 'SANDBOX_HOST']);
   });

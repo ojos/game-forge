@@ -8,6 +8,7 @@ import { authRoutes } from './auth/google.js';
 import { describeOriginRelation } from './origins.js';
 import type { Route } from './routes.js';
 import { dispatch, html, json } from './routes.js';
+import { waitlistRoutes } from './waitlist.js';
 
 /**
  * 開発用セッション cookie の名前。
@@ -203,7 +204,7 @@ const devRoutes: readonly Route[] = [
  * M1 以降で経路を足すときは、機能ごとの `Route[]` を別ファイルに置き、この配列へ
  * 連結する。ここへハンドラ本文を書き足さないこと（並行する PR が同じ行を取り合う）。
  */
-export const appRoutes: readonly Route[] = [...devRoutes, ...authRoutes];
+export const appRoutes: readonly Route[] = [...devRoutes, ...authRoutes, ...waitlistRoutes];
 
 /**
  * アプリ用ホストへのリクエストを処理する。

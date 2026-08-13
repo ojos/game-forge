@@ -93,12 +93,30 @@ describe('経路表への差し替えが振る舞いを変えていない', () =
   });
 
   it('既存の経路がすべて GET で登録されている', () => {
+    // 完全一致では固定しない。M1 以降で経路が足されるたびにこの行を書き換える
+    // ことになり、経路表へ分解して減らしたはずの衝突面をテスト側で作り直してしまう。
+    // ここが見たいのは「既存の 4 経路が失われていないこと」だけである。
     const registered = appRoutes.map((route) => `${route.method} ${route.path}`);
-    expect(registered).toEqual([
-      'GET /',
-      'GET /__dev/health',
-      'GET /__dev/session',
-      'GET /__dev/cookies',
-    ]);
+    expect(registered).toEqual(
+      expect.arrayContaining([
+        'GET /',
+        'GET /__dev/health',
+        'GET /__dev/session',
+        'GET /__dev/cookies',
+      ]),
+    );
   });
+
+  it('非 GET は 405 になる（分解前は 200 を返していた）', () =>
+    Promise.all(
+      ['/', '/__dev/health', '/__dev/session', '/__dev/cookies'].map(async (path) => {
+        // 分解前の `switch (url.pathname)` はメソッドを見ておらず、POST でも
+        // GET と同じレスポンスを返していた。経路表化で 405 に変わる。
+        // `/__dev/*` は開発用の診断経路で利用者がいないため互換を残さないが、
+        // 変わったこと自体は黙らせずにここで固定する。
+        const response = await SELF.fetch(`${APP_ORIGIN}${path}`, { method: 'POST' });
+        expect(response.status, path).toBe(405);
+        expect(response.headers.get('allow'), path).toBe('GET, HEAD');
+      }),
+    ));
 });

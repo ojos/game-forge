@@ -41,11 +41,11 @@ M0.5 の個別 issue は M0 の一部の決定を前提とするが、**いず�
 
 M1 以降のすべてに先行する土台。**M0 が「決定」の milestone であるのに対し、ここは「外部状態の構築」を扱う。**
 
-### M0.5-1 AWS アカウントを振り出し、Claude Platform on AWS の組織を開設する
-- **goal:** 既存 Control Tower landing zone から Dev / Prod を振り出し、各アカウントで Claude Platform on AWS の組織を開設して spend limit を設定する。
-- **scope.in:** Control Tower での 2 アカウント振り出し。各アカウントからの Claude Platform on AWS サインアップ。**member アカウントから AWS Marketplace のサブスクリプションが作れるかの確認**（Control Tower 配下は管理アカウント側の設定が要る場合がある）。workspace ID の確認。spend limit の設定（Prod = 1万円＋為替バッファ、Dev = 小さい枠）。Dev の API キー発行と `.env` に書かない読み込み経路の確定。
-- **scope.out:** Prod の API キー配置（Workers が未存在のため M2-2 で行う）。
-- **acceptance:** Dev / Prod 両組織が開設され workspace ID が確認できる / 両組織の spend limit が設定済み / Dev のキーで `count_tokens` が 200 を返す / `bash scripts/check-no-secrets.sh` が `SECRETS_PASS`。
+### M0.5-1 Prod の AWS アカウントを振り出し、Anthropic の組織と Workspace を用意する
+- **goal:** 既存 Control Tower landing zone から Prod を振り出し、Anthropic 直販（確定19）で組織と dev / prod の Workspace を作って spend limit を設定する。
+- **scope.in:** Control Tower での **Prod 1 アカウント**振り出し（置くのは Route53 ゾーンのみ。9.2）。Anthropic 直販のサインアップと支払い手段の登録（**前払いクレジット。自動チャージは切る**。4.3 の最外周）。dev / prod の Workspace 作成と spend limit の設定（prod = 1万円＋為替バッファ、dev = 小さい枠）。dev の API キー発行と `.env` に書かない読み込み経路の確定。
+- **scope.out:** Prod の API キー配置（Workers が未存在のため M2-2 で行う）。**Dev の AWS アカウント振り出し**（v0.9 で取りやめ。9.2 / 確定21）。
+- **acceptance:** dev / prod の Workspace が作成され spend limit が設定済み / **自動チャージが切れている** / dev のキーで `count_tokens` が 200 を返す / `bash scripts/check-no-secrets.sh` が `SECRETS_PASS`。
 - **priority:** high（M0-4 を直接ブロックする）
 - **参照:** 確定19 / 確定21 / 9.2 / 4.3
 
@@ -62,7 +62,7 @@ M1 以降のすべてに先行する土台。**M0 が「決定」の milestone �
 - **goal:** クラウドを使わずに Workers / D1 / R2 / Pages と隔離ビルドをローカルで動かせる状態にし、クリーンな環境から再現できる手順を残す。
 - **scope.in:** `wrangler dev` での Workers ＋ ローカル D1 ＋ ローカル R2。ローカル Docker での 7.1 隔離ビルド。**同一サイトの再現**（`localtest.me` 等 ＋ 自己署名証明書。`__Host-` は HTTPS 必須のため M4-3 / 7.2 の検証に要る）。Dev 組織の API キーの読み込み経路。手順の文書化。
 - **scope.out:** **「環境の骨組み」に限る。** D1 のスキーマとマイグレーション機構は M1-1（M1-1 の scope.in が「ローカル D1 への適用手順」を含むため）。Next.js / Pages の雛形は未起票（9.3 が Pages Functions の採否を M2-1 で確定するとしており、構成が未確定のまま置くと手戻りになる）。Ebitengine の vendor 焼き込みと VPS デプロイは M2-4。同時実行制御・タイムアウト・結果キャッシュは M2-5。本番向けの `wrangler.toml` は対応する issue が来た時点。
-- **constraints:** Dev 組織の API キーの実物は M0.5-1（#49）が未完了のため入手できない。読み込み経路（`.dev.vars`）を確定・文書化し、値は空のまま通す。
+- **constraints:** dev の Workspace の API キーの実物は M0.5-1（#49）が未完了のため入手できない。読み込み経路（`.dev.vars`）を確定・文書化し、値は空のまま通す。
 - **acceptance:** `wrangler dev` が起動しローカル D1 へのクエリが通る / ローカル Docker で `--network=none --read-only` のビルドが成功する / アプリ用とサンドボックス用の開発ホスト名が**別オリジン・同一サイト**になることを確認できる / 手順書だけでクリーンな環境から再現できる。
 - **priority:** high（M1 以降すべての前提）
 - **参照:** 確定20 / 9.1 / 7.1 / 7.2
@@ -98,7 +98,7 @@ M1 以降のすべてに先行する土台。**M0 が「決定」の milestone �
 ### M0-4 1 生成あたりのコストを実測し、日次クォータ値とプロバイダ層の上限値を決める
 - **goal:** Sonnet 5 の実トークン数を測り、4.2 の試算を実値へ置き換えたうえで、日次クォータとプロバイダ層 spend limit を決める。
 - **scope.in:**
-  - Claude Platform on AWS の組織開設と支払い手段の登録（確定19）
+  - Anthropic の組織開設と支払い手段の登録（確定19。直販）
   - 入力側: システムプロンプト草案と代表的な親ソースを `count_tokens` で実測
   - **出力側: `count_tokens` では測れないため実生成する**（4.1.1）。`effort=high` / `medium` で複数回生成し、`usage.output_tokens` の分布を取る
   - 月 1 万円からの生成回数の逆算、招待者数の想定からの日次クォータ決定
@@ -435,7 +435,7 @@ M1 以降のすべてに先行する土台。**M0 が「決定」の milestone �
 | 仕様書の記述 | 対応 issue |
 |---|---|
 | 確定21 / 9.2 AWS アカウント設計 | M0.5-1 |
-| 確定19 / 4.1 Claude Platform on AWS の組織 | M0.5-1 |
+| 確定19 / 4.1 Anthropic 直販の組織と Workspace | M0.5-1 |
 | 確定17 / 9.3 DNS（Route53 委譲・Terraform 管理） | M0.5-2 |
 | 確定20 / 9.1 環境構成（ローカル開発） | M0.5-3 |
 

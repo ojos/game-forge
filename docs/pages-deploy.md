@@ -55,11 +55,11 @@ npx wrangler r2 bucket create game-forge
 npx wrangler pages secret put SESSION_SECRET
 npx wrangler pages secret put GOOGLE_CLIENT_ID
 npx wrangler pages secret put GOOGLE_CLIENT_SECRET
-npx wrangler pages secret put ANTHROPIC_AWS_API_KEY
+npx wrangler pages secret put ANTHROPIC_API_KEY
 ```
 
-`ANTHROPIC_AWS_REGION` と `ANTHROPIC_AWS_WORKSPACE_ID` は機密ではないので、
-`[vars]` で持たせても構いません（値の出どころは仕様書 4.1）。
+LLM 関連はこの 1 本だけです。**リージョンや Workspace ID の指定は要りません**
+（確定19 で接続先を Anthropic 直販にしたため。仕様書 4.1）。
 
 ### 4. デプロイ
 

@@ -12,29 +12,19 @@
 #
 # 追跡除外: .dev.vars は .gitignore で除外済み。値を入れたままコミットされない。
 
-# Claude Platform on AWS の **Dev 組織**で発行した API キー（確定19 / 9.2）。
+# Anthropic 直販の **Dev 用 Workspace** で発行した API キー（確定19 / 4.1）。
 #
-# 本番の組織とは別枠であることが 4.3 の判定基準（プロバイダ層が先に発火したら
-# アプリ層のバグ）を成立させる前提なので、ここへ Prod のキーを入れないこと。
+# 本番の Workspace とは別枠であることが 4.3 の判定基準（プロバイダ層が先に発火
+# したらアプリ層のバグ）を成立させる前提なので、ここへ Prod のキーを入れないこと。
+# v0.9 から dev / prod は同一組織内の Workspace として分ける（9.2）。
 #
-# 空のままでも `wrangler dev` は起動する。実キーの発行は M0.5-1（#49）の範囲で、
-# 2026-08-12 時点では Claude Platform on AWS のサインアップが AWS 側の理由で
-# 未完了のため、まだ入れられない。
+# 空のままでも `npm run dev` は起動する。実キーの発行は M0.5-1（#49）の範囲。
 #
-# **キーは AWS コンソール（Claude Platform on AWS → API keys）で発行する。**
-# Claude Console で作ったキーはこのエンドポイントでは動かない。名前が紛らわしいので
-# ANTHROPIC_ ではなく ANTHROPIC_AWS_ を接頭辞にしている（4.1 の認証方式）。
-ANTHROPIC_AWS_API_KEY=
-
-# Claude Platform on AWS のリージョンと Workspace ID（4.1 の認証方式）。
-#
-# **キーだけでは呼べない。** ベース URL がリージョンから決まり
-# （https://aws-external-anthropic.{region}.api.aws）、リクエストには
-# anthropic-workspace-id ヘッダが要る。どちらも機密ではないが、環境ごとに違う値なので
-# ここへ置く。Workspace を分ける理由は 4.3（開発の実験が本番の spend limit に
+# **キーは Anthropic Console で発行する（直販。確定19 / 4.1）。**
+# キーが Workspace に紐づくため、リージョンや Workspace ID の指定は要らない。
+# 開発用の Workspace を本番と分ける理由は 4.3（開発の実験が本番の spend limit に
 # 混ざると「先に発火したらアプリ層のバグ」という判定基準が壊れる）。
-ANTHROPIC_AWS_REGION=
-ANTHROPIC_AWS_WORKSPACE_ID=
+ANTHROPIC_API_KEY=
 
 # 署名付きセッション cookie の HMAC 鍵（8.1 / 確定9 / #12）。
 #
@@ -51,7 +41,7 @@ SESSION_SECRET=
 # Google Cloud コンソールの「OAuth 2.0 クライアント ID」（種別: ウェブ アプリケーション）
 # で発行する。承認済みのリダイレクト URI には、開発なら
 #   https://game-forge.localtest.me:8787/auth/google/callback
-# を登録する（ホストは wrangler.toml の APP_HOST、ポートは wrangler dev のもの）。
+# を登録する（ホストは wrangler.toml の APP_HOST、ポートは `npm run dev` のもの）。
 #
 # シークレットはこのファイル（.dev.vars.example）へ決して書かないこと。値は各自の
 # .dev.vars にだけ置く（.dev.vars は .gitignore で除外済み）。

@@ -71,9 +71,9 @@ cp .dev.vars.example .dev.vars
 `.dev.vars` は `.gitignore` で除外済みで、除外が効いていることは
 `scripts/acceptance.sh` が毎回検査する。
 
-**Dev 組織の API キーは 2026-08-12 時点でまだ発行できない。** M0.5-1（#49）で
-Claude Platform on AWS のサインアップが AWS 側の理由で完了していないため。
-`ANTHROPIC_AWS_API_KEY` は空のままでよく、`wrangler pages dev` は起動する（キーは AWS コンソールで発行する。仕様書 4.1 の認証方式）。
+**Dev 用の API キーは M0.5-1（#49）で発行する。** それまで `ANTHROPIC_API_KEY` は
+空のままでよく、`wrangler pages dev` は起動する（キーは Anthropic Console で発行する。
+仕様書 4.1 の認証方式）。
 
 **ログインを手元で試すには `SESSION_SECRET` と Google の OAuth クライアントが要る**
 （#12 / 8.1）。値の作り方は `.dev.vars.example` のコメントに書いてある。空のままでも

@@ -315,7 +315,7 @@ D1 は読み取りより**書き込みの無料枠が桁で小さい**。実値�
 | 試したもの | 結果 |
 |---|---|
 | `@anthropic-ai/sdk` | **成功。** 直販ではこれをそのまま使う（`baseURL` の上書きも `defaultHeaders` も要らない） |
-| 生の `fetch` でヘッダを手で組む | **成功**（測定時は AWS 経由のヘッダ構成。**ヘッダの中身に依らず、ランタイム側の制約が無いこと**を示す） |
+| 生の `fetch` でヘッダを手で組む | **成功**（測定時は AWS 経由のヘッダ構成。**workerd から必要なヘッダを任意に付けられる**ことを示す。どのヘッダが必須かは上表が定める） |
 | `@anthropic-ai/aws-sdk` を import | **失敗**（`No such module ".../@aws-sdk/util-utf8-browser/dist-es/pureJs"`）。SigV4 と AWS SDK の依存を抱えるため Workers ランタイムで読めない |
 
 **M2-2 は `@anthropic-ai/sdk` で実装する。** 3 行目は直販では関係しないが、**AWS 経由を再検討する場合の制約として残す。**

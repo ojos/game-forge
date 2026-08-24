@@ -27,7 +27,17 @@
 # （プロバイダ層が先に発火したらアプリ層のバグ）が壊れる。分離の手段は #81 が決める。
 #
 # ローカルでは SSO の一時資格情報を使える。その場合は SESSION_TOKEN も要る。
+#
+# **export しただけでは足りない。** `aws configure export-credentials` が出すのは
+# `AWS_*` という別の名前で、しかも Worker が読むのはシェルの環境変数ではなく
+# `.dev.vars` というファイルである。**値を転記する**必要がある。
+#
 #   eval "$(AWS_PROFILE=game-forge-prod aws configure export-credentials --format env)"
+#   printf 'BEDROCK_AWS_REGION=%s\nBEDROCK_AWS_ACCESS_KEY_ID=%s\nBEDROCK_AWS_SECRET_ACCESS_KEY=%s\nBEDROCK_AWS_SESSION_TOKEN=%s\n' \
+#     ap-northeast-1 "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN"
+#
+# 出力で .dev.vars の該当 4 行を置き換える。**SSO の資格情報は数時間で失効する**ので、
+# 失効したら転記し直す。長命キーを使う場合は SESSION_TOKEN を空のままにする。
 #
 # 空のままでも `npm run dev` は起動する。
 BEDROCK_AWS_REGION=

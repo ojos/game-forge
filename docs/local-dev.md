@@ -74,11 +74,18 @@ cp .dev.vars.example .dev.vars
 **LLM は Amazon Bedrock を叩く（確定19 / 仕様書 4.1）。** 資格情報は `BEDROCK_AWS_*` の
 4 本で、空のままでも `wrangler pages dev` は起動する。
 
-ローカルでは SSO の一時資格情報をそのまま流用できる。
+ローカルでは SSO の一時資格情報を流用できる。ただし **export しただけでは効かない。**
+`aws configure export-credentials` が出すのは `AWS_*` という別の名前で、しかも Worker が
+読むのはシェルの環境変数ではなく `.dev.vars` というファイルである。**値を転記する。**
 
 ```bash
 eval "$(AWS_PROFILE=game-forge-prod aws configure export-credentials --format env)"
+printf 'BEDROCK_AWS_REGION=%s\nBEDROCK_AWS_ACCESS_KEY_ID=%s\nBEDROCK_AWS_SECRET_ACCESS_KEY=%s\nBEDROCK_AWS_SESSION_TOKEN=%s\n' \
+  ap-northeast-1 "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN"
 ```
+
+出力で `.dev.vars` の該当 4 行を置き換える。**SSO の資格情報は数時間で失効する**ので、
+`AccessDenied` や `401` が出たら `aws sso login` からやり直して転記し直す。
 
 **Anthropic のキーは使わない。** v0.9 までの `ANTHROPIC_API_KEY` は v1.0（#80）で廃止した。
 `BEDROCK_AWS_*` に `AWS_` の接頭辞を付けていないのは、Terraform 用の資格情報と混ざらない

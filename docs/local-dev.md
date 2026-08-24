@@ -71,9 +71,21 @@ cp .dev.vars.example .dev.vars
 `.dev.vars` は `.gitignore` で除外済みで、除外が効いていることは
 `scripts/acceptance.sh` が毎回検査する。
 
-**Dev 用の API キーは M0.5-1（#49）で発行する。** それまで `ANTHROPIC_API_KEY` は
-空のままでよく、`wrangler pages dev` は起動する（キーは Anthropic Console で発行する。
-仕様書 4.1 の認証方式）。
+**LLM は Amazon Bedrock を叩く（確定19 / 仕様書 4.1）。** 資格情報は `BEDROCK_AWS_*` の
+4 本で、空のままでも `wrangler pages dev` は起動する。
+
+ローカルでは SSO の一時資格情報をそのまま流用できる。
+
+```bash
+eval "$(AWS_PROFILE=game-forge-prod aws configure export-credentials --format env)"
+```
+
+**Anthropic のキーは使わない。** v0.9 までの `ANTHROPIC_API_KEY` は v1.0（#80）で廃止した。
+`BEDROCK_AWS_*` に `AWS_` の接頭辞を付けていないのは、Terraform 用の資格情報と混ざらない
+ようにするため（`.dev.vars.example` のコメント）。
+
+**Claude のモデルアクセスは #82 で有効化する。** それまで `anthropic.claude-sonnet-5` は
+`AccessDeniedException` になる。`deepseek.v3.2` は agreement 不要で今すぐ叩ける。
 
 **ログインを手元で試すには `SESSION_SECRET` と Google の OAuth クライアントが要る**
 （#12 / 8.1）。値の作り方は `.dev.vars.example` のコメントに書いてある。空のままでも

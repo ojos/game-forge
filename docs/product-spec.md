@@ -320,6 +320,85 @@ D1 は読み取りより**書き込みの無料枠が桁で小さい**。実値�
 
 **M2-2 は `@anthropic-ai/sdk` で実装する。** 3 行目は直販では関係しないが、**AWS 経由を再検討する場合の制約として残す。**
 
+#### 実測（2026-08-24）— Bedrock（#79 / M2-11）
+
+**上表 3 行目の結論は広すぎた。** 「Workers ランタイムで読めない」と書いたが、**読めないのは
+vitest の module resolution であって、workerd 本体ではない。** 原因は
+`@aws-sdk/util-utf8-browser` の export map が拡張子なしの `./pureJs` を指していることで、
+本番と同じ esbuild 経路（`wrangler pages build` / `pages dev`）では解決される。
+
+**Bedrock では接続経路が 2 つに分かれる。** モデルによって API が違う。
+
+| 対象 | 経路 | 形式 |
+|---|---|---|
+| Claude | `AnthropicBedrockMantle`（`@anthropic-ai/bedrock-sdk`） | Messages API |
+| Claude 以外（DeepSeek 等） | `bedrock-runtime` の `Converse` を直接呼ぶ | Converse API |
+
+**したがって単一のクライアントでは足りない。** Mantle は Anthropic 専用のエンドポイントであり、
+DeepSeek を通せない。
+
+##### 経路の成立可否
+
+| 試したもの | 結果 |
+|---|---|
+| `@anthropic-ai/bedrock-sdk` を **vitest**（`@cloudflare/vitest-pool-workers`）で import | **失敗**（`No such module ".../@aws-sdk/util-utf8-browser/dist-es/pureJs"`）。8/13 と同一。vitest 側の既知の制約であり、ランタイムの制約ではない |
+| `wrangler pages functions build`（`nodejs_compat` なし） | **失敗。** ただし理由が変わる。`pureJs` は esbuild が解決し、**`assert` と `stream` が未解決**になる |
+| `wrangler pages functions build`（**`nodejs_compat` あり**） | **成功**（`Compiled Worker successfully`） |
+| `pages dev` ＋ Mantle ＋ **ダミー資格情報**で `messages.create` | **署名と送信まで成功。** AWS が `401 authentication_error` を返し、SDK が `AuthenticationError` として型付きで受けた |
+| `pages dev` ＋ Mantle ＋ **実資格情報**で `messages.create` | **401 は消えた**（署名は成立）。`404 not_found_error`（モデルアクセス未有効。下記） |
+| `pages dev` ＋ **`aws4fetch`** で `bedrock-runtime` の `Converse`（`deepseek.v3.2`） | **成功。`200` で実生成が返った**（`stopReason: end_turn`、`usage` 取得） |
+
+**workerd 上で SigV4 は成立する。** Mantle 経由でも `aws4fetch` 経由でも、署名・送信・
+レスポンス解釈まで動く。**#79 のゲートは通った。**
+
+##### モデルアクセスとリージョン
+
+`ap-northeast-1`（東京）に **Claude Sonnet 5 と DeepSeek v3.2 の両方がある。** ただし
+有効化の要否が違う。
+
+| モデル | 状態 |
+|---|---|
+| `deepseek.v3.2` | **すでに使える。** agreement 不要（`Agreement not supported for this model`）。東京で実生成を確認 |
+| `anthropic.claude-sonnet-5` | **未有効。** `AccessDeniedException: not available for this account`。agreement offer は存在するため、承諾すれば有効になる |
+
+`deepseek.r1` は `us-east-1` にしかない。東京で揃えるなら `v3.2` を使う。
+
+##### 単価（Bedrock のレートカード実測）
+
+`anthropic.claude-sonnet-5` の agreement offer が返す従量レートは次のとおり。
+
+| 次元 | 値 |
+|---|---|
+| 入力 | 2 |
+| 出力 | 10 |
+| キャッシュ読み | 0.2 |
+| キャッシュ書き（5 分） | 2.5 |
+| キャッシュ書き（1 時間） | 4 |
+
+比率が Anthropic の料金体系（キャッシュ読み = 入力の 0.1 倍、書き = 1.25 倍、1 時間 = 2 倍）と
+完全に一致するため、**単位は 100 万トークンあたりのドルと読める。**
+
+**これは 4.1 冒頭の導入価格（入力 $2 / 出力 $10）と同額であり、通常価格（$3 / $15）より安い。**
+「Bedrock は別料金体系のため導入価格が適用されない」という不採用理由は、**現時点の実測では
+成り立たない。** ただし Bedrock 側のこの価格が期間限定かどうかは確認していない。**4.2 の
+再計算は #80 で行う。**
+
+##### 分かった前提
+
+- **`wrangler.toml` に `compatibility_flags = ["nodejs_compat"]` が要る。** 現在の宣言には無い
+- **クライアントは 2 つ要る。** Claude は `AnthropicBedrockMantle`（引数名は `awsRegion` /
+  `awsAccessKey` / `awsSecretAccessKey` / `awsSessionToken`）、それ以外は `aws4fetch` 等で
+  `Converse` を直接呼ぶ
+- **`aws4fetch` は必要である。** Claude だけなら SDK で足りるが、複数モデル構成では
+  Claude 以外の経路に要る
+
+##### 未実施
+
+`usage` 4 種の取得と、手動 `cache_control` を置いた 2 回目の呼び出しで
+`cache_read_input_tokens` が 0 より大きくなることの確認。**どちらも Claude のモデルアクセス
+有効化（#82）を待つ。** DeepSeek 側は `Converse` の `usage` が入出力トークンのみを返すため、
+費用台帳のモデル別対応（#84）はこの差を吸収する必要がある。
+
 ### 4.1.1 トークンの実測方法（`count_tokens` の限界）
 
 **`count_tokens` API が返すのは `input_tokens` のみである。** ところが 4.2 のとおり**支配項は出力トークン**であり、これは実際に生成しない限り測れない。

@@ -1,0 +1,120 @@
+/**
+ * Amazon Bedrock の宣言（確定19 / 9.2 / #82）。
+ *
+ * v1.0 で LLM の接続先を Bedrock にしたため、モデルアクセスと呼び出し用の権限が
+ * Prod アカウントの恒久的な外部状態になる。共通規範「外部サービスの状態管理」は
+ * UI やアドホックな CLI での直接作成を恒久的な変更手段にしないことを求めるので、
+ * ここで宣言する。
+ *
+ * ## この宣言が持つ範囲
+ *
+ * | 対象 | 持ち主 |
+ * |---|---|
+ * | モデルアクセス（agreement の承諾） | この宣言 |
+ * | Workers から呼ぶための IAM ユーザーとポリシー | この宣言 |
+ * | アクセスキーの実体 | **この宣言は持たない**（下記） |
+ * | TPM / RPM クォータ、AWS Budgets | **#81 が値を決めてから**足す |
+ *
+ * ## アクセスキーを宣言しない理由
+ *
+ * aws_iam_access_key は生成した秘密鍵を **tfstate へ平文で書く。** tfstate は
+ * .gitignore で追跡から外しているが、ディスク上は平文である。providers.tf が
+ * 「資格情報を Terraform 変数として受け取ると tfstate や plan ファイルへ平文で
+ * 落ちる経路ができる」として避けているのと同じ経路を、出力側に作ることになる。
+ *
+ * キーの発行とローテーションは docs/bedrock-access.md が持つ。宣言できない範囲だけを
+ * 文書が持つ形は docs/gcp-oauth-setup.md と同じである。
+ *
+ * ## DeepSeek を宣言していない理由
+ *
+ * deepseek.v3.2 は agreement を要求しない（`Agreement not supported for this model`）。
+ * 宣言する対象そのものが無く、Prod では既に呼び出せることを実測で確認している。
+ */
+
+locals {
+  # agreement の承諾が要るモデル。Anthropic 系は Marketplace 契約を経るため要る。
+  # DeepSeek は要らない（上記）。モデルを足すときはここへ足す。
+  bedrock_agreement_models = toset([
+    "anthropic.claude-sonnet-5",
+  ])
+}
+
+/**
+ * 承諾する offer を引く。
+ *
+ * offer_token をハードコードしないための経路である。トークンは不透明な文字列で、
+ * 宣言へ書き写すと発行し直されたときに追随できない。
+ */
+data "aws_bedrock_foundation_model_agreement_offers" "generation" {
+  for_each = local.bedrock_agreement_models
+
+  model_id = each.value
+}
+
+/**
+ * モデルアクセス（agreement）の承諾。
+ *
+ * これが無いと InvokeModel / Converse が AccessDeniedException になる
+ * （`<model> is not available for this account`。2026-08-24 実測）。
+ *
+ * use case の申請（authorizationStatus）とは別の段である。申請が AUTHORIZED でも、
+ * agreement を承諾するまで agreementAvailability は NOT_AVAILABLE のままになる。
+ */
+resource "aws_bedrock_foundation_model_agreement" "generation" {
+  for_each = local.bedrock_agreement_models
+
+  model_id    = each.value
+  offer_token = data.aws_bedrock_foundation_model_agreement_offers.generation[each.key].offers[0].offer_token
+}
+
+/**
+ * Workers（Cloudflare Pages Functions）から Bedrock を呼ぶためのプリンシパル。
+ *
+ * IAM ロールではなくユーザーにするのは、**Workers が AWS の外で動くため**である。
+ * ロールを引き受ける経路（インスタンスプロファイル、IRSA、OIDC フェデレーション）が
+ * どれも使えず、長命のアクセスキーを Pages のシークレットへ置くことになる
+ * （仕様 4.1）。これは直販の API キー 1 本より鍵管理として劣化しており、
+ * ローテーション手順で受ける（docs/bedrock-access.md）。
+ */
+resource "aws_iam_user" "bedrock_invoker" {
+  name = "game-forge-bedrock-invoker"
+  path = "/service/"
+
+  tags = {
+    Project   = "game-forge"
+    ManagedBy = "terraform"
+    Purpose   = "Cloudflare Pages Functions から Bedrock を呼ぶ（4.1 / #82）"
+  }
+}
+
+/**
+ * 呼び出しに要る最小の権限。
+ *
+ * bedrock:* を与えない。モデルアクセスの変更（agreement の承諾・解除）やクォータの
+ * 変更まで許すと、アプリの鍵が漏れたときに費用ガードそのものを外せてしまう。
+ *
+ * resource を全モデルに開いているのは、確定5 が複数モデル構成であり、モデルを
+ * 足すたびにポリシーを直す運用にすると追随漏れが起きるためである。**費用の上限は
+ * ここではなく 4.3 の機構で担保する**（#81）。
+ */
+data "aws_iam_policy_document" "bedrock_invoke" {
+  statement {
+    sid    = "InvokeGenerationModels"
+    effect = "Allow"
+
+    actions = [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream",
+      "bedrock:Converse",
+      "bedrock:ConverseStream",
+    ]
+
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_user_policy" "bedrock_invoke" {
+  name   = "bedrock-invoke"
+  user   = aws_iam_user.bedrock_invoker.name
+  policy = data.aws_iam_policy_document.bedrock_invoke.json
+}

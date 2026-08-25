@@ -753,7 +753,12 @@ v0.9 までの「プロバイダ層が先に発火したらアプリ層のバグ
 
 - **システムプロンプト（6 章の Ebitengine 制約、2,000 トークン程度）を `system` に置く。** 全生成で共有されるプレフィックスとなり、トラフィックが続く限り常時ホットになる。TTL は 5 分（書き込み 1.25倍）で足りる。
 - **親ソースは `messages` の先頭ブロックに置き、別ブレークポイントを打つ。** 親ごとのキャッシュになる。1時間 TTL（書き込み 2倍）はバズ中の作品に限定しないと、書き込み割増で損をする。
-- **キャッシュヒットの検証:** `cache_read_input_tokens` がゼロのまま推移する場合、プレフィックスに揮発値（タイムスタンプ・UUID・ユーザーID）が混入している。システムプロンプトには一切の動的値を入れない。
+- **キャッシュヒットの検証:** `cacheReadInputTokens` がゼロのまま推移する場合、プレフィックスに揮発値（タイムスタンプ・UUID・ユーザーID）が混入している。システムプロンプトには一切の動的値を入れない。
+
+> **項目名の表記について。** 本仕様で参照するのは **`Converse` が返す camelCase**
+> （`inputTokens` / `outputTokens` / `cacheReadInputTokens` / `cacheWriteInputTokens`）である。
+> 4.1.1 と 5.1 に出てくる snake_case（`input_tokens` 等）は、それぞれ Anthropic 直販の
+> `count_tokens` API の表記と、D1 の列名であり、**Bedrock のレスポンスのキーではない。**
 
 ### 4.6 その他の費用
 
@@ -780,7 +785,7 @@ v0.9 までの「プロバイダ層が先に発火したらアプリ層のバグ
 | `users` | `google_sub`（一意）、`email`、`display_name`、`x_handle`（任意・未検証）、`invited_by`、`created_at`、`banned_at` |
 | `invites` | `code`、`issued_by`、`used_by`、`used_at`、`expires_at` |
 | `games` | `id`、`author_id`、`parent_id`、`status`（draft/published/removed）、`title`、`go_version`、`source_key`、`wasm_key`、`fork_count`、`created_at`、`published_at` |
-| `generations` | `id`、`game_id`、`user_id`、`prompt`、`model`、`input_tokens`、`output_tokens`、`cache_*_tokens`、`cost_jpy`、`succeeded`、`created_at` |
+| `generations` | `id`、`game_id`、`user_id`、`prompt`、`model`、`input_tokens`、`output_tokens`、`cache_*_tokens`、`cost_jpy`、`succeeded`、`created_at`（**D1 の列名。** Bedrock のレスポンスは camelCase で、そこから写す。4.5） |
 | `reports` | `id`、`game_id`、`reporter_id`、`reason`、`created_at` |
 | `waitlist` | `id`、`email`（一意）、`source`、`created_at` |
 

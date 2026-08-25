@@ -437,12 +437,18 @@ D1 は読み取りより**書き込みの無料枠が桁で小さい**。実値�
 
 #### 実測（2026-08-24）— Bedrock（#79 / M2-11）
 
+> **v1.2 注記: 本節は #79 時点の測定記録である。** 後の実測で**接続経路の結論が変わった**
+> （Claude も `Converse` で動くため **1 本に統一**。1.2.9 / 上記「認証方式と Workers からの
+> 呼び出し」）。**現行の方針は本節ではなく 4.1 前半が正である。** 本節に残る「経路は 2 つ」
+> 「クライアントは 2 つ要る」は当時の記述であり、現在は当てはまらない。
+
 **上表 3 行目の結論は広すぎた。** 「Workers ランタイムで読めない」と書いたが、**読めないのは
 vitest の module resolution であって、workerd 本体ではない。** 原因は
 `@aws-sdk/util-utf8-browser` の export map が拡張子なしの `./pureJs` を指していることで、
 本番と同じ esbuild 経路（下表の `wrangler pages functions build` と `wrangler pages dev`）では解決される。
 
 **Bedrock では接続経路が 2 つに分かれる。** モデルによって API が違う。
+（**v1.2 で 1 本に統一。** 下表は #79 時点の理解である。）
 
 | 対象 | 経路 | 形式 |
 |---|---|---|
@@ -515,10 +521,10 @@ DeepSeek を通せない。
 ##### 分かった前提
 
 - **`wrangler.toml` に `compatibility_flags = ["nodejs_compat"]` が要る。** 現在の宣言には無い
-- **クライアントは 2 つ要る。** Claude は `AnthropicBedrockMantle`（引数名は `awsRegion` /
-  `awsAccessKey` / `awsSecretAccessKey` / `awsSessionToken`）、それ以外は `aws4fetch` 等で
-  `Converse` を直接呼ぶ
-- **`aws4fetch` は必要である。** Claude だけなら SDK で足りるが、複数モデル構成では
+- ~~**クライアントは 2 つ要る。**~~ **v1.2 で覆った。** Claude も `Converse` で動くため
+  `aws4fetch` 1 つで足り、`@anthropic-ai/bedrock-sdk` は要らない（4.1 前半）
+- **`aws4fetch` は必要である。**（v1.2 でも変わらない。むしろこれ 1 つで足りる。）
+  当時の理由: Claude だけなら SDK で足りるが、複数モデル構成では
   Claude 以外の経路に要る
 
 ##### 未実施

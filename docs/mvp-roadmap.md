@@ -1,11 +1,11 @@
 # MVP マイルストーンと issue 一覧（起票草案）
 
-- 版: draft-4（M0.5-4（#71）と M2-8（#72）を追加。M1-1 の scope.in に waitlist とテスト用スキーマ適用ヘルパを追記済み）
+- 版: draft-5（確定19 を Bedrock へ差し替え、複数モデル構成にした（仕様 v1.0 / #80）。M2-9〜M2-14 と M3-5 / M3-6 を追加。M2-9（#76）と M2-10（#77）は起票済みだが本文書へ未反映だったため、あわせて収録した）
 - 作成日: 2026-08-11
-- 更新日: 2026-08-13
+- 更新日: 2026-08-24
 - 位置づけ: [product-spec.md](product-spec.md) を実行単位へ分解した文書。仕様の正本は product-spec.md であり、本文書は仕様を上書きしない。
-- 粒度: 1 issue = 1 PR。全 **46 件**。
-- 起票状況: **起票済み。** milestone `M0`〜`M7`（`M0.5` を含む）と issue 46 件を `gh` CLI で作成済み（Terraform の宣言管理対象外）。本文書は起票内容の正本であり、issue 側を変更したときはこちらも更新する。
+- 粒度: 1 issue = 1 PR。全 **56 件**。
+- 起票状況: **起票済み。** milestone `M0`〜`M7`（`M0.5` を含む）と issue 56 件を `gh` CLI で作成済み（Terraform の宣言管理対象外）。本文書は起票内容の正本であり、issue 側を変更したときはこちらも更新する。
 
 ---
 
@@ -235,6 +235,48 @@ M1 以降のすべてに先行する土台。**M0 が「決定」の milestone �
 - **priority:** medium
 - **参照:** 6.1 / 8.3 / 3.4
 
+### M2-9 ビルド実行環境を決める（さくらの VPS / AWS Lambda）
+- **goal:** ビルドの実行環境をさくらの VPS のまま行くか AWS Lambda へ寄せるかを決め、実測に合わせて 7.1 の `--cpus=1` と 3.8 の「タイムアウト最大 10 秒」を整合させる。
+- **scope.in:** 両者の比較と決定、仕様書 3.1 / 3.8 / 7.1 / 4.6 の修正、`--cpus` とタイムアウトの決め直し。
+- **scope.out:** 実際の構築。M2-5 のビルド API の実装。
+- **constraints:** 7.1 の封じ込め水準を下げる決定にはしない。
+- **priority:** high（M2-5 の中身がどちらを選ぶかで変わる）
+- **issue:** #76
+
+### M2-10 確定19 を差し替え、LLM の接続先を Anthropic 直販にする（完了）
+- **goal:** 確定19（Claude Platform on AWS）を Anthropic 直販へ差し替える。
+- **状態:** **完了**（仕様 v0.9 / #78）。**ただし v1.0（M2-12）でさらに Bedrock へ差し替えた。**
+- **issue:** #77
+
+### M2-11 workerd から Bedrock への SigV4 疎通を実測する（完了）
+- **goal:** Cloudflare Pages Functions（workerd）から Bedrock を SigV4 で呼べることを実測し、仕様 4.1 へ記録する。Bedrock 案全体のゲート。
+- **状態:** **完了**（仕様 v1.0 の 4.1 実測節 / #85）。`aws4fetch` 経由の `Converse` が `200` を返し、SigV4 の成立を確認した。`usage` 4 種と `cache_read_input_tokens` の確認は M2-13 へ移管。
+- **issue:** #79
+
+### M2-12 確定19 を再決定し、接続先を Bedrock・生成モデルを複数構成にする
+- **goal:** 確定19 を Amazon Bedrock へ差し替え、生成モデルを Claude Sonnet 5 単独から複数構成へ広げて仕様を一貫させる。
+- **scope.in:** 仕様書 4.1 / 4.2 / 6.1 / 9.1 / 9.2 / 3.1 / 3.2 / 12 章 / 付録の修正、1.2.7 の追加、本文書への反映、`.dev.vars.example` の環境変数契約、`docs/local-dev.md` / `docs/pages-deploy.md`。
+- **scope.out:** 実装（M2-14）、AWS 側の宣言（M2-13）、費用ガードの再設計（M3-5）、DeepSeek の採否そのもの。
+- **constraints:** 履歴は書き換えない。付録の確定事項一覧と本文の両方を直す。
+- **acceptance:** 仕様書が Bedrock 前提で一貫している / 版が v1.0 で H1 と一致 / `bash scripts/verify.sh` が `VERIFY_PASS`。
+- **priority:** high
+- **issue:** #80
+
+### M2-13 Bedrock 利用に必要な AWS 側の状態を Terraform で宣言する
+- **goal:** リージョン決定、モデルアクセス（agreement）、IAM、クォータ、Budgets を宣言的に管理する。
+- **scope.in:** `aws_bedrock_use_case_for_model_access` / `aws_bedrock_foundation_model_agreement` / `aws_bedrock_foundation_model_agreement_offers` による宣言、Workers 用プリンシパルの最小権限、鍵のローテーション手順、M2-11 から移管した `usage` 4 種と `cache_read_input_tokens` の確認。
+- **constraints:** Workers は IAM ロールを引き受けられないため長命キーになる。クォータと Budgets の値は M3-5 が決める。
+- **priority:** high（M2-14 をブロックする）
+- **issue:** #82
+
+### M2-14 生成クライアントを Bedrock へ差し替え、モデル選択機構を入れる
+- **goal:** トランスポートを Bedrock へ差し替え、複数モデルを扱えるモデル選択機構を入れる。
+- **scope.in:** Claude 用の `AnthropicBedrockMantle` と Claude 以外用の `Converse`（`aws4fetch`）の 2 経路、モデル選択、`wrangler.toml` への `nodejs_compat`、環境変数契約の追随。
+- **scope.out:** システムプロンプトの本文（M2-2）。
+- **constraints:** vitest は `@anthropic-ai/bedrock-sdk` を import できない（module resolution の既知の制約）。テストの書き方を設計に織り込む。
+- **priority:** high
+- **issue:** #83
+
 ---
 
 ## M3 費用ガード
@@ -269,6 +311,21 @@ M1 以降のすべてに先行する土台。**M0 が「決定」の milestone �
 - **acceptance:** 両群の実コストと初回コンパイル成功率を出力する集計クエリが動く / 採用値の決定が仕様書 4.2 へ反映される。
 - **priority:** medium（4.2 が「最優先の実験項目」とする一方、計測には生成量が要るため M3 完成後に回す）
 - **参照:** 4.2 / 10.2
+
+### M3-5 4.3 の費用ガード最外周を Bedrock 向けに再設計する
+- **goal:** Bedrock へ移ることで失われる「前払いクレジットの残高」に代わる最外周の停止機構を決める。
+- **scope.in:** Bedrock の TPM / RPM クォータ、AWS Budgets Actions、その併用の比較と決定、具体値、4.3 の判定基準の再定義、劣化の明記、開発用と本番用の枠の分離方法。
+- **scope.out:** Terraform での宣言（M2-13）、台帳の実装（M3-6）。
+- **constraints:** 封じ込めの水準を下げる決定にはしない。前払いクレジット相当の即時性は作れない。
+- **priority:** high（M3 全体の前提）
+- **issue:** #81
+
+### M3-6 費用台帳をモデル別単価で円換算する
+- **goal:** 複数モデル構成に合わせ、費用台帳をモデル別の単価で円換算できるようにする。
+- **scope.in:** モデル別単価表の持ち方、使用モデルの記録、モデル別単価での円換算、為替の扱い。
+- **constraints:** 経路によって `usage` の形が違う（`Converse` はキャッシュ次元を持たない）。単価表の定義は 1 か所に集約する。
+- **priority:** medium（M3-1 が未着手のため、そちらへ畳んでもよい）
+- **issue:** #84
 
 ---
 
@@ -435,7 +492,8 @@ M1 以降のすべてに先行する土台。**M0 が「決定」の milestone �
 | 仕様書の記述 | 対応 issue |
 |---|---|
 | 確定21 / 9.2 AWS アカウント設計 | M0.5-1 |
-| 確定19 / 4.1 Anthropic 直販の組織と Workspace | M0.5-1 |
+| 確定19 / 4.1 LLM の接続先（Amazon Bedrock） | M2-12 / M2-13 |
+| 確定5 / 4.1 生成モデルの複数構成 | M2-12 / M2-14 |
 | 確定17 / 9.3 DNS（Route53 委譲・Terraform 管理） | M0.5-2 |
 | 確定20 / 9.1 環境構成（ローカル開発） | M0.5-3 |
 

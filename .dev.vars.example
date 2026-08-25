@@ -12,19 +12,39 @@
 #
 # 追跡除外: .dev.vars は .gitignore で除外済み。値を入れたままコミットされない。
 
-# Anthropic 直販の **Dev 用 Workspace** で発行した API キー（確定19 / 4.1）。
+# Amazon Bedrock を呼ぶための AWS 資格情報（確定19 / 4.1 / 9.1）。
 #
-# 本番の Workspace とは別枠であることが 4.3 の判定基準（プロバイダ層が先に発火
-# したらアプリ層のバグ）を成立させる前提なので、ここへ Prod のキーを入れないこと。
-# v0.9 から dev / prod は同一組織内の Workspace として分ける（9.2）。
+# **接続先は Bedrock であり、Anthropic のキーは使わない**（v1.0 / #80）。認証は
+# AWS 資格情報による SigV4 署名で、Claude は Mantle、それ以外のモデルは
+# bedrock-runtime の Converse を叩く（4.1）。
 #
-# 空のままでも `npm run dev` は起動する。実キーの発行は M0.5-1（#49）の範囲。
+# **BEDROCK_ 接頭辞を付ける理由。** このリポジトリは Terraform 用に AWS_PROFILE /
+# AWS_ACCESS_KEY_ID を開発機の環境変数として使う（terraform/、docs/gcp-oauth-setup.md）。
+# 同じ名前をアプリのシークレットにも使うと、どちらの資格情報で何を叩いているのかが
+# 読めなくなる。用途が違うものには違う名前を付ける。
 #
-# **キーは Anthropic Console で発行する（直販。確定19 / 4.1）。**
-# キーが Workspace に紐づくため、リージョンや Workspace ID の指定は要らない。
-# 開発用の Workspace を本番と分ける理由は 4.3（開発の実験が本番の spend limit に
-# 混ざると「先に発火したらアプリ層のバグ」という判定基準が壊れる）。
-ANTHROPIC_API_KEY=
+# **本番と開発で同じ枠を使わないこと。** 開発の実験が本番の枠に混ざると、4.3 の判定基準
+# （プロバイダ層が先に発火したらアプリ層のバグ）が壊れる。分離の手段は #81 が決める。
+#
+# ローカルでは SSO の一時資格情報を使える。その場合は SESSION_TOKEN も要る。
+#
+# **export しただけでは足りない。** `aws configure export-credentials` が出すのは
+# `AWS_*` という別の名前で、しかも Worker が読むのはシェルの環境変数ではなく
+# `.dev.vars` というファイルである。**値を転記する**必要がある。
+#
+#   eval "$(AWS_PROFILE=game-forge-prod aws configure export-credentials --format env)"
+#   printf 'BEDROCK_AWS_REGION=%s\nBEDROCK_AWS_ACCESS_KEY_ID=%s\nBEDROCK_AWS_SECRET_ACCESS_KEY=%s\nBEDROCK_AWS_SESSION_TOKEN=%s\n' \
+#     ap-northeast-1 "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN"
+#
+# 出力で .dev.vars の該当 4 行を置き換える。**SSO の資格情報は数時間で失効する**ので、
+# 失効したら転記し直す。長命キーを使う場合は SESSION_TOKEN を空のままにする。
+#
+# 空のままでも `npm run dev` は起動する。
+BEDROCK_AWS_REGION=
+BEDROCK_AWS_ACCESS_KEY_ID=
+BEDROCK_AWS_SECRET_ACCESS_KEY=
+# 一時資格情報（SSO）を使うときだけ入れる。長命キーでは空のままにする。
+BEDROCK_AWS_SESSION_TOKEN=
 
 # 署名付きセッション cookie の HMAC 鍵（8.1 / 確定9 / #12）。
 #

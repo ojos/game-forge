@@ -55,11 +55,20 @@ npx wrangler r2 bucket create game-forge
 npx wrangler pages secret put SESSION_SECRET
 npx wrangler pages secret put GOOGLE_CLIENT_ID
 npx wrangler pages secret put GOOGLE_CLIENT_SECRET
-npx wrangler pages secret put ANTHROPIC_API_KEY
+npx wrangler pages secret put BEDROCK_AWS_REGION
+npx wrangler pages secret put BEDROCK_AWS_ACCESS_KEY_ID
+npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY
 ```
 
-LLM 関連はこの 1 本だけです。**リージョンや Workspace ID の指定は要りません**
-（確定19 で接続先を Anthropic 直販にしたため。仕様書 4.1）。
+LLM は **Amazon Bedrock** を叩きます（確定19 / 仕様書 4.1）。認証は AWS 資格情報による
+SigV4 署名です。
+
+**`BEDROCK_AWS_SESSION_TOKEN` は本番では登録しません。** 一時資格情報はローカル開発で
+SSO を使うときだけのもので、本番には長命キーを置きます（Workers は AWS の外で動くため
+IAM ロールを引き受けられません。仕様書 4.1）。**鍵のローテーション手順は #82 が持ちます。**
+
+**`compatibility_flags = ["nodejs_compat"]` が必要です**（#79 の実測）。これが無いと
+`assert` / `stream` が解決できずビルドが落ちます。
 
 ### 4. デプロイ
 

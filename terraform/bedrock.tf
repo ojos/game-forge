@@ -65,6 +65,19 @@ resource "aws_bedrock_foundation_model_agreement" "generation" {
 
   model_id    = each.value
   offer_token = data.aws_bedrock_foundation_model_agreement_offers.generation[each.key].offers[0].offer_token
+
+  lifecycle {
+    # **offer_token は読むたびに変わる。** データソースが返すのは「この offer を承諾する
+    # ための一度きりの資格情報」で、同じ offer に対しても呼び出しごとに別の値が発行される
+    # （実測）。無視しないと plan が毎回 replace を出し、承諾済みの agreement を破棄して
+    # 作り直す差分が残り続ける。#82 の受け入れ条件「terraform plan が差分なし」を
+    # 満たせなくなる。
+    #
+    # 承諾が済んだ後の状態を決めるのは model_id であって token ではない。**token の
+    # 変化は外部状態の変化を意味しない**ので、無視してよい。offer そのものを差し替える
+    # 必要が出たときは、リソースを destroy して作り直す。
+    ignore_changes = [offer_token]
+  }
 }
 
 /**
@@ -83,7 +96,9 @@ resource "aws_iam_user" "bedrock_invoker" {
   tags = {
     Project   = "game-forge"
     ManagedBy = "terraform"
-    Purpose   = "Cloudflare Pages Functions から Bedrock を呼ぶ（4.1 / #82）"
+    # IAM のタグ値は [\p{L}\p{Z}\p{N}_.:/=+\-@] しか使えない。全角括弧と # は
+    # この集合に無く、ValidationError になる（実測）。理由の詳細は上のコメントに置く。
+    Purpose = "Invoke Bedrock from Cloudflare Pages Functions - spec 4.1 / issue 82"
   }
 }
 

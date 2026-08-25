@@ -133,3 +133,35 @@ resource "aws_iam_user_policy" "bedrock_invoke" {
   user   = aws_iam_user.bedrock_invoker.name
   policy = data.aws_iam_policy_document.bedrock_invoke.json
 }
+
+/**
+ * 開発アカウント側の Bedrock（#82）。
+ *
+ * prod と同じ agreement を承諾する。**開発の実験を本番の枠に混ぜないため**であり、
+ * 仕様 4.3 が「混ぜると判定基準が壊れる」としている要件に対応する。
+ *
+ * IAM ユーザーは置かない。開発では SSO の一時資格情報を `.dev.vars` へ転記して使う
+ * （docs/local-dev.md）。長命キーが要るのは Workers が動く本番だけである。
+ *
+ * **この宣言は 9.2 / 確定21 の「開発分の枠の分離はアカウント分割では行わない」と
+ * 食い違う。** #81 で追認し、仕様側を追随させること。
+ */
+data "aws_bedrock_foundation_model_agreement_offers" "generation_dev" {
+  provider = aws.dev
+  for_each = local.bedrock_agreement_models
+
+  model_id = each.value
+}
+
+resource "aws_bedrock_foundation_model_agreement" "generation_dev" {
+  provider = aws.dev
+  for_each = local.bedrock_agreement_models
+
+  model_id    = each.value
+  offer_token = data.aws_bedrock_foundation_model_agreement_offers.generation_dev[each.key].offers[0].offer_token
+
+  lifecycle {
+    # prod 側と同じ理由。offer_token は読むたびに変わる。
+    ignore_changes = [offer_token]
+  }
+}

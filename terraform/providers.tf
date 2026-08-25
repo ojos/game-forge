@@ -60,3 +60,27 @@ provider "aws" {
  */
 provider "google" {
 }
+
+/**
+ * AWS プロバイダ（開発アカウント）。
+ *
+ * Bedrock の開発用の枠のためだけに置く（#82）。本番の枠と混ぜると、仕様 4.3 の
+ * 判定基準（プロバイダ層がアプリ層より先に発火したらアプリ層のバグ）が壊れるため、
+ * 開発の実験は本番と別アカウントの枠で行う。
+ *
+ * **profile をここだけ明示する理由。** prod 側は環境変数 AWS_PROFILE で選ぶが、
+ * 1 回の apply で 2 つのアカウントを触る以上、環境変数では両方を選べない。
+ * profile は資格情報ではなく選択子で、実体は ~/.aws/config と SSO のキャッシュに
+ * ある。この宣言に秘密は入らない。
+ *
+ * **仕様との関係。** 9.2 / 確定21 は「Dev アカウントには置くものが無い」「開発分の
+ * 枠の分離はアカウント分割ではなく Bedrock 側の機構で行う（#81）」としている。
+ * ここで Dev に Bedrock を置くことは、その判断を先に決めることにあたる。
+ * **#81 で追認し、仕様側を追随させること。**
+ */
+provider "aws" {
+  alias               = "dev"
+  region              = var.aws_region
+  profile             = var.aws_profile_dev
+  allowed_account_ids = [var.aws_account_id_dev]
+}

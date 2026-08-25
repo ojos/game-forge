@@ -35,22 +35,37 @@ IAM ロールを引き受ける経路（インスタンスプロファイル、I
 
 ## 2. アクセス開通の順序
 
-**3 段ある。前の段が済むまで次は通らない。**
-
-| 段 | 確認方法 | 済んでいないときの症状 |
-|---:|---|---|
-| 1. use case の申請 | `authorizationStatus` が `AUTHORIZED` | 申請フォームへ誘導される |
-| 2. アカウント検証 | — | `Your account is currently being verified`（通常 2 時間以内） |
-| 3. agreement の承諾 | `agreementAvailability` が `AVAILABLE` | `<model> is not available for this account` |
+**確認は実際に呼び出すのが確実である。** 状態 API は当てにならない（後述）。
 
 ```bash
-aws bedrock get-foundation-model-availability \
-  --region ap-northeast-1 --model-id anthropic.claude-sonnet-5
+aws bedrock-runtime converse --region ap-northeast-1 \
+  --model-id jp.anthropic.claude-sonnet-4-6 \
+  --messages '[{"role":"user","content":[{"text":"ok"}]}]' \
+  --inference-config '{"maxTokens":8}'
 ```
 
-**段 1 と 2 は Console と AWS 側の処理で、宣言できない。段 3 は `terraform apply` が行う。**
+| 症状 | 意味 |
+|---|---|
+| `usage` が返る | 使える |
+| `Invocation of model ID ... with on-demand throughput isn't supported` | **推論プロファイル ID（`jp.` / `global.` / `apac.`）を使う** |
+| `<model> is not available for this account` | **そのモデルがアカウントに開放されていない** |
 
-`deepseek.v3.2` は段 3 が要らない（`Agreement not supported for this model`）。
+### agreement は呼び出しの条件ではない
+
+**#82 の作業中にここを取り違えた。** `agreementAvailability: NOT_AVAILABLE` を呼び出し
+不可の原因と診断して Sonnet 5 の agreement を承諾したが、**承諾しても呼び出せず、逆に
+agreement 未承諾の Sonnet 4.6 は動いた。**
+
+| モデル | agreement | 呼び出し |
+|---|---|---|
+| `jp.anthropic.claude-sonnet-4-6` | 未承諾 | **動く** |
+| `claude-sonnet-5` | **承諾済み** | 不可 |
+
+**`get-foundation-model-availability` が 3 つとも `AVAILABLE` を返していても、呼び出しは
+拒否されうる。** 状態 API を根拠に「使える」と判断しないこと。
+
+use case の申請とアカウント検証は通過しているが、**4.7 以降の世代がアカウントに開放されて
+いない**（仕様 1.2.9）。エラーが案内する `contact AWS Sales` の経路を通るかは未定。
 
 ### use case の申請内容（構築時）
 

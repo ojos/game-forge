@@ -32,8 +32,8 @@
  */
 
 locals {
-  # agreement の承諾が要るモデル。Anthropic 系は Marketplace 契約を経るため要る。
-  # DeepSeek は要らない（上記）。モデルを足すときはここへ足す。
+  # agreement を承諾しておくモデル。**呼び出しの条件ではない**（上記）。
+  # 現在は Sonnet 5 が開放されたときに備えた分だけである。
   bedrock_agreement_models = toset([
     "anthropic.claude-sonnet-5",
   ])
@@ -54,11 +54,15 @@ data "aws_bedrock_foundation_model_agreement_offers" "generation" {
 /**
  * モデルアクセス（agreement）の承諾。
  *
- * これが無いと InvokeModel / Converse が AccessDeniedException になる
- * （`<model> is not available for this account`。2026-08-24 実測）。
+ * **これは呼び出しの条件ではない**（実測で判明。仕様 1.2.9）。agreement 未承諾の
+ * jp.anthropic.claude-sonnet-4-6 は動き、承諾済みの claude-sonnet-5 は動かない。
+ * 呼び出しの可否を決めるのは、そのモデルがアカウントに開放されているかである。
  *
- * use case の申請（authorizationStatus）とは別の段である。申請が AUTHORIZED でも、
- * agreement を承諾するまで agreementAvailability は NOT_AVAILABLE のままになる。
+ * **それでも残す理由。** 承諾済みの状態は無害で、費用も発生しない。Sonnet 5 が開放された
+ * 時点で前提が揃っている方が早い。取り消すと再承諾に 1 分強かかるだけで、得るものが無い。
+ *
+ * **生成に使うモデル（確定5 の Sonnet 4.6 と DeepSeek）は、どちらも agreement を
+ * 必要としない。** ここにあるのは Sonnet 5 の分だけである。
  */
 resource "aws_bedrock_foundation_model_agreement" "generation" {
   for_each = local.bedrock_agreement_models

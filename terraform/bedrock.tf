@@ -143,8 +143,8 @@ resource "aws_iam_user_policy" "bedrock_invoke" {
  * IAM ユーザーは置かない。開発では SSO の一時資格情報を `.dev.vars` へ転記して使う
  * （docs/local-dev.md）。長命キーが要るのは Workers が動く本番だけである。
  *
- * **この宣言は 9.2 / 確定21 の「開発分の枠の分離はアカウント分割では行わない」と
- * 食い違う。** #81 で追認し、仕様側を追随させること。
+ * **アカウントで分ける根拠は 9.2 / 確定21（v1.1）にある。** Bedrock のクォータは
+ * アカウント単位でしか割れず、4.3 の最外周で即時に効く唯一の層がそこにある。
  */
 data "aws_bedrock_foundation_model_agreement_offers" "generation_dev" {
   provider = aws.dev

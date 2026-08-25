@@ -16,6 +16,10 @@
 | use case の申請 | **この文書（手作業）** | Console のフォームで、Anthropic 側の審査を伴う |
 | TPM / RPM クォータ、AWS Budgets | 未定（#81 が値を決める） | 機構そのものが未設計 |
 
+**対象は Dev / Prod の 2 アカウントである**（仕様 9.2 / 確定21）。`terraform/bedrock.tf` が
+両方の agreement を宣言する。IAM ユーザーを置くのは Prod だけで、Dev では SSO の一時
+資格情報を使う。
+
 ### アクセスキーを宣言しない理由
 
 `aws_iam_access_key` は生成した秘密鍵を **tfstate へ平文で書く。** tfstate は
@@ -140,4 +144,6 @@ aws iam get-access-key-last-used --access-key-id <KEY_ID>
 - **TPM / RPM クォータと AWS Budgets の値**（#81）。仕様 4.3 の最外周は Bedrock では
   前払いクレジットを使えないため、機構そのものの設計から要る。**この文書と
   `terraform/bedrock.tf` は、それが決まるまでモデルアクセスと呼び出し権限だけを持つ。**
-- **開発用と本番用の枠の分離方法**（#81）。現状は Prod アカウント 1 つに載っている。
+**分離方法は決着済み**（仕様 v1.1 / 9.2 / 確定21）。Dev / Prod の 2 アカウントに分け、
+それぞれで agreement を承諾する。**Bedrock のクォータがアカウント単位でしか割れず、
+4.3 の最外周で即時に効く唯一の層がそこにあるため。** 残っているのは上の値の決定だけ。

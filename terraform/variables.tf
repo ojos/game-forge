@@ -96,6 +96,39 @@ variable "aws_account_id_prod" {
   }
 }
 
+variable "aws_account_id_dev" {
+  description = <<-EOT
+    開発 AWS アカウント（game-forge-dev）のアカウント ID。
+
+    provider "aws.dev" の allowed_account_ids に渡す。用途は Bedrock の
+    開発用の枠だけである（#82 / #81）。
+
+    aws_account_id_prod と同じ理由で宣言へ直接書かず terraform.tfvars から受ける。
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]{12}$", var.aws_account_id_dev))
+    error_message = "aws_account_id_dev は 12 桁の数字である必要があります。"
+  }
+}
+
+variable "aws_profile_dev" {
+  description = <<-EOT
+    開発 AWS アカウントへ接続する SSO プロファイル名。
+
+    **これは資格情報ではなく選択子である。** 実体は ~/.aws/config と SSO の
+    キャッシュにあり、この宣言には秘密が入らない。providers.tf が避けているのは
+    「資格情報を変数で受けて tfstate や plan へ平文で落とすこと」であって、
+    どのプロファイルを使うかの表明ではない。
+
+    prod 側は従来どおり環境変数 AWS_PROFILE で選ぶ。ここだけ明示するのは、
+    1 回の apply で 2 つのアカウントを触るため、環境変数では両方を選べないからである。
+  EOT
+  type        = string
+  default     = "game-forge-dev"
+}
+
 variable "dns_zone_name" {
   description = <<-EOT
     Route53 で管理する DNS ゾーン名（確定16 / 確定17）。

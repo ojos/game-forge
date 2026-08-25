@@ -156,9 +156,15 @@ aws iam get-access-key-last-used --access-key-id <KEY_ID>
 
 ## 5. まだ決まっていないこと
 
-- **TPM / RPM クォータと AWS Budgets の値**（#81）。仕様 4.3 の最外周は Bedrock では
-  前払いクレジットを使えないため、機構そのものの設計から要る。**この文書と
-  `terraform/bedrock.tf` は、それが決まるまでモデルアクセスと呼び出し権限だけを持つ。**
+**費用ガードの機構と値は決着した**（仕様 v1.3 / 4.3 / #81）。**実装は #82 の残りである。**
+
+| 層 | 実体 | 値 |
+|---|---|---|
+| 2. 暴走検知 | CloudWatch アラーム → SNS → Lambda がポリシーを剥がす | `InputTokenCount` ＋ `OutputTokenCount` が **5 分で 30 万トークン** |
+| 3. 会計層 | AWS Budgets Actions | prod **85 USD/月**（80% 通知 / 100% 剥奪）、dev **10 USD/月** |
+| 4. 補助 | Bedrock のレートクォータ引き下げ | **Claude のみ調整可。DeepSeek は不可。** 引き下げ要求の可否は未確認 |
+
+**復旧は手動である。** 層 2 が発火したら、原因を調べてからポリシーを付け直す。
 
 **dev / prod の分離方法は決着済みである**（仕様 9.2 / 確定21）。Dev / Prod の 2 アカウントに
 分け、それぞれで Bedrock を使う。**Bedrock のクォータがアカウント単位でしか割れず、4.3 の

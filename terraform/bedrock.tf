@@ -40,7 +40,7 @@ locals {
   ])
 
   /**
-   * 生成に要る Bedrock の動作。**許可（下記）と剥奪（bedrock-guard.tf の Deny）の
+   * 生成に要る Bedrock の動作。**許可（下記）と停止用の Deny（bedrock-guard.tf）の
    * 両方が、この 1 つの定義から作られる。**
    *
    * 2 か所へ書き写すと、許可へ動作を足したときに Deny 側が古いままになり、

@@ -22,9 +22,10 @@
  *
  * ## 停止の実体は「明示的 Deny の付与」である
  *
- * 4.3 の本文は「ポリシーを剥がす」と書いているが、**実装は Deny ポリシーの
- * アタッチ**にした。求められているのは呼び出しが止まることであり、特定の API を
- * 呼ぶことではない。理由は 2 つある。
+ * 停止は Deny ポリシーの**アタッチ**で行う（4.3 / v1.7）。**v1.6 までの 4.3 は
+ * 「ポリシーを剥がす」と書いていたが、剥奪では成立しないことがこの実装で分かり、
+ * 仕様側を改めた。** 求められているのは呼び出しが止まることであり、特定の API を
+ * 呼ぶことではない。剥奪を採らなかった理由は 2 つある。
  *
  *   1. **剥がすと宣言と喧嘩する。** 許可は aws_iam_user_policy.bedrock_invoke として
  *      Terraform が持っている。ガードがそれを消すと plan に差分が出て、**誰かが
@@ -80,7 +81,7 @@ locals {
   bedrock_budget_prod_usd = "85"
   bedrock_budget_dev_usd  = "10"
 
-  # 80% で通知のみ、100% で剥奪（4.3）。しきい値をリソースへ直接書くと、prod と dev で
+  # 80% で通知のみ、100% で停止（Deny の付与。4.3）。しきい値をリソースへ直接書くと、prod と dev で
   # 片方だけずれても宣言からは気づけない。外部層の検査もここを output 経由で読む。
   bedrock_budget_warn_percent = 80
   bedrock_budget_halt_percent = 100
@@ -330,7 +331,7 @@ data "aws_iam_policy_document" "bedrock_guard_topic" {
   statement {
     sid       = "AllowCloudWatchAlarmPublish"
     effect    = "Allow"
-    actions   = ["SNS:Publish"]
+    actions   = ["sns:Publish"]
     resources = [aws_sns_topic.bedrock_guard.arn]
 
     principals {
@@ -511,7 +512,7 @@ resource "aws_iam_role_policy" "budget_action" {
  * ことによるずれは**早く発火する側**へ働き、為替バッファの向き（アプリ層の 1 万円より
  * 先に発火してはいけない）とも矛盾しない。84.5 USD でも 130 円/ドルで約 11,000 円ある。
  *
- * 80% は通知のみ、100% で剥奪（下の budget_action）。
+ * 80% は通知のみ、100% で停止（Deny の付与。下の budget_action）。
  */
 resource "aws_budgets_budget" "prod_monthly" {
   name              = "game-forge-prod-monthly"
@@ -571,7 +572,7 @@ resource "aws_budgets_budget_action" "prod_halt" {
  * 開発アカウントの月次予算（4.3「層 3 の設定」）。
  *
  * **アクションを付けない。通知だけである。** dev には長命のプリンシパルが無く
- * （IAM ユーザーを置かない。仕様 9.2）、剥がす相手そのものが存在しない。開発は人が
+ * （IAM ユーザーを置かない。仕様 9.2）、Deny を付ける相手そのものが存在しない。開発は人が
  * SSO の一時資格情報で手で叩く場所で、アプリのループが走らない。ここでの予算は
  * **事故の上限**としてのみ置く。
  *

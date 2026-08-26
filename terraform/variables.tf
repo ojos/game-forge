@@ -207,7 +207,7 @@ variable "budget_notification_email" {
     費用ガードの層 3（AWS Budgets）が通知を送る宛先（#82 / 仕様 4.3）。
 
     **AWS Budgets Actions は subscriber を必須項目としている**ため、省略できない。
-    80% の警告も 100% の剥奪も、この 1 か所へ届く。
+    80% の警告も 100% の停止（Deny の付与）も、この 1 か所へ届く。
 
     **機密ではないが宣言へ直接書かない。** aws_account_id_prod と同じ理由で、
     このリポジトリは公開であり、個人のメールアドレスを公開する必要が無いため。

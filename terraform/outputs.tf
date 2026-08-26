@@ -107,7 +107,7 @@ output "pages_hostname" {
  */
 
 output "bedrock_invoker_user_name" {
-  description = "Workers から Bedrock を呼ぶ IAM ユーザー名。ガードの剥奪対象でもある。"
+  description = "Workers から Bedrock を呼ぶ IAM ユーザー名。ガードが停止用の Deny を付ける対象でもある。"
   value       = aws_iam_user.bedrock_invoker.name
 }
 
@@ -192,7 +192,7 @@ output "bedrock_budget_warn_percent" {
 }
 
 output "bedrock_budget_halt_percent" {
-  description = "層 3 が剥奪へ移るしきい値（%）。仕様 4.3 が正本。"
+  description = "層 3 が停止（Deny の付与）へ移るしきい値（%）。仕様 4.3 が正本。"
   value       = local.bedrock_budget_halt_percent
 }
 

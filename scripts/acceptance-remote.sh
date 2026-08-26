@@ -662,7 +662,7 @@ check_bedrock_budgets() {
     rc=1
   fi
 
-  # 開発アカウント。**動作は宣言していない**（剥がす相手になる長命プリンシパルが
+  # 開発アカウント。**動作は宣言していない**（Deny を付ける相手になる長命プリンシパルが
   # dev に無い。仕様 9.2）。ここでも動作の有無は問わず、予算額だけを見る。
   limit="$(aws --profile "$dev_profile" budgets describe-budget --account-id "$dev_account" \
     --budget-name "$dev_budget" --query 'Budget.BudgetLimit.Amount' --output text 2>/dev/null)" || limit=""

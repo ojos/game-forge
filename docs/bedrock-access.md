@@ -206,8 +206,9 @@ aws iam get-access-key-last-used --access-key-id <KEY_ID>
 
 ### 停止の実体は「明示的 Deny の付与」である
 
-仕様 4.3 の本文は「ポリシーを剥がす」と書いているが、**実装は Deny ポリシー
-（`game-forge-bedrock-halt`）を `game-forge-bedrock-invoker` へアタッチする**形にした。
+停止は **Deny ポリシー（`game-forge-bedrock-halt`）を `game-forge-bedrock-invoker` へ
+アタッチする**形で行う（仕様 4.3 / v1.7）。**v1.6 までの 4.3 は「ポリシーを剥がす」と
+書いていたが、剥奪では成立しないことが #82 の実装で分かり、仕様側を改めた。**
 求められているのは呼び出しが止まることであって、特定の API を呼ぶことではない。
 
 1. **剥がすと宣言と喧嘩する。** 許可は Terraform が `aws_iam_user_policy` として

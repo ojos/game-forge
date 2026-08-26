@@ -38,6 +38,20 @@ OAuth Admin API 自体も、Google の告知により **2026-01-19 以降は新�
 | Terraform 認証（ADC） | `gcloud auth application-default login --no-launch-browser` | `gcloud auth application-default print-access-token` |
 
 CLI 用の認証（`gcloud auth login`）と Terraform 用の認証（ADC）は別物で、**両方が要る**。
+
+**ADC のアカウントは、ブラウザでサインインしたアカウントになる**（#89 で踏んだ）。
+別のアカウントでサインインしたままだと認証自体は成功し、`print-access-token` も通るのに、
+`terraform plan` が `the user does not have permission to access Project "ojos-game-forge"`
+で落ちる。**認証が失敗したのではなく、別人として成功している**ため、メッセージから
+原因へ辿りにくい。次で実際のアカウントを確かめられる。
+
+```bash
+curl -s https://www.googleapis.com/oauth2/v3/userinfo \
+  -H "Authorization: Bearer $(gcloud auth application-default print-access-token)" \
+  | jq -r .email
+# => ido@ojos.jp であること
+```
+
 `--no-launch-browser` を付けるのは devcontainer 内にブラウザが無いため（AWS SSO で
 `--use-device-code` が要るのと同じ事情）。どちらの資格情報も named volume `gcloud-storage`
 （`~/.config/gcloud`）に入り、リビルドを跨いで残る。

@@ -286,6 +286,46 @@ VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 しているのは、片方だけを変えると「DNS は張れているのに Worker が `unknown host` で
 404 を返す」という、どちらを見ても正しく見える壊れ方をするためです。
 
+## 実施の記録（2026-08-26 / #89）
+
+**この節だけが実行の記録である。** 上の手順を実際に通した結果を残す
+（本文書の冒頭のとおり、手順と記録は別物として扱う）。
+
+| 対象 | 値 |
+|---|---|
+| Pages プロジェクト | `game-forge`（`production_branch` = `main`） |
+| D1 | `game-forge` / `d81a6f80-7d08-4908-b311-2418bacda050` / リージョン APAC |
+| R2 バケット | `game-forge` |
+| マイグレーション | `0001_init.sql` 適用済み（`users` `games` `generations` `invites` `reports` `waitlist`） |
+| シークレット | `SESSION_SECRET`（本番用に新規生成）/ `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`。production スコープ |
+| カスタムドメイン | `app.game-forge.ojos.jp` / `sandbox.game-forge.ojos.jp` ともに `active` |
+| Route53 | CNAME 2 本を `terraform apply` で作成（作成 2 / 変更 0 / 削除 0） |
+| Google OAuth | `https://app.game-forge.ojos.jp/auth/google/callback` を Console へ追加済み |
+
+**R2 の事前有効化は不要だった**（このアカウントでは #82 の作業で有効化済みだったため、
+`r2 bucket create` がそのまま通った）。上の 0 章は、未有効のアカウントで再現する場合に要る。
+
+**カスタムドメインは登録から `active` まで約 7 分かかった**（15 秒間隔で 29 回ポーリング。
+Route53 の CNAME を作ってから 28 回目で `sandbox`、29 回目で `app` が `active` へ変わった）。
+`pending` のまま数分続くのは正常である。
+
+### 配備後の実測
+
+| 受け入れ条件 | 実測 |
+|---|---|
+| `/` が開発用ページではない | 200 / `<h1>Game Forge</h1>`。`__dev` の文字列は 0 件 |
+| `/__dev/*` が 404 | `/__dev/` `/__dev/health` `/__dev/session` `/__dev/cookies` すべて 404、`set-cookie` 0 件 |
+| `/signup` が表示される | 200 |
+| 招待コードなしの登録が塞がれている | 不正コードで 400、`Location` 0 件（OAuth 要求を組み立てない）、`set-cookie` 0 件 |
+| 待機リストが本番 D1 へ入る | `{"registered":true}` → D1 に行を確認。**検証用の行は削除済み** |
+| サンドボックスの CSP | `sandbox allow-scripts` あり / `allow-same-origin` なし / `set-cookie` 0 件 |
+| `terraform plan` | 差分なし（`-detailed-exitcode` が 0） |
+
+OAuth の開始経路も通っている。`/auth/google/start` が 303 で
+`redirect_uri=https://app.game-forge.ojos.jp/auth/google/callback` を組み立て、
+`__Host-gf_oauth` を発行し、Google 側は `redirect_uri_mismatch` を出さずサインイン画面へ
+到達した。
+
 ## まだ決まっていないこと
 
 - **本番の D1 / R2 を Terraform で宣言するか**、`wrangler` で作るか。現状 `terraform/` は

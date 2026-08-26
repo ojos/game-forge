@@ -6,6 +6,7 @@ import {
   consumeInvite,
   countIssuedInvites,
   issueInvite,
+  listIssuedInvites,
   lookupInvite,
   remainingInviteQuota,
 } from '../src/invites.js';
@@ -413,5 +414,44 @@ describe('消費を断るその他の理由', () => {
 
     await expect(consumeInvite(env.DB, code, 'u-no-such-user', NOW)).rejects.toThrow();
     expect((await rawInvite(code))?.used_by).toBeNull();
+  });
+});
+
+describe('発行者向けの一覧（#91）', () => {
+  it('自分が発行した招待だけを返す', async () => {
+    const issuer = await insertUser();
+    const other = await insertUser();
+    const mine = [await insertInvite(issuer), await insertInvite(issuer)];
+    await insertInvite(other);
+
+    const listed = await listIssuedInvites(env.DB, issuer);
+    expect(listed.map((invite) => invite.code).sort()).toEqual([...mine].sort());
+  });
+
+  it('コード順に並ぶ', async () => {
+    // `invites` に作成時刻の列が無いため、順序を指定しないと再読み込みのたびに
+    // 並びが変わりうる（5.1）。
+    const issuer = await insertUser();
+    await insertInvite(issuer);
+    await insertInvite(issuer);
+    await insertInvite(issuer);
+
+    const codes = (await listIssuedInvites(env.DB, issuer)).map((invite) => invite.code);
+    expect(codes).toEqual([...codes].sort());
+  });
+
+  it('使用済みの招待も、使用者と使用時刻を持って返る', async () => {
+    const issuer = await insertUser();
+    const guest = await insertUser();
+    const code = await insertInvite(issuer);
+    expect((await consumeInvite(env.DB, code, guest, NOW)).ok).toBe(true);
+
+    expect(await listIssuedInvites(env.DB, issuer)).toEqual([
+      { code, issuedBy: issuer, usedBy: guest, usedAt: NOW, expiresAt: null },
+    ]);
+  });
+
+  it('1 本も発行していなければ空を返す', async () => {
+    expect(await listIssuedInvites(env.DB, await insertUser())).toEqual([]);
   });
 });

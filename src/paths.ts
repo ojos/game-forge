@@ -28,3 +28,16 @@ export const WAITLIST_THANKS_PATH = '/signup/waitlist/thanks';
  * 登録フォームの `action` と経路の登録が同じ値を指すよう、定数を 1 か所に置く。
  */
 export const WAITLIST_PATH = '/api/waitlist';
+
+/**
+ * 招待を発行する画面（8.1 / #91）。
+ *
+ * 画面を提供するのは `src/invite-issuance.ts` だが、公開トップ（`src/home.ts`）が
+ * ここへ送る。一方で発行の画面は「トップへ戻る」導線として `HOME_PATH` を参照するため、
+ * どちらかがもう片方から import すると循環参照になる。`SIGNUP_PATH` と同じ理由で、
+ * 値だけを持つこのモジュールへ逃がす。
+ *
+ * API 側のパス（`/api/invites`）はここに置かない。参照するのは発行の経路を提供する
+ * モジュールだけで、上の条件に当たらない。
+ */
+export const INVITES_PATH = '/invites';

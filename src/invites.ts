@@ -334,6 +334,35 @@ export async function countIssuedInvites(db: D1Database, issuedBy: string): Prom
 }
 
 /**
+ * 発行者が発行した招待を、発行者向けの一覧として返す。
+ *
+ * **招待枠は 1 人 3 本**（`src/invite-issuance.ts` の `INVITE_QUOTA`）で、行が増え続ける
+ * 列ではないため、件数の上限も改ページも置かない。上限を上げるとしても、招待は
+ * 「何人を呼べるか」の枠であり（8.1）、一覧が画面に収まらない桁にはならない。
+ *
+ * 並び順を `code` にするのは、`invites` に**作成時刻の列が無い**ためである（5.1）。
+ * 順序を指定しなければ SQLite の返す順は保証されず、再読み込みのたびに一覧の並びが
+ * 変わりうる。時刻順に見せたくなったら列を足す話であって、指定を省く理由にはならない。
+ *
+ * @param db D1
+ * @param issuedBy 発行者の `users.id`
+ * @returns 発行した招待（コード順）
+ */
+export async function listIssuedInvites(
+  db: D1Database,
+  issuedBy: string,
+): Promise<readonly InviteRecord[]> {
+  const rows = await db
+    .prepare(
+      'select code, issued_by, used_by, used_at, expires_at from invites' +
+        ' where issued_by = ? order by code',
+    )
+    .bind(issuedBy)
+    .all<InviteRow>();
+  return rows.results.map(toRecord);
+}
+
+/**
  * 招待枠の残数を返す（表示用）。
  *
  * **上限値は引数で受け取る。** 招待枠の枚数は仕様書に定義が無く（12 章の未確定事項

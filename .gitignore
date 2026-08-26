@@ -10,7 +10,8 @@
 __MACOSX/
 .AppleDouble
 .LSOverride
-Icon[]
+Icon[
+]
 
 # Resource forks
 ._*
@@ -31,7 +32,8 @@ Icon[]
 .file
 .disk_label*
 lost+found
-.HFS+ Private Directory Data[]
+.HFS+ Private Directory Data[
+]
 
 # Directories potentially created on remote AFP share
 .AppleDB
@@ -275,6 +277,14 @@ override.tf.json
 terraform.rc
 # .terraform.lock.hcl はプロバイダ版の固定に必要なため、意図して除外しない。
 # <<< devcontainer-bootstrap managed section <<<
+
+# ── Terraform（プロジェクト固有。#82） ─────────────────────────────────────
+# archive_file が作る Lambda の zip。中身が読めない成果物を追跡すると、宣言
+# （terraform/lambda/ の平文ソース）と実物がずれても差分に現れない。
+#
+# 上の管理セクションではなくここへ置くのは、あちらが devcontainer-bootstrap に
+# 再生成されるため。管理セクション内へ書いた行は次の再生成で消える。
+terraform/build/
 
 # ── Cloudflare Workers ローカル開発（M0.5-3） ───────────────────────────────
 # wrangler / miniflare のローカル状態（D1 の SQLite、R2 のオブジェクト、キャッシュ）。

@@ -13,7 +13,8 @@
  * | モデルアクセス（agreement の承諾） | この宣言 |
  * | Workers から呼ぶための IAM ユーザーとポリシー | この宣言 |
  * | アクセスキーの実体 | **この宣言は持たない**（下記） |
- * | TPM / RPM クォータ、AWS Budgets | **#81 が値を決めてから**足す |
+ * | 費用ガードの層 2（暴走検知）と層 3（Budgets） | **terraform/bedrock-guard.tf**（#82） |
+ * | Bedrock のレートクォータ引き下げ（層 4） | **この宣言は持たない**（Service Quotas に引き下げ API が無い） |
  *
  * ## アクセスキーを宣言しない理由
  *
@@ -37,6 +38,24 @@ locals {
   bedrock_agreement_models = toset([
     "anthropic.claude-sonnet-5",
   ])
+
+  /**
+   * 生成に要る Bedrock の動作。**許可（下記）と剥奪（bedrock-guard.tf の Deny）の
+   * 両方が、この 1 つの定義から作られる。**
+   *
+   * 2 か所へ書き写すと、許可へ動作を足したときに Deny 側が古いままになり、
+   * **費用ガードが発火しても足した動作だけが素通りする**（共通規範 12 章
+   * 「一覧の複製は機械照合で担保する」。ここは複製しないことで担保する）。
+   *
+   * 外部層の検査（scripts/acceptance-remote.sh）も、期待値をここから
+   * output 経由で取る。
+   */
+  bedrock_invoke_actions = [
+    "bedrock:InvokeModel",
+    "bedrock:InvokeModelWithResponseStream",
+    "bedrock:Converse",
+    "bedrock:ConverseStream",
+  ]
 }
 
 /**
@@ -121,12 +140,7 @@ data "aws_iam_policy_document" "bedrock_invoke" {
     sid    = "InvokeGenerationModels"
     effect = "Allow"
 
-    actions = [
-      "bedrock:InvokeModel",
-      "bedrock:InvokeModelWithResponseStream",
-      "bedrock:Converse",
-      "bedrock:ConverseStream",
-    ]
+    actions = local.bedrock_invoke_actions
 
     resources = ["*"]
   }

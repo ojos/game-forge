@@ -32,3 +32,8 @@ gcp_org_id = "000000000000"
 # 既定値から変える場合のみ指定する。
 # gcp_project_id   = "ojos-game-forge"
 # gcp_project_name = "game-forge"
+
+# 費用ガードの層 3（AWS Budgets）が通知を送る宛先（#82 / 仕様 4.3）。
+# Budgets Actions は subscriber を必須としているため省略できない。
+# 機密ではないが、このリポジトリは公開のため宣言側には書かない。
+budget_notification_email = "you@example.com"

@@ -397,6 +397,287 @@ check_wrangler_production_hosts() {
   return "$rc"
 }
 
+##
+# Workers 用プリンシパルの権限が、宣言どおりでかつ最小限であることを確認する（#82）。
+#
+# 見るのは 3 つ。
+#
+#   1. **インラインポリシーの Allow の総和が、宣言した動作集合と完全に一致すること。**
+#      名前を決め打ちせず list-user-policies で全部を足すのは、宣言の外で 2 本目を
+#      手で足されたときに気づくためである。1 本だけを名指しで見る検査は、増えた分を
+#      見逃す。
+#   2. **ワイルドカードが無いこと。** #82 の制約「bedrock:* を与えない」。1. の一致
+#      比較で実質担保されるが、宣言側を緩めたときに独立に落ちる検査を残す。
+#   3. **停止用の Deny ポリシーが誰にも付いていないこと。** 付いていれば、費用ガードが
+#      発火した後まだ手で復旧していないということである。**4.3 は復旧を手動と定めて
+#      いる**ので自動では戻らず、ここが気づく口になる。
+#
+# 期待値はすべて terraform output から取る（shared-ai-rules.md 12 章）。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致・取得失敗・ガード発火中
+##
+check_bedrock_invoker_permissions() {
+  local user halt_arn expected actual attached
+  user="$(tf_output bedrock_invoker_user_name)"
+  halt_arn="$(tf_output bedrock_halt_policy_arn)"
+  if [[ -z "$user" || -z "$halt_arn" ]]; then
+    echo "terraform output から Bedrock のプリンシパル識別子を取得できません。apply 済みか確認すること。"
+    echo "  bedrock_invoker_user_name=${user:-(なし)} bedrock_halt_policy_arn=${halt_arn:-(なし)}"
+    return 1
+  fi
+
+  expected="$(terraform -chdir="$TF_DIR" output -json bedrock_invoke_actions | jq -S 'unique')" || return 1
+
+  local -a policy_names=()
+  mapfile -t policy_names < <(aws iam list-user-policies --user-name "$user" --query 'PolicyNames[]' --output text | tr '\t' '\n')
+  if [[ "${#policy_names[@]}" -eq 0 || -z "${policy_names[0]}" ]]; then
+    echo "${user} にインラインポリシーがありません。Bedrock を呼べない状態です。"
+    return 1
+  fi
+
+  # Action は文字列にも配列にもなりうる。Statement も同様に単体を取りうるため、
+  # どちらの綴りでも同じ集合になるよう正規化してから比べる。
+  local docs="" doc name
+  for name in "${policy_names[@]}"; do
+    doc="$(aws iam get-user-policy --user-name "$user" --policy-name "$name" --query 'PolicyDocument' --output json)" || return 1
+    docs+="$doc"$'\n'
+  done
+  actual="$(jq -s '
+    [ .[]
+      | .Statement
+      | if type == "array" then .[] else . end
+      | select(.Effect == "Allow")
+      | .Action
+    ] | flatten | unique
+  ' <<<"$docs")" || return 1
+
+  if [[ "$expected" != "$actual" ]]; then
+    echo "許可している Bedrock の動作が宣言と一致しません:"
+    echo "  expected: $(jq -c . <<<"$expected")"
+    echo "  actual:   $(jq -c . <<<"$actual")"
+    return 1
+  fi
+
+  if jq -e 'map(select(test("\\*"))) | length > 0' <<<"$actual" >/dev/null; then
+    echo "ワイルドカードを含む権限が付与されています: $(jq -c . <<<"$actual")"
+    return 1
+  fi
+
+  attached="$(aws iam list-attached-user-policies --user-name "$user" --query 'AttachedPolicies[].PolicyArn' --output json)" || return 1
+  if jq -e --arg arn "$halt_arn" 'index($arn) != null' <<<"$attached" >/dev/null; then
+    echo "費用ガードが発火したままです（${halt_arn} が ${user} に付いています）。"
+    echo "原因を調べたうえで docs/bedrock-access.md の復旧手順で外すこと。自動では戻りません（仕様 4.3）。"
+    return 1
+  fi
+  if [[ "$(jq 'length' <<<"$attached")" != "0" ]]; then
+    echo "宣言にない管理ポリシーが付与されています: $(jq -c . <<<"$attached")"
+    return 1
+  fi
+
+  echo "${user} grants exactly $(jq -c . <<<"$actual") with no attached policy"
+}
+
+##
+# 費用ガードの層 2（暴走検知）が、宣言どおりの形で実在することを確認する（#82 / 仕様 4.3）。
+#
+# **層 2 は平常時に一度も動かない機構である。** 動かないものは、壊れていても壊れて
+# いることが分からない。しきい値・期間・メトリクス・通知先・呼び出し先を、宣言と
+# 突き合わせられる限り全部見るのはそのためである。
+#
+# 経路は アラーム → SNS → Lambda の 3 段で、どこか 1 段が切れると黙って止まらなく
+# なる。段ごとに検査する。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_bedrock_burst_alarm() {
+  local alarm_name topic_arn func_name threshold period namespace alarm
+  alarm_name="$(tf_output bedrock_burst_alarm_name)"
+  topic_arn="$(tf_output bedrock_guard_topic_arn)"
+  func_name="$(tf_output bedrock_guard_function_name)"
+  threshold="$(tf_output bedrock_burst_threshold_tokens)"
+  period="$(tf_output bedrock_burst_period_seconds)"
+  namespace="$(tf_output bedrock_burst_namespace)"
+  if [[ -z "$alarm_name" || -z "$topic_arn" || -z "$func_name" || -z "$threshold" || -z "$period" || -z "$namespace" ]]; then
+    echo "terraform output から層 2 の識別子を取得できません。apply 済みか確認すること。"
+    echo "  alarm=${alarm_name:-(なし)} topic=${topic_arn:-(なし)} function=${func_name:-(なし)}"
+    echo "  threshold=${threshold:-(なし)} period=${period:-(なし)} namespace=${namespace:-(なし)}"
+    return 1
+  fi
+
+  alarm="$(aws cloudwatch describe-alarms --alarm-names "$alarm_name" --output json)" || return 1
+  if [[ "$(jq '.MetricAlarms | length' <<<"$alarm")" != "1" ]]; then
+    echo "アラーム ${alarm_name} が存在しません。層 2 が丸ごと効いていません。"
+    return 1
+  fi
+
+  local rc=0 actual
+
+  # しきい値は数値で返る。文字列比較だと 300000 と 300000.0 が食い違うため、
+  # 同じ書式へ揃えてから比べる。
+  actual="$(jq -r '.MetricAlarms[0].Threshold' <<<"$alarm")"
+  if [[ "$(printf '%.0f' "$actual")" != "$(printf '%.0f' "$threshold")" ]]; then
+    echo "しきい値が宣言と一致しません: expected=${threshold} actual=${actual}"
+    rc=1
+  fi
+
+  # 「1 データポイントで発火」（仕様 4.3）。複数期間を待つ設計に変わると、その分だけ
+  # 上振れが増える。
+  actual="$(jq -r '[.MetricAlarms[0].EvaluationPeriods, .MetricAlarms[0].DatapointsToAlarm] | @tsv' <<<"$alarm")"
+  if [[ "$actual" != $'1\t1' ]]; then
+    echo "評価期間が「300 秒 1 データポイントで発火」になっていません: ${actual}"
+    rc=1
+  fi
+
+  if [[ "$(jq -r '.MetricAlarms[0].ActionsEnabled' <<<"$alarm")" != "true" ]]; then
+    echo "アラームのアクションが無効化されています。発火しても何も起きません。"
+    rc=1
+  fi
+
+  if ! jq -e --arg arn "$topic_arn" '.MetricAlarms[0].AlarmActions | index($arn) != null' <<<"$alarm" >/dev/null; then
+    echo "アラームの通知先が宣言の SNS トピックではありません: expected=${topic_arn}"
+    rc=1
+  fi
+
+  # 合算しているメトリクスの集合。**モデル別の dimension を持たないこと**まで見る。
+  # 分けて張ると、複数モデルが同時に暴走したとき 1 本ずつはしきい値へ届かず、
+  # 合計では大きく超えている、という取り逃がしが起きる（仕様 4.3 の上振れ見積もり）。
+  local expected_metrics actual_metrics
+  expected_metrics="$(terraform -chdir="$TF_DIR" output -json bedrock_burst_metric_names | jq -S 'sort')" || return 1
+  actual_metrics="$(jq -S --arg ns "$namespace" --argjson p "$period" '
+    [ .MetricAlarms[0].Metrics[]
+      | select(has("MetricStat"))
+      | select(.MetricStat.Metric.Namespace == $ns)
+      | select(.MetricStat.Stat == "Sum")
+      | select(.MetricStat.Period == $p)
+      | select((.MetricStat.Metric.Dimensions | length) == 0)
+      | .MetricStat.Metric.MetricName
+    ] | sort
+  ' <<<"$alarm")" || return 1
+  if [[ "$expected_metrics" != "$actual_metrics" ]]; then
+    echo "合算しているメトリクスが宣言と一致しません（名前空間 ${namespace} / Sum / ${period} 秒 / dimension なし で絞った結果）:"
+    echo "  expected: $(jq -c . <<<"$expected_metrics")"
+    echo "  actual:   $(jq -c . <<<"$actual_metrics")"
+    rc=1
+  fi
+
+  # 2 段目: SNS から Lambda へ。購読が PendingConfirmation のままだと、アラームは
+  # 発火するのに関数が呼ばれない。**その状態でもアラーム側は正常に見える。**
+  local subs
+  subs="$(aws sns list-subscriptions-by-topic --topic-arn "$topic_arn" --output json)" || return 1
+  if ! jq -e --arg fn ":function:${func_name}" '
+    [ .Subscriptions[]
+      | select(.Protocol == "lambda")
+      | select(.Endpoint | endswith($fn))
+      | select(.SubscriptionArn | startswith("arn:"))
+    ] | length == 1
+  ' <<<"$subs" >/dev/null; then
+    echo "SNS トピック ${topic_arn} から ${func_name} への購読が確立していません。"
+    echo "アラームは発火しても関数が呼ばれない状態です。"
+    rc=1
+  fi
+
+  # 3 段目: 関数が「誰に何を付けるか」を、宣言と同じ対象に向けているか。ここが
+  # ずれると関数は成功したように動いて、実際には何も止めない。
+  local env_vars
+  env_vars="$(aws lambda get-function-configuration --function-name "$func_name" --query 'Environment.Variables' --output json)" || return 1
+  local expected_user expected_policy
+  expected_user="$(tf_output bedrock_invoker_user_name)"
+  expected_policy="$(tf_output bedrock_halt_policy_arn)"
+  if [[ "$(jq -r '.TARGET_USER_NAME // ""' <<<"$env_vars")" != "$expected_user" ]] ||
+    [[ "$(jq -r '.HALT_POLICY_ARN // ""' <<<"$env_vars")" != "$expected_policy" ]]; then
+    echo "${func_name} の対象が宣言と一致しません。発火しても別のものを見に行きます。"
+    rc=1
+  fi
+
+  if [[ "$rc" -eq 0 ]]; then
+    echo "layer 2: ${alarm_name} (${threshold} tokens / ${period}s) -> sns -> ${func_name}"
+  fi
+  return "$rc"
+}
+
+##
+# 費用ガードの層 3（AWS Budgets）が、宣言どおりの予算と動作で実在することを確認する
+# （#82 / 仕様 4.3）。
+#
+# **本番と開発の 2 アカウントを見る。** 開発側は別アカウントなので、プロファイルも
+# アカウント ID も terraform output から取る（どちらもここへ書き写さない）。
+# 開発アカウントの SSO が切れていれば失敗するが、それは terraform plan も同じ前提で
+# あり（aws.dev プロバイダを通る）、この検査だけが新たな前提を足しているわけではない。
+#
+# **予算の実在だけでは足りない。** 100% の Budget Action が無い予算は「通知は来るが
+# 止まらない」状態で、層 3 の役割を果たさない。動作の種類・しきい値・対象ポリシー・
+# 対象ユーザーまで突き合わせる。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_bedrock_budgets() {
+  local rc=0
+  local prod_account dev_account dev_profile
+  local prod_budget dev_budget prod_limit dev_limit halt_arn user halt_percent
+  prod_account="$(tf_output aws_account_id_prod)"
+  dev_account="$(tf_output aws_account_id_dev)"
+  dev_profile="$(tf_output aws_profile_dev)"
+  prod_budget="$(tf_output bedrock_budget_prod_name)"
+  dev_budget="$(tf_output bedrock_budget_dev_name)"
+  prod_limit="$(tf_output bedrock_budget_prod_limit_usd)"
+  dev_limit="$(tf_output bedrock_budget_dev_limit_usd)"
+  halt_arn="$(tf_output bedrock_halt_policy_arn)"
+  user="$(tf_output bedrock_invoker_user_name)"
+  halt_percent="$(tf_output bedrock_budget_halt_percent)"
+  if [[ -z "$prod_account" || -z "$dev_account" || -z "$prod_budget" || -z "$dev_budget" ||
+    -z "$prod_limit" || -z "$dev_limit" || -z "$halt_arn" || -z "$user" || -z "$halt_percent" || -z "$dev_profile" ]]; then
+    echo "terraform output から層 3 の識別子を取得できません。apply 済みか確認すること。"
+    echo "  prod=${prod_budget:-(なし)}/${prod_limit:-(なし)} dev=${dev_budget:-(なし)}/${dev_limit:-(なし)}"
+    echo "  halt_policy=${halt_arn:-(なし)} halt_percent=${halt_percent:-(なし)} user=${user:-(なし)}"
+    return 1
+  fi
+
+  # 予算額は "85" と "85.0" のどちらでも返りうる。書式を揃えてから比べる。
+  local limit
+  limit="$(aws budgets describe-budget --account-id "$prod_account" --budget-name "$prod_budget" \
+    --query 'Budget.BudgetLimit.Amount' --output text 2>/dev/null)" || limit=""
+  if [[ -z "$limit" ]] || [[ "$(printf '%.2f' "$limit")" != "$(printf '%.2f' "$prod_limit")" ]]; then
+    echo "本番予算 ${prod_budget} が宣言と一致しません: expected=${prod_limit} USD actual=${limit:-(なし)}"
+    rc=1
+  fi
+
+  local actions
+  actions="$(aws budgets describe-budget-actions-for-budget --account-id "$prod_account" \
+    --budget-name "$prod_budget" --output json 2>/dev/null)" || actions=""
+  if [[ -z "$actions" ]]; then
+    echo "本番予算 ${prod_budget} の Budget Action を取得できません。"
+    rc=1
+  elif ! jq -e --arg arn "$halt_arn" --arg user "$user" --argjson pct "$halt_percent" '
+    [ .Actions[]
+      | select(.ActionType == "APPLY_IAM_POLICY")
+      | select(.ActionThreshold.ActionThresholdType == "PERCENTAGE")
+      | select(.ActionThreshold.ActionThresholdValue == $pct)
+      | select(.Definition.IamActionDefinition.PolicyArn == $arn)
+      | select(.Definition.IamActionDefinition.Users | index($user) != null)
+      | select(.ApprovalModel == "AUTOMATIC")
+    ] | length == 1
+  ' <<<"$actions" >/dev/null; then
+    echo "本番予算 ${prod_budget} に、${halt_percent}% で ${user} へ ${halt_arn} を付ける自動動作がありません。"
+    echo "通知は来ても止まらない状態です（層 3 の役割を果たしていません）。"
+    rc=1
+  fi
+
+  # 開発アカウント。**動作は宣言していない**（Deny を付ける相手になる長命プリンシパルが
+  # dev に無い。仕様 9.2）。ここでも動作の有無は問わず、予算額だけを見る。
+  limit="$(aws --profile "$dev_profile" budgets describe-budget --account-id "$dev_account" \
+    --budget-name "$dev_budget" --query 'Budget.BudgetLimit.Amount' --output text 2>/dev/null)" || limit=""
+  if [[ -z "$limit" ]] || [[ "$(printf '%.2f' "$limit")" != "$(printf '%.2f' "$dev_limit")" ]]; then
+    echo "開発予算 ${dev_budget} が宣言と一致しません: expected=${dev_limit} USD actual=${limit:-(なし)}"
+    echo "開発アカウントの SSO が切れている場合もここで失敗する: aws sso login --profile ${dev_profile}"
+    rc=1
+  fi
+
+  if [[ "$rc" -eq 0 ]]; then
+    echo "layer 3: ${prod_budget} ${prod_limit} USD (halt at ${halt_percent}%) / ${dev_budget} ${dev_limit} USD"
+  fi
+  return "$rc"
+}
+
 run "repository exists and visibility matches" check_repository
 run "default branch matches" check_default_branch
 run "branch protection matches" check_branch_protection
@@ -405,6 +686,9 @@ run "dns hosted zone matches" check_dns_zone
 run "dns delegation from sakura is in place" check_dns_delegation
 run "pages custom domain records match" check_pages_dns_records
 run "wrangler production hosts match dns" check_wrangler_production_hosts
+run "bedrock invoker permissions are minimal" check_bedrock_invoker_permissions
+run "cost guard layer 2 (burst alarm) matches" check_bedrock_burst_alarm
+run "cost guard layer 3 (budgets) matches" check_bedrock_budgets
 
 if [[ "$ran_any" -eq 0 ]]; then
   echo "[acceptance-remote] 外部層の受け入れ条件が未定義です。検査を 1 つも実行していません。" >&2

@@ -21,6 +21,12 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 7.0"
     }
+    # 費用ガードの Lambda（terraform/bedrock-guard.tf）を zip にするためだけに使う。
+    # 外部の zip コマンドへ依存すると、適用する端末によって成果物が変わる。
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
   }
 
   # backend は宣言しない。既定の local backend（terraform/terraform.tfstate）を使う。

@@ -12,9 +12,12 @@
 |---|---|---|
 | モデルアクセス（agreement の承諾） | `terraform/bedrock.tf` | 宣言できる |
 | IAM ユーザーとポリシー | `terraform/bedrock.tf` | 宣言できる |
+| 費用ガードの層 2（暴走検知）と層 3（Budgets） | `terraform/bedrock-guard.tf` | 宣言できる |
 | **アクセスキーの実体** | **この文書（手作業）** | 宣言すると tfstate へ平文で落ちる |
+| **鍵のローテーション** | **この文書（手作業）** | 上と同じ。鍵に触る操作はすべて宣言の外 |
 | use case の申請 | **この文書（手作業）** | Console のフォームで、Anthropic 側の審査を伴う |
-| TPM / RPM クォータ、AWS Budgets | 未定（#81 が値を決める） | 機構そのものが未設計 |
+| **費用ガードの層 4（レートクォータの引き下げ）** | **この文書（未実施）** | **Service Quotas に引き下げの API が無い**（5 章） |
+| **ガード発火後の復旧** | **この文書（手作業）** | **意図して自動化しない**（仕様 4.3。5 章） |
 
 **対象は Dev / Prod の 2 アカウントである**（仕様 9.2 / 確定21）。`terraform/bedrock.tf` が
 両方の agreement を宣言する。IAM ユーザーを置くのは Prod だけで、Dev では SSO の一時
@@ -106,10 +109,17 @@ aws iam create-access-key --user-name game-forge-bedrock-invoker
 **`SecretAccessKey` は発行時にしか表示されない。**
 
 ```bash
-npx wrangler pages secret put BEDROCK_AWS_ACCESS_KEY_ID
-npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY
-npx wrangler pages secret put BEDROCK_AWS_REGION   # ap-northeast-1
+npx wrangler pages secret put BEDROCK_AWS_REGION --project-name game-forge          # ap-northeast-1
+npx wrangler pages secret put BEDROCK_AWS_ACCESS_KEY_ID --project-name game-forge
+npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY --project-name game-forge
 ```
+
+**`--project-name` を必ず付ける。** 省くと wrangler が対話で選ばせにいくため、
+非対話の手順として成立しない。名前と並びは `docs/pages-deploy.md` 5 章と同じで、
+**投入の手順はあちらが正本、鍵の発行とローテーションはこの文書が正本**である。
+
+**投入するのは `terraform apply` が済んだ後である。** 生成機能を開く時点（#83）で
+`docs/pages-deploy.md` 5 章から呼ばれる。
 
 **`BEDROCK_AWS_SESSION_TOKEN` は本番では登録しない。** 一時資格情報はローカル開発で SSO を
 使うときだけのものである（`docs/local-dev.md`）。
@@ -121,6 +131,27 @@ npx wrangler pages secret put BEDROCK_AWS_REGION   # ap-northeast-1
 
 ## 4. ローテーション手順
 
+**この手順が必要なのは、Workers が AWS の外で動くからである。** IAM ロールを引き受ける
+経路が無く、長命のアクセスキーを Pages のシークレットへ置くしかない（1 章）。
+**長命キーの唯一の対処がローテーションである**ため、手順が無いことは構成上の欠陥になる。
+
+### いつ回すか
+
+| 契機 | 期限 |
+|---|---|
+| **漏洩の疑い**（ログ・issue・PR・チャットへ値が出た、端末を紛失した） | **即時。** 先に無効化してから調べる |
+| 定期 | **90 日ごと** |
+| 鍵に触れた人が離れた | その時点 |
+
+**定期を 90 日にした理由。** 招待制の閉じたベータで、鍵は 1 本・保管先は Pages の
+シークレット 1 か所しかない。これより短くすると、回すこと自体が事故（更新漏れによる
+生成停止）の主因になる。**「回さない」より「回しすぎて壊す」ほうが起きやすい規模である。**
+
+最終使用日は下記で読める。**長く使われていない鍵は、消してよいのではなく「なぜ使われて
+いないのか」を先に確かめる**（片方が本番、片方が誰かの手元、という状態を見落とさない）。
+
+### 手順
+
 **IAM ユーザーは同時に 2 本までアクセスキーを持てる。** これを使って無停止で入れ替える。
 
 ```bash
@@ -131,8 +162,9 @@ USER=game-forge-bedrock-invoker
 aws iam create-access-key --user-name "$USER"
 
 # 2. Pages のシークレットを新しい値へ更新し、デプロイして疎通を確認する
-npx wrangler pages secret put BEDROCK_AWS_ACCESS_KEY_ID
-npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY
+npx wrangler pages secret put BEDROCK_AWS_ACCESS_KEY_ID --project-name game-forge
+npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY --project-name game-forge
+npx wrangler pages deploy --project-name game-forge --branch main
 
 # 3. 古いキーを **まず無効化する**（削除ではない。切り戻せる状態を残す）
 aws iam update-access-key --user-name "$USER" \
@@ -152,23 +184,125 @@ aws iam list-access-keys --user-name game-forge-bedrock-invoker
 aws iam get-access-key-last-used --access-key-id <KEY_ID>
 ```
 
+**ローテーションは費用ガードの復旧手段ではない**（5 章）。Deny ポリシーはユーザーに
+付いており、鍵に付いているのではない。新しいキーを作っても止まったままである。
+
+**値をここへ書き写さない。** `scripts/check-no-secrets.sh` が毎回検査するが、検査に
+頼る前に、鍵の値が出るのは `create-access-key` の出力と `wrangler` の入力だけに保つ。
+
 ---
 
-## 5. 費用ガード（決着済み。実装は #82 の残り）
+## 5. 費用ガード（層 2 / 層 3）
 
-機構と値は仕様 v1.3 の 4.3 で決めた（#81）。**この文書と `terraform/bedrock.tf` には、まだ実装が入っていない。**
+機構と値は仕様 4.3（#81）が正本である。**宣言の実体は `terraform/bedrock-guard.tf`**
+にあり、この章はそこから漏れる部分（宣言できない層 4、発火時の読み方、復旧手順）を持つ。
 
-| 層 | 実体 | 値 |
+| 層 | 実体 | 値 | 持ち主 |
+|---|---|---|---|
+| 1. アプリ層 | D1 の費用台帳＋月次 1 万円判定 | 80% 警告 / 100% 停止 | アプリ（#84） |
+| 2. 暴走検知 | CloudWatch アラーム → SNS → Lambda | `InputTokenCount` ＋ `OutputTokenCount` が **300 秒で 30 万トークン** | `terraform/bedrock-guard.tf` |
+| 3. 会計層 | AWS Budgets（＋ Budget Action） | prod **85 USD/月**（80% 通知 / 100% 停止）、dev **10 USD/月**（通知のみ） | `terraform/bedrock-guard.tf` |
+| 4. 補助 | Bedrock のレートクォータ引き下げ | — | **無し**（下記） |
+
+### 停止の実体は「明示的 Deny の付与」である
+
+停止は **Deny ポリシー（`game-forge-bedrock-halt`）を `game-forge-bedrock-invoker` へ
+アタッチする**形で行う（仕様 4.3 / v1.7）。**v1.6 までの 4.3 は「ポリシーを剥がす」と
+書いていたが、剥奪では成立しないことが #82 の実装で分かり、仕様側を改めた。**
+求められているのは呼び出しが止まることであって、特定の API を呼ぶことではない。
+
+1. **剥がすと宣言と喧嘩する。** 許可は Terraform が `aws_iam_user_policy` として
+   持っている。ガードがそれを消すと `terraform plan` に差分が出て、**誰かが無関係な
+   変更（DNS など）を apply した拍子に、原因を調べる前に許可が戻る。** 4.3 の
+   「復旧は手動とする」に反する。アタッチは宣言集合の外側なので apply では剥がれない。
+2. **層 3 は Deny の付与しかできない。** AWS Budgets の `APPLY_IAM_POLICY` は指定
+   ポリシーを**付ける**動作しか持たない。層 2 を「剥がす」にすると、発火した層ごとに
+   復旧手順が変わる。揃えれば復旧は常に「Deny を detach する」1 つで済む。
+
+明示的 Deny は同一アカウント内の Allow を必ず上書きするため、効果は剥奪と同じである。
+
+### 層 4 を宣言できない理由
+
+**Service Quotas は増加要求の API しか持たない。** 引き下げは宣言できず、そもそも
+要求が通るかも未確認である。**層 4 が無くても設計は成立する**ように、層 2 のしきい値は
+現行クォータのまま上振れが収まる値になっている（4.3）。**DeepSeek のクォータは 1 つも
+調整できない**（実測）。
+
+現時点で層 4 は**無いものとして運用する。** 引き下げを試みるなら Console の
+Service Quotas から要求することになるが、その時点で結果をこの章へ追記すること。
+
+### 発火したら何が起きるか
+
+**発火は「止まった」だけでは終わらない。どちらの層が撃ったかが、そのままバグの
+種類を指している**（4.3 の判定基準）。
+
+| 撃った層 | 意味 | 見る場所 |
 |---|---|---|
-| 2. 暴走検知 | CloudWatch アラーム → SNS → Lambda がポリシーを剥がす | `InputTokenCount` ＋ `OutputTokenCount` が **5 分で 30 万トークン** |
-| 3. 会計層 | AWS Budgets Actions | prod **85 USD/月**（80% 通知 / 100% 剥奪）、dev **10 USD/月** |
-| 4. 補助 | Bedrock のレートクォータ引き下げ | **Claude のみ調整可。DeepSeek は不可。** 引き下げ要求の可否は未確認 |
+| 層 2（暴走検知） | **アプリのループバグ。** リトライの暴走、例外パスでの再入 | CloudWatch Logs `/aws/lambda/game-forge-bedrock-guard`、D1 の `generations` |
+| 層 3（Budgets） | **台帳のずれ。** 計上漏れ、円換算の誤り、判定順序の誤り | Cost Explorer と D1 の費用台帳の突き合わせ |
 
-**復旧は手動である。** 層 2 が発火したら、原因を調べてからポリシーを付け直す。
+**いずれもアプリ層のバグである。** 層 1 が正しく動いていれば、2 も 3 も発火しない。
 
-**dev / prod の分離方法も決着済みである**（仕様 9.2 / 確定21）。Dev / Prod の 2 アカウントに
-分け、それぞれで Bedrock を使う。**Bedrock のクォータがアカウント単位でしか割れず、4.3 の
-最外周で即時に効く唯一の層がそこにあるため。**
+発火の有無は外部層の受け入れ検証でも見える。Deny ポリシーが付いたままなら
+`bedrock invoker permissions are minimal` が失敗する。
+
+```bash
+export AWS_PROFILE=game-forge-prod
+aws iam list-attached-user-policies --user-name game-forge-bedrock-invoker
+```
+
+### 復旧手順（手動。自動化しない）
+
+**自動で戻す経路をどこにも作っていない。** Lambda に detach の実装は無く、実行ロールにも
+`iam:DetachUserPolicy` を与えていない。4.3 が「暴走の原因を調べる前に自動で戻すと、
+同じ暴走を繰り返す」としているためである。
+
+**原因を特定して直すまで、以下を実行しないこと。** 直っていない状態で戻すと、同じ
+暴走がもう一度、同じ速さで走る。
+
+```bash
+export AWS_PROFILE=game-forge-prod
+USER=game-forge-bedrock-invoker
+HALT_ARN="$(terraform -chdir=terraform output -raw bedrock_halt_policy_arn)"
+
+# 1. 何が付いているかを見る（付いていなければ、そもそも発火していない）
+aws iam list-attached-user-policies --user-name "$USER"
+
+# 2. 原因を調べる。層 2 なら関数のログ、層 3 なら Cost Explorer と D1 の台帳
+aws logs tail /aws/lambda/game-forge-bedrock-guard --since 24h
+
+# 3. 直してから外す
+aws iam detach-user-policy --user-name "$USER" --policy-arn "$HALT_ARN"
+
+# 4. 呼び出しが戻ったことを実測で確かめる（状態 API は当てにしない。2 章）
+aws bedrock-runtime converse --region ap-northeast-1 \
+  --model-id jp.anthropic.claude-sonnet-4-6 \
+  --messages '[{"role":"user","content":[{"text":"ok"}]}]' \
+  --inference-config '{"maxTokens":8}'
+```
+
+**層 3 で撃たれた場合、外しても月内に再発する。** 予算は月次で、実績が下がらない限り
+100% を超えたままだからである。月内に生成を再開するなら、**原因を直したうえで
+`terraform/bedrock-guard.tf` の `bedrock_budget_prod_usd` を引き上げて apply する**か、
+その月は停止したままにするかを選ぶことになる。**引き上げは仕様 4.3 の上限そのものを
+動かす判断**なので、その場で決めずに記録を残すこと。
+
+**鍵のローテーション（4 章）では復旧しない。** Deny はユーザーに付いており、鍵に
+付いているのではない。新しいキーを作っても同じユーザーの権限を使うため、止まったままである。
+
+### Control Tower（SCP）の影響
+
+このアカウントは Control Tower の member である。**`terraform apply` が
+`AccessDenied` で落ちたときは、IAM の権限不足ではなく SCP を先に疑うこと。**
+SSO で引き受けているのは `AWSAdministratorAccess` なので、管理者にできない操作が
+出るとすれば SCP が理由である。
+
+```bash
+aws organizations describe-organization        # 管理アカウントでのみ通る
+```
+
+member アカウントからは SCP の一覧を読めない。落ちた操作名を管理アカウント側で
+確かめること。
 
 ---
 
@@ -177,3 +311,8 @@ aws iam get-access-key-last-used --access-key-id <KEY_ID>
 - **Bedrock のレートクォータを引き下げられるか**（層 4）。Service Quotas は増加要求の API
   しか持たない。引き下げられなければ層 4 は無いものとして運用する（仕様 4.3）。
 - **Sonnet 5 の開放**（仕様 12 章 #2）。4.7 以降の世代がアカウントに開放されていない。
+- **層 2 の発火を実地で試すか。** しきい値は 300 秒で 30 万トークンで、意図的に到達
+  させると 600 円程度の実費が出る。**未発火のまま本番へ出す**か、一度撃って経路
+  （アラーム → SNS → Lambda → Deny）を実測するかは決めていない。外部層の受け入れ
+  検証は**経路の各段が存在すること**までは見るが、**撃ったら本当に止まること**は
+  見ていない。

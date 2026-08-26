@@ -153,7 +153,7 @@ npx wrangler pages secret put GOOGLE_CLIENT_SECRET --project-name game-forge
 生成を有効にする時点で次を足します。**`BEDROCK_AWS_SESSION_TOKEN` は本番では
 登録しません**（一時資格情報はローカル開発で SSO を使うときだけのもので、本番には
 長命キーを置きます。Workers は AWS の外で動くため IAM ロールを引き受けられません。
-仕様書 4.1）。**鍵のローテーション手順は #82 が持ちます。**
+仕様書 4.1）。
 
 ```bash
 # 生成機能を有効にする時点で（#83）
@@ -161,6 +161,19 @@ npx wrangler pages secret put BEDROCK_AWS_REGION --project-name game-forge
 npx wrangler pages secret put BEDROCK_AWS_ACCESS_KEY_ID --project-name game-forge
 npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY --project-name game-forge
 ```
+
+**値の出どころは `docs/bedrock-access.md` です**（#82）。役割はこう分かれます。
+
+| 何 | 正本 |
+|---|---|
+| **どのシークレットを、どのプロジェクトへ入れるか**（上のコマンド） | この文書 |
+| **鍵の発行**（`aws iam create-access-key`）と**ローテーション手順** | `docs/bedrock-access.md` 3〜4 章 |
+| IAM ユーザーと権限、費用ガード | `terraform/bedrock.tf` / `terraform/bedrock-guard.tf` |
+
+**投入の前に `terraform apply` が済んでいる必要があります。** 鍵を発行する相手
+（`game-forge-bedrock-invoker`）も、費用ガードの層 2 / 層 3 も、宣言側が作ります。
+**ガードが無いまま生成を開けないこと**が要点です（仕様書 4.3 は月次上限を必須実装と
+しており、アプリ層だけでは不足するとしています）。
 
 **そのとき `compatibility_flags = ["nodejs_compat"]` が必要になります**（#79 の実測）。
 これが無いと `@anthropic-ai/bedrock-sdk` が要求する `assert` / `stream` が解決できず
@@ -285,6 +298,11 @@ VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 **`wrangler.toml` の本番ホストが DNS の宣言と一致すること**を見ます。後者を機械照合に
 しているのは、片方だけを変えると「DNS は張れているのに Worker が `unknown host` で
 404 を返す」という、どちらを見ても正しく見える壊れ方をするためです。
+
+**Bedrock の権限と費用ガードも同じ検証が見ます**（#82）。とくに
+`bedrock invoker permissions are minimal` は、**費用ガードが発火したまま復旧していない
+状態**でも失敗します（停止用の Deny ポリシーが付いたままになるため）。配備の赤ではなく
+**生成が止められている**合図なので、`docs/bedrock-access.md` 5 章の復旧手順を見てください。
 
 ## 実施の記録（2026-08-26 / #89）
 

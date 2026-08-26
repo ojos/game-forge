@@ -201,3 +201,26 @@ variable "cloudflare_pages_project" {
     error_message = "cloudflare_pages_project には英小文字・数字・ハイフンのみを使用できます。"
   }
 }
+
+variable "budget_notification_email" {
+  description = <<-EOT
+    費用ガードの層 3（AWS Budgets）が通知を送る宛先（#82 / 仕様 4.3）。
+
+    **AWS Budgets Actions は subscriber を必須項目としている**ため、省略できない。
+    80% の警告も 100% の停止（Deny の付与）も、この 1 か所へ届く。
+
+    **機密ではないが宣言へ直接書かない。** aws_account_id_prod と同じ理由で、
+    このリポジトリは公開であり、個人のメールアドレスを公開する必要が無いため。
+    値は terraform.tfvars（*.tfvars は追跡外）に置く。既定値は置かない。
+
+    **SNS を挟まない理由。** SNS のメール購読は購読者本人の確認クリックを要し、
+    宣言しても確認が済むまで届かない。「宣言は緑なのに通知だけ来ない」状態を作らない
+    ため、Budgets が直接メールを送る経路にしてある。
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", var.budget_notification_email))
+    error_message = "budget_notification_email はメールアドレスの形式である必要があります。"
+  }
+}

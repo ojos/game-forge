@@ -26,6 +26,12 @@ compatibility_date = "2026-08-01"
 [vars]
 APP_HOST = "game-forge.localtest.me"
 SANDBOX_HOST = "sandbox.game-forge.localtest.me"
+# 開発用の診断経路（`/__dev/*`）を登録するかどうか（#89）。
+#
+# **`enabled` はここ（トップレベル＝ローカル）にしか無い。** 配備される 2 つの環境は
+# 下で `disabled` を明示する。src/app.ts の `devRoutesEnabled` は値が `enabled` に
+# 一致したときだけ有効にするため、宣言し忘れた環境では自動的に閉じる側へ倒れる。
+DEV_ROUTES = "enabled"
 
 # ローカル D1。`--local` 実行では database_id は参照されず、Miniflare が
 # .wrangler/state 配下の SQLite を使う。本番の ID は D1 を実際に作る時点で入れる
@@ -43,3 +49,64 @@ migrations_dir = "migrations"
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "game-forge-local"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 配備される環境（#89）。
+#
+# Pages が受け付ける名前付き環境は `preview` と `production` の 2 つだけで、
+# `wrangler pages deploy` は**配備先ブランチが production_branch と一致するか**で
+# どちらを読むかを決める（wrangler 4.121 の実装で確認）。
+#
+# **vars / d1_databases / r2_buckets は環境へ引き継がれない種類の設定である。**
+# 省くとトップレベル（＝ローカル向けの値）が使われてしまうため、両方の環境で
+# 明示する。とくに `DEV_ROUTES` を書き忘れると、診断経路が本番で開いたままになる。
+# ──────────────────────────────────────────────────────────────────────────────
+
+[env.production.vars]
+# **アプリ用ホストが `app.` 付きなのは DNS の制約による**（#89 / 確定16 の改訂）。
+#
+# `game-forge.ojos.jp` は確定17 で Route53 へ委譲した**ホストゾーンの apex** であり、
+# Route53 は apex に CNAME を作れない（ALIAS は AWS のリソースしか指せず
+# `*.pages.dev` を指せない）。Cloudflare Pages 側も、外部 DNS のままの apex は
+# 対象外としている（ドメインごと Cloudflare のゾーンにすることを要求する）。
+# `app.` を 1 ラベル足すと、どちらの制約にも触れずに CNAME 1 本で張れる。
+APP_HOST = "app.game-forge.ojos.jp"
+SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
+DEV_ROUTES = "disabled"
+
+[env.preview.vars]
+# プレビュー配備（production_branch 以外のブランチ）。**`*.pages.dev` で公開される**
+# ため、開発用の診断経路をここで開けない。ホスト名は本番と同じ値を置く
+# （プレビューに専用のカスタムドメインは張らない）。
+APP_HOST = "app.game-forge.ojos.jp"
+SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
+DEV_ROUTES = "disabled"
+
+# 本番の D1。**ローカル用とは別のデータベース**である（9.1 / 確定20: クラウド環境は
+# 本番のみ）。`database_id` は `wrangler d1 create game-forge` が 2026-08-26 に返した
+# 実在の ID で、リージョンは APAC。
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "game-forge"
+database_id = "d81a6f80-7d08-4908-b311-2418bacda050"
+migrations_dir = "migrations"
+
+# 本番の R2。
+[[env.production.r2_buckets]]
+binding = "BUCKET"
+bucket_name = "game-forge"
+
+# プレビューにも同じバインディングを宣言する。**省くとバインディング自体が消える**
+# （トップレベルは名前付き環境へ引き継がれない。`wrangler types` が `DB?: D1Database` と
+# 省略可能に変わることで確認できる）。プレビュー専用のデータベースは作らない。
+# 9.1 が「クラウド環境は本番のみ」と定めており、preview はカスタムドメインを持たず
+# `src/index.ts` のホスト検査で全経路が 404 になるため、実際には触れられない。
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "game-forge"
+database_id = "d81a6f80-7d08-4908-b311-2418bacda050"
+migrations_dir = "migrations"
+
+[[env.preview.r2_buckets]]
+binding = "BUCKET"
+bucket_name = "game-forge"

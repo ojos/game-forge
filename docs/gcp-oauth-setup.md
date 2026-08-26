@@ -38,6 +38,20 @@ OAuth Admin API 自体も、Google の告知により **2026-01-19 以降は新�
 | Terraform 認証（ADC） | `gcloud auth application-default login --no-launch-browser` | `gcloud auth application-default print-access-token` |
 
 CLI 用の認証（`gcloud auth login`）と Terraform 用の認証（ADC）は別物で、**両方が要る**。
+
+**ADC のアカウントは、ブラウザでサインインしたアカウントになる**（#89 で踏んだ）。
+別のアカウントでサインインしたままだと認証自体は成功し、`print-access-token` も通るのに、
+`terraform plan` が `the user does not have permission to access Project "ojos-game-forge"`
+で落ちる。**認証が失敗したのではなく、別人として成功している**ため、メッセージから
+原因へ辿りにくい。次で実際のアカウントを確かめられる。
+
+```bash
+curl -s https://www.googleapis.com/oauth2/v3/userinfo \
+  -H "Authorization: Bearer $(gcloud auth application-default print-access-token)" \
+  | jq -r .email
+# => ido@ojos.jp であること
+```
+
 `--no-launch-browser` を付けるのは devcontainer 内にブラウザが無いため（AWS SSO で
 `--use-device-code` が要るのと同じ事情）。どちらの資格情報も named volume `gcloud-storage`
 （`~/.config/gcloud`）に入り、リビルドを跨いで残る。
@@ -94,6 +108,11 @@ Compute Engine API を有効にしない限り実体化しないため、既定�
 リフレッシュトークンではなく、自前の署名付き Cookie（`src/session.ts`）で保持するため。Google を
 使うのは初回ログインの本人確認だけである。
 
+**クローズドβの間は Testing のまま運用する**（2026-08-25 決定 / #89）。**その代償として、
+招待するたびにこの画面のテストユーザーへ相手のメールアドレスを手登録する必要がある。**
+アプリ側の招待コードと合わせて招待が二重になり、上限は 100 人である。運用上の制約として
+仕様書 8.1「Google OAuth を Testing のまま運用する」に記録した。
+
 ---
 
 ## 5. OAuth クライアント（手作業）
@@ -119,8 +138,31 @@ Compute Engine API を有効にしない限り実体化しないため、既定�
 維持できない可能性がある。その場合は `game-forge.ojos.jp`（Route53 で宣言済み、issue #53）の
 サブドメインを 127.0.0.1 へ向けて使う。所有ドメインなので Search Console で所有権を証明できる。
 
-本番用のクライアントはまだ作っていない。本番ドメインが決まった時点で、同じ手順で別クライアント
-として発行するか、このクライアントにリダイレクト URI を追加する。
+### 本番のリダイレクト URI（#89）
+
+**別クライアントを作らず、このクライアントへ URI を 1 本追加する。** クライアントを分けると
+`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` が 2 組になり、同意画面の設定（テストユーザーを
+含む）も二重に管理することになる。Testing のまま運用する以上、テストユーザーの一覧を
+1 か所に保つほうが運用の事故が少ない。
+
+| 項目 | 値 |
+|---|---|
+| 承認済みのリダイレクト URI（追加） | `https://app.game-forge.ojos.jp/auth/google/callback` |
+| 承認済みのリダイレクト URI（既存・維持） | `https://game-forge.localtest.me:8787/auth/google/callback` |
+
+**ホストが `app.` 付きなのは DNS の制約による**（仕様書 1.2.11 / `docs/pages-deploy.md`）。
+`game-forge.ojos.jp` は Route53 ホストゾーンの apex で CNAME を張れない。
+
+**既存のローカル用 URI は消さないこと。** 消すと手元の開発でログインできなくなる。
+リダイレクト URI は**完全一致**で照合されるため、本番は 443 番（ポート表記なし）、
+ローカルは `:8787` 付きで別々に登録する必要がある。
+
+**サンドボックス側（`sandbox.game-forge.ojos.jp`）は登録しない。** あちらは cookie も認証も
+持たない（仕様書 7.2）。
+
+`src/auth/google.ts` の `redirectUri` はリクエストの `Host` から組み立てるため、
+コードにホスト名を持たない。登録した URI と実際のホストが食い違うと
+`redirect_uri_mismatch` で落ちる。
 
 ---
 

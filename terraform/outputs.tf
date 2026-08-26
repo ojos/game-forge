@@ -77,3 +77,23 @@ output "gcp_project_number" {
   description = "GCP プロジェクト番号。コンソールの URL や API の一部が ID ではなくこちらを要求する。"
   value       = google_project.game_forge.number
 }
+
+output "app_host" {
+  description = <<-EOT
+    アプリ用ホスト名（#89）。
+
+    wrangler.toml の [env.production.vars] APP_HOST と同じ値でなければならない。
+    外部層の検査（scripts/acceptance-remote.sh）が両者を突き合わせる。
+  EOT
+  value       = aws_route53_record.app.name
+}
+
+output "sandbox_host" {
+  description = "サンドボックス用ホスト名（#89）。SANDBOX_HOST と突き合わせる。"
+  value       = aws_route53_record.sandbox.name
+}
+
+output "pages_hostname" {
+  description = "カスタムドメインの CNAME の向き先（<project>.pages.dev）。外部層の検査が実状態と突き合わせる。"
+  value       = local.pages_hostname
+}

@@ -7,6 +7,7 @@
 import { authRoutes } from './auth/google.js';
 import { describeOriginRelation } from './origins.js';
 import { generateRoutes } from './generate.js';
+import { homeRoutes } from './home.js';
 import type { Route } from './routes.js';
 import { dispatch, html, json } from './routes.js';
 import { signupRoutes } from './signup.js';
@@ -131,23 +132,55 @@ function describeError(error: unknown): string {
 }
 
 /**
- * ローカル開発用の経路（`/` と `/__dev/*`）。
+ * 開発用の経路を有効にする `DEV_ROUTES` の値。
+ *
+ * **一致したときだけ有効にする**（既定を「無効」に倒す）。`!== 'disabled'` の形に
+ * すると、変数の綴りを間違えた・宣言し忘れた環境で診断経路が黙って公開される。
+ * 事故の向きを、開けっ放しではなく閉じっぱなしへ倒しておく。
+ */
+const DEV_ROUTES_ENABLED = 'enabled';
+
+/**
+ * 開発用の経路（`/__dev/*`）を提供してよいかを判定する。
+ *
+ * 値は `wrangler.toml` の `[vars]` が供給する。ローカル（トップレベル）だけが
+ * `enabled` で、`[env.production]` / `[env.preview]` はどちらも `disabled` を明示する
+ * （#89）。**ホスト名では判定しない。** `APP_HOST` は「どのホストで待ち受けるか」の
+ * 宣言であって、環境の種別ではない。両者を兼ねさせると、ホスト名を変えただけで
+ * 診断経路の公開・非公開が変わる。
+ *
+ * @param env バインディングと環境変数
+ * @returns 開発用の経路を登録してよければ true
+ */
+export function devRoutesEnabled(env: Env): boolean {
+  return env.DEV_ROUTES === DEV_ROUTES_ENABLED;
+}
+
+/**
+ * 開発用の経路（`/__dev/*`）。
  *
  * M0.5-3 が所有する範囲であり、M1 以降が足す経路とは別の配列に置く。機能ごとに
- * `Route[]` を分けておくと、`appRoutes` への連結が 1 行で済み、並行する PR が
+ * `Route[]` を分けておくと、経路表への連結が 1 行で済み、並行する PR が
  * 互いのハンドラ本文を触らずに済む。
+ *
+ * **`/` をここに置かない**（#89 で `/__dev/` へ移した）。M0.5-3 の時点では索引を `/` に
+ * 置いていたが、それは本番でそのまま公開トップになる。公開トップ（`src/home.ts`）と
+ * 出し分ける形にすると `/` の登録が 2 つになり、`findDuplicateRoutes` が見ている
+ * 「後から連結した側が黙って無視される」事故と区別できなくなる。**この配列を丸ごと
+ * 落とせば本番の遮断が完了する**、という 1 つの規則に揃える。
  */
 const devRoutes: readonly Route[] = [
   {
     method: 'GET',
-    path: '/',
+    path: '/__dev/',
     handler: () =>
       html(`<!doctype html>
 <meta charset="utf-8">
 <title>Game Forge (local dev)</title>
 <h1>app origin</h1>
-<p>M0.5-3 のローカル開発環境です。</p>
+<p>ローカル開発用の索引です。本番では登録されません（#89）。</p>
 <ul>
+  <li><a href="/">/</a> — 公開トップ</li>
   <li><a href="/__dev/health">/__dev/health</a> — D1 / R2 の疎通</li>
   <li><a href="/__dev/session">/__dev/session</a> — <code>${DEV_SESSION_COOKIE}</code> を発行</li>
   <li><a href="/__dev/cookies">/__dev/cookies</a> — 届いた cookie 名の一覧</li>
@@ -201,12 +234,28 @@ const devRoutes: readonly Route[] = [
 ];
 
 /**
- * アプリ用ホストの経路表。
+ * アプリ用ホストの経路表を組み立てる。
  *
  * M1 以降で経路を足すときは、機能ごとの `Route[]` を別ファイルに置き、この配列へ
  * 連結する。ここへハンドラ本文を書き足さないこと（並行する PR が同じ行を取り合う）。
+ *
+ * **定数ではなく関数にしている理由**は `devRoutes` だけである。本番で `/__dev/*` を
+ * 遮断する（#89）には env を見る必要があり、モジュール読み込み時には env が無い。
+ * 組み立ては配列の連結だけなので、リクエストごとに呼んでも実質的な費用は無い。
+ *
+ * @param env バインディングと環境変数
+ * @returns 経路表
  */
-export const appRoutes: readonly Route[] = [...devRoutes, ...authRoutes, ...signupRoutes, ...waitlistRoutes, ...generateRoutes];
+export function createAppRoutes(env: Env): readonly Route[] {
+  return [
+    ...homeRoutes,
+    ...(devRoutesEnabled(env) ? devRoutes : []),
+    ...authRoutes,
+    ...signupRoutes,
+    ...waitlistRoutes,
+    ...generateRoutes,
+  ];
+}
 
 /**
  * アプリ用ホストへのリクエストを処理する。
@@ -216,7 +265,7 @@ export const appRoutes: readonly Route[] = [...devRoutes, ...authRoutes, ...sign
  * @returns レスポンス
  */
 export async function handleAppRequest(request: Request, env: Env): Promise<Response> {
-  return await dispatch(appRoutes, request, env);
+  return await dispatch(createAppRoutes(env), request, env);
 }
 
 /**

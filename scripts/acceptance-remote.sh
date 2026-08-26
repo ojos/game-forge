@@ -319,12 +319,92 @@ check_dns_delegation() {
   echo "delegation for ${zone_name} is in place"
 }
 
+##
+# Pages のカスタムドメイン用 CNAME が、宣言どおりの名前と向き先で実在することを確認する。
+#
+# 名前も向き先も terraform output から取る。ここへ app.game-forge.ojos.jp と書き写すと、
+# 宣言を変えたときに検査だけが古い名前を見続ける（shared-ai-rules.md 12 章）。
+#
+# ゾーン内のレコードは Route53 の API で直接読む。名前解決（dig）ではなく API を見るのは、
+# ここで確かめたいのが「宣言と実状態の一致」であって「世界中から引けること」ではないため。
+# キャッシュや委譲の遅れを、宣言の乖離として報告しない。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_pages_dns_records() {
+  local zone_id target rc=0
+  zone_id="$(tf_output dns_zone_id)" || return 1
+  target="$(tf_output pages_hostname)" || return 1
+  if [[ -z "$zone_id" || -z "$target" ]]; then
+    echo "terraform output から DNS の宣言値を取得できません。apply 済みか確認すること。"
+    return 1
+  fi
+
+  local output_name host actual
+  for output_name in app_host sandbox_host; do
+    host="$(tf_output "$output_name")" || return 1
+    if [[ -z "$host" ]]; then
+      echo "terraform output ${output_name} が空です。"
+      rc=1
+      continue
+    fi
+    # Route53 はレコード名を末尾ドット付きで返す。比較の前に両側から落とす。
+    actual="$(aws route53 list-resource-record-sets --hosted-zone-id "$zone_id" \
+      --query "ResourceRecordSets[?Name=='${host%.}.' && Type=='CNAME'].ResourceRecords[0].Value" \
+      --output text 2>/dev/null)" || actual=""
+    actual="${actual%.}"
+    if [[ "$actual" != "${target%.}" ]]; then
+      echo "${host%.} の CNAME が宣言と一致しません: expected=${target%.} actual=${actual:-(なし)}"
+      rc=1
+      continue
+    fi
+    echo "${host%.} CNAME -> ${actual}"
+  done
+  return "$rc"
+}
+
+##
+# wrangler.toml の本番ホストが、DNS の宣言と一致していることを確認する。
+#
+# 同じホスト名が 2 か所（terraform/dns.tf と wrangler.toml）にある。**片方だけを
+# 変えると、DNS は張れているのに Worker が「unknown host」で 404 を返す**という、
+# どちらの側を見ても正しく見える壊れ方をする（src/index.ts は APP_HOST /
+# SANDBOX_HOST と一致しないホストを通さない）。文書での呼びかけではなく照合で塞ぐ
+# （shared-ai-rules.md 12 章「一覧の複製は機械照合で担保する」）。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_wrangler_production_hosts() {
+  local rc=0 output_name key declared actual
+  for pair in "app_host:APP_HOST" "sandbox_host:SANDBOX_HOST"; do
+    output_name="${pair%%:*}"
+    key="${pair##*:}"
+    declared="$(tf_output "$output_name")" || return 1
+    declared="${declared%.}"
+    # [env.production.vars] テーブルの中だけを見る。トップレベル（ローカル向けの値）を
+    # 拾うと、本番の宣言を検査したことにならない。
+    actual="$(awk -v key="$key" '
+      /^\[/ { in_table = ($0 == "[env.production.vars]") ; next }
+      in_table && $1 == key { gsub(/^[^"]*"|"[^"]*$/, "", $0); print $0; exit }
+    ' wrangler.toml)"
+    if [[ "$actual" != "$declared" ]]; then
+      echo "wrangler.toml [env.production.vars] ${key} が DNS の宣言と一致しません: terraform=${declared} wrangler=${actual:-(なし)}"
+      rc=1
+      continue
+    fi
+    echo "${key} = ${actual}"
+  done
+  return "$rc"
+}
+
 run "repository exists and visibility matches" check_repository
 run "default branch matches" check_default_branch
 run "branch protection matches" check_branch_protection
 run "actions variable matches" check_actions_variable
 run "dns hosted zone matches" check_dns_zone
 run "dns delegation from sakura is in place" check_dns_delegation
+run "pages custom domain records match" check_pages_dns_records
+run "wrangler production hosts match dns" check_wrangler_production_hosts
 
 if [[ "$ran_any" -eq 0 ]]; then
   echo "[acceptance-remote] 外部層の受け入れ条件が未定義です。検査を 1 つも実行していません。" >&2

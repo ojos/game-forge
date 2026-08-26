@@ -66,6 +66,7 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       'TEST_PRODUCT_SPEC',
       'TEST_VENDOR_DEPS',
       'TEST_BUILD_SAMPLE',
+      'TEST_WRANGLER_TOML',
     ];
 
     // `.dev.vars.example` に**書かれている**秘密名は許容する。
@@ -86,7 +87,7 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       .filter((key) => !injectedByRunner.includes(key))
       .filter((key) => !documented.includes(key))
       .sort();
-    expect(declared).toEqual(['APP_HOST', 'BUCKET', 'DB', 'SANDBOX_HOST']);
+    expect(declared).toEqual(['APP_HOST', 'BUCKET', 'DB', 'DEV_ROUTES', 'SANDBOX_HOST']);
   });
 });
 
@@ -153,6 +154,8 @@ describe('バインディングの疎通（#51 acceptance 1）', () => {
     const failingEnv = {
       APP_HOST: env.APP_HOST,
       SANDBOX_HOST: env.SANDBOX_HOST,
+      // `/__dev/health` は開発用の経路なので、有効な設定を渡さないと 404 になる（#89）。
+      DEV_ROUTES: env.DEV_ROUTES,
       DB: env.DB,
       BUCKET: {
         put: async () => undefined,
@@ -176,9 +179,11 @@ describe('バインディングの疎通（#51 acceptance 1）', () => {
 
 describe('ホストによる出し分け（#51 acceptance 3）', () => {
   it('アプリ用ホストがアプリ側を返す', async () => {
+    // `/` は #89 で開発用の索引から公開トップ（src/home.ts）へ変わった。ここが
+    // 見たいのは Host による出し分けなので、アプリ側にしか無い見出しで判定する。
     const response = await SELF.fetch(`${APP_ORIGIN}/`);
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain('app origin');
+    expect(await response.text()).toContain('<h1>Game Forge</h1>');
   });
 
   it('サンドボックス用ホストがサンドボックス側を返す', async () => {

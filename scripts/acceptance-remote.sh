@@ -101,8 +101,94 @@ TF_DIR="terraform"
 # 資格情報が失効していると plan 側が先に落ちる。そのときのメッセージはプロバイダ由来で
 # 読み解きにくく、「宣言と実状態が食い違っている」のか「単に SSO が切れている」のかを
 # 切り分けられない。前提を先に見せることが、この並び順の目的である。
+
+# ── Cloudflare の資格情報（#95）──────────────────────────────────────────────
+#
+# gh と aws は**ツール自身のログイン状態**を持つが、**Cloudflare は持たない。**
+# `wrangler login` は OAuth のコールバックをブラウザで受けるため、ブラウザの無い
+# devcontainer では完結しない（.env.example の CLOUDFLARE_API_TOKEN の項）。この
+# 環境での供給元は `.env` だけである。
+#
+# **ここで .env を読むのは「認証を行う」ことではない。** このスクリプトの前提
+# （冒頭）が禁じているのは、資格情報をスクリプトへ書き写す経路を作ることである。
+# ローダー（scripts/load-project-env.sh）は、wrangler 自身が読むのと同じ名前・同じ
+# 値を、追跡外の .env から環境へ移すだけで、値をここへは持ち込まない。同じ形は
+# scripts/check-no-secrets.sh と scripts/verify-commit-identity.sh が既に採っている。
+#
+# **読まないと、同じリポジトリ状態が呼び出し方で違う答えを出す。** .env を読み込み
+# 済みの対話シェルからは通り、非対話シェル（rc を読まない）からは「未認証」になる。
+# 前提の不成立と実際の乖離を読み分けるという、このスクリプトの目的そのものが壊れる。
+cf_load_credentials() {
+  if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+    return 0
+  fi
+  local loader="$HERE/load-project-env.sh"
+  if [[ -f "$loader" ]]; then
+    # shellcheck source=scripts/load-project-env.sh
+    . "$loader"
+  fi
+}
+
+##
+# Cloudflare の API を叩き、応答の本体を標準出力へ返す。
+#
+# **診断は標準エラーへ書く。** 標準出力は呼び出し側が jq へ渡す本体そのもので、
+# ここへ混ぜると壊れた JSON を解析させることになる（run は両方を拾って失敗時に
+# 表示する）。
+#
+# **`.success` を見る。終了コードだけで判定しない。** Cloudflare は認証エラーでも
+# HTTP 200 で `success: false` を返すことがあり、`curl -f` では拾えない。
+#
+# 引数: $1 = /client/v4/ 以降のパス
+# 戻り値: 0 = 応答を取得できた / 1 = 到達できない・API がエラーを返した
+##
+cf_api() {
+  local path="$1" body
+  if ! body="$(curl -sS --max-time 30 \
+    -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+    "https://api.cloudflare.com/client/v4/${path}" 2>&1)"; then
+    echo "Cloudflare API へ到達できません（${path}）: ${body}" >&2
+    return 1
+  fi
+  if ! jq -e '.success == true' <<<"$body" >/dev/null 2>&1; then
+    echo "Cloudflare API がエラーを返しました（${path}）:" >&2
+    jq -c '.errors // .' <<<"$body" >&2 2>/dev/null || printf '%s\n' "$body" >&2
+    return 1
+  fi
+  printf '%s' "$body"
+}
+
+##
+# Cloudflare の API トークンが有効であることを確認する（前提の確認）。
+#
+# 配備ずれの検査より前に置く。トークンが切れているだけの状態を「本番が古い」と
+# 報告すると、取るべき行動（トークンの再発行 / 配備のやり直し）が読み違えられる。
+#
+# 戻り値: 0 = 有効 / 1 = 未設定・失効・到達不能
+##
+check_cloudflare_authenticated() {
+  cf_load_credentials
+  if [[ -z "${CLOUDFLARE_API_TOKEN:-}" || -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+    echo "CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID が環境にも .env にもありません。"
+    echo "  .env へ両方を設定すること（雛形と発行手順は .env.example / docs/pages-deploy.md）。"
+    return 1
+  fi
+
+  local body status
+  body="$(cf_api "user/tokens/verify")" || return 1
+  status="$(jq -r '.result.status // ""' <<<"$body")"
+  if [[ "$status" != "active" ]]; then
+    echo "API トークンが有効ではありません（status=${status:-(不明)}）。"
+    echo "  ダッシュボードの My Profile > API Tokens で再発行し、.env を差し替えること。"
+    echo "  **期限は API から読めない**ため、確認はダッシュボードでのみ可能（docs/pages-deploy.md）。"
+    return 1
+  fi
+  echo "cloudflare api token is active"
+}
+
 run "prerequisite: gh authenticated" gh auth status
 run "prerequisite: aws authenticated" aws sts get-caller-identity
+run "prerequisite: cloudflare api token is active" check_cloudflare_authenticated
 
 # terraform 自身も外部（プロバイダレジストリ）へ出る。init 済みでなければ plan は
 # 実行できないため、ここで冪等に通す。
@@ -398,6 +484,107 @@ check_wrangler_production_hosts() {
 }
 
 ##
+# **本番が配っている配備コミットが、main の HEAD と一致していることを確認する**（#95）。
+#
+# **「配備されたか」ではなく「一致しているか」を見る。** #95 で起きたのは、配備が
+# 一度も走らないまま本番が 4 コミット古い状態で動き続け、**ローカルの verify も
+# 外部層の検査も terraform plan もすべて緑だった**ことである。配備の有無を見る検査は
+# 「1 回でも配備されていれば緑」になるため、この状態を拾えない。
+#
+# **自動化したうえで、なおこの検査が要る。** ワークフローは失敗しうる（Secrets の
+# 失効、Cloudflare 側の障害、fork 判定の書き換え）。自動化は「配備し忘れ」を消すが、
+# 「配備が失敗したまま気づかない」は残る。塞ぐのはそちらである。
+#
+# 期待値と実測の取り方:
+#
+#   期待値（main の HEAD）— GitHub の API から取る。**手元の HEAD を使わない。**
+#     この検査は「本番と main の一致」を見るもので、手元の作業ブランチが何を
+#     指しているかは関係ない。対象リポジトリ名と既定ブランチ名は terraform の
+#     output から取る（他の検査と同じ流儀）。
+#
+#   実測（本番の配備）— Cloudflare の `canonical_deployment` を読む。
+#     **配備一覧の先頭ではない。** 一覧の先頭は「最後に作られた配備」であり、それが
+#     失敗していれば本番はもっと古いものを配り続けている。canonical_deployment は
+#     **いま本番ドメインが配っている配備**そのもので、見たいのはこちらである。
+#
+#   プロジェクト名 — terraform output の pages_hostname（`<project>.pages.dev`）から
+#     先頭ラベルを取る。**ここへ game-forge と書き写さない**（共通規範 12 章）。
+#     宣言側の変数（var.cloudflare_pages_project）を直接出す output は足していない。
+#     output を 1 つ増やすと `terraform plan` に差分として現れ、**この検査を通すために
+#     apply が要る**状態を作るためである。pages_hostname は同じ変数から組み立てられて
+#     いるので、宣言側から取るという性質は変わらない。
+#
+#   アカウント ID — 環境変数 CLOUDFLARE_ACCOUNT_ID（前提の確認で読み込み済み）。
+#     terraform は Cloudflare のプロバイダを持たない（Pages プロジェクトは wrangler で
+#     作る。docs/pages-deploy.md）ため、宣言側に置き場所が無い。wrangler 自身が読むのと
+#     同じ供給元を使う。
+#
+# 戻り値: 0 = 一致 / 1 = 乖離・取得失敗
+##
+check_pages_production_deployment() {
+  local pages_hostname project full_name branch expected deployment actual dirty
+  pages_hostname="$(tf_output pages_hostname)" || return 1
+  full_name="$(tf_output repository_full_name)" || return 1
+  branch="$(tf_output default_branch)" || return 1
+  project="${pages_hostname%%.*}"
+  if [[ -z "$project" || -z "$full_name" || -z "$branch" ]]; then
+    echo "terraform output から検査対象を取得できません。apply 済みか確認すること。"
+    echo "  pages_hostname=${pages_hostname:-(なし)} repository=${full_name:-(なし)} branch=${branch:-(なし)}"
+    return 1
+  fi
+
+  expected="$(gh api "repos/${full_name}/commits/${branch}" --jq '.sha')" || return 1
+  if [[ -z "$expected" ]]; then
+    echo "${full_name} の ${branch} の HEAD を取得できません。"
+    return 1
+  fi
+
+  local body
+  body="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${project}")" || return 1
+
+  # canonical_deployment が無い＝一度も配備されていない。**「一致しない」ではなく
+  # 「まだ何も無い」ことを、そのまま書く。**
+  if ! jq -e '.result.canonical_deployment != null' <<<"$body" >/dev/null; then
+    echo "Pages プロジェクト ${project} に本番の配備がありません（一度も配備されていない）。"
+    echo "  初回の配備手順は docs/pages-deploy.md にある。"
+    return 1
+  fi
+
+  actual="$(jq -r '.result.canonical_deployment.deployment_trigger.metadata.commit_hash // ""' <<<"$body")"
+  dirty="$(jq -r '.result.canonical_deployment.deployment_trigger.metadata.commit_dirty // false' <<<"$body")"
+
+  if [[ -z "$actual" ]]; then
+    # 手で `wrangler pages deploy` を打つとき --commit-hash を省くと、ここが空になる。
+    # **どのコミットが本番に居るのかを、Cloudflare 側から辿れない状態**である。
+    echo "本番の配備にコミットハッシュが記録されていません（${project}）。"
+    echo "  --commit-hash を渡さずに配備された可能性がある。.github/workflows/verify.yml の deploy ジョブは必ず渡す。"
+    return 1
+  fi
+
+  if [[ "$actual" != "$expected" ]]; then
+    local created
+    created="$(jq -r '.result.canonical_deployment.created_on // "?"' <<<"$body")"
+    echo "本番の配備コミットが ${branch} の HEAD と一致しません。"
+    echo "  ${branch} の HEAD: ${expected}"
+    echo "  本番の配備:       ${actual}（${created}）"
+    echo "  これは前提の不成立ではなく、実際の乖離である（ここまでの前提の確認は通っている）。"
+    echo "  まず deploy ジョブの実行を見ること: gh run list --workflow verify.yml --branch ${branch}"
+    echo "  緊急時の手動配備は docs/pages-deploy.md の「6. デプロイ（初回と緊急時のみ）」にある。"
+    return 1
+  fi
+
+  if [[ "$dirty" == "true" ]]; then
+    # ハッシュは合っているが、配備されたのは**そのコミットの内容ではない**。
+    # 手元の未コミットの変更を含んだまま配備すると、この印が付く。
+    echo "本番の配備がコミットと一致しない内容を含んでいます（commit_dirty=true / ${actual}）。"
+    echo "  作業ツリーが汚れた状態で手動配備された可能性がある。${branch} の HEAD から配備し直すこと。"
+    return 1
+  fi
+
+  echo "production deployment == ${branch} HEAD (${actual})"
+}
+
+##
 # Workers 用プリンシパルの権限が、宣言どおりでかつ最小限であることを確認する（#82）。
 #
 # 見るのは 3 つ。
@@ -686,6 +873,7 @@ run "dns hosted zone matches" check_dns_zone
 run "dns delegation from sakura is in place" check_dns_delegation
 run "pages custom domain records match" check_pages_dns_records
 run "wrangler production hosts match dns" check_wrangler_production_hosts
+run "production deployment matches main HEAD" check_pages_production_deployment
 run "bedrock invoker permissions are minimal" check_bedrock_invoker_permissions
 run "cost guard layer 2 (burst alarm) matches" check_bedrock_burst_alarm
 run "cost guard layer 3 (budgets) matches" check_bedrock_budgets

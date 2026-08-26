@@ -4,6 +4,10 @@
 - 対象: `app.game-forge.ojos.jp`（アプリ）と `sandbox.game-forge.ojos.jp`（UGC）。
 - **この文書は手順であって、実行の記録ではない。** 実際の配備は外部状態の変更なので、
   行った時点で `terraform/` か本文書に結果を残すこと。
+- **日常の配備は自動である（#95）。** `main` へマージすると GitHub Actions が本番へ
+  配備します。**この文書の「配備」の章が扱う手作業は、初回の構築と緊急時の手段**であって、
+  変更を本番へ届ける通常の経路ではありません。自動配備の実体と、その供給元
+  （GitHub Secrets）の登録手順は「自動配備」の章にあります。
 
 ## なぜ Workers ではなく Pages か
 
@@ -179,14 +183,151 @@ npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY --project-name game-
 これが無いと `@anthropic-ai/bedrock-sdk` が要求する `assert` / `stream` が解決できず
 ビルドが落ちます。**いまは何も import していないため不要**で、先に足しません。
 
-### 6. デプロイ
+### 6. デプロイ（初回と緊急時のみ）
+
+**日常の配備はこれではありません。** `main` へのマージで GitHub Actions が配備します
+（次章）。手で打つのは、**まだワークフローが無い初回**と、**ワークフローが使えない
+緊急時**（Cloudflare 側の障害、Secrets の失効、Actions の停止）に限ります。
 
 ```bash
-npx wrangler pages deploy --project-name game-forge --branch main
+set -a; source scripts/load-project-env.sh; set +a
+npx wrangler pages deploy --project-name game-forge --branch main \
+  --commit-hash "$(git rev-parse HEAD)" \
+  --commit-message "$(git log -1 --pretty=format:%s)"
 ```
 
 `--branch main` を明示します。省くと wrangler が git のブランチ名を推測し、
 **production_branch と一致しなければ preview として配備される**ためです。
+
+**`--commit-hash` / `--commit-message` は手で打つときも省かないこと。** 省くと
+Cloudflare 側に「どのコミットが本番に居るか」が残らず、配備ずれの検知（次章）が
+`本番の配備にコミットハッシュが記録されていません` で落ちます。**`main` の HEAD
+以外を配備しない**こと。手元の作業ツリーが汚れていると `commit_dirty` が立ち、
+やはり検知に掛かります。
+
+## 自動配備（日常の経路。#95）
+
+**`main` へマージすると、GitHub Actions が本番へ配備します。** 実体は
+`.github/workflows/verify.yml` の `deploy` ジョブで、実行するのは次の 1 本です。
+
+```bash
+npx wrangler pages deploy --project-name game-forge --branch main \
+  --commit-hash "$(git rev-parse HEAD)" \
+  --commit-message "$(git log -1 --pretty=format:%s)"
+```
+
+- **`verify` が緑のときにしか走りません。** 同じ実行の中で `needs: verify` の後段に
+  置いています。**条件式ではなく依存関係**なので、書き忘れで素通りする形になりません
+  （`workflow_run` で別ワークフローにしなかった理由は当該ジョブのコメントにあります）。
+- **契機は `push`（`main`）だけです。** PR では起動しません。fork からの PR は
+  そもそも `push` を起こせないため、構造的に届きません。
+- **Pages のシークレット（`SESSION_SECRET` 等）は触りません。** ワークフローに
+  `pages secret put` はありません。値の投入は上の「5. シークレットを入れる」（人手）が
+  持ち続けます。`wrangler pages deploy` は既存のシークレットを上書きしません。
+- **`--commit-hash` / `--commit-message` を必ず渡します。** これが Cloudflare 側の
+  配備一覧に載り、次の「配備ずれの検知」が読む値になります。
+
+### 配備ずれの検知
+
+**自動化しても「配備が失敗したまま気づかない」は残ります。** #95 で問題だったのは
+配備し忘れそのものより、**すべてのゲートが緑のまま本番だけが古かったこと**でした。
+外部層の受け入れ検証に検査を 1 件置いています。
+
+```bash
+VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
+#   production deployment matches main HEAD
+```
+
+**見るのは「配備されたか」ではなく「一致しているか」**です。本番がいま配っている配備
+（Cloudflare の `canonical_deployment`）のコミットハッシュと、GitHub 上の `main` の
+HEAD を突き合わせます。**配備一覧の先頭ではなく `canonical_deployment` を見る**のは、
+先頭は「最後に作られた配備」であり、それが失敗していれば本番はもっと古いものを配り
+続けているからです。
+
+手で確かめるなら次のとおりです。
+
+```bash
+set -a; source scripts/load-project-env.sh; set +a
+curl -s "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/game-forge" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  | jq -r '.result.canonical_deployment.deployment_trigger.metadata | "\(.commit_hash) dirty=\(.commit_dirty)"'
+git ls-remote origin refs/heads/main
+```
+
+不一致だったときは、まず `deploy` ジョブの実行を見ます。
+
+```bash
+gh run list --workflow verify.yml --branch main --limit 5
+```
+
+### GitHub Secrets への登録
+
+**ランナーには `.env` がありません。** ワークフローにとっての供給元は GitHub Secrets
+だけです。次の 2 つを登録します（`wrangler` が直接読む名前で、`.env` と同じ値です）。
+
+```bash
+# 値を履歴やプロセス一覧へ残さないよう、.env から読んで標準入力で渡す
+set -a; source scripts/load-project-env.sh; set +a
+printf '%s' "$CLOUDFLARE_API_TOKEN"  | gh secret set CLOUDFLARE_API_TOKEN  --repo ojos/game-forge
+printf '%s' "$CLOUDFLARE_ACCOUNT_ID" | gh secret set CLOUDFLARE_ACCOUNT_ID --repo ojos/game-forge
+
+gh secret list --repo ojos/game-forge    # 名前と更新日時だけが読める（値は読めない）
+```
+
+**再発行したときは 2 か所とも差し替えます。** ダッシュボードの My Profile → API Tokens
+で Roll し、`.env` を更新し、上のコマンドで Secrets も更新します。**片方だけ替えると、
+手元は通るのに CI だけが失効した状態**になります。そのときは `deploy` ジョブが赤くなり、
+放置すれば上の配備ずれ検知が拾います（どちらも黙って緑にはなりません）。
+
+### なぜトークンの保管先が `.env` と GitHub の 2 か所になるのか
+
+`.github/project-ai-rules.md` は **「トークンをファイルへ書き写さず、ツール自身の
+ログイン状態に持たせる」を原則**とし、gh（`GH_TOKEN`）と wrangler
+（`CLOUDFLARE_API_TOKEN`）を例外としています。**GitHub Secrets への登録は 3 つ目の
+例外**にあたるため、他の 2 つと同じ密度で理由を残します。
+
+- **理由**: GitHub Actions のランナーは、この devcontainer のログイン状態も `.env` も
+  持ちません。ワークフローが Cloudflare の API を呼ぶ以上、資格情報の供給元がランナー側に
+  要ります。そして **Cloudflare の API トークンには、GitHub の OIDC を受けて短命の
+  資格情報を発行する経路がありません**（AWS の `configure-aws-credentials` にあたるものが
+  無い）。**長命のトークンを置く以外の選択肢が無い**、というのが例外の根拠です。
+  これは仕様 4.1 が Bedrock の資格情報について「Workers は AWS の外で動くため IAM ロールを
+  引き受けられず、長命キーを置く」としているのと同じ形の妥協です。
+- **増えるのは保管先であって、トークンの本数ではありません。** 同じ 1 本を 2 か所へ
+  置きます。**CI 専用に別のトークンを発行して分けない**のは、**期限が API から読めない**
+  （上記「前提: 認証」）ためです。管理対象を 2 本に増やすと、切れたことに気づけない口が
+  2 つになります。片方だけを失効させたい理由ができた時点で分ければ足ります。
+- **権限は増やしません。** 上の 3 スコープ（Pages / D1 / R2 の Edit）のままです。配備に
+  必要なのは Pages だけですが、`.env` と同じ 1 本を使うため組は変わりません。
+- **fork からの PR に Secrets は渡りません**（GitHub の仕様）。`deploy` ジョブは
+  `push`（`main`）契機なので、**PR の内容から値を引き出す経路がそもそもありません**。
+  ワークフローはトークンを表示せず、GitHub はログ中の Secrets をマスクします。
+- **失効・期限切れ時**: 上の「再発行したときは 2 か所とも差し替えます」に従います。
+
+### Terraform で宣言するか（`github_actions_secret`）
+
+**採りません。** `terraform/main.tf` は GitHub のリポジトリ・ブランチ保護・Actions
+変数（`github_actions_variable.allowed_author_emails`）を宣言しており、Secrets も
+`github_actions_secret` で宣言する形は作れます。採らない理由は 3 つです。
+
+1. **値が tfstate へ平文で落ちます。** `github_actions_secret` は送信時に暗号化しますが、
+   受け取る属性（`plaintext_value`）は state に保存されます。これは
+   `terraform/bedrock.tf` が **`aws_iam_access_key` を宣言しない理由**（「生成した秘密鍵を
+   tfstate へ平文で書く。tfstate は追跡外だがディスク上は平文である」）と**同じ経路**です。
+   `providers.tf` が「資格情報を Terraform 変数として受け取ると tfstate や plan ファイルへ
+   平文で落ちる経路ができる」として避けているのも同じ判断で、**この論法はここにそのまま
+   当てはまります。**
+2. **宣言できるのは名前だけで、効くかどうかは宣言できません。** 値が正しいか・失効して
+   いないかは `terraform plan` では分かりません。それを担保するのは `deploy` ジョブの成否と、
+   上の配備ずれ検知です。**宣言を増やしても、この 2 つの代わりにはなりません。**
+3. **`ALLOWED_AUTHOR_EMAILS` を宣言しているのは、あれが機密でないからです。** 同じ理由で
+   `CLOUDFLARE_ACCOUNT_ID` だけなら変数として宣言できますが、**2 つの供給元を別々の
+   仕組みに分けると、片方だけを更新した状態が生まれます。** 2 つとも Secrets へ揃えます。
+
+**この判断は「宣言側で管理しない」ことを意味しません。** 名前・用途・登録手順・再発行
+経路をこの文書が持ち、実際に効いているかを外部層の検査が見ます。宣言できない範囲を文書が
+持つ形は、`docs/gcp-oauth-setup.md`（OAuth クライアント）と `docs/bedrock-access.md`
+（アクセスキー）と同じです。
 
 ## カスタムドメイン
 
@@ -299,6 +440,10 @@ VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 しているのは、片方だけを変えると「DNS は張れているのに Worker が `unknown host` で
 404 を返す」という、どちらを見ても正しく見える壊れ方をするためです。
 
+**本番の配備コミットが `main` の HEAD と一致していることも同じ検証が見ます**（#95。
+`production deployment matches main HEAD`）。**「すべてのゲートが緑なのに本番だけが
+古い」を拾う唯一の検査**です。詳しくは上の「配備ずれの検知」を見てください。
+
 **Bedrock の権限と費用ガードも同じ検証が見ます**（#82）。とくに
 `bedrock invoker permissions are minimal` は、**費用ガードが発火したまま復旧していない
 状態**でも失敗します（停止用の Deny ポリシーが付いたままになるため）。配備の赤ではなく
@@ -352,3 +497,5 @@ OAuth の開始経路も通っている。`/auth/google/start` が 303 で
   「UI やアドホックな CLI での直接作成・変更を、恒久的な状態変更の手段にしない」と
   定めており、上の手順のうち `wrangler ... create` と `domain add` は本来その対象です。
   **R2 の初回有効化だけは、宣言化しても解決しません**（API そのものが有効化前は使えない）。
+- **GitHub Secrets を Terraform で宣言するかは決着済みです**（#95。採らない。上の
+  「Terraform で宣言するか」参照）。ここへ残す未決事項ではありません。

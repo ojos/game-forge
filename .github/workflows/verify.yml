@@ -137,3 +137,141 @@ jobs:
           #   （複数はカンマまたは空白区切り。例: "you@example.com"）。
           ALLOWED_AUTHOR_EMAILS: ${{ vars.ALLOWED_AUTHOR_EMAILS }}
         run: bash scripts/verify.sh
+
+  # ── 本番への配備（#95）──────────────────────────────────────────────────────
+  #
+  # **なぜ別ファイル（workflow_run）ではなく、このワークフローのジョブなのか。**
+  #
+  # #95 の制約は「verify の後にだけ配備する。ゲートの外側に配備経路を作らない」で
+  # ある。**条件式で塞ぐか、依存関係で塞ぐかの違い**がここで効く。
+  #
+  #   workflow_run 案: verify の完了を契機に別ワークフローを起こし、
+  #     `github.event.workflow_run.conclusion == 'success'` を if で見る。
+  #     - 配備の可否が**書き忘れうる条件式**になる。条件を落としても、走った側は
+  #       緑に見える。ゲートの外側に経路がある状態を、条件式で塞いでいるだけである。
+  #     - workflow_run は **pull_request 由来の verify の成功でも発火する。** 絞り
+  #       損ねると PR の頭のコミットが本番へ出る。しかも workflow_run のジョブには
+  #       **fork 由来の実行に対しても Secrets が渡る**ため、事故の射程が最大になる。
+  #     - checkout する ref を明示しないと既定ブランチの先端を取る。**verify が
+  #       通ったコミットと、配備するコミットが別物になりうる。**
+  #
+  #   ここ（needs: verify）: 同じ実行・同じイベント・同じコミットの中で、
+  #     verify の後段に置く。
+  #     - `needs` は Actions 自身が強制する依存関係で、if のように書き忘れても
+  #       「素通り」にならない（書き忘れれば依存が消えるのではなく、ジョブの定義が
+  #       変わったことが diff に出る）。**verify が赤なら deploy は起動しない。**
+  #     - 契機が push(main) のみなので、fork からの PR は構造的に届かない。
+  #     - 配備するコミットは、verify を通したコミットそのものである。
+  #
+  # **verify.yml が配備も持つことになる。** 冒頭の設計コメントが言う「ここが担うのは
+  # 判定ではなく実行されること」の外側へ 1 歩出る。それでもこちらを採るのは、上の
+  # とおり「ゲートの外側に配備経路を作らない」を**機構で**保証できるのがこの形だけ
+  # だからである。判定ロジックを書き写さない原則（scripts/verify.sh を呼ぶだけ）は
+  # 変えていない。
+  #
+  # **このジョブは Pages のシークレット（SESSION_SECRET 等）を触らない**（#95 の制約）。
+  # `wrangler pages deploy` は既存のシークレットを上書きしない。`pages secret put` を
+  # ここへ書かないこと。値の投入は docs/pages-deploy.md の手順（人手）が持つ。
+  deploy:
+    # **配備の可否はこの 1 行が持つ。** verify が失敗・キャンセルされた実行では
+    # このジョブは起動しない。
+    needs: verify
+
+    # push(main) だけ。pull_request の実行では skip される（この if が false になる）。
+    #
+    # リポジトリの限定は fork 対策である。fork の main へ push すると、あちらには
+    # Secrets が無いので配備は必ず失敗する。verify.yml 冒頭の基準
+    # 「スキップの根拠は『その権限では実行できない』ことに限る」に、これは当たる。
+    #
+    # **ここだけはリポジトリ名を書き写している。** ワークフローから terraform の
+    # output（repository_full_name）は読めず、github コンテキストにも「upstream か
+    # どうか」を表す値が無いためである。名前を変えたときはここも変える。
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'ojos/game-forge'
+
+    runs-on: ubuntu-latest
+
+    # **配備は直列にする。鍵を github.sha にしない。**
+    #
+    # verify 側の鍵（push はコミットごとに別グループ）は「取り消しも待ちも起こさない」
+    # ことを狙ったもので、検査には正しい。配備では逆に働く。連続してマージすると
+    # 2 つの配備が並走し、**先に始まった古いコミットの配備が後に完了して本番が巻き
+    # 戻る**ことがある。
+    #
+    # 固定の鍵にすると、実行中の 1 本が終わるまで後続は待つ。待っているあいだに
+    # さらに新しい実行が来ると、GitHub は**待機中の古い方を取り消す**ため、最後に
+    # 残るのは常に最新のコミットになる。cancel-in-progress: false は、走り出した
+    # 配備を途中で切らないためである（wrangler の途中終了は成果が中途半端になる）。
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      # verify 側と違い fetch-depth は既定（1）でよい。ここで git に聞くのは
+      # HEAD のハッシュと件名だけで、履歴を遡る検査を持たない。
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # wrangler は devDependencies に固定されている（package.json）。npx が
+      # レジストリから別の版を引かないよう、ここで入れたものを使う。
+      # prepare（wrangler types）は Cloudflare の資格情報を要さない。
+      - run: npm ci
+
+      # **未設定を skip にしない。** deploy-compiler.yml の VPS 側は「まだ存在しない
+      # 相手」なので skip が正しいが、こちらは**すでに本番が動いている**。設定漏れを
+      # skip にすると、#95 で起きたこと（マージしても本番が変わらないのに、どのゲートも
+      # 緑）をそのまま作り直すことになる。落として気づけるようにする。
+      - name: Secrets が揃っているか
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CLOUDFLARE_API_TOKEN}" || -z "${CLOUDFLARE_ACCOUNT_ID}" ]]; then
+            echo "::error::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID が Secrets に設定されていません。登録手順は docs/pages-deploy.md「GitHub Secrets への登録」にあります。"
+            exit 1
+          fi
+
+      - name: Deploy to Cloudflare Pages
+        env:
+          # wrangler がこの 2 つの名前を直接読む（.env と同じ名前・同じ値）。
+          # 保管先が 2 か所になる理由は docs/pages-deploy.md に書いてある。
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # **式（${{ }}）を run の中へ書かない。** 置換は文字列として行われるため、
+        # 値に引用符が混ざるとシェルの構文ごと変わる（review-gate.yml の同じ注記）。
+        # コミット件名は人が書くもので引用符を含みうるので、git から取る。
+        run: |
+          set -euo pipefail
+
+          # **チェックアウト済みの作業ツリーから取る。** github.sha を式で埋めるのでは
+          # なく git に聞くことで、「いま配っているファイル」と「記録するハッシュ」が
+          # 同じものであることが構造的に担保される。
+          commit_hash="$(git rev-parse HEAD)"
+          # 件名だけを取る（%s）。本文まで渡すと Cloudflare の一覧で 1 行に潰れて読めない。
+          commit_message="$(git log -1 --pretty=format:%s)"
+
+          # **--commit-hash / --commit-message は省かない**（#95）。#95 の調査で
+          # 「本番がどのコミットか」を Cloudflare 側から辿れたことが決め手になった。
+          # scripts/acceptance-remote.sh の配備ずれ検知も、この値を読んでいる。
+          #
+          # --branch main を明示する。省くと wrangler が git のブランチ名を推測し、
+          # production_branch と一致しなければ preview として配備される
+          # （docs/pages-deploy.md）。
+          #
+          # --project-name は wrangler.toml の name と同じ値である。ここがずれると
+          # 別プロジェクトへ配備され、本番は古いままになるが、その状態は
+          # acceptance-remote.sh の配備ずれ検知が拾う（あちらは terraform の
+          # 宣言側からプロジェクト名を導いている）。
+          npx wrangler pages deploy \
+            --project-name game-forge \
+            --branch main \
+            --commit-hash "$commit_hash" \
+            --commit-message "$commit_message"

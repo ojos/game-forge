@@ -25,7 +25,7 @@
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { LOGIN_PATH } from './auth/google.js';
-import { SIGNUP_PATH } from './paths.js';
+import { INVITES_PATH, SIGNUP_PATH } from './paths.js';
 
 /** 公開トップのパス。 */
 export const HOME_PATH = '/';
@@ -37,6 +37,14 @@ export const HOME_PATH = '/';
  * 骨組みだけで、#83 / #16 が未完了である（#89 の scope.out）。この時点で「1 行の
  * プロンプトからゲームが作れます」と書くと、登録した人が最初に踏むのが「何もできない」
  * になる。いま提供できるのは登録と待機リストだけなので、そこまでを書く。
+ *
+ * 招待の発行（#91）への導線をここに置くのは、**ログイン後の着地点が `/` だから**である
+ * （`src/auth/google.ts` のコールバックは `/` へ戻す）。導線が無いと、実装した経路へ
+ * ブラウザから辿り着けない。未ログインにも見えるリンクになるが、押した先で
+ * ログインへ送られるだけで、D1 の読み取りはここでは起きない。
+ *
+ * **招待枠の本数をここに書かない。** 書けば `INVITE_QUOTA`（`src/invite-issuance.ts`）の
+ * 写しになり、変えたときに片方だけが古くなる。本数は発行の画面が出す。
  */
 const HOME_HTML = `<!doctype html>
 <meta charset="utf-8">
@@ -58,6 +66,9 @@ const HOME_HTML = `<!doctype html>
   <li><a href="${SIGNUP_PATH}">招待コードをお持ちでない方（待機リストに登録する）</a></li>
   <li><a href="${LOGIN_PATH}">すでにアカウントをお持ちの方（Google でログイン）</a></li>
 </ul>
+
+<h2>参加している方へ</h2>
+<p><a href="${INVITES_PATH}">招待コードを発行する</a>（ログインが必要です）</p>
 `;
 
 /**

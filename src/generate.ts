@@ -18,7 +18,7 @@
  */
 import type { Route, RouteHandler } from './routes.js';
 import { json, readLimitedText } from './routes.js';
-import { readSessionCookie, verifySession } from './session.js';
+import { resolveSessionUser } from './session-user.js';
 
 /** 生成エンドポイントのパス。 */
 export const GENERATE_PATH = '/api/generate';
@@ -182,52 +182,6 @@ export async function parseGenerateRequest(request: Request): Promise<GeneratePa
   }
 
   return { ok: true, request: { prompt: trimmed } };
-}
-
-/**
- * セッションから利用者を解決する。
- *
- * 署名の検証だけでなく、**その利用者が今も生成してよいか**を D1 で確かめる。
- * セッションの寿命は 7 日（`src/auth/google.ts`）で、サーバ側に失効の手段が無いため、
- * 署名だけを信じると BAN（7.3）が最大 7 日効かない。読み取りは書き込みの 1/1000 の
- * 単価であり（3.6）、生成は 1 日十数回の操作なので、ここで 1 回引いても問題にならない。
- *
- * @param request 受信したリクエスト
- * @param env バインディングと環境変数
- * @returns 利用者の id、または拒否
- */
-async function resolveSessionUser(
-  request: Request,
-  env: Env,
-): Promise<{ readonly ok: true; readonly userId: string } | { readonly ok: false }> {
-  const token = readSessionCookie(request.headers.get('cookie'));
-  if (token === null) {
-    return { ok: false };
-  }
-
-  const verified = await verifySession(token, env.SESSION_SECRET);
-  if (!verified.ok) {
-    // 理由は返さない。改竄・期限切れ・鍵違いのどれであっても、利用者にできることは
-    // 「もう一度ログインする」だけである。
-    console.error(`[generate] セッションを受け付けませんでした: ${verified.reason}`);
-    return { ok: false };
-  }
-
-  const row = await env.DB.prepare('select banned_at from users where id = ?')
-    .bind(verified.payload.userId)
-    .first<{ banned_at: number | null }>();
-  if (row === null) {
-    // 署名は通るが利用者が居ない。招待の消費に失敗して取り消された行（T7 の補償）や、
-    // 手動で消した行のセッションがこれにあたる。
-    console.error('[generate] セッションが指す利用者が存在しません');
-    return { ok: false };
-  }
-  if (row.banned_at !== null) {
-    console.error('[generate] BAN された利用者の生成を拒否しました');
-    return { ok: false };
-  }
-
-  return { ok: true, userId: verified.payload.userId };
 }
 
 /**

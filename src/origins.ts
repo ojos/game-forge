@@ -17,20 +17,37 @@ export interface OriginRelation {
 }
 
 /**
- * サンドボックス用ホストがアプリ用ホストの真のサブドメインであることを、
- * 同一サイト性の判定基準として使う。
+ * 同一サイト性を「**両者が同じ親ドメインの下にあること**」で判定する。
  *
- * なぜ登録可能ドメイン（eTLD+1）を直接計算しないか: 正確な算出には Public Suffix
- * List が要る。`co.jp` のような多段の public suffix があるため、末尾 2 ラベルを
- * 取る近似は一般には誤る。一方、本プロダクトが実際に採る構成では
- * サンドボックスがアプリの真のサブドメインであり（本番 `sandbox.game-forge.ojos.jp`
- * ⊂ `game-forge.ojos.jp` / 開発 `sandbox.game-forge.localtest.me` ⊂
- * `game-forge.localtest.me`）、**アプリ用ホスト自身が public suffix でない限り**
- * 両者の登録可能ドメインは必ず一致する。PSL を持ち込まずに構成として保証できる
- * ため、こちらを不変条件に選ぶ。
+ * ## なぜ eTLD+1 を直接計算しないか
  *
- * この関数が保証しないのは「アプリ用ホスト自身が public suffix でないこと」だけで、
- * これは `game-forge.ojos.jp` / `game-forge.localtest.me` のいずれも該当しない。
+ * 正確な算出には Public Suffix List が要る。`co.jp` のような多段の public suffix が
+ * あるため、末尾 2 ラベルを取る近似は一般には誤る。PSL を Worker へ持ち込むのは
+ * この判定の目的（設定の取り違えに気づくこと）に対して重い。
+ *
+ * ## 判定に使う近似
+ *
+ * 両ホストの**ラベル境界で揃えた最長共通接尾辞**を親ドメインとみなし、それが
+ * 2 ラベル以上あれば同一サイトとする。1 ラベル（`jp` / `com`＝ TLD）で終わる場合は
+ * 明らかに別サイトなので落とす。**この近似が保証しないのは「共通の親自身が public
+ * suffix でないこと」だけ**で、`game-forge.ojos.jp` / `game-forge.localtest.me` の
+ * いずれも該当しない。
+ *
+ * ## v1.4（#89）で緩めた点と、その埋め合わせ
+ *
+ * それ以前は「サンドボックスがアプリの**真のサブドメイン**であること」を条件に
+ * していた。本番のアプリ用ホストが `app.game-forge.ojos.jp` になり（確定16 の改訂。
+ * `game-forge.ojos.jp` は Route53 ゾーンの apex で CNAME を張れない）、サンドボックスと
+ * **兄弟**の関係になったため、その条件では本番の組み合わせが落ちる。
+ *
+ * 緩めた分、この関数は「綴りを間違えた設定」を捕まえる力を失う（`ojos.jp` 配下なら
+ * 何でも同一サイトと答える）。**その役目は `test/origins.test.ts` の
+ * 「wrangler.toml の本番値」の検査へ移した**。あちらは宣言そのものを読んで
+ * ホスト名の組を固定するので、近似の緩さと関係なく取り違えが落ちる。
+ *
+ * なお 7.2 が要求する対策（`__Host-` cookie / CSP `sandbox`）は、サブドメイン関係でも
+ * 兄弟関係でも同じである。兄弟でも `Domain=game-forge.ojos.jp` の cookie は相手へ
+ * 届くため、防ぐべきものは変わらない。
  *
  * @param appHost アプリ用ホスト名（ポートを含まない）
  * @param sandboxHost サンドボックス用ホスト名（ポートを含まない）
@@ -46,12 +63,51 @@ export function describeOriginRelation(appHost: string, sandboxHost: string): Or
     reasons.push(`ホスト名が同一かまたは空です（app=${app || '(空)'} / sandbox=${sandbox || '(空)'}）`);
   }
 
-  const sameSite = sandbox.endsWith(`.${app}`) && sandbox.length > app.length + 1;
+  // 空のラベルを持つ値（`.game-forge.ojos.jp` など）は、共通接尾辞の計算では
+  // 一致してしまうがホスト名として成立しない。先に落とす。
+  const wellFormed = hasOnlyNonEmptyLabels(app) && hasOnlyNonEmptyLabels(sandbox);
+  const parent = wellFormed ? longestCommonDomainSuffix(app, sandbox) : '';
+  const sameSite = parent.includes('.');
   if (!sameSite) {
-    reasons.push(`サンドボックス用ホストがアプリ用ホストの真のサブドメインではありません（${sandbox} ⊄ ${app}）`);
+    reasons.push(
+      `共通の親ドメインがありません（app=${app || '(空)'} / sandbox=${sandbox || '(空)'} / 共通=${parent || '(なし)'}）`,
+    );
   }
 
   return { differentOrigin, sameSite, reasons };
+}
+
+/**
+ * ホスト名が空のラベルを含まないことを確かめる。
+ *
+ * @param host 正規化済みのホスト名
+ * @returns ラベルがすべて非空なら true
+ */
+function hasOnlyNonEmptyLabels(host: string): boolean {
+  return host.length > 0 && host.split('.').every((label) => label.length > 0);
+}
+
+/**
+ * 2 つのホスト名の、**ラベル境界で揃えた**最長共通接尾辞を返す。
+ *
+ * 文字列の `endsWith` で書くと `evilgame-forge.ojos.jp` が `game-forge.ojos.jp` で
+ * 終わるように見える。ラベルの配列を末尾から突き合わせると、その取り違えが起きない。
+ *
+ * @param a ホスト名
+ * @param b ホスト名
+ * @returns 共通接尾辞（無ければ空文字）
+ */
+function longestCommonDomainSuffix(a: string, b: string): string {
+  const left = a.split('.').reverse();
+  const right = b.split('.').reverse();
+  const shared: string[] = [];
+  for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+    if (left[index] !== right[index]) {
+      break;
+    }
+    shared.push(left[index]!);
+  }
+  return shared.reverse().join('.');
 }
 
 /**

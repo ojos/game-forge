@@ -1,6 +1,6 @@
 import { SELF, env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { appRoutes } from '../src/app.js';
+import { createAppRoutes } from '../src/app.js';
 import { dispatch, findDuplicateRoutes, json } from '../src/routes.js';
 import type { Route } from '../src/routes.js';
 
@@ -77,11 +77,11 @@ describe('経路表の重複検出', () => {
     expect(findDuplicateRoutes(probeRoutes)).toEqual([]);
   });
 
-  it('appRoutes に重複した経路がない', () => {
+  it('経路表に重複した経路がない', () => {
     // dispatch は最初に一致した経路を使うため、重複しても動いてしまう。M1 は複数の
     // PR が並行して経路を連結するので、後から足した側が黙って無視される事故が起こる。
     // 動作では気づけない以上、ここで落とす。
-    expect(findDuplicateRoutes(appRoutes)).toEqual([]);
+    expect(findDuplicateRoutes(createAppRoutes(env))).toEqual([]);
   });
 });
 
@@ -96,10 +96,14 @@ describe('経路表への差し替えが振る舞いを変えていない', () =
     // 完全一致では固定しない。M1 以降で経路が足されるたびにこの行を書き換える
     // ことになり、経路表へ分解して減らしたはずの衝突面をテスト側で作り直してしまう。
     // ここが見たいのは「既存の 4 経路が失われていないこと」だけである。
-    const registered = appRoutes.map((route) => `${route.method} ${route.path}`);
+    //
+    // 索引は #89 で `/` から `/__dev/` へ移した（`/` は公開トップになった）。
+    // 経路そのものは失われていないので、綴りだけを追随させる。
+    const registered = createAppRoutes(env).map((route) => `${route.method} ${route.path}`);
     expect(registered).toEqual(
       expect.arrayContaining([
         'GET /',
+        'GET /__dev/',
         'GET /__dev/health',
         'GET /__dev/session',
         'GET /__dev/cookies',
@@ -109,7 +113,7 @@ describe('経路表への差し替えが振る舞いを変えていない', () =
 
   it('非 GET は 405 になる（分解前は 200 を返していた）', () =>
     Promise.all(
-      ['/', '/__dev/health', '/__dev/session', '/__dev/cookies'].map(async (path) => {
+      ['/', '/__dev/', '/__dev/health', '/__dev/session', '/__dev/cookies'].map(async (path) => {
         // 分解前の `switch (url.pathname)` はメソッドを見ておらず、POST でも
         // GET と同じレスポンスを返していた。経路表化で 405 に変わる。
         // `/__dev/*` は開発用の診断経路で利用者がいないため互換を残さないが、

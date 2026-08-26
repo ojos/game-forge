@@ -181,3 +181,23 @@ variable "gcp_project_name" {
   type        = string
   default     = "game-forge"
 }
+
+variable "cloudflare_pages_project" {
+  description = <<-EOT
+    Cloudflare Pages のプロジェクト名（#89）。
+
+    Pages プロジェクトそのものは Terraform の管理対象ではない（wrangler で作る。
+    docs/pages-deploy.md）。ここで受けるのは、カスタムドメインが要求する CNAME の
+    向き先 "<project>.pages.dev" を組み立てるための識別子だけである。
+
+    機密ではない。値を変えるとアプリの向き先が変わるため、既定値を置いて宣言の中で
+    完結させる（tfvars を書き忘れた環境が、黙って別の向き先を作らないようにする）。
+  EOT
+  type        = string
+  default     = "game-forge"
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9-]*$", var.cloudflare_pages_project))
+    error_message = "cloudflare_pages_project には英小文字・数字・ハイフンのみを使用できます。"
+  }
+}

@@ -21,6 +21,8 @@ declare global {
       readonly TEST_VENDOR_DEPS: string;
       /** 隔離ビルドの検査用サンプル（`docker/isolated-build/sample/ebitengine.go`）。 */
       readonly TEST_BUILD_SAMPLE: string;
+      /** `wrangler.toml` の中身。本番の宣言値をテストから読むために渡している（#89）。 */
+      readonly TEST_WRANGLER_TOML: string;
       /**
        * `.dev.vars.example` の中身（`vitest.config.ts` の `textBlobBindings`）。
        *

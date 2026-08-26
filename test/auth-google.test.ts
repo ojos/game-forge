@@ -1,6 +1,6 @@
 import { SELF, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { appRoutes } from '../src/app.js';
+import { createAppRoutes } from '../src/app.js';
 import {
   CALLBACK_PATH,
   LOGIN_PATH,
@@ -923,8 +923,8 @@ describe('ログアウト（#12 scope.in）', () => {
 });
 
 describe('経路表への連結', () => {
-  it('認証の 3 経路が appRoutes に登録されている', () => {
-    const registered = appRoutes.map((route) => `${route.method} ${route.path}`);
+  it('認証の 3 経路が経路表に登録されている', () => {
+    const registered = createAppRoutes(env).map((route) => `${route.method} ${route.path}`);
     expect(registered).toEqual(
       expect.arrayContaining([
         `GET ${LOGIN_PATH}`,

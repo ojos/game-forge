@@ -38,7 +38,9 @@
 #   （7.1 の対応表）、ハンドラは 3 領域を使わない。マウントしても production の
 #   コードパスが触らないため、「書けること」を確かめても本番の何も保証しない。
 #   7.1 の前提 2（`/cache` の chown）は、これで根拠ごと消えた。
-# - **`--memory` / `--cpus` を本番の配分に合わせた**（3,538 MB / 2 vCPU。3.8）。
+# - **`--memory` / `--cpus` を本番の配分に合わせた**（3,008 MB / 1.7 vCPU。3.8）。
+#   ※ 当初は 3,538 MB / 2 vCPU だった。**このアカウントの Lambda メモリ上限が
+#   3,008 MB で、3,538 を宣言できない**（#103。terraform/build-function.tf に経緯）。
 #   `--memory=512m --cpus=1` では実測 11.3 秒でタイムアウトに収まらず、
 #   ここで測る時間が本番の判断材料にならない。
 #
@@ -125,7 +127,9 @@ WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/isolated-build.XXXXXX")" || fatal "一時�
 # 検査ごとに書き下すと、片方だけ制約が緩んだ状態で緑になる経路ができる。
 #
 # `/tmp` の大きさと `--memory` / `--cpus` は**本番の宣言に合わせてある**
-# （terraform/build-function.tf: エフェメラルストレージ 1,024 MB / メモリ 3,538 MB＝2 vCPU 相当）。
+# （terraform/build-function.tf: エフェメラルストレージ 1,024 MB / メモリ 3,008 MB）。
+# Lambda の vCPU はメモリに比例し 1 vCPU = 1,769 MB なので、3,008 MB は 1.70 vCPU
+# 相当になる。**本番より速い配分でここを緑にすると、10 秒の判定が甘くなる。**
 #
 # --tmpfs の値にはカンマ区切りのマウントオプションが入る。shellcheck は配列要素の
 # 区切りと読み違えるが、ここは 1 要素として渡すのが正しい。
@@ -137,8 +141,8 @@ CONTAIN_OPTS=(
   --tmpfs /tmp:rw,nosuid,nodev,size=1024m
   --user 65534:65534
   --pids-limit=64
-  --memory=3538m
-  --cpus=2
+  --memory=3008m
+  --cpus=1.7
   --security-opt no-new-privileges
 )
 

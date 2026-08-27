@@ -53,8 +53,25 @@ locals {
    * 比例し、7.1 が当初書いていた `--cpus=1` 相当では実測 11.3 秒で 10 秒に収まらない。
    * 3,538 MB で実測 5.3 秒（#76）。**512 MB では 2 vCPU を得られない**ため、
    * ローカルの `--memory=512m` はここでは採らない。
+   *
+   * **ただし 3,538 は宣言できない。このアカウントの Lambda メモリ上限が 3,008 MB
+   * だからである**（#103 の初回 apply で判明。`CreateFunction` が
+   * `'MemorySize' value failed to satisfy constraint: Member must have value less
+   * than or equal to 3008` で 400 を返す）。10,240 MB まで使える既定のアカウントと、
+   * 3,008 MB で据え置かれるアカウントがあり、後者だった。
+   *
+   * **この上限は Service Quotas から引き上げられない。** `service-quotas
+   * list-service-quotas --service-code lambda` にメモリの項目自体が無く
+   * （`L-548AE339` は `NoSuchResourceException`）、経路は AWS Support のケースに
+   * なる。上の 3,538 は「2 vCPU ちょうど」を狙った値なので、3,008 は
+   * 3008/1769 = **1.70 vCPU 相当**であり、2 vCPU に対して約 15% 遅くなる。
+   *
+   * **それでも 3,008 で進める。** 10 秒の前提を確定させるのは Lambda 上の実測で
+   * あり、実測には関数が存在する必要がある。ローカルの 5.4 秒を 1.70/2.00 で割り
+   * 戻すと約 6.4 秒で、10 秒には収まる見込みである。実測がこれを裏切ったときに
+   * 初めて Support のケースを起こす（引き上げの待ち時間を、要否が判る前に払わない）。
    */
-  build_function_memory_mb       = 3538
+  build_function_memory_mb       = 3008
   build_function_timeout_seconds = 10
 
   /**

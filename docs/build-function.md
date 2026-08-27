@@ -11,11 +11,19 @@
 
 | 対象 | 実体 |
 |---|---|
-| 関数 | `game-forge-build`（`package_type = "Image"`。メモリ 3,538 MB / タイムアウト 10 秒） |
+| 関数 | `game-forge-build`（`package_type = "Image"`。メモリ **3,008 MB** / タイムアウト 10 秒） |
 | イメージ | ECR の `game-forge/isolated-build`。`golang:1.26.5` を基にした約 1.6 GB |
 | 入口 | `docker/isolated-build/handler/`（Lambda Runtime API を自前で回す。依存 0 件） |
 | 配備 | `.github/workflows/deploy-compiler.yml`（OIDC。長命の鍵を持たない） |
 | ログ | `/aws/lambda/game-forge-build`（14 日保持。**生成ソースも成果物も出しません**） |
+
+**メモリが 3,008 MB なのはアカウントの上限です。** 仕様は 3,538 MB（2 vCPU ちょうど）を
+指していましたが、`CreateFunction` が
+`'MemorySize' value failed to satisfy constraint: Member must have value less than or equal to 3008`
+で 400 を返します。Lambda のメモリ上限は 10,240 MB のアカウントと 3,008 MB のアカウントが
+あり、これは後者です。**Service Quotas には項目自体が無く**（`L-548AE339` は
+`NoSuchResourceException`）、引き上げは AWS Support のケースになります。3,008 MB は
+**1.70 vCPU 相当**で、下の実測より約 15% 遅くなる見込みです（仕様 1.2.22 / #103）。
 
 **VPC には入れません。** 確定24 が v1.11 で VPC を外した理由は 7.1 にあります。
 `vpc_config` を足すことは、DNS の持ち出しチャネル・実行ロールへの EC2 権限・
@@ -187,7 +195,7 @@ bash scripts/check-isolated-build.sh
 
 ## brotli の品質
 
-**q11 は 3.8 の 10 秒に収まりません。** 実測（本番と同じ 2 vCPU / 3,538 MB）:
+**q11 は 3.8 の 10 秒に収まりません。** 実測（当時の想定配分 2 vCPU / 3,538 MB。**実際の本番は上記のとおり 3,008 MB＝1.70 vCPU で、下の数字より遅くなります**）:
 
 | 品質 | ビルド | 圧縮 | 合計 | 圧縮後 |
 |---|---|---|---|---|

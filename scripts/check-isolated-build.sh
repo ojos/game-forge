@@ -164,7 +164,24 @@ fi
 # **掃除がテスト可能な単位であることは、7.1 が使い捨ての保証を手放す条件である。**
 # イメージのビルドが同じテストを走らせるので二重だが、こちらは**イメージを作らない
 # 経路（IMAGE を外から渡した場合）でも回り、失敗の中身がそのまま読める。**
-if command -v go >/dev/null 2>&1; then
+#
+# **ホストの Go の版が足りないときは回さない。** handler/go.mod は 1.26.5 を要求し、
+# `GOTOOLCHAIN=local` があるので古い Go は toolchain を落としに行かず、
+# `go.mod requires go >= 1.26.5 (running go 1.24.13)` で必ず落ちる。
+# **GitHub のランナーが実際にこれを踏んだ**（2026-08-27。ランナーの Go は 1.24.13、
+# 開発機は 1.26.5）。**開発機でだけ通る検査**になっていた。
+#
+# ここを「落とす」にすると、ホストの Go の版という**このイメージと無関係な理由**で
+# 赤が出る。イメージのビルドが同じテストを同じ Go（1.26.5）で走らせているので、
+# **担保は失われない。**
+HANDLER_GO_MIN="$(sed -nE 's/^go ([0-9.]+)$/\1/p' docker/isolated-build/handler/go.mod | head -1)"
+if ! command -v go >/dev/null 2>&1; then
+  info "go が無いため単体テストはここでは回しません（イメージのビルドが同じテストを走らせます）"
+elif [[ -n "$HANDLER_GO_MIN" ]] \
+  && ! printf '%s\n%s\n' "$HANDLER_GO_MIN" "$(go env GOVERSION | sed 's/^go//')" \
+     | sort -C -V; then
+  info "ホストの Go が $(go env GOVERSION)（handler/go.mod は ${HANDLER_GO_MIN} 以上を要求）なのでここでは回しません（イメージのビルドが同じテストを走らせます）"
+else
   if (cd docker/isolated-build/handler \
       && env GOFLAGS= GOOS=linux GOTOOLCHAIN=local go test ./... >"$WORKDIR/gotest.log" 2>&1); then
     ok "ハンドラの単体テストが通る（/tmp の掃除の単位）"
@@ -172,8 +189,6 @@ if command -v go >/dev/null 2>&1; then
     sed 's/^/    /' "$WORKDIR/gotest.log" >&2
     ng "ハンドラの単体テストが落ちました"
   fi
-else
-  info "go が無いため単体テストはここでは回しません（イメージのビルドが同じテストを走らせます）"
 fi
 
 # ── 実行ヘルパ ──────────────────────────────────────────────────────────────
@@ -352,13 +367,23 @@ if out_fetch first.json "$WORKDIR/first.json"; then
     ng ".wasm.br を base64 として復号できませんでした"
   fi
 
-  # 3.8 の 10 秒に収まっているか。**ここで測れる時間は本番と同じ CPU 配分のものである。**
+  # 所要時間。**必ず出すが、値では落とさない。**
+  #
+  # **ここで測れるのは「この機械での時間」であって、Lambda での時間ではない。**
+  # 同じ `--cpus=2` でも機械差が大きい（2026-08-27 の実測: 開発機 5,392 ms /
+  # GitHub のランナー 14,598 ms ＝ **2.7 倍**）。どちらも Lambda ではない。
+  #
+  # 値で落とすと、**機械が遅いという、この変更と無関係な理由で赤が出る**。
+  # #99 が塞いだ「原因の読めない赤」を新しく作ることになる。
+  #
+  # **3.8 の 10 秒の判定は Lambda 上の実測が持つ。** ここは回帰を目で見るための
+  # 数字であり、極端に伸びたときに気づくためのものである。
   total_ms="$(jq -r '.timings.totalMs' <"$WORKDIR/first.json")"
+  jq -r '"    timings: \(.timings)"' <"$WORKDIR/first.json" >&2
   if [[ "$total_ms" =~ ^[0-9]+$ ]] && ((total_ms < 10000)); then
-    ok "1 回の呼び出しが 10 秒に収まる（${total_ms} ms。3.8 のタイムアウト）"
+    ok "1 回の呼び出しが ${total_ms} ms（この機械では 10 秒に収まる。**Lambda の判定ではない**）"
   else
-    jq -r '"    timings: \(.timings)"' <"$WORKDIR/first.json" >&2
-    ng "1 回の呼び出しが 3.8 のタイムアウト（10 秒）に収まりません（${total_ms} ms）"
+    info "1 回の呼び出しが ${total_ms} ms（この機械では 10 秒を超える。**Lambda の判定ではない**。3.8 の判定は Lambda 上の実測が持つ）"
   fi
 else
   ng "1 回目の結果を取り出せませんでした"

@@ -174,12 +174,37 @@ fi
 # ここを「落とす」にすると、ホストの Go の版という**このイメージと無関係な理由**で
 # 赤が出る。イメージのビルドが同じテストを同じ Go（1.26.5）で走らせているので、
 # **担保は失われない。**
+##
+# 版 $1 が $2 以上かを判定する（`1.26.5` 形式）。
+#
+# **`sort -V` を使わない。** あれは GNU coreutils の拡張で、BSD の sort には無い。
+# 無い環境では `sort` がエラーを返し、**判定が常に「足りない」へ倒れて検査が黙って
+# 無効になる**（PR #108 の Copilot code review の指摘）。**検査していないことを
+# 合格にしない**ためには、外部コマンドに依存しない形が要る。
+#
+# 戻り値: 0 = $1 >= $2 / 1 = それ以外
+##
+version_at_least() {
+  local have="$1" want="$2" i
+  local -a h w
+  IFS=. read -r -a h <<<"$have"
+  IFS=. read -r -a w <<<"$want"
+  for ((i = 0; i < ${#w[@]}; i++)); do
+    local hv="${h[i]:-0}" wv="${w[i]:-0}"
+    # 数字でない断片（rc1 など）は 0 として扱う。厳密な比較は要らない。
+    [[ "$hv" =~ ^[0-9]+$ ]] || hv=0
+    [[ "$wv" =~ ^[0-9]+$ ]] || wv=0
+    ((hv > wv)) && return 0
+    ((hv < wv)) && return 1
+  done
+  return 0
+}
+
 HANDLER_GO_MIN="$(sed -nE 's/^go ([0-9.]+)$/\1/p' docker/isolated-build/handler/go.mod | head -1)"
 if ! command -v go >/dev/null 2>&1; then
   info "go が無いため単体テストはここでは回しません（イメージのビルドが同じテストを走らせます）"
 elif [[ -n "$HANDLER_GO_MIN" ]] \
-  && ! printf '%s\n%s\n' "$HANDLER_GO_MIN" "$(go env GOVERSION | sed 's/^go//')" \
-     | sort -C -V; then
+  && ! version_at_least "$(go env GOVERSION | sed 's/^go//')" "$HANDLER_GO_MIN"; then
   info "ホストの Go が $(go env GOVERSION)（handler/go.mod は ${HANDLER_GO_MIN} 以上を要求）なのでここでは回しません（イメージのビルドが同じテストを走らせます）"
 else
   if (cd docker/isolated-build/handler \

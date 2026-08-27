@@ -114,9 +114,26 @@ if (problems.length > 10) console.log(`... 他 ${problems.length - 10} 件`);
 process.exit(1);
 JS
 )"; then
-  # node 自身が落ちた場合（JSON が壊れている等）も、ここへ来る。出力をそのまま見せる。
+  # node 自身が落ちた場合（JSON が壊れている等）も、ここへ来る。
+  #
+  # **node の stderr は捕捉していない**（`2>&1` を付けていない）ので、`diff_report` は
+  # 空になり、下の分岐が読めるメッセージを出す。stderr を混ぜると、スタックの 1 行目を
+  # 件数として表示してしまう（PR #105 の Copilot code review の指摘。**実際には
+  # 捕捉していないので起きない**ことを実測で確認したが、`2>&1` を足した瞬間に成立する
+  # ため、足さない理由をここへ残す）。
+  #
+  # ただし node の生のスタックが先に流れて読みにくいので、区切りを 1 行入れる。
   if [[ -z "$diff_report" ]]; then
-    fail "package-lock.json / $HIDDEN を読めませんでした。'npm ci' を実行してください。"
+    printf '[deps] ---- 上は node の出力 ----\n' >&2
+    fail "package-lock.json / $HIDDEN を読めませんでした（JSON が壊れているか、ファイルがありません）。'npm ci' を実行してください。"
+  fi
+
+  # 先頭行が件数（数字）でなければ、想定外の出力である。**件数として表示しない。**
+  if [[ ! "$(printf '%s\n' "$diff_report" | head -1)" =~ ^[0-9]+$ ]]; then
+    printf '[deps] 依存の照合が想定外の出力を返しました。そのまま出します:\n' >&2
+    printf '%s\n' "$diff_report" | sed 's/^/[deps]     /' >&2
+    echo "DEPS_FAIL"
+    exit 1
   fi
   count="$(printf '%s\n' "$diff_report" | head -1)"
   printf '[deps] node_modules が package-lock.json とずれています（差分 %s 件）:\n' "$count" >&2

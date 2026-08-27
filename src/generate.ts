@@ -12,6 +12,10 @@
  * 失敗しても課金は発生している**という事実に対応する。順序が緩いと、失敗経路で計上を
  * 飛ばす実装が自然に見えてしまい、4.3 の「リトライ分も必ず計上する」が崩れる。
  *
+ * **#83 で 3.3-3（生成）が埋まった。** 実装は `src/bedrock.ts`（Bedrock の `Converse`）と
+ * `src/generation-models.ts`（モデル選択）にあり、このモジュールは順序と境界だけを持つ
+ * 立場を変えていない。**残りの段は 501 のままである。**
+ *
  * **5.2 との差分**: 5.2 は 3.3 に無い「入力の安全性検査（8.1）」をクォータ判定の
  * 手前に置く。これは M6-1 の範囲なので、この骨組みには段を作らず、挿入位置だけを
  * `runGenerationPipeline` のコメントに記す（使われない段を先に作らない）。
@@ -19,6 +23,8 @@
 import type { Route, RouteHandler } from './routes.js';
 import { json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
+import type { GenerationResult, SystemPromptResolver } from './generation-models.js';
+import { createBedrockGenerateSource } from './bedrock.js';
 
 /** 生成エンドポイントのパス。 */
 export const GENERATE_PATH = '/api/generate';
@@ -78,14 +84,20 @@ export type QuotaDecision =
 export interface GenerationPipeline {
   /** 3.3-2: 日次クォータと月次上限を判定する（M3-2）。 */
   readonly checkQuota: (env: Env, userId: string) => Promise<QuotaDecision>;
-  /** 3.3-3: Go ソースを生成し、`usage` を得る（M2-2）。 */
-  readonly generateSource: (env: Env, request: GenerateRequest) => Promise<unknown>;
+  /**
+   * 3.3-3: Go ソースを生成し、`usage` を得る（#83 が Bedrock で実装した）。
+   *
+   * **戻り値の型が「どのモデルで生成したか」を必須にしている**（`GenerationResult`）。
+   * #22 の費用台帳がモデル別単価で円換算するため、後段が推測で埋められない。型で
+   * 要求しておけば、モデルを落とした実装はコンパイルが通らない。
+   */
+  readonly generateSource: (env: Env, request: GenerateRequest) => Promise<GenerationResult>;
   /** 3.3-4: 費用を台帳へ加算する。**成功・失敗・リトライを問わず全件**（M3-1）。 */
-  readonly recordCost: (env: Env, userId: string, generated: unknown) => Promise<void>;
+  readonly recordCost: (env: Env, userId: string, generated: GenerationResult) => Promise<void>;
   /** 5.2-5: AST でパッケージのホワイトリストを検査する（M2-3）。 */
-  readonly inspectSource: (generated: unknown) => void;
+  readonly inspectSource: (generated: GenerationResult) => void;
   /** 3.3-5..8: Lambda でビルドし、書き戻し関数が R2 へ書き戻す（確定24 / M2-5）。 */
-  readonly build: (env: Env, generated: unknown) => Promise<unknown>;
+  readonly build: (env: Env, generated: GenerationResult) => Promise<unknown>;
   /** 3.3-9: `games` 行を `status='draft'` で作成する（M2-7）。 */
   readonly createGame: (env: Env, userId: string, built: unknown) => Promise<{ id: string }>;
 }
@@ -128,6 +140,35 @@ export const notImplementedPipeline: GenerationPipeline = {
   createGame: () => {
     throw new PipelineStepNotImplemented('createGame');
   },
+};
+
+/**
+ * システムプロンプトが未実装であることを表す解決関数（#16）。
+ *
+ * **本 issue はプロンプト本文を持たない。** トランスポート（#83）とプロンプト本文（#16）
+ * の分担がそこで切れている。空の文字列を返して「成功」にしないのは、
+ * `notImplementedPipeline` が空実装を成功にしないのと同じ理由で、**制約の書かれていない
+ * プロンプトで生成すると、課金だけが発生してコンパイルできないソースが返る**ためである。
+ *
+ * #16 はこの関数を差し替えるだけでよい。モデルを引数に取るのは、6.1 が
+ * 「システムプロンプトはモデルごとに持つ（確定5）」と定めるためである。
+ */
+export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
+  throw new PipelineStepNotImplemented(`systemPrompt:${model.key}`);
+};
+
+/**
+ * 既定のパイプライン。**生成の段（3.3-3）だけが実装済み**である。
+ *
+ * `notImplementedPipeline` を土台に、`generateSource` を Bedrock の実装で差し替える。
+ * **順序は変えない。** 3.3 は「クォータ判定 → 生成 → 費用計上 → ビルド → 行の作成」で、
+ * 生成の手前にクォータ判定（#23）が未実装のまま残る。したがってこの既定で経路を
+ * 叩いても **501 で止まり、Bedrock は呼ばれない。** これは事故ではなく設計で、
+ * **費用の出る段を、費用を止める段より先に開けない。**
+ */
+export const defaultPipeline: GenerationPipeline = {
+  ...notImplementedPipeline,
+  generateSource: createBedrockGenerateSource({ systemPrompt: notImplementedSystemPrompt }),
 };
 
 /**
@@ -302,11 +343,11 @@ function describeGenerateError(error: unknown): string {
 /**
  * 生成の経路を組み立てる。
  *
- * @param pipeline 差し替える各段（既定はすべて未実装）
+ * @param pipeline 差し替える各段（既定は `defaultPipeline`）
  * @returns 経路表へ連結する `Route[]`
  */
 export function createGenerateRoutes(
-  pipeline: GenerationPipeline = notImplementedPipeline,
+  pipeline: GenerationPipeline = defaultPipeline,
 ): readonly Route[] {
   const handler: RouteHandler = (request, env) => handleGenerate(request, env, pipeline);
   return [{ method: 'POST', path: GENERATE_PATH, handler }];

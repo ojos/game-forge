@@ -15,8 +15,12 @@
 # Amazon Bedrock を呼ぶための AWS 資格情報（確定19 / 4.1 / 9.1）。
 #
 # **接続先は Bedrock であり、Anthropic のキーは使わない**（v1.0 / #80）。認証は
-# AWS 資格情報による SigV4 署名で、Claude は Mantle、それ以外のモデルは
-# bedrock-runtime の Converse を叩く（4.1）。
+# AWS 資格情報による SigV4 署名で、**接続経路は bedrock-runtime の Converse 1 本**
+# である（4.1。Claude も Converse で動き usage 4 種もキャッシュも揃うことを実測したため、
+# v1.1 の「Claude は Mantle」は撤回された）。実装は src/bedrock.ts。
+#
+# **どのモデルで生成するかはここに無い。** モデルの選択は秘密ではなく構成なので、
+# wrangler.toml の GENERATION_MODEL が環境ごとに宣言する（確定5 / #83）。
 #
 # **BEDROCK_ 接頭辞を付ける理由。** このリポジトリは Terraform 用に AWS_PROFILE /
 # AWS_ACCESS_KEY_ID を開発機の環境変数として使う（terraform/、docs/gcp-oauth-setup.md）。

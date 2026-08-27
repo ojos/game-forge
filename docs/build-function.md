@@ -195,37 +195,51 @@ VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 **Control Tower の member アカウントです。** apply が `AccessDenied` で落ちたときは、
 権限不足ではなく **SCP を先に疑ってください**（`docs/bedrock-access.md` と同じ注記）。
 
-## 引き上げの申請（2 件・未了）
+## 引き上げの申請（2 件）
 
-**どちらもコンソールからの起票が唯一の経路です。** `aws support` は有料プラン必須で、
-このアカウントは Basic です（`describe-severity-levels` が `SubscriptionRequiredException`）。
-Service Quotas 経由も効きません（下記）。
+| 対象 | 現在 | 望む値 | 経路 | なぜ要るか |
+|---|---|---|---|---|
+| Lambda の同時実行数 | 10 | **1,000（既定）** | **Service Quotas**（申請済み・PENDING） | 予約同時実行数 5 を宣言するため。総枠 10 では**どの関数にも 1 も予約できない** |
+| Lambda の関数メモリ上限 | 3,008 MB | **10,240 MB** | **AWS Support のコンソール** | 3.8 のタイムアウトを 10 秒へ戻すため。約 7,200 MB 以上で 10 秒に収まる |
 
-| 対象 | 現在 | 望む値 | なぜ要るか |
-|---|---|---|---|
-| Lambda の関数メモリ上限 | 3,008 MB | **10,240 MB** | 3.8 のタイムアウトを 10 秒へ戻すため。約 7,200 MB 以上で 10 秒に収まる |
-| Lambda の同時実行数 | 10 | **1,000（既定）** | 予約同時実行数 5 を宣言するため。総枠 10 では**どの関数にも 1 も予約できない** |
+### 同時実行数（Service Quotas）
 
-**Service Quotas では申請できません。** 同時実行数について
-`aws service-quotas request-service-quota-increase --service-code lambda
---quota-code L-B99A9384 --desired-value 100` は
-`You must provide a quota value greater than the default quota value of 1000.0` を返します。
-**適用値 10 は Service Quotas の値ではなく、新規アカウントに掛かる別枠の制限**です。
-メモリのほうは項目自体がありません（`L-548AE339` は `NoSuchResourceException`）。
+```bash
+aws service-quotas request-service-quota-increase \
+  --service-code lambda --quota-code L-B99A9384 --desired-value 1000
 
-### 手順
+# 状態を見る
+aws service-quotas list-requested-service-quota-change-history-by-quota \
+  --service-code lambda --quota-code L-B99A9384 \
+  --query 'RequestedQuotas[0].{Status:Status,Desired:DesiredValue,Case:CaseId}'
+```
+
+**要求値を既定（1,000）より小さくできません。** `--desired-value 100` は
+`You must provide a quota value greater than the default quota value of 1000.0`
+で弾かれます。**適用値が 10 でも、基準になるのは既定のほうです。** 必要なのは 15
+（予約 5 ＋ 未予約の最低値 10）ですが、その値では申請できないので既定へ戻す形になります。
+
+> **#103 の途中で「Service Quotas からは申請できない」と書いたのは誤りでした。**
+> 弾かれたのは要求値が既定より小さかったためで、経路が無いからではありません。
+
+### 関数メモリ上限（Support のコンソール）
+
+**こちらは本当に Service Quotas に項目がありません。** 適用値の一覧
+（`list-service-quotas`）にも既定の一覧（`list-aws-default-service-quotas`）にも無く、
+`L-548AE339` は `NoSuchResourceException` を返します。`Max allocated MicroVM memory`
+（`L-CD1C0CC4`）は Lambda Managed Instances 用の別物です。
+
+そして `aws support` は有料プラン必須で、このアカウントは Basic です
+（`describe-severity-levels` が `SubscriptionRequiredException`）。
+**コンソールからの起票が唯一の経路です。**
 
 1. <https://support.console.aws.amazon.com/support/home#/case/create> を開く
-2. 種別に **「アカウントと請求」ではなく「サービス制限の引き上げ」**（Service limit increase）を選ぶ
-3. 制限タイプに **Lambda** を選ぶ
-4. リージョンは **アジアパシフィック (東京) / ap-northeast-1**
-5. 2 件を 1 つのケースにまとめてよい。本文には**実測を添える**と早い
+2. 種別に **「サービス制限の引き上げ」**（Service limit increase）を選ぶ
+3. 制限タイプに **Lambda**、リージョンは **アジアパシフィック (東京) / ap-northeast-1**
+4. 本文には**実測を添える**と早い
 
    - 関数メモリ上限 3,008 MB → 10,240 MB。3,008 MB でのビルド実測が 21.1 秒、
      必要な予算は 10 秒。build は vCPU 数に反比例し、10,240 MB で 7.7 秒の見込み
-   - 同時実行数 10 → 1,000。予約同時実行数を設定できず
-     （`decreases account's UnreservedConcurrentExecution below its minimum value of [10]`）、
-     費用ガードの関数が枯渇し得る
 
 **通ったあとにやること。**
 

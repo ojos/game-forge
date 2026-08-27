@@ -255,11 +255,19 @@ decreases account's UnreservedConcurrentExecution below its minimum value of [10
 **アカウントの同時実行総枠が 10 しかない**（既定は 1,000）。予約を付けると残りが最低値
 10 を割るため、**どの関数にも 1 も予約できない。** `null` にして apply を通した。
 
-**Service Quotas からは申請できない。** `request-service-quota-increase` は「既定値
-1000.0 より大きい値でなければ受け付けない」と返す。**10 は Service Quotas の値ではなく、
-新規アカウントに掛かる別枠の制限である。** そして **Support API は有料プラン必須**で、
-このアカウントは Basic である（`describe-severity-levels` が `SubscriptionRequiredException`）。
-**コンソールからの起票が唯一の経路。**
+**Service Quotas から申請できる**（2026-08-27 に `--desired-value 1000` で申請済み・PENDING）。
+
+**要求値は既定（1,000）より小さくできない。** 100 を要求すると `You must provide a quota
+value greater than the default quota value of 1000.0` で弾かれる。**適用値が 10 でも、
+基準になるのは既定のほうである。** 必要なのは 15（予約 5 ＋ 未予約の最低値 10）だが、
+その値では申請できないので既定ちょうどへ戻す形になる。
+
+※ **本節は当初「Service Quotas からは申請できない」と書いていたが誤りだった。**
+弾かれたのは要求値が既定より小さかったためで、経路が無いからではない。**メモリ上限の
+ほうは別で、そちらは本当に項目が無い**（適用値の一覧にも既定の一覧にも無く、
+`L-548AE339` は `NoSuchResourceException`）。Support API は有料プラン必須
+（`describe-severity-levels` が `SubscriptionRequiredException`）なので、
+**メモリはコンソールからの起票が唯一の経路である。**
 
 **外している間の上限はアカウント総枠の 10 である。** 3.3-5 の「暴走の上限を金額で
 押さえる」は、5 ではなく 10 という形でなお効く。**失われるのは下限のほう**で、

@@ -11,7 +11,7 @@
 
 | 対象 | 実体 |
 |---|---|
-| 関数 | `game-forge-build`（`package_type = "Image"`。メモリ **3,008 MB** / タイムアウト 10 秒） |
+| 関数 | `game-forge-build`（`package_type = "Image"`。メモリ **3,008 MB** / タイムアウト **25 秒** / 予約同時実行数**なし**） |
 | イメージ | ECR の `game-forge/isolated-build`。`golang:1.26.5` を基にした約 1.6 GB |
 | 入口 | `docker/isolated-build/handler/`（Lambda Runtime API を自前で回す。依存 0 件） |
 | 配備 | `.github/workflows/deploy-compiler.yml`（OIDC。長命の鍵を持たない） |
@@ -23,9 +23,25 @@
 で 400 を返します。Lambda のメモリ上限は 10,240 MB のアカウントと 3,008 MB のアカウントが
 あり、これは後者です。**Service Quotas には項目自体が無く**（`L-548AE339` は
 `NoSuchResourceException`）、引き上げは AWS Support のケースになります。3,008 MB は
-**1.70 vCPU 相当**で、下の実測より約 15% 遅くなります。同じ配分で回した手元の実測は
-**6,396 ms**（ビルド 5,842 ms / 圧縮 524 ms）で、10 秒に 36% の余裕があります
-（仕様 1.2.22 / #103）。**Lambda 上の実測は別です**（12 章）。
+**1.70 vCPU 相当**です（仕様 1.2.22 / #103）。
+
+**タイムアウトが 25 秒なのは、Lambda 上の実測が 21.1 秒だからです。** 仕様 3.8 は当初
+10 秒でしたが、**手元の 6,396 ms は Lambda の代理になりませんでした**（3.3 倍）。
+
+| 段 | Lambda（3,008 MB） | 手元（`--memory=3008m --cpus=1.7`） |
+|---|---|---|
+| build | 18,562 ms | 5,842 ms |
+| compress (q9) | 2,373 ms | 524 ms |
+| **合計** | **21,086 ms** | 6,396 ms |
+
+**build は vCPU 数にほぼ完全に反比例します**（1,769 MB で 30,788 ms / 2,048 MB で
+26,955 ms / 3,008 MB で 18,562 ms）。**10 秒に収めるには約 7,200 MB 以上**が要り、
+10,240 MB なら 7.7 秒の見込みです。**compress は 2,400 ms でほぼ一定**（brotli は
+単一スレッドなので vCPU を増やしても縮みません）。
+
+**コールドスタートは `Init Duration` 475 ms** で、1.65 GB のイメージでも無視できます。
+
+**予約同時実行数がないのは、このアカウントでは設定できないからです**（下の「引き上げの申請」）。
 
 **VPC には入れません。** 確定24 が v1.11 で VPC を外した理由は 7.1 にあります。
 `vpc_config` を足すことは、DNS の持ち出しチャネル・実行ロールへの EC2 権限・
@@ -178,6 +194,50 @@ VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 
 **Control Tower の member アカウントです。** apply が `AccessDenied` で落ちたときは、
 権限不足ではなく **SCP を先に疑ってください**（`docs/bedrock-access.md` と同じ注記）。
+
+## 引き上げの申請（2 件・未了）
+
+**どちらもコンソールからの起票が唯一の経路です。** `aws support` は有料プラン必須で、
+このアカウントは Basic です（`describe-severity-levels` が `SubscriptionRequiredException`）。
+Service Quotas 経由も効きません（下記）。
+
+| 対象 | 現在 | 望む値 | なぜ要るか |
+|---|---|---|---|
+| Lambda の関数メモリ上限 | 3,008 MB | **10,240 MB** | 3.8 のタイムアウトを 10 秒へ戻すため。約 7,200 MB 以上で 10 秒に収まる |
+| Lambda の同時実行数 | 10 | **1,000（既定）** | 予約同時実行数 5 を宣言するため。総枠 10 では**どの関数にも 1 も予約できない** |
+
+**Service Quotas では申請できません。** 同時実行数について
+`aws service-quotas request-service-quota-increase --service-code lambda
+--quota-code L-B99A9384 --desired-value 100` は
+`You must provide a quota value greater than the default quota value of 1000.0` を返します。
+**適用値 10 は Service Quotas の値ではなく、新規アカウントに掛かる別枠の制限**です。
+メモリのほうは項目自体がありません（`L-548AE339` は `NoSuchResourceException`）。
+
+### 手順
+
+1. <https://support.console.aws.amazon.com/support/home#/case/create> を開く
+2. 種別に **「アカウントと請求」ではなく「サービス制限の引き上げ」**（Service limit increase）を選ぶ
+3. 制限タイプに **Lambda** を選ぶ
+4. リージョンは **アジアパシフィック (東京) / ap-northeast-1**
+5. 2 件を 1 つのケースにまとめてよい。本文には**実測を添える**と早い
+
+   - 関数メモリ上限 3,008 MB → 10,240 MB。3,008 MB でのビルド実測が 21.1 秒、
+     必要な予算は 10 秒。build は vCPU 数に反比例し、10,240 MB で 7.7 秒の見込み
+   - 同時実行数 10 → 1,000。予約同時実行数を設定できず
+     （`decreases account's UnreservedConcurrentExecution below its minimum value of [10]`）、
+     費用ガードの関数が枯渇し得る
+
+**通ったあとにやること。**
+
+```bash
+# terraform/build-function.tf
+#   build_function_memory_mb       = 3008 -> 10240
+#   build_function_timeout_seconds = 25   -> 10
+#   build_function_reserved_concurrency = null -> 5
+terraform -chdir=terraform apply
+```
+
+仕様書の 3.8 / 3.3-5 / 確定24 / 4.6 にも注記が要ります（1.2.23 と対になる形で）。
 
 ## 以降の配備
 

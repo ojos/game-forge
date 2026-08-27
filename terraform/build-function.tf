@@ -71,8 +71,33 @@ locals {
    * 戻すと約 6.4 秒で、10 秒には収まる見込みである。実測がこれを裏切ったときに
    * 初めて Support のケースを起こす（引き上げの待ち時間を、要否が判る前に払わない）。
    */
-  build_function_memory_mb       = 3008
-  build_function_timeout_seconds = 10
+  build_function_memory_mb = 3008
+  /**
+   * **タイムアウトは 25 秒である（#103 で 10 秒から改めた）。**
+   *
+   * **3.8 の「10 秒」は Lambda 上の実測で成立しなかった。** 3,008 MB での実測は
+   * **21.1 秒**（build 18,562 ms / compress 2,373 ms）で、手元の 6,396 ms の 3.3 倍
+   * である。**メモリではなく CPU の差**で、`Max Memory Used` は 432 MB にとどまる。
+   *
+   * **build は vCPU 数にほぼ完全に反比例する**（Lambda 上の実測 3 点）。
+   *
+   *   | メモリ | vCPU | build | compress | 合計 |
+   *   |---|---|---|---|---|
+   *   | 1,769 MB | 1.00 | 30,788 ms | 2,367 ms | 33,323 ms |
+   *   | 2,048 MB | 1.16 | 26,955 ms | 2,661 ms | 29,773 ms |
+   *   | 3,008 MB | 1.70 | 18,562 ms | 2,373 ms | 21,086 ms |
+   *
+   * 30,788 ÷ 1.70 = 18,110 ≈ 18,562。**#76 の「支配項はコンパイルではなくリンク」は
+   * この実測で覆った。** compress は 2,400 ms でほぼ一定である（brotli は単一スレッド
+   * なので vCPU を増やしても縮まない）。
+   *
+   * **10 秒に収めるには約 7,200 MB 以上が要る**（外挿。10,240 MB なら 7.7 秒）。
+   * それはメモリ上限の引き上げ待ちであり、**待ち時間に稼働を人質に取らない**ために
+   * 25 秒で先に動かす。実測 21.1 秒に対して 4 秒弱の余裕がある。
+   *
+   * **引き上げが通ったら 10,240 MB へ上げ、ここを 10 秒へ戻す。**
+   */
+  build_function_timeout_seconds = 25
 
   /**
    * エフェメラルストレージ（`/tmp`）。
@@ -110,7 +135,31 @@ locals {
    *     回し続けても約 $1 で、月次上限（4.3）に対して無視できる大きさに収まる。
    *     ここを未設定（＝アカウント既定の 1,000）にすると、この性質が消える。
    */
-  build_function_reserved_concurrency = 5
+  /**
+   * **※ #103 で `null` へ変えた。このアカウントでは予約そのものが設定できない。**
+   *
+   * ```
+   * InvalidParameterValueException: Specified ReservedConcurrentExecutions for
+   * function decreases account's UnreservedConcurrentExecution below its minimum
+   * value of [10].
+   * ```
+   *
+   * **アカウントの同時実行総枠が 10 しかない**（既定は 1,000）。予約を付けると残りが
+   * 最低値 10 を割るため、**どの関数にも 1 も予約できない。**
+   *
+   * **Service Quotas からは申請できない。** `request-service-quota-increase` は
+   * 「既定値 1000.0 より大きい値でなければ受け付けない」と返す。つまり 10 は Service
+   * Quotas の値ではなく、**新規アカウントに掛かる別枠の制限**である。引き上げは
+   * AWS Support のケースになるが、**Support API は有料プラン必須**で、このアカウントは
+   * Basic である（`describe-severity-levels` が `SubscriptionRequiredException`）。
+   * **コンソールからの起票が唯一の経路である**（docs/build-function.md に手順）。
+   *
+   * **外している間の上限はアカウント総枠の 10 である。** 上の「暴走の上限を金額で
+   * 押さえる」は、5 ではなく 10 という形でなお効く。**失われるのは下限のほう**で、
+   * ビルドが 10 本走ると費用ガードの `game-forge-bedrock-guard` が枯渇し得る。
+   * これが引き上げを申請する理由である。
+   */
+  build_function_reserved_concurrency = null
 
   /**
    * brotli の品質（3.3-6 / 3.4-1）。**実測に基づいて q11 から下げた値である。**

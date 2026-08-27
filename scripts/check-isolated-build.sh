@@ -92,6 +92,11 @@ if [[ -z "$BROTLI_QUALITY" ]]; then
     terraform/build-function.tf | head -1)"
 fi
 
+# タイムアウトも**宣言から読む**（同じ理由。#103 で 10 秒から 25 秒へ変えたとき、
+# ここに 10000 が直書きされていて、検査だけが古い予算で判定し続ける形になっていた）。
+BUDGET_SECONDS="$(sed -nE 's/^[[:space:]]*build_function_timeout_seconds[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' \
+  terraform/build-function.tf | head -1)"
+
 ng() {
   printf '[isolated-build] NG %s\n' "$1" >&2
   FAILURES=$((FAILURES + 1))
@@ -120,6 +125,8 @@ command -v jq >/dev/null 2>&1 || fatal "jq が見つかりません（結果 JSO
 
 [[ -n "$BROTLI_QUALITY" ]] \
   || fatal "terraform/build-function.tf から build_brotli_quality を読めません（宣言が正本です）。"
+[[ -n "$BUDGET_SECONDS" ]] \
+  || fatal "terraform/build-function.tf から build_function_timeout_seconds を読めません（宣言が正本です）。"
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/isolated-build.XXXXXX")" || fatal "一時ディレクトリを作成できませんでした。"
 
@@ -409,10 +416,10 @@ if out_fetch first.json "$WORKDIR/first.json"; then
   # 数字であり、極端に伸びたときに気づくためのものである。
   total_ms="$(jq -r '.timings.totalMs' <"$WORKDIR/first.json")"
   jq -r '"    timings: \(.timings)"' <"$WORKDIR/first.json" >&2
-  if [[ "$total_ms" =~ ^[0-9]+$ ]] && ((total_ms < 10000)); then
-    ok "1 回の呼び出しが ${total_ms} ms（この機械では 10 秒に収まる。**Lambda の判定ではない**）"
+  if [[ "$total_ms" =~ ^[0-9]+$ ]] && ((total_ms < BUDGET_SECONDS * 1000)); then
+    ok "1 回の呼び出しが ${total_ms} ms（この機械では ${BUDGET_SECONDS} 秒に収まる。**Lambda の判定ではない**）"
   else
-    info "1 回の呼び出しが ${total_ms} ms（この機械では 10 秒を超える。**Lambda の判定ではない**。3.8 の判定は Lambda 上の実測が持つ）"
+    info "1 回の呼び出しが ${total_ms} ms（この機械では ${BUDGET_SECONDS} 秒を超える。**Lambda の判定ではない**。3.8 の判定は Lambda 上の実測が持つ）"
   fi
 else
   ng "1 回目の結果を取り出せませんでした"
@@ -431,6 +438,24 @@ else
 fi
 
 if out_fetch second.tmp-listing "$WORKDIR/second.listing"; then
+  # **Rosetta の残骸だけは数えない（#103）。** Apple Silicon の機械で amd64 の
+  # イメージを動かすと、Docker Desktop の Rosetta が `$HOME/.cache/rosetta` を作る。
+  # Dockerfile が `HOME=/tmp` にしているため、これが `/tmp/.cache` として現れる。
+  #
+  # **ハンドラの残骸ではなく、エミュレーションの足跡である。** Lambda（実 x86_64）でも
+  # amd64 のランナーでも生じない。除かないと、初回構築のときだけ**中身の無い赤**が出る。
+  #
+  # **除外は `.cache` の 1 語に限る。** 「掃除されていない」を見逃す穴になり得るので、
+  # 前方一致や広い正規表現にはしない。エミュレーションしているときだけ効かせる。
+  image_arch="$(docker image inspect "$IMAGE" --format '{{.Architecture}}' 2>/dev/null || true)"
+  host_arch="$(docker version --format '{{.Server.Arch}}' 2>/dev/null || true)"
+  if [[ -n "$image_arch" && -n "$host_arch" && "$image_arch" != "$host_arch" ]]; then
+    if grep -qx '\.cache' "$WORKDIR/second.listing"; then
+      info "/tmp/.cache は Rosetta の足跡として数えません（${host_arch} の機械で ${image_arch} のイメージを動かしています）"
+      grep -vx '\.cache' "$WORKDIR/second.listing" >"$WORKDIR/second.listing.filtered" || true
+      mv "$WORKDIR/second.listing.filtered" "$WORKDIR/second.listing"
+    fi
+  fi
   leftovers="$(grep -c . "$WORKDIR/second.listing" || true)"
   if [[ "$leftovers" == "1" ]]; then
     ok "2 回目のあと /tmp に残るのは今回の作業ディレクトリ 1 つだけ"

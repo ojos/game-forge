@@ -11,11 +11,37 @@
 
 | 対象 | 実体 |
 |---|---|
-| 関数 | `game-forge-build`（`package_type = "Image"`。メモリ 3,538 MB / タイムアウト 10 秒） |
+| 関数 | `game-forge-build`（`package_type = "Image"`。メモリ **3,008 MB** / タイムアウト **25 秒** / 予約同時実行数**なし**） |
 | イメージ | ECR の `game-forge/isolated-build`。`golang:1.26.5` を基にした約 1.6 GB |
 | 入口 | `docker/isolated-build/handler/`（Lambda Runtime API を自前で回す。依存 0 件） |
 | 配備 | `.github/workflows/deploy-compiler.yml`（OIDC。長命の鍵を持たない） |
 | ログ | `/aws/lambda/game-forge-build`（14 日保持。**生成ソースも成果物も出しません**） |
+
+**メモリが 3,008 MB なのはアカウントの上限です。** 仕様は 3,538 MB（2 vCPU ちょうど）を
+指していましたが、`CreateFunction` が
+`'MemorySize' value failed to satisfy constraint: Member must have value less than or equal to 3008`
+で 400 を返します。Lambda のメモリ上限は 10,240 MB のアカウントと 3,008 MB のアカウントが
+あり、これは後者です。**Service Quotas には項目自体が無く**（`L-548AE339` は
+`NoSuchResourceException`）、引き上げは AWS Support のケースになります。3,008 MB は
+**1.70 vCPU 相当**です（仕様 1.2.22 / #103）。
+
+**タイムアウトが 25 秒なのは、Lambda 上の実測が 21.1 秒だからです。** 仕様 3.8 は当初
+10 秒でしたが、**手元の 6,396 ms は Lambda の代理になりませんでした**（3.3 倍）。
+
+| 段 | Lambda（3,008 MB） | 手元（`--memory=3008m --cpus=1.7`） |
+|---|---|---|
+| build | 18,562 ms | 5,842 ms |
+| compress (q9) | 2,373 ms | 524 ms |
+| **合計** | **21,086 ms** | 6,396 ms |
+
+**build は vCPU 数にほぼ完全に反比例します**（1,769 MB で 30,788 ms / 2,048 MB で
+26,955 ms / 3,008 MB で 18,562 ms）。**10 秒に収めるには約 7,200 MB 以上**が要り、
+10,240 MB なら 7.7 秒の見込みです。**compress は 2,400 ms でほぼ一定**（brotli は
+単一スレッドなので vCPU を増やしても縮みません）。
+
+**コールドスタートは `Init Duration` 475 ms** で、1.65 GB のイメージでも無視できます。
+
+**予約同時実行数がないのは、このアカウントでは設定できないからです**（下の「引き上げの申請」）。
 
 **VPC には入れません。** 確定24 が v1.11 で VPC を外した理由は 7.1 にあります。
 `vpc_config` を足すことは、DNS の持ち出しチャネル・実行ロールへの EC2 権限・
@@ -125,8 +151,9 @@ terraform -chdir=terraform apply -target=aws_ecr_repository.isolated_build
 # 2. イメージを 1 つ push する
 repo="$(terraform -chdir=terraform output -raw build_image_repository_url)"
 aws ecr get-login-password | docker login --username AWS --password-stdin "${repo%%/*}"
-docker build --build-arg TARGETARCH=amd64 -t "${repo}:latest" docker/isolated-build
-bash scripts/check-isolated-build.sh          # 配る前に検査する
+docker build --platform linux/amd64 --provenance=false --sbom=false \
+  --build-arg TARGETARCH=amd64 -t "${repo}:latest" docker/isolated-build
+IMAGE="${repo}:latest" bash scripts/check-isolated-build.sh   # 配る現物を検査する
 docker push "${repo}:latest"
 
 # 3. 残り（関数・ロール・ロググループ・Actions 変数）を作る
@@ -138,6 +165,28 @@ terraform -chdir=terraform apply
 VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 ```
 
+**手順 2 の 2 つのフラグは、どちらも #103 で実際に踏んだものです。**
+
+- **`--platform linux/amd64`。** `--build-arg TARGETARCH=amd64` が決めるのは Dockerfile 内の
+  `GOARCH`、つまり**ハンドラのバイナリだけ**です。ベースイメージ `golang:1.26.5` はホストの
+  アーキテクチャで引かれるため、**aarch64 の開発機では arm64 のベースに amd64 のバイナリが
+  入った、どちらでも動かないイメージ**が出来ます。関数は `x86_64` で宣言してあります。
+- **`--provenance=false --sbom=false`。** 既定では BuildKit が attestation を足し、push される
+  のが単一のマニフェストではなく **OCI の image index**（`application/vnd.oci.image.index.v1+json`）
+  になります。**Lambda はこれを受け付けません。**
+
+  ```
+  InvalidParameterValueException: The image manifest, config or layer media type
+  for the source image ... is not supported.
+  ```
+
+  ECR 側の実体は `aws ecr batch-get-image --repository-name ... --image-ids imageTag=latest
+  --query 'images[0].imageManifest'` で読めます。`manifests` の配列が見えたら index です。
+
+**手順 2 は 1 回きりです。** 以降は `deploy-compiler.yml` が amd64 のランナー上で組み、
+**封じ込めの検査を通してから**押します。手元のイメージは初回に関数を作るためだけの
+足場であり、次の配備で置き換わります。
+
 **手順 3 で Actions のリポジトリ変数が 4 つ設定されます**
 （`AWS_REGION` / `AWS_DEPLOY_ROLE_ARN` / `BUILD_IMAGE_REPOSITORY` / `BUILD_FUNCTION_NAME`）。
 それまで `deploy-compiler.yml` の配備段は skip します（イメージのビルドと封じ込めの
@@ -145,6 +194,114 @@ VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 
 **Control Tower の member アカウントです。** apply が `AccessDenied` で落ちたときは、
 権限不足ではなく **SCP を先に疑ってください**（`docs/bedrock-access.md` と同じ注記）。
+
+## 引き上げの申請（2 件）
+
+**2 件とも 2026-08-27 に申請済みで、どちらも審査中です。**
+
+| 対象 | 現在 | 望む値 | 経路 | 状態 | なぜ要るか |
+|---|---|---|---|---|---|
+| Lambda の同時実行数 | 10 | **1,000（既定）** | Service Quotas | `CASE_OPENED` / ケース `178783057000696` | 予約同時実行数 5 を宣言するため。総枠 10 では**どの関数にも 1 も予約できない** |
+| Lambda の関数メモリ上限 | 3,008 MB | **10,240 MB** | AWS Support のコンソール | 起票済み | 3.8 のタイムアウトを 10 秒へ戻すため。約 7,200 MB 以上で 10 秒に収まる |
+
+**通ったかどうかは、宣言ではなく実際の値で確かめます。**
+
+```bash
+# 同時実行数
+aws lambda get-account-settings --query 'AccountLimit.ConcurrentExecutions'   # 10 -> 1000
+
+# メモリ上限は照会できる項目が無いので、実地に試すのが唯一の判定になる
+aws lambda update-function-configuration --function-name game-forge-build --memory-size 10240
+# 通れば緩和済み。ValidationException なら審査中。**必ず 3008 へ戻すこと。**
+```
+
+### 同時実行数（Service Quotas）
+
+```bash
+aws service-quotas request-service-quota-increase \
+  --service-code lambda --quota-code L-B99A9384 --desired-value 1000
+
+# 状態を見る
+aws service-quotas list-requested-service-quota-change-history-by-quota \
+  --service-code lambda --quota-code L-B99A9384 \
+  --query 'RequestedQuotas[0].{Status:Status,Desired:DesiredValue,Case:CaseId}'
+```
+
+**要求値を既定（1,000）より小さくできません。** `--desired-value 100` は
+`You must provide a quota value greater than the default quota value of 1000.0`
+で弾かれます。**適用値が 10 でも、基準になるのは既定のほうです。** 必要なのは 15
+（予約 5 ＋ 未予約の最低値 10）ですが、その値では申請できないので既定へ戻す形になります。
+
+> **#103 の途中で「Service Quotas からは申請できない」と書いたのは誤りでした。**
+> 弾かれたのは要求値が既定より小さかったためで、経路が無いからではありません。
+
+### 関数メモリ上限（Support のコンソール）
+
+**こちらは本当に Service Quotas に項目がありません。** 適用値の一覧
+（`list-service-quotas`）にも既定の一覧（`list-aws-default-service-quotas`）にも無く、
+`L-548AE339` は `NoSuchResourceException` を返します。`Max allocated MicroVM memory`
+（`L-CD1C0CC4`）は Lambda Managed Instances 用の別物です。
+
+そして `aws support` は有料プラン必須で、このアカウントは Basic です
+（`describe-severity-levels` が `SubscriptionRequiredException`）。
+**コンソールからの起票が唯一の経路です。**
+
+1. <https://support.console.aws.amazon.com/support/home#/case/create> を開く
+2. 種別に **「サービス制限の引き上げ」**（Service limit increase）を選ぶ
+3. 制限タイプに **Lambda**、リージョンは **アジアパシフィック (東京) / ap-northeast-1**
+4. 本文には**実測を添える**と早い
+
+   - 関数メモリ上限 3,008 MB → 10,240 MB。3,008 MB でのビルド実測が 21.1 秒、
+     必要な予算は 10 秒。build は vCPU 数に反比例し、10,240 MB で 7.7 秒の見込み
+
+### 通ったあとにやること
+
+**2 件は独立して効きます。片方だけ通ったら、その分だけ先に戻せます。**
+
+| 通ったもの | 宣言（`terraform/build-function.tf`） |
+|---|---|
+| メモリ上限 | `build_function_memory_mb` 3008 → **10240**、`build_function_timeout_seconds` 25 → **10** |
+| 同時実行数 | `build_function_reserved_concurrency` `null` → **5** |
+
+```bash
+terraform -chdir=terraform apply
+VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
+```
+
+**メモリを上げたら、10 秒に収まることを Lambda 上で測り直してください。** 7.7 秒は
+外挿であり、実測ではありません。手順は「実測のとり方」のとおりです。
+
+仕様書の 3.8 / 3.3-5 / 確定24 / 4.6 にも注記が要ります（1.2.23 と対になる形で）。
+
+## 実測のとり方
+
+**手元の数字は Lambda の代理になりません**（3.3 倍の開きがあります）。予算の判定は
+必ず関数の上で取ります。
+
+```bash
+export AWS_PROFILE=game-forge-prod
+jq -Rs '{source: .}' < docker/isolated-build/sample/ebitengine.go > /tmp/event.json
+
+aws lambda invoke --function-name game-forge-build \
+  --cli-binary-format raw-in-base64-out --payload file:///tmp/event.json \
+  --log-type Tail --query 'LogResult' --output text /tmp/resp.json | base64 -d | grep REPORT
+
+jq '.timings' /tmp/resp.json    # resetMs / prepareMs / buildMs / compressMs / totalMs
+```
+
+**1 回目は捨ててください**（`Init Duration` が乗ります）。**予算を超えると
+`timings` は返りません**。ハンドラが内部期限で先に落ち、`errorMessage` だけが返るためです。
+所要時間を知りたいときは、先にタイムアウトを広げてから測ります。
+
+```bash
+aws lambda update-function-configuration --function-name game-forge-build --timeout 120
+aws lambda wait function-updated --function-name game-forge-build
+# …測る…
+aws lambda update-function-configuration --function-name game-forge-build --timeout 25
+```
+
+**測り終えたら宣言値へ戻すこと。** 戻し忘れは `terraform plan` と
+`scripts/acceptance-remote.sh` の両方が検出します。
 
 ## 以降の配備
 
@@ -187,7 +344,7 @@ bash scripts/check-isolated-build.sh
 
 ## brotli の品質
 
-**q11 は 3.8 の 10 秒に収まりません。** 実測（本番と同じ 2 vCPU / 3,538 MB）:
+**q11 は 3.8 の 10 秒に収まりません。** 実測（当時の想定配分 2 vCPU / 3,538 MB。**実際の本番は上記のとおり 3,008 MB＝1.70 vCPU で、下の数字より遅くなります**）:
 
 | 品質 | ビルド | 圧縮 | 合計 | 圧縮後 |
 |---|---|---|---|---|

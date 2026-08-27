@@ -83,14 +83,32 @@ jobs:
           fi
 
       - name: ビルドする
-        # **`--build-arg TARGETARCH=amd64` を明示する。** 関数は x86_64 で宣言して
+        # **`--platform linux/amd64` を明示する。** 関数は x86_64 で宣言して
         # おり（terraform/build-function.tf の architectures）、**イメージと食い違うと
         # 関数は起動しない。** ランナーが amd64 であることに黙って頼らない。
+        #
+        # > **`--build-arg TARGETARCH=amd64` だけでは足りない（#103 で踏んだ）。**
+        # > あれが決めるのは Dockerfile 内の `GOARCH`、つまり**ハンドラのバイナリだけ**で
+        # > あって、ベースイメージ `golang:1.26.5` はホストのアーキテクチャで引かれる。
+        # > aarch64 の開発機で同じコマンドを打つと **arm64 のベースに amd64 のバイナリが
+        # > 入った、どちらでも動かないイメージ**が出来上がる。ランナーが amd64 である
+        # > 限り結果は正しいので、**この記述は「黙って頼らない」と書きながら実際には
+        # > 頼っていた。** `--platform` で外側も固定する。
+        #
+        # **`--provenance=false --sbom=false` を付ける。** 既定では BuildKit が
+        # attestation を足し、push されるのが単一のマニフェストではなく OCI の
+        # image index（`application/vnd.oci.image.index.v1+json`）になる。**Lambda は
+        # これを受け付けない**（`CreateFunction` が `The image manifest, config or
+        # layer media type for the source image ... is not supported.` を返す。#103）。
+        # ランナーの docker は既定でこの形にならないが、**そこに黙って頼らない**のは
+        # `--platform` と同じ理由である。
         #
         # commit SHA でも tag を打つ。`latest` だけだと、ECR 上のどの版がどの
         # コミットから来たのかを後から特定できない。
         run: |
           docker build \
+            --platform linux/amd64 \
+            --provenance=false --sbom=false \
             --build-arg TARGETARCH=amd64 \
             -t "isolated-build:${GITHUB_SHA}" \
             docker/isolated-build

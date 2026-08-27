@@ -53,9 +53,51 @@ locals {
    * 比例し、7.1 が当初書いていた `--cpus=1` 相当では実測 11.3 秒で 10 秒に収まらない。
    * 3,538 MB で実測 5.3 秒（#76）。**512 MB では 2 vCPU を得られない**ため、
    * ローカルの `--memory=512m` はここでは採らない。
+   *
+   * **ただし 3,538 は宣言できない。このアカウントの Lambda メモリ上限が 3,008 MB
+   * だからである**（#103 の初回 apply で判明。`CreateFunction` が
+   * `'MemorySize' value failed to satisfy constraint: Member must have value less
+   * than or equal to 3008` で 400 を返す）。10,240 MB まで使える既定のアカウントと、
+   * 3,008 MB で据え置かれるアカウントがあり、後者だった。
+   *
+   * **この上限は Service Quotas から引き上げられない。** `service-quotas
+   * list-service-quotas --service-code lambda` にメモリの項目自体が無く
+   * （`L-548AE339` は `NoSuchResourceException`）、経路は AWS Support のケースに
+   * なる。上の 3,538 は「2 vCPU ちょうど」を狙った値なので、3,008 は
+   * 3008/1769 = **1.70 vCPU 相当**であり、2 vCPU に対して約 15% 遅くなる。
+   *
+   * **それでも 3,008 で進める。** 10 秒の前提を確定させるのは Lambda 上の実測で
+   * あり、実測には関数が存在する必要がある。ローカルの 5.4 秒を 1.70/2.00 で割り
+   * 戻すと約 6.4 秒で、10 秒には収まる見込みである。実測がこれを裏切ったときに
+   * 初めて Support のケースを起こす（引き上げの待ち時間を、要否が判る前に払わない）。
    */
-  build_function_memory_mb       = 3538
-  build_function_timeout_seconds = 10
+  build_function_memory_mb = 3008
+  /**
+   * **タイムアウトは 25 秒である（#103 で 10 秒から改めた）。**
+   *
+   * **3.8 の「10 秒」は Lambda 上の実測で成立しなかった。** 3,008 MB での実測は
+   * **21.1 秒**（build 18,562 ms / compress 2,373 ms）で、手元の 6,396 ms の 3.3 倍
+   * である。**メモリではなく CPU の差**で、`Max Memory Used` は 432 MB にとどまる。
+   *
+   * **build は vCPU 数にほぼ完全に反比例する**（Lambda 上の実測 3 点）。
+   *
+   *   | メモリ | vCPU | build | compress | 合計 |
+   *   |---|---|---|---|---|
+   *   | 1,769 MB | 1.00 | 30,788 ms | 2,367 ms | 33,323 ms |
+   *   | 2,048 MB | 1.16 | 26,955 ms | 2,661 ms | 29,773 ms |
+   *   | 3,008 MB | 1.70 | 18,562 ms | 2,373 ms | 21,086 ms |
+   *
+   * 30,788 ÷ 1.70 = 18,110 ≈ 18,562。**#76 の「支配項はコンパイルではなくリンク」は
+   * この実測で覆った。** compress は 2,400 ms でほぼ一定である（brotli は単一スレッド
+   * なので vCPU を増やしても縮まない）。
+   *
+   * **10 秒に収めるには約 7,200 MB 以上が要る**（外挿。10,240 MB なら 7.7 秒）。
+   * それはメモリ上限の引き上げ待ちであり、**待ち時間に稼働を人質に取らない**ために
+   * 25 秒で先に動かす。実測 21.1 秒に対して 4 秒弱の余裕がある。
+   *
+   * **引き上げが通ったら 10,240 MB へ上げ、ここを 10 秒へ戻す。**
+   */
+  build_function_timeout_seconds = 25
 
   /**
    * エフェメラルストレージ（`/tmp`）。
@@ -93,7 +135,40 @@ locals {
    *     回し続けても約 $1 で、月次上限（4.3）に対して無視できる大きさに収まる。
    *     ここを未設定（＝アカウント既定の 1,000）にすると、この性質が消える。
    */
-  build_function_reserved_concurrency = 5
+  /**
+   * **※ #103 で `null` へ変えた。このアカウントでは予約そのものが設定できない。**
+   *
+   * ```
+   * InvalidParameterValueException: Specified ReservedConcurrentExecutions for
+   * function decreases account's UnreservedConcurrentExecution below its minimum
+   * value of [10].
+   * ```
+   *
+   * **アカウントの同時実行総枠が 10 しかない**（既定は 1,000）。予約を付けると残りが
+   * 最低値 10 を割るため、**どの関数にも 1 も予約できない。**
+   *
+   * **Service Quotas から申請できる（2026-08-27 に申請済み・PENDING）。**
+   *
+   * ```
+   * aws service-quotas request-service-quota-increase \
+   *   --service-code lambda --quota-code L-B99A9384 --desired-value 1000
+   * ```
+   *
+   * **要求値は既定（1,000）より小さくできない。** 100 を要求すると
+   * `You must provide a quota value greater than the default quota value of 1000.0`
+   * で弾かれる。適用値が 10 でも、**基準になるのは既定のほうである。**
+   * 必要なのは 15（予約 5 ＋ 未予約の最低値 10）だが、その値では申請できないので
+   * 既定ちょうどへ戻す形になる。
+   *
+   * ※ **#103 の途中で「Service Quotas からは申請できない」と書いたのは誤りだった。**
+   * 弾かれたのは要求値が既定より小さかったためで、経路が無いからではない。
+   *
+   * **外している間の上限はアカウント総枠の 10 である。** 上の「暴走の上限を金額で
+   * 押さえる」は、5 ではなく 10 という形でなお効く。**失われるのは下限のほう**で、
+   * ビルドが 10 本走ると費用ガードの `game-forge-bedrock-guard` が枯渇し得る。
+   * これが引き上げを申請する理由である。
+   */
+  build_function_reserved_concurrency = null
 
   /**
    * brotli の品質（3.3-6 / 3.4-1）。**実測に基づいて q11 から下げた値である。**

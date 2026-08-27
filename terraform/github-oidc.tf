@@ -49,6 +49,16 @@ locals {
  * 「宣言にある古い指紋」と実際が食い違い、**更新の必要が無いのに更新が必要に見える**
  * 状態を作る。
  *
+ * **`ignore_changes` が要る（#103 で判明）。** 空で宣言しても、**AWS 側が作成時に
+ * 指紋を 1 つ自動で入れる。** Terraform はそれを消そうとし、AWS は次の refresh で
+ * また入れるため、**apply しても消えない差分**が残り続ける。しかも
+ * `data.aws_iam_policy_document.deploy_compiler_assume` がこのリソースの ARN を
+ * 参照しているので、差分が**「読み取りは apply 時」→ ロールの assume policy も
+ * 毎回 (known after apply)** という形で `aws_iam_role.deploy_compiler` にも波及する。
+ * plan が恒久的に汚れ、**本物の差分がその中に埋もれる。**
+ *
+ * 上のとおり AWS はこの値を検証に使わないので、管理しないことに損失は無い。
+ *
  * client_id_list（`aud`）は `sts.amazonaws.com` の 1 つだけにする。
  * aws-actions/configure-aws-credentials が既定で要求する値である。
  */
@@ -56,6 +66,10 @@ resource "aws_iam_openid_connect_provider" "github" {
   url             = local.github_oidc_url
   client_id_list  = ["sts.amazonaws.com"]
   thumbprint_list = []
+
+  lifecycle {
+    ignore_changes = [thumbprint_list]
+  }
 
   tags = {
     Project   = "game-forge"

@@ -60,7 +60,14 @@ failed=0
 # 報告される（実測: 空の対象へのリダイレクトは rc=1）。原因の異なる赤を同じ形で
 # 出さないよう、ここで落とす。
 LOG="$(mktemp "${TMPDIR:-/tmp}/acceptance-remote.XXXXXX")" || exit 1
-trap 'rm -f "$LOG"' EXIT
+
+# **緑のときの出力は捨てられる**（`run` は成功したら $LOG を読まない）。そのため
+# 「一致してはいるが、劣化した状態である」ことを検査の中から伝える手段が無かった。
+# **通知はここへ溜め、最後にまとめて出す**（#103）。落とさないが、埋もれもしない。
+WARNINGS="$(mktemp "${TMPDIR:-/tmp}/acceptance-remote-warn.XXXXXX")" || exit 1
+trap 'rm -f "$LOG" "$WARNINGS"' EXIT
+
+warn() { printf '%s\n' "$*" >>"$WARNINGS"; }
 
 # ラベル付きで 1 件実行する。成功時は出力を捨て、失敗したときだけ出力を見せる。
 # 正常な実行の出力で画面が埋まると、失敗の位置が読めなくなる。
@@ -1032,14 +1039,35 @@ r2_parameter .Environment.Variables.R2_CREDENTIALS_PARAMETER r2_credentials_para
 EOF
 
   # 予約同時実行数は get-function-configuration には現れない。別 API で引く。
+  #
+  # **「予約なし」の綴りが両側で違う。** terraform output は AWS プロバイダの表現で
+  # `-1`、`get-function-concurrency` は `None` を返す。素で比べると**宣言どおりでも
+  # 必ず落ちる**ので、どちらも `none` へ寄せてから比べる（#103）。
   local expected_concurrency actual_concurrency
   expected_concurrency="$(tf_output build_function_reserved_concurrency)" || expected_concurrency=""
   actual_concurrency="$(aws lambda get-function-concurrency --function-name "$name" \
     --query 'ReservedConcurrentExecutions' --output text 2>/dev/null)" || actual_concurrency=""
-  if [[ -z "$expected_concurrency" ]] || [[ "$actual_concurrency" != "$expected_concurrency" ]]; then
-    echo "予約同時実行数が宣言と一致しません: expected=${expected_concurrency:-(なし)} actual=${actual_concurrency:-(なし)}"
+  normalize_concurrency() {
+    case "$1" in
+      -1 | None | null | "") echo none ;;
+      *) echo "$1" ;;
+    esac
+  }
+  if [[ -z "$expected_concurrency" ]]; then
+    echo "terraform output build_function_reserved_concurrency を取得できません。"
+    rc=1
+  elif [[ "$(normalize_concurrency "$actual_concurrency")" != "$(normalize_concurrency "$expected_concurrency")" ]]; then
+    echo "予約同時実行数が宣言と一致しません: expected=${expected_concurrency} actual=${actual_concurrency:-(なし)}"
     echo "外れているとアカウント既定（1,000）まで開き、3.8 の並列数制限が無くなります。"
     rc=1
+  elif [[ "$(normalize_concurrency "$expected_concurrency")" == none ]]; then
+    # **一致していても黙らない。** これは劣化した状態であり、引き上げが通ったら
+    # 戻す約束がある（docs/build-function.md の「引き上げの申請」）。緑の中に
+    # 埋めると、戻す機会が来たことに誰も気づかない。
+    warn "予約同時実行数がありません。アカウントの同時実行総枠が 10 で、予約を付けると"
+    warn "残りが最低値 10 を割るため設定できません（仕様 1.2.23 / #103）。上限は総枠 10"
+    warn "という形で残りますが、下限は失われており、ビルドが 10 本走ると費用ガードの"
+    warn "game-forge-bedrock-guard が枯渇し得ます。引き上げの申請は docs/build-function.md。"
   fi
 
   # **VPC に入っていないこと**（確定24 / v1.11）。入れると DNS の穴・実行ロールへの
@@ -1238,6 +1266,11 @@ if [[ "$ran_any" -eq 0 ]]; then
   echo "[acceptance-remote] 外部層の受け入れ条件が未定義です。検査を 1 つも実行していません。" >&2
   echo "[acceptance-remote] 宣言と実際の外部状態を照合する検査を scripts/acceptance-remote.sh へ定義してください。" >&2
   exit 1
+fi
+
+if [[ -s "$WARNINGS" ]]; then
+  echo "[acceptance-remote] 注意（検査は通っていますが、劣化した状態です）:" >&2
+  sed 's/^/    /' "$WARNINGS" >&2
 fi
 
 if [[ "$failed" -gt 0 ]]; then

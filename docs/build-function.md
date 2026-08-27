@@ -197,10 +197,23 @@ VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 
 ## 引き上げの申請（2 件）
 
-| 対象 | 現在 | 望む値 | 経路 | なぜ要るか |
-|---|---|---|---|---|
-| Lambda の同時実行数 | 10 | **1,000（既定）** | **Service Quotas**（申請済み・PENDING） | 予約同時実行数 5 を宣言するため。総枠 10 では**どの関数にも 1 も予約できない** |
-| Lambda の関数メモリ上限 | 3,008 MB | **10,240 MB** | **AWS Support のコンソール** | 3.8 のタイムアウトを 10 秒へ戻すため。約 7,200 MB 以上で 10 秒に収まる |
+**2 件とも 2026-08-27 に申請済みで、どちらも審査中です。**
+
+| 対象 | 現在 | 望む値 | 経路 | 状態 | なぜ要るか |
+|---|---|---|---|---|---|
+| Lambda の同時実行数 | 10 | **1,000（既定）** | Service Quotas | `CASE_OPENED` / ケース `178783057000696` | 予約同時実行数 5 を宣言するため。総枠 10 では**どの関数にも 1 も予約できない** |
+| Lambda の関数メモリ上限 | 3,008 MB | **10,240 MB** | AWS Support のコンソール | 起票済み | 3.8 のタイムアウトを 10 秒へ戻すため。約 7,200 MB 以上で 10 秒に収まる |
+
+**通ったかどうかは、宣言ではなく実際の値で確かめます。**
+
+```bash
+# 同時実行数
+aws lambda get-account-settings --query 'AccountLimit.ConcurrentExecutions'   # 10 -> 1000
+
+# メモリ上限は照会できる項目が無いので、実地に試すのが唯一の判定になる
+aws lambda update-function-configuration --function-name game-forge-build --memory-size 10240
+# 通れば緩和済み。ValidationException なら審査中。**必ず 3008 へ戻すこと。**
+```
 
 ### 同時実行数（Service Quotas）
 
@@ -241,17 +254,54 @@ aws service-quotas list-requested-service-quota-change-history-by-quota \
    - 関数メモリ上限 3,008 MB → 10,240 MB。3,008 MB でのビルド実測が 21.1 秒、
      必要な予算は 10 秒。build は vCPU 数に反比例し、10,240 MB で 7.7 秒の見込み
 
-**通ったあとにやること。**
+### 通ったあとにやること
+
+**2 件は独立して効きます。片方だけ通ったら、その分だけ先に戻せます。**
+
+| 通ったもの | 宣言（`terraform/build-function.tf`） |
+|---|---|
+| メモリ上限 | `build_function_memory_mb` 3008 → **10240**、`build_function_timeout_seconds` 25 → **10** |
+| 同時実行数 | `build_function_reserved_concurrency` `null` → **5** |
 
 ```bash
-# terraform/build-function.tf
-#   build_function_memory_mb       = 3008 -> 10240
-#   build_function_timeout_seconds = 25   -> 10
-#   build_function_reserved_concurrency = null -> 5
 terraform -chdir=terraform apply
+VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 ```
 
+**メモリを上げたら、10 秒に収まることを Lambda 上で測り直してください。** 7.7 秒は
+外挿であり、実測ではありません。手順は「実測のとり方」のとおりです。
+
 仕様書の 3.8 / 3.3-5 / 確定24 / 4.6 にも注記が要ります（1.2.23 と対になる形で）。
+
+## 実測のとり方
+
+**手元の数字は Lambda の代理になりません**（3.3 倍の開きがあります）。予算の判定は
+必ず関数の上で取ります。
+
+```bash
+export AWS_PROFILE=game-forge-prod
+jq -Rs '{source: .}' < docker/isolated-build/sample/ebitengine.go > /tmp/event.json
+
+aws lambda invoke --function-name game-forge-build \
+  --cli-binary-format raw-in-base64-out --payload file:///tmp/event.json \
+  --log-type Tail --query 'LogResult' --output text /tmp/resp.json | base64 -d | grep REPORT
+
+jq '.timings' /tmp/resp.json    # resetMs / prepareMs / buildMs / compressMs / totalMs
+```
+
+**1 回目は捨ててください**（`Init Duration` が乗ります）。**予算を超えると
+`timings` は返りません**。ハンドラが内部期限で先に落ち、`errorMessage` だけが返るためです。
+所要時間を知りたいときは、先にタイムアウトを広げてから測ります。
+
+```bash
+aws lambda update-function-configuration --function-name game-forge-build --timeout 120
+aws lambda wait function-updated --function-name game-forge-build
+# …測る…
+aws lambda update-function-configuration --function-name game-forge-build --timeout 25
+```
+
+**測り終えたら宣言値へ戻すこと。** 戻し忘れは `terraform plan` と
+`scripts/acceptance-remote.sh` の両方が検出します。
 
 ## 以降の配備
 

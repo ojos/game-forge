@@ -90,6 +90,11 @@ for (const [path, entry] of Object.entries(declared)) {
 }
 
 for (const [path, entry] of Object.entries(installed)) {
+  // ルートを表す空文字キーは、この npm（実測: 10.x）では node_modules/.package-lock.json
+  // へ書かれない（package-lock.json 側にはある）。**書かれないことを前提にしない。**
+  // 将来の版が書くようになると fs.existsSync('') が false を返すため、正常な状態が
+  // 毎回「実体が無い」になる。1 行のガードで版への依存を外しておく。
+  if (path === '') continue;
   if (!(path in declared)) {
     problems.push(`宣言に無い: ${path}@${entry.version ?? '(版不明)'}`);
     continue;

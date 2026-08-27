@@ -241,14 +241,28 @@ check_gcp_adc() {
 
   # 失敗時は標準エラーも掴む。gcloud は失効の理由（invalid_grant / reauth など）を
   # そちらへ書くため、捨てると「なぜ切れたのか」が読めなくなる。
-  if ! adc_token="$(gcloud auth application-default print-access-token 2>&1)"; then
+  # **stderr をトークンへ混ぜない。** `2>&1` で受けると、gcloud が更新通知などを stderr へ
+  # 出した瞬間にトークンが複数行になり、下の Authorization ヘッダが壊れる。**認証は通って
+  # いるのに「アカウントを特定できません」で落ちる**という、原因の読めない赤になる
+  # （この issue が塞ごうとしているものそのもの）。失敗時のメッセージは要るので、
+  # stderr は捨てずに別ファイルへ受ける。
+  local adc_stderr
+  adc_stderr="$(mktemp "${TMPDIR:-/tmp}/gcp-adc.XXXXXX")" || return 1
+  if ! adc_token="$(gcloud auth application-default print-access-token 2>"$adc_stderr")"; then
     echo "ADC が使えません（未作成、または失効）。terraform は ADC を読むため plan が落ちます。"
     echo "  対処: gcloud auth application-default login --no-launch-browser"
     echo "  gcloud auth login とは別の資格情報で、両方が要る（docs/gcp-oauth-setup.md 2 章）。"
     echo "  --no-launch-browser は devcontainer にブラウザが無いため（AWS SSO の --use-device-code と同じ事情）。"
     echo "  gcloud の出力:"
     # ここに入っているのはトークンではなく gcloud のエラー文である（取得に失敗している）。
-    printf '%s\n' "$adc_token" | sed 's/^/    /'
+    sed 's/^/    /' "$adc_stderr"
+    rm -f "$adc_stderr"
+    return 1
+  fi
+  rm -f "$adc_stderr"
+  # 念のため 1 行であることを見る。トークンは 1 行で返るが、混ざったときに気づけるようにする。
+  if [[ "$adc_token" == *$'\n'* ]]; then
+    echo "ADC のトークンが複数行で返りました。gcloud の出力に想定外のものが混ざっています。"
     return 1
   fi
 

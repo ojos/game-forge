@@ -1245,10 +1245,64 @@ check_r2_credentials_placement() {
   return "$rc"
 }
 
+##
+# GitHub OIDC の `sub` の綴りが、宣言と GitHub 側の事実で一致すること（#103）。
+#
+# **#103 では、ここが食い違ったことに「配備の失敗」で初めて気づいた。**
+# 信頼ポリシーは `repo:ojos/game-forge:...` を期待していたが、実際に届く `sub` は
+# `repo:ojos@76836/game-forge@1330337925:...` だった。**誰かが設定を変えたのではなく、
+# GitHub の既定の綴りが ID 入りへ移っていた**（`use_default` は true のまま）。
+#
+# エラーは `Not authorized to perform sts:AssumeRoleWithWebIdentity` としか言わない。
+# **権限の問題に見えて、実際は綴りの問題である。** 原因へ辿るには CloudTrail の
+# `principalId` を読むしかなかった。
+#
+# **期待値は GitHub の API が返す `sub_claim_prefix` そのものである。** ここへ綴りを
+# 書き写すと、GitHub 側が再び変えたときに検査だけが古い綴りで緑になる。
+##
+check_oidc_subject() {
+  local declared prefix expected_prefix
+  declared="$(tf_output github_deploy_subject)" || return 1
+  if [[ -z "$declared" ]]; then
+    echo "terraform output github_deploy_subject を取得できません。"
+    return 1
+  fi
+
+  # 宣言の `:ref:` より前が、GitHub の言う prefix にあたる。
+  prefix="${declared%%:ref:*}"
+  if [[ "$prefix" == "$declared" ]]; then
+    echo "宣言された sub に :ref: が含まれません: ${declared}"
+    return 1
+  fi
+
+  local repo
+  repo="$(tf_output repository_full_name)" || return 1
+  expected_prefix="$(gh api "repos/${repo}/actions/oidc/customization/sub" \
+    --jq '.sub_claim_prefix' 2>/dev/null)" || expected_prefix=""
+  if [[ -z "$expected_prefix" ]]; then
+    echo "GitHub から ${repo} の sub_claim_prefix を取得できません。"
+    return 1
+  fi
+
+  if [[ "$prefix" != "$expected_prefix" ]]; then
+    echo "OIDC の sub の綴りが GitHub 側と一致しません。"
+    echo "  宣言 : ${prefix}"
+    echo "  実際 : ${expected_prefix}"
+    echo "このままでは deploy-compiler.yml の OIDC が"
+    echo "Not authorized to perform sts:AssumeRoleWithWebIdentity で落ちます。"
+    echo "terraform/github-oidc.tf の github_deploy_subject を実際の綴りへ合わせること。"
+    return 1
+  fi
+
+  echo "oidc subject: ${declared}"
+  return 0
+}
+
 run "repository exists and visibility matches" check_repository
 run "default branch matches" check_default_branch
 run "branch protection matches" check_branch_protection
 run "actions variable matches" check_actions_variable
+run "github oidc subject spelling matches" check_oidc_subject
 run "dns hosted zone matches" check_dns_zone
 run "dns delegation from sakura is in place" check_dns_delegation
 run "pages custom domain records match" check_pages_dns_records

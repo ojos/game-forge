@@ -341,3 +341,12 @@ output "deploy_compiler_role_arn" {
   EOT
   value       = aws_iam_role.deploy_compiler.arn
 }
+
+output "github_deploy_subject" {
+  description = <<-EOT
+    配備を許す GitHub OIDC トークンの `sub`。所有者 ID とリポジトリ ID が入る綴りである
+    （terraform/github-oidc.tf に経緯）。`scripts/acceptance-remote.sh` が、GitHub 側の
+    `sub_claim_prefix` と照合するために読む。**検査へ綴りを書き写さないための出力である。**
+  EOT
+  value       = local.github_deploy_subject
+}

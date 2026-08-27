@@ -34,8 +34,34 @@ locals {
    *
    * `workflow_dispatch` を手で回した場合も、対象が既定ブランチなら同じ `sub` になる
    * ので、`deploy-compiler.yml` の手動実行はこの条件を満たす。
+   *
+   * ## 所有者 ID とリポジトリ ID が入る（#103 で踏んだ）
+   *
+   * **`repo:ojos/game-forge:...` では引き受けられない。** 実際に届く `sub` は
+   * 数値 ID 入りの綴りである。
+   *
+   * ```
+   * repo:ojos@76836/game-forge@1330337925:ref:refs/heads/main
+   * ```
+   *
+   * **これは誰かが設定を変えたのではなく、GitHub の既定である。**
+   * `GET /repos/{owner}/{repo}/actions/oidc/customization/sub` は
+   * `{"use_default": true, "use_immutable_subject": false,
+   * "sub_claim_prefix": "repo:ojos@76836/game-forge@1330337925"}` を返す。
+   * **`use_default` が true のまま、既定の綴りのほうが ID 入りへ移った。**
+   *
+   * 名前だけの綴りは**受け付けない。** ID 入りは、リポジトリを消して同じ名前で作り
+   * 直した相手を別物として扱える。両方を許すとその区別が消える。
+   *
+   * **数値は書き写さない。** 所有者 ID は `data.github_user`、リポジトリ ID は
+   * `github_repository.this.repo_id` から取る。ここへ 76836 や 1330337925 を直接
+   * 書くと、宣言が GitHub 側の事実から切り離される。
+   *
+   * **綴りが再び変わったら `scripts/acceptance-remote.sh` が先に気づく。** 上の API が
+   * 返す `sub_claim_prefix` と、ここで組み立てた値の前半を照合している。**気づく場所を
+   * 「配備の失敗」から「検査の赤」へ移すため**で、#103 では配備が落ちて初めて判った。
    */
-  github_deploy_subject = "repo:${var.github_owner}/${var.repository_name}:ref:refs/heads/${var.default_branch}"
+  github_deploy_subject = "repo:${var.github_owner}@${data.github_user.deploy_owner.id}/${var.repository_name}@${github_repository.this.repo_id}:ref:refs/heads/${var.default_branch}"
 
   deploy_compiler_role_name = "game-forge-deploy-compiler"
 }
@@ -62,6 +88,16 @@ locals {
  * client_id_list（`aud`）は `sts.amazonaws.com` の 1 つだけにする。
  * aws-actions/configure-aws-credentials が既定で要求する値である。
  */
+/**
+ * 所有者の数値 ID。`sub` の組み立てにだけ使う（上の `github_deploy_subject`）。
+ *
+ * **`ojos` は組織ではなくユーザーである**（`GET /orgs/ojos` は 404、`GET /users/ojos` は
+ * `type: User`）。`github_organization` ではなくこちらを使う理由である。
+ */
+data "github_user" "deploy_owner" {
+  username = var.github_owner
+}
+
 resource "aws_iam_openid_connect_provider" "github" {
   url             = local.github_oidc_url
   client_id_list  = ["sts.amazonaws.com"]

@@ -226,6 +226,36 @@ describe('資格情報', () => {
     expect(missingBedrockSecrets(bedrockEnv({ BEDROCK_AWS_SESSION_TOKEN: null }))).toEqual([]);
   });
 
+  it('システムプロンプトの未実装が、資格情報の不足より先に出る', async () => {
+    // **診断の順序を固定する。** `deps.systemPrompt` を本文の組み立て時に呼ぶと、
+    // 鍵を持たない呼び出し側には BedrockNotConfigured が先に飛び、**まだ書いて
+    // いない段（#16）を「設定の不備」として診断させてしまう。**
+    //
+    // 直しただけでは、次に順序を戻されても気づけない。ここで固定する（PR #98 の
+    // Copilot code review の指摘）。
+    const stub = capturingFetch(() => new Response('{}'));
+    const notImplemented = new Error('systemPrompt:not-implemented');
+    const generate = createBedrockGenerateSource({
+      systemPrompt: () => {
+        throw notImplemented;
+      },
+      fetch: stub.fetch,
+    });
+
+    // 鍵が 1 つも無い env。**それでも先に出るのはシステムプロンプト側**であること。
+    await expect(
+      generate(
+        bedrockEnv({
+          BEDROCK_AWS_REGION: null,
+          BEDROCK_AWS_ACCESS_KEY_ID: null,
+          BEDROCK_AWS_SECRET_ACCESS_KEY: null,
+        }),
+        { prompt: 'ゲーム' },
+      ),
+    ).rejects.toBe(notImplemented);
+    expect(stub.sent).toHaveLength(0);
+  });
+
   it('未設定なら呼び出す前に落とし、値を漏らさない', async () => {
     const stub = capturingFetch(() => new Response('{}'));
     const generate = createBedrockGenerateSource({ systemPrompt: stubSystemPrompt, fetch: stub.fetch });

@@ -362,9 +362,18 @@ export function createBedrockGenerateSource(
   const send = deps.fetch ?? ((request: Request) => fetch(request));
 
   return async (env: Env, request: GenerateRequest): Promise<GenerationResult> => {
-    // **モデルの決定が最初に来る。** 資格情報の確認より前に置くのは、未知のモデル名を
-    // 宣言したときに「鍵が無い」と誤診しないため。
+    // **宣言だけで決まるものを、資格情報より先に解決する。** どちらも「鍵が無い」と
+    // 誤診させないためである。
+    //
+    //   - モデルの決定（`GENERATION_MODEL` の綴り）
+    //   - システムプロンプトの解決（#16 が未実装なら `PipelineStepNotImplemented`）
+    //
+    // **とくに 2 つ目は既定の経路で必ず踏む。** `notImplementedSystemPrompt` を使う
+    // 呼び出し側が Bedrock の鍵を持たないと、本来出したい「#16 が未実装」ではなく
+    // `BedrockNotConfigured` が先に飛び、**まだ書いていない段を、設定の不備として
+    // 診断させてしまう。** 解決した結果は下の本文の組み立てで使い回す。
     const model = selectGenerationModel(env);
+    const system = deps.systemPrompt(model);
     const credentials = readBedrockCredentials(env);
 
     const aws = new AwsClient({
@@ -375,7 +384,7 @@ export function createBedrockGenerateSource(
       region: credentials.region,
     });
 
-    const body = JSON.stringify(buildConverseRequest(model, deps.systemPrompt(model), request.prompt));
+    const body = JSON.stringify(buildConverseRequest(model, system, request.prompt));
     const signed = await aws.sign(converseEndpoint(credentials.region, model.modelId), {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },

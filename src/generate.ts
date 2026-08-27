@@ -261,10 +261,10 @@ export async function runGenerationPipeline(
   // 5.2-5: ホワイトリスト検査。違反は再生成に回さず即拒否する。
   pipeline.inspectSource(generated);
 
-  // 3.3-5..7: ビルドと R2 への書き戻し。#76b で 8 段へ戻った（v1.9 は 3.3-5..8 だった）。
+  // 3.3-5..7: ビルドと R2 への書き戻し。#76 で 8 段へ戻った（v1.9 は 3.3-5..8 だった）。
   const built = await pipeline.build(env, generated);
 
-  // 3.3-8: `games` 行の作成（#76b で採番が戻った。v1.9 は 3.3-9 だった）。
+  // 3.3-8: `games` 行の作成（#76 で採番が戻った。v1.9 は 3.3-9 だった）。
   return await pipeline.createGame(env, userId, built);
 }
 

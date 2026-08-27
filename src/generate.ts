@@ -25,6 +25,7 @@ import { json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 import type { GenerationResult, SystemPromptResolver } from './generation-models.js';
 import { createBedrockGenerateSource } from './bedrock.js';
+import { buildSystemPrompt } from './system-prompt.js';
 
 /** 生成エンドポイントのパス。 */
 export const GENERATE_PATH = '/api/generate';
@@ -168,7 +169,7 @@ export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
  */
 export const defaultPipeline: GenerationPipeline = {
   ...notImplementedPipeline,
-  generateSource: createBedrockGenerateSource({ systemPrompt: notImplementedSystemPrompt }),
+  generateSource: createBedrockGenerateSource({ systemPrompt: buildSystemPrompt }),
 };
 
 /**

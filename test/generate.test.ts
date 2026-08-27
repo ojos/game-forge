@@ -15,6 +15,8 @@ import {
   DEFAULT_GENERATION_MODEL_KEY,
   findGenerationModel,
 } from '../src/generation-models.js';
+import { BedrockNotConfigured } from '../src/bedrock.js';
+import { buildSystemPrompt } from '../src/system-prompt.js';
 import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, buildSessionCookie, signSession } from '../src/session.js';
@@ -413,20 +415,24 @@ describe('生成の段が Bedrock へ結線されている（#83）', () => {
     expect(defaultPipeline.generateSource).not.toBe(notImplementedPipeline.generateSource);
   });
 
-  it('システムプロンプト（#16）が入るまでは、そこで未実装として落ちる', async () => {
-    // **#83 はトランスポートとモデル選択だけを持つ。** 本文の無いプロンプトで生成すると
-    // 課金だけが発生してコンパイルできないソースが返るので、空文字で「成功」にしない。
-    // モデル名まで出すのは、どのモデルのプロンプトが欠けているかがそのまま読めるように。
+  it('システムプロンプト（#16）が結線されている', async () => {
+    // **#16 で本文が入った。** 以前ここは `systemPrompt:<モデル>` の 501 を期待して
+    // いたが、本物のリゾルバ（`src/system-prompt.ts`）へ差し替えたので、その段は
+    // もう落ちない。
+    //
+    // **鍵を落とした env で確かめる。** `createBedrockGenerateSource` は
+    // 「モデル決定 → システムプロンプト解決 → 資格情報」の順で解決するので、
+    // 資格情報の不足まで到達したことが、そのままプロンプトが解決できた証拠になる。
+    // **この経路は Bedrock を呼ばない**（呼べば課金が受け入れ条件に混ざる）。
+    const withoutKeys: Env = { ...bedrockEnv(), BEDROCK_AWS_ACCESS_KEY_ID: '' };
     await expect(
-      defaultPipeline.generateSource(bedrockEnv(), { prompt: 'ゲーム' }),
-    ).rejects.toBeInstanceOf(PipelineStepNotImplemented);
-    await defaultPipeline
-      .generateSource(bedrockEnv(), { prompt: 'ゲーム' })
-      .catch((error: unknown) => {
-        expect((error as PipelineStepNotImplemented).step).toBe(
-          `systemPrompt:${DEFAULT_GENERATION_MODEL_KEY}`,
-        );
-      });
+      defaultPipeline.generateSource(withoutKeys, { prompt: 'ゲーム' }),
+    ).rejects.toBeInstanceOf(BedrockNotConfigured);
+
+    // 本文そのものの検査は `test/system-prompt.test.ts` が持つ。ここでは既定の経路が
+    // その本文を使っていることだけを見る。
+    const model = findGenerationModel(DEFAULT_GENERATION_MODEL_KEY)!;
+    expect(buildSystemPrompt(model).length).toBeGreaterThan(1);
   });
 
   it('費用の出る段は、費用を止める段より先に開かない', async () => {

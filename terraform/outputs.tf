@@ -226,3 +226,118 @@ output "aws_profile_dev" {
   EOT
   value       = var.aws_profile_dev
 }
+
+/**
+ * ビルド関数と ECR（確定24 / 仕様 3.8 / 7.1 / 9.3。#103）の照合値。
+ *
+ * 外部層の検査（scripts/acceptance-remote.sh）と .github/workflows/deploy-compiler.yml は、
+ * 対象の識別子も期待値もここから取る。3538 や 10 を検査やワークフローへ書き写すと、
+ * 宣言を変えたときにそちらだけが古い値を見続ける（共通規範 12 章）。
+ */
+
+output "build_function_name" {
+  description = "ビルド関数の名前。CI の update-function-code と外部層の検査が対象にする。"
+  value       = aws_lambda_function.build.function_name
+}
+
+output "build_function_arn" {
+  description = "ビルド関数の ARN。Workers 側（#19）が呼ぶ先でもある。"
+  value       = aws_lambda_function.build.arn
+}
+
+output "build_function_memory_mb" {
+  description = "宣言したメモリ（MB）。2 vCPU 相当を買うための値で、仕様 3.8 が正本。"
+  value       = aws_lambda_function.build.memory_size
+}
+
+output "build_function_timeout_seconds" {
+  description = "宣言したタイムアウト（秒）。仕様 3.8 が正本。"
+  value       = aws_lambda_function.build.timeout
+}
+
+output "build_function_ephemeral_storage_mb" {
+  description = "宣言したエフェメラルストレージ（MB）。本番で書き込める唯一の領域の大きさ（7.1）。"
+  value       = aws_lambda_function.build.ephemeral_storage[0].size
+}
+
+output "build_function_reserved_concurrency" {
+  description = "宣言した予約同時実行数。仕様 3.8 の「Worker Pool による並列数制限」の対応物。"
+  value       = aws_lambda_function.build.reserved_concurrent_executions
+}
+
+output "build_function_architecture" {
+  description = "宣言した命令セット。イメージ側と食い違うと関数は起動しない。"
+  value       = aws_lambda_function.build.architectures[0]
+}
+
+output "build_function_package_type" {
+  description = "パッケージ形式。確定24 はコンテナイメージと定めている。"
+  value       = aws_lambda_function.build.package_type
+}
+
+output "build_brotli_quality" {
+  description = <<-EOT
+    関数へ渡している brotli の品質（3.3-6 / 3.4-1）。
+
+    **q11 では 3.8 の 10 秒に収まらないことを #103 で実測した**（合計 16.96 秒）。
+    実測表は terraform/build-function.tf の local.build_brotli_quality にある。
+  EOT
+  value       = aws_lambda_function.build.environment[0].variables["BROTLI_QUALITY"]
+}
+
+output "build_function_role_name" {
+  description = "ビルド関数の実行ロール名。外部層の検査が付いているポリシーを引く。"
+  value       = aws_iam_role.build.name
+}
+
+output "build_function_role_actions" {
+  description = <<-EOT
+    実行ロールへ与えている動作。**外部層の検査が「最小限であること」を突き合わせる
+    期待値である**（#103 の受け入れ条件）。
+
+    ポリシー文書と同じ定義から作られる（terraform/build-function.tf の
+    local.build_role_actions）。
+  EOT
+  value       = local.build_role_actions
+}
+
+output "build_function_log_group" {
+  description = "ビルド関数のロググループ名。実行ロールが書ける先はこの 1 本だけである。"
+  value       = aws_cloudwatch_log_group.build.name
+}
+
+output "build_image_repository_name" {
+  description = "ビルドイメージを置く ECR リポジトリ名。ワークフローがここから取る。"
+  value       = aws_ecr_repository.isolated_build.name
+}
+
+output "build_image_repository_url" {
+  description = "ECR リポジトリの URL（<account>.dkr.ecr.<region>.amazonaws.com/<name>）。docker push の宛先。"
+  value       = aws_ecr_repository.isolated_build.repository_url
+}
+
+output "r2_credentials_parameter_name" {
+  description = <<-EOT
+    R2 の資格情報を置く SSM Parameter Store のパラメータ名（#103 / 3.3-6）。
+
+    **値はこの宣言が持たない。** `aws_ssm_parameter` を宣言すると、Terraform が
+    refresh のたびに復号済みの値を tfstate へ書き込む（`aws_iam_access_key` を
+    宣言しない理由と同じ経路である。terraform/bedrock.tf）。宣言が持つのは
+    「どこを見に行くか」と「誰が読めるか」だけで、値の投入と更新は
+    docs/build-function.md が持つ。
+
+    外部層の検査は、この名前の SecureString が実在することだけを確かめる
+    （**値は読まない**）。
+  EOT
+  value       = local.r2_credentials_parameter_name
+}
+
+output "deploy_compiler_role_arn" {
+  description = <<-EOT
+    GitHub Actions が OIDC で引き受けるロールの ARN（9.3）。
+
+    .github/workflows/deploy-compiler.yml がここから取る。**ワークフローへ ARN を
+    書き写さない**（アカウント ID を公開リポジトリへ置かないためでもある）。
+  EOT
+  value       = aws_iam_role.deploy_compiler.arn
+}

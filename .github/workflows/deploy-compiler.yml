@@ -1,93 +1,98 @@
 name: deploy-compiler
 
-# 隔離ビルドコンテナ（7.1 / M2-4）のイメージを更新する。
+# ビルド関数（確定24 / 3.8）のイメージを ECR へ配り、関数を差し替える（9.3 / #103）。
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# **このファイルは仕様より古い。確定24（#76）でビルド実行環境は AWS Lambda に
-# 決まったが、下の deploy ジョブは VPS への SSH のままである。**
+# 9.3 は「**ECR へイメージを push し、`aws lambda update-function-code --image-uri` で
+# 関数のイメージを更新する。SSH は使わない**」と定める。ここは 2 段に分ける。
 #
-# #76 の scope.out が「実際の構築」を外しているため、決定と仕様の整合だけが先に
-# 入り、実装がまだ追いついていない。**差し替えは #19（M2-5）が持つ。**
+#   1. build-and-push: イメージを組み立て、**封じ込めの検査を通してから** ECR へ push する。
+#   2. deploy:         push したダイジェストで関数を差し替え、載ったことを確認する。
 #
-# 9.3 は現在「ECR へ push し update-function-code で入れ替える」と定めている。
-# build-and-push（1 段目）は push 先が ghcr.io → ECR に変わるだけで骨格は残るが、
-# **deploy（2 段目）は丸ごと置き換わる。**
+# **`needs` で依存させる（条件式ではなく）。** 9.3 が Pages 側に定めた「ゲートの外側に
+# 配備経路を作らない」と同じ形である。検査が落ちれば 2 段目は起動しない。
 #
-# ここに注記を置くのは、ファイルの中身が仕様と食い違ったまま黙って残ることを
-# 避けるためである。**deploy ジョブ自体は毎回走って成功する**（job レベルの if は
-# 無く、guard は step である）。実行されていないのは **SSH でイメージを入れ替える
-# step** のほうで、VPS の secret が揃わないあいだ if で落ちる。つまり
-# **VPS へ届いたことは一度も無い。** 動いていないものが古いこと自体は害が無いが、
-# 読んだ人が「9.3 と違う」と迷う経路は塞いでおく。
-# ─────────────────────────────────────────────────────────────────────────────
+# **配るのはダイジェストである。** `latest` タグで更新すると、あとから
+# 「どの版が本番の関数に載っているか」を辿れない（9.3 の「配備の対象はイメージの
+# ダイジェストである」。Pages 側で `--commit-hash` を必ず渡すのと同じ理由）。
 #
-# 以下は起票時（VPS 前提）の設計記録である。**現在の方針ではない。**
+# **資格情報を持たない。** AWS へは OIDC で入る（terraform/github-oidc.tf）。
+# 長命のアクセスキーを Secrets へ置く形は採らない。
 #
-# 9.3 は「GitHub Actions (deploy-compiler.yml) 経由で SSH 接続し、Docker イメージを
-# さくらのVPS へ自動更新・コンテナ再起動」と定める。ここは 2 段に分ける。
-#
-#   1. build-and-push: イメージを組み立てて GitHub Container Registry へ push する。
-#   2. deploy:         VPS へ SSH し、pull して入れ替える。
-#
-# **なぜ分けるか。** VPS はまだ存在しない（M2-5 の前提）。1 段目だけなら今日から
-# 動かせて、「main への push でイメージが更新される」という受け入れ条件を実際に
-# 検証できる。1 段で SSH まで書くと、VPS が来るまで**一度も走らないワークフロー**に
-# なり、動くかどうか分からないものを緑として扱うことになる。
-#
-# 2 段目は必要な secret が揃っていないあいだ skip する。**失敗ではなく skip に
-# するのは、未設定と故障を区別するためである。** 落とすと「VPS がまだ無い」ことが
-# 毎回の赤として現れ、本物の故障が埋もれる。
-#
-# レジストリ経由にすることで、CI から VPS へ push するのではなく VPS が pull する
-# 形にもできる。その場合 2 段目は不要になるが、9.3 の記述に合わせて置いてある。
+# > **v1.11 までの記述（#103 で置き換え）。** ここは ghcr.io へ push し、`deploy` ジョブが
+# > さくらの VPS へ SSH してイメージを入れ替える形だった。**VPS の secret が揃わないため
+# > SSH の step は一度も実行されていない**（VPS へ届いたことは一度も無い）。確定24 が
+# > 実行環境を Lambda に決めたため、配布先ごと置き換えた。
 
 on:
   push:
     branches: [main]
     paths:
       - 'docker/isolated-build/**'
+      - 'scripts/check-isolated-build.sh'
       - '.github/workflows/deploy-compiler.yml'
-  # 手で回せるようにする。VPS を用意した直後など、docker/ を変えずに配りたいことがある。
+  # 手で回せるようにする。ベースイメージの更新（3.5）など、docker/ を変えずに
+  # 配り直したいことがある。
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
+  # OIDC のトークンを取るために要る。**これが無いと configure-aws-credentials は
+  # 認証できない**（`Credentials could not be loaded`）。
+  id-token: write
 
 concurrency:
   group: deploy-compiler
-  # 途中で止めない。イメージの push とデプロイは中断されると中途半端な状態を残す。
+  # 途中で止めない。イメージの push と関数の差し替えは中断されると中途半端な状態を残す。
   cancel-in-progress: false
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
     outputs:
-      image: ${{ steps.meta.outputs.image }}
+      configured: ${{ steps.guard.outputs.configured }}
+      digest: ${{ steps.push.outputs.digest }}
+      image_uri: ${{ steps.push.outputs.image_uri }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: イメージ名を決める
-        id: meta
-        # レジストリのパスは小文字でなければならない。リポジトリ名に大文字が
-        # 含まれていても通るよう、ここで落としておく。
+      - name: 配備先が宣言されているか
+        id: guard
+        env:
+          AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          BUILD_IMAGE_REPOSITORY: ${{ vars.BUILD_IMAGE_REPOSITORY }}
+          BUILD_FUNCTION_NAME: ${{ vars.BUILD_FUNCTION_NAME }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        # **3 つすべてを見る。** どれか 1 つでも欠けると、後段は「認証はできたが
+        # 対象が空」という読みにくい失敗になる。
+        #
+        # **未設定は失敗ではなく skip にする。** これらの変数は Terraform が
+        # 宣言している（terraform/build-function.tf）ので、空である＝まだ apply して
+        # いない、という 1 つの意味しか持たない。落とすと「まだ apply していない」ことが
+        # 毎回の赤として現れ、本物の故障が埋もれる。
+        #
+        # **イメージのビルドと封じ込めの検査は、この guard の外で必ず走る。** 配れない
+        # 状態でも、配る現物が壊れていないことは毎回確かめる。
         run: |
-          image="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')/isolated-build"
-          echo "image=${image}" >> "$GITHUB_OUTPUT"
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          if [[ -z "${AWS_DEPLOY_ROLE_ARN}" || -z "${BUILD_IMAGE_REPOSITORY}" || -z "${BUILD_FUNCTION_NAME}" || -z "${AWS_REGION}" ]]; then
+            echo "[deploy-compiler] Actions 変数が未設定のため、配備は skip します。"
+            echo "[deploy-compiler] terraform apply が済むと terraform/build-function.tf が 4 つとも設定します。"
+            echo "[deploy-compiler] 必要なのは AWS_DEPLOY_ROLE_ARN / BUILD_IMAGE_REPOSITORY / BUILD_FUNCTION_NAME / AWS_REGION です。"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: ビルドする
-        # commit SHA でも tag を打つ。`latest` だけだと、VPS 上のどの版が動いて
-        # いるのかを後から特定できない。
+        # **`--build-arg TARGETARCH=amd64` を明示する。** 関数は x86_64 で宣言して
+        # おり（terraform/build-function.tf の architectures）、**イメージと食い違うと
+        # 関数は起動しない。** ランナーが amd64 であることに黙って頼らない。
+        #
+        # commit SHA でも tag を打つ。`latest` だけだと、ECR 上のどの版がどの
+        # コミットから来たのかを後から特定できない。
         run: |
           docker build \
-            -t "${{ steps.meta.outputs.image }}:latest" \
-            -t "${{ steps.meta.outputs.image }}:${GITHUB_SHA}" \
+            --build-arg TARGETARCH=amd64 \
+            -t "isolated-build:${GITHUB_SHA}" \
             docker/isolated-build
 
       - name: 封じ込めの検査を通す
@@ -96,55 +101,101 @@ jobs:
         #
         # IMAGE を渡すのは、検査スクリプトに作り直させないためである。既定では
         # スクリプトが自分でビルドするが、それだと「同じ Dockerfile から作った別の
-        # イメージ」を検査することになり、配る現物が検査を通った保証にならない。
+        # イメージ」を検査することになり、**配る現物が検査を通った保証にならない。**
         env:
-          IMAGE: ${{ steps.meta.outputs.image }}:${{ github.sha }}
+          IMAGE: isolated-build:${{ github.sha }}
         run: bash scripts/check-isolated-build.sh
 
-      - name: push する
+      - name: AWS へ OIDC で入る
+        if: steps.guard.outputs.configured == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: ECR へログインする
+        if: steps.guard.outputs.configured == 'true'
         run: |
-          docker push "${{ steps.meta.outputs.image }}:latest"
-          docker push "${{ steps.meta.outputs.image }}:${GITHUB_SHA}"
+          set -euo pipefail
+          registry="${BUILD_IMAGE_REPOSITORY%%/*}"
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${registry}"
+        env:
+          BUILD_IMAGE_REPOSITORY: ${{ vars.BUILD_IMAGE_REPOSITORY }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+
+      - name: push してダイジェストを取る
+        id: push
+        if: steps.guard.outputs.configured == 'true'
+        env:
+          BUILD_IMAGE_REPOSITORY: ${{ vars.BUILD_IMAGE_REPOSITORY }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        # **ダイジェストは ECR に問い合わせる。** ローカルの `docker inspect` からも
+        # 取れるが、それは「push したつもりの値」であって「レジストリに在る値」では
+        # ない。関数へ渡すのはレジストリ側の事実にする。
+        #
+        # リポジトリ名はレジストリのホスト名を落として作る。**ワークフローへ綴りを
+        # 書き写さない**（宣言は terraform/build-function.tf の local.build_repository_name）。
+        run: |
+          set -euo pipefail
+          docker tag "isolated-build:${GITHUB_SHA}" "${BUILD_IMAGE_REPOSITORY}:${GITHUB_SHA}"
+          docker tag "isolated-build:${GITHUB_SHA}" "${BUILD_IMAGE_REPOSITORY}:latest"
+          docker push "${BUILD_IMAGE_REPOSITORY}:${GITHUB_SHA}"
+          docker push "${BUILD_IMAGE_REPOSITORY}:latest"
+
+          repository="${BUILD_IMAGE_REPOSITORY#*/}"
+          digest="$(aws ecr describe-images \
+            --region "${AWS_REGION}" \
+            --repository-name "${repository}" \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' --output text)"
+
+          if [[ -z "${digest}" || "${digest}" == "None" ]]; then
+            echo "[deploy-compiler] push したイメージのダイジェストを取得できません。" >&2
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "image_uri=${BUILD_IMAGE_REPOSITORY}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "[deploy-compiler] pushed ${BUILD_IMAGE_REPOSITORY}@${digest}"
 
   deploy:
     needs: build-and-push
+    if: needs.build-and-push.outputs.configured == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: secret が揃っているか
-        id: guard
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
-        # **4 つすべてを見る。** ホスト鍵を落とすと、3 つ揃った時点で deploy が走り、
-        # 空の known_hosts でホスト鍵の検証に失敗する。「未設定なので skip」と
-        # 「設定したのに壊れている」を区別できなくなる。
-        run: |
-          if [[ -z "${VPS_HOST}" || -z "${VPS_USER}" || -z "${VPS_SSH_KEY}" || -z "${VPS_HOST_KEY}" ]]; then
-            echo "[deploy] VPS の secret が未設定のため skip します（VPS は M2-5 の前提）。"
-            echo "[deploy] 必要なのは VPS_HOST / VPS_USER / VPS_SSH_KEY / VPS_HOST_KEY の 4 つです。"
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          fi
+      - name: AWS へ OIDC で入る
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
 
-      - name: SSH でイメージを入れ替える
-        if: steps.guard.outputs.ready == 'true'
+      - name: 関数のイメージを差し替える
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          IMAGE: ${{ needs.build-and-push.outputs.image }}
+          BUILD_FUNCTION_NAME: ${{ vars.BUILD_FUNCTION_NAME }}
+          IMAGE_URI: ${{ needs.build-and-push.outputs.image_uri }}
+        # **更新は非同期に完了する。** `wait function-updated` を挟まないと、
+        # 「配ったが載る前に緑になった」状態を作れる。
+        #
+        # **載ったことを読み返して確かめる。** 9.3 が Pages 側で「配備されたか」では
+        # なく「一致しているか」を見ると定めているのと同じ理由である。自動化で
+        # 消えるのは「配り忘れ」だけで、「配備が失敗したまま気づかない」は残る。
         run: |
           set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
-          # ホスト鍵は事前に登録したものだけを信用する。StrictHostKeyChecking=no は
-          # 中間者を黙って受け入れるので使わない。未設定なら上の guard で skip 済み。
-          printf '%s\n' "${{ secrets.VPS_HOST_KEY }}" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes \
-            "${VPS_USER}@${VPS_HOST}" \
-            "docker pull '${IMAGE}:${GITHUB_SHA}' && docker tag '${IMAGE}:${GITHUB_SHA}' game-forge/isolated-build:local"
+          aws lambda update-function-code \
+            --function-name "${BUILD_FUNCTION_NAME}" \
+            --image-uri "${IMAGE_URI}" \
+            --no-cli-pager >/dev/null
+
+          aws lambda wait function-updated --function-name "${BUILD_FUNCTION_NAME}"
+
+          actual="$(aws lambda get-function \
+            --function-name "${BUILD_FUNCTION_NAME}" \
+            --query 'Code.ImageUri' --output text)"
+
+          if [[ "${actual}" != "${IMAGE_URI}" ]]; then
+            echo "[deploy-compiler] 関数に載っているイメージが配ったものと一致しません。" >&2
+            echo "[deploy-compiler]   expected=${IMAGE_URI}" >&2
+            echo "[deploy-compiler]   actual  =${actual}" >&2
+            exit 1
+          fi
+          echo "[deploy-compiler] ${BUILD_FUNCTION_NAME} is running ${actual}"

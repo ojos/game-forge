@@ -484,7 +484,7 @@ check_wrangler_production_hosts() {
 }
 
 ##
-# **本番が配っている配備コミットが、main の HEAD と一致していることを確認する**（#95）。
+# **本番が配っている配備コミットが、既定ブランチの HEAD と一致していることを確認する**（#95）。
 #
 # **「配備されたか」ではなく「一致しているか」を見る。** #95 で起きたのは、配備が
 # 一度も走らないまま本番が 4 コミット古い状態で動き続け、**ローカルの verify も
@@ -497,10 +497,14 @@ check_wrangler_production_hosts() {
 #
 # 期待値と実測の取り方:
 #
-#   期待値（main の HEAD）— GitHub の API から取る。**手元の HEAD を使わない。**
-#     この検査は「本番と main の一致」を見るもので、手元の作業ブランチが何を
+#   期待値（既定ブランチの HEAD）— GitHub の API から取る。**手元の HEAD を使わない。**
+#     この検査は「本番と既定ブランチの一致」を見るもので、手元の作業ブランチが何を
 #     指しているかは関係ない。対象リポジトリ名と既定ブランチ名は terraform の
 #     output から取る（他の検査と同じ流儀）。
+#
+#     **ブランチ名を main と書き写さない。** 実装は tf_output default_branch を読んで
+#     おり、ここへ main と書くと、宣言側で既定ブランチを変えたときにコメントだけが
+#     古い名前を語り続ける（共通規範 12 章）。
 #
 #   実測（本番の配備）— Cloudflare の `canonical_deployment` を読む。
 #     **配備一覧の先頭ではない。** 一覧の先頭は「最後に作られた配備」であり、それが
@@ -522,7 +526,7 @@ check_wrangler_production_hosts() {
 # 戻り値: 0 = 一致 / 1 = 乖離・取得失敗
 ##
 check_pages_production_deployment() {
-  local pages_hostname project full_name branch expected deployment actual dirty
+  local pages_hostname project full_name branch expected actual dirty
   pages_hostname="$(tf_output pages_hostname)" || return 1
   full_name="$(tf_output repository_full_name)" || return 1
   branch="$(tf_output default_branch)" || return 1
@@ -873,7 +877,7 @@ run "dns hosted zone matches" check_dns_zone
 run "dns delegation from sakura is in place" check_dns_delegation
 run "pages custom domain records match" check_pages_dns_records
 run "wrangler production hosts match dns" check_wrangler_production_hosts
-run "production deployment matches main HEAD" check_pages_production_deployment
+run "production deployment matches default branch HEAD" check_pages_production_deployment
 run "bedrock invoker permissions are minimal" check_bedrock_invoker_permissions
 run "cost guard layer 2 (burst alarm) matches" check_bedrock_burst_alarm
 run "cost guard layer 3 (budgets) matches" check_bedrock_budgets

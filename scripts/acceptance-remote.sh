@@ -975,6 +975,248 @@ check_bedrock_budgets() {
   return "$rc"
 }
 
+##
+# ビルド関数（確定24 / 仕様 3.8 / 7.1 / 9.3。#103）の検査。
+#
+# 期待値はすべて terraform output から取る。3538 や 10 をここへ書き写すと、宣言を
+# 変えたときに検査だけが古い期待値を見続ける（共通規範 12 章）。
+##
+
+# output がリスト・数値のときは -raw が使えないため、JSON で取る。
+tf_output_json() {
+  terraform -chdir="$TF_DIR" output -json "$1" 2>/dev/null
+}
+
+##
+# 関数の設定が宣言どおりか。
+#
+# **メモリは 2 vCPU を買うための値であり、下げると 3.8 の 10 秒に収まらなくなる**
+# （実測 11.3 秒）。予約同時実行数は 3.8 の「Worker Pool による並列数制限」の
+# 対応物で、外れるとアカウント既定（1,000）まで開く。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_build_function_config() {
+  local rc=0 name config
+  name="$(tf_output build_function_name)" || return 1
+  if [[ -z "$name" ]]; then
+    echo "terraform output からビルド関数名を取得できません。apply 済みか確認すること。"
+    return 1
+  fi
+
+  config="$(aws lambda get-function-configuration --function-name "$name" --output json 2>/dev/null)" || config=""
+  if [[ -z "$config" ]]; then
+    echo "ビルド関数 ${name} を取得できません（未 apply / SCP による拒否を疑うこと）。"
+    return 1
+  fi
+
+  local expected actual
+  while read -r label query output_name; do
+    expected="$(tf_output "$output_name")" || expected=""
+    actual="$(jq -r "$query" <<<"$config")"
+    if [[ -z "$expected" ]]; then
+      echo "terraform output ${output_name} を取得できません。"
+      rc=1
+    elif [[ "$actual" != "$expected" ]]; then
+      echo "${label} が宣言と一致しません: expected=${expected} actual=${actual}"
+      rc=1
+    fi
+  done <<'EOF'
+memory .MemorySize build_function_memory_mb
+timeout .Timeout build_function_timeout_seconds
+ephemeral_storage .EphemeralStorage.Size build_function_ephemeral_storage_mb
+package_type .PackageType build_function_package_type
+architecture .Architectures[0] build_function_architecture
+brotli_quality .Environment.Variables.BROTLI_QUALITY build_brotli_quality
+r2_parameter .Environment.Variables.R2_CREDENTIALS_PARAMETER r2_credentials_parameter_name
+EOF
+
+  # 予約同時実行数は get-function-configuration には現れない。別 API で引く。
+  local expected_concurrency actual_concurrency
+  expected_concurrency="$(tf_output build_function_reserved_concurrency)" || expected_concurrency=""
+  actual_concurrency="$(aws lambda get-function-concurrency --function-name "$name" \
+    --query 'ReservedConcurrentExecutions' --output text 2>/dev/null)" || actual_concurrency=""
+  if [[ -z "$expected_concurrency" ]] || [[ "$actual_concurrency" != "$expected_concurrency" ]]; then
+    echo "予約同時実行数が宣言と一致しません: expected=${expected_concurrency:-(なし)} actual=${actual_concurrency:-(なし)}"
+    echo "外れているとアカウント既定（1,000）まで開き、3.8 の並列数制限が無くなります。"
+    rc=1
+  fi
+
+  # **VPC に入っていないこと**（確定24 / v1.11）。入れると DNS の穴・実行ロールへの
+  # EC2 権限・14 日アイドルでの初回失敗という 3 つの悪化を買い直すことになる。
+  local vpc
+  vpc="$(jq -r '.VpcConfig.VpcId // ""' <<<"$config")"
+  if [[ -n "$vpc" ]]; then
+    echo "ビルド関数が VPC (${vpc}) に入っています。確定24 は VPC を使わないと定めています。"
+    rc=1
+  fi
+
+  if [[ "$rc" -eq 0 ]]; then
+    echo "build function ${name}: $(jq -r '"\(.MemorySize)MB / \(.Timeout)s / \(.EphemeralStorage.Size)MB tmp"' <<<"$config"), concurrency=${actual_concurrency}, no vpc"
+  fi
+  return "$rc"
+}
+
+##
+# 関数に載っているイメージが、ECR の `latest` と同じダイジェストか（9.3）。
+#
+# **タグではなくダイジェストで見る。** タグは打ち直せるので、「`latest` が付いている」
+# ことは「同じ中身が載っている」ことを意味しない。9.3 が Pages 側で「配備されたか」
+# ではなく「一致しているか」を見ると定めているのと同じ形である。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_build_function_image() {
+  local name repository resolved deployed expected
+  name="$(tf_output build_function_name)" || return 1
+  repository="$(tf_output build_image_repository_name)" || return 1
+  if [[ -z "$name" || -z "$repository" ]]; then
+    echo "terraform output からビルド関数 / ECR リポジトリの識別子を取得できません。"
+    return 1
+  fi
+
+  resolved="$(aws lambda get-function --function-name "$name" \
+    --query 'Code.ResolvedImageUri' --output text 2>/dev/null)" || resolved=""
+  if [[ -z "$resolved" || "$resolved" == "None" ]]; then
+    echo "ビルド関数 ${name} に載っているイメージを取得できません。"
+    return 1
+  fi
+  deployed="${resolved##*@}"
+
+  expected="$(aws ecr describe-images --repository-name "$repository" \
+    --image-ids imageTag=latest --query 'imageDetails[0].imageDigest' --output text 2>/dev/null)" || expected=""
+  if [[ -z "$expected" || "$expected" == "None" ]]; then
+    echo "ECR ${repository} の latest タグを取得できません（イメージがまだ push されていない可能性）。"
+    return 1
+  fi
+
+  if [[ "$deployed" != "$expected" ]]; then
+    echo "関数に載っているイメージが ECR の latest と一致しません。"
+    echo "  function=${deployed}"
+    echo "  ecr:latest=${expected}"
+    echo "deploy-compiler ワークフローが失敗したまま気づいていない可能性があります（9.3）。"
+    return 1
+  fi
+  echo "build image ${repository}@${deployed:0:19}… is deployed"
+}
+
+##
+# 実行ロールの権限が最小限であること（#103 の受け入れ条件）。
+#
+# **この関数は攻撃者が制御しうるコードをコンパイルする**（7.1）。ロールに付いた権限は
+# 実質そのコードの権限だと考えて絞る。managed policy が 1 枚でも付いていれば失敗に
+# する（`AWSLambdaBasicExecutionRole` は `logs:CreateLogGroup` を含み、書ける先を
+# `*` に広げる）。
+#
+# 戻り値: 0 = 宣言どおり / 1 = 逸脱または取得失敗
+##
+check_build_function_role() {
+  local rc=0 role expected attached policies actual
+  role="$(tf_output build_function_role_name)" || return 1
+  expected="$(tf_output_json build_function_role_actions)" || expected=""
+  if [[ -z "$role" || -z "$expected" ]]; then
+    echo "terraform output からビルド関数の実行ロールを取得できません。"
+    return 1
+  fi
+
+  attached="$(aws iam list-attached-role-policies --role-name "$role" \
+    --query 'AttachedPolicies[].PolicyArn' --output json 2>/dev/null)" || attached=""
+  if [[ -z "$attached" ]]; then
+    echo "実行ロール ${role} を取得できません。"
+    return 1
+  fi
+  if [[ "$(jq 'length' <<<"$attached")" != "0" ]]; then
+    echo "実行ロールに managed policy が付いています: $(jq -c . <<<"$attached")"
+    echo "宣言はインラインポリシー 1 本だけを与えています（terraform/build-function.tf）。"
+    rc=1
+  fi
+
+  policies="$(aws iam list-role-policies --role-name "$role" --query 'PolicyNames' --output json 2>/dev/null)" || policies=""
+  if [[ -z "$policies" ]]; then
+    echo "実行ロール ${role} のインラインポリシーを取得できません。"
+    return 1
+  fi
+
+  local doc all='[]' policy_name
+  for policy_name in $(jq -r '.[]' <<<"$policies"); do
+    doc="$(aws iam get-role-policy --role-name "$role" --policy-name "$policy_name" \
+      --query 'PolicyDocument' --output json 2>/dev/null)" || doc=""
+    if [[ -z "$doc" ]]; then
+      echo "インラインポリシー ${policy_name} を取得できません。"
+      return 1
+    fi
+    all="$(jq -s '.[0] + ([.[1].Statement[] | .Action] | flatten)' <<<"$all"$'\n'"$doc")"
+  done
+
+  actual="$(jq -c 'unique' <<<"$all")"
+  if [[ "$actual" != "$(jq -c 'unique' <<<"$expected")" ]]; then
+    echo "実行ロールの動作が宣言と一致しません。"
+    echo "  expected=$(jq -c 'unique' <<<"$expected")"
+    echo "  actual  =${actual}"
+    return 1
+  fi
+
+  if [[ "$rc" -eq 0 ]]; then
+    echo "build function role ${role}: ${actual}"
+  fi
+  return "$rc"
+}
+
+##
+# R2 の資格情報が「宣言の外に、暗号化されて」存在すること（#103 の受け入れ条件）。
+#
+# 検査するのは 2 つ。
+#
+#   1. 宣言した名前の SecureString が実在する。**値は読まない。**
+#      読めば検査の出力とシェルの履歴へ秘密が写る。ここで確かめたいのは
+#      「置き場所が用意されているか」であって値そのものではない。
+#   2. **tfstate に `aws_ssm_parameter` が 1 件も無い。** 宣言すると Terraform が
+#      refresh のたびに復号済みの値を state へ書き込む（`aws_iam_access_key` を
+#      宣言しない理由と同じ経路。terraform/bedrock.tf）。**「宣言していないこと」
+#      そのものが要件なので、機械で押さえる。**
+#
+# 戻り値: 0 = 宣言どおり / 1 = 逸脱または取得失敗
+##
+check_r2_credentials_placement() {
+  local rc=0 name type
+  name="$(tf_output r2_credentials_parameter_name)" || return 1
+  if [[ -z "$name" ]]; then
+    echo "terraform output から R2 資格情報のパラメータ名を取得できません。"
+    return 1
+  fi
+
+  type="$(aws ssm describe-parameters \
+    --parameter-filters "Key=Name,Values=${name}" \
+    --query 'Parameters[0].Type' --output text 2>/dev/null)" || type=""
+  if [[ "$type" != "SecureString" ]]; then
+    echo "${name} が SecureString として存在しません（実測: ${type:-(なし)}）。"
+    echo "投入手順は docs/build-function.md にある（宣言は値を持たない）。"
+    rc=1
+  fi
+
+  # tfstate は追跡外だが、適用者の手元には必ずある。無ければ検査は成立しない。
+  local state="${TF_DIR}/terraform.tfstate"
+  if [[ ! -f "$state" ]]; then
+    echo "${state} が見つかりません。apply 済みの環境で実行すること。"
+    return 1
+  fi
+  local declared
+  declared="$(jq '[.resources[]? | select(.type == "aws_ssm_parameter")] | length' <"$state" 2>/dev/null)" || declared=""
+  if [[ -z "$declared" ]]; then
+    echo "${state} を読めません。"
+    rc=1
+  elif [[ "$declared" != "0" ]]; then
+    echo "tfstate に aws_ssm_parameter が ${declared} 件あります。"
+    echo "**復号済みの値が state へ平文で落ちます。** 宣言から外すこと（#103 の受け入れ条件）。"
+    rc=1
+  fi
+
+  if [[ "$rc" -eq 0 ]]; then
+    echo "r2 credentials: ${name} is a SecureString, and no aws_ssm_parameter is declared"
+  fi
+  return "$rc"
+}
+
 run "repository exists and visibility matches" check_repository
 run "default branch matches" check_default_branch
 run "branch protection matches" check_branch_protection
@@ -987,6 +1229,10 @@ run "production deployment matches default branch HEAD" check_pages_production_d
 run "bedrock invoker permissions are minimal" check_bedrock_invoker_permissions
 run "cost guard layer 2 (burst alarm) matches" check_bedrock_burst_alarm
 run "cost guard layer 3 (budgets) matches" check_bedrock_budgets
+run "build function configuration matches" check_build_function_config
+run "build function image matches the ecr latest digest" check_build_function_image
+run "build function execution role is minimal" check_build_function_role
+run "r2 credentials are outside the declaration" check_r2_credentials_placement
 
 if [[ "$ran_any" -eq 0 ]]; then
   echo "[acceptance-remote] 外部層の受け入れ条件が未定義です。検査を 1 つも実行していません。" >&2

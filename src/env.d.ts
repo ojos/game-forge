@@ -18,6 +18,28 @@
 interface AppSecrets {
   /** 署名付きセッション cookie の HMAC 鍵（8.1 / 確定9）。32 文字以上。 */
   SESSION_SECRET: string;
+  /**
+   * Bedrock を呼ぶ AWS 資格情報（確定19 / 4.1 / #83）。
+   *
+   * **`BEDROCK_` 接頭辞を付けている。** このリポジトリは Terraform 用に
+   * `AWS_PROFILE` / `AWS_ACCESS_KEY_ID` を開発機の環境変数として使うため、同じ名前を
+   * アプリの秘密にも使うと、どちらの資格情報で何を叩いているのか読めなくなる
+   * （`.dev.vars.example`）。
+   *
+   * **どのモデルで生成するかはここに無い。** `GENERATION_MODEL` は秘密ではなく構成で、
+   * `wrangler.toml` の `[vars]` が宣言する（`src/generation-models.ts`）。
+   */
+  BEDROCK_AWS_REGION: string;
+  BEDROCK_AWS_ACCESS_KEY_ID: string;
+  BEDROCK_AWS_SECRET_ACCESS_KEY: string;
+  /**
+   * SSO の一時資格情報を使うときだけ入る（本番の長命キーでは登録しない）。
+   *
+   * **`string` として宣言する。** 生成物側（`wrangler types`）は `.dev.vars` に
+   * キーがあれば `string` として出すため、こちらを省略可能（`?`）にすると宣言の
+   * マージが矛盾する。**空・未設定は `src/bedrock.ts` が実行時に判定する。**
+   */
+  BEDROCK_AWS_SESSION_TOKEN: string;
   /** Google OAuth のクライアント ID。ID トークンの `aud` の照合にも使う。 */
   GOOGLE_CLIENT_ID: string;
   /** Google OAuth のクライアントシークレット。トークンエンドポイントへのみ送る。 */

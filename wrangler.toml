@@ -26,6 +26,16 @@ compatibility_date = "2026-08-01"
 [vars]
 APP_HOST = "game-forge.localtest.me"
 SANDBOX_HOST = "sandbox.game-forge.localtest.me"
+# どの生成モデルで生成するか（確定5 / 4.1 / #83）。
+#
+# **シークレットではないので `[vars]` に置く。** モデルの選択は秘密ではなく構成で、
+# `.dev.vars` へ置くと本番でどのモデルを使っているかが宣言から読めなくなる。
+#
+# 値は `src/generation-models.ts` の登録簿の鍵（`sonnet-4-6` / `deepseek-v3-2`）。
+# **未知の綴りは既定へ落とさず例外にする**（A/B の片側が黙ってもう片側になると、
+# 4.2 の比較が成立しない）。省略すると既定（`sonnet-4-6`）になるが、**全環境で明示する。**
+# 暗黙に既定へ寄るのと、そのモデルを選んだのとは、次に触る人にとって別物である。
+GENERATION_MODEL = "sonnet-4-6"
 # 開発用の診断経路（`/__dev/*`）を登録するかどうか（#89）。
 #
 # **`enabled` はここ（トップレベル＝ローカル）にしか無い。** 配備される 2 つの環境は
@@ -72,6 +82,7 @@ bucket_name = "game-forge-local"
 # `app.` を 1 ラベル足すと、どちらの制約にも触れずに CNAME 1 本で張れる。
 APP_HOST = "app.game-forge.ojos.jp"
 SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
+GENERATION_MODEL = "sonnet-4-6"
 DEV_ROUTES = "disabled"
 
 [env.preview.vars]
@@ -80,6 +91,7 @@ DEV_ROUTES = "disabled"
 # （プレビューに専用のカスタムドメインは張らない）。
 APP_HOST = "app.game-forge.ojos.jp"
 SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
+GENERATION_MODEL = "sonnet-4-6"
 DEV_ROUTES = "disabled"
 
 # 本番の D1。**ローカル用とは別のデータベース**である（9.1 / 確定20: クラウド環境は

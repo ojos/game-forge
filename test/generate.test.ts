@@ -6,10 +6,15 @@ import {
   PipelineStepNotImplemented,
   QuotaExceeded,
   createGenerateRoutes,
+  defaultPipeline,
   notImplementedPipeline,
   runGenerationPipeline,
 } from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
+import {
+  DEFAULT_GENERATION_MODEL_KEY,
+  findGenerationModel,
+} from '../src/generation-models.js';
 import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, buildSessionCookie, signSession } from '../src/session.js';
@@ -101,7 +106,20 @@ function recordingPipeline(): { calls: string[]; pipeline: GenerationPipeline } 
       },
       generateSource: async () => {
         calls.push('generateSource');
-        return { source: 'package main' };
+        // **どのモデルで生成したかは型が必須にしている**（#83）。骨組みのテストでも
+        // 省けないので、登録簿の既定モデルをそのまま使う。
+        return {
+          modelKey: DEFAULT_GENERATION_MODEL_KEY,
+          modelId: findGenerationModel(DEFAULT_GENERATION_MODEL_KEY)!.modelId,
+          source: 'package main',
+          usage: {
+            inputTokens: 1,
+            outputTokens: 2,
+            cacheReadInputTokens: null,
+            cacheWriteInputTokens: null,
+          },
+          stopReason: 'end_turn',
+        };
       },
       recordCost: async () => {
         calls.push('recordCost');
@@ -370,6 +388,55 @@ describe('オーケストレーションの骨組み（3.3 の順序）', () => 
     expect(logged.join('\n')).not.toContain(secret);
     // 種類だけは残す。何も出さないと、落ちたことすら分からなくなる。
     expect(logged.join('\n')).toContain('Error');
+  });
+});
+
+describe('生成の段が Bedrock へ結線されている（#83）', () => {
+  /**
+   * Bedrock の資格情報を入れた env。
+   *
+   * **実在の鍵を使わない。** ここで見たいのは結線であって、呼び出しの成否ではない。
+   *
+   * @returns 差し替えた env
+   */
+  function bedrockEnv(): Env {
+    return {
+      ...testEnv(),
+      BEDROCK_AWS_REGION: 'ap-northeast-1',
+      BEDROCK_AWS_ACCESS_KEY_ID: 'test-access-key-id',
+      BEDROCK_AWS_SECRET_ACCESS_KEY: 'test-secret-access-key',
+      BEDROCK_AWS_SESSION_TOKEN: '',
+    };
+  }
+
+  it('既定の生成の段は未実装の段そのものではない', () => {
+    expect(defaultPipeline.generateSource).not.toBe(notImplementedPipeline.generateSource);
+  });
+
+  it('システムプロンプト（#16）が入るまでは、そこで未実装として落ちる', async () => {
+    // **#83 はトランスポートとモデル選択だけを持つ。** 本文の無いプロンプトで生成すると
+    // 課金だけが発生してコンパイルできないソースが返るので、空文字で「成功」にしない。
+    // モデル名まで出すのは、どのモデルのプロンプトが欠けているかがそのまま読めるように。
+    await expect(
+      defaultPipeline.generateSource(bedrockEnv(), { prompt: 'ゲーム' }),
+    ).rejects.toBeInstanceOf(PipelineStepNotImplemented);
+    await defaultPipeline
+      .generateSource(bedrockEnv(), { prompt: 'ゲーム' })
+      .catch((error: unknown) => {
+        expect((error as PipelineStepNotImplemented).step).toBe(
+          `systemPrompt:${DEFAULT_GENERATION_MODEL_KEY}`,
+        );
+      });
+  });
+
+  it('費用の出る段は、費用を止める段より先に開かない', async () => {
+    // 既定の経路を叩いても 501（checkQuota）で止まり、Bedrock は呼ばれない。
+    // クォータ判定（#23）が未実装のまま生成だけを開けると、4.3 の上限が効かない。
+    const routes = createGenerateRoutes();
+    const cookie = await sessionCookie(await seedUser('wired'));
+    const response = await post(routes, { prompt: 'ゲーム' }, cookie);
+    expect(response.status).toBe(501);
+    expect(await response.json()).toEqual({ error: 'not implemented', step: 'checkQuota' });
   });
 });
 

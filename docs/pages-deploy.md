@@ -152,9 +152,10 @@ npx wrangler pages secret put GOOGLE_CLIENT_SECRET --project-name game-forge
 **`SESSION_SECRET` はローカルの値を使い回さないこと。** 32 文字以上のランダム値を
 本番用に新しく作ります。
 
-**Bedrock の資格情報（`BEDROCK_AWS_*`）は、いまは登録しません。** 生成機能は
-`/api/generate` が骨組みのみで、#83 / #16 が未完了のためです（#89 scope.out）。
-生成を有効にする時点で次を足します。**`BEDROCK_AWS_SESSION_TOKEN` は本番では
+**Bedrock の資格情報（`BEDROCK_AWS_*`）は、いまは登録しません。** #83 で生成
+クライアント（Bedrock の `Converse` と SigV4 署名、モデル選択）は入りましたが、
+`/api/generate` は**クォータ判定（#23）とシステムプロンプト（#16）が未実装のため
+501 で止まり、Bedrock を呼びません**。生成を有効にする時点で次を足します。**`BEDROCK_AWS_SESSION_TOKEN` は本番では
 登録しません**（一時資格情報はローカル開発で SSO を使うときだけのもので、本番には
 長命キーを置きます。Workers は AWS の外で動くため IAM ロールを引き受けられません。
 仕様書 4.1）。
@@ -165,6 +166,10 @@ npx wrangler pages secret put BEDROCK_AWS_REGION --project-name game-forge
 npx wrangler pages secret put BEDROCK_AWS_ACCESS_KEY_ID --project-name game-forge
 npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY --project-name game-forge
 ```
+
+**どのモデルで生成するかはシークレットではありません。** `GENERATION_MODEL` は
+`wrangler.toml` の `[env.production.vars]` が宣言するので、配備すればそのまま効きます
+（`src/generation-models.ts` の登録簿の鍵。確定5 / #83）。
 
 **値の出どころは `docs/bedrock-access.md` です**（#82）。役割はこう分かれます。
 

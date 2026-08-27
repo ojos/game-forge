@@ -87,7 +87,14 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       .filter((key) => !injectedByRunner.includes(key))
       .filter((key) => !documented.includes(key))
       .sort();
-    expect(declared).toEqual(['APP_HOST', 'BUCKET', 'DB', 'DEV_ROUTES', 'SANDBOX_HOST']);
+    expect(declared).toEqual([
+      'APP_HOST',
+      'BUCKET',
+      'DB',
+      'DEV_ROUTES',
+      'GENERATION_MODEL',
+      'SANDBOX_HOST',
+    ]);
   });
 });
 

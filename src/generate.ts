@@ -84,9 +84,9 @@ export interface GenerationPipeline {
   readonly recordCost: (env: Env, userId: string, generated: unknown) => Promise<void>;
   /** 5.2-5: AST でパッケージのホワイトリストを検査する（M2-3）。 */
   readonly inspectSource: (generated: unknown) => void;
-  /** 3.3-5..7: VPS でビルドし、R2 へ書き戻す（M2-5）。 */
+  /** 3.3-5..8: Lambda でビルドし、書き戻し関数が R2 へ書き戻す（確定24 / M2-5）。 */
   readonly build: (env: Env, generated: unknown) => Promise<unknown>;
-  /** 3.3-8: `games` 行を `status='draft'` で作成する（M2-7）。 */
+  /** 3.3-9: `games` 行を `status='draft'` で作成する（M2-7）。 */
   readonly createGame: (env: Env, userId: string, built: unknown) => Promise<{ id: string }>;
 }
 
@@ -220,10 +220,10 @@ export async function runGenerationPipeline(
   // 5.2-5: ホワイトリスト検査。違反は再生成に回さず即拒否する。
   pipeline.inspectSource(generated);
 
-  // 3.3-5..7: ビルドと R2 への書き戻し。
+  // 3.3-5..8: ビルドと R2 への書き戻し。確定24 で段が 1 つ増えた（旧 3.3-5..7）。
   const built = await pipeline.build(env, generated);
 
-  // 3.3-8: `games` 行の作成。
+  // 3.3-9: `games` 行の作成（確定24 で採番が 1 つずれた。旧 3.3-8）。
   return await pipeline.createGame(env, userId, built);
 }
 

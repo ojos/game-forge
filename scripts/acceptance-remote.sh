@@ -186,9 +186,115 @@ check_cloudflare_authenticated() {
   echo "cloudflare api token is active"
 }
 
+# ── GCP の ADC（#99）────────────────────────────────────────────────────────
+#
+# terraform は google プロバイダを ADC（Application Default Credentials）で通す。
+# ADC が失効していると plan が
+#
+#   Error: Error when reading or editing Project "...": oauth2: "invalid_grant"
+#   "reauth related error (invalid_rapt)"
+#
+# で落ちる。**これは宣言と外部状態の乖離ではなく前提の不成立である**のに、メッセージは
+# プロバイダ由来で、乖離と読み分けられない（2026-08-27 に 2 回、切り分けに手間取った）。
+# AWS を plan より前に置いているのとまったく同じ理屈なので、GCP もここへ置く。
+#
+# **認証は行わない**（冒頭の前提）。ADC の作成はブラウザでのサインインを要するため、
+# そもそもスクリプトからは行えない。ここで見るのは状態だけである。
+#
+# **アクセストークンを表示しない。** 取得できたトークンは変数に留め、出力へは載せない
+# （run は失敗時に出力をそのまま見せるため、載せると資格情報がログへ落ちる）。
+# 失効時に表示するのは gcloud のエラー文であって、トークンではない。
+##
+# ADC が使えること、かつ **CLI と同じアカウントで作られていること**を確認する。
+#
+# 2 つ目を見る理由。ADC のアカウントはブラウザでサインインしたアカウントになるため、
+# 別のアカウントのままサインインすると**認証は成功する**。print-access-token も通る。
+# 落ちるのは plan だけで、しかも 403（does not have permission）になるため、
+# 「宣言が食い違っている」のか「別人として認証できている」のかが読み取れない
+# （#89 で踏み、2026-08-26 / 08-27 にも再発した。docs/gcp-oauth-setup.md 2 章）。
+# gcloud CLI の認証と ADC は別の資格情報で**両方が要る**と手順書が定めている以上、
+# 両者のアカウントが食い違っている状態は、それ自体が前提の不成立である。
+#
+# 期待するアカウントをここへ書き写さない。書き写せば、担当者が変わったときに検査だけが
+# 古い期待値を見続ける（shared-ai-rules.md 12 章）。**2 つの資格情報を互いに照合する**
+# ことで、書き写しを増やさずに取り違えを捕まえる。
+#
+# 限界: 両方が同じ「別人」で作られていれば通る。それでも、実際に起きた事故
+# （CLI は ido@ojos.jp のまま、ADC だけが別アカウントで作られる）はここで落ちる。
+#
+# 出力: 不成立の理由と対処を標準出力へ書く（run が失敗時のみ表示する）
+# 戻り値: 0 = 前提が成立 / 1 = 未認証・失効・アカウントの取り違え
+##
+check_gcp_adc() {
+  if ! command -v gcloud >/dev/null 2>&1; then
+    echo "gcloud が見つかりません。devcontainer を再ビルドすること（google-cloud-cli feature）。"
+    return 1
+  fi
+
+  local cli_account adc_token adc_email
+  cli_account="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -1)"
+  if [[ -z "$cli_account" ]]; then
+    echo "gcloud CLI が未認証です（有効なアカウントがありません）。"
+    echo "  gcloud auth login"
+    return 1
+  fi
+
+  # 失敗時は標準エラーも掴む。gcloud は失効の理由（invalid_grant / reauth など）を
+  # そちらへ書くため、捨てると「なぜ切れたのか」が読めなくなる。
+  # **stderr をトークンへ混ぜない。** `2>&1` で受けると、gcloud が更新通知などを stderr へ
+  # 出した瞬間にトークンが複数行になり、下の Authorization ヘッダが壊れる。**認証は通って
+  # いるのに「アカウントを特定できません」で落ちる**という、原因の読めない赤になる
+  # （この issue が塞ごうとしているものそのもの）。失敗時のメッセージは要るので、
+  # stderr は捨てずに別ファイルへ受ける。
+  local adc_stderr
+  adc_stderr="$(mktemp "${TMPDIR:-/tmp}/gcp-adc.XXXXXX")" || return 1
+  if ! adc_token="$(gcloud auth application-default print-access-token 2>"$adc_stderr")"; then
+    echo "ADC が使えません（未作成、または失効）。terraform は ADC を読むため plan が落ちます。"
+    echo "  対処: gcloud auth application-default login --no-launch-browser"
+    echo "  gcloud auth login とは別の資格情報で、両方が要る（docs/gcp-oauth-setup.md 2 章）。"
+    echo "  --no-launch-browser は devcontainer にブラウザが無いため（AWS SSO の --use-device-code と同じ事情）。"
+    echo "  gcloud の出力:"
+    # ここに入っているのはトークンではなく gcloud のエラー文である（取得に失敗している）。
+    sed 's/^/    /' "$adc_stderr"
+    rm -f "$adc_stderr"
+    return 1
+  fi
+  rm -f "$adc_stderr"
+  # 念のため 1 行であることを見る。トークンは 1 行で返るが、混ざったときに気づけるようにする。
+  if [[ "$adc_token" == *$'\n'* ]]; then
+    echo "ADC のトークンが複数行で返りました。gcloud の出力に想定外のものが混ざっています。"
+    return 1
+  fi
+
+  # トークンの持ち主を Google に問い合わせる（docs/gcp-oauth-setup.md 2 章の確認コマンド）。
+  # 手元のファイルではなく発行元に訊くので、「誰として認証できているか」が実際に分かる。
+  adc_email="$(curl -sS --max-time 30 https://www.googleapis.com/oauth2/v3/userinfo \
+    -H "Authorization: Bearer ${adc_token}" 2>/dev/null | jq -r '.email // ""' 2>/dev/null)"
+  if [[ -z "$adc_email" ]]; then
+    echo "ADC のトークンは取得できましたが、アカウントを特定できません。"
+    echo "  https://www.googleapis.com/oauth2/v3/userinfo が email を返しませんでした（到達不能か、スコープ不足）。"
+    echo "  対処: gcloud auth application-default login --no-launch-browser でやり直すこと。"
+    return 1
+  fi
+
+  if [[ "$adc_email" != "$cli_account" ]]; then
+    echo "ADC が gcloud CLI と別のアカウントで作られています（認証は成功していますが別人です）。"
+    echo "  ADC（terraform が読む）: ${adc_email}"
+    echo "  gcloud CLI:              ${cli_account}"
+    echo "  この状態は認証としては通り、terraform plan だけが"
+    echo "  'the user does not have permission to access Project ...' で落ちます。"
+    echo "  対処: ブラウザで正しいアカウントへサインインし直してから"
+    echo "        gcloud auth application-default login --no-launch-browser"
+    return 1
+  fi
+
+  echo "gcp adc is active (${adc_email})"
+}
+
 run "prerequisite: gh authenticated" gh auth status
 run "prerequisite: aws authenticated" aws sts get-caller-identity
 run "prerequisite: cloudflare api token is active" check_cloudflare_authenticated
+run "prerequisite: gcp adc is active" check_gcp_adc
 
 # terraform 自身も外部（プロバイダレジストリ）へ出る。init 済みでなければ plan は
 # 実行できないため、ここで冪等に通す。

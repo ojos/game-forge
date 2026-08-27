@@ -24,6 +24,23 @@ ran_any=0
 
 if [[ -f package.json ]]; then
   command -v npm >/dev/null 2>&1 || { echo "[acceptance] (node) npm not found. install Node.js (npm) to run this acceptance check." >&2; exit 1; }
+  # 依存の実体が宣言（package-lock.json）と一致していること（#99）。
+  #
+  # **npm test より前に置く。** ずれた状態でテストを回すと `Cannot find package` で
+  # スイートが全滅し、原因が読み取れない赤になる（2026-08-27 に 15 スイートが全滅した）。
+  # 安い検査から落として反復を短くするのは、verify.sh が機密混入検査を受け入れ条件の
+  # 手前へ置いているのと同じ考え方である。
+  #
+  # **verify.sh ではなくこちらへ置く理由。** verify.sh が持つのは規範由来の検査
+  # （どのプロジェクトでも同じ機密混入検査）で、言語やパッケージ管理を前提にしない
+  # 汎用の入口である。この検査は package.json / npm という**このプロジェクトの実態**に
+  # 依存し、「受け入れ条件を検証できる状態か」を見るものなので、プロジェクトが所有する
+  # この層に属する。package.json がある場合だけ走る、という既存の分岐にもそのまま乗る。
+  #
+  # 直さずに落とすだけである（理由は scripts/check-deps-installed.sh の冒頭）。
+  # CI は毎回 npm ci を実行するため、この検査で CI が赤くなることはない。
+  echo "[acceptance] (node) scripts/check-deps-installed.sh"
+  bash scripts/check-deps-installed.sh
   echo "[acceptance] (node) npm test"
   npm test
   echo "[acceptance] (node) npm run typecheck"

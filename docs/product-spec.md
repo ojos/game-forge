@@ -225,6 +225,32 @@ Bedrock という置くものができた時点で、その根拠が復活する
 **`scripts/check-isolated-build.sh` も `--memory=3008m --cpus=1.7` へ揃えた。**
 本番より速い配分で手元を緑にすると、10 秒の判定が甘くなるためである。
 
+#### イメージの形式で 2 つ踏んだ（9.3）
+
+メモリを直したあと、`CreateFunction` は今度はイメージで落ちた。
+
+```
+InvalidParameterValueException: The image manifest, config or layer media type
+for the source image ... is not supported.
+```
+
+**1. BuildKit の attestation は Lambda が受け付けない。** 既定では push されるのが単一の
+マニフェストではなく **OCI の image index**（`application/vnd.oci.image.index.v1+json`）に
+なる。`--provenance=false --sbom=false` が要る。
+
+**2. `--build-arg TARGETARCH=amd64` はアーキテクチャを揃えない。** これが決めるのは
+Dockerfile 内の `GOARCH`、つまり**ハンドラのバイナリだけ**であり、ベースイメージ
+`golang:1.26.5` はホストのアーキテクチャで引かれる。aarch64 の開発機では **arm64 の
+ベースに amd64 のバイナリが入った、どちらでも動かないイメージ**になる。
+**`deploy-compiler.yml` は「ランナーが amd64 であることに黙って頼らない」と書きながら、
+実際には頼っていた**（ランナーが amd64 である限り結果は正しいので表面化しなかった）。
+`--platform linux/amd64` で外側も固定した。
+
+**初回だけ手元から押す必要がある。** `deploy-compiler.yml` の配備段は Actions 変数
+`BUILD_FUNCTION_NAME` が空だと skip し、その変数は関数を作る apply が設定する。
+**関数が無いと CI が押せず、イメージが無いと関数が作れない。** 手元のイメージは足場で
+あり、次の配備で CI が組んだもの（**封じ込めの検査を通ったもの**）に置き換わる。
+
 **費用は変わらない。** 課金は GB 秒で、3.008 GB × 6.4 秒 = 19.3 GB 秒に対し
 3.538 GB × 5.3 秒 = 18.8 GB 秒である（4.6 の月 ¥24 は据え置く）。
 

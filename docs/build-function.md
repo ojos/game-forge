@@ -135,8 +135,9 @@ terraform -chdir=terraform apply -target=aws_ecr_repository.isolated_build
 # 2. イメージを 1 つ push する
 repo="$(terraform -chdir=terraform output -raw build_image_repository_url)"
 aws ecr get-login-password | docker login --username AWS --password-stdin "${repo%%/*}"
-docker build --build-arg TARGETARCH=amd64 -t "${repo}:latest" docker/isolated-build
-bash scripts/check-isolated-build.sh          # 配る前に検査する
+docker build --platform linux/amd64 --provenance=false --sbom=false \
+  --build-arg TARGETARCH=amd64 -t "${repo}:latest" docker/isolated-build
+IMAGE="${repo}:latest" bash scripts/check-isolated-build.sh   # 配る現物を検査する
 docker push "${repo}:latest"
 
 # 3. 残り（関数・ロール・ロググループ・Actions 変数）を作る
@@ -147,6 +148,28 @@ terraform -chdir=terraform apply
 # 5. 外部層の検査を通す
 VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 ```
+
+**手順 2 の 2 つのフラグは、どちらも #103 で実際に踏んだものです。**
+
+- **`--platform linux/amd64`。** `--build-arg TARGETARCH=amd64` が決めるのは Dockerfile 内の
+  `GOARCH`、つまり**ハンドラのバイナリだけ**です。ベースイメージ `golang:1.26.5` はホストの
+  アーキテクチャで引かれるため、**aarch64 の開発機では arm64 のベースに amd64 のバイナリが
+  入った、どちらでも動かないイメージ**が出来ます。関数は `x86_64` で宣言してあります。
+- **`--provenance=false --sbom=false`。** 既定では BuildKit が attestation を足し、push される
+  のが単一のマニフェストではなく **OCI の image index**（`application/vnd.oci.image.index.v1+json`）
+  になります。**Lambda はこれを受け付けません。**
+
+  ```
+  InvalidParameterValueException: The image manifest, config or layer media type
+  for the source image ... is not supported.
+  ```
+
+  ECR 側の実体は `aws ecr batch-get-image --repository-name ... --image-ids imageTag=latest
+  --query 'images[0].imageManifest'` で読めます。`manifests` の配列が見えたら index です。
+
+**手順 2 は 1 回きりです。** 以降は `deploy-compiler.yml` が amd64 のランナー上で組み、
+**封じ込めの検査を通してから**押します。手元のイメージは初回に関数を作るためだけの
+足場であり、次の配備で置き換わります。
 
 **手順 3 で Actions のリポジトリ変数が 4 つ設定されます**
 （`AWS_REGION` / `AWS_DEPLOY_ROLE_ARN` / `BUILD_IMAGE_REPOSITORY` / `BUILD_FUNCTION_NAME`）。

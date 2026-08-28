@@ -50,6 +50,35 @@ BEDROCK_AWS_SECRET_ACCESS_KEY=
 # 一時資格情報（SSO）を使うときだけ入れる。長命キーでは空のままにする。
 BEDROCK_AWS_SESSION_TOKEN=
 
+# ビルド関数（AWS Lambda `game-forge-build`）を呼ぶための AWS 資格情報
+# （確定24 / 3.3-5 / 9.2 / #19）。
+#
+# 認証は Bedrock と同じく **IAM の SigV4** で、実装は src/build-client.ts。Workers は
+# AWS の外で動くため IAM ロールを引き受ける経路が無く、長命のアクセスキーになる（4.1）。
+#
+# **Bedrock 用と分ける理由は 2 つある。**
+#
+#   1. 用途が違うものには違う名前を付ける（このファイルの BEDROCK_ 接頭辞と同じ方針）。
+#   2. **権限が違う。** Bedrock を呼ぶ IAM ユーザーのポリシーは bedrock:InvokeModel
+#      だけを許しており（terraform/bedrock.tf）、lambda:InvokeFunction を通せない。
+#      最小権限を保つなら principal ごと分けることになる。
+#
+# **この principal はまだ宣言されていない。** 発行の手順と必要な権限は
+# docs/build-invocation.md にある（宣言の追加は terraform 側の後続作業）。
+#
+# **呼ぶ相手（関数名）はここに無い。** 秘密ではなく構成なので、wrangler.toml の
+# BUILD_FUNCTION_NAME が環境ごとに宣言する。
+#
+# ローカルでは SSO の一時資格情報を使える。その場合は SESSION_TOKEN も要る
+# （転記の手順は上の Bedrock の項と同じ。プロファイルは game-forge-prod）。
+#
+# **空のままでも npm run dev は起動する。** 呼び出しの手前で設定不足として落ちる。
+BUILD_AWS_REGION=
+BUILD_AWS_ACCESS_KEY_ID=
+BUILD_AWS_SECRET_ACCESS_KEY=
+# 一時資格情報（SSO）を使うときだけ入れる。長命キーでは空のままにする。
+BUILD_AWS_SESSION_TOKEN=
+
 # 署名付きセッション cookie の HMAC 鍵（8.1 / 確定9 / #12）。
 #
 # **32 文字以上**を入れること。短い鍵は実行時エラーとして表面化せず、総当たりの

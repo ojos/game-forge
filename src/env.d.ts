@@ -40,6 +40,22 @@ interface AppSecrets {
    * マージが矛盾する。**空・未設定は `src/bedrock.ts` が実行時に判定する。**
    */
   BEDROCK_AWS_SESSION_TOKEN: string;
+  /**
+   * ビルド関数（Lambda）を呼ぶ AWS 資格情報（確定24 / 3.3-5 / #19）。
+   *
+   * **Bedrock 用と別の名前にしてある。** 用途が違うだけでなく、必要な権限も違う
+   * （`bedrock:InvokeModel` と `lambda:InvokeFunction`）。最小権限を保つなら
+   * principal ごと分かれる（`.dev.vars.example` / `docs/build-invocation.md`）。
+   *
+   * **呼ぶ相手（`BUILD_FUNCTION_NAME`）はここに無い。** 秘密ではなく構成なので、
+   * `wrangler.toml` の `[vars]` が宣言し、生成物（`worker-configuration.d.ts`）側に
+   * 現れる。
+   */
+  BUILD_AWS_REGION: string;
+  BUILD_AWS_ACCESS_KEY_ID: string;
+  BUILD_AWS_SECRET_ACCESS_KEY: string;
+  /** SSO の一時資格情報を使うときだけ入る（`BEDROCK_AWS_SESSION_TOKEN` と同じ扱い）。 */
+  BUILD_AWS_SESSION_TOKEN: string;
   /** Google OAuth のクライアント ID。ID トークンの `aud` の照合にも使う。 */
   GOOGLE_CLIENT_ID: string;
   /** Google OAuth のクライアントシークレット。トークンエンドポイントへのみ送る。 */

@@ -19,6 +19,7 @@ import {
   QUOTA_EXCEEDED_STATUS,
   QUOTA_REJECTION_REASONS,
   UNCLASSIFIED_QUOTA_CODE,
+  describeQuotaRejection,
   jstDayRange,
 } from '../src/quota.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from '../src/generate.js';
@@ -400,6 +401,21 @@ describe('4.4 の記述と、429 の出し分けの機械照合（#132）', () =
       expect(key, reason).toBe(`${QUOTA_EXCEEDED_STATUS}:${reason}`);
       expect(GENERATE_MESSAGES[key], reason).toBeDefined();
     }
+  });
+
+  it('応答が再開時刻を載せなくても、画面は再開時刻を示す（PR #135 のレビュー指摘）', () => {
+    // 段が契約を満たさない `resetsAt` を返したとき、応答はそれを**載せない**
+    // （`src/quota.ts` の `isResetTimestamp`）。**画面の照合はそれで壊れない。**
+    // 枠が戻るのは常に JST の 0 時で、画面が出す時刻は応答の値によらないためである
+    // （スクリプトが応答から読むのは `error` の 1 つだけ。8.3）。
+    const body = describeQuotaRejection(DAILY_QUOTA_REASON, 0);
+    expect(body).toEqual({ error: DAILY_QUOTA_REASON });
+
+    const key = selectGenerateMessageKey(QUOTA_EXCEEDED_STATUS, body.error);
+    expect(key).toBe(DAILY_QUOTA_MESSAGE_KEY);
+    expect(GENERATE_MESSAGES[key]).toContain(resumeClock);
+    // 4.4 との照合そのものも、応答の値に依存していない。
+    expect(collationViolations(env.TEST_PRODUCT_SPEC, GENERATE_MESSAGES)).toEqual([]);
   });
 
   it('仕様書側を変異させると照合が破れる', () => {

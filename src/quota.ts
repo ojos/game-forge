@@ -147,10 +147,34 @@ export interface QuotaExceededBody {
 }
 
 /**
+ * 応答へ載せてよい再開時刻か。
+ *
+ * **分類名と同じ扱いである。** 段（`GenerationPipeline['checkQuota']`）は差し替え
+ * られるので、`resetsAt` も「段が返した値」であって、契約を満たしている保証は無い。
+ * 分類名を一覧で絞っているのに数値を素通しすると、**同じ原則が片方だけ抜ける。**
+ *
+ * 契約は「**枠が戻る時刻を表す UNIX 秒の整数**」である。したがって
+ * 0 以下（時刻として意味を成さない）・小数（秒でない）・`Number.isSafeInteger` の
+ * 外（桁あふれ。JSON へ出しても復元できない）は載せない。
+ *
+ * **推測で直さない。** 丸めたり現在時刻で埋めたりすると、利用者へ嘘の時刻を見せる
+ * ことになる。**載せなくても日次の文言は変わらない**（画面が出す「翌日 0 時」は
+ * 固定文字列で、枠が戻るのは常に JST の 0 時である。`src/generate-page.ts`）。
+ *
+ * @param value 段が返した再開時刻
+ * @returns 応答へ載せてよければ true
+ */
+function isResetTimestamp(value: number | undefined): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+/**
  * 拒否を 429 の応答本文へ落とす。
  *
  * **載せるのは固定の分類名と時刻だけである**（8.3）。分類名は {@link QUOTA_REJECTION_REASONS}
  * に載っている値に限り、当たらなければ {@link UNCLASSIFIED_QUOTA_CODE} へ倒す。
+ * **時刻も同じ扱いで絞る**（{@link isResetTimestamp}）。段が返す値である以上、
+ * 契約を満たさない数値は載せない。
  *
  * **月次に再開時刻を載せない。** 4.4 が求めているのは日次に対する「翌日の再開時刻」で、
  * 月次に対しては「プレイと共有は継続できる」旨である。月次の復帰は翌月であり、
@@ -164,7 +188,7 @@ export function describeQuotaRejection(reason: string, resetsAt?: number): Quota
   if (!isQuotaRejectionReason(reason)) {
     return { error: UNCLASSIFIED_QUOTA_CODE };
   }
-  if (reason === DAILY_QUOTA_REASON && typeof resetsAt === 'number' && Number.isFinite(resetsAt)) {
+  if (reason === DAILY_QUOTA_REASON && isResetTimestamp(resetsAt)) {
     return { error: reason, resetsAt };
   }
   return { error: reason };

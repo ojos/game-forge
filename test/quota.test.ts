@@ -570,11 +570,41 @@ describe('429 の応答へ落とす形（4.4 / #132）', () => {
     }
   });
 
-  it('時刻でない値は載せない', () => {
-    // 段が時刻を持たないこともある（差し替えた実装）。**推測で埋めない。**
+  it('契約を満たす時刻はそのまま載る', () => {
+    // 実装が返すのは日の境界（UNIX 秒の整数）である。**絞りが厳しすぎて正しい値まで
+    // 落ちないこと**を、片側だけでなく両側で固定する。
+    const resetsAt = jstDayRange(AT).toSeconds;
+    expect(Number.isSafeInteger(resetsAt)).toBe(true);
+    expect(describeQuotaRejection(DAILY_QUOTA_REASON, resetsAt)).toEqual({
+      error: DAILY_QUOTA_REASON,
+      resetsAt,
+    });
+  });
+
+  it('契約を満たさない時刻は載せない（PR #135 のレビュー指摘）', () => {
+    // **分類名と同じ扱いである。** 段は差し替えられるので、`resetsAt` も「段が返した
+    // 値」でしかない。分類名を一覧で絞りながら数値を素通しすると、同じ原則が片方だけ
+    // 抜ける。契約は「枠が戻る時刻を表す UNIX 秒の整数」なので、下はすべて載せない。
+    //
+    // **推測で直さない**（丸めたり現在時刻で埋めたりすると、利用者へ嘘の時刻を見せる）。
     expect(describeQuotaRejection(DAILY_QUOTA_REASON)).toEqual({ error: DAILY_QUOTA_REASON });
-    for (const broken of [Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(describeQuotaRejection(DAILY_QUOTA_REASON, broken), String(broken)).toEqual({
+    const broken = [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      // 時刻として意味を成さない（0 は 1970-01-01、負は それ以前）。
+      0,
+      -1,
+      -jstDayRange(AT).toSeconds,
+      // 秒でない（ミリ秒を渡した実装や、割り算を丸め忘れた実装）。
+      1.5,
+      jstDayRange(AT).toSeconds + 0.001,
+      // 桁あふれ。JSON へ出しても元の値へ戻らない。
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.MAX_VALUE,
+    ];
+    for (const value of broken) {
+      expect(describeQuotaRejection(DAILY_QUOTA_REASON, value), String(value)).toEqual({
         error: DAILY_QUOTA_REASON,
       });
     }

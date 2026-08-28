@@ -297,6 +297,40 @@ describe('失敗の区別（#20 / 3.8 の degrade 判定）', () => {
     expect(rejected.message).not.toContain('undefined');
   });
 
+  it('ok:false でも stage が無ければ kind=build にしない（診断の無い再生成を起こさない）', async () => {
+    // **`'unknown'` で埋めていた経路の回帰**（レビュー指摘 / #19）。埋めると、契約を
+    // 満たしていない応答が `kind='build'` として #20 へ渡り、**手がかりの無いまま
+    // 生成と課金をもう一度起こす**（3.3-4 の費用計上はビルドより前にある）。
+    const seam = capturingFetch(() =>
+      okResponse({ ok: false, message: './main.go:7:2: undefined: ebiten.RunGam' }),
+    );
+
+    const error = await invokeBuildFunction(buildEnv(), 'package main', {
+      fetch: seam.fetch,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(BuildResponseUnreadable);
+    expect((error as BuildResponseUnreadable).field).toBe('stage');
+    // #20 が拾わない側であること。ここが 'build' に戻ると上の害が復活する。
+    expect((error as BuildResponseUnreadable).kind).toBe('function');
+    expect(error).not.toBeInstanceOf(BuildRejected);
+  });
+
+  it('ok:false で stage があれば、診断が空でも kind=build のまま', async () => {
+    // **空の診断は契約違反ではない。** stage と違い、関数が診断を持たずに落ちる段が
+    // ある。ここまで「読めない」にすると、本物のビルド失敗が function 扱いになり
+    // 3.8 の degrade が誤爆する。
+    const seam = capturingFetch(() => okResponse({ ok: false, stage: 'compress' }));
+
+    const error = await invokeBuildFunction(buildEnv(), 'package main', {
+      fetch: seam.fetch,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(BuildRejected);
+    expect((error as BuildRejected).stage).toBe('compress');
+    expect((error as BuildRejected).diagnostics).toBe('');
+  });
+
   it('プラットフォームの時間切れは kind=timeout になる', async () => {
     const seam = capturingFetch(() =>
       okResponse(

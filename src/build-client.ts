@@ -551,7 +551,7 @@ function toFunctionFailure(
  * @param payload 応答本文
  * @param requestId Lambda のリクエスト ID
  * @returns 成功応答
- * @throws {BuildRejected} `ok:false` のとき
+ * @throws {BuildRejected} `ok:false` で `stage` が読めたとき
  * @throws {BuildResponseUnreadable} 必要な項目が読めないとき
  */
 export async function readBuildResult(
@@ -563,10 +563,22 @@ export async function readBuildResult(
     if (ok !== false) {
       throw new BuildResponseUnreadable('ok');
     }
-    throw new BuildRejected(
-      stringOrNull(pick(payload, 'stage')) ?? 'unknown',
-      stringOrNull(pick(payload, 'message')) ?? '',
-    );
+    const stage = stringOrNull(pick(payload, 'stage'));
+    if (stage === null) {
+      // **`'unknown'` で埋めない**（レビュー指摘 / #19）。埋めると、契約を満たして
+      // いない応答が `kind='build'` として #20 へ渡る。#20 は診断を添えて再生成する
+      // 段なので、**診断の無いビルド失敗を渡すと、手がかりの無いまま生成と課金を
+      // もう一度起こす**（3.3-4 の費用計上はビルドより前にある）。しかも `stage` が
+      // 無いので、どこで止まったのかも後から辿れない。
+      //
+      // `ok:false` なのに `stage` が無いのは**関数側の契約違反**であり、
+      // `goVersion` や `compressed.contentEncoding` が欠けたときと同じ扱いにする。
+      // `kind='function'` になり、#20 は再生成しない。
+      throw new BuildResponseUnreadable('stage');
+    }
+    // **診断は空でも通す。** `stage` と違い、空であること自体は契約違反ではない
+    // （関数が診断を持たずに落ちる段がある）。#20 は空を受け取れる。
+    throw new BuildRejected(stage, stringOrNull(pick(payload, 'message')) ?? '');
   }
 
   const goVersion = stringOrNull(pick(payload, 'goVersion'));

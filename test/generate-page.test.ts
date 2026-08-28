@@ -1,20 +1,30 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import {
+  BUILD_STOPPED_NOTICE,
   CANDIDATE_KEYS_EXPRESSION,
   DAILY_QUOTA_MESSAGE_KEY,
   DEFAULT_MESSAGE_KEY,
   GENERATE_MESSAGES,
+  LONG_WAIT_SECONDS,
   MONTHLY_LIMIT_MESSAGE_KEY,
   NETWORK_MESSAGE_KEY,
+  QUOTA_UNKNOWN_NOTICE,
+  TYPICAL_WAIT_TEXT,
   UNCLASSIFIED_QUOTA_MESSAGE_KEY,
+  availabilityNotice,
+  canSubmit,
   generateMessageKeyCandidates,
+  remainingQuotaNotice,
   renderGeneratePage,
   selectGenerateMessageKey,
 } from '../src/generate-page.js';
+import type { GenerateAvailability } from '../src/generate-page.js';
 import {
+  DAILY_QUOTA_PER_USER,
   DAILY_QUOTA_REASON,
+  MONTHLY_COST_LIMIT_JPY,
   MONTHLY_LIMIT_REASON,
   QUOTA_EXCEEDED_STATUS,
   QUOTA_REJECTION_REASONS,
@@ -22,6 +32,7 @@ import {
   describeQuotaRejection,
   jstDayRange,
 } from '../src/quota.js';
+import { DEFAULT_GENERATION_MODEL_KEY } from '../src/generation-models.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from '../src/generate.js';
 import { HOME_PATH } from '../src/home.js';
 import { GENERATE_PAGE_PATH, SIGNUP_PATH } from '../src/paths.js';
@@ -125,6 +136,44 @@ beforeAll(async () => {
   await applySchema();
 });
 
+afterEach(async () => {
+  // **月次上限はサービス全体の累計で判定する**（4.3 / `src/quota.ts`）。台帳の行を
+  // 残すと、前のテストが積んだ 1 万円が次のテストの画面表示に効く。**このファイルが
+  // 作った行だけを消す**（`generations` を丸ごと空にすると、storage を共有している
+  // 他のテストを壊す。`test/quota.test.ts` と同じ理由）。
+  await env.DB.prepare("delete from generations where user_id like 'page-user-%'").run();
+});
+
+/**
+ * 台帳へ行を 1 件置く（＝生成枠を 1 回消費した状態を作る）。
+ *
+ * **`/api/generate` を呼ばない。** 呼べば 1 回あたり約 16 円が実際に課金される
+ * （2026-08-28 の実測 15.80 円 / 16.75 円）。枠の判定が見るのは `user_id` /
+ * `created_at` / `cost_jpy` の 3 列だけなので、そこを直接置く
+ * （`test/quota.test.ts` の `seedLedgerRow` と同じ方針）。
+ *
+ * @param userId 利用者の id
+ * @param costJpy 円換算の費用
+ * @returns なし
+ */
+async function seedLedgerRow(userId: string, costJpy = 0): Promise<void> {
+  await env.DB.prepare(
+    `insert into generations
+       (id, game_id, user_id, prompt, model,
+        input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+        cost_jpy, succeeded, created_at)
+     values (?, null, ?, 'ゲーム', ?, 0, 0, 0, 0, ?, 1, ?)`,
+  )
+    .bind(
+      crypto.randomUUID(),
+      userId,
+      DEFAULT_GENERATION_MODEL_KEY,
+      costJpy,
+      Math.floor(Date.now() / 1000),
+    )
+    .run();
+}
+
 describe('未ログインの導線（acceptance 1 / 8.1）', () => {
   it('未ログインで開くと登録導線が出る', async () => {
     const response = await openPage();
@@ -175,18 +224,37 @@ describe('ログイン済みの入力フォーム（acceptance 2 / 5.2-1）', ()
     const user = await seedUser('waiting');
     const body = await (await openPage(await sessionCookie(user))).text();
 
-    // 経過表示の器と、通常かかる時間。生成は同期で 20〜30 秒かかる。
+    // 経過表示の器と、通常かかる時間。**本番の実測はリクエスト全体で 90.9 秒**
+    // （2026-08-28。うちビルドが 21.6 秒）。#128 の「20〜30 秒」はビルド単体の実測で、
+    // 生成側を含む待ち時間ではなかった。
     expect(body).toContain('id="generate-progress"');
     expect(body).toContain('id="generate-elapsed"');
-    expect(body).toContain('20〜30 秒');
+    expect(body).toContain(TYPICAL_WAIT_TEXT);
+    expect(body).not.toContain('20〜30 秒');
 
     const script = embeddedScript(body);
     // 送信直後に器を見せ、1 秒ごとに経過を更新すること。
     expect(script).toContain('startWaiting()');
     expect(script).toContain('progress.hidden = false');
     expect(script).toContain('setInterval');
-    // 二重送信で枠を空撃ちしないこと（1 回あたり約 12 円が出る経路である）。
+    // 二重送信で枠を空撃ちしないこと（1 回あたり**約 16 円**が出る経路である。
+    // 2026-08-28 の実測 15.80 円 / 16.75 円。4.2 の「約 12 円」は古い見込み）。
     expect(script).toContain('button.disabled = true');
+  });
+
+  it('90 秒級の待ち時間で、経過秒数のほかにもう一言出す（1.2.27）', async () => {
+    // **動いている数字だけでは「これは正常なのか」に答えていない。** 送信してから
+    // 90 秒、画面が実質何も言わない状態は「押しても動かないボタン」と同じ問題である。
+    const user = await seedUser('long-wait');
+    const body = await (await openPage(await sessionCookie(user))).text();
+
+    expect(body).toContain('id="generate-long-wait"');
+    // 器は隠して描き、スクリプトは `hidden` を外すだけ（8.3）。
+    expect(body).toContain('<p id="generate-long-wait" role="status" aria-live="polite" hidden>');
+
+    const script = embeddedScript(body);
+    expect(script).toContain(`seconds >= ${LONG_WAIT_SECONDS}`);
+    expect(script).toContain('longWait.hidden = false');
   });
 
   it('JavaScript が要ることを画面上で断っている', async () => {
@@ -623,26 +691,315 @@ describe('8.3 の検査を通っていない文字列を表示面へ持ち込ま
   });
 });
 
-describe('残枠の差し込み口（#24 が乗る形）', () => {
-  it('渡された文言を出す口がある', () => {
-    // #24 は「本日の残り生成枠 N回」を出す（4.4）。値を作る経路はあちらが持ち、
-    // この画面は差し込み口だけを持つ。
-    const page = renderGeneratePage(true, { quotaNotice: '本日の残り生成枠 7回' });
-    expect(page).toContain('id="generate-quota"');
-    expect(page).toContain('本日の残り生成枠 7回');
+describe('残枠と停止状態の常時表示（acceptance 1 / 4.4 / #24）', () => {
+  /**
+   * 仕様書 4.4 の中で、ある目印を含む行が鉤括弧で囲んでいる文言を取り出す。
+   *
+   * **下の「4.4 の記述と、429 の出し分けの機械照合」と同じことをしている。**
+   * あちらは停止時の 2 つの文言を、こちらは常時表示の 1 つを見る。
+   *
+   * @param marker 行を特定する目印
+   * @returns 鉤括弧の中身（見つからなければ空文字）
+   */
+  function quotedIn44(marker: string): string {
+    const spec = env.TEST_PRODUCT_SPEC;
+    const start = spec.indexOf('### 4.4 生成枠の UX 上の扱い');
+    const line = spec
+      .slice(start, spec.indexOf('### 4.5', start))
+      .split('\n')
+      .find((candidate) => candidate.includes(marker));
+    return line?.match(/「([^」]+)」/u)?.[1] ?? '';
+  }
+
+  /**
+   * 画面を「状態として意味のある形」へ落とす。
+   *
+   * **HTML の全文をスナップショットに取らない。** 文言を 1 語見直すたびに全状態の
+   * 差分が出て、**意味のある変化（フォームが出た・ボタンが残った）がその中に埋もれる。**
+   * 取るのは 4.4 と #24 の goal が決めている 5 点だけにする。
+   *
+   * @param page 画面の HTML
+   * @returns スナップショットに取る形
+   */
+  function summarize(page: string): string {
+    const notice = page.match(/<p id="generate-quota">([^<]*)<\/p>/u)?.[1] ?? '(出ていない)';
+    return [
+      `常時表示: ${notice}`,
+      `入力フォーム: ${page.includes('id="generate-form"')}`,
+      `送信ボタン: ${page.includes('id="generate-submit"')}`,
+      `埋め込みスクリプト: ${page.includes('<script>')}`,
+      `プレイ導線: ${page.includes(`<a href="${HOME_PATH}"`)}`,
+    ].join('\n');
+  }
+
+  /** 4.4 と 3.8 が分けている状態の全体。**画面はこのどれかで描かれる。** */
+  const STATES: readonly {
+    readonly label: string;
+    readonly signedIn: boolean;
+    readonly availability: GenerateAvailability;
+  }[] = [
+    {
+      label: '生成できる（残り 12 回）',
+      signedIn: true,
+      availability: { kind: 'available', remaining: DAILY_QUOTA_PER_USER },
+    },
+    { label: '日次の枠が尽きた', signedIn: true, availability: { kind: DAILY_QUOTA_REASON } },
+    { label: '月次上限に達した', signedIn: true, availability: { kind: MONTHLY_LIMIT_REASON } },
+    { label: '残枠を読めなかった', signedIn: true, availability: { kind: 'unknown' } },
+    { label: '未ログイン', signedIn: false, availability: { kind: 'unknown' } },
+  ];
+
+  it('各状態の見え方（acceptance 1 のスナップショット）', () => {
+    const rendered = STATES.map(
+      (state) =>
+        `## ${state.label}\n${summarize(
+          renderGeneratePage(state.signedIn, { availability: state.availability }),
+        )}`,
+    ).join('\n\n');
+    expect(rendered).toMatchInlineSnapshot(`
+      "## 生成できる（残り 12 回）
+      常時表示: 本日の残り生成枠 12回
+      入力フォーム: true
+      送信ボタン: true
+      埋め込みスクリプト: true
+      プレイ導線: true
+
+      ## 日次の枠が尽きた
+      常時表示: 生成枠を使い切りました。本日の枠は終了しました。枠は翌日 0 時（日本時間）に戻ります。
+      入力フォーム: false
+      送信ボタン: false
+      埋め込みスクリプト: false
+      プレイ導線: true
+
+      ## 月次上限に達した
+      常時表示: サービス全体の月次上限に達しました。今月の生成は終了しました。プレイと共有は引き続きご利用いただけます。
+      入力フォーム: false
+      送信ボタン: false
+      埋め込みスクリプト: false
+      プレイ導線: true
+
+      ## 残枠を読めなかった
+      常時表示: 本日の残り生成枠を確認できませんでした。生成そのものは試せますが、枠が残っていない場合は送信後に断られます。
+      入力フォーム: true
+      送信ボタン: true
+      埋め込みスクリプト: true
+      プレイ導線: true
+
+      ## 未ログイン
+      常時表示: (出ていない)
+      入力フォーム: false
+      送信ボタン: false
+      埋め込みスクリプト: false
+      プレイ導線: true"
+    `);
   });
 
-  it('渡さなければ何も出ない', () => {
-    expect(renderGeneratePage(true, { quotaNotice: null })).not.toContain('id="generate-quota"');
+  it('4.4 の「本日の残り生成枠 N回」と一致する', () => {
+    // **文言を書き写さない。** 4.4 の箇条書きから拾って、N を数に置き換えたものと
+    // 突き合わせる（shared-ai-rules 12 章）。
+    const wording = quotedIn44('常時表示する');
+    expect(wording).not.toBe('');
+    expect(remainingQuotaNotice(7)).toBe(wording.replace('N', '7'));
+
+    // **変異検査。** 4.4 側を書き換えれば破れる（＝この照合は効いている）。
+    expect(remainingQuotaNotice(7)).not.toBe(
+      wording.replace('本日の残り生成枠', '今日つかえる生成').replace('N', '7'),
+    );
   });
 
-  it('差し込まれた値を無害化する', () => {
-    // いまは固定文字列しか来ない想定でも、安全側を既定にしておく
-    // （`src/signup.ts` / `src/invite-issuance.ts` と同じ理由）。
-    const hostile = '<img src=x onerror=alert(1)>';
-    const page = renderGeneratePage(true, { quotaNotice: hostile });
-    expect(page).not.toContain(hostile);
-    expect(page).toContain('&lt;img src=x onerror=alert(1)&gt;');
+  it('残数は数からしか作らない', () => {
+    // 値は `src/quota.ts` が数えた回数で、負にも小数にもならない。**それでも
+    // 表示は最後の砦なので、壊れた形の文字列を利用者へ出さない。**
+    expect(remainingQuotaNotice(0)).toContain('0回');
+    expect(remainingQuotaNotice(-3)).toContain('0回');
+    expect(remainingQuotaNotice(3.7)).toContain('3回');
+  });
+
+  it('停止時の文言は 429 の文言表と同じものを使う', () => {
+    // **同じ状態に 2 つの文言を作らない。** 4.4 との一致はあちらが機械照合の対象で、
+    // 常時表示のために別の文字列を書くと、片方だけが古くなる。
+    expect(availabilityNotice({ kind: DAILY_QUOTA_REASON })).toBe(
+      GENERATE_MESSAGES[DAILY_QUOTA_MESSAGE_KEY],
+    );
+    expect(availabilityNotice({ kind: MONTHLY_LIMIT_REASON })).toBe(
+      GENERATE_MESSAGES[MONTHLY_LIMIT_MESSAGE_KEY],
+    );
+    expect(availabilityNotice({ kind: 'unknown' })).toBe(QUOTA_UNKNOWN_NOTICE);
+  });
+
+  it('止まっている状態でだけフォームを落とす', () => {
+    // **`unknown` では描く。** 枠が尽きたことを確かめられたわけではないので、
+    // 押す機会まで奪うと、D1 の一時的な不調が「生成できない」に化ける。
+    expect(canSubmit({ kind: 'available', remaining: 1 })).toBe(true);
+    expect(canSubmit({ kind: 'unknown' })).toBe(true);
+    expect(canSubmit({ kind: DAILY_QUOTA_REASON })).toBe(false);
+    expect(canSubmit({ kind: MONTHLY_LIMIT_REASON })).toBe(false);
+  });
+});
+
+describe('枠の状態が画面へ出る（4.4 / #24 / 経路まで通す）', () => {
+  it('残り枠が本日の消費ぶんだけ減る', async () => {
+    const user = await seedUser('quota-remaining');
+    expect(await (await openPage(await sessionCookie(user))).text()).toContain(
+      remainingQuotaNotice(DAILY_QUOTA_PER_USER),
+    );
+
+    // **数える単位は「費用の出る LLM 呼び出し回数」である**（確定25）。台帳の行数が
+    // そのまま消費である。
+    await seedLedgerRow(user);
+    await seedLedgerRow(user);
+    expect(await (await openPage(await sessionCookie(user))).text()).toContain(
+      remainingQuotaNotice(DAILY_QUOTA_PER_USER - 2),
+    );
+  });
+
+  it('日次の枠が尽きたら、押しても動かないボタンを出さない（goal）', async () => {
+    const user = await seedUser('quota-daily-out');
+    for (let index = 0; index < DAILY_QUOTA_PER_USER; index += 1) {
+      await seedLedgerRow(user);
+    }
+
+    const body = await (await openPage(await sessionCookie(user))).text();
+    // 4.4 の「本日の枠は終了しました」と翌日の再開時刻。
+    expect(body).toContain(GENERATE_MESSAGES[DAILY_QUOTA_MESSAGE_KEY]);
+    // **押せば必ず 429 になるボタンを描かない。**
+    expect(body).not.toContain('id="generate-form"');
+    expect(body).not.toContain('id="generate-submit"');
+    // 動かす対象が無いので、スクリプトも置かない（`getElementById` が null を返す）。
+    expect(body).not.toContain('<script>');
+  });
+
+  it('月次上限に達してもプレイ導線は操作できる（acceptance 2 / 4.4 / 3.8）', async () => {
+    // **月次はサービス全体の累計である**（4.3）。止めた利用者と、画面を開く利用者は
+    // 別で構わない。
+    const spender = await seedUser('quota-monthly-spender');
+    await seedLedgerRow(spender, MONTHLY_COST_LIMIT_JPY);
+    const user = await seedUser('quota-monthly-viewer');
+
+    const body = await (await openPage(await sessionCookie(user))).text();
+    expect(body).toContain(GENERATE_MESSAGES[MONTHLY_LIMIT_MESSAGE_KEY]);
+    expect(body).not.toContain('id="generate-form"');
+    // **プレイと共有は続く。** 押せるリンクとして出ていること（言うだけにしない）。
+    expect(body).toContain(`<a href="${HOME_PATH}"`);
+    expect(body).not.toContain('<a href="#"');
+    // 日次の枠がまだ残っていても、月次で止まっているあいだは残数を出さない
+    // （「あなたの本日の枠は残っています」は、この状態では誤りである）。
+    expect(body).not.toContain(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
+  });
+
+  it('残枠を読めなくても画面は出る（D1 の不調で導線ごと落とさない）', async () => {
+    const user = await seedUser('quota-unreadable');
+    // 枠の集計だけを失敗させる。セッションの解決（`select banned_at`）は通す。
+    const broken = {
+      ...testEnv(),
+      DB: {
+        prepare(query: string) {
+          if (query.includes('sum(cost_jpy)')) {
+            throw new Error('D1 is down');
+          }
+          return env.DB.prepare(query);
+        },
+      } as unknown as D1Database,
+    };
+
+    const response = await handleAppRequest(
+      new Request(`${APP_ORIGIN}${GENERATE_PAGE_PATH}`, {
+        headers: { cookie: await sessionCookie(user) },
+      }),
+      broken,
+    );
+    expect(response.status).toBe(200);
+
+    const body = await response.text();
+    expect(body).toContain(QUOTA_UNKNOWN_NOTICE);
+    // **「残り 0 回」とは言わない。** 集計が読めなかっただけで、枠は尽きていない。
+    expect(body).not.toContain(remainingQuotaNotice(0));
+    // 押す機会まで奪わない（押せば API 側が同じ判定をやり直す）。
+    expect(body).toContain('id="generate-form"');
+  });
+
+  it('未ログインの画面では枠を読まない（3.6）', async () => {
+    // **D1 は読み取りも従量である。** 残枠を出す相手が居ない画面で引かない。
+    const queries: string[] = [];
+    const counting = {
+      ...testEnv(),
+      DB: {
+        prepare(query: string) {
+          queries.push(query);
+          return env.DB.prepare(query);
+        },
+      } as unknown as D1Database,
+    };
+
+    await handleAppRequest(new Request(`${APP_ORIGIN}${GENERATE_PAGE_PATH}`), counting);
+    expect(queries).toEqual([]);
+  });
+});
+
+describe('生成停止中（3.8 の degrade）', () => {
+  /**
+   * 仕様書 3.8 の節を切り出す。
+   *
+   * @returns 3.8 の節
+   */
+  function section38(): string {
+    const spec = env.TEST_PRODUCT_SPEC;
+    const start = spec.indexOf('### 3.8 ビルド実行環境');
+    const end = spec.indexOf('## 4. コスト構造', start);
+    return spec.slice(start, end);
+  }
+
+  /**
+   * 3.8 の中で、ある目印を含む行が鉤括弧で囲んでいる文言を取り出す。
+   *
+   * @param marker 行を特定する目印
+   * @returns 鉤括弧の中身（見つからなければ空文字）
+   */
+  function quotedIn38(marker: string): string {
+    const line = section38()
+      .split('\n')
+      .find((candidate) => candidate.includes(marker));
+    return line?.match(/「([^」]+)」/u)?.[1] ?? '';
+  }
+
+  it('3.8 の言い回しをそのまま使う', () => {
+    // **文言を書き写さない**（shared-ai-rules 12 章）。
+    const wording = quotedIn38('degrade 設計');
+    expect(wording).not.toBe('');
+    expect(BUILD_STOPPED_NOTICE).toContain(wording);
+  });
+
+  it('発火条件が「ビルド依頼の失敗」であることを本文から読む（確定24）', () => {
+    // v1.8 までは「VPS の死活監視」だった。**主語が変わっている。** 画面から観測
+    // できるのは自分が投げた要求の結果だけなので、5xx を発火条件に使っている。
+    const line = section38()
+      .split('\n')
+      .find((candidate) => candidate.includes('発火条件'));
+    expect(line).toContain('ビルド依頼の失敗');
+    expect(line).not.toBe(undefined);
+  });
+
+  it('停止を観測したらボタンを戻さない（押しても動かないボタンを無くす）', async () => {
+    const user = await seedUser('degraded');
+    const body = await (await openPage(await sessionCookie(user))).text();
+
+    // 文言はサーバが描いて隠しておく（8.3）。
+    expect(body).toContain('id="generate-degraded"');
+    expect(body).toContain(BUILD_STOPPED_NOTICE);
+
+    const script = embeddedScript(body);
+    expect(script).toContain('status >= 500');
+    expect(script).toContain('degraded.hidden = false');
+    // **`button.disabled = false` を固定で書かない。** 停止を観測したあとも押せる
+    // ボタンが残ると、3.8 の degrade が画面上で無効になる。
+    expect(script).toContain('button.disabled = stopped');
+    expect(script).not.toContain('button.disabled = false;\n    progress');
+  });
+
+  it('プレイ側に影響が無いことは 500 の文言が言う（3.8）', () => {
+    // 2 つが同時に出るので、同じことを 2 度言わない。
+    expect(GENERATE_MESSAGES['500:']).toContain('プレイと共有');
+    expect(BUILD_STOPPED_NOTICE).not.toContain('プレイと共有');
   });
 });
 

@@ -310,16 +310,110 @@ async function readForDecision<T>(read: () => Promise<T>): Promise<T> {
 }
 
 /**
- * 3.3-2 の段（`GenerationPipeline['checkQuota']`）の実装。
+ * 表示のための枠の状態（4.4 / #24）。
+ *
+ * **{@link QuotaCheckResult} と役割が違う。** あちらは 3.3-2 の段が「通すか止めるか」を
+ * 返す形で、**残りが何回あるかを持たない**（判定には要らないためである）。4.4 が求める
+ * 「本日の残り生成枠 N回」の**常時表示**には、止まっていないときの残数が要る。
+ *
+ * **同じ集計を 2 か所で書かない。** 判定（{@link checkGenerationQuota}）はこの状態から
+ * 導く。別々に数えると、画面が「残り 3 回」と出しているのに API が断る、という食い違いが
+ * 起こりうる（shared-ai-rules 12 章）。
+ */
+export type GenerationQuotaStatus =
+  | {
+      readonly kind: 'available';
+      /**
+       * 本日（JST）の残り回数。**必ず 1 以上**である。
+       *
+       * 0 になった状態は「まだ生成できる」ではないので、{@link DAILY_QUOTA_REASON} の
+       * 枝へ移る。残数 0 を `available` で表せる形にすると、表示側が「残り 0 回」と
+       * 出しながら押せるボタンを描く経路ができる（4.4 が塞ごうとしているものである）。
+       */
+      readonly remaining: number;
+      /** 80% 警告（4.3）。表示するかどうかは呼び出し側が決める。 */
+      readonly warning?: MonthlyCostWarning;
+    }
+  | {
+      readonly kind: typeof DAILY_QUOTA_REASON;
+      /** 枠が戻る時刻（UNIX 秒）。JST の翌 0 時（{@link jstDayRange} の終端）。 */
+      readonly resetsAt: number;
+    }
+  | { readonly kind: typeof MONTHLY_LIMIT_REASON };
+
+/**
+ * いまの枠の状態を求める（4.3 / 確定25）。**判定と表示の両方がここから読む。**
  *
  * **月次を先に見る。** 月次上限はサービス全体の停止で、日次クォータは 1 人あたりの
- * 蓋である。全体が止まっているときに「あなたの本日の枠は残っています」と読める理由を
+ * 蓋である。全体が止まっているときに「あなたの本日の枠は残っています」と読める状態を
  * 返しても意味がなく、4.4 の文言（「今月の生成は終了しました」）とも合わない。
  *
  * **月次で止まったら日次は読まない**（#122 のレビュー指摘）。**D1 は読み取りも従量
- * である**（3.6）。サービス全体が停止している間は生成が来るたびにこの段へ入るので、
+ * である**（3.6）。サービス全体が停止している間は生成のたびにこの段へ入るので、
  * **止まっている間ほど無駄な読み取りが積み上がる。** 「先に判定する」は「先に読む」
  * ではない。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 対象の利用者
+ * @param at 判定時刻（UNIX 秒。既定は現在時刻）
+ * @returns 枠の状態。生成できるときは残り回数を伴う
+ * @throws 集計を読めなかったとき（{@link readForDecision} が投げ直す）
+ */
+export async function generationQuotaStatus(
+  env: Env,
+  userId: string,
+  at: number = Math.floor(Date.now() / 1000),
+): Promise<GenerationQuotaStatus> {
+  // **月次はサービス全体。** 集計の実体は #22 の台帳が持つ。
+  const monthly = await readForDecision(() => monthlyCostTotals(env, at));
+
+  if (monthly.costJpy >= MONTHLY_COST_LIMIT_JPY) {
+    // 4.3「100% で生成停止」。停止するのは生成だけで、プレイと拡散は続く（4.4 / 3.8）。
+    // **ここで返る経路は D1 を 1 回しか読まない。**
+    //
+    // **再開時刻を持たない。** 復帰は翌月で、4.4 がこの状態に求めているのは
+    // 「プレイと共有は継続できる」旨である（日次の「翌日の再開時刻」ではない）。
+    return { kind: MONTHLY_LIMIT_REASON };
+  }
+
+  // **日次は 1 人。** 月次を通ったときだけ読む。
+  const daily = await readForDecision(() => dailyCallCount(env, userId, at));
+
+  if (daily.calls >= DAILY_QUOTA_PER_USER) {
+    // 確定25。**枠は JST の 0 時に戻る。** 12 回目までは通し、13 回目を止める。
+    //
+    // **戻る時刻をここで返す。** 4.4 は「翌日の再開時刻を示す」ことを求めており、
+    // 値は日の範囲の終端としてすでに手元にある（{@link dailyCallCount}）。返さないと、
+    // 経路層か画面が同じ境界をもう一度計算することになる（shared-ai-rules 12 章）。
+    return { kind: DAILY_QUOTA_REASON, resetsAt: daily.resetsAt };
+  }
+
+  // **台帳の行数から引く。** 数える単位が「費用の出る LLM 呼び出し」である以上
+  // （{@link DAILY_QUOTA_PER_USER}）、残数もその単位で出る。4.4 の「残り N回」は
+  // 成功した作品の本数ではない。
+  const remaining = DAILY_QUOTA_PER_USER - daily.calls;
+  const ratio = monthly.costJpy / MONTHLY_COST_LIMIT_JPY;
+  if (ratio >= MONTHLY_WARNING_RATIO) {
+    return {
+      kind: 'available',
+      remaining,
+      warning: {
+        kind: 'monthly-cost',
+        costJpy: monthly.costJpy,
+        limitJpy: MONTHLY_COST_LIMIT_JPY,
+        ratio,
+      },
+    };
+  }
+  return { kind: 'available', remaining };
+}
+
+/**
+ * 3.3-2 の段（`GenerationPipeline['checkQuota']`）の実装。
+ *
+ * **判定そのものは {@link generationQuotaStatus} が持つ。** ここがするのは、その状態を
+ * 段の契約（{@link QuotaCheckResult}）へ写すことだけである。**集計と順序をこちらへ
+ * 書き戻さない**（画面が出す残数と、API が通す・断るの判断が、別々の数え方に分かれる）。
  *
  * @param env バインディングと環境変数
  * @param userId 生成しようとしている利用者
@@ -331,41 +425,17 @@ export async function checkGenerationQuota(
   userId: string,
   at: number = Math.floor(Date.now() / 1000),
 ): Promise<QuotaCheckResult> {
-  // **月次はサービス全体。** 集計の実体は #22 の台帳が持つ。
-  const monthly = await readForDecision(() => monthlyCostTotals(env, at));
+  const status = await generationQuotaStatus(env, userId, at);
 
-  if (monthly.costJpy >= MONTHLY_COST_LIMIT_JPY) {
-    // 4.3「100% で生成停止」。停止するのは生成だけで、プレイと拡散は続く（4.4 / 3.8）。
-    // **ここで返る経路は D1 を 1 回しか読まない。**
-    //
-    // **再開時刻を付けない。** 復帰は翌月で、4.4 がこの状態に求めているのは
-    // 「プレイと共有は継続できる」旨である（日次の「翌日の再開時刻」ではない）。
+  if (status.kind === MONTHLY_LIMIT_REASON) {
     return { allowed: false, reason: MONTHLY_LIMIT_REASON };
   }
-
-  // **日次は 1 人。** 月次を通ったときだけ読む。
-  const daily = await readForDecision(() => dailyCallCount(env, userId, at));
-
-  if (daily.calls >= DAILY_QUOTA_PER_USER) {
-    // 確定25。**枠は JST の 0 時に戻る。** 12 回目までは通し、13 回目を止める。
-    //
-    // **戻る時刻をここで返す。** 4.4 は「翌日の再開時刻を示す」ことを求めており、
-    // 値は日の範囲の終端としてすでに手元にある（`dailyCallCount`）。返さないと、
-    // 経路層か画面が同じ境界をもう一度計算することになる（shared-ai-rules 12 章）。
-    return { allowed: false, reason: DAILY_QUOTA_REASON, resetsAt: daily.resetsAt };
+  if (status.kind === DAILY_QUOTA_REASON) {
+    return { allowed: false, reason: DAILY_QUOTA_REASON, resetsAt: status.resetsAt };
   }
-
-  const ratio = monthly.costJpy / MONTHLY_COST_LIMIT_JPY;
-  if (ratio >= MONTHLY_WARNING_RATIO) {
-    return {
-      allowed: true,
-      warning: {
-        kind: 'monthly-cost',
-        costJpy: monthly.costJpy,
-        limitJpy: MONTHLY_COST_LIMIT_JPY,
-        ratio,
-      },
-    };
-  }
-  return { allowed: true };
+  // **警告が無いときは項目そのものを持たせない。** `warning: undefined` を付けると、
+  // 「警告が無い」と「警告の値が未定義」が同じ形になる。
+  return status.warning === undefined
+    ? { allowed: true }
+    : { allowed: true, warning: status.warning };
 }

@@ -2,10 +2,12 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
   ALLOWLIST_SECTION_HEADING,
+  DIRECTIVE_DENYLIST_SECTION_HEADING,
+  GO_DIRECTIVE_DENYLIST,
   GO_IMPORT_ALLOWLIST,
   renderAllowlistSection,
 } from '../src/go-import-allowlist.js';
-import { inspectGoImports, scanImports } from '../src/go-imports.js';
+import { findDeniedDirectives, inspectGoImports, scanImports } from '../src/go-imports.js';
 
 /**
  * ソースを組み立てる。
@@ -106,6 +108,151 @@ describe('ホワイトリスト外を拒否する（#17 acceptance 1）', () => 
 
   it('import が 1 つも無ければ通る', () => {
     expect(inspectGoImports('package main\n\nfunc main() {}\n').ok).toBe(true);
+  });
+});
+
+describe('禁止するコンパイラ指示を拒否する（#100）', () => {
+  /**
+   * issue #100 の実測をそのまま置いたソース。
+   *
+   * **import 文が 1 つも無い。** それでも `GOOS=js GOARCH=wasm` でビルドでき、
+   * 生成 wasm のインポート節に `gojs / syscall/js.valueCall` が現れる
+   * （2026-08-28 / Go 1.26.5 で再実測。6.1「禁止するコンパイラ指示」）。
+   */
+  const bypass = `package main
+
+//go:wasmimport gojs syscall/js.valueCall
+func valueCall(sp uint32)
+
+func main() { valueCall(0) }
+`;
+
+  it('import 文が 0 個でも //go:wasmimport を拒否する', () => {
+    // この検査を入れる前は {"ok":true,"imports":[]} を返していた。
+    const result = inspectGoImports(bypass);
+    expect(result.ok).toBe(false);
+    expect(result.ok || result.reason).toBe('directive-not-allowed');
+    expect(result.ok || result.offending).toEqual(['go:wasmimport']);
+  });
+
+  it('字下げされた指示も拒否する', () => {
+    // 実測: 行頭でも字下げでもディレクティブとして効き、どちらも wasm の
+    // インポート節に現れた。桁位置を条件にしない理由。
+    const result = inspectGoImports(bypass.replace('//go:wasmimport', '\t//go:wasmimport'));
+    expect(result.ok || result.reason).toBe('directive-not-allowed');
+  });
+
+  it('//go:wasmexport を拒否する', () => {
+    const result = inspectGoImports('package main\n\n//go:wasmexport pwn\nfunc pwn() {}\n');
+    expect(result.ok || result.offending).toEqual(['go:wasmexport']);
+  });
+
+  it('許可された import と混ざっていても拒否する', () => {
+    const result = inspectGoImports(`package main
+
+import "math"
+
+//go:wasmimport gojs syscall/js.valueGet
+func valueGet(sp uint32)
+
+func main() { valueGet(uint32(math.Abs(0))) }
+`);
+    expect(result.ok || result.reason).toBe('directive-not-allowed');
+  });
+
+  it('import 違反と同時なら指示のほうを理由に返す', () => {
+    // 一覧で説明できないほうを返す。not-allowed を返すと「一覧に足せば通る」と
+    // 読めてしまうが、//go:wasmimport は一覧に足す・足さないの問題ではない。
+    const result = inspectGoImports(`package main
+
+import "os/exec"
+
+//go:wasmimport gojs syscall/js.valueGet
+func valueGet(sp uint32)
+`);
+    expect(result.ok || result.reason).toBe('directive-not-allowed');
+  });
+
+  it('//go:build は拒否しない', () => {
+    // ビルド制約は正当な Go で、ホスト関数への到達と無関係。指示という見た目で
+    // まとめて落とすと、説明できない拒否が増える（拒否は再生成に回さない）。
+    expect(inspectGoImports('//go:build js\n\npackage main\n\nimport "math"\n').ok).toBe(true);
+  });
+
+  it('//go:linkname は指示の一覧ではなく許可一覧が落とす', () => {
+    // 実測: Go が `//go:linkname only allowed in Go files that import "unsafe"` で
+    // 拒否するため、必ず unsafe を伴う。迂回路ではない。
+    const result = inspectGoImports(`package main
+
+import _ "unsafe"
+
+//go:linkname nanotime runtime.nanotime1
+func nanotime() int64
+`);
+    expect(result.ok || result.reason).toBe('not-allowed');
+    expect(result.ok || result.offending).toEqual(['unsafe']);
+  });
+
+  it('文字列リテラルの中の指示を拾わない', () => {
+    // 拒否は生成 1 回分を捨てるので、誤検出の代償が大きい。
+    const withStrings =
+      'package main\n\nimport "math"\n\nconst hint = "//go:wasmimport gojs f"\nconst raw = ' +
+      '`//go:wasmexport pwn`' +
+      '\n\nvar _ = math.Pi\n';
+    expect(findDeniedDirectives(withStrings)).toEqual([]);
+    expect(inspectGoImports(withStrings).ok).toBe(true);
+  });
+
+  it('ルーンリテラルの中のバッククォートで見失わない', () => {
+    // **素朴な走査が壊れる形。** '`' は正当な Go だが、生文字列の開始と読むと
+    // 次のバッククォートまで（＝ここでは終端まで）を丸ごと飛ばし、その先の
+    // 本物の指示を読み落とす。
+    const result = inspectGoImports(`package main
+
+import "math"
+
+var quote = '\`'
+
+//go:wasmimport gojs syscall/js.valueGet
+func valueGet(sp uint32)
+
+var _ = math.Pi
+`);
+    expect(result.ok || result.reason).toBe('directive-not-allowed');
+  });
+
+  it('閉じない文字列リテラルで以降を隠せない', () => {
+    // 行末で読み直す。終端まで飛ばす実装だと、壊れたリテラルを 1 つ置くだけで
+    // 以降の指示を隠せる。
+    const result = findDeniedDirectives(
+      'package main\n\nvar broken = "abc\n\n//go:wasmimport gojs f\nfunc f(sp uint32)\n',
+    );
+    expect(result).toEqual(['go:wasmimport']);
+  });
+
+  it('行末のバックスラッシュで次の行を隠せない', () => {
+    // Go の解釈される文字列に行継続は無い。エスケープを 2 文字まとめて飛ばす実装は
+    // ここで改行を越え、次の行をリテラルの続きとして読んでしまう。
+    const result = findDeniedDirectives(
+      'package main\n\nvar broken = "abc\\\n//go:wasmimport gojs f\nfunc f(sp uint32)\n',
+    );
+    expect(result).toEqual(['go:wasmimport']);
+  });
+
+  it('指示にならない綴りは拒否しない', () => {
+    // 実測: どちらも `missing function body` でビルドが落ち、ディレクティブとして
+    // 効かない。
+    for (const harmless of [
+      'package main\n\n// go:wasmimport gojs f\nfunc main() {}\n',
+      'package main\n\n/*go:wasmimport gojs f*/\nfunc main() {}\n',
+    ]) {
+      expect(findDeniedDirectives(harmless), harmless).toEqual([]);
+    }
+  });
+
+  it('同じ指示が複数回現れても 1 度だけ返す', () => {
+    const twice = 'package main\n\n//go:wasmimport gojs a\nfunc a(sp uint32)\n\n//go:wasmimport gojs b\nfunc b(sp uint32)\n';
+    expect(findDeniedDirectives(twice)).toEqual(['go:wasmimport']);
   });
 });
 
@@ -215,19 +362,55 @@ describe('読み取れない入力は通さない', () => {
 
 describe('一覧の機械照合（#17 acceptance 2）', () => {
   /**
+   * 仕様書 6.1 の表から、1 列目のコード表記を取り出す。
+   *
+   * 節の終わりは**見出しなら深さを問わず**とする（`#####` の小見出しを足しても、
+   * 別の表を巻き込まない）。
+   *
+   * @param heading 表を含む節の見出し
+   * @returns 表の 1 列目に書かれている値
+   */
+  function tableFromSpec(heading: string): string[] {
+    const spec = env.TEST_PRODUCT_SPEC;
+    const start = spec.indexOf(heading);
+    expect(start, `仕様書に「${heading}」の節がありません`).toBeGreaterThan(-1);
+    const rest = spec.slice(start + heading.length);
+    const end = rest.search(/\n#{1,6} /u);
+    const section = end === -1 ? rest : rest.slice(0, end);
+    return [...section.matchAll(/^\| `([^`]+)` \|/gmu)].map((matched) => matched[1]!);
+  }
+
+  /**
    * 仕様書 6.1 の表からパッケージ名を取り出す。
    *
    * @returns 仕様書に書かれているパッケージ名
    */
   function allowlistFromSpec(): string[] {
-    const spec = env.TEST_PRODUCT_SPEC;
-    const start = spec.indexOf(ALLOWLIST_SECTION_HEADING);
-    expect(start, `仕様書に「${ALLOWLIST_SECTION_HEADING}」の節がありません`).toBeGreaterThan(-1);
-    const rest = spec.slice(start + ALLOWLIST_SECTION_HEADING.length);
-    const end = rest.search(/\n#{1,4} /u);
-    const section = end === -1 ? rest : rest.slice(0, end);
-    return [...section.matchAll(/^\| `([^`]+)` \|/gmu)].map((matched) => matched[1]!);
+    return tableFromSpec(ALLOWLIST_SECTION_HEADING);
   }
+
+  it('仕様書 6.1 の禁止指示の表がコード側と一致する（#100）', () => {
+    // 一覧の複製は必ず古くなる。指示を足したのに仕様書が古いままだと、
+    // 「仕様には無いのに拒否される」生成が生まれる。
+    //
+    // 仕様書は Go の書き方（`//go:wasmimport`）で書き、コード側は検査が見る形
+    // （行コメント本文の先頭。`//` を含まない）で持つ。**同じ値の 2 つの表記**
+    // なので、比較の前に接頭辞だけを揃える。
+    const fromSpec = tableFromSpec(DIRECTIVE_DENYLIST_SECTION_HEADING).map((name) =>
+      name.replace(/^\/\//u, ''),
+    );
+    expect(fromSpec).toEqual(GO_DIRECTIVE_DENYLIST.map((entry) => entry.name));
+  });
+
+  it('仕様書 6.1 の禁止指示の表が空でない', () => {
+    // 上の比較は、節が見つからず両方が空でも通ってしまう。
+    expect(tableFromSpec(DIRECTIVE_DENYLIST_SECTION_HEADING).length).toBeGreaterThan(0);
+  });
+
+  it('禁止指示の一覧に重複が無い', () => {
+    const names = GO_DIRECTIVE_DENYLIST.map((entry) => entry.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
 
   it('仕様書 6.1 の一覧がコード側と一致する', () => {
     // ずれた瞬間に「プロンプトは許すが検査は落とす」パッケージが生まれ、生成が

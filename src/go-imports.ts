@@ -24,15 +24,27 @@
  * 一次の防御は 7.1 のコンテナ（`--network=none` / `--read-only` / 非 root）である。
  * ここを通ったソースが安全になるわけではない。**ビルドサーバ側で `go/parser` による
  * 検査を重ねること**を M2-5 で検討する価値がある（本物のパーサが使える唯一の場所）。
+ *
+ * ## import を見ても分からないことがある（#100）
+ *
+ * **`//go:wasmimport` は import 文を 1 つも書かずにホスト関数へ結び付ける。**
+ * import しか見ない検査は、これを**原理的に**検出できない。実装の欠陥ではなく、
+ * 手段の限界である（実測は `src/go-import-allowlist.ts` の `GO_DIRECTIVE_DENYLIST`）。
+ * そこで `findDeniedDirectives` を足し、**import とは別の軸**で同じソースを見る。
+ *
+ * **この 2 つを足しても「生成物が何を呼べるか」は決まらない。** それを最終的に
+ * 決めているのは 7.2（別オリジン ＋ CSP `sandbox` ＋ `connect-src`）である。
+ * ここは 7.2 の手前に置く上流の層であって、7.2 の代わりではない（仕様書 7.1 / 7.2）。
  */
-import { GO_IMPORT_ALLOWLIST } from './go-import-allowlist.js';
+import { GO_DIRECTIVE_DENYLIST, GO_IMPORT_ALLOWLIST } from './go-import-allowlist.js';
 
-/** import を受け付けられなかった理由。 */
+/** ソースを受け付けられなかった理由。 */
 export type ImportRejection =
   | 'empty-source'
   | 'no-package-clause'
   | 'unparsable'
-  | 'not-allowed';
+  | 'not-allowed'
+  | 'directive-not-allowed';
 
 /** 検査の結果。 */
 export type ImportInspection =
@@ -40,7 +52,10 @@ export type ImportInspection =
   | {
       readonly ok: false;
       readonly reason: ImportRejection;
-      /** `not-allowed` のとき、許可されていない import パス。 */
+      /**
+       * `not-allowed` のとき、許可されていない import パス。
+       * `directive-not-allowed` のとき、書かれていた禁止指示の名前（`go:wasmimport` 等）。
+       */
       readonly offending?: readonly string[];
     };
 
@@ -51,7 +66,11 @@ interface Token {
 }
 
 /**
- * 生成されたソースの import を検査する。
+ * 生成されたソースを検査する。
+ *
+ * 2 つの軸で見る。**import 文**（許可パッケージの一覧）と、**コンパイラ指示**
+ * （`//go:wasmimport` 等の拒否一覧）である。後者は前者では原理的に見えない
+ * （#100。冒頭の「import を見ても分からないことがある」）。
  *
  * @param source Go のソースコード
  * @returns 検査結果
@@ -62,6 +81,15 @@ export function inspectGoImports(source: string): ImportInspection {
     return scanned;
   }
 
+  // 指示の検査を import の検査より先に置く。**両方に違反しているソースでは、
+  // 一覧で説明できないほうを理由として返したい。** `not-allowed` を返すと
+  // 「一覧に足せば通る」と読めてしまうが、`//go:wasmimport` は一覧に足す・
+  // 足さないの問題ではない。
+  const directives = findDeniedDirectives(source);
+  if (directives.length > 0) {
+    return { ok: false, reason: 'directive-not-allowed', offending: directives };
+  }
+
   const allowed = new Set<string>(GO_IMPORT_ALLOWLIST.map((entry) => entry.path));
   const offending = scanned.imports.filter((path) => !allowed.has(path));
   if (offending.length > 0) {
@@ -70,6 +98,110 @@ export function inspectGoImports(source: string): ImportInspection {
     return { ok: false, reason: 'not-allowed', offending };
   }
   return { ok: true, imports: scanned.imports };
+}
+
+/**
+ * ソース全体から、拒否するコンパイラ指示を探す（#100）。
+ *
+ * ## なぜ正規表現 1 本ではないのか
+ *
+ * `//go:wasmimport` を単純に検索すると、**文字列リテラルの中の同じ綴りを拾う。**
+ * 逆に、文字列リテラルを飛ばさずに走ると**リテラルの中の `` ` `` やクォートで
+ * 位置を見失い、その先にある本物の指示を読み落とす。** とくに**ルーンリテラルの
+ * 中のバッククォート**（`` '`' ``。正当な Go である）は、素朴な走査を生文字列の
+ * 途中だと錯覚させ、**そこから次のバッククォートまでを丸ごと飛ばさせる。**
+ * そこで、`scanImports` と同じく字句として読む。
+ *
+ * ## 何を指示とみなすか（実測で決めた。Go 1.26.5 / 2026-08-28）
+ *
+ * **行コメントの本文が指示名で始まるものだけ**を指示とみなす。
+ *
+ * - 行頭でも**字下げされていても効く**（どちらも wasm のインポート節に現れた）。
+ *   したがって桁位置を条件にしない。
+ * - `// go:wasmimport`（`//` の後ろに空白を 1 つ入れた形）と、ブロックコメントへ
+ *   書いた同じ綴りは**指示にならない**（どちらも `missing function body` で
+ *   ビルドが落ちる）。拒否しても実害は無いが、**落とす理由を説明できない拒否を
+ *   増やさない**ほうを採る。
+ *
+ * @param source Go のソースコード
+ * @returns 見つかった指示の名前（重複なし、ソース中の出現順）
+ */
+export function findDeniedDirectives(source: string): readonly string[] {
+  const text = source.replace(/^\uFEFF/u, '');
+  const found: string[] = [];
+  let index = 0;
+
+  while (index < text.length) {
+    const char = text[index]!;
+
+    if (char === '"' || char === "'") {
+      // 解釈される文字列とルーンリテラル。どちらも改行をまたげないので、
+      // 閉じないまま行が終わったらそこで打ち切る（読み落としを作らない）。
+      index = skipUntilQuote(text, index, char);
+      continue;
+    }
+    if (char === '`') {
+      const end = text.indexOf('`', index + 1);
+      index = end === -1 ? text.length : end + 1;
+      continue;
+    }
+    if (text.startsWith('//', index)) {
+      const lineEnd = text.indexOf('\n', index);
+      const body = text.slice(index + 2, lineEnd === -1 ? text.length : lineEnd);
+      for (const directive of GO_DIRECTIVE_DENYLIST) {
+        if (body.startsWith(directive.name) && !found.includes(directive.name)) {
+          found.push(directive.name);
+        }
+      }
+      index = lineEnd === -1 ? text.length : lineEnd + 1;
+      continue;
+    }
+    if (text.startsWith('/*', index)) {
+      const end = text.indexOf('*/', index + 2);
+      index = end === -1 ? text.length : end + 2;
+      continue;
+    }
+    index += 1;
+  }
+
+  return found;
+}
+
+/**
+ * 閉じ引用符（または行末）まで読み飛ばす。
+ *
+ * @param text ソース
+ * @param start 開き引用符の位置
+ * @param quote 引用符の文字（`"` または `'`）
+ * @returns 読み飛ばした次の位置
+ */
+function skipUntilQuote(text: string, start: number, quote: string): number {
+  let index = start + 1;
+  while (index < text.length) {
+    const current = text[index]!;
+    if (current === '\\') {
+      if (text[index + 1] === '\n') {
+        // 行継続は Go に無い（解釈される文字列もルーンリテラルも改行をまたげない）。
+        // ここで 2 文字まとめて飛ばすと**改行を越えてしまい**、次の行を
+        // リテラルの続きとして読む。壊れたリテラルを 1 つ置くだけで次の行の
+        // 指示を隠せることになるので、改行では必ず打ち切る。
+        return index + 1;
+      }
+      // エスケープは 2 文字まとめて飛ばす。1 文字にすると `\"` や `\'` で終端する。
+      index += 2;
+      continue;
+    }
+    if (current === quote) {
+      return index + 1;
+    }
+    if (current === '\n') {
+      // 閉じないまま行が終わった。**次の行から読み直す。** ここで終端まで飛ばすと、
+      // 壊れたリテラルを 1 つ置くだけで以降の指示を隠せる。
+      return index;
+    }
+    index += 1;
+  }
+  return text.length;
 }
 
 /**

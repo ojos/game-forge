@@ -24,6 +24,12 @@
  * **5.2 との差分**: 5.2 は 3.3 に無い「入力の安全性検査（8.1）」をクォータ判定の
  * 手前に置く。これは M6-1 の範囲なので、この骨組みには段を作らず、挿入位置だけを
  * `runGenerationPipeline` のコメントに記す（使われない段を先に作らない）。
+ *
+ * **#129 で 4.2 のリトライ 1 段目（費用ゼロの機械修正）が入った。** ループの中、
+ * ビルドが `kind='build'` で落ちた直後に `repairAndRebuild` がある。**段
+ * （`GenerationPipeline`）を増やしていない**のは、これが 3.3 の順序に現れる段では
+ * なく、**既にある段（`build`）をもう一度呼ぶだけ**だからである。差し替えたいものは
+ * すべて既存の段の中にあり、増やすと「呼ばないと成立しない段」がもう 1 つ生まれる。
  */
 import type { Route, RouteHandler } from './routes.js';
 import { json, readLimitedText } from './routes.js';
@@ -53,6 +59,8 @@ import {
   retriableBuildFailure,
   withBuildDiagnostics,
 } from './build-retry.js';
+import type { BuildRejected } from './build-client.js';
+import { MAX_MECHANICAL_FIX_PASSES, removeUnusedImports } from './mechanical-fix.js';
 
 /** 生成エンドポイントのパス。 */
 export const GENERATE_PATH = '/api/generate';
@@ -394,7 +402,20 @@ export async function runGenerationPipeline(
       if (rejected === null) {
         throw error;
       }
-      retry = buildRetryContext(attempt, rejected, generated);
+
+      // **4.2 の 1 段目（費用ゼロの機械修正 / #129）。** ここが挿入位置である
+      // （ビルドが `kind='build'` で落ちた直後）。**LLM を呼ばず**に未使用 import を
+      // 除去して再ビルドし、通ればそのまま先へ進む。**台帳の行は作らない**ので、
+      // 日次クォータにも数えない（確定25。数える単位は行数である）。
+      const repaired = await repairAndRebuild(env, pipeline, generated, rejected);
+      if (repaired.built !== null) {
+        built = repaired.built;
+      } else {
+        // 直らなかった。**2 段目（LLM 再生成）へそのまま回す。** 材料は機械修正の
+        // 後のソースと、そのソースに対する診断である（未使用 import を消した分だけ
+        // 手掛かりが減っており、残った失敗だけが見える）。
+        retry = buildRetryContext(attempt, repaired.rejected, repaired.generated);
+      }
     }
 
     // 3.3-8: `games` 行の作成（#76 で採番が戻った。v1.9 は 3.3-9 だった）。
@@ -410,6 +431,85 @@ export async function runGenerationPipeline(
   // 上限まで試して通らなかった（5.2-7）。**ここへ来る経路はこれだけである**
   // （ビルドが成功すればループの中で返り、リトライ対象でない失敗は再送出される）。
   throw new BuildRetriesExhausted(MAX_GENERATION_ATTEMPTS, retry?.stage ?? 'unknown');
+}
+
+/**
+ * 機械修正の結果として、ループが次に持つもの。
+ *
+ * ビルドが通ったなら `built` が入り、通らなかったなら**次の試行へ渡す材料**
+ * （ソースと、そのソースに対する診断）が入る。
+ */
+interface RepairOutcome {
+  /** 機械修正の後にビルドが通ったなら成果物。通らなかった・修正できなかったなら null。 */
+  readonly built: BuildOutcome | null;
+  /** 最後にビルドを試したソース（修正できなければ元のまま）。 */
+  readonly generated: GenerationResult;
+  /** そのソースが落ちたときの拒否（`built` が非 null なら意味を持たない）。 */
+  readonly rejected: BuildRejected;
+}
+
+/**
+ * 4.2 の 1 段目。**未使用 import を機械的に除去して、ビルドし直す**（#129）。
+ *
+ * **LLM を呼ばない。費用は増えない。** 増えるのはビルド関数の呼び出しだけで、それも
+ * **実際に除去できたときにしか起きない**（診断に未使用 import が無ければ、ここは
+ * ビルドを 1 回も呼ばずに戻る）。
+ *
+ * **台帳へ書かない。** `recordCost` はループ側が LLM 呼び出しごとに 1 回呼ぶ
+ * （3.3-4 / 4.3 の記録規約）。ここで呼ぶと、費用の出ていない段が確定25 の枠を食う。
+ *
+ * **5.2-5 の検査はやり直す。** 除去は import を減らすだけなので新しい違反は生まれない
+ * はずだが、3.3 の「検査を通ったソースだけをビルドへ渡す」を分岐で崩さない。
+ * 万一ここで落ちれば、それは機械修正の不具合であり、**黙ってビルドへ流すより
+ * 経路層まで上げるほうがよい**（`removeUnusedImports` は自分の出力を読み直して
+ * 確かめており、壊れた出力は `changed: false` になる）。
+ *
+ * **繰り返しは {@link MAX_MECHANICAL_FIX_PASSES} 回まで。** `go build` は 10 件で
+ * 診断を打ち切るため（実測）、未使用 import が 11 件以上あると 1 回では消し切れない。
+ *
+ * @param env バインディングと環境変数
+ * @param pipeline 差し替え可能な各段
+ * @param generated 直前の試行の生成結果
+ * @param rejected そのソースが落ちたときの拒否
+ * @returns ループが次に持つもの
+ */
+async function repairAndRebuild(
+  env: Env,
+  pipeline: GenerationPipeline,
+  generated: GenerationResult,
+  rejected: BuildRejected,
+): Promise<RepairOutcome> {
+  let current = generated;
+  let currentRejected = rejected;
+
+  for (let pass = 1; pass <= MAX_MECHANICAL_FIX_PASSES; pass += 1) {
+    const fix = removeUnusedImports(current.source, currentRejected.diagnostics);
+    if (!fix.changed) {
+      // 未使用 import が無い、あるいは確実に消せなかった。**触らずに返す。**
+      return { built: null, generated: current, rejected: currentRejected };
+    }
+
+    // **`current` を広げて `source` だけ差し替える**（`withBuildDiagnostics` と同じ理由）。
+    // 作り直すと、`GenerationResult` へ項目が増えたときにこの経路だけが黙って落とす。
+    const repaired: GenerationResult = { ...current, source: fix.source };
+    pipeline.inspectSource(repaired);
+
+    try {
+      return { built: await pipeline.build(env, repaired), generated: repaired, rejected: currentRejected };
+    } catch (error) {
+      const rejectedAgain = retriableBuildFailure(error);
+      if (rejectedAgain === null) {
+        // ビルド経路そのものの失敗（設定・タイムアウト・関数障害）。**再生成でも
+        // 機械修正でも直らない**ので、ループの外まで上げる（`kind` での判断は
+        // `src/build-retry.ts` が 1 か所で持つ）。
+        throw error;
+      }
+      current = repaired;
+      currentRejected = rejectedAgain;
+    }
+  }
+
+  return { built: null, generated: current, rejected: currentRejected };
 }
 
 /** クォータ超過（3.3-2 / 4.3）。 */

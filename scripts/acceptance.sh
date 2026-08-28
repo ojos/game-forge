@@ -22,6 +22,22 @@ echo "[acceptance] project acceptance checks"
 # 検証していないことを合格として報告するのが最悪であるため。
 ran_any=0
 
+# 追跡ファイルへの「表示されない制御文字」混入の検査（#134）。
+#
+# **一番手前に置く。** 言語のマニフェストに依存せず、0.03 秒で終わり、しかも混入したまま
+# 先へ進むと後続の道具が読み取りにくい形で壊れる（エディタ・差分・リンタが扱いを誤る）。
+# 安い検査から落として反復を短くするのは、verify.sh が機密混入検査を受け入れ条件の
+# 手前へ置いているのと同じ考え方である。
+#
+# 判定はスクリプト側が持つ（理由と禁止範囲は scripts/check-control-chars.sh の冒頭）。
+# verify.sh ではなくこちらへ置くのは、verify.sh が直接呼ぶのを機密混入という別格の
+# 関心事に限っているため。
+#
+# ran_any は立てない。この検査はマニフェストに関係なく必ず走るため、立てると
+# 「テストを 1 つも実行していないのに合格」を作れてしまう（下の /waitlist 検査と同じ）。
+echo "[acceptance] (hygiene) scripts/check-control-chars.sh"
+bash scripts/check-control-chars.sh
+
 if [[ -f package.json ]]; then
   command -v npm >/dev/null 2>&1 || { echo "[acceptance] (node) npm not found. install Node.js (npm) to run this acceptance check." >&2; exit 1; }
   # 依存の実体が宣言（package-lock.json）と一致していること（#99）。

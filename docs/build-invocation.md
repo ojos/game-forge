@@ -14,6 +14,8 @@
 |---|---|
 | ECR / Lambda 関数の宣言・入口・配備 | **#103**（`terraform/build-function.tf` / `docker/isolated-build/`） |
 | **Workers からの呼び出し・認証・キャッシュ・失敗の区別** | **本文書（#19）** |
+| 呼び出しに使う IAM ユーザーとポリシーの宣言 | **#115**（`terraform/build-invoker.tf`） |
+| その鍵の発行・投入・ローテーション（宣言では持てない） | **本文書 3 章（#115）** |
 | R2 への書き込みと `games` 行の作成（3.3-6 / 3.3-8） | **#21** |
 | コンパイル失敗時の自動リトライ | **#20** |
 | `src/generate.ts` の `build` への結線 | **後続の単独 PR**（#17 と同じ 4 行を触るため） |
@@ -40,7 +42,7 @@ Workers ──SigV4(lambda)──> POST https://lambda.<region>.amazonaws.com
 
 ---
 
-## 3. 資格情報（**未宣言。後続作業がある**）
+## 3. 資格情報
 
 | 名前 | 置き場所 |
 |---|---|
@@ -55,16 +57,13 @@ Workers ──SigV4(lambda)──> POST https://lambda.<region>.amazonaws.com
    `bedrock:InvokeModelWithResponseStream` だけを許しており、`lambda:InvokeFunction` を
    通せない。**最小権限を保つなら principal ごと分かれる。**
 
-### まだ宣言されていない（申し送り）
+### プリンシパル（#115 で宣言した）
 
-**本 issue は `terraform/` を触っていない。** したがって次の 2 つは未了である。
-
-- `lambda:InvokeFunction` を**この関数の ARN だけ**に許す IAM ユーザーとポリシーの宣言。
-- そのユーザーのアクセスキーの発行（**宣言しない。** `aws_iam_access_key` は
-  tfstate へ平文で落ちるため。`docs/bedrock-access.md` 1 章と同じ理由で手作業）。
-
-必要なポリシーは次のとおり。**`Resource` を `*` にしない**（このアカウントには他の
-関数も置きうる。9.2）。
+**`terraform/build-invoker.tf` が `game-forge-build-invoker` という IAM ユーザーを
+宣言する。** 与えているのは `lambda:InvokeFunction` 1 つを、ビルド関数の ARN 1 つに
+限った権限だけである。**`Resource` を `*` にしない**（このアカウントには他の関数も
+置きうる。9.2。`lambda:InvokeFunction` on `*` は「アカウント内の全部の関数を呼べる鍵」
+である）。
 
 ```json
 {
@@ -77,8 +76,116 @@ Workers ──SigV4(lambda)──> POST https://lambda.<region>.amazonaws.com
 }
 ```
 
-**それまでの間、この経路は設定不足として呼び出しの手前で落ちる**
+**`lambda:*` を与えない。** それは `UpdateFunctionCode` を含み、**攻撃者が制御しうる
+コードをコンパイルする関数**（7.1）の中身を、この鍵 1 本で差し替えられるということで
+ある。配備の権限は OIDC のロール（`terraform/github-oidc.tf`）が別に持つ。
+
+**最小権限であることは `scripts/acceptance-remote.sh` の
+`build invoker permissions are minimal` が機械で見る。** 動作の集合・対象の ARN・
+管理ポリシーが付いていないこと・**tfstate に `aws_iam_access_key` が 1 件も無いこと**
+の 4 つで、期待値は `terraform output` から取る（検査へ書き写さない）。
+
+> **#19 時点の記述（#115 で解消）。** 上の節はもともと「**まだ宣言されていない（申し送り）**」
+> という見出しで、「本 issue は `terraform/` を触っていない。したがって次の 2 つは未了で
+> ある ─ `lambda:InvokeFunction` を**この関数の ARN だけ**に許す IAM ユーザーとポリシーの
+> 宣言／そのユーザーのアクセスキーの発行（**宣言しない。** `aws_iam_access_key` は
+> tfstate へ平文で落ちるため。`docs/bedrock-access.md` 1 章と同じ理由で手作業）」と
+> 書いていた。**旧記述はこの注記に残す。** 前者は #115 で宣言した。**後者は今も手作業で
+> あり、そちらは解消していない**（下の「鍵の発行と投入」）。
+
+**鍵を入れるまでの間、この経路は設定不足として呼び出しの手前で落ちる**
 （`BuildNotConfigured`。値ではなく**名前だけ**を報告する）。
+
+### 鍵の発行と投入（#115。**宣言では持てない範囲**）
+
+**`aws_iam_access_key` を宣言しない。** 生成された秘密鍵が **tfstate へ平文で
+書き込まれる**ためで、R2 の資格情報を `aws_ssm_parameter` で宣言しない理由
+（`docs/build-function.md`）とも、`terraform/bedrock.tf` が Bedrock 用の鍵を宣言しない
+理由とも同じ経路である。**したがって鍵の発行だけは手作業になる。**
+
+**先に `terraform apply` を済ませること。** 鍵を発行する相手（IAM ユーザー）を作るのは
+宣言側である。
+
+```bash
+export AWS_PROFILE=game-forge-prod
+
+# ユーザー名は宣言から取る。ここへ綴りを書き写さない。
+aws iam create-access-key \
+  --user-name "$(terraform -chdir=terraform output -raw build_invoker_user_name)"
+```
+
+出力の `AccessKeyId` と `SecretAccessKey` を使う。**`SecretAccessKey` は発行時にしか
+表示されない。**
+
+**本番（Cloudflare Pages のシークレット）へ入れる。**
+
+```bash
+npx wrangler pages secret put BUILD_AWS_REGION --project-name game-forge          # ap-northeast-1
+npx wrangler pages secret put BUILD_AWS_ACCESS_KEY_ID --project-name game-forge
+npx wrangler pages secret put BUILD_AWS_SECRET_ACCESS_KEY --project-name game-forge
+```
+
+- **名前の正本は `src/build-client.ts` の `BUILD_SECRET_NAMES` である。** ここは写しなので、
+  あちらを変えたらこちらも直す。
+- **`--project-name` を必ず付ける。** 省くと wrangler が対話で選ばせにいくため、
+  非対話の手順として成立しない。
+- **`BUILD_AWS_SESSION_TOKEN` は本番では登録しない。** 一時資格情報はローカルで SSO を
+  使うときだけのものである（下の「ローカルで叩くとき」）。
+- **`BUILD_FUNCTION_NAME` はシークレットではない。** `wrangler.toml` の `[vars]` が
+  環境ごとに宣言するので、配備すればそのまま効く。
+- **値をリポジトリへ書かない。** `scripts/check-no-secrets.sh` が毎回検査するが、検査に
+  頼る前に、鍵の値が出るのは `create-access-key` の出力と `wrangler` の入力だけに保つ。
+
+> **申し送り。** `docs/pages-deploy.md` 5 章が「どのシークレットをどのプロジェクトへ
+> 入れるか」の正本だが、#115 の所有範囲外のため `BUILD_AWS_*` の行をあちらへ足して
+> いない。**生成経路を実際に開くとき（#22 / `src/generate.ts` への結線）に、あちらへも
+> 同じ 3 行を追記すること。**
+
+**ローカル（`.dev.vars`）へ入れる。** 長命キーを手元へ置く必要は無い。ローカルは SSO の
+一時資格情報で足りる（下の「ローカルで叩くとき」）。雛形は `.dev.vars.example` にある。
+
+### ローテーション
+
+**この手順が必要なのは、Workers が AWS の外で動くからである。** IAM ロールを引き受ける
+経路が無く、長命のアクセスキーを Pages のシークレットへ置くしかない（4.1）。
+**長命キーの唯一の対処がローテーションである。**
+
+契機と間隔は `docs/bedrock-access.md` 4 章と同じにする（**漏洩の疑いは即時**、定期は
+**90 日**、鍵に触れた人が離れたらその時点）。**鍵が 2 本ある以上、片方だけ回して
+もう片方を忘れる形が最も起こりやすい。同じ間隔・同じ手順にしておくのはそのためである。**
+
+```bash
+export AWS_PROFILE=game-forge-prod
+USER="$(terraform -chdir=terraform output -raw build_invoker_user_name)"
+
+# 1. 新しいキーを作る（IAM ユーザーは同時に 2 本まで持てる。無停止で入れ替えられる）
+aws iam create-access-key --user-name "$USER"
+
+# 2. Pages のシークレットを新しい値へ更新し、配備して疎通を確認する
+npx wrangler pages secret put BUILD_AWS_ACCESS_KEY_ID --project-name game-forge
+npx wrangler pages secret put BUILD_AWS_SECRET_ACCESS_KEY --project-name game-forge
+npx wrangler pages deploy --project-name game-forge --branch main
+
+# 3. 古いキーを **まず無効化する**（削除ではない。切り戻せる状態を残す）
+aws iam update-access-key --user-name "$USER" \
+  --access-key-id <OLD_KEY_ID> --status Inactive
+
+# 4. 一定期間なにも壊れないことを確認してから削除する
+aws iam delete-access-key --user-name "$USER" --access-key-id <OLD_KEY_ID>
+```
+
+**手順 3 と 4 を分ける理由。** 削除は取り消せない。無効化なら `--status Active` で
+すぐ戻せる。切り戻せない操作を、確認より前に置かない。
+
+現在のキーの一覧と最終使用日:
+
+```bash
+aws iam list-access-keys --user-name "$USER"
+aws iam get-access-key-last-used --access-key-id <KEY_ID>
+```
+
+**有効な鍵が 1 本も無い状態は、外部層の検査が warn として出す**（落としはしない。
+未発行は「宣言と外部状態の乖離」ではなく手順の途中であるため）。
 
 ### ローカルで叩くとき
 
@@ -212,6 +319,8 @@ build(env, generated)
 |---|---|---|
 | 関数名 `game-forge-build` | `terraform/build-function.tf` の `local.build_function_name` | `wrangler.toml` の `BUILD_FUNCTION_NAME`（3 環境） |
 | タイムアウト 30 秒 | 同 `local.build_function_timeout_seconds` | `src/build-client.ts` の `BUILD_FUNCTION_TIMEOUT_SECONDS` |
+| シークレット名 `BUILD_AWS_*` | `src/build-client.ts` の `BUILD_SECRET_NAMES` | 本文書 3 章の `wrangler pages secret put` / `.dev.vars.example` |
+| IAM ユーザー名 `game-forge-build-invoker` | `terraform/build-invoker.tf` | 本文書 3 章（**コマンドは `terraform output` から取るので、綴りの写しは散文だけ**） |
 
 **機械照合を置いていない。** 照合するには Terraform の宣言を読む必要があり、
 ローカル層（ネットワークも外部認証も要さない層）の検査としては

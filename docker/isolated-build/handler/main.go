@@ -72,7 +72,22 @@ func main() {
 		return
 	}
 
-	h := NewHandler(scratchRoot, templateDir, quality)
+	// 3.3-6 の書き戻し先。**未設定は「書かない」ではなく構成の誤りである**
+	// （r2SettingsFromEnv の注記）。BROTLI_QUALITY と同じく、宣言に無い状態で
+	// 動き出さない。
+	r2, err := r2SettingsFromEnv()
+	if err != nil {
+		fail(*oneshot, err)
+		return
+	}
+
+	// **nil のまま渡すのは「書かない」を明示したときだけ**である。
+	var upload func(context.Context, uploadRequest) (*StoredArtifacts, error)
+	if r2 != nil {
+		upload = newR2Client(*r2).upload
+	}
+
+	h := NewHandler(scratchRoot, templateDir, quality, upload)
 
 	if *oneshot || os.Getenv("AWS_LAMBDA_RUNTIME_API") == "" {
 		if err := runOneshot(h, *eventFile, *outFile); err != nil {
@@ -170,11 +185,20 @@ func readEvent(eventFile string) ([]byte, error) {
 //
 // **生成されたソースも成果物も出さない。** ログは CloudWatch へ渡り、保持期間の
 // あいだ残る。攻撃者が制御しうる入力（7.1）をそこへ複製する理由が無い。
+//
+// **R2 のキーは出す。** キーは生成ソースのハッシュから決まる公開可能な綴りで
+// （`artifactKeys`）、資格情報でもソースでもない。**書けたかどうかを後から確かめる
+// 唯一の手掛かり**なので、ここに残す。
 func logResult(res *Result) {
 	if res.OK {
-		log.Printf("[build] ok wasm=%dB/%s br=%dB/%s reset=%dms build=%dms compress=%dms total=%dms",
-			res.Wasm.Bytes, res.Wasm.SHA256[:12], res.Compressed.Bytes, res.Compressed.SHA256[:12],
-			res.Timings.ResetMs, res.Timings.BuildMs, res.Timings.CompressMs, res.Timings.TotalMs)
+		stored := "skip"
+		if res.Storage != nil {
+			stored = res.Storage.WasmKey
+		}
+		log.Printf("[build] ok wasm=%dB/%s br=%dB/%s r2=%s reset=%dms build=%dms compress=%dms upload=%dms total=%dms",
+			res.Wasm.Bytes, res.Wasm.SHA256[:12], res.Compressed.Bytes, res.Compressed.SHA256[:12], stored,
+			res.Timings.ResetMs, res.Timings.BuildMs, res.Timings.CompressMs, res.Timings.UploadMs,
+			res.Timings.TotalMs)
 		return
 	}
 	log.Printf("[build] ng stage=%s total=%dms", res.Stage, res.Timings.TotalMs)

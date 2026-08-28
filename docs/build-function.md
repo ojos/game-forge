@@ -77,8 +77,11 @@ IAM ユーザー（`game-forge-build-invoker`）は `terraform/build-invoker.tf`
   "ok": true,
   "goVersion": "go1.26.5",
   "wasm":       { "bytes": 11404411, "sha256": "…" },
-  "compressed": { "bytes": 2282839, "sha256": "…", "contentEncoding": "br", "data": "<base64>" },
-  "timings":    { "resetMs": 0, "prepareMs": 20, "buildMs": 4797, "compressMs": 539, "totalMs": 5359 }
+  "compressed": { "bytes": 2282839, "sha256": "…", "contentEncoding": "br" },
+  "storage":    { "sourceKey": "builds/<sha256>/source.go",
+                  "wasmKey":   "builds/<sha256>/go1.26.5/game.wasm.br" },
+  "timings":    { "resetMs": 0, "prepareMs": 20, "buildMs": 4797, "compressMs": 539,
+                  "uploadMs": 310, "totalMs": 5359 }
 }
 ```
 
@@ -88,7 +91,20 @@ IAM ユーザー（`game-forge-build-invoker`）は `terraform/build-invoker.tf`
   発火する）が利用者のコードの誤りで誤爆します。
 - **未圧縮 wasm の本体は返しません。** 8〜12 MB あり、Lambda の同期応答 6 MB を
   超えます。返るのはバイト数と sha256 だけです。
-- `compressed.data` は器の段階の暫定です。**R2 への書き込み（3.3-6）は #21 が持ちます。**
+- **`.wasm.br` の本体も返しません（#21 で 3.3-6 が成立しました）。** 関数が R2 へ
+  書き、返るのは `storage` のキーだけです。**`compressed.data` が入るのは
+  `R2_UPLOAD=skip` で動かしたときだけ**で、それはローカルの封じ込め検査
+  （`scripts/check-isolated-build.sh`。`--network=none` なので R2 へ届きません）専用です。
+
+  > **旧記述（#21 より前）。** ここには「`compressed.data` は器の段階の暫定です。
+  > **R2 への書き込み（3.3-6）は #21 が持ちます。**」と書いていました。**旧記述は
+  > この注記に残します。**
+
+- **R2 へ書けなかった呼び出しは `ok=false` になりません。** 利用者のコードは正しく
+  ビルドできているので、**関数の障害**として返します（Runtime API のエラー経路）。
+  呼び出し側は `BuildFunctionFailed` として受け取り、3.8 の degrade 判定に乗ります。
+  **`ok=true` で成果物の無いキーを返す経路は作りません**（`games` 行だけができて
+  404 を返す作品が生まれます）。
 
 ## R2 の資格情報
 
@@ -107,6 +123,45 @@ IAM ユーザー（`game-forge-build-invoker`）は `terraform/build-invoker.tf`
 - 実行ロールがそれを**読める**こと（`ssm:GetParameter` を 1 つの ARN に限定）
 - 実行ロールがそれを**復号できる**こと（`kms:Decrypt`。`kms:ViaService` と
   `kms:EncryptionContext:PARAMETER_ARN` の 2 条件でこのパラメータだけに絞る）
+
+### 関数側の扱い（#21 / `docker/isolated-build/handler/r2.go`）
+
+- **読むのは呼び出しのたびです。** 初期化で固めません（上の「ローテーション」が
+  「再配備は要らない」と書いている前提を保つため）。ビルド 1 回が約 21 秒なのに対し、
+  SSM の 1 往復は無視できます。
+- **読むのはビルドと圧縮が終わったあとです。** ビルドが失敗する呼び出しでは読みません。
+  攻撃者由来のコードをコンパイルしているあいだ、資格情報がメモリに載っている時間を
+  短くします。
+- **環境変数へ置きません。** `go build` の子プロセスへ `os.Environ()` が渡るためです。
+  あわせて、**その子プロセスの環境から `AWS_*`（実行ロールの資格情報）を落とします**。
+  実行ロールの鍵は R2 の鍵ではありませんが、**渡せば R2 の鍵を取りに行けます。**
+- **`R2_CREDENTIALS_PARAMETER` が無ければ関数は起動しません。** `BROTLI_QUALITY` と
+  同じ扱いです（宣言に無い状態で動き出さない）。**未設定を「書かない」と読み替えると、
+  宣言から環境変数が落ちた日に 200 を返し続けたまま R2 には何も入りません。**
+  R2 へ書かずに動かすとき（ローカルの封じ込め検査）は `R2_UPLOAD=skip` を明示します。
+  **両方を指定したら起動しません**（暗黙の優先順位を作らないため）。
+- **値を読めなかった・R2 へ書けなかった呼び出しは、関数の障害として失敗します。**
+  エラーには状態コードと種別だけを残し、**応答本文もパラメータの値も出しません。**
+
+### オブジェクトのキー（3.3-6 の命名。確定26）
+
+```
+builds/<生成ソースの SHA-256>/source.go
+builds/<生成ソースの SHA-256>/<Go の版>/game.wasm.br
+```
+
+- **作品 id を含めません。** 確定26 は「R2 のオブジェクトは作品をまたいで共有される」を
+  正としており、**キャッシュヒット時は関数を呼ばない**ので、作品ごとのキーは作れません。
+  内容だけから決めることで、同じソースは必ず同じキーになります。
+- ハッシュは `src/build-cache.ts` の `sourceCacheKey`（UTF-8 の SHA-256）と同じ値です。
+- **`.wasm.br` にだけ Go の版を入れます。** 同じソースでも版が変われば wasm は別物で、
+  版を入れないと**再ビルドが既存の作品のオブジェクトを別の版の中身で上書きします**
+  （その作品の `go_version` は古いままなので、3.5 の出し分けが壊れます）。
+- **`builds/` にライフサイクルルールを置きません**（3.7 の規約 3）。年齢だけで消す
+  ルールは `games` を引けないため、共有されうるオブジェクトを載せられません。
+- `.wasm.br` には `Content-Type: application/wasm` と `Content-Encoding: br` の**両方**を
+  付けます（3.4-1 / 3.4-2）。**どちらも署名対象のヘッダ**なので、経路上で書き換えられれば
+  署名が壊れます。`source.go` は配信物ではないので圧縮も `Content-Encoding` もありません。
 
 ### 投入
 

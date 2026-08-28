@@ -59,7 +59,7 @@
  */
 import { AwsClient } from 'aws4fetch';
 import type { GenerationResult } from './generation-models.js';
-import type { BuildCacheEntry } from './build-cache.js';
+import type { BuildCacheEntry, BuildCacheRecord } from './build-cache.js';
 import { readBuildCache, sourceCacheKey, toHex } from './build-cache.js';
 
 /**
@@ -248,7 +248,24 @@ export interface BuildTimings {
   readonly prepareMs: number;
   readonly buildMs: number;
   readonly compressMs: number;
+  /** R2 への書き戻し（3.3-6。SSM の 1 往復と PUT 2 本）。 */
+  readonly uploadMs: number;
   readonly totalMs: number;
+}
+
+/**
+ * 関数が R2 へ書いたオブジェクトのキー（3.3-6 / 確定26）。
+ *
+ * **綴りを決めるのは関数側である**（`docker/isolated-build/handler/r2.go` の
+ * `artifactKeys`）。生成ソースのコンテンツハッシュから決まるので、**同じソースなら
+ * 別の作品でも同じキーになる**（確定26 の共有はここで成立している）。
+ * こちら側で組み立て直さない。
+ */
+export interface ArtifactKeys {
+  /** `source.go` の R2 キー。 */
+  readonly sourceKey: string;
+  /** `.wasm.br` の R2 キー。 */
+  readonly wasmKey: string;
 }
 
 /** ビルドが成功したときの成果物の申告。 */
@@ -264,19 +281,33 @@ export interface BuildFunctionResult {
   readonly goVersion: string;
   readonly artifact: BuiltArtifact;
   /**
+   * 関数が R2 へ書いたキー（3.3-6）。
+   *
+   * **必須である。** 3.3-6 が成立した以上、成功応答は必ずキーを持つ。欠けているのは
+   * 「関数が R2 へ書いていない」ということで、それを黙って受け取ると 3.3-8 が
+   * **成果物の無いキー**（あるいは空文字）で `games` 行を作る。
+   */
+  readonly keys: ArtifactKeys;
+  /**
    * `.wasm.br` の本体。
    *
-   * **`null` になりうる。** 3.3-6 は「関数が R2 へ直接書く」と定めており、
-   * `compressed.data` は器の段階の暫定である（`docs/build-function.md`）。
-   * 関数が R2 へ書くようになれば本体は返らなくなる。**その日にこちらが壊れないよう、
-   * 不在を異常として扱わない。**
+   * **`null` になりうる。** 3.3-6 が成立した本番では**返らない**（R2 に在るものを
+   * 応答へ二重に載せない）。本体が入るのは、関数を `R2_UPLOAD=skip` で動かす
+   * ローカルの封じ込め検査だけである（`docker/isolated-build/handler/handler.go`）。
+   * **不在を異常として扱わない。**
    */
   readonly compressedData: Uint8Array | null;
   readonly timings: BuildTimings;
   readonly requestId: string | null;
 }
 
-/** 3.3-5..7 の結果。**キャッシュヒットかどうかで持ち物が変わる。** */
+/**
+ * 3.3-5..7 の結果。**キャッシュヒットかどうかで持ち物が変わる。**
+ *
+ * **キーだけはどちらでも取れる**（ヒットなら索引の `entry`、非ヒットなら関数が
+ * 返した `keys`）。3.3-8 は経路を分けずに `games` 行を作れる必要があるので、
+ * その正規化は {@link artifactKeysOf} が持つ。
+ */
 export type BuildOutcome =
   | {
       readonly cached: true;
@@ -464,12 +495,12 @@ export async function invokeBuildFunction(
  * 3.3-5..7 の段を作る（`GenerationPipeline['build']` に嵌まる形）。
  *
  * **キャッシュを先に見る**（3.8）。ヒットすれば関数を呼ばない。ミスなら関数を呼び、
- * **索引は書かない。** 成果物が R2 に入るのは #21（3.3-6）の仕事で、まだ存在しない
- * オブジェクトを指す索引を作らないためである。#21 は書き込みのあとで
- * `recordBuildCache` を呼ぶ（`src/build-cache.ts`）。
+ * **索引はここでは書かない。** 索引を書くのは 3.3-8（`src/games.ts`）で、`games` 行を
+ * 作ったあとである。**成果物そのものは関数が R2 へ書いて返ってきている**（3.3-6 /
+ * #21）ので、「まだ存在しないオブジェクトを指す索引」にはならない。順序の理由は
+ * `src/games.ts` の `createDraftGame` が持つ。
  *
- * **`src/generate.ts` への結線は本 issue では行わない**（#17 が同じ `defaultPipeline` を
- * 触るため。issue #19 の 2026-08-28 追記）。結線は後続の単独 PR で行う。
+ * **`src/generate.ts` へは #21 で結線した**（`defaultPipeline.build`）。
  *
  * @param deps 外部依存
  * @returns `GenerationPipeline['build']` に嵌まる関数
@@ -500,6 +531,50 @@ export function createLambdaBuild(
 
     const built = await invokeBuildFunction(env, generated.source, deps);
     return { cached: false, sourceSha256, ...built };
+  };
+}
+
+/**
+ * ヒット・非ヒットのどちらでも、同じ形で R2 のキーを取り出す（3.3-8 が使う）。
+ *
+ * **綴りを組み立て直さない。** ヒット時は索引が覚えているキー、非ヒット時は関数が
+ * 書いたキーで、どちらも**関数側の命名**（`docker/isolated-build/handler/r2.go`）が
+ * 決めたものである。ここで組み立てると、命名の正本が 2 か所になる。
+ *
+ * @param outcome ビルドの結果
+ * @returns 2 つのキー
+ */
+export function artifactKeysOf(outcome: BuildOutcome): ArtifactKeys {
+  return outcome.cached
+    ? { sourceKey: outcome.entry.sourceKey, wasmKey: outcome.entry.wasmKey }
+    : outcome.keys;
+}
+
+/**
+ * ビルド結果キャッシュ（3.8）へ**新しく記録すべき内容**を返す。
+ *
+ * **ヒット時は `null` を返す。** 索引は既にあり、書き直すと `created_at` だけが
+ * 若返る。3.7 の掃除が索引の年齢を見る形になったとき、ヒットし続ける索引が
+ * 永遠に若いままになる（`deleteUnreferencedArtifacts` が元の `createdAt` で戻すのと
+ * 同じ理由）。
+ *
+ * @param outcome ビルドの結果
+ * @returns 記録する内容（ヒット時は null）
+ */
+export function buildCacheRecordOf(outcome: BuildOutcome): BuildCacheRecord | null {
+  if (outcome.cached) {
+    return null;
+  }
+  return {
+    sourceSha256: outcome.sourceSha256,
+    goVersion: outcome.goVersion,
+    sourceKey: outcome.keys.sourceKey,
+    wasmKey: outcome.keys.wasmKey,
+    wasmBytes: outcome.artifact.wasm.bytes,
+    wasmSha256: outcome.artifact.wasm.sha256,
+    compressedBytes: outcome.artifact.compressed.bytes,
+    compressedSha256: outcome.artifact.compressed.sha256,
+    contentEncoding: outcome.artifact.compressed.contentEncoding,
   };
 }
 
@@ -598,6 +673,8 @@ export async function readBuildResult(
     throw new BuildResponseUnreadable('compressed.contentEncoding');
   }
 
+  const keys = readArtifactKeys(pick(payload, 'storage'));
+
   const compressedData = decodeCompressedData(compressedNode);
   if (compressedData !== null) {
     if (compressedData.byteLength !== compressed.bytes) {
@@ -611,6 +688,7 @@ export async function readBuildResult(
   return {
     goVersion,
     artifact: { wasm, compressed: { ...compressed, contentEncoding } },
+    keys,
     compressedData,
     timings: readTimings(pick(payload, 'timings')),
     requestId,
@@ -650,6 +728,27 @@ function decodeCompressedData(node: unknown): Uint8Array | null {
 }
 
 /**
+ * 関数が書いた R2 のキー（`storage`）を読む。
+ *
+ * **欠けていたら読めないとする。** 3.3-6 が成立していれば必ず入る値であり、
+ * 空文字や `null` で埋めると、3.3-8 が**成果物を指さない `games` 行**を作る。
+ * そこまで進むと、壊れていることに気づくのは作者の試遊（5.4）か、公開後の
+ * プレイヤーである。`goVersion` と同じ扱いにする。
+ *
+ * @param node 応答の `storage` ノード
+ * @returns 2 つのキー
+ * @throws {BuildResponseUnreadable} キーが読めないとき
+ */
+function readArtifactKeys(node: unknown): ArtifactKeys {
+  const sourceKey = stringOrNull(pick(node, 'sourceKey'));
+  const wasmKey = stringOrNull(pick(node, 'wasmKey'));
+  if (sourceKey === null || sourceKey === '' || wasmKey === null || wasmKey === '') {
+    throw new BuildResponseUnreadable('storage.sourceKey / storage.wasmKey');
+  }
+  return { sourceKey, wasmKey };
+}
+
+/**
  * 成果物の申告（`bytes` / `sha256`）を読む。
  *
  * @param node 応答のノード
@@ -681,6 +780,7 @@ function readTimings(node: unknown): BuildTimings {
     prepareMs: numberOr(pick(node, 'prepareMs'), 0),
     buildMs: numberOr(pick(node, 'buildMs'), 0),
     compressMs: numberOr(pick(node, 'compressMs'), 0),
+    uploadMs: numberOr(pick(node, 'uploadMs'), 0),
     totalMs: numberOr(pick(node, 'totalMs'), 0),
   };
 }

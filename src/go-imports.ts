@@ -35,6 +35,18 @@
  * **この 2 つを足しても「生成物が何を呼べるか」は決まらない。** それを最終的に
  * 決めているのは 7.2（別オリジン ＋ CSP `sandbox` ＋ `connect-src`）である。
  * ここは 7.2 の手前に置く上流の層であって、7.2 の代わりではない（仕様書 7.1 / 7.2）。
+ *
+ * ## 位置も返す（#129）
+ *
+ * 4.2 の 1 段目（費用ゼロの機械修正）は、**未使用の import を除去する**。除去は
+ * 「どの範囲を消せばよいか」を知らなければ成立せず、文字列置換でやると近い行を
+ * 巻き込む。**ここは既に import 節を字句として正しく読めている**ので、読んだ位置を
+ * 捨てずに返す口（{@link scanImportSpecs}）を足した。**除去そのものは
+ * `src/mechanical-fix.ts` が持つ**（このモジュールは検査と読み取りに閉じる）。
+ *
+ * {@link scanImports} は {@link scanImportSpecs} の上に載せ替えてある。**読み取りの
+ * 実装を 2 つ持たない**ためで、片方だけが新しい書き方に対応する状態を作ると、
+ * 検査を通ったものと除去できるものがずれる。
  */
 import { GO_DIRECTIVE_DENYLIST, GO_IMPORT_ALLOWLIST } from './go-import-allowlist.js';
 
@@ -63,7 +75,58 @@ export type ImportInspection =
 interface Token {
   readonly kind: 'ident' | 'string' | 'punct' | 'other';
   readonly value: string;
+  /** ソース上の開始位置（空白とコメントを読み飛ばした後）。 */
+  readonly start: number;
+  /** ソース上の終了位置（この字句の次の文字）。 */
+  readonly end: number;
 }
+
+/**
+ * import 宣言 1 件（ImportSpec）の中身と位置。
+ *
+ * 位置は **BOM を落とした後のソース**（{@link GoImportScan.text}）に対する添字である。
+ * 元のソースへそのまま当てると BOM の分だけずれるので、除去する側は必ず
+ * `text` のほうを土台にすること。
+ */
+export interface GoImportSpec {
+  /** import パス（引用符の中身）。 */
+  readonly path: string;
+  /** 別名。`import str "strings"` の `str`、`.`、`_`。無ければ null。 */
+  readonly alias: string | null;
+  /** 開始位置。**別名があれば別名の先頭**、無ければ開き引用符。 */
+  readonly start: number;
+  /** 終了位置（閉じ引用符の次）。 */
+  readonly end: number;
+  /** 何番目の import 宣言に属するか（0 始まり）。 */
+  readonly declaration: number;
+}
+
+/** import 宣言 1 つ（`import "x"` あるいは `import ( … )`）。 */
+export interface GoImportDeclaration {
+  /** `import` の先頭位置。 */
+  readonly start: number;
+  /** 終了位置（括弧形なら閉じ括弧の次、単一形なら import パスの次）。 */
+  readonly end: number;
+  /** 括弧でまとめた形か。**除去の単位が変わる**（`src/mechanical-fix.ts`）。 */
+  readonly grouped: boolean;
+  /** この宣言に属する ImportSpec（ソース中の出現順）。 */
+  readonly specs: readonly GoImportSpec[];
+}
+
+/** {@link scanImportSpecs} の結果。 */
+export type GoImportScan =
+  | {
+      readonly ok: true;
+      /** BOM を落としたソース。**位置はすべてこの文字列に対する添字である。** */
+      readonly text: string;
+      readonly declarations: readonly GoImportDeclaration[];
+    }
+  | { readonly ok: false; readonly reason: ImportRejection };
+
+/** {@link readImportDeclaration} の結果。 */
+type DeclarationResult =
+  | { readonly ok: true; readonly declaration: GoImportDeclaration }
+  | { readonly ok: false; readonly reason: ImportRejection };
 
 /**
  * 生成されたソースを検査する。
@@ -207,10 +270,35 @@ function skipUntilQuote(text: string, start: number, quote: string): number {
 /**
  * ソースの先頭から package 句と import 宣言だけを読む。
  *
+ * **位置が要るなら {@link scanImportSpecs} を使う。** こちらはパスだけを返す薄い層で、
+ * 読み取りの実装は 1 つしかない。
+ *
  * @param source Go のソースコード
  * @returns import パスの一覧、または読み取れなかった理由
  */
 export function scanImports(source: string): ImportInspection {
+  const scanned = scanImportSpecs(source);
+  if (!scanned.ok) {
+    return scanned;
+  }
+  return {
+    ok: true,
+    imports: scanned.declarations.flatMap((declaration) =>
+      declaration.specs.map((spec) => spec.path),
+    ),
+  };
+}
+
+/**
+ * ソースの先頭から package 句と import 宣言だけを読み、**位置ごと**返す（#129）。
+ *
+ * 返す位置は BOM を落とした後の {@link GoImportScan.text} に対する添字である。
+ * **元のソースへそのまま当てないこと**（BOM の分だけずれる）。
+ *
+ * @param source Go のソースコード
+ * @returns import 宣言の一覧（位置付き）、または読み取れなかった理由
+ */
+export function scanImportSpecs(source: string): GoImportScan {
   // BOM は落とす。付いていても Go は受け付けるが、こちらの字句解析では識別子の
   // 先頭文字として現れて package 句を見失う。
   //
@@ -231,13 +319,13 @@ export function scanImports(source: string): ImportInspection {
     return { ok: false, reason: 'no-package-clause' };
   }
 
-  const imports: string[] = [];
+  const declarations: GoImportDeclaration[] = [];
   for (;;) {
     const saved = cursor.index;
     const token = nextToken(text, cursor);
     if (token === null) {
       // import 宣言だけで終わるソース。Go としては本体が無いが、構文としては読めた。
-      return { ok: true, imports };
+      return { ok: true, text, declarations };
     }
     if (token.kind === 'punct' && token.value === ';') {
       // 宣言の終端。Go の文法は `PackageClause ";" { ImportDecl ";" }` であり、通常は
@@ -250,14 +338,14 @@ export function scanImports(source: string): ImportInspection {
       // import 宣言の並びが終わった。Go は import を他のすべての宣言より前に置くことを
       // 要求するため、ここから先に import は現れない。
       cursor.index = saved;
-      return { ok: true, imports };
+      return { ok: true, text, declarations };
     }
 
-    const declaration = readImportDeclaration(text, cursor);
+    const declaration = readImportDeclaration(text, cursor, token.start, declarations.length);
     if (!declaration.ok) {
       return declaration;
     }
-    imports.push(...declaration.imports);
+    declarations.push(declaration.declaration);
   }
 }
 
@@ -266,9 +354,16 @@ export function scanImports(source: string): ImportInspection {
  *
  * @param text ソース
  * @param cursor 読み取り位置
- * @returns import パス、または読み取れなかった理由
+ * @param start `import` の先頭位置
+ * @param index この宣言が何番目か（0 始まり）
+ * @returns 宣言（位置付き）、または読み取れなかった理由
  */
-function readImportDeclaration(text: string, cursor: { index: number }): ImportInspection {
+function readImportDeclaration(
+  text: string,
+  cursor: { index: number },
+  start: number,
+  index: number,
+): DeclarationResult {
   const head = nextToken(text, cursor);
   if (head === null) {
     return { ok: false, reason: 'unparsable' };
@@ -276,21 +371,23 @@ function readImportDeclaration(text: string, cursor: { index: number }): ImportI
 
   // import "path" / import alias "path" / import _ "path" / import . "path"
   if (head.kind === 'string') {
-    return { ok: true, imports: [head.value] };
+    const spec = specOf(head.value, null, head.start, head.end, index);
+    return { ok: true, declaration: { start, end: head.end, grouped: false, specs: [spec] } };
   }
   if (head.kind === 'ident' || (head.kind === 'punct' && (head.value === '.' || head.value === '_'))) {
     const path = nextToken(text, cursor);
     if (path === null || path.kind !== 'string') {
       return { ok: false, reason: 'unparsable' };
     }
-    return { ok: true, imports: [path.value] };
+    const spec = specOf(path.value, head.value, head.start, path.end, index);
+    return { ok: true, declaration: { start, end: path.end, grouped: false, specs: [spec] } };
   }
 
   if (head.kind !== 'punct' || head.value !== '(') {
     return { ok: false, reason: 'unparsable' };
   }
 
-  const imports: string[] = [];
+  const specs: GoImportSpec[] = [];
   for (;;) {
     const token = nextToken(text, cursor);
     if (token === null) {
@@ -298,14 +395,14 @@ function readImportDeclaration(text: string, cursor: { index: number }): ImportI
       return { ok: false, reason: 'unparsable' };
     }
     if (token.kind === 'punct' && token.value === ')') {
-      return { ok: true, imports };
+      return { ok: true, declaration: { start, end: token.end, grouped: true, specs } };
     }
     if (token.kind === 'punct' && token.value === ';') {
       // 明示的なセミコロン。Go は改行で自動挿入するため、通常は現れない。
       continue;
     }
     if (token.kind === 'string') {
-      imports.push(token.value);
+      specs.push(specOf(token.value, null, token.start, token.end, index));
       continue;
     }
     if (token.kind === 'ident' || (token.kind === 'punct' && (token.value === '.' || token.value === '_'))) {
@@ -313,11 +410,35 @@ function readImportDeclaration(text: string, cursor: { index: number }): ImportI
       if (path === null || path.kind !== 'string') {
         return { ok: false, reason: 'unparsable' };
       }
-      imports.push(path.value);
+      specs.push(specOf(path.value, token.value, token.start, path.end, index));
       continue;
     }
     return { ok: false, reason: 'unparsable' };
   }
+}
+
+/**
+ * ImportSpec を 1 件組み立てる。
+ *
+ * **位置の意味を 1 か所で決めるための関数である**（開始は別名があれば別名の先頭、
+ * 無ければ開き引用符）。5 か所で同じオブジェクトリテラルを書くと、片方だけが
+ * 別の位置を指す実装になりうる。
+ *
+ * @param path import パス
+ * @param alias 別名（無ければ null）
+ * @param start 開始位置
+ * @param end 終了位置（閉じ引用符の次）
+ * @param declaration 属する宣言の番号
+ * @returns ImportSpec
+ */
+function specOf(
+  path: string,
+  alias: string | null,
+  start: number,
+  end: number,
+  declaration: number,
+): GoImportSpec {
+  return { path, alias, start, end, declaration };
 }
 
 /**
@@ -326,6 +447,10 @@ function readImportDeclaration(text: string, cursor: { index: number }): ImportI
  * **文字列リテラルとコメントを字句として正しく扱うことがこの関数の要点である。**
  * 正規表現で `import` を探す実装は、コメントや文字列の中の `import` を拾い、逆に
  * 本物を見落とす。
+ *
+ * **位置（`start` / `end`）も返す。** 4.2 の 1 段目（未使用 import の除去 / #129）は
+ * 「どこからどこまでを消すか」を知る必要があり、それを知っているのはここだけである。
+ * 呼び出し側が数え直すと、コメントや文字列を飛ばす規則が 2 か所に生まれる。
  *
  * @param text ソース
  * @param cursor 読み取り位置（呼び出しごとに進む）
@@ -337,6 +462,7 @@ function nextToken(text: string, cursor: { index: number }): Token | null {
     return null;
   }
 
+  const start = cursor.index;
   const char = text[cursor.index]!;
 
   // 解釈される文字列リテラル。エスケープを解釈する必要はなく、`\"` で終端しない
@@ -354,7 +480,7 @@ function nextToken(text: string, cursor: { index: number }): Token | null {
       }
       if (current === '"') {
         cursor.index = index + 1;
-        return { kind: 'string', value };
+        return { kind: 'string', value, start, end: cursor.index };
       }
       if (current === '\n') {
         // 解釈される文字列は改行をまたげない。読み取れていないので other にする。
@@ -364,7 +490,7 @@ function nextToken(text: string, cursor: { index: number }): Token | null {
       index += 1;
     }
     cursor.index = text.length;
-    return { kind: 'other', value: '' };
+    return { kind: 'other', value: '', start, end: cursor.index };
   }
 
   // 生文字列リテラル。エスケープを解釈せず、改行をまたげる。
@@ -372,11 +498,11 @@ function nextToken(text: string, cursor: { index: number }): Token | null {
     const end = text.indexOf('`', cursor.index + 1);
     if (end === -1) {
       cursor.index = text.length;
-      return { kind: 'other', value: '' };
+      return { kind: 'other', value: '', start, end: cursor.index };
     }
     const value = text.slice(cursor.index + 1, end);
     cursor.index = end + 1;
-    return { kind: 'string', value };
+    return { kind: 'string', value, start, end: cursor.index };
   }
 
   if (isIdentifierStart(char)) {
@@ -386,16 +512,16 @@ function nextToken(text: string, cursor: { index: number }): Token | null {
     }
     const value = text.slice(cursor.index, index);
     cursor.index = index;
-    return { kind: 'ident', value };
+    return { kind: 'ident', value, start, end: cursor.index };
   }
 
   if (char === '(' || char === ')' || char === ';' || char === '.') {
     cursor.index += 1;
-    return { kind: 'punct', value: char };
+    return { kind: 'punct', value: char, start, end: cursor.index };
   }
 
   cursor.index += 1;
-  return { kind: 'other', value: char };
+  return { kind: 'other', value: char, start, end: cursor.index };
 }
 
 /**

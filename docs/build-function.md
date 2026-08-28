@@ -56,6 +56,12 @@
 **呼び出し側（Workers）は `docs/build-invocation.md` が持ちます**（#19。認証・待ち時間・
 失敗の区別・ビルド結果キャッシュ）。ここが持つのは器の側の契約だけです。
 
+**呼ぶ権限も向こう側です。** `lambda:InvokeFunction` をこの関数の ARN 1 つに限った
+IAM ユーザー（`game-forge-build-invoker`）は `terraform/build-invoker.tf` が宣言し、
+その鍵の発行・投入・ローテーションは `docs/build-invocation.md` 3 章が持ちます（#115）。
+**ここ（実行ロール）とは別物です。** 実行ロールは関数が AWS を触るための権限で、
+向こうは関数を呼ぶための権限です。
+
 入力（Workers 側の実装は #19 が持ちます）:
 
 ```json
@@ -90,7 +96,8 @@
 **なぜ宣言しないのか。** `aws_ssm_parameter` を宣言すると、Terraform は refresh の
 たびに**復号済みの値を tfstate へ書き込みます。** `lifecycle { ignore_changes = [value] }`
 は差分を無視するだけで、state への取り込みは止まりません。これは
-`terraform/bedrock.tf` が `aws_iam_access_key` を宣言しない理由と**同じ経路**です。
+`terraform/bedrock.tf` と `terraform/build-invoker.tf` が `aws_iam_access_key` を
+宣言しない理由と**同じ経路**です。
 
 宣言が持つのは次の 3 つです。
 

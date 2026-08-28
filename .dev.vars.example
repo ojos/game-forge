@@ -63,8 +63,10 @@ BEDROCK_AWS_SESSION_TOKEN=
 #      だけを許しており（terraform/bedrock.tf）、lambda:InvokeFunction を通せない。
 #      最小権限を保つなら principal ごと分けることになる。
 #
-# **この principal はまだ宣言されていない。** 発行の手順と必要な権限は
-# docs/build-invocation.md にある（宣言の追加は terraform 側の後続作業）。
+# **principal は terraform/build-invoker.tf が宣言している**（#115。IAM ユーザー
+# game-forge-build-invoker。lambda:InvokeFunction をビルド関数の ARN 1 つだけに限る）。
+# **アクセスキーだけは宣言しない**（aws_iam_access_key は tfstate へ平文で落ちる）。
+# 鍵の発行・Pages への投入・ローテーションの手順は docs/build-invocation.md 3 章にある。
 #
 # **呼ぶ相手（関数名）はここに無い。** 秘密ではなく構成なので、wrangler.toml の
 # BUILD_FUNCTION_NAME が環境ごとに宣言する。

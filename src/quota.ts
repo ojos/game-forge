@@ -158,16 +158,42 @@ export type QuotaCheckResult =
   | { readonly allowed: false; readonly reason: QuotaRejectionReason };
 
 /**
+ * 判定に要る集計を 1 つ読む。**例外を握りつぶさない。**
+ *
+ * D1 の読み取りが失敗したときに「判定できなかったので許可する」を選ぶと、4.3 の上限が
+ * D1 の不調で静かに開く。ログを残して投げ直し、経路層に 500 を返させる（＝生成は
+ * 行われない）。**迷ったら止まる側へ倒す**のは、台帳が「迷ったら高い側へ倒す」のと
+ * 同じ理由である。
+ *
+ * @param read 集計を引く処理
+ * @returns 集計の結果
+ */
+async function readForDecision<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    // **利用者のプロンプトも生成物もここには無い。** 出すのは例外の種類だけにする
+    // （`src/generate.ts` の `describeGenerateError` と同じ方針）。
+    console.error(
+      `[quota] 判定に必要な集計を取得できませんでした: ${
+        error instanceof Error ? error.name : typeof error
+      }`,
+    );
+    throw error;
+  }
+}
+
+/**
  * 3.3-2 の段（`GenerationPipeline['checkQuota']`）の実装。
  *
  * **月次を先に見る。** 月次上限はサービス全体の停止で、日次クォータは 1 人あたりの
  * 蓋である。全体が止まっているときに「あなたの本日の枠は残っています」と読める理由を
  * 返しても意味がなく、4.4 の文言（「今月の生成は終了しました」）とも合わない。
  *
- * **例外を握りつぶさない。** D1 の読み取りが失敗したときに「判定できなかったので
- * 許可する」を選ぶと、4.3 の上限が D1 の不調で静かに開く。ログを残して投げ直し、
- * 経路層に 500 を返させる（＝生成は行われない）。**迷ったら止まる側へ倒す**のは、
- * 台帳が「迷ったら高い側へ倒す」のと同じ理由である。
+ * **月次で止まったら日次は読まない**（#122 のレビュー指摘）。**D1 は読み取りも従量
+ * である**（3.6）。サービス全体が停止している間は生成が来るたびにこの段へ入るので、
+ * **止まっている間ほど無駄な読み取りが積み上がる。** 「先に判定する」は「先に読む」
+ * ではない。
  *
  * @param env バインディングと環境変数
  * @param userId 生成しようとしている利用者
@@ -179,27 +205,17 @@ export async function checkGenerationQuota(
   userId: string,
   at: number = Math.floor(Date.now() / 1000),
 ): Promise<QuotaCheckResult> {
-  let monthly: Awaited<ReturnType<typeof monthlyCostTotals>>;
-  let daily: Awaited<ReturnType<typeof dailyCallCount>>;
-  try {
-    // **月次はサービス全体、日次は 1 人。** 集計の実体は #22 の台帳が持つ。
-    monthly = await monthlyCostTotals(env, at);
-    daily = await dailyCallCount(env, userId, at);
-  } catch (error) {
-    // **利用者のプロンプトも生成物もここには無い。** 出すのは例外の種類だけにする
-    // （`src/generate.ts` の `describeGenerateError` と同じ方針）。
-    console.error(
-      `[quota] 判定に必要な集計を取得できませんでした: ${
-        error instanceof Error ? error.name : typeof error
-      }`,
-    );
-    throw error;
-  }
+  // **月次はサービス全体。** 集計の実体は #22 の台帳が持つ。
+  const monthly = await readForDecision(() => monthlyCostTotals(env, at));
 
   if (monthly.costJpy >= MONTHLY_COST_LIMIT_JPY) {
     // 4.3「100% で生成停止」。停止するのは生成だけで、プレイと拡散は続く（4.4 / 3.8）。
+    // **ここで返る経路は D1 を 1 回しか読まない。**
     return { allowed: false, reason: 'monthly-limit' };
   }
+
+  // **日次は 1 人。** 月次を通ったときだけ読む。
+  const daily = await readForDecision(() => dailyCallCount(env, userId, at));
 
   if (daily.calls >= DAILY_QUOTA_PER_USER) {
     // 確定25。**枠は JST の 0 時に戻る。** 12 回目までは通し、13 回目を止める。

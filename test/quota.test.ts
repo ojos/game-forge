@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DAILY_QUOTA_PATTERN,
   DAILY_QUOTA_PER_USER,
@@ -356,6 +356,52 @@ describe('月次上限（4.3 層 1）', () => {
     expect(await checkGenerationQuota(env, userId, nextMonth)).toEqual({ allowed: true });
   });
 
+  /**
+   * `prepare` に渡った SQL を記録する D1 を持つ env を作る。
+   *
+   * **読み取りの回数そのものを見るために要る。** 「日次を読まない」は結果の値には
+   * 現れないので、値の検査では捕まらない。
+   *
+   * @returns 記録された SQL と、差し替えた env
+   */
+  function countingEnv(): { readonly queries: string[]; readonly env: Env } {
+    const queries: string[] = [];
+    const db = {
+      prepare(query: string) {
+        queries.push(query);
+        return env.DB.prepare(query);
+      },
+    } as unknown as D1Database;
+    return { queries, env: { ...env, DB: db } };
+  }
+
+  it('月次で止まったときは日次を読まない（#122 のレビュー指摘 1）', async () => {
+    // **D1 は読み取りも従量である**（3.6）。サービス全体が停止している間は生成の
+    // たびにこの段へ入るので、**止まっている間ほど無駄な読み取りが積み上がる。**
+    const userId = await seedUser('monthly-short-circuit');
+    await seedLedgerRow(userId, AT, MONTHLY_COST_LIMIT_JPY);
+    const counting = countingEnv();
+
+    expect(await checkGenerationQuota(counting.env, userId, AT)).toEqual({
+      allowed: false,
+      reason: 'monthly-limit',
+    });
+    expect(counting.queries).toHaveLength(1);
+    expect(counting.queries[0]).toContain('sum(cost_jpy)');
+    expect(counting.queries.join('\n')).not.toContain('user_id = ?');
+  });
+
+  it('月次を通ったときは日次も読む', async () => {
+    // **片側だけを見ない。** 「日次を読まない」だけを固定すると、日次を一切読まない
+    // 実装（＝確定25 が効かない）でも通る。
+    const userId = await seedUser('monthly-then-daily');
+    const counting = countingEnv();
+
+    expect(await checkGenerationQuota(counting.env, userId, AT)).toEqual({ allowed: true });
+    expect(counting.queries).toHaveLength(2);
+    expect(counting.queries[1]).toContain('user_id = ?');
+  });
+
   it('月次を日次より先に判定する', async () => {
     // 全体が止まっているときに「本日の枠は残っています」と読める理由を返さない。
     // 4.4 の文言（「今月の生成は終了しました」）と食い違う。
@@ -458,12 +504,31 @@ describe('3.3-2 への結線（acceptance 1）', () => {
     };
   }
 
+  // **時計を止める。** `runGenerationPipeline` は `checkQuota(env, userId)` を 2 引数で
+  // 呼ぶため、判定時刻は既定値（現在時刻）になる。行を「現在時刻」で置くと、**挿入と
+  // 判定の間に JST の日または月の境界を跨いだ瞬間に、置いた行が集計の外へ出る**
+  // （#122 のレビュー指摘 2 / 3）。翌日・翌月にも行を置いて塞ぐこともできるが、
+  // それは「跨いでも当たるように行を増やす」対処であって、跨がないようにする対処では
+  // ない。**時刻そのものを固定して、境界を跨ぐ経路を消す。**
+  //
+  // `toFake` を `Date` だけに絞るのは、`setTimeout` まで差し替えると D1 の I/O が
+  // 進まなくなるためである。
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(AT * 1000);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('月次上限を超えていたら LLM 呼び出しに到達しない', async () => {
     const userId = await seedUser('wired-monthly');
     const { called, pipeline } = pipelineWatchingGeneration();
 
-    // **既定の実装は現在時刻で判定する**（`at` の既定値）。台帳の行は当月（JST）へ入れる。
-    await seedLedgerRow(userId, Math.floor(Date.now() / 1000), MONTHLY_COST_LIMIT_JPY);
+    // 判定時刻は固定した現在時刻（= AT）である。行も同じ時刻へ置く。
+    expect(Math.floor(Date.now() / 1000)).toBe(AT);
+    await seedLedgerRow(userId, AT, MONTHLY_COST_LIMIT_JPY);
     await expect(
       runGenerationPipeline(env, userId, { prompt: 'ゲーム' }, pipeline),
     ).rejects.toBeInstanceOf(QuotaExceeded);
@@ -472,7 +537,7 @@ describe('3.3-2 への結線（acceptance 1）', () => {
 
   it('日次クォータを超えていたら LLM 呼び出しに到達しない', async () => {
     const userId = await seedUser('wired-daily');
-    await seedCalls(userId, DAILY_QUOTA_PER_USER, Math.floor(Date.now() / 1000));
+    await seedCalls(userId, DAILY_QUOTA_PER_USER, AT);
     const { called, pipeline } = pipelineWatchingGeneration();
 
     await expect(

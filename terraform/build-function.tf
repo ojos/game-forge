@@ -15,6 +15,7 @@
  * | 実行ロールとロググループ | このファイル |
  * | **関数に載っているイメージ** | **このファイルは持たない**（CI が更新する。下記） |
  * | **R2 の資格情報の値** | **このファイルは持たない**（下記。docs/build-function.md） |
+ * | **この関数を呼ぶ側（Workers）の IAM ユーザーとポリシー** | **terraform/build-invoker.tf**（#115） |
  * | Actions から ECR / Lambda を触るための OIDC ロール | terraform/github-oidc.tf |
  * | ハンドラの実装 | docker/isolated-build/handler/ |
  *

@@ -350,3 +350,41 @@ output "github_deploy_subject" {
   EOT
   value       = local.github_deploy_subject
 }
+
+/**
+ * ビルド関数を呼ぶプリンシパル（仕様 3.3-5 / 4.1 / 9.2。#115）の照合値。
+ *
+ * 外部層の検査（scripts/acceptance-remote.sh）は、対象の識別子も期待値もここから取る。
+ * ユーザー名や動作名を検査へ書き写すと、宣言を緩めたときに検査だけが古い期待値で
+ * 緑になる（共通規範 12 章）。
+ *
+ * **アクセスキーの値はここにも無い。** `aws_iam_access_key` を宣言しないため、
+ * そもそも Terraform が知らない（terraform/build-invoker.tf）。
+ */
+
+output "build_invoker_user_name" {
+  description = "Workers からビルド関数を呼ぶ IAM ユーザー名。鍵の発行対象でもある（docs/build-invocation.md 3 章）。"
+  value       = aws_iam_user.build_invoker.name
+}
+
+output "build_invoke_actions" {
+  description = <<-EOT
+    ビルド関数の呼び出しへ与えている動作。**外部層の検査が「最小限であること」を
+    突き合わせる期待値である**（#115 の受け入れ条件）。
+
+    ポリシー文書と同じ定義から作られる（terraform/build-invoker.tf の
+    local.build_invoke_actions）。
+  EOT
+  value       = local.build_invoke_actions
+}
+
+output "build_invoke_resources" {
+  description = <<-EOT
+    呼び出しを許している対象の ARN。**`*` でないことをここで見える形にしてある**
+    （仕様 9.2。このアカウントには他の関数も置きうる）。
+
+    ポリシー文書と同じ定義から作られる（terraform/build-invoker.tf の
+    local.build_invoke_resources）。
+  EOT
+  value       = local.build_invoke_resources
+}

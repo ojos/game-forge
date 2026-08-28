@@ -1246,6 +1246,156 @@ check_r2_credentials_placement() {
 }
 
 ##
+# Workers がビルド関数を呼ぶプリンシパルが、宣言どおりでかつ最小権限であること
+# （#115 / 仕様 3.3-5 / 4.1 / 9.2）。
+#
+# **この鍵は Cloudflare Pages のシークレットに長命で置かれる**（Workers は AWS の外で
+# 動くのでロールを引き受けられない。4.1）。漏れたときに何ができるかは、そのままこの
+# ポリシーの広さである。見るのは 5 つ。
+#
+#   1. **インラインポリシーの Allow の「動作」の総和が、宣言した集合と完全に一致すること。**
+#      ポリシー名を決め打ちせず list-user-policies で全部を足すのは、宣言の外で 2 本目を
+#      手で足されたときに気づくためである（bedrock 側の検査と同じ理由）。
+#   2. **Allow の「対象」の総和が、宣言した ARN と完全に一致すること。** 動作だけを見る
+#      検査は、**`Resource` を `*` へ緩めた変更を素通りさせる。** 仕様 9.2 が禁じている
+#      のはそちらで、`lambda:InvokeFunction` on `*` は「このアカウントの全部の関数を
+#      呼べる鍵」である。
+#   3. **動作にも対象にもワイルドカードが無いこと。** 1. と 2. の一致比較で実質担保
+#      されるが、宣言側を緩めたときに独立に落ちる検査を残す。
+#   4. **管理ポリシーが 1 枚も付いていないこと。** 1. と 2. はインラインしか読まない
+#      ので、`AWSLambda_FullAccess` を手で attach された状態はここでしか拾えない。
+#   5. **tfstate に `aws_iam_access_key` が 1 件も無いこと。** 宣言すると Terraform が
+#      生成した秘密鍵を state へ平文で書く（R2 の資格情報を `aws_ssm_parameter` で
+#      宣言しない理由と同じ経路）。**「宣言していないこと」そのものが要件なので、
+#      機械で押さえる**（terraform/build-invoker.tf）。
+#
+# 期待値はすべて terraform output から取る（shared-ai-rules.md 12 章）。ユーザー名や
+# 動作名をここへ書き写すと、宣言を緩めたときに検査だけが古い期待値で緑になる。
+#
+# **鍵そのものの有無は落とさず warn にする。** 鍵の発行は apply の後の手作業で
+# （docs/build-invocation.md 3 章）、未発行は「宣言と外部状態の乖離」ではなく
+# 手順の途中である。ただし黙って通すと `BuildNotConfigured` の原因が見えないので残す。
+#
+# 戻り値: 0 = 宣言どおり / 1 = 逸脱・取得失敗
+##
+check_build_invoker_permissions() {
+  local rc=0 user expected_actions expected_resources
+  user="$(tf_output build_invoker_user_name)" || return 1
+  expected_actions="$(tf_output_json build_invoke_actions)" || expected_actions=""
+  expected_resources="$(tf_output_json build_invoke_resources)" || expected_resources=""
+  if [[ -z "$user" || -z "$expected_actions" || -z "$expected_resources" ]]; then
+    echo "terraform output からビルド関数の呼び出しプリンシパルを取得できません。apply 済みか確認すること。"
+    echo "  build_invoker_user_name=${user:-(なし)}"
+    echo "  build_invoke_actions=${expected_actions:-(なし)} build_invoke_resources=${expected_resources:-(なし)}"
+    return 1
+  fi
+
+  local -a policy_names=()
+  mapfile -t policy_names < <(aws iam list-user-policies --user-name "$user" \
+    --query 'PolicyNames[]' --output text 2>/dev/null | tr '\t' '\n')
+  if [[ "${#policy_names[@]}" -eq 0 || -z "${policy_names[0]}" ]]; then
+    echo "${user} にインラインポリシーがありません。ビルド関数を呼べない状態です。"
+    return 1
+  fi
+
+  local docs="" doc name
+  for name in "${policy_names[@]}"; do
+    doc="$(aws iam get-user-policy --user-name "$user" --policy-name "$name" \
+      --query 'PolicyDocument' --output json 2>/dev/null)" || doc=""
+    if [[ -z "$doc" ]]; then
+      echo "インラインポリシー ${name} を取得できません。"
+      return 1
+    fi
+    docs+="$doc"$'\n'
+  done
+
+  # Action も Resource も文字列と配列の両方を取りうる。Statement も単体を取りうるため、
+  # どちらの綴りでも同じ集合になるよう正規化してから比べる。
+  local actual_actions actual_resources
+  actual_actions="$(jq -cs '
+    [ .[] | .Statement | if type == "array" then .[] else . end
+      | select(.Effect == "Allow") | .Action ] | flatten | unique
+  ' <<<"$docs")" || return 1
+  actual_resources="$(jq -cs '
+    [ .[] | .Statement | if type == "array" then .[] else . end
+      | select(.Effect == "Allow") | .Resource ] | flatten | unique
+  ' <<<"$docs")" || return 1
+
+  local want_actions want_resources
+  want_actions="$(jq -cS 'unique' <<<"$expected_actions")" || return 1
+  want_resources="$(jq -cS 'unique' <<<"$expected_resources")" || return 1
+
+  if [[ "$want_actions" != "$actual_actions" ]]; then
+    echo "許可している動作が宣言と一致しません:"
+    echo "  expected: ${want_actions}"
+    echo "  actual:   ${actual_actions}"
+    rc=1
+  fi
+
+  if [[ "$want_resources" != "$actual_resources" ]]; then
+    echo "許可している対象が宣言と一致しません:"
+    echo "  expected: ${want_resources}"
+    echo "  actual:   ${actual_resources}"
+    echo "**Resource を広げると、この鍵はアカウント内の他の関数も呼べます**（仕様 9.2）。"
+    rc=1
+  fi
+
+  if jq -e 'map(select(test("\\*"))) | length > 0' <<<"$actual_actions" >/dev/null; then
+    echo "ワイルドカードを含む動作が付与されています: ${actual_actions}"
+    rc=1
+  fi
+  if jq -e 'map(select(test("\\*"))) | length > 0' <<<"$actual_resources" >/dev/null; then
+    echo "ワイルドカードを含む対象が付与されています: ${actual_resources}"
+    rc=1
+  fi
+
+  local attached
+  attached="$(aws iam list-attached-user-policies --user-name "$user" \
+    --query 'AttachedPolicies[].PolicyArn' --output json 2>/dev/null)" || attached=""
+  if [[ -z "$attached" ]]; then
+    echo "${user} に付いている管理ポリシーを取得できません。"
+    return 1
+  fi
+  if [[ "$(jq 'length' <<<"$attached")" != "0" ]]; then
+    echo "宣言にない管理ポリシーが付与されています: $(jq -c . <<<"$attached")"
+    echo "宣言はインラインポリシー 1 本だけを与えています（terraform/build-invoker.tf）。"
+    rc=1
+  fi
+
+  # tfstate は追跡外だが、適用者の手元には必ずある。無ければ検査は成立しない。
+  local state="${TF_DIR}/terraform.tfstate"
+  if [[ ! -f "$state" ]]; then
+    echo "${state} が見つかりません。apply 済みの環境で実行すること。"
+    return 1
+  fi
+  local declared_keys
+  declared_keys="$(jq '[.resources[]? | select(.type == "aws_iam_access_key")] | length' <"$state" 2>/dev/null)" || declared_keys=""
+  if [[ -z "$declared_keys" ]]; then
+    echo "${state} を読めません。"
+    rc=1
+  elif [[ "$declared_keys" != "0" ]]; then
+    echo "tfstate に aws_iam_access_key が ${declared_keys} 件あります。"
+    echo "**生成された秘密鍵が state へ平文で落ちます。** 宣言から外すこと（#115 の制約）。"
+    echo "鍵の発行は docs/build-invocation.md 3 章の手作業が持ちます。"
+    rc=1
+  fi
+
+  # 鍵の有無は落とさない（未発行は乖離ではなく手順の途中）。ただし黙らせない。
+  local keys
+  keys="$(aws iam list-access-keys --user-name "$user" \
+    --query 'AccessKeyMetadata[?Status==`Active`].AccessKeyId' --output json 2>/dev/null)" || keys=""
+  if [[ -n "$keys" ]] && [[ "$(jq 'length' <<<"$keys")" == "0" ]]; then
+    warn "${user} に有効なアクセスキーがありません。宣言は正しいが、Workers からは呼べません"
+    warn "  （BuildNotConfigured / kind='config'）。発行と投入は docs/build-invocation.md 3 章。"
+  fi
+
+  if [[ "$rc" -eq 0 ]]; then
+    echo "${user} grants exactly ${actual_actions} on ${actual_resources} with no attached policy"
+  fi
+  return "$rc"
+}
+
+##
 # GitHub OIDC の `sub` の綴りが、宣言と GitHub 側の事実で一致すること（#103）。
 #
 # **#103 では、ここが食い違ったことに「配備の失敗」で初めて気づいた。**
@@ -1314,6 +1464,7 @@ run "cost guard layer 3 (budgets) matches" check_bedrock_budgets
 run "build function configuration matches" check_build_function_config
 run "build function image matches the ecr latest digest" check_build_function_image
 run "build function execution role is minimal" check_build_function_role
+run "build invoker permissions are minimal" check_build_invoker_permissions
 run "r2 credentials are outside the declaration" check_r2_credentials_placement
 
 if [[ "$ran_any" -eq 0 ]]; then

@@ -15,12 +15,16 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 | ビルドイメージの ECR リポジトリ | `aws_ecr_repository.isolated_build` ほか | `build-function.tf` |
 | ビルド関数（確定24 / 3.8） | `aws_lambda_function.build`、実行ロール、ロググループ | `build-function.tf` |
 | 配備に要る Actions 変数 4 つ | `github_actions_variable.aws_region` ほか | `build-function.tf` |
+| ビルド関数を呼ぶプリンシパル（3.3-5 / 4.1 / 9.2） | `aws_iam_user.build_invoker`、`aws_iam_user_policy.build_invoke` | `build-invoker.tf` |
+| Bedrock を呼ぶプリンシパルとモデルアクセス（確定19 / 4.1） | `aws_iam_user.bedrock_invoker`、`aws_bedrock_foundation_model_agreement.generation` | `bedrock.tf` |
+| 費用ガードの層 2 / 層 3（4.3） | `aws_cloudwatch_metric_alarm.bedrock_token_burst` ほか | `bedrock-guard.tf` |
 | GitHub Actions の OIDC 連携（9.3） | `aws_iam_openid_connect_provider.github`、`aws_iam_role.deploy_compiler` | `github-oidc.tf` |
 
 管理対象外:
 
 - Actions の Secrets の値（`COPILOT_REVIEW_TOKEN` 等）。値が tfstate へ平文で残るため宣言しません。必要になった時点で GitHub 側へ直接設定します。
 - **ビルド関数に載っているイメージ**（`image_uri`）。配るのは CI です（9.3）。宣言側が固定の URI を持つと、配備のたびに `plan` へ差分が出ます。`lifecycle { ignore_changes = [image_uri] }` で宣言の外に置いています。
+- **Workers 用 IAM ユーザーのアクセスキー**（`game-forge-bedrock-invoker` / `game-forge-build-invoker`）。`aws_iam_access_key` を宣言すると、生成された秘密鍵が **tfstate へ平文で書き込まれます**。宣言が持つのはユーザーと権限だけで、鍵の発行・投入・ローテーションは `docs/bedrock-access.md` 3〜4 章と `docs/build-invocation.md` 3 章が持ちます。**「宣言していないこと」自体は `scripts/acceptance-remote.sh` が tfstate を見て機械で押さえます。**
 - **R2 の資格情報**（SSM Parameter Store の SecureString）。`aws_ssm_parameter` を宣言すると、Terraform が refresh のたびに**復号済みの値を tfstate へ書き込みます**（`aws_iam_access_key` を宣言しない理由と同じ経路）。宣言が持つのは名前と読み取り権限だけで、値の投入とローテーションは `docs/build-function.md` が持ちます。
 - リモート state backend。ローカル state（`terraform/terraform.tfstate`）を使い続けます（2026-08-11 決定）。適用者が単一で state を共有する必要が無いためで、複数人・複数環境から適用するようになった時点で再検討します。
 

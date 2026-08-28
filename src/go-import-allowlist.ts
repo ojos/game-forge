@@ -98,6 +98,66 @@ export const GO_IMPORT_ALLOWLIST: readonly AllowedImport[] = [
 /** 仕様書 6.1 の一覧を切り出すときの見出し。仕様書側を変えたらこちらも変える。 */
 export const ALLOWLIST_SECTION_HEADING = '#### 許可パッケージのホワイトリスト';
 
+/** 拒否する 1 つのコンパイラ指示。 */
+export interface DeniedDirective {
+  /** 指示の名前。`//` を除いた形（例: `go:wasmimport`）。 */
+  readonly name: string;
+  /** なぜ拒否するか。仕様書 6.1 へ出す。 */
+  readonly reason: string;
+}
+
+/**
+ * 拒否するコンパイラ指示（6.1 / 7.1 / #100）。
+ *
+ * **上の許可パッケージ一覧は「import 文で何を参照してよいか」しか決めていない。**
+ * `//go:wasmimport` は **import 文を 1 つも書かずにホスト関数へ結び付ける**ため、
+ * import を見る検査では原理的に検出できない。**これは `inspectGoImports` の
+ * 実装上の欠陥ではなく、import 検査という手段の限界である。** そこで、同じソースに
+ * 対して**別の軸**（コンパイラ指示）で 1 枚重ねる。
+ *
+ * ## 実測（2026-08-28 / Go 1.26.5 / #100）
+ *
+ * - `//go:wasmimport gojs syscall/js.valueCall` だけを書いた **import 文 0 個**の
+ *   ソースが `GOOS=js GOARCH=wasm` でビルドでき、生成 wasm のインポート節に
+ *   `gojs / syscall/js.valueCall` が実際に現れた（指示なしの対照では `runtime.*` の
+ *   8 件しか現れないので、**この 2 件は指示だけが増やしている**）。
+ * - その wasm は `WebAssembly.validate` を通り、Go 同梱の `wasm_exec.js` で走らせると
+ *   **スタックトレースが `main.main → main.valueGet → syscall/js.valueGet`
+ *   （`wasm_exec.js` の実装）まで到達した。** `wasm_exec.js` の import object は
+ *   `gojs` に `syscall/js.*` を丸ごと並べているため、**到達できるのは
+ *   `syscall/js` のホスト面すべてである。**
+ * - 同じソースを `inspectGoImports` に掛けると `{"ok":true,"imports":[]}` を返した
+ *   （対照の `import "os/exec"` は `not-allowed`）。
+ *
+ * ## `//go:linkname` をここへ入れない理由（実測で分かれた）
+ *
+ * **`//go:linkname` は迂回路ではない。** Go が
+ * `//go:linkname only allowed in Go files that import "unsafe"` で拒否するため、
+ * **必ず `import "unsafe"` を伴い、それは上の許可一覧が既に落とす**
+ * （実測: `{"ok":false,"reason":"not-allowed","offending":["unsafe"]}`）。
+ * **同じ「import を経由しない結び付け」に見えて、検出可能性がまったく違う。**
+ * ここは「ホワイトリストで表現できないもの」だけを持つ。
+ *
+ * ## `//go:build` を入れない理由
+ *
+ * ビルド制約は正当な Go であり、ホスト関数への到達とは無関係である。**指示という
+ * 見た目でまとめて落とすと、落とす理由を説明できない拒否が増える**（拒否は再生成に
+ * 回さず即失敗させる設計なので、誤検出はそのまま利用者の 1 回分を捨てる）。
+ */
+export const GO_DIRECTIVE_DENYLIST: readonly DeniedDirective[] = [
+  {
+    name: 'go:wasmimport',
+    reason: 'import 文を書かずにホスト関数を呼べる。許可パッケージ一覧では表現できない（#100 の実測）',
+  },
+  {
+    name: 'go:wasmexport',
+    reason: '生成物の関数をホストへ露出させる。同じく import 文に現れない（#100 の実測）',
+  },
+];
+
+/** 仕様書 6.1 の禁止指示の表を切り出すときの見出し。仕様書側を変えたらこちらも変える。 */
+export const DIRECTIVE_DENYLIST_SECTION_HEADING = '#### 禁止するコンパイラ指示';
+
 /**
  * システムプロンプトへ埋め込む一節を組み立てる。
  *

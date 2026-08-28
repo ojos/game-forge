@@ -187,8 +187,8 @@ npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY --project-name game-
 > **この記述は誤りでした（2026-08-28 に訂正）。旧記述は下に残します。**
 >
 > **`nodejs_compat` は要りません。** 実装は `@anthropic-ai/bedrock-sdk` ではなく
-> **`aws4fetch` 1 つ**で署名しており（`src/bedrock.ts`）、依存は `package.json` に
-> `aws4fetch` しかありません。仕様が v1.8 で Converse へ一本化した時点で前提が
+> **`aws4fetch` 1 つ**で署名しており（`src/bedrock.ts`）、`package.json` の
+> **`dependencies`（実行時の依存）は `aws4fetch` だけ**です。仕様が v1.8 で Converse へ一本化した時点で前提が
 > 変わっていたのに、この段落だけが残っていました。**足すと不要なフラグが本番へ入ります。**
 >
 > ~~**そのとき `compatibility_flags = ["nodejs_compat"]` が必要になります**（#79 の実測）。~~
@@ -210,8 +210,10 @@ npx wrangler pages secret put BUILD_AWS_SECRET_ACCESS_KEY --project-name game-fo
 綴りが食い違うと、`BuildNotConfigured`（`kind='config'`）で呼び出しの手前で落ちます。
 
 **`BUILD_AWS_SESSION_TOKEN` は本番では登録しません**（Bedrock 側と同じ理由）。
-**`BUILD_FUNCTION_NAME` はシークレットではありません** — `wrangler.toml` の
-`[env.production.vars]` が宣言します。
+**`BUILD_FUNCTION_NAME` はシークレットではありません** — `wrangler.toml` が
+宣言します。**`[vars]` と `[env.production.vars]` / `[env.preview.vars]` の 3 か所すべてに
+書きます**（Pages の名前付き環境は `vars` を継承せず、省くとバインディングごと消えるため。
+この文書の 3 章と `src/build-client.ts` の説明が正本です）。
 
 | 何 | 正本 |
 |---|---|

@@ -29,12 +29,31 @@
  * 「数えない」ことになる（`src/quota.ts`）。**行を作ると、費用ゼロの段が確定25 の
  * 12 回の枠を食う。**
  *
- * ## 何もログへ出さない（8.3）
+ * ## ログへ出すのは数値と固定の分類名だけである（8.3 / #133）
  *
  * 入力（Go の診断）も出力（生成ソース）も、**8.3 の検査を通っていない文字列**である。
  * Go の診断は生成コードの行と識別子を引用するため、`BuildRejected` が `message` へ
- * 入れないのと同じ理由で、ここも文字列を外へ出さない。**除去した件数のような数値なら
- * 安全だが、読む先がまだ無い**ので出さない（「使われない段を先に作らない」）。
+ * 入れないのと同じ理由で、**ここから文字列を外へ出さない。**
+ *
+ * **#129 は「何も出さない」を選んだ。** 数値なら安全だが、**読む先がまだ無かった**
+ * ためである（「使われない段を先に作らない」）。**#133 で読む先（4.2 の #133 注記）を
+ * 決めたので、安全な分だけを開ける。** 1 巡につき 1 行、
+ * **{@link MECHANICAL_FIX_OUTCOMES} の分類名と件数だけ**を出す（{@link logPass}）。
+ * **緩めたのは範囲であって判断ではない。**
+ *
+ * **出さないものは #129 のときと同じである。**
+ *
+ * - **Go の診断。** 生成コードの行と識別子を引用する。
+ * - **import のパス。** 5.2-5 の許可一覧（`src/go-import-allowlist.ts`）の範囲内とはいえ
+ *   **生成物由来**であり、プロンプトの影響を受ける。「何を消したか」は診断の内容に近い。
+ *   **件数で足りる。**
+ * - **生成ソースとプロンプト。**
+ *
+ * **これを呼びかけで担保しない**（shared-ai-rules 12 章）。{@link logPass} が受け取れるのは
+ * **固定語彙と数値だけ**で、生成物由来の文字列は**型として渡せない。**
+ *
+ * **段の診断情報は段自身が出す。** 何が安全かを知っているのはこのモジュールであって、
+ * 例外を受けるだけの経路層ではない（`src/generate.ts` の `describeGenerateError`）。
  *
  * ## 除去は位置で行う（文字列置換ではない）
  *
@@ -107,16 +126,34 @@ export interface UnusedImport {
   readonly alias: string | null;
 }
 
-/** 機械修正を行わなかった理由。**利用者への文言ではない**（外へ出さない）。 */
-export type MechanicalFixSkip =
+/**
+ * 機械修正 1 巡の結末を表す**固定の語彙**（この配列が正本）。
+ *
+ * **ログへ出してよい文字列はここに並ぶものだけである**（8.3 / #133）。**実装が持つ語で
+ * あって生成物由来ではない**ため、8.3 の検査を通っていない文字列には当たらない。
+ *
+ * **仕様書 4.2 の #133 注記が同じ一覧を表として持つ**ので、`test/mechanical-fix.test.ts`
+ * が機械照合する（shared-ai-rules 12 章）。語を足す・改名すると、文書が追随するまで
+ * 検査が赤になる。
+ */
+export const MECHANICAL_FIX_OUTCOMES = [
+  /** 未使用 import を実際に除去した。 */
+  'removed',
   /** 診断に「未使用 import」が 1 件も無い。**通常の失敗はここへ来る。** */
-  | 'no-unused-imports'
+  'no-unused-imports',
   /** import 節を読めなかった（`src/go-imports.ts` の判定）。 */
-  | 'unreadable-source'
+  'unreadable-source',
   /** 診断の位置に、診断が引用しているのと同じ import が無かった。 */
-  | 'not-located'
+  'not-located',
   /** 除去後のソースを読み直したら、期待した import 構成になっていなかった。 */
-  | 'verification-failed';
+  'verification-failed',
+] as const;
+
+/** 機械修正 1 巡の結末（{@link MECHANICAL_FIX_OUTCOMES} の要素）。 */
+export type MechanicalFixOutcome = (typeof MECHANICAL_FIX_OUTCOMES)[number];
+
+/** 機械修正を行わなかった理由。**利用者への文言ではない**（外へ出さない）。 */
+export type MechanicalFixSkip = Exclude<MechanicalFixOutcome, 'removed'>;
 
 /** 機械修正の結果。 */
 export type MechanicalFixResult =
@@ -124,10 +161,68 @@ export type MechanicalFixResult =
       readonly changed: true;
       /** 除去後のソース。 */
       readonly source: string;
-      /** 除去した import パス（ソース中の出現順）。**ログへ出さないこと。** */
+      /**
+       * 除去した import パス（ソース中の出現順）。
+       *
+       * **ログへ出さないこと**（生成物由来である。#133 で開けたのは**件数**までで、
+       * パスそのものは出さない。{@link logPass}）。
+       */
       readonly removed: readonly string[];
     }
   | { readonly changed: false; readonly reason: MechanicalFixSkip };
+
+/**
+ * 1 巡で数えたもの。**すべて件数であり、生成物由来の文字列を 1 つも含まない。**
+ */
+interface MechanicalFixCounts {
+  /** 診断から読み取れた「未使用 import」の件数。 */
+  readonly diagnosed: number;
+  /** そのうち、ソース上の同じ位置に同じ import を見つけられた件数。 */
+  readonly located: number;
+  /** 実際に除去した件数（除去に至らなかった巡では 0）。 */
+  readonly removed: number;
+}
+
+/**
+ * 1 巡の結果を 1 行だけログへ出す（4.2 / 8.3 / #133）。
+ *
+ * **引数の型がそのまま安全性の根拠である。** 受け取れるのは
+ * {@link MECHANICAL_FIX_OUTCOMES} の固定語彙と件数だけで、**生成ソース・Go の診断・
+ * import のパス・プロンプトは型として渡せない。** 「気をつけて出す」ではなく、
+ * 出せない形にしてある（shared-ai-rules 12 章 / 1.2.34 の「構造で塞ぐ」）。
+ *
+ * **出力の形もここで閉じる。** 数えた値を持ち回った器をそのまま文字列にするのではなく、
+ * **3 つの数だけを持つ器へ入れ直してから**書き出すので、呼び出し側が余分な項目を
+ * 持っていても外へは出ない。
+ *
+ * 読み方（何を見れば「効いている」と言えるか）は**仕様書 4.2 の #133 注記**にある。
+ *
+ * @param outcome 1 巡の結末
+ * @param counts 数えたもの
+ */
+function logPass(outcome: MechanicalFixOutcome, counts: MechanicalFixCounts): void {
+  const numbers = {
+    diagnosed: counts.diagnosed,
+    located: counts.located,
+    removed: counts.removed,
+  };
+  console.info(`[mechanical-fix] ${outcome} ${JSON.stringify(numbers)}`);
+}
+
+/**
+ * 行わなかったことをログへ出してから、理由を返す。
+ *
+ * @param reason 行わなかった理由
+ * @param counts そこまでに数えたもの（除去は 0 件である）
+ * @returns 呼び出し側がそのまま返せる結果
+ */
+function skipped(
+  reason: MechanicalFixSkip,
+  counts: Omit<MechanicalFixCounts, 'removed'>,
+): MechanicalFixResult {
+  logPass(reason, { diagnosed: counts.diagnosed, located: counts.located, removed: 0 });
+  return { changed: false, reason };
+}
 
 /**
  * 「未使用 import」の診断 1 行の形（**実測。Go 1.26.5 / 2026-08-28**）。
@@ -193,7 +288,9 @@ export function parseUnusedImports(diagnostics: string): readonly UnusedImport[]
 /**
  * 未使用 import を除去したソースを返す（4.2 の 1 段目の本体）。
  *
- * **LLM を呼ばない。** 純粋な関数で、入力は直前の試行のソースと Go の診断だけである。
+ * **LLM を呼ばない。** 入力は直前の試行のソースと Go の診断だけで、**副作用は
+ * 1 巡につき 1 行のログだけ**である（{@link logPass}。出るのは分類名と件数で、
+ * 生成物由来の文字列は出ない）。
  *
  * **消せなかったときは `changed: false` を返す**（例外を投げない）。呼び出し側は
  * そのまま 2 段目（LLM 再生成）へ回せばよく、**判定に迷った分を勝手に書き換えない**のが
@@ -207,12 +304,12 @@ export function parseUnusedImports(diagnostics: string): readonly UnusedImport[]
 export function removeUnusedImports(source: string, diagnostics: string): MechanicalFixResult {
   const unused = parseUnusedImports(diagnostics);
   if (unused.length === 0) {
-    return { changed: false, reason: 'no-unused-imports' };
+    return skipped('no-unused-imports', { diagnosed: 0, located: 0 });
   }
 
   const scanned = scanImportSpecs(source);
   if (!scanned.ok) {
-    return { changed: false, reason: 'unreadable-source' };
+    return skipped('unreadable-source', { diagnosed: unused.length, located: 0 });
   }
   const { text, declarations } = scanned;
 
@@ -239,7 +336,9 @@ export function removeUnusedImports(source: string, diagnostics: string): Mechan
     }
   }
   if (targets.size === 0) {
-    return { changed: false, reason: 'not-located' };
+    // **診断は読めたのに、その位置に同じ import が無かった。** 件数が食い違うこと
+    // 自体が読み取りの手掛かりなので、`diagnosed` と `located` の両方を出す。
+    return skipped('not-located', { diagnosed: unused.length, located: 0 });
   }
 
   // **位置はすべて元のソースに対して先に決めてから、後ろから当てる。** 前から消すと
@@ -261,9 +360,17 @@ export function removeUnusedImports(source: string, diagnostics: string): Mechan
   }
 
   if (!verify(text, fixed, specs)) {
-    return { changed: false, reason: 'verification-failed' };
+    return skipped('verification-failed', { diagnosed: unused.length, located: targets.size });
   }
   const removed = specs.map((spec) => spec.path);
+
+  // **出すのは件数だけである。** `removed` は import のパスの配列（生成物由来）なので、
+  // 長さだけを渡す。パスそのものは {@link logPass} へ型として渡せない。
+  logPass('removed', {
+    diagnosed: unused.length,
+    located: targets.size,
+    removed: removed.length,
+  });
 
   // BOM は落とさずに戻す。**この関数がするのは import の除去だけ**であって、
   // ほかの違いを持ち込まない。

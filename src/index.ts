@@ -25,7 +25,10 @@ export default {
       const sandboxHost = normalizeHost(env.SANDBOX_HOST);
 
       if (host === sandboxHost) {
-        return handleSandboxRequest();
+        // `request` と `env` の両方を渡す。#28 で本物の配信が入り、**どの作品を返すかは
+        // URL（どのキーか）と D1 / R2（その作品が配信してよいものか）を見なければ
+        // 決まらなくなった**ため。M0.5-3 の頃は引数が無かった。
+        return await handleSandboxRequest(request, env);
       }
       if (host === appHost) {
         return await handleAppRequest(request, env);

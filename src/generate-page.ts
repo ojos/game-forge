@@ -68,6 +68,11 @@
  */
 import { LOGIN_PATH } from './auth/google.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from './generate.js';
+import {
+  DAILY_QUOTA_REASON,
+  MONTHLY_LIMIT_REASON,
+  QUOTA_EXCEEDED_STATUS,
+} from './quota.js';
 import { HOME_PATH } from './home.js';
 import { GENERATE_PAGE_PATH, SIGNUP_PATH } from './paths.js';
 import type { Route, RouteHandler } from './routes.js';
@@ -91,21 +96,44 @@ export const DEFAULT_MESSAGE_KEY = '';
 export const NETWORK_MESSAGE_KEY = 'network';
 
 /**
+ * 日次クォータで止まったときの文言の鍵。
+ *
+ * **分類名を書き写さない。** 正本は `src/quota.ts` で、応答の `error` に載るのも
+ * 同じ値である（`describeQuotaRejection`）。
+ */
+export const DAILY_QUOTA_MESSAGE_KEY = `${QUOTA_EXCEEDED_STATUS}:${DAILY_QUOTA_REASON}`;
+
+/** 月次上限で止まったときの文言の鍵（{@link DAILY_QUOTA_MESSAGE_KEY} と同じ作り）。 */
+export const MONTHLY_LIMIT_MESSAGE_KEY = `${QUOTA_EXCEEDED_STATUS}:${MONTHLY_LIMIT_REASON}`;
+
+/** 分類を持たない 429 へ倒す鍵（ステータスだけの項目）。 */
+export const UNCLASSIFIED_QUOTA_MESSAGE_KEY = `${QUOTA_EXCEEDED_STATUS}:`;
+
+/**
  * 画面に出す文言の対応表。**鍵は `"<HTTP ステータス>:<応答の error>"`。**
  *
  * `src/signup.ts` の `REASON_MESSAGES` と同じ方針で、**応答の値を画面へそのまま
  * 流さない。** ここに載っている固定文字列だけが画面に出る（モジュール冒頭 8.3）。
  *
- * **4.4 の停止時の文言は、仕様書の言い回しをそのまま使う。** 429 は日次と月次の
- * どちらでも返るため（下記）、両方の言い回しを 1 つの文言に含める。一致は
- * `test/generate-page.test.ts` が仕様書本文から拾って機械照合する
- * （shared-ai-rules 12 章）。
+ * **4.4 の停止時の文言は、仕様書の言い回しをそのまま使う。** 4.4 は日次と月次に
+ * **別々のメッセージ**を求めるので、**鍵も文言も分ける**（`429:daily-quota` /
+ * `429:monthly-limit`）。一致は `test/generate-page.test.ts` が仕様書本文から拾って
+ * 機械照合する（shared-ai-rules 12 章）。**分類ごとの網羅も同じ検査が見る**ので、
+ * `src/quota.ts` へ理由を増やして文言を足し忘れると落ちる。
  *
- * **429 が日次か月次かを、この画面は知りようがない。** `/api/generate` は
- * `QuotaExceeded` を一律 `{"error":"quota exceeded"}` で返し、`src/quota.ts` が
- * 持つ区別（`daily-quota` / `monthly-limit`）は応答に出ない。**出し分けは #24 の
- * 範囲**であり、そのときは応答か残枠の取得経路のどちらかが区別を持つ必要がある。
- * いまは「どちらであっても正しい」文言にしてある。
+ * **429 は日次と月次で別の文言を出す**（#132）。`/api/generate` が分類名
+ * （`daily-quota` / `monthly-limit`。正本は `src/quota.ts`）を `error` に載せるように
+ * なったので、**表の鍵がそのまま分かれる。** 4.4 は日次に「翌日の再開時刻」を、
+ * 月次に「プレイと共有は継続できる」旨を求めており、**混ぜると片方が必ず誤りになる。**
+ *
+ * **`429:` の項目は残す。** 分類を持たない 429（段を差し替えた実装が知らない理由を
+ * 返した場合。`src/quota.ts` の `UNCLASSIFIED_QUOTA_CODE`）へ倒す先で、**どちらの
+ * 主張もしない文言**にしてある（「本日」とも「今月」とも言わない）。
+ *
+ * **再開時刻は固定文字列で描く。** 応答は `resetsAt`（UNIX 秒）を載せるが、**日次の枠が
+ * 戻るのは常に JST の 0 時**（確定25 / `src/quota.ts` の `jstDayRange`）なので、
+ * 画面に出す時刻は値によらず決まる。**スクリプトが応答から読むのは `error` の 1 つだけ**
+ * という性質（下記 8.3）を、表示のために崩さない。
  *
  * **422 は 2 種類ある。** 許可外 import（5.2-5 / `source-rejected`）と、リトライを
  * 使い切ったコンパイル失敗（5.2-7 / `build-failed`）で、利用者から見て起きたことも
@@ -134,9 +162,15 @@ export const GENERATE_MESSAGES: Readonly<Record<string, string>> = {
   '422:':
     '生成されたものを受け付けられませんでした。この試行ぶんの生成枠は消費されています。' +
     'プロンプトを変えてお試しください。',
-  '429:':
-    '生成枠を使い切りました。本日の枠は終了しました（枠は翌日 0 時・日本時間に戻ります）。' +
-    '月次の上限に達している場合は、今月の生成は終了しました。プレイと共有は引き続きご利用いただけます。',
+  [DAILY_QUOTA_MESSAGE_KEY]:
+    '生成枠を使い切りました。本日の枠は終了しました。' +
+    '枠は翌日 0 時（日本時間）に戻ります。',
+  [MONTHLY_LIMIT_MESSAGE_KEY]:
+    'サービス全体の月次上限に達しました。今月の生成は終了しました。' +
+    'プレイと共有は引き続きご利用いただけます。',
+  [UNCLASSIFIED_QUOTA_MESSAGE_KEY]:
+    '生成の上限に達したため、いまは生成できません。' +
+    'プレイと共有は引き続きご利用いただけます。',
   '500:':
     '生成に失敗しました。ビルドの経路が停止している可能性があります。' +
     '時間をおいてお試しください。すでにある作品のプレイと共有には影響ありません。',

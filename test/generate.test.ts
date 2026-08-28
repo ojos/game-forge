@@ -26,7 +26,13 @@ import type { BuildFailure } from '../src/build-client.js';
 import { BuildRetriesExhausted, MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
 import type { BuildRetryContext } from '../src/build-retry.js';
 import { recordGenerationCost } from '../src/cost-ledger.js';
-import { DAILY_QUOTA_PER_USER } from '../src/quota.js';
+import {
+  DAILY_QUOTA_PER_USER,
+  DAILY_QUOTA_REASON,
+  MONTHLY_LIMIT_REASON,
+  UNCLASSIFIED_QUOTA_CODE,
+  jstDayRange,
+} from '../src/quota.js';
 import { buildSystemPrompt } from '../src/system-prompt.js';
 import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
@@ -348,11 +354,55 @@ describe('オーケストレーションの骨組み（3.3 の順序）', () => 
     const { pipeline } = recordingPipeline();
     const routes = createGenerateRoutes({
       ...pipeline,
-      checkQuota: async () => ({ allowed: false, reason: 'monthly' }),
+      checkQuota: async () => ({ allowed: false, reason: MONTHLY_LIMIT_REASON }),
     });
     const cookie = await sessionCookie(await seedUser('quota'));
     const response = await post(routes, { prompt: 'ゲーム' }, cookie);
     expect(response.status).toBe(429);
+  });
+
+  it('429 は日次と月次を区別して返す（4.4 / #132）', async () => {
+    // 4.4 は 2 つを**別のメッセージ**として求める（日次は翌日の再開時刻、月次は
+    // プレイと共有の継続）。**応答が区別を持たないと、画面はどちらかを必ず誤る。**
+    const { pipeline } = recordingPipeline();
+    const cookie = await sessionCookie(await seedUser('quota-scope'));
+    const resetsAt = jstDayRange(Math.floor(Date.now() / 1000)).toSeconds;
+
+    const dailyRoutes = createGenerateRoutes({
+      ...pipeline,
+      checkQuota: async () => ({ allowed: false, reason: DAILY_QUOTA_REASON, resetsAt }),
+    });
+    const daily = await post(dailyRoutes, { prompt: 'ゲーム' }, cookie);
+    expect(daily.status).toBe(429);
+    // **日次には翌日の再開時刻が載る**（4.4）。
+    expect(await daily.json()).toEqual({ error: DAILY_QUOTA_REASON, resetsAt });
+
+    const monthlyRoutes = createGenerateRoutes({
+      ...pipeline,
+      checkQuota: async () => ({ allowed: false, reason: MONTHLY_LIMIT_REASON }),
+    });
+    const monthly = await post(monthlyRoutes, { prompt: 'ゲーム' }, cookie);
+    expect(monthly.status).toBe(429);
+    // **月次には載せない。** 復帰は翌月であり、4.4 が求めているのは別のことである。
+    expect(await monthly.json()).toEqual({ error: MONTHLY_LIMIT_REASON });
+  });
+
+  it('段が返した文字列を 429 の応答へ流さない（8.3）', async () => {
+    // 段は差し替えられる。**応答に出てよいのは時刻と固定の分類名だけ**なので、
+    // 知らない理由は 1 つの値へ倒す（`src/quota.ts` の `describeQuotaRejection`）。
+    const hostile = '<img src=x onerror=alert(1)>';
+    const { pipeline } = recordingPipeline();
+    const routes = createGenerateRoutes({
+      ...pipeline,
+      checkQuota: async () => ({ allowed: false, reason: hostile, resetsAt: 1 }),
+    });
+    const cookie = await sessionCookie(await seedUser('quota-hostile'));
+    const response = await post(routes, { prompt: 'ゲーム' }, cookie);
+
+    expect(response.status).toBe(429);
+    const text = await response.text();
+    expect(text).not.toContain(hostile);
+    expect(JSON.parse(text)).toEqual({ error: UNCLASSIFIED_QUOTA_CODE });
   });
 
   it('既定のパイプラインはすべての段が未実装である', async () => {
@@ -532,7 +582,12 @@ describe('生成の段が Bedrock へ結線されている（#83）', () => {
       const routes = createGenerateRoutes();
       const response = await post(routes, { prompt: 'ゲーム' }, await sessionCookie(userId));
       expect(response.status).toBe(429);
-      expect(await response.json()).toEqual({ error: 'quota exceeded' });
+      // **既定の経路が日次で止まったことまで応答から読める**（4.4 / #132）。
+      // 再開時刻は判定と同じ境界（JST の翌 0 時）である。
+      expect(await response.json()).toEqual({
+        error: DAILY_QUOTA_REASON,
+        resetsAt: jstDayRange(now).toSeconds,
+      });
     } finally {
       vi.useRealTimers();
       // **この経路が置いた行を残さない。** 固定時計を戻したあとの他のテストからは

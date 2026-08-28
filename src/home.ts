@@ -25,7 +25,7 @@
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { LOGIN_PATH } from './auth/google.js';
-import { INVITES_PATH, SIGNUP_PATH } from './paths.js';
+import { GENERATE_PAGE_PATH, INVITES_PATH, SIGNUP_PATH } from './paths.js';
 
 /** 公開トップのパス。 */
 export const HOME_PATH = '/';
@@ -33,10 +33,15 @@ export const HOME_PATH = '/';
 /**
  * 公開トップの HTML。
  *
- * **まだ出来ていないものを出来ているように書かない。** 生成機能（`/api/generate`）は
- * 骨組みだけで、#83 / #16 が未完了である（#89 の scope.out）。この時点で「1 行の
- * プロンプトからゲームが作れます」と書くと、登録した人が最初に踏むのが「何もできない」
- * になる。いま提供できるのは登録と待機リストだけなので、そこまでを書く。
+ * **まだ出来ていないものを出来ているように書かない。** #89 の時点では生成機能
+ * （`/api/generate`）が骨組みだけで、#83 / #16 が未完了だったため、ここは
+ * 「生成機能はまだ公開していません」と書いていた。**#128 でその記述を落とした。**
+ * 3.3 の全段が実装され本番で開通しており、`/generate`（`src/generate-page.ts`）から
+ * 実際に生成できる。**書き換えたのは事実が変わったからで、方針は変えていない**
+ * （出来ていないもの——試遊・公開・フォークの画面——は、いまも書かない）。
+ *
+ * **待ち時間をここに書く。** 生成は同期で 20〜30 秒かかる（1.2.27）。押した先で
+ * 何十秒も待つことを、押す前に知らせておく。
  *
  * 招待の発行（#91）への導線をここに置くのは、**ログイン後の着地点が `/` だから**である
  * （`src/auth/google.ts` のコールバックは `/` へ戻す）。導線が無いと、実装した経路へ
@@ -58,10 +63,13 @@ const HOME_HTML = `<!doctype html>
 <h2>いまの状態</h2>
 <p><strong>招待制のクローズドβを準備しています。</strong>
    遊ぶことと URL の共有に招待は要りませんが、<strong>生成は招待コードをお持ちの方に限ります。</strong></p>
-<p>生成機能はまだ公開していません。いまできるのは、招待コードでの登録と、待機リストへの登録です。</p>
+<p>登録がお済みの方は<a href="${GENERATE_PAGE_PATH}">ゲームを生成できます</a>。
+   <strong>生成には 20〜30 秒かかります。</strong>
+   試遊と公開の画面はまだ準備中で、生成した作品は下書きとして保存されます。</p>
 
 <h2>はじめる</h2>
 <ul>
+  <li><a href="${GENERATE_PAGE_PATH}">ゲームを生成する</a>（招待コードでの登録が必要です）</li>
   <li><a href="${SIGNUP_PATH}">招待コードで登録する</a></li>
   <li><a href="${SIGNUP_PATH}">招待コードをお持ちでない方（待機リストに登録する）</a></li>
   <li><a href="${LOGIN_PATH}">すでにアカウントをお持ちの方（Google でログイン）</a></li>

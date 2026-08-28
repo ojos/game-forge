@@ -7,6 +7,7 @@
 import { authRoutes } from './auth/google.js';
 import { describeOriginRelation } from './origins.js';
 import { generateRoutes } from './generate.js';
+import { generatePageRoutes } from './generate-page.js';
 import { homeRoutes } from './home.js';
 import { inviteRoutes } from './invite-issuance.js';
 import type { Route } from './routes.js';
@@ -255,6 +256,7 @@ export function createAppRoutes(env: Env): readonly Route[] {
     ...signupRoutes,
     ...waitlistRoutes,
     ...generateRoutes,
+    ...generatePageRoutes,
     ...inviteRoutes,
   ];
 }

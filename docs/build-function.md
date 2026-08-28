@@ -12,7 +12,7 @@
 | 対象 | 実体 |
 |---|---|
 | 関数 | `game-forge-build`（`package_type = "Image"`。メモリ **3,008 MB** / タイムアウト **30 秒** / 予約同時実行数 **5**） |
-| イメージ | ECR の `game-forge/isolated-build`。`golang:1.26.5` を基にした約 1.6 GB |
+| イメージ | ECR の `game-forge/isolated-build`。`golang:<ピン留めした版>` を基にした約 1.6 GB。**版の正本は `docker/isolated-build/Dockerfile` の `ARG GO_VERSION`**（確定12。更新の契機と根拠は確定12、手順は仕様書 3.5） |
 | 入口 | `docker/isolated-build/handler/`（Lambda Runtime API を自前で回す。依存 0 件） |
 | 配備 | `.github/workflows/deploy-compiler.yml`（OIDC。長命の鍵を持たない） |
 | ログ | `/aws/lambda/game-forge-build`（14 日保持。**生成ソースも成果物も出しません**） |
@@ -239,9 +239,10 @@ VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 **手順 2 の 2 つのフラグは、どちらも #103 で実際に踏んだものです。**
 
 - **`--platform linux/amd64`。** `--build-arg TARGETARCH=amd64` が決めるのは Dockerfile 内の
-  `GOARCH`、つまり**ハンドラのバイナリだけ**です。ベースイメージ `golang:1.26.5` はホストの
-  アーキテクチャで引かれるため、**aarch64 の開発機では arm64 のベースに amd64 のバイナリが
-  入った、どちらでも動かないイメージ**が出来ます。関数は `x86_64` で宣言してあります。
+  `GOARCH`、つまり**ハンドラのバイナリだけ**です。ベースイメージ（`golang:` にピン留めした版。
+  正本は `ARG GO_VERSION`）はホストのアーキテクチャで引かれるため、**aarch64 の開発機では
+  arm64 のベースに amd64 のバイナリが入った、どちらでも動かないイメージ**が出来ます。
+  関数は `x86_64` で宣言してあります。
 - **`--provenance=false --sbom=false`。** 既定では BuildKit が attestation を足し、push される
   のが単一のマニフェストではなく **OCI の image index**（`application/vnd.oci.image.index.v1+json`）
   になります。**Lambda はこれを受け付けません。**

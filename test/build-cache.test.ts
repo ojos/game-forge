@@ -203,6 +203,79 @@ async function exists(key: string): Promise<boolean> {
   return (await env.BUCKET.head(key)) !== null;
 }
 
+/**
+ * D1 の文が 1 つ走り終わるたびにフックを呼ぶ `Env` を作る。
+ *
+ * `deleteUnreferencedArtifacts` の「索引を落とす → 数え直す」のあいだに並行して起きる
+ * 出来事（キャッシュヒットの生成が新しい参照を作る）を、**決定的に**再現するために使う。
+ * 実際の並行実行では起きる順序が固定できず、検査が不安定になる。
+ *
+ * @param afterStatement 文が走り終わったあとに呼ぶフック（走った SQL を受け取る）
+ * @returns 差し替えた `DB` を持つ `Env`
+ */
+function hookedEnv(afterStatement: (sql: string) => Promise<void>): Env {
+
+  /**
+   * 文を包み、非同期の実行が終わったところでフックを呼ぶ。
+   *
+   * @param sql 実行する SQL
+   * @param statement 包む対象
+   * @returns 包んだ文
+   */
+  const wrap = (sql: string, statement: D1PreparedStatement): D1PreparedStatement =>
+    new Proxy(statement, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver) as unknown;
+        if (typeof value !== 'function') return value;
+        return (...args: unknown[]): unknown => {
+          const result = (value as (...a: unknown[]) => unknown).apply(target, args);
+          if (property === 'bind') return wrap(sql, result as D1PreparedStatement);
+          if (result instanceof Promise) {
+            return result.then(async (resolved) => {
+              await afterStatement(sql);
+              return resolved;
+            });
+          }
+          return result;
+        };
+      },
+    });
+
+  const db = new Proxy(env.DB, {
+    get(target, property, receiver) {
+      if (property !== 'prepare') return Reflect.get(target, property, receiver);
+      return (sql: string): D1PreparedStatement => wrap(sql, target.prepare(sql));
+    },
+  });
+
+  return { ...env, DB: db } as Env;
+}
+
+/**
+ * `head` の呼び出しを記録する `BUCKET` に差し替えた `Env` を作る。
+ *
+ * 「実在確認まで進まずに戻さないと決めた」ことを、**呼ばれなかった往復**として観測する
+ * ために使う（3.7 は Class B のオペレーションも従量だと書いている）。
+ *
+ * @param base 差し替える元の `Env`
+ * @param heads 呼ばれた `head` のキーを記録する配列
+ * @returns 差し替えた `BUCKET` を持つ `Env`
+ */
+function countingHeads(base: Env, heads: string[]): Env {
+  const bucket = new Proxy(base.BUCKET, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (typeof value !== 'function') return value;
+      if (property !== 'head') return (value as (...a: unknown[]) => unknown).bind(target);
+      return (key: string): Promise<R2Object | null> => {
+        heads.push(key);
+        return target.head(key);
+      };
+    },
+  });
+  return { ...base, BUCKET: bucket } as Env;
+}
+
 describe('共有された成果物の削除（確定26 / 3.4-7 / 3.7 / #116）', () => {
   it('公開済みの作品が参照している成果物は、別の作品を削除しても消えない', async () => {
     // **本 issue の acceptance そのもの。** 作品 A と B は同一ソースから生まれ
@@ -355,6 +428,134 @@ describe('共有された成果物の削除（確定26 / 3.4-7 / 3.7 / #116）',
     // 既に消えている行に対して、キーを推測して消しに行かない。
     const plan = await planArtifactDeletion(env, 'g-does-not-exist');
     expect(plan).toEqual({ gameId: 'g-does-not-exist', deletable: [], retained: [] });
+  });
+
+  it('数え直しで残すことになったら、落とした索引を戻す（PR #121 の指摘）', async () => {
+    // 索引を落としてから数え直すまでのあいだに、並行したキャッシュヒットの生成が
+    // 参照を作る場合。**成果物は残るのに索引だけが失われる**と、以後の同一ソースの生成が
+    // 要らないビルドを 1 回する（約 21 秒。3.8）。規約 2 の順序は保ったまま、消さないと
+    // 決めたときに限って戻す。
+    const entry = record('d'.repeat(64));
+    await putArtifacts(entry);
+    await recordBuildCache(env, entry, 1_700_000_042);
+
+    const author = await insertUser('restore-index');
+    await insertGame('g-restore-a', author, {
+      sourceKey: entry.sourceKey,
+      wasmKey: entry.wasmKey,
+    });
+
+    // 索引を落とす文が走った直後に、同じ成果物を指す公開済みの作品が現れる。
+    // 索引を落とす文はキーの数だけ走る。**再現したいのは 1 度だけ起きた出来事**なので、
+    // 最初の 1 回に限る。
+    let raced1 = false;
+    const raced = hookedEnv(async (sql) => {
+      if (raced1 || !sql.startsWith('delete from build_cache')) return;
+      raced1 = true;
+      await insertGame(
+        'g-restore-b',
+        author,
+        { sourceKey: entry.sourceKey, wasmKey: entry.wasmKey },
+        'published',
+      );
+    });
+
+    const plan = await deleteUnreferencedArtifacts(raced, 'g-restore-a');
+
+    expect(plan.deletable).toEqual([]);
+    expect(await exists(entry.wasmKey)).toBe(true);
+    expect(await exists(entry.sourceKey)).toBe(true);
+
+    // **索引が戻っている。** `createdAt` も元の値のままであること（戻した行だけが
+    // 若返ると、索引の年齢を見る掃除から静かに外れる）。
+    const lookup = await readBuildCache(env, entry.sourceSha256);
+    expect(lookup.hit).toBe(true);
+    if (!lookup.hit) return;
+    expect(lookup.entry).toEqual({ ...entry, createdAt: 1_700_000_042 });
+  });
+
+  it('消したキーを指す索引は戻さない（片方だけ残ったとき）', async () => {
+    // 戻す条件を「残すと決めたキーがあること」にすると、**壊れた組を指す索引**を自分で
+    // 作り直すことになる。索引の行は source と wasm の両方を指すため、片方でも消えていれば
+    // 戻さない。
+    const entry = record('e'.repeat(64));
+    await putArtifacts(entry);
+    await recordBuildCache(env, entry);
+
+    const author = await insertUser('restore-partial');
+    await insertGame('g-partial-a', author, {
+      sourceKey: entry.sourceKey,
+      wasmKey: entry.wasmKey,
+    });
+
+    // 並行して現れるのは、source だけを指す tombstone（5.3）。wasm は誰も参照しない。
+    const heads: string[] = [];
+    let raced2 = false;
+    const raced = countingHeads(
+      hookedEnv(async (sql) => {
+        if (raced2 || !sql.startsWith('delete from build_cache')) return;
+        raced2 = true;
+        await insertGame(
+          'g-partial-b',
+          author,
+          { sourceKey: entry.sourceKey, wasmKey: null },
+          'removed',
+        );
+      }),
+      heads,
+    );
+
+    const plan = await deleteUnreferencedArtifacts(raced, 'g-partial-a');
+
+    expect(plan.deletable).toEqual([entry.wasmKey]);
+    expect(await exists(entry.sourceKey)).toBe(true);
+    expect(await exists(entry.wasmKey)).toBe(false);
+
+    // **実在確認まで進んでいない。** 消したキーを指す索引は、R2 へ問い合わせるまでもなく
+    // 戻さないと決まる。head は 3.7 の Class B に数えられる往復であり、要らない往復を
+    // しないこと自体が、この早期の打ち切りが効いている証拠になる。
+    expect(heads).toEqual([]);
+    expect(await readBuildCache(env, entry.sourceSha256)).toEqual({
+      hit: false,
+      reason: 'not-indexed',
+    });
+  });
+
+  it('戻す直前に成果物が消えていたら戻さない', async () => {
+    // 別の掃除が並行して消していた場合。実在を確かめずに戻すと、**消えたオブジェクトを
+    // 指す索引を自分で作り直す**ことになり、規約 2 で塞いだ経路が復活する。
+    const entry = record('f'.repeat(64));
+    await putArtifacts(entry);
+    await recordBuildCache(env, entry);
+
+    const author = await insertUser('restore-vanished');
+    await insertGame('g-vanish-a', author, {
+      sourceKey: entry.sourceKey,
+      wasmKey: entry.wasmKey,
+    });
+
+    let raced3 = false;
+    const raced = hookedEnv(async (sql) => {
+      if (raced3 || !sql.startsWith('delete from build_cache')) return;
+      raced3 = true;
+      // 参照は増えるが、成果物のほうは別の経路で既に消えている。
+      await insertGame(
+        'g-vanish-b',
+        author,
+        { sourceKey: entry.sourceKey, wasmKey: entry.wasmKey },
+        'published',
+      );
+      await env.BUCKET.delete(entry.wasmKey);
+      await env.BUCKET.delete(entry.sourceKey);
+    });
+
+    const plan = await deleteUnreferencedArtifacts(raced, 'g-vanish-a');
+
+    expect(plan.deletable).toEqual([]);
+    expect(await readBuildCache(env, entry.sourceSha256)).toEqual({
+      hit: false,
+      reason: 'not-indexed',
+    });
   });
 
   it('被参照チェックが使う索引が張られている（0004）', async () => {

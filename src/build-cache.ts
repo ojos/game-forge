@@ -50,6 +50,9 @@
  *    参照者である）。
  * 2. **索引を先に落とし、そのあとで数え直してから消す。** 逆順にすると、消した直後の
  *    生成がまだ索引に当たり、**消えたオブジェクトを指す新しい作品**が生まれる。
+ *    **数え直した結果として消さないことに決めたら、落とした索引を戻す**（成果物は残って
+ *    いるので、戻した索引は生きているオブジェクトを指す。戻さないと要らない再ビルドが
+ *    1 回増える）。
  * 3. **年齢だけで消すライフサイクルルールに、共有されうるオブジェクトを載せない。**
  *    R2 のライフサイクルは `games` を引けないため、規約 1 を構造的に満たせない
  *    （3.7 の注記）。
@@ -217,10 +220,16 @@ export async function forgetBuildCache(env: Env, sourceSha256: string): Promise<
 }
 
 /**
- * 索引の行を、R2 のキーの側から落とす（{@link deleteUnreferencedArtifacts} が使う）。
+ * 索引の行を、R2 のキーの側から**読み出してから落とす**（{@link deleteUnreferencedArtifacts} が使う）。
  *
  * 削除側は `games` 行しか持たず、キャッシュ鍵（生成ソースの SHA-256）を知らない。
  * `games` は鍵を持たないため（5.1）、索引を消すにはキーで引くほかない。
+ *
+ * **落とす前に中身を返すのは、戻せるようにするためである。** 呼び出し側は「消す」と
+ * 決めた対象の索引を先に落とすが（確定26 の規約 2）、数え直しの結果として**消さないことに
+ * 決め直す**ことがある。そのとき索引が失われたままだと、成果物は残っているのに以後の
+ * 同一ソースの生成が再ビルドになる（Lambda の実測でビルド 1 回は約 21 秒。3.8）。
+ * **正しさではなく無駄の問題**だが、戻せる情報を捨てる理由が無い。
  *
  * **索引にキー側の索引を張っていない。** 引くのは削除のときだけで、削除は月数百件
  * （3.6）である。一方 `build_cache` へ索引を足せば**ビルドのたびに書き込みが増える**側に
@@ -229,16 +238,31 @@ export async function forgetBuildCache(env: Env, sourceSha256: string): Promise<
  *
  * @param env バインディングと環境変数
  * @param keys 落とす対象の R2 キー（`source_key` か `wasm_key` のいずれかに一致する行を落とす）
+ * @returns 実際に落とした索引の行（落とす前の内容。戻すときに使う）
  */
-export async function forgetBuildCacheByArtifact(
+export async function takeBuildCacheByArtifact(
   env: Env,
   keys: readonly string[],
-): Promise<void> {
+): Promise<readonly BuildCacheEntry[]> {
+  const taken = new Map<string, BuildCacheEntry>();
   for (const key of keys) {
+    const found = await env.DB.prepare(
+      `select source_sha256, go_version, source_key, wasm_key,
+              wasm_bytes, wasm_sha256, compressed_bytes, compressed_sha256,
+              content_encoding, created_at
+         from build_cache where wasm_key = ? or source_key = ?`,
+    )
+      .bind(key, key)
+      .all<BuildCacheRow>();
+    for (const row of found.results) {
+      // 2 つのキーが同じ行を指すことがある。行は 1 回だけ数える。
+      taken.set(row.source_sha256, fromRow(row));
+    }
     await env.DB.prepare('delete from build_cache where wasm_key = ? or source_key = ?')
       .bind(key, key)
       .run();
   }
+  return [...taken.values()];
 }
 
 /**
@@ -339,6 +363,25 @@ export async function planArtifactDeletion(
  *    消えかけのオブジェクトにヒットして、`games` 行だけが新しく作られるのを止めるため**
  *    である（ヒット判定の R2 実在確認は、判定の時点で存在すれば通ってしまう）。
  * 3. **数え直してから**消す。1 と 2 のあいだに新しい参照が生まれていれば、ここで残す。
+ * 4. **残すことに決め直した分の索引を戻す**（下記）。
+ *
+ * ## 消さないと決めたら索引を戻す（PR #121 のレビュー指摘）
+ *
+ * 2 と 3 のあいだに並行してキャッシュヒットの生成が走ると、**成果物は残るのに索引だけが
+ * 失われる。** 以後の同一ソースの生成は `not-indexed` になり、要らないビルドを 1 回する
+ * （Lambda の実測で約 21 秒。ウォーム 21,219 ms / コールド 23,685 ms。3.8）。**正しさでは
+ * なく無駄の問題**だが、成果物は現に残っているので、戻した索引は生きているオブジェクトを
+ * 指す。**規約 2（先に落とす）は変えない。落とす順序は保ったまま、消さないと決めたときに
+ * 限って戻す。**
+ *
+ * **戻すことで新しい窓を開けないよう、2 つの条件を課す。**
+ *
+ * - **1 つでも消したキーを指す索引は戻さない。** 索引の行は `source.go` と `.wasm.br` の
+ *   両方を指すため、片方でも消えていれば、戻した索引は壊れた組を指す（読み出し側の実在
+ *   確認がミスへ落とすだけで、得るものが無い）。
+ * - **戻す直前に R2 の実在を確かめる。** 別の掃除が並行して消していれば戻さない。
+ *   ここを省くと、**消えたオブジェクトを指す索引を自分で作り直す**ことになり、規約 2 で
+ *   塞いだはずの経路が復活する。
  *
  * **`games` 行そのものは触らない。** tombstone 化（5.3）と削除の順序は M5-4 が持つ。
  * ここが持つのは「R2 のオブジェクトを、参照が無いときだけ消す」ことだけである。
@@ -362,11 +405,28 @@ export async function deleteUnreferencedArtifacts(
     return planned;
   }
 
-  await forgetBuildCacheByArtifact(env, planned.deletable);
+  const suspended = await takeBuildCacheByArtifact(env, planned.deletable);
 
   const confirmed = await planArtifactDeletion(env, gameId);
   for (const key of confirmed.deletable) {
     await env.BUCKET.delete(key);
+  }
+
+  const deleted = new Set(confirmed.deletable);
+  for (const entry of suspended) {
+    if (deleted.has(entry.wasmKey) || deleted.has(entry.sourceKey)) {
+      continue;
+    }
+    const [wasm, source] = await Promise.all([
+      env.BUCKET.head(entry.wasmKey),
+      env.BUCKET.head(entry.sourceKey),
+    ]);
+    if (wasm === null || source === null) {
+      continue;
+    }
+    // `createdAt` は元の値のまま戻す。3.7 の掃除が索引の年齢を見る形になったとき、
+    // 戻した行だけが若返っていると、掃除の対象から静かに外れる。
+    await recordBuildCache(env, entry, entry.createdAt);
   }
   return confirmed;
 }

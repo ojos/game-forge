@@ -1022,7 +1022,13 @@ describe('公開トップの書き換え（#128）', () => {
     const body = await (await handleAppRequest(new Request(`${APP_ORIGIN}${HOME_PATH}`), env)).text();
     expect(body).not.toContain('生成機能はまだ公開していません');
     expect(body).toContain(`href="${GENERATE_PAGE_PATH}"`);
-    // 押した先で何十秒も待つことを、押す前に知らせる（1.2.27）。
-    expect(body).toContain('20〜30 秒');
+    // 押した先で何分も待つことを、押す前に知らせる（1.2.27）。**待ち時間の説明を
+    // 2 つ持たない。** 正本は生成画面の `TYPICAL_WAIT_TEXT` で、公開トップはそれを
+    // 書き写している（`src/home.ts` は循環参照になるため import できない）。
+    // **書き写しは機械照合で担保する**（shared-ai-rules 12 章）。ここが落ちたときに
+    // 直すのは `src/home.ts` である。
+    expect(body).toContain(TYPICAL_WAIT_TEXT);
+    // ビルド単体の実測（3.8）を、生成の待ち時間として出したままにしない。
+    expect(body).not.toContain('20〜30 秒');
   });
 });

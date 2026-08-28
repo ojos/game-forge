@@ -3,12 +3,19 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import {
   DAILY_QUOTA_PATTERN,
   DAILY_QUOTA_PER_USER,
+  DAILY_QUOTA_REASON,
   MONTHLY_COST_LIMIT_JPY,
   MONTHLY_LIMIT_PATTERN,
+  MONTHLY_LIMIT_REASON,
   MONTHLY_WARNING_RATIO,
+  QUOTA_EXCEEDED_STATUS,
+  QUOTA_REJECTION_REASONS,
+  UNCLASSIFIED_QUOTA_CODE,
   WARNING_THRESHOLD_PATTERN,
   checkGenerationQuota,
   dailyCallCount,
+  describeQuotaRejection,
+  isQuotaRejectionReason,
   jstDayRange,
 } from '../src/quota.js';
 import { jstMonthRange, recordGeneration } from '../src/cost-ledger.js';
@@ -24,6 +31,7 @@ import {
   findGenerationModel,
 } from '../src/generation-models.js';
 import type { GenerationResult } from '../src/generation-models.js';
+import type { QuotaExceededBody } from '../src/quota.js';
 import { applySchema } from './helpers/schema.js';
 
 /** 判定の基準時刻。2020-05-15 12:00 JST（= 03:00 UTC）。 */
@@ -217,6 +225,7 @@ describe('日次クォータ（確定25 / acceptance 3）', () => {
     expect(await checkGenerationQuota(env, userId, AT)).toEqual({
       allowed: false,
       reason: 'daily-quota',
+      resetsAt: jstDayRange(AT).toSeconds,
     });
   });
 
@@ -228,11 +237,29 @@ describe('日次クォータ（確定25 / acceptance 3）', () => {
     expect(await checkGenerationQuota(env, userId, AT)).toEqual({
       allowed: false,
       reason: 'daily-quota',
+      resetsAt: jstDayRange(AT).toSeconds,
     });
 
     const nextDay = jstDayRange(AT).toSeconds;
     expect(await checkGenerationQuota(env, userId, nextDay)).toEqual({ allowed: true });
     expect((await dailyCallCount(env, userId, nextDay)).calls).toBe(0);
+  });
+
+  it('拒否は翌日の再開時刻を伴う（4.4 / #132）', async () => {
+    // 4.4 は「本日の枠は終了しました」と**翌日の再開時刻**を示すことを求める。
+    // 判定はすでに境界を計算しているので、**同じ境界を経路層や画面で計算し直さない**
+    // ように、拒否そのものへ乗せて返す（shared-ai-rules 12 章）。
+    const userId = await seedUser('daily-resets-at');
+    await seedCalls(userId, DAILY_QUOTA_PER_USER, AT);
+    const decision = await checkGenerationQuota(env, userId, AT);
+    // **型でも日次に絞る。** 月次の拒否は再開時刻を持たない（4.4 が求めていない）。
+    const resetsAt =
+      !decision.allowed && decision.reason === DAILY_QUOTA_REASON ? decision.resetsAt : 0;
+
+    // 2020-05-16 00:00 JST = 2020-05-15 15:00 UTC。**判定時刻より後の、翌日の 0 時**。
+    expect(new Date(resetsAt * 1000).toISOString()).toBe('2020-05-15T15:00:00.000Z');
+    expect(resetsAt).toBeGreaterThan(AT);
+    expect(resetsAt - jstDayRange(AT).fromSeconds).toBe(DAY);
   });
 
   it('境界は JST の 0 時であって UTC の 0 時ではない', () => {
@@ -289,6 +316,7 @@ describe('日次クォータ（確定25 / acceptance 3）', () => {
     expect(await checkGenerationQuota(env, userId, AT)).toEqual({
       allowed: false,
       reason: 'daily-quota',
+      resetsAt: jstDayRange(AT).toSeconds,
     });
   });
 
@@ -314,6 +342,7 @@ describe('日次クォータ（確定25 / acceptance 3）', () => {
     expect(await checkGenerationQuota(env, userId, AT)).toEqual({
       allowed: false,
       reason: 'daily-quota',
+      resetsAt: jstDayRange(AT).toSeconds,
     });
   });
 });
@@ -466,7 +495,130 @@ describe('80% 到達時の警告（4.3 / acceptance 2）', () => {
     expect(await checkGenerationQuota(env, userId, AT)).toEqual({
       allowed: false,
       reason: 'daily-quota',
+      resetsAt: jstDayRange(AT).toSeconds,
     });
+  });
+});
+
+describe('429 の応答へ落とす形（4.4 / #132）', () => {
+  /**
+   * 応答の並びが互いに区別できるか（分類名がすべて違うか）。
+   *
+   * **判定を関数に出しているのは、変異させて確かめるためである。** 分類を潰した
+   * 応答を与えれば false になることを、同じテストの中で見せる。
+   *
+   * @param bodies 応答本文の並び
+   * @returns すべて区別できれば true
+   */
+  function distinguishable(bodies: readonly QuotaExceededBody[]): boolean {
+    return new Set(bodies.map((body) => body.error)).size === bodies.length;
+  }
+
+  it('拒否は 429 で返す', () => {
+    expect(QUOTA_EXCEEDED_STATUS).toBe(429);
+  });
+
+  it('日次は分類名と再開時刻を載せる', () => {
+    const resetsAt = jstDayRange(AT).toSeconds;
+    expect(describeQuotaRejection(DAILY_QUOTA_REASON, resetsAt)).toEqual({
+      error: DAILY_QUOTA_REASON,
+      resetsAt,
+    });
+  });
+
+  it('月次は分類名だけを載せる', () => {
+    // 4.4 が月次に求めているのは「プレイと共有は継続できる」旨であって、再開時刻では
+    // ない（復帰は翌月）。**日次と同じ項目名で返すと、受け手が両者を同じものとして
+    // 扱う口ができる。**
+    expect(describeQuotaRejection(MONTHLY_LIMIT_REASON, jstDayRange(AT).toSeconds)).toEqual({
+      error: MONTHLY_LIMIT_REASON,
+    });
+  });
+
+  it('日次と月次が同じ応答にならない', () => {
+    // **区別できることが #132 の本体である。**
+    expect(
+      distinguishable([
+        describeQuotaRejection(DAILY_QUOTA_REASON, jstDayRange(AT).toSeconds),
+        describeQuotaRejection(MONTHLY_LIMIT_REASON),
+      ]),
+    ).toBe(true);
+    // **変異検査。** 分類を潰して 1 種類へ戻した応答を与えると、この判定は false に
+    // なる（＝上の検査は「区別できていること」を実際に見ている）。
+    expect(
+      distinguishable([
+        { error: UNCLASSIFIED_QUOTA_CODE },
+        { error: UNCLASSIFIED_QUOTA_CODE, resetsAt: jstDayRange(AT).toSeconds },
+      ]),
+    ).toBe(false);
+  });
+
+  it('段が返した文字列をそのまま載せない（8.3）', () => {
+    // 段は差し替えられる（`GenerationPipeline['checkQuota']`）。**応答に出てよいのは
+    // 時刻と固定の分類名だけ**なので、知らない理由は 1 つの値へ倒す。
+    const hostile = [
+      '<img src=x onerror=alert(1)>',
+      'daily',
+      '__proto__',
+      'constructor',
+      './main.go:12:2: undefined: foo',
+    ];
+    for (const value of hostile) {
+      expect(describeQuotaRejection(value, jstDayRange(AT).toSeconds), value).toEqual({
+        error: UNCLASSIFIED_QUOTA_CODE,
+      });
+    }
+  });
+
+  it('契約を満たす時刻はそのまま載る', () => {
+    // 実装が返すのは日の境界（UNIX 秒の整数）である。**絞りが厳しすぎて正しい値まで
+    // 落ちないこと**を、片側だけでなく両側で固定する。
+    const resetsAt = jstDayRange(AT).toSeconds;
+    expect(Number.isSafeInteger(resetsAt)).toBe(true);
+    expect(describeQuotaRejection(DAILY_QUOTA_REASON, resetsAt)).toEqual({
+      error: DAILY_QUOTA_REASON,
+      resetsAt,
+    });
+  });
+
+  it('契約を満たさない時刻は載せない（PR #135 のレビュー指摘）', () => {
+    // **分類名と同じ扱いである。** 段は差し替えられるので、`resetsAt` も「段が返した
+    // 値」でしかない。分類名を一覧で絞りながら数値を素通しすると、同じ原則が片方だけ
+    // 抜ける。契約は「枠が戻る時刻を表す UNIX 秒の整数」なので、下はすべて載せない。
+    //
+    // **推測で直さない**（丸めたり現在時刻で埋めたりすると、利用者へ嘘の時刻を見せる）。
+    expect(describeQuotaRejection(DAILY_QUOTA_REASON)).toEqual({ error: DAILY_QUOTA_REASON });
+    const broken = [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      // 時刻として意味を成さない（0 は 1970-01-01、負は それ以前）。
+      0,
+      -1,
+      -jstDayRange(AT).toSeconds,
+      // 秒でない（ミリ秒を渡した実装や、割り算を丸め忘れた実装）。
+      1.5,
+      jstDayRange(AT).toSeconds + 0.001,
+      // 桁あふれ。JSON へ出しても元の値へ戻らない。
+      Number.MAX_SAFE_INTEGER + 1,
+      Number.MAX_VALUE,
+    ];
+    for (const value of broken) {
+      expect(describeQuotaRejection(DAILY_QUOTA_REASON, value), String(value)).toEqual({
+        error: DAILY_QUOTA_REASON,
+      });
+    }
+  });
+
+  it('分類名の一覧と判定が一致する', () => {
+    // 一覧は画面の文言表が網羅の検査に使う（`test/generate-page.test.ts`）。
+    expect([...QUOTA_REJECTION_REASONS]).toEqual([DAILY_QUOTA_REASON, MONTHLY_LIMIT_REASON]);
+    for (const reason of QUOTA_REJECTION_REASONS) {
+      expect(isQuotaRejectionReason(reason), reason).toBe(true);
+      expect(describeQuotaRejection(reason).error, reason).toBe(reason);
+    }
+    // 倒し先そのものは分類名ではない（表の `429:` へ落ちる値である）。
+    expect(isQuotaRejectionReason(UNCLASSIFIED_QUOTA_CODE)).toBe(false);
   });
 });
 

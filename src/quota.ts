@@ -73,13 +73,126 @@ export const DAILY_QUOTA_PATTERN =
 export const WARNING_THRESHOLD_PATTERN = /\*\*([0-9]+)% で警告、([0-9]+)% で生成停止/gu;
 
 /**
+ * 日次クォータ（確定25）で止まったことを表す分類名。**利用者への文言ではない。**
+ *
+ * 4.4 はこの状態に「本日の枠は終了しました」と**翌日の再開時刻**を求める。
+ */
+export const DAILY_QUOTA_REASON = 'daily-quota' as const;
+
+/**
+ * 月次上限（4.3）で止まったことを表す分類名。**利用者への文言ではない。**
+ *
+ * 4.4 はこの状態に「今月の生成は終了しました。プレイと共有は引き続きご利用いただけます」を
+ * 求める。**日次とは別のメッセージである。** 「明日また使える」と「今月はもう使えないが
+ * プレイはできる」は利用者にとって別の情報で、**混ぜると片方が必ず誤りになる。**
+ */
+export const MONTHLY_LIMIT_REASON = 'monthly-limit' as const;
+
+/**
  * 拒否の理由。**利用者への文言ではない。**
  *
- * 経路層は 4.4 に従って 429 と共通の文言を返す（`src/generate.ts`）。この値は
- * どちらの上限で止まったかを後段とログが区別するためのもので、**日次と月次では
- * 復帰の条件が違う**（前者は翌日 0 時、後者は翌月）ため、1 つにまとめない。
+ * 経路層はこの値を 429 の応答へ**分類名として**載せる（`src/generate.ts` /
+ * {@link describeQuotaRejection}）。**日次と月次では復帰の条件が違う**（前者は
+ * 翌日 0 時、後者は翌月）ため、1 つにまとめない。
  */
-export type QuotaRejectionReason = 'daily-quota' | 'monthly-limit';
+export type QuotaRejectionReason = typeof DAILY_QUOTA_REASON | typeof MONTHLY_LIMIT_REASON;
+
+/**
+ * 応答へ載せてよい分類名の全体。
+ *
+ * **画面の文言表は、この一覧に対する網羅を機械で検査する**
+ * （`test/generate-page.test.ts`）。理由を増やして文言を足し忘れると落ちる。
+ */
+export const QUOTA_REJECTION_REASONS: readonly QuotaRejectionReason[] = [
+  DAILY_QUOTA_REASON,
+  MONTHLY_LIMIT_REASON,
+];
+
+/**
+ * その文字列が、応答へ載せてよい分類名か。
+ *
+ * **段は差し替えられる**（`src/generate.ts` の `GenerationPipeline['checkQuota']`）。
+ * 差し替えた実装が返した文字列をそのまま応答へ流さないための関門である（8.3）。
+ *
+ * @param value 判定する文字列
+ * @returns 分類名であれば true
+ */
+export function isQuotaRejectionReason(value: string): value is QuotaRejectionReason {
+  return (QUOTA_REJECTION_REASONS as readonly string[]).includes(value);
+}
+
+/** クォータ超過を返すステータス（4.3 / 4.4。`src/generate.ts` が使う）。 */
+export const QUOTA_EXCEEDED_STATUS = 429;
+
+/**
+ * 分類できなかったときに応答へ載せる値。
+ *
+ * **段が知らない理由を返しても、その文字列は応答へ出さない**（8.3。載せてよいのは
+ * 時刻と固定の分類名だけである）。値を #132 より前の応答と同じにしてあるので、
+ * 分類を持てない応答の形は変わらない。
+ */
+export const UNCLASSIFIED_QUOTA_CODE = 'quota exceeded';
+
+/** 429 の応答本文（{@link describeQuotaRejection} が組み立てる）。 */
+export interface QuotaExceededBody {
+  /** 分類名。{@link QuotaRejectionReason} か {@link UNCLASSIFIED_QUOTA_CODE} のいずれか。 */
+  readonly error: string;
+  /**
+   * 枠が戻る時刻（UNIX 秒）。**日次で止まったときだけ載る。**
+   *
+   * 4.4 の「翌日の再開時刻」である。値は {@link jstDayRange} の終端、すなわち
+   * **JST の翌 0 時**（確定25）。
+   */
+  readonly resetsAt?: number;
+}
+
+/**
+ * 応答へ載せてよい再開時刻か。
+ *
+ * **分類名と同じ扱いである。** 段（`GenerationPipeline['checkQuota']`）は差し替え
+ * られるので、`resetsAt` も「段が返した値」であって、契約を満たしている保証は無い。
+ * 分類名を一覧で絞っているのに数値を素通しすると、**同じ原則が片方だけ抜ける。**
+ *
+ * 契約は「**枠が戻る時刻を表す UNIX 秒の整数**」である。したがって
+ * 0 以下（時刻として意味を成さない）・小数（秒でない）・`Number.isSafeInteger` の
+ * 外（桁あふれ。JSON へ出しても復元できない）は載せない。
+ *
+ * **推測で直さない。** 丸めたり現在時刻で埋めたりすると、利用者へ嘘の時刻を見せる
+ * ことになる。**載せなくても日次の文言は変わらない**（画面が出す「翌日 0 時」は
+ * 固定文字列で、枠が戻るのは常に JST の 0 時である。`src/generate-page.ts`）。
+ *
+ * @param value 段が返した再開時刻
+ * @returns 応答へ載せてよければ true
+ */
+function isResetTimestamp(value: number | undefined): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+/**
+ * 拒否を 429 の応答本文へ落とす。
+ *
+ * **載せるのは固定の分類名と時刻だけである**（8.3）。分類名は {@link QUOTA_REJECTION_REASONS}
+ * に載っている値に限り、当たらなければ {@link UNCLASSIFIED_QUOTA_CODE} へ倒す。
+ * **時刻も同じ扱いで絞る**（{@link isResetTimestamp}）。段が返す値である以上、
+ * 契約を満たさない数値は載せない。
+ *
+ * **月次に再開時刻を載せない。** 4.4 が求めているのは日次に対する「翌日の再開時刻」で、
+ * 月次に対しては「プレイと共有は継続できる」旨である。月次の復帰は翌月であり、
+ * 同じ名前の項目で返すと、受け手が両者を同じものとして扱う口ができる。
+ *
+ * @param reason 段が返した拒否の理由（分類名とは限らない）
+ * @param resetsAt 枠が戻る時刻（UNIX 秒。日次のときだけ意味を持つ）
+ * @returns 429 の応答本文
+ */
+export function describeQuotaRejection(reason: string, resetsAt?: number): QuotaExceededBody {
+  if (!isQuotaRejectionReason(reason)) {
+    return { error: UNCLASSIFIED_QUOTA_CODE };
+  }
+  if (reason === DAILY_QUOTA_REASON && isResetTimestamp(resetsAt)) {
+    return { error: reason, resetsAt };
+  }
+  return { error: reason };
+}
 
 /**
  * 月次上限の 80% に到達したことを表す警告（4.3 / 4.4）。
@@ -152,10 +265,23 @@ export async function dailyCallCount(
   return { calls: row?.calls ?? 0, resetsAt: day.toSeconds };
 }
 
-/** 3.3-2 の判定結果。`src/generate.ts` の `QuotaDecision` と同じ形である。 */
+/**
+ * 3.3-2 の判定結果。`src/generate.ts` の `QuotaDecision` が受けられる形である
+ * （あちらは段を差し替えられるように `reason` を `string` で受ける）。
+ *
+ * **日次の拒否だけが `resetsAt` を持つ。** 4.4 が「翌日の再開時刻」を求めるのは
+ * 日次に対してだけで、月次の復帰は翌月である。任意項目にして両方の枝へ付けると、
+ * 「どちらのときに時刻があるか」が型から読めなくなる。
+ */
 export type QuotaCheckResult =
   | { readonly allowed: true; readonly warning?: MonthlyCostWarning }
-  | { readonly allowed: false; readonly reason: QuotaRejectionReason };
+  | {
+      readonly allowed: false;
+      readonly reason: typeof DAILY_QUOTA_REASON;
+      /** 枠が戻る時刻（UNIX 秒）。JST の翌 0 時（{@link jstDayRange} の終端）。 */
+      readonly resetsAt: number;
+    }
+  | { readonly allowed: false; readonly reason: typeof MONTHLY_LIMIT_REASON };
 
 /**
  * 判定に要る集計を 1 つ読む。**例外を握りつぶさない。**
@@ -211,7 +337,10 @@ export async function checkGenerationQuota(
   if (monthly.costJpy >= MONTHLY_COST_LIMIT_JPY) {
     // 4.3「100% で生成停止」。停止するのは生成だけで、プレイと拡散は続く（4.4 / 3.8）。
     // **ここで返る経路は D1 を 1 回しか読まない。**
-    return { allowed: false, reason: 'monthly-limit' };
+    //
+    // **再開時刻を付けない。** 復帰は翌月で、4.4 がこの状態に求めているのは
+    // 「プレイと共有は継続できる」旨である（日次の「翌日の再開時刻」ではない）。
+    return { allowed: false, reason: MONTHLY_LIMIT_REASON };
   }
 
   // **日次は 1 人。** 月次を通ったときだけ読む。
@@ -219,7 +348,11 @@ export async function checkGenerationQuota(
 
   if (daily.calls >= DAILY_QUOTA_PER_USER) {
     // 確定25。**枠は JST の 0 時に戻る。** 12 回目までは通し、13 回目を止める。
-    return { allowed: false, reason: 'daily-quota' };
+    //
+    // **戻る時刻をここで返す。** 4.4 は「翌日の再開時刻を示す」ことを求めており、
+    // 値は日の範囲の終端としてすでに手元にある（`dailyCallCount`）。返さないと、
+    // 経路層か画面が同じ境界をもう一度計算することになる（shared-ai-rules 12 章）。
+    return { allowed: false, reason: DAILY_QUOTA_REASON, resetsAt: daily.resetsAt };
   }
 
   const ratio = monthly.costJpy / MONTHLY_COST_LIMIT_JPY;

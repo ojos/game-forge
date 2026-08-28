@@ -47,7 +47,7 @@ import type { BuildOutcome } from './build-client.js';
 import { createLambdaBuild } from './build-client.js';
 import { createDraftGame } from './games.js';
 import { recordGenerationCost } from './cost-ledger.js';
-import { checkGenerationQuota } from './quota.js';
+import { QUOTA_EXCEEDED_STATUS, checkGenerationQuota, describeQuotaRejection } from './quota.js';
 import type { MonthlyCostWarning } from './quota.js';
 import type { BuildRetryContext } from './build-retry.js';
 import {
@@ -123,7 +123,21 @@ export type GenerateParseResult =
  */
 export type QuotaDecision =
   | { readonly allowed: true; readonly warning?: MonthlyCostWarning }
-  | { readonly allowed: false; readonly reason: string };
+  | {
+      readonly allowed: false;
+      readonly reason: string;
+      /**
+       * 枠が戻る時刻（UNIX 秒）。**日次で止まったときだけ意味を持つ**（4.4 / #132）。
+       *
+       * 4.4 は日次の枠切れに「翌日の再開時刻」を求める。段（`src/quota.ts`）は
+       * 判定の中で境界を計算しているので、**経路層が同じ境界をもう一度計算しない**
+       * ように、判定結果に乗せて受け取る（shared-ai-rules 12 章）。
+       *
+       * **任意にしてある。** 段は差し替えられるので、時刻を持たない実装もある。
+       * 無ければ応答へ載せない（`describeQuotaRejection`）。
+       */
+      readonly resetsAt?: number;
+    };
 
 /** 生成の各段。**未実装の段は例外を投げる**（黙って成功しない）。 */
 export interface GenerationPipeline {
@@ -364,7 +378,7 @@ export async function runGenerationPipeline(
   // 3.3-2: 超過なら即座に拒否する。生成より先に判定することが 4.3 の前提。
   const quota = await pipeline.checkQuota(env, userId);
   if (!quota.allowed) {
-    throw new QuotaExceeded(quota.reason);
+    throw new QuotaExceeded(quota.reason, quota.resetsAt);
   }
 
   // 3.3-3..8 を、5.2-7 のリトライの単位で回す。**回るのは生成からビルドまでで、
@@ -512,9 +526,21 @@ async function repairAndRebuild(
   return { built: null, generated: current, rejected: currentRejected };
 }
 
-/** クォータ超過（3.3-2 / 4.3）。 */
+/**
+ * クォータ超過（3.3-2 / 4.3）。
+ *
+ * **`detail` は段が返した理由をそのまま持つ。** 応答へ出るのはここではなく
+ * `describeQuotaRejection`（`src/quota.ts`）が固定の分類名へ落とした値である（8.3）。
+ */
 export class QuotaExceeded extends Error {
-  constructor(readonly detail: string) {
+  /**
+   * @param detail 段が返した拒否の理由（分類名とは限らない）
+   * @param resetsAt 枠が戻る時刻（UNIX 秒。日次で止まったときだけ意味を持つ）
+   */
+  constructor(
+    readonly detail: string,
+    readonly resetsAt?: number,
+  ) {
     super(`生成枠を超えています: ${detail}`);
     this.name = 'QuotaExceeded';
   }
@@ -552,7 +578,16 @@ async function handleGenerate(
     if (error instanceof QuotaExceeded) {
       // 4.4 は停止時も「プレイと拡散は継続する」とする。止まるのは生成だけなので、
       // 認証の失敗（401）とは別の応答にする。
-      return json({ error: 'quota exceeded' }, 429);
+      //
+      // **日次と月次を区別して返す**（#132）。4.4 は両者に**別々のメッセージ**を
+      // 求めており（日次は翌日の再開時刻、月次はプレイと共有の継続）、**混ぜると
+      // 片方が必ず誤りになる。** 応答に載るのは固定の分類名と時刻だけで、段が返した
+      // 文字列をそのまま流さない（8.3）。**その線引きは `src/quota.ts` が持つ**
+      // （分類名を定義している側が、応答に出してよい値も決める）。
+      return json(
+        describeQuotaRejection(error.detail, error.resetsAt),
+        QUOTA_EXCEEDED_STATUS,
+      );
     }
     if (error instanceof GeneratedSourceRejected) {
       // 5.2-5 の「違反時は再生成に回さず即拒否」。**500 にしない**（段は正常に働いた）。

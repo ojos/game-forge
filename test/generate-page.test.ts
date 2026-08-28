@@ -3,13 +3,25 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import {
   CANDIDATE_KEYS_EXPRESSION,
+  DAILY_QUOTA_MESSAGE_KEY,
   DEFAULT_MESSAGE_KEY,
   GENERATE_MESSAGES,
+  MONTHLY_LIMIT_MESSAGE_KEY,
   NETWORK_MESSAGE_KEY,
+  UNCLASSIFIED_QUOTA_MESSAGE_KEY,
   generateMessageKeyCandidates,
   renderGeneratePage,
   selectGenerateMessageKey,
 } from '../src/generate-page.js';
+import {
+  DAILY_QUOTA_REASON,
+  MONTHLY_LIMIT_REASON,
+  QUOTA_EXCEEDED_STATUS,
+  QUOTA_REJECTION_REASONS,
+  UNCLASSIFIED_QUOTA_CODE,
+  describeQuotaRejection,
+  jstDayRange,
+} from '../src/quota.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from '../src/generate.js';
 import { HOME_PATH } from '../src/home.js';
 import { GENERATE_PAGE_PATH, SIGNUP_PATH } from '../src/paths.js';
@@ -210,7 +222,17 @@ describe('失敗の種別ごとの文言（acceptance 2 / 4.4 / 3.8）', () => {
       expect(body, key).toContain(`data-message-key="${key}"`);
     }
     // 枠切れ（429）と、許可外 import / ビルド失敗（422 の 2 種）を出し分ける。
-    expect(selectGenerateMessageKey(429, 'quota exceeded')).toBe('429:');
+    // **429 は日次と月次で別の鍵になる**（#132）。分類名の正本は `src/quota.ts`。
+    expect(selectGenerateMessageKey(QUOTA_EXCEEDED_STATUS, DAILY_QUOTA_REASON)).toBe(
+      DAILY_QUOTA_MESSAGE_KEY,
+    );
+    expect(selectGenerateMessageKey(QUOTA_EXCEEDED_STATUS, MONTHLY_LIMIT_REASON)).toBe(
+      MONTHLY_LIMIT_MESSAGE_KEY,
+    );
+    // 分類を持たない 429（段を差し替えた実装が知らない理由を返した場合）。
+    expect(selectGenerateMessageKey(QUOTA_EXCEEDED_STATUS, UNCLASSIFIED_QUOTA_CODE)).toBe(
+      UNCLASSIFIED_QUOTA_MESSAGE_KEY,
+    );
     expect(selectGenerateMessageKey(422, 'source-rejected')).toBe('422:source-rejected');
     expect(selectGenerateMessageKey(422, 'build-failed')).toBe('422:build-failed');
     // 分類を知らない 422 でも、422 としての文言まではたどり着く。
@@ -240,7 +262,7 @@ describe('失敗の種別ごとの文言（acceptance 2 / 4.4 / 3.8）', () => {
   });
 });
 
-describe('4.4 の停止時の文言の機械照合', () => {
+describe('4.4 の記述と、429 の出し分けの機械照合（#132）', () => {
   /**
    * 仕様書 4.4 の節を切り出す。
    *
@@ -254,45 +276,209 @@ describe('4.4 の停止時の文言の機械照合', () => {
   }
 
   /**
-   * 4.4 の中で、ある目印を含む行が鉤括弧で囲んでいる文言を取り出す。
+   * 4.4 の中で、ある目印を含む行を取り出す。
    *
    * @param spec 仕様書の本文
    * @param marker 行を特定する目印
-   * @returns 鉤括弧の中身（見つからなければ空文字）
+   * @returns その行（見つからなければ空文字）
    */
-  function quotedWording(spec: string, marker: string): string {
-    const line = section44(spec)
-      .split('\n')
-      .find((candidate) => candidate.includes(marker));
-    return line?.match(/「([^」]+)」/u)?.[1] ?? '';
+  function bulletWith(spec: string, marker: string): string {
+    return (
+      section44(spec)
+        .split('\n')
+        .find((candidate) => candidate.includes(marker)) ?? ''
+    );
   }
 
-  it('429 の文言が 4.4 の言い回しをそのまま含む', () => {
-    // 同じ文言が仕様書と画面の 2 か所にある以上、機械で照合する
-    // （shared-ai-rules 12 章）。「更新したか」ではなく「一致しているか」を見る。
-    const daily = quotedWording(env.TEST_PRODUCT_SPEC, '枠が尽きたら');
-    const monthly = quotedWording(env.TEST_PRODUCT_SPEC, '月次上限に達した場合');
-    expect(daily).not.toBe('');
-    expect(monthly).not.toBe('');
+  /**
+   * 行が鉤括弧で囲んでいる文言を取り出す。
+   *
+   * @param line 4.4 の 1 行
+   * @returns 鉤括弧の中身（無ければ空文字）
+   */
+  function quoted(line: string): string {
+    return line.match(/「([^」]+)」/u)?.[1] ?? '';
+  }
 
-    const message = GENERATE_MESSAGES['429:']!;
-    expect(message).toContain(daily);
-    expect(message).toContain(monthly);
-    // 4.4 は「翌日の再開時刻を示す」ことも求める。枠が戻るのは JST の 0 時
-    // （確定25 / `src/quota.ts` の `jstDayRange`）。
-    expect(message).toContain('翌日 0 時');
+  /**
+   * 4.4 が分けている停止の状態と、応答の分類に対応する文言の鍵。
+   *
+   * **書き写しているのは「4.4 のどの行が、どの分類に対応するか」だけである。**
+   * 文言そのものと、「翌日の再開時刻を示す」ことを求めているかどうかは、その行から
+   * 読み取る（shared-ai-rules 12 章。文言をコードへ写すと必ず古くなる）。
+   */
+  const STOP_STATES = [
+    { messageKey: DAILY_QUOTA_MESSAGE_KEY, marker: '枠が尽きたら' },
+    { messageKey: MONTHLY_LIMIT_MESSAGE_KEY, marker: '月次上限に達した場合' },
+  ] as const;
+
+  /**
+   * 画面が出す再開時刻の言い回し。
+   *
+   * **時刻を書き写さない。** 日次の枠が戻るのは `src/quota.ts` の日の境界、すなわち
+   * JST の翌 0 時である（確定25）。境界を UTC で切る実装へ変えると、この期待は
+   * 「翌日 9 時」になって文言と食い違う。
+   */
+  const resumeClock = (() => {
+    const resetsAt = jstDayRange(Date.UTC(2020, 4, 15, 3) / 1000).toSeconds;
+    const jstHour = new Date((resetsAt + 9 * 60 * 60) * 1000).getUTCHours();
+    return `翌日 ${jstHour} 時`;
+  })();
+
+  /**
+   * 4.4 の記述と、画面の文言表の食い違いを数え上げる。
+   *
+   * **判定を関数に出しているのは、変異させて確かめるためである**（仕様書側を変えても、
+   * 文言表を潰しても、破れることを同じテストの中で見せる）。
+   *
+   * @param spec 仕様書の本文
+   * @param messages 画面の文言表
+   * @returns 見つかった食い違い（空なら一致）
+   */
+  function collationViolations(
+    spec: string,
+    messages: Readonly<Record<string, string>>,
+  ): string[] {
+    const problems: string[] = [];
+    const wordings = new Map<string, string>();
+
+    for (const state of STOP_STATES) {
+      const line = bulletWith(spec, state.marker);
+      const wording = quoted(line);
+      if (wording === '') {
+        problems.push(`4.4 から文言を拾えない: ${state.marker}`);
+        continue;
+      }
+      wordings.set(state.messageKey, wording);
+
+      const message = messages[state.messageKey];
+      if (message === undefined) {
+        problems.push(`分類に対応する文言が無い: ${state.messageKey}`);
+        continue;
+      }
+      if (!message.includes(wording)) {
+        problems.push(`4.4 の言い回しを含まない: ${state.messageKey}`);
+      }
+      // **「翌日の再開時刻を示す」ことを求めているのは日次の行だけである。**
+      // その要求も本文から読む（行に書かれているかを見る）。
+      if (line.includes('再開時刻') && !message.includes(resumeClock)) {
+        problems.push(`再開時刻を示していない: ${state.messageKey}`);
+      }
+    }
+
+    // **混ぜない。** 「明日また使える」と「今月はもう使えないがプレイはできる」は
+    // 別の情報で、片方の文言にもう片方の言い回しが入ると、必ずどちらかが誤りになる。
+    for (const [key, wording] of wordings) {
+      for (const [otherKey, otherWording] of wordings) {
+        if (otherKey !== key && messages[key]?.includes(otherWording) === true) {
+          problems.push(`別の状態の言い回しを混ぜている: ${key}`);
+        }
+      }
+      if (messages[UNCLASSIFIED_QUOTA_MESSAGE_KEY]?.includes(wording) === true) {
+        problems.push(`分類を持たない 429 が ${key} の主張をしている`);
+      }
+    }
+
+    // **区別できること自体を見る。** 同じ文言へ潰すと、分類を返す意味が消える。
+    const distinct = new Set(STOP_STATES.map((state) => messages[state.messageKey]));
+    if (distinct.size !== STOP_STATES.length) {
+      problems.push('日次と月次が同じ文言になっている');
+    }
+    return problems;
+  }
+
+  it('4.4 の 2 つの状態が、応答の分類ごとの文言と一致する', () => {
+    expect(collationViolations(env.TEST_PRODUCT_SPEC, GENERATE_MESSAGES)).toEqual([]);
+  });
+
+  it('応答が返しうる分類をすべて出し分けられる', () => {
+    // **一覧の正本は `src/quota.ts`。** 分類を増やして文言を足し忘れると落ちる。
+    expect(STOP_STATES.map((state) => state.messageKey)).toEqual(
+      QUOTA_REJECTION_REASONS.map((reason) => `${QUOTA_EXCEEDED_STATUS}:${reason}`),
+    );
+    for (const reason of QUOTA_REJECTION_REASONS) {
+      const key = selectGenerateMessageKey(QUOTA_EXCEEDED_STATUS, reason);
+      expect(key, reason).toBe(`${QUOTA_EXCEEDED_STATUS}:${reason}`);
+      expect(GENERATE_MESSAGES[key], reason).toBeDefined();
+    }
+  });
+
+  it('応答が再開時刻を載せなくても、画面は再開時刻を示す（PR #135 のレビュー指摘）', () => {
+    // 段が契約を満たさない `resetsAt` を返したとき、応答はそれを**載せない**
+    // （`src/quota.ts` の `isResetTimestamp`）。**画面の照合はそれで壊れない。**
+    // 枠が戻るのは常に JST の 0 時で、画面が出す時刻は応答の値によらないためである
+    // （スクリプトが応答から読むのは `error` の 1 つだけ。8.3）。
+    const body = describeQuotaRejection(DAILY_QUOTA_REASON, 0);
+    expect(body).toEqual({ error: DAILY_QUOTA_REASON });
+
+    const key = selectGenerateMessageKey(QUOTA_EXCEEDED_STATUS, body.error);
+    expect(key).toBe(DAILY_QUOTA_MESSAGE_KEY);
+    expect(GENERATE_MESSAGES[key]).toContain(resumeClock);
+    // 4.4 との照合そのものも、応答の値に依存していない。
+    expect(collationViolations(env.TEST_PRODUCT_SPEC, GENERATE_MESSAGES)).toEqual([]);
   });
 
   it('仕様書側を変異させると照合が破れる', () => {
-    // **この検査が効いていることを確かめる。** 上のテストは、抽出が何も拾わない
-    // 状態でも `toContain('')` で通ってしまう（空文字の検査はその一部しか塞がない）。
-    const doctored = env.TEST_PRODUCT_SPEC.replace(
+    // **この検査が効いていることを確かめる。** 抽出が何も拾わない状態でも
+    // `toContain('')` で通ってしまう書き方を避けるため、両方の行を変異させる。
+    const daily = env.TEST_PRODUCT_SPEC.replace(
       '「本日の枠は終了しました」',
       '「本日ぶんの生成は締め切りました」',
     );
-    expect(doctored).not.toBe(env.TEST_PRODUCT_SPEC);
-    expect(quotedWording(doctored, '枠が尽きたら')).toBe('本日ぶんの生成は締め切りました');
-    expect(GENERATE_MESSAGES['429:']).not.toContain(quotedWording(doctored, '枠が尽きたら'));
+    expect(daily).not.toBe(env.TEST_PRODUCT_SPEC);
+    expect(collationViolations(daily, GENERATE_MESSAGES)).toContain(
+      `4.4 の言い回しを含まない: ${DAILY_QUOTA_MESSAGE_KEY}`,
+    );
+
+    const monthly = env.TEST_PRODUCT_SPEC.replace(
+      '「今月の生成は終了しました。プレイと共有は引き続きご利用いただけます」',
+      '「今月の生成枠は使い切りました」',
+    );
+    expect(monthly).not.toBe(env.TEST_PRODUCT_SPEC);
+    expect(collationViolations(monthly, GENERATE_MESSAGES)).toContain(
+      `4.4 の言い回しを含まない: ${MONTHLY_LIMIT_MESSAGE_KEY}`,
+    );
+  });
+
+  it('4.4 が再開時刻を求めていることを、本文から読んでいる', () => {
+    // **要求そのものを書き写していない。** 4.4 から「再開時刻」の要求が消えれば、
+    // 画面が時刻を出しているかどうかは検査されなくなる（そして 4.4 の変更として
+    // レビューに現れる）。逆に、要求が残ったまま文言から時刻を落とせば落ちる。
+    const withoutResume = env.TEST_PRODUCT_SPEC.replace(
+      '翌日の再開時刻を示す',
+      '翌日また使えることを示す',
+    );
+    expect(withoutResume).not.toBe(env.TEST_PRODUCT_SPEC);
+    expect(bulletWith(withoutResume, '枠が尽きたら')).not.toContain('再開時刻');
+
+    const withoutClock = {
+      ...GENERATE_MESSAGES,
+      [DAILY_QUOTA_MESSAGE_KEY]: '生成枠を使い切りました。本日の枠は終了しました。',
+    };
+    expect(collationViolations(env.TEST_PRODUCT_SPEC, withoutClock)).toContain(
+      `再開時刻を示していない: ${DAILY_QUOTA_MESSAGE_KEY}`,
+    );
+  });
+
+  it('分類を 1 種類へ潰すと照合が破れる', () => {
+    // **#132 の本体は「区別できること」である。** #128 の状態（429 の文言が 1 つ
+    // しかなく、両方の言い回しを 1 つに束ねている）へ戻すと落ちる。
+    const collapsed = {
+      ...GENERATE_MESSAGES,
+      [DAILY_QUOTA_MESSAGE_KEY]: GENERATE_MESSAGES[MONTHLY_LIMIT_MESSAGE_KEY]!,
+    };
+    const problems = collationViolations(env.TEST_PRODUCT_SPEC, collapsed);
+    expect(problems).toContain('日次と月次が同じ文言になっている');
+    expect(problems).toContain(`別の状態の言い回しを混ぜている: ${DAILY_QUOTA_MESSAGE_KEY}`);
+
+    const merged = {
+      ...GENERATE_MESSAGES,
+      [UNCLASSIFIED_QUOTA_MESSAGE_KEY]:
+        GENERATE_MESSAGES[DAILY_QUOTA_MESSAGE_KEY]! + GENERATE_MESSAGES[MONTHLY_LIMIT_MESSAGE_KEY]!,
+    };
+    expect(collationViolations(env.TEST_PRODUCT_SPEC, merged)).toContain(
+      `分類を持たない 429 が ${DAILY_QUOTA_MESSAGE_KEY} の主張をしている`,
+    );
   });
 });
 
@@ -353,7 +539,10 @@ describe('8.3 の検査を通っていない文字列を表示面へ持ち込ま
       expect(isElapsedOnly(expression), expression).toBe(true);
     }
     // 応答本文の他の項目（生成物由来の import パスや理由）に触れていないこと。
-    for (const field of ['.imports', '.reason', '.step', '.message', '.gameId']) {
+    // **`.resetsAt` も読まない**（#132）。応答は日次の再開時刻を載せるが、枠が戻るのは
+    // 常に JST の 0 時なので、画面の文言は固定文字列で足りる。読む項目を増やすと、
+    // 「応答から読むのは `error` の 1 つだけ」という性質が表示の都合で緩む。
+    for (const field of ['.imports', '.reason', '.step', '.message', '.gameId', '.resetsAt']) {
       expect(script, field).not.toContain(field);
     }
   });

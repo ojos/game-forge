@@ -26,6 +26,13 @@ import { resolveSessionUser } from './session-user.js';
 import type { GenerationResult, SystemPromptResolver } from './generation-models.js';
 import { createBedrockGenerateSource } from './bedrock.js';
 import { buildSystemPrompt } from './system-prompt.js';
+import {
+  GeneratedSourceRejected,
+  SOURCE_REJECTED_STATUS,
+  describeSourceRejection,
+  inspectGeneratedSource,
+} from './source-inspection.js';
+import { createLambdaBuild } from './build-client.js';
 
 /** 生成エンドポイントのパス。 */
 export const GENERATE_PATH = '/api/generate';
@@ -159,17 +166,27 @@ export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
 };
 
 /**
- * 既定のパイプライン。**生成の段（3.3-3）だけが実装済み**である。
+ * 既定のパイプライン。**生成（3.3-3）・検査（5.2-5）・ビルド（3.3-5..7）が実装済み**である。
  *
- * `notImplementedPipeline` を土台に、`generateSource` を Bedrock の実装で差し替える。
+ * `notImplementedPipeline` を土台に、実装済みの段だけを差し替える。
  * **順序は変えない。** 3.3 は「クォータ判定 → 生成 → 費用計上 → ビルド → 行の作成」で、
  * 生成の手前にクォータ判定（#23）が未実装のまま残る。したがってこの既定で経路を
  * 叩いても **501 で止まり、Bedrock は呼ばれない。** これは事故ではなく設計で、
  * **費用の出る段を、費用を止める段より先に開けない。**
+ *
+ * **つまりこの結線は、まだ利用者から到達できない。** 3.3-2（#23）と 3.3-4（#22）が
+ * 埋まって初めて経路が通る。**それでも先に繋ぐ**のは、繋がっていない実装は
+ * 「動くはず」の状態にとどまり、結線のときに初めて型と契約の食い違いが出るためである。
+ *
+ * **ビルドは `createLambdaBuild()` で作る。** 呼び出しに必要な資格情報が環境に無い場合、
+ * この段は `BuildNotConfigured`（`kind='config'`）で落ちる。**#115 が IAM の principal を
+ * 宣言するまでは、その状態が正常である。**
  */
 export const defaultPipeline: GenerationPipeline = {
   ...notImplementedPipeline,
   generateSource: createBedrockGenerateSource({ systemPrompt: buildSystemPrompt }),
+  inspectSource: inspectGeneratedSource,
+  build: createLambdaBuild(),
 };
 
 /**
@@ -310,6 +327,14 @@ async function handleGenerate(
       // 4.4 は停止時も「プレイと拡散は継続する」とする。止まるのは生成だけなので、
       // 認証の失敗（401）とは別の応答にする。
       return json({ error: 'quota exceeded' }, 429);
+    }
+    if (error instanceof GeneratedSourceRejected) {
+      // 5.2-5 の「違反時は再生成に回さず即拒否」。**500 にしない**（段は正常に働いた）。
+      // **429 でもない**（枠は消費済み）。**400 でもない**（リクエストは検証を通っている）。
+      // 拒否の理由と、引っかかった import は `describeSourceRejection` が整える。
+      // **ここで文字列を組み立てない**（生成物由来の値の扱いは適合層が知っている）。
+      console.error(`[generate] ${error.name}: ${error.reason}`);
+      return json(describeSourceRejection(error), SOURCE_REJECTED_STATUS);
     }
     if (error instanceof PipelineStepNotImplemented) {
       // 骨組みだけが動いている状態。どこまで進んだかを返す（段の名前は実装の内部名

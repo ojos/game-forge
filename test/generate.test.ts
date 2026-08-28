@@ -415,6 +415,46 @@ describe('生成の段が Bedrock へ結線されている（#83）', () => {
     expect(defaultPipeline.generateSource).not.toBe(notImplementedPipeline.generateSource);
   });
 
+  it('検査（#17）とビルド（#19）が結線されている', () => {
+    // **同一性で見る。** 「501 を投げないこと」で見ると、未実装の段を別の例外へ
+    // 変えただけの実装でも通ってしまう。
+    expect(defaultPipeline.inspectSource).not.toBe(notImplementedPipeline.inspectSource);
+    expect(defaultPipeline.build).not.toBe(notImplementedPipeline.build);
+  });
+
+  it('許可外の import を含む生成は 422 で拒否され、500 にはならない', async () => {
+    // **経路の端まで見る。** `test/source-inspection.test.ts` は適合層までしか見て
+    // おらず、`handleGenerate` の catch に分岐が無ければ汎用の 500 へ落ちる。
+    // ここが 500 に戻ると、利用者には「システム障害」に見えて再試行を促してしまう。
+    const { pipeline } = recordingPipeline();
+    const routes = createGenerateRoutes({
+      ...pipeline,
+      generateSource: async () => ({
+        modelKey: DEFAULT_GENERATION_MODEL_KEY,
+        modelId: findGenerationModel(DEFAULT_GENERATION_MODEL_KEY)!.modelId,
+        source: 'package main\n\nimport "os/exec"\n\nfunc main() {}\n',
+        usage: {
+          inputTokens: 1,
+          outputTokens: 2,
+          cacheReadInputTokens: null,
+          cacheWriteInputTokens: null,
+        },
+        stopReason: 'end_turn',
+      }),
+      // **既定の実装を借りる。** ここでテスト専用の検査を書くと、結線した現物では
+      // なく写しを検査することになる。
+      inspectSource: defaultPipeline.inspectSource,
+    });
+
+    const cookie = await sessionCookie(await seedUser('rejected'));
+    const response = await post(routes, { prompt: 'ゲーム' }, cookie);
+
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { error: string; imports: readonly string[] };
+    expect(body.error).toBe('source-rejected');
+    expect(body.imports).toContain('os/exec');
+  });
+
   it('システムプロンプト（#16）が結線されている', async () => {
     // **#16 で本文が入った。** 以前ここは `systemPrompt:<モデル>` の 501 を期待して
     // いたが、本物のリゾルバ（`src/system-prompt.ts`）へ差し替えたので、その段は

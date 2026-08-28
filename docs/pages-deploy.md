@@ -152,20 +152,24 @@ npx wrangler pages secret put GOOGLE_CLIENT_SECRET --project-name game-forge
 **`SESSION_SECRET` はローカルの値を使い回さないこと。** 32 文字以上のランダム値を
 本番用に新しく作ります。
 
-**Bedrock の資格情報（`BEDROCK_AWS_*`）は、いまは登録しません。** #83 で生成
-クライアント（Bedrock の `Converse` と SigV4 署名、モデル選択）は入りましたが、
-`/api/generate` は**クォータ判定（#23）が未実装のため 501 で止まり、Bedrock を
-呼びません**（※ #16 のシステムプロンプトは実装済み。2026-08-28 に追随）。生成を有効にする時点で次を足します。**`BEDROCK_AWS_SESSION_TOKEN` は本番では
+**Bedrock の資格情報（`BEDROCK_AWS_*`）は投入済みです（2026-08-28）。生成経路は
+開通しています。** **`BEDROCK_AWS_SESSION_TOKEN` は本番では
 登録しません**（一時資格情報はローカル開発で SSO を使うときだけのもので、本番には
 長命キーを置きます。Workers は AWS の外で動くため IAM ロールを引き受けられません。
 仕様書 4.1）。
 
 ```bash
-# 生成機能を有効にする時点で（#83）
 npx wrangler pages secret put BEDROCK_AWS_REGION --project-name game-forge
 npx wrangler pages secret put BEDROCK_AWS_ACCESS_KEY_ID --project-name game-forge
 npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY --project-name game-forge
 ```
+
+> **投入までに何を確かめたか（2026-08-28）。** 下の「ガードが無いまま生成を開けない」を
+> 満たすため、**4 層のうち層 1 の発火を本番で実測してから**開けた。月次の台帳を上限超へ
+> 積んだ状態で `/api/generate` を叩き、**429 が返り Bedrock へ到達しない**ことを確認して
+> いる（確認後、積んだ行は削除した）。**鍵を Inactive のまま実測した**ので、層 1 が効かない
+> 場合でも課金は起きない形にした。層 2（5 分 30 万トークンのバースト）は、実測に実際の
+> 大量消費が要るため**未検証のまま受け入れている。**
 
 **どのモデルで生成するかはシークレットではありません。** `GENERATION_MODEL` は
 `wrangler.toml` の `[env.production.vars]` が宣言するので、配備すればそのまま効きます

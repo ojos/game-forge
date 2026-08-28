@@ -117,8 +117,14 @@ npm run db:migrate:list   # 未適用のマイグレーションを確認
   2 回目以降は `No migrations to apply!` を返します。SQL 側に `IF NOT EXISTS` を
   書いていないのは、途中で中断したマイグレーションの再実行を「成功」として
   通さないためです（`migrations/0001_init.sql` の冒頭）。
-- `--local` 固定です。リモートの D1 はまだ作っていません（`wrangler.toml` の
-  `database_id` は placeholder）。
+- `--local` 固定です。**手元の経路が触るのはローカルの D1 だけ**で、`wrangler.toml` の
+  `[[d1_databases]]`（既定側）の `database_id` は `local-only-placeholder` のままです。
+  `--local` 実行では参照されず、Miniflare がローカルの実体を作ります。
+  - ※ **本番の D1 は 2026-08-26 に作成済みです**（`game-forge` / `d81a6f80-…`）。
+    宣言は `[env.production]` と `[env.preview]` の側にあり、**適用は
+    `--remote` を付けた別の操作**になります（`docs/pages-deploy.md` の「マイグレーションを
+    本番 D1 へ適用する」）。**ここで `--remote` を既定にしないこと**が要点で、
+    手元の試行が本番のデータへ届く経路を作らないためです。
 - **テストは別経路です。** `npm test` は `vitest.config.ts` が Node 側で読んだ
   マイグレーションを `TEST_MIGRATIONS` として注入し、`test/helpers/schema.ts` の
   `applySchema()` が適用します。ここで `npm run db:migrate` を先に実行する必要は

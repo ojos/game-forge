@@ -303,7 +303,7 @@ function verify(before: string, after: string, removed: readonly GoImportSpec[])
     expected.splice(at, 1);
   }
   const actual = pathsOf(scannedAfter);
-  return expected.length === actual.length && [...expected].sort().join(' ') === [...actual].sort().join(' ');
+  return expected.length === actual.length && [...expected].sort().join('\0') === [...actual].sort().join('\0');
 }
 
 /**

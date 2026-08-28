@@ -9,6 +9,8 @@ import {
   BuildRejected,
   BuildResponseUnreadable,
   BuildTimedOut,
+  artifactKeysOf,
+  buildCacheRecordOf,
   createLambdaBuild,
   invokeBuildFunction,
   invokeEndpoint,
@@ -101,7 +103,20 @@ async function buildResponseBody(
     goVersion: 'go1.26.5',
     wasm: { bytes: 11_404_411, sha256: 'a'.repeat(64) },
     compressed: await compressedNode('brotli-bytes'),
-    timings: { resetMs: 0, prepareMs: 20, buildMs: 18_562, compressMs: 2_373, totalMs: 20_955 },
+    // 3.3-6: 関数が R2 へ書いたキー。**綴りは関数側が決める**
+    // （`docker/isolated-build/handler/r2.go` の `artifactKeys`）。
+    storage: {
+      sourceKey: `builds/${'d'.repeat(64)}/source.go`,
+      wasmKey: `builds/${'d'.repeat(64)}/go1.26.5/game.wasm.br`,
+    },
+    timings: {
+      resetMs: 0,
+      prepareMs: 20,
+      buildMs: 18_562,
+      compressMs: 2_373,
+      uploadMs: 310,
+      totalMs: 21_265,
+    },
     ...overrides,
   };
 }
@@ -270,6 +285,91 @@ describe('成功応答の読み取り（3.3-7）', () => {
     await expect(readBuildResult({ goVersion: 'go1.26.5' })).rejects.toThrow(
       BuildResponseUnreadable,
     );
+  });
+
+  it('R2 のキーをそのまま運ぶ（3.3-6 / #21）', async () => {
+    const result = await readBuildResult(await buildResponseBody());
+    expect(result.keys.sourceKey).toBe(`builds/${'d'.repeat(64)}/source.go`);
+    expect(result.keys.wasmKey).toBe(`builds/${'d'.repeat(64)}/go1.26.5/game.wasm.br`);
+  });
+
+  it('キーが無ければ読めないとする（成果物の無い作品を作らない）', async () => {
+    // **空文字で埋めない。** 埋めると 3.3-8 が「どこも指さないキー」で `games` 行を
+    // 作り、壊れていることに気づくのは作者の試遊（5.4）かプレイヤーになる。
+    await expect(readBuildResult(await buildResponseBody({ storage: undefined }))).rejects.toThrow(
+      BuildResponseUnreadable,
+    );
+    await expect(
+      readBuildResult(await buildResponseBody({ storage: { sourceKey: 's', wasmKey: '' } })),
+    ).rejects.toThrow(BuildResponseUnreadable);
+    await expect(
+      readBuildResult(await buildResponseBody({ storage: { wasmKey: 'w' } })),
+    ).rejects.toThrow(BuildResponseUnreadable);
+  });
+});
+
+describe('ヒットの有無によらず同じ形でキーが取れる（3.3-8 の前提）', () => {
+  it('非ヒットは関数が書いたキー、ヒットは索引のキーを返す', async () => {
+    const entry = {
+      sourceSha256: 'e'.repeat(64),
+      goVersion: 'go1.26.5',
+      sourceKey: 'builds/cached/source.go',
+      wasmKey: 'builds/cached/go1.26.5/game.wasm.br',
+      wasmBytes: 1,
+      wasmSha256: 'f'.repeat(64),
+      compressedBytes: 2,
+      compressedSha256: '0'.repeat(64),
+      contentEncoding: 'br',
+      createdAt: 1,
+    };
+    expect(artifactKeysOf({ cached: true, sourceSha256: entry.sourceSha256, goVersion: entry.goVersion, artifact: { wasm: { bytes: 1, sha256: entry.wasmSha256 }, compressed: { bytes: 2, sha256: entry.compressedSha256, contentEncoding: 'br' } }, entry })).toEqual({
+      sourceKey: entry.sourceKey,
+      wasmKey: entry.wasmKey,
+    });
+
+    const built = await readBuildResult(await buildResponseBody());
+    expect(artifactKeysOf({ cached: false, sourceSha256: 'a'.repeat(64), ...built })).toEqual(
+      built.keys,
+    );
+  });
+
+  it('索引へ書く内容は非ヒットのときだけ作られる', async () => {
+    // ヒット時に書き直すと `created_at` だけが若返る（`buildCacheRecordOf` の注記）。
+    const built = await readBuildResult(await buildResponseBody());
+    const record = buildCacheRecordOf({ cached: false, sourceSha256: 'a'.repeat(64), ...built });
+    expect(record).not.toBeNull();
+    expect(record).toMatchObject({
+      sourceSha256: 'a'.repeat(64),
+      goVersion: 'go1.26.5',
+      sourceKey: built.keys.sourceKey,
+      wasmKey: built.keys.wasmKey,
+      contentEncoding: 'br',
+    });
+
+    const entry = {
+      sourceSha256: 'e'.repeat(64),
+      goVersion: 'go1.26.5',
+      sourceKey: 'builds/cached/source.go',
+      wasmKey: 'builds/cached/go1.26.5/game.wasm.br',
+      wasmBytes: 1,
+      wasmSha256: 'f'.repeat(64),
+      compressedBytes: 2,
+      compressedSha256: '0'.repeat(64),
+      contentEncoding: 'br',
+      createdAt: 1,
+    };
+    expect(
+      buildCacheRecordOf({
+        cached: true,
+        sourceSha256: entry.sourceSha256,
+        goVersion: entry.goVersion,
+        artifact: {
+          wasm: { bytes: 1, sha256: entry.wasmSha256 },
+          compressed: { bytes: 2, sha256: entry.compressedSha256, contentEncoding: 'br' },
+        },
+        entry,
+      }),
+    ).toBeNull();
   });
 });
 

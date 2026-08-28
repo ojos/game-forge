@@ -16,7 +16,10 @@
  * `src/generation-models.ts`（モデル選択）にあり、このモジュールは順序と境界だけを持つ
  * 立場を変えていない。**#22 で 3.3-4（費用計上）も埋まった**（`src/cost-ledger.ts`）。
  * **#23 で 3.3-2（クォータ判定）も埋まった**（`src/quota.ts`）。
- * **残るのは 3.3-8（`createGame` / #21）で、その段は 501 のままである。**
+ * **#21 で 3.3-6（R2 への書き戻し）と 3.3-8（`games` 行の作成）が埋まり、
+ * 全段が実装済みになった**（`docker/isolated-build/handler/r2.go` と `src/games.ts`）。
+ * `notImplementedPipeline` は**残す**。段を差し替えるときの土台であり、
+ * 「空実装を成功にしない」という性質はこの先も要る。
  *
  * **5.2 との差分**: 5.2 は 3.3 に無い「入力の安全性検査（8.1）」をクォータ判定の
  * 手前に置く。これは M6-1 の範囲なので、この骨組みには段を作らず、挿入位置だけを
@@ -34,7 +37,9 @@ import {
   describeSourceRejection,
   inspectGeneratedSource,
 } from './source-inspection.js';
+import type { BuildOutcome } from './build-client.js';
 import { createLambdaBuild } from './build-client.js';
+import { createDraftGame } from './games.js';
 import { recordGenerationCost } from './cost-ledger.js';
 import { checkGenerationQuota } from './quota.js';
 import type { MonthlyCostWarning } from './quota.js';
@@ -134,10 +139,28 @@ export interface GenerationPipeline {
   ) => Promise<void>;
   /** 5.2-5: AST でパッケージのホワイトリストを検査する（M2-3）。 */
   readonly inspectSource: (generated: GenerationResult) => void;
-  /** 3.3-5..7: Lambda でビルドし、そのまま R2 へ書き戻す（確定24 / M2-5）。 */
-  readonly build: (env: Env, generated: GenerationResult) => Promise<unknown>;
-  /** 3.3-8: `games` 行を `status='draft'` で作成する（M2-7）。 */
-  readonly createGame: (env: Env, userId: string, built: unknown) => Promise<{ id: string }>;
+  /**
+   * 3.3-5..7: Lambda でビルドし、そのまま R2 へ書き戻す（確定24 / M2-5 / M2-7）。
+   *
+   * **戻り値を `unknown` にしていない。** 骨組みの段階では次の段の持ち物が決まって
+   * いなかったが、**#21 で両端が埋まった**。3.3-8 が要るのは R2 のキーと Go の版で、
+   * どちらも `BuildOutcome` が**キャッシュヒットの有無に関わらず**持つ。型で結んで
+   * おけば、キーを返さない実装はコンパイルが通らない。
+   */
+  readonly build: (env: Env, generated: GenerationResult) => Promise<BuildOutcome>;
+  /**
+   * 3.3-8: `games` 行を `status='draft'` で作成する（M2-7）。
+   *
+   * **リクエストを受け取る。** `games.title` は `NOT NULL` だが（5.1）、3.3 の経路に
+   * タイトルを決める段は無い。プロンプトから仮の題を作る（`src/games.ts`）ため、
+   * `recordCost` と同じ理由でここにもリクエストが要る。
+   */
+  readonly createGame: (
+    env: Env,
+    userId: string,
+    request: GenerateRequest,
+    built: BuildOutcome,
+  ) => Promise<{ readonly id: string }>;
 }
 
 /**
@@ -196,8 +219,8 @@ export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
 };
 
 /**
- * 既定のパイプライン。**クォータ判定（3.3-2）・生成（3.3-3）・費用計上（3.3-4）・
- * 検査（5.2-5）・ビルド（3.3-5..7）が実装済み**である。残るのは `createGame`（3.3-8 / #21）。
+ * 既定のパイプライン。**3.3 の全段が実装済み**である（クォータ判定 3.3-2 / 生成 3.3-3 /
+ * 費用計上 3.3-4 / 検査 5.2-5 / ビルドと R2 への書き戻し 3.3-5..7 / `games` 行 3.3-8）。
  *
  * `notImplementedPipeline` を土台に、実装済みの段だけを差し替える。
  * **順序は変えない。** 3.3 は「クォータ判定 → 生成 → 費用計上 → ビルド → 行の作成」である。
@@ -215,6 +238,11 @@ export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
  * **ビルドは `createLambdaBuild()` で作る。** 呼び出しに必要な資格情報が環境に無い場合、
  * この段は `BuildNotConfigured`（`kind='config'`）で落ちる。**#115 が IAM の principal を
  * 宣言するまでは、その状態が正常である。**
+ *
+ * **`createGame`（3.3-8）を結線したことで、経路全体が 202 を返せるようになった。**
+ * この段だけを外すと、成果物は R2 に入り費用も計上されたのに作品が残らない状態に
+ * なる（3.3 の最後の段は「起きたことを記録する」段である）。結線されていること自体を
+ * `test/games.test.ts` が同一性で確かめる（`test/quota.test.ts` と同じ形）。
  */
 export const defaultPipeline: GenerationPipeline = {
   ...notImplementedPipeline,
@@ -223,6 +251,7 @@ export const defaultPipeline: GenerationPipeline = {
   recordCost: recordGenerationCost,
   inspectSource: inspectGeneratedSource,
   build: createLambdaBuild(),
+  createGame: createDraftGame,
 };
 
 /**
@@ -319,7 +348,11 @@ export async function runGenerationPipeline(
   const built = await pipeline.build(env, generated);
 
   // 3.3-8: `games` 行の作成（#76 で採番が戻った。v1.9 は 3.3-9 だった）。
-  return await pipeline.createGame(env, userId, built);
+  //
+  // **この段まで来たとき、成果物は既に R2 に在る**（3.3-6 が書いた、あるいは
+  // キャッシュがヒットして既存のオブジェクトを指している）。順序を入れ替えて
+  // 行を先に作ると、成果物の無いキーを指す作品ができる。
+  return await pipeline.createGame(env, userId, request, built);
 }
 
 /** クォータ超過（3.3-2 / 4.3）。 */

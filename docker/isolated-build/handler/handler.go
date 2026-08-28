@@ -23,8 +23,10 @@ type Artifact struct {
 	Bytes           int64  `json:"bytes"`
 	SHA256          string `json:"sha256"`
 	ContentEncoding string `json:"contentEncoding,omitempty"`
-	// Data は base64（改行なし）。**圧縮後の成果物にだけ載せる。**
-	// 未圧縮 wasm は 8〜12 MB（3.4）あり、Lambda の同期応答 6 MB を超える。
+	// Data は base64（改行なし）。**R2 へ書かない構成のときだけ載る**（3.3-6 が
+	// 成立して以降、本番では返らない。`Result.Storage` の注記）。
+	// 未圧縮 wasm は 8〜12 MB（3.4）あり、Lambda の同期応答 6 MB を超えるため、
+	// 載せるとしても圧縮後の成果物だけである。
 	Data string `json:"data,omitempty"`
 }
 
@@ -48,6 +50,16 @@ type Result struct {
 	Wasm       *Artifact `json:"wasm,omitempty"`
 	Compressed *Artifact `json:"compressed,omitempty"`
 
+	// Storage は R2 へ書いたオブジェクトのキー（3.3-6 / 3.3-7）。
+	//
+	// **これが本来の運び方である。** 器の段階では `Compressed.Data` に本体を載せて
+	// いたが、3.3-6 は「ビルド関数が R2 へ直接書く」と定めている。書いたときは
+	// **本体を返さず、キーだけを返す**（呼び出し側は `games` 行と索引へ写す）。
+	//
+	// 書かない構成（`R2_UPLOAD=skip`。ローカルの封じ込め検査だけが使う）のときだけ
+	// nil になり、代わりに `Compressed.Data` が入る。**両方が空になることは無い。**
+	Storage *StoredArtifacts `json:"storage,omitempty"`
+
 	// Timings は 3.8 のタイムアウト（10 秒）に対する内訳。**どの段が食っているかを
 	// 呼び出し側とログの両方から読めるようにする。** brotli の品質を変える判断は
 	// この値でしか行えない。
@@ -60,7 +72,10 @@ type Timings struct {
 	PrepareMs  int64 `json:"prepareMs"`
 	BuildMs    int64 `json:"buildMs"`
 	CompressMs int64 `json:"compressMs"`
-	TotalMs    int64 `json:"totalMs"`
+	// UploadMs は R2 への書き戻し（3.3-6。SSM の 1 往復と PUT 2 本）。
+	// **書かない構成では 0 になる。**
+	UploadMs int64 `json:"uploadMs"`
+	TotalMs  int64 `json:"totalMs"`
 }
 
 // Handler は 1 つの関数インスタンスが持つ設定。
@@ -78,6 +93,18 @@ type Handler struct {
 	// DiagnosticLimit はビルド診断を切り詰める長さ。
 	DiagnosticLimit int
 
+	// Upload は成果物を R2 へ書き戻す段（3.3-6）。
+	//
+	// **nil は「書かない」を意味する。** そう読ませてよいのは、`R2_UPLOAD=skip` が
+	// 明示されたときだけである（`r2SettingsFromEnv`）。環境変数が落ちた事故で nil に
+	// なる経路は main 側で塞いである。**ここで nil を「まだ実装していない」と読んで
+	// 黙って成功にしない**（3.3-6 が成立していない状態を 200 で返すと、呼び出し側は
+	// `games` 行を作れないのに理由が分からない）。
+	//
+	// 差し替え可能にしてあるのは、**単体テストが実 R2 を要求しないため**である
+	// （`src/bedrock.ts` / `src/build-client.ts` と同じ継ぎ目の置き方）。
+	Upload func(ctx context.Context, req uploadRequest) (*StoredArtifacts, error)
+
 	// compile / compress は差し替え可能にしてある。**テストのためだけではない。**
 	// 掃除がハンドラの先頭で走ることを、後段を落としたうえで確かめられる形にする
 	// のが目的である（7.1 は掃除を「テスト可能な単位」にすることを受け入れの条件に
@@ -87,12 +114,23 @@ type Handler struct {
 }
 
 // NewHandler は本番の設定でハンドラを作る。
-func NewHandler(scratchRoot, templateDir string, quality int) *Handler {
+//
+// @param scratchRoot 毎回掃除する領域
+// @param templateDir vendor 済みテンプレートの位置
+// @param quality brotli の品質
+// @param upload R2 への書き戻し（nil は「書かない」。判断は main が持つ）
+// @returns ハンドラ
+func NewHandler(
+	scratchRoot, templateDir string,
+	quality int,
+	upload func(ctx context.Context, req uploadRequest) (*StoredArtifacts, error),
+) *Handler {
 	return &Handler{
 		ScratchRoot:     scratchRoot,
 		TemplateDir:     templateDir,
 		BrotliQuality:   quality,
 		DiagnosticLimit: 8192,
+		Upload:          upload,
 	}
 }
 
@@ -219,11 +257,40 @@ func (h *Handler) Handle(ctx context.Context, ev Event) (*Result, error) {
 	res.Compressed = &Artifact{
 		Bytes:  brBytes,
 		SHA256: brSum,
-		// 3.4-1 が R2 のオブジェクトメタデータへ求める値そのもの。ここで名前を
-		// 決めておかないと、書き込む側（#21）が綴りを選び直すことになる。
-		ContentEncoding: "br",
-		Data:            base64.StdEncoding.EncodeToString(raw),
+		// 3.4-1 が R2 のオブジェクトメタデータへ求める値そのもの。**書き込み側
+		// （putObject）も同じ定数を使う。** 綴りを 2 か所で選び直さない。
+		ContentEncoding: wasmContentEncoding,
 	}
+
+	// 3.3-6: R2 へ書き戻す。
+	//
+	// **ここで失敗したら関数の障害として返す。** 利用者のコードは正しくビルドできて
+	// いるので `ok=false` にはしない（#20 が診断の無い再生成を起こす）。**成果物が
+	// R2 に無いまま 200 を返すこともしない**（呼び出し側は `games` 行を作り、
+	// 404 を返す作品が生まれる）。
+	if h.Upload != nil {
+		uploadStarted := time.Now()
+		stored, err := h.Upload(ctx, uploadRequest{
+			Source:     []byte(ev.Source),
+			Compressed: raw,
+			GoVersion:  res.GoVersion,
+		})
+		res.Timings.UploadMs = time.Since(uploadStarted).Milliseconds()
+		if err != nil {
+			return nil, fmt.Errorf("成果物を R2 へ書き戻せませんでした: %w", err)
+		}
+		if stored == nil || stored.SourceKey == "" || stored.WasmKey == "" {
+			// 書けたと言いながらキーが無い状態を通さない。呼び出し側は
+			// このキーでしか `games` 行を作れない（3.3-8）。
+			return nil, fmt.Errorf("R2 へ書いたキーを取得できませんでした")
+		}
+		res.Storage = stored
+	} else {
+		// **書かない構成でだけ本体を返す**（ローカルの封じ込め検査が申告と
+		// 突き合わせるため。scripts/check-isolated-build.sh）。本番では返らない。
+		res.Compressed.Data = base64.StdEncoding.EncodeToString(raw)
+	}
+
 	res.OK = true
 	return fill(time.Now()), nil
 }

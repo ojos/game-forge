@@ -26,8 +26,36 @@ func newTestHandler(t *testing.T) (*Handler, string) {
 	mustWrite(t, filepath.Join(template, "go.mod"), "module gameforge.local/sandbox\n")
 	mustWrite(t, filepath.Join(template, "vendor", "modules.txt"), "# vendored\n")
 
-	h := NewHandler(scratch, template, 9)
+	// **書き戻しを持たないハンドラである**（`R2_UPLOAD=skip` に相当）。R2 へ書く経路の
+	// 検査は下の `TestHandleUploads…` が受け持つ。
+	h := NewHandler(scratch, template, 9, nil)
 	return h, scratch
+}
+
+// newUploadingTestHandler は R2 への書き戻しを差し替えたハンドラを作る。
+//
+// **実 R2 を叩かない。** 叩けば外部認証と課金が受け入れ条件に混ざる
+// （`src/build-client.ts` が `fetch` を継ぎ目にしたのと同じ理由）。
+//
+// @param t テスト
+// @param upload 差し替える書き戻し
+// @returns ハンドラ
+func newUploadingTestHandler(
+	t *testing.T,
+	upload func(context.Context, uploadRequest) (*StoredArtifacts, error),
+) *Handler {
+	t.Helper()
+	h, _ := newTestHandler(t)
+	h.Upload = upload
+	h.compile = func(_ context.Context, _, outPath string) ([]byte, error) {
+		mustWrite(t, outPath, "\x00asm the wasm")
+		return nil, nil
+	}
+	h.compress = func(_ context.Context, _ int, _, dstPath string) ([]byte, error) {
+		mustWrite(t, dstPath, "compressed")
+		return nil, nil
+	}
+	return h
 }
 
 // 入力が壊れていても掃除は走る。
@@ -160,6 +188,98 @@ func TestHandleReturnsTheCompressedArtifact(t *testing.T) {
 	}
 	if res.GoVersion == "" {
 		t.Fatalf("goVersion が空です（3.5 の wasm_exec.js 出し分けに要る）")
+	}
+}
+
+// 3.3-6: 書き戻す構成では、キーが返り、**本体は返らない。**
+func TestHandleUploadsAndReturnsKeys(t *testing.T) {
+	var seen uploadRequest
+	h := newUploadingTestHandler(t, func(_ context.Context, req uploadRequest) (*StoredArtifacts, error) {
+		seen = req
+		keys := artifactKeys(req.Source, req.GoVersion)
+		return &keys, nil
+	})
+
+	const source = "package main\n\nfunc main() {}\n"
+	res, err := h.Handle(context.Background(), Event{Source: source})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("成功していません: %+v", res)
+	}
+	if string(seen.Source) != source {
+		t.Fatalf("R2 へ渡したソースが違います: %q", seen.Source)
+	}
+	if string(seen.Compressed) != "compressed" {
+		t.Fatalf("R2 へ渡した .wasm.br が違います: %q", seen.Compressed)
+	}
+	if seen.GoVersion != res.GoVersion {
+		t.Fatalf("R2 へ渡した Go の版が結果と食い違います: %q / %q", seen.GoVersion, res.GoVersion)
+	}
+	if res.Storage == nil || res.Storage.SourceKey == "" || res.Storage.WasmKey == "" {
+		t.Fatalf("書いたキーが返っていません: %+v", res.Storage)
+	}
+	// **本体は返さない**（3.3-6 の完成形。R2 に在るものを応答へ二重に載せない）。
+	if res.Compressed.Data != "" {
+		t.Fatalf("R2 へ書いたのに本体も返しています（%d 文字）", len(res.Compressed.Data))
+	}
+	// 3.4-1 のメタデータは書き戻しの有無に関わらず申告する。
+	if res.Compressed.ContentEncoding != wasmContentEncoding {
+		t.Fatalf("Content-Encoding が %q です", res.Compressed.ContentEncoding)
+	}
+}
+
+// **R2 へ書けなかったら成功にしない**（3.3-6 / 3.3-8）。
+//
+// ここが `ok=true` になると、呼び出し側は成果物の無いキーで `games` 行を作り、
+// **404 を返す作品**が生まれる。`ok=false` でもいけない（利用者のコードは通っており、
+// #20 が手掛かりの無い再生成を起こす）。**関数の障害として返す。**
+func TestHandleFailsWhenTheUploadFails(t *testing.T) {
+	h := newUploadingTestHandler(t, func(context.Context, uploadRequest) (*StoredArtifacts, error) {
+		return nil, errors.New("SSM が 400 を返しました")
+	})
+
+	res, err := h.Handle(context.Background(), Event{Source: "package main\n"})
+	if err == nil {
+		t.Fatalf("R2 へ書けなかったのに成功しました: %+v", res)
+	}
+	if res != nil {
+		t.Fatalf("障害なのに結果を返しています: %+v", res)
+	}
+}
+
+// キーを返さない書き戻しを「成功」として通さない。
+func TestHandleFailsWhenTheUploadReturnsNoKeys(t *testing.T) {
+	h := newUploadingTestHandler(t, func(context.Context, uploadRequest) (*StoredArtifacts, error) {
+		return &StoredArtifacts{}, nil
+	})
+
+	if _, err := h.Handle(context.Background(), Event{Source: "package main\n"}); err == nil {
+		t.Fatal("キーが空でも成功しました")
+	}
+}
+
+// 書き戻しに渡す前にビルドが失敗したら、**R2 へは触らない**（資格情報も読まない）。
+func TestHandleDoesNotUploadWhenTheBuildFails(t *testing.T) {
+	called := false
+	h := newUploadingTestHandler(t, func(context.Context, uploadRequest) (*StoredArtifacts, error) {
+		called = true
+		return &StoredArtifacts{SourceKey: "s", WasmKey: "w"}, nil
+	})
+	h.compile = func(context.Context, string, string) ([]byte, error) {
+		return []byte("./main.go:3:1: syntax error"), errors.New("exit status 1")
+	}
+
+	res, err := h.Handle(context.Background(), Event{Source: "package main\n"})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if res.OK {
+		t.Fatal("ビルドが失敗したのに成功しています")
+	}
+	if called {
+		t.Fatal("ビルドが失敗したのに R2 を触りました")
 	}
 }
 

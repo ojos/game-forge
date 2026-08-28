@@ -21,6 +21,7 @@
 # | Ebitengine が vendor から解決できる | **する**（`GOFLAGS=-mod=vendor` は本番でも効く） |
 # | 成果物が申告と一致し、wasm と `.wasm.br` になる | **する** |
 # | 壊れたソースが `ok=false` で返る | **する** |
+# | **R2 の構成が無い／資格情報を読めないときに成功しない**（3.3-6） | **する**（同じコードが Lambda で動く） |
 # | `--read-only`（`/tmp` 以外が書けない） | **する**（本番もプラットフォーム既定でそうなる） |
 # | **`--network=none` が効いている** | **しない。本番に対応物が無い**（7.1 の「受け入れた劣化」1 点目） |
 # | **実行ユーザーが uid 65534** | **しない。** Lambda は USER を解釈すると明記していない（同 5 点目） |
@@ -257,6 +258,18 @@ out_fetch() {
   return "$rc"
 }
 
+# R2 への書き戻し（3.3-6）の構成。
+#
+# **この検査は R2 へ書けない。** `--network=none` なので SSM にも R2 にも到達できない。
+# ハンドラは**未設定を「書かない」と読み替えない**（`R2_CREDENTIALS_PARAMETER` が
+# 無ければ起動しない。handler/r2.go）ので、検査側が「書かない」を明示する。
+#
+# **既定値としてここに書き写しているのではない。** 本番の宣言は
+# terraform/build-function.tf の `R2_CREDENTIALS_PARAMETER` で、こちらはローカルの
+# 検査だけが使う逃げ道である。**逃げ道が本番へ紛れ込まないこと自体を、下の
+# 「4. R2 の構成」で検査する。**
+R2_ENV_OPTS=(-e "R2_UPLOAD=skip")
+
 ##
 # 封じ込め下でハンドラを走らせる。
 #
@@ -264,6 +277,8 @@ out_fetch() {
 #
 # 第 3 引数は、ハンドラを起動する前に `/tmp` へ細工をするためにある
 # （掃除の検査で「前回の残骸」を置く）。
+#
+# R2 の構成は `R2_ENV_OPTS`（配列）で渡す。呼び出しごとに差し替えられる。
 ##
 run_handler() {
   local source_file="$1" prefix="$2" pre="${3:-true}"
@@ -273,6 +288,7 @@ run_handler() {
   # **診断も一覧も、ハンドラの終了コードに関わらず書く。** 失敗したときにこそ
   # 中身が要る。終了コードは最後にそのまま返す。
   timeout "$BUILD_TIMEOUT" docker run -e "EVENT_JSON=$event" -e "BROTLI_QUALITY=$BROTLI_QUALITY" \
+    "${R2_ENV_OPTS[@]}" \
     "${CONTAIN_OPTS[@]}" -v "$OUT_VOLUME":/out \
     --entrypoint /bin/sh "$IMAGE" -c "
       rc=0
@@ -485,7 +501,58 @@ else
   ng "壊れたソースの呼び出しが結果を返しませんでした"
 fi
 
-# ── 4. 封じ込めそのもの（ローカルにしか無い層を含む） ───────────────────────
+# ── 4. R2 への書き戻しの構成（3.3-6） ───────────────────────────────────────
+#
+# **ここで確かめるのは「書けること」ではない**（`--network=none` なので書けない）。
+# 確かめるのは **「書けないときに成功しないこと」** である。
+#
+# 3.3-6 が成立していない状態で `ok=true` が返ると、呼び出し側（3.3-8）は
+# **成果物の無いキーで `games` 行を作る。** 壊れていることに気づくのは、
+# 作者が試遊した瞬間（5.4）か、公開後のプレイヤーである。
+#
+# 2 つの落とし方を見る。**どちらも「黙って成功」の経路そのものである。**
+#
+#   - 宣言（terraform/build-function.tf）から環境変数が落ちた   → 起動しない
+#   - 資格情報を読みに行けない（SSM へ到達できない・権限が無い） → 呼び出しが失敗する
+echo "[isolated-build] R2 への書き戻しの構成を検査します（3.3-6）"
+
+# (1) 構成が無いまま動き出さない。**未設定を「書かない」と読み替えない。**
+out_reset
+R2_ENV_OPTS=()
+if run_handler docker/isolated-build/sample/ebitengine.go noconfig >/dev/null 2>&1; then
+  ng "R2 の構成が無いのに成功しました（未設定を「書かない」と読み替えています）"
+else
+  if out_fetch noconfig.json "$WORKDIR/noconfig.json"; then
+    ng "R2 の構成が無いのに結果を返しました"
+  else
+    ok "R2 の構成が無ければ起動しない（黙って成果物だけ返さない）"
+  fi
+fi
+
+# (2) 資格情報を読めなければ、呼び出しは失敗する。
+#
+# **ビルドが通ったうえで**書き戻しに失敗する経路を見る。`ok=true` が返れば
+# 「R2 に無いのに成功した」ことになる。
+#
+# **Ebitengine のサンプルは使わない。** ここで見たいのは書き戻しの側だけで、
+# ビルドの中身は上の 2 で見ている。標準ライブラリだけの最小のソースにして、
+# 検査 1 回分の時間を足さない。
+printf 'package main\n\nfunc main() {}\n' >"$WORKDIR/minimal.go"
+out_reset
+R2_ENV_OPTS=(-e "R2_CREDENTIALS_PARAMETER=/game-forge/prod/r2-credentials" -e "AWS_REGION=ap-northeast-1")
+if run_handler "$WORKDIR/minimal.go" unreachable >/dev/null 2>&1; then
+  ng "SSM へ到達できないのに成功しました"
+else
+  if out_fetch unreachable.json "$WORKDIR/unreachable.json"; then
+    jq -c . <"$WORKDIR/unreachable.json" | sed 's/^/    /' >&2
+    ng "資格情報を読めないのに結果を返しました（黙って成功しています）"
+  else
+    ok "資格情報を読めなければ関数の障害として落ちる（成果物だけ返さない）"
+  fi
+fi
+R2_ENV_OPTS=(-e "R2_UPLOAD=skip")
+
+# ── 5. 封じ込めそのもの（ローカルにしか無い層を含む） ───────────────────────
 #
 # **ここから下は本番構成の検証ではない**（冒頭の表）。設定が外れたことに気づけない
 # まま緑が出続けるのを防ぐために残している。

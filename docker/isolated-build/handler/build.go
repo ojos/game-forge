@@ -77,7 +77,7 @@ func copyFile(src, dst string) error {
 func compileWasm(ctx context.Context, workDir, outPath string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "go", "build", "-ldflags=-s -w", "-o", outPath, ".")
 	cmd.Dir = workDir
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(environWithoutCredentials(),
 		"GOCACHE="+filepath.Join(workDir, "gocache"),
 		"GOMODCACHE="+filepath.Join(workDir, "gomodcache"),
 		"GOTMPDIR="+filepath.Join(workDir, "gotmp"),
@@ -119,6 +119,52 @@ func compressBrotli(ctx context.Context, quality int, srcPath, dstPath string) (
 		srcPath,
 	)
 	return cmd.CombinedOutput()
+}
+
+// environWithoutCredentials は、AWS の資格情報を落とした環境変数一覧を返す。
+//
+// # なぜ落とすのか（3.3-6 の受け入れ条件）
+//
+// 3.3 は「**R2 の認証情報はビルド側のみが保持する。ブラウザにもコンテナにも渡らない**」
+// と定める。R2 の資格情報は環境変数へ置いていない（`r2.go` の注記）ので、そちらは
+// 構造として渡らない。**残るのは Lambda が実行ロールのために置く `AWS_*` である。**
+// これは R2 の鍵ではないが、`ssm:GetParameter` と `kms:Decrypt` を持つ資格情報であり、
+// **渡せば R2 の資格情報を取りに行ける。**
+//
+// `go build` は生成コードを実行しない（CGO_ENABLED=0 で cgo も無く、`//go:generate` も
+// 走らない）ため、いま漏れる経路が分かっているわけではない。**それでも渡さない。**
+// 7.1 の封じ込めは「経路を数え上げて塞ぐ」ではなく「持たせない」で立てている。
+//
+// **`AWS_LAMBDA_` は残す。** 実行環境の識別（関数名・メモリ量など）であって資格情報
+// ではなく、落とすと Lambda の他の仕組みが読めなくなりうる。落とすのは資格情報と、
+// それを名乗る 3 つに限る。
+//
+// @returns 資格情報を除いた環境変数一覧
+func environWithoutCredentials() []string {
+	blocked := map[string]bool{
+		"AWS_ACCESS_KEY_ID":     true,
+		"AWS_SECRET_ACCESS_KEY": true,
+		"AWS_SESSION_TOKEN":     true,
+		// 古い綴り（SDK が受け付ける別名）も落とす。
+		"AWS_SECURITY_TOKEN": true,
+		// 資格情報そのものではないが、取りに行く先である。
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI":     true,
+		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": true,
+		"AWS_CONTAINER_AUTHORIZATION_TOKEN":      true,
+		// R2 の資格情報の在り処。値ではないが、渡す理由が無い。
+		"R2_CREDENTIALS_PARAMETER": true,
+	}
+
+	source := os.Environ()
+	out := make([]string, 0, len(source))
+	for _, entry := range source {
+		name, _, found := strings.Cut(entry, "=")
+		if found && blocked[name] {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // digestFile はファイルのバイト数と sha256 を返す。

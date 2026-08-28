@@ -21,6 +21,7 @@ import { buildSystemPrompt } from '../src/system-prompt.js';
 import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, buildSessionCookie, signSession } from '../src/session.js';
+import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
@@ -132,7 +133,7 @@ function recordingPipeline(): { calls: string[]; pipeline: GenerationPipeline } 
       },
       build: async () => {
         calls.push('build');
-        return { wasmKey: 'k' };
+        return fakeBuildOutcome();
       },
       createGame: async () => {
         calls.push('createGame');

@@ -17,6 +17,7 @@ import {
   describeSourceRejection,
   inspectGeneratedSource,
 } from '../src/source-inspection.js';
+import { fakeBuildOutcome } from './helpers/build-outcome.js';
 
 /**
  * 生成の段（3.3-3）の出力を組み立てる。
@@ -262,7 +263,7 @@ function pipelineWith(inspectSource: GenerationPipeline['inspectSource'], goSour
       },
       build: async () => {
         calls.push('build');
-        return { wasmKey: 'k' };
+        return fakeBuildOutcome();
       },
       createGame: async () => {
         calls.push('createGame');

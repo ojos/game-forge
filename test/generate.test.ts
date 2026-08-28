@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   GENERATE_PATH,
   MAX_PROMPT_LENGTH,
@@ -16,6 +16,16 @@ import {
   findGenerationModel,
 } from '../src/generation-models.js';
 import { BedrockNotConfigured } from '../src/bedrock.js';
+import {
+  BuildFunctionFailed,
+  BuildNotConfigured,
+  BuildRejected,
+  BuildTimedOut,
+} from '../src/build-client.js';
+import type { BuildFailure } from '../src/build-client.js';
+import { BuildRetriesExhausted, MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
+import type { BuildRetryContext } from '../src/build-retry.js';
+import { recordGenerationCost } from '../src/cost-ledger.js';
 import { DAILY_QUOTA_PER_USER } from '../src/quota.js';
 import { buildSystemPrompt } from '../src/system-prompt.js';
 import type { Route } from '../src/routes.js';
@@ -25,6 +35,14 @@ import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
+
+/**
+ * 仕様書 5.2-7 が宣言するリトライの上限（**再試行の回数**）を拾う形。
+ *
+ * 本文と、#20 の注記の両方に現れる。`test/quota.test.ts` の照合と同じで、
+ * 「更新したか」ではなく「一致しているか」を見る。
+ */
+const RETRY_LIMIT_PATTERN = /自動リトライ（最大\s*([0-9]+)\s*回）/gu;
 const SECRET = 'test-secret-value-for-generate-endpoint-1';
 
 /**
@@ -521,6 +539,343 @@ describe('生成の段が Bedrock へ結線されている（#83）', () => {
       // 見えない月の行だが、storage を共有する経路が将来できたときに効く。
       await env.DB.prepare('delete from generations where user_id = ?').bind(userId).run();
     }
+  });
+});
+
+describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () => {
+  /** Go の診断の代わり。**応答にもログにも台帳にも出てはいけない文字列。** */
+  const DIAGNOSTICS = './main.go:12:2: undefined: ebiten.RunGameX';
+
+  /**
+   * 常にビルドが失敗するパイプライン。
+   *
+   * @param failures 何回目までビルドを失敗させるか（既定は常に）
+   * @returns 観測用の配列と、パイプライン
+   */
+  function failingBuildPipeline(failures = Number.POSITIVE_INFINITY): {
+    attempts: (BuildRetryContext | undefined)[];
+    calls: string[];
+    pipeline: GenerationPipeline;
+  } {
+    const base = recordingPipeline();
+    const attempts: (BuildRetryContext | undefined)[] = [];
+    let built = 0;
+    return {
+      attempts,
+      calls: base.calls,
+      pipeline: {
+        ...base.pipeline,
+        generateSource: async (env, request, retry) => {
+          attempts.push(retry);
+          return await base.pipeline.generateSource(env, request, retry);
+        },
+        build: async (env, generated) => {
+          built += 1;
+          if (built > failures) {
+            return await base.pipeline.build(env, generated);
+          }
+          base.calls.push('build');
+          throw new BuildRejected('build', DIAGNOSTICS);
+        },
+      },
+    };
+  }
+
+  /**
+   * 台帳の行を読む。
+   *
+   * @param userId 利用者の id
+   * @returns 記録された行（古い順）
+   */
+  async function ledgerRows(
+    userId: string,
+  ): Promise<{ prompt: string; succeeded: number; model: string }[]> {
+    const rows = await env.DB.prepare(
+      'select prompt, succeeded, model from generations where user_id = ? order by rowid',
+    )
+      .bind(userId)
+      .all<{ prompt: string; succeeded: number; model: string }>();
+    return rows.results;
+  }
+
+  afterAll(async () => {
+    // **この describe が置いた行だけを消す。** 月次上限（4.3 層 1）はサービス全体の
+    // 累計で判定するので、実物の台帳へ書いた行を残すと他の経路の判定に効く
+    // （`test/quota.test.ts` と同じ後始末）。
+    await env.DB.prepare("delete from generations where user_id like 'gen-user-retry-%'").run();
+  });
+
+  it('常に失敗するソースは 3 回（初回＋2）で打ち切られる（acceptance 1）', async () => {
+    const { attempts, calls, pipeline } = failingBuildPipeline();
+
+    await expect(
+      runGenerationPipeline(testEnv(), 'user-retry-1', { prompt: 'ゲーム' }, pipeline),
+    ).rejects.toBeInstanceOf(BuildRetriesExhausted);
+
+    // **回数を定数からも直値からも見る。** 定数だけで見ると、上限を 4 に変えた
+    // 実装がテストごと追随して通る（変異が検出できない）。
+    expect(MAX_GENERATION_ATTEMPTS).toBe(3);
+    expect(attempts.length).toBe(3);
+    expect(calls.filter((call) => call === 'generateSource').length).toBe(3);
+    expect(calls.filter((call) => call === 'build').length).toBe(3);
+    // 作品行は作られない。ビルドが通っていない以上、成果物は R2 に無い。
+    expect(calls).not.toContain('createGame');
+  });
+
+  it('クォータ判定はリトライの外側で 1 回だけ行う（4.3 / 3.3-2）', async () => {
+    // 4.3 は「上限の判定は 3.3-2 の 1 か所で行う」と定める。ループの中で数え直すと
+    // 判定位置が 2 か所になり、D1 の読み取りも試行のたびに増える（3.6）。
+    // **枠の消費は台帳の行数で数える**ので、判定が 1 回でも消費は 3 回分である。
+    const { calls, pipeline } = failingBuildPipeline();
+    await runGenerationPipeline(testEnv(), 'user-retry-2', { prompt: 'ゲーム' }, pipeline).catch(
+      () => undefined,
+    );
+    expect(calls.filter((call) => call === 'checkQuota').length).toBe(1);
+    expect(calls.filter((call) => call === 'recordCost').length).toBe(3);
+  });
+
+  it('2 回目以降の生成に直前の診断とソースを渡す', async () => {
+    const { attempts, pipeline } = failingBuildPipeline();
+    await runGenerationPipeline(testEnv(), 'user-retry-3', { prompt: 'ゲーム' }, pipeline).catch(
+      () => undefined,
+    );
+
+    expect(attempts[0]).toBeUndefined();
+    expect(attempts[1]?.failedAttempt).toBe(1);
+    expect(attempts[1]?.diagnostics).toBe(DIAGNOSTICS);
+    expect(attempts[1]?.previousSource).toBe('package main');
+    expect(attempts[2]?.failedAttempt).toBe(2);
+    expect(attempts[2]?.diagnostics).toBe(DIAGNOSTICS);
+  });
+
+  it('通ったらそこで止まる（3 回まで回し切らない）', async () => {
+    const { attempts, calls, pipeline } = failingBuildPipeline(1);
+    const result = await runGenerationPipeline(
+      testEnv(),
+      'user-retry-4',
+      { prompt: 'ゲーム' },
+      pipeline,
+    );
+    expect(result.id).toBe('game-1');
+    expect(attempts.length).toBe(2);
+    expect(calls.filter((call) => call === 'recordCost').length).toBe(2);
+    expect(calls).toContain('createGame');
+  });
+
+  it('各試行が台帳に 1 行ずつ記録され、succeeded が正しい（acceptance 2）', async () => {
+    // **台帳は実物を使う**（`src/cost-ledger.ts`）。写しを使うと、記録の単位
+    // （1 呼び出し 1 行）も `succeeded` の決まり方も検証したことにならない。
+    const userId = await seedUser('retry-ledger');
+    const { pipeline } = failingBuildPipeline();
+
+    await expect(
+      runGenerationPipeline(
+        testEnv(),
+        userId,
+        { prompt: 'ゲーム' },
+        { ...pipeline, recordCost: recordGenerationCost },
+      ),
+    ).rejects.toBeInstanceOf(BuildRetriesExhausted);
+
+    const rows = await ledgerRows(userId);
+    // 4.3「リトライ分も必ず計上する」。行をまとめたり上書きしたりしない。
+    expect(rows.length).toBe(3);
+    for (const row of rows) {
+      // `succeeded` は「使えるソースが返ったか」であって「作品ができたか」ではない
+      // （4.3 の記録規約）。3 回ともビルドは失敗しているが、生成は成功している。
+      expect(row.succeeded).toBe(1);
+      // **台帳に残るのは利用者のプロンプトである。** 組み替えた側を記録すると、
+      // 8.3 の検査を通っていない生成物と Go の診断が D1 の列へ入る。
+      expect(row.prompt).toBe('ゲーム');
+      expect(row.prompt).not.toContain(DIAGNOSTICS);
+    }
+  });
+
+  it('記録を 1 回に減らすと acceptance 2 が破れる（この検査が効いていることの確認）', async () => {
+    // **変異検査。** 計上をループの外へ出した実装（初回だけ記録する）を作り、
+    // 上の検査が本当に 3 行を要求していることを確かめる。
+    const userId = await seedUser('retry-ledger-once');
+    const { pipeline } = failingBuildPipeline();
+    let recorded = 0;
+
+    await runGenerationPipeline(
+      testEnv(),
+      userId,
+      { prompt: 'ゲーム' },
+      {
+        ...pipeline,
+        recordCost: async (env, id, request, generated) => {
+          recorded += 1;
+          if (recorded > 1) {
+            return;
+          }
+          await recordGenerationCost(env, id, request, generated);
+        },
+      },
+    ).catch(() => undefined);
+
+    expect((await ledgerRows(userId)).length).toBe(1);
+  });
+
+  it('リトライ対象でないビルド失敗は 1 回で止まる', async () => {
+    // 回しても直らない失敗を回すと、1 リクエストで 3 回課金して必ず失敗する。
+    const failures: readonly BuildFailure[] = [
+      new BuildNotConfigured(['BUILD_AWS_ACCESS_KEY_ID']),
+      new BuildTimedOut('function', 'req-1'),
+      new BuildFunctionFailed(429, 'TooManyRequestsException', null, 'req-1'),
+    ];
+
+    for (const failure of failures) {
+      const { attempts, pipeline } = failingBuildPipeline();
+      await expect(
+        runGenerationPipeline(
+          testEnv(),
+          'user-retry-5',
+          { prompt: 'ゲーム' },
+          {
+            ...pipeline,
+            build: async () => {
+              throw failure;
+            },
+          },
+        ),
+        failure.name,
+      ).rejects.toBe(failure);
+      expect(attempts.length, failure.name).toBe(1);
+    }
+  });
+
+  it('5.2-5 の拒否（許可外 import）はリトライしない', async () => {
+    // 5.2-5 は「違反は再生成に回さず拒否」。混ぜると、禁止パッケージを使いたがる
+    // プロンプトが 1 リクエストで 3 回の生成を起こせる。
+    const { attempts, pipeline } = failingBuildPipeline();
+    const routes = createGenerateRoutes({
+      ...pipeline,
+      generateSource: async (env, request, retry) => {
+        attempts.push(retry);
+        return {
+          modelKey: DEFAULT_GENERATION_MODEL_KEY,
+          modelId: findGenerationModel(DEFAULT_GENERATION_MODEL_KEY)!.modelId,
+          source: 'package main\n\nimport "os/exec"\n\nfunc main() {}\n',
+          usage: {
+            inputTokens: 1,
+            outputTokens: 2,
+            cacheReadInputTokens: null,
+            cacheWriteInputTokens: null,
+          },
+          stopReason: 'end_turn',
+        };
+      },
+      inspectSource: defaultPipeline.inspectSource,
+    });
+
+    const response = await post(routes, { prompt: 'ゲーム' }, await sessionCookie(await seedUser('reject-noretry')));
+    expect(response.status).toBe(422);
+    expect(((await response.json()) as { error: string }).error).toBe('source-rejected');
+    expect(attempts.length).toBe(1);
+  });
+
+  it('max_tokens で切れたソースはリトライせず、失敗として 1 行だけ記録する（#17 の申し送り）', async () => {
+    // **`max_tokens` それ自体は引き金にしない**（`src/build-retry.ts` の決定）。
+    // 返せる診断が無く、しかも出力枠を使い切った最も高い失敗である。切れたソースは
+    // 5.2-5 の検査で `unparsable` として落ち、422 のまま返る。
+    const userId = await seedUser('retry-max-tokens');
+    const { attempts, pipeline } = failingBuildPipeline();
+    const truncated = 'package main\n\nimport (\n\t"github.com/hajimehoshi/ebiten/v2"\n';
+
+    const routes = createGenerateRoutes({
+      ...pipeline,
+      generateSource: async (_env, _request, retry) => {
+        attempts.push(retry);
+        return {
+          modelKey: DEFAULT_GENERATION_MODEL_KEY,
+          modelId: findGenerationModel(DEFAULT_GENERATION_MODEL_KEY)!.modelId,
+          source: truncated,
+          usage: {
+            inputTokens: 1,
+            outputTokens: 2,
+            cacheReadInputTokens: null,
+            cacheWriteInputTokens: null,
+          },
+          stopReason: 'max_tokens',
+        };
+      },
+      recordCost: recordGenerationCost,
+      inspectSource: defaultPipeline.inspectSource,
+    });
+
+    const response = await post(routes, { prompt: 'ゲーム' }, await sessionCookie(userId));
+    expect(response.status).toBe(422);
+    expect(attempts.length).toBe(1);
+
+    const rows = await ledgerRows(userId);
+    // **課金は発生している。** 記録しないのではなく、失敗として記録する（4.3）。
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.succeeded).toBe(0);
+  });
+
+  it('上限に達したら 422 と利用者向けの文言を返し、診断を漏らさない', async () => {
+    const { pipeline } = failingBuildPipeline();
+    const routes = createGenerateRoutes(pipeline);
+    const cookie = await sessionCookie(await seedUser('retry-exhausted'));
+
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      logged.push(args.map((value) => String(value)).join(' '));
+    };
+    let response: Response;
+    try {
+      response = await post(routes, { prompt: 'ゲーム' }, cookie);
+    } finally {
+      console.error = original;
+    }
+
+    expect(response.status).toBe(422);
+    const text = await response.text();
+    const body = JSON.parse(text) as { error: string; attempts: number; message: string };
+    expect(body.error).toBe('build-failed');
+    expect(body.attempts).toBe(MAX_GENERATION_ATTEMPTS);
+    expect(body.message).not.toBe('');
+    // **500 に落ちない。** 落ちると利用者には「システム障害」に見えて再試行を促す。
+    // **診断は Go が生成コードの行を引用したもの**で、応答にもログにも出さない。
+    expect(text).not.toContain(DIAGNOSTICS);
+    expect(logged.join('\n')).not.toContain(DIAGNOSTICS);
+    // 落ちたことと回数だけは残す。何も出さないと運用時に追えない。
+    expect(logged.join('\n')).toContain('BuildRetriesExhausted');
+  });
+
+  it('リトライ回数の宣言とコード側の定数が一致する（5.2-7）', () => {
+    // 同じ数値が仕様書とコードの 2 か所にある以上、機械で照合する
+    // （shared-ai-rules 12 章。`test/quota.test.ts` と同じやり方）。
+    // **仕様書は再試行の回数、定数は試行の総数**なので、+1 して突き合わせる。
+    const values = [...env.TEST_PRODUCT_SPEC.matchAll(RETRY_LIMIT_PATTERN)].map((matched) =>
+      Number(matched[1]),
+    );
+    expect(values.length).toBeGreaterThan(0);
+    for (const value of values) {
+      expect(value + 1).toBe(MAX_GENERATION_ATTEMPTS);
+    }
+  });
+
+  it('仕様書側を変異させると照合が破れる', () => {
+    const doctored = env.TEST_PRODUCT_SPEC.replace(
+      '自動リトライ（最大2回）',
+      '自動リトライ（最大5回）',
+    );
+    expect(doctored).not.toBe(env.TEST_PRODUCT_SPEC);
+    const values = [...doctored.matchAll(RETRY_LIMIT_PATTERN)].map((matched) =>
+      Number(matched[1]),
+    );
+    expect(values).toContain(5);
+  });
+
+  it('既定の生成の段は診断を織り込む層で包まれている（#20 の結線）', () => {
+    // **同一性ではなく引数の数で見る。** 包む層（`withBuildDiagnostics`）を外すと
+    // `createBedrockGenerateSource` が返す 2 引数の関数がそのまま入り、
+    // **リトライは診断を捨てた引き直しになる**（型は通る。第 3 引数は任意なので）。
+    // 実呼び出しでは確かめられない（呼べば課金される）。
+    expect(defaultPipeline.generateSource.length).toBe(3);
   });
 });
 

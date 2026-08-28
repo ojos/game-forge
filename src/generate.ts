@@ -43,6 +43,16 @@ import { createDraftGame } from './games.js';
 import { recordGenerationCost } from './cost-ledger.js';
 import { checkGenerationQuota } from './quota.js';
 import type { MonthlyCostWarning } from './quota.js';
+import type { BuildRetryContext } from './build-retry.js';
+import {
+  BUILD_FAILED_STATUS,
+  BuildRetriesExhausted,
+  MAX_GENERATION_ATTEMPTS,
+  buildRetryContext,
+  describeBuildFailure,
+  retriableBuildFailure,
+  withBuildDiagnostics,
+} from './build-retry.js';
 
 /** 生成エンドポイントのパス。 */
 export const GENERATE_PATH = '/api/generate';
@@ -122,8 +132,18 @@ export interface GenerationPipeline {
    * **戻り値の型が「どのモデルで生成したか」を必須にしている**（`GenerationResult`）。
    * #22 の費用台帳がモデル別単価で円換算するため、後段が推測で埋められない。型で
    * 要求しておけば、モデルを落とした実装はコンパイルが通らない。
+   *
+   * **`retry` は 2 回目以降の試行にだけ入る**（5.2-7 / #20）。直前の試行のソースと
+   * Go の診断を持ち、生成の段はそれを入力へ織り込む。**任意にしてあるので、
+   * リトライを知らない実装（`(env, request) => …`）もそのまま代入できる。**
+   * ただしその実装は診断を捨てるため、既定の経路は `withBuildDiagnostics` で
+   * 包んである（`src/build-retry.ts`）。
    */
-  readonly generateSource: (env: Env, request: GenerateRequest) => Promise<GenerationResult>;
+  readonly generateSource: (
+    env: Env,
+    request: GenerateRequest,
+    retry?: BuildRetryContext,
+  ) => Promise<GenerationResult>;
   /**
    * 3.3-4: 費用を台帳へ加算する。**成功・失敗・リトライを問わず全件**（M3-1）。
    *
@@ -247,7 +267,12 @@ export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
 export const defaultPipeline: GenerationPipeline = {
   ...notImplementedPipeline,
   checkQuota: checkGenerationQuota,
-  generateSource: createBedrockGenerateSource({ systemPrompt: buildSystemPrompt }),
+  // **リトライの材料を織り込む層で包む**（5.2-7 / #20）。トランスポート
+  // （`src/bedrock.ts`）は診断の存在を知らないままでよく、包む側がプロンプトを
+  // 組み替える。**包まないと、リトライは診断を捨てた引き直しになる。**
+  generateSource: withBuildDiagnostics(
+    createBedrockGenerateSource({ systemPrompt: buildSystemPrompt }),
+  ),
   recordCost: recordGenerationCost,
   inspectSource: inspectGeneratedSource,
   build: createLambdaBuild(),
@@ -334,25 +359,57 @@ export async function runGenerationPipeline(
     throw new QuotaExceeded(quota.reason);
   }
 
-  // 3.3-3: 生成。
-  const generated = await pipeline.generateSource(env, request);
-
-  // 3.3-4: 費用の計上。**生成が返った直後に、成否によらず行う。** ここより後ろの段が
-  // 失敗しても課金は済んでいるため、後ろへ動かすと計上漏れになる。
-  await pipeline.recordCost(env, userId, request, generated);
-
-  // 5.2-5: ホワイトリスト検査。違反は再生成に回さず即拒否する。
-  pipeline.inspectSource(generated);
-
-  // 3.3-5..7: ビルドと R2 への書き戻し。#76 で 8 段へ戻った（v1.9 は 3.3-5..8 だった）。
-  const built = await pipeline.build(env, generated);
-
-  // 3.3-8: `games` 行の作成（#76 で採番が戻った。v1.9 は 3.3-9 だった）。
+  // 3.3-3..8 を、5.2-7 のリトライの単位で回す。**回るのは生成からビルドまでで、
+  // クォータ判定は外側にある**（4.3 の「上限の判定は 3.3-2 の 1 か所で行う」）。
+  // 枠の消費は台帳の行数で数えるため（確定25）、**3 試行は枠 3 回分**である。
   //
-  // **この段まで来たとき、成果物は既に R2 に在る**（3.3-6 が書いた、あるいは
-  // キャッシュがヒットして既存のオブジェクトを指している）。順序を入れ替えて
-  // 行を先に作ると、成果物の無いキーを指す作品ができる。
-  return await pipeline.createGame(env, userId, request, built);
+  // **ループの上限は for の条件が持つ。** 打ち切りの判定を catch の中だけに置くと、
+  // その 1 行を落としたときに**課金の出る無限ループ**になる。抜けた先で必ず
+  // `BuildRetriesExhausted` を投げるので、上限を消せばテストが落ちる。
+  let retry: BuildRetryContext | undefined;
+  for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt += 1) {
+    // 3.3-3: 生成。2 回目以降は直前の診断を添える（5.2-7）。
+    const generated = await pipeline.generateSource(env, request, retry);
+
+    // 3.3-4: 費用の計上。**生成が返った直後に、成否によらず行う。** ここより後ろの段が
+    // 失敗しても課金は済んでいるため、後ろへ動かすと計上漏れになる。
+    //
+    // **ループの中にある。** 4.3 は「リトライ分も必ず計上する」と定めており、
+    // 1 回の呼び出しにつき 1 行である（#22 の記録規約）。**渡すのは元のリクエスト**で、
+    // 組み替えたプロンプトではない（`generations.prompt` は利用者の入力を持つ）。
+    await pipeline.recordCost(env, userId, request, generated);
+
+    // 5.2-5: ホワイトリスト検査。違反は再生成に回さず即拒否する。
+    // **この例外はループを素通りして経路層まで上がる**（#20 はビルドの失敗だけを
+    // 引き金にする。`src/build-retry.ts`）。
+    pipeline.inspectSource(generated);
+
+    // 3.3-5..7: ビルドと R2 への書き戻し。#76 で 8 段へ戻った（v1.9 は 3.3-5..8 だった）。
+    let built: BuildOutcome | null = null;
+    try {
+      built = await pipeline.build(env, generated);
+    } catch (error) {
+      // リトライしてよい失敗か（`kind === 'build'` だけ）。判断は 1 か所に置く。
+      const rejected = retriableBuildFailure(error);
+      if (rejected === null) {
+        throw error;
+      }
+      retry = buildRetryContext(attempt, rejected, generated);
+    }
+
+    // 3.3-8: `games` 行の作成（#76 で採番が戻った。v1.9 は 3.3-9 だった）。
+    //
+    // **この段まで来たとき、成果物は既に R2 に在る**（3.3-6 が書いた、あるいは
+    // キャッシュがヒットして既存のオブジェクトを指している）。順序を入れ替えて
+    // 行を先に作ると、成果物の無いキーを指す作品ができる。
+    if (built !== null) {
+      return await pipeline.createGame(env, userId, request, built);
+    }
+  }
+
+  // 上限まで試して通らなかった（5.2-7）。**ここへ来る経路はこれだけである**
+  // （ビルドが成功すればループの中で返り、リトライ対象でない失敗は再送出される）。
+  throw new BuildRetriesExhausted(MAX_GENERATION_ATTEMPTS, retry?.stage ?? 'unknown');
 }
 
 /** クォータ超過（3.3-2 / 4.3）。 */
@@ -404,6 +461,13 @@ async function handleGenerate(
       // **ここで文字列を組み立てない**（生成物由来の値の扱いは適合層が知っている）。
       console.error(`[generate] ${error.name}: ${error.reason}`);
       return json(describeSourceRejection(error), SOURCE_REJECTED_STATUS);
+    }
+    if (error instanceof BuildRetriesExhausted) {
+      // 5.2-7 の上限に達した。**500 にしない**（各段は正常に働いた）。**429 でもない**
+      // （枠は消費済みで、しかも 1 回ではなく試行の回数だけ消えている）。文言と
+      // 出してよい項目は `describeBuildFailure` が決める（**診断は出さない**）。
+      console.error(`[generate] ${error.name}: attempts=${error.attempts}`);
+      return json(describeBuildFailure(error), BUILD_FAILED_STATUS);
     }
     if (error instanceof PipelineStepNotImplemented) {
       // 骨組みだけが動いている状態。どこまで進んだかを返す（段の名前は実装の内部名

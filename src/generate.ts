@@ -14,7 +14,8 @@
  *
  * **#83 で 3.3-3（生成）が埋まった。** 実装は `src/bedrock.ts`（Bedrock の `Converse`）と
  * `src/generation-models.ts`（モデル選択）にあり、このモジュールは順序と境界だけを持つ
- * 立場を変えていない。**残りの段は 501 のままである。**
+ * 立場を変えていない。**#22 で 3.3-4（費用計上）も埋まった**（`src/cost-ledger.ts`）。
+ * **残りの段は 501 のままである。**
  *
  * **5.2 との差分**: 5.2 は 3.3 に無い「入力の安全性検査（8.1）」をクォータ判定の
  * 手前に置く。これは M6-1 の範囲なので、この骨組みには段を作らず、挿入位置だけを
@@ -33,6 +34,7 @@ import {
   inspectGeneratedSource,
 } from './source-inspection.js';
 import { createLambdaBuild } from './build-client.js';
+import { recordGenerationCost } from './cost-ledger.js';
 
 /** 生成エンドポイントのパス。 */
 export const GENERATE_PATH = '/api/generate';
@@ -100,8 +102,19 @@ export interface GenerationPipeline {
    * 要求しておけば、モデルを落とした実装はコンパイルが通らない。
    */
   readonly generateSource: (env: Env, request: GenerateRequest) => Promise<GenerationResult>;
-  /** 3.3-4: 費用を台帳へ加算する。**成功・失敗・リトライを問わず全件**（M3-1）。 */
-  readonly recordCost: (env: Env, userId: string, generated: GenerationResult) => Promise<void>;
+  /**
+   * 3.3-4: 費用を台帳へ加算する。**成功・失敗・リトライを問わず全件**（M3-1）。
+   *
+   * **リクエストを受け取る。** 5.1 の `generations` 行は `prompt` を必須にしており、
+   * 生成結果（`GenerationResult`）からは復元できない。ここで渡さないと、台帳側が
+   * 空文字で埋めるか、経路のどこかにプロンプトを持ち回る別の口を作ることになる。
+   */
+  readonly recordCost: (
+    env: Env,
+    userId: string,
+    request: GenerateRequest,
+    generated: GenerationResult,
+  ) => Promise<void>;
   /** 5.2-5: AST でパッケージのホワイトリストを検査する（M2-3）。 */
   readonly inspectSource: (generated: GenerationResult) => void;
   /** 3.3-5..7: Lambda でビルドし、そのまま R2 へ書き戻す（確定24 / M2-5）。 */
@@ -166,7 +179,8 @@ export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
 };
 
 /**
- * 既定のパイプライン。**生成（3.3-3）・検査（5.2-5）・ビルド（3.3-5..7）が実装済み**である。
+ * 既定のパイプライン。**生成（3.3-3）・費用計上（3.3-4）・検査（5.2-5）・
+ * ビルド（3.3-5..7）が実装済み**である。
  *
  * `notImplementedPipeline` を土台に、実装済みの段だけを差し替える。
  * **順序は変えない。** 3.3 は「クォータ判定 → 生成 → 費用計上 → ビルド → 行の作成」で、
@@ -174,9 +188,14 @@ export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
  * 叩いても **501 で止まり、Bedrock は呼ばれない。** これは事故ではなく設計で、
  * **費用の出る段を、費用を止める段より先に開けない。**
  *
- * **つまりこの結線は、まだ利用者から到達できない。** 3.3-2（#23）と 3.3-4（#22）が
- * 埋まって初めて経路が通る。**それでも先に繋ぐ**のは、繋がっていない実装は
- * 「動くはず」の状態にとどまり、結線のときに初めて型と契約の食い違いが出るためである。
+ * **つまりこの結線は、まだ利用者から到達できない。** #22 で 3.3-4（費用計上）が
+ * 埋まったが、**残る 3.3-2（クォータ判定 / #23）が未実装**なので経路は 501 で止まる。
+ * **それでも先に繋ぐ**のは、繋がっていない実装は「動くはず」の状態にとどまり、
+ * 結線のときに初めて型と契約の食い違いが出るためである。
+ *
+ * **費用計上（3.3-4）を先に開けても費用は出ない。** この段は D1 へ書くだけで、
+ * Bedrock を呼ぶのはその手前の 3.3-3 である。順序が「クォータ判定 → 生成 → 費用計上」
+ * である以上、**台帳だけが先に動くことはない。**
  *
  * **ビルドは `createLambdaBuild()` で作る。** 呼び出しに必要な資格情報が環境に無い場合、
  * この段は `BuildNotConfigured`（`kind='config'`）で落ちる。**#115 が IAM の principal を
@@ -185,6 +204,7 @@ export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
 export const defaultPipeline: GenerationPipeline = {
   ...notImplementedPipeline,
   generateSource: createBedrockGenerateSource({ systemPrompt: buildSystemPrompt }),
+  recordCost: recordGenerationCost,
   inspectSource: inspectGeneratedSource,
   build: createLambdaBuild(),
 };
@@ -274,7 +294,7 @@ export async function runGenerationPipeline(
 
   // 3.3-4: 費用の計上。**生成が返った直後に、成否によらず行う。** ここより後ろの段が
   // 失敗しても課金は済んでいるため、後ろへ動かすと計上漏れになる。
-  await pipeline.recordCost(env, userId, generated);
+  await pipeline.recordCost(env, userId, request, generated);
 
   // 5.2-5: ホワイトリスト検査。違反は再生成に回さず即拒否する。
   pipeline.inspectSource(generated);

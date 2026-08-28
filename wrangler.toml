@@ -36,6 +36,21 @@ SANDBOX_HOST = "sandbox.game-forge.localtest.me"
 # 4.2 の比較が成立しない）。省略すると既定（`sonnet-4-6`）になるが、**全環境で明示する。**
 # 暗黙に既定へ寄るのと、そのモデルを選んだのとは、次に触る人にとって別物である。
 GENERATION_MODEL = "sonnet-4-6"
+# ビルド関数（AWS Lambda）の関数名（確定24 / 3.3-5 / #19）。
+#
+# **シークレットではないので `[vars]` に置く。** 呼ぶ相手が誰かは秘密ではなく構成で、
+# `.dev.vars` へ置くと本番がどの関数を叩いているかが宣言から読めなくなる
+# （`GENERATION_MODEL` と同じ扱い）。**資格情報のほうは `.dev.vars` にある**
+# （`BUILD_AWS_*`）。
+#
+# 値の正本は `terraform/build-function.tf` の `local.build_function_name` である。
+# ここはその写しなので、宣言を変えたら追随させること（`docs/build-invocation.md`）。
+#
+# **ローカルにも同じ値を置く。** 9.2 のとおり Dev アカウントに Lambda は無く、
+# 別名の開発用関数が存在しない。ローカルでこの経路が動くかどうかは、`.dev.vars` に
+# 本番アカウントの資格情報を入れたかどうかで決まる（入れなければ設定不足として
+# 呼び出しの手前で落ちる。確定20 が受け入れた「本番構成をローカルで検証できない」）。
+BUILD_FUNCTION_NAME = "game-forge-build"
 # 開発用の診断経路（`/__dev/*`）を登録するかどうか（#89）。
 #
 # **`enabled` はここ（トップレベル＝ローカル）にしか無い。** 配備される 2 つの環境は
@@ -83,6 +98,7 @@ bucket_name = "game-forge-local"
 APP_HOST = "app.game-forge.ojos.jp"
 SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
 GENERATION_MODEL = "sonnet-4-6"
+BUILD_FUNCTION_NAME = "game-forge-build"
 DEV_ROUTES = "disabled"
 
 [env.preview.vars]
@@ -92,6 +108,7 @@ DEV_ROUTES = "disabled"
 APP_HOST = "app.game-forge.ojos.jp"
 SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
 GENERATION_MODEL = "sonnet-4-6"
+BUILD_FUNCTION_NAME = "game-forge-build"
 DEV_ROUTES = "disabled"
 
 # 本番の D1。**ローカル用とは別のデータベース**である（9.1 / 確定20: クラウド環境は

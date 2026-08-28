@@ -154,8 +154,8 @@ npx wrangler pages secret put GOOGLE_CLIENT_SECRET --project-name game-forge
 
 **Bedrock の資格情報（`BEDROCK_AWS_*`）は、いまは登録しません。** #83 で生成
 クライアント（Bedrock の `Converse` と SigV4 署名、モデル選択）は入りましたが、
-`/api/generate` は**クォータ判定（#23）とシステムプロンプト（#16）が未実装のため
-501 で止まり、Bedrock を呼びません**。生成を有効にする時点で次を足します。**`BEDROCK_AWS_SESSION_TOKEN` は本番では
+`/api/generate` は**クォータ判定（#23）が未実装のため 501 で止まり、Bedrock を
+呼びません**（※ #16 のシステムプロンプトは実装済み。2026-08-28 に追随）。生成を有効にする時点で次を足します。**`BEDROCK_AWS_SESSION_TOKEN` は本番では
 登録しません**（一時資格情報はローカル開発で SSO を使うときだけのもので、本番には
 長命キーを置きます。Workers は AWS の外で動くため IAM ロールを引き受けられません。
 仕様書 4.1）。
@@ -184,9 +184,44 @@ npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY --project-name game-
 **ガードが無いまま生成を開けないこと**が要点です（仕様書 4.3 は月次上限を必須実装と
 しており、アプリ層だけでは不足するとしています）。
 
-**そのとき `compatibility_flags = ["nodejs_compat"]` が必要になります**（#79 の実測）。
-これが無いと `@anthropic-ai/bedrock-sdk` が要求する `assert` / `stream` が解決できず
-ビルドが落ちます。**いまは何も import していないため不要**で、先に足しません。
+> **この記述は誤りでした（2026-08-28 に訂正）。旧記述は下に残します。**
+>
+> **`nodejs_compat` は要りません。** 実装は `@anthropic-ai/bedrock-sdk` ではなく
+> **`aws4fetch` 1 つ**で署名しており（`src/bedrock.ts`）、依存は `package.json` に
+> `aws4fetch` しかありません。仕様が v1.8 で Converse へ一本化した時点で前提が
+> 変わっていたのに、この段落だけが残っていました。**足すと不要なフラグが本番へ入ります。**
+>
+> ~~**そのとき `compatibility_flags = ["nodejs_compat"]` が必要になります**（#79 の実測）。~~
+> ~~これが無いと `@anthropic-ai/bedrock-sdk` が要求する `assert` / `stream` が解決できず~~
+> ~~ビルドが落ちます。**いまは何も import していないため不要**で、先に足しません。~~
+
+### ビルド関数を呼ぶ資格情報（`BUILD_AWS_*`。#115）
+
+**投入済みです（2026-08-28）。** 生成経路がビルド関数（Lambda `game-forge-build`）を
+呼ぶために要ります（3.3-5 / #19）。
+
+```bash
+npx wrangler pages secret put BUILD_AWS_REGION --project-name game-forge
+npx wrangler pages secret put BUILD_AWS_ACCESS_KEY_ID --project-name game-forge
+npx wrangler pages secret put BUILD_AWS_SECRET_ACCESS_KEY --project-name game-forge
+```
+
+**名前の正本は `src/build-client.ts` の `BUILD_SECRET_NAMES` です。** ここへ書き写した
+綴りが食い違うと、`BuildNotConfigured`（`kind='config'`）で呼び出しの手前で落ちます。
+
+**`BUILD_AWS_SESSION_TOKEN` は本番では登録しません**（Bedrock 側と同じ理由）。
+**`BUILD_FUNCTION_NAME` はシークレットではありません** — `wrangler.toml` の
+`[env.production.vars]` が宣言します。
+
+| 何 | 正本 |
+|---|---|
+| **どのシークレットを、どのプロジェクトへ入れるか**（上のコマンド） | この文書 |
+| **鍵の発行とローテーション手順** | `docs/build-invocation.md` 3 章 |
+| IAM ユーザーと権限（`lambda:InvokeFunction` を関数 1 つに限定） | `terraform/build-invoker.tf` |
+
+**Bedrock 用と鍵を分けてあります。** まとめると**鍵 1 本の漏洩で生成とビルドが同時に
+開く**うえ、`lambda:*` を与えれば `UpdateFunctionCode` まで通り、**攻撃者が制御しうる
+コードをコンパイルする関数の中身を差し替えられます**（`terraform/build-invoker.tf`）。
 
 ### 6. デプロイ（初回と緊急時のみ）
 

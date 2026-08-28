@@ -219,7 +219,11 @@ export function withBuildDiagnostics(
     if (retry === undefined) {
       return await generate(env, request);
     }
-    return await generate(env, { prompt: composeRetryPrompt(request.prompt, retry) });
+    // **`request` を広げて `prompt` だけ差し替える**（レビュー指摘 / #20）。
+    // 新しく作ると、あとで `GenerateRequest` へ項目が増えたときに
+    // **リトライ経路だけが黙ってそれを落とす。** 初回と 2 回目以降で渡すものが
+    // 変わる形そのものが罠なので、構造として消す。
+    return await generate(env, { ...request, prompt: composeRetryPrompt(request.prompt, retry) });
   };
 }
 
@@ -295,20 +299,54 @@ export function describeBuildFailure(exhausted: BuildRetriesExhausted): {
  * （`src/source-inspection.ts` の `summarizeImports` と同じ方針。黙って削ると
  * 「これで全部だ」と読まれ、モデルは切れた行を直そうとする）。
  *
+ * **注記を含めて `maxBytes` に収まる。** レビュー指摘（#20）で、注記を上限の外側で
+ * 足していたため返り値が上限を超えていた。**export しているのはテストのため**で、
+ * 上限が実際に守られることは合成後のプロンプト越しでは緩くしか見えない。
+ *
  * @param text 元の文字列
- * @param maxBytes 上限（UTF-8 のバイト数）
+ * @param maxBytes 上限（UTF-8 のバイト数。**注記込みの上限**）
  * @returns 上限に収めた文字列
  */
-function truncateBytes(text: string, maxBytes: number): string {
+const TRUNCATION_NOTICE = '\n…（以降は長さの上限で省略）';
+
+/**
+ * 省略の注記そのもののバイト数。**本文へ割ける分を減らすために先に引く。**
+ *
+ * レビュー指摘（#20）。注記を上限の外側で足していたため、**返り値が `maxBytes` を
+ * 超えていた。** 上限を置いた目的はプロンプトの肥大化を抑えること（入力トークンは
+ * そのまま費用である。4.1）なので、**上限を超える経路があると目的を果たさない。**
+ */
+const TRUNCATION_NOTICE_BYTES = new TextEncoder().encode(TRUNCATION_NOTICE).byteLength;
+
+export function truncateBytes(text: string, maxBytes: number): string {
   const encoded = new TextEncoder().encode(text);
   if (encoded.byteLength <= maxBytes) {
     return text;
   }
-  // UTF-8 の継続バイト（0b10xxxxxx）の途中で切らない。切ると復号で U+FFFD が
-  // 出て、モデルには「そういう文字が書いてある」と見える。
-  let end = maxBytes;
+  // **注記の分を先に予約する。** 上限が注記より小さいときは注記自身を切る。
+  // **注記を切ってでも上限を守る**のは、この関数の上限が費用の上限だからである
+  // （入力トークンはそのまま費用。4.1）。読みやすさより超えないことを優先する。
+  const room = maxBytes - TRUNCATION_NOTICE_BYTES;
+  if (room <= 0) {
+    return cutAtBoundary(new TextEncoder().encode(TRUNCATION_NOTICE), maxBytes);
+  }
+  return `${cutAtBoundary(encoded, room)}${TRUNCATION_NOTICE}`;
+}
+
+/**
+ * UTF-8 のバイト列を、文字の途中で切らずに `limit` バイト以内へ収める。
+ *
+ * **継続バイト（0b10xxxxxx）の途中で切らない。** 切ると復号で U+FFFD が出て、
+ * モデルには「そういう文字が書いてある」と見える。
+ *
+ * @param encoded UTF-8 のバイト列
+ * @param limit 上限（バイト）
+ * @returns 復号した文字列
+ */
+function cutAtBoundary(encoded: Uint8Array, limit: number): string {
+  let end = Math.min(limit, encoded.byteLength);
   while (end > 0 && (encoded[end] ?? 0) >= 0x80 && (encoded[end] ?? 0) < 0xc0) {
     end -= 1;
   }
-  return `${new TextDecoder().decode(encoded.subarray(0, end))}\n…（以降は長さの上限で省略）`;
+  return new TextDecoder().decode(encoded.subarray(0, end));
 }

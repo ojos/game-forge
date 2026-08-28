@@ -5,6 +5,7 @@ import {
   BuildRetriesExhausted,
   MAX_GENERATION_ATTEMPTS,
   MAX_RETRY_DIAGNOSTICS_BYTES,
+  truncateBytes,
   buildRetryContext,
   composeRetryPrompt,
   describeBuildFailure,
@@ -159,6 +160,49 @@ describe('診断の再投入（5.2-7 の「エラー出力を LLM に返して�
     const composed = composeRetryPrompt('ゲーム', context({ diagnostics: huge }));
     expect(composed).not.toContain(huge);
     expect(composed.length).toBeLessThan(MAX_RETRY_DIAGNOSTICS_BYTES * 2);
+  });
+
+  it('リトライは request の中身を保つ（prompt だけ差し替える）', async () => {
+    // **レビュー指摘（#20）の回帰。** 新しい object を作っていたため、あとで
+    // `GenerateRequest` へ項目が増えるとリトライ経路だけが黙って落とす形だった。
+    // 「初回とリトライで渡すものが違う」こと自体が罠なので、構造として消す。
+    const seen: Array<Record<string, unknown>> = [];
+    const wrapped = withBuildDiagnostics(async (_env, request) => {
+      seen.push(request as unknown as Record<string, unknown>);
+      return generation('package main\n');
+    });
+
+    const request = { prompt: 'ゲーム', locale: 'ja' } as unknown as { readonly prompt: string };
+    await wrapped({} as Env, request);
+    await wrapped({} as Env, request, context());
+
+    expect(seen).toHaveLength(2);
+    // 初回はそのまま。
+    expect(seen[0]).toEqual(request);
+    // リトライは prompt だけが変わり、他は残る。
+    expect(seen[1]!['locale']).toBe('ja');
+    expect(seen[1]!['prompt']).not.toBe('ゲーム');
+  });
+
+  it('注記を含めて上限に収まる', () => {
+    // **レビュー指摘（#20）の回帰。** 注記を上限の外側で足していたため、返り値が
+    // maxBytes を超えていた。上限を置いた目的はプロンプトの肥大化を抑えること
+    // （入力トークンはそのまま費用である。4.1）なので、超える経路があると目的を
+    // 果たさない。
+    for (const limit of [16, 64, 256, 1_024, MAX_RETRY_DIAGNOSTICS_BYTES]) {
+      const out = truncateBytes('x'.repeat(limit * 4), limit);
+      expect(new TextEncoder().encode(out).byteLength).toBeLessThanOrEqual(limit);
+    }
+  });
+
+  it('上限が注記より小さければ注記自身を切る', () => {
+    // 注記だけで 40 バイト超あるので、上限がそれ未満なら注記も切らないと超える。
+    // **読みやすさより超えないことを優先する**（上限は費用の上限である。4.1）。
+    const out = truncateBytes('x'.repeat(1_000), 8);
+    expect(new TextEncoder().encode(out).byteLength).toBeLessThanOrEqual(8);
+    expect(out).not.toContain('x');
+    // 途中で切っても U+FFFD を作らない。
+    expect(out).not.toContain('\uFFFD');
   });
 
   it('多バイト文字の途中で切らない', () => {

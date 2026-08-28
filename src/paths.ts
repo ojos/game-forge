@@ -41,3 +41,16 @@ export const WAITLIST_PATH = '/api/waitlist';
  * モジュールだけで、上の条件に当たらない。
  */
 export const INVITES_PATH = '/invites';
+
+/**
+ * 生成画面（5.2-1 / #128）。
+ *
+ * 画面を提供するのは `src/generate-page.ts` だが、公開トップ（`src/home.ts`）が
+ * ここへ送る。一方で生成画面は「トップへ戻る」導線として `HOME_PATH` を参照するため、
+ * どちらかがもう片方から import すると循環参照になる。`INVITES_PATH` と同じ理由で、
+ * 値だけを持つこのモジュールへ逃がす。
+ *
+ * API 側のパス（`/api/generate`）はここに置かない。正は `src/generate.ts` の
+ * `GENERATE_PATH` で、画面はそこから import する（上の条件に当たらない）。
+ */
+export const GENERATE_PAGE_PATH = '/generate';

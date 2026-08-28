@@ -16,6 +16,7 @@ import {
   findGenerationModel,
 } from '../src/generation-models.js';
 import { BedrockNotConfigured } from '../src/bedrock.js';
+import { DAILY_QUOTA_PER_USER } from '../src/quota.js';
 import { buildSystemPrompt } from '../src/system-prompt.js';
 import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
@@ -344,7 +345,10 @@ describe('オーケストレーションの骨組み（3.3 の順序）', () => 
   });
 
   it('未実装の段は 501 とその名前を返す', async () => {
-    const routes = createGenerateRoutes();
+    // **`notImplementedPipeline` を明示的に渡す。** #23 でクォータ判定が実装されたため、
+    // 既定のパイプラインで叩いても最初の段はもう 501 を投げない。ここで見たいのは
+    // 「未実装の段が 501 とその名前になること」であり、どの段が未実装かではない。
+    const routes = createGenerateRoutes(notImplementedPipeline);
     const cookie = await sessionCookie(await seedUser('notimpl'));
     const response = await post(routes, { prompt: 'ゲーム' }, cookie);
     expect(response.status).toBe(501);
@@ -475,14 +479,30 @@ describe('生成の段が Bedrock へ結線されている（#83）', () => {
     expect(buildSystemPrompt(model).length).toBeGreaterThan(1);
   });
 
-  it('費用の出る段は、費用を止める段より先に開かない', async () => {
-    // 既定の経路を叩いても 501（checkQuota）で止まり、Bedrock は呼ばれない。
-    // クォータ判定（#23）が未実装のまま生成だけを開けると、4.3 の上限が効かない。
+  it('費用の出る段は、費用を止める段より先に開かない（#23 / 4.3）', async () => {
+    // **既定の経路を、枠を使い切った利用者で叩く。** クォータ判定（#23）が
+    // 結線されていれば 429 で止まり、Bedrock へは進まない。
+    //
+    // **429 であること自体が「到達していない」証拠である。** この env には Bedrock の
+    // 資格情報が無いので、生成の段まで進んでいれば `BedrockNotConfigured` で 500 になる。
+    const userId = await seedUser('over-quota');
+    const now = Math.floor(Date.now() / 1000);
+    for (let index = 0; index < DAILY_QUOTA_PER_USER; index += 1) {
+      await env.DB.prepare(
+        `insert into generations
+           (id, game_id, user_id, prompt, model,
+            input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+            cost_jpy, succeeded, created_at)
+         values (?, null, ?, 'ゲーム', ?, 0, 0, 0, 0, 0, 1, ?)`,
+      )
+        .bind(crypto.randomUUID(), userId, DEFAULT_GENERATION_MODEL_KEY, now)
+        .run();
+    }
+
     const routes = createGenerateRoutes();
-    const cookie = await sessionCookie(await seedUser('wired'));
-    const response = await post(routes, { prompt: 'ゲーム' }, cookie);
-    expect(response.status).toBe(501);
-    expect(await response.json()).toEqual({ error: 'not implemented', step: 'checkQuota' });
+    const response = await post(routes, { prompt: 'ゲーム' }, await sessionCookie(userId));
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({ error: 'quota exceeded' });
   });
 });
 

@@ -15,7 +15,8 @@
  * **#83 で 3.3-3（生成）が埋まった。** 実装は `src/bedrock.ts`（Bedrock の `Converse`）と
  * `src/generation-models.ts`（モデル選択）にあり、このモジュールは順序と境界だけを持つ
  * 立場を変えていない。**#22 で 3.3-4（費用計上）も埋まった**（`src/cost-ledger.ts`）。
- * **残りの段は 501 のままである。**
+ * **#23 で 3.3-2（クォータ判定）も埋まった**（`src/quota.ts`）。
+ * **残るのは 3.3-8（`createGame` / #21）で、その段は 501 のままである。**
  *
  * **5.2 との差分**: 5.2 は 3.3 に無い「入力の安全性検査（8.1）」をクォータ判定の
  * 手前に置く。これは M6-1 の範囲なので、この骨組みには段を作らず、挿入位置だけを
@@ -35,6 +36,8 @@ import {
 } from './source-inspection.js';
 import { createLambdaBuild } from './build-client.js';
 import { recordGenerationCost } from './cost-ledger.js';
+import { checkGenerationQuota } from './quota.js';
+import type { MonthlyCostWarning } from './quota.js';
 
 /** 生成エンドポイントのパス。 */
 export const GENERATE_PATH = '/api/generate';
@@ -85,14 +88,28 @@ export type GenerateParseResult =
   | { readonly ok: true; readonly request: GenerateRequest }
   | { readonly ok: false; readonly reason: GenerateRejection };
 
-/** 日次クォータと月次上限の判定結果（3.3-2 / 4.3）。 */
+/**
+ * 日次クォータと月次上限の判定結果（3.3-2 / 4.3）。
+ *
+ * **警告は「許可」に付く。** 4.3 は「80% で警告、100% で生成停止」と定めており、
+ * 警告が立っている間はまだ生成できる。拒否と警告を同じ 1 つの値にすると、経路層が
+ * 「拒否だが通してよい」を判断する場所になる（`src/quota.ts`）。
+ *
+ * **`warning` を任意にしている。** 判定の実装（#23）は月次が 80% 未満なら付けない。
+ * 表示するのは 4.4 / #24（M3-3）の範囲で、この型はそこへ値を渡す口だけを持つ。
+ */
 export type QuotaDecision =
-  | { readonly allowed: true }
+  | { readonly allowed: true; readonly warning?: MonthlyCostWarning }
   | { readonly allowed: false; readonly reason: string };
 
 /** 生成の各段。**未実装の段は例外を投げる**（黙って成功しない）。 */
 export interface GenerationPipeline {
-  /** 3.3-2: 日次クォータと月次上限を判定する（M3-2）。 */
+  /**
+   * 3.3-2: 日次クォータと月次上限を判定する（#23 が `src/quota.ts` で実装した）。
+   *
+   * **この段だけが「LLM を呼ぶ前に止める」ことができる。** 4.3 の層 2 / 層 3 は
+   * どちらも遅れを持つ検知なので、ここを通したものは必ず課金され得る。
+   */
   readonly checkQuota: (env: Env, userId: string) => Promise<QuotaDecision>;
   /**
    * 3.3-3: Go ソースを生成し、`usage` を得る（#83 が Bedrock で実装した）。
@@ -179,19 +196,17 @@ export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
 };
 
 /**
- * 既定のパイプライン。**生成（3.3-3）・費用計上（3.3-4）・検査（5.2-5）・
- * ビルド（3.3-5..7）が実装済み**である。
+ * 既定のパイプライン。**クォータ判定（3.3-2）・生成（3.3-3）・費用計上（3.3-4）・
+ * 検査（5.2-5）・ビルド（3.3-5..7）が実装済み**である。残るのは `createGame`（3.3-8 / #21）。
  *
  * `notImplementedPipeline` を土台に、実装済みの段だけを差し替える。
- * **順序は変えない。** 3.3 は「クォータ判定 → 生成 → 費用計上 → ビルド → 行の作成」で、
- * 生成の手前にクォータ判定（#23）が未実装のまま残る。したがってこの既定で経路を
- * 叩いても **501 で止まり、Bedrock は呼ばれない。** これは事故ではなく設計で、
- * **費用の出る段を、費用を止める段より先に開けない。**
+ * **順序は変えない。** 3.3 は「クォータ判定 → 生成 → 費用計上 → ビルド → 行の作成」である。
  *
- * **つまりこの結線は、まだ利用者から到達できない。** #22 で 3.3-4（費用計上）が
- * 埋まったが、**残る 3.3-2（クォータ判定 / #23）が未実装**なので経路は 501 で止まる。
- * **それでも先に繋ぐ**のは、繋がっていない実装は「動くはず」の状態にとどまり、
- * 結線のときに初めて型と契約の食い違いが出るためである。
+ * **#23 で 3.3-2（クォータ判定）が埋まった。** これで **費用を止める段が、費用の出る段より
+ * 先に開いた状態**になる。逆順で開けないのは設計であって手順ではない: クォータ判定が
+ * 未実装のまま生成だけを結線すると、4.3 の上限が 1 つも効かないまま Bedrock を呼べる
+ * 経路ができる。**判定を外すとその状態へ戻る**ため、結線されていること自体を
+ * `test/quota.test.ts` が同一性で確かめる。
  *
  * **費用計上（3.3-4）を先に開けても費用は出ない。** この段は D1 へ書くだけで、
  * Bedrock を呼ぶのはその手前の 3.3-3 である。順序が「クォータ判定 → 生成 → 費用計上」
@@ -203,6 +218,7 @@ export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
  */
 export const defaultPipeline: GenerationPipeline = {
   ...notImplementedPipeline,
+  checkQuota: checkGenerationQuota,
   generateSource: createBedrockGenerateSource({ systemPrompt: buildSystemPrompt }),
   recordCost: recordGenerationCost,
   inspectSource: inspectGeneratedSource,

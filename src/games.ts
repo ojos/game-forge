@@ -29,9 +29,12 @@
  *
  * `generations.game_id` はここでは埋めない。台帳の行はビルドより前に書かれており
  * （3.3-4）、その行の id は経路を通って来ていない（`GenerationPipeline.recordCost` は
- * 値を返さない）。**結び付けは後続の課題**である（`src/cost-ledger.ts` の注記）。
- * ここで推測して UPDATE すると、リトライ（5.2-7）で複数行ある台帳のどれを結ぶかを
- * 当てずっぽうで決めることになる。
+ * 値を返さない）。ここで推測して UPDATE すると、リトライ（5.2-7）で複数行ある台帳の
+ * どれを結ぶかを当てずっぽうで決めることになる。
+ *
+ * **これは「後続の課題」ではなく、結び付けないという決定である**（確定27 / #124）。
+ * 読む側が存在しないためで（主 KPI のフォーク率は `games` の系統から出る。10 章）、
+ * **消費者が現れてから作る。** 根拠と、そのときの選択肢は仕様書 5.1 にある。
  */
 import type { BuildOutcome } from './build-client.js';
 import { artifactKeysOf, buildCacheRecordOf } from './build-client.js';

@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   GO_DIAGNOSTIC_ERROR_LIMIT,
   MAX_MECHANICAL_FIX_PASSES,
+  MECHANICAL_FIX_OUTCOMES,
   offsetOfPosition,
   parseUnusedImports,
   removeUnusedImports,
@@ -690,5 +691,326 @@ describe('繰り返し回数の根拠（shared-ai-rules 12 章の機械照合）
     ];
     expect(doctored.length).toBeGreaterThan(GO_IMPORT_ALLOWLIST.length);
     expect(MAX_MECHANICAL_FIX_PASSES * GO_DIAGNOSTIC_ERROR_LIMIT).toBeLessThan(doctored.length);
+  });
+});
+
+/**
+ * ログの検査で使うプロンプト。
+ *
+ * **偶然どこにも現れない語を入れる。** 「プロンプトがログに出ていない」を確かめるには、
+ * 出ていれば必ず見つかる印が要る。
+ */
+const LOGGED_PROMPT = 'ユニークな呪文-9137 が出るゲーム';
+
+/**
+ * ログ 1 行の**許された形**（4.2 の #133 注記 / 8.3）。
+ *
+ * **許可した形だけを通す**（禁じた語を探すのではない）。禁止語を並べる形にすると、
+ * 思いついた語しか塞げず、**新しい漏れ方が黙って通る。** 分類名と 3 つの件数以外が
+ * 1 文字でも混じれば、この形には合致しない。
+ */
+const MECHANICAL_FIX_LOG_PATTERN =
+  /^\[mechanical-fix\] (?<outcome>[a-z-]+) \{"diagnosed":(?<diagnosed>\d+),"located":(?<located>\d+),"removed":(?<removed>\d+)\}$/u;
+
+/**
+ * **ログに現れてはいけない断片**（#133 の acceptance）。
+ *
+ * 生成コード・Go の診断・import のパス・プロンプトを代表する文字列である。いずれも
+ * 8.3 の検査を通っていない、**生成物由来の文字列**にあたる。
+ */
+const FORBIDDEN_IN_LOG: readonly string[] = [
+  // import のパス（許可一覧の中身でも生成物由来である）
+  'errors',
+  'github.com/hajimehoshi/ebiten/v2',
+  // Go の診断（生成コードの行と識別子を引用する）
+  'imported and not used',
+  'main.go',
+  'vector.DrawFilledRoundRect',
+  // 生成コード
+  'package main',
+  'func main',
+  // プロンプト
+  LOGGED_PROMPT,
+];
+
+/**
+ * 1 行が、#133 で定めた形かどうか。
+ *
+ * @param line ログ 1 行
+ * @returns 許された形なら true
+ */
+function isAllowedLogLine(line: string): boolean {
+  const matched = MECHANICAL_FIX_LOG_PATTERN.exec(line);
+  const outcome = matched?.groups?.['outcome'];
+  return outcome !== undefined && (MECHANICAL_FIX_OUTCOMES as readonly string[]).includes(outcome);
+}
+
+/**
+ * 捕まえたログに現れてしまった、生成物由来の断片を返す。
+ *
+ * @param lines 捕まえたログ
+ * @returns 現れた断片（無ければ空）
+ */
+function leakedFragments(lines: readonly string[]): string[] {
+  const joined = lines.join('\n');
+  return FORBIDDEN_IN_LOG.filter((fragment) => joined.includes(fragment));
+}
+
+/**
+ * 実行中の `console` への出力をすべて捕まえる。
+ *
+ * **5 つのメソッドを全部差し替える。** 1 つでも素通しにすると、そこへ出したものが
+ * 検査の外に落ちる。文字列以外の引数も JSON にして記録するので、オブジェクトに
+ * 包んで渡した文字列も捕まる。
+ *
+ * @param run 実行するもの
+ * @returns 戻り値と、捕まえた行
+ */
+async function captureLogs<T>(run: () => T | Promise<T>): Promise<{ value: T; lines: string[] }> {
+  const lines: string[] = [];
+  const original = {
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+    error: console.error,
+    debug: console.debug,
+  };
+  const record = (...values: unknown[]): void => {
+    lines.push(
+      values
+        .map((value) => (typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value))))
+        .join(' '),
+    );
+  };
+  console.log = record;
+  console.info = record;
+  console.warn = record;
+  console.error = record;
+  console.debug = record;
+  try {
+    const value = await run();
+    return { value, lines };
+  } finally {
+    console.log = original.log;
+    console.info = original.info;
+    console.warn = original.warn;
+    console.error = original.error;
+    console.debug = original.debug;
+  }
+}
+
+describe('機械修正の観測（4.2 の #133 注記）', () => {
+  it('除去したら、件数が 1 行だけログへ出る', async () => {
+    const { lines } = await captureLogs(() =>
+      removeUnusedImports(UNUSED_IMPORT_SOURCE, UNUSED_IMPORT_DIAGNOSTICS),
+    );
+
+    // **1 巡につき 1 行。** 行数がそのまま巡回数になるので、ここで増やさない。
+    expect(lines).toEqual(['[mechanical-fix] removed {"diagnosed":1,"located":1,"removed":1}']);
+  });
+
+  it('空振りでも 1 行出る（この段が走ったことは分かる）', async () => {
+    // 未使用 import が原因でない失敗。**通常の失敗はここへ来る**ので、
+    // 「走ったが消すものが無かった」ことが読めないと空振りの比率が出せない。
+    const { lines } = await captureLogs(() =>
+      removeUnusedImports(UNUSED_IMPORT_SOURCE, SEMANTIC_DIAGNOSTICS),
+    );
+
+    expect(lines).toEqual([
+      '[mechanical-fix] no-unused-imports {"diagnosed":0,"located":0,"removed":0}',
+    ]);
+  });
+
+  it('位置が合わなければ、件数の食い違いとして読める', async () => {
+    // 診断は読めたのに消せなかった。`diagnosed` と `located` の差がそのまま手掛かりになる。
+    const diagnostics = '# gameforge/game\n./main.go:9:9: "errors" imported and not used';
+    const { value, lines } = await captureLogs(() =>
+      removeUnusedImports(UNUSED_IMPORT_SOURCE, diagnostics),
+    );
+
+    expect(value).toEqual({ changed: false, reason: 'not-located' });
+    expect(lines).toEqual(['[mechanical-fix] not-located {"diagnosed":1,"located":0,"removed":0}']);
+  });
+
+  it('除去件数と巡回数がログから読める（acceptance 1）', async () => {
+    // **生成経路をそのまま回す。** 巡回のループを持つのは `src/generate.ts` なので、
+    // 「1 巡につき 1 行」が実際に成り立つかは経路を通さないと確かめられない。
+    //
+    // 未使用 12 件（診断は 10 件で打ち切られる）。1 巡目で 10 件、2 巡目で 2 件消える。
+    const specs = [
+      ...GO_IMPORT_ALLOWLIST.map((entry) => `\t"${entry.path}"`),
+      '\ta1 "math"',
+      '\ta2 "strconv"',
+    ];
+    const source = `package main\n\nimport (\n${specs.join('\n')}\n)\n\nfunc main() {}\n`;
+    const { pipeline } = pipelineOf(source, (generated) => {
+      const diagnostics = emulateGoDiagnostics(generated.source, []);
+      if (parseUnusedImports(diagnostics).length > 0) {
+        throw new BuildRejected('build', diagnostics);
+      }
+      return fakeBuildOutcome();
+    });
+
+    const { lines } = await captureLogs(() =>
+      runGenerationPipeline(env, 'mech-user-observed', { prompt: LOGGED_PROMPT }, pipeline),
+    );
+
+    // **行数が巡回数である。** 2 行なら 2 巡した、と読める。
+    expect(lines.length).toBe(MAX_MECHANICAL_FIX_PASSES);
+    expect(lines).toEqual([
+      `[mechanical-fix] removed {"diagnosed":${GO_DIAGNOSTIC_ERROR_LIMIT},"located":${GO_DIAGNOSTIC_ERROR_LIMIT},"removed":${GO_DIAGNOSTIC_ERROR_LIMIT}}`,
+      '[mechanical-fix] removed {"diagnosed":2,"located":2,"removed":2}',
+    ]);
+    // 除去件数の合計は、ソースにあった未使用 import の数と一致する。
+    const removed = lines.map((line) => Number(MECHANICAL_FIX_LOG_PATTERN.exec(line)?.groups?.['removed']));
+    expect(removed.reduce((sum, count) => sum + count, 0)).toBe(specs.length);
+  });
+
+  it('生成コード・診断・import パス・プロンプトがログに現れない（acceptance 2）', async () => {
+    // **経路を通して、出た**ものだけを見る。実際に除去が起きる形（＝出すものが最も
+    // 多い巡）で回す。
+    const { lines } = await captureLogs(() =>
+      runGenerationPipeline(
+        env,
+        'mech-user-log-safe',
+        { prompt: LOGGED_PROMPT },
+        pipelineOf(UNUSED_IMPORT_SOURCE, compilerThatRejects('errors', UNUSED_IMPORT_DIAGNOSTICS))
+          .pipeline,
+      ),
+    );
+
+    expect(lines.length).toBeGreaterThan(0);
+    // 1. 許した形にしか合致しない（分類名と 3 つの件数以外は 1 文字も出ない）。
+    for (const line of lines) {
+      expect(isAllowedLogLine(line)).toBe(true);
+    }
+    // 2. 禁じた断片が 1 つも無い（1 の裏側から、もう一度見る）。
+    expect(leakedFragments(lines)).toEqual([]);
+  });
+
+  it('2 段目へ回る失敗でも、診断はログに現れない（acceptance 2）', async () => {
+    // 機械修正が効かない失敗（3 試行して尽きる）。**診断が最も出やすい経路**である。
+    const { pipeline } = pipelineOf(UNUSED_IMPORT_SOURCE, () => {
+      throw new BuildRejected('build', SEMANTIC_DIAGNOSTICS);
+    });
+
+    const { lines } = await captureLogs(async () => {
+      await expect(
+        runGenerationPipeline(env, 'mech-user-log-exhausted', { prompt: LOGGED_PROMPT }, pipeline),
+      ).rejects.toBeInstanceOf(BuildRetriesExhausted);
+    });
+
+    expect(lines.length).toBe(MAX_GENERATION_ATTEMPTS);
+    for (const line of lines) {
+      expect(isAllowedLogLine(line)).toBe(true);
+    }
+    expect(leakedFragments(lines)).toEqual([]);
+  });
+
+  it('import のパスを足したログは通らない（この検査が効いていることの確認）', () => {
+    // **変異検査。** 「件数で足りる」を破って**何を消したか**を出した行を作り、
+    // 上の 2 つの検査が実際に落とすことを見る。
+    const doctored =
+      '[mechanical-fix] removed {"diagnosed":1,"located":1,"removed":1,"paths":["errors"]}';
+
+    expect(isAllowedLogLine(doctored)).toBe(false);
+    expect(leakedFragments([doctored])).toContain('errors');
+  });
+
+  it('診断やプロンプトを足したログは通らない（この検査が効いていることの確認）', () => {
+    const withDiagnostics = `[mechanical-fix] removed ${UNUSED_IMPORT_DIAGNOSTICS}`;
+    const withPrompt = `[mechanical-fix] removed {"diagnosed":1} ${LOGGED_PROMPT}`;
+    const withSource = `[mechanical-fix] removed ${UNUSED_IMPORT_SOURCE}`;
+
+    for (const doctored of [withDiagnostics, withPrompt, withSource]) {
+      expect(isAllowedLogLine(doctored)).toBe(false);
+      expect(leakedFragments([doctored])).not.toEqual([]);
+    }
+  });
+
+  it('実際に出ている行は、その検査を通る（変異検査の対照）', async () => {
+    // **上の 3 つが「何を渡しても false」では、変異検査が空になる。** 本物の行が
+    // 通ることを固定して、検査が形を見分けていることを示す。
+    const { lines } = await captureLogs(() =>
+      removeUnusedImports(UNUSED_IMPORT_SOURCE, UNUSED_IMPORT_DIAGNOSTICS),
+    );
+
+    expect(lines.every((line) => isAllowedLogLine(line))).toBe(true);
+    expect(leakedFragments(lines)).toEqual([]);
+  });
+
+  it('分類名でない語は通らない（形だけでは足りない）', () => {
+    // 形は合っているが、実装が持たない語。**固定の語彙であることまで見る。**
+    expect(isAllowedLogLine('[mechanical-fix] removed {"diagnosed":1,"located":1,"removed":1}')).toBe(
+      true,
+    );
+    expect(
+      isAllowedLogLine('[mechanical-fix] errors-import {"diagnosed":1,"located":1,"removed":1}'),
+    ).toBe(false);
+  });
+});
+
+describe('分類名の機械照合（shared-ai-rules 12 章）', () => {
+  /** 仕様書 4.2 の分類名の表が始まる目印。 */
+  const OUTCOME_TABLE_ANCHOR = '**分類名は次の 5 つで、これがすべてである。**';
+
+  /**
+   * 仕様書 4.2 の表から分類名を拾う。
+   *
+   * 目印の直後にある最初の表だけを見る。**件数の表（`diagnosed` など）は目印より
+   * 前にある**ので混ざらない。
+   *
+   * @param spec 仕様書の本文
+   * @returns 表に並んでいる分類名（記載順）
+   */
+  function outcomeNamesIn(spec: string): string[] {
+    const at = spec.indexOf(OUTCOME_TABLE_ANCHOR);
+    if (at === -1) {
+      return [];
+    }
+    const names: string[] = [];
+    let started = false;
+    for (const line of spec.slice(at).split('\n')) {
+      if (!line.startsWith('|')) {
+        if (started) {
+          break;
+        }
+        continue;
+      }
+      started = true;
+      const matched = /^\| `([a-z-]+)` \|/u.exec(line);
+      if (matched !== null) {
+        names.push(matched[1]!);
+      }
+    }
+    return names;
+  }
+
+  it('仕様書の表と実装の語彙が一致する', () => {
+    // 文書が実装の一覧を書き写している箇所は機械照合する（shared-ai-rules 12 章）。
+    // **ログに出る語は運用者が読む語**なので、ずれると読み手だけが古い表を見続ける。
+    expect(outcomeNamesIn(env.TEST_PRODUCT_SPEC)).toEqual([...MECHANICAL_FIX_OUTCOMES]);
+  });
+
+  it('仕様書が書いている件数も実装と一致する', () => {
+    const declared = /\*\*分類名は次の (\d+) つで/u.exec(env.TEST_PRODUCT_SPEC);
+    expect(declared).not.toBeNull();
+    expect(Number(declared![1])).toBe(MECHANICAL_FIX_OUTCOMES.length);
+  });
+
+  it('仕様書側を変異させると照合が破れる（この検査が効いていることの確認）', () => {
+    const doctored = env.TEST_PRODUCT_SPEC.replace('| `not-located` |', '| `not-locatedd` |');
+    expect(doctored).not.toBe(env.TEST_PRODUCT_SPEC);
+    expect(outcomeNamesIn(doctored)).toContain('not-locatedd');
+    expect(outcomeNamesIn(doctored)).not.toEqual([...MECHANICAL_FIX_OUTCOMES]);
+  });
+
+  it('仕様書から表ごと消しても照合が破れる（空振りで通らない）', () => {
+    // **目印が見つからなければ空を返す**実装なので、「何も拾えないのに一致」に
+    // ならないことを確かめる。
+    const doctored = env.TEST_PRODUCT_SPEC.replace(OUTCOME_TABLE_ANCHOR, '');
+    expect(doctored).not.toBe(env.TEST_PRODUCT_SPEC);
+    expect(outcomeNamesIn(doctored)).toEqual([]);
+    expect(outcomeNamesIn(doctored)).not.toEqual([...MECHANICAL_FIX_OUTCOMES]);
   });
 });

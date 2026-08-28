@@ -1,0 +1,167 @@
+/**
+ * 生成パイプラインの検査段（3.3 の `inspectSource`）へ差し込む適合層（5.2-5 / 7.1 / #17）。
+ *
+ * 検査そのものは `src/go-imports.ts` が持つ。このモジュールが持つのは**継ぎ目の形**だけで、
+ * 次の 3 つを担う。
+ *
+ * 1. `GenerationResult`（生成の段の出力）から Go ソースを取り出して検査へ渡す。
+ * 2. 検査が落ちたら**拒否として例外を投げる**。`PipelineStepNotImplemented` を投げない。
+ * 3. 拒否の理由と**どの import が引っかかったか**を、呼び出し側が読める形で運ぶ。
+ *
+ * ## なぜ検査器と別のファイルなのか
+ *
+ * `inspectGoImports` は文字列を受けて結果を返す純粋な関数で、パイプラインの型も
+ * `GenerationResult` も知らない。そこへ `src/generate.ts` の都合を持ち込むと、検査器の
+ * テストが生成の型に依存し始める。**検査（何が許されるか）と結線（どこで呼ばれ、
+ * 落ちたら何が起きるか）は別々に変わる**ので、変わる理由ごとにファイルを分ける。
+ *
+ * ## 拒否の種類を列挙しない
+ *
+ * `ImportRejection` を `switch` で網羅したり、こちら側で別の enum へ写したりしない。
+ * **検査器が返した理由をそのまま運ぶ。** 検査器（#100）が新しい拒否理由を足したとき、
+ * ここを直さなくても素通りする形にしておくためである。写し替えを挟むと、足された理由が
+ * こちら側の既定値へ丸められ、**新しい拒否が「理由不明の拒否」として現れる。**
+ *
+ * ## 再生成に回さない（5.2-5）
+ *
+ * 5.2-5 は「違反は再生成に回さず拒否」と定める。したがってここは例外を投げるだけで、
+ * リトライも、緩和した再検査も行わない。5.2-7 の自動リトライ（#20）が対象にするのは
+ * **コンパイル失敗**であって、ホワイトリスト違反ではない。混ぜると、禁止パッケージを
+ * 使いたがるプロンプトが 1 回の枠で複数回の生成を起こせる（4.3 の上限が緩む）。
+ *
+ * ## 整形に寛容にしない
+ *
+ * ` ```go ` で囲まれた出力や前置きの文を、ここで剥がして検査し直すことはしない。
+ * 6.1 は本文の 1 節目（役割と出力形式）に「1 文字目が `package main` であること」を
+ * 置いており、**整形はプロンプト側の責務として設計されている。** ここで救うと、
+ * `scanImports` の「判定に迷ったら拒否する」方針に対する迂回路を、適合層の側から
+ * 開けることになる（剥がし方の解釈がひとつ増えるため）。読めない出力は
+ * `unparsable` / `no-package-clause` として落ちてよい。
+ *
+ * なお `stopReason === 'max_tokens'` で切れたソースもここで落ちるが、それは
+ * ホワイトリスト違反ではない。**種類は理由として区別できる形で運ぶ**ので、
+ * リトライの可否（#20）はこの例外を受けた側が判断できる。
+ */
+import type { GenerationResult } from './generation-models.js';
+import type { ImportRejection } from './go-imports.js';
+import { inspectGoImports } from './go-imports.js';
+
+/**
+ * 拒否を伝えるときに載せる import パスの最大件数。
+ *
+ * import パスは**生成物の一部**であり、プロンプトの影響を受ける。応答にもログにも
+ * 出る値なので、件数と長さの両方に上限を置く。診断に要るのは「何が引っかかったか」で
+ * あって全件ではない。
+ */
+export const MAX_REPORTED_IMPORTS = 10;
+
+/** 拒否を伝えるときの 1 パスあたりの最大文字数。超えた分は切り詰める。 */
+export const MAX_REPORTED_IMPORT_LENGTH = 120;
+
+/**
+ * 経路層が拒否へ写す HTTP ステータス。
+ *
+ * **422 とする。** 400 は「リクエストが壊れている」であり、ここで落ちたリクエストは
+ * 検証を通っている（`parseGenerateRequest` は成功している）。500 でもない。段は
+ * 設計どおりに動いており、**生成物が受け付けられなかった**という結果そのものが応答である。
+ * 429（クォータ超過）とも別で、枠は消費済みである（3.3-4 の費用計上はこの段より前にある）。
+ */
+export const SOURCE_REJECTED_STATUS = 422;
+
+/** 拒否を伝える応答の `error` の値。 */
+export const SOURCE_REJECTED_ERROR = 'source-rejected';
+
+/**
+ * 生成されたソースを受け付けなかった。
+ *
+ * **`PipelineStepNotImplemented` と区別する。** あちらは「段が無い」、こちらは
+ * 「段が働いて落とした」であり、経路層の応答（501 と 422）も、運用時に見るべき場所も違う。
+ *
+ * `reason` は検査器の `ImportRejection` をそのまま持つ。ここで別の型へ写さないのは、
+ * 検査器が理由を足したときに写し替えの側が古くなるためである（モジュール冒頭）。
+ */
+export class GeneratedSourceRejected extends Error {
+  /**
+   * @param reason 検査器が返した理由。**そのまま運ぶ**（種類を列挙しない）
+   * @param offending 許可されていない import パス。理由によっては空
+   */
+  constructor(
+    readonly reason: ImportRejection,
+    readonly offending: readonly string[],
+  ) {
+    // message にはソース本文もプロンプトも入れない。**上限を掛けた import パスだけ**を
+    // 載せる。`src/generate.ts` は段が投げた例外の message をログへ出さない方針だが、
+    // 「何が安全か知っている場所で出す」のはこの段の責務なので、ここで安全な形にする。
+    const listed = summarizeImports(offending);
+    super(
+      listed.length === 0
+        ? `生成されたソースを拒否しました: ${reason}`
+        : `生成されたソースを拒否しました: ${reason}（${listed.join(', ')}）`,
+    );
+    this.name = 'GeneratedSourceRejected';
+  }
+}
+
+/**
+ * 生成されたソースを検査し、許可外の import があれば拒否する（5.2-5）。
+ *
+ * `GenerationPipeline['inspectSource']` へそのまま代入できる形にしてある
+ * （`(generated: GenerationResult) => void`）。**成功時は何も返さない。** 読み取れた
+ * import の一覧は後段が使わないため、継ぎ目の戻り値を増やさない。
+ *
+ * @param generated 生成の段（3.3-3）が返した結果
+ * @throws {GeneratedSourceRejected} 検査が通らなかった場合
+ */
+export function inspectGeneratedSource(generated: GenerationResult): void {
+  const inspection = inspectGoImports(generated.source);
+  if (inspection.ok) {
+    return;
+  }
+  // 理由も違反 import も、検査器が返したものをそのまま渡す。
+  throw new GeneratedSourceRejected(inspection.reason, inspection.offending ?? []);
+}
+
+/**
+ * 拒否を、応答本文にもログにも出してよい形へ落とす。
+ *
+ * **経路層はこれを使う。** 例外のフィールドを経路層で直接組み立てると、上限を掛け忘れた
+ * 応答が生まれる。「何を外へ出してよいか」の判断はこの段が持つ（`src/generate.ts` の
+ * `describeGenerateError` が「段の診断情報は段自身が出す」としているのに対応する）。
+ *
+ * `reason` はそのまま出す。検査器が足した新しい理由も、ここを直さずに応答へ現れる。
+ *
+ * @param rejected 拒否の例外
+ * @returns 応答本文にできるオブジェクト
+ */
+export function describeSourceRejection(rejected: GeneratedSourceRejected): {
+  readonly error: string;
+  readonly reason: ImportRejection;
+  readonly imports: readonly string[];
+} {
+  return {
+    error: SOURCE_REJECTED_ERROR,
+    reason: rejected.reason,
+    imports: summarizeImports(rejected.offending),
+  };
+}
+
+/**
+ * import パスの一覧へ件数と長さの上限を掛ける。
+ *
+ * 切り詰めたことが読み手に分かるよう、末尾に印を付ける。黙って削ると「これで全部だ」と
+ * 読まれる。
+ *
+ * @param paths 許可されていない import パス
+ * @returns 上限を掛けた一覧
+ */
+function summarizeImports(paths: readonly string[]): readonly string[] {
+  const listed = paths
+    .slice(0, MAX_REPORTED_IMPORTS)
+    .map((path) =>
+      [...path].length > MAX_REPORTED_IMPORT_LENGTH
+        ? `${[...path].slice(0, MAX_REPORTED_IMPORT_LENGTH).join('')}…`
+        : path,
+    );
+  const remaining = paths.length - listed.length;
+  return remaining > 0 ? [...listed, `…他 ${remaining} 件`] : listed;
+}

@@ -90,6 +90,8 @@ describe('Worker の env に宣言外の値が混入しない', () => {
     expect(declared).toEqual([
       'APP_HOST',
       'BUCKET',
+      // ビルド関数の宛先（#19）。**秘密ではなく構成**なので wrangler.toml が宣言する。
+      'BUILD_FUNCTION_NAME',
       'DB',
       'DEV_ROUTES',
       'GENERATION_MODEL',

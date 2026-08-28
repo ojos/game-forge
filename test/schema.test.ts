@@ -41,7 +41,12 @@ describe('マイグレーションの適用（#11 acceptance 1）', () => {
     const row = await env.DB.prepare('select count(*) as applied from d1_migrations').first<{
       applied: number;
     }>();
-    expect(row?.applied).toBe(1);
+    // **期待値を数字で書かない。** `migrations/` へ 1 本足すたびにここを直す運用は、
+    // 直し忘れが「台帳の記録漏れ」と区別できない赤になる。ランナーが読み込んだ
+    // マイグレーションの本数（vitest.config.ts の TEST_MIGRATIONS）と突き合わせる
+    // （shared-ai-rules.md 12 章「一覧の複製は機械照合で担保する」）。
+    expect(env.TEST_MIGRATIONS.length).toBeGreaterThan(0);
+    expect(row?.applied).toBe(env.TEST_MIGRATIONS.length);
   });
 });
 

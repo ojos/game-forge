@@ -1,7 +1,7 @@
 import { SELF, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createPreviewKey } from '../src/games.js';
-import { parseSandboxPath } from '../src/sandbox-delivery.js';
+import { parseSandboxPath, wasmExecKey } from '../src/sandbox-delivery.js';
 import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
@@ -22,6 +22,9 @@ const GO_VERSION = 'go1.26.5';
  * 生成: `zlib.brotliCompressSync(Buffer.from([0x00,0x61,0x73,0x6d,0x01,0x00,0x00,0x00]))`
  */
 const WASM_BR_BASE64 = 'iwOAAGFzbQEAAAAD';
+
+/** 上を展開したときのバイト列（wasm のマジックナンバー）。 */
+const WASM_PLAIN_BASE64 = 'AGFzbQEAAAA=';
 
 /**
  * base64 をバイト列へ戻す。
@@ -114,8 +117,9 @@ beforeAll(async () => {
   )
     .bind('sandbox-author', 'sub-sandbox-author', 'sandbox@example.com', 'author')
     .run();
-  // 版の出し分けは M4-4（#29）の範囲。いまは 1 つだけ置く。
-  await env.BUCKET.put('runtime/wasm_exec.js', '/* wasm_exec.js */');
+  // 3.5 の出し分けの土台。**配信側は R2 に置かれたものを正本とする**ので、
+  // ここで置いた版だけが引ける。
+  await env.BUCKET.put(`runtime/${GO_VERSION}/wasm_exec.js`, '/* wasm_exec.js go1.26.5 */');
 });
 
 describe('パスの解釈（#28）', () => {
@@ -144,6 +148,35 @@ describe('パスの解釈（#28）', () => {
     // どちらか一方だけが動く状態は、リンクを踏む体験として意味が無い。
     const previewKey = 'b'.repeat(32);
     expect(parseSandboxPath(`/p/${previewKey}`)).toEqual(parseSandboxPath(`/p/${previewKey}/`));
+  });
+
+  it('空のセグメントはどの位置でも通さない', () => {
+    // **ここが緩むと実害がある。** `/p/<key>//` が文書として通ると、返す文書が埋める
+    // 資材のパスは正規の綴り（`/p/<key>/game.wasm`）である一方、CSP は要求された URL の
+    // ほうから組み立てられるため、**CSP が許した URL と実際に読む URL が食い違う。**
+    // 結果は「自分の wasm を読めないページ」で、200 で返るぶん壊れて見えない。
+    const previewKey = 'd'.repeat(32);
+    const gameId = '0189d3f2-9c1a-4b7e-8f0d-1a2b3c4d5e6f';
+    for (const path of [
+      `/p/${previewKey}//`, // 末尾スラッシュの重なり
+      `/g/${gameId}//`,
+      `/g/${gameId}/game.wasm/`, // ファイル名に末尾スラッシュは付かない
+      `/p/${previewKey}/wasm_exec.js/`,
+      `/p//${previewKey}/`,
+      `/p/${previewKey}//game.wasm`,
+    ]) {
+      expect(parseSandboxPath(path), path).toBeNull();
+    }
+  });
+
+  it('末尾スラッシュを許すのは文書の経路だけである', () => {
+    // 文書は `/p/<key>` と `/p/<key>/` の両方を受ける（リンクを踏む体験のため）。
+    // 資材は 1 つの綴りしか受けない。
+    const previewKey = 'e'.repeat(32);
+    expect(parseSandboxPath(`/p/${previewKey}`)).not.toBeNull();
+    expect(parseSandboxPath(`/p/${previewKey}/`)).not.toBeNull();
+    expect(parseSandboxPath(`/p/${previewKey}/game.wasm`)).not.toBeNull();
+    expect(parseSandboxPath(`/p/${previewKey}/game.wasm/`)).toBeNull();
   });
 
   it('綴りが違えば必ず null を返す', () => {
@@ -304,31 +337,86 @@ describe('公開状態による出し分け（5.4 / #28）', () => {
     expect(await unknown.text()).toBe(await notPublished.text());
   });
 
-  it('GET と HEAD 以外は 405 になる', async () => {
+  it('空セグメントの混ざった URL は配信経路でも 404 になる', async () => {
+    // 上の `parseSandboxPath` の検査と同じことを、入口から通して見る。
+    const game = await seedGame({ suffix: 'empty-seg', status: 'published' });
+    expect((await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`)).status).toBe(200);
+    for (const path of [`/g/${game.id}//`, `/g/${game.id}/game.wasm/`]) {
+      expect((await SELF.fetch(`${SANDBOX_ORIGIN}${path}`)).status, path).toBe(404);
+    }
+  });
+
+  it('HEAD は受け付ける', async () => {
+    // 405 の本文と `Allow` が「HEAD も受ける」と言っている以上、実際に受けること。
+    const game = await seedGame({ suffix: 'head', status: 'published' });
+    const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`, { method: 'HEAD' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toContain('sandbox allow-scripts');
+  });
+
+  it('GET と HEAD 以外は Allow 付きの 405 になる', async () => {
     const game = await seedGame({ suffix: 'method', status: 'published' });
     const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`, { method: 'POST' });
     expect(response.status).toBe(405);
+    // `src/routes.ts` の 405 と同じ形（「経路はあるが呼び方が違う」ことを示す）。
+    expect(response.headers.get('allow')).toBe('GET, HEAD');
+    // **本文が実際の判定とずれていないこと。** 受け付けるメソッドを本文でも名乗る。
+    expect(await response.text()).toContain('GET, HEAD');
   });
 });
 
-describe('資材の配信（#28）', () => {
-  it('.wasm が R2 のオブジェクトとして届く', async () => {
-    const game = await seedGame({ suffix: 'bytes', status: 'published' });
+describe('.wasm の配信（#29 acceptance 1）', () => {
+  it('Content-Type と Content-Encoding の両方が付く', async () => {
+    // 3.4-2:「`Content-Encoding` だけを設定して `Content-Type` を落とすと、圧縮は
+    // 効いているのにストリーミングだけが黙って失われる」。両方を個別に見る。
+    const game = await seedGame({ suffix: 'headers', status: 'published' });
     const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/game.wasm`);
     expect(response.status).toBe(200);
-    // どの R2 オブジェクトを返したかを etag で確かめる。本文で確かめないのは、
-    // `Content-Encoding` が付いた本文を受け取り側が展開しうるためで、ここで見たいのは
-    // 「キーが指すオブジェクトが届いたか」だけである。
-    const stored = await env.BUCKET.get(game.wasmKey!);
-    expect(response.headers.get('etag')).toBe(stored!.httpEtag);
+    expect(response.headers.get('content-type')).toBe('application/wasm');
+    expect(response.headers.get('content-encoding')).toBe('br');
+    // MIME type の推測でどちらかが書き換わらないこと。
     expect(response.headers.get('x-content-type-options')).toBe('nosniff');
   });
 
-  it('wasm_exec.js が届く', async () => {
-    const game = await seedGame({ suffix: 'exec', status: 'published' });
-    const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/wasm_exec.js`);
-    expect(response.status).toBe(200);
-    expect(await response.text()).toContain('wasm_exec.js');
+  it('R2 のメタデータに何も入っていなくても両方が付く', async () => {
+    // 置くのはビルド関数だが（3.4-1 / #21）、**配信側が返すものは配信側が決める。**
+    // メタデータ任せにすると、置き方が変わった日に静かにストリーミングだけが落ちる。
+    const game = await seedGame({ suffix: 'nometa', status: 'published' });
+    const stored = await env.BUCKET.get(game.wasmKey!);
+    expect(stored?.httpMetadata?.contentType).toBeUndefined();
+    expect(stored?.httpMetadata?.contentEncoding).toBeUndefined();
+
+    const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/game.wasm`);
+    expect(response.headers.get('content-type')).toBe('application/wasm');
+    expect(response.headers.get('content-encoding')).toBe('br');
+  });
+
+  it('R2 に置いたバイト列がそのまま届く', async () => {
+    const game = await seedGame({ suffix: 'bytes', status: 'published' });
+    const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/game.wasm`);
+    const received = new Uint8Array(await response.arrayBuffer());
+    // `Content-Encoding: br` を宣言しているため、受け取り側が展開していることも、
+    // 圧縮列のまま届くこともありうる。**どちらでも、元のバイト列に対応していること**を
+    // 見る（ここで確かめたいのは「R2 のオブジェクトが届いている」ことである）。
+    const compressed = fromBase64(WASM_BR_BASE64);
+    const plain = fromBase64(WASM_PLAIN_BASE64);
+    const matched =
+      received.length === compressed.length
+        ? received.every((byte, index) => byte === compressed[index])
+        : received.every((byte, index) => byte === plain[index]) && received.length === plain.length;
+    expect(matched, `received ${received.length} bytes`).toBe(true);
+  });
+
+  it('公開済みは共有キャッシュ可、プレビューは private にする', async () => {
+    const game = await seedGame({ suffix: 'cache', status: 'published' });
+    const published = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/game.wasm`);
+    expect(published.headers.get('cache-control')).toContain('public');
+    expect(published.headers.get('cache-control')).toContain('immutable');
+
+    // unlisted キーが唯一の資格情報なので、共有キャッシュへ載せない。
+    const preview = await SELF.fetch(`${SANDBOX_ORIGIN}/p/${game.previewKey}/game.wasm`);
+    expect(preview.headers.get('cache-control')).toContain('private');
+    expect(preview.headers.get('cache-control')).not.toContain('public');
   });
 
   it('tombstone された作品は 404 になる', async () => {
@@ -347,7 +435,72 @@ describe('資材の配信（#28）', () => {
   });
 });
 
-describe('ローダー文書（#28）', () => {
+describe('wasm_exec.js の出し分け（3.5 / #29）', () => {
+  it('go_version から R2 のキーを組み立てる', () => {
+    expect(wasmExecKey('go1.26.5')).toBe('runtime/go1.26.5/wasm_exec.js');
+    expect(wasmExecKey('go1.27')).toBe('runtime/go1.27/wasm_exec.js');
+  });
+
+  it('綴りが不正な go_version ではキーを作らない', () => {
+    // R2 のキーへ埋める値なので、経路の外へ出る綴りを組み立てさせない。
+    for (const value of ['', '1.26.5', 'go1.26.5/../../secret', '../runtime', 'go1.26.5 ']) {
+      expect(wasmExecKey(value), value).toBeNull();
+    }
+  });
+
+  it('作品の go_version に対応するファイルを返す', async () => {
+    const game = await seedGame({ suffix: 'exec', status: 'published' });
+    const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/wasm_exec.js`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/javascript');
+    expect(await response.text()).toContain(GO_VERSION);
+  });
+
+  it('版が違えば違うファイルを返す', async () => {
+    // 3.5 の要点。`go_version` を無視して 1 つのファイルを配ると、Go を上げた日に
+    // 過去の全作品が壊れる。
+    await env.BUCKET.put('runtime/go1.27.0/wasm_exec.js', '/* wasm_exec.js go1.27.0 */');
+    const newer = await seedGame({ suffix: 'newer', status: 'published', goVersion: 'go1.27.0' });
+    const older = await seedGame({ suffix: 'older', status: 'published' });
+
+    expect(await (await SELF.fetch(`${SANDBOX_ORIGIN}/g/${newer.id}/wasm_exec.js`)).text()).toContain(
+      'go1.27.0',
+    );
+    expect(await (await SELF.fetch(`${SANDBOX_ORIGIN}/g/${older.id}/wasm_exec.js`)).text()).toContain(
+      GO_VERSION,
+    );
+  });
+
+  it('置かれていない版へは別の版を配らずに失敗する', async () => {
+    // **フォールバックを作らない。** 版が違う `wasm_exec.js` は読み込みに成功して
+    // 実行時に壊れるため、いちばん原因が読めない失敗になる（3.5）。
+    const game = await seedGame({ suffix: 'unknown', status: 'published', goVersion: 'go1.99.0' });
+    const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/wasm_exec.js`);
+    expect(response.status).toBe(500);
+    expect(await response.text()).not.toContain(GO_VERSION);
+  });
+});
+
+describe('ローダー文書（3.4-2 / #29 acceptance 2）', () => {
+  it('instantiateStreaming を使う', async () => {
+    const game = await seedGame({ suffix: 'loader', status: 'published' });
+    const body = await (await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`)).text();
+    expect(body).toContain('WebAssembly.instantiateStreaming(fetch(');
+  });
+
+  it('非ストリーミングのフォールバック経路を持たない', async () => {
+    // 受け入れ条件「`instantiateStreaming` がフォールバック経路に落ちないこと」。
+    // 巷のテンプレートは `if (!WebAssembly.instantiateStreaming) { ... arrayBuffer ... }`
+    // を書いており、これがあるとヘッダを 1 つ落としただけで**黙って**非ストリーミングに
+    // なる。文字列として存在しないことを見る。
+    const game = await seedGame({ suffix: 'nofallback', status: 'published' });
+    const body = await (await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`)).text();
+    expect(body).not.toContain('arrayBuffer');
+    expect(body).not.toContain('WebAssembly.instantiate(');
+    expect(body).not.toContain('WebAssembly.compile');
+    expect(body).not.toContain('XMLHttpRequest');
+  });
+
   it('CSP が許した URL とローダーが読む URL が一致する', async () => {
     // 一方だけを直すと、CSP は通るのに読めない（あるいはその逆）状態になる。
     const game = await seedGame({ suffix: 'match', status: 'published' });

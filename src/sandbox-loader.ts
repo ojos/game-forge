@@ -1,9 +1,9 @@
 /**
- * サンドボックス用ホストが返すローダー文書を組み立てる（3.4 / #28）。
+ * サンドボックス用ホストが返すローダー文書を組み立てる（3.4 / 3.5 / #29）。
  *
  * この文書がやることは 2 つだけである。
  *
- *   1. `wasm_exec.js` を読む
+ *   1. `go_version` に対応する `wasm_exec.js` を読む（3.5）
  *   2. `WebAssembly.instantiateStreaming` で `.wasm` を起動する（3.4-2）
  *
  * # UGC 由来の文字列を 1 つも入れない
@@ -37,10 +37,16 @@ export interface LoaderAssetPaths {
  * （CSP のパス一致はリダイレクトを跨ぐと無効化されるため、`connect-src` を 1 点へ
  * 絞った意味が薄れる。`src/sandbox-csp.ts`）。絶対パスなら、どちらの綴りでも同じ 1 本を指す。
  *
- * # `instantiateStreaming` を使う
+ * # `instantiateStreaming` がフォールバック経路へ落ちない
  *
- * 3.4-2 が要求する。ストリーミングの取りこぼしを機構で塞ぐところ（フォールバック経路を
- * 持たせないこと・2 つのヘッダを配信側で保証すること）は M4-4（#29）の範囲である。
+ * 3.4-2 の受け入れ条件である。**非ストリーミングの代替を 1 行も書かない。**
+ * `wasm_exec.js` の同梱例や巷のテンプレートは
+ * `if (!WebAssembly.instantiateStreaming) { ... arrayBuffer ... }` を書いていることが
+ * 多く、これがあると、ヘッダを 1 つ落としただけで**黙って非ストリーミングになる。**
+ * 落ちたことに誰も気づけないのが最大の問題なので、代替を用意せず**失敗として見せる。**
+ *
+ * 下の `typeof ... !== 'function'` は代替ではなく、その逆である。使えないと分かった
+ * 時点で理由を表示して止める（フォールバックは「別の方法で成功させてしまう」）。
  *
  * @param paths ローダーが読む資材のパス
  * @returns HTML 文書
@@ -78,6 +84,17 @@ export function loaderHtml(paths: LoaderAssetPaths): string {
     status.textContent = '起動できませんでした: ' + reason;
   }
 
+  // **フォールバックではない。** ここで代替の読み込み方へ分岐すると、3.4-2 が
+  // 避けたい非ストリーミング経路が黙って成立する。使えないなら失敗として見せる。
+  if (typeof WebAssembly.instantiateStreaming !== 'function') {
+    fail('WebAssembly.instantiateStreaming がありません');
+    return;
+  }
+  if (typeof Go !== 'function') {
+    fail('wasm_exec.js を読み込めませんでした');
+    return;
+  }
+
   var go = new Go();
   WebAssembly.instantiateStreaming(fetch(${wasmLiteral}), go.importObject)
     .then(function (result) {
@@ -86,7 +103,7 @@ export function loaderHtml(paths: LoaderAssetPaths): string {
     })
     .catch(function (error) {
       // ここに到達するのは、取得の失敗・MIME type 不一致・wasm の不正のいずれか。
-      // **握り潰さない。** 黙って白画面になると取り違えに気づけない。
+      // **握り潰さない。** 黙って白画面になるとヘッダの取り違えに気づけない。
       fail(String(error));
     });
 })();

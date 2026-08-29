@@ -1,5 +1,5 @@
 /**
- * サンドボックス用ホストの配信（3.4 / 5.4 / 7.2 / #28）。
+ * サンドボックス用ホストの配信（3.4 / 3.5 / 5.4 / 7.2 / #28 / #29）。
  *
  * このモジュールが持つのは 3 つである。
  *
@@ -48,6 +48,18 @@ export const WASM_FILE = 'game.wasm';
 export const WASM_EXEC_FILE = 'wasm_exec.js';
 
 /**
+ * この経路が受け付けるメソッド。
+ *
+ * **判定にも `Allow` ヘッダにも本文にも、この 1 つの配列を使う。** 別々に書くと、
+ * 「HEAD は通るのに『GET だけを受け付けます』と答える」ような食い違いが生まれる
+ * （実際にそうなっていた）。読み取りしか無い経路なので、これ以上増えることはない。
+ *
+ * `Allow` の綴りは `src/routes.ts` の `allowedMethods` に揃える（`, ` 区切り）。
+ * アプリ側とサンドボックス側で 405 の形が違う理由が無い。
+ */
+const ALLOWED_METHODS = ['GET', 'HEAD'] as const;
+
+/**
  * `preview_key` の綴り。**16 進 32 桁 = 128 ビット。**
  *
  * 形を固定するのは推測困難性のためだけではない。この値は URL から取り出して
@@ -65,18 +77,13 @@ const PREVIEW_KEY_PATTERN = /^[0-9a-f]{32}$/u;
 const GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 /**
- * `wasm_exec.js` を置く R2 のキー。
+ * `go_version` の綴り（`go1.26.5` の形）。
  *
- * **いまは版を 1 つしか持たない。** 3.5 の「`go_version` に応じた出し分け」は M4-4（#29）の
- * 範囲なので、ここでは配信経路が成立することだけを作る。**版を混ぜないために、キーに
- * 版を含めない形にはしない**（後から `runtime/<go_version>/wasm_exec.js` へ寄せるとき、
- * 古いキーが「どの版のものか分からないファイル」として残る）。
- *
- * 置き場所を `builds/` の外にするのは、あちらがビルド結果で 3.7 のゴミ掃除（被参照ゼロで
- * 削除）の対象になるためである。`wasm_exec.js` はどの `games` 行からも参照されない
- * 共有のランタイム資材で、同じ接頭辞の下に置くと掃除の対象に見える。
+ * **R2 のキーへ埋めるので、綴りを限定しないと `../` を含む値でキーを組み立てうる。**
+ * 値は `games.go_version` 経由で来る（ビルド関数の応答が出所）ため現実には安全側だが、
+ * **キーを組み立てる側で閉じる。**
  */
-const WASM_EXEC_KEY = `runtime/${WASM_EXEC_FILE}`;
+const GO_VERSION_PATTERN = /^go\d+\.\d+(?:\.\d+)?$/u;
 
 /** 作品が draft のときだけ配信する経路か、公開済みだけを配信する経路か。 */
 export type SandboxScope = 'preview' | 'published';
@@ -107,15 +114,25 @@ export interface SandboxTarget {
  * @returns 解釈できた要求。できなければ null
  */
 export function parseSandboxPath(pathname: string): SandboxTarget | null {
-  // 先頭の `/` を落としてから分解する。`/p/x/` は ['p', 'x', ''] になるので、
-  // 末尾の空要素だけを 1 つ許して落とす（`//` のような綴りは救わない）。
   const rawSegments = pathname.replace(/^\//u, '').split('/');
+
+  // **末尾の空要素を許すのは、文書の経路（2 セグメント）のときだけである。**
+  // `/p/<key>/` を `/p/<key>` と同じ綴りとして受けるためのもので、それ以外の位置に
+  // 空セグメントがあれば下の検査で落ちる。
+  //
+  // ここを「末尾の空要素を 1 つ落とす」だけにすると `/p/<key>//` と
+  // `/g/<id>/game.wasm/` が通ってしまう。**通ると実害がある。** 配信された文書が
+  // 埋める資材のパスは正規の綴り（`/p/<key>/game.wasm`）だが、CSP は要求された URL の
+  // ほうから組み立てられるため、**CSP が許した URL と実際に読む URL が食い違う。**
+  // 結果は「自分の wasm を読めないページ」で、しかも 200 で返るので壊れて見えない。
   const segments =
-    rawSegments.length > 1 && rawSegments[rawSegments.length - 1] === ''
-      ? rawSegments.slice(0, -1)
-      : rawSegments;
+    rawSegments.length === 3 && rawSegments[2] === '' ? rawSegments.slice(0, 2) : rawSegments;
 
   if (segments.length < 2 || segments.length > 3) {
+    return null;
+  }
+  // 空セグメント（`//` や先頭の `/` の重なり）はどの位置でも通さない。
+  if (segments.some((segment) => segment === '')) {
     return null;
   }
 
@@ -130,7 +147,12 @@ export function parseSandboxPath(pathname: string): SandboxTarget | null {
     return null;
   }
 
-  const asset = assetOf(segments.length === 3 ? segments[2]! : '');
+  // 2 セグメントなら文書、3 セグメントなら 3 つ目がファイル名である。
+  if (segments.length === 2) {
+    return { scope, identifier, asset: 'document' };
+  }
+
+  const asset = assetOf(segments[2]!);
   if (asset === null) {
     return null;
   }
@@ -155,15 +177,16 @@ function scopeOf(prefix: string): SandboxScope | null {
 }
 
 /**
- * 3 番目のセグメントから資材の種類を決める。
+ * 3 番目のセグメント（ファイル名）から資材の種類を決める。
  *
- * @param name ファイル名（空文字なら文書そのもの）
+ * **空文字を受け付けない。** 文書の経路は呼び出し側が 2 セグメントの時点で確定させる。
+ * ここで空文字を `document` として扱うと、`/p/<key>//` のように空セグメントが
+ * 混ざった綴りまで文書として通る余地が残る。
+ *
+ * @param name ファイル名
  * @returns 資材の種類。未知の名前なら null
  */
 function assetOf(name: string): SandboxAsset | null {
-  if (name === '') {
-    return 'document';
-  }
   if (name === WASM_FILE) {
     return 'wasm';
   }
@@ -177,7 +200,7 @@ function assetOf(name: string): SandboxAsset | null {
 export interface DeliverableGame {
   readonly id: string;
   readonly status: string;
-  /** 3.5 の `wasm_exec.js` 出し分け（M4-4 / #29）に使う。 */
+  /** 3.5 の `wasm_exec.js` 出し分けに使う。 */
   readonly goVersion: string;
   /** R2 のキー。tombstone 化（5.3 / M5-4）で NULL になりうる。 */
   readonly wasmKey: string | null;
@@ -224,6 +247,33 @@ export async function resolveGame(env: Env, target: SandboxTarget): Promise<Deli
     return null;
   }
   return { id: row.id, status: row.status, goVersion: row.go_version, wasmKey: row.wasm_key };
+}
+
+/**
+ * `go_version` に対応する `wasm_exec.js` の R2 キーを組み立てる（3.5）。
+ *
+ * # なぜ「対応表」を持たないのか
+ *
+ * 3.5 は「新バージョンの `wasm_exec.js` を配信側へ追加する（既存バージョンのものは
+ * 消さない）」と定める。**すなわち正本は「R2 に何が置かれているか」である。**
+ * コード側に版の一覧を持つと、それは R2 の内容の写しになり、Go を上げた日から静かに
+ * ずれる（shared-ai-rules.md 12 章「一覧の複製は機械照合で担保する」）。
+ * ここが持つのは**綴りの検証とキーの組み立てだけ**にする。
+ *
+ * # 置き場所を `builds/` の外にする理由
+ *
+ * `builds/<source_sha256>/...` はビルド結果で、3.7 のゴミ掃除（被参照ゼロで削除）の
+ * 対象になる。`wasm_exec.js` は作品に紐づかない**共有のランタイム資材**であり、
+ * どの `games` 行からも参照されない。同じ接頭辞の下に置くと、掃除の対象に見える。
+ *
+ * @param goVersion `games.go_version` の値
+ * @returns R2 のキー。綴りが不正なら null
+ */
+export function wasmExecKey(goVersion: string): string | null {
+  if (!GO_VERSION_PATTERN.test(goVersion)) {
+    return null;
+  }
+  return `runtime/${goVersion}/${WASM_EXEC_FILE}`;
 }
 
 /**
@@ -301,9 +351,15 @@ function sandboxHeaders(csp: string, extra: Record<string, string>): Headers {
  * @param status HTTP ステータス
  * @param message 本文（利用者向けの短い日本語）
  * @param context CSP の組み立てに使うオリジン
+ * @param extra 追加のヘッダ（405 の `Allow` など）
  * @returns レスポンス
  */
-function sandboxError(status: number, message: string, context: ResponseContext): Response {
+function sandboxError(
+  status: number,
+  message: string,
+  context: ResponseContext,
+  extra: Record<string, string> = {},
+): Response {
   const csp = sandboxCsp({
     // エラー文書は何も読み込まない。ここは `'none'` のままである（7.2 のとおり）。
     scriptUrl: null,
@@ -315,6 +371,7 @@ function sandboxError(status: number, message: string, context: ResponseContext)
     headers: sandboxHeaders(csp, {
       'content-type': 'text/plain; charset=utf-8',
       'cache-control': 'no-store',
+      ...extra,
     }),
   });
 }
@@ -330,8 +387,13 @@ export async function deliverSandboxRequest(request: Request, env: Env): Promise
   const context = responseContextOf(request, env);
 
   // 読み取りしか無い経路である。POST / PUT の類は受けない。
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    return sandboxError(405, 'この経路は GET だけを受け付けます。', context);
+  //
+  // **`Allow` を付ける。** `src/routes.ts` は「経路はあるが呼び方が違う」ことを
+  // `Allow` で示す設計を持っており、こちらだけ落とす理由が無い。本文と `Allow` の
+  // どちらも `ALLOWED_METHODS` から作るので、実際の判定とずれない。
+  if (!(ALLOWED_METHODS as readonly string[]).includes(request.method)) {
+    const allow = ALLOWED_METHODS.join(', ');
+    return sandboxError(405, `この経路は ${allow} だけを受け付けます。`, context, { allow });
   }
 
   const target = parseSandboxPath(new URL(request.url).pathname);
@@ -348,9 +410,9 @@ export async function deliverSandboxRequest(request: Request, env: Env): Promise
     case 'document':
       return documentResponse(target, context);
     case 'wasm':
-      return await wasmResponse(env, game, context);
+      return await wasmResponse(env, target, game, context);
     case 'wasm-exec':
-      return await wasmExecResponse(env, context);
+      return await wasmExecResponse(env, target, game, context);
   }
 }
 
@@ -386,26 +448,40 @@ function documentResponse(target: SandboxTarget, context: ResponseContext): Resp
 }
 
 /**
- * `.wasm` を R2 から返す（3.4-1）。
+ * `.wasm` を R2 から返す（3.4-1 / 3.4-2）。
  *
- * # ヘッダは R2 のオブジェクトメタデータを写す
+ * # 2 つのヘッダを R2 のメタデータ任せにしない
  *
- * 3.4-1 のとおり、`Content-Type: application/wasm` と `Content-Encoding: br` は
- * **置く側（ビルド関数）が PUT のヘッダとして送っている**（#21）。ここではそれを
- * `writeHttpMetadata` でレスポンスへ写す。
+ * 置くのはビルド関数で、PUT のヘッダとして両方を送っている（3.4-1 / #21）。それでも
+ * ここで**明示的に上書きする。** 3.4-2 が指摘するとおり、`Content-Encoding` だけが
+ * 残って `Content-Type` が落ちると、**圧縮は効いているのにストリーミングだけが黙って
+ * 失われる。** 配信側が読み取り時の値に依存していると、その事故は配信のコードを読んでも
+ * 見つからない。**この経路が返すものは、この経路が決める。**
  *
- * **この経路が正しいことは、置く側が正しいことに依存している。** 3.4-2 は
- * 「`Content-Encoding` だけが残って `Content-Type` が落ちると、圧縮は効いているのに
- * ストリーミングだけが黙って失われる」と警告しており、その保証を配信側で閉じるのは
- * M4-4（#29）の範囲である。
+ * # `Content-Encoding: br` を付けたまま R2 のバイト列をそのまま流す
+ *
+ * R2 は保存したバイト列をそのまま返す（復号しない）。ブラウザ側が展開する。
+ * **`Accept-Encoding` を見て分岐しない。** R2 には br 版しか無く（3.4-1）、
+ * 展開して返す手段が Workers 側に無い以上、分岐しても返せるものは変わらない。
+ * br を解さないクライアントは wasm も動かせないので、実害のある組み合わせが無い。
+ *
+ * # キャッシュ
+ *
+ * 同じ URL の中身は変わらない。`wasm_key` は作成時に決まり（`src/games.ts`）、以後
+ * 書き換わらない。再生成は別の作品行（＝別の URL）になる。したがって長い `max-age` を
+ * 付けられる。**ただし `/p/` は `private` にする。** unlisted キーが唯一の資格情報なので、
+ * 共有キャッシュへ載せない。3.4-6 のとおり CDN のヒットは元々当てにしていないため、
+ * `private` にして失うものが無い。
  *
  * @param env バインディングと環境変数
+ * @param target 解釈済みの要求
  * @param game 配信してよい作品
  * @param context CSP の組み立てに使うオリジン
  * @returns レスポンス
  */
 async function wasmResponse(
   env: Env,
+  target: SandboxTarget,
   game: DeliverableGame,
   context: ResponseContext,
 ): Promise<Response> {
@@ -423,31 +499,50 @@ async function wasmResponse(
     return sandboxError(500, '作品を配信できませんでした。', context);
   }
 
-  const headers = sandboxHeaders(closedCsp(context), {
-    // UGC は常に個別ファイルであり、CDN キャッシュはヒットしない前提（3.4-6）。
-    'cache-control': 'no-store',
-    etag: object.httpEtag,
+  return new Response(object.body, {
+    status: 200,
+    headers: sandboxHeaders(closedCsp(context), {
+      // 3.4-1 が求める 2 つ。**両方を必ず付ける。**
+      'content-type': 'application/wasm',
+      'content-encoding': 'br',
+      'cache-control': cacheControlFor(target.scope),
+      etag: object.httpEtag,
+    }),
   });
-  object.writeHttpMetadata(headers);
-  return new Response(object.body, { status: 200, headers });
 }
 
 /**
- * `wasm_exec.js` を R2 から返す。
+ * `go_version` に対応する `wasm_exec.js` を R2 から返す（3.5）。
  *
- * **版の出し分けはまだ無い**（3.5 / M4-4 の範囲）。いまは置かれている 1 つを返す。
- * 見つからないときに何かで代替しないのは、`wasm_exec.js` はビルドに使った Go の版と
- * 厳密に一致する必要があり（3.5）、違うものを配ると読み込みは成功して実行時に壊れる
- * ためである。
+ * **版が見つからないときに他の版へ落ちない。** 3.5 が言うとおり `wasm_exec.js` は
+ * ビルドに使った Go の版と厳密に一致する必要があり、**違う版で動かすと失敗の仕方が
+ * 分かりにくい**（読み込みは成功し、実行時に壊れる）。既定の版へ落とすくらいなら、
+ * 何が足りないかを言って止めるほうが運用事故が短く済む。
  *
  * @param env バインディングと環境変数
+ * @param target 解釈済みの要求
+ * @param game 配信してよい作品
  * @param context CSP の組み立てに使うオリジン
  * @returns レスポンス
  */
-async function wasmExecResponse(env: Env, context: ResponseContext): Promise<Response> {
-  const object = await fetchObject(env, WASM_EXEC_KEY);
+async function wasmExecResponse(
+  env: Env,
+  target: SandboxTarget,
+  game: DeliverableGame,
+  context: ResponseContext,
+): Promise<Response> {
+  const key = wasmExecKey(game.goVersion);
+  if (key === null) {
+    console.error(`[sandbox] go_version の綴りが不正です: ${game.goVersion}`);
+    return sandboxError(500, '作品を配信できませんでした。', context);
+  }
+
+  const object = await fetchObject(env, key);
   if (object === null) {
-    console.error(`[sandbox] wasm_exec.js が R2 にありません（キー: ${WASM_EXEC_KEY}）。`);
+    console.error(
+      `[sandbox] ${game.goVersion} の wasm_exec.js が R2 にありません（キー: ${key}）。` +
+        ' 3.5 の更新手順「新バージョンの wasm_exec.js を配信側へ追加する」が未実施です。',
+    );
     return sandboxError(500, '作品を配信できませんでした。', context);
   }
 
@@ -455,7 +550,7 @@ async function wasmExecResponse(env: Env, context: ResponseContext): Promise<Res
     status: 200,
     headers: sandboxHeaders(closedCsp(context), {
       'content-type': 'text/javascript; charset=utf-8',
-      'cache-control': 'no-store',
+      'cache-control': cacheControlFor(target.scope),
       etag: object.httpEtag,
     }),
   });
@@ -490,4 +585,22 @@ function closedCsp(context: ResponseContext): string {
     connectUrl: null,
     frameAncestorOrigin: context.appOrigin,
   });
+}
+
+/**
+ * 資材の `Cache-Control` を決める。
+ *
+ * @param scope 配信の種類
+ * @returns `Cache-Control` の値
+ */
+function cacheControlFor(scope: SandboxScope): string {
+  // 公開済みは誰が見ても同じものなので共有キャッシュに載せてよい。中身は不変
+  // （`wasm_key` は作成時に決まり書き換わらない）なので `immutable` を付ける。
+  if (scope === 'published') {
+    return 'public, max-age=31536000, immutable';
+  }
+  // プレビューは unlisted キーが唯一の資格情報なので共有キャッシュへ載せない。
+  // 有効期間も短くする。作者が試遊のたびに 2.3MB を取り直さずに済み、かつ
+  // 「リンクを止めたのに古いキャッシュで見えている」窓が長く残らない長さにする。
+  return 'private, max-age=600';
 }

@@ -142,7 +142,8 @@ Pages 構成に対して「Workers 用のコマンドです」と言って落ち
 
 - アプリ: <https://game-forge.localtest.me:8787/>
 - 登録画面: <https://game-forge.localtest.me:8787/signup>
-- サンドボックス: <https://sandbox.game-forge.localtest.me:8787/>
+- サンドボックス: **`/` は 404 が正しい。** 配信するのは作品の URL だけです
+  （下記「サンドボックス側の動作確認」）。
 
 ポートを変えるときは `PORT=9000 npm run dev`。
 
@@ -200,11 +201,113 @@ API のパスは `/api/*` を正とします（確定22）。`scripts/acceptance
 
 ### 動作確認
 
+アプリ用ホスト（`https://game-forge.localtest.me:8787`）で叩きます。
+
 | URL | 返すもの |
 |---|---|
 | `/__dev/health` | D1 / R2 の疎通と、ホスト名の関係の判定 |
 | `/__dev/session` | `__Host-gf_dev_session` cookie を発行 |
 | `/__dev/cookies` | 届いた cookie の**名前だけ**（値は返さない） |
+
+### サンドボックス側の動作確認
+
+**`/` は 404 を返します。これが正しい状態です。** M4-3（#28）でサンドボックス用ホストは
+実際の配信を持つようになり、**作品を指す 2 つの接頭辞（`/p/` と `/g/`）の下だけ**を
+配信するようになりました。M0.5-3 の頃にあった「sandbox origin」のプレースホルダ画面は
+もうありません。
+
+| URL | 何を返すか |
+|---|---|
+| `/p/<preview_key>/` | draft（作者プレビュー）のローダー文書。`preview_key` は 16 進 32 桁 |
+| `/g/<game_id>/` | `status='published'` の作品のローダー文書 |
+| `/p/<...>/game.wasm`、`/g/<...>/game.wasm` | R2 の `.wasm.br`（`Content-Type: application/wasm` ＋ `Content-Encoding: br`） |
+| `/p/<...>/wasm_exec.js`、`/g/<...>/wasm_exec.js` | `games.go_version` に対応する `wasm_exec.js`（3.5） |
+| 上記以外（`/` を含む） | 404 |
+
+#### 1. CSP ヘッダの目視確認（作品が 1 件も無くてもできる）
+
+**M0.5-3 がこのホストに置いた目的はこれで、いまも果たせます。** 7.2 の必須要件 1 は
+「配信レスポンスに `Content-Security-Policy: sandbox allow-scripts` を付ける」ことで、
+**サンドボックス用ホストはどの経路でも**これを満たします。404 でも付きます。
+
+```bash
+curl -s --cacert certs/dev.crt -D - -o /dev/null \
+  https://sandbox.game-forge.localtest.me:8787/
+```
+
+```text
+HTTP/1.1 404 Not Found
+content-security-policy: sandbox allow-scripts; default-src 'none'; ...; connect-src 'none'; ...
+x-content-type-options: nosniff
+```
+
+`allow-same-origin` が無いこと、`set-cookie` が 1 つも無いことも同時に読めます。
+`npm run check:origins` はこれを自動で検査します。
+
+#### 2. 実際に配信される URL を作る（D1 に 1 行入れる）
+
+**ローダー文書を返すのに R2 は要りません**（`games` に行があれば 200 になる）。
+生成を 1 回通すのが本筋ですが、**課金される**ので、経路の疎通だけを見るなら行を直接
+入れるのが速いです。
+
+```bash
+# 作者。既に users 行があるなら飛ばす
+npx wrangler d1 execute DB --local --command \
+  "insert into users (id, google_sub, email, display_name, created_at)
+   values ('u-local','sub-local','local@example.com','local',1)"
+
+# 作品。preview_key は 16 進 32 桁でなければ 404 になる（綴りを検証している）
+npx wrangler d1 execute DB --local --command \
+  "insert into games (id, author_id, status, title, go_version, created_at, preview_key)
+   values ('11111111-1111-4111-8111-111111111111','u-local','draft','ローカル確認',
+           'go1.26.5',1,'0123456789abcdef0123456789abcdef')"
+```
+
+<https://sandbox.game-forge.localtest.me:8787/p/0123456789abcdef0123456789abcdef/> が
+200 でローダー文書を返します。ヘッダを見ると、**`connect-src` がその作品の `.wasm`
+1 本に固定されている**ことが読めます。
+
+```text
+content-security-policy: sandbox allow-scripts; default-src 'none';
+  script-src 'unsafe-inline' 'wasm-unsafe-eval' https://sandbox.game-forge.localtest.me:8787/p/0123.../wasm_exec.js;
+  connect-src https://sandbox.game-forge.localtest.me:8787/p/0123.../game.wasm;
+  img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none';
+  frame-ancestors https://game-forge.localtest.me:8787
+```
+
+`status` を `published` にすれば `/g/11111111-1111-4111-8111-111111111111/` でも同じ
+文書が返ります（`/g/` は `published` だけ、`/p/` は `removed` 以外を返す。5.4）。
+
+#### 3. この行だけでは**ゲームは動きません**（正常な失敗）
+
+上の行は R2 のオブジェクトを指していないため、ローダーは資材の取得で失敗し、画面に
+「起動できませんでした」と出ます。**黙って白画面にはなりません。**
+
+| 要求 | この状態での応答 | 理由 |
+|---|---|---|
+| `/p/<key>/game.wasm` | 404 | `wasm_key` が NULL（tombstone と同じ扱い。5.3） |
+| `/p/<key>/wasm_exec.js` | 500 | R2 に `runtime/go1.26.5/wasm_exec.js` が無い |
+
+`wasm_exec.js` は**まだ誰も R2 へ置いていません**（3.5 の「イメージからこのファイルを
+取り出して配信側へ配置する」が未実施。別 issue）。手元で先へ進めたい場合は、ローカル
+R2 へ直接置けます。
+
+```bash
+# キーの版と、置くファイルの版は必ず同じにする（下記の注意）
+GOV="$(go env GOVERSION)"   # 例: go1.26.5
+npx wrangler r2 object put "game-forge-local/runtime/${GOV}/wasm_exec.js" \
+  --file "$(go env GOROOT)/lib/wasm/wasm_exec.js" --local
+```
+
+- **`--local` を外さないこと。** 外すと本番の R2 を触ります。
+- 置いた内容は `wrangler pages dev` を再起動しなくても次の要求から反映されます。
+- **キーの版は `games.go_version` と一致させること。** 配信側は
+  `runtime/<go_version>/wasm_exec.js` を引き、**見つからなければ別の版へ落とさず 500 に
+  します**（3.5。版の違う `wasm_exec.js` は読み込みに成功して実行時に壊れるため、
+  いちばん原因が読めない失敗になる）。手元の `go version` がビルドイメージ
+  （`docker/isolated-build/Dockerfile` の `golang:` タグ）と違う場合、**手元の
+  `wasm_exec.js` を `go1.26.5` のキーへ置かないこと。** それは 3.5 が防ごうとしている
+  取り違えそのものです。
 
 ---
 
@@ -231,6 +334,9 @@ API のパスは `/api/*` を正とします（確定22）。`scripts/acceptance
 - その cookie が**サンドボックス用ホストへは送られない**こと ← 7.2 の眼目
 - サンドボックス側が `CSP: sandbox allow-scripts` を返し、`allow-same-origin` を含まず、
   cookie を一切設定しないこと
+  - **見ているのはヘッダだけ**なので、`/` が 404 になった #28 以降もそのまま通ります。
+    サンドボックス用ホストは**どの経路でも**この 3 つを満たすことが 7.2 の要件であり、
+    作品が引けたかどうかとは別の話です。
 
 ### `npm run check:isolated-build` が確かめること
 
@@ -294,16 +400,35 @@ devcontainer は docker-outside-of-docker 構成で、`/workspaces/game-forge` �
 差し出さない」）。**本番も同じ形になる**（確定24 で本番は AWS Lambda。イベントでソースを受け、
 返り値で `.wasm.br` を返す。仕様書 3.3 / 3.8。v1.8 までは「本番の VPS も同じ形になる」）。
 
-### 5.4 CSP の `connect-src 'none'` と wasm 配信の衝突（M4-3 で解消する）
+### 5.4 CSP の `connect-src 'none'` と wasm 配信の衝突（M4-3 / #28 で解消済み）
 
-7.2 は `connect-src 'none'` まで絞ることを求める一方、3.4 は
-`WebAssembly.instantiateStreaming` の使用を求める。`instantiateStreaming` は `fetch`
-経由で `.wasm.br` を取得するため、その取得は `connect-src` の管轄に入る。さらに
-`sandbox allow-scripts`（`allow-same-origin` なし）で不透明オリジンになるため、
-`connect-src 'self'` も一致しない。
+**旧記述（M0.5-3 時点。経緯として残す）:**
 
-**M0.5-3 のプレースホルダは wasm を読まないため、7.2 の記述どおり `'none'` のまま
-置いてある。** 実際に wasm を配信する M4-3 で、配信元ホストの明示列挙などの解決が要る。
+> 7.2 は `connect-src 'none'` まで絞ることを求める一方、3.4 は
+> `WebAssembly.instantiateStreaming` の使用を求める。`instantiateStreaming` は `fetch`
+> 経由で `.wasm.br` を取得するため、その取得は `connect-src` の管轄に入る。さらに
+> `sandbox allow-scripts`（`allow-same-origin` なし）で不透明オリジンになるため、
+> `connect-src 'self'` も一致しない。
+>
+> **M0.5-3 のプレースホルダは wasm を読まないため、7.2 の記述どおり `'none'` のまま
+> 置いてある。** 実際に wasm を配信する M4-3 で、配信元ホストの明示列挙などの解決が要る。
+
+**#28 での結論: 緩めた。** 迂回できないことを先に確かめている（data: URL への埋め込み・
+非ストリーミング化・`preload` は、いずれも同じ `connect-src` の管轄に入るか 3.4-2 に
+反する）。不透明オリジンで `'self'` が一致しないのも旧記述のとおりなので、**配信元を
+明示列挙する以外の解が無い。**
+
+**緩めた幅は「その作品の `.wasm` 1 本の URL」に限った。** CSP のソース式はパスまで
+書けるため、`connect-src https://sandbox…/p/<key>/game.wasm` と完全一致で許している。
+同じホスト上の別の作品にも、配信経路の他のパスにも一致しない。**ローダー文書だけが
+緩み、`.wasm` や `wasm_exec.js` のレスポンスは `'none'` のままである。**
+
+失われたのは「外へ一切出られない」という性質で、第三者への送出（情報送出・マイニング・
+DDoS 踏み台）はいずれも任意の宛先を要するため成立しない。**残る穴は、許可された 1 本を
+繰り返し取得できること**（Workers のリクエスト数を消費する）。
+
+理由と分担の見直しは `src/sandbox-csp.ts` の冒頭にある。**緩めた事実をコードから読める
+位置に置くのが完了条件だった**ので、この節はその入口として残す。
 
 ### 5.5 `wrangler.toml` を変えたら型を作り直す
 

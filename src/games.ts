@@ -519,3 +519,114 @@ export async function failGame(
 
   return (result.meta.changes ?? 0) > 0;
 }
+
+/** 一覧に出す作品 1 件（`src/my-works.ts` が読む）。 */
+export interface AuthoredGame {
+  /** `games.id`。作品ページ（`/works/<id>`）の URL に入る。 */
+  readonly id: string;
+  /** 仮のタイトル（プロンプト由来。{@link draftTitleFromPrompt}）。 */
+  readonly title: string;
+  /** 生成の進行状態。**D1 の綴りのまま返す**（画面の状態へ落とすのは読む側の仕事）。 */
+  readonly generationState: string;
+  /** 行を作った時刻（UNIX 秒）。 */
+  readonly createdAt: number;
+  /** ジョブが走り始めた時刻（UNIX 秒）。まだ握られていなければ null。 */
+  readonly startedAt: number | null;
+}
+
+/**
+ * ある作者の作品を新しい順に引く（5.5 / #152）。
+ *
+ * # `author_id` で絞ることが、この関数の唯一の責務である
+ *
+ * **5.4 は「公開前の URL は有効にしない」と定めており、一覧がその抜け道になっては
+ * いけない。** 生成直後の作品はすべて `status='draft'` で（`src/games.ts` 冒頭）、
+ * 現時点では公開の操作そのものが未実装（M4-1 / #26）なので、**この関数が返す行は
+ * 実質すべて draft である。** したがって「他人の行を 1 行も返さない」ことは、
+ * この一覧における 5.4 の担保そのものになる。
+ *
+ * **絞り込みを呼び出し側へ出さない。** 画面側で `filter` する形にすると、条件を
+ * 書き忘れた呼び出しが生まれても**動作では気づけない**（自分の作品は正しく出る）。
+ * 引く時点で SQL の `where` に入れておけば、書き忘れようがない。
+ *
+ * # `removed` を除く
+ *
+ * `status='removed'` は 8.4 の削除申請と 5.3 の tombstone 化が作る状態で、**作者が
+ * 戻るための作品ではない。** 出しても辿れる先は無い（`/p/` は `status <> 'removed'`
+ * でしか引けず、`/g/` は `published` でしか引けない）。**行き先の無いリンクを一覧に
+ * 並べない。**
+ *
+ * # 生成中の行も返す
+ *
+ * `generation_state` で絞らない。#152 が明示的に「生成中のものも出す」と定めており、
+ * **91 秒待っている最中の作品こそ、戻る道が要る。**
+ *
+ * # 件数の上限は呼び出し側が決める
+ *
+ * ここで既定値を持たない。**一覧は開くたびに引く**ので、上限は表示側の都合
+ * （何件並べるか、次があることをどう示すか）と一体で決まる。値と根拠は
+ * `src/my-works.ts` の `MAX_LISTED_WORKS` にある。
+ *
+ * @param env バインディングと環境変数
+ * @param authorId 作者の利用者 id
+ * @param limit 引く最大件数（0 以上の整数）
+ * @returns 新しい順（同時刻は id の降順）の作品
+ * @throws `limit` が 0 以上の整数でない場合
+ */
+export async function listAuthoredGames(
+  env: Env,
+  authorId: string,
+  limit: number,
+): Promise<readonly AuthoredGame[]> {
+  assertLimit(limit);
+
+  // 並べ替えの 2 列目に `id` を置くのは、`created_at` が UNIX 秒で**同じ秒に作られた
+  // 2 件の順序が決まらない**ためである（`migrations/0008_games_author_id_idx.sql`）。
+  // 索引の列順もこの並びに合わせてある。
+  const result = await env.DB.prepare(
+    `select id, title, generation_state, created_at, generation_started_at
+       from games
+      where author_id = ? and status <> 'removed'
+      order by created_at desc, id desc
+      limit ?`,
+  )
+    .bind(authorId, limit)
+    .all<{
+      id: string;
+      title: string;
+      generation_state: string;
+      created_at: number;
+      generation_started_at: number | null;
+    }>();
+
+  return result.results.map((row) => ({
+    id: row.id,
+    title: row.title,
+    generationState: row.generation_state,
+    createdAt: row.created_at,
+    startedAt: row.generation_started_at,
+  }));
+}
+
+/**
+ * 一覧の取得件数として受け取れる値かを検査する。
+ *
+ * **SQLite は `LIMIT -1` を「無制限」と解釈する。** すなわち負の値を渡すと、上限を
+ * 掛けたつもりの問い合わせが**その作者の全行の読み取り**に化ける。`NaN` や小数も
+ * 意図した件数にはならない。**どれも例外を投げずに「動いて」しまう**ため、動作では
+ * 気づけない（一覧は正しく見える。増えるのは読み取り行数だけである）。
+ *
+ * 3.6 は読み取りの単価が安いと言っているが、**静かに全件を読む経路を開いてよいとは
+ * 言っていない。** 呼び出し側の誤りを、無料枠の消費として先送りしない。
+ *
+ * 形は `src/invites.ts` の `assertQuota` に揃えてある（同じ種類の検査を、同じ書き方で
+ * 置く。読む側が 2 つの流儀を覚えなくて済む）。
+ *
+ * @param limit 検査する値
+ * @throws 0 以上の整数でない場合
+ */
+function assertLimit(limit: number): void {
+  if (!Number.isSafeInteger(limit) || limit < 0) {
+    throw new Error(`一覧の取得件数が不正です: ${limit}`);
+  }
+}

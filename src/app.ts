@@ -11,6 +11,7 @@ import { generateCallbackRoutes } from './generate-callback.js';
 import { generatePageRoutes } from './generate-page.js';
 import { homeRoutes } from './home.js';
 import { inviteRoutes } from './invite-issuance.js';
+import { myWorksRoutes } from './my-works.js';
 import type { Route } from './routes.js';
 import { dispatch, html, json } from './routes.js';
 import { signupRoutes } from './signup.js';
@@ -261,6 +262,7 @@ export function createAppRoutes(env: Env): readonly Route[] {
     ...generateCallbackRoutes,
     ...generatePageRoutes,
     ...workPageRoutes,
+    ...myWorksRoutes,
     ...inviteRoutes,
   ];
 }

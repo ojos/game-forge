@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# usage-report-selftest.sh — 集計スクリプトの自己検査（#149）
+# report-selftest.sh — 運用のための集計の自己検査（#149 / #166）
 #
 # **#149 の acceptance は「手元の D1 に既知の行を入れると、期待どおりの集計が出ることを
 # テストで確認できる」ことを求めている。** 台帳を読む処理は wrangler と SQL の上にあり、
@@ -7,9 +7,9 @@
 # **スクリプトそのものを、スクリプトとして検査する。**
 #
 # 使い方:
-#   bash scripts/usage-report-selftest.sh
+#   bash scripts/report-selftest.sh
 #
-# 終了コード: 0 = 合格（USAGE_REPORT_SELFTEST_PASS） / 1 = 不合格
+# 終了コード: 0 = 合格（REPORT_SELFTEST_PASS） / 1 = 不合格
 #
 # ── 手元の D1 を汚さない ────────────────────────────────────────────────────
 #
@@ -21,10 +21,14 @@
 #
 # ── 何を検査するか ──────────────────────────────────────────────────────────
 #
-#   1. 数え方の定義が 1 か所であること（#166 と別々の数え方をしないための担保）
+#   1. 数え方の定義が 1 か所であること（2 つの集計が別々の数え方をしないための担保）
 #   2. 日の境界が src/quota.ts の jstDayRange と同じであること
 #   3. 既知の行に対して、期待どおりの集計が出ること
 #   4. モデル別に割っても、合計が変わらないこと（#25 が同じ台帳へ乗れる形）
+#   5. ビルド時間の閾値が、天井の宣言から導かれていること（#166 / #164 が動かす値）
+#
+# **5 は AWS へ触れない。** 閾値の導出だけを見るので、認証もネットワークも要らない
+# （分布そのものを見るには CloudWatch が要るが、それは外部層の関心事である）。
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
@@ -64,7 +68,7 @@ expect_eq() {
 # 「共有していない集計が 1 本ある」状態が緑のまま通る。
 echo "[selftest] 数え方の定義が 1 か所であること"
 
-CONSUMERS=(scripts/usage-report.sh)
+CONSUMERS=(scripts/usage-report.sh scripts/build-time-report.sh)
 
 for consumer in "${CONSUMERS[@]}"; do
   if [[ ! -f "$consumer" ]]; then
@@ -120,11 +124,11 @@ echo "[selftest] 既知の行に対する集計"
 
 if ! report_window_require_tools jq npx; then
   echo "[selftest] 前提の道具が揃っていません。" >&2
-  echo "USAGE_REPORT_SELFTEST_FAIL"
+  echo "REPORT_SELFTEST_FAIL"
   exit 1
 fi
 
-SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/usage-report-selftest.XXXXXX")" || exit 1
+SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/report-selftest.XXXXXX")" || exit 1
 trap 'rm -rf "$SANDBOX"' EXIT
 
 d1() {
@@ -136,7 +140,7 @@ echo "  ... 使い捨ての D1 を作る（${SANDBOX}）"
 if ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
      npx wrangler d1 migrations apply DB --local --persist-to "$SANDBOX" >/dev/null 2>&1; then
   echo "  FAIL 使い捨ての D1 へマイグレーションを適用できません" >&2
-  echo "USAGE_REPORT_SELFTEST_FAIL"
+  echo "REPORT_SELFTEST_FAIL"
   exit 1
 fi
 
@@ -239,8 +243,58 @@ else
   failed=1
 fi
 
+# ── 5. ビルド時間の閾値が天井の宣言から導かれていること ─────────────────────
+#
+# **#164 が第 4 波で天井を動かす（30 → 60 秒を想定）。** 閾値を書き写していたら、
+# その日にずれる。ここで見るのは「宣言を差し替えたら閾値も動くか」である。
+#
+# **AWS へは触れない。** --explain-threshold は導出だけを印字して終わる。
+echo "[selftest] ビルド時間の閾値が天井の宣言から導かれていること"
+
+declared="$(sed -n 's/^[[:space:]]*build_function_timeout_seconds[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' \
+  terraform/build-function.tf | head -1)"
+if [[ -z "$declared" ]]; then
+  echo "  FAIL terraform/build-function.tf から天井を読めません" >&2
+  failed=1
+else
+  actual="$(bash scripts/build-time-report.sh --explain-threshold \
+    | sed -n 's/^  天井  *\([0-9][0-9]*\) 秒$/\1/p')"
+  expect_eq "天井が宣言と一致する" "$declared" "$actual"
+fi
+
+# **宣言を差し替えたら閾値が動くこと。** #164 が 60 秒にした日を先に踏んでおく。
+fixture="${SANDBOX}/build-function.tf"
+cat >"$fixture" <<'FIXTURE'
+locals {
+  build_function_name = "game-forge-build"
+
+  build_function_timeout_seconds = 60
+}
+
+resource "aws_cloudwatch_log_group" "build" {
+  name = "/aws/lambda/${local.build_function_name}"
+}
+FIXTURE
+moved="$(bash scripts/build-time-report.sh --explain-threshold --timeout-source "$fixture")"
+expect_eq "天井を 60 秒にすると天井が動く" "60" \
+  "$(sed -n 's/^  天井  *\([0-9][0-9]*\) 秒$/\1/p' <<<"$moved")"
+expect_eq "天井を 60 秒にすると接近の線も動く" "48.0" \
+  "$(sed -n 's/^  接近とみなす線  *\([0-9.]*\) 秒.*$/\1/p' <<<"$moved")"
+
+# **宣言が読めないときは落ちること。** 決め打ちの値へ静かに倒れると、
+# このスクリプトが防ごうとしている事故（古い天井で「余裕あり」と言い続ける）を
+# 自分で起こす。
+missing="${SANDBOX}/no-timeout.tf"
+echo 'locals { build_function_name = "x" }' >"$missing"
+if bash scripts/build-time-report.sh --explain-threshold --timeout-source "$missing" >/dev/null 2>&1; then
+  echo "  FAIL 天井の宣言が無くても通ってしまいます（決め打ちへ倒れています）" >&2
+  failed=1
+else
+  echo "  ok   天井の宣言が読めなければ落ちる"
+fi
+
 if (( failed )); then
-  echo "USAGE_REPORT_SELFTEST_FAIL"
+  echo "REPORT_SELFTEST_FAIL"
   exit 1
 fi
-echo "USAGE_REPORT_SELFTEST_PASS"
+echo "REPORT_SELFTEST_PASS"

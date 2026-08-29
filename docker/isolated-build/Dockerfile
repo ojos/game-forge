@@ -78,6 +78,11 @@ ENV CGO_ENABLED=0 \
 #
 # go.mod だけを先に複製するのは、**vendor の解決（ネットワークが要る唯一の段）より
 # 前で落とす**ためである。照合し終えたら消す。
+#
+# **`head -n 1` と書く（`head -1` ではない）。** 数字だけを渡す形は POSIX が定めておらず、
+# 解釈しない実装がある。**ここはベースイメージの中でしか動かないので現に困ってはいない**が、
+# scripts/check-isolated-build.sh が `sort -V`（GNU 拡張）を避けたのと同じ理由で揃える
+# （PR #108 の Copilot code review。**検査そのものが黙って無効になる形を作らない**）。
 COPY template/go.mod /pin/template.go.mod
 COPY handler/go.mod /pin/handler.go.mod
 RUN set -eu; \
@@ -87,7 +92,7 @@ RUN set -eu; \
       exit 1; \
     fi; \
     for f in /pin/template.go.mod /pin/handler.go.mod; do \
-      directive="$(sed -n 's/^go \([0-9][0-9.]*\)[[:space:]]*$/\1/p' "$f" | head -1)"; \
+      directive="$(sed -n 's/^go \([0-9][0-9.]*\)[[:space:]]*$/\1/p' "$f" | head -n 1)"; \
       if [ "$directive" != "${GO_VERSION}" ]; then \
         echo "${f} の go ディレクティブが ${GO_VERSION} ではありません: ${directive:-（読み取れません）}" >&2; \
         exit 1; \

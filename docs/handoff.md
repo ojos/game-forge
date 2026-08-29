@@ -58,7 +58,8 @@ worktree は `.claude/worktrees/` にあります。**消さないこと。**
 | `feat/28-sandbox-delivery` | #28 サンドボックス配信 → #29 Wasm 配信 | `VERIFY_PASS`（728） |
 | `docs/spec-v1.31` | 3 レーンの決定を仕様へ（`feat/101-go-pin` の上） | `VERIFY_PASS` |
 
-**取り込み順は C（#101）→ B（#24）→ A（#28 → #29）→ 仕様。** 4 本とも `main` へ衝突なく
+**取り込み順は `feat/101-go-pin`（#101）→ `feat/24-quota-ui`（#24）→
+`feat/28-sandbox-csp`（#28）→ `feat/29-wasm-delivery`（#29）→ `docs/spec-v1.31`（仕様）。** 4 本とも `main` へ衝突なく
 マージでき、レーン間で触れたファイルは 1 つも重なっていません。
 
 **新しく起票した残件: #139**（`wasm_exec.js` の配置。プレイ経路のブロッカー）、

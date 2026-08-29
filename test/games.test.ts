@@ -6,6 +6,7 @@ import { deleteUnreferencedArtifacts, readBuildCache, recordBuildCache } from '.
 import { defaultPipeline } from '../src/generate.js';
 import {
   DRAFT_STATUS,
+  GENERATION_ERROR_CODES,
   MAX_TITLE_LENGTH,
   PREVIEW_KEY_BYTES,
   UNTITLED_TITLE,
@@ -614,6 +615,24 @@ describe('生成の身元を先に作る（#150 / 3.3-2.5）', () => {
     expect(row.status).toBe(DRAFT_STATUS);
     // 成果物は無いので、配信側からは引けないままである。
     expect(row.preview_key).toBeNull();
+  });
+
+  it('時間切れは build-timeout として記録できる（#164）', async () => {
+    // **`internal` へ落とさない。** あちらは「設定不足・関数障害・想定外の例外」で、
+    // 運用者が最初にコードと設定を見に行くことになる。時間切れは容量の問題である。
+    const userId = await seedUser('failed-timeout');
+    const pending = await createPendingGame(env, userId, { prompt: 'ゲーム' });
+    await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken));
+
+    expect(await failGame(env, pending.id, 'build-timeout')).toBe(true);
+    expect((await readLifecycle(pending.id)).generation_error).toBe('build-timeout');
+  });
+
+  it('分類名の語彙に build-timeout が入っている（#164）', () => {
+    // **`src/generate-callback.ts` はこの配列で受け口を絞る。** ここに無い値は
+    // オーケストレータからのコールバックで弾かれ、行は `running` のまま残る。
+    expect(GENERATION_ERROR_CODES).toContain('build-timeout');
+    expect(GENERATION_ERROR_CODES).toContain('internal');
   });
 
   it('完了した行は失敗にできない（後から状態を壊さない）', async () => {

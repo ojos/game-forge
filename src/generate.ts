@@ -49,7 +49,7 @@ import {
   inspectGeneratedSource,
 } from './source-inspection.js';
 import type { BuildOutcome } from './build-client.js';
-import { createLambdaBuild } from './build-client.js';
+import { BuildFailure, createLambdaBuild } from './build-client.js';
 import type { GenerationErrorCode } from './games.js';
 import {
   claimGenerationJob,
@@ -681,6 +681,15 @@ export function generationErrorCodeOf(error: unknown): GenerationErrorCode {
   }
   if (error instanceof BuildRetriesExhausted) {
     return 'build-failed';
+  }
+  // **時間切れは `internal` ではない**（#164）。`internal` は「設定不足・関数障害・
+  // 想定外の例外」で、どれも直すべき不具合があると読める。時間切れは**容量の問題**
+  // であり、運用者が最初に見る場所が変わる（`src/games.ts` の
+  // `GENERATION_ERROR_CODES`）。**`kind` で見る**——`instanceof BuildTimedOut` でも
+  // 同じだが、種別で分岐する形は `src/build-client.ts` が `kind` を用意した理由
+  // そのものである。
+  if (error instanceof BuildFailure && error.kind === 'timeout') {
+    return 'build-timeout';
   }
   return 'internal';
 }

@@ -27,7 +27,7 @@
  *
  * ## 待ち時間（Cloudflare 側の制約との突き合わせ。1.2.24 の申し送り）
  *
- * 3.3-5 は同期呼び出しで、関数のタイムアウトは 30 秒である（1.2.24 / 確定24）。
+ * 3.3-5 は同期呼び出しで、関数のタイムアウトは 45 秒である（#164 / 確定24）。
  * **Cloudflare 側にこれを妨げる制約は無い。** 一次情報（developers.cloudflare.com）で
  * 確かめた点は次のとおりで、詳細と出典は `docs/build-invocation.md` にある。
  *
@@ -35,13 +35,16 @@
  * - **個々の subrequest にも時間の上限が無い**（`fetch` は自前で `AbortSignal` を
  *   渡さない限り待ち続ける）。
  * - **待ち時間は CPU 時間に算入されない。** CPU の上限（Paid 既定 30 秒）に対して、
- *   30 秒待つこと自体は 1 ms も使わない。
+ *   45 秒待つこと自体は 1 ms も使わない。
  * - 524（Proxy Read Timeout 125 秒）は Cloudflare のプロキシがオリジンに対して持つ
  *   もので、Worker の外向き subrequest の話ではない。
  * - Pages Functions は Workers と同じ実行時制限に従う（別の上限を持たない）。
  *
- * **したがって同期のまま維持する。** 残る現実的な上限は「利用者のブラウザ側の
- * タイムアウト」であり、これは 30 秒に対しては通常問題にならない。
+ * **したがって同期のまま維持する。** 残る現実的な上限は「呼び出し側が待てる時間」で
+ * ある。**#160 以降、本番でここを呼ぶのはオーケストレータ Lambda（600 秒）であって
+ * 利用者のブラウザではない**（利用者は作品ページで待つ）。**タイムアウトを 45 秒へ
+ * 伸ばせたのはこの変化があったからである**（#164。上限の導出は
+ * `terraform/build-function.tf` の `build_function_timeout_seconds`）。
  *
  * ## 失敗を 4 つに分ける（#20 / 3.8 の degrade 判定）
  *
@@ -51,6 +54,26 @@
  * | タイムアウト | {@link BuildTimedOut} | 3.8 の degrade 判定 |
  * | 関数のエラー・呼び出しの失敗 | {@link BuildFunctionFailed} | 3.8 の degrade 判定 |
  * | 設定の不足 | {@link BuildNotConfigured} | 運用（呼び出す前に落ちる） |
+ *
+ * ## 時間切れだけは、同じソースでもう一度だけ呼び直す（#164）
+ *
+ * **1.2.33 は `timeout` をリトライ対象から外していた。** 根拠は「診断が無く、生成を
+ * やり直しても関数側の事情は変わらない」で、**それはタイムアウトが 10 秒固定＝
+ * 「絶対に間に合わない」を意味していた頃の判断である。**
+ *
+ * いま時間切れが意味するのは「**21〜24 秒の分布が壁を超えた**」ことで、同じソースを
+ * もう一度投げれば通る見込みが十分にある（同じ分布の中で 21 秒の成功が何度も出て
+ * いる）。**変わったのは前提のほうなので、判断も変える。**
+ *
+ * **ただし「生成のやり直し」にはしない。** 1.2.33 の根拠のうち「**診断が無い**」は
+ * いまも正しく、LLM へ返せる材料は 1 文字も無い。それでも LLM を呼び直せば
+ * **約 16 円と日次枠 1 回**を、材料の無いまま賭けることになる。**やり直すのは
+ * ビルドだけである**——ソースは既に手元にあり、費用は Lambda の 1 呼び出し
+ * （約 0.35 円）だけで、**台帳の行も作らず、日次クォータも減らない**
+ * （4.2 の 1 段目・機械修正と同じ扱い。確定25 は枠を台帳の行数で数える）。
+ *
+ * 実装は {@link invokeBuildFunction} が持つ。**`kind` の表そのものは変えていない**ので、
+ * #20（`src/build-retry.ts`）から見た `timeout` は「回さない」のままである。
  *
  * **ビルド失敗を「関数の障害」と混ぜない。** 関数側も同じ線引きをしており、利用者の
  * コードの問題は 200 応答の中の `ok:false` で返る（`docker/isolated-build/handler/handler.go`）。
@@ -77,10 +100,14 @@ const LAMBDA_API_VERSION = '2015-03-31';
 /**
  * ビルド関数のタイムアウト（秒）。**正本は `terraform/build-function.tf` である。**
  *
- * ここに写しがあるのは、Workers 側の待ち時間を「関数のタイムアウトより長く」決める
+ * ここに写しがあるのは、呼び出し側の待ち時間を「関数のタイムアウトより長く」決める
  * ためだけである。宣言を変えたらこの値も追随させること（`docs/build-invocation.md`）。
+ *
+ * **#164 で 30 秒から 45 秒へ引き上げた。** 30 秒は本番の分布（中央値 24.2 秒 /
+ * 最悪 34.5 秒）のただ中に引かれており、**2026-08-29 に利用者が踏んだ。**
+ * 値の導出は宣言側のコメントが持つ（**ここへ書き写さない**）。
  */
-export const BUILD_FUNCTION_TIMEOUT_SECONDS = 30;
+export const BUILD_FUNCTION_TIMEOUT_SECONDS = 45;
 
 /**
  * Workers 側で待つ上限（ミリ秒）。
@@ -178,10 +205,13 @@ export class BuildRejected extends BuildFailure {
  * `where` は誰が打ち切ったかを表す。
  *
  * - `function`: 関数（またはその手前の Lambda プラットフォーム）が打ち切った。
- *   **想定される側。** 3.8 の 30 秒に対して、実測はコールドで 23.7 秒である。
- * - `worker`: Workers 側が {@link BUILD_INVOKE_TIMEOUT_MS} まで待っても応答が
+ *   **想定される側。** 3.8 の 45 秒に対して、記録上の最悪値は 34.5 秒である（#164）。
+ *   **こちらだけが、同じソースでの呼び直しの対象になる**（{@link invokeBuildFunction}）。
+ * - `worker`: 呼び出し側が {@link BUILD_INVOKE_TIMEOUT_MS} まで待っても応答が
  *   返らなかった。**関数のタイムアウトより長く待っているので、これは AWS 側の異常**
- *   （応答が失われた、スロットリングの滞留など）を意味する。
+ *   （応答が失われた、スロットリングの滞留など）を意味する。**呼び直さない**
+ *   （#164）。関数がまだ走っている可能性があり、投げ直すと同じビルドを 2 本
+ *   並走させて課金を二重にするだけで、AWS 側の異常はそれで変わらない。
  */
 export class BuildTimedOut extends BuildFailure {
   readonly kind = 'timeout';
@@ -398,7 +428,40 @@ export function invokeEndpoint(region: string, functionName: string): string {
 }
 
 /**
- * ビルド関数を 1 回呼ぶ。**キャッシュを見ない**（見るのは {@link createLambdaBuild}）。
+ * 関数側の時間切れに対して行う呼び出しの総数（**初回を含む**）。
+ *
+ * **2 である。つまり呼び直しは 1 回だけ。**
+ *
+ * **仕様書の「再試行の回数」ではなく「試行の総数」を数える**
+ * （`src/build-retry.ts` の `MAX_GENERATION_ATTEMPTS` と同じ数え方に
+ * そろえてある。どちらの意味の数字かが読めなくなるのを避けるため）。
+ *
+ * 2 にした根拠は 2 つある。
+ *
+ *   - **1 回で足りる。** 本番の記録では 12 回中 7 回が 25 秒未満に収まっている。
+ *     45 秒を 2 回続けて超える確率は、独立と見れば記録上の超過率の 2 乗である。
+ *   - **3 回目は上限に当たる。** オーケストレータの 600 秒は
+ *     `3 試行 ×（生成 91 秒 ＋ ビルド最大 45 秒 ×2）= 543 秒`で組んである
+ *     （terraform/build-function.tf）。1 回の依頼で 3 回焼くと、その見積もりが崩れる。
+ */
+export const MAX_BUILD_INVOCATIONS_ON_TIMEOUT = 2;
+
+/**
+ * ビルド関数を呼ぶ。**キャッシュを見ない**（見るのは {@link createLambdaBuild}）。
+ *
+ * # 関数側の時間切れのときだけ、同じソースでもう一度呼ぶ（#164）
+ *
+ * 呼び直すのは `BuildTimedOut` の `where === 'function'` に限る。理由と、
+ * 「LLM のやり直しにはしない」判断はモジュール冒頭にある。
+ *
+ * **待ってから投げ直さない。** 時間切れの原因は vCPU の不足（メモリに比例する）で
+ * あって混雑ではないので、待っても関数側の事情は変わらない。**待った分だけ
+ * オーケストレータの 600 秒を食うだけである。** スロットリング（429）は
+ * {@link BuildFunctionFailed} であってここには来ない。
+ *
+ * **`source` を読み直さない。** 同じ文字列をそのまま投げる。ソースが同じなら
+ * 成果物のキーも同じなので（確定26。キーは内容ハッシュ）、**1 回目が R2 まで
+ * 書き終えてから打ち切られていたとしても、2 回目が書くのは同じ場所である。**
  *
  * @param env バインディングと環境変数
  * @param source ビルドする Go ソース
@@ -406,11 +469,54 @@ export function invokeEndpoint(region: string, functionName: string): string {
  * @returns 成功応答
  * @throws {BuildNotConfigured} 設定が欠けているとき
  * @throws {BuildRejected} 生成コードがコンパイルを通らないとき
- * @throws {BuildTimedOut} 時間内に終わらなかったとき
+ * @throws {BuildTimedOut} 呼び直しても時間内に終わらなかったとき
  * @throws {BuildFunctionFailed} 関数を呼べなかった・関数が障害として失敗したとき
  * @throws {BuildResponseUnreadable} 応答の形が想定と違うとき
  */
 export async function invokeBuildFunction(
+  env: Env,
+  source: string,
+  deps: BuildDependencies = {},
+): Promise<BuildFunctionResult> {
+  // **上限は for の条件が持つ**（`src/generate.ts` のループと同じ理由）。打ち切りの
+  // 判定を catch の中だけに置くと、その 1 行を落としたときに**課金の出る無限ループ**
+  // になる。
+  let lastTimeout: BuildTimedOut | null = null;
+  for (let attempt = 1; attempt <= MAX_BUILD_INVOCATIONS_ON_TIMEOUT; attempt += 1) {
+    try {
+      return await invokeBuildFunctionOnce(env, source, deps);
+    } catch (error) {
+      if (!(error instanceof BuildTimedOut) || error.where !== 'function') {
+        throw error;
+      }
+      lastTimeout = error;
+      // **出してよいのは種別と回数と request-id だけ**（`src/build-retry.ts` の
+      // `describeBuildFailure` と同じ方針）。生成物由来の文字列を混ぜない。
+      console.warn(
+        `[build] timeout attempt=${attempt}/${MAX_BUILD_INVOCATIONS_ON_TIMEOUT} ` +
+          `request-id=${error.requestId ?? 'unknown'}`,
+      );
+    }
+  }
+
+  if (lastTimeout !== null) {
+    throw lastTimeout;
+  }
+  // 到達しない（{@link MAX_BUILD_INVOCATIONS_ON_TIMEOUT} は 1 以上で、ループは成功なら
+  // return、時間切れ以外の失敗なら throw で抜ける）。**それでも黙って undefined を
+  // 返さない**——ここへ来たなら上の上限が壊れている。
+  throw new BuildResponseUnreadable('ビルド関数を 1 回も呼べませんでした');
+}
+
+/**
+ * ビルド関数を 1 回だけ呼ぶ。**呼び直しは {@link invokeBuildFunction} が持つ。**
+ *
+ * @param env バインディングと環境変数
+ * @param source ビルドする Go ソース
+ * @param deps 外部依存
+ * @returns 成功応答
+ */
+async function invokeBuildFunctionOnce(
   env: Env,
   source: string,
   deps: BuildDependencies = {},

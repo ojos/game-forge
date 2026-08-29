@@ -22,6 +22,7 @@ import {
 } from '../src/build-client.js';
 import type { BuildFailure, BuildFailureKind } from '../src/build-client.js';
 import { GeneratedSourceRejected } from '../src/source-inspection.js';
+import { generationErrorCodeOf } from '../src/generate.js';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
   findGenerationModel,
@@ -287,5 +288,31 @@ describe('上限に達したときの応答（#20 scope.in 4）', () => {
     const body = JSON.stringify(describeBuildFailure(new BuildRetriesExhausted(3, 'compress')));
     expect(body).not.toContain('compress');
     expect(exhausted.message).not.toContain('診断');
+  });
+});
+
+describe('時間切れの分類（8.3 / #164）', () => {
+  it('時間切れは internal ではなく build-timeout になる', () => {
+    // `internal` の定義は「設定不足・関数障害・想定外の例外」で、どれも直すべき
+    // 不具合があると読める。**時間切れは容量の問題である。**
+    expect(generationErrorCodeOf(new BuildTimedOut('function', 'req-1'))).toBe('build-timeout');
+    expect(generationErrorCodeOf(new BuildTimedOut('worker'))).toBe('build-timeout');
+  });
+
+  it('build-failed には寄せない（「コードが通らなかった」は嘘になる）', () => {
+    expect(generationErrorCodeOf(new BuildTimedOut('function'))).not.toBe('build-failed');
+    expect(generationErrorCodeOf(new BuildRetriesExhausted(3, 'build'))).toBe('build-failed');
+  });
+
+  it('関数の障害・設定不足は internal のままである', () => {
+    expect(generationErrorCodeOf(new BuildFunctionFailed(500, null, null, null))).toBe('internal');
+    expect(generationErrorCodeOf(new BuildNotConfigured(['BUILD_AWS_REGION']))).toBe('internal');
+    expect(generationErrorCodeOf(new BuildResponseUnreadable('ok'))).toBe('internal');
+  });
+
+  it('LLM のやり直しの引き金は増やしていない', () => {
+    // **ビルドの呼び直し（#164）と、LLM の再生成（5.2-7）は別の層である。**
+    // ここを緩めると、費用ゼロの段と 16 円の段が同じ引き金を共有することになる。
+    expect(retriableBuildFailure(new BuildTimedOut('function'))).toBeNull();
   });
 });

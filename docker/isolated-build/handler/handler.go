@@ -91,6 +91,14 @@ type Result struct {
 // oneshot（scripts/check-isolated-build.sh・手元の確認）には deadline が無い。
 // そのときは**期限の側を名乗らない**（無い値を 0 と書くと「0 ms で打ち切られた」と読める）。
 //
+// # 期限が既に過ぎている場合を分ける（#168）
+//
+// `deadline.Sub(started)` は**負になりうる。** 呼び出しが滞留して deadline を過ぎてから
+// 処理が始まった場合と、期限切れの ctx がそのまま渡ってきた場合である。
+// **負の数を「内部期限は -3 ms」と出さない。** それは #165 が直したのと同じ種類の誤り
+// ——**ログが実態と違う値を名乗る**——であり、読み手は「期限が負とはどういうことか」を
+// 考えることになる。**起きた事象そのもの（始まった時点で既に過ぎていた）を書く。**
+//
 // @param ctx 打ち切りを持つコンテキスト
 // @param started ハンドラが処理を始めた時刻
 // @returns ログと呼び出し側へ返す説明
@@ -100,10 +108,17 @@ func describeBudget(ctx context.Context, started time.Time) string {
 	if !ok {
 		return fmt.Sprintf("%d ms 経過。この呼び出しに期限は設定されていません", elapsed)
 	}
+	budgetMs := deadline.Sub(started).Milliseconds()
+	if budgetMs <= 0 {
+		return fmt.Sprintf(
+			"%d ms 経過。処理を始めた時点で内部期限を既に過ぎていました（超過 %d ms。"+
+				"呼び出しが滞留したか、期限切れのコンテキストが渡っています）",
+			elapsed, -budgetMs)
+	}
 	return fmt.Sprintf(
 		"%d ms 経過。この呼び出しの内部期限は %d ms（Lambda の残り時間から %s 手前。"+
 			"宣言の正本は terraform/build-function.tf の build_function_timeout_seconds）",
-		elapsed, deadline.Sub(started).Milliseconds(), deadlineMargin)
+		elapsed, budgetMs, deadlineMargin)
 }
 
 // Timings は各段の所要時間（ミリ秒）。

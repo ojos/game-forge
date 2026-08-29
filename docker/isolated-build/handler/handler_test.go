@@ -361,6 +361,29 @@ func TestHandleReportsTheDeadlineItActuallyHad(t *testing.T) {
 	}
 }
 
+// 既に過ぎた期限を「負の内部期限」として出さないことの検査（#168）。
+//
+// **ログが実態と違う値を名乗る形は #165 が直したものと同じ種類である。**
+// 呼び出しが滞留して deadline を過ぎてから処理が始まることは実際に起こりうる。
+func TestDescribeBudgetWithAnExpiredDeadline(t *testing.T) {
+	started := time.Now()
+	// 処理の開始時点で既に 30 ms 過ぎている状況。
+	ctx, cancel := context.WithDeadline(context.Background(), started.Add(-30*time.Millisecond))
+	defer cancel()
+
+	described := describeBudget(ctx, started)
+	if !strings.Contains(described, "既に過ぎていました") {
+		t.Fatalf("期限切れが説明されていません: %q", described)
+	}
+	// **負の数を出さない。** 「内部期限は -30 ms」と書くと読み手を誤らせる。
+	if strings.Contains(described, "-") {
+		t.Fatalf("負の値が出ています: %q", described)
+	}
+	if strings.Contains(described, "内部期限は") {
+		t.Fatalf("残っていない期限を残っているかのように名乗っています: %q", described)
+	}
+}
+
 // 期限を持たない呼び出し（oneshot）では、期限の側を名乗らないことの検査（#165）。
 //
 // **無い値を 0 と書くと「0 ms で打ち切られた」と読める。**

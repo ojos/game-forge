@@ -224,3 +224,22 @@ variable "budget_notification_email" {
     error_message = "budget_notification_email はメールアドレスの形式である必要があります。"
   }
 }
+
+variable "cloudflare_account_id" {
+  description = <<-EOT
+    Cloudflare のアカウント ID。
+
+    R2 のライフサイクル宣言（terraform/r2-lifecycle.tf）が要求する。API トークンは
+    プロバイダが環境変数 CLOUDFLARE_API_TOKEN から読むため、ここには**資格情報を
+    置かない**（providers.tf の注記）。
+
+    aws_account_id_prod と同じ理由で宣言へ直接書かず terraform.tfvars から受ける。
+    値は .env の CLOUDFLARE_ACCOUNT_ID と同じもので、機密ではないが公開する必要も無い。
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{32}$", var.cloudflare_account_id))
+    error_message = "cloudflare_account_id は 16 進 32 桁である必要があります。"
+  }
+}

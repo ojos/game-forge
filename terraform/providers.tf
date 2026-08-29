@@ -84,3 +84,23 @@ provider "aws" {
   profile             = var.aws_profile_dev
   allowed_account_ids = [var.aws_account_id_dev]
 }
+
+/**
+ * Cloudflare プロバイダの設定。
+ *
+ * API トークンはこのファイルにも変数にも書かない。プロバイダが環境変数
+ * CLOUDFLARE_API_TOKEN を直接読む（GitHub / AWS / GCP と同じ理由。トークンを Terraform
+ * 変数として受け取ると、値が tfstate や plan ファイルへ平文で落ちる経路ができる）。
+ *
+ *   set -a; source scripts/load-project-env.sh; set +a
+ *
+ * **Cloudflare にはツール自身のログイン状態が無い**（`wrangler login` は OAuth の
+ * コールバックをブラウザで受けるため devcontainer では完結しない）。この環境での
+ * 供給元は追跡外の .env だけで、上のローダーがそれを環境へ移す。同じ形を
+ * scripts/acceptance-remote.sh が既に採っている。
+ *
+ * account_id はプロバイダではなくリソース側の必須属性なので、変数から受ける
+ * （var.cloudflare_account_id）。
+ */
+provider "cloudflare" {
+}

@@ -388,3 +388,28 @@ output "build_invoke_resources" {
   EOT
   value       = local.build_invoke_resources
 }
+
+output "r2_bucket_name" {
+  description = <<-EOT
+    ライフサイクルを宣言している R2 バケット名。
+
+    値は wrangler.toml の [[env.production.r2_buckets]] から読んでいる（写しを作らない）。
+    外部層の検査（scripts/check-r2-lifecycle.sh）がこれを対象として実状態を引く。
+  EOT
+  value       = local.r2_bucket_name
+}
+
+output "r2_lifecycle_rule_ids" {
+  description = <<-EOT
+    宣言しているライフサイクルルールの id 一覧。
+
+    **外部層の検査はこれと実状態を突き合わせる。** 検査スクリプト側へ id を書き写すと、
+    宣言にルールを足しても検査は古い一覧を見続ける（共通規範 12 章「一覧の複製」）。
+  EOT
+  value       = [for rule in cloudflare_r2_bucket_lifecycle.artifacts.rules : rule.id]
+}
+
+output "r2_abort_multipart_max_age_seconds" {
+  description = "未完了マルチパートアップロードを打ち切るまでの秒数。外部層の検査が実状態と突き合わせる。"
+  value       = local.r2_abort_multipart_max_age_seconds
+}

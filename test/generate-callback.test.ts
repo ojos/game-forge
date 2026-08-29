@@ -9,6 +9,7 @@ import {
   parseCallbackRequest,
 } from '../src/generate-callback.js';
 import type { CallbackNotifiers } from '../src/generate-callback.js';
+import type { GenerationOutcome } from '../src/mail/generation-notice.js';
 import { createPendingGame, hashJobToken } from '../src/games.js';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
@@ -60,7 +61,7 @@ async function seedPending(
  */
 async function post(body: unknown, contentType = 'application/json'): Promise<Response> {
   return await dispatch(
-    // **既定の通知を使わない**（#148）。既定は本物の送信経路なので、
+    // **既定の通知を使わない**（#148 / #153）。既定は本物の送信経路なので、
     // `.dev.vars` に Resend の鍵がある環境で回すと**テストから本番のメールが出る。**
     // 記録するだけの通知へ差し替え、送信の手前で止める。
     createGenerateCallbackRoutes(notifiers),
@@ -77,6 +78,8 @@ async function post(body: unknown, contentType = 'application/json'): Promise<Re
 interface NotifierCalls {
   /** 80% 警告の判定が呼ばれた回数（#148）。 */
   costWarnings: number;
+  /** 完了通知の呼び出し（#153）。**呼ばれた時点の `generation_state` も残す。** */
+  finished: { gameId: string; outcome: GenerationOutcome; stateWhenCalled: string }[];
 }
 
 let calls: NotifierCalls;
@@ -87,10 +90,16 @@ const notifiers: CallbackNotifiers = {
     calls.costWarnings += 1;
     return 'not-configured';
   },
+  generationFinished: async (_env, gameId, outcome) => {
+    // **通知が呼ばれた時点で、作品行はもう進んでいるはずである**（#153）。
+    // ここで読むことで「行を進める前に通知しない」を機械で確かめる。
+    calls.finished.push({ gameId, outcome, stateWhenCalled: (await stateOf(gameId)).state });
+    return 'not-configured';
+  },
 };
 
 beforeEach(() => {
-  calls = { costWarnings: 0 };
+  calls = { costWarnings: 0, finished: [] };
 });
 
 /**
@@ -603,7 +612,7 @@ describe('finish（成功側）', () => {
   });
 });
 
-describe('通知の結線（#148）', () => {
+describe('通知の結線（#148 / #153）', () => {
   it('ledger を受け取ると、費用 80% の判定が 1 回走る', async () => {
     const { id, jobToken } = await seedPending('notify-ledger');
     await post({ gameId: id, jobToken, kind: 'claim' });
@@ -627,17 +636,58 @@ describe('通知の結線（#148）', () => {
     expect(calls.costWarnings).toBe(2);
   });
 
-  it('claim と cache-lookup では判定が動かない（費用が変わらない）', async () => {
+  it('claim と cache-lookup では通知が動かない（費用も結果も変わらない）', async () => {
     const { id, jobToken } = await seedPending('notify-no-op');
     await post({ gameId: id, jobToken, kind: 'claim' });
     await post({ gameId: id, jobToken, kind: 'cache-lookup', sourceSha256: 'a'.repeat(64) });
     expect(calls.costWarnings).toBe(0);
+    expect(calls.finished).toHaveLength(0);
+  });
+
+  it('finish（成功）は、行を ready にしてから作者へ通知する', async () => {
+    const { id, jobToken } = await seedPending('notify-finish-ready');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    await post({ gameId: id, jobToken, kind: 'finish', artifacts: artifactsBody() });
+    expect(calls.finished).toEqual([
+      // **利用者から見える状態は、通知より先に確定している**（#153）。
+      { gameId: id, outcome: { kind: 'ready' }, stateWhenCalled: 'ready' },
+    ]);
+  });
+
+  it('finish（失敗）は、分類名を添えて通知する', async () => {
+    const { id, jobToken } = await seedPending('notify-finish-failed');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    await post({ gameId: id, jobToken, kind: 'finish', errorCode: 'build-failed' });
+    expect(calls.finished).toEqual([
+      {
+        gameId: id,
+        outcome: { kind: 'failed', errorCode: 'build-failed' },
+        stateWhenCalled: 'failed',
+      },
+    ]);
+  });
+
+  it('効かなかった finish では通知しない（二重送信の抑止）', async () => {
+    // ジョブトークンは完了と同時に捨てられるので、遅れて届いた再送は照合で落ちる
+    // （`src/games.ts`）。**通知の抑止はこの性質に乗っている。**
+    const { id, jobToken } = await seedPending('notify-finish-twice');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    await post({ gameId: id, jobToken, kind: 'finish', artifacts: artifactsBody() });
+
+    const again = await post({ gameId: id, jobToken, kind: 'finish', artifacts: artifactsBody() });
+    expect(await again.json()).toEqual({ accepted: false });
+    expect(calls.finished).toHaveLength(1);
   });
 
   it('経路表に登録されるのは既定の通知を持つ 1 本である', async () => {
     // 差し替えられる形にしたことで本番の結線が変わっていないこと。
     expect(generateCallbackRoutes).toHaveLength(1);
     expect(generateCallbackRoutes[0]!.path).toBe(GENERATE_CALLBACK_PATH);
-    expect(Object.keys(defaultCallbackNotifiers)).toEqual(['monthlyCostWarning']);
+    expect(Object.keys(defaultCallbackNotifiers).sort()).toEqual([
+      'generationFinished',
+      'monthlyCostWarning',
+    ]);
   });
 });

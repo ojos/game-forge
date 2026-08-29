@@ -19,4 +19,4 @@
 // **下振れは黙って通ってしまうため**、この照合は片側だけの保険ではない。
 module gameforge.local/buildfn
 
-go 1.26.7
+go 1.27.0

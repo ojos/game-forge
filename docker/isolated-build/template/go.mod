@@ -10,7 +10,7 @@
 // （#101 の scope.out）。vendor の焼き直しを伴うため、同じ契機で動かさない。
 module gameforge.local/sandbox
 
-go 1.26.7
+go 1.27.0
 
 require (
 	github.com/hajimehoshi/ebiten/v2 v2.9.9

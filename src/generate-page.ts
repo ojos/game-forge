@@ -44,27 +44,55 @@
  * あちらの判断を崩す）。
  *
  * あわせて、**待ち時間の提示そのものが JavaScript を要る**。素のフォーム送信では
- * ブラウザのタブが 20〜30 秒回るだけで、こちらから経過を出す手段が無い。
+ * ブラウザのタブが 1 分以上回るだけで、こちらから経過を出す手段が無い。
  *
  * ## 待ち時間（1.2.27 / 3.8）
  *
- * 生成〜ビルドは**実測 20〜30 秒**かかる。1.2.27 のとおり Cloudflare 側に待ち時間の
- * 上限は無く、非同期化（Queues / Workflows）は採らない判断が #19 で済んでいる。
- * **残るのはブラウザ側と利用者の体感**なので、この画面は送信直後に
+ * **本番で 1 回通した実測は、リクエスト全体で 90.9 秒である**（2026-08-28。うちビルドが
+ * 21.6 秒で、残りは生成側）。#128 の時点でこの画面は「20〜30 秒」と書いていたが、
+ * **その数字はビルド単体の実測**（3.8 の 21.1 秒 / 23.7 秒）であり、生成側を含む
+ * 待ち時間ではなかった。1.2.27 のとおり Cloudflare 側に待ち時間の上限は無く、
+ * 非同期化（Queues / Workflows）は採らない判断が #19 で済んでいる。
+ *
+ * **送信してから 90 秒、画面が何も言わない状態は「押しても動かないボタン」と同じ問題**
+ * なので、この画面は送信直後に
  *
  * - 生成中であること
  * - 経過秒数（1 秒ごとに更新する）
- * - 通常かかる時間（20〜30 秒）
+ * - 通常かかる時間（{@link TYPICAL_WAIT_TEXT}）
+ * - {@link LONG_WAIT_SECONDS} 秒を過ぎたら「まだ待っている」こと
  *
  * を出す。**作り込みは #30 の範囲**で、ここが持つのは「待っている間に何も出ない」を
- * 塞ぐ最小限である。
+ * 塞ぐ最小限である。**実測は n=1 なので、幅を持たせた言い方に留める。**
  *
- * ## 残枠の表示（4.4 / #24）は乗せない。差し込み口だけを持つ
+ * ## 残枠と停止状態を常時出す（4.4 / #24）
  *
- * 4.4 は「本日の残り生成枠 N回」の常時表示を求めるが、値を作る経路（D1 から当日の
- * 呼び出し回数を引く）は #24 が持つ。**作らないことと、作れないようにすることは違う**
- * ので、{@link GeneratePageView.quotaNotice} を口として置き、この issue では常に
- * `null` を渡す。#24 はここへ値を渡すだけでよい。
+ * 4.4 は「本日の残り生成枠 N回」の**常時表示**と、日次・月次それぞれの停止時の文言を
+ * 求める。値は `src/quota.ts` の {@link generationQuotaStatus} から取る。**画面が
+ * D1 を数え直さない**（同じ「当日とは何か」が 2 か所になり、画面の残数と API の判断が
+ * 割れる。shared-ai-rules 12 章）。
+ *
+ * **1 表示ぶんの D1 読み取りが増える**（月次の集計と、当日の呼び出し回数で 2 回）。
+ * `src/home.ts` が「トップに件数を出さない」としたのと逆の判断だが、**ここは 4.4 が
+ * 常時表示を要求している画面**であり、開くのはログイン済みの利用者だけである。
+ *
+ * ## 止まっているときはフォームを描かない
+ *
+ * #24 の goal は「押しても動かないボタンを無くす」ことである。枠が尽きているとき、
+ * 送信ボタンを描いて押させると、返るのは必ず 429 になる。**描くのは状態の説明と、
+ * 続けられること（プレイと共有）への導線だけ**にする。
+ *
+ * ## degrade（3.8）は「ビルド依頼の失敗」で発火する
+ *
+ * 3.8 は「停止時は生成 UI に『生成停止中』を表示し、プレイ側には一切影響を出さない」と
+ * 定める。**発火条件は確定24 で「VPS の死活監視」から「ビルド依頼の失敗」へ変わった。**
+ * この画面が観測できるのは自分が投げた要求の結果だけなので、**5xx が返った時点で
+ * 生成停止中を出し、ボタンを戻さない**（{@link GENERATE_SCRIPT}）。
+ *
+ * **これは近似である。** 5xx には D1 の不調（`src/quota.ts` の `readForDecision`）も
+ * 落ちてくるし、逆に「他の利用者のビルドが軒並み失敗している」ことはこの画面からは
+ * 見えない。**恒久的な発火条件はサーバ側に信号の置き場が要る**（ビルド依頼の失敗を
+ * 記録し、生成画面がそれを読む）。#24 の所有範囲の外なので作っていない。
  */
 import { LOGIN_PATH } from './auth/google.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from './generate.js';
@@ -72,6 +100,7 @@ import {
   DAILY_QUOTA_REASON,
   MONTHLY_LIMIT_REASON,
   QUOTA_EXCEEDED_STATUS,
+  generationQuotaStatus,
 } from './quota.js';
 import { HOME_PATH } from './home.js';
 import { GENERATE_PAGE_PATH, SIGNUP_PATH } from './paths.js';
@@ -219,25 +248,138 @@ export function selectGenerateMessageKey(status: number, errorCode: string): str
 }
 
 /**
+ * 送信してから応答が返るまでに通常かかる時間の言い方（1.2.27）。
+ *
+ * **本番の実測は 90.9 秒（2026-08-28）だが、n=1 である。** 「約 91 秒」と書くと、
+ * 次の 1 回が 2 分かかった時点で画面の説明が誤りになる。**幅で書く。**
+ *
+ * **#128 の「20〜30 秒」はビルド単体の実測**（3.8 の 21.1 秒 / 23.7 秒）で、生成側を
+ * 含む待ち時間ではなかった。
+ *
+ * **この定数が文言の正本である。** 公開トップ（`src/home.ts`）も同じ文言を出すが、
+ * あちらは**書き写し**である。`src/home.ts` からこの定数を import すると循環参照に
+ * なるためで（あちらの `HOME_PATH` をこのモジュールが取っている）、理由と正本の所在は
+ * `src/home.ts` 側にも書いてある。**一致は `test/generate-page.test.ts` の公開トップの
+ * 検査が機械照合する**（shared-ai-rules 12 章）。ここを動かしてトップを直し忘れると、
+ * その検査が落ちる。
+ */
+export const TYPICAL_WAIT_TEXT = '通常 1〜2 分かかります';
+
+/**
+ * 「まだ待っている」ことを追加で出すまでの秒数。
+ *
+ * 経過秒数は 1 秒ごとに動いているが、**動いている数字だけでは「これは正常なのか」に
+ * 答えていない。** 実測（90.9 秒）の手前でもう一言出す。
+ */
+export const LONG_WAIT_SECONDS = 60;
+
+/**
+ * 4.4 の「本日の残り生成枠 N回」を組み立てる。
+ *
+ * **数える単位は「費用の出る LLM 呼び出し回数」である**（確定25 / `src/quota.ts` の
+ * `DAILY_QUOTA_PER_USER`）。成功した作品の本数ではないので、失敗した試行でも減る。
+ * その理由は 422 の文言が言う（{@link GENERATE_MESSAGES}）。
+ *
+ * @param remaining 本日の残り回数
+ * @returns 画面へ出す文言
+ */
+export function remainingQuotaNotice(remaining: number): string {
+  // 値は `src/quota.ts` が数えた回数なので、負にも小数にもならない。**それでも
+  // 描く前に整数へ倒す。** 表示は最後の砦で、上流が変わったときに壊れた形の文字列を
+  // 利用者へ出すより、丸めた数を出すほうが害が小さい。
+  return `本日の残り生成枠 ${Math.max(0, Math.trunc(remaining))}回`;
+}
+
+/**
+ * 残枠を確認できなかったときの文言。
+ *
+ * **「残り 0 回」とも「まだ使えます」とも言わない。** 集計が読めなかっただけで、
+ * 枠が尽きたわけではない（`src/quota.ts` の `readForDecision` は握りつぶさずに
+ * 投げ直す）。**フォームは描く。** 押せば API 側が同じ判定をやり直し、断られれば
+ * 429 の文言が出る。
+ */
+export const QUOTA_UNKNOWN_NOTICE =
+  '本日の残り生成枠を確認できませんでした。生成そのものは試せますが、' +
+  '枠が残っていない場合は送信後に断られます。';
+
+/**
+ * 3.8 の degrade で出す文言。**「生成停止中」は 3.8 の言い回しである。**
+ *
+ * 一致は `test/generate-page.test.ts` が仕様書 3.8 から拾って機械照合する
+ * （shared-ai-rules 12 章）。
+ *
+ * **プレイ側に影響が無いことは {@link GENERATE_MESSAGES} の `500:` が言う。**
+ * ここで重ねて言わないのは、2 つが同時に出るためである。
+ */
+export const BUILD_STOPPED_NOTICE =
+  '生成停止中です（ビルドの経路が応答していません）。' +
+  '再開したら、この画面を再読み込みするともう一度生成できます。';
+
+/**
+ * いま生成できるかどうか（4.4 / #24）。
+ *
+ * **文字列ではなく状態で受ける。** #128 は口を `string | null` で開けていたが、
+ * 状態ごとに「フォームを描くか」「ボタンを出すか」まで変わるため、文言だけを渡す形では
+ * 呼び出し側が同じ分岐をもう一度書くことになる。
+ *
+ * **分類名は `src/quota.ts` から取る**（`daily-quota` / `monthly-limit`）。書き写すと
+ * {@link GENERATE_MESSAGES} の鍵と割れる。
+ */
+export type GenerateAvailability =
+  /** 生成できる。4.4 の「本日の残り生成枠 N回」を出す。 */
+  | { readonly kind: 'available'; readonly remaining: number }
+  /** 日次の枠が尽きた（確定25）。翌日の再開時刻を出す。 */
+  | { readonly kind: typeof DAILY_QUOTA_REASON }
+  /** 月次上限（4.3）。プレイと共有は続けられることを出す。 */
+  | { readonly kind: typeof MONTHLY_LIMIT_REASON }
+  /** 枠の集計を読めなかった（D1 の不調）。{@link QUOTA_UNKNOWN_NOTICE}。 */
+  | { readonly kind: 'unknown' };
+
+/**
  * 画面へ渡す値。
  *
- * **いまは 1 つしか無いが、口としてまとめておく。** #24（残枠と停止状態）と #30
- * （ロード中画面）がここへ足すことになる。引数を増やすたびに呼び出し側の並びが
- * 変わる形にすると、足す側が既存の呼び出しを壊す。
+ * **口としてまとめておく。** #30（ロード中画面）がここへ足すことになる。引数を
+ * 増やすたびに呼び出し側の並びが変わる形にすると、足す側が既存の呼び出しを壊す。
  */
 export interface GeneratePageView {
-  /**
-   * 4.4 の「本日の残り生成枠 N回」と停止状態の表示（#24）。
-   *
-   * **この issue では常に `null`。** 値を作る経路（D1 から当日の呼び出し回数を引く）は
-   * #24 が持つ。文字列を受けるのは、日次と月次と停止状態で出す内容が変わるためで、
-   * ここで構造を決めると #24 がそれに縛られる。
-   *
-   * **渡された値は `escapeHtml` を通す。** いまは固定文字列しか来ない想定でも、
-   * 値の出どころが変わったときに安全側が既定になるようにしておく
-   * （`src/signup.ts` / `src/invite-issuance.ts` と同じ理由）。
-   */
-  readonly quotaNotice: string | null;
+  /** 4.4 の残枠と停止状態（#24）。 */
+  readonly availability: GenerateAvailability;
+}
+
+/**
+ * 状態に対応する、常時表示の文言を選ぶ（4.4）。
+ *
+ * **停止時の文言は {@link GENERATE_MESSAGES} と同じものを使う。** 4.4 の言い回しとの
+ * 一致はあちらが機械照合の対象になっており、常時表示のために別の文字列を書くと、
+ * **同じ状態に 2 つの文言ができて片方だけが古くなる**（shared-ai-rules 12 章）。
+ *
+ * @param availability いま生成できるかどうか
+ * @returns 画面へ出す文言
+ */
+export function availabilityNotice(availability: GenerateAvailability): string {
+  switch (availability.kind) {
+    case 'available':
+      return remainingQuotaNotice(availability.remaining);
+    case DAILY_QUOTA_REASON:
+      return GENERATE_MESSAGES[DAILY_QUOTA_MESSAGE_KEY]!;
+    case MONTHLY_LIMIT_REASON:
+      return GENERATE_MESSAGES[MONTHLY_LIMIT_MESSAGE_KEY]!;
+    default:
+      return QUOTA_UNKNOWN_NOTICE;
+  }
+}
+
+/**
+ * その状態で生成を送れるか（＝フォームを描いてよいか）。
+ *
+ * **`unknown` では描く。** 枠が尽きたことを確かめられたわけではないので、押す機会
+ * まで奪うと、D1 の一時的な不調が「生成できない」に化ける。
+ *
+ * @param availability いま生成できるかどうか
+ * @returns 送信フォームを描いてよければ true
+ */
+export function canSubmit(availability: GenerateAvailability): boolean {
+  return availability.kind === 'available' || availability.kind === 'unknown';
 }
 
 /**
@@ -275,8 +417,12 @@ const GENERATE_SCRIPT = `
   var button = document.getElementById('generate-submit');
   var progress = document.getElementById('generate-progress');
   var elapsed = document.getElementById('generate-elapsed');
+  var longWait = document.getElementById('generate-long-wait');
+  var degraded = document.getElementById('generate-degraded');
   var messages = document.querySelectorAll('[data-message-key]');
   var ticking = null;
+  // 3.8 の degrade を観測したか。**観測したらボタンを戻さない。**
+  var stopped = false;
 
   /** 鍵の候補のうち、実際に描かれている最初の 1 つを選ぶ。 */
   function pick(candidates) {
@@ -298,13 +444,17 @@ const GENERATE_SCRIPT = `
     }
   }
 
-  /** 待ち時間の提示を始める（20〜30 秒かかるため、無反応の時間を作らない）。 */
+  /** 待ち時間の提示を始める（実測 90 秒台のため、無反応の時間を作らない）。 */
   function startWaiting() {
     var startedAt = Date.now();
     elapsed.textContent = '0';
+    longWait.hidden = true;
     progress.hidden = false;
     ticking = setInterval(function () {
-      elapsed.textContent = String(Math.round((Date.now() - startedAt) / 1000));
+      var seconds = Math.round((Date.now() - startedAt) / 1000);
+      elapsed.textContent = String(seconds);
+      // 長引いていることを、サーバが描いた固定の文言で言う（文字列は作らない）。
+      if (seconds >= ${LONG_WAIT_SECONDS}) { longWait.hidden = false; }
     }, 1000);
   }
 
@@ -312,7 +462,9 @@ const GENERATE_SCRIPT = `
   function stopWaiting() {
     if (ticking !== null) { clearInterval(ticking); ticking = null; }
     progress.hidden = true;
-    button.disabled = false;
+    longWait.hidden = true;
+    // **停止を観測したらボタンを戻さない**（3.8 / 押しても動かないボタンを無くす）。
+    button.disabled = stopped;
   }
 
   form.addEventListener('submit', function (event) {
@@ -341,6 +493,9 @@ const GENERATE_SCRIPT = `
     }).then(function (outcome) {
       var status = outcome.status;
       var code = outcome.code;
+      // 3.8 の degrade。**発火条件は「ビルド依頼の失敗」**（確定24）で、この画面から
+      // 観測できるのは「自分の要求がサーバ側の事情で落ちた」＝ 5xx である。
+      if (status >= 500) { stopped = true; degraded.hidden = false; }
       show(${CANDIDATE_KEYS_EXPRESSION});
     }, function () {
       show([${JSON.stringify(NETWORK_MESSAGE_KEY)}]);
@@ -379,10 +534,34 @@ function signedOutSection(): string {
 }
 
 /**
+ * 生成が止まっているときに出す導線（4.4 / 3.8）。
+ *
+ * **止まっているのは生成だけである。** 4.4 は月次上限に「プレイと共有は引き続き
+ * ご利用いただけます」を求め、3.8 は degrade について「プレイ側には一切影響を出さない」
+ * と定める。**言うだけでなく、押せるリンクとして出す**（#24 の acceptance 2）。
+ *
+ * **いまの行き先はトップだけである。** 試遊の画面（#27）はまだ無く、無いものへの
+ * リンクを置くと、それこそ「押しても動かない」導線になる。#27 が入ったらここへ足す。
+ *
+ * @returns HTML
+ */
+function stillAvailableSection(): string {
+  return `<h2>プレイと共有は続けられます</h2>
+<p>止まっているのは<strong>生成だけ</strong>です。すでにある作品を遊ぶことと、
+   URL を共有することには影響ありません（4.4 / 3.8）。</p>
+<ul>
+  <li><a href="${HOME_PATH}">作品を見る（トップへ）</a></li>
+</ul>`;
+}
+
+/**
  * プロンプトの入力フォームと、結果を出す領域を組み立てる。
  *
  * **文言はすべてここで描き、`hidden` で隠しておく**（モジュール冒頭 8.3）。
  * スクリプトは `hidden` を外すだけで、文字列を作らない。
+ *
+ * **枠が尽きているときはフォームを描かない**（モジュール冒頭）。押せば必ず 429 になる
+ * ボタンは、#24 の goal が無くそうとしているものそのものである。
  *
  * `maxlength` は `src/generate.ts` の `MAX_PROMPT_LENGTH` から取る。書き写すと、
  * あちらを見直したときに画面だけが古い上限で切ることになる。
@@ -391,11 +570,16 @@ function signedOutSection(): string {
  * @returns HTML
  */
 function signedInSection(view: GeneratePageView): string {
-  // #24 の差し込み口。値は渡された文字列で、必ず `escapeHtml` を通す。
-  const quota =
-    view.quotaNotice === null
-      ? ''
-      : `<p id="generate-quota">${escapeHtml(view.quotaNotice)}</p>\n`;
+  // 4.4 の常時表示。**状態にかかわらず必ず 1 つ出る。** 文言は固定文字列だが、
+  // `escapeHtml` は通す（`src/signup.ts` / `src/invite-issuance.ts` と同じ理由で、
+  // 値の出どころが変わったときに安全側が既定になるようにしておく）。
+  const quota = `<p id="generate-quota">${escapeHtml(availabilityNotice(view.availability))}</p>`;
+
+  if (!canSubmit(view.availability)) {
+    return `${quota}
+
+${stillAvailableSection()}`;
+  }
 
   const messages = Object.entries(GENERATE_MESSAGES)
     .map(
@@ -404,7 +588,8 @@ function signedInSection(view: GeneratePageView): string {
     )
     .join('\n');
 
-  return `${quota}<form id="generate-form" method="post" action="${GENERATE_PATH}">
+  return `${quota}
+<form id="generate-form" method="post" action="${GENERATE_PATH}">
   <label for="generate-prompt">どんなゲームを作りますか（日本語で、${MAX_PROMPT_LENGTH} 文字まで）</label>
   <textarea id="generate-prompt" name="prompt" rows="4" maxlength="${MAX_PROMPT_LENGTH}"
             placeholder="例: 左右キーで動く自機が、上から落ちてくるブロックをよけ続けるゲーム" required></textarea>
@@ -412,7 +597,10 @@ function signedInSection(view: GeneratePageView): string {
 </form>
 
 <p id="generate-progress" role="status" aria-live="polite" hidden>生成しています…（経過 <span id="generate-elapsed">0</span> 秒）。
-   <strong>通常 20〜30 秒かかります。</strong>この画面を閉じたり再読み込みしたりしないでください。</p>
+   <strong>${TYPICAL_WAIT_TEXT}。</strong>この画面を閉じたり再読み込みしたりしないでください。</p>
+<p id="generate-long-wait" role="status" aria-live="polite" hidden>まだ生成しています。
+   <strong>失敗したわけではありません。</strong>生成の待ち時間に上限は無いため、応答が返るまで待っています。</p>
+<p id="generate-degraded" role="status" aria-live="polite" hidden>${escapeHtml(BUILD_STOPPED_NOTICE)}</p>
 
 <div id="generate-messages" role="status" aria-live="polite">
 ${messages}
@@ -421,7 +609,7 @@ ${messages}
 <noscript>
   <p><strong>生成の送信には JavaScript が必要です。</strong>
      生成は JSON で受け付ける API（<code>${GENERATE_PATH}</code>）への送信で、
-     応答が返るまで 20〜30 秒かかります。その間の経過表示も JavaScript で行っています。</p>
+     応答が返るまで ${TYPICAL_WAIT_TEXT}。その間の経過表示も JavaScript で行っています。</p>
 </noscript>`;
 }
 
@@ -437,9 +625,10 @@ ${messages}
  */
 export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): string {
   const body = signedIn ? signedInSection(view) : signedOutSection();
-  // スクリプトはログイン済みのときだけ置く。未ログインの画面にはフォームが無く、
-  // 動かす対象が無い。
-  const script = signedIn ? `\n<script>${GENERATE_SCRIPT}</script>\n` : '';
+  // スクリプトはフォームを描いたときだけ置く。未ログインの画面と、枠が尽きている
+  // 画面にはフォームが無く、動かす対象が無い（`getElementById` が `null` を返す）。
+  const script =
+    signedIn && canSubmit(view.availability) ? `\n<script>${GENERATE_SCRIPT}</script>\n` : '';
 
   return `<!doctype html>
 <meta charset="utf-8">
@@ -447,11 +636,58 @@ export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): s
 <title>ゲームを生成する</title>
 <h1>ゲームを生成する</h1>
 <p>作りたいゲームを 1 行で書くと、ブラウザで遊べる 2D ゲームの下書きができます。
-   <strong>生成には 20〜30 秒かかります。</strong></p>
+   <strong>生成には ${TYPICAL_WAIT_TEXT}。</strong></p>
 
 ${body}
 
 <p><a href="${HOME_PATH}">トップへ戻る</a></p>${script}`;
+}
+
+/**
+ * いま生成できるかどうかを求める（4.4 / #24）。
+ *
+ * **判定は `src/quota.ts` に寄せる。** 画面が D1 を数え直すと、同じ「当日とは何か」が
+ * 2 か所になり、画面の残数と API の判断が割れる（shared-ai-rules 12 章）。
+ *
+ * **読めなかったときに画面ごと落とさない。** `src/quota.ts` は「迷ったら止まる側へ
+ * 倒す」ために例外を投げ直すが、**それは生成を通すかどうかの判断だからである。**
+ * こちらは表示で、費用は出ない。集計を読めないことを理由に画面を 500 にすると、
+ * 4.4 が求める常時表示どころか画面そのものが消え、**プレイと共有への導線まで
+ * 巻き添えになる**（3.8 の degrade が守ろうとしているものである）。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 対象の利用者
+ * @returns いま生成できるかどうか
+ */
+async function resolveAvailability(env: Env, userId: string): Promise<GenerateAvailability> {
+  try {
+    const status = await generationQuotaStatus(env, userId);
+    switch (status.kind) {
+      case 'available':
+        return { kind: 'available', remaining: status.remaining };
+      case DAILY_QUOTA_REASON:
+        // **`resetsAt` は渡さない。** 枠が戻るのは常に JST の 0 時なので、画面が出す
+        // 時刻は値によらず決まる（{@link GENERATE_MESSAGES}）。渡すと、同じ時刻を
+        // 表す経路が固定文字列と値の 2 つになる。
+        return { kind: DAILY_QUOTA_REASON };
+      case MONTHLY_LIMIT_REASON:
+        return { kind: MONTHLY_LIMIT_REASON };
+      default:
+        // **知らない状態を月次上限として描かない。** `src/quota.ts` へ状態が増えた
+        // ときに、画面が「今月の生成は終了しました」と嘘をつく経路になる。読めなかった
+        // ときと同じ扱いにして、判断は API へ委ねる。
+        return { kind: 'unknown' };
+    }
+  } catch (error) {
+    // 例外の種類だけを出す（`src/quota.ts` の `readForDecision` と同じ方針。
+    // 利用者のプロンプトも生成物もここには無い）。
+    console.error(
+      `[generate-page] 残枠を取得できませんでした: ${
+        error instanceof Error ? error.name : typeof error
+      }`,
+    );
+    return { kind: 'unknown' };
+  }
 }
 
 /**
@@ -460,14 +696,23 @@ ${body}
  * ログインの判定は `resolveSessionUser` に寄せる（署名だけを信じず、BAN と利用者の
  * 不在まで見る。`src/session-user.ts`）。**画面側で別の判定を書かない。**
  *
+ * **未ログインでは枠を読まない。** 出すのは登録の導線だけで、残枠を出す相手が
+ * 居ない。D1 は読み取りも従量である（3.6）。
+ *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
  * @returns レスポンス
  */
 const showGeneratePage: RouteHandler = async (request, env) => {
   const session = await resolveSessionUser(request, env);
-  // 4.4 の残枠は #24 が入れる。ここでは口だけを通す（モジュール冒頭）。
-  return html(renderGeneratePage(session.ok, { quotaNotice: null }));
+  if (!session.ok) {
+    // 未ログインの画面は残枠を出さない。`availability` は使われないが、型として
+    // 1 つ選ぶ必要があるので「読めていない」を渡す（「残り N 回」を作らない値）。
+    return html(renderGeneratePage(false, { availability: { kind: 'unknown' } }));
+  }
+  return html(
+    renderGeneratePage(true, { availability: await resolveAvailability(env, session.userId) }),
+  );
 };
 
 /**

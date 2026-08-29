@@ -20,11 +20,16 @@
  * 写すと、同じ「当月とは何か」の定義が 2 か所になり、片方だけが古くなる
  * （shared-ai-rules 12 章）。
  *
- * ## 警告は返すところまで
+ * ## 警告は返すところまで（送るのはここではない）
  *
- * 4.3 は「80% で警告、100% で生成停止」と定めるが、**警告を画面へ出すのは 4.4 の範囲
- * （#24 / M3-3）である。** この層は判定結果に警告を載せて返すところまでを持つ。
- * 使われない段を先に作らないため、通知や表示の口はここに作らない。
+ * 4.3 は「80% で警告、100% で生成停止」と定める。**この層が持つのは判定だけで、
+ * 誰にどう届けるかは持たない。**
+ *
+ * **宛先は運用者であり、利用者の画面には出さない**（#148 の決定）。80% は
+ * サービス全体の月次費用に対する進捗で、個々の利用者の行動では変わらない。見せても
+ * 利用者にできることが無く、4.4 が無くそうとしている「押しても動かないボタン」と
+ * 同じ性質の情報になる。**送信の実装は `src/mail/cost-alert.ts`** で、この層からは
+ * {@link monthlyCostWarning} を読むだけである（**費用を数え直さない**）。
  */
 import { monthlyCostTotals } from './cost-ledger.js';
 
@@ -195,10 +200,13 @@ export function describeQuotaRejection(reason: string, resetsAt?: number): Quota
 }
 
 /**
- * 月次上限の 80% に到達したことを表す警告（4.3 / 4.4）。
+ * 月次上限の 80% に到達したことを表す警告（4.3）。
  *
- * **表示は #24（M3-3）の範囲である。** ここは判定結果として返すだけで、通知も
- * 画面も持たない。
+ * **受け取るのは運用者だけである**（#148）。利用者の画面には出さない（モジュール冒頭）。
+ * ここは判定結果として返すだけで、送信は `src/mail/cost-alert.ts` が持つ。
+ *
+ * **利用者を特定する値を持たない。** 月次はサービス全体の累計で（4.3）、通知の本文へ
+ * そのまま写しても 8.1 の個人情報が混ざらない形にしてある。
  */
 export interface MonthlyCostWarning {
   readonly kind: 'monthly-cost';
@@ -208,6 +216,51 @@ export interface MonthlyCostWarning {
   readonly limitJpy: number;
   /** 上限に対する割合。{@link MONTHLY_WARNING_RATIO} 以上のときだけこの警告が立つ。 */
   readonly ratio: number;
+}
+
+/**
+ * 当月の累計から 80% 警告を導く（4.3）。**しきい値を持つのはこの 1 か所である。**
+ *
+ * **累計を引かない。** 引数で受け取る。集計の実体は `src/cost-ledger.ts` の
+ * `monthlyCostTotals` が持ち（#22）、同じ「当月とは何か」の定義を 2 か所に作らない
+ * （shared-ai-rules 12 章）。
+ *
+ * **100% 側でも警告は立つ。** 80% 以上であることが条件で、上限に達したかどうかは
+ * 別の判定である（{@link generationQuotaStatus} は停止の枝で警告を返さないが、それは
+ * 「止まっている利用者に警告を見せない」ためであって、警告が消えるからではない）。
+ *
+ * @param costJpy 当月（JST）の累計（円）
+ * @returns 80% 以上なら警告、そうでなければ null
+ */
+export function monthlyCostWarningOf(costJpy: number): MonthlyCostWarning | null {
+  const ratio = costJpy / MONTHLY_COST_LIMIT_JPY;
+  if (ratio < MONTHLY_WARNING_RATIO) {
+    return null;
+  }
+  return { kind: 'monthly-cost', costJpy, limitJpy: MONTHLY_COST_LIMIT_JPY, ratio };
+}
+
+/**
+ * いま 80% 警告が立っているかを、当月の累計から判定する（4.3 / #148）。
+ *
+ * **通知の側（`src/mail/cost-alert.ts`）が読む口である。** 通知が独自に費用を数えると、
+ * 同じ「当月とは何か」が 2 か所になり、片方だけが古くなる。**判定はここ、集計は台帳、
+ * 送信は通知**という分担を崩さない。
+ *
+ * **日次は読まない。** 月次はサービス全体の進捗で、利用者を引数に取らない
+ * （{@link generationQuotaStatus} は生成の可否を返すので日次も読むが、こちらは別物である）。
+ *
+ * @param env バインディングと環境変数
+ * @param at 判定時刻（UNIX 秒。既定は現在時刻）
+ * @returns 80% 以上なら警告、そうでなければ null
+ * @throws 集計を読めなかったとき（{@link readForDecision} が投げ直す）
+ */
+export async function monthlyCostWarning(
+  env: Env,
+  at: number = Math.floor(Date.now() / 1000),
+): Promise<MonthlyCostWarning | null> {
+  const monthly = await readForDecision(() => monthlyCostTotals(env, at));
+  return monthlyCostWarningOf(monthly.costJpy);
 }
 
 /**
@@ -392,20 +445,12 @@ export async function generationQuotaStatus(
   // （{@link DAILY_QUOTA_PER_USER}）、残数もその単位で出る。4.4 の「残り N回」は
   // 成功した作品の本数ではない。
   const remaining = DAILY_QUOTA_PER_USER - daily.calls;
-  const ratio = monthly.costJpy / MONTHLY_COST_LIMIT_JPY;
-  if (ratio >= MONTHLY_WARNING_RATIO) {
-    return {
-      kind: 'available',
-      remaining,
-      warning: {
-        kind: 'monthly-cost',
-        costJpy: monthly.costJpy,
-        limitJpy: MONTHLY_COST_LIMIT_JPY,
-        ratio,
-      },
-    };
-  }
-  return { kind: 'available', remaining };
+  // **しきい値の判定は {@link monthlyCostWarningOf} が持つ。** 通知（#148）も同じ
+  // 関数から警告を得るので、80% の意味が画面側と通知側で割れない。
+  const warning = monthlyCostWarningOf(monthly.costJpy);
+  return warning === null
+    ? { kind: 'available', remaining }
+    : { kind: 'available', remaining, warning };
 }
 
 /**

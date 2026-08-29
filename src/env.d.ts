@@ -60,6 +60,28 @@ interface AppSecrets {
   GOOGLE_CLIENT_ID: string;
   /** Google OAuth のクライアントシークレット。トークンエンドポイントへのみ送る。 */
   GOOGLE_CLIENT_SECRET: string;
+  /**
+   * メール送信（Resend）の API キー（確定14 / 4.6 / #148 / #153）。
+   *
+   * **未設定の環境では送らない**（例外にしない。`src/mail/resend.ts`）。ローカルにも
+   * テストにも値は無く、通知の経路は「送信の手前」で止まる。
+   */
+  RESEND_API_KEY: string;
+  /**
+   * 差出人（`name <local@domain>` の形も可）。**送信ドメインは ojos.jp 系である**（7.2）。
+   *
+   * **構成に見えるが `[vars]` へ置かない。** 実在のメールアドレスを追跡ファイルへ書くと、
+   * 宛先と同じ理由（下記 `OPERATOR_EMAIL`）でリポジトリに住所が残る。
+   */
+  MAIL_FROM: string;
+  /**
+   * 運用者の宛先（4.3 の 80% 警告。#148）。
+   *
+   * **コードにも仕様書にも書かない。** 誰が運用しているかは実装の一部ではなく、
+   * 環境ごとに変わる設定である。**利用者向けの通知はここを使わない**——生成の完了
+   * （#153）の宛先は `users.email` から引く。
+   */
+  OPERATOR_EMAIL: string;
 }
 
 declare global {

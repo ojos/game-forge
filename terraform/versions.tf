@@ -21,6 +21,13 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 7.0"
     }
+    # R2 のライフサイクル（terraform/r2-lifecycle.tf）を宣言するために使う。
+    # Cloudflare のリソースをどこまで宣言化するかは未決で（docs/pages-deploy.md
+    # 「まだ決まっていないこと」）、いまはライフサイクルだけがこのプロバイダを使う。
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
     # 費用ガードの Lambda（terraform/bedrock-guard.tf）を zip にするためだけに使う。
     # 外部の zip コマンドへ依存すると、適用する端末によって成果物が変わる。
     archive = {

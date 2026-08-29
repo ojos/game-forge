@@ -19,6 +19,7 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 | Bedrock を呼ぶプリンシパルとモデルアクセス（確定19 / 4.1） | `aws_iam_user.bedrock_invoker`、`aws_bedrock_foundation_model_agreement.generation` | `bedrock.tf` |
 | 費用ガードの層 2 / 層 3（4.3） | `aws_cloudwatch_metric_alarm.bedrock_token_burst` ほか | `bedrock-guard.tf` |
 | GitHub Actions の OIDC 連携（9.3） | `aws_iam_openid_connect_provider.github`、`aws_iam_role.deploy_compiler` | `github-oidc.tf` |
+| R2 のライフサイクル（3.7 / 確定13 / 確定26） | `cloudflare_r2_bucket_lifecycle.artifacts` | `r2-lifecycle.tf` |
 
 管理対象外:
 
@@ -26,6 +27,8 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 - **ビルド関数に載っているイメージ**（`image_uri`）。配るのは CI です（9.3）。宣言側が固定の URI を持つと、配備のたびに `plan` へ差分が出ます。`lifecycle { ignore_changes = [image_uri] }` で宣言の外に置いています。
 - **Workers 用 IAM ユーザーのアクセスキー**（`game-forge-bedrock-invoker` / `game-forge-build-invoker`）。`aws_iam_access_key` を宣言すると、生成された秘密鍵が **tfstate へ平文で書き込まれます**。宣言が持つのはユーザーと権限だけで、鍵の発行・投入・ローテーションは `docs/bedrock-access.md` 3〜4 章と `docs/build-invocation.md` 3 章が持ちます。**「宣言していないこと」自体は `scripts/acceptance-remote.sh` が tfstate を見て機械で押さえます。**
 - **R2 の資格情報**（SSM Parameter Store の SecureString）。`aws_ssm_parameter` を宣言すると、Terraform が refresh のたびに**復号済みの値を tfstate へ書き込みます**（`aws_iam_access_key` を宣言しない理由と同じ経路）。宣言が持つのは名前と読み取り権限だけで、値の投入とローテーションは `docs/build-function.md` が持ちます。
+- **R2 バケットそのもの**（`game-forge`）と D1 / Pages プロジェクト。`wrangler` で作成済みで（`docs/pages-deploy.md` の実施記録）、宣言化するかは未決です。`r2-lifecycle.tf` は**バケットのライフサイクルだけ**を宣言します（#31）。`cloudflare_r2_bucket` を宣言すると既存バケットの作成を試みて失敗します。
+- **未公開成果物の 14 日削除**。3.7（確定13）が求める掃除ですが、**R2 のライフサイクルでは実現できません。** ライフサイクルは `games` を引けず、確定26 のとおりオブジェクトは作品をまたいで共有されるため、年齢だけで消すと公開済みの作品が壊れます（3.7 の削除規約 3）。判定は M5-4 のゴミ掃除が持ちます。理由の全文は `r2-lifecycle.tf` の冒頭にあります。
 - リモート state backend。ローカル state（`terraform/terraform.tfstate`）を使い続けます（2026-08-11 決定）。適用者が単一で state を共有する必要が無いためで、複数人・複数環境から適用するようになった時点で再検討します。
 
 ## 認証
@@ -34,6 +37,12 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 
 ```bash
 export GITHUB_TOKEN="$(gh auth token)"
+```
+
+Cloudflare の API トークンも環境変数で渡します（`r2-lifecycle.tf` を適用する場合）。値は追跡外の `.env` にあり、ローダーが環境へ移します。
+
+```bash
+set -a; source scripts/load-project-env.sh; set +a   # CLOUDFLARE_API_TOKEN を環境へ
 ```
 
 必要な権限は `repo`（リポジトリの作成・設定・ブランチ保護・Actions 変数）です。`gh auth status` で現在の scope を確認できます。
@@ -66,6 +75,13 @@ terraform -chdir=terraform apply
 ```bash
 export GITHUB_TOKEN="$(gh auth token)"
 VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
+```
+
+R2 のライフサイクルは専用の検査が持ちます（`scripts/acceptance-remote.sh` へ結線するまでは単体で回します）。
+
+```bash
+set -a; source scripts/load-project-env.sh; set +a
+bash scripts/check-r2-lifecycle.sh   # R2_LIFECYCLE_PASS
 ```
 
 この層は反復のたびに回しません。通す契機は、この配下の宣言を変更したときです。ローカル事前ゲート（`scripts/loop-gate.sh`）にも含めません。外部認証の失効やオフラインでゲート全体が止まると、実装が正しいのにループが止まるためです。

@@ -39,11 +39,22 @@ readonly REQUIRED_SYMBOL="globalThis.Go"
 SCOPE="--local"
 BUCKET=""
 
+# 道具の不在は前提の不成立であって、オブジェクトの欠落ではない。
+# （jq は scripts/wasm-exec-versions.sh 側が自分で確認する。ここでは使っていない。）
+command -v npx >/dev/null 2>&1 || {
+  echo "[check-wasm-exec] npx がありません。検査が成立しないため失敗させます。" >&2
+  echo "WASM_EXEC_FAIL"
+  exit 1
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)  SCOPE="--local";  shift ;;
     --remote) SCOPE="--remote"; shift ;;
-    --bucket) BUCKET="${2:-}";  shift 2 ;;
+    --bucket)
+      # 値が無いと shift 2 自体が失敗し、読めない赤になる（put-wasm-exec.sh と同じ）。
+      [[ $# -ge 2 && -n "$2" ]] || { echo "[check-wasm-exec] --bucket には値が要ります。" >&2; exit 1; }
+      BUCKET="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,30p' "${BASH_SOURCE[0]}" >&2
       exit 0 ;;
@@ -121,7 +132,8 @@ while IFS= read -r version; do
     continue
   fi
 
-  echo "[check-wasm-exec] OK ${BUCKET}/${key} ($(wc -c < "$out") bytes)"
+  # `wc -c` は実装によって前後に空白を付ける（macOS は付ける）。表示に混ぜない。
+  echo "[check-wasm-exec] OK ${BUCKET}/${key} ($(wc -c < "$out" | tr -d "[:space:]") bytes)"
 done <<<"$versions"
 
 if [[ "$checked" -eq 0 ]]; then

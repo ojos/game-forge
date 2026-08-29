@@ -565,10 +565,42 @@ OAuth の開始経路も通っている。`/auth/google/start` が 303 で
 `__Host-gf_oauth` を発行し、Google 側は `redirect_uri_mismatch` を出さずサインイン画面へ
 到達した。
 
+### 8. R2 のライフサイクルを適用する（3.7 / #31）
+
+**バケットを作った直後は、Cloudflare が既定のルールを 1 本置いています**（実測:
+`Default Multipart Abort Rule` / 未完了マルチパートを 604,800 秒 = 7 日で打ち切り）。
+**誰も宣言していないし、誰も検査していない**状態なので、宣言側へ移します。
+
+```bash
+export GITHUB_TOKEN="$(gh auth token)"
+export AWS_PROFILE=game-forge-prod
+set -a; source scripts/load-project-env.sh; set +a   # CLOUDFLARE_API_TOKEN / ACCOUNT_ID
+
+terraform -chdir=terraform init
+terraform -chdir=terraform plan     # cloudflare_r2_bucket_lifecycle.artifacts の作成が出る
+terraform -chdir=terraform apply
+
+bash scripts/check-r2-lifecycle.sh  # R2_LIFECYCLE_PASS
+```
+
+- 初回は `terraform.tfvars` に `cloudflare_account_id` を足してください（雛形は
+  `terraform/terraform.tfvars.example`）。
+- **挙動は変わりません。** 既定のルールと同じ打ち切り（7 日）を、id を明示した
+  ルールとして置き直すだけです。変わるのは**宣言と検査が付くこと**です。
+- **年齢だけで成果物を消すルールは置きません。** R2 のライフサイクルは `games` を
+  引けず、確定26 のとおりオブジェクトは作品をまたいで共有されるため、年齢で消すと
+  **公開済みの作品が黙って壊れます**（3.7 の削除規約 3）。14 日の掃除（確定13）は
+  M5-4 のゴミ掃除が持ちます。理由の全文は `terraform/r2-lifecycle.tf` の冒頭にあります。
+- **`runtime/<版>/wasm_exec.js` は消してはいけません。** どの作品からも参照されない
+  共有資材で、消すとその版の作品すべてが配信 500 になります（3.5 / #139）。
+
 ## まだ決まっていないこと
 
 - **本番の D1 / R2 を Terraform で宣言するか**、`wrangler` で作るか。現状 `terraform/` は
   GitHub と AWS と GCP を見ており、Cloudflare のリソースは `wrangler` で作っています。
+  - **一部だけ動きました（#31）。** `terraform/r2-lifecycle.tf` が Cloudflare プロバイダを
+    足し、**R2 のライフサイクルだけ**を宣言します。**バケットそのものは宣言していません**
+    （既存バケットの作成を試みて失敗するため）。D1 と Pages プロジェクトも未決のままです。
 - **Pages プロジェクトそのものを Terraform で宣言するか。** shared-ai-rules 4 章は
   「UI やアドホックな CLI での直接作成・変更を、恒久的な状態変更の手段にしない」と
   定めており、上の手順のうち `wrangler ... create` と `domain add` は本来その対象です。

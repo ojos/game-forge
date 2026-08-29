@@ -35,6 +35,15 @@ readonly DOCKERFILE="docker/isolated-build/Dockerfile"
 
 SCOPE="--local"
 
+# **道具の不在は「乖離」ではなく前提の不成立である。** 確認せずに先へ進むと、jq が
+# 無いだけの状態が「D1 の応答を解釈できない」として報告され、直すべきものを取り違える。
+for tool in jq npx; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "[wasm-exec-versions] ${tool} がありません。版を導出できません。" >&2
+    exit 1
+  }
+done
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)  SCOPE="--local";  shift ;;
@@ -109,12 +118,49 @@ db_versions() {
     return 1
   fi
   # --json でも wrangler は前置きの行を混ぜることがある。最初の `[` から後ろを渡す。
-  printf '%s' "$out" | sed -n '/^\[/,$p' | jq -r '.[0].results[]?.go_version // empty'
+  local json parsed
+  json="$(printf '%s' "$out" | sed -n '/^\[/,$p')"
+  if [[ -z "$json" ]]; then
+    echo "[wasm-exec-versions] wrangler の応答に JSON が含まれていません（${SCOPE}）:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  fi
+
+  # **形を先に検査する。** `.[0].results[]?` の `?` は型が違っても黙って空を返すため、
+  # これだけに頼ると**wrangler の --json の形が変わった日に、既存の作品の版が一覧から
+  # 静かに消える。** 消えても検査は緑になり、その版の作品だけが本番で 500 になる
+  # （実測でこの挙動を確認した）。**空の結果と、読めなかった結果を区別する。**
+  if ! jq -e '(type == "array") and (.[0] | type == "object") and (.[0].results | type == "array")' \
+       <<<"$json" >/dev/null 2>&1; then
+    echo "[wasm-exec-versions] D1 の応答の形が想定と違います（wrangler --json の形が変わった可能性があります）。" >&2
+    echo "[wasm-exec-versions] 想定: [{\"results\": [ ... ]}]" >&2
+    echo "[wasm-exec-versions] 受け取った JSON の先頭:" >&2
+    printf '%s' "$json" | head -c 1000 >&2
+    echo >&2
+    return 1
+  fi
+
+  local rows got
+  rows="$(jq -r '.[0].results | length' <<<"$json")"
+  parsed="$(jq -r '.[0].results[] | .go_version // empty' <<<"$json")"
+  got="$(printf '%s' "$parsed" | grep -c . || true)"
+
+  # **行はあるのに 1 つも読めなかった、は「作品が無い」とは別である。** 列名が変わった
+  # ときにここで落とさないと、上と同じ「静かに消える」経路が残る。
+  if [[ "$rows" -gt 0 && "$got" -eq 0 ]]; then
+    echo "[wasm-exec-versions] games の行が ${rows} 件ありますが、go_version を 1 つも読めませんでした。" >&2
+    echo "[wasm-exec-versions] 列名が変わった可能性があります。空の結果として扱いません。" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$parsed"
 }
 
 pinned="$(pinned_version)" || exit 1
 
+# db_versions は失敗の理由を自分で標準エラーへ書く。ここで握り潰さず、そのまま落とす。
 if ! from_db="$(db_versions)"; then
+  echo "[wasm-exec-versions] D1 側の版を導出できないため、検査が成立しません。" >&2
   exit 1
 fi
 

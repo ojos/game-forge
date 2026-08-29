@@ -37,3 +37,10 @@ gcp_org_id = "000000000000"
 # Budgets Actions は subscriber を必須としているため省略できない。
 # 機密ではないが、このリポジトリは公開のため宣言側には書かない。
 budget_notification_email = "you@example.com"
+
+# Cloudflare のアカウント ID。16 進 32 桁。
+# R2 のライフサイクル宣言（terraform/r2-lifecycle.tf）が使う。
+# 値は .env の CLOUDFLARE_ACCOUNT_ID と同じもの。**API トークンはここへ書かない**
+# （プロバイダが環境変数 CLOUDFLARE_API_TOKEN から読む。providers.tf の注記）。
+# 機密ではないが、このリポジトリは公開のため宣言側には書かない。
+cloudflare_account_id = "00000000000000000000000000000000"

@@ -7,8 +7,10 @@ import { defaultPipeline } from '../src/generate.js';
 import {
   DRAFT_STATUS,
   MAX_TITLE_LENGTH,
+  PREVIEW_KEY_BYTES,
   UNTITLED_TITLE,
   createDraftGame,
+  createPreviewKey,
   draftTitleFromPrompt,
 } from '../src/games.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
@@ -31,6 +33,7 @@ interface GameRow {
   fork_count: number;
   created_at: number;
   published_at: number | null;
+  preview_key: string | null;
 }
 
 /**
@@ -66,15 +69,20 @@ async function readGame(id: string): Promise<GameRow> {
 }
 
 /**
- * 行から id を除く（2 つの行を「id 以外すべて」で比べるため）。
+ * 行から「行ごとに必ず異なる列」を除く（残りを「すべて一致」で比べるため）。
+ *
+ * 除くのは `id` と `preview_key` の 2 つ。**どちらも一致してはいけない値**である
+ * （`preview_key` が一致したら、別の作品のプレビュー URL が引けることになる。#28）。
+ * 一致しないことは下の別のテストで見る。
  *
  * @param row `games` の行
- * @returns id を除いた行
+ * @returns 2 列を除いた行
  */
-function withoutId(row: GameRow): Omit<GameRow, 'id'> {
+function withoutIdentity(row: GameRow): Omit<GameRow, 'id' | 'preview_key'> {
   const copy: Partial<GameRow> = { ...row };
   delete copy.id;
-  return copy as Omit<GameRow, 'id'>;
+  delete copy.preview_key;
+  return copy as Omit<GameRow, 'id' | 'preview_key'>;
 }
 
 /**
@@ -152,8 +160,71 @@ describe('draft の作品行を作る（3.3-8 / 5.1 / issue acceptance 2）', ()
       (await createDraftGame(env, userId, { prompt: '同じ題' }, cachedOutcome(entry), 1_700_000_100)).id,
     );
 
-    // id 以外のすべてが一致する。**片方だけキーが欠ける、といった差を作らない。**
-    expect(withoutId(fromHit)).toEqual(withoutId(fromMiss));
+    // 行ごとに必ず異なる 2 列（id / preview_key）以外のすべてが一致する。
+    // **片方だけキーが欠ける、といった差を作らない。**
+    expect(withoutIdentity(fromHit)).toEqual(withoutIdentity(fromMiss));
+    // 同じソース（確定26 で R2 のキーは共有される）でも、プレビュー URL は別である。
+    expect(fromHit.preview_key).not.toBe(fromMiss.preview_key);
+  });
+});
+
+describe('作者プレビュー用のキー（5.4 / #28）', () => {
+  it('16 進 32 桁（128 ビット）で出る', () => {
+    // 配信側（src/sandbox-delivery.ts の PREVIEW_KEY_PATTERN）が受け付ける綴りと
+    // **対になっている。** ここが崩れると、作った行のプレビュー URL が 404 になる。
+    // 期待する桁数は定数から出す（数字を書き写すと、定数を変えたときに追随漏れる）。
+    const key = createPreviewKey();
+    expect(key).toMatch(/^[0-9a-f]+$/u);
+    expect(key.length).toBe(PREVIEW_KEY_BYTES * 2);
+  });
+
+  it('呼び出しごとに違う', () => {
+    // 128 ビットの乱数なので衝突しない。定数を返す実装への退化を落とすための検査。
+    const keys = new Set(Array.from({ length: 64 }, () => createPreviewKey()));
+    expect(keys.size).toBe(64);
+  });
+
+  it('作品行に必ず入る', async () => {
+    const userId = await seedUser('preview-key');
+    const game = await createDraftGame(env, userId, { prompt: 'ゲーム' }, fakeBuildOutcome());
+    const row = await readGame(game.id);
+    expect(row.preview_key).not.toBeNull();
+    expect(row.preview_key).toMatch(/^[0-9a-f]{32}$/u);
+  });
+
+  it('games.preview_key が一意である', async () => {
+    // 衝突すれば別人の未公開作品が引ける。鍵の長さだけに預けず、索引でも押さえる
+    // （migrations/0006_games_preview_key.sql）。
+    const userId = await seedUser('preview-unique');
+    await env.DB.prepare(
+      'insert into games (id, author_id, status, title, go_version, created_at, preview_key) values (?, ?, ?, ?, ?, 1, ?)',
+    )
+      .bind('g-preview-1', userId, 'draft', 'T', 'go1.26.5', 'a'.repeat(32))
+      .run();
+    await expect(
+      env.DB.prepare(
+        'insert into games (id, author_id, status, title, go_version, created_at, preview_key) values (?, ?, ?, ?, ?, 1, ?)',
+      )
+        .bind('g-preview-2', userId, 'draft', 'T', 'go1.26.5', 'a'.repeat(32))
+        .run(),
+    ).rejects.toThrow();
+  });
+
+  it('preview_key が NULL の行は複数あってよい', async () => {
+    // 0006 は既存行を埋め戻さない。SQLite の UNIQUE 索引が NULL を重複と見なさない
+    // ことに依存しているので、依存していること自体を検査に残す。
+    const userId = await seedUser('preview-null');
+    for (const id of ['g-preview-null-1', 'g-preview-null-2']) {
+      await env.DB.prepare(
+        'insert into games (id, author_id, status, title, go_version, created_at) values (?, ?, ?, ?, ?, 1)',
+      )
+        .bind(id, userId, 'draft', 'T', 'go1.26.5')
+        .run();
+    }
+    const row = await env.DB.prepare('select preview_key from games where id = ?')
+      .bind('g-preview-null-1')
+      .first<{ preview_key: string | null }>();
+    expect(row?.preview_key).toBeNull();
   });
 });
 

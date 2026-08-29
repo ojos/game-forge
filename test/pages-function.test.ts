@@ -36,8 +36,13 @@ describe('Pages Functions の入口（#71）', () => {
 
   it('サンドボックス用ホストをサンドボックス側へ渡す', async () => {
     // Host による出し分け（7.2 の別オリジン）が Pages Functions 越しでも効くこと。
+    //
+    // **`/` は 404 になる。** #28 でサンドボックス用ホストは `/p/<preview_key>/` と
+    // `/g/<game_id>/` しか持たなくなった。見たいのは「サンドボックス側へ渡ったか」
+    // なので、あちらにしか無い CSP `sandbox` ヘッダで判定する（アプリ側の 404 と
+    // 未知ホストの 404 はどちらも CSP を持たない）。
     const response = await onRequest(pagesContext(new Request(`${SANDBOX_ORIGIN}/`)));
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(404);
     expect(response.headers.get('content-security-policy')).toContain('sandbox allow-scripts');
   });
 

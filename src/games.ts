@@ -57,6 +57,40 @@ export const MAX_TITLE_LENGTH = 40;
 export const UNTITLED_TITLE = '無題の作品';
 
 /**
+ * `preview_key` の乱数のバイト数（#28 / 5.4）。
+ *
+ * **128 ビット。** この鍵は作者プレビュー URL の唯一の資格情報である（cookie による
+ * 所有者確認がサンドボックス経路では原理的に成立しない。理由は
+ * `migrations/0006_games_preview_key.sql`）。総当たりが問題にならない長さが要る。
+ *
+ * 128 ビットは UUID v4 の実効エントロピー（122 ビット）と同程度で、`games.id` と
+ * 同じ桁である。**プレビュー URL は id より弱くてはいけない**という下限から決めた。
+ */
+export const PREVIEW_KEY_BYTES = 16;
+
+/**
+ * 推測不能なプレビュー用キーを 1 つ作る。
+ *
+ * # `crypto.randomUUID()` を使わない
+ *
+ * 長さは足りるが、UUID は `games.id` と**見分けが付かない**。プレビュー URL
+ * （`/p/<preview_key>/`）と公開 URL（`/g/<game_id>/`）で綴りが同じだと、ログや問い合わせで
+ * 取り違える。16 進 32 桁（区切りなし）なら一目で別物と分かる。
+ *
+ * # 16 進で出す
+ *
+ * URL とヘッダの両方へ埋め戻る値なので、どちらの文脈でも特別な意味を持たない文字だけで
+ * 構成する（`src/sandbox-delivery.ts` の `PREVIEW_KEY_PATTERN` と対になる）。base64url は
+ * 短くなるが、`-` と `_` を含む分だけ確かめることが増える。
+ *
+ * @returns 16 進 32 桁の小文字文字列
+ */
+export function createPreviewKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(PREVIEW_KEY_BYTES));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/**
  * プロンプトから仮のタイトルを作る。
  *
  * # なぜ仮のタイトルが要るのか
@@ -117,6 +151,12 @@ export function draftTitleFromPrompt(prompt: string): string {
  *
  * 索引は既にあり、書き直すと `created_at` だけが若返る（`buildCacheRecordOf`）。
  *
+ * # プレビュー用キーもここで作る（#28 / 5.4）
+ *
+ * `preview_key` は作者プレビュー URL（`/p/<preview_key>/`）の唯一の資格情報である。
+ * **`games` 行と同時に作る**のは、後から埋める経路にすると「キーの無い draft」が
+ * 存在しうる状態になり、配信側（`src/sandbox-delivery.ts`）が扱えない行を作るため。
+ *
  * # 冪等ではない
  *
  * 同じ入力で 2 回呼べば 2 つの作品ができる。**それが正しい**（同じプロンプトから
@@ -142,8 +182,8 @@ export async function createDraftGame(
   await env.DB.prepare(
     `insert into games
        (id, author_id, parent_id, status, title, go_version, source_key, wasm_key,
-        fork_count, created_at, published_at)
-     values (?, ?, null, ?, ?, ?, ?, ?, 0, ?, null)`,
+        fork_count, created_at, published_at, preview_key)
+     values (?, ?, null, ?, ?, ?, ?, ?, 0, ?, null, ?)`,
   )
     .bind(
       id,
@@ -158,6 +198,10 @@ export async function createDraftGame(
       keys.sourceKey,
       keys.wasmKey,
       now,
+      // 5.4 の作者プレビュー URL（`/p/<preview_key>/`）。**行を作るたびに新しく引く。**
+      // 同じソースからの 2 件目（確定26 でキーは共有される）でも、プレビュー URL は
+      // 別でなければならない。片方の URL を止めたときに、もう片方まで止まってしまう。
+      createPreviewKey(),
     )
     .run();
 

@@ -6,7 +6,6 @@ import {
   cookieNames,
   handleAppRequest,
 } from '../src/app.js';
-import { SANDBOX_CSP } from '../src/sandbox.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 const SANDBOX_ORIGIN = `https://${env.SANDBOX_HOST}`;
@@ -196,9 +195,16 @@ describe('ホストによる出し分け（#51 acceptance 3）', () => {
   });
 
   it('サンドボックス用ホストがサンドボックス側を返す', async () => {
+    // **`/` は 404 になる。** #28 で本物の配信が入り、サンドボックス用ホストは
+    // `/p/<preview_key>/` と `/g/<game_id>/` しか持たなくなった（M0.5-3 の
+    // プレースホルダ「sandbox origin」は役目を終えて消えている）。
+    //
+    // ここが見たいのは Host による出し分けなので、**サンドボックス側にしか無い
+    // 印**で判定する。アプリ側の 404 は JSON、未知ホストの 404 も JSON で、
+    // どちらも CSP `sandbox` ヘッダを持たない。
     const response = await SELF.fetch(`${SANDBOX_ORIGIN}/`);
-    expect(response.status).toBe(200);
-    expect(await response.text()).toContain('sandbox origin');
+    expect(response.status).toBe(404);
+    expect(response.headers.get('content-security-policy')).toContain('sandbox allow-scripts');
   });
 
   it('未知のホストはアプリ側へ流さず 404 にする', async () => {
@@ -216,12 +222,14 @@ describe('ホストによる出し分け（#51 acceptance 3）', () => {
 });
 
 describe('CSP sandbox ヘッダ（7.2 必須要件 1）', () => {
+  // **配信レスポンス（作品を返す経路）の検査は test/sandbox.test.ts にある。**
+  // ここに残すのは「サンドボックス用ホストへ来た要求は、作品が引けなくても
+  // 必ず CSP を伴って返る」という入口側の性質だけである。
   it('サンドボックス側のレスポンスが sandbox allow-scripts を付ける', async () => {
     const response = await SELF.fetch(`${SANDBOX_ORIGIN}/`);
     const csp = response.headers.get('content-security-policy');
     expect(csp).not.toBeNull();
     expect(csp).toContain('sandbox allow-scripts');
-    expect(csp).toBe(SANDBOX_CSP);
   });
 
   it('サンドボックス側は allow-same-origin を決して付けない', async () => {
@@ -229,7 +237,9 @@ describe('CSP sandbox ヘッダ（7.2 必須要件 1）', () => {
     expect(response.headers.get('content-security-policy')).not.toContain('allow-same-origin');
   });
 
-  it('サンドボックス側は connect-src を none に絞る', async () => {
+  it('作品を返さないレスポンスは connect-src を none に絞る', async () => {
+    // 緩めるのはローダー文書だけである（#28 / src/sandbox-csp.ts）。それ以外は
+    // 7.2 の記述どおり `'none'` のままであることを、入口の位置でも押さえておく。
     const response = await SELF.fetch(`${SANDBOX_ORIGIN}/`);
     expect(response.headers.get('content-security-policy')).toContain("connect-src 'none'");
   });

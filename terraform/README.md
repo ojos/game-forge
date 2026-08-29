@@ -15,8 +15,9 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 | ビルドイメージの ECR リポジトリ | `aws_ecr_repository.isolated_build` ほか | `build-function.tf` |
 | ビルド関数（確定24 / 3.8） | `aws_lambda_function.build`、実行ロール、ロググループ | `build-function.tf` |
 | 配備に要る Actions 変数 4 つ | `github_actions_variable.aws_region` ほか | `build-function.tf` |
-| ビルド関数を呼ぶプリンシパル（3.3-5 / 4.1 / 9.2） | `aws_iam_user.build_invoker`、`aws_iam_user_policy.build_invoke` | `build-invoker.tf` |
-| Bedrock を呼ぶプリンシパルとモデルアクセス（確定19 / 4.1） | `aws_iam_user.bedrock_invoker`、`aws_bedrock_foundation_model_agreement.generation` | `bedrock.tf` |
+| エッジからジョブを投げるプリンシパル（3.3-2.6 / 4.1 / 9.2） | `aws_iam_user.build_invoker`、`aws_iam_user_policy.build_invoke` | `build-invoker.tf` |
+| オーケストレータ（3.3 の再配置 / #160） | `aws_lambda_function.orchestrator`、実行ロール、ロググループ、`aws_lambda_function_event_invoke_config.orchestrator`、`aws_sqs_queue.orchestrator_failures` | `orchestrator.tf` |
+| モデルアクセスと Bedrock の動作の定義（確定19 / 4.1） | `aws_bedrock_foundation_model_agreement.generation`、`local.bedrock_invoke_actions` | `bedrock.tf` |
 | 費用ガードの層 2 / 層 3（4.3） | `aws_cloudwatch_metric_alarm.bedrock_token_burst` ほか | `bedrock-guard.tf` |
 | GitHub Actions の OIDC 連携（9.3） | `aws_iam_openid_connect_provider.github`、`aws_iam_role.deploy_compiler` | `github-oidc.tf` |
 | R2 のライフサイクル（3.7 / 確定13 / 確定26） | `cloudflare_r2_bucket_lifecycle.artifacts` | `r2-lifecycle.tf` |

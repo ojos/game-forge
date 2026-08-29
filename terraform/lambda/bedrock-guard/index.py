@@ -1,7 +1,12 @@
 """層 2（暴走検知）の実行部（仕様 4.3 / #82）。
 
 CloudWatch アラーム → SNS → この関数、という経路の終端である。やることは 1 つで、
-``game-forge-bedrock-invoker`` へ**明示的 Deny のポリシーを付ける**こと。それだけを行う。
+``game-forge-orchestrator`` の実行ロールへ**明示的 Deny のポリシーを付ける**こと。
+それだけを行う。
+
+**対象は #160 で IAM ユーザーからロールへ移った。** Bedrock を呼ぶプリンシパルが
+エッジ（長命キーの IAM ユーザー）からオーケストレータの実行ロールへ移ったためで、
+``attach_user_policy`` のままだと**止める相手がいない**。
 
 ## なぜ「Deny を付ける」なのか
 
@@ -10,7 +15,7 @@ CloudWatch アラーム → SNS → この関数、という経路の終端で�
 成立しないことがこの実装で分かり、仕様側を改めた（v1.7）。** 剥奪を採らなかった
 理由は 2 つある。
 
-1. **剥がすと宣言と喧嘩する。** 許可は ``aws_iam_user_policy.bedrock_invoke`` として
+1. **剥がすと宣言と喧嘩する。** 許可は ``aws_iam_role_policy.orchestrator`` として
    Terraform が持っている。関数がそれを消すと ``terraform plan`` に差分が出て、
    **誰かが無関係な変更（DNS など）を apply した拍子に、原因を調べる前に許可が
    戻る。** 4.3 は「復旧は手動とする。暴走の原因を調べる前に自明で戻すと、同じ
@@ -25,13 +30,13 @@ CloudWatch アラーム → SNS → この関数、という経路の終端で�
 
 ## 冪等である
 
-``attach_user_policy`` は既にアタッチ済みでもエラーにならない。アラームは
+``attach_role_policy`` は既にアタッチ済みでもエラーにならない。アラームは
 状態遷移のたびに発火しうるので、二重発火で落ちない性質が要る。
 
 ## 復旧しない
 
 この関数に detach の経路は無い。IAM ロールにも ``iam:DetachUserPolicy`` を与えて
-いない。**復旧は人間が手でやる**（docs/bedrock-access.md）。自動で戻す口を用意すると、
+いない（``iam:DetachRolePolicy`` も同じ）。**復旧は人間が手でやる**（docs/bedrock-access.md）。自動で戻す口を用意すると、
 それが誤って呼ばれた時点で層 2 が無効になる。
 """
 
@@ -47,7 +52,7 @@ _iam = boto3.client("iam")
 
 
 def handler(event, context):
-    """SNS 経由でアラームを受け、対象ユーザーへ Deny ポリシーを付ける。
+    """SNS 経由でアラームを受け、対象ロールへ Deny ポリシーを付ける。
 
     引数:
         event: SNS のイベント。中身は使わない（下記）。
@@ -55,7 +60,7 @@ def handler(event, context):
 
     戻り値: 付けた対象を含む dict（CloudWatch Logs に残す用）。
     """
-    user = os.environ["TARGET_USER_NAME"]
+    role = os.environ["TARGET_ROLE_NAME"]
     policy_arn = os.environ["HALT_POLICY_ARN"]
 
     # **イベントの中身で分岐しない。** この関数を呼べるのは、リソースポリシーで
@@ -67,8 +72,8 @@ def handler(event, context):
     # ただし受け取ったものは丸ごとログへ残す。事後に原因を追うのはこのログである。
     print(json.dumps({"event": "layer2_triggered", "sns": event}, ensure_ascii=False))
 
-    _iam.attach_user_policy(UserName=user, PolicyArn=policy_arn)
+    _iam.attach_role_policy(RoleName=role, PolicyArn=policy_arn)
 
-    result = {"event": "layer2_halted", "user": user, "policy_arn": policy_arn}
+    result = {"event": "layer2_halted", "role": role, "policy_arn": policy_arn}
     print(json.dumps(result, ensure_ascii=False))
     return result

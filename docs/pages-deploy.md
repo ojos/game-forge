@@ -152,17 +152,28 @@ npx wrangler pages secret put GOOGLE_CLIENT_SECRET --project-name game-forge
 **`SESSION_SECRET` はローカルの値を使い回さないこと。** 32 文字以上のランダム値を
 本番用に新しく作ります。
 
-**Bedrock の資格情報（`BEDROCK_AWS_*`）は投入済みです（2026-08-28）。生成経路は
-開通しています。** **`BEDROCK_AWS_SESSION_TOKEN` は本番では
-登録しません**（一時資格情報はローカル開発で SSO を使うときだけのもので、本番には
-長命キーを置きます。Workers は AWS の外で動くため IAM ロールを引き受けられません。
-仕様書 4.1）。
+#### ~~Bedrock の資格情報（`BEDROCK_AWS_*`）~~ **削除しました（#160 / 2026-08-29）**
+
+**エッジに Bedrock の資格情報を置きません。** 生成の実行体がオーケストレータ Lambda へ
+移り、**AWS の中で動くので IAM ロールを引き受けられる**ようになりました（仕様 9.2）。
+4.3 が最も恐れる「枠を焼ける資格情報」が、いちばん露出の大きい場所から消えます。
+
+投入済みの環境から**消す**手順です（初回の切り替えの一部。順序と前後の作業は
+`docs/orchestrator.md` にあります）。
 
 ```bash
-npx wrangler pages secret put BEDROCK_AWS_REGION --project-name game-forge
-npx wrangler pages secret put BEDROCK_AWS_ACCESS_KEY_ID --project-name game-forge
-npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY --project-name game-forge
+npx wrangler pages secret delete BEDROCK_AWS_REGION            --project-name game-forge
+npx wrangler pages secret delete BEDROCK_AWS_ACCESS_KEY_ID     --project-name game-forge
+npx wrangler pages secret delete BEDROCK_AWS_SECRET_ACCESS_KEY --project-name game-forge
 ```
+
+**残っていても生成は動きます。** だからこそ機械で見ます — 外部層の検査
+（`scripts/acceptance-remote.sh` の `edge no longer holds bedrock credentials`）が、
+Pages のシークレットと IAM の両方から消えていることを確かめます。
+
+> **v1 の記述（残す）。** `BEDROCK_AWS_SESSION_TOKEN` は本番では登録していません
+> （一時資格情報はローカル開発で SSO を使うときだけのもので、本番には長命キーを
+> 置いていました。仕様書 4.1）。したがって削除するのは上の 3 つだけです。
 
 > **投入までに何を確かめたか（2026-08-28）。** 下の「ガードが無いまま生成を開けない」を
 > 満たすため、**4 層のうち層 1 の発火を本番で実測してから**開けた。月次の台帳を上限超へ
@@ -201,8 +212,17 @@ npx wrangler pages secret put BEDROCK_AWS_SECRET_ACCESS_KEY --project-name game-
 
 ### ビルド関数を呼ぶ資格情報（`BUILD_AWS_*`。#115）
 
-**投入済みです（2026-08-28）。** 生成経路がビルド関数（Lambda `game-forge-build`）を
-呼ぶために要ります（3.3-5 / #19）。
+**投入済みです（2026-08-28）。エッジに残る唯一の長命 AWS 資格情報です（#160）。**
+
+**#160 で用途が変わりました。** 生成の本体がオーケストレータ Lambda の中で走るように
+なったため、エッジはビルド関数を直接呼びません。この鍵にできるのは
+**「オーケストレータへジョブを 1 回投げること」だけ**です
+（`src/orchestrator/start-job.ts` / `terraform/build-invoker.tf`）。
+
+**名前は `BUILD_AWS_*` のままにしてあります。** 改名はローテーション手順・雛形・型・
+文書へ同時に波及するのに対し、得られるのは綴りの気分だけだからです。`BUILD_` が
+指しているのは「AWS Lambda を呼ぶ側の鍵」であって、「ビルド関数だけを呼ぶ鍵」では
+ありません。
 
 ```bash
 npx wrangler pages secret put BUILD_AWS_REGION --project-name game-forge
@@ -213,9 +233,9 @@ npx wrangler pages secret put BUILD_AWS_SECRET_ACCESS_KEY --project-name game-fo
 **名前の正本は `src/build-client.ts` の `BUILD_SECRET_NAMES` です。** ここへ書き写した
 綴りが食い違うと、`BuildNotConfigured`（`kind='config'`）で呼び出しの手前で落ちます。
 
-**`BUILD_AWS_SESSION_TOKEN` は本番では登録しません**（Bedrock 側と同じ理由）。
-**`BUILD_FUNCTION_NAME` はシークレットではありません** — `wrangler.toml` が
-宣言します。**`[vars]` と `[env.production.vars]` / `[env.preview.vars]` の 3 か所すべてに
+**`BUILD_AWS_SESSION_TOKEN` は本番では登録しません**（長命キーを置くため）。
+**`BUILD_FUNCTION_NAME` と `ORCHESTRATOR_FUNCTION_NAME` はシークレットではありません** —
+`wrangler.toml` が宣言します。**`[vars]` と `[env.production.vars]` / `[env.preview.vars]` の 3 か所すべてに
 書きます**（Pages の名前付き環境は `vars` を継承せず、省くとバインディングごと消えるため。
 この文書の 3 章と `src/build-client.ts` の説明が正本です）。
 
@@ -225,9 +245,12 @@ npx wrangler pages secret put BUILD_AWS_SECRET_ACCESS_KEY --project-name game-fo
 | **鍵の発行とローテーション手順** | `docs/build-invocation.md` 3 章 |
 | IAM ユーザーと権限（`lambda:InvokeFunction` を関数 1 つに限定） | `terraform/build-invoker.tf` |
 
-**Bedrock 用と鍵を分けてあります。** まとめると**鍵 1 本の漏洩で生成とビルドが同時に
-開く**うえ、`lambda:*` を与えれば `UpdateFunctionCode` まで通り、**攻撃者が制御しうる
+**`lambda:*` は与えていません。** それは `UpdateFunctionCode` を含み、**攻撃者が制御しうる
 コードをコンパイルする関数の中身を差し替えられます**（`terraform/build-invoker.tf`）。
+許しているのは `lambda:InvokeFunction` を対象 1 つ（オーケストレータ）に限った形です。
+
+**#160 より前は Bedrock 用と 2 組ありました。** まとめると鍵 1 本の漏洩で生成とビルドが
+同時に開くため分けていたもので、**Bedrock 側は組ごと消えました**（上記）。
 
 ### 6. デプロイ（初回と緊急時のみ）
 

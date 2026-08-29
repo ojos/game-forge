@@ -106,9 +106,16 @@ output "pages_hostname" {
  * 期待値を見続ける（共通規範 12 章「一覧の複製は機械照合で担保する」）。
  */
 
-output "bedrock_invoker_user_name" {
-  description = "Workers から Bedrock を呼ぶ IAM ユーザー名。ガードが停止用の Deny を付ける対象でもある。"
-  value       = aws_iam_user.bedrock_invoker.name
+output "bedrock_invoker_role_name" {
+  description = <<-EOT
+    Bedrock を呼ぶプリンシパルのロール名（#160）。**ガードが停止用の Deny を付ける
+    対象でもある。**
+
+    v1 はエッジの IAM ユーザー（game-forge-bedrock-invoker）だった。生成の実行体が
+    AWS の中へ移り、ロールを引き受けられるようになったため、許可も停止もロール側へ
+    移った（terraform/orchestrator.tf / terraform/bedrock-guard.tf）。
+  EOT
+  value       = aws_iam_role.orchestrator.name
 }
 
 output "bedrock_invoke_actions" {
@@ -123,7 +130,7 @@ output "bedrock_invoke_actions" {
 }
 
 output "bedrock_halt_policy_arn" {
-  description = "層 2 / 層 3 が発火時に付ける明示的 Deny ポリシーの ARN。平常時はどのユーザーにも付いていないことが正しい。"
+  description = "層 2 / 層 3 が発火時に付ける明示的 Deny ポリシーの ARN。平常時はどのロールにも付いていないことが正しい（#160）。"
   value       = aws_iam_policy.bedrock_halt.arn
 }
 
@@ -412,4 +419,98 @@ output "r2_lifecycle_rule_ids" {
 output "r2_abort_multipart_max_age_seconds" {
   description = "未完了マルチパートアップロードを打ち切るまでの秒数。外部層の検査が実状態と突き合わせる。"
   value       = local.r2_abort_multipart_max_age_seconds
+}
+
+/**
+ * オーケストレータ（3.3 の再配置。#160）の照合値。
+ *
+ * **外部層の検査は、しきい値も対象名もここから取る。** 検査スクリプトへ 0 や 300 を
+ * 書き写すと、宣言を変えたときに検査だけが古い期待値を見続ける（共通規範 12 章
+ * 「一覧の複製は機械照合で担保する」）。
+ */
+
+output "orchestrator_function_name" {
+  description = "オーケストレータの関数名。wrangler.toml の ORCHESTRATOR_FUNCTION_NAME がこの写しを持つ。"
+  value       = aws_lambda_function.orchestrator.function_name
+}
+
+output "orchestrator_function_arn" {
+  description = "オーケストレータの ARN。エッジの IAM ユーザーが呼び出しを許されている唯一の対象である。"
+  value       = aws_lambda_function.orchestrator.arn
+}
+
+output "orchestrator_role_name" {
+  description = "オーケストレータの実行ロール名。Bedrock を呼ぶプリンシパルであり、費用ガードの停止対象でもある。"
+  value       = aws_iam_role.orchestrator.name
+}
+
+output "orchestrator_role_actions" {
+  description = <<-EOT
+    実行ロールへ与えている動作。**外部層の検査が「最小限であること」を突き合わせる
+    期待値である**（#160 の受け入れ条件）。
+
+    ポリシー文書と同じ定義から作られる（terraform/orchestrator.tf の
+    local.orchestrator_role_actions）。**Bedrock の分は terraform/bedrock.tf の
+    local.bedrock_invoke_actions を参照しており、書き写しではない。**
+  EOT
+  value       = local.orchestrator_role_actions
+}
+
+output "orchestrator_log_group" {
+  description = "オーケストレータのロググループ。実行ロールが書ける唯一の先である。"
+  value       = aws_cloudwatch_log_group.orchestrator.name
+}
+
+output "orchestrator_memory_mb" {
+  description = "オーケストレータのメモリ（MB）。外部層の検査が実状態と突き合わせる。"
+  value       = local.orchestrator_memory_mb
+}
+
+output "orchestrator_timeout_seconds" {
+  description = "オーケストレータのタイムアウト（秒）。src/work-page.ts の STALE_AFTER_SECONDS より短いこと。"
+  value       = local.orchestrator_timeout_seconds
+}
+
+output "orchestrator_reserved_concurrency" {
+  description = "オーケストレータの予約同時実行数。同時に走る生成の本数の上限である（4.3 の層 4 を持てない分をここで補う）。"
+  value       = local.orchestrator_reserved_concurrency
+}
+
+output "orchestrator_maximum_retry_attempts" {
+  description = <<-EOT
+    非同期呼び出しの基盤リトライ回数。**0 でなければならない**（#160）。
+
+    5.2-7 が既に最大 3 試行を持っており、掛け算にすると 1 回の送信から
+    最大 9 回・約 144 円・日次枠 9 個が出る。**既定は 2 なので、書き忘れると
+    掛け算になる。** ローカル層の検査（scripts/check-orchestrator-retry.sh）が
+    宣言側を、外部層の検査が実状態を押さえる。
+  EOT
+  value       = local.orchestrator_maximum_retry_attempts
+}
+
+output "orchestrator_maximum_event_age_seconds" {
+  description = "非同期イベントの有効期限（秒）。既定の 6 時間だと、忘れられた生成が課金と枠を食う。"
+  value       = local.orchestrator_maximum_event_age_seconds
+}
+
+output "orchestrator_failure_queue_name" {
+  description = "OnFailure destination（SQS）の名前。ここに溜まっていること自体が、完走しなかったジョブの件数である。"
+  value       = aws_sqs_queue.orchestrator_failures.name
+}
+
+output "orchestrator_failure_queue_arn" {
+  description = "OnFailure destination の ARN。宣言と実状態の突き合わせに使う。"
+  value       = aws_sqs_queue.orchestrator_failures.arn
+}
+
+output "orchestrator_callback_base_url" {
+  description = <<-EOT
+    コールバックの宛先。**ペイロードではなく宣言が持つ**（呼び出しのペイロードを
+    差し替えられる者がジョブトークンの送り先を変えられないようにするため。
+    src/orchestrator/payload.ts）。
+
+    値は local.app_host（terraform/dns.tf）から作るので、wrangler.toml の APP_HOST と
+    ずれない。
+  EOT
+  value       = "https://${local.app_host}"
 }

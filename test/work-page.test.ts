@@ -126,10 +126,20 @@ describe('状態は誰でも読め、詳細は本人だけが読める（#150 �
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(body).toContain('生成中です');
-    // **いまは同期実行なので「開いたままにしてください」が正しい**（#150）。
-    // できていないことを、できているように書かない。
-    expect(body).toContain('このタブを開いたままにしてください');
-    expect(body).not.toContain('タブを閉じても生成は進みます');
+    // **#160 で非同期実行になったので「閉じてよい」が正しい。**
+    // できていないことを、できているように書かない——そして、できるように
+    // なったことを、できていないように書かない。
+    //
+    // **期待値を実行形態から引く。** ここへどちらか一方を焼き込むと、段を戻したときに
+    // このテストだけが古い文言を要求する（照合の正本は `GENERATION_IS_SYNCHRONOUS`
+    // であり、それを `startJob` と突き合わせる検査が下にある）。
+    if (GENERATION_IS_SYNCHRONOUS) {
+      expect(body).toContain('このタブを開いたままにしてください');
+      expect(body).not.toContain('タブを閉じても生成は進みます');
+    } else {
+      expect(body).toContain('タブを閉じても生成は進みます');
+      expect(body).not.toContain('このタブを開いたままにしてください');
+    }
   });
 
   it('仮タイトル（プロンプト由来）は本人にしか出さない', async () => {

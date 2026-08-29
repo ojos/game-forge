@@ -12,6 +12,8 @@ import {
   runJobInline,
   startGeneration,
 } from '../src/generate.js';
+import { startJobOnLambda } from '../src/orchestrator/start-job.js';
+import { failGame } from '../src/games.js';
 import type { GenerationPipeline } from '../src/generate.js';
 import { workPagePath } from '../src/work-page.js';
 import {
@@ -1017,6 +1019,55 @@ describe('失敗も必ず作品行へ書く（#150）', () => {
     return row === null ? null : { state: row.generation_state, error: row.generation_error };
   }
 
+  it('failGame の段を省いた実装でも、失敗は行へ書かれる（#160）', async () => {
+    // **`failGame` は任意の段である**（`src/generate.ts`）。省いた実装——順序だけを
+    // 見る既存のテストが作るもの——では D1 へ直接書く既定に落ちる。**落ちなければ
+    // 行は `running` のまま残り、作品ページが永久に「生成中」を出し続ける。**
+    const userId = await seedUser('fail-default-stage');
+    const { pipeline } = recordingPipeline();
+    expect(pipeline.failGame).toBeUndefined();
+    const failing: GenerationPipeline = {
+      ...pipeline,
+      build: async () => {
+        throw new BuildRejected('build', 'prog.go:1:1: syntax error');
+      },
+    };
+
+    await expect(
+      startGeneration(env, userId, { prompt: '段を省いた作品' }, failing),
+    ).rejects.toBeInstanceOf(BuildRetriesExhausted);
+    expect(await latestStateOf(userId)).toEqual({ state: 'failed', error: 'build-failed' });
+  });
+
+  it('failGame の段を差し替えると、そちらが呼ばれる（#160）', async () => {
+    // **オーケストレータはここを `finish` コールバックへ差し替える。** 差し替えが
+    // 効いていることを、D1 側が更新されないことで見る（段が無視されると、
+    // Lambda から D1 のバインディングを要求する経路が残る）。
+    const userId = await seedUser('fail-stage-swap');
+    const seen: string[] = [];
+    const { pipeline } = recordingPipeline();
+    const failing: GenerationPipeline = {
+      ...pipeline,
+      build: async () => {
+        throw new BuildRejected('build', 'prog.go:1:1: syntax error');
+      },
+      failGame: async (_env, _gameId, errorCode) => {
+        seen.push(errorCode);
+        return true;
+      },
+    };
+
+    await expect(
+      startGeneration(env, userId, { prompt: '段を差し替えた作品' }, failing),
+    ).rejects.toBeInstanceOf(BuildRetriesExhausted);
+    expect(seen).toEqual(['build-failed']);
+    // **分類名は `internal` になる。** 段が D1 を触らなかったので、行を閉じたのは
+    // `startGeneration` の catch（Worker 側。D1 を持つ）である。**そちらは段を
+    // 経由しない**——非同期実装で「投げ込めなかった」ときに行を閉じるのは、
+    // コールバックではなく Worker 自身の仕事だからである（`src/generate.ts`）。
+    expect(await latestStateOf(userId)).toEqual({ state: 'failed', error: 'internal' });
+  });
+
   it('ビルドを使い切った失敗は build-failed として残る', async () => {
     const userId = await seedUser('fail-build');
     const { pipeline } = recordingPipeline();
@@ -1089,11 +1140,20 @@ describe('失敗も必ず作品行へ書く（#150）', () => {
   });
 });
 
-describe('ジョブの起動点が既定へ結線されている（#150 / 3.3-2.6）', () => {
-  it('startJob が runJobInline である', () => {
+describe('ジョブの起動点が既定へ結線されている（#150 / #160 / 3.3-2.6）', () => {
+  it('startJob が非同期実装（startJobOnLambda）である', () => {
     // **同一性で見る**（`test/quota.test.ts` / `test/games.test.ts` と同じ形）。
-    // ここが差し替わったこと自体が、待ち時間の設計が変わった合図になる。
-    expect(defaultPipeline.startJob).toBe(runJobInline);
+    // #160 でここが差し替わったこと自体が、待ち時間の設計が変わった合図である。
+    expect(defaultPipeline.startJob).toBe(startJobOnLambda);
+    // **同期実装は既定ではない。** 戻っていれば `test/work-page.test.ts` の
+    // `GENERATION_IS_SYNCHRONOUS` 照合も同時に落ちる。
+    expect(defaultPipeline.startJob).not.toBe(runJobInline);
+  });
+
+  it('失敗の記録（failGame）が既定へ結線されている（#160）', () => {
+    // **段にしたのはオーケストレータが D1 を持たないからである**（`src/generate.ts`）。
+    // 既定では D1 へ直接書く実装が入っていること自体を、同一性で確かめる。
+    expect(defaultPipeline.failGame).toBe(failGame);
   });
 
   it('未実装の起動点は 501 として扱える（空実装を成功にしない）', async () => {

@@ -44,6 +44,17 @@
 # 失効したら転記し直す。長命キーを使う場合は SESSION_TOKEN を空のままにする。
 #
 # 空のままでも `npm run dev` は起動する。
+#
+# **#160 以降、本番の Pages にはこの 4 つを登録しない。** 生成の実行体が
+# オーケストレータ Lambda へ移り、AWS の中で IAM ロールを引き受けられるように
+# なったためである（仕様 9.2 / docs/orchestrator.md）。この名前はコード側の口
+# （src/bedrock.ts の BEDROCK_SECRET_NAMES）として残っており、Lambda 側は実行ロールの
+# 一時資格情報をこの名前へ写して使う（src/orchestrator/handler.ts）。
+#
+# **したがってローカルでも、この 4 つだけでは /api/generate は通らない。** 既定の
+# startJob は「オーケストレータへ非同期で投げる」実装で、投げ先は本番の Lambda である
+# （Dev アカウントに Lambda は無い。確定20）。ローカルで生成の中身を確かめる手段は
+# test/orchestrator.test.ts と scripts/bundle-orchestrator.sh である。
 BEDROCK_AWS_REGION=
 BEDROCK_AWS_ACCESS_KEY_ID=
 BEDROCK_AWS_SECRET_ACCESS_KEY=

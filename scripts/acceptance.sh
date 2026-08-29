@@ -58,6 +58,23 @@ else
   echo "[acceptance] (go-version) skip: docker/isolated-build/Dockerfile not found"
 fi
 
+# 基盤のリトライが 0 と宣言されていること（#160 / 4.3）。
+#
+# **前寄りに置く。** grep 数本で終わり、npm test より 2 桁安い。しかも外すと
+# 1 回の送信から**最大 9 回・約 144 円・日次枠 9 個**が出る（5.2-7 の 3 試行との
+# 掛け算）。安い検査から落として反復を短くするのは、上の検査群と同じ考え方である。
+#
+# **判定はスクリプト側が持つ**（何を見て、なぜ見るのかは
+# scripts/check-orchestrator-retry.sh の冒頭）。宣言と実状態の一致は外部層
+# （scripts/acceptance-remote.sh）が見る。ここが見るのは宣言だけである。
+if [[ -f terraform/orchestrator.tf ]]; then
+  echo "[acceptance] (orchestrator) scripts/check-orchestrator-retry.sh"
+  bash scripts/check-orchestrator-retry.sh
+  ran_any=1
+else
+  echo "[acceptance] (orchestrator) skip: terraform/orchestrator.tf not found"
+fi
+
 if [[ -f package.json ]]; then
   command -v npm >/dev/null 2>&1 || { echo "[acceptance] (node) npm not found. install Node.js (npm) to run this acceptance check." >&2; exit 1; }
   # 依存の実体が宣言（package-lock.json）と一致していること（#99）。
@@ -81,6 +98,19 @@ if [[ -f package.json ]]; then
   npm test
   echo "[acceptance] (node) npm run typecheck"
   npm run --silent typecheck
+  # オーケストレータが Node へ束ねられること（#160）。
+  #
+  # **テストは workerd の上で走る。** 配備先は AWS Lambda の Node 22 で、そこには
+  # workerd の API が無い。`src/` を共有している以上、うっかり workerd 専用の口を
+  # 使った瞬間に**テストは緑のまま本番だけが落ちる。** 束ね直しは 20 ms 程度で、
+  # 束ねられないこと自体をここで捕まえる。
+  #
+  # **走らせて確かめてはいない**（それには資格情報が要る）。ここで見るのは
+  # 「1 ファイルの ESM になること」までである。
+  if [[ -f src/orchestrator/handler.ts ]]; then
+    echo "[acceptance] (orchestrator) scripts/bundle-orchestrator.sh"
+    bash scripts/bundle-orchestrator.sh >/dev/null
+  fi
   ran_any=1
 else
   echo "[acceptance] (node) skip: package.json not found"

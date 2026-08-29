@@ -31,7 +31,7 @@
  * | 重複配信で握れなかった | **飲む** | 正常な結果である（上記） |
  * | 生成が失敗し、`finish` は届いた | **飲む** | 利用者は作品ページで結果を見ている。8.3 の分類名も記録済み |
  * | `ledger` が届かなかった | **投げる** | **課金だけ出て日次枠が減らない**（4.3 / 確定25） |
- * | `finish` が届かなかった | **投げる** | 行が `running` のまま残り、作品ページが永久に「生成中」 |
+ * | `claim` / `finish` が届かなかった | **投げる** | 作品行が未確定のまま残り、作品ページが永久に「生成中」 |
  * | ペイロード・設定が壊れている | **投げる** | 契約違反。1 件も成功しないので早く見える必要がある |
  *
  * **結末を先に記録してから投げる。** 順序を逆にすると、DLQ には出るが利用者の画面は
@@ -106,10 +106,26 @@ export class OrchestratorPayloadRejected extends Error {
   }
 }
 
-/** 結末を記録できなかった。**行が `running` のまま残っている。** */
+/**
+ * 結末を記録できなかった。**作品行は未確定のまま残っている。**
+ *
+ * **どの状態で止まったかは断定できない。** この例外が表しているのは「結末が
+ * 記録されていない」ことだけで、止まった位置は**どのコールバックが届かなかったか**で
+ * 変わる。
+ *
+ * | 届かなかったもの | 作品行 |
+ * |---|---|
+ * | `claim` | `pending` のまま（LLM は 1 回も呼んでいない） |
+ * | `finish` | `running` のまま（生成は走り、結果を書けなかった） |
+ *
+ * **メッセージで状態を断定しない。** これは DLQ を見た人が最初に読む文字列で、
+ * **断定が外れると、最初に見る場所を間違える。**
+ */
 export class OutcomeNotRecorded extends Error {
   constructor(readonly gameId: string) {
-    super(`結末を記録できませんでした: ${gameId}（行が running のまま残っています）`);
+    super(
+      `結末を記録できませんでした: ${gameId}（コールバックが届かず、作品行は未確定のまま残っています。どの状態かは行を見ること）`,
+    );
     this.name = 'OutcomeNotRecorded';
   }
 }
@@ -190,6 +206,9 @@ export async function handleOrchestratorEvent(
     if (!client.outcomeRecorded) {
       // `runGenerationJob` の catch は必ず `failGame` を呼ぶ。それでも記録が残って
       // いないなら、**コールバックそのものが届いていない。**
+      //
+      // **`claim` が届かなかった場合もここへ来る**（その場合 LLM は 1 回も呼んで
+      // いない）。どちらなのかは例外の綴りでは区別しないので、断定しない。
       console.error(`[orchestrator] outcome not recorded: ${payload.gameId} (${describe(error)})`);
       throw new OutcomeNotRecorded(payload.gameId);
     }

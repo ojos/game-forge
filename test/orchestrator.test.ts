@@ -526,7 +526,7 @@ describe('失敗の記録と、運用へ出すもの（#160）', () => {
   });
 
   it('4xx は再送しない（同じ本文を送り直しても変わらない）', async () => {
-    const { payload } = await seedJob('no-retry-4xx');
+    const { gameId, payload } = await seedJob('no-retry-4xx');
     let attempts = 0;
     const outcome = await handleOrchestratorEvent(payload, lambdaEnv(), {
       fetch: async () => {
@@ -541,6 +541,11 @@ describe('失敗の記録と、運用へ出すもの（#160）', () => {
     // 最初の動作は `claim` で、そこで落ちる。**Bedrock は呼ばない。**
     expect(outcome).toBeInstanceOf(OutcomeNotRecorded);
     expect(attempts).toBe(1);
+    // **`claim` が届かなかったので、行は `pending` のままである。** 同じ例外が
+    // `finish` 不達（`running` のまま）でも投げられるので、**メッセージで状態を
+    // 断定してはいけない**（DLQ を見た人が最初に見る場所を間違える。#163）。
+    expect(await rowOf(gameId)).toMatchObject({ state: 'pending' });
+    expect(String(outcome)).not.toContain('running');
   });
 });
 

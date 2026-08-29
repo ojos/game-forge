@@ -241,11 +241,21 @@ Pages の配備だけでは片方しか新しくならない。
 
 | 例外 | 意味 | 作品行 | やること |
 |---|---|---|---|
-| `OutcomeNotRecorded` | `finish` が届かなかった | `running` のまま | Worker 側の障害を疑う。行は 3.7 の掃除で消える |
+| `OutcomeNotRecorded` | `claim` または `finish` が届かなかった | **未確定**（下記） | Worker 側の障害を疑う。行は 3.7 の掃除で消える |
 | `LedgerNotRecorded` | `ledger` が届かなかった | 閉じている | **課金は出ているのに日次枠が減っていない。** `generations` へ手で 1 行入れるか、超過を受け入れるかを決める |
 | `OrchestratorPayloadRejected` | ペイロードが契約に合わない | `pending` のまま | 版の食い違い。エッジと Lambda の配備のずれを疑う |
 | `OrchestratorEnvIncomplete` | 環境変数が足りない | `pending` のまま | `terraform apply` が通っているか |
 | （メッセージなし） | 有効期限切れ・スロットル | `pending` のまま | 予約同時実行数を見直す |
+
+**`OutcomeNotRecorded` は、止まった位置を教えません。** 表しているのは「結末が
+記録されていない」ことだけで、どの状態で止まったかは**どのコールバックが届かなかったか**で
+変わります。**例外のメッセージは状態を断定しません**（断定が外れると最初に見る場所を
+間違えるため）。**作品行を引いて確かめてください。**
+
+| 作品行 | 届かなかったもの | 費用 |
+|---|---|---|
+| `pending` | `claim` | **出ていない**（LLM を 1 回も呼んでいない） |
+| `running` | `finish` | **出ている**（台帳には残っている） |
 
 ```bash
 QUEUE="$(aws sqs get-queue-url --queue-name game-forge-orchestrator-failures --query QueueUrl --output text)"

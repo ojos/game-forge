@@ -8,9 +8,11 @@ import {
   createGenerateRoutes,
   defaultPipeline,
   notImplementedPipeline,
-  runGenerationPipeline,
+  runJobInline,
+  startGeneration,
 } from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
+import { workPagePath } from '../src/work-page.js';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
   findGenerationModel,
@@ -37,6 +39,7 @@ import { buildSystemPrompt } from '../src/system-prompt.js';
 import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, buildSessionCookie, signSession } from '../src/session.js';
+import { GeneratedSourceRejected } from '../src/source-inspection.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -159,16 +162,52 @@ function recordingPipeline(): { calls: string[]; pipeline: GenerationPipeline } 
         calls.push('build');
         return fakeBuildOutcome();
       },
-      createGame: async () => {
-        calls.push('createGame');
-        return { id: 'game-1' };
+      completeGame: async () => {
+        calls.push('completeGame');
+        return true;
       },
+      // **`startJob` は同期実行に固定する**（#150）。この一群のテストが見ているのは
+      // 3.3 の**順序**であって、ジョブをどこで走らせるかではない。既定
+      // （`defaultPipeline`）と同じ実装を借りるので、写しにもならない。
+      startJob: runJobInline,
     },
   };
 }
 
+/**
+ * この一群のテストが `startGeneration` へ渡す利用者を、実在する行として用意する。
+ *
+ * **#150 で必要になった。** 生成の経路はクォータ判定の直後に `games` 行を作るように
+ * なり（3.3-2.5）、`games.author_id` は `users(id)` への外部キーである。以前は
+ * 作品行がパイプラインの最後でしか作られず、しかもその段はテスト側の差し替えで
+ * 潰していたため、利用者が実在しなくても通っていた。
+ *
+ * **`insert or ignore` にしてある。** 同じ id を複数のテストが使うので、2 回目以降は
+ * 何もしない。
+ *
+ * @param ids 用意する利用者の id
+ */
+async function seedPipelineUsers(ids: readonly string[]): Promise<void> {
+  for (const id of ids) {
+    await env.DB.prepare(
+      `insert or ignore into users (id, google_sub, email, display_name, created_at, banned_at)
+       values (?, ?, ?, ?, 1, null)`,
+    )
+      .bind(id, `sub-${id}`, `${id}@example.com`, id)
+      .run();
+  }
+}
+
 beforeAll(async () => {
   await applySchema();
+  await seedPipelineUsers([
+    'user-1',
+    'user-retry-1',
+    'user-retry-2',
+    'user-retry-3',
+    'user-retry-4',
+    'user-retry-5',
+  ]);
 });
 
 describe('未認証リクエストを拒否する（#15 acceptance 1）', () => {
@@ -307,7 +346,7 @@ describe('オーケストレーションの骨組み（3.3 の順序）', () => 
   it('3.3 の順序どおりに段を呼ぶ', async () => {
     // 順序を先に固定しておく。後から段を実装するときに順序を議論し直さないため。
     const { calls, pipeline } = recordingPipeline();
-    const result = await runGenerationPipeline(
+    const result = await startGeneration(
       testEnv(),
       'user-1',
       { prompt: 'ゲーム' },
@@ -319,16 +358,18 @@ describe('オーケストレーションの骨組み（3.3 の順序）', () => 
       'recordCost',
       'inspectSource',
       'build',
-      'createGame',
+      'completeGame',
     ]);
-    expect(result.id).toBe('game-1');
+    expect(result.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+    );
   });
 
   it('費用の計上が検査とビルドより前にある', async () => {
     // 生成が返った時点で課金は済んでいる。計上をビルドの後ろへ動かすと、検査や
     // ビルドで落ちた分が台帳から漏れ、4.3 の「リトライ分も必ず計上する」が崩れる。
     const { calls, pipeline } = recordingPipeline();
-    await runGenerationPipeline(testEnv(), 'user-1', { prompt: 'ゲーム' }, pipeline).catch(
+    await startGeneration(testEnv(), 'user-1', { prompt: 'ゲーム' }, pipeline).catch(
       () => undefined,
     );
     expect(calls.indexOf('recordCost')).toBeLessThan(calls.indexOf('inspectSource'));
@@ -345,7 +386,7 @@ describe('オーケストレーションの骨組み（3.3 の順序）', () => 
       },
     };
     await expect(
-      runGenerationPipeline(testEnv(), 'user-1', { prompt: 'ゲーム' }, denied),
+      startGeneration(testEnv(), 'user-1', { prompt: 'ゲーム' }, denied),
     ).rejects.toBeInstanceOf(QuotaExceeded);
     expect(calls).toEqual(['checkQuota']);
   });
@@ -409,7 +450,7 @@ describe('オーケストレーションの骨組み（3.3 の順序）', () => 
     // 空の実装を「成功」にしない。成功にすると、段を実装し忘れたまま経路が 200 を
     // 返し、生成できていないのに作品ができたように見える。
     await expect(
-      runGenerationPipeline(testEnv(), 'user-1', { prompt: 'ゲーム' }, notImplementedPipeline),
+      startGeneration(testEnv(), 'user-1', { prompt: 'ゲーム' }, notImplementedPipeline),
     ).rejects.toBeInstanceOf(PipelineStepNotImplemented);
   });
 
@@ -424,13 +465,22 @@ describe('オーケストレーションの骨組み（3.3 の順序）', () => 
     expect(await response.json()).toEqual({ error: 'not implemented', step: 'checkQuota' });
   });
 
-  it('全段が揃えば 202 と作品 id を返す', async () => {
+  it('全段が揃えば 202 と作品 id・作品ページの URL を返す', async () => {
     const { pipeline } = recordingPipeline();
     const routes = createGenerateRoutes(pipeline);
     const cookie = await sessionCookie(await seedUser('complete'));
     const response = await post(routes, { prompt: 'ゲーム' }, cookie);
     expect(response.status).toBe(202);
-    expect(await response.json()).toEqual({ gameId: 'game-1' });
+
+    // **#150 で `url` が増えた。** id は段の戻り値ではなく、クォータ判定の直後に
+    // Worker が採番したものになったので、値ではなく形で見る。
+    const body = (await response.json()) as { gameId: string; url: string };
+    expect(body.gameId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+    );
+    // **URL は id から組み立てられている。** 2 つが食い違うと、返した URL が
+    // 別の作品を指す（あるいはどこも指さない）。
+    expect(body.url).toBe(workPagePath(body.gameId));
   });
 
   it('段が投げた例外を 500 にし、プロンプトを応答にもログにも漏らさない', async () => {
@@ -664,7 +714,7 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
     const { attempts, calls, pipeline } = failingBuildPipeline();
 
     await expect(
-      runGenerationPipeline(testEnv(), 'user-retry-1', { prompt: 'ゲーム' }, pipeline),
+      startGeneration(testEnv(), 'user-retry-1', { prompt: 'ゲーム' }, pipeline),
     ).rejects.toBeInstanceOf(BuildRetriesExhausted);
 
     // **回数を定数からも直値からも見る。** 定数だけで見ると、上限を 4 に変えた
@@ -674,7 +724,7 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
     expect(calls.filter((call) => call === 'generateSource').length).toBe(3);
     expect(calls.filter((call) => call === 'build').length).toBe(3);
     // 作品行は作られない。ビルドが通っていない以上、成果物は R2 に無い。
-    expect(calls).not.toContain('createGame');
+    expect(calls).not.toContain('completeGame');
   });
 
   it('クォータ判定はリトライの外側で 1 回だけ行う（4.3 / 3.3-2）', async () => {
@@ -682,7 +732,7 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
     // 判定位置が 2 か所になり、D1 の読み取りも試行のたびに増える（3.6）。
     // **枠の消費は台帳の行数で数える**ので、判定が 1 回でも消費は 3 回分である。
     const { calls, pipeline } = failingBuildPipeline();
-    await runGenerationPipeline(testEnv(), 'user-retry-2', { prompt: 'ゲーム' }, pipeline).catch(
+    await startGeneration(testEnv(), 'user-retry-2', { prompt: 'ゲーム' }, pipeline).catch(
       () => undefined,
     );
     expect(calls.filter((call) => call === 'checkQuota').length).toBe(1);
@@ -691,7 +741,7 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
 
   it('2 回目以降の生成に直前の診断とソースを渡す', async () => {
     const { attempts, pipeline } = failingBuildPipeline();
-    await runGenerationPipeline(testEnv(), 'user-retry-3', { prompt: 'ゲーム' }, pipeline).catch(
+    await startGeneration(testEnv(), 'user-retry-3', { prompt: 'ゲーム' }, pipeline).catch(
       () => undefined,
     );
 
@@ -705,16 +755,18 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
 
   it('通ったらそこで止まる（3 回まで回し切らない）', async () => {
     const { attempts, calls, pipeline } = failingBuildPipeline(1);
-    const result = await runGenerationPipeline(
+    const result = await startGeneration(
       testEnv(),
       'user-retry-4',
       { prompt: 'ゲーム' },
       pipeline,
     );
-    expect(result.id).toBe('game-1');
+    expect(result.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+    );
     expect(attempts.length).toBe(2);
     expect(calls.filter((call) => call === 'recordCost').length).toBe(2);
-    expect(calls).toContain('createGame');
+    expect(calls).toContain('completeGame');
   });
 
   it('各試行が台帳に 1 行ずつ記録され、succeeded が正しい（acceptance 2）', async () => {
@@ -724,7 +776,7 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
     const { pipeline } = failingBuildPipeline();
 
     await expect(
-      runGenerationPipeline(
+      startGeneration(
         testEnv(),
         userId,
         { prompt: 'ゲーム' },
@@ -753,7 +805,7 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
     const { pipeline } = failingBuildPipeline();
     let recorded = 0;
 
-    await runGenerationPipeline(
+    await startGeneration(
       testEnv(),
       userId,
       { prompt: 'ゲーム' },
@@ -783,7 +835,7 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
     for (const failure of failures) {
       const { attempts, pipeline } = failingBuildPipeline();
       await expect(
-        runGenerationPipeline(
+        startGeneration(
           testEnv(),
           'user-retry-5',
           { prompt: 'ゲーム' },
@@ -942,5 +994,89 @@ describe('経路', () => {
       testEnv(),
     );
     expect(response.status).toBe(405);
+  });
+});
+
+describe('失敗も必ず作品行へ書く（#150）', () => {
+  /**
+   * 作品行の生成状態を読む。
+   *
+   * @param userId 作者
+   * @returns いちばん新しい行の状態と分類名
+   */
+  async function latestStateOf(
+    userId: string,
+  ): Promise<{ state: string; error: string | null } | null> {
+    const row = await env.DB.prepare(
+      `select generation_state, generation_error from games
+        where author_id = ? order by rowid desc limit 1`,
+    )
+      .bind(userId)
+      .first<{ generation_state: string; generation_error: string | null }>();
+    return row === null ? null : { state: row.generation_state, error: row.generation_error };
+  }
+
+  it('ビルドを使い切った失敗は build-failed として残る', async () => {
+    const userId = await seedUser('fail-build');
+    const { pipeline } = recordingPipeline();
+    const failing: GenerationPipeline = {
+      ...pipeline,
+      build: async () => {
+        throw new BuildRejected('build', 'prog.go:1:1: syntax error');
+      },
+    };
+
+    await expect(
+      startGeneration(env, userId, { prompt: '失敗する作品' }, failing),
+    ).rejects.toBeInstanceOf(BuildRetriesExhausted);
+
+    // **`startGeneration` の catch が `internal` で上書きしないこと。**
+    // `failGame` は `pending` / `running` からしか遷移しないので、既に書かれた
+    // 分類名が残る。ここが `internal` になったら、利用者に出る説明が壊れる。
+    expect(await latestStateOf(userId)).toEqual({ state: 'failed', error: 'build-failed' });
+  });
+
+  it('許可外 import の拒否は source-rejected として残る', async () => {
+    const userId = await seedUser('fail-source');
+    const { pipeline } = recordingPipeline();
+    const rejecting: GenerationPipeline = {
+      ...pipeline,
+      inspectSource: () => {
+        throw new GeneratedSourceRejected('not-allowed', ['os/exec']);
+      },
+    };
+
+    await expect(
+      startGeneration(env, userId, { prompt: '許可外の作品' }, rejecting),
+    ).rejects.toBeInstanceOf(GeneratedSourceRejected);
+    expect(await latestStateOf(userId)).toEqual({ state: 'failed', error: 'source-rejected' });
+  });
+
+  it('クォータで断られたときは行を 1 つも作らない', async () => {
+    // **3.3 の順序が保たれていることの確認。** 判定は行の作成より前にある（4.3）。
+    const userId = await seedUser('fail-quota');
+    const { pipeline } = recordingPipeline();
+    const denied: GenerationPipeline = {
+      ...pipeline,
+      checkQuota: async () => ({ allowed: false, reason: DAILY_QUOTA_REASON }),
+    };
+
+    await expect(
+      startGeneration(env, userId, { prompt: 'ゲーム' }, denied),
+    ).rejects.toBeInstanceOf(QuotaExceeded);
+    expect(await latestStateOf(userId)).toBeNull();
+  });
+});
+
+describe('ジョブの起動点が既定へ結線されている（#150 / 3.3-2.6）', () => {
+  it('startJob が runJobInline である', () => {
+    // **同一性で見る**（`test/quota.test.ts` / `test/games.test.ts` と同じ形）。
+    // ここが差し替わったこと自体が、待ち時間の設計が変わった合図になる。
+    expect(defaultPipeline.startJob).toBe(runJobInline);
+  });
+
+  it('未実装の起動点は 501 として扱える（空実装を成功にしない）', async () => {
+    expect(() => notImplementedPipeline.startJob({} as Env, {} as never, notImplementedPipeline))
+      .toThrow(PipelineStepNotImplemented);
   });
 });

@@ -1,7 +1,12 @@
 import { SELF, env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { createAppRoutes } from '../src/app.js';
-import { dispatch, findDuplicateRoutes, json } from '../src/routes.js';
+import {
+  dispatch,
+  findDuplicateRoutes,
+  findMalformedPrefixRoutes,
+  json,
+} from '../src/routes.js';
 import type { Route } from '../src/routes.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
@@ -123,4 +128,101 @@ describe('経路表への差し替えが振る舞いを変えていない', () =
         expect(response.headers.get('allow'), path).toBe('GET, HEAD');
       }),
     ));
+});
+
+describe('前方一致の経路（#150）', () => {
+  /** 前方一致と完全一致を混ぜた経路表。 */
+  const prefixRoutes: readonly Route[] = [
+    { method: 'GET', path: '/exact', handler: () => json({ hit: 'exact' }) },
+    { method: 'GET', path: '/pre/', match: 'prefix', handler: () => json({ hit: 'pre' }) },
+    {
+      method: 'GET',
+      path: '/pre/deep/',
+      match: 'prefix',
+      handler: () => json({ hit: 'pre-deep' }),
+    },
+    { method: 'GET', path: '/pre/fixed', handler: () => json({ hit: 'fixed' }) },
+    { method: 'POST', path: '/pre/', match: 'prefix', handler: () => json({ hit: 'pre-post' }) },
+  ];
+
+  /**
+   * 経路を 1 つ引く。
+   *
+   * @param path パス
+   * @param method メソッド
+   * @returns レスポンス
+   */
+  async function hit(path: string, method = 'GET'): Promise<Response> {
+    return await dispatch(prefixRoutes, new Request(`${APP_ORIGIN}${path}`, { method }), env);
+  }
+
+  it('接頭辞に一致すれば、その先が何であってもハンドラへ届く', async () => {
+    expect(await (await hit('/pre/anything')).json()).toEqual({ hit: 'pre' });
+    expect(await (await hit('/pre/a/b/c')).json()).toEqual({ hit: 'pre' });
+  });
+
+  it('完全一致を前方一致より優先する', async () => {
+    // **これが無いと、`/pre/` の下に固定の経路を足せなくなる。** 前方一致が先に
+    // 当たると、より具体的な経路が永久に届かない。
+    expect(await (await hit('/pre/fixed')).json()).toEqual({ hit: 'fixed' });
+  });
+
+  it('いちばん長い接頭辞を採る（登録順に依存しない）', async () => {
+    // `/pre/` は `/pre/deep/x` にも一致するが、より具体的なほうが勝つ。
+    expect(await (await hit('/pre/deep/x')).json()).toEqual({ hit: 'pre-deep' });
+  });
+
+  it('接頭辞に一致しなければ 404 のままである', async () => {
+    // **`/pre` は `/pre/` に一致しない。** 接頭辞を `/` で終える規約が効いていること。
+    expect((await hit('/pre')).status).toBe(404);
+    expect((await hit('/prefix-like/x')).status).toBe(404);
+  });
+
+  it('前方一致でもメソッド違いは 405 になり、Allow が出る', async () => {
+    const response = await hit('/pre/anything', 'DELETE');
+    expect(response.status).toBe(405);
+    // 同じ接頭辞に登録されたメソッドだけが並ぶ（`/pre/deep/` の分は混ざらない）。
+    expect(response.headers.get('allow')).toBe('GET, HEAD, POST');
+  });
+
+  it('完全一致の経路は今までどおり動く（既定を変えていない）', async () => {
+    expect(await (await hit('/exact')).json()).toEqual({ hit: 'exact' });
+    expect((await hit('/exact/more')).status).toBe(404);
+  });
+
+  it('同じパスの完全一致と前方一致を重複と見なさない', () => {
+    // 併用は正当（`/pre/fixed` と `/pre/`）なので、重複検出で落としてはいけない。
+    expect(findDuplicateRoutes(prefixRoutes)).toEqual([]);
+  });
+
+  it('前方一致どうしの重複は今までどおり検出する', () => {
+    const duplicated: readonly Route[] = [
+      { method: 'GET', path: '/dup/', match: 'prefix', handler: () => json({}) },
+      { method: 'GET', path: '/dup/', match: 'prefix', handler: () => json({}) },
+    ];
+    expect(findDuplicateRoutes(duplicated)).toEqual(['GET /dup/*']);
+  });
+});
+
+describe('前方一致の接頭辞の綴り（#150）', () => {
+  it('アプリの経路表に規約違反の接頭辞が無い', () => {
+    // **`/` で終えないと、`/works` が `/worksmith` まで飲み込む。** 動いてしまうので、
+    // 綴りを間違えても気づけない（飲み込まれた側がまだ存在しないなら壊れて見えない）。
+    expect(findMalformedPrefixRoutes(createAppRoutes(env))).toEqual([]);
+  });
+
+  it('規約違反を実際に検出する（この検査が効いていることの確認）', () => {
+    const malformed: readonly Route[] = [
+      { method: 'GET', path: '/works', match: 'prefix', handler: () => json({}) },
+      { method: 'GET', path: 'works/', match: 'prefix', handler: () => json({}) },
+      { method: 'GET', path: '/', match: 'prefix', handler: () => json({}) },
+      // 完全一致は対象外（末尾の `/` を要求しない）。
+      { method: 'GET', path: '/fine', handler: () => json({}) },
+    ];
+    expect(findMalformedPrefixRoutes(malformed)).toEqual([
+      'GET /works',
+      'GET works/',
+      'GET /',
+    ]);
+  });
 });

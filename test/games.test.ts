@@ -9,16 +9,50 @@ import {
   MAX_TITLE_LENGTH,
   PREVIEW_KEY_BYTES,
   UNTITLED_TITLE,
-  createDraftGame,
+  claimGenerationJob,
+  completeGame,
+  createPendingGame,
+  UNBUILT_GO_VERSION,
   createPreviewKey,
   draftTitleFromPrompt,
+  failGame,
+  hashJobToken,
 } from '../src/games.js';
+import type { GenerateRequest } from '../src/generate.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
 beforeAll(async () => {
   await applySchema();
 });
+
+/**
+ * 作品行を 1 件、完成した状態まで進める。
+ *
+ * **#150 で 1 回の `insert` が 3 段に割れた**（作成 → 握る → 完成）。この一群の
+ * テストが見ているのは「完成した行と索引がどうなっているか」であって、その 3 段の
+ * 刻み方ではない。**刻み方そのものを見るテストは下に別に置いてある**ので、ここは
+ * 3 段をまとめた 1 つの呼び出しへ畳む。
+ *
+ * @param target 書き込み先（R2 の呼び出しを覗くために差し替えることがある）
+ * @param userId 作者
+ * @param request 生成リクエスト
+ * @param built ビルドの結果
+ * @param now 記録時刻（UNIX 秒）
+ * @returns 作った作品の id
+ */
+async function createDraftGame(
+  target: Env,
+  userId: string,
+  request: GenerateRequest,
+  built: BuildOutcome,
+  now?: number,
+): Promise<{ readonly id: string }> {
+  const pending = await createPendingGame(target, userId, request, now);
+  await claimGenerationJob(target, pending.id, await hashJobToken(pending.jobToken), now);
+  await completeGame(target, pending.id, built, now);
+  return { id: pending.id };
+}
 
 /** D1 から読んだ `games` の行（列名は SQL の綴りそのもの）。 */
 interface GameRow {
@@ -409,10 +443,10 @@ describe('仮のタイトル（5.1 の NOT NULL を満たす）', () => {
 });
 
 describe('既定のパイプラインへ結線されている（3.3-8）', () => {
-  it('createGame が createDraftGame である', () => {
+  it('completeGame が completeGame である', () => {
     // **同一性で見る**（`test/quota.test.ts` と同じ形）。外すと、成果物は R2 に入り
-    // 費用も計上されたのに作品が残らない状態へ戻る。
-    expect(defaultPipeline.createGame).toBe(createDraftGame);
+    // 費用も計上されたのに作品が `running` のまま残る状態へ戻る。
+    expect(defaultPipeline.completeGame).toBe(completeGame);
   });
 });
 
@@ -429,3 +463,198 @@ async function readBuildCacheOrThrow(sourceSha256: string): Promise<BuildCacheEn
   }
   return lookup.entry;
 }
+
+describe('生成の身元を先に作る（#150 / 3.3-2.5）', () => {
+  /**
+   * `games` の 1 行を、生成状態の列まで含めて読む。
+   *
+   * @param id 作品 id
+   * @returns 行
+   */
+  async function readLifecycle(id: string): Promise<{
+    status: string;
+    go_version: string;
+    source_key: string | null;
+    wasm_key: string | null;
+    preview_key: string | null;
+    generation_state: string;
+    generation_error: string | null;
+    job_token_hash: string | null;
+    generation_started_at: number | null;
+  }> {
+    const row = await env.DB.prepare(
+      `select status, go_version, source_key, wasm_key, preview_key,
+              generation_state, generation_error, job_token_hash, generation_started_at
+         from games where id = ?`,
+    )
+      .bind(id)
+      .first<{
+        status: string;
+        go_version: string;
+        source_key: string | null;
+        wasm_key: string | null;
+        preview_key: string | null;
+        generation_state: string;
+        generation_error: string | null;
+        job_token_hash: string | null;
+        generation_started_at: number | null;
+      }>();
+    if (row === null) {
+      throw new Error(`行がありません: ${id}`);
+    }
+    return row;
+  }
+
+  it('LLM を呼ぶ前に行が作られ、id が決まる', async () => {
+    const userId = await seedUser('pending');
+    const pending = await createPendingGame(env, userId, { prompt: '迷路ゲーム' });
+
+    expect(pending.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+    );
+    const row = await readLifecycle(pending.id);
+    // 5.4: 生成中も **`status` は `draft`** である（CHECK を作り直していない）。
+    expect(row.status).toBe(DRAFT_STATUS);
+    expect(row.generation_state).toBe('pending');
+    // 成果物はまだ 1 つも無い。
+    expect(row.source_key).toBeNull();
+    expect(row.wasm_key).toBeNull();
+    expect(row.go_version).toBe(UNBUILT_GO_VERSION);
+  });
+
+  it('生成中の行は preview_key を持たない（配信側の 500 へ化けさせないため）', async () => {
+    // **これが #150 の「生成中の行が配信側の 500 に化ける」問題への答えである。**
+    // `src/sandbox-delivery.ts` の `/p/` は `where preview_key = ?` で引くので、
+    // キーが無い行はあの経路から**原理的に引けない**。
+    const userId = await seedUser('nopreview');
+    const pending = await createPendingGame(env, userId, { prompt: 'ゲーム' });
+    expect((await readLifecycle(pending.id)).preview_key).toBeNull();
+  });
+
+  it('ジョブトークンは平文で保存されない', async () => {
+    const userId = await seedUser('token');
+    const pending = await createPendingGame(env, userId, { prompt: 'ゲーム' });
+    const row = await readLifecycle(pending.id);
+
+    expect(pending.jobToken).toMatch(/^[0-9a-f]{64}$/u);
+    expect(row.job_token_hash).not.toBe(pending.jobToken);
+    expect(row.job_token_hash).toBe(await hashJobToken(pending.jobToken));
+  });
+
+  it('ジョブを握れるのは 1 回だけである（重複実行が LLM を 2 回呼ばない）', async () => {
+    // **設定ではなくデータで担保する層である。** AWS Lambda の非同期呼び出しは
+    // 「関数がエラーを返さなくても同じイベントを複数回配信しうる」ので、
+    // `MaximumRetryAttempts=0` だけでは重複が止まらない。
+    const userId = await seedUser('claim-once');
+    const pending = await createPendingGame(env, userId, { prompt: 'ゲーム' });
+    const hash = await hashJobToken(pending.jobToken);
+
+    expect(await claimGenerationJob(env, pending.id, hash, 1_700_000_000)).toBe(true);
+    // 2 通目。**ここが false でなければ、16 円がもう一度出て日次枠も 1 つ減る。**
+    expect(await claimGenerationJob(env, pending.id, hash)).toBe(false);
+
+    const row = await readLifecycle(pending.id);
+    expect(row.generation_state).toBe('running');
+    expect(row.generation_started_at).toBe(1_700_000_000);
+  });
+
+  it('トークンが違えば握れない', async () => {
+    const userId = await seedUser('claim-token');
+    const pending = await createPendingGame(env, userId, { prompt: 'ゲーム' });
+    expect(await claimGenerationJob(env, pending.id, await hashJobToken('別のトークン'))).toBe(
+      false,
+    );
+    expect((await readLifecycle(pending.id)).generation_state).toBe('pending');
+  });
+
+  it('完成すると成果物と preview_key が同時に入り、トークンが捨てられる', async () => {
+    const userId = await seedUser('complete');
+    const built = fakeBuildOutcome();
+    const pending = await createPendingGame(env, userId, { prompt: 'ゲーム' });
+    await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken));
+
+    expect(await completeGame(env, pending.id, built)).toBe(true);
+
+    const row = await readLifecycle(pending.id);
+    expect(row.generation_state).toBe('ready');
+    expect(row.go_version).toBe(built.goVersion);
+    expect(row.source_key).toBe(built.keys.sourceKey);
+    expect(row.wasm_key).toBe(built.keys.wasmKey);
+    // **`preview_key` はここで初めて入る。** 成果物と同時であることが要点で、
+    // 先に入ると成果物の無い行が配信側から引ける。
+    expect(row.preview_key).toMatch(/^[0-9a-f]{32}$/u);
+    // 使い捨てである。
+    expect(row.job_token_hash).toBeNull();
+    // 5.4: 公開はしない。
+    expect(row.status).toBe(DRAFT_STATUS);
+  });
+
+  it('握られていない行は完成させられない', async () => {
+    const userId = await seedUser('complete-unclaimed');
+    const pending = await createPendingGame(env, userId, { prompt: 'ゲーム' });
+    // `pending` のまま completeGame を呼んでも通らない。
+    expect(await completeGame(env, pending.id, fakeBuildOutcome())).toBe(false);
+    expect((await readLifecycle(pending.id)).preview_key).toBeNull();
+  });
+
+  it('失敗は分類名とともに記録され、行は残る（3.7 の掃除に乗せる）', async () => {
+    const userId = await seedUser('failed');
+    const pending = await createPendingGame(env, userId, { prompt: 'ゲーム' });
+    await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken));
+
+    expect(await failGame(env, pending.id, 'build-failed')).toBe(true);
+
+    const row = await readLifecycle(pending.id);
+    expect(row.generation_state).toBe('failed');
+    expect(row.generation_error).toBe('build-failed');
+    expect(row.job_token_hash).toBeNull();
+    // **`status` は `draft` のまま。** 失敗用の掃除の規約を作らず、3.7 の
+    // 「未公開のまま 14 日で自動削除」にそのまま乗せる。
+    expect(row.status).toBe(DRAFT_STATUS);
+    // 成果物は無いので、配信側からは引けないままである。
+    expect(row.preview_key).toBeNull();
+  });
+
+  it('完了した行は失敗にできない（後から状態を壊さない）', async () => {
+    const userId = await seedUser('failed-after');
+    const pending = await createPendingGame(env, userId, { prompt: 'ゲーム' });
+    await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken));
+    await completeGame(env, pending.id, fakeBuildOutcome());
+
+    expect(await failGame(env, pending.id, 'internal')).toBe(false);
+    expect((await readLifecycle(pending.id)).generation_state).toBe('ready');
+  });
+});
+
+describe('0007 のスキーマ（#150）', () => {
+  it('既存の行は ready として埋め戻される', async () => {
+    // **0007 が NOT NULL + DEFAULT を選んだ根拠がここである。** 旧 `createDraftGame` は
+    // 3.3 の最後の段だったので、行があること自体が「成果物が揃っている」ことを
+    // 意味していた。既定値 `ready` は事実として正しい。
+    const userId = await seedUser('legacy');
+    const id = 'legacy-game-0007';
+    await env.DB.prepare(
+      `insert into games (id, author_id, status, title, go_version, created_at)
+       values (?, ?, 'draft', '旧来の行', 'go1.26.7', 1)`,
+    )
+      .bind(id, userId)
+      .run();
+
+    const row = await env.DB.prepare('select generation_state from games where id = ?')
+      .bind(id)
+      .first<{ generation_state: string }>();
+    expect(row?.generation_state).toBe('ready');
+  });
+
+  it('知らない状態は CHECK が拒否する', async () => {
+    const userId = await seedUser('check');
+    await expect(
+      env.DB.prepare(
+        `insert into games (id, author_id, status, title, go_version, created_at, generation_state)
+         values ('bogus-state-0007', ?, 'draft', 'x', 'go1.26.7', 1, 'generating')`,
+      )
+        .bind(userId)
+        .run(),
+    ).rejects.toThrow();
+  });
+});

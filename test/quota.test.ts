@@ -22,7 +22,8 @@ import { jstMonthRange, recordGeneration } from '../src/cost-ledger.js';
 import {
   defaultPipeline,
   notImplementedPipeline,
-  runGenerationPipeline,
+  runJobInline,
+  startGeneration,
   QuotaExceeded,
 } from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
@@ -647,6 +648,7 @@ describe('3.3-2 への結線（acceptance 1）', () => {
       called,
       pipeline: {
         ...notImplementedPipeline,
+        startJob: runJobInline,
         checkQuota: defaultPipeline.checkQuota,
         generateSource: async () => {
           called.generateSource = true;
@@ -656,7 +658,7 @@ describe('3.3-2 への結線（acceptance 1）', () => {
     };
   }
 
-  // **時計を止める。** `runGenerationPipeline` は `checkQuota(env, userId)` を 2 引数で
+  // **時計を止める。** `startGeneration` は `checkQuota(env, userId)` を 2 引数で
   // 呼ぶため、判定時刻は既定値（現在時刻）になる。行を「現在時刻」で置くと、**挿入と
   // 判定の間に JST の日または月の境界を跨いだ瞬間に、置いた行が集計の外へ出る**
   // （#122 のレビュー指摘 2 / 3）。翌日・翌月にも行を置いて塞ぐこともできるが、
@@ -682,7 +684,7 @@ describe('3.3-2 への結線（acceptance 1）', () => {
     expect(Math.floor(Date.now() / 1000)).toBe(AT);
     await seedLedgerRow(userId, AT, MONTHLY_COST_LIMIT_JPY);
     await expect(
-      runGenerationPipeline(env, userId, { prompt: 'ゲーム' }, pipeline),
+      startGeneration(env, userId, { prompt: 'ゲーム' }, pipeline),
     ).rejects.toBeInstanceOf(QuotaExceeded);
     expect(called.generateSource).toBe(false);
   });
@@ -693,7 +695,7 @@ describe('3.3-2 への結線（acceptance 1）', () => {
     const { called, pipeline } = pipelineWatchingGeneration();
 
     await expect(
-      runGenerationPipeline(env, userId, { prompt: 'ゲーム' }, pipeline),
+      startGeneration(env, userId, { prompt: 'ゲーム' }, pipeline),
     ).rejects.toBeInstanceOf(QuotaExceeded);
     expect(called.generateSource).toBe(false);
   });
@@ -704,7 +706,7 @@ describe('3.3-2 への結線（acceptance 1）', () => {
     const userId = await seedUser('wired-allowed');
     const { called, pipeline } = pipelineWatchingGeneration();
     await expect(
-      runGenerationPipeline(env, userId, { prompt: 'ゲーム' }, pipeline),
+      startGeneration(env, userId, { prompt: 'ゲーム' }, pipeline),
     ).rejects.not.toBeInstanceOf(QuotaExceeded);
     expect(called.generateSource).toBe(true);
   });

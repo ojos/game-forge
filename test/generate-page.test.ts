@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import {
   BUILD_STOPPED_NOTICE,
@@ -838,6 +838,30 @@ describe('残枠と停止状態の常時表示（acceptance 1 / 4.4 / #24）', (
 });
 
 describe('枠の状態が画面へ出る（4.4 / #24 / 経路まで通す）', () => {
+  /** 基準時刻。2020-05-15 12:00 JST（= 03:00 UTC）。**JST の日境界から遠い時刻**を選ぶ。 */
+  const AT_MS = Date.UTC(2020, 4, 15, 3);
+
+  // **時計を止める**（`test/quota.test.ts` と同じ形）。この describe は台帳へ行を置いて
+  // から画面を開き、画面側は判定時刻を既定値（現在時刻）で取る。行を「現在時刻」で
+  // 置くと、**挿入と判定の間に JST の日または月の境界を跨いだ瞬間に、置いた行が集計の
+  // 外へ出る**（枠の集計は `jstDayRange` で JST の 0 時に切られる。確定25）。1 日の
+  // うち数分だけ落ちるテストは、落ちたときに自分の変更を疑わせる。**跨いでも当たる
+  // ように行を増やすのではなく、時刻そのものを固定して跨ぐ経路を消す。**
+  //
+  // セッション cookie の失効時刻も同じ時計から作られる（`sessionCookie`）。署名の
+  // 検証も止めた時計を見るため、固定しても期限切れにはならない。
+  //
+  // `toFake` を `Date` だけに絞るのは、`setTimeout` まで差し替えると D1 の I/O が
+  // 進まなくなるためである。
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(AT_MS);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('残り枠が本日の消費ぶんだけ減る', async () => {
     const user = await seedUser('quota-remaining');
     expect(await (await openPage(await sessionCookie(user))).text()).toContain(

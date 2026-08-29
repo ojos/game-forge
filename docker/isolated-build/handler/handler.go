@@ -60,10 +60,50 @@ type Result struct {
 	// nil になり、代わりに `Compressed.Data` が入る。**両方が空になることは無い。**
 	Storage *StoredArtifacts `json:"storage,omitempty"`
 
-	// Timings は 3.8 のタイムアウト（10 秒）に対する内訳。**どの段が食っているかを
+	// Timings は 3.8 のタイムアウトに対する内訳。**どの段が食っているかを
 	// 呼び出し側とログの両方から読めるようにする。** brotli の品質を変える判断は
-	// この値でしか行えない。
+	// この値でしか行えない。**秒数はここへ書かない**（#165。値の正本は
+	// terraform/build-function.tf の build_function_timeout_seconds で、
+	// 実際に効いた期限は describeBudget が ctx から導く）。
 	Timings Timings `json:"timings"`
+}
+
+// describeBudget は、時間切れのログに出す「経過時間と、実際に効いた期限」を組み立てる。
+//
+// # 秒数を書き写さない（#165）
+//
+// v1.x のこの文言は「3.8 のタイムアウトは 10 秒」と名乗っていた。**実際の宣言は
+// 30 秒だった。** 29,528 ms 経過して「上限は 10 秒」と言うので、ログを読んだ人は
+// 「なぜ 10 秒を 3 倍も超えて動いていたのか」を考えることになる。10 秒は起票時の
+// 前提で、確定24 の実測を経て 25 秒 → 30 秒 → 45 秒と改まり、**文言だけが取り残された。**
+//
+// # 導出元は ctx の deadline である
+//
+// **Lambda は関数のタイムアウトを環境変数で渡さない**（`AWS_LAMBDA_FUNCTION_MEMORY_SIZE`
+// に相当するものが無い）。渡ってくるのは呼び出しごとの `Lambda-Runtime-Deadline-Ms`
+// だけで、main.go がそこから deadlineMargin を引いて ctx を作る。
+//
+// したがってここが名乗れるのは**「この呼び出しに与えられた時間」**であって、宣言の値
+// そのものではない。**deadlineMargin を足し戻して宣言へ寄せることはしない**——
+// 打ち切ったのはこちらの内部期限のほうであり、ログが説明すべきなのはそちらである。
+// **宣言と突き合わせたい読み手のために、正本の在り処だけを添える。**
+//
+// oneshot（scripts/check-isolated-build.sh・手元の確認）には deadline が無い。
+// そのときは**期限の側を名乗らない**（無い値を 0 と書くと「0 ms で打ち切られた」と読める）。
+//
+// @param ctx 打ち切りを持つコンテキスト
+// @param started ハンドラが処理を始めた時刻
+// @returns ログと呼び出し側へ返す説明
+func describeBudget(ctx context.Context, started time.Time) string {
+	elapsed := time.Since(started).Milliseconds()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return fmt.Sprintf("%d ms 経過。この呼び出しに期限は設定されていません", elapsed)
+	}
+	return fmt.Sprintf(
+		"%d ms 経過。この呼び出しの内部期限は %d ms（Lambda の残り時間から %s 手前。"+
+			"宣言の正本は terraform/build-function.tf の build_function_timeout_seconds）",
+		elapsed, deadline.Sub(started).Milliseconds(), deadlineMargin)
 }
 
 // Timings は各段の所要時間（ミリ秒）。
@@ -212,8 +252,8 @@ func (h *Handler) Handle(ctx context.Context, ev Event) (*Result, error) {
 		// 「このコードはコンパイルできない」と読み、3.8 の degrade 判定
 		// （ビルド依頼の失敗で発火する）が沈黙する。関数の障害として返す。
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("ビルドが時間内に終わりませんでした（%d ms 経過。3.8 のタイムアウトは 10 秒）: %w",
-				time.Since(started).Milliseconds(), ctx.Err())
+			return nil, fmt.Errorf("ビルドが時間内に終わりませんでした（%s）: %w",
+				describeBudget(ctx, started), ctx.Err())
 		}
 		res.OK = false
 		res.Stage = "build"

@@ -106,7 +106,7 @@ func compileWasm(ctx context.Context, workDir, outPath string) ([]byte, error) {
 // # 品質は宣言から受け取る
 //
 // 既定値をコードへ焼き込まない。**どの品質で配っているかは Terraform の宣言が持つ**
-// （terraform/build-function.tf の BROTLI_QUALITY）。3.8 の 10 秒に収まるかは品質で
+// （terraform/build-function.tf の BROTLI_QUALITY）。3.8 のタイムアウトに収まるかは品質で
 // 決まるため、タイムアウトと同じ場所で読めるようにしてある。
 func compressBrotli(ctx context.Context, quality int, srcPath, dstPath string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "brotli",

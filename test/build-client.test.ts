@@ -458,7 +458,9 @@ describe('失敗の区別（#20 / 3.8 の degrade 判定）', () => {
       okResponse(
         {
           errorMessage:
-            'ビルドが時間内に終わりませんでした（29500 ms 経過。3.8 のタイムアウトは 10 秒）: context deadline exceeded',
+            'ビルドが時間内に終わりませんでした（29500 ms 経過。この呼び出しの内部期限は ' +
+            '44500 ms（Lambda の残り時間から 500ms 手前。宣言の正本は ' +
+            'terraform/build-function.tf の build_function_timeout_seconds））: context deadline exceeded',
           errorType: 'BuildFunctionError',
         },
         { 'x-amz-function-error': 'Unhandled' },

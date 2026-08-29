@@ -75,6 +75,23 @@ else
   echo "[acceptance] (orchestrator) skip: terraform/orchestrator.tf not found"
 fi
 
+# 検査が読む terraform output が、宣言側に実在すること（#160 / shared-ai-rules 12 章）。
+#
+# **前寄りに置く。** grep 数本で終わる。外すと、宣言側で output を改名・削除したときに
+# 外部層の検査が**空のまま比較して緑になる**（実際に #160 で起きた。停止対象が IAM
+# ユーザーからロールへ移ったとき、層 2 の検査は消えた output と消えた環境変数を
+# 突き合わせて緑だった）。**確かめていない検査は、赤より悪い。**
+#
+# **判定はスクリプト側が持つ**（scripts/check-tf-output-refs.sh の冒頭）。
+# ネットワークも AWS の認証も要らない（宣言のテキストどうしの照合）。
+if [[ -d terraform ]]; then
+  echo "[acceptance] (tf-output-refs) scripts/check-tf-output-refs.sh"
+  bash scripts/check-tf-output-refs.sh
+  ran_any=1
+else
+  echo "[acceptance] (tf-output-refs) skip: terraform/ not found"
+fi
+
 # aws CLI の呼び出しが、引数の形として CLI の契約に合っていること（#160）。
 #
 # **前寄りに置く。** 1 秒強で終わり、npm test より 1 桁安い。しかも外すと

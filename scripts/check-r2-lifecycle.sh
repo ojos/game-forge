@@ -46,8 +46,15 @@ fail() {
   exit 1
 }
 
-command -v jq >/dev/null 2>&1 || fail "jq がありません。"
-command -v terraform >/dev/null 2>&1 || fail "terraform がありません。"
+# **使う道具はすべて確認する。** 一部だけ確認すると、確認していない道具が無いときに
+# 「API が返さない」「JSON を解釈できない」として報告され、**前提の不成立と実際の乖離が
+# 読み分けられなくなる**（scripts/acceptance-remote.sh の冒頭がまさにその読み分けを
+# 求めている）。curl と grep はどちらもこの検査の判定に直接使っている。
+for tool in jq terraform curl grep; do
+  command -v "$tool" >/dev/null 2>&1 \
+    || fail "${tool} がありません。" \
+            "  前提の不成立であって、宣言と外部状態の乖離ではありません。"
+done
 
 if [[ -z "${CLOUDFLARE_API_TOKEN:-}" || -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
   if [[ -f "$HERE/load-project-env.sh" ]]; then

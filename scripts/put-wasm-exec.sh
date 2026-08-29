@@ -42,8 +42,14 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)  SCOPE="--local";  shift ;;
     --remote) SCOPE="--remote"; shift ;;
-    --bucket) BUCKET="${2:-}";  shift 2 ;;
-    --image)  IMAGE_OVERRIDE="${2:-}"; shift 2 ;;
+    --bucket)
+      # **値の有無を先に見る。** 見ないと値が無いときに `shift 2` 自体が失敗し、
+      # set -e が「行番号だけの失敗」で落とす。何を直せばよいか読めない赤にしない。
+      [[ $# -ge 2 && -n "$2" ]] || { echo "[put-wasm-exec] --bucket には値が要ります。" >&2; exit 1; }
+      BUCKET="$2"; shift 2 ;;
+    --image)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "[put-wasm-exec] --image には値が要ります。" >&2; exit 1; }
+      IMAGE_OVERRIDE="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,25p' "${BASH_SOURCE[0]}" >&2
       exit 0 ;;
@@ -106,8 +112,54 @@ command -v docker >/dev/null 2>&1 || {
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/put-wasm-exec.XXXXXX")"
 CONTAINER=""
+
+##
+# 作りかけのコンテナを確実に片付け、CONTAINER を空へ戻す。
+#
+# **成功経路だけでなく、あらゆる失敗経路から呼ぶ。** `docker run --name` は途中で
+# 失敗しても**停止したコンテナを残す**。消さずに次の版へ進むと、次の版が CONTAINER を
+# 上書きするため、**残った 1 個は EXIT の trap でも消せなくなる**（trap が知っているのは
+# 最後の 1 個だけである）。**版を 2 つ以上置く設計なので、1 版目の失敗で必ず踏む。**
+#
+# 消せなかったこと自体では落とさない（後始末の失敗で、済んだ配置を失敗にしない）。
+##
+discard_container() {
+  if [[ -n "$CONTAINER" ]]; then
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    CONTAINER=""
+  fi
+}
+
+##
+# ファイルの sha256 を返す。**計算できなければ空を返す。**
+#
+# 記録のためだけに出している値なので、道具が無いことを理由に「置けたのに落ちる」形に
+# しない。`sha256sum` は GNU coreutils で、macOS には無い（あちらは `shasum`）。
+# この手順書は devcontainer の外からも叩かれる（docs/pages-deploy.md に貼ってある）。
+#
+# 引数: $1 = ファイル
+##
+file_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum < "$1" | cut -d" " -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 < "$1" | cut -d" " -f1
+  fi
+}
+
+##
+# ファイルのバイト数を返す。
+#
+# `wc -c` は実装によって前後に空白を付ける（macOS は付ける）。**表示に混ぜない。**
+#
+# 引数: $1 = ファイル
+##
+file_bytes() {
+  wc -c < "$1" | tr -d "[:space:]"
+}
+
 cleanup() {
-  [[ -n "$CONTAINER" ]] && docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  discard_container
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -140,7 +192,9 @@ extract_wasm_exec() {
   # --image で明示すれば隔離ビルドイメージからも取り出せる。
   image="${IMAGE_OVERRIDE:-golang:${version#go}}"
 
-  CONTAINER="put-wasm-exec-$$-$(date +%s%N)"
+  # **`date +%s%N` は使わない。** ナノ秒は GNU date の拡張で、BSD（macOS）の date には
+  # 無い。プロセス id と $RANDOM と秒で十分に一意である。
+  CONTAINER="put-wasm-exec-$$-${RANDOM}-$(date +%s)"
   if ! docker run --name "$CONTAINER" --entrypoint /bin/sh "$image" -c '
       set -eu
       root="$(go env GOROOT)"
@@ -160,13 +214,22 @@ extract_wasm_exec() {
       cp "$src" /tmp/wasm_exec.js
     ' >/dev/null; then
     echo "[put-wasm-exec] ${image} から取り出せません。" >&2
+    # **失敗しても名前付きコンテナは残る。** ここで消さないと、次の版が CONTAINER を
+    # 上書きした時点で trap からも手が届かなくなる。
+    discard_container
     return 1
   fi
 
-  docker cp "$CONTAINER:/tmp/goversion" "$dest/goversion" >/dev/null
-  docker cp "$CONTAINER:/tmp/wasm_exec.js" "$dest/wasm_exec.js" >/dev/null
-  docker rm -f "$CONTAINER" >/dev/null
-  CONTAINER=""
+  # **docker cp の成否を見る。** この関数は `if ! extract_wasm_exec` の中から呼ばれる
+  # ため、**関数の中では set -e が効かない**（条件文脈の中の失敗は終了させない）。
+  # 見ないまま先へ進むと、存在しないファイルを読んで「版が違う」という無関係な診断が出る。
+  if ! docker cp "$CONTAINER:/tmp/goversion" "$dest/goversion" >/dev/null 2>&1 \
+     || ! docker cp "$CONTAINER:/tmp/wasm_exec.js" "$dest/wasm_exec.js" >/dev/null 2>&1; then
+    echo "[put-wasm-exec] コンテナから取り出せません（${image}）。" >&2
+    discard_container
+    return 1
+  fi
+  discard_container
 
   local reported
   reported="$(tr -d '[:space:]' < "$dest/goversion")"
@@ -221,7 +284,12 @@ for version in "${VERSIONS[@]}"; do
     continue
   fi
 
-  echo "[put-wasm-exec] OK ${BUCKET}/${key} ($(wc -c < "$dest/wasm_exec.js") bytes, sha256=$(sha256sum < "$dest/wasm_exec.js" | cut -c1-16)…)"
+  sha="$(file_sha256 "$dest/wasm_exec.js")"
+  if [[ -n "$sha" ]]; then
+    echo "[put-wasm-exec] OK ${BUCKET}/${key} ($(file_bytes "$dest/wasm_exec.js") bytes, sha256=${sha:0:16}…)"
+  else
+    echo "[put-wasm-exec] OK ${BUCKET}/${key} ($(file_bytes "$dest/wasm_exec.js") bytes)"
+  fi
 done
 
 if [[ "$failed" -gt 0 ]]; then

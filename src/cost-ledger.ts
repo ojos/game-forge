@@ -274,6 +274,37 @@ export interface LedgerRecord {
   readonly cost: CostBreakdown;
   /** `generations.succeeded` に入った値。 */
   readonly succeeded: boolean;
+  /**
+   * 実際に行が増えたか（#150）。
+   *
+   * **冪等な書き込み（{@link RecordGenerationOptions.id} を渡した場合）でだけ
+   * `false` になりうる。** 同じ id が既にある＝再送を受け取ったという意味で、
+   * **異常ではない。** 通常の呼び出しでは id を新しく引くので常に `true` になる。
+   */
+  readonly written: boolean;
+}
+
+/** {@link recordGeneration} の任意の指定（#150）。 */
+export interface RecordGenerationOptions {
+  /**
+   * `generations.id` を呼び出し側が決める（冪等な再送のため）。
+   *
+   * **生成の本体が Worker の外へ出ると、台帳の書き込みはコールバックになる**（#150）。
+   * **LLM を呼んだあとにそのコールバックが落ち続けると、課金は出ているのに
+   * `generations` の行が無い状態になり**、4.3 の「リトライ分も必ず計上する」が崩れて
+   * 日次枠も減らない（確定25 は枠を行数で数える）。利用者には得だが、**費用ガードの
+   * 前提が壊れる。**
+   *
+   * **コールバックの再送は LLM を呼ばないので費用ゼロである。** したがって呼ぶ側は
+   * 届くまで再送してよく、こちら側は何度受け取っても 1 行でなければならない。
+   * 呼ぶ側が LLM 呼び出しごとに 1 つ採番した id をここへ渡すと、2 通目以降は
+   * `on conflict(id) do nothing` で落ちる。
+   *
+   * **`insert or ignore` にしない。** あれは主キー以外の制約違反（`user_id` の
+   * 外部キーなど）まで黙って飲み込む。**衝突させたいのは id だけ**なので、
+   * 競合の対象を明示する upsert の形にする。
+   */
+  readonly id?: string;
 }
 
 /**
@@ -296,6 +327,7 @@ export interface LedgerRecord {
  * @param env バインディングと環境変数
  * @param entry 記録する内容
  * @param now 記録時刻（UNIX 秒。既定は現在時刻）
+ * @param options 冪等な書き込みのための指定（#150）
  * @returns 書いた行の id と円換算の内訳
  */
 export async function recordGeneration(
@@ -306,10 +338,13 @@ export async function recordGeneration(
     readonly generated: GenerationResult;
   },
   now: number = Math.floor(Date.now() / 1000),
+  options: RecordGenerationOptions = {},
 ): Promise<LedgerRecord> {
   const cost = costOfGeneration(entry.generated);
   const succeeded = isUsableGeneration(entry.generated);
-  const id = crypto.randomUUID();
+  // 呼び出し側が id を決めていれば、それを使って再送を吸収する（{@link RecordGenerationOptions}）。
+  const id = options.id ?? crypto.randomUUID();
+  const conflictClause = options.id === undefined ? '' : '\n     on conflict(id) do nothing';
 
   for (const anomaly of cost.anomalies) {
     // **プロンプトも生成物も出さない。** 出してよいのはモデルと次元の名前だけである
@@ -317,12 +352,12 @@ export async function recordGeneration(
     console.error(`[cost-ledger] ${anomaly.kind}: ${JSON.stringify(anomaly)}`);
   }
 
-  await env.DB.prepare(
+  const result = await env.DB.prepare(
     `insert into generations
        (id, game_id, user_id, prompt, model,
         input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
         cost_jpy, succeeded, created_at)
-     values (?, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     values (?, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)${conflictClause}`,
   )
     .bind(
       id,
@@ -346,7 +381,7 @@ export async function recordGeneration(
     )
     .run();
 
-  return { id, cost, succeeded };
+  return { id, cost, succeeded, written: (result.meta.changes ?? 0) > 0 };
 }
 
 /**

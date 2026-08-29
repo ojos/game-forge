@@ -107,6 +107,39 @@ const GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
  */
 export const STALE_AFTER_SECONDS = 900;
 
+/**
+ * 生成が Worker の中で同期に走っているか（#150）。**暫定の値である。**
+ *
+ * # なぜ画面がこれを知る必要があるのか
+ *
+ * #150 の狙いは「タブを閉じてよくすること」だが、**この PR ではまだそうなっていない。**
+ * `GenerationPipeline.startJob` の既定は `runJobInline`（Worker の中で同期に走らせる）
+ * なので、**いまタブを閉じると生成は死ぬ。** 恒久的な URL と作品行は先に存在するように
+ * なったが、待ち時間そのものは 1 秒も縮んでいない。
+ *
+ * したがって画面は「開いたままにしてください」と言わなければならない。
+ * **できていないことを、できているように書かない**（`src/home.ts` と同じ方針）。
+ *
+ * # 差し替えたときに、この 1 行を変え忘れないようにする
+ *
+ * オーケストレータ Lambda（別 issue）が入って `startJob` が非同期実装へ差し替わると、
+ * **この定数は `false` にしなければならない。** 忘れると画面が嘘をつく——今度は
+ * 「開いたままにしてください」という不要な制約として。
+ *
+ * **呼びかけでは守らない**（shared-ai-rules 12 章）。`test/work-page.test.ts` が
+ *
+ *     (defaultPipeline.startJob === runJobInline) === GENERATION_IS_SYNCHRONOUS
+ *
+ * を照合しており、**段を差し替えた瞬間にこの定数の更新を要求して落ちる。**
+ * import で結ばずにテストで結ぶのは、`src/generate.ts` がこのモジュールから
+ * `workPagePath` を取っているため、逆向きの import が循環参照になるからである。
+ *
+ * 型を `boolean` と書いているのはリテラル型への絞り込みを避けるためで、
+ * `false` にしたときに「常に真」の比較として警告されないようにしている。
+ */
+export const GENERATION_IS_SYNCHRONOUS: boolean = true;
+
+
 /** 表示に使う `games` の 1 行。 */
 interface WorkRow {
   author_id: string;
@@ -279,7 +312,15 @@ ${title}
 function sectionFor(view: WorkPageView): string {
   switch (view.state) {
     case 'working':
-      return `<h2>生成中です</h2>
+      // **文言は `GENERATION_IS_SYNCHRONOUS` が決める。** いまは同期実行なので
+      // 「開いたままにしてください」が正しい。差し替えの手順はあの定数の注記にある。
+      return GENERATION_IS_SYNCHRONOUS
+        ? `<h2>生成中です</h2>
+<p><strong>生成が終わるまで、このタブを開いたままにしてください。</strong>
+   いま閉じると生成は中断します。</p>
+<p>通常 1〜2 分かかります。この画面は自動で更新されます。</p>
+<p>この URL は作品の恒久的な URL です。控えておけば、あとから状態を確認できます。</p>`
+        : `<h2>生成中です</h2>
 <p><strong>このページは開いたままにしなくて構いません。</strong>
    タブを閉じても生成は進みます。この URL をもう一度開けば、続きから状態が読めます。</p>
 <p>通常 1〜2 分かかります。この画面は自動で更新されます。</p>`;

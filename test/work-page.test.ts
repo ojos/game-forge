@@ -1,7 +1,12 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { dispatch } from '../src/routes.js';
-import { WORK_PAGE_PREFIX, workPagePath, workPageRoutes } from '../src/work-page.js';
+import {
+  GENERATION_IS_SYNCHRONOUS,
+  WORK_PAGE_PREFIX,
+  workPagePath,
+  workPageRoutes,
+} from '../src/work-page.js';
 import {
   claimGenerationJob,
   completeGame,
@@ -9,7 +14,7 @@ import {
   failGame,
   hashJobToken,
 } from '../src/games.js';
-import { defaultPipeline, startGeneration } from '../src/generate.js';
+import { defaultPipeline, runJobInline, startGeneration } from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
@@ -121,8 +126,10 @@ describe('状態は誰でも読め、詳細は本人だけが読める（#150 �
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(body).toContain('生成中です');
-    // **タブを閉じてよいことを言う。** #150 の狙いはここにある。
-    expect(body).toContain('タブを閉じても生成は進みます');
+    // **いまは同期実行なので「開いたままにしてください」が正しい**（#150）。
+    // できていないことを、できているように書かない。
+    expect(body).toContain('このタブを開いたままにしてください');
+    expect(body).not.toContain('タブを閉じても生成は進みます');
   });
 
   it('仮タイトル（プロンプト由来）は本人にしか出さない', async () => {
@@ -233,7 +240,7 @@ describe('#150 の acceptance: 接続を切っても、あとで URL を開け�
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
     );
 
-    // ここで利用者はタブを閉じた。**別のタブ（cookie 無し）で開いても状態が読める。**
+    // **別のタブ（cookie 無し）で開いても状態が読める。**
     const whileWorking = await open(workPagePath(started.id));
     expect(whileWorking.status).toBe(200);
     expect(await whileWorking.text()).toContain('生成中です');
@@ -282,5 +289,31 @@ describe('#150 の acceptance: 接続を切っても、あとで URL を開け�
       .bind('0'.repeat(32))
       .first();
     expect(byPreview).toBeNull();
+  });
+});
+
+describe('画面の文言が、いまの実行形態と食い違わない（#150）', () => {
+  it('GENERATION_IS_SYNCHRONOUS が startJob の既定と一致する', () => {
+    // **段を差し替えたら、この検査が文言の更新を要求して落ちる。**
+    // オーケストレータ Lambda（別 issue）が `startJob` を非同期実装へ替えたとき、
+    // `GENERATION_IS_SYNCHRONOUS` を false にしないと画面が嘘をつく——今度は
+    // 「開いたままにしてください」という不要な制約として。
+    //
+    // import で結ばずにここで結ぶのは、`src/generate.ts` が work-page から
+    // `workPagePath` を取っており、逆向きの import が循環参照になるためである。
+    expect(defaultPipeline.startJob === runJobInline).toBe(GENERATION_IS_SYNCHRONOUS);
+  });
+
+  it('同期実行のあいだは「閉じてよい」と書かない', async () => {
+    const { id } = await seedPending('wording');
+    const body = await (await open(workPagePath(id))).text();
+
+    if (GENERATION_IS_SYNCHRONOUS) {
+      expect(body).toContain('いま閉じると生成は中断します');
+      // 恒久的な URL であること自体は、いまでも本当なので言ってよい。
+      expect(body).toContain('恒久的な URL');
+    } else {
+      expect(body).toContain('タブを閉じても生成は進みます');
+    }
   });
 });

@@ -54,6 +54,7 @@
  * 根拠と、そのときの選択肢は仕様書 5.1 にある。
  */
 import type { BuildOutcome } from './build-client.js';
+import type { BuildCacheRecord } from './build-cache.js';
 import { artifactKeysOf, buildCacheRecordOf } from './build-client.js';
 import type { GenerateRequest } from './generate.js';
 import { recordBuildCache } from './build-cache.js';
@@ -409,7 +410,51 @@ export async function completeGame(
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<boolean> {
   const keys = artifactKeysOf(built);
+  return await completeGameWithArtifacts(
+    env,
+    gameId,
+    { goVersion: built.goVersion, sourceKey: keys.sourceKey, wasmKey: keys.wasmKey },
+    buildCacheRecordOf(built),
+    now,
+  );
+}
 
+/** 完成した行へ書き込む成果物の在り処。 */
+export interface CompletedArtifacts {
+  /** ビルドに使った Go の版（3.5 の `wasm_exec.js` 出し分け）。 */
+  readonly goVersion: string;
+  /** `source.go` の R2 キー。 */
+  readonly sourceKey: string;
+  /** `.wasm.br` の R2 キー。 */
+  readonly wasmKey: string;
+}
+
+/**
+ * 成果物の在り処を明示して行を完成させる（#150）。
+ *
+ * **{@link completeGame} の下層である。** 分けてあるのは、生成の本体が Worker の外
+ * （オーケストレータ Lambda）へ出ると、完成の通知が**コールバックの JSON**として
+ * 届くためである。JSON から `BuildOutcome`（ヒットと非ヒットの直和型）を組み立て直すと、
+ * **型の形を復元する作業そのものが検証の抜け道になる。** コールバック側は
+ * 「この経路が実際に使う値」だけを検証して、ここへ渡す
+ * （`src/generate-callback.ts`）。
+ *
+ * 順序（`games` を先に、索引をあとに）と原子性の根拠は {@link completeGame} にある。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param artifacts 成果物の在り処
+ * @param cacheRecord 3.8 の索引へ新しく記録する内容（ヒット時は null）
+ * @param now 完成時刻（UNIX 秒。既定は現在時刻）
+ * @returns 更新できたら true（`running` でなければ false）
+ */
+export async function completeGameWithArtifacts(
+  env: Env,
+  gameId: string,
+  artifacts: CompletedArtifacts,
+  cacheRecord: BuildCacheRecord | null,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<boolean> {
   const result = await env.DB.prepare(
     `update games
         set go_version = ?, source_key = ?, wasm_key = ?, preview_key = ?,
@@ -419,9 +464,9 @@ export async function completeGame(
     .bind(
       // 3.5 の `wasm_exec.js` 出し分けに要る。ヒット時は索引が覚えている版で、
       // **そのとき配られる成果物もその版でビルドされたもの**である。
-      built.goVersion,
-      keys.sourceKey,
-      keys.wasmKey,
+      artifacts.goVersion,
+      artifacts.sourceKey,
+      artifacts.wasmKey,
       // 5.4 の作者プレビュー URL（`/p/<preview_key>/`）。**完成のたびに新しく引く。**
       // 同じソースからの 2 件目（確定26 でキーは共有される）でも、プレビュー URL は
       // 別でなければならない。片方の URL を止めたときに、もう片方まで止まってしまう。
@@ -437,9 +482,8 @@ export async function completeGame(
   }
 
   // 3.8: 成果物は R2 に入っている（3.3-6 が書いた、あるいは索引が指していた）。
-  const record = buildCacheRecordOf(built);
-  if (record !== null) {
-    await recordBuildCache(env, record, now);
+  if (cacheRecord !== null) {
+    await recordBuildCache(env, cacheRecord, now);
   }
 
   return true;

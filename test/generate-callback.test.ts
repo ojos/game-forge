@@ -7,6 +7,12 @@ import {
   parseCallbackRequest,
 } from '../src/generate-callback.js';
 import { createPendingGame, hashJobToken } from '../src/games.js';
+import {
+  DEFAULT_GENERATION_MODEL_KEY,
+  findGenerationModel,
+} from '../src/generation-models.js';
+import { recordBuildCache } from '../src/build-cache.js';
+import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
@@ -34,10 +40,12 @@ async function seedUser(suffix: string): Promise<string> {
  * @param suffix テスト内で一意な接尾辞
  * @returns 作品 id とジョブトークン
  */
-async function seedPending(suffix: string): Promise<{ id: string; jobToken: string }> {
+async function seedPending(
+  suffix: string,
+): Promise<{ userId: string; id: string; jobToken: string }> {
   const userId = await seedUser(suffix);
   const pending = await createPendingGame(env, userId, { prompt: 'ゲーム' });
-  return { id: pending.id, jobToken: pending.jobToken };
+  return { userId, id: pending.id, jobToken: pending.jobToken };
 }
 
 /**
@@ -72,6 +80,70 @@ async function stateOf(id: string): Promise<{ state: string; error: string | nul
     .bind(id)
     .first<{ generation_state: string; generation_error: string | null }>();
   return { state: row!.generation_state, error: row!.generation_error };
+}
+
+
+/**
+ * `finish` の成功側の本文。
+ *
+ * @param overrides 差し替える項目
+ * @returns `artifacts` の中身
+ */
+function artifactsBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const built = fakeBuildOutcome();
+  return {
+    goVersion: built.goVersion,
+    sourceKey: built.keys.sourceKey,
+    wasmKey: built.keys.wasmKey,
+    cacheRecord: {
+      sourceSha256: built.sourceSha256,
+      goVersion: built.goVersion,
+      sourceKey: built.keys.sourceKey,
+      wasmKey: built.keys.wasmKey,
+      wasmBytes: built.artifact.wasm.bytes,
+      wasmSha256: built.artifact.wasm.sha256,
+      compressedBytes: built.artifact.compressed.bytes,
+      compressedSha256: built.artifact.compressed.sha256,
+      contentEncoding: built.artifact.compressed.contentEncoding,
+    },
+    ...overrides,
+  };
+}
+
+/**
+ * `ledger` の本文。
+ *
+ * @param overrides 差し替える項目
+ * @returns `ledger` の中身
+ */
+function ledgerBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    generationId: crypto.randomUUID(),
+    prompt: 'ねこが主人公のパズル',
+    modelKey: DEFAULT_GENERATION_MODEL_KEY,
+    modelId: findGenerationModel(DEFAULT_GENERATION_MODEL_KEY)!.modelId,
+    stopReason: 'end_turn',
+    usage: {
+      inputTokens: 1_000,
+      outputTokens: 2_000,
+      cacheReadInputTokens: null,
+      cacheWriteInputTokens: null,
+    },
+    ...overrides,
+  };
+}
+
+/**
+ * その利用者の台帳の行数を数える。
+ *
+ * @param userId 利用者の id
+ * @returns 行数
+ */
+async function ledgerRowsOf(userId: string): Promise<number> {
+  const row = await env.DB.prepare('select count(*) as n from generations where user_id = ?')
+    .bind(userId)
+    .first<{ n: number }>();
+  return row!.n;
 }
 
 beforeAll(async () => {
@@ -121,6 +193,21 @@ describe('本文の検証（#150）', () => {
       errorCode: 'とても失敗',
     });
     expect(await response.json()).toEqual({ error: 'unknown-error-code' });
+  });
+
+  it('finish は成功と失敗のどちらか一方でなければならない', async () => {
+    // 両方あると「成功なのか失敗なのか」を受け取り側が決めることになる。
+    const both = await post({
+      gameId: 'x',
+      jobToken: 'y',
+      kind: 'finish',
+      errorCode: 'internal',
+      artifacts: artifactsBody(),
+    });
+    expect(await both.json()).toEqual({ error: 'missing-outcome' });
+
+    const neither = await post({ gameId: 'x', jobToken: 'y', kind: 'finish' });
+    expect(await neither.json()).toEqual({ error: 'missing-outcome' });
   });
 
   it('解析だけを単体でも呼べる', async () => {
@@ -176,7 +263,7 @@ describe('finish（失敗の記録）', () => {
     await post({ gameId: id, jobToken, kind: 'claim' });
 
     const response = await post({ gameId: id, jobToken, kind: 'finish', errorCode: 'internal' });
-    expect(await response.json()).toEqual({ finished: true });
+    expect(await response.json()).toEqual({ accepted: true, finished: true });
     expect(await stateOf(id)).toEqual({ state: 'failed', error: 'internal' });
   });
 
@@ -192,11 +279,11 @@ describe('finish（失敗の記録）', () => {
       kind: 'finish',
       errorCode: 'internal',
     });
-    expect(await response.json()).toEqual({ finished: false });
+    expect(await response.json()).toEqual({ accepted: false });
     expect((await stateOf(id)).state).toBe('running');
   });
 
-  it('分類名を省いた finish は断る', async () => {
+  it('分類名も成果物も無い finish は断る', async () => {
     const { id, jobToken } = await seedPending('finish-no-code');
     await post({ gameId: id, jobToken, kind: 'claim' });
     const response = await post({ gameId: id, jobToken, kind: 'finish' });
@@ -216,7 +303,7 @@ describe('finish（失敗の記録）', () => {
       kind: 'finish',
       errorCode: 'build-failed',
     });
-    expect(await first.json()).toEqual({ finished: true });
+    expect(await first.json()).toEqual({ accepted: true, finished: true });
 
     // 2 通目。トークンは既に捨てられているので false になり、**状態は書き換わらない。**
     const second = await post({
@@ -225,7 +312,236 @@ describe('finish（失敗の記録）', () => {
       kind: 'finish',
       errorCode: 'internal',
     });
-    expect(await second.json()).toEqual({ finished: false });
+    expect(await second.json()).toEqual({ accepted: false });
     expect(await stateOf(id)).toEqual({ state: 'failed', error: 'build-failed' });
+  });
+});
+
+describe('ledger（3.3-4 / 確定25。届くまで再送される前提）', () => {
+  it('台帳へ 1 行書ける', async () => {
+    const { userId, id, jobToken } = await seedPending('ledger');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const before = await ledgerRowsOf(userId);
+    const response = await post({ gameId: id, jobToken, kind: 'ledger', ledger: ledgerBody() });
+    expect(await response.json()).toEqual({ accepted: true, recorded: true });
+    expect(await ledgerRowsOf(userId)).toBe(before + 1);
+  });
+
+  it('同じ generationId の再送は行を増やさない（費用ゼロの再送を前提にする）', async () => {
+    // **LLM を呼んだあとにコールバックが落ち続けると、課金は出ているのに台帳の行が
+    // 無い状態になる**（4.3 が崩れ、日次枠も減らない）。再送は費用ゼロなので呼ぶ側は
+    // 届くまで送ってよく、こちら側は何度受け取っても 1 行でなければならない。
+    const { userId, id, jobToken } = await seedPending('ledger-retry');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const ledger = ledgerBody();
+    const before = await ledgerRowsOf(userId);
+
+    const first = await post({ gameId: id, jobToken, kind: 'ledger', ledger });
+    expect(await first.json()).toEqual({ accepted: true, recorded: true });
+
+    const second = await post({ gameId: id, jobToken, kind: 'ledger', ledger });
+    // 受け付けはするが、行は増えない。
+    expect(await second.json()).toEqual({ accepted: true, recorded: false });
+    expect(await ledgerRowsOf(userId)).toBe(before + 1);
+  });
+
+  it('別の generationId なら別の行になる（リトライ分も必ず計上する）', async () => {
+    // 5.2-7 のリトライは LLM 呼び出しの回数だけ行を作る（確定25）。
+    const { userId, id, jobToken } = await seedPending('ledger-retries');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    const before = await ledgerRowsOf(userId);
+
+    await post({ gameId: id, jobToken, kind: 'ledger', ledger: ledgerBody() });
+    await post({ gameId: id, jobToken, kind: 'ledger', ledger: ledgerBody() });
+    expect(await ledgerRowsOf(userId)).toBe(before + 2);
+  });
+
+  it('作者は本文からではなく games 行から取る', async () => {
+    // **本文から取ると、トークンを持つ者が他人の枠を消費できる。**
+    const { userId, id, jobToken } = await seedPending('ledger-author');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    await post({ gameId: id, jobToken, kind: 'ledger', ledger: ledgerBody() });
+
+    const row = await env.DB.prepare(
+      'select user_id from generations order by rowid desc limit 1',
+    ).first<{ user_id: string }>();
+    expect(row?.user_id).toBe(userId);
+  });
+
+  it('壊れた ledger を断る', async () => {
+    const { id, jobToken } = await seedPending('ledger-invalid');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const broken: Record<string, unknown>[] = [
+      ledgerBody({ modelKey: '知らないモデル' }),
+      ledgerBody({ prompt: '' }),
+      ledgerBody({ prompt: 'あ'.repeat(2001) }),
+      ledgerBody({ usage: { inputTokens: -1, outputTokens: 1, cacheReadInputTokens: null, cacheWriteInputTokens: null } }),
+      ledgerBody({ usage: { inputTokens: 1.5, outputTokens: 1, cacheReadInputTokens: null, cacheWriteInputTokens: null } }),
+      ledgerBody({ generationId: '' }),
+    ];
+    for (const ledger of broken) {
+      const response = await post({ gameId: id, jobToken, kind: 'ledger', ledger });
+      expect(response.status, JSON.stringify(ledger).slice(0, 60)).toBe(400);
+      expect(await response.json()).toEqual({ error: 'invalid-ledger' });
+    }
+  });
+
+  it('トークンが違えば台帳を書けない', async () => {
+    const { userId, id, jobToken } = await seedPending('ledger-token');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    const before = await ledgerRowsOf(userId);
+
+    const response = await post({
+      gameId: id,
+      jobToken: 'c'.repeat(64),
+      kind: 'ledger',
+      ledger: ledgerBody(),
+    });
+    expect(await response.json()).toEqual({ accepted: false });
+    expect(await ledgerRowsOf(userId)).toBe(before);
+  });
+});
+
+describe('cache-lookup（3.8）', () => {
+  it('索引が無ければミスを返す', async () => {
+    const { id, jobToken } = await seedPending('cache-miss');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const response = await post({
+      gameId: id,
+      jobToken,
+      kind: 'cache-lookup',
+      sourceSha256: 'd'.repeat(64),
+    });
+    expect(await response.json()).toEqual({
+      accepted: true,
+      lookup: { hit: false, reason: 'not-indexed' },
+    });
+  });
+
+  it('索引があり成果物も在ればヒットを返す', async () => {
+    const { id, jobToken } = await seedPending('cache-hit');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const built = fakeBuildOutcome();
+    await env.BUCKET.put(built.keys.sourceKey, 'package main');
+    await env.BUCKET.put(built.keys.wasmKey, 'wasm');
+    await recordBuildCache(
+      env,
+      {
+        sourceSha256: built.sourceSha256,
+        goVersion: built.goVersion,
+        sourceKey: built.keys.sourceKey,
+        wasmKey: built.keys.wasmKey,
+        wasmBytes: built.artifact.wasm.bytes,
+        wasmSha256: built.artifact.wasm.sha256,
+        compressedBytes: built.artifact.compressed.bytes,
+        compressedSha256: built.artifact.compressed.sha256,
+        contentEncoding: built.artifact.compressed.contentEncoding,
+      },
+      1_700_000_000,
+    );
+
+    const response = await post({
+      gameId: id,
+      jobToken,
+      kind: 'cache-lookup',
+      sourceSha256: built.sourceSha256,
+    });
+    const body = (await response.json()) as { lookup: { hit: boolean } };
+    expect(body.lookup.hit).toBe(true);
+  });
+
+  it('ハッシュの綴りが違えば断る', async () => {
+    const { id, jobToken } = await seedPending('cache-bad-hash');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    const response = await post({
+      gameId: id,
+      jobToken,
+      kind: 'cache-lookup',
+      sourceSha256: 'ZZZ',
+    });
+    expect(await response.json()).toEqual({ error: 'invalid-source-hash' });
+  });
+});
+
+describe('finish（成功側）', () => {
+  it('成果物を書いて完成させ、トークンを捨てる', async () => {
+    const { id, jobToken } = await seedPending('finish-ok');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const response = await post({
+      gameId: id,
+      jobToken,
+      kind: 'finish',
+      artifacts: artifactsBody(),
+    });
+    expect(await response.json()).toEqual({ accepted: true, finished: true });
+
+    const row = await env.DB.prepare(
+      'select generation_state, go_version, wasm_key, preview_key, job_token_hash from games where id = ?',
+    )
+      .bind(id)
+      .first<{
+        generation_state: string;
+        go_version: string;
+        wasm_key: string;
+        preview_key: string;
+        job_token_hash: string | null;
+      }>();
+    expect(row?.generation_state).toBe('ready');
+    expect(row?.go_version).toBe(fakeBuildOutcome().goVersion);
+    expect(row?.wasm_key).toBe(fakeBuildOutcome().keys.wasmKey);
+    // **preview_key は完成と同時にしか入らない。**
+    expect(row?.preview_key).toMatch(/^[0-9a-f]{32}$/u);
+    expect(row?.job_token_hash).toBeNull();
+  });
+
+  it('空の go_version で完成させられない（配信側の 500 を作らせない）', async () => {
+    // 3.5 の `wasm_exec.js` 出し分けの入力なので、空のまま完成させると
+    // `/p/<key>/wasm_exec.js` が 500 になる。
+    const { id, jobToken } = await seedPending('finish-empty-version');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const response = await post({
+      gameId: id,
+      jobToken,
+      kind: 'finish',
+      artifacts: artifactsBody({ goVersion: '' }),
+    });
+    expect(await response.json()).toEqual({ error: 'invalid-artifacts' });
+    expect((await stateOf(id)).state).toBe('running');
+  });
+
+  it('キャッシュヒット時は索引を書き直さない（cacheRecord = null）', async () => {
+    const { id, jobToken } = await seedPending('finish-cached');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const response = await post({
+      gameId: id,
+      jobToken,
+      kind: 'finish',
+      artifacts: artifactsBody({ cacheRecord: null }),
+    });
+    expect(await response.json()).toEqual({ accepted: true, finished: true });
+    expect((await stateOf(id)).state).toBe('ready');
+  });
+
+  it('壊れた cacheRecord を断る', async () => {
+    const { id, jobToken } = await seedPending('finish-bad-record');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const response = await post({
+      gameId: id,
+      jobToken,
+      kind: 'finish',
+      artifacts: artifactsBody({
+        cacheRecord: { ...(artifactsBody().cacheRecord as object), wasmSha256: 'short' },
+      }),
+    });
+    expect(await response.json()).toEqual({ error: 'invalid-artifacts' });
   });
 });

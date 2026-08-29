@@ -17,6 +17,7 @@ import {
   draftTitleFromPrompt,
   failGame,
   hashJobToken,
+  listAuthoredGames,
 } from '../src/games.js';
 import type { GenerateRequest } from '../src/generate.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
@@ -656,5 +657,118 @@ describe('0007 のスキーマ（#150）', () => {
         .bind(userId)
         .run(),
     ).rejects.toThrow();
+  });
+});
+
+describe('listAuthoredGames（#152）', () => {
+  /**
+   * `games` の行を直接 1 件入れる。
+   *
+   * **生成の経路（`createPendingGame`）を通さない。** ここで確かめたいのは一覧の
+   * 引き方であって、行の作られ方ではない。`status` や `created_at` を自由に置ける
+   * ほうが、除外と並び順の条件を少ない行数で網羅できる。
+   *
+   * @param authorId 作者
+   * @param overrides 列の指定
+   * @returns 作った作品の id
+   */
+  async function seedGame(
+    authorId: string,
+    overrides: {
+      readonly status?: string;
+      readonly title?: string;
+      readonly createdAt?: number;
+      readonly generationState?: string;
+    } = {},
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    await env.DB.prepare(
+      `insert into games (id, author_id, status, title, go_version, created_at, generation_state)
+       values (?, ?, ?, ?, '', ?, ?)`,
+    )
+      .bind(
+        id,
+        authorId,
+        overrides.status ?? DRAFT_STATUS,
+        overrides.title ?? 'タイトル',
+        overrides.createdAt ?? 1000,
+        overrides.generationState ?? 'ready',
+      )
+      .run();
+    return id;
+  }
+
+  it('他人の作品を 1 行も返さない', async () => {
+    // **5.4 の担保そのものである。** 公開前の作品が本人以外から辿れてはいけない以上、
+    // 一覧が抜け道になっていないことを、画面ではなく**引く層**で固定する。
+    const mine = await seedUser('list-mine');
+    const theirs = await seedUser('list-theirs');
+    const myGame = await seedGame(mine);
+    const theirDraft = await seedGame(theirs, { title: '他人の下書き' });
+    const theirPending = await seedGame(theirs, { generationState: 'pending' });
+
+    const listed = await listAuthoredGames(env, mine, 50);
+    const ids = listed.map((work) => work.id);
+    expect(ids).toContain(myGame);
+    expect(ids).not.toContain(theirDraft);
+    expect(ids).not.toContain(theirPending);
+    // 作者が違う行が 1 つも混ざっていないことを、id の照合だけに任せない。
+    const authors = await Promise.all(
+      ids.map(async (id) => (await readGame(id)).author_id),
+    );
+    expect(new Set(authors)).toEqual(new Set([mine]));
+  });
+
+  it('新しい順に並び、同じ秒は id の降順で決まる', async () => {
+    const userId = await seedUser('list-order');
+    const older = await seedGame(userId, { createdAt: 100 });
+    const newer = await seedGame(userId, { createdAt: 200 });
+    // `created_at` が UNIX 秒である以上、同じ秒の 2 件がありうる。並びが決まらないと
+    // 「並びが変わった」と「作品が消えた」を利用者が区別できない。
+    const tieA = await seedGame(userId, { createdAt: 300 });
+    const tieB = await seedGame(userId, { createdAt: 300 });
+    const expectedTieOrder = [tieA, tieB].sort().reverse();
+
+    const listed = await listAuthoredGames(env, userId, 50);
+    expect(listed.map((work) => work.id)).toEqual([...expectedTieOrder, newer, older]);
+  });
+
+  it('生成中の作品も返す', async () => {
+    // #152 の acceptance。**91 秒待っている最中の作品こそ戻る道が要る。**
+    const userId = await seedUser('list-pending');
+    const pending = await seedGame(userId, { generationState: 'pending' });
+    const running = await seedGame(userId, { generationState: 'running' });
+    const failed = await seedGame(userId, { generationState: 'failed' });
+
+    const listed = await listAuthoredGames(env, userId, 50);
+    expect(listed.map((work) => work.id).sort()).toEqual([pending, running, failed].sort());
+    expect(listed.find((work) => work.id === pending)?.generationState).toBe('pending');
+  });
+
+  it('removed は返さない', async () => {
+    // 行き先の無いリンクを一覧に並べない（`/p/` も `/g/` も removed を配信しない）。
+    const userId = await seedUser('list-removed');
+    const kept = await seedGame(userId);
+    const removed = await seedGame(userId, { status: 'removed' });
+
+    const ids = (await listAuthoredGames(env, userId, 50)).map((work) => work.id);
+    expect(ids).toContain(kept);
+    expect(ids).not.toContain(removed);
+  });
+
+  it('limit を超えて返さない', async () => {
+    const userId = await seedUser('list-limit');
+    await seedGame(userId, { createdAt: 10 });
+    await seedGame(userId, { createdAt: 20 });
+    await seedGame(userId, { createdAt: 30 });
+
+    const listed = await listAuthoredGames(env, userId, 2);
+    // 切るのは**古いほう**である。新しい順に並べてから切っていることを見る。
+    expect(listed.map((work) => work.createdAt)).toEqual([30, 20]);
+  });
+
+  it('作品が無ければ空を返す', async () => {
+    const userId = await seedUser('list-empty');
+    expect(await listAuthoredGames(env, userId, 50)).toEqual([]);
   });
 });

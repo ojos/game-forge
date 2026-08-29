@@ -26,6 +26,10 @@ import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { GENERATE_PAGE_PATH, INVITES_PATH, SIGNUP_PATH } from './paths.js';
+// **一覧の綴りをここへ書き写さない。** 正本は `src/my-works.ts` で、そこは
+// `WORK_PAGE_PREFIX` から導いている。逆向きの import にならない（あちらは `/` への
+// 導線をリテラルで持つ）ので、`src/paths.ts` へ逃がす必要も無い。
+import { MY_WORKS_PATH } from './my-works.js';
 
 /** 公開トップのパス。 */
 export const HOME_PATH = '/';
@@ -53,6 +57,12 @@ export const HOME_PATH = '/';
  * **書き写した以上、一致は機械照合で担保する**（`test/generate-page.test.ts` の公開
  * トップの検査。shared-ai-rules 12 章）。同じ待ち時間の説明が利用者から見て 2 つある
  * 状態を、呼びかけではなく検査で塞ぐ。
+ *
+ * **「あなたの作品」（#152）への導線も同じ理由でここに置く。** ログインの着地点は `/` で
+ * あり、**URL を控え損ねた利用者が最初に戻ってくる場所もここ**である。導線が無ければ、
+ * 一覧は「その URL を知っている人だけが使える一覧」になり、#152 が解こうとしている問題を
+ * そのまま繰り返す。**リンクは静的なので、上の「D1 を読まない」は崩れない**（引くのは
+ * 遷移先であって、ここではない）。
  *
  * 招待の発行（#91）への導線をここに置くのは、**ログイン後の着地点が `/` だから**である
  * （`src/auth/google.ts` のコールバックは `/` へ戻す）。導線が無いと、実装した経路へ
@@ -87,6 +97,7 @@ const HOME_HTML = `<!doctype html>
 </ul>
 
 <h2>参加している方へ</h2>
+<p><a href="${MY_WORKS_PATH}">あなたの作品</a>（生成中のものも含みます。ログインが必要です）</p>
 <p><a href="${INVITES_PATH}">招待コードを発行する</a>（ログインが必要です）</p>
 `;
 

@@ -78,6 +78,8 @@ import { recordGeneration } from './cost-ledger.js';
 import type { GenerationModelKey, GenerationResult } from './generation-models.js';
 import { findGenerationModel } from './generation-models.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
+import type { CostAlertOutcome } from './mail/cost-alert.js';
+import { notifyMonthlyCostWarning } from './mail/cost-alert.js';
 
 /** コールバックのパス。 */
 export const GENERATE_CALLBACK_PATH = '/api/generate/callback';
@@ -453,6 +455,40 @@ export async function parseCallbackRequest(request: Request): Promise<CallbackPa
 }
 
 /**
+ * このコールバックが起こす通知（#148）。
+ *
+ * # なぜ通知の口がここにあるのか
+ *
+ * **費用が増えるのがこの経路だからである。** 80% 警告は**費用が増えた直後**にしか
+ * 変わらない。生成の入口（`/api/generate` のクォータ判定）で回すと、超過中は利用者の
+ * リクエストの中で毎回判定と R2 の読み書きを走らせることになる。
+ *
+ * **ここは利用者のリクエストの中ではない。** `/api/generate` は #160 以降
+ * オーケストレータへ投げてすぐ 202 を返し（`src/generate.ts`）、この経路を叩くのは
+ * AWS 側である。**90.9 秒の待ち時間に通知は載らない。**
+ *
+ * # 差し替えられる形にしてある
+ *
+ * `src/generate.ts` の `GenerationPipeline` と同じ形である。**テストは送信の手前で
+ * 止めるためにここを差し替える**（既定のまま経路を登録するので、本番の結線は変わらない）。
+ *
+ * # 通知の失敗でコールバックを失敗にしない
+ *
+ * 台帳の記録は通知より先に終わっている。**通知が落ちたことを理由に呼ぶ側へ再送させると、
+ * 届いている台帳に対して同じ処理をもう一度やらせることになる。** 通知の関数は投げない
+ * 契約である（`src/mail/cost-alert.ts`）。
+ */
+export interface CallbackNotifiers {
+  /** 月次費用の 80% 警告（#148）。 */
+  readonly monthlyCostWarning: (env: Env) => Promise<CostAlertOutcome>;
+}
+
+/** 既定の通知（本物の送信経路）。 */
+export const defaultCallbackNotifiers: CallbackNotifiers = {
+  monthlyCostWarning: (env) => notifyMonthlyCostWarning(env),
+};
+
+/**
  * コールバックを処理する。
  *
  * # 認証はジョブトークンだけである
@@ -470,9 +506,14 @@ export async function parseCallbackRequest(request: Request): Promise<CallbackPa
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
+ * @param notifiers 通知（既定は本物の送信経路）
  * @returns レスポンス
  */
-async function handleCallback(request: Request, env: Env): Promise<Response> {
+async function handleCallback(
+  request: Request,
+  env: Env,
+  notifiers: CallbackNotifiers = defaultCallbackNotifiers,
+): Promise<Response> {
   const parsed = await parseCallbackRequest(request);
   if (!parsed.ok) {
     return json({ error: parsed.reason }, 400);
@@ -510,6 +551,12 @@ async function handleCallback(request: Request, env: Env): Promise<Response> {
       undefined,
       { id: callback.ledger.generationId },
     );
+    // 4.3 の 80% 警告（#148）。**費用が増えた直後にだけ判定する。**
+    //
+    // **`record.written` で絞らない。** 再送でも判定へ入れる。抑止は月ごとの目印が
+    // 持っており（`src/mail/cost-alert.ts`）、「行が増えたか」に抑止を兼ねさせると、
+    // 行を書いた直後に落ちた回の警告が**永久に出なくなる**。
+    await notifiers.monthlyCostWarning(env);
     return json({ accepted: true, recorded: record.written }, 200);
   }
 
@@ -571,7 +618,26 @@ async function runningJob(
   return { authorId: row.author_id };
 }
 
+/**
+ * コールバックの経路を組み立てる。
+ *
+ * **通知を差し替えられるのはここだけである。** アプリの経路表（`src/app.ts`）は
+ * 既定の {@link generateCallbackRoutes} を連結するので、本番の結線は変わらない。
+ *
+ * @param notifiers 通知（既定は本物の送信経路）
+ * @returns 経路表
+ */
+export function createGenerateCallbackRoutes(
+  notifiers: CallbackNotifiers = defaultCallbackNotifiers,
+): readonly Route[] {
+  return [
+    {
+      method: 'POST',
+      path: GENERATE_CALLBACK_PATH,
+      handler: (request, env) => handleCallback(request, env, notifiers),
+    },
+  ];
+}
+
 /** アプリの経路表へ連結するコールバックの経路。 */
-export const generateCallbackRoutes: readonly Route[] = [
-  { method: 'POST', path: GENERATE_CALLBACK_PATH, handler: handleCallback },
-];
+export const generateCallbackRoutes: readonly Route[] = createGenerateCallbackRoutes();

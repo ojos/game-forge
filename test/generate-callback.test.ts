@@ -1,11 +1,14 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { dispatch } from '../src/routes.js';
 import {
   GENERATE_CALLBACK_PATH,
+  createGenerateCallbackRoutes,
+  defaultCallbackNotifiers,
   generateCallbackRoutes,
   parseCallbackRequest,
 } from '../src/generate-callback.js';
+import type { CallbackNotifiers } from '../src/generate-callback.js';
 import { createPendingGame, hashJobToken } from '../src/games.js';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
@@ -57,7 +60,10 @@ async function seedPending(
  */
 async function post(body: unknown, contentType = 'application/json'): Promise<Response> {
   return await dispatch(
-    generateCallbackRoutes,
+    // **既定の通知を使わない**（#148）。既定は本物の送信経路なので、
+    // `.dev.vars` に Resend の鍵がある環境で回すと**テストから本番のメールが出る。**
+    // 記録するだけの通知へ差し替え、送信の手前で止める。
+    createGenerateCallbackRoutes(notifiers),
     new Request(`${APP_ORIGIN}${GENERATE_CALLBACK_PATH}`, {
       method: 'POST',
       headers: { 'content-type': contentType },
@@ -66,6 +72,26 @@ async function post(body: unknown, contentType = 'application/json'): Promise<Re
     env,
   );
 }
+
+/** 通知の呼び出しを記録する。 */
+interface NotifierCalls {
+  /** 80% 警告の判定が呼ばれた回数（#148）。 */
+  costWarnings: number;
+}
+
+let calls: NotifierCalls;
+
+/** 記録するだけの通知。**送信の手前で止まる。** */
+const notifiers: CallbackNotifiers = {
+  monthlyCostWarning: async () => {
+    calls.costWarnings += 1;
+    return 'not-configured';
+  },
+};
+
+beforeEach(() => {
+  calls = { costWarnings: 0 };
+});
 
 /**
  * `generation_state` を読む。
@@ -574,5 +600,44 @@ describe('finish（成功側）', () => {
       }),
     });
     expect(await response.json()).toEqual({ error: 'invalid-artifacts' });
+  });
+});
+
+describe('通知の結線（#148）', () => {
+  it('ledger を受け取ると、費用 80% の判定が 1 回走る', async () => {
+    const { id, jobToken } = await seedPending('notify-ledger');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    expect(calls.costWarnings).toBe(0);
+
+    await post({ gameId: id, jobToken, kind: 'ledger', ledger: ledgerBody() });
+    expect(calls.costWarnings).toBe(1);
+  });
+
+  it('ledger の再送でも判定へ入る（抑止は通知側が持つ）', async () => {
+    // **「行が増えたか」に抑止を兼ねさせない。** 行を書いた直後に落ちた回の警告が
+    // 永久に出なくなる（`src/mail/cost-alert.ts` が月ごとの目印で抑止する）。
+    const { id, jobToken } = await seedPending('notify-ledger-resend');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    const ledger = ledgerBody();
+
+    const first = await post({ gameId: id, jobToken, kind: 'ledger', ledger });
+    const second = await post({ gameId: id, jobToken, kind: 'ledger', ledger });
+    expect(await first.json()).toEqual({ accepted: true, recorded: true });
+    expect(await second.json()).toEqual({ accepted: true, recorded: false });
+    expect(calls.costWarnings).toBe(2);
+  });
+
+  it('claim と cache-lookup では判定が動かない（費用が変わらない）', async () => {
+    const { id, jobToken } = await seedPending('notify-no-op');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    await post({ gameId: id, jobToken, kind: 'cache-lookup', sourceSha256: 'a'.repeat(64) });
+    expect(calls.costWarnings).toBe(0);
+  });
+
+  it('経路表に登録されるのは既定の通知を持つ 1 本である', async () => {
+    // 差し替えられる形にしたことで本番の結線が変わっていないこと。
+    expect(generateCallbackRoutes).toHaveLength(1);
+    expect(generateCallbackRoutes[0]!.path).toBe(GENERATE_CALLBACK_PATH);
+    expect(Object.keys(defaultCallbackNotifiers)).toEqual(['monthlyCostWarning']);
   });
 });

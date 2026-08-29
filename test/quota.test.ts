@@ -17,6 +17,8 @@ import {
   describeQuotaRejection,
   isQuotaRejectionReason,
   jstDayRange,
+  monthlyCostWarning,
+  monthlyCostWarningOf,
 } from '../src/quota.js';
 import { jstMonthRange, recordGeneration } from '../src/cost-ledger.js';
 import {
@@ -709,5 +711,46 @@ describe('3.3-2 への結線（acceptance 1）', () => {
       startGeneration(env, userId, { prompt: 'ゲーム' }, pipeline),
     ).rejects.not.toBeInstanceOf(QuotaExceeded);
     expect(called.generateSource).toBe(true);
+  });
+});
+
+describe('80% 警告を通知側が読む口（#148）', () => {
+  it('しきい値の判定は 1 か所にある（画面も通知も同じ関数から得る）', async () => {
+    const userId = await seedUser('warn-shared');
+    const cost = MONTHLY_COST_LIMIT_JPY * MONTHLY_WARNING_RATIO + 1;
+    await seedLedgerRow(userId, AT, cost);
+
+    const decision = await checkGenerationQuota(env, userId, AT);
+    const forNotice = await monthlyCostWarning(env, AT);
+    // 判定（3.3-2）と通知（#148）が同じ警告を見ていること。**別々に数え直さない。**
+    expect(forNotice).toEqual(decision.allowed === true ? decision.warning : null);
+    expect(forNotice).toEqual(monthlyCostWarningOf(cost));
+  });
+
+  it.each([
+    ['手前では立たない', MONTHLY_COST_LIMIT_JPY * MONTHLY_WARNING_RATIO - 0.01, false],
+    ['ちょうどで立つ', MONTHLY_COST_LIMIT_JPY * MONTHLY_WARNING_RATIO, true],
+    ['上限でも立つ', MONTHLY_COST_LIMIT_JPY, true],
+  ])('%s', (_label, cost, expected) => {
+    // **上限（100%）でも警告そのものは立つ。** 生成を止めるかどうかは別の判定である
+    // （`generationQuotaStatus` が停止の枝で警告を返さないのは、止まっている利用者へ
+    // 見せないためであって、警告が消えるからではない）。
+    expect(monthlyCostWarningOf(cost) !== null).toBe(expected);
+  });
+
+  it('通知側の判定も利用者で絞らない（月次はサービス全体）', async () => {
+    // 4.3 の月次 1 万円はサービス全体の上限である。別々の利用者の行が合算される。
+    const a = await seedUser('warn-total-a');
+    const b = await seedUser('warn-total-b');
+    await seedLedgerRow(a, AT, MONTHLY_COST_LIMIT_JPY * 0.5);
+    await seedLedgerRow(b, AT, MONTHLY_COST_LIMIT_JPY * 0.31);
+    expect((await monthlyCostWarning(env, AT))?.kind).toBe('monthly-cost');
+  });
+
+  it('当月の外の行は数えない（境界は JST）', async () => {
+    const userId = await seedUser('warn-month-edge');
+    // 当月（5 月）の開始の 1 秒前＝ 4 月分。
+    await seedLedgerRow(userId, jstMonthRange(AT).fromSeconds - 1, MONTHLY_COST_LIMIT_JPY);
+    expect(await monthlyCostWarning(env, AT)).toBeNull();
   });
 });

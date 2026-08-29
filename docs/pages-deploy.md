@@ -585,6 +585,13 @@ bash scripts/check-r2-lifecycle.sh  # R2_LIFECYCLE_PASS
 
 - 初回は `terraform.tfvars` に `cloudflare_account_id` を足してください（雛形は
   `terraform/terraform.tfvars.example`）。
+- **`source scripts/load-project-env.sh` を落とさないでください。** `apply` だけでなく
+  **`plan` にも必須**です。落とすと、プロバイダが認証ヘッダを 1 つも付けずに要求を出し、
+  Cloudflare が 9106（`Missing X-Auth-Key, X-Auth-Email or Authorization headers`）を
+  返します。**エラーは `cloudflare_r2_bucket_lifecycle` を名指しするので宣言が壊れて
+  いるように見えますが、宣言は正しい**（2026-08-29 に踏みました。詳細と再現は
+  `terraform/README.md` の「3 行目を忘れると何が起きるか」）。**しかも plan は全体として
+  止まるので、他のリソースの差分検出まで一緒に失われます。**
 - **挙動は変わりません。** 既定のルールと同じ打ち切り（7 日）を、id を明示した
   ルールとして置き直すだけです。変わるのは**宣言と検査が付くこと**です。
 - **年齢だけで成果物を消すルールは置きません。** R2 のライフサイクルは `games` を

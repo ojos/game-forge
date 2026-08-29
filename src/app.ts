@@ -7,6 +7,7 @@
 import { authRoutes } from './auth/google.js';
 import { describeOriginRelation } from './origins.js';
 import { generateRoutes } from './generate.js';
+import { generateCallbackRoutes } from './generate-callback.js';
 import { generatePageRoutes } from './generate-page.js';
 import { homeRoutes } from './home.js';
 import { inviteRoutes } from './invite-issuance.js';
@@ -14,6 +15,7 @@ import type { Route } from './routes.js';
 import { dispatch, html, json } from './routes.js';
 import { signupRoutes } from './signup.js';
 import { waitlistRoutes } from './waitlist.js';
+import { workPageRoutes } from './work-page.js';
 
 /**
  * 開発用セッション cookie の名前。
@@ -256,7 +258,9 @@ export function createAppRoutes(env: Env): readonly Route[] {
     ...signupRoutes,
     ...waitlistRoutes,
     ...generateRoutes,
+    ...generateCallbackRoutes,
     ...generatePageRoutes,
+    ...workPageRoutes,
     ...inviteRoutes,
   ];
 }

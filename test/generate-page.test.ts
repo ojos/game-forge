@@ -4,6 +4,7 @@ import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import {
   BUILD_STOPPED_NOTICE,
   CANDIDATE_KEYS_EXPRESSION,
+  GAME_ID_EXPRESSION,
   DAILY_QUOTA_MESSAGE_KEY,
   DEFAULT_MESSAGE_KEY,
   GENERATE_MESSAGES,
@@ -38,6 +39,7 @@ import { HOME_PATH } from '../src/home.js';
 import { GENERATE_PAGE_PATH, SIGNUP_PATH } from '../src/paths.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
 import { findDuplicateRoutes } from '../src/routes.js';
+import { WORK_PAGE_PREFIX } from '../src/work-page.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -609,10 +611,39 @@ describe('8.3 の検査を通っていない文字列を表示面へ持ち込ま
     // 応答本文の他の項目（生成物由来の import パスや理由）に触れていないこと。
     // **`.resetsAt` も読まない**（#132）。応答は日次の再開時刻を載せるが、枠が戻るのは
     // 常に JST の 0 時なので、画面の文言は固定文字列で足りる。読む項目を増やすと、
-    // 「応答から読むのは `error` の 1 つだけ」という性質が表示の都合で緩む。
-    for (const field of ['.imports', '.reason', '.step', '.message', '.gameId', '.resetsAt']) {
+    // 「応答から読むのは分類名と id だけ」という性質が表示の都合で緩む。
+    //
+    // **`.gameId` はこの一覧から外した**（#150）。作品ページへ送るために読むが、
+    // **表示面へは出さない**（上の 2 つの検査が、書ける経路が無いことを見ている）。
+    // **`.url` は読まない。** 応答の文字列がそのまま遷移先になる形を作らないためで、
+    // 遷移先は固定の接頭辞と、綴りを確かめた id の連結で組み立てる（下の検査）。
+    for (const field of ['.imports', '.reason', '.step', '.message', '.url', '.resetsAt']) {
       expect(script, field).not.toContain(field);
     }
+  });
+
+  it('作品ページへの遷移は、綴りを確かめた id と固定の接頭辞だけで組み立てる（#150 / 8.3）', async () => {
+    const user = await seedUser('navigate');
+    const script = embeddedScript(await (await openPage(await sessionCookie(user))).text());
+
+    // 遷移は 1 か所だけであること。増えると、どれが検査を通っているか読めなくなる。
+    const navigations = [...script.matchAll(/location\.href\s*=\s*([^;]+);/gu)].map(
+      (matched) => matched[1]!.trim(),
+    );
+    expect(navigations).toEqual([`${JSON.stringify(WORK_PAGE_PREFIX)} + outcome.id`]);
+
+    // **綴りの検査を通ってからでなければ遷移しない。** 定数を写さずに、画面が
+    // 実際に埋め込んだ式そのものを見る（shared-ai-rules 12 章）。
+    expect(script).toContain(`${GAME_ID_EXPRESSION}.test(outcome.id)`);
+
+    // 埋め込まれた正規表現が、作品ページ側の綴りと同じものであること。
+    // **2 か所にある以上、一致を機械で見る。**
+    // 埋め込みは正規表現リテラルの綴りなので、前後の `/` を落として組み立て直す。
+    const pattern = new RegExp(GAME_ID_EXPRESSION.slice(1, -1), 'u');
+    expect(pattern.test('9ffe7c2a-59a9-4a58-b82c-d4a8cea7c62f')).toBe(true);
+    expect(pattern.test('javascript:alert(1)')).toBe(false);
+    expect(pattern.test('../../etc')).toBe(false);
+    expect(pattern.test('')).toBe(false);
   });
 
   it('変異させると上の 2 つの検査が破れる', async () => {

@@ -45,7 +45,15 @@ import {
 } from './source-inspection.js';
 import type { BuildOutcome } from './build-client.js';
 import { createLambdaBuild } from './build-client.js';
-import { createDraftGame } from './games.js';
+import type { GenerationErrorCode } from './games.js';
+import {
+  claimGenerationJob,
+  completeGame,
+  createPendingGame,
+  failGame,
+  hashJobToken,
+} from './games.js';
+import { workPagePath } from './work-page.js';
 import { recordGenerationCost } from './cost-ledger.js';
 import { QUOTA_EXCEEDED_STATUS, checkGenerationQuota, describeQuotaRejection } from './quota.js';
 import type { MonthlyCostWarning } from './quota.js';
@@ -191,18 +199,53 @@ export interface GenerationPipeline {
    */
   readonly build: (env: Env, generated: GenerationResult) => Promise<BuildOutcome>;
   /**
-   * 3.3-8: `games` 行を `status='draft'` で作成する（M2-7）。
+   * 3.3-8: 先に作ってあった `games` 行を完成させる（M2-7 / #150）。
    *
-   * **リクエストを受け取る。** `games.title` は `NOT NULL` だが（5.1）、3.3 の経路に
-   * タイトルを決める段は無い。プロンプトから仮の題を作る（`src/games.ts`）ため、
-   * `recordCost` と同じ理由でここにもリクエストが要る。
+   * **#150 で「行を作る」から「行を完成させる」へ変わった。** 行はクォータ判定の
+   * 直後に `createPendingGame` が作っており、この段が入れるのは成果物の側
+   * （`go_version` / `source_key` / `wasm_key` / `preview_key`）である。
+   *
+   * **リクエストを受け取らない。** 仮のタイトルは行を作る時点で決まっているので、
+   * ここまでプロンプトを持ち回る理由が無くなった。
    */
-  readonly createGame: (
-    env: Env,
-    userId: string,
-    request: GenerateRequest,
-    built: BuildOutcome,
-  ) => Promise<{ readonly id: string }>;
+  readonly completeGame: (env: Env, gameId: string, built: BuildOutcome) => Promise<boolean>;
+  /**
+   * 3.3-2.6: ジョブを起動する（#150）。**A 案の差し替え点である。**
+   *
+   * **この段だけが「応答を返す前に待つかどうか」を決める。** 既定は
+   * {@link runJobInline}（Worker の中で同期に走らせる）で、**本番の振る舞いは
+   * 現状のまま**である。オーケストレータ Lambda が入ったら、この段を
+   * 「非同期呼び出しを 1 回投げて即座に戻る」実装へ差し替えるだけでよい。
+   *
+   * **段を 1 つ増やしたのは、増やさないと差し替えられないからである。**
+   * `src/generate.ts` は「順序と境界だけを持つ」立場を保ってきたが、ここは
+   * まさに境界（Worker の中か外か）であり、既存のどの段の中にも無い。
+   *
+   * **失敗したら投げる。** 同期実装では、投げた例外がそのまま経路層の分岐へ届き、
+   * #150 以前と同じ応答になる。非同期実装では「投げ込めなかった」ことだけを投げる
+   * （生成そのものの失敗は `games` 行へ記録され、応答には現れない）。
+   */
+  readonly startJob: (env: Env, job: GenerationJob, pipeline: GenerationPipeline) => Promise<void>;
+}
+
+/**
+ * 1 回の生成ジョブを指すもの（#150）。
+ *
+ * **オーケストレータ Lambda へ渡すペイロードでもある。** 非同期呼び出しの上限は
+ * 256 KB で、`prompt` は最大 2,000 文字なので余裕がある。
+ *
+ * **`jobToken` は平文である。** D1 にはハッシュしか無い（`src/games.ts`）。
+ * この値が存在するのは、この構造体と呼び出しのペイロードの中だけである。
+ */
+export interface GenerationJob {
+  /** 作品 id。作品ページ（`/works/<id>`）の URL に入る。 */
+  readonly gameId: string;
+  /** このジョブだけを完成・失敗させられる使い捨てのトークン（平文）。 */
+  readonly jobToken: string;
+  /** 生成する利用者。 */
+  readonly userId: string;
+  /** 検証済みのリクエスト。 */
+  readonly request: GenerateRequest;
 }
 
 /**
@@ -240,8 +283,11 @@ export const notImplementedPipeline: GenerationPipeline = {
   build: () => {
     throw new PipelineStepNotImplemented('build');
   },
-  createGame: () => {
-    throw new PipelineStepNotImplemented('createGame');
+  completeGame: () => {
+    throw new PipelineStepNotImplemented('completeGame');
+  },
+  startJob: () => {
+    throw new PipelineStepNotImplemented('startJob');
   },
 };
 
@@ -298,7 +344,15 @@ export const defaultPipeline: GenerationPipeline = {
   recordCost: recordGenerationCost,
   inspectSource: inspectGeneratedSource,
   build: createLambdaBuild(),
-  createGame: createDraftGame,
+  completeGame,
+  // **既定は Worker の中で同期に走らせる**（#150）。応答は今までどおり生成が
+  // 終わってから返るので、**本番の振る舞いは変わらない。** 変わったのは
+  // 「作品行と URL が最初から存在する」ことだけである。
+  //
+  // **非同期にするのは別の issue である。** オーケストレータ Lambda・IAM・配備が
+  // 揃うまでこの段を差し替えない。差し替えていないことが分かるように、既定を
+  // 「同期」という**名前の付いた実装**にしてある（`runJobInline`）。
+  startJob: runJobInline,
 };
 
 /**
@@ -356,9 +410,21 @@ export async function parseGenerateRequest(request: Request): Promise<GeneratePa
 }
 
 /**
- * 3.3 の順序で各段を呼ぶ。
+ * 3.3-2 → 3.3-2.6: 生成を受け付け、**作品の身元を確定させて返す**（#150）。
  *
- * 段の中身は持たない。**ここが持つのは順序と、段の間で何が渡るかだけ**である。
+ * **この関数が返った時点で、恒久的な URL が存在する。** 送信した瞬間に URL が
+ * 手に入れば、タブを閉じてよくなり「復帰」という概念自体が要らなくなる、という
+ * のが #150 の狙いである。
+ *
+ * 順序は 3.3 のままである。
+ *
+ *   1. **3.3-2 クォータ判定**（4.3 の「上限の判定は 3.3-2 の 1 か所で行う」）
+ *   2. **3.3-2.5 作品行の作成**（`pending`。id とジョブトークンがここで決まる）
+ *   3. **3.3-2.6 ジョブの起動**（差し替え可能な段）
+ *
+ * **行を先に作ることは「クォータ判定より前に書く」ことではない。** 判定は依然として
+ * 最初にあり、超過した要求は行を 1 つも作らない。**枠の数え方も変わらない**
+ * ——日次枠は `generations` の行数で数える（確定25）。
  *
  * M6-1（入力側モデレーション）は 5.2 が定める位置、すなわち `checkQuota` の**手前**へ
  * 入れる。生成前に弾くことに意味があるので、費用の発生する段より後ろへ置かないこと。
@@ -369,82 +435,245 @@ export async function parseGenerateRequest(request: Request): Promise<GeneratePa
  * @param pipeline 差し替え可能な各段
  * @returns 作成した作品の id
  */
-export async function runGenerationPipeline(
+export async function startGeneration(
   env: Env,
   userId: string,
   request: GenerateRequest,
   pipeline: GenerationPipeline,
 ): Promise<{ readonly id: string }> {
   // 3.3-2: 超過なら即座に拒否する。生成より先に判定することが 4.3 の前提。
+  // **行を作る前でもある**ので、断られた要求は D1 に何も残さない。
   const quota = await pipeline.checkQuota(env, userId);
   if (!quota.allowed) {
     throw new QuotaExceeded(quota.reason, quota.resetsAt);
   }
 
-  // 3.3-3..8 を、5.2-7 のリトライの単位で回す。**回るのは生成からビルドまでで、
-  // クォータ判定は外側にある**（4.3 の「上限の判定は 3.3-2 の 1 か所で行う」）。
-  // 枠の消費は台帳の行数で数えるため（確定25）、**3 試行は枠 3 回分**である。
-  //
-  // **ループの上限は for の条件が持つ。** 打ち切りの判定を catch の中だけに置くと、
-  // その 1 行を落としたときに**課金の出る無限ループ**になる。抜けた先で必ず
-  // `BuildRetriesExhausted` を投げるので、上限を消せばテストが落ちる。
-  let retry: BuildRetryContext | undefined;
-  for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt += 1) {
-    // 3.3-3: 生成。2 回目以降は直前の診断を添える（5.2-7）。
-    const generated = await pipeline.generateSource(env, request, retry);
+  // 3.3-2.5: ここで id と URL が決まる。**LLM はまだ 1 回も呼んでいない。**
+  const pending = await createPendingGame(env, userId, request);
+  const job: GenerationJob = {
+    gameId: pending.id,
+    jobToken: pending.jobToken,
+    userId,
+    request,
+  };
 
-    // 3.3-4: 費用の計上。**生成が返った直後に、成否によらず行う。** ここより後ろの段が
-    // 失敗しても課金は済んでいるため、後ろへ動かすと計上漏れになる。
-    //
-    // **ループの中にある。** 4.3 は「リトライ分も必ず計上する」と定めており、
-    // 1 回の呼び出しにつき 1 行である（#22 の記録規約）。**渡すのは元のリクエスト**で、
-    // 組み替えたプロンプトではない（`generations.prompt` は利用者の入力を持つ）。
-    await pipeline.recordCost(env, userId, request, generated);
-
-    // 5.2-5: ホワイトリスト検査。違反は再生成に回さず即拒否する。
-    // **この例外はループを素通りして経路層まで上がる**（#20 はビルドの失敗だけを
-    // 引き金にする。`src/build-retry.ts`）。
-    pipeline.inspectSource(generated);
-
-    // 3.3-5..7: ビルドと R2 への書き戻し。#76 で 8 段へ戻った（v1.9 は 3.3-5..8 だった）。
-    let built: BuildOutcome | null = null;
-    try {
-      built = await pipeline.build(env, generated);
-    } catch (error) {
-      // リトライしてよい失敗か（`kind === 'build'` だけ）。判断は 1 か所に置く。
-      const rejected = retriableBuildFailure(error);
-      if (rejected === null) {
-        throw error;
-      }
-
-      // **4.2 の 1 段目（費用ゼロの機械修正 / #129）。** ここが挿入位置である
-      // （ビルドが `kind='build'` で落ちた直後）。**LLM を呼ばず**に未使用 import を
-      // 除去して再ビルドし、通ればそのまま先へ進む。**台帳の行は作らない**ので、
-      // 日次クォータにも数えない（確定25。数える単位は行数である）。
-      const repaired = await repairAndRebuild(env, pipeline, generated, rejected);
-      if (repaired.built !== null) {
-        built = repaired.built;
-      } else {
-        // 直らなかった。**2 段目（LLM 再生成）へそのまま回す。** 材料は機械修正の
-        // 後のソースと、そのソースに対する診断である（未使用 import を消した分だけ
-        // 手掛かりが減っており、残った失敗だけが見える）。
-        retry = buildRetryContext(attempt, repaired.rejected, repaired.generated);
-      }
-    }
-
-    // 3.3-8: `games` 行の作成（#76 で採番が戻った。v1.9 は 3.3-9 だった）。
-    //
-    // **この段まで来たとき、成果物は既に R2 に在る**（3.3-6 が書いた、あるいは
-    // キャッシュがヒットして既存のオブジェクトを指している）。順序を入れ替えて
-    // 行を先に作ると、成果物の無いキーを指す作品ができる。
-    if (built !== null) {
-      return await pipeline.createGame(env, userId, request, built);
-    }
+  // 3.3-2.6: ジョブの起動。既定は同期実行なので、ここで生成の全段が走る。
+  try {
+    await pipeline.startJob(env, job, pipeline);
+  } catch (error) {
+    // **行を放置しない。** 同期実装では `runGenerationJob` が既に分類名を書いている
+    // ので、この呼び出しは何も更新しない（`failGame` は `pending` / `running` からしか
+    // 遷移しない）。**上書きされないことが、ここで安全に呼べる理由である。**
+    // 非同期実装では「投げ込めなかった」ときにここだけが行を閉じる。
+    await failGame(env, pending.id, 'internal');
+    throw error;
   }
 
-  // 上限まで試して通らなかった（5.2-7）。**ここへ来る経路はこれだけである**
-  // （ビルドが成功すればループの中で返り、リトライ対象でない失敗は再送出される）。
-  throw new BuildRetriesExhausted(MAX_GENERATION_ATTEMPTS, retry?.stage ?? 'unknown');
+  return { id: pending.id };
+}
+
+/**
+ * ジョブを Worker の中で同期に走らせる（{@link GenerationPipeline.startJob} の既定）。
+ *
+ * **#150 の時点ではこれが既定である。** 応答は生成が終わってから返るので、
+ * **本番の待ち時間も応答も現状のまま**である。#150 がこの PR で変えたのは
+ * 「作品行と URL が最初から存在する」ことだけで、待ち時間を消すのは
+ * オーケストレータ Lambda（別 issue）の仕事になる。
+ *
+ * **`claim` をここで行う。** 非同期実装では Lambda がコールバックで同じことをする
+ * （`src/generate-callback.ts` の `claim`）。**どちらの経路でも状態遷移が同じ**に
+ * なるよう、起動する側が握る、という形に揃えてある。
+ *
+ * @param env バインディングと環境変数
+ * @param job 起動するジョブ
+ * @param pipeline 差し替え可能な各段
+ */
+export async function runJobInline(
+  env: Env,
+  job: GenerationJob,
+  pipeline: GenerationPipeline,
+): Promise<void> {
+  const claimed = await claimGenerationJob(env, job.gameId, await hashJobToken(job.jobToken));
+  if (!claimed) {
+    // 同期実行では起こらない（作った直後に握るため）。**それでも黙って先へ進まない。**
+    // ここを素通りさせる実装にすると、非同期へ差し替えたときに二重実行の関門が
+    // 「あるように見えて効いていない」状態になる。
+    throw new GenerationJobNotClaimable(job.gameId);
+  }
+  await runGenerationJob(env, job, pipeline);
+}
+
+/**
+ * 3.3-3..8 を、5.2-7 のリトライの単位で回す。
+ *
+ * 段の中身は持たない。**ここが持つのは順序と、段の間で何が渡るかだけ**である。
+ *
+ * **この関数がオーケストレータ Lambda へそのまま移る部分である**（#150 / A 案）。
+ * 移す先を Node.js にすると決めたのは、5.2-5 の import ホワイトリスト
+ * （`src/go-imports.ts`）を書き写さずに済むためで、あれは #17 が仕様書と機械照合して
+ * いるセキュリティ層である。**複製を作らない。**
+ *
+ * # 結果は必ず `games` 行へ書く
+ *
+ * 成功なら `completeGame`、失敗なら `failGame`。**例外はそのあとで投げ直す。**
+ * 同期実装ではその例外が経路層の分岐へ届き、#150 以前と同じ応答になる。
+ * 非同期実装では呼び出し元（Lambda）がログへ落とすだけでよい——利用者が結果を
+ * 受け取る経路は、応答ではなく**作品ページ**になっているためである。
+ *
+ * @param env バインディングと環境変数
+ * @param job 走らせるジョブ（`claim` 済みであること）
+ * @param pipeline 差し替え可能な各段
+ */
+export async function runGenerationJob(
+  env: Env,
+  job: GenerationJob,
+  pipeline: GenerationPipeline,
+): Promise<void> {
+  try {
+    // 3.3-3..8 を、5.2-7 のリトライの単位で回す。**回るのは生成からビルドまでで、
+    // クォータ判定は外側にある**（4.3 の「上限の判定は 3.3-2 の 1 か所で行う」）。
+    // 枠の消費は台帳の行数で数えるため（確定25）、**3 試行は枠 3 回分**である。
+    //
+    // **ループの上限は for の条件が持つ。** 打ち切りの判定を catch の中だけに置くと、
+    // その 1 行を落としたときに**課金の出る無限ループ**になる。抜けた先で必ず
+    // `BuildRetriesExhausted` を投げるので、上限を消せばテストが落ちる。
+    let retry: BuildRetryContext | undefined;
+    for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt += 1) {
+      // 3.3-3: 生成。2 回目以降は直前の診断を添える（5.2-7）。
+      const generated = await pipeline.generateSource(env, job.request, retry);
+
+      // 3.3-4: 費用の計上。**生成が返った直後に、成否によらず行う。** ここより後ろの段が
+      // 失敗しても課金は済んでいるため、後ろへ動かすと計上漏れになる。
+      //
+      // **ループの中にある。** 4.3 は「リトライ分も必ず計上する」と定めており、
+      // 1 回の呼び出しにつき 1 行である（#22 の記録規約）。**渡すのは元のリクエスト**で、
+      // 組み替えたプロンプトではない（`generations.prompt` は利用者の入力を持つ）。
+      await pipeline.recordCost(env, job.userId, job.request, generated);
+
+      // 5.2-5: ホワイトリスト検査。違反は再生成に回さず即拒否する。
+      // **この例外はループを素通りして呼び出し元まで上がる**（#20 はビルドの失敗だけを
+      // 引き金にする。`src/build-retry.ts`）。
+      pipeline.inspectSource(generated);
+
+      // 3.3-5..7: ビルドと R2 への書き戻し。#76 で 8 段へ戻った（v1.9 は 3.3-5..8 だった）。
+      let built: BuildOutcome | null = null;
+      try {
+        built = await pipeline.build(env, generated);
+      } catch (error) {
+        // リトライしてよい失敗か（`kind === 'build'` だけ）。判断は 1 か所に置く。
+        const rejected = retriableBuildFailure(error);
+        if (rejected === null) {
+          throw error;
+        }
+
+        // **4.2 の 1 段目（費用ゼロの機械修正 / #129）。** ここが挿入位置である
+        // （ビルドが `kind='build'` で落ちた直後）。**LLM を呼ばず**に未使用 import を
+        // 除去して再ビルドし、通ればそのまま先へ進む。**台帳の行は作らない**ので、
+        // 日次クォータにも数えない（確定25。数える単位は行数である）。
+        const repaired = await repairAndRebuild(env, pipeline, generated, rejected);
+        if (repaired.built !== null) {
+          built = repaired.built;
+        } else {
+          // 直らなかった。**2 段目（LLM 再生成）へそのまま回す。** 材料は機械修正の
+          // 後のソースと、そのソースに対する診断である（未使用 import を消した分だけ
+          // 手掛かりが減っており、残った失敗だけが見える）。
+          retry = buildRetryContext(attempt, repaired.rejected, repaired.generated);
+        }
+      }
+
+      // 3.3-8: `games` 行の完成（#150 で「作成」から「完成」へ変わった）。
+      //
+      // **この段まで来たとき、成果物は既に R2 に在る**（3.3-6 が書いた、あるいは
+      // キャッシュがヒットして既存のオブジェクトを指している）。順序を入れ替えて
+      // 先に `preview_key` を書くと、成果物の無い行が配信側から引けてしまう
+      // （`src/games.ts` の冒頭）。
+      if (built !== null) {
+        // **戻り値を捨てない。** 0 行更新は「この行はもう `running` ではない」
+        // という意味で、成果物を書けていない。捨てて `return` すると**ジョブが
+        // 成功扱いになり、行は `running` のまま残る**——作品ページが永遠に
+        // 「生成中」を出し続ける状態そのものである（下の catch のコメント参照）。
+        //
+        // **例外にして外側の catch へ渡す。** そこで `failGame` が走るので、
+        // 利用者には「終わらない生成」ではなく「失敗した生成」として見える。
+        // どちらも良くはないが、**回り続ける表示より失敗として読めるほうがよい。**
+        //
+        // なお行が既に `ready` / `failed` なら `failGame` も 0 行更新になり、
+        // **先に確定した状態を上書きしない**（`src/games.ts`）。
+        const completed = await pipeline.completeGame(env, job.gameId, built);
+        if (!completed) {
+          throw new GenerationNotCompletable(job.gameId);
+        }
+        return;
+      }
+    }
+
+    // 上限まで試して通らなかった（5.2-7）。**ここへ来る経路はこれだけである**
+    // （ビルドが成功すればループの中で返り、リトライ対象でない失敗は再送出される）。
+    throw new BuildRetriesExhausted(MAX_GENERATION_ATTEMPTS, retry?.stage ?? 'unknown');
+  } catch (error) {
+    // **失敗も必ず行へ書く。** 書かないと `running` のまま永久に残り、作品ページが
+    // 「生成中」を出し続ける。利用者から見て、失敗したことすら分からない状態になる。
+    //
+    // **ここは戻り値を捨ててよい**（成功経路とは事情が違う）。false は「その行はもう
+    // `pending` / `running` ではない」という意味で、`GenerationNotCompletable` で
+    // 来たときは実際にそうなる。**先に確定した状態を上書きしないのが正しい**ので、
+    // ここで再び投げると元の例外を握り潰すことにしかならない。
+    await failGame(env, job.gameId, generationErrorCodeOf(error));
+    throw error;
+  }
+}
+
+/**
+ * 例外を `games.generation_error` の分類名へ落とす（8.3）。
+ *
+ * **既定は `internal` である。** 分類できない失敗を、たまたま近い分類へ寄せない。
+ * 利用者に出る文言が変わってしまい、しかも誤りに気づく手掛かりが残らない。
+ *
+ * @param error catch した値（型は unknown）
+ * @returns 分類名
+ */
+function generationErrorCodeOf(error: unknown): GenerationErrorCode {
+  if (error instanceof GeneratedSourceRejected) {
+    return 'source-rejected';
+  }
+  if (error instanceof BuildRetriesExhausted) {
+    return 'build-failed';
+  }
+  return 'internal';
+}
+
+/**
+ * 成果物は揃ったのに、作品行を完成させられなかった（#150）。
+ *
+ * `completeGame` が 0 行更新を返した状態、すなわち**その行がもう `running` では
+ * ない**ことを意味する。同じジョブが二重に走って片方が先に終えた、運用で状態を
+ * 触った、といった経路が該当する。
+ *
+ * **成功にしない。** 成功として返すと行は `running` のまま残り、作品ページが
+ * 永遠に「生成中」を出し続ける。`src/generate.ts` 冒頭の「空実装を成功にしない」
+ * と同じ判断で、**書けていないことを書けたことにしない。**
+ */
+export class GenerationNotCompletable extends Error {
+  constructor(readonly gameId: string) {
+    super('作品行を完成させられませんでした（行が running ではありません）');
+    this.name = 'GenerationNotCompletable';
+  }
+}
+
+/**
+ * ジョブを握れなかった（#150）。
+ *
+ * 非同期実行では**正常な結果**である（同じイベントが 2 回配信された。AWS は
+ * 「関数がエラーを返さなくても同じイベントを複数回受け取りうる」と明文で書いている）。
+ * その場合 Lambda 側は LLM を呼ばずに降りる。
+ *
+ * **同期実行では起こらない**ので、起きたら不具合である。
+ */
+export class GenerationJobNotClaimable extends Error {
+  constructor(readonly gameId: string) {
+    super('ジョブを握れませんでした（既に実行済みか、トークンが一致しません）');
+    this.name = 'GenerationJobNotClaimable';
+  }
 }
 
 /**
@@ -572,8 +801,13 @@ async function handleGenerate(
   }
 
   try {
-    const game = await runGenerationPipeline(env, session.userId, parsed.request, pipeline);
-    return json({ gameId: game.id }, 202);
+    const game = await startGeneration(env, session.userId, parsed.request, pipeline);
+    // **`url` を足した**（#150）。画面はこれを組み立て直さずに済む……のではなく、
+    // **画面は id だけを読んで自分で組み立てる**（`src/generate-page.ts`）。
+    // ここが `url` を返すのは、API を直接叩く側（将来の CLI など）が作品ページの
+    // 綴りを知らずに済むようにするためである。**画面が応答の文字列を遷移先に
+    // 使わない**という 8.3 の方針は変えていない。
+    return json({ gameId: game.id, url: workPagePath(game.id) }, 202);
   } catch (error) {
     if (error instanceof QuotaExceeded) {
       // 4.4 は停止時も「プレイと拡散は継続する」とする。止まるのは生成だけなので、

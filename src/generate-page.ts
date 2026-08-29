@@ -96,6 +96,8 @@
  */
 import { LOGIN_PATH } from './auth/google.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from './generate.js';
+// 遷移先の綴りの正本は作品ページ側が持つ（`src/work-page.ts`）。ここで書き写さない。
+import { WORK_PAGE_PREFIX } from './work-page.js';
 import {
   DAILY_QUOTA_REASON,
   MONTHLY_LIMIT_REASON,
@@ -393,6 +395,25 @@ export function canSubmit(availability: GenerateAvailability): boolean {
 export const CANDIDATE_KEYS_EXPRESSION = "[status + ':' + code, status + ':', '']";
 
 /**
+ * 埋め込みスクリプトが作品 id の綴りを確かめる式（#150）。
+ *
+ * **応答本文の文字列を遷移先へそのまま渡さないための関門である**（8.3）。
+ * 読むのは `gameId` だけで、しかも `crypto.randomUUID()` が返す形に一致したときしか
+ * 使わない。飛び先は**サーバが描いた固定の接頭辞**（`/works/`）との連結で作る。
+ *
+ * `body.url` を使わないのは、応答の文字列がそのまま `location.href` になる形だと、
+ * 本文しだいで `javascript:` を含む任意の URL へ飛ばせる経路が生まれるためである。
+ * いまその本文を作っているのは自分のサーバだが、**この画面が「応答の文字列を
+ * 表示にも遷移にも使わない」ことを、実装の性質として保つ。**
+ *
+ * `src/work-page.ts` の `GAME_ID_PATTERN` と同じ形である。**同じものが 2 か所に
+ * ある以上、定数として切り出して `test/generate-page.test.ts` が照合する**
+ * （shared-ai-rules 12 章）。
+ */
+export const GAME_ID_EXPRESSION =
+  '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/';
+
+/**
  * 送信と待ち時間の提示を行う埋め込みスクリプト。
  *
  * **文字列を DOM へ書き込まない。** できるのは
@@ -481,18 +502,32 @@ const GENERATE_SCRIPT = `
     }).then(function (response) {
       var status = response.status;
       return response.json().then(function (body) {
-        // **読むのは分類名だけ。** 応答本文の他の項目（生成物由来の import パスや
-        // 理由）はここで一切触らない（8.3）。
+        // **読むのは分類名と作品 id だけ。** 応答本文の他の項目（生成物由来の
+        // import パスや理由）はここで一切触らない（8.3）。
         var code = body !== null && typeof body === 'object' && typeof body.error === 'string'
           ? body.error
           : '';
-        return { status: status, code: code };
+        // **応答が返す url の項目は読まない**（#150）。応答の文字列をそのまま遷移先に
+        // すると、
+        // 本文しだいで任意の URL へ飛ばせる形になる。**id だけを受け取り、綴りを
+        // 確かめてから、サーバが描いた固定の接頭辞と連結する。**
+        var id = body !== null && typeof body === 'object' && typeof body.gameId === 'string'
+          ? body.gameId
+          : '';
+        return { status: status, code: code, id: id };
       }, function () {
-        return { status: status, code: '' };
+        return { status: status, code: '', id: '' };
       });
     }).then(function (outcome) {
       var status = outcome.status;
       var code = outcome.code;
+
+      // **受け付けられたら作品ページへ送る**（#150）。ここから先の待ち時間と結果は
+      // あの画面が持つので、**この画面は結果を表示しない。**
+      if (status === 202 && ${GAME_ID_EXPRESSION}.test(outcome.id)) {
+        window.location.href = ${JSON.stringify(WORK_PAGE_PREFIX)} + outcome.id;
+        return;
+      }
       // 3.8 の degrade。**発火条件は「ビルド依頼の失敗」**（確定24）で、この画面から
       // 観測できるのは「自分の要求がサーバ側の事情で落ちた」＝ 5xx である。
       if (status >= 500) { stopped = true; degraded.hidden = false; }

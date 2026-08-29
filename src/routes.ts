@@ -16,12 +16,42 @@ export type RouteMethod = 'GET' | 'POST';
 /** 1 つの経路を処理する関数。 */
 export type RouteHandler = (request: Request, env: Env) => Response | Promise<Response>;
 
+/**
+ * パスの一致のさせ方。
+ *
+ * **既定は `exact`（完全一致）である。** M1 以来この表は完全一致しか持たず、
+ * 「前方一致やパラメータは扱わない（必要になったら、その時点で設計する）」と
+ * 書いてあった。**#150 でその時点が来た**（`/works/<game_id>`）。
+ *
+ * **`prefix` を後付けにして、既定を変えない。** `match` を省いた経路は今までと
+ * 1 ビットも変わらない挙動になるので、既存の経路の振る舞いを見直す必要が無い。
+ */
+export type RouteMatch = 'exact' | 'prefix';
+
 /** 経路表の 1 行。 */
 export interface Route {
   readonly method: RouteMethod;
-  /** パス。前方一致やパラメータは扱わない（必要になったら、その時点で設計する）。 */
+  /**
+   * パス。`match` が `prefix` のときは、ここが**前方一致の接頭辞**になる。
+   *
+   * 接頭辞は `/` で終える規約にする（`/works/`）。終えないと `/worksmith` のような
+   * 別の経路まで飲み込む。**規約で守らず、登録時に機械で確かめる**
+   * （{@link findMalformedPrefixRoutes}）。
+   */
   readonly path: string;
+  /** パスの一致のさせ方（既定は `exact`）。 */
+  readonly match?: RouteMatch;
   readonly handler: RouteHandler;
+}
+
+/**
+ * 経路が前方一致かどうか。
+ *
+ * @param route 経路
+ * @returns 前方一致なら true
+ */
+function isPrefixRoute(route: Route): boolean {
+  return route.match === 'prefix';
 }
 
 /**
@@ -49,7 +79,28 @@ export async function dispatch(
   // 本文の除去はランタイムが行うため、ハンドラ側は GET と同じ実装でよい。
   const method = request.method === 'HEAD' ? 'GET' : request.method;
 
-  const samePath = routes.filter((route) => route.path === url.pathname);
+  // **完全一致を先に見る。** 前方一致より優先することで、`/works/` の下に将来
+  // `/works/new` のような固定の経路を足しても、前方一致の経路に飲み込まれない。
+  // 完全一致が 1 つでもあれば、そこで決める（405 の判定もその集合の中で行う）。
+  const exactPath = routes.filter(
+    (route) => !isPrefixRoute(route) && route.path === url.pathname,
+  );
+  // 前方一致は**いちばん長い接頭辞だけ**を採る。短いほうも候補に混ぜると、より具体的な
+  // 経路が登録順しだいで届かなくなり、405 の `Allow` にも無関係なメソッドが混ざる。
+  const matchedPrefixes = routes.filter(
+    (route) => isPrefixRoute(route) && url.pathname.startsWith(route.path),
+  );
+  const longestPrefix = matchedPrefixes.reduce<string | null>(
+    (longest, route) =>
+      longest === null || route.path.length > longest.length ? route.path : longest,
+    null,
+  );
+  const prefixPath =
+    longestPrefix === null
+      ? []
+      : matchedPrefixes.filter((route) => route.path === longestPrefix);
+
+  const samePath = exactPath.length > 0 ? exactPath : prefixPath;
   if (samePath.length === 0) {
     return json({ error: 'not found', path: url.pathname }, 404);
   }
@@ -101,7 +152,10 @@ export function findDuplicateRoutes(routes: readonly Route[]): string[] {
   const seen = new Set<string>();
   const duplicated: string[] = [];
   for (const route of routes) {
-    const key = `${route.method} ${route.path}`;
+    // **一致のさせ方まで含めて鍵にする。** 同じパスに完全一致と前方一致の両方を
+    // 登録するのは正当（`/works/` の下に固定の経路を足す場合）なので、混ぜて重複と
+    // 判定しない。`dispatch` も完全一致を先に見るので、この 2 つは共存できる。
+    const key = `${route.method} ${route.path}${isPrefixRoute(route) ? '*' : ''}`;
     if (seen.has(key)) {
       if (!duplicated.includes(key)) {
         duplicated.push(key);
@@ -111,6 +165,34 @@ export function findDuplicateRoutes(routes: readonly Route[]): string[] {
     }
   }
   return duplicated;
+}
+
+/**
+ * 接頭辞の綴りが規約に反している前方一致の経路を返す。
+ *
+ * **接頭辞は `/` で始まり `/` で終わること。** 終えないと、`/works` という接頭辞が
+ * `/worksmith` まで飲み込む。**動いてしまう**ので、綴りを間違えても気づけない
+ * （飲み込まれた側がまだ存在しないなら、何も壊れていないように見える）。
+ * {@link findDuplicateRoutes} と同じ理由で、呼びかけではなく機械で検出してテストで落とす。
+ *
+ * @param routes 経路表
+ * @returns 規約に反している `"METHOD /path"` の一覧（重複なし・出現順）
+ */
+export function findMalformedPrefixRoutes(routes: readonly Route[]): string[] {
+  const malformed: string[] = [];
+  for (const route of routes) {
+    if (!isPrefixRoute(route)) {
+      continue;
+    }
+    if (route.path.startsWith('/') && route.path.endsWith('/') && route.path.length > 1) {
+      continue;
+    }
+    const key = `${route.method} ${route.path}`;
+    if (!malformed.includes(key)) {
+      malformed.push(key);
+    }
+  }
+  return malformed;
 }
 
 /**

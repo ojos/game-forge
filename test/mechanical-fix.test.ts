@@ -14,7 +14,7 @@ import { BuildNotConfigured, BuildRejected } from '../src/build-client.js';
 import type { BuildOutcome } from '../src/build-client.js';
 import { BuildRetriesExhausted, MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
 import type { BuildRetryContext } from '../src/build-retry.js';
-import { runGenerationPipeline } from '../src/generate.js';
+import { runJobInline, startGeneration } from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
 import type { GenerationResult } from '../src/generation-models.js';
 import {
@@ -153,10 +153,14 @@ function pipelineOf(
         observed.builtSources.push(generated.source);
         return build(generated);
       },
-      createGame: async () => {
-        observed.calls.push('createGame');
-        return { id: 'game-1' };
+      completeGame: async () => {
+        observed.calls.push('completeGame');
+        return true;
       },
+      // **`startJob` は同期実行に固定する**（#150）。この一群のテストが見ているのは
+      // 3.3 の**順序**であって、ジョブをどこで走らせるかではない。既定
+      // （`defaultPipeline`）と同じ実装を借りるので、写しにもならない。
+      startJob: runJobInline,
     },
   };
 }
@@ -236,8 +240,44 @@ async function ledgerRows(userId: string): Promise<{ prompt: string; succeeded: 
   return rows.results;
 }
 
+/**
+ * この一群のテストが `startGeneration` へ渡す利用者を、実在する行として用意する。
+ *
+ * **#150 で必要になった。** 生成の経路はクォータ判定の直後に `games` 行を作るように
+ * なり（3.3-2.5）、`games.author_id` は `users(id)` への外部キーである。以前は
+ * 作品行がパイプラインの最後でしか作られず、しかもその段はテスト側の差し替えで
+ * 潰していたため、利用者が実在しなくても通っていた。
+ *
+ * **`insert or ignore` にしてある。** 同じ id を複数のテストが使うので、2 回目以降は
+ * 何もしない。
+ *
+ * @param ids 用意する利用者の id
+ */
+async function seedPipelineUsers(ids: readonly string[]): Promise<void> {
+  for (const id of ids) {
+    await env.DB.prepare(
+      `insert or ignore into users (id, google_sub, email, display_name, created_at, banned_at)
+       values (?, ?, ?, ?, 1, null)`,
+    )
+      .bind(id, `sub-${id}`, `${id}@example.com`, id)
+      .run();
+  }
+}
+
 beforeAll(async () => {
   await applySchema();
+  await seedPipelineUsers([
+    'mech-user-config',
+    'mech-user-fixed',
+    'mech-user-handoff',
+    'mech-user-inspect',
+    'mech-user-log-exhausted',
+    'mech-user-mutated',
+    'mech-user-observed',
+    'mech-user-semantic',
+    'mech-user-many',
+    'mech-user-log-safe',
+  ]);
 });
 
 afterAll(async () => {
@@ -488,14 +528,16 @@ describe('生成ループへの結線（#129 の acceptance）', () => {
       compilerThatRejects('errors', UNUSED_IMPORT_DIAGNOSTICS),
     );
 
-    const result = await runGenerationPipeline(env, 'mech-user-fixed', { prompt: 'ゲーム' }, pipeline);
+    const result = await startGeneration(env, 'mech-user-fixed', { prompt: 'ゲーム' }, pipeline);
 
-    expect(result.id).toBe('game-1');
+    expect(result.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+    );
     // **生成は 1 回だけ。** ここが 2 以上なら、費用ゼロの段が費用の出る段を呼んでいる。
     expect(observed.calls.filter((call) => call === 'generateSource').length).toBe(1);
     // ビルドは 2 回（元のソースと、機械修正の後）。
     expect(observed.builtSources).toEqual([UNUSED_IMPORT_SOURCE, REPAIRED_SOURCE]);
-    expect(observed.calls).toContain('createGame');
+    expect(observed.calls).toContain('completeGame');
   });
 
   it('その経路で台帳に行が増えない（acceptance 2）', async () => {
@@ -507,7 +549,7 @@ describe('生成ループへの結線（#129 の acceptance）', () => {
       compilerThatRejects('errors', UNUSED_IMPORT_DIAGNOSTICS),
     );
 
-    await runGenerationPipeline(
+    await startGeneration(
       env,
       userId,
       { prompt: 'ゲーム' },
@@ -529,7 +571,7 @@ describe('生成ループへの結線（#129 の acceptance）', () => {
       compilerThatRejects('errors', UNUSED_IMPORT_DIAGNOSTICS),
     );
 
-    await runGenerationPipeline(
+    await startGeneration(
       env,
       userId,
       { prompt: 'ゲーム' },
@@ -552,7 +594,7 @@ describe('生成ループへの結線（#129 の acceptance）', () => {
     });
 
     await expect(
-      runGenerationPipeline(env, 'mech-user-semantic', { prompt: 'ゲーム' }, pipeline),
+      startGeneration(env, 'mech-user-semantic', { prompt: 'ゲーム' }, pipeline),
     ).rejects.toBeInstanceOf(BuildRetriesExhausted);
 
     expect(observed.calls.filter((call) => call === 'generateSource').length).toBe(
@@ -573,7 +615,7 @@ describe('生成ループへの結線（#129 の acceptance）', () => {
     );
 
     await expect(
-      runGenerationPipeline(env, 'mech-user-mutated', { prompt: 'ゲーム' }, pipeline),
+      startGeneration(env, 'mech-user-mutated', { prompt: 'ゲーム' }, pipeline),
     ).rejects.toBeInstanceOf(BuildRetriesExhausted);
 
     expect(observed.calls.filter((call) => call === 'generateSource').length).toBe(
@@ -592,7 +634,7 @@ describe('生成ループへの結線（#129 の acceptance）', () => {
       throw new BuildRejected('build', SEMANTIC_DIAGNOSTICS);
     });
 
-    await runGenerationPipeline(env, 'mech-user-handoff', { prompt: 'ゲーム' }, pipeline).catch(
+    await startGeneration(env, 'mech-user-handoff', { prompt: 'ゲーム' }, pipeline).catch(
       () => undefined,
     );
 
@@ -615,7 +657,7 @@ describe('生成ループへの結線（#129 の acceptance）', () => {
     });
 
     await expect(
-      runGenerationPipeline(env, 'mech-user-config', { prompt: 'ゲーム' }, pipeline),
+      startGeneration(env, 'mech-user-config', { prompt: 'ゲーム' }, pipeline),
     ).rejects.toBe(failure);
     expect(observed.calls.filter((call) => call === 'generateSource').length).toBe(1);
   });
@@ -627,7 +669,7 @@ describe('生成ループへの結線（#129 の acceptance）', () => {
       compilerThatRejects('errors', UNUSED_IMPORT_DIAGNOSTICS),
     );
 
-    await runGenerationPipeline(env, 'mech-user-inspect', { prompt: 'ゲーム' }, pipeline);
+    await startGeneration(env, 'mech-user-inspect', { prompt: 'ゲーム' }, pipeline);
 
     expect(observed.calls.filter((call) => call === 'inspectSource').length).toBe(2);
   });
@@ -654,14 +696,16 @@ describe('生成ループへの結線（#129 の acceptance）', () => {
       return fakeBuildOutcome();
     });
 
-    const result = await runGenerationPipeline(
+    const result = await startGeneration(
       env,
       'mech-user-many',
       { prompt: 'ゲーム' },
       pipeline,
     );
 
-    expect(result.id).toBe('game-1');
+    expect(result.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+    );
     expect(observed.calls.filter((call) => call === 'generateSource').length).toBe(1);
     expect(observed.builtSources.length).toBe(1 + MAX_MECHANICAL_FIX_PASSES);
     expect(scanImports(observed.builtSources.at(-1)!)).toEqual({ ok: true, imports: [] });
@@ -852,7 +896,7 @@ describe('機械修正の観測（4.2 の #133 注記）', () => {
     });
 
     const { lines } = await captureLogs(() =>
-      runGenerationPipeline(env, 'mech-user-observed', { prompt: LOGGED_PROMPT }, pipeline),
+      startGeneration(env, 'mech-user-observed', { prompt: LOGGED_PROMPT }, pipeline),
     );
 
     // **行数が巡回数である。** 2 行なら 2 巡した、と読める。
@@ -870,7 +914,7 @@ describe('機械修正の観測（4.2 の #133 注記）', () => {
     // **経路を通して、出た**ものだけを見る。実際に除去が起きる形（＝出すものが最も
     // 多い巡）で回す。
     const { lines } = await captureLogs(() =>
-      runGenerationPipeline(
+      startGeneration(
         env,
         'mech-user-log-safe',
         { prompt: LOGGED_PROMPT },
@@ -896,7 +940,7 @@ describe('機械修正の観測（4.2 の #133 注記）', () => {
 
     const { lines } = await captureLogs(async () => {
       await expect(
-        runGenerationPipeline(env, 'mech-user-log-exhausted', { prompt: LOGGED_PROMPT }, pipeline),
+        startGeneration(env, 'mech-user-log-exhausted', { prompt: LOGGED_PROMPT }, pipeline),
       ).rejects.toBeInstanceOf(BuildRetriesExhausted);
     });
 

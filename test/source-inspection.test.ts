@@ -1,7 +1,11 @@
 import { env } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { GenerationPipeline } from '../src/generate.js';
-import { PipelineStepNotImplemented, runGenerationPipeline } from '../src/generate.js';
+import {
+  PipelineStepNotImplemented,
+  runJobInline,
+  startGeneration,
+} from '../src/generate.js';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
   findGenerationModel,
@@ -18,6 +22,39 @@ import {
   inspectGeneratedSource,
 } from '../src/source-inspection.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
+import { applySchema } from './helpers/schema.js';
+
+/**
+ * この一群のテストが `startGeneration` へ渡す利用者を、実在する行として用意する。
+ *
+ * **#150 で必要になった。** 生成の経路はクォータ判定の直後に `games` 行を作るように
+ * なり（3.3-2.5）、`games.author_id` は `users(id)` への外部キーである。以前は
+ * 作品行がパイプラインの最後でしか作られず、しかもその段はテスト側の差し替えで
+ * 潰していたため、利用者が実在しなくても通っていた。
+ *
+ * **`insert or ignore` にしてある。** 同じ id を複数のテストが使うので、2 回目以降は
+ * 何もしない。
+ *
+ * @param ids 用意する利用者の id
+ */
+async function seedPipelineUsers(ids: readonly string[]): Promise<void> {
+  for (const id of ids) {
+    await env.DB.prepare(
+      `insert or ignore into users (id, google_sub, email, display_name, created_at, banned_at)
+       values (?, ?, ?, ?, 1, null)`,
+    )
+      .bind(id, `sub-${id}`, `${id}@example.com`, id)
+      .run();
+  }
+}
+
+beforeAll(async () => {
+  await applySchema();
+  await seedPipelineUsers([
+    'user-1',
+  ]);
+});
+
 
 /**
  * 生成の段（3.3-3）の出力を組み立てる。
@@ -265,10 +302,14 @@ function pipelineWith(inspectSource: GenerationPipeline['inspectSource'], goSour
         calls.push('build');
         return fakeBuildOutcome();
       },
-      createGame: async () => {
-        calls.push('createGame');
-        return { id: 'game-1' };
+      completeGame: async () => {
+        calls.push('completeGame');
+        return true;
       },
+      // **`startJob` は同期実行に固定する**（#150）。この一群のテストが見ているのは
+      // 3.3 の**順序**であって、ジョブをどこで走らせるかではない。既定
+      // （`defaultPipeline`）と同じ実装を借りるので、写しにもならない。
+      startJob: runJobInline,
     },
   };
 }
@@ -282,7 +323,7 @@ describe('検査段へそのまま差し込める（結線 PR の前提）', () 
   it('許可外の生成はビルドへ進まない（5.2-5 の「再生成に回さず拒否」）', async () => {
     const { calls, pipeline } = pipelineWith(step, source('import "os/exec"'));
     await expect(
-      runGenerationPipeline(env, 'user-1', { prompt: 'ゲーム' }, pipeline),
+      startGeneration(env, 'user-1', { prompt: 'ゲーム' }, pipeline),
     ).rejects.toBeInstanceOf(GeneratedSourceRejected);
     // 検査までは進み、その先は開かない。**生成をやり直さない**ので generateSource は 1 回。
     expect(calls).toEqual(['checkQuota', 'generateSource', 'recordCost', 'inspectSource']);
@@ -292,7 +333,7 @@ describe('検査段へそのまま差し込める（結線 PR の前提）', () 
     // 拒否しても課金は発生済みである。検査で落ちた分が台帳から漏れると、4.3 の
     // 「リトライ分も必ず計上する」が崩れる。
     const { calls, pipeline } = pipelineWith(step, source('import "syscall"'));
-    await runGenerationPipeline(env, 'user-1', { prompt: 'ゲーム' }, pipeline).catch(
+    await startGeneration(env, 'user-1', { prompt: 'ゲーム' }, pipeline).catch(
       () => undefined,
     );
     expect(calls.indexOf('recordCost')).toBeLessThan(calls.indexOf('inspectSource'));
@@ -300,15 +341,17 @@ describe('検査段へそのまま差し込める（結線 PR の前提）', () 
 
   it('許可されたものだけなら最後まで進む', async () => {
     const { calls, pipeline } = pipelineWith(step, source('import "math"'));
-    const result = await runGenerationPipeline(env, 'user-1', { prompt: 'ゲーム' }, pipeline);
-    expect(result.id).toBe('game-1');
+    const result = await startGeneration(env, 'user-1', { prompt: 'ゲーム' }, pipeline);
+    expect(result.id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+    );
     expect(calls).toEqual([
       'checkQuota',
       'generateSource',
       'recordCost',
       'inspectSource',
       'build',
-      'createGame',
+      'completeGame',
     ]);
   });
 });

@@ -21,7 +21,12 @@ import type {
   GenerationUsage,
   ModelPricing,
 } from '../src/generation-models.js';
-import { defaultPipeline, notImplementedPipeline, runGenerationPipeline } from '../src/generate.js';
+import {
+  defaultPipeline,
+  notImplementedPipeline,
+  runJobInline,
+  startGeneration,
+} from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
 import { GeneratedSourceRejected } from '../src/source-inspection.js';
 import { applySchema } from './helpers/schema.js';
@@ -468,6 +473,7 @@ describe('3.3 の順序への結線（#22 acceptance 1）', () => {
     );
     const pipeline: GenerationPipeline = {
       ...notImplementedPipeline,
+      startJob: runJobInline,
       checkQuota: async () => ({ allowed: true }),
       generateSource: async () => generated,
       // **既定の実装を借りる。** 写しを検査しても結線の証拠にならない。
@@ -476,7 +482,7 @@ describe('3.3 の順序への結線（#22 acceptance 1）', () => {
     };
 
     await expect(
-      runGenerationPipeline(env, userId, { prompt: '許可外のゲーム' }, pipeline),
+      startGeneration(env, userId, { prompt: '許可外のゲーム' }, pipeline),
     ).rejects.toBeInstanceOf(GeneratedSourceRejected);
 
     const rows = await rowsOf(userId);

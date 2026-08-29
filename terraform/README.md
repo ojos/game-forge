@@ -39,7 +39,7 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 export GITHUB_TOKEN="$(gh auth token)"
 ```
 
-Cloudflare の API トークンも環境変数で渡します（`r2-lifecycle.tf` を適用する場合）。値は追跡外の `.env` にあり、ローダーが環境へ移します。
+Cloudflare の API トークンも環境変数で渡します。値は追跡外の `.env` にあり、ローダーが環境へ移します。**`r2-lifecycle.tf` が入って以降、これは「適用する場合だけ」ではなく `plan` にも必須です**（下記「3 行目を忘れると何が起きるか」）。
 
 ```bash
 set -a; source scripts/load-project-env.sh; set +a   # CLOUDFLARE_API_TOKEN を環境へ
@@ -60,13 +60,43 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 
 ## 適用手順
 
+**3 つの資格情報をこの 1 ブロックで揃えます。** どれか 1 つでも欠けると `plan` が落ちます。
+
 ```bash
 export GITHUB_TOKEN="$(gh auth token)"
+export AWS_PROFILE=game-forge-prod
+set -a; source scripts/load-project-env.sh; set +a   # CLOUDFLARE_API_TOKEN
 
 terraform -chdir=terraform init
 terraform -chdir=terraform plan
 terraform -chdir=terraform apply
 ```
+
+### 3 行目を忘れると何が起きるか（2026-08-29 に踏んだ）
+
+**`plan` が全体として落ち、他のリソースの差分検出まで止まります。**
+
+```
+Error: failed to make http request
+  with cloudflare_r2_bucket_lifecycle.artifacts,
+GET ".../r2/buckets/game-forge/lifecycle": 400 Bad Request
+{"success":false,"errors":[{"code":9106,"message":"Missing X-Auth-Key, X-Auth-Email or Authorization headers"}]}
+```
+
+**これはプロバイダの不具合ではなく、資格情報が環境に無いだけです**（同じ宣言・同じ
+state で、トークンを載せた状態と外した状態の両方を実行して確認しました。載せれば
+refresh は通ります）。**9106 は「認証ヘッダが 1 つも無い」ときの応答**で、権限不足では
+ありません。
+
+読み違えやすいのは、**エラーがリソース名で名指しされる**ため「その宣言が壊れている」
+ように見える点です。**`apply` は通ったのに後日の `plan` が落ちる**のも、資格情報を
+載せたシェルと載せていないシェルが違うだけで説明が付きます。
+
+**これは AWS の SSO が切れたときと同じ種類の失敗です。** `terraform` は refresh で
+どれか 1 つのプロバイダが失敗すると plan 全体を止めます。だからこの層はループの
+ゲートに含めません（`.github/project-ai-rules.md`「外部層を単一入口へ含めない理由」）。
+`scripts/acceptance-remote.sh` は前提の確認を先に置き、**terraform を資格情報ごしに
+呼ぶ**ので、この経路では踏みません。
 
 ## 受け入れ検証
 

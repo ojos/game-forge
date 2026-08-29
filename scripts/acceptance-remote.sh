@@ -137,6 +137,30 @@ cf_load_credentials() {
 }
 
 ##
+# terraform を、Cloudflare の資格情報を確実に環境へ載せてから起動する。
+#
+# **順序への暗黙の依存を消すために置く。** 資格情報は下の
+# `prerequisite: cloudflare api token is active` が（run は関数呼び出しなので現在の
+# シェルで）export しており、いまは init / plan がその後ろに並んでいるので届いている。
+# **しかしそれは並び順に依存した偶然である。** 検査を 1 つ足すときに順序が入れ替われば、
+# terraform は認証ヘッダを 1 つも付けずに要求を出し、Cloudflare が 9106
+# （`Missing X-Auth-Key, X-Auth-Email or Authorization headers`）を返す。
+#
+# **そのとき止まるのは Cloudflare のリソース 1 件ではなく plan 全体である。** refresh で
+# 1 つのプロバイダが失敗すると他のリソースの差分検出も行われないため、**乖離を検出する
+# 仕組みそのものが黙って無効になる。** 順序で守るのをやめ、呼ぶ側で載せる。
+#
+# cf_load_credentials は冪等で、既に載っていれば何もしない。
+#
+# 引数: terraform へそのまま渡す引数
+# 戻り値: terraform の終了コード（**-detailed-exitcode の 2 を潰さない**）
+##
+tf() {
+  cf_load_credentials
+  terraform "$@"
+}
+
+##
 # Cloudflare の API を叩き、応答の本体を標準出力へ返す。
 #
 # **診断は標準エラーへ書く。** 標準出力は呼び出し側が jq へ渡す本体そのもので、
@@ -305,11 +329,11 @@ run "prerequisite: gcp adc is active" check_gcp_adc
 
 # terraform 自身も外部（プロバイダレジストリ）へ出る。init 済みでなければ plan は
 # 実行できないため、ここで冪等に通す。
-run "terraform init" terraform -chdir="$TF_DIR" init -input=false -upgrade=false
+run "terraform init" tf -chdir="$TF_DIR" init -input=false -upgrade=false
 
 # 宣言と実状態の一致。-detailed-exitcode は差分なしで 0、差分ありで 2、エラーで 1 を返す。
 # 差分ありを合格にしないため、非0 をそのまま失敗として扱う。
-run "terraform plan: no drift" terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false
+run "terraform plan: no drift" tf -chdir="$TF_DIR" plan -detailed-exitcode -input=false
 
 # 以降の検査は output を期待値として使う。plan が通っていない状態では output も
 # 信頼できないため、取得できなければ個々の検査を失敗させる。

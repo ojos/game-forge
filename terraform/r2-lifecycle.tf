@@ -100,6 +100,13 @@ locals {
  * 宣言そのものである。実状態との一致は `scripts/check-r2-lifecycle.sh` が
  * Cloudflare の API を叩いて確かめる（ダッシュボードで足された削除ルールも落ちる）。
  */
+# **このリソースは terraform から destroy できない**（プロバイダが作成時に警告する）。
+# state から外しても、**ライフサイクル設定は R2 側に残る。** すなわち「宣言をやめる」は
+# 「設定を消す」ではなく「誰も見ていない設定に戻す」である。**片道の扉として扱う。**
+#
+# 消したい場合の唯一の経路は、ルールを取り除いた設定を apply し直すか、ダッシュボードで
+# 消すことである。後者は shared-ai-rules 4 章が禁じる「UI を恒久的な状態変更の手段に
+# する」に当たるので、前者を採る。
 resource "cloudflare_r2_bucket_lifecycle" "artifacts" {
   account_id  = var.cloudflare_account_id
   bucket_name = local.r2_bucket_name

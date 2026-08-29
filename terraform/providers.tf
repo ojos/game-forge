@@ -101,6 +101,25 @@ provider "aws" {
  *
  * account_id はプロバイダではなくリソース側の必須属性なので、変数から受ける
  * （var.cloudflare_account_id）。
+ *
+ * **忘れたときの見え方（2026-08-29 に踏んだ）。** 上のローダーを通さずに plan を回すと、
+ * プロバイダは認証ヘッダを 1 つも付けずに要求を出し、Cloudflare が 9106
+ * （`Missing X-Auth-Key, X-Auth-Email or Authorization headers`）を返す。**エラーは
+ * `cloudflare_r2_bucket_lifecycle` を名指しするので宣言が壊れているように見えるが、
+ * 宣言は正しい。** 資格情報を載せれば同じ state で refresh は通る（実測で両方確認）。
+ *
+ * **plan は全体として止まる。** refresh でどれか 1 つのプロバイダが失敗すると、他の
+ * リソースの差分検出も行われない。**これは AWS の SSO 失効と同じ種類の失敗**であり、
+ * この層をローカルのゲートへ含めない理由そのものである
+ * （`.github/project-ai-rules.md`「外部層を単一入口へ含めない理由」）。
+ *
+ * **`api_token` をここへ書いて塞ぐ案は採らない。** 変数で受ければ tfstate と plan
+ * ファイルへ平文で落ちる経路ができ、上の 1 段落目（および GitHub / AWS / GCP で同じ
+ * 判断をしていること）と矛盾する。しかも塞げていない — 環境変数が
+ * `CLOUDFLARE_API_TOKEN` から `TF_VAR_cloudflare_api_token` に変わるだけで、
+ * 「載せ忘れると落ちる」ことは変わらない。**載せ忘れを塞ぐのは宣言側ではなく、
+ * terraform を呼ぶ側である**（scripts/acceptance-remote.sh の tf()、および
+ * terraform/README.md の適用手順を 1 ブロックにまとめたこと）。
  */
 provider "cloudflare" {
 }

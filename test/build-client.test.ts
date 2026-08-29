@@ -9,6 +9,7 @@ import {
   BuildRejected,
   BuildResponseUnreadable,
   BuildTimedOut,
+  MAX_BUILD_INVOCATIONS_ON_TIMEOUT,
   artifactKeysOf,
   buildCacheRecordOf,
   createLambdaBuild,
@@ -538,6 +539,140 @@ describe('失敗の区別（#20 / 3.8 の degrade 判定）', () => {
 
     expect(error).toBeInstanceOf(BuildTimedOut);
     expect((error as BuildTimedOut).where).toBe('worker');
+  });
+});
+
+/**
+ * 応答を呼び出しごとに切り替える `fetch`。
+ *
+ * **呼び直しの検査に要る。** {@link capturingFetch} は毎回同じ応答を返すので、
+ * 「1 回目は時間切れ、2 回目は成功」を作れない。
+ *
+ * @param responses 呼び出しの順に返す応答（尽きたら最後のものを返し続ける）
+ * @returns 送られたリクエストと `fetch`
+ */
+function sequencedFetch(responses: readonly (() => Response)[]): {
+  sent: Request[];
+  fetch: (request: Request) => Promise<Response>;
+} {
+  const sent: Request[] = [];
+  return {
+    sent,
+    fetch: async (request: Request) => {
+      sent.push(request);
+      const next = responses[Math.min(sent.length, responses.length) - 1];
+      // 応答を 1 つも渡さない使い方はテスト側の誤りである。**黙って成功にしない。**
+      if (next === undefined) {
+        throw new Error('sequencedFetch に応答が渡されていません');
+      }
+      return next();
+    },
+  };
+}
+
+/** 関数側の時間切れ（`main.go` の内部期限）を模した応答。 */
+function functionTimeoutResponse(): Response {
+  return okResponse(
+    {
+      errorMessage: 'ビルドが時間内に終わりませんでした: context deadline exceeded',
+      errorType: 'BuildFunctionError',
+    },
+    { 'x-amz-function-error': 'Unhandled' },
+  );
+}
+
+describe('関数側の時間切れは同じソースで呼び直す（#164）', () => {
+  it('2 回目が通れば成功として返る', async () => {
+    const success = await buildResponseBody();
+    const seam = sequencedFetch([functionTimeoutResponse, () => okResponse(success)]);
+
+    const result = await invokeBuildFunction(buildEnv(), 'package main', {
+      fetch: seam.fetch,
+    });
+
+    expect(result.goVersion).toBe('go1.26.5');
+    // **2 回呼んでいる。** 1 回で返っていたら呼び直しが効いていない。
+    expect(seam.sent).toHaveLength(2);
+  });
+
+  it('同じソースを投げ直す（別のものを組み立て直さない）', async () => {
+    const success = await buildResponseBody();
+    const seam = sequencedFetch([functionTimeoutResponse, () => okResponse(success)]);
+
+    await invokeBuildFunction(buildEnv(), 'package main // 目印', { fetch: seam.fetch });
+
+    const bodies = await Promise.all(seam.sent.map(async (request) => await request.text()));
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toBe(bodies[1]);
+    expect(JSON.parse(bodies[1] ?? '{}')).toEqual({ source: 'package main // 目印' });
+  });
+
+  it('呼び直しても時間切れなら BuildTimedOut を返し、そこで止める', async () => {
+    const seam = sequencedFetch([functionTimeoutResponse]);
+
+    const error = await invokeBuildFunction(buildEnv(), 'package main', {
+      fetch: seam.fetch,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(BuildTimedOut);
+    expect((error as BuildTimedOut).where).toBe('function');
+    // **上限は宣言した値である。** ここを回数で書くと、定数を変えたときに
+    // 検査だけが古い上限で緑になる（shared-ai-rules 12 章）。
+    expect(seam.sent).toHaveLength(MAX_BUILD_INVOCATIONS_ON_TIMEOUT);
+  });
+
+  it('呼び直しの上限は 2（初回＋1 回）である', () => {
+    // **3 回目は上限に当たる。** オーケストレータの 600 秒は
+    // 「3 試行 ×（生成 91 秒 ＋ ビルド最大 45 秒 ×2）」で組んである。
+    expect(MAX_BUILD_INVOCATIONS_ON_TIMEOUT).toBe(2);
+  });
+
+  it('呼び出し側の打ち切り（where=worker）は呼び直さない', async () => {
+    // 関数がまだ走っている可能性がある。投げ直すと同じビルドを 2 本並走させる。
+    let calls = 0;
+    const error = await invokeBuildFunction(buildEnv(), 'package main', {
+      timeoutMs: 5,
+      fetch: (request) => {
+        calls += 1;
+        return new Promise((_resolve, reject) => {
+          request.signal.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      },
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(BuildTimedOut);
+    expect((error as BuildTimedOut).where).toBe('worker');
+    expect(calls).toBe(1);
+  });
+
+  it('コンパイル失敗は呼び直さない（#20 が診断付きで受け取る）', async () => {
+    const seam = capturingFetch(() =>
+      okResponse({ ok: false, stage: 'build', message: 'main.go:3:2: undefined: x' }),
+    );
+
+    await expect(
+      invokeBuildFunction(buildEnv(), 'package main', { fetch: seam.fetch }),
+    ).rejects.toBeInstanceOf(BuildRejected);
+    expect(seam.sent).toHaveLength(1);
+  });
+
+  it('スロットリング（429）は呼び直さない（滞留を増やすだけである）', async () => {
+    const seam = capturingFetch(
+      () =>
+        new Response('{"__type":"TooManyRequestsException"}', {
+          status: 429,
+          headers: {
+            'content-type': 'application/json',
+            'x-amzn-errortype': 'TooManyRequestsException',
+            'x-amzn-requestid': 'req-429',
+          },
+        }),
+    );
+
+    await expect(
+      invokeBuildFunction(buildEnv(), 'package main', { fetch: seam.fetch }),
+    ).rejects.toBeInstanceOf(BuildFunctionFailed);
+    expect(seam.sent).toHaveLength(1);
   });
 });
 

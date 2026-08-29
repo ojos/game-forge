@@ -11,7 +11,7 @@
 
 | 対象 | 実体 |
 |---|---|
-| 関数 | `game-forge-build`（`package_type = "Image"`。メモリ **3,008 MB** / タイムアウト **30 秒** / 予約同時実行数 **5**） |
+| 関数 | `game-forge-build`（`package_type = "Image"`。メモリ **3,008 MB** / タイムアウト **45 秒** / 予約同時実行数 **5**） |
 | イメージ | ECR の `game-forge/isolated-build`。`golang:<ピン留めした版>` を基にした約 1.6 GB。**版の正本は `docker/isolated-build/Dockerfile` の `ARG GO_VERSION`**（確定12。更新の契機と根拠は確定12、手順は仕様書 3.5） |
 | 入口 | `docker/isolated-build/handler/`（Lambda Runtime API を自前で回す。依存 0 件） |
 | 配備 | `.github/workflows/deploy-compiler.yml`（OIDC。長命の鍵を持たない） |
@@ -25,8 +25,10 @@
 `NoSuchResourceException`）、引き上げは AWS Support のケースになります。3,008 MB は
 **1.70 vCPU 相当**です（仕様 1.2.22 / #103）。
 
-**タイムアウトが 25 秒なのは、Lambda 上の実測が 21.1 秒だからです。** 仕様 3.8 は当初
-10 秒でしたが、**手元の 6,396 ms は Lambda の代理になりませんでした**（3.3 倍）。
+**タイムアウトは 45 秒です。** 仕様 3.8 は当初 10 秒でしたが、**手元の 6,396 ms は
+Lambda の代理になりませんでした**（3.3 倍）。25 秒 → 30 秒 → 45 秒と 3 回引き上げて
+います。**値の導出は `terraform/build-function.tf` の
+`build_function_timeout_seconds` が持ちます**（ここへ書き写しません）。
 
 | 段 | Lambda（3,008 MB） | 手元（`--memory=3008m --cpus=1.7`） |
 |---|---|---|
@@ -42,8 +44,21 @@
 **コールドスタートの `Init Duration` は 475 ms**で、1.65 GB のイメージでも無視できます。
 **ただし別の遅れがあります。** コールドの 1 回目は `buildMs` 自体が 2 秒伸び
 （20,654 ms 対 18,551 ms）、合計 **23,685 ms** になります。ページキャッシュが冷えている
-ためで、**タイムアウトが 30 秒なのはこの幅を見込んでのことです**（25 秒では余裕が
-1.3 秒しかありませんでした）。
+ためで、25 秒では余裕が 1.3 秒しかありませんでした。
+
+**30 秒でも足りず、2026-08-29 に本番で利用者が踏みました**（#164。29,528 ms で
+時間切れ。**7.94 円と日次枠 1 回が成果物なしで消えています**）。CloudWatch に残る
+12 回の記録は 23.9 / 21.1 / 34.5 / 33.3 / 30.4 / 29.8 / 23.7 / 21.2 / 24.4 / 21.6 /
+23.3 / 29.5 秒で、**中央値 24.2 秒に対して最悪値が 34.5 秒**です。**45 秒は
+「最悪値 34.5 秒の 1.3 倍」と「中央値 24.2 秒の 1.8 倍」の両方を満たす最小の
+5 の倍数**で、上限はオーケストレータの 600 秒（`3 × (91 + 2T) ≤ 600` から
+T ≤ 54 秒）が与えます。
+
+**関数側の時間切れは、同じソースで 1 回だけ呼び直します**（#164。
+`src/build-client.ts` の `invokeBuildFunction`）。**LLM は呼び直しません**——
+時間切れには診断が無く、材料の無い再生成に約 16 円と日次枠 1 回を賭けることに
+なるためです。呼び直しの費用は Lambda の 1 呼び出しだけで、**費用台帳の行も
+日次クォータも増えません。**
 
 **予約同時実行数は 5 です。** 一時は設定できませんでした（アカウントの同時実行総枠が
 10 しかなく、予約を付けると残りが最低値 10 を割るため）。**2026-08-28 に引き上げが通り、
@@ -297,7 +312,7 @@ VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 | 対象 | 状態 | 経路 |
 |---|---|---|
 | Lambda の同時実行数 10 → **1,000** | **完了**（2026-08-28。ケース `178783057000696` は `CASE_CLOSED`）。予約同時実行数 5 を戻し済み | Service Quotas |
-| Lambda の関数メモリ上限 3,008 MB → **10,240 MB** | **審査中。** 3.8 のタイムアウトを 10 秒へ戻すために要る（約 7,200 MB 以上で 10 秒に収まる） | AWS Support のコンソール |
+| Lambda の関数メモリ上限 3,008 MB → **10,240 MB** | **審査中。** ビルドを 21.1 秒から 7.7 秒へ縮めるために要る（約 7,200 MB 以上で 10 秒に収まる） | AWS Support のコンソール |
 
 **通ったかどうかは、宣言ではなく実際の値で確かめます。**
 
@@ -355,7 +370,7 @@ aws service-quotas list-requested-service-quota-change-history-by-quota \
 
 | 通ったもの | 宣言（`terraform/build-function.tf`） |
 |---|---|
-| メモリ上限 | `build_function_memory_mb` 3008 → **10240**、`build_function_timeout_seconds` 25 → **10** |
+| メモリ上限 | `build_function_memory_mb` 3008 → **10240**、`build_function_timeout_seconds` 45 → **20** |
 | 同時実行数 | `build_function_reserved_concurrency` `null` → **5** |
 
 ```bash
@@ -363,8 +378,19 @@ terraform -chdir=terraform apply
 VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 ```
 
-**メモリを上げたら、10 秒に収まることを Lambda 上で測り直してください。** 7.7 秒は
-外挿であり、実測ではありません。手順は「実測のとり方」のとおりです。
+**タイムアウトを 10 秒へは戻しません。20 秒です**（#164）。10,240 MB でも
+ビルド 7.7 秒 ＋ compress 2.4 秒 ＝ 約 10.1 秒で、コールドの上振れ（+2 秒）を見れば
+実効 12 秒になります。**10 秒は最初から余裕がありません。** 45 秒を決めたときの規則
+（中央値の 1.8 倍）を当てると 12 × 1.8 = 21.6 秒で、20 秒がその下限にほぼ一致します。
+
+**それでも下げること自体は必要です。** 10,240 MB では時間切れ 1 回が
+10.24 GB × 45 秒 = 461 GB 秒（約 1.19 円）になり、いまの 10 倍を焼きます。
+**メモリを上げる apply と、タイムアウトを下げる apply を分けないでください。**
+
+**メモリを上げたら、実際の所要時間を Lambda 上で測り直してください。** 7.7 秒は
+外挿であり、実測ではありません。手順は「実測のとり方」のとおりです。**測り直した
+値で 20 秒の余裕を確かめ、足りなければ 20 秒のほうを動かします**（規則は
+`terraform/build-function.tf`）。
 
 仕様書の 3.8 / 3.3-5 / 確定24 / 4.6 にも注記が要ります（1.2.23 と対になる形で）。
 
@@ -392,7 +418,7 @@ jq '.timings' /tmp/resp.json    # resetMs / prepareMs / buildMs / compressMs / t
 aws lambda update-function-configuration --function-name game-forge-build --timeout 120
 aws lambda wait function-updated --function-name game-forge-build
 # …測る…
-aws lambda update-function-configuration --function-name game-forge-build --timeout 25
+aws lambda update-function-configuration --function-name game-forge-build --timeout 45
 ```
 
 **測り終えたら宣言値へ戻すこと。** 戻し忘れは `terraform plan` と

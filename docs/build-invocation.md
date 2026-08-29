@@ -219,8 +219,8 @@ aws iam get-access-key-last-used --access-key-id <KEY_ID>
 
 - **30 秒待つこと自体は CPU 時間を 1 ms も使わない。** 上限に効くのは Worker が
   実際に計算した時間だけである。
-- **Workers 側の上限は関数のタイムアウトより長くする**（`BUILD_INVOKE_TIMEOUT_MS` は
-  30 + 5 = 35 秒）。短くすると先に諦めるのは呼び出し側になり、
+- **呼び出し側の上限は関数のタイムアウトより長くする**（`BUILD_INVOKE_TIMEOUT_MS` は
+  45 + 5 = 50 秒。#164 で 30 + 5 から動いた）。短くすると先に諦めるのは呼び出し側になり、
   1. 関数はそのまま走り続けて課金され（4.6）、
   2. 返るのは中身の無い中断で、**どの段が時間を食ったかが残らない**（関数の `timings` も
      AWS の `Task timed out` も届かない）。
@@ -231,6 +231,18 @@ aws iam get-access-key-last-used --access-key-id <KEY_ID>
     30 秒で、それを超えると打ち切られる。Cloudflare 自身が「長時間のリクエストと
     更新が重なる必要があるので極めて起こりにくい」としているが、**ゼロではない。**
     実測 21〜24 秒はこの 30 秒の内側にある。
+
+> **#164 注記（2026-08-29）。この節の 2 点は、本番ではもう効かない。**
+> **#160 以降、本番でビルド関数を呼ぶのはオーケストレータ Lambda（600 秒）であって
+> Workers ではない**（利用者は作品ページで待つ）。ブラウザのタイムアウトも
+> ランタイム更新の 30 秒猶予も、そちらの経路には無い。
+>
+> **効き続けるのは、Workers から同期で回す経路のほうである**（`src/generate.ts` の
+> `createLambdaBuild`。ローカルと、オーケストレータを構成していない環境）。
+> **タイムアウトを 45 秒へ広げ、時間切れ時に 1 回呼び直すようにしたので、
+> この経路の最悪の待ちは 100 秒（50 秒 × 2）になった。** 上の「30 秒の内側」は
+> もう成り立たない。**本番の経路ではないことを承知のうえで受け入れる**——
+> 直すなら経路を非同期へ寄せる話であって、タイムアウトを短く戻す話ではない。
 
 ### 非同期へ変えるとしたら（**本 issue では変えない**）
 
@@ -355,7 +367,7 @@ build(env, generated)
 | 値 | 正本 | 写し |
 |---|---|---|
 | 関数名 `game-forge-build` | `terraform/build-function.tf` の `local.build_function_name` | `wrangler.toml` の `BUILD_FUNCTION_NAME`（3 環境） |
-| タイムアウト 30 秒 | 同 `local.build_function_timeout_seconds` | `src/build-client.ts` の `BUILD_FUNCTION_TIMEOUT_SECONDS` |
+| タイムアウト 45 秒 | 同 `local.build_function_timeout_seconds` | `src/build-client.ts` の `BUILD_FUNCTION_TIMEOUT_SECONDS` |
 | シークレット名 `BUILD_AWS_*` | `src/build-client.ts` の `BUILD_SECRET_NAMES` | 本文書 3 章の `wrangler pages secret put` / `.dev.vars.example` |
 | IAM ユーザー名 `game-forge-build-invoker` | `terraform/build-invoker.tf` | 本文書 3 章（**コマンドは `terraform output` から取るので、綴りの写しは散文だけ**） |
 

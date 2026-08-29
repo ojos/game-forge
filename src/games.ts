@@ -83,12 +83,35 @@ export type GenerationState = 'pending' | 'running' | 'ready' | 'failed';
  * |---|---|
  * | `source-rejected` | 5.2-5 の import ホワイトリスト違反（再生成に回さず即拒否） |
  * | `build-failed` | 5.2-7 の上限までビルドが通らなかった |
+ * | `build-timeout` | ビルドが時間内に終わらなかった（#164） |
  * | `internal` | 上のどれでもない失敗（設定不足・関数障害・想定外の例外） |
+ *
+ * **`build-timeout` を `internal` から分けた理由（#164）。** `internal` の定義は
+ * 「設定不足・関数障害・想定外の例外」であり、**どれも「直すべき不具合がある」と
+ * 読める。** 時間切れはそのどれでもなく、**容量（vCPU）が足りなかった**という
+ * 結果である。同じ箱に入れておくと、運用者は最初にコードと設定を見に行く——
+ * 実際に見るべきなのはビルド時間の分布とメモリ配分のほうである
+ * （`terraform/build-function.tf`）。
+ *
+ * **`build-failed` にも寄せない。** あちらは「生成されたコードが通らなかった」で、
+ * 利用者へ出す文言が「作りたいものを簡単にしてください」になる。時間切れで
+ * そう言うのは**嘘である**（コードは正しいかもしれない）。
  *
  * **クォータ超過はここに無い。** 3.3 の順序ではクォータ判定が行の作成より前にあり
  * （4.3）、超過した要求は**そもそも行を作らない。**
+ *
+ * **この一覧に CHECK は無い**（`migrations/0007_games_generation_state.sql`。分類名は
+ * アプリの語彙であり、増減のたびにマイグレーションを足すと表示の都合でスキーマが
+ * 動く）。したがって値を足すのにマイグレーションは要らない。**代わりに
+ * `src/generate-callback.ts` がこの配列で受け口を絞っている**ので、ここへ足さない
+ * 値はコールバックから入って来られない。
  */
-export const GENERATION_ERROR_CODES = ['source-rejected', 'build-failed', 'internal'] as const;
+export const GENERATION_ERROR_CODES = [
+  'source-rejected',
+  'build-failed',
+  'build-timeout',
+  'internal',
+] as const;
 
 /** 失敗の分類名。 */
 export type GenerationErrorCode = (typeof GENERATION_ERROR_CODES)[number];

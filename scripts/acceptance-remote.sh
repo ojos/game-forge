@@ -1467,6 +1467,28 @@ run "build function execution role is minimal" check_build_function_role
 run "build invoker permissions are minimal" check_build_invoker_permissions
 run "r2 credentials are outside the declaration" check_r2_credentials_placement
 
+# ── 配信の共有資材と R2 のライフサイクル（#139 / #31）────────────────────────
+#
+# **この 2 本は、宣言（および手順）が実状態より先に居る間は赤になる。** それは故障では
+# なく、この層が見るべきものそのものである（冒頭「宣言と実際の外部状態が一致している
+# かの検査」/「通す契機: 外部状態の宣言を変更したとき」）。**赤の意味が読めないと
+# 「壊れている」と読まれる**ので、何をすれば緑になるかを書いておく。
+#
+#   wasm_exec objects …  本番 R2 へ `runtime/<版>/wasm_exec.js` を置くと緑になる。
+#                        `bash scripts/put-wasm-exec.sh --remote`
+#                        （docs/pages-deploy.md「wasm_exec.js を本番 R2 へ置く」）
+#                        **置くまで、その版の作品のプレイ経路は 500 である。**
+#   r2 lifecycle …       `terraform -chdir=terraform apply` を通すと緑になる。
+#                        初回は terraform.tfvars へ cloudflare_account_id が要る
+#                        （docs/pages-deploy.md「R2 のライフサイクルを適用する」）。
+#
+# **前提の不成立（未認証・オフライン）と乖離は、どちらのスクリプトも自分で読み分けて
+# 報告する。** 資格情報が無いときは「乖離」ではなく前提として落ちる。
+#
+# 判定はスクリプト側が持つ。ここへ検査の中身を書き写さない（shared-ai-rules 12 章）。
+run "wasm_exec objects exist for every delivered go_version" bash scripts/check-wasm-exec-objects.sh --remote
+run "r2 lifecycle has no age-based delete rules" bash scripts/check-r2-lifecycle.sh
+
 if [[ "$ran_any" -eq 0 ]]; then
   echo "[acceptance-remote] 外部層の受け入れ条件が未定義です。検査を 1 つも実行していません。" >&2
   echo "[acceptance-remote] 宣言と実際の外部状態を照合する検査を scripts/acceptance-remote.sh へ定義してください。" >&2

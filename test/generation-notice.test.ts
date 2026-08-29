@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { notifyGenerationFinished, workPageUrl } from '../src/mail/generation-notice.js';
 import type { GenerationNoticeDeps } from '../src/mail/generation-notice.js';
 import type { MailMessage, MailOutcome } from '../src/mail/resend.js';
@@ -216,6 +216,32 @@ describe('失敗したとき', () => {
   });
 });
 
+/**
+ * 台帳の集計だけが落ちる D1。
+ *
+ * **宛先の解決（`games` と `users` の結合）は通す。** 通らないと外側の catch へ落ち、
+ * 見たい「枠の状態だけが読めなかった」経路にならない。
+ *
+ * @returns 差し替えた D1
+ */
+function dbFailingOnLedger(): D1Database {
+  const real = env.DB;
+  return {
+    prepare: (sql: string) => {
+      if (sql.includes('from generations')) {
+        return {
+          bind: () => ({
+            first: async () => {
+              throw new Error('D1 down');
+            },
+          }),
+        } as unknown as D1PreparedStatement;
+      }
+      return real.prepare(sql);
+    },
+  } as unknown as D1Database;
+}
+
 describe('送れないとき', () => {
   it('作品が引けなければ送らず、例外にもしない', async () => {
     const { sent, deps } = fakeSender();
@@ -223,6 +249,19 @@ describe('送れないとき', () => {
       await notifyGenerationFinished(configuredEnv(), crypto.randomUUID(), { kind: 'ready' }, deps),
     ).toBe('no-recipient');
     expect(sent).toHaveLength(0);
+  });
+
+  it('宛先を引けなかったログに作品 id が残る（PR #170）', async () => {
+    // 固定のラベルだけだと、どの作品で宛先の解決に失敗したのかを追えない。
+    // **id は誰かを指す値ではない**ので、ログへ出してよい。
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const gameId = crypto.randomUUID();
+    try {
+      await notifyGenerationFinished(configuredEnv(), gameId, { kind: 'ready' }, fakeSender().deps);
+      expect(logged.mock.calls.flat().join(' ')).toContain(gameId);
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it('設定が無ければ D1 を触らずに降りる', async () => {
@@ -233,6 +272,35 @@ describe('送れないとき', () => {
       'not-configured',
     );
     expect(sent).toHaveLength(0);
+  });
+
+  it('枠の集計が読めなかったら、その一文を落として送り、ログを残す（PR #170）', async () => {
+    // **黙って落とさない。** 文面から 1 文が消えるだけだと、D1 の集計障害が静かに進む。
+    const { gameId } = await seedGame('quota-unreadable');
+    const { sent, deps } = fakeSender();
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const broken = { ...configuredEnv(), DB: dbFailingOnLedger() } as Env;
+      expect(
+        await notifyGenerationFinished(
+          broken,
+          gameId,
+          { kind: 'failed', errorCode: 'internal' },
+          deps,
+        ),
+      ).toBe('sent');
+      // 枠の一文は落ちるが、**推測で書かない**（「残り 0 回」とも「まだ使えます」とも言わない）。
+      expect(sent[0]!.text).not.toContain('本日の残りの生成枠は');
+      expect(sent[0]!.text).not.toContain('本日の生成枠は残っていません');
+      expect(sent[0]!.text).toContain('生成枠は消費されます');
+      // 例外の種類だけがログに出る（利用者 id も本文も出さない）。
+      const output = logged.mock.calls.flat().join(' ');
+      expect(output).toContain('枠の状態を読めませんでした');
+      expect(output).toContain('Error');
+      expect(output).not.toContain('notice-user-quota-unreadable');
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it('送信が失敗しても投げ返さない', async () => {

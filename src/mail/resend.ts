@@ -130,6 +130,22 @@ const ADDRESS_PATTERN = /^[^\s@,<>"]+@[^\s@,<>"]+\.[^\s@,<>"]+$/u;
 const CONTROL_PATTERN = /[\r\n]/u;
 
 /**
+ * 宛先として受け付ける綴りか。
+ *
+ * **設定から来る宛先を、送信の手前より早く検査するための口である**（PR #169 の
+ * レビュー指摘）。`OPERATOR_EMAIL` の綴りが壊れていると {@link sendMail} は
+ * `invalid-message` を返すが、そこまで進むと呼び出し側は既に「送った」ことにする
+ * 準備を済ませている（#148 は月ごとの目印を取ってしまう）。**同じ判定をこちらでも
+ * 使えるようにして、綴りの正本を 2 か所に作らない。**
+ *
+ * @param value 宛先の候補
+ * @returns 受け付けられる綴りなら true
+ */
+export function isMailAddress(value: string): boolean {
+  return ADDRESS_PATTERN.test(value);
+}
+
+/**
  * 環境から送信の設定を読む。
  *
  * **どちらか一方でも欠けたら null を返す。** 片方だけで送ろうとすると、Resend へ
@@ -158,7 +174,7 @@ export function mailConfigOf(env: Env): MailConfig | null {
  * @returns 満たしていれば true
  */
 function isSendable(message: MailMessage): boolean {
-  if (!ADDRESS_PATTERN.test(message.to)) {
+  if (!isMailAddress(message.to)) {
     return false;
   }
   return message.subject !== '' && !CONTROL_PATTERN.test(message.subject);

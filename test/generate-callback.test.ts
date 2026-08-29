@@ -78,6 +78,8 @@ async function post(body: unknown, contentType = 'application/json'): Promise<Re
 interface NotifierCalls {
   /** 80% 警告の判定が呼ばれた回数（#148）。 */
   costWarnings: number;
+  /** 判定へ渡された時刻（#148 / PR #169）。**台帳へ書いた時刻と同じでなければならない。** */
+  costWarningAt: number[];
   /** 完了通知の呼び出し（#153）。**呼ばれた時点の `generation_state` も残す。** */
   finished: { gameId: string; outcome: GenerationOutcome; stateWhenCalled: string }[];
 }
@@ -86,8 +88,9 @@ let calls: NotifierCalls;
 
 /** 記録するだけの通知。**送信の手前で止まる。** */
 const notifiers: CallbackNotifiers = {
-  monthlyCostWarning: async () => {
+  monthlyCostWarning: async (_env, at) => {
     calls.costWarnings += 1;
+    calls.costWarningAt.push(at);
     return 'not-configured';
   },
   generationFinished: async (_env, gameId, outcome) => {
@@ -99,7 +102,7 @@ const notifiers: CallbackNotifiers = {
 };
 
 beforeEach(() => {
-  calls = { costWarnings: 0, finished: [] };
+  calls = { costWarnings: 0, costWarningAt: [], finished: [] };
 });
 
 /**
@@ -679,6 +682,22 @@ describe('通知の結線（#148 / #153）', () => {
     const again = await post({ gameId: id, jobToken, kind: 'finish', artifacts: artifactsBody() });
     expect(await again.json()).toEqual({ accepted: false });
     expect(calls.finished).toHaveLength(1);
+  });
+
+  it('台帳へ書いた時刻と、80% 警告を判定する時刻が同じである', async () => {
+    // **月境界で割れないこと**（PR #169 のレビュー指摘）。記録と判定がそれぞれ
+    // 現在時刻を取ると、JST の月境界では 1 秒のずれで**行が前月に入り、判定と目印の
+    // 鍵が翌月で動く。** その月の警告が出ないか、翌月の目印を先に消費する。
+    const { id, jobToken } = await seedPending('notify-same-clock');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    const ledger = ledgerBody();
+
+    await post({ gameId: id, jobToken, kind: 'ledger', ledger });
+
+    const row = await env.DB.prepare('select created_at from generations where id = ?')
+      .bind(ledger['generationId'])
+      .first<{ created_at: number }>();
+    expect(calls.costWarningAt).toEqual([row!.created_at]);
   });
 
   it('経路表に登録されるのは既定の通知を持つ 1 本である', async () => {

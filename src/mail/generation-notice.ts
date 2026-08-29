@@ -120,9 +120,19 @@ async function remainingQuotaSentence(env: Env, userId: string): Promise<string 
   let status: Awaited<ReturnType<typeof generationQuotaStatus>>;
   try {
     status = await generationQuotaStatus(env, userId);
-  } catch {
+  } catch (error) {
     // 集計が読めなかっただけで、枠が尽きたわけではない。**何も書かない。**
     // 「残り 0 回」とも「まだ使えます」とも言わないのは `QUOTA_UNKNOWN_NOTICE` と同じ判断である。
+    //
+    // **ただし黙って落とさない**（PR #170 のレビュー指摘）。ここは D1 の集計障害が
+    // 最初に現れる場所のひとつで、ログが無いと**文面から 1 文が消えるだけ**になり、
+    // 障害が静かに進む。**出すのは例外の種類だけである**——利用者 id も本文も出さない
+    // （`src/quota.ts` の `readForDecision` と同じ方針）。
+    console.error(
+      `[generation-notice] 枠の状態を読めませんでした: ${
+        error instanceof Error ? error.name : typeof error
+      }`,
+    );
     return null;
   }
   if (status.kind === DAILY_QUOTA_REASON) {
@@ -241,7 +251,11 @@ export async function notifyGenerationFinished(
     const target = await noticeTarget(env, gameId);
     if (target === null) {
       // **例外にしない。** 作者の行が引けないのは異常だが、作品行はもう進んでいる。
-      console.error(`[generation-notice] 宛先を引けませんでした: ${LABEL}`);
+      //
+      // **`gameId` はログへ出す**（PR #170 のレビュー指摘）。固定のラベルだけでは、
+      // どの作品で宛先の解決に失敗したのかを追えない。**id は `crypto.randomUUID()` が
+      // 引いた値で、それ自体が誰かを指す情報ではない**（メールアドレスとは別物である）。
+      console.error(`[generation-notice] 宛先を引けませんでした: ${LABEL} / game ${gameId}`);
       return 'no-recipient';
     }
 

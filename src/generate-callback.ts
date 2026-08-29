@@ -477,6 +477,14 @@ export async function parseCallbackRequest(request: Request): Promise<CallbackPa
  * `src/generate.ts` の `GenerationPipeline` と同じ形である。**テストは送信の手前で
  * 止めるためにここを差し替える**（既定のまま経路を登録するので、本番の結線は変わらない）。
  *
+ * # 判定時刻は呼び出し側が渡す
+ *
+ * **台帳へ書いた時刻と、警告を判定する時刻を同じにする**（PR #169 のレビュー指摘）。
+ * どちらも既定で現在時刻を取る形にすると、**JST の月境界では 1 秒のずれで台帳の行が
+ * 前月に入り、警告の判定と目印の鍵が翌月で動く。** その月の警告が出ないか、翌月の
+ * 目印を先に消費する——どちらも「80% を超えたのに運用者へ届かない」形である。
+ * ハンドラで 1 つ捕まえた時刻を、記録と判定の両方へ渡す。
+ *
  * # 通知の失敗でコールバックを失敗にしない
  *
  * 台帳の記録も作品行の完成も、通知より先に終わっている。**通知が落ちたことを理由に
@@ -485,7 +493,7 @@ export async function parseCallbackRequest(request: Request): Promise<CallbackPa
  */
 export interface CallbackNotifiers {
   /** 月次費用の 80% 警告（#148）。 */
-  readonly monthlyCostWarning: (env: Env) => Promise<CostAlertOutcome>;
+  readonly monthlyCostWarning: (env: Env, at: number) => Promise<CostAlertOutcome>;
   /** 生成の完了・失敗（#153）。 */
   readonly generationFinished: (
     env: Env,
@@ -496,7 +504,7 @@ export interface CallbackNotifiers {
 
 /** 既定の通知（本物の送信経路）。 */
 export const defaultCallbackNotifiers: CallbackNotifiers = {
-  monthlyCostWarning: (env) => notifyMonthlyCostWarning(env),
+  monthlyCostWarning: (env, at) => notifyMonthlyCostWarning(env, at),
   generationFinished: (env, gameId, outcome) => notifyGenerationFinished(env, gameId, outcome),
 };
 
@@ -553,6 +561,10 @@ async function handleCallback(
     //
     // **`userId` は本文から取らない。** 作者は `games` 行が知っており、そちらが正である。
     // 本文から取ると、トークンを持つ者が他人の枠を消費できる。
+    // **時刻はここで 1 つだけ捕まえる。** 記録と判定が別々に現在時刻を取ると、JST の
+    // 月境界で行が前月に入り、判定と目印の鍵が翌月で動く（PR #169 のレビュー指摘。
+    // 上の {@link CallbackNotifiers} の「判定時刻は呼び出し側が渡す」）。
+    const now = Math.floor(Date.now() / 1000);
     const record = await recordGeneration(
       env,
       {
@@ -560,7 +572,7 @@ async function handleCallback(
         prompt: callback.ledger.prompt,
         generated: callback.ledger.generated,
       },
-      undefined,
+      now,
       { id: callback.ledger.generationId },
     );
     // 4.3 の 80% 警告（#148）。**費用が増えた直後にだけ判定する。**
@@ -568,7 +580,7 @@ async function handleCallback(
     // **`record.written` で絞らない。** 再送でも判定へ入れる。抑止は月ごとの目印が
     // 持っており（`src/mail/cost-alert.ts`）、「行が増えたか」に抑止を兼ねさせると、
     // 行を書いた直後に落ちた回の警告が**永久に出なくなる**。
-    await notifiers.monthlyCostWarning(env);
+    await notifiers.monthlyCostWarning(env, now);
     return json({ accepted: true, recorded: record.written }, 200);
   }
 

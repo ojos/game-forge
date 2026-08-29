@@ -41,12 +41,18 @@
  * **受け付けられなかった（`unreachable`）ときだけ目印を戻す。** 送り直せば通る種類の
  * 失敗なので、次の生成でもう一度試させる。**拒否（`rejected`）では戻さない**——同じ
  * 内容は何度送っても断られ、生成のたびに Resend を叩くだけになる。どちらもログには残す。
+ *
+ * **だからこそ、目印を取る前に宛先の綴りを確かめる**（PR #169 のレビュー指摘）。
+ * `OPERATOR_EMAIL` に表示名やカンマや改行が混ざっていると送信は `invalid-message` に
+ * なるが、**その分類では目印を戻さない。** 設定を直しても**その月はもう警告が出ない**
+ * ——費用ガードの通知としては最悪の壊れ方である。綴りの検査を目印より前へ出せば、
+ * 設定を直した次の生成で送られる。
  */
 import { jstMonthRange } from '../cost-ledger.js';
 import type { MonthlyCostWarning } from '../quota.js';
 import { MONTHLY_COST_LIMIT_JPY, MONTHLY_WARNING_RATIO, monthlyCostWarning } from '../quota.js';
 import type { MailDeps, MailMessage, MailOutcome } from './resend.js';
-import { defaultMailDeps, formatJpy, mailConfigOf, sendMail } from './resend.js';
+import { defaultMailDeps, formatJpy, isMailAddress, mailConfigOf, sendMail } from './resend.js';
 
 /**
  * 目印を置く R2 の接頭辞。
@@ -66,6 +72,7 @@ const LABEL = 'monthly-cost-warning';
  * - `below-threshold`: 80% に達していない
  * - `already-sent`: その月は送信済み（目印がある）
  * - `not-configured`: 送信の設定が無い（ローカル・テスト）
+ * - `invalid-recipient`: 宛先の綴りが壊れている（**設定の誤りであって、送信の失敗ではない**）
  * - `send-failed`: 送信に失敗した
  */
 export type CostAlertOutcome =
@@ -73,6 +80,7 @@ export type CostAlertOutcome =
   | 'below-threshold'
   | 'already-sent'
   | 'not-configured'
+  | 'invalid-recipient'
   | 'send-failed';
 
 /** 差し替えできる依存（{@link MailDeps} と同じ理由）。 */
@@ -181,6 +189,15 @@ export async function notifyMonthlyCostWarning(
   // 触らないようにするためで、判定の順序としても「送れないなら数えない」が安い。
   if (to === '' || mailConfigOf(env) === null) {
     return 'not-configured';
+  }
+  if (!isMailAddress(to)) {
+    // **目印より前に落とす**（モジュール冒頭）。ここを通してしまうと、設定を直しても
+    // その月は `already-sent` になり、警告が二度と出ない。
+    //
+    // **値そのものはログへ出さない。** 出せるのは「宛先の綴りが契約を満たさない」
+    // ことまでで、アドレスは 8.1 の個人情報である（`src/mail/resend.ts`）。
+    console.error(`[cost-alert] 宛先の綴りが不正なため送りません: ${LABEL}`);
+    return 'invalid-recipient';
   }
 
   try {

@@ -771,4 +771,25 @@ describe('listAuthoredGames（#152）', () => {
     const userId = await seedUser('list-empty');
     expect(await listAuthoredGames(env, userId, 50)).toEqual([]);
   });
+
+  it('不正な limit は問い合わせる前に落とす', async () => {
+    // **SQLite は `LIMIT -1` を「無制限」と解釈する。** 負の値が通ると、上限を掛けた
+    // つもりの問い合わせがその作者の**全行の読み取り**に化ける。しかも一覧は正しく
+    // 見えるので、**動作では気づけない**（増えるのは読み取り行数だけ）。
+    const userId = await seedUser('list-bad-limit');
+    await seedGame(userId);
+
+    for (const limit of [-1, -50, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(listAuthoredGames(env, userId, limit)).rejects.toThrow(
+        /一覧の取得件数が不正です/u,
+      );
+    }
+  });
+
+  it('limit が 0 なら 1 行も返さない（例外にはしない）', async () => {
+    // 0 は「不正」ではなく「0 件でよい」である。`LIMIT 0` は SQLite でも 0 件を返す。
+    const userId = await seedUser('list-zero-limit');
+    await seedGame(userId);
+    expect(await listAuthoredGames(env, userId, 0)).toEqual([]);
+  });
 });

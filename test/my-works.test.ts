@@ -10,6 +10,7 @@ import {
   displayTitleOf,
   formatJstMinutes,
   rowStateOf,
+  toIsoTimestamp,
 } from '../src/my-works.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
@@ -380,5 +381,43 @@ describe('表示のための純関数', () => {
     expect(formatJstMinutes(0)).toBe('1970-01-01 09:00');
     expect(formatJstMinutes(1_700_000_000)).toBe('2023-11-15 07:13');
     expect(formatJstMinutes(Number.NaN)).toBe('');
+  });
+
+  it('Date の範囲外でも投げずに空文字を返す', () => {
+    // **`toISOString()` は範囲外の Date で `RangeError` を投げる。** 有限な数でも
+    // ±8.64e15 ミリ秒の外に出れば Invalid Date になるため、`Number.isFinite` だけでは
+    // 足りない。1 行の異常で一覧全体が 500 になる形を塞ぐ。
+    for (const value of [1e15, -1e15, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => formatJstMinutes(value)).not.toThrow();
+      expect(() => toIsoTimestamp(value)).not.toThrow();
+      expect(formatJstMinutes(value), String(value)).toBe('');
+      expect(toIsoTimestamp(value), String(value)).toBe('');
+    }
+  });
+
+  it('読める日時では ISO と日本時間の両方を返す', () => {
+    expect(toIsoTimestamp(1_700_000_000)).toBe('2023-11-14T22:13:20.000Z');
+  });
+});
+
+describe('壊れた行が一覧全体を落とさない（#161 レビュー指摘 1）', () => {
+  it('日時が読めない行があっても 200 で、他の作品は出る', async () => {
+    // #152 が作ろうとしているのは「URL を控えていなくても戻れる道」である。**1 行の
+    // 異常で道ごと消える形はその性質と噛み合わない。** 日時は行の付加情報であって、
+    // 行を出す条件ではない。
+    const userId = await seedUser();
+    const broken = await seedGame(userId, { createdAt: 1e15, title: '壊れた日時の作品' });
+    const normal = await seedGame(userId, { createdAt: 1_700_000_000, title: '普通の作品' });
+
+    const response = await openList(await sessionCookie(userId));
+    expect(response.status).toBe(200);
+
+    const body = await response.text();
+    // 壊れた行も落とさない（作品へは辿れる）。落とすのは `<time>` だけである。
+    expect(body).toContain(broken);
+    expect(body).toContain('壊れた日時の作品');
+    expect(body).toContain(normal);
+    expect(body).toContain('普通の作品');
+    expect(body).not.toContain('datetime=""');
   });
 });

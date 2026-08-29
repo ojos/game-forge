@@ -569,14 +569,17 @@ export interface AuthoredGame {
  *
  * @param env バインディングと環境変数
  * @param authorId 作者の利用者 id
- * @param limit 引く最大件数
+ * @param limit 引く最大件数（0 以上の整数）
  * @returns 新しい順（同時刻は id の降順）の作品
+ * @throws `limit` が 0 以上の整数でない場合
  */
 export async function listAuthoredGames(
   env: Env,
   authorId: string,
   limit: number,
 ): Promise<readonly AuthoredGame[]> {
+  assertLimit(limit);
+
   // 並べ替えの 2 列目に `id` を置くのは、`created_at` が UNIX 秒で**同じ秒に作られた
   // 2 件の順序が決まらない**ためである（`migrations/0008_games_author_id_idx.sql`）。
   // 索引の列順もこの並びに合わせてある。
@@ -603,4 +606,27 @@ export async function listAuthoredGames(
     createdAt: row.created_at,
     startedAt: row.generation_started_at,
   }));
+}
+
+/**
+ * 一覧の取得件数として受け取れる値かを検査する。
+ *
+ * **SQLite は `LIMIT -1` を「無制限」と解釈する。** すなわち負の値を渡すと、上限を
+ * 掛けたつもりの問い合わせが**その作者の全行の読み取り**に化ける。`NaN` や小数も
+ * 意図した件数にはならない。**どれも例外を投げずに「動いて」しまう**ため、動作では
+ * 気づけない（一覧は正しく見える。増えるのは読み取り行数だけである）。
+ *
+ * 3.6 は読み取りの単価が安いと言っているが、**静かに全件を読む経路を開いてよいとは
+ * 言っていない。** 呼び出し側の誤りを、無料枠の消費として先送りしない。
+ *
+ * 形は `src/invites.ts` の `assertQuota` に揃えてある（同じ種類の検査を、同じ書き方で
+ * 置く。読む側が 2 つの流儀を覚えなくて済む）。
+ *
+ * @param limit 検査する値
+ * @throws 0 以上の整数でない場合
+ */
+function assertLimit(limit: number): void {
+  if (!Number.isSafeInteger(limit) || limit < 0) {
+    throw new Error(`一覧の取得件数が不正です: ${limit}`);
+  }
 }

@@ -414,11 +414,43 @@ bash scripts/check-isolated-build.sh
 
 ## Go を更新するとき
 
-3.5 の手順に従います。`docker/isolated-build/Dockerfile` の `FROM` と
-`docker/isolated-build/handler/go.mod` の `go` ディレクティブ、
-`docker/isolated-build/template/go.mod` の 3 か所を同じ版に揃えてください。
-`GOTOOLCHAIN=local` を入れてあるため、揃っていないとイメージのビルドが落ちます
-（**黙って新しいツールチェインを取りに行くよりよい**）。
+3.5 の手順に従います。**版の正本は `docker/isolated-build/Dockerfile` の `ARG GO_VERSION`**
+で、`FROM` の行はその値から組み立てられるため触りません（#101）。`ARG GO_VERSION` と
+`docker/isolated-build/template/go.mod` / `docker/isolated-build/handler/go.mod` の
+`go` ディレクティブが揃っていないと、イメージのビルドが落ちます（`GOTOOLCHAIN=local` を
+入れてあるため。**黙って新しいツールチェインを取りに行くよりよい**）。
+
+### `wasm_exec.js` を新しい版のぶんだけ足す（3.5 手順 5 / #139）
+
+**イメージを作り直しただけでは終わりません。** 配信側は `games.go_version` から
+`runtime/<版>/wasm_exec.js` を引き、**置かれていない版へ別の版を配らず 500 にします**
+（`src/sandbox-delivery.ts`）。すなわち**この段を忘れると、新しくビルドした作品だけが
+プレイできなくなります。**
+
+**#101 が「3 点のうちこの段だけは機械が見ていない」と書いたのがここです。** いまは
+3 本のスクリプトが持ちます。**どれも版の一覧を書き写しません。**
+
+| スクリプト | 役割 |
+|---|---|
+| `scripts/wasm-exec-versions.sh` | **要る版の正本。** `ARG GO_VERSION`（これから作る版）と D1 の `games.go_version`（すでにある版）から導く |
+| `scripts/put-wasm-exec.sh` | イメージから `docker cp` で取り出し、R2 の `runtime/<版>/wasm_exec.js` へ置く |
+| `scripts/check-wasm-exec-objects.sh` | 要る版が R2 に在ることを検査する（終了コードと `WASM_EXEC_PASS`） |
+
+```bash
+bash scripts/check-wasm-exec-objects.sh --remote   # 足りない版が名指しで出る
+bash scripts/put-wasm-exec.sh --remote             # 足りない版を置く（**本番 R2 へ書きます**）
+bash scripts/check-wasm-exec-objects.sh --remote   # 緑を確認する
+```
+
+- **既存の版のものは消しません**（3.5）。過去の作品は `go_version` に従って旧版の
+  `wasm_exec.js` で配信され続けます。
+- **取り出しは `docker cp` です。** `docker run ... cat` の標準出力には載せません
+  （出力はまるごと失われることがあり、しかも終了コードは 0 のまま。上の「手元で動かす」）。
+- **版はイメージ自身に申告させます。** タグを信じず、コンテナ内の `go env GOVERSION` を
+  ファイルへ書いて取り出し、要求した版と照合します。一致しなければ置きません。
+- 取り出し元は既定で `golang:<版>`（Dockerfile の `FROM` と同じイメージ）です。
+  `wasm_exec.js` は Go の配布物そのもので、隔離ビルドイメージが積む層は触らないため、
+  1.51 GB のイメージを作らずに済みます。`--image` で明示すればそちらからも取れます。
 
 ## brotli の品質
 

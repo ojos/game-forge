@@ -90,6 +90,48 @@
 #     書く行にする**（落ちたときの直しかたは失敗メッセージが出す）。
 #   - Go 以外の版（Ebitengine、`golang.org/x/image`）は見ない（#141 の scope.out）。
 #
+# 踏んだ事故（2026-08-29 / #141 のマージ後に main の CI を赤にした）:
+#   **手元（mawk）で緑、CI（gawk）で偽陽性**という形で落ちた。原因は 2 つあり、
+#   **どちらか片方だけでは起きない。**
+#
+#     (1) **`-v` は値のエスケープを解釈する。** POSIX の awk は `-v x=...` の値を
+#         文字列リテラルと同じ規則で処理する。`\.` は awk にとって未知のエスケープで、
+#         **gawk はこれを素の `.`（任意の 1 文字）へ潰す**（警告を出す）。mawk は
+#         バックスラッシュを残すため、手元では正しいまま動いていた。
+#     (2) **分類器へ grep の `パス:行番号:本文` をそのまま渡していた。** 判定したいのは
+#         本文だけなのに、**パスと行番号まで走査対象に入れていた。**
+#
+#   結果、`docs/build-function.md:417:3.5 の手順に従います。…` という**参照形の行**が、
+#   **行番号と節番号をまたいだ `417:3.5` を「版番号」として拾われ**、写しと誤判定された。
+#   その行に版番号は 1 つも書かれていない。
+#
+#   直しかたは 2 つとも塞ぐこと。
+#     (1) **正規表現のドットは `[.]` と書く。** ブラケットの中のドットは BRE でも ERE でも
+#         awk でも常にリテラルで、**エスケープの解釈差が原理的に起きない。** あわせて
+#         パターンは `-v` ではなく **ENVIRON 経由**で渡す（ENVIRON はエスケープを解釈しない）。
+#         `-F.` も単一文字 FS の扱いが実装で割れるため `-F'[.]'` と書く。
+#     (2) **判定は本文だけを見る。** パスと行番号は表示のためだけに持ち、走査から外す。
+#
+#   **自己診断がこれを捕まえられなかったことが、本当の欠陥である。** 当時の合成入力は
+#   参照形の行に**数字を 1 つも含めておらず**、ドットが緩んでも当たりようがなかった。
+#   いまは「参照形」「節番号」「日付」「サイズ」「版番号を含むパス」を合成入力へ入れ、
+#   **`パス:行番号:` を付けた形**で通している（下記 self_check）。実装差でドットが緩めば、
+#   走査へ入る前に自己診断が落ちる。
+
+# 移植性の約束（上記の事故を受けて洗い直した。同じ種類の穴を残さない）:
+#   この検査は sed(BRE) / grep(ERE) / awk(ERE) の 3 つの正規表現方言をまたぐ。
+#   **3 つすべてで同じ意味になる書き方しか置かない**、を約束にする。
+#
+#     - **正規表現のドットは必ず `[.]`。** `\.` は書かない（実装差の入口）。
+#     - **パターンを awk へ渡すのは ENVIRON 経由。** `-v` と `-F` は値をエスケープ解釈する。
+#       `-F` に単一のドットを渡す形（`-F.`）も、単一文字 FS の扱いが割れるので `-F'[.]'` と書く。
+#       `-F'\t'` だけは例外で、`\t` は**どの実装でも定義されている**エスケープなので使ってよい。
+#     - **awk のプログラム本体に書く正規表現リテラルは安全。** 伝達経路を通らないため。
+#     - **GNU 拡張に寄りかからない。** `sed` の `\t` や `\+`、`grep -P` は使わない。
+#       `grep -I`（バイナリを飛ばす）だけは POSIX 外だが、無い実装では grep がエラーを返し、
+#       それは標準エラーの非空として**失敗**に倒れる（黙って通らない）ので許容する。
+#     - **判定に使う文字列は本文だけ。** パス・行番号・整形用の前置きを混ぜない。
+#
 # 検査が成立していないことを合格にしない:
 #   git 管理外での実行、追跡ファイル 0 件、grep 自体の失敗、正本が読めない・複数ある、
 #   **写しが 1 件も見つからない**、のいずれも「写しが正しい」ことを意味しない。すべて失敗。
@@ -126,7 +168,12 @@ DOCKERFILE="docker/isolated-build/Dockerfile"
 # 版番号の形。3 成分に限る。`1.6 GB` や `3.5`（節番号）を拾わないための下限であり、
 # `1.2.38`（変更履歴の節番号）のような 3 成分は形だけでは除けないが、**印のある行しか
 # 見ない**ので実害が出ない（節番号の行が自分の正本を ARG GO_VERSION だと名乗ることは無い）。
-VER_RE='[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*'
+#
+# **ドットは `\.` ではなく `[.]` と書く。** ブラケットの中のドットは BRE でも ERE でも
+# awk でも常にリテラルで、**実装ごとのエスケープ解釈の差が原理的に起きない**（上記「踏んだ
+# 事故」。`\.` は gawk が素の `.` へ潰し、任意の 1 文字になった）。このパターンは sed の BRE と
+# awk の ERE の両方で使い回すので、**両方で同じ意味になる書き方しか置かない。**
+VER_RE='[0-9][0-9]*[.][0-9][0-9]*[.][0-9][0-9]*'
 
 # ── 正本の読み取り ───────────────────────────────────────────────────────────
 
@@ -145,52 +192,98 @@ echo "[go-version] 正本: ${DOCKERFILE} の ARG GO_VERSION=${CANON}"
 
 # ── 写しの分類器 ─────────────────────────────────────────────────────────────
 #
-# 標準入力から `パス:行番号:本文` を読み、**写しでありながら正本を含まない行**だけを
-# そのまま出す。自己診断と本走査で同じ経路を通すために関数へ切り出す
-# （分類器を 2 つ書くと、自己診断が本番と違うものを検査する）。
-classify_stale() {
-  local canon="$1"
-  awk -v canon="$canon" -v ver_re="$VER_RE" '
-    # 印: 同じ行に「ARG GO_VERSION」と「正本」があること。
-    index($0, "ARG GO_VERSION") == 0 { next }
-    index($0, "正本") == 0 { next }
+# 標準入力から grep の `パス:行番号:本文` を読み、1 行ごとに判定を付けて
+# `<判定><TAB><元の行>` を出す。判定は次の 3 つ。
+#
+#   COPY_OK    … 写しであり、正本と一致している
+#   COPY_STALE … 写しであり、正本と食い違っている（＝落とす対象）
+#   NOT_COPY   … 写しではない（記録・参照形・無印の行）
+#
+# **判定するのは本文だけである。** パスと行番号は表示のためだけに持ち、走査へ入れない。
+# 混ぜると、**行番号や版番号入りのパスが「その行に書かれた版」として拾われる**
+# （冒頭「踏んだ事故」。`…:417:3.5 …` が `417:3.5` という版に見えた）。
+#
+# 自己診断と本走査で同じ経路を通すために関数へ切り出す。**判定の定義はここ 1 か所**で、
+# 呼ぶ側は判定名で振り分けるだけにする（分類の条件を 2 か所へ書けば、それ自体が写しになる）。
+#
+# パターンは `-v` ではなく **ENVIRON 経由**で渡す。`-v` は値をエスケープ解釈するため、
+# 正規表現をそこへ通すと実装ごとの差が入り込む（冒頭「踏んだ事故」）。ENVIRON は解釈しない。
+classify() {
+  GO_VER_RE="$VER_RE" GO_CANON="$1" awk '
+    BEGIN {
+      ver_re    = ENVIRON["GO_VER_RE"]
+      canon     = ENVIRON["GO_CANON"]
+      # grep -nH が付ける `パス:行番号:` の形。
+      prefix_re = "^[^:]*:[0-9][0-9]*:"
+    }
     {
-      rest = $0
-      found = 0
-      ok = 0
-      # 行に現れる版番号をすべて拾い、1 つでも正本と一致すれば合格。
+      # 本文だけを取り出す。取り出せない行は黙って通さない（検査が成立していない）。
+      if (!match($0, prefix_re)) { print "NO_PREFIX\t" $0; next }
+      body = substr($0, RLENGTH + 1)
+
+      # 印: 同じ行に「ARG GO_VERSION」と「正本」があること。
+      if (index(body, "ARG GO_VERSION") == 0 || index(body, "正本") == 0) {
+        print "NOT_COPY\t" $0; next
+      }
+
+      # 本文に現れる版番号をすべて拾い、1 つでも正本と一致すれば合格。
+      rest = body; found = 0; ok = 0
       while (match(rest, ver_re)) {
         found = 1
         if (substr(rest, RSTART, RLENGTH) == canon) { ok = 1 }
         rest = substr(rest, RSTART + RLENGTH)
       }
-      # 版番号が無い行は「参照へ置き換えた形」。対象外（合格でも不合格でもない）。
-      if (found && !ok) { print }
+
+      # 版番号が無い行は「参照へ置き換えた形」（#101 が 4 か所へ施した望ましい書き方）。
+      if (!found) { print "NOT_COPY\t"   $0; next }
+      if (ok)     { print "COPY_OK\t"    $0; next }
+                    print "COPY_STALE\t" $0
     }
   '
 }
 
 # ── 自己診断 ─────────────────────────────────────────────────────────────────
 #
-# 分類器へ合成した 4 行を通す。**版番号は正本から組み立てる**（自己診断の中に版を
-# 書き写すと、それ自体が古くなる写しになる）。
-self_canon="$CANON"
-self_stale="$(printf '%s' "$CANON" | awk -F. '{print $1 "." $2 "." $3 + 1}')"
-self_input="$(
-  printf 'X:1:採用バージョン: Go %s。値の正本は Dockerfile の `ARG GO_VERSION`。\n' "$self_canon"
-  printf 'X:2:採用バージョン: Go %s。値の正本は Dockerfile の `ARG GO_VERSION`。\n' "$self_stale"
-  printf 'X:3:実測（2026-08-28 / Go %s）。測った版のまま残す。\n' "$self_stale"
-  printf 'X:4:値の正本は Dockerfile の `ARG GO_VERSION` である（版はここへ書かない）。\n'
-)"
-self_out="$(printf '%s\n' "$self_input" | classify_stale "$CANON" || true)"
+# 合成した入力を分類器へ通し、**判定が期待どおりであること**を確かめる。分類器が
+# 何にも当たらない（常に緑）、または何にでも当たる（常に赤）壊れかたは、走査を回す前に
+# ここで落とす。
+#
+# **入力は grep の出力と同じ `パス:行番号:本文` の形で書く。** 本走査と違う形を通すと、
+# 前置きの扱いを間違えたときに自己診断がそれを見逃す（**現に見逃した**。冒頭「踏んだ事故」）。
+#
+# **版番号は正本から組み立てる。** 自己診断の中へ版を書き写すと、それ自体が古くなる写しになる。
+#
+# 数字の入れかたが要点である。参照形・節番号・日付・サイズ・版番号入りのパスを混ぜてある。
+# **ドットが実装差で緩めば（任意の 1 文字になれば）、これらが版番号に見えて判定が変わる。**
+self_stale="$(printf '%s' "$CANON" | awk -F'[.]' '{ print $1 "." $2 "." ($3 + 1) }')"
+[[ -n "$self_stale" && "$self_stale" != "$CANON" ]] \
+  || fail "自己診断用の版を組み立てられません（正本 ${CANON}）。検査が成立していないため失敗させます。"
 
-printf '%s\n' "$self_out" | grep -q '^X:2:' \
-  || fail "自己診断に失敗しました: 正本と食い違う写しを検出できません。検査が成立していないため失敗させます。"
-if printf '%s\n' "$self_out" | grep -qE '^X:(1|3|4):'; then
-  printf '[go-version] 自己診断に失敗しました: 記録・参照形・正しい写しを誤検出します。\n' >&2
-  printf '%s\n' "$self_out" | grep -E '^X:(1|3|4):' | sed 's/^/[go-version]     /' >&2
-  fail "検査が成立していないため失敗させます。"
-fi
+self_cases="$(
+  printf 'COPY_OK\tdocs/spec.md:1551:**採用バージョン: Go %s**（確定12）。値の正本は `docker/isolated-build/Dockerfile` の `ARG GO_VERSION`。\n' "$CANON"
+  printf 'COPY_STALE\tdocs/spec.md:1552:**採用バージョン: Go %s**（確定12）。値の正本は `docker/isolated-build/Dockerfile` の `ARG GO_VERSION`。\n' "$self_stale"
+  printf 'NOT_COPY\tdocs/spec.md:2058:実測（2026-08-28 / Go %s / #100）。測った版のまま残す。\n' "$self_stale"
+  printf 'NOT_COPY\tdocs/build-function.md:417:3.5 の手順に従います。**版の正本は `docker/isolated-build/Dockerfile` の `ARG GO_VERSION`**\n'
+  printf 'NOT_COPY\tdocs/build-function.md:15:| イメージ | 約 1.6 GB。**版の正本は `docker/isolated-build/Dockerfile` の `ARG GO_VERSION`**\n'
+  printf 'NOT_COPY\tterraform/build-function.tf:268: * 2026-08-28 の注記。正本は `docker/isolated-build/Dockerfile` の `ARG GO_VERSION`）、\n'
+  printf 'NOT_COPY\tdocs/go-%s-notes.md:12:正本は `docker/isolated-build/Dockerfile` の `ARG GO_VERSION`（版はここへ書かない）。\n' "$self_stale"
+)"
+
+self_failed=0
+while IFS="$(printf '\t')" read -r want line; do
+  [[ -n "$want" ]] || continue
+  got="$(printf '%s\n' "$line" | classify "$CANON" | cut -f1)"
+  if [[ "$got" != "$want" ]]; then
+    printf '[go-version] 自己診断: 期待 %s / 実際 %s\n' "$want" "$got" >&2
+    printf '[go-version]     %s\n' "$line" >&2
+    self_failed=1
+  fi
+done <<SELF_EOF
+$self_cases
+SELF_EOF
+
+[[ "$self_failed" -eq 0 ]] \
+  || fail "自己診断に失敗しました。分類器が期待どおりに動いていないため、走査へ進まず失敗させます（awk の方言差を疑うこと。冒頭「踏んだ事故」）。"
 
 # ── 実装側 3 点の一致 ────────────────────────────────────────────────────────
 #
@@ -266,14 +359,25 @@ if [[ "$grep_status" -ne 0 && "$grep_status" -ne 123 ]]; then
   fail "走査が異常終了しました（xargs 終了コード ${grep_status}）。検査が成立していないため失敗させます。"
 fi
 
-# 2 段目: 印の揃った行を「写し」とみなし、正本を含むかどうかで分ける。
-copies="$(awk -v ver_re="$VER_RE" '
-  index($0, "ARG GO_VERSION") && index($0, "正本") && match($0, ver_re) { print }
-' "$HITS" || true)"
-stale="$(classify_stale "$CANON" < "$HITS" || true)"
+# 2 段目: 1 段目の当たりを分類器へ通す。**判定の定義は classify の中だけにある。**
+# ここで条件をもう一度書くと、それ自体が写しになって片方だけ古くなる。
+verdicts="$(classify "$CANON" < "$HITS" || true)"
 
-copy_count=0
-[[ -n "$copies" ]] && copy_count="$(printf '%s\n' "$copies" | wc -l | tr -d ' ')"
+# 前置き（`パス:行番号:`）を外せなかった行。パス名にコロンが入ると起こりうる。
+# **本文だけを判定するという前提が崩れているので、黙って通さない。**
+no_prefix="$(printf '%s\n' "$verdicts" | awk -F'\t' '$1 == "NO_PREFIX" { print substr($0, index($0, "\t") + 1) }')"
+if [[ -n "$no_prefix" ]]; then
+  printf '[go-version] 走査結果から `パス:行番号:` を外せない行があります。本文だけを判定できないため失敗させます:\n' >&2
+  printf '%s\n' "$no_prefix" | sed 's/^/[go-version]     /' | cut -c1-200 >&2
+  echo "GO_VERSION_FAIL"
+  exit 1
+fi
+
+# 表示は「最初の TAB 以降すべて」を取る。`$2` だと、元の行が TAB を含むときに
+# そこで切れて表示が壊れる（判定には影響しないが、直す場所が読めなくなる）。
+stale="$(printf '%s\n' "$verdicts" | awk -F'\t' '$1 == "COPY_STALE" { print substr($0, index($0, "\t") + 1) }')"
+copy_count="$(printf '%s\n' "$verdicts" \
+  | awk -F'\t' '$1 == "COPY_OK" || $1 == "COPY_STALE" { n++ } END { print n + 0 }')"
 
 # 写しが 1 件も無い状態を合格にしない。写しの置き場は 3.5 の更新手順 6 が
 # 「値を書かないわけにいかない」と認めた箇所であり、**0 になるのは、写しが
@@ -296,7 +400,7 @@ printf '[go-version] 写し %s 件が正本と一致（追跡 %s 件を走査）
 echo "GO_VERSION_PASS"
 
 # 実測（2026-08-29 / 追跡 181 件・2.6 MB / 開発コンテナ / 5 回平均）:
-#   このスクリプト全体で **35 ms**。同じ環境・同じ測りかたで
+#   このスクリプト全体で **39 ms**（自己診断の 7 件で 4 ms ほど増えた）。同じ環境・同じ測りかたで
 #   check-control-chars.sh が 22 ms、check-deps-installed.sh が 15 ms なので、
 #   **既にループの反復ごとに回っている検査と同じ桁**である（npm test は 2 桁上）。
 #   費用の内訳は追跡ファイルの列挙と 1 回の grep でほぼ全部で、追跡ファイル数に

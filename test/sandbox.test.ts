@@ -150,6 +150,35 @@ describe('パスの解釈（#28）', () => {
     expect(parseSandboxPath(`/p/${previewKey}`)).toEqual(parseSandboxPath(`/p/${previewKey}/`));
   });
 
+  it('空のセグメントはどの位置でも通さない', () => {
+    // **ここが緩むと実害がある。** `/p/<key>//` が文書として通ると、返す文書が埋める
+    // 資材のパスは正規の綴り（`/p/<key>/game.wasm`）である一方、CSP は要求された URL の
+    // ほうから組み立てられるため、**CSP が許した URL と実際に読む URL が食い違う。**
+    // 結果は「自分の wasm を読めないページ」で、200 で返るぶん壊れて見えない。
+    const previewKey = 'd'.repeat(32);
+    const gameId = '0189d3f2-9c1a-4b7e-8f0d-1a2b3c4d5e6f';
+    for (const path of [
+      `/p/${previewKey}//`, // 末尾スラッシュの重なり
+      `/g/${gameId}//`,
+      `/g/${gameId}/game.wasm/`, // ファイル名に末尾スラッシュは付かない
+      `/p/${previewKey}/wasm_exec.js/`,
+      `/p//${previewKey}/`,
+      `/p/${previewKey}//game.wasm`,
+    ]) {
+      expect(parseSandboxPath(path), path).toBeNull();
+    }
+  });
+
+  it('末尾スラッシュを許すのは文書の経路だけである', () => {
+    // 文書は `/p/<key>` と `/p/<key>/` の両方を受ける（リンクを踏む体験のため）。
+    // 資材は 1 つの綴りしか受けない。
+    const previewKey = 'e'.repeat(32);
+    expect(parseSandboxPath(`/p/${previewKey}`)).not.toBeNull();
+    expect(parseSandboxPath(`/p/${previewKey}/`)).not.toBeNull();
+    expect(parseSandboxPath(`/p/${previewKey}/game.wasm`)).not.toBeNull();
+    expect(parseSandboxPath(`/p/${previewKey}/game.wasm/`)).toBeNull();
+  });
+
   it('綴りが違えば必ず null を返す', () => {
     const previewKey = 'c'.repeat(32);
     const gameId = '0189d3f2-9c1a-4b7e-8f0d-1a2b3c4d5e6f';
@@ -308,10 +337,31 @@ describe('公開状態による出し分け（5.4 / #28）', () => {
     expect(await unknown.text()).toBe(await notPublished.text());
   });
 
-  it('GET と HEAD 以外は 405 になる', async () => {
+  it('空セグメントの混ざった URL は配信経路でも 404 になる', async () => {
+    // 上の `parseSandboxPath` の検査と同じことを、入口から通して見る。
+    const game = await seedGame({ suffix: 'empty-seg', status: 'published' });
+    expect((await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`)).status).toBe(200);
+    for (const path of [`/g/${game.id}//`, `/g/${game.id}/game.wasm/`]) {
+      expect((await SELF.fetch(`${SANDBOX_ORIGIN}${path}`)).status, path).toBe(404);
+    }
+  });
+
+  it('HEAD は受け付ける', async () => {
+    // 405 の本文と `Allow` が「HEAD も受ける」と言っている以上、実際に受けること。
+    const game = await seedGame({ suffix: 'head', status: 'published' });
+    const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`, { method: 'HEAD' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toContain('sandbox allow-scripts');
+  });
+
+  it('GET と HEAD 以外は Allow 付きの 405 になる', async () => {
     const game = await seedGame({ suffix: 'method', status: 'published' });
     const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`, { method: 'POST' });
     expect(response.status).toBe(405);
+    // `src/routes.ts` の 405 と同じ形（「経路はあるが呼び方が違う」ことを示す）。
+    expect(response.headers.get('allow')).toBe('GET, HEAD');
+    // **本文が実際の判定とずれていないこと。** 受け付けるメソッドを本文でも名乗る。
+    expect(await response.text()).toContain('GET, HEAD');
   });
 });
 

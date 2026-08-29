@@ -48,6 +48,18 @@ export const WASM_FILE = 'game.wasm';
 export const WASM_EXEC_FILE = 'wasm_exec.js';
 
 /**
+ * この経路が受け付けるメソッド。
+ *
+ * **判定にも `Allow` ヘッダにも本文にも、この 1 つの配列を使う。** 別々に書くと、
+ * 「HEAD は通るのに『GET だけを受け付けます』と答える」ような食い違いが生まれる
+ * （実際にそうなっていた）。読み取りしか無い経路なので、これ以上増えることはない。
+ *
+ * `Allow` の綴りは `src/routes.ts` の `allowedMethods` に揃える（`, ` 区切り）。
+ * アプリ側とサンドボックス側で 405 の形が違う理由が無い。
+ */
+const ALLOWED_METHODS = ['GET', 'HEAD'] as const;
+
+/**
  * `preview_key` の綴り。**16 進 32 桁 = 128 ビット。**
  *
  * 形を固定するのは推測困難性のためだけではない。この値は URL から取り出して
@@ -102,15 +114,25 @@ export interface SandboxTarget {
  * @returns 解釈できた要求。できなければ null
  */
 export function parseSandboxPath(pathname: string): SandboxTarget | null {
-  // 先頭の `/` を落としてから分解する。`/p/x/` は ['p', 'x', ''] になるので、
-  // 末尾の空要素だけを 1 つ許して落とす（`//` のような綴りは救わない）。
   const rawSegments = pathname.replace(/^\//u, '').split('/');
+
+  // **末尾の空要素を許すのは、文書の経路（2 セグメント）のときだけである。**
+  // `/p/<key>/` を `/p/<key>` と同じ綴りとして受けるためのもので、それ以外の位置に
+  // 空セグメントがあれば下の検査で落ちる。
+  //
+  // ここを「末尾の空要素を 1 つ落とす」だけにすると `/p/<key>//` と
+  // `/g/<id>/game.wasm/` が通ってしまう。**通ると実害がある。** 配信された文書が
+  // 埋める資材のパスは正規の綴り（`/p/<key>/game.wasm`）だが、CSP は要求された URL の
+  // ほうから組み立てられるため、**CSP が許した URL と実際に読む URL が食い違う。**
+  // 結果は「自分の wasm を読めないページ」で、しかも 200 で返るので壊れて見えない。
   const segments =
-    rawSegments.length > 1 && rawSegments[rawSegments.length - 1] === ''
-      ? rawSegments.slice(0, -1)
-      : rawSegments;
+    rawSegments.length === 3 && rawSegments[2] === '' ? rawSegments.slice(0, 2) : rawSegments;
 
   if (segments.length < 2 || segments.length > 3) {
+    return null;
+  }
+  // 空セグメント（`//` や先頭の `/` の重なり）はどの位置でも通さない。
+  if (segments.some((segment) => segment === '')) {
     return null;
   }
 
@@ -125,7 +147,12 @@ export function parseSandboxPath(pathname: string): SandboxTarget | null {
     return null;
   }
 
-  const asset = assetOf(segments.length === 3 ? segments[2]! : '');
+  // 2 セグメントなら文書、3 セグメントなら 3 つ目がファイル名である。
+  if (segments.length === 2) {
+    return { scope, identifier, asset: 'document' };
+  }
+
+  const asset = assetOf(segments[2]!);
   if (asset === null) {
     return null;
   }
@@ -150,15 +177,16 @@ function scopeOf(prefix: string): SandboxScope | null {
 }
 
 /**
- * 3 番目のセグメントから資材の種類を決める。
+ * 3 番目のセグメント（ファイル名）から資材の種類を決める。
  *
- * @param name ファイル名（空文字なら文書そのもの）
+ * **空文字を受け付けない。** 文書の経路は呼び出し側が 2 セグメントの時点で確定させる。
+ * ここで空文字を `document` として扱うと、`/p/<key>//` のように空セグメントが
+ * 混ざった綴りまで文書として通る余地が残る。
+ *
+ * @param name ファイル名
  * @returns 資材の種類。未知の名前なら null
  */
 function assetOf(name: string): SandboxAsset | null {
-  if (name === '') {
-    return 'document';
-  }
   if (name === WASM_FILE) {
     return 'wasm';
   }
@@ -323,9 +351,15 @@ function sandboxHeaders(csp: string, extra: Record<string, string>): Headers {
  * @param status HTTP ステータス
  * @param message 本文（利用者向けの短い日本語）
  * @param context CSP の組み立てに使うオリジン
+ * @param extra 追加のヘッダ（405 の `Allow` など）
  * @returns レスポンス
  */
-function sandboxError(status: number, message: string, context: ResponseContext): Response {
+function sandboxError(
+  status: number,
+  message: string,
+  context: ResponseContext,
+  extra: Record<string, string> = {},
+): Response {
   const csp = sandboxCsp({
     // エラー文書は何も読み込まない。ここは `'none'` のままである（7.2 のとおり）。
     scriptUrl: null,
@@ -337,6 +371,7 @@ function sandboxError(status: number, message: string, context: ResponseContext)
     headers: sandboxHeaders(csp, {
       'content-type': 'text/plain; charset=utf-8',
       'cache-control': 'no-store',
+      ...extra,
     }),
   });
 }
@@ -352,8 +387,13 @@ export async function deliverSandboxRequest(request: Request, env: Env): Promise
   const context = responseContextOf(request, env);
 
   // 読み取りしか無い経路である。POST / PUT の類は受けない。
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    return sandboxError(405, 'この経路は GET だけを受け付けます。', context);
+  //
+  // **`Allow` を付ける。** `src/routes.ts` は「経路はあるが呼び方が違う」ことを
+  // `Allow` で示す設計を持っており、こちらだけ落とす理由が無い。本文と `Allow` の
+  // どちらも `ALLOWED_METHODS` から作るので、実際の判定とずれない。
+  if (!(ALLOWED_METHODS as readonly string[]).includes(request.method)) {
+    const allow = ALLOWED_METHODS.join(', ');
+    return sandboxError(405, `この経路は ${allow} だけを受け付けます。`, context, { allow });
   }
 
   const target = parseSandboxPath(new URL(request.url).pathname);

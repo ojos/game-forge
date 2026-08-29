@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 本ファイルが固定するのは **「掃除がハンドラの先頭で走る」という順序そのもの**である
@@ -317,5 +318,81 @@ func TestHandleCopiesTheTemplateAndPlacesTheSource(t *testing.T) {
 	}
 	if _, err := os.Stat(scratch); err != nil {
 		t.Fatalf("作業領域が消えています: %v", err)
+	}
+}
+
+// 時間切れのログが、実際に効いた期限を名乗ることの検査（#165）。
+//
+// **秒数を書き写した文言は、宣言を変えた瞬間に嘘になる。** 実際 v1.x の文言は
+// 「3.8 のタイムアウトは 10 秒」と名乗ったまま 29,528 ms 走った実行を説明していた。
+// ここで固定するのは「**ctx の deadline から導いていること**」であって、特定の秒数
+// ではない（秒数を検査へ書き写すと、同じ写しをもう 1 か所増やすことになる）。
+func TestHandleReportsTheDeadlineItActuallyHad(t *testing.T) {
+	h, _ := newTestHandler(t)
+	// ビルドが期限を超えるまで戻らない状況を模す。**実物の go build は呼ばない。**
+	h.compile = func(ctx context.Context, _, _ string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	const budget = 40 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+
+	_, err := h.Handle(ctx, Event{Source: "package main\n"})
+	if err == nil {
+		t.Fatal("時間切れが関数の障害として返っていません")
+	}
+
+	// 呼び出し側（src/build-client.ts の toFunctionFailure）はこの綴りで
+	// 時間切れを見分ける。**落とすと BuildFunctionFailed に化ける。**
+	if !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("時間切れの綴りが失われています: %v", err)
+	}
+	// **与えた期限が文言に現れる。** 40 ms を渡したのだから、ハンドラは
+	// 40 前後を名乗るはずである（起点のずれで 39 になりうるので前方一致では見ない）。
+	if !strings.Contains(err.Error(), "内部期限は") {
+		t.Fatalf("実際に効いた期限が説明されていません: %v", err)
+	}
+	// **どこを見れば宣言が読めるかを添える**（値そのものは ctx から導けない。
+	// Lambda は関数のタイムアウトを環境変数で渡さない）。
+	if !strings.Contains(err.Error(), "build_function_timeout_seconds") {
+		t.Fatalf("宣言の在り処が示されていません: %v", err)
+	}
+}
+
+// 既に過ぎた期限を「負の内部期限」として出さないことの検査（#168）。
+//
+// **ログが実態と違う値を名乗る形は #165 が直したものと同じ種類である。**
+// 呼び出しが滞留して deadline を過ぎてから処理が始まることは実際に起こりうる。
+func TestDescribeBudgetWithAnExpiredDeadline(t *testing.T) {
+	started := time.Now()
+	// 処理の開始時点で既に 30 ms 過ぎている状況。
+	ctx, cancel := context.WithDeadline(context.Background(), started.Add(-30*time.Millisecond))
+	defer cancel()
+
+	described := describeBudget(ctx, started)
+	if !strings.Contains(described, "既に過ぎていました") {
+		t.Fatalf("期限切れが説明されていません: %q", described)
+	}
+	// **負の数を出さない。** 「内部期限は -30 ms」と書くと読み手を誤らせる。
+	if strings.Contains(described, "-") {
+		t.Fatalf("負の値が出ています: %q", described)
+	}
+	if strings.Contains(described, "内部期限は") {
+		t.Fatalf("残っていない期限を残っているかのように名乗っています: %q", described)
+	}
+}
+
+// 期限を持たない呼び出し（oneshot）では、期限の側を名乗らないことの検査（#165）。
+//
+// **無い値を 0 と書くと「0 ms で打ち切られた」と読める。**
+func TestDescribeBudgetWithoutDeadline(t *testing.T) {
+	described := describeBudget(context.Background(), time.Now())
+	if !strings.Contains(described, "期限は設定されていません") {
+		t.Fatalf("期限の不在が説明されていません: %q", described)
+	}
+	if strings.Contains(described, "内部期限は") {
+		t.Fatalf("無い期限を名乗っています: %q", described)
 	}
 }

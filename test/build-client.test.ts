@@ -130,6 +130,32 @@ function okResponse(body: unknown, headers: Record<string, string> = {}): Respon
   });
 }
 
+/**
+ * 関数が自分の内部期限で打ち切ったときの応答（`main.go` の `deadlineMargin` 経路）。
+ *
+ * **判定に要る綴りだけを持つ。** 見分けているのは `context deadline exceeded` の
+ * 1 語であり（`toFunctionFailure`）、実際の文言に含まれる経過時間・内部期限・宣言の
+ * 在り処は**判定に関与しない。**
+ *
+ * **運用の設定を検査へ書き写さない**（レビュー指摘 / #168。shared-ai-rules 12 章）。
+ * 「44,500 ms」「500ms」まで固定すると、**タイムアウトを変えるたびに無関係な
+ * テスト修正が要る**——この PR 自身が 30 → 45 秒へ変えたばかりで、メモリ引き上げの
+ * あとは 20 秒へ下げる予定である。**実際の文言は
+ * `docker/isolated-build/handler/handler_test.go` が押さえる**ので、こちらで
+ * 二重に固定する理由も無い。
+ *
+ * @returns 関数の時間切れを表す応答
+ */
+function functionTimeoutResponse(): Response {
+  return okResponse(
+    {
+      errorMessage: 'ビルドが時間内に終わりませんでした: context deadline exceeded',
+      errorType: 'BuildFunctionError',
+    },
+    { 'x-amz-function-error': 'Unhandled' },
+  );
+}
+
 /** 生成結果の雛形（3.3-3 の出力）。 */
 function generated(source: string): GenerationResult {
   return {
@@ -453,17 +479,10 @@ describe('失敗の区別（#20 / 3.8 の degrade 判定）', () => {
   });
 
   it('関数が自分の deadline で打ち切った場合も kind=timeout になる', async () => {
-    // 通常はこちらの経路になる（main.go の deadlineMargin が 500 ms 手前で切る）。
-    const seam = capturingFetch(() =>
-      okResponse(
-        {
-          errorMessage:
-            'ビルドが時間内に終わりませんでした（29500 ms 経過。3.8 のタイムアウトは 10 秒）: context deadline exceeded',
-          errorType: 'BuildFunctionError',
-        },
-        { 'x-amz-function-error': 'Unhandled' },
-      ),
-    );
+    // 通常はこちらの経路になる（main.go が Lambda の deadline より手前で切る）。
+    // **見分けているのは `context deadline exceeded` の 1 語だけ**なので、fixture も
+    // それだけを持つ（{@link functionTimeoutResponse} の注記）。
+    const seam = capturingFetch(functionTimeoutResponse);
 
     const error = await invokeBuildFunction(buildEnv(), 'package main', {
       fetch: seam.fetch,
@@ -568,17 +587,6 @@ function sequencedFetch(responses: readonly (() => Response)[]): {
       return next();
     },
   };
-}
-
-/** 関数側の時間切れ（`main.go` の内部期限）を模した応答。 */
-function functionTimeoutResponse(): Response {
-  return okResponse(
-    {
-      errorMessage: 'ビルドが時間内に終わりませんでした: context deadline exceeded',
-      errorType: 'BuildFunctionError',
-    },
-    { 'x-amz-function-error': 'Unhandled' },
-  );
 }
 
 describe('関数側の時間切れは同じソースで呼び直す（#164）', () => {

@@ -38,6 +38,26 @@ ran_any=0
 echo "[acceptance] (hygiene) scripts/check-control-chars.sh"
 bash scripts/check-control-chars.sh
 
+# Go の版の写しと正本（ARG GO_VERSION）の機械照合（#141 / shared-ai-rules 12 章）。
+#
+# **前寄りに置く。** 35 ms で終わり（実測。同スクリプト末尾）、npm test より 2 桁安い。
+# 安い検査から落として反復を短くするのは、上の制御文字検査や verify.sh の機密混入検査と
+# 同じ考え方である。
+#
+# **判定はスクリプト側が持つ**（記録と写しの見分けかた、除外を表現する形、承知のうえで
+# 受け入れた限界は scripts/check-go-version-copies.sh の冒頭）。
+#
+# 走査そのものは追跡ファイル全体に及ぶが、**照合の起点は docker/isolated-build/Dockerfile
+# の `ARG GO_VERSION`** なので、正本が無いプロジェクトでは走らせても意味がない。他の検査が
+# マニフェストの有無で分岐しているのと同じ形にそろえる。
+if [[ -f docker/isolated-build/Dockerfile ]]; then
+  echo "[acceptance] (go-version) scripts/check-go-version-copies.sh"
+  bash scripts/check-go-version-copies.sh
+  ran_any=1
+else
+  echo "[acceptance] (go-version) skip: docker/isolated-build/Dockerfile not found"
+fi
+
 if [[ -f package.json ]]; then
   command -v npm >/dev/null 2>&1 || { echo "[acceptance] (node) npm not found. install Node.js (npm) to run this acceptance check." >&2; exit 1; }
   # 依存の実体が宣言（package-lock.json）と一致していること（#99）。

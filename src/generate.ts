@@ -588,7 +588,21 @@ export async function runGenerationJob(
       // 先に `preview_key` を書くと、成果物の無い行が配信側から引けてしまう
       // （`src/games.ts` の冒頭）。
       if (built !== null) {
-        await pipeline.completeGame(env, job.gameId, built);
+        // **戻り値を捨てない。** 0 行更新は「この行はもう `running` ではない」
+        // という意味で、成果物を書けていない。捨てて `return` すると**ジョブが
+        // 成功扱いになり、行は `running` のまま残る**——作品ページが永遠に
+        // 「生成中」を出し続ける状態そのものである（下の catch のコメント参照）。
+        //
+        // **例外にして外側の catch へ渡す。** そこで `failGame` が走るので、
+        // 利用者には「終わらない生成」ではなく「失敗した生成」として見える。
+        // どちらも良くはないが、**回り続ける表示より失敗として読めるほうがよい。**
+        //
+        // なお行が既に `ready` / `failed` なら `failGame` も 0 行更新になり、
+        // **先に確定した状態を上書きしない**（`src/games.ts`）。
+        const completed = await pipeline.completeGame(env, job.gameId, built);
+        if (!completed) {
+          throw new GenerationNotCompletable(job.gameId);
+        }
         return;
       }
     }
@@ -599,6 +613,11 @@ export async function runGenerationJob(
   } catch (error) {
     // **失敗も必ず行へ書く。** 書かないと `running` のまま永久に残り、作品ページが
     // 「生成中」を出し続ける。利用者から見て、失敗したことすら分からない状態になる。
+    //
+    // **ここは戻り値を捨ててよい**（成功経路とは事情が違う）。false は「その行はもう
+    // `pending` / `running` ではない」という意味で、`GenerationNotCompletable` で
+    // 来たときは実際にそうなる。**先に確定した状態を上書きしないのが正しい**ので、
+    // ここで再び投げると元の例外を握り潰すことにしかならない。
     await failGame(env, job.gameId, generationErrorCodeOf(error));
     throw error;
   }
@@ -621,6 +640,24 @@ function generationErrorCodeOf(error: unknown): GenerationErrorCode {
     return 'build-failed';
   }
   return 'internal';
+}
+
+/**
+ * 成果物は揃ったのに、作品行を完成させられなかった（#150）。
+ *
+ * `completeGame` が 0 行更新を返した状態、すなわち**その行がもう `running` では
+ * ない**ことを意味する。同じジョブが二重に走って片方が先に終えた、運用で状態を
+ * 触った、といった経路が該当する。
+ *
+ * **成功にしない。** 成功として返すと行は `running` のまま残り、作品ページが
+ * 永遠に「生成中」を出し続ける。`src/generate.ts` 冒頭の「空実装を成功にしない」
+ * と同じ判断で、**書けていないことを書けたことにしない。**
+ */
+export class GenerationNotCompletable extends Error {
+  constructor(readonly gameId: string) {
+    super('作品行を完成させられませんでした（行が running ではありません）');
+    this.name = 'GenerationNotCompletable';
+  }
 }
 
 /**

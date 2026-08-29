@@ -329,8 +329,17 @@ function parseArtifacts(value: unknown): FinishArtifacts | null {
   if (typeof wasmKey !== 'string' || wasmKey === '') {
     return null;
   }
-  // **ヒット時は `null` である**（索引を書き直さない。`buildCacheRecordOf`）。
-  if (cacheRecord === null || cacheRecord === undefined) {
+  // **項目そのものが無い場合は断る。** 欠落（`undefined`）とキャッシュヒット（`null`）を
+  // 同じ扱いにすると、**呼ぶ側が索引の更新を落としたことを検出できない。** そのまま
+  // `ready` へ進むと 3.8 の索引が更新されず、次に同じソースが来てもヒットしない
+  // ——気づけないまま約 16 円と 21.6 秒を余計に払い続ける。
+  //
+  // **`null` は明示的な「書き直さない」である**（ヒット時。`buildCacheRecordOf` が
+  // null を返す）。意図した null と、書き忘れた undefined を区別する。
+  if (!Object.prototype.hasOwnProperty.call(value, 'cacheRecord')) {
+    return null;
+  }
+  if (cacheRecord === null) {
     return { goVersion, sourceKey, wasmKey, cacheRecord: null };
   }
   const record = parseCacheRecord(cacheRecord);

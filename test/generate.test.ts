@@ -7,6 +7,7 @@ import {
   QuotaExceeded,
   createGenerateRoutes,
   defaultPipeline,
+  GenerationNotCompletable,
   notImplementedPipeline,
   runJobInline,
   startGeneration,
@@ -1050,6 +1051,26 @@ describe('失敗も必ず作品行へ書く（#150）', () => {
       startGeneration(env, userId, { prompt: '許可外の作品' }, rejecting),
     ).rejects.toBeInstanceOf(GeneratedSourceRejected);
     expect(await latestStateOf(userId)).toEqual({ state: 'failed', error: 'source-rejected' });
+  });
+
+  it('行を完成させられなかったら成功にしない（永遠に「生成中」を作らない）', async () => {
+    // **戻り値を捨てると、ジョブが成功扱いのまま行が `running` で残る。**
+    // 作品ページが永遠に「生成中」を出し続ける状態そのものである。
+    // **回り続ける表示より、失敗として読めるほうがよい。**
+    const userId = await seedUser('not-completable');
+    const { pipeline } = recordingPipeline();
+    const stuck: GenerationPipeline = {
+      ...pipeline,
+      // 0 行更新（もう `running` ではない）を再現する。
+      completeGame: async () => false,
+    };
+
+    await expect(
+      startGeneration(env, userId, { prompt: '完成できない作品' }, stuck),
+    ).rejects.toBeInstanceOf(GenerationNotCompletable);
+
+    // `running` のまま残らないこと。
+    expect(await latestStateOf(userId)).toEqual({ state: 'failed', error: 'internal' });
   });
 
   it('クォータで断られたときは行を 1 つも作らない', async () => {

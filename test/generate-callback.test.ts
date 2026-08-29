@@ -530,6 +530,37 @@ describe('finish（成功側）', () => {
     expect((await stateOf(id)).state).toBe('ready');
   });
 
+  it('cacheRecord の項目そのものが無ければ断る（索引更新の落としを検出する）', async () => {
+    // **欠落（項目なし）とキャッシュヒット（null）を同じ扱いにしない。**
+    // 同じにすると、呼ぶ側が索引の更新を落としたことを検出できず、そのまま `ready` へ
+    // 進む。次に同じソースが来てもヒットせず、**気づけないまま約 16 円と 21.6 秒を
+    // 余計に払い続ける。**
+    const { id, jobToken } = await seedPending('finish-missing-record');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const artifacts = artifactsBody();
+    delete artifacts['cacheRecord'];
+
+    const response = await post({ gameId: id, jobToken, kind: 'finish', artifacts });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'invalid-artifacts' });
+    // 進んでいないこと。
+    expect((await stateOf(id)).state).toBe('running');
+  });
+
+  it('明示的な null は受け付ける（ヒット時の「書き直さない」）', async () => {
+    // 上の検査が厳しすぎないことの確認。**意図した null と書き忘れを区別している。**
+    const { id, jobToken } = await seedPending('finish-explicit-null');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    const response = await post({
+      gameId: id,
+      jobToken,
+      kind: 'finish',
+      artifacts: artifactsBody({ cacheRecord: null }),
+    });
+    expect(await response.json()).toEqual({ accepted: true, finished: true });
+  });
+
   it('壊れた cacheRecord を断る', async () => {
     const { id, jobToken } = await seedPending('finish-bad-record');
     await post({ gameId: id, jobToken, kind: 'claim' });

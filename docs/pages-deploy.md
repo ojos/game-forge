@@ -251,6 +251,36 @@ Cloudflare 側に「どのコミットが本番に居るか」が残らず、配
 以外を配備しない**こと。手元の作業ツリーが汚れていると `commit_dirty` が立ち、
 やはり検知に掛かります。
 
+### 7. `wasm_exec.js` を本番 R2 へ置く（3.5 / #139）
+
+**配備だけでは作品は動きません。** サンドボックス配信は `games.go_version` から
+R2 の `runtime/<版>/wasm_exec.js` を引き、**置かれていない版へ別の版を配らず 500 に
+します**（`src/sandbox-delivery.ts`）。**この段が抜けている間、プレイ経路は 500 です。**
+
+**これは「初回のみ」ではありません。** Go のピン留めを上げるたびに要ります。手順は
+[build-function.md](build-function.md)「Go を更新するとき」にも結線してあります。
+
+```bash
+set -a; source scripts/load-project-env.sh; set +a
+
+bash scripts/check-wasm-exec-objects.sh --remote   # 何が足りないかを先に見る
+bash scripts/put-wasm-exec.sh --remote             # **本番の R2 へ書き込みます**
+bash scripts/check-wasm-exec-objects.sh --remote   # WASM_EXEC_PASS を確認する
+```
+
+- **`--remote` を明示したときだけ本番へ書きます。** 既定は `--local` です。
+- **置く版を自分で数えなくてよい。** `scripts/wasm-exec-versions.sh` が
+  `docker/isolated-build/Dockerfile` の `ARG GO_VERSION` と、本番 D1 の
+  `games.go_version`（`removed` 以外）から導きます。**版を書き写す場所を作りません。**
+- **要るのは Docker と Cloudflare の API トークンです。** 前者は取り出し元のイメージを
+  動かすため、後者は `wrangler r2 object put --remote` のためで、どちらも `.env` の
+  `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` を上の `source` で環境へ移します
+  （「前提: 認証」）。
+- **既存の版のものは消しません**（3.5）。過去の作品は旧版で配信され続けます。
+- 冪等です。同じ版へ 2 回置いても同じ内容が入ります。
+
+置いたあとの実地確認は下の「確認」にあります。
+
 ## 自動配備（日常の経路。#95）
 
 **`main` へマージすると、GitHub Actions が本番へ配備します。** 実体は

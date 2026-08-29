@@ -288,26 +288,37 @@ content-security-policy: sandbox allow-scripts; default-src 'none';
 | `/p/<key>/game.wasm` | 404 | `wasm_key` が NULL（tombstone と同じ扱い。5.3） |
 | `/p/<key>/wasm_exec.js` | 500 | R2 に `runtime/go1.26.5/wasm_exec.js` が無い |
 
-`wasm_exec.js` は**まだ誰も R2 へ置いていません**（3.5 の「イメージからこのファイルを
-取り出して配信側へ配置する」が未実施。別 issue）。手元で先へ進めたい場合は、ローカル
-R2 へ直接置けます。
+`wasm_exec.js` の実体は **`scripts/put-wasm-exec.sh` が置きます**（#139）。3.5 の更新手順 5
+「イメージからこのファイルを取り出して配信側へ配置する」を機械にした 1 本です。
+**手で `wrangler r2 object put` を叩く形はやめました**（理由は下記）。
 
 ```bash
-# キーの版と、置くファイルの版は必ず同じにする（下記の注意）
-GOV="$(go env GOVERSION)"   # 例: go1.26.5
-npx wrangler r2 object put "game-forge-local/runtime/${GOV}/wasm_exec.js" \
-  --file "$(go env GOROOT)/lib/wasm/wasm_exec.js" --local
+bash scripts/put-wasm-exec.sh              # 要る版すべてをローカル R2 へ置く
+bash scripts/check-wasm-exec-objects.sh    # 在ることを検査する（WASM_EXEC_PASS）
 ```
 
-- **`--local` を外さないこと。** 外すと本番の R2 を触ります。
+- **置く版を自分で数えなくてよい。** `scripts/wasm-exec-versions.sh` が
+  `docker/isolated-build/Dockerfile` の `ARG GO_VERSION`（これから作られる作品の版）と、
+  D1 の `games.go_version`（すでにある作品の版）から導きます。**版の一覧を書き写す場所を
+  作りません。**
+- 既定は `--local` です。**本番へ書くのは `--remote` を明示したときだけ**で、逆にすると
+  手元の試行が本番の共有資材を上書きする経路が既定になります。本番の手順は
+  [pages-deploy.md](pages-deploy.md) の「`wasm_exec.js` を本番 R2 へ置く」にあります。
 - 置いた内容は `wrangler pages dev` を再起動しなくても次の要求から反映されます。
-- **キーの版は `games.go_version` と一致させること。** 配信側は
-  `runtime/<go_version>/wasm_exec.js` を引き、**見つからなければ別の版へ落とさず 500 に
-  します**（3.5。版の違う `wasm_exec.js` は読み込みに成功して実行時に壊れるため、
-  いちばん原因が読めない失敗になる）。手元の `go version` がビルドイメージ
-  （`docker/isolated-build/Dockerfile` の `golang:` タグ）と違う場合、**手元の
-  `wasm_exec.js` を `go1.26.5` のキーへ置かないこと。** それは 3.5 が防ごうとしている
-  取り違えそのものです。
+
+**手元の Go から版を導いてはいけません。** ここには以前 `go env GOVERSION` と
+`$(go env GOROOT)/lib/wasm/wasm_exec.js` を使う手順が書いてありましたが、それは
+**3.5 が防ごうとしている取り違えそのもの**です。手元のツールチェインはビルドイメージと
+無関係に更新されるため、版のずれた `wasm_exec.js` を正しい名前のキーへ置けてしまいます。
+配信側は見つからなければ別の版へ落とさず 500 にしますが、**中身だけが違う版のときは
+200 で配ってしまい、実行時に壊れます**（いちばん原因が読めない失敗）。
+`scripts/put-wasm-exec.sh` は取り出し元のイメージ自身に `go env GOVERSION` を申告させ、
+要求した版と一致しなければ**置かずに落とします。**
+
+**実測（2026-08-29 / #139）: `go1.26.5` と `go1.26.7` の `wasm_exec.js` はバイト単位で
+同一でした**（sha256 `0c949f4996f9a896…`。ホスト側 arm64 のイメージでも、Lambda と同じ
+amd64 のイメージでも同じ値）。**だからといって片方をもう片方のキーへ複製してよいことには
+なりません。** 次の版で中身が変わったとき、変わったことに気づく機構が無くなります。
 
 ---
 
@@ -318,6 +329,7 @@ npx wrangler r2 object put "game-forge-local/runtime/${GOV}/wasm_exec.js" \
 | `bash scripts/verify.sh` | ローカル層の受け入れ条件すべて（機密検査・テスト・型・型定義の照合） | 数秒 | なし |
 | `npm run check:origins` | 別オリジン・同一サイト・`__Host-`・CSP を**実際に起動して**確認 | 約 20 秒 | なし |
 | `npm run check:isolated-build` | 7.1 の封じ込め下で隔離ビルドが通ること ＋ **Ebitengine が vendor から解決できること** | **約 1〜2 分**（Ebitengine のサンプルビルドを含む。キャッシュが冷えていればさらに数分） | Docker（イメージのビルドにネットワーク。**実行時は `--network=none`**） |
+| `bash scripts/check-wasm-exec-objects.sh` | 配信が要求する `wasm_exec.js` が R2 に在ること（3.5 / #139） | 数秒 | ローカル D1 に `games` 行があること |
 
 `npm run check:origins` と `npm run check:isolated-build` は `scripts/verify.sh` には
 含めない。前者は約 20 秒かかり反復の信号としては重く、後者は Docker とイメージ取得を

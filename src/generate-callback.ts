@@ -80,6 +80,8 @@ import { findGenerationModel } from './generation-models.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
 import type { CostAlertOutcome } from './mail/cost-alert.js';
 import { notifyMonthlyCostWarning } from './mail/cost-alert.js';
+import type { GenerationNoticeOutcome, GenerationOutcome } from './mail/generation-notice.js';
+import { notifyGenerationFinished } from './mail/generation-notice.js';
 
 /** コールバックのパス。 */
 export const GENERATE_CALLBACK_PATH = '/api/generate/callback';
@@ -455,15 +457,18 @@ export async function parseCallbackRequest(request: Request): Promise<CallbackPa
 }
 
 /**
- * このコールバックが起こす通知（#148）。
+ * このコールバックが起こす通知（#148 / #153）。
  *
  * # なぜ通知の口がここにあるのか
  *
- * **費用が増えるのがこの経路だからである。** 80% 警告は**費用が増えた直後**にしか
- * 変わらない。生成の入口（`/api/generate` のクォータ判定）で回すと、超過中は利用者の
- * リクエストの中で毎回判定と R2 の読み書きを走らせることになる。
+ * **費用が増えるのも、生成が終わるのも、この経路だからである。**
  *
- * **ここは利用者のリクエストの中ではない。** `/api/generate` は #160 以降
+ * - 80% 警告（#148）は**費用が増えた直後**にしか変わらない。生成の入口
+ *   （`/api/generate` のクォータ判定）で回すと、超過中は利用者のリクエストの中で
+ *   毎回判定と R2 の読み書きを走らせることになる。
+ * - 完了通知（#153）は**結果が確定した瞬間**に送るものである。
+ *
+ * **どちらも利用者のリクエストの中ではない。** `/api/generate` は #160 以降
  * オーケストレータへ投げてすぐ 202 を返し（`src/generate.ts`）、この経路を叩くのは
  * AWS 側である。**90.9 秒の待ち時間に通知は載らない。**
  *
@@ -472,20 +477,35 @@ export async function parseCallbackRequest(request: Request): Promise<CallbackPa
  * `src/generate.ts` の `GenerationPipeline` と同じ形である。**テストは送信の手前で
  * 止めるためにここを差し替える**（既定のまま経路を登録するので、本番の結線は変わらない）。
  *
+ * # 判定時刻は呼び出し側が渡す
+ *
+ * **台帳へ書いた時刻と、警告を判定する時刻を同じにする**（PR #169 のレビュー指摘）。
+ * どちらも既定で現在時刻を取る形にすると、**JST の月境界では 1 秒のずれで台帳の行が
+ * 前月に入り、警告の判定と目印の鍵が翌月で動く。** その月の警告が出ないか、翌月の
+ * 目印を先に消費する——どちらも「80% を超えたのに運用者へ届かない」形である。
+ * ハンドラで 1 つ捕まえた時刻を、記録と判定の両方へ渡す。
+ *
  * # 通知の失敗でコールバックを失敗にしない
  *
- * 台帳の記録は通知より先に終わっている。**通知が落ちたことを理由に呼ぶ側へ再送させると、
- * 届いている台帳に対して同じ処理をもう一度やらせることになる。** 通知の関数は投げない
- * 契約である（`src/mail/cost-alert.ts`）。
+ * 台帳の記録も作品行の完成も、通知より先に終わっている。**通知が落ちたことを理由に
+ * 呼ぶ側へ再送させると、届いている台帳と作品行に対して同じ処理をもう一度やらせる
+ * ことになる。** どちらの関数も投げない契約である（`src/mail/` の 2 つ）。
  */
 export interface CallbackNotifiers {
   /** 月次費用の 80% 警告（#148）。 */
-  readonly monthlyCostWarning: (env: Env) => Promise<CostAlertOutcome>;
+  readonly monthlyCostWarning: (env: Env, at: number) => Promise<CostAlertOutcome>;
+  /** 生成の完了・失敗（#153）。 */
+  readonly generationFinished: (
+    env: Env,
+    gameId: string,
+    outcome: GenerationOutcome,
+  ) => Promise<GenerationNoticeOutcome>;
 }
 
 /** 既定の通知（本物の送信経路）。 */
 export const defaultCallbackNotifiers: CallbackNotifiers = {
-  monthlyCostWarning: (env) => notifyMonthlyCostWarning(env),
+  monthlyCostWarning: (env, at) => notifyMonthlyCostWarning(env, at),
+  generationFinished: (env, gameId, outcome) => notifyGenerationFinished(env, gameId, outcome),
 };
 
 /**
@@ -541,6 +561,10 @@ async function handleCallback(
     //
     // **`userId` は本文から取らない。** 作者は `games` 行が知っており、そちらが正である。
     // 本文から取ると、トークンを持つ者が他人の枠を消費できる。
+    // **時刻はここで 1 つだけ捕まえる。** 記録と判定が別々に現在時刻を取ると、JST の
+    // 月境界で行が前月に入り、判定と目印の鍵が翌月で動く（PR #169 のレビュー指摘。
+    // 上の {@link CallbackNotifiers} の「判定時刻は呼び出し側が渡す」）。
+    const now = Math.floor(Date.now() / 1000);
     const record = await recordGeneration(
       env,
       {
@@ -548,7 +572,7 @@ async function handleCallback(
         prompt: callback.ledger.prompt,
         generated: callback.ledger.generated,
       },
-      undefined,
+      now,
       { id: callback.ledger.generationId },
     );
     // 4.3 の 80% 警告（#148）。**費用が増えた直後にだけ判定する。**
@@ -556,7 +580,7 @@ async function handleCallback(
     // **`record.written` で絞らない。** 再送でも判定へ入れる。抑止は月ごとの目印が
     // 持っており（`src/mail/cost-alert.ts`）、「行が増えたか」に抑止を兼ねさせると、
     // 行を書いた直後に落ちた回の警告が**永久に出なくなる**。
-    await notifiers.monthlyCostWarning(env);
+    await notifiers.monthlyCostWarning(env, now);
     return json({ accepted: true, recorded: record.written }, 200);
   }
 
@@ -567,11 +591,22 @@ async function handleCallback(
   }
 
   // kind === 'finish'。
+  //
+  // **通知は行を進めたあとに送る**（#153）。利用者から見える状態は送信の前に確定して
+  // いるので、Resend が遅くても作品ページの表示は待たされない。
+  //
+  // **進まなかったときは送らない。** `finished` が false なのは、条件付き UPDATE が
+  // 1 行も変えなかった＝この `finish` が効かなかったということである。効かなかった
+  // 仕事の完了を知らせない。
   if ('errorCode' in callback) {
-    return json(
-      { accepted: true, finished: await failGame(env, callback.gameId, callback.errorCode) },
-      200,
-    );
+    const finished = await failGame(env, callback.gameId, callback.errorCode);
+    if (finished) {
+      await notifiers.generationFinished(env, callback.gameId, {
+        kind: 'failed',
+        errorCode: callback.errorCode,
+      });
+    }
+    return json({ accepted: true, finished }, 200);
   }
 
   const { goVersion, sourceKey, wasmKey, cacheRecord } = callback.artifacts;
@@ -581,6 +616,9 @@ async function handleCallback(
     { goVersion, sourceKey, wasmKey },
     cacheRecord,
   );
+  if (finished) {
+    await notifiers.generationFinished(env, callback.gameId, { kind: 'ready' });
+  }
   return json({ accepted: true, finished }, 200);
 }
 

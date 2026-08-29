@@ -4,6 +4,7 @@ import {
   MAIL_SECRET_NAMES,
   MAIL_TIMEOUT_MS,
   formatJpy,
+  isMailAddress,
   mailConfigOf,
   sendMail,
 } from '../src/mail/resend.js';
@@ -121,6 +122,36 @@ describe('綴りが契約を満たさない値は送らない', () => {
     );
     expect(outcome).toEqual({ sent: false, reason: 'invalid-message' });
     expect(requests).toHaveLength(0);
+  });
+});
+
+describe('宛先の綴りの判定は 1 か所にある（PR #169）', () => {
+  it.each([
+    ['ops@example.com', true],
+    ['a.b+tag@sub.example.co.jp', true],
+    ['Ops <ops@example.com>', false],
+    ['a@example.com, b@example.com', false],
+    ['ops@example.com\nbcc: c@example.com', false],
+    ['operator', false],
+    ['', false],
+  ])('%s → %s', (value, expected) => {
+    expect(isMailAddress(value)).toBe(expected);
+  });
+
+  it('送信の手前の検査も同じ判定を使う（綴りの正本を 2 つ作らない）', async () => {
+    // 設定から来る宛先は目印を取る前に検査される（`src/mail/cost-alert.ts`）。
+    // その検査と、送信直前の検査が食い違うと、片方だけ通る宛先が生まれる。
+    for (const value of ['ops@example.com', 'Ops <ops@example.com>', 'operator']) {
+      const { requests, fetcher } = recording();
+      const outcome = await sendMail(
+        configuredEnv(),
+        { to: value, subject: '件名', text: '本文' },
+        'test',
+        { fetcher },
+      );
+      expect(outcome.sent).toBe(isMailAddress(value));
+      expect(requests).toHaveLength(isMailAddress(value) ? 1 : 0);
+    }
   });
 });
 

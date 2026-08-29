@@ -266,6 +266,38 @@ describe('設定が無い環境では何もしない', () => {
   });
 });
 
+describe('宛先の設定が壊れているとき（PR #169）', () => {
+  it.each([
+    ['表示名が付いている', 'Ops <ops@example.com>'],
+    ['複数の宛先が入っている', 'a@example.com, b@example.com'],
+    ['改行が混ざっている', 'ops@example.com\nbcc: c@example.com'],
+    ['アドレスの形でない', 'operator'],
+  ])('%s なら、目印を取る前に落とす', async (_label, operator) => {
+    const userId = await seedUser('invalid-to');
+    await seedLedgerRow(userId, AT, MONTHLY_COST_LIMIT_JPY);
+
+    const { sent, deps } = fakeSender();
+    const broken = { ...configuredEnv(), OPERATOR_EMAIL: operator } as Env;
+    expect(await notifyMonthlyCostWarning(broken, AT, deps)).toBe('invalid-recipient');
+    expect(sent).toHaveLength(0);
+    // **ここが要点である。** 目印を取ってしまうと、送信は invalid-message で落ちるのに
+    // 目印は戻らず（戻すのは unreachable だけ）、**設定を直してもその月は送られない。**
+    expect(await markerExists(AT)).toBe(false);
+  });
+
+  it('設定を直せば、次の生成で送られる', async () => {
+    const userId = await seedUser('invalid-then-fixed');
+    await seedLedgerRow(userId, AT, MONTHLY_COST_LIMIT_JPY);
+
+    const { sent, deps } = fakeSender();
+    const broken = { ...configuredEnv(), OPERATOR_EMAIL: 'Ops <ops@example.com>' } as Env;
+    expect(await notifyMonthlyCostWarning(broken, AT, deps)).toBe('invalid-recipient');
+
+    expect(await notifyMonthlyCostWarning(configuredEnv(), AT + 60, deps)).toBe('sent');
+    expect(sent).toHaveLength(1);
+  });
+});
+
 describe('本文', () => {
   it('対象月・累計・上限・到達率を載せ、利用者を特定する値を載せない', () => {
     const warning = monthlyCostWarningOf(8_500)!;

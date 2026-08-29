@@ -58,6 +58,14 @@ command -v zip >/dev/null 2>&1 || {
   exit 1
 }
 
+# **openssl も前提である。** 末尾で CodeSha256 を出しており、配備側
+# （scripts/deploy-orchestrator.sh）はその値で「載っているコードが手元と同じか」を
+# 判定する。zip だけ確かめて openssl を確かめないのは、確認の穴になる。
+command -v openssl >/dev/null 2>&1 || {
+  echo "[bundle-orchestrator] openssl がありません（CodeSha256 の計算に要ります）。" >&2
+  exit 1
+}
+
 rm -rf "$OUT_DIR" "$ZIP"
 mkdir -p "$OUT_DIR"
 

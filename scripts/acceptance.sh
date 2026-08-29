@@ -75,6 +75,27 @@ else
   echo "[acceptance] (orchestrator) skip: terraform/orchestrator.tf not found"
 fi
 
+# aws CLI の呼び出しが、引数の形として CLI の契約に合っていること（#160）。
+#
+# **前寄りに置く。** 1 秒強で終わり、npm test より 1 桁安い。しかも外すと
+# **本番の配備が引数 1 つで落ちる**——実際に `--publish false` で落ちて、切り替え
+# 直後の生成が止まった。AWS CLI の真偽値フラグは値を取らない（`--publish` か
+# `--no-publish`）。**実行しなくても分かる誤りは、実行せずに落とす。**
+#
+# **判定はスクリプト側が持つ**（何を見て、何を見ないかは
+# scripts/check-aws-cli-usage.sh の冒頭）。ここが見るのは引数の形だけで、
+# **権限・存在・状態は外部層（scripts/acceptance-remote.sh）と本番でしか分からない。**
+#
+# 既定の対象は配備スクリプトである（他の経路で一度も実行されないため）。
+# scripts/ 配下すべてを見るには CHECK_AWS_ALL=1 を付ける。
+if [[ -f scripts/deploy-orchestrator.sh ]]; then
+  echo "[acceptance] (aws-usage) scripts/check-aws-cli-usage.sh"
+  bash scripts/check-aws-cli-usage.sh
+  ran_any=1
+else
+  echo "[acceptance] (aws-usage) skip: scripts/deploy-orchestrator.sh not found"
+fi
+
 if [[ -f package.json ]]; then
   command -v npm >/dev/null 2>&1 || { echo "[acceptance] (node) npm not found. install Node.js (npm) to run this acceptance check." >&2; exit 1; }
   # 依存の実体が宣言（package-lock.json）と一致していること（#99）。

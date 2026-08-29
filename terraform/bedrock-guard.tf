@@ -27,8 +27,9 @@
  * 仕様側を改めた。** 求められているのは呼び出しが止まることであり、特定の API を
  * 呼ぶことではない。剥奪を採らなかった理由は 2 つある。
  *
- *   1. **剥がすと宣言と喧嘩する。** 許可は aws_iam_user_policy.bedrock_invoke として
- *      Terraform が持っている。ガードがそれを消すと plan に差分が出て、**誰かが
+ *   1. **剥がすと宣言と喧嘩する。** 許可は aws_iam_role_policy.orchestrator として
+ *      Terraform が持っている（#160 でエッジの IAM ユーザーから実行ロールへ移った）。
+ *      ガードがそれを消すと plan に差分が出て、**誰かが
  *      無関係な変更（DNS など）を apply した拍子に、原因を調べる前に許可が戻る。**
  *      4.3 の「復旧は手動とする」に反する。アタッチは宣言集合の外側にあるので、
  *      apply では剥がれない。
@@ -117,7 +118,11 @@ data "aws_caller_identity" "dev" {
  * 古いままになり、**ガードが発火しても足した動作だけが素通りする。**
  *
  * アタッチ先は宣言しない。付けるのは発火したガードであり、外して回るのは人間である。
- * 平常時のこのポリシーは「どのユーザーにも付いていない状態」が正しい。
+ * 平常時のこのポリシーは「どのロールにも付いていない状態」が正しい。
+ *
+ * **付ける相手は #160 で IAM ユーザーからオーケストレータの実行ロールへ移った。**
+ * Bedrock を呼ぶプリンシパルが移ったのだから、止める相手も移らなければ、
+ * **発火しても何も止まらない。**
  */
 data "aws_iam_policy_document" "bedrock_halt" {
   statement {
@@ -196,10 +201,13 @@ data "aws_iam_policy_document" "bedrock_guard_assume" {
  */
 data "aws_iam_policy_document" "bedrock_guard" {
   statement {
-    sid       = "AttachHaltPolicyToInvoker"
-    effect    = "Allow"
-    actions   = ["iam:AttachUserPolicy"]
-    resources = [aws_iam_user.bedrock_invoker.arn]
+    sid    = "AttachHaltPolicyToInvoker"
+    effect = "Allow"
+    # **ロールに対して付ける**（#160）。Bedrock を呼ぶプリンシパルがエッジの IAM
+    # ユーザーからオーケストレータの実行ロールへ移ったため、AttachUserPolicy では
+    # **止める相手がいない。** 許可の移動と停止の移動は必ず対で行う。
+    actions   = ["iam:AttachRolePolicy"]
+    resources = [aws_iam_role.orchestrator.arn]
 
     condition {
       test     = "ArnEquals"
@@ -281,7 +289,7 @@ resource "aws_lambda_function" "bedrock_guard" {
     variables = {
       # 対象と手段をコードへ焼き込まない。**関数は「誰に何を付けるか」を知らず、
       # 宣言だけが知っている。** 名前を変えたときにコード側が古いままになる経路を作らない。
-      TARGET_USER_NAME = aws_iam_user.bedrock_invoker.name
+      TARGET_ROLE_NAME = aws_iam_role.orchestrator.name
       HALT_POLICY_ARN  = aws_iam_policy.bedrock_halt.arn
     }
   }
@@ -467,10 +475,11 @@ data "aws_iam_policy_document" "budget_action_assume" {
  */
 data "aws_iam_policy_document" "budget_action" {
   statement {
-    sid       = "AttachHaltPolicyToInvoker"
-    effect    = "Allow"
-    actions   = ["iam:AttachUserPolicy"]
-    resources = [aws_iam_user.bedrock_invoker.arn]
+    sid    = "AttachHaltPolicyToInvoker"
+    effect = "Allow"
+    # 層 2 と同じ理由でロール側へ移した（#160）。
+    actions   = ["iam:AttachRolePolicy"]
+    resources = [aws_iam_role.orchestrator.arn]
 
     condition {
       test     = "ArnEquals"
@@ -558,7 +567,9 @@ resource "aws_budgets_budget_action" "prod_halt" {
   definition {
     iam_action_definition {
       policy_arn = aws_iam_policy.bedrock_halt.arn
-      users      = [aws_iam_user.bedrock_invoker.name]
+      # **users ではなく roles**（#160）。Bedrock を呼ぶのはオーケストレータの
+      # 実行ロールで、エッジの IAM ユーザーはもう生成の権限を持たない。
+      roles = [aws_iam_role.orchestrator.name]
     }
   }
 

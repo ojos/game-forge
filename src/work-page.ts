@@ -108,23 +108,21 @@ const GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 export const STALE_AFTER_SECONDS = 900;
 
 /**
- * 生成が Worker の中で同期に走っているか（#150）。**暫定の値である。**
+ * 生成が Worker の中で同期に走っているか（#150 / #160）。
  *
  * # なぜ画面がこれを知る必要があるのか
  *
- * #150 の狙いは「タブを閉じてよくすること」だが、**この PR ではまだそうなっていない。**
- * `GenerationPipeline.startJob` の既定は `runJobInline`（Worker の中で同期に走らせる）
- * なので、**いまタブを閉じると生成は死ぬ。** 恒久的な URL と作品行は先に存在するように
- * なったが、待ち時間そのものは 1 秒も縮んでいない。
+ * 文言が実行形態と食い違うと、画面が嘘をつく。同期のあいだに「閉じてよい」と書けば
+ * 生成は死に、非同期になってから「開いたままに」と書けば、要らない制約を課すことに
+ * なる。**できていないことを、できているように書かない**（`src/home.ts` と同じ方針）。
  *
- * したがって画面は「開いたままにしてください」と言わなければならない。
- * **できていないことを、できているように書かない**（`src/home.ts` と同じ方針）。
+ * # いまは `false` である（#160）
  *
- * # 差し替えたときに、この 1 行を変え忘れないようにする
+ * #150 が段（`GenerationPipeline.startJob`）を宣言し、**#160 がそれを
+ * `startJobOnLambda`（オーケストレータ Lambda への非同期呼び出し）へ差し替えた。**
+ * 生成の 90.9 秒は Worker の外で走るので、**タブを閉じても生成は進む。**
  *
- * オーケストレータ Lambda（別 issue）が入って `startJob` が非同期実装へ差し替わると、
- * **この定数は `false` にしなければならない。** 忘れると画面が嘘をつく——今度は
- * 「開いたままにしてください」という不要な制約として。
+ * # 変え忘れを機構で塞ぐ
  *
  * **呼びかけでは守らない**（shared-ai-rules 12 章）。`test/work-page.test.ts` が
  *
@@ -135,9 +133,9 @@ export const STALE_AFTER_SECONDS = 900;
  * `workPagePath` を取っているため、逆向きの import が循環参照になるからである。
  *
  * 型を `boolean` と書いているのはリテラル型への絞り込みを避けるためで、
- * `false` にしたときに「常に真」の比較として警告されないようにしている。
+ * `false` のときに「常に偽」の比較として分岐が消えないようにしている。
  */
-export const GENERATION_IS_SYNCHRONOUS: boolean = true;
+export const GENERATION_IS_SYNCHRONOUS: boolean = false;
 
 
 /** 表示に使う `games` の 1 行。 */
@@ -312,8 +310,9 @@ ${title}
 function sectionFor(view: WorkPageView): string {
   switch (view.state) {
     case 'working':
-      // **文言は `GENERATION_IS_SYNCHRONOUS` が決める。** いまは同期実行なので
-      // 「開いたままにしてください」が正しい。差し替えの手順はあの定数の注記にある。
+      // **文言は `GENERATION_IS_SYNCHRONOUS` が決める。** #160 で非同期実行になった
+      // ので「閉じてよい」が正しい。同期側の文言は消さずに残す——段を戻したときに
+      // 書き直すのではなく、定数 1 つで両方の実行形態を言い当てられるようにしておく。
       return GENERATION_IS_SYNCHRONOUS
         ? `<h2>生成中です</h2>
 <p><strong>生成が終わるまで、このタブを開いたままにしてください。</strong>

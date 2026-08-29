@@ -30,6 +30,11 @@
  * （`GenerationPipeline`）を増やしていない**のは、これが 3.3 の順序に現れる段では
  * なく、**既にある段（`build`）をもう一度呼ぶだけ**だからである。差し替えたいものは
  * すべて既存の段の中にあり、増やすと「呼ばないと成立しない段」がもう 1 つ生まれる。
+ *
+ * **#160 で 3.3-2.6（`startJob`）が非同期実装へ差し替わった。** 生成の本体
+ * （`runGenerationJob`）は 1 行も変えずに、**そのままオーケストレータ Lambda の中で
+ * 走る**（`src/orchestrator/`）。このモジュールが「順序と境界だけを持つ」形にして
+ * あったことが、そこで効いている——移したのは実行体であって、順序ではない。
  */
 import type { Route, RouteHandler } from './routes.js';
 import { json, readLimitedText } from './routes.js';
@@ -69,6 +74,7 @@ import {
 } from './build-retry.js';
 import type { BuildRejected } from './build-client.js';
 import { MAX_MECHANICAL_FIX_PASSES, removeUnusedImports } from './mechanical-fix.js';
+import { startJobOnLambda } from './orchestrator/start-job.js';
 
 /** 生成エンドポイントのパス。 */
 export const GENERATE_PATH = '/api/generate';
@@ -212,10 +218,12 @@ export interface GenerationPipeline {
   /**
    * 3.3-2.6: ジョブを起動する（#150）。**A 案の差し替え点である。**
    *
-   * **この段だけが「応答を返す前に待つかどうか」を決める。** 既定は
-   * {@link runJobInline}（Worker の中で同期に走らせる）で、**本番の振る舞いは
-   * 現状のまま**である。オーケストレータ Lambda が入ったら、この段を
-   * 「非同期呼び出しを 1 回投げて即座に戻る」実装へ差し替えるだけでよい。
+   * **この段だけが「応答を返す前に待つかどうか」を決める。** 既定は #160 で
+   * {@link startJobOnLambda}（オーケストレータ Lambda へ非同期呼び出しを 1 回投げて
+   * 即座に戻る）へ差し替わった。**同期実装（{@link runJobInline}）は残してある**
+   * ——順序だけを見るテストが借りており、非同期版と対になる名前として、どちらが
+   * 結線されているかを `src/work-page.ts` の `GENERATION_IS_SYNCHRONOUS` と
+   * 照合できる形が要る。
    *
    * **段を 1 つ増やしたのは、増やさないと差し替えられないからである。**
    * `src/generate.ts` は「順序と境界だけを持つ」立場を保ってきたが、ここは
@@ -226,6 +234,28 @@ export interface GenerationPipeline {
    * （生成そのものの失敗は `games` 行へ記録され、応答には現れない）。
    */
   readonly startJob: (env: Env, job: GenerationJob, pipeline: GenerationPipeline) => Promise<void>;
+  /**
+   * 8.3: 失敗した作品行を閉じる（#160）。**任意である。**
+   *
+   * **段にしたのは、オーケストレータが D1 を持たないからである**（#160 / A 案）。
+   * あちらの `failGame` は `finish` コールバックで、`src/games.ts` の実装をそのまま
+   * 呼べない。ここが段になっていないと、`runGenerationJob` の catch だけが
+   * Lambda から D1 のバインディングを要求することになる。
+   *
+   * **任意にしてあるのは、既定が正しいからである。** 省いた実装は
+   * {@link failGame}（D1 へ直接）で動く。必須にすると、順序だけを見ている既存の
+   * テストが**この段の実装を書かされる**——見たいものと関係のない写しが増える
+   * （`generateSource` の `retry` を任意にしているのと同じ判断）。
+   *
+   * **戻り値は捨ててよい。** false は「その行はもう `pending` / `running` では
+   * ない」という意味で、**先に確定した状態を上書きしないのが正しい**
+   * （`src/games.ts`）。
+   */
+  readonly failGame?: (
+    env: Env,
+    gameId: string,
+    errorCode: GenerationErrorCode,
+  ) => Promise<boolean>;
 }
 
 /**
@@ -345,14 +375,19 @@ export const defaultPipeline: GenerationPipeline = {
   inspectSource: inspectGeneratedSource,
   build: createLambdaBuild(),
   completeGame,
-  // **既定は Worker の中で同期に走らせる**（#150）。応答は今までどおり生成が
-  // 終わってから返るので、**本番の振る舞いは変わらない。** 変わったのは
-  // 「作品行と URL が最初から存在する」ことだけである。
+  failGame,
+  // **既定は非同期呼び出しである**（#160）。応答は `games` 行を作った直後に返り、
+  // 生成の 90.9 秒はオーケストレータ Lambda の中で走る。**これで #150 の
+  // 「タブを閉じてよい」が本当になった。**
   //
-  // **非同期にするのは別の issue である。** オーケストレータ Lambda・IAM・配備が
-  // 揃うまでこの段を差し替えない。差し替えていないことが分かるように、既定を
-  // 「同期」という**名前の付いた実装**にしてある（`runJobInline`）。
-  startJob: runJobInline,
+  // **同期実装（`runJobInline`）は消していない。** 順序だけを見るテストが借りており、
+  // 対になる名前があることで「いまどちらが結線されているか」を機械照合できる
+  // （`test/work-page.test.ts` が `GENERATION_IS_SYNCHRONOUS` と突き合わせる）。
+  //
+  // **戻すときは 1 行で戻せる**が、戻すとエッジに Bedrock の資格情報が要る。
+  // #160 でそれはシークレットから削除したので、**戻すのは宣言と手順の話になる**
+  // （`docs/orchestrator.md`）。
+  startJob: startJobOnLambda,
 };
 
 /**
@@ -618,7 +653,11 @@ export async function runGenerationJob(
     // `pending` / `running` ではない」という意味で、`GenerationNotCompletable` で
     // 来たときは実際にそうなる。**先に確定した状態を上書きしないのが正しい**ので、
     // ここで再び投げると元の例外を握り潰すことにしかならない。
-    await failGame(env, job.gameId, generationErrorCodeOf(error));
+    //
+    // **段を経由する**（#160）。オーケストレータ Lambda は D1 を持たず、`finish`
+    // コールバックで同じことをする。省いた実装は `failGame`（D1 へ直接）に落ちる。
+    const fail = pipeline.failGame ?? failGame;
+    await fail(env, job.gameId, generationErrorCodeOf(error));
     throw error;
   }
 }
@@ -629,10 +668,14 @@ export async function runGenerationJob(
  * **既定は `internal` である。** 分類できない失敗を、たまたま近い分類へ寄せない。
  * 利用者に出る文言が変わってしまい、しかも誤りに気づく手掛かりが残らない。
  *
+ * **export しているのは、オーケストレータが同じ判定を書き写さないためである**
+ * （#160 / shared-ai-rules 12 章）。あちらは戻り値とログのために分類名が要るが、
+ * 判定そのものは 1 か所でよい（`src/orchestrator/handler.ts`）。
+ *
  * @param error catch した値（型は unknown）
  * @returns 分類名
  */
-function generationErrorCodeOf(error: unknown): GenerationErrorCode {
+export function generationErrorCodeOf(error: unknown): GenerationErrorCode {
   if (error instanceof GeneratedSourceRejected) {
     return 'source-rejected';
   }

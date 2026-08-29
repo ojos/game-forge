@@ -745,21 +745,25 @@ check_pages_production_deployment() {
 # 戻り値: 0 = 一致 / 1 = 不一致・取得失敗・ガード発火中
 ##
 check_bedrock_invoker_permissions() {
-  local user halt_arn expected actual attached
-  user="$(tf_output bedrock_invoker_user_name)"
+  local role halt_arn expected actual attached
+  role="$(tf_output bedrock_invoker_role_name)"
   halt_arn="$(tf_output bedrock_halt_policy_arn)"
-  if [[ -z "$user" || -z "$halt_arn" ]]; then
+  if [[ -z "$role" || -z "$halt_arn" ]]; then
     echo "terraform output から Bedrock のプリンシパル識別子を取得できません。apply 済みか確認すること。"
-    echo "  bedrock_invoker_user_name=${user:-(なし)} bedrock_halt_policy_arn=${halt_arn:-(なし)}"
+    echo "  bedrock_invoker_role_name=${role:-(なし)} bedrock_halt_policy_arn=${halt_arn:-(なし)}"
     return 1
   fi
 
-  expected="$(terraform -chdir="$TF_DIR" output -json bedrock_invoke_actions | jq -S 'unique')" || return 1
+  # **期待値は宣言から取る。** #160 でプリンシパルが IAM ユーザーからオーケストレータの
+  # 実行ロールへ移り、ロールは Bedrock 以外（ログ・ビルド関数・失敗の受け皿）も持つ。
+  # したがって突き合わせる相手は orchestrator_role_actions である。**Bedrock の分は
+  # その中に bedrock.tf の local から入っている**ので、書き写しにはならない。
+  expected="$(terraform -chdir="$TF_DIR" output -json orchestrator_role_actions | jq -S 'unique')" || return 1
 
   local -a policy_names=()
-  mapfile -t policy_names < <(aws iam list-user-policies --user-name "$user" --query 'PolicyNames[]' --output text | tr '\t' '\n')
+  mapfile -t policy_names < <(aws iam list-role-policies --role-name "$role" --query 'PolicyNames[]' --output text | tr '\t' '\n')
   if [[ "${#policy_names[@]}" -eq 0 || -z "${policy_names[0]}" ]]; then
-    echo "${user} にインラインポリシーがありません。Bedrock を呼べない状態です。"
+    echo "${role} にインラインポリシーがありません。Bedrock を呼べない状態です。"
     return 1
   fi
 
@@ -767,7 +771,7 @@ check_bedrock_invoker_permissions() {
   # どちらの綴りでも同じ集合になるよう正規化してから比べる。
   local docs="" doc name
   for name in "${policy_names[@]}"; do
-    doc="$(aws iam get-user-policy --user-name "$user" --policy-name "$name" --query 'PolicyDocument' --output json)" || return 1
+    doc="$(aws iam get-role-policy --role-name "$role" --policy-name "$name" --query 'PolicyDocument' --output json)" || return 1
     docs+="$doc"$'\n'
   done
   actual="$(jq -s '
@@ -780,7 +784,7 @@ check_bedrock_invoker_permissions() {
   ' <<<"$docs")" || return 1
 
   if [[ "$expected" != "$actual" ]]; then
-    echo "許可している Bedrock の動作が宣言と一致しません:"
+    echo "実行ロールに許可している動作が宣言と一致しません:"
     echo "  expected: $(jq -c . <<<"$expected")"
     echo "  actual:   $(jq -c . <<<"$actual")"
     return 1
@@ -791,9 +795,9 @@ check_bedrock_invoker_permissions() {
     return 1
   fi
 
-  attached="$(aws iam list-attached-user-policies --user-name "$user" --query 'AttachedPolicies[].PolicyArn' --output json)" || return 1
+  attached="$(aws iam list-attached-role-policies --role-name "$role" --query 'AttachedPolicies[].PolicyArn' --output json)" || return 1
   if jq -e --arg arn "$halt_arn" 'index($arn) != null' <<<"$attached" >/dev/null; then
-    echo "費用ガードが発火したままです（${halt_arn} が ${user} に付いています）。"
+    echo "費用ガードが発火したままです（${halt_arn} が ${role} に付いています）。"
     echo "原因を調べたうえで docs/bedrock-access.md の復旧手順で外すこと。自動では戻りません（仕様 4.3）。"
     return 1
   fi
@@ -802,8 +806,289 @@ check_bedrock_invoker_permissions() {
     return 1
   fi
 
-  echo "${user} grants exactly $(jq -c . <<<"$actual") with no attached policy"
+  echo "${role} grants exactly $(jq -c . <<<"$actual") with no attached policy"
 }
+
+##
+# エッジから Bedrock が消えていることを確認する（#160 の受け入れ条件 / 仕様 9.2）。
+#
+# **#160 の積極的な理由がこれである。** 9.2 は「長命キーが要るのは Workers が動く
+# 本番だけ」とし、Pages のシークレットには 2 組の長命アクセスキーがあった。生成の
+# 実行体が AWS の中へ移って実行ロールを引き受けられるようになった以上、
+# `BEDROCK_AWS_*` は**残っていてはいけない。**
+#
+# **残っていても生成は動く。** だからこそ機械で見る——動くものは、消し忘れていても
+# 消し忘れていることが分からない（shared-ai-rules 12 章）。
+#
+# 2 か所を見る。
+#
+#   1. Pages のシークレットに BEDROCK_AWS_* が無いこと
+#   2. エッジの IAM ユーザーが bedrock:* を 1 つも持たないこと
+#
+# 戻り値: 0 = 消えている / 1 = 残っている・取得失敗
+##
+check_edge_bedrock_removed() {
+  local pages_hostname project body leftovers user docs actual
+  # **順序に依存しない**（tf() の注記と同じ理由）。cf_load_credentials は冪等で、
+  # 既に載っていれば何もしない。
+  cf_load_credentials
+  if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
+    echo "CLOUDFLARE_ACCOUNT_ID が環境にも .env にもありません（前提の不成立であって乖離ではない）。"
+    return 1
+  fi
+  pages_hostname="$(tf_output pages_hostname)" || return 1
+  project="${pages_hostname%%.*}"
+  if [[ -z "$project" ]]; then
+    echo "terraform output から Pages プロジェクト名を取得できません。apply 済みか確認すること。"
+    return 1
+  fi
+
+  body="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${project}")" || return 1
+  leftovers="$(jq -r '
+    [ (.result.deployment_configs.production.env_vars // {} | keys[]),
+      (.result.deployment_configs.preview.env_vars // {} | keys[]) ]
+    | unique | map(select(startswith("BEDROCK_AWS_"))) | join(", ")
+  ' <<<"$body")"
+  if [[ -n "$leftovers" ]]; then
+    echo "Pages のシークレットに Bedrock の資格情報が残っています: ${leftovers}"
+    echo "  docs/orchestrator.md「エッジから Bedrock の資格情報を消す」の手順で削除すること。"
+    echo "  **消すまで、いちばん露出の大きい場所に枠を焼ける鍵が置かれたままである**（仕様 4.3 / 9.2）。"
+    return 1
+  fi
+
+  user="$(tf_output build_invoker_user_name)" || return 1
+  if [[ -z "$user" ]]; then
+    echo "terraform output からエッジの IAM ユーザー名を取得できません。"
+    return 1
+  fi
+  local -a policy_names=()
+  mapfile -t policy_names < <(aws iam list-user-policies --user-name "$user" --query 'PolicyNames[]' --output text | tr '\t' '\n')
+  docs=""
+  local name doc
+  for name in "${policy_names[@]}"; do
+    [[ -n "$name" ]] || continue
+    doc="$(aws iam get-user-policy --user-name "$user" --policy-name "$name" --query 'PolicyDocument' --output json)" || return 1
+    docs+="$doc"$'\n'
+  done
+  if [[ -n "$docs" ]]; then
+    actual="$(jq -s '
+      [ .[] | .Statement | if type == "array" then .[] else . end | .Action ]
+      | flatten | unique | map(select(startswith("bedrock:")))
+    ' <<<"$docs")" || return 1
+    if [[ "$(jq 'length' <<<"$actual")" != "0" ]]; then
+      echo "エッジの IAM ユーザー ${user} が Bedrock の権限を持っています: $(jq -c . <<<"$actual")"
+      return 1
+    fi
+  fi
+
+  echo "edge has no bedrock credentials and no bedrock permissions"
+}
+
+##
+# オーケストレータ関数の設定が宣言どおりか（#160）。
+#
+# **タイムアウトは src/work-page.ts の STALE_AFTER_SECONDS（900 秒）より短くなければ
+# ならない。** 逆順にすると、まだ走っている生成を画面が「中断した可能性」と呼ぶ。
+# 予約同時実行数は 4.3 の層 4（Bedrock のレートクォータ引き下げ）を持てない分を
+# 補う上限で、外れるとアカウント既定（1,000）まで開く。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_orchestrator_config() {
+  local rc=0 name config
+  name="$(tf_output orchestrator_function_name)" || return 1
+  if [[ -z "$name" ]]; then
+    echo "terraform output からオーケストレータの関数名を取得できません。apply 済みか確認すること。"
+    return 1
+  fi
+  config="$(aws lambda get-function-configuration --function-name "$name" --output json)" || {
+    echo "${name} が実在しません。terraform apply を通すこと（docs/orchestrator.md）。"
+    return 1
+  }
+
+  local -a fields=(
+    "MemorySize:orchestrator_memory_mb"
+    "Timeout:orchestrator_timeout_seconds"
+  )
+  local pair key output_name expected actual
+  for pair in "${fields[@]}"; do
+    key="${pair%%:*}"
+    output_name="${pair##*:}"
+    expected="$(tf_output "$output_name")"
+    actual="$(jq -r --arg k "$key" '.[$k] | tostring' <<<"$config")"
+    if [[ "$expected" != "$actual" ]]; then
+      echo "${key} が宣言と一致しません: expected=${expected} actual=${actual}"
+      rc=1
+    fi
+  done
+
+  local role_name role_actual
+  role_name="$(tf_output orchestrator_role_name)"
+  role_actual="$(jq -r '.Role' <<<"$config")"
+  if [[ "${role_actual##*/}" != "$role_name" ]]; then
+    echo "実行ロールが宣言と一致しません: expected=${role_name} actual=${role_actual}"
+    rc=1
+  fi
+
+  # **予約同時実行数は get-function-configuration に現れない。** 別の API で引く。
+  local reserved expected_reserved
+  expected_reserved="$(tf_output orchestrator_reserved_concurrency)"
+  reserved="$(aws lambda get-function-concurrency --function-name "$name" \
+    --query 'ReservedConcurrentExecutions' --output text 2>/dev/null || echo '')"
+  if [[ "$reserved" != "$expected_reserved" ]]; then
+    echo "予約同時実行数が宣言と一致しません: expected=${expected_reserved} actual=${reserved:-(未設定)}"
+    rc=1
+  fi
+
+  # **コールバックの宛先は宣言が持つ**（ペイロードで受け取らない。#160）。
+  local expected_url actual_url
+  expected_url="$(tf_output orchestrator_callback_base_url)"
+  actual_url="$(jq -r '.Environment.Variables.CALLBACK_BASE_URL // ""' <<<"$config")"
+  if [[ "$expected_url" != "$actual_url" ]]; then
+    echo "CALLBACK_BASE_URL が宣言と一致しません: expected=${expected_url} actual=${actual_url:-(なし)}"
+    rc=1
+  fi
+
+  # **資格情報を環境変数に置いていないこと。** ここに現れたら、実行ロールではなく
+  # 長命キーで動いている（9.2 が消したかった構図そのもの）。
+  local injected
+  injected="$(jq -r '.Environment.Variables // {} | keys | map(select(startswith("BEDROCK_AWS_") or startswith("BUILD_AWS_"))) | join(", ")' <<<"$config")"
+  if [[ -n "$injected" ]]; then
+    echo "関数の環境変数に長命キーが置かれています: ${injected}"
+    rc=1
+  fi
+
+  [[ "$rc" -eq 0 ]] && echo "${name} matches the declaration"
+  return "$rc"
+}
+
+##
+# 非同期呼び出しの構成が宣言どおりか（#160 でいちばん外してはいけない検査）。
+#
+# **maximum_retry_attempts が 0 でなければ落とす。** 既定は 2 で、5.2-7 の 3 試行と
+# 掛け算になると**1 回の送信から最大 9 回・約 144 円・日次枠 9 個**が出る。
+# ローカル層（scripts/check-orchestrator-retry.sh）は宣言を見る。ここは**実状態**を見る。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_orchestrator_invoke_config() {
+  local rc=0 name config
+  name="$(tf_output orchestrator_function_name)" || return 1
+  [[ -n "$name" ]] || { echo "terraform output からオーケストレータの関数名を取得できません。"; return 1; }
+
+  config="$(aws lambda get-function-event-invoke-config --function-name "$name" --output json 2>/dev/null)" || {
+    echo "${name} に非同期呼び出しの構成がありません。**既定（リトライ 2 回・有効期限 6 時間・行き先なし）で動いています。**"
+    echo "  terraform apply を通すこと（docs/orchestrator.md）。"
+    return 1
+  }
+
+  local expected actual
+  expected="$(tf_output orchestrator_maximum_retry_attempts)"
+  actual="$(jq -r '.MaximumRetryAttempts | tostring' <<<"$config")"
+  if [[ "$expected" != "$actual" ]]; then
+    echo "MaximumRetryAttempts が宣言と一致しません: expected=${expected} actual=${actual}"
+    echo "  **5.2-7 の 3 試行と掛け算になります**（最大 9 回・約 144 円・日次枠 9 個）。"
+    rc=1
+  fi
+
+  expected="$(tf_output orchestrator_maximum_event_age_seconds)"
+  actual="$(jq -r '.MaximumEventAgeInSeconds | tostring' <<<"$config")"
+  if [[ "$expected" != "$actual" ]]; then
+    echo "MaximumEventAgeInSeconds が宣言と一致しません: expected=${expected} actual=${actual}"
+    rc=1
+  fi
+
+  expected="$(tf_output orchestrator_failure_queue_arn)"
+  actual="$(jq -r '.DestinationConfig.OnFailure.Destination // ""' <<<"$config")"
+  if [[ "$expected" != "$actual" ]]; then
+    echo "OnFailure destination が宣言と一致しません: expected=${expected} actual=${actual:-(なし)}"
+    echo "  **リトライ 0 で行き先が無いと、失敗したイベントは黙って消えます。**"
+    rc=1
+  fi
+
+  if [[ "$rc" -eq 0 ]]; then
+    echo "retries=$(tf_output orchestrator_maximum_retry_attempts)" \
+      "age=$(tf_output orchestrator_maximum_event_age_seconds)s" \
+      "on-failure=$(tf_output orchestrator_failure_queue_name)"
+  fi
+  return "$rc"
+}
+
+##
+# 失敗の受け皿（SQS）が実在し、空であることを確認する（#160）。
+#
+# **溜まっていること自体が「完走しなかったジョブがある」という意味である。**
+# 落とさず注意として出すのは、過去の失敗が残っているだけで宣言と実状態は一致して
+# いるからである（#103 が導入した warn の使い方と同じ）。
+#
+# 戻り値: 0 = 実在し宣言と一致 / 1 = 不一致または取得失敗
+##
+check_orchestrator_failure_queue() {
+  local name url attrs waiting
+  name="$(tf_output orchestrator_failure_queue_name)" || return 1
+  [[ -n "$name" ]] || { echo "terraform output から受け皿の名前を取得できません。"; return 1; }
+
+  url="$(aws sqs get-queue-url --queue-name "$name" --query 'QueueUrl' --output text 2>/dev/null)" || {
+    echo "${name} が実在しません。terraform apply を通すこと。"
+    return 1
+  }
+  attrs="$(aws sqs get-queue-attributes --queue-url "$url" \
+    --attribute-names ApproximateNumberOfMessages SqsManagedSseEnabled MessageRetentionPeriod \
+    --output json)" || return 1
+
+  if [[ "$(jq -r '.Attributes.SqsManagedSseEnabled // "false"' <<<"$attrs")" != "true" ]]; then
+    echo "受け皿の保存時暗号化（SSE-SQS）が有効ではありません。"
+    echo "  **中身には平文のジョブトークンが載る**（terraform/orchestrator.tf）。"
+    return 1
+  fi
+
+  waiting="$(jq -r '.Attributes.ApproximateNumberOfMessages // "0"' <<<"$attrs")"
+  if [[ "$waiting" != "0" ]]; then
+    warn "orchestrator failure queue に ${waiting} 件溜まっています（完走しなかったジョブ）。"
+    warn "  aws sqs receive-message --queue-url ${url} で中身を読み、原因を調べること。"
+  fi
+
+  echo "${name} exists (encrypted, ${waiting} waiting)"
+}
+
+##
+# 本番に載っているコードが、手元で束ねたものと一致するか（#160 / 9.3）。
+#
+# **宣言はコードを持たない**（terraform/orchestrator.tf の ignore_changes）。したがって
+# 「宣言と実状態の一致」だけを見ても、**器はあるが仮のコードのまま**という状態を
+# 見逃す。zip の作り方は時刻まで固定してあるので、同じソースからは同じ CodeSha256 が
+# 出る（scripts/bundle-orchestrator.sh）。
+#
+# **手元が古い側でも赤になる。** それは故障ではなく、この層が見るべきものそのもの
+# である（冒頭「通す契機: 外部状態の宣言を変更したとき」）。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_orchestrator_code() {
+  local name local_sha remote_sha
+  name="$(tf_output orchestrator_function_name)" || return 1
+  [[ -n "$name" ]] || { echo "terraform output からオーケストレータの関数名を取得できません。"; return 1; }
+
+  bash scripts/bundle-orchestrator.sh >/dev/null 2>&1 || {
+    echo "手元で束ねられません（bash scripts/bundle-orchestrator.sh を単体で実行して原因を見ること）。"
+    return 1
+  }
+  local_sha="$(openssl dgst -sha256 -binary dist/orchestrator.zip | base64)"
+  remote_sha="$(aws lambda get-function-configuration --function-name "$name" \
+    --query 'CodeSha256' --output text 2>/dev/null)" || return 1
+
+  if [[ "$local_sha" != "$remote_sha" ]]; then
+    echo "本番のコードが手元と一致しません。"
+    echo "  手元: ${local_sha}"
+    echo "  本番: ${remote_sha}"
+    echo "  bash scripts/deploy-orchestrator.sh を実行すること（docs/orchestrator.md）。"
+    echo "  **仮のコードのままだと、投げられたジョブはすべて失敗の受け皿へ落ちます。**"
+    return 1
+  fi
+
+  echo "orchestrator code matches the local bundle (${local_sha})"
+}
+
 
 ##
 # 費用ガードの層 2（暴走検知）が、宣言どおりの形で実在することを確認する（#82 / 仕様 4.3）。
@@ -1483,12 +1768,28 @@ run "pages custom domain records match" check_pages_dns_records
 run "wrangler production hosts match dns" check_wrangler_production_hosts
 run "production deployment matches default branch HEAD" check_pages_production_deployment
 run "bedrock invoker permissions are minimal" check_bedrock_invoker_permissions
+run "edge no longer holds bedrock credentials" check_edge_bedrock_removed
 run "cost guard layer 2 (burst alarm) matches" check_bedrock_burst_alarm
 run "cost guard layer 3 (budgets) matches" check_bedrock_budgets
 run "build function configuration matches" check_build_function_config
 run "build function image matches the ecr latest digest" check_build_function_image
 run "build function execution role is minimal" check_build_function_role
 run "build invoker permissions are minimal" check_build_invoker_permissions
+
+# ── オーケストレータ（3.3 の再配置。#160）──────────────────────────────────
+#
+# **この 4 本は、宣言が実状態より先に居る間は赤になる。** それは故障ではなく、この層が
+# 見るべきものそのものである。何をすれば緑になるかを書いておく。
+#
+#   configuration / invoke config / failure queue …
+#       `terraform -chdir=terraform apply` を通すと緑になる。
+#   code matches the local bundle …
+#       `bash scripts/deploy-orchestrator.sh` を通すと緑になる。
+#       **通すまで、投げられたジョブはすべて失敗の受け皿へ落ちる。**
+run "orchestrator configuration matches" check_orchestrator_config
+run "orchestrator async invoke config matches (retries must be 0)" check_orchestrator_invoke_config
+run "orchestrator failure queue exists and is empty" check_orchestrator_failure_queue
+run "orchestrator code matches the local bundle" check_orchestrator_code
 run "r2 credentials are outside the declaration" check_r2_credentials_placement
 
 # ── 配信の共有資材と R2 のライフサイクル（#139 / #31）────────────────────────

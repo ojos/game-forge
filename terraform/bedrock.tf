@@ -11,20 +11,21 @@
  * | 対象 | 持ち主 |
  * |---|---|
  * | モデルアクセス（agreement の承諾） | この宣言 |
- * | Workers から呼ぶための IAM ユーザーとポリシー | この宣言 |
- * | アクセスキーの実体 | **この宣言は持たない**（下記） |
+ * | 生成の呼び出し権限 | **terraform/orchestrator.tf**（#160 で実行ロールへ移った。下記） |
+ * | 呼び出しに要る動作の定義（`local.bedrock_invoke_actions`） | この宣言 |
  * | 費用ガードの層 2（暴走検知）と層 3（Budgets） | **terraform/bedrock-guard.tf**（#82） |
  * | Bedrock のレートクォータ引き下げ（層 4） | **この宣言は持たない**（Service Quotas に引き下げ API が無い） |
  *
- * ## アクセスキーを宣言しない理由
+ * ## 長命キーはもう要らない（#160）
  *
- * aws_iam_access_key は生成した秘密鍵を **tfstate へ平文で書く。** tfstate は
- * .gitignore で追跡から外しているが、ディスク上は平文である。providers.tf が
- * 「資格情報を Terraform 変数として受け取ると tfstate や plan ファイルへ平文で
- * 落ちる経路ができる」として避けているのと同じ経路を、出力側に作ることになる。
+ * **エッジが Bedrock を呼ばなくなったので、この用途の長命アクセスキーは無くなった。**
+ * 9.2 の「長命キーが要るのは Workers が動く本番だけ」という制約は、実行体を AWS の
+ * 中へ移すことで外れる。残っている鍵（`BEDROCK_AWS_*`）は削除する対象であって、
+ * ローテーションする対象ではない（docs/orchestrator.md）。
  *
- * キーの発行とローテーションは docs/bedrock-access.md が持つ。宣言できない範囲だけを
- * 文書が持つ形は docs/gcp-oauth-setup.md と同じである。
+ * v1 の判断（aws_iam_access_key を宣言しない）は**そのまま生きている。** あれは生成した
+ * 秘密鍵を tfstate へ平文で書くためで、`terraform/build-invoker.tf` の
+ * `BUILD_AWS_*` にはいまも当てはまる。
  *
  * ## DeepSeek を宣言していない理由
  *
@@ -104,53 +105,36 @@ resource "aws_bedrock_foundation_model_agreement" "generation" {
 }
 
 /**
- * Workers（Cloudflare Pages Functions）から Bedrock を呼ぶためのプリンシパル。
+ * Bedrock を呼ぶプリンシパルは、**エッジではなくオーケストレータの実行ロール**である
+ * （#160。2026-08-29）。
  *
- * IAM ロールではなくユーザーにするのは、**Workers が AWS の外で動くため**である。
- * ロールを引き受ける経路（インスタンスプロファイル、IRSA、OIDC フェデレーション）が
- * どれも使えず、長命のアクセスキーを Pages のシークレットへ置くことになる
- * （仕様 4.1）。これは直販の API キー 1 本より鍵管理として劣化しており、
- * ローテーション手順で受ける（docs/bedrock-access.md）。
+ * ## 何が変わったか
+ *
+ * v1 では `game-forge-bedrock-invoker` という IAM **ユーザー**がここにあった。Workers は
+ * AWS の外で動き、ロールを引き受ける経路（インスタンスプロファイル、IRSA、OIDC
+ * フェデレーション）がどれも使えないため、長命のアクセスキーを Pages のシークレットへ
+ * 置くしかなかった（仕様 4.1 / 9.2）。
+ *
+ * **#160 で生成の実行体が AWS の中へ移り、ロールを引き受けられるようになった。**
+ * 許可は `terraform/orchestrator.tf` の `aws_iam_role.orchestrator` に乗っており、
+ * **エッジからは `BEDROCK_AWS_*` ごと消える。** 4.3 が最も恐れる「枠を焼ける資格情報」が、
+ * いちばん露出の大きい場所から無くなった。
+ *
+ * ## 動作の定義はここに残す
+ *
+ * `local.bedrock_invoke_actions` はこのファイルが持ち続ける。**許可（orchestrator.tf）と
+ * 停止用の Deny（bedrock-guard.tf）の両方が、この 1 つの定義から作られる**という構造は
+ * 変わっていない（下記 local のコメント）。定義をプリンシパルと一緒に動かすと、
+ * ガード側が別のファイルを参照することになり、対であることが読みにくくなる。
+ *
+ * ## ユーザーを消したときにやること
+ *
+ * **アクセスキーはこの宣言が持っていない**（上記「アクセスキーを宣言しない理由」）。
+ * したがって `terraform apply` はユーザーの削除で `DeleteConflict` になる。
+ * **鍵の削除と Pages シークレットの削除を先に行うこと**（docs/orchestrator.md
+ * 「エッジから Bedrock の資格情報を消す」）。順序を逆にすると、鍵は無効化されて
+ * いないのに宣言だけが「もう無い」と言う状態になる。
  */
-resource "aws_iam_user" "bedrock_invoker" {
-  name = "game-forge-bedrock-invoker"
-  path = "/service/"
-
-  tags = {
-    Project   = "game-forge"
-    ManagedBy = "terraform"
-    # IAM のタグ値は [\p{L}\p{Z}\p{N}_.:/=+\-@] しか使えない。全角括弧と # は
-    # この集合に無く、ValidationError になる（実測）。理由の詳細は上のコメントに置く。
-    Purpose = "Invoke Bedrock from Cloudflare Pages Functions - spec 4.1 / issue 82"
-  }
-}
-
-/**
- * 呼び出しに要る最小の権限。
- *
- * bedrock:* を与えない。モデルアクセスの変更（agreement の承諾・解除）やクォータの
- * 変更まで許すと、アプリの鍵が漏れたときに費用ガードそのものを外せてしまう。
- *
- * resource を全モデルに開いているのは、確定5 が複数モデル構成であり、モデルを
- * 足すたびにポリシーを直す運用にすると追随漏れが起きるためである。**費用の上限は
- * ここではなく 4.3 の機構で担保する**（#81）。
- */
-data "aws_iam_policy_document" "bedrock_invoke" {
-  statement {
-    sid    = "InvokeGenerationModels"
-    effect = "Allow"
-
-    actions = local.bedrock_invoke_actions
-
-    resources = ["*"]
-  }
-}
-
-resource "aws_iam_user_policy" "bedrock_invoke" {
-  name   = "bedrock-invoke"
-  user   = aws_iam_user.bedrock_invoker.name
-  policy = data.aws_iam_policy_document.bedrock_invoke.json
-}
 
 /**
  * 開発アカウント側の Bedrock（#82）。

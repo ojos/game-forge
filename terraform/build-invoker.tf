@@ -13,19 +13,19 @@
  * | Workers から呼ぶための IAM ユーザーとポリシー | この宣言 |
  * | アクセスキーの実体 | **この宣言は持たない**（下記。docs/build-invocation.md） |
  * | ビルド関数・ECR・実行ロール・ロググループ | terraform/build-function.tf |
- * | Bedrock を呼ぶための IAM ユーザー | terraform/bedrock.tf |
+ * | オーケストレータ（#160 で呼び出しの対象になった） | terraform/orchestrator.tf |
+ * | Bedrock を呼ぶ権限（#160 で実行ロールへ移った） | terraform/orchestrator.tf |
  *
- * ## Bedrock 用と分ける理由
+ * ## Bedrock 用と分けていた理由（#160 で片方が消えた）
  *
- * **権限が違う。** `terraform/bedrock.tf` の `game-forge-bedrock-invoker` は
- * `bedrock:InvokeModel` 系だけを許しており、`lambda:InvokeFunction` を通せない。
- * 1 つのユーザーへ両方を持たせれば鍵は 1 本で済むが、**そのとき鍵 1 本の漏洩で
- * 生成とビルドの両方が同時に開く。** 最小権限を保つなら principal ごと分かれる
- * （docs/build-invocation.md 3 章 / .dev.vars.example の `BUILD_` 接頭辞）。
+ * v1 では `terraform/bedrock.tf` に `game-forge-bedrock-invoker` という別のユーザーが
+ * あった。**権限が違い**、1 つのユーザーへ両方を持たせると**鍵 1 本の漏洩で生成と
+ * ビルドの両方が同時に開く**ためである（docs/build-invocation.md 3 章）。
  *
- * 秘密の名前も `BEDROCK_AWS_*` と `BUILD_AWS_*` に分かれている（正本は
- * `src/build-client.ts` の `BUILD_SECRET_NAMES`）。**principal を 1 つにすると、
- * 名前だけが分かれていて実体が同じ、という一番読み違えやすい形になる。**
+ * **#160 で Bedrock 側のユーザーが消えた。** 生成の実行体が AWS の中へ移り、実行ロールで
+ * 呼べるようになったからである。エッジに残る長命キーは `BUILD_AWS_*` の 1 組だけで、
+ * その 1 組にできるのは「オーケストレータへジョブを 1 回投げること」だけになった。
+ * **漏れたときに開くものが、生成とビルドから「ジョブの投入」へ狭まっている。**
  *
  * ## IAM ロールではなくユーザーにする理由
  *
@@ -81,11 +81,25 @@ locals {
    * ここにはその制約が無い。
    *
    * **バージョン・エイリアスの ARN（`...:function:name:qualifier`）は含まない。**
-   * 呼び出し側（src/build-client.ts）は修飾なしの関数名で呼ぶ。修飾付きを許すと、
-   * 公開済みの古いバージョンを名指しで叩ける経路が増える。
+   * 呼び出し側（src/orchestrator/start-job.ts）は修飾なしの関数名で呼ぶ。修飾付きを
+   * 許すと、公開済みの古いバージョンを名指しで叩ける経路が増える。
+   *
+   * ## #160 で対象がオーケストレータへ移った
+   *
+   * **エッジはもうビルド関数を直接呼ばない。** 生成の本体（3.3-3..8）がオーケストレータ
+   * Lambda の中で走るようになり、ビルド関数を呼ぶのは**あちらの実行ロール**である
+   * （terraform/orchestrator.tf）。エッジに残った仕事は「ジョブを 1 回投げること」だけで、
+   * 要る許可は lambda:InvokeFunction 1 つのまま、**対象だけが移った。**
+   *
+   * **鍵を増やしていない。** #160 の積極的な理由は「エッジから長命の AWS 資格情報が
+   * 1 組減る」ことである（9.2）。3 組目を作るとその理由が消えるので、BUILD_AWS_* を
+   * そのまま使う（src/orchestrator/start-job.ts に、改名しない理由がある）。
+   *
+   * **ビルド関数への許可を残さない。** 残すと、エッジの鍵 1 本で「攻撃者が制御しうる
+   * コードをコンパイルする関数」（7.1）を直接叩ける経路が残る。使わない許可は外す。
    */
   build_invoke_resources = [
-    aws_lambda_function.build.arn,
+    aws_lambda_function.orchestrator.arn,
   ]
 }
 

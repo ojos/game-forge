@@ -51,6 +51,19 @@ GENERATION_MODEL = "sonnet-4-6"
 # 本番アカウントの資格情報を入れたかどうかで決まる（入れなければ設定不足として
 # 呼び出しの手前で落ちる。確定20 が受け入れた「本番構成をローカルで検証できない」）。
 BUILD_FUNCTION_NAME = "game-forge-build"
+# オーケストレータ（AWS Lambda）の関数名（3.3-2.6 / #160）。
+#
+# **シークレットではないので `[vars]` に置く**（`BUILD_FUNCTION_NAME` と同じ扱い）。
+# 資格情報のほうは `.dev.vars` にある（`BUILD_AWS_*`。ビルド関数を呼ぶのに使っていた
+# 鍵が、そのままオーケストレータを呼ぶのに移った。`src/orchestrator/start-job.ts`）。
+#
+# 値の正本は `terraform/orchestrator.tf` の `local.orchestrator_function_name` である。
+# ここはその写しなので、宣言を変えたら追随させること（`docs/orchestrator.md`）。
+#
+# **ローカルでも同じ値を置く。** Dev アカウントに Lambda は無いので、ローカルで
+# この経路が動くかどうかは `.dev.vars` に本番アカウントの資格情報を入れたかどうかで
+# 決まる（`BUILD_FUNCTION_NAME` と同じ事情。確定20）。
+ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
 # 開発用の診断経路（`/__dev/*`）を登録するかどうか（#89）。
 #
 # **`enabled` はここ（トップレベル＝ローカル）にしか無い。** 配備される 2 つの環境は
@@ -99,6 +112,7 @@ APP_HOST = "app.game-forge.ojos.jp"
 SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
 GENERATION_MODEL = "sonnet-4-6"
 BUILD_FUNCTION_NAME = "game-forge-build"
+ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
 DEV_ROUTES = "disabled"
 
 [env.preview.vars]
@@ -109,6 +123,7 @@ APP_HOST = "app.game-forge.ojos.jp"
 SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
 GENERATION_MODEL = "sonnet-4-6"
 BUILD_FUNCTION_NAME = "game-forge-build"
+ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
 DEV_ROUTES = "disabled"
 
 # 本番の D1。**ローカル用とは別のデータベース**である（9.1 / 確定20: クラウド環境は

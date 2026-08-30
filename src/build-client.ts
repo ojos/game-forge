@@ -41,10 +41,11 @@
  * - Pages Functions は Workers と同じ実行時制限に従う（別の上限を持たない）。
  *
  * **したがって同期のまま維持する。** 残る現実的な上限は「呼び出し側が待てる時間」で
- * ある。**#160 以降、本番でここを呼ぶのはオーケストレータ Lambda（600 秒）であって
- * 利用者のブラウザではない**（利用者は作品ページで待つ）。**タイムアウトを 45 秒へ
- * 伸ばせたのはこの変化があったからである**（#164。上限の導出は
- * `terraform/build-function.tf` の `build_function_timeout_seconds`）。
+ * ある。**#160 以降、本番でここを呼ぶのはオーケストレータ Lambda であって
+ * 利用者のブラウザではない**（利用者は作品ページで待つ。あちらの実行時間と、その
+ * 見積もりの式は `terraform/orchestrator.tf` にある。**秒数をここへ書き写さない**）。
+ * **タイムアウトを 45 秒へ伸ばせたのはこの変化があったからである**（#164。上限の
+ * 導出は `terraform/build-function.tf` の `build_function_timeout_seconds`）。
  *
  * ## 失敗を 4 つに分ける（#20 / 3.8 の degrade 判定）
  *
@@ -74,6 +75,10 @@
  *
  * 実装は {@link invokeBuildFunction} が持つ。**`kind` の表そのものは変えていない**ので、
  * #20（`src/build-retry.ts`）から見た `timeout` は「回さない」のままである。
+ *
+ * **呼び直せるのは 1 依頼につき 1 回である**（#174）。#164 はこれを「ビルド 1 回に
+ * つき 1 回」として実装しており、1 依頼で最大 9 回積めた。**上限の単位が、上限を
+ * 決めた根拠（オーケストレータの実行時間）の単位と違っていた**（{@link BuildTimeoutBudget}）。
  *
  * **ビルド失敗を「関数の障害」と混ぜない。** 関数側も同じ線引きをしており、利用者の
  * コードの問題は 200 応答の中の `ok:false` で返る（`docker/isolated-build/handler/handler.go`）。
@@ -363,6 +368,17 @@ export interface BuildDependencies {
   readonly fetch?: (request: Request) => Promise<Response>;
   /** Workers 側で待つ上限（ミリ秒）。既定は {@link BUILD_INVOKE_TIMEOUT_MS}。 */
   readonly timeoutMs?: number;
+  /**
+   * 時間切れによる呼び直しの枠（#174）。**1 依頼につき 1 つ**を渡す。
+   *
+   * **省くと、ビルド 1 回ごとに新しい枠が作られる**（#164 のままの振る舞い）。
+   * それだと 1 依頼あたりの呼び直しが最大 9 回になり、オーケストレータの
+   * 実行時間の見積もり（`terraform/orchestrator.tf`）が成り立たない。
+   *
+   * **生成が実際に走る経路（`src/orchestrator/pipeline.ts`）は必ず渡す。**
+   * 渡していることを `scripts/check-orchestrator-retry.sh` が機械で見る。
+   */
+  readonly budget?: BuildTimeoutBudget;
 }
 
 /**
@@ -428,9 +444,9 @@ export function invokeEndpoint(region: string, functionName: string): string {
 }
 
 /**
- * 関数側の時間切れに対して行う呼び出しの総数（**初回を含む**）。
+ * 関数側の時間切れに対して行う呼び出しの総数（**初回を含む**）。**1 依頼あたりである。**
  *
- * **2 である。つまり呼び直しは 1 回だけ。**
+ * **2 である。つまり呼び直しは、1 回の生成依頼を通して 1 回だけ。**
  *
  * **仕様書の「再試行の回数」ではなく「試行の総数」を数える**
  * （`src/build-retry.ts` の `MAX_GENERATION_ATTEMPTS` と同じ数え方に
@@ -440,11 +456,49 @@ export function invokeEndpoint(region: string, functionName: string): string {
  *
  *   - **1 回で足りる。** 本番の記録では 12 回中 7 回が 25 秒未満に収まっている。
  *     45 秒を 2 回続けて超える確率は、独立と見れば記録上の超過率の 2 乗である。
- *   - **3 回目は上限に当たる。** オーケストレータの 600 秒は
- *     `3 試行 ×（生成 91 秒 ＋ ビルド最大 45 秒 ×2）= 543 秒`で組んである
- *     （terraform/build-function.tf）。1 回の依頼で 3 回焼くと、その見積もりが崩れる。
+ *   - **3 回目は上限に当たる。** オーケストレータの実行時間の見積もりは
+ *     この定数を入力にしている（`terraform/orchestrator.tf`）。**数値をここへ
+ *     書き写さない**——写した数字は宣言と別々に古くなる（#174 が踏んだ）。
+ *
+ * # 枠は 1 依頼あたりであって、1 ビルドあたりではない（#174）
+ *
+ * 上の「3 回目は上限に当たる」は**依頼の予算**についての判断だが、#164 の実装は
+ * 呼び直しを**ビルド 1 回ごと**に許していた。1 依頼のあいだにビルドは
+ * `MAX_GENERATION_ATTEMPTS ×（1 ＋ MAX_MECHANICAL_FIX_PASSES）` 回まで走るので、
+ * **依頼あたりでは呼び直しが最大 9 回積める。** 見積もりは 1 回ぶんしか見ておらず、
+ * そのずれがオーケストレータの実行時間を溢れさせていた（溢れると `finish` が
+ * 届かず、**作品行が `running` のまま残る**）。
+ *
+ * **残り回数は {@link BuildTimeoutBudget} が依頼ごとに持つ。** 作るのは、ジョブの
+ * 単位でパイプラインを組み立てる側である（`src/orchestrator/pipeline.ts`）。
  */
 export const MAX_BUILD_INVOCATIONS_ON_TIMEOUT = 2;
+
+/**
+ * 1 依頼ぶんの、時間切れによる呼び直しの残り回数（#174）。
+ *
+ * **可変な入れ物である。** {@link invokeBuildFunction} が呼び直すたびに 1 減らし、
+ * 0 になったらそれ以上は呼び直さずに {@link BuildTimedOut} を上げる。
+ *
+ * **依頼をまたいで使い回さないこと。** 使い回すと、1 件目が使い切ったあとの生成が
+ * 呼び直しを 1 回も持たない状態になる（#164 が戻す前の振る舞い）。
+ */
+export interface BuildTimeoutBudget {
+  /** 残りの呼び直し回数（**初回の呼び出しは含まない**）。 */
+  remaining: number;
+}
+
+/**
+ * 1 依頼ぶんの枠を作る。
+ *
+ * **ジョブごとに 1 つだけ作る。** 総数から初回のぶんを引いた数が入る——
+ * {@link MAX_BUILD_INVOCATIONS_ON_TIMEOUT} が「初回を含む総数」だからである。
+ *
+ * @returns まだ使っていない枠
+ */
+export function createBuildTimeoutBudget(): BuildTimeoutBudget {
+  return { remaining: MAX_BUILD_INVOCATIONS_ON_TIMEOUT - 1 };
+}
 
 /**
  * ビルド関数を呼ぶ。**キャッシュを見ない**（見るのは {@link createLambdaBuild}）。
@@ -454,9 +508,15 @@ export const MAX_BUILD_INVOCATIONS_ON_TIMEOUT = 2;
  * 呼び直すのは `BuildTimedOut` の `where === 'function'` に限る。理由と、
  * 「LLM のやり直しにはしない」判断はモジュール冒頭にある。
  *
+ * **枠は 1 依頼あたりである**（#174）。`deps.budget` で渡された枠から 1 回ぶんを
+ * 使い、使い切っていたら呼び直さない。**渡されなければビルド 1 回ぶんの枠を
+ * その場で作る**——ここで例外にすると、テストや将来の呼び出し側が
+ * 「枠を渡し忘れた」だけでビルドできなくなるためである。**渡すべき経路が
+ * 渡していることは検査が見る**（{@link BuildDependencies.budget}）。
+ *
  * **待ってから投げ直さない。** 時間切れの原因は vCPU の不足（メモリに比例する）で
  * あって混雑ではないので、待っても関数側の事情は変わらない。**待った分だけ
- * オーケストレータの 600 秒を食うだけである。** スロットリング（429）は
+ * オーケストレータの実行時間を食うだけである。** スロットリング（429）は
  * {@link BuildFunctionFailed} であってここには来ない。
  *
  * **`source` を読み直さない。** 同じ文字列をそのまま投げる。ソースが同じなら
@@ -478,9 +538,13 @@ export async function invokeBuildFunction(
   source: string,
   deps: BuildDependencies = {},
 ): Promise<BuildFunctionResult> {
+  // **依頼あたりの枠**（#174）。渡されなければこの呼び出しぶんだけを作る。
+  const budget = deps.budget ?? createBuildTimeoutBudget();
+
   // **上限は for の条件が持つ**（`src/generate.ts` のループと同じ理由）。打ち切りの
   // 判定を catch の中だけに置くと、その 1 行を落としたときに**課金の出る無限ループ**
-  // になる。
+  // になる。**枠を使い切ったときの break はこの上限を緩めない**——枠は総数以下に
+  // しか作られないので、for の条件のほうが常に外側の壁である。
   let lastTimeout: BuildTimedOut | null = null;
   for (let attempt = 1; attempt <= MAX_BUILD_INVOCATIONS_ON_TIMEOUT; attempt += 1) {
     try {
@@ -490,11 +554,15 @@ export async function invokeBuildFunction(
         throw error;
       }
       lastTimeout = error;
+      if (budget.remaining <= 0) {
+        break;
+      }
+      budget.remaining -= 1;
       // **出してよいのは種別と回数と request-id だけ**（`src/build-retry.ts` の
       // `describeBuildFailure` と同じ方針）。生成物由来の文字列を混ぜない。
       console.warn(
         `[build] timeout attempt=${attempt}/${MAX_BUILD_INVOCATIONS_ON_TIMEOUT} ` +
-          `request-id=${error.requestId ?? 'unknown'}`,
+          `budget-left=${budget.remaining} request-id=${error.requestId ?? 'unknown'}`,
       );
     }
   }

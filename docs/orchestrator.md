@@ -26,7 +26,7 @@ connected` という**条件付きの記述**で、応答後には適用され�
 
 | 対象 | 実体 | 持ち主 |
 |---|---|---|
-| オーケストレータ関数 | `game-forge-orchestrator`（Node 22 / x86_64 / 512 MB / 600 秒） | `terraform/orchestrator.tf` |
+| オーケストレータ関数 | `game-forge-orchestrator`（Node 22 / x86_64 / 512 MB / 840 秒） | `terraform/orchestrator.tf` |
 | 実行ロール | `game-forge-orchestrator`（Bedrock ＋ ビルド関数 ＋ ログ ＋ SQS） | `terraform/orchestrator.tf` |
 | 非同期呼び出しの構成 | リトライ 0 / 有効期限 300 秒 / OnFailure → SQS | `terraform/orchestrator.tf` |
 | 失敗の受け皿 | SQS `game-forge-orchestrator-failures`（14 日・SSE） | `terraform/orchestrator.tf` |
@@ -64,6 +64,64 @@ connected` という**条件付きの記述**で、応答後には適用され�
 （`src/games.ts` の `claimGenerationJob`）。オーケストレータの最初の動作が `claim` で、
 `false` が返ったら Bedrock を呼ばずに降りる。`test/orchestrator.test.ts` が、同じ
 イベントを 2 回処理して Bedrock の呼び出しが 1 回に留まることを確かめている。
+
+## 実行時間は最悪ケースから決める
+
+**タイムアウトは 840 秒（14 分）です。** 決め方は「余裕をみて丸めた」ではなく、
+**1 依頼が最悪どこまで伸びるかを式で置き、その式を機械で照合する**形です（#174）。
+
+```
+最悪ケース = 試行回数 × 生成の秒数
+           + ( 試行回数 × ( 1 + 機械修正の巡回数 ) + 呼び直しの枠 ) × ビルド 1 回の待ち上限
+```
+
+| 記号 | 正本 |
+|---|---|
+| 試行回数 | `src/build-retry.ts` の `MAX_GENERATION_ATTEMPTS`（5.2-7） |
+| 生成の秒数 | `terraform/orchestrator.tf` の `orchestrator_generation_seconds`（実測 90.9 秒の切り上げ） |
+| 機械修正の巡回数 | `src/mechanical-fix.ts` の `MAX_MECHANICAL_FIX_PASSES`（4.2 の 1 段目） |
+| 呼び直しの枠 | `src/build-client.ts` の `MAX_BUILD_INVOCATIONS_ON_TIMEOUT` − 1（#164。**1 依頼あたり**） |
+| ビルド 1 回の待ち上限 | `src/build-client.ts` の `BUILD_INVOKE_TIMEOUT_MS`（ビルド関数のタイムアウト ＋ 5 秒） |
+
+**いまの値をここへ書き写しません。** 検査を回すと合計と内訳が出ます。
+
+```
+$ bash scripts/check-orchestrator-retry.sh
+[orchestrator-retry] 見積もり: 生成 3×91 秒 ＋ ビルド 10×50 秒 = 773 秒（＋余裕 60 秒 → 833 秒 / timeout 840 秒）
+ORCHESTRATOR_RETRY_PASS
+```
+
+**1 試行あたりのビルドは 1 ＋ 機械修正の巡回数です**（`src/generate.ts` の
+`repairAndRebuild`）。**キャッシュヒット（3.8）は現れません**——ヒットすれば関数を
+呼ばないので、短くなる方向にしか効きません。
+
+**合計をどこにも書き写しません。** `scripts/check-orchestrator-retry.sh` が入力を
+実装から読み、自分で計算して 3 つの不等式を見ます。
+
+1. 最悪ケース ＋ 余裕（`orchestrator_budget_margin_seconds`）≤ タイムアウト
+2. タイムアウト < `src/work-page.ts` の `STALE_AFTER_SECONDS`（900 秒）
+3. タイムアウト ≤ Lambda の実行時間の上限（900 秒）
+
+**溢れると壊れ方が悪いので、1 を機械で見ます。** 関数が時間切れで殺されると
+`finish` が飛ばず、**作品行は `running` のまま残ります**（費用は出ています）。
+利用者から見ると「生成中の表示が終わらない作品」です。
+
+### #174 以前は何がずれていたか
+
+宣言のコメントは最悪ケースを「3 試行 ×（生成 91 秒 ＋ ビルド最大 T × 2）」と
+置いていましたが、**実際は 1 試行あたりビルドが 3 回走り**（4.2 の機械修正が
+`MAX_MECHANICAL_FIX_PASSES` 回まで再ビルドする）、さらに #164 の呼び直しが
+**ビルド 1 回ごとに**掛かっていました。**1 依頼で最大 18 回、どのタイムアウトを
+選んでも Lambda の 15 分に収まりません。**
+
+そこで **timeout を伸ばすだけでなく、上流も絞りました。** 呼び直しの枠を
+「1 ビルドあたり」から**「1 依頼あたり」**へ直しています（`BuildTimeoutBudget`）。
+**#164 自身の根拠が「1 回の依頼で 3 回焼くと見積もりが崩れる」であり、単位が
+依頼だったのに実装がビルド単位だった**、というずれです。
+
+**試行回数（3）と機械修正の巡回数（2）は動かしていません。** 前者を減らすと
+毎回の生成の成功率が下がり、後者を減らすと費用ゼロで直せた失敗に約 16 円を払う
+ことになります。**利用者に見える側を削らずに済む順に絞りました。**
 
 ## 基盤のリトライは 0 である
 

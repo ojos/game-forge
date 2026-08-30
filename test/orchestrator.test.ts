@@ -26,6 +26,7 @@ import {
   handleOrchestratorEvent,
   missingOrchestratorEnv,
 } from '../src/orchestrator/handler.js';
+import { MAX_BUILD_INVOCATIONS_ON_TIMEOUT } from '../src/build-client.js';
 import { recordBuildCache, sourceCacheKey } from '../src/build-cache.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -148,6 +149,29 @@ async function buildResponse(suffix: string): Promise<Response> {
 }
 
 /** ビルドが「コンパイルを通らなかった」ときの応答（`ok:false`）。 */
+/**
+ * 関数側の時間切れ（`Task timed out` 相当）。
+ *
+ * **`x-amz-function-error` が付く**ので 200 でも失敗として読まれる
+ * （`src/build-client.ts`。本文の綴りで時間切れと判定する）。
+ */
+function functionTimeoutResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      errorMessage: 'ビルドが時間内に終わりませんでした: context deadline exceeded',
+      errorType: 'BuildFunctionError',
+    }),
+    {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'x-amz-function-error': 'Unhandled',
+        'x-amzn-requestid': 'req-timeout',
+      },
+    },
+  );
+}
+
 function buildRejectedResponse(): Response {
   return new Response(
     JSON.stringify({ ok: false, stage: 'build', message: './main.go:7:2: undefined: ebiten.RunGam' }),
@@ -438,6 +462,38 @@ describe('失敗の記録と、運用へ出すもの（#160）', () => {
     // （`terraform/orchestrator.tf` の MaximumRetryAttempts=0）。
     expect(bedrock.calls()).toBe(3);
     expect(await ledgerCount(userId)).toBe(3);
+  });
+
+  it('時間切れの呼び直しは 1 依頼につき 1 回で打ち止め（#174）', async () => {
+    const { gameId, payload } = await seedJob('build-timeout');
+
+    // **依頼をまたいで枠が残っているかを見る。**
+    //   1 回目: 時間切れ → 呼び直し（枠を使う） → コンパイル失敗（#20 が次の試行へ）
+    //   2 回目: 時間切れ → **枠が無いので呼び直さない**
+    // 枠がビルドごとなら、ここで 4 回目が飛ぶ。
+    let calls = 0;
+    const buildFetch = async (): Promise<Response> => {
+      calls += 1;
+      return calls === 2 ? buildRejectedResponse() : functionTimeoutResponse();
+    };
+    const bedrock = counting(() => converseResponse());
+
+    const outcome = await handleOrchestratorEvent(payload, lambdaEnv(), {
+      fetch: callbackFetch(),
+      bedrockFetch: bedrock.fetch,
+      buildFetch,
+      sleep: async () => {},
+    });
+
+    // 時間切れは #20 の再試行に回らない（診断が無い）ので、2 試行目で降りる。
+    expect(outcome).toEqual({ status: 'failed', errorCode: 'build-timeout' });
+    expect(await rowOf(gameId)).toMatchObject({ state: 'failed', error: 'build-timeout' });
+    expect(bedrock.calls()).toBe(2);
+    // **1 依頼あたりの呼び直しは MAX_BUILD_INVOCATIONS_ON_TIMEOUT − 1 回**
+    // （`src/build-client.ts` の BuildTimeoutBudget）。ビルドごとに枠を作ると、
+    // 1 依頼で最大 18 回まで伸びうる——`terraform/orchestrator.tf` の実行時間の
+    // 見積もりはその形では成り立たない。
+    expect(calls).toBe(2 + (MAX_BUILD_INVOCATIONS_ON_TIMEOUT - 1));
   });
 
   it('台帳が届かなければ、行を閉じたうえで運用へ投げる', async () => {

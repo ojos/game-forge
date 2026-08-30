@@ -665,11 +665,18 @@ function reviseSection(view: WorkPageView): string {
       ? `<p>${QUOTA_UNKNOWN_NOTICE}</p>`
       : `<p>${remainingQuotaNotice(view.dailyRemaining)}</p>`;
 
-  return `${failed}
-<h3>気になるところを直す</h3>
-<p>どう直したいかを書くと、いまのソースをもとに作り直します。
-   <strong>1 回につき 1〜2 分かかり、生成枠を 1 回使います。</strong></p>
-${remaining}${daily}
+  // **本日の枠が尽きていたらフォームを出さない**（4.4）。4.4 は「UI に露出させなければ
+  // 押しても動かないボタンになる」と書いており、**その裏返しも真である**——押せば
+  // `/api/revise` が 429 で断る操作を、押せる形で出さない。`src/generate-page.ts` が
+  // 同じ状態でフォームを描かないのと揃える。
+  //
+  // **残数の表示は出したまま**にする。フォームごと消すと、作者からは「昨日はあった口が
+  // 消えた」としか読めない。**日次と月次のどちらで止まったかはここでは言わない**
+  // （文言の正本は `src/generate-page.ts` の文言表で、書き写すと片方だけが古くなる）。
+  const form =
+    view.dailyRemaining === 0
+      ? ''
+      : `
 <form method="post" action="${REVISE_PATH}">
   <input type="hidden" name="${REVISE_GAME_ID_FIELD}" value="${view.publishableId}">
   <label for="revise-prompt">どう直しますか</label>
@@ -678,6 +685,12 @@ ${remaining}${daily}
             placeholder="例: 玉の動きをもっと速くして、当たったら音を鳴らす"></textarea>
   <button type="submit">この内容で直す</button>
 </form>`;
+
+  return `${failed}
+<h3>気になるところを直す</h3>
+<p>どう直したいかを書くと、いまのソースをもとに作り直します。
+   <strong>1 回につき 1〜2 分かかり、生成枠を 1 回使います。</strong></p>
+${remaining}${daily}${form}`;
 }
 
 /**

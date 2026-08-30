@@ -17,6 +17,7 @@ import {
 import { defaultPipeline, runJobInline, startGeneration } from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { DEFAULT_GENERATION_MODEL_KEY } from '../src/generation-models.js';
 import { REVISE_PATH, RESTORE_PATH } from '../src/paths.js';
 import {
   DAILY_QUOTA_PER_USER,
@@ -412,6 +413,30 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     // （`src/quota.ts`。あちらが 4.4 の本文と機械照合されている）。
     expect(body).toContain(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
     expect(body).toContain(`あと ${REVISIONS_PER_GAME} 回手直しできます`);
+  });
+
+  it('本日の枠が尽きていたらフォームを出さず、残数は出す（4.4）', async () => {
+    const { userId, id } = await seedReady('daily-spent');
+    // **費用の出る呼び出しを日次の上限まで積む**（確定25 は台帳の行数で数える）。
+    const now = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < DAILY_QUOTA_PER_USER; i += 1) {
+      await env.DB.prepare(
+        `insert into generations
+           (id, game_id, user_id, prompt, model,
+            input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+            cost_jpy, succeeded, created_at)
+         values (?, null, ?, 'ゲーム', ?, 0, 0, 0, 0, 1, 1, ?)`,
+      )
+        .bind(`gen-daily-${id}-${i}`, userId, DEFAULT_GENERATION_MODEL_KEY, now)
+        .run();
+    }
+
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    // **押せば 429 で断られる操作を、押せる形で出さない**（4.4 の裏返し）。
+    expect(body).not.toContain(REVISE_PATH);
+    // **残数は出したまま。** 消すと「昨日はあった口が消えた」としか読めない。
+    expect(body).toContain('気になるところを直す');
+    expect(body).toContain(remainingQuotaNotice(0));
   });
 
   it('上限に達したら口を出さない', async () => {

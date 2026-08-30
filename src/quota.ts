@@ -110,6 +110,35 @@ export const REVISIONS_PER_GAME_PATTERN =
 export const WARNING_THRESHOLD_PATTERN = /\*\*([0-9]+)% で警告、([0-9]+)% で生成停止/gu;
 
 /**
+ * 4.4 の「本日の残り生成枠 N回」を組み立てる。
+ *
+ * **数える単位は「費用の出る LLM 呼び出し回数」である**（確定25 / `src/quota.ts` の
+ * `DAILY_QUOTA_PER_USER`）。成功した作品の本数ではないので、失敗した試行でも減る。
+ * その理由は 422 の文言が言う（{@link GENERATE_MESSAGES}）。
+ *
+ * @param remaining 本日の残り回数
+ * @returns 画面へ出す文言
+ */
+export function remainingQuotaNotice(remaining: number): string {
+  // 値は `src/quota.ts` が数えた回数なので、負にも小数にもならない。**それでも
+  // 描く前に整数へ倒す。** 表示は最後の砦で、上流が変わったときに壊れた形の文字列を
+  // 利用者へ出すより、丸めた数を出すほうが害が小さい。
+  return `本日の残り生成枠 ${Math.max(0, Math.trunc(remaining))}回`;
+}
+
+/**
+ * 残枠を確認できなかったときの文言。
+ *
+ * **「残り 0 回」とも「まだ使えます」とも言わない。** 集計が読めなかっただけで、
+ * 枠が尽きたわけではない（`src/quota.ts` の `readForDecision` は握りつぶさずに
+ * 投げ直す）。**フォームは描く。** 押せば API 側が同じ判定をやり直し、断られれば
+ * 429 の文言が出る。
+ */
+export const QUOTA_UNKNOWN_NOTICE =
+  '本日の残り生成枠を確認できませんでした。生成そのものは試せますが、' +
+  '枠が残っていない場合は送信後に断られます。';
+
+/**
  * 日次クォータ（確定25）で止まったことを表す分類名。**利用者への文言ではない。**
  *
  * 4.4 はこの状態に「本日の枠は終了しました」と**翌日の再開時刻**を求める。

@@ -118,6 +118,8 @@ import {
   MONTHLY_LIMIT_REASON,
   QUOTA_EXCEEDED_STATUS,
   generationQuotaStatus,
+  QUOTA_UNKNOWN_NOTICE,
+  remainingQuotaNotice,
 } from './quota.js';
 import { HOME_PATH } from './home.js';
 import { buildPathStopped } from './build-health.js';
@@ -292,33 +294,18 @@ export const TYPICAL_WAIT_TEXT = '通常 1〜2 分かかります';
 export const LONG_WAIT_SECONDS = 60;
 
 /**
- * 4.4 の「本日の残り生成枠 N回」を組み立てる。
+ * 4.4 の「本日の残り生成枠 N回」。**正本は `src/quota.ts` にある。**
  *
- * **数える単位は「費用の出る LLM 呼び出し回数」である**（確定25 / `src/quota.ts` の
- * `DAILY_QUOTA_PER_USER`）。成功した作品の本数ではないので、失敗した試行でも減る。
- * その理由は 422 の文言が言う（{@link GENERATE_MESSAGES}）。
+ * **ここから動かしたのは、作品ページ（`src/work-page.ts`）も同じ文言を出すためである**
+ * （5.7 の推敲。#193）。あちらからこのモジュールを import すると循環参照になる
+ * （このモジュールが `WORK_PAGE_PREFIX` を借りている）。**同じ状態に 2 つの文言を
+ * 作らない**という本モジュールの方針（下の `availabilityNotice` の注記）を守るには、
+ * 値を持っている側へ文言も置くのが正しい。
  *
- * @param remaining 本日の残り回数
- * @returns 画面へ出す文言
+ * 再輸出しているのは、`test/generate-page.test.ts` が 4.4 との照合をここで行って
+ * いるためである。**照合の場所は動かさない。**
  */
-export function remainingQuotaNotice(remaining: number): string {
-  // 値は `src/quota.ts` が数えた回数なので、負にも小数にもならない。**それでも
-  // 描く前に整数へ倒す。** 表示は最後の砦で、上流が変わったときに壊れた形の文字列を
-  // 利用者へ出すより、丸めた数を出すほうが害が小さい。
-  return `本日の残り生成枠 ${Math.max(0, Math.trunc(remaining))}回`;
-}
-
-/**
- * 残枠を確認できなかったときの文言。
- *
- * **「残り 0 回」とも「まだ使えます」とも言わない。** 集計が読めなかっただけで、
- * 枠が尽きたわけではない（`src/quota.ts` の `readForDecision` は握りつぶさずに
- * 投げ直す）。**フォームは描く。** 押せば API 側が同じ判定をやり直し、断られれば
- * 429 の文言が出る。
- */
-export const QUOTA_UNKNOWN_NOTICE =
-  '本日の残り生成枠を確認できませんでした。生成そのものは試せますが、' +
-  '枠が残っていない場合は送信後に断られます。';
+export { remainingQuotaNotice, QUOTA_UNKNOWN_NOTICE };
 
 /**
  * 3.8 の degrade で出す文言。**「生成停止中」は 3.8 の言い回しである。**

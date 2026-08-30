@@ -17,6 +17,13 @@ import {
 import { defaultPipeline, runJobInline, startGeneration } from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { REVISE_PATH, RESTORE_PATH } from '../src/paths.js';
+import {
+  DAILY_QUOTA_PER_USER,
+  remainingQuotaNotice,
+  REVISIONS_PER_GAME,
+} from '../src/quota.js';
+import { appendRevision, claimRevisionSlot, failRevision } from '../src/revisions.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -348,5 +355,140 @@ describe('画面の文言が、いまの実行形態と食い違わない（#150
     } else {
       expect(body).toContain('タブを閉じても生成は進みます');
     }
+  });
+});
+
+describe('推敲の口と版の一覧（5.7 / #193）', () => {
+  /**
+   * 完成した未公開の作品を 1 件用意し、初回の版まで積む。
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @returns 作者の id と作品 id
+   */
+  async function seedReady(suffix: string): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(`rev-${suffix}`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: `sha-rev-${suffix}` }));
+    const row = await env.DB.prepare(
+      `select go_version, source_key, wasm_key from games where id = ?`,
+    )
+      .bind(id)
+      .first<{ go_version: string; source_key: string; wasm_key: string }>();
+    await appendRevision(
+      env,
+      id,
+      { goVersion: row!.go_version, sourceKey: row!.source_key, wasmKey: row!.wasm_key },
+      null,
+    );
+    return { userId, id };
+  }
+
+  it('作者には推敲の口が出る', async () => {
+    const { userId, id } = await seedReady('owner');
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+
+    expect(body).toContain(REVISE_PATH);
+    expect(body).toContain('気になるところを直す');
+    // **待ち時間と費用を隠さない**（5.7）。
+    expect(body).toContain('生成枠を 1 回使います');
+  });
+
+  it('作者以外には推敲の口が出ない', async () => {
+    const { id } = await seedReady('not-owner');
+    const stranger = await seedUser('rev-stranger');
+
+    for (const cookie of [undefined, await sessionCookie(stranger)]) {
+      const body = await (await open(workPagePath(id), cookie)).text();
+      expect(body).not.toContain(REVISE_PATH);
+      expect(body).not.toContain(RESTORE_PATH);
+    }
+  });
+
+  it('日次の残枠と、この作品の残り回数が出る', async () => {
+    const { userId, id } = await seedReady('remaining');
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+
+    // **4.4 の文言を書き写さない。** 正本の組み立て関数と突き合わせる
+    // （`src/quota.ts`。あちらが 4.4 の本文と機械照合されている）。
+    expect(body).toContain(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
+    expect(body).toContain(`あと ${REVISIONS_PER_GAME} 回手直しできます`);
+  });
+
+  it('上限に達したら口を出さない', async () => {
+    const { userId, id } = await seedReady('exhausted');
+    await env.DB.prepare('update games set revise_count = ? where id = ?')
+      .bind(REVISIONS_PER_GAME, id)
+      .run();
+
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(body).not.toContain(REVISE_PATH);
+  });
+
+  it('推敲が走っているあいだは口を出さず、自動更新する', async () => {
+    const { userId, id } = await seedReady('running');
+    await claimRevisionSlot(env, id, userId, '玉を速く', 'work-page-hash-1');
+
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    // **二重送信をボタンの無効化ではなく「フォームが無い」ことで防ぐ**（JS を要求しない）。
+    expect(body).not.toContain(REVISE_PATH);
+    expect(body).toContain('手直しをしています');
+    // **`state` は `ready` のままなので、この検査が無いと画面は止まって見える。**
+    expect(body).toContain('http-equiv="refresh"');
+  });
+
+  it('失敗した推敲は理由を出し、作品が無事であることを言う', async () => {
+    const { userId, id } = await seedReady('failed');
+    await claimRevisionSlot(env, id, userId, '玉を速く', 'work-page-hash-2');
+    await failRevision(env, id, 'build-failed');
+
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(body).toContain('前回の手直しはうまくいきませんでした');
+    expect(body).toContain('作品はそのまま残っています');
+    // 作品は壊れていないので、次の手直しの口はそのまま出ている。
+    expect(body).toContain(REVISE_PATH);
+  });
+
+  it('版が 2 つ以上あるときだけ一覧を出し、いまの版には戻す口を出さない', async () => {
+    const { userId, id } = await seedReady('list');
+    const cookie = await sessionCookie(userId);
+
+    // 版が 1 つのうちは、戻す先が現在地しかないので出さない。
+    expect(await (await open(workPagePath(id), cookie)).text()).not.toContain(RESTORE_PATH);
+
+    await appendRevision(
+      env,
+      id,
+      { goVersion: 'go1.27.0', sourceKey: 'builds/n/source.go', wasmKey: 'builds/n/game.wasm.br' },
+      '玉を速く',
+    );
+    await env.DB.prepare(
+      'update games set source_key = ?, wasm_key = ?, go_version = ? where id = ?',
+    )
+      .bind('builds/n/source.go', 'builds/n/game.wasm.br', 'go1.27.0', id)
+      .run();
+
+    const body = await (await open(workPagePath(id), cookie)).text();
+    expect(body).toContain('これまでの版');
+    expect(body).toContain(RESTORE_PATH);
+    expect(body).toContain('戻すのに生成枠は使いません');
+    // `seq = 1` のプロンプトは null（確定27 により版から引けない）。
+    expect(body).toContain('最初の生成');
+    // いまの版には戻す口を出さない（戻す先が現在地である）。
+    expect(body).toContain('（いまの版）');
+    expect([...body.matchAll(new RegExp(RESTORE_PATH, 'gu'))]).toHaveLength(1);
+  });
+
+  it('版のプロンプトはエスケープされる（UGC 由来）', async () => {
+    const { userId, id } = await seedReady('escape');
+    await appendRevision(
+      env,
+      id,
+      { goVersion: 'go1.27.0', sourceKey: 'builds/e/source.go', wasmKey: 'builds/e/game.wasm.br' },
+      '<script>alert(1)</script>',
+    );
+
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(body).not.toContain('<script>alert(1)</script>');
+    expect(body).toContain('&lt;script&gt;');
   });
 });

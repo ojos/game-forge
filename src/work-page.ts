@@ -51,7 +51,24 @@
 import type { GenerationErrorCode, GenerationState } from './games.js';
 import { PUBLISHED_STATUS, REMOVED_STATUS } from './games.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH, ogpImagePath, ogpImageUrl } from './ogp.js';
-import { GENERATE_PAGE_PATH, PUBLISH_GAME_ID_FIELD, PUBLISH_PATH } from './paths.js';
+import {
+  GENERATE_PAGE_PATH,
+  PUBLISH_GAME_ID_FIELD,
+  PUBLISH_PATH,
+  RESTORE_PATH,
+  REVISE_GAME_ID_FIELD,
+  REVISE_PATH,
+  REVISE_PROMPT_FIELD,
+  REVISE_SEQ_FIELD,
+} from './paths.js';
+import { MAX_PROMPT_LENGTH } from './generate.js';
+import {
+  generationQuotaStatus,
+  QUOTA_UNKNOWN_NOTICE,
+  remainingQuotaNotice,
+} from './quota.js';
+import type { Revision } from './revisions.js';
+import { listRevisions, revisionStatus } from './revisions.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
@@ -375,6 +392,24 @@ export interface WorkPageView {
    * 「招待された参加者かどうか」であって、この作品の作者かどうかではない（2.2-4）。
    */
   readonly signedIn: boolean;
+  /**
+   * 推敲の入力を出してよいか（5.7 / 確定28）。
+   *
+   * **画面で `owner && !published && …` を組み立てない。** 5.7 の対象条件は仕様の値で
+   * あって画面の都合ではなく、判定が 2 か所に散ると**経路（`src/revise.ts`）は断るのに
+   * 画面は出す**という食い違いが生まれる。ここへ来るのは既に判定された真偽だけである。
+   */
+  readonly revisable: boolean;
+  /** 4.4 の「本日の残り生成枠 N回」の数。読めなければ null。 */
+  readonly dailyRemaining: number | null;
+  /** この作品にあと何回推敲できるか（5.7）。作者でなければ null。 */
+  readonly revisionsRemaining: number | null;
+  /** いま推敲が走っているか。走っているあいだは新しく始められない。 */
+  readonly revisionRunning: boolean;
+  /** 直前の推敲が失敗していれば、その分類名。 */
+  readonly revisionError: string | null;
+  /** 版の一覧（新しい順）。作者でなければ空。 */
+  readonly revisions: readonly Revision[];
 }
 
 /**
@@ -389,8 +424,12 @@ export interface WorkPageView {
 export function renderWorkPage(view: WorkPageView): string {
   // 生成中のあいだだけ自動更新する。完成・失敗の画面で再読み込みを続ける理由が無い
   // （D1 の読み取りが増えるだけで、表示は変わらない）。
+  // **推敲中も更新する。** 5.7 の「押したら作り直しが始まり、完成したら差し替わる」は、
+  // 作者が待っているあいだ画面が変わらないことを許さない。**`state` は `ready` のまま
+  // なので、この条件を足さないと止まって見える**（推敲は `games` の状態機械を動かさない。
+  // `migrations/0009_game_revisions.sql`）。
   const refresh =
-    view.state === 'working' || view.state === 'stalled'
+    view.state === 'working' || view.state === 'stalled' || view.revisionRunning
       ? `\n<meta http-equiv="refresh" content="${REFRESH_SECONDS}">`
       : '';
 
@@ -565,7 +604,133 @@ function readySection(view: WorkPageView): string {
 <p>遊んでみて、よければ公開できます。</p>
 ${publishForm(view.publishableId)}`;
   return `<h2>できました</h2>
-${play}${publish}`;
+${play}${publish}${reviseSection(view)}${revisionList(view)}`;
+}
+
+/**
+ * 推敲の入力（5.7 / #193）。
+ *
+ * # 主ボタンは「公開して共有」のままである
+ *
+ * 5.4 は試遊画面の主ボタンを「公開して共有」と定め、**1 タップに畳んでフォーク連鎖の
+ * 遅延を最小化する**と書いている。推敲はその**あと**に置く——先に置くと、公開までの
+ * 手数が 1 つ増えたのと同じことになる。
+ *
+ * # 待ち時間と費用を隠さない
+ *
+ * 5.7 が「プレイ画面の横で対話するような形にしない」と定めているのは、**その形が
+ * 即応性を約束してしまい、実測（90.9 秒）と食い違う**ためである。押す前に何が起きるかを
+ * 書く。**二重送信はボタンの無効化ではなく、走っているあいだフォームを出さないことで
+ * 防ぐ**（JavaScript を要求しない。`src/publish.ts` と同じ形）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function reviseSection(view: WorkPageView): string {
+  if (!view.owner) {
+    return '';
+  }
+  if (view.revisionRunning) {
+    return `
+<h3>手直しをしています</h3>
+<p><strong>このページは開いたままにしなくて構いません。</strong>
+   通常 1〜2 分かかります。この画面は自動で更新されます。</p>
+<p>できあがるまで、上の URL では<strong>いまの版</strong>が遊べます。</p>`;
+  }
+
+  // **失敗は残す。** 作品は無傷なので画面は「できました」のままだが、押した操作が
+  // どうなったかを言わないと、作者からは何も起きなかったように見える。
+  const failed =
+    view.revisionError === null
+      ? ''
+      : `
+<p><strong>前回の手直しはうまくいきませんでした。</strong>
+   ${escapeHtml(failureMessageOf(view.revisionError))}
+   作品はそのまま残っています。</p>`;
+
+  // **`publishableId` が無ければフォームを描かない。** ここは推敲の対象そのものの id で、
+  // `revisable` が真ならこちらも非 null である（`showWorkPage` が同じ条件から作る）。
+  // **その含意に寄りかからない**——空の `value` を持つフォームを描くくらいなら、
+  // 出さないほうがよい。
+  if (!view.revisable || view.publishableId === null) {
+    return failed;
+  }
+
+  const remaining =
+    view.revisionsRemaining === null
+      ? ''
+      : `<p>この作品はあと ${Math.max(0, Math.trunc(view.revisionsRemaining))} 回手直しできます。</p>`;
+  const daily =
+    view.dailyRemaining === null
+      ? `<p>${QUOTA_UNKNOWN_NOTICE}</p>`
+      : `<p>${remainingQuotaNotice(view.dailyRemaining)}</p>`;
+
+  return `${failed}
+<h3>気になるところを直す</h3>
+<p>どう直したいかを書くと、いまのソースをもとに作り直します。
+   <strong>1 回につき 1〜2 分かかり、生成枠を 1 回使います。</strong></p>
+${remaining}${daily}
+<form method="post" action="${REVISE_PATH}">
+  <input type="hidden" name="${REVISE_GAME_ID_FIELD}" value="${view.publishableId}">
+  <label for="revise-prompt">どう直しますか</label>
+  <textarea id="revise-prompt" name="${REVISE_PROMPT_FIELD}" rows="3"
+            maxlength="${MAX_PROMPT_LENGTH}" required
+            placeholder="例: 玉の動きをもっと速くして、当たったら音を鳴らす"></textarea>
+  <button type="submit">この内容で直す</button>
+</form>`;
+}
+
+/**
+ * 版の一覧と「この版に戻す」（5.7）。
+ *
+ * **全文再出力である以上、「少し直したつもりが全体が変わる」ことは異常ではない。**
+ * 戻せなければ推敲は 1 回 約 16 円の賭けになり、作者は 2 回目を押さない。
+ *
+ * **`seq = 1` のプロンプトは null である**（`migrations/0009_game_revisions.sql`）。
+ * 初回のプロンプトは費用台帳にしか無く、確定27 により版から引けない。**「最初の生成」と
+ * 出せば作者は選べる**ので、そのために値を 3 か所目へ複製しない。
+ *
+ * **推敲が走っているあいだは戻す口を出さない。** 戻しても 90 秒後に黙って上書き
+ * されるので、経路側も断る（`src/revisions.ts` の `restoreRevision`）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function revisionList(view: WorkPageView): string {
+  // **1 つしかない版を「履歴」として見せない。** 初回生成だけの作品では戻す先が
+  // 現在地しかなく、選択肢のない一覧は画面を重くするだけである。
+  if (!view.owner || view.revisions.length < 2) {
+    return '';
+  }
+
+  // **戻す口は id が要る。** {@link reviseSection} と同じ理由で、含意に寄りかからず
+  // 明示的に見る（一覧そのものは id が無くても読める値なので、出し続ける）。
+  const restorable = view.publishableId;
+
+  const items = view.revisions
+    .map((revision) => {
+      const label =
+        revision.prompt === null ? '最初の生成' : escapeHtml(revision.prompt);
+      const current = revision.current ? ' <strong>（いまの版）</strong>' : '';
+      const restore =
+        revision.current || view.revisionRunning || restorable === null
+          ? ''
+          : `
+    <form method="post" action="${RESTORE_PATH}">
+      <input type="hidden" name="${REVISE_GAME_ID_FIELD}" value="${restorable}">
+      <input type="hidden" name="${REVISE_SEQ_FIELD}" value="${revision.seq}">
+      <button type="submit">この版に戻す</button>
+    </form>`;
+      return `  <li>${label}${current}${restore}</li>`;
+    })
+    .join('\n');
+
+  return `
+<h3>これまでの版</h3>
+<p>戻すのに生成枠は使いません。</p>
+<ul>
+${items}
+</ul>`;
 }
 
 /**
@@ -878,6 +1043,17 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
 
   const published = row.status === PUBLISHED_STATUS;
 
+  // 5.7 の対象条件（自作・`draft`・完成済み）。**経路側と同じ条件をここで作り直して
+  // いるように見えるが、判定の正本は `claimRevisionSlot` の SQL である**
+  // （`src/revisions.ts`）。ここは「口を出すか」だけを決め、押した結果はあちらが決める。
+  const revisableNow = owner && !published && state === 'ready';
+
+  // **作者のときだけ引く。** 公開作品のページは拡散の着地点であり、閲覧者ごとに
+  // 版と枠を引く理由が無い（3.6 の読み取りがそのまま費用になる）。
+  const revisions = owner ? await listRevisions(env, gameId) : [];
+  const revisionQuota = owner ? await revisionStatus(env, gameId) : null;
+  const dailyRemaining = revisableNow ? await readDailyRemaining(env, row.author_id) : null;
+
   return html(
     renderWorkPage({
       state,
@@ -917,8 +1093,48 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       authorName: published ? row.author_name : null,
       parent: parentWorkOf(row),
       signedIn: session.ok,
+      // **走っているあいだは口を出さない。** 二重送信をボタンの無効化ではなく
+      // 「フォームが無い」ことで防ぐ（JavaScript を要求しない）。
+      revisable:
+        revisableNow && revisionQuota !== null && !revisionQuota.running && revisionQuota.remaining > 0,
+      dailyRemaining,
+      revisionsRemaining: revisionQuota?.remaining ?? null,
+      revisionRunning: revisionQuota?.running ?? false,
+      revisionError: revisionQuota?.failed ?? null,
+      revisions,
     }),
   );
+}
+
+/**
+ * 4.4 の「本日の残り生成枠 N回」に出す数を読む。
+ *
+ * **読めなかったら null を返す。** 4.4 は残枠を出せと言うが、**出せないことは作品
+ * ページを 500 にしてよい理由ではない**（この画面の本題は作品の状態である）。画面は
+ * null を受け取ったら `QUOTA_UNKNOWN_NOTICE` を出す——`src/generate-page.ts` が
+ * 同じ状況で選んでいる形と揃える。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 作者
+ * @returns 残り回数、読めなければ null
+ */
+async function readDailyRemaining(env: Env, userId: string): Promise<number | null> {
+  try {
+    const status = await generationQuotaStatus(env, userId);
+    // **止まっているときは 0 を返す。** `available` の `remaining` は必ず 1 以上で、
+    // 0 は日次・月次のどちらかで止まった状態を意味する（`src/quota.ts`）。
+    //
+    // **日次と月次を出し分けない。** 4.4 はそれぞれに別の文言を求めており、その正本は
+    // `src/generate-page.ts` の文言表が持っている。ここへ書き写すと**同じ状態に 2 つの
+    // 文言**ができ、片方だけが古くなる。この画面が言うべきことは「いまは手直しできない」
+    // ことで、**なぜ止まっているかを知る場所は生成画面である**（残枠 0 なら口も出ない）。
+    return status.kind === 'available' ? status.remaining : 0;
+  } catch (error) {
+    console.error(
+      `[work-page] 残枠を読めませんでした: ${error instanceof Error ? error.name : typeof error}`,
+    );
+    return null;
+  }
 }
 
 /**

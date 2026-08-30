@@ -384,7 +384,7 @@ amd64 のイメージでも同じ値）。**だからといって片方をもう
 その場で本物の材料を作ります（ダミーのバイト列を置きません）。
 
 1. `GOOS=js GOARCH=wasm` で**本物の Go の wasm** をビルドし、brotli で圧縮して R2 へ置く
-2. その Go に同梱の `wasm_exec.js` を `runtime/<版>/` へ置く（3.5 の版一致）
+2. **ビルドに使ったツールチェイン**に同梱の `wasm_exec.js` を `runtime/<版>/` へ置く（3.5 の版一致）
 3. `games` 行を 1 つ作る（**使い捨ての `--persist-to` へ。手元の `.wrangler/state` は汚しません**）
 4. `wrangler pages dev` を HTTPS で起動し、Chromium で `/p/<key>/` を開く
 
@@ -404,6 +404,13 @@ amd64 のイメージでも同じ値）。**だからといって片方をもう
 **依存は 1 つも足していません。** Playwright も Puppeteer も使わず、Chromium を直接
 起動して CDP を素で話します（`scripts/sandbox-browser-probe.mjs`。Node 22 以降の
 組み込み `WebSocket` を使う）。要るのは**ブラウザの実行ファイル 1 つ**だけです。
+
+**Go の版はここに書き写しません。** 生成する `go.mod` の `go` ディレクティブは
+`docker/isolated-build/template/go.mod` から読みます（正本は `Dockerfile` の
+`ARG GO_VERSION`。#101 / #141）。**読めなければ落ちます——既定値へ倒れません。**
+手元の Go がピン留めより古ければ go がツールチェインを切り替えるため、**初回は
+ネットワークが要ります。** `wasm_exec.js` と `go_version` は、**切り替え後の**
+実効ツールチェインから引きます（外で引くと 3.5 の版ずれをこの検査自身が踏みます）。
 
 ```bash
 # この devcontainer で実測した入手手順

@@ -82,7 +82,9 @@
 # 前提
 # ══════════════════════════════════════════════════════════════════════════════
 #
-#   - Go のツールチェーン（本物の `.wasm` と `wasm_exec.js` をその場で作るため）
+#   - Go のツールチェーン（本物の `.wasm` と `wasm_exec.js` をその場で作るため）。
+#     **版は正本から読む**ので、手元の Go がピン留めより古ければ go が
+#     ツールチェインを取りに行く（初回はネットワークが要る。`GOTOOLCHAIN=auto`）
 #   - Node.js 22 以降（`WebSocket` が組み込みであること。CDP を素で話す）
 #   - Chromium 系の実行ファイル。`GF_BROWSER_BIN` で渡すか、既知の場所に置く
 #
@@ -190,14 +192,32 @@ mkdir -p "$STATE" "$WORK/gosrc"
 #
 # **Ebitengine のゲームは使わない。** 依存の取得が要り、検査の前提が重くなる。
 # 標準ライブラリだけで書いた最小の Go は、この経路の全部を同じように通る。
-GO_VERSION="$(go env GOVERSION)"
-[[ -n "$GO_VERSION" ]] || fail "go env GOVERSION を読めませんでした。"
-note "go: $GO_VERSION"
+# ## 版は**正本から読む**（#101 / #141 / #151。ここへ書き写さない）
+#
+# **新しい検査を足すと、新しい写しが生まれる。** この検査は「本物を通す」ために Go の
+# ソースをその場でビルドするので、`go.mod` の `go` ディレクティブという形で**版を持つ
+# 必要が生まれた**。ここに版番号を直接書くと、それは**検査の外にある写し**になる——
+# `scripts/check-go-version-copies.sh` は「版番号 ＋ `ARG GO_VERSION` ＋『正本』が
+# 同じ行に揃った行」だけを写しとみなすため、**`go.mod` に書いた素の版指定は捕まらない。**
+# 実際に一度そうなった（この検査の初版が固定値を書き、ピン留めが動いても気づけなかった）。
+# **次に同種の検査を足す人も同じことをするので、ここに書いておく。**
+#
+# 正本は `docker/isolated-build/Dockerfile` の `ARG GO_VERSION` である（#101）。ここでは
+# `docker/isolated-build/template/go.mod` の `go` ディレクティブから読む。**あちらは
+# イメージのビルドが `ARG GO_VERSION` と機械照合しており**（版がずれたイメージは存在
+# できない）、そこから読めば正本に繋がる。**読めなければ落とす。既定値へ倒れない。**
+PINNED_GO_VERSION="$(
+  sed -nE 's/^go[[:space:]]+([0-9]+\.[0-9]+(\.[0-9]+)?)([[:space:]].*)?$/\1/p' \
+    docker/isolated-build/template/go.mod | head -1
+)"
+[[ -n "$PINNED_GO_VERSION" ]] ||
+  fail "docker/isolated-build/template/go.mod の go ディレクティブを読めませんでした。版の正本は docker/isolated-build/Dockerfile の ARG GO_VERSION です（#101）。両者が揃っているかを確認してください。"
+note "pinned go: $PINNED_GO_VERSION (docker/isolated-build/template/go.mod)"
 
-cat >"$WORK/gosrc/go.mod" <<'EOF'
+cat >"$WORK/gosrc/go.mod" <<EOF
 module gfbrowsercheck
 
-go 1.26
+go ${PINNED_GO_VERSION}
 EOF
 
 # Go 側が JavaScript の世界へ印を立てる。**この印が付いていることが層 3 の判定**で、
@@ -212,6 +232,32 @@ func main() {
 }
 EOF
 
+# ## 実効ツールチェインは**モジュールの中で**解決する（3.5）
+#
+# **`go.mod` を書いた「あと」に、その中で `go env` を引く。** ピン留めが手元の Go より
+# 新しいと、go はツールチェインを切り替えてビルドする（`GOTOOLCHAIN=auto` の既定）。
+# **モジュールの外で引いた値は切り替え前のものになる。**
+#
+# ここを外で引くと、**ビルドに使った版と `wasm_exec.js` の版がずれる。** それは 3.5 が
+# 「いちばん原因が読めない失敗」と呼ぶ形そのもの（読み込みは成功し、実行時に壊れる）で、
+# **この検査自身が同じ罠を踏むことになる。** GOROOT も同じ理由で中から引く。
+GO_VERSION="$(cd "$WORK/gosrc" && go env GOVERSION)" ||
+  fail "実効の Go ツールチェインを解決できませんでした（ピン留め ${PINNED_GO_VERSION} の取得に失敗した可能性があります）。"
+[[ -n "$GO_VERSION" ]] || fail "go env GOVERSION が空を返しました。"
+
+# ピン留めと実効版がずれたまま進まない。ずれる原因は主に 2 つある。
+#   - `GOTOOLCHAIN=local` で切り替えが止められている（手元の Go が古いままになる）
+#   - 正本側の綴りがメジャー.マイナーだけの 2 要素になっている
+#     （Dockerfile 側は 3 要素で照合するため、そちらとも食い違う）
+if [[ "$GO_VERSION" != "go${PINNED_GO_VERSION}" ]]; then
+  fail "ピン留め go${PINNED_GO_VERSION} に対して、実効のツールチェインが ${GO_VERSION} です。GOTOOLCHAIN（現在: $(go env GOTOOLCHAIN)）と、docker/isolated-build/ 側の版の綴りを確認してください。"
+fi
+note "effective go: $GO_VERSION"
+
+# `wasm_exec.js` は**ビルドに使ったツールチェイン**のものを使う（3.5 が版の一致を要求する）。
+WASM_EXEC_SRC="$(cd "$WORK/gosrc" && go env GOROOT)/lib/wasm/wasm_exec.js"
+[[ -f "$WASM_EXEC_SRC" ]] || fail "wasm_exec.js が見つかりません: $WASM_EXEC_SRC"
+
 note "building game.wasm (GOOS=js GOARCH=wasm)"
 (cd "$WORK/gosrc" && GOOS=js GOARCH=wasm go build -o "$WORK/game.wasm" .) ||
   fail "検査用の wasm をビルドできませんでした。"
@@ -224,10 +270,6 @@ const fs = require("node:fs");
 const source = process.argv[1];
 fs.writeFileSync(`${source}.br`, zlib.brotliCompressSync(fs.readFileSync(source)));
 ' "$WORK/game.wasm" || fail "wasm を brotli 圧縮できませんでした。"
-
-# `wasm_exec.js` は**ビルドに使った Go に同梱のもの**を使う（3.5 が版の一致を要求する）。
-WASM_EXEC_SRC="$(go env GOROOT)/lib/wasm/wasm_exec.js"
-[[ -f "$WASM_EXEC_SRC" ]] || fail "wasm_exec.js が見つかりません: $WASM_EXEC_SRC"
 
 # ── D1 / R2 を仕込む ──────────────────────────────────────────────────────────
 

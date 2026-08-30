@@ -336,7 +336,7 @@ decode_base64() {
 sha256_of() {
   local path="$1"
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$path" | cut -d' ' -f1
+    sha256sum "$path" | cut -d' ' -f1 # bsd-ok: 直上の存在確認で分岐し、shasum / openssl へ落ちる
   elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$path" | cut -d' ' -f1
   elif command -v openssl >/dev/null 2>&1; then

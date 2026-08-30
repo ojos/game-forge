@@ -141,7 +141,7 @@ discard_container() {
 ##
 file_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum < "$1" | cut -d" " -f1
+    sha256sum < "$1" | cut -d" " -f1 # bsd-ok: 直上の存在確認で分岐し、shasum へ落ちる
   elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 < "$1" | cut -d" " -f1
   fi

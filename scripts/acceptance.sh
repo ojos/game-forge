@@ -75,6 +75,62 @@ else
   echo "[acceptance] (orchestrator) skip: terraform/orchestrator.tf not found"
 fi
 
+# シェルスクリプトが GNU 拡張に依存していないこと（BSD / macOS で落ちる書き方）。
+#
+# **前寄りに置く。** grep 数本で終わる。**同じ事故を 3 度繰り返した**（第 1 波の
+# GNU 拡張オプション、第 2 波の `date +%s%N` と `sha256sum`、第 4 波の `mktemp`）。
+# いずれもこの開発環境（Linux / GNU coreutils）では通り、**利用者の端末（macOS）で
+# 落ちる。** しかも落ちるのは、配備や検証という**利用者が自分で叩く手順の中**である。
+#
+# **判定はスクリプト側が持つ**（表と、この検査が約束しないことは
+# scripts/check-shell-portability.sh の冒頭）。**網羅ではない**——踏んだ事故を表へ
+# 足していく形なので、緑でも macOS で落ちうる。
+if [[ -d scripts ]]; then
+  echo "[acceptance] (portability) scripts/check-shell-portability.sh"
+  bash scripts/check-shell-portability.sh
+  ran_any=1
+else
+  echo "[acceptance] (portability) skip: scripts/ not found"
+fi
+
+# 検査が読む terraform output が、宣言側に実在すること（#160 / shared-ai-rules 12 章）。
+#
+# **前寄りに置く。** grep 数本で終わる。外すと、宣言側で output を改名・削除したときに
+# 外部層の検査が**空のまま比較して緑になる**（実際に #160 で起きた。停止対象が IAM
+# ユーザーからロールへ移ったとき、層 2 の検査は消えた output と消えた環境変数を
+# 突き合わせて緑だった）。**確かめていない検査は、赤より悪い。**
+#
+# **判定はスクリプト側が持つ**（scripts/check-tf-output-refs.sh の冒頭）。
+# ネットワークも AWS の認証も要らない（宣言のテキストどうしの照合）。
+if [[ -d terraform ]]; then
+  echo "[acceptance] (tf-output-refs) scripts/check-tf-output-refs.sh"
+  bash scripts/check-tf-output-refs.sh
+  ran_any=1
+else
+  echo "[acceptance] (tf-output-refs) skip: terraform/ not found"
+fi
+
+# aws CLI の呼び出しが、引数の形として CLI の契約に合っていること（#160）。
+#
+# **前寄りに置く。** 1 秒強で終わり、npm test より 1 桁安い。しかも外すと
+# **本番の配備が引数 1 つで落ちる**——実際に `--publish false` で落ちて、切り替え
+# 直後の生成が止まった。AWS CLI の真偽値フラグは値を取らない（`--publish` か
+# `--no-publish`）。**実行しなくても分かる誤りは、実行せずに落とす。**
+#
+# **判定はスクリプト側が持つ**（何を見て、何を見ないかは
+# scripts/check-aws-cli-usage.sh の冒頭）。ここが見るのは引数の形だけで、
+# **権限・存在・状態は外部層（scripts/acceptance-remote.sh）と本番でしか分からない。**
+#
+# 既定の対象は配備スクリプトである（他の経路で一度も実行されないため）。
+# scripts/ 配下すべてを見るには CHECK_AWS_ALL=1 を付ける。
+if [[ -f scripts/deploy-orchestrator.sh ]]; then
+  echo "[acceptance] (aws-usage) scripts/check-aws-cli-usage.sh"
+  bash scripts/check-aws-cli-usage.sh
+  ran_any=1
+else
+  echo "[acceptance] (aws-usage) skip: scripts/deploy-orchestrator.sh not found"
+fi
+
 if [[ -f package.json ]]; then
   command -v npm >/dev/null 2>&1 || { echo "[acceptance] (node) npm not found. install Node.js (npm) to run this acceptance check." >&2; exit 1; }
   # 依存の実体が宣言（package-lock.json）と一致していること（#99）。

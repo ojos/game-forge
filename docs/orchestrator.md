@@ -149,6 +149,17 @@ bash scripts/deploy-orchestrator.sh
 **通すまで、投げられたジョブはすべて失敗の受け皿へ落ちる**（仮のコードは常に例外を
 投げる。`terraform/lambda/orchestrator-placeholder/index.mjs`）。
 
+> **2026-08-29 の失敗。** 初回の配備で、この段が
+> `aws: [ERROR]: Unknown options: false` で落ちた。**`--publish false` と書いていた**
+> ためである（AWS CLI の真偽値フラグは値を取らない）。`terraform apply` は成功して
+> いたので、**関数は仮のコードのまま存在し、エッジだけが非同期版になった**
+> ——本物のコードが載るまで、生成が戻らない状態が続いた。
+>
+> **この綴りは機械で照合するようになった**（`scripts/check-aws-cli-usage.sh`。
+> `scripts/acceptance.sh` が呼ぶ）。**実行せずに分かるのは引数の形までである**
+> ——権限・関数の存在・関数の状態は、下記「まだ決まっていないこと」のとおり
+> 本番でしか分からない。
+
 ### 5. Pages を配備し直す
 
 新しい `ORCHESTRATOR_FUNCTION_NAME`（`wrangler.toml` の `[vars]`）と、非同期版の
@@ -287,9 +298,17 @@ aws sqs receive-message --queue-url "$QUEUE" --max-number-of-messages 10 \
 
 - **待ち時間そのものは縮んでいない。** 90.9 秒は変わらず、変わったのは「待つ場所」
   である。短縮は #25 と、Lambda のメモリ引き上げ（審査中。`docs/build-function.md`）が持つ。
-- **完了の通知が無い。** タブを閉じてよくなった以上、終わったことを知る手段は
-  「もう一度開く」しかない。完了メールは #153 の範囲である。
 - **ローカルでこの経路を通しで確かめられない。** Dev アカウントに Lambda は無く
   （9.2 / 確定20）、`wrangler pages dev` から投げると本番の関数が動く。
   ローカルで確かめられるのは、束ねられること・Node で読み込めること・
   4 種別のコールバックと `claim` の振る舞い（`test/orchestrator.test.ts`）までである。
+- **配備そのものも、本番でしか確かめられない。** `scripts/deploy-orchestrator.sh` が
+  実際に成功するかは**認証・IAM の権限・関数の存在と状態**に依存し、そのどれも
+  ローカルには無い。**機械で見られるのは引数の形だけである**
+  （`scripts/check-aws-cli-usage.sh`。操作・オプション・待機子が実在すること、
+  真偽値フラグに値を渡していないこと）。**次にこの層へ手を入れる人は、「ローカルが
+  緑でも初回は本番で落ちうる」前提で構えること。**
+- **`aws lambda update-function-code` には `--dry-run` がある。** 資格情報のある環境
+  なら、**載せずに**呼び出しの可否（権限と引数）を確かめられる。認証を要するので
+  ローカル層には置けず、置くなら外部層（`scripts/acceptance-remote.sh`）である。
+  **まだ置いていない。**

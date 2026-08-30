@@ -1193,13 +1193,29 @@ check_bedrock_burst_alarm() {
   # ずれると関数は成功したように動いて、実際には何も止めない。
   local env_vars
   env_vars="$(aws lambda get-function-configuration --function-name "$func_name" --query 'Environment.Variables' --output json)" || return 1
-  local expected_user expected_policy
-  expected_user="$(tf_output bedrock_invoker_user_name)"
+  local expected_role expected_policy actual_role actual_policy
+  # **#160 で停止の対象が IAM ユーザーからオーケストレータの実行ロールへ移った。**
+  # 宣言側は TARGET_ROLE_NAME を渡している（terraform/bedrock-guard.tf）。
+  expected_role="$(tf_output bedrock_invoker_role_name)"
   expected_policy="$(tf_output bedrock_halt_policy_arn)"
-  if [[ "$(jq -r '.TARGET_USER_NAME // ""' <<<"$env_vars")" != "$expected_user" ]] ||
-    [[ "$(jq -r '.HALT_POLICY_ARN // ""' <<<"$env_vars")" != "$expected_policy" ]]; then
-    echo "${func_name} の対象が宣言と一致しません。発火しても別のものを見に行きます。"
+  # **期待値が空のまま比較しない。** ここは以前 `bedrock_invoker_user_name`（#160 で
+  # 消えた output）と `TARGET_USER_NAME`（同じく消えた環境変数）を突き合わせており、
+  # **どちらも空なので一致して緑だった。** 何も確かめていない検査は、赤より悪い
+  # ——確かめた証拠として読まれる。参照の実在は scripts/check-tf-output-refs.sh が
+  # 機械照合するが、**この検査自身も空を拒む。**
+  if [[ -z "$expected_role" || -z "$expected_policy" ]]; then
+    echo "terraform output から停止対象を取得できません。apply 済みか確認すること。"
+    echo "  bedrock_invoker_role_name=${expected_role:-(なし)} bedrock_halt_policy_arn=${expected_policy:-(なし)}"
     rc=1
+  else
+    actual_role="$(jq -r '.TARGET_ROLE_NAME // ""' <<<"$env_vars")"
+    actual_policy="$(jq -r '.HALT_POLICY_ARN // ""' <<<"$env_vars")"
+    if [[ "$actual_role" != "$expected_role" || "$actual_policy" != "$expected_policy" ]]; then
+      echo "${func_name} の対象が宣言と一致しません。発火しても別のものを見に行きます。"
+      echo "  expected: role=${expected_role} policy=${expected_policy}"
+      echo "  actual:   role=${actual_role:-(なし)} policy=${actual_policy:-(なし)}"
+      rc=1
+    fi
   fi
 
   if [[ "$rc" -eq 0 ]]; then
@@ -1226,7 +1242,7 @@ check_bedrock_burst_alarm() {
 check_bedrock_budgets() {
   local rc=0
   local prod_account dev_account dev_profile
-  local prod_budget dev_budget prod_limit dev_limit halt_arn user halt_percent
+  local prod_budget dev_budget prod_limit dev_limit halt_arn role halt_percent
   prod_account="$(tf_output aws_account_id_prod)"
   dev_account="$(tf_output aws_account_id_dev)"
   dev_profile="$(tf_output aws_profile_dev)"
@@ -1235,13 +1251,18 @@ check_bedrock_budgets() {
   prod_limit="$(tf_output bedrock_budget_prod_limit_usd)"
   dev_limit="$(tf_output bedrock_budget_dev_limit_usd)"
   halt_arn="$(tf_output bedrock_halt_policy_arn)"
-  user="$(tf_output bedrock_invoker_user_name)"
+  # **停止の対象はロールである**（#160。terraform/bedrock-guard.tf の
+  # `iam_action_definition` は `roles` を渡している）。以前はここが
+  # `bedrock_invoker_user_name` を読んでおり、**#160 でその output が消えたため、
+  # 実状態を見る手前の「識別子を取得できません」で落ちていた**（＝ users を見に行って
+  # いたのではなく、AWS を 1 回も叩けていなかった）。
+  role="$(tf_output bedrock_invoker_role_name)"
   halt_percent="$(tf_output bedrock_budget_halt_percent)"
   if [[ -z "$prod_account" || -z "$dev_account" || -z "$prod_budget" || -z "$dev_budget" ||
-    -z "$prod_limit" || -z "$dev_limit" || -z "$halt_arn" || -z "$user" || -z "$halt_percent" || -z "$dev_profile" ]]; then
+    -z "$prod_limit" || -z "$dev_limit" || -z "$halt_arn" || -z "$role" || -z "$halt_percent" || -z "$dev_profile" ]]; then
     echo "terraform output から層 3 の識別子を取得できません。apply 済みか確認すること。"
     echo "  prod=${prod_budget:-(なし)}/${prod_limit:-(なし)} dev=${dev_budget:-(なし)}/${dev_limit:-(なし)}"
-    echo "  halt_policy=${halt_arn:-(なし)} halt_percent=${halt_percent:-(なし)} user=${user:-(なし)}"
+    echo "  halt_policy=${halt_arn:-(なし)} halt_percent=${halt_percent:-(なし)} role=${role:-(なし)}"
     return 1
   fi
 
@@ -1260,18 +1281,26 @@ check_bedrock_budgets() {
   if [[ -z "$actions" ]]; then
     echo "本番予算 ${prod_budget} の Budget Action を取得できません。"
     rc=1
-  elif ! jq -e --arg arn "$halt_arn" --arg user "$user" --argjson pct "$halt_percent" '
+  elif ! jq -e --arg arn "$halt_arn" --arg role "$role" --argjson pct "$halt_percent" '
     [ .Actions[]
       | select(.ActionType == "APPLY_IAM_POLICY")
       | select(.ActionThreshold.ActionThresholdType == "PERCENTAGE")
       | select(.ActionThreshold.ActionThresholdValue == $pct)
       | select(.Definition.IamActionDefinition.PolicyArn == $arn)
-      | select(.Definition.IamActionDefinition.Users | index($user) != null)
+      # **ロールに付くこと**（#160）。Bedrock を呼ぶのはオーケストレータの実行ロールで、
+      # ここが users のままだと、発火しても生成は止まらない。
+      | select(.Definition.IamActionDefinition.Roles // [] | index($role) != null)
+      # **そして users には付かないこと。** #160 で消した IAM ユーザーが残っていれば、
+      # 動作の実行そのものが失敗しうる。移動が**片側だけ**終わっている状態を通さない。
+      | select(.Definition.IamActionDefinition.Users // [] | length == 0)
       | select(.ApprovalModel == "AUTOMATIC")
     ] | length == 1
   ' <<<"$actions" >/dev/null; then
-    echo "本番予算 ${prod_budget} に、${halt_percent}% で ${user} へ ${halt_arn} を付ける自動動作がありません。"
+    echo "本番予算 ${prod_budget} に、${halt_percent}% で ${role}（ロール）へ ${halt_arn} を付ける自動動作がありません。"
     echo "通知は来ても止まらない状態です（層 3 の役割を果たしていません）。"
+    # **実際に何が入っていたかを出す。** 「対象がロールへ移っていない」のか
+    # 「しきい値やポリシーが違う」のかが、この 1 行で分かれる。
+    echo "  actual: $(jq -c '[.Actions[] | {ActionType, ApprovalModel, Threshold: .ActionThreshold, Iam: .Definition.IamActionDefinition}]' <<<"$actions")"
     rc=1
   fi
 

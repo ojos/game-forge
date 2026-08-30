@@ -20,7 +20,23 @@
     "ghcr.io/devcontainers-extra/features/tmux-apt-get:1": {},
     "ghcr.io/devcontainers/features/github-cli:1": {},
     "ghcr.io/devcontainers/features/node:1": {},
-    "ghcr.io/devcontainers/features/go:1": {},
+    // **Go の版をここへ書き写さない**（#141 / #185）。値の正本は `docker/isolated-build/Dockerfile` の `ARG GO_VERSION`。
+    //
+    // **開発環境をピン留めへ揃えていないのは、判断した結果である**（#185）。
+    // モジュールの `go` ディレクティブ（正本と機械照合済み）を読んで、go 自身が
+    // ツールチェインを切り替えるため、ここで版を固定しなくてもピン留めどおりの版で
+    // ビルド・テストが回る。**ここへ版を書くと「必ず古くなる写し」が 1 つ増え、しかも
+    // Go を上げるたびに全員が devcontainer を再構築することになる。**
+    // 理由・帰結・踏んだときの直しかたは docs/local-dev.md 5.11 にある。
+    //
+    // **`GOTOOLCHAIN` をここで `local` に固定しないこと。** あれはビルドイメージ側の
+    // 要求（CVE-2023-39320 の系統）であって、開発環境で同じ値にすると上の切り替えが
+    // 止まり、ハンドラのテストが手元で回らなくなる。
+    //
+    // 下の行に版を書き足すと、その行は「値の正本は `ARG GO_VERSION`」を名乗る写しに
+    // なるので、`scripts/check-go-version-copies.sh` が正本と機械照合する（食い違えば
+    // 落ちる）。**別の行へ書けばこの照合からは見えない**——それが限界である。
+    "ghcr.io/devcontainers/features/go:1": {}, // 版を書かない。値の正本は `ARG GO_VERSION`（上の注記）
     "ghcr.io/devcontainers/features/aws-cli:1": {},
     "ghcr.io/dhoeric/features/google-cloud-cli:1": {},
     "ghcr.io/devcontainers/features/terraform:1": {}

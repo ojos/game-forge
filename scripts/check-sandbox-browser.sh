@@ -33,35 +33,35 @@
 # 何を見るか（3 層。どこで落ちたかが分かる形にする）
 # ══════════════════════════════════════════════════════════════════════════════
 #
+#   層 0  配信された `.wasm` の本文を**1 回展開**すると `00 61 73 6d`（`\0asm`）で
+#         始まること（#181 の判定）。**ブラウザを使わない層である**——実 HTTP さえ
+#         通れば見えるので、`GF_SKIP_BROWSER=1` でここだけを回せる。
 #   層 1  文書が**不透明オリジン**になっていること（7.2 必須要件 1 が効いている）
 #         → ここが崩れていたら、以降の緑には意味が無い。**前提の検査**である。
 #   層 2  `.wasm` の取得が CORS で破棄されないこと（#180 の判定）
 #   層 3  wasm が起動し、Go のコードが実際に走ること（プレイ経路の全体）
 #
+# **層 0 だけは単体テストで代替できない**（実測）。`SELF.fetch`（vitest の workers
+# pool）は内部サブリクエストで **HTTP のエンコード境界を通らない**ため、
+# `encodeBody` の指定に関係なく R2 のバイト列がそのまま返る。**#180 と同じ形の盲点で、
+# だからこの検査が実 HTTP を通す。**
+#
 # ══════════════════════════════════════════════════════════════════════════════
-# **既知: 現在この検査は層 3 で赤である（#180 とは別の不具合）**
+# この検査が実際に見つけた不具合（#181）
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# **スクリプトの故障ではない。** 層 1 と層 2 は通る（＝ #180 は直っている）。層 3 で
-# 次の表示になる。
+# **#180（CORS）を直した直後、この検査は層 3 で赤のままだった。**
 #
 #   起動できませんでした: CompileError: WebAssembly.instantiateStreaming():
 #   expected magic word 00 61 73 6d, found 9b df d6 1d @+0
 #
-# **原因は `.wasm` が二重に brotli 圧縮されて配信されていることである**（実測）。
-# `src/sandbox-delivery.ts` の `wasmResponse` は、R2 の**圧縮済みバイト列**を本文にして
-# `Content-Encoding: br` を付けた `Response` を作る。ところが Response の既定は
-# `encodeBody: 'automatic'` で、**ランタイムは本文を未エンコードとみなしてもう一度
-# 圧縮する。** ブラウザは 1 回だけ展開するので、手元に残るのは brotli ストリームである
-# （`9b df d6 1d` は brotli の先頭バイト）。
+# 原因は **`.wasm` が二重に brotli 圧縮されて配信されていたこと**である（#181）。
+# R2 のバイト列は既に 1 回圧縮済みなのに、`Response` の既定（`encodeBody: 'automatic'`）が
+# それを未エンコードとみなしてもう一度圧縮していた。**ヘッダは全部正しく、curl の 200 も
+# 正しく見える**ため、代理検査では永久に見つからない種類の不具合だった。
 #
-# 実測値: R2 に置いた .br が 445,648 バイト、配信されたのは 430,790 バイト。
-# 配信されたものを 1 回展開すると R2 の .br と完全一致し、2 回展開して初めて
-# wasm のマジックナンバー `00 61 73 6d` が出る。
-#
-# **`encodeBody: 'manual'` を足すとこの検査は全層が緑になる**（実測で確認済み）。
-# ただし **#180 の範囲外**であり、**本番の実挙動と突き合わせていない**ため、この
-# ブランチでは直していない。別の issue で扱うこと。
+# 修正は `src/sandbox-delivery.ts` の `encodeBody: 'manual'`（因果はそこに書いてある）。
+# **この検査があったから見つかった。** 層 0 は、同じものをブラウザ抜きでも見る。
 #
 # ══════════════════════════════════════════════════════════════════════════════
 # なぜ scripts/acceptance.sh へ配線しないのか
@@ -125,21 +125,30 @@ command -v npx >/dev/null 2>&1 || fail "npx が見つかりません（wrangler 
 node -e 'if (typeof WebSocket !== "function") { process.exit(1) }' 2>/dev/null ||
   fail "この Node には WebSocket が組み込まれていません（Node 22 以降が要ります）: $(node --version)"
 
-BROWSER_BIN="${GF_BROWSER_BIN:-}"
-if [[ -z "$BROWSER_BIN" ]]; then
-  for candidate in \
-    /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome \
-    /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome; do
-    if [[ -x "$candidate" ]]; then
-      BROWSER_BIN="$candidate"
-      break
-    fi
-  done
-fi
-[[ -n "$BROWSER_BIN" && -x "$BROWSER_BIN" ]] ||
-  fail "Chromium の実行ファイルが見つかりません。GF_BROWSER_BIN で渡してください（入手手順はこのファイルの冒頭）。"
+# `GF_SKIP_BROWSER=1` は**層 0 だけ**を回す（ブラウザを要求しない）。層 0 は実 HTTP さえ
+# 通れば見えるためで、**ブラウザを入れられない環境でも #181 の回帰は見られる。**
+# **層 1〜3 を飛ばしたことは最後に明示する**（黙って一部だけ回して緑に見せない）。
+SKIP_BROWSER="${GF_SKIP_BROWSER:-0}"
 
-note "browser: $BROWSER_BIN"
+BROWSER_BIN=""
+if [[ "$SKIP_BROWSER" != "1" ]]; then
+  BROWSER_BIN="${GF_BROWSER_BIN:-}"
+  if [[ -z "$BROWSER_BIN" ]]; then
+    for candidate in \
+      /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome \
+      /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome; do
+      if [[ -x "$candidate" ]]; then
+        BROWSER_BIN="$candidate"
+        break
+      fi
+    done
+  fi
+  [[ -n "$BROWSER_BIN" && -x "$BROWSER_BIN" ]] ||
+    fail "Chromium の実行ファイルが見つかりません。GF_BROWSER_BIN で渡すか、層 0 だけなら GF_SKIP_BROWSER=1 を付けてください（入手手順はこのファイルの冒頭）。"
+  note "browser: $BROWSER_BIN"
+else
+  note "GF_SKIP_BROWSER=1: 層 0（HTTP）だけを見ます"
+fi
 
 # ホスト名は wrangler.toml の宣言から読む。**ここへ書き写さない**——設定を変えたときに
 # 検査だけが古いホストを見続ける（shared-ai-rules.md 12 章）。
@@ -287,7 +296,74 @@ if [[ "$ready" -ne 1 ]]; then
   fail "dev サーバが応答しませんでした（${BASE}）。"
 fi
 
-# ── 実ブラウザで開く ──────────────────────────────────────────────────────────
+# ── 層 0: 配信された本文を 1 回展開すると wasm であること（#181。ブラウザ不要）──
+#
+# **curl は `--compressed` を付けない限り展開しない**ので、ここで受け取るのは
+# **ワイヤ上のバイト列そのもの**である。それを 1 回だけ展開して、wasm のマジック
+# ナンバーで始まることを見る。二重に圧縮されていれば、1 回展開しても brotli のままで、
+# マジックナンバーは出ない。
+WASM_URL="${BASE}/p/${PREVIEW_KEY}/game.wasm"
+note "層 0: fetching $WASM_URL (raw wire bytes)"
+# 自己署名の開発用証明書を明示的に信頼する（`-k` で丸ごと無視するより範囲が狭い）。
+curl -sS --max-time 60 --cacert certs/dev.crt \
+  --resolve "${SANDBOX_HOST}:${PORT}:127.0.0.1" -o "$WORK/wire.bin" "$WASM_URL" ||
+  fail "層 0: .wasm を取得できませんでした（$WASM_URL）。"
+
+node -e '
+const zlib = require("node:zlib");
+const fs = require("node:fs");
+const wire = fs.readFileSync(process.argv[1]);
+const head = (buffer) => [...buffer.subarray(0, 4)].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+
+let once;
+try {
+  once = zlib.brotliDecompressSync(wire);
+} catch (error) {
+  process.stderr.write(
+    `[browser-check] 層 0 (#181): 配信された本文を brotli として展開できませんでした` +
+      ` (${wire.length} バイト, 先頭 ${head(wire)}): ${String(error)}\n`,
+  );
+  process.exit(1);
+}
+
+// wasm のマジックナンバー `\0asm`。
+const MAGIC = Buffer.from([0x00, 0x61, 0x73, 0x6d]);
+if (once.subarray(0, 4).equals(MAGIC)) {
+  process.stdout.write(
+    `[browser-check] 層 0 OK: 1 回展開で wasm になりました` +
+      ` (配信 ${wire.length} → 展開 ${once.length} バイト, 先頭 ${head(once)})\n`,
+  );
+  process.exit(0);
+}
+
+// 1 回展開してもまだ brotli なら、二重圧縮である（#181 の症状そのもの）。
+let twice = null;
+try {
+  twice = zlib.brotliDecompressSync(once);
+} catch {
+  twice = null;
+}
+process.stderr.write(
+  `[browser-check] 層 0 (#181): 1 回展開しても wasm になりません` +
+    ` (配信 ${wire.length} → 1 回展開 ${once.length} バイト, 先頭 ${head(once)})\n`,
+);
+if (twice !== null && twice.subarray(0, 4).equals(MAGIC)) {
+  process.stderr.write(
+    `[browser-check] 2 回展開すると wasm になります (${twice.length} バイト)。` +
+      " **二重に brotli 圧縮されて配信されています。**\n" +
+      "[browser-check] src/sandbox-delivery.ts の wasmResponse に encodeBody: \x27manual\x27 が要ります（#181）。\n",
+  );
+}
+process.exit(1);
+' "$WORK/wire.bin" || fail "層 0 (#181) が通りませんでした。"
+
+if [[ "$SKIP_BROWSER" == "1" ]]; then
+  note "OK (層 0 のみ): 配信された .wasm は 1 回展開で wasm になります。"
+  note "**層 1〜3（実ブラウザ）は見ていません。** GF_SKIP_BROWSER を外すと見ます。"
+  exit 0
+fi
+
+# ── 層 1〜3: 実ブラウザで開く ─────────────────────────────────────────────────
 
 note "opening $DOC_URL"
 node scripts/sandbox-browser-probe.mjs \

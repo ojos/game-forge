@@ -1843,21 +1843,26 @@ run "r2 credentials are outside the declaration" check_r2_credentials_placement
 run "wasm_exec objects exist for every delivered go_version" bash scripts/check-wasm-exec-objects.sh --remote
 run "r2 lifecycle has no age-based delete rules" bash scripts/check-r2-lifecycle.sh
 
-# ── 配信の CORS ヘッダ（#180）────────────────────────────────────────────────
+# ── 配信の実物検査（#180 / #181）─────────────────────────────────────────────
 #
-# **配備した実物が `Access-Control-Allow-Origin` を返しているか**を見る。コードが
-# 正しくても配備していなければ返らないので、これは外部状態の検査である。
+# **配備した実物**を実 HTTP で見る。コードが正しくても配備していなければ直らないので、
+# これは外部状態の検査である。見るのは 2 つ。
 #
-#   sandbox cors …  `wrangler pages deploy` を通すと緑になる。
-#                   **返るまで、プレイ経路はブラウザで動かない**（#180。文書が
-#                   不透明オリジンなので、自分の .wasm の取得すら CORS 要求になる）。
+#   1. 応答に `Access-Control-Allow-Origin` が付いていること（#180）
+#   2. 配信された `.wasm` を 1 回展開すると wasm になること（#181。二重圧縮でないこと）
+#      → 実在の作品が要るため `GF_SANDBOX_PREVIEW_URL` を渡したときだけ見る
+#
+#   sandbox delivery …  `wrangler pages deploy` を通すと緑になる。
+#                       **通るまで、プレイ経路はブラウザで動かない**（#180 は文書が
+#                       不透明オリジンで自分の .wasm の取得すら CORS 要求になるため、
+#                       #181 は本文が二重圧縮で instantiateStreaming が落ちるため）。
 #
 # **この検査は「ブラウザが読めること」を約束しない**（curl は CORS を評価しない）。
 # 実ブラウザでの確認は `scripts/check-sandbox-browser.sh` が持つ。**代理と実物を
 # 取り違えたことが #180 の原因**なので、その区別はスクリプト側の冒頭に書いてある。
 #
-# 認証を要さない（公開 URL への GET 1 本）。判定はスクリプト側が持つ。
-run "sandbox responses carry Access-Control-Allow-Origin" bash scripts/check-sandbox-cors.sh
+# 認証を要さない（公開 URL への GET）。判定はスクリプト側が持つ。
+run "sandbox delivery is correct over real HTTP (cors + encoding)" bash scripts/check-sandbox-cors.sh
 
 if [[ "$ran_any" -eq 0 ]]; then
   echo "[acceptance-remote] 外部層の受け入れ条件が未定義です。検査を 1 つも実行していません。" >&2

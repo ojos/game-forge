@@ -330,8 +330,9 @@ amd64 のイメージでも同じ値）。**だからといって片方をもう
 | `npm run check:origins` | 別オリジン・同一サイト・`__Host-`・CSP を**実際に起動して**確認 | 約 20 秒 | なし |
 | `npm run check:isolated-build` | 7.1 の封じ込め下で隔離ビルドが通ること ＋ **Ebitengine が vendor から解決できること** | **約 1〜2 分**（Ebitengine のサンプルビルドを含む。キャッシュが冷えていればさらに数分） | Docker（イメージのビルドにネットワーク。**実行時は `--network=none`**） |
 | `bash scripts/check-wasm-exec-objects.sh` | 配信が要求する `wasm_exec.js` が R2 に在ること（3.5 / #139） | 数秒 | ローカル D1 に `games` 行があること |
-| `bash scripts/check-sandbox-browser.sh` | **実ブラウザで**プレイ経路が通ること（#180。不透明オリジン → 自分の wasm の取得 → 起動） | 約 1 分 | Go・Node 22 以降・**Chromium の実行ファイル**（下記） |
-| `bash scripts/check-sandbox-cors.sh` | **配備済みの実物**が `Access-Control-Allow-Origin` を返すこと（#180） | 数秒 | ネットワーク（公開 URL への GET 1 本。認証は不要） |
+| `bash scripts/check-sandbox-browser.sh` | **実ブラウザで**プレイ経路が通ること（#180 / #181。不透明オリジン → 自分の wasm の取得 → 起動） | 約 1 分 | Go・Node 22 以降・**Chromium の実行ファイル**（下記） |
+| `GF_SKIP_BROWSER=1 bash scripts/check-sandbox-browser.sh` | 上の**層 0 だけ**（配信された `.wasm` が二重圧縮でないこと。#181） | 約 30 秒 | Go・Node 22 以降（**ブラウザ不要**） |
+| `bash scripts/check-sandbox-cors.sh` | **配備済みの実物**が ACAO を返すこと（#180）と、`.wasm` が二重圧縮でないこと（#181） | 数秒 | ネットワーク（公開 URL への GET。認証は不要） |
 
 `npm run check:origins` と `npm run check:isolated-build` は `scripts/verify.sh` には
 含めない。前者は約 20 秒かかり反復の信号としては重く、後者は Docker とイメージ取得を
@@ -391,9 +392,14 @@ amd64 のイメージでも同じ値）。**だからといって片方をもう
 
 | 層 | 見るもの | 落ちたときの意味 |
 |---|---|---|
+| **0** | 配信された `.wasm` を**1 回展開**すると `00 61 73 6d` で始まること | 二重に brotli 圧縮されている（#181）。**ブラウザ不要の層**で、`GF_SKIP_BROWSER=1` でここだけ回せます |
 | 1 | 文書が**不透明オリジン**であること（`self.origin === "null"`、`localStorage` が投げる） | 7.2 必須要件 1 が効いていない。**この状態の緑は無意味です** |
 | 2 | `.wasm` の取得が CORS で破棄されないこと | #180 そのもの |
 | 3 | wasm が起動し Go が実際に走ること | プレイ経路が通っていない |
+
+**層 0 は単体テストで代替できません**（実測）。`SELF.fetch`（vitest の workers pool）は
+内部サブリクエストで **HTTP のエンコード境界を通らない**ため、`encodeBody` の指定に
+関係なく R2 のバイト列がそのまま返ります。**#180 と同じ形の盲点です。**
 
 **依存は 1 つも足していません。** Playwright も Puppeteer も使わず、Chromium を直接
 起動して CDP を素で話します（`scripts/sandbox-browser-probe.mjs`。Node 22 以降の
@@ -415,10 +421,10 @@ GF_BROWSER_BIN="$(node -e "console.log(require('playwright-core').chromium.execu
 そのものなので、前提が満たされなければ**赤で落ちます。** 起動の契機は
 `src/sandbox-*.ts` を触ったときです。
 
-> **既知: いまこの検査は層 3 で赤です。** スクリプトの故障ではありません。層 1・2 は
-> 通ります（#180 は直っています）。層 3 は `.wasm` が**二重に brotli 圧縮されて配信
-> される**という別の不具合で落ちます。詳細と実測値は
-> `scripts/check-sandbox-browser.sh` の冒頭にあります。
+> **この検査が実際に #181 を見つけました。** #180（CORS）を直した直後、層 3 は
+> `CompileError: expected magic word 00 61 73 6d, found 9b df d6 1d` で赤のままでした。
+> **`.wasm` が二重に brotli 圧縮されて配信されていた**のが原因です（5.9）。
+> ヘッダは全部正しく curl の 200 も正しく見えるため、代理検査では見つかりません。
 
 ---
 
@@ -570,6 +576,54 @@ CORS が別の理由で塞ぐ」という組み合わせは、原理的に捕ま
 |---|---|---|
 | `scripts/check-sandbox-cors.sh` | **配備済みの実物**に ACAO が付いていること | ブラウザが実際に読めるか（curl は CORS を評価しない） |
 | `scripts/check-sandbox-browser.sh` | **実ブラウザ**で不透明オリジンから取得して起動できること | 配備先の状態（ローカルの dev サーバを見る） |
+
+### 5.9 R2 のバイト列は既に圧縮済みである（M4-14 / #181）
+
+**`.wasm` の配信では `encodeBody: 'manual'` が要ります。** 無いと**二重に brotli 圧縮
+されて配信されます。**
+
+R2 に入っている `.wasm.br` は、ビルド関数が**ちょうど 1 回**圧縮して PUT したものです
+（3.4-1 / #21。[build-function.md](build-function.md)）。R2 はそれを復号しないので、
+`object.body` は**既にエンコード済みの本文**です。
+
+ところが `Response` の既定は `encodeBody: 'automatic'` で、これは「本文は未エンコード
+なので、宣言された `Content-Encoding` に従ってランタイムが圧縮せよ」という意味に
+なります。結果、**既に圧縮済みのバイト列がもう一度圧縮されます。**
+
+ブラウザは宣言どおり**1 回だけ**展開するので、手元に残るのは brotli ストリームです。
+
+```text
+CompileError: WebAssembly.instantiateStreaming():
+  expected magic word 00 61 73 6d, found 9b df d6 1d @+0
+```
+
+`9b df d6 1d` は wasm ではなく **brotli の先頭バイト**です。
+
+#### なぜ気づけないのか
+
+**ヘッダは全部正しいままです。** `Content-Type: application/wasm` も
+`Content-Encoding: br` も宣言どおりに付き、`curl -i` は 200 を返し、本文の大きさも
+「圧縮された wasm」として妥当に見えます。**`Content-Encoding` を正しく付けているのに
+二重になる**という形なので、ヘッダを何度確かめても原因に辿り着きません。
+
+本番の実測（#181）:
+
+```text
+配信      2,229,376 バイト（先頭 a5 ff 7f 09）
+  1 回展開 2,313,735 バイト（先頭 9f c8 89 b0 ← まだ brotli）
+  2 回展開 11,569,609 バイト（先頭 00 61 73 6d ← \0asm）★
+```
+
+**1 回展開してもまだ brotli であることを見て初めて分かります。** これが機械検査の形
+（層 0 / `check-sandbox-cors.sh`）になっています。
+
+#### `wasm_exec.js` は同じ形ではない
+
+同じく R2 のバイト列を本文にしますが、**`Content-Encoding` を宣言しません**（R2 に置く
+`wasm_exec.js` は非圧縮）。二重圧縮は「**エンコード済みの本文**に `Content-Encoding` を
+宣言した」ときにだけ起きるので、こちらには成立する余地がありません。**同じ形に見える
+2 つを、同じ扱いにしないこと。** 理由は `src/sandbox-delivery.ts` の
+`wasmExecResponse` に書いてあります。
 
 ---
 

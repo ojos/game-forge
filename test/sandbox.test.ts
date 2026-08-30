@@ -506,6 +506,16 @@ describe('.wasm の配信（#29 acceptance 1）', () => {
   });
 
   it('R2 に置いたバイト列がそのまま届く', async () => {
+    // **この検査は二重圧縮（#181）を捕まえられない。実測で確認済みである。**
+    //
+    // `SELF.fetch` は内部のサブリクエストで、**HTTP のエンコード境界を通らない。**
+    // そのため `encodeBody` の指定に関係なく R2 のバイト列がそのまま返り、
+    // `encodeBody: 'manual'` を外しても、この検査は緑のままである。
+    //
+    // **#180 と同じ形の盲点である**（代理は「宣言が正しいか」しか見ておらず、
+    // 宣言が正しいのに実物が壊れる組み合わせを構造的に捕まえられない）。
+    // **緑を「配信が正しい」と読まないこと。** 実 HTTP で確かめるのは
+    // `scripts/check-sandbox-browser.sh` と `scripts/check-sandbox-cors.sh` である。
     const game = await seedGame({ suffix: 'bytes', status: 'published' });
     const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/game.wasm`);
     const received = new Uint8Array(await response.arrayBuffer());

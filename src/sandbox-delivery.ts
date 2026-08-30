@@ -545,6 +545,66 @@ function documentResponse(target: SandboxTarget, context: ResponseContext): Resp
  * 展開して返す手段が Workers 側に無い以上、分岐しても返せるものは変わらない。
  * br を解さないクライアントは wasm も動かせないので、実害のある組み合わせが無い。
  *
+ * # **`encodeBody: 'manual'` が要る**（#181。これが無いと二重に圧縮される）
+ *
+ * ## 何が起きるか
+ *
+ * **R2 に入っているバイト列は、既にちょうど 1 回 brotli 圧縮されている。** 圧縮するのは
+ * ビルド関数で、`.wasm` を圧縮した `.wasm.br` を `Content-Encoding: br` 付きで PUT する
+ * （3.4-1 / #21。`docs/build-function.md`「投入」）。**R2 はそれを復号しないので、
+ * `object.body` は「既にエンコード済みの本文」である。**
+ *
+ * ところが `Response` の既定は `encodeBody: 'automatic'` で、これは
+ * **「本文は未エンコードなので、宣言された `Content-Encoding` に従ってランタイムが
+ * 圧縮せよ」** という意味になる。結果、**既に圧縮済みのバイト列がもう一度圧縮される。**
+ *
+ * ブラウザは宣言どおり **1 回だけ**展開するので、手元に残るのは brotli ストリームである。
+ * `instantiateStreaming` はそれを wasm として読もうとして落ちる。
+ *
+ * ```text
+ * CompileError: WebAssembly.instantiateStreaming():
+ *   expected magic word 00 61 73 6d, found 9b df d6 1d @+0
+ * ```
+ *
+ * `9b df d6 1d` は wasm ではなく **brotli の先頭バイト**である。
+ *
+ * ## なぜ気づけないのか（**この組み合わせは知らないと絶対に見えない**）
+ *
+ * **ヘッダは全部正しい。** `Content-Type: application/wasm` も `Content-Encoding: br` も
+ * 宣言どおりに付いており、`curl -i` で見ても 200 で、本文の大きさも「圧縮された wasm」
+ * として妥当に見える。**`Content-Encoding` を正しく付けているのに二重になる**という
+ * 形なので、ヘッダを何度確かめても原因に辿り着かない。**1 回展開してもまだ brotli
+ * である**ことを見て初めて分かる。
+ *
+ * 本番の実測（#181。取り込み担当が確認）:
+ *
+ * ```text
+ * 配信      2,229,376 バイト（先頭 a5 ff 7f 09）
+ *   1 回展開 2,313,735 バイト（先頭 9f c8 89 b0 ＝ まだ brotli）
+ *   2 回展開 11,569,609 バイト（先頭 00 61 73 6d ＝ \0asm）★
+ * ```
+ *
+ * ## `encodeBody: 'manual'` の意味
+ *
+ * **「本文は既にエンコード済みである。ランタイムは触るな」**と宣言する。ヘッダの
+ * `Content-Encoding: br` はそのまま送られ、本文は R2 のバイト列がそのまま流れる。
+ * これが 3.4-1 の意図（**事前**圧縮した `.wasm.br` を配る）そのものである。
+ *
+ * ## 単体テストでは捕まらない（実測）
+ *
+ * **`SELF.fetch`（vitest の workers pool）はこの不具合を再現しない。** 内部の
+ * サブリクエストには HTTP のエンコード境界が無く、R2 のバイト列がそのまま返るため、
+ * `encodeBody` の指定に関係なく同じ結果になる（実測で確認）。**#180 と同じ形の
+ * 盲点である**——代理は「宣言が正しいか」しか見ておらず、宣言が正しいのに実物が
+ * 壊れる組み合わせを構造的に捕まえられない。
+ *
+ * **捕まえるのは実 HTTP を通る 2 本である。**
+ *
+ *   - `scripts/check-sandbox-browser.sh`  ローカルの dev サーバ越しに取得し、
+ *                                         1 回展開して `00 61 73 6d` を確かめる
+ *                                         （ブラウザ不要の層と、実ブラウザの層の両方）
+ *   - `scripts/check-sandbox-cors.sh`     配備済みの実物に対して同じことを確かめる
+ *
  * # キャッシュ
  *
  * 同じ URL の中身は変わらない。`wasm_key` は作成時に決まり（`src/games.ts`）、以後
@@ -581,6 +641,10 @@ async function wasmResponse(
 
   return new Response(object.body, {
     status: 200,
+    // **この 1 行が無いと二重に圧縮される**（#181）。R2 のバイト列は既に 1 回
+    // 圧縮済みで、既定の `'automatic'` はそれを未エンコードとみなしてもう一度
+    // 圧縮する。因果と本番の実測値は上のドキュメントコメントにある。
+    encodeBody: 'manual',
     headers: sandboxHeaders(closedCsp(context), {
       // 3.4-1 が求める 2 つ。**両方を必ず付ける。**
       'content-type': 'application/wasm',
@@ -598,6 +662,14 @@ async function wasmResponse(
  * ビルドに使った Go の版と厳密に一致する必要があり、**違う版で動かすと失敗の仕方が
  * 分かりにくい**（読み込みは成功し、実行時に壊れる）。既定の版へ落とすくらいなら、
  * 何が足りないかを言って止めるほうが運用事故が短く済む。
+ *
+ * # ここに `encodeBody: 'manual'` は要らない（#181）
+ *
+ * **R2 のバイト列を本文にする点は `wasmResponse` と同じだが、こちらは
+ * `Content-Encoding` を宣言しない。** R2 に置く `wasm_exec.js` は非圧縮であり
+ * （`scripts/put-wasm-exec.sh`）、本文は未エンコードのままで正しい。二重圧縮は
+ * 「**エンコード済みの本文**に `Content-Encoding` を宣言した」ときにだけ起きるので、
+ * ここには成立する余地が無い。**同じ形に見える 2 つを、同じ扱いにしないこと。**
  *
  * @param env バインディングと環境変数
  * @param target 解釈済みの要求

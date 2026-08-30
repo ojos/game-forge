@@ -29,13 +29,81 @@ import { startInvitedLogin } from './auth/google.js';
 import { normalizeInviteCode } from './invite-code.js';
 import { checkInvite } from './invites.js';
 import { SIGNUP_PATH, WAITLIST_PATH, WAITLIST_THANKS_PATH } from './paths.js';
-import { countWaitlist, coarsenWaitlistCount } from './waitlist.js';
+import type { WaitlistSource } from './waitlist.js';
+import { WAITLIST_SOURCES, countWaitlist, coarsenWaitlistCount } from './waitlist.js';
 
 /** フォームの `Content-Type`。素の `<form method="post">` はこれで送る。 */
 const FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded';
 
 /** 受け付けるリクエスト本文の最大バイト数（`src/waitlist.ts` と同じ考え方）。 */
 const MAX_BODY_BYTES = 1024;
+
+/**
+ * どの導線からこの画面へ来たかを伝える query の名前（10.2 / 2.2-4 / #30）。
+ *
+ * **`source` にしない。** 待機リストのフォームが送る項目名と同じ綴りにすると、
+ * 「query から来た値」と「フォームが送る値」が同じ名前で 2 つの層に現れ、片方だけを
+ * 検証している状態が読めなくなる。**この画面が受け取るのはヒントであり、記録される
+ * 値ではない**（記録するのは `src/waitlist.ts` が本文から読んだほう）。
+ */
+const SIGNUP_FROM_PARAM = 'from';
+
+/**
+ * 導線が分からないときに使う値。
+ *
+ * **既定を `signup` にする。** この画面のフォームは元々この値を送っていた（#63）。
+ * 未知の綴りを既定へ倒すのは `REASON_MESSAGES` と同じ考え方で、**query から来た文字列を
+ * そのまま HTML へ出さない**ことの一部である。
+ */
+const DEFAULT_WAITLIST_SOURCE: WaitlistSource = 'signup';
+
+/**
+ * この画面へ送るときの URL を組み立てる（2.2-4）。
+ *
+ * **綴りを持つのはこのモジュールだけである**（`src/work-page.ts` の `workPagePath` と
+ * 同じ方針）。作品ページの「改造する」はここから取る。引数の型が
+ * {@link WaitlistSource} なので、**綴りを間違えると型検査が落ちる。**
+ *
+ * @param source 導線
+ * @returns アプリ用ホスト上の絶対パス（query 付き）
+ */
+export function signupPathFrom(source: WaitlistSource): string {
+  return `${SIGNUP_PATH}?${SIGNUP_FROM_PARAM}=${encodeURIComponent(source)}`;
+}
+
+/**
+ * query の値を導線として解釈する。
+ *
+ * **閉じた集合の中でだけ受け取る**（`src/waitlist.ts` の `WAITLIST_SOURCES`）。
+ * 自由な文字列を hidden 項目へ書き戻すと、そこが反射型の差し込み口になる。
+ * 集合に無い綴りは既定へ倒す（拒否しない——登録を落とす理由が無い）。
+ *
+ * @param value query から取り出した値（無ければ null）
+ * @returns 導線
+ */
+function waitlistSourceOf(value: string | null): WaitlistSource {
+  if (value !== null && (WAITLIST_SOURCES as readonly string[]).includes(value)) {
+    return value as WaitlistSource;
+  }
+  return DEFAULT_WAITLIST_SOURCE;
+}
+
+/**
+ * 「改造する」から来た人にだけ出す前置き（2.2-4）。
+ *
+ * 2.2-4 は未招待の利用者について「**待機リストへの登録導線に変換する**」と定める。
+ * 変換先が「登録画面」としか言わない画面だと、押した操作と着地点がつながらない。
+ * **押した操作の側から説明する。**
+ *
+ * @param source 導線
+ * @returns HTML（対象外の導線なら空文字）
+ */
+function fromForkSection(source: WaitlistSource): string {
+  return source === 'fork-cta'
+    ? `<p>改造（フォーク）できるのは招待された方だけです（8.1）。
+   <strong>遊ぶことと URL の共有に招待は要りません。</strong></p>`
+    : '';
+}
 
 /**
  * 画面に出す文言の対応表。
@@ -97,9 +165,14 @@ function reasonMessage(reason: string): string {
  *
  * @param message 画面上部に出すエラー文言（無ければ null）
  * @param waitingCount 待機リストの登録数（丸め済み）。0 のときは出さない
+ * @param source どの導線から来たか（10.2）
  * @returns HTML
  */
-function signupPage(message: string | null, waitingCount: number): string {
+function signupPage(
+  message: string | null,
+  waitingCount: number,
+  source: WaitlistSource = DEFAULT_WAITLIST_SOURCE,
+): string {
   // 文言は上の対応表から選んだ固定文字列なので、埋め込んでも差し込みにならない。
   // それでも `escapeHtml` を通すのは、将来この引数の出どころが変わったときに
   // 安全側が既定になっているようにするため。
@@ -117,6 +190,7 @@ function signupPage(message: string | null, waitingCount: number): string {
 <title>Game Forge に登録する</title>
 <h1>Game Forge に登録する</h1>
 ${error}
+${fromForkSection(source)}
 <h2>招待コードをお持ちの方</h2>
 <form method="post" action="${SIGNUP_PATH}">
   <label for="code">招待コード</label>
@@ -131,7 +205,7 @@ ${waiting}
 <form method="post" action="${WAITLIST_PATH}">
   <label for="email">メールアドレス</label>
   <input id="email" name="email" type="email" autocomplete="email" required>
-  <input type="hidden" name="source" value="signup">
+  <input type="hidden" name="source" value="${source}">
   <button type="submit">待機リストに登録する</button>
 </form>
 
@@ -162,10 +236,13 @@ function waitlistThanksPage(): string {
  * @returns レスポンス
  */
 const showSignupPage: RouteHandler = async (request, env) => {
-  const reason = new URL(request.url).searchParams.get('reason');
+  const params = new URL(request.url).searchParams;
+  const reason = params.get('reason');
   const message = reason === null ? null : reasonMessage(reason);
   const waitingCount = coarsenWaitlistCount(await countWaitlist(env.DB));
-  return html(signupPage(message, waitingCount), reason === null ? 200 : 400);
+  // **導線は画面の形を変えず、記録される値と前置きだけを変える。**
+  const source = waitlistSourceOf(params.get(SIGNUP_FROM_PARAM));
+  return html(signupPage(message, waitingCount, source), reason === null ? 200 : 400);
 };
 
 /**

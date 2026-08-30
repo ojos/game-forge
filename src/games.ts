@@ -555,6 +555,16 @@ export async function failGame(
 export const PUBLISHED_STATUS = 'published';
 
 /**
+ * 取り下げ（tombstone 化）された作品の状態（5.3 / 5.4）。
+ *
+ * **まだ誰もこの綴りを書き込まない。** 親の tombstone 化は M5-4 の範囲である。
+ * それでも定数として置くのは、**読む側が先に要るため**で、系統の表示
+ * （`src/work-page.ts` の「元ゲーム」）は「削除済みの作品から派生」を出し分ける必要が
+ * ある（5.3）。綴りを各所へ書き写すと、書き込む側が入った日にどこかが古くなる。
+ */
+export const REMOVED_STATUS = 'removed';
+
+/**
  * 公開の結果（5.4 / #26）。
  *
  * **「できなかった」を 1 つにまとめない。** 呼び出し側（`src/publish.ts`）が返す

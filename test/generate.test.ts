@@ -1068,6 +1068,68 @@ describe('失敗も必ず作品行へ書く（#150）', () => {
     expect(await latestStateOf(userId)).toEqual({ state: 'failed', error: 'internal' });
   });
 
+  it('degrade の信号を段へ渡す（#140 / 3.8 / 確定24）', async () => {
+    // **`errorCode` では代われない。** ビルド関数の障害も D1 の不調も `internal` に
+    // 落ちる（`src/games.ts` の語彙に区別が無い）。段の 4 つ目の引数だけが、
+    // 生成画面がサービス全体の停止を判定できる材料である。
+    //
+    // 分類そのものは `src/build-health.ts` が持ち、その網羅は
+    // `test/build-health.test.ts` が見る。**ここが見るのは「渡っているか」だけ**である。
+    /**
+     * ビルドの段を落として、段へ渡った信号を取り出す。
+     *
+     * @param suffix テスト内で一意な接尾辞
+     * @param error ビルドの段が投げる値
+     * @returns 段が受け取った（分類名, 信号）
+     */
+    async function signalOf(
+      suffix: string,
+      error: unknown,
+    ): Promise<{ code: string; signal: boolean | undefined }> {
+      const userId = await seedUser(`signal-${suffix}`);
+      const seen: { code: string; signal: boolean | undefined }[] = [];
+      const { pipeline } = recordingPipeline();
+      const failing: GenerationPipeline = {
+        ...pipeline,
+        build: async () => {
+          throw error;
+        },
+        failGame: async (_env, _gameId, errorCode, buildPathFailed) => {
+          seen.push({ code: errorCode, signal: buildPathFailed });
+          return true;
+        },
+      };
+      await expect(
+        startGeneration(env, userId, { prompt: `${suffix} の作品` }, failing),
+      ).rejects.toBeTruthy();
+      expect(seen).toHaveLength(1);
+      return seen[0]!;
+    }
+
+    // 確定24 の停止事象（スロットリング）。**分類名は `internal` である。**
+    expect(
+      await signalOf('function', new BuildFunctionFailed(429, 'TooManyRequestsException', null, 'r')),
+    ).toEqual({ code: 'internal', signal: true });
+
+    // **D1 の不調。分類名は同じ `internal` だが、信号は立たない。**
+    // ここが #140 の acceptance 2 の分かれ目である。
+    expect(await signalOf('d1', new Error('D1_ERROR: database is locked'))).toEqual({
+      code: 'internal',
+      signal: false,
+    });
+
+    // 時間切れは 3.8 の #164 注記が明示的に除外している。
+    expect(await signalOf('timeout', new BuildTimedOut('function', 'req'))).toEqual({
+      code: 'build-timeout',
+      signal: false,
+    });
+
+    // コンパイルが通らなかっただけ（5.2-7 の上限まで試した結果）。
+    expect(await signalOf('rejected', new BuildRejected('build', 'prog.go:1:1: syntax error'))).toEqual(
+      { code: 'build-failed', signal: false },
+    );
+  });
+
   it('ビルドを使い切った失敗は build-failed として残る', async () => {
     const userId = await seedUser('fail-build');
     const { pipeline } = recordingPipeline();

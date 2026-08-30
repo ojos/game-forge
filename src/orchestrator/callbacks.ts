@@ -284,12 +284,18 @@ export class CallbackClient {
    *
    * **書かないと `running` のまま永久に残り、作品ページが「生成中」を出し続ける。**
    *
+   * **`buildPathFailed` は 3.8 の degrade の発火信号である**（#140）。`errorCode` では
+   * 代われない——`internal` には D1 の不調も関数の障害も落ちてくるので、受け取った側が
+   * 区別できない（`src/generate.ts` の `GenerationPipeline.failGame`）。
+   * **常に送る。** 省略できる形にすると「送っていない」と「false」が区別できなくなる。
+   *
    * @param errorCode 分類名
+   * @param buildPathFailed ビルド依頼そのものが失敗したか（3.8 / #140）
    * @returns 行を閉じられたら true
    * @throws {CallbackDeliveryFailed} 予算内に届かなかったとき
    */
-  async finishWithError(errorCode: GenerationErrorCode): Promise<boolean> {
-    const body = await this.post('finish', { errorCode });
+  async finishWithError(errorCode: GenerationErrorCode, buildPathFailed = false): Promise<boolean> {
+    const body = await this.post('finish', { errorCode, buildPathFailed });
     if (body['accepted'] !== true) {
       throw new CallbackRejected('finish');
     }

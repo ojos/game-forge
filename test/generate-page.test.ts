@@ -38,9 +38,11 @@ import { GENERATE_PATH, MAX_PROMPT_LENGTH } from '../src/generate.js';
 import { HOME_PATH } from '../src/home.js';
 import { GENERATE_PAGE_PATH, SIGNUP_PATH } from '../src/paths.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
-import { findDuplicateRoutes } from '../src/routes.js';
+import { dispatch, findDuplicateRoutes } from '../src/routes.js';
 import { WORK_PAGE_PREFIX } from '../src/work-page.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { GENERATE_CALLBACK_PATH, generateCallbackRoutes } from '../src/generate-callback.js';
+import { createPendingGame } from '../src/games.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -144,6 +146,9 @@ afterEach(async () => {
   // 作った行だけを消す**（`generations` を丸ごと空にすると、storage を共有している
   // 他のテストを壊す。`test/quota.test.ts` と同じ理由）。
   await env.DB.prepare("delete from generations where user_id like 'page-user-%'").run();
+  // 3.8 の degrade の信号も**サービス全体の状態**である（#140）。残すと次のテストの
+  // 画面表示に効く。
+  await env.DB.prepare('delete from build_health').run();
 });
 
 /**
@@ -856,6 +861,8 @@ describe('残枠と停止状態の常時表示（acceptance 1 / 4.4 / #24）', (
       GENERATE_MESSAGES[MONTHLY_LIMIT_MESSAGE_KEY],
     );
     expect(availabilityNotice({ kind: 'unknown' })).toBe(QUOTA_UNKNOWN_NOTICE);
+    // 3.8 の degrade（#140）。**残枠の文言と混ぜない。**
+    expect(availabilityNotice({ kind: 'build-stopped' })).toBe(BUILD_STOPPED_NOTICE);
   });
 
   it('止まっている状態でだけフォームを落とす', () => {
@@ -865,6 +872,9 @@ describe('残枠と停止状態の常時表示（acceptance 1 / 4.4 / #24）', (
     expect(canSubmit({ kind: 'unknown' })).toBe(true);
     expect(canSubmit({ kind: DAILY_QUOTA_REASON })).toBe(false);
     expect(canSubmit({ kind: MONTHLY_LIMIT_REASON })).toBe(false);
+    // **`build-stopped` でも描かない**（3.8 / #140）。押すと生成は走ってビルドで
+    // 落ちる——約 16〜19 円と日次枠 1 回が、成果物なしで消える。
+    expect(canSubmit({ kind: 'build-stopped' })).toBe(false);
   });
 });
 
@@ -1055,6 +1065,148 @@ describe('生成停止中（3.8 の degrade）', () => {
     // 2 つが同時に出るので、同じことを 2 度言わない。
     expect(GENERATE_MESSAGES['500:']).toContain('プレイと共有');
     expect(BUILD_STOPPED_NOTICE).not.toContain('プレイと共有');
+  });
+});
+
+describe('サーバ側の信号で「生成停止中」を出す（#140 acceptance）', () => {
+  /**
+   * ビルド依頼が失敗した状態を、**コールバック経路を実際に通して**作る。
+   *
+   * **`build_health` へ直接 insert しない。** それだと「失敗がこの表へ届くか」が
+   * 検査から抜け、表の中身を自分で置いて自分で読むだけになる（docs/handoff.md 4 章）。
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @param buildPathFailed ビルド依頼そのものが失敗したか（false は D1 の不調に相当）
+   */
+  async function failGeneration(suffix: string, buildPathFailed: boolean): Promise<void> {
+    const author = await seedUser(`signal-${suffix}`);
+    const pending = await createPendingGame(env, author, { prompt: `${suffix} のゲーム` });
+    // `finish` は `running` の行にしか効かない（`src/generate-callback.ts`）。
+    const claimed = await dispatch(
+      generateCallbackRoutes,
+      new Request(`${APP_ORIGIN}${GENERATE_CALLBACK_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ gameId: pending.id, jobToken: pending.jobToken, kind: 'claim' }),
+      }),
+      env,
+    );
+    expect(await claimed.json()).toEqual({ claimed: true });
+
+    const finished = await dispatch(
+      generateCallbackRoutes,
+      new Request(`${APP_ORIGIN}${GENERATE_CALLBACK_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          gameId: pending.id,
+          jobToken: pending.jobToken,
+          kind: 'finish',
+          // **分類名はどちらでも `internal` である**（`src/games.ts` の語彙に区別が
+          // 無い）。区別しているのは `buildPathFailed` だけで、そこが #140 の
+          // acceptance 2 が要求する分かれ目である。
+          errorCode: 'internal',
+          buildPathFailed,
+        }),
+      }),
+      env,
+    );
+    expect(await finished.json()).toEqual({ accepted: true, finished: true });
+  }
+
+  it('ビルド依頼が失敗した状態を作ると「生成停止中」が出る（acceptance 1）', async () => {
+    const viewer = await seedUser('degrade-viewer');
+
+    // 1 件では出ない。**確定24 の停止事象は 1 つの要求からは読み取れない。**
+    await failGeneration('a', true);
+    const single = await (await openPage(await sessionCookie(viewer))).text();
+    expect(single).toContain('id="generate-form"');
+
+    // **別の依頼**で 2 件目。ここで停止とみなす。
+    await failGeneration('b', true);
+    const body = await (await openPage(await sessionCookie(viewer))).text();
+
+    // 常時表示の位置（4.4）に 3.8 の文言が出る。**隠してある `generate-degraded` の
+    // ほうと取り違えない**ので、`id` ごと照合する。
+    expect(body).toContain(`id="generate-quota">${BUILD_STOPPED_NOTICE}`);
+    // **押すと約 16〜19 円と日次枠 1 回が成果物なしで消えるボタンを描かない。**
+    expect(body).not.toContain('id="generate-form"');
+    expect(body).not.toContain('id="generate-submit"');
+    // **プレイと共有は続く**（3.8 の degrade 設計の核）。押せるリンクとして出す。
+    expect(body).toContain(`<a href="${HOME_PATH}"`);
+  });
+
+  it('D1 の不調では出ない（acceptance 2）', async () => {
+    const viewer = await seedUser('degrade-not-viewer');
+
+    // **同じ回数・同じ分類名（`internal`）で失敗している。** 違うのは
+    // 「ビルド依頼そのものが失敗したか」だけである。
+    await failGeneration('c', false);
+    await failGeneration('d', false);
+
+    const body = await (await openPage(await sessionCookie(viewer))).text();
+    expect(body).not.toContain(`id="generate-quota">${BUILD_STOPPED_NOTICE}`);
+    // 4.4 の常時表示は残枠のままで、フォームも描く。
+    expect(body).toContain(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
+    expect(body).toContain('id="generate-form"');
+  });
+
+  it('信号を読めなくても停止と言わない（D1 障害の増幅器にしない）', async () => {
+    const viewer = await seedUser('degrade-unreadable');
+    const broken = {
+      ...testEnv(),
+      DB: {
+        prepare(query: string) {
+          if (query.includes('build_health')) {
+            throw new Error('D1 is down');
+          }
+          return env.DB.prepare(query);
+        },
+      } as unknown as D1Database,
+    };
+
+    const response = await handleAppRequest(
+      new Request(`${APP_ORIGIN}${GENERATE_PAGE_PATH}`, {
+        headers: { cookie: await sessionCookie(viewer) },
+      }),
+      broken as unknown as Env,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).not.toContain(`id="generate-quota">${BUILD_STOPPED_NOTICE}`);
+    expect(body).toContain('id="generate-form"');
+    // **枠の集計は読めている。** 残枠の常時表示（4.4）まで巻き込んで
+    // {@link QUOTA_UNKNOWN_NOTICE} へ倒れていたら、信号が読めないことが画面の
+    // 他の部分を道連れにしている（`buildPathStopped` が投げている）。
+    expect(body).toContain(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
+    expect(body).not.toContain(QUOTA_UNKNOWN_NOTICE);
+  });
+
+  it('枠が尽きているときは信号を引かない（3.6 / 読み取りも従量）', async () => {
+    const user = await seedUser('degrade-no-read');
+    for (let index = 0; index < DAILY_QUOTA_PER_USER; index += 1) {
+      await seedLedgerRow(user);
+    }
+
+    const queries: string[] = [];
+    const counting = {
+      ...testEnv(),
+      DB: {
+        prepare(query: string) {
+          queries.push(query);
+          return env.DB.prepare(query);
+        },
+      } as unknown as D1Database,
+    };
+
+    await handleAppRequest(
+      new Request(`${APP_ORIGIN}${GENERATE_PAGE_PATH}`, {
+        headers: { cookie: await sessionCookie(user) },
+      }),
+      counting as unknown as Env,
+    );
+    // 押せない理由は枠であり、**そちらのほうが具体的**である（再開時刻が言える）。
+    expect(queries.some((query) => query.includes('build_health'))).toBe(false);
   });
 });
 

@@ -82,6 +82,9 @@ import type { CostAlertOutcome } from './mail/cost-alert.js';
 import { notifyMonthlyCostWarning } from './mail/cost-alert.js';
 import type { GenerationNoticeOutcome, GenerationOutcome } from './mail/generation-notice.js';
 import { notifyGenerationFinished } from './mail/generation-notice.js';
+// 3.8 の degrade の発火信号（#140）。**この経路だけが、ビルド依頼の失敗を D1 の側から
+// 見られる**——生成の本体はオーケストレータ Lambda で走っており、あちらは D1 を持たない。
+import { clearBuildPathFailures, recordBuildPathFailure } from './build-health.js';
 
 /** コールバックのパス。 */
 export const GENERATE_CALLBACK_PATH = '/api/generate/callback';
@@ -119,6 +122,7 @@ export type CallbackRejection =
   | 'missing-job-token'
   | 'unknown-kind'
   | 'unknown-error-code'
+  | 'invalid-build-signal'
   | 'invalid-ledger'
   | 'invalid-artifacts'
   | 'invalid-source-hash'
@@ -151,7 +155,18 @@ export type CallbackRequest = {
   | { readonly kind: 'claim' }
   | { readonly kind: 'ledger'; readonly ledger: LedgerCallback }
   | { readonly kind: 'cache-lookup'; readonly sourceSha256: string }
-  | { readonly kind: 'finish'; readonly errorCode: GenerationErrorCode }
+  | {
+      readonly kind: 'finish';
+      readonly errorCode: GenerationErrorCode;
+      /**
+       * ビルド依頼そのものが失敗したか（3.8 の degrade の発火信号。#140）。
+       *
+       * **`errorCode` から導けない。** `internal` には D1 の不調も関数の障害も落ちて
+       * くる（`src/games.ts` の `GENERATION_ERROR_CODES`）。判定は呼ぶ側の catch が
+       * 例外の種別で行い（`src/build-health.ts`）、ここは受け取るだけである。
+       */
+      readonly buildPathFailed: boolean;
+    }
   | { readonly kind: 'finish'; readonly artifacts: FinishArtifacts }
 );
 
@@ -169,6 +184,9 @@ const ALLOWED_FIELDS = new Set([
   'ledger',
   'artifacts',
   'sourceSha256',
+  // 3.8 の degrade の発火信号（#140）。**失敗側にしか意味が無い**ので、成功側に
+  // 付いていたら断る（下記）。
+  'buildPathFailed',
 ]);
 
 /** コンテンツハッシュの綴り（小文字 16 進 64 桁）。 */
@@ -435,6 +453,14 @@ export async function parseCallbackRequest(request: Request): Promise<CallbackPa
     return { ok: false, reason: 'missing-outcome' };
   }
 
+  // 3.8 の degrade の発火信号（#140）。**真偽値以外を推測で読まない。** 生成の経路は
+  // 差し替えられるので、`"true"` や `1` を true として飲むと、**送った側が意図して
+  // いない停止**をサービス全体へ出しうる（#140 の「誤爆のコストは見逃しより高い」）。
+  const buildSignal = parsed['buildPathFailed'];
+  if (buildSignal !== undefined && typeof buildSignal !== 'boolean') {
+    return { ok: false, reason: 'invalid-build-signal' };
+  }
+
   if (hasError) {
     const errorCode = parsed['errorCode'];
     if (
@@ -446,7 +472,24 @@ export async function parseCallbackRequest(request: Request): Promise<CallbackPa
       // 利用者にもこちらにも説明できなくなる）。
       return { ok: false, reason: 'unknown-error-code' };
     }
-    return { ok: true, request: { ...base, kind, errorCode: errorCode as GenerationErrorCode } };
+    // **省略は false として扱う。** 3.8 の停止は「起きたことが分かっている」ときに
+    // だけ出すもので、分からない状態を停止へ倒さない。
+    return {
+      ok: true,
+      request: {
+        ...base,
+        kind,
+        errorCode: errorCode as GenerationErrorCode,
+        buildPathFailed: buildSignal === true,
+      },
+    };
+  }
+
+  // **成功側に信号が付いていたら断る。** 黙って捨てると、呼ぶ側は「記録された」と
+  // 読める応答（`accepted: true`）を受け取る。**成功は停止の証拠になりえない**ので、
+  // 意味の無い項目として通さない。
+  if (buildSignal !== undefined) {
+    return { ok: false, reason: 'invalid-build-signal' };
   }
 
   const artifacts = parseArtifacts(parsed['artifacts']);
@@ -600,6 +643,15 @@ async function handleCallback(
   // 仕事の完了を知らせない。
   if ('errorCode' in callback) {
     const finished = await failGame(env, callback.gameId, callback.errorCode);
+    if (finished && callback.buildPathFailed) {
+      // 3.8 の degrade の発火信号（#140 / 確定24）。**`finished` で絞る**——false は
+      // 重複配信（0007）であり、同じ依頼を 2 件として数えると、**1 人の要求だけで
+      // 閾値へ届く。**（`build_health` の主キーでも止まるが、数え方の理由はここにある。）
+      //
+      // **`errorCode` を見ない。** 見ると、D1 の不調で `internal` になった失敗まで
+      // 停止として数えることになる（#140 の acceptance が区別せよと言う 2 つ）。
+      await recordBuildPathFailure(env, callback.gameId, Math.floor(Date.now() / 1000));
+    }
     if (finished) {
       await notifiers.generationFinished(env, callback.gameId, {
         kind: 'failed',
@@ -610,6 +662,19 @@ async function handleCallback(
   }
 
   const { goVersion, sourceKey, wasmKey, cacheRecord } = callback.artifacts;
+  // **ビルド関数を実際に呼んで成功したときだけ、停止の信号を捨てる**（3.8 / #140）。
+  //
+  // **`cacheRecord` が非 null であることが「関数を呼んだ」の同義語である**
+  // （`src/orchestrator/pipeline.ts` はヒット時に null を送る＝索引を書き直さない）。
+  // ヒットは D1 と R2 を引いただけなので、**AWS Lambda が生きている証拠にならない。**
+  //
+  // **`finished` で絞らない。** 経路が生きていたという事実は、`games` 行が既に
+  // 確定していたかどうか（重複配信）と関係しない。**平常時は表が空で、削除は 0 行・
+  // 行書き込みも 0 なので、生成 1 回あたりの書き込みは増えない**（3.6 /
+  // `src/build-health.ts`）。
+  if (cacheRecord !== null) {
+    await clearBuildPathFailures(env);
+  }
   const finished = await completeGameWithArtifacts(
     env,
     callback.gameId,

@@ -82,10 +82,23 @@ describe('テーブルとインデックスの存在（#11 acceptance 2）', () 
     // **`game_id` が主キーである。** 数えるのは失敗した**依頼**の数で、ビルド関数を
     // 何回叩いたかではない（1 依頼で最大 9 回走りうる。呼び出しを数えると、1 人の
     // 要求だけで閾値へ届く）。重複配信（0007）でも行が増えないのは同じ理由による。
-    const key = await env.DB.prepare('select * from pragma_index_info(?)')
-      .bind('sqlite_autoindex_build_health_1')
-      .all<{ name: string }>();
-    expect(key.results.map((row) => row.name)).toEqual(['game_id']);
+    //
+    // **`sqlite_autoindex_build_health_1` という名前で引かない**（PR #189 のレビュー指摘）。
+    // あれは SQLite が主キーのために勝手に作る索引の名前で、**末尾の連番は表に
+    // UNIQUE 制約が増えるだけで動く。** 確かめたいのは「`game_id` が主キーであること」
+    // であって索引の名前ではないので、名前で引くと**この検査の目的と無関係な理由で
+    // 赤になる**（docs/handoff.md 4 章 / #175 と同じ形）。
+    //
+    // `pragma_table_info` の `pk` は**主キーの中での位置**（1 始まり。主キーでなければ 0）
+    // である。位置つきで取るので、複合主キーになったときも順序ごと落ちる。
+    const columns = await env.DB.prepare('select name, pk from pragma_table_info(?)')
+      .bind('build_health')
+      .all<{ name: string; pk: number }>();
+    const primaryKey = columns.results
+      .filter((row) => row.pk > 0)
+      .sort((left, right) => left.pk - right.pk)
+      .map((row) => row.name);
+    expect(primaryKey).toEqual(['game_id']);
 
     // **索引を張らない。** 索引は 1 行の insert につき 1 行の書き込みを足す（3.6）。
     // この表は平常時 0 行なので、全走査で足りる。

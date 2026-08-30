@@ -354,9 +354,11 @@ describe('D1 が読めないときに停止と言わない（#140 acceptance 2 �
           }
           return env.DB.prepare(query);
         },
-        batch(statements: unknown[]) {
+        // 記録は `batch` を通る（`recordBuildPathFailure`）。**引数は使わない**ので、
+        // 未使用であることが読めるように `_` を付ける（`src/generate.ts` の段の実装と
+        // 同じ流儀）。**到達しない `return` を置かない**（PR #189 のレビュー指摘）。
+        batch(_statements: unknown[]): never {
           throw new Error('D1 is down');
-          return statements;
         },
       } as unknown as D1Database,
     } as Env;

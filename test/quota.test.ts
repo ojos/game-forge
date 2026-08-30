@@ -6,6 +6,8 @@ import {
   DAILY_QUOTA_REASON,
   MONTHLY_COST_LIMIT_JPY,
   MONTHLY_LIMIT_PATTERN,
+  REVISIONS_PER_GAME,
+  REVISIONS_PER_GAME_PATTERN,
   MONTHLY_LIMIT_REASON,
   MONTHLY_WARNING_RATIO,
   QUOTA_EXCEEDED_STATUS,
@@ -142,6 +144,26 @@ describe('しきい値の機械照合（4.3 / 確定25）', () => {
     }
   });
 
+  it('1 作品あたりの推敲上限の宣言とコード側の定数が一致する', () => {
+    const values = valuesIn(REVISIONS_PER_GAME_PATTERN, env.TEST_PRODUCT_SPEC);
+    // 5.7 の本文と確定28 の 2 か所に書かれている。
+    expect(values.length).toBeGreaterThan(1);
+    for (const value of values) {
+      expect(value).toBe(REVISIONS_PER_GAME);
+    }
+  });
+
+  it('推敲上限の照合が、日次クォータの宣言を拾わない', () => {
+    // **2 つの上限は軸が違う**（1 人・1 日 と 1 作品・生涯）。同じ正規表現に拾われると、
+    // 片方の値を変えたときにもう片方の照合が黙って通る。
+    expect(valuesIn(REVISIONS_PER_GAME_PATTERN, env.TEST_PRODUCT_SPEC)).not.toContain(
+      DAILY_QUOTA_PER_USER,
+    );
+    expect(valuesIn(DAILY_QUOTA_PATTERN, env.TEST_PRODUCT_SPEC)).not.toContain(
+      REVISIONS_PER_GAME,
+    );
+  });
+
   it('警告と停止のしきい値の宣言と定数が一致する', () => {
     const matched = [...env.TEST_PRODUCT_SPEC.matchAll(WARNING_THRESHOLD_PATTERN)];
     expect(matched.length).toBeGreaterThan(0);
@@ -168,6 +190,13 @@ describe('しきい値の機械照合（4.3 / 確定25）', () => {
     );
     expect(doctoredQuota).not.toBe(env.TEST_PRODUCT_SPEC);
     expect(valuesIn(DAILY_QUOTA_PATTERN, doctoredQuota)).toContain(20);
+
+    const doctoredRevisions = env.TEST_PRODUCT_SPEC.replace(
+      '1 作品あたりの推敲は 3 回まで',
+      '1 作品あたりの推敲は 9 回まで',
+    );
+    expect(doctoredRevisions).not.toBe(env.TEST_PRODUCT_SPEC);
+    expect(valuesIn(REVISIONS_PER_GAME_PATTERN, doctoredRevisions)).toContain(9);
   });
 });
 

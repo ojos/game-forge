@@ -10,7 +10,8 @@ import {
 } from '../src/generate-callback.js';
 import type { CallbackNotifiers } from '../src/generate-callback.js';
 import type { GenerationOutcome } from '../src/mail/generation-notice.js';
-import { createPendingGame, hashJobToken } from '../src/games.js';
+import { createJobToken, createPendingGame, hashJobToken } from '../src/games.js';
+import { claimRevisionSlot, listRevisions, revisionStatus } from '../src/revisions.js';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
   findGenerationModel,
@@ -708,5 +709,77 @@ describe('通知の結線（#148 / #153）', () => {
       'generationFinished',
       'monthlyCostWarning',
     ]);
+  });
+});
+
+describe('推敲のジョブは、初回生成とは別の落とし先へ届く（5.7 / #192）', () => {
+  /**
+   * 完成した作品と、走り出せる推敲のジョブを 1 組用意する。
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @returns 作品 id と、推敲のジョブトークン
+   */
+  async function seedRevisable(
+    suffix: string,
+  ): Promise<{ userId: string; id: string; jobToken: string }> {
+    const { userId, id, jobToken } = await seedPending(`rev-${suffix}`);
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    await post({ gameId: id, jobToken, kind: 'finish', artifacts: artifactsBody() });
+
+    const reviseToken = createJobToken();
+    expect(
+      await claimRevisionSlot(env, id, userId, '玉を速く', await hashJobToken(reviseToken)),
+    ).toBe(true);
+    return { userId, id, jobToken: reviseToken };
+  }
+
+  it('初回の finish が seq = 1 を積む（prompt は null）', async () => {
+    const { id, jobToken } = await seedPending('rev-first');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    await post({ gameId: id, jobToken, kind: 'finish', artifacts: artifactsBody() });
+
+    const revisions = await listRevisions(env, id);
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]!.seq).toBe(1);
+    expect(revisions[0]!.prompt).toBeNull();
+  });
+
+  it('推敲のトークンでも claim できる', async () => {
+    const { id, jobToken } = await seedRevisable('claim');
+    const response = await post({ gameId: id, jobToken, kind: 'claim' });
+    expect(await response.json()).toEqual({ claimed: true });
+  });
+
+  it('推敲の finish は版を積み、作品の状態機械を動かさない', async () => {
+    const { id, jobToken } = await seedRevisable('finish');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const response = await post({ gameId: id, jobToken, kind: 'finish', artifacts: artifactsBody() });
+    expect(await response.json()).toEqual({ accepted: true, finished: true });
+
+    const revisions = await listRevisions(env, id);
+    expect(revisions.map((revision) => revision.seq)).toEqual([2, 1]);
+    expect(revisions[0]!.prompt).toBe('玉を速く');
+    expect((await stateOf(id)).state).toBe('ready');
+    // ジョブ行が消えているので、次の推敲を始められる。
+    expect((await revisionStatus(env, id)).running).toBe(false);
+  });
+
+  it('推敲の失敗は作品を壊さない（5.3 の整理パスと同じ扱い）', async () => {
+    const { id, jobToken } = await seedRevisable('fail');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+
+    const response = await post({
+      gameId: id,
+      jobToken,
+      kind: 'finish',
+      errorCode: 'build-failed',
+    });
+    expect(await response.json()).toEqual({ accepted: true, finished: true });
+
+    // **ここが本題である。** 相乗りしていたら、完成していた作品が failed になる。
+    expect((await stateOf(id)).state).toBe('ready');
+    expect(await listRevisions(env, id)).toHaveLength(1);
+    expect((await revisionStatus(env, id)).failed).toBe('build-failed');
   });
 });

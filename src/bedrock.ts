@@ -198,20 +198,67 @@ export function toConverseSystem(
 }
 
 /**
+ * 元にするソースを `messages` の先頭へ置くときの前置き。
+ *
+ * **「これを直せ」と明示する。** 裸のソースを先頭へ置くと、モデルはそれを出力例とも
+ * 参考資料とも読める。5.3 / 5.7 が要求しているのは**そのソースを編集した全文**である。
+ */
+const BASE_SOURCE_PREFACE =
+  '次の Go のソースは、あなたが直す対象そのものです。これを編集し、全文を出力してください。';
+
+/**
+ * 元にするソースを載せた `content` ブロック列を作る（4.5 / 5.3 / 5.7）。
+ *
+ * **区切りはソースの直後に 1 つだけ置く。** 4.5 が「親ソース（フォーク）用の 2 つ目の
+ * 区切りは `messages` の先頭に置く」と定めているのがこれで、**同じ作品を続けて推敲する
+ * あいだ、前置きとソースが共有プレフィックスになる。** 差分プロンプトはそのうしろに
+ * 置くので、毎回変わってもキャッシュを割らない。
+ *
+ * **キャッシュ次元を持たないモデルでは区切りを落とす**（{@link toConverseSystem} と
+ * 同じ理由。DeepSeek にキャッシュは無い）。
+ *
+ * @param model 使うモデル
+ * @param baseSource 元にするソース
+ * @param prompt 差分プロンプト
+ * @returns `messages[0].content` に載せる配列
+ */
+function baseSourceContent(
+  model: GenerationModel,
+  baseSource: string,
+  prompt: string,
+): readonly Record<string, unknown>[] {
+  const content: Record<string, unknown>[] = [
+    { text: `${BASE_SOURCE_PREFACE}\n\n\`\`\`go\n${baseSource}\n\`\`\`` },
+  ];
+  if (supportsPromptCaching(model)) {
+    content.push({ cachePoint: { type: 'default' } });
+  }
+  content.push({ text: prompt });
+  return content;
+}
+
+/**
  * `Converse` のリクエスト本文を組み立てる。
  *
  * @param model 使うモデル
  * @param system システムプロンプトのブロック列
  * @param prompt 利用者の自然文プロンプト
+ * @param baseSource 元にするソース（推敲・フォーク。無ければ新規生成）
  * @returns JSON にする直前のオブジェクト
  */
 export function buildConverseRequest(
   model: GenerationModel,
   system: readonly SystemBlock[],
   prompt: string,
+  baseSource?: string,
 ): Record<string, unknown> {
+  const content =
+    baseSource === undefined || baseSource === ''
+      ? [{ text: prompt }]
+      : baseSourceContent(model, baseSource, prompt);
+
   const body: Record<string, unknown> = {
-    messages: [{ role: 'user', content: [{ text: prompt }] }],
+    messages: [{ role: 'user', content }],
     inferenceConfig: { maxTokens: model.maxTokens },
   };
 
@@ -384,7 +431,9 @@ export function createBedrockGenerateSource(
       region: credentials.region,
     });
 
-    const body = JSON.stringify(buildConverseRequest(model, system, request.prompt));
+    const body = JSON.stringify(
+      buildConverseRequest(model, system, request.prompt, request.baseSource),
+    );
     const signed = await aws.sign(converseEndpoint(credentials.region, model.modelId), {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },

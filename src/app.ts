@@ -14,6 +14,7 @@ import { inviteRoutes } from './invite-issuance.js';
 import { myWorksRoutes } from './my-works.js';
 import { ogpRoutes } from './ogp.js';
 import { publishRoutes } from './publish.js';
+import { reviseRoutes } from './revise.js';
 import type { Route } from './routes.js';
 import { dispatch, html, json } from './routes.js';
 import { signupRoutes } from './signup.js';
@@ -261,6 +262,7 @@ export function createAppRoutes(env: Env): readonly Route[] {
     ...signupRoutes,
     ...waitlistRoutes,
     ...generateRoutes,
+    ...reviseRoutes,
     ...generateCallbackRoutes,
     ...generatePageRoutes,
     ...workPageRoutes,

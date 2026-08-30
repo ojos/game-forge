@@ -74,6 +74,26 @@ describe('テーブルとインデックスの存在（#11 acceptance 2）', () 
     const indexes = await catalogNames('index');
     expect(indexes).toContain('invites_issued_by_idx');
   });
+
+  it('build_health は 1 依頼 1 行で、索引を持たない（#140 / 3.6）', async () => {
+    // 3.8 の degrade の発火信号（`migrations/0010_build_health.sql`）。
+    expect(await catalogNames('table')).toContain('build_health');
+
+    // **`game_id` が主キーである。** 数えるのは失敗した**依頼**の数で、ビルド関数を
+    // 何回叩いたかではない（1 依頼で最大 9 回走りうる。呼び出しを数えると、1 人の
+    // 要求だけで閾値へ届く）。重複配信（0007）でも行が増えないのは同じ理由による。
+    const key = await env.DB.prepare('select * from pragma_index_info(?)')
+      .bind('sqlite_autoindex_build_health_1')
+      .all<{ name: string }>();
+    expect(key.results.map((row) => row.name)).toEqual(['game_id']);
+
+    // **索引を張らない。** 索引は 1 行の insert につき 1 行の書き込みを足す（3.6）。
+    // この表は平常時 0 行なので、全走査で足りる。
+    const declared = (await catalogNames('index')).filter((name) =>
+      name.startsWith('build_health'),
+    );
+    expect(declared).toEqual([]);
+  });
 });
 
 /**

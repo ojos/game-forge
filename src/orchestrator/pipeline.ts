@@ -159,7 +159,13 @@ export function createOrchestratorPipeline(
 
     // 失敗の記録（8.3）。**送れなければ例外になる**ので、行が `running` のまま
     // 残ったことが呼び出し元（`./handler.ts`）から分かる。
-    failGame: async (_env, _gameId, errorCode) => await client.finishWithError(errorCode),
+    //
+    // **3.8 の degrade の信号も、ここで一緒に渡す**（#140）。この Lambda は D1 を
+    // 持たないため、信号を書けるのは Worker 側だけである（#150 の A 案）。
+    // **判定はしない**——`buildPathFailed` は `src/build-health.ts` が
+    // `src/generate.ts` の catch で決めたもので、ここは運ぶだけである。
+    failGame: async (_env, _gameId, errorCode, buildPathFailed) =>
+      await client.finishWithError(errorCode, buildPathFailed === true),
 
     // **最初の動作を `claim` にする。** `false` なら Bedrock を呼ばずに降りる。
     startJob: async (env, job, pipeline) => await runJobViaCallbacks(client, env, job, pipeline),

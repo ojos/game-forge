@@ -50,6 +50,7 @@ import {
 } from './source-inspection.js';
 import type { BuildOutcome } from './build-client.js';
 import { BuildFailure, createLambdaBuild } from './build-client.js';
+import { isBuildPathFailure } from './build-health.js';
 import type { GenerationErrorCode } from './games.js';
 import {
   claimGenerationJob,
@@ -250,11 +251,27 @@ export interface GenerationPipeline {
    * **戻り値は捨ててよい。** false は「その行はもう `pending` / `running` では
    * ない」という意味で、**先に確定した状態を上書きしないのが正しい**
    * （`src/games.ts`）。
+   *
+   * # 4 つ目の引数は 3.8 の degrade の信号である（#140）
+   *
+   * **`errorCode` では代われない。** `internal` の定義は「設定不足・関数障害・想定外の
+   * 例外」で、**D1 の不調もビルド関数の障害も同じ 1 語に落ちる**（`src/games.ts` の
+   * `GENERATION_ERROR_CODES`）。#140 の acceptance は「D1 の不調では出ない」ことを
+   * 区別して確かめよと定めており、**区別できる語彙が無い以上、別の口が要る。**
+   * 分類そのものは `src/build-health.ts` の `isBuildPathFailure` が 1 か所で持つ。
+   *
+   * **任意にしてあるのは、既定の実装（`src/games.ts` の `failGame`）が 3 引数だから
+   * である。** あちらは読まない——読ませるには `games` へ書く列を増やすことになるが、
+   * 信号は作品の属性ではない（`migrations/0010_build_health.sql`）。**同期実装
+   * （{@link runJobInline}）へ結線を戻すときは、この信号を書く経路も一緒に戻すこと。**
+   * 戻っていないことは `test/generate.test.ts` が `startJob` の結線で見る。
    */
   readonly failGame?: (
     env: Env,
     gameId: string,
     errorCode: GenerationErrorCode,
+    /** ビルド依頼そのものが失敗したか（3.8 の degrade の発火信号。#140）。 */
+    buildPathFailed?: boolean,
   ) => Promise<boolean>;
 }
 
@@ -656,8 +673,11 @@ export async function runGenerationJob(
     //
     // **段を経由する**（#160）。オーケストレータ Lambda は D1 を持たず、`finish`
     // コールバックで同じことをする。省いた実装は `failGame`（D1 へ直接）に落ちる。
+    //
+    // **4 つ目の引数は 3.8 の degrade の信号である**（#140）。分類は 1 か所
+    // （`src/build-health.ts`）が持つ。**ここで `instanceof` を並べ直さない。**
     const fail = pipeline.failGame ?? failGame;
-    await fail(env, job.gameId, generationErrorCodeOf(error));
+    await fail(env, job.gameId, generationErrorCodeOf(error), isBuildPathFailure(error));
     throw error;
   }
 }

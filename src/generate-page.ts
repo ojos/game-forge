@@ -89,10 +89,25 @@
  * この画面が観測できるのは自分が投げた要求の結果だけなので、**5xx が返った時点で
  * 生成停止中を出し、ボタンを戻さない**（{@link GENERATE_SCRIPT}）。
  *
- * **これは近似である。** 5xx には D1 の不調（`src/quota.ts` の `readForDecision`）も
- * 落ちてくるし、逆に「他の利用者のビルドが軒並み失敗している」ことはこの画面からは
- * 見えない。**恒久的な発火条件はサーバ側に信号の置き場が要る**（ビルド依頼の失敗を
- * 記録し、生成画面がそれを読む）。#24 の所有範囲の外なので作っていない。
+ * **#24 の時点でこれは近似だった。** 5xx には D1 の不調（`src/quota.ts` の
+ * `readForDecision`）も落ちてくるし、逆に「他の利用者のビルドが軒並み失敗している」
+ * ことはこの画面からは見えない。
+ *
+ * **#140 で信号がサーバ側に置かれた**（`src/build-health.ts` /
+ * `migrations/0010_build_health.sql`）。ビルド依頼そのものが失敗した依頼を数え、
+ * 窓と閾値で停止を判定する。**画面はそれを読んで、開いた時点で停止していれば
+ * 送信フォームを描かない**（{@link canSubmit}）。
+ *
+ * **5xx を見る近似は残してある。** 2 つは見ているものが違う。
+ *
+ * | | 見えるもの | 反応 |
+ * |---|---|---|
+ * | サーバ側の信号（#140） | **他人の依頼を含む**、ビルド依頼の失敗 | 画面を開いた時点で、フォームを描かない |
+ * | 埋め込みスクリプトの 5xx（#24） | **自分の要求**がサーバ側の事情で落ちたこと | その場でボタンを戻さない |
+ *
+ * **後者を落とさない**のは、開いたあとに起きた停止を前者が拾えないためである
+ * （画面は 1 回読むだけで、再読み込みまで更新されない）。ただし後者は 5xx なら何でも
+ * 反応する近似のままなので、**サービス全体の状態を決めるのは前者だけ**にしてある。
  */
 import { LOGIN_PATH } from './auth/google.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from './generate.js';
@@ -105,6 +120,7 @@ import {
   generationQuotaStatus,
 } from './quota.js';
 import { HOME_PATH } from './home.js';
+import { buildPathStopped } from './build-health.js';
 import { GENERATE_PAGE_PATH, SIGNUP_PATH } from './paths.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html } from './routes.js';
@@ -334,6 +350,14 @@ export type GenerateAvailability =
   | { readonly kind: typeof DAILY_QUOTA_REASON }
   /** 月次上限（4.3）。プレイと共有は続けられることを出す。 */
   | { readonly kind: typeof MONTHLY_LIMIT_REASON }
+  /**
+   * 3.8 の degrade。**ビルド経路が止まっている**（#140 / 確定24）。
+   *
+   * **枠の話ではない。** この状態の利用者は枠を持っているが、投げても成果物が
+   * 返らない（1 回あたり約 16〜19 円と日次枠 1 回が、成果物なしで消える）。
+   * 判定の材料は `src/build-health.ts` が持つ。
+   */
+  | { readonly kind: 'build-stopped' }
   /** 枠の集計を読めなかった（D1 の不調）。{@link QUOTA_UNKNOWN_NOTICE}。 */
   | { readonly kind: 'unknown' };
 
@@ -366,6 +390,10 @@ export function availabilityNotice(availability: GenerateAvailability): string {
       return GENERATE_MESSAGES[DAILY_QUOTA_MESSAGE_KEY]!;
     case MONTHLY_LIMIT_REASON:
       return GENERATE_MESSAGES[MONTHLY_LIMIT_MESSAGE_KEY]!;
+    case 'build-stopped':
+      // 3.8 の degrade（#140）。**残枠と混ぜない**——枠は残っているのに投げられない
+      // 状態で、「残り N 回」を並べると利用者は押せない理由を枠だと読む。
+      return BUILD_STOPPED_NOTICE;
     default:
       return QUOTA_UNKNOWN_NOTICE;
   }
@@ -376,6 +404,12 @@ export function availabilityNotice(availability: GenerateAvailability): string {
  *
  * **`unknown` では描く。** 枠が尽きたことを確かめられたわけではないので、押す機会
  * まで奪うと、D1 の一時的な不調が「生成できない」に化ける。
+ *
+ * **`build-stopped` では描かない**（3.8 / #140）。この状態で押すと、生成は走って
+ * ビルドで落ちる——**約 16〜19 円と日次枠 1 回が、成果物なしで消える。** 枠切れの
+ * ときと違って、失うのは「押せること」ではなく利用者の枠と費用である。
+ * **誤ってこの状態になったときの代償**（フォームが最大 15 分消える）と、その値の
+ * 選び方は `src/build-health.ts` の `BUILD_STOP_WINDOW_SECONDS` にある。
  *
  * @param availability いま生成できるかどうか
  * @returns 送信フォームを描いてよければ true
@@ -699,6 +733,19 @@ async function resolveAvailability(env: Env, userId: string): Promise<GenerateAv
     const status = await generationQuotaStatus(env, userId);
     switch (status.kind) {
       case 'available':
+        // 3.8 の degrade（#140）。**枠が残っているときだけ引く。**
+        //
+        // - 枠が尽きているなら、押せない理由は枠である。**そちらのほうが具体的**で
+        //   （日次なら再開時刻が言える）、停止の文言に差し替えると利用者は待つ先を
+        //   間違える。
+        // - 読めなかった（`unknown`）ときも引かない。**同じ D1 である。**
+        //   引いても読めないだけで、問い合わせが 1 つ増える（3.6）。
+        //
+        // **止まっていても「残り N 回」は消えるが、枠は消えていない。** 停止が解けた
+        // あとの再読み込みで元に戻る（`BUILD_STOPPED_NOTICE`）。
+        if (await buildPathStopped(env, Math.floor(Date.now() / 1000))) {
+          return { kind: 'build-stopped' };
+        }
         return { kind: 'available', remaining: status.remaining };
       case DAILY_QUOTA_REASON:
         // **`resetsAt` は渡さない。** 枠が戻るのは常に JST の 0 時なので、画面が出す

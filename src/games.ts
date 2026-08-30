@@ -543,6 +543,125 @@ export async function failGame(
   return (result.meta.changes ?? 0) > 0;
 }
 
+
+/**
+ * 公開済みの作品の状態（5.4）。
+ *
+ * **この綴りを作れるのは {@link publishGame} だけである。** 生成の経路
+ * （{@link createPendingGame}）は {@link DRAFT_STATUS} を定数として書き込んでおり、
+ * 引数で状態を受け取らない。5.4 の「「公開」操作で初めて URL が有効になる」は、
+ * **書ける場所を 1 つに絞ること**で担保している。
+ */
+export const PUBLISHED_STATUS = 'published';
+
+/**
+ * 公開の結果（5.4 / #26）。
+ *
+ * **「できなかった」を 1 つにまとめない。** 呼び出し側（`src/publish.ts`）が返す
+ * ステータスと文言が理由ごとに違うためである。一方で**作者以外には理由を渡さない**
+ * ——他人の作品に対する要求は、行が無いのと同じ `not-found` になる（下記）。
+ */
+export type PublishOutcome =
+  | {
+      readonly ok: true;
+      /** **この呼び出しが実際に遷移させたか。** 二度押しの 2 回目は false。 */
+      readonly firstTime: boolean;
+      /** `games.published_at`（UNIX 秒）。 */
+      readonly publishedAt: number;
+    }
+  | { readonly ok: false; readonly reason: 'not-found' | 'not-ready' | 'removed' };
+
+/**
+ * 作品を公開する（5.4 / #26）。
+ *
+ * # 4 つの条件を 1 本の UPDATE の WHERE に置く
+ *
+ * ```sql
+ * where id = ? and author_id = ? and status = 'draft' and generation_state = 'ready'
+ * ```
+ *
+ * **引いてから判定する形にしない。** `claimGenerationJob` と同じ理由である——
+ * select と update の隙間に 2 通目が通ると、二度公開できてしまう。ここでは
+ * それが **OGP の二重撮影**（＝ Lambda の二重起動）に直結する。
+ *
+ * 4 つはそれぞれ別のことを守っている。
+ *
+ * | 条件 | 何を止めるか |
+ * |---|---|
+ * | `author_id = ?` | **他人が他人の作品を公開すること。** 5.4 が「作者を唯一のフィルタとして使う」と定めており、ここが破れると設計そのものが無効になる |
+ * | `status = 'draft'` | **二度目の公開。** これが冪等性の関門である（2 通目は 0 行更新） |
+ * | `generation_state = 'ready'` | **成果物の無い作品の公開。** `pending` / `running` / `failed` の行には `preview_key` も `wasm_key` も無く（{@link completeGameWithArtifacts}）、公開しても `/g/` は 404 にしかならない |
+ * | `id = ?` | 対象の特定 |
+ *
+ * # 0 行だったときだけ、理由を引きに行く
+ *
+ * 条件付き UPDATE は「なぜ 0 行だったか」を返さない。**成功経路では引かない**
+ * （公開は 1 作品につき 1 回の操作で、成功時に追加の読み取りを増やす理由が無い）。
+ *
+ * **理由を引く SELECT にも `author_id = ?` を入れる。** 入れないと、他人の作品に
+ * 対して `not-ready` と `not-found` を撃ち分けることになり、**任意の id が実在するかを
+ * 外から確かめられる手がかり**になる（`src/work-page.ts` の `notFound` と同じ考え方）。
+ *
+ * # `published_at` は「最初に公開した時刻」である
+ *
+ * 二度目の呼び出しでは書き換えない（`status = 'draft'` の条件が先に外れる）。
+ * 公開の日時が押し直しのたびに若返る形は、5.5 の一覧や 3.7 の掃除が読む値としても
+ * 正しくない。
+ *
+ * # OGP の撮影はここでは起こさない
+ *
+ * **この関数は `games` の 1 行を進めるだけである。** 撮影の起動（と、その冪等性の
+ * 関門）は `src/ogp.ts` の `startOgpCapture` が持つ。分けてあるのは、撮影の可否が
+ * **`status='published'` であること**を条件に持つためで、順序（公開 → 撮影）が
+ * SQL の条件として現れる形にしたいからである。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param authorId 操作している利用者（**作者本人でなければ通らない**）
+ * @param now 公開時刻（UNIX 秒。既定は現在時刻）
+ * @returns 公開の結果
+ */
+export async function publishGame(
+  env: Env,
+  gameId: string,
+  authorId: string,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<PublishOutcome> {
+  const result = await env.DB.prepare(
+    `update games
+        set status = ?, published_at = ?
+      where id = ? and author_id = ? and status = ? and generation_state = 'ready'`,
+  )
+    .bind(PUBLISHED_STATUS, now, gameId, authorId, DRAFT_STATUS)
+    .run();
+
+  if ((result.meta.changes ?? 0) > 0) {
+    return { ok: true, firstTime: true, publishedAt: now };
+  }
+
+  const row = await env.DB.prepare(
+    'select status, published_at from games where id = ? and author_id = ?',
+  )
+    .bind(gameId, authorId)
+    .first<{ status: string; published_at: number | null }>();
+
+  if (row === null) {
+    // 行が無い、あるいは他人の作品。**区別しない。**
+    return { ok: false, reason: 'not-found' };
+  }
+  if (row.status === PUBLISHED_STATUS) {
+    // **二度押し。** 公開そのものは成立している状態なので、失敗にしない。
+    // `published_at` が NULL なのは 0001 以前の行だけだが、**不変条件を
+    // 呼び出し側が前提にしない**ため、読めなければ今の時刻を返す。
+    return { ok: true, firstTime: false, publishedAt: row.published_at ?? now };
+  }
+  if (row.status === 'removed') {
+    // 8.4 の審査で落ちた作品。作者にも公開させない。
+    return { ok: false, reason: 'removed' };
+  }
+  // `draft` のまま残ったということは、外れたのは `generation_state` の条件である。
+  return { ok: false, reason: 'not-ready' };
+}
 /** 一覧に出す作品 1 件（`src/my-works.ts` が読む）。 */
 export interface AuthoredGame {
   /** `games.id`。作品ページ（`/works/<id>`）の URL に入る。 */

@@ -94,6 +94,9 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       'DB',
       'DEV_ROUTES',
       'GENERATION_MODEL',
+      // OGP 撮影関数の宛先（#26）。**秘密ではなく構成**なので wrangler.toml が
+      // 宣言する（BUILD_FUNCTION_NAME と同じ扱い）。
+      'OGP_FUNCTION_NAME',
       // オーケストレータの宛先（#160）。**秘密ではなく構成**なので wrangler.toml が
       // 宣言する（BUILD_FUNCTION_NAME と同じ扱い）。
       'ORCHESTRATOR_FUNCTION_NAME',

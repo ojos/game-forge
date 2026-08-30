@@ -64,6 +64,21 @@ BUILD_FUNCTION_NAME = "game-forge-build"
 # この経路が動くかどうかは `.dev.vars` に本番アカウントの資格情報を入れたかどうかで
 # 決まる（`BUILD_FUNCTION_NAME` と同じ事情。確定20）。
 ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
+# OGP 撮影関数（AWS Lambda）の関数名（5.4 / 11.2 / #26）。
+#
+# **シークレットではないので `[vars]` に置く**（`BUILD_FUNCTION_NAME` /
+# `ORCHESTRATOR_FUNCTION_NAME` と同じ扱い）。資格情報のほうは `.dev.vars` にある
+# （`BUILD_AWS_*`。オーケストレータを呼ぶのに使っている鍵を、そのまま使う。
+# 増やさない理由は src/ogp-client.ts）。
+#
+# 値の正本は `terraform/ogp-function.tf` の `local.ogp_function_name` である。
+# ここはその写しなので、宣言を変えたら追随させること（`docs/ogp-capture.md`）。
+#
+# **ローカルでも同じ値を置く。** Dev アカウントに Lambda は無いので、ローカルで
+# この経路が動くかどうかは `.dev.vars` に本番アカウントの資格情報を入れたかどうかで
+# 決まる（`BUILD_FUNCTION_NAME` と同じ事情。確定20）。**入れなければ、公開は成立し、
+# 撮影だけが設定不足として起動の手前で止まる**（src/ogp.ts の startOgpCapture）。
+OGP_FUNCTION_NAME = "game-forge-ogp"
 # 開発用の診断経路（`/__dev/*`）を登録するかどうか（#89）。
 #
 # **`enabled` はここ（トップレベル＝ローカル）にしか無い。** 配備される 2 つの環境は
@@ -113,6 +128,7 @@ SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
 GENERATION_MODEL = "sonnet-4-6"
 BUILD_FUNCTION_NAME = "game-forge-build"
 ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
+OGP_FUNCTION_NAME = "game-forge-ogp"
 DEV_ROUTES = "disabled"
 
 [env.preview.vars]
@@ -124,6 +140,7 @@ SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
 GENERATION_MODEL = "sonnet-4-6"
 BUILD_FUNCTION_NAME = "game-forge-build"
 ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
+OGP_FUNCTION_NAME = "game-forge-ogp"
 DEV_ROUTES = "disabled"
 
 # 本番の D1。**ローカル用とは別のデータベース**である（9.1 / 確定20: クラウド環境は

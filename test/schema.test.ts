@@ -186,3 +186,59 @@ describe('列と制約', () => {
     }
   });
 });
+
+describe('OGP 画像の列（0009 / #26）', () => {
+  it('games に ogp_key / ogp_state / ogp_token_hash がある', async () => {
+    const columns = await env.DB.prepare('select * from pragma_table_info(?)')
+      .bind('games')
+      .all<{ name: string }>();
+    const names = columns.results.map((row) => row.name);
+    for (const expected of ['ogp_key', 'ogp_state', 'ogp_token_hash']) {
+      expect(names, expected).toContain(expected);
+    }
+  });
+
+  it('ogp_state が NULL と 3 つの綴りだけを受け付ける', async () => {
+    // **遷移そのものなので CHECK を張る**（0007 の generation_state と同じ軸。
+    // 表示の都合で増える語彙には張らない）。
+    const authorId = await insertUser('ogp-state');
+    await env.DB.prepare(
+      'insert into games (id, author_id, status, title, go_version, created_at) values (?, ?, ?, ?, ?, 1)',
+    )
+      .bind('g-ogp-state', authorId, 'draft', 'T', 'go1.25.0')
+      .run();
+
+    for (const state of ['capturing', 'ready', 'failed']) {
+      await expect(
+        env.DB.prepare('update games set ogp_state = ? where id = ?')
+          .bind(state, 'g-ogp-state')
+          .run(),
+      ).resolves.toBeTruthy();
+    }
+    await expect(
+      env.DB.prepare('update games set ogp_state = ? where id = ?')
+        .bind('shooting', 'g-ogp-state')
+        .run(),
+    ).rejects.toThrow();
+  });
+
+  it('既定は NULL である（既存行は「撮っていない」）', async () => {
+    // 0007 の generation_state を 'ready' に倒したのとは逆で、**既存行はすべて未公開**
+    // なので、NULL がそのまま真になる。
+    const authorId = await insertUser('ogp-default');
+    await env.DB.prepare(
+      'insert into games (id, author_id, status, title, go_version, created_at) values (?, ?, ?, ?, ?, 1)',
+    )
+      .bind('g-ogp-default', authorId, 'draft', 'T', 'go1.25.0')
+      .run();
+
+    const row = await env.DB.prepare(
+      'select ogp_key, ogp_state, ogp_token_hash from games where id = ?',
+    )
+      .bind('g-ogp-default')
+      .first<{ ogp_key: string | null; ogp_state: string | null; ogp_token_hash: string | null }>();
+    expect(row?.ogp_key).toBeNull();
+    expect(row?.ogp_state).toBeNull();
+    expect(row?.ogp_token_hash).toBeNull();
+  });
+});

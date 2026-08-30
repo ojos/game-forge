@@ -186,8 +186,8 @@ describe('状態ごとの表示（#150）', () => {
     expect(await (await open(workPagePath(id))).text()).not.toContain('http-equiv="refresh"');
   });
 
-  it('完成するとサンドボックス用ホストの試遊 URL が出る', async () => {
-    const { id, jobToken } = await seedPending('ready');
+  it('完成すると作者にサンドボックス用ホストの試遊 URL が出る', async () => {
+    const { userId, id, jobToken } = await seedPending('ready');
     await claimGenerationJob(env, id, await hashJobToken(jobToken));
     await completeGame(env, id, fakeBuildOutcome());
 
@@ -197,10 +197,33 @@ describe('状態ごとの表示（#150）', () => {
         .first<{ preview_key: string }>()
     )?.preview_key;
 
-    const body = await (await open(workPagePath(id))).text();
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     expect(body).toContain('できました');
     // **7.2 の別オリジンから配る。** アプリ用ホストで作品を描かない。
     expect(body).toContain(`https://${env.SANDBOX_HOST}/p/${previewKey}/`);
+  });
+
+  it('プレビュー URL は本人にしか出ない（#26）', async () => {
+    // `preview_key` は unlisted 配信の唯一の資格情報である（5.4 /
+    // migrations/0006_games_preview_key.sql）。**状態は誰でも読めるが、鍵は読めない。**
+    // ここが緩いと、公開していない作品が id を知っているだけの相手に遊ばれる。
+    const { id, jobToken } = await seedPending('ready-anon');
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome());
+
+    const previewKey = (
+      await env.DB.prepare('select preview_key from games where id = ?')
+        .bind(id)
+        .first<{ preview_key: string }>()
+    )?.preview_key;
+    expect(previewKey).toBeTypeOf('string');
+
+    const body = await (await open(workPagePath(id))).text();
+    // 状態は読める。
+    expect(body).toContain('できました');
+    // 鍵は読めない。
+    expect(body).not.toContain(previewKey!);
+    expect(body).toContain('まだ公開されていません');
   });
 
   it('長く止まっている生成は「中断した可能性」を出す', async () => {

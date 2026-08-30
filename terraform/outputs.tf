@@ -514,3 +514,139 @@ output "orchestrator_callback_base_url" {
   EOT
   value       = "https://${local.app_host}"
 }
+
+# ── OGP 撮影関数（5.4 / 11.2 / #26） ─────────────────────────────────────────
+
+output "ogp_function_name" {
+  description = <<-EOT
+    OGP 撮影関数の名前。**この値の正本は terraform/ogp-function.tf の
+    local.ogp_function_name である。** wrangler.toml の OGP_FUNCTION_NAME はその写しで、
+    Worker が呼ぶ相手を指す（src/ogp-client.ts）。突き合わせは外部層が行う。
+  EOT
+  value       = aws_lambda_function.ogp.function_name
+}
+
+output "ogp_function_arn" {
+  description = "OGP 撮影関数の ARN。呼び出し側の許可（ogp_invoke_resources）の対象。"
+  value       = aws_lambda_function.ogp.arn
+}
+
+output "ogp_function_memory_mb" {
+  description = <<-EOT
+    OGP 撮影関数のメモリ（MB）。**実測ではなく見積もりである**（本番でまだ 1 枚も
+    撮っていない。terraform/ogp-function.tf）。最初の撮影で CloudWatch の
+    Max Memory Used を見て決め直すこと。
+  EOT
+  value       = aws_lambda_function.ogp.memory_size
+}
+
+output "ogp_function_timeout_seconds" {
+  description = <<-EOT
+    OGP 撮影関数のタイムアウト（秒）。**関数の中で諦めるまでの時間
+    （ogp_capture_timeout_ms）より長くなければならない。** 短いと、失敗の
+    コールバックを送る前に Lambda ごと切られ、games.ogp_state が capturing のまま残る。
+  EOT
+  value       = aws_lambda_function.ogp.timeout
+}
+
+output "ogp_capture_timeout_ms" {
+  description = "撮影を諦めるまでの時間（ミリ秒）。関数の環境変数 CAPTURE_TIMEOUT_MS。"
+  value       = local.ogp_capture_timeout_ms
+}
+
+output "ogp_function_reserved_concurrency" {
+  description = <<-EOT
+    予約同時実行数。**アカウントの同時実行総枠に注意すること**（#103 では未予約の
+    最低値 10 を割って apply が InvalidParameterValueException で落ちた）。
+  EOT
+  value       = aws_lambda_function.ogp.reserved_concurrent_executions
+}
+
+output "ogp_maximum_retry_attempts" {
+  description = <<-EOT
+    非同期呼び出しの再試行回数。**オーケストレータ（0）と違って 1 である。**
+    掛け算の相手（5.2-7 の 3 試行）が無く、コールバックが使い捨てトークンで冪等な
+    ためである（terraform/ogp-function.tf）。
+  EOT
+  value       = aws_lambda_function_event_invoke_config.ogp.maximum_retry_attempts
+}
+
+output "ogp_maximum_event_age_seconds" {
+  description = "非同期呼び出しの有効期限（秒）。既定は 6 時間で、忘れられた撮影が数時間後に走る。"
+  value       = aws_lambda_function_event_invoke_config.ogp.maximum_event_age_in_seconds
+}
+
+output "ogp_function_role_name" {
+  description = "OGP 撮影関数の実行ロール名。"
+  value       = aws_iam_role.ogp.name
+}
+
+output "ogp_function_role_actions" {
+  description = <<-EOT
+    実行ロールへ与えている動作の一覧。**自分のログを書くことだけである。**
+    R2 の資格情報を渡していないこと（撮れた PNG は Worker 経由で R2 へ入る。
+    src/ogp.ts）を、この一覧が機械で読める形にしている。
+  EOT
+  value       = local.ogp_role_actions
+}
+
+output "ogp_function_log_group" {
+  description = "OGP 撮影関数のロググループ。撮影の失敗はここに出る。"
+  value       = aws_cloudwatch_log_group.ogp.name
+}
+
+output "ogp_image_repository_name" {
+  description = "OGP 撮影関数のイメージを置く ECR リポジトリ名（docker/ogp-shot/）。"
+  value       = aws_ecr_repository.ogp_shot.name
+}
+
+output "ogp_image_repository_url" {
+  description = <<-EOT
+    OGP 撮影関数のイメージの push 先。**最初の apply の前に 1 つ push しておくこと**
+    （ECR が空のままだと関数の作成が落ちる。docs/ogp-capture.md）。
+  EOT
+  value       = aws_ecr_repository.ogp_shot.repository_url
+}
+
+output "ogp_invoke_actions" {
+  description = "エッジからこの関数を呼ぶために足した動作。**1 つだけである。**"
+  value       = local.ogp_invoke_actions
+}
+
+output "ogp_invoke_resources" {
+  description = <<-EOT
+    エッジからの呼び出しを許す対象。**この関数 1 つだけである。**
+    許可は terraform/build-invoker.tf ではなく terraform/ogp-function.tf が持つ
+    （関数を消すときに、消す対象が 1 ファイルで閉じる）。
+  EOT
+  value       = local.ogp_invoke_resources
+}
+
+output "ogp_capture_base_url" {
+  description = <<-EOT
+    撮影対象のホスト。**ペイロードではなく宣言が持つ**（呼び出しのペイロードを
+    差し替えられる者に、撮る先を決めさせないため。terraform/ogp-function.tf）。
+    値は local.sandbox_host（terraform/dns.tf）から作るので、wrangler.toml の
+    SANDBOX_HOST とずれない。
+  EOT
+  value       = "https://${local.sandbox_host}"
+}
+
+output "ogp_callback_base_url" {
+  description = <<-EOT
+    撮れた PNG の送り先。**ペイロードではなく宣言が持つ**（orchestrator_callback_base_url
+    と同じ理由）。値は local.app_host（terraform/dns.tf）から作る。
+  EOT
+  value       = "https://${local.app_host}"
+}
+
+output "ogp_viewport" {
+  description = <<-EOT
+    撮る大きさ（px）。**src/ogp.ts の OGP_IMAGE_WIDTH / OGP_IMAGE_HEIGHT が写しを持つ**
+    （メタタグに書く値）。突き合わせは test/ogp.test.ts が行う。
+  EOT
+  value = {
+    width  = local.ogp_viewport_width
+    height = local.ogp_viewport_height
+  }
+}

@@ -49,6 +49,9 @@
  * 分類名で、**値そのものは出さない**（どの固定文言を出すかの鍵として使う）。
  */
 import type { GenerationErrorCode, GenerationState } from './games.js';
+import { PUBLISHED_STATUS } from './games.js';
+import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH, ogpImageUrl } from './ogp.js';
+import { PUBLISH_GAME_ID_FIELD, PUBLISH_PATH } from './paths.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
@@ -141,12 +144,16 @@ export const GENERATION_IS_SYNCHRONOUS: boolean = false;
 /** 表示に使う `games` の 1 行。 */
 interface WorkRow {
   author_id: string;
+  /** 5.4 の公開状態（`draft` / `published` / `removed`）。 */
+  status: string;
   title: string;
   generation_state: string;
   generation_error: string | null;
   preview_key: string | null;
   created_at: number;
   generation_started_at: number | null;
+  /** OGP 画像の撮影状態（`migrations/0009_games_ogp.sql`）。 */
+  ogp_state: string | null;
 }
 
 /**
@@ -225,6 +232,24 @@ function previewUrl(request: Request, env: Env, previewKey: string): string {
   return `${url.protocol}//${env.SANDBOX_HOST}${port}/p/${previewKey}/`;
 }
 
+/**
+ * サンドボックス用ホスト上の公開 URL を組み立てる（5.4）。
+ *
+ * **プレビュー URL と綴りを分ける。** 5.4 が「公開前後で綴りを分ける」と定めており、
+ * `/g/` は `status='published'` の作品しか返さない（`src/sandbox-delivery.ts`）。
+ * 組み立て方は {@link previewUrl} と同じで、違うのは接頭辞と、鍵ではなく id を使う点である。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param gameId 作品 id
+ * @returns 絶対 URL
+ */
+function publishedUrl(request: Request, env: Env, gameId: string): string {
+  const url = new URL(request.url);
+  const port = url.port === '' ? '' : `:${url.port}`;
+  return `${url.protocol}//${env.SANDBOX_HOST}${port}/g/${gameId}/`;
+}
+
 /** 画面に出す状態。D1 の綴りを、そのまま表示の分岐に使わない。 */
 type ViewState = 'working' | 'stalled' | 'ready' | 'failed' | 'unknown';
 
@@ -269,12 +294,31 @@ export interface WorkPageView {
   readonly state: ViewState;
   /** 作者本人が見ているか。**本人にだけ出す項目の門番である。** */
   readonly owner: boolean;
-  /** 仮タイトル（プロンプト由来）。本人でなければ null。 */
+  /**
+   * 公開済みか（5.4）。**この 1 つが画面の性格を変える。**
+   *
+   * 未公開なら作者のための状態画面（`noindex`・本人にしか中身を出さない）、
+   * 公開済みなら**共有される URL の着地点**（OGP のメタタグを持ち、タイトルを誰にでも
+   * 出す）になる。
+   */
+  readonly published: boolean;
+  /** 仮タイトル（プロンプト由来）。本人でも公開済みでもなければ null。 */
   readonly title: string | null;
   /** 失敗の分類名。本人でなければ null。 */
   readonly errorCode: string | null;
-  /** 完成しているときの試遊 URL。 */
+  /**
+   * 遊べる URL。
+   *
+   * 公開済みなら `/g/<game_id>/`（誰でも）、未公開なら `/p/<preview_key>/`
+   * （**作者本人にだけ**）。
+   */
   readonly playUrl: string | null;
+  /** この作品 id（公開のフォームに入れる）。公開の操作を出さないなら null。 */
+  readonly publishableId: string | null;
+  /** 公開済みのときの共有 URL（この作品ページ自身の絶対 URL）。 */
+  readonly shareUrl: string | null;
+  /** OGP 画像の絶対 URL。まだ撮れていなければ null。 */
+  readonly imageUrl: string | null;
 }
 
 /**
@@ -296,15 +340,84 @@ export function renderWorkPage(view: WorkPageView): string {
 
   const title = view.title === null ? '' : `<p>お題: ${escapeHtml(view.title)}</p>`;
 
+  // **公開済みの作品にだけ `noindex` を外す。** 未公開の作品ページは作者のための
+  // 状態画面であり、検索結果に現れる意味が無い（`src/my-works.ts` と同じ扱い）。
+  //
+  // 公開済みで外すのは体裁の問題ではない。**`noindex` を付けたページのカードを
+  // 描かないクローラがある**ため、付けたままだと 5.4 の「公開して共有」が、
+  // 共有先で画像も題名も出ないという形で黙って壊れる。
+  const robots = view.published ? '' : '\n<meta name="robots" content="noindex">';
+
   return `<!doctype html>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">${refresh}
-<meta name="robots" content="noindex">
-<title>作品 - Game Forge</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">${refresh}${robots}
+<title>${escapeHtml(documentTitleOf(view))}</title>${ogpMeta(view)}
 <h1>作品</h1>
 ${sectionFor(view)}
 ${title}
 <p><a href="/">トップへ</a></p>`;
+}
+
+/** OGP の説明文（固定）。**作品ごとに変えない**——中身を説明できるのは作者だけである。 */
+const OGP_DESCRIPTION = 'Game Forge で作られたゲームです。ブラウザでそのまま遊べます。';
+
+/** 作品名を出せないときの表題。 */
+const FALLBACK_WORK_TITLE = 'Game Forge の作品';
+
+/**
+ * `<title>` に出す文字列を決める。
+ *
+ * @param view 表示に必要な値
+ * @returns 表題
+ */
+function documentTitleOf(view: WorkPageView): string {
+  const name = view.title === null || view.title.trim() === '' ? FALLBACK_WORK_TITLE : view.title;
+  return `${name} - Game Forge`;
+}
+
+/**
+ * OGP のメタタグを組み立てる（5.4 / 11.2）。
+ *
+ * # 公開済みのときだけ出す
+ *
+ * **未公開の作品のメタタグを出さない。** 出す値（題名・画像）はどちらも
+ * 「公開したから出してよくなったもの」であり、5.4 の遅延（`OGP 画像の生成は「公開」時
+ * まで遅延する`）と揃える。
+ *
+ * # 画像が無ければ画像のタグごと出さない
+ *
+ * 撮影は非同期なので、公開した直後の数秒は `og:image` が無い状態がありうる
+ * （`src/ogp.ts`）。**その間だけ `summary_large_image` を名乗らない**——大きなカードを
+ * 宣言しておいて画像が 404 になるより、小さなカードのほうが壊れて見えない。
+ *
+ * # `escapeHtml` を通すのは題名だけである
+ *
+ * 他はこのモジュールが持つ固定の文字列か、`crypto.randomUUID()` から組み立てた URL
+ * である（`renderWorkPage` と同じ方針）。
+ *
+ * @param view 表示に必要な値
+ * @returns メタタグ（未公開なら空文字）
+ */
+function ogpMeta(view: WorkPageView): string {
+  if (!view.published || view.shareUrl === null) {
+    return '';
+  }
+  const name = view.title === null || view.title.trim() === '' ? FALLBACK_WORK_TITLE : view.title;
+  const image =
+    view.imageUrl === null
+      ? '\n<meta name="twitter:card" content="summary">'
+      : `
+<meta property="og:image" content="${view.imageUrl}">
+<meta property="og:image:width" content="${OGP_IMAGE_WIDTH}">
+<meta property="og:image:height" content="${OGP_IMAGE_HEIGHT}">
+<meta name="twitter:card" content="summary_large_image">`;
+
+  return `
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Game Forge">
+<meta property="og:title" content="${escapeHtml(name)}">
+<meta property="og:description" content="${OGP_DESCRIPTION}">
+<meta property="og:url" content="${view.shareUrl}">${image}`;
 }
 
 /**
@@ -335,13 +448,7 @@ function sectionFor(view: WorkPageView): string {
    しばらく待っても変わらない場合は、お手数ですがもう一度生成してください。</p>
 <p>この画面は自動で更新されます。</p>`;
     case 'ready':
-      return `<h2>できました</h2>
-${
-  view.playUrl === null
-    ? '<p>作品は完成していますが、試遊 URL を組み立てられませんでした。</p>'
-    : `<p><a href="${view.playUrl}">この作品を遊ぶ</a></p>
-<p>この URL は<strong>あなただけが知っている URL</strong> です（まだ公開されていません）。</p>`
-}`;
+      return view.published ? publishedSection(view) : readySection(view);
     case 'failed':
       return `<h2>生成できませんでした</h2>
 <p>${view.owner ? escapeHtml(failureMessageOf(view.errorCode)) : escapeHtml(UNKNOWN_FAILURE_MESSAGE)}</p>`;
@@ -349,6 +456,86 @@ ${
       return `<h2>状態を読み取れませんでした</h2>
 <p>この作品の状態が想定外の値になっています。時間をおいてもう一度お試しください。</p>`;
   }
+}
+
+/**
+ * 試遊画面の主ボタン（5.4）。
+ *
+ * **文言は 5.4 が定めている**（「試遊画面の主ボタンは「**公開して共有**」とし、
+ * 1タップに畳んでフォーク連鎖の遅延を最小化する」）。ここで言い換えない。
+ *
+ * **1 タップに畳む。** 題名を入力させる欄も、確認の画面も置かない。5.4 が
+ * 「フォーク連鎖の遅延を最小化する」と定めているのは、**公開の手数がそのまま
+ * コア体験ループ（2.2）の長さになる**ためである。題名は生成のプロンプトから
+ * 借りたものがそのまま公開される（`src/games.ts` の `draftTitleFromPrompt`）。
+ *
+ * **JavaScript を要求しない。** 素の `<form method="post">` で、押した結果は
+ * POST-redirect-GET でこのページへ戻る（`src/publish.ts`）。
+ *
+ * @param gameId 作品 id
+ * @returns HTML
+ */
+function publishForm(gameId: string): string {
+  return `<form method="post" action="${PUBLISH_PATH}">
+  <input type="hidden" name="${PUBLISH_GAME_ID_FIELD}" value="${gameId}">
+  <button type="submit">公開して共有</button>
+</form>`;
+}
+
+/**
+ * 完成したが、まだ公開していない作品の本文。
+ *
+ * **試遊 URL を出すのは作者本人にだけである。** `preview_key` は unlisted 配信の
+ * 唯一の資格情報で（5.4 / `migrations/0006_games_preview_key.sql`）、id を知って
+ * いるだけの相手へ渡す理由が無い。**状態は誰でも読めるが、鍵は本人だけが読める。**
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function readySection(view: WorkPageView): string {
+  if (!view.owner) {
+    return `<h2>できました</h2>
+<p>この作品はまだ公開されていません。</p>`;
+  }
+  const play =
+    view.playUrl === null
+      ? '<p>作品は完成していますが、試遊 URL を組み立てられませんでした。</p>'
+      : `<p><a href="${view.playUrl}">この作品を遊ぶ</a></p>
+<p>この URL は<strong>あなただけが知っている URL</strong> です（まだ公開されていません）。</p>`;
+  const publish =
+    view.publishableId === null
+      ? ''
+      : `
+<p>遊んでみて、よければ公開できます。</p>
+${publishForm(view.publishableId)}`;
+  return `<h2>できました</h2>
+${play}${publish}`;
+}
+
+/**
+ * 公開済みの作品の本文。
+ *
+ * **共有すべき URL を 1 本だけ出す。** 出せる URL は 2 本ある（このページと
+ * `/g/<game_id>/`）が、**カードが出るのはこのページのほうである**（OGP のメタタグを
+ * 持っているのはこちら。`/g/` は不透明オリジンの iframe 用文書で、UGC 由来の文字列を
+ * 1 つも入れないと決めてある。`src/sandbox-loader.ts`）。2 本並べると、利用者は
+ * カードの出ないほうを配りうる。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function publishedSection(view: WorkPageView): string {
+  const play =
+    view.playUrl === null
+      ? '<p>公開されていますが、試遊 URL を組み立てられませんでした。</p>'
+      : `<p><a href="${view.playUrl}">この作品を遊ぶ</a></p>`;
+  const share =
+    view.shareUrl === null
+      ? ''
+      : `
+<p>共有する URL: <code>${view.shareUrl}</code></p>`;
+  return `<h2>公開しています</h2>
+${play}${share}`;
 }
 
 /**
@@ -389,8 +576,8 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   }
 
   const row = await env.DB.prepare(
-    `select author_id, title, generation_state, generation_error, preview_key,
-            created_at, generation_started_at
+    `select author_id, status, title, generation_state, generation_error, preview_key,
+            created_at, generation_started_at, ogp_state
        from games where id = ?`,
   )
     .bind(gameId)
@@ -411,19 +598,39 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   );
   const state = viewStateOf(row.generation_state, stalled);
 
+  const published = row.status === PUBLISHED_STATUS;
+
   return html(
     renderWorkPage({
       state,
       owner,
-      // **本人にだけ出す。** 仮タイトルはプロンプト由来である（モジュール冒頭）。
-      title: owner ? row.title : null,
+      published,
+      // **本人か、公開済みのときだけ出す。** 仮タイトルはプロンプト由来である
+      // （モジュール冒頭）が、**公開そのものが「これを作品として出す」という
+      // 作者の意思表示**である（5.4 は作者を唯一のフィルタとして使う）。
+      // 未公開のあいだは、id を知っているだけの相手には見えないままにする。
+      title: owner || published ? row.title : null,
       errorCode: owner ? row.generation_error : null,
       // `ready` なら `preview_key` は必ず入っている（`src/games.ts` の不変条件）。
       // それでも null を扱えるようにしてあるのは、**不変条件を画面が前提にしない**ため。
-      playUrl:
-        state === 'ready' && row.preview_key !== null
+      //
+      // **公開後は id で引ける URL（`/g/`）へ切り替える。** プレビュー鍵は公開後も
+      // 生きている（`/p/` は `removed` 以外を返す。5.4）が、**配る URL は 1 本でよい。**
+      playUrl: published
+        ? publishedUrl(request, env, gameId)
+        : state === 'ready' && owner && row.preview_key !== null
           ? previewUrl(request, env, row.preview_key)
           : null,
+      // 公開の操作を出すのは、**本人・完成済み・未公開**のときだけである。
+      // （押せない・押しても何も起きないボタンを出さない。仕様 1.2.38 の #24 と同じ方針）
+      publishableId: owner && !published && state === 'ready' ? gameId : null,
+      // **要求された URL をそのまま写さない。** 問い合わせ文字列（`?utm_source=` など）が
+      // 付いた URL を `og:url` に出すと、同じ作品が別の URL として拡散する。
+      // 正規の綴りを組み立て直す。
+      shareUrl: published ? new URL(workPagePath(gameId), request.url).toString() : null,
+      // **`ready` のときだけ URL を出す。** 撮影中・失敗のときに URL を出すと、
+      // クローラが 404 を引く（`src/ogp.ts` の配信は行と実体の両方を見る）。
+      imageUrl: published && row.ogp_state === 'ready' ? ogpImageUrl(request, gameId) : null,
     }),
   );
 }

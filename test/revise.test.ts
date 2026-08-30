@@ -18,6 +18,7 @@ import {
   RESTORE_PATH,
 } from '../src/paths.js';
 import { REVISIONS_PER_GAME } from '../src/quota.js';
+import { MAX_SOURCE_BYTES } from '../src/system-prompt.js';
 import { createReviseRoutes } from '../src/revise.js';
 import { appendRevision, listRevisions, revisionStatus } from '../src/revisions.js';
 import { dispatch } from '../src/routes.js';
@@ -218,7 +219,7 @@ describe('推敲の受け口（5.7 / #192）', () => {
     expect(status.failed).toBe('internal');
   });
 
-  it('元のソースが R2 に無ければ起動せず、ジョブを failed にする', async () => {
+  it('元のソースが R2 に無ければ起動せず、枠を返す（LLM を呼んでいない）', async () => {
     const userId = await createUser('revise-no-source');
     const gameId = await createReadyGame(userId);
     const row = await env.DB.prepare('select source_key from games where id = ?')
@@ -229,7 +230,29 @@ describe('推敲の受け口（5.7 / #192）', () => {
 
     expect((await postRevise(userId, gameId, '玉を速く', spy.pipeline)).status).toBe(500);
     expect(spy.calls).toHaveLength(0);
-    expect((await revisionStatus(env, gameId)).failed).toBe('internal');
+
+    const status = await revisionStatus(env, gameId);
+    // **確定28 が失敗を数える根拠は「費用は出ている」こと。** 呼んでいない以上、
+    // その根拠は当てはまらない。ジョブ行も残さない。
+    expect(status.used).toBe(0);
+    expect(status.running).toBe(false);
+    expect(status.failed).toBeNull();
+  });
+
+  it('30KB を超えるソースは 409 で、枠を消費しない（何度やっても成功しないため）', async () => {
+    const userId = await createUser('revise-too-large');
+    const gameId = await createReadyGame(userId);
+    const row = await env.DB.prepare('select source_key from games where id = ?')
+      .bind(gameId)
+      .first<{ source_key: string }>();
+    await env.BUCKET.put(row!.source_key, 'a'.repeat(MAX_SOURCE_BYTES + 1));
+    const spy = startSpy();
+
+    // **500「時間をおいてもう一度」にしない。** 整理パス（M5-2）が入るまで成功しない
+    // 操作を、上限の回数だけ繰り返させることになる。
+    expect((await postRevise(userId, gameId, '玉を速く', spy.pipeline)).status).toBe(409);
+    expect(spy.calls).toHaveLength(0);
+    expect((await revisionStatus(env, gameId)).used).toBe(0);
   });
 });
 

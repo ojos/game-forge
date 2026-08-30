@@ -358,6 +358,45 @@ export async function failRevision(env: Env, gameId: string, code: string): Prom
   return (result.meta.changes ?? 0) > 0;
 }
 
+/**
+ * 取った枠を返す（起動前に確定的に失敗したとき）。
+ *
+ * **確定28 が失敗した推敲を回数に数える根拠は「費用は出ている」ことである。**
+ * LLM を 1 度も呼んでいない失敗には、その根拠が当てはまらない。**呼ぶ前に確定的に
+ * 失敗する経路（元のソースが読めない・大きすぎる）で枠を食うと、作者は 1 回も
+ * 生成させないまま上限へ達する。**
+ *
+ * **「失敗を繰り返して上限を迂回できる」にはならない。** 迂回して得られるのは
+ * 費用の出る生成の回数だが、ここで返すのは**費用が 1 円も出ていない試行**である。
+ *
+ * **起動を試みたあとには使わない。** 非同期呼び出しは、こちらがエラーとして受け取っても
+ * 相手が走り出している可能性を否定できない。走っているジョブの枠を返すと、
+ * 完成したときに回数が 1 つ足りない状態になる。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param jobTokenHash 返す枠を取ったときのトークンのハッシュ
+ * @returns 返せたら true
+ */
+export async function releaseRevisionSlot(
+  env: Env,
+  gameId: string,
+  jobTokenHash: string,
+): Promise<boolean> {
+  const [released] = await env.DB.batch([
+    env.DB.prepare(
+      `delete from game_revision_jobs
+        where game_id = ? and job_token_hash = ? and state = 'pending'`,
+    ).bind(gameId, jobTokenHash),
+    env.DB.prepare(
+      `update games set revise_count = max(0, revise_count - 1)
+        where id = ?
+          and not exists (select 1 from game_revision_jobs j where j.game_id = games.id)`,
+    ).bind(gameId),
+  ]);
+  return ((released as D1Result).meta.changes ?? 0) > 0;
+}
+
 /** 復元の結果。**「見つからない」と「他人の作品」を区別しない**（`src/games.ts` と同じ）。 */
 export type RestoreOutcome = 'restored' | 'not-found' | 'busy';
 

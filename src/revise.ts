@@ -29,11 +29,16 @@
  * 枠の取得が「他人の作品ではない」ことまで確かめるからである——**確かめる前に
  * `source_key` を読むと、他人の作品のキーを引く経路ができる。**
  *
- * ## 失敗したら枠を返さない
+ * ## 枠を返すのは「LLM を呼ぶ前に確定的に失敗した」ときだけ
  *
- * ソースが取れない・起動に失敗した場合、`revise_count` は増えたままにする。
- * **戻すと、失敗を繰り返すことで上限を無限に迂回できる。** 代わりにジョブ行を
- * `failed` にして、作者には理由を出す（`src/revisions.ts` の `failRevision`）。
+ * | 失敗 | 枠 | 理由 |
+ * |---|---|---|
+ * | 元のソースが読めない / 30KB 超（確定18） | **返す** | **LLM を 1 度も呼んでいない。** 確定28 が失敗を数える根拠（費用は出ている）が当てはまらない |
+ * | 起動を試みて失敗した | **返さない** | 非同期呼び出しは、エラーを受け取っても**相手が走り出している可能性を否定できない** |
+ * | ビルドが通らなかった（コールバック経由） | **返さない** | 費用が出ている。確定25 の「リトライは含む」と同じ線 |
+ *
+ * **30KB 超は、何度やっても成功しない。** 整理パスは M5-2（#33）が持つ。ここで枠を
+ * 食うと、大きい作品の作者は**1 回も生成させないまま上限へ達する。**
  *
  * ## CSRF について
  *
@@ -54,7 +59,12 @@ import {
 import { checkGenerationQuota, describeQuotaRejection, QUOTA_EXCEEDED_STATUS } from './quota.js';
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
-import { claimRevisionSlot, failRevision, restoreRevision } from './revisions.js';
+import {
+  claimRevisionSlot,
+  failRevision,
+  releaseRevisionSlot,
+  restoreRevision,
+} from './revisions.js';
 import { resolveSessionUser } from './session-user.js';
 import { MAX_SOURCE_BYTES } from './system-prompt.js';
 import { workPagePath } from './work-page.js';
@@ -124,7 +134,10 @@ function refusal(heading: string, body: string, status: number): Response {
 
 /** 推敲を断る理由ごとの、ステータスと文言。 */
 const REFUSALS: Readonly<
-  Record<'not-revisable' | 'source-missing' | 'start-failed', { status: number; heading: string; body: string }>
+  Record<
+    'not-revisable' | 'source-missing' | 'source-too-large' | 'start-failed',
+    { status: number; heading: string; body: string }
+  >
 > = {
   // **他人の作品・存在しない作品・公開済み・生成中・上限超過・推敲中を区別しない。**
   // 区別すると、任意の id が存在するかを外から確かめられる手がかりになる
@@ -139,6 +152,12 @@ const REFUSALS: Readonly<
     status: 500,
     heading: '元のソースを読み出せませんでした',
     body: '時間をおいて、もう一度お試しください。',
+  },
+  // **「もう一度」と言わない。** 何度やっても同じ結果になる（整理パスは M5-2 が持つ）。
+  'source-too-large': {
+    status: 409,
+    heading: 'この作品は手直しできる大きさを超えています',
+    body: 'ソースが大きくなりすぎているため、いまは手直しできません。',
   },
   'start-failed': {
     status: 500,
@@ -201,27 +220,40 @@ async function parseReviseInput(request: Request): Promise<ReviseInput | null> {
   return { gameId, prompt: trimmed };
 }
 
+/** 元のソースを取れなかった理由。**畳まない**——作者への文言も、枠の扱いも変わる。 */
+type BaseSourceFailure = 'source-missing' | 'source-too-large';
+
 /**
  * 元にするソースを R2 から読む（5.7 / 確定26）。
  *
- * **30KB を超えていたら断る**（確定18 / 5.3）。超過時に LLM へ整理させる経路は
- * M5-2（#33）が持つ。**ここで黙って切り詰めない**——切れた Go のソースを渡すと、
- * コンパイルが必ず落ちて枠だけが消える。
+ * **30KB 超を「読めなかった」と同じ扱いにしない**（確定18 / 5.3）。あれは確定した
+ * 上限で、**何度やっても成功しない。**「時間をおいてもう一度」と案内すると、作者は
+ * 成功しない操作を上限の回数だけ繰り返すことになる。超過時に LLM へ整理させる経路は
+ * M5-2（#33）が持つ。
+ *
+ * **黙って切り詰めない。** 切れた Go のソースを渡すと、コンパイルが必ず落ちて
+ * 枠だけが消える。
  *
  * @param env バインディングと環境変数
  * @param sourceKey R2 のキー
- * @returns ソース、読めなければ null
+ * @returns ソース、または失敗の理由
  */
-async function readBaseSource(env: Env, sourceKey: string): Promise<string | null> {
+async function readBaseSource(
+  env: Env,
+  sourceKey: string,
+): Promise<{ ok: true; source: string } | { ok: false; reason: BaseSourceFailure }> {
   const object = await env.BUCKET.get(sourceKey);
   if (object === null) {
-    return null;
+    return { ok: false, reason: 'source-missing' };
   }
   const source = await object.text();
-  if (source === '' || new TextEncoder().encode(source).length > MAX_SOURCE_BYTES) {
-    return null;
+  if (source === '') {
+    return { ok: false, reason: 'source-missing' };
   }
-  return source;
+  if (new TextEncoder().encode(source).length > MAX_SOURCE_BYTES) {
+    return { ok: false, reason: 'source-too-large' };
+  }
+  return { ok: true, source };
 }
 
 /**
@@ -263,12 +295,13 @@ async function handleRevise(
 
   // **ここが 5.7 の対象条件と上限を同時に確かめる唯一の関門である**（`src/revisions.ts`）。
   const jobToken = createJobToken();
+  const jobTokenHash = await hashJobToken(jobToken);
   const claimed = await claimRevisionSlot(
     env,
     input.gameId,
     session.userId,
     input.prompt,
-    await hashJobToken(jobToken),
+    jobTokenHash,
   );
   if (!claimed) {
     const refused = REFUSALS['not-revisable'];
@@ -281,22 +314,25 @@ async function handleRevise(
   const row = await env.DB.prepare('select source_key from games where id = ?')
     .bind(input.gameId)
     .first<{ source_key: string | null }>();
-  const baseSource =
-    row?.source_key == null ? null : await readBaseSource(env, row.source_key);
-  if (baseSource === null) {
-    // **枠は返さない**（モジュール冒頭）。失敗はジョブ行に残し、作者へ理由を出す。
-    await failRevision(env, input.gameId, 'internal');
-    const refused = REFUSALS['source-missing'];
+  const base =
+    row?.source_key == null
+      ? ({ ok: false, reason: 'source-missing' } as const)
+      : await readBaseSource(env, row.source_key);
+  if (!base.ok) {
+    // **LLM を 1 度も呼んでいないので枠を返す**（モジュール冒頭の表）。ジョブ行も
+    // 消す——起きなかった仕事の失敗を、作品ページに残す意味が無い。
+    await releaseRevisionSlot(env, input.gameId, jobTokenHash);
+    const refused = REFUSALS[base.reason];
     return wantsHtml(request)
       ? refusal(refused.heading, refused.body, refused.status)
-      : json({ error: 'source unavailable' }, refused.status);
+      : json({ error: base.reason }, refused.status);
   }
 
   const job: GenerationJob = {
     gameId: input.gameId,
     jobToken,
     userId: session.userId,
-    request: { prompt: input.prompt, baseSource },
+    request: { prompt: input.prompt, baseSource: base.source },
   };
 
   try {

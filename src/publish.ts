@@ -149,10 +149,54 @@ const REFUSALS: Readonly<
   },
 };
 
+/**
+ * 要求を受け付けられなかった理由。
+ *
+ * **`readLimitedText` が区別して返すものを、こちらで潰さない。** 上限を超えた本文は
+ * 413（Payload Too Large）であり、400 にすると「送った内容が悪い」と読める——
+ * 実際には**大きさだけ**の問題で、直し方が違う。
+ *
+ * 綴りと分け方は `src/ogp.ts` の `OgpCallbackRejection` に揃えてある。**同じ PR の
+ * 2 つの入口が違う流儀になっていた**ので、あちらへ寄せた（#26 のレビュー指摘）。
+ */
+export type PublishRejection =
+  | 'unsupported-content-type'
+  | 'body-too-large'
+  | 'unreadable-body'
+  | 'invalid-game-id';
+
+/**
+ * 断りの理由ごとのステータスと、画面に出す文言。
+ *
+ * **ステータスを分岐の式で書かない**（`reason === 'x' ? 415 : 400` の形にすると、
+ * 理由を 1 つ足したときに既定の側へ黙って落ちる）。表にしておけば、足した理由は
+ * ここに現れる。
+ */
+const BODY_REFUSALS: Readonly<Record<PublishRejection, { status: number; body: string }>> = {
+  'unsupported-content-type': {
+    status: 415,
+    body: '要求の形式に対応していません。',
+  },
+  'body-too-large': {
+    // **413 である。** 載るのは UUID 1 つだけ（{@link MAX_BODY_BYTES}）なので、
+    // ここへ来るのは通常の操作ではない。
+    status: 413,
+    body: '要求が大きすぎます。',
+  },
+  'unreadable-body': {
+    status: 400,
+    body: '要求を最後まで受け取れませんでした。もう一度お試しください。',
+  },
+  'invalid-game-id': {
+    status: 400,
+    body: '要求の形が正しくありません。',
+  },
+};
+
 /** 本文から取り出した対象。 */
 type GameIdResult =
   | { readonly ok: true; readonly gameId: string }
-  | { readonly ok: false; readonly reason: 'unsupported-content-type' | 'invalid-game-id' };
+  | { readonly ok: false; readonly reason: PublishRejection };
 
 /**
  * 本文から対象の作品 id を取り出す。
@@ -175,7 +219,9 @@ async function readGameId(request: Request): Promise<GameIdResult> {
 
   const read = await readLimitedText(request, MAX_BODY_BYTES);
   if (!read.ok) {
-    return { ok: false, reason: 'invalid-game-id' };
+    // **理由をそのまま運ぶ。** `body-too-large` と `unreadable-body` は
+    // `readLimitedText` が区別して返しており、こちらで潰す理由が無い。
+    return { ok: false, reason: read.reason };
   }
 
   let raw: unknown;
@@ -265,9 +311,10 @@ async function handlePublish(
 
   const target = await readGameId(request);
   if (!target.ok) {
+    const refused = BODY_REFUSALS[target.reason];
     return asHtml
-      ? refusal('公開できません', '要求の形が正しくありません。', 400)
-      : json({ error: target.reason }, target.reason === 'unsupported-content-type' ? 415 : 400);
+      ? refusal('公開できません', refused.body, refused.status)
+      : json({ error: target.reason }, refused.status);
   }
 
   const outcome = await publishGame(env, target.gameId, session.userId);

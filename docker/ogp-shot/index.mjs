@@ -36,6 +36,13 @@
  * （src/ogp.ts）。関数の中で諦める時間（`CAPTURE_TIMEOUT_MS`）を Lambda の
  * タイムアウトより短くしてあるのは、**そのコールバックを送る時間を残すため**である。
  *
+ * ## 設定は 1 つも既定値を持たない
+ *
+ * 撮る大きさも待ち時間も、**宣言（terraform/ogp-function.tf の `environment`）が
+ * 無ければ起動の時点で落ちる**（./config.mjs）。既定値を置くと、宣言が落ちても
+ * 関数は自前の値で走り続け、**宣言と実物がずれたまま検査が緑になる。**
+ * 理由の全文は ./config.mjs の冒頭にある。
+ *
  * ## ログに秘密を出さない
  *
  * `ogpToken` はこの 1 行を進められる資格情報である。**ログへ出さない**
@@ -44,6 +51,7 @@
  */
 import chromium from '@sparticuz/chromium';
 import puppeteer from 'puppeteer-core';
+import { readConfig } from './config.mjs';
 
 /**
  * コールバックのパス。
@@ -74,32 +82,6 @@ const GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 
 /** 使い捨てトークンの綴り（16 進 64 桁）。 */
 const TOKEN_PATTERN = /^[0-9a-f]{64}$/u;
-
-/**
- * 必須の環境変数を読む。
- *
- * **既定値を持たない。** 撮る先や送り先に既定を置くと、宣言を書き忘れた状態で
- * 「どこかへ撮りに行く」関数になる（terraform/ogp-function.tf が値の正本である）。
- *
- * @returns 設定
- */
-function readConfig() {
-  const required = ['SANDBOX_BASE_URL', 'CALLBACK_BASE_URL'];
-  const missing = required.filter((name) => {
-    const value = process.env[name];
-    return typeof value !== 'string' || value.trim() === '';
-  });
-  if (missing.length > 0) {
-    throw new Error(`必要な環境変数がありません: ${missing.join(', ')}`);
-  }
-  return {
-    sandboxBaseUrl: process.env.SANDBOX_BASE_URL.replace(/\/+$/u, ''),
-    callbackBaseUrl: process.env.CALLBACK_BASE_URL.replace(/\/+$/u, ''),
-    width: Number.parseInt(process.env.VIEWPORT_WIDTH ?? '1200', 10),
-    height: Number.parseInt(process.env.VIEWPORT_HEIGHT ?? '630', 10),
-    captureTimeoutMs: Number.parseInt(process.env.CAPTURE_TIMEOUT_MS ?? '20000', 10),
-  };
-}
 
 /**
  * 撮影の結果を送り返す。

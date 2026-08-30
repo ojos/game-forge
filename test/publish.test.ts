@@ -323,24 +323,68 @@ describe('公開の遷移（5.4 / #26）', () => {
     expect(spy.calls).toHaveLength(1);
   });
 
-  it('本文の形が違えば 400 / 415 で断る', async () => {
-    const { userId } = await seedReadyGame('malformed');
+  it('上限を超える本文は 413（400 に潰さない）', async () => {
+    // `readLimitedText` は body-too-large と unreadable-body を区別して返す。
+    // **潰すと「送った内容が悪い」と読めるが、実際には大きさだけの問題である。**
+    // src/ogp.ts のコールバックが 413 を返すのと、流儀を揃えてある。
+    const { userId, id } = await seedReadyGame('too-large');
     const cookie = await sessionCookie(userId);
     const spy = captureSpy();
+    const padded = new URLSearchParams({
+      [PUBLISH_GAME_ID_FIELD]: id,
+      pad: 'x'.repeat(2048),
+    }).toString();
 
-    const notUuid = await publish('not-a-uuid', cookie, spy.start);
-    expect(notUuid.status).toBe(400);
+    const fromForm = await dispatch(
+      createPublishRoutes(spy.start),
+      new Request(`${APP_ORIGIN}${PUBLISH_PATH}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'text/html',
+          cookie,
+        },
+        body: padded,
+      }),
+      testEnv(),
+    );
+    expect(fromForm.status).toBe(413);
+
+    const fromApi = await dispatch(
+      createPublishRoutes(spy.start),
+      new Request(`${APP_ORIGIN}${PUBLISH_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ [PUBLISH_GAME_ID_FIELD]: id, pad: 'x'.repeat(2048) }),
+      }),
+      testEnv(),
+    );
+    expect(fromApi.status).toBe(413);
+    expect(((await fromApi.json()) as Record<string, unknown>)['error']).toBe('body-too-large');
+
+    // **公開もしていない。** 断った要求が行を進めていないことまで見る。
+    expect(spy.calls).toEqual([]);
+    expect((await readGame(id)).status).toBe('draft');
+  });
+
+  it('対応しない Content-Type は 415、形が違う id は 400', async () => {
+    // 断りの理由ごとにステータスが違うこと（1 つの分岐式へ畳んでいないこと）。
+    const { userId, id } = await seedReadyGame('status-codes');
+    const cookie = await sessionCookie(userId);
+    const spy = captureSpy();
 
     const wrongType = await dispatch(
       createPublishRoutes(spy.start),
       new Request(`${APP_ORIGIN}${PUBLISH_PATH}`, {
         method: 'POST',
         headers: { 'content-type': 'text/plain', cookie },
-        body: 'game_id=x',
+        body: `game_id=${id}`,
       }),
       testEnv(),
     );
     expect(wrongType.status).toBe(415);
+
+    expect((await publish('not-a-uuid', cookie, spy.start)).status).toBe(400);
     expect(spy.calls).toEqual([]);
   });
 

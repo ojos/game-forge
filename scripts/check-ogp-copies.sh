@@ -5,10 +5,11 @@
 #
 # OGP の撮影は 4 つの場所にまたがる。
 #
-#   宣言   terraform/ogp-function.tf   関数名・撮る大きさ・待ち時間
-#   エッジ src/ogp.ts / wrangler.toml  メタタグに書く大きさ・呼ぶ相手・コールバックの綴り
-#   撮影   docker/ogp-shot/index.mjs   コールバックの綴り・ローダーの合図
-#   配信   src/sandbox-loader.ts       その合図を出す側
+#   宣言   terraform/ogp-function.tf    関数名・撮る大きさ・待ち時間
+#   エッジ src/ogp.ts / wrangler.toml   メタタグに書く大きさ・呼ぶ相手・コールバックの綴り
+#   撮影   docker/ogp-shot/index.mjs    コールバックの綴り・ローダーの合図
+#          docker/ogp-shot/config.mjs   **要求する環境変数の名前**
+#   配信   src/sandbox-loader.ts        その合図を出す側
 #
 # **どれも「同じ値を 2 か所に書く」形になっている。** 環境変数で全部を渡す形にすれば
 # 写しは消えるが、そのぶん宣言を書き忘れた状態で動く余地が増える（撮影関数の
@@ -21,6 +22,18 @@
 # - **ローダーの合図の id がずれる: 撮影が必ず時間切れになる**（合図が永遠に来ない）
 # - 大きさがずれる: メタタグの og:image:width と実物が食い違う
 # - 関数の中で諦める時間 >= Lambda のタイムアウト: 失敗のコールバックを送る前に切られる
+# - **宣言（environment）から環境変数が落ちる: 関数が起動の時点で落ちる**
+#
+# ## 撮影関数は値の写しを持たない（#26 のレビューで直した）
+#
+# 当初 docker/ogp-shot は撮る大きさと待ち時間に既定値（`?? '1200'` など）を持っており、
+# **この検査はそれを見ていなかった。** 宣言が落ちても関数は自前の値で走り続け、
+# 検査は緑のまま——**確かめていない検査は、確かめた証拠として読まれるぶん赤より悪い**
+# （docs/handoff.md 4 章）。
+#
+# **既定値を消したので、残った結合は「名前」だけである。** 下の 7 番が、撮影関数が
+# 要求する名前（config.mjs の REQUIRED_ENV）と terraform の environment を
+# **両方向に**突き合わせる。実行時に落ちる前に、宣言のテキストで捕まえる。
 #
 # 使い方:
 #   bash scripts/check-ogp-copies.sh
@@ -37,9 +50,10 @@ TF="terraform/ogp-function.tf"
 OGP_TS="src/ogp.ts"
 LOADER_TS="src/sandbox-loader.ts"
 SHOT="docker/ogp-shot/index.mjs"
+SHOT_CONFIG="docker/ogp-shot/config.mjs"
 WRANGLER="wrangler.toml"
 
-for file in "$TF" "$OGP_TS" "$LOADER_TS" "$SHOT" "$WRANGLER"; do
+for file in "$TF" "$OGP_TS" "$LOADER_TS" "$SHOT" "$SHOT_CONFIG" "$WRANGLER"; do
   if [[ ! -f "$file" ]]; then
     echo "[ogp-copies] 照合の対象がありません: $file" >&2
     echo "[ogp-copies] 検査が成立しないため失敗させます（見ていないことを合格にしない）。" >&2
@@ -157,9 +171,57 @@ if require "terraform の ogp_capture_timeout_ms" "$tf_capture_ms" &&
   fi
 fi
 
+# 7. **撮影関数が要求する環境変数の名前**と、terraform の environment の宣言。
+#    **両方向に見る。** 片方向だと、
+#      - 宣言から落ちる  → 関数が本番で起動に失敗する（config.mjs には既定値が無い）
+#      - REQUIRED_ENV から落ちる → 既定値を戻した誰かが、宣言なしで走らせられる
+#    のどちらかを見逃す。
+tf_env_names="$(awk '/^  environment {/,/^  }$/' "$TF" |
+  sed -n 's/^[[:space:]]*\([A-Z][A-Z0-9_]*\)[[:space:]]*=.*/\1/p' | sort)"
+shot_env_names="$(awk '/^export const REQUIRED_ENV = \[/,/^\];/' "$SHOT_CONFIG" |
+  sed -n "s/^[[:space:]]*'\([A-Z][A-Z0-9_]*\)',.*/\1/p" | sort)"
+if require "terraform の environment の宣言" "$tf_env_names" &&
+  require "docker/ogp-shot/config.mjs の REQUIRED_ENV" "$shot_env_names"; then
+  if [[ "$tf_env_names" != "$shot_env_names" ]]; then
+    echo "[ogp-copies] 撮影関数が要求する環境変数と、terraform の宣言が食い違っています:" >&2
+    echo "  terraform（宣言）:" >&2
+    echo "$tf_env_names" | sed 's/^/    - /' >&2
+    echo "  config.mjs（要求）:" >&2
+    echo "$shot_env_names" | sed 's/^/    - /' >&2
+    echo "[ogp-copies] 宣言から落ちると、関数は起動の時点で落ちます（既定値を持たないため）。" >&2
+    fail=1
+  fi
+fi
+
+# 8. 撮影関数が値の既定を持っていないこと。
+#
+#    **7 番は名前しか見ない。** 既定値が戻ると、名前が宣言から落ちても関数は走り続け、
+#    7 番も（名前が両方から消えていれば）緑になる。**値の写しが無いことを直接見る。**
+#
+#    **この 8 番自身が一度空振りした**（#26 のレビュー中）。最初は
+#    `process.env[...] ??` を探していたが、config.mjs が読むのは引数の `source` で
+#    あって `process.env` ではないため、既定値を戻す変異が緑のまま通った。
+#    **綴りを絞った検査は、対象が別の綴りになった瞬間に何も見なくなる。**
+#    いまは 2 つの単純な規則で見る。
+#
+#      (1) 設定を読む config.mjs に `??` を 1 つも書かない（既定値はこの形でしか書けない）
+#      (2) index.mjs は process.env を直接読まない（読み口を 1 か所に保つ）
+if grep -n '??' "$SHOT_CONFIG" >/dev/null 2>&1; then
+  echo "[ogp-copies] $SHOT_CONFIG に ?? があります（環境変数の既定値の形）。" >&2
+  grep -n '??' "$SHOT_CONFIG" | sed 's/^/    /' >&2
+  echo "[ogp-copies] 既定値は terraform の宣言の写しです。落ちても走り続けるため、ずれが検査に映りません。" >&2
+  fail=1
+fi
+if grep -n 'process\.env' "$SHOT" >/dev/null 2>&1; then
+  echo "[ogp-copies] $SHOT が process.env を直接読んでいます。" >&2
+  grep -n 'process\.env' "$SHOT" | sed 's/^/    /' >&2
+  echo "[ogp-copies] 環境変数の読み口は $SHOT_CONFIG の readConfig 1 か所に保つこと（7 番の照合が効かなくなります）。" >&2
+  fail=1
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
 
-echo "[ogp-copies] 関数名・撮る大きさ・コールバックの綴り・ローダーの合図・待ち時間の 5 組が一致しています"
+echo "[ogp-copies] 関数名・撮る大きさ・コールバックの綴り・ローダーの合図・待ち時間・環境変数の名前の 6 組が一致しています"
 echo "OGP_COPIES_PASS"

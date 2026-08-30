@@ -177,12 +177,11 @@ fi
 # イメージのビルドが同じテストを走らせるので二重だが、こちらは**イメージを作らない
 # 経路（IMAGE を外から渡した場合）でも回り、失敗の中身がそのまま読める。**
 #
-# **ホストの Go の版が足りないときは回さない。** handler/go.mod は**ピン留めした版**を
+# **ピン留めした版で回せないときは回さない。** handler/go.mod は**ピン留めした版**を
 # 要求し（確定12。値の正本は docker/isolated-build/Dockerfile の `ARG GO_VERSION`）、
-# `GOTOOLCHAIN=local` があるので古い Go は toolchain を落としに行かず、
-# `go.mod requires go >= <ピン留めした版> (running go <ホストの版>)` で必ず落ちる。
-# **GitHub のランナーが実際にこれを踏んだ**（2026-08-27。ランナーの Go は 1.24.13、
-# **当時のピン留めと開発機は 1.26.5**）。**開発機でだけ通る検査**になっていた。
+# 届かない go では `go.mod requires go >= <ピン留めした版> (running go <ホストの版>)` で
+# 必ず落ちる。**GitHub のランナーが実際にこれを踏んだ**（2026-08-27。ランナーの Go は
+# 1.24.13、**当時のピン留めと開発機は 1.26.5**）。**開発機でだけ通る検査**になっていた。
 #
 # ここを「落とす」にすると、ホストの Go の版という**このイメージと無関係な理由**で
 # 赤が出る。イメージのビルドが同じテストを**同じ（ピン留めした）Go** で走らせているので、
@@ -190,6 +189,34 @@ fi
 #
 # **版そのものをここへ書き写さない**（#101）。写しは機械が見ていないので古くなり、
 # 現にこの注記は 1.26.7 へ上げるまで 1.26.5 のまま取り残されていた（3.5 の更新手順 6）。
+#
+# ── 実効のツールチェインは、モジュールの中で測る（#185）─────────────────────
+#
+# **ここは以前、リポジトリのルートで `go env GOVERSION` を引いていた。** その値は
+# **ツールチェイン切り替えの前**のもので、モジュールの中で実際に走る go の版ではない。
+# **#180 の作業中に `scripts/check-sandbox-browser.sh` が踏んだのと同じ取り違えである**
+# （3.5 が「いちばん原因が読めない失敗」と呼ぶ形。**外で引いた値で判断しない**）。
+#
+# go は `go.mod` の `go` ディレクティブを読み、手元の go がそれより古ければ**その版の
+# ツールチェインへ自分で切り替える**（`GOTOOLCHAIN=auto`。既定）。handler/go.mod の
+# `go` ディレクティブがピン留めと一致することは `scripts/check-go-version-copies.sh` が
+# 機械照合している。**したがって、版をここへ書き写さずにピン留めどおりの版で回せる。**
+# **開発環境の Go をピン留めへ揃える必要も無い**（#185 の判断。docs/local-dev.md 5.11）。
+#
+# 実測（2026-08-30 / この devcontainer。ホストの go は go1.26.5）: モジュールの中では
+# go1.27.0 として走り、`go test ./...` は 0.33 秒で通った。**この skip は最初から
+# 不要だった。**
+#
+# **`GOTOOLCHAIN=local` をここで強制しない。** あれは**イメージ側の要求**である
+# （攻撃者が制御しうる `go.mod` にツールチェインを取りに行かせない。CVE-2023-39320 の
+# 系統。Dockerfile の注記）。ここでコンパイルするのは**このリポジトリのハンドラ**で
+# あって投稿されたコードではなく、その `go.mod` は機械照合された宣言である。強制すると、
+# 手元の go が古いというだけで**この 1 本が黙って回らなくなる。**
+#
+# **それでも回せないことはある**（切り替えは初回にネットワークを要り、環境側で
+# `GOTOOLCHAIN=local` が設定されていれば効かない）。そのときは**落とさずに飛ばす**が、
+# **飛ばしたことの帰結を必ず書く。** 以前の skip は事実だけを述べていて、
+# **手元の検査が 1 本減っていること**が読めなかった（#185）。
 ##
 # 版 $1 が $2 以上かを判定する（`X.Y.Z` 形式）。
 #
@@ -216,20 +243,40 @@ version_at_least() {
   return 0
 }
 
-HANDLER_GO_MIN="$(sed -nE 's/^go ([0-9.]+)$/\1/p' docker/isolated-build/handler/go.mod | head -1)"
+HANDLER_DIR="docker/isolated-build/handler"
+HANDLER_GO_MIN="$(sed -nE 's/^go ([0-9.]+)$/\1/p' "$HANDLER_DIR/go.mod" | head -1)"
+
+##
+# 単体テストを飛ばすことと、**その帰結**を出す。
+#
+# 帰結の文面をここ 1 か所に持つ。呼ぶ側が渡すのは理由だけである。各分岐へ書き下すと、
+# 片方だけ古くなる（この節が直そうとしている状態そのもの）。
+#
+#   $1 … なぜ飛ばすのか（事実）
+##
+skip_handler_test() {
+  info "ハンドラの単体テストをここでは回しません: $1"
+  info "  帰結: **手元の検査がこの 1 本ぶん減ります**（/tmp の掃除の単位）。担保はイメージのビルド側にだけ残ります（同じテストを、ピン留めした版で走らせます）。"
+  info "  帰結: 同じ理由で \`scripts/check-sandbox-browser.sh\` も初回にネットワークを要します（ピン留めした版のツールチェインを取りに行くため）。"
+  info "  経緯と直しかた: docs/local-dev.md 5.11（#185）"
+}
+
 if ! command -v go >/dev/null 2>&1; then
-  info "go が無いため単体テストはここでは回しません（イメージのビルドが同じテストを走らせます）"
-elif [[ -n "$HANDLER_GO_MIN" ]] \
-  && ! version_at_least "$(go env GOVERSION | sed 's/^go//')" "$HANDLER_GO_MIN"; then
-  info "ホストの Go が $(go env GOVERSION)（handler/go.mod は ${HANDLER_GO_MIN} 以上を要求）なのでここでは回しません（イメージのビルドが同じテストを走らせます）"
+  skip_handler_test "go が見つかりません"
+elif [[ -z "$HANDLER_GO_MIN" ]]; then
+  skip_handler_test "${HANDLER_DIR}/go.mod の go ディレクティブを読めません（要求する版が分からないため判定できません。正本との一致は scripts/check-go-version-copies.sh が見ています）"
+# **測るのはモジュールの中である。** 外で引くと切り替え前の版を見ることになる（上記）。
+elif ! GO_EFFECTIVE="$( (cd "$HANDLER_DIR" && go env GOVERSION) 2>"$WORKDIR/gotoolchain.err" )"; then
+  sed 's/^/    /' "$WORKDIR/gotoolchain.err" >&2
+  skip_handler_test "ピン留めした版のツールチェインを用意できません（初回はネットワークが要ります。go の出力は上）"
+elif ! version_at_least "${GO_EFFECTIVE#go}" "$HANDLER_GO_MIN"; then
+  skip_handler_test "モジュールの中での実効ツールチェインが ${GO_EFFECTIVE} で、${HANDLER_DIR}/go.mod が要求する ${HANDLER_GO_MIN} に届きません（GOTOOLCHAIN=$(go env GOTOOLCHAIN) で切り替えが止められているか、ネットワークがありません）"
+elif (cd "$HANDLER_DIR" \
+    && env GOFLAGS= GOOS=linux go test ./... >"$WORKDIR/gotest.log" 2>&1); then
+  ok "ハンドラの単体テストが通る（/tmp の掃除の単位。実効ツールチェイン ${GO_EFFECTIVE}）"
 else
-  if (cd docker/isolated-build/handler \
-      && env GOFLAGS= GOOS=linux GOTOOLCHAIN=local go test ./... >"$WORKDIR/gotest.log" 2>&1); then
-    ok "ハンドラの単体テストが通る（/tmp の掃除の単位）"
-  else
-    sed 's/^/    /' "$WORKDIR/gotest.log" >&2
-    ng "ハンドラの単体テストが落ちました"
-  fi
+  sed 's/^/    /' "$WORKDIR/gotest.log" >&2
+  ng "ハンドラの単体テストが落ちました（実効ツールチェイン ${GO_EFFECTIVE}）"
 fi
 
 # ── 実行ヘルパ ──────────────────────────────────────────────────────────────

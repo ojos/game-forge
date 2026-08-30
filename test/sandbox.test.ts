@@ -300,6 +300,120 @@ describe('CSP（#28 acceptance 2 / 3、7.2）', () => {
   });
 });
 
+describe('不透明オリジンからの自己資材の取得（#180）', () => {
+  // **この検査群が塞ぐ穴は、CSP の検査では原理的に捕まらない。**
+  //
+  // #28 / #29 の検査は「CSP が許しているか」だけを見ていた。7.2 必須要件 1 の帰結で
+  // 文書が不透明オリジンになるため、**CSP が許していても CORS が別の理由で塞ぐ**という
+  // 組み合わせが成立する。実際に本番でそうなり（#180）、`起動できませんでした:
+  // TypeError: Failed to fetch` だけが利用者に見えていた。
+  //
+  // **ここで見るのは CSP ではなく応答ヘッダである。** ブラウザが応答を読めるかどうかを
+  // 決めるのは ACAO であり、それは curl でも CSP の照合でも確かめられない
+  // （どちらも CORS を評価しない）。**実ブラウザでの確認は scripts/check-sandbox-browser.sh。**
+
+  it('.wasm の応答に Access-Control-Allow-Origin が付く', async () => {
+    // #180 の本体。**これが無いとプレイ経路が動かない。**
+    const game = await seedGame({ suffix: 'cors-wasm', status: 'published' });
+    for (const path of [`/g/${game.id}/game.wasm`, `/p/${game.previewKey}/game.wasm`]) {
+      const response = await SELF.fetch(`${SANDBOX_ORIGIN}${path}`, {
+        // 不透明オリジンの文書が実際に送る形。ブラウザは `Origin: null` を付ける。
+        headers: { origin: 'null' },
+      });
+      expect(response.status, path).toBe(200);
+      expect(response.headers.get('access-control-allow-origin'), path).toBe('*');
+    }
+  });
+
+  it('Origin ヘッダの有無や値で応答が変わらない', async () => {
+    // **`*` を選んだ判断そのものを固定する。** 要求ごとに値を変える形（`Origin` の
+    // 反射や `null` の出し分け）へ寄ると `Vary: Origin` の管理が付いて回り、
+    // `/g/` の `.wasm` は共有キャッシュに載る（`public, immutable`）ため、`Vary` を
+    // 1 度落とした日に別のオリジン向けの応答が配られる。
+    const game = await seedGame({ suffix: 'cors-vary', status: 'published' });
+    const url = `${SANDBOX_ORIGIN}/g/${game.id}/game.wasm`;
+    const values = await Promise.all(
+      [undefined, 'null', 'https://evil.example', APP_ORIGIN].map(async (origin) => {
+        const response = await SELF.fetch(
+          url,
+          origin === undefined ? {} : { headers: { origin } },
+        );
+        return response.headers.get('access-control-allow-origin');
+      }),
+    );
+    expect(new Set(values)).toEqual(new Set(['*']));
+  });
+
+  it('Vary に Origin を入れない', async () => {
+    // 上の裏返し。応答が `Origin` に依らないなら、依らないと書くのが壊れにくい。
+    const game = await seedGame({ suffix: 'cors-novary', status: 'published' });
+    const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/game.wasm`);
+    expect((response.headers.get('vary') ?? '').toLowerCase()).not.toContain('origin');
+  });
+
+  it('すべての応答に付く（文書・wasm_exec・エラー）', async () => {
+    // **一律に付ける**という判断を固定する。資材ごとの付け外しにすると、資材が
+    // 増えた日の付け忘れが本番のブラウザでしか見えない（#180 そのもの）。
+    const game = await seedGame({ suffix: 'cors-all', status: 'published' });
+    for (const path of [
+      `/g/${game.id}/`,
+      `/g/${game.id}/wasm_exec.js`,
+      `/p/${game.previewKey}/`,
+      '/', // 404
+      `/p/${'f'.repeat(32)}/`, // 404（知らないキー）
+    ]) {
+      const response = await SELF.fetch(`${SANDBOX_ORIGIN}${path}`);
+      expect(response.headers.get('access-control-allow-origin'), path).toBe('*');
+    }
+  });
+
+  it('.wasm が 404 / 500 のときも応答が読める', async () => {
+    // **診断が利用者へ届くために要る。** ACAO が無いとブラウザは 404 も 500 も
+    // 破棄するため、原因の違う失敗が一様に `TypeError: Failed to fetch` になる。
+    // 配信側が 3.7 の「隙間を隠さない」で 500 を返しても、誰にも見えない。
+    const tomb = await seedGame({ suffix: 'cors-404', status: 'published', wasmKey: null });
+    const missing = await seedGame({ suffix: 'cors-500', status: 'published' });
+    await env.BUCKET.delete(missing.wasmKey!);
+
+    const notFound = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${tomb.id}/game.wasm`, {
+      headers: { origin: 'null' },
+    });
+    expect(notFound.status).toBe(404);
+    expect(notFound.headers.get('access-control-allow-origin')).toBe('*');
+
+    const serverError = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${missing.id}/game.wasm`, {
+      headers: { origin: 'null' },
+    });
+    expect(serverError.status).toBe(500);
+    expect(serverError.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
+  it('Access-Control-Allow-Credentials を決して付けない', async () => {
+    // `*` は資格情報付きの要求を構造的に拒む（`*` と `Allow-Credentials` は併用できない）。
+    // **その性質を頼りにしている**ので、片方だけが足された状態を作らせない。
+    const game = await seedGame({ suffix: 'cors-cred', status: 'published' });
+    for (const path of [`/g/${game.id}/`, `/g/${game.id}/game.wasm`, '/']) {
+      const response = await SELF.fetch(`${SANDBOX_ORIGIN}${path}`, {
+        headers: { origin: 'null' },
+      });
+      expect(response.headers.get('access-control-allow-credentials'), path).toBeNull();
+    }
+  });
+
+  it('CORS を足しても connect-src は 1 本のままである', async () => {
+    // **「CORS を足した＝緩めた」という誤読を機械で塞ぐ。** 7.2 が塞いでいるのは
+    // 生成物が外へ出ることで、それを塞ぐのは `connect-src` である。ACAO は
+    // 「この応答を要求元へ渡してよい」と言うだけで、宛先の集合に 1 要素も足さない。
+    const game = await seedGame({ suffix: 'cors-connect', status: 'published' });
+    const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`);
+    const csp = response.headers.get('content-security-policy') ?? '';
+    expect(directiveOf(csp, 'connect-src')).toBe(
+      `connect-src ${SANDBOX_ORIGIN}/g/${game.id}/game.wasm`,
+    );
+    expect(csp).not.toContain('allow-same-origin');
+  });
+});
+
 describe('公開状態による出し分け（5.4 / #28）', () => {
   it('/g/ は published だけを返す', async () => {
     const published = await seedGame({ suffix: 'pub', status: 'published' });
@@ -392,6 +506,16 @@ describe('.wasm の配信（#29 acceptance 1）', () => {
   });
 
   it('R2 に置いたバイト列がそのまま届く', async () => {
+    // **この検査は二重圧縮（#181）を捕まえられない。実測で確認済みである。**
+    //
+    // `SELF.fetch` は内部のサブリクエストで、**HTTP のエンコード境界を通らない。**
+    // そのため `encodeBody` の指定に関係なく R2 のバイト列がそのまま返り、
+    // `encodeBody: 'manual'` を外しても、この検査は緑のままである。
+    //
+    // **#180 と同じ形の盲点である**（代理は「宣言が正しいか」しか見ておらず、
+    // 宣言が正しいのに実物が壊れる組み合わせを構造的に捕まえられない）。
+    // **緑を「配信が正しい」と読まないこと。** 実 HTTP で確かめるのは
+    // `scripts/check-sandbox-browser.sh` と `scripts/check-sandbox-cors.sh` である。
     const game = await seedGame({ suffix: 'bytes', status: 'published' });
     const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/game.wasm`);
     const received = new Uint8Array(await response.arrayBuffer());

@@ -318,6 +318,79 @@ function responseContextOf(request: Request, env: Env): ResponseContext {
 }
 
 /**
+ * すべてのレスポンスに付ける `Access-Control-Allow-Origin` の値（#180）。
+ *
+ * # これは緩和ではない。**読んだ人が真っ先に誤読する場所なので、先に書く**
+ *
+ * 「CORS を足した＝サンドボックスを緩めた」は**誤りである。** 7.2 が塞いでいるのは
+ * **生成物が外へ出ていくこと**で、それを塞いでいるのは `connect-src`（`src/sandbox-csp.ts`）
+ * である。**この定数はその集合に 1 要素も足さない。** `connect-src` は依然としてその作品の
+ * `.wasm` 1 本だけであり、生成物はそれ以外のどこへも到達できない。
+ *
+ * ACAO が言うのは **「この応答を、要求した不透明オリジンの文書へ渡してよい」** だけである。
+ * 宛先を増やす話ではなく、**すでに許した 1 本の宛先から返ってきた応答を、要求元が
+ * 読めるかどうか**の話である。
+ *
+ * # なぜ必要になったのか（#180 の原因）
+ *
+ * 7.2 の必須要件 1（`sandbox allow-scripts`、`allow-same-origin` なし）により、**この文書は
+ * 不透明オリジンになる。** その帰結として、**自分自身のホストへの `fetch` すらクロス
+ * オリジン要求になる**（文書のオリジンが `null` なので「同一オリジン」が成立しない）。
+ * ブラウザは `Origin: null` を付けて送り、応答に ACAO が無いので**応答を破棄する。**
+ * 利用者の画面には `起動できませんでした: TypeError: Failed to fetch` だけが出る。
+ *
+ * `wasm_exec.js` が動いていたのは `<script src>`（クラシックスクリプト）で読まれ、
+ * CORS の対象外だったためである。**落ちるのは `fetch` だけだった。**
+ *
+ * # なぜ `*` にしたか（`null` を採らない理由）
+ *
+ * `null` は「不透明オリジンにだけ渡す」ように**見えるが、絞れていない。**
+ *
+ * - **`null` は誰でも名乗れる。** 他サイトの sandboxed iframe も `data:` URL も
+ *   `Origin: null` を送る。攻撃者が自分のページで 1 行書けば手に入る値であり、
+ *   **`*` に対して防げる相手が 1 人も増えない。** 絞れているように見えるだけの指定を
+ *   置くと、次に読む人が「不透明オリジン限定になっている」と誤解する。
+ * - **`*` は定数なので `Vary: Origin` が要らない。** `null` を返す形は「要求の `Origin` に
+ *   応じた応答」に見え、`Vary: Origin` の管理が付いて回る。`/g/` の `.wasm` は
+ *   `public, max-age=31536000, immutable`（`cacheControlFor`）で共有キャッシュに載るため、
+ *   **`Vary` を 1 度落とすと、あるオリジン向けの応答が別のオリジンへ配られる。**
+ *   応答が `Origin` に依らないなら、依らないと書くのがいちばん壊れにくい。
+ * - **`*` は資格情報付きの要求を構造的に拒む。** `credentials: 'include'` の要求は
+ *   `*` に対して必ず失敗する（`Access-Control-Allow-Credentials` と併用もできない）。
+ *   この経路は cookie を 1 つも発行しない（下記）ので実害の差は無いが、**将来
+ *   `Allow-Credentials` を足す事故が、`*` のままなら成立しない。**
+ *
+ * # `*` にして何が起きるか（明示的な判断）
+ *
+ * **プレビュー URL の唯一の資格情報は `preview_key`（16 進 32 桁 = 128 ビット）である。**
+ * ACAO は URL を探索可能にはしない。URL を知っている者は ACAO の有無に関係なく
+ * サーバ側（curl 等）から取得できたのであり、**CORS が守っていたのは元々
+ * 「ブラウザが被害者の環境の資格情報を勝手に添えて読むこと」だけである。** この経路は
+ * cookie を発行せず（7.2 必須要件 3）、認証も見ないため、添えられる資格情報が存在しない。
+ * したがって `*` が第三者へ渡すのは**「URL を知っている者が元から取れたもの」だけ**である。
+ *
+ * # 一律に付ける（サブ資材にもエラーにも）
+ *
+ * `.wasm` だけに付ける形にしない。**理由は 2 つある。**
+ *
+ *   1. **エラー応答にも要る。** ローダーの `fetch` が読むのは 200 だけではない。
+ *      `.wasm` が 404 / 500 のとき、ACAO が無いとブラウザは**その応答も破棄する**ため、
+ *      画面には原因の違う失敗が一様に `TypeError: Failed to fetch` として出る。
+ *      **配信側が返した診断が利用者にも作者にも届かない。**
+ *   2. **分岐を作らない。** CSP を一律に付けているのと同じ考え方である
+ *      （`sandboxHeaders` 参照）。「どの資材か」で付け外しすると、資材が増えた日に
+ *      付け忘れが生まれ、しかもその失敗は本番のブラウザでしか見えない（#180 そのもの）。
+ *
+ * # preflight を扱わない（`OPTIONS` を受けない）のは意図である
+ *
+ * ローダーが出すのは**ヘッダを何も足さない `GET`**（`src/sandbox-loader.ts`）で、
+ * これは単純要求なので preflight が発生しない。`ALLOWED_METHODS` に `OPTIONS` を
+ * 足さないのは、**preflight が要る要求を将来この経路へ持ち込ませないため**でもある。
+ * 持ち込んだ日は 405 で明確に落ちる（黙って通るより短く済む）。
+ */
+const ALLOW_ORIGIN = '*';
+
+/**
  * サンドボックス用ホストのレスポンスに必ず付けるヘッダを組み立てる。
  *
  * **cookie は一切設定しない。** 7.2 の 3 点目（`Domain=ojos.jp` の cookie をどこにも
@@ -327,6 +400,9 @@ function responseContextOf(request: Request, env: Env): ResponseContext {
  * ディレクティブを無視するが、**付けない理由が「無視されるから」だと、文書とサブ資材の
  * どちらを返しているかで挙動が分かれる分岐が増える。** 一律に付けて分岐を作らない。
  *
+ * `Access-Control-Allow-Origin` も同じ理由で一律に付ける。値と、それが 7.2 を
+ * 緩めない理由は `ALLOW_ORIGIN` に書いてある。
+ *
  * @param csp `Content-Security-Policy` の値
  * @param extra 追加のヘッダ
  * @returns ヘッダ
@@ -334,6 +410,10 @@ function responseContextOf(request: Request, env: Env): ResponseContext {
 function sandboxHeaders(csp: string, extra: Record<string, string>): Headers {
   return new Headers({
     'content-security-policy': csp,
+    // 不透明オリジン（7.2 必須要件 1 の帰結）の文書が、自分自身の資材を読めるようにする。
+    // **宛先を増やす指定ではない**（`ALLOW_ORIGIN` の冒頭）。`Vary: Origin` は要らない
+    // ——応答が要求の `Origin` に依らないためである。
+    'access-control-allow-origin': ALLOW_ORIGIN,
     // MIME type の推測を止める。`instantiateStreaming` は `Content-Type` を検証するため、
     // 推測で書き換えられるとストリーミングだけが黙って失われる（3.4-2）。
     'x-content-type-options': 'nosniff',
@@ -465,6 +545,66 @@ function documentResponse(target: SandboxTarget, context: ResponseContext): Resp
  * 展開して返す手段が Workers 側に無い以上、分岐しても返せるものは変わらない。
  * br を解さないクライアントは wasm も動かせないので、実害のある組み合わせが無い。
  *
+ * # **`encodeBody: 'manual'` が要る**（#181。これが無いと二重に圧縮される）
+ *
+ * ## 何が起きるか
+ *
+ * **R2 に入っているバイト列は、既にちょうど 1 回 brotli 圧縮されている。** 圧縮するのは
+ * ビルド関数で、`.wasm` を圧縮した `.wasm.br` を `Content-Encoding: br` 付きで PUT する
+ * （3.4-1 / #21。`docs/build-function.md`「投入」）。**R2 はそれを復号しないので、
+ * `object.body` は「既にエンコード済みの本文」である。**
+ *
+ * ところが `Response` の既定は `encodeBody: 'automatic'` で、これは
+ * **「本文は未エンコードなので、宣言された `Content-Encoding` に従ってランタイムが
+ * 圧縮せよ」** という意味になる。結果、**既に圧縮済みのバイト列がもう一度圧縮される。**
+ *
+ * ブラウザは宣言どおり **1 回だけ**展開するので、手元に残るのは brotli ストリームである。
+ * `instantiateStreaming` はそれを wasm として読もうとして落ちる。
+ *
+ * ```text
+ * CompileError: WebAssembly.instantiateStreaming():
+ *   expected magic word 00 61 73 6d, found 9b df d6 1d @+0
+ * ```
+ *
+ * `9b df d6 1d` は wasm ではなく **brotli の先頭バイト**である。
+ *
+ * ## なぜ気づけないのか（**この組み合わせは知らないと絶対に見えない**）
+ *
+ * **ヘッダは全部正しい。** `Content-Type: application/wasm` も `Content-Encoding: br` も
+ * 宣言どおりに付いており、`curl -i` で見ても 200 で、本文の大きさも「圧縮された wasm」
+ * として妥当に見える。**`Content-Encoding` を正しく付けているのに二重になる**という
+ * 形なので、ヘッダを何度確かめても原因に辿り着かない。**1 回展開してもまだ brotli
+ * である**ことを見て初めて分かる。
+ *
+ * 本番の実測（#181。取り込み担当が確認）:
+ *
+ * ```text
+ * 配信      2,229,376 バイト（先頭 a5 ff 7f 09）
+ *   1 回展開 2,313,735 バイト（先頭 9f c8 89 b0 ＝ まだ brotli）
+ *   2 回展開 11,569,609 バイト（先頭 00 61 73 6d ＝ \0asm）★
+ * ```
+ *
+ * ## `encodeBody: 'manual'` の意味
+ *
+ * **「本文は既にエンコード済みである。ランタイムは触るな」**と宣言する。ヘッダの
+ * `Content-Encoding: br` はそのまま送られ、本文は R2 のバイト列がそのまま流れる。
+ * これが 3.4-1 の意図（**事前**圧縮した `.wasm.br` を配る）そのものである。
+ *
+ * ## 単体テストでは捕まらない（実測）
+ *
+ * **`SELF.fetch`（vitest の workers pool）はこの不具合を再現しない。** 内部の
+ * サブリクエストには HTTP のエンコード境界が無く、R2 のバイト列がそのまま返るため、
+ * `encodeBody` の指定に関係なく同じ結果になる（実測で確認）。**#180 と同じ形の
+ * 盲点である**——代理は「宣言が正しいか」しか見ておらず、宣言が正しいのに実物が
+ * 壊れる組み合わせを構造的に捕まえられない。
+ *
+ * **捕まえるのは実 HTTP を通る 2 本である。**
+ *
+ *   - `scripts/check-sandbox-browser.sh`  ローカルの dev サーバ越しに取得し、
+ *                                         1 回展開して `00 61 73 6d` を確かめる
+ *                                         （ブラウザ不要の層と、実ブラウザの層の両方）
+ *   - `scripts/check-sandbox-cors.sh`     配備済みの実物に対して同じことを確かめる
+ *
  * # キャッシュ
  *
  * 同じ URL の中身は変わらない。`wasm_key` は作成時に決まり（`src/games.ts`）、以後
@@ -501,6 +641,10 @@ async function wasmResponse(
 
   return new Response(object.body, {
     status: 200,
+    // **この 1 行が無いと二重に圧縮される**（#181）。R2 のバイト列は既に 1 回
+    // 圧縮済みで、既定の `'automatic'` はそれを未エンコードとみなしてもう一度
+    // 圧縮する。因果と本番の実測値は上のドキュメントコメントにある。
+    encodeBody: 'manual',
     headers: sandboxHeaders(closedCsp(context), {
       // 3.4-1 が求める 2 つ。**両方を必ず付ける。**
       'content-type': 'application/wasm',
@@ -518,6 +662,14 @@ async function wasmResponse(
  * ビルドに使った Go の版と厳密に一致する必要があり、**違う版で動かすと失敗の仕方が
  * 分かりにくい**（読み込みは成功し、実行時に壊れる）。既定の版へ落とすくらいなら、
  * 何が足りないかを言って止めるほうが運用事故が短く済む。
+ *
+ * # ここに `encodeBody: 'manual'` は要らない（#181）
+ *
+ * **R2 のバイト列を本文にする点は `wasmResponse` と同じだが、こちらは
+ * `Content-Encoding` を宣言しない。** R2 に置く `wasm_exec.js` は非圧縮であり
+ * （`scripts/put-wasm-exec.sh`）、本文は未エンコードのままで正しい。二重圧縮は
+ * 「**エンコード済みの本文**に `Content-Encoding` を宣言した」ときにだけ起きるので、
+ * ここには成立する余地が無い。**同じ形に見える 2 つを、同じ扱いにしないこと。**
  *
  * @param env バインディングと環境変数
  * @param target 解釈済みの要求

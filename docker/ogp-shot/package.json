@@ -1,0 +1,11 @@
+{
+  "name": "game-forge-ogp-shot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "公開された作品の初回フレームを 1 枚撮る Lambda（仕様 5.4 / 11.2 / issue 26）",
+  "dependencies": {
+    "@sparticuz/chromium": "^131.0.0",
+    "puppeteer-core": "^23.0.0"
+  }
+}

@@ -54,3 +54,22 @@ export const INVITES_PATH = '/invites';
  * `GENERATE_PATH` で、画面はそこから import する（上の条件に当たらない）。
  */
 export const GENERATE_PAGE_PATH = '/generate';
+
+/**
+ * 公開の操作（5.4 / #26）。
+ *
+ * 経路を提供するのは `src/publish.ts` だが、**試遊画面（`src/work-page.ts`）が
+ * 「公開して共有」のフォームの `action` として同じ綴りを要る。** 一方で
+ * `src/publish.ts` は公開後の戻り先として `src/work-page.ts` の `workPagePath` を
+ * 使うため、どちらかがもう片方から import すると循環参照になる。
+ * `SIGNUP_PATH` / `INVITES_PATH` と同じ理由で、値だけを持つこのモジュールへ逃がす。
+ */
+export const PUBLISH_PATH = '/api/publish';
+
+/**
+ * 公開の対象を指す項目名（フォームの `name` と JSON の鍵の両方）。
+ *
+ * {@link PUBLISH_PATH} と同じ理由でここに置く。**フォームを書く側と、それを読む側が
+ * 別モジュールである**以上、綴りの正本も片方の中には置けない。
+ */
+export const PUBLISH_GAME_ID_FIELD = 'game_id';

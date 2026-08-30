@@ -112,9 +112,9 @@ check_url() {
 
   # ヘッダ名の大小は経路によって変わりうる。値だけを取り出す。
   acao="$(printf '%s\n' "$headers" |
-    awk 'BEGIN { IGNORECASE = 1 } /^access-control-allow-origin:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }')"
+    awk 'tolower($0) ~ /^access-control-allow-origin:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }')"
   vary="$(printf '%s\n' "$headers" |
-    awk 'BEGIN { IGNORECASE = 1 } /^vary:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }')"
+    awk 'tolower($0) ~ /^vary:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }')"
 
   if [[ -z "$acao" ]]; then
     echo "[sandbox-cors] 乖離: $label に Access-Control-Allow-Origin がありません（HTTP $status / $url）"
@@ -143,65 +143,54 @@ check_url() {
   echo "[sandbox-cors] OK: $label (HTTP $status, ACAO: $acao)"
 }
 
-# 配信された `.wasm` の本文が、**1 回展開で wasm になる**ことを見る（#181）。
+# 配信された `.wasm` の本文が正しいことを見る（#181 / #182）。
 #
-# **curl は `--compressed` を付けない限り展開しない**ので、受け取るのはワイヤ上の
-# バイト列そのものである。二重に圧縮されていれば、1 回展開しても brotli のままになる。
+# **判定はここに書かない。** `scripts/wasm-body-verdict.mjs` が持つ（判定表と、
+# 両方向に間違えた経緯はそこの冒頭にある）。**2 箇所に書けば、片方だけ直る日が来る。**
+#
+# **`Accept-Encoding: br` を明示して要求する。** ブラウザが送るのと同じ形にして、
+# 経路の気まぐれで検査対象の形が変わらないようにするためである。ただし
+# **返ってきた `Content-Encoding` で判定を分ける**——エッジが宣言を無視して展開して
+# きても、それは正しい状態であって不合格ではない（#182 で偽陽性を出した原因）。
 #
 #   check_wasm_body <URL>
 check_wasm_body() {
-  local url="$1" body
+  local url="$1" body headers encoding
 
   body="$(mktemp "${TMPDIR:-/tmp}/sandbox-wasm.XXXXXX")" || {
     echo "[sandbox-cors] 一時ファイルを作れませんでした。" >&2
     failed=$((failed + 1))
     return
   }
-
-  if ! curl -sS --max-time 120 -o "$body" "$url" 2>/dev/null; then
-    echo "[sandbox-cors] 前提の不成立: .wasm を取得できません（$url）"
+  headers="$(mktemp "${TMPDIR:-/tmp}/sandbox-wasm-h.XXXXXX")" || {
+    echo "[sandbox-cors] 一時ファイルを作れませんでした。" >&2
     rm -f "$body"
+    failed=$((failed + 1))
+    return
+  }
+
+  # **`--compressed` を付けない。** 付けると curl が展開したうえで
+  # `Content-Encoding` を残すため、ヘッダと本文の対応が崩れて判定できなくなる。
+  # ヘッダと本文は**同じ 1 回の要求**から取る（別々に取ると対応が保証されない）。
+  if ! curl -sS --max-time 180 -H 'Accept-Encoding: br' -D "$headers" -o "$body" "$url" 2>/dev/null; then
+    echo "[sandbox-cors] 前提の不成立: .wasm を取得できません（$url）"
+    rm -f "$body" "$headers"
     failed=$((failed + 1))
     return
   fi
 
-  if node -e '
-const zlib = require("node:zlib");
-const fs = require("node:fs");
-const wire = fs.readFileSync(process.argv[1]);
-const head = (buffer) => [...buffer.subarray(0, 4)].map((b) => b.toString(16).padStart(2, "0")).join(" ");
-const MAGIC = Buffer.from([0x00, 0x61, 0x73, 0x6d]);
+  encoding="$(awk 'tolower($0) ~ /^content-encoding:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }' "$headers")"
 
-let once;
-try {
-  once = zlib.brotliDecompressSync(wire);
-} catch (error) {
-  process.stderr.write(`  配信された本文を brotli として展開できません (${wire.length} バイト, 先頭 ${head(wire)}): ${String(error)}\n`);
-  process.exit(1);
-}
-if (once.subarray(0, 4).equals(MAGIC)) {
-  process.stdout.write(`  1 回展開で wasm になりました (配信 ${wire.length} → 展開 ${once.length} バイト)\n`);
-  process.exit(0);
-}
-process.stderr.write(`  1 回展開しても wasm になりません (配信 ${wire.length} → 1 回展開 ${once.length} バイト, 先頭 ${head(once)})\n`);
-let twice = null;
-try {
-  twice = zlib.brotliDecompressSync(once);
-} catch {
-  twice = null;
-}
-if (twice !== null && twice.subarray(0, 4).equals(MAGIC)) {
-  process.stderr.write(`  2 回展開すると wasm になります (${twice.length} バイト)。**二重に brotli 圧縮されています**（#181）。\n`);
-  process.stderr.write("  src/sandbox-delivery.ts の wasmResponse に encodeBody: \x27manual\x27 を含む版を配備してください。\n");
-}
-process.exit(1);
-' "$body"; then
-    echo "[sandbox-cors] OK: 配信された .wasm は 1 回展開で wasm になります"
+  if node scripts/wasm-body-verdict.mjs \
+    --body "$body" \
+    --content-encoding "$encoding" \
+    --label "[sandbox-cors] .wasm の本文"; then
+    :
   else
-    echo "[sandbox-cors] 乖離: 配信された .wasm の圧縮が二重です（#181 / $url）"
+    echo "[sandbox-cors] 乖離: 配信された .wasm の本文が正しくありません（$url）" >&2
     failed=$((failed + 1))
   fi
-  rm -f "$body"
+  rm -f "$body" "$headers"
 }
 
 check_url "サンドボックス用ホストの応答" "https://${SANDBOX_HOST}/"

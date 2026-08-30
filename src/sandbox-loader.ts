@@ -10,7 +10,7 @@
  *
  * タイトル・作者名・親作品名のいずれも入れない。**3.4-5 が求める「文脈の提示」は
  * 親ページ（アプリ用ホスト）の責務である**。ここは iframe の中身であり、親が既に
- * その情報を表示している。
+ * その情報を表示している（`src/work-page.ts` の `loadingScreen`。#30 で実装した）。
  *
  * これは体裁の話ではなく安全側の決定である。CSP は `script-src 'unsafe-inline'` を
  * 許しており（起動スクリプトのため。`src/sandbox-csp.ts`）、この文書に UGC 由来の
@@ -48,6 +48,26 @@ export interface LoaderAssetPaths {
  * 下の `typeof ... !== 'function'` は代替ではなく、その逆である。使えないと分かった
  * 時点で理由を表示して止める（フォールバックは「別の方法で成功させてしまう」）。
  *
+ * # ロード進捗（#30 / 3.4-5）
+ *
+ * **段階を出す。割合は出さない。** ここに出せるのは実際に区別できる状態だけで、
+ * 「資材の読み込み中」と「ゲーム本体の取得・コンパイル中（2〜3MB。待ち時間の大半）」の
+ * 2 つがそれにあたる。
+ *
+ * **割合（%）を出さない理由は 2 つある。**
+ *
+ * 1. **分母が取れない。** `.wasm` は brotli 事前圧縮で配信され（3.4-1）、`fetch` は
+ *    経路上で透過的に展開する。`Content-Length` は**圧縮後**の長さで、`body` から
+ *    流れてくるのは**展開後**のバイト列である。突き合わせた割合は必ず狂う。
+ *    **#180 / #181 は「経路が透過的に展開しうる」ことを勘定に入れ損ねた事故**であり、
+ *    同じ勘定違いをもう一度画面へ出すことになる。
+ * 2. **数えるには本文を挟む必要がある。** `fetch` の応答を包み直して
+ *    `instantiateStreaming` へ渡す形になる。**そこは 2 度壊れた経路である**（#180 / #181）。
+ *    割合の表示は、その経路へ手を入れる理由として釣り合わない。
+ *
+ * `<progress>` は値を持たない（不確定）。**知らないことを知らないと言う形**であり、
+ * 進んでいないのに進んで見える棒よりも正確である。
+ *
  * @param paths ローダーが読む資材のパス
  * @returns HTML 文書
  */
@@ -73,15 +93,28 @@ export function loaderHtml(paths: LoaderAssetPaths): string {
   /* hidden 属性は display:none 相当だが、上の display:flex のほうが詳細度で勝つ。
      この 1 行が無いと status.hidden = true が効かず、起動後も文字が残る。 */
   #gf-status[hidden] { display: none; }
+  #gf-status > div { max-width: 20rem; width: 80%; }
+  #gf-progress { width: 100%; height: 0.5rem; }
+  #gf-progress[hidden] { display: none; }
 </style>
-<div id="gf-status">読み込み中</div>
+<div id="gf-status">
+  <div>
+    <p id="gf-phase">読み込み中</p>
+    <progress id="gf-progress"></progress>
+  </div>
+</div>
 <script src="${wasmExecAttribute}"></script>
 <script>
 (function () {
   var status = document.getElementById('gf-status');
+  var phase = document.getElementById('gf-phase');
+  var progress = document.getElementById('gf-progress');
   function fail(reason) {
     status.hidden = false;
-    status.textContent = '起動できませんでした: ' + reason;
+    // **止まったことを棒でも示す。** 動く棒を残したまま失敗の文言を出すと、
+    // まだ進んでいるように見える。
+    progress.hidden = true;
+    phase.textContent = '起動できませんでした: ' + reason;
   }
 
   // **フォールバックではない。** ここで代替の読み込み方へ分岐すると、3.4-2 が
@@ -94,6 +127,10 @@ export function loaderHtml(paths: LoaderAssetPaths): string {
     fail('wasm_exec.js を読み込めませんでした');
     return;
   }
+
+  // **ここから先が待ち時間の大半である**（2〜3MB の取得とコンパイル）。
+  // 上の 2 つの検査を通ったことは、資材が揃ったことを意味する。
+  phase.textContent = 'ゲームを読み込んでいます';
 
   var go = new Go();
   WebAssembly.instantiateStreaming(fetch(${wasmLiteral}), go.importObject)

@@ -30,7 +30,7 @@
 # **空回りしない検査であることを確認済みである。** 実装を戻せば赤くなる。
 #
 # ══════════════════════════════════════════════════════════════════════════════
-# 何を見るか（3 層。どこで落ちたかが分かる形にする）
+# 何を見るか（5 層。どこで落ちたかが分かる形にする）
 # ══════════════════════════════════════════════════════════════════════════════
 #
 #   層 0  配信された `.wasm` の本文を**1 回展開**すると `00 61 73 6d`（`\0asm`）で
@@ -40,6 +40,9 @@
 #         → ここが崩れていたら、以降の緑には意味が無い。**前提の検査**である。
 #   層 2  `.wasm` の取得が CORS で破棄されないこと（#180 の判定）
 #   層 3  wasm が起動し、Go のコードが実際に走ること（プレイ経路の全体）
+#   層 4  **作品ページ（`/works/<id>`）に埋め込んだ状態でも層 1 と層 3 が成り立つこと**
+#         （#30）。利用者が実際に踏むのはこちらで、`frame-ancestors` と 2 重の
+#         `sandbox` 指定が絡む。**層 1〜3 の緑からは導けない。**
 #
 # **層 0 だけは単体テストで代替できない**（実測）。`SELF.fetch`（vitest の workers
 # pool）は内部サブリクエストで **HTTP のエンコード境界を通らない**ため、
@@ -129,7 +132,7 @@ node -e 'if (typeof WebSocket !== "function") { process.exit(1) }' 2>/dev/null |
 
 # `GF_SKIP_BROWSER=1` は**層 0 だけ**を回す（ブラウザを要求しない）。層 0 は実 HTTP さえ
 # 通れば見えるためで、**ブラウザを入れられない環境でも #181 の回帰は見られる。**
-# **層 1〜3 を飛ばしたことは最後に明示する**（黙って一部だけ回して緑に見せない）。
+# **層 1〜4 を飛ばしたことは最後に明示する**（黙って一部だけ回して緑に見せない）。
 SKIP_BROWSER="${GF_SKIP_BROWSER:-0}"
 
 BROWSER_BIN=""
@@ -159,6 +162,8 @@ read_var() {
 }
 SANDBOX_HOST="$(read_var SANDBOX_HOST)"
 [[ -n "$SANDBOX_HOST" ]] || fail "wrangler.toml から SANDBOX_HOST を読めませんでした。"
+APP_HOST="$(read_var APP_HOST)"
+[[ -n "$APP_HOST" ]] || fail "wrangler.toml から APP_HOST を読めませんでした。"
 
 # バケット名も宣言から読む（R2 へ資材を置くのに要る）。
 BUCKET_NAME="$(sed -nE 's/^[[:space:]]*bucket_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' wrangler.toml | head -1)"
@@ -276,6 +281,10 @@ fs.writeFileSync(`${source}.br`, zlib.brotliCompressSync(fs.readFileSync(source)
 WASM_KEY="builds/browsercheck/${GO_VERSION}/game.wasm.br"
 PREVIEW_KEY="$(node -e 'console.log([...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join(""))')"
 GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
+# 層 4（#30）が開く、公開済みの作品。**draft の行を使い回さない**——`/works/<id>` が
+# 作品を埋め込むのは公開済みのときだけで、状態を変えると層 1〜3 の対象まで変わる。
+PUBLISHED_ID="$(node -e 'console.log(crypto.randomUUID())')"
+PUBLISHED_PREVIEW_KEY="$(node -e 'console.log([...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join(""))')"
 
 note "applying migrations"
 npx wrangler d1 migrations apply DB --local --persist-to "$STATE" >"$WORK/d1.log" 2>&1 ||
@@ -287,6 +296,8 @@ npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     values ('browsercheck', 'sub-browsercheck', 'browsercheck@example.invalid', 'browsercheck', 1);
   insert into games (id, author_id, status, title, go_version, source_key, wasm_key, created_at, preview_key)
     values ('$GAME_ID', 'browsercheck', 'draft', 't', '$GO_VERSION', 'builds/browsercheck/source.go', '$WASM_KEY', 1, '$PREVIEW_KEY');
+  insert into games (id, author_id, status, title, go_version, source_key, wasm_key, created_at, published_at, preview_key)
+    values ('$PUBLISHED_ID', 'browsercheck', 'published', 't2', '$GO_VERSION', 'builds/browsercheck/source.go', '$WASM_KEY', 1, 1, '$PUBLISHED_PREVIEW_KEY');
 " >"$WORK/seed.log" 2>&1 ||
   { sed 's/^/    /' "$WORK/seed.log" >&2; fail "games 行を作れませんでした。"; }
 
@@ -367,7 +378,7 @@ node scripts/wasm-body-verdict.mjs \
 
 if [[ "$SKIP_BROWSER" == "1" ]]; then
   note "OK (層 0 のみ): 配信された .wasm の本文は正しい形です。"
-  note "**層 1〜3（実ブラウザ）は見ていません。** GF_SKIP_BROWSER を外すと見ます。"
+  note "**層 1〜4（実ブラウザ）は見ていません。** GF_SKIP_BROWSER を外すと見ます。"
   exit 0
 fi
 
@@ -429,4 +440,61 @@ if (problems.length > 0) {
 }
 ' "$WORK/probe.json" || fail "実ブラウザでプレイ経路が通りませんでした。"
 
-note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走りました。"
+# ── 層 4: 作品ページに埋め込んだ状態でも同じことが起きること（#30 / 3.4-5）─────
+#
+# **層 1〜3 が見ているのはサンドボックス URL を直接開いた場合である。** ところが
+# 利用者が踏むのは作品ページ（`/works/<id>`）で、そこでは同じ文書が
+# **アプリ用ホストの iframe の中**に入る。この形は層 1〜3 の緑からは導けない。
+#
+#   - 配信側の `frame-ancestors` が親のオリジンと一致していなければ、**枠ごと落ちる**
+#     （CSP ヘッダの文字列照合では、親が実際に何のオリジンで配られるかを見ていない）
+#   - iframe 属性の `sandbox` と応答ヘッダの `sandbox` は**両方が効く**。片方に
+#     `allow-scripts` が無ければ、そこで黙って止まる
+#
+# **どちらも「動いているつもりで動いていない」形で現れる。** #180 / #181 と同じ質の
+# 盲点なので、同じ場所で見る。
+WORK_PAGE_URL="https://${APP_HOST}:${PORT}/works/${PUBLISHED_ID}"
+note "層 4: opening $WORK_PAGE_URL"
+node scripts/sandbox-browser-probe.mjs \
+  --browser "$BROWSER_BIN" \
+  --url "$WORK_PAGE_URL" \
+  --timeout-ms "$TIMEOUT_MS" >"$WORK/embed.json" ||
+  { fail "層 4: ブラウザでの観測ができませんでした。"; }
+
+node -e '
+const fs = require("node:fs");
+const result = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const problems = [];
+
+// 親ページ自身は**不透明オリジンではない**（アプリ用ホストである）。ここが null に
+// なっていたら、開いている URL が違う。
+if (result.state?.settingsOrigin === "null") {
+  problems.push("層 4 前提: 親ページが不透明オリジンです。作品ページではないものを開いています。");
+}
+
+// 埋め込まれた文書の中で、7.2 と 3.4 の両方が成立していること。
+const frames = result.frameContexts ?? [];
+const embedded = frames.filter((frame) => frame.state?.settingsOrigin === "null");
+if (embedded.length === 0) {
+  problems.push(
+    "層 4: 不透明オリジンの子文書が 1 つもありません。" +
+      " frame-ancestors で枠ごと落ちているか、iframe が読み込まれていません。",
+  );
+} else if (!embedded.some((frame) => frame.state?.wasmRan === "ok")) {
+  problems.push(
+    "層 4: 埋め込んだ文書の中で wasm が起動しませんでした。画面の表示: " +
+      JSON.stringify(embedded.map((frame) => frame.state?.statusText)),
+  );
+}
+
+if (problems.length > 0) {
+  for (const problem of problems) {
+    process.stderr.write(`[browser-check] ${problem}\n`);
+  }
+  process.stderr.write("[browser-check] --- 観測結果 ---\n");
+  process.stderr.write(`${JSON.stringify(result, null, 2)}\n`);
+  process.exit(1);
+}
+' "$WORK/embed.json" || fail "層 4: 作品ページに埋め込んだプレイ経路が通りませんでした。"
+
+note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走りました（直接・埋め込みの両方）。"

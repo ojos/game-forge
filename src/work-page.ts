@@ -49,15 +49,15 @@
  * 分類名で、**値そのものは出さない**（どの固定文言を出すかの鍵として使う）。
  */
 import type { GenerationErrorCode, GenerationState } from './games.js';
-import { PUBLISHED_STATUS } from './games.js';
-import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH, ogpImageUrl } from './ogp.js';
-import { PUBLISH_GAME_ID_FIELD, PUBLISH_PATH } from './paths.js';
+import { PUBLISHED_STATUS, REMOVED_STATUS } from './games.js';
+import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH, ogpImagePath, ogpImageUrl } from './ogp.js';
+import { GENERATE_PAGE_PATH, PUBLISH_GAME_ID_FIELD, PUBLISH_PATH } from './paths.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/invite-issuance.ts` も
 // そこから取っている）。同じ関数をこのモジュールで作り直さない。
-import { escapeHtml } from './signup.js';
+import { escapeHtml, signupPathFrom } from './signup.js';
 
 /**
  * 作品ページの接頭辞。
@@ -141,7 +141,7 @@ export const STALE_AFTER_SECONDS = 900;
 export const GENERATION_IS_SYNCHRONOUS: boolean = false;
 
 
-/** 表示に使う `games` の 1 行。 */
+/** 表示に使う `games` の 1 行（作者名と親作品を結合して引く）。 */
 interface WorkRow {
   author_id: string;
   /** 5.4 の公開状態（`draft` / `published` / `removed`）。 */
@@ -154,7 +154,37 @@ interface WorkRow {
   generation_started_at: number | null;
   /** OGP 画像の撮影状態（`migrations/0009_games_ogp.sql`）。 */
   ogp_state: string | null;
+  /** 作者の表示名（`users.display_name`）。結合が空振りしたら null。 */
+  author_name: string | null;
+  /**
+   * この作品が指す親の id（`games.parent_id` そのもの）。オリジナルなら null。
+   *
+   * **結合結果の `p.id` ではない。** 結合が空振りした場合に「親が無い」と
+   * 「親の行が引けない」を区別できなくなる。
+   */
+  parent_ref: string | null;
+  /** 親作品の公開状態。親の行を引けなければ null。 */
+  parent_status: string | null;
+  /** 親作品の題名。親の行を引けなければ null。 */
+  parent_title: string | null;
 }
+
+/**
+ * ロード中画面が出す「元ゲーム」の中身（3.4-5 / 5.3 / 5.5）。
+ *
+ * **題名を出せる場合と出せない場合を、同じ型の別の枝にする。** 「題名が null なら
+ * 親が無い」という表現にすると、**親が居るのに題名を出せない状態**（未公開・
+ * tombstone）と区別できず、`null` の意味が 3 つになる。
+ */
+export type ParentWork =
+  /** 親が無い（この作品がオリジナル）。 */
+  | { readonly kind: 'none' }
+  /** 親が公開されている。題名とリンクを出す。 */
+  | { readonly kind: 'published'; readonly title: string; readonly path: string }
+  /** 親が居るが公開されていない。**題名を出さない**（プロンプト由来のため）。 */
+  | { readonly kind: 'unlisted' }
+  /** 親が tombstone 化されている（5.3）。 */
+  | { readonly kind: 'removed' };
 
 /**
  * 失敗の分類名ごとの固定文言（8.3）。
@@ -319,6 +349,32 @@ export interface WorkPageView {
   readonly shareUrl: string | null;
   /** OGP 画像の絶対 URL。まだ撮れていなければ null。 */
   readonly imageUrl: string | null;
+  /**
+   * ロード中画面に出す OGP 画像のパス（3.4-5 / #30）。まだ撮れていなければ null。
+   *
+   * **`imageUrl`（絶対 URL）と別に持つ。** あちらはメタタグ用で、クローラのために
+   * 絶対 URL でなければならない。画面に貼る `<img>` は**同一オリジンの絶対パス**で
+   * よく、`og:image` の値を使い回すと、要求された URL のホスト表記（開発時の
+   * `localtest.me:8788` など）がそのまま画面の依存先になる。
+   */
+  readonly imagePath: string | null;
+  /**
+   * 作者の表示名（`users.display_name`）。**公開済みのときだけ入る。**
+   *
+   * 3.4-5 と 2.2-2 が名指しする 4 要素の 1 つである。**UGC 由来の文字列**なので
+   * `escapeHtml` を通す（この値がサンドボックス文書へ渡らないことが 7.2 の要点。
+   * 下の {@link loadingScreen} を参照）。
+   */
+  readonly authorName: string | null;
+  /** 元ゲーム（3.4-5 の 4 要素の 1 つ）。公開済みのときだけ意味を持つ。 */
+  readonly parent: ParentWork;
+  /**
+   * この画面を見ている人がログインしているか。
+   *
+   * **`owner` とは別である。** 「改造する」の行き先を決めるのに要るのは
+   * 「招待された参加者かどうか」であって、この作品の作者かどうかではない（2.2-4）。
+   */
+  readonly signedIn: boolean;
 }
 
 /**
@@ -351,7 +407,7 @@ export function renderWorkPage(view: WorkPageView): string {
   return `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">${refresh}${robots}
-<title>${escapeHtml(documentTitleOf(view))}</title>${ogpMeta(view)}
+<title>${escapeHtml(documentTitleOf(view))}</title>${ogpMeta(view)}${loadingScreenStyle(view)}
 <h1>作品</h1>
 ${sectionFor(view)}
 ${title}
@@ -513,29 +569,211 @@ ${play}${publish}`;
 }
 
 /**
- * 公開済みの作品の本文。
+ * 公開済みの作品の本文。**この画面が 3.4-5 の「ロード中画面」である**（#30）。
  *
- * **共有すべき URL を 1 本だけ出す。** 出せる URL は 2 本ある（このページと
- * `/g/<game_id>/`）が、**カードが出るのはこのページのほうである**（OGP のメタタグを
- * 持っているのはこちら。`/g/` は不透明オリジンの iframe 用文書で、UGC 由来の文字列を
- * 1 つも入れないと決めてある。`src/sandbox-loader.ts`）。2 本並べると、利用者は
- * カードの出ないほうを配りうる。
+ * # なぜ作品ページが遊ぶ場所になるのか
+ *
+ * 2.2 のループは「発見（SNS の URL）→ ロード（タップから数秒）」である。**共有される
+ * URL はこのページである**（カードが出るのはこちらで、`/g/` は不透明オリジンの
+ * iframe 用文書）。ここで遊べないと、利用者は 1 回よけいにタップし、その先の数秒は
+ * 文脈を持たない黒い画面になる。**待ち時間が起きる場所と、文脈を出せる場所を同じに
+ * する**のが 3.4-5 の求めていることである。
+ *
+ * **`/g/<game_id>/` へのリンクを別に出さない。** 出せる URL は 2 本あるが、5.4 の
+ * 「配る URL は 1 本でよい」に従い、遊ぶための URL は iframe の `src` としてだけ現れる。
+ *
+ * # 4 要素をアプリ用ホスト側に置く（7.2 を崩さないための判断）
+ *
+ * 3.4-5 は OGP スクリーンショット・作者名・親ゲーム名・「改造する」の 4 つを先に出せと
+ * 言う。**このうち作者名と親ゲーム名は UGC 由来である。** 一方 7.2 の必須要件を満たす
+ * サンドボックス文書は `script-src 'unsafe-inline'` を持つため、**そこへ UGC 由来の
+ * 文字列を入れると、エスケープ漏れが即座にスクリプト実行になる**（`src/sandbox-loader.ts`）。
+ *
+ * **したがって 4 要素はこちら側に描く。** 結果として、
+ *
+ * - サンドボックス文書は UGC 由来の文字列を 1 つも持たないまま変わらない（7.2）
+ * - OGP 画像は**このページと同一オリジン**になり、サンドボックスの `img-src` を
+ *   緩める必要が消える（`src/sandbox-csp.ts` は 1 文字も変わらない）
+ * - iframe は `sandbox="allow-scripts"` だけを付ける。**`allow-same-origin` も
+ *   `allow-popups` も付けない**（7.2）。配信側の `frame-ancestors` は既にこのオリジン
+ *   だけを許している（`src/sandbox-delivery.ts`）
+ *
+ * # ロード中画面を「覆い」にしない
+ *
+ * 4 要素を iframe の上へ重ねて、読み込み完了で消す形は採らない。**消す契機を作れない**
+ * ためである。JavaScript で消すなら、親は wasm が起動したことを知る必要があり、経路は
+ * 不透明オリジン（`origin` が `null`）からの `postMessage` しかない。**`null` は名乗り
+ * であって身元ではなく**、しかも送り手の文書では UGC が動く。CSS だけで重ねる形も
+ * 成立しない——iframe の中の文書は自前の背景を持つので、**wasm ではなく文書が
+ * 読み込まれた瞬間**（数秒ではなく数十ミリ秒）に覆いを塗りつぶす。**出したい数秒の
+ * 手前で消える。**
+ *
+ * **だから並べる。** 4 要素は枠の手前（文書順で先）に置き、読み込み中も、読み込み後も
+ * そのまま残る。作者名・元ゲーム・改造導線は、遊び終わったあとにも要る情報である。
  *
  * @param view 表示に必要な値
  * @returns HTML
  */
 function publishedSection(view: WorkPageView): string {
-  const play =
-    view.playUrl === null
-      ? '<p>公開されていますが、試遊 URL を組み立てられませんでした。</p>'
-      : `<p><a href="${view.playUrl}">この作品を遊ぶ</a></p>`;
   const share =
     view.shareUrl === null
       ? ''
       : `
 <p>共有する URL: <code>${view.shareUrl}</code></p>`;
   return `<h2>公開しています</h2>
-${play}${share}`;
+${loadingScreen(view)}${share}`;
+}
+
+/**
+ * 「改造する」の文言（2.2-4）。**仕様の言い回しをここで言い換えない。**
+ */
+const FORK_LABEL = 'このゲームを改造する';
+
+/**
+ * ロード中画面（3.4-5 / 2.2-2 / #30）。
+ *
+ * **4 要素は 1 つも条件付きにしない。** どれか 1 つでも「値が無ければ出さない」に
+ * すると、acceptance が求める「4 要素すべてが描画される」が**データの状態しだいで
+ * 崩れる。** 値が無いときは、無いことを言う固定文言へ倒す（撮影中のスクリーンショット、
+ * 親を持たない作品）。
+ *
+ * **文書順が描画順である。** 4 要素は iframe より前に置く。HTML は上から解釈されるので、
+ * ここに書いたものは**枠の中身が 1 バイトも届く前に**描かれる。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function loadingScreen(view: WorkPageView): string {
+  const frame =
+    view.playUrl === null
+      ? '<p>公開されていますが、遊ぶための URL を組み立てられませんでした。</p>'
+      : // **`sandbox` は `allow-scripts` だけである**（7.2）。属性を足すときは 7.2 を先に読むこと。
+        `<iframe class="gf-frame" src="${view.playUrl}" sandbox="allow-scripts" title="ゲーム"></iframe>`;
+
+  return `<div class="gf-context">
+${screenshot(view)}
+<p class="gf-author">作者: <strong>${escapeHtml(view.authorName ?? UNKNOWN_AUTHOR)}</strong></p>
+<p class="gf-parent">${parentLine(view.parent)}</p>
+${forkCta(view)}
+</div>
+${frame}`;
+}
+
+/** 作者名を引けなかったときの表示。**空欄にしない。** */
+const UNKNOWN_AUTHOR = '不明';
+
+/**
+ * OGP スクリーンショット（3.4-5 の 4 要素の 1 つ）。
+ *
+ * **撮影中・失敗のときは `<img>` を出さない。** 出すと確実に 404 を引き（`src/ogp.ts` の
+ * 配信は行と実体の両方を見る）、壊れた画像として見える。代わりに、同じ場所へ同じ
+ * 大きさの枠と固定文言を置く。**要素そのものは消さない**（消すと読み込み後に版面が
+ * 飛ぶ）。
+ *
+ * `width` / `height` を属性で書くのは版面の飛びを防ぐためで、値は撮影側の定数
+ * （`src/ogp.ts`）から取る。**書き写さない。**
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function screenshot(view: WorkPageView): string {
+  if (view.imagePath === null) {
+    // 大きさは `.gf-shot` の `aspect-ratio` が持つ（`width` / `height` 属性は
+    // 置換要素のためのものなので、ここには書かない）。
+    return `<p class="gf-shot gf-shot-pending">スクリーンショットを準備しています。</p>`;
+  }
+  // **`loading="lazy"` を付けない。** この画像は待ち時間を埋めるためのもので、
+  // 遅らせると出したい数秒に間に合わない。
+  return `<img class="gf-shot" src="${view.imagePath}" width="${OGP_IMAGE_WIDTH}" height="${OGP_IMAGE_HEIGHT}" alt="この作品の画面">`;
+}
+
+/**
+ * 「元ゲーム」の 1 行（3.4-5 の 4 要素の 1 つ / 5.3 / 5.5）。
+ *
+ * **親が居ても題名を出さないことがある。** 題名はプロンプト由来（`draftTitleFromPrompt`）
+ * であり、公開されていない作品のそれを他人へ出す理由が無い（このモジュール冒頭の表と
+ * 同じ規則）。tombstone 化された親は 5.3 の言い回しで出す。
+ *
+ * @param parent 親作品
+ * @returns HTML
+ */
+function parentLine(parent: ParentWork): string {
+  switch (parent.kind) {
+    case 'none':
+      return '元ゲーム: ありません（この作品がオリジナルです）';
+    case 'published':
+      return `元ゲーム: <a href="${parent.path}">${escapeHtml(parent.title)}</a>`;
+    case 'unlisted':
+      return '元ゲーム: まだ公開されていない作品から派生';
+    case 'removed':
+      return '元ゲーム: 削除済みの作品から派生';
+  }
+}
+
+/**
+ * 「改造する」（3.4-5 の 4 要素の 1 つ / 2.2-4 / 4.4）。
+ *
+ * # 行き先の無いボタンにしない
+ *
+ * フォークの生成そのものは M5-1 であり、この時点では存在しない。**それでも押せない
+ * ボタンや、押しても何も起きないボタンは出さない**——4.4 が無くそうとしているのは
+ * まさにそれで、#24 は「押せば必ず 429 になるボタンを描かない」という形で同じ判断を
+ * している。
+ *
+ * **代わりに、いま実際に到達できる導線へ送る。** 4.4 が月次上限のときに「プレイと共有
+ * への導線を**押せるリンクとして**出す」と定めているのと同じ扱いである。
+ *
+ * | 見ている人 | 行き先 | 根拠 |
+ * |---|---|---|
+ * | 未ログイン（共有 URL を踏んだ大半） | 登録画面の待機リスト（`from=fork-cta`） | 2.2-4「未招待: 待機リストへの登録導線に変換する」。10.2 がこの導線の登録率を見る |
+ * | ログイン済み（招待された参加者） | 生成画面 | 親を引き継ぐ改造はまだ無い。**いまできることは新しく作ることだけ**なので、そう書いてそこへ送る |
+ *
+ * **`fork-cta` の受け皿は先に在った**（`src/waitlist.ts` の `WAITLIST_SOURCES`）。
+ * この導線が唯一の送り手であり、ここが繋がるまで 10.2 の分子は永久に 0 だった。
+ *
+ * **ログイン済みの側では文言で行き先を明示する。** ボタンの名前と着地点が違うまま
+ * 送るのは、押せないボタンより悪い。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function forkCta(view: WorkPageView): string {
+  const href = view.signedIn ? GENERATE_PAGE_PATH : signupPathFrom('fork-cta');
+  const note = view.signedIn
+    ? '親のソースを引き継ぐ改造はまだ用意できていません。いまは新しく作ることができます。'
+    : '改造には招待が必要です。招待コードをお持ちでない方は待機リストにご登録いただけます。';
+  return `<p class="gf-fork"><a class="gf-fork-link" href="${href}">${FORK_LABEL}</a></p>
+<p class="gf-fork-note">${note}</p>`;
+}
+
+/**
+ * ロード中画面の見た目（#30）。
+ *
+ * **公開済みのときだけ出す。** 他の状態の画面はこの規則を 1 つも使わない。
+ *
+ * **外部資材を読まない。** ここで web フォントや CSS ファイルを引くと、3.4-5 が
+ * 埋めようとしている数秒に、埋めるための資材の待ち時間を足すことになる。
+ *
+ * 枠の縦横比を撮影の大きさ（`src/ogp.ts`）から取るのは、**スクリーンショットが枠の
+ * 予告になる**ようにするためである。別々の比率にすると、読み込みが終わった瞬間に
+ * 版面が飛ぶ。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（公開済みでなければ空文字）
+ */
+function loadingScreenStyle(view: WorkPageView): string {
+  if (!view.published) {
+    return '';
+  }
+  return `
+<style>
+  .gf-context, .gf-frame { display: block; width: 100%; max-width: ${OGP_IMAGE_WIDTH / 2}px; }
+  .gf-shot { width: 100%; height: auto; aspect-ratio: ${OGP_IMAGE_WIDTH} / ${OGP_IMAGE_HEIGHT}; background: #111; }
+  .gf-shot-pending { display: flex; align-items: center; justify-content: center; color: #ccc; }
+  .gf-frame { aspect-ratio: ${OGP_IMAGE_WIDTH} / ${OGP_IMAGE_HEIGHT}; border: 0; background: #000; }
+  .gf-author, .gf-parent, .gf-fork, .gf-fork-note { margin: 0.4rem 0; }
+  .gf-fork-note { font-size: 0.85em; }
+</style>`;
 }
 
 /**
@@ -562,6 +800,34 @@ function notFound(): Response {
 }
 
 /**
+ * 結合して引いた親作品の列を、画面が使う形へ落とす（5.3 / 5.5 / #30）。
+ *
+ * **`parent_id` ではなく結合結果を見る。** `games.parent_id` に値があっても、結合が
+ * 空振りすることはありうる（行が消えた場合）。**そのときは「親が無い」ではなく
+ * 「削除済み」に倒す**——`parent_id` が入っている以上、この作品は派生である。
+ *
+ * @param row 引いた行
+ * @returns 画面が使う親作品
+ */
+export function parentWorkOf(row: {
+  readonly parent_ref: string | null;
+  readonly parent_status: string | null;
+  readonly parent_title: string | null;
+}): ParentWork {
+  if (row.parent_ref === null) {
+    return { kind: 'none' };
+  }
+  // 行が引けない（消えた）ときも 5.3 の「削除済みの作品から派生」に倒す。
+  if (row.parent_status === null || row.parent_status === REMOVED_STATUS) {
+    return { kind: 'removed' };
+  }
+  if (row.parent_status !== PUBLISHED_STATUS || row.parent_title === null) {
+    return { kind: 'unlisted' };
+  }
+  return { kind: 'published', title: row.parent_title, path: workPagePath(row.parent_ref) };
+}
+
+/**
  * 作品ページを表示する。
  *
  * @param request 受信したリクエスト
@@ -575,10 +841,22 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
     return notFound();
   }
 
+  // **1 回の問い合わせで引く。** 作者名も親作品も、ロード中画面（3.4-5）が
+  // 必ず出す項目である。3 回に分けると、待ち時間を埋めるための画面が、それ自体
+  // 3 往復ぶん遅くなる。
+  //
+  // **`users` は `left join` である。** `author_id` は NOT NULL の外部キーなので
+  // 通常は必ず当たるが、当たらなかったときに**ページ全体を 404 にしない**
+  // （作者名が引けないことと、作品が無いことは別である）。
   const row = await env.DB.prepare(
-    `select author_id, status, title, generation_state, generation_error, preview_key,
-            created_at, generation_started_at, ogp_state
-       from games where id = ?`,
+    `select g.author_id, g.status, g.title, g.generation_state, g.generation_error,
+            g.preview_key, g.created_at, g.generation_started_at, g.ogp_state,
+            a.display_name as author_name,
+            g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
+       from games g
+       left join users a on a.id = g.author_id
+       left join games p on p.id = g.parent_id
+      where g.id = ?`,
   )
     .bind(gameId)
     .first<WorkRow>();
@@ -631,6 +909,14 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **`ready` のときだけ URL を出す。** 撮影中・失敗のときに URL を出すと、
       // クローラが 404 を引く（`src/ogp.ts` の配信は行と実体の両方を見る）。
       imageUrl: published && row.ogp_state === 'ready' ? ogpImageUrl(request, gameId) : null,
+      // 画面に貼るほうは同一オリジンの絶対パスでよい（`WorkPageView.imagePath`）。
+      // **条件はメタタグと同じものを使う。** 別々に書くと、片方だけが 404 を引く。
+      imagePath: published && row.ogp_state === 'ready' ? ogpImagePath(gameId) : null,
+      // **公開済みのときだけ出す。** 未公開の作品ページは作者のための状態画面で、
+      // そこに作者名を出しても意味が無い（見ているのは本人か、id を知る誰かである）。
+      authorName: published ? row.author_name : null,
+      parent: parentWorkOf(row),
+      signedIn: session.ok,
     }),
   );
 }

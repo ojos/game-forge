@@ -245,6 +245,52 @@ const PAGE_STATE_EXPRESSION = `(() => {
 })()`;
 
 /**
+ * ページの中にある**すべての実行文脈**を読む（#30 の層 4）。
+ *
+ * # なぜ子ターゲットではなく実行文脈なのか
+ *
+ * 埋め込まれたサンドボックス文書（`/works/<id>` の中の iframe）は、**別ターゲットに
+ * ならないことがある。** `Target.setAutoAttach` で待っても `attachedToTarget` は
+ * 1 件も来ない（実測）。アプリ用ホストとサンドボックス用ホストは**同一サイト**であり
+ * （7.2「同一サイトであることの帰結」）、Chromium の site isolation は同一サイトの
+ * フレームを同じプロセスへ置くためである。**不透明オリジンでも別プロセスにはならない。**
+ *
+ * 見るべきは同じターゲットの中の**別の実行文脈**である。`Runtime.enable` が
+ * `Runtime.executionContextCreated` で通知するので、そこから id を集めて評価する。
+ *
+ * **文脈を選り分けない。** `auxData` の中身は版によって変わりうるので、**全部に対して
+ * 評価して、評価できたものだけを返す**（遷移で消えた文脈は例外になる。握り潰す）。
+ * 判定側は「不透明オリジンで、かつ wasm が走った文脈が 1 つ以上あるか」を見る。
+ *
+ * @param {CdpConnection} connection CDP 接続
+ * @param {string} sessionId 対象のセッション
+ * @returns {Promise<Array<{id: number, state: any}>>} 文脈ごとの観測値
+ */
+async function readExecutionContexts(connection, sessionId) {
+  const ids = connection.events
+    .filter((event) => event.method === 'Runtime.executionContextCreated')
+    .map((event) => /** @type {any} */ (event.params).context?.id)
+    .filter((id) => typeof id === 'number');
+
+  const contexts = [];
+  for (const id of ids) {
+    try {
+      const evaluated = await connection.send(
+        'Runtime.evaluate',
+        { expression: PAGE_STATE_EXPRESSION, returnByValue: true, contextId: id },
+        sessionId,
+      );
+      if (evaluated.exceptionDetails === undefined && evaluated.result?.value !== undefined) {
+        contexts.push({ id, state: evaluated.result.value });
+      }
+    } catch {
+      // 遷移で消えた文脈。**観測できないことは失敗ではない。**
+    }
+  }
+  return contexts;
+}
+
+/**
  * 1 ページを開いて観測する。
  *
  * @param {{browser: string, url: string, timeoutMs: number}} options 設定
@@ -280,6 +326,8 @@ async function probe(options) {
     const deadline = Date.now() + options.timeoutMs;
     /** @type {any} */
     let state = null;
+    /** @type {Array<{id: number, state: any}>} */
+    let frameContexts = [];
     while (Date.now() < deadline) {
       const evaluated = await connection.send(
         'Runtime.evaluate',
@@ -294,12 +342,20 @@ async function probe(options) {
           break;
         }
       }
+      // **埋め込み（層 4）のときは、印が立つのは子の文脈である。** 主文書だけを見て
+      // 待ち続けると、通っていても必ず時間切れになる。
+      frameContexts = await readExecutionContexts(connection, sessionId);
+      if (frameContexts.some((context) => context.state?.wasmRan !== null && context.state?.wasmRan !== undefined)) {
+        break;
+      }
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
 
     return {
       url: options.url,
       state,
+      // 主文書を含む、読めたすべての実行文脈（層 4 の判定材料）。
+      frameContexts,
       // 判定には使わないが、失敗したときに読む材料。
       console: connection.events
         .filter((event) => event.method === 'Runtime.consoleAPICalled')

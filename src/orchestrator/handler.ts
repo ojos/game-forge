@@ -190,7 +190,12 @@ export async function handleOrchestratorEvent(
     gameId: payload.gameId,
     jobToken: payload.jobToken,
     userId: USER_ID_NOT_CARRIED,
-    request: { prompt: payload.prompt },
+    // **`baseSource` をそのまま運ぶ**（5.7 の推敲）。載っていなければ新規生成で、
+    // `buildConverseRequest` は `messages` を 1 ブロックのままにする。
+    request:
+      payload.baseSource === undefined
+        ? { prompt: payload.prompt }
+        : { prompt: payload.prompt, baseSource: payload.baseSource },
   };
 
   let outcome: OrchestratorOutcome;

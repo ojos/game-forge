@@ -38,6 +38,7 @@
 import type { GenerationModelKey } from '../generation-models.js';
 import { findGenerationModel } from '../generation-models.js';
 import { MAX_PROMPT_LENGTH } from '../generate.js';
+import { MAX_SOURCE_BYTES } from '../system-prompt.js';
 
 /**
  * ペイロードの版。
@@ -48,9 +49,46 @@ import { MAX_PROMPT_LENGTH } from '../generate.js';
  */
 export const ORCHESTRATOR_PAYLOAD_VERSION = 1;
 
+/**
+ * `baseSource` を載せた本文の版（5.7 の推敲 / #192）。
+ *
+ * # 版は「この本文を読むのに必要な最小の版」である
+ *
+ * **一律に上げない。** `baseSource` を持たない本文は版 1 のまま送る。理由は配備の
+ * 順序にある。
+ *
+ * | 側 | 配備 |
+ * |---|---|
+ * | 送る側（Worker / Pages） | **main へのマージで自動** |
+ * | 受ける側（オーケストレータ Lambda） | **利用者が手で叩く**（`scripts/deploy-orchestrator.sh`） |
+ *
+ * **一律に 2 へ上げると、Lambda を配備し直すまで生成が 1 本残らず落ちる。**
+ * 上の「知らない版を黙って処理しない」がそのまま効くからで、これは正しい振る舞いだが、
+ * **落ちる範囲が推敲だけであるべきところを全生成へ広げてしまう。**
+ *
+ * 版を能力の宣言として使えば、**古い Lambda は従来どおり新規生成を処理し、推敲だけが
+ * 「知らない版」として断られる**（そして推敲は #193 の画面が入るまで誰も呼べない）。
+ *
+ * **省略可能な項目だから版を上げなくてよい、ではない。** 上げないと古い受け側が
+ * `baseSource` を落としたまま生成を走らせ、推敲したつもりの利用者に**まったく別の
+ * ゲーム**が返る。1 回 約 16 円を払ったうえで、である。
+ */
+export const ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE = 2;
+
+/** 受け側が理解できる版。 */
+const SUPPORTED_VERSIONS: readonly number[] = [
+  ORCHESTRATOR_PAYLOAD_VERSION,
+  ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE,
+];
+
 /** 非同期呼び出しの本文。 */
 export interface OrchestratorPayload {
-  /** {@link ORCHESTRATOR_PAYLOAD_VERSION}。 */
+  /**
+   * この本文を読むのに必要な最小の版。
+   *
+   * {@link ORCHESTRATOR_PAYLOAD_VERSION}、または `baseSource` を載せているなら
+   * {@link ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE}。
+   */
   readonly version: number;
   /** 作品 id。 */
   readonly gameId: string;
@@ -60,6 +98,13 @@ export interface OrchestratorPayload {
   readonly prompt: string;
   /** 生成に使うモデルの鍵（`src/generation-models.ts` の登録簿）。 */
   readonly modelKey: GenerationModelKey;
+  /**
+   * 元にするソース（5.7 の推敲）。**新規生成では持たない。**
+   *
+   * 上限は {@link MAX_SOURCE_BYTES}（30 KB。確定18 / 5.3）で、Lambda の非同期呼び出しの
+   * ペイロード上限 256 KB に対して桁が 1 つ違う。**プロンプトと合わせても収まる。**
+   */
+  readonly baseSource?: string;
 }
 
 /**
@@ -70,16 +115,29 @@ export interface OrchestratorPayload {
  * @returns 非同期呼び出しの本文
  */
 export function buildOrchestratorPayload(
-  job: { readonly gameId: string; readonly jobToken: string; readonly request: { readonly prompt: string } },
+  job: {
+    readonly gameId: string;
+    readonly jobToken: string;
+    readonly request: { readonly prompt: string; readonly baseSource?: string };
+  },
   modelKey: GenerationModelKey,
 ): OrchestratorPayload {
-  return {
-    version: ORCHESTRATOR_PAYLOAD_VERSION,
+  const base = {
     gameId: job.gameId,
     jobToken: job.jobToken,
     prompt: job.request.prompt,
     modelKey,
   };
+  // **新規生成では項目ごと載せず、版も上げない**（上記）。`baseSource: undefined` を
+  // 置くと `JSON.stringify` が落とすので実害は無いが、**受け側の未知項目の検査を
+  // 「値が undefined なら許す」へ緩める必要が出る**（いまは鍵の集合だけを見ている）。
+  return job.request.baseSource === undefined
+    ? { version: ORCHESTRATOR_PAYLOAD_VERSION, ...base }
+    : {
+        version: ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE,
+        ...base,
+        baseSource: job.request.baseSource,
+      };
 }
 
 /**
@@ -100,11 +158,12 @@ export function parseOrchestratorPayload(value: unknown): OrchestratorPayload | 
   }
   const record = value as Record<string, unknown>;
   for (const key of Object.keys(record)) {
-    if (!['version', 'gameId', 'jobToken', 'prompt', 'modelKey'].includes(key)) {
+    if (!['version', 'gameId', 'jobToken', 'prompt', 'modelKey', 'baseSource'].includes(key)) {
       return null;
     }
   }
-  if (record['version'] !== ORCHESTRATOR_PAYLOAD_VERSION) {
+  const version = record['version'];
+  if (typeof version !== 'number' || !SUPPORTED_VERSIONS.includes(version)) {
     return null;
   }
   const gameId = record['gameId'];
@@ -123,11 +182,40 @@ export function parseOrchestratorPayload(value: unknown): OrchestratorPayload | 
   if (typeof modelKey !== 'string' || findGenerationModel(modelKey) === null) {
     return null;
   }
+  // **空文字は断る。** 「載っているが空」は新規生成と推敲のどちらとも読めるので、
+  // 送る側の不具合を黙って新規生成として実行させない（1 回 約 16 円が出る）。
+  const baseSource = record['baseSource'];
+  if (baseSource === undefined) {
+    // **版 2 を名乗って `baseSource` が無い本文は断る。** 版が能力の宣言である以上、
+    // 名乗りと中身が食い違う本文を「たぶん新規生成だろう」と解釈しない。
+    if (version !== ORCHESTRATOR_PAYLOAD_VERSION) {
+      return null;
+    }
+    return {
+      version,
+      gameId,
+      jobToken,
+      prompt,
+      modelKey: modelKey as GenerationModelKey,
+    };
+  }
+  // **`baseSource` を載せた本文は版 2 を名乗らなければならない。** 版 1 で通すと、
+  // 古い受け側が読めない項目を「読める版」として受け取ることになる。
+  if (version !== ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE) {
+    return null;
+  }
+  if (typeof baseSource !== 'string' || baseSource === '') {
+    return null;
+  }
+  if (new TextEncoder().encode(baseSource).length > MAX_SOURCE_BYTES) {
+    return null;
+  }
   return {
-    version: ORCHESTRATOR_PAYLOAD_VERSION,
+    version,
     gameId,
     jobToken,
     prompt,
     modelKey: modelKey as GenerationModelKey,
+    baseSource,
   };
 }

@@ -73,7 +73,7 @@ import {
   hashJobToken,
 } from './games.js';
 import type { BuildCacheRecord } from './build-cache.js';
-import { readBuildCache } from './build-cache.js';
+import { readBuildCache, recordBuildCache } from './build-cache.js';
 import { recordGeneration } from './cost-ledger.js';
 import type { GenerationModelKey, GenerationResult } from './generation-models.js';
 import { findGenerationModel } from './generation-models.js';
@@ -85,6 +85,12 @@ import { notifyGenerationFinished } from './mail/generation-notice.js';
 // 3.8 の degrade の発火信号（#140）。**この経路だけが、ビルド依頼の失敗を D1 の側から
 // 見られる**——生成の本体はオーケストレータ Lambda で走っており、あちらは D1 を持たない。
 import { clearBuildPathFailures, recordBuildPathFailure } from './build-health.js';
+import {
+  appendRevision,
+  claimRevisionJob,
+  completeRevision,
+  failRevision,
+} from './revisions.js';
 
 /** コールバックのパス。 */
 export const GENERATE_CALLBACK_PATH = '/api/generate/callback';
@@ -588,7 +594,14 @@ async function handleCallback(
     // **握れたかどうかをそのまま返す。** 呼ぶ側は false を受け取ったら LLM を呼ばずに
     // 降りる。これが「1 回の送信につき LLM は 1 回」を担保する唯一の関門である
     // （`src/games.ts` の `claimGenerationJob`）。
-    return json({ claimed: await claimGenerationJob(env, callback.gameId, tokenHash) }, 200);
+    //
+    // **推敲のジョブも同じ口で握る**（5.7 / #192）。オーケストレータは自分が何を
+    // 走らせているかを知らず、`gameId` と `jobToken` しか持たない。**どちらの表を
+    // 進めるかは、トークンが一致した側が決める。**
+    const claimed =
+      (await claimGenerationJob(env, callback.gameId, tokenHash)) ||
+      (await claimRevisionJob(env, callback.gameId, tokenHash));
+    return json({ claimed }, 200);
   }
 
   // `claim` 以外は、先に「このジョブの持ち主か」を確かめる。**`claim` だけが
@@ -642,6 +655,16 @@ async function handleCallback(
   // 1 行も変えなかった＝この `finish` が効かなかったということである。効かなかった
   // 仕事の完了を知らせない。
   if ('errorCode' in callback) {
+    if (job.kind === 'revision') {
+      // **作品には触らない**（5.7 / 5.3 の整理パスと同じ扱い）。失敗の記録は
+      // ジョブ行にだけ残り、現行版はそのまま遊べる。**枠も戻さない**（0009）。
+      //
+      // **3.8 の degrade の信号も、完了通知も出さない。** 前者は #140 が
+      // 「1 人の要求だけで閾値へ届く」ことを避ける設計で、推敲は同じ作品に対して
+      // 繰り返し起こせるぶん、より強くその形になる。後者は #153 が
+      // 「生成の完了」を知らせるもので、推敲の失敗は作品の状態を変えていない。
+      return json({ accepted: true, finished: await failRevision(env, callback.gameId, callback.errorCode) }, 200);
+    }
     const finished = await failGame(env, callback.gameId, callback.errorCode);
     if (finished && callback.buildPathFailed) {
       // 3.8 の degrade の発火信号（#140 / 確定24）。**`finished` で絞る**——false は
@@ -675,6 +698,27 @@ async function handleCallback(
   if (cacheRecord !== null) {
     await clearBuildPathFailures(env);
   }
+  if (job.kind === 'revision') {
+    // 5.7 の「完成したら差し替わる」。**版を積み、成果物を差し替え、ジョブ行を消す**
+    // までを `completeRevision` が 1 つの batch で行う（`src/revisions.ts`）。
+    // **`games` の状態機械は動かない**ので、`generation_state` は `ready` のままである。
+    const swapped = await completeRevision(env, callback.gameId, tokenHash, {
+      goVersion,
+      sourceKey,
+      wasmKey,
+    });
+    if (swapped && cacheRecord !== null) {
+      // 3.8: 索引は作品ではなくソースに対して書くので、推敲でも同じように書く。
+      // **差し替えられたときだけ**——効かなかった仕事のために成果物を生かさない
+      // （`completeGameWithArtifacts` が `changes === 0` で索引を書かないのと同じ）。
+      await recordBuildCache(env, cacheRecord);
+    }
+    if (swapped) {
+      await notifiers.generationFinished(env, callback.gameId, { kind: 'ready' });
+    }
+    return json({ accepted: true, finished: swapped }, 200);
+  }
+
   const finished = await completeGameWithArtifacts(
     env,
     callback.gameId,
@@ -682,14 +726,33 @@ async function handleCallback(
     cacheRecord,
   );
   if (finished) {
+    // 5.7 の「完成のたびに版を 1 つ積む」の 1 つ目（`seq = 1`）。**プロンプトは
+    // null になる**——初回のプロンプトは `generations.prompt` にしか無く、そこは
+    // 確定27 により `game_id` を持たないので版から引けない（0009）。
+    //
+    // **`completeGameWithArtifacts` の中でやらない。** あちらは `src/games.ts` に
+    // あり、版の表を触らせると `games` ⇄ `revisions` の循環参照ができる
+    // （`createPreviewKey` が逆向きに要る）。**積み損ねても作品は壊れない**
+    // ——版の一覧が空になるだけで、次の推敲が `seq = 1` から積み直す。
+    await appendRevision(env, callback.gameId, { goVersion, sourceKey, wasmKey }, null);
     await notifiers.generationFinished(env, callback.gameId, { kind: 'ready' });
   }
   return json({ accepted: true, finished }, 200);
 }
 
+/**
+ * 進行中のジョブの種類。
+ *
+ * **`games` の状態機械を進めるか、推敲のジョブを進めるかが分かれる**（5.7 / #192）。
+ * 推敲は失敗しても作品を壊さないので、`finish` の落とし先そのものが違う
+ * （`src/revisions.ts` / `migrations/0009_game_revisions.sql`）。
+ */
+type RunningJobKind = 'generation' | 'revision';
+
 /** 進行中のジョブと、その作者。 */
 interface RunningJob {
   readonly authorId: string;
+  readonly kind: RunningJobKind;
 }
 
 /**
@@ -712,13 +775,28 @@ async function runningJob(
   gameId: string,
   tokenHash: string,
 ): Promise<RunningJob | null> {
-  const row = await env.DB.prepare('select author_id, job_token_hash from games where id = ?')
+  const row = await env.DB.prepare(
+    `select g.author_id as author_id, g.job_token_hash as job_token_hash,
+            j.job_token_hash as revision_token_hash
+       from games g left join game_revision_jobs j
+         on j.game_id = g.id and j.state in ('pending', 'running')
+      where g.id = ?`,
+  )
     .bind(gameId)
-    .first<{ author_id: string; job_token_hash: string | null }>();
-  if (row === null || row.job_token_hash === null || row.job_token_hash !== tokenHash) {
+    .first<{ author_id: string; job_token_hash: string | null; revision_token_hash: string | null }>();
+  if (row === null) {
     return null;
   }
-  return { authorId: row.author_id };
+  // **生成を先に見る。** 2 つのトークンが同時に一致することは無い（どちらも
+  // 使い捨ての乱数で、同じ値を採る確率は 2^-256）。順序に意味は無いが、**両方を
+  // 見て「どちらでもない」を 1 か所で返す**ほうが、片方だけを見る経路が生まれない。
+  if (row.job_token_hash !== null && row.job_token_hash === tokenHash) {
+    return { authorId: row.author_id, kind: 'generation' };
+  }
+  if (row.revision_token_hash !== null && row.revision_token_hash === tokenHash) {
+    return { authorId: row.author_id, kind: 'revision' };
+  }
+  return null;
 }
 
 /**

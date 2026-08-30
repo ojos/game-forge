@@ -73,3 +73,31 @@ export const PUBLISH_PATH = '/api/publish';
  * 別モジュールである**以上、綴りの正本も片方の中には置けない。
  */
 export const PUBLISH_GAME_ID_FIELD = 'game_id';
+
+/**
+ * 推敲の操作（5.7 / #192）。
+ *
+ * 経路を提供するのは `src/revise.ts` だが、**作品ページ（`src/work-page.ts`）が
+ * 推敲のフォームの `action` として同じ綴りを要る。** 一方で `src/revise.ts` は
+ * 推敲を始めたあとの戻り先として `workPagePath` を使うため、どちらかがもう片方から
+ * import すると循環参照になる。`PUBLISH_PATH` と同じ理由でここへ逃がす。
+ */
+export const REVISE_PATH = '/api/revise';
+
+/**
+ * 「この版に戻す」（5.7）。
+ *
+ * **`/api/revise` と同じパスに畳まない。** 畳むと、経路表ではなくハンドラが本文の
+ * 項目の有無で「手直しか復元か」を見分けることになる。**費用が出る操作と出ない操作を、
+ * 本文の推測で分けない**（前者は 1 回 約 16 円、後者は 0 円である）。
+ */
+export const RESTORE_PATH = '/api/revise/restore';
+
+/** 推敲の対象を指す項目名（フォームの `name` と JSON の鍵の両方）。 */
+export const REVISE_GAME_ID_FIELD = 'game_id';
+
+/** 差分プロンプトの項目名。 */
+export const REVISE_PROMPT_FIELD = 'prompt';
+
+/** 戻したい版の番号の項目名。 */
+export const REVISE_SEQ_FIELD = 'seq';

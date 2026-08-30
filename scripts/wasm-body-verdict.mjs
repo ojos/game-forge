@@ -43,9 +43,20 @@
 // | br   | 2 回展開で `\0asm` | NG | **二重圧縮**（#181） |
 // | なし | そのまま `\0asm`   | OK | 経路が既に展開している。**正しい** |
 // | なし | 1 回展開で `\0asm` | NG | 本文は brotli なのに宣言が無い。**ブラウザは展開しない** |
+// | それ以外 | —          | NG | `gzip` など**想定外の宣言**。3.4-1 は br しか使わない |
 // | —    | どちらでも wasm にならない | NG | 別物が返っている |
 //
-// **不合格は「二重」と「宣言と本文の食い違い」と「そもそも wasm でない」だけである。**
+// **不合格は「二重」「宣言と本文の食い違い」「想定外の宣言」「そもそも wasm でない」である。**
+//
+// ## 想定外の宣言を「宣言なし」に混ぜない
+//
+// `gzip` が返ってきたときに `br` でないことだけを見て「宣言なし」の経路へ流すと、
+// **診断が `Content-Encoding: なし` になる。実際には付いているのに「無い」と言う**ので、
+// 読んだ人が最初に見る場所を間違える。**判定体が状態を取り違えたまま断定する形は、
+// #182（正しい本番を「二重圧縮です」と断定した）と同じ誤りである。**
+// 想定外の値は、**実際のヘッダ値をそのまま添えて**独立の不合格にする。
+//
+// `identity` だけは例外で、HTTP の意味が「変換していない」なので宣言なしと同じに扱う。
 //
 // 使い方:
 //   node scripts/wasm-body-verdict.mjs --body <file> --content-encoding <value> --label <prefix>
@@ -122,14 +133,55 @@ function inflateOnce(buffer) {
 }
 
 /**
+ * `Content-Encoding` の値を、この経路が扱う 3 つの状態へ落とす。
+ *
+ * 3.4-1 が使うのは `br` だけで、経路が展開した場合はヘッダごと外れる。**それ以外の値は
+ * 想定外**であり、「宣言なし」と同じ扱いにしてはならない（このファイル冒頭の注記）。
+ *
+ * @param {string} raw `Content-Encoding` ヘッダの値（無ければ空文字）
+ * @returns {'none' | 'br' | 'unexpected'} 宣言の状態
+ */
+function encodingState(raw) {
+  const value = raw.trim().toLowerCase();
+  if (value === '') {
+    return 'none';
+  }
+  // `identity` は「変換していない」を意味するので、宣言が無いのと同じである。
+  if (value === 'identity') {
+    return 'none';
+  }
+  if (value === 'br') {
+    return 'br';
+  }
+  return 'unexpected';
+}
+
+/**
  * 本文を判定する。
  *
  * @param {Buffer} body 受け取った本文
- * @param {boolean} declaresBrotli 応答が `Content-Encoding: br` を宣言しているか
+ * @param {'none' | 'br' | 'unexpected'} state 宣言の状態
+ * @param {string} rawEncoding `Content-Encoding` の生の値（診断に使う）
  * @returns {{ok: boolean, message: string}} 判定と説明
  */
-function verdict(body, declaresBrotli) {
-  const declared = declaresBrotli ? 'br' : 'なし';
+function verdict(body, state, rawEncoding) {
+  // **実際のヘッダ値をそのまま出す。** 判定の都合で言い換えると、読んだ人が
+  // 最初に見る場所を間違える。
+  const declared = rawEncoding.trim() === '' ? 'なし' : rawEncoding.trim();
+
+  // 想定外の宣言は、本文を読む前に落とす。**どう読めばよいか決められない**ためで、
+  // 憶測で読んで「二重圧縮です」のような断定を返すほうが有害である。
+  if (state === 'unexpected') {
+    return {
+      ok: false,
+      message:
+        `想定外の Content-Encoding です: '${declared}' (${body.length} バイト, 先頭 ${head(body)})。` +
+        ' この経路が扱うのは br か、宣言なし（経路が展開済み）の 2 つだけです（3.4-1）。' +
+        ' 配信側か、間に入っている経路の設定を確認してください。',
+    };
+  }
+
+  const declaresBrotli = state === 'br';
 
   // 経路が既に展開した形。宣言が無ければ、これが正しい。
   if (isWasm(body)) {
@@ -190,12 +242,7 @@ try {
   const options = parseArgs(process.argv.slice(2));
   const body = readFileSync(options.body);
 
-  // `Content-Encoding: br` の宣言があるか。`br` 以外（gzip 等）は、この経路では
-  // 想定していないので「宣言なし」とは別に扱いたいが、実際に返るのは br か無しの
-  // 2 通りである（3.4-1）。トークンとして br を含むかだけを見る。
-  const declaresBrotli = /(^|[\s,])br([\s,;]|$)/iu.test(options.contentEncoding);
-
-  const result = verdict(body, declaresBrotli);
+  const result = verdict(body, encodingState(options.contentEncoding), options.contentEncoding);
   const stream = result.ok ? process.stdout : process.stderr;
   stream.write(`${options.label} ${result.ok ? 'OK' : 'NG'}: ${result.message}\n`);
   process.exit(result.ok ? 0 : 1);

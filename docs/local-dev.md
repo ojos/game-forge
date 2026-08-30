@@ -330,6 +330,8 @@ amd64 のイメージでも同じ値）。**だからといって片方をもう
 | `npm run check:origins` | 別オリジン・同一サイト・`__Host-`・CSP を**実際に起動して**確認 | 約 20 秒 | なし |
 | `npm run check:isolated-build` | 7.1 の封じ込め下で隔離ビルドが通ること ＋ **Ebitengine が vendor から解決できること** | **約 1〜2 分**（Ebitengine のサンプルビルドを含む。キャッシュが冷えていればさらに数分） | Docker（イメージのビルドにネットワーク。**実行時は `--network=none`**） |
 | `bash scripts/check-wasm-exec-objects.sh` | 配信が要求する `wasm_exec.js` が R2 に在ること（3.5 / #139） | 数秒 | ローカル D1 に `games` 行があること |
+| `bash scripts/check-sandbox-browser.sh` | **実ブラウザで**プレイ経路が通ること（#180。不透明オリジン → 自分の wasm の取得 → 起動） | 約 1 分 | Go・Node 22 以降・**Chromium の実行ファイル**（下記） |
+| `bash scripts/check-sandbox-cors.sh` | **配備済みの実物**が `Access-Control-Allow-Origin` を返すこと（#180） | 数秒 | ネットワーク（公開 URL への GET 1 本。認証は不要） |
 
 `npm run check:origins` と `npm run check:isolated-build` は `scripts/verify.sh` には
 含めない。前者は約 20 秒かかり反復の信号としては重く、後者は Docker とイメージ取得を
@@ -372,6 +374,51 @@ amd64 のイメージでも同じ値）。**だからといって片方をもう
 
 一覧は 3 か所に現れます（許可パッケージ・vendor 焼き込み・検査用サンプル）。
 `test/go-imports.test.ts` が機械照合するので、ずれたら落ちます。
+
+### `bash scripts/check-sandbox-browser.sh` が確かめること
+
+**プレイ経路を実ブラウザで通します。** 代理検査では捕まらない種類の不具合があるため
+（#180。下の 5.8）、この 1 本だけは本物のブラウザで見ます。
+
+その場で本物の材料を作ります（ダミーのバイト列を置きません）。
+
+1. `GOOS=js GOARCH=wasm` で**本物の Go の wasm** をビルドし、brotli で圧縮して R2 へ置く
+2. その Go に同梱の `wasm_exec.js` を `runtime/<版>/` へ置く（3.5 の版一致）
+3. `games` 行を 1 つ作る（**使い捨ての `--persist-to` へ。手元の `.wrangler/state` は汚しません**）
+4. `wrangler pages dev` を HTTPS で起動し、Chromium で `/p/<key>/` を開く
+
+見るのは 3 層で、**どこで落ちたかが分かる形**になっています。
+
+| 層 | 見るもの | 落ちたときの意味 |
+|---|---|---|
+| 1 | 文書が**不透明オリジン**であること（`self.origin === "null"`、`localStorage` が投げる） | 7.2 必須要件 1 が効いていない。**この状態の緑は無意味です** |
+| 2 | `.wasm` の取得が CORS で破棄されないこと | #180 そのもの |
+| 3 | wasm が起動し Go が実際に走ること | プレイ経路が通っていない |
+
+**依存は 1 つも足していません。** Playwright も Puppeteer も使わず、Chromium を直接
+起動して CDP を素で話します（`scripts/sandbox-browser-probe.mjs`。Node 22 以降の
+組み込み `WebSocket` を使う）。要るのは**ブラウザの実行ファイル 1 つ**だけです。
+
+```bash
+# この devcontainer で実測した入手手順
+npm i playwright-core && npx playwright install chromium-headless-shell
+sudo npx playwright install-deps chromium-headless-shell   # システムパッケージ
+
+GF_BROWSER_BIN="$(node -e "console.log(require('playwright-core').chromium.executablePath())")" \
+  bash scripts/check-sandbox-browser.sh
+```
+
+**`scripts/verify.sh` には含めていません。** ローカル層の契約は「ネットワークも外部認証も
+要さない検査」で（`.github/project-ai-rules.md`「受け入れ検証の二層」）、この検査は
+ブラウザの入手にネットワークとシステムパッケージを要するためです。**一方で「入って
+いなければ黙って飛ばす」形にもしていません**——飛ばして緑を出すのが #180 の通り抜けかた
+そのものなので、前提が満たされなければ**赤で落ちます。** 起動の契機は
+`src/sandbox-*.ts` を触ったときです。
+
+> **既知: いまこの検査は層 3 で赤です。** スクリプトの故障ではありません。層 1・2 は
+> 通ります（#180 は直っています）。層 3 は `.wasm` が**二重に brotli 圧縮されて配信
+> される**という別の不具合で落ちます。詳細と実測値は
+> `scripts/check-sandbox-browser.sh` の冒頭にあります。
 
 ---
 
@@ -476,6 +523,53 @@ SQL が通ることしか分からず、ストレージ層へ到達したかを�
 ```
 
 `npm ci` と隔離ビルドイメージの初回取得にはネットワークが要る。
+
+### 5.8 不透明オリジンからの自己資材の取得には CORS が要る（M4-13 / #180）
+
+**7.2 必須要件 1 の帰結です。緩和ではありません。**
+
+`sandbox allow-scripts`（`allow-same-origin` なし）を付けた文書は**不透明オリジン**に
+なります。7.2 はそれを意図しています。ただしその帰結として、**自分自身のホストへの
+`fetch` すらクロスオリジン要求になります**——文書のオリジンが `null` なので、「同一
+オリジン」が成立しないためです。
+
+```text
+文書のオリジン: null（不透明）
+fetch の宛先:   https://sandbox…/p/<key>/game.wasm   ← 同じホストなのに
+→ ブラウザは Origin: null を付けた CORS 要求として送る
+→ 応答に Access-Control-Allow-Origin が無ければ、ブラウザが応答を破棄する
+→ 画面には「起動できませんでした: TypeError: Failed to fetch」だけが出る
+```
+
+**これが本番で起きていました**（#180）。`wasm_exec.js` が動いていたのは `<script src>`
+で読まれていたためで、**クラシックスクリプトの読み込みは CORS の対象外です。落ちるのは
+`fetch` だけでした。**
+
+配信は `Access-Control-Allow-Origin: *` をすべての応答へ一律に付けます。**値を `*` に
+した根拠、`null` を採らなかった理由、そしてこれが 7.2 を緩めない理由**は、
+`src/sandbox-delivery.ts` の `ALLOW_ORIGIN` に書いてあります。要点だけ再掲します。
+
+- **`connect-src` は 1 本の URL のままです**（5.4 のとおり）。7.2 が塞いでいるのは
+  「生成物が**外へ**出ていくこと」で、**ACAO は宛先の集合に 1 要素も足しません。**
+  ACAO が言うのは「この応答を、要求した不透明オリジンの文書へ渡してよい」だけです。
+- `null` は不透明オリジン限定に**見えるだけ**です。他サイトの sandboxed iframe も
+  `data:` URL も `Origin: null` を名乗るため、`*` に対して防げる相手が増えません。
+- プレビュー URL の唯一の資格情報は `preview_key` です。この経路は cookie を発行しない
+  ため（7.2 必須要件 3）、**CORS が守っていた「被害者の資格情報つきの読み取り」が
+  そもそも存在しません。**
+
+#### なぜ代理検査で捕まらなかったか
+
+**CSP を読む検査は「CSP が許しているか」しか見ていません。** 「CSP は許しているが
+CORS が別の理由で塞ぐ」という組み合わせは、原理的に捕まりません。**curl も同じ穴を
+持ちます**（curl は CORS を評価しない）。
+
+そのため検査を 2 本足しました。**片方はもう片方の代わりになりません。**
+
+| 検査 | 見るもの | 見ないもの |
+|---|---|---|
+| `scripts/check-sandbox-cors.sh` | **配備済みの実物**に ACAO が付いていること | ブラウザが実際に読めるか（curl は CORS を評価しない） |
+| `scripts/check-sandbox-browser.sh` | **実ブラウザ**で不透明オリジンから取得して起動できること | 配備先の状態（ローカルの dev サーバを見る） |
 
 ---
 

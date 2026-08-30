@@ -49,6 +49,9 @@ cd "$(dirname "$HERE")"
 # help はローカルの文書だが、既定のページャを噛ませると非対話で止まりうる。
 export AWS_PAGER=""
 
+# エスケープ文字そのもの（GNU sed の `\x1B` に頼らないため。下記 synopsis_of）。
+ESC="$(printf '\033')"
+
 TARGETS=(scripts/deploy-orchestrator.sh)
 if [[ "${CHECK_AWS_ALL:-}" == "1" ]]; then
   mapfile -t TARGETS < <(find scripts -maxdepth 1 -name '*.sh' | sort)
@@ -59,7 +62,12 @@ checked_invocations=0
 checked_flags=0
 
 # 一時ディレクトリに help の出力を溜める（同じ操作を何度も引かない）。
-CACHE="$(mktemp -d)"
+# テンプレートを明示する（BSD 系の mktemp は必須。予測可能な名前も避ける。
+# scripts/acceptance-remote.sh と同じ規約）。
+CACHE="$(mktemp -d "${TMPDIR:-/tmp}/aws-cli-usage.XXXXXX")" || {
+  echo "[aws-usage] 一時ディレクトリを作成できませんでした。" >&2
+  exit 1
+}
 trap 'rm -rf "$CACHE"' EXIT
 
 have_aws=0
@@ -95,9 +103,12 @@ synopsis_of() {
   local path="$CACHE/$key"
   if [[ ! -f "$path" ]]; then
     # groff の出力は太字を ANSI エスケープで表す。落としてから見出しで切る。
+    #
+    # **`\x1B` と書かない。** あれは GNU sed の拡張で、BSD 系（macOS）の sed は
+    # 「x」という文字として扱う。エスケープ文字は printf で作って渡す。
     aws "$@" help 2>/dev/null \
       | col -b \
-      | sed -e 's/\x1B\[[0-9;]*[A-Za-z]//g' \
+      | sed -e "s/${ESC}\[[0-9;]*[A-Za-z]//g" \
       | sed -n '/SYNOPSIS/,/OPTIONS/p' >"$path" || : >"$path"
   fi
   cat "$path"
@@ -138,7 +149,7 @@ check_invocation() {
     [[ -n "$waiter" && "$waiter" != --* ]] || return 0
     index=$((index + 1))
     if [[ $have_aws -eq 1 ]]; then
-      if ! aws "$service" wait help 2>/dev/null | col -b | sed -e 's/\x1B\[[0-9;]*[A-Za-z]//g' \
+      if ! aws "$service" wait help 2>/dev/null | col -b | sed -e "s/${ESC}\[[0-9;]*[A-Za-z]//g" \
         | grep -qE "^[[:space:]]+o[[:space:]]+${waiter}[[:space:]]*$"; then
         echo "[aws-usage] $file: 待機子が実在しません: aws $service wait $waiter" >&2
         failed=1

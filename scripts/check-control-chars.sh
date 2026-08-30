@@ -111,7 +111,7 @@ fail() {
   exit 1
 }
 
-WORK="$(mktemp -d)" || { echo "[control-chars] 一時ディレクトリを作成できません。" >&2; echo "CONTROL_CHARS_FAIL"; exit 1; }
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/control-chars.XXXXXX")" || { echo "[control-chars] 一時ディレクトリを作成できません。" >&2; echo "CONTROL_CHARS_FAIL"; exit 1; }
 trap 'rm -rf "$WORK"' EXIT
 
 PATTERN="$WORK/forbidden.pattern"

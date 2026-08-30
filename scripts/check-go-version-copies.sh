@@ -304,7 +304,7 @@ echo "[go-version] 実装側 3 点一致: Dockerfile / template/go.mod / handler
 
 # ── 追跡ファイルの走査 ───────────────────────────────────────────────────────
 
-WORK="$(mktemp -d)" || { echo "[go-version] 一時ディレクトリを作成できません。" >&2; echo "GO_VERSION_FAIL"; exit 1; }
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/go-version.XXXXXX")" || { echo "[go-version] 一時ディレクトリを作成できません。" >&2; echo "GO_VERSION_FAIL"; exit 1; }
 trap 'rm -rf "$WORK"' EXIT
 
 TRACKED="$WORK/tracked.z"

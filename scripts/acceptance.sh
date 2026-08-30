@@ -75,6 +75,24 @@ else
   echo "[acceptance] (orchestrator) skip: terraform/orchestrator.tf not found"
 fi
 
+# シェルスクリプトが GNU 拡張に依存していないこと（BSD / macOS で落ちる書き方）。
+#
+# **前寄りに置く。** grep 数本で終わる。**同じ事故を 3 度繰り返した**（第 1 波の
+# GNU 拡張オプション、第 2 波の `date +%s%N` と `sha256sum`、第 4 波の `mktemp`）。
+# いずれもこの開発環境（Linux / GNU coreutils）では通り、**利用者の端末（macOS）で
+# 落ちる。** しかも落ちるのは、配備や検証という**利用者が自分で叩く手順の中**である。
+#
+# **判定はスクリプト側が持つ**（表と、この検査が約束しないことは
+# scripts/check-shell-portability.sh の冒頭）。**網羅ではない**——踏んだ事故を表へ
+# 足していく形なので、緑でも macOS で落ちうる。
+if [[ -d scripts ]]; then
+  echo "[acceptance] (portability) scripts/check-shell-portability.sh"
+  bash scripts/check-shell-portability.sh
+  ran_any=1
+else
+  echo "[acceptance] (portability) skip: scripts/ not found"
+fi
+
 # 検査が読む terraform output が、宣言側に実在すること（#160 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く。** grep 数本で終わる。外すと、宣言側で output を改名・削除したときに

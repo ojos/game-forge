@@ -34,7 +34,7 @@ sudo_chown() {
 
 owned_by_me() {
   local owner
-  owner="$(stat -c %U "$1" 2>/dev/null || stat -f %Su "$1" 2>/dev/null || echo '')"
+  owner="$(stat -c %U "$1" 2>/dev/null || stat -f %Su "$1" 2>/dev/null || echo '')" # bsd-ok: GNU の -c と BSD の -f を両方試している
   [[ "$owner" == "$(id -un)" ]]
 }
 

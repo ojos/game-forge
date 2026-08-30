@@ -54,7 +54,15 @@ echo "[deploy-orchestrator] 現在載っているコードを確認します"
 # **失敗を握りつぶさない。** 以前はここを `2>/dev/null || echo ''` で流していたため、
 # 認証切れも関数の不在も「まだ何も載っていない」と同じ見た目になり、次の
 # update-function-code が出す生のエラーだけが残った。**何を直せばよいかを言う。**
-ERR="$(mktemp)"
+# **テンプレートを明示する。** BSD 系（macOS）の mktemp はテンプレート無しでは
+# 失敗する。**この手順は利用者が自分の端末で叩く**（冒頭「誰が叩くか」）ので、
+# 開発環境（Linux）でしか動かない書き方をここへ置かない。
+# `$$` 由来の予測可能な名前も使わない（同名を先に置かれると書き込み先を乗っ取られる。
+# scripts/acceptance-remote.sh と同じ規約）。
+ERR="$(mktemp "${TMPDIR:-/tmp}/deploy-orchestrator.XXXXXX")" || {
+  echo "[deploy-orchestrator] 一時ファイルを作成できませんでした。" >&2
+  exit 1
+}
 trap 'rm -f "$ERR"' EXIT
 if ! SHA_REMOTE="$(aws lambda get-function-configuration \
   --function-name "$FUNCTION_NAME" \

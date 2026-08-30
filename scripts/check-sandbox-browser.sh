@@ -338,69 +338,35 @@ if [[ "$ready" -ne 1 ]]; then
   fail "dev サーバが応答しませんでした（${BASE}）。"
 fi
 
-# ── 層 0: 配信された本文を 1 回展開すると wasm であること（#181。ブラウザ不要）──
+# ── 層 0: 配信された `.wasm` の本文が正しいこと（#181 / #182。ブラウザ不要）──
 #
-# **curl は `--compressed` を付けない限り展開しない**ので、ここで受け取るのは
-# **ワイヤ上のバイト列そのもの**である。それを 1 回だけ展開して、wasm のマジック
-# ナンバーで始まることを見る。二重に圧縮されていれば、1 回展開しても brotli のままで、
-# マジックナンバーは出ない。
+# **判定はここに書かない。** `scripts/wasm-body-verdict.mjs` が持つ。**`check-sandbox-cors.sh`
+# と同じ判定体を使う**——2 箇所に書けば、片方だけ直る日が来る（実際に #182 で、
+# 同じ誤りが 2 箇所に複製されていた）。
+#
+# **`Accept-Encoding: br` を明示し、返ってきた `Content-Encoding` で判定を分ける。**
+# dev サーバの前には展開する経路が無いので、いまは必ず br が返る。**それでも宣言を
+# 見て分岐する**——「経路は本文を透過的に展開しうる」という前提を、環境が変わった日に
+# 踏み直さないためである（本番でそれが起き、#182 の偽陽性になった）。
 WASM_URL="${BASE}/p/${PREVIEW_KEY}/game.wasm"
-note "層 0: fetching $WASM_URL (raw wire bytes)"
+note "層 0: fetching $WASM_URL"
 # 自己署名の開発用証明書を明示的に信頼する（`-k` で丸ごと無視するより範囲が狭い）。
-curl -sS --max-time 60 --cacert certs/dev.crt \
-  --resolve "${SANDBOX_HOST}:${PORT}:127.0.0.1" -o "$WORK/wire.bin" "$WASM_URL" ||
+# **`--compressed` は付けない**（curl が展開するとヘッダと本文の対応が崩れる）。
+curl -sS --max-time 60 --cacert certs/dev.crt -H 'Accept-Encoding: br' \
+  --resolve "${SANDBOX_HOST}:${PORT}:127.0.0.1" \
+  -D "$WORK/wire.headers" -o "$WORK/wire.bin" "$WASM_URL" ||
   fail "層 0: .wasm を取得できませんでした（$WASM_URL）。"
 
-node -e '
-const zlib = require("node:zlib");
-const fs = require("node:fs");
-const wire = fs.readFileSync(process.argv[1]);
-const head = (buffer) => [...buffer.subarray(0, 4)].map((b) => b.toString(16).padStart(2, "0")).join(" ");
+WIRE_ENCODING="$(awk 'tolower($0) ~ /^content-encoding:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }' "$WORK/wire.headers")"
 
-let once;
-try {
-  once = zlib.brotliDecompressSync(wire);
-} catch (error) {
-  process.stderr.write(
-    `[browser-check] 層 0 (#181): 配信された本文を brotli として展開できませんでした` +
-      ` (${wire.length} バイト, 先頭 ${head(wire)}): ${String(error)}\n`,
-  );
-  process.exit(1);
-}
-
-// wasm のマジックナンバー `\0asm`。
-const MAGIC = Buffer.from([0x00, 0x61, 0x73, 0x6d]);
-if (once.subarray(0, 4).equals(MAGIC)) {
-  process.stdout.write(
-    `[browser-check] 層 0 OK: 1 回展開で wasm になりました` +
-      ` (配信 ${wire.length} → 展開 ${once.length} バイト, 先頭 ${head(once)})\n`,
-  );
-  process.exit(0);
-}
-
-// 1 回展開してもまだ brotli なら、二重圧縮である（#181 の症状そのもの）。
-let twice = null;
-try {
-  twice = zlib.brotliDecompressSync(once);
-} catch {
-  twice = null;
-}
-process.stderr.write(
-  `[browser-check] 層 0 (#181): 1 回展開しても wasm になりません` +
-    ` (配信 ${wire.length} → 1 回展開 ${once.length} バイト, 先頭 ${head(once)})\n`,
-);
-if (twice !== null && twice.subarray(0, 4).equals(MAGIC)) {
-  process.stderr.write(
-    `[browser-check] 2 回展開すると wasm になります (${twice.length} バイト)。` +
-      " **二重に brotli 圧縮されて配信されています。**\n" +
-      "[browser-check] src/sandbox-delivery.ts の wasmResponse に encodeBody: \x27manual\x27 が要ります（#181）。\n",
-  );
-}
-process.exit(1);
-' "$WORK/wire.bin" || fail "層 0 (#181) が通りませんでした。"
+node scripts/wasm-body-verdict.mjs \
+  --body "$WORK/wire.bin" \
+  --content-encoding "$WIRE_ENCODING" \
+  --label "[browser-check] 層 0" ||
+  fail "層 0 (#181) が通りませんでした。"
 
 if [[ "$SKIP_BROWSER" == "1" ]]; then
-  note "OK (層 0 のみ): 配信された .wasm は 1 回展開で wasm になります。"
+  note "OK (層 0 のみ): 配信された .wasm の本文は正しい形です。"
   note "**層 1〜3（実ブラウザ）は見ていません。** GF_SKIP_BROWSER を外すと見ます。"
   exit 0
 fi

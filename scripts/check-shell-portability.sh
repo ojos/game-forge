@@ -83,6 +83,7 @@ find [^|;&]*-printf	BSD の find に -printf は無い。-exec か -print と組
 xargs [^|;&]*-r	BSD の xargs に -r は無い（空入力でも実行しない挙動が既定）
 (head|tail) +-n +-[0-9]	負の行数は GNU 拡張。BSD には無い
 (^|[^-[:alnum:]_/])tac( |$)	BSD 系には tac が無い。tail -r か awk で代用する
+IGNORECASE[[:space:]]*=	IGNORECASE は gawk の拡張。mawk（Debian 既定の awk）と BSD awk は**黙って無視する**ので、大小の違う入力に一致しなくなる。tolower($0) ~ /.../ と書く
 RULES
 )"
 

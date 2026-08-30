@@ -32,6 +32,7 @@ import type { BuildOutcome } from '../build-client.js';
 import {
   artifactKeysOf,
   buildCacheRecordOf,
+  createBuildTimeoutBudget,
   invokeBuildFunction,
 } from '../build-client.js';
 import { sourceCacheKey } from '../build-cache.js';
@@ -65,6 +66,9 @@ export interface OrchestratorPipelineDependencies {
  * 使わない段（`checkQuota`）を空の成功にしないためで、うっかり呼んだときに
  * **クォータを判定せずに通った**状態を作らない。
  *
+ * **この関数は 1 ジョブにつき 1 回だけ呼ばれる**（`./handler.ts`）。時間切れの
+ * 呼び直しの枠を依頼ごとに持たせているのは、その性質に乗っている（#174）。
+ *
  * @param client このジョブのコールバッククライアント
  * @param deps 外部依存
  * @returns パイプライン
@@ -74,6 +78,12 @@ export function createOrchestratorPipeline(
   deps: OrchestratorPipelineDependencies = {},
 ): GenerationPipeline {
   const newGenerationId = deps.newGenerationId ?? (() => crypto.randomUUID());
+
+  // **1 依頼ぶんの、時間切れによる呼び直しの枠**（#174 / `src/build-client.ts`）。
+  // **ここで 1 つだけ作る。** ビルドごとに作ると、1 依頼で最大 9 回の呼び直しが
+  // 積める状態へ戻り、`terraform/orchestrator.tf` の実行時間の見積もりが崩れる
+  // （溢れると `finish` が届かず、作品行は `running` のまま残る）。
+  const buildTimeoutBudget = createBuildTimeoutBudget();
 
   return {
     ...notImplementedPipeline,
@@ -127,11 +137,11 @@ export function createOrchestratorPipeline(
         };
       }
 
-      const built = await invokeBuildFunction(
-        env,
-        generated.source,
-        deps.buildFetch === undefined ? {} : { fetch: deps.buildFetch },
-      );
+      const built = await invokeBuildFunction(env, generated.source, {
+        // **枠はジョブごとの 1 つを渡す**（#174。作るのはこの関数の冒頭）。
+        budget: buildTimeoutBudget,
+        ...(deps.buildFetch === undefined ? {} : { fetch: deps.buildFetch }),
+      });
       return { cached: false, sourceSha256, ...built };
     },
 

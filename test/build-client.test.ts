@@ -12,6 +12,7 @@ import {
   MAX_BUILD_INVOCATIONS_ON_TIMEOUT,
   artifactKeysOf,
   buildCacheRecordOf,
+  createBuildTimeoutBudget,
   createLambdaBuild,
   invokeBuildFunction,
   invokeEndpoint,
@@ -630,8 +631,8 @@ describe('関数側の時間切れは同じソースで呼び直す（#164）', 
   });
 
   it('呼び直しの上限は 2（初回＋1 回）である', () => {
-    // **3 回目は上限に当たる。** オーケストレータの 600 秒は
-    // 「3 試行 ×（生成 91 秒 ＋ ビルド最大 45 秒 ×2）」で組んである。
+    // **3 回目は上限に当たる。** オーケストレータの実行時間の見積もりが
+    // この定数を入力にしている（terraform/orchestrator.tf。数値はここへ写さない）。
     expect(MAX_BUILD_INVOCATIONS_ON_TIMEOUT).toBe(2);
   });
 
@@ -662,6 +663,33 @@ describe('関数側の時間切れは同じソースで呼び直す（#164）', 
       invokeBuildFunction(buildEnv(), 'package main', { fetch: seam.fetch }),
     ).rejects.toBeInstanceOf(BuildRejected);
     expect(seam.sent).toHaveLength(1);
+  });
+
+  it('枠は依頼をまたいで持ち越す（2 本目のビルドは呼び直さない。#174）', async () => {
+    // **1 依頼のあいだにビルドは何度も走る**（4.2 の機械修正と 5.2-7 の再試行）。
+    // 枠がビルドごとだと、1 依頼で呼び直しが最大 9 回積める。
+    const success = await buildResponseBody();
+    const budget = createBuildTimeoutBudget();
+
+    const first = sequencedFetch([functionTimeoutResponse, () => okResponse(success)]);
+    await invokeBuildFunction(buildEnv(), 'package main', { fetch: first.fetch, budget });
+    expect(first.sent).toHaveLength(2);
+
+    // 2 本目。**同じ枠を渡す。** 使い切っているので、時間切れ 1 回で降りる。
+    const second = sequencedFetch([functionTimeoutResponse]);
+    const error = await invokeBuildFunction(buildEnv(), 'package main', {
+      fetch: second.fetch,
+      budget,
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(BuildTimedOut);
+    expect(second.sent).toHaveLength(1);
+  });
+
+  it('新しい枠は呼び直しを 1 回持つ（初回のぶんを引いた数）', () => {
+    // **総数から初回を引く。** ここを回数で書くと、定数を変えたときに
+    // 検査だけが古い上限で緑になる（shared-ai-rules 12 章）。
+    expect(createBuildTimeoutBudget().remaining).toBe(MAX_BUILD_INVOCATIONS_ON_TIMEOUT - 1);
   });
 
   it('スロットリング（429）は呼び直さない（滞留を増やすだけである）', async () => {

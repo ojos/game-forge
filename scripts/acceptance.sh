@@ -150,6 +150,24 @@ if [[ -f package.json ]]; then
   # CI は毎回 npm ci を実行するため、この検査で CI が赤くなることはない。
   echo "[acceptance] (node) scripts/check-deps-installed.sh"
   bash scripts/check-deps-installed.sh
+  # 生成物（worker-configuration.d.ts）が宣言（wrangler.toml）より古くないこと（#175）。
+  #
+  # **上の依存の検査とまったく同じ事故で、対象が別の生成物である。** wrangler.toml へ
+  # [vars] を足した PR が入ると、npm ci を打っていない worktree の生成物が黙って古くなり、
+  # npm test / npm run typecheck が TS2339（Property ... does not exist on type 'Env'）で
+  # 落ちる。**自分の変更と無関係な赤で、しかも原因が読み取りにくい。** 第 4 波で 4 者が
+  # 同じ赤を踏んだ。直さずに落とすだけである（理由は scripts/check-deps-installed.sh の
+  # 冒頭と、あの生成物に固有の事情は check-worker-types-fresh.sh の冒頭）。
+  #
+  # **本命の置き場所は package.json の typecheck / test 側である。** 落ちる当のコマンドの
+  # 手前に置かないと、`npm run typecheck` を直接叩く反復には効かない。ここへも書くのは、
+  # 上の依存の検査と同じ並びで読めるようにするためと、npm 側の配線が外れても受け入れ
+  # 検証からは消えないようにするため（20 ms なので重ねても値段は変わらない）。
+  #
+  # **完全な照合ではない。** 名前と値と compatibility_date しか見ない。全行の一致は
+  # 下の scripts/check-worker-types.sh が wrangler types を実行して確かめる。
+  echo "[acceptance] (node) scripts/check-worker-types-fresh.sh"
+  bash scripts/check-worker-types-fresh.sh
   echo "[acceptance] (node) npm test"
   npm test
   echo "[acceptance] (node) npm run typecheck"

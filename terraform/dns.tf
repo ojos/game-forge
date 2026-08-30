@@ -93,3 +93,85 @@ resource "aws_route53_record" "sandbox" {
   ttl     = 300
   records = [local.pages_hostname]
 }
+
+/**
+ * ここから下はメール送信（Resend / 確定14 / #178）のためのレコードである。
+ *
+ * # なぜ上位ドメイン（ojos.jp）へ 1 本も置かないのか
+ *
+ * **`ojos.jp` は Google Workspace の MX が乗っている本番のメール経路**であり、確定17 で
+ * Route53 へ委譲したのは `game-forge.ojos.jp` だけである。**そこへ触らずに送信を成立
+ * させられる**ことを、2026-08-30 に実際の DNS を引いて確かめた。
+ *
+ *   - DKIM は `<selector>._domainkey.<domain>` と署名の `d=` で完結する。サブドメインで独立
+ *   - SPF は封筒の送信者（Return-Path）のドメインを見る。Resend は `send.<domain>` を使う
+ *   - **DMARC だけは、無ければ組織ドメイン（`ojos.jp`）を見に行く性質がある。**
+ *     だから `_dmarc.game-forge.ojos.jp` を自分で置く。置けば `ojos.jp` に何が起きても
+ *     このサブドメインの判定は変わらない（`_dmarc.ojos.jp` は現在未設定である）
+ *
+ * From が `@game-forge.ojos.jp`、DKIM の `d=` も同じなので**アラインメントは厳密一致で通る。**
+ *
+ * **Resend の画面は名前を `ojos.jp` からの相対で表示する**（`resend._domainkey.game-forge`
+ * など）。**ここではフル名で書く。** 画面の表示をそのまま写すと、DMARC が `_dmarc.ojos.jp`
+ * ＝上位ドメインに落ちる。
+ *
+ * **受信（Enable Receiving）は使わないので MX を置かない。**
+ */
+
+/**
+ * DKIM の公開鍵（Resend が生成した 1024 ビット鍵）。
+ *
+ * **値は Resend の管理画面が正本である。** ここにあるのは写しで、鍵を再生成したら
+ * 差し替える。**分割していないのは 218 バイトだからである**（Route53 の TXT は 1 つの
+ * 文字列が 255 バイトを超えると分割が要る。2048 ビット鍵へ替えたら必要になる）。
+ */
+resource "aws_route53_record" "resend_dkim" {
+  zone_id = aws_route53_zone.game_forge.zone_id
+  name    = "resend._domainkey.${aws_route53_zone.game_forge.name}"
+  type    = "TXT"
+  ttl     = 300
+  records = ["p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDE/CoOSLsw3zbIiRplRjmpH+DmMeI6mvbq58cNlrXNQj1RrDjycOoxfyKVmosUWqMryI58eAAuGNv91L3HZuiZwmqKZHE+P3ECqRJbjUEgVTjcLfHnrf8MJ/86OtxN1OtNbACsx2cZtKZ4tHjpR5pA5KjUGucIHyCQvyhvbZvvVwIDAQAB"]
+}
+
+/**
+ * 送信経路（Resend の新しい方式では SPF を TXT ではなく CNAME で持つ）。
+ *
+ * **`rmta.net` は Resend の MTA である。** include ではなく委譲の形なので、
+ * SPF の 10 回ルックアップ制限を消費しない。リージョンは Tokyo（`apne1`）。
+ */
+resource "aws_route53_record" "resend_spf_rsend" {
+  zone_id = aws_route53_zone.game_forge.zone_id
+  name    = "rsend.${aws_route53_zone.game_forge.name}"
+  type    = "CNAME"
+  ttl     = 300
+  records = ["rsend-apne1.forge.rmta.net"]
+}
+
+/**
+ * Return-Path（バウンスの戻り先）。
+ */
+resource "aws_route53_record" "resend_spf_send" {
+  zone_id = aws_route53_zone.game_forge.zone_id
+  name    = "send.${aws_route53_zone.game_forge.name}"
+  type    = "CNAME"
+  ttl     = 300
+  records = ["send.forge.rmta.net"]
+}
+
+/**
+ * DMARC。**このサブドメインの判定を、上位ドメインから独立させるために置く。**
+ *
+ * **`p=none` から始める。** 到達性の実績が無いうちに `quarantine` / `reject` を出すと、
+ * 設定の誤りが「届かない」ではなく「迷惑メール扱い」として現れ、切り分けが遅れる。
+ * **締めるのは、実際に届くようになってからである**（#178 の acceptance）。
+ *
+ * 集計レポートの宛先（`rua=`）は置いていない。受け取る先を決めていないうちに書くと、
+ * 誰も読まないレポートが毎日どこかへ送られる。
+ */
+resource "aws_route53_record" "resend_dmarc" {
+  zone_id = aws_route53_zone.game_forge.zone_id
+  name    = "_dmarc.${aws_route53_zone.game_forge.name}"
+  type    = "TXT"
+  ttl     = 300
+  records = ["v=DMARC1; p=none;"]
+}

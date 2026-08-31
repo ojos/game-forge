@@ -207,9 +207,12 @@ main() {
   # そこで落ちたときには既に PR が出ている。**混入したコミットは push 済みなので、
   # 直すには履歴の書き換えと force push が要る**（波 1 で実際に踏んだ。#210）。
   #
-  # **worktree で落ちやすい。** `user.email` は worktree ごとに持つため、新しく
-  # 作った worktree でコミットするとグローバル／既定へ落ちる。ここまでは
-  # CI だけが見ていた（verify.sh にも acceptance.sh にも入っていない）。
+  # **並列作業で落ちやすい。** identity は `.git/config` で全 worktree が共有する
+  # （`extensions.worktreeConfig` は無効）。**共有しているからこそ、どれか 1 つの
+  # worktree で `git config user.email` を打つと全部が汚れる。** 波 1 では 3 レーンの
+  # うち 1 つだけが許可外 identity でコミットしており、作業の途中で共有 config が
+  # 書き換わったことになる。**ここまでは CI だけが見ていた**（verify.sh にも
+  # acceptance.sh にも入っていない）。
   #
   # 許可 email の解決は verify-commit-identity.sh が持つ。**解決できなければ
   # 通過させず落ちる**（fail-closed）ので、ここで別途の分岐を足さない。

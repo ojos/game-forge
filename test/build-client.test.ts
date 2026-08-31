@@ -808,8 +808,10 @@ describe('雛形の keys は内容アドレスに追随する（test/helpers/bui
     const pinned = fakeBuildOutcome({ goVersion: 'go1.26.5' });
     const other = fakeBuildOutcome({ goVersion: 'go1.27.0' });
 
-    expect(pinned.keys.wasmKey).toBe(`builds/${'a'.repeat(64)}/go1.26.5/game.wasm.br`);
-    expect(other.keys.wasmKey).toBe(`builds/${'a'.repeat(64)}/go1.27.0/game.wasm.br`);
+    // **雛形の既定 `sourceSha256` を直書きしない。** 既定値を変えた日にこのテストだけが
+    // 古くなる。見たいのは「`wasmKey` が `sourceSha256` と `goVersion` に追随する」関係である。
+    expect(pinned.keys.wasmKey).toBe(`builds/${pinned.sourceSha256}/go1.26.5/game.wasm.br`);
+    expect(other.keys.wasmKey).toBe(`builds/${other.sourceSha256}/go1.27.0/game.wasm.br`);
     // ソースは同じなので `source.go` の置き場所は変わらない（3.7 の掃除が数える単位）。
     expect(pinned.keys.sourceKey).toBe(other.keys.sourceKey);
   });

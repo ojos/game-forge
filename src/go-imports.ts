@@ -71,9 +71,17 @@ export type ImportInspection =
       readonly offending?: readonly string[];
     };
 
-/** 字句。import 宣言を読むのに要る種類だけを持つ。 */
+/**
+ * 字句。import 宣言を読むのに要る種類だけを持つ。
+ *
+ * **`rune` は #38 で足した。** import 宣言には現れないが、{@link scanStringLiterals} が
+ * ソース**全体**を同じ字句解析で走るので、ルーンリテラルを 1 つの字句として
+ * 閉じられる必要がある。`'"'` を 1 文字ずつ読むと、その中の引用符から文字列が
+ * 始まったと錯覚し、**そこから次の引用符までを丸ごと文字列として読む**
+ * （{@link findDeniedDirectives} が `'` を明示的に飛ばしているのと同じ事情）。
+ */
 interface Token {
-  readonly kind: 'ident' | 'string' | 'punct' | 'other';
+  readonly kind: 'ident' | 'string' | 'rune' | 'punct' | 'other';
   readonly value: string;
   /** ソース上の開始位置（空白とコメントを読み飛ばした後）。 */
   readonly start: number;
@@ -120,6 +128,43 @@ export type GoImportScan =
       /** BOM を落としたソース。**位置はすべてこの文字列に対する添字である。** */
       readonly text: string;
       readonly declarations: readonly GoImportDeclaration[];
+    }
+  | { readonly ok: false; readonly reason: ImportRejection };
+
+/**
+ * ソース中の文字列リテラル 1 件（8.3 / #38）。
+ *
+ * 位置は {@link GoStringScan.text}（BOM を落とした後のソース）に対する添字である。
+ */
+export interface GoStringLiteral {
+  /**
+   * 引用符の中身。**エスケープは解釈していない。**
+   *
+   * 解釈は「何のために読むか」で変わる（8.3 の語の突き合わせはエスケープを
+   * 展開したいが、位置を数える用途は展開されると添字がずれる）。**読み取り側は
+   * 生の綴りだけを返し、解釈は使う側に置く。**
+   */
+  readonly value: string;
+  /**
+   * 生文字列（`` ` `` で囲んだ形）か。
+   *
+   * **エスケープを解釈してよいかがこれで決まる。** 生文字列の中に書かれた
+   * `\u3042` は 6 文字ぶんの綴りであって「あ」1 文字ではない。
+   */
+  readonly raw: boolean;
+  /** 開始位置（開き引用符）。 */
+  readonly start: number;
+  /** 終了位置（閉じ引用符の次）。 */
+  readonly end: number;
+}
+
+/** {@link scanStringLiterals} の結果。 */
+export type GoStringScan =
+  | {
+      readonly ok: true;
+      /** BOM を落としたソース。**位置はすべてこの文字列に対する添字である。** */
+      readonly text: string;
+      readonly literals: readonly GoStringLiteral[];
     }
   | { readonly ok: false; readonly reason: ImportRejection };
 
@@ -350,6 +395,72 @@ export function scanImportSpecs(source: string): GoImportScan {
 }
 
 /**
+ * ソース**全体**から文字列リテラルを拾う（8.3 / #38）。
+ *
+ * ## 新しいパーサを足さない
+ *
+ * 8.3 の出力側モデレーションは「生成コード内の文字列リテラルを抽出して NG ワード検査を
+ * 行う」と定める。**その抽出をもう 1 つの走査器で書かない。** このモジュールの
+ * {@link nextToken} は既に、コメント・解釈される文字列・生文字列・ルーンリテラルを
+ * 字句として正しく読み分けており、**同じ読み分けを 2 つ持つと、片方だけが新しい
+ * 書き方に対応する状態**が生まれる（{@link scanImports} を {@link scanImportSpecs} の
+ * 上に載せ替えてあるのと同じ理由）。ここがするのは、その字句解析を最後まで走らせて
+ * `string` の字句を集めることだけである。
+ *
+ * ## 読めなければ落とす
+ *
+ * 閉じないリテラルに出会ったら `unparsable` を返す。**そこで打ち切って「見つからな
+ * かった」を返さない。** 返すと、閉じない引用符を 1 つ置くだけで以降の文字列を
+ * 検査から隠せる（このモジュールの「判定に迷ったら拒否する」）。閉じないリテラルは
+ * そもそも Go として通らないので、通す理由もない。
+ *
+ * ## コメントは対象にしない
+ *
+ * {@link skipTrivia} がコメントを飛ばすため、コメント中の語は拾わない。**画面へ出るのは
+ * 文字列リテラルであってコメントではない**（8.3 が捕まえると言っているのも前者）。
+ *
+ * @param source Go のソースコード
+ * @returns 文字列リテラルの一覧、または読み取れなかった理由
+ */
+export function scanStringLiterals(source: string): GoStringScan {
+  const text = source.replace(/^\uFEFF/u, '');
+  const cursor = { index: 0 };
+  const literals: GoStringLiteral[] = [];
+
+  for (;;) {
+    const token = nextToken(text, cursor);
+    if (token === null) {
+      return { ok: true, text, literals };
+    }
+    if (token.kind === 'string') {
+      literals.push({
+        // 生文字列（`` ` `` で囲む）はエスケープを解釈しない。**解釈の有無は
+        // 語を突き合わせる側が知る必要がある**ので、ここで捨てずに渡す。
+        raw: text[token.start] === '`',
+        value: token.value,
+        start: token.start,
+        end: token.end,
+      });
+      continue;
+    }
+    if (token.kind === 'other' && isQuote(text[token.start])) {
+      // 閉じないリテラル。読み取れていない。
+      return { ok: false, reason: 'unparsable' };
+    }
+  }
+}
+
+/**
+ * 引用符（文字列・生文字列・ルーンリテラルの開始文字）かどうか。
+ *
+ * @param char 判定する 1 文字（終端なら undefined）
+ * @returns 引用符なら true
+ */
+function isQuote(char: string | undefined): boolean {
+  return char === '"' || char === '`' || char === "'";
+}
+
+/**
  * `import` の後ろを読む。単一形と括弧でまとめた形の両方を受ける。
  *
  * @param text ソース
@@ -503,6 +614,26 @@ function nextToken(text: string, cursor: { index: number }): Token | null {
     const value = text.slice(cursor.index + 1, end);
     cursor.index = end + 1;
     return { kind: 'string', value, start, end: cursor.index };
+  }
+
+  // ルーンリテラル。**import 宣言には現れない**が、閉じずに 1 文字として返すと
+  // `'"'` の中の引用符から文字列が始まったことになり、以降の読み取りがずれる
+  // （#38。{@link Token} の注記）。**`string` にはしない**——中身は 1 文字なので
+  // 8.3 の語の検査に寄与せず、`readImportDeclaration` が import パスとして
+  // 受け取ってしまう形も作らない。
+  if (char === "'") {
+    const end = skipUntilQuote(text, cursor.index, "'");
+    // **開き引用符そのものを閉じ引用符と読まない。** ソース末尾の `'` 1 個では
+    // `skipUntilQuote` が終端（= 開き引用符の次）を返すため、`end - 1` は
+    // 開き引用符を指す。長さで先に落とす。
+    if (end - cursor.index < 2 || text[end - 1] !== "'") {
+      // 閉じないまま行が終わった（`skipUntilQuote` は改行で打ち切る）。
+      cursor.index = end;
+      return { kind: 'other', value: '', start, end: cursor.index };
+    }
+    const value = text.slice(cursor.index + 1, end - 1);
+    cursor.index = end;
+    return { kind: 'rune', value, start, end: cursor.index };
   }
 
   if (isIdentifierStart(char)) {

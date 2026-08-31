@@ -3,9 +3,12 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { GenerationPipeline } from '../src/generate.js';
 import {
   PipelineStepNotImplemented,
+  defaultPipeline,
   runJobInline,
   startGeneration,
 } from '../src/generate.js';
+import type { DeniedTerm } from '../src/denied-terms.js';
+import { DENIED_TERMS } from '../src/denied-terms.js';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
   findGenerationModel,
@@ -18,6 +21,7 @@ import {
   MAX_REPORTED_IMPORT_LENGTH,
   SOURCE_REJECTED_ERROR,
   SOURCE_REJECTED_STATUS,
+  createSourceInspector,
   describeSourceRejection,
   inspectGeneratedSource,
 } from '../src/source-inspection.js';
@@ -353,5 +357,130 @@ describe('検査段へそのまま差し込める（結線 PR の前提）', () 
       'build',
       'completeGame',
     ]);
+  });
+});
+
+
+/**
+ * `text` 描画で文字列を出す Go のソースを組み立てる（8.3 / 確定23 / #38）。
+ *
+ * **8.3 が想定しているのはこの経路そのものである。** 6.1 が `text/v2` と `basicfont` を
+ * 許しているため（確定23 / #72）、生成物は画面へ任意の文字列を出せる。
+ *
+ * @param literal 描画する Go の文字列リテラル（引用符を含む）
+ * @returns Go のソース
+ */
+function drawingSource(literal: string): string {
+  return `package main
+
+import (
+\t"github.com/hajimehoshi/ebiten/v2"
+\t"github.com/hajimehoshi/ebiten/v2/text/v2"
+\t"golang.org/x/image/font/basicfont"
+)
+
+type Game struct{}
+
+func (g *Game) Draw(screen *ebiten.Image) {
+\tface := text.NewGoXFace(basicfont.Face7x13)
+\ttext.Draw(screen, ${literal}, face, nil)
+}
+`;
+}
+
+/**
+ * 規則ではなく**結線**を試すためのダミーの表。
+ *
+ * **実在の差別語をこのファイルへ書かない**（`test/output-moderation.test.ts` と同じ方針）。
+ * 既定の表が実際に効いていることは、下で表から語を引いて確かめる。
+ */
+const DUMMY_TERMS: readonly DeniedTerm[] = [
+  { term: 'ダミー禁止語', match: 'substring', category: 'discriminatory' },
+];
+
+describe('NG ワードを描画するソースを拒否する（8.3 / #38）', () => {
+  it('差別語を text 描画するソースが検出される（acceptance）', () => {
+    // **語をこのファイルへ書き写さない。** 既定の表から引いて組み立てる。
+    // これで「テストに実在の差別語を書かない」ことと「既定の表が本当に効いている
+    // ことを確かめる」ことが両立する。
+    //
+    // **件数を先に見る。** 表が空だと for が 1 度も回らず、**何も確かめないまま緑**に
+    // なる（引き継ぎ 4 章「確かめていない検査は赤より悪い」）。表を空にする変異で
+    // このテストが赤になることを実際に確かめてある。
+    expect(DENIED_TERMS.length).toBeGreaterThan(0);
+    for (const term of DENIED_TERMS) {
+      const rejected = rejectionOf(drawingSource(`"${term.term}"`));
+      expect(rejected.reason).toBe('denied-term');
+      expect(rejected.offending).toEqual([term.category]);
+    }
+  });
+
+  it('表に無い語しか出さないソースは通る', () => {
+    expect(() =>
+      inspectGeneratedSource(generated(drawingSource('"SCORE: 100"'))),
+    ).not.toThrow();
+  });
+
+  it('表を注入した検査段でも同じ形で拒否する', () => {
+    const inspect = createSourceInspector(DUMMY_TERMS);
+    let rejected: GeneratedSourceRejected | null = null;
+    try {
+      inspect(generated(drawingSource('"ダミー禁止語"')));
+    } catch (error) {
+      rejected = error as GeneratedSourceRejected;
+    }
+    expect(rejected).toBeInstanceOf(GeneratedSourceRejected);
+    // **理由まで見る。** 拒否されたことだけを見ると、読み取りに失敗して落ちた
+    // （`unparsable`）場合も緑になる。
+    expect(rejected!.reason).toBe('denied-term');
+    // 注入した表に無い語は通る。**既定の表を見に行っていない**ことの確認でもある。
+    expect(() => inspect(generated(drawingSource('"SCORE"')))).not.toThrow();
+  });
+
+  it('拒否した語そのものは応答にもログにも出さない', () => {
+    // 8.3 の #133 注記は「固定語彙は生成物由来ではない」とするので、語を出しても
+    // 規約違反ではない。それでも出さないのは、**422 の応答が表を 1 語ずつ引き出せる
+    // 口になる**ためである（当てては消し、を繰り返せば一覧が復元できる）。
+    const inspect = createSourceInspector(DUMMY_TERMS);
+    let rejected: GeneratedSourceRejected | null = null;
+    try {
+      inspect(generated(drawingSource('"これはダミー禁止語です"')));
+    } catch (error) {
+      rejected = error as GeneratedSourceRejected;
+    }
+    expect(rejected).not.toBeNull();
+    expect(rejected!.message).not.toContain('ダミー禁止語');
+    const body = describeSourceRejection(rejected!);
+    expect(body).toEqual({
+      error: SOURCE_REJECTED_ERROR,
+      reason: 'denied-term',
+      imports: ['discriminatory'],
+    });
+  });
+
+  it('5.2-5 の違反のほうを理由にする', () => {
+    // 両方に違反しているソースでは、**先に安全側の理由**を返す。import と指示は
+    // 7.1 のコンテナに対する多層防御の層で、8.3 は表示物の話である。
+    const inspect = createSourceInspector(DUMMY_TERMS);
+    let rejected: GeneratedSourceRejected | null = null;
+    try {
+      inspect(
+        generated(`package main
+
+import "os/exec"
+
+const label = "ダミー禁止語"
+`),
+      );
+    } catch (error) {
+      rejected = error as GeneratedSourceRejected;
+    }
+    expect(rejected!.reason).toBe('not-allowed');
+  });
+
+  it('エッジとオーケストレータが同じ検査段を借りている', () => {
+    // **実行環境によって表が違う状態を作らない。** 表をコード側へ置いた理由
+    // （`src/denied-terms.ts` 冒頭）は、この同一性が成り立っていて初めて意味を持つ。
+    expect(defaultPipeline.inspectSource).toBe(inspectGeneratedSource);
   });
 });

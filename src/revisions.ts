@@ -249,10 +249,18 @@ export async function claimRevisionSlot(
     // **枠を取るより先に積む。** 同じ batch なので、枠が取れなければこの行も残らない
     // （D1 の `batch` は暗黙のトランザクションで走る）。
     //
-    // **条件は下の UPSERT とそろえてある。** そろえないと、断られた要求で版だけが
-    // 積まれる経路ができる。`source_key` / `wasm_key` の非 NULL を足しているのは、
-    // `generation_state = 'ready'` なら入っているはずの値に**寄りかからない**ためである
-    // （0007 の不変条件を画面が前提にしないのと同じ線）。
+    // **5.7 の対象条件は下の UPSERT とそろえてある**（作者・`draft`・`ready`・上限）。
+    // そろえないと、断られた要求で版だけが積まれる経路ができる。
+    //
+    // **そのうえで、こちらにだけ `source_key` / `wasm_key` の非 NULL がある。**
+    // 意図的な差である。0007 の不変条件によれば `ready` なら入っているはずだが、
+    // **写す値そのものなので、入っていなかったときに NOT NULL 制約で batch ごと
+    // 落とすより、積まないほうがよい**（0009 の `game_revisions` は両方 NOT NULL）。
+    //
+    // **UPSERT 側へは足さない。** 足すと、この状態の要求が「いま推敲できません」
+    // （409）で断られる。実際にはソースが読めないことが理由で、`src/revise.ts` は
+    // それを 500 と専用の文言で返し、**枠も返す。** 断り方の正しさを、こちらの
+    // 都合で下げない。
     env.DB.prepare(
       `insert into game_revisions (game_id, seq, source_key, wasm_key, go_version, prompt, created_at)
        select g.id, 1, g.source_key, g.wasm_key, g.go_version, null, g.created_at

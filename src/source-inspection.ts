@@ -1,12 +1,22 @@
 /**
- * 生成パイプラインの検査段（3.3 の `inspectSource`）へ差し込む適合層（5.2-5 / 7.1 / #17）。
+ * 生成パイプラインの検査段（3.3 の `inspectSource`）へ差し込む適合層
+ * （5.2-5 / 7.1 / 8.3 / #17 / #38）。
  *
- * 検査そのものは `src/go-imports.ts` が持つ。このモジュールが持つのは**継ぎ目の形**だけで、
- * 次の 3 つを担う。
+ * 検査そのものは `src/go-imports.ts`（5.2-5 の import と指示）と
+ * `src/output-moderation.ts`（8.3 の文字列リテラル）が持つ。このモジュールが持つのは
+ * **継ぎ目の形**だけで、次の 3 つを担う。
  *
  * 1. `GenerationResult`（生成の段の出力）から Go ソースを取り出して検査へ渡す。
  * 2. 検査が落ちたら**拒否として例外を投げる**。`PipelineStepNotImplemented` を投げない。
- * 3. 拒否の理由と**どの import が引っかかったか**を、呼び出し側が読める形で運ぶ。
+ * 3. 拒否の理由と**何が引っかかったか**を、呼び出し側が読める形で運ぶ。
+ *
+ * ## 2 つの検査を 1 つの段に束ねる（#38）
+ *
+ * 8.3 の出力側モデレーションを別の段にしていない。**`GenerationPipeline` の段を増やすと、
+ * エッジとオーケストレータの 2 か所で結線が要り、片方だけ結線されていない状態を作れる**
+ * （`src/orchestrator/pipeline.ts` の表がそれを 1 行で見せている）。5.2-5 と 8.3 は
+ * どちらも「生成物を見て、通すか拒否するか」であり、**拒否の扱いも同じ**（再生成に
+ * 回さない。下記）なので、段の数を増やす理由がない。
  *
  * ## なぜ検査器と別のファイルなのか
  *
@@ -22,12 +32,17 @@
  * ここを直さなくても素通りする形にしておくためである。写し替えを挟むと、足された理由が
  * こちら側の既定値へ丸められ、**新しい拒否が「理由不明の拒否」として現れる。**
  *
- * ## 再生成に回さない（5.2-5）
+ * ## 再生成に回さない（5.2-5 / 8.3）
  *
  * 5.2-5 は「違反は再生成に回さず拒否」と定める。したがってここは例外を投げるだけで、
- * リトライも、緩和した再検査も行わない。5.2-7 の自動リトライ（#20）が対象にするのは
- * **コンパイル失敗**であって、ホワイトリスト違反ではない。混ぜると、禁止パッケージを
- * 使いたがるプロンプトが 1 回の枠で複数回の生成を起こせる（4.3 の上限が緩む）。
+ * リトライも、緩和した再検査も行わない。**8.3 の NG ワードも同じ扱いにする**（#38）。
+ * 理由は 5.2-5 と同じで、**再生成に回すと、差別語を出したがるプロンプトが 1 回の枠で
+ * 複数回の生成を起こせる**（4.3 の上限が緩む）。しかも表に当たったソースを引き直しても、
+ * 同じプロンプトからは同じ語が出やすい——**費用だけが増えて結果が変わらない。**
+ *
+ * 5.2-7 の自動リトライ（#20）が対象にするのは**コンパイル失敗**であって、ホワイトリスト
+ * 違反ではない。混ぜると、禁止パッケージを使いたがるプロンプトが 1 回の枠で複数回の
+ * 生成を起こせる（4.3 の上限が緩む）。
  *
  * ## 整形に寛容にしない
  *
@@ -42,9 +57,23 @@
  * ホワイトリスト違反ではない。**種類は理由として区別できる形で運ぶ**ので、
  * リトライの可否（#20）はこの例外を受けた側が判断できる。
  */
+import type { DeniedTerm } from './denied-terms.js';
+import { DENIED_TERMS } from './denied-terms.js';
 import type { GenerationResult } from './generation-models.js';
 import type { ImportRejection } from './go-imports.js';
 import { inspectGoImports } from './go-imports.js';
+import type { DeniedTermRejection } from './output-moderation.js';
+import { inspectStringLiterals } from './output-moderation.js';
+
+/**
+ * 生成されたソースを受け付けなかった理由。
+ *
+ * **2 つの検査の理由を合わせた形である。** 5.2-5 の import / 指示（`ImportRejection`）と、
+ * 8.3 の文字列リテラル（`DeniedTermRejection`）で、**どちらも「再生成に回さず拒否」**
+ * という同じ扱いになる（下記「再生成に回さない」）。理由の側は混ぜず、どちらの検査が
+ * 落としたかが読み取れる形で運ぶ。
+ */
+export type SourceRejection = ImportRejection | DeniedTermRejection;
 
 /**
  * 拒否を伝えるときに載せる import パスの最大件数。
@@ -77,16 +106,23 @@ export const SOURCE_REJECTED_ERROR = 'source-rejected';
  * **`PipelineStepNotImplemented` と区別する。** あちらは「段が無い」、こちらは
  * 「段が働いて落とした」であり、経路層の応答（501 と 422）も、運用時に見るべき場所も違う。
  *
- * `reason` は検査器の `ImportRejection` をそのまま持つ。ここで別の型へ写さないのは、
+ * `reason` は検査器が返した理由をそのまま持つ。ここで別の型へ写さないのは、
  * 検査器が理由を足したときに写し替えの側が古くなるためである（モジュール冒頭）。
+ *
+ * **`offending` に載るものは理由で変わる。** `not-allowed` なら import パス、
+ * `directive-not-allowed` なら指示の名前、`denied-term`（8.3）なら**語の分類**である。
+ * どれも上限を掛けたうえで応答へ出る。**`denied-term` で当たった語そのものは載せない**
+ * （`src/denied-terms.ts` の `category` の注記。応答が表を引き出す口になる）。
  */
 export class GeneratedSourceRejected extends Error {
   /**
    * @param reason 検査器が返した理由。**そのまま運ぶ**（種類を列挙しない）
-   * @param offending 許可されていない import パス。理由によっては空
+   * @param offending 引っかかったものの識別子。**理由で中身が変わる**（クラスの説明を
+   *   参照。`not-allowed` なら import パス、`directive-not-allowed` なら指示の名前、
+   *   `denied-term` なら語の分類）。理由によっては空
    */
   constructor(
-    readonly reason: ImportRejection,
+    readonly reason: SourceRejection,
     readonly offending: readonly string[],
   ) {
     // message にはソース本文もプロンプトも入れない。**上限を掛けた import パスだけ**を
@@ -103,23 +139,53 @@ export class GeneratedSourceRejected extends Error {
 }
 
 /**
- * 生成されたソースを検査し、許可外の import があれば拒否する（5.2-5）。
+ * 検査段を作る（5.2-5 と 8.3 の 2 つを直列に掛ける）。
+ *
+ * **引数は NG ワード表だけである。** 既定は `src/denied-terms.ts` の一覧で、
+ * **テストがダミー語を注入するための口**として開けてある（実在の差別語をテストへ
+ * 書かずに、規則と結線の両方を試せるようにするため）。運用で表を差し替える口では
+ * ない——表をコード側に置いた理由は `src/denied-terms.ts` の冒頭にある。
+ *
+ * @param terms 拒否する語の表
+ * @returns `GenerationPipeline['inspectSource']` へ代入できる検査段
+ */
+export function createSourceInspector(
+  terms: readonly DeniedTerm[] = DENIED_TERMS,
+): (generated: GenerationResult) => void {
+  return (generated: GenerationResult): void => {
+    // **5.2-5 を先に見る。** import と指示は 7.1 のコンテナに対する多層防御の層で、
+    // 8.3 は表示物の話である。両方に違反しているソースでは、**先に安全側の理由**を
+    // 返したい（`inspectGoImports` が指示を import より先に見ているのと同じ考え方）。
+    const imports = inspectGoImports(generated.source);
+    if (!imports.ok) {
+      // 理由も違反 import も、検査器が返したものをそのまま渡す。
+      throw new GeneratedSourceRejected(imports.reason, imports.offending ?? []);
+    }
+
+    // 8.3: 出力側モデレーション。**文字列リテラルの抽出は M2-3 と同じ字句解析を使う。**
+    const literals = inspectStringLiterals(generated.source, terms);
+    if (!literals.ok) {
+      throw new GeneratedSourceRejected(literals.reason, literals.categories);
+    }
+  };
+}
+
+/**
+ * 生成されたソースを検査し、許可外の import（5.2-5）と NG ワード（8.3）を拒否する。
  *
  * `GenerationPipeline['inspectSource']` へそのまま代入できる形にしてある
  * （`(generated: GenerationResult) => void`）。**成功時は何も返さない。** 読み取れた
  * import の一覧は後段が使わないため、継ぎ目の戻り値を増やさない。
  *
+ * **既定の NG ワード表を束ねた形である。** エッジ（`src/generate.ts`）と
+ * オーケストレータ（`src/orchestrator/pipeline.ts`）がどちらもこれを借りるので、
+ * **実行環境によって表が違う状態を作らない。**
+ *
  * @param generated 生成の段（3.3-3）が返した結果
  * @throws {GeneratedSourceRejected} 検査が通らなかった場合
  */
-export function inspectGeneratedSource(generated: GenerationResult): void {
-  const inspection = inspectGoImports(generated.source);
-  if (inspection.ok) {
-    return;
-  }
-  // 理由も違反 import も、検査器が返したものをそのまま渡す。
-  throw new GeneratedSourceRejected(inspection.reason, inspection.offending ?? []);
-}
+export const inspectGeneratedSource: (generated: GenerationResult) => void =
+  createSourceInspector();
 
 /**
  * 拒否を、応答本文にもログにも出してよい形へ落とす。
@@ -135,23 +201,30 @@ export function inspectGeneratedSource(generated: GenerationResult): void {
  */
 export function describeSourceRejection(rejected: GeneratedSourceRejected): {
   readonly error: string;
-  readonly reason: ImportRejection;
+  readonly reason: SourceRejection;
   readonly imports: readonly string[];
 } {
   return {
     error: SOURCE_REJECTED_ERROR,
     reason: rejected.reason,
+    // **`imports` という綴りは変えない。** #38 で中身は「理由ごとの識別子」へ広がった
+    // （8.3 なら語の分類）が、これは公開済みの応答本文のフィールド名であり、改名は
+    // 経路層と `test/generate.test.ts` へ波及する。**綴りの正確さのために外向きの形を
+    // 壊さない**（改名するなら応答の版を分ける話になるので、別 issue で扱う）。
     imports: summarizeImports(rejected.offending),
   };
 }
 
 /**
- * import パスの一覧へ件数と長さの上限を掛ける。
+ * 応答へ載せる識別子の一覧へ、件数と長さの上限を掛ける。
  *
  * 切り詰めたことが読み手に分かるよう、末尾に印を付ける。黙って削ると「これで全部だ」と
  * 読まれる。
  *
- * @param paths 許可されていない import パス
+ * **載るものは理由で変わる**（import パス / 指示の名前 / 8.3 の語の分類）。上限の掛け方は
+ * どれでも同じなので、理由ごとに分けない。
+ *
+ * @param paths 引っかかったものの識別子
  * @returns 上限を掛けた一覧
  */
 function summarizeImports(paths: readonly string[]): readonly string[] {

@@ -39,9 +39,10 @@
  * 理由は 5.2-5 と同じで、**再生成に回すと、差別語を出したがるプロンプトが 1 回の枠で
  * 複数回の生成を起こせる**（4.3 の上限が緩む）。しかも表に当たったソースを引き直しても、
  * 同じプロンプトからは同じ語が出やすい——**費用だけが増えて結果が変わらない。**
- *5.2-7 の自動リトライ（#20）が対象にするのは
- * **コンパイル失敗**であって、ホワイトリスト違反ではない。混ぜると、禁止パッケージを
- * 使いたがるプロンプトが 1 回の枠で複数回の生成を起こせる（4.3 の上限が緩む）。
+ *
+ * 5.2-7 の自動リトライ（#20）が対象にするのは**コンパイル失敗**であって、ホワイトリスト
+ * 違反ではない。混ぜると、禁止パッケージを使いたがるプロンプトが 1 回の枠で複数回の
+ * 生成を起こせる（4.3 の上限が緩む）。
  *
  * ## 整形に寛容にしない
  *
@@ -116,7 +117,9 @@ export const SOURCE_REJECTED_ERROR = 'source-rejected';
 export class GeneratedSourceRejected extends Error {
   /**
    * @param reason 検査器が返した理由。**そのまま運ぶ**（種類を列挙しない）
-   * @param offending 許可されていない import パス。理由によっては空
+   * @param offending 引っかかったものの識別子。**理由で中身が変わる**（クラスの説明を
+   *   参照。`not-allowed` なら import パス、`directive-not-allowed` なら指示の名前、
+   *   `denied-term` なら語の分類）。理由によっては空
    */
   constructor(
     readonly reason: SourceRejection,
@@ -204,6 +207,10 @@ export function describeSourceRejection(rejected: GeneratedSourceRejected): {
   return {
     error: SOURCE_REJECTED_ERROR,
     reason: rejected.reason,
+    // **`imports` という綴りは変えない。** #38 で中身は「理由ごとの識別子」へ広がった
+    // （8.3 なら語の分類）が、これは公開済みの応答本文のフィールド名であり、改名は
+    // 経路層と `test/generate.test.ts` へ波及する。**綴りの正確さのために外向きの形を
+    // 壊さない**（改名するなら応答の版を分ける話になるので、別 issue で扱う）。
     imports: summarizeImports(rejected.offending),
   };
 }

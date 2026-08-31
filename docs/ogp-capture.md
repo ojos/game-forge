@@ -62,7 +62,12 @@ terraform apply -target=aws_ecr_repository.ogp_shot
 **`linux/amd64` で作ること**（関数は x86_64。Apple Silicon の既定は arm64 で、
 そのまま push すると関数が `Runtime.InvalidEntrypoint` で落ちる）。
 
+**`--provenance=false --sbom=false` と `oci-mediatypes=false` が要る。** これを落とすと
+`terraform apply` が **400 で落ちる**（下記）。
+
 ```bash
+cd "$(git rev-parse --show-toplevel)"   # 3.1 で terraform/ にいるので戻る
+
 ACCOUNT_ID="$(aws sts get-caller-identity --profile game-forge-prod --query Account --output text)"
 REGION=ap-northeast-1
 REPO="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/game-forge/ogp-shot"
@@ -70,8 +75,39 @@ REPO="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/game-forge/ogp-shot"
 aws ecr get-login-password --region "$REGION" --profile game-forge-prod \
   | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 
-docker buildx build --platform linux/amd64 -t "${REPO}:latest" --push docker/ogp-shot
+docker buildx build --platform linux/amd64 \
+  --provenance=false --sbom=false \
+  --output type=image,oci-mediatypes=false,push=true \
+  -t "${REPO}:latest" docker/ogp-shot
 ```
+
+**なぜ 3 つ要るのか**（2026-08-31 に実際に踏んだ）。
+
+```
+InvalidParameterValueException: The image manifest, config or layer media type
+for the source image ... is not supported.
+```
+
+**Lambda が受け付けるのは Docker Image Manifest V2 schema2 だけ**である。ところが
+`docker buildx build --push` の既定は 2 つの意味でこれを外す。
+
+| フラグ | 落とすと何が起きるか |
+|---|---|
+| `--provenance=false` / `--sbom=false` | 添付（attestation）が付き、**イメージインデックス**（`application/vnd.oci.image.index.v1+json`）になる。Lambda はマニフェストリストを受け付けない |
+| `oci-mediatypes=false` | メディアタイプが `application/vnd.oci.image.manifest.v1+json` になる。Lambda は Docker V2 schema2 を要求する |
+
+**エラー文からは buildx の既定が原因だと辿れない。** イメージの中身は正しく、形式だけが違う。
+
+**push したら、apply の前に形式を確かめること**（1 秒）。
+
+```bash
+aws ecr describe-images --repository-name game-forge/ogp-shot --region ap-northeast-1 \
+  --profile game-forge-prod \
+  --query 'imageDetails[?contains(imageTags||`[]`, `latest`)].imageManifestMediaType' --output text
+```
+
+**`application/vnd.docker.distribution.manifest.v2+json`** と出れば通る。`oci` を含む値なら
+apply は必ず 400 で落ちるので、フラグを付けて push し直す。
 
 ### 3.3 残りを apply する
 
@@ -161,12 +197,13 @@ X / Slack / Discord はそれぞれ独自にクロールする。**`https://app.
 
 | 項目 | 状態 |
 |---|---|
-| **本番で 1 枚も撮っていない** | イメージのビルドも push も apply も未実施 |
-| メモリ 2,048 MB / タイムアウト 60 秒 | **見積もりであって実測ではない。** 最初の撮影で `Max Memory Used` と `Duration` を見て決め直す |
-| 合図のあとの待ち時間 1,500 ms | 同上（`docker/ogp-shot/index.mjs` の `FIRST_FRAME_SETTLE_MS`）。撮れた画像が黒い・白いなら、まずここを疑う |
+| ~~**本番で 1 枚も撮っていない**~~ | **2026-08-31 に 1 枚目を撮った**（`ff7d397e`）。1200×630 / 15,311 バイトで、初回フレームが正しく写っている |
+| メモリ 2,048 MB / タイムアウト 60 秒 | **実測: `Max Memory Used` 689 MB（34%）/ `Duration` 16,907 ms（コールドスタート 2,425 ms 別）。** 1 枚あたり約 0.1 円。**メモリを下げないこと**——買っているのは RAM ではなく vCPU で、下げると撮影が遅くなり、下の `CAPTURE_TIMEOUT_MS` の薄い余裕を削る |
+| **`CAPTURE_TIMEOUT_MS` 20,000 ms** | **余裕が 3.1 秒しかない**（実測 16,907 ms）。Lambda の 60 秒より内側の 20 秒が先に切る。**より重い作品では超えうる**（#219） |
+| 合図のあとの待ち時間 1,500 ms | **足りていた**（`docker/ogp-shot/index.mjs` の `FIRST_FRAME_SETTLE_MS`）。1 枚目に「読み込み中」は写らなかった。撮れた画像が黒い・白いなら、まずここを疑う |
 | 撮る大きさ・待ち時間の受け渡し | 関数は環境変数だけを見る（既定値を持たない）。**宣言が欠けると起動時に落ちる**ので、`terraform apply` の前に `bash scripts/check-ogp-copies.sh` を通すこと |
-| `@sparticuz/chromium` / `puppeteer-core` の版 | **未検証。** `npm install` が解決できなければ実在する版へ直す。通った版はここへ記録する |
-| WebGL | `chromium.setGraphicsMode = true` を明示している。**切れていると真っ黒な画像が「成功」として撮れる** |
+| `@sparticuz/chromium` / `puppeteer-core` の版 | **`docker/ogp-shot/package.json` の宣言のままで解決できた**（2026-08-31。`npm install` は無改変で通った） |
+| WebGL | `chromium.setGraphicsMode = true` を明示している。**切れていると真っ黒な画像が「成功」として撮れる。** 1 枚目は正しく描画された（雲・ブロック・自機まで写っている） |
 | `capturing` のまま残った行の撮り直し | **経路が無い。** 関数ごと落ちた場合（OOM・タイムアウト）はコールバックが飛ばない。D1 に痕跡は残るが、進める手段は手作業の UPDATE だけである |
 | 公開後のタイトル変更 | 無い。題名は生成のプロンプト由来のまま公開される（5.4 は 1 タップを優先している） |
 | CI からのイメージ配備 | 無い。`.github/workflows/deploy-compiler.yml` はビルド関数のイメージだけを扱う |

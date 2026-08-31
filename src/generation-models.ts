@@ -168,13 +168,11 @@ export const GENERATION_MODELS: readonly GenerationModel[] = [
   {
     key: 'sonnet-4-6',
     ...SONNET_4_6,
-    // **既定では指定しない。** `output_config.effort` を Bedrock の `Converse` が
-    // どう受けるかは実呼び出しで確かめていない。未検証の項目を既定で送ると、初回の
-    // 実呼び出しが `ValidationException` で落ちて原因の切り分けが増える。値を入れれば
-    // 送る経路は `src/bedrock.ts` にあり、テストで固定してある（#25 が値を決める）。
-    //
-    // **綴りの検証手順は `scripts/verify-effort-spelling.sh` にある**（1 回の
-    // 実呼び出しで真偽が付く。#25）。
+    // **既定では指定しない。** 綴り（`output_config.effort`）が受理されることは
+    // 実呼び出しで確かめたが（2026-08-31 / `scripts/verify-effort-spelling.sh`）、
+    // **どの値を採るかは決まっていない**（#25 の A/B が測る。4.2）。既定で送ると、
+    // 採用値を決める前に全生成が片方の群になる。値を入れれば送る経路は
+    // `src/bedrock.ts` にあり、テストで固定してある。
     effort: null,
   },
   {

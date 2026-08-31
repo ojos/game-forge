@@ -272,9 +272,14 @@ export function buildConverseRequest(
     // `inferenceConfig` には無い。`additionalModelRequestFields` はモデル本来の
     // API の項目をそのまま通す口である。
     //
-    // **この綴りは実呼び出しで確かめていない**（#83 は実呼び出しを行っていない）。
-    // 登録簿の既定が `effort: null` なので既定の経路では送られない。#25 が値を
-    // 決めるときに、最初の 1 回で綴りごと検証すること。
+    // **この綴りは実呼び出しで確かめた**（2026-08-31 / #25。
+    // `scripts/verify-effort-spelling.sh`）。**存在しない項目名を送る対照が
+    // `ValidationException` で断られたうえで**、`high` / `medium` の両方が受理された
+    // ——API は項目名を検証しており、この綴りはその検証を通っている。
+    //
+    // **受理されることと、生成が変わることは別である。** `effort` が実際に thinking を
+    // 増やすかは A/B（#25）が測る。検証に使ったのは "ping" 1 語で、両群とも出力
+    // 18 トークンだった（差が出ない題材である）。
     body['additionalModelRequestFields'] = { output_config: { effort: model.effort } };
   }
 

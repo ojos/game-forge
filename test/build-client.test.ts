@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import {
   BUILD_FUNCTION_TIMEOUT_SECONDS,
   BUILD_INVOKE_TIMEOUT_MS,
@@ -780,5 +781,45 @@ describe('ビルド結果キャッシュ（3.8）', () => {
     const outcome = await build(buildEnv(), generated(source));
     expect(calls).toBe(1);
     expect(outcome.cached).toBe(false);
+  });
+});
+
+describe('雛形の keys は内容アドレスに追随する（test/helpers/build-outcome.ts）', () => {
+  // **雛形そのものを検査する。** 本物の `keys` は `builds/<source_sha256>/...` で
+  // 内容アドレスなので、**ソースが違えば必ず違うキーになる。** 雛形が固定値を返すと、
+  // 2 件の作品を作ったテストで後の R2 書き込みが前を上書きし、**別々のソースの
+  // つもりが同じ本文を指す**（#32 のキャッシュ検査が偽の緑になりかけた）。
+  //
+  // 雛形の検査を雛形の隣に置かないのは、**壊れたときに落ちるのは雛形を使う側**
+  // だからである。ここは `artifactKeysOf` を見ている場所であり、キーの形を
+  // 知っている唯一のテストである。
+  it('sourceSha256 を差し替えると keys が変わる', () => {
+    const first = fakeBuildOutcome({ sourceSha256: '1'.repeat(64) });
+    const second = fakeBuildOutcome({ sourceSha256: '2'.repeat(64) });
+
+    expect(first.keys.sourceKey).toBe(`builds/${'1'.repeat(64)}/source.go`);
+    expect(second.keys.sourceKey).toBe(`builds/${'2'.repeat(64)}/source.go`);
+    // **これが本題である。** 固定値だと 2 つが一致し、R2 で上書きが起きる。
+    expect(first.keys.sourceKey).not.toBe(second.keys.sourceKey);
+    expect(first.keys.wasmKey).not.toBe(second.keys.wasmKey);
+  });
+
+  it('goVersion を差し替えると wasmKey が変わる（sourceKey は変わらない）', () => {
+    const pinned = fakeBuildOutcome({ goVersion: 'go1.26.5' });
+    const other = fakeBuildOutcome({ goVersion: 'go1.27.0' });
+
+    expect(pinned.keys.wasmKey).toBe(`builds/${'a'.repeat(64)}/go1.26.5/game.wasm.br`);
+    expect(other.keys.wasmKey).toBe(`builds/${'a'.repeat(64)}/go1.27.0/game.wasm.br`);
+    // ソースは同じなので `source.go` の置き場所は変わらない（3.7 の掃除が数える単位）。
+    expect(pinned.keys.sourceKey).toBe(other.keys.sourceKey);
+  });
+
+  it('keys を明示的に渡せば、そちらが勝つ', () => {
+    const outcome = fakeBuildOutcome({
+      sourceSha256: '3'.repeat(64),
+      keys: { sourceKey: 'builds/custom/source.go', wasmKey: 'builds/custom/game.wasm.br' },
+    });
+
+    expect(outcome.keys.sourceKey).toBe('builds/custom/source.go');
   });
 });

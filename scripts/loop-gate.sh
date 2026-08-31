@@ -202,14 +202,34 @@ main() {
   # resolve_review_range を呼ぶ。
   cd "$(dirname "$HERE")"
 
-  echo "[loop-gate] step 1: verify (acceptance)"
+  # step 1 を identity にするのは、**いちばん安く、いちばん遅く露見する**からである。
+  # 判定は 5ms 程度で終わるのに対し、見逃すと CI の identity-guard まで分からず、
+  # そこで落ちたときには既に PR が出ている。**混入したコミットは push 済みなので、
+  # 直すには履歴の書き換えと force push が要る**（波 1 で実際に踏んだ。#210）。
+  #
+  # **worktree で落ちやすい。** `user.email` は worktree ごとに持つため、新しく
+  # 作った worktree でコミットするとグローバル／既定へ落ちる。ここまでは
+  # CI だけが見ていた（verify.sh にも acceptance.sh にも入っていない）。
+  #
+  # 許可 email の解決は verify-commit-identity.sh が持つ。**解決できなければ
+  # 通過させず落ちる**（fail-closed）ので、ここで別途の分岐を足さない。
+  # worktree から実行しても load-project-env.sh がメインの作業コピーの .env へ
+  # 回り込むため、`.env` を worktree へ複製する必要はない。
+  echo "[loop-gate] step 1: commit identity"
+  if ! bash "$HERE/verify-commit-identity.sh"; then
+    echo "[loop-gate] commit identity not passed" >&2
+    echo "GATE_FAIL"
+    exit 1
+  fi
+
+  echo "[loop-gate] step 2: verify (acceptance)"
   if ! bash "$HERE/verify.sh"; then
     echo "[loop-gate] verify not passed" >&2
     echo "GATE_FAIL"
     exit 1
   fi
 
-  echo "[loop-gate] step 2: second opinion"
+  echo "[loop-gate] step 3: second opinion"
   if [[ "${LOOP_GATE_REVIEW_CMD-__UNSET__}" == "__UNSET__" ]]; then
     if [[ -f "$HERE/second-opinion-review.sh" ]]; then
       resolve_review_range

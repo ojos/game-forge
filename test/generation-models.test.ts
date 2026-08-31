@@ -2,15 +2,20 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
+  EFFORT_AB_ARMS,
+  EFFORT_AB_MODEL_KEYS,
+  EFFORT_NOT_SENT,
   GENERATION_MODELS,
   GENERATION_MODEL_VAR,
   PRICING_SECTION_HEADING,
   UnknownGenerationModel,
   findGenerationModel,
   inferenceProfilePrefix,
+  ledgerEffortOf,
   selectGenerationModel,
   supportsPromptCaching,
 } from '../src/generation-models.js';
+import type { ModelPricing } from '../src/generation-models.js';
 
 /**
  * env を差し替える。
@@ -69,11 +74,28 @@ describe('単価の機械照合（4.1 の表）', () => {
     return rows;
   }
 
-  it('仕様書 4.1 の単価がコード側と一致する', () => {
-    // ずれると費用台帳（#22）の円換算が静かに狂い、4.3 の月次 1 万円が上振れする。
-    // 数値を 2 か所に書く以上、機械で照合する（shared-ai-rules 12 章）。
-    expect(pricingFromSpec()).toEqual(
-      GENERATION_MODELS.map((model) => ({
+  /**
+   * 登録簿の単価を、モデル ID ごとに 1 つへまとめる。
+   *
+   * **仕様書 4.1 の表はモデル ID の表で、登録簿は鍵の表である。** #25 の A/B は
+   * 同じモデル ID に `effort` だけが違う要素を並べる（`sonnet-4-6-high` /
+   * `sonnet-4-6-medium`）ため、この 2 つは 1 対 1 ではない。
+   *
+   * **まとめても照合は弱くならない。** 同じ ID の要素どうしで単価が食い違わないことは
+   * 下の「同じモデル ID の要素は単価が完全に一致する」が別に見ており、そこが緑で
+   * ある限り、代表 1 つと仕様書を比べれば全要素を比べたのと同じである。
+   *
+   * @returns モデル ID ごとの単価（登録簿の並び順）
+   */
+  function pricingFromRegistry(): { modelId: string; values: (number | null)[] }[] {
+    const seen = new Set<string>();
+    const rows: { modelId: string; values: (number | null)[] }[] = [];
+    for (const model of GENERATION_MODELS) {
+      if (seen.has(model.modelId)) {
+        continue;
+      }
+      seen.add(model.modelId);
+      rows.push({
         modelId: model.modelId,
         values: [
           model.pricing.inputUsdPerMillion,
@@ -81,8 +103,30 @@ describe('単価の機械照合（4.1 の表）', () => {
           model.pricing.cacheReadUsdPerMillion,
           model.pricing.cacheWriteUsdPerMillion,
         ],
-      })),
-    );
+      });
+    }
+    return rows;
+  }
+
+  it('仕様書 4.1 の単価がコード側と一致する', () => {
+    // ずれると費用台帳（#22）の円換算が静かに狂い、4.3 の月次 1 万円が上振れする。
+    // 数値を 2 か所に書く以上、機械で照合する（shared-ai-rules 12 章）。
+    expect(pricingFromSpec()).toEqual(pricingFromRegistry());
+  });
+
+  it('同じモデル ID の要素は単価が完全に一致する', () => {
+    // 上の照合が代表 1 つしか見ないことの受け皿であり、**#25 の A/B が成立する条件
+    // そのもの**でもある。1.2.43 の実測では費用が出力トークンにほぼ比例したので、
+    // **群どうしで単価が違えば、その差がそのまま `effort` の効果に見える。**
+    const byModelId = new Map<string, ModelPricing>();
+    for (const model of GENERATION_MODELS) {
+      const first = byModelId.get(model.modelId);
+      if (first === undefined) {
+        byModelId.set(model.modelId, model.pricing);
+        continue;
+      }
+      expect(model.pricing, model.key).toEqual(first);
+    }
   });
 
   it('仕様書の表が空でない', () => {
@@ -169,6 +213,50 @@ describe('モデル選択の経路（#83 acceptance 2）', () => {
     const error = new UnknownGenerationModel('typo');
     for (const model of GENERATION_MODELS) {
       expect(error.message).toContain(model.key);
+    }
+  });
+});
+
+describe('effort の A/B（#25 / 4.2）', () => {
+  it('2 群が登録簿にあり、それぞれ effort を持つ', () => {
+    // 「切り替え機構」の入口。ここが無ければ、`effort` を送る経路（src/bedrock.ts）は
+    // 既定の `effort: null` に阻まれて 1 度も通らない。
+    expect(EFFORT_AB_MODEL_KEYS).toHaveLength(EFFORT_AB_ARMS.length);
+    for (const arm of EFFORT_AB_ARMS) {
+      const model = findGenerationModel(`sonnet-4-6-${arm}`);
+      expect(model, arm).not.toBeNull();
+      expect(model!.effort, arm).toBe(arm);
+      expect(EFFORT_AB_MODEL_KEYS, arm).toContain(model!.key);
+    }
+  });
+
+  it('2 群は effort 以外が素の sonnet-4-6 と完全に一致する', () => {
+    // **A/B が成立する条件である。** 1.2.43 の実測では費用が出力トークンにほぼ比例した。
+    // 単価・モデル ID・出力上限のどれかが群で違えば、その差がそのまま `effort` の
+    // 効果に見える（`max_tokens` の差なら、切れた回数の差が成功率の差に見える）。
+    const base = findGenerationModel('sonnet-4-6')!;
+    for (const key of EFFORT_AB_MODEL_KEYS) {
+      const arm = findGenerationModel(key)!;
+      expect({ ...arm, key: base.key, effort: base.effort }, key).toEqual(base);
+    }
+  });
+
+  it('GENERATION_MODEL を群の鍵にすると effort が切り替わる', () => {
+    // 「切り替えられる」ことの本体は、決定の経路（selectGenerationModel）を通った
+    // 結果として `effort` が変わることである。ここが繋がっていれば、以降
+    // （payload.modelKey → Lambda → bedrock → ledger）は既に本番で動いている経路に乗る。
+    expect(selectGenerationModel(envWithModel('sonnet-4-6-high')).effort).toBe('high');
+    expect(selectGenerationModel(envWithModel('sonnet-4-6-medium')).effort).toBe('medium');
+    expect(selectGenerationModel(envWithModel('sonnet-4-6')).effort).toBeNull();
+  });
+
+  it('台帳へ残す綴りは、送らなかったときだけ none になる', () => {
+    // 列の NULL は「記録していない」（0011 より前の行）で、'none' は「記録した結果、
+    // 送っていなかった」である。混ぜると集計が古い行を対照群として数える。
+    expect(ledgerEffortOf(findGenerationModel('sonnet-4-6')!)).toBe(EFFORT_NOT_SENT);
+    expect(ledgerEffortOf(findGenerationModel('deepseek-v3-2')!)).toBe(EFFORT_NOT_SENT);
+    for (const arm of EFFORT_AB_ARMS) {
+      expect(ledgerEffortOf(findGenerationModel(`sonnet-4-6-${arm}`)!)).toBe(arm);
     }
   });
 });

@@ -101,6 +101,34 @@ fi
 # ValidationException は入力を引用しうる（`src/bedrock.ts` の BedrockCallFailed）。
 # ここで送っているのは "ping" だけなので実害は無いが、経路の扱いはそろえておく。
 PROBE_OUTPUT=""
+
+# 呼び出しが失敗したとき、**それが「項目の検証で断られた」のか「そもそも呼べていない」のか**
+# を分ける。
+#
+# **ここを分けないと、資格情報切れが「綴りが違う」と報告される。** 実際に踏んだ
+# （2026-08-31。SSO の期限切れで 3 回とも失敗し、対照の失敗を「API は項目を検証している」、
+# 本番の綴りの失敗を「綴りが違う」と読んで EFFORT_SPELLING_WRONG を出した）。
+# **終了コードだけを見る検査は、確かめていないものを確かめた証拠として報告する。**
+#
+# `ValidationException` は Bedrock が入力を見て断った証拠であり、この検査が見たいものは
+# それだけである。それ以外（SSO / 権限 / 疎通 / スロットリング）は**判定不能**であって、
+# 綴りについて何も言えない。
+is_validation_error() {
+  printf '%s' "$PROBE_OUTPUT" | grep -qF 'ValidationException'
+}
+
+# 判定できない失敗を報告して終える。**綴りについて何も言わない。**
+abort_undecidable() {
+  echo "[effort] $1" >&2
+  echo "[effort] **綴りについては何も判定できていません。**" >&2
+  echo "[effort] 出力:" >&2
+  printf '%s\n' "$PROBE_OUTPUT" >&2
+  echo "[effort] SSO が切れているなら:" >&2
+  echo "[effort]   aws sso login --profile game-forge-prod --use-device-code" >&2
+  echo "EFFORT_SPELLING_UNDECIDABLE"
+  exit 1
+}
+
 probe() {
   local fields="$1"
   local rc=0
@@ -128,7 +156,11 @@ if probe '{"output_config":{"effort_this_field_does_not_exist":"high"}}'; then
   echo "EFFORT_SPELLING_UNDECIDABLE"
   exit 1
 fi
-echo "[effort]     対照は拒否されました（API は項目を検証しています）"
+# **対照が「拒否された」だけでは足りない。** 呼べていないだけかもしれない。
+if ! is_validation_error; then
+  abort_undecidable "対照は失敗しましたが、ValidationException ではありません（呼び出せていません）。"
+fi
+echo "[effort]     対照は ValidationException で拒否されました（API は項目を検証しています）"
 
 # 2. 本番の綴りを、A/B の 2 群ぶん送る。
 #
@@ -143,7 +175,11 @@ for effort in high medium; do
     tokens="$(printf '%s' "$PROBE_OUTPUT" | tr ',' '\n' | grep -iF 'outputTokens' | head -1 || true)"
     echo "[effort]     受理されました${tokens:+（$tokens）}"
   else
-    echo "[effort]     拒否されました（effort=$effort）" >&2
+    # **ここでも種類を見る。** 対照のあとに SSO が切れることもある。
+    if ! is_validation_error; then
+      abort_undecidable "effort=$effort の呼び出しが ValidationException 以外で失敗しました。"
+    fi
+    echo "[effort]     ValidationException で拒否されました（effort=$effort）" >&2
     printf '%s\n' "$PROBE_OUTPUT" >&2
     status=1
   fi

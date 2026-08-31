@@ -833,6 +833,34 @@ describe('A/B の集計（#25 acceptance 1）', () => {
     expect(groupOf(recut, 'high').strata[0]!.toOutputTokens).toBe(10_000);
   });
 
+  it('境界が空なら層別せず、1 層として返る（SQL の構文エラーにしない）', async () => {
+    // **`case` は `when` を 1 つも持てない。** 素朴に組み立てると `case  else 0 end`
+    // になり、SQLite が `near "else": syntax error` を返す。**空配列は「層別せず全部を
+    // 1 つで見たい」という正当な指定**で、集計を読む人が最初に試す形でもある。
+    // そこで落ちるのは、意味のある結果が返らないより悪い。
+    const userId = await seedUser('ab-no-strata');
+    await seedExperiment(userId);
+
+    const report = await effortExperimentTotals(env, { ...WINDOW, outputTokenStrata: [] });
+    expect(report.outputTokenStrata).toEqual([]);
+
+    const high = groupOf(report, 'high');
+    // 層は 1 つだけで、範囲は `[0, 上限なし)`——層別しないことそのものである。
+    expect(high.strata).toHaveLength(1);
+    expect(high.strata[0]!.fromOutputTokens).toBe(0);
+    expect(high.strata[0]!.toOutputTokens).toBeNull();
+
+    // **群の合計と一致すること。** 1 層に全部入っているので、取りこぼしがあれば割れる。
+    expect(high.strata[0]!.calls).toBe(high.calls);
+    expect(high.strata[0]!.outputTokens).toBe(high.outputTokens);
+    expect(high.strata[0]!.costJpy).toBeCloseTo(high.costJpy, 8);
+
+    // 既定（層が 2 つ以上）と同じ群がそろって返ること（空配列だけ別経路にしない）。
+    const medium = groupOf(report, 'medium');
+    expect(medium.strata).toHaveLength(1);
+    expect(medium.strata[0]!.calls).toBe(medium.calls);
+  });
+
   it('推敲（元ソースが messages に載った生成）を新規生成と混ぜない', async () => {
     // 1.2.43: 推敲は 19.5〜25.0 円、新規生成は約 16 円で**別の値**である。混ぜると
     // effort より大きな差がそこから入る。判定は経路の構造（元ソースの直後の

@@ -576,8 +576,23 @@ export interface EffortExperimentGroup {
   /**
    * `generations.effort`。
    *
-   * `'none'` は「送らなかった」、**`null` は「記録していない」**（0011 より前の行）。
-   * 混ぜないこと（`migrations/0011_generations_effort.sql`）。
+   * `'none'` は「**送らなかった**」（登録簿の `effort: null`）。
+   *
+   * **`null` には意味が 2 つある。混ぜないこと。**
+   *
+   * | 出どころ | 意味 | 見分けかた |
+   * |---|---|---|
+   * | 0011 より前に入った行 | **記録していない** | 窓を `migrations/0011_generations_effort.sql` の適用より後に取れば、そもそも入らない |
+   * | 登録簿に無い鍵で生成された行 | **何を送ったか分からない** | {@link modelKey} を `findGenerationModel` に引くと `null` が返る |
+   *
+   * **2 つ目を「実験より前の古い行」として読み飛ばさないこと。** `recordGeneration` は
+   * 登録簿に無い鍵のとき `'none'` と断定せず `null` を書く（送っていないとは限らない
+   * ため。費用を最大単価へ倒すのと同じ向きの判断である）。**それは実験期間中の設定
+   * ミスでありうる**——`GENERATION_MODEL` の綴りを変えた、登録簿から要素を消した、
+   * といった、**A/B でいちばん見たい行**である。
+   *
+   * したがって `effort` が `null` の群を見つけたら、**まず {@link modelKey} を登録簿へ
+   * 引くこと。** 引けなければ 2 つ目で、窓の中で起きた事故である。
    */
   readonly effort: string | null;
   /** 元ソースが `messages` に載っていたか（＝推敲・フォーク。{@link BASE_SOURCE_INPUT_TOKEN_CEILING}）。 */
@@ -672,7 +687,11 @@ export interface EffortExperimentOptions {
   readonly toSeconds: number;
   /** 元ソースの有無を分ける境目。既定は {@link BASE_SOURCE_INPUT_TOKEN_CEILING}。 */
   readonly baseSourceInputTokenCeiling?: number;
-  /** 出力トークンの層の境界（昇順）。既定は {@link OUTPUT_TOKEN_STRATA}。 */
+  /**
+   * 出力トークンの層の境界（昇順）。既定は {@link OUTPUT_TOKEN_STRATA}。
+   *
+   * **空配列は「層別しない」**（全呼び出しが `[0, 上限なし)` の 1 層になる）。
+   */
   readonly outputTokenStrata?: readonly number[];
 }
 
@@ -737,10 +756,26 @@ function ratioOrNull(numerator: number, denominator: number): number | null {
  * 「SQL を文字列連結で作ってよい」という前例をこの経路に作らない。埋め込むのは
  * 層の番号（配列の添字）だけである。
  *
- * @param boundaries 層の境界（昇順）
- * @returns `case` 式
+ * **境界が空なら定数の `0` を返す。** `case` は `when` を 1 つも持てないため、
+ * 素朴に組み立てると `case  else 0 end` という**構文エラー**になる（走らせて確かめた:
+ * SQLite は `near "else": syntax error` を返す）。
+ *
+ * **空配列は「層別せず、全部を 1 つとして見たい」という正当な指定である。** 集計を
+ * 読む人が最初に試す形でもある。そこで構文エラーになるのは、意味のある結果が
+ * 返らないより悪い。
+ *
+ * 定数 `0` を返すと、後段の辻褄も合う。層は 1 つだけになり、
+ * `row.stratum === 0` なので下端は 0、`row.stratum === boundaries.length`（0 === 0）
+ * なので上端は `null`——**`[0, 上限なし)` の 1 層**、つまり層別しないことそのものである。
+ * 束縛する値も `...boundaries` が空へ展開されるので、`?` の数と一致する。
+ *
+ * @param boundaries 層の境界（昇順）。空なら層別しない
+ * @returns `case` 式（境界が空なら定数 `0`）
  */
 function stratumExpression(boundaries: readonly number[]): string {
+  if (boundaries.length === 0) {
+    return '0';
+  }
   const whens = boundaries.map((_, index) => `when output_tokens < ? then ${index}`).join(' ');
   return `case ${whens} else ${boundaries.length} end`;
 }

@@ -64,6 +64,11 @@ REGION="${GF_BEDROCK_REGION:-ap-northeast-1}"
 # **したがって、実装側に同じ綴りが在ることを先に見る。** 実装が変わったらこの検査は
 # **走る前に落ちる**（緑にはならない）。綴りを絞った検査は対象が変われば空振りするが、
 # 空振りが「通過」ではなく「失敗」になるなら、写しの古さは必ず人に見える。
+#
+# **grep は必ず -F（固定文字列）で当てる。** 探している綴りには `.` や `{` が入って
+# おり、正規表現として解釈させると `jp.anthropic...` の `.` が任意 1 文字になる——
+# **綴りが違っていても一致してしまう。** それはこの検査の目的そのもの（写しの古さを
+# 見つける）を損なう。緩く一致する検査は、確かめた証拠として読まれるぶん赤より悪い。
 IMPL="src/bedrock.ts"
 REGISTRY="src/generation-models.ts"
 MODEL_ID="jp.anthropic.claude-sonnet-4-6"
@@ -73,14 +78,14 @@ if [[ ! -f "$IMPL" || ! -f "$REGISTRY" ]]; then
   exit 1
 fi
 
-if ! grep -q "output_config: { effort: model.effort }" "$IMPL"; then
+if ! grep -qF "output_config: { effort: model.effort }" "$IMPL"; then
   echo "[effort] $IMPL の綴りが変わっています。" >&2
   echo "[effort] このスクリプトが送る項目（output_config.effort）は実装の写しです。" >&2
   echo "[effort] 実装を読み直し、このスクリプトを更新してから再実行してください。" >&2
   exit 1
 fi
 
-if ! grep -q "modelId: '$MODEL_ID'" "$REGISTRY"; then
+if ! grep -qF "modelId: '$MODEL_ID'" "$REGISTRY"; then
   echo "[effort] $REGISTRY に $MODEL_ID がありません。登録簿を読み直してください。" >&2
   exit 1
 fi
@@ -135,7 +140,7 @@ for effort in high medium; do
   if probe "{\"output_config\":{\"effort\":\"$effort\"}}"; then
     # 出力トークンも出す。high と medium で差があれば、効いていることの傍証になる
     # （thinking は出力として課金される。4.2）。
-    tokens="$(printf '%s' "$PROBE_OUTPUT" | tr ',' '\n' | grep -i 'outputTokens' | head -1 || true)"
+    tokens="$(printf '%s' "$PROBE_OUTPUT" | tr ',' '\n' | grep -iF 'outputTokens' | head -1 || true)"
     echo "[effort]     受理されました${tokens:+（$tokens）}"
   else
     echo "[effort]     拒否されました（effort=$effort）" >&2

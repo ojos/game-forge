@@ -35,8 +35,16 @@ export const PRICING_SECTION_HEADING = '### 4.1 接続先と単価';
  */
 export const INFERENCE_PROFILE_PREFIXES: readonly string[] = ['jp.', 'global.', 'apac.'];
 
-/** 生成モデルを指す短い鍵。**環境変数と費用台帳（#22）がこの値で参照する。** */
-export type GenerationModelKey = 'sonnet-4-6' | 'deepseek-v3-2';
+/**
+ * 生成モデルを指す短い鍵。**環境変数と費用台帳（#22）がこの値で参照する。**
+ *
+ * **`effort` の A/B（#25）の 2 群も、この鍵で表す。** 理由は下の
+ * {@link EFFORT_AB_ARMS} にある。
+ */
+export type GenerationModelKey =
+  | 'sonnet-4-6'
+  | 'deepseek-v3-2'
+  | `sonnet-4-6-${(typeof EFFORT_AB_ARMS)[number]}`;
 
 /**
  * 推論の深さ（`effort`）。
@@ -46,6 +54,44 @@ export type GenerationModelKey = 'sonnet-4-6' | 'deepseek-v3-2';
  * （#25）。**その実験の入り口がこの型である。**
  */
 export type GenerationEffort = 'low' | 'medium' | 'high' | 'max';
+
+/**
+ * A/B で比べる 2 つの `effort`（4.2 / #25）。
+ *
+ * **群を「登録簿の要素」として表す。** `effort` 専用の環境変数を新しく作らないのは、
+ * **どの群へ割り当てられたかが記録に残る経路が、既に 1 本だけ通っているから**である。
+ *
+ * ```
+ * wrangler.toml の GENERATION_MODEL
+ *   → selectGenerationModel（決定はここ 1 か所。既存のコメントが #25 を名指ししている）
+ *   → src/orchestrator/start-job.ts が payload.modelKey へ載せる
+ *   → Lambda の workerLikeEnv が同じ鍵で復元する
+ *   → src/bedrock.ts が effort を送る
+ *   → ledger コールバックが modelKey を運ぶ（src/generate-callback.ts の parseLedger）
+ *   → generations.model / generations.effort
+ * ```
+ *
+ * **`effort` を別の変数にすると、この 6 段すべてに項目を 1 つずつ足すことになる。**
+ * 足し忘れた段があると、**エッジでは送れているのに本番（オーケストレータ経路）だけが
+ * 既定へ落ちる**——A/B の片側が黙ってもう片側になる、という 4.2 の比較が成立しない
+ * 壊れ方そのものである。鍵に載せれば、既に本番で動いている 1 本がそのまま運ぶ。
+ *
+ * **群を増やすときはここへ足す**（`low` / `max` を測るなら 1 要素）。**測らない値を
+ * 登録簿へ置かない**——費用の出る経路の選択肢は、実験の対象だけに保つ。
+ */
+export const EFFORT_AB_ARMS = ['high', 'medium'] as const;
+
+/**
+ * 台帳へ「`effort` を送らなかった」を残すときの綴り（`generations.effort`）。
+ *
+ * **`null` と区別する。** 列の `NULL` は「**この行は `effort` を記録していない**」
+ * （`migrations/0011_generations_effort.sql` より前に入った行）で、`'none'` は
+ * 「**記録した結果、送っていなかった**」である。混ぜると、A/B の集計が
+ * 「古い行」と「対照群」を同じものとして数える。
+ *
+ * 4.1 のキャッシュ単価を `0` ではなく `null` にしているのと同じ線である。
+ */
+export const EFFORT_NOT_SENT = 'none';
 
 /** モデル別の単価（$/100 万トークン。4.1 の表が正本）。 */
 export interface ModelPricing {
@@ -79,51 +125,92 @@ export interface GenerationModel {
  * **`Sonnet 5` はこのアカウントで開放されていない**（12 章 #2 / 1.2.9）。開放されたら
  * ここへ 1 要素足し、4.1 の表も更新する（照合テストが片方だけの更新を落とす）。
  */
+const SONNET_4_6: Omit<GenerationModel, 'key' | 'effort'> = {
+  // `jp.` は東京（ap-northeast-1）を含む地理スコープの推論プロファイル。素の
+  // `anthropic.claude-sonnet-4-6` はオンデマンドで呼べない（4.1 の実測）。
+  modelId: 'jp.anthropic.claude-sonnet-4-6',
+  provider: 'anthropic',
+  pricing: {
+    inputUsdPerMillion: 3,
+    outputUsdPerMillion: 15,
+    cacheReadUsdPerMillion: 0.3,
+    cacheWriteUsdPerMillion: 3.75,
+  },
+  // 4.2 の実測は平均 4,171 トークン。5.3 がソースを 30KB（おおよそ 1 万トークン）に
+  // 制限しており、thinking が出力として乗ることを見込んでもこの値で収まる。
+  // **上限は費用の天井でもある**ので、必要より大きくしない。
+  //
+  // **A/B の 2 群も同じ値を使う**（下記）。片方だけ広げると、`max_tokens` で切れた
+  // 回数の差が `effort` の効果に見える。
+  maxTokens: 16_000,
+};
+
+const DEEPSEEK_V3_2: Omit<GenerationModel, 'key' | 'effort'> = {
+  // **こちらは推論プロファイルではない。** `deepseek.` は提供者の接頭辞で、素の ID の
+  // まま東京で実生成できることを実測している（4.1 / #79）。同じ「接頭辞つき」でも
+  // 意味が違うため、一律の規則で組み立てず ID を直接書く。
+  modelId: 'deepseek.v3.2',
+  provider: 'deepseek',
+  // **キャッシュの課金次元を持たない**（4.1）。`0` ではなく `null` を置く。`0` は
+  // 「無料でキャッシュできる」の意味になり、`cachePoint` を置く判断が変わる。
+  pricing: {
+    inputUsdPerMillion: 0.74,
+    outputUsdPerMillion: 2.22,
+    cacheReadUsdPerMillion: null,
+    cacheWriteUsdPerMillion: null,
+  },
+  // 4.2 の実測は平均 2,159 トークン。Bedrock 上でこのモデルが受け付ける上限を
+  // 確かめていないため、実測の 4 倍程度に留める。
+  maxTokens: 8_192,
+};
+
 export const GENERATION_MODELS: readonly GenerationModel[] = [
   {
     key: 'sonnet-4-6',
-    // `jp.` は東京（ap-northeast-1）を含む地理スコープの推論プロファイル。素の
-    // `anthropic.claude-sonnet-4-6` はオンデマンドで呼べない（4.1 の実測）。
-    modelId: 'jp.anthropic.claude-sonnet-4-6',
-    provider: 'anthropic',
-    pricing: {
-      inputUsdPerMillion: 3,
-      outputUsdPerMillion: 15,
-      cacheReadUsdPerMillion: 0.3,
-      cacheWriteUsdPerMillion: 3.75,
-    },
+    ...SONNET_4_6,
     // **既定では指定しない。** `output_config.effort` を Bedrock の `Converse` が
     // どう受けるかは実呼び出しで確かめていない。未検証の項目を既定で送ると、初回の
     // 実呼び出しが `ValidationException` で落ちて原因の切り分けが増える。値を入れれば
     // 送る経路は `src/bedrock.ts` にあり、テストで固定してある（#25 が値を決める）。
+    //
+    // **綴りの検証手順は `scripts/verify-effort-spelling.sh` にある**（1 回の
+    // 実呼び出しで真偽が付く。#25）。
     effort: null,
-    // 4.2 の実測は平均 4,171 トークン。5.3 がソースを 30KB（おおよそ 1 万トークン）に
-    // 制限しており、thinking が出力として乗ることを見込んでもこの値で収まる。
-    // **上限は費用の天井でもある**ので、必要より大きくしない。
-    maxTokens: 16_000,
   },
   {
     key: 'deepseek-v3-2',
-    // **こちらは推論プロファイルではない。** `deepseek.` は提供者の接頭辞で、素の ID の
-    // まま東京で実生成できることを実測している（4.1 / #79）。同じ「接頭辞つき」でも
-    // 意味が違うため、一律の規則で組み立てず ID を直接書く。
-    modelId: 'deepseek.v3.2',
-    provider: 'deepseek',
-    // **キャッシュの課金次元を持たない**（4.1）。`0` ではなく `null` を置く。`0` は
-    // 「無料でキャッシュできる」の意味になり、`cachePoint` を置く判断が変わる。
-    pricing: {
-      inputUsdPerMillion: 0.74,
-      outputUsdPerMillion: 2.22,
-      cacheReadUsdPerMillion: null,
-      cacheWriteUsdPerMillion: null,
-    },
+    ...DEEPSEEK_V3_2,
     // `effort` は Claude のみの概念（4.2）。
     effort: null,
-    // 4.2 の実測は平均 2,159 トークン。Bedrock 上でこのモデルが受け付ける上限を
-    // 確かめていないため、実測の 4 倍程度に留める。
-    maxTokens: 8_192,
   },
+  // **A/B の 2 群**（4.2 / #25。{@link EFFORT_AB_ARMS}）。
+  //
+  // **素の `sonnet-4-6` との差は `effort` だけである。** 単価・モデル ID・出力上限は
+  // 同じ実体を展開しているので、**片方だけ古くなる経路が無い。** 1.2.43 の実測が
+  // 示したとおり費用は出力トークンにほぼ比例するため、**単価が 1 桁でも違えば
+  // 費用差は `effort` の効果に見えなくなる。**
+  //
+  // ここが「切り替え機構」の全体である。`wrangler.toml` の `GENERATION_MODEL` を
+  // この鍵にすれば、決定（`selectGenerationModel`）→ ペイロード → Lambda → 台帳まで
+  // **既に本番で動いている 1 本**がそのまま群を運ぶ。
+  ...EFFORT_AB_ARMS.map(
+    (effort): GenerationModel => ({
+      key: `sonnet-4-6-${effort}`,
+      ...SONNET_4_6,
+      effort,
+    }),
+  ),
 ];
+
+/**
+ * A/B の 2 群を指す鍵（`wrangler.toml` の `GENERATION_MODEL` へ置く値）。
+ *
+ * **一覧をここで作る。** 手で書き写すと、{@link EFFORT_AB_ARMS} へ群を足したときに
+ * 片方だけが古くなる（shared-ai-rules 12 章）。
+ */
+export const EFFORT_AB_MODEL_KEYS: readonly GenerationModelKey[] = EFFORT_AB_ARMS.map(
+  (effort) => `sonnet-4-6-${effort}` as const,
+);
 
 /**
  * 既定のモデル。
@@ -171,6 +258,13 @@ export function findGenerationModel(key: string): GenerationModel | null {
  * 将来 #25 の A/B や利用者ごとの出し分けを入れるとしても、入り口はこの関数のままにして、
  * 「どこでモデルが決まるのか」を探す作業を二度と発生させない。
  *
+ * **#25 の A/B もそのとおりに入った。** 群は登録簿の要素（`sonnet-4-6-high` /
+ * `sonnet-4-6-medium`。{@link EFFORT_AB_ARMS}）で、この関数は 1 行も変わっていない。
+ * **群の切り替えは `GENERATION_MODEL` の値を変えて配備すること**で行う。
+ * 1 度の配備の中で群が混ざらないので、**同じ依頼のリトライが群をまたがない**
+ * （この関数は LLM 呼び出しごとに呼ばれる。乱択をここへ置くと、2 回目の試行だけ
+ * もう片方の群になり、台帳の行と実際の割り当てが依頼の中でずれる）。
+ *
  * **未知の値は既定へ落とさずに落とす。** 綴り違いを既定で拾うと、A/B の片側が黙って
  * もう片側になり、4.2 の比較（成功率と単価）が成立しない。**費用の出る経路で、
  * 曖昧な指定を推測で受け取らない**（`src/generate.ts` の未知項目の扱いと同じ方針）。
@@ -206,6 +300,19 @@ export function selectGenerationModel(env: Env): GenerationModel {
  */
 export function supportsPromptCaching(model: GenerationModel): boolean {
   return model.pricing.cacheReadUsdPerMillion !== null;
+}
+
+/**
+ * このモデルで生成したとき、台帳の `effort` 列へ残す値（#25 / 4.2）。
+ *
+ * **`null`（送らない）を `'none'` へ落とす。** 列の `NULL` は「記録していない」を
+ * 表すため（{@link EFFORT_NOT_SENT}）、値として書くときは必ず綴りを持たせる。
+ *
+ * @param model 使ったモデル
+ * @returns `generations.effort` へ入れる値
+ */
+export function ledgerEffortOf(model: GenerationModel): string {
+  return model.effort ?? EFFORT_NOT_SENT;
 }
 
 /**

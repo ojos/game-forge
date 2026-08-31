@@ -1,21 +1,31 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  AMBIGUOUS_JOB_SPAN_SECONDS,
   EXCHANGE_RATE_PATTERN,
   USD_JPY_RATE,
   convertUsageToJpy,
   costOfGeneration,
+  effortExperimentTotals,
   isUsableGeneration,
   jstMonthRange,
   monthlyCostTotals,
   recordGeneration,
 } from '../src/cost-ledger.js';
+import type {
+  EffortExperimentGroup,
+  EffortExperimentReport,
+} from '../src/cost-ledger.js';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
+  EFFORT_AB_ARMS,
+  EFFORT_AB_MODEL_KEYS,
+  EFFORT_NOT_SENT,
   GENERATION_MODELS,
   findGenerationModel,
 } from '../src/generation-models.js';
 import type {
+  GenerationEffort,
   GenerationModelKey,
   GenerationResult,
   GenerationUsage,
@@ -81,6 +91,7 @@ interface LedgerRow {
   user_id: string;
   prompt: string;
   model: string;
+  effort: string | null;
   input_tokens: number;
   output_tokens: number;
   cache_creation_input_tokens: number;
@@ -552,5 +563,380 @@ describe('月次累計の集計（4.3 層 1）', () => {
     const totals = await monthlyCostTotals(env, at);
     expect(totals.generations).toBe(2);
     expect(totals.costJpy).toBeCloseTo(costOfGeneration(generated).totalJpy * 2, 10);
+  });
+});
+
+describe('effort の割り当てと結果が台帳から追える（#25 acceptance 2）', () => {
+  it('群の鍵で生成すると、model と effort の両方が残る', async () => {
+    // **これが「割り当てと結果が追える」の実体である。** 群は登録簿の要素なので
+    // `model` にも入るが、集計が鍵の綴りを解釈しないで済むよう `effort` を別に持つ
+    // （`migrations/0011_generations_effort.sql`）。
+    const userId = await seedUser('effort-recorded');
+    for (const arm of EFFORT_AB_ARMS) {
+      await recordGeneration(env, {
+        userId,
+        prompt: `お題-${arm}`,
+        generated: generationOf(`sonnet-4-6-${arm}`, { inputTokens: 1_200, outputTokens: 6_000 }),
+      });
+    }
+    const rows = await rowsOf(userId);
+    expect(rows.map((row) => row.model)).toEqual(EFFORT_AB_MODEL_KEYS);
+    expect(rows.map((row) => row.effort)).toEqual([...EFFORT_AB_ARMS]);
+  });
+
+  it('effort を送っていない生成は none として残る（NULL にしない）', async () => {
+    // 列の NULL は「記録していない」（0011 より前の行）である。送らなかったことを
+    // NULL で表すと、集計が古い行を対照群として数える。
+    const userId = await seedUser('effort-none');
+    await recordGeneration(env, {
+      userId,
+      prompt: 'お題',
+      generated: generationOf('sonnet-4-6', { inputTokens: 1_200, outputTokens: 6_000 }),
+    });
+    expect((await rowsOf(userId))[0]!.effort).toBe(EFFORT_NOT_SENT);
+  });
+
+  it('登録簿の effort を変異させると、書かれる値が変わる（写しでない証拠）', async () => {
+    // **綴りを台帳側へ写していれば、登録簿を変えても結果は変わらない。** 単価表の
+    // 変異検査（上）と同じ形で、値の出どころが 1 か所であることを確かめる。
+    const model = findGenerationModel('sonnet-4-6-high')!;
+    const original = model.effort;
+    const userId = await seedUser('effort-mutated');
+    try {
+      (model as { effort: GenerationEffort | null }).effort = 'low';
+      await recordGeneration(env, {
+        userId,
+        prompt: 'お題',
+        generated: generationOf('sonnet-4-6-high', { inputTokens: 1_200, outputTokens: 100 }),
+      });
+      expect((await rowsOf(userId))[0]!.effort).toBe('low');
+    } finally {
+      (model as { effort: GenerationEffort | null }).effort = original;
+    }
+    // 戻したことを確かめる（崩れると後続が理由不明で落ちる）。
+    expect(findGenerationModel('sonnet-4-6-high')!.effort).toBe('high');
+  });
+
+  it('登録簿に無いモデルの effort は NULL にする（none と断定しない）', async () => {
+    // 何を送ったのか分からない。**分からないものを「送っていない」と断定しない。**
+    const userId = await seedUser('effort-unknown-model');
+    await recordGeneration(env, {
+      userId,
+      prompt: 'お題',
+      generated: {
+        ...generationOf(DEFAULT_GENERATION_MODEL_KEY, { inputTokens: 10, outputTokens: 10 }),
+        modelKey: 'sonnet-9' as GenerationModelKey,
+      },
+    });
+    expect((await rowsOf(userId))[0]!.effort).toBeNull();
+  });
+});
+
+describe('A/B の集計（#25 acceptance 1）', () => {
+  // **テストごとに別の窓を使う。** このファイルの D1 はテスト間で持ち越されるので
+  // （上の月次のテストが「過去の月」を使って干渉を避けているのと同じ事情）、窓を
+  // 共有すると、前のテストが書いた行を次のテストが数えてしまう。
+  const WINDOW_BASE = Date.UTC(2015, 5, 1) / 1000;
+  const WINDOW_LENGTH = 24 * 60 * 60;
+  let windowIndex = 0;
+  let WINDOW_FROM = WINDOW_BASE;
+  let WINDOW_TO = WINDOW_BASE + WINDOW_LENGTH;
+  /** 集計にかける窓（前後に余白を置かない。境界そのものを見るため）。 */
+  let WINDOW = { fromSeconds: WINDOW_FROM, toSeconds: WINDOW_TO };
+
+  beforeEach(() => {
+    windowIndex += 1;
+    WINDOW_FROM = WINDOW_BASE + windowIndex * 7 * WINDOW_LENGTH;
+    WINDOW_TO = WINDOW_FROM + WINDOW_LENGTH;
+    WINDOW = { fromSeconds: WINDOW_FROM, toSeconds: WINDOW_TO };
+  });
+
+  /**
+   * 新規生成 1 回ぶんの行を書く。
+   *
+   * **未キャッシュ入力を 1,200 にそろえてある**（4.2 の実測 1,092〜1,444 の範囲）。
+   * これが `BASE_SOURCE_INPUT_TOKEN_CEILING` の上にあることが「新規生成」の判定である。
+   *
+   * @param userId 利用者
+   * @param arm 群（`high` / `medium`）
+   * @param prompt お題（1 群につき別の文面にする。依頼の切り分けがこれで決まる）
+   * @param outputTokens 出力トークン
+   * @param at 記録時刻
+   * @param stopReason 生成が止まった理由
+   */
+  async function seedCall(
+    userId: string,
+    arm: (typeof EFFORT_AB_ARMS)[number],
+    prompt: string,
+    outputTokens: number,
+    at: number,
+    stopReason = 'end_turn',
+  ): Promise<void> {
+    await recordGeneration(
+      env,
+      {
+        userId,
+        prompt,
+        generated: generationOf(
+          `sonnet-4-6-${arm}`,
+          { inputTokens: 1_200, outputTokens, cacheReadInputTokens: 0, cacheWriteInputTokens: 0 },
+          { stopReason },
+        ),
+      },
+      at,
+    );
+  }
+
+  /**
+   * 群を 1 つ引く。
+   *
+   * @param report 集計結果
+   * @param arm 群
+   * @param withBaseSource 元ソースが載っていたか
+   * @returns 群
+   */
+  function groupOf(
+    report: EffortExperimentReport,
+    arm: string,
+    withBaseSource = false,
+  ): EffortExperimentGroup {
+    const found = report.groups.find(
+      (group) => group.effort === arm && group.withBaseSource === withBaseSource,
+    );
+    expect(found, `${arm} / withBaseSource=${withBaseSource}`).toBeDefined();
+    return found!;
+  }
+
+  /**
+   * A/B を 1 回ぶん仕込む。
+   *
+   * - `high`: 3 依頼・出力 9,000。うち 1 依頼だけ 2 回目の呼び出しがある（初回で
+   *   ビルドが通らなかった依頼）
+   * - `medium`: 3 依頼・出力 6,000。すべて 1 回で終わった
+   *
+   * **お題の文面は 1 群の中ですべて別にしてある**（依頼の切り分けの前提。
+   * `effortExperimentTotals` の但し書き）。群が違えば `model` で分かれるので、
+   * 同じ文面を両群へ使うのは正しい。
+   *
+   * @param userId 利用者
+   */
+  async function seedExperiment(userId: string): Promise<void> {
+    for (const [index, arm] of (['high', 'medium'] as const).entries()) {
+      const outputTokens = arm === 'high' ? 9_000 : 6_000;
+      for (let job = 1; job <= 3; job += 1) {
+        await seedCall(userId, arm, `お題 ${job}`, outputTokens, WINDOW_FROM + index * 3_600 + job * 200);
+      }
+    }
+    // high の 1 依頼だけ、2 回目の呼び出しがある（＝初回でコンパイルが通らなかった）。
+    await seedCall(userId, 'high', 'お題 3', 9_000, WINDOW_FROM + 800);
+  }
+
+  it('両群の実コストと初回コンパイル成功率を出す', async () => {
+    const userId = await seedUser('ab-core');
+    await seedExperiment(userId);
+
+    const report = await effortExperimentTotals(env, WINDOW);
+    const high = groupOf(report, 'high');
+    const medium = groupOf(report, 'medium');
+
+    // 群の識別。`model` と `effort` の両方から追える。
+    expect(high.modelKey).toBe('sonnet-4-6-high');
+    expect(medium.modelKey).toBe('sonnet-4-6-medium');
+
+    // **初回コンパイル成功率。** high は 3 依頼中 1 つが 2 回目を要した。
+    expect(high.jobs).toBe(3);
+    expect(high.calls).toBe(4);
+    expect(high.firstCallCompleted).toBe(2);
+    expect(high.firstCallCompletionRate).toBeCloseTo(2 / 3, 10);
+    expect(medium.jobs).toBe(3);
+    expect(medium.calls).toBe(3);
+    expect(medium.firstCallCompletionRate).toBe(1);
+
+    // **実コスト。** 台帳の行の合計そのものであって、試算ではない。
+    const highCall = costOfGeneration(
+      generationOf('sonnet-4-6-high', {
+        inputTokens: 1_200,
+        outputTokens: 9_000,
+        cacheReadInputTokens: 0,
+        cacheWriteInputTokens: 0,
+      }),
+    ).totalJpy;
+    expect(high.costJpy).toBeCloseTo(highCall * 4, 8);
+    expect(high.costJpyPerJob).toBeCloseTo((highCall * 4) / 3, 8);
+    // 1 本の「初回で終わった依頼」あたり（4.2 の「1 本の成功あたり」に対応）。
+    expect(high.costJpyPerFirstCallCompletion).toBeCloseTo((highCall * 4) / 2, 8);
+
+    // 依頼の切り分けが怪しいまとまりは無い（お題の文面をすべて別にしてあるため）。
+    expect(high.ambiguousJobs).toBe(0);
+    expect(medium.ambiguousJobs).toBe(0);
+    expect(high.unusableCalls).toBe(0);
+  });
+
+  it('総額の差の大半は出力長で説明できることが、正規化した値に現れる', async () => {
+    // **これが交絡の分離である。** 1.2.43 の実測では費用が出力トークンにほぼ比例した。
+    // 群ごとに出力長が違えば、**総額の差はほとんど出力長の差**であって `effort` の
+    // 効果ではない。正規化した値（出力 1,000 トークンあたりの円）に差が残らなければ、
+    // 「差はすべて出力長として現れた」と読める。
+    const userId = await seedUser('ab-confound');
+    await seedExperiment(userId);
+
+    const report = await effortExperimentTotals(env, WINDOW);
+    const high = groupOf(report, 'high');
+    const medium = groupOf(report, 'medium');
+
+    // 1 呼び出しあたりの出力長そのもの（分解）。**effort の効果はここに出る。**
+    expect(high.outputTokensPerCall).toBeCloseTo(9_000, 8);
+    expect(medium.outputTokensPerCall).toBeCloseTo(6_000, 8);
+
+    // 総額は 1 呼び出しあたりで 1.48 倍ちがう（出力が 1.5 倍なので、ほぼそのまま）。
+    const highPerCall = high.costJpy / high.calls;
+    const mediumPerCall = medium.costJpy / medium.calls;
+    expect(highPerCall / mediumPerCall).toBeGreaterThan(1.4);
+
+    // **正規化すると差は 2% 未満まで縮む。** 残るのは入力ぶん（出力長に比例しない
+    // 固定費）だけである。**この 2 つの数を並べて初めて、費用差を読み分けられる。**
+    const ratio = high.costJpyPerKiloOutputToken! / medium.costJpyPerKiloOutputToken!;
+    expect(ratio).toBeGreaterThan(0.98);
+    expect(ratio).toBeLessThan(1.0);
+  });
+
+  it('出力トークンで層別できる（同じ帯どうしで比べられる）', async () => {
+    // 正規化だけでは足りない。**帯を固定すれば出力長の差は消える**ので、同じ帯に
+    // 両群の呼び出しが入ったときにだけ、費用差を effort の効果として読める。
+    const userId = await seedUser('ab-strata');
+    await seedExperiment(userId);
+
+    const report = await effortExperimentTotals(env, WINDOW);
+    expect(report.outputTokenStrata).toEqual([4_000, 8_000]);
+
+    // high の出力 9,000 は最上位の帯、medium の 6,000 は真ん中の帯へ入る。
+    const high = groupOf(report, 'high');
+    expect(high.strata).toEqual([
+      {
+        fromOutputTokens: 8_000,
+        toOutputTokens: null,
+        calls: 4,
+        costJpy: high.costJpy,
+        outputTokens: 36_000,
+        costJpyPerCall: high.costJpy / 4,
+      },
+    ]);
+    const medium = groupOf(report, 'medium');
+    expect(medium.strata.map((stratum) => [stratum.fromOutputTokens, stratum.toOutputTokens])).toEqual(
+      [[4_000, 8_000]],
+    );
+
+    // 境界は指定できる（同じ帯へそろえた比較を、後から切り直せる）。
+    const recut = await effortExperimentTotals(env, { ...WINDOW, outputTokenStrata: [10_000] });
+    expect(groupOf(recut, 'high').strata).toHaveLength(1);
+    expect(groupOf(recut, 'high').strata[0]!.fromOutputTokens).toBe(0);
+    expect(groupOf(recut, 'high').strata[0]!.toOutputTokens).toBe(10_000);
+  });
+
+  it('推敲（元ソースが messages に載った生成）を新規生成と混ぜない', async () => {
+    // 1.2.43: 推敲は 19.5〜25.0 円、新規生成は約 16 円で**別の値**である。混ぜると
+    // effort より大きな差がそこから入る。判定は経路の構造（元ソースの直後の
+    // cachePoint により、未キャッシュ入力が差分プロンプトだけになる）から引く。
+    const userId = await seedUser('ab-revise');
+    await seedExperiment(userId);
+    // 1.2.43 の 4 回目の実測（入力 35 / 読み出し 9,478 / 出力 9,036）に合わせる。
+    await recordGeneration(
+      env,
+      {
+        userId,
+        prompt: '敵を速くして',
+        generated: generationOf('sonnet-4-6-high', {
+          inputTokens: 35,
+          outputTokens: 9_036,
+          cacheReadInputTokens: 9_478,
+          cacheWriteInputTokens: 0,
+        }),
+      },
+      WINDOW_FROM + 10_000,
+    );
+
+    const report = await effortExperimentTotals(env, WINDOW);
+    const newGeneration = groupOf(report, 'high', false);
+    const revise = groupOf(report, 'high', true);
+
+    expect(newGeneration.calls).toBe(4);
+    expect(revise.calls).toBe(1);
+    // **同じ effort でも別の行として返る。** 片方だけを読めば混ざらない。
+    expect(revise.costJpy).not.toBeCloseTo(newGeneration.costJpy, 6);
+
+    // 分類が崩れていないことを、返ってきた値そのもので確かめられる（谷をまたがない）。
+    expect(newGeneration.minInputTokens).toBeGreaterThan(report.baseSourceInputTokenCeiling);
+    expect(revise.maxInputTokens).toBeLessThanOrEqual(report.baseSourceInputTokenCeiling);
+  });
+
+  it('依頼の切り分けが怪しいときは、そう分かる', async () => {
+    // 台帳は作品行と結び付いていない（確定27）ので、依頼の境目は「同じ利用者の同じ
+    // プロンプト」から引くしかない。**同じお題を 1 群で 2 回使うと前提が崩れる**ので、
+    // 崩れたことが見えなければならない（黙って誤った成功率を出さない）。
+    const userId = await seedUser('ab-ambiguous');
+    for (let call = 0; call < 4; call += 1) {
+      await seedCall(userId, 'high', '同じお題', 9_000, WINDOW_FROM + call * 100);
+    }
+    const report = await effortExperimentTotals(env, WINDOW);
+    expect(groupOf(report, 'high').ambiguousJobs).toBe(1);
+
+    // 時間の広がりでも立つ（3 回以内でも、別々の依頼なら数分に収まらない）。
+    const spread = await seedUser('ab-spread');
+    await seedCall(spread, 'medium', '同じお題', 6_000, WINDOW_FROM);
+    await seedCall(spread, 'medium', '同じお題', 6_000, WINDOW_FROM + AMBIGUOUS_JOB_SPAN_SECONDS + 1);
+    const spreadReport = await effortExperimentTotals(env, {
+      ...WINDOW,
+      fromSeconds: WINDOW_FROM,
+      toSeconds: WINDOW_FROM + AMBIGUOUS_JOB_SPAN_SECONDS + 2,
+    });
+    expect(groupOf(spreadReport, 'medium').ambiguousJobs).toBe(1);
+  });
+
+  it('max_tokens で切れた呼び出しは初回成功に数えない', async () => {
+    // 切れたソースはコンパイルできない（`isUsableGeneration`）。1 行しか無くても
+    // 「初回で通った」ではない。**出力上限に張り付いた群があれば、成功率の差が
+    // effort の効果ではなく天井の効果になる。**
+    const userId = await seedUser('ab-truncated');
+    await seedCall(userId, 'high', '切れるお題', 16_000, WINDOW_FROM + 50, 'max_tokens');
+    const report = await effortExperimentTotals(env, WINDOW);
+    const high = groupOf(report, 'high');
+    expect(high.jobs).toBe(1);
+    expect(high.firstCallCompleted).toBe(0);
+    expect(high.unusableCalls).toBe(1);
+  });
+
+  it('窓の外の行を数えない（0011 より前の行を対照群にしない）', async () => {
+    // `effort` 列はこのマイグレーションで足したもので、それより前の行は NULL である。
+    // 窓を適用より後に取れば入らない——**その窓が効いていること**をここで見る。
+    const userId = await seedUser('ab-window');
+    await seedCall(userId, 'high', '窓の中', 9_000, WINDOW_FROM);
+    await seedCall(userId, 'high', '窓の前', 9_000, WINDOW_FROM - 1);
+    await seedCall(userId, 'high', '窓の後', 9_000, WINDOW_TO);
+
+    const report = await effortExperimentTotals(env, WINDOW);
+    expect(groupOf(report, 'high').jobs).toBe(1);
+    expect(groupOf(report, 'high').calls).toBe(1);
+  });
+
+  it('同じ窓の作品行の内訳を返す（初回成功率の上界を実数へ寄せる）', async () => {
+    // 5.2-5 の即拒否（許可外パッケージ）はリトライされず 1 行で終わるため、
+    // `firstCallCompleted` はそれを「初回で通った」と数えてしまう。**窓の中では群が
+    // 1 つに固定されている**ので、作品行の側から件数を引ける。
+    const userId = await seedUser('ab-games');
+    await seedCall(userId, 'high', '拒否されるお題', 9_000, WINDOW_FROM + 10);
+    await env.DB.prepare(
+      `insert into games (id, author_id, status, title, go_version, created_at,
+                          generation_state, generation_error)
+       values (?, ?, 'draft', 'T', 'go1.25.0', ?, 'failed', 'source-rejected')`,
+    )
+      .bind('ab-game-rejected', userId, WINDOW_FROM + 20)
+      .run();
+
+    const report = await effortExperimentTotals(env, WINDOW);
+    expect(report.games.total).toBe(1);
+    expect(report.games.byState).toEqual({ failed: 1 });
+    expect(report.games.byError).toEqual({ 'source-rejected': 1 });
+    // 上界と、そこから引くべき数が両方そろっている。
+    expect(groupOf(report, 'high').firstCallCompleted).toBe(1);
   });
 });

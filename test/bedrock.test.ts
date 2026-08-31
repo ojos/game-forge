@@ -14,7 +14,7 @@ import {
   toConverseSystem,
 } from '../src/bedrock.js';
 import type { GenerationModel, SystemBlock } from '../src/generation-models.js';
-import { findGenerationModel } from '../src/generation-models.js';
+import { EFFORT_AB_ARMS, findGenerationModel } from '../src/generation-models.js';
 
 const SONNET = findGenerationModel('sonnet-4-6')!;
 const DEEPSEEK = findGenerationModel('deepseek-v3-2')!;
@@ -157,6 +157,23 @@ describe('リクエストの組み立て', () => {
 
   it('システムプロンプトが空なら system を送らない', () => {
     expect(buildConverseRequest(SONNET, [], 'x')).not.toHaveProperty('system');
+  });
+
+  it('A/B の 2 群は、登録簿の要素として選ぶだけで effort が送られる（#25）', () => {
+    // 上のテストは `{ ...SONNET, effort: 'medium' }` という**その場で作った**モデルを
+    // 使っており、「送る経路がある」ことしか見ていない。**登録簿の要素を引いただけで
+    // 送られる**ことは別である——ここが繋がっていないと、`GENERATION_MODEL` を群の鍵に
+    // しても既定（effort なし）のまま生成が走り、**両群が同じ生成になる。**
+    for (const arm of EFFORT_AB_ARMS) {
+      const model = findGenerationModel(`sonnet-4-6-${arm}`)!;
+      const body = buildConverseRequest(model, stubSystemPrompt(), 'x');
+      expect(body['additionalModelRequestFields'], arm).toEqual({
+        output_config: { effort: arm },
+      });
+      // 送り先は素の sonnet-4-6 と同じでなければならない（比較が別モデルにならない）。
+      expect(model.modelId, arm).toBe(SONNET.modelId);
+      expect(body['inferenceConfig'], arm).toEqual({ maxTokens: SONNET.maxTokens });
+    }
   });
 });
 

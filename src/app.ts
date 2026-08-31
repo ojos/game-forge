@@ -6,6 +6,7 @@
  */
 import { authRoutes } from './auth/google.js';
 import { describeOriginRelation } from './origins.js';
+import { forkRoutes } from './fork.js';
 import { generateRoutes } from './generate.js';
 import { generateCallbackRoutes } from './generate-callback.js';
 import { generatePageRoutes } from './generate-page.js';
@@ -263,6 +264,7 @@ export function createAppRoutes(env: Env): readonly Route[] {
     ...waitlistRoutes,
     ...generateRoutes,
     ...reviseRoutes,
+    ...forkRoutes,
     ...generateCallbackRoutes,
     ...generatePageRoutes,
     ...workPageRoutes,

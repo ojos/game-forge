@@ -23,7 +23,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { dispatch } from '../src/routes.js';
 import { createPublishRoutes } from '../src/publish.js';
-import { PUBLISH_GAME_ID_FIELD, PUBLISH_PATH, GENERATE_PAGE_PATH } from '../src/paths.js';
+import { FORK_PATH, PUBLISH_GAME_ID_FIELD, PUBLISH_PATH } from '../src/paths.js';
 import {
   claimGenerationJob,
   completeGame,
@@ -426,12 +426,15 @@ describe('「改造する」の行き先（2.2-4 / 4.4 / #30）', () => {
     expect(row?.source).toBe('fork-cta');
   });
 
-  it('ログイン済みには生成画面を出し、まだ改造でないことを書く', async () => {
+  it('ログイン済みには差分プロンプトの口を出す（M5-1 で本物の導線になった。#32）', async () => {
+    // **#30 の時点ではここが生成画面へのリンクで、「親のソースを引き継ぐ改造はまだ
+    // 用意できていません」と書いていた。** M5-1（#32）でフォークの生成が入ったので、
+    // ボタンの名前どおりの着地点になった。**未ログイン側は 1 文字も変わっていない**
+    // （上の 2 つのテスト。10.2 の分子への唯一の送り手である）。
     const { userId, id } = await seedPlayableGame('fork-member');
     const body = await workPage(id, await sessionCookie(userId));
-    expect(body).toContain(`href="${GENERATE_PAGE_PATH}"`);
-    // **ボタンの名前と着地点が違うまま送らない。**
-    expect(body).toContain('親のソースを引き継ぐ改造はまだ用意できていません');
+    expect(body).toContain(`action="${FORK_PATH}"`);
+    expect(body).toContain(`value="${id}"`);
     expect(body).not.toContain('from=fork-cta');
   });
 

@@ -13,12 +13,18 @@ import {
   createPendingGame,
   failGame,
   hashJobToken,
+  publishGame,
 } from '../src/games.js';
 import { defaultPipeline, runJobInline, startGeneration } from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { DEFAULT_GENERATION_MODEL_KEY } from '../src/generation-models.js';
-import { REVISE_PATH, RESTORE_PATH } from '../src/paths.js';
+import {
+  FORK_PARENT_ID_FIELD,
+  FORK_PATH,
+  REVISE_PATH,
+  RESTORE_PATH,
+} from '../src/paths.js';
 import {
   DAILY_QUOTA_PER_USER,
   remainingQuotaNotice,
@@ -515,5 +521,94 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     expect(body).not.toContain('<script>alert(1)</script>');
     expect(body).toContain('&lt;script&gt;');
+  });
+});
+
+describe('フォークの口（5.3 / M5-1 / #32）', () => {
+  /**
+   * 公開済みの作品を 1 件用意する。
+   *
+   * **フォークの親になれるのは公開済みの作品だけである**（5.3）。作品ページの側でも
+   * 同じ条件で口を出す（`src/work-page.ts` の `forkableId`）。
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @returns 作者の id と作品 id
+   */
+  async function seedPublished(suffix: string): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(`fork-${suffix}`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: `sha-fork-${suffix}` }));
+    const published = await publishGame(env, id, userId);
+    expect(published.ok).toBe(true);
+    return { userId, id };
+  }
+
+  it('ログイン済みには差分プロンプトの口が出て、親としてこの作品が入る', async () => {
+    const { id } = await seedPublished('form');
+    const visitor = await seedUser('fork-visitor');
+
+    const body = await (await open(workPagePath(id), await sessionCookie(visitor))).text();
+
+    expect(body).toContain(`action="${FORK_PATH}"`);
+    // **親はこの作品である。** 送り先の項目名も綴りを書き写さない（`src/paths.ts`）。
+    expect(body).toContain(`<input type="hidden" name="${FORK_PARENT_ID_FIELD}" value="${id}">`);
+    expect(body).toContain('どう改造しますか');
+    // **待ち時間と費用を隠さない**（5.7 の推敲と同じ扱い。1 回は生成 1 回そのもの）。
+    expect(body).toContain('生成枠を 1 回使います');
+    expect(body).toContain(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
+  });
+
+  it('作者本人にも出る（5.7「公開後に手を入れたい作者はフォークする」）', async () => {
+    const { userId, id } = await seedPublished('self');
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(body).toContain(`action="${FORK_PATH}"`);
+  });
+
+  it('未ログインには待機リストの導線のまま（10.2 の唯一の送り手を壊さない）', async () => {
+    const { id } = await seedPublished('anon');
+    const body = await (await open(workPagePath(id))).text();
+
+    // **この綴りが 10.2 の分子である**（`src/waitlist.ts` の受け皿と対になっている）。
+    expect(body).toContain('href="/signup?from=fork-cta"');
+    expect(body).toContain('改造には招待が必要です');
+    // 押しても 401 になる口を、未ログインの人へ出さない。
+    expect(body).not.toContain(FORK_PATH);
+  });
+
+  it('未公開の作品には口が出ない（親になれるのは公開済みだけ）', async () => {
+    const { userId, id, jobToken } = await seedPending('fork-draft');
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: 'sha-fork-draft' }));
+    const visitor = await seedUser('fork-draft-visitor');
+
+    for (const cookie of [await sessionCookie(userId), await sessionCookie(visitor)]) {
+      const body = await (await open(workPagePath(id), cookie)).text();
+      expect(body).not.toContain(FORK_PATH);
+    }
+  });
+
+  it('本日の枠が尽きていたらフォームを出さず、見出しと残数は出す（4.4 / 3.4-5）', async () => {
+    const { id } = await seedPublished('daily-spent');
+    const visitor = await seedUser('fork-spent-visitor');
+    const now = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < DAILY_QUOTA_PER_USER; i += 1) {
+      await env.DB.prepare(
+        `insert into generations
+           (id, game_id, user_id, prompt, model,
+            input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+            cost_jpy, succeeded, created_at)
+         values (?, null, ?, 'ゲーム', ?, 0, 0, 0, 0, 1, 1, ?)`,
+      )
+        .bind(`gen-fork-daily-${i}`, visitor, DEFAULT_GENERATION_MODEL_KEY, now)
+        .run();
+    }
+
+    const body = await (await open(workPagePath(id), await sessionCookie(visitor))).text();
+
+    // **押せば 429 で断られる操作を、押せる形で出さない**（4.4 の裏返し）。
+    expect(body).not.toContain(FORK_PATH);
+    // **3.4-5 の 4 要素は 1 つも条件付きにしない。** 見出しと残数は残る。
+    expect(body).toContain('このゲームを改造する');
+    expect(body).toContain(remainingQuotaNotice(0));
   });
 });

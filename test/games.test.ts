@@ -12,6 +12,7 @@ import {
   UNTITLED_TITLE,
   claimGenerationJob,
   completeGame,
+  createForkedGame,
   createPendingGame,
   UNBUILT_GO_VERSION,
   createPreviewKey,
@@ -810,5 +811,45 @@ describe('listAuthoredGames（#152）', () => {
     const userId = await seedUser('list-zero-limit');
     await seedGame(userId);
     expect(await listAuthoredGames(env, userId, 0)).toEqual([]);
+  });
+});
+
+describe('フォークの子は親を指す（5.3 / M5-1 / #32）', () => {
+  it('createForkedGame は parent_id に親を入れる', async () => {
+    const author = await seedUser('fork-parent');
+    const forker = await seedUser('fork-child');
+    const parent = await createPendingGame(env, author, { prompt: '親のお題' });
+
+    const child = await createForkedGame(env, forker, { prompt: '敵を増やす' }, parent.id);
+
+    const row = await readGame(child.id);
+    expect(row.parent_id).toBe(parent.id);
+    // 子は改造した人のものである。
+    expect(row.author_id).toBe(forker);
+    // **5.4 は変わらない。** フォークの経路も `published` を作れない。
+    expect(row.status).toBe(DRAFT_STATUS);
+    // **`fork_count` は親のものであって、子の値ではない**（子の被フォーク数は 0）。
+    expect(row.fork_count).toBe(0);
+  });
+
+  it('新規生成の parent_id は NULL のままである（5.7 の推敲も同じ）', async () => {
+    // **系統に載るかどうかを、呼び出し側の引数ではなく呼んだ関数が決める。**
+    // 推敲（5.7）はそもそも行を作らないので、この 2 つ以外に `parent_id` を書く経路が無い。
+    const userId = await seedUser('fork-original');
+    const original = await createPendingGame(env, userId, { prompt: 'オリジナル' });
+    expect((await readGame(original.id)).parent_id).toBeNull();
+  });
+
+  it('同じ親から 2 件フォークしても、どちらも親を 1 つだけ持つ（DAG にしない）', async () => {
+    const author = await seedUser('fork-tree-parent');
+    const forker = await seedUser('fork-tree-child');
+    const parent = await createPendingGame(env, author, { prompt: '親のお題' });
+
+    const first = await createForkedGame(env, forker, { prompt: '1 回目' }, parent.id);
+    const second = await createForkedGame(env, forker, { prompt: '2 回目' }, parent.id);
+
+    expect(first.id).not.toBe(second.id);
+    expect((await readGame(first.id)).parent_id).toBe(parent.id);
+    expect((await readGame(second.id)).parent_id).toBe(parent.id);
   });
 });

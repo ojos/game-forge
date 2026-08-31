@@ -313,3 +313,112 @@ describe('版へ戻す（5.7）', () => {
     expect(await restoreRevision(env, gameId, userId, 99)).toBe('not-found');
   });
 });
+
+describe('版が記録されていない作品の推敲（#202）', () => {
+  /**
+   * #192 より前に完成した作品を再現する。**版を 1 つも持たない `ready` の行**である。
+   *
+   * @param userId 作者
+   * @returns 作品 id と、そのときの成果物
+   */
+  async function createLegacyGame(
+    userId: string,
+  ): Promise<{ gameId: string; artifacts: { goVersion: string; sourceKey: string; wasmKey: string } }> {
+    const pending = await createPendingGame(env, userId, REQUEST);
+    await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken));
+    await completeGame(
+      env,
+      pending.id,
+      fakeBuildOutcome({ goVersion: 'go1.26.5', sourceSha256: `legacy-${pending.id}` }),
+    );
+    const row = await env.DB.prepare(
+      `select go_version, source_key, wasm_key from games where id = ?`,
+    )
+      .bind(pending.id)
+      .first<{ go_version: string; source_key: string; wasm_key: string }>();
+    // **`appendRevision` を呼ばない。** これが #192 より前の行の状態である。
+    expect(await listRevisions(env, pending.id)).toHaveLength(0);
+    return {
+      gameId: pending.id,
+      artifacts: {
+        goVersion: row!.go_version,
+        sourceKey: row!.source_key,
+        wasmKey: row!.wasm_key,
+      },
+    };
+  }
+
+  it('推敲を始めると、いまの成果物が seq = 1 として積まれる', async () => {
+    const userId = await createUser('rev-legacy');
+    const { gameId, artifacts } = await createLegacyGame(userId);
+
+    expect(await claimRevisionSlot(env, gameId, userId, '玉を速く', 'hash-legacy-1')).toBe(true);
+
+    const revisions = await listRevisions(env, gameId);
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]!.seq).toBe(1);
+    // 初回のプロンプトは版から引けない（確定27 / 0009）。
+    expect(revisions[0]!.prompt).toBeNull();
+    expect(revisions[0]!.current).toBe(true);
+
+    const row = await env.DB.prepare(
+      `select source_key, wasm_key, go_version from game_revisions where game_id = ? and seq = 1`,
+    )
+      .bind(gameId)
+      .first<{ source_key: string; wasm_key: string; go_version: string }>();
+    expect(row).toEqual({
+      source_key: artifacts.sourceKey,
+      wasm_key: artifacts.wasmKey,
+      go_version: artifacts.goVersion,
+    });
+  });
+
+  it('その推敲の結果は seq = 2 に入り、元の版へ戻せる', async () => {
+    const userId = await createUser('rev-legacy-complete');
+    const { gameId, artifacts } = await createLegacyGame(userId);
+    await claimRevisionSlot(env, gameId, userId, '玉を速く', 'hash-legacy-2');
+    await claimRevisionJob(env, gameId, 'hash-legacy-2');
+    await completeRevision(env, gameId, 'hash-legacy-2', {
+      goVersion: 'go1.27.0',
+      sourceKey: 'builds/after/source.go',
+      wasmKey: 'builds/after/game.wasm.br',
+    });
+
+    const revisions = await listRevisions(env, gameId);
+    expect(revisions.map((revision) => revision.seq)).toEqual([2, 1]);
+    expect(revisions[0]!.prompt).toBe('玉を速く');
+
+    // **これが #202 の本題である。** 元の版へ戻せなければ、5.7 の約束が果たされない。
+    expect(await restoreRevision(env, gameId, userId, 1)).toBe('restored');
+    const row = await env.DB.prepare(`select source_key, go_version from games where id = ?`)
+      .bind(gameId)
+      .first<{ source_key: string; go_version: string }>();
+    expect(row!.source_key).toBe(artifacts.sourceKey);
+    expect(row!.go_version).toBe(artifacts.goVersion);
+  });
+
+  it('版が既にある作品では、余分な seq を積まない', async () => {
+    const userId = await createUser('rev-legacy-noop');
+    const gameId = await createReadyGame(userId);
+
+    await claimRevisionSlot(env, gameId, userId, '玉を速く', 'hash-legacy-3');
+
+    // 初回の 1 件だけ。**保険が二重に積まないこと。**
+    expect(await listRevisions(env, gameId)).toHaveLength(1);
+  });
+
+  it('枠を取れなかった要求では、版を積まない', async () => {
+    const userId = await createUser('rev-legacy-refused');
+    const other = await createUser('rev-legacy-stranger');
+    const { gameId } = await createLegacyGame(userId);
+
+    // 他人の要求。**断られた要求で版だけが積まれる経路を作らない。**
+    expect(await claimRevisionSlot(env, gameId, other, '乗っ取り', 'hash-legacy-4')).toBe(false);
+    expect(await listRevisions(env, gameId)).toHaveLength(0);
+
+    // 公開済みも同じ。
+    expect((await publishGame(env, gameId, userId)).ok).toBe(true);
+    expect(await claimRevisionSlot(env, gameId, userId, '直したい', 'hash-legacy-5')).toBe(false);
+    expect(await listRevisions(env, gameId)).toHaveLength(0);
+  });
+});

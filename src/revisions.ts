@@ -209,6 +209,26 @@ export async function revisionStatus(env: Env, gameId: string): Promise<Revision
  * `game_id` が主キーなので 2 本目は衝突する。**`state = 'failed'` のときだけ上書きする**
  * ので、走っている最中の要求は 0 行で返る。失敗した行は次の推敲が引き取る。
  *
+ * # 版が 1 つも無ければ、いまの成果物を `seq = 1` として先に積む（#202）
+ *
+ * **これが無いと、本番で元の版が消えた。** #192 より前に完成した作品は
+ * `appendRevision` を通っていないので版を 1 つも持たない。そこへ推敲が走ると
+ * `coalesce(max(seq), 0) + 1` が 1 を採り、{@link completeRevision} が `games` の
+ * 成果物を上書きする。**元の版はどこにも残らない。**
+ *
+ * 帰結は 2 つあった（2026-08-31 に本番で 2 件観測）。
+ *
+ * 1. **5.7 の「任意の版へ戻せる」が成立しない。** 版が 1 つでは一覧すら出ない
+ * 2. **確定26 の掃除（M5-4 / #35）が、元の成果物を「参照ゼロ」と正しく判定して消す**
+ *
+ * **初回完成の経路（`src/generate-callback.ts`）は変えない。** これから生まれる作品は
+ * そちらで `seq = 1` を得ており、ここが足すのは**その経路を通っていない行への保険**である。
+ * 積むのは推敲を始める直前——**上書きされる前の最後の瞬間**である。
+ *
+ * `created_at` には `games.created_at` を使う。**完成した時刻は `games` に無い**
+ * （`generation_started_at` はあるが、完成時刻を持つ列は無い）。版の並びは `seq` が
+ * 決めるので（0009）、時刻がずれても順序は壊れない。
+ *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
  * @param userId 要求した利用者（作者本人でなければ通らない）
@@ -225,7 +245,31 @@ export async function claimRevisionSlot(
   jobTokenHash: string,
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<boolean> {
-  const [claim] = await env.DB.batch([
+  const [, claim] = await env.DB.batch([
+    // **枠を取るより先に積む。** 同じ batch なので、枠が取れなければこの行も残らない
+    // （D1 の `batch` は暗黙のトランザクションで走る）。
+    //
+    // **5.7 の対象条件は下の UPSERT とそろえてある**（作者・`draft`・`ready`・上限）。
+    // そろえないと、断られた要求で版だけが積まれる経路ができる。
+    //
+    // **そのうえで、こちらにだけ `source_key` / `wasm_key` の非 NULL がある。**
+    // 意図的な差である。0007 の不変条件によれば `ready` なら入っているはずだが、
+    // **写す値そのものなので、入っていなかったときに NOT NULL 制約で batch ごと
+    // 落とすより、積まないほうがよい**（0009 の `game_revisions` は両方 NOT NULL）。
+    //
+    // **UPSERT 側へは足さない。** 足すと、この状態の要求が「いま推敲できません」
+    // （409）で断られる。実際にはソースが読めないことが理由で、`src/revise.ts` は
+    // それを 500 と専用の文言で返し、**枠も返す。** 断り方の正しさを、こちらの
+    // 都合で下げない。
+    env.DB.prepare(
+      `insert into game_revisions (game_id, seq, source_key, wasm_key, go_version, prompt, created_at)
+       select g.id, 1, g.source_key, g.wasm_key, g.go_version, null, g.created_at
+         from games g
+        where g.id = ? and g.author_id = ? and g.status = 'draft'
+          and g.generation_state = 'ready' and g.revise_count < ?
+          and g.source_key is not null and g.wasm_key is not null
+          and not exists (select 1 from game_revisions r where r.game_id = g.id)`,
+    ).bind(gameId, userId, REVISIONS_PER_GAME),
     env.DB.prepare(
       `insert into game_revision_jobs (game_id, job_token_hash, prompt, state, error, started_at, created_at)
        select g.id, ?, ?, 'pending', null, null, ?

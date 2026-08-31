@@ -311,6 +311,14 @@ export const UNBUILT_GO_VERSION = '';
  * 2 件作ることは利用者の自由で、確定26 のもとでは 2 件が同じ成果物を指すだけである）。
  * 二重実行を防ぐのはこの関数ではなく {@link claimGenerationJob} である。
  *
+ * # フォークは親を指す（5.3 / #32）
+ *
+ * `parent_id` を張るのは {@link createForkedGame} だけである。**新規生成の経路が親を
+ * 受け取らない形にしてある**のは、5.4 で `status` を引数にしなかったのと同じ理由で、
+ * 系統（5.5）へ載るかどうかを**呼び出し側の値ではなく、呼んだ関数**で決めたいため。
+ * 推敲（5.7）が `parent_id` を張らないことも、あちらがこの関数を 1 度も呼ばない
+ * （同じ行を置き換える）という形で自然に守られる。
+ *
  * @param env バインディングと環境変数
  * @param userId 作者
  * @param request 生成リクエスト（仮のタイトルに使う）
@@ -323,6 +331,62 @@ export async function createPendingGame(
   request: GenerateRequest,
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<PendingGame> {
+  return await insertPendingGame(env, userId, request, null, now);
+}
+
+/**
+ * フォークの子を `pending` で作る（5.3 / M5-1 / #32）。
+ *
+ * **{@link createPendingGame} との違いは `parent_id` を張ることだけである。**
+ * 5.7 の表がフォークと推敲を分ける 2 点のうち、「**新しい作品行**が生まれる」と
+ * 「`parent_id` が親を指す」の両方がこの 1 つの呼び出しに現れる。
+ *
+ * **`fork_count` はここで動かさない**（#34 の範囲）。親の被フォーク数は**公開された
+ * 子の数**として意味を持つ値で、`pending` の行——ビルドが通らずに終わるかもしれない
+ * 行——を数えた瞬間に、5.5 の「このゲームからの改造: N 件」と食い違う。
+ *
+ * **親が公開済みであることをここでは確かめない。** 5.3 の対象条件は
+ * `src/fork.ts` が親のソースを読む前に判定しており、**確かめる場所を 2 つ持たない**
+ * （`claimRevisionSlot` が 5.7 の対象条件を 1 か所で持っているのと同じ形）。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 改造する利用者（**子の作者は親の作者ではない**）
+ * @param request 生成リクエスト（差分プロンプト。仮のタイトルに使う）
+ * @param parentId 親の作品 id
+ * @param now 作成時刻（UNIX 秒。既定は現在時刻）
+ * @returns 作品の id と、ジョブトークンの平文
+ */
+export async function createForkedGame(
+  env: Env,
+  userId: string,
+  request: GenerateRequest,
+  parentId: string,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<PendingGame> {
+  return await insertPendingGame(env, userId, request, parentId, now);
+}
+
+/**
+ * `games` の行を 1 つ `pending` で挿入する。
+ *
+ * **SQL をこの 1 か所に置く。** 新規生成とフォークで文を書き分けると、列を足した日に
+ * 片方だけが古くなる（shared-ai-rules 12 章「一覧の複製を作らない」）。違いは
+ * `parent_id` に何を束ねるかだけである。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 作者
+ * @param request 生成リクエスト（仮のタイトルに使う）
+ * @param parentId 親の作品 id（オリジナルなら null）
+ * @param now 作成時刻（UNIX 秒）
+ * @returns 作品の id と、ジョブトークンの平文
+ */
+async function insertPendingGame(
+  env: Env,
+  userId: string,
+  request: GenerateRequest,
+  parentId: string | null,
+  now: number,
+): Promise<PendingGame> {
   const id = crypto.randomUUID();
   const jobToken = createJobToken();
 
@@ -331,11 +395,12 @@ export async function createPendingGame(
        (id, author_id, parent_id, status, title, go_version, source_key, wasm_key,
         fork_count, created_at, published_at, preview_key,
         generation_state, generation_error, job_token_hash, generation_started_at)
-     values (?, ?, null, ?, ?, ?, null, null, 0, ?, null, null, 'pending', null, ?, null)`,
+     values (?, ?, ?, ?, ?, ?, null, null, 0, ?, null, null, 'pending', null, ?, null)`,
   )
     .bind(
       id,
       userId,
+      parentId,
       // **状態は定数である。** 引数で受け取らないのは、生成の経路から
       // `published` を作れないようにするため（5.4）。
       DRAFT_STATUS,

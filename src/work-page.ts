@@ -52,7 +52,9 @@ import type { GenerationErrorCode, GenerationState } from './games.js';
 import { PUBLISHED_STATUS, REMOVED_STATUS } from './games.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH, ogpImagePath, ogpImageUrl } from './ogp.js';
 import {
-  GENERATE_PAGE_PATH,
+  FORK_PARENT_ID_FIELD,
+  FORK_PATH,
+  FORK_PROMPT_FIELD,
   PUBLISH_GAME_ID_FIELD,
   PUBLISH_PATH,
   RESTORE_PATH,
@@ -362,6 +364,14 @@ export interface WorkPageView {
   readonly playUrl: string | null;
   /** この作品 id（公開のフォームに入れる）。公開の操作を出さないなら null。 */
   readonly publishableId: string | null;
+  /**
+   * この作品 id（フォークのフォームに**親として**入れる。5.3 / #32）。
+   *
+   * **`publishableId` と兼ねない。** あちらは「未公開・完成済み・本人」のときの id で、
+   * こちらは「**公開済み**」のときの id である。**同時に非 null になることが無い**
+   * 2 つの値を 1 つの項目に畳むと、片方の条件を変えた日にもう片方が黙って壊れる。
+   */
+  readonly forkableId: string | null;
   /** 公開済みのときの共有 URL（この作品ページ自身の絶対 URL）。 */
   readonly shareUrl: string | null;
   /** OGP 画像の絶対 URL。まだ撮れていなければ null。 */
@@ -400,7 +410,13 @@ export interface WorkPageView {
    * 画面は出す**という食い違いが生まれる。ここへ来るのは既に判定された真偽だけである。
    */
   readonly revisable: boolean;
-  /** 4.4 の「本日の残り生成枠 N回」の数。読めなければ null。 */
+  /**
+   * 4.4 の「本日の残り生成枠 N回」の数。読めなければ null。
+   *
+   * **推敲（5.7）とフォーク（5.3）が同じ値を見る。** 確定25 の日次枠は 1 人あたりの
+   * ものであって操作ごとのものではない（5.7「別枠は作らない」）ので、**画面にも 1 つ
+   * しか置かない。**
+   */
   readonly dailyRemaining: number | null;
   /** この作品にあと何回推敲できるか（5.7）。作者でなければ null。 */
   readonly revisionsRemaining: number | null;
@@ -889,39 +905,71 @@ function parentLine(parent: ParentWork): string {
 }
 
 /**
- * 「改造する」（3.4-5 の 4 要素の 1 つ / 2.2-4 / 4.4）。
+ * 「改造する」（3.4-5 の 4 要素の 1 つ / 2.2-4 / 5.3 / 4.4）。
  *
- * # 行き先の無いボタンにしない
+ * # 見ている人で 2 つに分かれる
  *
- * フォークの生成そのものは M5-1 であり、この時点では存在しない。**それでも押せない
- * ボタンや、押しても何も起きないボタンは出さない**——4.4 が無くそうとしているのは
- * まさにそれで、#24 は「押せば必ず 429 になるボタンを描かない」という形で同じ判断を
- * している。
- *
- * **代わりに、いま実際に到達できる導線へ送る。** 4.4 が月次上限のときに「プレイと共有
- * への導線を**押せるリンクとして**出す」と定めているのと同じ扱いである。
- *
- * | 見ている人 | 行き先 | 根拠 |
+ * | 見ている人 | 出すもの | 根拠 |
  * |---|---|---|
- * | 未ログイン（共有 URL を踏んだ大半） | 登録画面の待機リスト（`from=fork-cta`） | 2.2-4「未招待: 待機リストへの登録導線に変換する」。10.2 がこの導線の登録率を見る |
- * | ログイン済み（招待された参加者） | 生成画面 | 親を引き継ぐ改造はまだ無い。**いまできることは新しく作ることだけ**なので、そう書いてそこへ送る |
+ * | 未ログイン（共有 URL を踏んだ大半） | 登録画面の待機リストへのリンク（`from=fork-cta`） | 2.2-4「未招待: 待機リストへの登録導線に変換する」。10.2 がこの導線の登録率を見る |
+ * | ログイン済み（招待された参加者） | **差分プロンプトの入力（`POST /api/fork`）** | 5.3。M5-1（#32）でフォークの生成が入り、ここが本物の導線になった |
  *
- * **`fork-cta` の受け皿は先に在った**（`src/waitlist.ts` の `WAITLIST_SOURCES`）。
- * この導線が唯一の送り手であり、ここが繋がるまで 10.2 の分子は永久に 0 だった。
+ * **未ログイン側は 1 文字も変わっていない**（#30 のまま）。**この導線が 10.2 の
+ * 分子への唯一の送り手**であり、綴り（`from=fork-cta`）を変えると受け皿
+ * （`src/waitlist.ts` の `WAITLIST_SOURCES`）ごと数えられなくなる。
  *
- * **ログイン済みの側では文言で行き先を明示する。** ボタンの名前と着地点が違うまま
- * 送るのは、押せないボタンより悪い。
+ * # 作者本人にも出す
+ *
+ * **「他人の作品だけ」に絞らない。** 5.7 が「公開後に手を入れたい作者はフォークする
+ * （自分の作品を親にしても親子関係は正しく引ける）」と明示しており、公開後の作り直しは
+ * この口しか無い。**条件は公開済みであることだけ**である（5.3 の対象条件そのもの）。
+ *
+ * # 行き先の無いボタンにしない（4.4）
+ *
+ * **本日の枠が尽きていたらフォームを出さない。** 4.4 は「UI に露出させなければ押しても
+ * 動かないボタンになる」と書いており、**その裏返しも真である**——押せば `/api/fork` が
+ * 429 で断る操作を、押せる形で出さない（{@link reviseSection} と同じ判断）。
+ *
+ * **それでも「改造する」の見出しと残枠は出したままにする。** 3.4-5 の 4 要素は
+ * 「1 つも条件付きにしない」のが {@link loadingScreen} の規則であり、**枠の状態で
+ * 要素そのものが消える形にしない。**
  *
  * @param view 表示に必要な値
  * @returns HTML
  */
 function forkCta(view: WorkPageView): string {
-  const href = view.signedIn ? GENERATE_PAGE_PATH : signupPathFrom('fork-cta');
-  const note = view.signedIn
-    ? '親のソースを引き継ぐ改造はまだ用意できていません。いまは新しく作ることができます。'
-    : '改造には招待が必要です。招待コードをお持ちでない方は待機リストにご登録いただけます。';
-  return `<p class="gf-fork"><a class="gf-fork-link" href="${href}">${FORK_LABEL}</a></p>
-<p class="gf-fork-note">${note}</p>`;
+  if (!view.signedIn) {
+    return `<p class="gf-fork"><a class="gf-fork-link" href="${signupPathFrom('fork-cta')}">${FORK_LABEL}</a></p>
+<p class="gf-fork-note">改造には招待が必要です。招待コードをお持ちでない方は待機リストにご登録いただけます。</p>`;
+  }
+
+  // **枠の文言はこのモジュールで組み立てない**（正本は `src/quota.ts`）。読めなかった
+  // ときに画面を落とさないのは {@link readDailyRemaining} の方針である。
+  const daily =
+    view.dailyRemaining === null
+      ? `<p class="gf-fork-note">${QUOTA_UNKNOWN_NOTICE}</p>`
+      : `<p class="gf-fork-note">${remainingQuotaNotice(view.dailyRemaining)}</p>`;
+
+  // **id が無ければフォームを描かない。** 公開済みの画面からしか呼ばれないので
+  // 通常は非 null だが、**空の `value` を持つフォームを描くくらいなら出さない**
+  // （{@link reviseSection} と同じ理由で、含意に寄りかからない）。
+  const form =
+    view.forkableId === null || view.dailyRemaining === 0
+      ? ''
+      : `
+<form method="post" action="${FORK_PATH}">
+  <input type="hidden" name="${FORK_PARENT_ID_FIELD}" value="${view.forkableId}">
+  <label for="fork-prompt">どう改造しますか</label>
+  <textarea id="fork-prompt" name="${FORK_PROMPT_FIELD}" rows="3"
+            maxlength="${MAX_PROMPT_LENGTH}" required
+            placeholder="例: 玉の色を赤にして、敵を 2 体に増やす"></textarea>
+  <button type="submit">この内容で改造する</button>
+</form>`;
+
+  return `<p class="gf-fork">${FORK_LABEL}</p>
+<p class="gf-fork-note">どう改造したいかを書くと、このゲームのソースをもとに新しい作品を作ります。
+   <strong>1 回につき 1〜2 分かかり、生成枠を 1 回使います。</strong>元の作品はそのまま残ります。</p>
+${daily}${form}`;
 }
 
 /**
@@ -1065,7 +1113,21 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   // 版と枠を引く理由が無い（3.6 の読み取りがそのまま費用になる）。
   const revisions = owner ? await listRevisions(env, gameId) : [];
   const revisionQuota = owner ? await revisionStatus(env, gameId) : null;
-  const dailyRemaining = revisableNow ? await readDailyRemaining(env, row.author_id) : null;
+
+  // **枠を読むのは、その数を出す口が画面にあるときだけである**（3.6 の読み取りが
+  // そのまま費用になる）。口は 2 つある——未公開の作者に出す推敲（5.7）と、公開済みの
+  // 作品をログイン済みの誰かに出すフォーク（5.3）である。**後者は作者本人とは限らない**
+  // ので、数えるのは行の作者ではなく**見ている人**の枠になる。
+  //
+  // **見ている人の枠を読む。** `revisableNow` は `owner`（＝ `session.userId` が
+  // 作者）を含むので、推敲の場合もこの id は作者の id と同じ値になる。**行の
+  // `author_id` を使わない**のは、フォークでは両者が違いうるためで、**同じ変数で
+  // 両方を賄えることが「枠は 1 人あたり」（確定25）の裏返し**である。
+  const forkableNow = published && session.ok;
+  const dailyRemaining =
+    session.ok && (revisableNow || forkableNow)
+      ? await readDailyRemaining(env, session.userId)
+      : null;
 
   return html(
     renderWorkPage({
@@ -1091,6 +1153,10 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // 公開の操作を出すのは、**本人・完成済み・未公開**のときだけである。
       // （押せない・押しても何も起きないボタンを出さない。仕様 1.2.38 の #24 と同じ方針）
       publishableId: owner && !published && state === 'ready' ? gameId : null,
+      // フォークの親になれるのは**公開済みの作品だけ**である（5.3）。**作者かどうかは
+      // 見ない**（5.7 の「公開後に手を入れたい作者はフォークする」）。押した結果を
+      // 決めるのは `src/fork.ts` の `readParentSource` で、ここは口を出すかだけを決める。
+      forkableId: published ? gameId : null,
       // **要求された URL をそのまま写さない。** 問い合わせ文字列（`?utm_source=` など）が
       // 付いた URL を `og:url` に出すと、同じ作品が別の URL として拡散する。
       // 正規の綴りを組み立て直す。

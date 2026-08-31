@@ -101,3 +101,32 @@ export const REVISE_PROMPT_FIELD = 'prompt';
 
 /** 戻したい版の番号の項目名。 */
 export const REVISE_SEQ_FIELD = 'seq';
+
+/**
+ * フォークの操作（5.3 / #32）。
+ *
+ * 経路を提供するのは `src/fork.ts` だが、**作品ページ（`src/work-page.ts`）が
+ * 「このゲームを改造する」のフォームの `action` として同じ綴りを要る。** 一方で
+ * `src/fork.ts` は生まれた子の作品ページへ送り返すために `workPagePath` を使うため、
+ * どちらかがもう片方から import すると循環参照になる。`REVISE_PATH` と同じ理由で
+ * ここへ逃がす。
+ *
+ * **`/api/revise` と同じパスに畳まない。** 5.7 の表のとおり、推敲は同じ作品行を
+ * 置き換え、フォークは**新しい作品行**を作って `parent_id` を張る。**結果が違う操作を、
+ * 本文の項目の有無で見分けない**（`RESTORE_PATH` を分けたのと同じ理由）。
+ */
+export const FORK_PATH = '/api/fork';
+
+/**
+ * フォークの**親**を指す項目名（フォームの `name` と JSON の鍵の両方）。
+ *
+ * **`game_id` ではなく `parent_id` と綴る**（{@link REVISE_GAME_ID_FIELD} と別の値に
+ * する）。推敲の `game_id` は「置き換える対象そのもの」だが、こちらが指すのは
+ * **これから作る作品の親**であって、要求が作る作品ではない。同じ綴りにすると、
+ * 推敲のフォームを写して作ったフォークのフォームが**動いてしまう**——動いたうえで、
+ * 読む側の意味だけが食い違う。
+ */
+export const FORK_PARENT_ID_FIELD = 'parent_id';
+
+/** 差分プロンプトの項目名（5.3「親のソースコード＋差分プロンプト」）。 */
+export const FORK_PROMPT_FIELD = 'prompt';

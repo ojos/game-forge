@@ -66,10 +66,20 @@ export async function readStoredSource(env: Env, sourceKey: string): Promise<Sto
   if (object === null) {
     return { ok: false, reason: 'source-missing' };
   }
+  // **本文を読む前に、保存されている大きさで断る。** R2 は本文を読まなくても
+  // `size`（保存されたバイト数）を返す。ここを読んでから測ると、**上限で断ると
+  // 決まっているものを、いったん全部メモリへ載せることになる。** 上限を守るための
+  // 判定が、上限を超えたものによって落ちうる形にしない。
+  if (object.size > MAX_SOURCE_BYTES) {
+    return { ok: false, reason: 'source-too-large' };
+  }
   const source = await object.text();
   if (source === '') {
     return { ok: false, reason: 'source-missing' };
   }
+  // **読み出した本文でも測る。** 上の `size` は保存時のバイト数で、判定したいのは
+  // 「いま LLM へ渡そうとしている文字列」の大きさである。この 2 つは同じはずだが、
+  // **同じはずだから省く**のは、確かめていないものを確かめた証拠として使うことになる。
   if (new TextEncoder().encode(source).length > MAX_SOURCE_BYTES) {
     return { ok: false, reason: 'source-too-large' };
   }

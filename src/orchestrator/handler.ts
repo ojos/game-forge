@@ -52,7 +52,7 @@ import { CallbackClient } from './callbacks.js';
 import type { CallbackDependencies } from './callbacks.js';
 import { createOrchestratorPipeline } from './pipeline.js';
 import type { OrchestratorPipelineDependencies } from './pipeline.js';
-import { parseOrchestratorPayload } from './payload.js';
+import { identifyOrchestratorJob, parseOrchestratorPayload } from './payload.js';
 
 /**
  * ペイロードが運ばない値の置き場所。
@@ -161,6 +161,68 @@ export interface OrchestratorDependencies
  * @throws {OutcomeNotRecorded} 結末を記録できなかったとき
  * @throws {LedgerNotRecorded} 台帳を記録できなかったとき
  */
+/**
+ * 契約に合わないペイポードでも、宛先が読めるなら行を閉じる（#242）。
+ *
+ * # なぜ要るのか
+ *
+ * **2026-09-01、コールバックを 1 通も送らずに落ちた。** 登録簿のずれで
+ * {@link parseOrchestratorPayload} が `null` を返し（#241）、**作品行は `pending` の
+ * まま残った。** 作者の画面は 15 分のあいだ「生成中です／通常 1〜2 分かかります」を
+ * 出し続け、**利用者からは「遅い」としか見えなかった。**
+ *
+ * **拒否は失敗である。失敗したことは伝えられる。**
+ *
+ * # 握ってから閉じる
+ *
+ * `finish` は `running` の行にしか効かない（`src/games.ts`）。**この経路で来る行は
+ * まだ `pending`** なので、先に `claim` で握る。**握れなければ何もしない**——
+ * 別の呼び出しが既に進めている行を、こちらが閉じてはいけない。
+ *
+ * # 失敗しても、元の拒否を隠さない
+ *
+ * ここでの失敗（不達・握れない・環境変数が無い）は**飲み込む。** 呼ぶ側は
+ * {@link OrchestratorPayloadRejected} を投げ続ける必要がある——**DLQ と CloudWatch に
+ * 残る「契約違反」が、この付け足しで消えてはいけない。**
+ *
+ * @param event 呼び出しで届いた値
+ * @param values 環境変数
+ * @param deps 外部依存
+ */
+async function closeRejectedJob(
+  event: unknown,
+  values: Readonly<Record<string, string | undefined>>,
+  deps: OrchestratorDependencies,
+): Promise<void> {
+  const target = identifyOrchestratorJob(event);
+  if (target === null) {
+    return;
+  }
+  // 環境変数が欠けていれば送り先が無い。**その不足は呼ぶ側が別の例外で報告する。**
+  if (missingOrchestratorEnv(values).length > 0) {
+    return;
+  }
+  try {
+    const client = new CallbackClient(
+      {
+        baseUrl: values['CALLBACK_BASE_URL']!.trim(),
+        gameId: target.gameId,
+        jobToken: target.jobToken,
+      },
+      deps,
+    );
+    if (!(await client.claim())) {
+      return;
+    }
+    // **`internal` にする。** 5.2-5 の拒否（`source-rejected`）でも、ビルドの失敗でもない。
+    // **`buildPathFailed` は false**——ビルド経路は 1 度も触っていないので、3.8 の
+    // degrade を焚かない（#140）。
+    await client.finishWithError('internal', false);
+  } catch {
+    // **何もしない。** 元の拒否を隠さないことのほうが大事である。
+  }
+}
+
 export async function handleOrchestratorEvent(
   event: unknown,
   values: Readonly<Record<string, string | undefined>>,
@@ -168,6 +230,8 @@ export async function handleOrchestratorEvent(
 ): Promise<OrchestratorOutcome> {
   const payload = parseOrchestratorPayload(event);
   if (payload === null) {
+    // **断るときも、行を閉じられるなら閉じる**（#242）。詳細は下記。
+    await closeRejectedJob(event, values, deps);
     throw new OrchestratorPayloadRejected();
   }
 

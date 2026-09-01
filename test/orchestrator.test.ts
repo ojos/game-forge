@@ -612,6 +612,49 @@ describe('契約違反は早く見える（#160）', () => {
     );
   });
 
+  it('宛先が読めれば、断るときも行を閉じる（#242）', async () => {
+    // **2026-09-01 に本番で起きた形をそのまま置く。** 登録簿のずれで modelKey が
+    // 未知になり（#241）、ペイロードが契約に合わなくなった。**当時はコールバックを
+    // 1 通も送らず、作品行は pending のまま 15 分残った。**
+    const { gameId, payload } = await seedJob('reject-close');
+    const broken = { ...payload, modelKey: 'sonnet-4-6-does-not-exist' };
+
+    await expect(
+      handleOrchestratorEvent(broken, lambdaEnv(), { fetch: callbackFetch() }),
+    ).rejects.toBeInstanceOf(OrchestratorPayloadRejected);
+
+    // **握ってから閉じている**（finish は running の行にしか効かない）。
+    expect(await rowOf(gameId)).toMatchObject({ state: 'failed', error: 'internal' });
+    // **トークンは捨てられている**（遅れた再送が届かない）。
+    expect((await rowOf(gameId)).tokenHash).toBeNull();
+  });
+
+  it('宛先が読めなければ、何も送らずに落ちる（#242）', async () => {
+    // gameId も jobToken も無い本文。**送り先が無いので、送らない。**
+    const callback = counting(() => new Response('{}', { status: 200 }));
+    await expect(
+      handleOrchestratorEvent({ nope: 1 }, lambdaEnv(), { fetch: callback.fetch }),
+    ).rejects.toBeInstanceOf(OrchestratorPayloadRejected);
+    expect(callback.calls()).toBe(0);
+  });
+
+  it('握れなければ閉じない。それでも契約違反の報告は消えない（#242）', async () => {
+    // **別の呼び出しが既に進めている行を、こちらが閉じてはいけない。**
+    // `claim` が false を返したら、何も書かずに降りる。
+    const { gameId, payload } = await seedJob('reject-unclaimable');
+    const broken = { ...payload, modelKey: 'sonnet-4-6-does-not-exist' };
+    const callback = counting(() => Response.json({ claimed: false }));
+
+    await expect(
+      handleOrchestratorEvent(broken, lambdaEnv(), { fetch: callback.fetch }),
+    ).rejects.toBeInstanceOf(OrchestratorPayloadRejected);
+
+    // **claim を 1 回試しただけで、finish は送っていない。**
+    expect(callback.calls()).toBe(1);
+    // **行は触られていない。**
+    expect(await rowOf(gameId)).toMatchObject({ state: 'pending', error: null });
+  });
+
   it('環境変数が足りなければ、名前だけを挙げて落ちる', async () => {
     const { payload } = await seedJob('env-missing');
     const error = await handleOrchestratorEvent(

@@ -199,7 +199,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 **当時はこれが使えなかったので、ビルド関数を 1 回だけ直接叩いて**測りました——
 `docker/isolated-build/sample/ebitengine.go` を入力に同期呼び出しで、**LLM を呼ばないので
 約 0.31 円**、日次枠も費用台帳も動きません。**この手そのものは今も有効です**（新しい構成での
-実測が 1 件も無いとき、`build-time-report.sh` は `BUILD_HEADROOM_UNKNOWN` で止まります——
+実測が 1 件も無いとき、`scripts/build-time-report.sh` は `BUILD_HEADROOM_UNKNOWN` で止まります——
 **「測っていない」と「測って余裕がある」は別**なので、最初の 1 件はこの手で作ります）。
 
 > **`Max Memory Used` は 579 MB です**（割り当ての 5.7%）。**「使っていないから下げる」と

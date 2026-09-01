@@ -169,6 +169,35 @@ bash scripts/deploy-orchestrator.sh --check-prerequisites
 > export し忘れ、`NoRegion` になった。**当時の文言は「認証と器の作成を確認してください」**で、
 > **認証も器も済んでいた**——当たっていない原因を指していた（#243）。
 
+### 配備の順序: **オーケストレータが先、Worker があと**（#241）
+
+**2026-09-01、逆にして本番の生成を 12 分止めた。** `wrangler.toml` の `GENERATION_MODEL` を
+変えて Worker を配ったところ、**配備済みのオーケストレータがその鍵を知らず**、ペイロードを
+拒否した。**登録簿は repo に入っていたが、Lambda は 2.5 時間前のコードのままだった。**
+
+**いまは CI が止める。** `.github/workflows/verify.yml` の `deploy` ジョブが、**Worker を
+本番へ配る直前に**、配備済みのオーケストレータの `CodeSha256` と手元で束ね直したものを
+比べる。古ければ**配備そのものを止める。**
+
+```
+::error::配備済みのオーケストレータが古いままです。Worker を配ると、生成が静かに止まります（#241）。
+  手元: UvdQgHvjdqmRRqQdL9xm+AXcUMUoJweYRlpn2ruCMPc=
+  本番: o2XSyqShdmqn/96uNtpQtA4v4i6GxmdvLgx3KgjvvhY=
+  先に bash scripts/deploy-orchestrator.sh を実行してください
+```
+
+- **登録簿に関わる差分のときだけ走る**（`wrangler.toml` / `src/generation-models.ts`）。
+  毎回 AWS を読むと、**AWS 側の不調で Worker を配れなくなる**——外部の可用性を配備の
+  前提条件へ持ち込まない
+- **束ね直しは決定的である**（`bundle-orchestrator.sh` が時刻を固定し `zip -X` を使う）。
+  macOS で束ねたものと Linux で束ねたものが**バイト一致することを実測で確かめてある**
+- 読み取りは**専用の読み取り専用ロール**で行う（`terraform/orchestrator.tf` の
+  `aws_iam_role.orchestrator_freshness`。`lambda:GetFunctionConfiguration` 1 つ・1 関数のみ）
+
+**検査そのものは前からあった**（`scripts/acceptance-remote.sh` の `check_orchestrator_code`）。
+**欠けていたのは契機である**——外部層は「外部状態の宣言を変更したとき」に回す層で、
+`wrangler.toml` の変更は terraform の宣言変更ではない。**誰も回そうと思わなかった。**
+
 ### この切り替えは生成経路を数分止める
 
 **手順 2 から 5 のあいだ、生成は失敗する。** 理由は 2 つある。

@@ -515,3 +515,78 @@ resource "aws_lambda_function_event_invoke_config" "orchestrator" {
     }
   }
 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 配備の前に「オーケストレータが古くないか」を CI から見るための読み取り権限（#241）
+# ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 2026-09-01、**本番の生成が 12 分止まった。**
+ *
+ * `wrangler.toml` の `GENERATION_MODEL` を `sonnet-4-6-high` にして Worker を配備した
+ * ところ、**配備済みのオーケストレータがその鍵を知らず**、ペイロードを拒否した
+ * （`src/orchestrator/payload.ts` の `findGenerationModel`）。登録簿を足した PR（#210）は
+ * repo に入っていたが、**オーケストレータは手動配備で、2.5 時間前のコードのままだった。**
+ *
+ * **検査は既にあった**（`scripts/acceptance-remote.sh` の `check_orchestrator_code`）。
+ * 欠けていたのは**契機**である——外部層は「外部状態の宣言を変更したとき」に回す層で、
+ * `wrangler.toml` の変更は terraform の宣言変更ではない。**誰も回そうと思わなかった。**
+ *
+ * **だから機構へ移す。** Worker を本番へ配る直前に、CI が同じ比較を行う。古ければ
+ * **配備そのものを止める**（`.github/workflows/verify.yml` の deploy ジョブ）。
+ *
+ * # 読み取りだけの専用ロールにする
+ *
+ * `deploy_compiler`（ECR へ押す役）へ相乗りさせない。**役割が違うものを 1 つのロールへ
+ * 集めると、片方の都合でもう片方の権限が動く。** ここが要るのは
+ * `lambda:GetFunctionConfiguration` 1 つで、対象も 1 関数である。
+ */
+resource "aws_iam_role" "orchestrator_freshness" {
+  name               = "game-forge-orchestrator-freshness"
+  path               = "/service/"
+  assume_role_policy = data.aws_iam_policy_document.deploy_compiler_assume.json
+
+  tags = {
+    Project   = "game-forge"
+    ManagedBy = "terraform"
+    Purpose   = "CI reads the deployed orchestrator CodeSha256 before deploying the Worker - issue 241"
+  }
+}
+
+data "aws_iam_policy_document" "orchestrator_freshness" {
+  statement {
+    sid     = "ReadOrchestratorCodeSha"
+    effect  = "Allow"
+    actions = ["lambda:GetFunctionConfiguration"]
+    # **関数を名指しする。** 「Lambda を読める」ではなく「この関数の構成を読める」。
+    resources = ["arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.prod.account_id}:function:${local.orchestrator_function_name}"]
+  }
+}
+
+resource "aws_iam_role_policy" "orchestrator_freshness" {
+  name   = "orchestrator-freshness"
+  role   = aws_iam_role.orchestrator_freshness.id
+  policy = data.aws_iam_policy_document.orchestrator_freshness.json
+}
+
+/**
+ * CI が引き受けるロールの ARN。**ワークフローへ ARN を書き写さない。**
+ */
+resource "github_actions_variable" "orchestrator_freshness_role_arn" {
+  repository    = github_repository.this.name
+  variable_name = "AWS_ORCHESTRATOR_FRESHNESS_ROLE_ARN"
+  value         = aws_iam_role.orchestrator_freshness.arn
+}
+
+/**
+ * 関数名。**ワークフローへ書き写さない**（`build_function_name` と同じ扱い）。
+ *
+ * **既定値へ落とす形にしない。** ワークフロー側は空なら落とす——名前を決め打ちすると、
+ * 宣言を動かした日に**存在しない関数を読んで「取れなかった」で止まる**か、最悪
+ * **別の関数を読んで通る。**
+ */
+resource "github_actions_variable" "orchestrator_function_name" {
+  repository    = github_repository.this.name
+  variable_name = "ORCHESTRATOR_FUNCTION_NAME"
+  value         = local.orchestrator_function_name
+}

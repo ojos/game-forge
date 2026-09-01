@@ -228,7 +228,8 @@ X / Slack / Discord はそれぞれ独自にクロールする。**`https://app.
 内側の締め切り（`CAPTURE_TIMEOUT_MS`）と直接比べられるのは `Duration` のほうである。
 
 ```bash
-AWS_PROFILE=game-forge-prod aws logs filter-log-events \
+aws logs filter-log-events \
+  --profile game-forge-prod \
   --region ap-northeast-1 \
   --log-group-name /aws/lambda/game-forge-ogp \
   --filter-pattern 'REPORT' --output text --query 'events[].message'

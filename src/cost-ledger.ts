@@ -507,33 +507,56 @@ export async function monthlyCostTotals(
  * ------------------------------------------------------------------ */
 
 /**
- * 「元ソースが `messages` に載っている」と判定する未キャッシュ入力トークンの上限。
+ * 「元ソースが `messages` に載っている」と判定する**合計入力トークン**の下限。
  *
  * **推敲・フォークと新規生成を混ぜないための境目である。** 1.2.43 は
  * 「推敲（19.5〜25.0 円）と新規生成（約 16 円）は別の値」と定めており、混ぜると
  * `effort` の効果より大きな差がそこから入る。
  *
- * **綴りやプロンプトの中身ではなく、経路の構造から判定する。** 推敲・フォークは
- * 「前置き＋元ソース」を `messages` の先頭に置き、**その直後に `cachePoint` を置く**
- * （`src/bedrock.ts` の `baseSourceContent` / 4.5）。キャッシュへ入ったトークンは
- * `usage.inputTokens` に現れないため、**未キャッシュ入力は差分プロンプトだけ**になる。
+ * # 未キャッシュ入力では切れなくなった（#245）
  *
- * | | 未キャッシュ入力の実測 | 出典 |
+ * **以前は未キャッシュ入力 200 トークンで切っていた。** 推敲は「前置き＋元ソース」を
+ * `messages` の先頭へ置き、その直後に `cachePoint` を置くので（`src/bedrock.ts` /
+ * 4.5）、**未キャッシュ入力は差分プロンプトだけ**になる——1.2.43 の 20〜37 と、4.2 の
+ * 新規生成 1,092〜1,444 のあいだに 1.5 桁の谷があった。
+ *
+ * **その谷は消えた。** システムプロンプト（約 2,422 トークン）もキャッシュから読まれる
+ * ようになり、**新規生成の未キャッシュ入力も 30〜40 に落ちた**（2026-09-01 の実測）。
+ *
+ * | | 未キャッシュ入力 | **合計入力**（`input + cache_creation + cache_read`） |
  * |---|---|---|
- * | 推敲 | **20 / 20 / 37 / 35** | 1.2.43（4 回） |
- * | 新規生成 | **1,092（平均）/ 1,215〜1,444** | 4.2 |
+ * | 新規生成（7 件） | **30〜40** | **2,452〜2,462** |
+ * | 推敲・フォーク（5 件） | 15〜62 | **9,980〜12,606** |
  *
- * **1.5 桁離れている。** 200 はその谷の底で、どちらの側へも 5 倍以上の余裕がある。
+ * **合計入力なら谷が残っている。** キャッシュに入ったかどうかで動かない量だからである。
+ *
+ * # 4,000 の根拠と、その限界
+ *
+ * 上の実測の谷（2,462 と 9,980）の内側で、**新規生成側から 1.6 倍、推敲側から 2.5 倍**の
+ * 位置に置いた。
+ *
+ * **これは依然として推測である。** 2 つの壊れ方が残っている。
+ *
+ * - **システムプロンプトが 4,000 トークンを超えたら、新規生成が推敲側へ倒れる。**
+ *   `src/system-prompt.ts` は編集される。**今日と同じ形の事故がもう一度起きる**
+ * - **元ソースが極端に小さい推敲は、新規生成側へ倒れる。** 実測でいちばん短い生成物が
+ *   2,352 トークンなので、推敲の合計は約 4,800 が下限と見ているが、下限そのものは
+ *   測っていない
+ *
+ * **恒久の直しは「元ソースを載せたかどうかを台帳へ記録する」ことである**（呼ぶ側は
+ * 知っている）。**#25 の A/B の最中は書き込み側を変えられない**ため（1 日目の行が
+ * その列を通っていない状態になる）、読み出し側だけで直してある。
+ *
+ * **崩れたら見えるようにしてある。** {@link EffortExperimentGroup} は群ごとに**合計入力**の
+ * 最小・最大を返す。**以前は未キャッシュ入力を返していたが、それは判定に使っていない量
+ * だった**——だから今回の崩れ（全部が片側へ寄る）を見逃した。**判定に使う量を見せる。**
  *
  * **この判定が成立しないモデルがある。** DeepSeek はキャッシュの課金次元を持たない
- * ため（4.1）、元ソースがそのまま未キャッシュ入力に乗る。**A/B の対象は Claude
- * だけである**（`effort` は Claude のみの概念。4.2）ので実験の集計では問題に
- * ならないが、他のモデルの行をこの境目で分類しないこと。
- *
- * **確かめられる形にしてある。** {@link EffortExperimentGroup} は群ごとに未キャッシュ
- * 入力の最小・最大を返す。分類が崩れていれば、その 2 つの値が谷をまたいで見える。
+ * ため（4.1）、キャッシュの列が常に 0 になる。**A/B の対象は Claude だけである**
+ * （`effort` は Claude のみの概念。4.2）ので実験の集計では問題にならないが、
+ * 他のモデルの行をこの境目で分類しないこと。
  */
-export const BASE_SOURCE_INPUT_TOKEN_CEILING = 200;
+export const BASE_SOURCE_TOTAL_INPUT_FLOOR = 4000;
 
 /**
  * 出力トークンの層の境界（既定）。
@@ -595,7 +618,7 @@ export interface EffortExperimentGroup {
    * 引くこと。** 引けなければ 2 つ目で、窓の中で起きた事故である。
    */
   readonly effort: string | null;
-  /** 元ソースが `messages` に載っていたか（＝推敲・フォーク。{@link BASE_SOURCE_INPUT_TOKEN_CEILING}）。 */
+  /** 元ソースが `messages` に載っていたか（＝推敲・フォーク。{@link BASE_SOURCE_TOTAL_INPUT_FLOOR}）。 */
   readonly withBaseSource: boolean;
   /** 依頼の数（＝同じプロンプトの行のまとまりの数。下記の但し書きを読むこと）。 */
   readonly jobs: number;
@@ -634,10 +657,15 @@ export interface EffortExperimentGroup {
   readonly costJpyPerKiloOutputToken: number | null;
   /** `end_turn` で終わらなかった呼び出しの回数（`max_tokens` の疑い）。 */
   readonly unusableCalls: number;
-  /** 未キャッシュ入力トークンの最小（分類が崩れていないかの確認用）。 */
-  readonly minInputTokens: number;
-  /** 未キャッシュ入力トークンの最大（同上）。 */
-  readonly maxInputTokens: number;
+  /**
+   * **合計入力トークン**の最小（分類が崩れていないかの確認用。#245）。
+   *
+   * **判定に使っている量そのものを返す。** 以前は未キャッシュ入力を返していたが、
+   * それは判定に使っていない量だったため、**全部が片側へ寄る形の崩れを見逃した。**
+   */
+  readonly minTotalInputTokens: number;
+  /** **合計入力トークン**の最大（同上）。 */
+  readonly maxTotalInputTokens: number;
   /**
    * **依頼の切り分けが怪しいまとまりの数。**
    *
@@ -656,8 +684,8 @@ export interface EffortExperimentReport {
   readonly fromSeconds: number;
   /** 集計範囲の上端（UNIX 秒。この値を**含まない**）。 */
   readonly toSeconds: number;
-  /** 元ソースの有無を分けた境目（{@link BASE_SOURCE_INPUT_TOKEN_CEILING}）。 */
-  readonly baseSourceInputTokenCeiling: number;
+  /** 元ソースの有無を分けた境目（{@link BASE_SOURCE_TOTAL_INPUT_FLOOR}）。 */
+  readonly baseSourceTotalInputFloor: number;
   /** 出力トークンの層の境界。 */
   readonly outputTokenStrata: readonly number[];
   /** 群ごとの集計。 */
@@ -685,8 +713,8 @@ export interface EffortExperimentOptions {
   readonly fromSeconds: number;
   /** 集計範囲の上端（UNIX 秒。この値を**含まない**）。 */
   readonly toSeconds: number;
-  /** 元ソースの有無を分ける境目。既定は {@link BASE_SOURCE_INPUT_TOKEN_CEILING}。 */
-  readonly baseSourceInputTokenCeiling?: number;
+  /** 元ソースの有無を分ける境目。既定は {@link BASE_SOURCE_TOTAL_INPUT_FLOOR}。 */
+  readonly baseSourceTotalInputFloor?: number;
   /**
    * 出力トークンの層の境界（昇順）。既定は {@link OUTPUT_TOKEN_STRATA}。
    *
@@ -704,8 +732,8 @@ interface JobRow {
   usable_calls: number;
   cost_jpy: number;
   output_tokens: number;
-  min_input_tokens: number;
-  max_input_tokens: number;
+  min_total_input: number;
+  max_total_input: number;
   first_at: number;
   last_at: number;
 }
@@ -811,7 +839,7 @@ function stratumExpression(boundaries: readonly number[]): string {
  *
  * ## 推敲と新規生成を混ぜない
  *
- * 群は `withBaseSource` でも分かれる（{@link BASE_SOURCE_INPUT_TOKEN_CEILING}）。
+ * 群は `withBaseSource` でも分かれる（{@link BASE_SOURCE_TOTAL_INPUT_FLOOR}）。
  * **1.2.43 が「推敲と新規生成は別の値」と定めている**ためで、混ぜると `effort` より
  * 大きな差がそこから入る。
  *
@@ -845,7 +873,7 @@ export async function effortExperimentTotals(
   options: EffortExperimentOptions,
 ): Promise<EffortExperimentReport> {
   const { fromSeconds, toSeconds } = options;
-  const ceiling = options.baseSourceInputTokenCeiling ?? BASE_SOURCE_INPUT_TOKEN_CEILING;
+  const floor = options.baseSourceTotalInputFloor ?? BASE_SOURCE_TOTAL_INPUT_FLOOR;
   const boundaries = options.outputTokenStrata ?? OUTPUT_TOKEN_STRATA;
 
   // 1 依頼 ＝「同じモデル・同じ effort・同じ元ソースの有無・同じ利用者・同じ
@@ -856,27 +884,29 @@ export async function effortExperimentTotals(
     `select
         model,
         effort,
-        case when input_tokens <= ? then 1 else 0 end as has_base_source,
+        case when (input_tokens + cache_creation_input_tokens + cache_read_input_tokens) >= ?
+             then 1 else 0 end as has_base_source,
         count(*) as calls,
         sum(case when succeeded = 1 then 1 else 0 end) as usable_calls,
         sum(cost_jpy) as cost_jpy,
         sum(output_tokens) as output_tokens,
-        min(input_tokens) as min_input_tokens,
-        max(input_tokens) as max_input_tokens,
+        min(input_tokens + cache_creation_input_tokens + cache_read_input_tokens) as min_total_input,
+        max(input_tokens + cache_creation_input_tokens + cache_read_input_tokens) as max_total_input,
         min(created_at) as first_at,
         max(created_at) as last_at
        from generations
       where created_at >= ? and created_at < ?
       group by model, effort, has_base_source, user_id, prompt`,
   )
-    .bind(ceiling, fromSeconds, toSeconds)
+    .bind(floor, fromSeconds, toSeconds)
     .all<JobRow>();
 
   const strata = await env.DB.prepare(
     `select
         model,
         effort,
-        case when input_tokens <= ? then 1 else 0 end as has_base_source,
+        case when (input_tokens + cache_creation_input_tokens + cache_read_input_tokens) >= ?
+             then 1 else 0 end as has_base_source,
         ${stratumExpression(boundaries)} as stratum,
         count(*) as calls,
         sum(cost_jpy) as cost_jpy,
@@ -885,7 +915,7 @@ export async function effortExperimentTotals(
       where created_at >= ? and created_at < ?
       group by model, effort, has_base_source, stratum`,
   )
-    .bind(ceiling, ...boundaries, fromSeconds, toSeconds)
+    .bind(floor, ...boundaries, fromSeconds, toSeconds)
     .all<StratumRow>();
 
   // **作品行は別に数える。** 台帳と結び付いていないので join できない（確定27）。
@@ -916,8 +946,8 @@ export async function effortExperimentTotals(
       outputTokensPerCall: null,
       costJpyPerKiloOutputToken: null,
       unusableCalls: 0,
-      minInputTokens: row.min_input_tokens,
-      maxInputTokens: row.max_input_tokens,
+      minTotalInputTokens: row.min_total_input,
+      maxTotalInputTokens: row.max_total_input,
       ambiguousJobs: 0,
       strata: [],
     };
@@ -937,8 +967,8 @@ export async function effortExperimentTotals(
       costJpy: previous.costJpy + row.cost_jpy,
       outputTokens: previous.outputTokens + row.output_tokens,
       unusableCalls: previous.unusableCalls + (row.calls - row.usable_calls),
-      minInputTokens: Math.min(previous.minInputTokens, row.min_input_tokens),
-      maxInputTokens: Math.max(previous.maxInputTokens, row.max_input_tokens),
+      minTotalInputTokens: Math.min(previous.minTotalInputTokens, row.min_total_input),
+      maxTotalInputTokens: Math.max(previous.maxTotalInputTokens, row.max_total_input),
       ambiguousJobs: previous.ambiguousJobs + (ambiguous ? 1 : 0),
     });
   }
@@ -984,7 +1014,7 @@ export async function effortExperimentTotals(
   return {
     fromSeconds,
     toSeconds,
-    baseSourceInputTokenCeiling: ceiling,
+    baseSourceTotalInputFloor: floor,
     outputTokenStrata: boundaries,
     groups: groups.sort(
       (left, right) =>

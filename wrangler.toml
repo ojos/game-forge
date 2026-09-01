@@ -125,7 +125,10 @@ bucket_name = "game-forge-local"
 # `app.` を 1 ラベル足すと、どちらの制約にも触れずに CNAME 1 本で張れる。
 APP_HOST = "app.game-forge.ojos.jp"
 SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
-GENERATION_MODEL = "sonnet-4-6"
+# **#25 の A/B の 1 日目（high 群）。2026-09-01。** 6 本流したら medium 群へ切り替え、
+# 終わったら "sonnet-4-6" へ戻すこと（戻し忘れると以後の生成がずっと A/B の設定で走る）。
+# 手順とお題 6 本は docs/usage-report.md「effort の A/B で使うお題」にある。
+GENERATION_MODEL = "sonnet-4-6-high"
 BUILD_FUNCTION_NAME = "game-forge-build"
 ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
 OGP_FUNCTION_NAME = "game-forge-ogp"

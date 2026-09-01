@@ -10,6 +10,8 @@
 #   bash scripts/build-time-report.sh --days 3
 #   bash scripts/build-time-report.sh --explain-threshold # 閾値の導出だけを見る（AWS 不要）
 #   bash scripts/build-time-report.sh --format json
+#   bash scripts/build-time-report.sh --events-file saved.json --from 2026-08-27 --to 2026-08-27
+#                                                        # 保存済みの応答を読む（AWS 不要）
 #
 # 期間の指定・日の境界・日付の綴りは scripts/report-window.sh が持つ（**#149 の費用の
 # 集計と同じ定義である**）。ここへ書き写さない。
@@ -119,7 +121,10 @@ EXPLAIN_ONLY=0
 NOW="${BUILD_TIME_REPORT_NOW:-$(date -u +%s)}"
 
 usage() {
-  sed -n '2,20p' "${BASH_SOURCE[0]}" >&2
+  # **行番号で切らない。** 冒頭の説明はこれまで何度も伸びており、そのたびに help が
+  # 途中で切れる（#211 でこの節を伸ばしたとき、実際に終了コードの説明が 1 行だけ
+  # 切れた状態で出た）。最初の区切り（`# ── `）の手前までを出す。
+  sed -n '2,/^# ── /p' "${BASH_SOURCE[0]}" | sed '$d' >&2
 }
 
 while [[ $# -gt 0 ]]; do

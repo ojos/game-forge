@@ -41,6 +41,25 @@ cd "$ROOT" || exit 1
 
 failed=0
 
+# ── 前提の道具（いちばん先に見る）────────────────────────────────────────────
+#
+# **この検査は GNU date を要する**（`date -d @<epoch>`）。`report-window.sh` が
+# 書式ではなく実際の変換で確かめ、明示して落とす——**黙って別の日付を出さない。**
+#
+# **以前はこの判定が 3 節にあった。** ところが 2 節が先に `date -u -d` を使うため、
+# **macOS（BSD date）では「GNU date が要ります」に辿り着く前に、読み取りにくい FAIL が
+# 2 件出た。** 原因が読み取りにくい赤は、ゲートへの信頼を削る
+# （`scripts/check-deps-installed.sh` の冒頭と同じ理由）。**前提はいちばん先に見る。**
+#
+# **利用者の端末は macOS である**（`docs/handoff.md` 3 章）。手元で回すなら
+# coreutils の `gdate` を `date` として見せるか、devcontainer の中で回すこと。
+# CI（`.github/workflows/verify.yml`）は ubuntu-latest なので、そのまま通る。
+if ! report_window_require_tools jq npx; then
+  echo "[selftest] 前提の道具が揃っていません。" >&2
+  echo "REPORT_SELFTEST_FAIL"
+  exit 1
+fi
+
 ##
 # 1 件の判定。**失敗しても続ける**（乖離は複数あることが多く、1 件ずつ往復すると
 # 回数だけ増える。scripts/acceptance-remote.sh と同じ方針）。
@@ -122,12 +141,6 @@ expect_eq "その 1 秒後の日付"   "2026-08-30" "$(report_window_label "$nex
 
 # ── 3. 既知の行に対して期待どおりの集計が出ること ───────────────────────────
 echo "[selftest] 既知の行に対する集計"
-
-if ! report_window_require_tools jq npx; then
-  echo "[selftest] 前提の道具が揃っていません。" >&2
-  echo "REPORT_SELFTEST_FAIL"
-  exit 1
-fi
 
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/report-selftest.XXXXXX")" || exit 1
 trap 'rm -rf "$SANDBOX"' EXIT

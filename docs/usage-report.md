@@ -320,6 +320,12 @@ bash scripts/report-selftest.sh   # 終了コードと REPORT_SELFTEST_PASS
 bash scripts/report-selftest.sh   # 17 秒
 ```
 
+**手元で回すには GNU date が要ります**（`date -d @<epoch>`。`scripts/report-window.sh` が
+実際の変換で確かめ、**明示して落とします**——黙って別の日付を出すことはありません）。
+**利用者の端末は macOS なので、そのままでは通りません**（`docs/handoff.md` 3 章）。
+coreutils の `gdate` を `date` として見せるか、**devcontainer の中で回してください。**
+CI は ubuntu-latest なので、そのまま通ります。
+
 **`verify` ジョブの段なので、これが赤いと `deploy` も起きません**（`deploy` は
 `needs: verify`）。集計を読み違える状態で本番を進めない、という意味では筋が通りますが、
 **影響は `scripts/verify.sh` の失敗と同じ広さになります。** 別ジョブにすればそこは切れますが、

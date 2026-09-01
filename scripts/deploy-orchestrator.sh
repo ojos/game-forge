@@ -44,6 +44,69 @@ command -v openssl >/dev/null 2>&1 || {
   exit 1
 }
 
+##
+# 前提を、AWS を叩く前に名指しで検査する（#243）。
+#
+# **以前は region の未設定が「認証と器の作成を確認してください」として出ていた。**
+# 2026-09-01、本番の生成が止まっている最中にこれを踏んだ（#241 の復旧作業）。
+# 認証も器の作成も済んでおり、**当たっていない原因を指していた。**
+#
+#   aws: [ERROR]: An error occurred (NoRegion): You must specify a region.
+#   [deploy-orchestrator] 認証（aws sso login --sso-session ojos）と、
+#   [deploy-orchestrator] 器の作成（terraform apply）が済んでいるか確認してください。
+#
+# **原因が読み取りにくい赤は、いちばん時間を取られたくない場面で出る**
+# （docs/handoff.md 4 章）。前提が欠けているなら、**欠けている前提を言う。**
+#
+# # region の値をここへ書き写さない
+#
+# **正本は terraform 側である。** ここが持つのは「解決できているか」だけで、
+# 値そのものは持たない。書き写すと、宣言を動かした日にずれる（確定24 と同じ理由）。
+#
+# @return 0 = 揃っている / 2 = 欠けている（何が欠けているかを標準エラーへ）
+##
+check_prerequisites() {
+  local missing=0
+
+  # **profile か、環境の資格情報か。** どちらでもよいが、どちらも無ければ落とす。
+  # 実際に踏んだ入口はこちらである（AWS_PROFILE を export し忘れると、既定の
+  # プロファイルには region が無く、NoRegion になる）。
+  if [[ -z "${AWS_PROFILE:-}" && -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
+    echo "[deploy-orchestrator] AWS_PROFILE も AWS_ACCESS_KEY_ID もありません。" >&2
+    echo "[deploy-orchestrator] 対処: export AWS_PROFILE=game-forge-prod" >&2
+    missing=1
+  fi
+
+  # **region は環境か、プロファイルの設定から解決する。** aws configure get は
+  # AWS_PROFILE を見るので、ここで解決できなければ aws 本体でも解決できない。
+  local region="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+  if [[ -z "$region" ]]; then
+    region="$(aws configure get region 2>/dev/null || true)"
+  fi
+  if [[ -z "$region" ]]; then
+    echo "[deploy-orchestrator] region を解決できません（NoRegion になります）。" >&2
+    echo "[deploy-orchestrator] 対処: export AWS_REGION=<リージョン>、または" >&2
+    echo "[deploy-orchestrator]       ~/.aws/config のプロファイルへ region を書く" >&2
+    missing=1
+  fi
+
+  if (( missing )); then
+    echo "[deploy-orchestrator] **AWS へは 1 度も触れていません。** 前提が欠けています。" >&2
+    return 2
+  fi
+  echo "[deploy-orchestrator] 前提 OK（profile=${AWS_PROFILE:-（環境の資格情報）} / region=${region}）"
+  return 0
+}
+
+# **前提だけを見て終わる口**（--check-prerequisites）。
+# AWS へも本番へも触れないので、手元でも CI でも安全に踏める。
+if [[ "${1:-}" == "--check-prerequisites" ]]; then
+  check_prerequisites
+  exit $?
+fi
+
+check_prerequisites || exit 2
+
 # **毎回束ね直す。** 手元の dist/ が古いまま載ると、直したはずの不具合が本番に
 # 残る。束ね直しは 20 ms 程度で、省く理由が無い。
 bash scripts/bundle-orchestrator.sh

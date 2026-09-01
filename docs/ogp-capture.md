@@ -133,6 +133,7 @@ aws lambda update-function-code \
 
 `migrations/0009_games_ogp.sql` が `games` へ 3 列足し、`migrations/0012_games_ogp_started_at.sql`
 が**撮影を始めた時刻**を 1 列足す（#235。10 章）。**デプロイでは走らない。**
+**どちらも本番へ適用済みである**（0009 は 2026-08-30、0012 は 2026-09-02）。
 
 ```bash
 npx wrangler d1 migrations apply DB --remote --env production
@@ -409,8 +410,8 @@ aws lambda invoke \
 
 **この 3 つでは D1 に痕跡が残らない。** 経過時間だけが手掛かりになる。
 
-**2026-09-02 の時点で、本番ではまだ 1 件も出ていない**（公開 5 枚はすべて `ready`。9 章）。
-**踏む前に直した形である。**
+**2026-09-02 の時点で、本番ではまだ 1 件も出ていない**（**公開済み 18 行がすべて `ready`**。
+実測を取ったのはそのうち 5 枚である。9 章）。**踏む前に直した形である。**
 
 ### 10.2 検出（読み取りのみ）
 
@@ -418,6 +419,10 @@ aws lambda invoke \
 bash scripts/ogp-stale-report.sh              # OGP_STALE_NONE / OGP_STALE_FOUND
 bash scripts/ogp-stale-report.sh --format json
 ```
+
+**2026-09-02 に本番の台帳へ通してある**（`OGP_STALE_NONE`）。**書いた日に一度通すこと**
+——`effortExperimentTotals` が「テストの中では動くが、本番に対しては 1 度も動いていない」
+状態で残った前例がある（#238 / #239）。**「テストが緑」と「本番に対して動く」は別である。**
 
 終了コードは **0 = 無い / 1 = 有る / 2 = 判定できなかった**（未認証・道具が無い）。
 **1 と 2 を混ぜない**——「中断が有った」と「調べられなかった」は別である。

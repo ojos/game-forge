@@ -93,6 +93,24 @@ else
   echo "[acceptance] (portability) skip: scripts/ not found"
 fi
 
+# OGP 撮影の「写し」の機械照合（#26 / #235 / shared-ai-rules 12 章）。
+#
+# **前寄りに置く。** 23 ms で終わる（実測）。外すと、宣言と実装がずれた状態がどれも
+# **黙って壊れる**形で本番へ出る——関数名がずれれば撮影が呼べず、コールバックの綴りが
+# ずれれば ogp_state が capturing のまま残り、ローダーの合図がずれれば撮影は必ず
+# 時間切れになる（判定と理由は scripts/check-ogp-copies.sh の冒頭）。
+#
+# **これまで手で叩く手順にしか無かった**（docs/ogp-capture.md 3 章・6.1）。#235 で
+# 「中断した撮影の検出が読む定数」という 7 組目の照合が増えたので、ここへ移す
+# ——**思い出して叩く運用は破綻する**（.github/project-ai-rules.md「単一入口」）。
+if [[ -f terraform/ogp-function.tf ]]; then
+  echo "[acceptance] (ogp) scripts/check-ogp-copies.sh"
+  bash scripts/check-ogp-copies.sh
+  ran_any=1
+else
+  echo "[acceptance] (ogp) skip: terraform/ogp-function.tf not found"
+fi
+
 # 検査が読む terraform output が、宣言側に実在すること（#160 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く。** grep 数本で終わる。外すと、宣言側で output を改名・削除したときに

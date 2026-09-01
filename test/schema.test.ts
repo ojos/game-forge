@@ -275,3 +275,29 @@ describe('OGP 画像の列（0009 / #26）', () => {
     expect(row?.ogp_token_hash).toBeNull();
   });
 });
+
+describe('OGP の撮影を始めた時刻（0012 / #235）', () => {
+  it('games に ogp_started_at がある（INTEGER）', async () => {
+    const columns = await env.DB.prepare('select * from pragma_table_info(?)')
+      .bind('games')
+      .all<{ name: string; type: string }>();
+    const found = columns.results.find((row) => row.name === 'ogp_started_at');
+    expect(found, 'games.ogp_started_at').toBeDefined();
+    // **時刻はすべて UNIX 秒の INTEGER で持つ**（0001 の冒頭）。
+    expect(found?.type).toBe('INTEGER');
+  });
+
+  it('既定は NULL である（まだ撮り始めていない）', async () => {
+    const authorId = await insertUser('ogp-started-default');
+    await env.DB.prepare(
+      'insert into games (id, author_id, status, title, go_version, created_at) values (?, ?, ?, ?, ?, 1)',
+    )
+      .bind('g-ogp-started-default', authorId, 'draft', 'T', 'go1.25.0')
+      .run();
+
+    const row = await env.DB.prepare('select ogp_started_at from games where id = ?')
+      .bind('g-ogp-started-default')
+      .first<{ ogp_started_at: number | null }>();
+    expect(row?.ogp_started_at).toBeNull();
+  });
+});

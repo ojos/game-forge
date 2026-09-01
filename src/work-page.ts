@@ -50,11 +50,19 @@
  */
 import type { GenerationErrorCode, GenerationState } from './games.js';
 import { PUBLISHED_STATUS, REMOVED_STATUS } from './games.js';
-import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH, ogpImagePath, ogpImageUrl } from './ogp.js';
+import {
+  OGP_IMAGE_HEIGHT,
+  OGP_IMAGE_WIDTH,
+  ogpCaptureIsStale,
+  ogpImagePath,
+  ogpImageUrl,
+} from './ogp.js';
 import {
   FORK_PARENT_ID_FIELD,
   FORK_PATH,
   FORK_PROMPT_FIELD,
+  OGP_RECAPTURE_GAME_ID_FIELD,
+  OGP_RECAPTURE_PATH,
   PUBLISH_GAME_ID_FIELD,
   PUBLISH_PATH,
   RESTORE_PATH,
@@ -173,6 +181,10 @@ interface WorkRow {
   generation_started_at: number | null;
   /** OGP 画像の撮影状態（`migrations/0009_games_ogp.sql`）。 */
   ogp_state: string | null;
+  /** OGP の撮影を始めた時刻（`migrations/0012_games_ogp_started_at.sql`）。 */
+  ogp_started_at: number | null;
+  /** 公開した時刻。未公開なら null。**撮影を始めた時刻の代用**に使う（#235）。 */
+  published_at: number | null;
   /** 作者の表示名（`users.display_name`）。結合が空振りしたら null。 */
   author_name: string | null;
   /**
@@ -426,6 +438,18 @@ export interface WorkPageView {
   readonly revisionError: string | null;
   /** 版の一覧（新しい順）。作者でなければ空。 */
   readonly revisions: readonly Revision[];
+  /**
+   * この作品 id（撮り直しのフォームに入れる。5.4 / #235）。撮り直せないなら null。
+   *
+   * **`publishableId` と兼ねない。** あちらは「未公開・完成済み・本人」のときの id で、
+   * こちらは「**公開済み**・撮影が中断したまま・本人」のときの id である
+   * （`forkableId` を分けたのと同じ理由——同時に非 null になりえない値を 1 つに畳むと、
+   * 片方の条件を変えた日にもう片方が黙って壊れる）。
+   *
+   * **画面でこの条件を組み立てない**（`revisable` と同じ方針）。掴めるかどうかを
+   * 決めるのは `reclaimStaleOgpCapture` の SQL で、ここへ来るのは判定済みの値だけである。
+   */
+  readonly recapturableId: string | null;
 }
 
 /**
@@ -815,7 +839,45 @@ function publishedSection(view: WorkPageView): string {
       : `
 <p>共有する URL: <code>${view.shareUrl}</code></p>`;
   return `<h2>公開しています</h2>
-${loadingScreen(view)}${share}`;
+${loadingScreen(view)}${share}${recaptureSection(view)}`;
+}
+
+/**
+ * 中断したままの撮影を撮り直す口（5.4 / #235）。
+ *
+ * # なぜ作者に見せるのか
+ *
+ * 撮影が中断したまま残っても、**作品ページはそれを待たずに出る。** 共有 URL は
+ * OGP 無しで拡散し、**気づく経路がどこにも無かった**（`docs/ogp-capture.md` 7 章）。
+ * 黙って失敗を作らない（仕様 1.2.31）。
+ *
+ * # 主ボタンを増やさない
+ *
+ * 5.4 は試遊画面の主ボタンを「公開して共有」と定める。ここは**公開したあと**の画面で、
+ * しかも**出るのは中断が起きたときだけ**である（`recapturableId` が null なら 1 バイトも
+ * 出ない）。1 タップの導線は 1 文字も変わらない。
+ *
+ * # 押せるときにしか出さない
+ *
+ * 押しても何も起きないボタンを出さない（`publishForm` と同じ方針）。**押した結果を
+ * 決めるのは `reclaimStaleOgpCapture` の SQL** で、ここは口を出すかだけを決める。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function recaptureSection(view: WorkPageView): string {
+  if (view.recapturableId === null) {
+    return '';
+  }
+  // **「失敗しました」と言い切らない。** ここへ来るのは「900 秒たっても終わっていない」
+  // ことだけで、撮影関数が何を返したかは分かっていない（返せずに落ちたから残っている）。
+  return `
+<h3>スクリーンショット</h3>
+<p>この作品のスクリーンショットの撮影が、途中で止まったままです。共有した URL に画像が出ません。</p>
+<form method="post" action="${OGP_RECAPTURE_PATH}">
+  <input type="hidden" name="${OGP_RECAPTURE_GAME_ID_FIELD}" value="${view.recapturableId}">
+  <button type="submit">スクリーンショットを撮り直す</button>
+</form>`;
 }
 
 /**
@@ -874,7 +936,14 @@ function screenshot(view: WorkPageView): string {
   if (view.imagePath === null) {
     // 大きさは `.gf-shot` の `aspect-ratio` が持つ（`width` / `height` 属性は
     // 置換要素のためのものなので、ここには書かない）。
-    return `<p class="gf-shot gf-shot-pending">スクリーンショットを準備しています。</p>`;
+    //
+    // **撮り直しの口が出ている画面で「準備しています」と書かない**（#235）。
+    // 同じページが「準備中」と「止まったまま」を同時に言うことになる。
+    // **口が出るのは作者だけ**なので、他人には従来の文言のままにする——中断を
+    // 見せても、その人にできることが 1 つも無い。
+    return view.recapturableId === null
+      ? `<p class="gf-shot gf-shot-pending">スクリーンショットを準備しています。</p>`
+      : `<p class="gf-shot gf-shot-pending">スクリーンショットの撮影が止まっています。</p>`;
   }
   // **`loading="lazy"` を付けない。** この画像は待ち時間を埋めるためのもので、
   // 遅らせると出したい数秒に間に合わない。
@@ -1076,7 +1145,8 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   // （作者名が引けないことと、作品が無いことは別である）。
   const row = await env.DB.prepare(
     `select g.author_id, g.status, g.title, g.generation_state, g.generation_error,
-            g.preview_key, g.created_at, g.generation_started_at, g.ogp_state,
+            g.preview_key, g.created_at, g.generation_started_at,
+            g.ogp_state, g.ogp_started_at, g.published_at,
             a.display_name as author_name,
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
        from games g
@@ -1181,6 +1251,18 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       revisionRunning: revisionQuota?.running ?? false,
       revisionError: revisionQuota?.failed ?? null,
       revisions,
+      // **撮影が中断したまま残ったときだけ、作者に口を出す**（5.4 / #235）。
+      // 期限切れかどうかの判定は `src/ogp.ts` が持つ——ここで `now - x >= 900` と
+      // 書くと、掴み直せるかを決める SQL と食い違いうる。
+      recapturableId:
+        owner &&
+        published &&
+        ogpCaptureIsStale(
+          { state: row.ogp_state, startedAt: row.ogp_started_at, publishedAt: row.published_at },
+          now,
+        )
+          ? gameId
+          : null,
     }),
   );
 }

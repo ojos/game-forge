@@ -31,6 +31,26 @@
  * 同じ形）。公開そのものが冪等なので二度目の公開ではここまで来ないが、**関門を
  * 上流の冪等性に依存させない。**
  *
+ * # 撮り直しは、この関門を緩めずにもう 1 本の UPDATE で通す（#235）
+ *
+ * 関数ごと落ちる（Lambda のタイムアウト・メモリ不足・送信中の切断）と、失敗の
+ * コールバックすら飛ばず、**`ogp_state='capturing'` のまま誰も進められない行が残る。**
+ * 上の関門は `ogp_state is null` なので、**公開操作からは二度と撮影されない。**
+ *
+ * ```sql
+ * update games set ogp_token_hash = ?, ogp_started_at = ?
+ *  where id = ? and author_id = ? and status = 'published' and ogp_state = 'capturing'
+ *    and coalesce(ogp_started_at, published_at, 0) <= ?   -- 期限切れ
+ * ```
+ *
+ * **2 本の UPDATE は互いに排他である**（`is null` と `= 'capturing'`）。片方を緩めた
+ * ことにならず、**同時に走る撮影はやはり 1 つ**である——掴み直すとトークンのハッシュが
+ * 上書きされるので、遅れて届いた 1 通目のコールバックは 404 で弾かれる。
+ * 詳しくは {@link reclaimStaleOgpCapture}。
+ *
+ * **口は `src/ogp-recapture.ts` にある**（この経路は作品ページへ戻すので、
+ * ここへ置くと `src/work-page.ts` と循環参照になる）。
+ *
  * # R2 へ書くのは Worker である（撮影関数ではない）
  *
  * ビルド関数は自分で R2 へ書く（`terraform/build-function.tf` が SSM 経由で R2 の
@@ -191,29 +211,228 @@ export type CaptureStartOutcome =
   | 'failed';
 
 /**
+ * 撮影を始めてから、その行を「中断したまま」と見なすまでの秒数（#235）。
+ *
+ * # 900 秒（15 分）
+ *
+ * **正常に走っている撮影を、誤って掴み直さないだけの余裕が要る。** 上限は宣言から
+ * 出る（`terraform/ogp-function.tf`）。
+ *
+ * | 宣言 | 値 |
+ * |---|---|
+ * | `ogp_maximum_event_age_seconds` | **300 秒**（これを過ぎた事象は配送されない） |
+ * | `ogp_maximum_retry_attempts` | **1**（再試行は同じトークンで来る） |
+ * | `ogp_function_timeout_seconds` | **60 秒** |
+ *
+ * したがって **claim から 360 秒（300 ＋ 60）を過ぎて、まだ走っている撮影は無い。**
+ * 900 秒はその 2.5 倍で、`CAPTURE_TIMEOUT_MS`（30,000 ms）の 30 倍である。
+ *
+ * # 実測に対する余裕
+ *
+ * 公開時の 5 枚は 7,850〜16,907 ms だった（`docs/ogp-capture.md` 9 章）。**900 秒は
+ * 最悪実測の 53 倍**で、遅い撮影を中断と読み違える余地は無い。
+ *
+ * # `src/work-page.ts` の `STALE_AFTER_SECONDS` と同じ値だが、別の定数である
+ *
+ * あちらは生成（オーケストレータ Lambda の 15 分上限と実測 90.9 秒）から出た値で、
+ * **導出が違う。** 数が一致しているのは偶然であり、import で結ぶと**どちらかの宣言を
+ * 動かした日に、もう片方が黙って追随する。** 一方は「画面に中断と書く」閾値、もう一方は
+ * **「本番の行を掴み直してよい」閾値**である（`src/work-page.ts` の `FAILURE_MESSAGES`
+ * を生成画面と共有しなかったのと同じ判断）。
+ */
+export const OGP_STALE_AFTER_SECONDS = 900;
+
+/**
+ * 「いつ撮り始めたか」を表す SQL の式（#235）。
+ *
+ * **`ogp_started_at` を直に見ない。** 0012 より前から `capturing` だった行は
+ * この列を持たない（`migrations/0012_games_ogp_started_at.sql` が `published_at` で
+ * 埋めるが、**埋め損ねた行が NULL のまま残る余地を潰しておく**）。NULL は
+ * `<= ?` に当たらないので、**そのままだと検出から静かに漏れる。**
+ *
+ * 0 へ倒すのは「無限に古い」＝ただちに期限切れの側である。**見落とすより安全**
+ * ——撮り直しは 1 枚 約 0.1 円で、生成（16〜19 円）の 3 桁下にある。
+ *
+ * **定数として 1 か所に置く。** この式は {@link reclaimStaleOgpCapture}（掴み直す側）と
+ * {@link listStaleOgpCaptures}（数える側）の両方に要る。書き写すと、**片方だけを
+ * 直した日に「検出できるのに掴めない」行が生まれる。** 運用の検出
+ * （`scripts/ogp-stale-report.sh`）もここから取り出す（書き写さない）。
+ *
+ * 値は固定の文字列であり、外から来た値を混ぜない（SQL へ差し込んでよいのはそのため）。
+ */
+export const OGP_CAPTURE_SINCE_SQL = 'coalesce(ogp_started_at, published_at, 0)';
+
+/**
  * 撮影の権利を取る（モジュール冒頭の「SQL の条件として持つ」）。
+ *
+ * **`ogp_started_at` を同じ UPDATE で書く。** 別の UPDATE にすると、権利を取った行に
+ * 時刻が入らない瞬間ができ、その隙間に走った検出が**始まったばかりの撮影を
+ * 「無限に古い」と読む**（{@link OGP_CAPTURE_SINCE_SQL}）。
  *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
  * @param tokenHash 使い捨てトークンのハッシュ
+ * @param now 現在時刻（UNIX 秒）
  * @returns 権利を取れたら true
  */
 export async function claimOgpCapture(
   env: Env,
   gameId: string,
   tokenHash: string,
+  now: number = Math.floor(Date.now() / 1000),
 ): Promise<boolean> {
   const result = await env.DB.prepare(
     `update games
-        set ogp_state = 'capturing', ogp_token_hash = ?
+        set ogp_state = 'capturing', ogp_token_hash = ?, ogp_started_at = ?
       where id = ? and status = ? and ogp_state is null`,
   )
-    .bind(tokenHash, gameId, PUBLISHED_STATUS)
+    .bind(tokenHash, now, gameId, PUBLISHED_STATUS)
     .run();
 
   // D1 の `meta.changes` は実際に更新された行数。**存在検査と排他を 1 回の往復で行う**
   // （`src/games.ts` の `claimGenerationJob` と同じ）。
   return (result.meta.changes ?? 0) > 0;
+}
+
+/**
+ * 中断したまま残った撮影を掴み直す（#235）。
+ *
+ * # {@link claimOgpCapture} を緩めない
+ *
+ * **二度撮りの関門（`ogp_state is null`）は 1 文字も変えていない。** 公開の経路が
+ * 通るのはいまも「まだ一度も撮っていない行」だけである。ここが足すのは**互いに
+ * 排他な、もう 1 本の UPDATE** で、通るのは「`capturing` かつ期限切れ」の行だけ
+ * ——**2 つの条件は同時に真になりえない**ので、どちらかを緩めたことにならない。
+ *
+ * 条件を 1 本の UPDATE に畳んで `where ogp_state is null or (capturing and 期限切れ)`
+ * と書くこともできるが、**採らない。** 公開の経路は 5.4 の 1 タップの本体であり、
+ * そこが通る条件に「期限切れ」という**時刻に依存する枝**を持ち込むと、公開の挙動が
+ * 時計の関数になる。**関門を触らずに済む形があるなら、触らない。**
+ *
+ * # 同時に走る撮影は、やはり 1 つである
+ *
+ * この UPDATE も原子的で、通るのは 1 人だけである。**古いトークンのハッシュは
+ * 上書きで消える**ので、遅れて届いた 1 通目のコールバックは
+ * {@link ogpCaptureIsPending} と {@link completeOgpCapture} / {@link failOgpCapture} の
+ * トークン一致に落ちて 404 になる。**R2 も書かれない**（照合は `BUCKET.put` より前に
+ * ある）。
+ *
+ * # 掴み直した瞬間から、また 900 秒は掴めない
+ *
+ * `ogp_started_at` を現在時刻で書き換えるので、**同じ行を連打しても走るのは
+ * {@link OGP_STALE_AFTER_SECONDS} に 1 回だけ**である。撮り直しの口を叩ける相手を
+ * 増やしても、費用の上限がこの SQL 1 本で決まる。
+ *
+ * # 「作者本人か」もこの SQL が見る
+ *
+ * `src/games.ts` の `publishGame` が `where author_id = ?` を持つのと同じ形である。
+ * **呼び出し側の `if` で守らない**——押すと AWS Lambda が 1 回走る（1 枚 約 0.1 円）
+ * 操作であり、経路を足した人が条件を書き忘れても動作では気づけない。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param authorId 撮り直しを求めている利用者（作者本人でなければ掴めない）
+ * @param tokenHash 使い捨てトークンのハッシュ
+ * @param now 現在時刻（UNIX 秒）
+ * @returns 掴み直せたら true
+ */
+export async function reclaimStaleOgpCapture(
+  env: Env,
+  gameId: string,
+  authorId: string,
+  tokenHash: string,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `update games
+        set ogp_token_hash = ?, ogp_started_at = ?
+      where id = ? and author_id = ? and status = ? and ogp_state = 'capturing'
+        and ${OGP_CAPTURE_SINCE_SQL} <= ?`,
+  )
+    .bind(tokenHash, now, gameId, authorId, PUBLISHED_STATUS, now - OGP_STALE_AFTER_SECONDS)
+    .run();
+
+  return (result.meta.changes ?? 0) > 0;
+}
+
+/** 中断したまま残った撮影の 1 行（{@link listStaleOgpCaptures}）。 */
+export interface StaleOgpCapture {
+  /** 作品 id。 */
+  readonly gameId: string;
+  /** 撮影を始めた時刻（UNIX 秒）。0012 より前の行は `published_at` で代用される。 */
+  readonly since: number;
+}
+
+/**
+ * 中断したまま残った撮影を挙げる（#235 の「機械で検出できる」）。
+ *
+ * **画面はこれを呼ばない。** 作品ページが引くのは自分の 1 行だけである
+ * （`src/work-page.ts`）。ここは運用の検出（`scripts/ogp-stale-report.sh`）と、
+ * それを検査するテストのための口である。
+ *
+ * **題名を返さない。** 題名はプロンプト由来の UGC であり（`src/games.ts` の
+ * `draftTitleFromPrompt`）、**運用の一覧に載せる理由が無い**（8.2 の「入力そのものを
+ * 持ち出さない」と同じ扱い）。進めるのに要るのは id だけである。
+ *
+ * @param env バインディングと環境変数
+ * @param now 現在時刻（UNIX 秒）
+ * @returns 期限切れの行（古い順）
+ */
+export async function listStaleOgpCaptures(
+  env: Env,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<readonly StaleOgpCapture[]> {
+  const result = await env.DB.prepare(
+    `select id, ${OGP_CAPTURE_SINCE_SQL} as since
+       from games
+      where status = ? and ogp_state = 'capturing' and ${OGP_CAPTURE_SINCE_SQL} <= ?
+      order by since asc`,
+  )
+    .bind(PUBLISHED_STATUS, now - OGP_STALE_AFTER_SECONDS)
+    .all<{ id: string; since: number }>();
+
+  return (result.results ?? []).map((row) => ({ gameId: row.id, since: row.since }));
+}
+
+/**
+ * その 1 行の撮影が中断したままかを見る（#235）。
+ *
+ * **判定を画面で組み立てない。** 画面が独自に `now - x >= 900` と書くと、**経路は
+ * 断るのに画面は口を出す**という食い違いが生まれる（`src/work-page.ts` の `revisable` と
+ * 同じ判断）。ここへ寄せておけば、直す場所が 1 つになる。
+ *
+ * # これは {@link reclaimStaleOgpCapture} の条件の 2 つ目の実装である
+ *
+ * **隠さずに書く。** 掴み直せるかを決める正本はあちらの SQL で、こちらは同じ規則を
+ * TS で書いたものである。**1 か所にはできない**——画面は既に自分の 1 行を引いており、
+ * 同じことを D1 へもう 1 往復して尋ねる理由が無い（3.6 の読み取りがそのまま費用になる）。
+ *
+ * **代わりに、両者が同じ答えを出すことを機械で見る**（`test/ogp-recapture.test.ts` の
+ * 「画面の判定（ogpCaptureIsStale）と一覧が一致する」）。境界の前後 3 点で
+ * {@link listStaleOgpCaptures} の結果と突き合わせるので、**片方だけを直すと赤くなる。**
+ *
+ * `state` を引数に取るのは、**`capturing` 以外は問答無用で false** にするためである
+ * ——`ready` の行に古い `ogp_started_at` が残っていても、それは中断ではない。
+ *
+ * @param row 対象の行（`ogp_state` と、撮り始めた時刻の材料）
+ * @param now 現在時刻（UNIX 秒）
+ * @returns 中断したままなら true
+ */
+export function ogpCaptureIsStale(
+  row: {
+    readonly state: string | null;
+    readonly startedAt: number | null;
+    readonly publishedAt: number | null;
+  },
+  now: number,
+): boolean {
+  if (row.state !== ('capturing' satisfies OgpState)) {
+    return false;
+  }
+  // **`OGP_CAPTURE_SINCE_SQL` と同じ倒し方をする。** あちらは SQL、こちらは TS だが、
+  // 倒す先（`published_at` → 0）は同じでなければならない。
+  const since = row.startedAt ?? row.publishedAt ?? 0;
+  return now - since >= OGP_STALE_AFTER_SECONDS;
 }
 
 /**
@@ -343,6 +562,66 @@ export async function startOgpCapture(
   gameId: string,
   start: StartOgpCapture = startOgpCaptureOnLambda,
 ): Promise<CaptureStartOutcome> {
+  // **ここが関門である**（モジュール冒頭）。未公開・撮影済み・撮影中はここで止まる。
+  return await runCapture(env, gameId, start, claimOgpCapture);
+}
+
+/**
+ * 中断したまま残った撮影を、撮り直す（#235）。
+ *
+ * # {@link startOgpCapture} との違いは関門 1 つだけである
+ *
+ * トークンの作り方も、投げ方も、投げ込めなかったときの後始末も同じである
+ * （{@link runCapture} が 1 つ持つ）。**違うのは「どの行を掴んでよいか」だけ**で、
+ * それは {@link reclaimStaleOgpCapture} の SQL が決める。
+ *
+ * **2 つ目の実装を作らない。** 撮影の起動を 2 か所に書くと、片方だけが
+ * 「投げ込めなかったら `failed` にする」を持つ状態になりうる——**その形は、
+ * この issue が直そうとしているもの（進める手段の無い行）を新しく作る。**
+ *
+ * # 期限切れでなければ何もしない
+ *
+ * 走っている撮影を横から掴み直さない。掴めなければ `skipped` を返す——
+ * **`failed` にしない**（`startOgpCapture` が未公開・撮影済みに `skipped` を返すのと
+ * 同じ理由で、「撮ろうとして撮れなかった」と「撮る必要が無かった」を混同しない）。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param authorId 撮り直しを求めている利用者（作者本人でなければ掴めない）
+ * @param start 撮影を投げる段（既定は AWS Lambda への非同期呼び出し）
+ * @param now 現在時刻（UNIX 秒）
+ * @returns 起動の結果
+ */
+export async function startOgpRecapture(
+  env: Env,
+  gameId: string,
+  authorId: string,
+  start: StartOgpCapture = startOgpCaptureOnLambda,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<CaptureStartOutcome> {
+  return await runCapture(env, gameId, start, (e, id, tokenHash) =>
+    reclaimStaleOgpCapture(e, id, authorId, tokenHash, now),
+  );
+}
+
+/** 撮影の権利を取る段。**{@link runCapture} が差し替えるのはここだけである。** */
+type ClaimOgpCapture = (env: Env, gameId: string, tokenHash: string) => Promise<boolean>;
+
+/**
+ * 撮影を起動する本体（{@link startOgpCapture} / {@link startOgpRecapture} の共通部分）。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param start 撮影を投げる段
+ * @param claim 権利を取る段
+ * @returns 起動の結果
+ */
+async function runCapture(
+  env: Env,
+  gameId: string,
+  start: StartOgpCapture,
+  claim: ClaimOgpCapture,
+): Promise<CaptureStartOutcome> {
   const missing = missingOgpSecrets(env);
   if (missing.length > 0) {
     // **名前だけを出す。値は出さない。**
@@ -352,8 +631,7 @@ export async function startOgpCapture(
 
   const token = createJobToken();
   const tokenHash = await hashJobToken(token);
-  // **ここが関門である**（モジュール冒頭）。未公開・撮影済み・撮影中はここで止まる。
-  if (!(await claimOgpCapture(env, gameId, tokenHash))) {
+  if (!(await claim(env, gameId, tokenHash))) {
     return 'skipped';
   }
 
@@ -364,6 +642,8 @@ export async function startOgpCapture(
     console.error(
       `[ogp] 撮影の呼び出しに失敗しました: ${error instanceof Error ? `${error.name}: ${error.message}` : 'unknown error'}`,
     );
+    // **撮り直しの経路から来た場合もここへ落ちる。** `failOgpCapture` の条件は
+    // 「`capturing` かつトークン一致」なので、掴み直した直後の行にそのまま効く。
     await failOgpCapture(env, gameId, tokenHash);
     return 'failed';
   }

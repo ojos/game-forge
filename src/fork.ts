@@ -63,7 +63,8 @@ import { checkGenerationQuota, describeQuotaRejection, QUOTA_EXCEEDED_STATUS } f
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { MAX_SOURCE_BYTES } from './system-prompt.js';
+import type { StoredSourceFailure } from './source-store.js';
+import { readStoredSource } from './source-store.js';
 import { workPagePath } from './work-page.js';
 
 /**
@@ -222,8 +223,13 @@ async function parseForkInput(request: Request): Promise<ForkInput | null> {
   return { parentId, prompt: trimmed };
 }
 
-/** 親を取れなかった理由。**畳まない**——作者への文言も、状態コードも変わる。 */
-type ParentFailure = 'not-forkable' | 'source-missing' | 'source-too-large';
+/**
+ * 親を取れなかった理由。**畳まない**——作者への文言も、状態コードも変わる。
+ *
+ * `not-forkable` だけがフォーク固有である（前段の資格判定）。残りは
+ * `src/source-store.ts` が返すものと同じで、**そちらを書き写さずに合成する**（#217）。
+ */
+type ParentFailure = 'not-forkable' | StoredSourceFailure;
 
 /**
  * 親の最終ソースを読む（5.3 / 確定18 / 確定26）。
@@ -243,14 +249,15 @@ type ParentFailure = 'not-forkable' | 'source-missing' | 'source-too-large';
  * **黙って切り詰めない。** 切れた Go のソースを渡すと、コンパイルが必ず落ちて枠だけが
  * 消える。
  *
- * # `src/revise.ts` の `readBaseSource` と読み方が同じである
+ * # 読み取りそのものは `src/source-store.ts` にある（#217）
  *
  * 5.7 が「方式はフォークと同じ、扱いだけが違う」と書いているとおりで、**上限も
- * 切り詰めない規約も出典は同じ確定18 である。** それでもこの 2 つを 1 つの関数に
- * していないのは、**前段（誰の何を読んでよいか）が違い、失敗したときの後始末も違う**
- * ためである（あちらは取った枠を返す。こちらはまだ何も取っていない）。**共有する
- * 価値があるのは `MAX_SOURCE_BYTES` の値そのもの**で、それは
- * `src/system-prompt.ts` の 1 か所にある。
+ * 切り詰めない規約も出典は同じ確定18 である。** その「読んで測る」部分だけを
+ * `readStoredSource` へ寄せた。
+ *
+ * **前後は寄せていない。** 前段（誰の何を読んでよいか）が違い、失敗したときの
+ * 後始末も違う——推敲は取った枠を返すが、**こちらはまだ何も取っていない。**
+ * ここまで畳むと、フォークが取っていない枠を返す壊れ方をする。
  *
  * @param env バインディングと環境変数
  * @param parentId 親の作品 id
@@ -276,18 +283,7 @@ async function readParentSource(
     return { ok: false, reason: 'source-missing' };
   }
 
-  const object = await env.BUCKET.get(row.source_key);
-  if (object === null) {
-    return { ok: false, reason: 'source-missing' };
-  }
-  const source = await object.text();
-  if (source === '') {
-    return { ok: false, reason: 'source-missing' };
-  }
-  if (new TextEncoder().encode(source).length > MAX_SOURCE_BYTES) {
-    return { ok: false, reason: 'source-too-large' };
-  }
-  return { ok: true, source };
+  return await readStoredSource(env, row.source_key);
 }
 
 /**

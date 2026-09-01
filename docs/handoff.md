@@ -68,7 +68,13 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 **関数を直接叩く手は、いまも「測る」だけで「撮り直す」ものではありません**（コールバックが
 404 で弾かれ、画像は保存されない。9 章）。
 
-**本番ではまだ 1 件も `capturing` の残置が出ていません。踏む前に直した形です。**
+**本番ではまだ 1 件も `capturing` の残置が出ていません**（2026-09-02 に実測。
+公開済み **18 行がすべて `ready`** で、`bash scripts/ogp-stale-report.sh` は `OGP_STALE_NONE`）。
+**踏む前に直した形です。**
+
+**この検出は 2026-09-02 に本番の台帳に対して初めて動きました。** 書いたその日に一度
+通しています——`effortExperimentTotals` が「テストの中では動くが本番に対しては 1 度も
+動いていない」状態で 3 日残った前例があります（#238 / #239。1 章の A/B の節）。
 
 **`terraform apply` が 1 度落ちました。** `docker buildx build --push` の既定が OCI 形式の
 イメージインデックスを作り、Lambda は Docker V2 schema2 しか受け付けません。**手順は
@@ -280,11 +286,10 @@ issue のコメントにしか無い状態は解消しました。**#7 の 6 本
 **実際に置いたのは `game-forge.ojos.jp` のゾーン内だけで、`ojos.jp` には 1 本もありません**（1 章）。
 **手で足すと外部層の「terraform plan: no drift」が赤くなります。**
 
-### 適用していない宣言は、いま 0 件です（**ただし D1 のマイグレーションが 1 件残っています**）
+### 適用していない宣言は、いま 0 件です
 
-**2026-09-02 に確認しました。terraform / Worker 側の宣言に差分はありません。**
-**D1 だけ別です**——#235 が足した `0012_games_ogp_started_at.sql` が未適用で、
-**マージしたら利用者の端末で打つ必要があります**（この節の後半）。
+**2026-09-02 に確認しました。terraform / Worker 側の宣言にも、D1 にも差分はありません**
+（`0012_games_ogp_started_at.sql` は同日に適用済み。この節の後半）。
 
 ```
 CAPTURE_TIMEOUT_MS = 30000（実物）      terraform plan → No changes
@@ -331,17 +336,16 @@ No changes. Your infrastructure matches the configuration.
 
 | やること | 状態 |
 |---|---|
-| ECR へ OGP 撮影イメージを push → `terraform apply` | **完了。** 関数 `game-forge-ogp` が作られ、5 枚撮れています（1 章）。**push の形式で 1 度落ちました**——手順は `docs/ogp-capture.md` 3.2 に直してあります |
+| ECR へ OGP 撮影イメージを push → `terraform apply` | **完了。** 関数 `game-forge-ogp` が作られ、**公開済み 18 行がすべて `ready`** です（2026-09-02 時点。実測を取ったのはうち 5 枚。1 章）。**push の形式で 1 度落ちました**——手順は `docs/ogp-capture.md` 3.2 に直してあります |
 | オーケストレータの `timeout` 600 → 840（#174） | **既に適用済みでした。** #212（Lambda のメモリ）の apply に相乗りしており、`terraform plan` は 0 to change です |
 
 **宣言と外部状態が揃っているかは `terraform plan` で見ます**（読み取りなので実行環境から通ります。
 ただし `CLOUDFLARE_API_TOKEN` を載せること。3 章）。
 
-**D1 のマイグレーションは 0011 まで適用済みです。0012 は未適用です**
-（#235 が足した `0012_games_ogp_started_at.sql`。**マージしたら利用者の端末で
-`npx wrangler d1 migrations apply DB --remote --env production` を打つこと**——
-未適用のままだと `claimOgpCapture` が `no such column` で落ち、**公開は成立したうえで
-応答が 500 になります**。`docs/ogp-capture.md` 4 章）。以下は 0011 までの経緯です
+**D1 のマイグレーションは 0012 まで適用済みです**（`0012_games_ogp_started_at.sql` を
+2026-09-02 に適用。#235。`pragma table_info` で `games.ogp_started_at` が INTEGER として
+在ることを確認済み。**既に `capturing` だった行を埋める UPDATE は 0 行**——公開済み 18 行は
+すべて `ready` だったため、予告どおりです）。以下は 0011 までの経緯です
 （`npx wrangler d1 migrations apply DB --remote --env production`。
 `0009_game_revisions` / `0009_games_ogp` / `0010_build_health` を 2026-08-30 に、
 `0011_generations_effort` を 2026-08-31 に適用。**`generations` に `effort` 列があることを

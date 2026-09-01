@@ -146,6 +146,29 @@ export AWS_PROFILE=game-forge-prod
 set -a; source scripts/load-project-env.sh; set +a   # CLOUDFLARE_API_TOKEN 等
 ```
 
+**`export AWS_PROFILE` を飛ばさないこと。** `aws sso login --profile ...` は**ログインするだけ**で、
+以後の `aws` には効かない。既定のプロファイルに `region` が無いと `NoRegion` で落ちる。
+
+**前提だけを先に見られる**（AWS へも本番へも触れない。#243）。
+
+```bash
+bash scripts/deploy-orchestrator.sh --check-prerequisites
+# [deploy-orchestrator] 前提 OK（profile=game-forge-prod / region=ap-northeast-1）
+```
+
+欠けていれば、**欠けている前提を名指しして 2 で落ちる。**
+
+```
+[deploy-orchestrator] region を解決できません（NoRegion になります）。
+[deploy-orchestrator] 対処: export AWS_REGION=<リージョン>、または
+[deploy-orchestrator]       ~/.aws/config のプロファイルへ region を書く
+[deploy-orchestrator] **AWS へは 1 度も触れていません。** 前提が欠けています。
+```
+
+> **2026-09-01 に踏んだ。** 本番の生成が止まっている最中（#241 の復旧）に `AWS_PROFILE` を
+> export し忘れ、`NoRegion` になった。**当時の文言は「認証と器の作成を確認してください」**で、
+> **認証も器も済んでいた**——当たっていない原因を指していた（#243）。
+
 ### この切り替えは生成経路を数分止める
 
 **手順 2 から 5 のあいだ、生成は失敗する。** 理由は 2 つある。

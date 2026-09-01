@@ -66,7 +66,8 @@ import {
   restoreRevision,
 } from './revisions.js';
 import { resolveSessionUser } from './session-user.js';
-import { MAX_SOURCE_BYTES } from './system-prompt.js';
+import type { StoredSourceFailure } from './source-store.js';
+import { readStoredSource } from './source-store.js';
 import { workPagePath } from './work-page.js';
 
 /**
@@ -220,41 +221,14 @@ async function parseReviseInput(request: Request): Promise<ReviseInput | null> {
   return { gameId, prompt: trimmed };
 }
 
-/** 元のソースを取れなかった理由。**畳まない**——作者への文言も、枠の扱いも変わる。 */
-type BaseSourceFailure = 'source-missing' | 'source-too-large';
-
 /**
- * 元にするソースを R2 から読む（5.7 / 確定26）。
+ * 元のソースを取れなかった理由。**畳まない**——作者への文言も、枠の扱いも変わる。
  *
- * **30KB 超を「読めなかった」と同じ扱いにしない**（確定18 / 5.3）。あれは確定した
- * 上限で、**何度やっても成功しない。**「時間をおいてもう一度」と案内すると、作者は
- * 成功しない操作を上限の回数だけ繰り返すことになる。超過時に LLM へ整理させる経路は
- * M5-2（#33）が持つ。
- *
- * **黙って切り詰めない。** 切れた Go のソースを渡すと、コンパイルが必ず落ちて
- * 枠だけが消える。
- *
- * @param env バインディングと環境変数
- * @param sourceKey R2 のキー
- * @returns ソース、または失敗の理由
+ * 読み取りと 30KB 判定は `src/source-store.ts` にある（#217）。**枠を返すのはこちらの
+ * 責務である**——あちらは「読んで測る」だけを持ち、失敗の後始末を持たない
+ * （フォークはまだ枠を取っていないので、返すものが無い）。
  */
-async function readBaseSource(
-  env: Env,
-  sourceKey: string,
-): Promise<{ ok: true; source: string } | { ok: false; reason: BaseSourceFailure }> {
-  const object = await env.BUCKET.get(sourceKey);
-  if (object === null) {
-    return { ok: false, reason: 'source-missing' };
-  }
-  const source = await object.text();
-  if (source === '') {
-    return { ok: false, reason: 'source-missing' };
-  }
-  if (new TextEncoder().encode(source).length > MAX_SOURCE_BYTES) {
-    return { ok: false, reason: 'source-too-large' };
-  }
-  return { ok: true, source };
-}
+type BaseSourceFailure = StoredSourceFailure;
 
 /**
  * 推敲の要求を処理する。
@@ -317,7 +291,7 @@ async function handleRevise(
   const base =
     row?.source_key == null
       ? ({ ok: false, reason: 'source-missing' } as const)
-      : await readBaseSource(env, row.source_key);
+      : await readStoredSource(env, row.source_key);
   if (!base.ok) {
     // **LLM を 1 度も呼んでいないので枠を返す**（モジュール冒頭の表）。ジョブ行も
     // 消す——起きなかった仕事の失敗を、作品ページに残す意味が無い。

@@ -293,22 +293,47 @@ bash scripts/report-selftest.sh   # 終了コードと REPORT_SELFTEST_PASS
   および**窓の外だと言った行が、窓を移せば出てくること**（「入らない」が「そもそも
   入れられていない」ではないこと）。
 
-## 受け入れ条件へは配線していません
+## どこで走るか（CI に配線しました。#226）
 
-**`scripts/report-selftest.sh` は `scripts/acceptance.sh` から呼ばれていません。**
-配線は別レーンと衝突しうるため、判断の材料だけをここへ残します。
+**`scripts/report-selftest.sh` は `.github/workflows/verify.yml` の `verify` ジョブで走ります**
+（`Report selftest` の段）。**ローカル層（`scripts/acceptance.sh` / `scripts/verify.sh`）へは
+入れていません。**
 
-- 置くならローカル層（`scripts/acceptance.sh`）です。ネットワークも外部認証も要さず、
-  使い捨ての D1 で完結します。
-- ただし**約 12 秒かかります**（実測。`wrangler d1 migrations apply` と 10 回の
-  `d1 execute` がそれぞれプロセスを起動するため）。`npm test` の 8 秒に対して 1.5 倍で、
-  反復のたびに払う代償としては小さくありません。**`generations` を読む集計を触ったときだけ
-  回す**運用でも成立します。
-- 置く場合の位置は `npm test` の後ろが妥当です（安い検査から落とす方針に反するため、
-  前寄りには置きません）。
-- **`scripts/build-time-report.sh` そのものは、置くなら外部層です**
-  （`scripts/acceptance-remote.sh`）。AWS の認証を要するため、ローカル層へ入れると
-  認証の失効でループ全体が止まります（プロジェクト共通ルール「外部層を単一入口へ
-  含めない理由」）。ただし**これは「宣言と外部状態の一致」ではなく「外部状態の傾向」**
-  なので、外部層の性格とも少しずれます。**定期実行（cron / GitHub Actions）のほうが
-  素直です。**
+| 層 | 走るか | 理由 |
+|---|---|---|
+| CI（`verify.yml`） | **走る** | 1 回払えば足りる。PR ごとに必ず通る |
+| ローカル事前ゲート（`scripts/loop-gate.sh`） | 走らない | 反復のたびに 17 秒を払う価値が薄い（下記） |
+| 外部層（`scripts/acceptance-remote.sh`） | 走らない | AWS も本番 D1 も要らないので、外部層の関心事ではない |
+
+**なぜローカル層へ入れないのか。** 実測で `report-selftest.sh` は **17 秒**、
+`scripts/acceptance.sh` は **20 秒**です（1,183 テスト込み）。入れると事前ゲートが
+**20 → 37 秒（+85%）**になります。**この検査が守っているのは「集計の読み方」であって、
+反復のたびに壊れる層ではありません**——`src/` を触っても壊れず、壊れるのは
+`scripts/usage-report.sh` / `scripts/build-time-report.sh` / `scripts/report-window.sh` /
+`src/quota.ts` の境界を動かしたときだけです。
+
+**代わりに「ローカルで緑・CI で赤」が起こりえます。** それは受け入れています
+（`docs/handoff.md` 4 章「**PR を出したら `gh pr checks` を見る**——CI にしかない検査は
+他にもある」）。**集計まわりを触ったら、push を待たずに手で回してください。**
+
+```bash
+bash scripts/report-selftest.sh   # 17 秒
+```
+
+**手元で回すには GNU date が要ります**（`date -d @<epoch>`。`scripts/report-window.sh` が
+実際の変換で確かめ、**明示して落とします**——黙って別の日付を出すことはありません）。
+**利用者の端末は macOS なので、そのままでは通りません**（`docs/handoff.md` 3 章）。
+coreutils の `gdate` を `date` として見せるか、**devcontainer の中で回してください。**
+CI は ubuntu-latest なので、そのまま通ります。
+
+**`verify` ジョブの段なので、これが赤いと `deploy` も起きません**（`deploy` は
+`needs: verify`）。集計を読み違える状態で本番を進めない、という意味では筋が通りますが、
+**影響は `scripts/verify.sh` の失敗と同じ広さになります。** 別ジョブにすればそこは切れますが、
+`checkout` と `npm ci` をもう一度払うことになるため採っていません。
+
+**`scripts/build-time-report.sh` そのものは、どの層にも配線していません。**
+AWS の認証を要するため、ローカル層へ入れると認証の失効でループ全体が止まります
+（プロジェクト共通ルール「外部層を単一入口へ含めない理由」）。ただし**これは「宣言と外部状態の
+一致」ではなく「外部状態の傾向」**なので、外部層の性格とも少しずれます。**定期実行
+（cron / GitHub Actions）のほうが素直です。** 自己検査の側は `--events-file` で
+CloudWatch を置き換えるので、**CI では AWS を要しません。**

@@ -141,6 +141,46 @@ export function buildOrchestratorPayload(
 }
 
 /**
+ * ペイロードから**仕事の宛先だけ**を取り出す（#242）。
+ *
+ * # なぜ全体の検証と分けるのか
+ *
+ * **断るときも、行を閉じられるなら閉じるためである。** 2026-09-01、登録簿のずれで
+ * {@link parseOrchestratorPayload} が `null` を返し（#241）、**コールバックを 1 通も
+ * 送らなかった。** 作品行は `pending` のまま残り、作者の画面は 15 分のあいだ
+ * 「生成中です／通常 1〜2 分」を出し続けた。
+ *
+ * **宛先が読めるなら、失敗したことは伝えられる。** 中身が契約に合っていなくても、
+ * `gameId` と `jobToken` の形が正しければ、その行を握って閉じられる。
+ *
+ * # ここで中身の妥当性を見ない
+ *
+ * **見るのは「宛先として使える形か」だけである。** 実際に握れるかどうかは
+ * `jobToken` の照合が決める（`src/games.ts` の `claimGenerationJob`）——**この関数が
+ * 通したからといって、その行を触れるわけではない。**
+ *
+ * @param value 呼び出しで届いた値
+ * @returns 宛先、または読み取れなければ null
+ */
+export function identifyOrchestratorJob(
+  value: unknown,
+): { readonly gameId: string; readonly jobToken: string } | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const gameId = record['gameId'];
+  const jobToken = record['jobToken'];
+  if (typeof gameId !== 'string' || gameId === '') {
+    return null;
+  }
+  if (typeof jobToken !== 'string' || jobToken === '') {
+    return null;
+  }
+  return { gameId, jobToken };
+}
+
+/**
  * ペイロードを検証する（受ける側）。
  *
  * **この関数は例外を投げない**（`src/generate.ts` の `parseGenerateRequest`、

@@ -26,6 +26,7 @@
 #   3. 既知の行に対して、期待どおりの集計が出ること
 #   4. モデル別に割っても、合計が変わらないこと（#25 が同じ台帳へ乗れる形）
 #   5. ビルド時間の閾値が、天井の宣言から導かれていること（#166 / #164 が動かす値）
+#   6. 天井を動かした直後に、過去の完走が「打ち切り」に化けないこと（#211）
 #
 # **5 は AWS へ触れない。** 閾値の導出だけを見るので、認証もネットワークも要らない
 # （分布そのものを見るには CloudWatch が要るが、それは外部層の関心事である）。
@@ -268,6 +269,9 @@ cat >"$fixture" <<'FIXTURE'
 locals {
   build_function_name = "game-forge-build"
 
+  # #211 以降、メモリの宣言も必須である（判定に使う構成を、ここから読む）。
+  build_function_memory_mb = 3008
+
   build_function_timeout_seconds = 60
 }
 
@@ -291,6 +295,115 @@ if bash scripts/build-time-report.sh --explain-threshold --timeout-source "$miss
   failed=1
 else
   echo "  ok   天井の宣言が読めなければ落ちる"
+fi
+
+# **メモリの宣言が読めないときも落ちること。** 天井と同じ理由である（#211）。
+# 決め打ちの 10,240 へ倒れると、宣言を動かした日に「別の構成かどうか」が丸ごとずれる。
+no_mem="${SANDBOX}/no-memory.tf"
+cat >"$no_mem" <<'FIXTURE'
+locals {
+  build_function_name = "game-forge-build"
+
+  build_function_timeout_seconds = 60
+}
+FIXTURE
+if bash scripts/build-time-report.sh --explain-threshold --timeout-source "$no_mem" >/dev/null 2>&1; then
+  echo "  FAIL メモリの宣言が無くても通ってしまいます（決め打ちへ倒れています）" >&2
+  failed=1
+else
+  echo "  ok   メモリの宣言が読めなければ落ちる"
+fi
+
+# ── 6. 天井を動かした直後に、過去の完走が「打ち切り」に化けないこと（#211） ──
+#
+# **2026-08-31 に実際に起きた形をそのまま置く。** メモリを 3,008 → 10,240 MB、天井を
+# 45 → 20 秒へ動かした直後、3,008 MB 時代の完走が「打ち切られています」と報告された。
+#
+# **AWS へは触れない。** --events-file が filter-log-events の応答の形をそのまま受ける
+# （--timeout-source と同じ位置づけの口である）。
+echo "[selftest] 天井を動かした直後に、過去の完走が打ち切りに化けないこと（#211）"
+
+events="${SANDBOX}/events.json"
+base="$(date -u -d 2026-08-27T03:00:00Z +%s)000"
+
+# 5 件を置く。**それぞれが 1 つの罠に対応している。**
+#
+#   1  3008 MB / 10.0 秒          … 普通の完走
+#   2  3008 MB / 65.0 秒 / ログ無  … **天井（60 秒）を超えているが打ち切られていない。**
+#                                     #211 の核心。ここを打ち切りに数えてはいけない
+#   3  3008 MB / 55.0 秒 / ログ有  … **天井より短いが実際に打ち切られた。** 実ログで数える
+#   4  3008 MB / 50.0 秒 / ログ有  … 同上。**打ち切りを 2 件にするために置いている**
+#   5  1769 MB / 70.0 秒          … 別の構成。判定から外れるが表には残る
+#
+# **4 が無いと、この検査は「所要 >= 天井」の推測を捕まえられない。** 推測でも実ログでも
+# 打ち切りが 1 件になり、数が一致してしまう（実際に変異を当てて緑になることを確かめた）。
+# **当てた変異が緑なら、検査の欠陥を疑うこと**（docs/handoff.md 4 章）。
+cat >"$events" <<EVENTS
+{"events":[
+ {"timestamp":${base},"message":"REPORT RequestId: 11111111-1111-4111-8111-111111111111\tDuration: 10000.00 ms\tBilled Duration: 10001 ms\tMemory Size: 3008 MB\tMax Memory Used: 432 MB\tInit Duration: 475.00 ms\t"},
+ {"timestamp":${base},"message":"REPORT RequestId: 22222222-2222-4222-8222-222222222222\tDuration: 65000.00 ms\tBilled Duration: 65001 ms\tMemory Size: 3008 MB\tMax Memory Used: 432 MB\t"},
+ {"timestamp":${base},"message":"REPORT RequestId: 33333333-3333-4333-8333-333333333333\tDuration: 55000.00 ms\tBilled Duration: 55001 ms\tMemory Size: 3008 MB\tMax Memory Used: 432 MB\t"},
+ {"timestamp":${base},"message":"2026-08-27T03:00:03.100Z 33333333-3333-4333-8333-333333333333 Task timed out after 60.00 seconds"},
+ {"timestamp":${base},"message":"REPORT RequestId: 55555555-5555-4555-8555-555555555555\tDuration: 50000.00 ms\tBilled Duration: 50001 ms\tMemory Size: 3008 MB\tMax Memory Used: 432 MB\t"},
+ {"timestamp":${base},"message":"2026-08-27T03:00:04.100Z 55555555-5555-4555-8555-555555555555 Task timed out after 60.00 seconds"},
+ {"timestamp":${base},"message":"REPORT RequestId: 44444444-4444-4444-8444-444444444444\tDuration: 70000.00 ms\tBilled Duration: 70001 ms\tMemory Size: 1769 MB\tMax Memory Used: 423 MB\tInit Duration: 38.90 ms\t"}
+]}
+EVENTS
+
+# **最終行は判定の綴り**（BUILD_HEADROOM_*）であって JSON ではない。落としてから読む。
+btr() {
+  bash scripts/build-time-report.sh --events-file "$events" \
+    --from 2026-08-27 --to 2026-08-27 --format json "$@" 2>/dev/null | sed '$d'
+}
+
+# 宣言が 3,008 MB のとき（= 当時の構成）。
+same="$(btr --timeout-source "$fixture")"
+if [[ -z "$same" ]]; then
+  echo "  FAIL --events-file で集計を取得できません" >&2
+  failed=1
+else
+  expect_eq "判定に使う構成は宣言から読む" "3008" "$(jq -r '.ceiling.memoryMb' <<<"$same")"
+  expect_eq "判定の母数は現在の構成の 4 件" "4" "$(jq -r '.totals.calls' <<<"$same")"
+  # **これが #211 そのものである。** 65 秒は天井 60 秒を超えているが打ち切られておらず、
+  # 55 秒と 50 秒は天井より短いが打ち切られている。**推測なら 1 件、実ログなら 2 件になる。**
+  expect_eq "打ち切りは実ログの 2 件（所要 >= 天井 では数えない）" "2" \
+    "$(jq -r '.totals.over' <<<"$same")"
+  expect_eq "打ち切りのログは 2 行" "2" "$(jq -r '.timedOut.lines' <<<"$same")"
+  expect_eq "打ち切りの出所を名乗る" "log:Task timed out" \
+    "$(jq -r '.timedOut.countedFrom' <<<"$same")"
+  expect_eq "突き合わない打ち切りは 0 件" "0" "$(jq -r '.timedOut.unmatched' <<<"$same")"
+  # **外したぶんは消えていない。**
+  expect_eq "別の構成の 1 件は表に残る" '[{"memoryMb":1769,"calls":1}]' \
+    "$(jq -c '[.excluded.byMemory[] | {memoryMb, calls}]' <<<"$same")"
+  if jq -e '.excluded.reason | test("判定から外した")' <<<"$same" >/dev/null; then
+    echo "  ok   なぜ外したかが出力に載っている"
+  else
+    echo "  FAIL なぜ外したかが出力に載っていません" >&2
+    failed=1
+  fi
+fi
+
+# 宣言を 10,240 MB へ動かした直後（= 2026-08-31 に起きた状態）。
+# **過去の完走は 1 件も判定に使われず、UNKNOWN で止まる。**
+moved_mem="${SANDBOX}/build-function-10240.tf"
+sed 's/build_function_memory_mb = 3008/build_function_memory_mb = 10240/' "$fixture" >"$moved_mem"
+after_move="$(bash scripts/build-time-report.sh --events-file "$events" \
+  --timeout-source "$moved_mem" --from 2026-08-27 --to 2026-08-27 2>/dev/null)"
+after_code=$?
+expect_eq "現在の構成での呼び出しが 0 件なら UNKNOWN" "2" "$after_code"
+expect_eq "その判定の綴り" "BUILD_HEADROOM_UNKNOWN" "$(tail -1 <<<"$after_move")"
+if grep -Fq "表からは消していません" <<<"$after_move"; then
+  echo "  ok   0 件でも、別の構成での実測は表に残る"
+else
+  echo "  FAIL 0 件のときに別の構成での実測が消えています" >&2
+  failed=1
+fi
+# **「打ち切られています」と言っていないこと。** #211 が報告した文言そのものを見る。
+if grep -Fq "打ち切られています" <<<"$after_move"; then
+  echo "  FAIL 過去の完走を「打ち切られています」と報告しています（#211 の再発）" >&2
+  failed=1
+else
+  echo "  ok   過去の完走を打ち切りと呼んでいない"
 fi
 
 if (( failed )); then

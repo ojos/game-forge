@@ -75,6 +75,14 @@ trap 'rm -rf "$SANDBOX"' EXIT
 ##
 # 本番へ 1 文だけ送る。**select で始まらない文は送らない。**
 #
+# **形を先に検査する。** `jq` の `?` や `// empty` は型が違っても黙って空を返すため、
+# これに頼ると **wrangler の `--json` の形が変わった日に、集計が静かに 0 行になる。**
+# 0 行は「その期間に生成が無かった」と読めてしまい、いちばん気づけない壊れ方になる
+# （`scripts/usage-report.sh` の `send_query` と同じ理由・同じ形）。
+#
+# **失敗の中身を捨てない。** 資格情報の失効も CLI の不具合も、ここで握りつぶすと
+# 「行が取れない」としか出ず、原因が読み取れない赤になる。
+#
 # @param $1 SQL
 # @return 標準出力へ results の配列（JSON）
 ##
@@ -84,9 +92,38 @@ send_query() {
     echo "[effort-ab] select で始まらない文は送りません（読み取りのみ）。" >&2
     return 1
   fi
-  CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
-    npx wrangler d1 execute DB --remote --env production --json --command "$sql" 2>/dev/null \
-    | jq -c '[.[] | .results // empty] | add // []'
+
+  # wrangler は CLOUDFLARE_API_TOKEN を自分で読むが、非対話シェルには .env が
+  # 載っていない。値はこのスクリプトへ持ち込まず、環境へ移すだけにする。
+  if [[ -z "${CLOUDFLARE_API_TOKEN:-}" && -f "$HERE/load-project-env.sh" ]]; then
+    # shellcheck source=scripts/load-project-env.sh
+    . "$HERE/load-project-env.sh"
+  fi
+
+  local out
+  if ! out="$(CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+    npx wrangler d1 execute DB --remote --env production --json --command "$sql" 2>&1)"; then
+    echo "[effort-ab] 本番の D1 を読めません:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  fi
+
+  # --json でも wrangler は前置きの行を混ぜることがある。最初の [ から後ろを渡す。
+  local json
+  json="$(printf '%s' "$out" | sed -n '/^\[/,$p')"
+  if [[ -z "$json" ]]; then
+    echo "[effort-ab] wrangler の応答に JSON が含まれていません:" >&2
+    printf '%s\n' "$out" >&2
+    return 1
+  fi
+  if ! jq -e '(type == "array") and (.[0] | type == "object") and (.[0].results | type == "array")' \
+       <<<"$json" >/dev/null 2>&1; then
+    echo "[effort-ab] wrangler の --json の形が想定と違います（静かに 0 行にしません）:" >&2
+    printf '%s\n' "$json" | head -5 >&2
+    return 1
+  fi
+
+  jq -c '[.[] | .results] | add' <<<"$json"
 }
 
 ROWS="${SANDBOX}/rows.json"

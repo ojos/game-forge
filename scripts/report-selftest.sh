@@ -476,7 +476,9 @@ fi
 # これは**構造の検査**である（実行時ではない）。`d1 execute` を呼ぶ場所が 1 か所だけで、
 # そこが select で始まることを確かめてから送る、という形を見る。**呼び出し場所が増えたら
 # ここが落ちる**ので、guard を通らない経路が黙って増えることは無い。
-ab_calls="$(grep -c 'd1 execute' scripts/effort-ab-report.sh || true)"
+# **綴りを絞る。** `d1 execute` だけだと、コメントに同じ語が入っただけで数が増える
+# （この節の説明文がまさにそれである）。**実際の呼び出しの形**で数える。
+ab_calls="$(grep -cF 'npx wrangler d1 execute DB --remote --env production' scripts/effort-ab-report.sh || true)"
 expect_eq "本番を叩く場所は 1 か所だけ" "1" "$ab_calls"
 if grep -Fq 'select で始まらない文は送りません' scripts/effort-ab-report.sh; then
   echo "  ok   select で始まらない文を送らない guard がある"

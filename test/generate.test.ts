@@ -576,9 +576,9 @@ describe('生成の段が Bedrock へ結線されている（#83）', () => {
     const response = await post(routes, { prompt: 'ゲーム' }, cookie);
 
     expect(response.status).toBe(422);
-    const body = (await response.json()) as { error: string; imports: readonly string[] };
+    const body = (await response.json()) as { error: string; offending: readonly string[] };
     expect(body.error).toBe('source-rejected');
-    expect(body.imports).toContain('os/exec');
+    expect(body.offending).toContain('os/exec');
   });
 
   it('システムプロンプト（#16）が結線されている', async () => {

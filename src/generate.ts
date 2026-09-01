@@ -907,7 +907,8 @@ async function handleGenerate(
     if (error instanceof GeneratedSourceRejected) {
       // 5.2-5 の「違反時は再生成に回さず即拒否」。**500 にしない**（段は正常に働いた）。
       // **429 でもない**（枠は消費済み）。**400 でもない**（リクエストは検証を通っている）。
-      // 拒否の理由と、引っかかった import は `describeSourceRejection` が整える。
+      // 拒否の理由と、引っかかったもの（import パス / 指示の名前 / 8.3 の語の分類）は
+      // `describeSourceRejection` が整える。
       // **ここで文字列を組み立てない**（生成物由来の値の扱いは適合層が知っている）。
       console.error(`[generate] ${error.name}: ${error.reason}`);
       return json(describeSourceRejection(error), SOURCE_REJECTED_STATUS);

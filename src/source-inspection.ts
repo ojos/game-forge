@@ -82,10 +82,10 @@ export type SourceRejection = ImportRejection | DeniedTermRejection;
  * 出る値なので、件数と長さの両方に上限を置く。診断に要るのは「何が引っかかったか」で
  * あって全件ではない。
  */
-export const MAX_REPORTED_IMPORTS = 10;
+export const MAX_REPORTED_OFFENDING = 10;
 
 /** 拒否を伝えるときの 1 パスあたりの最大文字数。超えた分は切り詰める。 */
-export const MAX_REPORTED_IMPORT_LENGTH = 120;
+export const MAX_REPORTED_OFFENDING_LENGTH = 120;
 
 /**
  * 経路層が拒否へ写す HTTP ステータス。
@@ -125,10 +125,11 @@ export class GeneratedSourceRejected extends Error {
     readonly reason: SourceRejection,
     readonly offending: readonly string[],
   ) {
-    // message にはソース本文もプロンプトも入れない。**上限を掛けた import パスだけ**を
-    // 載せる。`src/generate.ts` は段が投げた例外の message をログへ出さない方針だが、
+    // message にはソース本文もプロンプトも入れない。**上限を掛けた識別子だけ**を
+    // 載せる（理由によって import パス / 指示の名前 / 語の分類のいずれか。#216）。
+    // `src/generate.ts` は段が投げた例外の message をログへ出さない方針だが、
     // 「何が安全か知っている場所で出す」のはこの段の責務なので、ここで安全な形にする。
-    const listed = summarizeImports(offending);
+    const listed = summarizeOffending(offending);
     super(
       listed.length === 0
         ? `生成されたソースを拒否しました: ${reason}`
@@ -202,16 +203,22 @@ export const inspectGeneratedSource: (generated: GenerationResult) => void =
 export function describeSourceRejection(rejected: GeneratedSourceRejected): {
   readonly error: string;
   readonly reason: SourceRejection;
-  readonly imports: readonly string[];
+  readonly offending: readonly string[];
 } {
   return {
     error: SOURCE_REJECTED_ERROR,
     reason: rejected.reason,
-    // **`imports` という綴りは変えない。** #38 で中身は「理由ごとの識別子」へ広がった
-    // （8.3 なら語の分類）が、これは公開済みの応答本文のフィールド名であり、改名は
-    // 経路層と `test/generate.test.ts` へ波及する。**綴りの正確さのために外向きの形を
-    // 壊さない**（改名するなら応答の版を分ける話になるので、別 issue で扱う）。
-    imports: summarizeImports(rejected.offending),
+    // **`imports` から `offending` へ改名した**（#216）。#38 で中身が「理由ごとの
+    // 識別子」へ広がり（8.3 なら語の分類）、**名前が中身と合わなくなっていた。**
+    // `imports: ["discriminatory"]` は import パスではないのに、ログや応答を見る人が
+    // 「許可外の import が使われた」と読むおそれがある。
+    //
+    // **版は分けず、両方も出さない。** 応答本文の綴りを変えるので #38 では見送ったが、
+    // 改めて消費側を調べたところ、**この項目を読んでいるのはテストだけだった**
+    // （`public/` にも各ページのモジュールにも読み手がいない）。しかもこれは 422 の
+    // 誤り本文であって成功時の契約ではない。**両方を出すと、誤った名前を残す口実に
+    // なる。** 名前は例外側の `offending` に合わせる（あちらの綴りは変えない）。
+    offending: summarizeOffending(rejected.offending),
   };
 }
 
@@ -222,19 +229,20 @@ export function describeSourceRejection(rejected: GeneratedSourceRejected): {
  * 読まれる。
  *
  * **載るものは理由で変わる**（import パス / 指示の名前 / 8.3 の語の分類）。上限の掛け方は
- * どれでも同じなので、理由ごとに分けない。
+ * どれでも同じなので、理由ごとに分けない。**名前に `import` を含めない**のはそのためで、
+ * 含めると #216 と同じ取り違えを内側で再生産する。
  *
- * @param paths 引っかかったものの識別子
+ * @param offending 引っかかったものの識別子
  * @returns 上限を掛けた一覧
  */
-function summarizeImports(paths: readonly string[]): readonly string[] {
-  const listed = paths
-    .slice(0, MAX_REPORTED_IMPORTS)
-    .map((path) =>
-      [...path].length > MAX_REPORTED_IMPORT_LENGTH
-        ? `${[...path].slice(0, MAX_REPORTED_IMPORT_LENGTH).join('')}…`
-        : path,
+function summarizeOffending(offending: readonly string[]): readonly string[] {
+  const listed = offending
+    .slice(0, MAX_REPORTED_OFFENDING)
+    .map((identifier) =>
+      [...identifier].length > MAX_REPORTED_OFFENDING_LENGTH
+        ? `${[...identifier].slice(0, MAX_REPORTED_OFFENDING_LENGTH).join('')}…`
+        : identifier,
     );
-  const remaining = paths.length - listed.length;
+  const remaining = offending.length - listed.length;
   return remaining > 0 ? [...listed, `…他 ${remaining} 件`] : listed;
 }

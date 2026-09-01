@@ -17,8 +17,8 @@ import type { GenerationResult } from '../src/generation-models.js';
 import { inspectGoImports } from '../src/go-imports.js';
 import {
   GeneratedSourceRejected,
-  MAX_REPORTED_IMPORTS,
-  MAX_REPORTED_IMPORT_LENGTH,
+  MAX_REPORTED_OFFENDING,
+  MAX_REPORTED_OFFENDING_LENGTH,
   SOURCE_REJECTED_ERROR,
   SOURCE_REJECTED_STATUS,
   createSourceInspector,
@@ -232,7 +232,7 @@ describe('経路層へ出す形（追加 acceptance 2）', () => {
     expect(body).toEqual({
       error: SOURCE_REJECTED_ERROR,
       reason: 'not-allowed',
-      imports: ['os/exec'],
+      offending: ['os/exec'],
     });
   });
 
@@ -244,7 +244,7 @@ describe('経路層へ出す形（追加 acceptance 2）', () => {
 
   it('件数に上限を掛け、切り詰めたことを示す', () => {
     const paths = ['os', 'net', 'net/http', 'syscall', 'unsafe', 'embed', 'plugin', 'fmt', 'reflect', 'time', 'bufio', 'bytes', 'io'];
-    expect(paths.length).toBeGreaterThan(MAX_REPORTED_IMPORTS);
+    expect(paths.length).toBeGreaterThan(MAX_REPORTED_OFFENDING);
     const rejected = rejectionOf(
       source(`import (\n${paths.map((path) => `\t"${path}"`).join('\n')}\n)`),
     );
@@ -252,23 +252,23 @@ describe('経路層へ出す形（追加 acceptance 2）', () => {
     expect(rejected.offending).toEqual(paths);
     // 外へ出す形では上限を掛ける。
     const body = describeSourceRejection(rejected);
-    expect(body.imports).toHaveLength(MAX_REPORTED_IMPORTS + 1);
-    expect(body.imports.at(-1)).toContain(`他 ${paths.length - MAX_REPORTED_IMPORTS} 件`);
+    expect(body.offending).toHaveLength(MAX_REPORTED_OFFENDING + 1);
+    expect(body.offending.at(-1)).toContain(`他 ${paths.length - MAX_REPORTED_OFFENDING} 件`);
   });
 
   it('長すぎるパスを切り詰める', () => {
     // import パスは生成物であり、長さはこちらで決まらない。
-    const long = 'x'.repeat(MAX_REPORTED_IMPORT_LENGTH * 3);
+    const long = 'x'.repeat(MAX_REPORTED_OFFENDING_LENGTH * 3);
     const body = describeSourceRejection(rejectionOf(source(`import "${long}"`)));
-    expect(body.imports).toHaveLength(1);
-    expect([...body.imports[0]!]).toHaveLength(MAX_REPORTED_IMPORT_LENGTH + 1);
-    expect(body.imports[0]!.endsWith('…')).toBe(true);
+    expect(body.offending).toHaveLength(1);
+    expect([...body.offending[0]!]).toHaveLength(MAX_REPORTED_OFFENDING_LENGTH + 1);
+    expect(body.offending[0]!.endsWith('…')).toBe(true);
   });
 
   it('上限ちょうどのパスは切り詰めない', () => {
-    const exact = 'y'.repeat(MAX_REPORTED_IMPORT_LENGTH);
+    const exact = 'y'.repeat(MAX_REPORTED_OFFENDING_LENGTH);
     const body = describeSourceRejection(rejectionOf(source(`import "${exact}"`)));
-    expect(body.imports).toEqual([exact]);
+    expect(body.offending).toEqual([exact]);
   });
 });
 
@@ -454,7 +454,7 @@ describe('NG ワードを描画するソースを拒否する（8.3 / #38）', (
     expect(body).toEqual({
       error: SOURCE_REJECTED_ERROR,
       reason: 'denied-term',
-      imports: ['discriminatory'],
+      offending: ['discriminatory'],
     });
   });
 

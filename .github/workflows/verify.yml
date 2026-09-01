@@ -220,6 +220,13 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    # **OIDC のトークンを発行するために要る**（#241）。下の「オーケストレータが古くないか」
+    # が AWS を読むために、GitHub Actions のフェデレーションで役を引き受ける。
+    # **鍵は置かない**（terraform の aws_iam_role.orchestrator_freshness。読み取り専用）。
+    permissions:
+      contents: read
+      id-token: write
+
     # **配備は直列にする。鍵を github.sha にしない。**
     #
     # verify 側の鍵（push はコミットごとに別グループ）は「取り消しも待ちも起こさない」
@@ -236,9 +243,13 @@ jobs:
       cancel-in-progress: false
 
     steps:
-      # verify 側と違い fetch-depth は既定（1）でよい。ここで git に聞くのは
-      # HEAD のハッシュと件名だけで、履歴を遡る検査を持たない。
+      # **2 コミットぶん取る。** ここで git に聞くのは HEAD のハッシュと件名のほかに、
+      # **直前のコミットとの差分**（下の「登録簿に関わる差分か」。#241）である。
+      # **既定（1）だと `git diff HEAD^ HEAD` が「不明なリビジョン」で落ち、配備が
+      # 丸ごと止まる。** verify 側の全履歴までは要らない（1 コミットぶんの差分で足りる）。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -265,6 +276,67 @@ jobs:
             echo "::error::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID が Secrets に設定されていません。登録手順は docs/pages-deploy.md「GitHub Secrets への登録」にあります。"
             exit 1
           fi
+
+      # ── オーケストレータが古くないか（#241）────────────────────────────────
+      #
+      # **2026-09-01、本番の生成が 12 分止まった。** wrangler.toml の GENERATION_MODEL を
+      # 変えて Worker を配ったところ、**配備済みのオーケストレータがその鍵を知らず**、
+      # ペイロードを拒否した。登録簿を足した PR は repo に入っていたが、
+      # **オーケストレータは手動配備で、2.5 時間前のコードのままだった。**
+      #
+      # **検査は既にあった**（scripts/acceptance-remote.sh の check_orchestrator_code）。
+      # 欠けていたのは契機である——外部層は「外部状態の宣言を変更したとき」に回す層で、
+      # wrangler.toml の変更は terraform の宣言変更ではない。**誰も回そうと思わなかった。**
+      # **だから配備の直前という契機へ移す。**
+      #
+      # **登録簿に関わる差分のときだけ走らせる。** 毎回 AWS を読むと、AWS 側の不調で
+      # Worker を配れなくなる——外部の可用性を配備の前提条件へ持ち込まない
+      # （.github/project-ai-rules.md「外部層を単一入口へ含めない理由」と同じ線）。
+      - name: 登録簿に関わる差分か
+        id: registry-diff
+        run: |
+          set -euo pipefail
+          # push(main) の差分。マージコミット 1 つぶんを見る。
+          if git diff --name-only HEAD^ HEAD | grep -qE '^(wrangler\.toml|src/generation-models\.ts)$'; then
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+            echo "登録簿に関わる差分があります。配備の前にオーケストレータの新しさを見ます。"
+          else
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+            echo "登録簿に関わる差分はありません。"
+          fi
+
+      - name: AWS の読み取り権を得る（OIDC）
+        if: steps.registry-diff.outputs.touched == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ORCHESTRATOR_FRESHNESS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: オーケストレータが手元の束と一致すること
+        if: steps.registry-diff.outputs.touched == 'true'
+        env:
+          ORCHESTRATOR_FUNCTION_NAME: ${{ vars.ORCHESTRATOR_FUNCTION_NAME }}
+        run: |
+          set -euo pipefail
+          # **名前を決め打ちしない。** 正本は terraform の local.orchestrator_function_name で、
+          # ここへ写すと宣言を動かした日にずれる。空なら落とす（別の関数を読んで通らない）。
+          name="${ORCHESTRATOR_FUNCTION_NAME}"
+          if [[ -z "$name" ]]; then
+            echo "::error::ORCHESTRATOR_FUNCTION_NAME が空です（terraform の github_actions_variable が配ります）。"
+            exit 1
+          fi
+          bash scripts/bundle-orchestrator.sh
+          local_sha="$(openssl dgst -sha256 -binary dist/orchestrator.zip | base64)"
+          remote_sha="$(aws lambda get-function-configuration \
+            --function-name "$name" --query 'CodeSha256' --output text)"
+          if [[ "$local_sha" != "$remote_sha" ]]; then
+            echo "::error::配備済みのオーケストレータが古いままです。Worker を配ると、生成が静かに止まります（#241）。"
+            echo "  手元: ${local_sha}"
+            echo "  本番: ${remote_sha}"
+            echo "  先に bash scripts/deploy-orchestrator.sh を実行してください（docs/orchestrator.md）。"
+            exit 1
+          fi
+          echo "オーケストレータは手元の束と一致しています（${local_sha}）。"
 
       - name: Deploy to Cloudflare Pages
         env:

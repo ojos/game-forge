@@ -138,6 +138,33 @@ jobs:
           ALLOWED_AUTHOR_EMAILS: ${{ vars.ALLOWED_AUTHOR_EMAILS }}
         run: bash scripts/verify.sh
 
+      # ── 集計の自己検査（#226）────────────────────────────────────────────
+      #
+      # scripts/report-selftest.sh は、運用のための集計（#149 の費用・#166 のビルド
+      # 時間）が「同じ数え方・同じ日の境界」で動くことを、既知の入力に対して確かめる。
+      # **これまで verify.sh にも CI にも入っておらず、誰も回さなければ何も起きな
+      # かった。** #211 で 12 件の検査が増えたときに、それが表面化した。
+      #
+      # **なぜ scripts/acceptance.sh（ローカル層）ではなく、ここなのか。**
+      # 実測で report-selftest.sh は 17 秒、acceptance.sh は 20 秒である。ローカル層へ
+      # 入れると事前ゲートが 20 → 37 秒（+85%）になる。**この検査が守っているのは
+      # 「集計の読み方」であって、反復のたびに壊れる層ではない**——src/ を触っても
+      # 壊れず、壊れるのは usage-report.sh / build-time-report.sh / report-window.sh /
+      # src/quota.ts の境界を動かしたときだけである。17 秒を毎回払う価値は薄い。
+      #
+      # **代わりに「ローカルで緑・CI で赤」が起こりうる。** それは受け入れる
+      # （docs/handoff.md 4 章「PR を出したら gh pr checks を見る」）。
+      #
+      # **verify ジョブの段なので、これが赤いと deploy も起きない**（deploy は
+      # needs: verify）。集計を読み違える状態で本番を進めないという意味では筋が
+      # 通るが、影響は verify.sh の失敗と同じ広さになる。別ジョブにすればそこは
+      # 切れるが、checkout と npm ci をもう一度払うことになるため採らない。
+      #
+      # AWS にも本番 D1 にも触れない（--remote を渡さず、CloudWatch は --events-file
+      # で置き換える）。Secrets も vars も要らないので、fork からの PR でも走る。
+      - name: Report selftest
+        run: bash scripts/report-selftest.sh
+
   # ── 本番への配備（#95）──────────────────────────────────────────────────────
   #
   # **なぜ別ファイル（workflow_run）ではなく、このワークフローのジョブなのか。**

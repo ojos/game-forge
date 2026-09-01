@@ -219,9 +219,42 @@ if grep -n 'process\.env' "$SHOT" >/dev/null 2>&1; then
   fail=1
 fi
 
+# 9. 中断した撮影の検出（#235）が読む定数を、実際に取り出せること。
+#
+#    `scripts/ogp-stale-report.sh` は期限切れの定義（何秒で・どの時刻を起点に）を
+#    **src/ogp.ts から sed で取り出す。** 書き写さないためだが、**取り出す側は綴りに
+#    依存する**——定数を改名すると、あのスクリプトは実行時まで気づけない。
+#
+#    **改名した日にここが赤くなる形にしておく。** 見るのは「取り出せるか」だけで、
+#    値そのものは見ない（値の正本は src/ogp.ts であって、ここに期待値は無い）。
+#
+#    **同じ sed を使う。** 別の綴りで確かめると、この検査が緑でもあちらが空を掴む。
+STALE_REPORT="scripts/ogp-stale-report.sh"
+if [[ -f "$STALE_REPORT" ]]; then
+  stale_after="$(sed -n 's/^export const OGP_STALE_AFTER_SECONDS = \([0-9][0-9]*\);.*/\1/p' "$OGP_TS" | head -1)"
+  since_sql="$(sed -n "s/^export const OGP_CAPTURE_SINCE_SQL = '\(.*\)';.*/\1/p" "$OGP_TS" | head -1)"
+  if require "OGP_STALE_AFTER_SECONDS（$OGP_TS）" "$stale_after" \
+    && require "OGP_CAPTURE_SINCE_SQL（$OGP_TS）" "$since_sql"; then
+    :
+  else
+    echo "[ogp-copies] $STALE_REPORT はこの 2 つを sed で取り出します（書き写していません）。" >&2
+    echo "[ogp-copies] 改名したなら、あちらの sed も同じコミットで直してください。" >&2
+  fi
+  # 取り出した綴りが、実際にあのスクリプトの中の sed と同じであること。
+  # **別々の綴りで確かめると、この検査だけが緑になる。**
+  for needle in 'OGP_STALE_AFTER_SECONDS' 'OGP_CAPTURE_SINCE_SQL'; do
+    if ! grep -qF "$needle" "$STALE_REPORT"; then
+      echo "[ogp-copies] $STALE_REPORT が $needle を参照していません。" >&2
+      echo "[ogp-copies] 定数を読まずに数字を書き写した形になっていないか確かめてください。" >&2
+      fail=1
+    fi
+  done
+fi
+
 if [[ "$fail" -ne 0 ]]; then
   exit 1
 fi
 
 echo "[ogp-copies] 関数名・撮る大きさ・コールバックの綴り・ローダーの合図・待ち時間・環境変数の名前の 6 組が一致しています"
+echo "[ogp-copies] 中断した撮影の検出が読む定数（OGP_STALE_AFTER_SECONDS / OGP_CAPTURE_SINCE_SQL）も取り出せます"
 echo "OGP_COPIES_PASS"

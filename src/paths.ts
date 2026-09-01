@@ -75,6 +75,32 @@ export const PUBLISH_PATH = '/api/publish';
 export const PUBLISH_GAME_ID_FIELD = 'game_id';
 
 /**
+ * 中断したままの OGP 撮影を撮り直す操作（5.4 / #235）。
+ *
+ * 経路を提供するのは `src/ogp-recapture.ts` だが、**作品ページ（`src/work-page.ts`）が
+ * 「撮り直す」のフォームの `action` として同じ綴りを要る。** 一方で
+ * `src/ogp-recapture.ts` は押したあとの戻り先として `workPagePath` を使うため、
+ * どちらかがもう片方から import すると循環参照になる。`PUBLISH_PATH` と同じ理由で
+ * ここへ逃がす。
+ *
+ * **`/api/ogp/callback` と同じパスに畳まない。** あちらは撮影関数が結果を持ってくる
+ * 口で、認証は使い捨てトークンである。こちらは**人が押す口**で、認証はセッションと
+ * 作者の一致である。**認証の相手が違う 2 つを、本文の形で見分けない**
+ * （`RESTORE_PATH` を `REVISE_PATH` から分けたのと同じ理由）。
+ */
+export const OGP_RECAPTURE_PATH = '/api/ogp/recapture';
+
+/**
+ * 撮り直しの対象を指す項目名（フォームの `name` と JSON の鍵の両方）。
+ *
+ * 値は `PUBLISH_GAME_ID_FIELD` と同じ綴りだが、**別の定数にする**（`REVISE_GAME_ID_FIELD`
+ * と同じ扱い）。フォームを書く側と読む側が別モジュールである以上、綴りの正本も
+ * 片方の中には置けず、**別の経路の綴りに相乗りさせると、あちらを変えた日にこちらが
+ * 黙って壊れる。**
+ */
+export const OGP_RECAPTURE_GAME_ID_FIELD = 'game_id';
+
+/**
  * 推敲の操作（5.7 / #192）。
  *
  * 経路を提供するのは `src/revise.ts` だが、**作品ページ（`src/work-page.ts`）が

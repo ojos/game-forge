@@ -131,14 +131,18 @@ aws lambda update-function-code \
 
 ## 4. 本番 D1 のマイグレーション（**忘れると公開そのものが 500 になる**）
 
-`migrations/0009_games_ogp.sql` が `games` へ 3 列足す。**デプロイでは走らない。**
+`migrations/0009_games_ogp.sql` が `games` へ 3 列足し、`migrations/0012_games_ogp_started_at.sql`
+が**撮影を始めた時刻**を 1 列足す（#235。10 章）。**デプロイでは走らない。**
 
 ```bash
 npx wrangler d1 migrations apply DB --remote --env production
 ```
 
 **忘れると、公開の UPDATE ではなく撮影の UPDATE（`ogp_state`）が
-「no such column」で落ちる。** 0002〜0005 を忘れて 16.75 円を捨てた前例がある
+「no such column」で落ちる。** **0012 を忘れても同じ形で落ちる**——`ogp_started_at` を書くのは
+`ogp_state` と同じ 1 本の UPDATE だからである（#235。`src/ogp.ts` の `claimOgpCapture`）。
+**しかも公開そのものは成立したうえで応答が 500 になる**（`games` の行は `published` に
+なっている）。この節の見出しのとおりで、**0009 と 0012 は 1 組として適用すること。** 0002〜0005 を忘れて 16.75 円を捨てた前例がある
 （docs/handoff.md 3 章）。
 
 ## 5. Worker 側に要るもの
@@ -179,7 +183,7 @@ npx wrangler d1 execute DB --remote --env production \
 ```
 
 - `ogp_state='ready'` … 撮れている。`https://app.game-forge.ojos.jp/ogp/<id>.png` が引ける
-- `ogp_state='capturing'` のまま … 撮影が返ってきていない（下記 7 章）
+- `ogp_state='capturing'` のまま … 撮影が返ってきていない。**900 秒を過ぎていれば中断である**（10 章）
 - `ogp_state='failed'` … 撮影関数が「撮れなかった」と言ってきた。ログを見る
 
 ```bash
@@ -204,7 +208,8 @@ X / Slack / Discord はそれぞれ独自にクロールする。**`https://app.
 | 撮る大きさ・待ち時間の受け渡し | 関数は環境変数だけを見る（既定値を持たない）。**宣言が欠けると起動時に落ちる**ので、`terraform apply` の前に `bash scripts/check-ogp-copies.sh` を通すこと |
 | `@sparticuz/chromium` / `puppeteer-core` の版 | **`docker/ogp-shot/package.json` の宣言のままで解決できた**（2026-08-31。`npm install` は無改変で通った） |
 | WebGL | `chromium.setGraphicsMode = true` を明示している。**切れていると真っ黒な画像が「成功」として撮れる。** 1 枚目は正しく描画された（雲・ブロック・自機まで写っている） |
-| `capturing` のまま残った行の撮り直し | **経路が無い。** 関数ごと落ちた場合（OOM・タイムアウト）はコールバックが飛ばない。D1 に痕跡は残るが、進める手段は手作業の UPDATE だけである。**#219 では扱わないと決めた**（9 章の末尾に理由） |
+| ~~`capturing` のまま残った行の撮り直し~~ | **入った**（#235。10 章）。作者が作品ページから撮り直せる。検出は `bash scripts/ogp-stale-report.sh`。**手作業の UPDATE はもう要らない** |
+| `failed` で終わった行の撮り直し | **経路が無い。** #235 が扱ったのは `capturing` のまま残った行だけである。`failed` は「撮ろうとして撮れなかった」ことが分かっている状態で、**同じ作品をもう一度撮れば同じ結果になりうる**（原因が作品側にあるなら、回数を重ねても変わらない）。踏んでから決める |
 | 公開後のタイトル変更 | 無い。題名は生成のプロンプト由来のまま公開される（5.4 は 1 タップを優先している） |
 | CI からのイメージ配備 | 無い。`.github/workflows/deploy-compiler.yml` はビルド関数のイメージだけを扱う |
 
@@ -387,3 +392,62 @@ aws lambda invoke \
   継ぎ目が違う（宣言の値 と 状態機械の回収経路）
 
 **別 issue にする価値はある。** 起票は intake を通すこと。
+
+---
+
+## 10. 中断したままの撮影を回収する（#235）
+
+### 10.1 何が残るのか
+
+**撮影関数は、自分で諦めたときは必ず失敗のコールバックを送る**（`docker/ogp-shot/index.mjs`
+が `png === null` のとき `{"error":"capture-failed"}` を送り、受け側の `failOgpCapture` が
+`failed` へ落とす）。**したがって `capturing` のまま残るのは、送る余地が無かった場合だけ**である。
+
+- Lambda のタイムアウト（60 秒）で切られた
+- メモリ不足などでプロセスごと死んだ
+- コールバックの送信中に切られた
+
+**この 3 つでは D1 に痕跡が残らない。** 経過時間だけが手掛かりになる。
+
+**2026-09-02 の時点で、本番ではまだ 1 件も出ていない**（公開 5 枚はすべて `ready`。9 章）。
+**踏む前に直した形である。**
+
+### 10.2 検出（読み取りのみ）
+
+```bash
+bash scripts/ogp-stale-report.sh              # OGP_STALE_NONE / OGP_STALE_FOUND
+bash scripts/ogp-stale-report.sh --format json
+```
+
+終了コードは **0 = 無い / 1 = 有る / 2 = 判定できなかった**（未認証・道具が無い）。
+**1 と 2 を混ぜない**——「中断が有った」と「調べられなかった」は別である。
+
+閾値（900 秒）と起点の式は **`src/ogp.ts` から取り出している**（書き写していない）。
+定数を改名すると `bash scripts/check-ogp-copies.sh` が赤くなる。
+
+### 10.3 撮り直し（**作者が押す。手作業の UPDATE はしない**）
+
+**口は作品ページにある。** 中断していると、作者にだけ「スクリーンショットを撮り直す」が出る
+（`POST /api/ogp/recapture`。`src/ogp-recapture.ts`）。
+
+```
+作品ページ →「スクリーンショットを撮り直す」→ 掴み直す → Lambda → コールバック → ready
+```
+
+- **二度撮りの関門は緩めていない。** 公開の経路が通るのはいまも `ogp_state is null` の行
+  だけで、撮り直しは**互いに排他なもう 1 本の UPDATE**（`capturing` かつ期限切れ）である
+- **掴み直すとトークンが差し替わる。** 遅れて届いた 1 通目のコールバックは 404 で弾かれ、
+  **R2 も書かれない**（照合は `BUCKET.put` より前にある）
+- **連打しても走るのは 900 秒に 1 回**（掴んだ時点で起点の時刻が動く）
+- **生成の枠は使わない**（LLM を呼ばないので台帳に行が増えない。1 枚 約 0.1 円）
+
+### 10.4 なぜ「自動で回収」ではないのか
+
+| 案 | 採らなかった理由 |
+|---|---|
+| 定期実行（cron）で掃除する | **Pages に `scheduled` は無い**（確定22。このプロジェクトは Workers ではなく Pages である）。口を置く場所そのものが無い |
+| 作品ページを開いたら回収する | **GET が状態を書き換える形にしない**（`src/work-page.ts` の `STALE_AFTER_SECONDS`）。ページを開いた人が行を壊せる |
+| 運用スクリプトから本番 D1 を直接 UPDATE | **関門の SQL が `src/ogp.ts` の外にもう 1 本できる。** #26 が「撮影の権利は 1 本の UPDATE を通った者だけが得る」と決めた形が崩れる |
+
+**9 章の「撮り直さずに測る」は、いまも撮り直しの手段ではない。** ダミートークンでの直接呼び出しは
+コールバックが 404 で弾かれ、画像は保存されない。**あれは「測る」経路である。**

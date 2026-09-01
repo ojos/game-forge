@@ -68,11 +68,26 @@ command -v openssl >/dev/null 2>&1 || {
 check_prerequisites() {
   local missing=0
 
-  # **profile か、環境の資格情報か。** どちらでもよいが、どちらも無ければ落とす。
-  # 実際に踏んだ入口はこちらである（AWS_PROFILE を export し忘れると、既定の
-  # プロファイルには region が無く、NoRegion になる）。
-  if [[ -z "${AWS_PROFILE:-}" && -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
-    echo "[deploy-orchestrator] AWS_PROFILE も AWS_ACCESS_KEY_ID もありません。" >&2
+  # **profile か、環境の資格情報か。どちらか片方に揃える。**
+  #
+  # 実際に踏んだ入口は「どちらも無い」だった（AWS_PROFILE を export し忘れると、既定の
+  # プロファイルには region が無く、NoRegion になる）。**残り 2 つの形も塞ぐ。**
+  #
+  # - **環境の資格情報は 2 つで 1 組である。** AWS_ACCESS_KEY_ID だけでは動かない
+  # - **両方あると環境側が勝つ**（AWS CLI の優先順位）。AWS_PROFILE を書いた本人は
+  #   そのプロファイルで配るつもりでいるのに、**古い環境変数が残っていれば別の
+  #   アカウントへ配る。** 本番へ書く道具でこれを黙って通さない
+  if [[ -n "${AWS_PROFILE:-}" && -n "${AWS_ACCESS_KEY_ID:-}" ]]; then
+    echo "[deploy-orchestrator] AWS_PROFILE と AWS_ACCESS_KEY_ID の両方があります。" >&2
+    echo "[deploy-orchestrator] **環境変数のほうが勝つ**ので、AWS_PROFILE は使われません。" >&2
+    echo "[deploy-orchestrator] 対処: どちらか片方に揃える（unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY）" >&2
+    missing=1
+  elif [[ -n "${AWS_ACCESS_KEY_ID:-}" && -z "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+    echo "[deploy-orchestrator] AWS_ACCESS_KEY_ID はありますが AWS_SECRET_ACCESS_KEY がありません。" >&2
+    echo "[deploy-orchestrator] **環境の資格情報は 2 つで 1 組です。**" >&2
+    missing=1
+  elif [[ -z "${AWS_PROFILE:-}" && -z "${AWS_ACCESS_KEY_ID:-}" ]]; then
+    echo "[deploy-orchestrator] AWS_PROFILE も環境の資格情報もありません。" >&2
     echo "[deploy-orchestrator] 対処: export AWS_PROFILE=game-forge-prod" >&2
     missing=1
   fi

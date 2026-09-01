@@ -419,6 +419,72 @@ else
   echo "  ok   過去の完走を打ち切りと呼んでいない"
 fi
 
+# ── 7. A/B の読み出しが、既知の行に対して期待どおりに出ること（#238）──────────
+#
+# **`effortExperimentTotals` は長らくテストからしか呼ばれていなかった**（#238）。
+# `scripts/effort-ab-report.sh` がその集計を本番の台帳へ向けて回す道具で、ここでは
+# **本番にも認証にも触れずに**（`--rows-file`）、既知の行に対する出力を見る。
+#
+# **集計そのものは検査していない**（それは test/cost-ledger.test.ts が持つ）。
+# ここが見るのは**読み出しの経路**——行の詰め替え、D1 の形をした覆い、束ね方である。
+echo "[selftest] A/B の読み出しが既知の行に対して期待どおりに出ること（#238）"
+
+ab_rows="${SANDBOX}/ab-rows.json"
+# high 3 本（全部成功・出力が長い）/ medium 3 本（1 本は succeeded=0）。
+# **prompt は番号である**（本番から取り出すときも dense_rank へ置き換える。8.2）。
+cat >"$ab_rows" <<'ABROWS'
+{"generations":[
+ {"id":"g1","model":"sonnet-4-6-high","effort":"high","input_tokens":1100,"output_tokens":6000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cost_jpy":20.0,"succeeded":1,"created_at":1788192000,"prompt":1},
+ {"id":"g2","model":"sonnet-4-6-high","effort":"high","input_tokens":1100,"output_tokens":6200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cost_jpy":21.0,"succeeded":1,"created_at":1788192600,"prompt":2},
+ {"id":"g3","model":"sonnet-4-6-high","effort":"high","input_tokens":1100,"output_tokens":5800,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cost_jpy":19.0,"succeeded":1,"created_at":1788193200,"prompt":3},
+ {"id":"g4","model":"sonnet-4-6-medium","effort":"medium","input_tokens":1100,"output_tokens":4000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cost_jpy":14.0,"succeeded":1,"created_at":1788193800,"prompt":1},
+ {"id":"g5","model":"sonnet-4-6-medium","effort":"medium","input_tokens":1100,"output_tokens":4200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cost_jpy":15.0,"succeeded":1,"created_at":1788194400,"prompt":2},
+ {"id":"g6","model":"sonnet-4-6-medium","effort":"medium","input_tokens":1100,"output_tokens":3800,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cost_jpy":13.0,"succeeded":0,"created_at":1788195000,"prompt":3}
+],"games":[
+ {"id":"w1","generation_state":"ready","generation_error":null,"created_at":1788192100},
+ {"id":"w2","generation_state":"failed","generation_error":"source-rejected","created_at":1788192200}
+]}
+ABROWS
+
+ab_json="$(bash scripts/effort-ab-report.sh --rows-file "$ab_rows" \
+  --from 2026-09-01 --to 2026-09-01 --format json 2>/dev/null)"
+if [[ -z "$ab_json" ]]; then
+  echo "  FAIL A/B の読み出しが何も返しません" >&2
+  failed=1
+else
+  expect_eq "群は 2 つに分かれる" '["sonnet-4-6-high","sonnet-4-6-medium"]' \
+    "$(jq -c '[.groups[].modelKey] | sort' <<<"$ab_json")"
+  expect_eq "high の実コスト" "60" \
+    "$(jq -r '.groups[] | select(.modelKey=="sonnet-4-6-high") | .costJpy' <<<"$ab_json")"
+  expect_eq "medium の実コスト" "42" \
+    "$(jq -r '.groups[] | select(.modelKey=="sonnet-4-6-medium") | .costJpy' <<<"$ab_json")"
+  # **succeeded=0 の 1 本は初回完了に数えない。**
+  expect_eq "high の初回完了" "3" \
+    "$(jq -r '.groups[] | select(.modelKey=="sonnet-4-6-high") | .firstCallCompleted' <<<"$ab_json")"
+  expect_eq "medium の初回完了" "2" \
+    "$(jq -r '.groups[] | select(.modelKey=="sonnet-4-6-medium") | .firstCallCompleted' <<<"$ab_json")"
+  expect_eq "1 呼び出しあたりの出力（high）" "6000" \
+    "$(jq -r '.groups[] | select(.modelKey=="sonnet-4-6-high") | .outputTokensPerCall' <<<"$ab_json")"
+  # **依頼の切り分けが崩れていないこと。** 1 群の中で文面が重なると立つ。
+  expect_eq "曖昧な依頼は 0 件" "0" "$(jq -r '[.groups[].ambiguousJobs] | add' <<<"$ab_json")"
+  expect_eq "作品行の内訳も出る" '{"total":2,"byState":{"failed":1,"ready":1},"byError":{"source-rejected":1}}' \
+    "$(jq -c '.games' <<<"$ab_json")"
+fi
+
+# **本番へ select 以外を送らないこと。**
+#
+# これは**構造の検査**である（実行時ではない）。`d1 execute` を呼ぶ場所が 1 か所だけで、
+# そこが select で始まることを確かめてから送る、という形を見る。**呼び出し場所が増えたら
+# ここが落ちる**ので、guard を通らない経路が黙って増えることは無い。
+ab_calls="$(grep -c 'd1 execute' scripts/effort-ab-report.sh || true)"
+expect_eq "本番を叩く場所は 1 か所だけ" "1" "$ab_calls"
+if grep -Fq 'select で始まらない文は送りません' scripts/effort-ab-report.sh; then
+  echo "  ok   select で始まらない文を送らない guard がある"
+else
+  echo "  FAIL select の guard がありません" >&2
+  failed=1
+fi
+
 if (( failed )); then
   echo "REPORT_SELFTEST_FAIL"
   exit 1

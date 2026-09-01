@@ -162,7 +162,7 @@ export interface OrchestratorDependencies
  * @throws {LedgerNotRecorded} 台帳を記録できなかったとき
  */
 /**
- * 契約に合わないペイポードでも、宛先が読めるなら行を閉じる（#242）。
+ * 契約に合わないペイロードでも、宛先が読めるなら行を閉じる（#242）。
  *
  * # なぜ要るのか
  *

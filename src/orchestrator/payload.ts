@@ -141,18 +141,6 @@ export function buildOrchestratorPayload(
 }
 
 /**
- * ペイロードを検証する（受ける側）。
- *
- * **この関数は例外を投げない**（`src/generate.ts` の `parseGenerateRequest`、
- * `src/generate-callback.ts` の `parseCallbackRequest` と同じ方針）。
- *
- * 未知の項目は**断る**。綴り違いが「既定値で通った」形になると、そのまま LLM を
- * 呼んでしまう。
- *
- * @param value 呼び出しで届いた値
- * @returns 検証を通ったペイロード、または null
- */
-/**
  * ペイロードから**仕事の宛先だけ**を取り出す（#242）。
  *
  * # なぜ全体の検証と分けるのか
@@ -192,6 +180,18 @@ export function identifyOrchestratorJob(
   return { gameId, jobToken };
 }
 
+/**
+ * ペイロードを検証する（受ける側）。
+ *
+ * **この関数は例外を投げない**（`src/generate.ts` の `parseGenerateRequest`、
+ * `src/generate-callback.ts` の `parseCallbackRequest` と同じ方針）。
+ *
+ * 未知の項目は**断る**。綴り違いが「既定値で通った」形になると、そのまま LLM を
+ * 呼んでしまう。
+ *
+ * @param value 呼び出しで届いた値
+ * @returns 検証を通ったペイロード、または null
+ */
 export function parseOrchestratorPayload(value: unknown): OrchestratorPayload | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return null;

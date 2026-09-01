@@ -655,7 +655,8 @@ describe('A/B の集計（#25 acceptance 1）', () => {
    * 新規生成 1 回ぶんの行を書く。
    *
    * **未キャッシュ入力を 1,200 にそろえてある**（4.2 の実測 1,092〜1,444 の範囲）。
-   * これが `BASE_SOURCE_INPUT_TOKEN_CEILING` の上にあることが「新規生成」の判定である。
+   * **合計入力も 1,200** なので `BASE_SOURCE_TOTAL_INPUT_FLOOR` の下にあり、「新規生成」と
+   * 判定される。**キャッシュが当たった新規生成は下の #245 の検査が別に見る。**
    *
    * @param userId 利用者
    * @param arm 群（`high` / `medium`）
@@ -893,8 +894,44 @@ describe('A/B の集計（#25 acceptance 1）', () => {
     expect(revise.costJpy).not.toBeCloseTo(newGeneration.costJpy, 6);
 
     // 分類が崩れていないことを、返ってきた値そのもので確かめられる（谷をまたがない）。
-    expect(newGeneration.minInputTokens).toBeGreaterThan(report.baseSourceInputTokenCeiling);
-    expect(revise.maxInputTokens).toBeLessThanOrEqual(report.baseSourceInputTokenCeiling);
+    // **判定に使っている量（合計入力）を見る**——以前は未キャッシュ入力を見ており、
+    // 判定に使っていない量だったので、全部が片側へ寄る崩れを見逃した（#245）。
+    expect(newGeneration.maxTotalInputTokens).toBeLessThan(report.baseSourceTotalInputFloor);
+    expect(revise.minTotalInputTokens).toBeGreaterThanOrEqual(report.baseSourceTotalInputFloor);
+  });
+
+  it('キャッシュが当たった新規生成を、推敲と間違えない（#245）', async () => {
+    // **2026-09-01 に本番で起きた形をそのまま置く。** システムプロンプト 2,422 が
+    // キャッシュから読まれるようになり、新規生成の未キャッシュ入力が 30〜40 に落ちた。
+    // **旧判定（未キャッシュ入力 <= 200）はこれを「推敲」に分類した。**
+    const userId = await seedUser('ab-cached-new');
+    for (const [index, tokens] of [2_352, 2_421, 3_243].entries()) {
+      await recordGeneration(
+        env,
+        {
+          userId,
+          prompt: `お題 ${index + 1}`,
+          generated: generationOf('sonnet-4-6-high', {
+            inputTokens: 37,
+            outputTokens: tokens,
+            // 1 本目はキャッシュへ書き、以降は読む。**どちらでも合計は同じ**である。
+            cacheReadInputTokens: index === 0 ? 0 : 2_422,
+            cacheWriteInputTokens: index === 0 ? 2_422 : 0,
+          }),
+        },
+        WINDOW_FROM + 20_000 + index * 600,
+      );
+    }
+
+    const report = await effortExperimentTotals(env, WINDOW);
+    const newGeneration = groupOf(report, 'high', false);
+
+    // **3 本とも新規生成の側に入る。** 旧判定では 3 本とも推敲側へ落ちた。
+    expect(newGeneration.calls).toBe(3);
+    expect(report.groups.some((group) => group.withBaseSource)).toBe(false);
+    // 合計入力は 2,459 前後で、境目（4,000）の下にある。
+    expect(newGeneration.maxTotalInputTokens).toBeLessThan(report.baseSourceTotalInputFloor);
+    expect(newGeneration.minTotalInputTokens).toBeGreaterThan(2_000);
   });
 
   it('依頼の切り分けが怪しいときは、そう分かる', async () => {

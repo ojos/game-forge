@@ -926,22 +926,32 @@ ${forkList(view.forks)}${recaptureSection(view)}`;
  */
 function forkList(forks: ForkNeighbors): string {
   const heading = `<p class="gf-forks">このゲームからの改造: ${forks.total} 件</p>`;
-  if (forks.items.length === 0) {
-    return heading;
-  }
-  const items = forks.items
-    .map(
-      (child) =>
-        `<li><a href="${workPagePath(child.id)}">${escapeHtml(child.title)}</a></li>`,
-    )
-    .join('\n');
+
   // **「もっと見る」も「前へ」も素のリンクである**（このモジュール冒頭の「JavaScript を
   // 要求しない」）。次が無ければ出さない——押しても何も起きない導線を出さない
   // （`publishForm` と同じ方針）。
   const more =
-    forks.morePath === null ? '' : `\n<p class="gf-forks-more"><a href="${forks.morePath}">もっと見る</a></p>`;
+    forks.morePath === null
+      ? ''
+      : `\n<p class="gf-forks-more"><a href="${forks.morePath}">もっと見る</a></p>`;
   const back =
-    forks.backPath === null ? '' : `\n<p class="gf-forks-back"><a href="${forks.backPath}">前へ</a></p>`;
+    forks.backPath === null
+      ? ''
+      : `\n<p class="gf-forks-back"><a href="${forks.backPath}">前へ</a></p>`;
+
+  // **条件付きにしてよいのは `<ul>` だけである。** 一覧が空でも頁送りは落とさない
+  // ——落とすと、空の頁を引いた読み手の戻る道が URL の手編集しか無くなる。
+  // 通常この枝へ来るのは総数 0 のとき（どちらのパスも null）だが、**その含意に
+  // 寄りかからない。**
+  if (forks.items.length === 0) {
+    return `${heading}${back}${more}`;
+  }
+
+  const items = forks.items
+    .map(
+      (child) => `<li><a href="${workPagePath(child.id)}">${escapeHtml(child.title)}</a></li>`,
+    )
+    .join('\n');
   return `${heading}
 <ul class="gf-fork-list">
 ${items}
@@ -1434,15 +1444,21 @@ async function forkNeighborsOf(
     return NO_FORKS;
   }
 
-  const items = await listPublishedForks(env, gameId, FORKS_PER_PAGE, offset);
-  const nextOffset = offset + items.length;
-  const previousOffset = Math.max(offset - FORKS_PER_PAGE, 0);
+  // **範囲の外を指す位置は 1 頁目へ倒す。** `?forks=20` を控えたあとに改造が
+  // 取り下げられれば、**同じ URL が空の頁になる**（総数は減る）。空の頁を出して
+  // 戻る道を添えるより、**在るものを出す**ほうがよい。読み手が何かを間違えた
+  // わけでもない。
+  const start = offset < total ? offset : 0;
+
+  const items = await listPublishedForks(env, gameId, FORKS_PER_PAGE, start);
+  const nextOffset = start + items.length;
+  const previousOffset = Math.max(start - FORKS_PER_PAGE, 0);
 
   return {
     total,
     items,
     morePath: nextOffset < total ? forksPagePath(gameId, nextOffset) : null,
-    backPath: offset > 0 ? forksPagePath(gameId, previousOffset) : null,
+    backPath: start > 0 ? forksPagePath(gameId, previousOffset) : null,
   };
 }
 

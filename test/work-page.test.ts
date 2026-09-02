@@ -750,6 +750,24 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     }
   });
 
+  it('範囲の外を指す forks は 1 頁目へ倒す（控えた URL が空の頁にならない）', async () => {
+    // **`?forks=20` を控えたあとに改造が取り下げられれば、総数は減る。** 同じ URL が
+    // 空の頁になり、戻る道が URL の手編集しか無くなる形にしない。
+    const { id } = await seedPublishedWork('out-of-range');
+    const forker = await seedUser('lin-out-of-range-forker');
+    await seedChild(forker, id, { title: '唯一の改造' });
+
+    const body = await (
+      await open(`${workPagePath(id)}?${FORKS_OFFSET_PARAM}=${FORKS_PER_PAGE}`)
+    ).text();
+
+    expect(body).toContain('このゲームからの改造: 1 件');
+    expect(body).toContain('唯一の改造');
+    // 1 頁目なので「前へ」も「もっと見る」も出ない。
+    expect(body).not.toContain('前へ');
+    expect(body).not.toContain('もっと見る');
+  });
+
   it('子の題名を escape する（UGC 由来）', async () => {
     const { id } = await seedPublishedWork('escape-child');
     const forker = await seedUser('lin-escape-forker');

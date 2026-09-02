@@ -132,15 +132,43 @@ async function seedCapturingGame(
  * **時計を進める代わりに行を古くする。** 撮影が 15 分かかるのを待てないので、
  * 「いつ撮り始めたか」のほうを動かす。
  *
+ * **境界を見る検査では `now` を渡し、判定側と同じ時計を使うこと**（#260）。
+ * 既定のまま呼ぶと、ここが引いた「いま」と判定側の「いま」が別の瞬間になり、
+ * **その間に壁時計が 1 秒またぐと境界ちょうどの行が「以上」に該当する。**
+ * 実際に CI をランダムに赤くしていた（コードを 1 バイトも触っていない差分の
+ * ゲートまで落ちた）。**閾値ちょうど・閾値の 1 秒手前を置く呼び出しでは、
+ * 既定に頼らない。**
+ *
+ * 判定が HTTP の経路の中で走る検査（作品ページの描画・撮り直しの POST）には
+ * 時計を渡す口が無い。そちらは {@link WELL_INSIDE_WINDOW_SECONDS} を使い、
+ * **1 秒のずれでは跨げない位置**へ置く。
+ *
  * @param id 作品 id
  * @param secondsAgo 何秒前に始めたことにするか
+ * @param now 現在時刻（UNIX 秒）。判定側と共有する時計
+ * @returns 実際に使った時計（呼び出し側が判定へ渡せるようにする）
  */
-async function ageCapture(id: string, secondsAgo: number): Promise<void> {
-  const now = Math.floor(Date.now() / 1000);
+async function ageCapture(
+  id: string,
+  secondsAgo: number,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<number> {
   await env.DB.prepare('update games set ogp_started_at = ? where id = ?')
     .bind(now - secondsAgo, id)
     .run();
+  return now;
 }
+
+/**
+ * 「まだ期限切れではない」と確実に言える古さ（秒）。
+ *
+ * **`OGP_STALE_AFTER_SECONDS - 1` を使わない。** 1 秒手前に置くと、判定までに
+ * 壁時計が 1 秒進んだだけで閾値に達する（#260）。**時計を渡せる検査は境界
+ * そのものを見るので、渡せない検査まで境界に置く必要は無い。**
+ *
+ * 60 秒にしたのは、遅い CI でも 1 つの `it` がここまで掛からないためである。
+ */
+const WELL_INSIDE_WINDOW_SECONDS = OGP_STALE_AFTER_SECONDS - 60;
 
 /**
  * `games` の撮影まわりを読む。
@@ -263,10 +291,15 @@ describe('中断したままの撮影を検出する（#235 の acceptance 1）'
     const stale = await seedCapturingGame('detect-stale');
 
     // **1 秒足りない行は挙がらない。** 走っている撮影を掴み直さないための境界である。
-    await ageCapture(fresh.id, OGP_STALE_AFTER_SECONDS - 1);
-    await ageCapture(stale.id, OGP_STALE_AFTER_SECONDS);
+    //
+    // **3 つの呼び出しで 1 つの時計を共有する**（#260）。別々に `Date.now()` を
+    // 引くと、その間に秒が繰り上がったときに 899 秒前の行が 900 秒前になり、
+    // **この検査だけがランダムに落ちる。**
+    const now = Math.floor(Date.now() / 1000);
+    await ageCapture(fresh.id, OGP_STALE_AFTER_SECONDS - 1, now);
+    await ageCapture(stale.id, OGP_STALE_AFTER_SECONDS, now);
 
-    const ids = (await listStaleOgpCaptures(env)).map((row) => row.gameId);
+    const ids = (await listStaleOgpCaptures(env, now)).map((row) => row.gameId);
     expect(ids).toContain(stale.id);
     expect(ids).not.toContain(fresh.id);
   });
@@ -284,7 +317,8 @@ describe('中断したままの撮影を検出する（#235 の acceptance 1）'
     const seeded: { id: string; startedAt: number }[] = [];
     for (const age of cases) {
       const game = await seedCapturingGame(`agree-${age}`);
-      await ageCapture(game.id, age);
+      // **`seeded` に積む値と DB に入る値を同じ時計から作る**（#260）。
+      await ageCapture(game.id, age, now);
       seeded.push({ id: game.id, startedAt: now - age });
     }
 
@@ -407,7 +441,10 @@ describe('撮り直しの経路（#235 の acceptance 2）', () => {
 
   it('まだ期限切れでなければ 409（走っている撮影を横から掴まない）', async () => {
     const { userId, id } = await seedCapturingGame('recap-fresh');
-    await ageCapture(id, OGP_STALE_AFTER_SECONDS - 1);
+    // **判定は POST の経路の中で走るので時計を渡せない**（#260）。境界そのものは
+    // 上の「閾値を超えた行だけが挙がる」と「画面の判定と一覧が一致する」が
+    // 決定的に見ているので、ここは**跨げない位置**に置く。
+    await ageCapture(id, WELL_INSIDE_WINDOW_SECONDS);
 
     const jobs: OgpCaptureJob[] = [];
     expect((await postRecapture(id, await sessionCookie(userId), jobs)).status).toBe(409);
@@ -487,7 +524,8 @@ describe('作品ページに出る口（#235 の「気づく経路」）', () =>
     const cookie = await sessionCookie(userId);
 
     // まだ走っているうちは出さない（押しても何も起きないボタンを出さない）。
-    await ageCapture(id, OGP_STALE_AFTER_SECONDS - 1);
+    // **描画の中で判定が走るので時計を渡せない**（#260。上の 409 の検査と同じ）。
+    await ageCapture(id, WELL_INSIDE_WINDOW_SECONDS);
     expect(await workPage(id, cookie)).not.toContain(OGP_RECAPTURE_PATH);
 
     await ageCapture(id, OGP_STALE_AFTER_SECONDS);

@@ -292,28 +292,54 @@ jobs:
       # **登録簿に関わる差分のときだけ走らせる。** 毎回 AWS を読むと、AWS 側の不調で
       # Worker を配れなくなる——外部の可用性を配備の前提条件へ持ち込まない
       # （.github/project-ai-rules.md「外部層を単一入口へ含めない理由」と同じ線）。
-      - name: 登録簿に関わる差分か
-        id: registry-diff
+      - name: オーケストレータの束が変わったか
+        id: orchestrator-diff
         run: |
           set -euo pipefail
-          # push(main) の差分。マージコミット 1 つぶんを見る。
-          if git diff --name-only HEAD^ HEAD | grep -qE '^(wrangler\.toml|src/generation-models\.ts)$'; then
-            echo "touched=true" >> "$GITHUB_OUTPUT"
-            echo "登録簿に関わる差分があります。配備の前にオーケストレータの新しさを見ます。"
+          # **ファイル名の一覧では決めない**（#263）。以前はここが `wrangler.toml` と
+          # `src/generation-models.ts` の 2 本を見ていたが、2026-09-02 に #258 が
+          # `src/orchestrator/payload.ts` でペイロードの版 3 を足したとき、一覧に無いので
+          # **関門は 1 度も起動せず、送り側だけが版 3 を知っている窓が約 25 分開いた**
+          # （実害は 0 件。窓の間の生成が 0 行だったという偶然による）。
+          #
+          # **一覧を広げても同じことが起きる。** 束には `src/orchestrator/**` のほかに
+          # `src/bedrock.ts` や `src/generate.ts` が入っており、次に増えた依存を書き忘れた
+          # 日に同じ窓がまた開く。**束そのものを 2 回作って比べれば、一覧を維持する場所が
+          # 消える**（esbuild は 15ms）。
+          # **`if` の条件式へ直に置かない。** 条件式の中では `set -e` が効かないので、
+          # スクリプトが `exit 1`（作業ツリーが汚れている・比較元を解決できない・束を
+          # 作れない）で落ちても `else` へ落ち、**関門が黙って外れる。** スクリプト自身が
+          # 「判定できないことを『変わっていない』に倒さない」と定めている形そのものになる。
+          #
+          # **`set -e` の細かい挙動に頼らず、明示的に受ける。** 代入で受ければ `set -e` は
+          # 効くが、条件式や `&&` の左辺へ移した日に黙って無効化される種類の依存である。
+          if ! out="$(bash scripts/orchestrator-bundle-changed.sh)"; then
+            echo "::error::束が変わったかを判定できませんでした（判定スクリプトが失敗）。"
+            exit 1
+          fi
+          echo "$out"
+          # **どちらの合図も出ていないときは落とす。** 「CHANGED でなければ UNCHANGED」と
+          # 読むと、合図の綴りを変えた日に関門が黙って外れる。
+          if printf '%s\n' "$out" | grep -q '^ORCHESTRATOR_BUNDLE_CHANGED$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "オーケストレータの束が変わりました。配備の前に新しさを見ます。"
+          elif printf '%s\n' "$out" | grep -q '^ORCHESTRATOR_BUNDLE_UNCHANGED$'; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "オーケストレータの束は変わっていません。AWS は読みません。"
           else
-            echo "touched=false" >> "$GITHUB_OUTPUT"
-            echo "登録簿に関わる差分はありません。"
+            echo "::error::束が変わったかを判定できませんでした（合図がありません）。"
+            exit 1
           fi
 
       - name: AWS の読み取り権を得る（OIDC）
-        if: steps.registry-diff.outputs.touched == 'true'
+        if: steps.orchestrator-diff.outputs.changed == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ORCHESTRATOR_FRESHNESS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: オーケストレータが手元の束と一致すること
-        if: steps.registry-diff.outputs.touched == 'true'
+        if: steps.orchestrator-diff.outputs.changed == 'true'
         env:
           ORCHESTRATOR_FUNCTION_NAME: ${{ vars.ORCHESTRATOR_FUNCTION_NAME }}
         run: |

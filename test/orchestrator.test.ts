@@ -335,6 +335,15 @@ describe('整理パスの版（確定18 の条件 2〜4 / M5-2 / #33）', () => 
     ).toBeNull();
   });
 
+  it('版 3 を名乗って上限内のソースを載せた本文は断る', () => {
+    // **版 2 の規則と同じ**（「版 2 を名乗って `baseSource` が無い本文は断る」）。
+    // 版が能力の宣言である以上、**名乗りと中身が食い違う本文を解釈しない。**
+    // `buildOrchestratorPayload` は整理パスのときしか版 3 を作らないので、そうでない
+    // 版 3 が届いたら送り側の不具合である。
+    expect(parseOrchestratorPayload(payloadOf(3, IN_LIMIT_SOURCE))).toBeNull();
+    expect(parseOrchestratorPayload(payloadOf(3, 'x'.repeat(100)))).toBeNull();
+  });
+
   it('版 1 は元ソースを載せられないままである', () => {
     expect(parseOrchestratorPayload(payloadOf(1, IN_LIMIT_SOURCE))).toBeNull();
   });

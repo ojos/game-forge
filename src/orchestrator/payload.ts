@@ -301,9 +301,25 @@ export function parseOrchestratorPayload(value: unknown): OrchestratorPayload | 
   // **版 2 の条件は 1 文字も緩めていない。** 緩めると、整理を頼んでいない生成が上限超の
   // ソースを土台にでき、**5.3 の上限そのものが消える。** 版を名乗ることが、その 1 回に
   // 限って上限を外す唯一の口である。
+  const bytes = new TextEncoder().encode(baseSource).length;
   const limit =
     version === ORCHESTRATOR_PAYLOAD_VERSION_WITH_TIDY ? TIDY_MAX_SOURCE_BYTES : MAX_SOURCE_BYTES;
-  if (new TextEncoder().encode(baseSource).length > limit) {
+  if (bytes > limit) {
+    return null;
+  }
+  // **版 3 を名乗って上限内のソースを載せた本文も断る**（#258 のレビュー指摘）。
+  //
+  // **版 2 の規則と同じである**——「版 2 を名乗って `baseSource` が無い本文は断る。
+  // 版が能力の宣言である以上、名乗りと中身が食い違う本文を『たぶん新規生成だろう』と
+  // 解釈しない」。版 3 は「整理パスである」という宣言なので、整理パスでない中身を
+  // 伴った版 3 は同じ食い違いである。
+  //
+  // **上限そのものが危うかったわけではない。** 振る舞いを決めるのは名乗りではなく
+  // 元ソースの大きさ（`isTidyPass`）で、上限内のソースを積んだ版 3 は通しても通常の
+  // フォークとして走る。**断る理由は、送る側と受ける側の契約を厳密に保つことである**
+  // ——`buildOrchestratorPayload` は整理パスのときしか版 3 を作らないので、そうでない
+  // 版 3 が届いたら**それは送り側の不具合か、こちらが作っていない本文**である。
+  if (version === ORCHESTRATOR_PAYLOAD_VERSION_WITH_TIDY && bytes <= MAX_SOURCE_BYTES) {
     return null;
   }
   return {

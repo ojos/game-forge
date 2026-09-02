@@ -91,6 +91,7 @@ import type { SizeConsent } from './source-size.js';
 import {
   MAX_SOURCE_BYTES,
   SOURCE_SIZE_WARNING_BYTES,
+  TIDY_MAX_SOURCE_BYTES,
   decideForkSizeAction,
   measureSourceBytes,
 } from './source-size.js';
@@ -170,8 +171,17 @@ function refusal(heading: string, body: string, status: number): Response {
  */
 export const FORK_SIZE_CONSENT_FIELD = 'size_consent';
 
-/** {@link FORK_SIZE_CONSENT_FIELD} の値のうち「このまま改造する」を意味するもの。 */
+/** {@link FORK_SIZE_CONSENT_FIELD} の値のうち「このまま改造する」を意味するもの（条件 1）。 */
 export const FORK_SIZE_CONSENT_PROCEED = 'proceed';
+
+/**
+ * {@link FORK_SIZE_CONSENT_FIELD} の値のうち「整理して続ける」を意味するもの（**条件 2**）。
+ *
+ * **`proceed` と別の綴りにする。** 確定18 の条件 2 は「整理は自動実行せず、作者が
+ * 明示的に選ぶ」ことを求めており、事前警告（条件 1）で押した「このまま改造する」を
+ * 整理への同意として流用すると、**作者が押していない操作でソースが書き換わる。**
+ */
+export const FORK_SIZE_CONSENT_TIDY = 'tidy';
 
 /**
  * 3 桁ごとに区切った数字にする。
@@ -228,6 +238,48 @@ function sizeWarningPage(parentId: string, prompt: string, bytes: number): Respo
   <input type="hidden" name="${FORK_PROMPT_FIELD}" value="${escapeHtml(prompt)}">
   <input type="hidden" name="${FORK_SIZE_CONSENT_FIELD}" value="${FORK_SIZE_CONSENT_PROCEED}">
   <button type="submit">このまま改造する</button>
+</form>
+<p><a href="${workPagePath(parentId)}">やめる</a></p>`,
+    SIZE_WARNING_STATUS,
+  );
+}
+
+/**
+ * 整理するかどうかを問う画面を返す（**確定18 の条件 2**）。
+ *
+ * **問いであって、断りではない。** 5.3 は「拒否のみは採らない」と定め、その理由を
+ * 10.3 の撤退条件（「3 世代以上の系統が 1 本も出ていない」）に置いている——システムが
+ * 構造的に世代数を制限すると、自分で立てた撤退条件を自分の実装で不成立にしうる。
+ *
+ * **費用を先に言う。** 条件 2 の文言は「整理して続けますか（生成枠を 1 回使います）」で、
+ * 理由欄は「日次枠の 1 回を、作者の知らないうちに消費させない」である。**押す前に
+ * 何を失うかが見えていなければ、明示的に選んだことにならない。**
+ *
+ * **整理すると別物になりうることも言う。** 5.3 は「整理したことは作者に開示する。
+ * 黙って別物を出すのは体験として悪い」と定めている（6.2 と同じ原則）。
+ *
+ * @param parentId 親の作品 id
+ * @param prompt 作者が入力した差分プロンプト
+ * @param bytes 親ソースのバイト数
+ * @returns レスポンス
+ */
+function tidyOfferPage(parentId: string, prompt: string, bytes: number): Response {
+  return html(
+    `<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>整理してから改造しますか - Game Forge</title>
+<h1>整理してから改造しますか</h1>
+<p>元のソースは ${groupDigits(bytes)} バイトあり、改造できる上限 ${groupDigits(MAX_SOURCE_BYTES)} バイトを超えています。</p>
+<p>このまま改造することはできませんが、<strong>いったん整理して ${groupDigits(MAX_SOURCE_BYTES)} バイト以内に収めてから</strong>、指示のとおりに改造できます。</p>
+<p><strong>整理して続けますか（生成枠を 1 回使います）。</strong></p>
+<p>整理では、重なった処理をまとめ、遊びの中心から遠い要素を削ります。<strong>元の作品は変わりませんが、出来上がるゲームは元と細かい部分が変わることがあります。</strong>できあがったものを試してから公開してください。</p>
+<form method="post" action="${FORK_PATH}">
+  <input type="hidden" name="${FORK_PARENT_ID_FIELD}" value="${escapeHtml(parentId)}">
+  <input type="hidden" name="${FORK_PROMPT_FIELD}" value="${escapeHtml(prompt)}">
+  <input type="hidden" name="${FORK_SIZE_CONSENT_FIELD}" value="${FORK_SIZE_CONSENT_TIDY}">
+  <button type="submit">整理して改造する</button>
 </form>
 <p><a href="${workPagePath(parentId)}">やめる</a></p>`,
     SIZE_WARNING_STATUS,
@@ -342,11 +394,26 @@ async function parseForkInput(request: Request): Promise<ForkInput | null> {
   }
   // **知らない値は同意として扱わない。** 綴りが違うものを黙って `proceed` へ寄せると、
   // 事前警告が「送りさえすれば飛ばせる関門」になる。
-  return {
-    parentId,
-    prompt: trimmed,
-    consent: consent === FORK_SIZE_CONSENT_PROCEED ? 'proceed' : 'none',
-  };
+  return { parentId, prompt: trimmed, consent: readConsent(consent) };
+}
+
+/**
+ * 同意の綴りを {@link SizeConsent} へ落とす。
+ *
+ * **表に無い綴りはすべて `none` である。** 既定を同意側へ倒すと、項目を付け足せる者が
+ * 関門を飛ばせる。
+ *
+ * @param value 本文から読んだ値
+ * @returns 同意
+ */
+function readConsent(value: string | null): SizeConsent {
+  if (value === FORK_SIZE_CONSENT_PROCEED) {
+    return 'proceed';
+  }
+  if (value === FORK_SIZE_CONSENT_TIDY) {
+    return 'tidy';
+  }
+  return 'none';
 }
 
 /**
@@ -409,7 +476,13 @@ async function readParentSource(
     return { ok: false, reason: 'source-missing' };
   }
 
-  return await readStoredSource(env, row.source_key);
+  // **整理パスの上限まで読む**（確定18 の条件 2 / #33）。30KB で断ってしまうと、
+  // 5.3 が定めた「作者の選択で整理させる」経路へ入る前に落ちる——**断る側が、
+  // 断らない選択肢を作者へ見せる材料まで捨てていた。**
+  //
+  // **上限が消えたわけではない。** 帯の判定は `decideForkSizeAction` が行い、
+  // 30KB 超はそのままでは通らない（整理を選んで初めて通る）。
+  return await readStoredSource(env, row.source_key, TIDY_MAX_SOURCE_BYTES);
 }
 
 /**
@@ -468,7 +541,8 @@ async function handleFork(
   // 小さい。**上限そのものは超えていない**（超えていれば上で断られている）ので、
   // ここへ来る文字列の大きさには天井がある。
   const bytes = measureSourceBytes(base.source);
-  if (decideForkSizeAction({ bytes, consent: input.consent }) === 'warn') {
+  const action = decideForkSizeAction({ bytes, consent: input.consent });
+  if (action === 'warn') {
     return wantsHtml(request)
       ? sizeWarningPage(input.parentId, input.prompt, bytes)
       : json(
@@ -481,10 +555,59 @@ async function handleFork(
           SIZE_WARNING_STATUS,
         );
   }
+  // 確定18 の条件 2。**整理は自動実行せず、作者が明示的に選ぶ。**
+  if (action === 'offer-tidy') {
+    return wantsHtml(request)
+      ? tidyOfferPage(input.parentId, input.prompt, bytes)
+      : json(
+          {
+            error: 'source-too-large',
+            bytes,
+            limit: MAX_SOURCE_BYTES,
+            tidyLimit: TIDY_MAX_SOURCE_BYTES,
+            // **`error` は変えない。** 整理を知らない相手（既存の呼び出し側）は
+            // 今までどおり「大きすぎて断られた」と読める。**知っている相手だけが
+            // この項目を見て問いへ進む**ので、古い側が黙って整理を始めることは無い。
+            tidyConsent: FORK_SIZE_CONSENT_TIDY,
+          },
+          REFUSALS['source-too-large'].status,
+        );
+  }
+  // **残るのは `proceed` と `tidy` だけである。** それ以外は断る側へ倒す。
+  //
+  // **`refuse`（整理しても収まらない大きさ）は、いまここへは届かない**
+  // ——`readParentSource` が同じ上限で先に断つためである。**それでも書いておく**のは、
+  // 読み取り側の上限を将来ゆるめたときに、**判定だけが正しくて経路が素通りする**形を
+  // 作らないためで、`src/source-store.ts` が保存時の大きさと本文の両方を測るのと
+  // 同じ考え方である（同じはずだから省く、をしない）。知らない値が増えたときも
+  // ここで止まる。
+  if (action !== 'proceed' && action !== 'tidy') {
+    const refused = REFUSALS['source-too-large'];
+    return wantsHtml(request)
+      ? refusal(refused.heading, refused.body, refused.status)
+      : json({ error: 'source-too-large', bytes, limit: MAX_SOURCE_BYTES }, refused.status);
+  }
 
   // **ここで初めて行ができる。** 5.3 の「新しい作品行が生まれる」であり、
   // 5.7 の推敲と分かれる唯一の点である（`src/games.ts` の `createForkedGame`）。
   const child = await createForkedGame(env, session.userId, { prompt: input.prompt }, input.parentId);
+
+  // **整理パスを通ったことを残す**（5.3「整理したことは作者に開示する」/
+  // `migrations/0014_source_tidy.sql`）。
+  //
+  // **起動より先に書く。** あとに置くと、起動が落ちたときに「整理を頼まれた行」だと
+  // 分からないまま `failed` が残る。**この事実は通した瞬間にしか観測できず、完成後の
+  // ソースを見ても分からない**（台帳が持つのは利用者のプロンプトで、整理の指示は
+  // `withTidyInstruction` の中だけに在る）。
+  //
+  // **`createForkedGame` へ足さずに UPDATE で書く。** `src/games.ts` は本 issue の
+  // 所有外である（#34 / #35 が持っている）。**列を増やす側と行を作る側を同じ PR で
+  // 触らないための形**であって、望ましい形ではない——#33 の報告に書いた。
+  if (action === 'tidy') {
+    await env.DB.prepare('update games set tidy_requested_at = ? where id = ?')
+      .bind(Math.floor(Date.now() / 1000), child.id)
+      .run();
+  }
 
   const job: GenerationJob = {
     gameId: child.id,

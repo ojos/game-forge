@@ -7,6 +7,8 @@ import { MAX_PROMPT_LENGTH } from '../src/generate.js';
 import { DEFAULT_GENERATION_MODEL_KEY } from '../src/generation-models.js';
 import {
   ORCHESTRATOR_PAYLOAD_VERSION,
+  ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE,
+  ORCHESTRATOR_PAYLOAD_VERSION_WITH_TIDY,
   buildOrchestratorPayload,
   parseOrchestratorPayload,
 } from '../src/orchestrator/payload.js';
@@ -28,6 +30,7 @@ import {
 } from '../src/orchestrator/handler.js';
 import { MAX_BUILD_INVOCATIONS_ON_TIMEOUT } from '../src/build-client.js';
 import { recordBuildCache, sourceCacheKey } from '../src/build-cache.js';
+import { MAX_SOURCE_BYTES, TIDY_MAX_SOURCE_BYTES } from '../src/source-size.js';
 import { applySchema } from './helpers/schema.js';
 
 /** 生成の段が返す Go ソース（許可パッケージ検査を通る最小の形）。 */
@@ -282,6 +285,108 @@ describe('ペイロードの契約（#160）', () => {
     expect(parseOrchestratorPayload({ ...base, prompt: 'あ'.repeat(MAX_PROMPT_LENGTH + 1) })).toBeNull();
     expect(parseOrchestratorPayload(null)).toBeNull();
     expect(parseOrchestratorPayload([base])).toBeNull();
+  });
+});
+
+/** 上限内の元ソース（版 2 の帯）。 */
+const IN_LIMIT_SOURCE = 'x'.repeat(MAX_SOURCE_BYTES);
+
+/** 上限を 1 バイト超えた元ソース（整理パス＝版 3 の帯）。 */
+const OVER_LIMIT_SOURCE = 'x'.repeat(MAX_SOURCE_BYTES + 1);
+
+describe('整理パスの版（確定18 の条件 2〜4 / M5-2 / #33）', () => {
+  /**
+   * 版と `baseSource` を指定して本文を組み立てる。
+   *
+   * @param version 名乗る版
+   * @param baseSource 載せる元ソース
+   * @returns 受け側へ渡す本文
+   */
+  function payloadOf(version: number, baseSource: string): Record<string, unknown> {
+    return {
+      version,
+      gameId: 'g',
+      jobToken: 't',
+      prompt: 'p',
+      modelKey: DEFAULT_GENERATION_MODEL_KEY,
+      baseSource,
+    };
+  }
+
+  it('版 2 の受け入れ条件は 1 つも変わっていない', () => {
+    // **配備順の事故を防ぐ要である**（`docs/handoff.md` 1 章。2026-09-01 に本番の生成が
+    // 12 分止まった）。版 3 を足したことで版 2 の判定が動くと、**整理と関係の無い
+    // 推敲とフォークが全部落ちる。**
+    expect(parseOrchestratorPayload(payloadOf(2, IN_LIMIT_SOURCE))).not.toBeNull();
+    expect(parseOrchestratorPayload(payloadOf(2, OVER_LIMIT_SOURCE))).toBeNull();
+  });
+
+  it('版 3 だけが上限超の元ソースを載せられる', () => {
+    // **上限を無条件に緩めない。** 緩めると 5.3 の上限そのものが消える。
+    expect(parseOrchestratorPayload(payloadOf(3, OVER_LIMIT_SOURCE))).not.toBeNull();
+  });
+
+  it('版 3 でも整理の上限（30KB の 2 倍）は超えられない', () => {
+    expect(
+      parseOrchestratorPayload(payloadOf(3, 'x'.repeat(TIDY_MAX_SOURCE_BYTES))),
+    ).not.toBeNull();
+    expect(
+      parseOrchestratorPayload(payloadOf(3, 'x'.repeat(TIDY_MAX_SOURCE_BYTES + 1))),
+    ).toBeNull();
+  });
+
+  it('版 3 を名乗って上限内のソースを載せた本文は断る', () => {
+    // **版 2 の規則と同じ**（「版 2 を名乗って `baseSource` が無い本文は断る」）。
+    // 版が能力の宣言である以上、**名乗りと中身が食い違う本文を解釈しない。**
+    // `buildOrchestratorPayload` は整理パスのときしか版 3 を作らないので、そうでない
+    // 版 3 が届いたら送り側の不具合である。
+    expect(parseOrchestratorPayload(payloadOf(3, IN_LIMIT_SOURCE))).toBeNull();
+    expect(parseOrchestratorPayload(payloadOf(3, 'x'.repeat(100)))).toBeNull();
+  });
+
+  it('版 1 は元ソースを載せられないままである', () => {
+    expect(parseOrchestratorPayload(payloadOf(1, IN_LIMIT_SOURCE))).toBeNull();
+  });
+
+  it('送る側は、整理パスのときだけ版 3 を名乗る', () => {
+    const plain = buildOrchestratorPayload(
+      { gameId: 'g', jobToken: 't', request: { prompt: 'p', baseSource: IN_LIMIT_SOURCE } },
+      DEFAULT_GENERATION_MODEL_KEY,
+    );
+    const tidy = buildOrchestratorPayload(
+      { gameId: 'g', jobToken: 't', request: { prompt: 'p', baseSource: OVER_LIMIT_SOURCE } },
+      DEFAULT_GENERATION_MODEL_KEY,
+    );
+    expect(plain.version).toBe(ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE);
+    expect(tidy.version).toBe(ORCHESTRATOR_PAYLOAD_VERSION_WITH_TIDY);
+  });
+
+  it('組み立てた版 3 の本文は、そのまま受け側を通る（往復）', () => {
+    // **送る側と受ける側が別々に「整理かどうか」を決めていないこと。** 片方だけが
+    // そう思っている本文が作れると、上限超のソースが版 2 として送られて必ず落ちる。
+    const payload = buildOrchestratorPayload(
+      { gameId: 'g', jobToken: 't', request: { prompt: 'p', baseSource: OVER_LIMIT_SOURCE } },
+      DEFAULT_GENERATION_MODEL_KEY,
+    );
+    expect(parseOrchestratorPayload(JSON.parse(JSON.stringify(payload)))).toEqual(payload);
+  });
+
+  it('版 3 は項目を増やしていない（tidy の印を本文へ足さない）', () => {
+    // 整理かどうかは**元ソースの大きさ**が決める（`src/source-size.ts` の `isTidyPass`）。
+    // 印を別項目で運ぶと、`src/orchestrator/handler.ts` が組み直す `GenerationJob` を
+    // 通らず、**エッジでは効いてオーケストレータでは黙って消える。**
+    const payload = buildOrchestratorPayload(
+      { gameId: 'g', jobToken: 't', request: { prompt: 'p', baseSource: OVER_LIMIT_SOURCE } },
+      DEFAULT_GENERATION_MODEL_KEY,
+    );
+    expect(Object.keys(payload).sort()).toEqual([
+      'baseSource',
+      'gameId',
+      'jobToken',
+      'modelKey',
+      'prompt',
+      'version',
+    ]);
   });
 });
 

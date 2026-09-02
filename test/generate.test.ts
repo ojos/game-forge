@@ -11,11 +11,13 @@ import {
   notImplementedPipeline,
   runJobInline,
   startGeneration,
+  withTidyInstruction,
 } from '../src/generate.js';
 import { startJobOnLambda } from '../src/orchestrator/start-job.js';
 import { failGame } from '../src/games.js';
 import type { GenerationPipeline } from '../src/generate.js';
 import { workPagePath } from '../src/work-page.js';
+import type { GenerationResult } from '../src/generation-models.js';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
   findGenerationModel,
@@ -43,6 +45,7 @@ import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, buildSessionCookie, signSession } from '../src/session.js';
 import { GeneratedSourceRejected } from '../src/source-inspection.js';
+import { MAX_SOURCE_BYTES, TIDY_ATTEMPTS } from '../src/source-size.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -210,6 +213,9 @@ beforeAll(async () => {
     'user-retry-3',
     'user-retry-4',
     'user-retry-5',
+    'user-tidy-1',
+    'user-tidy-2',
+    'user-tidy-3',
   ]);
 });
 
@@ -647,6 +653,167 @@ describe('生成の段が Bedrock へ結線されている（#83）', () => {
       // 見えない月の行だが、storage を共有する経路が将来できたときに効く。
       await env.DB.prepare('delete from generations where user_id = ?').bind(userId).run();
     }
+  });
+});
+
+describe('整理パスは 1 回で打ち切る（確定18 の条件 3・4 / M5-2 / #33）', () => {
+  /** 上限を 1 バイト超えた元ソース（整理パスの入口）。 */
+  const OVER_LIMIT = 'x'.repeat(MAX_SOURCE_BYTES + 1);
+
+  /** 上限に収まった元ソース（通常のフォーク）。 */
+  const IN_LIMIT = 'x'.repeat(MAX_SOURCE_BYTES);
+
+  /**
+   * 常にビルドが失敗するパイプラインと、生成の呼び出し記録。
+   *
+   * @returns 生成へ渡された `prompt` の記録と、パイプライン
+   */
+  function alwaysFailingBuild(): { prompts: string[]; pipeline: GenerationPipeline } {
+    const base = recordingPipeline();
+    const prompts: string[] = [];
+    return {
+      prompts,
+      pipeline: {
+        ...base.pipeline,
+        generateSource: async (env, request, retry) => {
+          prompts.push(request.prompt);
+          return await base.pipeline.generateSource(env, request, retry);
+        },
+        build: async () => {
+          throw new BuildRejected('build', './main.go:1:1: boom');
+        },
+      },
+    };
+  }
+
+  afterAll(async () => {
+    await env.DB.prepare("delete from generations where user_id like 'user-tidy-%'").run();
+  });
+
+  it('整理パスはコンパイルに失敗しても 1 回で終わる（条件 4）', async () => {
+    // 条件 4 の理由欄は「リトライが乗ると最悪 3 回分の枠を消費する。失敗の連鎖を
+    // 切る」。整理パスは 1 回でも 26〜41 円の見積もりなので、3 回に回すと
+    // 1 度の操作で 120 円前後を失う。
+    const { prompts, pipeline } = alwaysFailingBuild();
+
+    await expect(
+      startGeneration(
+        testEnv(),
+        'user-tidy-1',
+        { prompt: 'ゲーム', baseSource: OVER_LIMIT },
+        pipeline,
+      ),
+    ).rejects.toBeInstanceOf(BuildRetriesExhausted);
+
+    expect(prompts).toHaveLength(TIDY_ATTEMPTS);
+    expect(TIDY_ATTEMPTS).toBe(1);
+  });
+
+  it('整理パスでない生成は、いままでどおり 3 回試す', () => {
+    // **整理パスの打ち切りが、通常のリトライを巻き込んでいないこと。**
+    // ここが崩れると 5.2-7 が黙って消える。
+    expect(MAX_GENERATION_ATTEMPTS).toBe(3);
+  });
+
+  it('上限に収まった元ソースのフォークは 3 回試す（条件 4 は整理パスだけ）', async () => {
+    const { prompts, pipeline } = alwaysFailingBuild();
+
+    await expect(
+      startGeneration(testEnv(), 'user-tidy-2', { prompt: 'ゲーム', baseSource: IN_LIMIT }, pipeline),
+    ).rejects.toBeInstanceOf(BuildRetriesExhausted);
+
+    expect(prompts).toHaveLength(3);
+  });
+});
+
+describe('整理の指示は包み層の中だけで足す（確定18 / M5-2 / #33）', () => {
+  /**
+   * 生成の段が受け取ったプロンプトを記録する。
+   *
+   * @returns 記録と、包んだ生成の段
+   */
+  function recordingGenerate(): {
+    seen: string[];
+    generate: (
+      env: Env,
+      request: { readonly prompt: string; readonly baseSource?: string },
+    ) => Promise<GenerationResult>;
+  } {
+    const seen: string[] = [];
+    return {
+      seen,
+      generate: async (_env, request) => {
+        seen.push(request.prompt);
+        return {
+          modelKey: DEFAULT_GENERATION_MODEL_KEY,
+          modelId: findGenerationModel(DEFAULT_GENERATION_MODEL_KEY)!.modelId,
+          source: 'package main',
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheReadInputTokens: null,
+            cacheWriteInputTokens: null,
+          },
+          stopReason: 'end_turn',
+        };
+      },
+    };
+  }
+
+  it('整理パスでは、利用者のプロンプトを消さずに指示を足す', async () => {
+    const { seen, generate } = recordingGenerate();
+    const wrapped = withTidyInstruction(generate);
+
+    await wrapped({} as Env, { prompt: '敵を 3 体にする', baseSource: 'x'.repeat(MAX_SOURCE_BYTES + 1) });
+
+    expect(seen[0]!.startsWith('敵を 3 体にする')).toBe(true);
+    expect(seen[0]).toContain(String(MAX_SOURCE_BYTES));
+  });
+
+  it('整理パスでなければ 1 文字も足さない', async () => {
+    // **新規生成と通常のフォークのプロンプトを変えない。** 変えると 4.5 の
+    // キャッシュのプレフィックスが動き、4.2 の実測と比較できなくなる。
+    const { seen, generate } = recordingGenerate();
+    const wrapped = withTidyInstruction(generate);
+
+    await wrapped({} as Env, { prompt: 'ゲーム' });
+    await wrapped({} as Env, { prompt: 'ゲーム', baseSource: 'x'.repeat(MAX_SOURCE_BYTES) });
+
+    expect(seen).toEqual(['ゲーム', 'ゲーム']);
+  });
+
+  it('費用の計上へ渡るのは、組み替える前のリクエストである', async () => {
+    // `generations.prompt`（5.1）は利用者が書いた文字列を持つ。整理の指示を入れると、
+    // **利用者が書いていない文字列が利用者の入力として残る。**
+    //
+    // **台帳の行ではなく、段へ渡る値を見る。** 3.3-4 の呼び出しが元のリクエストで
+    // 行われることが確かめたい性質で、そこから先（`src/cost-ledger.ts` が D1 へ
+    // 書くこと）は別の検査が持っている。
+    const base = recordingPipeline();
+    const toGenerate: string[] = [];
+    const toLedger: string[] = [];
+    const pipeline: GenerationPipeline = {
+      ...base.pipeline,
+      generateSource: withTidyInstruction(async (env, request) => {
+        toGenerate.push(request.prompt);
+        return await base.pipeline.generateSource(env, request);
+      }),
+      recordCost: async (_env, _userId, request) => {
+        toLedger.push(request.prompt);
+      },
+    };
+
+    await startGeneration(
+      testEnv(),
+      'user-tidy-3',
+      { prompt: '敵を 3 体にする', baseSource: 'x'.repeat(MAX_SOURCE_BYTES + 1) },
+      pipeline,
+    );
+
+    // 生成には指示が載り、台帳には載らない。**この 2 つが同じになったら赤になる。**
+    expect(toLedger).toEqual(['敵を 3 体にする']);
+    expect(toGenerate[0]).not.toBe('敵を 3 体にする');
+    expect(toGenerate[0]!.startsWith('敵を 3 体にする')).toBe(true);
   });
 });
 

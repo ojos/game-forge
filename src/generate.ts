@@ -76,6 +76,12 @@ import {
 import type { BuildRejected } from './build-client.js';
 import { MAX_MECHANICAL_FIX_PASSES, removeUnusedImports } from './mechanical-fix.js';
 import { startJobOnLambda } from './orchestrator/start-job.js';
+import {
+  TIDY_ATTEMPTS,
+  composeTidyPrompt,
+  isTidyPass,
+  measureSourceBytes,
+} from './source-size.js';
 
 /** 生成エンドポイントのパス。 */
 export const GENERATE_PATH = '/api/generate';
@@ -388,6 +394,43 @@ export const notImplementedSystemPrompt: SystemPromptResolver = (model) => {
  * なる（3.3 の最後の段は「起きたことを記録する」段である）。結線されていること自体を
  * `test/games.test.ts` が同一性で確かめる（`test/quota.test.ts` と同じ形）。
  */
+/**
+ * 生成の段（3.3-3）を、整理パスの指示を織り込める形へ包む（確定18 / 5.3 / #33）。
+ *
+ * **`withBuildDiagnostics`（`src/build-retry.ts`）と同じ形の継ぎ目である。**
+ * トランスポート（`src/bedrock.ts`）は整理の存在を知らないままでよく、包む側が
+ * プロンプトを組み替える。**両方を掛けるときは、こちらを内側に置く**——整理の指示は
+ * 常に最後（transport の直前）に載るほうが、リトライの有無で文面が変わらない。
+ *
+ * **台帳へは組み替える前のプロンプトが残る**（`recordCost` はループ側が元のリクエストで
+ * 呼ぶ）。組み替えた側を渡すと `generations.prompt`（5.1）に整理の指示文が入り、
+ * **利用者が書いていない文字列が利用者の入力として残る。**
+ *
+ * @param generate 包む生成の段
+ * @returns 整理パスの指示を織り込む生成の段
+ */
+export function withTidyInstruction(
+  generate: (
+    env: Env,
+    request: { readonly prompt: string; readonly baseSource?: string },
+  ) => Promise<GenerationResult>,
+): (
+  env: Env,
+  request: { readonly prompt: string; readonly baseSource?: string },
+) => Promise<GenerationResult> {
+  return async (env, request) => {
+    if (!isTidyPass(request)) {
+      return await generate(env, request);
+    }
+    // **`request` を広げて `prompt` だけ差し替える**（`withBuildDiagnostics` と同じ）。
+    // 新しく作ると、`GenerateRequest` へ項目が増えた日に整理パスだけが黙って落とす。
+    return await generate(env, {
+      ...request,
+      prompt: composeTidyPrompt(request.prompt, measureSourceBytes(request.baseSource ?? '')),
+    });
+  };
+}
+
 export const defaultPipeline: GenerationPipeline = {
   ...notImplementedPipeline,
   checkQuota: checkGenerationQuota,
@@ -395,7 +438,7 @@ export const defaultPipeline: GenerationPipeline = {
   // （`src/bedrock.ts`）は診断の存在を知らないままでよく、包む側がプロンプトを
   // 組み替える。**包まないと、リトライは診断を捨てた引き直しになる。**
   generateSource: withBuildDiagnostics(
-    createBedrockGenerateSource({ systemPrompt: buildSystemPrompt }),
+    withTidyInstruction(createBedrockGenerateSource({ systemPrompt: buildSystemPrompt })),
   ),
   recordCost: recordGenerationCost,
   inspectSource: inspectGeneratedSource,
@@ -598,8 +641,21 @@ export async function runGenerationJob(
     // **ループの上限は for の条件が持つ。** 打ち切りの判定を catch の中だけに置くと、
     // その 1 行を落としたときに**課金の出る無限ループ**になる。抜けた先で必ず
     // `BuildRetriesExhausted` を投げるので、上限を消せばテストが落ちる。
+    //
+    // **整理パスだけは 1 回で打ち切る**（確定18 の条件 3・4。`src/source-size.ts` の
+    // `TIDY_ATTEMPTS`）。条件 4 は「整理パスがコンパイルに失敗しても自動リトライしない。
+    // 元のソースへ戻して拒否する」で、理由欄は「リトライが乗ると最悪 3 回分の枠を
+    // 消費する。失敗の連鎖を切る」である。**整理パスは通常の生成より入力も出力も
+    // 大きく、1 回あたりの見積もりが 26〜41 円**（見積もりであって実測ではない。
+    // 5.3 の #33 注記）なので、3 回に回すと 1 度の操作で 120 円前後を失う。
+    //
+    // **「元のソースへ戻す」は、この経路では構造として満たされている。** 整理パスは
+    // フォークからしか始まらず（`src/fork.ts`）、フォークは親を 1 バイトも書き換えない。
+    // 失敗した子の行は下の catch が `failed` にするので、**半分だけ整理された成果物が
+    // どこにも残らない。**
+    const attempts = isTidyPass(job.request) ? TIDY_ATTEMPTS : MAX_GENERATION_ATTEMPTS;
     let retry: BuildRetryContext | undefined;
-    for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt += 1) {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
       // 3.3-3: 生成。2 回目以降は直前の診断を添える（5.2-7）。
       const generated = await pipeline.generateSource(env, job.request, retry);
 
@@ -670,7 +726,7 @@ export async function runGenerationJob(
 
     // 上限まで試して通らなかった（5.2-7）。**ここへ来る経路はこれだけである**
     // （ビルドが成功すればループの中で返り、リトライ対象でない失敗は再送出される）。
-    throw new BuildRetriesExhausted(MAX_GENERATION_ATTEMPTS, retry?.stage ?? 'unknown');
+    throw new BuildRetriesExhausted(attempts, retry?.stage ?? 'unknown');
   } catch (error) {
     // **失敗も必ず行へ書く。** 書かないと `running` のまま永久に残り、作品ページが
     // 「生成中」を出し続ける。利用者から見て、失敗したことすら分からない状態になる。

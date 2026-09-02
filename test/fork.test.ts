@@ -28,6 +28,7 @@ import { createBedrockGenerateSource } from '../src/bedrock.js';
 import {
   FORK_SIZE_CONSENT_FIELD,
   FORK_SIZE_CONSENT_PROCEED,
+  FORK_SIZE_CONSENT_TIDY,
   createForkRoutes,
 } from '../src/fork.js';
 import type { GenerationJob, GenerationPipeline } from '../src/generate.js';
@@ -50,7 +51,11 @@ import { FORK_PARENT_ID_FIELD, FORK_PATH, FORK_PROMPT_FIELD } from '../src/paths
 import { DAILY_QUOTA_PER_USER, QUOTA_EXCEEDED_STATUS } from '../src/quota.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
-import { MAX_SOURCE_BYTES, SOURCE_SIZE_WARNING_BYTES } from '../src/source-size.js';
+import {
+  MAX_SOURCE_BYTES,
+  SOURCE_SIZE_WARNING_BYTES,
+  TIDY_MAX_SOURCE_BYTES,
+} from '../src/source-size.js';
 import { workPagePath } from '../src/work-page.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
@@ -441,7 +446,7 @@ describe('公開されていない作品はフォークできない（acceptance
 });
 
 describe('元のソースの扱い（確定18 / 5.3）', () => {
-  it('30KB を超える親は断る（整理パスは動かせない。#33 の報告）', async () => {
+  it('30KB を超える親には、断る前に整理を問う（確定18 の条件 2）', async () => {
     const author = await createUser('fork-large-author');
     // **上限のちょうど 1 バイト上。** 切り詰めて渡すと、コンパイルが必ず落ちて枠だけが消える。
     const parentId = await createPublishedGame(author, 'x'.repeat(MAX_SOURCE_BYTES + 1));
@@ -451,7 +456,8 @@ describe('元のソースの扱い（確定18 / 5.3）', () => {
     const response = await postFork(forker, parentId, '敵を増やす', spy.pipeline);
 
     expect(response.status).toBe(409);
-    expect(await response.text()).toContain('大きさを超えています');
+    expect(await response.text()).toContain('整理して続けますか（生成枠を 1 回使います）');
+    // **問うだけで、まだ何も始めない。** 枠も行も使っていない。
     expect(spy.calls).toHaveLength(0);
     expect(await gamesOf(forker)).toHaveLength(0);
   });
@@ -603,9 +609,9 @@ describe('大きい親は、始める前に知らせる（確定18 の条件 1 /
     expect(spy.calls).toHaveLength(1);
   });
 
-  it('同意があっても 30KB 超は通さない', async () => {
-    // 通すと `src/orchestrator/payload.ts` がペイロードごと拒否し、生成されることの
-    // 無い `pending` の行だけが「あなたの作品」（5.5）に並ぶ。
+  it('事前警告への同意では、30KB 超の整理は始まらない（条件 2）', async () => {
+    // 条件 1 の画面で押した「このまま改造する」を整理への同意として読むと、
+    // **作者が押していない操作で枠が減り、ソースが書き換わる。**
     const author = await createUser('fork-warn-over-author');
     const parentId = await createPublishedGame(author, 'x'.repeat(MAX_SOURCE_BYTES + 1));
     const forker = await createUser('fork-warn-over-forker');
@@ -620,7 +626,7 @@ describe('大きい親は、始める前に知らせる（確定18 の条件 1 /
     );
 
     expect(response.status).toBe(409);
-    expect(await response.text()).toContain('大きさを超えています');
+    expect(await response.text()).toContain('整理して続けますか');
     expect(spy.calls).toHaveLength(0);
     expect(await gamesOf(forker)).toHaveLength(0);
   });
@@ -646,6 +652,155 @@ describe('大きい親は、始める前に知らせる（確定18 の条件 1 /
 
     expect(response.status).toBe(QUOTA_EXCEEDED_STATUS);
     expect(await response.text()).not.toContain('この作品はすでに大きめです');
+  });
+});
+
+/** 上限を 1 バイト超えた親ソース（整理パスの入口。確定18 の条件 2）。 */
+const OVER_LIMIT_SOURCE = 'x'.repeat(MAX_SOURCE_BYTES + 1);
+
+/**
+ * 作品行の整理の印を読む（`migrations/0014_source_tidy.sql`）。
+ *
+ * @param gameId 作品 id
+ * @returns 記録された時刻、または null
+ */
+async function tidyRequestedAt(gameId: string): Promise<number | null> {
+  const row = await env.DB.prepare('select tidy_requested_at from games where id = ?')
+    .bind(gameId)
+    .first<{ tidy_requested_at: number | null }>();
+  return row!.tidy_requested_at;
+}
+
+describe('整理してから改造する（確定18 の条件 2 / M5-2 / #33）', () => {
+  it('整理を選んで初めて、上限超の親から改造が始まる', async () => {
+    const author = await createUser('fork-tidy-author');
+    const parentId = await createPublishedGame(author, OVER_LIMIT_SOURCE);
+    const forker = await createUser('fork-tidy-forker');
+    const spy = startSpy();
+
+    const response = await postFork(
+      forker,
+      parentId,
+      '敵を増やす',
+      spy.pipeline,
+      FORK_SIZE_CONSENT_TIDY,
+    );
+
+    expect(response.status).toBe(303);
+    expect(spy.calls).toHaveLength(1);
+    // **切り詰めずに丸ごと載る**（5.3「黙って切り詰めない」）。切れた Go を渡すと
+    // コンパイルが必ず落ちて枠だけが消える。
+    expect(spy.calls[0]!.request.baseSource).toBe(OVER_LIMIT_SOURCE);
+    expect(spy.calls[0]!.request.prompt).toBe('敵を増やす');
+  });
+
+  it('整理を選んだことを作品行へ残す（5.3「整理したことは作者に開示する」）', async () => {
+    // **通した瞬間にしか観測できない事実である**（`migrations/0014_source_tidy.sql`）。
+    // 完成後のソースを見ても分からず、台帳にも残らない。
+    const author = await createUser('fork-tidy-mark-author');
+    const parentId = await createPublishedGame(author, OVER_LIMIT_SOURCE);
+    const forker = await createUser('fork-tidy-mark-forker');
+    const spy = startSpy();
+
+    await postFork(forker, parentId, '敵を増やす', spy.pipeline, FORK_SIZE_CONSENT_TIDY);
+
+    const childId = spy.calls[0]!.gameId;
+    expect(await tidyRequestedAt(childId)).toBeGreaterThan(0);
+  });
+
+  it('整理でないフォークには印を付けない', async () => {
+    // 付けると、5.3 の開示が**整理していない作品にも出る。**
+    const author = await createUser('fork-tidy-unmarked-author');
+    const parentId = await createPublishedGame(author);
+    const forker = await createUser('fork-tidy-unmarked-forker');
+    const spy = startSpy();
+
+    await postFork(forker, parentId, '敵を増やす', spy.pipeline);
+
+    expect(await tidyRequestedAt(spy.calls[0]!.gameId)).toBeNull();
+  });
+
+  it('問いの画面が、費用と「別物になりうること」を先に言う', async () => {
+    const author = await createUser('fork-tidy-page-author');
+    const parentId = await createPublishedGame(author, OVER_LIMIT_SOURCE);
+    const forker = await createUser('fork-tidy-page-forker');
+    const spy = startSpy();
+
+    const page = await (await postFork(forker, parentId, '敵を増やす', spy.pipeline)).text();
+
+    // 条件 2 の文言そのもの。**押す前に何を失うかが見えていなければ、明示的に
+    // 選んだことにならない。**
+    expect(page).toContain('整理して続けますか（生成枠を 1 回使います）');
+    expect(page).toContain('元と細かい部分が変わることがあります');
+    // 入力を預かり直し、整理の同意として送り返す。
+    expect(page).toContain(`name="${FORK_PROMPT_FIELD}" value="敵を増やす"`);
+    expect(page).toContain(`name="${FORK_SIZE_CONSENT_FIELD}" value="${FORK_SIZE_CONSENT_TIDY}"`);
+  });
+
+  it('整理しても収まる見込みが無い大きさは、問わずに断る', async () => {
+    // 問うだけ問って必ず失敗する選択肢は、条件 2 が守ろうとした「知らないうちに枠を
+    // 使わせない」を、知ったうえで確実に捨てさせる形へ裏返す。
+    const author = await createUser('fork-tidy-huge-author');
+    const parentId = await createPublishedGame(author, 'x'.repeat(TIDY_MAX_SOURCE_BYTES + 1));
+    const forker = await createUser('fork-tidy-huge-forker');
+    const spy = startSpy();
+
+    const response = await postFork(
+      forker,
+      parentId,
+      '敵を増やす',
+      spy.pipeline,
+      FORK_SIZE_CONSENT_TIDY,
+    );
+
+    expect(response.status).toBe(409);
+    const page = await response.text();
+    expect(page).toContain('大きさを超えています');
+    expect(page).not.toContain('整理して続けますか');
+    expect(spy.calls).toHaveLength(0);
+    expect(await gamesOf(forker)).toHaveLength(0);
+  });
+
+  it('JSON で叩く相手には、整理を知らなくても断りとして読める形で返す', async () => {
+    const author = await createUser('fork-tidy-json-author');
+    const parentId = await createPublishedGame(author, OVER_LIMIT_SOURCE);
+    const forker = await createUser('fork-tidy-json-forker');
+    const spy = startSpy();
+
+    const headers = await sessionHeaders(forker, {
+      'content-type': 'application/json',
+      accept: 'application/json',
+    });
+    const response = await dispatch(
+      createForkRoutes(spy.pipeline),
+      new Request(`${APP_ORIGIN}${FORK_PATH}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ [FORK_PARENT_ID_FIELD]: parentId, [FORK_PROMPT_FIELD]: '敵' }),
+      }),
+      testEnv(),
+    );
+
+    expect(response.status).toBe(409);
+    const body = (await response.json()) as Record<string, unknown>;
+    // **`error` は変えない。** 整理を知らない相手が「始まった」と読む形にしない。
+    expect(body['error']).toBe('source-too-large');
+    expect(body['tidyConsent']).toBe(FORK_SIZE_CONSENT_TIDY);
+    expect(spy.calls).toHaveLength(0);
+  });
+});
+
+describe('0014 の列（`migrations/0014_source_tidy.sql`）', () => {
+  it('games に tidy_requested_at があり、既存行は null である', async () => {
+    // #202 / #203 の形を確かめる——**実装より前に完成した行は、その実装の経路を
+    // 1 度も通っていない。** この列では NULL がまさに「通っていない」を意味するので、
+    // 埋め戻す UPDATE は要らない。**要らないことを、要らないと確かめておく。**
+    const author = await createUser('fork-schema-author');
+    const existing = await createPublishedGame(author);
+    expect(await tidyRequestedAt(existing)).toBeNull();
+
+    const columns = await env.DB.prepare("pragma table_info('games')").all<{ name: string }>();
+    expect(columns.results.map((row) => row.name)).toContain('tidy_requested_at');
   });
 });
 

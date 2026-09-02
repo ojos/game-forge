@@ -45,6 +45,7 @@ import {
   GenerationJobNotClaimable,
   notImplementedPipeline,
   runGenerationJob,
+  withTidyInstruction,
 } from '../generate.js';
 import type { GenerationResult } from '../generation-models.js';
 import type { CallbackClient } from './callbacks.js';
@@ -90,11 +91,16 @@ export function createOrchestratorPipeline(
 
     // 3.3-3: 生成。**エッジと同じ実装**である。違うのは資格情報の出どころだけで、
     // `BEDROCK_AWS_*` に実行ロールの一時資格情報が写っている（`./handler.ts`）。
+    // **整理パスの指示も同じ順で掛ける**（確定18 / #33）。エッジ
+    // （`src/generate.ts` の `defaultPipeline`）と**包み方まで揃える**——ずれると、
+    // 同じジョブが実行環境によって別のプロンプトで走る。
     generateSource: withBuildDiagnostics(
-      createBedrockGenerateSource({
-        systemPrompt: buildSystemPrompt,
-        ...(deps.bedrockFetch === undefined ? {} : { fetch: deps.bedrockFetch }),
-      }),
+      withTidyInstruction(
+        createBedrockGenerateSource({
+          systemPrompt: buildSystemPrompt,
+          ...(deps.bedrockFetch === undefined ? {} : { fetch: deps.bedrockFetch }),
+        }),
+      ),
     ),
 
     // 3.3-4: 費用の計上。**id はここで採番する**（1 回の LLM 呼び出しにつき 1 つ）。

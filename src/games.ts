@@ -341,9 +341,11 @@ export async function createPendingGame(
  * 5.7 の表がフォークと推敲を分ける 2 点のうち、「**新しい作品行**が生まれる」と
  * 「`parent_id` が親を指す」の両方がこの 1 つの呼び出しに現れる。
  *
- * **`fork_count` はここで動かさない**（#34 の範囲）。親の被フォーク数は**公開された
- * 子の数**として意味を持つ値で、`pending` の行——ビルドが通らずに終わるかもしれない
- * 行——を数えた瞬間に、5.5 の「このゲームからの改造: N 件」と食い違う。
+ * **`fork_count` はここで動かさない**（#32 が置いた境界を #34 も動かしていない）。
+ * 親の被フォーク数は**公開された子の数**として意味を持つ値で、`pending` の行——
+ * ビルドが通らずに終わるかもしれない行——を数えた瞬間に、5.5 の
+ * 「このゲームからの改造: N 件」と食い違う。**動くのは子が公開された瞬間**で、
+ * 置き場は {@link publishGame} である（#34 / {@link refreshParentForkCount}）。
  *
  * **親が公開済みであることをここでは確かめない。** 5.3 の対象条件は
  * `src/fork.ts` が親のソースを読む前に判定しており、**確かめる場所を 2 つ持たない**
@@ -690,6 +692,17 @@ export type PublishOutcome =
  * **`status='published'` であること**を条件に持つためで、順序（公開 → 撮影）が
  * SQL の条件として現れる形にしたいからである。
  *
+ * # `fork_count` はここで動く（5.5 / M5-3 / #34）
+ *
+ * **フォークの起動（`src/fork.ts` → {@link createForkedGame}）では動かさない。**
+ * あちらが作るのは `status='draft'` / `generation_state='pending'` の行で、ビルドが
+ * 通らずに終わるかもしれない。数えた瞬間に、5.5 の「このゲームからの改造: N 件」
+ * （`status='published'` のみ）と食い違う。**子が公開された瞬間が、親の被改造数が
+ * 増える唯一の瞬間である。**
+ *
+ * 加算ではなく**数え直し**である（{@link refreshParentForkCount}）。理由はそちらに
+ * ある。
+ *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
  * @param authorId 操作している利用者（**作者本人でなければ通らない**）
@@ -711,6 +724,9 @@ export async function publishGame(
     .run();
 
   if ((result.meta.changes ?? 0) > 0) {
+    // **遷移が起きたときだけ数え直す。** 二度押しの 2 回目はここへ来ない
+    // （`status = 'draft'` の条件が先に外れる）ので、押した回数では増えない。
+    await refreshParentForkCount(env, gameId);
     return { ok: true, firstTime: true, publishedAt: now };
   }
 
@@ -737,6 +753,158 @@ export async function publishGame(
   // `draft` のまま残ったということは、外れたのは `generation_state` の条件である。
   return { ok: false, reason: 'not-ready' };
 }
+
+/**
+ * ある作品の**親**の `fork_count` を、実件数で置き直す（5.1 / 5.5 / M5-3 / #34）。
+ *
+ * # 加算しない。数え直す
+ *
+ * `fork_count = fork_count + 1` にしない。理由は 3 つある。
+ *
+ * 1. **実装より前に完成した行は、この経路を 1 度も通っていない。** `fork_count` は
+ *    `migrations/0001_init.sql` からある列だが、これを動かす経路は #34 で初めてできた。
+ *    本番には既に公開済みの行があり、**3 世代の系統が 1 本できている**（引き継ぎ 1 章）。
+ *    加算なら、それらの親の値は永久に 0 のままである。数え直しなら、**その系統で次に
+ *    1 件公開された時点で正しい値へ収束する。** 同じ形の事故が #202 / #203 で起きている
+ *    （版が 1 つも無い作品を推敲すると元の版が消えた）。
+ * 2. **冪等である。** 2 回呼んでも値が動かない。呼び出し側（{@link publishGame}）の
+ *    関門が壊れても、**数が壊れるところまでは伝播しない。**
+ * 3. **増減の両方を 1 つの綴りで賄える。** tombstone 化（5.3 / M5-4 / #35）は子を
+ *    1 件減らす操作だが、`- 1` を別に書く必要が無い。**まだ書き込む側は居ない**
+ *    ——`removed` を作る経路は #35 が入れる。
+ *
+ * 代償は、親の子を毎回数え直すことである。**`games_parent_id_idx`（0001）がある**ので
+ * 索引の範囲走査で済み、しかも走るのは公開・取り下げのときだけ（閲覧では走らない）。
+ *
+ * # 親を引いてから更新しない
+ *
+ * `parent_id` を読む SELECT を挟まず、1 本の UPDATE の `where` に副問い合わせとして
+ * 置く。**オリジナル（`parent_id is null`）なら `id = null` はどの行にも一致しない**ので、
+ * 「親が居るか」の分岐をこちら側に書かずに済む。
+ *
+ * @param env バインディングと環境変数
+ * @param childId 状態が変わった**子**の作品 id（この親を数え直す）
+ */
+async function refreshParentForkCount(env: Env, childId: string): Promise<void> {
+  await env.DB.prepare(
+    `update games
+        set fork_count = (select count(*)
+                            from games c
+                           where c.parent_id = games.id and c.status = ?)
+      where id = (select parent_id from games where id = ?)`,
+  )
+    .bind(PUBLISHED_STATUS, childId)
+    .run();
+}
+
+/** 系統の近傍に出す子作品 1 件（5.5 / M5-3 / #34）。 */
+export interface ForkChild {
+  /** `games.id`。作品ページ（`/works/<id>`）の URL に入る。 */
+  readonly id: string;
+  /**
+   * 題名。
+   *
+   * **公開済みの行しか返さないので、そのまま誰にでも出してよい**（`src/work-page.ts`
+   * が親の題名を `published` のときだけ出すのと同じ規則）。UGC 由来なので
+   * 表示側で `escapeHtml` を通すこと。
+   */
+  readonly title: string;
+  /** 公開した時刻（UNIX 秒）。0001 以前の行では null になりうる。 */
+  readonly publishedAt: number | null;
+}
+
+/**
+ * ある作品の、公開されている子の件数を数える（5.5 / M5-3 / #34）。
+ *
+ * # なぜ `fork_count` を読まないのか
+ *
+ * **画面に出す数は、その場で数えた実件数である。** `fork_count` は 5.1 が
+ * 「一覧を軽くするための非正規化列」と定めた値で、**この画面の数の出どころではない。**
+ *
+ * 理由は {@link refreshParentForkCount} と同じ根である——**本番には、非正規化の経路を
+ * 1 度も通っていない公開済みの行がある。** 列を読むと、この画面は**初日から嘘の数を
+ * 出す**（3 世代の系統の親が「改造: 0 件」と言う）。しかも下に並ぶ一覧は実件数から
+ * 引くので、**数と一覧が食い違う**という、いちばん読み解きにくい形の嘘になる。
+ *
+ * 数えるのは 1 作品ぶんで、`games_parent_id_idx`（0001）が効く。
+ *
+ * @param env バインディングと環境変数
+ * @param parentId 親の作品 id
+ * @returns 公開されている子の件数
+ */
+export async function countPublishedForks(env: Env, parentId: string): Promise<number> {
+  const row = await env.DB.prepare(
+    `select count(*) as n from games where parent_id = ? and status = ?`,
+  )
+    .bind(parentId, PUBLISHED_STATUS)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/**
+ * ある作品の、公開されている子を新しい順に引く（5.5 / M5-3 / #34）。
+ *
+ * # `published` だけを返すことが、この関数の唯一の責務である
+ *
+ * **絞り込みを呼び出し側へ出さない**（{@link listAuthoredGames} と同じ方針）。
+ * 画面側で `filter` する形にすると、条件を書き忘れた呼び出しが生まれても
+ * **動作では気づけない**——公開済みの子は正しく出るので、見た目は正しい。
+ *
+ * ここで漏れるのは他人の `draft` の題名（プロンプト由来）である。5.4 は「「公開」操作で
+ * 初めて URL が有効になる」と定めており、**系統の一覧がその抜け道になってはいけない。**
+ *
+ * # 並びは `published_at` の降順である
+ *
+ * 5.5 が「新しい順」と定めるのは**改造として現れた順**であって、行ができた順ではない。
+ * `created_at` で並べると、**生成に 91 秒かかり公開までに何日か置かれた作品**が、
+ * あとから作られて先に公開された作品より上に来る。
+ *
+ * 2 列目に `id` を置くのは、`published_at` が UNIX 秒で**同じ秒に公開された 2 件の
+ * 順序が決まらない**ためである（{@link listAuthoredGames} と同じ理由）。
+ * `published_at` が NULL の行（0001 以前）は SQLite の DESC で末尾へ落ちる。
+ *
+ * # 続きは位置（offset）で取る
+ *
+ * 5.5 の「20 件＋もっと見る」は**続きを一度だけ辿れれば足りる**ので、`limit` /
+ * `offset` の素朴な形にする。取っているあいだに新しい改造が公開されると境目が 1 件
+ * ずれうるが、**この一覧は近傍を見せるためのもので、全件の走査を約束していない**
+ * （家系図 UI は MVP 対象外。11 章）。
+ *
+ * @param env バインディングと環境変数
+ * @param parentId 親の作品 id
+ * @param limit 引く最大件数（0 以上の整数）
+ * @param offset 読み飛ばす件数（0 以上の整数）
+ * @returns 新しい順（同時刻は id の降順）の子作品
+ * @throws `limit` / `offset` が 0 以上の整数でない場合
+ */
+export async function listPublishedForks(
+  env: Env,
+  parentId: string,
+  limit: number,
+  offset = 0,
+): Promise<readonly ForkChild[]> {
+  assertLimit(limit);
+  // **`OFFSET` にも同じ検査が要る。** SQLite は `OFFSET -1` を 0 として黙って受け入れる
+  // ので、負の位置を渡した呼び出しは 1 頁目を返して「動いて」しまう。
+  assertLimit(offset, '読み飛ばし件数');
+
+  const result = await env.DB.prepare(
+    `select id, title, published_at
+       from games
+      where parent_id = ? and status = ?
+      order by published_at desc, id desc
+      limit ? offset ?`,
+  )
+    .bind(parentId, PUBLISHED_STATUS, limit, offset)
+    .all<{ id: string; title: string; published_at: number | null }>();
+
+  return result.results.map((row) => ({
+    id: row.id,
+    title: row.title,
+    publishedAt: row.published_at,
+  }));
+}
+
 /** 一覧に出す作品 1 件（`src/my-works.ts` が読む）。 */
 export interface AuthoredGame {
   /** `games.id`。作品ページ（`/works/<id>`）の URL に入る。 */
@@ -840,10 +1008,11 @@ export async function listAuthoredGames(
  * 置く。読む側が 2 つの流儀を覚えなくて済む）。
  *
  * @param limit 検査する値
+ * @param what 値の呼び名（例外の文言に入る。既定は取得件数）
  * @throws 0 以上の整数でない場合
  */
-function assertLimit(limit: number): void {
+function assertLimit(limit: number, what = '取得件数'): void {
   if (!Number.isSafeInteger(limit) || limit < 0) {
-    throw new Error(`一覧の取得件数が不正です: ${limit}`);
+    throw new Error(`一覧の${what}が不正です: ${limit}`);
   }
 }

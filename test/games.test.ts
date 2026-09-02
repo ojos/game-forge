@@ -12,6 +12,7 @@ import {
   UNTITLED_TITLE,
   claimGenerationJob,
   completeGame,
+  countPublishedForks,
   createForkedGame,
   createPendingGame,
   UNBUILT_GO_VERSION,
@@ -20,6 +21,8 @@ import {
   failGame,
   hashJobToken,
   listAuthoredGames,
+  listPublishedForks,
+  publishGame,
 } from '../src/games.js';
 import type { GenerateRequest } from '../src/generate.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
@@ -851,5 +854,214 @@ describe('フォークの子は親を指す（5.3 / M5-1 / #32）', () => {
     expect(first.id).not.toBe(second.id);
     expect((await readGame(first.id)).parent_id).toBe(parent.id);
     expect((await readGame(second.id)).parent_id).toBe(parent.id);
+  });
+});
+
+describe('系統の近傍と fork_count（5.5 / M5-3 / #34）', () => {
+  /**
+   * 完成させて公開した作品を 1 件用意する。
+   *
+   * **経路を通す。** ここで確かめたいのは「`fork_count` が公開の経路で動くか」で
+   * あって一覧の引き方ではないので、行を直接 insert しない
+   * （`listAuthoredGames` の `seedGame` とは逆の判断である）。
+   *
+   * @param userId 作者
+   * @param prompt 仮タイトルの元になるプロンプト
+   * @param parentId 親の作品 id（オリジナルなら null）
+   * @param now 時刻（UNIX 秒。`published_at` になるので並び順を決める）
+   * @returns 作った作品の id
+   */
+  async function publishNew(
+    userId: string,
+    prompt: string,
+    parentId: string | null,
+    now: number,
+  ): Promise<string> {
+    const pending =
+      parentId === null
+        ? await createPendingGame(env, userId, { prompt }, now)
+        : await createForkedGame(env, userId, { prompt }, parentId, now);
+    await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken), now);
+    await completeGame(
+      env,
+      pending.id,
+      fakeBuildOutcome({ sourceSha256: `f${pending.id.replace(/-/gu, '')}`.padEnd(64, '0') }),
+      now,
+    );
+    const outcome = await publishGame(env, pending.id, userId, now);
+    expect(outcome.ok).toBe(true);
+    return pending.id;
+  }
+
+  /**
+   * 完成させたが公開していないフォークの子を 1 件用意する。
+   *
+   * @param userId 作者
+   * @param parentId 親の作品 id
+   * @param now 時刻（UNIX 秒）
+   * @returns 作った作品の id
+   */
+  async function forkDraft(userId: string, parentId: string, now: number): Promise<string> {
+    const pending = await createForkedGame(env, userId, { prompt: '未公開の改造' }, parentId, now);
+    await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken), now);
+    await completeGame(
+      env,
+      pending.id,
+      fakeBuildOutcome({ sourceSha256: `d${pending.id.replace(/-/gu, '')}`.padEnd(64, '0') }),
+      now,
+    );
+    return pending.id;
+  }
+
+  it('子が公開された瞬間に親の fork_count が動く（フォークの起動では動かない）', async () => {
+    const author = await seedUser('fc-publish-author');
+    const forker = await seedUser('fc-publish-forker');
+    const parent = await publishNew(author, '親のゲーム', null, 1000);
+
+    // **起動では動かない**（#32 が置いた境界。`pending` の行を数えると 5.5 の
+    // 「N 件」と食い違う）。この不変条件は `test/fork.test.ts` も見ている。
+    const child = await createForkedGame(env, forker, { prompt: '色を変える' }, parent, 1100);
+    expect((await readGame(parent)).fork_count).toBe(0);
+
+    await claimGenerationJob(env, child.id, await hashJobToken(child.jobToken), 1100);
+    await completeGame(env, child.id, fakeBuildOutcome({ sourceSha256: 'e'.repeat(64) }), 1100);
+    // ここまで（完成しただけ）でも動かない。
+    expect((await readGame(parent)).fork_count).toBe(0);
+
+    await publishGame(env, child.id, forker, 1200);
+    expect((await readGame(parent)).fork_count).toBe(1);
+  });
+
+  it('draft の子は fork_count に入らない（実件数と一致する）', async () => {
+    const author = await seedUser('fc-draft-author');
+    const forker = await seedUser('fc-draft-forker');
+    const parent = await publishNew(author, '親のゲーム', null, 2000);
+
+    await publishNew(forker, '公開された改造', parent, 2100);
+    await forkDraft(forker, parent, 2200);
+    await forkDraft(forker, parent, 2300);
+
+    expect((await readGame(parent)).fork_count).toBe(1);
+    expect(await countPublishedForks(env, parent)).toBe(1);
+  });
+
+  it('二度押しでは増えない（遷移が起きたときだけ数え直す）', async () => {
+    const author = await seedUser('fc-twice-author');
+    const forker = await seedUser('fc-twice-forker');
+    const parent = await publishNew(author, '親のゲーム', null, 3000);
+    const child = await publishNew(forker, '改造', parent, 3100);
+
+    const second = await publishGame(env, child, forker, 3200);
+    expect(second).toEqual({ ok: true, firstTime: false, publishedAt: 3100 });
+    expect((await readGame(parent)).fork_count).toBe(1);
+  });
+
+  it('この実装より前に作られた行も、次の 1 件が公開された時点で実件数に揃う', async () => {
+    // **「実装より前に完成した行は、その実装の経路を 1 度も通っていない」**
+    // （#202 / #203 と同じ形）。`fork_count` は 0001 からある列だが、これを動かす
+    // 経路は #34 で初めてできた。本番には既に 3 世代の系統が 1 本ある。
+    //
+    // **加算（`fork_count + 1`）ならここが赤になる**（0 のまま残った親に 1 を足すので
+    // 2 件目の公開で 1 にしかならない）。数え直しなので実件数へ収束する。
+    const author = await seedUser('fc-legacy-author');
+    const forker = await seedUser('fc-legacy-forker');
+    const parent = await publishNew(author, '親のゲーム', null, 4000);
+
+    // 「#34 より前に公開された子」を、経路を通さずに置く。
+    const legacy = crypto.randomUUID();
+    await env.DB.prepare(
+      `insert into games
+         (id, author_id, parent_id, status, title, go_version, fork_count,
+          created_at, published_at, generation_state)
+       values (?, ?, ?, 'published', '昔の改造', '', 0, 4100, 4100, 'ready')`,
+    )
+      .bind(legacy, forker, parent)
+      .run();
+    // 親の非正規化列は取り残されている（本番と同じ状態）。
+    expect((await readGame(parent)).fork_count).toBe(0);
+
+    await publishNew(forker, '新しい改造', parent, 4200);
+
+    // 1 ではなく 2 になる。**取り残されていた 1 件も数え直しに含まれた。**
+    expect((await readGame(parent)).fork_count).toBe(2);
+    expect(await countPublishedForks(env, parent)).toBe(2);
+  });
+
+  it('オリジナル（parent_id が NULL）の公開では誰の値も動かない', async () => {
+    const author = await seedUser('fc-orphan-author');
+    const before = await env.DB.prepare('select sum(fork_count) as n from games')
+      .first<{ n: number | null }>();
+    await publishNew(author, '親を持たないゲーム', null, 5000);
+    const after = await env.DB.prepare('select sum(fork_count) as n from games')
+      .first<{ n: number | null }>();
+    expect(after?.n ?? 0).toBe(before?.n ?? 0);
+  });
+
+  it('listPublishedForks は published の子だけを新しい順に返す', async () => {
+    const author = await seedUser('fl-order-author');
+    const forker = await seedUser('fl-order-forker');
+    const parent = await publishNew(author, '親のゲーム', null, 6000);
+
+    const older = await publishNew(forker, '古い改造', parent, 6100);
+    const newer = await publishNew(forker, '新しい改造', parent, 6300);
+    const hidden = await forkDraft(forker, parent, 6200);
+
+    const listed = await listPublishedForks(env, parent, 20);
+    expect(listed.map((child) => child.id)).toEqual([newer, older]);
+    // **draft は 1 行も出ない**（#34 の acceptance）。題名はプロンプト由来なので、
+    // 出すと 5.4 の「公開して初めて有効になる」の抜け道になる。
+    expect(listed.map((child) => child.id)).not.toContain(hidden);
+    expect(listed[0]?.title).toBe('新しい改造');
+    expect(listed[0]?.publishedAt).toBe(6300);
+  });
+
+  it('同じ秒に公開された 2 件は id の降順で決まる', async () => {
+    const author = await seedUser('fl-tie-author');
+    const forker = await seedUser('fl-tie-forker');
+    const parent = await publishNew(author, '親のゲーム', null, 7000);
+    const a = await publishNew(forker, '同時 A', parent, 7100);
+    const b = await publishNew(forker, '同時 B', parent, 7100);
+
+    const listed = await listPublishedForks(env, parent, 20);
+    expect(listed.map((child) => child.id)).toEqual([a, b].sort().reverse());
+  });
+
+  it('21 件目は offset で取れる（20 件＋もっと見る）', async () => {
+    const author = await seedUser('fl-page-author');
+    const forker = await seedUser('fl-page-forker');
+    const parent = await publishNew(author, '親のゲーム', null, 8000);
+    const children: string[] = [];
+    for (let i = 0; i < 21; i += 1) {
+      children.push(await publishNew(forker, `改造 ${i}`, parent, 8100 + i));
+    }
+    // 新しい順なので、最後に公開したものが先頭に来る。
+    const newestFirst = [...children].reverse();
+
+    const first = await listPublishedForks(env, parent, 20, 0);
+    expect(first.map((child) => child.id)).toEqual(newestFirst.slice(0, 20));
+
+    const second = await listPublishedForks(env, parent, 20, 20);
+    expect(second.map((child) => child.id)).toEqual([newestFirst[20]]);
+    expect(await countPublishedForks(env, parent)).toBe(21);
+  });
+
+  it('子が 1 件も無ければ 0 件と空を返す', async () => {
+    const author = await seedUser('fl-empty-author');
+    const parent = await publishNew(author, '誰も改造していないゲーム', null, 9000);
+    expect(await countPublishedForks(env, parent)).toBe(0);
+    expect(await listPublishedForks(env, parent, 20)).toEqual([]);
+  });
+
+  it('不正な limit / offset は問い合わせる前に落とす', async () => {
+    // **SQLite は `OFFSET -1` を 0 として黙って受け入れる。** 落とさないと、
+    // 負の位置を渡した呼び出しが 1 頁目を返して「動いて」しまう。
+    const author = await seedUser('fl-bad-args-author');
+    const parent = await publishNew(author, '親のゲーム', null, 9500);
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(listPublishedForks(env, parent, bad)).rejects.toThrow(/取得件数が不正です/u);
+      await expect(listPublishedForks(env, parent, 20, bad)).rejects.toThrow(
+        /読み飛ばし件数が不正です/u,
+      );
+    }
   });
 });

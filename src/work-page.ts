@@ -48,8 +48,13 @@
  * **利用者自身の入力（仮タイトル）だけ**である。`generation_error` は固定語彙の
  * 分類名で、**値そのものは出さない**（どの固定文言を出すかの鍵として使う）。
  */
-import type { GenerationErrorCode, GenerationState } from './games.js';
-import { PUBLISHED_STATUS, REMOVED_STATUS } from './games.js';
+import type { ForkChild, GenerationErrorCode, GenerationState } from './games.js';
+import {
+  countPublishedForks,
+  listPublishedForks,
+  PUBLISHED_STATUS,
+  REMOVED_STATUS,
+} from './games.js';
 import {
   OGP_IMAGE_HEIGHT,
   OGP_IMAGE_WIDTH,
@@ -216,6 +221,49 @@ export type ParentWork =
   | { readonly kind: 'unlisted' }
   /** 親が tombstone 化されている（5.3）。 */
   | { readonly kind: 'removed' };
+
+/**
+ * 1 頁に並べる子作品の数（5.5 / M5-3 / #34）。
+ *
+ * **20 件。** 5.5 が「`status='published'` のみ、新しい順、20件＋もっと見る」と値まで
+ * 定めている。**ここで別の値を選ばない。**
+ *
+ * 値の置き場がこちら側なのは `listAuthoredGames` と同じ理由で、上限は
+ * 「何件並べるか・次があることをどう示すか」という表示側の都合と一体だからである
+ * （`src/games.ts` の `listPublishedForks` は既定値を持たない）。
+ */
+export const FORKS_PER_PAGE = 20;
+
+/**
+ * 「もっと見る」で頁を送るときの問い合わせ文字列の鍵（5.5 / #34）。
+ *
+ * **経路を増やさない。** 子の一覧は作品ページの一部であり、別の URL に出すと
+ * 「同じ作品に 2 つの URL」ができる（`shareUrl` が問い合わせ文字列を捨てて正規の
+ * 綴りを組み立て直しているのと同じ懸念）。**JavaScript も要求しない**——素の
+ * `<a href="?forks=20">` である（このモジュール冒頭の方針）。
+ */
+export const FORKS_OFFSET_PARAM = 'forks';
+
+/** 系統の下側（この作品からの改造）に出すもの（5.5 / M5-3 / #34）。 */
+export interface ForkNeighbors {
+  /**
+   * 公開されている子の**実件数**。
+   *
+   * **`games.fork_count` ではない**（`src/games.ts` の `countPublishedForks`）。
+   * 非正規化列は本番に「その更新経路を 1 度も通っていない行」を残しており、
+   * 読むと初日から嘘の数が出る。
+   */
+  readonly total: number;
+  /** この頁に並べる子（新しい順）。 */
+  readonly items: readonly ForkChild[];
+  /** 「もっと見る」の行き先。次の頁が無ければ null。 */
+  readonly morePath: string | null;
+  /** 「前へ」の行き先。1 頁目なら null。 */
+  readonly backPath: string | null;
+}
+
+/** 子が 1 件も無い（＝一覧を引く必要も無い）状態。 */
+const NO_FORKS: ForkNeighbors = { total: 0, items: [], morePath: null, backPath: null };
 
 /**
  * 失敗の分類名ごとの固定文言（8.3）。
@@ -407,6 +455,14 @@ export interface WorkPageView {
   readonly authorName: string | null;
   /** 元ゲーム（3.4-5 の 4 要素の 1 つ）。公開済みのときだけ意味を持つ。 */
   readonly parent: ParentWork;
+  /**
+   * この作品からの改造（5.5 / M5-3 / #34）。**公開済みのときだけ引く。**
+   *
+   * 未公開の作品に公開済みの子はありえない（フォークの親になれるのは公開済みだけ。
+   * 5.3）が、**「ありえないから 0 件」を画面が前提にしない**——空の
+   * {@link NO_FORKS} を渡すのは `showWorkPage` の判断であって、この型の含意ではない。
+   */
+  readonly forks: ForkNeighbors;
   /**
    * この画面を見ている人がログインしているか。
    *
@@ -839,7 +895,67 @@ function publishedSection(view: WorkPageView): string {
       : `
 <p>共有する URL: <code>${view.shareUrl}</code></p>`;
   return `<h2>公開しています</h2>
-${loadingScreen(view)}${share}${recaptureSection(view)}`;
+${loadingScreen(view)}${share}
+${forkList(view.forks)}${recaptureSection(view)}`;
+}
+
+/**
+ * 「このゲームからの改造: N 件」（5.5 / M5-3 / #34）。
+ *
+ * # 件数は必ず出す
+ *
+ * **0 件でも見出しを消さない。** 5.5 は親の 1 リンクと子の一覧を対で定めており、
+ * 「元ゲーム: ありません（この作品がオリジナルです）」を出しているのに、下側だけ
+ * 何も無いと**「まだ誰も改造していない」と「機能が無い」を読み手が区別できない**
+ * （{@link loadingScreen} の「無いときは、無いことを言う固定文言へ倒す」と同じ規則）。
+ *
+ * # 枠の**下**に置く
+ *
+ * 3.4-5 の 4 要素は iframe より前に置くと決まっている（{@link loadingScreen}）。
+ * **子の一覧はその 4 要素ではない。** 前に置くと、拡散の着地点で最初に目に入るものが
+ * 「このゲーム」ではなく「派生の一覧」になり、待ち時間を埋めるための版面が押し下げられる。
+ *
+ * # 題名を出してよいのは、公開済みの行だけである
+ *
+ * 引く時点で `status='published'` に絞ってある（`src/games.ts` の
+ * `listPublishedForks`）。**ここで再度絞らない**——絞りを 2 か所に置くと、片方を
+ * 直した日にもう片方が古くなる。UGC 由来なので `escapeHtml` は通す。
+ *
+ * @param forks 子作品の一覧と件数
+ * @returns HTML
+ */
+function forkList(forks: ForkNeighbors): string {
+  const heading = `<p class="gf-forks">このゲームからの改造: ${forks.total} 件</p>`;
+
+  // **「もっと見る」も「前へ」も素のリンクである**（このモジュール冒頭の「JavaScript を
+  // 要求しない」）。次が無ければ出さない——押しても何も起きない導線を出さない
+  // （`publishForm` と同じ方針）。
+  const more =
+    forks.morePath === null
+      ? ''
+      : `\n<p class="gf-forks-more"><a href="${forks.morePath}">もっと見る</a></p>`;
+  const back =
+    forks.backPath === null
+      ? ''
+      : `\n<p class="gf-forks-back"><a href="${forks.backPath}">前へ</a></p>`;
+
+  // **条件付きにしてよいのは `<ul>` だけである。** 一覧が空でも頁送りは落とさない
+  // ——落とすと、空の頁を引いた読み手の戻る道が URL の手編集しか無くなる。
+  // 通常この枝へ来るのは総数 0 のとき（どちらのパスも null）だが、**その含意に
+  // 寄りかからない。**
+  if (forks.items.length === 0) {
+    return `${heading}${back}${more}`;
+  }
+
+  const items = forks.items
+    .map(
+      (child) => `<li><a href="${workPagePath(child.id)}">${escapeHtml(child.title)}</a></li>`,
+    )
+    .join('\n');
+  return `${heading}
+<ul class="gf-fork-list">
+${items}
+</ul>${back}${more}`;
 }
 
 /**
@@ -1066,7 +1182,7 @@ function loadingScreenStyle(view: WorkPageView): string {
   .gf-shot { width: 100%; height: auto; aspect-ratio: ${OGP_IMAGE_WIDTH} / ${OGP_IMAGE_HEIGHT}; background: #111; }
   .gf-shot-pending { display: flex; align-items: center; justify-content: center; color: #ccc; }
   .gf-frame { aspect-ratio: ${OGP_IMAGE_WIDTH} / ${OGP_IMAGE_HEIGHT}; border: 0; background: #000; }
-  .gf-author, .gf-parent, .gf-fork, .gf-fork-note { margin: 0.4rem 0; }
+  .gf-author, .gf-parent, .gf-fork, .gf-fork-note, .gf-forks { margin: 0.4rem 0; }
   .gf-fork-note { font-size: 0.85em; }
 </style>`;
 }
@@ -1130,7 +1246,8 @@ export function parentWorkOf(row: {
  * @returns レスポンス
  */
 async function showWorkPage(request: Request, env: Env): Promise<Response> {
-  const pathname = new URL(request.url).pathname;
+  const url = new URL(request.url);
+  const pathname = url.pathname;
   const gameId = pathname.slice(WORK_PAGE_PREFIX.length);
   if (!GAME_ID_PATTERN.test(gameId)) {
     return notFound();
@@ -1241,6 +1358,10 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // そこに作者名を出しても意味が無い（見ているのは本人か、id を知る誰かである）。
       authorName: published ? row.author_name : null,
       parent: parentWorkOf(row),
+      // **公開済みのときだけ引く**（3.6 の読み取りがそのまま費用になる）。フォークの
+      // 親になれるのは公開済みの作品だけなので（5.3）、未公開の行に公開済みの子は
+      // 現れない。**2 回の問い合わせは、子が 1 件も無ければ 1 回で終わる。**
+      forks: published ? await forkNeighborsOf(env, gameId, readForksOffset(url)) : NO_FORKS,
       signedIn: session.ok,
       // **走っているあいだは口を出さない。** 二重送信をボタンの無効化ではなく
       // 「フォームが無い」ことで防ぐ（JavaScript を要求しない）。
@@ -1265,6 +1386,93 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
           : null,
     }),
   );
+}
+
+/**
+ * 「もっと見る」で送られてきた位置を読む（5.5 / #34）。
+ *
+ * **読めない値は 0 に倒す。** ここへ来るのは URL の問い合わせ文字列で、**誰でも
+ * 好きな値を書ける。** 負の値・小数・巨大な値・文字列を `listPublishedForks` へ
+ * 渡すと例外になり（`assertLimit`）、**作品ページ全体が 500 になる**——問い合わせ
+ * 文字列を 1 つ足すだけで拡散の着地点を落とせることになる。**1 頁目を出すほうが正しい。**
+ *
+ * 上限を `Number.MAX_SAFE_INTEGER` ではなく置いていないのは、範囲外の位置が
+ * 0 件を返すだけで、その先の分岐（`morePath` が null）が正しく働くためである。
+ *
+ * @param url 要求された URL
+ * @returns 読み飛ばす件数（0 以上の安全な整数）
+ */
+function readForksOffset(url: URL): number {
+  const raw = url.searchParams.get(FORKS_OFFSET_PARAM);
+  if (raw === null) {
+    return 0;
+  }
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+/**
+ * この作品からの改造（子）を引いて、画面が使う形へ落とす（5.5 / M5-3 / #34）。
+ *
+ * # 件数を先に数える
+ *
+ * 「N 件」の N は**この頁に並んだ数ではない**（20 件目までしか出さないので、
+ * 並んだ数を出すと 21 件目以降が存在しないことになる）。そして**次の頁があるか**も
+ * 総数から決まるので、どちらにせよ数は要る。
+ *
+ * **0 件なら一覧は引かない。** 大半の作品には子が居らず、その場合の問い合わせは
+ * 1 回で終わる。
+ *
+ * # 頁送りのリンクはパスだけを組み立てる
+ *
+ * **要求された URL を写さない。** 写すと `?utm_source=` のような外から付いた
+ * 問い合わせ文字列が頁送りのたびに引き継がれる（`shareUrl` が正規の綴りを
+ * 組み立て直しているのと同じ理由）。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId この作品の id（＝子から見た親）
+ * @param offset 読み飛ばす件数
+ * @returns 画面が使う子作品の一覧
+ */
+async function forkNeighborsOf(
+  env: Env,
+  gameId: string,
+  offset: number,
+): Promise<ForkNeighbors> {
+  const total = await countPublishedForks(env, gameId);
+  if (total === 0) {
+    return NO_FORKS;
+  }
+
+  // **範囲の外を指す位置は 1 頁目へ倒す。** `?forks=20` を控えたあとに改造が
+  // 取り下げられれば、**同じ URL が空の頁になる**（総数は減る）。空の頁を出して
+  // 戻る道を添えるより、**在るものを出す**ほうがよい。読み手が何かを間違えた
+  // わけでもない。
+  const start = offset < total ? offset : 0;
+
+  const items = await listPublishedForks(env, gameId, FORKS_PER_PAGE, start);
+  const nextOffset = start + items.length;
+  const previousOffset = Math.max(start - FORKS_PER_PAGE, 0);
+
+  return {
+    total,
+    items,
+    morePath: nextOffset < total ? forksPagePath(gameId, nextOffset) : null,
+    backPath: start > 0 ? forksPagePath(gameId, previousOffset) : null,
+  };
+}
+
+/**
+ * 頁送りの行き先を組み立てる。
+ *
+ * @param gameId 作品 id
+ * @param offset 読み飛ばす件数（0 なら問い合わせ文字列を付けない）
+ * @returns アプリ用ホスト上の絶対パス
+ */
+function forksPagePath(gameId: string, offset: number): string {
+  return offset === 0
+    ? workPagePath(gameId)
+    : `${workPagePath(gameId)}?${FORKS_OFFSET_PARAM}=${offset}`;
 }
 
 /**

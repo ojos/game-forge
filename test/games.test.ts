@@ -23,6 +23,7 @@ import {
   listAuthoredGames,
   listPublishedForks,
   publishGame,
+  removeGame,
 } from '../src/games.js';
 import type { GenerateRequest } from '../src/generate.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
@@ -1063,5 +1064,149 @@ describe('系統の近傍と fork_count（5.5 / M5-3 / #34）', () => {
         /読み飛ばし件数が不正です/u,
       );
     }
+  });
+});
+
+describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
+  /**
+   * 完成させて公開した作品を 1 件用意する。
+   *
+   * @param userId 作者
+   * @param prompt 仮タイトルの元になるプロンプト
+   * @param parentId 親の作品 id（オリジナルなら null）
+   * @param now 時刻（UNIX 秒）
+   * @returns 作った作品の id
+   */
+  async function publishNew(
+    userId: string,
+    prompt: string,
+    parentId: string | null,
+    now: number,
+  ): Promise<string> {
+    const pending =
+      parentId === null
+        ? await createPendingGame(env, userId, { prompt }, now)
+        : await createForkedGame(env, userId, { prompt }, parentId, now);
+    await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken), now);
+    await completeGame(
+      env,
+      pending.id,
+      fakeBuildOutcome({ sourceSha256: `t${pending.id.replace(/-/gu, '')}`.padEnd(64, '0') }),
+      now,
+    );
+    expect((await publishGame(env, pending.id, userId, now)).ok).toBe(true);
+    return pending.id;
+  }
+
+  it('親を取り下げても、子は published のまま残る（連鎖削除しない）', async () => {
+    // **#35 の acceptance そのものである。** 5.3 は「連鎖削除は荒れるため採らない」。
+    const author = await seedUser('rm-cascade-author');
+    const forker = await seedUser('rm-cascade-forker');
+    const parent = await publishNew(author, '親のゲーム', null, 10_000);
+    const child = await publishNew(forker, '子のゲーム', parent, 10_100);
+    const grandchild = await publishNew(forker, '孫のゲーム', child, 10_200);
+    // **作者自身が改造した子も巻き込まない。** 5.7 は「公開後に手を入れたい作者は
+    // フォークする」と定めており、**親子が同じ作者になる系統は正常な形**である。
+    // ここを他人の子だけで確かめると、`author_id = ?` が偶然止めているだけの
+    // 実装（`where id = ? or parent_id = ?`）を緑のまま通してしまう。
+    const ownChild = await publishNew(author, '作者自身の改造', parent, 10_300);
+
+    expect(await removeGame(env, parent, author)).toEqual({ ok: true, firstTime: true });
+
+    expect((await readGame(parent)).status).toBe('removed');
+    // **子も孫も 1 文字も動いていない。**
+    expect((await readGame(child)).status).toBe('published');
+    expect((await readGame(child)).parent_id).toBe(parent);
+    expect((await readGame(grandchild)).status).toBe('published');
+    expect((await readGame(ownChild)).status).toBe('published');
+  });
+
+  it('物理削除しない（行も、子から親への参照も残る）', async () => {
+    const author = await seedUser('rm-tombstone-author');
+    const forker = await seedUser('rm-tombstone-forker');
+    const parent = await publishNew(author, '親のゲーム', null, 11_000);
+    const child = await publishNew(forker, '子のゲーム', parent, 11_100);
+
+    await removeGame(env, parent, author);
+
+    // 行が残っているから、子の画面は「削除済みの作品から派生」と言える
+    // （`parentWorkOf` は結合の空振りも removed へ倒すが、それは保険である）。
+    const row = await readGame(parent);
+    expect(row.status).toBe('removed');
+    expect(row.title).not.toBe('');
+    // R2 の成果物への参照も残る（確定26 の削除規約が引く先を壊さない）。
+    expect(row.source_key).not.toBeNull();
+    expect((await readGame(child)).parent_id).toBe(parent);
+  });
+
+  it('取り下げると、親の fork_count と実件数から外れる', async () => {
+    const author = await seedUser('rm-count-author');
+    const forker = await seedUser('rm-count-forker');
+    const parent = await publishNew(author, '親のゲーム', null, 12_000);
+    const kept = await publishNew(forker, '残す改造', parent, 12_100);
+    const dropped = await publishNew(forker, '取り下げる改造', parent, 12_200);
+    expect((await readGame(parent)).fork_count).toBe(2);
+
+    await removeGame(env, dropped, forker);
+
+    expect((await readGame(parent)).fork_count).toBe(1);
+    expect(await countPublishedForks(env, parent)).toBe(1);
+    expect((await listPublishedForks(env, parent, 20)).map((c) => c.id)).toEqual([kept]);
+  });
+
+  it('他人は取り下げられない（存在しない id と区別しない）', async () => {
+    const author = await seedUser('rm-other-author');
+    const stranger = await seedUser('rm-other-stranger');
+    const game = await publishNew(author, '他人のゲーム', null, 13_000);
+
+    expect(await removeGame(env, game, stranger)).toEqual({ ok: false, reason: 'not-found' });
+    expect(await removeGame(env, crypto.randomUUID(), author)).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    // **作品は無傷である。**
+    expect((await readGame(game)).status).toBe('published');
+  });
+
+  it('未公開の作品は取り下げられない', async () => {
+    const author = await seedUser('rm-draft-author');
+    const pending = await createPendingGame(env, author, { prompt: '未公開' }, 14_000);
+    expect(await removeGame(env, pending.id, author)).toEqual({
+      ok: false,
+      reason: 'not-published',
+    });
+    expect((await readGame(pending.id)).status).toBe(DRAFT_STATUS);
+  });
+
+  it('二度押しても壊れない（2 回目は firstTime が false）', async () => {
+    const author = await seedUser('rm-twice-author');
+    const game = await publishNew(author, '取り下げるゲーム', null, 15_000);
+
+    expect(await removeGame(env, game, author)).toEqual({ ok: true, firstTime: true });
+    expect(await removeGame(env, game, author)).toEqual({ ok: true, firstTime: false });
+    expect((await readGame(game)).status).toBe('removed');
+  });
+
+  it('取り下げた作品は公開し直せない（publishGame が removed で断る）', async () => {
+    const author = await seedUser('rm-republish-author');
+    const game = await publishNew(author, '取り下げるゲーム', null, 16_000);
+    await removeGame(env, game, author);
+
+    expect(await publishGame(env, game, author, 16_100)).toEqual({
+      ok: false,
+      reason: 'removed',
+    });
+  });
+
+  it('取り下げた作品は「あなたの作品」一覧に出ない', async () => {
+    const author = await seedUser('rm-list-author');
+    const kept = await publishNew(author, '残すゲーム', null, 17_000);
+    const dropped = await publishNew(author, '取り下げるゲーム', null, 17_100);
+    await removeGame(env, dropped, author);
+
+    const ids = (await listAuthoredGames(env, author, 50)).map((work) => work.id);
+    expect(ids).toContain(kept);
+    // 行き先の無いリンクを一覧に並べない（`listAuthoredGames` の規則）。
+    expect(ids).not.toContain(dropped);
   });
 });

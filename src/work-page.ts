@@ -54,6 +54,7 @@ import {
   listPublishedForks,
   PUBLISHED_STATUS,
   REMOVED_STATUS,
+  removeGame,
 } from './games.js';
 import {
   OGP_IMAGE_HEIGHT,
@@ -76,6 +77,7 @@ import {
   REVISE_PROMPT_FIELD,
   REVISE_SEQ_FIELD,
 } from './paths.js';
+import { LOGIN_PATH } from './auth/google.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
 import {
   generationQuotaStatus,
@@ -85,7 +87,7 @@ import {
 import type { Revision } from './revisions.js';
 import { listRevisions, revisionStatus } from './revisions.js';
 import type { Route } from './routes.js';
-import { html } from './routes.js';
+import { html, json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/invite-issuance.ts` も
 // そこから取っている）。同じ関数をこのモジュールで作り直さない。
@@ -115,6 +117,26 @@ export const WORK_PAGE_PREFIX = '/works/';
 export function workPagePath(gameId: string): string {
   return `${WORK_PAGE_PREFIX}${gameId}`;
 }
+
+/**
+ * 公開を取り下げる操作（tombstone 化。5.3 / M5-4 / #35）。
+ *
+ * # なぜ `src/paths.ts` に置かないのか
+ *
+ * あちらの規約は「**提供する側と、そこへ送り返す側が別モジュールになるもの**だけ」
+ * である（`src/paths.ts` 冒頭）。この経路はフォームも受け口も**このモジュールが
+ * 持つ**ので、循環参照が起きる余地が無い。`HOME_PATH` / `GENERATE_PATH` と同じ扱い。
+ *
+ * # なぜ作品ページに置くのか
+ *
+ * 取り下げは**その作品の状態を進める操作**であり、押す場所も戻る場所も作品ページ
+ * である。`src/publish.ts` が公開のために別モジュールを持っているのは、あちらが
+ * **OGP の撮影という別の副作用**を起動するためで、こちらには無い。
+ */
+export const WORK_REMOVE_PATH = '/api/works/remove';
+
+/** 取り下げの対象を指す項目名（フォームの `name` と JSON の鍵の両方）。 */
+export const WORK_REMOVE_GAME_ID_FIELD = 'game_id';
 
 /**
  * `games.id` の綴り（`crypto.randomUUID()` が返す形）。
@@ -411,6 +433,15 @@ export interface WorkPageView {
    * 出す）になる。
    */
   readonly published: boolean;
+  /**
+   * 取り下げられているか（tombstone。5.3 / M5-4 / #35）。
+   *
+   * **`published` の否定ではない。** `draft`（まだ公開していない）と `removed`
+   * （公開したが取り下げた）は、作者にできることが正反対である——前者には
+   * 「公開して共有」の口が出るが、**後者に出してはいけない**（押せば
+   * `publishGame` が `removed` で断る）。1 つの真偽で表すと、その区別が消える。
+   */
+  readonly removed: boolean;
   /** 仮タイトル（プロンプト由来）。本人でも公開済みでもなければ null。 */
   readonly title: string | null;
   /** 失敗の分類名。本人でなければ null。 */
@@ -506,6 +537,14 @@ export interface WorkPageView {
    * 決めるのは `reclaimStaleOgpCapture` の SQL で、ここへ来るのは判定済みの値だけである。
    */
   readonly recapturableId: string | null;
+  /**
+   * この作品 id（取り下げのフォームに入れる。5.3 / M5-4 / #35）。取り下げられないなら null。
+   *
+   * **`publishableId` / `forkableId` / `recapturableId` と兼ねない**（同時に非 null に
+   * なりえない値を 1 つに畳むと、片方の条件を変えた日にもう片方が黙って壊れる。
+   * `forkableId` を分けたのと同じ理由）。条件は「**公開済み・本人**」である。
+   */
+  readonly removableId: string | null;
 }
 
 /**
@@ -618,6 +657,12 @@ function ogpMeta(view: WorkPageView): string {
  * @returns HTML
  */
 function sectionFor(view: WorkPageView): string {
+  // **`state` より先に見る。** tombstone は生成の進行状態と直交しており（取り下げても
+  // `generation_state` は `ready` のまま）、`state` の分岐に混ぜると「できました」の
+  // 枝の中に「取り下げています」を書き足して回ることになる。
+  if (view.removed) {
+    return removedSection(view);
+  }
   switch (view.state) {
     case 'working':
       // **文言は `GENERATION_IS_SYNCHRONOUS` が決める。** #160 で非同期実行になった
@@ -647,6 +692,71 @@ function sectionFor(view: WorkPageView): string {
       return `<h2>状態を読み取れませんでした</h2>
 <p>この作品の状態が想定外の値になっています。時間をおいてもう一度お試しください。</p>`;
   }
+}
+
+/**
+ * 取り下げられた作品の本文（5.3 / M5-4 / #35）。
+ *
+ * # 誰にでも同じことを言う
+ *
+ * **404 にしない。** 取り下げられたことは既に公開の事実である——**子の作品ページが
+ * 「元ゲーム: 削除済みの作品から派生」と言っている**（{@link parentLine}）。ここだけ
+ * 「作品が見つかりません」と言うと、辿ってきた人には**リンクが壊れているのか、
+ * 取り下げられたのか**が読めない。
+ *
+ * それでも**題名は出さない**（`showWorkPage` が本人以外へ渡さない）。取り下げは
+ * 「もう見せない」という作者の意思表示で、5.4 の公開が「見せてよい」の表明だった
+ * のと対になっている。
+ *
+ * # 元に戻す口は置かない
+ *
+ * 5.3 も 5.4 も `removed` から戻る遷移を定義していない。**戻せるように見せて
+ * 断るより、置かないほうがよい**（`publishGame` は `removed` を `reason: 'removed'`
+ * で断る）。公開し直したいなら、5.7 が言うとおりフォークが正しい口である。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function removedSection(view: WorkPageView): string {
+  const owned = view.owner
+    ? `
+<p>この作品はあなたが取り下げました。共有した URL からは遊べなくなっています。</p>
+<p><strong>この作品を改造した作品は、そのまま公開されたままです。</strong>
+   取り下げは、そこから派生した作品を巻き込みません。</p>`
+    : '';
+  return `<h2>この作品は取り下げられました</h2>
+<p>作者がこの作品の公開を取り下げました。${owned}`;
+}
+
+/**
+ * 公開を取り下げる口（5.3 / M5-4 / #35）。
+ *
+ * # 連鎖しないことを、押す前に書く
+ *
+ * 5.3 は「連鎖削除は荒れるため採らない」と定めるが、**それを作者が知る経路が
+ * 無ければ、作者は「子まで消える」と思って押せない（あるいは、消えると思って押す）。**
+ * どちらも黙って裏切る形になる（仕様 1.2.31「黙って失敗を作らない」）。
+ *
+ * # 主ボタンを増やさない
+ *
+ * ここは**公開したあと**の画面で、5.4 の「公開して共有」の 1 タップは 1 文字も
+ * 変わらない（{@link recaptureSection} と同じ判断）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function removeSection(view: WorkPageView): string {
+  if (view.removableId === null) {
+    return '';
+  }
+  return `
+<h3>公開の取り下げ</h3>
+<p>この作品の公開をやめられます。共有した URL からは遊べなくなります。
+   <strong>この作品を改造した作品は、そのまま公開されたままです</strong>（連鎖して消えることはありません）。</p>
+<form method="post" action="${WORK_REMOVE_PATH}">
+  <input type="hidden" name="${WORK_REMOVE_GAME_ID_FIELD}" value="${view.removableId}">
+  <button type="submit">公開を取り下げる</button>
+</form>`;
 }
 
 /**
@@ -896,7 +1006,7 @@ function publishedSection(view: WorkPageView): string {
 <p>共有する URL: <code>${view.shareUrl}</code></p>`;
   return `<h2>公開しています</h2>
 ${loadingScreen(view)}${share}
-${forkList(view.forks)}${recaptureSection(view)}`;
+${forkList(view.forks)}${recaptureSection(view)}${removeSection(view)}`;
 }
 
 /**
@@ -1290,11 +1400,14 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   const state = viewStateOf(row.generation_state, stalled);
 
   const published = row.status === PUBLISHED_STATUS;
+  // **`!published` で代用しない**（5.3 / #35）。`draft` と `removed` は作者にできる
+  // ことが正反対で、混ぜると取り下げた作品に「公開して共有」の口が出る。
+  const removed = row.status === REMOVED_STATUS;
 
   // 5.7 の対象条件（自作・`draft`・完成済み）。**経路側と同じ条件をここで作り直して
   // いるように見えるが、判定の正本は `claimRevisionSlot` の SQL である**
   // （`src/revisions.ts`）。ここは「口を出すか」だけを決め、押した結果はあちらが決める。
-  const revisableNow = owner && !published && state === 'ready';
+  const revisableNow = owner && !published && !removed && state === 'ready';
 
   // **作者のときだけ引く。** 公開作品のページは拡散の着地点であり、閲覧者ごとに
   // 版と枠を引く理由が無い（3.6 の読み取りがそのまま費用になる）。
@@ -1321,6 +1434,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       state,
       owner,
       published,
+      removed,
       // **本人か、公開済みのときだけ出す。** 仮タイトルはプロンプト由来である
       // （モジュール冒頭）が、**公開そのものが「これを作品として出す」という
       // 作者の意思表示**である（5.4 は作者を唯一のフィルタとして使う）。
@@ -1332,14 +1446,26 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       //
       // **公開後は id で引ける URL（`/g/`）へ切り替える。** プレビュー鍵は公開後も
       // 生きている（`/p/` は `removed` 以外を返す。5.4）が、**配る URL は 1 本でよい。**
-      playUrl: published
-        ? publishedUrl(request, env, gameId)
-        : state === 'ready' && owner && row.preview_key !== null
-          ? previewUrl(request, env, row.preview_key)
-          : null,
+      //
+      // **取り下げた作品では試遊 URL も出さない**（#35）。`/p/` は
+      // `status <> 'removed'` でしか引けない（`src/sandbox-delivery.ts`）ので、
+      // 出せば作者本人が 404 を踏む。
+      playUrl:
+        published
+          ? publishedUrl(request, env, gameId)
+          : state === 'ready' && owner && !removed && row.preview_key !== null
+            ? previewUrl(request, env, row.preview_key)
+            : null,
       // 公開の操作を出すのは、**本人・完成済み・未公開**のときだけである。
       // （押せない・押しても何も起きないボタンを出さない。仕様 1.2.38 の #24 と同じ方針）
-      publishableId: owner && !published && state === 'ready' ? gameId : null,
+      //
+      // **`removed` を除く**（#35）。押せば `publishGame` が `reason: 'removed'` で断る。
+      //
+      // **これは第 2 層である。** 画面側の第 1 層は `sectionFor` の tombstone 分岐で、
+      // そちらが先に本文ごと差し替える。**したがってこの条件だけを外しても画面は
+      // 変わらない**（変異を当てて確かめた）。**両方を外すと `test/work-page.test.ts`
+      // が赤くなる**ので、層が 1 枚になった状態は残らない。
+      publishableId: owner && !published && !removed && state === 'ready' ? gameId : null,
       // フォークの親になれるのは**公開済みの作品だけ**である（5.3）。**作者かどうかは
       // 見ない**（5.7 の「公開後に手を入れたい作者はフォークする」）。押した結果を
       // 決めるのは `src/fork.ts` の `readParentSource` で、ここは口を出すかだけを決める。
@@ -1384,8 +1510,202 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
         )
           ? gameId
           : null,
+      // **取り下げられるのは、公開してしまった作品だけである**（5.3 / #35）。
+      // 押した結果を決めるのは `removeGame` の SQL で、ここは口を出すかだけを決める。
+      removableId: owner && published ? gameId : null,
     }),
   );
+}
+
+/**
+ * 公開を取り下げる（`POST /api/works/remove`。5.3 / M5-4 / #35）。
+ *
+ * # 形は `src/publish.ts` / `src/ogp-recapture.ts` に揃える
+ *
+ * 素の `<form method="post">` と `fetch` の両方を受け、**判定はすべて `removeGame` の
+ * SQL 1 本が持つ**（作者の一致も、いまの状態も、ここに `if` を置かない）。
+ *
+ * # CSRF について
+ *
+ * セッション cookie は `SameSite=Lax`（8.1 / `src/session.ts`）なので、他サイトからの
+ * POST には cookie が乗らない。`src/publish.ts` と同じ理由でトークンを足していない。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function handleRemove(request: Request, env: Env): Promise<Response> {
+  const asHtml = (request.headers.get('accept') ?? '').includes('text/html');
+
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return asHtml ? seeOther(LOGIN_PATH) : json({ error: 'unauthorized' }, 401);
+  }
+
+  const target = await readRemoveTarget(request);
+  if (!target.ok) {
+    const refused = REMOVE_BODY_REFUSALS[target.reason];
+    return asHtml
+      ? removeRefusal('取り下げられません', refused.body, refused.status)
+      : json({ error: target.reason }, refused.status);
+  }
+
+  const outcome = await removeGame(env, target.gameId, session.userId);
+
+  if (outcome.ok) {
+    // POST-redirect-GET。戻り先は作品ページで、そこに tombstone の表示が出る。
+    return asHtml
+      ? seeOther(workPagePath(target.gameId))
+      : json({ removed: true, firstTime: outcome.firstTime }, 200);
+  }
+
+  const refused = REMOVE_OUTCOME_REFUSALS[outcome.reason];
+  return asHtml
+    ? removeRefusal(refused.heading, refused.body, refused.status)
+    : json({ error: outcome.reason }, refused.status);
+}
+
+/**
+ * 受け付ける本文の最大バイト数。
+ *
+ * **1 KiB。** 載るのは UUID 1 つだけである（`src/publish.ts` と同じ値・同じ理由）。
+ */
+const REMOVE_MAX_BODY_BYTES = 1024;
+
+/** 素の HTML フォームが送ってくる `Content-Type`。 */
+const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
+
+/** `fetch` から呼ぶときの `Content-Type`。 */
+const JSON_MEDIA_TYPE = 'application/json';
+
+/**
+ * 取り下げの要求を受け付けられなかった理由。
+ *
+ * 綴りと分け方は `src/publish.ts` の `PublishRejection` に揃えてある。
+ */
+export type RemoveRejection =
+  | 'unsupported-content-type'
+  | 'body-too-large'
+  | 'unreadable-body'
+  | 'invalid-game-id';
+
+/**
+ * 断りの理由ごとのステータスと文言。
+ *
+ * **ステータスを分岐の式で書かない**（`src/publish.ts` の `BODY_REFUSALS` と同じ理由。
+ * 理由を 1 つ足したときに既定の側へ黙って落ちる形にしない）。
+ */
+const REMOVE_BODY_REFUSALS: Readonly<Record<RemoveRejection, { status: number; body: string }>> = {
+  'unsupported-content-type': { status: 415, body: '要求の形式に対応していません。' },
+  'body-too-large': { status: 413, body: '要求が大きすぎます。' },
+  'unreadable-body': {
+    status: 400,
+    body: '要求を最後まで受け取れませんでした。もう一度お試しください。',
+  },
+  'invalid-game-id': { status: 400, body: '要求の形が正しくありません。' },
+};
+
+/**
+ * 取り下げの結果ごとの、ステータスと文言。
+ *
+ * **成功はここに無い**（POST-redirect-GET で応答の作り方そのものが違う。
+ * `src/ogp-recapture.ts` の `OUTCOME_REFUSALS` と同じ形）。
+ *
+ * `not-found` に他人の作品も含める（`removeGame` が区別しない）。
+ */
+const REMOVE_OUTCOME_REFUSALS: Readonly<
+  Record<'not-found' | 'not-published', { status: number; heading: string; body: string }>
+> = {
+  'not-found': {
+    status: 404,
+    heading: '作品が見つかりません',
+    body: 'URL が正しいかご確認ください。',
+  },
+  'not-published': {
+    status: 409,
+    heading: '取り下げられません',
+    body: 'この作品はまだ公開されていません。公開していない作品には、取り下げるものがありません。',
+  },
+};
+
+/**
+ * 303 See Other を返す。
+ *
+ * @param location 遷移先
+ * @returns レスポンス
+ */
+function seeOther(location: string): Response {
+  return new Response(null, { status: 303, headers: { location, 'cache-control': 'no-store' } });
+}
+
+/**
+ * 断りの画面を返す。
+ *
+ * **作品ページへ 303 で戻さない。** 戻すと、取り下げられなかったことが URL にも
+ * ステータスにも残らない（`src/publish.ts` の `refusal` と同じ判断）。
+ *
+ * @param heading 見出し
+ * @param body 本文
+ * @param status ステータスコード
+ * @returns レスポンス
+ */
+function removeRefusal(heading: string, body: string, status: number): Response {
+  return html(
+    `<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>${heading} - Game Forge</title>
+<h1>${heading}</h1>
+<p>${body}</p>
+<p><a href="/">トップへ</a></p>`,
+    status,
+  );
+}
+
+/** 本文から取り出した対象。 */
+type RemoveTarget =
+  | { readonly ok: true; readonly gameId: string }
+  | { readonly ok: false; readonly reason: RemoveRejection };
+
+/**
+ * 本文から取り下げる作品の id を取り出す。
+ *
+ * **形をここで確かめる**（`src/publish.ts` の `readGameId` と同じ方針）。
+ *
+ * @param request 受信したリクエスト
+ * @returns 作品 id、または理由
+ */
+async function readRemoveTarget(request: Request): Promise<RemoveTarget> {
+  const mediaType = (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+  if (mediaType !== FORM_MEDIA_TYPE && mediaType !== JSON_MEDIA_TYPE) {
+    return { ok: false, reason: 'unsupported-content-type' };
+  }
+
+  const read = await readLimitedText(request, REMOVE_MAX_BODY_BYTES);
+  if (!read.ok) {
+    return { ok: false, reason: read.reason };
+  }
+
+  let raw: unknown;
+  if (mediaType === FORM_MEDIA_TYPE) {
+    raw = new URLSearchParams(read.text).get(WORK_REMOVE_GAME_ID_FIELD) ?? undefined;
+  } else {
+    try {
+      const parsed: unknown = JSON.parse(read.text);
+      raw =
+        typeof parsed === 'object' && parsed !== null
+          ? (parsed as Record<string, unknown>)[WORK_REMOVE_GAME_ID_FIELD]
+          : undefined;
+    } catch {
+      return { ok: false, reason: 'invalid-game-id' };
+    }
+  }
+
+  if (typeof raw !== 'string' || !GAME_ID_PATTERN.test(raw)) {
+    return { ok: false, reason: 'invalid-game-id' };
+  }
+  return { ok: true, gameId: raw };
 }
 
 /**
@@ -1515,4 +1835,7 @@ async function readDailyRemaining(env: Env, userId: string): Promise<number | nu
  */
 export const workPageRoutes: readonly Route[] = [
   { method: 'GET', path: WORK_PAGE_PREFIX, match: 'prefix', handler: showWorkPage },
+  // **取り下げ（#35）は完全一致である。** `/api/works/remove` は `/works/` の
+  // 前方一致に当たらない綴りにしてある（当たると作品ページの id として解釈される）。
+  { method: 'POST', path: WORK_REMOVE_PATH, handler: handleRemove },
 ];

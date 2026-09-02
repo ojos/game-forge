@@ -6,6 +6,7 @@ import {
   classifySourceBytes,
   decideForkSizeAction,
   measureSourceBytes,
+  warningBytesFor,
 } from '../src/source-size.js';
 
 /**
@@ -24,6 +25,19 @@ describe('上限と警告の閾値（確定18 の条件 1）', () => {
     expect(SOURCE_SIZE_WARNING_RATIO).toBe(0.8);
     expect(SOURCE_SIZE_WARNING_BYTES).toBe(24 * 1024);
     expect(SOURCE_SIZE_WARNING_BYTES).toBe(MAX_SOURCE_BYTES * 0.8);
+  });
+
+  it('閾値は整数である（上限が動いても端数を作らない）', () => {
+    // **バイト数は画面へそのまま出る**（`src/fork.ts` の警告画面）。`* 0.8` は
+    // 二進小数なので、上限によっては端数になる。**いまの 30,720 では割り切れるため、
+    // 現在値だけを見る検査はこの不具合を捕まえられない**——割り切れない上限を
+    // 直接与えて確かめる（#255 のレビュー指摘）。
+    expect(Number.isInteger(SOURCE_SIZE_WARNING_BYTES)).toBe(true);
+    expect(Number.isInteger(warningBytesFor(31 * 1024))).toBe(true);
+    expect(Number.isInteger(warningBytesFor(9 * 1024))).toBe(true);
+    // 導出そのものは変えていない（切り下げるだけ）。
+    expect(warningBytesFor(30 * 1024)).toBe(24 * 1024);
+    expect(warningBytesFor(31 * 1024)).toBe(25_395);
   });
 
   it('警告の帯が空でない（閾値は上限より小さい）', () => {

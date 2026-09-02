@@ -59,8 +59,27 @@ export { MAX_SOURCE_BYTES };
  */
 export const SOURCE_SIZE_WARNING_RATIO = 0.8;
 
+/**
+ * 上限から事前警告の閾値を導く。
+ *
+ * **切り下げる。** バイト数は整数であり、しかも**作者の画面へそのまま出る値**である
+ * （`src/fork.ts` の警告画面）。`* 0.8` は二進小数なので、上限によっては
+ * `25395.2` のような端数を作る——いまの 30,720 では割り切れるが、**上限が動いた日に
+ * 画面へ小数が出る**（#255 のレビュー指摘。指摘そのものは正しく、ただし挙げられた
+ * 例（現在値が端数になる）は外れていた。実測して確かめた）。
+ *
+ * **端数は警告を早める側へ倒す。** 条件 1 は「知らせる」ためのもので、1 バイト早く
+ * 知らせても失うものが無い。
+ *
+ * @param limitBytes 上限のバイト数
+ * @returns 警告を始めるバイト数（**これを超えたら**警告する）
+ */
+export function warningBytesFor(limitBytes: number): number {
+  return Math.floor(limitBytes * SOURCE_SIZE_WARNING_RATIO);
+}
+
 /** 事前警告を出すバイト数（**これを超えたら**警告する。24KB）。 */
-export const SOURCE_SIZE_WARNING_BYTES = MAX_SOURCE_BYTES * SOURCE_SIZE_WARNING_RATIO;
+export const SOURCE_SIZE_WARNING_BYTES = warningBytesFor(MAX_SOURCE_BYTES);
 
 /**
  * ソースのバイト数を測る。

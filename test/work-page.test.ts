@@ -2,6 +2,8 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { dispatch } from '../src/routes.js';
 import {
+  FORKS_OFFSET_PARAM,
+  FORKS_PER_PAGE,
   GENERATION_IS_SYNCHRONOUS,
   WORK_PAGE_PREFIX,
   workPagePath,
@@ -610,5 +612,163 @@ describe('フォークの口（5.3 / M5-1 / #32）', () => {
     // **3.4-5 の 4 要素は 1 つも条件付きにしない。** 見出しと残数は残る。
     expect(body).toContain('このゲームを改造する');
     expect(body).toContain(remainingQuotaNotice(0));
+  });
+});
+
+describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
+  /**
+   * 公開済みの作品を 1 件用意する。
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @returns 作者の id と作品 id
+   */
+  async function seedPublishedWork(suffix: string): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(`lin-${suffix}`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: `sha-lin-${suffix}` }));
+    const published = await publishGame(env, id, userId);
+    expect(published.ok).toBe(true);
+    return { userId, id };
+  }
+
+  /**
+   * 子の `games` 行を直接 1 件入れる。
+   *
+   * **生成の経路を通さない。** ここで確かめたいのは画面の引き方と並べ方であって、
+   * 行の作られ方ではない（`test/games.test.ts` が経路側を見ている）。`status` と
+   * `published_at` を自由に置けるほうが、除外と並び順を少ない行数で網羅できる。
+   *
+   * @param authorId 作者
+   * @param parentId 親の作品 id
+   * @param overrides 列の指定
+   * @returns 作った作品の id
+   */
+  async function seedChild(
+    authorId: string,
+    parentId: string,
+    overrides: { readonly status?: string; readonly title?: string; readonly publishedAt?: number } = {},
+  ): Promise<string> {
+    const id = crypto.randomUUID();
+    await env.DB.prepare(
+      `insert into games
+         (id, author_id, parent_id, status, title, go_version, fork_count,
+          created_at, published_at, generation_state)
+       values (?, ?, ?, ?, ?, '', 0, 1, ?, 'ready')`,
+    )
+      .bind(
+        id,
+        authorId,
+        parentId,
+        overrides.status ?? 'published',
+        overrides.title ?? '改造された作品',
+        overrides.publishedAt ?? 1000,
+      )
+      .run();
+    return id;
+  }
+
+  it('公開済みの作品に「このゲームからの改造: N 件」と子へのリンクが出る', async () => {
+    const { id } = await seedPublishedWork('list');
+    const forker = await seedUser('lin-list-forker');
+    const older = await seedChild(forker, id, { title: '古い改造', publishedAt: 100 });
+    const newer = await seedChild(forker, id, { title: '新しい改造', publishedAt: 200 });
+
+    const body = await (await open(workPagePath(id))).text();
+
+    expect(body).toContain('このゲームからの改造: 2 件');
+    expect(body).toContain(`<a href="${workPagePath(newer)}">新しい改造</a>`);
+    expect(body).toContain(`<a href="${workPagePath(older)}">古い改造</a>`);
+    // **新しい順である**（5.5）。
+    expect(body.indexOf('新しい改造')).toBeLessThan(body.indexOf('古い改造'));
+  });
+
+  it('draft の子は一覧にも件数にも出ない（#34 の acceptance）', async () => {
+    const { id } = await seedPublishedWork('draft-child');
+    const forker = await seedUser('lin-draft-forker');
+    await seedChild(forker, id, { status: 'draft', title: '未公開の改造' });
+    await seedChild(forker, id, { status: 'removed', title: '取り下げた改造' });
+    const shown = await seedChild(forker, id, { title: '公開された改造' });
+
+    const body = await (await open(workPagePath(id))).text();
+
+    expect(body).toContain('このゲームからの改造: 1 件');
+    expect(body).toContain(`<a href="${workPagePath(shown)}">公開された改造</a>`);
+    // **題名はプロンプト由来である。** 出せば 5.4 の「公開して初めて有効になる」の
+    // 抜け道になる。
+    expect(body).not.toContain('未公開の改造');
+    expect(body).not.toContain('取り下げた改造');
+  });
+
+  it('21 件目は「もっと見る」で取れる（20 件＋もっと見る）', async () => {
+    const { id } = await seedPublishedWork('paging');
+    const forker = await seedUser('lin-paging-forker');
+    const children: string[] = [];
+    for (let i = 0; i < 21; i += 1) {
+      children.push(await seedChild(forker, id, { title: `改造 ${i}`, publishedAt: 1000 + i }));
+    }
+    const newestFirst = [...children].reverse();
+
+    const first = await (await open(workPagePath(id))).text();
+    expect(first).toContain('このゲームからの改造: 21 件');
+    // 20 件だけ出て、21 件目（＝いちばん古い 1 件）は出ていない。
+    expect(first).toContain(`<a href="${workPagePath(newestFirst[19]!)}">改造 1</a>`);
+    expect(first).not.toContain(`<a href="${workPagePath(newestFirst[20]!)}">改造 0</a>`);
+
+    const morePath = `${workPagePath(id)}?${FORKS_OFFSET_PARAM}=${FORKS_PER_PAGE}`;
+    expect(first).toContain(`<a href="${morePath}">もっと見る</a>`);
+
+    // **画面に出ているリンクをそのまま辿る**（テストが URL を組み立て直すと、
+    // 画面の綴りが変わっても緑のままになる）。
+    const second = await (await open(morePath)).text();
+    expect(second).toContain(`<a href="${workPagePath(newestFirst[20]!)}">改造 0</a>`);
+    // 2 頁目には次が無いので「もっと見る」は出ない。
+    expect(second).not.toContain('もっと見る');
+    // 戻る道はある。
+    expect(second).toContain(`<a href="${workPagePath(id)}">前へ</a>`);
+  });
+
+  it('改造が 1 件も無ければ 0 件と言い、一覧は出さない', async () => {
+    const { id } = await seedPublishedWork('empty');
+    const body = await (await open(workPagePath(id))).text();
+    // **見出しを消さない。**「まだ誰も改造していない」と「機能が無い」を区別できる形にする。
+    expect(body).toContain('このゲームからの改造: 0 件');
+    expect(body).not.toContain('<ul class="gf-fork-list">');
+    expect(body).not.toContain('もっと見る');
+  });
+
+  it('壊れた forks の値で 500 にしない（1 頁目に倒す）', async () => {
+    // **問い合わせ文字列は誰でも書ける。** 例外にすると、拡散の着地点を 1 つの
+    // クエリで落とせることになる。
+    const { id } = await seedPublishedWork('bad-offset');
+    const forker = await seedUser('lin-bad-offset-forker');
+    await seedChild(forker, id, { title: 'ある改造' });
+
+    for (const raw of ['-1', '1.5', 'abc', '', '9007199254740993']) {
+      const response = await open(`${workPagePath(id)}?${FORKS_OFFSET_PARAM}=${raw}`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain('ある改造');
+    }
+  });
+
+  it('子の題名を escape する（UGC 由来）', async () => {
+    const { id } = await seedPublishedWork('escape-child');
+    const forker = await seedUser('lin-escape-forker');
+    await seedChild(forker, id, { title: '<script>alert(1)</script>' });
+
+    const body = await (await open(workPagePath(id))).text();
+    expect(body).not.toContain('<script>alert(1)</script>');
+    expect(body).toContain('&lt;script&gt;');
+  });
+
+  it('未公開の作品ページには系統の一覧を出さない', async () => {
+    // 公開済みの作品しかフォークの親になれない（5.3）ので、未公開の行に公開済みの
+    // 子は現れない。**引きに行かないことを画面の側でも固定する**（3.6 の読み取りが
+    // そのまま費用になる）。
+    const { userId, id, jobToken } = await seedPending('lin-unpublished');
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: 'sha-lin-unpublished' }));
+
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(body).not.toContain('このゲームからの改造');
   });
 });

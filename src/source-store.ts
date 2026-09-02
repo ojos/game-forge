@@ -31,10 +31,12 @@
  * 枠だけが消える。
  *
  * **上限の値そのものは `src/system-prompt.ts` の 1 か所にある**（`MAX_SOURCE_BYTES`）。
- * ここへ書き写さない。
+ * ここへ書き写さない。**境界の読み方（どちらが「超えた」側か）も書き写さない**
+ * ——`src/source-size.ts` の `classifySourceBytes` が持つ（#33）。以前はここに
+ * 同じ比較が 2 つあり、片方だけ `>=` へ倒しても**どちらも落ちない**形だった。
  */
 
-import { MAX_SOURCE_BYTES } from './system-prompt.js';
+import { classifySourceBytes, measureSourceBytes } from './source-size.js';
 
 /**
  * ソースを読めなかった理由。**畳まない**——呼ぶ側で文言も後始末も変わる。
@@ -70,7 +72,7 @@ export async function readStoredSource(env: Env, sourceKey: string): Promise<Sto
   // `size`（保存されたバイト数）を返す。ここを読んでから測ると、**上限で断ると
   // 決まっているものを、いったん全部メモリへ載せることになる。** 上限を守るための
   // 判定が、上限を超えたものによって落ちうる形にしない。
-  if (object.size > MAX_SOURCE_BYTES) {
+  if (classifySourceBytes(object.size) === 'over-limit') {
     return { ok: false, reason: 'source-too-large' };
   }
   const source = await object.text();
@@ -80,7 +82,7 @@ export async function readStoredSource(env: Env, sourceKey: string): Promise<Sto
   // **読み出した本文でも測る。** 上の `size` は保存時のバイト数で、判定したいのは
   // 「いま LLM へ渡そうとしている文字列」の大きさである。この 2 つは同じはずだが、
   // **同じはずだから省く**のは、確かめていないものを確かめた証拠として使うことになる。
-  if (new TextEncoder().encode(source).length > MAX_SOURCE_BYTES) {
+  if (classifySourceBytes(measureSourceBytes(source)) === 'over-limit') {
     return { ok: false, reason: 'source-too-large' };
   }
   return { ok: true, source };

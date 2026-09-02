@@ -622,12 +622,11 @@ export async function failGame(
 export const PUBLISHED_STATUS = 'published';
 
 /**
- * 取り下げ（tombstone 化）された作品の状態（5.3 / 5.4）。
+ * 取り下げ（tombstone 化）された作品の状態（5.3 / 5.4 / M5-4 / #35）。
  *
- * **まだ誰もこの綴りを書き込まない。** 親の tombstone 化は M5-4 の範囲である。
- * それでも定数として置くのは、**読む側が先に要るため**で、系統の表示
- * （`src/work-page.ts` の「元ゲーム」）は「削除済みの作品から派生」を出し分ける必要が
- * ある（5.3）。綴りを各所へ書き写すと、書き込む側が入った日にどこかが古くなる。
+ * **書き込むのは {@link removeGame} だけである**（#35 で入った。それまでは読む側
+ * ——系統の表示が「削除済みの作品から派生」を出し分けるため——だけが要っていた）。
+ * {@link PUBLISHED_STATUS} と同じ形で、**書ける場所を 1 つに絞る。**
  */
 export const REMOVED_STATUS = 'removed';
 
@@ -752,6 +751,98 @@ export async function publishGame(
   }
   // `draft` のまま残ったということは、外れたのは `generation_state` の条件である。
   return { ok: false, reason: 'not-ready' };
+}
+
+/**
+ * 取り下げの結果（5.3 / M5-4 / #35）。
+ *
+ * 形は {@link PublishOutcome} に揃えてある。**「できなかった」を 1 つにまとめない**
+ * のも同じ理由で、呼び出し側が返すステータスと文言が理由ごとに違う。
+ */
+export type RemoveOutcome =
+  | {
+      readonly ok: true;
+      /** **この呼び出しが実際に遷移させたか。** 二度押しの 2 回目は false。 */
+      readonly firstTime: boolean;
+    }
+  | { readonly ok: false; readonly reason: 'not-found' | 'not-published' };
+
+/**
+ * 作品を取り下げる（tombstone 化。5.3 / M5-4 / #35）。
+ *
+ * # 物理削除しない
+ *
+ * 5.3 は「**親の削除は物理削除せず tombstone 化**し、子は残して「削除済みの作品から
+ * 派生」と表示する」と定める。`delete from games` にできない理由は 3 つある。
+ *
+ * 1. **子の `parent_id` が親を指している。** 消すと外部キーが宙に浮くか、
+ *    連鎖削除で子まで消える。**どちらも 5.3 が明示的に採らないと言っている形**である
+ *    （「連鎖削除は荒れるため採らない」）。
+ * 2. **子の画面が「削除済みの作品から派生」と言えなくなる。** 行が無いと、
+ *    `parentWorkOf` から見て「親が居ない（オリジナル）」と区別できない
+ *    （`src/work-page.ts` は結合の空振りも `removed` へ倒すが、**それは保険であって
+ *    設計ではない**）。
+ * 3. **R2 の成果物は作品をまたいで共有される**（確定26）。行を消すと、確定26 の
+ *    削除規約 ① が「参照ゼロ」と判定する対象が変わる。**参照する側の行が失われる**
+ *    のは #202 / #203 が踏んだ事故そのものである。
+ *
+ * # 連鎖しない
+ *
+ * **この関数は `games` の 1 行しか書き換えない。** 子の `status` に触れない
+ * （子が `published` のまま残ることが #35 の acceptance である）。**子を巻き込む
+ * 条件を「書かない」ことで守る**——`where` に子を含める余地のある SQL を置いてから
+ * 「含めないように気をつける」形にしない。
+ *
+ * # `published` からしか遷移しない
+ *
+ * 取り下げるものがあるのは、公開してしまった作品だけである。`draft` は
+ * **そもそも公開 URL を持たない**（5.4）ので、取り下げるべきものが無い
+ * （未公開の行は 3.7 の掃除に任せる。確定13）。**条件を狭くしておくほうが、
+ * 広げる日に判断を残せる。**
+ *
+ * # 親の `fork_count` は数え直す
+ *
+ * 取り下げた作品が誰かの子であれば、**その親の被改造数は 1 件減る。** 5.5 の
+ * 「このゲームからの改造: N 件」は `status='published'` のみを数えるので、
+ * 取り下げた作品が数に残ってはいけない。{@link refreshParentForkCount} は
+ * 数え直しなので、**増やす側と同じ 1 本で賄える。**
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param authorId 操作している利用者（**作者本人でなければ通らない**）
+ * @returns 取り下げの結果
+ */
+export async function removeGame(
+  env: Env,
+  gameId: string,
+  authorId: string,
+): Promise<RemoveOutcome> {
+  const result = await env.DB.prepare(
+    'update games set status = ? where id = ? and author_id = ? and status = ?',
+  )
+    .bind(REMOVED_STATUS, gameId, authorId, PUBLISHED_STATUS)
+    .run();
+
+  if ((result.meta.changes ?? 0) > 0) {
+    await refreshParentForkCount(env, gameId);
+    return { ok: true, firstTime: true };
+  }
+
+  // **理由を引く SELECT にも `author_id = ?` を入れる**（{@link publishGame} と
+  // 同じ理由。他人の作品に対して理由を撃ち分けると、任意の id が実在するかを外から
+  // 確かめられる手がかりになる）。
+  const row = await env.DB.prepare('select status from games where id = ? and author_id = ?')
+    .bind(gameId, authorId)
+    .first<{ status: string }>();
+
+  if (row === null) {
+    return { ok: false, reason: 'not-found' };
+  }
+  if (row.status === REMOVED_STATUS) {
+    // **二度押し。** 取り下げそのものは成立している状態なので、失敗にしない。
+    return { ok: true, firstTime: false };
+  }
+  return { ok: false, reason: 'not-published' };
 }
 
 /**

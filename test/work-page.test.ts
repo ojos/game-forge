@@ -6,17 +6,21 @@ import {
   FORKS_PER_PAGE,
   GENERATION_IS_SYNCHRONOUS,
   WORK_PAGE_PREFIX,
+  WORK_REMOVE_GAME_ID_FIELD,
+  WORK_REMOVE_PATH,
   workPagePath,
   workPageRoutes,
 } from '../src/work-page.js';
 import {
   claimGenerationJob,
   completeGame,
+  createForkedGame,
   createPendingGame,
   failGame,
   hashJobToken,
   publishGame,
 } from '../src/games.js';
+import { LOGIN_PATH } from '../src/auth/google.js';
 import { defaultPipeline, runJobInline, startGeneration } from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
@@ -788,5 +792,168 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
 
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     expect(body).not.toContain('このゲームからの改造');
+  });
+});
+
+describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
+  /**
+   * 公開済みの作品を 1 件用意する。
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @param parentId 親の作品 id（オリジナルなら省略）
+   * @returns 作者の id と作品 id
+   */
+  async function seedPublishedWork(
+    suffix: string,
+    parentId?: string,
+  ): Promise<{ userId: string; id: string }> {
+    const userId = await seedUser(`rm-${suffix}`);
+    const pending =
+      parentId === undefined
+        ? await createPendingGame(env, userId, { prompt: `作品 ${suffix}` })
+        : await createForkedGame(env, userId, { prompt: `改造 ${suffix}` }, parentId);
+    await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken));
+    await completeGame(env, pending.id, fakeBuildOutcome({ sourceSha256: `sha-rm-${suffix}` }));
+    expect((await publishGame(env, pending.id, userId)).ok).toBe(true);
+    return { userId, id: pending.id };
+  }
+
+  /**
+   * 取り下げの経路を、素の HTML フォームと同じ形で叩く。
+   *
+   * @param gameId 取り下げる作品 id
+   * @param cookie `Cookie` ヘッダ（省略すると未ログイン）
+   * @returns レスポンス
+   */
+  async function postRemove(gameId: string, cookie?: string): Promise<Response> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/x-www-form-urlencoded',
+      accept: 'text/html',
+    };
+    if (cookie !== undefined) {
+      headers['cookie'] = cookie;
+    }
+    return await dispatch(
+      workPageRoutes,
+      new Request(`${APP_ORIGIN}${WORK_REMOVE_PATH}`, {
+        method: 'POST',
+        headers,
+        body: new URLSearchParams({ [WORK_REMOVE_GAME_ID_FIELD]: gameId }).toString(),
+      }),
+      testEnv(),
+    );
+  }
+
+  it('作者にだけ取り下げの口が出る', async () => {
+    const { userId, id } = await seedPublishedWork('cta');
+    const stranger = await seedUser('rm-cta-stranger');
+
+    const mine = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(mine).toContain(`action="${WORK_REMOVE_PATH}"`);
+    expect(mine).toContain(`<input type="hidden" name="${WORK_REMOVE_GAME_ID_FIELD}" value="${id}">`);
+    // **連鎖しないことを押す前に書く**（5.3「連鎖削除は荒れるため採らない」）。
+    expect(mine).toContain('そのまま公開されたままです');
+
+    // 押しても 404 になる口を、他人へ出さない。
+    const theirs = await (await open(workPagePath(id), await sessionCookie(stranger))).text();
+    expect(theirs).not.toContain(WORK_REMOVE_PATH);
+    const anon = await (await open(workPagePath(id))).text();
+    expect(anon).not.toContain(WORK_REMOVE_PATH);
+  });
+
+  it('取り下げると作品ページへ戻り、子は published のまま残る（#35 の acceptance）', async () => {
+    const parent = await seedPublishedWork('cascade');
+    const child = await seedPublishedWork('cascade-child', parent.id);
+
+    const response = await postRemove(parent.id, await sessionCookie(parent.userId));
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(workPagePath(parent.id));
+
+    const rows = await env.DB.prepare('select id, status from games where id in (?, ?)')
+      .bind(parent.id, child.id)
+      .all<{ id: string; status: string }>();
+    const byId = new Map(rows.results.map((row) => [row.id, row.status]));
+    expect(byId.get(parent.id)).toBe('removed');
+    // **連鎖削除しない。**
+    expect(byId.get(child.id)).toBe('published');
+  });
+
+  it('子の作品ページに「削除済みの作品から派生」が出る（#35 の acceptance）', async () => {
+    const parent = await seedPublishedWork('parent-line');
+    const child = await seedPublishedWork('parent-line-child', parent.id);
+
+    // 取り下げる前は、親の題名がリンクとして出ている。
+    const before = await (await open(workPagePath(child.id))).text();
+    expect(before).toContain(`元ゲーム: <a href="${workPagePath(parent.id)}">`);
+
+    await postRemove(parent.id, await sessionCookie(parent.userId));
+
+    const after = await (await open(workPagePath(child.id))).text();
+    expect(after).toContain('元ゲーム: 削除済みの作品から派生');
+    // **題名は出さない**（プロンプト由来。取り下げは「もう見せない」という意思表示）。
+    expect(after).not.toContain(`<a href="${workPagePath(parent.id)}">`);
+  });
+
+  it('取り下げた作品のページは、誰にでも取り下げられたと言う', async () => {
+    const { userId, id } = await seedPublishedWork('tombstone-page');
+    await postRemove(id, await sessionCookie(userId));
+
+    const anon = await (await open(workPagePath(id))).text();
+    // **404 にしない。** 子のページが「削除済みの作品から派生」と言っている以上、
+    // 取り下げられたことは既に公開の事実である。
+    expect(anon).toContain('この作品は取り下げられました');
+    // 題名（プロンプト由来）は出さない。
+    expect(anon).not.toContain('作品 tombstone-page');
+
+    const owner = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(owner).toContain('この作品は取り下げられました');
+    expect(owner).toContain('そのまま公開されたままです');
+  });
+
+  it('取り下げた作品に、公開・改造・撮り直しの口を出さない', async () => {
+    const { userId, id } = await seedPublishedWork('no-cta');
+    await postRemove(id, await sessionCookie(userId));
+
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    // **押せば `publishGame` が `removed` で断る操作を、押せる形で出さない。**
+    expect(body).not.toContain('公開して共有');
+    expect(body).not.toContain(FORK_PATH);
+    expect(body).not.toContain(REVISE_PATH);
+    // `/p/` は removed を返さないので、試遊 URL も出さない。
+    expect(body).not.toContain('/p/');
+    // 取り下げの口も、もう出ない。
+    expect(body).not.toContain(WORK_REMOVE_PATH);
+  });
+
+  it('他人は取り下げられない（作品は無傷のまま）', async () => {
+    const { id } = await seedPublishedWork('other');
+    const stranger = await seedUser('rm-other-stranger');
+
+    const response = await postRemove(id, await sessionCookie(stranger));
+    expect(response.status).toBe(404);
+
+    const row = await env.DB.prepare('select status from games where id = ?')
+      .bind(id)
+      .first<{ status: string }>();
+    expect(row?.status).toBe('published');
+  });
+
+  it('未ログインはログインへ送る（作品には触れない）', async () => {
+    const { id } = await seedPublishedWork('anon');
+
+    const response = await postRemove(id);
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(LOGIN_PATH);
+
+    const row = await env.DB.prepare('select status from games where id = ?')
+      .bind(id)
+      .first<{ status: string }>();
+    expect(row?.status).toBe('published');
+  });
+
+  it('id の綴りが違えば 400（引く前に落とす）', async () => {
+    const userId = await seedUser('rm-bad-id');
+    const response = await postRemove('not-a-uuid', await sessionCookie(userId));
+    expect(response.status).toBe(400);
   });
 });

@@ -7,11 +7,15 @@ import { PUBLISH_GAME_ID_FIELD, PUBLISH_PATH } from '../src/paths.js';
 import {
   claimGenerationJob,
   completeGame,
+  createForkedGame,
   createPendingGame,
   failGame,
   hashJobToken,
   publishGame,
 } from '../src/games.js';
+import type { ForkNoticeOutcome } from '../src/mail/fork-notice.js';
+import { notifyForkPublished } from '../src/mail/fork-notice.js';
+import { sendMail } from '../src/mail/resend.js';
 import type { OgpCaptureJob } from '../src/ogp-client.js';
 import { handleSandboxRequest } from '../src/sandbox.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
@@ -420,5 +424,173 @@ describe('publishGame（SQL の条件そのもの）', () => {
       ok: false,
       reason: 'not-found',
     });
+  });
+});
+
+/**
+ * 改造通知メールの送信（5.5 / 2.2-6 / #36 / M5-5）。
+ *
+ * **実際のメールを送らない。** `notifyForkPublished` は通すが、その中の `fetcher` を
+ * 差し替えて Resend の手前で止める——**経路層から送信の組み立てまでを 1 本で通し、
+ * 最後の 1 歩だけを止める形である**（`send` ごと差し替えると、宛先の解決も本文も
+ * 抑止も検査していないことになる）。
+ */
+
+/** 送信の設定を足した env（**本物の値ではない**）。 */
+function mailEnv(): Env {
+  return {
+    ...testEnv(),
+    RESEND_API_KEY: 'test-api-key',
+    MAIL_FROM: 'Game Forge <no-reply@example.com>',
+  } as Env;
+}
+
+/** Resend への要求を記録する `fetcher` と、それを使う通知の段。 */
+function noticeSpy(): {
+  requests: Request[];
+  notify: (env: Env, gameId: string) => Promise<ForkNoticeOutcome>;
+} {
+  const requests: Request[] = [];
+  return {
+    requests,
+    notify: async (_env: Env, gameId: string) =>
+      await notifyForkPublished(mailEnv(), gameId, {
+        fetcher: async (request) => {
+          requests.push(request);
+          return new Response('{}', { status: 200 });
+        },
+        send: sendMail,
+      }),
+  };
+}
+
+/**
+ * 完成済み（`generation_state='ready'`・`status='draft'`）のフォークを 1 件用意する。
+ *
+ * @param suffix テスト内で一意な接尾辞
+ * @param forkAuthorId 改造する人
+ * @param parentId 親の作品 id
+ * @returns 子作品の id
+ */
+async function seedReadyFork(
+  suffix: string,
+  forkAuthorId: string,
+  parentId: string,
+): Promise<string> {
+  const pending = await createForkedGame(
+    env,
+    forkAuthorId,
+    { prompt: `${suffix}の改造` },
+    parentId,
+  );
+  await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken));
+  await completeGame(env, pending.id, fakeBuildOutcome());
+  return pending.id;
+}
+
+/**
+ * フォークの公開を要求する。
+ *
+ * @param gameId 子作品の id
+ * @param cookie `Cookie` ヘッダ
+ * @param notify 通知の段
+ * @returns レスポンス
+ */
+async function publishWithNotice(
+  gameId: string,
+  cookie: string,
+  notify: (env: Env, gameId: string) => Promise<ForkNoticeOutcome>,
+): Promise<Response> {
+  return await dispatch(
+    createPublishRoutes(async () => {}, notify),
+    new Request(`${APP_ORIGIN}${PUBLISH_PATH}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        accept: 'text/html',
+        cookie,
+      },
+      body: new URLSearchParams({ [PUBLISH_GAME_ID_FIELD]: gameId }).toString(),
+    }),
+    mailEnv(),
+  );
+}
+
+describe('改造通知メール（#36 / 5.5 / 2.2-6）', () => {
+  it('フォークの公開でメールが 1 通だけ送られる', async () => {
+    const parent = await seedReadyGame('notice-parent');
+    const forkAuthor = await seedUser('notice-forker');
+    const childId = await seedReadyFork('notice', forkAuthor, parent.id);
+    const cookie = await sessionCookie(forkAuthor);
+    const spy = noticeSpy();
+
+    expect((await publishWithNotice(childId, cookie, spy.notify)).status).toBe(303);
+
+    expect(spy.requests).toHaveLength(1);
+    const body = (await spy.requests[0]!.json()) as { to: string[]; text: string };
+    // 宛先は**親の作者**であって、公開を押した本人ではない。
+    expect(body.to).toEqual([`${parent.userId}@example.com`]);
+    expect(body.text).toContain(`/works/${childId}`);
+
+    // **二度押しでも 2 通目は出ない。** 関門は 2 つある（`publishGame` の
+    // `status='draft'` と `fork_notices` の主キー）。ここで見えるのは前者である。
+    expect((await publishWithNotice(childId, cookie, spy.notify)).status).toBe(303);
+    expect(spy.requests).toHaveLength(1);
+  });
+
+  it('自分自身のフォークでは送られない', async () => {
+    const parent = await seedReadyGame('notice-self');
+    const childId = await seedReadyFork('notice-self', parent.userId, parent.id);
+    const spy = noticeSpy();
+
+    expect(
+      (await publishWithNotice(childId, await sessionCookie(parent.userId), spy.notify)).status,
+    ).toBe(303);
+    expect(spy.requests).toEqual([]);
+    // 記録も残さない（あとから「未送信」と読まれる行を作らない）。
+    const row = await env.DB.prepare('select game_id from fork_notices where game_id = ?')
+      .bind(childId)
+      .first();
+    expect(row).toBeNull();
+  });
+
+  it('親を持たない作品の公開では送られない', async () => {
+    const { userId, id } = await seedReadyGame('notice-original');
+    const spy = noticeSpy();
+
+    expect((await publishWithNotice(id, await sessionCookie(userId), spy.notify)).status).toBe(303);
+    expect(spy.requests).toEqual([]);
+  });
+
+  it('公開に失敗した要求は通知を起こさない（他人の作品）', async () => {
+    const parent = await seedReadyGame('notice-stranger-parent');
+    const forkAuthor = await seedUser('notice-stranger-forker');
+    const childId = await seedReadyFork('notice-stranger', forkAuthor, parent.id);
+    const stranger = await seedUser('notice-stranger-third');
+    const spy = noticeSpy();
+
+    expect(
+      (await publishWithNotice(childId, await sessionCookie(stranger), spy.notify)).status,
+    ).toBe(404);
+    expect(spy.requests).toEqual([]);
+  });
+
+  it('既に公開済みのフォークは、記録が無くても通知の経路へ入らない', async () => {
+    // **「記録が無い＝未送信」と読む設計になっていないこと**（#202 / #203 と同じ形。
+    // 本番には公開済みのフォークが既に 2 件ある）。記録を消して 0013 適用前の
+    // 状態を作り、もう一度公開を押しても通知は出ない——関門は記録の有無ではなく、
+    // `publishGame` の `status='draft'` だからである。
+    const parent = await seedReadyGame('notice-legacy-parent');
+    const forkAuthor = await seedUser('notice-legacy-forker');
+    const childId = await seedReadyFork('notice-legacy', forkAuthor, parent.id);
+    const cookie = await sessionCookie(forkAuthor);
+    const spy = noticeSpy();
+
+    await publishWithNotice(childId, cookie, spy.notify);
+    expect(spy.requests).toHaveLength(1);
+
+    await env.DB.prepare('delete from fork_notices where game_id = ?').bind(childId).run();
+    await publishWithNotice(childId, cookie, spy.notify);
+    expect(spy.requests).toHaveLength(1);
   });
 });

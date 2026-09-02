@@ -31,12 +31,14 @@
  * 枠だけが消える。
  *
  * **上限の値そのものは `src/system-prompt.ts` の 1 か所にある**（`MAX_SOURCE_BYTES`）。
- * ここへ書き写さない。**境界の読み方（どちらが「超えた」側か）も書き写さない**
- * ——`src/source-size.ts` の `classifySourceBytes` が持つ（#33）。以前はここに
- * 同じ比較が 2 つあり、片方だけ `>=` へ倒しても**どちらも落ちない**形だった。
+ * ここへ書き写さない。**測り方（バイト数か文字数か）も書き写さない**
+ * ——`src/source-size.ts` の `measureSourceBytes` が持つ（#33）。
+ *
+ * **断つ大きさは引数で受ける**（既定は 5.3 の上限）。整理パス（確定18 の条件 2〜4）
+ * だけが上限超のソースを読むためで、**既定を変えたわけではない。**
  */
 
-import { classifySourceBytes, measureSourceBytes } from './source-size.js';
+import { MAX_SOURCE_BYTES, measureSourceBytes } from './source-size.js';
 
 /**
  * ソースを読めなかった理由。**畳まない**——呼ぶ側で文言も後始末も変わる。
@@ -59,11 +61,25 @@ export type StoredSourceResult =
  * 取ってから引く。**確かめる前にキーを読むと、未公開の作品の R2 キーを引ける
  * 経路ができる。**
  *
+ * # 上限を引数にしてある（確定18 の整理パス / #33）
+ *
+ * **既定は `MAX_SOURCE_BYTES` で、これまでと同じ振る舞いである。** 引数にしたのは
+ * 整理パス（5.3 の条件 2〜4）だけが上限超のソースを読む必要があるためで、
+ * `src/fork.ts` が {@link TIDY_MAX_SOURCE_BYTES} を渡す。
+ *
+ * **呼ぶ側が上限を決められる形にしても、上限が消えるわけではない。** 渡された値で
+ * 必ず断つ——「無制限」を意味する値を用意していないのは、そのためである。
+ *
  * @param env バインディングと環境変数
  * @param sourceKey R2 のキー
+ * @param maxBytes 断つバイト数（**これを超えたら**断る）。既定は 5.3 の上限
  * @returns ソース、または失敗の理由
  */
-export async function readStoredSource(env: Env, sourceKey: string): Promise<StoredSourceResult> {
+export async function readStoredSource(
+  env: Env,
+  sourceKey: string,
+  maxBytes: number = MAX_SOURCE_BYTES,
+): Promise<StoredSourceResult> {
   const object = await env.BUCKET.get(sourceKey);
   if (object === null) {
     return { ok: false, reason: 'source-missing' };
@@ -72,7 +88,7 @@ export async function readStoredSource(env: Env, sourceKey: string): Promise<Sto
   // `size`（保存されたバイト数）を返す。ここを読んでから測ると、**上限で断ると
   // 決まっているものを、いったん全部メモリへ載せることになる。** 上限を守るための
   // 判定が、上限を超えたものによって落ちうる形にしない。
-  if (classifySourceBytes(object.size) === 'over-limit') {
+  if (object.size > maxBytes) {
     return { ok: false, reason: 'source-too-large' };
   }
   const source = await object.text();
@@ -82,7 +98,7 @@ export async function readStoredSource(env: Env, sourceKey: string): Promise<Sto
   // **読み出した本文でも測る。** 上の `size` は保存時のバイト数で、判定したいのは
   // 「いま LLM へ渡そうとしている文字列」の大きさである。この 2 つは同じはずだが、
   // **同じはずだから省く**のは、確かめていないものを確かめた証拠として使うことになる。
-  if (classifySourceBytes(measureSourceBytes(source)) === 'over-limit') {
+  if (measureSourceBytes(source) > maxBytes) {
     return { ok: false, reason: 'source-too-large' };
   }
   return { ok: true, source };

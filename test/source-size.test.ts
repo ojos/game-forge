@@ -5,6 +5,10 @@ import {
   SOURCE_SIZE_WARNING_RATIO,
   classifySourceBytes,
   decideForkSizeAction,
+  TIDY_ATTEMPTS,
+  TIDY_MAX_SOURCE_BYTES,
+  composeTidyPrompt,
+  isTidyPass,
   measureSourceBytes,
   warningBytesFor,
 } from '../src/source-size.js';
@@ -38,6 +42,18 @@ describe('上限と警告の閾値（確定18 の条件 1）', () => {
     // 導出そのものは変えていない（切り下げるだけ）。
     expect(warningBytesFor(30 * 1024)).toBe(24 * 1024);
     expect(warningBytesFor(31 * 1024)).toBe(25_395);
+  });
+
+  it('整理の入力上限は上限の 2 倍（＝60KB）である', () => {
+    // **直値でも見る。** 帯の検査はどれも `TIDY_MAX_SOURCE_BYTES` を基準に書いてあるので、
+    // 定数を緩めるとテストごと追随して通る（実際、2 倍を 4 倍へ変える変異が
+    // 1 件も落ちなかった）。`test/generate.test.ts` が
+    // 「定数からも直値からも見る」と書いているのと同じ理由である。
+    expect(TIDY_MAX_SOURCE_BYTES).toBe(60 * 1024);
+    expect(TIDY_MAX_SOURCE_BYTES).toBe(MAX_SOURCE_BYTES * 2);
+    // **緩めてよい理由が消えていないこと。** 非同期呼び出しのペイロード上限 256 KB に
+    // 対して、プロンプト（最大 2,000 文字＝ UTF-8 で 8 KB）を足しても桁が 1 つ違う。
+    expect(TIDY_MAX_SOURCE_BYTES + 8 * 1024).toBeLessThan(256 * 1024);
   });
 
   it('警告の帯が空でない（閾値は上限より小さい）', () => {
@@ -106,10 +122,67 @@ describe('入力段階の振る舞い（確定18 の条件 1）', () => {
     );
   });
 
-  it('上限超は、同意があっても通さない', () => {
-    // 通すと `src/orchestrator/payload.ts` がペイロードごと拒否し、**作品行だけが
-    // `pending` で残る。** 同意は警告の帯にしか効かない。
-    expect(decideForkSizeAction({ bytes: MAX_SOURCE_BYTES + 1, consent: 'proceed' })).toBe('refuse');
-    expect(decideForkSizeAction({ bytes: MAX_SOURCE_BYTES + 1, consent: 'none' })).toBe('refuse');
+  it('上限超は、まず整理するかどうかを問う（条件 2）', () => {
+    // 5.3 は「拒否のみは採らない」と定めている。**問わずに断ると、フォーク連鎖が
+    // 30KB で行き止まりになり、10.3 の撤退条件を実装の側で不成立にしうる。**
+    expect(decideForkSizeAction({ bytes: MAX_SOURCE_BYTES + 1, consent: 'none' })).toBe(
+      'offer-tidy',
+    );
+  });
+
+  it('事前警告への同意を、整理への同意として読まない（条件 2）', () => {
+    // 条件 2 は「作者が明示的に選ぶ」ことを求める。条件 1 の画面で押した
+    // 「このまま改造する」を流用すると、**作者が押していない操作で枠が減る。**
+    expect(decideForkSizeAction({ bytes: MAX_SOURCE_BYTES + 1, consent: 'proceed' })).toBe(
+      'offer-tidy',
+    );
+  });
+
+  it('整理を選んで初めて整理パスへ入る（条件 2）', () => {
+    expect(decideForkSizeAction({ bytes: MAX_SOURCE_BYTES + 1, consent: 'tidy' })).toBe('tidy');
+  });
+
+  it('整理しても収まる見込みが無い大きさは、問わずに断る', () => {
+    // 問うだけ問って必ず失敗する選択肢は、条件 2 が守ろうとした「知らないうちに枠を
+    // 使わせない」を、知ったうえで確実に捨てさせる形へ裏返す。
+    expect(decideForkSizeAction({ bytes: TIDY_MAX_SOURCE_BYTES + 1, consent: 'tidy' })).toBe(
+      'refuse',
+    );
+    expect(decideForkSizeAction({ bytes: TIDY_MAX_SOURCE_BYTES, consent: 'tidy' })).toBe('tidy');
+  });
+
+  it('近い帯では、整理の同意もそのまま進ませる', () => {
+    // 30KB に収まっているなら整理は要らない。**要らない整理で枠を使わせない。**
+    expect(decideForkSizeAction({ bytes: SOURCE_SIZE_WARNING_BYTES + 1, consent: 'tidy' })).toBe(
+      'proceed',
+    );
+  });
+});
+
+describe('整理パスの見分けと指示（確定18 の条件 2〜4）', () => {
+  it('元ソースが上限を超えていれば整理パスである', () => {
+    expect(isTidyPass({ baseSource: 'x'.repeat(MAX_SOURCE_BYTES + 1) })).toBe(true);
+  });
+
+  it('上限ちょうど・元ソース無しは整理パスではない', () => {
+    // **新規生成を整理パスと読まない。** 読むと、元ソースの無い生成に整理の指示が
+    // 載り、試行の上限も 1 へ落ちる（5.2-7 のリトライが黙って消える）。
+    expect(isTidyPass({ baseSource: 'x'.repeat(MAX_SOURCE_BYTES) })).toBe(false);
+    expect(isTidyPass({})).toBe(false);
+  });
+
+  it('整理の指示は、利用者のプロンプトを消さずに足す', () => {
+    // 差し替えると、収まっても別のゲームができる。
+    const composed = composeTidyPrompt('敵を 3 体にする', MAX_SOURCE_BYTES + 500);
+    expect(composed.startsWith('敵を 3 体にする')).toBe(true);
+    expect(composed).toContain(String(MAX_SOURCE_BYTES));
+    expect(composed).toContain(String(MAX_SOURCE_BYTES + 500));
+    // 遊べる状態を保たせる（5.4 は作者を唯一のフィルタに据えており、遊べないものを
+    // 出すとそのフィルタが働く前に無駄になる）。
+    expect(composed).toContain('遊べる状態');
+  });
+
+  it('整理パスの試行は 1 回である（条件 3・4）', () => {
+    expect(TIDY_ATTEMPTS).toBe(1);
   });
 });

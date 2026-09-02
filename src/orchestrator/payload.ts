@@ -39,6 +39,7 @@ import type { GenerationModelKey } from '../generation-models.js';
 import { findGenerationModel } from '../generation-models.js';
 import { MAX_PROMPT_LENGTH } from '../generate.js';
 import { MAX_SOURCE_BYTES } from '../system-prompt.js';
+import { TIDY_MAX_SOURCE_BYTES, isTidyPass } from '../source-size.js';
 
 /**
  * ペイロードの版。
@@ -75,10 +76,44 @@ export const ORCHESTRATOR_PAYLOAD_VERSION = 1;
  */
 export const ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE = 2;
 
+/**
+ * 上限を超えた `baseSource` を載せた本文の版（確定18 の整理パス / 5.3 / M5-2 / #33）。
+ *
+ * # なぜ版を 1 つ増やすのか
+ *
+ * **版 2 は `baseSource` が 30KB を超えていたら本文ごと拒否する。** それが正しい——
+ * 上限を守るための検査である。しかし**整理パスの入力はまさに上限超のソース**なので、
+ * 5.3 が定めた逃げ道は版 2 の受け側では原理的に通れない（#33 で判明した）。
+ *
+ * **無条件に検査を緩めない。** 緩めると上限そのものが消える。**版 3 を名乗る本文だけ**が
+ * {@link TIDY_MAX_SOURCE_BYTES}（上限の 2 倍）までを載せられる、という形にした。
+ * 版 1・版 2 の受け入れ条件は 1 つも変えていない。
+ *
+ * # 配備の順序（**ここを間違えると本番の生成が止まる**）
+ *
+ * **受け側（オーケストレータ Lambda）を先に配る。送り側（Worker）は後である。**
+ *
+ * | 側 | 配備 |
+ * |---|---|
+ * | 送る側（Worker / Pages） | **main へのマージで自動** |
+ * | 受ける側（オーケストレータ Lambda） | **利用者が手で叩く**（`scripts/deploy-orchestrator.sh`） |
+ *
+ * 2026-09-01 に、`wrangler.toml` を変えて Worker を先に配ったところ、**配備済みの
+ * オーケストレータがその鍵を知らず、本番の生成が 12 分止まった**（`docs/handoff.md`
+ * 1 章）。**「repo に入っている」と「動いている Lambda が知っている」は別である。**
+ *
+ * **ただし今回、順序を誤っても壊れる範囲は整理パスだけである。** 版を能力の宣言として
+ * 使う設計（版 2 の注記）がそのまま効く——古い Lambda は版 1・版 2 を今までどおり
+ * 処理し、**版 3 だけが「知らない版」として断られる。** 一律に版を上げないのは
+ * このためである。
+ */
+export const ORCHESTRATOR_PAYLOAD_VERSION_WITH_TIDY = 3;
+
 /** 受け側が理解できる版。 */
 const SUPPORTED_VERSIONS: readonly number[] = [
   ORCHESTRATOR_PAYLOAD_VERSION,
   ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE,
+  ORCHESTRATOR_PAYLOAD_VERSION_WITH_TIDY,
 ];
 
 /** 非同期呼び出しの本文。 */
@@ -103,6 +138,10 @@ export interface OrchestratorPayload {
    *
    * 上限は {@link MAX_SOURCE_BYTES}（30 KB。確定18 / 5.3）で、Lambda の非同期呼び出しの
    * ペイロード上限 256 KB に対して桁が 1 つ違う。**プロンプトと合わせても収まる。**
+   *
+   * **版 3（整理パス）だけは {@link TIDY_MAX_SOURCE_BYTES}（60 KB）まで載る**
+   * （{@link ORCHESTRATOR_PAYLOAD_VERSION_WITH_TIDY}）。それでも 256 KB に対して
+   * 桁が 1 つ違う。
    */
   readonly baseSource?: string;
 }
@@ -131,13 +170,19 @@ export function buildOrchestratorPayload(
   // **新規生成では項目ごと載せず、版も上げない**（上記）。`baseSource: undefined` を
   // 置くと `JSON.stringify` が落とすので実害は無いが、**受け側の未知項目の検査を
   // 「値が undefined なら許す」へ緩める必要が出る**（いまは鍵の集合だけを見ている）。
-  return job.request.baseSource === undefined
-    ? { version: ORCHESTRATOR_PAYLOAD_VERSION, ...base }
-    : {
-        version: ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE,
-        ...base,
-        baseSource: job.request.baseSource,
-      };
+  if (job.request.baseSource === undefined) {
+    return { version: ORCHESTRATOR_PAYLOAD_VERSION, ...base };
+  }
+  // **整理パスだけが版 3 を名乗る**（確定18 / #33）。判定は `isTidyPass` の 1 か所で、
+  // ここで大きさを測り直さない——**送る側と受ける側が別々に「整理かどうか」を決めると、
+  // 片方だけがそう思っている本文が作れる。**
+  return {
+    version: isTidyPass(job.request)
+      ? ORCHESTRATOR_PAYLOAD_VERSION_WITH_TIDY
+      : ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE,
+    ...base,
+    baseSource: job.request.baseSource,
+  };
 }
 
 /**
@@ -239,15 +284,26 @@ export function parseOrchestratorPayload(value: unknown): OrchestratorPayload | 
       modelKey: modelKey as GenerationModelKey,
     };
   }
-  // **`baseSource` を載せた本文は版 2 を名乗らなければならない。** 版 1 で通すと、
+  // **`baseSource` を載せた本文は版 2 か版 3 を名乗らなければならない。** 版 1 で通すと、
   // 古い受け側が読めない項目を「読める版」として受け取ることになる。
-  if (version !== ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE) {
+  if (
+    version !== ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE &&
+    version !== ORCHESTRATOR_PAYLOAD_VERSION_WITH_TIDY
+  ) {
     return null;
   }
   if (typeof baseSource !== 'string' || baseSource === '') {
     return null;
   }
-  if (new TextEncoder().encode(baseSource).length > MAX_SOURCE_BYTES) {
+  // **上限は版で変わる。** 版 2 は 30KB（確定18 の上限そのもの）、**版 3＝整理パスだけ**が
+  // その 2 倍まで載せられる（`src/source-size.ts` の `TIDY_MAX_SOURCE_BYTES`）。
+  //
+  // **版 2 の条件は 1 文字も緩めていない。** 緩めると、整理を頼んでいない生成が上限超の
+  // ソースを土台にでき、**5.3 の上限そのものが消える。** 版を名乗ることが、その 1 回に
+  // 限って上限を外す唯一の口である。
+  const limit =
+    version === ORCHESTRATOR_PAYLOAD_VERSION_WITH_TIDY ? TIDY_MAX_SOURCE_BYTES : MAX_SOURCE_BYTES;
+  if (new TextEncoder().encode(baseSource).length > limit) {
     return null;
   }
   return {

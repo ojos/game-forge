@@ -25,6 +25,7 @@ import {
   describeSourceRejection,
   inspectGeneratedSource,
 } from '../src/source-inspection.js';
+import { MAX_SOURCE_BYTES } from '../src/source-size.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -119,6 +120,73 @@ function rejectionOf(goSource: string): GeneratedSourceRejected {
   }
   throw new Error('拒否されませんでした');
 }
+
+/**
+ * ちょうど指定バイト数の、検査を通る Go ソースを作る。
+ *
+ * **`package main` から始める。** 先頭が違うと `scanImports` が `unparsable` で
+ * 落ち、サイズ検査を見るつもりのテストが別の理由で緑になる。
+ *
+ * @param bytes 作りたいバイト数
+ * @returns Go のソース
+ */
+function sourceOfBytes(bytes: number): string {
+  const head = source('');
+  const padding = bytes - new TextEncoder().encode(head).length;
+  if (padding < 0) {
+    throw new Error('雛形より小さいソースは作れません');
+  }
+  return head + 'x'.repeat(padding);
+}
+
+describe('生成後のサイズ検査（5.3 / 6.1 / 確定18 の条件 3 / M5-2 / #33）', () => {
+  it('上限ちょうどは通る（境界で切りすぎない）', () => {
+    const exact = sourceOfBytes(MAX_SOURCE_BYTES);
+    expect(new TextEncoder().encode(exact).length).toBe(MAX_SOURCE_BYTES);
+    expect(() => inspectGeneratedSource(generated(exact))).not.toThrow();
+  });
+
+  it('上限の 1 バイト上は拒否する', () => {
+    // **これがフォーク連鎖の肥大化を止める関門である**（#33 の goal）。ここが無いと、
+    // 上限超のソースが R2 へ入り、次にフォークや推敲をした瞬間に行き止まりになる。
+    const rejected = rejectionOf(sourceOfBytes(MAX_SOURCE_BYTES + 1));
+    expect(rejected.reason).toBe('source-too-large');
+  });
+
+  it('バイト数で測る（日本語のコメントを 3 分の 1 に見誤らない）', () => {
+    // 文字数で数えると、日本語のコメントが多いソースが上限の 3 倍まで通る。
+    const head = source('');
+    const comments = 'あ'.repeat(MAX_SOURCE_BYTES / 3);
+    const goSource = head + comments;
+    expect([...goSource].length).toBeLessThan(MAX_SOURCE_BYTES);
+    expect(rejectionOf(goSource).reason).toBe('source-too-large');
+  });
+
+  it('引用できる断片を載せない', () => {
+    // 上限はソース全体の性質で、引用できる断片が無い。**生成物由来の文字列を
+    // 応答とログへ持ち出さない**（このモジュールが件数と長さに上限を掛けている理由）。
+    const rejected = rejectionOf(sourceOfBytes(MAX_SOURCE_BYTES + 1));
+    expect(rejected.offending).toEqual([]);
+    expect(describeSourceRejection(rejected).offending).toEqual([]);
+  });
+
+  it('許可外 import より先に落とす', () => {
+    // どちらにも違反しているソースでは、**先に落とせるほうで落とす。** 上限超は
+    // 字句解析を回す前に分かる。
+    const head = source('import "os/exec"');
+    const padded = head + 'x'.repeat(MAX_SOURCE_BYTES + 1 - new TextEncoder().encode(head).length);
+    expect(rejectionOf(padded).reason).toBe('source-too-large');
+    // 上限内なら、いままでどおり import の理由で落ちる。
+    expect(rejectionOf(head).reason).toBe('not-allowed');
+  });
+
+  it('経路層へは 422 として出る（既存の拒否と同じ扱い）', () => {
+    const body = describeSourceRejection(rejectionOf(sourceOfBytes(MAX_SOURCE_BYTES + 1)));
+    expect(body.error).toBe(SOURCE_REJECTED_ERROR);
+    expect(body.reason).toBe('source-too-large');
+    expect(SOURCE_REJECTED_STATUS).toBe(422);
+  });
+});
 
 describe('許可外の import を拒否する（5.2-5 / #17）', () => {
   it('許可されたものだけなら何も投げない', () => {

@@ -18,10 +18,28 @@
  * | **二度押しで二重に撮影・課金しない** | 同 `where status = 'draft'`（2 通目は 0 行更新）＋ `claimOgpCapture` |
  * | **未公開の作品を撮らない** | `claimOgpCapture` の `where status = 'published'`（`src/ogp.ts`） |
  *
- * **すべて SQL の条件である。** この経路のハンドラには 1 つも `if` が無い——
- * 判定は `publishGame` と `startOgpCapture` が返した値を、応答へ写しているだけである。
+ * **すべて SQL の条件である。** この経路のハンドラは**公開の可否を 1 つも判定しない**
+ * ——`publishGame` と `startOgpCapture` が返した値を、応答へ写しているだけである。
  * 呼び出し側の `if` で守る形にすると、経路を足した人が書き忘れても動作では気づけない
  * （`src/my-works.ts` が絞り込みを SQL に置いたのと同じ判断）。
+ *
+ * > **v1 の本文は「この経路のハンドラには 1 つも `if` が無い」と書いていた。**
+ * > #36 で改造通知を足したときに `outcome.firstTime` を見る `if` が 1 つ増えたので、
+ * > 言い方を改めた。**増えたのは「実際に公開したか」を読む分岐であって、公開してよいか
+ * > の判定ではない**（それは今も 1 つ残らず SQL の側にある）。
+ *
+ * ## 改造の通知はここから起こす（5.5 / #36 / M5-5）
+ *
+ * **フォークが公開されたら、元の作者へメールを 1 通送る**（`src/mail/fork-notice.ts`）。
+ * 契機は撮影とまったく同じ「**この呼び出しが実際に公開したとき**」で、条件も
+ * `outcome.firstTime` 1 つである。
+ *
+ * **`publishGame`（`src/games.ts`）には置かない。** あれは `games` の 1 行を進める
+ * だけの関数で、撮影の起動も置いていない（同関数の「OGP の撮影はここでは起こさない」）。
+ * データ層へ外部への送信を持ち込むと、行を進めたい別の経路がそのたびにメールを撒く。
+ *
+ * **「誰に送るか」「送ってよいか」はここに書かない。** 親の作者の解決も、自分自身の
+ * フォークの除外も、1 フォーク 1 通の抑止も、すべて `notifyForkPublished` の中にある。
  *
  * ## CSRF について
  *
@@ -38,6 +56,8 @@
 import { LOGIN_PATH } from './auth/google.js';
 import type { PublishOutcome } from './games.js';
 import { publishGame } from './games.js';
+import type { ForkNoticeOutcome } from './mail/fork-notice.js';
+import { notifyForkPublished } from './mail/fork-notice.js';
 import type { StartOgpCapture } from './ogp-client.js';
 import { startOgpCaptureOnLambda } from './ogp-client.js';
 import type { CaptureStartOutcome } from './ogp.js';
@@ -68,6 +88,15 @@ import { workPagePath } from './work-page.js';
  * **載らないものに合わせた上限を置かない。**
  */
 const MAX_BODY_BYTES = 1024;
+
+/**
+ * 改造の通知を送る段（5.5 / #36）。
+ *
+ * **`StartOgpCapture` と同じ形で差し替えられるようにする。** テストは本物の送信を
+ * 起こさずに「1 通だけか」「自分のフォークでは呼ばれないか」を見る必要がある
+ * （`test/publish.test.ts`）。
+ */
+export type NotifyForkPublished = (env: Env, gameId: string) => Promise<ForkNoticeOutcome>;
 
 /** 素の HTML フォームが送ってくる `Content-Type`。 */
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
@@ -294,12 +323,14 @@ function respond(
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
  * @param start 撮影を投げる段（既定は AWS Lambda への非同期呼び出し）
+ * @param notify 改造の通知を送る段（既定は本物の送信）
  * @returns レスポンス
  */
 async function handlePublish(
   request: Request,
   env: Env,
   start: StartOgpCapture,
+  notify: NotifyForkPublished,
 ): Promise<Response> {
   const asHtml = wantsHtml(request);
 
@@ -325,27 +356,41 @@ async function handlePublish(
   const capture =
     outcome.ok && outcome.firstTime ? await startOgpCapture(env, target.gameId, start) : null;
 
+  // **改造の通知も同じ条件で起こす**（5.5 / #36。上の撮影と同じ「実際に公開したとき
+  // だけ」である）。**判定をここに増やさない**——「親を持つか」「自分のフォークか」
+  // 「既に送ったか」はすべて `notifyForkPublished` の中にあり、この経路は
+  // 「公開が成立したかどうか」しか知らない。
+  //
+  // **結果を応答へ載せない。** 公開の結果は公開の結果であって、元の作者へ通知が
+  // 届いたかどうかは要求した側（改造した人）の関知するところではない。載せると、
+  // 他人の宛先が有効かどうかを外から確かめる手掛かりになる。
+  if (outcome.ok && outcome.firstTime) {
+    await notify(env, target.gameId);
+  }
+
   return respond(request, target.gameId, outcome, capture);
 }
 
 /**
  * 公開の経路を組み立てる。
  *
- * **撮影の段を差し替えられるのはここだけである**（`src/generate-callback.ts` の
+ * **撮影の段と通知の段を差し替えられるのはここだけである**（`src/generate-callback.ts` の
  * `createGenerateCallbackRoutes` と同じ形）。アプリの経路表（`src/app.ts`）は既定の
  * {@link publishRoutes} を連結するので、本番の結線は変わらない。
  *
  * @param start 撮影を投げる段（既定は AWS Lambda への非同期呼び出し）
+ * @param notify 改造の通知を送る段（既定は本物の送信）
  * @returns 経路表
  */
 export function createPublishRoutes(
   start: StartOgpCapture = startOgpCaptureOnLambda,
+  notify: NotifyForkPublished = notifyForkPublished,
 ): readonly Route[] {
   return [
     {
       method: 'POST',
       path: PUBLISH_PATH,
-      handler: (request, env) => handlePublish(request, env, start),
+      handler: (request, env) => handlePublish(request, env, start, notify),
     },
   ];
 }

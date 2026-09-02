@@ -301,3 +301,133 @@ describe('OGP の撮影を始めた時刻（0012 / #235）', () => {
     expect(row?.ogp_started_at).toBeNull();
   });
 });
+
+describe('改造通知の記録（0013 / #36）', () => {
+  it('fork_notices は 1 フォーク 1 行で、索引を持たない（3.6）', async () => {
+    expect(await catalogNames('table')).toContain('fork_notices');
+
+    // **`game_id`（＝子作品の id）が主キーである。** 数えるのは「改造 1 件につき
+    // 1 通」であって、親ごとでも作者ごとでもない。親を主キーにすると 2 人目の
+    // 改造者の通知が消え、作者を主キーにすると 2 作目の改造の通知が消える。
+    //
+    // **`sqlite_autoindex_...` の名前で引かない**（build_health と同じ理由）。
+    // 位置つきで取るので、複合主キーになったときも順序ごと落ちる。
+    const columns = await env.DB.prepare('select * from pragma_table_info(?)')
+      .bind('fork_notices')
+      .all<{ name: string; pk: number; type: string }>();
+    const primaryKey = columns.results
+      .filter((row) => row.pk > 0)
+      .sort((left, right) => left.pk - right.pk)
+      .map((row) => row.name);
+    expect(primaryKey).toEqual(['game_id']);
+
+    // 時刻は UNIX 秒の INTEGER（0001 の規約）。
+    expect(columns.results.find((row) => row.name === 'claimed_at')?.type).toBe('INTEGER');
+
+    // **明示的な索引を張らない。** 引き方は主キー 1 本だけで、索引は 1 行の insert に
+    // つき 1 行の書き込みを足す（3.6）。
+    const declared = (await catalogNames('index')).filter((name) => name.startsWith('fork_notices'));
+    expect(declared).toEqual([]);
+  });
+
+  it('outcome が 4 つの綴りだけを受け付ける', async () => {
+    const authorId = await insertUser('fork-notice-outcome');
+    await env.DB.prepare(
+      'insert into games (id, author_id, status, title, go_version, created_at) values (?, ?, ?, ?, ?, 1)',
+    )
+      .bind('g-fork-notice-outcome', authorId, 'draft', 'T', 'go1.25.0')
+      .run();
+
+    for (const outcome of ['claimed', 'sent', 'send-failed', 'backfilled']) {
+      await env.DB.prepare(
+        `insert into fork_notices (game_id, claimed_at, outcome) values (?, 1, ?)
+         on conflict (game_id) do update set outcome = excluded.outcome`,
+      )
+        .bind('g-fork-notice-outcome', outcome)
+        .run();
+    }
+    await expect(
+      env.DB.prepare('update fork_notices set outcome = ? where game_id = ?')
+        .bind('mailed', 'g-fork-notice-outcome')
+        .run(),
+    ).rejects.toThrow();
+  });
+
+  it('同じフォークの 2 行目は主キーで弾かれる（1 フォーク 1 通の関門）', async () => {
+    const authorId = await insertUser('fork-notice-pk');
+    await env.DB.prepare(
+      'insert into games (id, author_id, status, title, go_version, created_at) values (?, ?, ?, ?, ?, 1)',
+    )
+      .bind('g-fork-notice-pk', authorId, 'draft', 'T', 'go1.25.0')
+      .run();
+
+    await env.DB.prepare(
+      "insert into fork_notices (game_id, claimed_at, outcome) values (?, 1, 'claimed')",
+    )
+      .bind('g-fork-notice-pk')
+      .run();
+    await expect(
+      env.DB.prepare(
+        "insert into fork_notices (game_id, claimed_at, outcome) values (?, 2, 'claimed')",
+      )
+        .bind('g-fork-notice-pk')
+        .run(),
+    ).rejects.toThrow();
+  });
+
+  it('適用時に公開済みだったフォークを backfilled として埋める（#202 / #203 の形）', async () => {
+    // **既存行はこの実装の経路を 1 度も通っていない**（docs/handoff.md 1 章）。
+    // 空の表を「1 通も送っていない」と読む運用を書いた人が、過去のフォーク全部へ
+    // 通知を撒くことになる。0013 はその読みを塞ぐために埋めている。
+    //
+    // **テストの D1 は空の状態でマイグレーションが流れる**ので、適用の瞬間には
+    // 0 行しか埋まらない。**SQL そのものを取り出して、行がある状態で回す**
+    // （期待値をテストへ書き写すと、0013 を書き換えた日にこの検査だけが古くなる）。
+    const migration = env.TEST_MIGRATIONS.find((entry) => entry.name.startsWith('0013_'));
+    expect(migration, '0013 のマイグレーション').toBeDefined();
+    const backfill = migration!.queries.find((query) => /insert\s+into\s+fork_notices/iu.test(query));
+    expect(backfill, '0013 の埋め戻し文').toBeDefined();
+    // **行コメントを落としてから 1 行へ潰す。** `exec` は文を 1 行で受け取るので、
+    // `--` を残したまま改行を消すと**文全体がコメントになり、0 行で緑になる。**
+    const sql = backfill!
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('--'))
+      .join(' ')
+      .replace(/\s+/gu, ' ')
+      .trim();
+    expect(sql).toMatch(/^insert into fork_notices/iu);
+
+    const authorId = await insertUser('fork-backfill');
+    const rows: readonly [string, string | null, string][] = [
+      ['g-backfill-parent', null, 'published'],
+      ['g-backfill-published', 'g-backfill-parent', 'published'],
+      ['g-backfill-removed', 'g-backfill-parent', 'removed'],
+      ['g-backfill-draft', 'g-backfill-parent', 'draft'],
+    ];
+    for (const [id, parentId, status] of rows) {
+      await env.DB.prepare(
+        `insert into games (id, author_id, parent_id, status, title, go_version, created_at, published_at)
+         values (?, ?, ?, ?, ?, ?, 7, 9)`,
+      )
+        .bind(id, authorId, parentId, status, 'T', 'go1.25.0')
+        .run();
+    }
+
+    await env.DB.exec(sql);
+
+    const marked = await env.DB.prepare(
+      "select game_id, claimed_at, outcome from fork_notices where game_id like 'g-backfill-%' order by game_id",
+    ).all<{ game_id: string; claimed_at: number; outcome: string }>();
+    // **親そのものと、まだ公開していないフォークは埋めない。** 前者は改造ではなく、
+    // 後者はこれから公開されるときに通知されるべきものである。
+    expect(marked.results.map((row) => row.game_id)).toEqual([
+      'g-backfill-published',
+      'g-backfill-removed',
+    ]);
+    for (const row of marked.results) {
+      expect(row.outcome).toBe('backfilled');
+      // `published_at` を入れる（その時点で真である値。0012 と同じ考え方）。
+      expect(row.claimed_at).toBe(9);
+    }
+  });
+});

@@ -43,11 +43,34 @@
  * 並ぶ。推敲が同じ状況で枠を返す（`releaseRevisionSlot`）のと同じ判断で、
  * **LLM を 1 度も呼んでいない失敗の跡を残さない。**
  *
- * ## 30KB は断るだけである（確定18 / M5-2）
+ * ## 大きい親は、まず知らせる（確定18 の条件 1 / M5-2 / #33）
  *
- * 5.3 は超過時に「作者の選択で LLM に整理させる」と定めるが、**整理パスは #33 が
- * 持つ**。ここでは断る。**枠は減らない**（LLM を呼ぶ前なので `generations` に行が
- * 出ない）ので、確定18 が心配した「知らないうちに枠を 2 回使わされた」形にはならない。
+ * 5.3 は 30KB 超過時に「作者の選択で LLM に整理させる」と定め、その 1 つ目の条件として
+ * **入力段階での事前警告**（親ソースが 24KB＝上限の 80% を超えていたら伝える）を課す。
+ * **その警告をここに置く。** 5.3 が作品ページではなくこちらを指名しているのは、
+ * 作品ページで警告すると**閲覧のたびに親のソースを R2 から測る**ことになり、拡散の
+ * 着地点（5.4 の共有 URL）に読み取りの費用が乗るからである。
+ *
+ * **警告は「やめさせる」ためのものではない。** 5.3 は拒否だけにしない理由を 10.3 の
+ * 撤退条件（「3 世代以上の系統が 1 本も出ていない」）に置いている——システムが構造的に
+ * 世代数を制限すると、自分で立てた撤退条件を自分の実装で不成立にしうる。したがって
+ * ここが伝えるのは**枠を余分に使う可能性**であって、改造をやめる勧めではない。
+ *
+ * **警告の時点では枠を 1 つも使っていない。** 行も作らない（下記）ので、作者が
+ * 「やめる」を選んでも跡が残らない。
+ *
+ * ## 30KB 超はいまも断るしかない（確定18 の条件 2〜4 は未実装である）
+ *
+ * 5.3 の整理パスは**この経路からは動かせない。** 2 つとも構造的な理由である。
+ *
+ * 1. **エッジは Bedrock を呼べない**（`BEDROCK_AWS_*` は #160 で削除された）。整理は
+ *    全文再出力の LLM 呼び出しなので、オーケストレータ Lambda の中でしか走らない。
+ * 2. **`src/orchestrator/payload.ts` が上限超の `baseSource` を断る。** 整理の入力は
+ *    まさに上限超のソースであり、**上限を守るための検査が逃げ道の入口をふさいでいる。**
+ *
+ * 詳しくは `src/source-size.ts` の冒頭にある。**断るときも「もう一度」と言わない**
+ * （何度やっても同じ結果になる）。**枠は減らない**——LLM を呼ぶ前なので `generations`
+ * に行が出ない。
  *
  * ## CSRF について
  *
@@ -63,6 +86,14 @@ import { checkGenerationQuota, describeQuotaRejection, QUOTA_EXCEEDED_STATUS } f
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
+import { escapeHtml } from './signup.js';
+import type { SizeConsent } from './source-size.js';
+import {
+  MAX_SOURCE_BYTES,
+  SOURCE_SIZE_WARNING_BYTES,
+  decideForkSizeAction,
+  measureSourceBytes,
+} from './source-size.js';
 import type { StoredSourceFailure } from './source-store.js';
 import { readStoredSource } from './source-store.js';
 import { workPagePath } from './work-page.js';
@@ -129,6 +160,80 @@ function refusal(heading: string, body: string, status: number): Response {
   );
 }
 
+/**
+ * 事前警告に同意したことを送り返す項目名（確定18 の条件 1。#33）。
+ *
+ * **`src/paths.ts` へ置かない。** あそこに在るのは
+ * {@link FORK_PARENT_ID_FIELD} のように**作品ページのフォーム（`src/work-page.ts`）が
+ * 同じ綴りを要る**項目で、循環参照を避けるために逃がしたものである。この項目を送る
+ * フォームを描くのは**この経路自身**（警告の画面）なので、綴りを共有する相手がいない。
+ */
+export const FORK_SIZE_CONSENT_FIELD = 'size_consent';
+
+/** {@link FORK_SIZE_CONSENT_FIELD} の値のうち「このまま改造する」を意味するもの。 */
+export const FORK_SIZE_CONSENT_PROCEED = 'proceed';
+
+/**
+ * 3 桁ごとに区切った数字にする。
+ *
+ * **`toLocaleString` を使わない。** ロケールデータの有無で出力が変わる値を、テストが
+ * 突き合わせる文言の中へ入れない。
+ *
+ * @param value 0 以上の整数
+ * @returns 区切りを入れた文字列
+ */
+function groupDigits(value: number): string {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/gu, ',');
+}
+
+/**
+ * 事前警告を返すときのステータス（確定18 の条件 1）。
+ *
+ * **200 にしない。** 同意を持たない要求ではフォークが**始まっていない**ので、成功として
+ * 読める応答を返すと、`Accept: application/json` で叩く側が「改造が始まった」と扱う。
+ * 断りと同じ 409 に寄せておけば、この応答の `error` を知らない相手も**進まない側**へ
+ * 倒れる（`not-forkable` と同じ値なのは、どちらも「この要求はこのままでは通せない」
+ * だからである。**区別は `error` が持つ**）。
+ */
+const SIZE_WARNING_STATUS = 409;
+
+/**
+ * 事前警告の画面を返す（確定18 の条件 1）。
+ *
+ * **警告と選択肢を 1 画面に収める**（5.3）。読んだうえで「このまま改造する」を押すと、
+ * 同じ入力が同意付きで戻ってくる。**差分プロンプトを預かり直すのはこの画面である**
+ * ——作者に入力し直させると、警告のたびに書いた文章が消える。
+ *
+ * **`escapeHtml` を通す。** 差分プロンプトは作者が書いた任意の文字列で、8.3 の検査を
+ * 通っていない（あれは生成物を見る検査である）。**自分にしか返らないから安全、とは
+ * 数えない。**
+ *
+ * @param parentId 親の作品 id
+ * @param prompt 作者が入力した差分プロンプト
+ * @param bytes 親ソースのバイト数
+ * @returns レスポンス
+ */
+function sizeWarningPage(parentId: string, prompt: string, bytes: number): Response {
+  return html(
+    `<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>この作品はすでに大きめです - Game Forge</title>
+<h1>この作品はすでに大きめです</h1>
+<p>元のソースは ${groupDigits(bytes)} バイトあり、上限 ${groupDigits(MAX_SOURCE_BYTES)} バイトの 80%（${groupDigits(SOURCE_SIZE_WARNING_BYTES)} バイト）を超えています。</p>
+<p>このまま改造できます。ただし出来上がったソースが上限を超えると、収め直すためにもう 1 回ぶんの生成枠が要ることがあります。</p>
+<form method="post" action="${FORK_PATH}">
+  <input type="hidden" name="${FORK_PARENT_ID_FIELD}" value="${escapeHtml(parentId)}">
+  <input type="hidden" name="${FORK_PROMPT_FIELD}" value="${escapeHtml(prompt)}">
+  <input type="hidden" name="${FORK_SIZE_CONSENT_FIELD}" value="${FORK_SIZE_CONSENT_PROCEED}">
+  <button type="submit">このまま改造する</button>
+</form>
+<p><a href="${workPagePath(parentId)}">やめる</a></p>`,
+    SIZE_WARNING_STATUS,
+  );
+}
+
 /** フォークを断る理由ごとの、ステータスと文言。 */
 const REFUSALS: Readonly<
   Record<
@@ -150,7 +255,9 @@ const REFUSALS: Readonly<
     heading: '元のソースを読み出せませんでした',
     body: '時間をおいて、もう一度お試しください。',
   },
-  // **「もう一度」と言わない。** 何度やっても同じ結果になる（整理パスは M5-2 が持つ）。
+  // **「もう一度」と言わない。** 何度やっても同じ結果になる。5.3 の整理パス
+  // （確定18 の条件 2〜4）はこの経路からは動かせない——理由はモジュール冒頭と
+  // `src/source-size.ts` にある。**「いまは」と書いてあるのはそのためである。**
   'source-too-large': {
     status: 409,
     heading: 'この作品は改造できる大きさを超えています',
@@ -169,6 +276,13 @@ interface ForkInput {
   readonly parentId: string;
   /** 差分プロンプト。 */
   readonly prompt: string;
+  /**
+   * 事前警告に対して作者が示した同意（確定18 の条件 1）。
+   *
+   * **既定は `none` である。** 「送られてこなかった」を「同意した」と読まない
+   * ——読むと、警告を 1 度も見ていない作者が同意した扱いになる。
+   */
+  readonly consent: SizeConsent;
 }
 
 /**
@@ -187,10 +301,12 @@ async function parseForkInput(request: Request): Promise<ForkInput | null> {
 
   let parentId: string | null = null;
   let prompt: string | null = null;
+  let consent: string | null = null;
   if (contentType.includes(FORM_MEDIA_TYPE)) {
     const form = new URLSearchParams(body);
     parentId = form.get(FORK_PARENT_ID_FIELD);
     prompt = form.get(FORK_PROMPT_FIELD);
+    consent = form.get(FORK_SIZE_CONSENT_FIELD);
   } else if (contentType.includes(JSON_MEDIA_TYPE)) {
     try {
       const parsed: unknown = JSON.parse(body);
@@ -204,6 +320,10 @@ async function parseForkInput(request: Request): Promise<ForkInput | null> {
           : null;
       prompt =
         typeof record[FORK_PROMPT_FIELD] === 'string' ? (record[FORK_PROMPT_FIELD] as string) : null;
+      consent =
+        typeof record[FORK_SIZE_CONSENT_FIELD] === 'string'
+          ? (record[FORK_SIZE_CONSENT_FIELD] as string)
+          : null;
     } catch {
       return null;
     }
@@ -220,7 +340,13 @@ async function parseForkInput(request: Request): Promise<ForkInput | null> {
   if (trimmed === '' || [...trimmed].length > MAX_PROMPT_LENGTH) {
     return null;
   }
-  return { parentId, prompt: trimmed };
+  // **知らない値は同意として扱わない。** 綴りが違うものを黙って `proceed` へ寄せると、
+  // 事前警告が「送りさえすれば飛ばせる関門」になる。
+  return {
+    parentId,
+    prompt: trimmed,
+    consent: consent === FORK_SIZE_CONSENT_PROCEED ? 'proceed' : 'none',
+  };
 }
 
 /**
@@ -332,6 +458,28 @@ async function handleFork(
     return wantsHtml(request)
       ? refusal(refused.heading, refused.body, refused.status)
       : json({ error: base.reason }, refused.status);
+  }
+
+  // 確定18 の条件 1。**行を作る前・枠を使う前に測って知らせる。**
+  //
+  // **`readStoredSource` が測った値を持ち出さない。** あちらの戻り値は
+  // `src/revise.ts`（所有外）も受け取る形で、ここの都合で広げると推敲側の検査まで
+  // 巻き込む。測り直しの費用は 30KB の `TextEncoder` 1 回で、R2 の読み出しより桁が
+  // 小さい。**上限そのものは超えていない**（超えていれば上で断られている）ので、
+  // ここへ来る文字列の大きさには天井がある。
+  const bytes = measureSourceBytes(base.source);
+  if (decideForkSizeAction({ bytes, consent: input.consent }) === 'warn') {
+    return wantsHtml(request)
+      ? sizeWarningPage(input.parentId, input.prompt, bytes)
+      : json(
+          {
+            error: 'source-near-limit',
+            bytes,
+            limit: MAX_SOURCE_BYTES,
+            warnAt: SOURCE_SIZE_WARNING_BYTES,
+          },
+          SIZE_WARNING_STATUS,
+        );
   }
 
   // **ここで初めて行ができる。** 5.3 の「新しい作品行が生まれる」であり、

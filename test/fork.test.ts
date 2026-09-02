@@ -25,7 +25,11 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { LOGIN_PATH } from '../src/auth/google.js';
 import { createBedrockGenerateSource } from '../src/bedrock.js';
-import { createForkRoutes } from '../src/fork.js';
+import {
+  FORK_SIZE_CONSENT_FIELD,
+  FORK_SIZE_CONSENT_PROCEED,
+  createForkRoutes,
+} from '../src/fork.js';
 import type { GenerationJob, GenerationPipeline } from '../src/generate.js';
 import { defaultPipeline } from '../src/generate.js';
 import {
@@ -46,7 +50,7 @@ import { FORK_PARENT_ID_FIELD, FORK_PATH, FORK_PROMPT_FIELD } from '../src/paths
 import { DAILY_QUOTA_PER_USER, QUOTA_EXCEEDED_STATUS } from '../src/quota.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
-import { MAX_SOURCE_BYTES } from '../src/system-prompt.js';
+import { MAX_SOURCE_BYTES, SOURCE_SIZE_WARNING_BYTES } from '../src/source-size.js';
 import { workPagePath } from '../src/work-page.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
@@ -165,6 +169,7 @@ async function createPublishedGame(
  * @param parentId 親の作品 id
  * @param prompt 差分プロンプト
  * @param pipeline 差し替えた pipeline
+ * @param consent 事前警告への同意（確定18 の条件 1）。省くと**送らない**
  * @returns レスポンス
  */
 async function postFork(
@@ -172,12 +177,14 @@ async function postFork(
   parentId: string,
   prompt: string,
   pipeline: GenerationPipeline,
+  consent?: string,
 ): Promise<Response> {
   const base = { 'content-type': FORM_TYPE, accept: 'text/html' };
   const headers = userId === null ? base : await sessionHeaders(userId, base);
   const body = new URLSearchParams({
     [FORK_PARENT_ID_FIELD]: parentId,
     [FORK_PROMPT_FIELD]: prompt,
+    ...(consent === undefined ? {} : { [FORK_SIZE_CONSENT_FIELD]: consent }),
   }).toString();
   return await dispatch(
     createForkRoutes(pipeline),
@@ -434,7 +441,7 @@ describe('公開されていない作品はフォークできない（acceptance
 });
 
 describe('元のソースの扱い（確定18 / 5.3）', () => {
-  it('30KB を超える親は断る（整理パスは M5-2 が持つ）', async () => {
+  it('30KB を超える親は断る（整理パスは動かせない。#33 の報告）', async () => {
     const author = await createUser('fork-large-author');
     // **上限のちょうど 1 バイト上。** 切り詰めて渡すと、コンパイルが必ず落ちて枠だけが消える。
     const parentId = await createPublishedGame(author, 'x'.repeat(MAX_SOURCE_BYTES + 1));
@@ -478,6 +485,167 @@ describe('元のソースの扱い（確定18 / 5.3）', () => {
     // **プロンプトと分けて持つ**（`src/generate.ts` の `GenerateRequest`）。連結すると
     // 4.5 の区切りをソースの直後へ置けず、台帳に残るのが利用者の入力でなくなる。
     expect(spy.calls[0]!.request.prompt).toBe('敵を 2 体にする');
+  });
+});
+
+/** 24KB を超えるが 30KB には収まる親ソース（事前警告の帯。確定18 の条件 1）。 */
+const NEAR_LIMIT_SOURCE = 'x'.repeat(SOURCE_SIZE_WARNING_BYTES + 1);
+
+describe('大きい親は、始める前に知らせる（確定18 の条件 1 / M5-2 / #33）', () => {
+  it('24KB を超える親では、同意を取るまでフォークを始めない', async () => {
+    const author = await createUser('fork-warn-author');
+    const parentId = await createPublishedGame(author, NEAR_LIMIT_SOURCE);
+    const forker = await createUser('fork-warn-forker');
+    const spy = startSpy();
+
+    const response = await postFork(forker, parentId, '敵を増やす', spy.pipeline);
+
+    expect(response.status).toBe(409);
+    const page = await response.text();
+    expect(page).toContain('この作品はすでに大きめです');
+    // **警告の時点で枠も行も使っていない。** ここが崩れると、確定18 が避けたかった
+    // 「知らないうちに枠を使わされた」体験そのものになる。
+    expect(spy.calls).toHaveLength(0);
+    expect(await gamesOf(forker)).toHaveLength(0);
+  });
+
+  it('警告の画面が、上限と閾値の実際の値を出す', async () => {
+    const author = await createUser('fork-warn-figures-author');
+    const parentId = await createPublishedGame(author, NEAR_LIMIT_SOURCE);
+    const forker = await createUser('fork-warn-figures-forker');
+    const spy = startSpy();
+
+    const page = await (await postFork(forker, parentId, '敵を増やす', spy.pipeline)).text();
+
+    // **定数から出ていることを見る。** 手書きの数字だと、上限が動いた日に画面だけが
+    // 古い値を出し続ける。
+    expect(page).toContain('30,720 バイト');
+    expect(page).toContain('24,576 バイト');
+    expect(page).toContain(String(SOURCE_SIZE_WARNING_BYTES + 1).replace(/\B(?=(\d{3})+(?!\d))/gu, ','));
+    expect(MAX_SOURCE_BYTES).toBe(30_720);
+  });
+
+  it('警告の画面が、書いた差分プロンプトを預かり直す', async () => {
+    // 入力し直させると、警告のたびに書いた文章が消える。
+    const author = await createUser('fork-warn-keep-author');
+    const parentId = await createPublishedGame(author, NEAR_LIMIT_SOURCE);
+    const forker = await createUser('fork-warn-keep-forker');
+    const spy = startSpy();
+
+    const page = await (
+      await postFork(forker, parentId, '敵を 3 体にする', spy.pipeline)
+    ).text();
+
+    expect(page).toContain(`name="${FORK_PROMPT_FIELD}" value="敵を 3 体にする"`);
+    expect(page).toContain(`name="${FORK_PARENT_ID_FIELD}" value="${parentId}"`);
+    expect(page).toContain(
+      `name="${FORK_SIZE_CONSENT_FIELD}" value="${FORK_SIZE_CONSENT_PROCEED}"`,
+    );
+  });
+
+  it('預かり直す差分プロンプトを HTML として書き出さない', async () => {
+    // 作者が書いた任意の文字列であり、8.3 の検査は**生成物**しか見ていない。
+    const author = await createUser('fork-warn-escape-author');
+    const parentId = await createPublishedGame(author, NEAR_LIMIT_SOURCE);
+    const forker = await createUser('fork-warn-escape-forker');
+    const spy = startSpy();
+
+    const page = await (
+      await postFork(forker, parentId, '"><script>alert(1)</script>', spy.pipeline)
+    ).text();
+
+    expect(page).not.toContain('<script>alert(1)</script>');
+    expect(page).toContain('&quot;&gt;&lt;script&gt;');
+  });
+
+  it('同意を持って戻ってきたら、そのままフォークが始まる', async () => {
+    const author = await createUser('fork-warn-ok-author');
+    const parentId = await createPublishedGame(author, NEAR_LIMIT_SOURCE);
+    const forker = await createUser('fork-warn-ok-forker');
+    const spy = startSpy();
+
+    const response = await postFork(
+      forker,
+      parentId,
+      '敵を増やす',
+      spy.pipeline,
+      FORK_SIZE_CONSENT_PROCEED,
+    );
+
+    expect(response.status).toBe(303);
+    expect(spy.calls).toHaveLength(1);
+    // **切り詰めずに丸ごと載る。** 警告は大きさを伝えるだけで、渡すものを変えない。
+    expect(spy.calls[0]!.request.baseSource).toBe(NEAR_LIMIT_SOURCE);
+  });
+
+  it('知らない綴りの同意は同意として扱わない', async () => {
+    // 「送りさえすれば飛ばせる関門」にしない。
+    const author = await createUser('fork-warn-bogus-author');
+    const parentId = await createPublishedGame(author, NEAR_LIMIT_SOURCE);
+    const forker = await createUser('fork-warn-bogus-forker');
+    const spy = startSpy();
+
+    const response = await postFork(forker, parentId, '敵を増やす', spy.pipeline, 'yes');
+
+    expect(response.status).toBe(409);
+    expect(spy.calls).toHaveLength(0);
+  });
+
+  it('24KB ちょうどの親は警告しない（境界は「超えたら」）', async () => {
+    const author = await createUser('fork-warn-exact-author');
+    const parentId = await createPublishedGame(author, 'x'.repeat(SOURCE_SIZE_WARNING_BYTES));
+    const forker = await createUser('fork-warn-exact-forker');
+    const spy = startSpy();
+
+    const response = await postFork(forker, parentId, '敵を増やす', spy.pipeline);
+
+    expect(response.status).toBe(303);
+    expect(spy.calls).toHaveLength(1);
+  });
+
+  it('同意があっても 30KB 超は通さない', async () => {
+    // 通すと `src/orchestrator/payload.ts` がペイロードごと拒否し、生成されることの
+    // 無い `pending` の行だけが「あなたの作品」（5.5）に並ぶ。
+    const author = await createUser('fork-warn-over-author');
+    const parentId = await createPublishedGame(author, 'x'.repeat(MAX_SOURCE_BYTES + 1));
+    const forker = await createUser('fork-warn-over-forker');
+    const spy = startSpy();
+
+    const response = await postFork(
+      forker,
+      parentId,
+      '敵を増やす',
+      spy.pipeline,
+      FORK_SIZE_CONSENT_PROCEED,
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain('大きさを超えています');
+    expect(spy.calls).toHaveLength(0);
+    expect(await gamesOf(forker)).toHaveLength(0);
+  });
+
+  it('枠切れは警告より先に出る（断られる要求のために R2 を引かない）', async () => {
+    const author = await createUser('fork-warn-quota-author');
+    const parentId = await createPublishedGame(author, NEAR_LIMIT_SOURCE);
+    const forker = await createUser('fork-warn-quota-forker');
+    const now = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < DAILY_QUOTA_PER_USER; i += 1) {
+      await env.DB.prepare(
+        `insert into generations
+           (id, game_id, user_id, prompt, model, input_tokens, output_tokens,
+            cache_creation_input_tokens, cache_read_input_tokens, cost_jpy, succeeded, created_at)
+         values (?, null, ?, 'x', 'sonnet-4-6', 1, 1, 0, 0, 1.0, 1, ?)`,
+      )
+        .bind(`gen-fork-warn-quota-${i}`, forker, now)
+        .run();
+    }
+    const spy = startSpy();
+
+    const response = await postFork(forker, parentId, '敵を増やす', spy.pipeline);
+
+    expect(response.status).toBe(QUOTA_EXCEEDED_STATUS);
+    expect(await response.text()).not.toContain('この作品はすでに大きめです');
   });
 });
 

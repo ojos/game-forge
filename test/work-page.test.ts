@@ -972,6 +972,7 @@ const baseView: WorkPageView = {
   state: 'ready',
   owner: false,
   ipNotice: [],
+  blockedCategories: [],
   published: false,
   removed: false,
   title: 'お題',

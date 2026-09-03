@@ -294,6 +294,25 @@ export class CallbackClient {
    * @returns 行を閉じられたら true
    * @throws {CallbackDeliveryFailed} 予算内に届かなかったとき
    */
+  /**
+   * 入力側モデレーションが遮断したことを記録させる（8.2 / #37）。
+   *
+   * **状態機械は進めない。** 作品行を失敗にするのは、このあと投げる
+   * `PromptBlocked` が `finishWithError('prompt-blocked')` へ落ちる経路である。
+   *
+   * **本文を送る。** オーケストレータは D1 を持たないので、記録できるのはエッジだけ
+   * である。本文は既に {@link ledger} が同じ経路で運んでいるため、運ぶ情報の種類は
+   * 増えていない（`migrations/0016_moderation_blocks.sql`）。
+   *
+   * @param categories Guardrail が挙げたカテゴリの表示名（空にしない）
+   * @param prompt 遮断された本文
+   * @returns 1 行入ったら true
+   */
+  async blocked(categories: readonly string[], prompt: string): Promise<boolean> {
+    const body = await this.post('blocked', { blocked: { categories, prompt } });
+    return body['recorded'] === true;
+  }
+
   async finishWithError(errorCode: GenerationErrorCode, buildPathFailed = false): Promise<boolean> {
     const body = await this.post('finish', { errorCode, buildPathFailed });
     if (body['accepted'] !== true) {

@@ -62,6 +62,7 @@
  * 置くのは、あちらがこの契約を土台として使うためである。** 何を送れば何が起きるかの
  * 正本はここにある。
  */
+import { MODERATION_CATEGORY_SEPARATOR } from './input-moderation.js';
 import type { Route } from './routes.js';
 import { json, readLimitedText } from './routes.js';
 import type { GenerationErrorCode } from './games.js';
@@ -112,7 +113,7 @@ const MAX_BODY_BYTES = 16 * 1024;
 const JSON_MEDIA_TYPE = 'application/json';
 
 /** コールバックの種別（モジュール冒頭の表）。 */
-export const CALLBACK_KINDS = ['claim', 'ledger', 'cache-lookup', 'finish'] as const;
+export const CALLBACK_KINDS = ['claim', 'ledger', 'cache-lookup', 'blocked', 'finish'] as const;
 
 /** コールバックの種別。 */
 export type CallbackKind = (typeof CALLBACK_KINDS)[number];
@@ -128,6 +129,7 @@ export type CallbackRejection =
   | 'missing-job-token'
   | 'unknown-kind'
   | 'unknown-error-code'
+  | 'invalid-blocked'
   | 'invalid-build-signal'
   | 'invalid-ledger'
   | 'invalid-artifacts'
@@ -145,6 +147,57 @@ export interface LedgerCallback {
 }
 
 /** `finish` の成功側が運ぶもの。 */
+/**
+ * 入力側モデレーションが遮断したことの記録（8.2 / #37）。
+ *
+ * **これは状態機械を進めない。** 作品行を失敗にするのは、いつもどおり
+ * `finish` の `errorCode: 'prompt-blocked'` である（`failGame`）。**記録と状態遷移を
+ * 分けておく**と、記録の失敗が作品行を宙ぶらりんにしない。
+ *
+ * **オーケストレータが送るのは、あちらが D1 を持たないためである。** 本文は既に
+ * `ledger` が同じ経路で運んでいるので、運ぶ情報の種類は増えていない。
+ */
+export interface BlockedCallback {
+  /** Guardrail が挙げたカテゴリの表示名。**空は受け付けない。** */
+  readonly categories: readonly string[];
+  /** 遮断された本文。**90 日で消す**（`migrations/0016_moderation_blocks.sql`）。 */
+  readonly prompt: string;
+}
+
+/**
+ * `blocked` の中身を読む。
+ *
+ * **空のカテゴリを受け付けない。** 空を通すと、画面が「引っ掛かった分類:」の見出しだけを
+ * 出すか、何も出さないかのどちらかになる。**送る側は空にならないことを保証している**
+ * （`src/input-moderation.ts` の `readGuardrailBlocks`）ので、ここで断ってよい。
+ *
+ * @param value 本文の `blocked`
+ * @returns 読めた値、読めなければ null
+ */
+export function parseBlocked(value: unknown): BlockedCallback | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (key !== 'categories' && key !== 'prompt') {
+      return null;
+    }
+  }
+  const categories = record['categories'];
+  const prompt = record['prompt'];
+  if (!Array.isArray(categories) || categories.length === 0) {
+    return null;
+  }
+  if (!categories.every((item) => typeof item === 'string' && item !== '')) {
+    return null;
+  }
+  if (typeof prompt !== 'string' || prompt === '') {
+    return null;
+  }
+  return { categories: categories as readonly string[], prompt };
+}
+
 export interface FinishArtifacts {
   readonly goVersion: string;
   readonly sourceKey: string;
@@ -161,6 +214,7 @@ export type CallbackRequest = {
   | { readonly kind: 'claim' }
   | { readonly kind: 'ledger'; readonly ledger: LedgerCallback }
   | { readonly kind: 'cache-lookup'; readonly sourceSha256: string }
+  | { readonly kind: 'blocked'; readonly blocked: BlockedCallback }
   | {
       readonly kind: 'finish';
       readonly errorCode: GenerationErrorCode;
@@ -193,6 +247,8 @@ const ALLOWED_FIELDS = new Set([
   // 3.8 の degrade の発火信号（#140）。**失敗側にしか意味が無い**ので、成功側に
   // 付いていたら断る（下記）。
   'buildPathFailed',
+  // 入力側モデレーションの遮断の記録（8.2 / #37）。
+  'blocked',
 ]);
 
 /** コンテンツハッシュの綴り（小文字 16 進 64 桁）。 */
@@ -450,6 +506,14 @@ export async function parseCallbackRequest(request: Request): Promise<CallbackPa
     return { ok: true, request: { ...base, kind, sourceSha256 } };
   }
 
+  if (kind === 'blocked') {
+    const blocked = parseBlocked(parsed['blocked']);
+    if (blocked === null) {
+      return { ok: false, reason: 'invalid-blocked' };
+    }
+    return { ok: true, request: { ...base, kind, blocked } };
+  }
+
   // kind === 'finish'。**成功と失敗のどちらか一方でなければならない。**
   const hasError = parsed['errorCode'] !== undefined;
   const hasArtifacts = parsed['artifacts'] !== undefined;
@@ -540,6 +604,48 @@ export async function parseCallbackRequest(request: Request): Promise<CallbackPa
  * 呼ぶ側へ再送させると、届いている台帳と作品行に対して同じ処理をもう一度やらせる
  * ことになる。** どちらの関数も投げない契約である（`src/mail/` の 2 つ）。
  */
+/**
+ * 遮断を `moderation_blocks` へ 1 行残す（8.2 / #37）。
+ *
+ * **`games` から作者を引く。** 送り側（オーケストレータ）に `userId` を持たせない
+ * ——作者は `games` 行が知っており、そちらが正である（`ledger` が `userId` を
+ * 送らないのと同じ理由）。
+ *
+ * **行が引けなければ書かない。** 外部キーで落ちるより先に、静かに false を返す。
+ * 遮断そのものは `finish` が作品行へ残すので、**記録が欠けても遮断は効いている。**
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 作品 id
+ * @param blocked 遮断の中身
+ * @returns 1 行入ったら true
+ */
+async function recordModerationBlock(
+  env: Env,
+  gameId: string,
+  blocked: BlockedCallback,
+): Promise<boolean> {
+  const game = await env.DB.prepare('select author_id from games where id = ?')
+    .bind(gameId)
+    .first<{ author_id: string }>();
+  if (game === null) {
+    return false;
+  }
+  const result = await env.DB.prepare(
+    `insert into moderation_blocks (id, game_id, user_id, categories, prompt, created_at)
+     values (?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      crypto.randomUUID(),
+      gameId,
+      game.author_id,
+      blocked.categories.join(MODERATION_CATEGORY_SEPARATOR),
+      blocked.prompt,
+      Math.floor(Date.now() / 1000),
+    )
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
 export interface CallbackNotifiers {
   /** 月次費用の 80% 警告（#148）。 */
   readonly monthlyCostWarning: (env: Env, at: number) => Promise<CostAlertOutcome>;
@@ -644,6 +750,14 @@ async function handleCallback(
     // 3.8: 索引を引き、成果物が R2 に実在することまで確かめる（`src/build-cache.ts`）。
     const lookup = await readBuildCache(env, callback.sourceSha256);
     return json({ accepted: true, lookup }, 200);
+  }
+
+  if (callback.kind === 'blocked') {
+    // **状態機械はここで進めない。** 作品行を失敗にするのは、このあと届く
+    // `finish`（`errorCode: 'prompt-blocked'`）である。記録と状態遷移を分けておくと、
+    // **記録に失敗しても作品行が宙ぶらりんにならない**（逆も同じ）。
+    const recorded = await recordModerationBlock(env, callback.gameId, callback.blocked);
+    return json({ accepted: true, recorded }, 200);
   }
 
   // kind === 'finish'。

@@ -1,3 +1,4 @@
+import { MODERATION_TEST_ENV, guardrailBlock, guardrailPass } from './helpers/guardrail.js';
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { dispatch } from '../src/routes.js';
@@ -53,6 +54,8 @@ function lambdaEnv(overrides: Record<string, string | null> = {}): Record<string
     AWS_ACCESS_KEY_ID: 'test-access-key-id',
     AWS_SECRET_ACCESS_KEY: 'test-secret-access-key',
     AWS_SESSION_TOKEN: 'test-session-token',
+    // 入力側モデレーション（8.2 / #37）。**足さないと fail-closed で全部止まる。**
+    ...MODERATION_TEST_ENV,
   };
   const values: Record<string, string | undefined> = { ...base };
   for (const [key, value] of Object.entries(overrides)) {
@@ -515,7 +518,7 @@ describe('重複配信でも LLM は 1 回（#160 acceptance 2）', () => {
     const build = counting(async () => await buildResponse('dup'));
     const deps = {
       fetch: callbackFetch(),
-      bedrockFetch: bedrock.fetch,
+      bedrockFetch: guardrailPass(bedrock.fetch),
       buildFetch: build.fetch,
       sleep: async () => {},
     };
@@ -540,7 +543,7 @@ describe('重複配信でも LLM は 1 回（#160 acceptance 2）', () => {
     const { gameId, payload } = await seedJob('token-burn');
     await handleOrchestratorEvent(payload, lambdaEnv(), {
       fetch: callbackFetch(),
-      bedrockFetch: async () => converseResponse(),
+      bedrockFetch: guardrailPass(async () => converseResponse()),
       buildFetch: async () => await buildResponse('token-burn'),
       sleep: async () => {},
     });
@@ -555,7 +558,7 @@ describe('失敗の記録と、運用へ出すもの（#160）', () => {
 
     const outcome = await handleOrchestratorEvent(payload, lambdaEnv(), {
       fetch: callbackFetch(),
-      bedrockFetch: bedrock.fetch,
+      bedrockFetch: guardrailPass(bedrock.fetch),
       buildFetch: async () => buildRejectedResponse(),
       sleep: async () => {},
     });
@@ -585,7 +588,7 @@ describe('失敗の記録と、運用へ出すもの（#160）', () => {
 
     const outcome = await handleOrchestratorEvent(payload, lambdaEnv(), {
       fetch: callbackFetch(),
-      bedrockFetch: bedrock.fetch,
+      bedrockFetch: guardrailPass(bedrock.fetch),
       buildFetch,
       sleep: async () => {},
     });
@@ -613,7 +616,7 @@ describe('失敗の記録と、運用へ出すもの（#160）', () => {
         }
         return await real(request);
       },
-      bedrockFetch: async () => converseResponse(),
+      bedrockFetch: guardrailPass(async () => converseResponse()),
       buildFetch: async () => await buildResponse('ledger-lost'),
       sleep: async () => {},
       now: (() => {
@@ -643,7 +646,7 @@ describe('失敗の記録と、運用へ出すもの（#160）', () => {
         }
         return await real(request);
       },
-      bedrockFetch: async () => converseResponse(),
+      bedrockFetch: guardrailPass(async () => converseResponse()),
       buildFetch: async () => await buildResponse('finish-lost'),
       sleep: async () => {},
       now: (() => {
@@ -674,7 +677,7 @@ describe('失敗の記録と、運用へ出すもの（#160）', () => {
         }
         return await real(request);
       },
-      bedrockFetch: async () => converseResponse(),
+      bedrockFetch: guardrailPass(async () => converseResponse()),
       buildFetch: async () => await buildResponse('ledger-retry'),
       sleep: async () => {},
     });
@@ -694,7 +697,7 @@ describe('失敗の記録と、運用へ出すもの（#160）', () => {
         attempts += 1;
         return new Response('{"error":"unknown-field"}', { status: 400 });
       },
-      bedrockFetch: async () => converseResponse(),
+      bedrockFetch: guardrailPass(async () => converseResponse()),
       buildFetch: async () => await buildResponse('no-retry-4xx'),
       sleep: async () => {},
     }).catch((error: unknown) => error);
@@ -800,7 +803,7 @@ describe('3.8 のビルド結果キャッシュ（#160）', () => {
     const build = counting(async () => await buildResponse('cache-hit'));
     const outcome = await handleOrchestratorEvent(payload, lambdaEnv(), {
       fetch: callbackFetch(),
-      bedrockFetch: async () => converseResponse(),
+      bedrockFetch: guardrailPass(async () => converseResponse()),
       buildFetch: build.fetch,
       sleep: async () => {},
     });
@@ -809,5 +812,73 @@ describe('3.8 のビルド結果キャッシュ（#160）', () => {
     // **約 16 円と 21.6 秒を払わずに済む経路である。**
     expect(build.calls()).toBe(0);
     expect(await rowOf(gameId)).toMatchObject({ state: 'ready', wasmKey });
+  });
+});
+
+describe('入力側モデレーション（8.2 / #37）', () => {
+  it('遮断されると、モデルへ到達せず prompt-blocked で行が閉じる', async () => {
+    const { userId, gameId, payload } = await seedJob('moderation-block');
+    const bedrock = counting(() => converseResponse());
+    const build = counting(async () => await buildResponse('moderation-block'));
+
+    const outcome = await handleOrchestratorEvent(payload, lambdaEnv(), {
+      fetch: callbackFetch(),
+      bedrockFetch: guardrailBlock(bedrock.fetch, ['VIOLENCE']),
+      buildFetch: build.fetch,
+      sleep: async () => {},
+    });
+
+    expect(outcome).toEqual({ status: 'failed', errorCode: 'prompt-blocked' });
+    expect(await rowOf(gameId)).toMatchObject({
+      state: 'failed',
+      error: 'prompt-blocked',
+    });
+
+    // **モデルへ到達していない。** ここが #37 の acceptance 1 である。
+    expect(bedrock.calls()).toBe(0);
+    expect(build.calls()).toBe(0);
+
+    // **枠を消費していない。** 台帳の行はモデル呼び出しの後にしか作られない（確定25）。
+    expect(await ledgerCount(userId)).toBe(0);
+
+    // **遮断が記録されている。** 本文とカテゴリが 1 行だけ入る。
+    const blocked = await env.DB.prepare(
+      'select user_id, categories, prompt from moderation_blocks where game_id = ?',
+    )
+      .bind(gameId)
+      .all<{ user_id: string; categories: string; prompt: string }>();
+    expect(blocked.results).toHaveLength(1);
+    expect(blocked.results[0]!.user_id).toBe(userId);
+    expect(blocked.results[0]!.categories).toBe('暴力表現');
+    expect(blocked.results[0]!.prompt).not.toBe('');
+  });
+
+  it('Guardrail を呼べなければ internal で止まる（fail-closed）', async () => {
+    // **通す側へ倒さない。** ただし分類は `prompt-blocked` ではない——利用者に
+    // できることは「もう一度」であって「言い直す」ではない。
+    const { userId, gameId, payload } = await seedJob('moderation-down');
+    const bedrock = counting(() => converseResponse());
+
+    const outcome = await handleOrchestratorEvent(payload, lambdaEnv(), {
+      fetch: callbackFetch(),
+      bedrockFetch: async (request) =>
+        new URL(request.url).pathname.includes('/guardrail/')
+          ? new Response('nope', { status: 500 })
+          : await bedrock.fetch(request),
+      buildFetch: async () => await buildResponse('moderation-down'),
+      sleep: async () => {},
+    });
+
+    expect(outcome).toEqual({ status: 'failed', errorCode: 'internal' });
+    expect(bedrock.calls()).toBe(0);
+    expect(await ledgerCount(userId)).toBe(0);
+
+    // **記録は残らない**（遮断ではないので、残す対象が無い）。
+    const blocked = await env.DB.prepare(
+      'select count(*) as n from moderation_blocks where game_id = ?',
+    )
+      .bind(gameId)
+      .first<{ n: number }>();
+    expect(blocked?.n).toBe(0);
   });
 });

@@ -41,6 +41,7 @@ import { json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 import type { GenerationResult, SystemPromptResolver } from './generation-models.js';
 import { createBedrockGenerateSource } from './bedrock.js';
+import { PromptBlocked } from './input-moderation.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import {
   GeneratedSourceRejected,
@@ -761,6 +762,12 @@ export async function runGenerationJob(
  * @returns 分類名
  */
 export function generationErrorCodeOf(error: unknown): GenerationErrorCode {
+  // **入力側モデレーション（8.2 / #37）を最初に見る。** `ModerationUnavailable` は
+  // ここに現れない——呼べなかったことは「設定不足・関数障害」であり、最後の
+  // `internal` がそのまま正しい分類である（`src/input-moderation.ts` の表）。
+  if (error instanceof PromptBlocked) {
+    return 'prompt-blocked';
+  }
   if (error instanceof GeneratedSourceRejected) {
     return 'source-rejected';
   }

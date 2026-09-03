@@ -973,6 +973,8 @@ const baseView: WorkPageView = {
   owner: false,
   ipNotice: [],
   blockedCategories: [],
+  reportableId: null,
+  alreadyReported: false,
   published: false,
   removed: false,
   title: 'お題',

@@ -90,6 +90,8 @@ import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { parseIpNotice } from './ip-substitution.js';
 import { MODERATION_CATEGORY_SEPARATOR } from './input-moderation.js';
+import { MAX_REASON_LENGTH, hasReported, recordReport } from './reports.js';
+import type { ReportRejection } from './reports.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/invite-issuance.ts` も
 // そこから取っている）。同じ関数をこのモジュールで作り直さない。
@@ -139,6 +141,21 @@ export const WORK_REMOVE_PATH = '/api/works/remove';
 
 /** 取り下げの対象を指す項目名（フォームの `name` と JSON の鍵の両方）。 */
 export const WORK_REMOVE_GAME_ID_FIELD = 'game_id';
+
+/**
+ * 通報の受け口（8.4 / #40）。
+ *
+ * **取り下げ（{@link WORK_REMOVE_PATH}）と別の経路にする。** 取り下げは作者が自分の
+ * 作品に対して行い、通報は他者が行う。**同じ口にすると、誰の意思なのかが本文の中身
+ * でしか分からなくなる。**
+ */
+export const WORK_REPORT_PATH = '/api/works/report';
+
+/** 通報の対象を指す項目名。 */
+export const WORK_REPORT_GAME_ID_FIELD = 'game_id';
+
+/** 通報の理由を載せる項目名。 */
+export const WORK_REPORT_REASON_FIELD = 'reason';
 
 /**
  * `games.id` の綴り（`crypto.randomUUID()` が返す形）。
@@ -465,6 +482,17 @@ export interface WorkPageView {
    */
   readonly blockedCategories: readonly string[];
   /**
+   * 通報できる作品の id（8.4 / #40）。できないなら null。
+   *
+   * **出す条件は「公開済み・ログイン済み・作者でない・まだ通報していない」。**
+   * 押しても必ず断られるボタンを出さない（`src/invite-issuance.ts` が枠 0 のときに
+   * フォームを出さないのと同じ判断——**利用者から見て「壊れている」ことと「できない」
+   * ことの区別がつかなくなる**）。
+   */
+  readonly reportableId: string | null;
+  /** 既に通報済みか。**押せない理由を示すために出す**（黙って消さない）。 */
+  readonly alreadyReported: boolean;
+  /**
    * 公開済みか（5.4）。**この 1 つが画面の性格を変える。**
    *
    * 未公開なら作者のための状態画面（`noindex`・本人にしか中身を出さない）、
@@ -625,7 +653,7 @@ export function renderWorkPage(view: WorkPageView): string {
 <title>${escapeHtml(documentTitleOf(view))}</title>${ogpMeta(view)}${loadingScreenStyle(view)}
 <h1>作品</h1>
 ${sectionFor(view)}
-${title}${ipNotice}
+${title}${ipNotice}${reportSection(view)}
 <p><a href="/">トップへ</a></p>`;
 }
 
@@ -650,6 +678,41 @@ async function listBlockedCategories(env: Env, gameId: string): Promise<readonly
     return [];
   }
   return row.categories.split(MODERATION_CATEGORY_SEPARATOR).filter((part) => part !== '');
+}
+
+/**
+ * 通報の口（8.4 / #40）。
+ *
+ * **ワンタップである。** 8.4 は「ワンタップ通報機能」と書いており、理由の入力を必須に
+ * すると 1 タップで終わらない。理由欄は任意で、**空でも送れる。**
+ *
+ * **JavaScript を要求しない**（`src/publish.ts` と同じ形。素の `<form>`）。
+ *
+ * **押した結果がどうなるかを書かない。** 「N 件で非表示になります」と出すと、
+ * **閾値を外から測れる**——8.4 が警戒している通報爆撃の設計図になる。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（通報できなければ空文字、通報済みならその旨）
+ */
+function reportSection(view: WorkPageView): string {
+  if (view.alreadyReported) {
+    return `
+<p class="gf-reported">この作品は通報済みです。運用側で確認します。</p>`;
+  }
+  if (view.reportableId === null) {
+    return '';
+  }
+  return `
+<details class="gf-report">
+  <summary>この作品を通報する</summary>
+  <form method="post" action="${WORK_REPORT_PATH}">
+    <input type="hidden" name="${WORK_REPORT_GAME_ID_FIELD}" value="${view.reportableId}">
+    <p><label>理由（任意・${MAX_REASON_LENGTH} 文字まで）<br>
+      <textarea name="${WORK_REPORT_REASON_FIELD}" maxlength="${MAX_REASON_LENGTH}" rows="3"></textarea>
+    </label></p>
+    <button type="submit">通報する</button>
+  </form>
+</details>`;
 }
 
 /**
@@ -1533,6 +1596,13 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       ? await listBlockedCategories(env, gameId)
       : [];
 
+  // **通報済みかは、通報できる立場の人にだけ引く**（8.4 / #40）。未ログイン・作者・
+  // 未公開では読み取りが 1 件も増えない。
+  const alreadyReported =
+    published && !removed && session.ok && !owner
+      ? await hasReported(env, gameId, session.userId)
+      : false;
+
   // **作者のときだけ引く。** 公開作品のページは拡散の着地点であり、閲覧者ごとに
   // 版と枠を引く理由が無い（3.6 の読み取りがそのまま費用になる）。
   const revisions = owner ? await listRevisions(env, gameId) : [];
@@ -1561,6 +1631,12 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // `owner` を見直さなくても漏れない形にする（`errorCode` と同じ扱い）。
       ipNotice: owner ? parseIpNotice(row.ip_notice) : [],
       blockedCategories,
+      // 8.4 の通報（#40）。**押しても必ず断られるボタンを出さない**ので、条件を
+      // ここで畳む（画面側で `owner && published && …` を組み立てない。5.7 の
+      // 推敲欄が同じ形を避けている）。
+      reportableId:
+        published && !removed && session.ok && !owner && !alreadyReported ? gameId : null,
+      alreadyReported,
       published,
       removed,
       // **本人か、公開済みのときだけ出す。** 仮タイトルはプロンプト由来である
@@ -1691,6 +1767,128 @@ async function handleRemove(request: Request, env: Env): Promise<Response> {
   return asHtml
     ? removeRefusal(refused.heading, refused.body, refused.status)
     : json({ error: outcome.reason }, refused.status);
+}
+
+/**
+ * 通報を受け付ける（8.4 / #40）。
+ *
+ * **{@link handleRemove} と同じ形にしてある**（`accept` で HTML と JSON を分け、
+ * 素の `<form>` でも動く）。違うのは、**理由の自由記述を 1 つ運ぶ**ことだけである。
+ *
+ * **押した結果を必ず返す。** 断った理由（自分の作品・通報済み）を黙って握り潰すと、
+ * 押した人には「何も起きていない」ように見える。
+ *
+ * **キューへ入ったかどうかを利用者へ出さない。** 出すと**閾値を外から測れる**
+ * ——何回押せば止まるかが分かると、8.4 が警戒している通報爆撃の設計図になる。
+ * 返すのは「受け付けました」だけである。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function handleReport(request: Request, env: Env): Promise<Response> {
+  const asHtml = (request.headers.get('accept') ?? '').includes('text/html');
+
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return asHtml ? seeOther(LOGIN_PATH) : json({ error: 'unauthorized' }, 401);
+  }
+
+  const target = await readReportTarget(request);
+  if (!target.ok) {
+    const refused = REMOVE_BODY_REFUSALS[target.reason];
+    return asHtml
+      ? removeRefusal('通報できません', refused.body, refused.status)
+      : json({ error: target.reason }, refused.status);
+  }
+
+  const outcome = await recordReport(env, target.gameId, session.userId, target.reason);
+  if (!outcome.ok) {
+    const refused = REPORT_REFUSALS[outcome.reason];
+    return asHtml
+      ? removeRefusal('通報できません', refused.body, refused.status)
+      : json({ error: outcome.reason }, refused.status);
+  }
+
+  // POST-redirect-GET。戻り先は作品ページで、そこに「通報済み」が出る。
+  //
+  // **`queued` を返さない**（上記）。
+  return asHtml
+    ? seeOther(workPagePath(target.gameId))
+    : json({ reported: true }, 200);
+}
+
+/** 通報を断ったときに出すもの。 */
+// **鍵を `ReportRejection` で縛る。** `Record<string, …>` にすると、`recordReport` が
+// 理由を 1 つ増やした日に**表へ足し忘れても型検査が通り、実行時に undefined を読む。**
+const REPORT_REFUSALS: Readonly<Record<ReportRejection, { body: string; status: number }>> = {
+  'game-not-found': { body: 'その作品は見つかりませんでした。', status: 404 },
+  // **理由を分けて返す。** 「できません」だけだと、押した人は何度も押す。
+  'own-work': {
+    body: '自分の作品は通報できません。公開を取り下げたい場合は、作品ページの「公開を取り下げる」をお使いください。',
+    status: 400,
+  },
+  'already-reported': { body: 'この作品はすでに通報済みです。', status: 409 },
+  'reason-too-long': {
+    body: `理由が長すぎます（${MAX_REASON_LENGTH} 文字まで）。`,
+    status: 400,
+  },
+  'not-signed-in': { body: 'ログインが必要です。', status: 401 },
+};
+
+/** 通報の本文を読んだ結果。 */
+type ReportTarget =
+  | { readonly ok: true; readonly gameId: string; readonly reason: string }
+  | { readonly ok: false; readonly reason: RemoveRejection };
+
+/**
+ * 通報の本文を読む。
+ *
+ * **`readRemoveTarget` と同じ規律である**（媒体型を絞り、大きさを縛り、id の綴りを見る）。
+ * **理由は空でもよい**——ワンタップ通報（8.4）なので、理由を必須にすると 1 タップで
+ * 終わらない。長さだけは `recordReport` が見る。
+ *
+ * @param request 受信したリクエスト
+ * @returns 読めた対象、読めなければ理由
+ */
+async function readReportTarget(request: Request): Promise<ReportTarget> {
+  const mediaType = (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+  if (mediaType !== FORM_MEDIA_TYPE && mediaType !== JSON_MEDIA_TYPE) {
+    return { ok: false, reason: 'unsupported-content-type' };
+  }
+
+  // **理由のぶんだけ広げる。** 取り下げは UUID 1 つで 1 KiB だが、こちらは自由記述が
+  // 載る。`MAX_REASON_LENGTH` は文字数なので、UTF-8 の最大 4 バイト/文字を見込む。
+  const read = await readLimitedText(request, REMOVE_MAX_BODY_BYTES + MAX_REASON_LENGTH * 4);
+  if (!read.ok) {
+    return { ok: false, reason: read.reason };
+  }
+
+  let rawId: unknown;
+  let rawReason: unknown;
+  if (mediaType === FORM_MEDIA_TYPE) {
+    const form = new URLSearchParams(read.text);
+    rawId = form.get(WORK_REPORT_GAME_ID_FIELD) ?? undefined;
+    rawReason = form.get(WORK_REPORT_REASON_FIELD) ?? '';
+  } else {
+    try {
+      const parsed: unknown = JSON.parse(read.text);
+      const record =
+        typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+      rawId = record[WORK_REPORT_GAME_ID_FIELD];
+      rawReason = record[WORK_REPORT_REASON_FIELD] ?? '';
+    } catch {
+      return { ok: false, reason: 'invalid-game-id' };
+    }
+  }
+
+  if (typeof rawId !== 'string' || !GAME_ID_PATTERN.test(rawId)) {
+    return { ok: false, reason: 'invalid-game-id' };
+  }
+  if (typeof rawReason !== 'string') {
+    return { ok: false, reason: 'invalid-game-id' };
+  }
+  return { ok: true, gameId: rawId, reason: rawReason };
 }
 
 /**
@@ -1966,4 +2164,5 @@ export const workPageRoutes: readonly Route[] = [
   // **取り下げ（#35）は完全一致である。** `/api/works/remove` は `/works/` の
   // 前方一致に当たらない綴りにしてある（当たると作品ページの id として解釈される）。
   { method: 'POST', path: WORK_REMOVE_PATH, handler: handleRemove },
+  { method: 'POST', path: WORK_REPORT_PATH, handler: handleReport },
 ];

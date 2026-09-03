@@ -54,6 +54,7 @@
  * 根拠と、そのときの選択肢は仕様書 5.1 にある。
  */
 import { ipNoticeOf } from './ip-substitution.js';
+import { reviewVisibleSql } from './reports.js';
 import type { BuildOutcome } from './build-client.js';
 import type { BuildCacheRecord } from './build-cache.js';
 import { artifactKeysOf, buildCacheRecordOf } from './build-client.js';
@@ -944,7 +945,11 @@ export interface ForkChild {
  */
 export async function countPublishedForks(env: Env, parentId: string): Promise<number> {
   const row = await env.DB.prepare(
-    `select count(*) as n from games where parent_id = ? and status = ?`,
+    // **審査待ちの子を数えない**（8.4 / #40）。5.5 の「このゲームからの改造: N 件」は
+    // 新規露出そのものなので、止めるのはここである。**条件は `src/reports.ts` が持つ**
+    // ——書き写すと、次に露出する場所を足した日に片方だけが古くなる。
+    `select count(*) as n from games
+      where parent_id = ? and status = ? and ${reviewVisibleSql()}`,
   )
     .bind(parentId, PUBLISHED_STATUS)
     .first<{ n: number }>();
@@ -999,9 +1004,11 @@ export async function listPublishedForks(
   assertLimit(offset, '読み飛ばし件数');
 
   const result = await env.DB.prepare(
+    // **審査待ちの子を出さない**（8.4 / #40）。数える側（{@link countPublishedForks}）と
+    // **同じ断片を借りる**ので、件数と一覧がずれない。
     `select id, title, published_at
        from games
-      where parent_id = ? and status = ?
+      where parent_id = ? and status = ? and ${reviewVisibleSql()}
       order by published_at desc, id desc
       limit ? offset ?`,
   )

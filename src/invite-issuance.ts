@@ -29,6 +29,7 @@
 import { formatInviteCode, isInviteExpired } from './invite-code.js';
 import type { InviteRecord } from './invites.js';
 import { issueInvite, listIssuedInvites, remainingInviteQuota } from './invites.js';
+import { inviteQuotaHalted } from './reports.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, json } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
@@ -71,6 +72,10 @@ export const INVITES_API_PATH = '/api/invites';
  */
 const REASON_MESSAGES: Readonly<Record<string, string>> = {
   'quota-exhausted': `招待枠を使い切りました（1 人 ${INVITE_QUOTA} 本まで）。`,
+  // 7.3 の「BAN 時に招待元の招待枠を停止する」（#40）。**「使い切った」と混ぜない**
+  // ——利用者にできることが違う（枠は待っても戻らないが、こちらは運用の判断による）。
+  'quota-halted':
+    '招待枠を停止しています。招待した方の利用が停止されたためです。お心当たりがない場合はお問い合わせください。',
   failed: '招待を発行できませんでした。時間をおいて試してください。',
 };
 
@@ -285,15 +290,24 @@ const handleIssueInvite: RouteHandler = async (request, env) => {
   }
 
   try {
-    const issued = await issueInvite(env.DB, session.userId, INVITE_QUOTA);
+    // 7.3 の招待枠の停止（#40）。**`issueInvite` は枠を引数で受ける**ので、
+    // 止めることは「0 を渡す」ことに等しい。**別の分岐を足さない**——枠の判定を
+    // INSERT の `WHERE` に閉じ込めた設計（`src/invites.ts`）がそのまま効く。
+    const halted = await inviteQuotaHalted(env, session.userId);
+    const quota = halted ? 0 : INVITE_QUOTA;
+    const issued = await issueInvite(env.DB, session.userId, quota);
     if (!issued.ok) {
-      // 409 を使う。429（Too Many Requests）は時間あたりの制限に対する応答で、
-      // 待てば解けることを意味するが、招待枠は**総数**の上限であり待っても戻らない。
+      // **「使い切った」と「止められた」を分けて返す。** `issueInvite` はどちらも
+      // `quota-exhausted` として返す（あちらは理由を知らない）ので、ここで言い分ける。
+      //
+      // 409 を使う。429（Too Many Requests）は時間あたりの制限に対する応答で、待てば
+      // 解けることを意味するが、**招待枠は総数の上限であり待っても戻らない**（停止の
+      // ほうも、待って戻るものではない）。
+      const reason = halted ? 'quota-halted' : issued.reason;
       return asHtml
-        ? seeOther(`${INVITES_PATH}?reason=${issued.reason}`)
-        : json({ error: issued.reason, quota: INVITE_QUOTA, remaining: 0 }, 409);
+        ? seeOther(`${INVITES_PATH}?reason=${reason}`)
+        : json({ error: reason, quota, remaining: 0 }, 409);
     }
-
     if (asHtml) {
       // POST-redirect-GET。発行の結果を同じ URL に描くと、再読み込みで再送信の確認が
       // 出て、利用者が枠を空撃ちすることになる。

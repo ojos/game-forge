@@ -777,6 +777,75 @@ else
   failed=1
 fi
 
+
+# ── 11. 審査キューの読み出しが、既知の行に対して正しいこと（#40）──────────────
+echo "[selftest] 審査キューの読み出し（#40）"
+
+QUEUE_SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/queue-selftest.XXXXXX")" || exit 1
+trap 'rm -rf "$SANDBOX" "$KPI_SANDBOX" "$MIG_SANDBOX" "$QUEUE_SANDBOX"' EXIT
+
+if ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+     npx wrangler d1 migrations apply DB --local --persist-to "$QUEUE_SANDBOX" >/dev/null 2>&1; then
+  echo "  FAIL キュー用の使い捨て D1 へマイグレーションを適用できません" >&2
+  failed=1
+else
+  # 審査待ち 1 件（qg1）、通報はあるが cleared（qg3）、通報なし（qg2）。
+  CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+    npx wrangler d1 execute DB --local --persist-to "$QUEUE_SANDBOX" --command "
+  insert into users (id, google_sub, email, display_name, created_at) values
+    ('qa','sqa','a@example.invalid','A',0), ('qb','sqb','b@example.invalid','B',0);
+  insert into games (id, author_id, status, title, go_version, created_at, review_state) values
+    ('qg1','qa','published','t1','1.23',0,'queued'),
+    ('qg2','qa','published','t2','1.23',0,null),
+    ('qg3','qa','published','t3','1.23',0,'cleared');
+  insert into reports (id, game_id, reporter_id, reason, created_at) values
+    ('r1','qg1','qb','ひどい',100), ('r2','qg3','qb','',50);
+  " >/dev/null 2>&1 || { echo "  FAIL キュー用の既知の行を入れられません" >&2; failed=1; }
+
+  queue_json="$(bash scripts/report-queue.sh --persist-to "$QUEUE_SANDBOX" --format json 2>/dev/null)"
+  queue_code=$?
+  expect_eq "審査待ちが有れば 1 で落ちる" "1" "$queue_code"
+  expect_eq "審査待ちは 1 件"            "1" "$(jq -r '.count' <<<"$queue_json")"
+  expect_eq "出るのは queued の作品だけ" "qg1" "$(jq -r '.rows[0].game_id' <<<"$queue_json")"
+  expect_eq "通報者の数が出る"           "1" "$(jq -r '.rows[0].reporters' <<<"$queue_json")"
+
+  # **題名も理由も持ち出さないこと**（8.2 / 8.3）。運用が最初に要るのは「どれを見るか」
+  # だけで、中身は作品ページに権限の判定がある。
+  if jq -e '.rows[0] | has("title") or has("reason")' <<<"$queue_json" >/dev/null 2>&1; then
+    echo "  FAIL 題名か理由が出力に載っています（UGC を持ち出さない）" >&2
+    failed=1
+  else
+    echo "  ok   題名も理由も出力に載らない"
+  fi
+
+  # 空にすると 0 で通る。
+  CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+    npx wrangler d1 execute DB --local --persist-to "$QUEUE_SANDBOX" \
+    --command "update games set review_state = null where id = 'qg1'" >/dev/null 2>&1
+  run_bounded 60 bash scripts/report-queue.sh --persist-to "$QUEUE_SANDBOX"
+  expect_eq "審査待ちが無ければ 0 で通る" "0" "$?"
+fi
+
+# **綴りを書き写していないこと。** src/reports.ts から取り出しているか本文で見る。
+if grep -q 'REVIEW_QUEUED' scripts/report-queue.sh; then
+  echo "  ok   審査待ちの綴りを src/reports.ts から取り出している"
+else
+  echo "  FAIL 審査待ちの綴りを書き写しています" >&2
+  failed=1
+fi
+
+# **本番へは select しか送らないこと。**
+if grep -Fq 'select で始まらない文は送りません' scripts/report-queue.sh; then
+  echo "  ok   読み取りのみの guard がある"
+else
+  echo "  FAIL 読み取りのみの guard がありません" >&2
+  failed=1
+fi
+
+for missing in --format --persist-to; do
+  expect_missing_value_exits scripts/report-queue.sh "$missing"
+done
+
 if (( failed )); then
   echo "REPORT_SELFTEST_FAIL"
   exit 1

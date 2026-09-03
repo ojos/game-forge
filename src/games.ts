@@ -53,6 +53,7 @@
  * 結び付けないという決定である**（確定27 / #124）。読む側が存在しないためで、
  * 根拠と、そのときの選択肢は仕様書 5.1 にある。
  */
+import { ipNoticeOf } from './ip-substitution.js';
 import type { BuildOutcome } from './build-client.js';
 import type { BuildCacheRecord } from './build-cache.js';
 import { artifactKeysOf, buildCacheRecordOf } from './build-client.js';
@@ -396,8 +397,10 @@ async function insertPendingGame(
     `insert into games
        (id, author_id, parent_id, status, title, go_version, source_key, wasm_key,
         fork_count, created_at, published_at, preview_key,
-        generation_state, generation_error, job_token_hash, generation_started_at)
-     values (?, ?, ?, ?, ?, ?, null, null, 0, ?, null, null, 'pending', null, ?, null)`,
+        generation_state, generation_error, job_token_hash, generation_started_at,
+        ip_notice)
+     values (?, ?, ?, ?, ?, ?, null, null, 0, ?, null, null, 'pending', null, ?, null,
+             ?)`,
   )
     .bind(
       id,
@@ -410,6 +413,11 @@ async function insertPendingGame(
       UNBUILT_GO_VERSION,
       now,
       await hashJobToken(jobToken),
+      // 6.2 の開示（#39）。**生成もフォークもここを通るので、1 か所で覆える**
+      // （`createPendingGame` と `createForkedGame` の両方がこの関数を呼ぶ）。
+      // **入るのはこちらの一覧が持つ正式名だけで、利用者が書いた文字列は入らない**
+      // （`migrations/0015_games_ip_notice.sql`）。当たらなければ null。
+      ipNoticeOf(request.prompt),
     )
     .run();
 

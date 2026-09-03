@@ -1,6 +1,8 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { dispatch } from '../src/routes.js';
+import { renderWorkPage } from '../src/work-page.js';
+import type { WorkPageView } from '../src/work-page.js';
 import {
   FORKS_OFFSET_PARAM,
   FORKS_PER_PAGE,
@@ -957,5 +959,114 @@ describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
     const userId = await seedUser('rm-bad-id');
     const response = await postRemove('not-a-uuid', await sessionCookie(userId));
     expect(response.status).toBe(400);
+  });
+});
+
+/**
+ * 描画だけを試すための最小の view。**経路を通さないので D1 も要らない。**
+ *
+ * ここで組み立てるのは `renderWorkPage` の引数そのものであり、`showWorkPage` が
+ * 作る値ではない。**両者がずれたら型検査が落ちる**ので、写しにはならない。
+ */
+const baseView: WorkPageView = {
+  state: 'ready',
+  owner: false,
+  ipNotice: [],
+  published: false,
+  removed: false,
+  title: 'お題',
+  errorCode: null,
+  playUrl: null,
+  publishableId: null,
+  forkableId: null,
+  shareUrl: null,
+  imageUrl: null,
+  imagePath: null,
+  authorName: null,
+  parent: { kind: 'none' },
+  forks: { total: 0, items: [], morePath: null, backPath: null },
+  signedIn: false,
+  revisable: false,
+  dailyRemaining: null,
+  revisionsRemaining: null,
+  revisionRunning: false,
+  revisionError: null,
+  revisions: [],
+  recapturableId: null,
+  removableId: null,
+};
+
+describe('著名 IP 名の置換を作者へ開示する（6.2 / #39）', () => {
+  it('作者には開示が出る', async () => {
+    const { userId, id } = await seedPending('ip-owner', 'マリオみたいな横スクロール');
+    const res = await open(`${WORK_PAGE_PREFIX}${id}`, await sessionCookie(userId));
+    const body = await res.text();
+    expect(res.status).toBe(200);
+    expect(body).toContain('「マリオ」');
+    expect(body).toContain('オリジナルの要素へ置き換えて作っています');
+  });
+
+  it('作者以外には出ない（商標を公開ページへ出さない）', async () => {
+    // **この検査が覆うのは 2 つの門番の「対」である。** 変異で 3 通り確かめた:
+    //
+    //   描画側だけ外す … 下の it が赤くなる（この it は緑のまま）
+    //   view 側だけ外す … **どちらも緑のまま**。描画側が止めるので漏れない
+    //   両方外す       … この it が赤くなる
+    //
+    // **「view 側だけ外して緑」は覆いの穴ではない**——二重の門番の後段が実際に
+    // 効いている証拠である。ただし **view 側の門番は単独では確かめられていない**
+    // （view を外から観測する口が無い）。ここを書き落とすと、次に読む人が
+    // 「両方とも変異で確かめてある」と読む。
+    const { id } = await seedPending('ip-other', 'マリオみたいな横スクロール');
+    const stranger = await seedUser('ip-stranger');
+
+    const anonymous = await (await open(`${WORK_PAGE_PREFIX}${id}`)).text();
+    expect(anonymous).not.toContain('マリオ');
+
+    const other = await (
+      await open(`${WORK_PAGE_PREFIX}${id}`, await sessionCookie(stranger))
+    ).text();
+    expect(other).not.toContain('マリオ');
+  });
+
+  it('描画側の門番だけでも止まる（view に値が載っていても出さない）', () => {
+    // **view の組み立て側が空にしているので、経路からは到達しない状態である。**
+    // だからこそ経路の検査では確かめられず、ここで直に渡して見る。
+    // 門番を外すと赤くなることは変異で確かめてある。
+    const leaked = renderWorkPage({ ...baseView, owner: false, ipNotice: ['マリオ'] });
+    expect(leaked).not.toContain('マリオ');
+
+    // 同じ view で `owner` だけを立てると出る（＝この検査は空振りしていない）。
+    const shown = renderWorkPage({ ...baseView, owner: true, ipNotice: ['マリオ'] });
+    expect(shown).toContain('「マリオ」');
+  });
+
+  it('当たらないお題では開示が出ない', async () => {
+    // **無いことを断言しない。** 何も出さないだけである。
+    const { userId, id } = await seedPending('ip-clean', 'ねこが主人公のパズル');
+    const body = await (
+      await open(`${WORK_PAGE_PREFIX}${id}`, await sessionCookie(userId))
+    ).text();
+    expect(body).not.toContain('オリジナルの要素へ置き換えて作っています');
+  });
+
+  it('列へ入るのは正式名であって、利用者が書いた文字列ではない', async () => {
+    // 5.1 の入力が別の列へ複製されないこと（`migrations/0015_games_ip_notice.sql`）。
+    const { id } = await seedPending('ip-column', 'ＭＡＲＩＯ っぽい横スクロール');
+    const row = await env.DB.prepare('select ip_notice from games where id = ?')
+      .bind(id)
+      .first<{ ip_notice: string | null }>();
+    expect(row?.ip_notice).toBe('マリオ');
+  });
+
+  it('フォークの子でも同じ経路を通る', async () => {
+    // `createPendingGame` と `createForkedGame` は同じ `insertPendingGame` を呼ぶ。
+    // **1 か所で覆えていることを、経路の側から確かめる。**
+    const { userId, id: parentId } = await seedPending('ip-fork-parent');
+    const child = await createForkedGame(env, userId, { prompt: 'ゼルダ風にする' }, parentId);
+    const row = await env.DB.prepare('select ip_notice from games where id = ?')
+      .bind(child.id)
+      .first<{ ip_notice: string | null }>();
+    expect(row?.ip_notice).toBe('ゼルダ');
   });
 });

@@ -364,6 +364,30 @@ jobs:
           fi
           echo "オーケストレータは手元の束と一致しています（${local_sha}）。"
 
+      # ── マイグレーションの関門（#275）────────────────────────────────────
+      #
+      # **2026-09-03 に、これが無くて本番を約 10 分壊した。** #39 をマージしたとき
+      # `migrations apply --remote` を実行せず、`insertPendingGame` が `ip_notice` を
+      # INSERT に含めるのに本番の `games` にその列が無い状態で Worker が出た。
+      # **ログイン済み利用者の生成・フォーク・推敲がすべて失敗する状態**だった。
+      # 実害 0 件は偶然である（窓の間の生成が 0 件だった）。
+      #
+      # **オーケストレータの束（上の関門）と同じ形の事故なのに、こちらだけ機構が
+      # 無かった。** `docs/handoff.md` は「忘れないこと」と警告していたが、
+      # **呼びかけでは止まらなかった。**
+      #
+      # **適用はしない。** 本番のスキーマ変更は利用者の端末に留める（`docs/handoff.md`）。
+      # ここは止めるだけで、何を当てることになるのかを出力に並べる。
+      #
+      # **常に見る**（束の関門と違って `if` を付けない）。判定は本番 D1 への
+      # 読み取り 1 回で、マイグレーションを足したかどうかに関係なく**ずれは起こりうる**
+      # ——過去の PR で当て忘れたものが残っていれば、今日の PR が踏む。
+      - name: 未適用のマイグレーションが無いこと
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bash scripts/check-migrations-applied.sh --remote
+
       - name: Deploy to Cloudflare Pages
         env:
           # wrangler がこの 2 つの名前を直接読む（.env と同じ名前・同じ値）。

@@ -700,6 +700,84 @@ else
   failed=1
 fi
 
+# ── 10. 撤退条件の判定手順が、実際に使える形であること（#44）────────────────
+#
+# **10.3 は「決めていない状態のみが危険」と書いている。** 手順書があっても、指す先が
+# 変わっていれば判定日に使えない。**指している場所が実在することを機械で見る。**
+echo "[selftest] 撤退条件の判定手順（#44）"
+
+RETREAT_DOC="docs/retreat-review.md"
+if [[ -f "$RETREAT_DOC" ]]; then
+  echo "  ok   ${RETREAT_DOC} がある"
+else
+  echo "  FAIL ${RETREAT_DOC} がありません" >&2
+  failed=1
+fi
+
+# **手順が指す jq のパスが、集計の出力に実在すること。**
+# 手順書が `.forkRate.rate` を読めと言っているのに、集計がその名前を出さなくなったら、
+# **判定日に初めて気づく。** 手順書と集計の両方から取り出して突き合わせる。
+for path in '.forkRate.rate' '.deepLineages.count'; do
+  if ! grep -qF "$path" "$RETREAT_DOC" 2>/dev/null; then
+    echo "  FAIL 手順書が ${path} を指していません" >&2
+    failed=1
+    continue
+  fi
+  # 集計側の出力に同じ鍵があるか（`--persist-to` の空 D1 では引けないので、
+  # 既知の行を入れた KPI 用の使い捨て D1 を借りる）。
+  #
+  # **`jq -e` の終了コードで見る。出力の中身で見ない。** 鍵が無いとき `jq` は
+  # **文字列 `null` を出力する**ので、`[[ -n "$out" ]]` は真になる——**鍵を消しても
+  # 緑のままだった**（この検査を書いた直後に変異で踏んだ）。`-e` は最後の値が
+  # `null` / `false` なら 1 を返すので、そちらを見る。
+  #
+  # **`0` は偽にならない**（`jq -e` が 1 を返すのは `null` と `false` だけ）ので、
+  # 3 世代の本数が 0 本でもこの検査は通る。
+  if bash scripts/kpi-report.sh --persist-to "$KPI_SANDBOX" --format json 2>/dev/null \
+     | jq -e "${path}" >/dev/null 2>&1; then
+    echo "  ok   集計の出力に ${path} がある"
+  else
+    echo "  FAIL 集計の出力に ${path} がありません（手順書が指す先が消えています）" >&2
+    failed=1
+  fi
+done
+
+# **判定日の欄が空のまま埋もれないこと。** 空欄そのものは正しい状態（M7 未完了）だが、
+# **「未確定」と書いてあることが、埋めるべき場所だという合図になる。**
+if grep -q '未確定' "$RETREAT_DOC" 2>/dev/null; then
+  echo "  ok   判定日が未確定であることが明示されている"
+else
+  echo "  ok   判定日が記入済み（未確定の表記が消えている）"
+fi
+
+# **閾値の数値が手順書に 1 度しか現れないこと。**
+#
+# 2 か所に置くと、10.3 が基準を緩めた日に片方が古くなる。**緩めるのは 10.3 が明示的に
+# 許している操作**なので、起こる前提で置き場を 1 つにする。
+#
+# **判定コマンドの中には現れてよい**——そこは実行するものであり、値が無いと動かない。
+# 散文は 10.3 を指すだけにする。
+#
+# **この検査は、最初に書いたとき見つけても `failed` を立てていなかった**（Copilot の
+# 指摘で気づいた）。**説明と逆のことをする検査は、無いより悪い**——「複製していない
+# ことを見ている」と読まれたまま、複製が通る。
+threshold_hits="$(grep -cE '0\.40|40 ?%' "$RETREAT_DOC" 2>/dev/null || true)"
+if [[ "$threshold_hits" -eq 1 ]]; then
+  echo "  ok   閾値の数値は 1 度だけ現れる（判定コマンドの中）"
+else
+  echo "  FAIL 閾値の数値が ${threshold_hits} 回現れます（判定コマンドの 1 度だけにしてください）" >&2
+  grep -nE '0\.40|40 ?%' "$RETREAT_DOC" >&2
+  failed=1
+fi
+# **その 1 度が判定コマンドの中であること。** 散文に 1 度だけ書いても上は通る。
+if grep -E '0\.40|40 ?%' "$RETREAT_DOC" 2>/dev/null | grep -q 'forkRate'; then
+  echo "  ok   その 1 度は判定コマンドの中にある"
+else
+  echo "  FAIL 閾値の数値が判定コマンドの外にあります" >&2
+  failed=1
+fi
+
+
 # ── 11. 審査キューの読み出しが、既知の行に対して正しいこと（#40）──────────────
 echo "[selftest] 審査キューの読み出し（#40）"
 

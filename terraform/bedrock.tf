@@ -14,6 +14,7 @@
  * | 生成の呼び出し権限 | **terraform/orchestrator.tf**（#160 で実行ロールへ移った。下記） |
  * | 呼び出しに要る動作の定義（`local.bedrock_invoke_actions`） | この宣言 |
  * | 費用ガードの層 2（暴走検知）と層 3（Budgets） | **terraform/bedrock-guard.tf**（#82） |
+ * | 入力側モデレーションの Guardrail（8.2） | **terraform/moderation.tf**（#37。名前が似ているが別物） |
  * | Bedrock のレートクォータ引き下げ（層 4） | **この宣言は持たない**（Service Quotas に引き下げ API が無い） |
  *
  * ## 長命キーはもう要らない（#160）
@@ -41,8 +42,14 @@ locals {
   ])
 
   /**
-   * 生成に要る Bedrock の動作。**許可（下記）と停止用の Deny（bedrock-guard.tf）の
+   * 生成の経路に要る Bedrock の動作。**許可（下記）と停止用の Deny（bedrock-guard.tf）の
    * 両方が、この 1 つの定義から作られる。**
+   *
+   * **`ApplyGuardrail` もここへ入れる**（8.2 / #37）。生成そのものではないが、
+   * **同じ経路の中で、モデル呼び出しの直前に走る。** 別の statement へ切り出すと
+   * 費用ガードの Deny から漏れ、**停止しているのにモデレーションだけ課金され続ける。**
+   * 入れておけば、停止したときは経路ごと止まる（入力側モデレーションは fail-closed
+   * なので、止まった状態でも通してしまうことはない）。
    *
    * 2 か所へ書き写すと、許可へ動作を足したときに Deny 側が古いままになり、
    * **費用ガードが発火しても足した動作だけが素通りする**（共通規範 12 章
@@ -56,6 +63,7 @@ locals {
     "bedrock:InvokeModelWithResponseStream",
     "bedrock:Converse",
     "bedrock:ConverseStream",
+    "bedrock:ApplyGuardrail",
   ]
 }
 

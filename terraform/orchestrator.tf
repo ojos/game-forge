@@ -466,6 +466,12 @@ resource "aws_lambda_function" "orchestrator" {
       CALLBACK_BASE_URL = "https://${local.app_host}"
       # ビルド関数の宛先。**値の正本はここではなく build-function.tf の local である。**
       BUILD_FUNCTION_NAME = aws_lambda_function.build.function_name
+      # 入力側モデレーション（8.2 / #37）。**id も版も宣言から渡す**——ハンドラ側で
+      # 組み立てると、apply していない版を呼びうる。`DRAFT` は渡さない
+      # （`terraform/moderation.tf`）。**渡らなかったときは fail-closed で遮断する**
+      # ので、環境変数が抜けた状態が「素通り」にはならない。
+      MODERATION_GUARDRAIL_ID      = aws_bedrock_guardrail.input_moderation.guardrail_id
+      MODERATION_GUARDRAIL_VERSION = aws_bedrock_guardrail_version.input_moderation.version
     }
   }
 

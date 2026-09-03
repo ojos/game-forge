@@ -567,6 +567,39 @@ select (select count(*) from (select root from lineage group by root having max(
 " 2>/dev/null | sed -n '/^\[/,$p' | jq -r '.[0].results[0].n' 2>/dev/null)"
 expect_eq "変異（status で絞る）が 0 本になる" "0" "$KPI_MUTANT"
 
+# **値の無いオプションで止まらないこと。**
+#
+# `shift 2` は残りが 1 個のとき**シフトせずに失敗する**。`set -e` を使っていないので
+# そのまま次の周回へ進み、`while [[ $# -gt 0 ]]` が同じ引数を読み続けて無限ループになる。
+# **この壊れ方は「赤くならずに止まる」ので、ふつうの検査では見えない。** 見張りを立てて
+# 打ち切る（`timeout` は GNU 拡張なので使わない。macOS の bash 3.2 に無い）。
+run_bounded() {
+  local seconds="$1"; shift
+  "$@" >/dev/null 2>&1 &
+  local pid=$!
+  ( sleep "$seconds"; kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  local watchdog=$!
+  wait "$pid" 2>/dev/null
+  local code=$?
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  return "$code"
+}
+
+for missing in --format --persist-to; do
+  run_bounded 10 bash scripts/kpi-report.sh "$missing"
+  kpi_code=$?
+  if [[ "$kpi_code" -eq 2 ]]; then
+    echo "  ok   ${missing} に値が無ければ 2 で落ちる"
+  elif [[ "$kpi_code" -eq 137 ]]; then
+    echo "  FAIL ${missing} に値が無いと止まりません（無限ループ）" >&2
+    failed=1
+  else
+    echo "  FAIL ${missing} に値が無いときの終了コードが 2 ではありません: ${kpi_code}" >&2
+    failed=1
+  fi
+done
+
 # **本番を叩く場所は 1 か所だけであること**（effort-ab-report.sh と同じ規律）。
 kpi_calls="$(grep -cF 'args+=(--remote --env production)' scripts/kpi-report.sh || true)"
 expect_eq "本番を叩く場所は 1 か所だけ" "1" "$kpi_calls"

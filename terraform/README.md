@@ -19,6 +19,7 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 | オーケストレータ（3.3 の再配置 / #160） | `aws_lambda_function.orchestrator`、実行ロール、ロググループ、`aws_lambda_function_event_invoke_config.orchestrator`、`aws_sqs_queue.orchestrator_failures` | `orchestrator.tf` |
 | モデルアクセスと Bedrock の動作の定義（確定19 / 4.1） | `aws_bedrock_foundation_model_agreement.generation`、`local.bedrock_invoke_actions` | `bedrock.tf` |
 | 費用ガードの層 2 / 層 3（4.3） | `aws_cloudwatch_metric_alarm.bedrock_token_burst` ほか | `bedrock-guard.tf` |
+| 入力側モデレーションの Guardrail（8.2 / #37） | `aws_bedrock_guardrail.input_moderation`、`aws_bedrock_guardrail_version.input_moderation` | `moderation.tf`（**`bedrock-guard.tf` とは別物**。あちらは費用） |
 | GitHub Actions の OIDC 連携（9.3） | `aws_iam_openid_connect_provider.github`、`aws_iam_role.deploy_compiler` | `github-oidc.tf` |
 | R2 のライフサイクル（3.7 / 確定13 / 確定26） | `cloudflare_r2_bucket_lifecycle.artifacts` | `r2-lifecycle.tf` |
 
@@ -38,6 +39,22 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 
 ```bash
 export GITHUB_TOKEN="$(gh auth token)"
+```
+
+**AWS の prod は `AWS_PROFILE` を環境から取ります。**
+
+```bash
+export AWS_PROFILE=game-forge-prod
+```
+
+**dev と非対称です。** `provider "aws"`（prod）は `profile` を宣言しておらず、`alias = "dev"` のほうだけが `profile = var.aws_profile_dev` を持っています（`providers.tf`）。**資格情報を宣言へ持ち込まない方針の結果**であり、意図的です。
+
+**忘れると `plan` が「No valid credential sources found」で落ちます。** そのとき **dev のデータソースだけは成功する**ので、出力を見ると「AWS へは繋がっているのに一部だけ落ちている」ように読めます。**繋がっているのは dev で、落ちているのは prod です。**
+
+SSO が失効していたら更新します（`--use-device-code` を必ず付けます。既定の PKCE は `127.0.0.1` へのコールバックを要求し、devcontainer の外のブラウザからは届きません）。
+
+```bash
+aws sso login --sso-session ojos --no-browser --use-device-code
 ```
 
 Cloudflare の API トークンも環境変数で渡します。値は追跡外の `.env` にあり、ローダーが環境へ移します。**`r2-lifecycle.tf` が入って以降、これは「適用する場合だけ」ではなく `plan` にも必須です**（下記「3 行目を忘れると何が起きるか」）。

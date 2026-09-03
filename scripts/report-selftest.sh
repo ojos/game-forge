@@ -487,6 +487,96 @@ else
   failed=1
 fi
 
+# ── 8. KPI の集計が、既知の行に対して期待どおりに出ること（#42）──────────────
+#
+# **10.3 の撤退条件はこの集計で判定する。** 判定日に「数えられません」とならないよう、
+# 数え方そのものをここで見る。
+#
+# **見たいのは 1 点に尽きる**——**系統を `status` ではなく `parent_id` で数えているか**。
+# 本番には**真ん中が `removed` の 3 世代系統が実在する**（docs/handoff.md 1 章）ので、
+# 「公開済みだけ」で数えるとその系統が勘定から消える。**下の行はその形をそのまま作る。**
+echo "[selftest] KPI の集計が既知の行に対して期待どおりに出ること（#42）"
+
+KPI_SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/kpi-selftest.XXXXXX")" || exit 1
+trap 'rm -rf "$SANDBOX" "$KPI_SANDBOX"' EXIT
+
+kpi_d1() {
+  CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+    npx wrangler d1 execute DB --local --persist-to "$KPI_SANDBOX" "$@"
+}
+
+if ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+     npx wrangler d1 migrations apply DB --local --persist-to "$KPI_SANDBOX" >/dev/null 2>&1; then
+  echo "  FAIL KPI 用の使い捨て D1 へマイグレーションを適用できません" >&2
+  echo "REPORT_SELFTEST_FAIL"
+  exit 1
+fi
+
+# 利用者 2 / 作品 4（新規 2・フォーク 2）。**g1 → g2 → g3 が 3 世代で、真ん中の g2 は
+# `removed`**。待機リストは fork-cta が 1 件。台帳は 2 呼び出しで計 30 円。
+# 推敲は g1 に seq 2 と 3（seq 1 は初回生成なので数えない）。
+kpi_d1 --command "
+insert into users (id, google_sub, email, display_name, created_at) values
+  ('k1','ks1','k1@example.invalid','K1',0), ('k2','ks2','k2@example.invalid','K2',0);
+insert into games (id, author_id, parent_id, status, title, go_version, fork_count, created_at) values
+  ('kg1','k1',null,'published','root','1.23',1,0),
+  ('kg2','k2','kg1','removed','mid','1.23',1,0),
+  ('kg3','k1','kg2','published','leaf','1.23',0,0),
+  ('kg4','k2',null,'draft','other','1.23',0,0);
+insert into waitlist (id, email, source, created_at) values
+  ('kw1','kw1@example.invalid','fork-cta',0), ('kw2','kw2@example.invalid','landing',0);
+insert into generations (id, game_id, user_id, prompt, model, input_tokens, output_tokens,
+  cache_creation_input_tokens, cache_read_input_tokens, cost_jpy, succeeded, created_at) values
+  ('kn1',null,'k1','p','m',1,1,0,0,10.0,1,0),
+  ('kn2',null,'k1','p','m',1,1,0,0,20.0,0,0);
+insert into game_revisions (game_id, seq, source_key, wasm_key, go_version, prompt, created_at) values
+  ('kg1',1,'s','w','1.23',null,0), ('kg1',2,'s','w','1.23','fix',0), ('kg1',3,'s','w','1.23','fix2',0);
+" >/dev/null 2>&1 || { echo "  FAIL KPI 用の既知の行を入れられません" >&2; failed=1; }
+
+KPI_JSON="$(bash scripts/kpi-report.sh --persist-to "$KPI_SANDBOX" --format json 2>/dev/null)"
+if [[ -z "$KPI_JSON" ]]; then
+  echo "  FAIL kpi-report.sh が JSON を返しません" >&2
+  failed=1
+else
+  expect_eq "フォーク率 0.5"                "0.5" "$(jq -r '.forkRate.rate' <<<"$KPI_JSON")"
+  expect_eq "3 世代以上の系統 1 本"          "1"   "$(jq -r '.deepLineages.count' <<<"$KPI_JSON")"
+  expect_eq "最大 3 世代"                    "3"   "$(jq -r '.deepLineages.maxDepth' <<<"$KPI_JSON")"
+  expect_eq "招待者あたりの生成数 2"         "2"   "$(jq -r '.generationsPerUser.perUser' <<<"$KPI_JSON")"
+  expect_eq "改造 CTA からの登録 1 件"       "1"   "$(jq -r '.forkCtaWaitlist.registrations' <<<"$KPI_JSON")"
+  expect_eq "1 生成あたり 15 円"             "15"  "$(jq -r '.costPerGeneration.perCall' <<<"$KPI_JSON")"
+  expect_eq "1 作品あたりの推敲 0.5 回"      "0.5" "$(jq -r '.revisionsPerWork.perWork' <<<"$KPI_JSON")"
+
+  # **出せない 2 件は、0 ではなく null で出ること。** 0 を返すと「測って 0 だった」と
+  # 読まれる。`docs/handoff.md` 2 章の「測っていない と 測って余裕がある は別」と
+  # 同じ線であり、いちばん気づけない壊れ方をここで塞ぐ。
+  expect_eq "改造 CTA の登録率は null"       "null" "$(jq -r '.forkCtaWaitlist.conversionRate' <<<"$KPI_JSON")"
+  expect_eq "初回コンパイル成功率は null"    "null" "$(jq -r '.firstCompileSuccess.rate' <<<"$KPI_JSON")"
+fi
+
+# **この検査が空振りしないことを、変異で独立に確かめる。** 系統の SQL を
+# `status = 'published'` で絞ると、上の 3 世代（真ん中が removed）は 0 本になる。
+# **0 にならないなら、この検査は「status で数える実装」を通してしまう。**
+KPI_MUTANT="$(kpi_d1 --json --command "
+with recursive lineage(id, root, depth) as (
+    select id, id, 1 from games where parent_id is null and status = 'published'
+  union all
+    select g.id, lineage.root, lineage.depth + 1
+      from games g join lineage on g.parent_id = lineage.id where g.status = 'published'
+)
+select (select count(*) from (select root from lineage group by root having max(depth) >= 3)) as n
+" 2>/dev/null | sed -n '/^\[/,$p' | jq -r '.[0].results[0].n' 2>/dev/null)"
+expect_eq "変異（status で絞る）が 0 本になる" "0" "$KPI_MUTANT"
+
+# **本番を叩く場所は 1 か所だけであること**（effort-ab-report.sh と同じ規律）。
+kpi_calls="$(grep -cF 'args+=(--remote --env production)' scripts/kpi-report.sh || true)"
+expect_eq "本番を叩く場所は 1 か所だけ" "1" "$kpi_calls"
+if grep -Fq 'select / with で始まらない文は送りません' scripts/kpi-report.sh; then
+  echo "  ok   読み取りのみの guard がある"
+else
+  echo "  FAIL 読み取りのみの guard がありません" >&2
+  failed=1
+fi
+
 if (( failed )); then
   echo "REPORT_SELFTEST_FAIL"
   exit 1

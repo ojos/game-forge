@@ -610,6 +610,76 @@ else
   failed=1
 fi
 
+# ── 9. マイグレーションの関門が、未適用を実際に見つけること（#275）──────────
+#
+# **2026-09-03 に、これが無くて本番を約 10 分壊した。** 関門そのものが空振りしていたら
+# 意味が無いので、**未適用が有る D1 と無い D1 の両方**に当てて、合図が分かれることを見る。
+echo "[selftest] マイグレーションの関門（#275）"
+
+MIG_SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/mig-selftest.XXXXXX")" || exit 1
+trap 'rm -rf "$SANDBOX" "$KPI_SANDBOX" "$MIG_SANDBOX"' EXIT
+
+# 空の D1（＝全件が未適用）。
+mig_out="$(bash scripts/check-migrations-applied.sh --persist-to "$MIG_SANDBOX" 2>&1)"
+mig_code=$?
+if [[ "$mig_code" -eq 1 ]] && printf '%s\n' "$mig_out" | grep -q '^MIGRATIONS_PENDING$'; then
+  echo "  ok   未適用が有れば 1 で落ちる"
+else
+  echo "  FAIL 未適用が有るのに止まりません（code=${mig_code}）" >&2
+  failed=1
+fi
+# **名前が出力に載ること。** 「有る」とだけ言われても、何を当てるのかが分からない。
+if printf '%s\n' "$mig_out" | grep -q '0001_init\.sql'; then
+  echo "  ok   未適用の名前が出力に載る"
+else
+  echo "  FAIL 未適用の名前が出力に載りません" >&2
+  failed=1
+fi
+# **実行すべきコマンドが載ること。**
+if printf '%s\n' "$mig_out" | grep -q 'migrations apply DB --remote'; then
+  echo "  ok   実行すべきコマンドが出力に載る"
+else
+  echo "  FAIL 実行すべきコマンドが出力に載りません" >&2
+  failed=1
+fi
+
+# 適用してから、同じ D1 に当て直す。
+if ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+     npx wrangler d1 migrations apply DB --local --persist-to "$MIG_SANDBOX" >/dev/null 2>&1; then
+  echo "  FAIL 関門用の使い捨て D1 へマイグレーションを適用できません" >&2
+  failed=1
+else
+  mig_out="$(bash scripts/check-migrations-applied.sh --persist-to "$MIG_SANDBOX" 2>&1)"
+  mig_code=$?
+  if [[ "$mig_code" -eq 0 ]] && printf '%s\n' "$mig_out" | grep -q '^MIGRATIONS_APPLIED$'; then
+    echo "  ok   未適用が無ければ 0 で通る"
+  else
+    echo "  FAIL 未適用が無いのに通りません（code=${mig_code}）" >&2
+    failed=1
+  fi
+fi
+
+# **「判定できなかった」を「無い」に倒さないこと。** 合図の綴りを両方とも探している
+# ことを、本文で機械照合する（#263 の関門と同じ規律）。
+for mark in 'No migrations to apply' 'Migrations to be applied'; do
+  if grep -qF "$mark" scripts/check-migrations-applied.sh; then
+    echo "  ok   合図「${mark}」を明示的に探している"
+  else
+    echo "  FAIL 合図「${mark}」を探していません" >&2
+    failed=1
+  fi
+done
+
+# **配備の前に置かれていること。** 後ろにあると、壊れた Worker が出てから止まる。
+gate_line="$(grep -n '未適用のマイグレーションが無いこと' .github/workflows/verify.yml | head -1 | cut -d: -f1)"
+deploy_line="$(grep -n 'name: Deploy to Cloudflare Pages' .github/workflows/verify.yml | head -1 | cut -d: -f1)"
+if [[ -n "$gate_line" && -n "$deploy_line" && "$gate_line" -lt "$deploy_line" ]]; then
+  echo "  ok   関門が Pages 配備より前にある"
+else
+  echo "  FAIL 関門が Pages 配備より前にありません（gate=${gate_line} deploy=${deploy_line}）" >&2
+  failed=1
+fi
+
 if (( failed )); then
   echo "REPORT_SELFTEST_FAIL"
   exit 1

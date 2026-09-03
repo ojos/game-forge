@@ -567,7 +567,7 @@ select (select count(*) from (select root from lineage group by root having max(
 " 2>/dev/null | sed -n '/^\[/,$p' | jq -r '.[0].results[0].n' 2>/dev/null)"
 expect_eq "変異（status で絞る）が 0 本になる" "0" "$KPI_MUTANT"
 
-# **値の無いオプションで止まらないこと。**
+# **値の無いオプションで止まらないこと（3 本すべて）。**
 #
 # `shift 2` は残りが 1 個のとき**シフトせずに失敗する**。`set -e` を使っていないので
 # そのまま次の周回へ進み、`while [[ $# -gt 0 ]]` が同じ引数を読み続けて無限ループになる。
@@ -586,18 +586,38 @@ run_bounded() {
   return "$code"
 }
 
-for missing in --format --persist-to; do
-  run_bounded 10 bash scripts/kpi-report.sh "$missing"
-  kpi_code=$?
-  if [[ "$kpi_code" -eq 2 ]]; then
-    echo "  ok   ${missing} に値が無ければ 2 で落ちる"
-  elif [[ "$kpi_code" -eq 137 ]]; then
-    echo "  FAIL ${missing} に値が無いと止まりません（無限ループ）" >&2
+##
+# 値の無いオプションで、止まらずに 2 で落ちることを見る。
+#
+# @param $1 スクリプトのパス
+# @param $2 引数の綴り
+##
+expect_missing_value_exits() {
+  run_bounded 10 bash "$1" "$2"
+  local code=$?
+  local label="$(basename "$1") $2"
+  if [[ "$code" -eq 2 ]]; then
+    echo "  ok   ${label} に値が無ければ 2 で落ちる"
+  elif [[ "$code" -eq 137 ]]; then
+    echo "  FAIL ${label} に値が無いと止まりません（無限ループ）" >&2
     failed=1
   else
-    echo "  FAIL ${missing} に値が無いときの終了コードが 2 ではありません: ${kpi_code}" >&2
+    echo "  FAIL ${label} に値が無いときの終了コードが 2 ではありません: ${code}" >&2
     failed=1
   fi
+}
+
+# **3 本まとめて見る。** 同じ形の不具合が 3 本にあった（kpi-report.sh は #42 の PR で
+# Copilot が見つけ、残る 2 本はそれを受けて確かめたら同じだった）。**1 本だけ直すと、
+# 次に同じ形を書いた日にまた入る。**
+for missing in --format --persist-to; do
+  expect_missing_value_exits scripts/kpi-report.sh "$missing"
+done
+for missing in --format --rows-file; do
+  expect_missing_value_exits scripts/ogp-stale-report.sh "$missing"
+done
+for missing in --format --rows-file --days --from --to; do
+  expect_missing_value_exits scripts/effort-ab-report.sh "$missing"
 done
 
 # **本番を叩く場所は 1 か所だけであること**（effort-ab-report.sh と同じ規律）。

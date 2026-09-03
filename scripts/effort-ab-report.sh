@@ -47,15 +47,37 @@ FORMAT="table"
 ROWS_FILE=""
 NOW="${EFFORT_AB_NOW:-$(date -u +%s)}"
 
+##
+# 値を取る引数に、値が付いていることを確かめる。**無ければ落とす。**
+#
+# `shift 2` は残りが 1 個のとき**シフトせずに失敗する**。`set -e` を使っていないので
+# そのまま次の周回へ進み、`while [[ $# -gt 0 ]]` が同じ引数を読み続けて**無限ループ**に
+# なった。**この関門を入れる前は実際にそうだった**——`--format` に値を付けずに
+# 叩くと `bash scripts/effort-ab-report.sh` が打ち切るまで返らなかった（exit 124。2026-09-03 に
+# 7 通りで再現）。**いまは 2 で落ちる。**
+#
+# **黙って既定値へ倒さない。** 値を書いた人は既定でないものを求めており、既定へ倒すと
+# 「指定したのに効かなかった」になる。
+#
+# @param $1 引数の綴り
+# @param $2 残りの個数
+##
+require_value() {
+  if [[ "$2" -lt 2 ]]; then
+    echo "[effort-ab] $1 には値が要ります。" >&2
+    exit 2
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --days)   DAYS="${2:-}"; shift 2 ;;
-    --from)   FROM="${2:-}"; shift 2 ;;
-    --to)     TO="${2:-}"; shift 2 ;;
-    --format) FORMAT="${2:-}"; shift 2 ;;
+    --days) require_value "$1" "$#"; DAYS="$2"; shift 2 ;;
+    --from) require_value "$1" "$#"; FROM="$2"; shift 2 ;;
+    --to) require_value "$1" "$#"; TO="$2"; shift 2 ;;
+    --format) require_value "$1" "$#"; FORMAT="$2"; shift 2 ;;
     # 本番の代わりに、保存しておいた行を読む。**scripts/report-selftest.sh が
     # 集計そのものを検査するための口である**（本番にも認証にも触れない）。
-    --rows-file) ROWS_FILE="${2:-}"; shift 2 ;;
+    --rows-file) require_value "$1" "$#"; ROWS_FILE="$2"; shift 2 ;;
     -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" >&2; exit 0 ;;
     *) echo "[effort-ab] 不明な引数です: $1" >&2; exit 2 ;;
   esac

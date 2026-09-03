@@ -10,6 +10,8 @@
 | 日毎の生成回数・成功率・費用（#149） | `scripts/usage-report.sh` | D1 の `generations` |
 | ビルド時間が天井へ近づいていないか（#166） | `scripts/build-time-report.sh` | CloudWatch の `REPORT` 行 |
 | 10 章の KPI（#42） | `scripts/kpi-report.sh` | D1 の `games` / `generations` / `waitlist` / `game_revisions` |
+| 審査待ちの作品（#40） | `scripts/report-queue.sh` | D1 の `games` / `reports` |
+| 遮断の記録の掃除（#37） | `scripts/moderation-prune.sh` | D1 の `moderation_blocks` |
 | 数え方の定義（両方が共有する） | `scripts/report-window.sh` | — |
 | 自己検査 | `scripts/report-selftest.sh` | 使い捨ての手元 D1 と宣言 |
 
@@ -457,6 +459,52 @@ M5-4 の tombstone は行を消さず `status` だけを変えるので、`paren
 「初回の成功率」ではありません。**別物を同じ名前で出すと、10.3 の判定がその数字を根拠に
 行われます。** 出すなら、確定27 が挙げている 2 案（相関 id / `recordGeneration` の id を
 運ぶ）のどちらかを先に入れる必要があります。
+
+
+## 審査待ちの作品を読む（#40 / M6-4）
+
+**仕様書 8.4 は運用画面を要求していません。** 求めているのは通報 UI・審査キューへの投入・
+削除申請フォーム・記録の 4 つで、画面はどこにも出てきません（#40 の intake / 2026-09-03）。
+
+```bash
+bash scripts/report-queue.sh --remote            # 本番（読み取りのみ）
+bash scripts/report-queue.sh --remote --format json
+```
+
+**画面を作らないことで、管理者の識別が不要になっています。** 権限は Cloudflare の資格情報
+そのもので、**新しい認証経路を 1 つも作っていません。**
+
+### 出るもの
+
+`game_id` / `status` / 通報者の数 / 最初と最後の通報時刻。**題名も通報の理由も出しません**
+——題名はプロンプト由来の UGC で（8.2）、理由は通報者が書いた自由記述です。**運用が最初に
+要るのは「どれを見るか」だけ**なので、中身は作品ページで見ます（そこには既に権限の判定が
+あります）。
+
+### 進めるのはこのスクリプトの仕事ではありません
+
+**本番へは select しか送りません。** 見た結果どうするか（`cleared` にする / `status` を
+動かす / 利用者を BAN する）は**別の操作**で、`--delete` のような口を付けていません
+（`scripts/ogp-stale-report.sh` と同じ規律）。
+
+### 自動非表示にしていません
+
+8.4 は「**自動非表示は組織的通報（通報爆撃）で正常なコンテンツを消せてしまう**」と書いて
+います。閾値に達しても動くのは `games.review_state` だけで、**`status` は `published` の
+ままです**——`/g/<game_id>/` は生き、共有済みの URL は切れません。**止まるのは 5.5 の
+「このゲームからの改造」の一覧に出ることだけ**です。
+
+**閾値は「異なる通報者 1 人」です**（#40 の intake）。**値の正本は `src/reports.ts` の
+`REVIEW_THRESHOLD_REPORTERS`** で、ここへ書き写していません。
+
+### BAN と招待枠
+
+**BAN の実体は `users.banned_at` で、既に効いています**（`src/session-user.ts` が
+セッションの解決を拒み、生成・フォーク・推敲の 3 経路が止まります）。
+
+**招待枠の停止に列を足していません。** 7.3 の「BAN 時に招待元の招待枠を停止する」は、
+**招待した相手が BAN されているかどうかから導けます**（`inviteQuotaHalted`）。別の列で
+持つと、**BAN を取り消したときに戻し忘れる余地**ができます。
 
 
 ## 気づく経路は作っていません

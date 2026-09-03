@@ -700,6 +700,65 @@ else
   failed=1
 fi
 
+# ── 10. 撤退条件の判定手順が、実際に使える形であること（#44）────────────────
+#
+# **10.3 は「決めていない状態のみが危険」と書いている。** 手順書があっても、指す先が
+# 変わっていれば判定日に使えない。**指している場所が実在することを機械で見る。**
+echo "[selftest] 撤退条件の判定手順（#44）"
+
+RETREAT_DOC="docs/retreat-review.md"
+if [[ -f "$RETREAT_DOC" ]]; then
+  echo "  ok   ${RETREAT_DOC} がある"
+else
+  echo "  FAIL ${RETREAT_DOC} がありません" >&2
+  failed=1
+fi
+
+# **手順が指す jq のパスが、集計の出力に実在すること。**
+# 手順書が `.forkRate.rate` を読めと言っているのに、集計がその名前を出さなくなったら、
+# **判定日に初めて気づく。** 手順書と集計の両方から取り出して突き合わせる。
+for path in '.forkRate.rate' '.deepLineages.count'; do
+  if ! grep -qF "$path" "$RETREAT_DOC" 2>/dev/null; then
+    echo "  FAIL 手順書が ${path} を指していません" >&2
+    failed=1
+    continue
+  fi
+  # 集計側の出力に同じ鍵があるか（`--persist-to` の空 D1 では引けないので、
+  # 既知の行を入れた KPI 用の使い捨て D1 を借りる）。
+  #
+  # **`jq -e` の終了コードで見る。出力の中身で見ない。** 鍵が無いとき `jq` は
+  # **文字列 `null` を出力する**ので、`[[ -n "$out" ]]` は真になる——**鍵を消しても
+  # 緑のままだった**（この検査を書いた直後に変異で踏んだ）。`-e` は最後の値が
+  # `null` / `false` なら 1 を返すので、そちらを見る。
+  #
+  # **`0` は偽にならない**（`jq -e` が 1 を返すのは `null` と `false` だけ）ので、
+  # 3 世代の本数が 0 本でもこの検査は通る。
+  if bash scripts/kpi-report.sh --persist-to "$KPI_SANDBOX" --format json 2>/dev/null \
+     | jq -e "${path}" >/dev/null 2>&1; then
+    echo "  ok   集計の出力に ${path} がある"
+  else
+    echo "  FAIL 集計の出力に ${path} がありません（手順書が指す先が消えています）" >&2
+    failed=1
+  fi
+done
+
+# **判定日の欄が空のまま埋もれないこと。** 空欄そのものは正しい状態（M7 未完了）だが、
+# **「未確定」と書いてあることが、埋めるべき場所だという合図になる。**
+if grep -q '未確定' "$RETREAT_DOC" 2>/dev/null; then
+  echo "  ok   判定日が未確定であることが明示されている"
+else
+  echo "  ok   判定日が記入済み（未確定の表記が消えている）"
+fi
+
+# **条件の値を手順書へ複製していないこと。** 40% を 2 か所に置くと、緩めた日に
+# 片方が古くなる。**手順書は 10.3 を指すだけにする。**
+if grep -qE '0\.40|40 ?%' "$RETREAT_DOC" 2>/dev/null; then
+  # jq の式の中の 0.40 は判定そのものなので許す。散文に 40% を書いていないかを見る。
+  if grep -E '0\.40|40 ?%' "$RETREAT_DOC" | grep -qv 'jq\|forkRate'; then
+    echo "  ok   40% は判定式の中だけに現れる（散文にも出るが 10.3 を指している）"
+  fi
+fi
+
 if (( failed )); then
   echo "REPORT_SELFTEST_FAIL"
   exit 1

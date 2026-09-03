@@ -101,6 +101,16 @@ export type GenerationState = 'pending' | 'running' | 'ready' | 'failed';
  * **クォータ超過はここに無い。** 3.3 の順序ではクォータ判定が行の作成より前にあり
  * （4.3）、超過した要求は**そもそも行を作らない。**
  *
+ * **`prompt-blocked` を `source-rejected` に寄せない理由（#37）。** あちらは
+ * **生成されたコード**が 5.2-5 の検査に落ちたもので、利用者へ出す文言は「作りたいものを
+ * 変えてください」ではなく「作り直します」に近い。`prompt-blocked` は**入力そのもの**が
+ * 8.2 に落ちたもので、**利用者にできることが違う**（言い直す）。同じ箱に入れると、
+ * 片方の文言が必ず誤りになる（`build-timeout` を `build-failed` から分けたのと同じ理由）。
+ *
+ * **枠は消費しない。** 遮断はモデル呼び出しの前に起きるので `generations` の行が
+ * 作られない（確定25 は枠を台帳の行数で数える）。**この行が残ることと枠が減ることは
+ * 別である。**
+ *
  * **この一覧に CHECK は無い**（`migrations/0007_games_generation_state.sql`。分類名は
  * アプリの語彙であり、増減のたびにマイグレーションを足すと表示の都合でスキーマが
  * 動く）。したがって値を足すのにマイグレーションは要らない。**代わりに
@@ -111,6 +121,7 @@ export const GENERATION_ERROR_CODES = [
   'source-rejected',
   'build-failed',
   'build-timeout',
+  'prompt-blocked',
   'internal',
 ] as const;
 

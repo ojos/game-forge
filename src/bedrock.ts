@@ -60,7 +60,7 @@ export const BEDROCK_SECRET_NAMES = [
 ] as const;
 
 /** 署名に使う資格情報。 */
-interface BedrockCredentials {
+export interface BedrockCredentials {
   readonly region: string;
   readonly accessKeyId: string;
   readonly secretAccessKey: string;
@@ -125,11 +125,16 @@ export function missingBedrockSecrets(env: Env): readonly string[] {
 /**
  * env から資格情報を取り出す。
  *
+ * **export しているのは、入力側モデレーション（`src/input-moderation.ts` / #37）が
+ * 同じ資格情報で `ApplyGuardrail` を叩くためである。** 読み取りを書き写すと、
+ * `BEDROCK_AWS_SESSION_TOKEN` の空文字の扱い（下記）が片方だけ古くなる
+ * ——署名が壊れる形なので、壊れ方が分かりにくい。
+ *
  * @param env バインディングと環境変数
  * @returns 資格情報
  * @throws {BedrockNotConfigured} 必須の値が欠けているとき
  */
-function readBedrockCredentials(env: Env): BedrockCredentials {
+export function readBedrockCredentials(env: Env): BedrockCredentials {
   const missing = missingBedrockSecrets(env);
   if (missing.length > 0) {
     throw new BedrockNotConfigured(missing);

@@ -89,6 +89,7 @@ import { listRevisions, revisionStatus } from './revisions.js';
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { parseIpNotice } from './ip-substitution.js';
+import { MODERATION_CATEGORY_SEPARATOR } from './input-moderation.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/invite-issuance.ts` も
 // そこから取っている）。同じ関数をこのモジュールで作り直さない。
@@ -320,6 +321,16 @@ const FAILURE_MESSAGES: Readonly<Record<GenerationErrorCode, string>> = {
   'build-timeout':
     'ビルドが時間内に終わりませんでした。こちら側の混み具合による一時的なもので、' +
     '作りたいものの内容は関係ありません。そのままもう一度お試しください。',
+  // **カテゴリ名をここへ書かない**（値ごとに変わる）。8.2 は「カテゴリ名までを返し、
+  // 検出箇所・スコア・閾値は返さない」と定めており、カテゴリ名は `moderation_blocks`
+  // から引いて画面側が足す（{@link WorkPageView.blockedCategories}）。
+  //
+  // **「作り直します」と言わない。** `source-rejected` と `build-failed` は
+  // こちらが何度か試した結果だが、こちらは**入力そのものが止められている**ので
+  // 何度押しても同じである。**利用者にできることは言い直すことだけ**なので、それだけを言う。
+  'prompt-blocked':
+    '安全性の検査により、この内容では生成できませんでした。' +
+    '同じ内容でもう一度お試しいただいても結果は変わりません。表現を変えて言い直してください。',
   internal: '生成の途中で問題が起きました。しばらくしてからもう一度お試しください。',
 };
 
@@ -442,6 +453,17 @@ export interface WorkPageView {
    * **こちらから増やす理由も無い**）。門番は {@link owner} である。
    */
   readonly ipNotice: readonly string[];
+  /**
+   * 入力側モデレーションが挙げたカテゴリ名（8.2 / #37）。遮断されていなければ空配列。
+   *
+   * **検出箇所・スコア・閾値は入らない。** 8.2 が返す粒度をカテゴリ名までに決めている
+   * ——ゲームという題材上、正当な題材が暴力フィルタに当たることが現実的な頻度で起きる
+   * ので**分類が分かれば言い直せる**必要がある一方、検出箇所まで返すと回避の手がかりに
+   * なる。
+   *
+   * **作者にしか渡さない**（{@link ipNotice} と同じ扱い）。
+   */
+  readonly blockedCategories: readonly string[];
   /**
    * 公開済みか（5.4）。**この 1 つが画面の性格を変える。**
    *
@@ -608,6 +630,48 @@ ${title}${ipNotice}
 }
 
 /**
+ * `moderation_blocks` から、その作品が引っ掛かったカテゴリを引く（8.2 / #37）。
+ *
+ * **本文は引かない。** 画面が要るのは分類名だけで、`prompt` は運用の材料である
+ * （`migrations/0016_moderation_blocks.sql`）。**引かなければ、画面の経路から
+ * 本文が漏れる余地が構造的に無い。**
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 作品 id
+ * @returns カテゴリの表示名（行が無ければ空配列）
+ */
+async function listBlockedCategories(env: Env, gameId: string): Promise<readonly string[]> {
+  const row = await env.DB.prepare(
+    'select categories from moderation_blocks where game_id = ? order by created_at desc limit 1',
+  )
+    .bind(gameId)
+    .first<{ categories: string }>();
+  if (row === null || row.categories === '') {
+    return [];
+  }
+  return row.categories.split(MODERATION_CATEGORY_SEPARATOR).filter((part) => part !== '');
+}
+
+/**
+ * 遮断されたカテゴリの提示（8.2 / #37）。
+ *
+ * **分類までしか出さない。** 検出箇所・スコア・閾値は出さない（{@link
+ * WorkPageView.blockedCategories}）。**作者にしか出さない**——他人の入力が何で
+ * 止められたかは、その人以外に関係が無い。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（遮断されていなければ空文字）
+ */
+function blockedCategoriesSection(view: WorkPageView): string {
+  if (!view.owner || view.blockedCategories.length === 0) {
+    return '';
+  }
+  const names = view.blockedCategories.map((name) => escapeHtml(name)).join('・');
+  return `
+<p class="gf-blocked-categories">引っ掛かった分類: <strong>${names}</strong></p>`;
+}
+
+/**
  * 著名 IP 名を置き換えたことの開示（6.2 / #39）。
  *
  * **6.2 は「置換したことをユーザーに開示する。黙って別物を出すのは体験として悪い」と
@@ -736,7 +800,7 @@ function sectionFor(view: WorkPageView): string {
       return view.published ? publishedSection(view) : readySection(view);
     case 'failed':
       return `<h2>生成できませんでした</h2>
-<p>${view.owner ? escapeHtml(failureMessageOf(view.errorCode)) : escapeHtml(UNKNOWN_FAILURE_MESSAGE)}</p>`;
+<p>${view.owner ? escapeHtml(failureMessageOf(view.errorCode)) : escapeHtml(UNKNOWN_FAILURE_MESSAGE)}</p>${blockedCategoriesSection(view)}`;
     case 'unknown':
       return `<h2>状態を読み取れませんでした</h2>
 <p>この作品の状態が想定外の値になっています。時間をおいてもう一度お試しください。</p>`;
@@ -1461,6 +1525,14 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   // （`src/revisions.ts`）。ここは「口を出すか」だけを決め、押した結果はあちらが決める。
   const revisableNow = owner && !published && !removed && state === 'ready';
 
+  // **引くのは遮断されたときの作者だけである**（8.2 / #37）。1 行の追加読み取りだが、
+  // 遮断は例外的な出来事なので平常時は 1 度も起きない。**`generation_error` を見てから
+  // 引く**——`moderation_blocks` を毎回 left join すると、遮断が無い日にも結合が走る。
+  const blockedCategories =
+    owner && row.generation_error === 'prompt-blocked'
+      ? await listBlockedCategories(env, gameId)
+      : [];
+
   // **作者のときだけ引く。** 公開作品のページは拡散の着地点であり、閲覧者ごとに
   // 版と枠を引く理由が無い（3.6 の読み取りがそのまま費用になる）。
   const revisions = owner ? await listRevisions(env, gameId) : [];
@@ -1488,6 +1560,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **作者にだけ渡す。** 未ログインや他人には空配列を渡し、画面側で
       // `owner` を見直さなくても漏れない形にする（`errorCode` と同じ扱い）。
       ipNotice: owner ? parseIpNotice(row.ip_notice) : [],
+      blockedCategories,
       published,
       removed,
       // **本人か、公開済みのときだけ出す。** 仮タイトルはプロンプト由来である

@@ -88,6 +88,7 @@ import type { Revision } from './revisions.js';
 import { listRevisions, revisionStatus } from './revisions.js';
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
+import { parseIpNotice } from './ip-substitution.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/invite-issuance.ts` も
 // そこから取っている）。同じ関数をこのモジュールで作り直さない。
@@ -225,6 +226,14 @@ interface WorkRow {
   parent_status: string | null;
   /** 親作品の題名。親の行を引けなければ null。 */
   parent_title: string | null;
+  /**
+   * 6.2 の開示（`migrations/0015_games_ip_notice.sql`）。
+   *
+   * **null は「当たらなかった」である。** 0015 より前に作られた行もすべて null に
+   * なるが、そちらは「調べていない」——遡って判定する材料がもう無い。
+   * **画面はどちらも「開示を出さない」に倒す**（無いことを断言しない）。
+   */
+  ip_notice: string | null;
 }
 
 /**
@@ -426,6 +435,14 @@ export interface WorkPageView {
   /** 作者本人が見ているか。**本人にだけ出す項目の門番である。** */
   readonly owner: boolean;
   /**
+   * 入力に含まれていた著名 IP 名の正式名（6.2 / #39）。当たらなければ空配列。
+   *
+   * **作者にしか渡さない。** 開示はプロンプトを書いた本人へのものであり、
+   * 公開ページへ商標を並べる理由が無い（6.2 の命名規制は生成物の話だが、
+   * **こちらから増やす理由も無い**）。門番は {@link owner} である。
+   */
+  readonly ipNotice: readonly string[];
+  /**
    * 公開済みか（5.4）。**この 1 つが画面の性格を変える。**
    *
    * 未公開なら作者のための状態画面（`noindex`・本人にしか中身を出さない）、
@@ -570,6 +587,8 @@ export function renderWorkPage(view: WorkPageView): string {
 
   const title = view.title === null ? '' : `<p>お題: ${escapeHtml(view.title)}</p>`;
 
+  const ipNotice = ipNoticeSection(view);
+
   // **公開済みの作品にだけ `noindex` を外す。** 未公開の作品ページは作者のための
   // 状態画面であり、検索結果に現れる意味が無い（`src/my-works.ts` と同じ扱い）。
   //
@@ -584,8 +603,38 @@ export function renderWorkPage(view: WorkPageView): string {
 <title>${escapeHtml(documentTitleOf(view))}</title>${ogpMeta(view)}${loadingScreenStyle(view)}
 <h1>作品</h1>
 ${sectionFor(view)}
-${title}
+${title}${ipNotice}
 <p><a href="/">トップへ</a></p>`;
+}
+
+/**
+ * 著名 IP 名を置き換えたことの開示（6.2 / #39）。
+ *
+ * **6.2 は「置換したことをユーザーに開示する。黙って別物を出すのは体験として悪い」と
+ * 定めている。** 置換そのものはシステムプロンプトが行い（`src/system-prompt.ts` の
+ * `COPYRIGHT`）、ここはそれが起きたはずだと伝えるだけである。
+ *
+ * **「置き換えました」と断定しない。** モデルが実際に何をしたかは、こちらから
+ * 見えない——出力は Go のソース 1 本だけで、置換の報告を返す口が無い
+ * （`src/ip-substitution.ts` の冒頭）。**確かめていないことを、確かめたように
+ * 書かない**（`docs/handoff.md` 4 章）。
+ *
+ * **作者にしか出さない。** {@link WorkPageView.ipNotice} が既に空になっているが、
+ * ここでも `owner` を見る。**2 か所で止めるのは、片方の条件を将来ゆるめたときに
+ * 商標が公開ページへ出ないようにするため**である。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（開示が無ければ空文字）
+ */
+function ipNoticeSection(view: WorkPageView): string {
+  if (!view.owner || view.ipNotice.length === 0) {
+    return '';
+  }
+  const names = view.ipNotice.map((name) => `「${escapeHtml(name)}」`).join('');
+  return `
+<p class="gf-ip-notice"><strong>${names}は、オリジナルの要素へ置き換えて作っています。</strong>
+   有名な作品の名前・見た目・固有名詞はそのまま使えないため、遊びの仕組みだけを
+   取り出しています（<a href="/">Game Forge</a> の方針です）。この案内はあなたにだけ見えています。</p>`;
 }
 
 /** OGP の説明文（固定）。**作品ごとに変えない**——中身を説明できるのは作者だけである。 */
@@ -1376,7 +1425,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   const row = await env.DB.prepare(
     `select g.author_id, g.status, g.title, g.generation_state, g.generation_error,
             g.preview_key, g.created_at, g.generation_started_at,
-            g.ogp_state, g.ogp_started_at, g.published_at,
+            g.ogp_state, g.ogp_started_at, g.published_at, g.ip_notice,
             a.display_name as author_name,
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
        from games g
@@ -1436,6 +1485,9 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
     renderWorkPage({
       state,
       owner,
+      // **作者にだけ渡す。** 未ログインや他人には空配列を渡し、画面側で
+      // `owner` を見直さなくても漏れない形にする（`errorCode` と同じ扱い）。
+      ipNotice: owner ? parseIpNotice(row.ip_notice) : [],
       published,
       removed,
       // **本人か、公開済みのときだけ出す。** 仮タイトルはプロンプト由来である

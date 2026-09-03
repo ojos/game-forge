@@ -46,6 +46,23 @@ describe('本文の構成（6.1）', () => {
     });
   });
 
+  it('6.2 の 2 つの規則が本文に現れる（#39）', () => {
+    // 6.2 は 2 つを定めている。**節が在ることと、規則が在ることは別**である
+    // （上の it は節の見出しの並びしか見ていない）。
+    const text = renderSystemPromptText();
+    // (1) 自動変換ルール。**拒否しないことが本体である**——「拒否」ではなく
+    // 「置き換え」であることを見る。
+    expect(text).toContain('拒否せずに');
+    expect(text).toContain('オリジナルへ置き換えます');
+    // (2) 命名規制。確定23 で文字描画を許した結果、商標がそのまま画面へ出る経路が
+    // できたため、6.2 は「変数名・画面内 UI」の両方を対象にしている。
+    expect(text).toContain('画面へ出す文字列');
+    expect(text).toContain('一般名詞');
+    for (const generic of ['player', 'enemy', 'block']) {
+      expect(text).toContain(generic);
+    }
+  });
+
   it('6.1 の制約がすべて本文に現れる', () => {
     const text = renderSystemPromptText();
     // 6.1 の箇条書きに対応する。文言そのものではなく、**制約が落ちていないこと**を見る。

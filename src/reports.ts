@@ -109,20 +109,22 @@ export async function recordReport(
     return { ok: false, reason: 'own-work' };
   }
 
-  const seen = await env.DB.prepare(
-    'select 1 as hit from reports where game_id = ? and reporter_id = ? limit 1',
-  )
-    .bind(gameId, reporterId)
-    .first<{ hit: number }>();
-  if (seen !== null) {
-    return { ok: false, reason: 'already-reported' };
+  // **先に SELECT して確認する形にしない。** `src/invites.ts` が二重使用の防止について
+  // 同じことを書いている——**同じ人の二重送信が同時に走ると、SELECT はどちらもすり抜ける。**
+  // 判定は `reports` の一意制約が持ち（`migrations/0017_games_review_state.sql`）、
+  // ここは違反を「通報済み」へ翻訳するだけである。
+  try {
+    await env.DB.prepare(
+      'insert into reports (id, game_id, reporter_id, reason, created_at) values (?, ?, ?, ?, ?)',
+    )
+      .bind(crypto.randomUUID(), gameId, reporterId, reason, now)
+      .run();
+  } catch (error) {
+    if (isDuplicateReport(error)) {
+      return { ok: false, reason: 'already-reported' };
+    }
+    throw error;
   }
-
-  await env.DB.prepare(
-    'insert into reports (id, game_id, reporter_id, reason, created_at) values (?, ?, ?, ?, ?)',
-  )
-    .bind(crypto.randomUUID(), gameId, reporterId, reason, now)
-    .run();
 
   const counted = await env.DB.prepare(
     'select count(distinct reporter_id) as reporters from reports where game_id = ?',
@@ -147,6 +149,24 @@ export async function recordReport(
     .run();
 
   return { ok: true, outcome: { queued: (queued.meta.changes ?? 0) > 0, reporters } };
+}
+
+/**
+ * 例外が「同じ人が同じ作品を 2 度通報した」かを判定する。
+ *
+ * **D1 はエラーコードを構造化して返さない**ので、メッセージで判定するほかない
+ * （`src/invites.ts` の `isCodeCollision` と同じ形）。**索引の名前まで含めて照合し**、
+ * 他のテーブルの一意制約を拾わないようにする。
+ *
+ * @param error 捕まえた値
+ * @returns 二重通報なら true
+ */
+function isDuplicateReport(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.includes('reports_game_reporter_uq') ||
+      error.message.includes('UNIQUE constraint failed: reports.game_id, reports.reporter_id'))
+  );
 }
 
 /**

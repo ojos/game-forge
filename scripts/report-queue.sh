@@ -94,7 +94,10 @@ if [[ ! -f "$REPORTS_TS" ]]; then
   echo "[queue] 定義の正本がありません: ${REPORTS_TS}" >&2
   exit 2
 fi
-QUEUED="$(sed -n "s/^export const REVIEW_QUEUED = '\([a-z]*\)'.*/\1/p" "$REPORTS_TS" | head -1)"
+# **書式のゆれに耐える形にする。** 空白が 1 つ増えただけ・値に `-` が入っただけで
+# 取り出せなくなると、**キューに入っているのに 0 件と報告する**（実測で両方壊れた）。
+# `scripts/check-ogp-copies.sh` が採っている `[[:space:]]*` と `[^']*` に揃える。
+QUEUED="$(sed -n "s/^export const REVIEW_QUEUED[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" "$REPORTS_TS" | head -1)"
 if [[ -z "$QUEUED" ]]; then
   echo "[queue] ${REPORTS_TS} から REVIEW_QUEUED を取り出せません。" >&2
   echo "[queue] 綴りが変わったなら、このスクリプトの sed も直してください。" >&2

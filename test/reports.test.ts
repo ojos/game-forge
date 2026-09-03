@@ -175,7 +175,7 @@ describe('通報の受付（8.4 / #40）', () => {
     expect(await statusOf(gameId)).toBe('published');
   });
 
-  it('同じ人の 2 度目は断る', async () => {
+  it('同じ人の 2 度目は、データ側の一意制約で断る', async () => {
     const author = await seedUser('rep-author-2');
     const reporter = await seedUser('rep-reporter-2');
     const gameId = await seedGame('rep-g2', author);
@@ -186,6 +186,27 @@ describe('通報の受付（8.4 / #40）', () => {
     expect(!second.ok && second.reason).toBe('already-reported');
 
     // 行が 2 本にならない。
+    const rows = await env.DB.prepare('select count(*) as n from reports where game_id = ?')
+      .bind(gameId)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(1);
+  });
+
+  it('同時に走っても 2 行にならない（先に SELECT する形では防げない）', async () => {
+    // **`src/invites.ts` が二重使用の防止で「先に SELECT して確認する形にしない」と
+    // 書いているのと同じ理由。** SELECT で見てから INSERT すると、同時の 2 本は
+    // どちらもすり抜ける。判定はデータ側の一意制約が持つ。
+    const author = await seedUser('rep-author-race');
+    const reporter = await seedUser('rep-reporter-race');
+    const gameId = await seedGame('rep-g-race', author);
+
+    const outcomes = await Promise.all([
+      recordReport(env, gameId, reporter, 'a'),
+      recordReport(env, gameId, reporter, 'b'),
+      recordReport(env, gameId, reporter, 'c'),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(1);
+
     const rows = await env.DB.prepare('select count(*) as n from reports where game_id = ?')
       .bind(gameId)
       .first<{ n: number }>();

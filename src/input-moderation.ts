@@ -40,6 +40,7 @@
  */
 import { AwsClient } from 'aws4fetch';
 import { readBedrockCredentials } from './bedrock.js';
+import type { GenerationResult } from './generation-models.js';
 
 /**
  * `moderation_blocks.categories` の区切り文字（Unit Separator、U+001F）。
@@ -215,8 +216,14 @@ export function readGuardrailBlocks(payload: unknown): readonly string[] {
 
 /** 差し替えられる依存（テスト用）。 */
 export interface InputModerationDependencies {
-  /** 送信に使う `fetch`。既定はグローバル。 */
-  readonly fetch?: typeof fetch;
+  /**
+   * 送信に使う `fetch`。既定はグローバル。
+   *
+   * **署名済みの `Request` を受け取る形にする**（`src/bedrock.ts` の
+   * `BedrockDependencies` と同じ）。揃えておかないと、オーケストレータが
+   * 1 つの stub を両方へ渡せない。
+   */
+  readonly fetch?: (request: Request) => Promise<Response>;
 }
 
 /**
@@ -271,7 +278,7 @@ export async function applyInputModeration(
     content: [{ text: { text: prompt } }],
   });
 
-  const send = deps.fetch ?? fetch;
+  const send = deps.fetch ?? ((request: Request) => fetch(request));
   let response: Response;
   try {
     const signed = await aws.sign(url, {
@@ -304,4 +311,62 @@ export async function applyInputModeration(
   if (blocked.length > 0) {
     throw new PromptBlocked(blocked);
   }
+}
+
+/**
+ * 生成の段を、入力側モデレーションで包む（8.2 / #37）。
+ *
+ * **`withBuildDiagnostics` / `withTidyInstruction` と同じ形の継ぎ目である**
+ * （`src/generate.ts`）。トランスポート（`src/bedrock.ts`）はモデレーションの存在を
+ * 知らないままでよく、包む側が手前で止める。
+ *
+ * **いちばん外側に置く。** 内側に置くと、整理パスの指示や再試行の診断が織り込まれた
+ * **後**のプロンプトを検査することになる——**利用者が書いていない文字列で遮断が
+ * 起きうる。** 検査するのは 5.1 の入力そのものである。
+ *
+ * **`request.baseSource` には当てない**（冒頭の但し書き）。ここが `request.prompt`
+ * だけを渡していることが、その保証そのものである。
+ *
+ * @param generate 包まれる生成の段
+ * @param options 遮断したときの記録先と、差し替えられる依存
+ * @returns 包んだ生成の段
+ */
+export function withInputModeration(
+  generate: (
+    env: Env,
+    request: { readonly prompt: string; readonly baseSource?: string },
+  ) => Promise<GenerationResult>,
+  options: {
+    /**
+     * 遮断を記録する。**失敗しても遮断は続行する**——記録が書けないことを理由に
+     * 素通しにしない（`src/denied-terms.ts` の規律）。
+     */
+    readonly record?: (categories: readonly string[], prompt: string) => Promise<unknown>;
+  } & InputModerationDependencies = {},
+): (
+  env: Env,
+  request: { readonly prompt: string; readonly baseSource?: string },
+) => Promise<GenerationResult> {
+  return async (env, request) => {
+    try {
+      await applyInputModeration(env, request.prompt, options);
+    } catch (error) {
+      if (error instanceof PromptBlocked && options.record !== undefined) {
+        try {
+          await options.record(error.categories, request.prompt);
+        } catch (recordError) {
+          // **記録の失敗で遮断を取り下げない。** ログだけ残して、そのまま投げ直す。
+          console.warn(
+            `[input-moderation] 遮断の記録に失敗しました: ${
+              recordError instanceof Error
+                ? `${recordError.name}: ${recordError.message}`
+                : String(recordError)
+            }`,
+          );
+        }
+      }
+      throw error;
+    }
+    return await generate(env, request);
+  };
 }

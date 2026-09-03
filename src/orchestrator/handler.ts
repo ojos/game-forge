@@ -366,6 +366,15 @@ function workerLikeEnv(
     BUILD_FUNCTION_NAME: values['BUILD_FUNCTION_NAME']!.trim(),
     // **モデルはペイロードが運ぶ**（正本は `wrangler.toml`。`./payload.ts`）。
     GENERATION_MODEL: modelKey,
+    // 入力側モデレーション（8.2 / #37）。**正本は `terraform/moderation.tf`** で、
+    // 関数の環境変数として届く。
+    //
+    // **`missingOrchestratorEnv` の必須には入れない。** 欠けたときに落とすのは
+    // `src/input-moderation.ts` の 1 か所で、そこは **fail-closed**（遮断側へ倒す）
+    // である。ここでも必須にすると、**同じ判定が 2 か所になる**——片方だけを
+    // ゆるめた日に、もう片方が黙って通す形になりうる。
+    MODERATION_GUARDRAIL_ID: values['MODERATION_GUARDRAIL_ID'],
+    MODERATION_GUARDRAIL_VERSION: values['MODERATION_GUARDRAIL_VERSION'],
     // D1 / R2 のバインディングは**持たない。** 使う段はすべてコールバックへ
     // 差し替えてあり（`./pipeline.ts`）、持たないことが 7.3 / 9.2 の要件である。
   } as unknown as Env;

@@ -38,6 +38,7 @@ import {
 import { sourceCacheKey } from '../build-cache.js';
 import { createBedrockGenerateSource } from '../bedrock.js';
 import { buildSystemPrompt } from '../system-prompt.js';
+import { withInputModeration } from '../input-moderation.js';
 import { withBuildDiagnostics } from '../build-retry.js';
 import { inspectGeneratedSource } from '../source-inspection.js';
 import type { GenerationJob, GenerationPipeline } from '../generate.js';
@@ -94,13 +95,23 @@ export function createOrchestratorPipeline(
     // **整理パスの指示も同じ順で掛ける**（確定18 / #33）。エッジ
     // （`src/generate.ts` の `defaultPipeline`）と**包み方まで揃える**——ずれると、
     // 同じジョブが実行環境によって別のプロンプトで走る。
-    generateSource: withBuildDiagnostics(
-      withTidyInstruction(
-        createBedrockGenerateSource({
-          systemPrompt: buildSystemPrompt,
-          ...(deps.bedrockFetch === undefined ? {} : { fetch: deps.bedrockFetch }),
-        }),
+    //
+    // **モデレーションはいちばん外側である**（8.2 / #37）。内側に置くと、整理パスの
+    // 指示や再試行の診断が織り込まれた**後**のプロンプトを検査することになり、
+    // **利用者が書いていない文字列で遮断が起きうる。** 検査するのは 5.1 の入力そのもの。
+    generateSource: withInputModeration(
+      withBuildDiagnostics(
+        withTidyInstruction(
+          createBedrockGenerateSource({
+            systemPrompt: buildSystemPrompt,
+            ...(deps.bedrockFetch === undefined ? {} : { fetch: deps.bedrockFetch }),
+          }),
+        ),
       ),
+      {
+        record: async (categories, prompt) => await client.blocked(categories, prompt),
+        ...(deps.bedrockFetch === undefined ? {} : { fetch: deps.bedrockFetch }),
+      },
     ),
 
     // 3.3-4: 費用の計上。**id はここで採番する**（1 回の LLM 呼び出しにつき 1 つ）。

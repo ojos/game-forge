@@ -1,3 +1,4 @@
+import { MODERATION_TEST_ENV, guardrailPass } from './helpers/guardrail.js';
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -64,6 +65,8 @@ function lambdaEnv(): Record<string, string | undefined> {
     AWS_ACCESS_KEY_ID: 'test-access-key-id',
     AWS_SECRET_ACCESS_KEY: 'test-secret-access-key',
     AWS_SESSION_TOKEN: 'test-session-token',
+    // 入力側モデレーション（8.2 / #37）。**足さないと fail-closed で全部止まる。**
+    ...MODERATION_TEST_ENV,
   };
 }
 
@@ -385,7 +388,7 @@ describe('実際の経路で信号が立つ（#140 acceptance 1）', () => {
 
     const outcome = await handleOrchestratorEvent(payload, lambdaEnv(), {
       fetch: callbackFetch(),
-      bedrockFetch: async () => converseResponse(),
+      bedrockFetch: guardrailPass(async () => converseResponse()),
       // 確定24 の停止事象そのもの（スロットリング）。
       buildFetch: async () => throttledResponse(),
       sleep: async () => {},
@@ -407,7 +410,7 @@ describe('実際の経路で信号が立つ（#140 acceptance 1）', () => {
       const { payload } = await seedJob(suffix);
       await handleOrchestratorEvent(payload, lambdaEnv(), {
         fetch: callbackFetch(),
-        bedrockFetch: async () => converseResponse(),
+        bedrockFetch: guardrailPass(async () => converseResponse()),
         buildFetch: async () => throttledResponse(),
         sleep: async () => {},
         now: fastClock(),
@@ -421,7 +424,7 @@ describe('実際の経路で信号が立つ（#140 acceptance 1）', () => {
     const { payload } = await seedJob('rejected');
     const outcome = await handleOrchestratorEvent(payload, lambdaEnv(), {
       fetch: callbackFetch(),
-      bedrockFetch: async () => converseResponse(),
+      bedrockFetch: guardrailPass(async () => converseResponse()),
       buildFetch: async () => buildRejectedResponse(),
       sleep: async () => {},
       now: fastClock(),
@@ -457,7 +460,7 @@ describe('D1 の不調では信号が立たない（#140 acceptance 2）', () =>
     await expect(
       handleOrchestratorEvent(payload, lambdaEnv(), {
         fetch: callbackFetch(sickDb),
-        bedrockFetch: async () => converseResponse(),
+        bedrockFetch: guardrailPass(async () => converseResponse()),
         buildFetch: async () => await buildResponse('d1-sick'),
         sleep: async () => {},
         now: fastClock(),
@@ -536,7 +539,7 @@ describe('復帰（ビルド関数を実際に呼んで成功した）', () => {
     const { payload } = await seedJob('recovered');
     const outcome = await handleOrchestratorEvent(payload, lambdaEnv(), {
       fetch: callbackFetch(),
-      bedrockFetch: async () => converseResponse(),
+      bedrockFetch: guardrailPass(async () => converseResponse()),
       buildFetch: async () => await buildResponse('recovered'),
       sleep: async () => {},
       now: fastClock(),
@@ -574,7 +577,7 @@ describe('復帰（ビルド関数を実際に呼んで成功した）', () => {
     const second = await seedJob('cache-hit');
     const outcome = await handleOrchestratorEvent(second.payload, lambdaEnv(), {
       fetch: callbackFetch(),
-      bedrockFetch: async () => converseResponse(),
+      bedrockFetch: guardrailPass(async () => converseResponse()),
       buildFetch: async () => {
         throw new Error('キャッシュヒット時にビルド関数を呼んではならない');
       },

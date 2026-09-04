@@ -178,6 +178,34 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
     expect(SYSTEM_PROMPT_SECTIONS.at(-1)).toContain('漢字が混ざっていない');
   });
 
+  it('音の使い方を書いている（#286）', () => {
+    // **一覧へ `audio` を足しただけでは音は鳴らない。** 学習データで見慣れた書き方は
+    // デコーダでファイルを読む形であり、それは一覧に無い。**合成の書き方を教えなければ、
+    // モデルは拒否される import を書くか、音を諦める。**
+    const text = renderSystemPromptText();
+    // (1) Context は 1 度だけ（2 度目は panic する）。
+    expect(text).toContain('audio.NewContext は初期化時に 1 度だけ');
+    // (2) 渡すのは自前の Read を持つ型である（＝ファイルを開く余地が構造的に無い）。
+    expect(text).toContain('Read(buf []byte) (int, error)');
+    expect(text).toContain('音声ファイルを読み込む方法はありません');
+    // (3) 波形は math で作る。
+    expect(text).toContain('波形は math で作ります');
+    // (4) 32bit float 版だけを教える。**16 ビット整数版（NewPlayer）は教えない。**
+    // ebiten 自身が「新しいコードは NewPlayerF32 が望ましい。将来は内部で 32bit float
+    // だけを扱う」と書いており、int16 版を教えると、それが外れた日に**既に生成された
+    // 作品のフォークが壊れる**（フォークは親ソースを現物のイメージで再コンパイルする）。
+    expect(text).toContain('NewPlayerF32');
+    expect(text).toContain('NewPlayer（16 ビット整数版）は使いません');
+    // **使い方の例として int16 版が出ていないこと。** 名前は上の 1 行にしか現れない。
+    expect(text).not.toContain('NewPlayer(&tone');
+    // (5) 最初の入力より前に音へ依存しない（ブラウザの自動再生制限。5.4 の OGP 撮影）。
+    expect(text).toContain('audioContext.IsReady()');
+    expect(text).toContain('ゲームの進行を音に依存させません');
+    // **長さと音量の「制限」を書かない**（#286 の scope.out。6.1 はプロンプトを防御と
+    // 数えないので、書いても守られたことにならない）。
+    expect(text).not.toContain('秒以内');
+  });
+
   it('教える API は隔離ビルドで実際にコンパイルが通った形と一致する', () => {
     // **存在しない API を教えないことの機械照合。** 4.2 が記録した Claude の失敗は
     // 存在しない API の捏造（`vector.DrawFilledRoundRect`）であり、プロンプトが同じ
@@ -199,6 +227,12 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
       'text.Draw(screen, "SCORE "+strconv.Itoa(',
       'text.Draw(screen, "スコア "+strconv.Itoa(',
       'vector.DrawFilledRect(screen, ',
+      'audio.NewContext(sampleRate)',
+      'func (t *tone) Read(buf []byte) (int, error)',
+      'audioContext.NewPlayerF32(&tone{freq: 440, vol: 0.2})',
+      'math.Float32bits(level)',
+      'audioContext.IsReady()',
+      'player.Play()',
       'inpututil.IsKeyJustPressed(ebiten.Key',
       'ebiten.IsKeyPressed(ebiten.Key',
       'ebiten.SetWindowSize(640, 480)',

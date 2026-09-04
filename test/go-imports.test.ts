@@ -522,4 +522,30 @@ describe('一覧の機械照合（#17 acceptance 2）', () => {
     const paths = GO_IMPORT_ALLOWLIST.map((entry) => entry.path);
     expect(new Set(paths).size).toBe(paths.length);
   });
+
+  it('音は合成だけを許し、デコーダと io を入れない（#286）', () => {
+    // **後から外すのは危険である**（既に生成された作品が動かなくなる）。だから
+    // 「入れなかったこと」の側を固定する。デコーダ 3 つは「バイト列を渡すと音になる」
+    // 口であり、**外部アセットを持ち込む経路そのもの**で、6.2 の「外部アセット禁止こそが
+    // 最大の防御」を直接崩す。**音を許すこととデコーダを許すことは別の判断である。**
+    //
+    // `io` も入れない。`NewPlayer(src io.Reader)` へ自前の型を渡すだけなら
+    // `Read(p []byte) (int, error)` の実装で足り、終わりの無いストリームなら `io.EOF` も
+    // 要らない（隔離ビルドのサンプルが `--network=none` で実際にコンパイルできている）。
+    const paths = GO_IMPORT_ALLOWLIST.map((entry) => entry.path);
+    expect(paths).toContain('github.com/hajimehoshi/ebiten/v2/audio');
+    for (const decoder of ['vorbis', 'mp3', 'wav']) {
+      expect(paths, decoder).not.toContain(`github.com/hajimehoshi/ebiten/v2/audio/${decoder}`);
+    }
+    expect(paths).not.toContain('io');
+  });
+
+  it('音のパッケージは vendor 焼き込みの対象になる（#286）', () => {
+    // `jpfont`（テンプレート自身のパッケージ）と違い、**これは外部モジュールである。**
+    // 焼き込みから漏れると `--network=none` のビルドが必ず落ちる。
+    // **上の「vendor 焼き込みの対象が一覧の外部モジュールと一致する」と組で効く。**
+    // あちらが `vendor-deps.go` との一致を見るので、ここで true になっている以上、
+    // 宣言側へ書き忘れれば赤になる。
+    expect(requiresVendoring('github.com/hajimehoshi/ebiten/v2/audio')).toBe(true);
+  });
 });

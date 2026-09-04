@@ -250,6 +250,42 @@ const ALLOWED_PACKAGES = `${renderAllowlistSection()}
  * **プロンプトは防御ではない**（3 節の注記と同じ）。「漢字を使わない」が守られなかった
  * ときは代替の升目が画面へ出て、作者が見て気づける——`jpfont` 側がそう作ってある。
  *
+ * ## 音の使い方をここへ書く理由（#286）
+ *
+ * **一覧に `audio` を足しただけでは、モデルは音を鳴らせない。** 学習データで見慣れた
+ * 書き方は `audio/vorbis` や `audio/wav` でファイルを読む形であり、**そのデコーダは
+ * 一覧に無い**（外部アセットの持ち込み経路になるため。`src/go-import-allowlist.ts`）。
+ * 何も書かなければ、モデルは一覧に無いデコーダを import して拒否されるか、音を諦める。
+ * 6.1「制約を並べるだけでは足りない」が `text/v2` について言っていることが、そのまま
+ * ここにも当てはまる。
+ *
+ * 書くのは 5 つである。
+ *
+ * 1. **`audio.NewContext` は初期化時に 1 度だけ。** 2 度目は `panic` する
+ *    （ebiten の実装。プロセスに 1 つしか持てない）。**毎フレーム作る形は
+ *    `text.NewGoXFace` で既に踏んでいる失敗**なので、同じ注意を音にも置く。
+ * 2. **`NewPlayerF32` を使い、`NewPlayer`（16 ビット整数版）は教えない。** ebiten
+ *    自身が「新しいコードは `NewPlayerF32` が望ましい。将来は内部で 32bit float だけを
+ *    扱う」と明記している。**「後から外すのは危険」（`src/go-import-allowlist.ts` の
+ *    方針）は API の選択にも効く**——int16 版を教えて、それが将来外れると、**既に
+ *    生成された作品のフォークが壊れる**（フォークは親ソースを現物のイメージで
+ *    再コンパイルする）。**一覧はパッケージ単位なので、どちらを教えても許可の広さは
+ *    変わらない。** 変わるのは寿命だけである。
+ * 3. **`NewPlayerF32` へ渡すのは自前の `Read` を持つ型である。** ここが合成のみという
+ *    制約の実体で、**ファイルを開く余地が構造的に無い。**
+ * 4. **PCM の形（32 ビット浮動小数点・リトルエンディアン・2 チャンネル）。** 書かないと
+ *    雑音になる。**雑音は「動くが壊れている」ので、コンパイルの成否では捕まらない。**
+ *    バイトへ並べる手段も書く——`encoding/binary` も `unsafe` も一覧に無いので、
+ *    **`math.Float32bits` しか経路が無い。**
+ * 5. **最初の入力より前に音へ依存しない。** ブラウザはクリックやキー押下より前に
+ *    音を鳴らさない（`IsReady` の doc が明記している）。**これは行儀の話ではない**
+ *    ——OGP は headless chromium で初回フレームを撮るので、音が鳴るまで進まない
+ *    ゲームは 1 枚も撮れない（5.4 / #26）。
+ *
+ * **音の長さや音量を「制限」として書かない**（#286 の scope.out）。6.1 はプロンプトを
+ * 防御と数えないので、書いても守られたことにならない。**書いてよいのは使い方だけ**で、
+ * 内容を止める役は 8.4 の通報が負う（8.3 は音に対して検査対象を持たない。仕様 8.3）。
+ *
  * ## float32 と int を混ぜないことを書く理由
  *
  * #7 の失敗のうち 2 本は int / float64 の混在だった。`vector` の座標は float32、
@@ -295,6 +331,58 @@ const API_USAGE = `許可された API の使い方（このとおりに書い�
 
 - 押した瞬間は inpututil、押している間は ebiten です。ebiten だけでは前フレームとの差分が取れません。
 - ebiten.CursorPosition の戻り値は int です。
+
+音（波形をコードで作ります。音声ファイルは読みません）:
+
+	const sampleRate = 48000
+
+	type tone struct {
+		freq  float64
+		vol   float64
+		phase float64
+	}
+
+	func (t *tone) Read(buf []byte) (int, error) {
+		n := len(buf) / 8 * 8
+		step := t.freq / float64(sampleRate)
+		for i := 0; i < n; i += 8 {
+			level := float32(t.vol)
+			if math.Mod(t.phase, 1) >= 0.5 {
+				level = -level
+			}
+			bits := math.Float32bits(level)
+			buf[i] = byte(bits)
+			buf[i+1] = byte(bits >> 8)
+			buf[i+2] = byte(bits >> 16)
+			buf[i+3] = byte(bits >> 24)
+			buf[i+4] = buf[i]
+			buf[i+5] = buf[i+1]
+			buf[i+6] = buf[i+2]
+			buf[i+7] = buf[i+3]
+			t.phase += step
+		}
+		return n, nil
+	}
+
+	audioContext := audio.NewContext(sampleRate)
+	player, err := audioContext.NewPlayerF32(&tone{freq: 440, vol: 0.2})
+	if err != nil {
+		panic(err)
+	}
+
+	if inpututil.IsKeyJustPressed(ebiten.KeySpace) && audioContext.IsReady() {
+		player.Play()
+	}
+
+- audio.NewContext は初期化時に 1 度だけ呼びます。2 度呼ぶとその場で落ちます。player も毎フレーム作らず、初期化時に作って構造体へ持たせます。
+- 再生は NewPlayerF32 で始めます。NewPlayer（16 ビット整数版）は使いません。
+- NewPlayerF32 へ渡すのは、上の tone のように Read(buf []byte) (int, error) を持つ自前の型です。音声ファイルを読み込む方法はありません（デコーダのパッケージは許可されていません）。
+- 波形は math で作ります。上は矩形波（math.Mod で位相の前半と後半を切り替えたもの）です。三角波や鋸波にするなら、level の計算だけを変えます。
+- 渡すのは 32 ビット浮動小数点のリトルエンディアン・2 チャンネルです。1 サンプルが 8 バイトで、左右へ同じ 4 バイトを書きます。長さは必ず 8 の倍数にします。
+- level は -1.0 から 1.0 までの範囲にします。バイトへ並べるには math.Float32bits を使います（encoding/binary と unsafe は許可されていません）。
+- 終わりの無いストリームなので、Read が返す error は常に nil です。
+- 音を鳴らすのは、最初のキー入力かクリックのあとにします。ブラウザは利用者が操作するまで音を鳴らしません。鳴らせる状態かは audioContext.IsReady() で分かります。
+- ゲームの進行を音に依存させません。音が鳴らなくても、最初のフレームから画面が動いて遊べる状態にします。
 
 乱数と計時:
 

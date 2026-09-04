@@ -635,6 +635,21 @@ async function listBlockedCategories(env: Env, gameId: string): Promise<readonly
  * **押した結果がどうなるかを書かない。** 「N 件で非表示になります」と出すと、
  * **閾値を外から測れる**——8.4 が警戒している通報爆撃の設計図になる。
  *
+ * ## 何を通報してよいかを書く（#286）
+ *
+ * **音には出力側モデレーション（8.3）の検査対象が無い。** 8.3 が見るのは生成ソースの
+ * 文字列リテラルであり、音は `math` で組み立てた数値の列なので、**検査すべきリテラルが
+ * 1 つも残らない。** 音を許した時点で、止め役はこのフォームだけになった（仕様 8.3 の
+ * #286 注記）。
+ *
+ * **唯一の止め役へ実際に届く経路を作る。** 「理由（任意）」だけを置くと、通報の対象は
+ * 見た目の話だと読まれる。**耳で気づいたことをここへ書いてよい**と明示しなければ、
+ * 届かない通報は最初から存在しないのと同じである。
+ *
+ * **具体例を並べない。** 何が該当するかを列挙すると、列挙されなかったものは対象外だと
+ * 読まれる。**判断は審査キューが行う**（8.4）ので、ここは「見えるもの・聞こえるものが
+ * 対象である」ことだけを伝える。
+ *
  * @param view 表示に必要な値
  * @returns HTML（通報できなければ空文字、通報済みならその旨）
  */
@@ -651,6 +666,7 @@ function reportSection(view: WorkPageView): string {
   <summary>この作品を通報する</summary>
   <form method="post" action="${WORK_REPORT_PATH}">
     <input type="hidden" name="${WORK_REPORT_GAME_ID_FIELD}" value="${view.reportableId}">
+    <p class="gf-report-scope">画面に出るものだけでなく、<strong>この作品が鳴らす音</strong>も通報の対象です。気づいたことがあれば理由欄へ書いてください（空のままでも送れます）。</p>
     <p><label>理由（任意・${MAX_REASON_LENGTH} 文字まで）<br>
       <textarea name="${WORK_REPORT_REASON_FIELD}" maxlength="${MAX_REASON_LENGTH}" rows="3"></textarea>
     </label></p>

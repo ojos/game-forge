@@ -965,8 +965,9 @@ check_orchestrator_config() {
 ##
 # 非同期呼び出しの構成が宣言どおりか（#160 でいちばん外してはいけない検査）。
 #
-# **maximum_retry_attempts が 0 でなければ落とす。** 既定は 2 で、5.2-7 の 3 試行と
-# 掛け算になると**1 回の送信から最大 9 回・約 144 円・日次枠 9 個**が出る。
+# **maximum_retry_attempts が 0 でなければ落とす。** 既定は 2 で、5.2-7 の 2 試行と
+# 掛け算になると**1 回の送信から最大 6 回・約 134 円・日次枠 6 個**が出る
+# （3 配信 × 2 試行、1 生成の実測 ¥22.41。#284 で 9 回・約 144 円から下がった）。
 # ローカル層（scripts/check-orchestrator-retry.sh）は宣言を見る。ここは**実状態**を見る。
 #
 # 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
@@ -987,7 +988,7 @@ check_orchestrator_invoke_config() {
   actual="$(jq -r '.MaximumRetryAttempts | tostring' <<<"$config")"
   if [[ "$expected" != "$actual" ]]; then
     echo "MaximumRetryAttempts が宣言と一致しません: expected=${expected} actual=${actual}"
-    echo "  **5.2-7 の 3 試行と掛け算になります**（最大 9 回・約 144 円・日次枠 9 個）。"
+    echo "  **5.2-7 の 2 試行と掛け算になります**（最大 6 回・約 134 円・日次枠 6 個）。"
     rc=1
   fi
 

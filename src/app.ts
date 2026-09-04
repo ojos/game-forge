@@ -17,6 +17,7 @@ import { inviteRoutes } from './invite-issuance.js';
 import { myWorksRoutes } from './my-works.js';
 import { ogpRecaptureRoutes } from './ogp-recapture.js';
 import { ogpRoutes } from './ogp.js';
+import { ssrPagePaths } from './page-paths.js';
 import { publishRoutes } from './publish.js';
 import { reviseRoutes } from './revise.js';
 import type { Route } from './routes.js';
@@ -195,6 +196,7 @@ const devRoutes: readonly Route[] = [
   <li><a href="/">/</a> — 公開トップ</li>
   <li><a href="/__dev/health">/__dev/health</a> — D1 / R2 の疎通</li>
   <li><a href="/__dev/session">/__dev/session</a> — <code>${DEV_SESSION_COOKIE}</code> を発行</li>
+  <li><a href="/__dev/pages">/__dev/pages</a> — SSR 画面のパス一覧（#282）</li>
   <li><a href="/__dev/cookies">/__dev/cookies</a> — 届いた cookie 名の一覧</li>
 </ul>`),
   },
@@ -235,6 +237,20 @@ const devRoutes: readonly Route[] = [
       ].join('; ');
       return json({ issued: DEV_SESSION_COOKIE }, 200, { 'set-cookie': cookie });
     },
+  },
+  {
+    method: 'GET',
+    path: '/__dev/pages',
+    // SSR 画面のパスを、経路表そのものから導いて返す（#282）。
+    //
+    // **`scripts/check-page-width.sh` のための口である。** あの検査は実ブラウザで
+    // 全画面を 390px で開くが、シェルから経路表（TypeScript）は読めない。ここを
+    // 通さずにパスを書き並べると、画面を 1 枚足した日に検査だけが古い一覧を見続ける
+    // （`src/page-paths.ts` の冒頭）。
+    //
+    // **`devRoutes` に置くので本番には出ない。** 経路表の形を外へ晒す口を、
+    // 本番で開けたままにしない。
+    handler: (_request, env) => json({ paths: ssrPagePaths(createAppRoutes(env)) }),
   },
   {
     method: 'GET',

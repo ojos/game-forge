@@ -135,7 +135,7 @@ while [[ $# -gt 0 ]]; do
     --format)            FORMAT="${2:-}"; shift 2 ;;
     --near-ratio)        NEAR_RATIO="${2:-}"; shift 2 ;;
     --near-share)        NEAR_SHARE="${2:-}"; shift 2 ;;
-    # 宣言の在り処を差し替える。scripts/usage-report-selftest.sh が
+    # 宣言の在り処を差し替える。scripts/report-selftest.sh が
     # 「#164 が天井を動かしたら閾値も動くこと」を検査するための口である。
     --timeout-source)    TIMEOUT_SOURCE="${2:-}"; shift 2 ;;
     --log-group)         LOG_GROUP="${2:-}"; shift 2 ;;

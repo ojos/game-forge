@@ -53,6 +53,7 @@
  * 黙って死ぬ**（拡散した先には取り消しが届かない）。8.4 の削除申請は `removed` という
  * 別の状態を持っており、そちらが「もう配らない」を表す。
  */
+import { siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import { LOGIN_PATH } from './auth/google.js';
 import type { PublishOutcome } from './games.js';
@@ -145,11 +146,7 @@ function wantsHtml(request: Request): boolean {
  */
 function refusal(heading: string, body: string, status: number): Response {
   return html(
-    `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>${heading} - Game Forge</title>
+    `${siteHead({ title: `${heading} - Game Forge`, noindex: true })}
 <h1>${heading}</h1>
 <p>${body}</p>
 ${siteFooter()}`,

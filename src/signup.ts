@@ -23,7 +23,7 @@
  * 実行環境の都合で塞がらないようにしておく。
  */
 import { siteFooter } from './legal.js';
-import { escapeHtml } from './html.js';
+import { escapeHtml, siteHead } from './html.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import type { AuthDependencies } from './auth/google.js';
@@ -186,10 +186,7 @@ function signupPage(
   const waiting =
     waitingCount > 0 ? `<p>現在 ${waitingCount} 人以上が登録して待っています。</p>` : '';
 
-  return `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Game Forge に登録する</title>
+  return `${siteHead({ title: 'Game Forge に登録する' })}
 <h1>Game Forge に登録する</h1>
 ${error}
 ${fromForkSection(source)}
@@ -222,10 +219,7 @@ ${siteFooter()}`;
  * @returns HTML
  */
 function waitlistThanksPage(): string {
-  return `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>待機リストに登録しました</title>
+  return `${siteHead({ title: '待機リストに登録しました' })}
 <h1>待機リストに登録しました</h1>
 <p>招待枠が空いたらご連絡します。</p>
 <p><a href="${SIGNUP_PATH}">登録画面へ戻る</a></p>

@@ -24,6 +24,20 @@ declare global {
       /** `wrangler.toml` の中身。本番の宣言値をテストから読むために渡している（#89）。 */
       readonly TEST_WRANGLER_TOML: string;
       /**
+       * 見た目の土台（`public/assets/app.css`）の中身。
+       *
+       * CSS からは `src/ogp.ts` の定数を読めないため、作品枠の縦横比が写しになる。
+       * その一致を機械照合するために渡している（#266）。
+       */
+      readonly TEST_APP_CSS: string;
+      /**
+       * Pages の経路振り分け宣言（`public/_routes.json`）の中身。
+       *
+       * `exclude` から外れたパスは、`public/` に実体があっても Functions が飲み込む
+       * （#266 で実測）。その回帰を捕まえるために渡している。
+       */
+      readonly TEST_ROUTES_JSON: string;
+      /**
        * `.dev.vars.example` の中身（`vitest.config.ts` の `textBlobBindings`）。
        *
        * 文書化された秘密の名前を、書き写さずにテストから引くために渡している

@@ -156,7 +156,7 @@ ${form}
 ${list}
 
 <h2>コードを渡す前に</h2>
-<p><strong>招待する相手のメールアドレスを、Google Cloud Console のテストユーザーへ登録してください。</strong>
+<p class="gf-notice"><strong>招待する相手のメールアドレスを、Google Cloud Console のテストユーザーへ登録してください。</strong>
    クローズドβの間、Google の同意画面は Testing のまま運用しているため、登録が無い相手は
    コードを持っていても Google のログイン画面に到達できません（8.1）。</p>
 

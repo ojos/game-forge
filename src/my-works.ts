@@ -258,7 +258,7 @@ function renderRow(work: AuthoredGame, now: number): string {
   const created = iso === '' ? '' : ` <time datetime="${iso}">${formatJstMinutes(work.createdAt)}</time>`;
   return (
     `  <li><a href="${workPagePath(work.id)}">${escapeHtml(displayTitleOf(work.title))}</a>` +
-    ` — ${STATE_LABELS[state]}${created}</li>`
+    ` <span class="gf-state gf-state-${state}">${STATE_LABELS[state]}</span>${created}</li>`
   );
 }
 
@@ -286,7 +286,7 @@ export function renderMyWorksPage(view: MyWorksView): string {
     view.works.length === 0
       ? `<p>まだ作品がありません。</p>
 <p><a href="${GENERATE_PAGE_PATH}">最初のゲームを生成する</a></p>`
-      : `<ul>
+      : `<ul class="gf-works">
 ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
 </ul>`;
 
@@ -302,7 +302,7 @@ ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
 <p>生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>
 ${body}
 ${truncated}
-<p><a href="${GENERATE_PAGE_PATH}">新しく生成する</a></p>
+<p><a class="gf-cta" href="${GENERATE_PAGE_PATH}">新しく生成する</a></p>
 ${siteFooter()}`;
 }
 

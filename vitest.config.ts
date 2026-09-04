@@ -66,6 +66,9 @@ export default defineConfig({
           // 見た目の土台。作品枠の縦横比が `src/ogp.ts` の定数の写しになるため、
           // その一致をテストから照合する（#266）。CSS は定数を読めない。
           TEST_APP_CSS: 'public/assets/app.css',
+          // どの要求が Functions へ行くかを決める宣言。app.css が exclude から
+          // 外れると、実体があっても 404 になる（#266 で実測）。機械照合する。
+          TEST_ROUTES_JSON: 'public/_routes.json',
         },
       },
     }),

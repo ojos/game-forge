@@ -139,6 +139,42 @@ async function open(path: string): Promise<{ body: string; type: string }> {
 }
 
 /**
+ * CSS から、あるセレクタを含む規則の本体をすべて取り出す。
+ *
+ * **完全な CSS パーサを書かない。** 見たいのは 1 つの宣言の写しが腐っていないかで、
+ * `app.css` は入れ子を持たない素の CSS 1 枚である（#266 の constraints）。
+ *
+ * **1 つ目で打ち切らない。** 同じセレクタが複数の規則に現れる（`.gf-frame` は
+ * `.gf-context, .gf-frame` と単独の規則の両方に出る）ので、打ち切ると宣言を
+ * 持たない側だけを見て落ちる。
+ *
+ * @param css CSS の全文
+ * @param selector 探すセレクタ
+ * @returns `{ ... }` の中身の配列
+ */
+function ruleBlocksOf(css: string, selector: string): string[] {
+  const blocks: string[] = [];
+  for (let from = 0; ; ) {
+    const at = css.indexOf(selector, from);
+    if (at < 0) {
+      return blocks;
+    }
+    from = at + selector.length;
+    // `.gf-shot` が `.gf-shot-pending` に当たらないようにする。
+    if (/[\w-]/u.test(css[from] ?? '')) {
+      continue;
+    }
+    const open = css.indexOf('{', at);
+    const close = css.indexOf('}', open);
+    if (open < 0 || close < 0) {
+      return blocks;
+    }
+    blocks.push(css.slice(open + 1, close));
+    from = close;
+  }
+}
+
+/**
  * HTML の末尾から `<script>` ブロック・コメント・空白を取り除く。
  *
  * @param tail フッタより後ろの HTML
@@ -240,10 +276,34 @@ describe('全 SSR 画面の外枠', () => {
     // CSS からは `src/ogp.ts` の定数を読めないので、app.css の中の数値は写しになる。
     // **写しは必ず腐る**ので、ここで機械照合する（shared-ai-rules.md 12 章）。
     // 揃っていないと、読み込みが終わった瞬間に版面が飛ぶ（#30）。
+    //
+    // **見るのは作品枠の 2 つだけである。** `aspect-ratio` の出現をすべて縛ると、
+    // 作品と無関係な用途で 1 つ足した日に落ちる。写しを腐らせない目的は変わらない。
     const expected = `aspect-ratio: ${OGP_IMAGE_WIDTH} / ${OGP_IMAGE_HEIGHT};`;
-    const found = env.TEST_APP_CSS.split('aspect-ratio:').length - 1;
-    expect(found, 'app.css の aspect-ratio の数').toBeGreaterThan(0);
-    expect(env.TEST_APP_CSS.split(expected).length - 1, `app.css の ${expected}`).toBe(found);
+    for (const selector of ['.gf-shot', '.gf-frame']) {
+      const blocks = ruleBlocksOf(env.TEST_APP_CSS, selector);
+      expect(blocks.length, `app.css に ${selector} の規則が見つかりません`).toBeGreaterThan(0);
+      expect(
+        blocks.some((block) => block.includes(expected)),
+        `${selector} のどの規則にも ${expected} がありません`,
+      ).toBe(true);
+    }
+  });
+
+  it('見た目の土台が Functions ではなく静的に配られる宣言になっている', () => {
+    // **`functions/[[path]].ts` は catch-all である。** `exclude` から外れると、
+    // `public/` に実体があっても Pages は Functions へ流し、404 になる（#266 で実測）。
+    // **経路表との衝突を見るだけでは、この回帰は捕まらない。**
+    const routes = JSON.parse(env.TEST_ROUTES_JSON) as {
+      include?: string[];
+      exclude?: string[];
+    };
+    const excluded = (routes.exclude ?? []).some((pattern) =>
+      pattern.endsWith('*')
+        ? APP_CSS_PATH.startsWith(pattern.slice(0, -1))
+        : pattern === APP_CSS_PATH,
+    );
+    expect(excluded, `${APP_CSS_PATH} が _routes.json の exclude に入っていません`).toBe(true);
   });
 
   it('フッタより後ろに本文が残っていない', async () => {

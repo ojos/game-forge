@@ -48,24 +48,41 @@ Cloudflare 上にありません。
 
 ```
 functions/[[path]].ts   Pages Functions の入口。src/index.ts の default export を呼ぶだけ
-public/                 出力ディレクトリ。見た目の土台（assets/app.css）だけを置く
+public/                 出力ディレクトリ。assets/app.css（見た目の土台）と _routes.json
 wrangler.toml           pages_build_output_dir とバインディングの宣言
 ```
 
-**`public/` に、経路と衝突するパスの静的ファイルを置かないこと。** Pages は静的ファイルを
-Functions より先に解決するため、`index.html` を置くと `/` の経路が隠れます（実測で確認）。
+**どの要求が Functions へ行くかは `public/_routes.json` が決めます。** 「静的ファイルが
+Functions より先に解決される」は**この構成では成り立ちません**——`functions/[[path]].ts` は
+catch-all なので、`_routes.json` が無いと Pages は `/*` をすべて Functions へ流し、
+`public/` に実体があってもワーカーの応答が返ります。
 
-**衝突しないパスは置いてよい**（#266 で狭めました）。従来ここは「静的ファイルを置かない」と
-書いていましたが、根拠は上の 1 点だけで、**覆いが根拠より広く読める状態**でした。
-いま置いているのは `public/assets/app.css`（全画面が `<link>` で参照する見た目の土台）1 枚で、
+**実測（#266。ローカル dev で対照実験）:**
+
+| `public/_routes.json` | `/assets/app.css` |
+|---|---|
+| 無し | `404` / `Content-Type: application/json`（ワーカーの応答） |
+| 有り（`/assets/*` を exclude） | `200` / `Content-Type: text/css` ＋ `ETag` |
+
+```json
+{ "version": 1, "include": ["/*"], "exclude": ["/assets/*"] }
+```
+
+**`exclude` から外れたパスは静的ファイルを置いても届きません。** `public/` へ資材を足すときは、
+`_routes.json` の `exclude` にも足してください。**`app.css` が exclude に含まれることは
+`test/page-shell.test.ts` が機械検査します。**
+
+**それとは別に、経路と衝突するパスへ置かないこと。** `index.html` を置くと `/` の経路が
+隠れます（実測で確認）。従来ここは「静的ファイルを置かない」と書いていましたが、根拠は
+この 1 点だけで、**覆いが根拠より広く読める状態**でした（#266 で狭めました）。
 **経路表のどの `path` とも衝突しないことは `test/page-shell.test.ts` が `exact` と `prefix` の
 両方で機械検査します。** 狭めた以上、衝突しないことは呼びかけではなく機構で保証します。
 
 画面そのものはすべて Worker が生成します。
 
-**キャッシュの挙動は測っていません。** Pages が既定でどの `cache-control` と `ETag` を
-返すかを 1 度も測っておらず、「再検証が効く」は仕様上の期待であって実測ではありません。
-測ったらここへ書き足してください。
+**キャッシュはローカルでだけ測りました**（#266）。`Cache-Control: public, max-age=0,
+must-revalidate` と `ETag` が返り、`If-None-Match` を付けた再取得は `304` になります。
+**本番では未確認です。** 測ったらここへ書き足してください。
 
 ## 前提: 認証
 

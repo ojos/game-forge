@@ -35,8 +35,12 @@ import { HOME_PATH } from './paths.js';
 /**
  * 見た目の土台となる 1 枚の CSS のパス（9.3 / #266）。
  *
- * **`public/` から静的に配る。** Pages は静的ファイルを Functions より先に解決するので
- * （`functions/[[path]].ts` の冒頭）、Worker も D1 も CPU も通らない。
+ * **`public/` から静的に配る。** Worker も D1 も CPU も通らない。
+ *
+ * **ただし、静的に配られるのは `public/_routes.json` の `exclude` に入っているからである。**
+ * `functions/[[path]].ts` は catch-all なので、`exclude` が無いと Pages は `/*` をすべて
+ * Functions へ流し、実体があっても 404 になる（実測。`docs/pages-deploy.md`）。
+ * このパスが `exclude` に含まれることは `test/page-shell.test.ts` が機械検査する。
  *
  * **各ページへ `<style>` を差し込む案は採らない。** すべてのページ応答に
  * `cache-control: no-store` が付いており（`src/routes.ts` の `html()`）、CSS 本文が
@@ -71,7 +75,12 @@ export interface SiteHeadOptions {
   readonly noindex?: boolean;
   /** `<title>` のあとへ足す HTML（OGP の `meta` など）。既にエスケープ済みで渡す。 */
   readonly extraHead?: string;
-  /** `<meta charset>` の直後へ足す HTML（`http-equiv` の再読み込みなど）。 */
+  /**
+   * `<title>` より前へ足す HTML（`http-equiv` の再読み込みなど）。
+   *
+   * 入るのは `<link rel="stylesheet">` の直後で、**`<meta charset>` より前へは置けない**
+   * （下の「`charset` を最初に置く」）。
+   */
   readonly beforeTitle?: string;
 }
 

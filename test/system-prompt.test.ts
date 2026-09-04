@@ -206,6 +206,29 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
     expect(text).not.toContain('秒以内');
   });
 
+  it('鳴らし直す形を教え、Rewind / SetPosition を塞いでいる（#301）', () => {
+    // **本番で踏んだ。** #286 の配備後、生成物が `player.Rewind()` を書き、スペースキー
+    // 2 度目で画面ごと固まった。ebiten v2.9.9 の `Rewind()` は `SetPosition(0)` で、
+    // その先は `audio/player.go:474` の
+    // `panic("audio: the source must be io.Seeker when seeking but not")` である。
+    // **合成の音源（自前の `Read` だけを持つ型）は必ず `seekable == false` になる**
+    // （`audio/audio.go:383` が `src.(io.Seeker)` で決める）ので、この経路は必ず落ちる。
+    const text = renderSystemPromptText();
+    // (1) **正しい形を先に教えていること。** 禁止だけを書くと、モデルは別の壊れ方
+    // （鳴らすたびに player を作り直す等）へ流れる。位置を戻すのは音源の側である。
+    expect(text).toContain('音源が自分で持っている位置');
+    expect(text).toContain('0 へ戻してから player.Play() を呼びます');
+    expect(text).toContain('player は作り直さず');
+    // (2) 禁止は、その理由（panic する）と一緒に書く。
+    expect(text).toContain('player.Rewind と player.SetPosition');
+    expect(text).toContain('io.Seeker ではないので');
+    expect(text).toContain('panic して画面が固まります');
+    // (3) **案 B（音源へ `io.Seeker` を実装させる）は採らない**（#301 の scope.out）。
+    // `io` の import が要るようになり、#286 で「不要」と実測して外したばかりである。
+    expect(GO_IMPORT_ALLOWLIST.map((entry) => entry.path)).not.toContain('io');
+    expect(text).not.toContain('func (t *tone) Seek(');
+  });
+
   it('教える API は隔離ビルドで実際にコンパイルが通った形と一致する', () => {
     // **存在しない API を教えないことの機械照合。** 4.2 が記録した Claude の失敗は
     // 存在しない API の捏造（`vector.DrawFilledRoundRect`）であり、プロンプトが同じ
@@ -229,8 +252,13 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
       'vector.DrawFilledRect(screen, ',
       'audio.NewContext(sampleRate)',
       'func (t *tone) Read(buf []byte) (int, error)',
-      'audioContext.NewPlayerF32(&tone{freq: 440, vol: 0.2})',
+      'shot := &tone{freq: 440, vol: 0.2}',
+      'audioContext.NewPlayerF32(shot)',
       'math.Float32bits(level)',
+      'func (t *tone) restart()',
+      't.pos = 0',
+      't.pos++',
+      'shot.restart()',
       'audioContext.IsReady()',
       'player.Play()',
       'inpututil.IsKeyJustPressed(ebiten.Key',

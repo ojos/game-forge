@@ -201,7 +201,6 @@ ${fromForkSection(source)}
   <button type="submit">コードを確認して Google でログイン</button>
 </form>
 <p>コードを確認したあとに Google のログイン画面へ進みます。</p>
-${siteFooter()}
 
 <h2>招待コードをお持ちでない方</h2>
 ${waiting}
@@ -213,7 +212,8 @@ ${waiting}
 </form>
 
 <h2>すでにアカウントをお持ちの方</h2>
-<p><a href="/auth/google/start">Google でログイン</a></p>`;
+<p><a href="/auth/google/start">Google でログイン</a></p>
+${siteFooter()}`;
 }
 
 /**

@@ -170,22 +170,25 @@ ${message}
    内容を確認したうえで、削除・表示制限・申請を認めない、のいずれかを判断し、
    その結果を記録します。</p>
 
+<!-- 入力欄に size / cols を置かない。size="50" は幅 390px の端末で layout viewport を
+     498px へ広げ、ページ全体を縮めたうえで欄がはみ出す（#282 で実測）。文字数の上限は
+     maxlength が持ち、見た目の幅は M8-1 の app.css が与える。 -->
 <form method="post" action="${TAKEDOWN_SUBMIT_PATH}">
   <p><label>対象の作品 URL または作品 ID<br>
-    <input type="text" name="${TAKEDOWN_FIELDS.gameId}" required size="50">
+    <input type="text" name="${TAKEDOWN_FIELDS.gameId}" required>
   </label><br>
   <small>作品ページの URL（<code>/works/…</code>）に含まれる ID です。</small></p>
 
   <p><label>お名前または団体名（${MAX_CLAIMANT_LENGTH} 文字まで）<br>
-    <input type="text" name="${TAKEDOWN_FIELDS.name}" required maxlength="${MAX_CLAIMANT_LENGTH}" size="40">
+    <input type="text" name="${TAKEDOWN_FIELDS.name}" required maxlength="${MAX_CLAIMANT_LENGTH}">
   </label></p>
 
   <p><label>ご連絡先（メールアドレス等。${MAX_CLAIMANT_LENGTH} 文字まで）<br>
-    <input type="text" name="${TAKEDOWN_FIELDS.contact}" required maxlength="${MAX_CLAIMANT_LENGTH}" size="40">
+    <input type="text" name="${TAKEDOWN_FIELDS.contact}" required maxlength="${MAX_CLAIMANT_LENGTH}">
   </label></p>
 
   <p><label>申請の内容（どの権利に基づき、何を求めるか。${MAX_BODY_LENGTH} 文字まで）<br>
-    <textarea name="${TAKEDOWN_FIELDS.body}" required maxlength="${MAX_BODY_LENGTH}" rows="8" cols="60"></textarea>
+    <textarea name="${TAKEDOWN_FIELDS.body}" required maxlength="${MAX_BODY_LENGTH}" rows="8"></textarea>
   </label></p>
 
   <button type="submit">申請を送る</button>

@@ -57,19 +57,36 @@ const sampleRate = 48000
 // `math.Float32bits` でリトルエンディアンへ並べる。**`encoding/binary` も `unsafe` も
 // 許可リストに無いので、この経路しかない**——それが実際に書けることを、配る現物の
 // イメージで確かめる。
+//
+// **長さ（`pos`）と `restart()` は #301 で足した。** `player.Rewind()` /
+// `player.SetPosition()` は、`io.Seeker` でない音源に対して panic する
+// （ebiten v2.9.9 `audio/player.go:474`。`NewPlayerF32` は渡された音源が `io.Seeker` か
+// どうかで `seekable` を決める）。**鳴らし直す手段は「音源が自分で持つ位置を 0 へ戻す」
+// しかない**ので、それが実際に書けてビルドが通ることを、教える形と同じ形で確かめる。
+// 終わりの無い矩形波のままでは「鳴らし直す」が形として現れない。
 type tone struct {
 	freq  float64
 	vol   float64
 	phase float64
+	pos   int
+}
+
+// 鳴らし直すために、音源が自分で持つ位置を 0 へ戻す（#301）。
+func (t *tone) restart() {
+	t.phase = 0
+	t.pos = 0
 }
 
 func (t *tone) Read(buf []byte) (int, error) {
 	n := len(buf) / 8 * 8
 	step := t.freq / float64(sampleRate)
 	for i := 0; i < n; i += 8 {
-		level := float32(t.vol)
-		if math.Mod(t.phase, 1) >= 0.5 {
-			level = -level
+		var level float32
+		if t.pos < sampleRate/10 {
+			level = float32(t.vol)
+			if math.Mod(t.phase, 1) >= 0.5 {
+				level = -level
+			}
 		}
 		bits := math.Float32bits(level)
 		buf[i] = byte(bits)
@@ -81,6 +98,7 @@ func (t *tone) Read(buf []byte) (int, error) {
 		buf[i+6] = buf[i+2]
 		buf[i+7] = buf[i+3]
 		t.phase += step
+		t.pos++
 	}
 	return n, nil
 }
@@ -91,6 +109,7 @@ type Game struct {
 	face         *text.GoXFace
 	jpFace       *text.GoXFace
 	audioContext *audio.Context
+	shot         *tone
 	player       *audio.Player
 }
 
@@ -100,7 +119,12 @@ func (g *Game) Update() error {
 	}
 	// **最初の入力より前に鳴らさない**（#286）。ブラウザは利用者の操作より前に音を
 	// 鳴らさず、OGP は初回フレームを撮るだけなので、ここに依存する進行を書かない。
+	//
+	// **鳴らし直しは音源の側で行う**（#301）。`player.Rewind()` は `SetPosition(0)` で、
+	// `io.Seeker` でない音源に対して panic する。**同じキーを 2 度押しても固まらない
+	// ことが、この形を教える理由である。**
 	if inpututil.IsKeyJustPressed(ebiten.KeySpace) && g.audioContext.IsReady() {
+		g.shot.restart()
 		g.player.Play()
 	}
 	if ebiten.IsKeyPressed(ebiten.KeyRight) {
@@ -134,7 +158,8 @@ func (g *Game) Layout(int, int) (int, int) { return 320, 240 }
 
 func main() {
 	audioContext := audio.NewContext(sampleRate)
-	player, err := audioContext.NewPlayerF32(&tone{freq: 440, vol: 0.2})
+	shot := &tone{freq: 440, vol: 0.2}
+	player, err := audioContext.NewPlayerF32(shot)
 	if err != nil {
 		panic(err)
 	}
@@ -142,6 +167,7 @@ func main() {
 		face:         text.NewGoXFace(basicfont.Face7x13),
 		jpFace:       text.NewGoXFace(jpfont.Face16),
 		audioContext: audioContext,
+		shot:         shot,
 		player:       player,
 	}
 	ebiten.SetWindowSize(640, 480)

@@ -286,6 +286,34 @@ const ALLOWED_PACKAGES = `${renderAllowlistSection()}
  * 防御と数えないので、書いても守られたことにならない。**書いてよいのは使い方だけ**で、
  * 内容を止める役は 8.4 の通報が負う（8.3 は音に対して検査対象を持たない。仕様 8.3）。
  *
+ * ## 鳴らし直す形をここへ足した理由（#301）
+ *
+ * **#286 の配備後、本番の生成物がスペースキー 2 回で固まった。** 生成物は
+ * `player.Rewind()` を呼んでいた。ebiten v2.9.9 で `Rewind()` は `SetPosition(0)` で、
+ * その先は `timeStream.Seek` の
+ * `panic("audio: the source must be io.Seeker when seeking but not")`
+ * （`audio/player.go:474`）である。**`NewPlayerF32` は渡された音源が `io.Seeker` かを
+ * 見て `seekable` を決める**（`audio/audio.go:383`）ので、上の 3 が言う「自前の `Read`
+ * を持つ型」は必ず `seekable == false` になる。**合成のみと決めた時点で、`Rewind` /
+ * `SetPosition` / 旧 `Seek` は使えない。** wasm の panic はキャンバスごと止まる。
+ *
+ * **1 度目は通り、2 度目で落ちる。** `SetPosition` は `offset == 0 && p.player == nil`
+ * を早期に返すため、最初の 1 回（まだ `Play()` していない状態）は panic しない。
+ * **「音が鳴る作品を 1 本作って 1 回試す」受け入れでは見つからない**——本番の実測が
+ * 2 回目で固まったのはこの構造である。
+ *
+ * **音源へ `io.Seeker` を実装させる案は採らない**（#301 の scope.out）。`Rewind` は
+ * 通るようになるが、教える API が増え、`io` の import が要る（#286 で「不要」を
+ * 実測して外したばかりである。`docker/isolated-build/sample/ebitengine.go` の注記）。
+ *
+ * **禁止だけを書かない。** 「`Rewind` を使うな」だけを足すと、モデルは別の壊れ方
+ * （鳴らすたびに `NewPlayerF32` で作り直す、など）へ流れる。**正しい形を先に示し、
+ * 禁止をその理由として添える**——本番の生成物は「音源が持つ位置を自分で戻す」正しい
+ * 形を既に書けていて、余分な 1 行で死んでいた。**サンプルの `tone` に長さ（`pos`）と
+ * `restart()` を足したのはこのためである。** 終わりの無い矩形波のままでは「鳴らし直す」
+ * が観測できず、教える形とビルドで通した形を機械照合できない
+ * （`test/system-prompt.test.ts`）。
+ *
  * ## float32 と int を混ぜないことを書く理由
  *
  * #7 の失敗のうち 2 本は int / float64 の混在だった。`vector` の座標は float32、
@@ -340,15 +368,24 @@ const API_USAGE = `許可された API の使い方（このとおりに書い�
 		freq  float64
 		vol   float64
 		phase float64
+		pos   int
+	}
+
+	func (t *tone) restart() {
+		t.phase = 0
+		t.pos = 0
 	}
 
 	func (t *tone) Read(buf []byte) (int, error) {
 		n := len(buf) / 8 * 8
 		step := t.freq / float64(sampleRate)
 		for i := 0; i < n; i += 8 {
-			level := float32(t.vol)
-			if math.Mod(t.phase, 1) >= 0.5 {
-				level = -level
+			var level float32
+			if t.pos < sampleRate/10 {
+				level = float32(t.vol)
+				if math.Mod(t.phase, 1) >= 0.5 {
+					level = -level
+				}
 			}
 			bits := math.Float32bits(level)
 			buf[i] = byte(bits)
@@ -360,17 +397,20 @@ const API_USAGE = `許可された API の使い方（このとおりに書い�
 			buf[i+6] = buf[i+2]
 			buf[i+7] = buf[i+3]
 			t.phase += step
+			t.pos++
 		}
 		return n, nil
 	}
 
 	audioContext := audio.NewContext(sampleRate)
-	player, err := audioContext.NewPlayerF32(&tone{freq: 440, vol: 0.2})
+	shot := &tone{freq: 440, vol: 0.2}
+	player, err := audioContext.NewPlayerF32(shot)
 	if err != nil {
 		panic(err)
 	}
 
 	if inpututil.IsKeyJustPressed(ebiten.KeySpace) && audioContext.IsReady() {
+		shot.restart()
 		player.Play()
 	}
 
@@ -380,7 +420,9 @@ const API_USAGE = `許可された API の使い方（このとおりに書い�
 - 波形は math で作ります。上は矩形波（math.Mod で位相の前半と後半を切り替えたもの）です。三角波や鋸波にするなら、level の計算だけを変えます。
 - 渡すのは 32 ビット浮動小数点のリトルエンディアン・2 チャンネルです。1 サンプルが 8 バイトで、左右へ同じ 4 バイトを書きます。長さは必ず 8 の倍数にします。
 - level は -1.0 から 1.0 までの範囲にします。バイトへ並べるには math.Float32bits を使います（encoding/binary と unsafe は許可されていません）。
-- 終わりの無いストリームなので、Read が返す error は常に nil です。
+- 音の長さは音源が自分で数えます。上は 0.1 秒（sampleRate/10 サンプル）だけ鳴らし、そのあとは無音（level が 0）を書き続けます。ストリームは終わらせないので、Read が返す error は常に nil です。
+- 同じ音をもう一度鳴らすときは、音源が自分で持っている位置（上の pos と phase）を 0 へ戻してから player.Play() を呼びます。上の restart がそれです。player は作り直さず、同じものを鳴らし直します。
+- player.Rewind と player.SetPosition（古い名前の player.Seek も同じものです）は呼びません。コードで作った音源は io.Seeker ではないので、呼ぶとその場で panic して画面が固まります。位置を戻すのは音源の側です。
 - 音を鳴らすのは、最初のキー入力かクリックのあとにします。ブラウザは利用者が操作するまで音を鳴らしません。鳴らせる状態かは audioContext.IsReady() で分かります。
 - ゲームの進行を音に依存させません。音が鳴らなくても、最初のフレームから画面が動いて遊べる状態にします。
 

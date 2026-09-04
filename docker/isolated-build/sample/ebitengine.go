@@ -66,9 +66,12 @@ func (g *Game) Draw(screen *ebiten.Image) {
 
 	// 日本語のフォント（#285）。半角と全角で送り幅が違うので、**両方を含む文字列**を
 	// 描いて自前の font.Face 実装を実際に通す。
+	//
+	// **収録外の文字（漢字）も 1 つ混ぜる。** 代替の升目（枠に×）を組み立てる経路まで
+	// 含めて、配る現物のイメージでコンパイルと連結を確かめる。
 	jp := &text.DrawOptions{}
 	jp.GeoM.Translate(8, 24)
-	text.Draw(screen, "スコア "+strconv.Itoa(g.score)+" てん", g.jpFace, jp)
+	text.Draw(screen, "スコア "+strconv.Itoa(g.score)+" てん 漢", g.jpFace, jp)
 }
 
 func (g *Game) Layout(int, int) (int, int) { return 320, 240 }

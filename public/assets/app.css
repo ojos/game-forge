@@ -383,7 +383,10 @@ button:disabled {
  * 枠より弱く置く——目立たせたいのは作品で、CTA はその次である。
  */
 .gf-fork {
-  margin-top: var(--gf-gap-4);
+  /* **余白はこのブロックで完結させる。** `margin-top` だけを書くと、上の
+     まとめ書き（`.gf-author, .gf-parent, ...`）の下余白に暗黙で依存し、
+     あちらを触った日にここだけ崩れる（Copilot の指摘。2026-09-04）。 */
+  margin: var(--gf-gap-4) 0 var(--gf-gap-1);
   font-size: var(--gf-text-h2);
   font-weight: 700;
   line-height: 1.5;

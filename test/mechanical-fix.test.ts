@@ -226,6 +226,48 @@ function emulateGoDiagnostics(source: string, used: readonly string[]): string {
 }
 
 /**
+ * 診断の打ち切り（{@link GO_DIAGNOSTIC_ERROR_LIMIT}）を跨ぐ未使用 import のソースを作る。
+ *
+ * 許可一覧に、同じパスの別名 import を 2 つ足す。**別名を足せば許可一覧の件数を
+ * 超えられる**ので、上限は一覧の件数では決まらない。**件数は書き写さず、下の
+ * 不等式で見る**（写すと一覧が増えた日に古くなる）。
+ *
+ * **前提をここで表明する（#298）。** 「1 巡目で上限ぶん、2 巡目で残りが消える」という
+ * 形は、未使用 import の数が上限を跨ぐことに依存している。許可一覧が縮んで上限以下に
+ * なれば 1 巡で消し切れてしまい、逆に残りが上限を超えれば
+ * {@link MAX_MECHANICAL_FIX_PASSES} 巡でも消し切れない。**どちらも機械修正の挙動は
+ * 正しいまま期待値だけが成り立たなくなる**ので、表明しないと「2 行目のログが合わない」
+ * という、何の前提が崩れたのか読めない形で落ちる。
+ *
+ * @returns ソースと、未使用 import の総数・2 巡目に残る件数
+ */
+function sourceSpanningDiagnosticLimit(): {
+  readonly source: string;
+  readonly total: number;
+  readonly remainder: number;
+} {
+  const specs = [
+    ...GO_IMPORT_ALLOWLIST.map((entry) => `\t"${entry.path}"`),
+    '\ta1 "math"',
+    '\ta2 "strconv"',
+  ];
+  const remainder = specs.length - GO_DIAGNOSTIC_ERROR_LIMIT;
+  expect(
+    specs.length,
+    `前提が崩れています: 未使用 import ${specs.length} 件が GO_DIAGNOSTIC_ERROR_LIMIT（${GO_DIAGNOSTIC_ERROR_LIMIT}）以下です。1 巡で消し切れるため 2 巡目を期待できません（GO_IMPORT_ALLOWLIST が縮んだか、上限が上がった）`,
+  ).toBeGreaterThan(GO_DIAGNOSTIC_ERROR_LIMIT);
+  expect(
+    remainder,
+    `前提が崩れています: 2 巡目へ残る ${remainder} 件が GO_DIAGNOSTIC_ERROR_LIMIT（${GO_DIAGNOSTIC_ERROR_LIMIT}）を超えます。MAX_MECHANICAL_FIX_PASSES（${MAX_MECHANICAL_FIX_PASSES}）巡では消し切れません（GO_IMPORT_ALLOWLIST が増えたか、上限が下がった）`,
+  ).toBeLessThanOrEqual(GO_DIAGNOSTIC_ERROR_LIMIT);
+  return {
+    source: `package main\n\nimport (\n${specs.join('\n')}\n)\n\nfunc main() {}\n`,
+    total: specs.length,
+    remainder,
+  };
+}
+
+/**
  * 台帳の行を読む。
  *
  * @param userId 利用者の id
@@ -678,16 +720,9 @@ describe('生成ループへの結線（#129 の acceptance）', () => {
     // 実測: 12 個の未使用 import を持つソースで、Go は 10 件（GO_DIAGNOSTIC_ERROR_LIMIT）
     // を報告して `too many errors` で打ち切った。1 巡では消し切れない。
     //
-    // 許可一覧に、同じパスの別名 import を 2 つ足す。**別名を足せば許可一覧の件数を
-    // 超えられる**ので、上限は一覧の件数では決まらない。**件数は書き写さず、下の
-    // 不等式で見る**（写すと一覧が増えた日に古くなる）。
-    const specs = [
-      ...GO_IMPORT_ALLOWLIST.map((entry) => `\t"${entry.path}"`),
-      '\ta1 "math"',
-      '\ta2 "strconv"',
-    ];
-    expect(specs.length).toBeGreaterThan(GO_DIAGNOSTIC_ERROR_LIMIT);
-    const source = `package main\n\nimport (\n${specs.join('\n')}\n)\n\nfunc main() {}\n`;
+    // **この形が成り立つ前提**（未使用の数が上限を跨ぐこと）は
+    // {@link sourceSpanningDiagnosticLimit} が表明する。
+    const { source } = sourceSpanningDiagnosticLimit();
 
     const { observed, pipeline } = pipelineOf(source, (generated) => {
       const diagnostics = emulateGoDiagnostics(generated.source, []);
@@ -895,14 +930,12 @@ describe('機械修正の観測（4.2 の #133 注記）', () => {
     // **件数を数えて書き写さない。** 許可一覧は増える（#285 で 1 件増えた）。写した数は
     // 増えた日に落ちるが、落ちるのは期待値の側であって機械修正の挙動ではないため、
     // **直し方が「数を書き換える」になってしまう。**
-    const specs = [
-      ...GO_IMPORT_ALLOWLIST.map((entry) => `\t"${entry.path}"`),
-      '\ta1 "math"',
-      '\ta2 "strconv"',
-    ];
-    // 2 巡目に残る件数。1 巡目は診断の上限ぶんしか消せない。
-    const remainder = specs.length - GO_DIAGNOSTIC_ERROR_LIMIT;
-    const source = `package main\n\nimport (\n${specs.join('\n')}\n)\n\nfunc main() {}\n`;
+    //
+    // **その導出が成り立つ前提**（1 巡では消し切れず、2 巡では消し切れる）は
+    // {@link sourceSpanningDiagnosticLimit} が表明する。表明が無いと、許可一覧が縮んだ
+    // 日に `remainder` が 0 以下のまま先へ進み、**期待するログの 2 行目が合わない**と
+    // いう読めない形で落ちる（#298）。
+    const { source, total, remainder } = sourceSpanningDiagnosticLimit();
     const { pipeline } = pipelineOf(source, (generated) => {
       const diagnostics = emulateGoDiagnostics(generated.source, []);
       if (parseUnusedImports(diagnostics).length > 0) {
@@ -923,7 +956,7 @@ describe('機械修正の観測（4.2 の #133 注記）', () => {
     ]);
     // 除去件数の合計は、ソースにあった未使用 import の数と一致する。
     const removed = lines.map((line) => Number(MECHANICAL_FIX_LOG_PATTERN.exec(line)?.groups?.['removed']));
-    expect(removed.reduce((sum, count) => sum + count, 0)).toBe(specs.length);
+    expect(removed.reduce((sum, count) => sum + count, 0)).toBe(total);
   });
 
   it('生成コード・診断・import パス・プロンプトがログに現れない（acceptance 2）', async () => {

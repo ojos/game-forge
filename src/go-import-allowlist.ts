@@ -154,6 +154,11 @@ export const GO_IMPORT_ALLOWLIST: readonly AllowedImport[] = [
  * ——テンプレート自身のパッケージが外部扱いへ落ちれば `vendor-deps.go` との照合が赤に
  * なり、逆にここを実在しないモジュール名にすれば、`jpfont` が外部扱いになって同じ照合が
  * 赤になる（`test/go-imports.test.ts`）。
+ *
+ * **写しであること自体も機械照合する（#298）。** 上の「静かには壊れない」は成り立つが、
+ * 赤くなるのは*別の*照合であり、そこから写しへ辿る必要があった。`vitest.config.ts` が
+ * `go.mod` を `TEST_TEMPLATE_GO_MOD` として注入し（workerd 内にファイルシステムが
+ * 無いため、これが唯一の経路）、`module` 行との一致を `test/worker.test.ts` が直接見る。
  */
 export const TEMPLATE_MODULE_PATH = 'gameforge.local/sandbox';
 

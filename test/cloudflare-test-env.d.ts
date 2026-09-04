@@ -21,6 +21,14 @@ declare global {
       readonly TEST_VENDOR_DEPS: string;
       /** 隔離ビルドの検査用サンプル（`docker/isolated-build/sample/ebitengine.go`）。 */
       readonly TEST_BUILD_SAMPLE: string;
+      /**
+       * 隔離ビルドのテンプレートのモジュール宣言（`docker/isolated-build/template/go.mod`）。
+       *
+       * `src/go-import-allowlist.ts` の `TEMPLATE_MODULE_PATH` は `module` 行の写しで、
+       * workerd 内からはこのファイルを読めない。写しの一致を機械照合するために渡している
+       * （#285 / #298）。
+       */
+      readonly TEST_TEMPLATE_GO_MOD: string;
       /** `wrangler.toml` の中身。本番の宣言値をテストから読むために渡している（#89）。 */
       readonly TEST_WRANGLER_TOML: string;
       /**

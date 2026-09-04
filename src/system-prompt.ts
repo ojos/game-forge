@@ -96,10 +96,24 @@ import { renderAllowlistSection } from './go-import-allowlist.js';
  * 静的な値なので、埋め込んでもキャッシュのプレフィックスは変わらない。
  *
  * **境界の読み方（何バイトから警告するか、ちょうどの値はどちら側か）は
- * `src/source-size.ts` が持つ**（確定18 の条件 1・24KB。#33）。値と読み方は別々に
- * 変わるので、あちらはこの定数を import して割合から導く。
+ * `src/source-size.ts` が持つ**（確定18 の条件 1・24KB → 51.2KB。#33）。値と読み方は
+ * 別々に変わるので、あちらはこの定数を import して割合から導く。
+ *
+ * ## 30KB から 64KB へ引き上げた（2026-09-04 / #284）
+ *
+ * **「30KB ≒ 1 万トークン」という前提が覆った。** 旧値はソース 3.07 バイト/token を
+ * 前提にしていたが、`output_tokens` には thinking が乗るため**ソースのバイト数から
+ * 割った値は分母を取り違えている。** R2 の `source.go` 4 本での実測は
+ * **2.0 バイト/output token**（1.99〜2.07）で、64KB は約 32,768 トークンにあたる。
+ *
+ * **上限サイズ・`maxTokens`・時間予算の 3 つは連動する**（`src/generation-models.ts` の
+ * `maxTokens` = 33,000 / `terraform/orchestrator.tf` の `orchestrator_generation_seconds`）。
+ * どれか 1 つだけを動かすと、`max_tokens` での切断か、関数の時間切れのどちらかになる。
+ *
+ * **ビルド側は反応しない**（実測。1.8KB / 24KB / 65KB でビルド時間 8.06〜8.23 秒、
+ * 65,020 バイトのソースが brotli 後 2,318,938 バイトで 3MB の内側）。
  */
-export const MAX_SOURCE_BYTES = 30 * 1024;
+export const MAX_SOURCE_BYTES = 64 * 1024;
 
 /**
  * 1 節: 役割と出力形式。

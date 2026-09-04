@@ -22,37 +22,47 @@ import {
  * 用意が要る。
  */
 describe('上限と警告の閾値（確定18 の条件 1）', () => {
-  it('警告の閾値は上限の 80%（＝24KB）である', () => {
-    // 5.3 は値（24KB）と導出（上限の 80%）の両方を書いている。**どちらも確かめる。**
-    // 割合からだけ確かめると、上限が動いた日に「80% ではあるが 24KB ではない」ことに
+  it('警告の閾値は上限の 80%（＝52,428 バイト）である', () => {
+    // 5.3 は値と導出（上限の 80%）の両方を書いている。**どちらも確かめる。**
+    // 割合からだけ確かめると、上限が動いた日に「80% ではあるが値が違う」ことに
     // 気づけない——それは仕様の書き換えを伴う変更であって、黙って通ってよくない。
+    //
+    // **#284 でその日が来た**（30KB → 64KB。24,576 → 52,428）。
     expect(SOURCE_SIZE_WARNING_RATIO).toBe(0.8);
-    expect(SOURCE_SIZE_WARNING_BYTES).toBe(24 * 1024);
-    expect(SOURCE_SIZE_WARNING_BYTES).toBe(MAX_SOURCE_BYTES * 0.8);
+    expect(SOURCE_SIZE_WARNING_BYTES).toBe(52_428);
+    // **`MAX_SOURCE_BYTES * 0.8` と直接は比べない。** 65,536 × 0.8 は二進小数で
+    // 52,428.800000000003 になり、切り下げた実装値とは一致しない（30,720 の頃は
+    // 割り切れたので一致していた）。**導出は「切り下げ込み」で確かめる。**
+    expect(SOURCE_SIZE_WARNING_BYTES).toBe(Math.floor(MAX_SOURCE_BYTES * 0.8));
+    expect(MAX_SOURCE_BYTES * 0.8).not.toBe(SOURCE_SIZE_WARNING_BYTES);
   });
 
   it('閾値は整数である（上限が動いても端数を作らない）', () => {
     // **バイト数は画面へそのまま出る**（`src/fork.ts` の警告画面）。`* 0.8` は
-    // 二進小数なので、上限によっては端数になる。**いまの 30,720 では割り切れるため、
-    // 現在値だけを見る検査はこの不具合を捕まえられない**——割り切れない上限を
-    // 直接与えて確かめる（#255 のレビュー指摘）。
+    // 二進小数なので、上限によっては端数になる。**30,720 では割り切れていたため、
+    // 現在値だけを見る検査はこの不具合を捕まえられなかった**——割り切れない上限を
+    // 直接与えて確かめる（#255 のレビュー指摘）。**#284 の 65,536 は割り切れないので、
+    // いまは現在値そのものが端数の側にある。**
     expect(Number.isInteger(SOURCE_SIZE_WARNING_BYTES)).toBe(true);
     expect(Number.isInteger(warningBytesFor(31 * 1024))).toBe(true);
     expect(Number.isInteger(warningBytesFor(9 * 1024))).toBe(true);
     // 導出そのものは変えていない（切り下げるだけ）。
     expect(warningBytesFor(30 * 1024)).toBe(24 * 1024);
     expect(warningBytesFor(31 * 1024)).toBe(25_395);
+    expect(warningBytesFor(64 * 1024)).toBe(52_428);
   });
 
-  it('整理の入力上限は上限の 2 倍（＝60KB）である', () => {
+  it('整理の入力上限は上限の 2 倍（＝128KB）である', () => {
     // **直値でも見る。** 帯の検査はどれも `TIDY_MAX_SOURCE_BYTES` を基準に書いてあるので、
     // 定数を緩めるとテストごと追随して通る（実際、2 倍を 4 倍へ変える変異が
     // 1 件も落ちなかった）。`test/generate.test.ts` が
     // 「定数からも直値からも見る」と書いているのと同じ理由である。
-    expect(TIDY_MAX_SOURCE_BYTES).toBe(60 * 1024);
+    expect(TIDY_MAX_SOURCE_BYTES).toBe(128 * 1024);
     expect(TIDY_MAX_SOURCE_BYTES).toBe(MAX_SOURCE_BYTES * 2);
     // **緩めてよい理由が消えていないこと。** 非同期呼び出しのペイロード上限 256 KB に
-    // 対して、プロンプト（最大 2,000 文字＝ UTF-8 で 8 KB）を足しても桁が 1 つ違う。
+    // 対して、プロンプト（最大 2,000 文字＝ UTF-8 で 8 KB）を足しても収まる。
+    // **#284 で「桁が 1 つ違う」ではなくなった**（60KB＋8KB → 128KB＋8KB）。
+    // 収まることは変わらないが、余裕は約 188 KB から約 120 KB へ減っている。
     expect(TIDY_MAX_SOURCE_BYTES + 8 * 1024).toBeLessThan(256 * 1024);
   });
 
@@ -73,29 +83,35 @@ describe('バイト数で測る（文字数ではない）', () => {
   });
 
   it('上限ちょうどの日本語ソースは、文字数で測れば 3 分の 1 に見える', () => {
-    const source = 'あ'.repeat(MAX_SOURCE_BYTES / 3);
-    expect([...source]).toHaveLength(MAX_SOURCE_BYTES / 3);
+    // **文字数は整数でなければならない。** 30,720 は 3 で割り切れたが、#284 の
+    // 65,536 は割り切れない（21,845.33…）。**割り切れない上限でも成り立つ形にする**
+    // ——`あ`（3 バイト）で埋めて、余りは 1 バイト文字で詰める。
+    const wideChars = Math.floor(MAX_SOURCE_BYTES / 3);
+    const source = 'あ'.repeat(wideChars) + 'x'.repeat(MAX_SOURCE_BYTES - wideChars * 3);
     expect(measureSourceBytes(source)).toBe(MAX_SOURCE_BYTES);
+    // 文字数はバイト数のおよそ 3 分の 1 にしか見えない（ここが本題）。
+    expect([...source].length).toBeLessThanOrEqual(wideChars + 3);
+    expect([...source].length).toBeGreaterThanOrEqual(wideChars);
     expect(classifySourceBytes(measureSourceBytes(source))).toBe('near-limit');
   });
 });
 
 describe('帯の境界は「超えたら」である（`>` であって `>=` ではない）', () => {
-  it('24KB ちょうどは警告しない', () => {
+  it('閾値ちょうどは警告しない', () => {
     expect(classifySourceBytes(SOURCE_SIZE_WARNING_BYTES)).toBe('within');
   });
 
-  it('24KB の 1 バイト上から警告する', () => {
+  it('閾値の 1 バイト上から警告する', () => {
     expect(classifySourceBytes(SOURCE_SIZE_WARNING_BYTES + 1)).toBe('near-limit');
   });
 
-  it('30KB ちょうどはまだ改造できる', () => {
+  it('上限ちょうどはまだ改造できる', () => {
     // `src/source-store.ts` が上限ちょうどのソースを読むこと
     // （`test/source-store.test.ts`）と、同じ 1 つの判断でなければならない。
     expect(classifySourceBytes(MAX_SOURCE_BYTES)).toBe('near-limit');
   });
 
-  it('30KB の 1 バイト上から超過である', () => {
+  it('上限の 1 バイト上から超過である', () => {
     expect(classifySourceBytes(MAX_SOURCE_BYTES + 1)).toBe('over-limit');
   });
 
@@ -124,7 +140,7 @@ describe('入力段階の振る舞い（確定18 の条件 1）', () => {
 
   it('上限超は、まず整理するかどうかを問う（条件 2）', () => {
     // 5.3 は「拒否のみは採らない」と定めている。**問わずに断ると、フォーク連鎖が
-    // 30KB で行き止まりになり、10.3 の撤退条件を実装の側で不成立にしうる。**
+    // 上限で行き止まりになり、10.3 の撤退条件を実装の側で不成立にしうる。**
     expect(decideForkSizeAction({ bytes: MAX_SOURCE_BYTES + 1, consent: 'none' })).toBe(
       'offer-tidy',
     );
@@ -152,7 +168,7 @@ describe('入力段階の振る舞い（確定18 の条件 1）', () => {
   });
 
   it('近い帯では、整理の同意もそのまま進ませる', () => {
-    // 30KB に収まっているなら整理は要らない。**要らない整理で枠を使わせない。**
+    // 上限に収まっているなら整理は要らない。**要らない整理で枠を使わせない。**
     expect(decideForkSizeAction({ bytes: SOURCE_SIZE_WARNING_BYTES + 1, consent: 'tidy' })).toBe(
       'proceed',
     );

@@ -6,9 +6,9 @@
 # **これは #160 でいちばん外してはいけない宣言である。**
 #
 # 5.2-7（src/build-retry.ts の MAX_GENERATION_ATTEMPTS）が既にビルド診断を織り込む
-# 賢い再試行を最大 3 回持っている。Lambda の非同期呼び出しの maximum_retry_attempts は
-# **既定が 2** で、放っておくと掛け算になる。1 回の送信から**最大 9 回・約 144 円・
-# 日次枠 9 個**が出る。
+# 賢い再試行を最大 2 回持っている（#284 で 3 → 2）。Lambda の非同期呼び出しの
+# maximum_retry_attempts は **既定が 2** で、放っておくと掛け算になる。1 回の送信から
+# **最大 6 回・約 134 円・日次枠 6 個**が出る（3 配信 × 2 試行、実測 ¥22.41）。
 #
 # 呼びかけでは守らない（shared-ai-rules 12 章「機構が結果そのものを生む」）。
 # **この検査は宣言（terraform/orchestrator.tf）を読む。** 実状態との一致は外部層
@@ -84,8 +84,8 @@ fail=0
 # 1. local に 0 と書かれていること。
 if ! grep -qE '^[[:space:]]*orchestrator_maximum_retry_attempts[[:space:]]*=[[:space:]]*0[[:space:]]*$' "$DECL"; then
   echo "[orchestrator-retry] $DECL の orchestrator_maximum_retry_attempts が 0 ではありません。" >&2
-  echo "[orchestrator-retry] 既定（2）と 5.2-7 の 3 試行が掛け算になり、1 回の送信から" >&2
-  echo "[orchestrator-retry] 最大 9 回・約 144 円・日次枠 9 個が出ます。" >&2
+  echo "[orchestrator-retry] 既定（2）と 5.2-7 の 2 試行が掛け算になり、1 回の送信から" >&2
+  echo "[orchestrator-retry] 最大 6 回・約 134 円・日次枠 6 個が出ます。" >&2
   fail=1
 fi
 

@@ -300,14 +300,25 @@ describe('宛先の設定が壊れているとき（PR #169）', () => {
 
 describe('本文', () => {
   it('対象月・累計・上限・到達率を載せ、利用者を特定する値を載せない', () => {
-    const warning = monthlyCostWarningOf(8_500)!;
+    // **累計は上限から導く**（上限の 85%）。直値で 8,500 と書くと、上限を変えた日に
+    // **警告の帯にすら入らない額**になり（#284 で 1 万 → 2 万円にしたとき実際にそう
+    // なった）、`monthlyCostWarningOf` が null を返してテストが型のところで落ちる。
+    // **確かめたいのは「本文が対象月・累計・上限・到達率を載せること」**であって、
+    // 8,500 という額ではない。
+    const grouped = (value: number): string =>
+      String(value).replace(/\B(?=(\d{3})+(?!\d))/gu, ',');
+    const accumulated = MONTHLY_COST_LIMIT_JPY * 0.85;
+    const warning = monthlyCostWarningOf(accumulated)!;
     const message = costAlertMessage(warning, AT);
 
     expect(message.subject).toContain('80%');
     expect(message.text).toContain('2020-05');
-    expect(message.text).toContain('8,500 円');
-    expect(message.text).toContain('10,000 円');
+    expect(message.text).toContain(`${grouped(accumulated)} 円`);
+    expect(message.text).toContain(`${grouped(MONTHLY_COST_LIMIT_JPY)} 円`);
     expect(message.text).toContain('85.0%');
+    // **直値の錨**（#284 で 10,000 → 20,000）。無いと、上限を変えた実装に
+    // テストごと追随されて変異が検出できない。
+    expect(MONTHLY_COST_LIMIT_JPY).toBe(20_000);
     // 宛先も利用者 id も本文に無い（`src/mail/cost-alert.ts` の方針）。
     expect(message.text).not.toContain('@');
     expect(message.text).not.toContain('cost-alert-user');

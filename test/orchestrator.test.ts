@@ -32,6 +32,7 @@ import {
 import { MAX_BUILD_INVOCATIONS_ON_TIMEOUT } from '../src/build-client.js';
 import { recordBuildCache, sourceCacheKey } from '../src/build-cache.js';
 import { MAX_SOURCE_BYTES, TIDY_MAX_SOURCE_BYTES } from '../src/source-size.js';
+import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
 import { applySchema } from './helpers/schema.js';
 
 /** 生成の段が返す Go ソース（許可パッケージ検査を通る最小の形）。 */
@@ -566,10 +567,16 @@ describe('失敗の記録と、運用へ出すもの（#160）', () => {
     // **投げない。** 利用者は作品ページで結果を見ており、DLQ へ出す理由が無い。
     expect(outcome).toEqual({ status: 'failed', errorCode: 'build-failed' });
     expect(await rowOf(gameId)).toMatchObject({ state: 'failed', error: 'build-failed' });
-    // 5.2-7 の最大 3 試行。**基盤のリトライと掛け算にしない**理由がこれである
-    // （`terraform/orchestrator.tf` の MaximumRetryAttempts=0）。
-    expect(bedrock.calls()).toBe(3);
-    expect(await ledgerCount(userId)).toBe(3);
+    // 5.2-7 の試行回数ぶん呼び、そのぶんだけ台帳の行が増える。**基盤のリトライと
+    // 掛け算にしない**理由がこれである（`terraform/orchestrator.tf` の
+    // MaximumRetryAttempts=0）。
+    //
+    // **回数は定数から導く。** ここで見たいのは「オーケストレータが 5.2-7 の試行を
+    // そのまま回すこと」であって、3 や 2 という数そのものではない。直値で書くと、
+    // 上限を変えた日に**この経路だけ古い回数を期待して落ちる**（#284 で実際に落ちた）。
+    // 数そのものは `test/generate.test.ts` が直値で押さえている。
+    expect(bedrock.calls()).toBe(MAX_GENERATION_ATTEMPTS);
+    expect(await ledgerCount(userId)).toBe(MAX_GENERATION_ATTEMPTS);
   });
 
   it('時間切れの呼び直しは 1 依頼につき 1 回で打ち止め（#174）', async () => {

@@ -15,6 +15,7 @@ import {
   UNCLASSIFIED_QUOTA_CODE,
   WARNING_THRESHOLD_PATTERN,
   checkGenerationQuota,
+  currentDeclarationsIn,
   dailyCallCount,
   describeQuotaRejection,
   isQuotaRejectionReason,
@@ -117,12 +118,20 @@ describe('しきい値の機械照合（4.3 / 確定25）', () => {
   /**
    * 仕様書から数値を拾う。
    *
+   * **拾うのは「現行値の宣言」だけである**（`currentDeclarationsIn`）。この仕様書は
+   * 覆った前提を消さずに残す方針なので、本文には過去の値が残り続ける。**それを
+   * そのまま照合すると、値を変えた日に過去の記録が照合を落とし、いちばん安い
+   * 直しかたが「記録の文面を書き換えて逃がすこと」になる**（#284 で実際に
+   * やりかけた）。除外の理由と範囲は `src/quota.ts` にある。
+   *
    * @param pattern 拾う形
    * @param spec 仕様書の本文
    * @returns 見つかった数値の配列（1 件の一致につき最初の捕獲群）
    */
   function valuesIn(pattern: RegExp, spec: string): number[] {
-    return [...spec.matchAll(pattern)].map((matched) => Number(matched[1]));
+    return [...currentDeclarationsIn(spec).matchAll(pattern)].map((matched) =>
+      Number(matched[1]),
+    );
   }
 
   it('月次上限の宣言とコード側の定数が一致する', () => {
@@ -164,8 +173,43 @@ describe('しきい値の機械照合（4.3 / 確定25）', () => {
     );
   });
 
+  it('過去の決定の記録は照合の対象にしない（1 章 / #284）', () => {
+    // **記録は書き換えない。** この仕様書は覆った前提を残す方針なので、1.2.19 には
+    // 「日次クォータを 1 人 1 日 12 回と決めた」が当時のまま残っている。**照合は
+    // 現行値がずれていないことを見る機構であって、記録を消させる機構ではない。**
+    //
+    // ここが破れると、次に枠を変えた人は**記録の文面を書き換えて逃がす**ことになる
+    // （#284 で実際にやりかけた。そうやって逃がした形は、次に同じ書き方をした人の
+    // ところで黙って壊れる）。
+    expect(env.TEST_PRODUCT_SPEC).toContain('日次クォータを 1 人 1 日 12 回と決めた');
+    expect(valuesIn(DAILY_QUOTA_PATTERN, env.TEST_PRODUCT_SPEC)).not.toContain(12);
+    // **1 章そのものが落ちていること**（見出しが「vX.Y からの主要な変更」しか無い章）。
+    expect(currentDeclarationsIn(env.TEST_PRODUCT_SPEC)).not.toContain(
+      '### 1.2.19 v1.11 からの主要な変更',
+    );
+    // **2 章から先は残っていること。** ここまで落とすと照合が丸ごと空振りする。
+    expect(currentDeclarationsIn(env.TEST_PRODUCT_SPEC)).toContain('### 4.3 月次上限機構');
+  });
+
+  it('取り消し線で消した記述は照合の対象にしない（#284）', () => {
+    // この仕様書は覆った記述を `~~…~~` で残す（4.3 の逆算、確定6、確定25 が実際に
+    // そうしている）。**書き手が「もう現行ではない」と明示した部分**なので外す。
+    //
+    // **「書き換えれば通る」ではなく「印を付ければ外れる」形にしてある。** 次に同じ
+    // 状況へ来た人がやるのは記録を消すことではなく、取り消し線を引くことである。
+    const doctored = `${env.TEST_PRODUCT_SPEC}\n\n~~上限額: 9万円/月。1 人あたり 1 日 99 回。~~`;
+    expect(valuesIn(MONTHLY_LIMIT_PATTERN, doctored)).not.toContain(9);
+    expect(valuesIn(DAILY_QUOTA_PATTERN, doctored)).not.toContain(99);
+    // **取り消し線が無ければ拾う**（外れるのは印を付けたときだけである）。
+    const live = `${env.TEST_PRODUCT_SPEC}\n\n上限額: 9万円/月。1 人あたり 1 日 99 回。`;
+    expect(valuesIn(MONTHLY_LIMIT_PATTERN, live)).toContain(9);
+    expect(valuesIn(DAILY_QUOTA_PATTERN, live)).toContain(99);
+  });
+
   it('警告と停止のしきい値の宣言と定数が一致する', () => {
-    const matched = [...env.TEST_PRODUCT_SPEC.matchAll(WARNING_THRESHOLD_PATTERN)];
+    const matched = [
+      ...currentDeclarationsIn(env.TEST_PRODUCT_SPEC).matchAll(WARNING_THRESHOLD_PATTERN),
+    ];
     expect(matched.length).toBeGreaterThan(0);
     for (const one of matched) {
       expect(Number(one[1]) / 100).toBe(MONTHLY_WARNING_RATIO);
@@ -178,14 +222,14 @@ describe('しきい値の機械照合（4.3 / 確定25）', () => {
     // **この検査が効いていることを確かめる。** 上の 3 件は、正規表現が何も拾わない
     // 状態でも「すべて一致」で通りうる（`length` の検査はその一部しか塞がない）。
     const doctoredLimit = env.TEST_PRODUCT_SPEC.replace(
-      '**上限額: 1万円/月。**',
-      '**上限額: 2万円/月。**',
+      '**上限額: 2万円/月**',
+      '**上限額: 5万円/月**',
     );
     expect(doctoredLimit).not.toBe(env.TEST_PRODUCT_SPEC);
-    expect(valuesIn(MONTHLY_LIMIT_PATTERN, doctoredLimit)).toContain(2);
+    expect(valuesIn(MONTHLY_LIMIT_PATTERN, doctoredLimit)).toContain(5);
 
     const doctoredQuota = env.TEST_PRODUCT_SPEC.replace(
-      '1 利用者・1 暦日あたり **12 回**',
+      '1 利用者・1 暦日あたり **10 回**',
       '1 利用者・1 暦日あたり **20 回**',
     );
     expect(doctoredQuota).not.toBe(env.TEST_PRODUCT_SPEC);

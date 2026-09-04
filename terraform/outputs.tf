@@ -480,8 +480,8 @@ output "orchestrator_maximum_retry_attempts" {
   description = <<-EOT
     非同期呼び出しの基盤リトライ回数。**0 でなければならない**（#160）。
 
-    5.2-7 が既に最大 3 試行を持っており、掛け算にすると 1 回の送信から
-    最大 9 回・約 144 円・日次枠 9 個が出る。**既定は 2 なので、書き忘れると
+    5.2-7 が既に最大 2 試行を持っており（#284 で 3 → 2）、掛け算にすると 1 回の
+    送信から最大 6 回・約 134 円・日次枠 6 個が出る。**既定は 2 なので、書き忘れると
     掛け算になる。** ローカル層の検査（scripts/check-orchestrator-retry.sh）が
     宣言側を、外部層の検査が実状態を押さえる。
   EOT
@@ -565,8 +565,8 @@ output "ogp_function_reserved_concurrency" {
 output "ogp_maximum_retry_attempts" {
   description = <<-EOT
     非同期呼び出しの再試行回数。**オーケストレータ（0）と違って 1 である。**
-    掛け算の相手（5.2-7 の 3 試行）が無く、コールバックが使い捨てトークンで冪等な
-    ためである（terraform/ogp-function.tf）。
+    掛け算の相手（5.2-7 の試行。#284 以降 2）が無く、コールバックが使い捨てトークンで
+    冪等なためである（terraform/ogp-function.tf）。
   EOT
   value       = aws_lambda_function_event_invoke_config.ogp.maximum_retry_attempts
 }

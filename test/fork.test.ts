@@ -494,7 +494,7 @@ describe('元のソースの扱い（確定18 / 5.3）', () => {
   });
 });
 
-/** 24KB を超えるが 30KB には収まる親ソース（事前警告の帯。確定18 の条件 1）。 */
+/** 警告の閾値を超えるが上限には収まる親ソース（事前警告の帯。確定18 の条件 1）。 */
 const NEAR_LIMIT_SOURCE = 'x'.repeat(SOURCE_SIZE_WARNING_BYTES + 1);
 
 describe('大きい親は、始める前に知らせる（確定18 の条件 1 / M5-2 / #33）', () => {
@@ -524,11 +524,18 @@ describe('大きい親は、始める前に知らせる（確定18 の条件 1 /
     const page = await (await postFork(forker, parentId, '敵を増やす', spy.pipeline)).text();
 
     // **定数から出ていることを見る。** 手書きの数字だと、上限が動いた日に画面だけが
-    // 古い値を出し続ける。
-    expect(page).toContain('30,720 バイト');
-    expect(page).toContain('24,576 バイト');
-    expect(page).toContain(String(SOURCE_SIZE_WARNING_BYTES + 1).replace(/\B(?=(\d{3})+(?!\d))/gu, ','));
-    expect(MAX_SOURCE_BYTES).toBe(30_720);
+    // 古い値を出し続ける。**期待値も定数から組み立てる**——直値で並べると、上限が
+    // 動くたびにこの 3 行を書き換えることになり、「画面が定数から出している」と
+    // いう本題の検査が値の追随作業に埋もれる（#284）。
+    const grouped = (value: number): string =>
+      String(value).replace(/\B(?=(\d{3})+(?!\d))/gu, ',');
+    expect(page).toContain(`${grouped(MAX_SOURCE_BYTES)} バイト`);
+    expect(page).toContain(`${grouped(SOURCE_SIZE_WARNING_BYTES)} バイト`);
+    expect(page).toContain(grouped(SOURCE_SIZE_WARNING_BYTES + 1));
+    // **直値の錨は 1 行だけ持つ。** これが無いと、上限を変えた実装にテストごと
+    // 追随されて変異が検出できない（#284 で 30,720 → 65,536）。
+    expect(MAX_SOURCE_BYTES).toBe(65_536);
+    expect(SOURCE_SIZE_WARNING_BYTES).toBe(52_428);
   });
 
   it('警告の画面が、書いた差分プロンプトを預かり直す', async () => {

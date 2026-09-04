@@ -82,8 +82,9 @@ export function createOrchestratorPipeline(
   const newGenerationId = deps.newGenerationId ?? (() => crypto.randomUUID());
 
   // **1 依頼ぶんの、時間切れによる呼び直しの枠**（#174 / `src/build-client.ts`）。
-  // **ここで 1 つだけ作る。** ビルドごとに作ると、1 依頼で最大 9 回の呼び直しが
-  // 積める状態へ戻り、`terraform/orchestrator.tf` の実行時間の見積もりが崩れる
+  // **ここで 1 つだけ作る。** ビルドごとに作ると、1 依頼で最大 6 回
+  // （`MAX_GENERATION_ATTEMPTS ×（1 ＋ MAX_MECHANICAL_FIX_PASSES）`＝ 2 × 3）の
+  // 呼び直しが積める状態へ戻り、`terraform/orchestrator.tf` の実行時間の見積もりが崩れる
   // （溢れると `finish` が届かず、作品行は `running` のまま残る）。
   const buildTimeoutBudget = createBuildTimeoutBudget();
 

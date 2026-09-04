@@ -104,7 +104,8 @@ func (f *bitmapFace) GlyphAdvance(r rune) (fixed.Int26_6, bool) {
 // GlyphBounds は font.Face の実装。
 //
 // **墨の範囲ではなく升目の範囲を返す。** 升目は 16×16 に固定で、外へはみ出す墨は無い
-// （焼く工程が検出して報告する）。text/v2 の GoXFace はこの矩形の大きさで
+// ——**これは呼びかけではなく、焼く工程が守っている**（tools/fontbake は升目の外へ出る
+// 墨を検出したら、出力を書かずに落ちる）。text/v2 の GoXFace はこの矩形の大きさで
 // グリフ画像を確保し、Min の位置へ置く——升目より広く返しても、余った所は透明のまま
 // 描かれるだけで、見た目は変わらない。
 func (f *bitmapFace) GlyphBounds(r rune) (fixed.Rectangle26_6, fixed.Int26_6, bool) {

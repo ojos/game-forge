@@ -162,10 +162,8 @@ func run(ttfPath, outPath string) error {
 	fmt.Fprintf(os.Stderr,
 		"fontbake: %d グリフ / オフセット ox=%d oy=%d / ascent=%d / %s に %d バイト\n",
 		len(baked.glyphs), baked.ox, baked.oy, baked.ascent, outPath, len(src))
-	if len(baked.clipped) > 0 {
-		fmt.Fprintf(os.Stderr, "fontbake: 升目の外へ出て切り落とされたグリフ %d 件: %s\n",
-			len(baked.clipped), runeListString(baked.clipped))
-	}
+	// clipped はここへ来ない（bake が出力を書く前に落とす）。missing は落とさない
+	// ——理由の違いは bake の該当箇所にある。
 	if len(baked.missing) > 0 {
 		fmt.Fprintf(os.Stderr, "fontbake: フォントに無かった符号位置 %d 件: %s\n",
 			len(baked.missing), runeListString(baked.missing))
@@ -302,18 +300,23 @@ func bake(ttf []byte) (*result, error) {
 	if err != nil {
 		return nil, err
 	}
+	// **face は閉じる。** この工程は一度走って終わる短命な CLI なので、閉じ忘れても
+	// 実害は出ない。それでも `defer` を置くのは、**「閉じなくてよい理由」を読み手が
+	// 毎回確かめ直さねばならない形にしない**ためである（値段は 2 行）。
 	hi, err := opentype.NewFace(f, &opentype.FaceOptions{
 		Size: cellW * super, DPI: 72, Hinting: font.HintingNone,
 	})
 	if err != nil {
 		return nil, err
 	}
+	defer hi.Close()
 	metric, err := opentype.NewFace(f, &opentype.FaceOptions{
 		Size: cellW, DPI: 72, Hinting: font.HintingNone,
 	})
 	if err != nil {
 		return nil, err
 	}
+	defer metric.Close()
 
 	res := &result{unitsPerEm: int(f.UnitsPerEm())}
 	var buf sfnt.Buffer
@@ -435,15 +438,18 @@ func bake(ttf []byte) (*result, error) {
 		return nil, fmt.Errorf("墨が 1 ドットもありません")
 	}
 
-	// 升目の左上を決める。横は原点（ペン位置）に合わせる——送り幅の起点と一致しないと
-	// 文字が詰まる。縦は墨の上端に合わせ、収まらない分は下を切る。
+	// 升目の左上を決める。
+	//
+	// **横はペン位置に固定する。** face.go は升目を dot.X にそのまま置く（左サイド
+	// ベアリングを持たない）ので、ここをずらすと**焼いた升目と描く位置が食い違う。**
+	// ペンより左に墨があるフォントは、ずらして救わずに下の検査で落とす。
+	//
+	// 縦はベースラインとの関係が font ごとに決まるので、墨の上端から決める。
 	originX := margin
-	if left < originX {
-		originX = left
-	}
 	originY := top
 	if bottom-originY >= cellH {
-		// 16 行に収まらない。ベースラインを優先して上端から詰める。
+		// 升目に収まらない。ベースライン側を優先して下端から詰める
+		// （どちらにせよ下の検査で落ちるが、報告の内容を読めるものにする）。
 		originY = bottom - cellH + 1
 	}
 	res.ascent = (margin + baseRow) - originY
@@ -470,6 +476,29 @@ func bake(ttf []byte) (*result, error) {
 		res.glyphs = append(res.glyphs, glyph{r: g.r, adv: g.adv, rows: rows})
 	}
 
+	// **切り落としがあったら焼かない。**
+	//
+	// face.go の GlyphBounds は「升目は 16×16 に固定で、外へ出る墨は無い」を前提に
+	// 升目そのものを返している。**報告するだけで成功として返すと、その前提が
+	// コードのどこにも守られていない状態になる**——収録範囲を広げたり別のフォントへ
+	// 差し替えたときに、**墨の欠けたグリフが黙って焼かれる。**
+	// 「確かめていない検査は、確かめた証拠として読まれるぶん赤より悪い」
+	// （src/denied-terms.ts）。ここは止める。
+	//
+	// **missing とは扱いが違う。** あちらは「フォントがその文字を持っていない」という
+	// 入力側の事実で、収録範囲を機械的に定義している以上ふつうに起こりうる
+	// （実際 U+2225 が 1 件ある）。こちらは**焼いた出力が壊れている**ことなので、
+	// 出力を書く前に落とす。
+	if len(res.clipped) > 0 {
+		return nil, fmt.Errorf(
+			"升目（%d×%d）の外へ出る墨があります。%d 件: %s\n"+
+				"  墨の範囲は縦 %d 行・横 %d 列（ペン位置と墨の上端を原点とする）。\n"+
+				"  升目を広げるか、収録範囲を見直してください。face.go は"+
+				"「升目の外へ出る墨は無い」を前提に GlyphBounds を返しています",
+			cellW, cellH, len(res.clipped), runeListString(res.clipped),
+			bottom-top+1, right-left+1)
+	}
+
 	res.capHeight = inkHeight(res, 'H')
 	res.xHeight = inkHeight(res, 'x')
 	return res, nil
@@ -491,9 +520,18 @@ func inkHeight(res *result, r rune) int {
 	return 0
 }
 
+// runeListString は符号位置の一覧を人が読める形にする。
+//
+// **頭打ちにする。** 収録は 700 字近くあり、範囲ごと外れると一覧が数百件になる。
+// 全部並べると肝心の 1 行目（何が起きたか）が流れて読めなくなる。
 func runeListString(rs []rune) string {
+	const limit = 12
 	var b strings.Builder
 	for i, r := range rs {
+		if i == limit {
+			fmt.Fprintf(&b, " …他 %d 件", len(rs)-limit)
+			break
+		}
 		if i > 0 {
 			b.WriteString(" ")
 		}

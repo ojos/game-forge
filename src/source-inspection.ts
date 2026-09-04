@@ -77,7 +77,7 @@ import { inspectStringLiterals } from './output-moderation.js';
 export type SourceRejection = ImportRejection | DeniedTermRejection | SourceSizeRejection;
 
 /**
- * 生成物が 30KB 上限を超えていた（5.3 / 6.1 / 確定18 / M5-2 / #33）。
+ * 生成物がソースの上限（64KB）を超えていた（5.3 / 6.1 / 確定18 / M5-2 / #33）。
  *
  * **`src/source-store.ts` が返す `source-too-large` と綴りを揃えてある。** あちらは
  * 「R2 から読んだ元ソースが大きすぎる」、こちらは「いま生成された出力が大きすぎる」で、
@@ -164,7 +164,7 @@ export function createSourceInspector(
   terms: readonly DeniedTerm[] = DENIED_TERMS,
 ): (generated: GenerationResult) => void {
   return (generated: GenerationResult): void => {
-    // **6.1 / 5.3 の 30KB 上限（生成後のサイズ検査。M5-2 / #33）。**
+    // **6.1 / 5.3 のソース上限（64KB。生成後のサイズ検査。M5-2 / #33）。**
     //
     // **いちばん先に見る。** 上限を超えた出力は、この先の検査がどう転んでも保存できない
     // ——`src/source-store.ts` が読み出し側で断つので、**通しても次にフォークや推敲を
@@ -172,7 +172,7 @@ export function createSourceInspector(
     // 文字列に対して回さずに済む。
     //
     // **再生成に回さない**（この段の例外はループを素通りする。`src/generate.ts`）。
-    // これが確定18 の**条件 3**「整理は 1 回まで。整理後も 30KB を超えたら、そこで
+    // これが確定18 の**条件 3**「整理は 1 回まで。整理後も上限を超えたら、そこで
     // 拒否する」の実体である——整理パスの出力がまだ超えていたら、ここで落ちて
     // **2 回目の整理は起きない。**
     //

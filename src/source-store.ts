@@ -20,7 +20,7 @@
  * **ここを一緒に畳むと、フォークが取っていない枠を返す、といった壊れ方をする。**
  * 呼ぶ側が前段を済ませ、失敗の後始末も呼ぶ側が持つ。
  *
- * # 30KB 超を「読めなかった」と同じ扱いにしない（確定18 / 5.3）
+ * # 上限超を「読めなかった」と同じ扱いにしない（確定18 / 5.3）
  *
  * あれは確定した上限で、**何度やっても成功しない。**「時間をおいてもう一度」と案内
  * すると、利用者は成功しない操作を繰り返す。だから理由を畳まず 2 つに分ける——
@@ -44,7 +44,7 @@ import { MAX_SOURCE_BYTES, measureSourceBytes } from './source-size.js';
  * ソースを読めなかった理由。**畳まない**——呼ぶ側で文言も後始末も変わる。
  *
  * - `source-missing` … キーが無い・実体が無い・空。**やり直す価値がある**
- * - `source-too-large` … 30KB 超。**何度やっても成功しない**
+ * - `source-too-large` … 上限（64KB）超。**何度やっても成功しない**
  */
 export type StoredSourceFailure = 'source-missing' | 'source-too-large';
 
@@ -54,7 +54,7 @@ export type StoredSourceResult =
   | { ok: false; reason: StoredSourceFailure };
 
 /**
- * R2 のキーからソースを読み、30KB 上限を判定する。
+ * R2 のキーからソースを読み、上限（`MAX_SOURCE_BYTES`。64KB）を判定する。
  *
  * **資格の判定はここで行わない。** 呼ぶ側が済ませてからキーを渡すこと——
  * `src/fork.ts` は `status='published'` を確かめてから、`src/revise.ts` は枠を

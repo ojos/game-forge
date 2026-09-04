@@ -846,6 +846,78 @@ for missing in --format --persist-to; do
   expect_missing_value_exits scripts/report-queue.sh "$missing"
 done
 
+# ── 12. 削除申請の読み出しと、手順書の整合（#41）────────────────────────────
+echo "[selftest] 削除申請の読み出し（#41）"
+
+TD_SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/td-selftest.XXXXXX")" || exit 1
+trap 'rm -rf "$SANDBOX" "$KPI_SANDBOX" "$MIG_SANDBOX" "$QUEUE_SANDBOX" "$TD_SANDBOX"' EXIT
+
+if ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+     npx wrangler d1 migrations apply DB --local --persist-to "$TD_SANDBOX" >/dev/null 2>&1; then
+  echo "  FAIL 削除申請用の使い捨て D1 へマイグレーションを適用できません" >&2
+  failed=1
+else
+  CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+    npx wrangler d1 execute DB --local --persist-to "$TD_SANDBOX" --command "
+  insert into takedown_requests
+    (id, game_id, claimant_name, claimant_contact, body, received_at, handled_at, action, note)
+  values
+    ('t1','g-1','権利者A','a@example.invalid','削除を求めます。',100,null,null,null),
+    ('t2','g-2','権利者B','b@example.invalid','対応済み',50,60,'rejected','根拠不明');
+  " >/dev/null 2>&1 || { echo "  FAIL 削除申請の既知の行を入れられません" >&2; failed=1; }
+
+  td_json="$(bash scripts/takedown-queue.sh --persist-to "$TD_SANDBOX" --format json 2>/dev/null)"
+  td_code=$?
+  expect_eq "未対応が有れば 1 で落ちる" "1"  "$td_code"
+  expect_eq "未対応は 1 件"            "1"  "$(jq -r '.count' <<<"$td_json")"
+  # **対応済みを出さない。** 出すと、判断した申請が何度もキューへ戻る。
+  expect_eq "出るのは未対応だけ"       "t1" "$(jq -r '.rows[0].id' <<<"$td_json")"
+  # **中身を出す。** report-queue.sh とは判断が違う——権利者の申請は読まないと
+  # 判断できない（docs/takedown.md）。
+  expect_eq "申請の本文が出る"         "削除を求めます。" "$(jq -r '.rows[0].body' <<<"$td_json")"
+
+  CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+    npx wrangler d1 execute DB --local --persist-to "$TD_SANDBOX" \
+    --command "update takedown_requests set handled_at = 1, action = 'removed' where id = 't1'" \
+    >/dev/null 2>&1
+  run_bounded 60 bash scripts/takedown-queue.sh --persist-to "$TD_SANDBOX"
+  expect_eq "未対応が無ければ 0 で通る" "0" "$?"
+fi
+
+# **手順書が指す措置の綴りが、実装に実在すること。**
+# 手順書が `restricted` と書いているのに実装が別の綴りを持っていたら、**判断した日に
+# 記録できない。**
+TAKEDOWN_DOC="docs/takedown.md"
+if [[ -f "$TAKEDOWN_DOC" ]]; then
+  echo "  ok   ${TAKEDOWN_DOC} がある"
+  for action in removed restricted rejected; do
+    in_doc=0; in_src=0
+    grep -qF "\`${action}\`" "$TAKEDOWN_DOC" && in_doc=1
+    grep -qF "'${action}'" src/takedown.ts && in_src=1
+    if [[ "$in_doc" -eq 1 && "$in_src" -eq 1 ]]; then
+      echo "  ok   措置「${action}」が手順書と実装の両方にある"
+    else
+      echo "  FAIL 措置「${action}」が片方にしかありません（doc=${in_doc} src=${in_src}）" >&2
+      failed=1
+    fi
+  done
+else
+  echo "  FAIL ${TAKEDOWN_DOC} がありません" >&2
+  failed=1
+fi
+
+# **本番へは select しか送らないこと。**
+if grep -Fq 'select で始まらない文は送りません' scripts/takedown-queue.sh; then
+  echo "  ok   読み取りのみの guard がある"
+else
+  echo "  FAIL 読み取りのみの guard がありません" >&2
+  failed=1
+fi
+
+for missing in --format --persist-to; do
+  expect_missing_value_exits scripts/takedown-queue.sh "$missing"
+done
+
 if (( failed )); then
   echo "REPORT_SELFTEST_FAIL"
   exit 1

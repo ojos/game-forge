@@ -43,6 +43,7 @@
  * セッション cookie は `SameSite=Lax`（8.1 / `src/session.ts`）なので、他サイトからの
  * POST には cookie が乗らない。`src/publish.ts` と同じ理由でトークンを足していない。
  */
+import { siteFooter } from './legal.js';
 import { LOGIN_PATH } from './auth/google.js';
 import type { StartOgpCapture } from './ogp-client.js';
 import { startOgpCaptureOnLambda } from './ogp-client.js';
@@ -167,7 +168,7 @@ function refusal(heading: string, body: string, status: number): Response {
 <title>${heading} - Game Forge</title>
 <h1>${heading}</h1>
 <p>${body}</p>
-<p><a href="/">トップへ</a></p>`,
+${siteFooter()}`,
     status,
   );
 }

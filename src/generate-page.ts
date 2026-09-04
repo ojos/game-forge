@@ -109,6 +109,7 @@
  * （画面は 1 回読むだけで、再読み込みまで更新されない）。ただし後者は 5xx なら何でも
  * 反応する近似のままなので、**サービス全体の状態を決めるのは前者だけ**にしてある。
  */
+import { siteFooter } from './legal.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from './generate.js';
 // 遷移先の綴りの正本は作品ページ側が持つ（`src/work-page.ts`）。ここで書き写さない。
@@ -696,7 +697,7 @@ export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): s
 
 ${body}
 
-<p><a href="${HOME_PATH}">トップへ戻る</a></p>${script}`;
+${siteFooter()}${script}`;
 }
 
 /**

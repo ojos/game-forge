@@ -22,6 +22,7 @@
  * になる。登録は「招待制のクローズドβに入る」ための唯一の入口であり、ここだけは
  * 実行環境の都合で塞がらないようにしておく。
  */
+import { siteFooter } from './legal.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import type { AuthDependencies } from './auth/google.js';
@@ -199,6 +200,7 @@ ${fromForkSection(source)}
   <button type="submit">コードを確認して Google でログイン</button>
 </form>
 <p>コードを確認したあとに Google のログイン画面へ進みます。</p>
+${siteFooter()}
 
 <h2>招待コードをお持ちでない方</h2>
 ${waiting}
@@ -225,7 +227,8 @@ function waitlistThanksPage(): string {
 <title>待機リストに登録しました</title>
 <h1>待機リストに登録しました</h1>
 <p>招待枠が空いたらご連絡します。</p>
-<p><a href="${SIGNUP_PATH}">登録画面へ戻る</a></p>`;
+<p><a href="${SIGNUP_PATH}">登録画面へ戻る</a></p>
+${siteFooter()}`;
 }
 
 /**

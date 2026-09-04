@@ -48,6 +48,7 @@
  * **利用者自身の入力（仮タイトル）だけ**である。`generation_error` は固定語彙の
  * 分類名で、**値そのものは出さない**（どの固定文言を出すかの鍵として使う）。
  */
+import { siteFooter } from './legal.js';
 import type { ForkChild, GenerationErrorCode, GenerationState } from './games.js';
 import {
   countPublishedForks,
@@ -654,7 +655,7 @@ export function renderWorkPage(view: WorkPageView): string {
 <h1>作品</h1>
 ${sectionFor(view)}
 ${title}${ipNotice}${reportSection(view)}
-<p><a href="/">トップへ</a></p>`;
+${siteFooter()}`;
 }
 
 /**
@@ -1494,7 +1495,7 @@ function notFound(): Response {
 <title>作品が見つかりません - Game Forge</title>
 <h1>作品が見つかりません</h1>
 <p>URL が正しいかご確認ください。</p>
-<p><a href="/">トップへ</a></p>`,
+${siteFooter()}`,
     404,
   );
 }
@@ -1984,7 +1985,7 @@ function removeRefusal(heading: string, body: string, status: number): Response 
 <title>${heading} - Game Forge</title>
 <h1>${heading}</h1>
 <p>${body}</p>
-<p><a href="/">トップへ</a></p>`,
+${siteFooter()}`,
     status,
   );
 }

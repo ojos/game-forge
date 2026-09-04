@@ -21,6 +21,7 @@ import {
   recordTakedownRequest,
 } from '../src/takedown.js';
 import { applySchema } from './helpers/schema.js';
+import type { MailMessage, sendMail } from '../src/mail/resend.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 
 /** 本番と同じ経路表（`/__dev/*` を含まない形）。 */
@@ -82,16 +83,24 @@ function mailEnv(): Env {
   return { ...env, OPERATOR_EMAIL: 'ops@example.invalid' } as unknown as Env;
 }
 
-/** 送信の記録（メールを実際には送らない）。 */
+/**
+ * 送信の記録（メールを実際には送らない）。
+ *
+ * **`never` で型を捨てない。** `as never` は何にでも代入できるので、
+ * `recordTakedownRequest` の依存の型が変わっても**テストが追随しないまま緑になる**
+ * （Copilot の指摘。2026-09-04）。**本物の型（`typeof sendMail`）で受ける。**
+ *
+ * @returns 記録した宛先と、差し替える送信関数
+ */
 function recordingSend(): {
-  readonly sent: { to: string; subject: string; text: string }[];
-  readonly send: never;
+  readonly sent: MailMessage[];
+  readonly send: typeof sendMail;
 } {
-  const sent: { to: string; subject: string; text: string }[] = [];
-  const send = (async (_env: unknown, message: { to: string; subject: string; text: string }) => {
+  const sent: MailMessage[] = [];
+  const send: typeof sendMail = async (_env, message) => {
     sent.push(message);
     return { sent: true };
-  }) as never;
+  };
   return { sent, send };
 }
 
@@ -329,6 +338,33 @@ describe('通知は同じ作品につき 1 通（#41 の intake）', () => {
     expect(row?.game_id).toBe('td-no-mail');
   });
 
+  it('同時に走っても 1 通に収束する（先に SELECT する形では防げない）', async () => {
+    // **`src/invites.ts` が二重使用の防止で避けているのと同じ形。** SELECT で見てから
+    // 送ると、同時の 3 本はどれも「まだ誰も送っていない」と読む。
+    const { sent, send } = recordingSend();
+    const input = {
+      gameId: 'td-race',
+      claimantName: 'R',
+      claimantContact: 'r@example.invalid',
+      body: 'x',
+    };
+    const outcomes = await Promise.all([
+      recordTakedownRequest(mailEnv(), input, { send, now: 100 }),
+      recordTakedownRequest(mailEnv(), input, { send, now: 100 }),
+      recordTakedownRequest(mailEnv(), input, { send, now: 100 }),
+    ]);
+    expect(outcomes.filter((o) => o.ok && o.receipt.notified)).toHaveLength(1);
+    expect(sent).toHaveLength(1);
+
+    // **記録は 3 件とも残る**（8.4 が求めているのは記録である）。
+    const rows = await env.DB.prepare(
+      'select count(*) as n from takedown_requests where game_id = ?',
+    )
+      .bind('td-race')
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(3);
+  });
+
   it('通知に申請者の連絡先も本文も載らない', async () => {
     const { sent, send } = recordingSend();
     await recordTakedownRequest(
@@ -380,6 +416,30 @@ describe('受付の入口（非ログイン）', () => {
       .bind('td-form')
       .first<{ game_id: string }>();
     expect(row?.game_id).toBe('td-form');
+  });
+
+  it('前後の空白をならしてから記録する', async () => {
+    // **検査だけ trim して記録に生の値を使うと、末尾の空白が付いた入力が
+    // 別作品として記録され、「作品につき 1 通」の判定もずれる。**
+    const { sent, send } = recordingSend();
+    await recordTakedownRequest(
+      mailEnv(),
+      { gameId: '  td-trim  ', claimantName: 'T', claimantContact: 't@example.invalid', body: 'x' },
+      { send, now: 100 },
+    );
+    await recordTakedownRequest(
+      mailEnv(),
+      { gameId: 'td-trim', claimantName: 'T', claimantContact: 't@example.invalid', body: 'x' },
+      { send, now: 200 },
+    );
+    // 同じ作品として扱われるので、通知は 1 通。
+    expect(sent).toHaveLength(1);
+    const row = await env.DB.prepare(
+      'select count(*) as n from takedown_requests where game_id = ?',
+    )
+      .bind('td-trim')
+      .first<{ n: number }>();
+    expect(row?.n).toBe(2);
   });
 
   it('空の項目は断る（行も作らない）', async () => {

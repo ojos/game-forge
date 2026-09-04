@@ -97,11 +97,15 @@ export async function recordTakedownRequest(
   },
   deps: TakedownDependencies = {},
 ): Promise<{ ok: true; receipt: TakedownReceipt } | { ok: false; reason: TakedownRejection }> {
+  // **ならした値を、この先すべてで使う。** 検査だけ `trim()` して記録に生の値を
+  // 使うと、**末尾に空白が付いた入力が別作品として記録され**、「作品につき 1 通」の
+  // 判定もずれる（Copilot の指摘で気づいた）。
+  const gameId = input.gameId.trim();
   const name = input.claimantName.trim();
   const contact = input.claimantContact.trim();
   const body = input.body.trim();
 
-  if (input.gameId.trim() === '') {
+  if (gameId === '') {
     return { ok: false, reason: 'invalid-game-id' };
   }
   // **空を断る。** 誰が何を求めているのか分からない行は、記録として役に立たない。
@@ -117,15 +121,6 @@ export async function recordTakedownRequest(
 
   const now = deps.now ?? Math.floor(Date.now() / 1000);
 
-  // **先に「この作品で既に送ったか」を見る。** 行を入れたあとに見ると、自分が入れた
-  // 行を数えてしまう。
-  const seen = await env.DB.prepare(
-    'select 1 as hit from takedown_requests where game_id = ? limit 1',
-  )
-    .bind(input.gameId)
-    .first<{ hit: number }>();
-  const first = seen === null;
-
   const id = crypto.randomUUID();
   await env.DB.prepare(
     `insert into takedown_requests
@@ -133,10 +128,20 @@ export async function recordTakedownRequest(
         handled_at, action, note)
      values (?, ?, ?, ?, ?, ?, null, null, null)`,
   )
-    .bind(id, input.gameId, name, contact, body, now)
+    .bind(id, gameId, name, contact, body, now)
     .run();
 
-  if (!first) {
+  // **通知の権利をデータ側で取る。** 先に SELECT して確認する形にすると、同じ作品への
+  // 申請が同時に走ったときに**どちらも「まだ誰も送っていない」と読んで 2 通送る**
+  // （`src/invites.ts` が二重使用の防止で避けているのと同じ形）。
+  //
+  // **`insert` が通った側だけが送る。** 主キーが「作品につき 1 通」の担保そのものである。
+  const claimed = await env.DB.prepare(
+    'insert or ignore into takedown_notices (game_id, notified_at) values (?, ?)',
+  )
+    .bind(gameId, now)
+    .run();
+  if ((claimed.meta.changes ?? 0) === 0) {
     return { ok: true, receipt: { id, notified: false } };
   }
 
@@ -161,7 +166,7 @@ export async function recordTakedownRequest(
         to,
         subject: '[game-forge] 削除申請を受け付けました',
         text:
-          `作品 ${input.gameId} について、権利者からの削除申請を受け付けました。\n` +
+          `作品 ${gameId} について、権利者からの削除申請を受け付けました。\n` +
           `受付 id: ${id}\n\n` +
           '内容は台帳で確認してください:\n' +
           '  bash scripts/takedown-queue.sh --remote\n\n' +

@@ -18,7 +18,7 @@
  */
 import type { Route } from './routes.js';
 import { html } from './routes.js';
-import { escapeHtml } from './signup.js';
+import { escapeHtml } from './html.js';
 import { MAX_BODY_LENGTH, MAX_CLAIMANT_LENGTH } from './takedown.js';
 
 /** 利用規約のパス。 */

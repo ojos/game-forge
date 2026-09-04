@@ -96,7 +96,8 @@ import type { ReportRejection } from './reports.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/invite-issuance.ts` も
 // そこから取っている）。同じ関数をこのモジュールで作り直さない。
-import { escapeHtml, signupPathFrom } from './signup.js';
+import {  signupPathFrom } from './signup.js';
+import { escapeHtml } from './html.js';
 
 /**
  * 作品ページの接頭辞。

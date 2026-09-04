@@ -87,7 +87,7 @@ import { checkGenerationQuota, describeQuotaRejection, QUOTA_EXCEEDED_STATUS } f
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { escapeHtml } from './signup.js';
+import { escapeHtml } from './html.js';
 import type { SizeConsent } from './source-size.js';
 import {
   MAX_SOURCE_BYTES,

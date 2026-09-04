@@ -128,7 +128,7 @@ import { GENERATE_PAGE_PATH, SIGNUP_PATH } from './paths.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { escapeHtml } from './signup.js';
+import { escapeHtml } from './html.js';
 
 /**
  * 文言を選ぶ鍵が 1 つも当たらなかったときに使う鍵。

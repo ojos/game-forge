@@ -23,6 +23,7 @@
  * 実行環境の都合で塞がらないようにしておく。
  */
 import { siteFooter } from './legal.js';
+import { escapeHtml } from './html.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import type { AuthDependencies } from './auth/google.js';
@@ -339,22 +340,6 @@ async function readCodeField(request: Request): Promise<string | null> {
   return fields.get('code');
 }
 
-/**
- * HTML へ埋め込む文字列を無害化する。
- *
- * 属性値にも本文にも使える最小の集合を落とす。
- *
- * @param value 埋め込む文字列
- * @returns 無害化した文字列
- */
-export function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
 
 /**
  * 登録の経路を組み立てる。

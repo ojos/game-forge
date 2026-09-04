@@ -74,7 +74,7 @@ import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/work-page.ts` もそこから取っている）。
-import { escapeHtml } from './signup.js';
+import { escapeHtml } from './html.js';
 import { WORK_PAGE_PREFIX, looksStalled, workPagePath } from './work-page.js';
 
 /**

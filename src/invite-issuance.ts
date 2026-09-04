@@ -34,7 +34,7 @@ import { inviteQuotaHalted } from './reports.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, json } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { escapeHtml } from './signup.js';
+import { escapeHtml } from './html.js';
 import { HOME_PATH } from './home.js';
 import { INVITES_PATH } from './paths.js';
 import { LOGIN_PATH } from './auth/google.js';

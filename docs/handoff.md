@@ -749,6 +749,12 @@ Cloudflare / AWS の資格情報そのものになります）。
 | 未対応の削除申請 | `scripts/takedown-queue.sh` |
 | 遮断の記録の掃除（90 日） | `scripts/moderation-prune.sh` |
 | 中断した OGP 撮影 | `scripts/ogp-stale-report.sh` |
+| 未適用のマイグレーション | `scripts/check-migrations-applied.sh` |
+| これらの自己検査（**12 節**） | `scripts/report-selftest.sh` |
+
+**新しいスクリプトを足したら `report-selftest.sh` へ節を足すこと。** CI の `verify.yml` が
+走らせます。**値の無いオプションで無限ループにならないこと**も、そこが見ます
+（`--format` だけ渡すと止まる不具合が 3 本にありました。#276）。
 
 **画面を触るときの道具は別にあります**（本番を読まない。ブラウザの実行ファイルが要る）。
 
@@ -760,12 +766,6 @@ Cloudflare / AWS の資格情報そのものになります）。
 **どちらも `scripts/verify.sh` には入れません。** ブラウザの実行ファイルを前提にする層は、
 道具の有無でループを止めます。下ごしらえ（サーバ・仕込み・セッション）は
 `scripts/lib/dev-fixture.sh`、CDP は `scripts/lib/cdp.mjs` を 2 本で共有しています。
-| 未適用のマイグレーション | `scripts/check-migrations-applied.sh` |
-| これらの自己検査（**12 節**） | `scripts/report-selftest.sh` |
-
-**新しいスクリプトを足したら `report-selftest.sh` へ節を足すこと。** CI の `verify.yml` が
-走らせます。**値の無いオプションで無限ループにならないこと**も、そこが見ます
-（`--format` だけ渡すと止まる不具合が 3 本にありました。#276）。
 
 ### 次にやること
 

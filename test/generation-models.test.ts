@@ -16,6 +16,7 @@ import {
   supportsPromptCaching,
 } from '../src/generation-models.js';
 import type { ModelPricing } from '../src/generation-models.js';
+import { MAX_SOURCE_BYTES } from '../src/system-prompt.js';
 
 /**
  * env を差し替える。
@@ -173,6 +174,30 @@ describe('モデルごとの設定', () => {
     // 平均的な生成が `max_tokens` で切れて必ずコンパイルに失敗する。
     expect(findGenerationModel('sonnet-4-6')!.maxTokens).toBeGreaterThan(4_171);
     expect(findGenerationModel('deepseek-v3-2')!.maxTokens).toBeGreaterThan(2_159);
+  });
+
+  it('Sonnet 4.6 の出力上限が 6.1 のソース上限を出し切れる（#284）', () => {
+    // **上限サイズ・`maxTokens`・時間予算の 3 つは連動する。** 64KB を実測
+    // 2.0 バイト/output token で割ると 32,768 トークンで、これを下回る `maxTokens` は
+    // **上限いっぱいのソースを構造的に出せなくする**（`max_tokens` で必ず切れる）。
+    //
+    // **定数からも直値からも見る**（`test/generate.test.ts` と同じ理由。片方だけだと、
+    // 上限を下げた変異にテストごと追随されて緑になる）。
+    const sonnet = findGenerationModel('sonnet-4-6')!;
+    expect(sonnet.maxTokens).toBe(33_000);
+    expect(sonnet.maxTokens).toBeGreaterThanOrEqual(MAX_SOURCE_BYTES / 2);
+    // 時間予算の不等式から解いた上限（33,638）の内側であること。**超えると
+    // `scripts/check-orchestrator-retry.sh` ではなく本番の時間切れで気づくことになる。**
+    expect(sonnet.maxTokens).toBeLessThanOrEqual(33_638);
+  });
+
+  it('A/B の 2 群は素の sonnet-4-6 と同じ出力上限を使う（4.2 / #25 / #284）', () => {
+    // 片方だけ広げると、`max_tokens` で切れた回数の差が `effort` の効果に見える。
+    // **同じ実体を展開しているので構造的に揃うが、その構造が崩れたら落とす。**
+    const base = findGenerationModel('sonnet-4-6')!.maxTokens;
+    for (const key of EFFORT_AB_MODEL_KEYS) {
+      expect(findGenerationModel(key)!.maxTokens, key).toBe(base);
+    }
   });
 
   it('既定のモデルが登録簿にある', () => {

@@ -178,14 +178,14 @@ describe('しきい値の機械照合（4.3 / 確定25）', () => {
     // **この検査が効いていることを確かめる。** 上の 3 件は、正規表現が何も拾わない
     // 状態でも「すべて一致」で通りうる（`length` の検査はその一部しか塞がない）。
     const doctoredLimit = env.TEST_PRODUCT_SPEC.replace(
-      '**上限額: 1万円/月。**',
-      '**上限額: 2万円/月。**',
+      '**上限額: 2万円/月**',
+      '**上限額: 5万円/月**',
     );
     expect(doctoredLimit).not.toBe(env.TEST_PRODUCT_SPEC);
-    expect(valuesIn(MONTHLY_LIMIT_PATTERN, doctoredLimit)).toContain(2);
+    expect(valuesIn(MONTHLY_LIMIT_PATTERN, doctoredLimit)).toContain(5);
 
     const doctoredQuota = env.TEST_PRODUCT_SPEC.replace(
-      '1 利用者・1 暦日あたり **12 回**',
+      '1 利用者・1 暦日あたり **10 回**',
       '1 利用者・1 暦日あたり **20 回**',
     );
     expect(doctoredQuota).not.toBe(env.TEST_PRODUCT_SPEC);

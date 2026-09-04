@@ -1032,6 +1032,33 @@ describe('著名 IP 名の置換を作者へ開示する（6.2 / #39）', () => 
     expect(other).not.toContain('マリオ');
   });
 
+  it('見出しがその作品の名前になっている（#267）', () => {
+    // **主 KPI（フォーク率）の着地点で、いちばん目立つ文字がその作品の名前である。**
+    // M8-2 の前は見出しが「作品」で、名前は最下部の「お題:」だけだった。
+    // **誰も見ていなかったので、名前を消しても 1 件も落ちなかった**（#267 で気づいた）。
+    const named = renderWorkPage({ ...baseView, title: 'よけて跳ねる箱' });
+    expect(named).toContain('<h1>よけて跳ねる箱</h1>');
+
+    // 題名は UGC なので、見出しでもエスケープを通す。
+    const evil = renderWorkPage({ ...baseView, title: '<script>alert(1)</script>' });
+    expect(evil).not.toContain('<script>alert(1)</script>');
+    expect(evil).toContain('&lt;script&gt;');
+
+    // **空欄にしない。** 題名が無い作品でも、見出しは既定の文言へ落とす。
+    for (const title of [null, '', '   ']) {
+      const fallback = renderWorkPage({ ...baseView, title });
+      expect(fallback, `title=${JSON.stringify(title)}`).toContain('<h1>Game Forge の作品</h1>');
+    }
+  });
+
+  it('題名を本文で 2 度出さない（#267）', () => {
+    // 見出しへ上げたので、以前の「お題: ...」は重複になる。**本文では 1 度だけにする。**
+    // `<title>` は本文ではないので数えない（タブ名と見出しは別の役目である）。
+    const html = renderWorkPage({ ...baseView, title: 'よけて跳ねる箱' });
+    const body = html.slice(html.indexOf('</title>'));
+    expect(body.split('よけて跳ねる箱').length - 1, '本文に現れた回数').toBe(1);
+  });
+
   it('描画側の門番だけでも止まる（view に値が載っていても出さない）', () => {
     // **view の組み立て側が空にしているので、経路からは到達しない状態である。**
     // だからこそ経路の検査では確かめられず、ここで直に渡して見る。

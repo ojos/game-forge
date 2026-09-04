@@ -29,8 +29,22 @@
 #
 # **空回りしない検査であることを確認済みである。** 実装を戻せば赤くなる。
 #
+# **#306 は、同じ穴をもう一度通り抜けた。** `script-src` に `blob:` が無いため
+# `audioWorklet.addModule()` が拒否され、**#286 で入れた音は 1 度も鳴らなかった。**
+# 症状の 2 行目は `Failed to load worklet module script: blob:null/… (CORS or access
+# check error)` で、**#180 と字面まで似ている。** この検査は当時 CSP と CORS の
+# 組み合わせを見るために生まれたのに、**音の経路を見ていなかったので通り抜けた。**
+# 層 5 はその穴である。
+#
+# 効いていることの実測（2026-09-04、この環境）:
+#   script-src に blob: 無し → rejected: AbortError: Unable to load a worklet's module.
+#                              Log: "Loading the script 'blob:null/…' violates the
+#                              following Content Security Policy directive: …"
+#                              （＝ 本番で観測された症状の完全な再現）
+#   script-src に blob: 有り → ok（`connect-src` はその作品の .wasm 1 本のまま）
+#
 # ══════════════════════════════════════════════════════════════════════════════
-# 何を見るか（5 層。どこで落ちたかが分かる形にする）
+# 何を見るか（6 層。どこで落ちたかが分かる形にする）
 # ══════════════════════════════════════════════════════════════════════════════
 #
 #   層 0  配信された `.wasm` の本文を**1 回展開**すると `00 61 73 6d`（`\0asm`）で
@@ -43,6 +57,10 @@
 #   層 4  **作品ページ（`/works/<id>`）に埋め込んだ状態でも層 1 と層 3 が成り立つこと**
 #         （#30）。利用者が実際に踏むのはこちらで、`frame-ancestors` と 2 重の
 #         `sandbox` 指定が絡む。**層 1〜3 の緑からは導けない。**
+#   層 5  **音のワークレットのモジュールが `blob:` URL から読み込めること**（#306）。
+#         6.1 が許した音（`ebiten/v2/audio`）は oto を通じて AudioWorklet を使い、
+#         そのモジュールを `blob:` から読む。**直接開いた形（層 1〜3）と埋め込んだ形
+#         （層 4）の両方で見る**——CSP は同じでも、iframe の中では別の制約が乗りうる。
 #
 # **層 0 だけは単体テストで代替できない**（実測）。`SELF.fetch`（vitest の workers
 # pool）は内部サブリクエストで **HTTP のエンコード境界を通らない**ため、
@@ -132,7 +150,7 @@ node -e 'if (typeof WebSocket !== "function") { process.exit(1) }' 2>/dev/null |
 
 # `GF_SKIP_BROWSER=1` は**層 0 だけ**を回す（ブラウザを要求しない）。層 0 は実 HTTP さえ
 # 通れば見えるためで、**ブラウザを入れられない環境でも #181 の回帰は見られる。**
-# **層 1〜4 を飛ばしたことは最後に明示する**（黙って一部だけ回して緑に見せない）。
+# **層 1〜5 を飛ばしたことは最後に明示する**（黙って一部だけ回して緑に見せない）。
 SKIP_BROWSER="${GF_SKIP_BROWSER:-0}"
 
 BROWSER_BIN=""
@@ -227,12 +245,89 @@ EOF
 
 # Go 側が JavaScript の世界へ印を立てる。**この印が付いていることが層 3 の判定**で、
 # 「wasm が本当に走った」以外の理由では立たない。
+#
+# あわせて**層 5（#306）の材料**をここで作る。**Ebitengine も oto も持ち込まない**
+# （上記のとおり依存の取得が検査の前提を重くする）。持ち込むのは oto がやることの
+# **手順そのもの**——`AudioContext` を作り、ワークレットのモジュールを `Blob` から組み立て、
+# `URL.createObjectURL` の `blob:` URL を `audioWorklet.addModule()` へ渡す——であり、
+# **CSP が見ているのはこの手順であってライブラリではない。**
 cat >"$WORK/gosrc/main.go" <<'EOF'
 package main
 
-import "syscall/js"
+import (
+	"fmt"
+	"syscall/js"
+	"time"
+)
+
+// ワークレットのモジュールを組み立てる最小のソース。中身は問わない。
+// **見たいのは `blob:` からモジュールとして読み込めるかどうか**である。
+const workletSource = "class P extends AudioWorkletProcessor { process() { return true } }\n" +
+	"registerProcessor('gf-probe', P)\n"
+
+// addModule() の解決を待つ上限。**待ち続けない**——通らないときに「wasm が走らなかった」
+// という別の失敗として現れると、原因の切り分けができなくなる。
+const workletTimeout = 10 * time.Second
+
+// probeAudioWorklet は oto と同じ手順で `blob:` のワークレットを読み込み、結果を返す。
+//
+// 返す文字列がそのまま判定の材料になる（"ok" 以外はすべて赤）。
+func probeAudioWorklet() (verdict string) {
+	// JS 側の綴りが変わって Get/Call が落ちても、**検査が観測不能で終わらないようにする。**
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			verdict = fmt.Sprint("panic: ", recovered)
+		}
+	}()
+
+	global := js.Global()
+	constructor := global.Get("AudioContext")
+	if !constructor.Truthy() {
+		return "no-audiocontext"
+	}
+	context := constructor.New()
+
+	// `js.ValueOf` が変換する（`[]any` → JS の配列、`map[string]any` → JS のオブジェクト。
+	// `syscall/js` の変換表）。**`Array` / `Object` を自分で組み立てない。**
+	blob := global.Get("Blob").New(
+		[]any{workletSource},
+		map[string]any{"type": "application/javascript"},
+	)
+	url := global.Get("URL").Call("createObjectURL", blob)
+
+	// 緩衝を持たせる。**解決と時間切れが競ったときに送り手を止めない**
+	// （止まると js.Func が解放されず、ページ側に残る）。
+	settled := make(chan string, 2)
+	onFulfilled := js.FuncOf(func(_ js.Value, _ []js.Value) any {
+		settled <- "ok"
+		return nil
+	})
+	defer onFulfilled.Release()
+	onRejected := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		reason := "(理由なし)"
+		if len(args) > 0 {
+			reason = fmt.Sprintf("%s: %s", args[0].Get("name"), args[0].Get("message"))
+		}
+		settled <- "rejected: " + reason
+		return nil
+	})
+	defer onRejected.Release()
+
+	context.Get("audioWorklet").Call("addModule", url).Call("then", onFulfilled, onRejected)
+
+	select {
+	case verdict := <-settled:
+		return verdict
+	case <-time.After(workletTimeout):
+		return "timeout"
+	}
+}
 
 func main() {
+	js.Global().Set("__gfAudioWorklet", probeAudioWorklet())
+	// **`__gfWasmRan` は最後に立てる。** 観測側（`scripts/sandbox-browser-probe.mjs`）は
+	// この印が立った時点で読み取りを打ち切るため、先に立てるとワークレットの結果が
+	// 間に合わず、層 5 が「観測できなかった」で不安定になる。
 	js.Global().Set("__gfWasmRan", "ok")
 }
 EOF
@@ -378,11 +473,11 @@ node scripts/wasm-body-verdict.mjs \
 
 if [[ "$SKIP_BROWSER" == "1" ]]; then
   note "OK (層 0 のみ): 配信された .wasm の本文は正しい形です。"
-  note "**層 1〜4（実ブラウザ）は見ていません。** GF_SKIP_BROWSER を外すと見ます。"
+  note "**層 1〜5（実ブラウザ）は見ていません。** GF_SKIP_BROWSER を外すと見ます。"
   exit 0
 fi
 
-# ── 層 1〜3: 実ブラウザで開く ─────────────────────────────────────────────────
+# ── 層 1〜3・層 5: 実ブラウザで開く ─────────────────────────────────────────────────
 
 note "opening $DOC_URL"
 node scripts/sandbox-browser-probe.mjs \
@@ -428,6 +523,20 @@ if (state.wasmRan !== "ok") {
   );
 } else if (state.statusHidden !== true) {
   problems.push("層 3: 起動したのに読み込み表示が消えていません。");
+}
+
+// 層 5: #306 の判定。音のワークレットのモジュールが blob: URL から読めること。
+//
+// **CSP の文字列照合では原理的に捕まらない。** #306 は `script-src` に `blob:` が
+// 無いことで拒否されたが、**同じ症状は「CSP は許しているが別の理由で塞ぐ」形でも
+// 起きうる**（#180 がまさにそれだった）。だから実ブラウザでモジュールを読ませる。
+if (state.audioWorklet !== "ok") {
+  problems.push(
+    `層 5 (#306): 音のワークレットのモジュールを blob: URL から読み込めませんでした` +
+      `（${JSON.stringify(state.audioWorklet)}）。` +
+      " src/sandbox-csp.ts の script-src に blob: があるかを確認してください。" +
+      " CSP 違反なら logEntries に「violates the following Content Security Policy directive」が出ます。",
+  );
 }
 
 if (problems.length > 0) {
@@ -485,6 +594,14 @@ if (embedded.length === 0) {
     "層 4: 埋め込んだ文書の中で wasm が起動しませんでした。画面の表示: " +
       JSON.stringify(embedded.map((frame) => frame.state?.statusText)),
   );
+} else if (!embedded.some((frame) => frame.state?.audioWorklet === "ok")) {
+  // 層 5 を埋め込んだ形でも見る（#306）。**直接開いた形の緑からは導けない**——
+  // iframe の中では Permissions Policy と 2 重の `sandbox` 指定が乗るため、
+  // 同じ CSP でも結果が変わりうる。**利用者が実際に踏むのはこちらである。**
+  problems.push(
+    "層 5 (#306): 埋め込んだ文書の中で音のワークレットのモジュールを読み込めませんでした: " +
+      JSON.stringify(embedded.map((frame) => frame.state?.audioWorklet)),
+  );
 }
 
 if (problems.length > 0) {
@@ -497,4 +614,4 @@ if (problems.length > 0) {
 }
 ' "$WORK/embed.json" || fail "層 4: 作品ページに埋め込んだプレイ経路が通りませんでした。"
 
-note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走りました（直接・埋め込みの両方）。"
+note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走り、音のワークレットが読み込めました（直接・埋め込みの両方）。"

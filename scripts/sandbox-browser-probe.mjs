@@ -222,6 +222,14 @@ function openSocket(endpoint) {
  *
  * 裏取りとして `localStorage` の参照も見る。不透明オリジンでは
  * `SecurityError` を投げるため、**綴りの解釈に依らない証拠**になる。
+ *
+ * # 音のワークレット（#306）
+ *
+ * `audioWorklet` は `__gfAudioWorklet` として観測する。**ここでは試さない**——値を立てるのは
+ * ページ側（`check-sandbox-browser.sh` が焼く Go）であり、**このファイルは開いて読むだけ**
+ * という分担を崩さない。CDP から `Runtime.evaluate` で試す形にすると、
+ * **観測者が観測対象を作ることになる**（DevTools 経由の評価はページのスクリプトと
+ * 同じ経路とは限らない）。
  */
 const PAGE_STATE_EXPRESSION = `(() => {
   const status = document.getElementById('gf-status');
@@ -238,6 +246,7 @@ const PAGE_STATE_EXPRESSION = `(() => {
     locationOrigin: String(location.origin),
     storageThrows,
     wasmRan: globalThis.__gfWasmRan ?? null,
+    audioWorklet: globalThis.__gfAudioWorklet ?? null,
     statusText: status === null ? null : String(status.textContent ?? ''),
     statusHidden: status === null ? null : Boolean(status.hidden),
     hasCanvas: document.querySelector('canvas') !== null,

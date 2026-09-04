@@ -11,6 +11,8 @@ import { generateRoutes } from './generate.js';
 import { generateCallbackRoutes } from './generate-callback.js';
 import { generatePageRoutes } from './generate-page.js';
 import { homeRoutes } from './home.js';
+import { legalRoutes } from './legal.js';
+import { takedownRoutes } from './takedown-routes.js';
 import { inviteRoutes } from './invite-issuance.js';
 import { myWorksRoutes } from './my-works.js';
 import { ogpRecaptureRoutes } from './ogp-recapture.js';
@@ -259,6 +261,10 @@ const devRoutes: readonly Route[] = [
 export function createAppRoutes(env: Env): readonly Route[] {
   return [
     ...homeRoutes,
+    // 5.6 の規約と、8.4 の削除申請（#41）。**どちらも非ログインで到達できる**
+    // ——権利者は本サービスの利用者とは限らない。
+    ...legalRoutes,
+    ...takedownRoutes,
     ...(devRoutesEnabled(env) ? devRoutes : []),
     ...authRoutes,
     ...signupRoutes,

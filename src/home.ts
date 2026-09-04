@@ -22,6 +22,7 @@
  * MVP の画面は SSR の素の HTML に留める（9.3 / #89 の scope.out）。Next.js / React へ
  * 寄せる判断は M2-1 以降が持ち、ここで先取りすると捨てる量が増える。
  */
+import { siteFooter } from './legal.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { LOGIN_PATH } from './auth/google.js';
@@ -99,6 +100,7 @@ const HOME_HTML = `<!doctype html>
 <h2>参加している方へ</h2>
 <p><a href="${MY_WORKS_PATH}">あなたの作品</a>（生成中のものも含みます。ログインが必要です）</p>
 <p><a href="${INVITES_PATH}">招待コードを発行する</a>（ログインが必要です）</p>
+${siteFooter()}
 `;
 
 /**

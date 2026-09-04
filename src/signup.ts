@@ -22,6 +22,8 @@
  * になる。登録は「招待制のクローズドβに入る」ための唯一の入口であり、ここだけは
  * 実行環境の都合で塞がらないようにしておく。
  */
+import { siteFooter } from './legal.js';
+import { escapeHtml } from './html.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import type { AuthDependencies } from './auth/google.js';
@@ -199,6 +201,7 @@ ${fromForkSection(source)}
   <button type="submit">コードを確認して Google でログイン</button>
 </form>
 <p>コードを確認したあとに Google のログイン画面へ進みます。</p>
+${siteFooter()}
 
 <h2>招待コードをお持ちでない方</h2>
 ${waiting}
@@ -225,7 +228,8 @@ function waitlistThanksPage(): string {
 <title>待機リストに登録しました</title>
 <h1>待機リストに登録しました</h1>
 <p>招待枠が空いたらご連絡します。</p>
-<p><a href="${SIGNUP_PATH}">登録画面へ戻る</a></p>`;
+<p><a href="${SIGNUP_PATH}">登録画面へ戻る</a></p>
+${siteFooter()}`;
 }
 
 /**
@@ -336,22 +340,6 @@ async function readCodeField(request: Request): Promise<string | null> {
   return fields.get('code');
 }
 
-/**
- * HTML へ埋め込む文字列を無害化する。
- *
- * 属性値にも本文にも使える最小の集合を落とす。
- *
- * @param value 埋め込む文字列
- * @returns 無害化した文字列
- */
-export function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
 
 /**
  * 登録の経路を組み立てる。

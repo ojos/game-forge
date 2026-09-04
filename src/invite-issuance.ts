@@ -26,6 +26,7 @@
  * 寄せ方は M2-1 が持つ判断で、ここで先取りすると捨てる量が増える。JavaScript も
  * スタイルシートも要求しない。
  */
+import { siteFooter } from './legal.js';
 import { formatInviteCode, isInviteExpired } from './invite-code.js';
 import type { InviteRecord } from './invites.js';
 import { issueInvite, listIssuedInvites, remainingInviteQuota } from './invites.js';
@@ -33,7 +34,7 @@ import { inviteQuotaHalted } from './reports.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, json } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { escapeHtml } from './signup.js';
+import { escapeHtml } from './html.js';
 import { HOME_PATH } from './home.js';
 import { INVITES_PATH } from './paths.js';
 import { LOGIN_PATH } from './auth/google.js';
@@ -162,7 +163,7 @@ ${list}
    クローズドβの間、Google の同意画面は Testing のまま運用しているため、登録が無い相手は
    コードを持っていても Google のログイン画面に到達できません（8.1）。</p>
 
-<p><a href="${HOME_PATH}">トップへ戻る</a></p>
+${siteFooter()}
 `;
 }
 

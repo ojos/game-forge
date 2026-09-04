@@ -11,6 +11,7 @@
 | ビルド時間が天井へ近づいていないか（#166） | `scripts/build-time-report.sh` | CloudWatch の `REPORT` 行 |
 | 10 章の KPI（#42） | `scripts/kpi-report.sh` | D1 の `games` / `generations` / `waitlist` / `game_revisions` |
 | 審査待ちの作品（#40） | `scripts/report-queue.sh` | D1 の `games` / `reports` |
+| 未対応の削除申請（#41） | `scripts/takedown-queue.sh` | D1 の `takedown_requests`（手順は [takedown.md](takedown.md)） |
 | 遮断の記録の掃除（#37） | `scripts/moderation-prune.sh` | D1 の `moderation_blocks` |
 | 数え方の定義（両方が共有する） | `scripts/report-window.sh` | — |
 | 自己検査 | `scripts/report-selftest.sh` | 使い捨ての手元 D1 と宣言 |

@@ -65,6 +65,7 @@
  * 付けない。**生成中の作品を見張る画面は作品ページ（`/works/<id>`）が既に持っており**、
  * こちらまで再読み込みを続けると、開きっぱなしのタブが D1 の読み取りを増やし続ける。
  */
+import { siteFooter } from './legal.js';
 import type { AuthoredGame, GenerationState } from './games.js';
 import { UNTITLED_TITLE, listAuthoredGames } from './games.js';
 import { LOGIN_PATH } from './auth/google.js';
@@ -73,7 +74,7 @@ import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/work-page.ts` もそこから取っている）。
-import { escapeHtml } from './signup.js';
+import { escapeHtml } from './html.js';
 import { WORK_PAGE_PREFIX, looksStalled, workPagePath } from './work-page.js';
 
 /**
@@ -305,7 +306,7 @@ ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
 ${body}
 ${truncated}
 <p><a href="${GENERATE_PAGE_PATH}">新しく生成する</a></p>
-<p><a href="/">トップへ</a></p>`;
+${siteFooter()}`;
 }
 
 /**

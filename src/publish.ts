@@ -53,6 +53,7 @@
  * 黙って死ぬ**（拡散した先には取り消しが届かない）。8.4 の削除申請は `removed` という
  * 別の状態を持っており、そちらが「もう配らない」を表す。
  */
+import { siteFooter } from './legal.js';
 import { LOGIN_PATH } from './auth/google.js';
 import type { PublishOutcome } from './games.js';
 import { publishGame } from './games.js';
@@ -151,7 +152,7 @@ function refusal(heading: string, body: string, status: number): Response {
 <title>${heading} - Game Forge</title>
 <h1>${heading}</h1>
 <p>${body}</p>
-<p><a href="/">トップへ</a></p>`,
+${siteFooter()}`,
     status,
   );
 }

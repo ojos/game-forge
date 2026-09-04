@@ -77,6 +77,7 @@
  * セッション cookie は `SameSite=Lax`（8.1）で、他サイトからの POST にはそもそも
  * cookie が乗らない。`src/publish.ts` / `src/revise.ts` と同じ理由でトークンを足していない。
  */
+import { siteFooter } from './legal.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { createForkedGame, failGame, PUBLISHED_STATUS } from './games.js';
 import type { GenerationJob, GenerationPipeline } from './generate.js';
@@ -86,7 +87,7 @@ import { checkGenerationQuota, describeQuotaRejection, QUOTA_EXCEEDED_STATUS } f
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { escapeHtml } from './signup.js';
+import { escapeHtml } from './html.js';
 import type { SizeConsent } from './source-size.js';
 import {
   MAX_SOURCE_BYTES,
@@ -156,7 +157,7 @@ function refusal(heading: string, body: string, status: number): Response {
 <title>${heading} - Game Forge</title>
 <h1>${heading}</h1>
 <p>${body}</p>
-<p><a href="/">トップへ</a></p>`,
+${siteFooter()}`,
     status,
   );
 }

@@ -43,6 +43,169 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 cd "$(dirname "$HERE")" || exit 1
 
+# ── 宣言から期待値を導く部分（認証もネットワークも要さない）──────────────────
+#
+# **ここだけが宣言テキスト（terraform/*.tf）の読み取りで、以降の検査は AWS への
+# 問い合わせである。** 分けてあるのは、導出だけを**認証なしで確かめられる**ように
+# するためである（#297）。認証済みの環境でしか動かせない導出は、変異させて赤くなる
+# ことを確かめる経路も持てない。
+#
+#   bash scripts/acceptance-remote.sh --print-declared-invoker-policies
+#
+# 読む宣言の場所は `ACCEPTANCE_TF_DIR` で差し替えられる。**変異させた写しを指せば、
+# 宣言を汚さずに「期待値が動くこと」を確かめられる**（issue #297 の受け入れ条件
+# 「宣言に無い関数を許可対象へ足すと赤くなる」）。
+#
+#   cp -r terraform /tmp/tf-mutated && ...（3 本目のポリシーを足す）
+#   ACCEPTANCE_TF_DIR=/tmp/tf-mutated bash scripts/acceptance-remote.sh --print-declared-invoker-policies
+#
+# 呼び出し側（check_build_invoker_permissions）より前に置いてあるのは、bash が
+# 定義済みの関数しか呼べないためである。この入口を terraform init / plan より手前に
+# 出すには、定義をここへ置くしかない。
+#
+# そのため宣言の場所（`TF_DIR`）もここで確定させる（下の「外部状態の検査」の節より
+# 前に読むことになるため）。**参照側で `${TF_DIR:-terraform}` と書き分けない。**
+# 既定値の綴りが 2 か所に散ると、片方だけを直した日に、既定で読む場所が参照ごとに
+# 違う状態になる。
+#
+# **差し替えの名前を `TF_DIR` そのものにしない。** 他の用途で輸出されていたときに、
+# `terraform plan: no drift` を含むゲート全体が黙って別の宣言を見ることになる。
+TF_DIR="${ACCEPTANCE_TF_DIR:-terraform}"
+
+##
+# ある IAM ユーザーに付いている**インラインポリシーの全部**と、その期待値の
+# 出どころ（terraform output の名前）を、宣言から導く。
+#
+# **なぜ「全部」なのか**（#297）。ポリシー名を決め打ちして 1 本だけを期待値にすると、
+# 2 本目（terraform/ogp-function.tf の `ogp_invoke`）が実在するだけで検査が赤くなり、
+# **実在しない乖離を毎回報告する。** かといって期待値へ「orchestrator と ogp」と
+# 書き足すのは、**3 本目が足された日にまた黙って通る**という逆向きの空振りを作る。
+# 検査が読むのは名前ではなく、**宣言に書いてある構造**である。
+#
+# **この導出は output 名の複製そのものを消す。** scripts/check-tf-output-refs.sh は
+# 「検査へ書き写した output 名が宣言に実在するか」を見る層だが、書き写しが無ければ
+# 古い名前を読み続けることも起きない。名前は宣言から辿り、無ければ落とす。
+#
+# 辿る鎖は次の 4 段で、すべて terraform/*.tf のテキストから読む。
+#
+#   1. `output "<anchor>" { value = aws_iam_user.<X>.name }`      → ユーザー <X>
+#   2. `resource "aws_iam_user_policy" { user = aws_iam_user.<X>.name
+#                                        policy = data.aws_iam_policy_document.<D>.json }`
+#                                                                  → <X> に付く全ポリシー
+#   3. `data "aws_iam_policy_document" "<D>" { statement { actions = local.<A>
+#                                                          resources = local.<R> } }`
+#   4. `output "<O>" { value = local.<A> }`                        → 期待値の output 名
+#
+# **導けなければ落とす。** 3 本目のポリシーが locals を経由していない、対応する
+# output が無い、Deny が混ざっている——どれも「期待値を導けない」であって、
+# 「期待どおり」ではない。黙って総和から抜けると、そのポリシーの分だけ検査が緩む。
+#
+# 値そのものはここでは解決しない（ARN は apply 後にしか定まらない）。値は
+# terraform output が持ち、この関数はその**名前**までを導く。
+#
+# 引数: 1) ユーザーを指す output の名前（例: build_invoker_user_name）
+# 出力: 1 行 1 ポリシー。タブ区切りで
+#         <IAM 上のポリシー名> <policy document 名> <actions の output> <resources の output>
+#       導けない点は `ERROR<TAB><理由>` の行にする（黙って落とさない）。
+##
+declared_inline_policies() {
+  local anchor="$1"
+  local dir="$TF_DIR"
+  if ! compgen -G "$dir/*.tf" >/dev/null 2>&1; then
+    printf 'ERROR\t%s に .tf がありません。宣言を読めないため導出できません。\n' "$dir"
+    return 0
+  fi
+
+  # 最上位ブロックは `terraform fmt` の整形により、必ず桁 0 の `}` で閉じる。
+  # **波括弧を数えない。** 注記の中の `\p{L}` や `${...}` まで数に入り、
+  # 数え違いがそのまま「宣言を読めない」になる。
+  awk -v anchor="$anchor" '
+    function qs(s, i,   n, a) { n = split(s, a, "\""); return (n >= 2 * i ? a[2 * i] : "") }
+    function rhs(s,   p) { p = s; sub(/^[^=]*=[ \t]*/, "", p); sub(/[ \t]*$/, "", p); return p }
+    function part(s, i,   n, a) { n = split(s, a, "."); return (i <= n ? a[i] : "") }
+    function add(k, kind, value) {
+      if (value ~ /^local\.[A-Za-z0-9_]+$/) {
+        if (kind == "a") { acts[k] = acts[k] " " part(value, 2) }
+        else { ress[k] = ress[k] " " part(value, 2) }
+      } else {
+        lit[k] = 1
+      }
+    }
+    function outputs_for(names,   n, a, i, o, joined) {
+      errmsg = ""
+      n = split(names, a, " ")
+      if (n == 0) { errmsg = "statement が local を参照していません"; return "" }
+      joined = ""
+      for (i = 1; i <= n; i++) {
+        o = out_of[a[i]]
+        if (o == "") { errmsg = "local." a[i] " を値に持つ output が宣言にありません"; return "" }
+        joined = (joined == "" ? o : joined "," o)
+      }
+      return joined
+    }
+
+    /^resource[ \t]+"aws_iam_user_policy"[ \t]+"/ { ctx = "policy"; key = qs($0, 2); seen[key] = 1; next }
+    /^data[ \t]+"aws_iam_policy_document"[ \t]+"/ { ctx = "doc"; key = qs($0, 2); next }
+    /^output[ \t]+"/ { ctx = "output"; key = qs($0, 1); next }
+    /^}/ { ctx = ""; next }
+
+    ctx == "policy" && /^[ \t]+name[ \t]*=/ { pname[key] = qs($0, 1); next }
+    ctx == "policy" && /^[ \t]+user[ \t]*=[ \t]*aws_iam_user\./ { puser[key] = part(rhs($0), 2); next }
+    ctx == "policy" && /^[ \t]+policy[ \t]*=[ \t]*data\.aws_iam_policy_document\./ { pdoc[key] = part(rhs($0), 3); next }
+
+    ctx == "doc" && /^[ \t]+effect[ \t]*=[ \t]*"Deny"/ { deny[key] = 1; next }
+    ctx == "doc" && /^[ \t]+actions[ \t]*=/ { add(key, "a", rhs($0)); next }
+    ctx == "doc" && /^[ \t]+resources[ \t]*=/ { add(key, "r", rhs($0)); next }
+
+    ctx == "output" && /^[ \t]+value[ \t]*=[ \t]*local\./ { if (!(part(rhs($0), 2) in out_of)) { out_of[part(rhs($0), 2)] = key } next }
+    ctx == "output" && key == anchor && /^[ \t]+value[ \t]*=[ \t]*aws_iam_user\./ { user_res = part(rhs($0), 2); next }
+
+    END {
+      if (user_res == "") {
+        printf "ERROR\toutput \"%s\" から aws_iam_user.<名前>.name を読めません。宣言側で改名・削除された可能性があります。\n", anchor
+        exit 0
+      }
+      found = 0
+      for (k in seen) {
+        if (puser[k] != user_res) { continue }
+        found++
+        d = pdoc[k]
+        if (d == "") {
+          printf "ERROR\taws_iam_user_policy.%s の policy が data.aws_iam_policy_document.<名前>.json ではありません。\n", k
+          continue
+        }
+        if (deny[d]) {
+          printf "ERROR\tdata.aws_iam_policy_document.%s に Deny があります。総和は Allow だけを前提にしているため導出できません。\n", d
+          continue
+        }
+        if (lit[d]) {
+          printf "ERROR\tdata.aws_iam_policy_document.%s が actions/resources をリテラルで持っています。locals へ出し、output で見える形にすること。\n", d
+          continue
+        }
+        a = outputs_for(acts[d])
+        if (a == "") { printf "ERROR\t%s の動作を導けません: %s\n", d, errmsg; continue }
+        r = outputs_for(ress[d])
+        if (r == "") { printf "ERROR\t%s の対象を導けません: %s\n", d, errmsg; continue }
+        printf "%s\t%s\t%s\t%s\n", pname[k], d, a, r
+      }
+      if (found == 0) {
+        printf "ERROR\taws_iam_user.%s に付くインラインポリシーが宣言に 1 つもありません。\n", user_res
+      }
+    }
+  ' "$dir"/*.tf
+}
+
+# 導出だけを見る入口（認証も terraform の状態も要らない）。
+# **宣言を変異させたときに期待値が動くことを、ここで単体で確かめられる。**
+if [[ "${1:-}" == "--print-declared-invoker-policies" ]]; then
+  declared_rows_out="$(declared_inline_policies "${2:-build_invoker_user_name}" | sort)"
+  printf '%s\n' "$declared_rows_out"
+  if grep -q '^ERROR' <<<"$declared_rows_out"; then
+    exit 1
+  fi
+  exit 0
+fi
+
 echo "[acceptance-remote] external state checks"
 
 # 実際に検査を 1 つでも実行したか。1 つも実行できなければ「合格」ではなく失敗にする。
@@ -98,8 +261,8 @@ run() {
 # 検査対象の識別子（owner/repo、既定ブランチ名、必須チェック名、可視性）は、すべて
 # terraform の output から取る。ここへ書き写すと、宣言を変えたときに検査だけが古い
 # 対象・古い期待値を見続ける（shared-ai-rules.md 12 章「一覧の複製は機械照合で担保する」）。
-
-TF_DIR="terraform"
+#
+# 宣言の場所（TF_DIR）は冒頭で確定済みである。既定値をここへもう一度書かない。
 
 # 前提の確認を最初に置く。未認証やオフラインでの失敗は「宣言と外部状態の乖離」では
 # ないため、乖離の検査より前に、前提の不成立として先に見えるようにする。
@@ -1594,7 +1757,8 @@ check_r2_credentials_placement() {
 #
 #   1. **インラインポリシーの Allow の「動作」の総和が、宣言した集合と完全に一致すること。**
 #      ポリシー名を決め打ちせず list-user-policies で全部を足すのは、宣言の外で 2 本目を
-#      手で足されたときに気づくためである（bedrock 側の検査と同じ理由）。
+#      手で足されたときに気づくためである（bedrock 側の検査と同じ理由）。**期待値の側も
+#      同じく総和で、宣言から導く**（下記「期待値の導き方」。#297）。
 #   2. **Allow の「対象」の総和が、宣言した ARN と完全に一致すること。** 動作だけを見る
 #      検査は、**`Resource` を `*` へ緩めた変更を素通りさせる。** 仕様 9.2 が禁じている
 #      のはそちらで、`lambda:InvokeFunction` on `*` は「このアカウントの全部の関数を
@@ -1607,9 +1771,27 @@ check_r2_credentials_placement() {
 #      生成した秘密鍵を state へ平文で書く（R2 の資格情報を `aws_ssm_parameter` で
 #      宣言しない理由と同じ経路）。**「宣言していないこと」そのものが要件なので、
 #      機械で押さえる**（terraform/build-invoker.tf）。
+#   6. **付いているインラインポリシーの構成（名前の集合）が宣言と一致すること。**
+#      1. と 2. は総和しか見ないので、**宣言と同じ許可を別名で手で足された状態**は
+#      総和が変わらず素通りする。本数と名前はここで見る。
+#
+# ## 期待値の導き方（#297）
 #
 # 期待値はすべて terraform output から取る（shared-ai-rules.md 12 章）。ユーザー名や
 # 動作名をここへ書き写すと、宣言を緩めたときに検査だけが古い期待値で緑になる。
+#
+# **どの output を読むかも、書き写さずに宣言から導く。** ここはかつて
+# `build_invoke_actions` / `build_invoke_resources` の 2 つを名指ししていた。
+# **2 本目のインラインポリシー**（terraform/ogp-function.tf の `ogp_invoke`。同じ IAM
+# ユーザーへ意図して付けており、宣言も実態も正しい）が加わった時点で、この検査は
+# 片方のポリシーだけを期待値として、**実在しない乖離を毎回報告するようになった。**
+# **偽の失敗は「検査を読まない習慣」を作る**ので、本物の乖離ごと見落とす。
+#
+# **かといって期待値へ「orchestrator と ogp」と書き足すのは、直したことにならない。**
+# 3 本目が足された日に、検査だけが黙って通る（緩む方向の空振り）。名指しするのは
+# ユーザーを指す output 1 つだけにして、**そのユーザーに付く全インラインポリシー**と
+# 各々の期待値の出どころは `declared_inline_policies`（このファイルの冒頭）が宣言から
+# 辿る。**導けなければ落とす**（黙って総和から抜くと、その分だけ検査が緩む）。
 #
 # **鍵そのものの有無は落とさず warn にする。** 鍵の発行は apply の後の手作業で
 # （docs/build-invocation.md 3 章）、未発行は「宣言と外部状態の乖離」ではなく
@@ -1618,16 +1800,54 @@ check_r2_credentials_placement() {
 # 戻り値: 0 = 宣言どおり / 1 = 逸脱・取得失敗
 ##
 check_build_invoker_permissions() {
-  local rc=0 user expected_actions expected_resources
-  user="$(tf_output build_invoker_user_name)" || return 1
-  expected_actions="$(tf_output_json build_invoke_actions)" || expected_actions=""
-  expected_resources="$(tf_output_json build_invoke_resources)" || expected_resources=""
-  if [[ -z "$user" || -z "$expected_actions" || -z "$expected_resources" ]]; then
+  local rc=0 user
+  user="$(tf_output build_invoker_user_name)" || user=""
+  if [[ -z "$user" ]]; then
     echo "terraform output からビルド関数の呼び出しプリンシパルを取得できません。apply 済みか確認すること。"
-    echo "  build_invoker_user_name=${user:-(なし)}"
-    echo "  build_invoke_actions=${expected_actions:-(なし)} build_invoke_resources=${expected_resources:-(なし)}"
+    echo "  build_invoker_user_name=(なし)"
     return 1
   fi
+
+  # 名指しするのは build_invoker_user_name だけである。ポリシーの本数も、期待値が
+  # どの output に載っているかも、宣言から辿る（上記「期待値の導き方」）。
+  local -a declared_rows=()
+  mapfile -t declared_rows < <(declared_inline_policies build_invoker_user_name | sort)
+  if [[ "${#declared_rows[@]}" -eq 0 || -z "${declared_rows[0]}" ]]; then
+    echo "宣言（${TF_DIR}/*.tf）から ${user} のインラインポリシーを 1 つも導けません。"
+    echo "導出だけを見るには: bash scripts/acceptance-remote.sh --print-declared-invoker-policies"
+    return 1
+  fi
+
+  local row pname doc actions_outs resources_outs out json
+  local declared_policies="" expected_actions="" expected_resources=""
+  local -a out_names=()
+  for row in "${declared_rows[@]}"; do
+    if [[ "$row" == "ERROR"$'\t'* ]]; then
+      echo "宣言から期待値を導けません: ${row#ERROR$'\t'}"
+      echo "**期待値をこの検査へ書き写して回避しないこと。** 3 本目が足された日に、検査だけが黙って通る（#297）。"
+      return 1
+    fi
+    IFS=$'\t' read -r pname doc actions_outs resources_outs <<<"$row"
+    declared_policies+="${pname}"$'\n'
+    IFS=',' read -r -a out_names <<<"$actions_outs"
+    for out in "${out_names[@]}"; do
+      json="$(tf_output_json "$out")" || json=""
+      if [[ -z "$json" ]]; then
+        echo "terraform output ${out}（${doc} の動作）を取得できません。apply 済みか確認すること。"
+        return 1
+      fi
+      expected_actions+="$json"$'\n'
+    done
+    IFS=',' read -r -a out_names <<<"$resources_outs"
+    for out in "${out_names[@]}"; do
+      json="$(tf_output_json "$out")" || json=""
+      if [[ -z "$json" ]]; then
+        echo "terraform output ${out}（${doc} の対象）を取得できません。apply 済みか確認すること。"
+        return 1
+      fi
+      expected_resources+="$json"$'\n'
+    done
+  done
 
   local -a policy_names=()
   mapfile -t policy_names < <(aws iam list-user-policies --user-name "$user" \
@@ -1635,6 +1855,19 @@ check_build_invoker_permissions() {
   if [[ "${#policy_names[@]}" -eq 0 || -z "${policy_names[0]}" ]]; then
     echo "${user} にインラインポリシーがありません。ビルド関数を呼べない状態です。"
     return 1
+  fi
+
+  # 6. 構成（名前の集合）の一致。**総和だけでは、宣言と同じ許可を別名で手で足された
+  # 状態を拾えない。** 宣言が先に居るとき（apply 前）もここが赤になるが、それはこの層が
+  # 見るべきものそのものである。
+  local declared_policy_list actual_policy_list
+  declared_policy_list="$(printf '%s' "$declared_policies" | sort)"
+  actual_policy_list="$(printf '%s\n' "${policy_names[@]}" | sort)"
+  if [[ "$declared_policy_list" != "$actual_policy_list" ]]; then
+    echo "付いているインラインポリシーが宣言と一致しません:"
+    echo "  expected: $(tr '\n' ' ' <<<"$declared_policy_list")"
+    echo "  actual:   $(tr '\n' ' ' <<<"$actual_policy_list")"
+    rc=1
   fi
 
   local docs="" doc name
@@ -1660,9 +1893,15 @@ check_build_invoker_permissions() {
       | select(.Effect == "Allow") | .Resource ] | flatten | unique
   ' <<<"$docs")" || return 1
 
+  # 宣言側も総和にする（-s で 1 本ずつの output を束ね、flatten してから一意化する）。
   local want_actions want_resources
-  want_actions="$(jq -cS 'unique' <<<"$expected_actions")" || return 1
-  want_resources="$(jq -cS 'unique' <<<"$expected_resources")" || return 1
+  want_actions="$(jq -cs 'flatten | unique' <<<"$expected_actions")" || return 1
+  want_resources="$(jq -cs 'flatten | unique' <<<"$expected_resources")" || return 1
+  if [[ "$want_actions" == "[]" || "$want_resources" == "[]" ]]; then
+    echo "宣言から導いた期待値が空です（動作: ${want_actions} / 対象: ${want_resources}）。"
+    echo "**空のまま比較へ進むと、空どうしが一致して緑になります**（#160 と同じ空振り）。"
+    return 1
+  fi
 
   if [[ "$want_actions" != "$actual_actions" ]]; then
     echo "許可している動作が宣言と一致しません:"
@@ -1697,7 +1936,7 @@ check_build_invoker_permissions() {
   fi
   if [[ "$(jq 'length' <<<"$attached")" != "0" ]]; then
     echo "宣言にない管理ポリシーが付与されています: $(jq -c . <<<"$attached")"
-    echo "宣言はインラインポリシー 1 本だけを与えています（terraform/build-invoker.tf）。"
+    echo "宣言が与えているのはインラインポリシーだけです（terraform/build-invoker.tf / terraform/ogp-function.tf）。"
     rc=1
   fi
 
@@ -1730,6 +1969,7 @@ check_build_invoker_permissions() {
 
   if [[ "$rc" -eq 0 ]]; then
     echo "${user} grants exactly ${actual_actions} on ${actual_resources} with no attached policy"
+    echo "  （宣言から導いた総和: $(tr '\n' ' ' <<<"$declared_policy_list")）"
   fi
   return "$rc"
 }

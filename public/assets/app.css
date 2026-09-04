@@ -1,0 +1,439 @@
+/*
+ * app.css — 全 SSR 画面が参照する見た目の土台（9.3 / #266）
+ *
+ * ============================================================================
+ * 方針: 作品を主役にする。プラットフォーム側は無彩色・装飾最小
+ * ============================================================================
+ *
+ * intake（2026-09-03）で決めた 4 点のうちの 1 つである。**画面の中で色を持つのは
+ * 作品だけ**にしてある——スクリーンショットとゲーム枠に色があり、それ以外の
+ * 文字・線・ボタンはすべて無彩色である。リンクも色ではなく下線で示す。
+ *
+ * **例外は 1 つだけ、エラーの赤である。** これは装飾ではなく意味であり、
+ * 「送信に失敗した」を灰色で伝えると気づけない。
+ *
+ * ============================================================================
+ * ここに書かないもの
+ * ============================================================================
+ *
+ * **各画面の作り込みは M8-2 / M8-3 が持つ。** ここが持つのは、色・余白・文字の
+ * トークンと、全画面に共通する部品（フッタ / ボタン / フォーム / カード / 作品枠）
+ * だけである。特定の画面だけに効く規則をここへ足さないこと。
+ *
+ * ============================================================================
+ * 制約（#266 の constraints）
+ * ============================================================================
+ *
+ * - **素の CSS 1 枚。** プリプロセッサもバンドラも入れない（ビルド段を増やさない）
+ * - **外部から資材を読まない。** `@import` も web フォントも使わない。
+ *   3.4-5 が埋めようとしている数秒に、埋めるための資材の待ち時間を足さないため
+ * - **JavaScript を増やさない。** 状態の切り替えは CSS だけで表現する
+ */
+
+/* ==========================================================================
+   トークン
+   ========================================================================== */
+
+:root {
+  /* 無彩色の段階。**中間の灰を 1 つだけにしない**——線と補助文字で必要な濃さが違う。 */
+  --gf-ink: #16181a;
+  --gf-ink-soft: #55595e;
+  --gf-ink-faint: #797f85;
+  --gf-rule: #d6d9dc;
+  --gf-rule-soft: #e7e9eb;
+  --gf-ground: #ffffff;
+  --gf-surface: #f6f7f8;
+
+  /* 意味を持つ唯一の色。装飾に使わないこと。 */
+  --gf-danger: #a3272a;
+  --gf-danger-ground: #fdf2f2;
+
+  /* 余白。4px を刻みにして、階段を 5 段に絞る。 */
+  --gf-gap-1: 0.25rem;
+  --gf-gap-2: 0.5rem;
+  --gf-gap-3: 1rem;
+  --gf-gap-4: 1.5rem;
+  --gf-gap-5: 2.5rem;
+
+  /* 文字。**本文を 16px より下げない**（モバイルで拡大が起きる）。 */
+  --gf-text: 1rem;
+  --gf-text-small: 0.875rem;
+  --gf-text-h1: 1.75rem;
+  --gf-text-h2: 1.25rem;
+
+  /* 版面の幅。作品枠（600px）が窮屈にならない値にしてある。 */
+  --gf-measure: 42rem;
+
+  --gf-radius: 4px;
+
+  /*
+   * 日本語を含む本文の既定スタック。**web フォントを読まない**ので、
+   * 端末が持っている中でいちばん読みやすいものを順に指名する。
+   */
+  --gf-font: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP",
+    "Yu Gothic", "Meiryo", sans-serif;
+  --gf-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  color-scheme: light dark;
+}
+
+/*
+ * 端末が暗い配色を求めているときは、トークンだけを差し替える。
+ *
+ * **部品側の規則をここへ書かない。** 片方の配色にしか無い規則ができると、
+ * もう片方でだけ壊れる形になり、目で見るまで気づけない。
+ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --gf-ink: #e7e9eb;
+    --gf-ink-soft: #a9aeb3;
+    --gf-ink-faint: #878d93;
+    --gf-rule: #34383c;
+    --gf-rule-soft: #26292c;
+    --gf-ground: #131517;
+    --gf-surface: #1b1e21;
+    --gf-danger: #f0918e;
+    --gf-danger-ground: #2c1b1b;
+  }
+}
+
+/* ==========================================================================
+   土台
+   ========================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/*
+ * 版面。**画面はどれも `<body>` 直下に本文が並ぶ**ので、包む要素を足さずに
+ * body そのものを版面にする（情報設計を変えないため。#266 の scope.out）。
+ */
+body {
+  margin: 0 auto;
+  padding: var(--gf-gap-5) var(--gf-gap-3) var(--gf-gap-5);
+  max-width: var(--gf-measure);
+  background: var(--gf-ground);
+  color: var(--gf-ink);
+  font-family: var(--gf-font);
+  font-size: var(--gf-text);
+  line-height: 1.8;
+  /* 日本語の行頭に句読点や閉じ括弧が来ないようにする。 */
+  line-break: strict;
+  overflow-wrap: anywhere;
+  -webkit-text-size-adjust: 100%;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.45;
+  font-weight: 700;
+  text-wrap: balance;
+}
+
+h1 {
+  margin: 0 0 var(--gf-gap-4);
+  font-size: var(--gf-text-h1);
+  letter-spacing: 0.01em;
+}
+
+h2 {
+  margin: var(--gf-gap-5) 0 var(--gf-gap-2);
+  font-size: var(--gf-text-h2);
+}
+
+p {
+  margin: 0 0 var(--gf-gap-3);
+}
+
+ul,
+ol {
+  margin: 0 0 var(--gf-gap-3);
+  padding-left: 1.4em;
+}
+
+li {
+  margin-bottom: var(--gf-gap-1);
+}
+
+small {
+  display: inline-block;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+  line-height: 1.7;
+}
+
+code {
+  font-family: var(--gf-font-mono);
+  font-size: 0.9em;
+  background: var(--gf-surface);
+  padding: 0.1em 0.35em;
+  border-radius: var(--gf-radius);
+}
+
+hr {
+  margin: var(--gf-gap-5) 0 var(--gf-gap-3);
+  border: 0;
+  border-top: 1px solid var(--gf-rule);
+}
+
+/*
+ * リンクは**色ではなく下線**で示す。無彩色にすると色による区別が使えないので、
+ * 下線を外さないこと。下線の位置を下げて、日本語の文字と重ならないようにする。
+ */
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 1px;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+/*
+ * キーボードで辿っている位置を必ず見せる。**無彩色の設計でいちばん失いやすい**のが
+ * ここで、輪郭が無いと「いまどこに居るか」を示す手がかりが全く無くなる。
+ */
+:focus-visible {
+  outline: 2px solid var(--gf-ink);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ==========================================================================
+   フォーム
+   ========================================================================== */
+
+/*
+ * 入力欄は**幅を CSS が持つ**。`size` / `cols` 属性は使わない——狭い端末で
+ * layout viewport を広げ、ページ全体を縮める（#282 で実測。`src/legal.ts`）。
+ */
+label {
+  display: block;
+  margin-bottom: var(--gf-gap-1);
+  font-weight: 700;
+}
+
+input[type='text'],
+input[type='email'],
+textarea {
+  display: block;
+  width: 100%;
+  padding: 0.55em 0.7em;
+  border: 1px solid var(--gf-rule);
+  border-radius: var(--gf-radius);
+  background: var(--gf-ground);
+  color: var(--gf-ink);
+  font: inherit;
+  /* **16px を下回らせない。** iOS は小さい文字の入力欄で自動的に拡大する。 */
+  font-size: max(1rem, var(--gf-text));
+}
+
+textarea {
+  min-height: 6.5em;
+  resize: vertical;
+  line-height: 1.7;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--gf-ink-faint);
+}
+
+form {
+  margin: 0 0 var(--gf-gap-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-3);
+  align-items: stretch;
+}
+
+/* `<p>` で包まれた項目が二重に余白を持たないようにする。 */
+form p {
+  margin: 0;
+}
+
+/* ==========================================================================
+   ボタン
+   ========================================================================== */
+
+button {
+  align-self: flex-start;
+  padding: 0.6em 1.3em;
+  border: 1px solid var(--gf-ink);
+  border-radius: var(--gf-radius);
+  background: var(--gf-ink);
+  color: var(--gf-ground);
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+button:hover {
+  opacity: 0.85;
+}
+
+button:disabled {
+  border-color: var(--gf-rule);
+  background: var(--gf-rule);
+  color: var(--gf-ink-faint);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+/* ==========================================================================
+   知らせ（エラー・但し書き）
+   ========================================================================== */
+
+.error {
+  margin-bottom: var(--gf-gap-3);
+  padding: var(--gf-gap-2) var(--gf-gap-3);
+  border-left: 3px solid var(--gf-danger);
+  background: var(--gf-danger-ground);
+  color: var(--gf-danger);
+  border-radius: 0 var(--gf-radius) var(--gf-radius) 0;
+}
+
+.gf-draft-notice,
+.gf-ip-notice,
+.generate-message,
+.gf-blocked-categories {
+  margin-bottom: var(--gf-gap-3);
+  padding: var(--gf-gap-2) var(--gf-gap-3);
+  border-left: 3px solid var(--gf-rule);
+  background: var(--gf-surface);
+  border-radius: 0 var(--gf-radius) var(--gf-radius) 0;
+}
+
+/* ==========================================================================
+   作品（ここだけが色を持つ）
+   ========================================================================== */
+
+/*
+ * ロード中画面の見た目（#30）。**`src/work-page.ts` の `<style>` から移設した。**
+ *
+ * 枠の縦横比は撮影の大きさ（`src/ogp.ts` の OGP_IMAGE_WIDTH / OGP_IMAGE_HEIGHT）と
+ * 揃える。**スクリーンショットが枠の予告になる**ようにするためで、別々の比率にすると
+ * 読み込みが終わった瞬間に版面が飛ぶ。
+ *
+ * **この数値は `src/ogp.ts` の写しである。** CSS からは定数を読めないため、
+ * `test/page-shell.test.ts` が両者の一致を機械で照合する。
+ */
+.gf-context,
+.gf-frame {
+  display: block;
+  width: 100%;
+  max-width: 600px;
+}
+
+.gf-shot {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1200 / 630;
+  background: #111;
+  border-radius: var(--gf-radius);
+}
+
+.gf-shot-pending {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--gf-gap-3);
+  color: #ccc;
+  text-align: center;
+}
+
+.gf-frame {
+  aspect-ratio: 1200 / 630;
+  border: 0;
+  border-radius: var(--gf-radius);
+  background: #000;
+}
+
+.gf-author,
+.gf-parent,
+.gf-fork,
+.gf-fork-note,
+.gf-forks {
+  margin: var(--gf-gap-1) 0;
+}
+
+.gf-fork-note {
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-fork-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.gf-report,
+.gf-reported {
+  color: var(--gf-ink-faint);
+  font-size: var(--gf-text-small);
+}
+
+/* ==========================================================================
+   ヘッダ
+   ========================================================================== */
+
+/*
+ * サービス名だけを出す 1 行（#266）。**見出しではない。**
+ *
+ * 大きくすると、その画面の `<h1>` と主役を争う。小さく・淡くして、
+ * 「いまどこに居るか」の手がかりに留める。
+ */
+.gf-header {
+  margin-bottom: var(--gf-gap-4);
+  padding-bottom: var(--gf-gap-2);
+  border-bottom: 1px solid var(--gf-rule-soft);
+  font-size: var(--gf-text-small);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.gf-header a {
+  color: var(--gf-ink-soft);
+  text-decoration: none;
+}
+
+.gf-header a:hover {
+  color: var(--gf-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+/* ==========================================================================
+   フッタ
+   ========================================================================== */
+
+.gf-footer {
+  margin-top: var(--gf-gap-5);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-footer p {
+  margin: 0;
+}
+
+/* ==========================================================================
+   動きを減らす設定を尊重する
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

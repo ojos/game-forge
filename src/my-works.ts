@@ -74,7 +74,7 @@ import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/work-page.ts` もそこから取っている）。
-import { escapeHtml } from './html.js';
+import { escapeHtml, siteHead } from './html.js';
 import { WORK_PAGE_PREFIX, looksStalled, workPagePath } from './work-page.js';
 
 /**
@@ -296,11 +296,7 @@ ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
     ? `<p>新しい ${MAX_LISTED_WORKS} 件までを表示しています。</p>`
     : '';
 
-  return `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>あなたの作品 - Game Forge</title>
+  return `${siteHead({ title: 'あなたの作品 - Game Forge', noindex: true })}
 <h1>あなたの作品</h1>
 <p>生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>
 ${body}

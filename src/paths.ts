@@ -12,6 +12,16 @@
  * 依存が生まれない。
  */
 
+/**
+ * 公開トップ（8.1 / #266）。
+ *
+ * 画面を提供するのは `src/home.ts` だが、全画面共通のヘッダ（`src/html.ts` の
+ * `siteHead`）がここへ送り返す。`src/html.ts` は**誰からも借りられる葉**であり、
+ * `src/home.ts` はその `siteHead` を使うため、直接 import すると循環参照になる。
+ * `SIGNUP_PATH` と同じ理由でこちらへ置く（`src/home.ts` は再輸出するだけ）。
+ */
+export const HOME_PATH = '/';
+
 /** 登録画面（招待コードの入力）。 */
 export const SIGNUP_PATH = '/signup';
 

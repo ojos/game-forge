@@ -45,6 +45,7 @@
  * セッション cookie は `SameSite=Lax`（8.1）で、他サイトからの POST には
  * そもそも cookie が乗らない。`src/publish.ts` と同じ理由でトークンを足していない。
  */
+import { siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import { LOGIN_PATH } from './auth/google.js';
 import type { GenerationJob, GenerationPipeline } from './generate.js';
@@ -122,11 +123,7 @@ function wantsHtml(request: Request): boolean {
  */
 function refusal(heading: string, body: string, status: number): Response {
   return html(
-    `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>${heading} - Game Forge</title>
+    `${siteHead({ title: `${heading} - Game Forge`, noindex: true })}
 <h1>${heading}</h1>
 <p>${body}</p>
 ${siteFooter()}`,

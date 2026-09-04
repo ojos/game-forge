@@ -87,7 +87,7 @@ import { checkGenerationQuota, describeQuotaRejection, QUOTA_EXCEEDED_STATUS } f
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { escapeHtml } from './html.js';
+import { escapeHtml, siteHead } from './html.js';
 import type { SizeConsent } from './source-size.js';
 import {
   MAX_SOURCE_BYTES,
@@ -150,11 +150,7 @@ function wantsHtml(request: Request): boolean {
  */
 function refusal(heading: string, body: string, status: number): Response {
   return html(
-    `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>${heading} - Game Forge</title>
+    `${siteHead({ title: `${heading} - Game Forge`, noindex: true })}
 <h1>${heading}</h1>
 <p>${body}</p>
 ${siteFooter()}`,
@@ -226,11 +222,7 @@ const SIZE_WARNING_STATUS = 409;
  */
 function sizeWarningPage(parentId: string, prompt: string, bytes: number): Response {
   return html(
-    `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>この作品はすでに大きめです - Game Forge</title>
+    `${siteHead({ title: 'この作品はすでに大きめです - Game Forge', noindex: true })}
 <h1>この作品はすでに大きめです</h1>
 <p>元のソースは ${groupDigits(bytes)} バイトあり、上限 ${groupDigits(MAX_SOURCE_BYTES)} バイトの 80%（${groupDigits(SOURCE_SIZE_WARNING_BYTES)} バイト）を超えています。</p>
 <p>このまま改造できます。ただし出来上がったソースが上限を超えると、収め直すためにもう 1 回ぶんの生成枠が要ることがあります。</p>
@@ -266,11 +258,7 @@ function sizeWarningPage(parentId: string, prompt: string, bytes: number): Respo
  */
 function tidyOfferPage(parentId: string, prompt: string, bytes: number): Response {
   return html(
-    `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>整理してから改造しますか - Game Forge</title>
+    `${siteHead({ title: '整理してから改造しますか - Game Forge', noindex: true })}
 <h1>整理してから改造しますか</h1>
 <p>元のソースは ${groupDigits(bytes)} バイトあり、改造できる上限 ${groupDigits(MAX_SOURCE_BYTES)} バイトを超えています。</p>
 <p>このまま改造することはできませんが、<strong>いったん整理して ${groupDigits(MAX_SOURCE_BYTES)} バイト以内に収めてから</strong>、指示のとおりに改造できます。</p>

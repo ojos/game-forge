@@ -97,7 +97,7 @@ import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/invite-issuance.ts` も
 // そこから取っている）。同じ関数をこのモジュールで作り直さない。
 import {  signupPathFrom } from './signup.js';
-import { escapeHtml } from './html.js';
+import { escapeHtml, siteHead } from './html.js';
 
 /**
  * 作品ページの接頭辞。
@@ -214,7 +214,6 @@ export const STALE_AFTER_SECONDS = 900;
  * `false` のときに「常に偽」の比較として分岐が消えないようにしている。
  */
 export const GENERATION_IS_SYNCHRONOUS: boolean = false;
-
 
 /** 表示に使う `games` の 1 行（作者名と親作品を結合して引く）。 */
 interface WorkRow {
@@ -647,12 +646,13 @@ export function renderWorkPage(view: WorkPageView): string {
   // 公開済みで外すのは体裁の問題ではない。**`noindex` を付けたページのカードを
   // 描かないクローラがある**ため、付けたままだと 5.4 の「公開して共有」が、
   // 共有先で画像も題名も出ないという形で黙って壊れる。
-  const robots = view.published ? '' : '\n<meta name="robots" content="noindex">';
-
-  return `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">${refresh}${robots}
-<title>${escapeHtml(documentTitleOf(view))}</title>${ogpMeta(view)}${loadingScreenStyle(view)}
+  return `${siteHead({
+    // **公開前の作品を検索避けする。** 公開して初めて外へ出す（5.4）。
+    title: documentTitleOf(view),
+    noindex: !view.published,
+    beforeTitle: refresh,
+    extraHead: ogpMeta(view),
+  })}
 <h1>作品</h1>
 ${sectionFor(view)}
 ${title}${ipNotice}${reportSection(view)}
@@ -1449,36 +1449,6 @@ ${daily}${form}`;
 }
 
 /**
- * ロード中画面の見た目（#30）。
- *
- * **公開済みのときだけ出す。** 他の状態の画面はこの規則を 1 つも使わない。
- *
- * **外部資材を読まない。** ここで web フォントや CSS ファイルを引くと、3.4-5 が
- * 埋めようとしている数秒に、埋めるための資材の待ち時間を足すことになる。
- *
- * 枠の縦横比を撮影の大きさ（`src/ogp.ts`）から取るのは、**スクリーンショットが枠の
- * 予告になる**ようにするためである。別々の比率にすると、読み込みが終わった瞬間に
- * 版面が飛ぶ。
- *
- * @param view 表示に必要な値
- * @returns HTML（公開済みでなければ空文字）
- */
-function loadingScreenStyle(view: WorkPageView): string {
-  if (!view.published) {
-    return '';
-  }
-  return `
-<style>
-  .gf-context, .gf-frame { display: block; width: 100%; max-width: ${OGP_IMAGE_WIDTH / 2}px; }
-  .gf-shot { width: 100%; height: auto; aspect-ratio: ${OGP_IMAGE_WIDTH} / ${OGP_IMAGE_HEIGHT}; background: #111; }
-  .gf-shot-pending { display: flex; align-items: center; justify-content: center; color: #ccc; }
-  .gf-frame { aspect-ratio: ${OGP_IMAGE_WIDTH} / ${OGP_IMAGE_HEIGHT}; border: 0; background: #000; }
-  .gf-author, .gf-parent, .gf-fork, .gf-fork-note, .gf-forks { margin: 0.4rem 0; }
-  .gf-fork-note { font-size: 0.85em; }
-</style>`;
-}
-
-/**
  * 作品が見つからないときの応答。
  *
  * **理由を分けない。** 「id の形が違う」「行が無い」「他人の作品だ」のどれであっても
@@ -1489,11 +1459,7 @@ function loadingScreenStyle(view: WorkPageView): string {
  */
 function notFound(): Response {
   return html(
-    `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>作品が見つかりません - Game Forge</title>
+    `${siteHead({ title: '作品が見つかりません - Game Forge', noindex: true })}
 <h1>作品が見つかりません</h1>
 <p>URL が正しいかご確認ください。</p>
 ${siteFooter()}`,
@@ -1979,11 +1945,7 @@ function seeOther(location: string): Response {
  */
 function removeRefusal(heading: string, body: string, status: number): Response {
   return html(
-    `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>${heading} - Game Forge</title>
+    `${siteHead({ title: `${heading} - Game Forge`, noindex: true })}
 <h1>${heading}</h1>
 <p>${body}</p>
 ${siteFooter()}`,

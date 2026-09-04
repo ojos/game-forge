@@ -5,7 +5,10 @@ import {
   DIRECTIVE_DENYLIST_SECTION_HEADING,
   GO_DIRECTIVE_DENYLIST,
   GO_IMPORT_ALLOWLIST,
+  TEMPLATE_MODULE_PATH,
+  isExternalModulePath,
   renderAllowlistSection,
+  requiresVendoring,
 } from '../src/go-import-allowlist.js';
 import { findDeniedDirectives, inspectGoImports, scanImports } from '../src/go-imports.js';
 
@@ -450,31 +453,69 @@ describe('一覧の機械照合（#17 acceptance 2）', () => {
     return [...source.matchAll(/^\t(?:_ )?"([^"]+)"$/gmu)].map((matched) => matched[1]!);
   }
 
-  /** 一覧のうち標準ライブラリでないもの。vendor へ焼き込む対象はこれだけ。 */
-  const externalPaths = GO_IMPORT_ALLOWLIST.map((entry) => entry.path).filter((path) =>
-    path.split('/')[0]!.includes('.'),
+  /** 一覧のうち標準ライブラリでないもの。イメージへ焼き込む必要があるのはこれだけ。 */
+  const nonStdlibPaths = GO_IMPORT_ALLOWLIST.map((entry) => entry.path).filter(
+    isExternalModulePath,
   );
 
-  it('vendor 焼き込みの対象が一覧の外部パッケージと一致する', () => {
+  /** そのうち vendor へ焼き込む対象。**テンプレート自身のパッケージは入らない。** */
+  const vendoredPaths = nonStdlibPaths.filter(requiresVendoring);
+
+  it('vendor 焼き込みの対象が一覧の外部モジュールと一致する', () => {
     // ずれると「プロンプトと AST 検査は許すが、vendor に無いのでビルドが落ちる」
     // 状態になる。--network=none で回す以上、実行時に取りに行くことはできない。
-    expect(importsOf(env.TEST_VENDOR_DEPS).sort()).toEqual([...externalPaths].sort());
+    expect(importsOf(env.TEST_VENDOR_DEPS).sort()).toEqual([...vendoredPaths].sort());
   });
 
-  it('隔離ビルドの検査用サンプルが外部パッケージをすべて使う', () => {
+  it('vendor 焼き込みの対象が空でない', () => {
+    // 上の比較は、判定を緩めすぎて対象が 0 件になっても「両方空」で通ってしまう。
+    // **この検査が空振りしていないこと**を別に見る（#285）。
+    expect(vendoredPaths.length).toBeGreaterThan(0);
+  });
+
+  it('隔離ビルドの検査用サンプルが標準ライブラリ以外をすべて使う', () => {
     // 標準ライブラリだけのサンプルでは vendor が空でもビルドが通る。焼き込みが
-    // 効いているかを見るには、外部パッケージを実際に import する必要がある。
+    // 効いているかを見るには、実際に import する必要がある。
+    //
+    // **対象は vendor へ入るものだけではない。** テンプレート自身のパッケージ
+    // （`gameforge.local/sandbox/jpfont`。#285）は vendor に入らないが、
+    // **Dockerfile の `COPY template/` が取りこぼしていれば `--network=none` の
+    // ビルドで初めて分かる。** 配る現物のイメージで確かめる点は同じなので、
+    // サンプルの側は「標準ライブラリ以外すべて」を要求する。
     const sample = importsOf(env.TEST_BUILD_SAMPLE);
-    for (const path of externalPaths) {
+    for (const path of nonStdlibPaths) {
       expect(sample, path).toContain(path);
     }
   });
 
-  it('標準ライブラリを vendor 焼き込みの対象に含めない', () => {
-    // 標準ライブラリは vendor されない。混ぜると go mod vendor が落ちる。
-    expect(importsOf(env.TEST_VENDOR_DEPS).every((path) => path.split('/')[0]!.includes('.'))).toBe(
-      true,
-    );
+  it('vendor へ入らないものを vendor 焼き込みの対象に含めない', () => {
+    // 標準ライブラリは vendor されない。テンプレート自身のパッケージも
+    // （`go mod vendor` はモジュール自身を集めないため）vendor されない。
+    // どちらも混ぜると、宣言と実体が食い違う。
+    expect(importsOf(env.TEST_VENDOR_DEPS).every(requiresVendoring)).toBe(true);
+  });
+
+  it('テンプレート自身のパッケージを vendor 焼き込みの対象から外す（#285）', () => {
+    // **判定側の意図はここにある。** `gameforge.local` は先頭セグメントにドットを
+    // 含むので「外部」に見えるが、テンプレート自身のモジュールなので
+    // `go mod vendor` の対象にならない。
+    expect(nonStdlibPaths).toContain('gameforge.local/sandbox/jpfont');
+    expect(vendoredPaths).not.toContain('gameforge.local/sandbox/jpfont');
+  });
+
+  it('モジュール自身かどうかをセグメント境界で見る', () => {
+    // **先頭一致で見ると、名前の似た別モジュールが黙って vendor 対象から外れる。**
+    // 外れたものは「プロンプトと AST 検査は許すが vendor に無い」状態になり、
+    // 生成のたびにビルドが落ちる。
+    expect(requiresVendoring(`${TEMPLATE_MODULE_PATH}/jpfont`)).toBe(false);
+    expect(requiresVendoring(TEMPLATE_MODULE_PATH)).toBe(false);
+    expect(requiresVendoring(`${TEMPLATE_MODULE_PATH}foo/x`)).toBe(true);
+    expect(requiresVendoring(`${TEMPLATE_MODULE_PATH}.example.com/x`)).toBe(true);
+    // 外部モジュールと標準ライブラリは今までどおり。
+    expect(requiresVendoring('golang.org/x/image/font/basicfont')).toBe(true);
+    expect(requiresVendoring('example.com/whatever')).toBe(true);
+    expect(requiresVendoring('math/rand')).toBe(false);
+    expect(isExternalModulePath('math/rand')).toBe(false);
   });
 
   it('一覧に重複が無い', () => {

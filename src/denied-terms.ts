@@ -43,6 +43,22 @@
  * 算術ピクセル描画・`strconv` での組み立て・同義語・綴りの崩しは素通りする。
  * **語を足すのは運用の仕事**（8.4 の通報から来る）であって、この検査の完成条件ではない。
  *
+ * ## 片仮名の綴りを別の行として持つ（#285）
+ *
+ * **正規化は片仮名と平仮名を同じにしない。** `normalizeForMatching`（NFKC ＋ 小文字化）は
+ * 半角片仮名を全角片仮名へ寄せるので `ﾒｸﾗ` は `メクラ` で拾えるが、**`めくら` の行では
+ * 拾えない。** 平仮名だけを持つ語は、片仮名で書かれた瞬間に素通りする。
+ *
+ * **#285 で生成物が日本語を画面へ出せるようになった**（`jpfont`。仕様 6.1）。焼いたのは
+ * ドットのフォントで、そこへ出る日本語は片仮名の割合が高い。**穴が塞がっていなかった
+ * のではなく、通る文字列の量が変わった**ので種を厚くする。`きちがい` / `キチガイ` は
+ * 元から両方あり、揃っていなかったのは残りのほうである。
+ *
+ * **平仮名へ寄せて正規化する形は採らない。** 突き合わせ側で片仮名を平仮名へ畳むと、
+ * **表の全行に効く**——`おし` を落とした理由（「おしまい」に含まれる）と同じ衝突が、
+ * 片仮名側の語（`オシ` → 「オシャレ」）でも起きる。**誤検出は 1 回ぶんの枠と費用を
+ * 消す**ので、効く範囲を 1 語ずつに閉じられる「行を足す」ほうを採る。
+ *
  * ## 誤検出を避けるために `match` を持つ
  *
  * 日本語には語の区切りが無いので部分一致で見るしかない。一方、英字の語を部分一致に
@@ -105,6 +121,15 @@ export type DeniedTermCategory =
  * - `鮮人` — 「朝鮮人」に含まれる。**こちらは差別語ではない。**
  * - `おし` — 「おしまい」「おしえる」ほか多数に含まれる。
  * - `chink` — 英語の "a chink of light" / "a chink in the armor" が正当な用法。
+ * - `カタワ` — 「カタワレ時」（片割れ時）に含まれる。
+ * - `オシ` — 「オシャレ」「オシロスコープ」ほかに含まれる（`おし` と同じ理由）。
+ * - `気ちがい` — 「雰囲気ちがいますね」に含まれる。
+ * - `チョン` — 「チョンボ」「チョンマゲ」に含まれる。
+ * - `おかま` — 「おかまいなく」に含まれる。
+ * - `ホモ` — 「ホモサピエンス」に含まれる。
+ * - `エタ` — 「エタノール」に含まれる。
+ * - `非人` — 「非人道的」「非人間的」に含まれる。
+ * - `盲` — 「盲点」「色盲」「盲導犬」に含まれる。
  */
 export const DENIED_TERMS: readonly DeniedTerm[] = [
   // 日本語。**語の区切りが無いので部分一致で見る。**
@@ -113,10 +138,15 @@ export const DENIED_TERMS: readonly DeniedTerm[] = [
   { term: '気違い', match: 'substring', category: 'discriminatory' },
   { term: '気狂い', match: 'substring', category: 'discriminatory' },
   { term: 'つんぼ', match: 'substring', category: 'discriminatory' },
+  { term: 'ツンボ', match: 'substring', category: 'discriminatory' },
   { term: 'めくら', match: 'substring', category: 'discriminatory' },
+  { term: 'メクラ', match: 'substring', category: 'discriminatory' },
   { term: 'びっこ', match: 'substring', category: 'discriminatory' },
+  { term: 'ビッコ', match: 'substring', category: 'discriminatory' },
+  { term: '白痴', match: 'substring', category: 'discriminatory' },
   { term: '土人', match: 'substring', category: 'discriminatory' },
   { term: '支那人', match: 'substring', category: 'discriminatory' },
+  { term: 'シナ人', match: 'substring', category: 'discriminatory' },
   { term: '三国人', match: 'substring', category: 'discriminatory' },
 
   // 英字。**語一致で見る**（部分一致にすると無関係な語の中の綴りを拾う）。

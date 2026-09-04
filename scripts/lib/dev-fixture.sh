@@ -94,18 +94,13 @@ dev_fixture_up() {
   #
   # **開発者の .wrangler/state を汚さない。** 検査のために作った `games` 行が手元へ残ると、
   # 次に画面を開いた人が「知らない作品」を見ることになる。
-  WORK="$(mktemp -d "${TMPDIR:-/tmp}/gf-page-width.XXXXXX")"
+  #
+  # **ここで `trap` を張らない。** 後片付けは `dev_fixture_down` が持ち、
+  # `trap` は呼ぶ側が張る（このファイルの「使い方」）。ここでも張ると、呼ぶ側の
+  # `trap dev_fixture_down EXIT` を黙って上書きする——**動いてはいるが、説明と実装が
+  # 食い違う**（Copilot の指摘。2026-09-04）。
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/gf-dev-fixture.XXXXXX")"
   DEV_PID=""
-  cleanup() {
-    if [[ -n "$DEV_PID" ]]; then
-      # プロセスグループごと落とす。wrangler は workerd を子として持つため、
-      # 親だけを落とすと workerd がポートを掴んだまま残る。
-      kill -- "-$DEV_PID" 2>/dev/null || kill "$DEV_PID" 2>/dev/null || true
-      wait "$DEV_PID" 2>/dev/null || true
-    fi
-    rm -rf "$WORK"
-  }
-  trap cleanup EXIT
 
   STATE="$WORK/state"
   mkdir -p "$STATE"

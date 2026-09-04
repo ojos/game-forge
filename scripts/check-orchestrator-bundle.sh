@@ -44,6 +44,9 @@
 # `scripts/verify.sh` の接地信号に含めてよい（`scripts/check-page-width.sh` を
 # 外した理由とは条件が違う）。
 #
+# **束ねるのは `scripts/bundle-orchestrator.sh` である。** ここは metafile を読むだけで、
+# esbuild を自前で呼ばない（束ね方の写しを作らないため。あちらの `--metafile`）。
+#
 # 使い方:
 #   bash scripts/check-orchestrator-bundle.sh
 #
@@ -58,22 +61,16 @@ fail() {
   exit 1
 }
 
-command -v npx >/dev/null 2>&1 || fail "npx が見つかりません。"
 [[ -f src/orchestrator/handler.ts ]] || fail "src/orchestrator/handler.ts がありません。"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gf-orch-bundle.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-# **束ね方は `scripts/bundle-orchestrator.sh` と揃える。** 別の設定で束ねると、
-# ここで見ているものと本番へ載るものが別になる。metafile を採るためだけに
-# `--outfile=/dev/null` を足している。
-npx esbuild src/orchestrator/handler.ts \
-  --bundle \
-  --platform=node \
-  --format=esm \
-  --metafile="$WORK/meta.json" \
-  --outfile=/dev/null >"$WORK/esbuild.log" 2>&1 ||
-  { sed 's/^/    /' "$WORK/esbuild.log" >&2; fail "束ねられませんでした。"; }
+# **束ね方を写さない。** ここで自前に esbuild を呼ぶと、フラグが写しになって静かに
+# ずれ、**検査している束と本番へ載る束が別物になる**（Copilot の指摘。2026-09-04）。
+# 正本（`scripts/bundle-orchestrator.sh`）に metafile を出させ、それを読む。
+bash scripts/bundle-orchestrator.sh --metafile "$WORK/meta.json" >"$WORK/bundle.log" 2>&1 ||
+  { sed 's/^/    /' "$WORK/bundle.log" >&2; fail "束ねられませんでした。"; }
 
 node -e '
 const fs = require("node:fs");

@@ -77,7 +77,10 @@ import {
   REVISE_PATH,
   REVISE_PROMPT_FIELD,
   REVISE_SEQ_FIELD,
+  WORK_PAGE_PREFIX,
+  workPagePath,
 } from './paths.js';
+import { UNKNOWN_FAILURE_MESSAGE, failureMessageOf } from './generation-failure.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
 import {
@@ -100,29 +103,12 @@ import {  signupPathFrom } from './signup.js';
 import { escapeHtml, siteHead } from './html.js';
 
 /**
- * 作品ページの接頭辞。
+ * 作品ページの接頭辞とパスの組み立て。
  *
- * **`/works/` にした。** サンドボックス側の `/g/`（公開）と `/p/`（プレビュー）と
- * 綴りを分けてある。ログや問い合わせで取り違えないことを優先した
- * （`src/games.ts` の `createPreviewKey` が UUID を避けたのと同じ判断）。
- *
- * 末尾の `/` は前方一致の規約である（`src/routes.ts` の `findMalformedPrefixRoutes`）。
+ * **正本は `src/paths.ts` である**（#290 で移した。理由はあちら）。ここから再輸出するのは、
+ * 既にこのモジュールから読んでいる箇所を動かさないためで、値を二重に持っているわけではない。
  */
-export const WORK_PAGE_PREFIX = '/works/';
-
-/**
- * 作品ページのパスを組み立てる。
- *
- * **綴りを持つのはこのモジュールだけである。** 生成の経路（`src/generate.ts`）も
- * 生成画面（`src/generate-page.ts`）もここから取る。3 か所に `/works/` と書くと、
- * 変えたときに片方だけが古くなる。
- *
- * @param gameId 作品 id
- * @returns アプリ用ホスト上の絶対パス
- */
-export function workPagePath(gameId: string): string {
-  return `${WORK_PAGE_PREFIX}${gameId}`;
-}
+export { WORK_PAGE_PREFIX, workPagePath };
 
 /**
  * 公開を取り下げる操作（tombstone 化。5.3 / M5-4 / #35）。
@@ -316,47 +302,6 @@ export interface ForkNeighbors {
 const NO_FORKS: ForkNeighbors = { total: 0, items: [], morePath: null, backPath: null };
 
 /**
- * 失敗の分類名ごとの固定文言（8.3）。
- *
- * **生成画面（`src/generate-page.ts`）の `GENERATE_MESSAGES` を再利用しない。**
- * あちらは「送信した要求が断られた」ときの文言で、こちらは「終わった仕事が失敗
- * だった」ときの文言である。時制も、利用者にできることも違う。共有すると、
- * どちらかに合わない文言を両方が我慢することになる。
- *
- * **鍵に無い値は既定の文言へ落とす。** 分類名は D1 から来るので、コードを戻した・
- * 進めた状況で知らない値が入っていることがありうる。
- */
-const FAILURE_MESSAGES: Readonly<Record<GenerationErrorCode, string>> = {
-  'source-rejected':
-    '生成されたコードに、このサービスで許可していない機能の呼び出しが含まれていました。' +
-    '別の言い方でもう一度お試しください。',
-  'build-failed':
-    '生成されたコードが最後までビルドできませんでした。' +
-    '何度か作り直しましたが通らなかったため、ここで止めています。別の言い方でもう一度お試しください。',
-  // **「コードが悪い」と言わない**（#164）。時間切れはこちら側の容量の問題であり、
-  // 作りたいものを簡単にしても直らない。**利用者にできることは「もう一度」だけ**
-  // なので、それだけを言う。
-  'build-timeout':
-    'ビルドが時間内に終わりませんでした。こちら側の混み具合による一時的なもので、' +
-    '作りたいものの内容は関係ありません。そのままもう一度お試しください。',
-  // **カテゴリ名をここへ書かない**（値ごとに変わる）。8.2 は「カテゴリ名までを返し、
-  // 検出箇所・スコア・閾値は返さない」と定めており、カテゴリ名は `moderation_blocks`
-  // から引いて画面側が足す（{@link WorkPageView.blockedCategories}）。
-  //
-  // **「作り直します」と言わない。** `source-rejected` と `build-failed` は
-  // こちらが何度か試した結果だが、こちらは**入力そのものが止められている**ので
-  // 何度押しても同じである。**利用者にできることは言い直すことだけ**なので、それだけを言う。
-  'prompt-blocked':
-    '安全性の検査により、この内容では生成できませんでした。' +
-    '同じ内容でもう一度お試しいただいても結果は変わりません。表現を変えて言い直してください。',
-  internal: '生成の途中で問題が起きました。しばらくしてからもう一度お試しください。',
-};
-
-/** 分類できない失敗に出す文言。 */
-const UNKNOWN_FAILURE_MESSAGE =
-  '生成できませんでした。しばらくしてからもう一度お試しください。';
-
-/**
  * 自動更新の間隔（秒）。
  *
  * **5 秒。** 生成中のあいだだけ付ける。1 回の再読み込みで増えるのは D1 の読み取り
@@ -443,19 +388,6 @@ function viewStateOf(state: string, stalled: boolean): ViewState {
     return 'failed';
   }
   return stalled ? 'stalled' : 'working';
-}
-
-/**
- * 失敗の分類名に対応する固定文言を選ぶ。
- *
- * @param code D1 の `generation_error`
- * @returns 表示する文言
- */
-export function failureMessageOf(code: string | null): string {
-  if (code !== null && Object.prototype.hasOwnProperty.call(FAILURE_MESSAGES, code)) {
-    return FAILURE_MESSAGES[code as GenerationErrorCode];
-  }
-  return UNKNOWN_FAILURE_MESSAGE;
 }
 
 /** 画面を組み立てるのに必要なものだけを集めた入力。 */

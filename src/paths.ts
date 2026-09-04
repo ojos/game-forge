@@ -22,6 +22,43 @@
  */
 export const HOME_PATH = '/';
 
+/**
+ * 作品ページの接頭辞（5.4 / #290）。
+ *
+ * **`/works/` にした。** サンドボックス側の `/g/`（公開）と `/p/`（プレビュー）と
+ * 綴りを分けてある。ログや問い合わせで取り違えないことを優先した
+ * （`src/games.ts` の `createPreviewKey` が UUID を避けたのと同じ判断）。
+ *
+ * 末尾の `/` は前方一致の規約である（`src/routes.ts` の `findMalformedPrefixRoutes`）。
+ *
+ * # なぜ `src/work-page.ts` から移したのか（#290）
+ *
+ * **オーケストレータ Lambda の束に、作品ページの実装が丸ごと入っていた。**
+ * `src/generate.ts` と `src/mail/generation-notice.ts` が `workPagePath` を
+ * 使うためだけに `src/work-page.ts` を import し、そこから `siteFooter` /
+ * `siteHead` を通じて画面 4 本が束へ引き込まれていた。
+ *
+ * その結果、**画面だけを触っても Lambda の `CodeSha256` が変わり**、#241 の関門が
+ * 本番配備を止めた（#266 と #283 で 2 回）。パスの綴りは値だけの葉に置き、
+ * 画面の実装から切り離す。**この規約の適用例としても素直である**——提供する側
+ * （作品ページ）と、そこへ送り返す側（生成・メール）が別モジュールになっている。
+ */
+export const WORK_PAGE_PREFIX = '/works/';
+
+/**
+ * 作品ページのパスを組み立てる。
+ *
+ * **綴りを持つのはこのモジュールだけである。** 生成の経路（`src/generate.ts`）も
+ * 生成画面（`src/generate-page.ts`）もここから取る。3 か所に `/works/` と書くと、
+ * 変えたときに片方だけが古くなる。
+ *
+ * @param gameId 作品 id
+ * @returns アプリ用ホスト上の絶対パス
+ */
+export function workPagePath(gameId: string): string {
+  return `${WORK_PAGE_PREFIX}${gameId}`;
+}
+
 /** 登録画面（招待コードの入力）。 */
 export const SIGNUP_PATH = '/signup';
 

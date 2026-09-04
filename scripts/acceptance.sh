@@ -75,6 +75,26 @@ else
   echo "[acceptance] (orchestrator) skip: terraform/orchestrator.tf not found"
 fi
 
+# 画面の実装がオーケストレータ Lambda の束に入っていないこと（#290）。
+#
+# **前寄りに置く。** esbuild 1 回で終わる（実測 10ms 前後）。ネットワークも AWS も
+# 要らないので、接地信号に含めてよい（`scripts/check-page-width.sh` を外した理由とは
+# 条件が違う）。
+#
+# **外すと、画面を触るたびに本番配備が止まる。** #266 と #283 が実際にそうなった——
+# パスを組み立てるだけの関数のために作品ページの実装が束へ入り、Lambda の
+# `CodeSha256` が変わって #241 の関門が起動した。**関門は正しく、束が汚れていた。**
+#
+# **判定はスクリプト側が持つ**（何を「画面」とみなすかの導出は
+# scripts/check-orchestrator-bundle.sh の冒頭）。
+if [[ -f src/orchestrator/handler.ts ]]; then
+  echo "[acceptance] (orchestrator-bundle) scripts/check-orchestrator-bundle.sh"
+  bash scripts/check-orchestrator-bundle.sh
+  ran_any=1
+else
+  echo "[acceptance] (orchestrator-bundle) skip: src/orchestrator/handler.ts not found"
+fi
+
 # シェルスクリプトが GNU 拡張に依存していないこと（BSD / macOS で落ちる書き方）。
 #
 # **前寄りに置く。** grep 数本で終わる。**同じ事故を 3 度繰り返した**（第 1 波の

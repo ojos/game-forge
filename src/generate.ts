@@ -60,7 +60,7 @@ import {
   failGame,
   hashJobToken,
 } from './games.js';
-import { workPagePath } from './work-page.js';
+import { workPagePath } from './paths.js';
 import { recordGenerationCost } from './cost-ledger.js';
 import { QUOTA_EXCEEDED_STATUS, checkGenerationQuota, describeQuotaRejection } from './quota.js';
 import type { MonthlyCostWarning } from './quota.js';

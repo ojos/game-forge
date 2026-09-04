@@ -31,6 +31,18 @@
  * **この決着で一覧は変わらない。** `text/v2` と `basicfont` はそのまま残る。決着したのは
  * 仕様書側の文言であり、ここを直す必要が生じたわけではない。
  *
+ * ## 一覧はテンプレート自身のパッケージも載せる（#285）
+ *
+ * **この一覧が縛るのは「生成されたソースが何を import してよいか」であって、
+ * import 先がどこから来るかではない。** `gameforge.local/sandbox/jpfont`（日本語の
+ * 埋め込みフォント）は隔離ビルドのテンプレート自身のパッケージで、外部モジュールでは
+ * ない。生成コードから見れば `basicfont` と同じ「import して使うもの」なので、
+ * ここへ載せなければ AST 検査が落とす。
+ *
+ * **ただし vendor の扱いだけが違う。** `go mod vendor` はモジュール自身のパッケージを
+ * 集めないため、`vendor-deps.go` へ書いてはいけない。この違いは
+ * {@link requiresVendoring} が持つ。
+ *
  * なお `text/v2` は許可するだけでは足りない。`text.NewGoXFace(basicfont.Face7x13)` を
  * はさむ必要があり、これを書かないとモデルは旧 `text`（v1）の書き方を出して 6 本中 6 本が
  * コンパイルに失敗する（#7 の実測。6.1「制約を並べるだけでは足りない」）。使い方は
@@ -74,6 +86,11 @@ export const GO_IMPORT_ALLOWLIST: readonly AllowedImport[] = [
     reason: '文字描画に使う埋め込みフォント。外部ファイルを読まない（6.1 の全面禁止に抵触しない）',
   },
   {
+    path: 'gameforge.local/sandbox/jpfont',
+    reason:
+      '日本語の文字描画に使う埋め込みフォント。ASCII と半角カナ ＋ JIS X 0208 の非漢字部を 16×16 のドットで持つ（漢字は無い）',
+  },
+  {
     path: 'image/color',
     reason: '描画色の指定。vector の描画 API が color.Color を受け取る',
   },
@@ -94,6 +111,69 @@ export const GO_IMPORT_ALLOWLIST: readonly AllowedImport[] = [
     reason: 'ebiten.Game.Update がゲーム終了を errors で返す（ebiten.Termination の判定）',
   },
 ];
+
+/**
+ * 隔離ビルドのテンプレートのモジュールパス（`docker/isolated-build/template/go.mod` の
+ * `module` 行）。
+ *
+ * **この一覧には 3 種類が混ざっている。** 標準ライブラリ（`math` など）、外部モジュール
+ * （`github.com/...` / `golang.org/x/...`）、そして**テンプレート自身のパッケージ**
+ * （`gameforge.local/sandbox/jpfont`。#285）である。3 つは「どこから来るか」が違い、
+ * とくに **vendor へ焼き込む必要があるかどうか**が違う（{@link requiresVendoring}）。
+ *
+ * 値を `go.mod` から読めないので、ここへ書き写している。**ずれても静かには壊れない**
+ * ——テンプレート自身のパッケージが外部扱いへ落ちれば `vendor-deps.go` との照合が赤に
+ * なり、逆にここを実在しないモジュール名にすれば、`jpfont` が外部扱いになって同じ照合が
+ * 赤になる（`test/go-imports.test.ts`）。
+ */
+export const TEMPLATE_MODULE_PATH = 'gameforge.local/sandbox';
+
+/**
+ * 標準ライブラリでない import パスか。
+ *
+ * Go の判定と同じ規則で見る——**先頭セグメントにドットを含むものが標準ライブラリの外**
+ * である（`math/rand` は含まず、`golang.org/x/image/font/basicfont` は含む）。
+ *
+ * @param path import パス
+ * @returns 標準ライブラリでなければ true
+ */
+export function isExternalModulePath(path: string): boolean {
+  return path.split('/')[0]!.includes('.');
+}
+
+/**
+ * テンプレート自身（`gameforge.local/sandbox`）のパッケージか。
+ *
+ * 先頭一致ではなく**セグメント境界で見る。** `gameforge.local/sandboxfoo/x` のような
+ * 別モジュールを取り違えると、vendor へ焼き込むべきものが黙って対象から外れる。
+ *
+ * @param path import パス
+ * @returns テンプレート自身のパッケージなら true
+ */
+export function isTemplatePackage(path: string): boolean {
+  return path === TEMPLATE_MODULE_PATH || path.startsWith(`${TEMPLATE_MODULE_PATH}/`);
+}
+
+/**
+ * vendor へ焼き込む必要がある import パスか（`docker/isolated-build/template/vendor-deps.go`）。
+ *
+ * **「標準ライブラリでない」だけでは足りない。** `go mod vendor` が集めるのは
+ * **依存モジュール**であって、モジュール自身のパッケージは vendor へ入らない。
+ * `gameforge.local/sandbox/jpfont` はテンプレート自身の一部（#285）なので、
+ * 外部モジュールと同じ扱いにすると「vendor 宣言に書いたのに vendor されない」
+ * という、宣言と実体が食い違う状態になる。
+ *
+ * **緩めた側へ倒していない。** 判定から外れるのは
+ * {@link TEMPLATE_MODULE_PATH} の下にあるものだけで、未知のホスト名は今までどおり
+ * 「焼き込みが要る」と判定される（許可リストへ架空の外部パッケージを足せば、
+ * `vendor-deps.go` との照合が赤になる）。
+ *
+ * @param path import パス
+ * @returns vendor へ焼き込む必要があれば true
+ */
+export function requiresVendoring(path: string): boolean {
+  return isExternalModulePath(path) && !isTemplatePackage(path);
+}
 
 /** 仕様書 6.1 の一覧を切り出すときの見出し。仕様書側を変えたらこちらも変える。 */
 export const ALLOWLIST_SECTION_HEADING = '#### 許可パッケージのホワイトリスト';

@@ -230,6 +230,26 @@ const ALLOWED_PACKAGES = `${renderAllowlistSection()}
  * 書かない（嘘になる）。**こちらが使わせる範囲として絞る**書き方にして、捏造の余地を
  * 減らす。
  *
+ * ## フォントを 1 つに絞る理由（#285）
+ *
+ * **日本語の埋め込みフォント（`jpfont`）を入れた結果、一覧にフォントが 2 つ並んだ。**
+ * ここでは `jpfont.Face16` だけを教える。理由は 3 つある。
+ *
+ * 1. **`jpfont` は英数字も持つ。** ASCII を含めて焼いてあるので、日本語を出すゲームで
+ *    フォントを 2 つ抱える理由が無い。混ぜると行の高さが 16px と 13px で食い違う。
+ * 2. **`basicfont` は一覧から外せない。** 外すと既存作品のフォークで親ソースの import が
+ *    拒否され、フォークが壊れる（#285 の scope.out）。**一覧に残すことと、新しい生成物へ
+ *    使わせることは別である。** 一覧は `renderAllowlistSection()` が機械的に出すので、
+ *    「一覧にあるが使わない」ことは**この節で明示するしかない**（黙っていると、モデルは
+ *    学習データで見慣れた `basicfont` を選ぶ）。
+ * 3. **収録範囲の限界を、使い方と同じ場所に書く必要がある。** 漢字は入っておらず、
+ *    収録外は代替の升目（枠に×）になる。罫線は 16 升へ収まらないので枠は `vector` で
+ *    描かせる（実測は `tools/fontbake/main.go` にある）。**どちらも「許可された API の
+ *    使い方」であって、禁止事項の節（3 節）に置くと使い方から離れる。**
+ *
+ * **プロンプトは防御ではない**（3 節の注記と同じ）。「漢字を使わない」が守られなかった
+ * ときは代替の升目が画面へ出て、作者が見て気づける——`jpfont` 側がそう作ってある。
+ *
  * ## float32 と int を混ぜないことを書く理由
  *
  * #7 の失敗のうち 2 本は int / float64 の混在だった。`vector` の座標は float32、
@@ -239,14 +259,19 @@ const API_USAGE = `許可された API の使い方（このとおりに書い�
 
 フォントと文字描画:
 
-	face := text.NewGoXFace(basicfont.Face7x13)
+	face := text.NewGoXFace(jpfont.Face16)
 	op := &text.DrawOptions{}
 	op.GeoM.Translate(8, 8)
 	op.ColorScale.ScaleWithColor(color.White)
 	text.Draw(screen, "SCORE "+strconv.Itoa(g.score), face, op)
+	text.Draw(screen, "スコア "+strconv.Itoa(g.score), face, op)
 	w, h := text.Measure("SCORE", face, 0)
 
-- basicfont.Face7x13 を text.Face や text.GoTextFace として直接渡すことはできません。必ず text.NewGoXFace ではさみます。
+- 使うフォントは 1 つだけです。英数字もひらがな・カタカナも jpfont.Face16 で描きます。許可パッケージの一覧には basicfont もありますが、これは既存の作品のために残してあるもので、新しく書くゲームでは import しません。
+- jpfont.Face16 を text.Face や text.GoTextFace として直接渡すことはできません。必ず text.NewGoXFace ではさみます。
+- 漢字を使いません。画面へ出す文字は、ひらがな・カタカナ・英数字・記号だけにします。このフォントが持っているのは ASCII と半角カナ、および JIS X 0208 の非漢字部だけで、漢字は入っていません。入っていない文字は、代わりに升目（枠に×）が画面へ出ます。
+- 枠や区切りを罫線の文字（─ │ ┌ ┐）で描きません。文字として並べても隙間なく繋がりません。枠の線は vector.StrokeRect、塗りつぶしは vector.DrawFilledRect で描きます。
+- 文字の高さは 16 ピクセルです。送り幅は半角が 8 ピクセル、全角が 16 ピクセルで、文字ごとに変わります。並べる位置を自分で計算せず、幅が要るときは text.Measure で測ります。
 - text.Draw の引数は 4 つです。座標と色は op で与えます。
 - text.Measure の戻り値は 2 つ（幅と高さ、float64）です。
 - face は毎フレーム作らず、初期化時に 1 度だけ作って構造体へ持たせます。
@@ -303,6 +328,7 @@ const SELF_CHECK = `出力する前に自分で確かめること:
 - import が許可された一覧の中だけで、そのすべてを実際に使っている
 - Update / Draw / Layout の 3 つが揃っている
 - text と vector の呼び出しが上の形と一致している
+- 画面へ出す文字列に漢字が混ざっていない（フォントに漢字は入っていません）
 - ${MAX_SOURCE_BYTES} バイト以内に収まっている`;
 
 /**

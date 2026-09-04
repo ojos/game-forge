@@ -142,10 +142,40 @@ describe('許可パッケージは正本から導出する（acceptance 2）', (
 describe('許可 API の使い方（6.1「制約を並べるだけでは足りない」/ #7 / #72）', () => {
   it('text/v2 の 3 点を書いている', () => {
     // この 3 行が無いと DeepSeek は 6 本中 6 本落ちた（#72 のコメント）。
+    // **橋渡し（`text.NewGoXFace`）を教える点は #285 でも変わらない。** 変わったのは
+    // はさむ相手が `basicfont.Face7x13` から `jpfont.Face16` になったことだけである。
     const text = renderSystemPromptText();
-    expect(text).toContain('text.NewGoXFace(basicfont.Face7x13)');
+    expect(text).toContain('text.NewGoXFace(jpfont.Face16)');
     expect(text).toContain('text.Draw の引数は 4 つです');
     expect(text).toContain('text.Measure の戻り値は 2 つ');
+  });
+
+  it('フォントを 1 つに絞り、一覧に残る basicfont を使わせない（#285）', () => {
+    // 一覧（`renderAllowlistSection()` の出力）には basicfont も並ぶ。**一覧に残す
+    // ことと、新しい生成物へ使わせることは別である**——黙っていると、モデルは
+    // 学習データで見慣れたほうを選ぶ。
+    const text = renderSystemPromptText();
+    expect(text).toContain('使うフォントは 1 つだけです');
+    expect(text).toContain('新しく書くゲームでは import しません');
+    // 一覧の行としては残っていること（外すと既存作品のフォークが壊れる）。
+    expect(GO_IMPORT_ALLOWLIST.map((entry) => entry.path)).toContain(
+      'golang.org/x/image/font/basicfont',
+    );
+    // 使い方の例としては basicfont を出さない。
+    expect(text).not.toContain('text.NewGoXFace(basicfont');
+  });
+
+  it('収録範囲の限界を使い方と同じ場所に書いている（#285）', () => {
+    // 漢字は焼いていない。守られなかったときは代替の升目が出るので画面で気づけるが、
+    // **気づけることは、書かなくてよい理由にならない。**
+    const text = renderSystemPromptText();
+    expect(text).toContain('漢字を使いません');
+    expect(text).toContain('升目');
+    // 罫線で枠を描かせない（16 升へ収まらない。実測は tools/fontbake/main.go）。
+    expect(text).toContain('罫線');
+    expect(text).toContain('vector.StrokeRect');
+    // 自己点検（7 節）へも畳んでおく。
+    expect(SYSTEM_PROMPT_SECTIONS.at(-1)).toContain('漢字が混ざっていない');
   });
 
   it('教える API は隔離ビルドで実際にコンパイルが通った形と一致する', () => {
@@ -163,10 +193,11 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
     const sample = env.TEST_BUILD_SAMPLE;
     const text = renderSystemPromptText();
     for (const fragment of [
-      'text.NewGoXFace(basicfont.Face7x13)',
+      'text.NewGoXFace(jpfont.Face16)',
       'op := &text.DrawOptions{}',
       'op.GeoM.Translate(',
       'text.Draw(screen, "SCORE "+strconv.Itoa(',
+      'text.Draw(screen, "スコア "+strconv.Itoa(',
       'vector.DrawFilledRect(screen, ',
       'inpututil.IsKeyJustPressed(ebiten.Key',
       'ebiten.IsKeyPressed(ebiten.Key',

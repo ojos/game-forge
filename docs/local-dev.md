@@ -441,6 +441,41 @@ GF_BROWSER_BIN="$(node -e "console.log(require('playwright-core').chromium.execu
 
 ---
 
+### 画面を撮る（`bash scripts/shoot-pages.sh`）
+
+**見た目は、見ないと分からない。** #282 の 2 件（フッタが `/signup` の中ほどにあった /
+`/takedown` がスマホで縮んだ）も、M8-2 で CTA をボタンにした失敗も、**撮った 1 枚目で
+分かったもの**である——どれも `curl` も型検査も 1,400 件超のテストも通り抜けている。
+
+```bash
+bash scripts/shoot-pages.sh
+# [shoot] 対象 10 経路 / 幅 390,1280 / 出力先 dist/shots
+#   /                     390×951   200 css=1
+#   ...
+# [shoot] 20 枚を dist/shots へ書きました。
+# SHOT_PASS
+```
+
+**走っているサーバは要らない。** 使い捨ての `.wrangler` state を作り、D1 を仕込み、
+署名付きセッションを発行し、dev サーバを立ててから撮る（`scripts/lib/dev-fixture.sh`）。
+**手元の state は汚さない。**
+
+**経路の一覧は書き写していない。** `/__dev/pages` から受け取る（正本は
+`src/page-paths.ts` の導出）。画面を 1 枚足せば、次の実行から勝手に入る。
+
+| 変えたいもの | 環境変数 | 既定 |
+|---|---|---|
+| 出力先 | `GF_SHOT_DIR` | `dist/shots`（**追跡除外**） |
+| 幅 | `GF_SHOT_WIDTHS` | `390,1280` |
+| ポート | `GF_SHOT_PORT` | `8796` |
+
+**これは検査ではない。** 見た目の良し悪しは機械が決めない。合否を返すのは
+`bash scripts/check-page-width.sh`（幅が端末に収まっているか）だけである。
+
+**ブラウザの実行ファイルが要る。** 入手手順は `scripts/check-page-width.sh` の冒頭に
+書いてある（`npx playwright install chromium-headless-shell`）。見つからなければ
+**赤で落ちる**——「道具が無いので飛ばした」を成功にしない。
+
 ## 5. 既知の制約と注意
 
 ### 5.1 ローカルで検証できないもの（仕様書 9.1）

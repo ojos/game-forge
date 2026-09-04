@@ -455,6 +455,77 @@ button:disabled {
 }
 
 /* ==========================================================================
+   ログイン後の画面（#268）
+   ========================================================================== */
+
+/*
+ * 「あなたの作品」の一覧。
+ *
+ * **作者がいちばん長く見る画面である。** 見たいのは「どれが」「いまどうなっているか」の
+ * 2 つなので、題名を強く、状態を小さな札に、日時を淡くする。**並びも項目も変えていない。**
+ */
+.gf-works {
+  list-style: none;
+  padding-left: 0;
+}
+
+.gf-works li {
+  padding: var(--gf-gap-2) 0;
+  border-bottom: 1px solid var(--gf-rule-soft);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--gf-gap-1) var(--gf-gap-2);
+}
+
+.gf-works li > a {
+  font-weight: 700;
+}
+
+/*
+ * 状態の札。
+ *
+ * **色で区別しない**（プラットフォーム側は無彩色。app.css 冒頭）。区別が要るのは
+ * 「終わったか、まだか」で、それは文言が言っている。札は**同じ形**にして、
+ * 目が題名から状態へ移る手がかりだけを作る。
+ */
+.gf-state {
+  padding: 0.1em 0.6em;
+  border: 1px solid var(--gf-rule);
+  border-radius: 999px;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+  white-space: nowrap;
+}
+
+/* 生成が終わっていない行だけ、札を塗って「まだ動いている」ことを示す。 */
+.gf-state-working,
+.gf-state-stalled {
+  background: var(--gf-surface);
+  color: var(--gf-ink);
+}
+
+/* 日時は付加情報である（`src/my-works.ts` の `renderRow`）。 */
+.gf-works time {
+  color: var(--gf-ink-faint);
+  font-size: var(--gf-text-small);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 運用上いちばん間違えやすいことの但し書き（招待画面）。
+ *
+ * **本文に混ぜない。** ここを読み飛ばすと、コードを渡した相手が Google の
+ * ログイン画面に到達できない（8.1）。
+ */
+.gf-notice {
+  padding: var(--gf-gap-2) var(--gf-gap-3);
+  border-left: 3px solid var(--gf-rule);
+  background: var(--gf-surface);
+  border-radius: 0 var(--gf-radius) var(--gf-radius) 0;
+}
+
+/* ==========================================================================
    ヘッダ
    ========================================================================== */
 

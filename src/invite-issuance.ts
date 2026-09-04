@@ -34,7 +34,7 @@ import { inviteQuotaHalted } from './reports.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, json } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { escapeHtml } from './html.js';
+import { escapeHtml, siteHead } from './html.js';
 import { HOME_PATH } from './home.js';
 import { INVITES_PATH } from './paths.js';
 import { LOGIN_PATH } from './auth/google.js';
@@ -146,10 +146,7 @@ ${invites
   .join('\n')}
 </ul>`;
 
-  return `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>招待を発行する</title>
+  return `${siteHead({ title: '招待を発行する' })}
 <h1>招待を発行する</h1>
 ${error}
 <p>招待枠は 1 人 ${INVITE_QUOTA} 本です。残り ${remaining} 本（発行済み ${invites.length} 本）。</p>

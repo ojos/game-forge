@@ -48,13 +48,24 @@ Cloudflare 上にありません。
 
 ```
 functions/[[path]].ts   Pages Functions の入口。src/index.ts の default export を呼ぶだけ
-public/                 出力ディレクトリ。空（.gitkeep のみ）
+public/                 出力ディレクトリ。見た目の土台（assets/app.css）だけを置く
 wrangler.toml           pages_build_output_dir とバインディングの宣言
 ```
 
-**`public/` に静的ファイルを置かないこと。** Pages は静的ファイルを Functions より先に
-解決するため、`index.html` を置くと `/` の経路が隠れます（実測で確認）。画面はすべて
-Worker が生成します。
+**`public/` に、経路と衝突するパスの静的ファイルを置かないこと。** Pages は静的ファイルを
+Functions より先に解決するため、`index.html` を置くと `/` の経路が隠れます（実測で確認）。
+
+**衝突しないパスは置いてよい**（#266 で狭めました）。従来ここは「静的ファイルを置かない」と
+書いていましたが、根拠は上の 1 点だけで、**覆いが根拠より広く読める状態**でした。
+いま置いているのは `public/assets/app.css`（全画面が `<link>` で参照する見た目の土台）1 枚で、
+**経路表のどの `path` とも衝突しないことは `test/page-shell.test.ts` が `exact` と `prefix` の
+両方で機械検査します。** 狭めた以上、衝突しないことは呼びかけではなく機構で保証します。
+
+画面そのものはすべて Worker が生成します。
+
+**キャッシュの挙動は測っていません。** Pages が既定でどの `cache-control` と `ETag` を
+返すかを 1 度も測っておらず、「再検証が効く」は仕様上の期待であって実測ではありません。
+測ったらここへ書き足してください。
 
 ## 前提: 認証
 

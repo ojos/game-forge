@@ -63,6 +63,9 @@ export default defineConfig({
           // 渡す（#89 / test/origins.test.ts）。期待値をテストへ書き写すと、宣言を
           // 変えたときにテストだけが古い値を見続ける。
           TEST_WRANGLER_TOML: 'wrangler.toml',
+          // 見た目の土台。作品枠の縦横比が `src/ogp.ts` の定数の写しになるため、
+          // その一致をテストから照合する（#266）。CSS は定数を読めない。
+          TEST_APP_CSS: 'public/assets/app.css',
         },
       },
     }),

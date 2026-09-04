@@ -22,18 +22,25 @@
  * MVP の画面は SSR の素の HTML に留める（9.3 / #89 の scope.out）。Next.js / React へ
  * 寄せる判断は M2-1 以降が持ち、ここで先取りすると捨てる量が増える。
  */
+import { siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { LOGIN_PATH } from './auth/google.js';
-import { GENERATE_PAGE_PATH, INVITES_PATH, SIGNUP_PATH } from './paths.js';
+import { GENERATE_PAGE_PATH, HOME_PATH, INVITES_PATH, SIGNUP_PATH } from './paths.js';
 // **一覧の綴りをここへ書き写さない。** 正本は `src/my-works.ts` で、そこは
 // `WORK_PAGE_PREFIX` から導いている。逆向きの import にならない（あちらは `/` への
 // 導線をリテラルで持つ）ので、`src/paths.ts` へ逃がす必要も無い。
 import { MY_WORKS_PATH } from './my-works.js';
 
-/** 公開トップのパス。 */
-export const HOME_PATH = '/';
+/**
+ * 公開トップのパス。
+ *
+ * **正本は `src/paths.ts` である**（#266 でヘッダを足したときに移した。理由はあちら）。
+ * ここから再輸出するのは、既に `src/home.ts` から読んでいる箇所を動かさないためで、
+ * 値を二重に持っているわけではない。
+ */
+export { HOME_PATH };
 
 /**
  * 公開トップの HTML。
@@ -73,11 +80,11 @@ export const HOME_PATH = '/';
  * **招待枠の本数をここに書かない。** 書けば `INVITE_QUOTA`（`src/invite-issuance.ts`）の
  * 写しになり、変えたときに片方だけが古くなる。本数は発行の画面が出す。
  */
-const HOME_HTML = `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Game Forge</title>
-<meta name="description" content="プロンプト1行で生まれるブラウザ2Dゲームと、フォーク型 UGC コミュニティ。招待制クローズドβ。">
+const HOME_HTML = `${siteHead({
+  title: 'Game Forge',
+  extraHead:
+    '\n<meta name="description" content="プロンプト1行で生まれるブラウザ2Dゲームと、フォーク型 UGC コミュニティ。招待制クローズドβ。">',
+})}
 <h1>Game Forge</h1>
 <p>プロンプト 1 行から、ブラウザで遊べる 2D ゲームが生まれます。
    気に入った作品は<strong>改造（フォーク）</strong>して、自分の 1 本として公開できます。</p>

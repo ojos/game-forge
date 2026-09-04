@@ -24,6 +24,13 @@ declare global {
       /** `wrangler.toml` の中身。本番の宣言値をテストから読むために渡している（#89）。 */
       readonly TEST_WRANGLER_TOML: string;
       /**
+       * 見た目の土台（`public/assets/app.css`）の中身。
+       *
+       * CSS からは `src/ogp.ts` の定数を読めないため、作品枠の縦横比が写しになる。
+       * その一致を機械照合するために渡している（#266）。
+       */
+      readonly TEST_APP_CSS: string;
+      /**
        * `.dev.vars.example` の中身（`vitest.config.ts` の `textBlobBindings`）。
        *
        * 文書化された秘密の名前を、書き写さずにテストから引くために渡している

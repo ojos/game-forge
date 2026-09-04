@@ -44,7 +44,13 @@ import { MAX_SOURCE_BYTES, measureSourceBytes } from './source-size.js';
  * ソースを読めなかった理由。**畳まない**——呼ぶ側で文言も後始末も変わる。
  *
  * - `source-missing` … キーが無い・実体が無い・空。**やり直す価値がある**
- * - `source-too-large` … 上限（64KB）超。**何度やっても成功しない**
+ * - `source-too-large` … **呼ぶ側が渡した `maxBytes` を超えた**（既定は
+ *   `MAX_SOURCE_BYTES`）。**何度やっても成功しない**
+ *
+ * **`source-too-large` は特定のバイト数を意味しない。** 断つ大きさは
+ * {@link readStoredSource} の引数で決まり、整理パス（確定18 の条件 2〜4）では
+ * `src/fork.ts` が上限の 2 倍を渡す。**ここに数字を書くと、既定でない経路の
+ * 失敗を説明できない記述になる。**
  */
 export type StoredSourceFailure = 'source-missing' | 'source-too-large';
 
@@ -54,7 +60,8 @@ export type StoredSourceResult =
   | { ok: false; reason: StoredSourceFailure };
 
 /**
- * R2 のキーからソースを読み、上限（`MAX_SOURCE_BYTES`。64KB）を判定する。
+ * R2 のキーからソースを読み、**渡された `maxBytes` で断つ**（既定は
+ * `MAX_SOURCE_BYTES`）。
  *
  * **資格の判定はここで行わない。** 呼ぶ側が済ませてからキーを渡すこと——
  * `src/fork.ts` は `status='published'` を確かめてから、`src/revise.ts` は枠を
@@ -65,10 +72,17 @@ export type StoredSourceResult =
  *
  * **既定は `MAX_SOURCE_BYTES` で、これまでと同じ振る舞いである。** 引数にしたのは
  * 整理パス（5.3 の条件 2〜4）だけが上限超のソースを読む必要があるためで、
- * `src/fork.ts` が {@link TIDY_MAX_SOURCE_BYTES} を渡す。
+ * `src/fork.ts` が `TIDY_MAX_SOURCE_BYTES`（`src/source-size.ts`。上限の 2 倍）を
+ * 渡す。**`{@link}` にしない**——この綴りはここへ import されておらず、
+ * 解決しないリンクになる。
  *
  * **呼ぶ側が上限を決められる形にしても、上限が消えるわけではない。** 渡された値で
  * 必ず断つ——「無制限」を意味する値を用意していないのは、そのためである。
+ *
+ * **断つ箇所は 2 つあり、どちらも `source-too-large` を返す。** R2 の `size`
+ * （保存されたバイト数。本文を読む前）と、読み出した本文の
+ * `measureSourceBytes`（UTF-8 のバイト数）である。**同じ値になるはずだが、
+ * 確かめずに省かない**（下記）。
  *
  * @param env バインディングと環境変数
  * @param sourceKey R2 のキー

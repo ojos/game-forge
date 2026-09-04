@@ -539,9 +539,13 @@ async function handleFork(
   //
   // **`readStoredSource` が測った値を持ち出さない。** あちらの戻り値は
   // `src/revise.ts`（所有外）も受け取る形で、ここの都合で広げると推敲側の検査まで
-  // 巻き込む。測り直しの費用は 64KB の `TextEncoder` 1 回で、R2 の読み出しより桁が
-  // 小さい。**上限そのものは超えていない**（超えていれば上で断られている）ので、
-  // ここへ来る文字列の大きさには天井がある。
+  // 巻き込む。測り直しの費用は `TextEncoder` 1 回で、R2 の読み出しより桁が小さい。
+  //
+  // **ここへ上限超のソースは来る。** `readParentSource` は
+  // `TIDY_MAX_SOURCE_BYTES`（上限の 2 倍）まで読むので、**天井はそちらであって
+  // `MAX_SOURCE_BYTES` ではない**——上限超が来るからこそ、次の
+  // `decideForkSizeAction` が `offer-tidy` を返せる（確定18 の条件 2）。
+  // それでも天井はあるので、測り直す文字列の大きさには上限がある。
   const bytes = measureSourceBytes(base.source);
   const action = decideForkSizeAction({ bytes, consent: input.consent });
   if (action === 'warn') {

@@ -81,7 +81,7 @@ export const ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE = 2;
  *
  * # なぜ版を 1 つ増やすのか
  *
- * **版 2 は `baseSource` が上限（64KB）を超えていたら本文ごと拒否する。** それが正しい——
+ * **版 2 は `baseSource` が `MAX_SOURCE_BYTES` を超えていたら本文ごと拒否する。** それが正しい——
  * 上限を守るための検査である。しかし**整理パスの入力はまさに上限超のソース**なので、
  * 5.3 が定めた逃げ道は版 2 の受け側では原理的に通れない（#33 で判明した）。
  *
@@ -295,7 +295,7 @@ export function parseOrchestratorPayload(value: unknown): OrchestratorPayload | 
   if (typeof baseSource !== 'string' || baseSource === '') {
     return null;
   }
-  // **上限は版で変わる。** 版 2 は `MAX_SOURCE_BYTES`（確定18 の上限そのもの。64KB）、
+  // **上限は版で変わる。** 版 2 は `MAX_SOURCE_BYTES`（確定18 の上限そのもの）、
   // **版 3＝整理パスだけ**が
   // その 2 倍まで載せられる（`src/source-size.ts` の `TIDY_MAX_SOURCE_BYTES`）。
   //

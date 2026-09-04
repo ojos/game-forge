@@ -38,6 +38,7 @@ import {
   DAILY_QUOTA_REASON,
   MONTHLY_LIMIT_REASON,
   UNCLASSIFIED_QUOTA_CODE,
+  currentDeclarationsIn,
   jstDayRange,
 } from '../src/quota.js';
 import { buildSystemPrompt } from '../src/system-prompt.js';
@@ -709,20 +710,26 @@ describe('整理パスは 1 回で打ち切る（確定18 の条件 3・4 / M5-2
     expect(TIDY_ATTEMPTS).toBe(1);
   });
 
-  it('整理パスでない生成は、いままでどおり 3 回試す', () => {
+  it('整理パスでない生成は、通常の試行回数のまま試す', () => {
     // **整理パスの打ち切りが、通常のリトライを巻き込んでいないこと。**
-    // ここが崩れると 5.2-7 が黙って消える。
-    expect(MAX_GENERATION_ATTEMPTS).toBe(3);
+    // ここが崩れると 5.2-7 が黙って消える。**見るのは「2 つが別の数であること」**で、
+    // 整理パス側が 1 に固定なのに対し、通常側は 5.2-7 の試行回数である。
+    expect(MAX_GENERATION_ATTEMPTS).toBeGreaterThan(TIDY_ATTEMPTS);
+    // **直値でも見る**（#284 で 3 → 2）。定数だけで見ると、上限を変えた実装が
+    // テストごと追随して通る。
+    expect(MAX_GENERATION_ATTEMPTS).toBe(2);
   });
 
-  it('上限に収まった元ソースのフォークは 3 回試す（条件 4 は整理パスだけ）', async () => {
+  it('上限に収まった元ソースのフォークは通常の回数だけ試す（条件 4 は整理パスだけ）', async () => {
     const { prompts, pipeline } = alwaysFailingBuild();
 
     await expect(
       startGeneration(testEnv(), 'user-tidy-2', { prompt: 'ゲーム', baseSource: IN_LIMIT }, pipeline),
     ).rejects.toBeInstanceOf(BuildRetriesExhausted);
 
-    expect(prompts).toHaveLength(3);
+    // **回数は定数から導く。** ここは「整理パスではない生成が通常どおり回ること」を
+    // 見ており、通常の回数がいくつかを決めているのは 5.2-7 の側である。
+    expect(prompts).toHaveLength(MAX_GENERATION_ATTEMPTS);
   });
 });
 
@@ -880,19 +887,23 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
     await env.DB.prepare("delete from generations where user_id like 'gen-user-retry-%'").run();
   });
 
-  it('常に失敗するソースは 3 回（初回＋2）で打ち切られる（acceptance 1）', async () => {
+  it('常に失敗するソースは上限（初回＋リトライ）で打ち切られる（acceptance 1）', async () => {
     const { attempts, calls, pipeline } = failingBuildPipeline();
 
     await expect(
       startGeneration(testEnv(), 'user-retry-1', { prompt: 'ゲーム' }, pipeline),
     ).rejects.toBeInstanceOf(BuildRetriesExhausted);
 
-    // **回数を定数からも直値からも見る。** 定数だけで見ると、上限を 4 に変えた
-    // 実装がテストごと追随して通る（変異が検出できない）。
-    expect(MAX_GENERATION_ATTEMPTS).toBe(3);
-    expect(attempts.length).toBe(3);
-    expect(calls.filter((call) => call === 'generateSource').length).toBe(3);
-    expect(calls.filter((call) => call === 'build').length).toBe(3);
+    // **回数を定数からも直値からも見る。** 定数だけで見ると、上限を変えた実装が
+    // テストごと追随して通る（変異が検出できない）。**直値はここ 1 行が持ち**、
+    // 観測した回数のほうは定数から導く——**確かめたいのは「上限の回数だけ呼ぶ」と
+    // いう振る舞い**であって、3 や 2 という数そのものではない。
+    expect(MAX_GENERATION_ATTEMPTS).toBe(2); // #284 で 3 → 2
+    expect(attempts.length).toBe(MAX_GENERATION_ATTEMPTS);
+    expect(calls.filter((call) => call === 'generateSource').length).toBe(
+      MAX_GENERATION_ATTEMPTS,
+    );
+    expect(calls.filter((call) => call === 'build').length).toBe(MAX_GENERATION_ATTEMPTS);
     // 作品行は作られない。ビルドが通っていない以上、成果物は R2 に無い。
     expect(calls).not.toContain('completeGame');
   });
@@ -900,13 +911,15 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
   it('クォータ判定はリトライの外側で 1 回だけ行う（4.3 / 3.3-2）', async () => {
     // 4.3 は「上限の判定は 3.3-2 の 1 か所で行う」と定める。ループの中で数え直すと
     // 判定位置が 2 か所になり、D1 の読み取りも試行のたびに増える（3.6）。
-    // **枠の消費は台帳の行数で数える**ので、判定が 1 回でも消費は 3 回分である。
+    // **枠の消費は台帳の行数で数える**ので、判定が 1 回でも消費は試行の回数分である。
     const { calls, pipeline } = failingBuildPipeline();
     await startGeneration(testEnv(), 'user-retry-2', { prompt: 'ゲーム' }, pipeline).catch(
       () => undefined,
     );
+    // **判定は 1 回**（これが本題。直値でよい）。
     expect(calls.filter((call) => call === 'checkQuota').length).toBe(1);
-    expect(calls.filter((call) => call === 'recordCost').length).toBe(3);
+    // **消費は試行の回数分**（回数そのものは 5.2-7 が決める）。
+    expect(calls.filter((call) => call === 'recordCost').length).toBe(MAX_GENERATION_ATTEMPTS);
   });
 
   it('2 回目以降の生成に直前の診断とソースを渡す', async () => {
@@ -915,15 +928,20 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
       () => undefined,
     );
 
+    // 初回は渡すものが無い（まだ失敗していない）。
     expect(attempts[0]).toBeUndefined();
-    expect(attempts[1]?.failedAttempt).toBe(1);
-    expect(attempts[1]?.diagnostics).toBe(DIAGNOSTICS);
-    expect(attempts[1]?.previousSource).toBe('package main');
-    expect(attempts[2]?.failedAttempt).toBe(2);
-    expect(attempts[2]?.diagnostics).toBe(DIAGNOSTICS);
+    // **2 回目以降は必ず直前の診断とソースを受け取る。** 添字を直値で並べると、
+    // 上限を変えた日に**最後の試行だけ検査されない**状態が黙って生まれる
+    // （#284 で 3 → 2 にしたとき、実際に `attempts[2]` が宙に浮いた）。
+    expect(attempts.length).toBe(MAX_GENERATION_ATTEMPTS);
+    for (let index = 1; index < MAX_GENERATION_ATTEMPTS; index += 1) {
+      expect(attempts[index]?.failedAttempt, `試行 ${index}`).toBe(index);
+      expect(attempts[index]?.diagnostics, `試行 ${index}`).toBe(DIAGNOSTICS);
+      expect(attempts[index]?.previousSource, `試行 ${index}`).toBe('package main');
+    }
   });
 
-  it('通ったらそこで止まる（3 回まで回し切らない）', async () => {
+  it('通ったらそこで止まる（上限まで回し切らない）', async () => {
     const { attempts, calls, pipeline } = failingBuildPipeline(1);
     const result = await startGeneration(
       testEnv(),
@@ -956,10 +974,11 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
 
     const rows = await ledgerRows(userId);
     // 4.3「リトライ分も必ず計上する」。行をまとめたり上書きしたりしない。
-    expect(rows.length).toBe(3);
+    // **行数は試行の回数と同じ**（記録の単位が「費用の出る LLM 呼び出し 1 回」である）。
+    expect(rows.length).toBe(MAX_GENERATION_ATTEMPTS);
     for (const row of rows) {
       // `succeeded` は「使えるソースが返ったか」であって「作品ができたか」ではない
-      // （4.3 の記録規約）。3 回ともビルドは失敗しているが、生成は成功している。
+      // （4.3 の記録規約）。どの試行もビルドは失敗しているが、生成は成功している。
       expect(row.succeeded).toBe(1);
       // **台帳に残るのは利用者のプロンプトである。** 組み替えた側を記録すると、
       // 8.3 の検査を通っていない生成物と Go の診断が D1 の列へ入る。
@@ -1126,9 +1145,12 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
     // 同じ数値が仕様書とコードの 2 か所にある以上、機械で照合する
     // （shared-ai-rules 12 章。`test/quota.test.ts` と同じやり方）。
     // **仕様書は再試行の回数、定数は試行の総数**なので、+1 して突き合わせる。
-    const values = [...env.TEST_PRODUCT_SPEC.matchAll(RETRY_LIMIT_PATTERN)].map((matched) =>
-      Number(matched[1]),
-    );
+    // **拾うのは現行値の宣言だけである**（`currentDeclarationsIn`）。この仕様書は
+    // 覆った前提を消さずに残すので、過去の回数が本文に残り続ける。理由と範囲は
+    // `src/quota.ts` にある（#284）。
+    const values = [
+      ...currentDeclarationsIn(env.TEST_PRODUCT_SPEC).matchAll(RETRY_LIMIT_PATTERN),
+    ].map((matched) => Number(matched[1]));
     expect(values.length).toBeGreaterThan(0);
     for (const value of values) {
       expect(value + 1).toBe(MAX_GENERATION_ATTEMPTS);
@@ -1137,12 +1159,12 @@ describe('コンパイル失敗時の自動リトライ（5.2-7 / #20）', () =>
 
   it('仕様書側を変異させると照合が破れる', () => {
     const doctored = env.TEST_PRODUCT_SPEC.replace(
-      '自動リトライ（最大2回）',
+      '自動リトライ（最大1回）',
       '自動リトライ（最大5回）',
     );
     expect(doctored).not.toBe(env.TEST_PRODUCT_SPEC);
-    const values = [...doctored.matchAll(RETRY_LIMIT_PATTERN)].map((matched) =>
-      Number(matched[1]),
+    const values = [...currentDeclarationsIn(doctored).matchAll(RETRY_LIMIT_PATTERN)].map(
+      (matched) => Number(matched[1]),
     );
     expect(values).toContain(5);
   });

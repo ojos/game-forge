@@ -775,7 +775,10 @@ describe('残枠と停止状態の常時表示（acceptance 1 / 4.4 / #24）', (
     readonly availability: GenerateAvailability;
   }[] = [
     {
-      label: '生成できる（残り 12 回）',
+      // **表題も定数から作る。** 直値だと、枠を変えた日に「残り 12 回」と書いた見出しの
+      // 下へ「残り 10 回」の本文が並ぶ（#284）。スナップショット側は直値のままでよい
+      // ——あれは差分を人が読むためのもので、値の錨も兼ねている。
+      label: `生成できる（残り ${DAILY_QUOTA_PER_USER} 回）`,
       signedIn: true,
       availability: { kind: 'available', remaining: DAILY_QUOTA_PER_USER },
     },
@@ -793,8 +796,8 @@ describe('残枠と停止状態の常時表示（acceptance 1 / 4.4 / #24）', (
         )}`,
     ).join('\n\n');
     expect(rendered).toMatchInlineSnapshot(`
-      "## 生成できる（残り 12 回）
-      常時表示: 本日の残り生成枠 12回
+      "## 生成できる（残り 10 回）
+      常時表示: 本日の残り生成枠 10回
       入力フォーム: true
       送信ボタン: true
       埋め込みスクリプト: true

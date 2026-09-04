@@ -675,11 +675,12 @@ describe('生成ループへの結線（#129 の acceptance）', () => {
   });
 
   it('診断が 10 件で打ち切られても、2 巡目で消し切る', async () => {
-    // 実測: 12 個の未使用 import を持つソースで、Go は 10 件を報告して
-    // `too many errors` で打ち切った。1 巡では消し切れない。
+    // 実測: 12 個の未使用 import を持つソースで、Go は 10 件（GO_DIAGNOSTIC_ERROR_LIMIT）
+    // を報告して `too many errors` で打ち切った。1 巡では消し切れない。
     //
-    // 許可一覧（10 件）に、同じパスの別名 import を 2 つ足して 12 件にする。
-    // **別名を足せば許可一覧の件数を超えられる**ので、上限は一覧の件数では決まらない。
+    // 許可一覧に、同じパスの別名 import を 2 つ足す。**別名を足せば許可一覧の件数を
+    // 超えられる**ので、上限は一覧の件数では決まらない。**件数は書き写さず、下の
+    // 不等式で見る**（写すと一覧が増えた日に古くなる）。
     const specs = [
       ...GO_IMPORT_ALLOWLIST.map((entry) => `\t"${entry.path}"`),
       '\ta1 "math"',
@@ -726,9 +727,17 @@ describe('繰り返し回数の根拠（shared-ai-rules 12 章の機械照合）
   it('許可一覧が 20 件を超えると照合が破れる（この検査が効いていることの確認）', () => {
     // 変異検査。一覧側を膨らませると同じ不等式が成り立たなくなる、すなわち上の検査は
     // 「一覧が増えても黙って通る」形になっていない。
+    // **膨らませる件数も導出する。** 「21 件足せば 20 を超える」は 2 つの定数と許可一覧の
+    // 件数を人が暗算した結果であり、どれかが動いた日に前提だけが古くなる。
+    //
+    // **上限そのものより 1 多く足す。** 一覧の件数を引いて過不足なく足す形にすると、
+    // 一覧が既に上限を超えている世界で足す数が負になり、**この変異検査自体が
+    // 「膨らませられなかった」で落ちる。** そこは上の検査が落ちて定数の見直しを
+    // 要求している場所なので、変異検査まで巻き込んで鳴らす必要はない。
+    const excess = MAX_MECHANICAL_FIX_PASSES * GO_DIAGNOSTIC_ERROR_LIMIT + 1;
     const doctored = [
       ...GO_IMPORT_ALLOWLIST,
-      ...Array.from({ length: 21 }, (_value, index) => ({
+      ...Array.from({ length: excess }, (_value, index) => ({
         path: `example.com/pkg${index}`,
         reason: '変異検査のための架空の項目',
       })),
@@ -880,12 +889,19 @@ describe('機械修正の観測（4.2 の #133 注記）', () => {
     // **生成経路をそのまま回す。** 巡回のループを持つのは `src/generate.ts` なので、
     // 「1 巡につき 1 行」が実際に成り立つかは経路を通さないと確かめられない。
     //
-    // 未使用 12 件（診断は 10 件で打ち切られる）。1 巡目で 10 件、2 巡目で 2 件消える。
+    // 未使用は「許可一覧の件数 ＋ 別名 2 件」。診断は GO_DIAGNOSTIC_ERROR_LIMIT で
+    // 打ち切られるので、1 巡目でその上限ぶん、2 巡目で**残り**が消える。
+    //
+    // **件数を数えて書き写さない。** 許可一覧は増える（#285 で 1 件増えた）。写した数は
+    // 増えた日に落ちるが、落ちるのは期待値の側であって機械修正の挙動ではないため、
+    // **直し方が「数を書き換える」になってしまう。**
     const specs = [
       ...GO_IMPORT_ALLOWLIST.map((entry) => `\t"${entry.path}"`),
       '\ta1 "math"',
       '\ta2 "strconv"',
     ];
+    // 2 巡目に残る件数。1 巡目は診断の上限ぶんしか消せない。
+    const remainder = specs.length - GO_DIAGNOSTIC_ERROR_LIMIT;
     const source = `package main\n\nimport (\n${specs.join('\n')}\n)\n\nfunc main() {}\n`;
     const { pipeline } = pipelineOf(source, (generated) => {
       const diagnostics = emulateGoDiagnostics(generated.source, []);
@@ -903,7 +919,7 @@ describe('機械修正の観測（4.2 の #133 注記）', () => {
     expect(lines.length).toBe(MAX_MECHANICAL_FIX_PASSES);
     expect(lines).toEqual([
       `[mechanical-fix] removed {"diagnosed":${GO_DIAGNOSTIC_ERROR_LIMIT},"located":${GO_DIAGNOSTIC_ERROR_LIMIT},"removed":${GO_DIAGNOSTIC_ERROR_LIMIT}}`,
-      '[mechanical-fix] removed {"diagnosed":2,"located":2,"removed":2}',
+      `[mechanical-fix] removed {"diagnosed":${remainder},"located":${remainder},"removed":${remainder}}`,
     ]);
     // 除去件数の合計は、ソースにあった未使用 import の数と一致する。
     const removed = lines.map((line) => Number(MECHANICAL_FIX_LOG_PATTERN.exec(line)?.groups?.['removed']));

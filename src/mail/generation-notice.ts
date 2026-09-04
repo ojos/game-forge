@@ -42,7 +42,8 @@
  * 独自の抑止は要らない——**通知を送るのは、条件付き UPDATE が実際に行を進めたときだけ**
  * である（`src/generate-callback.ts`）。
  */
-import { failureMessageOf, workPagePath } from '../work-page.js';
+import { failureMessageOf } from '../generation-failure.js';
+import { workPagePath } from '../paths.js';
 import { DAILY_QUOTA_REASON, MONTHLY_LIMIT_REASON, generationQuotaStatus } from '../quota.js';
 import type { MailDeps, MailMessage, MailOutcome } from './resend.js';
 import { defaultMailDeps, mailConfigOf, sendMail } from './resend.js';
@@ -92,7 +93,7 @@ interface NoticeTarget {
 /**
  * 作品ページの絶対 URL を組み立てる。
  *
- * **綴りの正本は `src/work-page.ts` の `workPagePath` である**（3 か所に `/works/` と
+ * **綴りの正本は `src/paths.ts` の `workPagePath` である**（3 か所に `/works/` と
  * 書かない）。ホスト名は環境の宣言（`APP_HOST`）から取る。
  *
  * @param env バインディングと環境変数
@@ -168,7 +169,7 @@ function readyMessage(title: string, url: string): { subject: string; text: stri
 /**
  * 失敗の本文を組み立てる。
  *
- * **失敗の説明は `src/work-page.ts` の `failureMessageOf` から取る。** 作品ページと
+ * **失敗の説明は `src/generation-failure.ts` の `failureMessageOf` から取る。** 作品ページと
  * メールで説明が食い違うと、同じ 1 件の失敗に 2 つの説明ができる（shared-ai-rules 12 章）。
  *
  * @param title 仮タイトル（プロンプト由来）

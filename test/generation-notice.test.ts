@@ -6,7 +6,8 @@ import type { MailMessage, MailOutcome } from '../src/mail/resend.js';
 import { createPendingGame } from '../src/games.js';
 import { DAILY_QUOTA_PER_USER, MONTHLY_COST_LIMIT_JPY } from '../src/quota.js';
 import { DEFAULT_GENERATION_MODEL_KEY } from '../src/generation-models.js';
-import { failureMessageOf, workPagePath } from '../src/work-page.js';
+import { failureMessageOf } from '../src/generation-failure.js';
+import { workPagePath } from '../src/paths.js';
 import { applySchema } from './helpers/schema.js';
 
 /**

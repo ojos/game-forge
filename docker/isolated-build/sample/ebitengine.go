@@ -87,6 +87,7 @@ func (t *tone) Read(buf []byte) (int, error) {
 			if math.Mod(t.phase, 1) >= 0.5 {
 				level = -level
 			}
+			t.pos++
 		}
 		bits := math.Float32bits(level)
 		buf[i] = byte(bits)
@@ -98,7 +99,6 @@ func (t *tone) Read(buf []byte) (int, error) {
 		buf[i+6] = buf[i+2]
 		buf[i+7] = buf[i+3]
 		t.phase += step
-		t.pos++
 	}
 	return n, nil
 }

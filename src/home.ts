@@ -98,7 +98,7 @@ const HOME_HTML = `${siteHead({
 
 <h2>はじめる</h2>
 <ul>
-  <li><a href="${GENERATE_PAGE_PATH}">ゲームを生成する</a>（招待コードでの登録が必要です）</li>
+  <li><a class="gf-cta" href="${GENERATE_PAGE_PATH}">ゲームを生成する</a>（招待コードでの登録が必要です）</li>
   <li><a href="${SIGNUP_PATH}">招待コードで登録する</a></li>
   <li><a href="${SIGNUP_PATH}">招待コードをお持ちでない方（待機リストに登録する）</a></li>
   <li><a href="${LOGIN_PATH}">すでにアカウントをお持ちの方（Google でログイン）</a></li>

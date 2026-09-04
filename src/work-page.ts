@@ -578,7 +578,7 @@ export function renderWorkPage(view: WorkPageView): string {
       ? `\n<meta http-equiv="refresh" content="${REFRESH_SECONDS}">`
       : '';
 
-  const title = view.title === null ? '' : `<p>お題: ${escapeHtml(view.title)}</p>`;
+
 
   const ipNotice = ipNoticeSection(view);
 
@@ -595,9 +595,9 @@ export function renderWorkPage(view: WorkPageView): string {
     beforeTitle: refresh,
     extraHead: ogpMeta(view),
   })}
-<h1>作品</h1>
+<h1>${escapeHtml(workNameOf(view))}</h1>
 ${sectionFor(view)}
-${title}${ipNotice}${reportSection(view)}
+${ipNotice}${reportSection(view)}
 ${siteFooter()}`;
 }
 
@@ -737,8 +737,20 @@ const FALLBACK_WORK_TITLE = 'Game Forge の作品';
  * @returns 表題
  */
 function documentTitleOf(view: WorkPageView): string {
-  const name = view.title === null || view.title.trim() === '' ? FALLBACK_WORK_TITLE : view.title;
-  return `${name} - Game Forge`;
+  return `${workNameOf(view)} - Game Forge`;
+}
+
+/**
+ * 画面と `<title>` と OGP が出す、その作品の名前（#267）。
+ *
+ * **3 か所が同じ判定を要る。** 以前は同じ式が 2 か所へ写っていた（`documentTitleOf` と
+ * `ogpMeta`）。M8-2 で見出しにも要るようになったので、**写しを増やす前に 1 か所へ寄せる。**
+ *
+ * @param view 表示に必要な値
+ * @returns 題名（空・未設定なら既定の文言）
+ */
+function workNameOf(view: WorkPageView): string {
+  return view.title === null || view.title.trim() === '' ? FALLBACK_WORK_TITLE : view.title;
 }
 
 /**
@@ -768,7 +780,7 @@ function ogpMeta(view: WorkPageView): string {
   if (!view.published || view.shareUrl === null) {
     return '';
   }
-  const name = view.title === null || view.title.trim() === '' ? FALLBACK_WORK_TITLE : view.title;
+  const name = workNameOf(view);
   const image =
     view.imageUrl === null
       ? '\n<meta name="twitter:card" content="summary">'

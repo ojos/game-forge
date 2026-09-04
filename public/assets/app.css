@@ -325,11 +325,18 @@ button:disabled {
  * **この数値は `src/ogp.ts` の写しである。** CSS からは定数を読めないため、
  * `test/page-shell.test.ts` が両者の一致を機械で照合する。
  */
+/*
+ * **作品の枠を、版面いっぱいに置く**（#267）。
+ *
+ * M8-1 では 600px で止めていたが、拡散の着地点で最も目立つべきものが本文より
+ * 狭いのは逆である。読みやすさの上限（`--gf-measure`）は文字のための値であって、
+ * 絵と枠のための値ではない。
+ */
 .gf-context,
 .gf-frame {
   display: block;
   width: 100%;
-  max-width: 600px;
+  max-width: none;
 }
 
 .gf-shot {
@@ -367,6 +374,73 @@ button:disabled {
 .gf-fork-note {
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
+}
+
+/*
+ * 「このゲームを改造する」（#267）。
+ *
+ * **主 KPI（フォーク率）の入口である。** ページの中で本文より強く、しかし作品の絵と
+ * 枠より弱く置く——目立たせたいのは作品で、CTA はその次である。
+ */
+.gf-fork {
+  /* **余白はこのブロックで完結させる。** `margin-top` だけを書くと、上の
+     まとめ書き（`.gf-author, .gf-parent, ...`）の下余白に暗黙で依存し、
+     あちらを触った日にここだけ崩れる（Copilot の指摘。2026-09-04）。 */
+  margin: var(--gf-gap-4) 0 var(--gf-gap-1);
+  font-size: var(--gf-text-h2);
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+/*
+ * その画面でいちばんしてほしい 1 つ（#267）。
+ *
+ * **1 画面に 1 つだけ付ける。** 2 つ付いた時点で、どちらも「いちばん」ではなくなる。
+ *
+ * **箇条書きの中では塗りつぶさない。** 項目 1 つだけが黒い箱になると、行の高さが揃わず
+ * 添え書きが箱に巻き付く（幅 390px で確認した）。**リンクのまま、太さと大きさで示す。**
+ */
+.gf-cta {
+  font-weight: 700;
+  font-size: 1.05em;
+  text-decoration-thickness: 2px;
+}
+
+/*
+ * 登録へ送る側の改造 CTA は、単独の段落に置かれた 1 本のリンクである。
+ * ここは押せることを形でも示してよい。
+ */
+.gf-fork-link {
+  display: inline-block;
+  padding: 0.6em 1.3em;
+  border: 1px solid var(--gf-ink);
+  border-radius: var(--gf-radius);
+  background: var(--gf-ink);
+  color: var(--gf-ground);
+  text-decoration: none;
+}
+
+.gf-fork-link:hover {
+  opacity: 0.85;
+  text-decoration: none;
+}
+
+/*
+ * 通報は `<details>` で畳んである（`src/work-page.ts` の `reportSection`）。
+ * **開く前は目立たせない。** 作品を見に来た人の視線を奪う位置ではない。
+ */
+.gf-report {
+  margin-top: var(--gf-gap-4);
+  color: var(--gf-ink-faint);
+  font-size: var(--gf-text-small);
+}
+
+.gf-report summary {
+  cursor: pointer;
+}
+
+.gf-report[open] {
+  color: var(--gf-ink);
 }
 
 .gf-fork-list {

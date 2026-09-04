@@ -18,7 +18,7 @@
  */
 import type { Route } from './routes.js';
 import { html } from './routes.js';
-import { escapeHtml } from './html.js';
+import { escapeHtml, siteHead } from './html.js';
 import { MAX_BODY_LENGTH, MAX_CLAIMANT_LENGTH } from './takedown.js';
 
 /** 利用規約のパス。 */
@@ -74,10 +74,7 @@ const DRAFT_NOTICE = `<p class="gf-draft-notice"><strong>この規約はクロ�
  * 「これは仕様に紐づいた条項か、一般的な雛形か」を見分けられるようにするため
  * （冒頭の但し書き）。
  */
-const TERMS_HTML = `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>利用規約 - Game Forge</title>
+const TERMS_HTML = `${siteHead({ title: '利用規約 - Game Forge' })}
 <h1>利用規約</h1>
 ${DRAFT_NOTICE}
 
@@ -157,10 +154,7 @@ ${siteFooter()}
 function takedownPage(error: string | null): string {
   const message =
     error === null ? '' : `<p class="error" role="alert">${escapeHtml(error)}</p>`;
-  return `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>削除申請 - Game Forge</title>
+  return `${siteHead({ title: '削除申請 - Game Forge' })}
 <h1>権利者の方へ（削除申請）</h1>
 ${message}
 <p>本サービス上の作品が、あなたの権利を侵害していると思われる場合、
@@ -198,10 +192,7 @@ ${siteFooter()}
 }
 
 /** 受け付けたあとの画面。 */
-const TAKEDOWN_THANKS_HTML = `<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>削除申請を受け付けました - Game Forge</title>
+const TAKEDOWN_THANKS_HTML = `${siteHead({ title: '削除申請を受け付けました - Game Forge' })}
 <h1>削除申請を受け付けました</h1>
 <p>ご連絡ありがとうございます。内容を確認し、記録したうえで対応します。</p>
 <p><strong>確認には数日いただくことがあります。</strong>

@@ -24,16 +24,15 @@
 # 「表に出る日」が 9 時間ずれる。
 #
 # **オフセットの値をここへ書き写しているように見えるが、写しは機械照合される。**
-# scripts/report-selftest.sh の 2 節が src/quota.ts の JST_OFFSET_SECONDS と突き合わせ、
-# 一致しなければ落とす（shared-ai-rules 12 章「一覧の複製は機械照合で担保する」）。
+# scripts/report-selftest.sh の 2 節が src/quota.ts と src/cost-ledger.ts の
+# JST_OFFSET_SECONDS の両方と突き合わせ、一致しなければ落とす
+# （shared-ai-rules 12 章「一覧の複製は機械照合で担保する」）。
 # シェルから TypeScript の定数を実行時に引く手段が無い以上、写しを置かない選択肢は
 # 無いが、**古くなったまま通る経路は塞げる。**
 
 # JST の UTC からの差（秒）。日本は夏時間を持たないため固定でよい。
-# src/quota.ts / src/cost-ledger.ts の JST_OFFSET_SECONDS と同じ値である。
-# **ただし機械で見ているのは src/quota.ts との一致だけである**
-# （scripts/report-selftest.sh の 2 節）。src/cost-ledger.ts の同名の定数は照合して
-# いないので、**あちらとの一致は読み手が保つしかない。**
+# src/quota.ts / src/cost-ledger.ts の JST_OFFSET_SECONDS と同じ値である
+# （一致は scripts/report-selftest.sh の 2 節が、両方について機械で見る）。
 REPORT_WINDOW_JST_OFFSET_SECONDS=32400
 
 # 1 日の秒数。閏秒は UNIX 時間に現れないため固定でよい。

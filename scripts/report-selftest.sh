@@ -22,7 +22,7 @@
 # ── 何を検査するか ──────────────────────────────────────────────────────────
 #
 #    1. 数え方の定義が 1 か所であること（2 つの集計が別々の数え方をしないための担保）
-#    2. 日の境界が src/quota.ts の jstDayRange と同じであること
+#    2. 日の境界が src/quota.ts / src/cost-ledger.ts と同じであること
 #    3. 既知の行に対して、期待どおりの集計が出ること
 #    4. モデル別に割っても、合計が変わらないこと（#25 が同じ台帳へ乗れる形）
 #    5. ビルド時間の閾値が、天井の宣言から導かれていること（#166 / #164 が動かす値）
@@ -124,24 +124,32 @@ for consumer in "${CONSUMERS[@]}"; do
   fi
 done
 
-# ── 2. 日の境界が src/quota.ts と同じであること ─────────────────────────────
+# ── 2. 日の境界が src/quota.ts / src/cost-ledger.ts と同じであること ────────
 #
 # **確定25 は日の境界を JST の 0 時と定めており、日次枠の判定はそこで切っている。**
 # 集計だけが UTC で切ると、「枠を使い切った日」と「表に出る日」が 9 時間ずれる。
 #
-# src/quota.ts の定数は TypeScript の式（9 * 60 * 60）なので、シェルから実行時に
-# 引けない。**式を読んで計算し、写しと突き合わせる。**
-echo "[selftest] 日の境界が src/quota.ts の jstDayRange と同じであること"
+# TypeScript 側の定数は式（9 * 60 * 60）なので、シェルから実行時に引けない。
+# **式を読んで計算し、写しと突き合わせる。**
+#
+# **同じ値の写しは 3 つある**（report-window.sh の値と、TypeScript 側の 2 つ）。
+# 片方だけを見ていると、見ていないほうがずれても静かに通る（#315）。
+# 実装側の一覧はここが持つ。**同名の定数を増やしたらここへ足す。**
+echo "[selftest] 日の境界が src/quota.ts / src/cost-ledger.ts の JST_OFFSET_SECONDS と同じであること"
 
-quota_expr="$(sed -n 's/^const JST_OFFSET_SECONDS = \(.*\);$/\1/p' src/quota.ts | head -1)"
-if [[ -z "$quota_expr" ]]; then
-  echo "  FAIL src/quota.ts から JST_OFFSET_SECONDS を読めません（綴りが変わった可能性）" >&2
-  failed=1
-else
-  quota_offset=$(( quota_expr ))
-  expect_eq "JST オフセット（src/quota.ts = ${quota_expr}）" \
-    "$quota_offset" "$REPORT_WINDOW_JST_OFFSET_SECONDS"
-fi
+JST_OFFSET_SOURCES=(src/quota.ts src/cost-ledger.ts)
+
+for source_file in "${JST_OFFSET_SOURCES[@]}"; do
+  offset_expr="$(sed -n 's/^const JST_OFFSET_SECONDS = \(.*\);$/\1/p' "$source_file" | head -1)"
+  if [[ -z "$offset_expr" ]]; then
+    echo "  FAIL ${source_file} から JST_OFFSET_SECONDS を読めません（綴りが変わった可能性）" >&2
+    failed=1
+    continue
+  fi
+  offset_seconds=$(( offset_expr ))
+  expect_eq "JST オフセット（${source_file} = ${offset_expr}）" \
+    "$offset_seconds" "$REPORT_WINDOW_JST_OFFSET_SECONDS"
+done
 
 # 境界そのものの検査。JST の 23:59:59 と、その 1 秒後が別の日に入ること。
 last_second="$(date -u -d "2026-08-29T14:59:59Z" +%s)"   # 2026-08-29 23:59:59 JST

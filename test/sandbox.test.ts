@@ -255,12 +255,33 @@ describe('CSP（#28 acceptance 2 / 3、7.2）', () => {
     expect(csp).not.toContain(other.id);
   });
 
-  it('script-src がその作品の wasm_exec.js 1 本だけを許す', async () => {
+  it('script-src の許可集合を完全一致で固定する（URL はその作品の wasm_exec.js 1 本だけ）', async () => {
+    // **名前を実態より強く書かない。** ここが押さえているのは
+    // 「**URL として**許されるのがその作品の `wasm_exec.js` 1 本だけであること」であり、
+    // 集合には 2 つのキーワードと `blob:`（#306）も入っている。**集合そのものを
+    // 完全一致で固定する**ことで、どれか 1 つが増減したらここが落ちる。
     const game = await seedGame({ suffix: 'script', status: 'published' });
     const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`);
     const csp = response.headers.get('content-security-policy') ?? '';
     expect(directiveOf(csp, 'script-src')).toBe(
-      `script-src 'unsafe-inline' 'wasm-unsafe-eval' ${SANDBOX_ORIGIN}/g/${game.id}/wasm_exec.js`,
+      `script-src 'unsafe-inline' 'wasm-unsafe-eval' blob: ${SANDBOX_ORIGIN}/g/${game.id}/wasm_exec.js`,
+    );
+  });
+
+  it('script-src が blob: を許す（#306。AudioWorklet のモジュール読み込み）', async () => {
+    // **この検査は「書いてあること」しか見ていない。** ワークレットが実際に読めるかは
+    // CSP の文字列からは導けない（#180 と同じ形。`scripts/check-sandbox-browser.sh` の
+    // 層 5 が実ブラウザで見る）。ここで押さえるのは**うっかり消えないこと**である。
+    const game = await seedGame({ suffix: 'worklet', status: 'published' });
+    const csp =
+      (await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`)).headers.get(
+        'content-security-policy',
+      ) ?? '';
+    expect(directiveOf(csp, 'script-src').split(' ')).toContain('blob:');
+    // **`connect-src` は道連れで緩んでいない。** `blob:` の取得は `connect-src` の管轄に
+    // 入らないため、外へ出られる宛先は 1 つも増えない。
+    expect(directiveOf(csp, 'connect-src')).toBe(
+      `connect-src ${SANDBOX_ORIGIN}/g/${game.id}/game.wasm`,
     );
   });
 

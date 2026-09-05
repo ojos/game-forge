@@ -89,6 +89,54 @@ export interface SandboxCspSources {
  * 入れていない**ため（タイトルも作者名も入れない。3.4-5 の文脈提示は親ページの責務）、
  * `'unsafe-inline'` が UGC の混入経路にならない。
  *
+ * # 緩めたこと: `script-src` に `blob:` を足した（#306）
+ *
+ * **これも意図的な緩和であり、7.2 の記述との差分である。** `connect-src` のときと同じ形で、
+ * 理由と範囲をここに残す。
+ *
+ * ## なぜ足さざるを得ないのか
+ *
+ * **6.1 が許した音（`ebiten/v2/audio`）は、oto を通じて AudioWorklet を使う。** oto は
+ * ワークレットのモジュールを**その場で組み立てた `blob:` URL** から読み込む。ワークレットの
+ * モジュール読み込みは `script-src` の管轄（Chromium は `script-src-elem` の fallback として
+ * `script-src` で照合する）なので、`blob:` が無いと `addModule()` が拒否され、
+ * **`AbortError` で音の初期化が丸ごと失敗する。** #306 の本番の症状はこれで、
+ * **#286 が入れた音は 1 度も鳴っていなかった。**
+ *
+ * 迂回できないかを検討したが、いずれも成立しない。
+ *
+ * - **URL を列挙する。** `blob:` URL は実行時に生成される UUID で、**事前に書けない。**
+ *   不透明オリジンでは接頭辞も `blob:null/` になる。
+ * - **`'unsafe-inline'` で足りる。** 足りない。ワークレットは**外部モジュールの取得**であり、
+ *   インライン指定は一致しない（実測。上の症状がまさにそれである）。
+ * - **oto に別の経路を使わせる。** 生成物が使うのはライブラリの既定経路であり、
+ *   プロンプトで書き換えさせる形は 6.1 が防御と数えない層になる。
+ *
+ * ## どこまで緩めたか（何が失われたか）
+ *
+ * - **`blob:` が指せるのは、この文書自身が `URL.createObjectURL` で作った物だけである。**
+ *   スキーム全体を開けたように見えるが、**他所から持ち込める URL ではない。** 中身の出所は
+ *   必ずこの文書の中で組み立てられたバイト列で、それを組み立てられるのは
+ *   **既にこの文書で動いているスクリプト**である。
+ * - **したがって「任意のスクリプトが動くようになった」という劣化は起きていない。**
+ *   `script-src` には元々 `'unsafe-inline'` があり、**この文書ではもともと任意のスクリプトが
+ *   動く。** 封じ込めを担っているのは script-src ではなく、**不透明オリジン・別ホスト・
+ *   `connect-src` の 1 点許可**の側である（上記）。`blob:` はそのどれにも触れない。
+ * - **失われたのは「文書に流し込めるスクリプトの綴りが 1 種類増えた」ことである。**
+ *   具体的には、`blob:` を経由すると **`'unsafe-inline'` を外した将来の版でも**
+ *   スクリプトを動かせる。**`'unsafe-inline'` を外す道を 1 本狭めた**という意味で、
+ *   これは受け入れた劣化である。
+ * - **`connect-src` は緩めていない。** `blob:` の取得は `connect-src` の管轄に入らないため、
+ *   外へ出られる宛先は 1 つも増えていない。**実ブラウザで確認済み**
+ *   （`scripts/check-sandbox-browser.sh` の層 5。`connect-src` をその作品の `.wasm` 1 本に
+ *   絞ったまま `addModule()` が通る）。
+ *
+ * ## 検査は実ブラウザが持つ
+ *
+ * **この不具合は CSP を読む検査では原理的に捕まらない。** #180 と同じ形である
+ * （`scripts/check-sandbox-browser.sh` の冒頭）。**層 5 が実ブラウザで
+ * `audioWorklet.addModule(blob:)` を通す。** `blob:` を消せば赤くなる（実測）。
+ *
  * # `img-src` から `'self'` を落とした
  *
  * 上と同じ理由で不透明オリジンでは一致せず、**書いてあるのに効かない指定**だった。
@@ -127,11 +175,17 @@ export function sandboxCsp(sources: SandboxCspSources): string {
  * `WebAssembly.instantiateStreaming` 自体が CSP で落ちる）。**`'unsafe-eval'` ではない。**
  * 前者は wasm のコンパイルだけを許し、JavaScript の `eval` は許さない。
  *
+ * `blob:` は AudioWorklet のモジュール読み込みに要る（#306。理由と、緩めた範囲は
+ * `sandboxCsp` の「緩めたこと: `script-src` に `blob:` を足した」）。**文書以外の
+ * レスポンスにも付く**——`scriptUrl` が null のときも消さない。ワークレットを読むのは
+ * 文書だけだが、**ここで分岐を増やすと「どちらの綴りが本番か」が読みにくくなる**うえ、
+ * `blob:` は文書自身が作った物しか指せないため、他のレスポンスで許しても指せる先が無い。
+ *
  * @param scriptUrl 許す外部スクリプトの絶対 URL（無ければ null）
  * @returns `script-src` ディレクティブ
  */
 function scriptSrc(scriptUrl: string | null): string {
-  const sources = ["'unsafe-inline'", "'wasm-unsafe-eval'"];
+  const sources = ["'unsafe-inline'", "'wasm-unsafe-eval'", 'blob:'];
   if (scriptUrl !== null) {
     sources.push(scriptUrl);
   }

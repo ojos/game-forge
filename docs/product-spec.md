@@ -4835,6 +4835,34 @@ docker run --rm \
     将来の事故も構造的に塞ぐ。
   - **この要件は CSP の照合でも `curl` でも検証できない**（どちらも CORS を評価しない）。
     **実ブラウザでの確認を受け入れ条件に含める。**
+- **`script-src` に `blob:` を足した（#306 / 2026-09-04）。緩和である。** 6.1 が許した音
+  （`ebiten/v2/audio`）は oto を通じて **AudioWorklet** を使い、そのモジュールを実行時に
+  組み立てた **`blob:` URL** から読む。ワークレットのモジュール読み込みは `script-src` の
+  管轄（Chromium は `script-src-elem` の fallback として `script-src` で照合する）なので、
+  `blob:` が無いと `addModule()` が拒否され、**`AbortError` で音の初期化が丸ごと失敗する。**
+  **#286 で入れた音は、この 1 語が無かったために 1 度も鳴っていなかった。**
+  - **迂回できない。** `blob:` URL は実行時に生成される UUID（不透明オリジンでは
+    `blob:null/<uuid>`）で**事前に列挙できない**。`'unsafe-inline'` でも一致しない
+    （ワークレットは**外部モジュールの取得**である）。検討の記録は `src/sandbox-csp.ts`。
+  - **何をどこまで緩めたか。** `blob:` が指せるのは**この文書自身が `URL.createObjectURL`
+    で作った物だけ**であり、外から持ち込める URL ではない。それを作れるのは**既にこの文書で
+    動いているスクリプト**である。したがって**「任意のスクリプトが動くようになった」という
+    劣化は起きていない**——`script-src` には元より `'unsafe-inline'` があり、
+    **この文書ではもともと任意のスクリプトが動く。**
+  - **失われたもの。** 文書へ流し込めるスクリプトの綴りが 1 種類増えた。具体的には、
+    **`'unsafe-inline'` を将来外しても `blob:` 経由でスクリプトを動かせる。**
+    **`'unsafe-inline'` を外す道を 1 本狭めた**という意味で、これは受け入れた劣化である。
+  - **道連れで緩んだものは無い。** `connect-src` はその作品の `.wasm` 1 本のまま、
+    `sandbox allow-scripts`（必須要件 1）も `default-src 'none'` もそのままで
+    `addModule()` は通る。**実ブラウザで確認した**（下記）。**封じ込めを担っているのは
+    `script-src` ではなく、不透明オリジン・別ホスト・`connect-src` の 1 点許可の側である。**
+  - **この要件も CSP の照合では検証できない。** 本番の症状の 2 行目は
+    `Failed to load worklet module script: blob:null/… (CORS or access check error)` で、
+    **#180 と同じ「CSP は許しているが別の理由で塞ぐ」形に見えた。**
+    実測で切り分けた結果、**これは CSP 拒否の帰結であり、不透明オリジン固有の別制約は
+    無かった。** `scripts/check-sandbox-browser.sh` の**層 5**が、直接開いた形と
+    作品ページへ埋め込んだ形の両方で `audioWorklet.addModule(blob:)` を実際に通す。
+    **`blob:` を消せば赤くなる**（実測。同スクリプト冒頭に記録）。
 - COEP / CORP、`credentialless` iframe も検討する。
 
 ### 7.3 費用 DoS の防御

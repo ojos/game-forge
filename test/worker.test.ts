@@ -6,6 +6,7 @@ import {
   cookieNames,
   handleAppRequest,
 } from '../src/app.js';
+import { TEMPLATE_MODULE_PATH } from '../src/go-import-allowlist.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 const SANDBOX_ORIGIN = `https://${env.SANDBOX_HOST}`;
@@ -65,6 +66,7 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       'TEST_PRODUCT_SPEC',
       'TEST_VENDOR_DEPS',
       'TEST_BUILD_SAMPLE',
+      'TEST_TEMPLATE_GO_MOD',
       'TEST_WRANGLER_TOML',
       'TEST_APP_CSS',
       'TEST_ROUTES_JSON',
@@ -291,5 +293,61 @@ describe('__Host- cookie（7.2 必須要件 2）', () => {
     const body = (await response.json()) as { cookieNames: string[] };
     expect(body.cookieNames).toEqual([DEV_SESSION_COOKIE]);
     expect(JSON.stringify(body)).not.toContain('must-not-appear');
+  });
+});
+
+/**
+ * `go.mod` の `module` 行からモジュールパスを取り出す。
+ *
+ * **行頭に錨を打つ。** `go.mod` の注記は `//` で始まる散文で、`module` という語を
+ * 本文に含む行がある。錨を外すと注記の一語を宣言として読み、照合が実体を見なくなる。
+ *
+ * @param goMod `go.mod` の中身
+ * @returns モジュールパス。`module` 行が無ければ null
+ */
+function modulePathOf(goMod: string): string | null {
+  const matched = /^module[ \t]+(\S+)[ \t]*$/mu.exec(goMod);
+  return matched === null ? null : matched[1]!;
+}
+
+describe('隔離ビルドのテンプレートのモジュールパス（#285 / #298）', () => {
+  // **この検査がここにある理由は、値の出どころが Node 側にしかないことである。**
+  // workerd 内にファイルシステムが無いため、`docker/isolated-build/template/go.mod` は
+  // `vitest.config.ts` が `TEST_TEMPLATE_GO_MOD` として注入する経路でしか読めない。
+  // 注入するバインディングの員数を数えているのはこのファイル（上の env キー検査）なので、
+  // 通し先もここへ置く。
+
+  it('module 行の抽出が宣言だけを拾う', () => {
+    // この抽出が緩むと、下の照合が「注記に現れた語」と比べるようになる。
+    expect(
+      modulePathOf(
+        ['// module gameforge.local/注記の中の語', 'module example.com/real', '', 'go 1.27.0'].join(
+          '\n',
+        ),
+      ),
+    ).toBe('example.com/real');
+    expect(modulePathOf('go 1.27.0\n')).toBeNull();
+  });
+
+  it('TEMPLATE_MODULE_PATH が go.mod の module 行と一致する', () => {
+    // `src/go-import-allowlist.ts` の `TEMPLATE_MODULE_PATH` は module 行の**写し**で、
+    // それが写しであることは、これまで記述にしか無かった（#298）。ずれても静かには
+    // 壊れない（`vendor-deps.go` との照合が赤くなる）が、**赤の出方から写しへ辿る**
+    // 必要があった。ここで直接照合する。
+    expect(
+      modulePathOf(env.TEST_TEMPLATE_GO_MOD),
+      'src/go-import-allowlist.ts の TEMPLATE_MODULE_PATH は docker/isolated-build/template/go.mod の module 行の写しです。どちらかを変えたら両方を合わせてください',
+    ).toBe(TEMPLATE_MODULE_PATH);
+  });
+
+  it('go.mod をずらすと照合が破れる（この検査が効いていることの確認）', () => {
+    // 変異検査。**セグメント境界の 1 文字違いで落ちる**ことを見る
+    // （`isTemplatePackage` が先頭一致ではなく境界で見ている理由と同じ形）。
+    const doctored = env.TEST_TEMPLATE_GO_MOD.replace(
+      /^module[ \t]+\S+[ \t]*$/mu,
+      `module ${TEMPLATE_MODULE_PATH}foo`,
+    );
+    expect(doctored).not.toBe(env.TEST_TEMPLATE_GO_MOD);
+    expect(modulePathOf(doctored)).not.toBe(TEMPLATE_MODULE_PATH);
   });
 });

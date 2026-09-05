@@ -59,6 +59,11 @@ export default defineConfig({
           // どちらも許可パッケージ一覧の複製にあたるため機械照合する（#18）。
           TEST_VENDOR_DEPS: 'docker/isolated-build/template/vendor-deps.go',
           TEST_BUILD_SAMPLE: 'docker/isolated-build/sample/ebitengine.go',
+          // テンプレートのモジュール宣言。`src/go-import-allowlist.ts` の
+          // `TEMPLATE_MODULE_PATH` はこの `module` 行の写しなので機械照合する
+          // （#285 / #298）。写しであることが記述にしか無いと、ずれたときに
+          // 「なぜ vendor 照合が赤いのか」からしか辿れない。
+          TEST_TEMPLATE_GO_MOD: 'docker/isolated-build/template/go.mod',
           // 本番のホスト名と DEV_ROUTES の宣言を、テストから宣言そのものとして読むために
           // 渡す（#89 / test/origins.test.ts）。期待値をテストへ書き写すと、宣言を
           // 変えたときにテストだけが古い値を見続ける。

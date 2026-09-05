@@ -271,19 +271,42 @@ const workletTimeout = 10 * time.Second
 
 // probeAudioWorklet は oto と同じ手順で `blob:` のワークレットを読み込み、結果を返す。
 //
-// 返す文字列がそのまま判定の材料になる（"ok" 以外はすべて赤）。
-func probeAudioWorklet() (verdict string) {
+// 返す文字列がそのまま判定の材料になる（"ok" 以外はすべて赤）。**第 2 の戻り値が真の
+// ときは、Go を終わらせてはならない**（下記「なぜ時間切れのときに終われないのか」）。
+//
+// # なぜ時間切れのときに終われないのか（実測）
+//
+// `wasm_exec.js` の `_resume()` は、**Go の関数表を引く前に `this.exited` を見て投げる。**
+//
+//	_resume() {
+//	    if (this.exited) { throw new Error("Go program has already exited"); }
+//
+// したがって、時間切れで `main` を返したあとに `addModule()` の Promise が決着すると、
+// その反応が `Uncaught (in promise) Error: Go program has already exited` になる
+// （`workletTimeout` を 1ms にして実測した）。**`js.Func` を解放したかどうかは関係が無い**
+// ——解放の有無を見るコードへは到達しないためである。
+//
+// **層 5 は Console と未捕捉例外を読む検査である。** この経路は「ワークレットが決着しない」
+// という**いちばん診断が要る場面**でだけ通るので、そこへ無関係な例外を 1 本足すのは、
+// 検査としていちばん困る壊れ方になる。**だから終わらせない。**
+//
+// **実物の ebiten も終わらない**（`RunGame` は返らない）ので、待ち続ける形のほうが本番に近い。
+func probeAudioWorklet() (verdict string, parked bool) {
 	// JS 側の綴りが変わって Get/Call が落ちても、**検査が観測不能で終わらないようにする。**
+	//
+	// **ここでは待たない。** panic で来るのは `then` を張る前に JS の綴りが崩れた場合で、
+	// **後から呼ばれる反応が存在しない。**
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			verdict = fmt.Sprint("panic: ", recovered)
+			parked = false
 		}
 	}()
 
 	global := js.Global()
 	constructor := global.Get("AudioContext")
 	if !constructor.Truthy() {
-		return "no-audiocontext"
+		return "no-audiocontext", false
 	}
 	context := constructor.New()
 
@@ -295,14 +318,14 @@ func probeAudioWorklet() (verdict string) {
 	)
 	url := global.Get("URL").Call("createObjectURL", blob)
 
-	// 緩衝を持たせる。**解決と時間切れが競ったときに送り手を止めない**
-	// （止まると js.Func が解放されず、ページ側に残る）。
-	settled := make(chan string, 2)
+	// 緩衝を 1 つ持たせる。**時間切れのあとに決着した反応を止めない**——受け手はもう
+	// 居ないので、緩衝が無いと JS からの呼び出しがその場で刺さったままになる。
+	// 反応は解決か拒否のどちらか一方しか起きないため、1 つで足りる。
+	settled := make(chan string, 1)
 	onFulfilled := js.FuncOf(func(_ js.Value, _ []js.Value) any {
 		settled <- "ok"
 		return nil
 	})
-	defer onFulfilled.Release()
 	onRejected := js.FuncOf(func(_ js.Value, args []js.Value) any {
 		reason := "(理由なし)"
 		if len(args) > 0 {
@@ -311,24 +334,37 @@ func probeAudioWorklet() (verdict string) {
 		settled <- "rejected: " + reason
 		return nil
 	})
-	defer onRejected.Release()
 
 	context.Get("audioWorklet").Call("addModule", url).Call("then", onFulfilled, onRejected)
 
 	select {
 	case verdict := <-settled:
-		return verdict
+		// 決着した。**もう呼ばれないので解放してよい**（`then` の反応は一度しか起きない）。
+		onFulfilled.Release()
+		onRejected.Release()
+		return verdict, false
 	case <-time.After(workletTimeout):
-		return "timeout"
+		// **解放しない。** 解放したうえで Go が生き続けると、遅れて来た反応が
+		// 「解放済みの関数の呼び出し」になる。生かしたままにすれば、遅れて来ても
+		// 上の無害な送信で終わる。
+		return "timeout", true
 	}
 }
 
 func main() {
-	js.Global().Set("__gfAudioWorklet", probeAudioWorklet())
+	verdict, parked := probeAudioWorklet()
+	js.Global().Set("__gfAudioWorklet", verdict)
 	// **`__gfWasmRan` は最後に立てる。** 観測側（`scripts/sandbox-browser-probe.mjs`）は
 	// この印が立った時点で読み取りを打ち切るため、先に立てるとワークレットの結果が
 	// 間に合わず、層 5 が「観測できなかった」で不安定になる。
 	js.Global().Set("__gfWasmRan", "ok")
+
+	if parked {
+		// **観測に要る値は上で立て終えている。** ここから先は「終わらないこと」だけが
+		// 仕事である（理由は probeAudioWorklet の注記）。解放していない js.Func が
+		// 残っているため、ランタイムはこれを deadlock と見なさない。
+		select {}
+	}
 }
 EOF
 

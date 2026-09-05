@@ -255,7 +255,11 @@ describe('CSP（#28 acceptance 2 / 3、7.2）', () => {
     expect(csp).not.toContain(other.id);
   });
 
-  it('script-src がその作品の wasm_exec.js 1 本だけを許す', async () => {
+  it('script-src の許可集合を完全一致で固定する（URL はその作品の wasm_exec.js 1 本だけ）', async () => {
+    // **名前を実態より強く書かない。** ここが押さえているのは
+    // 「**URL として**許されるのがその作品の `wasm_exec.js` 1 本だけであること」であり、
+    // 集合には 2 つのキーワードと `blob:`（#306）も入っている。**集合そのものを
+    // 完全一致で固定する**ことで、どれか 1 つが増減したらここが落ちる。
     const game = await seedGame({ suffix: 'script', status: 'published' });
     const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`);
     const csp = response.headers.get('content-security-policy') ?? '';

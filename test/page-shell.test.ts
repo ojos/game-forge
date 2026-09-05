@@ -277,10 +277,12 @@ describe('全 SSR 画面の外枠', () => {
     // **写しは必ず腐る**ので、ここで機械照合する（shared-ai-rules.md 12 章）。
     // 揃っていないと、読み込みが終わった瞬間に版面が飛ぶ（#30）。
     //
-    // **見るのは作品枠の 2 つだけである。** `aspect-ratio` の出現をすべて縛ると、
+    // **見るのは作品を写す 3 つだけである。** `aspect-ratio` の出現をすべて縛ると、
     // 作品と無関係な用途で 1 つ足した日に落ちる。写しを腐らせない目的は変わらない。
+    // **`.gf-card-shot` は #328 で増えた**（一覧・トップ・作者ページが共有するカードの
+    // 画像。揃っていないと画像が届いた瞬間に格子全体が飛ぶ）。
     const expected = `aspect-ratio: ${OGP_IMAGE_WIDTH} / ${OGP_IMAGE_HEIGHT};`;
-    for (const selector of ['.gf-shot', '.gf-frame']) {
+    for (const selector of ['.gf-shot', '.gf-frame', '.gf-card-shot']) {
       const blocks = ruleBlocksOf(env.TEST_APP_CSS, selector);
       expect(blocks.length, `app.css に ${selector} の規則が見つかりません`).toBeGreaterThan(0);
       expect(

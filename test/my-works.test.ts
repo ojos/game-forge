@@ -4,16 +4,16 @@ import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
 import { DRAFT_STATUS, UNTITLED_TITLE } from '../src/games.js';
 import { HOME_PATH } from '../src/home.js';
+import { formatJstMinutes, toIsoTimestamp } from '../src/jst.js';
 import {
   MAX_LISTED_WORKS,
   MY_WORKS_PATH,
   displayTitleOf,
-  formatJstMinutes,
   rowStateOf,
-  toIsoTimestamp,
 } from '../src/my-works.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { PUBLIC_WORKS_PATH } from '../src/works-list.js';
 import { STALE_AFTER_SECONDS, WORK_PAGE_PREFIX, workPagePath } from '../src/work-page.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -133,10 +133,13 @@ async function openList(cookie?: string): Promise<Response> {
 }
 
 describe('経路の登録（#152）', () => {
-  it('一覧は作品ページの親の位置にある', () => {
-    // 綴りを 2 か所に書かない決定を、導出の結果として固定する。**URL を 1 本でも
-    // 覚えている人が末尾を削るだけで一覧に着く**ことが、この位置を選んだ理由である。
-    expect(WORK_PAGE_PREFIX).toBe(`${MY_WORKS_PATH}/`);
+  it('「あなたの作品」は作品ページと同じ接頭辞の下にある（#328 で移した）', () => {
+    // 綴りを 2 か所に書かない決定を、導出の結果として固定する。
+    expect(MY_WORKS_PATH.startsWith(WORK_PAGE_PREFIX)).toBe(true);
+    // **親の位置は公開作品の一覧が取った**（#328 / 仕様 2.3.2）。「URL を 1 本でも
+    // 覚えている人が末尾を削るだけで一覧に着く」（#152）は失われていない——
+    // 着く先が、共有 URL を踏んだ未ログインの閲覧者にとって意味のある行き先になった。
+    expect(WORK_PAGE_PREFIX).toBe(`${PUBLIC_WORKS_PATH}/`);
   });
 
   it('経路表に登録されていて、重複も綴り違いも無い', () => {

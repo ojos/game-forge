@@ -59,6 +59,36 @@ export function workPagePath(gameId: string): string {
   return `${WORK_PAGE_PREFIX}${gameId}`;
 }
 
+/**
+ * 公開作品の一覧（2.3.1 / #328）。
+ *
+ * **`/works` の意味を変えた。** もとは「あなたの作品」（#152）で、いまは公開作品の
+ * 一覧である。`/games` を新設すると `作品 = /works/<id>` と `作品の一覧 = /games` で
+ * **同じものに綴りが 2 つ**できるため、`/works` のほうを譲った（仕様 2.3.2）。
+ *
+ * 末尾の `/` を落とすので、経路表には**完全一致**で載る（前方一致の `/works/` とは
+ * 鍵が別になる）。
+ *
+ * # なぜここに置くのか
+ *
+ * **画面を提供する側（`src/works-list.ts`）と、そこへ送り返す側が別モジュールだから**
+ * である（このファイルの冒頭が定める基準）。送り返すのは公開トップ（`src/home.ts`）と
+ * 「あなたの作品」（`src/my-works.ts`）で、**後者は逆向きにも参照される**
+ * （一覧は移設の案内で `/works/mine` を出す）。値だけの葉へ置かないと循環参照になる。
+ */
+export const PUBLIC_WORKS_PATH = WORK_PAGE_PREFIX.slice(0, -1);
+
+/**
+ * 「あなたの作品」（5.5 / #152。#328 で `/works` から移した）。
+ *
+ * **完全一致で登録する。** `src/routes.ts` は完全一致を前方一致より先に見ると定め、
+ * 「`/works/` の下に将来 `/works/new` のような固定の経路を足しても、前方一致の経路に
+ * 飲み込まれない」と書いている。**その想定していた形が、ここで実際に来た。**
+ *
+ * 置き場の理由は {@link PUBLIC_WORKS_PATH} と同じである。
+ */
+export const MY_WORKS_PATH = `${WORK_PAGE_PREFIX}mine`;
+
 /** 登録画面（招待コードの入力）。 */
 export const SIGNUP_PATH = '/signup';
 

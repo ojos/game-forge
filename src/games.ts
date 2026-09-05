@@ -1134,3 +1134,153 @@ function assertLimit(limit: number, what = '取得件数'): void {
     throw new Error(`一覧の${what}が不正です: ${limit}`);
   }
 }
+
+/**
+ * 公開作品の一覧の並べ替え軸（仕様 2.3.4 / #328）。
+ *
+ * **2 つだけである。** AivisHub は `download` / `like` / `recent` の 3 軸を持つが、
+ * `like` に相当するものは 11.2 が MVP 外と決めており（ワンタップスタンプ評価）、
+ * `download` に相当するのは `fork_count` である——**10.1 の主 KPI はフォーク率であり、
+ * よく改造された作品を並べることは主 KPI をそのまま可視化する。**
+ *
+ * **綴りの正本はここである。** URL のクエリ（`?sort=`）も索引の名前
+ * （`migrations/0019_games_public_list_idx.sql`）もこの 2 語に揃える。
+ */
+export const PUBLIC_WORK_SORTS = ['recent', 'forked'] as const;
+
+/** 並べ替え軸。 */
+export type PublicWorkSort = (typeof PUBLIC_WORK_SORTS)[number];
+
+/**
+ * 未知の綴りを既定の軸へ落とす。
+ *
+ * **落とすのであって、失敗させない。** `?sort=` は利用者が手で書き換えられる場所で、
+ * 綴りを間違えた URL が 400 を返すより、既定の並びで一覧が出るほうがよい
+ * （一覧の仕事は作品を見つけさせることである）。
+ *
+ * @param value クエリから来た値（未指定なら null）
+ * @returns 既知の軸。未知なら `recent`
+ */
+export function toPublicWorkSort(value: string | null): PublicWorkSort {
+  return (PUBLIC_WORK_SORTS as readonly string[]).includes(value ?? '')
+    ? (value as PublicWorkSort)
+    : 'recent';
+}
+
+/** 公開作品の一覧に出す 1 件（仕様 2.3.6）。 */
+export interface PublicWork {
+  /** `games.id`。作品ページ（`/works/<id>`）の URL に入る。 */
+  readonly id: string;
+  /** 題名。**公開済みの行しか返さないのでそのまま出してよい**（UGC なので表示側で escape する）。 */
+  readonly title: string;
+  /** 作者の表示名。行が壊れている場合に備えて null を許す。 */
+  readonly authorName: string | null;
+  /** 公開した時刻（UNIX 秒）。0001 以前の行では null になりうる。 */
+  readonly publishedAt: number | null;
+  /** この作品から生まれた公開済みのフォークの数（非正規化列。5.1）。 */
+  readonly forkCount: number;
+  /** 親を持つか（改造された作品か）。系統の詳細は作品ページが持つ（5.5）。 */
+  readonly hasParent: boolean;
+  /** スクリーンショットが撮れているか。撮れていなければカードは代替表示にする。 */
+  readonly hasShot: boolean;
+}
+
+/**
+ * 公開作品を引く SQL を組み立てる。
+ *
+ * **関数として出しているのは、実行計画を検査できるようにするためである。**
+ * 仕様 2.3.3 の条件 2（索引を張る）は、**索引が実際に使われて初めて意味を持つ。**
+ * SQL をここへ閉じ込めず `listPublishedGames` の中に書いたままだと、検査は同じ SQL を
+ * **書き写す**ことになり、片方だけが古くなる（`.ai-playbook/shared-ai-rules.md` 12 章）。
+ * `test/works-list.test.ts` はここが返す文字列に `EXPLAIN QUERY PLAN` を付けて実行する。
+ *
+ * **文字列を組み立てるが、材料は `PublicWorkSort` の 2 値だけである。** 利用者の入力は
+ * {@link toPublicWorkSort} が既に既知の 2 語へ落としており、SQL へ届く経路が無い。
+ *
+ * 並び順の末尾に `id desc` を置くのは、同値の行の順序を決めるためである
+ * （`migrations/0019_games_public_list_idx.sql`。索引の列順もこれに合わせてある）。
+ *
+ * @param sort 並べ替え軸
+ * @returns 束縛パラメータが 3 つ（status / limit / offset）の SELECT 文
+ */
+export function publishedGamesSql(sort: PublicWorkSort): string {
+  const orderBy =
+    sort === 'forked'
+      ? 'g.fork_count desc, g.published_at desc, g.id desc'
+      : 'g.published_at desc, g.id desc';
+
+  // `users` を join するのは表示名 1 列のためである。**行ごと持ってこない**
+  // （`email` と `invited_by` は公開してはいけない。仕様 2.3.6）。
+  return `select g.id, g.title, g.published_at, g.fork_count, g.parent_id, g.ogp_state,
+            u.display_name as author_name
+       from games g
+       left join users u on u.id = g.author_id
+      where g.status = ? and ${reviewVisibleSql('g')}
+      order by ${orderBy}
+      limit ? offset ?`;
+}
+
+/**
+ * 公開作品を一覧で引く（仕様 2.3 / #328 / M9-2）。
+ *
+ * # 絞り込みは引く時点で行う
+ *
+ * **`status = 'published'` と審査の可視条件を SQL に置く。** 画面側で `filter` する形は
+ * #152 が `/works` について退けたものと同じで、**書き忘れても「それらしく」動く**
+ * （公開作品は正しく出る）。5.4 の「「公開」操作で初めて URL が有効になる」を、
+ * 一覧が抜け道にしてはいけない。
+ *
+ * **審査待ちの子を出さない条件（{@link reviewVisibleSql}）は、系統の一覧
+ * （{@link listPublishedForks}）と同じ断片を借りる。** 8.4 の通報が効く範囲を
+ * 画面ごとに書き分けると、足した画面だけが素通しになる。
+ *
+ * # BAN された作者の作品を、ここでは落とさない
+ *
+ * `users.banned_at` を条件に足さない。**BAN は生成と招待を止めるもの**（7.3）で、
+ * 公開済みの作品を取り下げるのは 8.4 の削除（`status='removed'`）が持つ。ここで
+ * 落とすと、**同じ作品が作品ページでは見えて一覧では消える**という食い違いになる。
+ * 作者ページ（M9-4 / #330）が BAN の扱いを決めるときに、ここも併せて見直すこと。
+ *
+ * # 件数の上限は呼び出し側が決める
+ *
+ * {@link listAuthoredGames} と同じ理由でここに既定値を持たない。値と根拠は
+ * `src/works-list.ts` の `WORKS_PER_PAGE` にある（仕様 2.3.3 の条件 1）。
+ *
+ * @param env バインディングと環境変数
+ * @param sort 並べ替え軸
+ * @param limit 引く最大件数（0 以上の整数）
+ * @param offset 読み飛ばす件数（0 以上の整数）
+ * @returns 指定した軸の順に並んだ公開作品
+ * @throws `limit` / `offset` が 0 以上の整数でない場合
+ */
+export async function listPublishedGames(
+  env: Env,
+  sort: PublicWorkSort,
+  limit: number,
+  offset = 0,
+): Promise<readonly PublicWork[]> {
+  assertLimit(limit);
+  assertLimit(offset, '読み飛ばし件数');
+
+  const result = await env.DB.prepare(publishedGamesSql(sort))
+    .bind(PUBLISHED_STATUS, limit, offset)
+    .all<{
+      id: string;
+      title: string;
+      published_at: number | null;
+      fork_count: number;
+      parent_id: string | null;
+      ogp_state: string | null;
+      author_name: string | null;
+    }>();
+
+  return result.results.map((row) => ({
+    id: row.id,
+    title: row.title,
+    authorName: row.author_name,
+    publishedAt: row.published_at,
+    forkCount: row.fork_count,
+    hasParent: row.parent_id !== null,
+    hasShot: row.ogp_state === 'ready',
+  }));
+}

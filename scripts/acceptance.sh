@@ -38,6 +38,28 @@ ran_any=0
 echo "[acceptance] (hygiene) scripts/check-control-chars.sh"
 bash scripts/check-control-chars.sh
 
+# Markdown の表崩れ（表の途中への段落差し込み）の検査（#317）。
+#
+# **制御文字の検査と同じ層に置く。** どちらも「読んでも気づけない壊れ方」を機械で
+# 見るもので、言語のマニフェストに依存せず、0.04 秒で終わる。
+#
+# **2026-09-04、3 つのセッションが docs/handoff.md を同時に触って実際に踏んだ**
+# （#308）。表の途中へ段落が入ると、続く行は表ではなくただの段落として描画される。
+# **引き継ぎは次の人が最初に読む文書**なので、そこが崩れると崩れた先の情報がまるごと
+# 読まれなくなる。git も既存のどの検査も捕まえない。
+#
+# **scripts/check-page-width.sh のように単一入口から外す理由が無い。** あちらは
+# ブラウザの実行ファイルを前提にするため外してあるが、この検査は bash と awk と git
+# しか要らない（判断の全文は scripts/check-table-breaks.sh の冒頭「決めた 3 点」）。
+#
+# **判定はスクリプト側が持つ**（何を崩れとみなすか、何を見ないか、承知のうえで受け入れた
+# 寛容さは scripts/check-table-breaks.sh の冒頭）。
+#
+# ran_any は立てない。上の制御文字検査と同じ理由（マニフェストに関係なく必ず走るため、
+# 立てると「テストを 1 つも実行していないのに合格」を作れてしまう）。
+echo "[acceptance] (hygiene) scripts/check-table-breaks.sh"
+bash scripts/check-table-breaks.sh
+
 # Go の版の写しと正本（ARG GO_VERSION）の機械照合（#141 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く。** 35 ms で終わり（実測。同スクリプト末尾）、npm test より 2 桁安い。

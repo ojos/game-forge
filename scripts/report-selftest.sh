@@ -96,9 +96,12 @@ expect_eq() {
 #
 # 消費側の一覧はここが持つ。**新しい集計を足したらここへ足す。** 足し忘れると
 # 「共有していない集計が 1 本ある」状態が緑のまま通る。
+#
+# **予告どおり 1 件抜けた。** #238 で effort-ab-report.sh が増えたときここへ足されず、
+# 検査の網から外れたまま緑で通っていた（#316）。
 echo "[selftest] 数え方の定義が 1 か所であること"
 
-CONSUMERS=(scripts/usage-report.sh scripts/build-time-report.sh)
+CONSUMERS=(scripts/usage-report.sh scripts/build-time-report.sh scripts/effort-ab-report.sh)
 
 for consumer in "${CONSUMERS[@]}"; do
   if [[ ! -f "$consumer" ]]; then

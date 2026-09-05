@@ -1981,8 +1981,9 @@ M9 の各 issue が担う。
 
 1. **1 画面あたりの読み取り件数を固定する。** トップは**各節 8 件・3 節**、一覧は**1 ページ 20 件**。
    母数が増えても読み取りが増えない形にする。
-2. **索引を張る。** `games` の索引は `parent_id` / `author_id` / `artifact_key` だけで、
-   **`status` と `published_at` の索引が無い。** この状態で「公開作品を新しい順に 20 件」を
+2. **索引を張る。** `games` の索引は 5 本ある（`source_key` / `wasm_key` / `parent_id` /
+   `(author_id, created_at DESC, id DESC)` / `generation_state` の部分索引）。**そのどれも
+   `status` や `published_at` を先頭に持たない。** この状態で「公開作品を新しい順に 20 件」を
    引くと全表走査になり、**読み取り行数が開設以来の全作品数に比例する**（4.3 が
    `generations` の日次集計について警告しているのと同じ形）。並べ替えの 2 軸ぶんを張る。
 3. **Cache API を前段に置く。ただし載せるのは HTML ではなく、D1 から引いた一覧の

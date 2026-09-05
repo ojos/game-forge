@@ -650,8 +650,8 @@ async function handleFork(
  *
  * **`pipeline` を差し替えられるのはここだけである**（`src/generate.ts` の
  * `createGenerateRoutes`、`src/revise.ts` の `createReviseRoutes` と同じ形）。既定に
- * すると単体テストが Lambda への実呼び出しを要求し、**1 回 約 16 円が受け入れ条件に
- * 混ざる。**
+ * すると単体テストが Lambda への実呼び出しを要求し、**1 回 ¥22.41 が受け入れ条件に
+ * 混ざる**（2026-09-04 / 本番の既定群 20 件の平均。4.2 の実測注記）。
  *
  * @param pipeline 差し替える各段（既定は `defaultPipeline`）
  * @returns 経路表へ連結する `Route[]`

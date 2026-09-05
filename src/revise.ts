@@ -381,7 +381,8 @@ async function handleRestore(request: Request, env: Env): Promise<Response> {
  *
  * **`pipeline` を差し替えられるのはここだけである**（`src/generate.ts` の
  * `createGenerateRoutes` と同じ形）。既定にすると単体テストが Lambda への実呼び出しを
- * 要求し、**1 回 約 16 円が受け入れ条件に混ざる。**
+ * 要求し、**1 回 ¥22.41 が受け入れ条件に混ざる**（2026-09-04 / 本番の既定群 20 件の
+ * 平均。4.2 の実測注記）。
  *
  * @param pipeline 差し替える各段（既定は `defaultPipeline`）
  * @returns 経路表へ連結する `Route[]`

@@ -526,6 +526,131 @@ button:disabled {
 }
 
 /* ==========================================================================
+   作品カード（一覧・トップ・作者ページが共有する）
+   ========================================================================== */
+
+/*
+ * カードの格子（#328 / 仕様 2.3.6）。
+ *
+ * **`auto-fill` で列数を決める。** 断点を並べて幅ごとに列数を書くと、画面を 1 枚
+ * 足すたびにその表を読み直すことになる。1 枚の最小幅だけを決めれば、狭い画面では
+ * 1 列、広い画面では自然に増える。
+ *
+ * **版面（`body` の `--gf-measure`）の外へは出さない。** 出す手（`100vw` を使う
+ * 負のマージン）はスクロールバーの幅を数えられず、**横スクロールを生む**——
+ * `scripts/check-page-width.sh` が見ている回帰そのものである。1280px で 2 列、
+ * 390px で 1 列になり、**1 枚あたりの絵はむしろ大きい。** 列を増やすために
+ * 最小幅を詰めると、主役であるはずの絵が小さくなる。
+ */
+.gf-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+  gap: var(--gf-gap-4);
+  width: 100%;
+  max-width: none;
+  margin: var(--gf-gap-4) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gf-card {
+  margin: 0;
+}
+
+/*
+ * カード全体を 1 本のリンクにする。
+ *
+ * 画像と題名を別々のリンクにすると、同じ行き先が読み上げに 2 度現れる。
+ */
+.gf-card-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+
+.gf-card-link:hover .gf-card-title {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+/*
+ * カードの画像。
+ *
+ * **縦横比は撮影の大きさと揃える**（`src/ogp.ts` の定数の写しであり、
+ * `test/page-shell.test.ts` が機械照合する）。揃っていないと、画像が届いた瞬間に
+ * 格子全体が飛ぶ。
+ */
+.gf-card-shot {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1200 / 630;
+  background: #111;
+  border-radius: var(--gf-radius);
+  object-fit: cover;
+}
+
+/* 撮れていない作品も並べる（`src/work-card.ts`）。枠だけ同じ大きさで残す。 */
+.gf-card-shot-pending {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--gf-gap-3);
+  color: #ccc;
+  font-size: var(--gf-text-small);
+  text-align: center;
+}
+
+.gf-card-title {
+  display: block;
+  margin-top: var(--gf-gap-2);
+  font-weight: 700;
+}
+
+.gf-card-meta {
+  margin: var(--gf-gap-1) 0 0;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-card-meta > * + * {
+  margin-left: var(--gf-gap-2);
+}
+
+.gf-card-tag,
+.gf-card-forks {
+  color: var(--gf-ink-faint);
+}
+
+/* ==========================================================================
+   並べ替えと頁送り
+   ========================================================================== */
+
+/*
+ * 並べ替えの切り替え（仕様 2.3.4 の 2 軸）と頁送り。
+ *
+ * **どちらも本文の一部として素朴に置く。** タブやボタンの見た目にすると、
+ * JavaScript を足したくなる。9.3 は素の HTML に留めると定めている。
+ */
+.gf-sort,
+.gf-pager {
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-pager {
+  margin-top: var(--gf-gap-4);
+}
+
+.gf-pager a + a {
+  margin-left: var(--gf-gap-3);
+}
+
+.gf-sort-current {
+  color: var(--gf-ink);
+}
+
+/* ==========================================================================
    ヘッダ
    ========================================================================== */
 

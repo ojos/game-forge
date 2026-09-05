@@ -11,20 +11,22 @@
  *
  * ## 置き場所を `/works` にした理由
  *
- * **公開トップ（`/`）には置けない。** `src/home.ts` は「D1 を読まない」ことを設計として
- * 選び、テストで固定してある（3.6。トップは未ログインの閲覧者が最初に踏む経路で、
- * URL 拡散の着地点でもある）。一覧はログインした本人にしか出せないうえ、開くたびに
- * D1 を引く。**トップに混ぜると、その 2 つの性質が公開トップへ伝染する。**
+ * **公開トップ（`/`）には置けない。** この一覧はログインした本人にしか出せず、
+ * **本人にしか出せないものを、URL 拡散の着地点に混ぜない。**
  *
- * 専用ページとして、**作品ページ（`/works/<id>`）の親の位置**に置く。
+ * > **#328 注記。** 起票時（#152）はここに「`src/home.ts` は「D1 を読まない」ことを
+ * > 設計として選んでいる」という根拠も並べていた。**その根拠のほうは 2.3.3 で解けている**
+ * > （トップは条件付きで D1 を読む）。**置けない理由は上の 1 点に絞られた。**
  *
- * - **URL を 1 本でも覚えている人が、末尾を削るだけで一覧に着く。** この issue が
- *   解こうとしている問題そのものに、綴りが直接効く。
+ * 専用ページとして、**作品ページ（`/works/<id>`）と同じ接頭辞の下**に置く。
+ *
  * - 綴りの正本を増やさない（{@link MY_WORKS_PATH} は `WORK_PAGE_PREFIX` から導く）。
  *
- * `/works` を「みんなの作品」の索引にする案は採らない。他人の作品の一覧・タイムラインは
- * 11.2 が MVP の対象外としており（招待制で母数が小さく、URL 共有が主経路）、
- * **入るあてのないものに一等地を空けておく理由が無い。**
+ * **#328 で `/works` から `/works/mine` へ移した。** 起票時（#152）は「`/works` を
+ * 「みんなの作品」の索引にする案は採らない。11.2 が MVP の対象外としており、
+ * 入るあてのないものに一等地を空けておく理由が無い」と書いていた。**その「入るあて」が
+ * 来た**（仕様 2.3。11.2 の「タイムライン」は取り消していない——置いたのは個人向けに
+ * 並ぶタイムラインではなく、全員に同じものが出るカタログである）。
  *
  * ## 他人の作品を 1 行も出さない
  *
@@ -66,10 +68,12 @@
  * こちらまで再読み込みを続けると、開きっぱなしのタブが D1 の読み取りを増やし続ける。
  */
 import { siteFooter } from './legal.js';
+import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import type { AuthoredGame, GenerationState } from './games.js';
 import { UNTITLED_TITLE, listAuthoredGames } from './games.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { GENERATE_PAGE_PATH } from './paths.js';
+import { PUBLIC_WORKS_PATH } from './works-list.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
@@ -78,18 +82,24 @@ import { escapeHtml, siteHead } from './html.js';
 import { WORK_PAGE_PREFIX, looksStalled, workPagePath } from './work-page.js';
 
 /**
- * 一覧のパス（`/works`）。
+ * 「あなたの作品」のパス（`/works/mine`）。
  *
- * **`WORK_PAGE_PREFIX` から導く。** `/works` と書き写すと、作品ページの綴りを変えた日に
- * **一覧だけが古い場所に残る**（`src/work-page.ts` は「綴りを持つのはこのモジュールだけ
- * である」と定めている）。一覧を作品ページの親の位置に置くという決定そのものを、
- * 導出の形で表しておく。
+ * **#328 で `/works` から移した。** `/works` は公開作品の一覧になった（仕様 2.3.2。
+ * `作品 = /works/<id>` と `作品の一覧 = /games` で綴りを 2 つ作らないため、
+ * `/works` の意味を変えるほうを採った）。**#152 の「末尾を削れば一覧に着く」は
+ * 失われていない**——削って着く先が、共有 URL を踏んだ未ログインの閲覧者にとって
+ * 意味のある行き先になった。
  *
- * 末尾の `/` を落とすので、経路表には**完全一致**で載る。前方一致の `/works/`（作品
- * ページ）とは鍵が別なので重複にならず、`dispatch` も完全一致を先に見る
- * （`src/routes.ts`）。
+ * **`WORK_PAGE_PREFIX` から導く。** `/works/mine` と書き写すと、作品ページの綴りを
+ * 変えた日にここだけが古い場所に残る（`src/work-page.ts` は「綴りを持つのはこの
+ * モジュールだけである」と定めている）。
+ *
+ * **経路表には完全一致で載る。** 前方一致の `/works/`（作品ページ）と同じ接頭辞を
+ * 持つが、`src/routes.ts` の `dispatch` は**完全一致を先に見る**と定めており、
+ * 「`/works/` の下に将来 `/works/new` のような固定の経路を足しても、前方一致の経路に
+ * 飲み込まれない」と書いてある。**その想定していた形が、ここで実際に来た。**
  */
-export const MY_WORKS_PATH = WORK_PAGE_PREFIX.slice(0, -1);
+export const MY_WORKS_PATH = `${WORK_PAGE_PREFIX}mine`;
 
 /**
  * 一覧に並べる最大件数。
@@ -106,73 +116,6 @@ export const MY_WORKS_PATH = WORK_PAGE_PREFIX.slice(0, -1);
  * 出てから**決める（超えていることは画面に出す。{@link renderMyWorksPage}）。
  */
 export const MAX_LISTED_WORKS = 50;
-
-/** JST の UTC からのずれ（秒）。日本には夏時間が無いため固定でよい。 */
-const JST_OFFSET_SECONDS = 9 * 60 * 60;
-
-/**
- * UNIX 秒を ISO 8601 の文字列にする。**読めない値では例外を投げず null を返す。**
- *
- * # なぜ `Number.isFinite` だけでは足りないのか
- *
- * **`Date#toISOString()` は Date が範囲外のときに `RangeError` を投げる。** JavaScript の
- * Date が表せるのは ±8.64e15 ミリ秒（西暦 ±約 27 万年）までで、有限な数でもこの外に
- * 出れば `new Date(...)` は Invalid Date になり、`toISOString()` がそこで投げる。
- *
- * **投げると一覧全体が 500 になる。** `created_at` が想定外の値になった行が 1 つ
- * あるだけで、**他の作品まで見えなくなる。** #152 が作ろうとしているのは「URL を
- * 控えていなくても戻れる道」であり、1 行の異常で道ごと消える形はその性質と噛み合わない。
- * 日時は行の付加情報であって、行を出す条件ではない。
- *
- * 判定を `getTime()` の NaN で行うのは、**範囲外かどうかを桁で書き写さない**ためである
- * （境界値をこちらに複製すると、ランタイムの定義とずれても気づけない）。Date に作らせて、
- * 作れたかどうかを聞く。
- *
- * @param epochSeconds UNIX 秒
- * @param offsetSeconds 足すオフセット（秒）。既定は 0（UTC）
- * @returns ISO 8601 の文字列。読めない値なら null
- */
-function isoFrom(epochSeconds: number, offsetSeconds = 0): string | null {
-  if (!Number.isFinite(epochSeconds)) {
-    return null;
-  }
-  const date = new Date((epochSeconds + offsetSeconds) * 1000);
-  // Invalid Date（範囲外）はここで捕まる。`toISOString()` を呼ぶ前に落とす。
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-  return date.toISOString();
-}
-
-/**
- * UNIX 秒を日本時間の `YYYY-MM-DD HH:MM` にする。
- *
- * **`Intl` / `toLocaleString` を使わない。** ランタイムに積まれた ICU データの版で
- * 出力が変わりうるものを、テストで固定したい表示面へ持ち込まない。オフセットを足して
- * `toISOString` から切り出すほうが、**どの環境でも同じ文字列**になる。
- *
- * @param epochSeconds UNIX 秒
- * @returns 日本時間の表記（読めない値なら空文字）
- */
-export function formatJstMinutes(epochSeconds: number): string {
-  const iso = isoFrom(epochSeconds, JST_OFFSET_SECONDS);
-  if (iso === null) {
-    return '';
-  }
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
-}
-
-/**
- * UNIX 秒を `<time datetime="...">` に入れる ISO 8601（UTC）にする。
- *
- * 表示は日本時間だが、**機械が読む属性には時差を含んだ絶対時刻を入れる。**
- *
- * @param epochSeconds UNIX 秒
- * @returns ISO 8601 の文字列（読めない値なら空文字）
- */
-export function toIsoTimestamp(epochSeconds: number): string {
-  return isoFrom(epochSeconds) ?? '';
-}
 
 /**
  * 一覧に出す状態の短い名前。
@@ -300,6 +243,7 @@ ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
   return `${siteHead({ title: 'あなたの作品 - Game Forge', noindex: true })}
 <h1>あなたの作品</h1>
 <p>生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>
+<p><a href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>
 ${body}
 ${truncated}
 <p><a class="gf-cta" href="${GENERATE_PAGE_PATH}">新しく生成する</a></p>

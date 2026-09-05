@@ -80,6 +80,7 @@ import {
   WORK_PAGE_PREFIX,
   workPagePath,
 } from './paths.js';
+import { UNKNOWN_AUTHOR } from './work-card.js';
 import { UNKNOWN_FAILURE_MESSAGE, failureMessageOf } from './generation-failure.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
@@ -1293,8 +1294,8 @@ ${forkCta(view)}
 ${frame}`;
 }
 
-/** 作者名を引けなかったときの表示。**空欄にしない。** */
-const UNKNOWN_AUTHOR = '不明';
+// 作者名を引けなかったときの表示（**空欄にしない**）は `src/work-card.ts` が持つ。
+// **一覧・トップ・作者ページと同じ名前を出す**ため、綴りを 2 つにしない（#328）。
 
 /**
  * OGP スクリーンショット（3.4-5 の 4 要素の 1 つ）。

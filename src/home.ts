@@ -32,6 +32,8 @@ import { GENERATE_PAGE_PATH, HOME_PATH, INVITES_PATH, SIGNUP_PATH } from './path
 // `WORK_PAGE_PREFIX` から導いている。逆向きの import にならない（あちらは `/` への
 // 導線をリテラルで持つ）ので、`src/paths.ts` へ逃がす必要も無い。
 import { MY_WORKS_PATH } from './my-works.js';
+// 公開一覧の綴りも正本から借りる（#328。同じ理由で書き写さない）。
+import { PUBLIC_WORKS_PATH } from './works-list.js';
 
 /**
  * 公開トップのパス。
@@ -98,6 +100,7 @@ const HOME_HTML = `${siteHead({
 
 <h2>はじめる</h2>
 <ul>
+  <li><a href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a>（登録は要りません）</li>
   <li><a class="gf-cta" href="${GENERATE_PAGE_PATH}">ゲームを生成する</a>（招待コードでの登録が必要です）</li>
   <li><a href="${SIGNUP_PATH}">招待コードで登録する</a></li>
   <li><a href="${SIGNUP_PATH}">招待コードをお持ちでない方（待機リストに登録する）</a></li>

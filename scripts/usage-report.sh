@@ -66,7 +66,7 @@ while [[ $# -gt 0 ]]; do
     --to)         TO="${2:-}"; shift 2 ;;
     --by-model)   BY_MODEL=1; shift ;;
     --format)     FORMAT="${2:-}"; shift 2 ;;
-    # 手元の D1 の置き場所を差し替える。scripts/usage-report-selftest.sh が
+    # 手元の D1 の置き場所を差し替える。scripts/report-selftest.sh が
     # 使い捨ての D1 を作って検査するための口で、**開発者の手元の D1 を汚さない。**
     --persist-to) PERSIST_TO="${2:-}"; shift 2 ;;
     -h|--help)    usage; exit 0 ;;
@@ -162,7 +162,7 @@ send_query() {
 #
 # **日の綴りは SQL の中で作るが、オフセットは report-window.sh の定数から渡す。**
 # ここへ値そのものを書くと、#166 の集計と別々に古くなる余地ができる（持っていないことは
-# scripts/usage-report-selftest.sh が機械で見る）。
+# scripts/report-selftest.sh の 1 節が機械で見る）。
 #
 # **model 別に割れる形にしてある**（#25 / M3-4 の effort の A/B が同じ台帳から成功率と
 # 実コストを集計する）。--by-model の有無で group by の粒度だけが変わり、数え方

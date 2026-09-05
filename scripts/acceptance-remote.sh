@@ -68,9 +68,14 @@ cd "$(dirname "$HERE")" || exit 1
 # 既定値の綴りが 2 か所に散ると、片方だけを直した日に、既定で読む場所が参照ごとに
 # 違う状態になる。
 #
-# **差し替えの名前を `TF_DIR` そのものにしない。** 他の用途で輸出されていたときに、
-# `terraform plan: no drift` を含むゲート全体が黙って別の宣言を見ることになる。
-TF_DIR="${ACCEPTANCE_TF_DIR:-terraform}"
+# **既定値そのものは `scripts/lib/tf-dir.sh` が持つ**（#318）。差し替えを見る入口が
+# `scripts/check-r2-lifecycle.sh` にも要ることになり、**そちらへ既定値を書き写すと
+# 綴りがファイルをまたいで散る**ため、ここから外へ出した。上の「書き分けない」は、
+# ファイルをまたいでも同じである。差し替えの名前を `TF_DIR` そのものにしない理由
+# （他の用途で輸出されていると、`terraform plan: no drift` を含むゲート全体が黙って
+# 別の宣言を見る）も、同ファイルの冒頭にそのまま移してある。
+# shellcheck source=scripts/lib/tf-dir.sh
+. "$HERE/lib/tf-dir.sh"
 
 ##
 # ある IAM ユーザーに付いている**インラインポリシーの全部**と、その期待値の
@@ -2081,6 +2086,13 @@ run "r2 credentials are outside the declaration" check_r2_credentials_placement
 # 報告する。** 資格情報が無いときは「乖離」ではなく前提として落ちる。
 #
 # 判定はスクリプト側が持つ。ここへ検査の中身を書き写さない（shared-ai-rules 12 章）。
+#
+# **`ACCEPTANCE_TF_DIR` をここで渡し直さない**（#318）。差し替えは起動時の環境変数
+# として渡っており、環境はそのまま子プロセスへ継がれる。子は親と同じ
+# `scripts/lib/tf-dir.sh` を読むので、差し替えたときも、既定のままのときも、親と同じ
+# 場所を見る。**`ACCEPTANCE_TF_DIR="$TF_DIR"` と書き足すと、そこが「既定値の 2 つめの
+# 出どころ」になりうる**（親が別の経路で TF_DIR を決めた日に、渡す値と子の既定が
+# 食い違う）。渡さないことが配線である。
 run "wasm_exec objects exist for every delivered go_version" bash scripts/check-wasm-exec-objects.sh --remote
 run "r2 lifecycle has no age-based delete rules" bash scripts/check-r2-lifecycle.sh
 

@@ -28,6 +28,15 @@
 # 使い方:
 #   bash scripts/check-r2-lifecycle.sh
 #
+# 宣言と state を読む場所は `ACCEPTANCE_TF_DIR` で差し替えられる（#318。既定は
+# `terraform`）。**state はローカル backend で、apply を通したツリーにしかない**ため、
+# 別の worktree から回すときは apply 済みのツリーを指すこと。
+#
+#   ACCEPTANCE_TF_DIR=/path/to/primary/terraform bash scripts/check-r2-lifecycle.sh
+#
+# 変異させた写しを指せば、宣言を汚さずに「この検査が空振りしていない」ことも確かめられる
+# （写しへ age ベースの削除規則を足すと赤くなる）。
+#
 # 前提: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID（無ければ .env から読む）と、
 #       terraform の init 済み・apply 済みの state。**このスクリプトは認証を行わない。**
 #
@@ -38,7 +47,16 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 ROOT="$(dirname "$HERE")" || exit 1
 cd "$ROOT" || exit 1
 
-readonly TF_DIR="terraform"
+# 宣言を読む場所（TF_DIR）。**既定値をここへ書かない。**
+#
+# この検査は単独でも、`scripts/acceptance-remote.sh` からも起動される。両方の入口が
+# `ACCEPTANCE_TF_DIR` を尊重する必要がある（#318）が、既定値の綴りを両方へ書くと
+# 「片方だけ直した日に、既定で読む場所が入口ごとに違う」状態になる。**既定値は
+# `scripts/lib/tf-dir.sh` の 1 か所だけに置き、両方がそこを読む**（理由の全文は同ファイル）。
+#
+# ルートへ cd した後に読み込むこと（既定値が相対パスのため）。
+# shellcheck source=scripts/lib/tf-dir.sh
+. "$HERE/lib/tf-dir.sh"
 
 fail() {
   printf '[check-r2-lifecycle] %s\n' "$@" >&2

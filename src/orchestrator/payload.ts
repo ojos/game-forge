@@ -45,8 +45,9 @@ import { TIDY_MAX_SOURCE_BYTES, isTidyPass } from '../source-size.js';
  * ペイロードの版。
  *
  * **受け側が知らない版を黙って処理しない。** 送る側だけを先に配ると、古い Lambda が
- * 新しい形を「知っている項目だけ読んで」処理してしまう。生成は 1 回 約 16 円で、
- * 黙って走り出す形をここに作らない。
+ * 新しい形を「知っている項目だけ読んで」処理してしまう。生成は 1 回 **¥22.41**
+ * （2026-09-04 / 本番の既定群 20 件の平均。4.2 の実測注記）で、黙って走り出す形を
+ * ここに作らない。
  */
 export const ORCHESTRATOR_PAYLOAD_VERSION = 1;
 
@@ -72,7 +73,7 @@ export const ORCHESTRATOR_PAYLOAD_VERSION = 1;
  *
  * **省略可能な項目だから版を上げなくてよい、ではない。** 上げないと古い受け側が
  * `baseSource` を落としたまま生成を走らせ、推敲したつもりの利用者に**まったく別の
- * ゲーム**が返る。1 回 約 16 円を払ったうえで、である。
+ * ゲーム**が返る。1 回 ¥22.41 を払ったうえで、である。
  */
 export const ORCHESTRATOR_PAYLOAD_VERSION_WITH_BASE_SOURCE = 2;
 
@@ -268,7 +269,7 @@ export function parseOrchestratorPayload(value: unknown): OrchestratorPayload | 
     return null;
   }
   // **空文字は断る。** 「載っているが空」は新規生成と推敲のどちらとも読めるので、
-  // 送る側の不具合を黙って新規生成として実行させない（1 回 約 16 円が出る）。
+  // 送る側の不具合を黙って新規生成として実行させない（1 回 ¥22.41 が出る）。
   const baseSource = record['baseSource'];
   if (baseSource === undefined) {
     // **版 2 を名乗って `baseSource` が無い本文は断る。** 版が能力の宣言である以上、

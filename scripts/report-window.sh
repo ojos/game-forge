@@ -265,6 +265,12 @@ report_table() {
 }
 
 # 直接実行されたときは、定義そのものを印字する（検査ではない）。
+#
+# **下の「この定義を使う集計:」は消費側一覧の写しである。** 正本は
+# scripts/report-selftest.sh の 1 節の CONSUMERS で、**パスの集合が一致することを
+# あちらが機械で照合する**（#324。#316 で CONSUMERS だけを直したとき、こちらは
+# effort-ab-report.sh が抜けたまま緑で通っていた）。集計を足すときは両方へ足すこと。
+# 説明文は照合の対象外なので、他の行にそろえて簡潔に書けばよい。
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   cat <<DEFN
 [report-window] 集計の数え方の定義（#149 / #166 が共有する）
@@ -278,5 +284,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   この定義を使う集計:
     scripts/usage-report.sh       生成回数・成功率・費用（D1 の generations）
     scripts/build-time-report.sh  ビルド時間の分布（CloudWatch の REPORT 行）
+    scripts/effort-ab-report.sh   A/B の依頼別の比較（D1 の generations）
 DEFN
 fi

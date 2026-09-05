@@ -109,10 +109,30 @@ for consumer in "${CONSUMERS[@]}"; do
     failed=1
     continue
   fi
-  if grep -q 'report-window\.sh' "$consumer"; then
-    echo "  ok   ${consumer} が report-window.sh を読んでいる"
+  # **「読んでいる」は source の行で見る。**「ファイルのどこかに report-window.sh と
+  # いう字がある」では足りない。消費側 3 本はいずれも冒頭の説明コメントに
+  # 「期間の指定・日の境界・日付の綴りは scripts/report-window.sh が持つ」と書いており、
+  # **`. "$HERE/report-window.sh"` を丸ごと外しても、その説明文に当たって緑のまま
+  # 通っていた**（#324）。保証の記述だけがあって実体が無い状態である。
+  #
+  # 印は **「行頭（先頭の空白を除く）が `.` または `source` で、その行が
+  # report-window.sh を指していること」**。これで足りる理由:
+  #   - **コメント行は `#` で始まるので、この錨に当たらない。** 説明文を落とすために
+  #     ファイル名や行番号の除外リストを持たずに済む（check-go-version-copies.sh が
+  #     除外リストを避けたのと同じ理由——除外リスト自体が写しになって古くなる）。
+  #   - 行内コメントで騙せないよう、`#` の手前までで見る。
+  #   - 文字列の中の `. "…/report-window.sh"`（`echo` の引数など）は行頭が `echo` に
+  #     なるので当たらない。
+  #
+  # **変数越しの source（`. "$lib"`）は当たらない。これは意図した狭さである。**
+  # 3 本とも `. "$HERE/report-window.sh"` と直に書いており、読み手が 1 行で
+  # 「定義を共有している」と分かる形を、この検査はあわせて要求する。ここを緩めて
+  # 「source という語があること」まで戻すと、またコメントに当たって空振りへ帰る。
+  if grep -qE '^[[:space:]]*(\.|source)[[:space:]]+[^#]*report-window\.sh' "$consumer"; then
+    echo "  ok   ${consumer} が report-window.sh を source している"
   else
-    echo "  FAIL ${consumer} が report-window.sh を読んでいません" >&2
+    echo "  FAIL ${consumer} が report-window.sh を source していません" >&2
+    echo '       （説明コメントでの言及は数えません。. "$HERE/report-window.sh" の行が要ります）' >&2
     failed=1
   fi
   # **自前のオフセットを持っていないこと。** 定数名で参照している行は写しではない。
@@ -126,6 +146,28 @@ for consumer in "${CONSUMERS[@]}"; do
     echo "  ok   ${consumer} が自前の JST オフセットを持っていない"
   fi
 done
+
+# **同じ一覧の写しが、利用者に見せるヘルプ本文にもある。** report-window.sh を直接
+# 実行すると出る DEFN ブロックの「この定義を使う集計:」がそれで、#316 で CONSUMERS の
+# 側だけを直したため effort-ab-report.sh が抜けたまま残り、**機械照合が無いので緑で
+# 通っていた**（#324）。shared-ai-rules 12 章「一覧の複製は機械照合で担保する」の適用。
+#
+# **照合するのはパスの集合だけにする（書式ごと生成はしない）。** ヘルプ本文には
+# 説明文が併記されている（「生成回数・成功率・費用（D1 の generations）」等）が、
+# あれは利用者向けの散文で、CONSUMERS 側に対応する正本を持たない。書式ごと生成する形に
+# すると、その散文を CONSUMERS の隣か この検査へ書き写すことになり、**写しを 1 つ
+# 減らすために別の写しを 1 つ作る。** 古くなって困るのは「どれが載っているか」であって、
+# 説明文の言い回しではない（言い回しのずれはレビューで足りる）。
+#
+# **見るのはソースの字面ではなく、実行した出力である。** 利用者が読むのはヘルプの
+# 出力なので、そちらを突き合わせる。見出しの綴りが変われば sed が何も拾わず、
+# 空の一覧として落ちる——**照合が成立しない状態を緑にしない。**
+defn_consumers="$(bash "$HERE/report-window.sh" \
+  | sed -n '/この定義を使う集計:/,$p' \
+  | grep -oE 'scripts/[A-Za-z0-9._-]+\.sh' | LC_ALL=C sort | tr '\n' ' ')"
+expect_eq "report-window.sh のヘルプ本文の一覧が CONSUMERS と一致すること" \
+  "$(printf '%s\n' "${CONSUMERS[@]}" | LC_ALL=C sort | tr '\n' ' ')" \
+  "$defn_consumers"
 
 # ── 2. 日の境界が src/quota.ts / src/cost-ledger.ts と同じであること ────────
 #

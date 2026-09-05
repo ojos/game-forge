@@ -33,7 +33,7 @@ import { listPublishedGames, toPublicWorkSort } from './games.js';
 import { siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import { cachedRows, listCacheKey } from './list-cache.js';
-import { GENERATE_PAGE_PATH, WORK_PAGE_PREFIX } from './paths.js';
+import { GENERATE_PAGE_PATH, MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './paths.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { renderWorkCards } from './work-card.js';
@@ -41,12 +41,13 @@ import { renderWorkCards } from './work-card.js';
 /**
  * 公開一覧のパス（`/works`）。
  *
- * **`WORK_PAGE_PREFIX` から導く**（`src/my-works.ts` が同じ理由でそうしていた）。
- * `/works` と書き写すと、作品ページの綴りを変えた日に一覧だけが古い場所に残る。
- * 末尾の `/` を落とすので経路表には**完全一致**で載り、前方一致の `/works/` とは
- * 別の鍵になる（`src/routes.ts` の `dispatch` は完全一致を先に見る）。
+ * **正本は `src/paths.ts` である**（あちらの冒頭が定める「提供する側と、そこへ送り返す
+ * 側が別モジュールになるもの」に当たる。移設の案内でここが `/works/mine` を出し、
+ * 「あなたの作品」の側がここを出すので、値を持ち合うと循環参照になる）。
+ * ここから再輸出するのは、既にこのモジュールから読んでいる箇所を動かさないためで、
+ * 値を二重に持っているわけではない（`src/home.ts` の `HOME_PATH` と同じ扱い）。
  */
-export const PUBLIC_WORKS_PATH = WORK_PAGE_PREFIX.slice(0, -1);
+export { PUBLIC_WORKS_PATH }
 
 /**
  * 1 頁に並べる件数。
@@ -70,8 +71,14 @@ export const WORKS_PER_PAGE = 20;
  */
 export const MAX_PAGE = 50;
 
-/** 移設の案内。**綴りを 1 か所に置く**（画面とテストが同じ文字列を見る）。 */
-export const MOVED_NOTICE = '自分の作品は /works/mine へ移りました。';
+/**
+ * 移設の案内。
+ *
+ * **綴りを書き写さない。** `/works/mine` とリテラルで書くと、作品ページの綴りを変えた
+ * 日に**案内文だけが古い場所を指す**（Copilot code review の指摘。2026-09-05）。
+ * 正本（`src/paths.ts`）から組み立てる。
+ */
+export const MOVED_NOTICE = `自分の作品は ${MY_WORKS_PATH} へ移りました。`;
 
 /** 並べ替えの札。**綴りの正本は `src/games.ts` の `PUBLIC_WORK_SORTS` である。** */
 const SORT_LABELS: Record<PublicWorkSort, string> = {

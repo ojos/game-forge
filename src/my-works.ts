@@ -20,7 +20,7 @@
  *
  * 専用ページとして、**作品ページ（`/works/<id>`）と同じ接頭辞の下**に置く。
  *
- * - 綴りの正本を増やさない（{@link MY_WORKS_PATH} は `WORK_PAGE_PREFIX` から導く）。
+ * - 綴りの正本を増やさない（{@link MY_WORKS_PATH} の正本は `src/paths.ts` である）。
  *
  * **#328 で `/works` から `/works/mine` へ移した。** 起票時（#152）は「`/works` を
  * 「みんなの作品」の索引にする案は採らない。11.2 が MVP の対象外としており、
@@ -72,34 +72,26 @@ import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import type { AuthoredGame, GenerationState } from './games.js';
 import { UNTITLED_TITLE, listAuthoredGames } from './games.js';
 import { LOGIN_PATH } from './auth/google.js';
-import { GENERATE_PAGE_PATH } from './paths.js';
-import { PUBLIC_WORKS_PATH } from './works-list.js';
+import { GENERATE_PAGE_PATH, MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './paths.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/work-page.ts` もそこから取っている）。
 import { escapeHtml, siteHead } from './html.js';
-import { WORK_PAGE_PREFIX, looksStalled, workPagePath } from './work-page.js';
+import { looksStalled, workPagePath } from './work-page.js';
 
 /**
  * 「あなたの作品」のパス（`/works/mine`）。
  *
- * **#328 で `/works` から移した。** `/works` は公開作品の一覧になった（仕様 2.3.2。
- * `作品 = /works/<id>` と `作品の一覧 = /games` で綴りを 2 つ作らないため、
- * `/works` の意味を変えるほうを採った）。**#152 の「末尾を削れば一覧に着く」は
- * 失われていない**——削って着く先が、共有 URL を踏んだ未ログインの閲覧者にとって
- * 意味のある行き先になった。
+ * **#328 で `/works` から移した。** `/works` は公開作品の一覧になった（仕様 2.3.2）。
+ * **#152 の「末尾を削れば一覧に着く」は失われていない**——着く先が、共有 URL を踏んだ
+ * 未ログインの閲覧者にとって意味のある行き先になった。
  *
- * **`WORK_PAGE_PREFIX` から導く。** `/works/mine` と書き写すと、作品ページの綴りを
- * 変えた日にここだけが古い場所に残る（`src/work-page.ts` は「綴りを持つのはこの
- * モジュールだけである」と定めている）。
- *
- * **経路表には完全一致で載る。** 前方一致の `/works/`（作品ページ）と同じ接頭辞を
- * 持つが、`src/routes.ts` の `dispatch` は**完全一致を先に見る**と定めており、
- * 「`/works/` の下に将来 `/works/new` のような固定の経路を足しても、前方一致の経路に
- * 飲み込まれない」と書いてある。**その想定していた形が、ここで実際に来た。**
+ * **正本は `src/paths.ts` である**（公開一覧の側が移設の案内でこの綴りを出すため、
+ * 値を持ち合うと循環参照になる）。ここから再輸出するのは、既にこのモジュールから
+ * 読んでいる箇所を動かさないためである。
  */
-export const MY_WORKS_PATH = `${WORK_PAGE_PREFIX}mine`;
+export { MY_WORKS_PATH };
 
 /**
  * 一覧に並べる最大件数。

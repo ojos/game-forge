@@ -96,27 +96,41 @@ export async function cachedRows<T>(
 
   const request = new Request(key, { method: 'GET' });
   const cache = caches.default;
-  const hit = await cache.match(request);
-  if (hit !== undefined) {
-    // **壊れた保存物で一覧を落とさない。** JSON として読めなければ引き直す。
-    try {
-      return (await hit.json()) as T;
-    } catch {
-      // 読めない保存物は捨てる。残すと TTL の間ずっと引き直しになる。
-      await cache.delete(request);
+
+  // **キャッシュの失敗で一覧を落とさない。** ここは読み取りを減らすための前段で
+  // あって、一覧が出るための条件ではない（Copilot code review の指摘。2026-09-05）。
+  // `match` も `put` も、容量やランタイムの都合で投げうる。**投げたら素通しにする。**
+  try {
+    const hit = await cache.match(request);
+    if (hit !== undefined) {
+      // **壊れた保存物で一覧を落とさない。** JSON として読めなければ引き直す。
+      try {
+        return (await hit.json()) as T;
+      } catch {
+        // 読めない保存物は捨てる。残すと TTL の間ずっと引き直しになる。
+        await cache.delete(request);
+      }
     }
+  } catch {
+    // 読めなければ引くだけである。**握りつぶしてよい唯一の理由**は、この層が
+    // 無くても一覧が正しく出ることにある（4.3 の「判定できなかったときは止まる側へ
+    // 倒す」とは性質が違う——あちらは握りつぶすと上限が静かに開く）。
   }
 
   const rows = await load();
-  await cache.put(
-    request,
-    new Response(JSON.stringify(rows), {
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        'cache-control': `max-age=${ttlSeconds}`,
-      },
-    }),
-  );
+  try {
+    await cache.put(
+      request,
+      new Response(JSON.stringify(rows), {
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': `max-age=${ttlSeconds}`,
+        },
+      }),
+    );
+  } catch {
+    // 保存できなくても、引いた行はそのまま返す。次のリクエストがまた引くだけである。
+  }
   return rows;
 }
 
@@ -135,5 +149,9 @@ export async function purgeListCache(key: string): Promise<boolean> {
   if (!cacheAvailable()) {
     return false;
   }
-  return await caches.default.delete(new Request(key, { method: 'GET' }));
+  try {
+    return await caches.default.delete(new Request(key, { method: 'GET' }));
+  } catch {
+    return false;
+  }
 }

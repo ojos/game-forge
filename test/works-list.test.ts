@@ -7,7 +7,7 @@ import {
   REMOVED_STATUS,
   publishedGamesSql,
 } from '../src/games.js';
-import { listCacheKey, purgeListCache } from '../src/list-cache.js';
+import { cachedRows, listCacheKey, purgeListCache } from '../src/list-cache.js';
 import { MY_WORKS_PATH } from '../src/my-works.js';
 import { REVIEW_QUEUED } from '../src/reports.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
@@ -309,6 +309,30 @@ describe('Cache API の前段（仕様 2.3.3 の条件 3）', () => {
     expect(await purgeListCache(key)).toBe(true);
     const fresh = await handleAppRequest(new Request(url), env);
     expect(await fresh.text()).toContain(workPagePath(after));
+  });
+
+  it('キャッシュが投げても一覧は出る', async () => {
+    // **この層が無くても一覧は正しく出る**（Copilot code review の指摘。2026-09-05）。
+    // `caches` を差し替えて、`match` も `put` も投げる状態を作る。
+    const original = Reflect.get(globalThis, 'caches') as unknown;
+    const broken = {
+      default: {
+        match: () => Promise.reject(new Error('match が使えない')),
+        put: () => Promise.reject(new Error('put が使えない')),
+        delete: () => Promise.reject(new Error('delete が使えない')),
+      },
+    };
+    Reflect.set(globalThis, 'caches', broken);
+    try {
+      const rows = await cachedRows('https://list-cache.game-forge.invalid/x?y=1', async () => [
+        'ok',
+      ]);
+      expect(rows).toEqual(['ok']);
+      // 捨てる側も投げるが、false を返すだけで落ちない。
+      expect(await purgeListCache('https://list-cache.game-forge.invalid/x?y=1')).toBe(false);
+    } finally {
+      Reflect.set(globalThis, 'caches', original);
+    }
   });
 
   it('鍵は並べ替え軸と頁で分かれる', () => {

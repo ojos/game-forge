@@ -283,6 +283,10 @@ export class LikeHub extends DurableObject<LikesEnv> {
   /**
    * 同期の本体。{@link LikeHub.alarm} から呼ぶ（テストからも直接呼ぶ）。
    *
+   * **DO の公開メソッドなので RPC からも呼べる**（呼べるのはバインディングを持つ Pages
+   * だけ）。呼ばれても害は無い——D1 へ書くのは DO の中で数えた実数だけで、何度走っても
+   * 同じ値に収まる（冪等）。窓口（`src/likes.ts`）は呼ばない。
+   *
    * # 手順
    *
    * 1. D1 から BAN されている利用者を引く（{@link BANNED_USERS_SQL}）

@@ -143,18 +143,64 @@ curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
 
 ## ローカルで動かす
 
-- **テスト**（`npm test`）: `LikeHub` を Pages と同じ実行体へ読み込み、`LIKE_HUB` を
-  自分自身の DO へ差し替える（`vitest.config.ts` / `workers/likes/test-entry.ts`）。
-  Miniflare は 2 本目の Worker を TypeScript のまま動かせず、`runInDurableObject` も
-  自分自身の DO にしか使えないためである
-- **`wrangler pages dev`**: likes Worker を別に立てる（Pages の公式の手順）
+### テスト（`npm test`）
 
-  ```bash
-  # 端末 1
-  npx wrangler dev --config workers/likes/wrangler.toml
-  # 端末 2（いつもの dev サーバ）
-  npm run dev
-  ```
+`LikeHub` を Pages と同じ実行体へ読み込み、`LIKE_HUB` を自分自身の DO へ差し替える
+（`vitest.config.ts` / `workers/likes/test-entry.ts`）。Miniflare は 2 本目の Worker を
+TypeScript のまま動かせず、`runInDurableObject` も自分自身の DO にしか使えないためである。
+**このため、テストは「別スクリプトを指す結線」を通らない。** それを通すのが次の手順である。
+
+### 本物の結線で 1 往復する（dev registry。配備前の結線の確認）
+
+**別々に立てた `wrangler dev`（likes Worker）と `wrangler pages dev`（Pages）は、
+`script_name` で互いを見つけてつながる**（wrangler の dev registry。Pages 側の起動表示に
+`env.LIKE_HUB (LikeHub, defined in game-forge-likes) ... [connected]` と出る）。
+
+**揃えるものは 3 つある。**
+
+| | Pages | likes Worker | 揃えないと |
+|---|---|---|---|
+| ポート | 8787（`scripts/dev-server.sh` の既定） | **8788**（`--port`）。検査用も **9230**（`--inspector-port`） | 同じ 8787 / 9229 を取り合って片方が立たない |
+| 状態の置き場 | `.wrangler/state`（既定） | **`--persist-to .wrangler/state`**（リポジトリの直下で叩く） | D1 のファイルが別になる |
+| ローカル D1 の id | `local-only-placeholder`（トップレベルの `database_id`） | **`preview_database_id = "local-only-placeholder"`**（`workers/likes/wrangler.toml`。`wrangler dev` は `database_id` より先にこれを使う） | 同期が本番の id の名前を持つ**空の** D1 へ書き、`no such table: users` で落ちる（実測） |
+
+3 つ目は宣言に入れてあり、`scripts/check-likes-worker.sh` が Pages のローカル D1 との一致を
+照合する。**叩くのは次のとおり。**
+
+```bash
+# 0. ローカル D1 にマイグレーションを当てる（Pages の宣言。0020 を含む）
+npm run db:migrate
+
+# 1. 端末 1: likes Worker
+CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler dev \
+  --config workers/likes/wrangler.toml --ip 127.0.0.1 \
+  --port 8788 --inspector-port 9230 --persist-to .wrangler/state
+
+# 2. 端末 2: Pages（.dev.vars の SESSION_SECRET を使う）
+npm run dev
+```
+
+**同期は付与から 5 分後に走る**（アラーム）。ローカルでも縮めていない。
+
+### 実際に通した記録（2026-09-11 / PR #346）
+
+**本物の結線（Pages → `script_name = "game-forge-likes"` の DO）で、付与・取り消し・同期を
+1 往復通した。** 本番・リモートには触れていない。他のセッションとポートを取り合わないよう、
+このときは Pages を 8797（検査用 9239）、likes Worker を 8798（9238）で立てた。
+`.dev.vars` を置いていない作業ツリーだったので、`SESSION_SECRET` は
+`bash scripts/dev-server.sh --binding SESSION_SECRET=<32 文字以上>` で渡し、同じ鍵で
+`src/session.ts` の `signSession` を node から呼んで cookie を作った。利用者 2 人と公開作品 1 件は
+`npx wrangler d1 execute DB --local --file ...` で入れた。
+
+| 時刻（UTC） | 操作 | 観測 |
+|---|---|---|
+| 10:02 | 両方を起動 | Pages の表示: `env.LIKE_HUB (LikeHub, defined in game-forge-likes)  Durable Object  local [connected]` |
+| 10:03 | `POST /api/like`（cookie あり・JSON） | `200 {"like":"liked"}`。2 回目は `200 {"like":"unchanged"}`。HTML で送ると `303 → /works/<id>`。cookie なしは `401` |
+| 10:08 | 最初の同期（`preview_database_id` を**置く前**） | likes Worker のログ: `[likes] 同期に失敗しました。次の回に写します: D1_ERROR: no such table: users`。likes Worker の D1 は `d81a6f80-…`（本番の id の名前を持つ空のローカル D1）を指していた |
+| 10:08 | likes Worker だけ止め、`preview_database_id` を足して立て直す | 起動表示が `env.DB (local-only-placeholder)`。Pages は `[not connected]` → `[connected]` に戻った。DO の行とアラームは `.wrangler/state` に残っていた |
+| 10:13 | 同期 | `[likes] 同期しました: 1 件（残り 0 件）`。Pages のローカル D1 の `like_count` が **0 → 1** |
+| 10:13 | `POST /api/like/cancel` | `200 {"like":"unliked"}`、2 回目は `unchanged`。**直後の `like_count` は 1 のまま**（取り消しは D1 に書かない） |
+| 10:18 | 同期 | `[likes] 同期しました: 1 件（残り 0 件）`。`like_count` が **1 → 0** |
 
 ## 連打の防波堤（Workers Rate Limiting）は置いていない
 
@@ -174,9 +220,9 @@ Service binding で呼んで、そこで Rate Limiting を数えてから DO を
 
 ## 確かめられていないこと
 
-- **Pages → 別 Worker の DO の結線を、本番と同じ形では一度も通していない。** テストは
-  同じ実行体の中の DO を呼んでいる（上の「ローカルで動かす」）。本番で初めて通るのは
-  初回配備の 5 である
+- **Pages → 別 Worker の DO の結線は、ローカル（dev registry）でだけ通した**（上の記録）。
+  本番の結線（アカウントの中の `script_name` の解決・本番の D1・DO の配置）で通るのは
+  初回配備の 5 が最初である。自動テストは同じ実行体の中の DO を呼んでいる
 - **Pages の preview 配備から DO を呼んだときの振る舞い**は見ていない（preview は
   `src/index.ts` のホスト検査で全経路が 404 になるので、実際には届かない）
 - **DO の配置**: 最初に呼んだ場所の近くに作られる（Pages の呼び出し元＝日本の利用者の

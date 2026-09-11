@@ -326,6 +326,72 @@ describe('D1 への同期（5.8）', () => {
     expect(await hub.sync(NOON_JST)).toEqual({ synced: 0, deferred: 0 });
   });
 
+  it('同期の最中に変わり続ける作品が先頭に居座らず、後ろの作品が有限回で写る', async () => {
+    // **飢餓の検査**（Copilot code review の指摘。PR #346）。印は付けた順（rowid の順）に
+    // 40 件ずつ写す。**D1 の batch を待つ間に数が変わった作品**の印を古い rowid のまま
+    // 残すと、変わり続ける作品が 40 件以上あるとき、後ろの作品が 1 度も写らない。
+    //
+    // 「最中に変わる」を決定的に作るため、DO の env の `DB.batch` を包み、batch の手前で
+    // 先頭の 40 件へ別の利用者のいいねを 1 つずつ足す（本番では、batch を待つ間に
+    // 届いた付与がこれにあたる）。
+    const hub = freshHub();
+    const author = await seedUser();
+    const churners: string[] = [];
+    for (let count = 0; count < MAX_GAMES_PER_SYNC; count += 1) {
+      const game = await seedGame(author);
+      churners.push(game);
+      await hub.like(`seed-${count}`, game, NOON_JST);
+    }
+    // **最後に印を付けた作品**。先頭の 40 件が居座れば、これが写らない。
+    const waiting = await seedGame(author);
+    await hub.like('seed-last', waiting, NOON_JST);
+
+    const syncWhileChurning = async (round: number): Promise<void> => {
+      await inHub(hub, async (instance) => {
+        const original = Reflect.get(instance, 'env') as { DB: D1Database };
+        const churningDb = new Proxy(original.DB, {
+          get(target, property) {
+            if (property === 'batch') {
+              return async (statements: D1PreparedStatement[]) => {
+                for (const [index, game] of churners.entries()) {
+                  await instance.like(`churn-${round}-${index}`, game, NOON_JST);
+                }
+                return await target.batch(statements);
+              };
+            }
+            const value: unknown = Reflect.get(target, property);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+        Reflect.set(instance, 'env', { ...original, DB: churningDb });
+        try {
+          await instance.sync(NOON_JST);
+        } finally {
+          Reflect.set(instance, 'env', original);
+        }
+      });
+    };
+
+    // 先頭が同期のたびに変わり続けても、**3 回のうちに**待っていた作品が写る
+    // （付け直せば 2 回目に先頭へ来る）。
+    let rounds = 0;
+    while ((await d1LikeCount(waiting)) !== 1 && rounds < 3) {
+      rounds += 1;
+      await syncWhileChurning(rounds);
+    }
+    expect(await d1LikeCount(waiting), `${rounds} 回の同期で写らなかった`).toBe(1);
+    // **割り込みが実際に起きていたこと**（包みが空振りしていれば、この検査は何も見ていない）。
+    expect((await hub.viewerState('anyone', churners[0]!)).count).toBe(1 + rounds);
+
+    // 変わり続けた作品も、割り込みが止めば実数に収まる（取り残しが無い）。
+    while ((await hub.sync(NOON_JST)).synced > 0) {
+      // 印が尽きるまで回す。
+    }
+    for (const game of churners) {
+      expect(await d1LikeCount(game), game).toBe((await hub.viewerState('anyone', game)).count);
+    }
+  });
+
   it('前日以前の操作回数は同期で消える', async () => {
     const hub = freshHub();
     await hub.like('yesterday-user', crypto.randomUUID(), NOON_JST);

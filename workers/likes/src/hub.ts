@@ -192,7 +192,8 @@ export class LikeHub extends DurableObject<LikesEnv> {
     //
     // **dirty_games だけは rowid を残す。** 同期は印を付けた順（rowid の順）に
     // {@link MAX_GAMES_PER_SYNC} 件ずつ写す。作品 id の順にすると、写しても写しても
-    // 印が付き直す作品が先頭を占め、後ろの作品がいつまでも写らない。
+    // 印が付き直す作品が先頭を占め、後ろの作品がいつまでも写らない。同じ理由で、
+    // 同期の最中に変わった作品は印を消して付け直し、末尾へ回す（{@link LikeHub.sync}）。
     ctx.storage.sql.exec(`
       create table if not exists likes (
         user_id text not null,
@@ -294,13 +295,18 @@ export class LikeHub extends DurableObject<LikesEnv> {
    *    利用者の押した作品に同期待ちの印を付ける。一覧を置き換える。古い日の操作回数を
    *    消す。写す作品と、その実数を決める
    * 3. D1 の `games.like_count` を上書きする（batch 1 回）
-   * 4. **写したあとに実数が変わっていなければ**印を消す
+   * 4. 写した作品の印を消す。**写したあとに実数が変わっていた作品は、印を末尾へ付け直す**
    *
    * # なぜ 4 で数え直すのか
    *
    * **3 の `await` のあいだに、別の付与・取り消しが割り込める**（外への I/O を待つ間、
    * DO は次の要求を受け付ける）。写した値と今の実数が違えば、その作品はまた変わって
-   * いるので印を残す。**印を先に消す形にすると、割り込んだ操作の分を取り残す。**
+   * いるので印が要る。**印を先に消す形にすると、割り込んだ操作の分を取り残す。**
+   *
+   * **残すのではなく、末尾へ付け直す。** 古い印を残すと rowid が古いまま先頭に居座り、
+   * 同期のたびに変わり続ける作品が {@link MAX_GAMES_PER_SYNC} 件を超えると、後ろの作品が
+   * 1 度も写らない（飢餓）。付け直せば、写し損ねた作品は後ろへ回り、待っていた作品が
+   * 次の回に先頭へ来る。
    *
    * @param at 同期の時刻（UNIX 秒）。古い日の操作回数を消す境界に使う
    * @returns 何をしたか
@@ -362,8 +368,13 @@ export class LikeHub extends DurableObject<LikesEnv> {
 
     this.ctx.storage.transactionSync(() => {
       for (const { gameId, count } of planned) {
-        if (this.countFor(gameId) === count) {
-          sql.exec('delete from dirty_games where game_id = ?', gameId);
+        sql.exec('delete from dirty_games where game_id = ?', gameId);
+        if (this.countFor(gameId) !== count) {
+          // **写している間に変わった。印を末尾へ付け直す**（新しい rowid を取る）。
+          // 印を残すだけにすると古い rowid のまま先頭に居座り、変わり続ける作品が
+          // {@link MAX_GAMES_PER_SYNC} 件を超えると、後ろの作品がいつまでも写らない
+          // （付与の側は `insert or ignore` なので、印が付き直しても rowid は変わらない）。
+          sql.exec('insert into dirty_games (game_id) values (?)', gameId);
         }
       }
     });

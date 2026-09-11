@@ -28,6 +28,8 @@
 #      （durable_objects は環境へ引き継がれないので、1 か所でも欠けると本番から消える）
 #    - likes Worker の D1（同期の書き込み先）が、Pages の本番 D1 と同じ `database_id`
 #      （片方だけ書き換えると、同期が別のデータベースへ書く）
+#    - likes Worker の `preview_database_id`（`wrangler dev` だけが使う）が、Pages のローカル D1
+#      （トップレベルの `database_id`）と同じ（ずれるとローカルの同期が空の D1 へ書く。実測済み）
 # 4. **`env.LIKE_HUB` を読むのは src/likes.ts だけ**（窓口を 1 つにする。5.8）
 # 5. **配る順序**: `.github/workflows/verify.yml` の deploy ジョブで、likes Worker を配る段が
 #    Pages を配る段より前にある（5.8。Pages が存在しない DO を指さないように）
@@ -140,6 +142,12 @@ if (likesDb === undefined || pagesDb === undefined) {
   problems.push('likes Worker と Pages の本番のどちらかに D1（DB）がありません');
 } else if (likesDb.database_id !== pagesDb.database_id) {
   problems.push(`likes Worker の D1（${likesDb.database_id}）が Pages の本番 D1（${pagesDb.database_id}）と一致しません`);
+}
+// ローカル: `wrangler dev` は preview_database_id を先に使う。Pages のローカル D1
+// （トップレベルの database_id）と同じでないと、ローカルの同期が別の空の D1 へ書く。
+const pagesLocalDb = (pages.d1_databases ?? []).find((d) => d.binding === 'DB');
+if (likesDb !== undefined && pagesLocalDb !== undefined && likesDb.preview_database_id !== pagesLocalDb.database_id) {
+  problems.push(`likes Worker の preview_database_id（${likesDb.preview_database_id}）が Pages のローカル D1（${pagesLocalDb.database_id}）と一致しません（ローカルの同期が Pages の読む D1 に届かない）`);
 }
 
 for (const problem of problems) console.log(problem);

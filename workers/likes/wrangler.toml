@@ -51,7 +51,16 @@ new_sqlite_classes = ["LikeHub"]
 # 機械で照合する（片方だけ書き換えると、同期が別のデータベースへ書く）。
 #
 # **いいねの付与・取り消しではここを使わない。** D1 への書き込みは同期だけである（3.6）。
+#
+# **`preview_database_id` はローカル専用である**（`wrangler dev` が `database_id` より先に
+# 使う。配備は `database_id` だけを読む）。値はルートの `wrangler.toml` のトップレベル
+# （ローカル）の `database_id` の写しで、**Pages のローカル D1 と同じデータベースを指す**。
+# 省くと、ローカルの同期が本番の id の名前を持つ**空の**ローカル D1 へ書きに行き、
+# `no such table: users` で落ちる（2026-09-11 に実測。`docs/likes.md`）。一致は
+# `scripts/check-likes-worker.sh` が照合する。`wrangler dev --remote` では使えない
+# （実在しない id なので）が、この Worker をリモートで立てる手順は無い。
 [[d1_databases]]
 binding = "DB"
 database_name = "game-forge"
 database_id = "d81a6f80-7d08-4908-b311-2418bacda050"
+preview_database_id = "local-only-placeholder"

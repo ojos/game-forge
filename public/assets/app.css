@@ -371,6 +371,30 @@ button:disabled {
   margin: var(--gf-gap-1) 0;
 }
 
+/*
+ * 運営の印（#334 / 仕様 5.9）。作品ページの作者名の隣に置く。
+ *
+ * **名前の文字では真似できない見た目にする。** 表示名は利用者が自由に決められ、
+ * 語の制限も無い（5.9）。太字かどうかだけの差だと、名前に同じ文字を書けば並びが
+ * 揃ってしまう。名前は `<strong>` の中にエスケープして出るので、利用者は枠も背景も
+ * 持ち込めない——**枠と地を持つバッジにして、文字の並びでは作れない差にする。**
+ *
+ * **無彩色のまま**（冒頭の方針。色は作品だけが持つ）。`--gf-ink` で塗りつぶさないのは、
+ * 黒い箱が「改造する」の CTA（`.gf-fork-link`）と同じ強さで競うためである。
+ * 行の中で折り返すとバッジが 2 行に割れて枠の形が崩れるので、折り返さない。
+ */
+.gf-operator {
+  display: inline-block;
+  padding: 0 var(--gf-gap-2);
+  border: 1px solid var(--gf-ink-soft);
+  border-radius: var(--gf-radius);
+  background: var(--gf-surface);
+  color: var(--gf-ink);
+  font-size: var(--gf-text-small);
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
 .gf-fork-note {
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);

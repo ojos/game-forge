@@ -13,7 +13,9 @@ import {
 import type { TokenExchange, TokenExchangeParams } from '../src/auth/google.js';
 import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
-import { SESSION_COOKIE, verifySession } from '../src/session.js';
+import { SESSION_COOKIE, buildSessionCookie, signSession, verifySession } from '../src/session.js';
+import { createAccountRoutes } from '../src/account.js';
+import { ACCOUNT_DISPLAY_NAME_PATH, DISPLAY_NAME_FIELD } from '../src/account-paths.js';
 import { normalizeInviteCode } from '../src/invite-code.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -612,6 +614,116 @@ describe('コールバックと users 行の作成（#12 scope.in）', () => {
     expect(response.status).toBe(503);
     expect(exchanged.calls).toHaveLength(0);
     expect(await usersBySub('google-sub-unconfigured')).toHaveLength(0);
+  });
+});
+
+describe('表示名は、利用者が決めたらログインで上書きしない（5.9 / #341）', () => {
+  /**
+   * 既存の利用者を 1 人作る（2 回目以降のログインを試すため。招待は要らない）。
+   *
+   * @param sub Google のアカウント識別子
+   * @param displayName いまの表示名
+   * @returns 利用者の id
+   */
+  async function seedExistingUser(sub: string, displayName: string): Promise<string> {
+    const id = `u-${sub}`;
+    await env.DB.prepare(
+      'insert into users (id, google_sub, email, display_name, created_at) values (?, ?, ?, ?, 1)',
+    )
+      .bind(id, sub, `${sub}@example.com`, displayName)
+      .run();
+    return id;
+  }
+
+  /**
+   * Google の名前とメールアドレスを差し替えてログインし直す。
+   *
+   * @param sub Google のアカウント識別子
+   * @param claims ID トークンに載せる名前とメールアドレス
+   * @returns コールバックの応答
+   */
+  async function relogin(sub: string, claims: { name: string; email: string }): Promise<Response> {
+    const exchanged = recordExchange(buildIdToken({ sub, ...claims }));
+    const routes = createAuthRoutes({
+      exchange: exchanged.exchange,
+      now: () => NOW,
+      randomToken: fixedRandomToken(),
+    });
+    const started = await startLogin(routes, testEnv());
+    return await callback(
+      routes,
+      testEnv(),
+      `code=code-name&state=${FIXED_STATE}`,
+      started.cookieHeader,
+    );
+  }
+
+  /**
+   * `users` から表示名まわりの列を引く。
+   *
+   * @param sub Google のアカウント識別子
+   * @returns 表示名・メールアドレス・`display_name_set_at`
+   */
+  async function nameColumns(
+    sub: string,
+  ): Promise<{ display_name: string; email: string; display_name_set_at: number | null }> {
+    const row = await env.DB.prepare(
+      'select display_name, email, display_name_set_at from users where google_sub = ?',
+    )
+      .bind(sub)
+      .first<{ display_name: string; email: string; display_name_set_at: number | null }>();
+    expect(row).not.toBeNull();
+    return row!;
+  }
+
+  it('決めていない利用者は、ログインのたびに Google の表示名に追随する', async () => {
+    // **既存の利用者は NULL のまま始まり、振る舞いが変わらない**（5.9）。
+    // `case` の条件を外して「常に今の名前を残す」にすると、ここが赤くなる。
+    const sub = 'google-sub-follows-google';
+    await seedExistingUser(sub, 'Google の旧名');
+
+    const response = await relogin(sub, { name: 'Google の新名', email: 'follows@example.com' });
+
+    expect(response.status).toBe(303);
+    expect(await nameColumns(sub)).toEqual({
+      display_name: 'Google の新名',
+      email: 'follows@example.com',
+      // **ログインは印を付けない。** 付けると、次のログインから追随しなくなる。
+      display_name_set_at: null,
+    });
+  });
+
+  it('表示名を変えた利用者が再ログインしても、表示名は Google の名前へ戻らない', async () => {
+    // **変更は本物の口（`POST /api/account/display-name`）で行う。** 列を直接埋めると、
+    // 変更の口が印を付け忘れても緑になる。
+    const sub = 'google-sub-keeps-own-name';
+    const userId = await seedExistingUser(sub, 'Google の名前');
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const token = await signSession({ userId, issuedAt, expiresAt: issuedAt + 3600 }, SECRET);
+    const changed = await dispatch(
+      createAccountRoutes({ now: () => NOW }),
+      new Request(`${APP_ORIGIN}${ACCOUNT_DISPLAY_NAME_PATH}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          cookie: buildSessionCookie(token, 3600).split(';')[0]!,
+        },
+        body: new URLSearchParams({ [DISPLAY_NAME_FIELD]: '自分で決めた名前' }).toString(),
+      }),
+      testEnv(),
+    );
+    expect(changed.status).toBe(303);
+    expect((await nameColumns(sub)).display_name).toBe('自分で決めた名前');
+
+    const response = await relogin(sub, { name: 'Google の名前', email: 'changed@example.com' });
+
+    expect(response.status).toBe(303);
+    expect(await nameColumns(sub)).toEqual({
+      display_name: '自分で決めた名前',
+      // **メールアドレスは今までどおり毎回更新する**（5.9。宛先が古いまま残ると届かない）。
+      email: 'changed@example.com',
+      display_name_set_at: NOW,
+    });
   });
 });
 

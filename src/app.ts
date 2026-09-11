@@ -5,6 +5,7 @@
  * M1-1 が所有するため、ここでは**スキーマに依存しない疎通確認**だけを行う。
  */
 import { authRoutes } from './auth/google.js';
+import { accountRoutes } from './account.js';
 import { describeOriginRelation } from './origins.js';
 import { forkRoutes } from './fork.js';
 import { generateRoutes } from './generate.js';
@@ -284,6 +285,7 @@ export function createAppRoutes(env: Env): readonly Route[] {
     ...takedownRoutes,
     ...(devRoutesEnabled(env) ? devRoutes : []),
     ...authRoutes,
+    ...accountRoutes,
     ...signupRoutes,
     ...waitlistRoutes,
     ...generateRoutes,

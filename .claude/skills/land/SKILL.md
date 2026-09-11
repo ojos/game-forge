@@ -35,6 +35,22 @@ gh pr view N --json number,title,state,isDraft,mergeable,headRefName,baseRefName
 
 **利用者の入力を、再開のきっかけにしません。** これまでは PR を作った時点でターンを終えていたため、利用者が指示するまで確認そのものが始まりませんでした。このスキルが解消したいのはその点です。待つときは、終わると通知が来て自動で再開する形（Bash の `run_in_background`）を使います。
 
+**先に、確かめたいコミットにチェックが付いたことを確かめます。** push の直後に `gh pr checks` を叩くと、**前のコミットの結果が返ることがあります。** 実測では、push の直後に前の head の全緑が終了コード 0 で返り、その 3 秒後に新しいコミットの pending へ変わりました。`--watch` は前者を見て即座に抜けるので、7 で直して戻ってきたときに偽の緑で通り抜けます。
+
+`sha` には、最初に来たときは 1 で読んだ head のコミットを、7 から戻ってきたときは push したコミット（`git rev-parse HEAD`）を入れます。
+
+```bash
+for _ in $(seq 60); do  # 5 秒 × 60 回 = 5 分
+  head="$(gh pr view N --json headRefOid --jq .headRefOid)" || head=""
+  runs="$(gh api "repos/{owner}/{repo}/commits/$sha/check-runs" --jq .total_count)" || runs=0
+  [ "$head" = "$sha" ] && [ "${runs:-0}" -gt 0 ] && { echo CHECKS_ATTACHED; exit 0; }
+  sleep 5
+done
+echo CHECKS_NOT_ATTACHED; exit 1
+```
+
+`CHECKS_ATTACHED` が出てから watch します。`CHECKS_NOT_ATTACHED` なら、止めて報告します。
+
 ```bash
 gh pr checks N --watch --interval 30
 ```

@@ -725,6 +725,36 @@ describe('表示名は、利用者が決めたらログインで上書きしな�
       display_name_set_at: NOW,
     });
   });
+
+  it('運営フラグ（is_operator）は、再ログインで消えない（#334）', async () => {
+    // **ログインの UPDATE は `users` の行を毎回書く。** そこへ列を 1 つ書き足す変更
+    // （たとえば既定値へ戻す `is_operator = 0`）が入ると、運営が次にログインした瞬間に
+    // 印が消える。印は運営が D1 を直接 UPDATE して立てるもので（`docs/operator-account.md`）、
+    // 消えても誰も気づかず、**名前で「運営」を名乗る利用者と見分けが付かなくなる**（5.9）。
+    const sub = 'google-sub-operator-keeps-flag';
+    const userId = await seedExistingUser(sub, 'Google の名前');
+    const marked = await env.DB.prepare('update users set is_operator = 1 where id = ?')
+      .bind(userId)
+      .run();
+    // 当たったことを先に確かめる（0 行のまま「消えない」を見ても何も確かめていない）。
+    expect(marked.meta.changes).toBe(1);
+
+    const response = await relogin(sub, { name: 'Google の新名', email: 'operator@example.com' });
+
+    expect(response.status).toBe(303);
+    const row = await env.DB.prepare(
+      'select is_operator, display_name, email from users where google_sub = ?',
+    )
+      .bind(sub)
+      .first<{ is_operator: number; display_name: string; email: string }>();
+    // **ログインそのものは今までどおり進んだ**（名前は追随し、メールアドレスも更新された）
+    // うえで、印だけが残っていることを見る。
+    expect(row).toEqual({
+      is_operator: 1,
+      display_name: 'Google の新名',
+      email: 'operator@example.com',
+    });
+  });
 });
 
 describe('state と一時 cookie による CSRF 対策', () => {

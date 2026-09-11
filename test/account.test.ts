@@ -12,12 +12,14 @@ import {
   DISPLAY_NAME_FIELD,
 } from '../src/account-paths.js';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
+import { PUBLISHED_STATUS } from '../src/games.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
 import { toIsoTimestamp } from '../src/jst.js';
 import { ssrPagePaths } from '../src/page-paths.js';
 import type { Route } from '../src/routes.js';
 import { dispatch, findDuplicateRoutes } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { OPERATOR_MARK, workPagePath } from '../src/work-page.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -517,5 +519,77 @@ describe('表示名の変更（POST /api/account/display-name）', () => {
     const body = await (await openAccount(cookie, '?saved=1')).text();
     expect(body).toContain('value="往復した名前"');
     expect(body).toContain('ログインしても Google アカウントの名前には戻りません');
+  });
+});
+
+describe('運営フラグ（#334）との組み合わせ', () => {
+  /**
+   * 印の要素（タグとして解釈される形）。`test/work-page.test.ts` の同名の検査と同じ形で、
+   * 引用符の有無と種類を問わない。エスケープされた `&lt;b class=...` はタグではないので当たらない。
+   */
+  const BADGE_ELEMENT = /<[a-z][^<>]*\sclass\s*=\s*["']?[^"'<>]*\bgf-operator\b/giu;
+
+  /**
+   * 公開済みの作品を 1 件用意し、作品ページの本文を返す。
+   *
+   * @param authorId 作者
+   * @returns 作品ページの HTML
+   */
+  async function publishedPageOf(authorId: string): Promise<string> {
+    const id = crypto.randomUUID();
+    await env.DB.prepare(
+      `insert into games (id, author_id, status, title, go_version, created_at, published_at,
+                          generation_state, preview_key)
+       values (?, ?, ?, ?, '', 1, 1, 'ready', ?)`,
+    )
+      .bind(id, authorId, PUBLISHED_STATUS, '運営の組み合わせ検査', `acct-${id}`)
+      .run();
+    // 未ログインの閲覧者として開く（印も名前も、外から見える値である）。
+    const response = await handleAppRequest(new Request(`${APP_ORIGIN}${workPagePath(id)}`), testEnv());
+    expect(response.status).toBe(200);
+    return await response.text();
+  }
+
+  /**
+   * 表示名を本物の変更の口で変える。
+   *
+   * @param userId 利用者の id
+   * @param name 新しい表示名
+   */
+  async function rename(userId: string, name: string): Promise<void> {
+    const routes = createAccountRoutes({ now: () => NOW });
+    const response = await postName(routes, await cookieFor(userId), name);
+    expect(response.headers.get('location'), name).toBe(`${ACCOUNT_PATH}?saved=1`);
+  }
+
+  it('名前を変えた運営の作品ページに、決めた名前とは別に印が 1 つ出る', async () => {
+    // 5.9「なりすましは名前で見分けない」。**名前を変えても印は列（is_operator）から出る**
+    // ——名前の変更が印を消したり、印が名前の中へ入り込んだりしないことを見る。
+    const userId = await seedUser({ displayName: 'Google の名前' });
+    await env.DB.prepare('update users set is_operator = 1 where id = ?').bind(userId).run();
+    // 当たったことを読み戻して確かめる。**`meta.changes` では数えない**——このファイルが
+    // 張ったトリガの INSERT まで数えに入り、1 行の UPDATE が 2 と返る（実測）。
+    const flag = await env.DB.prepare('select is_operator from users where id = ?')
+      .bind(userId)
+      .first<{ is_operator: number }>();
+    expect(flag?.is_operator).toBe(1);
+    await rename(userId, '新しい運営の名前');
+
+    const body = await publishedPageOf(userId);
+    expect(body).toContain(
+      `作者: <strong>新しい運営の名前</strong> <span class="gf-operator">${OPERATOR_MARK}</span>`,
+    );
+    expect(body.match(BADGE_ELEMENT)).toHaveLength(1);
+  });
+
+  it('運営でない利用者が名前で印を真似ても、印の要素は 1 つも出ない', async () => {
+    // 変更の口を通る名前（30 文字以内・制御文字なし）で真似る。**保存時には弾かない**
+    // （語の検査をしない。5.9）ので、見分けは出力側に懸かっている。
+    for (const name of [OPERATOR_MARK, '<b class=gf-operator>運営</b>']) {
+      const userId = await seedUser({ displayName: 'Google の名前' });
+      await rename(userId, name);
+      const body = await publishedPageOf(userId);
+      expect(body.match(BADGE_ELEMENT), name).toBeNull();
+    }
   });
 });

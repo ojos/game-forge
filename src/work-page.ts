@@ -227,6 +227,12 @@ interface WorkRow {
   /** 作者の表示名（`users.display_name`）。結合が空振りしたら null。 */
   author_name: string | null;
   /**
+   * 作者が運営か（`users.is_operator`。`migrations/0021_users_operator.sql`）。
+   *
+   * 列は `NOT NULL` で 0 か 1 だが、**結合が空振りしたら null になる**（`left join`）。
+   */
+  author_is_operator: number | null;
+  /**
    * この作品が指す親の id（`games.parent_id` そのもの）。オリジナルなら null。
    *
    * **結合結果の `p.id` ではない。** 結合が空振りした場合に「親が無い」と
@@ -495,6 +501,15 @@ export interface WorkPageView {
    * 下の {@link loadingScreen} を参照）。
    */
   readonly authorName: string | null;
+  /**
+   * 作者が運営か（#334）。**公開済みのときだけ立ちうる**（{@link authorName} と同じ条件）。
+   *
+   * **名前から導かない。** 表示名は Google の表示名でログインのたびに上書きされ、
+   * 仕様 5.9（#341）以後は利用者が自由に変えられる——誰でも「運営」と名乗れる。
+   * 運営であることは `users.is_operator` の列だけで見分ける（なぜ導出せず列で持つのかは
+   * `migrations/0021_users_operator.sql`）。
+   */
+  readonly authorIsOperator: boolean;
   /** 元ゲーム（3.4-5 の 4 要素の 1 つ）。公開済みのときだけ意味を持つ。 */
   readonly parent: ParentWork;
   /**
@@ -1287,11 +1302,42 @@ function loadingScreen(view: WorkPageView): string {
 
   return `<div class="gf-context">
 ${screenshot(view)}
-<p class="gf-author">作者: <strong>${escapeHtml(view.authorName ?? UNKNOWN_AUTHOR)}</strong></p>
+<p class="gf-author">作者: <strong>${escapeHtml(view.authorName ?? UNKNOWN_AUTHOR)}</strong>${operatorMark(view)}</p>
 <p class="gf-parent">${parentLine(view.parent)}</p>
 ${forkCta(view)}
 </div>
 ${frame}`;
+}
+
+/**
+ * 作者が運営であることを示す印の文言（#334）。
+ *
+ * **固定文言である。利用者の入力を 1 文字も混ぜない**——混ぜれば、印そのものが
+ * 名乗りになる。テストが同じ綴りを見るために export している（書き写さない）。
+ */
+export const OPERATOR_MARK = '運営アカウント';
+
+/**
+ * 作者名の隣に置く、運営の印（#334）。運営でなければ空文字列を返す。
+ *
+ * # 名前の外に置く
+ *
+ * 印は `<strong>`（利用者が決めた名前）の**外**に置く。名前は `escapeHtml` を通るので、
+ * 名前の入力からこの要素を作ることはできない。**名前に「運営」と書いた利用者の画面には、
+ * この要素が 1 つも現れない。**
+ *
+ * # 立っていない作者には 1 バイトも足さない
+ *
+ * 既定値 0 のままの作者（既存の作品すべて）では、この行は #334 の前と同じ文字列になる。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function operatorMark(view: WorkPageView): string {
+  if (!view.authorIsOperator) {
+    return '';
+  }
+  return ` <span class="gf-operator">（${OPERATOR_MARK}）</span>`;
 }
 
 // 作者名を引けなかったときの表示（**空欄にしない**）は `src/work-card.ts` が持つ。
@@ -1489,11 +1535,16 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   // **`users` は `left join` である。** `author_id` は NOT NULL の外部キーなので
   // 通常は必ず当たるが、当たらなかったときに**ページ全体を 404 にしない**
   // （作者名が引けないことと、作品が無いことは別である）。
+  //
+  // **`users` からは表示に要る 2 列だけを選ぶ**（表示名と運営の印。#334）。
+  // `email` と `invited_by` は選ばない——前者は本人にしか出さない値で、後者は公開すると
+  // 招待の連鎖が外から辿れる（仕様 2.3.6 の「出さないもの」）。選ばなければ、画面の側で
+  // 書き間違えても漏れようがない。
   const row = await env.DB.prepare(
     `select g.author_id, g.status, g.title, g.generation_state, g.generation_error,
             g.preview_key, g.created_at, g.generation_started_at,
             g.ogp_state, g.ogp_started_at, g.published_at, g.ip_notice,
-            a.display_name as author_name,
+            a.display_name as author_name, a.is_operator as author_is_operator,
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
        from games g
        left join users a on a.id = g.author_id
@@ -1627,6 +1678,14 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **公開済みのときだけ出す。** 未公開の作品ページは作者のための状態画面で、
       // そこに作者名を出しても意味が無い（見ているのは本人か、id を知る誰かである）。
       authorName: published ? row.author_name : null,
+      // **運営かどうかは列だけで決める**（#334）。`author_name` を見ない——表示名は
+      // ログインのたびに Google の名前で上書きされ、5.9 以後は誰でも「運営」と名乗れる。
+      // なぜ導出せず列で持つのかは `migrations/0021_users_operator.sql` にある。
+      //
+      // **`=== 1` で読む。** 結合が空振りした null を「運営」へ倒さない。0 と 1 以外は
+      // CHECK が入れさせない。印は名前に付くものなので、名前を出さない未公開のときは
+      // 出さない（`authorName` と同じ条件）。
+      authorIsOperator: published && row.author_is_operator === 1,
       parent: parentWorkOf(row),
       // **公開済みのときだけ引く**（3.6 の読み取りがそのまま費用になる）。フォークの
       // 親になれるのは公開済みの作品だけなので（5.3）、未公開の行に公開済みの子は

@@ -7,6 +7,7 @@ import {
   FORKS_OFFSET_PARAM,
   FORKS_PER_PAGE,
   GENERATION_IS_SYNCHRONOUS,
+  OPERATOR_MARK,
   WORK_PAGE_PREFIX,
   WORK_REMOVE_GAME_ID_FIELD,
   WORK_REMOVE_PATH,
@@ -986,6 +987,7 @@ const baseView: WorkPageView = {
   imageUrl: null,
   imagePath: null,
   authorName: null,
+  authorIsOperator: false,
   parent: { kind: 'none' },
   forks: { total: 0, items: [], morePath: null, backPath: null },
   signedIn: false,
@@ -1098,5 +1100,147 @@ describe('著名 IP 名の置換を作者へ開示する（6.2 / #39）', () => 
       .bind(child.id)
       .first<{ ip_notice: string | null }>();
     expect(row?.ip_notice).toBe('ゼルダ');
+  });
+});
+
+describe('運営の印（#334）', () => {
+  /** 印の要素そのもの。**文言は `OPERATOR_MARK` から取る**（書き写さない）。 */
+  const MARK_ELEMENT = `<span class="gf-operator">（${OPERATOR_MARK}）</span>`;
+
+  /**
+   * 公開済みの作品を 1 件用意する。
+   *
+   * @param suffix テスト内で一意な接尾辞（作者の表示名にもなる）
+   * @param prompt プロンプト
+   * @returns 作者の id と作品 id
+   */
+  async function seedPublished(
+    suffix: string,
+    prompt?: string,
+  ): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(suffix, prompt);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: `sha-${suffix}` }));
+    const published = await publishGame(env, id, userId);
+    expect(published.ok).toBe(true);
+    return { userId, id };
+  }
+
+  /**
+   * 運営フラグを立てる（`docs/operator-account.md` と同じ、列の直接 UPDATE）。
+   *
+   * @param userId 利用者の id
+   */
+  async function markOperator(userId: string): Promise<void> {
+    const result = await env.DB.prepare('update users set is_operator = 1 where id = ?')
+      .bind(userId)
+      .run();
+    // **当たったことを先に確かめる。** 0 行の UPDATE のあとで「出ない」を見ても何も
+    // 確かめていない（`docs/handoff.md` 4 章「変異が当たったことを…先に確かめる」と同じ）。
+    expect(result.meta.changes).toBe(1);
+  }
+
+  /**
+   * 本文から作者の行（`<p class="gf-author">…</p>`）を 1 つ取り出す。
+   *
+   * @param body 作品ページの HTML
+   * @returns 作者の行
+   */
+  function authorLine(body: string): string {
+    const lines = body.match(/<p class="gf-author">.*?<\/p>/gu) ?? [];
+    expect(lines, '作者の行はちょうど 1 つ').toHaveLength(1);
+    return lines[0]!;
+  }
+
+  it('フラグが立った作者の作品ページには、名前の隣に印が出る', async () => {
+    const { userId, id } = await seedPublished('op-flagged');
+    await markOperator(userId);
+
+    const body = await (await open(workPagePath(id))).text();
+
+    // 印は `<strong>`（利用者が決めた名前）の**外**、同じ行の中にある。
+    expect(authorLine(body)).toBe(
+      `<p class="gf-author">作者: <strong>op-flagged</strong> ${MARK_ELEMENT}</p>`,
+    );
+    // **画面に出たのは印だけで、`users` の他の列ではない**（仕様 2.3.6）。
+    // SQL で `email` を選んでいないことそのものは、ここからは観測できない。
+    // 見ているのは「出ていない」ことである。
+    expect(body).not.toContain('@example.com');
+  });
+
+  it('フラグが立っていない作者の作品ページには出ない（既定値のまま・表示は #334 の前と同じ）', async () => {
+    // **列を 1 度も触らない作者である。** 既存の 18 件の作者と同じ状態（0021 の既定値 0）。
+    const { userId, id } = await seedPublished('op-default');
+    const row = await env.DB.prepare('select is_operator from users where id = ?')
+      .bind(userId)
+      .first<{ is_operator: number }>();
+    expect(row?.is_operator).toBe(0);
+
+    const body = await (await open(workPagePath(id))).text();
+
+    // **#334 の前と 1 バイトも違わない行である。** 部分一致ではなく全体で比べる
+    // ——空白 1 つ・空の `<span>` 1 つが足されても落ちる。
+    expect(authorLine(body)).toBe('<p class="gf-author">作者: <strong>op-default</strong></p>');
+    expect(body).not.toContain('gf-operator');
+    expect(body).not.toContain(OPERATOR_MARK);
+  });
+
+  it('フラグは後から立てても、既に公開した作品にそのまま効く（外せば消える）', async () => {
+    // #43 の運用どおり、作品が先にあり、フラグは後から立てる。**作品の行は触らない。**
+    const { userId, id } = await seedPublished('op-later');
+    expect(await (await open(workPagePath(id))).text()).not.toContain(MARK_ELEMENT);
+
+    await markOperator(userId);
+    expect(await (await open(workPagePath(id))).text()).toContain(MARK_ELEMENT);
+
+    await env.DB.prepare('update users set is_operator = 0 where id = ?').bind(userId).run();
+    expect(await (await open(workPagePath(id))).text()).not.toContain(MARK_ELEMENT);
+  });
+
+  it('名前で「運営」と名乗っても印は出ない（名前で判定しない）', async () => {
+    // 仕様 5.9（#341）以後は、誰でも表示名を自由に決められる。**名前が何であっても、
+    // フラグが立っていなければ印の要素は 1 つも現れない。** 印の綴りそのものや、
+    // 印の HTML を名前に入れた場合も、エスケープされて名前の中に閉じる。
+    const disguises = ['運営', OPERATOR_MARK, `（${OPERATOR_MARK}）`, MARK_ELEMENT];
+    for (const [index, name] of disguises.entries()) {
+      const { userId, id } = await seedPublished(`op-disguise-${index}`);
+      await env.DB.prepare('update users set display_name = ? where id = ?')
+        .bind(name, userId)
+        .run();
+
+      const body = await (await open(workPagePath(id))).text();
+
+      expect(body, name).not.toContain('<span class="gf-operator">');
+      // 名前は `<strong>` の中にだけ現れ、行はそこで終わる。
+      expect(authorLine(body), name).toMatch(/^<p class="gf-author">作者: <strong>[^<]*<\/strong><\/p>$/u);
+    }
+  });
+
+  it('未公開の作品には出さない（名前を出さない画面に、名前の印だけを出さない）', async () => {
+    const { userId, id } = await seedPending('op-draft');
+    await markOperator(userId);
+
+    // 本人が開いても、未公開の作品ページは作者のための状態画面である（名前を出さない）。
+    //
+    // **この it が止めているのは描画側の位置である**——印は作者の行の中にしか無く、
+    // 作者の行は公開済みの節（ロード中画面）にしか無い。`showWorkPage` の
+    // `authorIsOperator: published && …` から `published` を外す変異では**緑のまま**
+    // だった（view 側の門番は、経路からは単独で観測できない）。ここを書き落とすと、
+    // 次に読む人が「view 側も変異で確かめてある」と読む。
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(body).not.toContain('gf-operator');
+    expect(body).not.toContain(OPERATOR_MARK);
+  });
+
+  it('描画は view の真偽だけで決まる（名前の中身を見ない）', () => {
+    // 経路を通さず、`renderWorkPage` に直に渡す。**同じ名前で真偽だけを変える。**
+    const view: WorkPageView = {
+      ...baseView,
+      published: true,
+      authorName: '運営',
+      forkableId: '00000000-0000-4000-8000-000000000000',
+    };
+    expect(renderWorkPage({ ...view, authorIsOperator: false })).not.toContain(MARK_ELEMENT);
+    expect(renderWorkPage({ ...view, authorIsOperator: true })).toContain(MARK_ELEMENT);
   });
 });

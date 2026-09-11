@@ -192,6 +192,7 @@ describe('表示名のエスケープ（#341 / 5.9）', () => {
       authorName: HOSTILE_NAME,
       publishedAt: 1_800_000_000,
       forkCount: 0,
+      likeCount: 0,
       hasParent: false,
       hasShot: false,
     });

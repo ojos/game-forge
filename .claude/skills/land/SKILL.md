@@ -136,11 +136,11 @@ gh pr merge N --squash
 
   ```bash
   sha="$(gh pr view N --json mergeCommit --jq .mergeCommit.oid)"
-  run="$(gh run list --workflow verify.yml --commit "$sha" --event push --json databaseId --jq '.[0].databaseId')"
+  run="$(gh run list --workflow verify.yml --commit "$sha" --event push --json databaseId --jq '.[0].databaseId // empty')"
   gh run watch "$run" --exit-status
   ```
 
-  実行がまだ作られていなければ `run` は空になります。その場合は少し待って取り直します。**空のまま watch しません。** `deploy` ジョブまで緑になったことを確かめます。
+  実行がまだ作られていなければ `run` は空になります。その場合は少し待って取り直します。**空のまま watch しません。** `// empty` は外しません。gh 2.97.0 の `--jq` は null を空として出しますが、単体の `jq` は `null` という文字列を出します（どちらも実測）。後者で動かすと空チェックをすり抜け、`gh run watch null` になります。 `deploy` ジョブまで緑になったことを確かめます。
 
 ## 報告
 

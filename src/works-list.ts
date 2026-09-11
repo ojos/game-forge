@@ -33,7 +33,8 @@ import { listPublishedGames, toPublicWorkSort } from './games.js';
 import { siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import { cachedRows, listCacheKey } from './list-cache.js';
-import { GENERATE_PAGE_PATH, MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './paths.js';
+import { GENERATE_PAGE_PATH } from './paths.js';
+import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './works-paths.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { renderWorkCards } from './work-card.js';
@@ -41,9 +42,10 @@ import { renderWorkCards } from './work-card.js';
 /**
  * 公開一覧のパス（`/works`）。
  *
- * **正本は `src/paths.ts` である**（あちらの冒頭が定める「提供する側と、そこへ送り返す
- * 側が別モジュールになるもの」に当たる。移設の案内でここが `/works/mine` を出し、
- * 「あなたの作品」の側がここを出すので、値を持ち合うと循環参照になる）。
+ * **正本は `src/works-paths.ts` である**（`src/paths.ts` の冒頭が定める「提供する側と、
+ * そこへ送り返す側が別モジュールになるもの」に当たる。移設の案内でここが `/works/mine`
+ * を出し、「あなたの作品」の側がここを出すので、値を持ち合うと循環参照になる。
+ * `src/paths.ts` そのものに置かないのは、Lambda の束に入るからである——#336）。
  * ここから再輸出するのは、既にこのモジュールから読んでいる箇所を動かさないためで、
  * 値を二重に持っているわけではない（`src/home.ts` の `HOME_PATH` と同じ扱い）。
  */
@@ -76,7 +78,7 @@ export const MAX_PAGE = 50;
  *
  * **綴りを書き写さない。** `/works/mine` とリテラルで書くと、作品ページの綴りを変えた
  * 日に**案内文だけが古い場所を指す**（Copilot code review の指摘。2026-09-05）。
- * 正本（`src/paths.ts`）から組み立てる。
+ * 正本（`src/works-paths.ts`）から組み立てる。
  */
 export const MOVED_NOTICE = `自分の作品は ${MY_WORKS_PATH} へ移りました。`;
 

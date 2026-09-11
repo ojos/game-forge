@@ -17,6 +17,7 @@ import { takedownRoutes } from './takedown-routes.js';
 import { inviteRoutes } from './invite-issuance.js';
 import { myWorksRoutes } from './my-works.js';
 import { worksListRoutes } from './works-list.js';
+import { likeRoutes } from './likes.js';
 import { ogpRecaptureRoutes } from './ogp-recapture.js';
 import { ogpRoutes } from './ogp.js';
 import { ssrPagePaths } from './page-paths.js';
@@ -291,6 +292,7 @@ export function createAppRoutes(env: Env): readonly Route[] {
     ...generateRoutes,
     ...reviseRoutes,
     ...forkRoutes,
+    ...likeRoutes,
     ...generateCallbackRoutes,
     ...generatePageRoutes,
     ...workPageRoutes,

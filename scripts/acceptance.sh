@@ -229,6 +229,21 @@ if [[ -f package.json ]]; then
   # 下の scripts/check-worker-types.sh が wrangler types を実行して確かめる。
   echo "[acceptance] (node) scripts/check-worker-types-fresh.sh"
   bash scripts/check-worker-types-fresh.sh
+  # いいねの Worker に公開の入口が無いこと（#339 / 仕様 5.8）。
+  #
+  # **`LikeHub` は受け取った利用者 id を信じる。** `game-forge-likes` に公開の入口
+  # （workers.dev・プレビュー URL・ルート）が 1 本でも開くと、セッションを持たない
+  # 呼び出し元が id を偽装できる。入口は宣言 1 行で開き、**テストは本番の公開状態を
+  # 見ないので緑のまま通る。** だから宣言を機械で見る。あわせて Pages との結線
+  # （script_name・class_name・D1 の database_id）の一致と、`env.LIKE_HUB` を読むのが
+  # src/likes.ts だけであることと、likes Worker が束ねられることを見る。
+  #
+  # **node ブロックに置く**のは、宣言を wrangler 自身の読み取り器で読むため
+  # （node_modules が要る）。約 1 秒。判定はスクリプト側が持つ。
+  if [[ -f workers/likes/wrangler.toml ]]; then
+    echo "[acceptance] (node) scripts/check-likes-worker.sh"
+    bash scripts/check-likes-worker.sh
+  fi
   echo "[acceptance] (node) npm test"
   npm test
   echo "[acceptance] (node) npm run typecheck"

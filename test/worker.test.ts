@@ -98,6 +98,8 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       'DB',
       'DEV_ROUTES',
       'GENERATION_MODEL',
+      // いいねの DO（#339）。**秘密ではなく結線**なので wrangler.toml が宣言する。
+      'LIKE_HUB',
       // OGP 撮影関数の宛先（#26）。**秘密ではなく構成**なので wrangler.toml が
       // 宣言する（BUILD_FUNCTION_NAME と同じ扱い）。
       'OGP_FUNCTION_NAME',

@@ -1,0 +1,66 @@
+# いいねの正本を持つ Worker `game-forge-likes`（5.8 / #339）。
+#
+# **このサービスの本体は Cloudflare Pages である**（ルートの `wrangler.toml`。確定22）。
+# **Pages は Durable Objects のクラスを自分で持てない**ため、クラス `LikeHub` をこの
+# Worker に置き、Pages はバインディング（`script_name = "game-forge-likes"`）で直接呼ぶ。
+#
+# # 公開の入口を持たせない
+#
+# **`LikeHub` は受け取った利用者 id を信じる。** それを渡せるのは、セッションを確かめた
+# Pages（`src/likes.ts`）だけでなければならない。公開の入口を 1 本でも足すと、
+# セッションを持たない呼び出し元が id を偽装できる（仕様 5.8）。
+#
+# - `workers_dev = false`: `*.workers.dev` に出さない
+# - `preview_urls = false`: 版ごとのプレビュー URL にも出さない（既定は `workers_dev` の値に
+#   従うが、**既定に頼らず明示する**。既定が変わった日に黙って開く形にしない）
+# - `route` / `routes` を置かない
+#
+# この 3 点は `scripts/check-likes-worker.sh` が機械で確かめる（`scripts/acceptance.sh`
+# から呼ぶ）。
+#
+# # 配備
+#
+# **Pages より先に配る。** Pages が存在しない DO を指さないようにするため（5.8）。
+# 順序は `.github/workflows/verify.yml` の deploy ジョブが段の並びで持ち、手順は
+# `docs/likes.md` にある。
+name = "game-forge-likes"
+main = "src/index.ts"
+# Pages（ルートの `wrangler.toml`）と同じ日付に揃える。呼び出し側と受け側で
+# ランタイムの挙動がずれる理由を作らない。
+compatibility_date = "2026-08-01"
+workers_dev = false
+preview_urls = false
+
+# 自分自身の DO を指すバインディング。**この Worker のコードは使わない**（呼ぶのは
+# Pages である）。宣言しておくのは、クラスとバインディングの対応を宣言から読めるように
+# するためである。
+[[durable_objects.bindings]]
+name = "LIKE_HUB"
+class_name = "LikeHub"
+
+# **SQLite 版で作る。** Workers Free で使えるのは SQLite 版の DO だけである（5.8）。
+# 一度作ったクラスの保存形式は後から変えられないので、`new_classes`（KV 版）と
+# 取り違えないこと。タグは配った後に書き換えない（配備済みの版の記録として残る）。
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LikeHub"]
+
+# 同期（アラーム）が `games.like_count` を書き、`users.banned_at` を読む先。
+# **Pages と同じ本番の D1 を指す。** `database_id` はルートの `wrangler.toml` の
+# `[[env.production.d1_databases]]` の写しで、`scripts/check-likes-worker.sh` が一致を
+# 機械で照合する（片方だけ書き換えると、同期が別のデータベースへ書く）。
+#
+# **いいねの付与・取り消しではここを使わない。** D1 への書き込みは同期だけである（3.6）。
+#
+# **`preview_database_id` はローカル専用である**（`wrangler dev` が `database_id` より先に
+# 使う。配備は `database_id` だけを読む）。値はルートの `wrangler.toml` のトップレベル
+# （ローカル）の `database_id` の写しで、**Pages のローカル D1 と同じデータベースを指す**。
+# 省くと、ローカルの同期が本番の id の名前を持つ**空の**ローカル D1 へ書きに行き、
+# `no such table: users` で落ちる（2026-09-11 に実測。`docs/likes.md`）。一致は
+# `scripts/check-likes-worker.sh` が照合する。`wrangler dev --remote` では使えない
+# （実在しない id なので）が、この Worker をリモートで立てる手順は無い。
+[[d1_databases]]
+binding = "DB"
+database_name = "game-forge"
+database_id = "d81a6f80-7d08-4908-b311-2418bacda050"
+preview_database_id = "local-only-placeholder"

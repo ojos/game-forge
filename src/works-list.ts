@@ -19,14 +19,19 @@
  *
  * 1. **件数を固定する。** 1 頁 {@link WORKS_PER_PAGE} 件、頁数の上限は {@link MAX_PAGE}。
  *    母数が増えても 1 回の読み取りが増えない
- * 2. **索引を張る。** `migrations/0019_games_public_list_idx.sql`（2 軸ぶん）
+ * 2. **索引を張る。** `migrations/0019_games_public_list_idx.sql`（`recent` と `forked`）と
+ *    `migrations/0020_games_like_count.sql`（`liked`。審査の可視条件を含む部分索引）
  * 3. **Cache API を前段に置く。** 載せるのは HTML ではなく引いた行だけ（`src/list-cache.ts`）
  *
  * ## 出さないもの
  *
- * いいね・プレイ数・タグ・キーワード検索は**持たない**（仕様 2.3.5）。並べ替えは
- * 新着と「改造された数」の 2 軸だけである（2.3.4）。無限スクロールも置かない——
- * **18 本しか無いところに置くものではない**（2.3.3）。
+ * プレイ数・タグ・キーワード検索は**持たない**（仕様 2.3.5）。並べ替えは
+ * 新着・「改造された数」・「いいねの数」の 3 軸である（2.3.4。v1.51 で `liked` を足した）。
+ * 無限スクロールも置かない——**18 本しか無いところに置くものではない**（2.3.3）。
+ *
+ * **いいねの数は最大 5 分遅れる。** 並べ替えが読むのは `games.like_count`
+ * （Durable Objects から写した数）で、正本は DO にある（5.8）。**一覧を開くことで
+ * DO を呼ばない**——外部の閲覧者が大半で、閲覧数で DO の枠を減らさない。
  */
 import type { PublicWork, PublicWorkSort } from './games.js';
 import { listPublishedGames, toPublicWorkSort } from './games.js';
@@ -82,10 +87,15 @@ export const MAX_PAGE = 50;
  */
 export const MOVED_NOTICE = `自分の作品は ${MY_WORKS_PATH} へ移りました。`;
 
-/** 並べ替えの札。**綴りの正本は `src/games.ts` の `PUBLIC_WORK_SORTS` である。** */
+/**
+ * 並べ替えの札。**綴りの正本は `src/games.ts` の `PUBLIC_WORK_SORTS` である。**
+ *
+ * `Record` にしてあるので、軸を足して札を書き忘れると型の検査で落ちる。
+ */
 const SORT_LABELS: Record<PublicWorkSort, string> = {
   recent: '新着',
   forked: '改造された数',
+  liked: 'いいねの数',
 };
 
 /**
@@ -188,7 +198,7 @@ export function renderWorksListPage(view: WorksListView): string {
   return `${siteHead({
     title: '作品をさがす - Game Forge',
     extraHead:
-      '\n<meta name="description" content="Game Forge で公開されているブラウザ2Dゲームの一覧。新着順と、改造された数の順に並べ替えられます。">',
+      '\n<meta name="description" content="Game Forge で公開されているブラウザ2Dゲームの一覧。新着順・改造された数の順・いいねの数の順に並べ替えられます。">',
   })}
 <h1>作品をさがす</h1>
 <p>公開された作品が並んでいます。遊ぶのに登録は要りません。</p>

@@ -731,3 +731,29 @@ button:disabled {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* === 登録情報（#341）=== */
+
+/*
+ * 登録情報の画面（`/account`。`src/account.ts`）のメールアドレスと登録日。
+ *
+ * **上に余白を取る。** 見出しで区切らない画面なので（`src/account.ts`）、表示名の欄と
+ * 登録情報の間を余白だけで分ける。
+ *
+ * **項目名と値を横に並べない。** 390px の幅でメールアドレスが長いと、横並びでは値の欄が
+ * 狭くなって 1 文字ずつ折れる。縦に積み、長いアドレスは任意の位置で折り返させる
+ * （`overflow-wrap: anywhere`。折らないと版面を押し広げて横スクロールを生む——
+ * `scripts/check-page-width.sh` が見ている回帰である）。
+ */
+.gf-account {
+  margin: var(--gf-gap-4) 0 var(--gf-gap-3);
+}
+
+.gf-account dt {
+  font-weight: 700;
+}
+
+.gf-account dd {
+  margin: 0 0 var(--gf-gap-2);
+  overflow-wrap: anywhere;
+}

@@ -560,6 +560,22 @@ async function resolveUser(
  * 同時ログインで読み取りと書き込みが交錯する。同一性の判定は `google_sub` なので、
  * email と表示名を更新しても別人になることはない。
  *
+ * ## 表示名は、利用者が決めていないときだけ上書きする（5.9 / #341）
+ *
+ * **`display_name_set_at` が NULL の間だけ Google の表示名で上書きする。** 利用者が
+ * `/account` で名前を決めると値が入り（`src/account.ts`）、以後のログインでは
+ * `display_name` を今の値のまま残す。**上書きしてしまうと、決めた名前が次のログインで
+ * 黙って Google の名前へ戻る**——利用者からは「変えたのに戻った」としか見えない。
+ *
+ * 判定を `SELECT` で先に読む形にせず、**`case` で同じ 1 文へ畳む。** 上の理由に加え、
+ * 読んでから書く形だと、ログインと名前の変更が同時に走ったときに「読んだ時点では
+ * NULL だった」側が決めたばかりの名前を上書きしうる。1 文なら SQLite が行単位で
+ * 直列化する。
+ *
+ * **メールアドレスは今までどおり毎回更新する**（5.9。Google 側で変わりうる。同一性は
+ * `google_sub` で見る）。`users.email` は招待や改造通知（5.5）の宛先であり、古いまま
+ * 残すと届かなくなる。
+ *
  * @param db D1 バインディング
  * @param identity ID トークンから取り出した同一性
  * @returns 既存行、または存在しなければ null
@@ -570,9 +586,11 @@ async function refreshExistingUser(
 ): Promise<{ readonly id: string; readonly banned: boolean } | null> {
   const row = await db
     .prepare(
-      `update users set email = ?, display_name = ?
-       where google_sub = ?
-       returning id, banned_at`,
+      `update users
+          set email = ?,
+              display_name = case when display_name_set_at is null then ? else display_name end
+        where google_sub = ?
+        returning id, banned_at`,
     )
     .bind(identity.email, identity.displayName, identity.sub)
     .first<{ id: string; banned_at: number | null }>();

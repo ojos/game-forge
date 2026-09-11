@@ -137,9 +137,20 @@ CI が緑でも、Copilot の指摘が 0 件でも、読まずにマージしま
 
 ### 8. マージする
 
+**先に、squash の本文に CI を飛ばす指示が入っていないか確かめます。** このリポジトリの squash の本文は、PR のコミットメッセージを連ねたものです（`squash_merge_commit_message: COMMIT_MESSAGES`）。どれか 1 つのメッセージに CI を飛ばす指示があれば、**main の `verify` も `deploy` も起動しません。** GitHub は、メッセージの見出しでなく本文にあっても、この指示に従います。PR #343 で実際に踏みました。説明のために書いた一文がこれに当たり、PR 側の CI が 1 本も起動しませんでした。
+
+```bash
+gh pr view N --json commits --jq '.commits[] | .messageHeadline, .messageBody' \
+  | grep -n -i -E '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks: *true'
+```
+
+何も出なければ（終了コード 1）、そのままマージします。
+
 ```bash
 gh pr merge N --squash
 ```
+
+該当する行が出たら、その指示を除いた本文をファイルに書き、`gh pr merge N --squash --body-file <そのファイル>` で本文を差し替えてマージします。
 
 - **確認が出るのは正常です。** `scripts/confirm-merge-hook.sh` がマージの直前に確認を挟みます。承認されればマージが実行されます。
 - **拒否されたら、再試行しません。REST や GraphQL といった別の経路も使いません。** そこで止めて、理由を聞きます。

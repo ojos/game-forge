@@ -26,56 +26,73 @@ argument-hint: "[PR 番号（省略時はこの会話で直前に扱った PR）
 gh pr view N --json number,title,state,isDraft,mergeable,headRefName,baseRefName,body,closingIssuesReferences,commits
 ```
 
-open でない、あるいは draft なら、止めて報告します。
+次のどれかにあたれば、止めて報告します。
+
+- open でない、あるいは draft である
+- `baseRefName` が `main` でない。**この手順は、main へのマージとその配備を前提にしています。** 別のブランチ向けの PR に使うと、9 で無関係な main の実行を見届け、配備が済んだと誤って報告することになります。
 
 ### 2. CI とリモート最終ゲートの完了を待つ
 
-**ターンを終えずに待ちます。** これまでは PR を作った時点でターンを終えていたため、利用者が指示するまで確認そのものが始まりませんでした。このスキルが解消したいのはその点です。
+**利用者の入力を、再開のきっかけにしません。** これまでは PR を作った時点でターンを終えていたため、利用者が指示するまで確認そのものが始まりませんでした。このスキルが解消したいのはその点です。待つときは、終わると通知が来て自動で再開する形（Bash の `run_in_background`）を使います。
 
 ```bash
 gh pr checks N --watch --interval 30
 ```
 
 - `review-gate` は、opened のときは 120 秒の猶予を置いてから判定します。すぐに出なくても異常ではありません。
-- `review-gate` が failure の場合は、Copilot のレビューが要求されていません。**そのジョブのエラー文に書かれている手順どおりに、1 回だけ手で要求します。** 2 回目は要求しません（「1 回だけ要求する」）。
+- 失敗の形は 2 つあり、**扱いが違います。**
+  - **status の `review-gate` が failure**（説明文が `Copilot code review was never requested`）: Copilot のレビューが要求されていません。**ジョブのエラー文に書かれている手順どおりに、1 回だけ手で要求します。**
+  - **ジョブの `check` だけが失敗し、status の `review-gate` が failure でない**: レビューの有無を API から読めなかっただけです（`review-gate.yml` はこのとき status を付けません）。**要求しません。** 要求済みのレビューを二重に要求すると、「1 回だけ要求する」が壊れます。3 のループで待ち、届かなければ止めて報告します。
 
 ### 3. Copilot のレビューが届くのを待つ
 
-`review-gate` が緑でも、それは「要求された」ことを示すだけです。**レビュー本文が届くまで待ちます。** 待つときは Monitor の until ループか、Bash の `run_in_background` を使います（フォアグラウンドの sleep は使えません）。
+`review-gate` が緑でも、それは「要求された」ことを示すだけです。**レビュー本文が届くまで待ちます。** 次のループを Bash の `run_in_background` で回します（フォアグラウンドの sleep は使えません）。
 
 ```bash
-until n="$(gh api 'repos/{owner}/{repo}/pulls/N/reviews' \
-      --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')" \
-    && [ "$n" -gt 0 ]; do
+for _ in $(seq 30); do  # 30 秒 × 30 回 = 15 分
+  n="$(gh api --paginate 'repos/{owner}/{repo}/pulls/N/reviews' \
+      --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]") | .id' | wc -l)" || n=0
+  [ "$n" -gt 0 ] && { echo COPILOT_REVIEW_POSTED; exit 0; }
   sleep 30
 done
+echo COPILOT_REVIEW_TIMEOUT; exit 1
 ```
 
-API から読めなかった回は「まだ届いていない」として待ち続けます。**「届いた」と判定してはいけません。** 読めなかったことを到着と取り違えると、レビューを読まないまま次へ進んでしまいます。
+- **`--paginate` を外しません。** 外すと先頭の 30 件しか見ないため、レビューが多い PR では、届いているのに待ち続けます。`--paginate` と `--jq` を組み合わせると、jq はページごとに適用されます。そのため `length` で数えず、1 件 1 行で出して `wc -l` で数えます。
+- API から読めなかった回は 0 件として扱い、そのまま待ち続けます。**「届いた」と判定してはいけません。** 読めなかったことを到着と取り違えると、レビューを読まないまま次へ進んでしまいます。
+- **`|| n=0` を外しません。** `set -e -o pipefail` のシェルで回すと、API が 1 回失敗しただけで、合図の行を何も出さずに終了します（実測）。どちらの合図も出ないまま止まると、届いたのか、時間切れなのかが分かりません。
 
-- **15 分待っても届かなければ、マージせずに止めて報告します。** レビュアー不在で最終判断できない状態は、closer の「エスカレーション条件」にあたります。
+- **`COPILOT_REVIEW_TIMEOUT` が出たら、マージせずに止めて報告します。** レビュアー不在で最終判断できない状態は、closer の「エスカレーション条件」にあたります。
 - 指摘は review 本文と、行に付いたコメントの両方に出ます。
 
 ```bash
-gh api 'repos/{owner}/{repo}/pulls/N/reviews' --jq '.[] | {user: .user.login, state, body}'
+gh api --paginate 'repos/{owner}/{repo}/pulls/N/reviews' --jq '.[] | {user: .user.login, state, body}'
 gh api --paginate 'repos/{owner}/{repo}/pulls/N/comments' --jq '.[] | {user: .user.login, path, line, body}'
 ```
 
-人間が付けたコメントも同じ一覧に出ます。**それも指摘として扱います。**
+- 人間が付けたコメントも同じ一覧に出ます。**それも指摘として扱います。**
+- Copilot は、確度の低い指摘を review 本文の「Suppressed comments」に折りたたんで出します。**これも読みます。** 行コメントと同じくらい実在することがあります。
 
 ### 4. 自分でも差分を読む
 
 CI が緑でも、Copilot の指摘が 0 件でも、読まずにマージしません。
 
 - `gh pr diff N` を読み、`pr-review.md` の順に確認します（受け入れ条件との対応、次に高リスクの観点）。
-- **その差分がこの PR のものか確かめます。** 直前のブランチに居たまま `git checkout -b` すると、前の PR のコミットが相乗りします。この場合、レビューも CI も緑のまま通ってしまいます（`docs/handoff.md`）。`commits` の見出しと `gh pr diff N --name-only` が、PR の主題と合っているかを見ます。
+- **その差分がこの PR のものか確かめます。** 直前のブランチに居たまま `git checkout -b` すると、前の PR のコミットが相乗りします。この場合、レビューも CI も緑のまま通ってしまいます（`docs/handoff.md`）。`commits` の見出しと `gh pr diff N --name-only`（変更したファイルの一覧）が、PR の主題と合っているかを見ます。
 - 本文に `Closes #NNN` があるか確かめます。書かれていないと、マージしても issue が open のまま残ります。
 
 ### 5. マージの前提を確かめる
 
 **main へマージすると、そのまま本番へ配備されます**（`.github/workflows/verify.yml` の `deploy` ジョブ）。マージした後で順序を直す方法はありません。
 
-- 差分がオーケストレータの束（`src/orchestrator/**` など、束に入るファイル）に及ぶ場合は、**Lambda の配備を先に済ませる必要があります**（`docs/orchestrator.md`）。
+- オーケストレータの束が変わる場合は、**Lambda の配備を先に済ませる必要があります**（`docs/orchestrator.md`）。**変わるかどうかを、ファイル名で判断しません。** 束には `src/orchestrator/**` のほかに `src/bedrock.ts` や `src/generate.ts` も入るため、名前で見ると見落とします。#258 が実際にこれで抜けました。束そのものを作って比べます。PR のブランチを checkout したきれいな作業ツリーで、次を実行します。
+
+  ```bash
+  git fetch origin main
+  bash scripts/orchestrator-bundle-changed.sh "$(git merge-base origin/main HEAD)"
+  ```
+
+  最終行が `ORCHESTRATOR_BUNDLE_CHANGED` なら、配備が必要です。スクリプトが失敗した場合（作業ツリーが汚れている等）は、「変わっていない」とは扱いません。
 - 差分が `migrations/` に及ぶ場合は、**適用を先に済ませる必要があります。** 適用済みかどうかは、PR のブランチを checkout したツリーで `bash scripts/check-migrations-applied.sh --remote` を実行して確かめます。そのブランチが古い main から切られているなら、先に手元で main を取り込みます（確かめるためだけなので push はしません）。古いツリーで見ると、未適用を見落とします。
 - PR 本文や issue に「マージ前に〜」と書かれている前提も確かめます。
 
@@ -83,13 +100,11 @@ CI が緑でも、Copilot の指摘が 0 件でも、読まずにマージしま
 
 ### 6. 指摘を判定する
 
-指摘ごとに、`review-workflow.md` の条件に照らして次のどれにあたるかを決めます。
+判定の基準は、`review-workflow.md` の「リモート最終ゲート」と「指摘の却下」に従います。そのうえで、指摘ごとに次の順に判断します。
 
-| 判定 | 扱い |
-|---|---|
-| 実在し、今回の差分の中にある | 7 で直す |
-| スコープ外、または命名・可読性・好み | 直さない。技術負債として PR コメントに記録する |
-| 事実誤認 | 却下する。**再現手順と実測結果を PR コメントに記録する。** 記録を伴わない却下は認めない |
+1. **実在するかを、実測で確かめます。** 読んだ印象だけで決めません。
+2. **実在しない（事実誤認）なら**、「指摘の却下」の手順で却下し、再現手順と実測結果を残します。**ただし、却下するかどうかと、示された対処を採るかどうかは別に判断します。** 前提が誤っていても、提案された対処そのものに価値があれば採ります（同節）。
+3. **実在するなら、7 で直します。** 規範は「CI がすべて通っていれば解決済みとしてマージしてよい」としていますが、これは「マージしてよい」という許可であって、「直さなくてよい」と決める規則ではありません。**CI が緑であることだけを理由に、実在する指摘を残したままマージしません。** 直さずに通すのは、スコープ外、または命名・可読性・好みの提案にあたる場合だけです。その場合は、どちらにあたるかと、技術負債として記録したことを書きます。
 
 判定の結果は、PR へ 1 件のコメントにまとめて返します（どの指摘を、どう扱ったか）。
 
@@ -101,7 +116,7 @@ CI が緑でも、Copilot の指摘が 0 件でも、読まずにマージしま
 - **次のどれかにあたれば、マージせずに止めて報告します。**
   - 直すには仕様の判断が要る。または直すと PR の範囲を超える
   - 直したあとも CI が赤い
-  - 2 巡目の指摘が出た（2 巡目以降の指摘は人間が却下する規則です。AI 同士を往復させません）
+  - 直したあとに、新しい指摘（2 巡目）が出た。**扱いを決めるのは人間です。** 規範では、2 巡目以降の軽微な指摘は人間が却下し、AI 同士を往復させません。重大な指摘であれば、人間が扱いを決めます。どちらの場合も、このスキルの中では判定しません
 
 ### 8. マージする
 
@@ -117,7 +132,15 @@ gh pr merge N --squash
 ### 9. マージ後を確かめる
 
 - `closingIssuesReferences` に挙がっている issue が閉じたかを見ます。
-- main で走る `verify` の実行を `gh run watch <run-id> --exit-status` で最後まで見届けます。`deploy` ジョブまで緑になったことを確かめます。
+- main で走る `verify` の実行を、**マージコミットの SHA で特定してから**、最後まで見届けます。「main の最新の実行」で選ぶと、直後に入った別のマージの実行を見てしまい、この PR の配備を確かめたことになりません。
+
+  ```bash
+  sha="$(gh pr view N --json mergeCommit --jq .mergeCommit.oid)"
+  run="$(gh run list --workflow verify.yml --commit "$sha" --event push --json databaseId --jq '.[0].databaseId')"
+  gh run watch "$run" --exit-status
+  ```
+
+  実行がまだ作られていなければ `run` は空になります。その場合は少し待って取り直します。**空のまま watch しません。** `deploy` ジョブまで緑になったことを確かめます。
 
 ## 報告
 

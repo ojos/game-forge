@@ -103,6 +103,22 @@ migrations_dir = "migrations"
 binding = "BUCKET"
 bucket_name = "game-forge-local"
 
+# いいねの正本（5.8 / #339）。**別 Worker `game-forge-likes` の Durable Object を指す。**
+#
+# **Pages は DO のクラスを自分で持てない**ので、クラスは `workers/likes/` に置き、
+# ここは `script_name` で向こうを指すだけである（Pages の宣言では `script_name` が必須）。
+# **この binding を読むのは `src/likes.ts` だけ**（窓口を 1 つにする。5.8）。
+#
+# **トップレベル（ローカル）にも宣言する。** 省くとローカルとテストで本番の結線を
+# 再現できない。テストはクラスを同じ実行体へ読み込み、`vitest.config.ts` で自分自身を
+# 指すように差し替える（Miniflare は別スクリプトの TypeScript をそのまま動かせない）。
+# ローカルで `wrangler pages dev` を使うときは `docs/likes.md` の手順で likes Worker を
+# 別に立てる。
+[[durable_objects.bindings]]
+name = "LIKE_HUB"
+class_name = "LikeHub"
+script_name = "game-forge-likes"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 配備される環境（#89）。
 #
@@ -174,3 +190,20 @@ migrations_dir = "migrations"
 [[env.preview.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "game-forge"
+
+# いいねの DO（5.8 / #339）。**durable_objects も環境へ引き継がれない種類の設定である**
+# （Pages の non-inheritable keys）。省くと本番からバインディングが消え、いいねの口が
+# 設定不足で落ちる。preview も同じ理由で宣言する（D1 と同じく本番の実体を指す）。
+#
+# **`game-forge-likes` を先に配ること。** 存在しないスクリプトを指したまま Pages を
+# 配ると、binding が解決できない（配備の順序は `.github/workflows/verify.yml` の
+# deploy ジョブが機構で持つ）。
+[[env.production.durable_objects.bindings]]
+name = "LIKE_HUB"
+class_name = "LikeHub"
+script_name = "game-forge-likes"
+
+[[env.preview.durable_objects.bindings]]
+name = "LIKE_HUB"
+class_name = "LikeHub"
+script_name = "game-forge-likes"

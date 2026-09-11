@@ -31,10 +31,20 @@ export default defineConfig({
       // エントリを明示する。**Pages の構成には `main` が無い**（`functions/` を
       // wrangler が束ねる）ため、`SELF.fetch` を使うテストが
       // 「service bindings to the current worker requires main」で落ちる（実測）。
-      // 本番で `functions/[[path]].ts` が呼ぶのと同じモジュールをここでも指す。
-      main: './src/index.ts',
+      //
+      // **既定の輸出は、本番で `functions/[[path]].ts` が呼ぶのと同じモジュール
+      // （`src/index.ts`）である。** `workers/likes/test-entry.ts` はそれをそのまま
+      // 再輸出し、いいねの DO（`LikeHub`）を横に並べるだけである（#339。理由は同ファイルの
+      // 冒頭——本番では別スクリプトだが、Miniflare では 2 本目を TypeScript のまま
+      // 動かせず、`runInDurableObject` も自分自身の DO にしか使えない）。
+      main: './workers/likes/test-entry.ts',
       wrangler: { configPath: './wrangler.toml' },
       miniflare: {
+        // `wrangler.toml` の `LIKE_HUB` は `script_name = "game-forge-likes"`（別スクリプト）を
+        // 指す。テストではそれを**自分自身の SQLite 版 DO** へ差し替える（#339）。
+        // `useSQLite` を落とすと `ctx.storage.sql` が使えず、本番（`new_sqlite_classes`）と
+        // 違う保存形式で走ることになる。
+        durableObjects: { LIKE_HUB: { className: 'LikeHub', useSQLite: true } },
         bindings: { TEST_MIGRATIONS: migrations },
         // `.dev.vars.example` の中身をテキストとして渡す。
         //

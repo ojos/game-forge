@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import {
   DRAFT_STATUS,
+  PUBLIC_WORK_SORTS,
   PUBLISHED_STATUS,
   REMOVED_STATUS,
   publishedGamesSql,
@@ -28,7 +29,7 @@ import { applySchema } from './helpers/schema.js';
  *
  * 1. `draft` の作品が一覧に出ない
  * 2. 21 件目がページングで取得できる
- * 3. 並べ替え 2 軸それぞれ
+ * 3. 並べ替え 3 軸それぞれ（`liked` は #339）
  * 4. **索引が効いていること**（`EXPLAIN QUERY PLAN` が全表走査でない）
  * 5. `/works/mine` が未ログインでログインへ送られる（`test/my-works.test.ts` が持つ）
  *
@@ -98,6 +99,7 @@ async function seedGame(
     readonly title?: string;
     readonly publishedAt?: number | null;
     readonly forkCount?: number;
+    readonly likeCount?: number;
     readonly ogpState?: string | null;
     readonly reviewState?: string | null;
     readonly parentId?: string | null;
@@ -107,8 +109,8 @@ async function seedGame(
   await env.DB.prepare(
     `insert into games
        (id, author_id, status, title, go_version, created_at, generation_state,
-        published_at, fork_count, ogp_state, review_state, parent_id)
-     values (?, ?, ?, ?, '', 1, 'ready', ?, ?, ?, ?, ?)`,
+        published_at, fork_count, like_count, ogp_state, review_state, parent_id)
+     values (?, ?, ?, ?, '', 1, 'ready', ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -117,6 +119,7 @@ async function seedGame(
       overrides.title ?? 'タイトル',
       overrides.publishedAt === undefined ? nextPublishedAt() : overrides.publishedAt,
       overrides.forkCount ?? 0,
+      overrides.likeCount ?? 0,
       overrides.ogpState === undefined ? 'ready' : overrides.ogpState,
       overrides.reviewState ?? null,
       overrides.parentId ?? null,
@@ -220,6 +223,35 @@ describe('並べ替えと頁送り（仕様 2.3.3 / 2.3.4）', () => {
     );
   });
 
+  it('いいねの数の順で、いいねの多い作品が先頭に来る（#339）', async () => {
+    // 値は `games.like_count`（DO から写した数）を読む。一覧は DO を呼ばない（5.8）。
+    const author = await seedUser('いいねの作者');
+    const mostLiked = await seedGame(author, { likeCount: 99 });
+    const newest = await seedGame(author, { likeCount: 0 });
+
+    const recent = await (await openList('?sort=recent')).text();
+    const liked = await (await openList('?sort=liked')).text();
+
+    expect(recent.indexOf(workPagePath(newest))).toBeLessThan(
+      recent.indexOf(workPagePath(mostLiked)),
+    );
+    expect(liked.indexOf(workPagePath(mostLiked))).toBeLessThan(
+      liked.indexOf(workPagePath(newest)),
+    );
+  });
+
+  it('いいねの数の順でも、draft と審査待ちは出ない（#339）', async () => {
+    // **部分索引の条件と、一覧の SQL の条件が両方効いていること。** 索引が条件を
+    // 持っていても、SQL の側が落とせば素通しになる（逆も同じ）。
+    const author = await seedUser('いいねの絞り込みの作者');
+    const draft = await seedGame(author, { status: DRAFT_STATUS, likeCount: 10_000 });
+    const queued = await seedGame(author, { reviewState: REVIEW_QUEUED, likeCount: 10_000 });
+
+    const body = await (await openList('?sort=liked')).text();
+    expect(body).not.toContain(workPagePath(draft));
+    expect(body).not.toContain(workPagePath(queued));
+  });
+
   it('21 件目が次の頁で取得できる', async () => {
     const author = await seedUser('頁送りの作者');
     const ids: string[] = [];
@@ -251,12 +283,18 @@ describe('並べ替えと頁送り（仕様 2.3.3 / 2.3.4）', () => {
 });
 
 describe('索引が効いている（仕様 2.3.3 の条件 2）', () => {
-  it('2 軸とも全表走査ではなく、0019 の索引を使う', async () => {
+  it('3 軸とも全表走査ではなく、軸ごとの索引を使う', async () => {
     // **検査が SQL を書き写さない。** `publishedGamesSql` が返す文字列をそのまま
     // 実行計画に掛ける（`.ai-playbook/shared-ai-rules.md` 12 章）。
+    //
+    // `liked` は 0020 の**部分索引**である（審査の可視条件を含む。2.3.3 の v1.51 注記）。
+    // SQLite は、問い合わせの条件が索引の条件を含むと示せたときだけ部分索引を使う。
+    // **`status` は束縛で渡している**ので、束縛した値で照合されることまでここで確かめる
+    // （本番と同じ `bind` で掛けている）。
     for (const [sort, index] of [
       ['recent', 'games_status_published_at_idx'],
       ['forked', 'games_status_fork_count_idx'],
+      ['liked', 'games_status_like_count_idx'],
     ] as const) {
       const plan = await env.DB.prepare(`explain query plan ${publishedGamesSql(sort)}`)
         .bind(PUBLISHED_STATUS, WORKS_PER_PAGE, 0)
@@ -266,7 +304,15 @@ describe('索引が効いている（仕様 2.3.3 の条件 2）', () => {
       expect(detail, `${sort} の実行計画: ${detail}`).toContain(index);
       // **並べ替えのための一時 B-tree が出たら、索引の列順が並びと合っていない。**
       expect(detail, `${sort} の実行計画: ${detail}`).not.toContain('USE TEMP B-TREE');
+      // **索引を使わない `SCAN g` が出たら全表走査である**（`SCAN g USING INDEX ...` は
+      // 索引の上を順に読む正しい形なので除く）。
+      expect(detail, `${sort} の実行計画: ${detail}`).not.toMatch(/SCAN g(?! USING)/u);
     }
+  });
+
+  it('並べ替えの軸と索引が 1 対 1 に揃っている（#339）', () => {
+    // 軸を足したのに索引の検査へ足し忘れると、その軸だけが全表走査のまま通る。
+    expect([...PUBLIC_WORK_SORTS].sort()).toEqual(['forked', 'liked', 'recent']);
   });
 });
 

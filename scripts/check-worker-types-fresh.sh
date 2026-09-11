@@ -64,11 +64,15 @@
 # この検査が約束しないこと（**網羅ではない**）:
 #   - 見るのは **Env のメンバの名前と、var の値と、compatibility_date / flags** だけである。
 #     ランタイム型 14,000 行の一致は見ない。それは scripts/check-worker-types.sh が持つ。
-#   - 宣言側で読むのは **[vars] 系のテーブルと `binding = "..."` を持つテーブル**だけである。
-#     `[[durable_objects.bindings]]` のように別の綴りでバインディングを宣言する形は
-#     読まない（このリポジトリには無い）。**緑でも古いことはありうる。** 完全な照合は
-#     acceptance の check-worker-types.sh が引き受ける。この検査が引き受けるのは
-#     「**反復のたびに、ほぼ全ての実例を、原因の読める赤で捕まえる**」ことである。
+#   - 宣言側で読むのは **[vars] 系のテーブルと、バインディングの名前を持つテーブル**だけで
+#     ある。名前の綴りは 2 通りある: ほとんどのテーブルは `binding = "..."`（d1_databases /
+#     r2_buckets / …）で、**一部のテーブルは `name = "..."`** で宣言する。後者は
+#     NAME_KEYED_BINDING_TABLES の一覧だけを読む（`[[durable_objects.bindings]]` は #339 で
+#     初めて入った。以前はこのリポジトリに無かったので読んでいなかった）。**一覧に無いテーブルの
+#     `name` を数えない**——`[[workflows]]` の `name` はワークフローの名前で、バインディング名は
+#     別の `binding` にある。**緑でも古いことはありうる**（一覧に無い綴りのバインディングを
+#     足した場合）。完全な照合は acceptance の check-worker-types.sh が引き受ける。この検査が
+#     引き受けるのは「**反復のたびに、ほぼ全ての実例を、原因の読める赤で捕まえる**」ことである。
 #   - node_modules の workerd の版は見ない。生成物と node_modules のずれは `npm ci` の
 #     prepare が閉じており、package-lock.json と node_modules のずれは
 #     check-deps-installed.sh が持つ。ここで重ねると、同じ赤が 2 か所から出る。
@@ -174,6 +178,16 @@ function parseValue(raw) {
 }
 
 /**
+ * `name = "..."` の綴りでバインディングを宣言するテーブル（環境の接頭辞 `env.<名前>.` を除いた形）。
+ *
+ * wrangler 4.121 の設定の読み方で確かめたもの（`getBindingNames` が `bindings` 配列の
+ * `name` を読む 2 つと、`ratelimits` の `name`）。**一覧にしてあるのは、`name` を持つ
+ * テーブルでも、それがバインディング名とは限らないから**である（`[[workflows]]` の `name`
+ * はワークフローの名前で、バインディング名は `binding`）。
+ */
+const NAME_KEYED_BINDING_TABLES = ['durable_objects.bindings', 'unsafe.bindings', 'ratelimits'];
+
+/**
  * wrangler.toml を行単位で走査し、Env の面に現れる宣言だけを集める。
  * @param {string} text wrangler.toml の中身
  * @returns {{vars: Map<string, {values: Set<string>, hasOther: boolean}>, bindings: Set<string>, compatDate: string|null, compatFlags: string[]}}
@@ -215,6 +229,16 @@ function scanConfig(text) {
     // バインディングは、どのテーブルであっても `binding = "名前"` の綴りで宣言される
     // （d1_databases / r2_buckets / kv_namespaces / services / queues.producers …）。
     if (key === 'binding' && table !== '' && value.kind === 'string') {
+      bindings.add(value.value);
+      continue;
+    }
+    // 一部のテーブルは `name = "名前"` の綴りで宣言する（NAME_KEYED_BINDING_TABLES）。
+    // 環境ごとの宣言（`[[env.production.durable_objects.bindings]]`）も同じ名前で Env に出る。
+    if (
+      key === 'name' &&
+      value.kind === 'string' &&
+      NAME_KEYED_BINDING_TABLES.includes(table.replace(/^env\.[^.]+\./, ''))
+    ) {
       bindings.add(value.value);
       continue;
     }

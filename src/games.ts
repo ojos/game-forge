@@ -1136,17 +1136,20 @@ function assertLimit(limit: number, what = '取得件数'): void {
 }
 
 /**
- * 公開作品の一覧の並べ替え軸（仕様 2.3.4 / #328）。
+ * 公開作品の一覧の並べ替え軸（仕様 2.3.4 / #328 / #339）。
  *
- * **2 つだけである。** AivisHub は `download` / `like` / `recent` の 3 軸を持つが、
- * `like` に相当するものは 11.2 が MVP 外と決めており（ワンタップスタンプ評価）、
+ * **3 つである**（v1.51）。AivisHub の `download` / `like` / `recent` に対して、
  * `download` に相当するのは `fork_count` である——**10.1 の主 KPI はフォーク率であり、
- * よく改造された作品を並べることは主 KPI をそのまま可視化する。**
+ * よく改造された作品を並べることは主 KPI をそのまま可視化する。** `like` に相当する
+ * `liked` は、v1.50 まで「持たない」としていたが、利用者がいいねを求めたため足した
+ * （2.3.5 / 5.8）。**値は `games.like_count`（Durable Objects から 5 分おきに写した数）を
+ * 読むので、並び順は最大 5 分遅れる。**
  *
  * **綴りの正本はここである。** URL のクエリ（`?sort=`）も索引の名前
- * （`migrations/0019_games_public_list_idx.sql`）もこの 2 語に揃える。
+ * （`migrations/0019_games_public_list_idx.sql` / `0020_games_like_count.sql`）もこの 3 語に
+ * 揃える。
  */
-export const PUBLIC_WORK_SORTS = ['recent', 'forked'] as const;
+export const PUBLIC_WORK_SORTS = ['recent', 'forked', 'liked'] as const;
 
 /** 並べ替え軸。 */
 export type PublicWorkSort = (typeof PUBLIC_WORK_SORTS)[number];
@@ -1179,11 +1182,32 @@ export interface PublicWork {
   readonly publishedAt: number | null;
   /** この作品から生まれた公開済みのフォークの数（非正規化列。5.1）。 */
   readonly forkCount: number;
+  /**
+   * いいねの数（`games.like_count`。5.8）。**Durable Objects から写した数で、最大 5 分
+   * 遅れる。** 正本は DO にあり、ずれたら DO の側が正しい（5.1）。
+   */
+  readonly likeCount: number;
   /** 親を持つか（改造された作品か）。系統の詳細は作品ページが持つ（5.5）。 */
   readonly hasParent: boolean;
   /** スクリーンショットが撮れているか。撮れていなければカードは代替表示にする。 */
   readonly hasShot: boolean;
 }
+
+/**
+ * 並べ替え軸ごとの `order by`。
+ *
+ * **軸を足したときに、既定の並びへ黙って落ちる形にしない。** 三項演算子で書くと、
+ * 足した軸が「どれでもない」側（新着順）へ落ち、索引の検査だけが赤くなる。表にすると
+ * 書き忘れは型の検査で落ちる。
+ *
+ * 列順は索引と揃えてある（`migrations/0019_games_public_list_idx.sql` の 2 本と、
+ * `liked` は `migrations/0020_games_like_count.sql` の部分索引）。
+ */
+const PUBLIC_WORK_ORDER_BY: Readonly<Record<PublicWorkSort, string>> = {
+  recent: 'g.published_at desc, g.id desc',
+  forked: 'g.fork_count desc, g.published_at desc, g.id desc',
+  liked: 'g.like_count desc, g.published_at desc, g.id desc',
+};
 
 /**
  * 公開作品を引く SQL を組み立てる。
@@ -1194,8 +1218,8 @@ export interface PublicWork {
  * **書き写す**ことになり、片方だけが古くなる（`.ai-playbook/shared-ai-rules.md` 12 章）。
  * `test/works-list.test.ts` はここが返す文字列に `EXPLAIN QUERY PLAN` を付けて実行する。
  *
- * **文字列を組み立てるが、材料は `PublicWorkSort` の 2 値だけである。** 利用者の入力は
- * {@link toPublicWorkSort} が既に既知の 2 語へ落としており、SQL へ届く経路が無い。
+ * **文字列を組み立てるが、材料は `PublicWorkSort` の 3 値だけである。** 利用者の入力は
+ * {@link toPublicWorkSort} が既に既知の 3 語へ落としており、SQL へ届く経路が無い。
  *
  * 並び順の末尾に `id desc` を置くのは、同値の行の順序を決めるためである
  * （`migrations/0019_games_public_list_idx.sql`。索引の列順もこれに合わせてある）。
@@ -1204,15 +1228,12 @@ export interface PublicWork {
  * @returns 束縛パラメータが 3 つ（status / limit / offset）の SELECT 文
  */
 export function publishedGamesSql(sort: PublicWorkSort): string {
-  const orderBy =
-    sort === 'forked'
-      ? 'g.fork_count desc, g.published_at desc, g.id desc'
-      : 'g.published_at desc, g.id desc';
+  const orderBy = PUBLIC_WORK_ORDER_BY[sort];
 
   // `users` を join するのは表示名 1 列のためである。**行ごと持ってこない**
   // （`email` と `invited_by` は公開してはいけない。仕様 2.3.6）。
-  return `select g.id, g.title, g.published_at, g.fork_count, g.parent_id, g.ogp_state,
-            u.display_name as author_name
+  return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
+            g.ogp_state, u.display_name as author_name
        from games g
        left join users u on u.id = g.author_id
       where g.status = ? and ${reviewVisibleSql('g')}
@@ -1269,6 +1290,7 @@ export async function listPublishedGames(
       title: string;
       published_at: number | null;
       fork_count: number;
+      like_count: number;
       parent_id: string | null;
       ogp_state: string | null;
       author_name: string | null;
@@ -1280,6 +1302,7 @@ export async function listPublishedGames(
     authorName: row.author_name,
     publishedAt: row.published_at,
     forkCount: row.fork_count,
+    likeCount: row.like_count,
     hasParent: row.parent_id !== null,
     hasShot: row.ogp_state === 'ready',
   }));

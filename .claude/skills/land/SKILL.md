@@ -23,7 +23,7 @@ argument-hint: "[PR 番号（省略時はこの会話で直前に扱った PR）
 ### 1. 状態を読む
 
 ```bash
-gh pr view N --json number,title,state,isDraft,mergeable,headRefName,baseRefName,body,closingIssuesReferences,commits
+gh pr view N --json number,title,state,isDraft,mergeable,headRefName,headRefOid,baseRefName,body,closingIssuesReferences,commits
 ```
 
 次のどれかにあたれば、止めて報告します。
@@ -37,7 +37,7 @@ gh pr view N --json number,title,state,isDraft,mergeable,headRefName,baseRefName
 
 **先に、確かめたいコミットにチェックが付いたことを確かめます。** push の直後に `gh pr checks` を叩くと、**前のコミットの結果が返ることがあります。** 実測では、push の直後に前の head の全緑が終了コード 0 で返り、その 3 秒後に新しいコミットの pending へ変わりました。`--watch` は前者を見て即座に抜けるので、7 で直して戻ってきたときに偽の緑で通り抜けます。
 
-`sha` には、最初に来たときは 1 で読んだ head のコミットを、7 から戻ってきたときは push したコミット（`git rev-parse HEAD`）を入れます。
+`sha` には、最初に来たときは 1 で読んだ `headRefOid` を、7 から戻ってきたときは push したコミット（`git rev-parse HEAD`）を入れます。`headRefName`（ブランチ名）と取り違えると、比較が必ず外れて時間切れになります。
 
 ```bash
 for _ in $(seq 60); do  # 5 秒 × 60 回 = 5 分
@@ -50,6 +50,8 @@ echo CHECKS_NOT_ATTACHED; exit 1
 ```
 
 `CHECKS_ATTACHED` が出てから watch します。`CHECKS_NOT_ATTACHED` なら、止めて報告します。
+
+check run だけを数えれば足りるのは、このリポジトリの事情によります。PR で起動する `verify`・`identity-guard`・`review-gate` はパスで絞っていないため、PR のどのコミットにも check run が付きます。commit status は `review-gate` だけで、これも check run と一緒に Actions が出しています。外部の CI はありません。それでも付かないのは、`[skip ci]` などで CI を飛ばしたコミットです。**CI を通っていないコミットを黙って通さず、止まるのが正しい動きです。**
 
 ```bash
 gh pr checks N --watch --interval 30

@@ -345,6 +345,40 @@ describe('表示名の検査（5.9）', () => {
     }
   });
 
+  it('文字の向きを変える書式文字（Bidi_Control の 12 個）を、真ん中にも末尾にも含めさせない', () => {
+    // **期待する一覧を実装の定数から作らない。** 定数から 1 つ落としたとき、両辺が同じだけ
+    // 減って緑のままになる。コードポイントをここへ独立に並べる（取り込みで決めた 11 個と、
+    // 第二意見のレビューで漏れを指摘された U+061C）。
+    //
+    // 文字そのものをソースに書かない（目に見えず、書いたかどうかを読んで確かめられない）。
+    const directionControls = [
+      0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069,
+    ];
+    for (const codePoint of directionControls) {
+      const mark = String.fromCodePoint(codePoint);
+      const label = `U+${codePoint.toString(16).toUpperCase()}`;
+      expect(validateDisplayName(`名前${mark}の後ろ`), label).toEqual({
+        ok: false,
+        reason: 'control-char',
+      });
+      // **末尾に置いても `trim` では消えない**（空白でも行終端でもない）。名前の直後に
+      // 並ぶもの（作品カードの日時・運営の印）を並び替えるのは、まさにこの位置である。
+      expect(validateDisplayName(`名前${mark}`), `${label}（末尾）`).toEqual({
+        ok: false,
+        reason: 'control-char',
+      });
+    }
+  });
+
+  it('向きを変えない書式文字までは広げない（ゼロ幅空白・ゼロ幅接合子）', () => {
+    // 取り込みの判断で、弾くのは向きを変える 11 個に限る。ゼロ幅接合子（U+200D）は
+    // 絵文字の合成（家族の絵文字など）に要る。
+    const zeroWidthSpace = String.fromCodePoint(0x200b);
+    const family = String.fromCodePoint(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467);
+    expect(validateDisplayName(`ゼロ幅${zeroWidthSpace}空白`).ok).toBe(true);
+    expect(validateDisplayName(`家族${family}`).ok).toBe(true);
+  });
+
   it('HTML に効く文字は通す（防ぐのは出力側のエスケープである）', () => {
     // 5.9「保存時の制約は XSS を防がない」。ここで弾く実装にすると、出力側のエスケープが
     // 抜けていても気づけなくなる。
@@ -398,6 +432,10 @@ describe('表示名の変更（POST /api/account/display-name）', () => {
       ['　', 'empty'],
       [null, 'empty'],
       ['一行目\n二行目', 'control-char'],
+      // 右から左への上書き（RLO）を末尾に置いた名前。画面の口を通しても弾かれる。
+      [`名前${String.fromCodePoint(0x202e)}`, 'control-char'],
+      // アラビア文字の印（ALM）。General Punctuation の外にあり、範囲の書き並べから漏れやすい。
+      [`名前${String.fromCodePoint(0x061c)}`, 'control-char'],
     ];
     for (const [name, reason] of cases) {
       const response = await postName(routes, cookie, name);

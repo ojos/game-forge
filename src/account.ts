@@ -21,8 +21,8 @@
  *
  * ## 保存時の制約は XSS を防がない
  *
- * **`<script>` も `"` も 30 文字に収まる。** ここで弾くのは長さと制御文字だけで、
- * HTML に効く文字は通す（通さない理由が無い——「<」を名前に含めたい人はいる）。
+ * **`<script>` も `"` も 30 文字に収まる。** ここで弾くのは長さと制御文字（文字の向きを
+ * 変える書式文字を含む。{@link validateDisplayName}）だけで、HTML に効く文字は通す（通さない理由が無い——「<」を名前に含めたい人はいる）。
  * **表示名を HTML へ出す場所は、すべて `escapeHtml` を通すこと**（作品ページ・作品カード・
  * 作者ページ・この画面）。確かめているのは `test/display-name-escape.test.ts` である。
  *
@@ -103,6 +103,50 @@ const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
  */
 const FORBIDDEN_CHARACTER = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 
+/**
+ * 表示名に含めてはいけない、**文字の向きを変える書式文字**（#341 の取り込みで決めた）。
+ *
+ * Unicode の `Bidi_Control` 特性を持つ 12 個である。
+ *
+ * | コードポイント | 名前 |
+ * |---|---|
+ * | U+061C | ALM（アラビア文字の印。右→左） |
+ * | U+200E / U+200F | LRM / RLM（左→右・右→左の印） |
+ * | U+202A〜U+202E | LRE / RLE / PDF / LRO / RLO（埋め込みと上書き） |
+ * | U+2066〜U+2069 | LRI / RLI / FSI / PDI（分離） |
+ *
+ * ## なぜ弾くのか
+ *
+ * **名前の後ろに並ぶものの見え方を崩せる。** たとえば名前の末尾に RLO（U+202E）を
+ * 置くと、同じ段落で後ろに続く文字が右から左へ並び替わる——作品カードでは名前の直後に
+ * 公開日時が並び（`src/work-card.ts`）、作品ページでは運営の印（#334）が名前の隣に付く。
+ * **印で運営を見分ける（5.9「なりすましは名前で見分けない」）以上、名前の側から印の
+ * 見え方を動かせてはいけない。** しかも どれも目に見えず、日本語の名前で使う正当な理由が無い。
+ *
+ * 5.9 の「制御文字を含まない」の趣旨の範囲として扱う（Unicode の分類では `\p{Cf}`
+ * 書式文字で、`\p{Cc}` には入らない）。**語の検査ではない**——見ているのは文字の働き
+ * だけで、名前の意味には触れない。
+ *
+ * ## 12 個を書き並べず、特性で引く
+ *
+ * 取り込みの指示は U+200E〜U+2069 の 11 個だった。**第二意見のレビューで U+061C（ALM）の
+ * 漏れを指摘された**——RLM と同じ働きを持つのに、General Punctuation の外にあるので
+ * 範囲の書き並べから落ちていた。**書き並べると同じ漏れ方をもう一度しうる**ので、
+ * Unicode が「向きを制御する文字」として定める特性（`Bidi_Control`）そのものを使う。
+ * 将来の Unicode で向きを制御する文字が足されても、ランタイムの Unicode データに従って
+ * 追随する（書き並べた範囲は追随しない）。
+ *
+ * ## `\p{Cf}` を丸ごと弾かない
+ *
+ * `\p{Cf}` にはゼロ幅接合子（U+200D。絵文字の合成に要る）や異体字の選択に関わるものも
+ * 入る。**弾くのは「向きを変える」働きを持つものに限る**（ゼロ幅空白 U+200B などへは
+ * 広げない。取り込みの判断）。
+ *
+ * **前後の空白を除いても消えない。** これらは `String#trim` の対象（空白・行終端）では
+ * ないので、末尾に置かれたものも検査に掛かる。
+ */
+const DIRECTION_FORMATTING_CHARACTER = /\p{Bidi_Control}/u;
+
 /** 表示名を受け付けなかった理由。 */
 export type DisplayNameRejection = 'empty' | 'too-long' | 'control-char';
 
@@ -129,7 +173,8 @@ export function validateDisplayName(raw: string): DisplayNameValidation {
   if (value === '') {
     return { ok: false, reason: 'empty' };
   }
-  if (FORBIDDEN_CHARACTER.test(value)) {
+  // 向きを変える書式文字も同じ理由名で返す（5.9 の「制御文字」の趣旨の範囲。上の定数）。
+  if (FORBIDDEN_CHARACTER.test(value) || DIRECTION_FORMATTING_CHARACTER.test(value)) {
     return { ok: false, reason: 'control-char' };
   }
   // スプレッドは文字列をコードポイントごとに分ける（サロゲート対を 1 つに数える）。
@@ -204,7 +249,10 @@ export type AccountReason = DisplayNameRejection | 'too-soon' | 'invalid-request
 const REASON_MESSAGES: Readonly<Record<AccountReason, string>> = {
   empty: '表示名を入力してください（空白だけの名前は使えません）。',
   'too-long': `表示名は ${DISPLAY_NAME_MAX_LENGTH} 文字までです。`,
-  'control-char': '表示名に改行やタブなどの制御文字は使えません。',
+  // 向きを変える書式文字は目に見えないので、**「見えない文字」と言わないと利用者は
+  // 何を消せばよいか分からない**（コピーした名前に紛れていることがある）。
+  'control-char':
+    '表示名に改行やタブなどの制御文字、文字の向きを変える目に見えない記号は使えません。',
   // **待てば通ることを言う。** 「変更できませんでした」だけだと、利用者は壊れていると
   // 読んで押し続ける——それは間隔を置いた理由（書き込みを増やさない）と逆向きである。
   'too-soon': `表示名の変更は ${DISPLAY_NAME_CHANGE_INTERVAL_SECONDS} 秒に 1 回までです。少し待ってからもう一度お試しください。`,

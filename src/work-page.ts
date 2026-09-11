@@ -1326,6 +1326,13 @@ export const OPERATOR_MARK = '運営アカウント';
  * 名前の入力からこの要素を作ることはできない。**名前に「運営」と書いた利用者の画面には、
  * この要素が 1 つも現れない。**
  *
+ * # 見分けは見た目で付ける
+ *
+ * 表示名は利用者が自由に決められ、語の制限も無い（5.9）。**文字の並びは名前で真似
+ * できる**ので、印の文言に括弧などの飾りを足しても見分けにはならない。見分けは
+ * `public/assets/app.css` の `.gf-operator`（枠と地を持つバッジ）が付ける——クラスを
+ * 持ち込めるのはこの関数だけで、名前の側からは持ち込めない。
+ *
  * # 立っていない作者には 1 バイトも足さない
  *
  * 既定値 0 のままの作者（既存の作品すべて）では、この行は #334 の前と同じ文字列になる。
@@ -1337,7 +1344,7 @@ function operatorMark(view: WorkPageView): string {
   if (!view.authorIsOperator) {
     return '';
   }
-  return ` <span class="gf-operator">（${OPERATOR_MARK}）</span>`;
+  return ` <span class="gf-operator">${OPERATOR_MARK}</span>`;
 }
 
 // 作者名を引けなかったときの表示（**空欄にしない**）は `src/work-card.ts` が持つ。

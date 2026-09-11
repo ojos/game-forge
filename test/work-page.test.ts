@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { escapeHtml } from '../src/html.js';
 import { dispatch } from '../src/routes.js';
 import { renderWorkPage } from '../src/work-page.js';
 import type { WorkPageView } from '../src/work-page.js';
@@ -1105,7 +1106,15 @@ describe('著名 IP 名の置換を作者へ開示する（6.2 / #39）', () => 
 
 describe('運営の印（#334）', () => {
   /** 印の要素そのもの。**文言は `OPERATOR_MARK` から取る**（書き写さない）。 */
-  const MARK_ELEMENT = `<span class="gf-operator">（${OPERATOR_MARK}）</span>`;
+  const MARK_ELEMENT = `<span class="gf-operator">${OPERATOR_MARK}</span>`;
+
+  /**
+   * `gf-operator` のクラスを持つ要素（タグとして解釈される形）。引用符の有無と種類を問わない。
+   *
+   * **印の綴りを 1 通りに決め打ちしない。** 決め打ちすると、属性の書き方が 1 文字違う
+   * 偽物をすり抜けさせる。エスケープされた `&lt;span class=...` はタグではないので当たらない。
+   */
+  const BADGE_ELEMENT = /<[a-z][^<>]*\sclass\s*=\s*["']?[^"'<>]*\bgf-operator\b/iu;
 
   /**
    * 公開済みの作品を 1 件用意する。
@@ -1162,6 +1171,8 @@ describe('運営の印（#334）', () => {
     expect(authorLine(body)).toBe(
       `<p class="gf-author">作者: <strong>op-flagged</strong> ${MARK_ELEMENT}</p>`,
     );
+    // 下の「出ない」側が使う検出の正規表現が、本物の印には当たること（空振りしない）。
+    expect(body).toMatch(BADGE_ELEMENT);
     // **画面に出たのは印だけで、`users` の他の列ではない**（仕様 2.3.6）。
     // SQL で `email` を選んでいないことそのものは、ここからは観測できない。
     // 見ているのは「出ていない」ことである。
@@ -1197,23 +1208,76 @@ describe('運営の印（#334）', () => {
     expect(await (await open(workPagePath(id))).text()).not.toContain(MARK_ELEMENT);
   });
 
+  /**
+   * 公開済みの作品を用意し、作者の表示名を書き換えてから作品ページを開く。
+   *
+   * **フラグは立てない。** 5.9（#341）以後に利用者が自分で名前を変えた状態を、
+   * 列の直接 UPDATE で作る。
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @param name 書き換える表示名
+   * @returns 作品ページの HTML
+   */
+  async function openAsRenamed(suffix: string, name: string): Promise<string> {
+    const { userId, id } = await seedPublished(suffix);
+    const result = await env.DB.prepare('update users set display_name = ? where id = ?')
+      .bind(name, userId)
+      .run();
+    // **書き換えが当たったことを先に確かめる。** 0 行の UPDATE だと名前は
+    // `op-disguise-*` のままで、下の「印が無い」は**なりすましを 1 度も試さずに**通る。
+    expect(result.meta.changes, name).toBe(1);
+    return await (await open(workPagePath(id))).text();
+  }
+
   it('名前で「運営」と名乗っても印は出ない（名前で判定しない）', async () => {
     // 仕様 5.9（#341）以後は、誰でも表示名を自由に決められる。**名前が何であっても、
-    // フラグが立っていなければ印の要素は 1 つも現れない。** 印の綴りそのものや、
-    // 印の HTML を名前に入れた場合も、エスケープされて名前の中に閉じる。
-    const disguises = ['運営', OPERATOR_MARK, `（${OPERATOR_MARK}）`, MARK_ELEMENT];
+    // フラグが立っていなければ印の要素は 1 つも現れない。**
+    const disguises = ['運営', OPERATOR_MARK, `（${OPERATOR_MARK}）`, `運営 ${OPERATOR_MARK}`];
     for (const [index, name] of disguises.entries()) {
-      const { userId, id } = await seedPublished(`op-disguise-${index}`);
-      await env.DB.prepare('update users set display_name = ? where id = ?')
-        .bind(name, userId)
-        .run();
+      const body = await openAsRenamed(`op-disguise-${index}`, name);
 
-      const body = await (await open(workPagePath(id))).text();
-
-      expect(body, name).not.toContain('<span class="gf-operator">');
-      // 名前は `<strong>` の中にだけ現れ、行はそこで終わる。
-      expect(authorLine(body), name).toMatch(/^<p class="gf-author">作者: <strong>[^<]*<\/strong><\/p>$/u);
+      expect(body, name).not.toMatch(BADGE_ELEMENT);
+      // 名前は `<strong>` の中にだけ現れ、行はそこで終わる。**書き換えた名前そのもの**が
+      // 出ていることも見る（元の名前のままなら、ここで落ちる）。
+      expect(authorLine(body), name).toBe(
+        `<p class="gf-author">作者: <strong>${escapeHtml(name)}</strong></p>`,
+      );
     }
+  });
+
+  it('名前に class 属性つきの HTML を入れても、バッジの要素にならない', async () => {
+    // **見分けはバッジの見た目（`.gf-operator` の枠と地）で付けている**（`public/assets/app.css`）。
+    // その前提は「利用者はクラスを持ち込めない」ことである。名前は `<strong>` の中へ
+    // エスケープして出るので、タグとしては解釈されず、ただの文字列になる。
+    const injections = [
+      MARK_ELEMENT,
+      `<span class="gf-operator">運営</span>`,
+      `<b class='gf-operator'>運営</b>`,
+      `<span class=gf-operator>運営</span>`,
+      `</strong><span class="gf-operator">${OPERATOR_MARK}</span><strong>`,
+    ];
+    for (const [index, name] of injections.entries()) {
+      const body = await openAsRenamed(`op-inject-${index}`, name);
+
+      expect(body, name).not.toMatch(BADGE_ELEMENT);
+      expect(authorLine(body), name).toBe(
+        `<p class="gf-author">作者: <strong>${escapeHtml(name)}</strong></p>`,
+      );
+    }
+  });
+
+  it('バッジは枠と地を持ち、無彩色のトークンだけで描く（app.css）', () => {
+    // **太字かどうかだけの差では、名前に同じ文字を書けば並びが揃う。** 名前の文字では
+    // 真似できない差（枠と地）を持っていることを、見た目の宣言そのものから確かめる。
+    // 行頭から始まる規則だけを拾う（コメントの中の綴りに当たらない）。
+    const rule = /^\.gf-operator\s*\{([^}]*)\}/mu.exec(env.TEST_APP_CSS);
+    expect(rule, 'app.css に .gf-operator の規則が無い').not.toBeNull();
+    const body = rule![1]!;
+    expect(body).toMatch(/^\s*border:\s*1px solid var\(--gf-[\w-]+\);/mu);
+    expect(body).toMatch(/^\s*background:\s*var\(--gf-[\w-]+\);/mu);
+    // **色は作品だけが持つ**（app.css 冒頭の方針）。色の値を直に書かず、無彩色の
+    // トークン（ダークモードで入れ替わる）だけを参照する。
+    expect(body).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/iu);
   });
 
   it('未公開の作品には出さない（名前を出さない画面に、名前の印だけを出さない）', async () => {

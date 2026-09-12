@@ -138,6 +138,10 @@ describe('仕様と食い違わない（#373 の constraints。4.3 / 4.4 / 5.6 /
     const answer = answerOf('no-fork');
     expect(answer).toContain('公開しなければ、改造されることはありません');
     expect(answer).toContain('取り下げる前に作られた改造作品は消えません');
+    // **未公開の作品ページそのものは誰でも開ける**（状態だけを出す。`src/work-page.ts` の
+    // `readySection`）。本人に限るのは遊べる URL である（PR #400 の Copilot の指摘）。
+    expect(answer).not.toContain('作品ページは作った本人にしか開けません');
+    expect(answer).toContain('作品を遊べる URL は作った本人にしか表示されません');
   });
 
   it('問い合わせの窓口は 1 か所の定数から来る', () => {

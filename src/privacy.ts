@@ -24,7 +24,7 @@
  * | 削除申請 | `src/takedown.ts` / `migrations/0018_takedown_requests.sql` |
  * | 運営の措置の記録 | `migrations/0026_admin_actions.sql` |
  * | Cookie 2 種 | `src/session.ts`（`__Host-gf_session`、7 日）/ `src/auth/google.ts`（`__Host-gf_oauth`、10 分） |
- * | AWS 上の処理の記録（14 日） | `terraform/orchestrator.tf` / `terraform/build-function.tf` / `terraform/ogp-function.tf` の `retention_in_days` |
+ * | AWS 上の処理の記録（14 日） | `terraform/orchestrator.tf` / `terraform/build-function.tf` / `terraform/ogp-function.tf` の `retention_in_days`。**費用ガード（`terraform/bedrock-guard.tf`）のログは 30 日だが、アラームの発火を受ける関数で利用者の情報を扱わないので本文の対象に含めていない**（PR #400 の Copilot の指摘で区別した） |
  * | 外部サービス | Cloudflare（`wrangler.toml`）/ AWS・Bedrock・Guardrails（`terraform/bedrock.tf` / `terraform/moderation.tf` / `src/generation-models.ts`）/ Google（`src/auth/google.ts`）/ Resend（`src/mail/resend.ts`） |
  *
  * **アクセス解析・広告は使っていない**（外部のスクリプトも解析の cookie も無い）。**使い始めた
@@ -157,7 +157,7 @@ export function privacyBody(contact: PrivacyContact): string {
    誰が誰を招待したか、通報の内容。</p>
 
 <h2>4. 第三者への提供</h2>
-<p>運営者は、法令に基づく場合を除き、利用者の同意なく個人情報を第三者へ提供しません。
+<p>運営者は、法令に基づく場合と、下の 5 に書いた外部のサービスへ業務を委託する場合を除き、利用者の同意なく個人情報を第三者へ提供しません。
    上の「公開される情報」は、利用者が作品を公開したり表示名を設定したりすることで公開されるものです。</p>
 
 <h2>5. 外部のサービスの利用</h2>
@@ -187,7 +187,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <h2>7. 保存期間</h2>
 <ul>
   <li>入力の検査で止めた指示文は、90 日を目安に削除します。</li>
-  <li>AWS 上の処理の記録（ログ）は、14 日で自動的に削除されます。</li>
+  <li>作品の生成・ビルド・紹介用の画像の撮影を AWS 上で行ったときの処理の記録（ログ）は、14 日で自動的に削除されます。</li>
   <li>Cookie は、上の 6 に書いた有効期間で失効します。</li>
   <li>それ以外の情報は、期限を定めた自動の削除を行っておらず、本サービスの提供に必要なあいだ保存します。</li>
 </ul>

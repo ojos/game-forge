@@ -147,6 +147,21 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     }
   });
 
+  it('保存期間は、宣言にある保持期間と食い違わない', async () => {
+    // **AWS のログをひとまとめに「14 日」と書かない。** 費用ガードのログは 30 日である
+    // （`terraform/bedrock-guard.tf`）。本文が 14 日と言うのは生成・ビルド・撮影の 3 つだけ
+    // （PR #400 の Copilot の指摘）。
+    const body = pageBodyOf((await openPrivacy()).body);
+    expect(body).not.toContain('AWS 上の処理の記録（ログ）は、14 日');
+    expect(body).toContain('作品の生成・ビルド・紹介用の画像の撮影を AWS 上で行ったときの処理の記録（ログ）は、14 日');
+    expect(body).toContain('90 日を目安に削除');
+  });
+
+  it('第三者への提供の節は、委託先の節と矛盾しない', async () => {
+    const body = pageBodyOf((await openPrivacy()).body);
+    expect(body).toContain('外部のサービスへ業務を委託する場合を除き');
+  });
+
   it('アクセス解析を使っていると書かない（使っていない）', async () => {
     const body = pageBodyOf((await openPrivacy()).body);
     expect(body).toContain('アクセス解析や広告のための Cookie・外部のスクリプトは使っていません');

@@ -187,6 +187,15 @@ describe('記事に書いた数字が正本と一致する（shared-ai-rules 12 
     expect(text).toContain(`枠を最大 ${MAX_GENERATION_ATTEMPTS} 回分使う`);
   });
 
+  it('月次の上限については、いつ戻るかを書かない（仕様 1.2.37）', () => {
+    // 4.4 が月次に求めているのは「プレイと共有は継続できる」ことで、復帰の時刻ではない。
+    const text = quotaArticleText();
+    expect(text).toContain('その月は全員の生成が止まります');
+    expect(text).toContain('遊ぶことと共有することは引き続きご利用いただけます');
+    expect(text).not.toContain('再開');
+    expect(text).not.toContain('月が替わる');
+  });
+
   it('1 作品あたりの直せる回数が `REVISIONS_PER_GAME` と一致する', () => {
     expect(quotaArticleText()).toContain(`1 作品につき ${REVISIONS_PER_GAME} 回まで`);
   });

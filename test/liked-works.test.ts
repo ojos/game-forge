@@ -25,6 +25,7 @@ import {
   findMalformedPrefixRoutes,
 } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { authorPagePath } from '../src/users-page-paths.js';
 import { WORK_PAGE_PREFIX, workPagePath } from '../src/work-page.js';
 import { MY_WORKS_PATH } from '../src/works-paths.js';
 import { applySchema } from './helpers/schema.js';
@@ -801,5 +802,24 @@ describe('空に見える 3 つの状態を書き分ける（PR #348 のレビ�
     expect(body, '押した本人に「まだありません」と言っている').not.toContain(
       'まだいいねした作品がありません',
     );
+  });
+});
+
+describe('いいねした作品のカードも作者ページへ辿れる（#330 / PR #350）', () => {
+  it('`likedWorksSql` が `author_id` を選び、画面でリンクになる', async () => {
+    // **この一覧だけが `src/games.ts` の `listPublishedGames` を通らない**（DO が返した
+    // id を D1 で引き直す 2 段である）。選び忘れると、**この一覧だけ作者名がリンクに
+    // ならない。** 画面は正しく出るので、綴りと画面の両方で見る（PR #350 の Copilot の指摘）。
+    const author = await seedUser('リンクになる作者');
+    const me = await seedUser('押す人');
+    const game = await seedGame(author);
+    await like(me, game);
+
+    const body = await (await openLiked(await sessionCookie(me))).text();
+    expect(body).toContain(workPagePath(game));
+    expect(body).toContain(`<a class="gf-card-author" href="${authorPagePath(author)}">`);
+    expect(body).toContain('>リンクになる作者</a>');
+    // 綴りの側も見る（選ばなくなったら赤くなる）。
+    expect(likedWorksSql(1)).toContain('g.author_id');
   });
 });

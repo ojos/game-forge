@@ -14,6 +14,8 @@ import {
 } from '../src/home-feed.js';
 import { REVIEW_QUEUED } from '../src/reports.js';
 import { purgeListCache } from '../src/list-cache.js';
+import { handleAppRequest } from '../src/app.js';
+import { authorPagePath } from '../src/users-page-paths.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -593,5 +595,48 @@ describe('Cache API の前段（仕様 2.3.3 の条件 3）', () => {
     // 同じ鍵に載せると件数の違う行が混ざる。
     expect(HOME_CACHE_KEY).toContain('/home?');
     expect(HOME_CACHE_KEY).toContain(`limit=${HOME_SECTION_LIMIT}`);
+  });
+});
+
+describe('公式サンプルの作者名も作者ページへのリンクになる（#330 / PR #350）', () => {
+  it('`officialSamplesSql` が `author_id` を選び、節が `authorId` を運ぶ', async () => {
+    // **この節だけが `src/games.ts` の `listPublishedGames` を通らない。** 選び忘れると、
+    // **公式サンプルの節だけ作者名がリンクにならない**（他の 3 節はリンクになる）。
+    // 画面は正しく出るので、引く側で機械判定する（PR #350 の Copilot の指摘）。
+    await clearOperators();
+    const operator = await seedUser({ operator: true });
+    const sample = await seedGame(operator, { title: '公式サンプル' });
+
+    const feed = await freshFeed();
+    const found = feed.official.find((work) => work.id === sample);
+    expect(found, '公式サンプルの節に仕込んだ作品が無い').toBeDefined();
+    expect(found!.authorId).toBe(operator);
+    // 綴りの側も見る（選ばなくなったら赤くなる）。
+    expect(officialSamplesSql()).toContain('g.author_id');
+  });
+
+  it('トップの画面まで通してもリンクになっている（公式サンプルの節の中で見る）', async () => {
+    // **引く側だけでは足りない。** カードが `authorId` を無視する形へ変わったら、ここで落ちる。
+    //
+    // **本文全体を探してはいけない。** 運営の公開作品は新着の節にも並び、そちらは
+    // `listPublishedGames`（`author_id` を選んでいる）を通るので、**全体を探すと
+    // 公式サンプルの節が選び忘れていても緑になる**（この it を書いた時点で実際に
+    // そうなっていた）。**節の中だけを切り出して見る。**
+    await clearOperators();
+    const operator = await seedUser({ operator: true });
+    await seedGame(operator, { title: '公式サンプル（画面）' });
+
+    await purgeListCache(HOME_CACHE_KEY);
+    const body = await (await handleAppRequest(new Request(`https://${env.APP_HOST}/`), env)).text();
+
+    // 公式サンプルの節（`src/home.ts` が `gf-home-<key>` の見出し id で結ぶ）を切り出す。
+    const start = body.indexOf('id="gf-home-official"');
+    expect(start, 'トップに公式サンプルの節が無い').toBeGreaterThan(-1);
+    const end = body.indexOf('</section>', start);
+    expect(end, '公式サンプルの節が閉じていない').toBeGreaterThan(start);
+    const section = body.slice(start, end);
+
+    expect(section).toContain('公式サンプル（画面）');
+    expect(section).toContain(`<a class="gf-card-author" href="${authorPagePath(operator)}">`);
   });
 });

@@ -6,6 +6,7 @@ import { APP_CSS_PATH } from '../src/html.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH } from '../src/ogp.js';
 import { NON_PAGE_PATHS, ssrPagePaths } from '../src/page-paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { AUTHOR_PAGE_PREFIX } from '../src/users-page-paths.js';
 import { WORK_PAGE_PREFIX } from '../src/work-page.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -63,11 +64,14 @@ function testEnv(): Env {
 let cookie = '';
 let gameId = '';
 let publishedGameId = '';
+/** 作者ページ（`/users/<user_id>`）へ補う利用者 id（#330）。 */
+let authorId = '';
 
 beforeAll(async () => {
   await applySchema();
 
   const userId = `shell-${crypto.randomUUID()}`;
+  authorId = userId;
   await env.DB.prepare(
     `insert into users (id, google_sub, email, display_name, created_at)
      values (?, ?, ?, ?, ?)`,
@@ -108,17 +112,54 @@ beforeAll(async () => {
 });
 
 /**
+ * 前方一致の経路に補う id（接頭辞ごと）。
+ *
+ * **接頭辞ごとに違う表の id が要る**（#330 / PR #350 の Copilot code review の指摘）。
+ * `/users/` へ作品の id を補うと**作者ページの 404 の画面しか見ない**ので、外枠の検査も
+ * 幅の検査も**画面の本体を 1 度も開かないまま緑になる。**
+ *
+ * **綴りは定数から取る**（`WORK_PAGE_PREFIX` / `AUTHOR_PAGE_PREFIX`）。書き写すと、
+ * 綴りを変えた日に検査だけが古い接頭辞を見続ける。
+ *
+ * **同じ規則を `scripts/lib/dev-fixture.sh` の `dev_fixture_paths` も持つ**（あちらは
+ * シェルなのでこのモジュールを import できない）。**片方だけが古くなることは
+ * {@link getPaths} が塞ぐ**——知らない接頭辞が来たら落ちる。
+ *
+ * @returns 接頭辞 → 補う id
+ */
+function prefixIds(): Record<string, string> {
+  return { [WORK_PAGE_PREFIX]: gameId, [AUTHOR_PAGE_PREFIX]: authorId };
+}
+
+/**
  * 検査対象の画面パスを、経路表から導いて実際に開ける形へ落とす。
  *
  * 導出そのものは `src/page-paths.ts` が持つ。**ここで条件を書き直さない**——
  * 実ブラウザ側の検査（`scripts/check-page-width.sh`）と同じ一覧を見る必要がある。
  *
+ * **知らない前方一致の経路が来たら落とす。** 画面を 1 枚足した人に「何を補うか」を
+ * 決めさせる形にする——黙って裸の接頭辞を開くと、**その画面は 404 だけを見られて
+ * 緑になる**（#330 の前が実際にそうなっていた）。`src/page-paths.ts` が
+ * 「一覧を持つのは画面ではなく例外の側である」と書いているのと同じ向きである。
+ *
  * @returns パスの配列
  */
 function getPaths(): string[] {
-  return ssrPagePaths(createAppRoutes(testEnv())).map((path) =>
-    path === WORK_PAGE_PREFIX ? `${WORK_PAGE_PREFIX}${gameId}` : path,
-  );
+  const ids = prefixIds();
+  return ssrPagePaths(createAppRoutes(testEnv())).map((path) => {
+    if (!path.endsWith('/') || path === '/') {
+      return path;
+    }
+    const id = ids[path];
+    if (id === undefined) {
+      throw new Error(
+        `前方一致の経路 ${path} に補う id が決まっていません。` +
+          `test/page-shell.test.ts の prefixIds と scripts/lib/dev-fixture.sh の` +
+          ` dev_fixture_paths の両方へ足してください。`,
+      );
+    }
+    return `${path}${id}`;
+  });
 }
 
 /**
@@ -211,6 +252,33 @@ describe('全 SSR 画面の外枠', () => {
 
   it('検査対象の画面が 1 枚も無い、という状態にはならない', () => {
     expect(getPaths().length).toBeGreaterThan(5);
+  });
+
+  it('前方一致の経路は、404 ではなく画面の本体を開いている（#330 / PR #350）', async () => {
+    // **これが無いと、以下の検査は 404 の画面だけを見て緑になれる。** 404 も `siteHead`
+    // を通るので、外枠（フッタ・CSS・viewport）はすべて揃っている——**足した画面の本体を
+    // 1 度も開かないまま「乗っている」と言える。** #330 の前は `/users/` が実際にそう
+    // なっていた（裸の接頭辞を開いていた）。
+    const paths = getPaths().filter((path) => path !== '/' && path.split('/').length > 2);
+    // 前方一致の経路が 1 本も無い状態を緑にしない（`prefixIds` が空になっても通る形を置かない）。
+    expect(Object.keys(prefixIds()).length).toBeGreaterThan(1);
+
+    for (const prefix of Object.keys(prefixIds())) {
+      const path = paths.find((candidate) => candidate.startsWith(prefix));
+      expect(path, `${prefix} に補った経路が一覧に無い`).toBeDefined();
+      const response = await handleAppRequest(
+        new Request(`${APP_ORIGIN}${path!}`, { headers: { cookie } }),
+        testEnv(),
+      );
+      expect(response.status, `${path!} が 404 です（id が正しい表のものか確認）`).toBe(200);
+    }
+
+    // **作者ページは、作者の名前を出す本体であること**まで見る（200 を返す別の画面に
+    // すり替わっても落ちるようにする）。
+    const authorBody = (await open(`${AUTHOR_PAGE_PREFIX}${authorId}`)).body;
+    expect(authorBody).toContain('<h1>外枠検査</h1>');
+    // 公開済みの作品を仕込んであるので、カードも並ぶ（作者ページの主役である）。
+    expect(authorBody).toContain(publishedGameId);
   });
 
   it('どの画面にも共通フッタが 1 つある', async () => {

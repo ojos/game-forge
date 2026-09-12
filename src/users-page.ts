@@ -145,10 +145,23 @@ export const MAX_USER_ID_LENGTH = 64;
  * （`src/games.ts` の `publishedGamesSql` と同じ理由。検査が SQL を書き写すと、片方だけが
  * 古くなる。`.ai-playbook/shared-ai-rules.md` 12 章）。
  *
- * 選ぶ列は `publishedGamesSql` と揃えてある（同じ {@link PublicWork} へ落とす）。
- * **`users` から選ぶのは `display_name` 1 列だけである**——ここでは見出しに出す名前を
- * 別に引いているので結合は要らないように見えるが、**カードは作者名を出す部品である**
- * （2.3.6）ので、部品へ渡す値を欠かさない。
+ * # `users` を結合しない（PR #350 の Copilot code review の指摘）
+ *
+ * `publishedGamesSql` は作者名のために `users` を結合するが、**ここはしない。** 並ぶのは
+ * 1 人の作者の作品だけなので、**名前は既に分かっている**（`showAuthorPage` が主キーで
+ * 1 行引いている）。
+ *
+ * **結合すると害がある。** 引いた行は Cache API に 60 秒載るので、**表示名を変えた直後は
+ * 見出しだけが新しく、カードは古い名前のまま**になる（同じ画面が 1 つの名前について
+ * 2 つのことを言う）。カードの名前は、キャッシュを通らない側の値で**毎回差し替える**
+ * ——{@link AuthorWorksData} と `showAuthorPage` を参照。
+ *
+ * **キャッシュを捨てる形は採らない。** `src/list-cache.ts` はトップ・一覧・作者ページが
+ * 共有する層で、作者ページ 1 枚のために読み取りを増やす取引は合わない（3.6 /
+ * `src/work-card.ts` の `cardLikeCount` が同じ対案を退けている）。
+ *
+ * **結合を落とすと、古い名前が保存物に入る余地がそもそも無い**——差し替えの前に、
+ * 間違えようのない形にしてある。
  *
  * **並びは公開日時の新しい順である。** `created_at` ではない理由は
  * `migrations/0024_games_author_published_idx.sql` にある（カードが出すのは
@@ -163,9 +176,8 @@ export const MAX_USER_ID_LENGTH = 64;
  */
 export function authorWorksSql(): string {
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
-            g.ogp_state, g.author_id, u.display_name as author_name
+            g.ogp_state, g.author_id
        from games g
-       left join users u on u.id = g.author_id
       where g.author_id = ? and g.status = ? and ${reviewVisibleSql('g')}
       order by g.published_at desc, g.id desc
       limit ? offset ?`;
@@ -201,7 +213,14 @@ export function likesReceivedSql(): string {
 
 /** Cache API へ載せる、作者ページ 1 頁ぶんのデータ。 */
 export interface AuthorWorksData {
-  /** 並べる作品（{@link WORKS_PER_PAGE} 件より 1 件多く入りうる）。 */
+  /**
+   * 並べる作品（{@link WORKS_PER_PAGE} 件より 1 件多く入りうる）。
+   *
+   * **`authorName` は常に null である。** 名前はキャッシュに載せず、`showAuthorPage` が
+   * 毎回引いている `users` の行から差し替える（{@link authorWorksSql} の「`users` を
+   * 結合しない」）。**保存物に名前が入らないので、60 秒古い名前がカードに出る経路が
+   * 無い。**
+   */
   readonly works: readonly PublicWork[];
   /** 被いいね数（その人の公開作品の `like_count` の合計）。 */
   readonly likesReceived: number;
@@ -445,7 +464,6 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
         parent_id: string | null;
         ogp_state: string | null;
         author_id: string | null;
-        author_name: string | null;
       }>();
     const counted = await env.DB.prepare(likesReceivedSql())
       .bind(userId, PUBLISHED_STATUS)
@@ -455,7 +473,9 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
       works: rows.results.map((row) => ({
         id: row.id,
         title: row.title,
-        authorName: row.author_name,
+        // **名前はキャッシュに載せない**（{@link AuthorWorksData}）。描画の直前に、
+        // 毎回引いている `users` の行から差し替える。
+        authorName: null,
         authorId: row.author_id,
         publishedAt: row.published_at,
         forkCount: row.fork_count,
@@ -470,19 +490,45 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
   });
 
   const works = data.works ?? [];
+  // **名前は 1 か所で決める。** 見出しとカードが別々に倒し方を持つと、**同じ画面が
+  // 1 つの名前について 2 つのことを言う**（PR #350 の Copilot code review の指摘。
+  // 空の表示名で、見出しは既定値・カードは空文字のリンクになっていた）。
+  const name = displayNameOf(user.display_name);
   return html(
     renderAuthorPage({
-      displayName:
-        user.display_name === null || user.display_name.trim() === ''
-          ? UNKNOWN_AUTHOR_HEADING
-          : user.display_name,
+      displayName: name ?? UNKNOWN_AUTHOR_HEADING,
       userId,
-      works: works.slice(0, WORKS_PER_PAGE),
+      // **カードの名前を毎回差し替える**（{@link AuthorWorksData}）。並ぶのは 1 人の
+      // 作者の作品だけなので、全件に同じ名前を入れてよい。
+      //
+      // **引けなければ null を渡す。** カードは自分の既定値（`UNKNOWN_AUTHOR`）へ倒し、
+      // **リンクにもしない**（`src/work-card.ts` の `cardAuthorId` が `authorName` が
+      // null の行をリンクにしない）。空文字がリンクになる形を作らない。
+      works: works.slice(0, WORKS_PER_PAGE).map((work) => ({ ...work, authorName: name })),
       likesReceived: data.likesReceived ?? 0,
       page,
       hasNext: works.length > WORKS_PER_PAGE && page < MAX_PAGE,
     }),
   );
+}
+
+/**
+ * `users.display_name` を、画面に出してよい名前へ落とす。
+ *
+ * **`display_name` は `NOT NULL` である**（0001）が、**不変条件を画面が前提にしない**
+ * （`src/my-works.ts` と同じ方針）。空白だけの値も「無い」側へ倒す——空欄の `<h1>` と、
+ * 空文字のリンクを作らない。
+ *
+ * **倒し先をここで決めない。** 見出しは {@link UNKNOWN_AUTHOR_HEADING}、カードは
+ * `src/work-card.ts` の `UNKNOWN_AUTHOR` で、**同じ「無い」に対して画面ごとに違う文言が
+ * 要る**（`<h1>` に「不明」だけが出る画面は壊れて見える）。ここが返すのは「引けたか」の
+ * 1 ビットである。
+ *
+ * @param value `users.display_name`
+ * @returns 出してよい名前。引けなければ null
+ */
+function displayNameOf(value: string | null): string | null {
+  return value === null || value.trim() === '' ? null : value;
 }
 
 /**

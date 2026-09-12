@@ -14,6 +14,7 @@ import {
   authorPagePath,
   userIdFromPath,
 } from '../src/users-page.js';
+import { UNKNOWN_AUTHOR } from '../src/work-card.js';
 import { workPagePath } from '../src/work-page.js';
 import { MAX_PAGE, PUBLIC_WORKS_PATH, WORKS_PER_PAGE } from '../src/works-list.js';
 import { applySchema } from './helpers/schema.js';
@@ -565,6 +566,40 @@ describe('Cache API の前段（仕様 2.3.3 の条件 3）', () => {
     );
   });
 
+  it('名前を変えた直後、見出しとカードが食い違わない（PR #350 の Copilot の指摘）', async () => {
+    // **カードの作者名がキャッシュから来ていると、見出しだけが新しくなる**——同じ画面が
+    // 1 つの名前について 2 つのことを言う。引く側が `users` を結合せず、描画の直前に
+    // 毎回引いた行から差し替えることで塞いでいる（`src/users-page.ts`）。
+    const author = await seedUser('食い違いを試す作者');
+    await seedGame(author);
+    const url = `${APP_ORIGIN}${authorPagePath(author)}`;
+    await purgeListCache(authorCacheKey(author, 1));
+    // **先に溜める。** これをしないと、下の 1 回目でキャッシュが作られてしまい、
+    // 「古い名前がキャッシュに載っている」状態を試せない。
+    const before = await (await handleAppRequest(new Request(url), env)).text();
+    expect(before).toContain('<h1>食い違いを試す作者</h1>');
+    expect(before).toContain('>食い違いを試す作者</a>');
+
+    const renamed = await env.DB.prepare('update users set display_name = ? where id = ?')
+      .bind('新しい名前', author)
+      .run();
+    expect(renamed.meta.changes).toBe(1);
+
+    // **キャッシュを捨てずに開く**（作品の行は古いままである）。
+    const after = await (await handleAppRequest(new Request(url), env)).text();
+    expect(after).toContain('<h1>新しい名前</h1>');
+    // カードの作者名も新しい（`.gf-card-author` のリンクの中身を見る）。
+    expect(after).toContain('>新しい名前</a>');
+    expect(after, 'カードに古い名前が残っている').not.toContain('食い違いを試す作者');
+  });
+
+  it('引く側が作者名を選んでいない（古い名前が保存物に入る経路が無い）', async () => {
+    // **差し替えの前に、間違えようのない形にしてある。** 結合を戻した日にここが赤くなる。
+    const { authorWorksSql } = await import('../src/users-page.js');
+    expect(authorWorksSql()).not.toContain('display_name');
+    expect(authorWorksSql()).not.toContain('join users');
+  });
+
   it('鍵は利用者と頁で分かれる', () => {
     expect(authorCacheKey('a', 1)).not.toBe(authorCacheKey('b', 1));
     expect(authorCacheKey('a', 1)).not.toBe(authorCacheKey('a', 2));
@@ -574,16 +609,43 @@ describe('Cache API の前段（仕様 2.3.3 の条件 3）', () => {
 });
 
 describe('表示名が引けないとき', () => {
-  it('空欄の見出しを出さない', async () => {
-    const author = await seedUser('あとで空にする作者');
+  /**
+   * 表示名を空白だけにした作者を用意する。
+   *
+   * `display_name` は NOT NULL なので、空白だけの値で「引けない」を作る。
+   *
+   * @param label 作者の元の名前（テスト内で一意にする）
+   * @returns 利用者の id
+   */
+  async function seedBlankName(label: string): Promise<string> {
+    const author = await seedUser(label);
     await seedGame(author);
-    // `display_name` は NOT NULL なので、空白だけの値で試す。
     const updated = await env.DB.prepare('update users set display_name = ? where id = ?')
       .bind('   ', author)
       .run();
+    // **当たったことを先に確かめる**（0 行の UPDATE だと、名前は元のままで何も試せない）。
     expect(updated.meta.changes).toBe(1);
+    return author;
+  }
 
+  it('空欄の見出しを出さない', async () => {
+    const author = await seedBlankName('あとで空にする作者');
     expect(await bodyOf(author)).toContain(`<h1>${UNKNOWN_AUTHOR_HEADING}</h1>`);
+  });
+
+  it('カードにも空の名前を渡さず、空文字をリンクにしない（PR #350 の Copilot の指摘）', async () => {
+    // **見出しだけを倒しても足りなかった。** カードには空の名前が渡り、`authorId` が
+    // あるので**空文字のリンク**（押せるが何も読めないもの）ができていた。
+    const author = await seedBlankName('あとで空にする作者 2');
+    const body = await bodyOf(author);
+
+    // カードは自分の既定値（`UNKNOWN_AUTHOR`）へ倒し、**`<span>` のままである。**
+    expect(body).toContain(`<span class="gf-card-author">${UNKNOWN_AUTHOR}</span>`);
+    // 空のリンクが 1 つも無い（クラスが付いた `<a>` そのものを探す）。
+    expect(body).not.toContain('<a class="gf-card-author"');
+    expect(body).not.toMatch(/<a[^>]*>\s*<\/a>/u);
+    // 見出しとカードで倒し先の文言が違うのは意図である（`<h1>` に「不明」だけを出さない）。
+    expect(UNKNOWN_AUTHOR_HEADING).not.toBe(UNKNOWN_AUTHOR);
   });
 });
 

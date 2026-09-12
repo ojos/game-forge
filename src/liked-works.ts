@@ -122,8 +122,10 @@ export const LIKED_PAGE_PARAM = 'page';
  */
 export function likedWorksSql(count: number): string {
   const placeholders = new Array<string>(count).fill('?').join(', ');
+  // **`g.author_id` を選ぶのは作者ページへのリンクのためである**（#330。選ばないと
+  // この一覧だけ作者名がリンクにならない）。`users` から選ぶ列は増えていない。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
-            g.ogp_state, u.display_name as author_name
+            g.ogp_state, g.author_id, u.display_name as author_name
        from games g
        left join users u on u.id = g.author_id
       where g.id in (${placeholders}) and g.status = ? and ${reviewVisibleSql('g')}`;
@@ -194,6 +196,7 @@ export async function listLikedWorks(
       like_count: number;
       parent_id: string | null;
       ogp_state: string | null;
+      author_id: string | null;
       author_name: string | null;
     }>();
 
@@ -211,6 +214,9 @@ export async function listLikedWorks(
       id: row.id,
       title: row.title,
       authorName: row.author_name,
+      // 作者ページへのリンク（#330）。**欠けている行はリンクにならない**だけである
+      // （`src/work-card.ts` の `cardAuthorId`）。
+      authorId: row.author_id,
       publishedAt: row.published_at,
       forkCount: row.fork_count,
       likeCount: row.like_count,

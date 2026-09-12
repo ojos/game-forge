@@ -24,7 +24,7 @@
  * | 削除申請 | `src/takedown.ts` / `migrations/0018_takedown_requests.sql` |
  * | 運営の措置の記録 | `migrations/0026_admin_actions.sql` |
  * | Cookie 2 種 | `src/session.ts`（`__Host-gf_session`、7 日）/ `src/auth/google.ts`（`__Host-gf_oauth`、10 分） |
- * | AWS 上の処理の記録（14 日） | `terraform/orchestrator.tf` / `terraform/build-function.tf` / `terraform/ogp-function.tf` の `retention_in_days`。**費用ガード（`terraform/bedrock-guard.tf`）のログは 30 日だが、アラームの発火を受ける関数で利用者の情報を扱わないので本文の対象に含めていない**（PR #400 の Copilot の指摘で区別した） |
+ * | AWS 上の処理の記録（生成・ビルド・撮影は 14 日 / 費用ガードは 30 日） | `terraform/orchestrator.tf`・`terraform/build-function.tf`・`terraform/ogp-function.tf` の `retention_in_days = 14` と、`terraform/bedrock-guard.tf` の `retention_in_days = 30`（**ひとまとめに 14 日と書いていた誤りを PR #400 の Copilot の指摘で分けた。値を変えたら本文も直すこと**） |
  * | 外部サービス | Cloudflare（`wrangler.toml`）/ AWS・Bedrock・Guardrails（`terraform/bedrock.tf` / `terraform/moderation.tf` / `src/generation-models.ts`）/ Google（`src/auth/google.ts`）/ Resend（`src/mail/resend.ts`） |
  *
  * **アクセス解析・広告は使っていない**（外部のスクリプトも解析の cookie も無い）。**使い始めた
@@ -33,6 +33,8 @@
  * ## 法的助言ではない
  *
  * `src/legal.ts` の規約と同じく、**書いたのは弁護士ではない。** 画面にも但し書きを出す。
+ * **一般公開の前に専門家の確認が要る。** とくに外部の事業者への送信が「委託」か「外国にある
+ * 第三者への提供」かは**断定しない**——事実（誰へ何を送るか）だけを書き、区分は確認後に書く。
  * **事業者の名称は暫定である**（`src/service-contact.ts` の `OPERATOR_NAME`。正式名称へ差し替えが
  * 必要。住所と代表者はまだ書いていない）。
  *
@@ -152,13 +154,16 @@ export function privacyBody(contact: PrivacyContact): string {
   <li>公開した作品（題名・遊べる形・紹介用の画像・改造元の作品）と、そのいいねの数</li>
 </ul>
 <p>作品の題名は、最初は指示文から作られます。題名は作品ページで変えられます。</p>
+<p>公開する前の作品でも、作品ページの URL を知っている人がそのページを開くと、題名と、まだ公開されていないことが表示されます（遊ぶことはできません）。</p>
 <p>公開した作品のソースコードは、他の利用者がその作品を改造するときに、生成の材料として使われます。</p>
 <p><strong>次の情報は公開しません。</strong>メールアドレス、指示文、いいねした作品の一覧、
    誰が誰を招待したか、通報の内容。</p>
 
-<h2>4. 第三者への提供</h2>
-<p>運営者は、法令に基づく場合と、下の 5 に書いた外部のサービスへ業務を委託する場合を除き、利用者の同意なく個人情報を第三者へ提供しません。
-   上の「公開される情報」は、利用者が作品を公開したり表示名を設定したりすることで公開されるものです。</p>
+<h2>4. 第三者への提供と、外部の事業者への送信</h2>
+<p>上の 3 に書いた情報は、利用者が表示名を設定したり作品を公開したりすることで、誰でも見られるようになります。</p>
+<p>また、本サービスを動かすために、下の 5 に書いた事業者へ、そこに書いた情報を送っています。
+   これらの送信が法令上どのように位置づけられるか（業務の委託にあたるか、外国にある第三者への提供にあたるかなど）は、
+   正式公開までに専門家の確認を受け、本ページに記載します。</p>
 
 <h2>5. 外部のサービスの利用</h2>
 <p>本サービスは、次の事業者のサービスを使って運営しています。
@@ -187,7 +192,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <h2>7. 保存期間</h2>
 <ul>
   <li>入力の検査で止めた指示文は、90 日を目安に削除します。</li>
-  <li>作品の生成・ビルド・紹介用の画像の撮影を AWS 上で行ったときの処理の記録（ログ）は、14 日で自動的に削除されます。</li>
+  <li>AWS 上の処理の記録（ログ）のうち、作品の生成・ビルド・紹介用の画像の撮影の記録は 14 日で、費用の上限を監視する処理の記録は 30 日で、自動的に削除されます。</li>
   <li>Cookie は、上の 6 に書いた有効期間で失効します。</li>
   <li>それ以外の情報は、期限を定めた自動の削除を行っておらず、本サービスの提供に必要なあいだ保存します。</li>
 </ul>

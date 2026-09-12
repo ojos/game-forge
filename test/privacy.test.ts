@@ -148,18 +148,29 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
   });
 
   it('保存期間は、宣言にある保持期間と食い違わない', async () => {
-    // **AWS のログをひとまとめに「14 日」と書かない。** 費用ガードのログは 30 日である
-    // （`terraform/bedrock-guard.tf`）。本文が 14 日と言うのは生成・ビルド・撮影の 3 つだけ
-    // （PR #400 の Copilot の指摘）。
+    // **AWS のログをひとまとめに「14 日」と書かない。** 生成・ビルド・撮影は 14 日、
+    // 費用ガードは 30 日である（`terraform/*.tf` の `retention_in_days`。PR #400 の
+    // Copilot の指摘）。
     const body = pageBodyOf((await openPrivacy()).body);
     expect(body).not.toContain('AWS 上の処理の記録（ログ）は、14 日');
-    expect(body).toContain('作品の生成・ビルド・紹介用の画像の撮影を AWS 上で行ったときの処理の記録（ログ）は、14 日');
+    expect(body).toContain('作品の生成・ビルド・紹介用の画像の撮影の記録は 14 日');
+    expect(body).toContain('費用の上限を監視する処理の記録は 30 日');
     expect(body).toContain('90 日を目安に削除');
   });
 
-  it('第三者への提供の節は、委託先の節と矛盾しない', async () => {
+  it('第三者への提供の節は、法的な区分を断定せず、外部への送信と矛盾しない', async () => {
+    // **委託か外国にある第三者への提供かは専門家が決めること**（PR #400 の Copilot の指摘）。
+    // 「同意なく提供しません」と断定しながら次の節で外部への送信を並べる形に戻さない。
     const body = pageBodyOf((await openPrivacy()).body);
-    expect(body).toContain('外部のサービスへ業務を委託する場合を除き');
+    expect(body).not.toContain('同意なく');
+    expect(body).toContain('本サービスを動かすために、下の 5 に書いた事業者へ、そこに書いた情報を送っています');
+    expect(body).toContain('正式公開までに専門家の確認を受け');
+  });
+
+  it('未公開の作品でも、URL を知っている人には題名が見えると書く', async () => {
+    // `src/work-page.ts` の `readySection` は、本人以外にも題名と未公開の旨を返す。
+    const body = pageBodyOf((await openPrivacy()).body);
+    expect(body).toContain('公開する前の作品でも、作品ページの URL を知っている人がそのページを開くと、題名と');
   });
 
   it('アクセス解析を使っていると書かない（使っていない）', async () => {

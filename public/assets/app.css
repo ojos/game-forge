@@ -897,6 +897,29 @@ a.gf-card-author {
   overflow-wrap: anywhere;
 }
 
+/*
+ * ログアウト（#362。`src/account.ts` の末尾のフォーム）。
+ *
+ * **罫線で区切って離す。** この画面の主たる操作は表示名の変更で、ログアウトはそれとは
+ * 別の用事である。素の `form` の余白だけでは登録情報の続きに見え、**表示名を変えに来た人が
+ * 最後のボタンを押して落ちる**。見出しは置かない（ボタンの文字が用事をそのまま言っている
+ * ——`.gf-account` の上と同じ理由で、同じ語を 2 度並べない）。
+ *
+ * **ボタンの地色を外す。** 既定の `button` は地色付き（主たる操作の見た目）で、同じ画面に
+ * 同じ強さのボタンが 2 つ並ぶと押し間違える。枠だけにして、押せることは保ったまま
+ * 主従を付ける。**`:disabled` の見た目は触らない**——このボタンは無効にならない。
+ */
+.gf-logout {
+  margin-top: var(--gf-gap-4);
+  padding-top: var(--gf-gap-4);
+  border-top: 1px solid var(--gf-rule);
+}
+
+.gf-logout button {
+  background: transparent;
+  color: var(--gf-ink);
+}
+
 /* === トップ（#329）=== */
 
 /*

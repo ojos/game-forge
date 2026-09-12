@@ -44,9 +44,25 @@
  * 素の `<form method="post">` と POST-redirect-GET だけで組む（9.3）。結果は
  * `/account` の query（固定の分類名だけ）で運び、**入力した名前そのものは URL に載せない**
  * （載せると、断られた名前が履歴やログに残り、画面へ反射する口にもなる）。
+ *
+ * ## ログアウトをこの画面が持つ理由（#362 / 2.3.7）
+ *
+ * 機構（`POST /auth/logout`）は #12 で入っていたが、**それを呼ぶ HTML が 1 つも無く**、
+ * ログイン済みの利用者に残っていた手段は DevTools で cookie を消すことだけだった。
+ *
+ * **ヘッダには置けない。** ログアウトは GET を受けない（`<img src="/auth/logout">` を
+ * 踏ませるだけで他人をログアウトさせられる。理由は `src/auth/google.ts` の経路表）ので
+ * `<form method="post">` が要るが、**ヘッダのナビは `<a href>` しか作らない**
+ * （`src/html.ts` の `navLinks`）。`NavItem` へ POST を持ち込むと、仕様 2.3.7 の項目列挙と
+ * `test/page-shell.test.ts` の全画面 × ログイン両状態の照合まで動く。
+ *
+ * **この画面は既にログイン必須で、セッションを解決済みである。** 上の 2 節（CSRF を
+ * トークンで守らない根拠、JavaScript を要求しない作法）がそのまま当てはまるので、
+ * ログアウトはここに収まる。**`handleLogout` の振る舞いには触れていない**——着地は `/` の
+ * ままで、秘密が未設定でもログアウトが成立する性質（`missingSecrets` を見ない）も保つ。
  */
 import { ACCOUNT_DISPLAY_NAME_PATH, ACCOUNT_PATH, DISPLAY_NAME_FIELD } from './account-paths.js';
-import { LOGIN_PATH } from './auth/google.js';
+import { LOGIN_PATH, LOGOUT_PATH } from './auth/google.js';
 import { VIEWER_SIGNED_IN, escapeHtml, siteHead } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { siteFooter } from './legal.js';
@@ -357,6 +373,11 @@ export function renderAccountPage(view: AccountView): string {
   // こちらの規則（コードポイントで 30）と食い違い、絵文字を含む名前が 30 文字に
   // 届く前に打てなくなる。長さは送信後に 1 つの規則で断る（{@link validateDisplayName}）。
   // **ログイン済みとして組む**（`src/my-works.ts` と同じ扱い。2.3.7 / #331）。
+  //
+  // **末尾のログアウトを `<a href="${LOGOUT_PATH}">` にしない**（#362。冒頭の
+  // 「ログアウトをこの画面が持つ理由」）。リンクにした瞬間に GET の口ができ、
+  // `<img src>` 1 つで他人をログアウトさせられる。`test/account.test.ts` が
+  // 「`href` が無いこと」を見ているのは、それを足し戻す変更を赤くするためである。
   return `${siteHead({
     title: '登録情報 - Game Forge',
     noindex: true,
@@ -380,6 +401,9 @@ ${following}
   <dd>${created}</dd>
 </dl>
 <p>メールアドレスはあなたにだけ表示しています。ほかの人には見えません。</p>
+<form class="gf-logout" method="post" action="${LOGOUT_PATH}">
+  <button type="submit">ログアウト</button>
+</form>
 ${siteFooter()}`;
 }
 

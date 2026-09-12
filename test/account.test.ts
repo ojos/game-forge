@@ -13,7 +13,7 @@ import {
 } from '../src/account-paths.js';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { PUBLISHED_STATUS } from '../src/games.js';
-import { LOGIN_PATH } from '../src/auth/google.js';
+import { LOGIN_PATH, LOGOUT_PATH } from '../src/auth/google.js';
 import { toIsoTimestamp } from '../src/jst.js';
 import { ssrPagePaths } from '../src/page-paths.js';
 import type { Route } from '../src/routes.js';
@@ -299,6 +299,34 @@ describe('登録情報の画面（GET /account）', () => {
     const response = await openAccount(await cookieFor(userId), '?saved=1');
     expect(response.status).toBe(200);
     expect(await response.text()).toContain('表示名を変更しました。');
+  });
+
+  it('ログアウトを POST のフォームで 1 つだけ置く（#362）', async () => {
+    // **画面から辿れる導線がここしかない。** `POST /auth/logout` は #12 から動いていたが、
+    // それを呼ぶ HTML がリポジトリに 1 つも無く、ログイン済みの利用者に残っていた手段は
+    // DevTools で cookie を消すことだけだった。
+    //
+    // **`<form>` の開始タグを数える。** 本文に `/auth/logout` という文字列があることだけを
+    // 見ると、押せない場所（説明文やコメント）にあっても緑になる。
+    const userId = await seedUser();
+    const body = await (await openAccount(await cookieFor(userId))).text();
+
+    const logoutForms = (body.match(/<form[^>]*>/g) ?? []).filter((tag) =>
+      tag.includes(`action="${LOGOUT_PATH}"`),
+    );
+    expect(logoutForms).toHaveLength(1);
+    expect(logoutForms[0]).toContain('method="post"');
+  });
+
+  it('ログアウトを GET で押せる形にしない（`href` を置かない。#362）', async () => {
+    // **GET の口を足し戻したら赤くする。** GET なら `<img src="/auth/logout">` を踏ませる
+    // だけで他人をログアウトさせられる（`src/auth/google.ts` の経路表）。`<a href>` は
+    // ヘッダのナビが作る唯一の形でもあるので、**ここを緑に保つことがナビへ足し戻す変更も
+    // 止める**（ナビの項目数そのものは `test/page-shell.test.ts` が見ている）。
+    const userId = await seedUser();
+    const body = await (await openAccount(await cookieFor(userId))).text();
+
+    expect(body).not.toContain(`href="${LOGOUT_PATH}"`);
   });
 });
 

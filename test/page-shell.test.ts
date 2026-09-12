@@ -674,7 +674,8 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
   it('ヘッダ・パンくず・フッタのリンクは、すべて経路表の GET 経路を指す（行き先の無いリンクを出さない）', async () => {
     // **4.4 / 2.2「押しても何も起きないリンクを出さない」を外枠の全リンクで見る。** とくに
     // フッタのお問い合わせ（#373 が行き先を作る）のように、**画面より先に項目だけを足す**
-    // 変更を赤くする。行き先は画面に限らない（ログインは Google へのリダイレクトである）。
+    // 変更を赤くする。行き先は画面に限らない（ログインは Google へのリダイレクトである。
+    // メールの窓口は `mailto:` の形だけを見る）。
     const routes = createAppRoutes(testEnv()).filter(
       (route) => route.method === 'GET' && route.match !== 'prefix',
     );
@@ -689,6 +690,16 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
       const links = hrefsOf(shell);
       expect(links.length, `${path} の外枠にリンクが無い（検査が空振りする）`).toBeGreaterThan(3);
       for (const link of links) {
+        // **サイト内の行き先と、メールの行き先を分けて見る**（PR #393 の Copilot の指摘）。
+        // #373 は一般の問い合わせ窓口を「メールアドレスで足りる」としており、`mailto:` は
+        // 経路表に載らないが実在する行き先である。**それ以外の外部の綴り（`https:` /
+        // `javascript:` など）は外枠に置かない**——置くと決めたなら、ここを先に直す。
+        if (link.startsWith('mailto:')) {
+          expect(link, `${path} の外枠の ${link} がメールアドレスの形でない`).toMatch(
+            /^mailto:[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/u,
+          );
+          continue;
+        }
         expect(known.has(link), `${path} の外枠のリンク ${link} が経路表の GET 経路に無い`).toBe(true);
       }
     }

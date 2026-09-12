@@ -60,6 +60,27 @@ bash scripts/check-control-chars.sh
 echo "[acceptance] (hygiene) scripts/check-table-breaks.sh"
 bash scripts/check-table-breaks.sh
 
+# app.css の区画の規約と、画面幅の段の検査（#371 / 仕様 2.3.9）。
+#
+# **上の 2 つと同じ層に置く。** bash と awk しか要らず、40 ms で終わる。
+#
+# **実ブラウザの幅の検査（scripts/check-page-width.sh）はここへ入れない**——あちらは
+# ブラウザの実行ファイルを前提にし、道具の有無でループの接地信号が止まる（あちらの冒頭）。
+# 入れられるのは「実ブラウザの検査が正しい幅で回るための前提」のほうで、ここが見るのは
+# **CSS の段と検査の幅が噛み合っていること**と、**幅の @media が器の区画にしか無いこと**と、
+# **区画の索引が見出しと一致していること**である（判定と理由は scripts/check-app-css.sh の冒頭）。
+#
+# **並列に追記するレーンが増えるほど効く。** 規約を呼びかけだけにすると、区画は
+# 1 波で崩れる（shared-ai-rules 12 章「一覧の複製は機械照合で担保する」）。
+#
+# ran_any は立てない（上の 2 つと同じ理由）。
+if [[ -f public/assets/app.css ]]; then
+  echo "[acceptance] (hygiene) scripts/check-app-css.sh"
+  bash scripts/check-app-css.sh
+else
+  echo "[acceptance] (hygiene) skip: public/assets/app.css not found"
+fi
+
 # Go の版の写しと正本（ARG GO_VERSION）の機械照合（#141 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く。** 35 ms で終わり（実測。同スクリプト末尾）、npm test より 2 桁安い。

@@ -23,6 +23,7 @@ import {
   listAuthoredGames,
   listPublishedForks,
   listPublishedGames,
+  normalizeTitle,
   PUBLISHED_STATUS,
   publishGame,
   publishedGamesSql,
@@ -449,6 +450,156 @@ describe('仮のタイトル（5.1 の NOT NULL を満たす）', () => {
     const userId = await seedUser('title');
     const game = await createDraftGame(env, userId, { prompt: '猫が主人公のパズル' }, fakeBuildOutcome());
     expect((await readGame(game.id)).title).toBe('猫が主人公のパズル');
+  });
+});
+
+describe('プロンプトの宣言から題名を決める（#365）', () => {
+  it('先頭行が宣言なら、その値が題名になる', () => {
+    expect(
+      draftTitleFromPrompt('タイトル: 紙飛行機のたたかい\n縦スクロールのシューティング。'),
+    ).toBe('紙飛行機のたたかい');
+  });
+
+  it('宣言だけの 1 行でも題名になる', () => {
+    expect(draftTitleFromPrompt('タイトル: ブロックよけ')).toBe('ブロックよけ');
+  });
+
+  it('表記ゆれを宣言として受ける（見出し・区切り・前後の空白）', () => {
+    // 見出しの 3 綴りと、`title` の大文字小文字。
+    expect(draftTitleFromPrompt('タイトル: 猫パズル')).toBe('猫パズル');
+    expect(draftTitleFromPrompt('題名: 猫パズル')).toBe('猫パズル');
+    expect(draftTitleFromPrompt('title: 猫パズル')).toBe('猫パズル');
+    expect(draftTitleFromPrompt('Title: 猫パズル')).toBe('猫パズル');
+    expect(draftTitleFromPrompt('TITLE: 猫パズル')).toBe('猫パズル');
+
+    // 区切りは半角と全角の両方。**日本語入力のまま打つと全角になる。**
+    expect(draftTitleFromPrompt('題名：猫パズル')).toBe('猫パズル');
+    expect(draftTitleFromPrompt('タイトル：猫パズル')).toBe('猫パズル');
+
+    // 見出しの前後・区切りのまわりの空白（半角・全角）は無視する。
+    expect(draftTitleFromPrompt('  タイトル  :   猫パズル  ')).toBe('猫パズル');
+    expect(draftTitleFromPrompt('　タイトル　：　猫パズル　')).toBe('猫パズル');
+  });
+
+  it('本文中の「タイトル: 〜」を拾わない（宣言は先頭の 1 行だけ）', () => {
+    // **2 行目以降を走査しない。** 走査する実装にすると、ここが「操作説明」ではなく
+    // 「画面の見出し」を題名として採る（＝この検査が落ちる）。
+    expect(
+      draftTitleFromPrompt('横スクロールのアクション\nタイトル: 画面の見出しを出して'),
+    ).toBe('横スクロールのアクション');
+
+    // **行の途中の宣言も拾わない。** 行が丸ごと宣言のときだけ採る。
+    expect(draftTitleFromPrompt('画面の上に タイトル: ねこ と表示する')).toBe(
+      '画面の上に タイトル: ねこ と表示する',
+    );
+
+    // 宣言らしい行が本文の先頭に無いかぎり、結果はフォールバックのままである。
+    expect(draftTitleFromPrompt('ゲームのタイトル: を画面に出す')).toBe(
+      'ゲームのタイトル: を画面に出す',
+    );
+  });
+
+  it('先頭の空行を飛ばして宣言を見つける', () => {
+    expect(draftTitleFromPrompt('\n\nタイトル: 紙飛行機のたたかい\n本文')).toBe(
+      '紙飛行機のたたかい',
+    );
+    // 空白だけの行も空行として飛ばす。
+    expect(draftTitleFromPrompt('   \n\t\nタイトル: 紙飛行機のたたかい')).toBe(
+      '紙飛行機のたたかい',
+    );
+  });
+
+  it('空の宣言は無題の作品にする（本文の 1 行目へ落とさない）', () => {
+    expect(draftTitleFromPrompt('タイトル:\n横スクロールのアクション')).toBe(UNTITLED_TITLE);
+    expect(draftTitleFromPrompt('題名：   \n横スクロールのアクション')).toBe(UNTITLED_TITLE);
+  });
+
+  it('宣言も 40 字で切る（上限を宣言とフォールバックで共有する）', () => {
+    const declared = draftTitleFromPrompt(`タイトル: ${'あ'.repeat(MAX_TITLE_LENGTH * 3)}`);
+    expect([...declared]).toHaveLength(MAX_TITLE_LENGTH);
+    // **サロゲートペアで割らない**のも共有する。
+    const emoji = draftTitleFromPrompt(`タイトル: ${'🎮'.repeat(MAX_TITLE_LENGTH * 2)}`);
+    expect([...emoji]).toHaveLength(MAX_TITLE_LENGTH);
+    expect([...emoji].every((char) => char === '🎮')).toBe(true);
+  });
+
+  it('正規化の規則を 2 か所に置いていない（両経路が normalizeTitle と一致する）', () => {
+    // **同じ入力を、宣言の経路とフォールバックの経路と `normalizeTitle` の 3 通りで
+    // 通して、3 つとも一致することを見る。** 片方だけに規則を足すと破れる。
+    const candidates = [
+      'あ'.repeat(MAX_TITLE_LENGTH * 2),
+      '🎮'.repeat(MAX_TITLE_LENGTH),
+      '  前後に空白  ',
+      '横\u0001スクロール',
+      '',
+      '   ',
+    ];
+    for (const candidate of candidates) {
+      const expected = normalizeTitle(candidate);
+      expect(draftTitleFromPrompt(`タイトル: ${candidate}`)).toBe(expected);
+      expect(draftTitleFromPrompt(candidate)).toBe(expected);
+    }
+  });
+
+  it('宣言が無いときの結果は #365 の前と 1 文字も変わらない', () => {
+    // **#365 の前の実装の出力を、直値で固定してある。** 宣言の経路を足したことで
+    // 既存の入力の見え方が動いていないことを、ここが錨として押さえる。
+    const before: readonly (readonly [string, string])[] = [
+      ['横スクロールのアクション\n主人公は猫', '横スクロールのアクション'],
+      ['  パズル  ', 'パズル'],
+      ['横\u0001スクロール', '横 スクロール'],
+      ['\n\n', UNTITLED_TITLE],
+      ['   ', UNTITLED_TITLE],
+      // **先頭が空行のとき、宣言が無ければ従来どおり `無題の作品` である。**
+      // 空行を飛ばすのは宣言の判定にだけ効く（飛ばす実装にするとここが落ちる）。
+      ['\n横スクロールのアクション', UNTITLED_TITLE],
+      ['猫が主人公のパズル', '猫が主人公のパズル'],
+    ];
+    for (const [prompt, expected] of before) {
+      expect(draftTitleFromPrompt(prompt)).toBe(expected);
+    }
+    expect([...draftTitleFromPrompt('あ'.repeat(MAX_TITLE_LENGTH * 3))]).toHaveLength(
+      MAX_TITLE_LENGTH,
+    );
+  });
+
+  it('新規生成の作品行に宣言した題名が入る', async () => {
+    const userId = await seedUser('declared-title');
+    const game = await createDraftGame(
+      env,
+      userId,
+      { prompt: 'タイトル: ブロックよけ\n左右キーで動く自機が、ブロックをよけ続けるゲーム' },
+      fakeBuildOutcome(),
+    );
+    expect((await readGame(game.id)).title).toBe('ブロックよけ');
+  });
+
+  it('フォークの差分プロンプトでも同じ規則で動く（5.3）', async () => {
+    const author = await seedUser('declared-fork-parent');
+    const forker = await seedUser('declared-fork-child');
+    const parent = await createDraftGame(env, author, { prompt: '親の作品' }, fakeBuildOutcome());
+
+    // 宣言あり。
+    const declared = await createForkedGame(
+      env,
+      forker,
+      { prompt: 'タイトル: 夜のブロックよけ\n背景を夜にして、敵を増やす' },
+      parent.id,
+    );
+    expect((await readGame(declared.id)).title).toBe('夜のブロックよけ');
+
+    // 宣言なし。**差分プロンプトの 1 行目がそのまま仮の題になる**（従来どおり）。
+    const fallback = await createForkedGame(env, forker, { prompt: '敵を増やす' }, parent.id);
+    expect((await readGame(fallback.id)).title).toBe('敵を増やす');
+
+    // 本文中の宣言は子でも拾わない。
+    const inBody = await createForkedGame(
+      env,
+      forker,
+      { prompt: '敵を増やす\nタイトル: 画面の見出し' },
+      parent.id,
+    );
+    expect((await readGame(inBody.id)).title).toBe('敵を増やす');
   });
 });
 

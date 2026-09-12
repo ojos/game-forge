@@ -1264,8 +1264,19 @@ const DESCRIPTION_FORBIDDEN_CHARACTER = /(?!\n)[\p{Cc}\p{Zl}\p{Zp}]/u;
  * **`src/account.ts` の `DIRECTION_FORMATTING_CHARACTER` と同じ特性（`Bidi_Control`）で
  * 引く。** 説明は作者名・運営の印と同じ画面に並ぶので、表示名が弾く理由（5.9「名前の
  * 側から印の見え方を動かせてはいけない」）がそのまま当てはまる。
+ *
+ * **モジュールの定数にせず、関数の中に置く。** esbuild は `\p{Bidi_Control}` を
+ * `new RegExp(...)` へ書き換え、**例外を投げうる式として束から落とさない**——定数に
+ * すると、オーケストレータが 1 度も呼ばない説明の検査のために束（CodeSha256）が変わる
+ * （`scripts/bundle-orchestrator.sh`。PR #401 で実測した）。関数に閉じれば、呼ばれない
+ * 関数ごと束から落ちる。
+ *
+ * @param value 検査する文字列
+ * @returns 向きを変える書式文字を含めば true
  */
-const DESCRIPTION_DIRECTION_CHARACTER = /\p{Bidi_Control}/u;
+function containsDirectionCharacter(value: string): boolean {
+  return /\p{Bidi_Control}/u.test(value);
+}
 
 /** 説明の形を受け付けなかった理由（#388）。 */
 export type DescriptionFormRejection = 'too-long' | 'forbidden-character';
@@ -1293,7 +1304,7 @@ export type DescriptionValidation =
  *
  * 1. **`\r\n` と `\r` を `\n` へ畳む。** ブラウザは `<textarea>` の改行を `\r\n` で送る
  * 2. **禁じた文字を含めば断る**（{@link DESCRIPTION_FORBIDDEN_CHARACTER} /
- *    {@link DESCRIPTION_DIRECTION_CHARACTER}）。**前後の空白を除く前に見る**——`trim` は
+ *    {@link containsDirectionCharacter}）。**前後の空白を除く前に見る**——`trim` は
  *    U+2028 / U+2029 とタブも除くので、後に見ると端の禁じた文字が黙って消えて通る
  * 3. **前後の空白（改行を含む）を除く**（空白だけなら空文字＝説明なし）
  * 4. **{@link MAX_DESCRIPTION_LENGTH} を超えれば断る**（コードポイントで数える）
@@ -1314,7 +1325,7 @@ export function validateDescription(raw: string): DescriptionValidation {
   // 食い違う。
   if (
     DESCRIPTION_FORBIDDEN_CHARACTER.test(unified) ||
-    DESCRIPTION_DIRECTION_CHARACTER.test(unified)
+    containsDirectionCharacter(unified)
   ) {
     return { ok: false, reason: 'forbidden-character' };
   }

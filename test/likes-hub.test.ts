@@ -5,6 +5,7 @@ import { PUBLISHED_STATUS } from '../src/games.js';
 import likesWorker from '../workers/likes/src/index.js';
 import {
   DAILY_OPERATION_LIMIT,
+  LIKED_GAMES_SQL,
   LikeHub,
   MAX_GAMES_PER_SYNC,
   MAX_LIKED_GAMES_PER_CALL,
@@ -643,5 +644,74 @@ describe('押した作品の一覧（5.8 / M9-8 / #340）', () => {
     ]);
     // **通る側も見る**（全部投げる実装で緑にならないように）。
     expect(await hub.likedGames(user, MAX_LIKED_GAMES_PER_CALL, 0)).toHaveLength(1);
+  });
+});
+
+describe('本人の一覧の索引（PR #348 のレビュー指摘）', () => {
+  it('`likes_user_recent_idx` が効き、並べ替えのための一時的な処理が入らない', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+    // 索引が選ばれるだけの行を入れる（1 行だと全走査のほうが安いと判断されうる）。
+    for (let index = 0; index < 30; index += 1) {
+      await hub.like(user, crypto.randomUUID(), NOON_JST + index);
+    }
+
+    const plan = await inHub(hub, (_instance, state) =>
+      state.storage.sql
+        // **SQL を書き写さない。** `LIKED_GAMES_SQL` そのものに `EXPLAIN QUERY PLAN` を
+        // 付ける（書き写すと、索引を落とした日に検査だけが古い SQL を見る）。
+        .exec<{ detail: string }>(`explain query plan ${LIKED_GAMES_SQL}`, user, 20, 0)
+        .toArray()
+        .map((row) => row.detail)
+        .join('\n'),
+    );
+
+    // **索引で辿っていること。**
+    expect(plan, plan).toContain('likes_user_recent_idx');
+    // **並べ替えのための一時的な処理が入らないこと**——これが索引を足した理由である
+    // （主キー `(user_id, game_id)` では `order by created_at desc` を作れないので、
+    // 索引が無いとその人の履歴全体を呼び出しごとに並べ替える）。
+    expect(plan, plan).not.toMatch(/TEMP B-TREE/iu);
+    // 表を素で走らせていないこと（`SCAN likes` は全走査の印である）。
+    expect(plan, plan).not.toMatch(/\bSCAN\b/iu);
+  });
+
+  it('索引は起動のたびに作られる（既存の行を持つ DO でも壊れない）', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+    await hub.like(user, crypto.randomUUID(), NOON_JST);
+
+    const indexes = await inHub(hub, (_instance, state) =>
+      state.storage.sql
+        .exec<{ name: string }>(
+          "select name from sqlite_master where type = 'index' and tbl_name = 'likes'",
+        )
+        .toArray()
+        .map((row) => row.name)
+        .sort(),
+    );
+    expect(indexes).toContain('likes_user_recent_idx');
+    // 作品ごとの数を数えるための索引（#339）も残っている。
+    expect(indexes).toContain('likes_game_idx');
+  });
+
+  it('書き込みは 6 行である（索引で 1 行増えた。3.6 の見積もりの根拠）', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+
+    const measured = await measureWrites(hub, (instance) =>
+      instance.like(user, crypto.randomUUID(), NOON_JST),
+    );
+
+    // **状態を変える付与 1 回で 6 行。** 内訳はいいねの行＋`likes_game_idx`＋
+    // **`likes_user_recent_idx`**＋今日の操作回数＋同期待ちの印（`dirty_games` は rowid 表
+    // なので行と `game_id` の自動索引で 2 行）。
+    //
+    // **索引を足す前は 5 行だった**（この検査を書いてから索引の行だけを外して実測した）。
+    // **起票時の記述の「4 行」は 1 行少なかった**——`dirty_games` の 2 行を数えていない。
+    // **この数が 3.6 の見積もりの入力である**ので、実測を検査に持たせる（増やした日に
+    // 気づける。推測の数を書き写さない）。
+    expect(measured.value.outcome).toBe('liked');
+    expect(measured.rowsWritten, 'DO への書き込み行数が変わった').toBe(6);
   });
 });

@@ -139,16 +139,27 @@ export function likedWorksSql(count: number): string {
  * 画面ごと落とさない」）。**空の一覧と区別する**——「まだ押していない」と「読めなかった」を
  * 同じ表示にすると、画面が嘘をつく。
  *
+ * **`likedOnPage`（DO がこの頁で返した id の件数）も返す。** 画面はこれと `works.length` を
+ * 比べて「絞り込みで落ちたものがあるか」を知る。**`hasNext` から導いてはいけない**
+ * ——最終頁でちょうど 20 件返り、そのうち 1 件が公開停止のときは `hasNext` が false なので、
+ * **落ちたことに気づけないまま「まだいいねした作品がありません」と出うる**
+ * （PR #348 の Copilot の指摘）。
+ *
  * @param env バインディングと環境変数
  * @param userId **セッションで確かめた**利用者 id
  * @param page 頁番号（1 始まり）
- * @returns 並べる作品（押した新しい順）と、次の頁があるか、読めたか
+ * @returns 並べる作品（押した新しい順）と、次の頁があるか、読めたか、DO が返した件数
  */
 export async function listLikedWorks(
   env: Env,
   userId: string,
   page: number,
-): Promise<{ works: readonly PublicWork[]; hasNext: boolean; unavailable: boolean }> {
+): Promise<{
+  works: readonly PublicWork[];
+  hasNext: boolean;
+  unavailable: boolean;
+  likedOnPage: number;
+}> {
   // **上限より 1 件多く引く。** 「ちょうど 20 件あった」と「次の頁がある」は引いた件数
   // だけでは区別できず、区別せずに「次へ」を出すと**空の頁へ送る**ことになる
   // （`src/works-list.ts` / `src/my-works.ts` と同じ理由）。
@@ -163,12 +174,14 @@ export async function listLikedWorks(
   );
   if (ids === null) {
     // **DO へ届かなかった。** D1 を引かずに返す——引く材料（id）が無い。
-    return { works: [], hasNext: false, unavailable: true };
+    return { works: [], hasNext: false, unavailable: true, likedOnPage: 0 };
   }
   const hasNext = ids.length > LIKED_WORKS_PER_PAGE && page < MAX_LIKED_PAGE;
   const wanted = ids.slice(0, LIKED_WORKS_PER_PAGE);
   if (wanted.length === 0) {
-    return { works: [], hasNext: false, unavailable: false };
+    // **この頁には押した作品が 1 件も無い。** 絞り込みで落ちたのではない（1 件も引いて
+    // いない）ので、画面は「まだ押していない」側の文言へ倒せる。
+    return { works: [], hasNext: false, unavailable: false, likedOnPage: 0 };
   }
 
   const result = await env.DB.prepare(likedWorksSql(wanted.length))
@@ -205,7 +218,9 @@ export async function listLikedWorks(
       hasShot: row.ogp_state === 'ready',
     });
   }
-  return { works, hasNext, unavailable: false };
+  // **`likedOnPage` は絞り込みの前の件数である。** `works.length` との差が、この頁で D1 に
+  // 引けなかった作品の数になる（公開をやめた・審査で止めた・行が消えた）。
+  return { works, hasNext, unavailable: false, likedOnPage: wanted.length };
 }
 
 /**
@@ -253,6 +268,22 @@ export interface LikedWorksView {
    * 嘘をつく（`src/home.ts` の「出来ていないものを出来ているように書かない」の裏返し）。
    */
   readonly unavailable: boolean;
+  /**
+   * いいねの正本（DO）がこの頁で返した作品の件数（**絞り込みの前**）。
+   *
+   * **`works.length` との差が、この頁で D1 に引けなかった作品の数である**
+   * （{@link someHidden}）。**`hasNext` から導けない**——最終頁でちょうど 20 件返り、
+   * そのうち 1 件が公開停止のときは `hasNext` が false になり、**落ちたことに気づけない**
+   * （PR #348 の Copilot の指摘）。
+   *
+   * **0 と「絞り込みで全部落ちた」を区別するためにも要る。** 前者は「まだ押していない」、
+   * 後者は「押したものが、いまは表示できない」で、**言うべきことが正反対である。**
+   *
+   * > **これは DO の総数ではない。** 画面が DO の形を知らないという 5.8 の設計は崩して
+   * > いない——渡しているのは「この頁の要求に対して返った件数」1 つだけで、画面は DO を
+   * > 呼ぶ方法も、全体で何件あるかも知らない。
+   */
+  readonly likedOnPage: number;
 }
 
 /**
@@ -264,9 +295,27 @@ export interface LikedWorksView {
  * **「公開をやめた作品」と「審査で止めた作品」を書き分けない。** どちらであるかを本人へ
  * 伝えると、8.4 の審査の状態が外から読めてしまう（`src/likes.ts` の
  * `NOT_PRESSABLE_MESSAGE` が理由を区別しないのと同じ判断）。
+ *
+ * > **「公開されていない」とも書かない**（PR #348 の Copilot の指摘）。**審査で新規露出を
+ * > 止めた作品は `status` が `published` のままで、URL も生きている**——本人が URL を開けば
+ * > 普通に遊べるのに、この一覧が「公開されていない」と言うと**事実と食い違う。** しかも
+ * > 「公開されているのに一覧に出ない」＝審査に入っている、と読めてしまい、理由を区別
+ * > しないと決めた意味が消える。**言えるのは「いまこの一覧に出ない」まで**である。
  */
 export const HIDDEN_NOTICE =
-  'いいねした作品のうち、公開されていないものはこの一覧に出ません。';
+  'いいねした作品のうち、現在この一覧に表示されないものがあります。';
+
+/**
+ * この頁の作品が**すべて**絞り込みで落ちたときの文言（PR #348 の Copilot の指摘）。
+ *
+ * **「まだいいねした作品がありません」と言わない。** 押した作品はある——**いまこの頁に
+ * 出せるものが無い**だけである。前者を出すと、押した本人に対して画面が嘘をつく
+ * （`src/home.ts` の「出来ていないものを出来ているように書かない」の裏返し）。
+ *
+ * 理由を区別しないのは {@link HIDDEN_NOTICE} と同じである。
+ */
+export const ALL_HIDDEN_MESSAGE =
+  'いいねした作品のうち、現在この頁に表示できるものがありません。';
 
 /**
  * いいねの正本（DO）へ届かなかったときの文言（`src/likes.ts` の「読み取りが届かなくても、
@@ -323,22 +372,36 @@ function renderPager(view: LikedWorksView): string {
  */
 export function renderLikedWorksPage(view: LikedWorksView): string {
   const cards = renderWorkCards(view.works);
-  const body = view.unavailable
+  // **空に見える 4 つの状態を書き分ける**（PR #348 の Copilot の指摘）。どれも `works` が
+  // 空だが、**利用者にとっての意味が違う。**
+  //
+  // | 状態 | 判定 | 言うこと |
+  // |---|---|---|
+  // | 読めなかった | `unavailable` | いまは読めない（いいねは失われていない） |
+  // | 絞り込みで全部落ちた | `likedOnPage > 0` | 押したものはあるが、いま出せない |
+  // | 1 件も押していない | `likedOnPage === 0` かつ 1 頁目 | まだ無い → さがす導線 |
+  // | 範囲の外の頁 | `likedOnPage === 0` かつ 2 頁目以降 | この頁には並ぶものが無い |
+  //
+  // **2 つ目を「まだいいねした作品がありません」に混ぜない。** 押した本人に対して画面が
+  // 嘘をつく（{@link ALL_HIDDEN_MESSAGE}）。
+  const emptyBody = view.unavailable
     ? // **読めなかったことを、読めたことのように書かない。** 頁送りも出さない
       // （次の頁があるかどうかも分かっていない。押しても何も起きない導線を出さない。4.4）。
       `<p>${UNAVAILABLE_MESSAGE}</p>`
-    : cards === ''
-      ? // **1 頁目と 2 頁目以降で言うことが違う。** 前者は「まだ押していない」、後者は
-        // 「この頁には並ぶものが無い」である（絞り込みで全部落ちた頁がありうる）。
-        view.page === 1
+    : view.likedOnPage > 0
+      ? `<p>${ALL_HIDDEN_MESSAGE}</p>`
+      : view.page === 1
         ? `<p>まだいいねした作品がありません。</p>
 <p><a href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>`
-        : `<p>この頁に並ぶ作品がありません。</p>`
-      : cards;
+        : `<p>この頁に並ぶ作品がありません。</p>`;
+  const body = cards === '' || view.unavailable ? emptyBody : cards;
 
-  // **欠けている頁にだけ断りを出す**（{@link someHidden}）。**1 頁目で 0 件のときは
-  // 出さない**——押していないことと、押したものが隠れていることは別である。
-  const hidden = someHidden(view) ? `\n<p class="gf-notice">${HIDDEN_NOTICE}</p>` : '';
+  // **欠けている頁にだけ断りを出す**（{@link someHidden}）。**全部落ちた頁では出さない**
+  // ——本文がすでに {@link ALL_HIDDEN_MESSAGE} で同じことを言っており、2 度言う理由が無い。
+  const hidden =
+    someHidden(view) && view.works.length > 0
+      ? `\n<p class="gf-notice">${HIDDEN_NOTICE}</p>`
+      : '';
   const pager = view.unavailable ? '' : renderPager(view);
 
   return `${siteHead({ title: 'いいねした作品 - Game Forge', noindex: true })}
@@ -353,21 +416,22 @@ ${siteFooter()}`;
 /**
  * この頁で、絞り込みに落ちた作品があるか。
  *
- * **「1 頁ぶん引いたのに 20 件に届かなかった」ことを、次の頁の有無から導く。**
- * 最後の頁は本来 20 件未満なので、件数だけで判定すると**毎回**断りが出る。
- * **次の頁があるのに 20 件未満なら、落ちた作品がある**（DO からは 21 件返っており、
- * 20 件ぶんの id のうちいくつかが D1 で引けなかった、ということである）。
+ * **DO が返した件数（{@link LikedWorksView.likedOnPage}）と、並べられた件数を比べる。**
+ * 差がそのまま「D1 に引けなかった作品の数」である。
  *
- * **「次の頁が無い最後の頁で落ちた分」は言わない。** 言うには「DO が何件返したか」を
- * 画面へ渡す必要があり、**画面が DO の件数を知る形にしたくない**（5.8 は画面が DO の形を
- * 知らないことを設計にしている）。**代わりに、落ちた分があることは一度は必ず目に入る**
- * ——落ちた作品を持つ利用者は、いずれかの頁でこの断りを見る。
+ * **`hasNext` から導いてはいけない**（PR #348 の Copilot の指摘。以前はそうしていた）。
+ * 最終頁でちょうど 20 件返り、そのうち 1 件が公開停止のとき `hasNext` は false なので、
+ * **落ちたことに気づけない。** 残りが 19 件なら「まだいいねした作品がありません」とすら
+ * 出うる。
+ *
+ * **自然に短い最終頁では出ない。** DO が 7 件返して 7 件並んだ頁は差が 0 である——
+ * {@link LIKED_WORKS_PER_PAGE} と比べていないので、「最後の頁だから毎回出る」形にならない。
  *
  * @param view 表示に必要な値
- * @returns 断りを出すなら true
+ * @returns 落ちた作品があるなら true
  */
 function someHidden(view: LikedWorksView): boolean {
-  return view.hasNext && view.works.length < LIKED_WORKS_PER_PAGE;
+  return view.works.length < view.likedOnPage;
 }
 
 /**
@@ -402,8 +466,12 @@ async function showLikedWorks(request: Request, env: Env): Promise<Response> {
   }
 
   const page = toLikedPageNumber(new URL(request.url).searchParams.get(LIKED_PAGE_PARAM));
-  const { works, hasNext, unavailable } = await listLikedWorks(env, session.userId, page);
-  return html(renderLikedWorksPage({ works, page, hasNext, unavailable }));
+  const { works, hasNext, unavailable, likedOnPage } = await listLikedWorks(
+    env,
+    session.userId,
+    page,
+  );
+  return html(renderLikedWorksPage({ works, page, hasNext, unavailable, likedOnPage }));
 }
 
 /**

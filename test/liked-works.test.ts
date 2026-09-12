@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
 import { DRAFT_STATUS, PUBLISHED_STATUS, REMOVED_STATUS } from '../src/games.js';
+import type { PublicWork } from '../src/games.js';
 import {
   HIDDEN_NOTICE,
   LIKED_PAGE_PARAM,
@@ -13,8 +14,10 @@ import {
   likedWorksSql,
   renderLikedWorksPage,
   toLikedPageNumber,
+  ALL_HIDDEN_MESSAGE,
   UNAVAILABLE_MESSAGE,
 } from '../src/liked-works.js';
+import type { LikedWorksView } from '../src/liked-works.js';
 import { changeLike } from '../src/likes.js';
 import { REVIEW_CLEARED, REVIEW_QUEUED } from '../src/reports.js';
 import {
@@ -506,22 +509,25 @@ describe('空のとき（4.4 / 押せない導線を出さない）', () => {
 
   it('2 頁目以降が空のときは、言うことを変える', () => {
     // 経路を通さず `renderLikedWorksPage` に直に渡す（範囲の外の頁を手で開いた形）。
-    const first = renderLikedWorksPage({ works: [], page: 1, hasNext: false, unavailable: false });
-    const later = renderLikedWorksPage({ works: [], page: 3, hasNext: false, unavailable: false });
+    const first = renderLikedWorksPage({
+      works: [],
+      page: 1,
+      hasNext: false,
+      unavailable: false,
+      likedOnPage: 0,
+    });
+    const later = renderLikedWorksPage({
+      works: [],
+      page: 3,
+      hasNext: false,
+      unavailable: false,
+      likedOnPage: 0,
+    });
     expect(first).toContain('まだいいねした作品がありません');
     expect(later).toContain('この頁に並ぶ作品がありません');
     expect(later).not.toContain('まだいいねした作品がありません');
     // 2 頁目以降には前へ戻る導線がある（戻る道が URL の手編集だけにならない）。
     expect(later).toContain(likedWorksPath(2));
-  });
-
-  it('断りは、欠けている頁にだけ出す', () => {
-    // 最後の頁（次が無い）が 20 件未満なのは当たり前なので、出さない。
-    expect(renderLikedWorksPage({ works: [], page: 1, hasNext: false, unavailable: false })).not.toContain(
-      HIDDEN_NOTICE,
-    );
-    // 次があるのに 20 件未満なら、落ちた作品がある。
-    expect(renderLikedWorksPage({ works: [], page: 1, hasNext: true, unavailable: false })).toContain(HIDDEN_NOTICE);
   });
 });
 
@@ -630,5 +636,170 @@ describe('DO へ届かなくても画面ごと落とさない（5.8「止まる�
     expect(body).toContain('いいね 4');
     // **ボタンは出さない**（押しても届かない。4.4）。
     expect(body).not.toMatch(/<form[^<>]*action="\/api\/like/u);
+  });
+});
+
+describe('空に見える 3 つの状態を書き分ける（PR #348 のレビュー指摘）', () => {
+  /**
+   * 描画だけを試すための最小の view。
+   *
+   * **`LikedWorksView` そのものを組み立てる**（型が変わったら落ちるので写しにならない）。
+   *
+   * @param overrides 差し替える値
+   * @returns view
+   */
+  function view(overrides: Partial<LikedWorksView> = {}): LikedWorksView {
+    return {
+      works: [],
+      page: 1,
+      hasNext: false,
+      unavailable: false,
+      likedOnPage: 0,
+      ...overrides,
+    };
+  }
+
+  it('1 件も押していない頁と、全部落ちた頁を書き分ける', () => {
+    // **押していない**（DO が 0 件返した）。
+    const none = renderLikedWorksPage(view());
+    expect(none).toContain('まだいいねした作品がありません');
+    expect(none).not.toContain(ALL_HIDDEN_MESSAGE);
+
+    // **押したものはあるが、D1 で全部落ちた。** 「まだありません」と言うと嘘になる。
+    const allHidden = renderLikedWorksPage(view({ likedOnPage: 3 }));
+    expect(allHidden).toContain(ALL_HIDDEN_MESSAGE);
+    expect(allHidden, '押した本人に「まだありません」と言っている').not.toContain(
+      'まだいいねした作品がありません',
+    );
+    // 本文がすでに同じことを言っているので、断りを 2 度出さない。
+    expect(allHidden).not.toContain(HIDDEN_NOTICE);
+  });
+
+  it('読めなかった頁は、そのどちらとも違う', () => {
+    const broken = renderLikedWorksPage(view({ unavailable: true }));
+    expect(broken).toContain(UNAVAILABLE_MESSAGE);
+    expect(broken).not.toContain('まだいいねした作品がありません');
+    expect(broken).not.toContain(ALL_HIDDEN_MESSAGE);
+  });
+
+  it('読めなかった頁では、行が載っていてもカードを描かない（含意に寄りかからない）', () => {
+    // `listLikedWorks` は `unavailable` のとき必ず空の `works` を返すので、**経路からは
+    // この組み合わせが来ない。** それでも描画側で止める——**`unavailable` と `works` が
+    // 別の項目である以上、片方だけを変えた日に食い違いうる。**
+    const work: PublicWork = {
+      id: '00000000-0000-4000-8000-000000000009',
+      title: '載ってしまった作品',
+      authorName: '作者',
+      publishedAt: 1_800_000_000,
+      forkCount: 0,
+      likeCount: 0,
+      hasParent: false,
+      hasShot: false,
+    };
+    const broken = renderLikedWorksPage(view({ unavailable: true, works: [work] }));
+    expect(broken).toContain(UNAVAILABLE_MESSAGE);
+    expect(broken, '読めなかったのにカードを描いている').not.toContain('載ってしまった作品');
+    // 同じ view で `unavailable` だけを倒すと描く（この検査が空振りしていない）。
+    expect(renderLikedWorksPage(view({ unavailable: false, works: [work], likedOnPage: 1 }))).toContain(
+      '載ってしまった作品',
+    );
+  });
+
+  it('断りは DO が返した件数との差で決まる（`hasNext` からは導かない）', () => {
+    const work: PublicWork = {
+      id: '00000000-0000-4000-8000-000000000001',
+      title: '並んだ作品',
+      authorName: '作者',
+      publishedAt: 1_800_000_000,
+      forkCount: 0,
+      likeCount: 0,
+      hasParent: false,
+      hasShot: false,
+    };
+
+    // **最終頁（`hasNext` が false）でも、落ちていれば出す。** これが指摘そのものである
+    // ——以前は `hasNext && works.length < 20` で判定しており、ここが緑のまま抜けていた。
+    expect(
+      renderLikedWorksPage(view({ works: [work], hasNext: false, likedOnPage: 2 })),
+    ).toContain(HIDDEN_NOTICE);
+
+    // **自然に短い最終頁では出さない**（DO が 1 件返して 1 件並んだ）。
+    expect(
+      renderLikedWorksPage(view({ works: [work], hasNext: false, likedOnPage: 1 })),
+    ).not.toContain(HIDDEN_NOTICE);
+
+    // 次の頁がある側でも、差が無ければ出さない。
+    expect(
+      renderLikedWorksPage(view({ works: [work], hasNext: true, likedOnPage: 1 })),
+    ).not.toContain(HIDDEN_NOTICE);
+  });
+
+  it('文言が審査の状態を漏らさない（`status` は published のままである）', () => {
+    // **「公開されていない」と書かない。** 審査で新規露出を止めた作品は
+    // `status = 'published'` のままで URL も生きており、本人が開けば遊べる。
+    // 「公開されているのに一覧に出ない」＝審査中、と読めてしまう形にもしない。
+    for (const message of [HIDDEN_NOTICE, ALL_HIDDEN_MESSAGE]) {
+      expect(message).not.toContain('公開されていない');
+      expect(message).not.toContain('公開をやめ');
+      expect(message).not.toContain('審査');
+      expect(message).not.toContain('通報');
+      expect(message).not.toContain('削除');
+    }
+  });
+
+  it('最終頁でちょうど 20 件返り 1 件落ちても、断りが出る（経路を通す）', async () => {
+    const me = await seedUser();
+    const author = await seedUser();
+    const ids: string[] = [];
+    // **ちょうど 20 件**押す（`hasNext` が false になる）。
+    for (let index = 0; index < LIKED_WORKS_PER_PAGE; index += 1) {
+      const id = await seedGame(author, { title: `最終頁の作品 ${index}` });
+      ids.push(id);
+      await like(me, id);
+    }
+    const cookie = await sessionCookie(me);
+
+    // 落とす前: 20 件並び、断りも「次へ」も出ない。
+    const full = await (await openLiked(cookie)).text();
+    expect(full).not.toContain(HIDDEN_NOTICE);
+    expect(full).not.toContain(likedWorksPath(2));
+
+    await env.DB.prepare('update games set status = ? where id = ?')
+      .bind(REMOVED_STATUS, ids[0]!)
+      .run();
+
+    const body = await (await openLiked(cookie)).text();
+    const listed = [...body.matchAll(/class="gf-card-link" href="([^"]+)"/gu)].map(
+      (match) => match[1],
+    );
+    expect(listed).toHaveLength(LIKED_WORKS_PER_PAGE - 1);
+    // **ここが以前は抜けていた**（`hasNext` が false なので断りが出なかった）。
+    expect(body).toContain(HIDDEN_NOTICE);
+    expect(body).not.toContain(likedWorksPath(2));
+  });
+
+  it('全件落ちた頁は、経路を通しても「まだありません」と言わない', async () => {
+    const me = await seedUser();
+    const author = await seedUser();
+    const ids: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const id = await seedGame(author, { title: `全部落ちる ${index}` });
+      ids.push(id);
+      await like(me, id);
+    }
+    const cookie = await sessionCookie(me);
+    expect(await (await openLiked(cookie)).text()).toContain(workPagePath(ids[0]!));
+
+    for (const id of ids) {
+      await env.DB.prepare('update games set status = ? where id = ?')
+        .bind(REMOVED_STATUS, id)
+        .run();
+    }
+
+    const body = await (await openLiked(cookie)).text();
+    expect(body).toContain(ALL_HIDDEN_MESSAGE);
+    expect(body, '押した本人に「まだありません」と言っている').not.toContain(
+      'まだいいねした作品がありません',
+    );
   });
 });

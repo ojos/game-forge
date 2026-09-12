@@ -266,6 +266,13 @@ TTL は 60 秒）、**配備の直後、最大 60 秒は `likeCount` を持た�
 - **DO は 1 回、D1 は 1 回**（id が 0 件なら D1 は 0 回）。`likedGames` は**読むだけで
   1 行も書かない**ので、日次の操作回数（1 人 1 日 100 操作）を減らさない——**押しすぎた
   日でも自分の一覧は見られる**
+- **索引を 1 本足した**（`likes_user_recent_idx = (user_id, created_at desc, game_id desc)`）。
+  主キー `(user_id, game_id)` は 1 人の行までは辿れるが **`order by created_at desc` を
+  作れない**ので、索引が無いと**開くたびにその人の履歴全体を並べ替える**（日次の上限は
+  溜まった履歴の量を縛らない。DO は 1 個の共有なので単一スレッドを占有する）。
+  **書き込みが 1 行増える**——実測で**付与 1 回あたり 5 行 → 6 行**。あわせて、
+  **起票時の「4 行」が 1 行少なかったことも分かった**（`dirty_games` への `insert` が
+  rowid 表の行と `game_id` の自動索引で 2 行書く）。**3.6 の「約 4 行」は「約 6 行」へ動く**
 - **絞り込みは D1 の `where` で行う**（#152 の規律）。**したがって 1 頁が 20 件に満たない
   ことがある。** 欠けている頁には画面が断りを出す（`HIDDEN_NOTICE`）。**件数を揃えるため
   に DO を引き直さない**——1 頁の表示で DO の呼び出しが何回になるか決まらなくなる
@@ -281,9 +288,28 @@ TTL は 60 秒）、**配備の直後、最大 60 秒は `likeCount` を持た�
   1 回あたりの上限がある（`MAX_LIKED_GAMES_PER_CALL = 100`）
 
 **配備の順序は変わらない**（likes Worker → Pages）。`likedGames` はクラスを増やさないので
-**DO のマイグレーションは要らない**。**ただし Pages を先に配ると、まだ `likedGames` を
-持たない DO を呼んで `/works/liked` が 500 になる**——`.github/workflows/verify.yml` の
-段の並びが順序を担保しており、`scripts/check-likes-worker.sh` の 5 番がそれを機械で見る。
+**DO のマイグレーションは要らない**（索引 `likes_user_recent_idx` はコンストラクタの
+`create index if not exists` が起動のたびに作るので、既存の行を持つ DO でも壊れない）。
+
+**Pages を先に配ると、まだ `likedGames` を持たない DO を呼ぶ。** そのとき起きるのは
+**500 ではない**——窓口が読み取りの失敗を `null` へ倒すので（`src/likes.ts` の
+「読み取りが届かなくても、画面ごと落とさない」）、
+
+- **`/works/liked` は 200 で**「いまこの一覧を読み込めませんでした。いいねは失われて
+  いません。」と出す（頁送りも出さない）
+- **作品ページも 200 のまま**で、D1 の `games.like_count` を出し、**いいねのボタンを
+  出さない**（押しても届かないので 4.4）
+- **ログには出る**（`[likes] いいねを読めませんでした`）。**画面が静かに degrade するので、
+  配備の順序が狂ったことは画面を見ても気づけない**——気づく手段はログである
+
+**それでも順序の要件は残る。** degrade は「いいねが使えない」状態であって、正しい状態では
+ない（利用者から見れば機能が消えている）。`.github/workflows/verify.yml` の段の並びが順序を
+担保しており、`scripts/check-likes-worker.sh` の 5 番がそれを機械で見る。
+
+**ローカルでも同じ degrade が起きる。** `wrangler pages dev` だけでは `game-forge-likes` が
+dev registry に居ないため、`/works/liked` は常に「読み込めませんでした」になる
+（`scripts/check-page-width.sh` が通るのはこの degrade した頁である）。**中身の入った一覧を
+ローカルで見るには、`npx wrangler dev --config workers/likes/wrangler.toml` を別に走らせる。**
 
 ## 確かめられていないこと
 

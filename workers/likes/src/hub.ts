@@ -25,9 +25,23 @@
  *
  * # 書き込みの行数（3.6 の表の根拠）
  *
- * 状態を変えた付与・取り消し 1 回で、DO の SQLite へ 4 行（いいねの行＋作品の索引＋
- * 今日の操作回数＋同期待ちの印。印が既にあれば 3 行）。**断った操作と、状態が変わらない
- * 操作は 1 行も書かない。**
+ * **状態を変えた付与・取り消し 1 回で、DO の SQLite へ 6 行**（`test/likes-hub.test.ts` が
+ * SQLite の `rowsWritten` で実測している）。内訳は、いいねの行＋作品の索引
+ * （`likes_game_idx`）＋**本人の一覧の索引**（`likes_user_recent_idx`）＋今日の操作回数＋
+ * 同期待ちの印（`dirty_games` は rowid 表なので、行と `game_id` の自動索引で 2 行）。
+ * **断った操作と、状態が変わらない操作は 1 行も書かない。**
+ *
+ * > **#340 で測り直したら 2 つ分かった**（PR #348 のレビュー指摘をきっかけに実測した）。
+ * >
+ * > 1. **`likes_user_recent_idx` を足して 1 行増えた**（実測 5 → 6）。本人の一覧のための
+ * >    索引で、**理由と取引は {@link LikeHub.likedGames} にある**（索引が無いと、開くたびに
+ * >    その人の履歴全体を並べ替える）
+ * > 2. **起票時の「4 行」は 1 行少なかった。** 索引を足す前の実測は **5 行**である——
+ * >    `dirty_games` への `insert` が 2 行を書く（rowid 表の行と、`game_id` の
+ * >    `sqlite_autoindex`）ことを数えていなかった。**3.6 の見積もりの「約 4 行」は、この
+ * >    2 つを合わせて「約 6 行」へ動く**（+1 はこの PR、+1 は元からの数え落ち）
+ * >
+ * > **実測を検査に持たせた**ので、次に増えた日に気づける。
  */
 import { DurableObject } from 'cloudflare:workers';
 import { formatJstMinutes } from '../../../src/jst.js';
@@ -76,6 +90,23 @@ export const BANNED_USERS_SQL = 'select id from users where banned_at is not nul
  */
 export const UPDATE_LIKE_COUNT_SQL =
   'update games set like_count = ? where id = ? and like_count <> ?';
+
+/**
+ * ある利用者が押した作品を、押した新しい順に引く SQL（5.8 / M9-8 / #340）。
+ *
+ * **定数として出しているのは、実行計画を検査できるようにするためである**
+ * （{@link BANNED_USERS_SQL} と同じ扱い。`.ai-playbook/shared-ai-rules.md` 12 章）。
+ * `test/likes-hub.test.ts` はこの文字列に `EXPLAIN QUERY PLAN` を付けて実行し、
+ * **`likes_user_recent_idx` が使われ、並べ替えのための一時的な処理（TEMP B-TREE）が
+ * 入らないこと**を確かめる。**書き写すと、索引を落とした日に検査だけが古い SQL を見る。**
+ *
+ * 並びの末尾に `game_id` を足すのは、同じ秒に押した行の順序を決めるためである（決まって
+ * いないと、頁をめくったときに同じ作品が 2 度出たり 1 度も出なかったりする）。
+ */
+export const LIKED_GAMES_SQL = `select game_id from likes
+  where user_id = ?
+  order by created_at desc, game_id desc
+  limit ? offset ?`;
 
 /** 受け付ける id の最大の長さ。**防御の上限**であって、形の検査は呼び出し側が持つ。 */
 const MAX_ID_LENGTH = 128;
@@ -215,7 +246,11 @@ export class LikeHub extends DurableObject<LikesEnv> {
     // （`alter table ... add column` を条件付きで）にすること。
     //
     // - likes: 正本。主キーが「二重押しの判定」と「利用者の押した作品」を兼ねる。
-    //   作品ごとの数を数えるために game_id の索引を持つ
+    //   作品ごとの数を数えるために game_id の索引を持ち、**本人の一覧（M9-8）のために
+    //   (user_id, created_at desc, game_id desc) の索引を持つ**。主キーは 1 人の行までは
+    //   辿れるが `order by created_at desc` を作れないので、索引が無いと**その人の履歴
+    //   全体を呼び出しごとに並べ替える**（日次上限 100 操作は溜まった履歴の量を縛らない。
+    //   DO は 1 個の共有なので、並べ替えは全員の単一スレッドを占有する。PR #348 の指摘）
     // - daily_ops: 1 人 1 日（JST）の操作回数。古い日は同期のたびに掃除する
     // - dirty_games: 前回の同期から数が変わりうる作品（同期待ちの印）
     // - banned_users: 同期が最後に見た「BAN されている利用者」。D1 と差分を取り、
@@ -233,6 +268,8 @@ export class LikeHub extends DurableObject<LikesEnv> {
         primary key (user_id, game_id)
       ) without rowid;
       create index if not exists likes_game_idx on likes (game_id);
+      create index if not exists likes_user_recent_idx
+        on likes (user_id, created_at desc, game_id desc);
       create table if not exists daily_ops (
         user_id text not null,
         day text not null,
@@ -317,9 +354,26 @@ export class LikeHub extends DurableObject<LikesEnv> {
    * 順序が決まっていないと、頁をめくったときに同じ作品が 2 度出たり 1 度も出なかったり
    * する**）。
    *
-   * **索引は要らない。** `likes` の主キーが `(user_id, game_id)` なので
-   * `where user_id = ?` は主キーの前方一致で引ける。並べ替えは**その利用者の行だけ**を
-   * 対象にした並べ替えで、1 人が押せるのは 1 日 100 件までである。
+   * # 索引を持つ（PR #348 のレビュー指摘）
+   *
+   * **`(user_id, created_at desc, game_id desc)` の索引を持つ**（`likes_user_recent_idx`。
+   * 表の定義はコンストラクタにある）。
+   *
+   * > **起票時の記述は誤りだった。** 「索引は要らない——主キー `(user_id, game_id)` で
+   * > `where user_id = ?` は前方一致で引けるし、1 人が押せるのは 1 日 100 件までである」と
+   * > 書いていた。**前半は正しいが、後半が理由になっていない。** 主キーは 1 人の行までは
+   * > 辿れるが、**`order by created_at desc` を作れない**（主キーの 2 列目は `game_id`）。
+   * > **日次の上限は 1 日の操作回数を縛るだけで、溜まった履歴の量を縛らない**——押し続けた
+   * > 利用者の行は数千件になり、**その全体を呼び出しごとに並べ替える。** DO は 1 個の共有
+   * > （5.8 の B1）なので、その並べ替えは**全員の単一スレッドを占有する。**
+   *
+   * **書き込みが 1 行増える**（このモジュール冒頭。実測で付与 1 回あたり 5 行 → 6 行）。
+   * **それでも足す**——増えるのは押したときだけの 1 行で、減るのは**開くたびに全履歴を
+   * 並べ替える処理**である。
+   *
+   * **列に `desc` を書いてあるが、昇順の索引でも同じ計画になる**（SQLite は索引を逆向きに
+   * 走れる。実測で確かめた）。**それでも `order by` と同じ向きで書く**——読む側が
+   * 「この索引はこの並べ替えのためにある」と 1 行で読めるようにするためである。
    *
    * @param userId 見ている利用者（**呼び出し側がセッションで確かめた id**）
    * @param limit 引く最大件数（0 以上 {@link MAX_LIKED_GAMES_PER_CALL} 以下）
@@ -336,15 +390,7 @@ export class LikeHub extends DurableObject<LikesEnv> {
     assertCount(limit, 'limit', MAX_LIKED_GAMES_PER_CALL);
     assertCount(offset, 'offset', Number.MAX_SAFE_INTEGER);
     return this.ctx.storage.sql
-      .exec<{ game_id: string }>(
-        `select game_id from likes
-          where user_id = ?
-          order by created_at desc, game_id desc
-          limit ? offset ?`,
-        userId,
-        limit,
-        offset,
-      )
+      .exec<{ game_id: string }>(LIKED_GAMES_SQL, userId, limit, offset)
       .toArray()
       .map((row) => row.game_id);
   }

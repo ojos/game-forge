@@ -24,3 +24,9 @@ export const TAKEDOWN_PATH = '/takedown';
 
 /** 削除申請を受け付けたあとの行き先。 */
 export const TAKEDOWN_THANKS_PATH = '/takedown/thanks';
+
+/** プライバシーポリシーのパス（2.3.1 v1.57 / #373）。 */
+export const PRIVACY_PATH = '/privacy';
+
+/** よくある質問のパス（2.3.1 v1.57 / #373）。 */
+export const FAQ_PATH = '/faq';

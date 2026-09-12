@@ -13,6 +13,8 @@ import { generateCallbackRoutes } from './generate-callback.js';
 import { generatePageRoutes } from './generate-page.js';
 import { homeRoutes } from './home.js';
 import { legalRoutes } from './legal.js';
+import { faqRoutes } from './faq.js';
+import { privacyRoutes } from './privacy.js';
 import { takedownRoutes } from './takedown-routes.js';
 import { inviteRoutes } from './invite-issuance.js';
 import { myWorksRoutes } from './my-works.js';
@@ -288,6 +290,10 @@ export function createAppRoutes(env: Env): readonly Route[] {
     // ——権利者は本サービスの利用者とは限らない。
     ...legalRoutes,
     ...takedownRoutes,
+    // プライバシーポリシーとよくある質問（2.3.1 v1.57 / #373）。**どちらも非ログインで
+    // 到達でき、D1 を読まない**（静的な画面）。
+    ...privacyRoutes,
+    ...faqRoutes,
     ...(devRoutesEnabled(env) ? devRoutes : []),
     ...authRoutes,
     ...accountRoutes,

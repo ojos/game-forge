@@ -6,6 +6,7 @@ import { LOGIN_PATH, LOGOUT_PATH } from '../src/auth/google.js';
 import { DRAFT_STATUS } from '../src/games.js';
 import { APP_CSS_PATH, BREADCRUMB_PARENTS, breadcrumbLabelOf } from '../src/html.js';
 import { TAKEDOWN_PATH, TERMS_PATH } from '../src/legal.js';
+import { FAQ_PATH, PRIVACY_PATH } from '../src/legal-paths.js';
 import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH } from '../src/ogp.js';
 import { NON_PAGE_PATHS, ancestorPathsOf, ssrPagePaths } from '../src/page-paths.js';
@@ -713,17 +714,24 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
     }
   });
 
-  it('フッタはサービス / 法務を持ち、空の区画と置かないと決めた区画が無い', async () => {
+  it('フッタはサービス / 法務 / お問い合わせを持ち、空の区画と置かないと決めた区画が無い', async () => {
     for (const path of getPaths()) {
       const footer = footerOf((await open(path)).body);
       expect(footer, `${path} にフッタが無い`).not.toBeNull();
-      for (const link of [PUBLIC_WORKS_PATH, GENERATE_PAGE_PATH, TERMS_PATH, TAKEDOWN_PATH]) {
+      for (const link of [
+        PUBLIC_WORKS_PATH,
+        GENERATE_PAGE_PATH,
+        TERMS_PATH,
+        TAKEDOWN_PATH,
+        PRIVACY_PATH,
+        FAQ_PATH,
+      ]) {
         expect(footer!, `${path} のフッタに ${link} が無い`).toContain(`href="${link}"`);
       }
-      // **見出しだけの区画を出さない**（#372）。お問い合わせは枠だけを置いてあり
-      // （`src/legal.ts` の `FOOTER_CONTACT_ITEMS`）、**行き先ができるまで見出しごと出ない。**
+      // **見出しだけの区画を出さない**（#372）。お問い合わせは #372 が枠だけを置き、
+      // #373 が行き先（窓口のメールアドレスとよくある質問）を入れた。
       const groups = footer!.split('<div class="gf-footer-group">').slice(1);
-      expect(groups.length, `${path} のフッタの区画が 2 つ未満`).toBeGreaterThanOrEqual(2);
+      expect(groups.length, `${path} のフッタの区画が 3 つ未満`).toBeGreaterThanOrEqual(3);
       for (const group of groups) {
         expect(group, `${path} のフッタに項目の無い区画がある`).toContain('<li><a href=');
       }

@@ -5,8 +5,10 @@ import { PUBLISHED_STATUS } from '../src/games.js';
 import likesWorker from '../workers/likes/src/index.js';
 import {
   DAILY_OPERATION_LIMIT,
+  LIKED_GAMES_SQL,
   LikeHub,
   MAX_GAMES_PER_SYNC,
+  MAX_LIKED_GAMES_PER_CALL,
   SYNC_INTERVAL_MS,
   jstDayKey,
 } from '../workers/likes/src/hub.js';
@@ -454,5 +456,262 @@ describe('公開の入口が無い（5.8）', () => {
   it('Worker の fetch は要求を読まずに 404 を返す', async () => {
     const response = await likesWorker.fetch();
     expect(response.status).toBe(404);
+  });
+});
+
+describe('押した作品の一覧（5.8 / M9-8 / #340）', () => {
+  it('押した新しい順に返し、取り消した作品は消える', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+    const first = crypto.randomUUID();
+    const second = crypto.randomUUID();
+    const third = crypto.randomUUID();
+
+    await hub.like(user, first, NOON_JST);
+    await hub.like(user, second, NOON_JST + 1);
+    await hub.like(user, third, NOON_JST + 2);
+
+    expect(await hub.likedGames(user, 10, 0)).toEqual([third, second, first]);
+
+    await hub.unlike(user, second, NOON_JST + 3);
+    expect(await hub.likedGames(user, 10, 0)).toEqual([third, first]);
+  });
+
+  it('同じ秒に押した作品の順序も決まっている（頁をめくって取りこぼさない）', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+    // **同じ `created_at` の行を作る。** 末尾の `game_id desc` が無いと、SQLite が
+    // 返す順序に頼ることになり、頁の境目で同じ作品が 2 度出たり 1 度も出なかったりする。
+    const ids = ['aaa', 'bbb', 'ccc'].map((prefix) => `${prefix}-${crypto.randomUUID()}`);
+    for (const id of ids) {
+      await hub.like(user, id, NOON_JST);
+    }
+    const expected = [...ids].sort().reverse();
+    expect(await hub.likedGames(user, 10, 0)).toEqual(expected);
+    // 1 件ずつめくっても、全件がちょうど 1 度ずつ出る。
+    const paged: string[] = [];
+    for (let offset = 0; offset < ids.length; offset += 1) {
+      paged.push(...(await hub.likedGames(user, 1, offset)));
+    }
+    expect(paged).toEqual(expected);
+  });
+
+  it('他人のいいねを 1 件も返さない', async () => {
+    const hub = freshHub();
+    const me = await seedUser();
+    const other = await seedUser();
+    const mine = crypto.randomUUID();
+    const theirs = crypto.randomUUID();
+
+    await hub.like(me, mine, NOON_JST);
+    await hub.like(other, theirs, NOON_JST + 1);
+
+    expect(await hub.likedGames(me, 10, 0)).toEqual([mine]);
+    expect(await hub.likedGames(other, 10, 0)).toEqual([theirs]);
+    // 1 件も押していない利用者には空の配列（例外にしない）。
+    expect(await hub.likedGames(await seedUser(), 10, 0)).toEqual([]);
+  });
+
+  it('限度と読み飛ばしが効く', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+    const ids: string[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      const id = crypto.randomUUID();
+      ids.push(id);
+      await hub.like(user, id, NOON_JST + index);
+    }
+    const newestFirst = [...ids].reverse();
+
+    expect(await hub.likedGames(user, 2, 0)).toEqual(newestFirst.slice(0, 2));
+    expect(await hub.likedGames(user, 2, 2)).toEqual(newestFirst.slice(2, 4));
+    expect(await hub.likedGames(user, 2, 4)).toEqual(newestFirst.slice(4, 5));
+    // 範囲の外は空（例外にしない。画面は空の頁を描ける）。
+    expect(await hub.likedGames(user, 2, 99)).toEqual([]);
+    expect(await hub.likedGames(user, 0, 0)).toEqual([]);
+  });
+
+  it('1 行も書かない（日次の操作回数にも同期待ちの印にも触れない）', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+    const game = crypto.randomUUID();
+    await hub.like(user, game, NOON_JST);
+
+    const before = await inHub(hub, (_instance, state) => ({
+      ops: state.storage.sql
+        .exec('select * from daily_ops')
+        .toArray()
+        .map((row) => JSON.stringify(row))
+        .sort(),
+      dirty: state.storage.sql
+        .exec('select * from dirty_games')
+        .toArray()
+        .map((row) => JSON.stringify(row))
+        .sort(),
+    }));
+
+    const measured = await measureWrites(hub, (instance) => instance.likedGames(user, 20, 0));
+
+    expect(measured.value).toEqual([game]);
+    // **SQLite が数えた書き込み行数で見る。** 表の中身を比べるだけでは、書いてから
+    // 同じ値へ戻す実装を通してしまう（このファイルの `measureWrites` の冒頭）。
+    expect(measured.rowsWritten, '一覧を引くだけで DO へ書いている').toBe(0);
+    expect(
+      await inHub(hub, (_instance, state) => ({
+        ops: state.storage.sql
+          .exec('select * from daily_ops')
+          .toArray()
+          .map((row) => JSON.stringify(row))
+          .sort(),
+        dirty: state.storage.sql
+          .exec('select * from dirty_games')
+          .toArray()
+          .map((row) => JSON.stringify(row))
+          .sort(),
+      })),
+    ).toEqual(before);
+  });
+
+  it('日次の上限に達していても引ける（読み取りは数えない）', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+    const ids: string[] = [];
+    // 上限ぴったりまで、状態が変わる操作を行う（付与だけで DAILY_OPERATION_LIMIT 回）。
+    for (let index = 0; index < DAILY_OPERATION_LIMIT; index += 1) {
+      const id = crypto.randomUUID();
+      ids.push(id);
+      expect((await hub.like(user, id, NOON_JST + index)).outcome).toBe('liked');
+    }
+    // 次の付与は断られる（上限に達している）。
+    expect((await hub.like(user, crypto.randomUUID(), NOON_JST)).outcome).toBe('limited');
+    // **それでも一覧は引ける。** 読むだけの口が上限に巻き込まれると、押しすぎた日に
+    // 自分の一覧が見えなくなる。
+    expect(await hub.likedGames(user, 20, 0)).toHaveLength(20);
+  });
+
+  it('BAN された利用者でも、本人の一覧は空にならない（数から外すのは他人向けである）', async () => {
+    const hub = freshHub();
+    const author = await seedUser();
+    const game = await seedGame(author);
+    const bad = await seedUser();
+    await hub.like(bad, game, NOON_JST);
+    await setBanned(bad, true);
+    await hub.sync(NOON_JST);
+
+    // 他人に見せる数からは外れる（#339 が決めたこと）。
+    expect(await d1LikeCount(game)).toBe(0);
+    // **本人の一覧には残る。** いいねの行は消していない（解除すれば数にも戻る）。
+    expect(await hub.likedGames(bad, 20, 0)).toEqual([game]);
+    await setBanned(bad, false);
+  });
+
+  it('引数の形が不正なら例外にする（LIMIT -1 を無制限にしない）', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+    await hub.like(user, crypto.randomUUID(), NOON_JST);
+
+    // **DO の中で呼ぶ**（RPC 越しに投げさせない）。stub からの拒否は workerd の RPC 層を
+    // 通り、`rejects` で受けても未処理の拒否として別に報告される（このファイルの他の
+    // 検査が RPC で呼んでいるのは、投げない経路だけである）。
+    //
+    // **SQLite は `LIMIT -1` を「無制限」と解釈する。** 負の値で上限が消えないこと。
+    // 防御の上限（1 個の DO に全員のいいねが集まっている）も見る。
+    const rejected = await inHub(hub, async (instance) => {
+      const thrown: string[] = [];
+      const cases: readonly [string, () => Promise<unknown>][] = [
+        ['limit が負', () => instance.likedGames(user, -1, 0)],
+        ['offset が負', () => instance.likedGames(user, 0, -1)],
+        ['limit が整数でない', () => instance.likedGames(user, 1.5, 0)],
+        ['limit が上限超え', () => instance.likedGames(user, MAX_LIKED_GAMES_PER_CALL + 1, 0)],
+        ['userId が空', () => instance.likedGames('', 1, 0)],
+      ];
+      for (const [label, call] of cases) {
+        try {
+          await call();
+        } catch {
+          thrown.push(label);
+        }
+      }
+      return thrown;
+    });
+
+    expect(rejected).toEqual([
+      'limit が負',
+      'offset が負',
+      'limit が整数でない',
+      'limit が上限超え',
+      'userId が空',
+    ]);
+    // **通る側も見る**（全部投げる実装で緑にならないように）。
+    expect(await hub.likedGames(user, MAX_LIKED_GAMES_PER_CALL, 0)).toHaveLength(1);
+  });
+});
+
+describe('本人の一覧の索引（PR #348 のレビュー指摘）', () => {
+  it('`likes_user_recent_idx` が効き、並べ替えのための一時的な処理が入らない', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+    // 索引が選ばれるだけの行を入れる（1 行だと全走査のほうが安いと判断されうる）。
+    for (let index = 0; index < 30; index += 1) {
+      await hub.like(user, crypto.randomUUID(), NOON_JST + index);
+    }
+
+    const plan = await inHub(hub, (_instance, state) =>
+      state.storage.sql
+        // **SQL を書き写さない。** `LIKED_GAMES_SQL` そのものに `EXPLAIN QUERY PLAN` を
+        // 付ける（書き写すと、索引を落とした日に検査だけが古い SQL を見る）。
+        .exec<{ detail: string }>(`explain query plan ${LIKED_GAMES_SQL}`, user, 20, 0)
+        .toArray()
+        .map((row) => row.detail)
+        .join('\n'),
+    );
+
+    // **索引で辿っていること。**
+    expect(plan, plan).toContain('likes_user_recent_idx');
+    // **並べ替えのための一時的な処理が入らないこと**——これが索引を足した理由である
+    // （主キー `(user_id, game_id)` では `order by created_at desc` を作れないので、
+    // 索引が無いとその人の履歴全体を呼び出しごとに並べ替える）。
+    expect(plan, plan).not.toMatch(/TEMP B-TREE/iu);
+    // 表を素で走らせていないこと（`SCAN likes` は全走査の印である）。
+    expect(plan, plan).not.toMatch(/\bSCAN\b/iu);
+  });
+
+  it('索引は起動のたびに作られる（既存の行を持つ DO でも壊れない）', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+    await hub.like(user, crypto.randomUUID(), NOON_JST);
+
+    const indexes = await inHub(hub, (_instance, state) =>
+      state.storage.sql
+        .exec<{ name: string }>(
+          "select name from sqlite_master where type = 'index' and tbl_name = 'likes'",
+        )
+        .toArray()
+        .map((row) => row.name)
+        .sort(),
+    );
+    expect(indexes).toContain('likes_user_recent_idx');
+    // 作品ごとの数を数えるための索引（#339）も残っている。
+    expect(indexes).toContain('likes_game_idx');
+  });
+
+  it('書き込みは 6 行である（索引で 1 行増えた。3.6 の見積もりの根拠）', async () => {
+    const hub = freshHub();
+    const user = await seedUser();
+
+    const measured = await measureWrites(hub, (instance) =>
+      instance.like(user, crypto.randomUUID(), NOON_JST),
+    );
+
+    // **状態を変える付与 1 回で 6 行。** 内訳はいいねの行＋`likes_game_idx`＋
+    // **`likes_user_recent_idx`**＋今日の操作回数＋同期待ちの印（`dirty_games` は rowid 表
+    // なので行と `game_id` の自動索引で 2 行）。
+    //
+    // **索引を足す前は 5 行だった**（この検査を書いてから索引の行だけを外して実測した）。
+    // **起票時の記述の「4 行」は 1 行少なかった**——`dirty_games` の 2 行を数えていない。
+    // **この数が 3.6 の見積もりの入力である**ので、実測を検査に持たせる（増やした日に
+    // 気づける。推測の数を書き写さない）。
+    expect(measured.value.outcome).toBe('liked');
+    expect(measured.rowsWritten, 'DO への書き込み行数が変わった').toBe(6);
   });
 });

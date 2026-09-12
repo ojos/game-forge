@@ -73,6 +73,10 @@ import type { AuthoredGame, GenerationState } from './games.js';
 import { UNTITLED_TITLE, listAuthoredGames } from './games.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { GENERATE_PAGE_PATH } from './paths.js';
+// **「いいねした作品」への導線はここに置く**（2.3.7 / 5.8 / #340）。**ヘッダには置かない**
+// ——本人だけの画面が 2 枚並ぶので、ヘッダの項目を増やさないと 2.3.7 が決めている。
+// 綴りは値だけの葉から取る（`src/liked-works-paths.ts`。あちらの冒頭が置き場の理由）。
+import { LIKED_WORKS_PATH } from './liked-works-paths.js';
 import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './works-paths.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
@@ -237,6 +241,7 @@ ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
   return `${siteHead({ title: 'あなたの作品 - Game Forge', noindex: true })}
 <h1>あなたの作品</h1>
 <p>生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>
+<p><a href="${LIKED_WORKS_PATH}">いいねした作品</a></p>
 <p><a href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>
 ${body}
 ${truncated}

@@ -81,6 +81,17 @@ import {
   workPagePath,
 } from './paths.js';
 import { UNKNOWN_AUTHOR } from './work-card.js';
+import {
+  LIKE_CANCEL_GAME_ID_FIELD,
+  LIKE_CANCEL_PATH,
+  LIKE_GAME_ID_FIELD,
+  LIKE_PATH,
+} from './like-paths.js';
+// **いいねの読み書きは窓口だけを通す**（5.8）。この画面が触れるのは
+// {@link isPressableGame}（D1 の読み取り）と {@link readLikeViewerState}（DO の読み取り）の
+// 2 つで、どちらも窓口（`src/likes.ts`）が輸出しているものである。**DO のバインディングの
+// 綴りはこの画面に現れない**（`scripts/check-likes-worker.sh` の 4 番がそれを機械で見る）。
+import { isPressableGame, readLikeViewerState } from './likes.js';
 import { UNKNOWN_FAILURE_MESSAGE, failureMessageOf } from './generation-failure.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
@@ -224,6 +235,17 @@ interface WorkRow {
   ogp_started_at: number | null;
   /** 公開した時刻。未公開なら null。**撮影を始めた時刻の代用**に使う（#235）。 */
   published_at: number | null;
+  /**
+   * いいねの数（`games.like_count`。`migrations/0020_games_like_count.sql`）。
+   *
+   * **正本は Durable Objects にある**（5.8）。この列は DO のアラームが 5 分おきに
+   * 上書きした写しで、**最大 5 分遅れる。** **未ログインの閲覧ではこの列を読む**
+   * ——閲覧数で DO の枠を減らさない（5.8「数の読み方と同期」）。
+   *
+   * 列は `NOT NULL DEFAULT 0` だが、**型の上で必須であることは実行時の保証ではない**
+   * （1.2.50 / #340）。読み方は {@link storedLikeCount} が 1 か所で持つ。
+   */
+  like_count: number | null;
   /** 作者の表示名（`users.display_name`）。結合が空振りしたら null。 */
   author_name: string | null;
   /**
@@ -571,6 +593,35 @@ export interface WorkPageView {
    * `forkableId` を分けたのと同じ理由）。条件は「**公開済み・本人**」である。
    */
   readonly removableId: string | null;
+  /**
+   * いいねの数（5.8 / #340）。**0 のときは出さない**（2.3.6 の `fork_count` と同じ扱い）。
+   *
+   * **どこから来た数かは、この型に現れない。** ログイン中なら DO が数えた実数、
+   * 未ログインなら D1 の `games.like_count`（最大 5 分遅れる）である。画面は
+   * どちらでも同じ 1 つの数として出す——**遅れているかどうかは見た目で示せない**し、
+   * 示しても読み手にできることが無い。
+   */
+  readonly likeCount: number;
+  /**
+   * この作品 id（いいねを**付ける**フォームに入れる。5.8）。付けられないなら null。
+   *
+   * **`unlikableId` と兼ねない**（`publishableId` / `forkableId` を分けたのと同じ理由
+   * ——同時に非 null になりえない値を 1 つに畳むと、片方の条件を変えた日にもう片方が
+   * 黙って壊れる）。**真偽 1 つで「押しているか」を表す形にもしない**——それだと
+   * 「押せない人」（未ログイン・作者・審査で止めた作品）を表せず、4.4 の
+   * 「押せないボタンを出さない」が画面側の `&&` に落ちる。
+   *
+   * **条件は窓口が決める。** 画面で `published && signedIn && !owner && …` を
+   * 組み立てない——押せるかどうかの正本は `src/likes.ts` の `PRESSABLE_GAME_SQL`
+   * であり、ここへ来るのは判定済みの値だけである（`revisable` と同じ方針）。
+   */
+  readonly likableId: string | null;
+  /**
+   * この作品 id（いいねを**取り消す**フォームに入れる。5.8）。取り消せないなら null。
+   *
+   * 置き方の理由は {@link likableId} と同じである。**押している人にだけ非 null になる。**
+   */
+  readonly unlikableId: string | null;
 }
 
 /**
@@ -1173,8 +1224,78 @@ function publishedSection(view: WorkPageView): string {
       : `
 <p>共有する URL: <code>${view.shareUrl}</code></p>`;
   return `<h2>公開しています</h2>
-${loadingScreen(view)}${share}
+${loadingScreen(view)}${likeSection(view)}${share}
 ${forkList(view.forks)}${recaptureSection(view)}${removeSection(view)}`;
+}
+
+/**
+ * いいねの数と、付け外しのボタン（5.8 / #340）。
+ *
+ * # 数は 0 のときに出さない
+ *
+ * 2.3.6 が `fork_count` について決めたのと同じ扱いである。**「いいね 0」が全作品に
+ * 並ぶ状態は、区別を何も運ばない**うえに、押していないことを責める文字列になる。
+ * 系統の「このゲームからの改造: 0 件」を消さないのとは判断が違う——あちらは親の
+ * 1 行と対になっており、**片方だけが無いと「機能が無い」と読める**（{@link forkList}）。
+ * いいねにはその対が無い。
+ *
+ * # 押せない人にはボタンを出さない（4.4）
+ *
+ * **未ログインの閲覧者と作者にはフォームが 1 バイトも出ない。** 判定は窓口が
+ * 済ませてあり（{@link WorkPageView.likableId}）、ここでは `null` かどうかだけを見る。
+ * **無効化した `<button disabled>` を出す形も採らない**——4.4 が無くそうとしている
+ * のは「押しても動かないボタン」そのもので、無効化はその見た目を残す（1.2.38 の
+ * #24 が同じ判断をしている）。
+ *
+ * # 二重送信を JavaScript で防がない
+ *
+ * 口は冪等である（5.8。既に押していれば何もしない）。**だから連打で壊れるものが無く、
+ * ボタンを止める必要も無い。** POST-redirect-GET で戻ってきた画面は、押した側の
+ * フォームだけを持つ。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML。数もボタンも無ければ空文字
+ */
+function likeSection(view: WorkPageView): string {
+  const count =
+    view.likeCount > 0 ? `\n<p class="gf-likes">いいね ${view.likeCount}</p>` : '';
+
+  // **2 つが同時に非 null になる経路は無い**（窓口は「押しているか」で振り分ける）。
+  // それでも `else if` で書くのは、**含意に寄りかからない**ためである（両方が
+  // 入ってきたときにフォームを 2 つ描くより、付ける側だけを出すほうが害が小さい）。
+  const form =
+    view.likableId !== null
+      ? likeForm(LIKE_PATH, LIKE_GAME_ID_FIELD, view.likableId, 'いいね')
+      : view.unlikableId !== null
+        ? likeForm(
+            LIKE_CANCEL_PATH,
+            LIKE_CANCEL_GAME_ID_FIELD,
+            view.unlikableId,
+            'いいねを取り消す',
+          )
+        : '';
+
+  return `${count}${form}`;
+}
+
+/**
+ * いいねのフォーム 1 つ（5.8）。
+ *
+ * **素の `<form method="post">` である**（このモジュール冒頭の「JavaScript を要求
+ * しない」）。終わったら窓口が作品ページへ 303 で戻す。
+ *
+ * @param action 送り先（`src/like-paths.ts` の綴り）
+ * @param field 作品 id を載せる項目名（**口ごとに別の定数**。5.8）
+ * @param gameId 作品
+ * @param label ボタンの文言
+ * @returns HTML
+ */
+function likeForm(action: string, field: string, gameId: string, label: string): string {
+  return `
+<form class="gf-like" method="post" action="${action}">
+  <input type="hidden" name="${field}" value="${gameId}">
+  <button type="submit">${label}</button>
+</form>`;
 }
 
 /**
@@ -1521,6 +1642,25 @@ export function parentWorkOf(row: {
 }
 
 /**
+ * D1 の `games.like_count` を、画面に出せる数へ落とす（5.8 / #340）。
+ *
+ * **列は `NOT NULL DEFAULT 0` だが、実行時の保証として扱わない**（1.2.50）。数でない値が
+ * 来たときに `いいね undefined` と描くくらいなら、**0 に倒して何も出さない**ほうがよい
+ * ——0 は「出さない」と同義なので、**倒した先の見た目が「いいねがまだ無い作品」と
+ * 同じになる**（誤った数を出さない）。負の値も 0 へ倒す（同期は実数を上書きするので
+ * 通常ありえないが、画面が「いいね -1」を描く余地を残さない）。
+ *
+ * @param value 引いた値
+ * @returns 0 以上の整数
+ */
+export function storedLikeCount(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  return Math.floor(value);
+}
+
+/**
  * 作品ページを表示する。
  *
  * @param request 受信したリクエスト
@@ -1550,7 +1690,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   const row = await env.DB.prepare(
     `select g.author_id, g.status, g.title, g.generation_state, g.generation_error,
             g.preview_key, g.created_at, g.generation_started_at,
-            g.ogp_state, g.ogp_started_at, g.published_at, g.ip_notice,
+            g.ogp_state, g.ogp_started_at, g.published_at, g.like_count, g.ip_notice,
             a.display_name as author_name, a.is_operator as author_is_operator,
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
        from games g
@@ -1620,6 +1760,39 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
     session.ok && (revisableNow || forkableNow)
       ? await readDailyRemaining(env, session.userId)
       : null;
+
+  // ── いいね（5.8 / #340）────────────────────────────────────────────────────
+  //
+  // **DO を呼ぶのはログイン中の公開作品のページだけである。** 未ログインの閲覧では
+  // 1 度も呼ばず、上で既に引いてある `games.like_count` を読む（追加の問い合わせは
+  // 0 件）。共有 URL を踏む閲覧者が大半であり、**閲覧数で DO の枠を減らさない**
+  // （5.8「数の読み方と同期」。DO の枠は 1 日 10 万リクエストで、尽きれば止まるのは
+  // いいねだけだが、尽くす必要が無い）。
+  //
+  // **取り下げた作品では呼ばない。** tombstone の画面に数もボタンも出さない——
+  // 押せば窓口が 404 で断る（`PRESSABLE_GAME_SQL` は `status = 'published'`）。
+  //
+  // **届かなければ null が返る**（窓口が倒す。`src/likes.ts` の「読み取りが届かなくても、
+  // 画面ごと落とさない」）。**未ログインと同じ枝に落ちる**——D1 の写しを出し、ボタンは
+  // 出さない。**これは投げるより弱い扱いだが、正しい扱いである**: 5.8 は「DO の枠が
+  // 尽きても止まるのはいいねだけである」と約束しており、**投げると、拡散の着地点が
+  // ログイン中の利用者にだけ 500 になる**（止まるのがいいねだけでなくなる）。
+  const likeViewer =
+    published && !removed && session.ok
+      ? await readLikeViewerState(env, session.userId, gameId)
+      : null;
+
+  // **押せるかどうかを画面で組み立てない。** 正本は窓口の SQL（`PRESSABLE_GAME_SQL`）で、
+  // 公開済み・自作でない・8.4 の審査で止めていない、の 3 つを 1 本で見る。**同じ条件を
+  // ここへ書き写すと、審査で止めた作品にボタンが出たまま口だけが 404 を返す**という
+  // 食い違いになる（4.4 が無くそうとしているもの）。
+  //
+  // **読むのはログイン中の公開作品のときだけ**である（3.6 の読み取りがそのまま費用に
+  // なる。未ログインでは押せる余地が無いので 1 行も引かない）。
+  const pressable =
+    published && !removed && session.ok
+      ? await isPressableGame(env, session.userId, gameId)
+      : false;
 
   return html(
     renderWorkPage({
@@ -1723,6 +1896,26 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **取り下げられるのは、公開してしまった作品だけである**（5.3 / #35）。
       // 押した結果を決めるのは `removeGame` の SQL で、ここは口を出すかだけを決める。
       removableId: owner && published ? gameId : null,
+      // **ログイン中は DO が数えた実数、未ログインは D1 の写し**（5.8）。前者は
+      // BAN された利用者の分を除いてあり、後者は最大 5 分遅れる。**未公開・取り下げ済みの
+      // ページでは 0**（数を出さない）——`like_count` に値が残っていても、公開していない
+      // 作品のいいねを画面に出す意味が無い。
+      //
+      // **`!removed` は第 2 層である。** 描画側の第 1 層は `sectionFor` の tombstone
+      // 分岐で、そちらが先に本文ごと差し替える（`publishableId` と同じ関係）。
+      // **したがってここだけを外しても画面は変わらない**（変異を当てて確かめた）。
+      // 層が 1 枚になった状態を残さないために、`test/work-page.test.ts` が第 1 層
+      // そのものを別の it で止めている。
+      likeCount:
+        published && !removed
+          ? (likeViewer?.count ?? storedLikeCount(row.like_count))
+          : 0,
+      // **押している人には取り消しだけ、押していない人には付与だけを出す**（5.8）。
+      // `pressable` は窓口の SQL が返した判定で、**未ログイン（`likeViewer === null`）と
+      // 作者では必ず false** になる。押していないことを `likeViewer` の側から見るので、
+      // 「押せるが状態が読めない」という組み合わせは現れない。
+      likableId: pressable && likeViewer !== null && !likeViewer.liked ? gameId : null,
+      unlikableId: pressable && likeViewer !== null && likeViewer.liked ? gameId : null,
     }),
   );
 }

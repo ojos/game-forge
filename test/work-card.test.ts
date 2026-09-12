@@ -1,0 +1,238 @@
+import { env } from 'cloudflare:test';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { handleAppRequest } from '../src/app.js';
+import { PUBLISHED_STATUS } from '../src/games.js';
+import type { PublicWork } from '../src/games.js';
+import { cachedRows, listCacheKey, purgeListCache } from '../src/list-cache.js';
+import { PUBLIC_WORKS_PATH } from '../src/works-paths.js';
+import { cardLikeCount, renderWorkCard, renderWorkCards } from '../src/work-card.js';
+import { workPagePath } from '../src/work-page.js';
+import { applySchema } from './helpers/schema.js';
+
+/**
+ * 作品カードのいいねの数（仕様 2.3.6 / 5.8 / M9-8 / #340）。
+ *
+ * # 何を確かめるか
+ *
+ * 1. **数が出る**（0 のときは出さない）
+ * 2. **`likeCount` を持たない古い行でも「いいね undefined」と描かない**
+ *    ——一覧は Cache API に行を載せ、**鍵に行の形の版を持たない**（`src/list-cache.ts`。
+ *    TTL 60 秒）。配備の直後、最大 60 秒は `like_count` を選んでいなかった頃の行が
+ *    返りうる（#339 からの申し送り。1.2.50「型が必須であることは実行時の保証ではない」）。
+ *    **実際に古い形の行をキャッシュへ入れてから一覧を開く**——`?? 0` を書いただけの
+ *    検査にしない
+ * 3. **表示名は数を足したあともエスケープされる**（5.9。カードが D1 の値を HTML へ
+ *    入れるのは題名と作者名の 2 つだけで、いいねの数は数値である）
+ *
+ * # 数を出す側は DO を呼ばない
+ *
+ * カードが読むのは `games.like_count`（D1 へ写した値。最大 5 分遅れる）である。
+ * **一覧を開くことで DO の枠を減らさない**（5.8）。この性質は
+ * `test/work-page.test.ts` が作品ページについて機械判定しており、ここでは
+ * 「カードは渡された行だけから描かれる」ことを描画で見る。
+ */
+
+const APP_ORIGIN = `https://${env.APP_HOST}`;
+
+beforeAll(async () => {
+  await applySchema();
+});
+
+/** 公開時刻の払い出し（`test/works-list.test.ts` と同じ理由で、常に最も新しい値を返す）。 */
+let publishedAtSeq = 9_500_000_000;
+
+/**
+ * 次の公開時刻を返す。
+ *
+ * @returns UNIX 秒
+ */
+function nextPublishedAt(): number {
+  publishedAtSeq += 1;
+  return publishedAtSeq;
+}
+
+/**
+ * 描画だけを試すための最小の行。
+ *
+ * **`PublicWork` そのものを組み立てる。** 型が変わったら検査が落ちるので、写しには
+ * ならない（`test/work-page.test.ts` の `baseView` と同じ扱い）。
+ */
+const baseWork: PublicWork = {
+  id: '00000000-0000-4000-8000-000000000000',
+  title: 'カードの題',
+  authorName: 'カードの作者',
+  publishedAt: 1_700_000_000,
+  forkCount: 0,
+  likeCount: 0,
+  hasParent: false,
+  hasShot: true,
+};
+
+/**
+ * 作者を 1 人用意する。
+ *
+ * @param displayName 表示名
+ * @returns 利用者の id
+ */
+async function seedUser(displayName: string): Promise<string> {
+  const id = `card-${crypto.randomUUID()}`;
+  await env.DB.prepare(
+    'insert into users (id, google_sub, email, display_name, created_at) values (?, ?, ?, ?, 1)',
+  )
+    .bind(id, `sub-${id}`, `${id}@example.com`, displayName)
+    .run();
+  return id;
+}
+
+/**
+ * 公開済みの作品を 1 件入れる。
+ *
+ * @param authorId 作者
+ * @param likeCount `games.like_count`
+ * @returns 作った作品の id
+ */
+async function seedGame(authorId: string, likeCount: number): Promise<string> {
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `insert into games
+       (id, author_id, status, title, go_version, created_at, generation_state,
+        published_at, fork_count, like_count, ogp_state)
+     values (?, ?, ?, 'カードの題', '', 1, 'ready', ?, 0, ?, 'ready')`,
+  )
+    .bind(id, authorId, PUBLISHED_STATUS, nextPublishedAt(), likeCount)
+    .run();
+  return id;
+}
+
+/** 1 頁目（新着順）のキャッシュの鍵。 */
+const FIRST_PAGE_KEY = listCacheKey('works', { sort: 'recent', page: 1 });
+
+/**
+ * 公開一覧を開く（**経路表を通す**）。
+ *
+ * @returns 本文
+ */
+async function openList(): Promise<string> {
+  const response = await handleAppRequest(
+    new Request(`${APP_ORIGIN}${PUBLIC_WORKS_PATH}`, { headers: { accept: 'text/html' } }),
+    env,
+  );
+  return await response.text();
+}
+
+describe('いいねの数を出す（2.3.6 / 5.8）', () => {
+  it('1 以上なら出し、0 なら出さない', () => {
+    expect(renderWorkCard({ ...baseWork, likeCount: 4 })).toContain('いいね 4');
+    // **全行に「いいね 0」が並ぶ一覧は、区別を何も運ばない**（`fork_count` と同じ扱い）。
+    expect(renderWorkCard({ ...baseWork, likeCount: 0 })).not.toContain('いいね');
+  });
+
+  it('改造された数と並んで出る（どちらも 0 なら両方出ない）', () => {
+    const both = renderWorkCard({ ...baseWork, forkCount: 2, likeCount: 5 });
+    expect(both).toContain('改造 2');
+    expect(both).toContain('いいね 5');
+    const neither = renderWorkCard({ ...baseWork, forkCount: 0, likeCount: 0 });
+    expect(neither).not.toContain('改造');
+    expect(neither).not.toContain('いいね');
+  });
+
+  it('公開一覧のカードに、D1 へ写した数が出る', async () => {
+    const author = await seedUser('数の出る作者');
+    const liked = await seedGame(author, 6);
+
+    await purgeListCache(FIRST_PAGE_KEY);
+    const body = await openList();
+
+    expect(body).toContain(workPagePath(liked));
+    expect(body).toContain('いいね 6');
+  });
+});
+
+describe('likeCount を持たない古い行（キャッシュの 60 秒の窓。#340）', () => {
+  it('欠けていても数を出さず、undefined も NaN も本文へ出さない', async () => {
+    const author = await seedUser('古い行の作者');
+    const id = await seedGame(author, 8);
+
+    // **本番と同じ経路で古い形の行を仕込む。** `src/list-cache.ts` は行を JSON として
+    // 保存し、鍵に行の形の版を持たない。`like_count` を選んでいなかった頃の行は、
+    // まさにこの形（`likeCount` の無いオブジェクト）で入っている。
+    await purgeListCache(FIRST_PAGE_KEY);
+    const stale = [
+      {
+        id,
+        title: 'カードの題',
+        authorName: '古い行の作者',
+        publishedAt: publishedAtSeq,
+        forkCount: 0,
+        hasParent: false,
+        hasShot: true,
+      },
+    ];
+    await cachedRows(FIRST_PAGE_KEY, async () => stale as unknown as readonly PublicWork[]);
+
+    const body = await openList();
+
+    // 仕込みが効いていること（キャッシュを読んでいる）を先に確かめる。**効いていない
+    // まま「undefined が無い」を見ても、何も確かめていない**（`docs/handoff.md` 4 章）。
+    expect(body).toContain(workPagePath(id));
+    expect(body, 'キャッシュを読んでいない（D1 の 8 が出ている）').not.toContain('いいね 8');
+    // **0 として扱う**＝数を出さない（誤った数を 1 つも出さない。#340 の判断）。
+    //
+    // **「いいね」の語だけでは見られない。** 並べ替えの札（「いいねの数」）と
+    // `<meta name="description">` が同じ語を持つ（`src/works-list.ts`）。**数が
+    // 添えられている形**だけを探す。
+    expect(body).not.toMatch(/いいね\s*\d/u);
+    expect(body).not.toContain('undefined');
+    expect(body).not.toContain('NaN');
+
+    // 窓は 60 秒で閉じる。捨てれば D1 から引き直し、数が出る。
+    await purgeListCache(FIRST_PAGE_KEY);
+    expect(await openList()).toContain('いいね 8');
+  });
+
+  it('数でない値はすべて 0 に倒す（読み方は 1 か所が持つ）', () => {
+    for (const broken of [undefined, null, Number.NaN, Number.POSITIVE_INFINITY, '3', -1, 0]) {
+      const work = { ...baseWork, likeCount: broken } as unknown as PublicWork;
+      expect(cardLikeCount(work), String(broken)).toBe(0);
+      expect(renderWorkCard(work), String(broken)).not.toContain('いいね');
+    }
+    // 空振りしないことを対で見る。
+    expect(cardLikeCount({ ...baseWork, likeCount: 3 })).toBe(3);
+    expect(cardLikeCount({ ...baseWork, likeCount: 3.9 }), '整数へ落とす').toBe(3);
+  });
+});
+
+describe('表示名は数を足したあともエスケープされる（5.9）', () => {
+  it('数と並んでも、作者名の HTML はタグにならない', () => {
+    const html = renderWorkCard({
+      ...baseWork,
+      authorName: '<script>alert(1)</script>',
+      likeCount: 2,
+    });
+    expect(html).toContain('いいね 2');
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('公開一覧の経路でも、作者名がタグにならない（数が出る行で確かめる）', async () => {
+    const author = await seedUser('<img src=x onerror=alert(1)>');
+    const id = await seedGame(author, 9);
+
+    await purgeListCache(FIRST_PAGE_KEY);
+    const body = await openList();
+
+    expect(body).toContain(workPagePath(id));
+    expect(body).toContain('いいね 9');
+    expect(body).not.toContain('<img src=x');
+    expect(body).toContain('&lt;img src=x onerror=alert(1)&gt;');
+  });
+
+  it('カードを並べても同じ（部品は 1 つである。2.3.6）', () => {
+    const cards = renderWorkCards([
+      { ...baseWork, id: '00000000-0000-4000-8000-000000000001', likeCount: 1 },
+      { ...baseWork, id: '00000000-0000-4000-8000-000000000002', likeCount: 0 },
+    ]);
+    expect(cards.match(/いいね /gu) ?? []).toHaveLength(1);
+    expect(renderWorkCards([])).toBe('');
+  });
+});

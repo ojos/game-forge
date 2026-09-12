@@ -18,6 +18,7 @@ import { inviteRoutes } from './invite-issuance.js';
 import { myWorksRoutes } from './my-works.js';
 import { worksListRoutes } from './works-list.js';
 import { likeRoutes } from './likes.js';
+import { likedWorksRoutes } from './liked-works.js';
 import { ogpRecaptureRoutes } from './ogp-recapture.js';
 import { ogpRoutes } from './ogp.js';
 import { ssrPagePaths } from './page-paths.js';
@@ -293,6 +294,7 @@ export function createAppRoutes(env: Env): readonly Route[] {
     ...reviseRoutes,
     ...forkRoutes,
     ...likeRoutes,
+    ...likedWorksRoutes,
     ...generateCallbackRoutes,
     ...generatePageRoutes,
     ...workPageRoutes,

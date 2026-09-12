@@ -395,6 +395,36 @@ button:disabled {
   white-space: nowrap;
 }
 
+/*
+ * いいね（仕様 5.8 / #340）。
+ *
+ * **主ボタンにしない。** このページの主 CTA は「このゲームを改造する」（`.gf-fork`）で、
+ * 10.1 の主 KPI（フォーク率）の入口である。いいねは 10.2 の補助指標であり、
+ * **強さの順序をそのまま見た目の順序にする**——素のボタンのまま、作品の枠の下に置く。
+ *
+ * **数とボタンを横に並べない。** 縦に積むと、幅 390px の端末（`scripts/check-page-width.sh`）
+ * で折り返しの相談が要らない。
+ */
+.gf-likes {
+  margin: var(--gf-gap-3) 0 0;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-like {
+  margin-top: var(--gf-gap-2);
+}
+
+/*
+ * 作品カードのいいねの数（仕様 2.3.6 / #340）。
+ *
+ * **`.gf-card-forks` と同じ扱いにする**（下の「作品カード」の区画にある）。カードの
+ * 下段は作品そのものより弱く置く——主役はスクリーンショットである（M8 の方針）。
+ */
+.gf-card-likes {
+  color: var(--gf-ink-faint);
+}
+
 .gf-fork-note {
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);

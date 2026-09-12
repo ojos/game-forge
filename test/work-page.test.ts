@@ -9,6 +9,7 @@ import {
   FORKS_PER_PAGE,
   GENERATION_IS_SYNCHRONOUS,
   OPERATOR_MARK,
+  storedLikeCount,
   WORK_PAGE_PREFIX,
   WORK_REMOVE_GAME_ID_FIELD,
   WORK_REMOVE_PATH,
@@ -23,7 +24,16 @@ import {
   failGame,
   hashJobToken,
   publishGame,
+  removeGame,
 } from '../src/games.js';
+import {
+  LIKE_CANCEL_GAME_ID_FIELD,
+  LIKE_CANCEL_PATH,
+  LIKE_GAME_ID_FIELD,
+  LIKE_PATH,
+} from '../src/like-paths.js';
+import { changeLike } from '../src/likes.js';
+import { REVIEW_QUEUED } from '../src/reports.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
 import { defaultPipeline, runJobInline, startGeneration } from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
@@ -1000,6 +1010,9 @@ const baseView: WorkPageView = {
   revisions: [],
   recapturableId: null,
   removableId: null,
+  likeCount: 0,
+  likableId: null,
+  unlikableId: null,
 };
 
 describe('著名 IP 名の置換を作者へ開示する（6.2 / #39）', () => {
@@ -1306,5 +1319,300 @@ describe('運営の印（#334）', () => {
     };
     expect(renderWorkPage({ ...view, authorIsOperator: false })).not.toContain(MARK_ELEMENT);
     expect(renderWorkPage({ ...view, authorIsOperator: true })).toContain(MARK_ELEMENT);
+  });
+});
+
+describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
+  /**
+   * DO のバインディングへの触り方を記録する env を作る。
+   *
+   * **「DO を呼ばない」を機械判定できる形にする。** 名前空間（`env.LIKE_HUB`）から
+   * stub を取らずに DO へ届く経路は無いので、**プロパティへ 1 度も触っていなければ
+   * 呼んでいない。** 特定のメソッド名（`getByName`）だけを数える形にしないのは、
+   * 別の取り方（`get(idFromName(...))`）へ書き換えたときに検査が黙って空振りする
+   * ためである。
+   *
+   * @returns 差し替えた env と、触ったプロパティ名の記録
+   */
+  function recordingHubEnv(): { env: Env; touched: string[] } {
+    const touched: string[] = [];
+    const namespace = env.LIKE_HUB as unknown as object;
+    const proxy = new Proxy(namespace, {
+      get(target, property) {
+        if (typeof property === 'string') {
+          touched.push(property);
+        }
+        const value: unknown = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    return {
+      env: { ...env, SESSION_SECRET: SECRET, LIKE_HUB: proxy } as unknown as Env,
+      touched,
+    };
+  }
+
+  /**
+   * 記録つきの env で作品ページを開く。
+   *
+   * @param path 開くパス
+   * @param cookie `Cookie` ヘッダ（省略すると未ログイン）
+   * @returns 本文と、DO へ触った記録
+   */
+  async function openRecording(
+    path: string,
+    cookie?: string,
+  ): Promise<{ body: string; touched: string[] }> {
+    const headers: Record<string, string> = {};
+    if (cookie !== undefined) {
+      headers['cookie'] = cookie;
+    }
+    const recording = recordingHubEnv();
+    const response = await dispatch(
+      workPageRoutes,
+      new Request(`${APP_ORIGIN}${path}`, { headers }),
+      recording.env,
+    );
+    return { body: await response.text(), touched: recording.touched };
+  }
+
+  /**
+   * 公開済みの作品を 1 件用意する。
+   *
+   * @param suffix テスト内で一意な接尾辞（作者の表示名にもなる）
+   * @returns 作者の id と作品 id
+   */
+  async function seedPublished(suffix: string): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(`like-${suffix}`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: `sha-like-${suffix}` }));
+    const published = await publishGame(env, id, userId);
+    expect(published.ok).toBe(true);
+    return { userId, id };
+  }
+
+  /**
+   * D1 の `games.like_count` を直に書き換える（同期（DO のアラーム）が書く列である）。
+   *
+   * **当たったことを先に確かめる。** 0 行の UPDATE のあとで数を見ても、何も確かめて
+   * いない（`docs/handoff.md` 4 章）。
+   *
+   * @param gameId 作品
+   * @param count 数
+   */
+  async function setStoredLikeCount(gameId: string, count: number): Promise<void> {
+    const result = await env.DB.prepare('update games set like_count = ? where id = ?')
+      .bind(count, gameId)
+      .run();
+    expect(result.meta.changes).toBe(1);
+  }
+
+  /** 付与のフォーム（`action` がいいねの口を指す `<form>`）。 */
+  const LIKE_FORM = new RegExp(`<form[^<>]*action="${LIKE_PATH}"`, 'u');
+
+  /** 取り消しのフォーム。**付与の綴りは取り消しの接頭辞なので、別々に見る。** */
+  const CANCEL_FORM = new RegExp(`<form[^<>]*action="${LIKE_CANCEL_PATH}"`, 'u');
+
+  it('未ログインの閲覧では DO を 1 度も呼ばず、D1 の数を出す（ボタンは出さない）', async () => {
+    const { id } = await seedPublished('anon');
+    await setStoredLikeCount(id, 3);
+
+    const { body, touched } = await openRecording(workPagePath(id));
+
+    // **acceptance: 未ログインの作品ページにボタンが出ず、DO が呼ばれない。**
+    expect(touched, 'DO のバインディングに触れている').toEqual([]);
+    expect(body).not.toMatch(LIKE_FORM);
+    expect(body).not.toMatch(CANCEL_FORM);
+    // 数は出す（5.8。外部の閲覧者は「数を見るだけ」）。値は D1 の写しである。
+    expect(body).toContain('いいね 3');
+  });
+
+  it('ログイン中は DO へ 1 回だけ問い合わせ、D1 の写しより DO の実数を出す', async () => {
+    const { id } = await seedPublished('exact');
+    const fan = await seedUser('like-exact-fan');
+    // D1 の写しを、わざと実数と違う値にする（同期の遅れを再現する）。
+    await setStoredLikeCount(id, 99);
+    expect(await changeLike(env, 'like', fan, id, Math.floor(Date.now() / 1000))).toBe('liked');
+
+    const { body, touched } = await openRecording(workPagePath(id), await sessionCookie(fan));
+
+    // **1 回だけ**（5.8）。stub を取るのは 1 度で、名前空間への触り方も 1 つだけである。
+    expect(touched).toEqual(['getByName']);
+    // DO が数えた実数が出る。**D1 の写し（99）は出ない。**
+    expect(body).toContain('いいね 1');
+    expect(body).not.toContain('いいね 99');
+    // 押しているので、出るのは取り消しだけである。
+    expect(body).toMatch(CANCEL_FORM);
+    expect(body).not.toMatch(LIKE_FORM);
+    expect(body).toContain('いいねを取り消す');
+  });
+
+  it('ログイン中の他人には「いいね」が出て、押すと「取り消す」に変わる', async () => {
+    const { id } = await seedPublished('toggle');
+    const fan = await seedUser('like-toggle-fan');
+    const cookie = await sessionCookie(fan);
+
+    const before = await openRecording(workPagePath(id), cookie);
+    expect(before.body).toMatch(LIKE_FORM);
+    expect(before.body).not.toMatch(CANCEL_FORM);
+    // まだ 0 なので数は出さない（2.3.6）。
+    expect(before.body).not.toContain('いいね 1');
+
+    const at = Math.floor(Date.now() / 1000);
+    expect(await changeLike(env, 'like', fan, id, at)).toBe('liked');
+    const liked = await openRecording(workPagePath(id), cookie);
+    expect(liked.body).toMatch(CANCEL_FORM);
+    expect(liked.body).not.toMatch(LIKE_FORM);
+    expect(liked.body).toContain('いいね 1');
+
+    expect(await changeLike(env, 'unlike', fan, id, at)).toBe('unliked');
+    const cancelled = await openRecording(workPagePath(id), cookie);
+    expect(cancelled.body).toMatch(LIKE_FORM);
+    expect(cancelled.body).not.toMatch(CANCEL_FORM);
+    expect(cancelled.body).not.toContain('いいね 1');
+  });
+
+  it('作者の作品ページにはボタンが出ない（被いいね数を自己申告にしない）', async () => {
+    const { userId, id } = await seedPublished('author');
+    const fan = await seedUser('like-author-fan');
+    expect(await changeLike(env, 'like', fan, id, Math.floor(Date.now() / 1000))).toBe('liked');
+
+    const { body } = await openRecording(workPagePath(id), await sessionCookie(userId));
+
+    // **acceptance: 作者の作品ページにボタンが出ない。**
+    expect(body).not.toMatch(LIKE_FORM);
+    expect(body).not.toMatch(CANCEL_FORM);
+    // 数は出す（5.8「数は作品と作者に公開し」）。
+    expect(body).toContain('いいね 1');
+  });
+
+  it('審査で新規露出を止めた作品にはボタンを出さない（口が 404 にするものを出さない）', async () => {
+    const { id } = await seedPublished('review');
+    const fan = await seedUser('like-review-fan');
+    const cookie = await sessionCookie(fan);
+
+    // 止める前は出る（**この検査が空振りしていない**ことを先に見る）。
+    expect((await openRecording(workPagePath(id), cookie)).body).toMatch(LIKE_FORM);
+
+    const queued = await env.DB.prepare('update games set review_state = ? where id = ?')
+      .bind(REVIEW_QUEUED, id)
+      .run();
+    expect(queued.meta.changes).toBe(1);
+
+    const { body } = await openRecording(workPagePath(id), cookie);
+    // 4.4: 押せば窓口が 404 で断る操作を、押せる形で出さない。
+    expect(body).not.toMatch(LIKE_FORM);
+    expect(body).not.toMatch(CANCEL_FORM);
+  });
+
+  it('取り下げた作品には数もボタンも出さない', async () => {
+    const { userId, id } = await seedPublished('removed');
+    const fan = await seedUser('like-removed-fan');
+    expect(await changeLike(env, 'like', fan, id, Math.floor(Date.now() / 1000))).toBe('liked');
+    await setStoredLikeCount(id, 7);
+    const outcome = await removeGame(env, id, userId);
+    expect(outcome.ok).toBe(true);
+
+    const { body, touched } = await openRecording(workPagePath(id), await sessionCookie(fan));
+
+    expect(touched, '取り下げた作品で DO を呼んでいる').toEqual([]);
+    expect(body).not.toContain('いいね');
+    expect(body).not.toMatch(LIKE_FORM);
+    expect(body).not.toMatch(CANCEL_FORM);
+  });
+
+  it('取り下げた作品の `likeCount` の門番は第 2 層である（変異の結果を書き残す）', () => {
+    // **描画側の第 1 層は `sectionFor` の tombstone 分岐**で、そちらが本文ごと
+    // `removedSection` に差し替える。**したがって `showWorkPage` の
+    // `likeCount: published && !removed` から `!removed` を外しても、画面は
+    // 変わらない**（変異を当てて緑のままだったことを確かめた。`publishableId` に
+    // ついて同じことが書いてあるのと同じ形である）。
+    //
+    // **層が 1 枚になった状態は残らない。** 上の it は `!removed` ではなく
+    // **DO を呼ぶかどうかの門番**（`likeViewer` の条件）を止めており、そちらから
+    // `published` を外すと赤くなる（実測した）。ここでは第 1 層そのものを見る。
+    const id = '00000000-0000-4000-8000-000000000003';
+    const removed = renderWorkPage({ ...baseView, removed: true, likeCount: 4, likableId: id });
+    expect(removed).not.toContain('いいね 4');
+    expect(removed).not.toMatch(LIKE_FORM);
+    // 同じ view で `removed` だけを倒すと出る（この検査が空振りしていない）。
+    const shown = renderWorkPage({
+      ...baseView,
+      published: true,
+      removed: false,
+      likeCount: 4,
+      likableId: id,
+    });
+    expect(shown).toContain('いいね 4');
+    expect(shown).toMatch(LIKE_FORM);
+  });
+
+  it('未公開の作品ページには数もボタンも出さず、DO も呼ばない', async () => {
+    const { userId, id } = await seedPending('like-draft');
+    await setStoredLikeCount(id, 5);
+
+    const { body, touched } = await openRecording(workPagePath(id), await sessionCookie(userId));
+
+    expect(touched).toEqual([]);
+    expect(body).not.toContain('いいね');
+  });
+
+  it('描画は view の 3 つの値だけで決まる（画面側で押せるかを組み立てていない）', () => {
+    // 経路を通さず `renderWorkPage` に直に渡す。**経路側の条件を全部満たしていない
+    // view でも、載っていればそのまま描く**——押せるかの判定は窓口が持つ（5.8）。
+    const id = '00000000-0000-4000-8000-000000000001';
+    const view: WorkPageView = { ...baseView, published: true, forkableId: id };
+
+    expect(renderWorkPage(view)).not.toMatch(LIKE_FORM);
+    expect(renderWorkPage(view)).not.toMatch(CANCEL_FORM);
+    expect(renderWorkPage({ ...view, likableId: id })).toMatch(LIKE_FORM);
+    expect(renderWorkPage({ ...view, unlikableId: id })).toMatch(CANCEL_FORM);
+    // **項目名は口ごとに別の定数である**（5.8）。フォームがそれぞれの綴りを載せている。
+    expect(renderWorkPage({ ...view, likableId: id })).toContain(
+      `name="${LIKE_GAME_ID_FIELD}" value="${id}"`,
+    );
+    expect(renderWorkPage({ ...view, unlikableId: id })).toContain(
+      `name="${LIKE_CANCEL_GAME_ID_FIELD}" value="${id}"`,
+    );
+
+    // 0 のときは数を出さない（2.3.6）。**1 以上なら出す**（空振りしないことを対で見る）。
+    expect(renderWorkPage({ ...view, likeCount: 0 })).not.toContain('いいね');
+    expect(renderWorkPage({ ...view, likeCount: 1 })).toContain('いいね 1');
+  });
+
+  it('JavaScript を要さない（素の form と button だけで組む）', () => {
+    const id = '00000000-0000-4000-8000-000000000002';
+    const body = renderWorkPage({
+      ...baseView,
+      published: true,
+      forkableId: id,
+      likableId: id,
+      likeCount: 2,
+    });
+    const form = /<form class="gf-like"[\s\S]*?<\/form>/u.exec(body);
+    expect(form, 'いいねのフォームが無い').not.toBeNull();
+    expect(form![0]).toContain('method="post"');
+    expect(form![0]).not.toMatch(/on[a-z]+=|<script/iu);
+    // 無効化したボタンを出す形にしない（4.4。押せないものは出さない）。
+    expect(form![0]).not.toContain('disabled');
+  });
+
+  it('D1 の写しが数でなくても「いいね undefined」と描かない（60 秒の窓。#340）', () => {
+    // **列は NOT NULL DEFAULT 0 だが、型の上の必須は実行時の保証ではない**（1.2.50）。
+    // 読み方は 1 か所（`storedLikeCount`）が持つ。
+    for (const broken of [undefined, null, Number.NaN, '3', -1, 0]) {
+      expect(storedLikeCount(broken), String(broken)).toBe(0);
+    }
+    expect(storedLikeCount(4)).toBe(4);
+    expect(storedLikeCount(4.7), '整数へ落とす').toBe(4);
+  });
+
+  it('いいねの見た目は app.css に規則を持ち、色の値を直に書かない', () => {
+    for (const selector of ['gf-likes', 'gf-like', 'gf-card-likes']) {
+      const rule = new RegExp(`^\\.${selector}\\s*\\{([^}]*)\\}`, 'mu').exec(env.TEST_APP_CSS);
+      expect(rule, `app.css に .${selector} の規則が無い`).not.toBeNull();
+      // **色は作品だけが持つ**（app.css 冒頭の方針）。無彩色のトークンだけを参照する。
+      expect(rule![1]!, selector).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/iu);
+    }
   });
 });

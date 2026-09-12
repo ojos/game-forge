@@ -61,6 +61,10 @@ import { homeSections, loadHomeFeed } from './home-feed.js';
 // **カードは共通部品を借りる**（仕様 2.3.6。一覧・トップ・作者ページが同じ 1 枚を使う。
 // 項目を足したり減らしたりするのは `src/work-card.ts` の仕事で、ここではない）。
 import { renderWorkCards } from './work-card.js';
+// お知らせの節（#375 / M12-7）。**記事は静的な定義で、D1 を 1 行も読まない**（`src/news.ts`）。
+import type { NewsArticle } from './news-articles.js';
+import { NEWS_ARTICLES } from './news-articles.js';
+import { renderHomeNewsSection } from './news.js';
 
 /**
  * 公開トップのパス。
@@ -144,11 +148,20 @@ ${renderWorkCards(section.works)}${more}
  * 案内（いまの状態 / はじめる / 参加している方へ）の文言は #128 から動かしていない
  * ——**位置を変えただけで、書いてあることは変えていない。**
  *
+ * **お知らせの節は作品の節の後ろ、案内の前に置く**（#375）。作品が画面上で最も目立つ
+ * 位置にあること（M8-2）を崩さず、案内より先に「いまの告知」が読める位置である。
+ * 記事が 0 本なら節ごと出ない（`src/news.ts` の `renderHomeNewsSection`）。
+ *
  * @param sections 並べる節（空の節は既に落としてある。`src/home-feed.ts`）
+ * @param news お知らせの記事（新しい順。静的な定義なので D1 は読まない）
  * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns HTML
  */
-function renderHomePage(sections: readonly HomeSection[], viewer: SiteViewer): string {
+function renderHomePage(
+  sections: readonly HomeSection[],
+  news: readonly NewsArticle[],
+  viewer: SiteViewer,
+): string {
   return `${siteHead({
     title: 'Game Forge',
     viewer,
@@ -159,6 +172,7 @@ function renderHomePage(sections: readonly HomeSection[], viewer: SiteViewer): s
 <p>プロンプト 1 行から、ブラウザで遊べる 2D ゲームが生まれます。
    気に入った作品は<strong>改造（フォーク）</strong>して、自分の 1 本として公開できます。</p>
 ${sections.map(renderSection).join('\n')}
+${renderHomeNewsSection(news)}
 
 <h2>いまの状態</h2>
 <p><strong>招待制のクローズドβを準備しています。</strong>
@@ -242,7 +256,7 @@ async function showHome(request: Request, env: Env): Promise<Response> {
   // **キャッシュに載るのはこの下で引く行だけ**である（`src/list-cache.ts`）——
   // ヘッダが出し分かる以上、HTML を共有キャッシュへ載せてはいけない（2.3.3 の条件 3）。
   const viewer = await resolveSiteViewer(request, env);
-  return html(renderHomePage(homeSections(await homeFeed(env)), viewer));
+  return html(renderHomePage(homeSections(await homeFeed(env)), NEWS_ARTICLES, viewer));
 }
 
 /**

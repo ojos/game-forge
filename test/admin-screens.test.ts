@@ -14,9 +14,14 @@ import {
 import { ADMIN_LIST_LIMIT, listAdminActions } from '../src/admin/actions.js';
 import { ADMIN_OPEN_ROUTES, createAdminRoutes, handleAdminRequest } from '../src/admin/routes.js';
 import { BAN_NEXT_ACTIVE, BAN_NEXT_BANNED } from '../src/admin/users.js';
-import { PUBLISHED_STATUS } from '../src/games.js';
+import { PUBLISHED_STATUS, renameGame } from '../src/games.js';
 import { ssrPagePaths } from '../src/page-paths.js';
-import { REVIEW_CLEARED, REVIEW_QUEUED } from '../src/reports.js';
+import {
+  REVIEW_CLEARED,
+  REVIEW_QUEUED,
+  TITLE_CHANGES_TABLE,
+  reviewAttentionSql,
+} from '../src/reports.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -198,6 +203,9 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await env.DB.prepare('delete from admin_actions').run();
+  // **作品を指す表を先に消す**（外部キー。#367 で通報と改名の履歴を仕込むようになった）。
+  await env.DB.prepare(`delete from ${TITLE_CHANGES_TABLE}`).run();
+  await env.DB.prepare('delete from reports').run();
   await env.DB.prepare('delete from games').run();
   await env.DB.prepare('update users set banned_at = null').run();
 });
@@ -391,6 +399,274 @@ describe('審査キューの画面（2.4.3 / 8.4）', () => {
     expect(status).toBe(400);
     expect(body).not.toContain('<img src=x');
     expect(body).toContain('操作の結果を確認できませんでした');
+  });
+});
+
+/** 審査キューの節の見出し（**画面の文言である**。節の切り出しにだけ使う）。 */
+const HEADINGS = {
+  queued: '審査待ち',
+  renamed: '問題なしとしたあと、改名されて通報が付いた作品',
+  cleared: '問題なしとした作品',
+} as const;
+
+/**
+ * 審査キューの本文から 1 つの節を切り出す（見出しから次の見出しまで）。
+ *
+ * **節を分けて見る。** 本文全体に id が含まれるかだけを見ると、「`cleared` の節に
+ * 出ている」ことと「改名の節に出ている」ことが区別できない——#367 の受け入れは
+ * まさにその区別である。
+ *
+ * @param body 画面の本文
+ * @param key 節
+ * @returns その節の HTML（見つからなければ空文字）
+ */
+function sectionOf(body: string, key: keyof typeof HEADINGS): string {
+  const start = body.indexOf(`<h2>${HEADINGS[key]}（`);
+  if (start < 0) {
+    return '';
+  }
+  const next = body.indexOf('<h2>', start + 1);
+  return next < 0 ? body.slice(start) : body.slice(start, next);
+}
+
+/**
+ * 通報を 1 件入れる（時刻を指定する。改名との前後を決めるため）。
+ *
+ * **`recordReport` を通さない。** あちらは `review_state` を動かすので、`cleared` の
+ * 作品へ「改名後の通報」を置く状況を直接作れない（`test/title-rename.test.ts` と同じ形）。
+ *
+ * @param gameId 作品の id
+ * @param createdAt 通報の時刻（UNIX 秒）
+ */
+async function insertReport(gameId: string, createdAt: number): Promise<void> {
+  await env.DB.prepare(
+    'insert into reports (id, game_id, reporter_id, reason, created_at) values (?, ?, ?, ?, ?)',
+  )
+    .bind(crypto.randomUUID(), gameId, users.other, '通報の理由', createdAt)
+    .run();
+}
+
+/**
+ * 「`cleared` のあと改名され、その改名以降に通報が付いた」作品を 1 本作る。
+ *
+ * **改名は `cleared` を `NULL` へ戻す**（`renameGame`）ので、改名の後で `cleared` へ
+ * 書き直す（`test/title-rename.test.ts` の「当たる」と同じ手順）。
+ *
+ * @param title 改名後の題名
+ * @returns 作品の id
+ */
+async function insertRenamedAfterReview(title = '改名後の題名'): Promise<string> {
+  const gameId = await insertGame(REVIEW_CLEARED, '改名前の題名');
+  const renamed = await renameGame(env, gameId, users.author, title, 1_700_001_000);
+  expect(renamed.ok, '改名が通っていない（仕込みの前提が崩れている）').toBe(true);
+  await env.DB.prepare('update games set review_state = ? where id = ?')
+    .bind(REVIEW_CLEARED, gameId)
+    .run();
+  await insertReport(gameId, 1_700_002_000);
+  return gameId;
+}
+
+describe('審査キューに改名のあとに通報が付いた cleared を出す（#367）', () => {
+  it('cleared かつ改名後に通報がある作品が、改名の節に出る（cleared の節には出ない）', async () => {
+    const renamed = await insertRenamedAfterReview();
+
+    const { status, body } = await open(ADMIN_HOME_PATH, adminCookie);
+    expect(status).toBe(200);
+    expect(sectionOf(body, 'renamed')).toContain(renamed);
+    // **行は片方にしか出さない**（同じ作品に操作のフォームを 2 つ並べない）。
+    expect(sectionOf(body, 'cleared')).not.toContain(renamed);
+    expect(sectionOf(body, 'queued')).not.toContain(renamed);
+    expect(body.split(`value="${renamed}"`).length - 1).toBe(1);
+  });
+
+  it('改名の無い cleared の作品は、通報が付いていても改名の節に出ない', async () => {
+    // **審査が終わった状態そのもの**である（8.4 の「再び閾値に達しても戻さない」）。
+    const plain = await insertGame(REVIEW_CLEARED, '改名していない作品');
+    await insertReport(plain, 1_700_002_000);
+
+    const { body } = await open(ADMIN_HOME_PATH, adminCookie);
+    expect(sectionOf(body, 'renamed')).not.toContain(plain);
+    expect(sectionOf(body, 'renamed')).toContain('いま該当する作品はありません。');
+    // **cleared の節からは消えない**（往復の「審査待ちへ戻す」を失わない）。
+    expect(sectionOf(body, 'cleared')).toContain(plain);
+  });
+
+  it('通報が改名より前にしか無い cleared の作品も、改名の節に出ない', async () => {
+    const gameId = await insertGame(REVIEW_CLEARED, '改名前の題名');
+    await insertReport(gameId, 1_700_001_000);
+    await renameGame(env, gameId, users.author, '改名後の題名', 1_700_002_000);
+    await env.DB.prepare('update games set review_state = ? where id = ?')
+      .bind(REVIEW_CLEARED, gameId)
+      .run();
+
+    const { body } = await open(ADMIN_HOME_PATH, adminCookie);
+    expect(sectionOf(body, 'renamed')).not.toContain(gameId);
+    expect(sectionOf(body, 'cleared')).toContain(gameId);
+  });
+
+  it('queued の行と区別できる（札と最終改名の時刻は改名の節の行にだけ付く）', async () => {
+    const queued = await insertGame(REVIEW_QUEUED, '審査待ちの作品');
+    const renamed = await insertRenamedAfterReview();
+
+    const { body } = await open(ADMIN_HOME_PATH, adminCookie);
+    const renamedSection = sectionOf(body, 'renamed');
+    const queuedSection = sectionOf(body, 'queued');
+
+    expect(renamedSection).toContain('<p class="gf-admin-badge">改名後に通報あり</p>');
+    // **いつ改名されたか**を出す（題名の旧新は出さない。どちらも UGC で、いまの題名は行にある）。
+    expect(renamedSection).toContain('最終改名: <time datetime="');
+    expect(renamedSection).toContain('改名後の題名');
+    expect(renamedSection).not.toContain('改名前の題名');
+
+    expect(queuedSection).toContain(queued);
+    expect(queuedSection).not.toContain('gf-admin-badge');
+    expect(queuedSection).not.toContain('最終改名');
+    // **押す操作も違う**（改名の節の行は `cleared` なので、向かう先は `queued`）。
+    const renamedRow = renamedSection
+      .split('<li class="gf-admin-row">')
+      .find((row) => row.includes(renamed));
+    expect(renamedRow).toContain(`name="${ADMIN_NEXT_FIELD}" value="${REVIEW_QUEUED}"`);
+  });
+
+  it('審査待ちと改名の節を合わせると、scripts/report-queue.sh と同じ条件（reviewAttentionSql）の集合になる', async () => {
+    // **条件を 2 か所に書かない**ことの確認である。スクリプトは `reviewAttentionSql` と
+    // 同じ形（`REVIEW_QUEUED` or `REVIEW_RENAMED_SQL`）をソースから組み立てる。
+    // 画面が別の条件を書き始めたら、この集合がずれて赤くなる。
+    const expected = [
+      await insertGame(REVIEW_QUEUED, '審査待ち'),
+      await insertRenamedAfterReview('改名の節 1'),
+      await insertRenamedAfterReview('改名の節 2'),
+    ];
+    const plainCleared = await insertGame(REVIEW_CLEARED, '見終わった作品');
+    await insertReport(plainCleared, 1_700_002_000);
+    await insertGame(null, '通報されていない作品');
+
+    const attention = await env.DB.prepare(
+      `select g.id from games g where ${reviewAttentionSql()} and g.status = ? order by g.id`,
+    )
+      .bind(PUBLISHED_STATUS)
+      .all<{ id: string }>();
+    expect(attention.results.map((row) => row.id)).toEqual([...expected].sort());
+
+    const { body } = await open(ADMIN_HOME_PATH, adminCookie);
+    const shown = `${sectionOf(body, 'queued')}${sectionOf(body, 'renamed')}`;
+    const allIds = (
+      await env.DB.prepare('select id from games').all<{ id: string }>()
+    ).results.map((row) => row.id);
+    expect(allIds.filter((id) => shown.includes(`value="${id}"`)).sort()).toEqual(
+      [...expected].sort(),
+    );
+  });
+
+  it('改名の節も件数を固定する（2.3.3 の条件 1 と同じ考え方）', async () => {
+    for (let index = 0; index < ADMIN_LIST_LIMIT + 3; index += 1) {
+      await insertRenamedAfterReview(`改名後 ${index}`);
+    }
+
+    const { body } = await open(ADMIN_HOME_PATH, adminCookie);
+    expect(sectionOf(body, 'renamed').split('<li class="gf-admin-row">').length - 1).toBe(
+      ADMIN_LIST_LIMIT,
+    );
+  });
+
+  it('改名の節の行から審査待ちへ戻せる（新しい操作ではなく、既存の口を通る）', async () => {
+    const renamed = await insertRenamedAfterReview();
+    const { status, location } = await post(
+      ADMIN_REVIEW_API_PATH,
+      {
+        [ADMIN_GAME_ID_FIELD]: renamed,
+        [ADMIN_NEXT_FIELD]: REVIEW_QUEUED,
+        [ADMIN_REASON_FIELD]: '改名後の題名が不適切',
+      },
+      adminCookie,
+    );
+    expect(status).toBe(303);
+    expect(location).toBe(`${ADMIN_HOME_PATH}?outcome=applied`);
+    expect(await reviewStateOf(renamed)).toBe(REVIEW_QUEUED);
+
+    const { body } = await open(ADMIN_HOME_PATH, adminCookie);
+    expect(sectionOf(body, 'queued')).toContain(renamed);
+    expect(sectionOf(body, 'renamed')).not.toContain(renamed);
+  });
+
+  it('権限が無ければ 404 のままで、改名の節の作品は本文に 1 バイトも出ない', async () => {
+    // **この issue は経路を足していない**（`ADMIN_OPEN_ROUTES` にも足していない）。
+    // 足した「中身」が権限の手前へ漏れていないことを、同じ `/` で確かめる。
+    const renamed = await insertRenamedAfterReview('漏れてはいけない題名');
+    expect(
+      ADMIN_OPEN_ROUTES.some((route) => route.path === ADMIN_HOME_PATH),
+      '/ が未ログインで開いている',
+    ).toBe(false);
+
+    for (const cookie of [undefined, await cookieFor(users.other)]) {
+      const { status, body } = await open(ADMIN_HOME_PATH, cookie);
+      expect(status).toBe(404);
+      expect(body).not.toContain(renamed);
+      expect(body).not.toContain('漏れてはいけない題名');
+      expect(body).not.toContain('改名後に通報あり');
+    }
+  });
+
+  it('3 つの節を 1 つの batch で読む（同じ時点の状態から描き、同じ作品を 2 節に出さない）', async () => {
+    // **節ごとに別々に読むと、間に別の管理者の操作が挟まったとき、同じ作品が
+    // 向きの違うボタン付きで 2 節に並ぶ**（PR #392 の Copilot レビュー）。D1 の batch は
+    // 1 つの SQL トランザクションで、文を順に・並行せずに実行する（Cloudflare の D1
+    // Worker API の `batch()`）。ここでは画面がその経路を通ることを見る。
+    await insertGame(REVIEW_QUEUED, '審査待ちの作品');
+    await insertRenamedAfterReview();
+    const batches: number[] = [];
+    const spied = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'batch') {
+          return (statements: D1PreparedStatement[]) => {
+            batches.push(statements.length);
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, property) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const response = await handleAdminRequest(
+      new Request(`${ADMIN_ORIGIN}${ADMIN_HOME_PATH}`, { headers: { cookie: adminCookie } }),
+      { ...testEnv(), DB: spied } as Env,
+    );
+    expect(response.status).toBe(200);
+    expect(batches).toEqual([3]);
+  });
+
+  it('操作が成功した直後に一覧が読めなければ、成功の知らせと読み取り失敗の知らせを両方出す', async () => {
+    // **成功の知らせは消さない**——操作と履歴は既にコミットされている。消すと運営は
+    // 失敗したと読んで押し直す。**不完全なのは一覧の側**なので、それを並べて書く。
+    await insertGame(REVIEW_QUEUED, '審査待ちの作品');
+    await env.DB.prepare(`alter table ${TITLE_CHANGES_TABLE} rename to title_changes_hidden`).run();
+    try {
+      const { status, body } = await open(`${ADMIN_HOME_PATH}?outcome=applied`, adminCookie);
+      expect(status).toBe(500);
+      expect(body).toContain('<p class="gf-notice" role="status">');
+      expect(body).toContain('一覧の一部を読み込めませんでした。下の一覧は不完全です。');
+    } finally {
+      await env.DB.prepare(`alter table title_changes_hidden rename to ${TITLE_CHANGES_TABLE}`).run();
+    }
+  });
+
+  it('改名の履歴の表が読めなくても、審査待ちの節は出る（0027 の適用漏れで一覧ごと落とさない）', async () => {
+    // **#367 が足した読み取りの失敗で、#361 から動いていた一覧を巻き添えにしない。**
+    // 表の名前を一時的に変えて「no such table」を再現する。
+    const queued = await insertGame(REVIEW_QUEUED, '審査待ちの作品');
+    await env.DB.prepare(`alter table ${TITLE_CHANGES_TABLE} rename to title_changes_hidden`).run();
+    try {
+      const { status, body } = await open(ADMIN_HOME_PATH, adminCookie);
+      // **成功したかのようにログへ残さない。**
+      expect(status).toBe(500);
+      expect(sectionOf(body, 'queued')).toContain(queued);
+      // **0 件と描かない**（「該当なし」と「読めていない」を区別する）。
+      expect(body).toContain(`<h2>${HEADINGS.renamed}（読み込めませんでした）</h2>`);
+      expect(body).toContain(`<h2>${HEADINGS.cleared}（読み込めませんでした）</h2>`);
+      expect(body).not.toContain('いま該当する作品はありません。');
+    } finally {
+      await env.DB.prepare(`alter table title_changes_hidden rename to ${TITLE_CHANGES_TABLE}`).run();
+    }
   });
 });
 

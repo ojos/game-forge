@@ -47,7 +47,7 @@
  */
 import { ACCOUNT_DISPLAY_NAME_PATH, ACCOUNT_PATH, DISPLAY_NAME_FIELD } from './account-paths.js';
 import { LOGIN_PATH } from './auth/google.js';
-import { escapeHtml, siteHead } from './html.js';
+import { VIEWER_SIGNED_IN, escapeHtml, siteHead } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { siteFooter } from './legal.js';
 import type { Route } from './routes.js';
@@ -356,7 +356,12 @@ export function renderAccountPage(view: AccountView): string {
   // **`maxlength` を付けない。** HTML の `maxlength` は UTF-16 の長さで数えるので、
   // こちらの規則（コードポイントで 30）と食い違い、絵文字を含む名前が 30 文字に
   // 届く前に打てなくなる。長さは送信後に 1 つの規則で断る（{@link validateDisplayName}）。
-  return `${siteHead({ title: '登録情報 - Game Forge', noindex: true })}
+  // **ログイン済みとして組む**（`src/my-works.ts` と同じ扱い。2.3.7 / #331）。
+  return `${siteHead({
+    title: '登録情報 - Game Forge',
+    noindex: true,
+    viewer: VIEWER_SIGNED_IN,
+  })}
 <h1>登録情報</h1>
 ${notice}
 <form method="post" action="${ACCOUNT_DISPLAY_NAME_PATH}">

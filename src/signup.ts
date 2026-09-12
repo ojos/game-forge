@@ -23,7 +23,8 @@
  * 実行環境の都合で塞がらないようにしておく。
  */
 import { siteFooter } from './legal.js';
-import { escapeHtml, siteHead } from './html.js';
+import type { SiteViewer } from './html.js';
+import { VIEWER_SIGNED_OUT, escapeHtml, resolveSiteViewer, siteHead } from './html.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import type { AuthDependencies } from './auth/google.js';
@@ -167,12 +168,14 @@ function reasonMessage(reason: string): string {
  *
  * @param message 画面上部に出すエラー文言（無ければ null）
  * @param waitingCount 待機リストの登録数（丸め済み）。0 のときは出さない
+ * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @param source どの導線から来たか（10.2）
  * @returns HTML
  */
 function signupPage(
   message: string | null,
   waitingCount: number,
+  viewer: SiteViewer,
   source: WaitlistSource = DEFAULT_WAITLIST_SOURCE,
 ): string {
   // 文言は上の対応表から選んだ固定文字列なので、埋め込んでも差し込みにならない。
@@ -186,7 +189,7 @@ function signupPage(
   const waiting =
     waitingCount > 0 ? `<p>現在 ${waitingCount} 人以上が登録して待っています。</p>` : '';
 
-  return `${siteHead({ title: 'Game Forge に登録する' })}
+  return `${siteHead({ title: 'Game Forge に登録する', viewer })}
 <h1>Game Forge に登録する</h1>
 ${error}
 ${fromForkSection(source)}
@@ -216,10 +219,11 @@ ${siteFooter()}`;
 /**
  * 待機リスト登録後の受け皿。
  *
+ * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns HTML
  */
-function waitlistThanksPage(): string {
-  return `${siteHead({ title: '待機リストに登録しました' })}
+function waitlistThanksPage(viewer: SiteViewer): string {
+  return `${siteHead({ title: '待機リストに登録しました', viewer })}
 <h1>待機リストに登録しました</h1>
 <p>招待枠が空いたらご連絡します。</p>
 <p><a href="${SIGNUP_PATH}">登録画面へ戻る</a></p>
@@ -240,7 +244,10 @@ const showSignupPage: RouteHandler = async (request, env) => {
   const waitingCount = coarsenWaitlistCount(await countWaitlist(env.DB));
   // **導線は画面の形を変えず、記録される値と前置きだけを変える。**
   const source = waitlistSourceOf(params.get(SIGNUP_FROM_PARAM));
-  return html(signupPage(message, waitingCount, source), reason === null ? 200 : 400);
+  return html(
+    signupPage(message, waitingCount, await resolveSiteViewer(request, env), source),
+    reason === null ? 200 : 400,
+  );
 };
 
 /**
@@ -295,7 +302,10 @@ async function submitInviteCode(
  */
 async function signupError(env: Env, reason: string): Promise<Response> {
   const waitingCount = coarsenWaitlistCount(await countWaitlist(env.DB));
-  return html(signupPage(reasonMessage(reason), waitingCount), 400);
+  // **未ログインとして組む。** ここは招待コードの送信が断られた結果であり、
+  // **セッションはまだ 1 つも無い**（発行するのは Google の同意を得たあとである。
+  // `src/auth/google.ts`）。既定に倒しているのではなく、状況から決まっている。
+  return html(signupPage(reasonMessage(reason), waitingCount, VIEWER_SIGNED_OUT), 400);
 }
 
 /**
@@ -352,7 +362,12 @@ export function createSignupRoutes(overrides: Partial<AuthDependencies> = {}): r
       path: SIGNUP_PATH,
       handler: (request, env) => submitInviteCode(request, env, overrides),
     },
-    { method: 'GET', path: WAITLIST_THANKS_PATH, handler: () => html(waitlistThanksPage()) },
+    {
+      method: 'GET',
+      path: WAITLIST_THANKS_PATH,
+      handler: async (request, env) =>
+        html(waitlistThanksPage(await resolveSiteViewer(request, env))),
+    },
   ];
 }
 

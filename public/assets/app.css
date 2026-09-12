@@ -752,12 +752,23 @@ a.gf-card-author {
    ========================================================================== */
 
 /*
- * サービス名だけを出す 1 行（#266）。**見出しではない。**
+ * サービス名と、サイト内の主な行き先（#266。#331 でナビを入れた）。**見出しではない。**
  *
  * 大きくすると、その画面の `<h1>` と主役を争う。小さく・淡くして、
- * 「いまどこに居るか」の手がかりに留める。
+ * 「いまどこに居るか」と「どこへ行けるか」の手がかりに留める。
+ *
+ * **横に 1 行で並べようとしない。** 390px では「Game Forge / 作品をさがす / つくる /
+ * 自分の作品 / 登録情報」が 1 行に収まらない。`flex-wrap` で折り返させ、**折り返しても
+ * 版面の幅を超えない**形にする（`scripts/check-page-width.sh` が見ている回帰である）。
+ *
+ * **`position: sticky` にしない。** 狭い端末で縦の場所を常時 1 行ぶん食う。
+ * 主役は作品であり（M8-1）、外枠は上に置いたまま流れるだけでよい。
  */
 .gf-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
   margin-bottom: var(--gf-gap-4);
   padding-bottom: var(--gf-gap-2);
   border-bottom: 1px solid var(--gf-rule-soft);
@@ -777,6 +788,19 @@ a.gf-card-author {
   text-underline-offset: 0.2em;
 }
 
+/*
+ * ナビの項目。
+ *
+ * **サービス名より弱く出す**（太字を外す）。ロゴと同じ太さで並べると、5 つが対等に
+ * 見えて「いまどこに居るか」の手がかりが消える。
+ */
+.gf-header-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+  font-weight: 400;
+}
+
 /* ==========================================================================
    フッタ
    ========================================================================== */
@@ -789,6 +813,48 @@ a.gf-card-author {
 
 .gf-footer p {
   margin: 0;
+}
+
+/*
+ * 2 区画（サービス / 法務。2.3.7 / #331）。
+ *
+ * **横に並べるが、狭い端末では折り返す。** `flex-wrap` と `min-width` の組で、390px では
+ * 縦に積み、広い画面では横に 2 列になる。**`grid-template-columns: 1fr 1fr` にしない**
+ * ——狭い幅でも 2 列を保とうとして、「権利者の方へ（削除申請）」が 1 文字ずつ折れる。
+ */
+.gf-footer-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-3) var(--gf-gap-5);
+}
+
+.gf-footer-group {
+  min-width: 12rem;
+}
+
+/*
+ * 区画の見出し。
+ *
+ * **`<h2>` だが、本文の見出しの大きさでは出さない。** ここは外枠であり、その画面の
+ * `<h2>` と主役を争ってはいけない（ヘッダを小さく・淡くしているのと同じ理由）。
+ * 要素を `<p>` にしないのは、区画に名前があること自体が支援技術にとっての手がかりで
+ * あるためである。
+ */
+.gf-footer-heading {
+  margin: 0 0 var(--gf-gap-1);
+  color: var(--gf-ink-faint);
+  font-size: var(--gf-text-small);
+  font-weight: 700;
+}
+
+.gf-footer-nav ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gf-footer-nav li {
+  margin-bottom: var(--gf-gap-1);
 }
 
 /* ==========================================================================

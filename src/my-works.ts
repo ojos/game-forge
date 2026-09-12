@@ -82,7 +82,7 @@ import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/work-page.ts` もそこから取っている）。
-import { escapeHtml, siteHead } from './html.js';
+import { VIEWER_SIGNED_IN, escapeHtml, siteHead } from './html.js';
 import { looksStalled, workPagePath } from './work-page.js';
 
 /**
@@ -238,7 +238,13 @@ ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
     ? `<p>新しい ${MAX_LISTED_WORKS} 件までを表示しています。</p>`
     : '';
 
-  return `${siteHead({ title: 'あなたの作品 - Game Forge', noindex: true })}
+  // **ログイン済みとして組む。** この画面は未ログインでは開けない（{@link showMyWorks} が
+  // ログインへ送る）ので、**外枠のためにセッションを 2 度検証しない**（2.3.7 / #331）。
+  return `${siteHead({
+    title: 'あなたの作品 - Game Forge',
+    noindex: true,
+    viewer: VIEWER_SIGNED_IN,
+  })}
 <h1>あなたの作品</h1>
 <p>生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>
 <p><a href="${LIKED_WORKS_PATH}">いいねした作品</a></p>

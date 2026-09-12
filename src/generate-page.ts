@@ -128,7 +128,7 @@ import { GENERATE_PAGE_PATH, SIGNUP_PATH } from './paths.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { escapeHtml, siteHead } from './html.js';
+import { VIEWER_SIGNED_IN, VIEWER_SIGNED_OUT, escapeHtml, siteHead } from './html.js';
 
 /**
  * 文言を選ぶ鍵が 1 つも当たらなかったときに使う鍵。
@@ -687,7 +687,13 @@ export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): s
   const script =
     signedIn && canSubmit(view.availability) ? `\n<script>${GENERATE_SCRIPT}</script>\n` : '';
 
-  return `${siteHead({ title: 'ゲームを生成する' })}
+  // **ヘッダの出し分けに、この関数が既に持っている 1 ビットをそのまま渡す**
+  // （2.3.7 / #331）。**セッションを 2 度検証しない**——`signedIn` の正本は
+  // {@link showGeneratePage} の `resolveSessionUser` である。
+  return `${siteHead({
+    title: 'ゲームを生成する',
+    viewer: signedIn ? VIEWER_SIGNED_IN : VIEWER_SIGNED_OUT,
+  })}
 <h1>ゲームを生成する</h1>
 <p>作りたいゲームを 1 行で書くと、ブラウザで遊べる 2D ゲームの下書きができます。
    <strong>生成には ${TYPICAL_WAIT_TEXT}。</strong></p>

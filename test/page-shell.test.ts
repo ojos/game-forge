@@ -1,13 +1,19 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
+import { ACCOUNT_PATH } from '../src/account-paths.js';
+import { LOGIN_PATH } from '../src/auth/google.js';
 import { DRAFT_STATUS } from '../src/games.js';
 import { APP_CSS_PATH } from '../src/html.js';
+import { TAKEDOWN_PATH, TERMS_PATH } from '../src/legal.js';
+import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH } from '../src/ogp.js';
 import { NON_PAGE_PATHS, ssrPagePaths } from '../src/page-paths.js';
+import { GENERATE_PAGE_PATH, HOME_PATH } from '../src/paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { AUTHOR_PAGE_PREFIX } from '../src/users-page-paths.js';
 import { WORK_PAGE_PREFIX } from '../src/work-page.js';
+import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from '../src/works-paths.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -166,17 +172,52 @@ function getPaths(): string[] {
  * 1 経路を開いて、本文と content-type を返す。
  *
  * @param path パス
- * @returns 応答の本文と content-type
+ * @param sessionCookie 送る cookie（空文字なら未ログインとして開く）
+ * @returns 応答の本文・content-type・ステータス・遷移先
  */
-async function open(path: string): Promise<{ body: string; type: string }> {
+async function open(
+  path: string,
+  sessionCookie: string = cookie,
+): Promise<{ body: string; type: string; status: number; location: string }> {
   const response = await handleAppRequest(
-    new Request(`${APP_ORIGIN}${path}`, { headers: { cookie } }),
+    new Request(`${APP_ORIGIN}${path}`, {
+      headers: sessionCookie === '' ? {} : { cookie: sessionCookie },
+    }),
     testEnv(),
   );
   return {
     body: await response.text(),
     type: response.headers.get('content-type') ?? '',
+    status: response.status,
+    location: response.headers.get('location') ?? '',
   };
+}
+
+/** 未ログインとして開くときに渡す cookie。 */
+const NO_COOKIE = '';
+
+/**
+ * HTML からヘッダの区画だけを取り出す。
+ *
+ * **本文を巻き込まない。** ヘッダに置かないと決めたものが**本文には在る**画面が
+ * 実際にある（「あなたの作品」は `/works/liked` への導線を本文に持つ。2.3.7）。
+ * 全文で照合すると、その画面が正しいのに赤くなる。
+ *
+ * @param body HTML
+ * @returns `<header>` の中身（見つからなければ null）
+ */
+function headerOf(body: string): string | null {
+  return /<header class="gf-header">[\s\S]*?<\/header>/u.exec(body)?.[0] ?? null;
+}
+
+/**
+ * HTML からフッタの区画だけを取り出す。
+ *
+ * @param body HTML
+ * @returns `<footer>` の中身（見つからなければ null）
+ */
+function footerOf(body: string): string | null {
+  return /<footer class="gf-footer">[\s\S]*?<\/footer>/u.exec(body)?.[0] ?? null;
 }
 
 /**
@@ -387,6 +428,168 @@ describe('全 SSR 画面の外枠', () => {
       expect(end, `${path} に </footer> が無い`).toBeGreaterThan(-1);
       const rest = stripAllowedTail(body.slice(end + closing.length));
       expect(rest, `${path} のフッタより後ろに残った本文`).toBe('');
+    }
+  });
+});
+
+/**
+ * ヘッダとフッタのナビ（2.3.7 / #331）。
+ *
+ * # なぜ経路表から導くのか
+ *
+ * 上の外枠の検査と同じ理由である。**画面の一覧をここへ書き写さない。** #331 が置こうと
+ * しているのは「どの画面からでも探す・つくる・自分の作品へ移れる」状態であり、
+ * **画面を 1 枚足した日に片方だけが追随する形にしない。**
+ *
+ * # なぜ両方の状態を開くのか
+ *
+ * **ヘッダがログイン状態で出し分かれることは、HTML を共有キャッシュへ載せられない理由
+ * そのものである**（仕様 2.3.3 の条件 3）。片方の状態しか見ない検査は、**出し分けが
+ * 消えたことに気づけない**——消えても画面は正しく見える。
+ *
+ * # 綴りはそれぞれの定数から取る
+ *
+ * パスを文字列で書かない。`src/html.ts` から取ると**検査が実装の写しになる**（同じ
+ * 値どうしを比べて必ず緑になる）ので、**画面を提供している側の定数**を読む
+ * （`MY_WORKS_PATH` は `src/works-paths.ts`、`ACCOUNT_PATH` は `src/account-paths.ts`）。
+ */
+describe('ヘッダとフッタのナビ（2.3.7）', () => {
+  /** ログイン状態によらずヘッダに出る行き先（2.3.7）。 */
+  const COMMON_LINKS = [HOME_PATH, PUBLIC_WORKS_PATH, GENERATE_PAGE_PATH];
+
+  /** 未ログインで開いた画面の分類。 */
+  interface AnonymousPages {
+    /** HTML を返した画面。 */
+    readonly pages: readonly { readonly path: string; readonly body: string }[];
+    /** ログインへ送られた画面（ログイン必須の画面。**黙って飛ばさないために数える**）。 */
+    readonly toLogin: readonly string[];
+  }
+
+  /**
+   * 全画面を未ログインで開き、HTML を返した画面とログインへ送られた画面に分ける。
+   *
+   * **飛ばした経路を黙って緑にしない**（このファイルの冒頭と同じ規律）。HTML でも
+   * ログインへの 303 でもない応答が 1 本でもあれば、その場で赤くする。
+   *
+   * @returns 分類した結果
+   */
+  async function anonymousPages(): Promise<AnonymousPages> {
+    const pages: { path: string; body: string }[] = [];
+    const toLogin: string[] = [];
+    for (const path of getPaths()) {
+      const { body, type, status, location } = await open(path, NO_COOKIE);
+      if (type.includes('text/html')) {
+        pages.push({ path, body });
+        continue;
+      }
+      expect(status, `${path} が HTML でもログインへの 303 でもない`).toBe(303);
+      expect(location, `${path} の遷移先`).toBe(LOGIN_PATH);
+      toLogin.push(path);
+    }
+    // **どちらの群も空にしない。** 未ログインで開ける画面が 0 なら下の検査は空振りし、
+    // ログインへ送られる画面が 0 なら、この分類そのものが要らなかったことになる。
+    expect(pages.length, '未ログインで開ける画面が無い（検査が空振りする）').toBeGreaterThan(5);
+    expect(toLogin.length, 'ログイン必須の画面が 1 枚も無い').toBeGreaterThan(0);
+    return { pages, toLogin };
+  }
+
+  it('未ログインのヘッダは、ログインへ送る（本人だけの画面へは送らない）', async () => {
+    const { pages } = await anonymousPages();
+    for (const { path, body } of pages) {
+      const header = headerOf(body);
+      expect(header, `${path} にヘッダが無い`).not.toBeNull();
+      expect(header!, `${path} のヘッダにログインの導線が無い`).toContain(`href="${LOGIN_PATH}"`);
+      // **押した先で必ずログインへ送られるリンクを、未ログインに出さない**（4.4 / 2.2）。
+      expect(header!, `${path} のヘッダに本人だけの画面が出ている`).not.toContain(
+        `href="${MY_WORKS_PATH}"`,
+      );
+      expect(header!, `${path} のヘッダに登録情報が出ている`).not.toContain(
+        `href="${ACCOUNT_PATH}"`,
+      );
+    }
+  });
+
+  it('ログイン済みのヘッダは、自分の作品と登録情報を出す（ログインは出さない）', async () => {
+    for (const path of getPaths()) {
+      const header = headerOf((await open(path)).body);
+      expect(header, `${path} にヘッダが無い`).not.toBeNull();
+      expect(header!, `${path} のヘッダに「自分の作品」が無い`).toContain(
+        `href="${MY_WORKS_PATH}"`,
+      );
+      expect(header!, `${path} のヘッダに「登録情報」が無い`).toContain(`href="${ACCOUNT_PATH}"`);
+      expect(header!, `${path} のヘッダにログインが出ている`).not.toContain(
+        `href="${LOGIN_PATH}"`,
+      );
+    }
+  });
+
+  it('ログイン状態によらない行き先は、全画面のヘッダにある', async () => {
+    const { pages } = await anonymousPages();
+    for (const { path, body } of pages) {
+      for (const link of COMMON_LINKS) {
+        expect(headerOf(body)!, `${path} のヘッダに ${link} が無い（未ログイン）`).toContain(
+          `href="${link}"`,
+        );
+      }
+    }
+    for (const path of getPaths()) {
+      const header = headerOf((await open(path)).body)!;
+      for (const link of COMMON_LINKS) {
+        expect(header, `${path} のヘッダに ${link} が無い（ログイン済み）`).toContain(
+          `href="${link}"`,
+        );
+      }
+    }
+  });
+
+  it('いいねした作品は、どの画面のヘッダにも出ない（2.3.7）', async () => {
+    // **本人だけの画面が 2 枚並ぶので、ヘッダの項目を増やさない**（2.3.7）。導線は
+    // 「あなたの作品」の本文が持つ（`test/my-works.test.ts` が見ている）。
+    const { pages } = await anonymousPages();
+    for (const { path, body } of pages) {
+      expect(headerOf(body)!, `${path} のヘッダ（未ログイン）`).not.toContain(LIKED_WORKS_PATH);
+    }
+    for (const path of getPaths()) {
+      expect(headerOf((await open(path)).body)!, `${path} のヘッダ（ログイン済み）`).not.toContain(
+        LIKED_WORKS_PATH,
+      );
+    }
+  });
+
+  it('ヘッダはログイン状態で変わる（HTML を共有キャッシュへ載せられない理由。2.3.3 の条件 3）', async () => {
+    const { pages } = await anonymousPages();
+    for (const { path, body } of pages) {
+      const signedIn = headerOf((await open(path)).body);
+      expect(headerOf(body), `${path} のヘッダがログイン状態で変わっていない`).not.toBe(signedIn);
+    }
+  });
+
+  it('フッタは 2 区画（サービス / 法務）で、置かないと決めた区画が無い', async () => {
+    for (const path of getPaths()) {
+      const footer = footerOf((await open(path)).body);
+      expect(footer, `${path} にフッタが無い`).not.toBeNull();
+      for (const link of [PUBLIC_WORKS_PATH, GENERATE_PAGE_PATH, TERMS_PATH, TAKEDOWN_PATH]) {
+        expect(footer!, `${path} のフッタに ${link} が無い`).toContain(`href="${link}"`);
+      }
+      // **行き先が実在しない区画を置かない**（2.3.7。AivisHub の 5 区画のうち 3 つ）。
+      for (const absent of ['会社情報', 'お問い合わせ', 'SNS']) {
+        expect(footer!, `${path} のフッタに ${absent} の区画がある`).not.toContain(absent);
+      }
+    }
+  });
+
+  it('フッタはログイン状態で変わらない（出し分けはヘッダだけが持つ）', async () => {
+    const { pages } = await anonymousPages();
+    for (const { path, body } of pages) {
+      const footer = footerOf(body);
+      expect(footer, `${path} のフッタが未ログインで出ていない`).not.toBeNull();
+      expect(footer, `${path} のフッタがログイン状態で変わっている`).toBe(
+        footerOf((await open(path)).body),
+      );
+      // 本人だけの画面と、ログインの導線はフッタに置かない（2.3.7 の 2 区画に無い）。
+      for (const absent of [MY_WORKS_PATH, ACCOUNT_PATH, LIKED_WORKS_PATH, LOGIN_PATH]) {
+        expect(footer!, `${path} のフッタに ${absent} がある`).not.toContain(`href="${absent}"`);
+      }
     }
   });
 });

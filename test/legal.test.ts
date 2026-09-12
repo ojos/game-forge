@@ -12,7 +12,9 @@ import {
   siteFooter,
   takedownMessageOf,
 } from '../src/legal.js';
+import { GENERATE_PAGE_PATH } from '../src/paths.js';
 import { gameIdFromInput } from '../src/takedown-routes.js';
+import { PUBLIC_WORKS_PATH } from '../src/works-paths.js';
 import {
   MAX_BODY_LENGTH,
   MAX_CLAIMANT_LENGTH,
@@ -196,6 +198,35 @@ describe('削除申請フォームが全ページのフッターから到達で�
     const footer = siteFooter();
     expect(footer).toContain(TERMS_PATH);
     expect(footer).toContain(TAKEDOWN_PATH);
+  });
+
+  it('フッターは 2 区画（サービス / 法務）である（2.3.7 / #331）', () => {
+    const footer = siteFooter();
+    // **区画の名前で見る。** リンクの数で見ると、区画を 1 つ潰して項目を寄せた形でも
+    // 通ってしまう（2.3.7 が定めているのは区画の構成である）。
+    expect(footer).toContain('>サービス<');
+    expect(footer).toContain('>法務<');
+    // サービスの 2 項目は実在する画面を指す（綴りは提供する側の定数から取る）。
+    expect(footer).toContain(`href="${PUBLIC_WORKS_PATH}"`);
+    expect(footer).toContain(`href="${GENERATE_PAGE_PATH}"`);
+    expect(footer).toContain(`href="${TERMS_PATH}"`);
+    expect(footer).toContain(`href="${TAKEDOWN_PATH}"`);
+  });
+
+  it('行き先の無い区画を置かない（会社情報・SNS・お問い合わせ。2.3.7 / 4.4 / 2.2）', () => {
+    // **AivisHub の 5 区画のうち 3 つは、このサービスに行き先が実在しない。**
+    // 空の区画を置くことは「出来ていないものを出来ているように書く」ことである。
+    const footer = siteFooter();
+    for (const absent of ['会社情報', 'お問い合わせ', 'SNS']) {
+      expect(footer, `フッターに ${absent} の区画がある`).not.toContain(absent);
+    }
+  });
+
+  it('フッターはログイン状態を引数に取らない（出し分けはヘッダだけが持つ）', () => {
+    // **同じ呼び出しが同じ HTML を返す。** フッタが出し分かると、POST の結果を返す
+    // 画面（`src/publish.ts` など）が状態を知らないまま組むことになる。
+    expect(siteFooter.length, 'siteFooter が引数を取るようになっている').toBe(0);
+    expect(siteFooter()).toBe(siteFooter());
   });
 
   it('削除申請フォームはログイン無しで開ける', async () => {

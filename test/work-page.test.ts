@@ -1,8 +1,8 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { escapeHtml } from '../src/html.js';
+import { VIEWER_SIGNED_OUT, escapeHtml } from '../src/html.js';
 import { dispatch } from '../src/routes.js';
-import { renderWorkPage } from '../src/work-page.js';
+import { renderWorkPage as renderWorkPageFor } from '../src/work-page.js';
 import type { WorkPageView } from '../src/work-page.js';
 import {
   FORKS_OFFSET_PARAM,
@@ -57,6 +57,21 @@ import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 const SECRET = 'test-secret-value-for-work-page-endpoint-1';
+
+/**
+ * 作品ページを、**ヘッダの状態を固定して**組み立てる（#331）。
+ *
+ * この一連の検査が見ているのは**本文**である（題名のエスケープ・IP の断り・いいねの口）。
+ * ヘッダの出し分け（2.3.7）は全画面に共通する外枠なので、**画面ごとに書くのではなく
+ * `test/page-shell.test.ts` が経路表から導いて両方の状態で見る。** ここで状態を振ると、
+ * 同じことを 2 か所で検査したうえに、片方だけが古くなる。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function renderWorkPage(view: WorkPageView): string {
+  return renderWorkPageFor(view, VIEWER_SIGNED_OUT);
+}
 
 /**
  * テスト用の env。

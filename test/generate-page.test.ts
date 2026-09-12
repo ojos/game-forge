@@ -12,6 +12,8 @@ import {
   MONTHLY_LIMIT_MESSAGE_KEY,
   NETWORK_MESSAGE_KEY,
   QUOTA_UNKNOWN_NOTICE,
+  TITLE_DECLARATION_EXAMPLE,
+  TITLE_DECLARATION_NOTICE,
   TYPICAL_WAIT_TEXT,
   UNCLASSIFIED_QUOTA_MESSAGE_KEY,
   availabilityNotice,
@@ -42,7 +44,7 @@ import { dispatch, findDuplicateRoutes } from '../src/routes.js';
 import { WORK_PAGE_PREFIX } from '../src/work-page.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { GENERATE_CALLBACK_PATH, generateCallbackRoutes } from '../src/generate-callback.js';
-import { createPendingGame } from '../src/games.js';
+import { MAX_TITLE_LENGTH, createPendingGame, draftTitleFromPrompt } from '../src/games.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -284,6 +286,42 @@ describe('ログイン済みの入力フォーム（acceptance 2 / 5.2-1）', ()
     expect(body).not.toContain('<iframe');
     expect(body).not.toContain('.wasm');
     expect(body).not.toContain('wasm_exec');
+  });
+
+  it('題名の宣言の書き方が画面に出ている（#365）', async () => {
+    // **この画面にタイトルの入力欄は無い**（5.4）。題名を決める手段があること自体を
+    // 画面で伝えないかぎり、宣言の経路は誰にも使われない。
+    const user = await seedUser('title-hint');
+    const body = await (await openPage(await sessionCookie(user))).text();
+
+    expect(body).toContain(TITLE_DECLARATION_NOTICE);
+    // 見出しの綴りと、それが「1 行目」であることが書かれている。
+    expect(TITLE_DECLARATION_NOTICE).toContain('タイトル:');
+    expect(TITLE_DECLARATION_NOTICE).toContain('1 行目');
+    // 宣言が独立した 1 行であることは `placeholder` の例が示す。
+    expect(body).toContain(TITLE_DECLARATION_EXAMPLE);
+    expect(TITLE_DECLARATION_EXAMPLE).toContain('タイトル: ');
+    // **例は「例:」で始めない**（PR #385 のレビュー指摘）。詳細は次の検査。
+    // 入力欄からたどれる（読み上げでも案内が結び付く）。
+    expect(body).toContain('aria-describedby="generate-title-hint"');
+    expect(body).toContain('id="generate-title-hint"');
+  });
+
+  it('入力例をそのまま送ると、案内どおりの題名になる（PR #385 のレビュー指摘）', () => {
+    // **例と解釈の規則を突き合わせる**（shared-ai-rules 12 章）。初版の例は `例:` の
+    // 行から始まっており、写して送ると題名が `例:` になった——案内文が言っている
+    // 「1 行目に宣言」と食い違っていた。ここは**例を実際に解釈して**確かめる。
+    const typed = TITLE_DECLARATION_EXAMPLE.replaceAll('&#10;', '\n');
+    expect(draftTitleFromPrompt(typed)).toBe('ブロックよけ');
+    // 1 行目が丸ごと宣言であること（＝フォールバックに落ちていないこと）。
+    expect(typed.split('\n')[0]).toBe('タイトル: ブロックよけ');
+    expect(draftTitleFromPrompt(typed)).not.toBe(typed.split('\n')[0]);
+  });
+
+  it('題名の上限を案内文へ書き写していない（#365 / shared-ai-rules 12 章）', () => {
+    // **`src/games.ts` の定数から作る。** 直値だと、あちらを見直した日にこの画面だけが
+    // 古い字数を案内する。ここは「定数を動かせば文面も動く」ことを見る。
+    expect(TITLE_DECLARATION_NOTICE).toContain(`${MAX_TITLE_LENGTH} 文字まで`);
   });
 });
 

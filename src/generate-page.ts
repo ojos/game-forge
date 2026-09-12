@@ -112,6 +112,8 @@
 import { siteFooter } from './legal.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from './generate.js';
+// 題名の上限の正本は `src/games.ts` が持つ（#365）。案内文へ書き写さない。
+import { MAX_TITLE_LENGTH } from './games.js';
 // 遷移先の綴りの正本は作品ページ側が持つ（`src/work-page.ts`）。ここで書き写さない。
 import { WORK_PAGE_PREFIX } from './work-page.js';
 import {
@@ -285,6 +287,50 @@ export function selectGenerateMessageKey(status: number, errorCode: string): str
  * その検査が落ちる。
  */
 export const TYPICAL_WAIT_TEXT = '通常 1〜2 分かかります';
+
+/**
+ * タイトルの宣言の書き方を伝える案内文（#365）。
+ *
+ * **この画面にタイトルの入力欄は無い**（5.4 の決定により、公開時に題名を入力させる段も
+ * 置かない）。題名はプロンプトから決まるので、**決める手段があること自体を利用者へ
+ * 伝えるのがこの一文の役目である。** 書けることを知らせないかぎり、宣言の経路
+ * （`src/games.ts` の `draftTitleFromPrompt`）は誰にも使われない。
+ *
+ * **上限は書き写さず `MAX_TITLE_LENGTH` から作る**（shared-ai-rules 12 章）。直値だと、
+ * あちらを見直した日にこの画面だけが古い字数を案内する。
+ *
+ * **宣言しなかったときの挙動もあわせて言う。** 「書かないと 1 行目が題名になる」ことを
+ * 知らないまま送った利用者が、文の途中で切れた題名を見て驚く——それが #365 の発端で
+ * ある。宣言の書式そのものは {@link TITLE_DECLARATION_EXAMPLE} が例示する。
+ */
+export const TITLE_DECLARATION_NOTICE =
+  `1 行目に「タイトル: ○○」と書くと、その ○○ が作品名になります（${MAX_TITLE_LENGTH} 文字まで）。` +
+  '書かない場合は 1 行目の先頭を仮の題として使います。';
+
+/**
+ * `placeholder` に出す、宣言を含む入力例（#365）。
+ *
+ * **`placeholder` を宣言つきの例へ差し替える。** 案内文（{@link TITLE_DECLARATION_NOTICE}）
+ * だけでは、宣言が**独立した 1 行**であることが伝わらない。改行を含む例を置くと、
+ * 「1 行目に書く」が読まずに分かる。
+ *
+ * 改行は属性値なので文字参照（`&#10;`）で入れる。**`escapeHtml` を通さずに埋める唯一の
+ * 箇所なので、固定文字列であることをここで担保する**（利用者の入力は 1 文字も混ざらない）。
+ *
+ * # 「例:」で始めない（PR #385 の Copilot レビュー）
+ *
+ * **初版はこの文字列が `例:` の行から始まっていた。** 例をそのまま写して送ると、
+ * 先頭の非空行が `例:` になるため `draftTitleFromPrompt` は宣言を見つけられず、
+ * **題名が `例:` になる**——案内文が言っている「1 行目に宣言」と、例そのものが
+ * 食い違っていた。**例は、そのまま送って案内どおりに動くものでなければならない。**
+ * 例であることは `placeholder` という置き場と案内文が既に示している。
+ *
+ * **写して送った結果は `test/generate-page.test.ts` が `draftTitleFromPrompt` へ
+ * 通して機械照合する**（shared-ai-rules 12 章）。この文字列を宣言でない形へ戻すと、
+ * その検査が落ちる。
+ */
+export const TITLE_DECLARATION_EXAMPLE =
+  'タイトル: ブロックよけ&#10;左右キーで動く自機が、上から落ちてくるブロックをよけ続けるゲーム';
 
 /**
  * 「まだ待っている」ことを追加で出すまでの秒数。
@@ -648,8 +694,10 @@ ${stillAvailableSection()}`;
   return `${quota}
 <form id="generate-form" method="post" action="${GENERATE_PATH}">
   <label for="generate-prompt">どんなゲームを作りますか（日本語で、${MAX_PROMPT_LENGTH} 文字まで）</label>
-  <textarea id="generate-prompt" name="prompt" rows="4" maxlength="${MAX_PROMPT_LENGTH}"
-            placeholder="例: 左右キーで動く自機が、上から落ちてくるブロックをよけ続けるゲーム" required></textarea>
+  <p id="generate-title-hint">${escapeHtml(TITLE_DECLARATION_NOTICE)}</p>
+  <textarea id="generate-prompt" name="prompt" rows="5" maxlength="${MAX_PROMPT_LENGTH}"
+            aria-describedby="generate-title-hint"
+            placeholder="${TITLE_DECLARATION_EXAMPLE}" required></textarea>
   <button id="generate-submit" type="submit" disabled>生成する</button>
 </form>
 

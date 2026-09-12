@@ -501,3 +501,42 @@ describe('断るときは何も書かない（5.8）', () => {
     expect(await readLikeViewerState(env, fan, game)).toEqual({ liked: false, count: 0 });
   });
 });
+
+describe('上限に達したときの案内（5.8 / M9-8 / #340）', () => {
+  it('文言が仕様 5.8 の言い回しと一致している', () => {
+    // **仕様の文言をコードへ書き写さない**（`.ai-playbook/shared-ai-rules.md` 12 章。
+    // `test/generate-page.test.ts` が 4.4 の文言について同じことをしている）。
+    // 仕様側を直したらここが落ち、コード側を直したらここが落ちる。
+    const spec = env.TEST_PRODUCT_SPEC;
+    const quoted = [...spec.matchAll(/\*\*上限に達したとき:?\*\*\s*「([^」]+)」/gu)].map(
+      (match) => match[1]!,
+    );
+    expect(quoted, '仕様 5.8 の「上限に達したとき」の文言が 1 つ見つからない').toHaveLength(1);
+    // 仕様は鍵括弧の中に句点を書かない。**コード側の句点だけを外して比べる。**
+    expect(DAILY_LIMIT_MESSAGE.replace(/。$/u, '')).toBe(quoted[0]);
+  });
+
+  it('断りの画面に作品ページへ戻る導線が出る（HTML のときだけ）', async () => {
+    const author = await seedUser('作者');
+    const fan = await seedUser('上限まで押す人');
+    const game = await seedGame(author);
+
+    for (let count = 0; count < DAILY_OPERATION_LIMIT; count += 1) {
+      const { response } = await send(count % 2 === 0 ? 'like' : 'cancel', game, { userId: fan });
+      expect(response.status, `${count + 1} 回目`).toBe(303);
+    }
+
+    const asHtml = await send('like', game, { userId: fan });
+    expect(asHtml.response.status).toBe(429);
+    const body = await asHtml.response.text();
+    expect(body).toContain(DAILY_LIMIT_MESSAGE);
+    // **戻り先はリンクで出す**（303 で戻すと断られたことが URL にもステータスにも
+    // 残らない。`src/likes.ts` の `refusal`）。
+    expect(body).toContain(`<a href="${workPagePath(game)}">`);
+
+    // `fetch` で送った側には画面を返さない（8.3。応答本文の文字列を表示面へ持ち込まない）。
+    const asJson = await send('like', game, { userId: fan, accept: 'application/json' });
+    expect(asJson.response.status).toBe(429);
+    expect(await asJson.response.json()).toEqual({ error: 'daily-limit' });
+  });
+});

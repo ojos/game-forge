@@ -222,7 +222,7 @@ describe('2 つの経路表が混ざらない（#356 の constraints）', () => 
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(body).toContain('<h1>Game Forge</h1>');
-    expect(body).not.toContain('<h1>管理</h1>');
+    expect(body).not.toContain('<h1>審査キュー</h1>');
     expect(body).not.toContain('gf-admin-header');
   });
 

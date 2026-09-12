@@ -14,8 +14,15 @@
  * | `GET /auth/google/start` | **通す**（Google へ 303） | 通す | 通す |
  * | `GET /auth/google/callback` | **通す**（セッションを発行） | 通す | 通す |
  * | `POST /auth/logout` | **通す**（cookie を消す） | 通す | 通す |
- * | `GET /`（管理画面） | 404 | 404 | 200 |
+ * | `GET /`（審査キュー） | 404 | 404 | 200 |
  * | **上記以外のすべて**（`POST /` や `GET /auth/logout` を含む） | 404 | 404 | 経路表が決める |
+ *
+ * **M10-3（#361）が足した 5 本も、この表の最終行にそのまま入っている**
+ * （`GET /users` / `GET /actions` / `POST /api/review` / `POST /api/ban`、そして
+ * 画面になった `GET /`）。**`ADMIN_OPEN_ROUTES` へ 1 行も足していない**ので、
+ * **何もしなくても守られた**——それが下記「既定が『閉』である」ことの意味である。
+ * `test/admin-guard.test.ts` が経路表を歩いて、足した経路すべてが未ログインで 404 に
+ * なることを確かめる（**一覧を書き写さない**ので、次に足す人も同じ検査に乗る）。
  *
  * **開いているのは「パス」ではなく「メソッドとパスの組」である**（{@link ADMIN_OPEN_ROUTES}）。
  * これが #359 の Copilot の指摘で直した点で、経緯は下記「なぜ経路ごとに包まないのか」。
@@ -94,7 +101,9 @@ import { CALLBACK_PATH, LOGIN_PATH, LOGOUT_PATH, createAuthRoutes } from '../aut
 import type { Route, RouteMethod } from '../routes.js';
 import { dispatch } from '../routes.js';
 import { adminNotFound, resolveAdminUser } from './guard.js';
-import { adminHomeRoutes } from './home.js';
+import { adminHistoryRoutes } from './history.js';
+import { adminReviewRoutes } from './review.js';
+import { adminUsersRoutes } from './users.js';
 
 /** 未ログインで通す要求の 1 つ。**メソッドまで含めて指定する**（下記）。 */
 export interface AdminOpenRoute {
@@ -155,19 +164,33 @@ function isOpenRequest(request: Request): boolean {
  * **この表は権限を持たない。** 守るのは {@link handleAdminRequest} で、ここは
  * 「どの呼び方にどのハンドラが対応するか」だけを持つ。
  *
+ * **実行者の id を受け取る**（M10-3 / #361）。`admin_actions` は実行者を残すので
+ * （2.4.4）、操作の口がそれを知っている必要がある。**判定を 2 か所に増やさずに渡す**
+ * ——`handleAdminRequest` が 1 回だけ判定し、その id をここへ渡して、ハンドラが
+ * 閉じ込める（`src/admin/guard.ts` の「M10-3 へ: 実行者の id が要るとき」が、
+ * まさにこの形を指定している）。**ハンドラの中で `resolveAdminUser` を呼び直さないこと。**
+ *
+ * **既定は `null` である。** 経路表そのものは権限を持たないので、**id を知らないまま
+ * でも組み立てられる**（検査が経路を歩くときに使う）。id を要する口は、`null` を
+ * 受け取ったら 404 へ倒す（fail-closed。`src/admin/review.ts`）。
+ *
  * @param authOverrides 認証の依存の差し替え（テストがコールバックをネットワークなしで
  *   通すために使う。既定は本番の振る舞い）
+ * @param adminUserId 権限を確かめ済みの実行者の id（未判定なら null）
  * @returns 経路表
  */
 export function createAdminRoutes(
   authOverrides: Partial<AuthDependencies> = {},
+  adminUserId: string | null = null,
 ): readonly Route[] {
   return [
     // **OAuth の 3 経路は `app` ホストと同じ実装を使う。** `redirectUri` は
     // `env.APP_HOST` ではなく**要求のホスト**から組み立てるので（`src/auth/google.ts`）、
     // admin ホストへ来た要求は admin のコールバックへ戻る。**写しを作らない。**
     ...createAuthRoutes(authOverrides),
-    ...adminHomeRoutes,
+    ...adminReviewRoutes(adminUserId),
+    ...adminUsersRoutes(adminUserId),
+    ...adminHistoryRoutes(),
   ];
 }
 
@@ -182,11 +205,17 @@ export function createAdminRoutes(
  * @returns レスポンス
  */
 export async function handleAdminRequest(request: Request, env: Env): Promise<Response> {
-  if (!isOpenRequest(request)) {
-    const admin = await resolveAdminUser(request, env);
-    if (!admin.ok) {
-      return adminNotFound(request);
-    }
+  if (isOpenRequest(request)) {
+    // **未ログインで通す 3 つ（OAuth）。** 実行者は分からないままでよい——
+    // **この 3 つは `admin_actions` を 1 行も書かない。**
+    return await dispatch(createAdminRoutes(), request, env);
   }
-  return await dispatch(createAdminRoutes(), request, env);
+
+  const admin = await resolveAdminUser(request, env);
+  if (!admin.ok) {
+    return adminNotFound(request);
+  }
+  // **判定した id をそのまま経路表へ渡す**（M10-3 / #361。`createAdminRoutes` の注記）。
+  // ハンドラが D1 を読み直さないので、**境界は 1 か所のままである。**
+  return await dispatch(createAdminRoutes({}, admin.userId), request, env);
 }

@@ -22,7 +22,10 @@ import {
   hashJobToken,
   listAuthoredGames,
   listPublishedForks,
+  listPublishedGames,
+  PUBLISHED_STATUS,
   publishGame,
+  publishedGamesSql,
   removeGame,
 } from '../src/games.js';
 import type { GenerateRequest } from '../src/generate.js';
@@ -1208,5 +1211,37 @@ describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
     expect(ids).toContain(kept);
     // 行き先の無いリンクを一覧に並べない（`listAuthoredGames` の規則）。
     expect(ids).not.toContain(dropped);
+  });
+});
+
+describe('公開一覧が作者 id を返す（#330 / 仕様 2.3.1）', () => {
+  it('`listPublishedGames` が `authorId` を入れる', async () => {
+    // **作者ページへのリンクを張るのに要る 1 列である**（`src/work-card.ts` の
+    // `cardAuthorId`）。選ばなくなったらカードは静かに `<span>` へ戻る——**画面は
+    // 正しく出るので、引く側で機械判定する。**
+    const userId = `games-author-${crypto.randomUUID()}`;
+    await env.DB.prepare(
+      'insert into users (id, google_sub, email, display_name, created_at) values (?, ?, ?, ?, 1)',
+    )
+      .bind(userId, `sub-${userId}`, `${userId}@example.com`, '作者 id を返す作者')
+      .run();
+    const gameId = crypto.randomUUID();
+    await env.DB.prepare(
+      `insert into games
+         (id, author_id, status, title, go_version, created_at, generation_state,
+          published_at, fork_count, like_count, ogp_state)
+       values (?, ?, ?, '作者 id の作品', '', 1, 'ready', ?, 0, 0, 'ready')`,
+    )
+      .bind(gameId, userId, PUBLISHED_STATUS, 9_800_000_001)
+      .run();
+
+    const works = await listPublishedGames(env, 'recent', 5);
+    const found = works.find((work) => work.id === gameId);
+    expect(found, '仕込んだ作品が 1 頁目に無い').toBeDefined();
+    expect(found!.authorId).toBe(userId);
+    // **`users` から選ぶ列は増えていない**（仕様 2.3.6。`email` と `invited_by` が
+    // カードへ届く経路を作らない）。増えたのは `games.author_id` 1 つである。
+    expect(publishedGamesSql('recent')).not.toContain('u.email');
+    expect(publishedGamesSql('recent')).not.toContain('invited_by');
   });
 });

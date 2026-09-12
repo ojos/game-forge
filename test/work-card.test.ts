@@ -5,7 +5,8 @@ import { PUBLISHED_STATUS } from '../src/games.js';
 import type { PublicWork } from '../src/games.js';
 import { cachedRows, listCacheKey, purgeListCache } from '../src/list-cache.js';
 import { PUBLIC_WORKS_PATH } from '../src/works-paths.js';
-import { cardLikeCount, renderWorkCard, renderWorkCards } from '../src/work-card.js';
+import { authorPagePath } from '../src/users-page-paths.js';
+import { cardAuthorId, cardLikeCount, renderWorkCard, renderWorkCards } from '../src/work-card.js';
 import { workPagePath } from '../src/work-page.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -234,5 +235,64 @@ describe('表示名は数を足したあともエスケープされる（5.9）'
     ]);
     expect(cards.match(/いいね /gu) ?? []).toHaveLength(1);
     expect(renderWorkCards([])).toBe('');
+  });
+});
+
+describe('作者名から作者ページへ辿れる（#330 / 仕様 2.3.1）', () => {
+  it('`authorId` があれば作者名がリンクになる', () => {
+    const html = renderWorkCard({ ...baseWork, authorId: 'u-1' });
+    expect(html).toContain(`<a class="gf-card-author" href="${authorPagePath('u-1')}">`);
+    // 名前はリンクの中身になるだけである（エスケープは変わらない）。
+    expect(html).toContain('>カードの作者</a>');
+  });
+
+  it('`authorId` が無い行はリンクにしない（`<span>` のまま）', () => {
+    // **一覧の行は Cache API に載っており、鍵に行の形の版が無い**（`src/list-cache.ts`。
+    // TTL 60 秒）。配備の直後、最大 60 秒は `author_id` を選んでいなかった頃の行が
+    // 返りうる（`likeCount` が #340 で踏んだ穴と同じもの。5.8 の v1.52）。
+    //
+    // **空の `href` や 404 へ行くリンクを出さない**（4.4）。
+    expect(renderWorkCard(baseWork)).toContain('<span class="gf-card-author">カードの作者</span>');
+    expect(renderWorkCard(baseWork)).not.toContain('gf-card-author" href');
+  });
+
+  it('数でない値・空文字も同じ扱いにする（キャッシュを経由する値は JSON である）', () => {
+    for (const broken of [null, '', 0, {}, []] as unknown[]) {
+      const html = renderWorkCard({ ...baseWork, authorId: broken as string });
+      expect(html, String(broken)).toContain('<span class="gf-card-author">');
+      expect(cardAuthorId({ ...baseWork, authorId: broken as string }), String(broken)).toBeNull();
+    }
+    // 空振りしないことを対で見る。
+    expect(cardAuthorId({ ...baseWork, authorId: 'u-2' })).toBe('u-2');
+  });
+
+  it('作者名が引けていない行はリンクにしない（押した人を必ず 404 へ送らない）', () => {
+    // `authorName` が null のカードは「不明」と出る。**`users` の行が引けていないので、
+    // その id の作者ページは 404 である。**
+    const html = renderWorkCard({ ...baseWork, authorName: null, authorId: 'u-3' });
+    expect(html).toContain('<span class="gf-card-author">不明</span>');
+    expect(cardAuthorId({ ...baseWork, authorName: null, authorId: 'u-3' })).toBeNull();
+  });
+
+  it('カード全体のリンクの中に入れ子にしない（HTML として不正にならない）', () => {
+    // `.gf-card-link` が包むのはスクリーンショットと題名だけで、下段はその外側にある。
+    const html = renderWorkCard({ ...baseWork, authorId: 'u-4' });
+    const cardLinkEnd = html.indexOf('</a>');
+    const authorLink = html.indexOf('class="gf-card-author"');
+    expect(cardLinkEnd).toBeGreaterThan(0);
+    expect(authorLink, '作者のリンクがカードのリンクより前にある').toBeGreaterThan(cardLinkEnd);
+  });
+
+  it('公開一覧の経路でも作者名がリンクになる（引く側が `author_id` を選んでいる）', async () => {
+    // **描画の検査だけでは足りない。** `publishedGamesSql` が `g.author_id` を選ばなく
+    // なったら、カードは静かに `<span>` へ戻る（画面は正しく出る）。
+    const author = await seedUser('一覧から辿られる作者');
+    const id = await seedGame(author, 0);
+
+    await purgeListCache(FIRST_PAGE_KEY);
+    const body = await openList();
+
+    expect(body).toContain(workPagePath(id));
+    expect(body).toContain(`<a class="gf-card-author" href="${authorPagePath(author)}">`);
   });
 });

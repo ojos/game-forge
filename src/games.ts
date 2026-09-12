@@ -1178,6 +1178,29 @@ export interface PublicWork {
   readonly title: string;
   /** 作者の表示名。行が壊れている場合に備えて null を許す。 */
   readonly authorName: string | null;
+  /**
+   * 作者の `users.id`。**作者ページ（`/users/<user_id>`）へのリンクにだけ使う**（#330）。
+   *
+   * # なぜ省略可なのか
+   *
+   * **型の上で必須にできない。** 一覧の行は Cache API に載っており、鍵に行の形の版が
+   * 無い（`src/list-cache.ts`。TTL は 60 秒）。配備の直後、最大 60 秒は `author_id` を
+   * 選んでいなかった頃の行が返りうる——`likeCount` が #340 で踏んだ穴と同じものである
+   * （仕様 5.8 の v1.52 / 1.2.50）。
+   *
+   * **もう 1 つ理由がある。** `PublicWork` を組み立てるのはここだけではない
+   * （`src/home-feed.ts` の公式サンプルと `src/liked-works.ts`）。必須にすると、
+   * この 3 か所すべてが同時に `author_id` を選ぶまで型の検査が通らない。
+   * **省略可にしておけば、選んだ経路から順に作者名がリンクになる。**
+   *
+   * 欠けているときにカードがどうするかは `src/work-card.ts` の `cardAuthorId` が決める
+   * （**リンクにせず、名前を文字のまま出す**）。
+   *
+   * **`users` を行ごと持ってこないという規律は崩していない**（仕様 2.3.6）。増えたのは
+   * `games.author_id` 1 列で、`users` 側から選んでいるのは今までどおり `display_name`
+   * だけである——`email` と `invited_by` がカードへ届く経路は 1 本も増えていない。
+   */
+  readonly authorId?: string | null;
   /** 公開した時刻（UNIX 秒）。0001 以前の行では null になりうる。 */
   readonly publishedAt: number | null;
   /** この作品から生まれた公開済みのフォークの数（非正規化列。5.1）。 */
@@ -1232,8 +1255,12 @@ export function publishedGamesSql(sort: PublicWorkSort): string {
 
   // `users` を join するのは表示名 1 列のためである。**行ごと持ってこない**
   // （`email` と `invited_by` は公開してはいけない。仕様 2.3.6）。
+  //
+  // **`g.author_id` を選ぶのは作者ページへのリンクのためである**（#330）。`users` 側から
+  // 選ぶ列は増やしていない——増えたのは `games` の列 1 つで、これは既にこの表の中で
+  // 誰にでも見える値である（作品ページが同じ列を引いて作者名を出している）。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
-            g.ogp_state, u.display_name as author_name
+            g.ogp_state, g.author_id, u.display_name as author_name
        from games g
        left join users u on u.id = g.author_id
       where g.status = ? and ${reviewVisibleSql('g')}
@@ -1260,7 +1287,11 @@ export function publishedGamesSql(sort: PublicWorkSort): string {
  * `users.banned_at` を条件に足さない。**BAN は生成と招待を止めるもの**（7.3）で、
  * 公開済みの作品を取り下げるのは 8.4 の削除（`status='removed'`）が持つ。ここで
  * 落とすと、**同じ作品が作品ページでは見えて一覧では消える**という食い違いになる。
- * 作者ページ（M9-4 / #330）が BAN の扱いを決めるときに、ここも併せて見直すこと。
+ *
+ * **#330（M9-4）が作者ページについて同じ判断をした**ので、この段は見直さずに残す。
+ * 判断と 4 つの根拠は `src/users-page.ts` の「BAN 済みの利用者をどう扱うか」にある
+ * ——**露出を止める単位は利用者ではなく作品である**（8.4）。したがって公開一覧・
+ * トップ・作品ページ・作者ページの 4 枚が、BAN について同じことを言う状態になった。
  *
  * # 件数の上限は呼び出し側が決める
  *
@@ -1293,6 +1324,7 @@ export async function listPublishedGames(
       like_count: number;
       parent_id: string | null;
       ogp_state: string | null;
+      author_id: string | null;
       author_name: string | null;
     }>();
 
@@ -1300,6 +1332,7 @@ export async function listPublishedGames(
     id: row.id,
     title: row.title,
     authorName: row.author_name,
+    authorId: row.author_id,
     publishedAt: row.published_at,
     forkCount: row.fork_count,
     likeCount: row.like_count,

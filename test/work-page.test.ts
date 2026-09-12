@@ -5,6 +5,7 @@ import { dispatch } from '../src/routes.js';
 import { renderWorkPage } from '../src/work-page.js';
 import type { WorkPageView } from '../src/work-page.js';
 import {
+  AUTHOR_WORKS_LABEL,
   FORKS_OFFSET_PARAM,
   FORKS_PER_PAGE,
   GENERATION_IS_SYNCHRONOUS,
@@ -34,6 +35,7 @@ import {
 } from '../src/like-paths.js';
 import { changeLike } from '../src/likes.js';
 import { REVIEW_QUEUED } from '../src/reports.js';
+import { authorPagePath } from '../src/users-page-paths.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
 import { defaultPipeline, runJobInline, startGeneration } from '../src/generate.js';
 import type { GenerationPipeline } from '../src/generate.js';
@@ -998,6 +1000,7 @@ const baseView: WorkPageView = {
   imageUrl: null,
   imagePath: null,
   authorName: null,
+  authorPageId: null,
   authorIsOperator: false,
   parent: { kind: 'none' },
   forks: { total: 0, items: [], morePath: null, backPath: null },
@@ -1174,6 +1177,30 @@ describe('運営の印（#334）', () => {
     return lines[0]!;
   }
 
+  /**
+   * 期待する作者の行を組み立てる（#330 が作者ページへの導線を足した）。
+   *
+   * **写す範囲を 1 か所に閉じている。** 以下の it は**行を全体で比べる**（部分一致に
+   * しない——空白 1 つ・空の `<span>` 1 つが足されても落ちる形を保つ）ので、綴りは
+   * どこかに要る。**4 か所に散らすと、印や導線の位置を変えたときに 3 か所だけ直す
+   * 事故が起きる。**
+   *
+   * **`authorPagePath` と `AUTHOR_WORKS_LABEL` は借りる。** `/users/` の綴りと文言を
+   * 検査へ書き写すと、変えた日に検査だけが古い綴りを見続ける。
+   *
+   * **順は 名前 → 印 → 導線 である**（印は名前に付くので、あいだに挟まない）。
+   *
+   * @param userId 作者の id
+   * @param name 表示名（**エスケープ前**。この関数が通す）
+   * @param mark 名前の後ろに続く印（運営バッジ。既定は無し）
+   * @returns `<p class="gf-author">…</p>`
+   */
+  function expectedAuthorLine(userId: string, name: string, mark = ''): string {
+    const link =
+      ` <a class="gf-author-link" href="${authorPagePath(userId)}">${AUTHOR_WORKS_LABEL}</a>`;
+    return `<p class="gf-author">作者: <strong>${escapeHtml(name)}</strong>${mark}${link}</p>`;
+  }
+
   it('フラグが立った作者の作品ページには、名前の隣に印が出る', async () => {
     const { userId, id } = await seedPublished('op-flagged');
     await markOperator(userId);
@@ -1181,9 +1208,8 @@ describe('運営の印（#334）', () => {
     const body = await (await open(workPagePath(id))).text();
 
     // 印は `<strong>`（利用者が決めた名前）の**外**、同じ行の中にある。
-    expect(authorLine(body)).toBe(
-      `<p class="gf-author">作者: <strong>op-flagged</strong> ${MARK_ELEMENT}</p>`,
-    );
+    // **リンク（#330）は `<strong>` の内側である**——印の「外」の意味を動かさない。
+    expect(authorLine(body)).toBe(expectedAuthorLine(userId, 'op-flagged', ` ${MARK_ELEMENT}`));
     // 下の「出ない」側が使う検出の正規表現が、本物の印には当たること（空振りしない）。
     expect(body).toMatch(BADGE_ELEMENT);
     // **画面に出たのは印だけで、`users` の他の列ではない**（仕様 2.3.6）。
@@ -1202,9 +1228,13 @@ describe('運営の印（#334）', () => {
 
     const body = await (await open(workPagePath(id))).text();
 
-    // **#334 の前と 1 バイトも違わない行である。** 部分一致ではなく全体で比べる
-    // ——空白 1 つ・空の `<span>` 1 つが足されても落ちる。
-    expect(authorLine(body)).toBe('<p class="gf-author">作者: <strong>op-default</strong></p>');
+    // **印に関わるものが 1 バイトも足されていない行である。** 部分一致ではなく全体で
+    // 比べる——空白 1 つ・空の `<span>` 1 つが足されても落ちる。
+    //
+    // **#334 の時点の期待値は `<strong>op-default</strong>` だった**（「#334 の前と
+    // 1 バイトも違わない」）。#330 が作者名をリンクにしたので、その 1 点だけが変わって
+    // いる。**印については変わっていないこと**を、下の 2 行と合わせて見る。
+    expect(authorLine(body)).toBe(expectedAuthorLine(userId, 'op-default'));
     expect(body).not.toContain('gf-operator');
     expect(body).not.toContain(OPERATOR_MARK);
   });
@@ -1229,9 +1259,12 @@ describe('運営の印（#334）', () => {
    *
    * @param suffix テスト内で一意な接尾辞
    * @param name 書き換える表示名
-   * @returns 作品ページの HTML
+   * @returns 作品ページの HTML と、作者の id（作者ページのリンクの期待値に要る）
    */
-  async function openAsRenamed(suffix: string, name: string): Promise<string> {
+  async function openAsRenamed(
+    suffix: string,
+    name: string,
+  ): Promise<{ body: string; userId: string }> {
     const { userId, id } = await seedPublished(suffix);
     const result = await env.DB.prepare('update users set display_name = ? where id = ?')
       .bind(name, userId)
@@ -1239,7 +1272,7 @@ describe('運営の印（#334）', () => {
     // **書き換えが当たったことを先に確かめる。** 0 行の UPDATE だと名前は
     // `op-disguise-*` のままで、下の「印が無い」は**なりすましを 1 度も試さずに**通る。
     expect(result.meta.changes, name).toBe(1);
-    return await (await open(workPagePath(id))).text();
+    return { body: await (await open(workPagePath(id))).text(), userId };
   }
 
   it('名前で「運営」と名乗っても印は出ない（名前で判定しない）', async () => {
@@ -1247,14 +1280,12 @@ describe('運営の印（#334）', () => {
     // フラグが立っていなければ印の要素は 1 つも現れない。**
     const disguises = ['運営', OPERATOR_MARK, `（${OPERATOR_MARK}）`, `運営 ${OPERATOR_MARK}`];
     for (const [index, name] of disguises.entries()) {
-      const body = await openAsRenamed(`op-disguise-${index}`, name);
+      const { body, userId } = await openAsRenamed(`op-disguise-${index}`, name);
 
       expect(body, name).not.toMatch(BADGE_ELEMENT);
       // 名前は `<strong>` の中にだけ現れ、行はそこで終わる。**書き換えた名前そのもの**が
       // 出ていることも見る（元の名前のままなら、ここで落ちる）。
-      expect(authorLine(body), name).toBe(
-        `<p class="gf-author">作者: <strong>${escapeHtml(name)}</strong></p>`,
-      );
+      expect(authorLine(body), name).toBe(expectedAuthorLine(userId, name));
     }
   });
 
@@ -1270,12 +1301,12 @@ describe('運営の印（#334）', () => {
       `</strong><span class="gf-operator">${OPERATOR_MARK}</span><strong>`,
     ];
     for (const [index, name] of injections.entries()) {
-      const body = await openAsRenamed(`op-inject-${index}`, name);
+      const { body, userId } = await openAsRenamed(`op-inject-${index}`, name);
 
       expect(body, name).not.toMatch(BADGE_ELEMENT);
-      expect(authorLine(body), name).toBe(
-        `<p class="gf-author">作者: <strong>${escapeHtml(name)}</strong></p>`,
-      );
+      // **リンクの中でもエスケープされる**（#330）。名前は `<a>` の中身になるだけで、
+      // `href` は `authorPagePath` が組み立てた値のままである。
+      expect(authorLine(body), name).toBe(expectedAuthorLine(userId, name));
     }
   });
 
@@ -1307,6 +1338,54 @@ describe('運営の印（#334）', () => {
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     expect(body).not.toContain('gf-operator');
     expect(body).not.toContain(OPERATOR_MARK);
+  });
+
+  it('作者の行から作者ページへ行ける（#330）', async () => {
+    const { userId, id } = await seedPublished('op-author-link');
+    const body = await (await open(workPagePath(id))).text();
+    expect(body).toContain(`href="${authorPagePath(userId)}"`);
+    expect(body).toContain(AUTHOR_WORKS_LABEL);
+    // **導線は印の後ろにある。** 名前 → 印 → 導線の順で、印と名前のあいだに何も挟まない
+    // （印は名前に付くものである）。
+    expect(authorLine(body)).toBe(expectedAuthorLine(userId, 'op-author-link'));
+  });
+
+  it('印が立っていても、導線は印の後ろに 1 つだけ出る（#330 / #334）', async () => {
+    const { userId, id } = await seedPublished('op-link-and-mark');
+    await markOperator(userId);
+    const body = await (await open(workPagePath(id))).text();
+    expect(authorLine(body)).toBe(
+      expectedAuthorLine(userId, 'op-link-and-mark', ` ${MARK_ELEMENT}`),
+    );
+    // 導線は 1 本だけである（印を足したことで 2 本になっていない）。
+    expect(body.match(/gf-author-link/gu) ?? []).toHaveLength(1);
+  });
+
+  it('作者の行が引けていなければ導線を出さない（404 へ送らない。#330）', () => {
+    // **`author_id` は NOT NULL の外部キー**なので通常は当たるが、当たらなかったときに
+    // **導線だけが残ると押した人を必ず 404 へ送る**（作者ページは存在しない利用者を
+    // 404 にする）。経路側は `published && row.author_name !== null` で畳んでおり、
+    // ここは描画側が `authorPageId` の真偽だけで決めることを見る。
+    const view: WorkPageView = {
+      ...baseView,
+      published: true,
+      authorName: null,
+      authorPageId: null,
+      forkableId: '00000000-0000-4000-8000-000000000000',
+    };
+    expect(renderWorkPage(view)).not.toContain('gf-author-link');
+    expect(renderWorkPage(view)).toContain('<strong>不明</strong>');
+    // 空振りしないことを対で見る（id を渡せば出る）。
+    expect(
+      renderWorkPage({ ...view, authorPageId: '00000000-0000-4000-8000-0000000000aa' }),
+    ).toContain('gf-author-link');
+  });
+
+  it('未公開の作品ページには作者ページへの導線も出ない（名前を出さない画面である）', async () => {
+    const { userId, id } = await seedPending('op-draft-link');
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(body).not.toContain('gf-author-link');
+    expect(body).not.toContain(authorPagePath(userId));
   });
 
   it('描画は view の真偽だけで決まる（名前の中身を見ない）', () => {

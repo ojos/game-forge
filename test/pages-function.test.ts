@@ -12,6 +12,7 @@ import { onRequest } from '../functions/[[path]].js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 const SANDBOX_ORIGIN = `https://${env.SANDBOX_HOST}`;
+const ADMIN_ORIGIN = `https://${env.ADMIN_HOST}`;
 
 /**
  * Pages Functions が渡す context を、このラッパが使う範囲だけ組み立てる。
@@ -44,6 +45,19 @@ describe('Pages Functions の入口（#71）', () => {
     const response = await onRequest(pagesContext(new Request(`${SANDBOX_ORIGIN}/`)));
     expect(response.status).toBe(404);
     expect(response.headers.get('content-security-policy')).toContain('sandbox allow-scripts');
+  });
+
+  it('管理画面用ホストを admin 側へ渡す（#356 / 2.4.1）', async () => {
+    // **カスタムドメインは 3 本になる**（`docs/admin-host.md`）。この薄いラッパが
+    // Host をそのまま渡していないと、**本番で admin ホストだけが未知のホストになる**
+    // ——ローカルの `SELF.fetch` は通るので、ここを見ないと配備まで気づけない。
+    //
+    // 未ログインなので 404 だが、**未知のホストの 404 とは本文が違う。**
+    const response = await onRequest(pagesContext(new Request(`${ADMIN_ORIGIN}/`)));
+    expect(response.status).toBe(404);
+    const body = await response.text();
+    expect(body).not.toContain('unknown host');
+    expect(JSON.parse(body)).toEqual({ error: 'not found', path: '/' });
   });
 
   it('未知のホストを 404 にする', async () => {

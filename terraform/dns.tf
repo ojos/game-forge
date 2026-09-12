@@ -58,6 +58,7 @@ resource "aws_route53_zone" "game_forge" {
 locals {
   app_host     = "app.${aws_route53_zone.game_forge.name}"
   sandbox_host = "sandbox.${aws_route53_zone.game_forge.name}"
+  admin_host   = "admin.${aws_route53_zone.game_forge.name}"
 
   # Cloudflare Pages のカスタムドメインが要求する CNAME の向き先。
   # プロジェクト名は Cloudflare 側の識別子で、Terraform の管理対象ではない
@@ -89,6 +90,32 @@ resource "aws_route53_record" "app" {
 resource "aws_route53_record" "sandbox" {
   zone_id = aws_route53_zone.game_forge.zone_id
   name    = local.sandbox_host
+  type    = "CNAME"
+  ttl     = 300
+  records = [local.pages_hostname]
+}
+
+/**
+ * 運営の管理画面のホスト（仕様 2.4.1 / #356）。
+ *
+ * **同じ Pages プロジェクトを指す**（サンドボックス用ホストと同じ理由）。
+ * src/index.ts が Host ヘッダで 3 つ目として振り分け、権限が無い要求には 404 を返す
+ * （2.4.2。403 は画面の存在を教える）。
+ *
+ * **apex ではなく `admin.` を 1 ラベル足しているのは、app と同じ DNS の制約による**
+ * （上の app_host の注記）。ゾーンの apex には CNAME を作れない。
+ *
+ * **このレコードだけでは開かない。** Cloudflare Pages 側のカスタムドメインの登録
+ * （API。docs/admin-host.md）が要り、**片方だけでは `active` にならない。**
+ * 順序はどちらからでもよいが、DNS が引けるまで証明書は発行されない。
+ *
+ * **`app` と同一サイトである**（登録可能ドメインがどちらも ojos.jp）。したがって
+ * セッション cookie の `__Host-` 接頭辞は admin 側でも必須で、**`Domain` 属性を
+ * 持てない以上、app のセッションは admin へ届かない**（2.4.1。独立にログインする）。
+ */
+resource "aws_route53_record" "admin" {
+  zone_id = aws_route53_zone.game_forge.zone_id
+  name    = local.admin_host
   type    = "CNAME"
   ttl     = 300
   records = [local.pages_hostname]

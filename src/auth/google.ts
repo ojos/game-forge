@@ -907,7 +907,21 @@ function notConfigured(missing: readonly string[]): Response {
  * 含まれず、ローカル開発は `https://game-forge.localtest.me:8787` で動くため、
  * 定数から組むとポートが落ちて開発時のログインだけが通らなくなる。
  * `Host` ヘッダ由来の値を使うことになるが、`src/index.ts` が未知のホストを
- * 404 で落としているため、ここへ届く時点でホスト名は `APP_HOST` に限られる。
+ * 404 で落としているため、ここへ届く時点でホスト名は**宣言したホストに限られる。**
+ *
+ * **そのホストは 2 つある**（2.4.1 / #356）。この経路は `app` ホストと
+ * **運営の管理画面（`ADMIN_HOST`）の両方**の経路表に載る。セッション cookie は
+ * `__Host-` 接頭辞で `Domain` 属性を持てないため（7.2 必須要件 2 / `src/session.ts`）、
+ * **admin 側は独立にログインする**——ホストごとに別のリダイレクト URI が要る。
+ *
+ * **要求から取る形が、そのまま両ホストで正しく働く。** `env.APP_HOST` から組んでいたら、
+ * admin ホストのログインが `app` のコールバックへ戻り、**cookie は届かず、
+ * Google 側では一致しない `redirect_uri` として弾かれる。**
+ *
+ * **代償は、ホストごとに Google Cloud Console への登録が要ること**である
+ * （**利用者の手作業。** `docs/admin-host.md`）。OAuth クライアントは API から操作
+ * できないため、ここは機構で代替できない。**登録が無いホストでは、ログインの開始は
+ * 成功し、Google の同意画面が `redirect_uri_mismatch` で止まる。**
  *
  * スキームは `https` に固定する。`__Host-` cookie が `Secure` を要求する以上、
  * http で認証を成立させる理由がない。

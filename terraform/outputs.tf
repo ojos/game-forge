@@ -93,6 +93,18 @@ output "sandbox_host" {
   value       = aws_route53_record.sandbox.name
 }
 
+output "admin_host" {
+  description = <<-EOT
+    運営の管理画面のホスト名（仕様 2.4.1。#356）。ADMIN_HOST と突き合わせる。
+
+    **足さないと、admin の CNAME が無くても宣言とずれていても検査が緑のまま通る**
+    （scripts/acceptance-remote.sh は output に在るホストしか回らない。#359 の
+    Copilot の指摘）。app_host / sandbox_host と同じ 2 つの検査へ入る——CNAME の実在と、
+    wrangler.toml の [env.production.vars] との一致である。
+  EOT
+  value       = aws_route53_record.admin.name
+}
+
 output "pages_hostname" {
   description = "カスタムドメインの CNAME の向き先（<project>.pages.dev）。外部層の検査が実状態と突き合わせる。"
   value       = local.pages_hostname

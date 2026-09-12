@@ -26,7 +26,14 @@ import {
   resolveSiteViewer,
   siteHead,
 } from './html.js';
-import { TAKEDOWN_PATH, TAKEDOWN_THANKS_PATH, TERMS_PATH } from './legal-paths.js';
+import {
+  FAQ_PATH,
+  PRIVACY_PATH,
+  TAKEDOWN_PATH,
+  TAKEDOWN_THANKS_PATH,
+  TERMS_PATH,
+} from './legal-paths.js';
+import { CONTACT_EMAIL, CONTACT_MAILTO } from './service-contact.js';
 import { MAX_BODY_LENGTH, MAX_CLAIMANT_LENGTH } from './takedown.js';
 
 // 画面の綴りの正本は値だけの葉である（外枠がパンくずのために借りる。`src/legal-paths.ts`）。
@@ -47,31 +54,37 @@ export const TAKEDOWN_FIELDS = {
 /**
  * フッタの法務の区画（2.3.7）。
  *
- * **この 2 つだけである。** 規約と削除申請は実在し、削除申請は #41 の acceptance 2 が
- * 「全ページのフッターから到達できる」ことを求めている唯一の窓口である。
+ * 規約と削除申請は実在し、削除申請は #41 の acceptance 2 が「全ページのフッターから
+ * 到達できる」ことを求めている唯一の窓口である。**プライバシーポリシーは v1.57 で足した**
+ * （2.3.7 の v1.57 注記 / #373。画面は `src/privacy.ts`）。
  */
 const FOOTER_LEGAL_ITEMS: readonly NavItem[] = [
   { path: TERMS_PATH, label: '利用規約' },
   { path: TAKEDOWN_PATH, label: '権利者の方へ（削除申請）' },
+  { path: PRIVACY_PATH, label: 'プライバシーポリシー' },
 ];
 
 /**
- * フッタのお問い合わせの区画（2.3.7 v1.57 / #372）。**いまは空である。**
+ * フッタのお問い合わせの区画（2.3.7 v1.57 / #372 / #373）。
  *
- * **枠だけを先に置く。** v1.57 はお問い合わせの区画を置くと決めたが、**行き先（一般の
- * 問い合わせ窓口とよくある質問）はまだ実在しない**——作るのは M12-5（#373）である。
- * 行き先の無いリンクは出さない（4.4 / 2.2）ので、**項目が空のあいだは見出しごと出ない**
- * （`src/html.ts` の `footerSection`）。
+ * **#372 が枠だけを先に置き、#373 が行き先を入れた。** 中身は 2.3.7 の v1.57 注記どおり
+ * **一般の問い合わせ窓口**と**よくある質問（`/faq`）**の 2 つである。
  *
- * **#373 は、画面を経路表へ足したうえで、ここへ項目を足すだけでよい。** 見出しは項目と
- * 一緒に現れる。**足した行き先がサイト内なら経路表の GET 経路であること、メールの窓口なら
- * `mailto:` の形であることを `test/page-shell.test.ts` が全画面で見る**ので、画面より先に
- * 項目だけを足すと赤くなる（`path` はメールの窓口なら `mailto:...` をそのまま入れてよい）。
+ * **窓口は画面ではなくメールアドレスである**（#373 の scope.out。問い合わせをフォームで
+ * 受けて D1 へ保存しない）。宛先は `src/service-contact.ts` の 1 か所にあり、プライバシー
+ * ポリシーの窓口もそこから組み立てる。**サイト内の行き先は経路表の GET 経路であること、
+ * メールの窓口は `mailto:` の形であることを `test/page-shell.test.ts` が全画面で見る。**
+ *
+ * **ラベルにアドレスそのものを出す。** `mailto:` はメールの道具が設定されていない端末では
+ * 押しても何も起きない（4.4 / 2.2）ので、書き写せる形でも見せる。
  *
  * `/takedown` をここへ入れないこと。あれは**権利者向け**の窓口で、一般の利用者の
  * 不具合報告の行き先ではない（2.3.7 v1.57 の注記）。
  */
-export const FOOTER_CONTACT_ITEMS: readonly NavItem[] = [];
+export const FOOTER_CONTACT_ITEMS: readonly NavItem[] = [
+  { path: CONTACT_MAILTO, label: `メールでのお問い合わせ（${CONTACT_EMAIL}）` },
+  { path: FAQ_PATH, label: 'よくある質問' },
+];
 
 /**
  * 全ページ共通のフッター（#41 の acceptance 2。#331 で 2 区画にした）。
@@ -80,8 +93,8 @@ export const FOOTER_CONTACT_ITEMS: readonly NavItem[] = [];
  *
  * ## 区画は、行き先が実在するものだけである（2.3.7）
  *
- * いま出るのはサービス / 法務の 2 区画である。**お問い合わせは枠だけを置き、項目が
- * 入るまで出ない**（{@link FOOTER_CONTACT_ITEMS}）。**会社情報・SNS は枠も置かない**
+ * いま出るのはサービス / 法務 / お問い合わせの 3 区画である（お問い合わせは #372 が枠を
+ * 置き、#373 が行き先を入れた。{@link FOOTER_CONTACT_ITEMS}）。**会社情報・SNS は枠も置かない**
  * ——v1.57 でも行き先が実在しないと決めたままである（2.3.14）。判断の正本は仕様 2.3.7 で、
  * ここはその写しである。
  *

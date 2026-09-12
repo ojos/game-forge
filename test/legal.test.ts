@@ -13,7 +13,9 @@ import {
   siteFooter,
   takedownMessageOf,
 } from '../src/legal.js';
+import { FAQ_PATH, PRIVACY_PATH } from '../src/legal-paths.js';
 import { GENERATE_PAGE_PATH } from '../src/paths.js';
+import { CONTACT_EMAIL, CONTACT_MAILTO } from '../src/service-contact.js';
 import { gameIdFromInput } from '../src/takedown-routes.js';
 import { PUBLIC_WORKS_PATH } from '../src/works-paths.js';
 import {
@@ -183,6 +185,12 @@ describe('削除申請フォームが全ページのフッターから到達で�
       }
       expect(body, `${page.path} にフッターが無い`).toContain(TAKEDOWN_PATH);
       expect(body, `${page.path} に規約への導線が無い`).toContain(TERMS_PATH);
+      // **#373 の受け入れ（訂正後）: フッタから 2 枚と問い合わせ先の 3 つへ辿れる。**
+      expect(body, `${page.path} にプライバシーポリシーへの導線が無い`).toContain(
+        `href="${PRIVACY_PATH}"`,
+      );
+      expect(body, `${page.path} によくある質問への導線が無い`).toContain(`href="${FAQ_PATH}"`);
+      expect(body, `${page.path} に問い合わせ先が無い`).toContain(`href="${CONTACT_MAILTO}"`);
     }
     // **ログイン済みなら、すべての画面が本文を出すはずである。**
     expect(skipped, '本文を出さなかった画面がある').toEqual([]);
@@ -201,12 +209,14 @@ describe('削除申請フォームが全ページのフッターから到達で�
     expect(footer).toContain(TAKEDOWN_PATH);
   });
 
-  it('フッターは 2 区画（サービス / 法務）である（2.3.7 / #331）', () => {
+  it('フッターは 3 区画（サービス / 法務 / お問い合わせ）である（2.3.7 v1.57 / #331 / #373）', () => {
     const footer = siteFooter();
     // **区画の名前で見る。** リンクの数で見ると、区画を 1 つ潰して項目を寄せた形でも
     // 通ってしまう（2.3.7 が定めているのは区画の構成である）。
     expect(footer).toContain('>サービス<');
     expect(footer).toContain('>法務<');
+    expect(footer).toContain('>お問い合わせ<');
+    expect(footer.split('<div class="gf-footer-group">')).toHaveLength(4);
     // サービスの 2 項目は実在する画面を指す（綴りは提供する側の定数から取る）。
     expect(footer).toContain(`href="${PUBLIC_WORKS_PATH}"`);
     expect(footer).toContain(`href="${GENERATE_PAGE_PATH}"`);
@@ -224,13 +234,30 @@ describe('削除申請フォームが全ページのフッターから到達で�
     }
   });
 
-  it('お問い合わせは枠だけを置き、行き先が入るまで見出しごと出さない（2.3.7 v1.57 / #372）', () => {
-    // **行き先（一般の問い合わせ窓口・よくある質問）は #373 が作る。** それまでは
-    // `FOOTER_CONTACT_ITEMS` が空で、見出しも出ない。**#373 が項目を足した日に、この it は
-    // 「見出しと項目が一緒に出る」へ書き換える**（足した行き先が画面であることは
-    // `test/page-shell.test.ts` が全画面で見る）。
-    expect(FOOTER_CONTACT_ITEMS).toEqual([]);
-    expect(siteFooter()).not.toContain('お問い合わせ');
+  it('お問い合わせの区画は、窓口のメールアドレスとよくある質問を持つ（2.3.7 v1.57 / #372 / #373）', () => {
+    // **#372 が置いた「枠だけ」の検査を反転させた。** 行き先（一般の問い合わせ窓口と
+    // よくある質問）を #373 が作ったので、見出しと項目が一緒に出る。
+    expect(FOOTER_CONTACT_ITEMS.map((item) => item.path)).toEqual([CONTACT_MAILTO, FAQ_PATH]);
+    const footer = siteFooter();
+    const contact = footer.split('<div class="gf-footer-group">').find((group) =>
+      group.includes('>お問い合わせ<'),
+    );
+    expect(contact, 'お問い合わせの区画が無い').toBeDefined();
+    expect(contact!).toContain(`href="mailto:${CONTACT_EMAIL}"`);
+    // **アドレスを文字でも見せる**（メールの道具が無い端末では `mailto:` が動かない）。
+    expect(contact!).toContain(`>メールでのお問い合わせ（${CONTACT_EMAIL}）<`);
+    expect(contact!).toContain(`href="${FAQ_PATH}"`);
+    // **権利者向けの窓口を一般の問い合わせへ混ぜない**（2.3.7 v1.57 の注記）。
+    expect(contact!).not.toContain(TAKEDOWN_PATH);
+  });
+
+  it('法務の区画はプライバシーポリシーを持つ（2.3.7 v1.57 / #373）', () => {
+    const footer = siteFooter();
+    const legal = footer.split('<div class="gf-footer-group">').find((group) =>
+      group.includes('>法務<'),
+    );
+    expect(legal, '法務の区画が無い').toBeDefined();
+    expect(legal!).toContain(`href="${PRIVACY_PATH}"`);
   });
 
   it('フッターはログイン状態を引数に取らない（出し分けはヘッダだけが持つ）', () => {

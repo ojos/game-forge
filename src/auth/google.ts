@@ -73,7 +73,7 @@ export const OAUTH_COOKIE = '__Host-gf_oauth';
  * 利用者が Google の同意画面で迷う時間を見込んで 10 分。長くすると、盗まれた
  * `code_verifier` が使える窓が広がる。短くすると正規の利用者が失敗する。
  */
-const OAUTH_COOKIE_MAX_AGE = 600;
+export const OAUTH_COOKIE_MAX_AGE = 600;
 
 /**
  * セッション cookie の寿命（秒）。
@@ -82,7 +82,7 @@ const OAUTH_COOKIE_MAX_AGE = 600;
  * 無い。** 寿命だけが唯一の制御なので、長すぎる値にしない。7 日は、毎日使う人が
  * 再ログインを求められない下限として選んだ。
  */
-const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
+export const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
 
 /**
  * 一時 cookie の署名に混ぜる用途識別子。

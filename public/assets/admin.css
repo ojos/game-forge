@@ -121,6 +121,24 @@
   font-size: var(--gf-text-small);
 }
 
+/*
+ * 行の頭の札（審査キューの「改名後に通報あり」。#367）。
+ *
+ * **文字で区別し、色に頼らない。** 新しい色のトークンを足さない（この 1 枚はトークンを
+ * 定義しない。冒頭）——`--gf-ink` の枠線と太字だけで、明暗どちらのテーマでも同じ強さに
+ * 見える。**`queued` の行には付かない**ので、同じ枠の行が並んでも取り違えない。
+ */
+.gf-admin-badge {
+  display: inline-block;
+  margin: 0 0 var(--gf-gap-1);
+  padding: 0 0.5em;
+  border: 1px solid var(--gf-ink);
+  border-radius: var(--gf-radius);
+  color: var(--gf-ink);
+  font-size: var(--gf-text-small);
+  font-weight: 700;
+}
+
 /* 理由は運営が書いた自由記述である。**折り返す**（`overflow-wrap` は body から継ぐ）。 */
 .gf-admin-reason {
   margin: 0;

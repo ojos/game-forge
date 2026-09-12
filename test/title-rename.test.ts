@@ -307,8 +307,8 @@ describe('正規化は生成側と同じ関数を通る（#365 / #366）', () =>
   // 気づけない。**
   const candidates = [
     { name: '40 文字を超える', value: 'あ'.repeat(MAX_TITLE_LENGTH + 10) },
-    { name: '制御文字（NEL を含む）', value: 'ねこのゲーム' },
-    { name: '行区切り（U+2028）', value: 'ねこ ゲーム' },
+    { name: '制御文字（NEL を含む）', value: 'ね\u0085こ\u0007の\u001fゲーム' },
+    { name: '行区切り（U+2028）', value: 'ねこ\u2028ゲーム' },
     { name: '前後の空白', value: '  ねこのゲーム  ' },
     { name: '空白だけ', value: '   ' },
     { name: '空文字', value: '' },
@@ -370,7 +370,7 @@ describe('8.3 の表を掛ける（#366）', () => {
     // **突き合わせの規則が 8.3 と同じ 1 本であることの検査である**（`inspectText` は
     // `inspectStringLiterals` と `collectCategories` を共有している）。
     expect(inspectText(denied.term.toUpperCase()).ok).toBe(false);
-    expect(inspectText(`${denied.term[0]}​${denied.term.slice(1)}`).ok).toBe(false);
+    expect(inspectText(`${denied.term[0]}\u200b${denied.term.slice(1)}`).ok).toBe(false);
     expect(inspectText('ふつうのゲーム').ok).toBe(true);
   });
 

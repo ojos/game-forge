@@ -1030,6 +1030,10 @@ const baseView: WorkPageView = {
   // 改名の口（5.4 / #366）。**既定は出さない**（作者にだけ出る。
   // 出し分けそのものは `test/title-rename.test.ts` が見る）。
   renamableId: null,
+  // 説明（#388）。**既定は出さない**（公開済みのときだけ入り、フォームは作者にだけ出る。
+  // 出し分けそのものは `test/work-description.test.ts` が見る）。
+  description: null,
+  describableId: null,
   removableId: null,
   likeCount: 0,
   likableId: null,

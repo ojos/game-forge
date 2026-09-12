@@ -4995,12 +4995,13 @@ v0.9 までの「プロバイダ層が先に発火したらアプリ層のバグ
 |---|---|
 | `users` | `google_sub`（一意）、`email`、`display_name`、`display_name_set_at`（利用者が表示名を決めた日時。NULL なら Google の表示名に追随する。5.9）、`x_handle`（任意・未検証）、`invited_by`、`created_at`、`banned_at`、`is_operator`（運営フラグ。0/1、既定 0。**表示だけで権限は与えない**。BAN と同じく直接 UPDATE で立てる。#334 / `docs/operator-account.md`）、`is_admin`（管理画面の権限。0/1、既定 0。**`is_operator` とは別の列**——表示と権限を一体にしない。2.4.2。最初の 1 人は直接 UPDATE） |
 | `invites` | `code`、`issued_by`、`used_by`、`used_at`、`expires_at` |
-| `games` | `id`、`author_id`、`parent_id`、`status`（draft/published/removed）、`title`、`go_version`、`source_key`、`wasm_key`、`fork_count`、`like_count`（5.8。Durable Objects から写した数）、`created_at`、`published_at` |
+| `games` | `id`、`author_id`、`parent_id`、`status`（draft/published/removed）、`title`、`go_version`、`source_key`、`wasm_key`、`fork_count`、`like_count`（5.8。Durable Objects から写した数）、`created_at`、`published_at`、`description`（作者が公開後に書く説明。空文字なら無し。5.4 / #388）、`description_set_at`（最後に説明を変えた時刻。変更の間隔の判定に使う。#388） |
 | `generations` | `id`、`game_id`、`user_id`、`prompt`、`model`、`input_tokens`、`output_tokens`、`cache_*_tokens`、`cost_jpy`、`succeeded`、`created_at`（**D1 の列名。** Bedrock のレスポンスは camelCase で、そこから写す。4.5） |
 | `reports` | `id`、`game_id`、`reporter_id`、`reason`、`created_at` |
 | `waitlist` | `id`、`email`（一意）、`source`、`created_at` |
 | `admin_actions` | `id`、`actor_id`（実行した運営）、`action`、`target_kind`、`target_id`、`reason`、`created_at`（**追記のみ。更新も削除もしない**。2.4.4） |
 | `title_changes` | `id`、`game_id`、`old_title`、`new_title`、`changed_at`（作者による改名の履歴。**追記のみ**で、**作品と同じ寿命**。5.4 / #366） |
+| `description_changes` | `id`、`game_id`、`old_description`、`new_description`、`changed_at`（作者による説明の変更の履歴。**追記のみ**で、**作品と同じ寿命**。`title_changes` と同じ形。5.4 / #388） |
 
 `games.parent_id` にインデックスを張る。`fork_count` は非正規化して一覧を軽くする。
 
@@ -5479,6 +5480,42 @@ set title` は実装に 1 つも無かった。公開フローにタイトル入
 > ゲームになっていた」と感じることは起こらず、確定28 ④ は覆っていない。公開後に
 > 中身を変えたい作者は、いまも 5.7 のとおりフォークする。
 
+#### 作者は公開後に作品の説明を書ける（実装注記（#388。実装日 2026-09-12））
+
+**作品ページに、作者が書いた文章が 1 文字も無かった**（題名は 40 字の名前であって内容では
+ない）。5.6 がクレジットの尊重を定めているのに、**それを書く欄が無かった。** 改名（上）と
+同じ形で、**説明を公開後に作品ページから書けるようにした。**
+
+- **口は作品ページに置き、公開済みの作品の作者にだけ出す**（`POST /api/works/describe`）。
+  素の `<form method="post">` と `<textarea>` で、CSRF はセッション cookie の `SameSite=Lax`
+  が受ける（改名と同じ）。**5.4 の 1タップの導線は 1 文字も変えない**——**未公開の作品には
+  欄を出さず、経路も断る**（`status = 'published'` を UPDATE の WHERE に置く）。ここが改名
+  （公開の前後を問わない）と違う。
+- **表示は誰にでも出す**（公開済みの作品の本文である）。`escapeHtml` を通したうえで、**改行
+  だけを構造へ戻す**（空行で段落、段落内の改行は `<br>`）。**Markdown・リンク・その他の書式は
+  持たない**——URL を書いてもリンクにならない（5.6 の外部リンクの緩和策をこの欄へ持ち込まない）。
+- **長さは 1000 文字（コードポイント）で、超えたら断る。黙って切らない**——題名の
+  `normalizeTitle` が切るのは仮の題を作る関数でもあるからで、説明の末尾を切るとクレジットの
+  最後の行が消えたまま公開される。**改行は 1 文字に数える**（`\r\n` は `\n` へ畳む）。
+- **禁じる文字は表示名（5.9）と同じ組から改行（LF）だけを除いたもの**（制御文字・U+2028 /
+  U+2029・`Bidi_Control`）。**置き換えずに断る。** 規則は `src/games.ts` の
+  `validateDescription` 1 か所にあり、組が表示名と一致していることは
+  `test/work-description.test.ts` が文字ごとに突き合わせる（`src/games.ts` はオーケストレータの
+  束に入るので `src/account.ts` を import できない）。
+- **8.3 の表を掛ける**（`src/output-moderation.ts` の `inspectText` を改名と共有する）。
+  **8.2 は通らない**（改名と同じ制約）。落ちたときに語も分類も返さない。
+- **変更の間隔は作品ごとに 60 秒**（表示名と同じ考え方。`games.description_set_at` を WHERE で
+  見るので、断った要求は 1 行も書かない）。
+- **履歴は `description_changes`（`migrations/0028`）に追記のみで、説明と 1 つの `D1.batch`
+  で書く。** 履歴の insert が落ちれば説明も変わらない。
+- **審査済み（`cleared`）の作品の説明を変えると `review_state` は `NULL` へ戻る**（改名と
+  同じ。`queued` にはしない・`queued` はそのまま）。**運営の一覧の条件（`REVIEW_RENAMED_SQL`）は
+  説明の変更を見ていない**——あの条件は #394 が「最後に `cleared` にした時刻より後の通報」へ
+  一般化する最中で、一般化されれば説明の変更も覆う。この実装は `src/reports.ts` に触れていない。
+- **持たないもの**: 公開時の入力（5.4）、検索の対象にすること（#378）、詳細情報パネルへの
+  配置（#383）、LLM に書かせること、改訂履歴を利用者に見せること、`og:description` への反映
+  （固定文言のまま）。
+
 公開後の**共有 URL は作品ページ（`https://<APP_HOST>/works/<game_id>`）である。**
 OGP のメタタグを持つのはこちらで、`/g/<game_id>/` は 7.2 のサンドボックス文書として
 UGC 由来の文字列を 1 つも持たない（`src/sandbox-loader.ts`）。公開済みの作品ページは
@@ -5618,6 +5655,12 @@ URL を控え損ねても、ここから辿れる。**一覧は作品ページ�
 >
 > **`x_handle` そのものの扱いは、M12-11 が決める**（新しい外部リンクの 1 本として扱い直すか、
 > 列ごと畳むか）。**この注記は「リンク化を一律に禁じない」ところまでを決めている。**
+
+> **実装注記（#388。実装日 2026-09-12）。クレジットを書く場所ができた。** 作者は公開済みの
+> 作品に**説明**を書け、作品ページに誰にでも出る（5.4「作者は公開後に作品の説明を書ける」）。
+> **原作・素材・二次利用の条件などのクレジットは、この欄に書く。** 運営は内容を検証しない
+> （外部リンクと同じく自称の値である）。**URL はリンクにしない。**
+
 - 利用規約に「**投稿は、他ユーザーによる改変・再配布を許諾するものとする**」旨を明記する。これがなければフォーク機能そのものが法的に不安定になるため、MVP でも省略できない。
 - 生成物の権利帰属（ユーザーに帰属し、サービスへ非独占の利用許諾）を規約に定める。
 - **LLM プロバイダ側の規約は確認済み（確定15）。** Anthropic の商用利用規約は「顧客が Output を所有する」「Anthropic は Output に対する権利を顧客へ譲渡する」「自社の顧客・エンドユーザーへ提供する製品・サービスに使える」と定めており、**生成物の再配布・サブライセンスに制限はない。** 本プロダクトの構成（生成物をユーザーに帰属させ、公開・フォークを許諾する）と矛盾しない。

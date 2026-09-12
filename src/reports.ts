@@ -211,8 +211,9 @@ export function reviewVisibleSql(alias = ''): string {
  * モジュールから `reviewVisibleSql` を取っており、逆向きの import は循環参照になる
  * （`src/paths.ts` が値だけの葉に逃がしているのと同じ問題）。
  *
- * **一致は `test/title-rename.test.ts` が機械照合する**（書き写した綴りは必ず腐る。
- * `.ai-playbook/shared-ai-rules.md` 12 章）。
+ * **表名の綴りが実在の表と一致することは `test/title-rename.test.ts` が確かめる**（この定数で
+ * 表を引いて改名の履歴を読む。書き写した綴りは必ず腐る。`.ai-playbook/shared-ai-rules.md`
+ * 12 章）。**審査キューの条件の綴りの照合は、#394 で `test/review-attention.test.ts` へ移した。**
  */
 export const TITLE_CHANGES_TABLE = 'title_changes';
 

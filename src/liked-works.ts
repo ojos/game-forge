@@ -46,7 +46,7 @@
  * MVP の画面は SSR の素の HTML に留める（9.3）。カードは公開一覧と**同じ 1 つの部品**を
  * 使う（`src/work-card.ts`。仕様 2.3.6）。
  */
-import { LOGIN_PATH } from './auth/google.js';
+import { loginRequiredRedirect } from './auth/google.js';
 import type { PublicWork } from './games.js';
 import { PUBLISHED_STATUS } from './games.js';
 import { VIEWER_SIGNED_IN, siteHead } from './html.js';
@@ -473,7 +473,9 @@ function seeOther(location: string): Response {
 async function showLikedWorks(request: Request, env: Env): Promise<Response> {
   const session = await resolveSessionUser(request, env);
   if (!session.ok) {
-    return seeOther(LOGIN_PATH);
+    // ログイン後はこの画面へ戻す（2.3.11 / #374）。**ページ番号は積まない**——
+    // 戻り先に載せるのは画面の定数だけで、要求から作った文字列は入れない。
+    return await loginRequiredRedirect(env, LIKED_WORKS_PATH);
   }
 
   const page = toLikedPageNumber(new URL(request.url).searchParams.get(LIKED_PAGE_PARAM));

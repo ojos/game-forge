@@ -37,7 +37,7 @@ import { resolveSessionUser } from './session-user.js';
 import { VIEWER_SIGNED_IN, escapeHtml, siteHead } from './html.js';
 import { HOME_PATH } from './home.js';
 import { INVITES_PATH } from './paths.js';
-import { LOGIN_PATH } from './auth/google.js';
+import { loginRequiredRedirect } from './auth/google.js';
 
 /**
  * 1 人あたりの招待枠（発行できる総数）。
@@ -216,7 +216,8 @@ function wantsHtml(request: Request): boolean {
 const showInvitePage: RouteHandler = async (request, env) => {
   const session = await resolveSessionUser(request, env);
   if (!session.ok) {
-    return seeOther(LOGIN_PATH);
+    // ログイン後はこの画面へ戻す（2.3.11 / #374）。
+    return await loginRequiredRedirect(env, INVITES_PATH);
   }
 
   const invites = await listIssuedInvites(env.DB, session.userId);
@@ -285,7 +286,9 @@ const handleIssueInvite: RouteHandler = async (request, env) => {
   if (!session.ok) {
     // 未ログインでは `invites` に行を作らない（枠の紐づけ先が無い）。画面から来た
     // 場合はログインへ送り、API には 401 を返す。
-    return asHtml ? seeOther(LOGIN_PATH) : json({ error: 'unauthorized' }, 401);
+    return asHtml
+      ? await loginRequiredRedirect(env, INVITES_PATH)
+      : json({ error: 'unauthorized' }, 401);
   }
 
   try {

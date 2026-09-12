@@ -16,12 +16,17 @@
  * **招待コードとの結線はここに持ち込まない。** `users.invited_by` は #14（T7）が
  * 埋める。8.1 の登録フロー（招待コードの検証が先、Google OAuth が後）は、招待側の
  * 経路が確定してから組む。ここで先取りすると、並行して進む #13 の完了を待つことになる。
+ *
+ * **ログイン後の戻り先も、同じ一時 cookie が運ぶ**（2.3.11 / #374）。`?redirect=` の
+ * ような query で受けない——外から与えられる形にすると**オープンリダイレクト**になり、
+ * 自前の検証を書いてテストで守り続けることになる。署名付き cookie なら外から
+ * 書き換えられない。**それでも着地の直前に検証する**（{@link safeReturnPath}）。
  */
 import type { Route } from '../routes.js';
 import { json } from '../routes.js';
 import { buildSessionCookie, clearSessionCookie, signSession } from '../session.js';
 import { normalizeInviteCode } from '../invite-code.js';
-import { SIGNUP_PATH } from '../paths.js';
+import { HOME_PATH, SIGNUP_PATH } from '../paths.js';
 import type { InviteRejection } from '../invites.js';
 import { consumeInvite } from '../invites.js';
 
@@ -84,10 +89,17 @@ const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
  *
  * セッション cookie と同じ `SESSION_SECRET` で署名するため、片方のトークンを
  * もう片方として通されないよう、署名対象の先頭へ用途を書く。形式が違う（セッションは
- * 2 要素、こちらは 4 要素）ので実際には混同しにくいが、鍵を共有する以上、
+ * 2 要素、こちらは 5 要素）ので実際には混同しにくいが、鍵を共有する以上、
  * 分離は署名側で明示しておく。
+ *
+ * **要素を増やすたびに版を上げる**（v1 → v2 は招待コード、v2 → v3 は戻り先）。
+ * 上げないと、**旧い形の cookie が新しい要素を欠いたまま署名を通る**余地が残る。
+ * 代償は、配備の瞬間に往復の途中だった利用者のログインが 1 回だけ落ちること
+ * （一時 cookie の寿命は {@link OAUTH_COOKIE_MAX_AGE} 秒で、窓はそれきり）。
+ * **旧い形を読める経路を残す選択は採らない**——恒久的に残る互換コードと引き換えに
+ * 塞げるのは 10 分の窓だけで、利用者にできることは「もう一度ログインする」である。
  */
-const OAUTH_STATE_DOMAIN = 'gf-oauth-state.v2';
+const OAUTH_STATE_DOMAIN = 'gf-oauth-state.v3';
 
 /**
  * 招待コードを持たないことを表す、一時 cookie 上の印。
@@ -97,6 +109,43 @@ const OAUTH_STATE_DOMAIN = 'gf-oauth-state.v2';
  * 正規形のコードと取り違えられない。
  */
 const NO_INVITE_MARK = '-';
+
+/**
+ * 戻り先を持たないことを表す、一時 cookie 上の印。
+ *
+ * {@link NO_INVITE_MARK} と同じ理由で空文字にしない。戻り先は base64url で載せる
+ * （パスは `.` も `/` も含みうるので、区切り文字と衝突させない）。1 バイト以上の
+ * 文字列を base64url した結果は必ず 2 文字以上になるため、**1 文字の `-` と
+ * 取り違えられない。**
+ */
+const NO_RETURN_MARK = '-';
+
+/**
+ * 戻り先として受け付けるパスの最大長（文字数）。
+ *
+ * cookie 全体には 4KB 程度の上限があり、そこを戻り先で食い潰すと `state` ごと
+ * ブラウザに捨てられて**ログインそのものが落ちる**。上限に触れた戻り先は、
+ * 失敗の向きを閉じる側（`/` へ着く）に倒す。
+ */
+const MAX_RETURN_PATH_LENGTH = 512;
+
+/**
+ * 戻り先の検証に使う、実在しない起点。
+ *
+ * `new URL(候補, 起点)` の解釈結果がこの起点から出ていないことを見るために置く。
+ * `.invalid` は RFC 2606 が「解決されない」ことを保証する TLD で、**誤って
+ * ネットワークへ出ても行き先が無い。**
+ */
+const RETURN_PATH_PROBE_ORIGIN = 'https://return-path.invalid';
+
+/**
+ * 「この画面にはログインが必要です」を登録画面へ伝える分類（2.3.11 / #374）。
+ *
+ * **文言はここに持たない。** 画面へ出す文字列は `src/signup.ts` の対応表が持ち、
+ * こちらは分類だけを渡す（`reason` を画面へそのまま流さない、という向こうの規律を
+ * こちらから壊さない）。
+ */
+export const LOGIN_REQUIRED_REASON = 'login-required';
 
 /** 認証で必要になる秘密の名前。不足を報告するときは**名前だけ**を出す（値は決して出さない）。 */
 const REQUIRED_SECRETS = ['SESSION_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'] as const;
@@ -188,6 +237,18 @@ interface OAuthState {
    * 外部へ晒さないこと（7.3）の両方による。
    */
   readonly inviteCode: string | null;
+  /**
+   * ログインを終えたあとに着地させるパス（2.3.11 / #374）。無ければ null。
+   *
+   * 招待コードと同じ理由でこの cookie へ相乗りさせる。**別の cookie を立てない**——
+   * 寿命・署名・破棄の契機が 1 つで済み、「state は生きているが戻り先だけ失効して
+   * いる」という状態が作れない。
+   *
+   * **この値を query で受けない。** 外から与えられる形にすると、任意の外部サイトへ
+   * 飛ばせる（オープンリダイレクト）。署名付き cookie なら外から書き換えられず、
+   * 値の出どころは**送り出した画面が持つ定数**だけになる。
+   */
+  readonly returnPath: string | null;
 }
 
 /**
@@ -319,6 +380,87 @@ export async function startInvitedLogin(
 }
 
 /**
+ * ログインが必要な画面から、戻り先を積んでログインへ送る（2.3.11 / #374）。
+ *
+ * 未ログインの利用者を `LOGIN_PATH` へ 303 で送るところは今までどおりで、**そこへ
+ * 一時 cookie を 1 枚添える**。cookie には戻り先だけが意味を持ち、`state` と
+ * `code_verifier` は {@link startLogin} が作り直す（Google へ送るのはあちらの要求
+ * なので、CSRF と PKCE を守る値はあちらが持たなければならない）。
+ *
+ * ## なぜ画面から Google へ直接送らないのか
+ *
+ * ここで認可要求まで組み立てると、**`GOOGLE_CLIENT_ID` が未設定の環境で画面が 503 に
+ * なる。** いまは `SESSION_SECRET` だけを使うので、ログインの設定が欠けていても
+ * 「ログインへ送る」ところまでは今までどおり成立する
+ * （`handleLogout` が `missingSecrets` を見ないのと同じ向きの判断である）。
+ *
+ * ## 戻り先は要求から作らない
+ *
+ * **引数で受け取るのは、呼び出し側が持つ画面の定数だけ**である（`ACCOUNT_PATH` など）。
+ * `request.url` から組み立てると、外から与えられた文字列が cookie へ入る経路が
+ * できる。署名があっても、**署名できるのは「こちらが書いた」ことであって
+ * 「安全な値である」ことではない。**
+ *
+ * @param env バインディングと環境変数
+ * @param returnPath ログイン後に着地させる、自サイト内の絶対パス
+ * @param overrides 差し替える依存（テスト用）
+ * @returns ログインへの 303。戻り先を積めなかった場合も 303（cookie なし）
+ */
+export async function loginRequiredRedirect(
+  env: Env,
+  returnPath: string,
+  overrides: Partial<AuthDependencies> = {},
+): Promise<Response> {
+  const deps = resolveAuthDependencies(overrides);
+  try {
+    const cookie = await signOAuthState(
+      {
+        state: deps.randomToken(),
+        codeVerifier: deps.randomToken(),
+        expiresAt: deps.now() + OAUTH_COOKIE_MAX_AGE,
+        inviteCode: null,
+        // **ここでは検証しない。** 戻り先の検証は着地の直前（{@link safeReturnPath}）
+        // に 1 か所だけ置く。積む側と着地側の両方に置くと、片方だけが直る事故が
+        // 起きるうえ、**「積むときに弾いているはず」という前提で着地側の検証を
+        // 緩める**方向へ働く。積むのは呼び出し側が持つ画面の定数だけである。
+        returnPath,
+      },
+      env.SESSION_SECRET,
+    );
+    return redirect(LOGIN_PATH, [buildOAuthCookie(cookie)]);
+  } catch (error) {
+    // 署名できないのは `SESSION_SECRET` が未設定・短すぎる場合だけである。
+    // **ログインへ送ること自体は止めない**（戻り先が無ければ `/` へ着く）。
+    console.error('[auth] 戻り先を積めませんでした。ログインへは送ります', error);
+    return redirect(LOGIN_PATH);
+  }
+}
+
+/**
+ * 送り出した画面が積んだ戻り先を読む。
+ *
+ * 読めない・期限切れ・署名が合わない場合は null（戻り先が無いのと同じ扱い）。
+ * **ここで落とさない**——戻り先が無いことはログインを止める理由にならない。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param nowSeconds 現在時刻（UNIX 秒）
+ * @returns 戻り先、または null
+ */
+async function pendingReturnPath(
+  request: Request,
+  env: Env,
+  nowSeconds: number,
+): Promise<string | null> {
+  const cookie = readCookie(request.headers.get('cookie'), OAUTH_COOKIE);
+  if (cookie === null) {
+    return null;
+  }
+  const verified = await verifyOAuthState(cookie, env.SESSION_SECRET, nowSeconds);
+  return verified === null ? null : verified.returnPath;
+}
+
+/**
  * ログインを開始する。
  *
  * `state`（CSRF 対策）と `code_verifier`（PKCE）を作り、署名付きの一時 cookie に
@@ -345,9 +487,15 @@ async function startLogin(
   try {
     const state = deps.randomToken();
     const codeVerifier = deps.randomToken();
-    const expiresAt = deps.now() + OAUTH_COOKIE_MAX_AGE;
+    const now = deps.now();
+    const expiresAt = now + OAUTH_COOKIE_MAX_AGE;
+    // 送り出した画面が積んだ戻り先を引き継ぐ（2.3.11 / #374）。**`state` と
+    // `code_verifier` は毎回作り直す**——Google へ送るのはこの要求なので、CSRF と
+    // PKCE を守る値は、この要求が作ったものでなければならない。引き継ぐのは
+    // 「どこへ戻すか」だけである。
+    const returnPath = await pendingReturnPath(request, env, now);
     const cookie = await signOAuthState(
-      { state, codeVerifier, expiresAt, inviteCode },
+      { state, codeVerifier, expiresAt, inviteCode, returnPath },
       env.SESSION_SECRET,
     );
 
@@ -453,7 +601,16 @@ async function handleCallback(
     if (!user.ok) {
       // 招待が無い / 使えない場合はアカウントを作らないまま登録画面へ戻す。理由を
       // query に載せるのは、登録画面が文言を出し分けるため（値ではなく分類のみ）。
-      return redirect(`${SIGNUP_PATH}?reason=${user.reason}`, [discardOAuthCookie]);
+      //
+      // **ログインが必要な画面から来た人には、そう言う**（2.3.11 / #374）。
+      // 「登録には招待コードが必要です」だけだと、**自分が押した操作と画面が
+      // つながらない**——開こうとしたのは登録画面ではない。戻り先そのものは
+      // 載せない（query へ出せば、それは外から与えられる形に戻る）。
+      const reason =
+        user.reason === 'invite-required' && verified.returnPath !== null
+          ? LOGIN_REQUIRED_REASON
+          : user.reason;
+      return redirect(`${SIGNUP_PATH}?reason=${reason}`, [discardOAuthCookie]);
     }
     if (user.banned) {
       // BAN は google_sub 単位（7.3）。行を消さないため、ここで毎回はじく。
@@ -466,7 +623,12 @@ async function handleCallback(
       { userId: user.id, issuedAt, expiresAt: issuedAt + SESSION_MAX_AGE },
       env.SESSION_SECRET,
     );
-    return redirect('/', [buildSessionCookie(token, SESSION_MAX_AGE), discardOAuthCookie]);
+    // 開こうとしていた画面へ戻す（2.3.11 / #374）。**着地の直前に検証する**——
+    // 受け付けられない戻り先は `/` へ倒れる。
+    return redirect(safeReturnPath(verified.returnPath), [
+      buildSessionCookie(token, SESSION_MAX_AGE),
+      discardOAuthCookie,
+    ]);
   } catch (error) {
     console.error('[auth] コールバックの処理に失敗しました', error);
     return withCookies(json({ error: 'internal error' }, 500), [discardOAuthCookie]);
@@ -714,11 +876,14 @@ export function parseGoogleIdToken(
 /**
  * 一時 cookie の値を組み立てて署名する。
  *
- * 形式は `<state>.<code_verifier>.<失効時刻>.<base64url(HMAC)>`。JSON を base64url
- * する `src/session.ts` と形は違うが、**署名の考え方は同じ**（本文の文字列そのものへ
- * HMAC-SHA256 を掛け、照合は `crypto.subtle.verify` に委ねる）。ここで JSON を
- * 使わないのは、載せる 3 つの値がいずれも base64url 文字と数字だけで構成され、
- * 符号化を挟む理由が無いため。
+ * 形式は `<state>.<code_verifier>.<失効時刻>.<招待コード>.<戻り先>.<base64url(HMAC)>`。
+ * JSON を base64url する `src/session.ts` と形は違うが、**署名の考え方は同じ**
+ * （本文の文字列そのものへ HMAC-SHA256 を掛け、照合は `crypto.subtle.verify` に
+ * 委ねる）。ここで JSON を使わないのは、載せる値がいずれも base64url 文字と数字だけで
+ * 構成され、符号化を挟む理由が無いため。
+ *
+ * **戻り先だけは base64url して載せる。** パスは `.` も `/` も含みうるので、素で
+ * 載せると区切り文字と衝突して要素の数え方が壊れる。
  *
  * `src/session.ts` の `signSession` を使い回せないのは、あちらのペイロードが
  * `userId` / `issuedAt` / `expiresAt` に固定されているためで、`src/session.ts` は
@@ -729,9 +894,13 @@ export function parseGoogleIdToken(
  * @returns cookie に載せる文字列
  */
 async function signOAuthState(value: OAuthState, secret: string): Promise<string> {
+  const returnMark =
+    value.returnPath === null
+      ? NO_RETURN_MARK
+      : encodeBase64Url(new TextEncoder().encode(value.returnPath));
   const body = `${value.state}.${value.codeVerifier}.${value.expiresAt}.${
     value.inviteCode ?? NO_INVITE_MARK
-  }`;
+  }.${returnMark}`;
   const key = await importKey(secret);
   const signature = await crypto.subtle.sign(
     'HMAC',
@@ -755,13 +924,14 @@ async function verifyOAuthState(
   nowSeconds: number,
 ): Promise<OAuthState | null> {
   const parts = cookie.split('.');
-  const [state, codeVerifier, expiresText, inviteText, signatureText] = parts;
+  const [state, codeVerifier, expiresText, inviteText, returnText, signatureText] = parts;
   if (
-    parts.length !== 5 ||
+    parts.length !== 6 ||
     state === undefined ||
     codeVerifier === undefined ||
     expiresText === undefined ||
     inviteText === undefined ||
+    returnText === undefined ||
     signatureText === undefined
   ) {
     return null;
@@ -782,7 +952,7 @@ async function verifyOAuthState(
     return null;
   }
 
-  const body = `${state}.${codeVerifier}.${expiresText}.${inviteText}`;
+  const body = `${state}.${codeVerifier}.${expiresText}.${inviteText}.${returnText}`;
   const key = await importKey(secret);
   const valid = await crypto.subtle.verify(
     'HMAC',
@@ -798,7 +968,83 @@ async function verifyOAuthState(
   if (expiresAt <= nowSeconds) {
     return null;
   }
-  return { state, codeVerifier, expiresAt, inviteCode };
+  // **戻り先が解けなくてもログインを落とさない。** 署名は通っているので改竄では
+  // なく、こちら側の書き込みが壊れている場合だけが該当する。着地を `/` へ倒せば
+  // ログインは成立する（2.3.11「失敗の向きを閉じる側にする」）。
+  return { state, codeVerifier, expiresAt, inviteCode, returnPath: decodeReturnPath(returnText) };
+}
+
+/**
+ * 一時 cookie に載っていた戻り先を、文字列へ戻す。
+ *
+ * @param text cookie 上の要素（{@link NO_RETURN_MARK} か base64url）
+ * @returns 戻り先。印だった場合・解けなかった場合は null
+ */
+function decodeReturnPath(text: string): string | null {
+  if (text === NO_RETURN_MARK) {
+    return null;
+  }
+  const decoded = decodeBase64Url(text);
+  if (decoded === null) {
+    return null;
+  }
+  try {
+    // 不正な UTF-8 を黙って置換文字へ寄せない。寄せると、壊れた戻り先が
+    // 「U+FFFD を含む、それらしいパス」として下流の検証へ流れる。
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(decoded);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 戻り先を検証し、着地させてよいパスだけを返す（2.3.11 / #374）。
+ *
+ * **cookie が署名付きであることと、この検証は別の層である。** 署名は「外から
+ * 書き換えられていない」ことしか言わず、**こちら側が誤って外部 URL を積んだ場合を
+ * 防がない。** 二重に守るために、着地の直前でもう一度見る。
+ *
+ * 見るのは 2 つの層である。
+ *
+ * 1. **字句** — 自サイト内の絶対パス（`/` で始まる）であること、`//` や `/\` で
+ *    始まらないこと（どちらもブラウザはプロトコル相対 URL、すなわち**外部ホスト**と
+ *    解釈する）、`\` と制御文字を含まないこと、長すぎないこと。
+ * 2. **解釈** — `URL` に実際に解かせ、**起点から出ていない**こと（スキームや
+ *    ホストが付いていない）と、解いた結果が入力と 1 文字も違わないことを見る。
+ *    字句の検査を書き漏らしても、こちらが受け止める。
+ *
+ * **判定できないものはすべて `/` へ倒す。** 戻り先が無い場合も同じ扱いで、
+ * 「戻れないこと」は失敗だが「知らない場所へ飛ばすこと」は事故である。
+ *
+ * @param candidate 一時 cookie が運んできた戻り先（無ければ null）
+ * @returns 着地させるパス。受け付けられない場合は `/`
+ */
+export function safeReturnPath(candidate: string | null): string {
+  if (candidate === null || candidate === '' || candidate.length > MAX_RETURN_PATH_LENGTH) {
+    return HOME_PATH;
+  }
+  if (!candidate.startsWith('/') || candidate.startsWith('//') || candidate.startsWith('/\\')) {
+    return HOME_PATH;
+  }
+  // 制御文字と `\` を弾く。`\` はブラウザによって `/` として解釈されるため、
+  // 上の `//` の検査を素通りする書き方（`/\/evil.example`）が作れる。
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001F\u007F\\]/.test(candidate)) {
+    return HOME_PATH;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate, RETURN_PATH_PROBE_ORIGIN);
+  } catch {
+    return HOME_PATH;
+  }
+  if (parsed.origin !== RETURN_PATH_PROBE_ORIGIN) {
+    return HOME_PATH;
+  }
+  // 解き直した形が入力と一致しない値は受けない。**送り出す側が持つのは画面の
+  // 定数**（`ACCOUNT_PATH` など）なので、正規化で形の変わる値はそもそも来ない。
+  return `${parsed.pathname}${parsed.search}${parsed.hash}` === candidate ? candidate : HOME_PATH;
 }
 
 /**

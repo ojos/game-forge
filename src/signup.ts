@@ -28,7 +28,7 @@ import { escapeHtml, resolveSiteViewer, siteHead } from './html.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import type { AuthDependencies } from './auth/google.js';
-import { startInvitedLogin } from './auth/google.js';
+import { LOGIN_REQUIRED_REASON, startInvitedLogin } from './auth/google.js';
 import { normalizeInviteCode } from './invite-code.js';
 import { checkInvite } from './invites.js';
 import { SIGNUP_PATH, WAITLIST_PATH, WAITLIST_THANKS_PATH } from './paths.js';
@@ -119,6 +119,11 @@ function fromForkSection(source: WaitlistSource): string {
  */
 const REASON_MESSAGES: Readonly<Record<string, string>> = {
   'invite-required': '登録には招待コードが必要です。',
+  // ログインが必要な画面から送られてきた人が、招待を持たないまま戻ってきた場合
+  // （2.3.11 / #374）。**「登録には招待コードが必要です」だけを出さない**——
+  // 開こうとしたのは登録画面ではないので、押した操作と画面がつながらない。
+  [LOGIN_REQUIRED_REASON]:
+    'この画面にはログインが必要です。ご利用には招待コードでの登録が必要です。',
   malformed: '招待コードの形式が正しくありません。',
   unknown: 'この招待コードは使えません。',
   used: 'この招待コードは使えません。',

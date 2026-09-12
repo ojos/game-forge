@@ -13,7 +13,7 @@ import {
 } from '../src/account-paths.js';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { PUBLISHED_STATUS } from '../src/games.js';
-import { LOGIN_PATH, LOGOUT_PATH } from '../src/auth/google.js';
+import { LOGIN_PATH, LOGOUT_PATH, OAUTH_COOKIE } from '../src/auth/google.js';
 import { toIsoTimestamp } from '../src/jst.js';
 import { ssrPagePaths } from '../src/page-paths.js';
 import type { Route } from '../src/routes.js';
@@ -229,6 +229,16 @@ describe('登録情報の画面（GET /account）', () => {
     const response = await openAccount(null);
     expect(response.status).toBe(303);
     expect(response.headers.get('location')).toBe(LOGIN_PATH);
+  });
+
+  it('ログインへ送るときに、戻り先を署名付きの一時 cookie へ積む（2.3.11 / #374）', async () => {
+    // 戻り先は query へ出さない（オープンリダイレクトの入口を作らない）。着地まで
+    // 通す検査は `test/auth-google.test.ts` が持つ。
+    const response = await openAccount(null);
+    expect(response.headers.get('location')).toBe(LOGIN_PATH);
+    expect(response.headers.getSetCookie().some((c) => c.startsWith(`${OAUTH_COOKIE}=`))).toBe(
+      true,
+    );
   });
 
   it('署名の壊れた cookie でもログインへ送る（画面を出さない）', async () => {

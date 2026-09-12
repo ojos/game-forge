@@ -177,10 +177,11 @@ function renderRow(row: ReviewRow, section: ReviewSection, appHost: string): str
 /**
  * 1 つの節を組み立てる。
  *
- * **空でも節ごと消さない。** 「審査待ち（0 件）」を出さない規律
- * （`src/admin/home.ts` が持っていたもの）は**機構が無いときの話**であり、
- * ここは機構が在って中身が無い。**在るものが 0 件であることは、書かなければ
- * 分からない**（`scripts/report-queue.sh` が `REPORT_QUEUE_EMPTY` を出すのと同じ）。
+ * **空でも節ごと消さない。** 「審査待ち（0 件）」を出さない規律（`src/home.ts` が持ち、
+ * M10-2 の空の管理画面がそれに従って一覧を 1 つも置かなかったもの）は、**機構が無い
+ * ときの話**である。**ここは機構が在って中身が無い。** 在るものが 0 件であることは、
+ * 書かなければ分からない（`scripts/report-queue.sh` が `REPORT_QUEUE_EMPTY` を出すのと
+ * 同じ——**静かに 0 行にすると「審査待ちが無い」のか「読めていない」のかが区別できない**）。
  *
  * @param section 節の定義
  * @param rows 並べる行

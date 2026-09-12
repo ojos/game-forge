@@ -7,6 +7,7 @@ import { PUBLISHED_STATUS } from '../src/games.js';
 import { listCacheKey, purgeListCache } from '../src/list-cache.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { authorCacheKey, authorPagePath } from '../src/users-page.js';
 import { renderWorkCard } from '../src/work-card.js';
 import { workPagePath } from '../src/work-page.js';
 import { PUBLIC_WORKS_PATH } from '../src/works-list.js';
@@ -34,9 +35,11 @@ import { applySchema } from './helpers/schema.js';
  * | 作品ページ（`/works/<id>`） | `src/work-page.ts` の「作者:」 |
  * | 作品カード（`/works` ほか） | `src/work-card.ts` の `.gf-card-author` |
  * | 登録情報（`/account`） | `src/account.ts` の入力欄の `value` 属性 |
+ * | **作者ページ（`/users/<user_id>`）** | `src/users-page.ts` の `<h1>` と `<title>` |
  *
- * **作者ページ（`/users/<user_id>`。#330）はまだ無い。** 作る PR がここへ 1 件足すこと
- * （表示名を見出しに出すなら、そこも本文として同じ形で確かめる）。
+ * **作者ページは #330 で足した。** あの画面は表示名を**見出しと `<title>` の両方**へ
+ * 出すので、本文としても確かめる（`<title>` のエスケープは `siteHead` が中で行う。
+ * 呼び出し側で二重に掛けていないことも、ここが通ることで分かる）。
  *
  * # 名前に何を入れるか
  *
@@ -180,7 +183,14 @@ describe('表示名のエスケープ（#341 / 5.9）', () => {
       testEnv(),
     );
     expect(response.status).toBe(200);
-    expectEscaped(await response.text(), '作品ページ');
+    const body = await response.text();
+    expectEscaped(body, '作品ページ');
+    // **#330 で作者名が作者ページへのリンクになった。** エスケープが**リンクの中でも**
+    // 効いていること（`<a>` の中身になっても素の名前へ戻っていないこと）を、
+    // リンクの綴りごと確かめる。`/users/` の綴りは `authorPagePath` から取る。
+    expect(body).toContain(
+      `<a class="gf-author-link" href="${authorPagePath(authorId)}">${ESCAPED_NAME}</a>`,
+    );
   });
 
   it('いいねの数が出る行でもエスケープされる（#340 でカードに数が増えた）', () => {
@@ -217,6 +227,27 @@ describe('表示名のエスケープ（#341 / 5.9）', () => {
       hasShot: false,
     });
     expectEscaped(html, '作品カード');
+  });
+
+  it('作者ページ（/users/<user_id>）の見出しでエスケープされる（#330）', async () => {
+    // **表示名を `<h1>` に出す画面である。** 未ログインの閲覧者として開く（5.9 の
+    // 「未ログインの閲覧者にも見える値」の前提そのもの）。
+    const authorId = await seedUser(HOSTILE_NAME);
+    await seedPublishedGame(authorId);
+    // 作者ページも Cache API を前段に置く（`src/users-page.ts`）。開く前に捨てる。
+    await purgeListCache(authorCacheKey(authorId, 1));
+    const response = await handleAppRequest(
+      new Request(`${APP_ORIGIN}${authorPagePath(authorId)}`),
+      testEnv(),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expectEscaped(body, '作者ページ');
+    // **見出しの中に入っていることまで見る**（`<title>` だけが出ていても通る形にしない）。
+    expect(body).toContain(`<h1>${ESCAPED_NAME}</h1>`);
+    // `<title>` は `siteHead` がエスケープする。**二重にエスケープしていない**
+    // （`&amp;quot;` になっていたら、ここで落ちる）。
+    expect(body).toContain(`<title>${ESCAPED_NAME} の作品 - Game Forge</title>`);
   });
 
   it('公開作品の一覧（/works）に並んだカードでエスケープされる', async () => {

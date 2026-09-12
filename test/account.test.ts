@@ -19,6 +19,7 @@ import { ssrPagePaths } from '../src/page-paths.js';
 import type { Route } from '../src/routes.js';
 import { dispatch, findDuplicateRoutes } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { authorPagePath } from '../src/users-page-paths.js';
 import { OPERATOR_MARK, workPagePath } from '../src/work-page.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -576,10 +577,21 @@ describe('運営フラグ（#334）との組み合わせ', () => {
     await rename(userId, '新しい運営の名前');
 
     const body = await publishedPageOf(userId);
+    // **#330 で作者名が作者ページへのリンクになった。** 綴りのうち変わったのはそこだけで、
+    // **印の位置は変わっていない**——リンクは `<strong>` の内側にあり、印は
+    // `<strong>` の外＝リンクの外である（`src/work-page.ts` の `authorLabel`）。
+    // `/users/` の綴りは `authorPagePath` から取る（検査へ書き写さない）。
     expect(body).toContain(
-      `作者: <strong>新しい運営の名前</strong> <span class="gf-operator">${OPERATOR_MARK}</span>`,
+      `作者: <strong><a class="gf-author-link" href="${authorPagePath(userId)}">新しい運営の名前</a></strong>` +
+        ` <span class="gf-operator">${OPERATOR_MARK}</span>`,
     );
+    // **この 2 行が #341 の主眼である。** 「決めた名前とは別に印がちょうど 1 つ出る」
+    // ——リンクにしたことで印が名前の中へ入ったり、2 つに増えたりしていない。
     expect(body.match(BADGE_ELEMENT)).toHaveLength(1);
+    // **印が `<a>` の外にある**ことを、綴りの全体比較とは別の軸でも押さえる。
+    const line = /<p class="gf-author">.*?<\/p>/u.exec(body)?.[0] ?? '';
+    expect(line, '作者の行が見当たらない').not.toBe('');
+    expect(line.indexOf('</a>')).toBeLessThan(line.indexOf('gf-operator'));
   });
 
   it('運営でない利用者が名前で印を真似ても、印の要素は 1 つも出ない', async () => {

@@ -12,11 +12,13 @@
 #
 # 終わると、呼ぶ側は次を使える。
 #
-#   BROWSER_BIN   ブラウザの実行ファイル
-#   BASE          https://<APP_HOST>:<PORT>
-#   COOKIE_VALUE  `__Host-gf_session` の値
-#   GAME_ID       仕込んだ作品の id（`prefix` 経路の続きに使う）
-#   WORK          使い捨ての作業場
+#   BROWSER_BIN         ブラウザの実行ファイル
+#   BASE                https://<APP_HOST>:<PORT>
+#   COOKIE_VALUE        `__Host-gf_session` の値
+#   GAME_ID             仕込んだ draft の作品の id（`/works/` の続きに使う）
+#   PUBLISHED_GAME_ID   仕込んだ公開済みの作品の id（カードが並ぶ画面のため）
+#   USER_ID             仕込んだ利用者の id（`/users/` の続きに使う）
+#   WORK                使い捨ての作業場
 #
 # ══════════════════════════════════════════════════════════════════════════════
 # なぜ共有するのか
@@ -118,12 +120,22 @@ dev_fixture_up() {
   npx wrangler d1 migrations apply DB --local --persist-to "$STATE" >"$WORK/d1.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/d1.log" >&2; fail "D1 のマイグレーションに失敗しました。"; }
 
-  note "seeding a user and a game"
+  # **公開済みの作品も 1 件仕込む**（#330 / PR #350）。draft だけだと、カードが並ぶ画面
+  # （トップ・公開一覧・作者ページ）がすべて「まだ公開された作品がありません」になり、
+  # **`.gf-cards` の格子を 390px で 1 度も測らないまま緑になる。** 幅の検査が見たいのは
+  # まさにその格子である。
+  PUBLISHED_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
+
+  note "seeding a user and two games (draft + published)"
   npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     insert into users (id, google_sub, email, display_name, created_at)
       values ('$USER_ID', 'sub-$USER_ID', '$USER_ID@example.invalid', '幅の検査', 1);
     insert into games (id, author_id, status, title, go_version, created_at, generation_state)
       values ('$GAME_ID', '$USER_ID', 'draft', '幅の検査の作品', '', 1, 'ready');
+    insert into games (id, author_id, status, title, go_version, created_at, published_at,
+                       generation_state, preview_key, like_count)
+      values ('$PUBLISHED_GAME_ID', '$USER_ID', 'published', '幅の検査の公開作品', '', 1, 1,
+              'ready', 'width-check-preview', 3);
   " >"$WORK/seed.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/seed.log" >&2; fail "検査用の行を作れませんでした。"; }
 
@@ -202,7 +214,20 @@ dev_fixture_down() {
 # 経路表から SSR 画面のパスを受け取る（`/__dev/pages`）。
 #
 # **一覧を書き写さない。** 導出の正本は `src/page-paths.ts` で、`/__dev/pages` が
-# それを返す（#282 / #290）。`match: 'prefix'` の経路は仕込んだ作品の id を補う。
+# それを返す（#282 / #290）。
+#
+# ## 前方一致の経路には、接頭辞ごとに違う id を補う（#330 / PR #350）
+#
+# **どれにも作品の id を補うと、別の表を指す画面は 404 しか見られない。** 作者ページ
+# （`/users/<user_id>`）へ作品の id を渡すと 404 になり、`check-page-width.sh` は
+# 404 を通す（「作品ページの『見つかりません』があるので通す」）ので、**画面の本体を
+# 1 度も開かないまま緑になる。** #330 の実装中に実際にそうなっていた。
+#
+# **綴りの正本はコードにある**——`/works/` は `src/paths.ts` の `WORK_PAGE_PREFIX`、
+# `/users/` は `src/users-page-paths.ts` の `AUTHOR_PAGE_PREFIX`。**シェルからは
+# import できないので、ここは写しである。** 腐らせないために、**知らない接頭辞が来たら
+# 落とす**（下）。同じ規則を `test/page-shell.test.ts` の `prefixIds` が定数から組み立てて
+# いるので、綴りを変えれば必ずどちらかが赤くなる。
 #
 # @return カンマ区切りのパス（標準出力）
 #
@@ -218,6 +243,29 @@ if (!Array.isArray(paths) || paths.length === 0) {
   console.error("/__dev/pages が画面のパスを返しませんでした");
   process.exit(1);
 }
-console.log(paths.map((path) => (path.endsWith("/") && path !== "/" ? path + process.argv[2] : path)).join(","));
-' "$WORK/pages.json" "$GAME_ID" || fail "画面の一覧を読めませんでした。"
+
+// 接頭辞 → 補う id。**画面を 1 枚足した人にここを決めさせる。**
+const ids = new Map([
+  ["/works/", process.argv[2]],
+  ["/users/", process.argv[3]],
+]);
+
+const filled = paths.map((path) => {
+  if (!path.endsWith("/") || path === "/") {
+    return path;
+  }
+  const id = ids.get(path);
+  if (id === undefined) {
+    // **黙って裸の接頭辞を返さない。** 返すと、その画面は 404 だけを見られて緑になる。
+    console.error(
+      `前方一致の経路 ${path} に補う id が決まっていません。` +
+        "scripts/lib/dev-fixture.sh の dev_fixture_paths と" +
+        " test/page-shell.test.ts の prefixIds の両方へ足してください。",
+    );
+    process.exit(1);
+  }
+  return path + id;
+});
+console.log(filled.join(","));
+' "$WORK/pages.json" "$GAME_ID" "$USER_ID" || fail "画面の一覧を読めませんでした。"
 }

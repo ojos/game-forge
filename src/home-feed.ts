@@ -128,8 +128,11 @@ export function officialSamplesSql(): string {
   //
   // 並べ替えに使う `created_at` は選ばない。**運営アカウントをまたいで並べ直さない**
   // （{@link listOfficialSamples} が、アカウントごとの結果を前から詰めるだけである）。
+  //
+  // **`g.author_id` を選ぶのは作者ページへのリンクのためである**（#330。選ばないと
+  // この節だけ作者名がリンクにならない）。`users` から選ぶ列は増えていない。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
-            g.ogp_state, u.display_name as author_name
+            g.ogp_state, g.author_id, u.display_name as author_name
        from games g
        left join users u on u.id = g.author_id
       where g.author_id = ? and g.status = ? and ${reviewVisibleSql('g')}
@@ -146,6 +149,7 @@ interface OfficialSampleRow {
   readonly like_count: number;
   readonly parent_id: string | null;
   readonly ogp_state: string | null;
+  readonly author_id: string | null;
   readonly author_name: string | null;
 }
 
@@ -160,6 +164,9 @@ function toPublicWork(row: OfficialSampleRow): PublicWork {
     id: row.id,
     title: row.title,
     authorName: row.author_name,
+    // 作者ページへのリンク（#330）。**欠けている行はリンクにならない**だけである
+    // （`src/work-card.ts` の `cardAuthorId`）。
+    authorId: row.author_id,
     publishedAt: row.published_at,
     forkCount: row.fork_count,
     likeCount: row.like_count,

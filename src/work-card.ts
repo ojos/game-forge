@@ -20,6 +20,16 @@
  * > だった。**いいねは持つことになった**（v1.51 / 仕様 2.3.5 / 5.8）ので、数を
  * > 出している（{@link cardLikeCount}）。**プレイ数とタグは変わらず持たない。**
  *
+ * ## 作者名から作者ページへ辿れる（#330）
+ *
+ * **作者名をリンクにした**（`/users/<user_id>`。仕様 2.3.1）。**カード全体を包む 1 本の
+ * リンクの中には入れていない**——`.gf-card-link` が包むのはスクリーンショットと題名
+ * だけで、下段（`.gf-card-meta`）はその外側にある。入れ子のリンクは HTML として不正で、
+ * 読み上げでも「どちらが押されるか」が決まらない。
+ *
+ * **id が読めないカードはリンクにしない**（{@link cardAuthorId}）。**運営の印
+ * （`.gf-operator`）はここへ出さない**——判断と根拠は `src/users-page.ts` にある。
+ *
  * ## 欠けている `likeCount` を 0 として扱う（#340）
  *
  * **一覧の行は Cache API に載っており、鍵に行の形の版が無い**（`src/list-cache.ts`。
@@ -40,6 +50,7 @@ import { escapeHtml } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH, ogpImagePath } from './ogp.js';
 import { workPagePath } from './paths.js';
+import { authorPagePath } from './users-page-paths.js';
 
 /**
  * 作者名が引けなかったときに出す名前。
@@ -128,6 +139,62 @@ export function cardLikeCount(work: PublicWork): number {
 }
 
 /**
+ * カードに出す作者ページの id（仕様 2.3.1 / #330）。
+ *
+ * # 読めなければリンクにしない
+ *
+ * **`PublicWork.authorId` は省略可である**（`src/games.ts` がその理由を 2 つ書いている
+ * ——キャッシュに載った古い形の行と、`PublicWork` を組み立てる経路が 3 つあること）。
+ * **{@link cardLikeCount} と同じ扱いにする**——読めなければ倒し、**誤ったものを 1 つも
+ * 出さない。**
+ *
+ * 倒した先は「名前を文字のまま出す」である。**空のリンク（`href=""`）や、行き先が
+ * 404 になるリンクを出さない**——4.4 が「押せるが何も起きないもの」を出さないと
+ * 定めている。
+ *
+ * # 名前が引けていないときもリンクにしない
+ *
+ * `authorName` が null のカードは「不明」と出る（{@link UNKNOWN_AUTHOR}）。**`users` の
+ * 行が引けていないのだから、その id の作者ページは 404 である**（`src/users-page.ts` は
+ * 存在しない利用者を 404 にする）。**「不明」をリンクにすると、押した人を必ず 404 へ
+ * 送る。**
+ *
+ * @param work 作品
+ * @returns 作者ページの id。リンクにしないなら null
+ */
+export function cardAuthorId(work: PublicWork): string | null {
+  const value: unknown = work.authorId;
+  // **キャッシュを経由する値は JSON である**（`null` も数も入りうる）。型ではなく
+  // 実際の値を見る（{@link cardLikeCount} が同じ理由で同じ形を採っている）。
+  if (typeof value !== 'string' || value === '') {
+    return null;
+  }
+  return work.authorName === null ? null : value;
+}
+
+/**
+ * カードの作者名を組み立てる（仕様 2.3.6 / 2.3.1 / #330）。
+ *
+ * **クラスは `gf-card-author` のままにする。** 要素が `<span>` から `<a>` へ変わっても、
+ * 見た目と検査の当て先を動かさない。
+ *
+ * **`<a>` を入れ子にしていない。** カード全体を包む 1 本のリンク（`.gf-card-link`）は
+ * スクリーンショットと題名だけを包んでおり、**下段（`.gf-card-meta`）はその外側にある**
+ * （`renderWorkCard`）。入れ子のリンクは HTML として不正である。
+ *
+ * @param work 作品
+ * @returns HTML
+ */
+function renderAuthor(work: PublicWork): string {
+  const name = escapeHtml(work.authorName ?? UNKNOWN_AUTHOR);
+  const authorId = cardAuthorId(work);
+  if (authorId === null) {
+    return `<span class="gf-card-author">${name}</span>`;
+  }
+  return `<a class="gf-card-author" href="${authorPagePath(authorId)}">${name}</a>`;
+}
+
+/**
  * カードの下段（作者・改造された数・いいねの数・公開日時）を組み立てる。
  *
  * **`fork_count` が 0 の作品には何も出さない。** 全行に「改造 0」が並ぶ一覧は区別を
@@ -139,9 +206,7 @@ export function cardLikeCount(work: PublicWork): number {
  * @returns HTML
  */
 function renderMeta(work: PublicWork): string {
-  const parts = [
-    `<span class="gf-card-author">${escapeHtml(work.authorName ?? UNKNOWN_AUTHOR)}</span>`,
-  ];
+  const parts = [renderAuthor(work)];
   if (work.hasParent) {
     parts.push('<span class="gf-card-tag">改造された作品</span>');
   }
@@ -167,8 +232,14 @@ function renderMeta(work: PublicWork): string {
  * 作品カード 1 枚を組み立てる。
  *
  * **`escapeHtml` を通すのは題名と作者名だけである。** 他はこのモジュールが持つ固定の
- * 文字列か、`games.id`（`crypto.randomUUID()` の出力）と数値である。どちらも UGC 由来で、
- * **カードが D1 の値を HTML へ入れる場所はこの 2 つに限られる。**
+ * 文字列か、`games.id` / `games.author_id`（`crypto.randomUUID()` の出力）と数値である。
+ * 題名と作者名だけが UGC 由来で、**カードが D1 の値を本文へ入れる場所はこの 2 つに
+ * 限られる。**
+ *
+ * **id の 2 つは属性値（`href`）へ入る。** 作者ページのほうは `authorPagePath` が
+ * `encodeURIComponent` で閉じる（理由は `src/users-page-paths.ts`）。`workPagePath`
+ * （`src/paths.ts`）は閉じていないが、**あちらは作品ページの経路が受け取る側で
+ * UUID の形を検査している**（`src/work-page.ts` の `GAME_ID_PATTERN`）。
  *
  * @param work 作品
  * @returns `<li>` 1 つ

@@ -81,6 +81,7 @@ import {
   workPagePath,
 } from './paths.js';
 import { UNKNOWN_AUTHOR } from './work-card.js';
+import { authorPagePath } from './users-page-paths.js';
 import {
   LIKE_CANCEL_GAME_ID_FIELD,
   LIKE_CANCEL_PATH,
@@ -523,6 +524,17 @@ export interface WorkPageView {
    * 下の {@link loadingScreen} を参照）。
    */
   readonly authorName: string | null;
+  /**
+   * 作者ページ（`/users/<user_id>`）へ送るための `users.id`（#330 / 仕様 2.3.1）。
+   *
+   * **{@link authorName} が入っているときだけ入る。** 名前が引けていない（`users` の行が
+   * 無い）作品でリンクを出すと、**押した人を必ず 404 へ送る**（作者ページは存在しない
+   * 利用者を 404 にする）。4.4 が「押せるが何も起きないもの」を出さないと定めている。
+   *
+   * **UGC ではない。** `crypto.randomUUID()` の出力であり、`href` へ入れる前に
+   * `authorPagePath` が `encodeURIComponent` を通す（`src/users-page-paths.ts`）。
+   */
+  readonly authorPageId: string | null;
   /**
    * 作者が運営か（#334）。**公開済みのときだけ立ちうる**（{@link authorName} と同じ条件）。
    *
@@ -1423,11 +1435,51 @@ function loadingScreen(view: WorkPageView): string {
 
   return `<div class="gf-context">
 ${screenshot(view)}
-<p class="gf-author">作者: <strong>${escapeHtml(view.authorName ?? UNKNOWN_AUTHOR)}</strong>${operatorMark(view)}</p>
+<p class="gf-author">作者: <strong>${authorLabel(view)}</strong>${operatorMark(view)}</p>
 <p class="gf-parent">${parentLine(view.parent)}</p>
 ${forkCta(view)}
 </div>
 ${frame}`;
+}
+
+/**
+ * 作者名を組み立てる（#330 / 仕様 2.3.1）。
+ *
+ * # 名前そのものをリンクにする
+ *
+ * **作品カードと同じ形にする**（`src/work-card.ts` の `renderAuthor`）。**同じ操作に
+ * 2 つの見せ方を作らない**——カードで名前が押せるのを覚えた利用者が、作品ページで
+ * 押せない名前に当たる形にしない。
+ *
+ * **ラベル付きのリンク（「この作者の作品」）を別に置く案は採らなかった。** 名前が
+ * 既にリンクなら、**同じ行き先が 1 行に 2 つ並ぶ**ことになる（読み上げでも同じ
+ * 行き先が 2 度読まれる。`public/assets/app.css` の `.gf-card-link` が
+ * 「画像と題名を別々のリンクにしない」と書いているのと同じ理由）。
+ *
+ * # `<a>` は `<strong>` の内側、印は両方の外に置く
+ *
+ * **#334 の印は `<strong>`（利用者が決めた名前）の外にある**（{@link operatorMark}）。
+ * リンクを `<strong>` の内側へ入れることで、**印はリンクの外でもあり続ける**
+ * ——押した先が作者ページになる印を作らない。名前は今までどおり `escapeHtml` を通り、
+ * **リンクの中身は名前だけ**である。
+ *
+ * `<strong>` を `<a>` の内側へ入れ替えないのは、**印の位置を説明する軸を
+ * 「`<strong>` の内か外か」から動かさない**ためである（5.9 が「名前の側から印の
+ * 見え方を動かせてはいけない」と書いている行であり、構造の説明を増やさない）。
+ *
+ * # 名前が引けていなければリンクにしない
+ *
+ * {@link WorkPageView.authorPageId} の説明のとおり、404 へ送るリンクを出さない。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（`<strong>` の中身）
+ */
+function authorLabel(view: WorkPageView): string {
+  const name = escapeHtml(view.authorName ?? UNKNOWN_AUTHOR);
+  if (view.authorPageId === null) {
+    return name;
+  }
+  return `<a class="gf-author-link" href="${authorPagePath(view.authorPageId)}">${name}</a>`;
 }
 
 /**
@@ -1446,6 +1498,10 @@ export const OPERATOR_MARK = '運営アカウント';
  * 印は `<strong>`（利用者が決めた名前）の**外**に置く。名前は `escapeHtml` を通るので、
  * 名前の入力からこの要素を作ることはできない。**名前に「運営」と書いた利用者の画面には、
  * この要素が 1 つも現れない。**
+ *
+ * **#330 で名前が作者ページへのリンクになったが、印の位置は動いていない。** リンクは
+ * `<strong>` の内側に入れてあるので（{@link authorLabel}）、印は `<strong>` の外であり、
+ * **リンクの外でもある**——押した先が作者ページになる印は作れない。
  *
  * # 見分けは見た目で付ける
  *
@@ -1858,6 +1914,15 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **公開済みのときだけ出す。** 未公開の作品ページは作者のための状態画面で、
       // そこに作者名を出しても意味が無い（見ているのは本人か、id を知る誰かである）。
       authorName: published ? row.author_name : null,
+      // **作者ページへの導線（#330 / 2.3.1）。`authorName` と同じ条件で出す**
+      // ——未公開の作品ページは作者のための状態画面で、名前を出さない画面に名前の
+      // リンクだけを置く意味が無い（運営の印が同じ条件を採っているのと同じ理由）。
+      //
+      // **結合が空振りしたら出さない。** `author_id` は NOT NULL の外部キーなので
+      // 行は常にあるはずだが、**無かったときにリンクだけが残ると 404 へ送る。**
+      // 判定を `author_name` で行うのは、それが「`users` の行が引けたか」そのもの
+      // だからである。
+      authorPageId: published && row.author_name !== null ? row.author_id : null,
       // **運営かどうかは列だけで決める**（#334）。`author_name` を見ない——表示名は
       // ログインのたびに Google の名前で上書きされ、5.9 以後は誰でも「運営」と名乗れる。
       // なぜ導出せず列で持つのかは `migrations/0021_users_operator.sql` にある。

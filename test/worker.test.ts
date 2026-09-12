@@ -91,6 +91,9 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       .filter((key) => !documented.includes(key))
       .sort();
     expect(declared).toEqual([
+      // 運営の管理画面のホスト（#356）。**秘密ではなく構成**なので wrangler.toml が
+      // 宣言する（`APP_HOST` / `SANDBOX_HOST` と同じ扱い。2.4.1）。
+      'ADMIN_HOST',
       'APP_HOST',
       'BUCKET',
       // ビルド関数の宛先（#19）。**秘密ではなく構成**なので wrangler.toml が宣言する。
@@ -223,6 +226,16 @@ describe('ホストによる出し分け（#51 acceptance 3）', () => {
     const response = await SELF.fetch('https://example.com/');
     expect(response.status).toBe(404);
     expect(await response.text()).toContain('unknown host');
+  });
+
+  it('管理画面用ホストが 3 つ目として振り分けられる（#356 / 2.4.1）', async () => {
+    // **出し分けの詳細は `test/admin-host.test.ts` が持つ。** ここに残すのは
+    // 「`src/index.ts` の分岐が 3 つになった」という入口側の事実だけである
+    // （このファイルが #51 acceptance 3 として見ているのはそれである）。
+    const response = await SELF.fetch(`https://${env.ADMIN_HOST}/`);
+    // 権限が無いので 404。**未知のホストの 404 とは本文が違う**（あちらは `unknown host`）。
+    expect(response.status).toBe(404);
+    expect(await response.text()).not.toContain('unknown host');
   });
 
   it('サンドボックス用ホストがアプリ用ホストの真のサブドメインである', () => {

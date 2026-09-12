@@ -26,6 +26,17 @@ compatibility_date = "2026-08-01"
 [vars]
 APP_HOST = "game-forge.localtest.me"
 SANDBOX_HOST = "sandbox.game-forge.localtest.me"
+# 運営の管理画面のホスト（2.4.1 / #356）。**3 つ目のホストである。**
+#
+# **セッションを app と共有できないので、別のホストであることに意味がある。** cookie は
+# `__Host-` 接頭辞で `Domain` 属性を持てず（7.2 必須要件 2 / `src/session.ts`）、
+# **admin 側は独立にログインする**（`docs/admin-host.md`）。
+#
+# **ローカルでも `.localtest.me` の下に置く。** `*.localtest.me` は公開 DNS が 127.0.0.1 を
+# 返すので、hosts ファイルを触らずに 3 ホストが立つ。app と兄弟の関係にしてあるのは、
+# 本番（`admin.` と `app.` が `game-forge.ojos.jp` の下で兄弟）と同じ構造を再現するため
+# である——**同一サイトなので、`__Host-` が要る理由はここでも変わらない。**
+ADMIN_HOST = "admin.game-forge.localtest.me"
 # どの生成モデルで生成するか（確定5 / 4.1 / #83）。
 #
 # **シークレットではないので `[vars]` に置く。** モデルの選択は秘密ではなく構成で、
@@ -141,6 +152,12 @@ script_name = "game-forge-likes"
 # `app.` を 1 ラベル足すと、どちらの制約にも触れずに CNAME 1 本で張れる。
 APP_HOST = "app.game-forge.ojos.jp"
 SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
+# 運営の管理画面（2.4.1 / #356）。**`app.` と兄弟に置く。**
+#
+# `game-forge.ojos.jp` はゾーンの apex で CNAME を張れないため（上の `APP_HOST` の注記）、
+# ここも 1 ラベル足した形になる。**カスタムドメインの登録（Cloudflare API）と Route53 の
+# CNAME の両方が要る**——片方だけでは `active` にならない（`docs/admin-host.md`）。
+ADMIN_HOST = "admin.game-forge.ojos.jp"
 # **#25 の A/B は終わった**（2026-09-02。n=6 では high と medium の差を識別できなかった。
 # 仕様書 4.2 の「A/B の結果」）。**採用値は変えないので、素の sonnet-4-6 へ戻す。**
 # 登録簿の 2 群（sonnet-4-6-high / -medium）は残してある——n を増やして測り直すときの口である。
@@ -156,6 +173,11 @@ DEV_ROUTES = "disabled"
 # （プレビューに専用のカスタムドメインは張らない）。
 APP_HOST = "app.game-forge.ojos.jp"
 SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
+# **プレビューにも本番と同じ値を置く**（`APP_HOST` と同じ理由）。プレビューは
+# `*.pages.dev` で公開され、このホスト名では到達できないため、`src/index.ts` のホスト検査で
+# admin の全経路が 404 になる。**それが狙いである**——プレビュー配備から管理画面へ
+# 入れる経路を作らない。
+ADMIN_HOST = "admin.game-forge.ojos.jp"
 GENERATION_MODEL = "sonnet-4-6"
 BUILD_FUNCTION_NAME = "game-forge-build"
 ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"

@@ -1,4 +1,4 @@
-// page-width-probe.mjs — 実ブラウザで SSR 画面を 1 つの幅で開き、判定材料を JSON で返す（#282）。
+// page-width-probe.mjs — 実ブラウザで SSR 画面を各幅で開き、判定材料を JSON で返す（#282 / #371）。
 //
 // # なぜこれが要るのか
 //
@@ -18,11 +18,20 @@
 // 開いて、観測して、JSON を出すだけである。**合否は scripts/check-page-width.sh が
 // 決める。** 観測と判定を混ぜると、失敗したときに「何が観測されたのか」が読めなくなる。
 //
+// # 幅は複数受け取り、ブラウザは 1 回しか起動しない（#371）
+//
+// 画面幅を 3 段で持つと決めたので（2.3.9）、**検査も 3 段すべてを見る。** 幅ごとに
+// この道具を呼ぶと、いちばん高い費用（ブラウザの起動と dev サーバへの初回接続）を
+// 段の数だけ払うことになる。**同じターゲットへ `Emulation.setDeviceMetricsOverride` を
+// 掛け直して回る**（`scripts/shoot-pages.mjs` が先に採っている形）。
+//
 // 使い方:
 //   node scripts/page-width-probe.mjs --browser <path> --base <origin> \
-//     --paths </a,/b,...> --width 390 [--cookie <name=value>] [--timeout-ms 20000]
+//     --paths </a,/b,...> --widths 390,768,1280 [--cookie <name=value>] [--timeout-ms 20000]
 //
-// 標準出力: 観測結果 1 個の JSON
+// `--width`（単数）も受ける。1 つの幅だけを見たいときの綴りである。
+//
+// 標準出力: 観測結果 1 個の JSON（`runs` が幅ごとの観測を持つ）
 // 終了コード: 0 = 観測できた（合否とは無関係） / 1 = 観測そのものができなかった
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -37,7 +46,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
  * コマンドライン引数を読む。
  *
  * @param {string[]} argv `process.argv.slice(2)`
- * @returns {{browser: string, base: string, paths: string[], width: number, cookie: string | null, timeoutMs: number}} 読み取った設定
+ * @returns {{browser: string, base: string, paths: string[], widths: number[], cookie: string | null, timeoutMs: number}} 読み取った設定
  */
 function parseArgs(argv) {
   /** @type {Record<string, string>} */
@@ -50,14 +59,24 @@ function parseArgs(argv) {
     }
     values[name.slice(2)] = value;
   }
-  for (const required of ['browser', 'base', 'paths', 'width']) {
+  for (const required of ['browser', 'base', 'paths']) {
     if (values[required] === undefined) {
       throw new Error(`--${required} は必須です`);
     }
   }
-  const width = Number(values['width']);
-  if (!Number.isInteger(width) || width <= 0) {
-    throw new Error(`--width の値が不正です: ${String(values['width'])}`);
+  // `--widths` を正とし、`--width`（単数）も受ける。**どちらも無いのは誤りである**
+  // ——既定値を作ると、幅を渡し忘れた呼び出しが黙って 1 段だけを見て緑になる。
+  const rawWidths = values['widths'] ?? values['width'];
+  if (rawWidths === undefined) {
+    throw new Error('--widths は必須です');
+  }
+  const widths = rawWidths
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value !== '')
+    .map((value) => Number(value));
+  if (widths.length === 0 || widths.some((width) => !Number.isInteger(width) || width <= 0)) {
+    throw new Error(`--widths の値が不正です: ${rawWidths}`);
   }
   const timeoutMs =
     values['timeout-ms'] === undefined ? DEFAULT_TIMEOUT_MS : Number(values['timeout-ms']);
@@ -72,7 +91,7 @@ function parseArgs(argv) {
     browser: values['browser'],
     base: values['base'],
     paths,
-    width,
+    widths,
     cookie: values['cookie'] ?? null,
     timeoutMs,
   };
@@ -181,51 +200,58 @@ try {
     }
   });
 
-  await cdp.send(
-    'Emulation.setDeviceMetricsOverride',
-    { width: args.width, height: 800, deviceScaleFactor: 1, mobile: args.width < 700 },
-    sessionId,
-  );
-
-  const observations = [];
-  for (const path of args.paths) {
-    status = null;
-    responseUrl = null;
-    loadFired = false;
-    const url = `${args.base}${path}`;
-    await cdp.send('Page.navigate', { url }, sessionId);
-
-    // まず `load` を待ち、そのうえで `readyState` を確かめる。**片方だけにしない**
-    // ——`load` は前の文書では発火せず、`readyState` は「解析まで終わったか」を
-    // 別の角度から見る。両方が揃ってから観測する。
-    let loaded = false;
-    const deadline = Date.now() + args.timeoutMs;
-    while (Date.now() < deadline) {
-      if (loadFired) {
-        const result = await cdp.send(
-          'Runtime.evaluate',
-          { expression: 'document.readyState', returnByValue: true },
-          sessionId,
-        );
-        if (result.result?.value === 'complete') {
-          loaded = true;
-          break;
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-    }
-
-    const state = await cdp.send(
-      'Runtime.evaluate',
-      { expression: PAGE_STATE_EXPRESSION, returnByValue: true },
+  // **幅を外側の輪にする。** `Emulation.setDeviceMetricsOverride` は 1 幅につき 1 回で
+  // 済み、内側の輪は #282 のときと同じ「経路を順に開く」形のまま変わらない。
+  const runs = [];
+  for (const width of args.widths) {
+    await cdp.send(
+      'Emulation.setDeviceMetricsOverride',
+      { width, height: 800, deviceScaleFactor: 1, mobile: width < 700 },
       sessionId,
     );
 
-    observations.push({ path, url, loaded, status, responseUrl, ...state.result.value });
+    const observations = [];
+    for (const path of args.paths) {
+      status = null;
+      responseUrl = null;
+      loadFired = false;
+      const url = `${args.base}${path}`;
+      await cdp.send('Page.navigate', { url }, sessionId);
+
+      // まず `load` を待ち、そのうえで `readyState` を確かめる。**片方だけにしない**
+      // ——`load` は前の文書では発火せず、`readyState` は「解析まで終わったか」を
+      // 別の角度から見る。両方が揃ってから観測する。
+      let loaded = false;
+      const deadline = Date.now() + args.timeoutMs;
+      while (Date.now() < deadline) {
+        if (loadFired) {
+          const result = await cdp.send(
+            'Runtime.evaluate',
+            { expression: 'document.readyState', returnByValue: true },
+            sessionId,
+          );
+          if (result.result?.value === 'complete') {
+            loaded = true;
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      }
+
+      const state = await cdp.send(
+        'Runtime.evaluate',
+        { expression: PAGE_STATE_EXPRESSION, returnByValue: true },
+        sessionId,
+      );
+
+      observations.push({ path, url, loaded, status, responseUrl, ...state.result.value });
+    }
+
+    runs.push({ width, observations });
   }
 
   cdp.socket.close();
-  console.log(JSON.stringify({ width: args.width, observations }, null, 2));
+  console.log(JSON.stringify({ widths: args.widths, runs }, null, 2));
 } catch (error) {
   console.error(`[page-width-probe] ${String(error)}`);
   process.exitCode = 1;

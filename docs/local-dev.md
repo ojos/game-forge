@@ -334,6 +334,7 @@ amd64 のイメージでも同じ値）。**だからといって片方をもう
 | `bash scripts/check-sandbox-browser.sh` | **実ブラウザで**プレイ経路が通ること（#180 / #181。不透明オリジン → 自分の wasm の取得 → 起動） | 約 1 分 | Go・Node 22 以降・**Chromium の実行ファイル**（下記） |
 | `GF_SKIP_BROWSER=1 bash scripts/check-sandbox-browser.sh` | 上の**層 0 だけ**（配信された `.wasm` が二重圧縮でないこと。#181） | 約 30 秒 | Go・Node 22 以降（**ブラウザ不要**） |
 | `bash scripts/check-sandbox-cors.sh` | **配備済みの実物**が ACAO を返すこと（#180）と、`.wasm` が二重圧縮でないこと（#181） | 数秒 | ネットワーク（公開 URL への GET。認証は不要） |
+| `bash scripts/check-page-width.sh` | 全 SSR 画面が**3 段すべての幅**（390 / 768 / 1280px）に収まり、横スクロールが出ないこと（#282 / #371 / 2.3.9） | **約 12 秒** | Node 22 以降・**Chromium の実行ファイル**（下記） |
 
 `npm run check:origins` と `npm run check:isolated-build` は `scripts/verify.sh` には
 含めない。前者は約 20 秒かかり反復の信号としては重く、後者は Docker とイメージ取得を
@@ -471,6 +472,12 @@ bash scripts/shoot-pages.sh
 
 **これは検査ではない。** 見た目の良し悪しは機械が決めない。合否を返すのは
 `bash scripts/check-page-width.sh`（幅が端末に収まっているか）だけである。
+
+**あちらは 3 段すべての幅で回る**（既定 `390,768,1280`。2.3.9 / #371）。幅を変えるには
+`GF_PAGE_WIDTHS=360,900 bash scripts/check-page-width.sh` のように渡す。**段と幅の対応**
+（CSS の `@media` が定める段を、検査の幅がすべて覆っているか）は `bash scripts/verify.sh`
+の中で `scripts/check-app-css.sh` が機械照合する——**ブラウザが要らない側だけを単一入口へ
+載せてある。**
 
 **ブラウザの実行ファイルが要る。** 入手手順は `scripts/check-page-width.sh` の冒頭に
 書いてある（`npx playwright install chromium-headless-shell`）。見つからなければ

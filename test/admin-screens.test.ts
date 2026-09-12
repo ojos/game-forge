@@ -607,6 +607,49 @@ describe('審査キューに改名のあとに通報が付いた cleared を出�
     }
   });
 
+  it('3 つの節を 1 つの batch で読む（同じ時点の状態から描き、同じ作品を 2 節に出さない）', async () => {
+    // **節ごとに別々に読むと、間に別の管理者の操作が挟まったとき、同じ作品が
+    // 向きの違うボタン付きで 2 節に並ぶ**（PR #392 の Copilot レビュー）。D1 の batch は
+    // 1 つの SQL トランザクションで、文を順に・並行せずに実行する（Cloudflare の D1
+    // Worker API の `batch()`）。ここでは画面がその経路を通ることを見る。
+    await insertGame(REVIEW_QUEUED, '審査待ちの作品');
+    await insertRenamedAfterReview();
+    const batches: number[] = [];
+    const spied = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'batch') {
+          return (statements: D1PreparedStatement[]) => {
+            batches.push(statements.length);
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, property) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const response = await handleAdminRequest(
+      new Request(`${ADMIN_ORIGIN}${ADMIN_HOME_PATH}`, { headers: { cookie: adminCookie } }),
+      { ...testEnv(), DB: spied } as Env,
+    );
+    expect(response.status).toBe(200);
+    expect(batches).toEqual([3]);
+  });
+
+  it('操作が成功した直後に一覧が読めなければ、成功の知らせと読み取り失敗の知らせを両方出す', async () => {
+    // **成功の知らせは消さない**——操作と履歴は既にコミットされている。消すと運営は
+    // 失敗したと読んで押し直す。**不完全なのは一覧の側**なので、それを並べて書く。
+    await insertGame(REVIEW_QUEUED, '審査待ちの作品');
+    await env.DB.prepare(`alter table ${TITLE_CHANGES_TABLE} rename to title_changes_hidden`).run();
+    try {
+      const { status, body } = await open(`${ADMIN_HOME_PATH}?outcome=applied`, adminCookie);
+      expect(status).toBe(500);
+      expect(body).toContain('<p class="gf-notice" role="status">');
+      expect(body).toContain('一覧の一部を読み込めませんでした。下の一覧は不完全です。');
+    } finally {
+      await env.DB.prepare(`alter table title_changes_hidden rename to ${TITLE_CHANGES_TABLE}`).run();
+    }
+  });
+
   it('改名の履歴の表が読めなくても、審査待ちの節は出る（0027 の適用漏れで一覧ごと落とさない）', async () => {
     // **#367 が足した読み取りの失敗で、#361 から動いていた一覧を巻き添えにしない。**
     // 表の名前を一時的に変えて「no such table」を再現する。

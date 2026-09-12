@@ -112,8 +112,15 @@ interface ReviewSection {
    * （`src/reports.ts` の `reviewVisibleSql` が断片を文字列で渡しているのと同じ扱い）。
    */
   readonly where: string;
-  /** 行に最後の改名の時刻を出すか（**`title_changes` を読むのはこの節だけ**）。 */
+  /** 行に最後の改名の時刻を出すか。 */
   readonly showsRename: boolean;
+  /**
+   * 条件が `title_changes` を読むか（`REVIEW_RENAMED_SQL` を含むか）。
+   *
+   * **読めないときに読み直す節を決める**（{@link readSections}）。`0027` が未適用の D1 で
+   * 落ちるのはこれが真の節である。
+   */
+  readonly readsRenames: boolean;
   /** 行の頭に付ける札（`queued` の行と見分けるため）。付けない節は null。 */
   readonly badge: string | null;
   readonly heading: string;
@@ -135,6 +142,7 @@ const SECTIONS: readonly ReviewSection[] = [
     state: REVIEW_QUEUED,
     where: `g.review_state = '${REVIEW_QUEUED}'`,
     showsRename: false,
+    readsRenames: false,
     badge: null,
     heading: '審査待ち',
     empty: 'いま審査待ちの作品はありません。',
@@ -147,6 +155,7 @@ const SECTIONS: readonly ReviewSection[] = [
     // **条件の正本はここではない**（`src/reports.ts`。このファイルの冒頭）。
     where: REVIEW_RENAMED_SQL,
     showsRename: true,
+    readsRenames: true,
     badge: '改名後に通報あり',
     heading: '問題なしとしたあと、改名されて通報が付いた作品',
     empty: 'いま該当する作品はありません。',
@@ -162,6 +171,7 @@ const SECTIONS: readonly ReviewSection[] = [
     // **改名の節に出す行を除く**（同じ作品にフォームを 2 つ並べない）。
     where: `g.review_state = '${REVIEW_CLEARED}' and not ${REVIEW_RENAMED_SQL}`,
     showsRename: false,
+    readsRenames: true,
     badge: null,
     heading: '問題なしとした作品',
     empty: 'まだ 1 件もありません。',
@@ -173,7 +183,7 @@ const SECTIONS: readonly ReviewSection[] = [
 ];
 
 /**
- * ある節の作品を引く。
+ * ある節の作品を引く文を組み立てる。
  *
  * **件数を固定する**（{@link ADMIN_LIST_LIMIT}。2.3.3 の条件 1 と同じ考え方）。
  * 母数（公開作品の総数）が増えても、この画面の読み取りは増えない。**節ごとに**固定する
@@ -195,20 +205,20 @@ const SECTIONS: readonly ReviewSection[] = [
  * 管理画面にも出さない）。
  *
  * **改名の時刻は、出す節でだけ引く。** ほかの節まで `title_changes` を読むと、
- * `0027` が未適用の D1 で**審査待ちの節まで読めなくなる**（下記 {@link readSection}）。
+ * `0027` が未適用の D1 で**審査待ちの節まで読めなくなる**（下記 {@link readSections}）。
  * **旧題名・新題名は引かない**——出すのは時刻だけで、題名はいまの 1 つを出す
  * （`scripts/report-queue.sh` が `last_rename` で同じ線を引いている）。
  *
  * @param env バインディングと環境変数
  * @param section 節の定義
  * @param limit 取得件数の上限
- * @returns 作品の行（新しい順）
+ * @returns 準備済みの文（行は新しい順）
  */
-async function listSectionRows(
+function sectionStatement(
   env: Env,
   section: ReviewSection,
   limit: number = ADMIN_LIST_LIMIT,
-): Promise<readonly ReviewRow[]> {
+): D1PreparedStatement {
   // **別名は `tc` にする。** `REVIEW_RENAMED_SQL` の中の `c` と同じ綴りでも SQL の上は
   // 衝突しないが、読む人が「どちらの `c` か」を追わずに済むようにする。
   const renamedAt = section.showsRename
@@ -217,7 +227,7 @@ async function listSectionRows(
   // **並びは公開の新しい順である。** 通報の時刻で並べるには `reports` を集計する
   // 必要があり（`scripts/report-queue.sh` はそうしている）、**画面 1 枚のために
   // 読み取りを増やす理由が無い**——平常時のキューは数件である。
-  const result = await env.DB.prepare(
+  return env.DB.prepare(
     `select g.id, g.title, g.published_at, u.display_name as author_name,
             ${renamedAt} as renamed_at
        from games g
@@ -225,10 +235,7 @@ async function listSectionRows(
       where ${section.where} and g.status = ?
       order by g.published_at desc, g.id desc
       limit ?`,
-  )
-    .bind(PUBLISHED_STATUS, limit)
-    .all<ReviewRow>();
-  return result.results;
+  ).bind(PUBLISHED_STATUS, limit);
 }
 
 /** 1 つの節を読んだ結果。**読めなかったことを 0 行と区別する。** */
@@ -237,27 +244,62 @@ type SectionRead =
   | { readonly ok: false };
 
 /**
- * 1 つの節を読む。**失敗しても画面ごと落とさない。**
+ * 3 つの節を読む。**同じ時点の状態から読み、失敗しても画面ごと落とさない。**
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 1 つの batch で読む（PR #392 の Copilot レビュー）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **節ごとに別々に読むと、節ごとに違う時点の状態になる。** 読み取りの間に別の管理者が
+ * 作品を `queued` ↔ `cleared` へ動かすと、**同じ作品が 2 つの節に、向きの違う
+ * ボタン付きで並ぶ**——「行は片方にしか出さない」が破れる。`D1.batch` は 1 つの
+ * トランザクションなので、3 本の SELECT が同じ状態を見る。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 読めなければ、`title_changes` に依らない節だけを読み直す
+ * ══════════════════════════════════════════════════════════════════════════════
  *
  * **#367 で読む表が 1 つ増えた**（`title_changes`。`migrations/0027`）。本番の D1 へ
- * `0027` を適用し忘れると、改名の条件を含む 2 つの節が「no such table」で落ちる。
- * 例外をそのまま上へ投げると**審査待ちの節まで見えなくなる**——#367 が足したものの
- * 失敗で、#361 から動いていた一覧を巻き添えにしない。
+ * `0027` を適用し忘れると、改名の条件を含む 2 つの節が「no such table」で落ち、
+ * batch ごと落ちる。例外をそのまま上へ投げると**審査待ちの節まで見えなくなる**
+ * ——#367 が足したものの失敗で、#361 から動いていた一覧を巻き添えにしない。
+ *
+ * **読み直すのは {@link ReviewSection.readsRenames} が偽の節（審査待ち）だけ**で、
+ * ほかの節は「読めなかった」とする。**1 節だけなので、時点のずれによる重複は
+ * 起こりえない。**
  *
  * **0 行として描かない。** 「該当なし」と「読めていない」を区別できなくなる
  * （`scripts/report-queue.sh` が終了コード 1 と 2 を分けているのと同じ線）。
  *
  * @param env バインディングと環境変数
- * @param section 節の定義
- * @returns 行、または読めなかったこと
+ * @returns 節ごとの結果（{@link SECTIONS} と同じ順）
  */
-async function readSection(env: Env, section: ReviewSection): Promise<SectionRead> {
+async function readSections(env: Env): Promise<readonly SectionRead[]> {
   try {
-    return { ok: true, rows: await listSectionRows(env, section) };
+    const results = await env.DB.batch<ReviewRow>(
+      SECTIONS.map((section) => sectionStatement(env, section)),
+    );
+    return SECTIONS.map((_, index) => {
+      const result = results[index];
+      return result === undefined ? { ok: false } : { ok: true, rows: result.results };
+    });
   } catch (error) {
-    console.error(`[admin] 審査キューの節（${section.key}）を読めませんでした`, error);
-    return { ok: false };
+    console.error('[admin] 審査キューを読めませんでした。審査待ちの節だけを読み直します', error);
   }
+
+  return await Promise.all(
+    SECTIONS.map(async (section): Promise<SectionRead> => {
+      if (section.readsRenames) {
+        return { ok: false };
+      }
+      try {
+        return { ok: true, rows: (await sectionStatement(env, section).all<ReviewRow>()).results };
+      } catch (error) {
+        console.error(`[admin] 審査キューの節（${section.key}）も読めませんでした`, error);
+        return { ok: false };
+      }
+    }),
+  );
 }
 
 /**
@@ -329,7 +371,7 @@ function timeOrDash(epochSeconds: number | null, missing = '—'): string {
  * 書かなければ分からない（`scripts/report-queue.sh` が `REPORT_QUEUE_EMPTY` を出すのと
  * 同じ——**静かに 0 行にすると「審査待ちが無い」のか「読めていない」のかが区別できない**）。
  *
- * **読めなかった節は、件数の代わりにそう書く**（{@link readSection}）。
+ * **読めなかった節は、件数の代わりにそう書く**（{@link readSections}）。
  *
  * @param section 節の定義
  * @param read 読んだ結果
@@ -358,28 +400,34 @@ ${body}`;
  * 審査キューの画面を返す。
  *
  * **読み取りは節ごとに 1 本**（審査待ち・改名のあとに通報が付いた作品・問題なし）で、
- * それぞれ件数を固定してある。
+ * それぞれ件数を固定し、**3 本を 1 つの batch で送る**（{@link readSections}）。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
  * @returns レスポンス
  */
 async function showReviewQueue(request: Request, env: Env): Promise<Response> {
-  const reads = await Promise.all(SECTIONS.map((section) => readSection(env, section)));
+  const reads = await readSections(env);
   const outcome = new URL(request.url).searchParams.get(ADMIN_OUTCOME_QUERY);
+  const unreadable = reads.some((read) => !read.ok);
 
   // **読めなかった節があれば 500 にする。** 本文は描くが、成功したかのように
   // ログへ残さない（下の 400 と同じ考え方）。
-  const status = reads.some((read) => !read.ok)
-    ? 500
-    : outcome === null || isSucceeded(outcome)
-      ? 200
-      : 400;
+  const status = unreadable ? 500 : outcome === null || isSucceeded(outcome) ? 200 : 400;
+  // **操作の知らせは消さない。読み取りの失敗を並べて出す**（PR #392 の Copilot レビュー
+  // への対応）。POST の操作と履歴は既にコミットされており、「操作しました」は事実である
+  // ——消すと運営は失敗したと読んで押し直す。**食い違いは「一覧のほうが不完全である」
+  // ことで、それは一覧の側の知らせとして書く。** ステータスは 500 のままにする。
+  const notice = `${renderOutcomeNotice(outcome)}${
+    unreadable
+      ? `\n<p class="error" role="alert">一覧の一部を読み込めませんでした。下の一覧は不完全です。</p>`
+      : ''
+  }`;
 
   return html(
     `${adminHead('審査キュー')}
 <h1>審査キュー</h1>
-${renderOutcomeNotice(outcome)}
+${notice}
 <p>通報が閾値に達した作品がここへ入ります（仕様 8.4）。<strong>止まるのは新規露出だけで、
    作品の取り下げはこの画面に置いていません</strong>（仕様 2.4.3。戻せない操作のため、
    引き続き D1 への直接 UPDATE で行います）。</p>

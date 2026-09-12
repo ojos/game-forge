@@ -13,6 +13,7 @@ import { INVITES_PATH } from '../src/paths.js';
 import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, buildSessionCookie, signSession } from '../src/session.js';
 import { applySchema } from './helpers/schema.js';
+import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
  * 招待の発行経路（#91）。
@@ -356,7 +357,8 @@ describe('招待を発行する画面', () => {
     }
 
     const body = await (await call(INVITES_PATH, { cookie, accept: 'text/html' })).text();
-    expect(body).not.toContain('<form');
+    // **本文だけを見る。** ヘッダのアカウントのメニューはログアウトの `<form>` を持つ（#372）。
+    expect(pageBodyOf(body)).not.toContain('<form');
     expect(body).toContain('招待枠を使い切りました');
   });
 

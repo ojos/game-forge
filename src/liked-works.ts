@@ -49,7 +49,7 @@
 import { loginRequiredRedirect } from './auth/google.js';
 import type { PublicWork } from './games.js';
 import { PUBLISHED_STATUS } from './games.js';
-import { VIEWER_SIGNED_IN, siteHead } from './html.js';
+import { siteHead, siteViewerAt } from './html.js';
 import { siteFooter } from './legal.js';
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';
 import { listLikedGameIds } from './likes.js';
@@ -414,7 +414,7 @@ export function renderLikedWorksPage(view: LikedWorksView): string {
   return `${siteHead({
     title: 'いいねした作品 - Game Forge',
     noindex: true,
-    viewer: VIEWER_SIGNED_IN,
+    viewer: siteViewerAt(LIKED_WORKS_PATH, true),
   })}
 <h1>いいねした作品</h1>
 <p>あなたがいいねを付けた作品が、押した新しい順に並んでいます。<strong>この一覧はあなたにしか見えません。</strong></p>

@@ -61,8 +61,9 @@
  * | work-card | 作品カード（一覧・トップ・作者ページが共有する。#328） |
  * | author | 作者ページ（#330） |
  * | sort-pager | 並べ替えと頁送り |
- * | header | ヘッダ（#266 / #331。**アバタードロップダウンは #372 がここへ**） |
- * | footer | フッタ（#331） |
+ * | header | ヘッダ（#266 / #331 / #372。アカウントのメニュー＝アバタードロップダウンを含む） |
+ * | breadcrumb | パンくず（#372。ヘッダの直後に外枠が 1 か所だけ出す） |
+ * | footer | フッタ（#331 / #372） |
  * | motion | 動きを減らす設定 |
  * | account | 登録情報（#341 / #362） |
  * | home | トップ（#329） |
@@ -954,9 +955,16 @@ a.gf-card-author {
  * 主役は作品であり（M8-1）、外枠は上に置いたまま流れるだけでよい。
  */
 .gf-header {
+  /* アカウントのメニューの中身を、ヘッダの右端に揃えて重ねる基準（下の `.gf-account-menu-list`）。 */
+  position: relative;
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  /*
+   * **縦は中央で揃える**（#372 で `baseline` から変えた）。アバターは文字を持たない図形で、
+   * `baseline` のままだと図形の下端が行の基準線になり、ロゴとナビの文字だけが下へ落ちる
+   * （撮影で確かめた）。
+   */
+  align-items: center;
   gap: var(--gf-gap-2) var(--gf-gap-3);
   margin-bottom: var(--gf-gap-4);
   padding-bottom: var(--gf-gap-2);
@@ -986,8 +994,198 @@ a.gf-card-author {
 .gf-header-nav {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--gf-gap-2) var(--gf-gap-3);
   font-weight: 400;
+}
+
+/*
+ * アカウントのメニュー（アバター＋ドロップダウン。2.3.7 v1.57 / #372。`src/html.ts` の
+ * `accountMenu`）。
+ *
+ * **開閉は `<details>` が持つ。** ここは見た目だけで、`[open]` の切り替えに JavaScript を
+ * 使わない（冒頭の制約「状態の切り替えは CSS だけで表現する」）。
+ *
+ * ## 中身はヘッダの右端に揃え、本文の上へ重ねる
+ *
+ * **`<details>` 自身を基準にしない。** 基準をヘッダ（`.gf-header` の `position: relative`）
+ * にして `right: 0` で置くと、**アバターがどこに折り返されても、中身は必ず版面の内側に
+ * 収まる**——狭い段ではナビが右へ寄らない（`@section shell`）のでアバターは行の途中に
+ * あり、アバター基準で右揃えにすると中身が左の画面外へはみ出す。幅は
+ * `min(16rem, 100%)` で、ヘッダより広くならない。**だから幅の `@media` が要らない**
+ * （規約 3。広い段では器がナビを右へ寄せるので、アバターの真下に揃う）。
+ *
+ * **押し下げずに重ねる。** 流れの中で開くと、開くたびに本文が 1 画面ぶん下がり、
+ * 閉じると戻る。重ねるので地の色と線を持たせ、下の本文と混ざらないようにする。
+ */
+.gf-account-menu > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--gf-gap-1);
+  padding: var(--gf-gap-1);
+  border-radius: 999px;
+  cursor: pointer;
+  /* 既定の三角（`list-item` の marker）を消し、下の `::after` の印に置き換える。 */
+  list-style: none;
+}
+
+.gf-account-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+/*
+ * 開けることを示す小さな印。**開いているときは向きを変える**（状態を形で伝える。
+ * 読み上げには `<summary>` 自身が開閉の状態を渡すので、この印は `content` を持たない）。
+ */
+.gf-account-menu > summary::after {
+  content: '';
+  width: 0;
+  height: 0;
+  border-left: 0.3em solid transparent;
+  border-right: 0.3em solid transparent;
+  border-top: 0.35em solid var(--gf-ink-soft);
+}
+
+.gf-account-menu[open] > summary::after {
+  border-top: 0;
+  border-bottom: 0.35em solid var(--gf-ink-soft);
+}
+
+/*
+ * アバターの既定の図形（**画像そのものは M12-12 / #380 が持つ**）。
+ *
+ * 無彩色の円に、頭と肩の形を重ねる。**色を持たせない**（冒頭の方針。色を持つのは作品だけ）。
+ */
+.gf-avatar {
+  display: block;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--gf-rule);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 38%, var(--gf-ink-faint) 0 22%, transparent 23%),
+    radial-gradient(circle at 50% 100%, var(--gf-ink-faint) 0 40%, transparent 41%),
+    var(--gf-surface);
+}
+
+/*
+ * 読み上げにだけ渡す名前（「アカウントのメニュー」）。**`display: none` にしない**
+ * ——それでは読み上げからも消える。見た目の上だけ 1px に畳む。
+ */
+.gf-account-menu-name {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.gf-account-menu-list {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 1;
+  width: min(16rem, 100%);
+  margin: var(--gf-gap-1) 0 0;
+  padding: var(--gf-gap-1) 0;
+  list-style: none;
+  border: 1px solid var(--gf-rule);
+  border-radius: var(--gf-radius);
+  background: var(--gf-ground);
+  font-size: var(--gf-text);
+  letter-spacing: normal;
+}
+
+.gf-account-menu-list li {
+  margin: 0;
+}
+
+/*
+ * 項目（リンクとログアウトのボタン）を同じ形に揃える。**押せる範囲を行いっぱいにする**
+ * ——狭い端末の指で、文字の上だけを狙わせない。
+ */
+.gf-account-menu-list a,
+.gf-account-menu-list button {
+  display: block;
+  width: 100%;
+  padding: var(--gf-gap-2) var(--gf-gap-3);
+  text-align: left;
+}
+
+/*
+ * ログアウトは**素の `<form method="post">`** である（GET を受けない。`src/html.ts`）。
+ * フォームの既定（`@section forms` の縦積みと下の余白）を外し、**ボタンの地色も外す**
+ * ——メニューの中で 1 つだけ塗られていると、主たる操作に見えて押し間違える。
+ * 他の項目と罫線で分けるのは、ページを移る項目と「状態を変える」項目を混ぜないためである。
+ */
+.gf-account-menu-list form {
+  display: block;
+  margin: var(--gf-gap-1) 0 0;
+  padding-top: var(--gf-gap-1);
+  border-top: 1px solid var(--gf-rule-soft);
+}
+
+.gf-account-menu-list button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--gf-ink-soft);
+  font-weight: 400;
+}
+
+.gf-account-menu-list button:hover {
+  color: var(--gf-ink);
+  opacity: 1;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+/* ==========================================================================
+   @section breadcrumb — パンくず（#372）
+   ========================================================================== */
+
+/*
+ * いまどこに居るか（2.3.10。`src/html.ts` の `siteBreadcrumb`）。
+ *
+ * **ヘッダと同じく小さく・淡く出す。** 外枠であり、その画面の `<h1>` と主役を争わない。
+ *
+ * **区切りの記号は CSS が出す。** HTML に置くと、読み上げが項目ごとに記号を読む。
+ * `content` の `/ ""` は代替テキストを空にする書き方で、対応していない環境では記号が
+ * 読まれるだけで壊れはしない。
+ *
+ * **折り返す。** 作品名は長くなりうる（題名は作者が付け替えられる。#366）ので、
+ * 1 行に収めようとして省略しない——省略すると、いま居る画面の名前が読めなくなる。
+ */
+.gf-breadcrumb {
+  margin: calc(-1 * var(--gf-gap-2)) 0 var(--gf-gap-4);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-breadcrumb ol {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gf-breadcrumb li {
+  margin: 0;
+}
+
+.gf-breadcrumb li + li::before {
+  content: '›' / '';
+  margin: 0 var(--gf-gap-2);
+  color: var(--gf-ink-faint);
+}
+
+.gf-breadcrumb [aria-current='page'] {
+  color: var(--gf-ink);
 }
 
 /* ==========================================================================
@@ -1086,29 +1284,6 @@ a.gf-card-author {
 .gf-account dd {
   margin: 0 0 var(--gf-gap-2);
   overflow-wrap: anywhere;
-}
-
-/*
- * ログアウト（#362。`src/account.ts` の末尾のフォーム）。
- *
- * **罫線で区切って離す。** この画面の主たる操作は表示名の変更で、ログアウトはそれとは
- * 別の用事である。素の `form` の余白だけでは登録情報の続きに見え、**表示名を変えに来た人が
- * 最後のボタンを押して落ちる**。見出しは置かない（ボタンの文字が用事をそのまま言っている
- * ——`.gf-account` の上と同じ理由で、同じ語を 2 度並べない）。
- *
- * **ボタンの地色を外す。** 既定の `button` は地色付き（主たる操作の見た目）で、同じ画面に
- * 同じ強さのボタンが 2 つ並ぶと押し間違える。枠だけにして、押せることは保ったまま
- * 主従を付ける。**`:disabled` の見た目は触らない**——このボタンは無効にならない。
- */
-.gf-logout {
-  margin-top: var(--gf-gap-4);
-  padding-top: var(--gf-gap-4);
-  border-top: 1px solid var(--gf-rule);
-}
-
-.gf-logout button {
-  background: transparent;
-  color: var(--gf-ink);
 }
 
 /* ==========================================================================

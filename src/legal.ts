@@ -26,19 +26,15 @@ import {
   resolveSiteViewer,
   siteHead,
 } from './html.js';
+import { TAKEDOWN_PATH, TAKEDOWN_THANKS_PATH, TERMS_PATH } from './legal-paths.js';
 import { MAX_BODY_LENGTH, MAX_CLAIMANT_LENGTH } from './takedown.js';
 
-/** 利用規約のパス。 */
-export const TERMS_PATH = '/terms';
-
-/** 削除申請フォームのパス。 */
-export const TAKEDOWN_PATH = '/takedown';
+// 画面の綴りの正本は値だけの葉である（外枠がパンくずのために借りる。`src/legal-paths.ts`）。
+// ここから再輸出するのは、既存の import（`src/takedown-routes.ts` やテスト）を動かさないため。
+export { TAKEDOWN_PATH, TAKEDOWN_THANKS_PATH, TERMS_PATH } from './legal-paths.js';
 
 /** 削除申請の受け口。 */
 export const TAKEDOWN_SUBMIT_PATH = '/api/takedown';
-
-/** 削除申請を受け付けたあとの行き先。 */
-export const TAKEDOWN_THANKS_PATH = '/takedown/thanks';
 
 /** フォームの項目名（`name` と JSON の鍵の両方）。 */
 export const TAKEDOWN_FIELDS = {
@@ -60,14 +56,33 @@ const FOOTER_LEGAL_ITEMS: readonly NavItem[] = [
 ];
 
 /**
+ * フッタのお問い合わせの区画（2.3.7 v1.57 / #372）。**いまは空である。**
+ *
+ * **枠だけを先に置く。** v1.57 はお問い合わせの区画を置くと決めたが、**行き先（一般の
+ * 問い合わせ窓口とよくある質問）はまだ実在しない**——作るのは M12-5（#373）である。
+ * 行き先の無いリンクは出さない（4.4 / 2.2）ので、**項目が空のあいだは見出しごと出ない**
+ * （`src/html.ts` の `footerSection`）。
+ *
+ * **#373 は、画面を経路表へ足したうえで、ここへ項目を足すだけでよい。** 見出しは項目と
+ * 一緒に現れる。**足した行き先が経路表の画面であることは `test/page-shell.test.ts` が
+ * 全画面で見る**ので、画面より先に項目だけを足すと赤くなる。
+ *
+ * `/takedown` をここへ入れないこと。あれは**権利者向け**の窓口で、一般の利用者の
+ * 不具合報告の行き先ではない（2.3.7 v1.57 の注記）。
+ */
+export const FOOTER_CONTACT_ITEMS: readonly NavItem[] = [];
+
+/**
  * 全ページ共通のフッター（#41 の acceptance 2。#331 で 2 区画にした）。
  *
  * **各ページで組み立てない。** 1 か所に置き、全画面がこれを呼ぶ。
  *
- * ## 区画は 2 つだけである（2.3.7）
+ * ## 区画は、行き先が実在するものだけである（2.3.7）
  *
- * 会社情報・SNS・お問い合わせは**区画ごと置かない**（行き先が実在しない）。
- * 判断の正本は仕様 2.3.7 で、ここはその写しである。
+ * いま出るのはサービス / 法務の 2 区画である。**お問い合わせは枠だけを置き、項目が
+ * 入るまで出ない**（{@link FOOTER_CONTACT_ITEMS}）。**会社情報・SNS は枠も置かない**
+ * ——v1.57 でも行き先が実在しないと決めたままである（2.3.14）。判断の正本は仕様 2.3.7 で、
+ * ここはその写しである。
  *
  * ## ログイン状態で出し分けない
  *
@@ -84,12 +99,17 @@ const FOOTER_LEGAL_ITEMS: readonly NavItem[] = [
  * @returns HTML
  */
 export function siteFooter(): string {
+  // 空の区画は `footerSection` が空文字を返すので、行ごと落として空行を残さない。
+  const sections = [
+    footerSection('サービス', FOOTER_SERVICE_ITEMS),
+    footerSection('法務', FOOTER_LEGAL_ITEMS),
+    footerSection('お問い合わせ', FOOTER_CONTACT_ITEMS),
+  ].filter((section) => section !== '');
   return `
 <hr>
 <footer class="gf-footer">
   <nav class="gf-footer-nav" aria-label="フッタの行き先">
-${footerSection('サービス', FOOTER_SERVICE_ITEMS)}
-${footerSection('法務', FOOTER_LEGAL_ITEMS)}
+${sections.join('\n')}
   </nav>
 </footer>`;
 }

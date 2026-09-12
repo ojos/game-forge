@@ -2,13 +2,13 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { ACCOUNT_PATH } from '../src/account-paths.js';
-import { LOGIN_PATH } from '../src/auth/google.js';
+import { LOGIN_PATH, LOGOUT_PATH } from '../src/auth/google.js';
 import { DRAFT_STATUS } from '../src/games.js';
-import { APP_CSS_PATH } from '../src/html.js';
+import { APP_CSS_PATH, BREADCRUMB_PARENTS, breadcrumbLabelOf } from '../src/html.js';
 import { TAKEDOWN_PATH, TERMS_PATH } from '../src/legal.js';
 import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH } from '../src/ogp.js';
-import { NON_PAGE_PATHS, ssrPagePaths } from '../src/page-paths.js';
+import { NON_PAGE_PATHS, ancestorPathsOf, ssrPagePaths } from '../src/page-paths.js';
 import { GENERATE_PAGE_PATH, HOME_PATH } from '../src/paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { AUTHOR_PAGE_PREFIX } from '../src/users-page-paths.js';
@@ -208,6 +208,51 @@ const NO_COOKIE = '';
  */
 function headerOf(body: string): string | null {
   return /<header class="gf-header">[\s\S]*?<\/header>/u.exec(body)?.[0] ?? null;
+}
+
+/**
+ * ヘッダの中から、アカウントのメニュー（`<details>`）だけを取り出す（#372）。
+ *
+ * @param header {@link headerOf} の戻り値
+ * @returns `<details>` の中身（無ければ null）
+ */
+function accountMenuOf(header: string): string | null {
+  return /<details class="gf-account-menu">[\s\S]*?<\/details>/u.exec(header)?.[0] ?? null;
+}
+
+/**
+ * HTML からパンくずの区画だけを取り出す（#372）。
+ *
+ * @param body HTML
+ * @returns パンくずの中身（無ければ null）
+ */
+function breadcrumbOf(body: string): string | null {
+  return /<nav class="gf-breadcrumb"[\s\S]*?<\/nav>/u.exec(body)?.[0] ?? null;
+}
+
+/**
+ * HTML の中の、ログアウトへ送るフォームの開始タグを数えるために拾う。
+ *
+ * **`<form>` の開始タグを見る。** `/auth/logout` という文字列があることだけを見ると、
+ * 押せない場所（説明文やコメント）にあっても緑になる（#362 の検査と同じ理由）。
+ *
+ * @param body HTML
+ * @returns ログアウトへ送る `<form>` の開始タグ
+ */
+function logoutFormsOf(body: string): string[] {
+  return (body.match(/<form[^>]*>/gu) ?? []).filter((tag) =>
+    tag.includes(`action="${LOGOUT_PATH}"`),
+  );
+}
+
+/**
+ * HTML の断片から `href` の値をすべて拾う。
+ *
+ * @param fragment HTML の断片
+ * @returns `href` の値
+ */
+function hrefsOf(fragment: string): string[] {
+  return [...fragment.matchAll(/href="([^"]*)"/gu)].map((match) => match[1]!);
 }
 
 /**
@@ -506,19 +551,58 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
       expect(header!, `${path} のヘッダに登録情報が出ている`).not.toContain(
         `href="${ACCOUNT_PATH}"`,
       );
+      // **ログアウトするものが無い人に、アカウントのメニューもログアウトも出さない**（#372）。
+      expect(accountMenuOf(header!), `${path} の未ログインのヘッダにメニューがある`).toBeNull();
+      expect(logoutFormsOf(body), `${path} の未ログインの画面にログアウトがある`).toEqual([]);
     }
   });
 
-  it('ログイン済みのヘッダは、自分の作品と登録情報を出す（ログインは出さない）', async () => {
+  it('ログイン済みのヘッダは、アカウントのメニューに 4 つを収める（ログインは出さない。#372）', async () => {
+    // **v1.57 で 2.3.7 を覆した形である。** 自分の作品・いいねした作品・登録情報・ログアウトを
+    // アバターのドロップダウンへ収め、**閉じたヘッダの項目列には本人だけの画面を出さない。**
     for (const path of getPaths()) {
       const header = headerOf((await open(path)).body);
       expect(header, `${path} にヘッダが無い`).not.toBeNull();
-      expect(header!, `${path} のヘッダに「自分の作品」が無い`).toContain(
-        `href="${MY_WORKS_PATH}"`,
-      );
-      expect(header!, `${path} のヘッダに「登録情報」が無い`).toContain(`href="${ACCOUNT_PATH}"`);
+      const menu = accountMenuOf(header!);
+      expect(menu, `${path} のヘッダにアカウントのメニューが無い`).not.toBeNull();
+      for (const [link, label] of [
+        [MY_WORKS_PATH, '自分の作品'],
+        [LIKED_WORKS_PATH, 'いいねした作品'],
+        [ACCOUNT_PATH, '登録情報'],
+      ] as const) {
+        expect(menu!, `${path} のメニューに「${label}」が無い`).toContain(`href="${link}"`);
+      }
+      expect(logoutFormsOf(menu!), `${path} のメニューにログアウトが無い`).toHaveLength(1);
+      const outside = header!.replace(menu!, '');
+      for (const link of [MY_WORKS_PATH, LIKED_WORKS_PATH, ACCOUNT_PATH]) {
+        expect(outside, `${path} のヘッダの項目列（メニューの外）に ${link} がある`).not.toContain(
+          `href="${link}"`,
+        );
+      }
       expect(header!, `${path} のヘッダにログインが出ている`).not.toContain(
         `href="${LOGIN_PATH}"`,
+      );
+    }
+  });
+
+  it('アカウントのメニューは JavaScript を要求しない形で、閉じた状態で配られる（#372）', async () => {
+    // **開閉をブラウザ（`<details>` / `<summary>`）に持たせる。** 画面ごとに外枠が
+    // 違っていないことを全画面で見る——実ブラウザで JavaScript を止めて開閉できることは
+    // `scripts/check-page-width.sh` が 3 幅で見るが、あちらが開くのは 1 画面だけである。
+    for (const path of getPaths()) {
+      const header = headerOf((await open(path)).body)!;
+      const menu = accountMenuOf(header)!;
+      expect(header.split('<details').length - 1, `${path} のヘッダの <details> の数`).toBe(1);
+      expect(menu, `${path} のメニューの最初の子が <summary> でない`).toMatch(
+        /^<details class="gf-account-menu">\s*<summary>/u,
+      );
+      expect(menu, `${path} のメニューが開いた状態で配られている`).not.toMatch(
+        /<details[^>]*\sopen/u,
+      );
+      expect(header, `${path} のヘッダに <script> がある`).not.toContain('<script');
+      expect(menu, `${path} のメニューにイベント属性がある`).not.toMatch(/\son[a-z]+=/u);
+      expect(menu, `${path} のメニューに hidden / inert / tabindex がある`).not.toMatch(
+        /\s(hidden|inert|tabindex)[\s=>]/u,
       );
     }
   });
@@ -542,17 +626,71 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
     }
   });
 
-  it('いいねした作品は、どの画面のヘッダにも出ない（2.3.7）', async () => {
-    // **本人だけの画面が 2 枚並ぶので、ヘッダの項目を増やさない**（2.3.7）。導線は
-    // 「あなたの作品」の本文が持つ（`test/my-works.test.ts` が見ている）。
+  it('ログアウトは全画面で POST のフォーム 1 つだけで、GET の口（href）を作らない（#372）', async () => {
+    // **GET なら `<img src="/auth/logout">` を踏ませるだけで他人をログアウトさせられる**
+    // （`src/auth/google.ts` の経路表）。#362 は `/account` にだけ置いていたが、#372 で
+    // ヘッダへ移したので**全画面に出る。** 1 画面に 2 つ（ヘッダと本文）並べないことも見る。
+    for (const path of getPaths()) {
+      const { body } = await open(path);
+      const forms = logoutFormsOf(body);
+      expect(forms, `${path} のログアウトのフォームの数`).toHaveLength(1);
+      expect(forms[0], `${path} のログアウトが POST でない`).toContain('method="post"');
+      expect(body, `${path} にログアウトへの href がある`).not.toContain(`href="${LOGOUT_PATH}"`);
+    }
+  });
+
+  it('ログアウトは GET を受けない（ヘッダのフォームを踏まずに状態を変えられない。#372）', async () => {
+    // **フォームが POST であることだけでは足りない。** 経路が GET も受けるなら、フォームを
+    // 迂回して `<img src>` 1 つでログアウトさせられる。**ログイン済みの cookie を載せて**
+    // 開き、cookie を消す応答が返らないことまで見る（未ログインの GET だと、消されても
+    // 気づけない）。
+    for (const method of ['GET', 'HEAD']) {
+      const response = await handleAppRequest(
+        new Request(`${APP_ORIGIN}${LOGOUT_PATH}`, { method, headers: { cookie } }),
+        testEnv(),
+      );
+      expect(response.status, `${method} ${LOGOUT_PATH} のステータス`).toBe(405);
+      expect(response.headers.get('allow'), `${method} ${LOGOUT_PATH} の Allow`).toBe('POST');
+      expect(response.headers.get('set-cookie'), `${method} ${LOGOUT_PATH} が cookie を触った`).toBeNull();
+    }
+    // **POST は通る**（上が「経路ごと消えた」ことで緑になっていないことの確認）。着地は
+    // `/` のまま変えない（#362 / #374 が確かめた性質）。
+    const posted = await handleAppRequest(
+      new Request(`${APP_ORIGIN}${LOGOUT_PATH}`, { method: 'POST', headers: { cookie } }),
+      testEnv(),
+    );
+    expect(posted.status).toBe(303);
+    expect(posted.headers.get('location')).toBe(HOME_PATH);
+    expect(posted.headers.get('set-cookie') ?? '').toContain('Max-Age=0');
+  });
+
+  it('いいねした作品は、未ログインのヘッダには出ない（ログイン済みはメニューの中だけ。2.3.7 v1.57）', async () => {
     const { pages } = await anonymousPages();
     for (const { path, body } of pages) {
       expect(headerOf(body)!, `${path} のヘッダ（未ログイン）`).not.toContain(LIKED_WORKS_PATH);
     }
+  });
+
+  it('ヘッダ・パンくず・フッタのリンクは、すべて経路表の GET 経路を指す（行き先の無いリンクを出さない）', async () => {
+    // **4.4 / 2.2「押しても何も起きないリンクを出さない」を外枠の全リンクで見る。** とくに
+    // フッタのお問い合わせ（#373 が行き先を作る）のように、**画面より先に項目だけを足す**
+    // 変更を赤くする。行き先は画面に限らない（ログインは Google へのリダイレクトである）。
+    const routes = createAppRoutes(testEnv()).filter(
+      (route) => route.method === 'GET' && route.match !== 'prefix',
+    );
+    const known = new Set(routes.map((route) => route.path));
+    const { pages } = await anonymousPages();
+    const signedIn: { path: string; body: string }[] = [];
     for (const path of getPaths()) {
-      expect(headerOf((await open(path)).body)!, `${path} のヘッダ（ログイン済み）`).not.toContain(
-        LIKED_WORKS_PATH,
-      );
+      signedIn.push({ path, body: (await open(path)).body });
+    }
+    for (const { path, body } of [...pages, ...signedIn]) {
+      const shell = [headerOf(body), breadcrumbOf(body), footerOf(body)].join('\n');
+      const links = hrefsOf(shell);
+      expect(links.length, `${path} の外枠にリンクが無い（検査が空振りする）`).toBeGreaterThan(3);
+      for (const link of links) {
+        expect(known.has(link), `${path} の外枠のリンク ${link} が経路表の GET 経路に無い`).toBe(true);
+      }
     }
   });
 
@@ -564,15 +702,22 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
     }
   });
 
-  it('フッタは 2 区画（サービス / 法務）で、置かないと決めた区画が無い', async () => {
+  it('フッタはサービス / 法務を持ち、空の区画と置かないと決めた区画が無い', async () => {
     for (const path of getPaths()) {
       const footer = footerOf((await open(path)).body);
       expect(footer, `${path} にフッタが無い`).not.toBeNull();
       for (const link of [PUBLIC_WORKS_PATH, GENERATE_PAGE_PATH, TERMS_PATH, TAKEDOWN_PATH]) {
         expect(footer!, `${path} のフッタに ${link} が無い`).toContain(`href="${link}"`);
       }
-      // **行き先が実在しない区画を置かない**（2.3.7。AivisHub の 5 区画のうち 3 つ）。
-      for (const absent of ['会社情報', 'お問い合わせ', 'SNS']) {
+      // **見出しだけの区画を出さない**（#372）。お問い合わせは枠だけを置いてあり
+      // （`src/legal.ts` の `FOOTER_CONTACT_ITEMS`）、**行き先ができるまで見出しごと出ない。**
+      const groups = footer!.split('<div class="gf-footer-group">').slice(1);
+      expect(groups.length, `${path} のフッタの区画が 2 つ未満`).toBeGreaterThanOrEqual(2);
+      for (const group of groups) {
+        expect(group, `${path} のフッタに項目の無い区画がある`).toContain('<li><a href=');
+      }
+      // **行き先が実在しない区画は、枠も置かない**（2.3.7 / 2.3.14。v1.57 でも維持）。
+      for (const absent of ['会社情報', 'SNS']) {
         expect(footer!, `${path} のフッタに ${absent} の区画がある`).not.toContain(absent);
       }
     }
@@ -590,6 +735,138 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
       for (const absent of [MY_WORKS_PATH, ACCOUNT_PATH, LIKED_WORKS_PATH, LOGIN_PATH]) {
         expect(footer!, `${path} のフッタに ${absent} がある`).not.toContain(`href="${absent}"`);
       }
+    }
+  });
+});
+
+/**
+ * パンくず（2.3.10 / #372）。
+ *
+ * # なぜ経路表から導くのか
+ *
+ * **パンくずの構造は、経路表の画面を URL の末尾から削って出来る**（2.3.2 / #152 が決めた
+ * 階層）。ここはその導出を画面ごとに書き写さず、`ssrPagePaths` と `ancestorPathsOf` から
+ * 期待値を作って全画面 × ログイン両状態で突き合わせる。**画面を 1 枚足した日も、
+ * ここに書き足すものは無い**——足した画面が親になったときだけ、下の「漏れ」の検査が
+ * `src/html.ts` の `BREADCRUMB_PARENTS` への 1 行を求める。
+ */
+describe('パンくず（2.3.10）', () => {
+  /** 経路表の画面のうち、完全一致のもの（パンくずの親になりうるもの）。 */
+  function exactPagePaths(): Set<string> {
+    return new Set(
+      ssrPagePaths(createAppRoutes(testEnv())).filter((path) => path === '/' || !path.endsWith('/')),
+    );
+  }
+
+  /**
+   * パンくずの項目を、リンク（親）と末尾（いまの画面）に分けて読む。
+   *
+   * @param crumb {@link breadcrumbOf} の戻り値
+   * @returns 親の href の列と、末尾の名前（エスケープされたまま）
+   */
+  function readCrumb(crumb: string): { links: string[]; current: string | null } {
+    return {
+      links: hrefsOf(crumb),
+      current: /<span aria-current="page">([\s\S]*?)<\/span>/u.exec(crumb)?.[1] ?? null,
+    };
+  }
+
+  /**
+   * 全画面を両方の状態で開き、HTML を返したものを集める。
+   *
+   * **ログインへ送られた画面（未ログインの本人専用画面）は数えて除く**——パンくずは
+   * HTML の外枠なので、303 には出ようがない。黙って飛ばさないために件数を見る。
+   *
+   * @returns 開いた画面
+   */
+  async function allRendered(): Promise<{ path: string; body: string; state: string }[]> {
+    const rendered: { path: string; body: string; state: string }[] = [];
+    let redirected = 0;
+    for (const path of getPaths()) {
+      rendered.push({ path, body: (await open(path)).body, state: 'ログイン済み' });
+      const anonymous = await open(path, NO_COOKIE);
+      if (anonymous.type.includes('text/html')) {
+        rendered.push({ path, body: anonymous.body, state: '未ログイン' });
+      } else {
+        redirected++;
+      }
+    }
+    expect(redirected, 'ログイン必須の画面が 1 枚も無い（分類が空振りしている）').toBeGreaterThan(0);
+    expect(rendered.length).toBeGreaterThan(getPaths().length);
+    return rendered;
+  }
+
+  it('トップには出さず、それ以外のすべての画面に 1 つだけ出る', async () => {
+    for (const { path, body, state } of await allRendered()) {
+      const count = body.split('<nav class="gf-breadcrumb"').length - 1;
+      expect(count, `${path}（${state}）のパンくずの数`).toBe(path === HOME_PATH ? 0 : 1);
+    }
+  });
+
+  it('パンくずはヘッダの直後にあり、本文より前に出る', async () => {
+    for (const { path, body, state } of await allRendered()) {
+      if (path === HOME_PATH) {
+        continue;
+      }
+      const after = body.slice(body.indexOf('</header>') + '</header>'.length).trimStart();
+      expect(after.startsWith('<nav class="gf-breadcrumb"'), `${path}（${state}）`).toBe(true);
+    }
+  });
+
+  it('親は「トップ」から始まり、URL を削って出来る画面をすべて浅い順に並べる', async () => {
+    const pages = exactPagePaths();
+    let withParents = 0;
+    for (const { path, body, state } of await allRendered()) {
+      if (path === HOME_PATH) {
+        continue;
+      }
+      const { links } = readCrumb(breadcrumbOf(body)!);
+      const expected = [HOME_PATH, ...ancestorPathsOf(path).filter((ancestor) => pages.has(ancestor))];
+      expect(links, `${path}（${state}）のパンくずの親`).toEqual(expected);
+      if (expected.length > 1) {
+        withParents++;
+      }
+    }
+    // **親を持つ画面が 1 枚も無いまま緑にしない**（作品ページ・自分の作品・受付完了がある）。
+    expect(withParents, 'トップ以外の親を持つ画面が無い（検査が空振りする）').toBeGreaterThan(3);
+  });
+
+  it('末尾はいまの画面の名前（<title> からサービス名を落としたもの）で、リンクにしない', async () => {
+    for (const { path, body, state } of await allRendered()) {
+      if (path === HOME_PATH) {
+        continue;
+      }
+      const title = /<title>([\s\S]*?)<\/title>/u.exec(body)?.[1] ?? '';
+      const { current, links } = readCrumb(breadcrumbOf(body)!);
+      expect(current, `${path}（${state}）のパンくずの末尾`).toBe(breadcrumbLabelOf(title));
+      expect(current, `${path}（${state}）のパンくずの末尾が空`).not.toBe('');
+      expect(links, `${path}（${state}）のパンくずが自分自身へリンクしている`).not.toContain(path);
+    }
+  });
+
+  it('親の名前の表に、画面である親の漏れが無い（経路表から導く）', () => {
+    // **表に無い親はパンくずから黙って消える。** 画面を足してそれが別の画面の親になった日に、
+    // ここが赤くなって `BREADCRUMB_PARENTS` への 1 行を求める。
+    const pages = exactPagePaths();
+    const named = new Set(BREADCRUMB_PARENTS.map((item) => item.path));
+    const missing = [...new Set(getPaths().flatMap((path) => ancestorPathsOf(path)))]
+      .filter((ancestor) => pages.has(ancestor))
+      .filter((ancestor) => !named.has(ancestor));
+    expect(missing, 'src/html.ts の BREADCRUMB_PARENTS に名前の無い親').toEqual([]);
+    // 空振りしない（親を持つ階層が経路表に実際にある）。
+    expect(named.size).toBeGreaterThan(0);
+  });
+
+  it('親の名前の表の行き先はすべて画面で、名前はその画面自身の末尾の名前と一致する', async () => {
+    // **表は画面の名前の写しである。** 写しは腐るので、その画面を開いたときのパンくずの
+    // 末尾（= `<title>` から導いた名前）と突き合わせる（`.ai-playbook/shared-ai-rules.md` 12 章）。
+    const pages = exactPagePaths();
+    for (const item of BREADCRUMB_PARENTS) {
+      expect(pages.has(item.path), `${item.path} は経路表の画面ではない`).toBe(true);
+      const { body, type } = await open(item.path);
+      expect(type, `${item.path} が HTML を返さない`).toContain('text/html');
+      const { current } = readCrumb(breadcrumbOf(body)!);
+      expect(current, `${item.path} の名前が表とずれている`).toBe(item.label);
     }
   });
 });

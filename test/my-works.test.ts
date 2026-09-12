@@ -17,6 +17,7 @@ import { buildSessionCookie, signSession } from '../src/session.js';
 import { PUBLIC_WORKS_PATH } from '../src/works-list.js';
 import { STALE_AFTER_SECONDS, WORK_PAGE_PREFIX, workPagePath } from '../src/work-page.js';
 import { applySchema } from './helpers/schema.js';
+import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
  * 「あなたの作品」一覧（#152）。
@@ -444,13 +445,13 @@ describe('「いいねした作品」への導線（2.3.7 / 5.8 / #340）', () =
     expect(body).toContain('いいねした作品');
   });
 
-  it('ヘッダには置かない（本人だけの画面が 2 枚並ぶので項目を増やさない）', async () => {
+  it('本文の導線は、ヘッダのメニューへ移さずに残す（2.3.7 v1.57 / #372）', async () => {
+    // **v1.57 はヘッダのアカウントのメニューにも「いいねした作品」を置いた**（ドロップダウンの
+    // 中身はヘッダの項目ではない）。**本文の導線はそのまま残す**——メニューは閉じているので、
+    // 「あなたの作品」を見ている人の目に入る導線が要る。外枠の側は `test/page-shell.test.ts`。
     const userId = await seedUser();
     const body = await (await openList(await sessionCookie(userId))).text();
-    // ヘッダは `siteHead` が出す 1 行だけである。**導線は本文に置く**（2.3.7）。
-    const header = /<header class="gf-header">[\s\S]*?<\/header>/u.exec(body);
-    expect(header, 'ヘッダが無い（検査が空振りする）').not.toBeNull();
-    expect(header![0]).not.toContain(LIKED_WORKS_PATH);
+    expect(pageBodyOf(body)).toContain(`href="${LIKED_WORKS_PATH}"`);
   });
 
   it('未ログインの応答には出さない（ログインへ送るだけである）', async () => {

@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { VIEWER_SIGNED_OUT, escapeHtml } from '../src/html.js';
+import { escapeHtml, siteViewerAt } from '../src/html.js';
+import { pageBodyOf } from './helpers/site-shell.js';
 import { dispatch } from '../src/routes.js';
 import { renderWorkPage as renderWorkPageFor } from '../src/work-page.js';
 import type { WorkPageView } from '../src/work-page.js';
@@ -70,7 +71,7 @@ const SECRET = 'test-secret-value-for-work-page-endpoint-1';
  * @returns HTML
  */
 function renderWorkPage(view: WorkPageView): string {
-  return renderWorkPageFor(view, VIEWER_SIGNED_OUT);
+  return renderWorkPageFor(view, siteViewerAt(WORK_PAGE_PREFIX, false));
 }
 
 /**
@@ -1089,8 +1090,9 @@ describe('著名 IP 名の置換を作者へ開示する（6.2 / #39）', () => 
 
   it('題名を本文で 2 度出さない（#267）', () => {
     // 見出しへ上げたので、以前の「お題: ...」は重複になる。**本文では 1 度だけにする。**
-    // `<title>` は本文ではないので数えない（タブ名と見出しは別の役目である）。
-    const html = renderWorkPage({ ...baseView, title: 'よけて跳ねる箱' });
+    // `<title>` は本文ではないので数えない（タブ名と見出しは別の役目である）。**パンくずの
+    // 末尾（いまの画面の名前）も外枠なので数えない**（#372。外枠は `test/page-shell.test.ts`）。
+    const html = pageBodyOf(renderWorkPage({ ...baseView, title: 'よけて跳ねる箱' }));
     const body = html.slice(html.indexOf('</title>'));
     expect(body.split('よけて跳ねる箱').length - 1, '本文に現れた回数').toBe(1);
   });
@@ -1627,7 +1629,8 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
     const { body, touched } = await openRecording(workPagePath(id), await sessionCookie(fan));
 
     expect(touched, '取り下げた作品で DO を呼んでいる').toEqual([]);
-    expect(body).not.toContain('いいね');
+    // **本文だけを見る。** ヘッダのアカウントのメニューが「いいねした作品」を持つ（#372）。
+    expect(pageBodyOf(body)).not.toContain('いいね');
     expect(body).not.toMatch(LIKE_FORM);
     expect(body).not.toMatch(CANCEL_FORM);
   });
@@ -1665,7 +1668,8 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
     const { body, touched } = await openRecording(workPagePath(id), await sessionCookie(userId));
 
     expect(touched).toEqual([]);
-    expect(body).not.toContain('いいね');
+    // **本文だけを見る。** ヘッダのアカウントのメニューが「いいねした作品」を持つ（#372）。
+    expect(pageBodyOf(body)).not.toContain('いいね');
   });
 
   it('描画は view の 3 つの値だけで決まる（画面側で押せるかを組み立てていない）', () => {

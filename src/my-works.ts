@@ -73,8 +73,8 @@ import type { AuthoredGame, GenerationState } from './games.js';
 import { UNTITLED_TITLE, listAuthoredGames } from './games.js';
 import { loginRequiredRedirect } from './auth/google.js';
 import { GENERATE_PAGE_PATH } from './paths.js';
-// **「いいねした作品」への導線はここに置く**（2.3.7 / 5.8 / #340）。**ヘッダには置かない**
-// ——本人だけの画面が 2 枚並ぶので、ヘッダの項目を増やさないと 2.3.7 が決めている。
+// **「いいねした作品」への導線はここに置く**（2.3.7 / 5.8 / #340）。v1.57 でヘッダの
+// アカウントのメニューにも入った（#372）が、メニューは閉じているので本文の導線は残す。
 // 綴りは値だけの葉から取る（`src/liked-works-paths.ts`。あちらの冒頭が置き場の理由）。
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';
 import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './works-paths.js';
@@ -82,7 +82,7 @@ import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/work-page.ts` もそこから取っている）。
-import { VIEWER_SIGNED_IN, escapeHtml, siteHead } from './html.js';
+import { escapeHtml, siteHead, siteViewerAt } from './html.js';
 import { looksStalled, workPagePath } from './work-page.js';
 
 /**
@@ -243,7 +243,7 @@ ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
   return `${siteHead({
     title: 'あなたの作品 - Game Forge',
     noindex: true,
-    viewer: VIEWER_SIGNED_IN,
+    viewer: siteViewerAt(MY_WORKS_PATH, true),
   })}
 <h1>あなたの作品</h1>
 <p>生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>

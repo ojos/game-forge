@@ -34,7 +34,7 @@ import { inviteQuotaHalted } from './reports.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, json } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { VIEWER_SIGNED_IN, escapeHtml, siteHead } from './html.js';
+import { escapeHtml, siteHead, siteViewerAt } from './html.js';
 import { HOME_PATH } from './home.js';
 import { INVITES_PATH } from './paths.js';
 import { loginRequiredRedirect } from './auth/google.js';
@@ -147,7 +147,7 @@ ${invites
 </ul>`;
 
   // **ログイン済みとして組む**（`src/my-works.ts` と同じ扱い。2.3.7 / #331）。
-  return `${siteHead({ title: '招待を発行する', viewer: VIEWER_SIGNED_IN })}
+  return `${siteHead({ title: '招待を発行する', viewer: siteViewerAt(INVITES_PATH, true) })}
 <h1>招待を発行する</h1>
 ${error}
 <p>招待枠は 1 人 ${INVITE_QUOTA} 本です。残り ${remaining} 本（発行済み ${invites.length} 本）。</p>

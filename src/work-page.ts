@@ -113,7 +113,14 @@ import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/invite-issuance.ts` も
 // そこから取っている）。同じ関数をこのモジュールで作り直さない。
 import {  signupPathFrom } from './signup.js';
-import { escapeHtml, siteHead } from './html.js';
+import type { SiteViewer } from './html.js';
+import {
+  VIEWER_SIGNED_IN,
+  VIEWER_SIGNED_OUT,
+  escapeHtml,
+  resolveSiteViewer,
+  siteHead,
+} from './html.js';
 
 /**
  * 作品ページの接頭辞とパスの組み立て。
@@ -643,9 +650,10 @@ export interface WorkPageView {
  * 固定の文字列か、正規表現で形を確かめた URL である。
  *
  * @param view 表示に必要な値
+ * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns HTML
  */
-export function renderWorkPage(view: WorkPageView): string {
+export function renderWorkPage(view: WorkPageView, viewer: SiteViewer): string {
   // 生成中のあいだだけ自動更新する。完成・失敗の画面で再読み込みを続ける理由が無い
   // （D1 の読み取りが増えるだけで、表示は変わらない）。
   // **推敲中も更新する。** 5.7 の「押したら作り直しが始まり、完成したら差し替わる」は、
@@ -673,6 +681,7 @@ export function renderWorkPage(view: WorkPageView): string {
     noindex: !view.published,
     beforeTitle: refresh,
     extraHead: ogpMeta(view),
+    viewer,
   })}
 <h1>${escapeHtml(workNameOf(view))}</h1>
 ${sectionFor(view)}
@@ -1657,11 +1666,15 @@ ${daily}${form}`;
  * 404 を返す。分けると、任意の id が存在するかを外から確かめられる手がかりになる
  * （`src/session-user.ts` が失敗の理由を返さないのと同じ考え方）。
  *
+ * **ヘッダは出す。** 404 は行き止まりなので、**ここから出る道が要る**（2.3.7）——
+ * ここは共有された URL を踏んだ人が着く 1 枚でもある。
+ *
+ * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns レスポンス
  */
-function notFound(): Response {
+function notFound(viewer: SiteViewer): Response {
   return html(
-    `${siteHead({ title: '作品が見つかりません - Game Forge', noindex: true })}
+    `${siteHead({ title: '作品が見つかりません - Game Forge', noindex: true, viewer })}
 <h1>作品が見つかりません</h1>
 <p>URL が正しいかご確認ください。</p>
 ${siteFooter()}`,
@@ -1728,7 +1741,9 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   const pathname = url.pathname;
   const gameId = pathname.slice(WORK_PAGE_PREFIX.length);
   if (!GAME_ID_PATTERN.test(gameId)) {
-    return notFound();
+    // **404 でもヘッダは出す**（{@link notFound}）。`resolveSiteViewer` は署名だけを見る
+    // ので、**この経路で D1 は 1 行も読まない**（`resolveSessionUser` を前へ出すと読む）。
+    return notFound(await resolveSiteViewer(request, env));
   }
 
   // **1 回の問い合わせで引く。** 作者名も親作品も、ロード中画面（3.4-5）が
@@ -1757,7 +1772,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
     .bind(gameId)
     .first<WorkRow>();
   if (row === null) {
-    return notFound();
+    return notFound(await resolveSiteViewer(request, env));
   }
 
   // **セッションは「本人か」を見るためだけに引く。** 未ログインでも 401 にしない
@@ -1851,7 +1866,8 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       : false;
 
   return html(
-    renderWorkPage({
+    renderWorkPage(
+      {
       state,
       owner,
       // **作者にだけ渡す。** 未ログインや他人には空配列を渡し、画面側で
@@ -1981,7 +1997,12 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // 「押せるが状態が読めない」という組み合わせは現れない。
       likableId: pressable && likeViewer !== null && !likeViewer.liked ? gameId : null,
       unlikableId: pressable && likeViewer !== null && likeViewer.liked ? gameId : null,
-    }),
+    },
+    // **ヘッダの出し分けには、既に引いてあるセッションを使う**（2.3.7 / #331）。
+    // **`owner` ではない**——他人の作品を見ているログイン済みの利用者にも、自分の作品と
+    // 登録情報への導線が要る。**署名を 2 度検証しない**（`resolveSessionUser` が正本）。
+    session.ok ? VIEWER_SIGNED_IN : VIEWER_SIGNED_OUT,
+    ),
   );
 }
 

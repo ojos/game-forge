@@ -35,7 +35,8 @@
  */
 import type { PublicWork, PublicWorkSort } from './games.js';
 import { listPublishedGames, toPublicWorkSort } from './games.js';
-import { siteHead } from './html.js';
+import type { SiteViewer } from './html.js';
+import { resolveSiteViewer, siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import { cachedRows, listCacheKey } from './list-cache.js';
 import { GENERATE_PAGE_PATH } from './paths.js';
@@ -185,9 +186,10 @@ function renderPager(view: WorksListView): string {
  * 作品ページの下書き表示とは性質が違う。
  *
  * @param view 表示に必要な値
+ * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns HTML
  */
-export function renderWorksListPage(view: WorksListView): string {
+export function renderWorksListPage(view: WorksListView, viewer: SiteViewer): string {
   const cards = renderWorkCards(view.works);
   const body =
     cards === ''
@@ -197,6 +199,7 @@ export function renderWorksListPage(view: WorksListView): string {
 
   return `${siteHead({
     title: '作品をさがす - Game Forge',
+    viewer,
     extraHead:
       '\n<meta name="description" content="Game Forge で公開されているブラウザ2Dゲームの一覧。新着順・改造された数の順・いいねの数の順に並べ替えられます。">',
   })}
@@ -234,12 +237,18 @@ async function showWorksList(request: Request, env: Env): Promise<Response> {
   );
 
   return html(
-    renderWorksListPage({
-      works: fetched.slice(0, WORKS_PER_PAGE),
-      sort,
-      page,
-      hasNext: fetched.length > WORKS_PER_PAGE && page < MAX_PAGE,
-    }),
+    renderWorksListPage(
+      {
+        works: fetched.slice(0, WORKS_PER_PAGE),
+        sort,
+        page,
+        hasNext: fetched.length > WORKS_PER_PAGE && page < MAX_PAGE,
+      },
+      // **ヘッダだけが出し分かる**（2.3.7 / #331）。**鍵に混ぜない**——上のキャッシュに
+      // 載るのは D1 から引いた行だけで、HTML はこのリクエストの状態で毎回組む
+      // （2.3.3 の条件 3）。
+      await resolveSiteViewer(request, env),
+    ),
   );
 }
 

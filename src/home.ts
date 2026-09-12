@@ -42,7 +42,8 @@
  * MVP の画面は SSR の素の HTML に留める（9.3 / #89 の scope.out）。Next.js / React へ
  * 寄せる判断は M2-1 以降が持ち、ここで先取りすると捨てる量が増える。
  */
-import { siteHead } from './html.js';
+import type { SiteViewer } from './html.js';
+import { resolveSiteViewer, siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
@@ -144,11 +145,13 @@ ${renderWorkCards(section.works)}${more}
  * ——**位置を変えただけで、書いてあることは変えていない。**
  *
  * @param sections 並べる節（空の節は既に落としてある。`src/home-feed.ts`）
+ * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns HTML
  */
-function renderHomePage(sections: readonly HomeSection[]): string {
+function renderHomePage(sections: readonly HomeSection[], viewer: SiteViewer): string {
   return `${siteHead({
     title: 'Game Forge',
+    viewer,
     extraHead:
       '\n<meta name="description" content="プロンプト1行で生まれるブラウザ2Dゲームと、フォーク型 UGC コミュニティ。招待制クローズドβ。">',
   })}
@@ -227,15 +230,19 @@ async function homeFeed(env: Env): Promise<HomeFeedData> {
  *
  * **キャッシュが無くても、D1 が空でも、D1 が落ちていても 200 を返す**（{@link homeFeed}）。
  *
- * @param _request 受信したリクエスト（**ログイン状態を見ない。**下記）
+ * @param request 受信したリクエスト（**本文は出し分けない。**下記）
  * @param env バインディングと環境変数
  * @returns レスポンス
  */
-async function showHome(_request: Request, env: Env): Promise<Response> {
-  // **ログイン状態で出し分けない。** 全員に同じものが出るカタログである（2.3.3）。
-  // ヘッダの出し分け（2.3.7 / M9-5）はここではなく `src/html.ts` の仕事で、
-  // **キャッシュに載るのはこの下で引く行だけ**である（`src/list-cache.ts`）。
-  return html(renderHomePage(homeSections(await homeFeed(env))));
+async function showHome(request: Request, env: Env): Promise<Response> {
+  // **本文はログイン状態で出し分けない。** 全員に同じものが出るカタログである（2.3.3）。
+  // **出し分かれるのはヘッダだけ**で、判定と描画は `src/html.ts` が持つ（2.3.7 / #331）。
+  // ここがするのは**そのリクエストの状態を外枠へ渡すこと**だけである。
+  //
+  // **キャッシュに載るのはこの下で引く行だけ**である（`src/list-cache.ts`）——
+  // ヘッダが出し分かる以上、HTML を共有キャッシュへ載せてはいけない（2.3.3 の条件 3）。
+  const viewer = await resolveSiteViewer(request, env);
+  return html(renderHomePage(homeSections(await homeFeed(env)), viewer));
 }
 
 /**

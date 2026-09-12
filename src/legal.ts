@@ -18,7 +18,14 @@
  */
 import type { Route } from './routes.js';
 import { html } from './routes.js';
-import { escapeHtml, siteHead } from './html.js';
+import type { NavItem, SiteViewer } from './html.js';
+import {
+  FOOTER_SERVICE_ITEMS,
+  escapeHtml,
+  footerSection,
+  resolveSiteViewer,
+  siteHead,
+} from './html.js';
 import { MAX_BODY_LENGTH, MAX_CLAIMANT_LENGTH } from './takedown.js';
 
 /** 利用規約のパス。 */
@@ -42,9 +49,37 @@ export const TAKEDOWN_FIELDS = {
 } as const;
 
 /**
- * 全ページ共通のフッター（#41 の acceptance 2）。
+ * フッタの法務の区画（2.3.7）。
+ *
+ * **この 2 つだけである。** 規約と削除申請は実在し、削除申請は #41 の acceptance 2 が
+ * 「全ページのフッターから到達できる」ことを求めている唯一の窓口である。
+ */
+const FOOTER_LEGAL_ITEMS: readonly NavItem[] = [
+  { path: TERMS_PATH, label: '利用規約' },
+  { path: TAKEDOWN_PATH, label: '権利者の方へ（削除申請）' },
+];
+
+/**
+ * 全ページ共通のフッター（#41 の acceptance 2。#331 で 2 区画にした）。
  *
  * **各ページで組み立てない。** 1 か所に置き、全画面がこれを呼ぶ。
+ *
+ * ## 区画は 2 つだけである（2.3.7）
+ *
+ * 会社情報・SNS・お問い合わせは**区画ごと置かない**（行き先が実在しない）。
+ * 判断の正本は仕様 2.3.7 で、ここはその写しである。
+ *
+ * ## ログイン状態で出し分けない
+ *
+ * **フッタに本人だけの画面を置いていない**ので、ここは誰に対しても同じものになる
+ * （出し分けはヘッダだけが持つ。`src/html.ts` の `siteHeader`）。引数を取らない形を
+ * 保てば、**POST の結果を返す画面も同じフッタに乗る。**
+ *
+ * ## 「トップへ」を持たない
+ *
+ * **ヘッダのロゴが `/` を指しており、それが全画面に出る**（`src/html.ts`）。#331 まで
+ * フッタが持っていたのは、ヘッダがサービス名 1 行だけだった時期の名残である。
+ * 同じ行き先への導線を 1 画面に 2 つ置かない。
  *
  * @returns HTML
  */
@@ -52,9 +87,10 @@ export function siteFooter(): string {
   return `
 <hr>
 <footer class="gf-footer">
-  <p><a href="/">トップへ</a>
-   ・<a href="${TERMS_PATH}">利用規約</a>
-   ・<a href="${TAKEDOWN_PATH}">権利者の方へ（削除申請）</a></p>
+  <nav class="gf-footer-nav" aria-label="フッタの行き先">
+${footerSection('サービス', FOOTER_SERVICE_ITEMS)}
+${footerSection('法務', FOOTER_LEGAL_ITEMS)}
+  </nav>
 </footer>`;
 }
 
@@ -74,8 +110,7 @@ const DRAFT_NOTICE = `<p class="gf-draft-notice"><strong>この規約はクロ�
  * 「これは仕様に紐づいた条項か、一般的な雛形か」を見分けられるようにするため
  * （冒頭の但し書き）。
  */
-const TERMS_HTML = `${siteHead({ title: '利用規約 - Game Forge' })}
-<h1>利用規約</h1>
+const TERMS_BODY = `<h1>利用規約</h1>
 ${DRAFT_NOTICE}
 
 <h2>1. 適用</h2>
@@ -137,9 +172,23 @@ ${DRAFT_NOTICE}
 
 <h2>10. 準拠法および管轄</h2>
 <p>本規約は日本法に準拠します。本サービスに関して紛争が生じた場合、
-   運営者の所在地を管轄する裁判所を第一審の専属的合意管轄裁判所とします。</p>
+   運営者の所在地を管轄する裁判所を第一審の専属的合意管轄裁判所とします。</p>`;
+
+/**
+ * 利用規約の画面を組み立てる。
+ *
+ * **本文（{@link TERMS_BODY}）は定数のままにする。** 変わるのは外枠だけで、規約の
+ * 文面はログイン状態に依存しない。
+ *
+ * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
+ * @returns HTML
+ */
+function termsPage(viewer: SiteViewer): string {
+  return `${siteHead({ title: '利用規約 - Game Forge', viewer })}
+${TERMS_BODY}
 ${siteFooter()}
 `;
+}
 
 /**
  * 削除申請フォーム（8.4 / #41 の acceptance 2）。
@@ -149,12 +198,13 @@ ${siteFooter()}
  * **JavaScript を要求しない**（素の `<form>`。`src/publish.ts` と同じ形）。
  *
  * @param error 直前の申請が断られた理由（無ければ null）
+ * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns HTML
  */
-function takedownPage(error: string | null): string {
+function takedownPage(error: string | null, viewer: SiteViewer): string {
   const message =
     error === null ? '' : `<p class="error" role="alert">${escapeHtml(error)}</p>`;
-  return `${siteHead({ title: '削除申請 - Game Forge' })}
+  return `${siteHead({ title: '削除申請 - Game Forge', viewer })}
 <h1>権利者の方へ（削除申請）</h1>
 ${message}
 <p>本サービス上の作品が、あなたの権利を侵害していると思われる場合、
@@ -191,14 +241,21 @@ ${siteFooter()}
 `;
 }
 
-/** 受け付けたあとの画面。 */
-const TAKEDOWN_THANKS_HTML = `${siteHead({ title: '削除申請を受け付けました - Game Forge' })}
+/**
+ * 受け付けたあとの画面。
+ *
+ * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
+ * @returns HTML
+ */
+function takedownThanksPage(viewer: SiteViewer): string {
+  return `${siteHead({ title: '削除申請を受け付けました - Game Forge', viewer })}
 <h1>削除申請を受け付けました</h1>
 <p>ご連絡ありがとうございます。内容を確認し、記録したうえで対応します。</p>
 <p><strong>確認には数日いただくことがあります。</strong>
    緊急を要する場合は、その旨を追記のうえ再度お送りください。</p>
 ${siteFooter()}
 `;
+}
 
 /**
  * 規約と削除申請の経路。
@@ -207,17 +264,31 @@ ${siteFooter()}
  * このモジュールは画面（GET）だけを持ち、**D1 に触らない。**
  */
 export const legalRoutes: readonly Route[] = [
-  { method: 'GET', path: TERMS_PATH, handler: () => html(TERMS_HTML) },
+  {
+    method: 'GET',
+    path: TERMS_PATH,
+    handler: async (request, env) => html(termsPage(await resolveSiteViewer(request, env))),
+  },
   {
     method: 'GET',
     path: TAKEDOWN_PATH,
-    handler: (request) => {
+    handler: async (request, env) => {
       // 断られたときは `?reason=` で戻ってくる（POST-redirect-GET）。
       const reason = new URL(request.url).searchParams.get('reason');
-      return html(takedownPage(reason === null ? null : takedownMessageOf(reason)));
+      return html(
+        takedownPage(
+          reason === null ? null : takedownMessageOf(reason),
+          await resolveSiteViewer(request, env),
+        ),
+      );
     },
   },
-  { method: 'GET', path: TAKEDOWN_THANKS_PATH, handler: () => html(TAKEDOWN_THANKS_HTML) },
+  {
+    method: 'GET',
+    path: TAKEDOWN_THANKS_PATH,
+    handler: async (request, env) =>
+      html(takedownThanksPage(await resolveSiteViewer(request, env))),
+  },
 ];
 
 /**

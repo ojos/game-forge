@@ -111,7 +111,8 @@
  */
 import type { PublicWork } from './games.js';
 import { PUBLISHED_STATUS } from './games.js';
-import { escapeHtml, siteHead } from './html.js';
+import type { SiteViewer } from './html.js';
+import { escapeHtml, resolveSiteViewer, siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import { cachedRows, listCacheKey } from './list-cache.js';
 import { reviewVisibleSql } from './reports.js';
@@ -337,9 +338,10 @@ function renderPager(view: AuthorPageView): string {
  * だけで、**UGC を属性値へ入れる場所が 1 か所増える。** 増やす利得が無い。
  *
  * @param view 表示に必要な値
+ * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns HTML
  */
-export function renderAuthorPage(view: AuthorPageView): string {
+export function renderAuthorPage(view: AuthorPageView, viewer: SiteViewer): string {
   const name = escapeHtml(view.displayName);
   const cards = renderWorkCards(view.works);
   // **空のときに「この作者の作品」の見出しだけを残さない**（`src/home.ts` の規律。
@@ -348,6 +350,7 @@ export function renderAuthorPage(view: AuthorPageView): string {
 
   return `${siteHead({
     title: `${view.displayName} の作品 - Game Forge`,
+    viewer,
     extraHead:
       '\n<meta name="description" content="Game Forge の作者ページ。この作者が公開したブラウザ2Dゲームが並びます。">',
   })}
@@ -365,11 +368,14 @@ ${siteFooter()}`;
  * **404 の本文で理由を分けない。** 「そんな利用者は居ない」と「id の綴りが長すぎる」を
  * 区別して返す理由が無く、区別すると id の総当たりに手掛かりを渡す。
  *
+ * **ヘッダは出す。** 404 は行き止まりなので、**ここから出る道が要る**（2.3.7）。
+ *
+ * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns レスポンス
  */
-function notFound(): Response {
+function notFound(viewer: SiteViewer): Response {
   return html(
-    `${siteHead({ title: '作者が見つかりません - Game Forge', noindex: true })}
+    `${siteHead({ title: '作者が見つかりません - Game Forge', noindex: true, viewer })}
 <h1>作者が見つかりません</h1>
 <p>URL が正しいかご確認ください。</p>
 <p><a href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>
@@ -434,16 +440,21 @@ export function userIdFromPath(pathname: string): string | null {
  */
 async function showAuthorPage(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
+  // **ヘッダの出し分けだけを先に決める**（2.3.7 / #331）。**本文はログイン状態で
+  // 変わらない**——作者ページは誰にでも同じものが出る（`src/home.ts` と同じ扱い）。
+  // **D1 は読まない**（`resolveSiteViewer` は署名だけを見る）ので、404 の経路でも 1 行も
+  // 増えない。
+  const viewer = await resolveSiteViewer(request, env);
   const userId = userIdFromPath(url.pathname);
   if (userId === null) {
-    return notFound();
+    return notFound(viewer);
   }
 
   const user = await env.DB.prepare('select display_name from users where id = ?')
     .bind(userId)
     .first<{ display_name: string | null }>();
   if (user === null) {
-    return notFound();
+    return notFound(viewer);
   }
 
   const page = toPageNumber(url.searchParams.get('page'));
@@ -495,20 +506,23 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
   // 空の表示名で、見出しは既定値・カードは空文字のリンクになっていた）。
   const name = displayNameOf(user.display_name);
   return html(
-    renderAuthorPage({
-      displayName: name ?? UNKNOWN_AUTHOR_HEADING,
-      userId,
-      // **カードの名前を毎回差し替える**（{@link AuthorWorksData}）。並ぶのは 1 人の
-      // 作者の作品だけなので、全件に同じ名前を入れてよい。
-      //
-      // **引けなければ null を渡す。** カードは自分の既定値（`UNKNOWN_AUTHOR`）へ倒し、
-      // **リンクにもしない**（`src/work-card.ts` の `cardAuthorId` が `authorName` が
-      // null の行をリンクにしない）。空文字がリンクになる形を作らない。
-      works: works.slice(0, WORKS_PER_PAGE).map((work) => ({ ...work, authorName: name })),
-      likesReceived: data.likesReceived ?? 0,
-      page,
-      hasNext: works.length > WORKS_PER_PAGE && page < MAX_PAGE,
-    }),
+    renderAuthorPage(
+      {
+        displayName: name ?? UNKNOWN_AUTHOR_HEADING,
+        userId,
+        // **カードの名前を毎回差し替える**（{@link AuthorWorksData}）。並ぶのは 1 人の
+        // 作者の作品だけなので、全件に同じ名前を入れてよい。
+        //
+        // **引けなければ null を渡す。** カードは自分の既定値（`UNKNOWN_AUTHOR`）へ倒し、
+        // **リンクにもしない**（`src/work-card.ts` の `cardAuthorId` が `authorName` が
+        // null の行をリンクにしない）。空文字がリンクになる形を作らない。
+        works: works.slice(0, WORKS_PER_PAGE).map((work) => ({ ...work, authorName: name })),
+        likesReceived: data.likesReceived ?? 0,
+        page,
+        hasNext: works.length > WORKS_PER_PAGE && page < MAX_PAGE,
+      },
+      viewer,
+    ),
   );
 }
 

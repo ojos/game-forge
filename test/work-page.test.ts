@@ -1026,6 +1026,9 @@ const baseView: WorkPageView = {
   revisionError: null,
   revisions: [],
   recapturableId: null,
+  // 改名の口（5.4 / #366）。**既定は出さない**（作者にだけ出る。
+  // 出し分けそのものは `test/title-rename.test.ts` が見る）。
+  renamableId: null,
   removableId: null,
   likeCount: 0,
   likableId: null,

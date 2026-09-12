@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# report-queue.sh — 審査待ちの作品を、本番の台帳から読む（8.4 / #40）
+# report-queue.sh — 運営が見るべき作品を、本番の台帳から読む（8.4 / #40 / #366）
 #
 # ## なぜスクリプトなのか
 #
@@ -17,12 +17,28 @@
 #   bash scripts/report-queue.sh --remote --format json
 #
 # 終了コード:
-#   0 = REPORT_QUEUE_EMPTY（審査待ちは無い）
+#   0 = REPORT_QUEUE_EMPTY（見るべき作品は無い）
 #   1 = REPORT_QUEUE_FOUND（有る。一覧を出す）
 #   2 = 前提の不成立（未認証・道具が無い・応答の形が違う）
 #
 # **1 と 2 を分ける。** 「審査待ちが有った」と「調べられなかった」は別である
 # （`scripts/ogp-stale-report.sh` と同じ線）。
+#
+# ── 出すのは 2 種類である（#366 で 1 つ増えた）────────────────────────────────
+#
+#   1. `queued` … 通報が閾値に達した作品（8.4 / #40）
+#   2. **`cleared` かつ、最後の改名より後に通報が付いた作品**（#366）
+#
+# **2 が要るのは、改名が `cleared` の終端をすり抜ける経路を開けるからである。**
+# 「穏当な題名で公開 → 通報 → 審査で `cleared` → 改名」が成立し、`cleared` に付いた
+# 通報はどの画面にも出ない。改名そのものは `review_state` を NULL へ戻すが、
+# **戻す前に付いていた通報**と**閾値に届かない通報**は `cleared` のまま残る。
+#
+# **条件は書き写さない。** 正本は `src/reports.ts` の `REVIEW_RENAMED_SQL` で、この
+# スクリプトはそれを**ソースから取り出して**差し込む。書き写すと、片方だけが古くなった
+# ときに**見るべき作品が有るのに 0 件と報告する**——いちばん気づけない壊れ方である
+# （`REVIEW_QUEUED` の綴りを取り出しているのと同じ規律）。**後続の admin 画面（#367）も
+# 同じ定数を借りる。**
 #
 # ── 進めるのはこのスクリプトの仕事ではない ──────────────────────────────────
 #
@@ -104,6 +120,35 @@ if [[ -z "$QUEUED" ]]; then
   exit 2
 fi
 
+# **改名で `cleared` をすり抜けた作品の条件も、同じ正本から取り出す**（冒頭の 2）。
+#
+# 正本は 1 行の二重引用符つき文字列リテラルである（`src/reports.ts` の
+# `REVIEW_RENAMED_SQL`。**シェルから取り出せる形にするために**テンプレートリテラルに
+# していない）。宣言の次に現れる `"…"` の中身を取る。
+#
+# **awk で取る。** `sed` でも書けるが、宣言の行と値の行が分かれている（1 行が長い）ので、
+# 状態を持てる awk のほうが素直である。**GNU 拡張は使わない**（利用者の端末は macOS。
+# docs/handoff.md 3 章）。
+RENAMED="$(awk '
+  /^export const REVIEW_RENAMED_SQL/ { found = 1 }
+  found && /"/ {
+    line = $0
+    sub(/^[^"]*"/, "", line)
+    sub(/";?[[:space:]]*$/, "", line)
+    print line
+    exit
+  }
+' "$REPORTS_TS")"
+if [[ -z "$RENAMED" ]]; then
+  echo "[queue] ${REPORTS_TS} から REVIEW_RENAMED_SQL を取り出せません。" >&2
+  echo "[queue] 綴りが変わったなら、このスクリプトの awk も直してください。" >&2
+  exit 2
+fi
+
+# **2 つの条件の和が、運営が見るべき作品である**（`src/reports.ts` の
+# `reviewAttentionSql` と同じ形）。**別名は `g` に固定**されている（あちらの但し書き）。
+ATTENTION="(g.review_state = '${QUEUED}' or ${RENAMED})"
+
 ##
 # 読み取りだけを送る。**select で始まらない文は送らない。**
 #
@@ -160,13 +205,22 @@ send_query() {
 }
 
 # **題名も理由も引かない**（冒頭の但し書き）。
-ROWS="$(send_query "select g.id as game_id, g.status,
+#
+# **`review_state` は引く。** 綴りは固定語彙（`src/reports.ts`）であって UGC ではなく、
+# **どちらの理由で出ているか**（審査待ちか、改名で戻ってきたか）が分からないと、
+# 運営が最初にすることが変わる。
+#
+# **`title_changes` も引かない。** 最後の改名の**時刻**は出すが（`last_rename`）、
+# 旧題名も新題名も出さない——どちらも UGC である（`migrations/0027_title_changes.sql`）。
+ROWS="$(send_query "select g.id as game_id, g.status, g.review_state,
                            count(distinct r.reporter_id) as reporters,
                            min(r.created_at) as first_report,
-                           max(r.created_at) as last_report
+                           max(r.created_at) as last_report,
+                           (select max(c.changed_at) from title_changes c
+                             where c.game_id = g.id) as last_rename
                       from games g join reports r on r.game_id = g.id
-                     where g.review_state = '${QUEUED}'
-                     group by g.id, g.status
+                     where ${ATTENTION}
+                     group by g.id, g.status, g.review_state
                      order by last_report desc")" || exit 2
 
 if [[ -z "$ROWS" || "$ROWS" == "null" ]]; then
@@ -177,15 +231,21 @@ fi
 COUNT="$(jq 'length' <<<"$ROWS")"
 
 if [[ "$FORMAT" == "json" ]]; then
+  # **`reviewState` は残す**（既存の読み手のため。審査待ちの綴りである）。行ごとの
+  # `review_state` が、その行がどちらの理由で出ているかを持つ。
   jq --arg state "$QUEUED" '{ reviewState: $state, count: length, rows: . }' <<<"$ROWS"
 else
   echo "[queue] 対象: ${SCOPE}${PERSIST_TO:+（--persist-to ${PERSIST_TO}）}"
   echo "[queue] 審査待ちの綴り: ${QUEUED}（src/reports.ts の REVIEW_QUEUED）"
+  echo "[queue] 改名でキューへ戻った作品も出します（src/reports.ts の REVIEW_RENAMED_SQL）"
   if [[ "$COUNT" -gt 0 ]]; then
-    printf '%-38s %-10s %10s %12s\n' "game_id" "status" "通報者" "最終通報"
-    jq -r '.[] | [ .game_id, .status, .reporters, .last_report ] | @tsv' <<<"$ROWS" \
-      | while IFS=$'\t' read -r id status reporters last; do
-          printf '%-38s %-10s %10s %12s\n' "$id" "$status" "$reporters" "$last"
+    printf '%-38s %-10s %-8s %6s %12s %12s\n' \
+      "game_id" "status" "審査" "通報者" "最終通報" "最終改名"
+    jq -r '.[] | [ .game_id, .status, .review_state, .reporters, .last_report,
+                   (.last_rename // "-") ] | @tsv' <<<"$ROWS" \
+      | while IFS=$'\t' read -r id status review reporters last rename; do
+          printf '%-38s %-10s %-8s %6s %12s %12s\n' \
+            "$id" "$status" "$review" "$reporters" "$last" "$rename"
         done
     echo
     echo "[queue] 中身は作品ページで見てください（題名も理由もここには出しません）。"

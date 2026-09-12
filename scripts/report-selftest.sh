@@ -31,7 +31,7 @@
 #    8. KPI の集計が、既知の行に対して期待どおりに出ること（#42）
 #    9. マイグレーションの関門が、未適用を実際に見つけること（#275）
 #   10. 撤退条件の判定手順が、実際に使える形であること（#44）
-#   11. 審査キューの読み出しが、既知の行に対して正しいこと（#40）
+#   11. 審査キューの読み出しが、既知の行に対して正しいこと（#40 / #366）
 #   12. 削除申請の読み出しと、手順書の整合（#41）
 #
 # **この一覧は下の節見出しの写しである。** 節を足したらここへも足すこと——足し忘れると、
@@ -841,8 +841,8 @@ else
 fi
 
 
-# ── 11. 審査キューの読み出しが、既知の行に対して正しいこと（#40）──────────────
-echo "[selftest] 審査キューの読み出し（#40）"
+# ── 11. 審査キューの読み出しが、既知の行に対して正しいこと（#40 / #366）──────
+echo "[selftest] 審査キューの読み出し（#40 / #366）"
 
 QUEUE_SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/queue-selftest.XXXXXX")" || exit 1
 trap 'rm -rf "$SANDBOX" "$KPI_SANDBOX" "$MIG_SANDBOX" "$QUEUE_SANDBOX"' EXIT
@@ -853,6 +853,11 @@ if ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
   failed=1
 else
   # 審査待ち 1 件（qg1）、通報はあるが cleared（qg3）、通報なし（qg2）。
+  #
+  # **#366 で 2 件増やした。** qg4 は `cleared` のあと改名され、**その改名より後に**
+  # 通報が付いた作品（出る）。qg5 は改名されているが、通報は**改名より前**にしか
+  # 無い作品（出ない）。**この 2 件が対になっていないと、条件を
+  # 「`cleared` かつ改名がある」まで緩めても緑のままになる。**
   CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
     npx wrangler d1 execute DB --local --persist-to "$QUEUE_SANDBOX" --command "
   insert into users (id, google_sub, email, display_name, created_at) values
@@ -860,17 +865,42 @@ else
   insert into games (id, author_id, status, title, go_version, created_at, review_state) values
     ('qg1','qa','published','t1','1.23',0,'queued'),
     ('qg2','qa','published','t2','1.23',0,null),
-    ('qg3','qa','published','t3','1.23',0,'cleared');
+    ('qg3','qa','published','t3','1.23',0,'cleared'),
+    ('qg4','qa','published','t4','1.23',0,'cleared'),
+    ('qg5','qa','published','t5','1.23',0,'cleared');
   insert into reports (id, game_id, reporter_id, reason, created_at) values
-    ('r1','qg1','qb','ひどい',100), ('r2','qg3','qb','',50);
+    ('r1','qg1','qb','ひどい',100), ('r2','qg3','qb','',50),
+    ('r4','qg4','qb','改名後の通報',300), ('r5','qg5','qb','改名前の通報',10);
+  insert into title_changes (id, game_id, old_title, new_title, changed_at) values
+    ('c4','qg4','t4-old','t4',200),
+    ('c5','qg5','t5-old','t5',400);
   " >/dev/null 2>&1 || { echo "  FAIL キュー用の既知の行を入れられません" >&2; failed=1; }
 
   queue_json="$(bash scripts/report-queue.sh --persist-to "$QUEUE_SANDBOX" --format json 2>/dev/null)"
   queue_code=$?
-  expect_eq "審査待ちが有れば 1 で落ちる" "1" "$queue_code"
-  expect_eq "審査待ちは 1 件"            "1" "$(jq -r '.count' <<<"$queue_json")"
-  expect_eq "出るのは queued の作品だけ" "qg1" "$(jq -r '.rows[0].game_id' <<<"$queue_json")"
-  expect_eq "通報者の数が出る"           "1" "$(jq -r '.rows[0].reporters' <<<"$queue_json")"
+  expect_eq "見るべき作品が有れば 1 で落ちる" "1" "$queue_code"
+  expect_eq "出るのは 2 件"                   "2" "$(jq -r '.count' <<<"$queue_json")"
+  # 並びは最終通報の降順なので、改名後に通報が付いた qg4（300）が先で qg1（100）が後。
+  expect_eq "改名後に通報が付いた cleared が出る" \
+    "qg4" "$(jq -r '.rows[0].game_id' <<<"$queue_json")"
+  expect_eq "その行は cleared として出る" \
+    "cleared" "$(jq -r '.rows[0].review_state' <<<"$queue_json")"
+  expect_eq "最後の改名の時刻が出る"      "200" "$(jq -r '.rows[0].last_rename' <<<"$queue_json")"
+  expect_eq "審査待ちも出る"              "qg1" "$(jq -r '.rows[1].game_id' <<<"$queue_json")"
+  expect_eq "通報者の数が出る"            "1" "$(jq -r '.rows[1].reporters' <<<"$queue_json")"
+  # **出てはいけないものを名指しで見る。** 件数だけでは、別の行が紛れても気づけない。
+  expect_eq "改名していない cleared は出ない" \
+    "" "$(jq -r '.rows[] | select(.game_id == "qg3") | .game_id' <<<"$queue_json")"
+  expect_eq "通報が改名より前の cleared は出ない" \
+    "" "$(jq -r '.rows[] | select(.game_id == "qg5") | .game_id' <<<"$queue_json")"
+
+  # **旧題名も新題名も持ち出さないこと**（0027 のとおり UGC である）。
+  if jq -e '.rows[0] | has("old_title") or has("new_title")' <<<"$queue_json" >/dev/null 2>&1; then
+    echo "  FAIL 改名の題名が出力に載っています（UGC を持ち出さない）" >&2
+    failed=1
+  else
+    echo "  ok   改名の題名は出力に載らない"
+  fi
 
   # **題名も理由も持ち出さないこと**（8.2 / 8.3）。運用が最初に要るのは「どれを見るか」
   # だけで、中身は作品ページに権限の判定がある。
@@ -881,12 +911,13 @@ else
     echo "  ok   題名も理由も出力に載らない"
   fi
 
-  # 空にすると 0 で通る。
+  # 空にすると 0 で通る。**両方の理由を消す**（#366 で 2 種類になったので、片方を
+  # 消しただけでは 0 にならない）。
   CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
     npx wrangler d1 execute DB --local --persist-to "$QUEUE_SANDBOX" \
-    --command "update games set review_state = null where id = 'qg1'" >/dev/null 2>&1
+    --command "update games set review_state = null where id in ('qg1','qg4')" >/dev/null 2>&1
   run_bounded 60 bash scripts/report-queue.sh --persist-to "$QUEUE_SANDBOX"
-  expect_eq "審査待ちが無ければ 0 で通る" "0" "$?"
+  expect_eq "見るべき作品が無ければ 0 で通る" "0" "$?"
 fi
 
 # **綴りを書き写していないこと。** src/reports.ts から取り出しているか本文で見る。
@@ -894,6 +925,26 @@ if grep -q 'REVIEW_QUEUED' scripts/report-queue.sh; then
   echo "  ok   審査待ちの綴りを src/reports.ts から取り出している"
 else
   echo "  FAIL 審査待ちの綴りを書き写しています" >&2
+  failed=1
+fi
+
+# **改名の条件も書き写していないこと**（#366）。**後続の admin 画面（#367）が同じ定数を
+# 借りる**ので、片方だけが古くなる形をここで止める。
+if grep -q 'REVIEW_RENAMED_SQL' scripts/report-queue.sh; then
+  echo "  ok   改名の条件を src/reports.ts から取り出している"
+else
+  echo "  FAIL 改名の条件を書き写しています（src/reports.ts の REVIEW_RENAMED_SQL を使ってください）" >&2
+  failed=1
+fi
+# **取り出せることそのものを見る。** 定数の書き方（改行位置・引用符）が変わると、
+# スクリプトは exit 2 で落ちるが、**その落ち方はこの節の外で起きうる。**
+if [[ -n "$(awk '
+  /^export const REVIEW_RENAMED_SQL/ { found = 1 }
+  found && /"/ { line = $0; sub(/^[^"]*"/, "", line); sub(/";?[[:space:]]*$/, "", line); print line; exit }
+' src/reports.ts)" ]]; then
+  echo "  ok   REVIEW_RENAMED_SQL を 1 行の文字列として取り出せる"
+else
+  echo "  FAIL REVIEW_RENAMED_SQL を取り出せません（1 行の二重引用符つき文字列にしてください）" >&2
   failed=1
 fi
 

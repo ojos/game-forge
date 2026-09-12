@@ -15,7 +15,7 @@
  *
  * ヘッダのナビとパンくず（2.3.7 / 2.3.10）は行き先の綴りを要るので、このモジュールは
  * `src/works-paths.ts` / `src/account-paths.ts` / `src/liked-works-paths.ts` /
- * `src/legal-paths.ts` / `src/paths.ts` / `src/page-paths.ts` / `src/session.ts` と
+ * `src/legal-paths.ts` / `src/news-paths.ts` / `src/paths.ts` / `src/page-paths.ts` / `src/session.ts` と
  * **`src/auth/google.ts` の `LOGIN_PATH` / `LOGOUT_PATH`** を読む。**どれもここへ戻ってこない**
  * ——`src/auth/google.ts` が辿るのは経路表・セッション・招待だけで、画面を 1 枚も
  * import しない（確かめずに足さないこと。上の循環参照はそれで生まれた）。
@@ -53,6 +53,7 @@ import { ACCOUNT_PATH } from './account-paths.js';
 import { LOGIN_PATH, LOGOUT_PATH } from './auth/google.js';
 import { TAKEDOWN_PATH } from './legal-paths.js';
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';
+import { NEWS_PATH } from './news-paths.js';
 import { ancestorPathsOf } from './page-paths.js';
 import { GENERATE_PAGE_PATH, HOME_PATH, SIGNUP_PATH } from './paths.js';
 import { readSessionCookie, verifySession } from './session.js';
@@ -365,6 +366,7 @@ export const BREADCRUMB_PARENTS: readonly NavItem[] = [
   { path: PUBLIC_WORKS_PATH, label: '作品をさがす' },
   { path: SIGNUP_PATH, label: 'Game Forge に登録する' },
   { path: TAKEDOWN_PATH, label: '削除申請' },
+  { path: NEWS_PATH, label: 'お知らせ' },
 ];
 
 /** 全画面の `<title>` の末尾に付く、サービス名の区切り。 */

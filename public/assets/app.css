@@ -68,7 +68,7 @@
  * | account | 登録情報（#341 / #362） |
  * | home | トップ（#329） |
  * | legal | 法務ページ（**予約**。#373 が使う） |
- * | news | お知らせ（**予約**。#375 が使う） |
+ * | news | お知らせ（#375） |
  * | stats | 統計カード（#382。`/works/mine`） |
  *
  * ============================================================================
@@ -1337,12 +1337,91 @@ a.gf-card-author {
  */
 
 /* ==========================================================================
-   @section news — お知らせ（予約。#375 が使う）
+   @section news — お知らせ（#375）
    ========================================================================== */
 
 /*
- * **まだ空である。** お知らせの一覧と記事（2.3.1）の見た目を、#375 がここへ書く。
+ * お知らせ（`src/news.ts`。仕様 2.3.1 / #375）。トップの節・一覧（`/news`）・記事（`/news/<id>`）。
+ *
+ * **枠も地色も付けない。** トップでは作品の節の後ろに並ぶので、ここが箱で囲まれると
+ * カードの絵より強く出る（`@section home` と同じ理由）。項目の間は細い罫線で分けるだけにする。
+ *
+ * **分類は色で塗らない。** 色を持つのは作品だけである（app.css 冒頭の方針）。
+ * 文字の濃さと細い枠で、日付と区別が付けば足りる。
  */
+.gf-news-section {
+  margin: var(--gf-gap-5) 0;
+}
+
+.gf-news-section h2 {
+  margin-bottom: 0;
+}
+
+/* 最終更新日。見出しの直下に置く補助の 1 行である。 */
+.gf-news-updated {
+  margin: var(--gf-gap-1) 0 0;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-news-list {
+  margin: var(--gf-gap-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gf-news-item {
+  padding: var(--gf-gap-3) 0;
+  border-top: 1px solid var(--gf-rule-soft);
+}
+
+.gf-news-item:last-child {
+  border-bottom: 1px solid var(--gf-rule-soft);
+}
+
+.gf-news-item p {
+  margin: var(--gf-gap-2) 0 0;
+}
+
+/* 日付と分類の 1 行。 */
+.gf-news-meta {
+  margin: 0;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-news-item .gf-news-meta {
+  margin: 0;
+}
+
+.gf-news-category {
+  display: inline-block;
+  margin-left: var(--gf-gap-2);
+  padding: 0 var(--gf-gap-2);
+  border: 1px solid var(--gf-rule);
+  border-radius: var(--gf-radius);
+}
+
+/*
+ * 項目の見出し。**トップの節の中（`h3`）でも一覧（`h2`）でも同じ大きさにする**
+ * ——階層が違うのは文書の構造の都合で、読む側にとっては同じ 1 項目である。
+ */
+.gf-news-title {
+  margin: var(--gf-gap-1) 0 0;
+  font-size: var(--gf-text);
+  overflow-wrap: anywhere;
+}
+
+.gf-news-article h1 {
+  margin-top: var(--gf-gap-2);
+  overflow-wrap: anywhere;
+}
+
+/* 一覧へ・すべて見る。本文の終わりに置く補助の導線である。 */
+.gf-news-more {
+  margin: var(--gf-gap-3) 0 0;
+  font-size: var(--gf-text-small);
+}
 
 /* ==========================================================================
    @section stats — 統計カード（#382。`/works/mine`）

@@ -85,6 +85,11 @@ cd "$(dirname "$HERE")"
 # **この行の綴りは `scripts/check-app-css.sh` が読む。** 変えるなら、あちらの
 # 読み取り（sed）も一緒に直すこと。
 WIDTHS="${GF_PAGE_WIDTHS:-390,768,1280}"
+# **空白を落として正規化する。** 観測側（`scripts/page-width-probe.mjs`）は要素ごとに
+# `trim()` するので `'390, 768, 1280'` も受け付ける。正規化せずに渡すと、**幅の検査は
+# 通っているのに、下の「頼んだ幅と返ってきた幅」の突き合わせだけが必ず落ちる**
+# （Copilot の指摘。2026-09-12）。
+WIDTHS="$(printf '%s' "$WIDTHS" | tr -d '[:space:]')"
 TIMEOUT_MS="${GF_PAGE_WIDTH_TIMEOUT_MS:-20000}"
 
 # 下ごしらえ（ブラウザの解決・使い捨ての state・仕込み・セッション・dev サーバ）は

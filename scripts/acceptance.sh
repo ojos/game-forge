@@ -73,13 +73,15 @@ bash scripts/check-table-breaks.sh
 # **並列に追記するレーンが増えるほど効く。** 規約を呼びかけだけにすると、区画は
 # 1 波で崩れる（shared-ai-rules 12 章「一覧の複製は機械照合で担保する」）。
 #
+# **マニフェストの有無で分岐させない。** `public/assets/app.css` は全 SSR 画面が参照する
+# 必須の資材であり、**無いこと自体が壊れている状態**である。分岐で飛ばすと、CSS を消した
+# 日に `scripts/verify.sh` は緑のまま、配備後の全画面が無装飾になる（`test/page-shell.test.ts`
+# が見ているのは HTML の `<link>` の文字列だけである）。**不在は検査の側が落とす**
+# （Copilot の指摘。2026-09-12）。
+#
 # ran_any は立てない（上の 2 つと同じ理由）。
-if [[ -f public/assets/app.css ]]; then
-  echo "[acceptance] (hygiene) scripts/check-app-css.sh"
-  bash scripts/check-app-css.sh
-else
-  echo "[acceptance] (hygiene) skip: public/assets/app.css not found"
-fi
+echo "[acceptance] (hygiene) scripts/check-app-css.sh"
+bash scripts/check-app-css.sh
 
 # Go の版の写しと正本（ARG GO_VERSION）の機械照合（#141 / shared-ai-rules 12 章）。
 #

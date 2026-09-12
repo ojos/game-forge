@@ -1771,6 +1771,12 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   //
   // **取り下げた作品では呼ばない。** tombstone の画面に数もボタンも出さない——
   // 押せば窓口が 404 で断る（`PRESSABLE_GAME_SQL` は `status = 'published'`）。
+  //
+  // **届かなければ null が返る**（窓口が倒す。`src/likes.ts` の「読み取りが届かなくても、
+  // 画面ごと落とさない」）。**未ログインと同じ枝に落ちる**——D1 の写しを出し、ボタンは
+  // 出さない。**これは投げるより弱い扱いだが、正しい扱いである**: 5.8 は「DO の枠が
+  // 尽きても止まるのはいいねだけである」と約束しており、**投げると、拡散の着地点が
+  // ログイン中の利用者にだけ 500 になる**（止まるのがいいねだけでなくなる）。
   const likeViewer =
     published && !removed && session.ok
       ? await readLikeViewerState(env, session.userId, gameId)

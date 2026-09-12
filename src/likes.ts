@@ -52,6 +52,24 @@
  * Service binding の RPC 入口を足してそこで数える形になる（公開の入口ではないが、
  * 呼び出しの段が 1 つ増える。`docs/likes.md`）。
  *
+ * # 読み取りが届かなくても、画面ごと落とさない（#340）
+ *
+ * **5.8 は「DO の枠が尽きても止まるのはいいねだけである」と約束している。** 読み取りの
+ * 失敗をそのまま投げると、**その約束が守れない**——作品ページは**ログイン中だけ** DO を
+ * 引く（M9-8）ので、DO へ届かない間、**拡散の着地点がログイン中の利用者にだけ 500 に
+ * なる。** 止まるのがいいねだけでなくなる。
+ *
+ * **だから読み取り（{@link readLikeViewerState} / {@link listLikedGameIds}）は、届かな
+ * かったときに `null` を返す。** 呼び出し側は D1 の `games.like_count` へ倒し、
+ * **ボタンを出さない**（押しても届かないので 4.4）。**握りつぶすが黙らない**
+ * （{@link LIKES_UNAVAILABLE_REASON}）。
+ *
+ * **書き込み（付与・取り消し）は倒さない。** あちらが投げれば 500 になるが、
+ * **押した結果が分からないまま「できました」と戻すほうが悪い。** 読み取りを倒せるのは、
+ * **倒した先に正しい表示がある**（数は D1 にあり、ボタンは出さないのが正しい）ためで
+ * ある（`src/list-cache.ts` が「この層が無くても一覧が正しく出る」を握りつぶしの唯一の
+ * 理由に挙げているのと同じ形）。
+ *
  * # CSRF について
  *
  * セッション cookie は `SameSite=Lax`（8.1 / `src/session.ts`）なので、他サイトからの
@@ -236,24 +254,94 @@ export async function changeLike(
 }
 
 /**
+ * DO へ届かなかったときにログへ出す接頭辞。
+ *
+ * **握りつぶすが、黙らない。** 何度も出るなら DO の枠（1 日 10 万リクエスト）か結線の
+ * 問題で、**それは画面の不具合ではない**（`src/list-cache.ts` が同じ形で理由を書いている）。
+ */
+export const LIKES_UNAVAILABLE_REASON = '[likes] いいねを読めませんでした';
+
+/**
+ * DO へ届かなかったことを記録する。
+ *
+ * @param what 何を読もうとしたか
+ * @param error 投げられたもの
+ */
+function logLikesUnavailable(what: string, error: unknown): void {
+  console.error(
+    `${LIKES_UNAVAILABLE_REASON}（${what}）: ${error instanceof Error ? error.message : String(error)}`,
+  );
+}
+
+/**
  * ある利用者から見た作品のいいねの状態を引く（5.8）。**読むだけで、何も書かない。**
  *
  * **ログイン中の作品ページだけが呼ぶ**（M9-8）。未ログインの閲覧では DO を呼ばず、
  * D1 の `games.like_count` を読むこと（閲覧数で DO の枠を減らさない）。
  *
+ * **読めなければ null を返す**（{@link LIKES_UNAVAILABLE_REASON}）。呼び出し側は
+ * D1 の `games.like_count` へ倒し、**ボタンを出さない**（押しても届かないので 4.4）。
+ *
  * @param env バインディングと環境変数
  * @param userId **セッションで確かめた**利用者 id
  * @param gameId 作品
- * @returns 押しているかと、数（BAN された利用者の分を除いた実数）
+ * @returns 押しているかと、数（BAN された利用者の分を除いた実数）。読めなければ null
  */
 export async function readLikeViewerState(
   env: Env,
   userId: string,
   gameId: string,
-): Promise<LikeViewerState> {
-  const state = await likeHub(env).viewerState(userId, gameId);
-  // RPC の戻り値は複製して返す（stub の型が付いたまま画面へ渡さない）。
-  return { liked: state.liked, count: state.count };
+): Promise<LikeViewerState | null> {
+  try {
+    const state = await likeHub(env).viewerState(userId, gameId);
+    // RPC の戻り値は複製して返す（stub の型が付いたまま画面へ渡さない）。
+    return { liked: state.liked, count: state.count };
+  } catch (error) {
+    logLikesUnavailable('作品ページのいいねの状態', error);
+    return null;
+  }
+}
+
+/**
+ * ある利用者が押した作品の id を、押した新しい順に引く（5.8 / M9-8 / #340）。
+ * **読むだけで、何も書かない。**
+ *
+ * **`/works/liked` だけが呼ぶ**（`src/liked-works.ts`）。本人の画面なので、DO を呼ぶことが
+ * 「未ログインの閲覧で DO の枠を減らさない」（5.8）に反しない——**未ログインでは
+ * この画面そのものがログインへ送られる。**
+ *
+ * # 返すのは id だけである
+ *
+ * **絞り込みは呼び出し側が D1 で行う。** DO は D1 の作品を知らないので、公開をやめた
+ * 作品・審査で新規露出を止めた作品もこの配列に混ざる。**id を D1 で引き直し、引く時点で
+ * 落とすこと**（#152 の規律。5.8）。**したがって、返った件数より画面に並ぶ件数が
+ * 少なくなりうる。**
+ *
+ * **読めなければ null を返す。** 空の配列と区別する——**「1 件も押していない」と
+ * 「読めなかった」を同じ値にすると、画面が「まだいいねがありません」と嘘をつく**
+ * （`src/home.ts` の「出来ていないものを出来ているように書かない」と同じ規範）。
+ *
+ * @param env バインディングと環境変数
+ * @param userId **セッションで確かめた**利用者 id
+ * @param limit 引く最大件数（0 以上 `MAX_LIKED_GAMES_PER_CALL` 以下）
+ * @param offset 読み飛ばす件数（0 以上）
+ * @returns 作品 id（押した新しい順）。読めなければ null
+ */
+export async function listLikedGameIds(
+  env: Env,
+  userId: string,
+  limit: number,
+  offset: number,
+): Promise<readonly string[] | null> {
+  try {
+    const ids = await likeHub(env).likedGames(userId, limit, offset);
+    // RPC の戻り値は複製して返す（`readLikeViewerState` と同じ理由——stub の型が付いたまま
+    // 画面へ渡さない）。
+    return [...ids];
+  } catch (error) {
+    logLikesUnavailable('いいねした作品の一覧', error);
+    return null;
+  }
 }
 
 /**

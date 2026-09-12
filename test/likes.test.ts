@@ -372,7 +372,7 @@ describe('付与・取り消し（5.8）', () => {
     for (const fan of fans) {
       await send('like', game, { userId: fan });
     }
-    expect((await readLikeViewerState(env, fans[0]!, game)).count).toBe(3);
+    expect(await readLikeViewerState(env, fans[0]!, game)).toEqual({ liked: true, count: 3 });
   });
 
   it('fetch からの呼び出しには JSON で返す', async () => {

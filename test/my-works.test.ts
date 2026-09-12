@@ -11,6 +11,7 @@ import {
   displayTitleOf,
   rowStateOf,
 } from '../src/my-works.js';
+import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { PUBLIC_WORKS_PATH } from '../src/works-list.js';
@@ -422,5 +423,29 @@ describe('壊れた行が一覧全体を落とさない（#161 レビュー指�
     expect(body).toContain(normal);
     expect(body).toContain('普通の作品');
     expect(body).not.toContain('datetime=""');
+  });
+});
+
+describe('「いいねした作品」への導線（2.3.7 / 5.8 / #340）', () => {
+  it('「あなたの作品」から `/works/liked` へ行ける', async () => {
+    const userId = await seedUser();
+    const body = await (await openList(await sessionCookie(userId))).text();
+    expect(body).toContain(`href="${LIKED_WORKS_PATH}"`);
+    expect(body).toContain('いいねした作品');
+  });
+
+  it('ヘッダには置かない（本人だけの画面が 2 枚並ぶので項目を増やさない）', async () => {
+    const userId = await seedUser();
+    const body = await (await openList(await sessionCookie(userId))).text();
+    // ヘッダは `siteHead` が出す 1 行だけである。**導線は本文に置く**（2.3.7）。
+    const header = /<header class="gf-header">[\s\S]*?<\/header>/u.exec(body);
+    expect(header, 'ヘッダが無い（検査が空振りする）').not.toBeNull();
+    expect(header![0]).not.toContain(LIKED_WORKS_PATH);
+  });
+
+  it('未ログインの応答には出さない（ログインへ送るだけである）', async () => {
+    const response = await openList();
+    expect(response.status).toBe(303);
+    expect(await response.text()).not.toContain(LIKED_WORKS_PATH);
   });
 });

@@ -80,6 +80,17 @@ export const UPDATE_LIKE_COUNT_SQL =
 /** 受け付ける id の最大の長さ。**防御の上限**であって、形の検査は呼び出し側が持つ。 */
 const MAX_ID_LENGTH = 128;
 
+/**
+ * {@link LikeHub.likedGames} が 1 回に返す作品の上限。
+ *
+ * **防御の上限である**（{@link MAX_ID_LENGTH} と同じ扱い）。1 頁の件数を決めるのは
+ * 画面の側で（`src/liked-works.ts`。仕様 5.8 は 20 件ずつと定める）、ここはその値を
+ * 知らない。**それでも上限を置く**のは、`limit` を桁違いに大きくした呼び出し 1 本で
+ * DO の単一スレッドを長く占有できないようにするためである（1 個の DO に全員のいいねが
+ * 集まっている。5.8 の B1）。
+ */
+export const MAX_LIKED_GAMES_PER_CALL = 100;
+
 /** 付与・取り消しの結果。 */
 export type LikeOperationOutcome =
   /** 付与した（状態が変わった）。 */
@@ -164,6 +175,26 @@ function assertEpochSeconds(at: unknown): number {
     throw new TypeError('時刻の形が不正です');
   }
   return at;
+}
+
+/**
+ * 件数の形を確かめる（`limit` / `offset`）。
+ *
+ * **SQLite は `LIMIT -1` を「無制限」と解釈する**（`src/games.ts` の `assertLimit` が
+ * 同じ理由で置かれている）。負の値を渡すと上限が消えるので、**0 以上の整数だけを通す。**
+ * `OFFSET` にも同じ検査が要る——SQLite は `OFFSET -1` を 0 として黙って受け入れる。
+ *
+ * @param value 受け取った値
+ * @param what ログに出す名前
+ * @param max 許す最大値
+ * @returns 値そのもの
+ * @throws 0 以上の整数でない、または `max` を超えるとき
+ */
+function assertCount(value: unknown, what: string, max: number): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > max) {
+    throw new TypeError(`${what} の形が不正です`);
+  }
+  return value;
 }
 
 /**
@@ -254,6 +285,68 @@ export class LikeHub extends DurableObject<LikesEnv> {
     assertId(userId, 'userId');
     assertId(gameId, 'gameId');
     return { liked: this.hasLiked(userId, gameId), count: this.countFor(gameId) };
+  }
+
+  /**
+   * ある利用者が押した作品を、**押した新しい順**に返す（5.8 / M9-8 / #340）。
+   *
+   * **読むだけで、何も書かない。** 日次の操作回数（{@link DAILY_OPERATION_LIMIT}）にも、
+   * 同期待ちの印（`dirty_games`）にも触れない——**回数を数えるには書き込みが要る**ので、
+   * 「読むだけ」と「数える」は両立しない（{@link DAILY_OPERATION_LIMIT} の冒頭が
+   * 冪等な操作について同じことを書いている）。
+   *
+   * # 返すのは id だけである
+   *
+   * **題名も作者名も、公開状態も返さない。** それらは D1 の `games` にあり、**この DO は
+   * D1 の作品を知らない**（知っているのは「誰がどの id を押したか」だけである）。
+   * 呼び出し側（`src/liked-works.ts`）が id を D1 で引き直し、**引く時点で
+   * 「公開をやめた作品・審査で新規露出を止めた作品」を落とす**（#152 の規律。5.8）。
+   * **したがって、ここが返した件数より画面に並ぶ件数が少なくなりうる。**
+   *
+   * # BAN された利用者の一覧を空にしない
+   *
+   * {@link LikeHub.countFor} は BAN された利用者の分を数に入れないが、**ここでは
+   * `banned_users` を見ない。** 除くのは**他人に見せる数**であって（5.8）、
+   * **本人が自分の押した作品を見る一覧**は別である。いいねの行は消さないので、
+   * BAN が解ければ数にも戻る。
+   *
+   * # 並びは `created_at` の降順である
+   *
+   * 同じ秒に複数を押した場合の順序を決めるため、末尾に `game_id` を足す
+   * （`src/games.ts` の一覧が `id desc` を末尾に置いているのと同じ理由——**同値の行の
+   * 順序が決まっていないと、頁をめくったときに同じ作品が 2 度出たり 1 度も出なかったり
+   * する**）。
+   *
+   * **索引は要らない。** `likes` の主キーが `(user_id, game_id)` なので
+   * `where user_id = ?` は主キーの前方一致で引ける。並べ替えは**その利用者の行だけ**を
+   * 対象にした並べ替えで、1 人が押せるのは 1 日 100 件までである。
+   *
+   * @param userId 見ている利用者（**呼び出し側がセッションで確かめた id**）
+   * @param limit 引く最大件数（0 以上 {@link MAX_LIKED_GAMES_PER_CALL} 以下）
+   * @param offset 読み飛ばす件数（0 以上）
+   * @returns 作品 id（押した新しい順）
+   * @throws 引数の形が不正なとき
+   */
+  async likedGames(
+    userId: string,
+    limit: number,
+    offset: number,
+  ): Promise<readonly string[]> {
+    assertId(userId, 'userId');
+    assertCount(limit, 'limit', MAX_LIKED_GAMES_PER_CALL);
+    assertCount(offset, 'offset', Number.MAX_SAFE_INTEGER);
+    return this.ctx.storage.sql
+      .exec<{ game_id: string }>(
+        `select game_id from likes
+          where user_id = ?
+          order by created_at desc, game_id desc
+          limit ? offset ?`,
+        userId,
+        limit,
+        offset,
+      )
+      .toArray()
+      .map((row) => row.game_id);
   }
 
   /**

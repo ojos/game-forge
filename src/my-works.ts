@@ -71,7 +71,7 @@ import { siteFooter } from './legal.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import type { AuthoredGame, GenerationState } from './games.js';
 import { UNTITLED_TITLE, listAuthoredGames } from './games.js';
-import { LOGIN_PATH } from './auth/google.js';
+import { loginRequiredRedirect } from './auth/google.js';
 import { GENERATE_PAGE_PATH } from './paths.js';
 // **「いいねした作品」への導線はここに置く**（2.3.7 / 5.8 / #340）。**ヘッダには置かない**
 // ——本人だけの画面が 2 枚並ぶので、ヘッダの項目を増やさないと 2.3.7 が決めている。
@@ -256,16 +256,6 @@ ${siteFooter()}`;
 }
 
 /**
- * 303 See Other を返す。
- *
- * @param location 遷移先
- * @returns レスポンス
- */
-function seeOther(location: string): Response {
-  return new Response(null, { status: 303, headers: { location, 'cache-control': 'no-store' } });
-}
-
-/**
  * 一覧を表示する。
  *
  * **未ログインならログインへ送る。** 401 の JSON を返しても、画面を開いた利用者に
@@ -284,7 +274,9 @@ function seeOther(location: string): Response {
 async function showMyWorks(request: Request, env: Env): Promise<Response> {
   const session = await resolveSessionUser(request, env);
   if (!session.ok) {
-    return seeOther(LOGIN_PATH);
+    // ログイン後はこの画面へ戻す（2.3.11 / #374）。戻り先は署名付きの一時 cookie が
+    // 運ぶ（query では受けない）。
+    return await loginRequiredRedirect(env, MY_WORKS_PATH);
   }
 
   const fetched = await listAuthoredGames(env, session.userId, MAX_LISTED_WORKS + 1);

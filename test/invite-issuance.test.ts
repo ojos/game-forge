@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes } from '../src/app.js';
-import { LOGIN_PATH } from '../src/auth/google.js';
+import { LOGIN_PATH, OAUTH_COOKIE } from '../src/auth/google.js';
 import {
   INVITES_API_PATH,
   INVITE_QUOTA,
@@ -142,6 +142,16 @@ describe('未ログインの発行要求を拒否する（#91 acceptance 3）', 
     expect(response.status).toBe(303);
     expect(response.headers.get('location')).toBe(LOGIN_PATH);
     expect(await countAllInvites()).toBe(before);
+  });
+
+  it('ログインへ送るときに、戻り先を署名付きの一時 cookie へ積む（2.3.11 / #374）', async () => {
+    // 戻り先は query へ出さない（オープンリダイレクトの入口を作らない）。着地まで
+    // 通す検査は `test/auth-google.test.ts` が持つ。
+    const response = await call(INVITES_API_PATH, { method: 'POST', accept: 'text/html' });
+    expect(response.headers.get('location')).toBe(LOGIN_PATH);
+    expect(response.headers.getSetCookie().some((c) => c.startsWith(`${OAUTH_COOKIE}=`))).toBe(
+      true,
+    );
   });
 
   it('署名が通らない cookie は 401', async () => {

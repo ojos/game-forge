@@ -62,7 +62,7 @@
  * ままで、秘密が未設定でもログアウトが成立する性質（`missingSecrets` を見ない）も保つ。
  */
 import { ACCOUNT_DISPLAY_NAME_PATH, ACCOUNT_PATH, DISPLAY_NAME_FIELD } from './account-paths.js';
-import { LOGIN_PATH, LOGOUT_PATH } from './auth/google.js';
+import { LOGOUT_PATH, loginRequiredRedirect } from './auth/google.js';
 import { VIEWER_SIGNED_IN, escapeHtml, siteHead } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { siteFooter } from './legal.js';
@@ -445,7 +445,9 @@ interface AccountRow {
 async function showAccount(request: Request, env: Env): Promise<Response> {
   const session = await resolveSessionUser(request, env);
   if (!session.ok) {
-    return seeOther(LOGIN_PATH);
+    // ログイン後はこの画面へ戻す（2.3.11 / #374）。戻り先は署名付きの一時 cookie が
+    // 運ぶ（query では受けない）。
+    return await loginRequiredRedirect(env, ACCOUNT_PATH);
   }
 
   const row = await env.DB.prepare(
@@ -456,7 +458,7 @@ async function showAccount(request: Request, env: Env): Promise<Response> {
   if (row === null) {
     // 解決の直後に行が消えた（手動の削除など）。`resolveSessionUser` が居ないと
     // 答えたときと同じ扱いにする。
-    return seeOther(LOGIN_PATH);
+    return await loginRequiredRedirect(env, ACCOUNT_PATH);
   }
 
   const params = new URL(request.url).searchParams;
@@ -536,7 +538,9 @@ async function handleDisplayNameChange(
 ): Promise<Response> {
   const session = await resolveSessionUser(request, env);
   if (!session.ok) {
-    return seeOther(LOGIN_PATH);
+    // ログイン後はこの画面へ戻す（2.3.11 / #374）。戻り先は署名付きの一時 cookie が
+    // 運ぶ（query では受けない）。
+    return await loginRequiredRedirect(env, ACCOUNT_PATH);
   }
 
   const input = await readDisplayName(request);

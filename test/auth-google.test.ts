@@ -4,10 +4,13 @@ import { createAppRoutes } from '../src/app.js';
 import {
   CALLBACK_PATH,
   LOGIN_PATH,
+  LOGIN_REQUIRED_REASON,
   LOGOUT_PATH,
   OAUTH_COOKIE,
   createAuthRoutes,
+  loginRequiredRedirect,
   parseGoogleIdToken,
+  safeReturnPath,
   startInvitedLogin,
 } from '../src/auth/google.js';
 import type { TokenExchange, TokenExchangeParams } from '../src/auth/google.js';
@@ -15,8 +18,9 @@ import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, buildSessionCookie, signSession, verifySession } from '../src/session.js';
 import { createAccountRoutes } from '../src/account.js';
-import { ACCOUNT_DISPLAY_NAME_PATH, DISPLAY_NAME_FIELD } from '../src/account-paths.js';
+import { ACCOUNT_DISPLAY_NAME_PATH, ACCOUNT_PATH, DISPLAY_NAME_FIELD } from '../src/account-paths.js';
 import { normalizeInviteCode } from '../src/invite-code.js';
+import { SIGNUP_PATH } from '../src/paths.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -130,6 +134,24 @@ function base64UrlJson(value: unknown): string {
   const bytes = new TextEncoder().encode(JSON.stringify(value));
   let binary = '';
   for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+}
+
+/**
+ * PKCE の `code_challenge`（S256）を計算する。
+ *
+ * **実装から import せず、テスト側で計算する。** 実装の関数を借りると「同じ式を
+ * 2 回通しただけ」になり、式そのものが間違っていても緑になる。
+ *
+ * @param codeVerifier 検証子
+ * @returns base64url した SHA-256 ハッシュ
+ */
+async function pkceChallengeOf(codeVerifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(codeVerifier));
+  let binary = '';
+  for (const byte of new Uint8Array(digest)) {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
@@ -348,17 +370,9 @@ describe('ログインの開始（8.1）', () => {
     });
     const started = await startLogin(routes, testEnv());
 
-    const digest = await crypto.subtle.digest(
-      'SHA-256',
-      new TextEncoder().encode(FIXED_VERIFIER),
+    expect(started.authorize.searchParams.get('code_challenge')).toBe(
+      await pkceChallengeOf(FIXED_VERIFIER),
     );
-    let binary = '';
-    for (const byte of new Uint8Array(digest)) {
-      binary += String.fromCharCode(byte);
-    }
-    const expected = btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
-
-    expect(started.authorize.searchParams.get('code_challenge')).toBe(expected);
     expect(started.cookieHeader).toContain(FIXED_VERIFIER);
   });
 
@@ -824,9 +838,14 @@ describe('state と一時 cookie による CSRF 対策', () => {
     });
     const started = await startLogin(routes, testEnv());
     // 1 文字だけ変える。全体を差し替えるより、実際に起こる改竄に近い。
+    //
+    // **署名は必ず最後の要素である**（`signOAuthState`）。位置を直書きすると、
+    // 要素が増えた日に別の要素（招待コードの印など）を書き換えることになり、
+    // **署名の検証まで届かないまま緑になる**——実際に v3 で 1 つ増えた（#374）。
     const parts = started.cookieHeader.split('.');
-    const signature = parts[3]!;
-    parts[3] = signature.startsWith('A') ? `B${signature.slice(1)}` : `A${signature.slice(1)}`;
+    const last = parts.length - 1;
+    const signature = parts[last]!;
+    parts[last] = signature.startsWith('A') ? `B${signature.slice(1)}` : `A${signature.slice(1)}`;
 
     const response = await rejected(
       `code=x&state=${FIXED_STATE}`,
@@ -1074,5 +1093,300 @@ describe('経路表への連結', () => {
         `POST ${LOGOUT_PATH}`,
       ]),
     );
+  });
+});
+
+describe('ログインの後は、開こうとしていた画面へ戻す（2.3.11 / #374）', () => {
+  /**
+   * 既存の利用者を 1 人作る（戻り先の検査に招待は要らない）。
+   *
+   * @param sub Google のアカウント識別子
+   * @returns 利用者の id
+   */
+  async function seedReturningUser(sub: string): Promise<string> {
+    const id = `ret-${sub}`;
+    await env.DB.prepare(
+      'insert into users (id, google_sub, email, display_name, created_at) values (?, ?, ?, ?, 1)',
+    )
+      .bind(id, sub, `${sub}@example.com`, '戻る人')
+      .run();
+    return id;
+  }
+
+  /**
+   * 一時 cookie を引き継いでログインを開始する。
+   *
+   * `startLogin` ヘルパとの違いは `Cookie` ヘッダを載せられることだけである。
+   * **戻り先はここで引き継がれる**（`state` と `code_verifier` は作り直される）。
+   *
+   * @param routes 経路表
+   * @param target 対象の env
+   * @param cookieHeader 画面が積んだ一時 cookie（省略可）
+   * @returns 開始の結果
+   */
+  async function startLoginWith(
+    routes: readonly Route[],
+    target: Env,
+    cookieHeader?: string,
+  ): Promise<StartedLogin> {
+    const response = await dispatch(
+      routes,
+      new Request(
+        `${APP_ORIGIN}${LOGIN_PATH}`,
+        cookieHeader === undefined ? undefined : { headers: { cookie: cookieHeader } },
+      ),
+      target,
+    );
+    expect(response.status).toBe(303);
+    const cookie = findCookie(response, OAUTH_COOKIE);
+    expect(cookie).toBeDefined();
+    return {
+      response,
+      authorize: new URL(response.headers.get('location')!),
+      cookieHeader: toCookieHeader(cookie!),
+    };
+  }
+
+  /**
+   * 戻り先を積んだ一時 cookie を作る（画面が未ログインの利用者を送るときと同じ形）。
+   *
+   * **`loginRequiredRedirect` は値を検証しない**（検証は着地の 1 か所だけにある）。
+   * だからこそ、ここへ外部ホストを渡せば「署名は通るが着地させてはいけない戻り先」を
+   * 本物の鍵で作れる。query から仕込む経路は、そもそも存在しない。
+   *
+   * @param returnPath 積む戻り先
+   * @returns `Cookie` ヘッダへ載せられる形
+   */
+  async function stackReturn(returnPath: string): Promise<string> {
+    const response = await loginRequiredRedirect(testEnv(), returnPath, {
+      now: () => NOW,
+      randomToken: fixedRandomToken(),
+    });
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(LOGIN_PATH);
+    return toCookieHeader(findCookie(response, OAUTH_COOKIE)!);
+  }
+
+  /**
+   * 戻り先を積んでからログインを最後まで通し、着地のパスを返す。
+   *
+   * @param sub Google のアカウント識別子（テストごとに変える）
+   * @param returnPath 積む戻り先（null なら積まない）
+   * @returns `Location` ヘッダの値
+   */
+  async function landAfterLogin(sub: string, returnPath: string | null): Promise<string> {
+    await seedReturningUser(sub);
+    const overrides = {
+      exchange: recordExchange(buildIdToken({ sub, email: `${sub}@example.com` })).exchange,
+      now: () => NOW,
+      randomToken: fixedRandomToken(),
+    };
+    const routes = createAuthRoutes(overrides);
+    const pending = returnPath === null ? undefined : await stackReturn(returnPath);
+    const started = await startLoginWith(routes, testEnv(), pending);
+
+    const response = await callback(
+      routes,
+      testEnv(),
+      `code=code-return&state=${FIXED_STATE}`,
+      started.cookieHeader,
+    );
+    expect(response.status).toBe(303);
+    return response.headers.get('location')!;
+  }
+
+  it('未ログインで /account を開き、ログイン後に /account へ着く', async () => {
+    // 画面側は既定の依存で動かす（本番と同じ経路で cookie が積まれることを見る）。
+    const sub = 'google-sub-return-account';
+    await seedReturningUser(sub);
+
+    const guard = await dispatch(
+      createAccountRoutes(),
+      new Request(`${APP_ORIGIN}${ACCOUNT_PATH}`),
+      testEnv(),
+    );
+    expect(guard.status).toBe(303);
+    // 送り先は今までどおり。**変わったのは cookie が 1 枚増えたことだけ**である。
+    expect(guard.headers.get('location')).toBe(LOGIN_PATH);
+    // 戻り先を query へ出していないこと（オープンリダイレクトの入口を作らない）。
+    expect(guard.headers.get('location')).not.toContain(ACCOUNT_PATH);
+    const pending = findCookie(guard, OAUTH_COOKIE);
+    expect(pending).toBeDefined();
+    // 画面は既定の乱数源で `state` と `code_verifier` を作る。**固定値ではない**ので、
+    // 下の「作り直している」の検査が値の一致だけで緑になることがない。
+    const pendingBody = toCookieHeader(pending!).slice(`${OAUTH_COOKIE}=`.length).split('.');
+    const [pendingState, pendingVerifier] = pendingBody;
+    expect(pendingState).not.toBe(FIXED_STATE);
+    expect(pendingVerifier).not.toBe(FIXED_VERIFIER);
+
+    const overrides = {
+      exchange: recordExchange(buildIdToken({ sub, email: `${sub}@example.com` })).exchange,
+      now: () => NOW,
+      randomToken: fixedRandomToken(),
+    };
+    const routes = createAuthRoutes(overrides);
+    const started = await startLoginWith(routes, testEnv(), toCookieHeader(pending!));
+    // ログインの開始は `state` と `code_verifier` を**作り直す**（CSRF と PKCE を
+    // 守る値は、Google へ送る要求が持たなければならない）。引き継ぐのは戻り先だけ
+    // である。**画面が積んだ値と違うこと**を、両方について見る。
+    expect(started.authorize.searchParams.get('state')).toBe(FIXED_STATE);
+    expect(started.authorize.searchParams.get('state')).not.toBe(pendingState);
+    expect(started.cookieHeader).toContain(FIXED_VERIFIER);
+    expect(started.cookieHeader).not.toContain(pendingVerifier!);
+    // PKCE の challenge も、作り直した verifier から作られている。
+    expect(started.authorize.searchParams.get('code_challenge')).toBe(
+      await pkceChallengeOf(FIXED_VERIFIER),
+    );
+
+    const response = await callback(
+      routes,
+      testEnv(),
+      `code=code-account&state=${FIXED_STATE}`,
+      started.cookieHeader,
+    );
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(ACCOUNT_PATH);
+    expect(findCookie(response, SESSION_COOKIE)).toBeDefined();
+  });
+
+  it('戻り先が無いときは / へ着く', async () => {
+    expect(await landAfterLogin('google-sub-return-none', null)).toBe('/');
+  });
+
+  it('外部へ向く戻り先を仕込んでも / へ着く', async () => {
+    // **署名は通る**（`loginRequiredRedirect` が本物の鍵で署名している）。
+    // ここを守るのは、着地の直前の検証だけである。
+    const evil = [
+      '//evil.example',
+      '//evil.example/account',
+      'https://evil.example/',
+      'http://evil.example',
+      // `\` を `/` として解釈するブラウザでは、これがプロトコル相対 URL になる。
+      '/\\evil.example',
+      '/\\/evil.example',
+      // スキーム付き（`/` で始まらない）。
+      'javascript:alert(1)',
+      'data:text/html,x',
+      // 相対パス。着地の起点が要求ごとに変わる形は受けない。
+      'account',
+      '',
+    ];
+    for (const [index, path] of evil.entries()) {
+      expect(await landAfterLogin(`google-sub-evil-${index}`, path), path).toBe('/');
+    }
+  });
+
+  it('制御文字や長すぎる戻り先を仕込んでも / へ着く', async () => {
+    const broken = [
+      '/account\nSet-Cookie: x=1',
+      '/account\r\n',
+      '/account\u0000',
+      `/${'a'.repeat(600)}`,
+    ];
+    for (const [index, path] of broken.entries()) {
+      expect(await landAfterLogin(`google-sub-broken-${index}`, path), path).toBe('/');
+    }
+  });
+
+  it('解き直すと形の変わる戻り先は / へ着く（解釈の層）', async () => {
+    // **字句の検査だけでは通ってしまう値**をここへ置く。`URL` に実際に解かせ、
+    // 解いた結果が入力と 1 文字も違わないことまで見ている、という層を固定する。
+    const normalized = ['/../evil.example', '/./account', '/ account', '/a<b>', '/a b?c=d'];
+    for (const [index, path] of normalized.entries()) {
+      expect(await landAfterLogin(`google-sub-normalized-${index}`, path), path).toBe('/');
+    }
+  });
+
+  it('別の鍵で署名された戻り先は引き継がない', async () => {
+    // 一時 cookie の署名は `SESSION_SECRET` で行う。鍵が合わない cookie は
+    // 「戻り先が無い」のと同じ扱いにする（ログインそのものは落とさない）。
+    const sub = 'google-sub-return-otherkey';
+    await seedReturningUser(sub);
+    const forged = await loginRequiredRedirect(
+      testEnv({ SESSION_SECRET: OTHER_SECRET }),
+      ACCOUNT_PATH,
+      { now: () => NOW, randomToken: fixedRandomToken() },
+    );
+    const overrides = {
+      exchange: recordExchange(buildIdToken({ sub, email: `${sub}@example.com` })).exchange,
+      now: () => NOW,
+      randomToken: fixedRandomToken(),
+    };
+    const routes = createAuthRoutes(overrides);
+    const started = await startLoginWith(
+      routes,
+      testEnv(),
+      toCookieHeader(findCookie(forged, OAUTH_COOKIE)!),
+    );
+
+    const response = await callback(
+      routes,
+      testEnv(),
+      `code=code-otherkey&state=${FIXED_STATE}`,
+      started.cookieHeader,
+    );
+    expect(response.headers.get('location')).toBe('/');
+  });
+
+  it('秘密が未設定でも、ログインへは送る（戻り先は積めない）', async () => {
+    // 画面の入口を設定の欠落で塞がない（`handleLogout` と同じ向きの判断）。
+    const response = await loginRequiredRedirect(bareEnv(), ACCOUNT_PATH);
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(LOGIN_PATH);
+    expect(findCookie(response, OAUTH_COOKIE)).toBeUndefined();
+  });
+
+  it('自サイト内のパスだけを通す（着地の直前の検証）', () => {
+    const allowed = ['/', '/account', '/works/mine', '/works/liked', '/invites', '/works?sort=new'];
+    for (const path of allowed) {
+      expect(safeReturnPath(path), path).toBe(path);
+    }
+    const rejected = [null, '', '//evil.example', '/\\evil', 'https://evil.example/', '/a\\b'];
+    for (const path of rejected) {
+      expect(safeReturnPath(path), String(path)).toBe('/');
+    }
+  });
+
+  it('ログインが必要な画面から来た未登録の利用者へは、そう言う', async () => {
+    // 「登録には招待コードが必要です」だけだと、押した操作と着地した画面がつながらない。
+    const sub = 'google-sub-return-noaccount';
+    const overrides = {
+      exchange: recordExchange(buildIdToken({ sub, email: `${sub}@example.com` })).exchange,
+      now: () => NOW,
+      randomToken: fixedRandomToken(),
+    };
+    const routes = createAuthRoutes(overrides);
+    const started = await startLoginWith(routes, testEnv(), await stackReturn(ACCOUNT_PATH));
+
+    const response = await callback(
+      routes,
+      testEnv(),
+      `code=code-noaccount&state=${FIXED_STATE}`,
+      started.cookieHeader,
+    );
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(`${SIGNUP_PATH}?reason=${LOGIN_REQUIRED_REASON}`);
+    // **戻り先そのものは query へ出さない**（出せば外から与えられる形に戻る）。
+    expect(response.headers.get('location')).not.toContain(ACCOUNT_PATH);
+    expect(await usersBySub(sub)).toHaveLength(0);
+  });
+
+  it('戻り先を積んでいない未登録の利用者は、今までどおり招待の文言で戻る', async () => {
+    const sub = 'google-sub-plain-noaccount';
+    const overrides = {
+      exchange: recordExchange(buildIdToken({ sub, email: `${sub}@example.com` })).exchange,
+      now: () => NOW,
+      randomToken: fixedRandomToken(),
+    };
+    const routes = createAuthRoutes(overrides);
+    const started = await startLoginWith(routes, testEnv());
+
+    const response = await callback(
+      routes,
+      testEnv(),
+      `code=code-plain&state=${FIXED_STATE}`,
+      started.cookieHeader,
+    );
+    expect(response.headers.get('location')).toBe(`${SIGNUP_PATH}?reason=invite-required`);
   });
 });

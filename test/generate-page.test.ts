@@ -44,7 +44,7 @@ import { dispatch, findDuplicateRoutes } from '../src/routes.js';
 import { WORK_PAGE_PREFIX } from '../src/work-page.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { GENERATE_CALLBACK_PATH, generateCallbackRoutes } from '../src/generate-callback.js';
-import { MAX_TITLE_LENGTH, createPendingGame } from '../src/games.js';
+import { MAX_TITLE_LENGTH, createPendingGame, draftTitleFromPrompt } from '../src/games.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -301,9 +301,21 @@ describe('ログイン済みの入力フォーム（acceptance 2 / 5.2-1）', ()
     // 宣言が独立した 1 行であることは `placeholder` の例が示す。
     expect(body).toContain(TITLE_DECLARATION_EXAMPLE);
     expect(TITLE_DECLARATION_EXAMPLE).toContain('タイトル: ');
+    // **例は「例:」で始めない**（PR #385 のレビュー指摘）。詳細は次の検査。
     // 入力欄からたどれる（読み上げでも案内が結び付く）。
     expect(body).toContain('aria-describedby="generate-title-hint"');
     expect(body).toContain('id="generate-title-hint"');
+  });
+
+  it('入力例をそのまま送ると、案内どおりの題名になる（PR #385 のレビュー指摘）', () => {
+    // **例と解釈の規則を突き合わせる**（shared-ai-rules 12 章）。初版の例は `例:` の
+    // 行から始まっており、写して送ると題名が `例:` になった——案内文が言っている
+    // 「1 行目に宣言」と食い違っていた。ここは**例を実際に解釈して**確かめる。
+    const typed = TITLE_DECLARATION_EXAMPLE.replaceAll('&#10;', '\n');
+    expect(draftTitleFromPrompt(typed)).toBe('ブロックよけ');
+    // 1 行目が丸ごと宣言であること（＝フォールバックに落ちていないこと）。
+    expect(typed.split('\n')[0]).toBe('タイトル: ブロックよけ');
+    expect(draftTitleFromPrompt(typed)).not.toBe(typed.split('\n')[0]);
   });
 
   it('題名の上限を案内文へ書き写していない（#365 / shared-ai-rules 12 章）', () => {

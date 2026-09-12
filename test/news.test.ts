@@ -1,8 +1,9 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { handleAppRequest } from '../src/app.js';
+import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
 import { HOME_PATH } from '../src/home.js';
+import { BREADCRUMB_PARENTS, newsBreadcrumbParents } from '../src/html.js';
 import { HOME_CACHE_KEY, loadHomeFeed } from '../src/home-feed.js';
 import { purgeListCache } from '../src/list-cache.js';
 import type { NewsArticle, NewsCategory } from '../src/news-articles.js';
@@ -198,6 +199,19 @@ describe('トップの節（renderHomeNewsSection）', () => {
 
   it('記事が 0 本なら経路を 1 本も登録しない', () => {
     expect(createNewsRoutes([])).toEqual([]);
+  });
+
+  it('記事が 0 本ならパンくずの親にも一覧を入れない（経路と同じ条件）', () => {
+    expect(newsBreadcrumbParents([])).toEqual([]);
+    expect(newsBreadcrumbParents([article()])).toEqual([{ path: NEWS_PATH, label: NEWS_TITLE }]);
+  });
+
+  it('いまの記事で、パンくずの親の一覧と経路表の一覧が噛み合う', () => {
+    // **片方だけが一覧を持つ状態を作らない。** 経路表に `/news` が無ければ親にも無く、
+    // あれば親にもある（どちらも記事の本数で決まる）。
+    const routed = createAppRoutes(env).some((route) => route.path === NEWS_PATH);
+    const parent = BREADCRUMB_PARENTS.some((item) => item.path === NEWS_PATH);
+    expect(parent).toBe(routed);
   });
 
   it('日付・分類・見出し（記事へのリンク）・本文の 1 段落目・最終更新日を出す', () => {

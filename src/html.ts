@@ -53,6 +53,8 @@ import { ACCOUNT_PATH } from './account-paths.js';
 import { LOGIN_PATH, LOGOUT_PATH } from './auth/google.js';
 import { TAKEDOWN_PATH } from './legal-paths.js';
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';
+import type { NewsArticle } from './news-articles.js';
+import { NEWS_ARTICLES } from './news-articles.js';
 import { NEWS_PATH } from './news-paths.js';
 import { ancestorPathsOf } from './page-paths.js';
 import { GENERATE_PAGE_PATH, HOME_PATH, SIGNUP_PATH } from './paths.js';
@@ -338,6 +340,23 @@ function siteHeader(viewer: SiteViewer | undefined): string {
 const BREADCRUMB_HOME: NavItem = { path: HOME_PATH, label: 'トップ' };
 
 /**
+ * お知らせの一覧をパンくずの親に入れるか（#375）。
+ *
+ * **記事が 0 本なら入れない。** そのとき `src/news.ts` の `createNewsRoutes` は一覧の経路を
+ * 登録しない（空の一覧を置かない）ので、ここに残すと**行き先の無い親**になる（2.3.7）。
+ * 経路と同じ条件をここでも見る。
+ *
+ * **記事の定義（`src/news-articles.ts`）は import を持たない葉なので、ここから読んでも
+ * 循環しない**（画面の `src/news.ts` からは借りない。冒頭の理由）。
+ *
+ * @param articles お知らせの記事
+ * @returns 親の項目（0 本なら空）
+ */
+export function newsBreadcrumbParents(articles: readonly NewsArticle[]): readonly NavItem[] {
+  return articles.length === 0 ? [] : [{ path: NEWS_PATH, label: 'お知らせ' }];
+}
+
+/**
  * パンくずの親になる画面と、そのときの名前（2.3.10 / #372）。
  *
  * ## 一覧を持つのは、親になる画面の側だけである
@@ -366,7 +385,7 @@ export const BREADCRUMB_PARENTS: readonly NavItem[] = [
   { path: PUBLIC_WORKS_PATH, label: '作品をさがす' },
   { path: SIGNUP_PATH, label: 'Game Forge に登録する' },
   { path: TAKEDOWN_PATH, label: '削除申請' },
-  { path: NEWS_PATH, label: 'お知らせ' },
+  ...newsBreadcrumbParents(NEWS_ARTICLES),
 ];
 
 /** 全画面の `<title>` の末尾に付く、サービス名の区切り。 */

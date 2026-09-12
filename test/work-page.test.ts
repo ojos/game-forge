@@ -5,7 +5,6 @@ import { dispatch } from '../src/routes.js';
 import { renderWorkPage } from '../src/work-page.js';
 import type { WorkPageView } from '../src/work-page.js';
 import {
-  AUTHOR_WORKS_LABEL,
   FORKS_OFFSET_PARAM,
   FORKS_PER_PAGE,
   GENERATION_IS_SYNCHRONOUS,
@@ -1178,17 +1177,18 @@ describe('運営の印（#334）', () => {
   }
 
   /**
-   * 期待する作者の行を組み立てる（#330 が作者ページへの導線を足した）。
+   * 期待する作者の行を組み立てる（#330 で作者名が作者ページへのリンクになった）。
    *
    * **写す範囲を 1 か所に閉じている。** 以下の it は**行を全体で比べる**（部分一致に
    * しない——空白 1 つ・空の `<span>` 1 つが足されても落ちる形を保つ）ので、綴りは
-   * どこかに要る。**4 か所に散らすと、印や導線の位置を変えたときに 3 か所だけ直す
+   * どこかに要る。**4 か所に散らすと、印やリンクの位置を変えたときに 3 か所だけ直す
    * 事故が起きる。**
    *
-   * **`authorPagePath` と `AUTHOR_WORKS_LABEL` は借りる。** `/users/` の綴りと文言を
+   * **`authorPagePath` は借りる**（`src/users-page-paths.ts`）。`/users/` の綴りを
    * 検査へ書き写すと、変えた日に検査だけが古い綴りを見続ける。
    *
-   * **順は 名前 → 印 → 導線 である**（印は名前に付くので、あいだに挟まない）。
+   * **構造は `<strong><a>名前</a></strong>印 である。** リンクは `<strong>` の内側、
+   * **印は `<strong>` の外＝リンクの外**である（押した先が作者ページになる印を作らない）。
    *
    * @param userId 作者の id
    * @param name 表示名（**エスケープ前**。この関数が通す）
@@ -1196,9 +1196,8 @@ describe('運営の印（#334）', () => {
    * @returns `<p class="gf-author">…</p>`
    */
   function expectedAuthorLine(userId: string, name: string, mark = ''): string {
-    const link =
-      ` <a class="gf-author-link" href="${authorPagePath(userId)}">${AUTHOR_WORKS_LABEL}</a>`;
-    return `<p class="gf-author">作者: <strong>${escapeHtml(name)}</strong>${mark}${link}</p>`;
+    const link = `<a class="gf-author-link" href="${authorPagePath(userId)}">${escapeHtml(name)}</a>`;
+    return `<p class="gf-author">作者: <strong>${link}</strong>${mark}</p>`;
   }
 
   it('フラグが立った作者の作品ページには、名前の隣に印が出る', async () => {
@@ -1340,30 +1339,34 @@ describe('運営の印（#334）', () => {
     expect(body).not.toContain(OPERATOR_MARK);
   });
 
-  it('作者の行から作者ページへ行ける（#330）', async () => {
+  it('作者名そのものが作者ページへのリンクになる（#330）', async () => {
     const { userId, id } = await seedPublished('op-author-link');
     const body = await (await open(workPagePath(id))).text();
     expect(body).toContain(`href="${authorPagePath(userId)}"`);
-    expect(body).toContain(AUTHOR_WORKS_LABEL);
-    // **導線は印の後ろにある。** 名前 → 印 → 導線の順で、印と名前のあいだに何も挟まない
-    // （印は名前に付くものである）。
+    // **リンクは `<strong>` の内側、中身は名前だけである。** 行き先が 1 行に 2 つ
+    // 並んでいないこと（ラベル付きのリンクを別に置いていないこと）も、行を全体で
+    // 比べることで固定される。
     expect(authorLine(body)).toBe(expectedAuthorLine(userId, 'op-author-link'));
-  });
-
-  it('印が立っていても、導線は印の後ろに 1 つだけ出る（#330 / #334）', async () => {
-    const { userId, id } = await seedPublished('op-link-and-mark');
-    await markOperator(userId);
-    const body = await (await open(workPagePath(id))).text();
-    expect(authorLine(body)).toBe(
-      expectedAuthorLine(userId, 'op-link-and-mark', ` ${MARK_ELEMENT}`),
-    );
-    // 導線は 1 本だけである（印を足したことで 2 本になっていない）。
     expect(body.match(/gf-author-link/gu) ?? []).toHaveLength(1);
   });
 
-  it('作者の行が引けていなければ導線を出さない（404 へ送らない。#330）', () => {
+  it('印はリンクの外にある（押した先が作者ページになる印を作らない。#330 / #334）', async () => {
+    const { userId, id } = await seedPublished('op-link-and-mark');
+    await markOperator(userId);
+    const body = await (await open(workPagePath(id))).text();
+    const line = authorLine(body);
+
+    expect(line).toBe(expectedAuthorLine(userId, 'op-link-and-mark', ` ${MARK_ELEMENT}`));
+    // **`</a>` が印より前に来る**（＝印は `<a>` の中に無い）。綴りの全体比較でも
+    // 押さえているが、**何を守っているのかを名指しで 1 行にしておく。**
+    expect(line.indexOf('</a>')).toBeLessThan(line.indexOf('gf-operator'));
+    // リンクは 1 本だけである（印を足したことで 2 本になっていない）。
+    expect(body.match(/gf-author-link/gu) ?? []).toHaveLength(1);
+  });
+
+  it('作者の行が引けていなければリンクにしない（404 へ送らない。#330）', () => {
     // **`author_id` は NOT NULL の外部キー**なので通常は当たるが、当たらなかったときに
-    // **導線だけが残ると押した人を必ず 404 へ送る**（作者ページは存在しない利用者を
+    // **リンクだけが残ると押した人を必ず 404 へ送る**（作者ページは存在しない利用者を
     // 404 にする）。経路側は `published && row.author_name !== null` で畳んでおり、
     // ここは描画側が `authorPageId` の真偽だけで決めることを見る。
     const view: WorkPageView = {
@@ -1381,7 +1384,18 @@ describe('運営の印（#334）', () => {
     ).toContain('gf-author-link');
   });
 
-  it('未公開の作品ページには作者ページへの導線も出ない（名前を出さない画面である）', async () => {
+  it('リンクの中でも表示名がエスケープされる（5.9 / #330）', async () => {
+    // **リンクにしたことでエスケープが抜けていないこと。** `<a>` の中身になっても
+    // `escapeHtml` を通る（`test/display-name-escape.test.ts` が経路でも見ている）。
+    const hostile = `"'><script>alert(1)</script>`;
+    const { body, userId } = await openAsRenamed('op-link-escape', hostile);
+    expect(body).not.toContain(hostile);
+    expect(authorLine(body)).toBe(expectedAuthorLine(userId, hostile));
+    // **`href` は名前から作られていない**（`authorPagePath` が組み立てた値である）。
+    expect(body).toContain(`href="${authorPagePath(userId)}"`);
+  });
+
+  it('未公開の作品ページには作者ページへのリンクも出ない（名前を出さない画面である）', async () => {
     const { userId, id } = await seedPending('op-draft-link');
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     expect(body).not.toContain('gf-author-link');

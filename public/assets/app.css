@@ -700,21 +700,18 @@ button:disabled {
 }
 
 /*
- * 作者ページへの導線（作品ページの `.gf-author-link`）と、カードの作者名
- * （`a.gf-card-author`）。
+ * 作者ページへのリンク——作品ページの作者名（`.gf-author-link`）と、カードの作者名
+ * （`a.gf-card-author`）。**どちらも名前そのものがリンクである**（同じ操作に 2 つの
+ * 見せ方を作らない）。
  *
  * **色を持たせない。** リンクは色ではなく下線で示す（app.css 冒頭の方針）。
  * `color: inherit` にしておくと、作品ページでは作者の行と同じ濃さ、カードの下段では
  * `.gf-card-meta` の薄い灰と揃う——**どちらの文脈でも、隣に並ぶ文字と同じ色になる。**
  *
- * **`.gf-author-link` は `<strong>` と運営の印（`.gf-operator`）の後ろにある**
- * （`src/work-page.ts`）。太字にしない——**名前と印より目立たせない**（導線であって
- * 主題ではない）。
+ * **大きさも太さも足さない。** `.gf-author-link` は `<strong>` の内側にあり
+ * （`src/work-page.ts`）、太字は `<strong>` が持つ。ここで字を変えると、**運営の印
+ * （`.gf-operator`）との対比が名前の側の見た目で動く**——5.9 が禁じている向きである。
  */
-.gf-author-link {
-  font-size: var(--gf-text-small);
-}
-
 .gf-author-link,
 a.gf-card-author {
   color: inherit;

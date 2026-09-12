@@ -1435,7 +1435,7 @@ function loadingScreen(view: WorkPageView): string {
 
   return `<div class="gf-context">
 ${screenshot(view)}
-<p class="gf-author">作者: <strong>${escapeHtml(view.authorName ?? UNKNOWN_AUTHOR)}</strong>${operatorMark(view)}${authorWorksLink(view)}</p>
+<p class="gf-author">作者: <strong>${authorLabel(view)}</strong>${operatorMark(view)}</p>
 <p class="gf-parent">${parentLine(view.parent)}</p>
 ${forkCta(view)}
 </div>
@@ -1443,51 +1443,43 @@ ${frame}`;
 }
 
 /**
- * 作者ページへの導線の文言（#330 / 仕様 2.3.1）。
+ * 作者名を組み立てる（#330 / 仕様 2.3.1）。
  *
- * **行き先を言う。** 「作者名を押すと何かが起きる」ではなく、**何が起きるか**を文字で
- * 書く（2.2 / 4.4 が「押せるが何が起きるか分からないもの」を嫌うのと同じ向きである）。
- * テストが同じ綴りを見るために export している（書き写さない）。
- */
-export const AUTHOR_WORKS_LABEL = 'この作者の作品';
-
-/**
- * 作者ページへの導線（#330 / 仕様 2.3.1）。作者ページへ送れなければ空文字列を返す。
+ * # 名前そのものをリンクにする
  *
- * # なぜ作者名そのものをリンクにしないのか
+ * **作品カードと同じ形にする**（`src/work-card.ts` の `renderAuthor`）。**同じ操作に
+ * 2 つの見せ方を作らない**——カードで名前が押せるのを覚えた利用者が、作品ページで
+ * 押せない名前に当たる形にしない。
  *
- * **作品カードは名前をリンクにしている**（`src/work-card.ts` の `renderAuthor`）。
- * ここだけ形が違うのには理由が 2 つある。
+ * **ラベル付きのリンク（「この作者の作品」）を別に置く案は採らなかった。** 名前が
+ * 既にリンクなら、**同じ行き先が 1 行に 2 つ並ぶ**ことになる（読み上げでも同じ
+ * 行き先が 2 度読まれる。`public/assets/app.css` の `.gf-card-link` が
+ * 「画像と題名を別々のリンクにしない」と書いているのと同じ理由）。
  *
- * 1. **#334 の印は「`<strong>` の外、同じ行の中」に置くと決まっている**
- *    （{@link operatorMark}）。名前を `<a>` で包むと、**印との位置関係を説明する軸が
- *    「`<strong>` の内か外か」から「リンクの内か外か」へ増える。** 見分けを名前の側から
- *    動かせてはいけない（5.9 の「向きの記号を弾く理由」）という制約が効いている行なので、
- *    構造を増やさない
- * 2. **この行には文字を置ける。** カードの下段は名前・改造数・いいね・日時が横に並ぶので
- *    リンクの文字を足す余地が無く、名前自身をリンクにするしかない。**ここは作者 1 人に
- *    1 行を使っている**ので、行き先を文字で言える（上の {@link AUTHOR_WORKS_LABEL}）
+ * # `<a>` は `<strong>` の内側、印は両方の外に置く
  *
- * # 名前が引けていなければ出さない
+ * **#334 の印は `<strong>`（利用者が決めた名前）の外にある**（{@link operatorMark}）。
+ * リンクを `<strong>` の内側へ入れることで、**印はリンクの外でもあり続ける**
+ * ——押した先が作者ページになる印を作らない。名前は今までどおり `escapeHtml` を通り、
+ * **リンクの中身は名前だけ**である。
+ *
+ * `<strong>` を `<a>` の内側へ入れ替えないのは、**印の位置を説明する軸を
+ * 「`<strong>` の内か外か」から動かさない**ためである（5.9 が「名前の側から印の
+ * 見え方を動かせてはいけない」と書いている行であり、構造の説明を増やさない）。
+ *
+ * # 名前が引けていなければリンクにしない
  *
  * {@link WorkPageView.authorPageId} の説明のとおり、404 へ送るリンクを出さない。
  *
- * # 印の後ろに置く
- *
- * **名前 → 印 → 導線**の順である。印は名前に付くものなので、あいだに別の要素を
- * 挟まない。
- *
  * @param view 表示に必要な値
- * @returns HTML
+ * @returns HTML（`<strong>` の中身）
  */
-function authorWorksLink(view: WorkPageView): string {
+function authorLabel(view: WorkPageView): string {
+  const name = escapeHtml(view.authorName ?? UNKNOWN_AUTHOR);
   if (view.authorPageId === null) {
-    return '';
+    return name;
   }
-  return (
-    ` <a class="gf-author-link" href="${authorPagePath(view.authorPageId)}">` +
-    `${AUTHOR_WORKS_LABEL}</a>`
-  );
+  return `<a class="gf-author-link" href="${authorPagePath(view.authorPageId)}">${name}</a>`;
 }
 
 /**
@@ -1506,6 +1498,10 @@ export const OPERATOR_MARK = '運営アカウント';
  * 印は `<strong>`（利用者が決めた名前）の**外**に置く。名前は `escapeHtml` を通るので、
  * 名前の入力からこの要素を作ることはできない。**名前に「運営」と書いた利用者の画面には、
  * この要素が 1 つも現れない。**
+ *
+ * **#330 で名前が作者ページへのリンクになったが、印の位置は動いていない。** リンクは
+ * `<strong>` の内側に入れてあるので（{@link authorLabel}）、印は `<strong>` の外であり、
+ * **リンクの外でもある**——押した先が作者ページになる印は作れない。
  *
  * # 見分けは見た目で付ける
  *

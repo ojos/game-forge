@@ -183,7 +183,14 @@ describe('表示名のエスケープ（#341 / 5.9）', () => {
       testEnv(),
     );
     expect(response.status).toBe(200);
-    expectEscaped(await response.text(), '作品ページ');
+    const body = await response.text();
+    expectEscaped(body, '作品ページ');
+    // **#330 で作者名が作者ページへのリンクになった。** エスケープが**リンクの中でも**
+    // 効いていること（`<a>` の中身になっても素の名前へ戻っていないこと）を、
+    // リンクの綴りごと確かめる。`/users/` の綴りは `authorPagePath` から取る。
+    expect(body).toContain(
+      `<a class="gf-author-link" href="${authorPagePath(authorId)}">${ESCAPED_NAME}</a>`,
+    );
   });
 
   it('いいねの数が出る行でもエスケープされる（#340 でカードに数が増えた）', () => {

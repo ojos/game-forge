@@ -1521,6 +1521,32 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
     expect(body).not.toMatch(CANCEL_FORM);
   });
 
+  it('取り下げた作品の `likeCount` の門番は第 2 層である（変異の結果を書き残す）', () => {
+    // **描画側の第 1 層は `sectionFor` の tombstone 分岐**で、そちらが本文ごと
+    // `removedSection` に差し替える。**したがって `showWorkPage` の
+    // `likeCount: published && !removed` から `!removed` を外しても、画面は
+    // 変わらない**（変異を当てて緑のままだったことを確かめた。`publishableId` に
+    // ついて同じことが書いてあるのと同じ形である）。
+    //
+    // **層が 1 枚になった状態は残らない。** 上の it は `!removed` ではなく
+    // **DO を呼ぶかどうかの門番**（`likeViewer` の条件）を止めており、そちらから
+    // `published` を外すと赤くなる（実測した）。ここでは第 1 層そのものを見る。
+    const id = '00000000-0000-4000-8000-000000000003';
+    const removed = renderWorkPage({ ...baseView, removed: true, likeCount: 4, likableId: id });
+    expect(removed).not.toContain('いいね 4');
+    expect(removed).not.toMatch(LIKE_FORM);
+    // 同じ view で `removed` だけを倒すと出る（この検査が空振りしていない）。
+    const shown = renderWorkPage({
+      ...baseView,
+      published: true,
+      removed: false,
+      likeCount: 4,
+      likableId: id,
+    });
+    expect(shown).toContain('いいね 4');
+    expect(shown).toMatch(LIKE_FORM);
+  });
+
   it('未公開の作品ページには数もボタンも出さず、DO も呼ばない', async () => {
     const { userId, id } = await seedPending('like-draft');
     await setStoredLikeCount(id, 5);

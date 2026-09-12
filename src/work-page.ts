@@ -1894,6 +1894,12 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // BAN された利用者の分を除いてあり、後者は最大 5 分遅れる。**未公開・取り下げ済みの
       // ページでは 0**（数を出さない）——`like_count` に値が残っていても、公開していない
       // 作品のいいねを画面に出す意味が無い。
+      //
+      // **`!removed` は第 2 層である。** 描画側の第 1 層は `sectionFor` の tombstone
+      // 分岐で、そちらが先に本文ごと差し替える（`publishableId` と同じ関係）。
+      // **したがってここだけを外しても画面は変わらない**（変異を当てて確かめた）。
+      // 層が 1 枚になった状態を残さないために、`test/work-page.test.ts` が第 1 層
+      // そのものを別の it で止めている。
       likeCount:
         published && !removed
           ? (likeViewer?.count ?? storedLikeCount(row.like_count))

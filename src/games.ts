@@ -15,6 +15,14 @@
  *     completeGame       … 成果物が揃った。R2 のキーと preview_key がここで入る
  *     failGame           … もう成果物は来ない
  *
+ * ## 題名はあとから変えられる（#366）
+ *
+ * **`title` に値が入るのは行を作る瞬間だけ、ではなくなった。** {@link renameGame} が
+ * 作者の改名を書く（口は作品ページ。5.4）。**生成側の初期値（{@link
+ * draftTitleFromPrompt}）と改名は、正規化の規則を {@link normalizeTitle} で共有する。**
+ * 改名は履歴（`migrations/0027_title_changes.sql`）と同じ batch で書き、審査済み
+ * （`cleared`）の作品は `NULL` へ戻る（理由は {@link renameGame}）。
+ *
  * ## 状態は `games.status` ではなく `generation_state` が持つ
  *
  * 5.4 は「生成 → 作者が試遊 → 「公開」操作で初めて URL が有効になる」と定める。
@@ -54,7 +62,13 @@
  * 根拠と、そのときの選択肢は仕様書 5.1 にある。
  */
 import { ipNoticeOf } from './ip-substitution.js';
-import { reviewVisibleSql } from './reports.js';
+import {
+  REVIEW_CLEARED,
+  REVIEW_STATE_COLUMN,
+  TITLE_CHANGES_TABLE,
+  reviewVisibleSql,
+} from './reports.js';
+import { inspectText } from './output-moderation.js';
 import type { BuildOutcome } from './build-client.js';
 import type { BuildCacheRecord } from './build-cache.js';
 import { artifactKeysOf, buildCacheRecordOf } from './build-client.js';
@@ -362,8 +376,10 @@ function declaredTitleOf(prompt: string): string | null {
  * 増える**（`src/bedrock.ts`）。増える入力は 20〜40 トークンで、`cachePoint` は
  * システムプロンプトの末尾にあるためキャッシュも割れない（#365）。
  *
- * **あとから題名を変える口はここが持たない。** 改名は別の issue（#366）が持ち、
- * 正規化の規則だけを {@link normalizeTitle} として共有する。
+ * **あとから題名を変える口はここが持たない。** 改名は {@link renameGame} が持ち
+ * （#366。口は作品ページの作者にだけ出る）、**正規化の規則だけを
+ * {@link normalizeTitle} として共有する。** すなわちこの関数が入れるのは
+ * **初期値**であって、作品名の最終形ではない。
  *
  * # 生成物ではなく入力から取る
  *
@@ -987,6 +1003,193 @@ export async function removeGame(
     return { ok: true, firstTime: false };
   }
   return { ok: false, reason: 'not-published' };
+}
+
+/**
+ * 改名の結果（5.4 / #366）。
+ *
+ * 形は {@link RemoveOutcome} に揃えてある。**「できなかった」を 1 つにまとめない**
+ * のも同じ理由で、呼び出し側（`src/work-page.ts`）が返すステータスと文言が理由ごとに違う。
+ */
+export type RenameOutcome =
+  | {
+      readonly ok: true;
+      /**
+       * 保存されている題名（**正規化後**）。
+       *
+       * **同じ題名を入れ直したときは、いま入っている値がそのまま返る。**
+       */
+      readonly title: string;
+      /** **この呼び出しが実際に題名を変えたか。** 同じ題名の入れ直しは false。 */
+      readonly changed: boolean;
+    }
+  | { readonly ok: false; readonly reason: RenameRejection };
+
+/**
+ * 改名を受け付けなかった理由（#366）。
+ *
+ * **`denied-term` に語も分類も添えない。** 8.2 が検出箇所を返さないのと同じ方針で、
+ * **当てては消しを繰り返せば表（`src/denied-terms.ts`）が 1 語ずつ復元できる**口を、
+ * 利用者の自由入力に対して開かない。呼び出し側も分類を出さない。
+ */
+export type RenameRejection = 'not-found' | 'removed' | 'not-ready' | 'denied-term';
+
+/**
+ * 作者が作品の題名を変える（5.4 / #366）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 正規化は {@link normalizeTitle} を通す（規則を 2 か所に置かない）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **生成側と同じ関数である。** 制御文字・前後の空白・40 文字・空の既定（`無題の作品`）は
+ * すべてあちらの規則で、**ここには 1 つも書かない。** 書き足すと「宣言したときだけ
+ * 41 文字が通る」たぐいの食い違いが黙って生まれる（#365 が同じことを書いている）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 8.3 の表を掛ける（8.2 は通せない）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **現在の題名は必ず 8.2（Guardrail）を通ったプロンプト由来である**（遮断されれば
+ * `games` の行すら作られない）。改名はその前提を崩すが、`withInputModeration` は
+ * オーケストレータ Lambda の中だけにあり、**Worker から呼ぶ経路が無い**
+ * （`src/orchestrator/pipeline.ts`）。そこで 8.3 の表（`src/denied-terms.ts`）を掛ける
+ * ——同期の純粋関数で、エッジ側が既に借りている層である。**8.2 の代わりではない。**
+ * 残りは 8.4 の通報が受ける（issue #366 の決定）。
+ *
+ * **検査するのは正規化した後の値である。** 40 文字で切った後を見るので、**保存される
+ * 文字列そのもの**が検査に掛かる（切られて消える語で断らない／切った結果を素通ししない）。
+ *
+ * **行を引く前に検査する。** 表に当たる要求は、対象が誰の作品であっても 1 行も書かない
+ * ——**成功経路の読み取りを 1 件も増やさない**ためでもある（3.6）。そのぶん、存在しない
+ * 作品への要求が `not-found` ではなく `denied-term` で返りうるが、**どちらも「何も
+ * 起きなかった」であり、作品の実在は漏れない**（むしろ表に当たった時点で id を見に
+ * 行かないほうが漏れが少ない）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 改名と履歴を 1 つの batch で書く（履歴の無い改名を作らない）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **順序に意味がある。履歴を先に積む。** 旧題名は `games` の行から取るので、
+ * UPDATE の後では読めない（`src/admin/actions.ts` が「先に状態を動かす」のと逆なのは、
+ * あちらの履歴が**動いた後の状態**を `exists` で見るためである）。
+ *
+ * **2 文の WHERE は同じである。** `src/revisions.ts` の `claimRevisionSlot` と同じ形で、
+ * 条件がそろっていなければ**どちらも 0 行**になる（断られた要求で履歴だけが積まれない）。
+ * そして履歴の insert が落ちれば（0027 の CHECK・D1 の障害）**batch ごと巻き戻り、
+ * 題名も変わらない。**
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * `cleared` は `NULL` へ戻す。`queued` にはしない
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **審査で見たのは改名前の題名である。** 別の題名になった作品について「見た結果、
+ * 問題なし」と言い続けることはできないので、終端（`REVIEW_CLEARED`）を解く。
+ *
+ * **`queued` にはしない。** あれは新規露出を止める状態なので（`reviewVisibleSql`）、
+ * **善意の改名で作品がトップから消える。** `NULL` へ戻せば、以後の通報は 8.4 の
+ * 閾値を通って普通にキューへ入る。
+ *
+ * **`nullif` で書く。** `queued` の作品はそのまま `queued` で残り（審査待ちのまま
+ * 題名だけが変わる）、`NULL` の作品は `NULL` のままである。**分岐をアプリ側に持たない**
+ * ——先に読んでから決める形にすると、読みと書きの隙間に通報が入ったときに、
+ * キューへ入ったばかりの作品を `NULL` へ戻しうる。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 取り下げた作品と、まだ完成していない作品は改名できない
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * tombstone は「もう見せない」という作者の意思表示で（{@link removeGame}）、
+ * 題名はどの画面にも出ない。**押せば断られる操作を口だけ開けておかない**
+ * （`src/work-page.ts` は同じ条件でフォームを出さない）。
+ *
+ * **`generation_state = 'ready'` も SQL の条件に置く**（PR #391 の Copilot レビュー）。
+ * 画面側は `state === 'ready'` のときしかフォームを出さないが、**画面の条件は経路の
+ * 関門ではない**——`POST` を直接投げれば `pending` / `running` / `failed` の行も改名
+ * できてしまい、5.4 の「生成が完了している作品だけ」と食い違う。{@link publishGame} が
+ * 同じ条件を 1 本の UPDATE の WHERE に置いているのと同じ形にする。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param authorId 操作している利用者（**作者本人でなければ通らない**）
+ * @param candidate 作者が入力した題名（**正規化前**）
+ * @param now 改名時刻（UNIX 秒。既定は現在時刻）
+ * @returns 改名の結果
+ */
+export async function renameGame(
+  env: Env,
+  gameId: string,
+  authorId: string,
+  candidate: string,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<RenameOutcome> {
+  const title = normalizeTitle(candidate);
+
+  // **語も分類も外へ出さない**（{@link RenameRejection}）。
+  if (!inspectText(title).ok) {
+    return { ok: false, reason: 'denied-term' };
+  }
+
+  // **条件の綴りを 1 つにする。** 2 文へ書き分けると、片方だけを直した日に
+  // 「断られた要求で履歴だけが積まれる」形ができる。**別名を付けない**ので、
+  // どちらの文へもそのまま置ける（`insert ... select` 側は `from games` が
+  // 1 つしかなく、列の解決に曖昧さが無い）。
+  const conditions =
+    "id = ? and author_id = ? and status <> ? and generation_state = 'ready' and title <> ?";
+  const bindings = [gameId, authorId, REMOVED_STATUS, title] as const;
+
+  const results = await env.DB.batch([
+    // **履歴を先に積む。** 旧題名は UPDATE の前の行からしか取れない（上記）。
+    env.DB.prepare(
+      `insert into ${TITLE_CHANGES_TABLE} (id, game_id, old_title, new_title, changed_at)
+       select ?, id, title, ?, ?
+         from games
+        where ${conditions}`,
+    ).bind(crypto.randomUUID(), title, now, ...bindings),
+    env.DB.prepare(
+      `update games
+          set title = ?, ${REVIEW_STATE_COLUMN} = nullif(${REVIEW_STATE_COLUMN}, ?)
+        where ${conditions}`,
+    ).bind(title, REVIEW_CLEARED, ...bindings),
+  ]);
+
+  // **添字で読む**（`noUncheckedIndexedAccess`。`src/admin/actions.ts` と同じ形）。
+  const historyRows = results[0]?.meta.changes ?? 0;
+  const renamedRows = results[1]?.meta.changes ?? 0;
+
+  if (renamedRows > 0) {
+    // **履歴の無い改名は構造上ありえない**（同じ条件・同じ batch）。ありえない形を
+    // 黙って通さない（`src/admin/actions.ts` と同じ扱い）。出るとすれば D1 の意味が
+    // 変わったときで、それは気づきたい。
+    if (historyRows === 0) {
+      console.error('[games] 履歴の無い改名が入りました（batch の意味が変わっています）');
+    }
+    return { ok: true, title, changed: true };
+  }
+
+  // **0 行だったときだけ、理由を引きに行く**（{@link publishGame} と同じ方針。
+  // 理由を引く SELECT にも `author_id = ?` を入れる——他人の作品に対して理由を
+  // 撃ち分けると、任意の id が実在するかを外から確かめられる手がかりになる）。
+  const row = await env.DB.prepare(
+    'select status, generation_state, title from games where id = ? and author_id = ?',
+  )
+    .bind(gameId, authorId)
+    .first<{ status: string; generation_state: string; title: string }>();
+
+  if (row === null) {
+    return { ok: false, reason: 'not-found' };
+  }
+  if (row.status === REMOVED_STATUS) {
+    return { ok: false, reason: 'removed' };
+  }
+  if (row.generation_state !== 'ready') {
+    // まだ成果物が無い（`pending` / `running` / `failed`）。**題名だけ先に付けさせない**
+    // ——失敗した行の題名を変えても出る場所が無く、生成中の行は完成時に何ができるかも
+    // 決まっていない。
+    return { ok: false, reason: 'not-ready' };
+  }
+  // 残る理由は「同じ題名だった」である。**失敗にしない**（二度押しと、正規化の結果が
+  // いまの題名と一致した場合の両方がここへ来る。{@link removeGame} の二度押しと同じ扱い）。
+  return { ok: true, title: row.title, changed: false };
 }
 
 /**

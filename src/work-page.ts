@@ -49,13 +49,20 @@
  * 分類名で、**値そのものは出さない**（どの固定文言を出すかの鍵として使う）。
  */
 import { siteFooter } from './legal.js';
-import type { ForkChild, GenerationErrorCode, GenerationState } from './games.js';
+import type {
+  ForkChild,
+  GenerationErrorCode,
+  GenerationState,
+  RenameRejection,
+} from './games.js';
 import {
+  MAX_TITLE_LENGTH,
   countPublishedForks,
   listPublishedForks,
   PUBLISHED_STATUS,
   REMOVED_STATUS,
   removeGame,
+  renameGame,
 } from './games.js';
 import {
   OGP_IMAGE_HEIGHT,
@@ -164,6 +171,24 @@ export const WORK_REPORT_GAME_ID_FIELD = 'game_id';
 
 /** 通報の理由を載せる項目名。 */
 export const WORK_REPORT_REASON_FIELD = 'reason';
+
+/**
+ * 題名を変える口（5.4 / #366）。
+ *
+ * **{@link WORK_REMOVE_PATH} と同じ理由で `src/paths.ts` に置かない**——フォームも
+ * 受け口もこのモジュールが持つので、循環参照が起きる余地が無い。
+ *
+ * **`/api/publish` に畳まない。** 5.4 は公開の主ボタンを 1 タップに畳むと定めており、
+ * 公開時に題名を入力させない。**畳むと、公開の本文に題名が載りうる形**になり、その
+ * 決定が実装の上で曖昧になる。改名は公開の前でも後でも押せる、別の操作である。
+ */
+export const WORK_RENAME_PATH = '/api/works/rename';
+
+/** 改名の対象を指す項目名（フォームの `name` と JSON の鍵の両方）。 */
+export const WORK_RENAME_GAME_ID_FIELD = 'game_id';
+
+/** 新しい題名を載せる項目名。 */
+export const WORK_RENAME_TITLE_FIELD = 'title';
 
 /**
  * `games.id` の綴り（`crypto.randomUUID()` が返す形）。
@@ -605,6 +630,18 @@ export interface WorkPageView {
    */
   readonly recapturableId: string | null;
   /**
+   * この作品 id（改名のフォームに入れる。5.4 / #366）。改名できないなら null。
+   *
+   * **`publishableId` / `forkableId` / `removableId` と兼ねない**（同時に非 null に
+   * なりうるかどうかに関わらず、条件が違う値を 1 つに畳まない。`forkableId` を分けた
+   * のと同じ理由）。条件は「**本人・完成済み・取り下げていない**」で、**公開の前後を
+   * 問わない**——題名は未公開のあいだも作者に見えており（`title`）、公開後は
+   * `og:title` として外へ出る。どちらの側でも変えられて困らない。
+   *
+   * **`title` が null なら出さない**（改名のフォームは現在の題名を初期値に入れる）。
+   */
+  readonly renamableId: string | null;
+  /**
    * この作品 id（取り下げのフォームに入れる。5.3 / M5-4 / #35）。取り下げられないなら null。
    *
    * **`publishableId` / `forkableId` / `recapturableId` と兼ねない**（同時に非 null に
@@ -999,6 +1036,61 @@ function removeSection(view: WorkPageView): string {
 }
 
 /**
+ * 題名を変える口（5.4 / #366）。
+ *
+ * # 作者にだけ出す
+ *
+ * 門番は {@link WorkPageView.renamableId} で、**画面側で `owner && …` を組み立てない**
+ * （`revisable` と同じ方針）。ここは null かどうかだけを見る。
+ *
+ * # 主ボタンを増やさない
+ *
+ * 5.4 の「公開して共有」の 1 タップは 1 文字も変わらない（{@link removeSection} /
+ * {@link recaptureSection} と同じ判断）。改名は**公開のあとでも押せる**ので、公開前の
+ * 導線へ割り込ませない位置に置く。
+ *
+ * # `maxlength` を付けない
+ *
+ * HTML の `maxlength` は UTF-16 の長さで数えるので、こちらの規則（コードポイントで
+ * {@link MAX_TITLE_LENGTH}）と食い違い、**絵文字を含む題名が 40 文字に届く前に
+ * 打てなくなる。** 長さは送信後に 1 つの規則（`normalizeTitle`）で畳む
+ * （`src/account.ts` の表示名が同じ判断をしている）。**断らずに切る**のは、生成側の
+ * 初期値と同じ扱いにするためである。
+ *
+ * # `required` は助言であって規則ではない
+ *
+ * ブラウザが空のまま送るのを止めるだけである。**空で届いた要求は断らない**——
+ * `normalizeTitle` が `無題の作品` へ倒す（生成側と同じ扱い）。**規則はサーバ側の
+ * 1 か所にあり、`required` はそこへ辿り着く前の案内にすぎない。**
+ *
+ * # JavaScript を要求しない
+ *
+ * 素の `<form method="post">` で、押した結果は POST-redirect-GET でこのページへ戻る
+ * （このモジュール冒頭の方針）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（改名できなければ空文字）
+ */
+function renameSection(view: WorkPageView): string {
+  if (view.renamableId === null || view.title === null) {
+    return '';
+  }
+  // **題名は UGC である。** `value` 属性へ入れるので `escapeHtml` を通す
+  // （`src/html.ts` の `escapeHtml` は `"` と `'` まで置き換える）。
+  return `
+<h3>作品名を変える</h3>
+<p>この作品の名前を変えられます。<strong>変わるのは名前だけで、作品の中身は変わりません。</strong>
+   ${MAX_TITLE_LENGTH} 文字を超えた分は切り詰めます。</p>
+<form method="post" action="${WORK_RENAME_PATH}">
+  <input type="hidden" name="${WORK_RENAME_GAME_ID_FIELD}" value="${view.renamableId}">
+  <label for="work-title">作品名</label>
+  <input id="work-title" name="${WORK_RENAME_TITLE_FIELD}" type="text"
+         value="${escapeHtml(view.title)}" required>
+  <button type="submit">この名前にする</button>
+</form>`;
+}
+
+/**
  * 試遊画面の主ボタン（5.4）。
  *
  * **文言は 5.4 が定めている**（「試遊画面の主ボタンは「**公開して共有**」とし、
@@ -1008,6 +1100,10 @@ function removeSection(view: WorkPageView): string {
  * 「フォーク連鎖の遅延を最小化する」と定めているのは、**公開の手数がそのまま
  * コア体験ループ（2.2）の長さになる**ためである。題名は生成のプロンプトから
  * 借りたものがそのまま公開される（`src/games.ts` の `draftTitleFromPrompt`）。
+ *
+ * **#366 で変わったのは、公開の前でも後でも作者が題名を変えられるようになったこと
+ * だけである**（{@link renameSection}）。**この導線には 1 文字も足していない**
+ * ——改名の口は別のフォームで、公開の手数は変わらない。
  *
  * **JavaScript を要求しない。** 素の `<form method="post">` で、押した結果は
  * POST-redirect-GET でこのページへ戻る（`src/publish.ts`）。
@@ -1048,8 +1144,10 @@ function readySection(view: WorkPageView): string {
       : `
 <p>遊んでみて、よければ公開できます。</p>
 ${publishForm(view.publishableId)}`;
+  // **改名は推敲より後に置く。** 5.4 の 1 タップ（公開して共有）と、5.7 の手直しが
+  // 先で、題名の変更はそのどちらの導線も押し下げない位置に入れる（#366）。
   return `<h2>できました</h2>
-${play}${publish}${reviseSection(view)}${revisionList(view)}`;
+${play}${publish}${reviseSection(view)}${revisionList(view)}${renameSection(view)}`;
 }
 
 /**
@@ -1246,7 +1344,7 @@ function publishedSection(view: WorkPageView): string {
 <p>共有する URL: <code>${view.shareUrl}</code></p>`;
   return `<h2>公開しています</h2>
 ${loadingScreen(view)}${likeSection(view)}${share}
-${forkList(view.forks)}${recaptureSection(view)}${removeSection(view)}`;
+${forkList(view.forks)}${recaptureSection(view)}${renameSection(view)}${removeSection(view)}`;
 }
 
 /**
@@ -1974,6 +2072,15 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
         )
           ? gameId
           : null,
+      // **改名できるのは、本人・完成済み・取り下げていない作品である**（5.4 / #366）。
+      // **公開の前後を問わない**（題名は未公開でも本人に見えており、公開後は
+      // `og:title` として外へ出る）。押した結果を決めるのは `renameGame` の SQL で、
+      // ここは口を出すかだけを決める。
+      //
+      // **`state === 'ready'` を条件に入れる。** 生成中の行にも仮の題は入っているが、
+      // その画面は「生成中です」だけを出す場所で、**まだ何ができたかも分からない作品に
+      // 名前を付け直させない**（推敲の口が同じ理由で `ready` を見ている）。
+      renamableId: owner && !removed && state === 'ready' ? gameId : null,
       // **取り下げられるのは、公開してしまった作品だけである**（5.3 / #35）。
       // 押した結果を決めるのは `removeGame` の SQL で、ここは口を出すかだけを決める。
       removableId: owner && published ? gameId : null,
@@ -2102,6 +2209,157 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
     ? seeOther(workPagePath(target.gameId))
     : json({ reported: true }, 200);
 }
+
+/**
+ * 題名を変える（`POST /api/works/rename`。5.4 / #366）。
+ *
+ * **形は {@link handleRemove} / {@link handleReport} に揃えてある**（`accept` で HTML と
+ * JSON を分け、素の `<form>` でも動く。CSRF はセッション cookie の `SameSite=Lax` が
+ * 受ける）。**判定はすべて `renameGame` が持つ**——作者の一致も、いまの状態も、
+ * 8.3 の検査も、ここに `if` を置かない。
+ *
+ * # 落ちた理由を、語でも分類でも言わない
+ *
+ * 8.3 に当たったときに返すのは固定の 1 文だけである（{@link RENAME_OUTCOME_REFUSALS}）。
+ * **当てては消しを繰り返せば表が復元できる**ので、8.2 が検出箇所を返さないのと同じ
+ * 方針を採る（`src/games.ts` の `RenameRejection`）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function handleRename(request: Request, env: Env): Promise<Response> {
+  const asHtml = (request.headers.get('accept') ?? '').includes('text/html');
+
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return asHtml ? seeOther(LOGIN_PATH) : json({ error: 'unauthorized' }, 401);
+  }
+
+  const target = await readRenameTarget(request);
+  if (!target.ok) {
+    const refused = REMOVE_BODY_REFUSALS[target.reason];
+    return asHtml
+      ? removeRefusal('作品名を変えられません', refused.body, refused.status)
+      : json({ error: target.reason }, refused.status);
+  }
+
+  const outcome = await renameGame(env, target.gameId, session.userId, target.title);
+  if (!outcome.ok) {
+    const refused = RENAME_OUTCOME_REFUSALS[outcome.reason];
+    return asHtml
+      ? removeRefusal(refused.heading, refused.body, refused.status)
+      : json({ error: outcome.reason }, refused.status);
+  }
+
+  // POST-redirect-GET。戻り先は作品ページで、そこに新しい題名が出る。
+  //
+  // **`changed` を利用者へ出し分けない**（画面に出るのは結果の題名である）。JSON では
+  // 返す——`fetch` から叩く側が「同じ題名だった」を区別できると、二度押しの扱いを
+  // 呼び出し側で決められる（{@link handleRemove} の `firstTime` と同じ扱い）。
+  return asHtml
+    ? seeOther(workPagePath(target.gameId))
+    : json({ renamed: true, title: outcome.title, changed: outcome.changed }, 200);
+}
+
+/**
+ * 改名を断ったときに出すもの。
+ *
+ * **鍵を `RenameRejection` で縛る**（{@link REPORT_REFUSALS} と同じ理由。`renameGame` が
+ * 理由を 1 つ増やした日に、表へ足し忘れても型検査が通る形にしない）。
+ */
+const RENAME_OUTCOME_REFUSALS: Readonly<
+  Record<RenameRejection, { status: number; heading: string; body: string }>
+> = {
+  'not-found': {
+    status: 404,
+    heading: '作品が見つかりません',
+    body: 'URL が正しいかご確認ください。',
+  },
+  removed: {
+    status: 409,
+    heading: '作品名を変えられません',
+    body: 'この作品は公開を取り下げています。取り下げた作品の名前は変えられません。',
+  },
+  'not-ready': {
+    status: 409,
+    heading: '作品名を変えられません',
+    body: 'この作品はまだできあがっていません。生成が終わってから名前を変えてください。',
+  },
+  // **語も分類も出さない**（上記）。言い直せる程度のことだけを伝える。
+  'denied-term': {
+    status: 400,
+    heading: '作品名を変えられません',
+    body: 'この作品名は使えません。別の名前にしてください。',
+  },
+};
+
+/** 改名の本文を読んだ結果。 */
+type RenameTarget =
+  | { readonly ok: true; readonly gameId: string; readonly title: string }
+  | { readonly ok: false; readonly reason: RemoveRejection };
+
+/**
+ * 改名の本文を読む。
+ *
+ * **`readReportTarget` と同じ規律である**（媒体型を絞り、大きさを縛り、id の綴りを見る）。
+ *
+ * **題名の中身はここで検査しない。** 長さも制御文字も 8.3 の語も `renameGame` が
+ * 1 か所で見る（**規則を 2 か所に置かない**）。ここが見るのは「文字列であること」までである。
+ *
+ * @param request 受信したリクエスト
+ * @returns 読めた対象、読めなければ理由
+ */
+async function readRenameTarget(request: Request): Promise<RenameTarget> {
+  const mediaType = (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+  if (mediaType !== FORM_MEDIA_TYPE && mediaType !== JSON_MEDIA_TYPE) {
+    return { ok: false, reason: 'unsupported-content-type' };
+  }
+
+  const read = await readLimitedText(request, RENAME_MAX_BODY_BYTES);
+  if (!read.ok) {
+    return { ok: false, reason: read.reason };
+  }
+
+  let rawId: unknown;
+  let rawTitle: unknown;
+  if (mediaType === FORM_MEDIA_TYPE) {
+    const form = new URLSearchParams(read.text);
+    rawId = form.get(WORK_RENAME_GAME_ID_FIELD) ?? undefined;
+    rawTitle = form.get(WORK_RENAME_TITLE_FIELD) ?? undefined;
+  } else {
+    try {
+      const parsed: unknown = JSON.parse(read.text);
+      const record =
+        typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+      rawId = record[WORK_RENAME_GAME_ID_FIELD];
+      rawTitle = record[WORK_RENAME_TITLE_FIELD];
+    } catch {
+      return { ok: false, reason: 'invalid-game-id' };
+    }
+  }
+
+  if (typeof rawId !== 'string' || !GAME_ID_PATTERN.test(rawId)) {
+    return { ok: false, reason: 'invalid-game-id' };
+  }
+  if (typeof rawTitle !== 'string') {
+    return { ok: false, reason: 'invalid-game-id' };
+  }
+  return { ok: true, gameId: rawId, title: rawTitle };
+}
+
+/**
+ * 改名で受け付ける本文の最大バイト数。
+ *
+ * **4096 バイト**（`src/account.ts` の表示名と同じ値・同じ理由）。題名は
+ * {@link MAX_TITLE_LENGTH} 文字で切るが、**超えた分を 413 で断るのではなく切り詰める**
+ * ので、上限は「本文を際限なく読まない」ためだけに置く。
+ *
+ * **フォーム符号化は 1 文字あたり最大 12 バイトになる**（UTF-8 の 4 バイト × `%XX`）
+ * ので、40 文字の題名は最大 480 バイトである。4096 なら、貼り付けた長い文字列も
+ * そのまま受けて切り詰められる。
+ */
+const RENAME_MAX_BODY_BYTES = 4096;
 
 /** 通報を断ったときに出すもの。 */
 // **鍵を `ReportRejection` で縛る。** `Record<string, …>` にすると、`recordReport` が
@@ -2446,4 +2704,7 @@ export const workPageRoutes: readonly Route[] = [
   // 前方一致に当たらない綴りにしてある（当たると作品ページの id として解釈される）。
   { method: 'POST', path: WORK_REMOVE_PATH, handler: handleRemove },
   { method: 'POST', path: WORK_REPORT_PATH, handler: handleReport },
+  // **改名（#366）も完全一致である。** `/api/works/rename` は `/works/` の前方一致に
+  // 当たらない綴りにしてある（取り下げ・通報と同じ規約）。
+  { method: 'POST', path: WORK_RENAME_PATH, handler: handleRename },
 ];

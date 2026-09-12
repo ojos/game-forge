@@ -124,9 +124,12 @@ import {
   QUOTA_UNKNOWN_NOTICE,
   remainingQuotaNotice,
 } from './quota.js';
-import { HOME_PATH } from './home.js';
+// `HOME_PATH` の正本は `src/paths.ts` である。**`src/home.ts` から取らない**（#382）——
+// あちらは `src/my-works.ts` から「あなたの作品」の綴りを取っており、`src/my-works.ts` は
+// 残枠をこのモジュールの {@link resolveAvailability} から取る。`home.js` 経由にすると
+// 生成画面 → トップ → あなたの作品 → 生成画面の循環参照になる。
+import { GENERATE_PAGE_PATH, HOME_PATH, SIGNUP_PATH } from './paths.js';
 import { buildPathStopped } from './build-health.js';
-import { GENERATE_PAGE_PATH, SIGNUP_PATH } from './paths.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
@@ -763,11 +766,17 @@ ${siteFooter()}${script}`;
  * 4.4 が求める常時表示どころか画面そのものが消え、**プレイと共有への導線まで
  * 巻き添えになる**（3.8 の degrade が守ろうとしているものである）。
  *
+ * **「あなたの作品」（`/works/mine`）もここから引く**（2.3.13 / #382）。あちらが出す
+ * 「本日の残り生成枠 N回」は、この関数の結果を {@link availabilityNotice} へ通したもの
+ * そのままである。**残枠の数え方と、状態ごとの文言を 2 か所に持たない**——ずれた瞬間に、
+ * どちらの画面が正しいか利用者には分からない。一致は `test/my-works.test.ts` が両画面を
+ * 開いて照合する。
+ *
  * @param env バインディングと環境変数
  * @param userId 対象の利用者
  * @returns いま生成できるかどうか
  */
-async function resolveAvailability(env: Env, userId: string): Promise<GenerateAvailability> {
+export async function resolveAvailability(env: Env, userId: string): Promise<GenerateAvailability> {
   try {
     const status = await generationQuotaStatus(env, userId);
     switch (status.kind) {

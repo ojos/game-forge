@@ -5,7 +5,7 @@
  *
  * #373 の constraints は「**書いていない収集をしないのと同じくらい、していない収集を
  * 書かないことが要る**」と定めている。**M12 でこれから増える項目（アイコン・自己紹介・
- * 外部リンク・作品の説明）は、ここへ先回りして書かない。** 収集を始める issue が、
+ * 外部リンク）は、ここへ先回りして書かない。** 収集を始める issue が、
  * 同じ変更の中でこの本文へ追記する。
  *
  * 各項目が実在することは、2026-09-12 に次の場所で確かめた（PR #373 の本文にも一覧を置く）。
@@ -18,6 +18,7 @@
  * | 指示文・生成の記録 | `src/cost-ledger.ts`（`generations.prompt`）/ `migrations/0009_game_revisions.sql` |
  * | 遮断された指示文（90 日） | `migrations/0016_moderation_blocks.sql` / `scripts/moderation-prune.sh` |
  * | 作品・題名の変更履歴 | `migrations/0001_init.sql`（`games`）/ `migrations/0027_title_changes.sql` / R2 |
+ * | 作品の説明とその変更履歴（公開済みの作品だけ・作品ページで誰でも見られる） | `migrations/0028_game_descriptions.sql`（`games.description` / 追記のみの `description_changes`）/ `src/games.ts` の `describeGame` / `src/work-page.ts`（#388 が同じ変更で追記した） |
  * | いいね・1 日の操作回数 | `workers/likes/src/hub.ts`（Durable Object の `likes` / `daily_ops`） |
  * | 通報 | `src/reports.ts` / `migrations/0001_init.sql`（`reports`） |
  * | 待機リスト | `src/waitlist.ts` / `migrations/0001_init.sql`（`waitlist`） |
@@ -114,6 +115,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li><strong>招待の情報</strong>: 招待コード、誰が誰を招待したか、コードを使った日時</li>
   <li><strong>作品を作るときの指示文</strong>（生成・改造・推敲の指示）</li>
   <li><strong>作品</strong>: 題名とその変更履歴、生成されたソースコード、遊ぶためのファイル、紹介用の画像、公開・取り下げの状態、改造元の作品</li>
+  <li><strong>作品の説明</strong>: 作者が公開済みの作品に書く説明（遊び方やクレジットなど）と、その変更の履歴（変える前と後の説明、変えた日時）。説明は作品ページで誰でも見られます。変更の履歴は書き換えず、追記だけで残します。どちらも Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>いいね</strong>: どの作品にいいねしたかと、その日時</li>
   <li><strong>通報</strong>: 通報した作品と、書いていただいた理由</li>
 </ul>
@@ -152,6 +154,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <ul>
   <li>表示名（作者ページや、公開した作品の作者名として表示されます）</li>
   <li>公開した作品（題名・遊べる形・紹介用の画像・改造元の作品）と、そのいいねの数</li>
+  <li>公開した作品に作者が書いた説明（作品ページに表示されます）</li>
 </ul>
 <p>作品の題名は、最初は指示文から作られます。題名は作品ページで変えられます。</p>
 <p>公開する前の作品でも、作品ページの URL を知っている人がそのページを開くと、題名と、まだ公開されていないことが表示されます（遊ぶことはできません）。</p>

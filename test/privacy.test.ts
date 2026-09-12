@@ -119,14 +119,31 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
   it('M12 でこれから増える収集項目を先回りして書かない', async () => {
     // **「していない収集を書かない」を機械で見る。** 収集を始める issue（M12-11 / M12-12 /
     // 作品の説明）は、実装と同じ変更でこの一覧から語を外し、本文へ追記すること。
+    // **作品の説明は #388 が収集を始め、この一覧から外して本文へ足した**（下の it）。
     const body = pageBodyOf((await openPrivacy()).body);
-    for (const notYet of ['アイコン', '自己紹介', '外部リンク', '作品の説明', 'プレイ数', 'ハンドル']) {
+    for (const notYet of ['アイコン', '自己紹介', '外部リンク', 'プレイ数', 'ハンドル']) {
       expect(body, `まだ収集していない「${notYet}」が書いてある`).not.toContain(notYet);
     }
     // 2.3.14 が「収集しない」と決めたもの。
     for (const never of ['誕生', '性別']) {
       expect(body, `収集しないと決めた「${never}」が書いてある`).not.toContain(never);
     }
+  });
+
+  it('作品の説明を、取得する情報と公開される情報の両方に書く（#388）', async () => {
+    // **収集を始めた変更で書く**（#373 の constraints）。説明は作者が公開済みの作品に書き、
+    // 作品ページで誰でも見られ、履歴（`description_changes`）を追記だけで D1 に残す。
+    const body = pageBodyOf((await openPrivacy()).body);
+    const collected = body.slice(body.indexOf('1. 取得する情報'), body.indexOf('2. 利用目的'));
+    expect(collected).toContain('<strong>作品の説明</strong>');
+    expect(collected).toContain('作品ページで誰でも見られます');
+    expect(collected).toContain('追記だけで残します');
+    expect(collected).toContain('D1');
+    const published = body.slice(
+      body.indexOf('3. 公開される情報'),
+      body.indexOf('4. 第三者への提供'),
+    );
+    expect(published).toContain('作者が書いた説明');
   });
 
   it('Cookie の有効期間は、発行する側の定数と一致する', async () => {

@@ -1032,7 +1032,7 @@ export type RenameOutcome =
  * **当てては消しを繰り返せば表（`src/denied-terms.ts`）が 1 語ずつ復元できる**口を、
  * 利用者の自由入力に対して開かない。呼び出し側も分類を出さない。
  */
-export type RenameRejection = 'not-found' | 'removed' | 'denied-term';
+export type RenameRejection = 'not-found' | 'removed' | 'not-ready' | 'denied-term';
 
 /**
  * 作者が作品の題名を変える（5.4 / #366）。
@@ -1095,12 +1095,18 @@ export type RenameRejection = 'not-found' | 'removed' | 'denied-term';
  * キューへ入ったばかりの作品を `NULL` へ戻しうる。
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 取り下げた作品は改名できない
+ * 取り下げた作品と、まだ完成していない作品は改名できない
  * ══════════════════════════════════════════════════════════════════════════════
  *
  * tombstone は「もう見せない」という作者の意思表示で（{@link removeGame}）、
  * 題名はどの画面にも出ない。**押せば断られる操作を口だけ開けておかない**
  * （`src/work-page.ts` は同じ条件でフォームを出さない）。
+ *
+ * **`generation_state = 'ready'` も SQL の条件に置く**（PR #391 の Copilot レビュー）。
+ * 画面側は `state === 'ready'` のときしかフォームを出さないが、**画面の条件は経路の
+ * 関門ではない**——`POST` を直接投げれば `pending` / `running` / `failed` の行も改名
+ * できてしまい、5.4 の「生成が完了している作品だけ」と食い違う。{@link publishGame} が
+ * 同じ条件を 1 本の UPDATE の WHERE に置いているのと同じ形にする。
  *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
@@ -1127,7 +1133,8 @@ export async function renameGame(
   // 「断られた要求で履歴だけが積まれる」形ができる。**別名を付けない**ので、
   // どちらの文へもそのまま置ける（`insert ... select` 側は `from games` が
   // 1 つしかなく、列の解決に曖昧さが無い）。
-  const conditions = 'id = ? and author_id = ? and status <> ? and title <> ?';
+  const conditions =
+    "id = ? and author_id = ? and status <> ? and generation_state = 'ready' and title <> ?";
   const bindings = [gameId, authorId, REMOVED_STATUS, title] as const;
 
   const results = await env.DB.batch([
@@ -1162,15 +1169,23 @@ export async function renameGame(
   // **0 行だったときだけ、理由を引きに行く**（{@link publishGame} と同じ方針。
   // 理由を引く SELECT にも `author_id = ?` を入れる——他人の作品に対して理由を
   // 撃ち分けると、任意の id が実在するかを外から確かめられる手がかりになる）。
-  const row = await env.DB.prepare('select status, title from games where id = ? and author_id = ?')
+  const row = await env.DB.prepare(
+    'select status, generation_state, title from games where id = ? and author_id = ?',
+  )
     .bind(gameId, authorId)
-    .first<{ status: string; title: string }>();
+    .first<{ status: string; generation_state: string; title: string }>();
 
   if (row === null) {
     return { ok: false, reason: 'not-found' };
   }
   if (row.status === REMOVED_STATUS) {
     return { ok: false, reason: 'removed' };
+  }
+  if (row.generation_state !== 'ready') {
+    // まだ成果物が無い（`pending` / `running` / `failed`）。**題名だけ先に付けさせない**
+    // ——失敗した行の題名を変えても出る場所が無く、生成中の行は完成時に何ができるかも
+    // 決まっていない。
+    return { ok: false, reason: 'not-ready' };
   }
   // 残る理由は「同じ題名だった」である。**失敗にしない**（二度押しと、正規化の結果が
   // いまの題名と一致した場合の両方がここへ来る。{@link removeGame} の二度押しと同じ扱い）。

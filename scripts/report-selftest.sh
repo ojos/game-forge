@@ -854,10 +854,13 @@ if ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
 else
   # 審査待ち 1 件（qg1）、通報はあるが cleared（qg3）、通報なし（qg2）。
   #
-  # **#366 で 2 件増やした。** qg4 は `cleared` のあと改名され、**その改名より後に**
+  # **#366 で 3 件増やした。** qg4 は `cleared` のあと改名され、**その改名より後に**
   # 通報が付いた作品（出る）。qg5 は改名されているが、通報は**改名より前**にしか
   # 無い作品（出ない）。**この 2 件が対になっていないと、条件を
   # 「`cleared` かつ改名がある」まで緩めても緑のままになる。**
+  #
+  # qg6 は**改名と通報が同じ秒**の作品（出る）。時刻は UNIX 秒なので、改名の直後の
+  # 通報は同じ秒に入りうる（PR #391 の Copilot レビュー）。**`>` で書くとここが落ちる。**
   CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
     npx wrangler d1 execute DB --local --persist-to "$QUEUE_SANDBOX" --command "
   insert into users (id, google_sub, email, display_name, created_at) values
@@ -867,32 +870,44 @@ else
     ('qg2','qa','published','t2','1.23',0,null),
     ('qg3','qa','published','t3','1.23',0,'cleared'),
     ('qg4','qa','published','t4','1.23',0,'cleared'),
-    ('qg5','qa','published','t5','1.23',0,'cleared');
+    ('qg5','qa','published','t5','1.23',0,'cleared'),
+    ('qg6','qa','published','t6','1.23',0,'cleared');
   insert into reports (id, game_id, reporter_id, reason, created_at) values
     ('r1','qg1','qb','ひどい',100), ('r2','qg3','qb','',50),
-    ('r4','qg4','qb','改名後の通報',300), ('r5','qg5','qb','改名前の通報',10);
+    ('r4','qg4','qb','改名後の通報',300), ('r5','qg5','qb','改名前の通報',10),
+    ('r6','qg6','qb','同じ秒の通報',500);
   insert into title_changes (id, game_id, old_title, new_title, changed_at) values
     ('c4','qg4','t4-old','t4',200),
-    ('c5','qg5','t5-old','t5',400);
+    ('c5','qg5','t5-old','t5',400),
+    ('c6','qg6','t6-old','t6',500);
   " >/dev/null 2>&1 || { echo "  FAIL キュー用の既知の行を入れられません" >&2; failed=1; }
 
   queue_json="$(bash scripts/report-queue.sh --persist-to "$QUEUE_SANDBOX" --format json 2>/dev/null)"
   queue_code=$?
   expect_eq "見るべき作品が有れば 1 で落ちる" "1" "$queue_code"
-  expect_eq "出るのは 2 件"                   "2" "$(jq -r '.count' <<<"$queue_json")"
-  # 並びは最終通報の降順なので、改名後に通報が付いた qg4（300）が先で qg1（100）が後。
+  expect_eq "出るのは 3 件"                   "3" "$(jq -r '.count' <<<"$queue_json")"
+  # 並びは最終通報の降順なので、qg6（500）→ qg4（300）→ qg1（100）になる。
+  expect_eq "改名と通報が同じ秒の cleared が出る" \
+    "qg6" "$(jq -r '.rows[0].game_id' <<<"$queue_json")"
   expect_eq "改名後に通報が付いた cleared が出る" \
-    "qg4" "$(jq -r '.rows[0].game_id' <<<"$queue_json")"
+    "qg4" "$(jq -r '.rows[1].game_id' <<<"$queue_json")"
   expect_eq "その行は cleared として出る" \
-    "cleared" "$(jq -r '.rows[0].review_state' <<<"$queue_json")"
-  expect_eq "最後の改名の時刻が出る"      "200" "$(jq -r '.rows[0].last_rename' <<<"$queue_json")"
-  expect_eq "審査待ちも出る"              "qg1" "$(jq -r '.rows[1].game_id' <<<"$queue_json")"
-  expect_eq "通報者の数が出る"            "1" "$(jq -r '.rows[1].reporters' <<<"$queue_json")"
+    "cleared" "$(jq -r '.rows[1].review_state' <<<"$queue_json")"
+  expect_eq "最後の改名の時刻が出る"      "200" "$(jq -r '.rows[1].last_rename' <<<"$queue_json")"
+  expect_eq "審査待ちも出る"              "qg1" "$(jq -r '.rows[2].game_id' <<<"$queue_json")"
+  expect_eq "通報者の数が出る"            "1" "$(jq -r '.rows[2].reporters' <<<"$queue_json")"
   # **出てはいけないものを名指しで見る。** 件数だけでは、別の行が紛れても気づけない。
   expect_eq "改名していない cleared は出ない" \
     "" "$(jq -r '.rows[] | select(.game_id == "qg3") | .game_id' <<<"$queue_json")"
   expect_eq "通報が改名より前の cleared は出ない" \
     "" "$(jq -r '.rows[] | select(.game_id == "qg5") | .game_id' <<<"$queue_json")"
+
+  # **外枠は「出うる状態の一覧」である**（#366。単数の `reviewState` は意味が変わった
+  # ので消した。PR #391 の Copilot レビュー）。
+  expect_eq "外枠に出うる状態が 2 つ並ぶ" \
+    "queued cleared" "$(jq -r '.reviewStates | join(" ")' <<<"$queue_json")"
+  expect_eq "意味の変わった単数の鍵は残っていない" \
+    "null" "$(jq -r '.reviewState // "null"' <<<"$queue_json")"
 
   # **旧題名も新題名も持ち出さないこと**（0027 のとおり UGC である）。
   if jq -e '.rows[0] | has("old_title") or has("new_title")' <<<"$queue_json" >/dev/null 2>&1; then
@@ -915,7 +930,7 @@ else
   # 消しただけでは 0 にならない）。
   CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
     npx wrangler d1 execute DB --local --persist-to "$QUEUE_SANDBOX" \
-    --command "update games set review_state = null where id in ('qg1','qg4')" >/dev/null 2>&1
+    --command "update games set review_state = null where id in ('qg1','qg4','qg6')" >/dev/null 2>&1
   run_bounded 60 bash scripts/report-queue.sh --persist-to "$QUEUE_SANDBOX"
   expect_eq "見るべき作品が無ければ 0 で通る" "0" "$?"
 fi

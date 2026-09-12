@@ -263,9 +263,23 @@ export const TITLE_CHANGES_TABLE = 'title_changes';
  * `max(changed_at)` は行が無ければ NULL を返し、**NULL との比較は真にならない。**
  * すなわち「`cleared` にしただけで改名していない作品」は出てこない——それは審査が
  * 終わった状態そのものであり、8.4 が「再び閾値に達しても戻さない」と決めたものである。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 同じ秒に並んだら拾う側へ倒す（`>=` である）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **時刻はどちらも UNIX 秒である**（0001 の方針）。改名した直後の通報は**同じ秒**に
+ * 記録されうるので、`>` で書くと**その通報が一覧から落ちる**（PR #391 の Copilot
+ * レビュー）。秒より細かい時刻も連番も持っていない以上、同じ秒の前後は区別できない。
+ *
+ * **区別できないときは、多く出すほうへ倒す。** 落とす側へ倒すと**見るべき作品が
+ * 出ないまま消える**が、拾う側へ倒したときの代償は「改名の直前に付いた通報で 1 件
+ * 余計に出る」だけであり、**運営は作品ページを見て判断する**（8.4）。`reviewVisibleSql`
+ * が `cleared` を露出させているのと同じで、**この一覧に出ること自体は作品に何の影響も
+ * 与えない。**
  */
 export const REVIEW_RENAMED_SQL =
-  "(g.review_state = 'cleared' and exists (select 1 from reports r where r.game_id = g.id and r.created_at > (select max(c.changed_at) from title_changes c where c.game_id = g.id)))";
+  "(g.review_state = 'cleared' and exists (select 1 from reports r where r.game_id = g.id and r.created_at >= (select max(c.changed_at) from title_changes c where c.game_id = g.id)))";
 
 /**
  * 運営が見るべき作品の条件（8.4 / #366）。

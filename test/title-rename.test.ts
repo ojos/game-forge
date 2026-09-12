@@ -289,6 +289,20 @@ describe('改名できるのは作者だけである（#366）', () => {
     expect(await titleOf(id)).toBe('あたらしい題名');
   });
 
+  it('まだ完成していない作品は改名できない（画面の条件は経路の関門ではない）', async () => {
+    // **`POST` は画面を通らない。** 作品ページは `state === 'ready'` のときしか
+    // フォームを出さないが、経路そのものが `generation_state` を見ていなければ、
+    // 直接投げるだけで生成中の行を改名できる（PR #391 の Copilot レビュー）。
+    const userId = await seedUser('pending-write');
+    const pending = await createPendingGame(env, userId, { prompt: 'もとの題名' });
+
+    const response = await postRename(pending.id, 'あたらしい題名', await sessionCookie(userId));
+
+    expect(response.status).toBe(409);
+    expect(await titleOf(pending.id)).toBe('もとの題名');
+    expect(await historyOf(pending.id)).toHaveLength(0);
+  });
+
   it('取り下げた作品は改名できない', async () => {
     const { userId, id } = await seedReady('removed-write', 'もとの題名');
     await publishGame(env, id, userId);
@@ -297,6 +311,85 @@ describe('改名できるのは作者だけである（#366）', () => {
     const outcome = await renameGame(env, id, userId, 'あたらしい題名');
 
     expect(outcome).toEqual({ ok: false, reason: 'removed' });
+    expect(await titleOf(id)).toBe('もとの題名');
+  });
+});
+
+describe('JSON でも同じ口を叩ける（#366）', () => {
+  /**
+   * 改名の経路へ JSON を POST する。
+   *
+   * **素の `<form>` とは別の解析と別の断り方を通る**ので、別に試す
+   * （PR #391 の Copilot レビュー）。
+   *
+   * @param body 本文（文字列ならそのまま送る）
+   * @param cookie `Cookie` ヘッダ
+   * @returns レスポンス
+   */
+  async function postJson(body: unknown, cookie: string): Promise<Response> {
+    return await dispatch(
+      workPageRoutes,
+      new Request(`${APP_ORIGIN}${WORK_RENAME_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: typeof body === 'string' ? body : JSON.stringify(body),
+      }),
+      testEnv(),
+    );
+  }
+
+  it('JSON で改名できる（結果の題名と changed が返る）', async () => {
+    const { userId, id } = await seedReady('json-ok', 'もとの題名');
+
+    const response = await postJson(
+      { [WORK_RENAME_GAME_ID_FIELD]: id, [WORK_RENAME_TITLE_FIELD]: 'あたらしい題名' },
+      await sessionCookie(userId),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      renamed: true,
+      title: 'あたらしい題名',
+      changed: true,
+    });
+    expect(await titleOf(id)).toBe('あたらしい題名');
+  });
+
+  it('壊れた JSON と題名でない値は 400（題名は変わらない）', async () => {
+    const { userId, id } = await seedReady('json-bad', 'もとの題名');
+    const cookie = await sessionCookie(userId);
+
+    const broken = await postJson('{"game_id":', cookie);
+    expect(broken.status).toBe(400);
+
+    // **文字列でない題名を受け取らない**（`String(値)` へ倒すと `[object Object]` が
+    // 題名になる）。
+    const notString = await postJson(
+      { [WORK_RENAME_GAME_ID_FIELD]: id, [WORK_RENAME_TITLE_FIELD]: { evil: true } },
+      cookie,
+    );
+    expect(notString.status).toBe(400);
+
+    // 題名の項目が無い要求も同じ扱いである。
+    const missing = await postJson({ [WORK_RENAME_GAME_ID_FIELD]: id }, cookie);
+    expect(missing.status).toBe(400);
+
+    expect(await titleOf(id)).toBe('もとの題名');
+    expect(await historyOf(id)).toHaveLength(0);
+  });
+
+  it('対応していない媒体型は 415', async () => {
+    const { userId, id } = await seedReady('json-media', 'もとの題名');
+    const response = await dispatch(
+      workPageRoutes,
+      new Request(`${APP_ORIGIN}${WORK_RENAME_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain', cookie: await sessionCookie(userId) },
+        body: 'title=あたらしい題名',
+      }),
+      testEnv(),
+    );
+    expect(response.status).toBe(415);
     expect(await titleOf(id)).toBe('もとの題名');
   });
 });
@@ -513,6 +606,24 @@ describe('改名後の通報を拾う条件（#366 / #367 が借りる）', () =
 
     expect(await matching(REVIEW_RENAMED_SQL)).toContain(id);
     expect(await matching(reviewAttentionSql())).toContain(id);
+  });
+
+  it('改名と通報が同じ秒でも当たる（拾う側へ倒す）', async () => {
+    // **時刻はどちらも UNIX 秒である。** 改名の直後の通報は同じ秒に入りうるので、
+    // `>` で書くとこの作品が一覧から落ちる（PR #391 の Copilot レビュー）。
+    const { userId, id } = await seedReady('attention-same-second', 'もとの題名');
+    const reporter = await seedUser('attention-same-second-reporter');
+    await renameGame(env, id, userId, 'あたらしい題名', 1_700_005_000);
+    await env.DB.prepare(`update games set ${REVIEW_STATE_COLUMN} = ? where id = ?`)
+      .bind(REVIEW_CLEARED, id)
+      .run();
+    await env.DB.prepare(
+      'insert into reports (id, game_id, reporter_id, reason, created_at) values (?, ?, ?, ?, ?)',
+    )
+      .bind(`report-${id}`, id, reporter, '同じ秒の通報', 1_700_005_000)
+      .run();
+
+    expect(await matching(REVIEW_RENAMED_SQL)).toContain(id);
   });
 
   it('通報が改名より前なら当たらない', async () => {

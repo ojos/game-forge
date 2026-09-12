@@ -120,6 +120,14 @@ if [[ -z "$QUEUED" ]]; then
   exit 2
 fi
 
+# **審査済みの綴りも取り出す**（出力の `reviewStates` に載せる。書き写さない）。
+CLEARED="$(sed -n "s/^export const REVIEW_CLEARED[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" "$REPORTS_TS" | head -1)"
+if [[ -z "$CLEARED" ]]; then
+  echo "[queue] ${REPORTS_TS} から REVIEW_CLEARED を取り出せません。" >&2
+  echo "[queue] 綴りが変わったなら、このスクリプトの sed も直してください。" >&2
+  exit 2
+fi
+
 # **改名で `cleared` をすり抜けた作品の条件も、同じ正本から取り出す**（冒頭の 2）。
 #
 # 正本は 1 行の二重引用符つき文字列リテラルである（`src/reports.ts` の
@@ -231,9 +239,15 @@ fi
 COUNT="$(jq 'length' <<<"$ROWS")"
 
 if [[ "$FORMAT" == "json" ]]; then
-  # **`reviewState` は残す**（既存の読み手のため。審査待ちの綴りである）。行ごとの
-  # `review_state` が、その行がどちらの理由で出ているかを持つ。
-  jq --arg state "$QUEUED" '{ reviewState: $state, count: length, rows: . }' <<<"$ROWS"
+  # **`reviewState`（単数）は残さない**（PR #391 の Copilot レビュー）。以前は
+  # 「出ているのは全部この状態である」という意味だったが、**#366 で 2 つの状態が
+  # 混ざった。** 綴りだけ残すと、古い読み手が `cleared` の行を `queued` と読む——
+  # **意味が変わった鍵を同じ名前で出すのは、消すより悪い。**
+  #
+  # 代わりに `reviewStates`（複数）を出す。**行ごとの `review_state` が正で**、
+  # こちらは「この一覧に出うる状態」の一覧である。
+  jq --arg queued "$QUEUED" --arg cleared "$CLEARED" \
+    '{ reviewStates: [$queued, $cleared], count: length, rows: . }' <<<"$ROWS"
 else
   echo "[queue] 対象: ${SCOPE}${PERSIST_TO:+（--persist-to ${PERSIST_TO}）}"
   echo "[queue] 審査待ちの綴り: ${QUEUED}（src/reports.ts の REVIEW_QUEUED）"

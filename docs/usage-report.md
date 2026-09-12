@@ -499,7 +499,9 @@ bash scripts/report-queue.sh --remote --format json
 ### 出る理由は 2 つあります（#366）
 
 1. `review_state = 'queued'` … 通報が閾値に達した作品（8.4）
-2. `review_state = 'cleared'` **かつ、最後の改名より後に通報が付いた**作品（5.4 / #366）
+2. `review_state = 'cleared'` **かつ、最後の改名より後に通報が付いた**作品（5.4 / #366。
+   **改名と同じ秒の通報も出します**——時刻は UNIX 秒で、秒より細かい順序を持っていない
+   ためです。見落とすより 1 件多く出すほうを採っています）
 
 **2 が要るのは、改名が `cleared` の終端をすり抜ける経路を開けるからです。**「穏当な題名で
 公開 → 通報 → 審査で `cleared` → 改名」が成立し、`cleared` に付いた通報はどの画面にも
@@ -507,6 +509,12 @@ bash scripts/report-queue.sh --remote --format json
 
 **条件は書き写していません。** 正本は `src/reports.ts` の `REVIEW_RENAMED_SQL` で、
 スクリプトはそれをソースから取り出して差し込みます（`REVIEW_QUEUED` の綴りと同じ規律）。
+
+**`--format json` の外枠が変わりました（#366）。** 以前の `reviewState`（単数。「出て
+いるのは全部この状態」の意味）は**無くなり**、`reviewStates`（複数。この一覧に出うる
+状態の一覧）になりました。**どの行がどちらかは、行ごとの `review_state` を見てください**
+——意味が変わった鍵を同じ名前で出すと、古い読み手が `cleared` の行を `queued` と
+読みます。
 
 ### 進めるのはこのスクリプトの仕事ではありません
 

@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   ADMIN_ACTIONS,
-  ADMIN_ACTION_TARGETS,
+  ADMIN_ACTION_TARGET_KINDS,
   ADMIN_LIST_LIMIT,
   ADMIN_REASON_MAX_LENGTH,
   listAdminActions,
@@ -160,7 +160,7 @@ describe('0026 の形（仕様 2.4.4）', () => {
     // ——値は `crypto.randomUUID()` が必ず入れる（`src/admin/actions.ts`）。
     const columns = await env.DB.prepare('pragma table_info(admin_actions)').all<ColumnInfo>();
     const byName = new Map(columns.results.map((row) => [row.name, row]));
-    for (const name of ['actor_id', 'created_at', 'action', 'target_type', 'target_id', 'reason']) {
+    for (const name of ['actor_id', 'created_at', 'action', 'target_kind', 'target_id', 'reason']) {
       expect(byName.get(name), `admin_actions.${name}`).toBeDefined();
       expect(byName.get(name)!.notnull, `admin_actions.${name} の NOT NULL`).toBe(1);
     }
@@ -188,7 +188,7 @@ describe('0026 の形（仕様 2.4.4）', () => {
     };
 
     expect(valuesOf('action').sort()).toEqual([...ADMIN_ACTIONS].sort());
-    expect(valuesOf('target_type').sort()).toEqual([...ADMIN_ACTION_TARGETS].sort());
+    expect(valuesOf('target_kind').sort()).toEqual([...ADMIN_ACTION_TARGET_KINDS].sort());
   });
 
   it('取り下げ（removed）の綴りが無く、書こうとしても入らない（2.4.3）', async () => {
@@ -197,7 +197,7 @@ describe('0026 の形（仕様 2.4.4）', () => {
     await expect(
       env.DB.prepare(
         `insert into admin_actions
-           (id, actor_id, created_at, action, target_type, target_id, reason)
+           (id, actor_id, created_at, action, target_kind, target_id, reason)
          values (?, ?, 1, 'game-removed', 'game', 'g', '理由')`,
       )
         .bind(crypto.randomUUID(), users.admin)
@@ -209,7 +209,7 @@ describe('0026 の形（仕様 2.4.4）', () => {
     await expect(
       env.DB.prepare(
         `insert into admin_actions
-           (id, actor_id, created_at, action, target_type, target_id, reason)
+           (id, actor_id, created_at, action, target_kind, target_id, reason)
          values (?, ?, 1, 'user-banned', 'user', ?, '   ')`,
       )
         .bind(crypto.randomUUID(), users.admin, users.target)
@@ -264,7 +264,7 @@ describe('操作と履歴が 1 つの batch で入る（2.4.4）', () => {
     expect(entry).toMatchObject({
       actorId: users.admin,
       action: 'review-cleared',
-      targetType: 'game',
+      targetKind: 'game',
       targetId: gameId,
       reason: '通報を見たが問題なし',
       createdAt: 1_700_000_000,
@@ -288,7 +288,7 @@ describe('操作と履歴が 1 つの batch で入る（2.4.4）', () => {
     expect(await historyCount()).toBe(before + 1);
     expect((await listAdminActions(env))[0]).toMatchObject({
       action: 'user-banned',
-      targetType: 'user',
+      targetKind: 'user',
       targetId: users.target,
     });
   });
@@ -492,7 +492,7 @@ describe('履歴の読み取り（2.4.4）', () => {
       statements.push(
         env.DB.prepare(
           `insert into admin_actions
-             (id, actor_id, created_at, action, target_type, target_id, reason)
+             (id, actor_id, created_at, action, target_kind, target_id, reason)
            values (?, ?, ?, 'user-banned', 'user', ?, ?)`,
         ).bind(crypto.randomUUID(), users.admin, 1_700_100_000 + index, users.target, `理由 ${index}`),
       );

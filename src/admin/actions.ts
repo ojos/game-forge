@@ -59,6 +59,7 @@
  * **運営フラグ（`is_operator`）と管理者（`is_admin`）を書く関数も置かない**（2.4.2 /
  * 2.4.3）。引き続き D1 への直接 UPDATE で行う（`docs/admin-host.md`）。
  */
+import { PUBLISHED_STATUS } from '../games.js';
 import { REVIEW_CLEARED, REVIEW_QUEUED } from '../reports.js';
 import type { ReviewState } from '../reports.js';
 
@@ -82,11 +83,16 @@ export const ADMIN_ACTIONS = [
 /** 履歴に残す操作。 */
 export type AdminActionName = (typeof ADMIN_ACTIONS)[number];
 
-/** 対象の種類（**正本**。`migrations/0026` の CHECK と機械照合する）。 */
-export const ADMIN_ACTION_TARGETS = ['game', 'user'] as const;
+/**
+ * 対象の種類（**正本**。`migrations/0026` の CHECK と機械照合する）。
+ *
+ * **列名は `target_kind` である**（仕様 5.1 の表の綴り。`target_type` ではない
+ * ——PR #364 のレビューで直した）。
+ */
+export const ADMIN_ACTION_TARGET_KINDS = ['game', 'user'] as const;
 
 /** 対象の種類。 */
-export type AdminActionTarget = (typeof ADMIN_ACTION_TARGETS)[number];
+export type AdminActionTargetKind = (typeof ADMIN_ACTION_TARGET_KINDS)[number];
 
 /**
  * 理由の最大長（**コードポイントで数える**）。
@@ -162,7 +168,7 @@ export type AdminWriteOutcome =
 interface AdminActionRecord {
   readonly actorId: string;
   readonly action: AdminActionName;
-  readonly targetType: AdminActionTarget;
+  readonly targetKind: AdminActionTargetKind;
   readonly targetId: string;
   /** **未検査でよい**（下記 {@link runWithHistory}）。 */
   readonly reason: string;
@@ -173,7 +179,7 @@ interface AdminActionRecord {
  * 履歴の insert を組み立てる。
  *
  * **`where exists` で「操作した後の状態」を確かめる**（このファイルの冒頭）。
- * 束縛の順は `select` の並び（id / actor / created_at / action / target_type は定数 /
+ * 束縛の順は `select` の並び（id / actor / created_at / action / target_kind は定数 /
  * target_id / reason）に続けて、`exists` の条件が取る。
  *
  * @param db D1 バインディング
@@ -191,7 +197,7 @@ function historyInsert(
   return db
     .prepare(
       `insert into admin_actions
-         (id, actor_id, created_at, action, target_type, target_id, reason)
+         (id, actor_id, created_at, action, target_kind, target_id, reason)
        select ?, ?, ?, ?, ?, ?, ?
         where exists (${guardSql})`,
     )
@@ -200,7 +206,7 @@ function historyInsert(
       record.actorId,
       record.createdAt,
       record.action,
-      record.targetType,
+      record.targetKind,
       record.targetId,
       record.reason,
       ...guardBindings,
@@ -278,6 +284,14 @@ async function runWithHistory(
  * 置いていない**（8.4 は「閾値到達で審査キューへ投入」と定めており、投入するのは
  * 通報の側である）。
  *
+ * **取り下げ済み（`status = 'removed'`）の作品も対象にしない**（PR #364 のレビューで
+ * 足した条件）。**`removeGame` は `status` だけを動かし、`review_state` を触らない**
+ * （`src/games.ts`。状態を 2 か所で持たないという 0017 の方針の帰結である）。
+ * そのため**審査待ちのまま作者が取り下げた作品**がありうる——条件が無いと、その
+ * tombstone に対して「新規露出を戻す」操作が通り、**戻らない露出について履歴が 1 行
+ * 積まれる。** 2.4.3 が取り下げを画面へ置かないと決めた以上、**取り下げ済みの作品は
+ * 往復の外側**である。
+ *
  * **`games.status` を 1 ビットも動かさない**（0017 / 8.4）。止まるのは新規露出だけで、
  * `/works/<id>` は生き続ける。
  *
@@ -298,8 +312,8 @@ export async function setReviewState(
 ): Promise<AdminWriteOutcome> {
   const createdAt = params.now ?? Math.floor(Date.now() / 1000);
   const update = env.DB.prepare(
-    'update games set review_state = ? where id = ? and review_state = ?',
-  ).bind(params.to, params.gameId, params.from);
+    'update games set review_state = ? where id = ? and review_state = ? and status = ?',
+  ).bind(params.to, params.gameId, params.from, PUBLISHED_STATUS);
 
   return await runWithHistory(
     env.DB,
@@ -309,13 +323,15 @@ export async function setReviewState(
       {
         actorId: params.actorId,
         action: params.to === REVIEW_QUEUED ? 'review-queued' : 'review-cleared',
-        targetType: 'game',
+        targetKind: 'game',
         targetId: params.gameId,
         reason: params.reason,
         createdAt,
       },
-      'select 1 from games where id = ? and review_state = ?',
-      [params.gameId, params.to],
+      // **`status` も見る。** 見ないと、取り下げ済みの作品に対して（UPDATE は当たらない
+      // のに）`exists` だけが真になり、**操作していない履歴が 1 行積まれる。**
+      'select 1 from games where id = ? and review_state = ? and status = ?',
+      [params.gameId, params.to, PUBLISHED_STATUS],
     ),
   );
 }
@@ -324,8 +340,11 @@ export async function setReviewState(
  * BAN を付け外しする（`users.banned_at`。2.4.3 / 7.3）。
  *
  * **BAN は露出を止めない**（7.3 / #330 の決定）。この関数が触るのは `users.banned_at`
- * だけで、**その人の作品は一覧からも作品ページからも消えない**——止まるのは
- * ログインである（`src/session-user.ts`）。`test/admin-actions.test.ts` が、BAN した
+ * だけで、**その人の作品は一覧からも作品ページからも消えない。**
+ *
+ * **止まるのはセッションである。** `resolveSessionUser` が拒否するので
+ * （`src/session-user.ts`）、ログインと、**ログインを要する操作（生成・公開・いいね・
+ * 招待コードの発行など）がすべて止まる。** `test/admin-actions.test.ts` が、BAN した
  * 直後に公開一覧を引いて作品が残っていることを確かめる。
  *
  * **行を消さない**（0001。消すと `invited_by` の連鎖と生成履歴が同時に失われ、
@@ -367,7 +386,7 @@ export async function setUserBan(
       {
         actorId: params.actorId,
         action: params.banned ? 'user-banned' : 'user-unbanned',
-        targetType: 'user',
+        targetKind: 'user',
         targetId: params.userId,
         reason: params.reason,
         createdAt,
@@ -386,7 +405,7 @@ export interface AdminActionEntry {
   readonly actorName: string | null;
   readonly createdAt: number;
   readonly action: AdminActionName;
-  readonly targetType: AdminActionTarget;
+  readonly targetKind: AdminActionTargetKind;
   readonly targetId: string;
   readonly reason: string;
 }
@@ -419,7 +438,7 @@ export async function listAdminActions(
   limit: number = ADMIN_LIST_LIMIT,
 ): Promise<readonly AdminActionEntry[]> {
   const result = await env.DB.prepare(
-    `select a.id, a.actor_id, a.created_at, a.action, a.target_type, a.target_id, a.reason,
+    `select a.id, a.actor_id, a.created_at, a.action, a.target_kind, a.target_id, a.reason,
             u.display_name as actor_name
        from admin_actions a
        left join users u on u.id = a.actor_id
@@ -432,7 +451,7 @@ export async function listAdminActions(
       actor_id: string;
       created_at: number;
       action: AdminActionName;
-      target_type: AdminActionTarget;
+      target_kind: AdminActionTargetKind;
       target_id: string;
       reason: string;
       actor_name: string | null;
@@ -444,7 +463,7 @@ export async function listAdminActions(
     actorName: row.actor_name,
     createdAt: row.created_at,
     action: row.action,
-    targetType: row.target_type,
+    targetKind: row.target_kind,
     targetId: row.target_id,
     reason: row.reason,
   }));

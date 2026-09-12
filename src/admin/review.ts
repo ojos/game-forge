@@ -33,6 +33,7 @@
  * **`games.status` を 1 ビットも動かさない**（0017 / 8.4）。この画面が動かすのは
  * `review_state` だけで、**共有済みの URL は切れない。**
  */
+import { PUBLISHED_STATUS } from '../games.js';
 import { escapeHtml } from '../html.js';
 import { formatJstMinutes, toIsoTimestamp } from '../jst.js';
 import { workPagePath } from '../paths.js';
@@ -71,6 +72,11 @@ interface ReviewRow {
  * とおり。運用が数日に 1 度開く画面である）。**張る契機は、公開作品が数千本になった
  * ときである**——`limit` は走査を止めないので、そのときは `review_state` の部分索引が要る。
  *
+ * **公開中の作品だけを並べる**（PR #364 のレビューで足した条件）。`removeGame` は
+ * `status` だけを動かして `review_state` を残すので（`src/games.ts`）、**審査待ちのまま
+ * 作者が取り下げた作品**がありうる。並べると、**戻らない露出について「新規露出を戻す」
+ * ボタンを出す**ことになる（2.4.3 は取り下げを画面へ置かないと決めている）。
+ *
  * **`users` は表示名 1 列のために結合する**（行ごと持ってこない。`email` は
  * 管理画面にも出さない）。
  *
@@ -91,11 +97,11 @@ async function listByReviewState(
     `select g.id, g.title, g.published_at, u.display_name as author_name
        from games g
        left join users u on u.id = g.author_id
-      where g.review_state = ?
+      where g.review_state = ? and g.status = ?
       order by g.published_at desc, g.id desc
       limit ?`,
   )
-    .bind(state, limit)
+    .bind(state, PUBLISHED_STATUS, limit)
     .all<ReviewRow>();
   return result.results;
 }

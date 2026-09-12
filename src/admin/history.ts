@@ -40,14 +40,19 @@ import { adminFooter, adminHead } from './shell.js';
 const ACTION_LABELS: Readonly<Record<AdminActionName, string>> = {
   'review-queued': '審査待ちにした（新規露出を止めた）',
   'review-cleared': '問題なしにした（新規露出を戻した）',
-  'user-banned': 'BAN した（ログインを止めた）',
+  'user-banned': 'BAN した（ログインを要する操作を止めた）',
   'user-unbanned': 'BAN を解除した',
 };
 
 /**
  * 1 行を組み立てる。
  *
- * **D1 から来る値（実行者名・対象 id・理由）は、すべて `escapeHtml` を通す。**
+ * **実行者は名前と id の両方を出す**（PR #364 のレビューで足した）。**表示名は利用者が
+ * 変えられ、重複も許される**（5.9 / `src/account.ts`）ので、名前だけでは**改名後や
+ * 同名の管理者が居るときに、どちらが操作したのかを決められない。** `admin_actions` が
+ * 残しているのは `actor_id` のほうで、名前は表示のための結合にすぎない。
+ *
+ * **D1 から来る値（実行者名・実行者 id・対象 id・理由）は、すべて `escapeHtml` を通す。**
  * **理由は運営が書いた自由記述である**——書いた本人しか読まない値であっても、
  * 出力側でエスケープする（`src/account.ts` の「保存時の制約は XSS を防がない」）。
  *
@@ -66,13 +71,14 @@ function renderEntry(entry: AdminActionEntry, appHost: string): string {
   // 絶対 URL にする）。利用者は送り先が無い——**admin に利用者の個別画面は無く**、
   // app の作者ページは公開作品しか出さないので、id をそのまま出す。
   const target =
-    entry.targetType === 'game'
+    entry.targetKind === 'game'
       ? `作品 <a href="https://${escapeHtml(appHost)}${escapeHtml(workPagePath(entry.targetId))}"><code>${targetId}</code></a>`
       : `利用者 <code>${targetId}</code>`;
 
   return `<li class="gf-admin-row">
   <p class="gf-admin-row-title">${when}　${escapeHtml(ACTION_LABELS[entry.action])}</p>
-  <p class="gf-admin-meta">実行: ${escapeHtml(entry.actorName ?? '（不明）')} ／ 対象: ${target}</p>
+  <p class="gf-admin-meta">実行: ${escapeHtml(entry.actorName ?? '（不明）')}
+     <code>${escapeHtml(entry.actorId)}</code> ／ 対象: ${target}</p>
   <p class="gf-admin-reason">理由: ${escapeHtml(entry.reason)}</p>
 </li>`;
 }

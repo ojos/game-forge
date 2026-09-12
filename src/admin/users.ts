@@ -5,8 +5,14 @@
  * BAN は露出を止めない（7.3 / #330 の決定）
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **止まるのはログインだけである**（`src/session-user.ts` が `banned_at` を見る）。
- * **その人の作品は、一覧からもトップからも作者ページからも消えない。**
+ * **止まるのはセッションである。** `resolveSessionUser` が `banned_at` を見て拒否するので
+ * （`src/session-user.ts`）、**ログインだけでなく、ログインを要する操作がすべて止まる**
+ * ——生成（`src/generate.ts`）・公開・推敲・いいね・招待コードの発行
+ * （`src/invite-issuance.ts`）・登録情報の変更。**BAN は費用 DoS への防波堤である**
+ * （7.3）ので、止まる範囲がここまで及ぶのは意図どおりである。
+ *
+ * **止まらないのは露出である。** その人の公開済みの作品は、一覧からもトップからも
+ * 作者ページからも消えない。
  *
  * **それは仕様である。** 7.3 は BAN を「費用 DoS への防波堤」として置いており、
  * **作品の可否は審査（`review_state`）と取り下げ（`status`）が決める。** 混ぜると、
@@ -140,7 +146,7 @@ function renderUser(row: UserRow, actorId: string): string {
     <input type="hidden" name="${ADMIN_NEXT_FIELD}" value="${banned ? BAN_NEXT_ACTIVE : BAN_NEXT_BANNED}">
     <label for="reason-${id}">理由（必須。履歴に残ります）</label>
     <input id="reason-${id}" name="${ADMIN_REASON_FIELD}" type="text" required>
-    <button type="submit">${banned ? 'BAN を解除する' : 'BAN する（ログインを止める）'}</button>
+    <button type="submit">${banned ? 'BAN を解除する' : 'BAN する（ログインを要する操作を止める）'}</button>
   </form>`;
 
   return `<li class="gf-admin-row">
@@ -171,8 +177,10 @@ async function showUsers(
     `${adminHead('利用者')}
 <h1>利用者</h1>
 ${renderOutcomeNotice(outcome)}
-<p><strong>BAN で止まるのはログインだけです。</strong>その人の公開済みの作品は、一覧にも
-   作品ページにも残ります（仕様 7.3）。作品を止めるのは審査キューの操作です。</p>
+<p><strong>BAN するとログインが通らなくなり、生成・公開・いいね・招待コードの発行など、
+   ログインを要する操作がすべて止まります。</strong>止まらないのは露出です——その人の
+   公開済みの作品は、一覧にも作品ページにも残ります（仕様 7.3）。作品を止めるのは
+   審査キューの操作です。</p>
 <p>運営フラグ（<code>is_operator</code>）の付け外しと、管理者を増やすことは、この画面に
    置いていません（仕様 2.4.2 / 2.4.3）。</p>
 <h2>新しい順（${rows.length} 件）</h2>

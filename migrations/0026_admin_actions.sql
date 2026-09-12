@@ -44,9 +44,9 @@
 -- （`is_admin = 1` の行がある）、**存在しない id が入る経路が無い。**
 --
 -- **`target_id` には張らない。** 対象は作品のことも利用者のこともあり、
--- **SQLite の外部キーは「行き先の表」を 1 つに決めなければ書けない**（`target_type` で
+-- **SQLite の外部キーは「行き先の表」を 1 つに決めなければ書けない**（`target_kind` で
 -- 分かれる参照は表現できない）。**片方にだけ張ると、もう片方が黙って無検査になる**
--- ので、**どちらにも張らず、対象の種類を `target_type` で明示する。**
+-- ので、**どちらにも張らず、対象の種類を `target_kind` で明示する。**
 --
 -- **`0018` が `game_id` に外部キーを張らなかった理由とは別である**（あちらは「実在
 -- しない id の申請も記録に残すほうが 8.4 に適う」という判断だった）。ここは表現できない
@@ -55,10 +55,16 @@
 --
 -- ## CHECK を 3 つ張る
 --
--- **`action` と `target_type` は取りうる値が決まっている。** 0021 / 0025 が真偽の 2 値へ
+-- **列名は仕様 5.1 の表の綴りに合わせる。** あの表は `admin_actions` を
+-- 「`id`・`actor_id`・`action`・**`target_kind`**・`target_id`・`reason`・`created_at`」と
+-- 定めている。**`target_type` にしない**——PR #364 のレビューで指摘を受けて直した
+-- （**適用前に直せば済むが、適用後は列名を変えられない**。仕様どおりに読む人が、
+-- 存在しない列を参照することになる）。
+--
+-- **`action` と `target_kind` は取りうる値が決まっている。** 0021 / 0025 が真偽の 2 値へ
 -- CHECK を張ったのと同じ判断で、**この 2 列は「戻せる操作だけを置く」という 2.4.3 の
 -- 決定そのものを表している。** 綴りの正本は `src/admin/actions.ts` の
--- `ADMIN_ACTIONS` / `ADMIN_ACTION_TARGETS` で、**一致は `test/admin-actions.test.ts` が
+-- `ADMIN_ACTIONS` / `ADMIN_ACTION_TARGET_KINDS` で、**一致は `test/admin-actions.test.ts` が
 -- 機械照合する**（書き写した一覧は必ず腐る。`.ai-playbook/shared-ai-rules.md` 12 章）。
 --
 -- **`'game-removed'` をここへ足さない。** 作品の取り下げ（`games.status = 'removed'`）は
@@ -110,7 +116,7 @@ CREATE TABLE admin_actions (
     action IN ('review-queued', 'review-cleared', 'user-banned', 'user-unbanned')
   ),
   -- 対象の種類。**`target_id` の行き先がどちらの表かを、この列だけが知っている**（上記）。
-  target_type TEXT NOT NULL CHECK (target_type IN ('game', 'user')),
+  target_kind TEXT NOT NULL CHECK (target_kind IN ('game', 'user')),
   -- 対象の id（`games.id` または `users.id`）。
   target_id TEXT NOT NULL,
   -- 判断の理由（**必須**。2.4.4）。空と空白だけを表の側でも弾く（上記）。

@@ -338,6 +338,50 @@ describe('審査キューの画面（2.4.3 / 8.4）', () => {
     expect(body.split('<li class="gf-admin-row">').length - 1).toBe(ADMIN_LIST_LIMIT);
   });
 
+  it('取り下げ済み（removed）の作品は、審査待ちのままでも並べない', async () => {
+    // **`removeGame` は `status` だけを動かし、`review_state` を残す**（`src/games.ts`）。
+    // 並べると、**戻らない露出について「新規露出を戻す」ボタンを出す**ことになる
+    // （PR #364 のレビューの指摘。2.4.3 は取り下げを画面へ置かないと決めている）。
+    const removed = crypto.randomUUID();
+    await env.DB.prepare(
+      `insert into games
+         (id, author_id, status, title, go_version, created_at, generation_state,
+          published_at, fork_count, like_count, ogp_state, review_state)
+       values (?, ?, 'removed', '取り下げ済みの作品', '', 1, 'ready', 1, 0, 0, 'ready', ?)`,
+    )
+      .bind(removed, users.author, REVIEW_QUEUED)
+      .run();
+
+    const { body } = await open(ADMIN_HOME_PATH, adminCookie);
+    expect(body).not.toContain(removed);
+  });
+
+  it('取り下げ済みの作品は、口からも動かせない（履歴も残らない）', async () => {
+    const removed = crypto.randomUUID();
+    await env.DB.prepare(
+      `insert into games
+         (id, author_id, status, title, go_version, created_at, generation_state,
+          published_at, fork_count, like_count, ogp_state, review_state)
+       values (?, ?, 'removed', '取り下げ済みの作品', '', 1, 'ready', 1, 0, 0, 'ready', ?)`,
+    )
+      .bind(removed, users.author, REVIEW_QUEUED)
+      .run();
+
+    const { location } = await post(
+      ADMIN_REVIEW_API_PATH,
+      {
+        [ADMIN_GAME_ID_FIELD]: removed,
+        [ADMIN_NEXT_FIELD]: REVIEW_CLEARED,
+        [ADMIN_REASON_FIELD]: '取り下げ済みを戻そうとした',
+      },
+      adminCookie,
+    );
+    expect(location).toBe(`${ADMIN_HOME_PATH}?outcome=not-applicable`);
+    expect(await reviewStateOf(removed)).toBe(REVIEW_QUEUED);
+    // **履歴も 1 行も残らない**（操作していない履歴を作らない）。
+    expect(await listAdminActions(env)).toEqual([]);
+  });
+
   it('未知の outcome を画面へ反射しない', async () => {
     // **query に載るのは固定の綴りだけである**（`src/admin/outcome.ts`）。
     const { status, body } = await open(
@@ -546,10 +590,13 @@ describe('利用者の一覧と BAN（2.4.3 / 7.3）', () => {
     expect(await listAdminActions(env)).toEqual([]);
   });
 
-  it('BAN は露出を止めないと画面に書いてある（7.3）', async () => {
+  it('BAN で止まる範囲と、止まらない露出の両方を画面に書いてある（7.3）', async () => {
     // **書かないと、運営は「BAN したのに作品が出ている」を不具合だと読む。**
+    // **止まる範囲も正しく書く**——`resolveSessionUser` が拒否するので、生成も招待も
+    // 止まる（PR #364 のレビューの指摘）。「ログインだけ」と書くと誤認させる。
     const { body } = await open(ADMIN_USERS_PATH, adminCookie);
-    expect(body).toContain('BAN で止まるのはログインだけです');
+    expect(body).toContain('ログインを要する操作がすべて止まります');
+    expect(body).toContain('止まらないのは露出です');
   });
 });
 
@@ -571,12 +618,15 @@ describe('操作の履歴の画面（2.4.4）', () => {
     expect(body).toContain('通報を見たが問題なし');
     expect(body).toContain(gameId);
     expect(body).toContain('管理者');
+    // **実行者の id も出す**（表示名は変えられて重複も許されるので、名前だけでは
+    // どの管理者が操作したのかを決められない。PR #364 のレビューの指摘）。
+    expect(body).toContain(users.admin);
   });
 
   it('理由をエスケープして出す（運営が書いた自由記述である）', async () => {
     await env.DB.prepare(
       `insert into admin_actions
-         (id, actor_id, created_at, action, target_type, target_id, reason)
+         (id, actor_id, created_at, action, target_kind, target_id, reason)
        values (?, ?, 1, 'user-banned', 'user', ?, ?)`,
     )
       .bind(crypto.randomUUID(), users.admin, users.other, '<script>alert(1)</script>')

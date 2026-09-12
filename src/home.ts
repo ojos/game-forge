@@ -10,12 +10,32 @@
  * 公開トップを独立させ、開発用の索引を `/__dev/` へ寄せると、
  * **「`/` は常に公開トップ、`/__dev/*` は開発時のみ」**という 1 つの規則で済む。
  *
- * ## D1 を読まない
+ * ## D1 を読む（#329 / M9-3。2.3.3 が覆した決定）
  *
- * 待機リストの件数（`src/signup.ts` が出しているもの）をここへ出さない。トップは
- * 未ログインの閲覧者が最初に踏む経路で、URL 拡散の着地点にもなる（2.2-1）。
- * 1 アクセスごとに D1 の読み取りが増える形は、3.6 が挙げる無料枠の圧迫に直結する。
- * 件数は登録の判断に効く `/signup` にだけ置く。
+ * **かつてここには「D1 を読まない」と書いてあった。** 根拠は 3.6 の無料枠で、
+ * 「1 アクセスごとに D1 の読み取りが増える形は無料枠の圧迫に直結する」としていた。
+ * **仕様 2.3.3 がこの決定を覆し、#329 がコードを追いつかせた**（あの記述は「いまの
+ * コードが何をしているか」の説明として正しかったので、**読むようになるまで書き換えない**
+ * と 2.3.3 が定めていた）。
+ *
+ * 覆した根拠は 3 つである。
+ *
+ * 1. **3.6 が名指しで警告しているのは書き込み側である**（「プレイ回数やスタンプ評価を
+ *    都度書くと即座に枯れる」）。同じ節が**「タイムラインの読み取りは Cache API を前段に
+ *    置く」**と書いており、**一覧の読み取りは 3.6 自身が前提として認めている**
+ * 2. **実数で 3〜4 桁の余裕がある。** 1 回が読むのは 32 行＋索引で、無料枠 500 万行/日 は
+ *    **1 日 7〜15 万ページビュー相当**である（2.3.3 の表）
+ * 3. **解禁の本体は 3 条件のほうである**——件数の固定・索引・Cache API の前段。
+ *    3 つとも `src/home-feed.ts` にある
+ *
+ * **ハブ型のトップは作品の行を読まないと 1 枚も描けない**（2.3.1）。読まない形を保つ
+ * ことは、**発見の面を 1 枚も持たない**ことと同じだった。
+ *
+ * ### それでも待機リストの件数はここへ出さない
+ *
+ * **これは「D1 を読まない」から導いていた結論ではない。** 件数は**登録するかどうかの
+ * 判断に効く数字**であり、効く場所は `/signup` である（`src/signup.ts`）。読めるように
+ * なったからといって、判断に効かない場所へ数字を増やさない。
  *
  * ## JavaScript もスタイルシートも要求しない
  *
@@ -34,6 +54,12 @@ import { GENERATE_PAGE_PATH, HOME_PATH, INVITES_PATH, SIGNUP_PATH } from './path
 import { MY_WORKS_PATH } from './my-works.js';
 // 公開一覧の綴りも正本から借りる（#328。同じ理由で書き写さない）。
 import { PUBLIC_WORKS_PATH } from './works-list.js';
+// 引く側（#329 / M9-3）。**トップの問い合わせをここへ書かない**（あちらの冒頭が理由）。
+import type { HomeFeedData, HomeSection } from './home-feed.js';
+import { homeSections, loadHomeFeed } from './home-feed.js';
+// **カードは共通部品を借りる**（仕様 2.3.6。一覧・トップ・作者ページが同じ 1 枚を使う。
+// 項目を足したり減らしたりするのは `src/work-card.ts` の仕事で、ここではない）。
+import { renderWorkCards } from './work-card.js';
 
 /**
  * 公開トップのパス。
@@ -43,6 +69,37 @@ import { PUBLIC_WORKS_PATH } from './works-list.js';
  * 値を二重に持っているわけではない。
  */
 export { HOME_PATH };
+
+/**
+ * 節 1 つを組み立てる。
+ *
+ * **見出しと節を `<section>` で結ぶ。** カードの `<ul>` が 4 つ縦に並ぶので、
+ * 読み上げで「どの見出しの下のリストか」が分かる必要がある（`aria-labelledby`）。
+ * `id` は節の識別子から作るので、節を足しても綴りを考え直さずに済む。
+ *
+ * **「もっと見る」の行き先は `worksListPath` が持つ**（`src/home-feed.ts` が組み立てて
+ * 渡す）。ここは文言だけを決める。**見える文字は「もっと見る」に留め、軸の名前は
+ * `aria-label` に入れる**——同じ文字のリンクが 3 本並ぶので、リンクだけを抜き出して
+ * 読む（読み上げのリンク一覧）ときに区別が付かなくなる。見えている側は直上の見出しで
+ * 区別が付いており、そこへ軸名を重ねると 1 行が長くなって 390px で折れる
+ * （`scripts/check-page-width.sh` が見ている回帰の側）。
+ *
+ * @param section 節
+ * @returns HTML
+ */
+function renderSection(section: HomeSection): string {
+  const headingId = `gf-home-${section.key}`;
+  const more =
+    section.moreHref === null
+      ? ''
+      : `\n<p class="gf-home-more"><a href="${section.moreHref}"` +
+        ` aria-label="${section.title}をもっと見る">もっと見る</a></p>`;
+  return `
+<section class="gf-home-section" aria-labelledby="${headingId}">
+<h2 id="${headingId}">${section.title}</h2>
+${renderWorkCards(section.works)}${more}
+</section>`;
+}
 
 /**
  * 公開トップの HTML。
@@ -71,25 +128,34 @@ export { HOME_PATH };
  * **「あなたの作品」（#152）への導線も同じ理由でここに置く。** ログインの着地点は `/` で
  * あり、**URL を控え損ねた利用者が最初に戻ってくる場所もここ**である。導線が無ければ、
  * 一覧は「その URL を知っている人だけが使える一覧」になり、#152 が解こうとしている問題を
- * そのまま繰り返す。**リンクは静的なので、上の「D1 を読まない」は崩れない**（引くのは
- * 遷移先であって、ここではない）。
+ * そのまま繰り返す。
  *
  * 招待の発行（#91）への導線をここに置くのは、**ログイン後の着地点が `/` だから**である
  * （`src/auth/google.ts` のコールバックは `/` へ戻す）。導線が無いと、実装した経路へ
  * ブラウザから辿り着けない。未ログインにも見えるリンクになるが、押した先で
- * ログインへ送られるだけで、D1 の読み取りはここでは起きない。
+ * ログインへ送られるだけで、**そのリンクを出すために D1 は読まない。**
  *
  * **招待枠の本数をここに書かない。** 書けば `INVITE_QUOTA`（`src/invite-issuance.ts`）の
  * 写しになり、変えたときに片方だけが古くなる。本数は発行の画面が出す。
+ *
+ * **作品の節を、案内の文より先に置く。** M8-2 は拡散の着地点 3 枚について「作品が
+ * 画面上で最も目立つ位置と大きさ」を求めており、トップはその 1 枚である。
+ * 案内（いまの状態 / はじめる / 参加している方へ）の文言は #128 から動かしていない
+ * ——**位置を変えただけで、書いてあることは変えていない。**
+ *
+ * @param sections 並べる節（空の節は既に落としてある。`src/home-feed.ts`）
+ * @returns HTML
  */
-const HOME_HTML = `${siteHead({
-  title: 'Game Forge',
-  extraHead:
-    '\n<meta name="description" content="プロンプト1行で生まれるブラウザ2Dゲームと、フォーク型 UGC コミュニティ。招待制クローズドβ。">',
-})}
+function renderHomePage(sections: readonly HomeSection[]): string {
+  return `${siteHead({
+    title: 'Game Forge',
+    extraHead:
+      '\n<meta name="description" content="プロンプト1行で生まれるブラウザ2Dゲームと、フォーク型 UGC コミュニティ。招待制クローズドβ。">',
+  })}
 <h1>Game Forge</h1>
 <p>プロンプト 1 行から、ブラウザで遊べる 2D ゲームが生まれます。
    気に入った作品は<strong>改造（フォーク）</strong>して、自分の 1 本として公開できます。</p>
+${sections.map(renderSection).join('\n')}
 
 <h2>いまの状態</h2>
 <p><strong>招待制のクローズドβを準備しています。</strong>
@@ -112,6 +178,65 @@ const HOME_HTML = `${siteHead({
 <p><a href="${INVITES_PATH}">招待コードを発行する</a>（ログインが必要です）</p>
 ${siteFooter()}
 `;
+}
+
+/** 節が 1 つも無いトップ。 */
+const EMPTY_FEED: HomeFeedData = { official: [], recent: [], forked: [], liked: [] };
+
+/**
+ * 4 節を引く。**引けなくても、トップは出す。**
+ *
+ * ## なぜここで握りつぶすのか
+ *
+ * **トップは本番で最初に見られる 1 枚であり、URL 拡散の着地点でもある**（このファイルの
+ * 冒頭）。ここが 500 を返すと、**サービスの説明も登録の導線も、まるごと消える。**
+ * 案内と導線は D1 を 1 行も要らないのに、作品の節を引けなかったことに引きずられて
+ * 一緒に落ちる形になる。
+ *
+ * **`src/list-cache.ts` が握りつぶしている理由と同じ形である**——「この層が無くても
+ * 一覧は正しく出る」。ここでは「作品の節が無くてもトップは意味を持つ」であり、
+ * **issue #329 が「作品が 0 本のときに壊れない」と定めた状態そのもの**に落ちる
+ * （節ごと出ない）。
+ *
+ * ## 4.3 の「判定できなかったときは止まる側へ倒す」とは性質が違う
+ *
+ * あちらが握りつぶしを禁じているのは、**握りつぶすと上限や可視性が静かに開く**
+ * 場所である（日次枠・審査・公開状態）。ここで失敗しても**開くものが 1 つも無い**
+ * ——`draft` も審査中の作品も、引けなければ並ばないだけである。
+ *
+ * **黙らせない。** 失敗はログへ残す（本番で「節が出ない」を見たときに、0 本なのか
+ * 引けていないのかを切り分ける手がかりが要る）。
+ *
+ * @param env バインディングと環境変数
+ * @returns 4 節ぶんの作品。引けなければ空
+ */
+async function homeFeed(env: Env): Promise<HomeFeedData> {
+  try {
+    return await loadHomeFeed(env);
+  } catch (error) {
+    console.error('[home] 作品の節を引けませんでした', error);
+    return EMPTY_FEED;
+  }
+}
+
+/**
+ * 公開トップを表示する。
+ *
+ * **引くのは `src/home-feed.ts` で、ここは組み立てるだけである。** 読み取りの上限・索引・
+ * Cache API の前段（2.3.3 の 3 条件）はあちらが持つ。
+ *
+ * **キャッシュが無くても、D1 が空でも、D1 が落ちていても 200 を返す**（{@link homeFeed}）。
+ *
+ * @param _request 受信したリクエスト（**ログイン状態を見ない。**下記）
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function showHome(_request: Request, env: Env): Promise<Response> {
+  // **ログイン状態で出し分けない。** 全員に同じものが出るカタログである（2.3.3）。
+  // ヘッダの出し分け（2.3.7 / M9-5）はここではなく `src/html.ts` の仕事で、
+  // **キャッシュに載るのはこの下で引く行だけ**である（`src/list-cache.ts`）。
+  return html(renderHomePage(homeSections(await homeFeed(env))));
+}
 
 /**
  * 公開トップの経路。
@@ -120,5 +245,5 @@ ${siteFooter()}
  * 単位が `devRoutes` なので、混ざると遮断の対象から漏れる）。
  */
 export const homeRoutes: readonly Route[] = [
-  { method: 'GET', path: HOME_PATH, handler: () => html(HOME_HTML) },
+  { method: 'GET', path: HOME_PATH, handler: showHome },
 ];

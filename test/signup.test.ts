@@ -6,7 +6,15 @@ import { normalizeInviteCode } from '../src/invite-code.js';
 import { SIGNUP_PATH, WAITLIST_PATH, WAITLIST_THANKS_PATH } from '../src/paths.js';
 import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
-import { SESSION_COOKIE, verifySession } from '../src/session.js';
+import { ACCOUNT_PATH } from '../src/account-paths.js';
+import { LOGIN_PATH } from '../src/auth/google.js';
+import {
+  SESSION_COOKIE,
+  buildSessionCookie,
+  signSession,
+  verifySession,
+} from '../src/session.js';
+import { MY_WORKS_PATH } from '../src/works-paths.js';
 import { createSignupRoutes } from '../src/signup.js';
 import { waitlistRoutes } from '../src/waitlist.js';
 import { applySchema } from './helpers/schema.js';
@@ -65,14 +73,22 @@ async function seedInvite(
  *
  * @param routes 経路表
  * @param code 入力された招待コード
+ * @param cookie 送る `Cookie` ヘッダ（空文字なら未ログイン）
  * @returns レスポンス
  */
-async function submitCode(routes: readonly Route[], code: string): Promise<Response> {
+async function submitCode(
+  routes: readonly Route[],
+  code: string,
+  cookie = '',
+): Promise<Response> {
   return await dispatch(
     routes,
     new Request(`${APP_ORIGIN}${SIGNUP_PATH}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        ...(cookie === '' ? {} : { cookie }),
+      },
       body: new URLSearchParams({ code }).toString(),
     }),
     testEnv(),
@@ -562,5 +578,61 @@ describe('待機リストの no-JS 送信（#14 acceptance 2）', () => {
     await submitForm('counted@example.com');
     const after = await env.DB.prepare('select count(*) as n from waitlist').first<{ n: number }>();
     expect(after!.n).toBe(before!.n + 1);
+  });
+});
+
+/**
+ * 断られた登録画面のヘッダ（2.3.7 / #331 / PR #353 の Copilot code review）。
+ *
+ * **`POST /signup` は、断ったときに同じ画面をその場で返す**（303 で逃がすと失敗の理由が
+ * URL に残る。`signupError`）。**やり直す先が同じ画面である以上、外枠も同じでなければ
+ * ならない**——到達した経路でヘッダが変わると、ログイン済みの利用者だけが自分の画面で
+ * 「ログイン」を出される。
+ */
+describe('断られた登録画面のヘッダ（2.3.7）', () => {
+  const routes = createSignupRoutes({ now: () => NOW });
+
+  /**
+   * HTML からヘッダの区画だけを取り出す。
+   *
+   * **本文を巻き込まない。** この画面の本文には「すでにアカウントをお持ちの方」の
+   * ログイン導線が**正しく**在るので、全文で照合すると常に真になる。
+   *
+   * @param body HTML
+   * @returns `<header>` の中身
+   */
+  function headerOf(body: string): string {
+    const header = /<header class="gf-header">[\s\S]*?<\/header>/u.exec(body);
+    expect(header, 'ヘッダが無い（検査が空振りする）').not.toBeNull();
+    return header![0];
+  }
+
+  it('未ログインで断られたら、ヘッダはログインへ送る', async () => {
+    const response = await submitCode(routes, 'ZZZZZZZZZZZZ');
+    expect(response.status).toBe(400);
+    const header = headerOf(await response.text());
+    expect(header).toContain(`href="${LOGIN_PATH}"`);
+    expect(header).not.toContain(`href="${MY_WORKS_PATH}"`);
+  });
+
+  it('ログイン済みで断られても、ヘッダは自分の作品と登録情報のままである', async () => {
+    // **ログイン済みの利用者も無効なコードを送れる**（2 本目の招待を試す、など）。
+    // ここが cookie を見ないと、その人のヘッダだけが「ログイン」に戻る。
+    // **実時刻で署名する。** `NOW`（この検査が経路へ渡す固定時刻）は過去の日付なので、
+    // それで作ると期限切れになり、**未ログイン扱いのまま緑に見える**（`verifySession` は
+    // 既定で実時刻を見る）。
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const token = await signSession(
+      { userId: 'signup-header-user', issuedAt, expiresAt: issuedAt + 3600 },
+      SECRET,
+    );
+    const cookie = buildSessionCookie(token, 3600).split(';')[0]!;
+
+    const response = await submitCode(routes, 'ZZZZZZZZZZZZ', cookie);
+    expect(response.status).toBe(400);
+    const header = headerOf(await response.text());
+    expect(header).toContain(`href="${MY_WORKS_PATH}"`);
+    expect(header).toContain(`href="${ACCOUNT_PATH}"`);
+    expect(header).not.toContain(`href="${LOGIN_PATH}"`);
   });
 });

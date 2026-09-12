@@ -24,7 +24,7 @@
  */
 import { siteFooter } from './legal.js';
 import type { SiteViewer } from './html.js';
-import { VIEWER_SIGNED_OUT, escapeHtml, resolveSiteViewer, siteHead } from './html.js';
+import { escapeHtml, resolveSiteViewer, siteHead } from './html.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import type { AuthDependencies } from './auth/google.js';
@@ -273,17 +273,17 @@ async function submitInviteCode(
 ): Promise<Response> {
   const submitted = await readCodeField(request);
   if (submitted === null) {
-    return await signupError(env, 'malformed');
+    return await signupError(request, env, 'malformed');
   }
 
   const normalized = normalizeInviteCode(submitted);
   if (normalized === null) {
-    return await signupError(env, 'malformed');
+    return await signupError(request, env, 'malformed');
   }
 
   const checked = await checkInvite(env.DB, normalized);
   if (!checked.ok) {
-    return await signupError(env, checked.reason);
+    return await signupError(request, env, checked.reason);
   }
 
   return await startInvitedLogin(request, env, normalized, overrides);
@@ -296,16 +296,30 @@ async function submitInviteCode(
  * 逃がすと、失敗のたびに理由が URL に残り、ブラウザの履歴や共有リンクに載る。
  * 成功していないので、やり直す先も同じ画面でよい。
  *
+ * ## ヘッダは要求から求める（#331 / PR #353 の Copilot code review）
+ *
+ * **「ここは未ログインに決まっている」は誤りだった。** ログイン済みの利用者が
+ * `/signup` を開いて無効なコードを送ることはできる（2 本目の招待を試す、URL を
+ * 控えていた、など）。**未ログインとして描くと、その人のヘッダだけが「ログイン」に
+ * なる。**
+ *
+ * **この画面をナビ無しにもしない。** 上のとおり**やり直す先が同じ画面**であり、
+ * 到達した経路（GET か、断られた POST か）でヘッダが消える形にはしない
+ * ——**同じ画面は同じ外枠で出す。** 状態はここで分かる（`resolveSiteViewer` は
+ * 要求だけを見て、D1 を読まない）ので、`src/html.ts` が言う「分からないときは
+ * 言わない」に当たる場面ではない。
+ *
+ * @param request 受信したリクエスト
  * @param env バインディングと環境変数
  * @param reason 失敗の分類
  * @returns レスポンス
  */
-async function signupError(env: Env, reason: string): Promise<Response> {
+async function signupError(request: Request, env: Env, reason: string): Promise<Response> {
   const waitingCount = coarsenWaitlistCount(await countWaitlist(env.DB));
-  // **未ログインとして組む。** ここは招待コードの送信が断られた結果であり、
-  // **セッションはまだ 1 つも無い**（発行するのは Google の同意を得たあとである。
-  // `src/auth/google.ts`）。既定に倒しているのではなく、状況から決まっている。
-  return html(signupPage(reasonMessage(reason), waitingCount, VIEWER_SIGNED_OUT), 400);
+  return html(
+    signupPage(reasonMessage(reason), waitingCount, await resolveSiteViewer(request, env)),
+    400,
+  );
 }
 
 /**

@@ -29,6 +29,10 @@ import { applySchema } from './helpers/schema.js';
  * 3. **いいねが 1 件も無いときに、いいねの節を出さない**
  * 4. **作品が 0 本でも壊れない**
  *
+ * **実行計画（`EXPLAIN QUERY PLAN`）はここに置かない。** `0023` の 2 本の部分索引が
+ * 実際に使われることは `test/schema-official-samples.test.ts` が見る——**同じ期待値を
+ * 2 か所に置くと、片方だけが古くなる。**
+ *
  * **Cache API を毎回捨ててから測る。** `caches.default` はテストの間で共有されるので、
  * 捨てないと前のテストが仕込んだ行を読む（`test/works-list.test.ts` と同じ扱い）。
  */
@@ -252,6 +256,113 @@ describe('読み取りの上限（仕様 2.3.3 の条件 1 / v1.51 注記）', (
     expect(delta, `審査中 ${queued} 件で ${delta} 行増えた`).toBeLessThanOrEqual(queued * 8);
   });
 
+  it('運営の下書きと審査中の行を増やしても、読み取りが増えない（0023 の部分索引）', async () => {
+    // **`0008` の `games_author_id_created_at_idx` では足りないことの検査である。**
+    // あちらは公開状態も審査の可視条件も含まないので、運営の下書きと審査で止めた作品が
+    // `author_id` の下に並び、**8 件を集めるまでに挟まった数だけ余分に読む。**
+    // `0023` の部分索引は節が引く条件そのもので絞るので、**1 行も増えない。**
+    // **測るのは公式サンプルの節だけである。** 4 節まとめて測ると、審査中の作品が
+    // 新着の索引（`0019` は審査の可視条件を含まない）へ挟まった分が混ざり、
+    // **どちらの索引の話なのか分からなくなる**（実際にそれで 40 行増えて赤くなった。
+    // あちらは 2.3.3 の v1.51 注記が認めている項で、別のテストが測っている）。
+    await clearOperators();
+    const operator = await seedUser({ operator: true });
+    for (let count = 0; count < HOME_SECTION_LIMIT; count += 1) {
+      await seedGame(operator, { title: '公式サンプル' });
+    }
+
+    const before = countingEnv();
+    await listOfficialSamples(before.env);
+    const baseline = before.rowsRead();
+    expect(baseline).toBeGreaterThan(0);
+
+    // **並びの上位へ挟む**（払い出しが常に「いままでで最も新しい」値を返す）。
+    for (let count = 0; count < 40; count += 1) {
+      await seedGame(operator, { status: DRAFT_STATUS });
+      await seedGame(operator, { reviewState: REVIEW_QUEUED });
+    }
+
+    const after = countingEnv();
+    const works = await listOfficialSamples(after.env);
+    expect(works.length).toBe(HOME_SECTION_LIMIT);
+    expect(
+      after.rowsRead(),
+      `下書き 40 件・審査中 40 件を足す前 ${baseline} 行 → 後 ${after.rowsRead()} 行`,
+    ).toBe(baseline);
+  });
+
+  it('枠が埋まったら、次の運営アカウントには問い合わせない', async () => {
+    // **捨てるために読む行を 1 行も出さない**（PR #349 の Copilot code review の指摘）。
+    // 毎回 8 件を要求して最後に切る形だと、2 つ目のアカウントからも 8 件読んでしまう。
+    await clearOperators();
+    const first = await seedUser({ operator: true });
+    const second = await seedUser({ operator: true });
+    // **`users.id` の昇順が「運営アカウントの順」である**（`operatorIdsSql`）。
+    // 先に来るほうへ枠を埋めるだけの作品を入れる。
+    const [filler, starved] = first < second ? [first, second] : [second, first];
+    for (let count = 0; count < HOME_SECTION_LIMIT; count += 1) {
+      await seedGame(filler);
+    }
+    const hidden = await seedGame(starved);
+
+    let asked = 0;
+    const watched = {
+      ...env,
+      DB: new Proxy(env.DB, {
+        get(target, property, receiver) {
+          const value = Reflect.get(target, property, receiver) as unknown;
+          if (property === 'prepare') {
+            return (query: string) => {
+              if (query.includes('g.author_id = ?')) {
+                asked += 1;
+              }
+              return (value as (q: string) => D1PreparedStatement).call(target, query);
+            };
+          }
+          return typeof value === 'function'
+            ? (value as (...a: unknown[]) => unknown).bind(target)
+            : value;
+        },
+      }),
+    } as unknown as Env;
+
+    const works = await listOfficialSamples(watched);
+    expect(works.length).toBe(HOME_SECTION_LIMIT);
+    expect(works.map((work) => work.id)).not.toContain(hidden);
+    expect(asked, '公式サンプルの問い合わせの本数').toBe(1);
+  });
+
+  it('先のアカウントが埋めきれないとき、後のアカウントへ渡すのは残り枠だけである', async () => {
+    // **上のテストだけでは足りない**（1 つ目で埋まる場合しか見ていないので、各アカウントへ
+    // 毎回 8 件を要求する実装でも緑になる。実際に変異 N4 が素通りした）。
+    // **先のアカウントが 3 件しか持たない状況を作る**——残り枠を渡していなければ、
+    // 後のアカウントから 8 件読んで **合計 11 件**になる。
+    await clearOperators();
+    const one = await seedUser({ operator: true });
+    const other = await seedUser({ operator: true });
+    const [shortAccount, richAccount] = one < other ? [one, other] : [other, one];
+
+    const short = 3;
+    for (let count = 0; count < short; count += 1) {
+      await seedGame(shortAccount);
+    }
+    for (let count = 0; count < HOME_SECTION_LIMIT + 2; count += 1) {
+      await seedGame(richAccount);
+    }
+
+    const counting = countingEnv();
+    const works = await listOfficialSamples(counting.env);
+    // **枠を 1 件も超えない。**
+    expect(works.length).toBe(HOME_SECTION_LIMIT);
+    // 先のアカウントの 3 件が全部入り、残り 5 件が後のアカウントから来ている。
+    expect(works.slice(0, short).every((work) => work.authorName !== null)).toBe(true);
+    // 読み取りも枠ぶんで止まっている（作品 8 行 ＋ 作者名の引き当て ＋ アカウントの一覧）。
+    expect(
+      counting.rowsRead(),
+      `公式サンプルの読み取り ${counting.rowsRead()} 行`,
+    ).toBeLessThanOrEqual(HOME_SECTION_LIMIT * 2 + MAX_OPERATOR_ACCOUNTS);
+  });
+
   it('1 節が引くのは 8 件までである', async () => {
     const author = await seedUser();
     for (let count = 0; count < HOME_SECTION_LIMIT + 5; count += 1) {
@@ -263,21 +374,6 @@ describe('読み取りの上限（仕様 2.3.3 の条件 1 / v1.51 注記）', (
     expect(feed.forked.length).toBe(HOME_SECTION_LIMIT);
     expect(feed.liked.length).toBe(HOME_SECTION_LIMIT);
     expect(feed.official.length).toBeLessThanOrEqual(HOME_SECTION_LIMIT);
-  });
-
-  it('索引が効いている（公式サンプルの節）', async () => {
-    // **検査が SQL を書き写さない**（`test/works-list.test.ts` と同じ形）。
-    // `order by created_at desc, id desc` は 0008 の索引の列順そのものなので、
-    // **一時 B-tree が出たら並びと索引がずれている**——ずれた瞬間、LIMIT は
-    // 「全件読んでから切る」になり、読み取りが運営の公開作品数に比例する。
-    const plan = await env.DB.prepare(`explain query plan ${officialSamplesSql()}`)
-      .bind('だれか', PUBLISHED_STATUS, HOME_SECTION_LIMIT)
-      .all<{ detail: string }>();
-    const detail = plan.results.map((row) => row.detail).join(' | ');
-
-    expect(detail, detail).toContain('games_author_id_created_at_idx');
-    expect(detail, detail).not.toContain('USE TEMP B-TREE');
-    expect(detail, detail).not.toMatch(/SCAN g(?! USING)/u);
   });
 
   it('運営アカウントを引く本数に上限がある', () => {
@@ -328,6 +424,39 @@ describe('公式サンプルの選び方（#329 が決めた: 運営フラグ）
     const ids = (await listOfficialSamples(env, HOME_SECTION_LIMIT)).map((work) => work.id);
     expect(ids).toContain(fromFirst);
     expect(ids).toContain(fromSecond);
+  });
+
+  it('並びは「運営アカウントの順 → その中で生成の新しい順」である', async () => {
+    // **意図した振る舞いをここで固定する**（PR #349 の Copilot code review の 1 件目）。
+    // 全体を生成日時で並べ直さないので、**先のアカウントの古い作品が、後のアカウントの
+    // 新しい作品より前に出る。** 並べ直すと全アカウントぶんを読んでから切ることになり、
+    // 読み取りの上限が `MAX_OPERATOR_ACCOUNTS` 倍に増える（`src/home-feed.ts`）。
+    await clearOperators();
+    const a = await seedUser({ operator: true });
+    const b = await seedUser({ operator: true });
+    // 「運営アカウントの順」は `users.id` の昇順である（`operatorIdsSql` の `order by id`）。
+    const [firstAccount, secondAccount] = a < b ? [a, b] : [b, a];
+
+    // **先のアカウントに「古い」作品、後のアカウントに「新しい」作品を入れる**
+    // （払い出しは呼ぶたびに新しくなるので、順に入れればこの関係になる）。
+    const olderOfFirst = await seedGame(firstAccount, { title: '先のアカウントの古い作品' });
+    const newerOfSecond = await seedGame(secondAccount, { title: '後のアカウントの新しい作品' });
+
+    const ids = (await listOfficialSamples(env)).map((work) => work.id);
+    expect(ids).toContain(olderOfFirst);
+    expect(ids).toContain(newerOfSecond);
+    // **生成日時では後のほうが新しいのに、先のアカウントのほうが前に出る。**
+    expect(ids.indexOf(olderOfFirst)).toBeLessThan(ids.indexOf(newerOfSecond));
+
+    // 1 つのアカウントの中では、生成の新しい順である。
+    const newerOfFirst = await seedGame(firstAccount, { title: '先のアカウントの新しい作品' });
+    const inside = (await listOfficialSamples(env)).map((work) => work.id);
+    expect(inside.indexOf(newerOfFirst)).toBeLessThan(inside.indexOf(olderOfFirst));
+  });
+
+  it('運営アカウントの順が、実行のたびに変わらない', () => {
+    // 節に並ぶ順がアカウントの順で決まるので、**その順が不定であってはいけない。**
+    expect(operatorIdsSql()).toContain('order by id');
   });
 
   it('公式サンプルが足りなくても、他の作者で埋めない', async () => {

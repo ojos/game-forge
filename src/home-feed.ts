@@ -55,22 +55,22 @@ export const MAX_OPERATOR_ACCOUNTS = 4;
 /**
  * 公式サンプルの作者を引く SQL。
  *
- * **`users` の全走査である。** `is_operator` に索引は無い——`migrations/0021_users_operator.sql`
- * が「この列で絞り込む経路は無い」として張らなかった。**#329 がその経路を作った**ので、
- * 前提が変わっている。それでもここで索引を足さないのは、
+ * **専用の部分索引で引く**（`migrations/0023_official_samples_idx.sql` の
+ * `users_operator_idx`）。索引が無いと、運営の行を見つけるまで `users` を走査する
+ * ——**`limit` は走査を止めない**ので、1 人しか居なければ最後まで読み、**読む行数が
+ * 利用者数に比例する**（PR #349 の Copilot code review の指摘）。
  *
- * - **読む行数は利用者数**（数十人規模。仕様 2.1）**であって、公開作品の総数ではない。**
- *   2.3.3 の条件 1 が守ろうとしているのは母数（作品）への比例で、そこは崩れていない
- * - 前段に Cache API があるので、実際に走るのは 60 秒に 1 回である（`src/list-cache.ts`）
+ * `0021` は「この列で絞り込む経路は無い」として索引を張らなかったが、**#329 がその経路を
+ * 作った。** 前例は `0020` の `users_banned_idx` で、同じ理由・同じ形である。
  *
- * **利用者が数千人規模になったら、部分索引（`users(id) WHERE is_operator = 1`。`0020` が
- * `users_banned_idx` で使っている形）を張る。** マイグレーションは #329 の所有範囲の外なので、
- * ここには判断だけを残す。
+ * **`order by id` を付ける。** 節に並ぶ順が「運営アカウントの順」で決まるため
+ * （{@link listOfficialSamples}）、その順が**実行のたびに変わってはいけない。**
+ * 索引が `id` 順に並んでいるので、並べ替えの費用は 1 行も増えない。
  *
  * @returns 束縛パラメータが 1 つ（limit）の SELECT 文
  */
 export function operatorIdsSql(): string {
-  return 'select id from users where is_operator = 1 limit ?';
+  return 'select id from users where is_operator = 1 order by id limit ?';
 }
 
 /**
@@ -98,12 +98,20 @@ export function operatorIdsSql(): string {
  * **これは見た目の好みではなく、読み取りの上限が決めている。** `order by g.published_at desc`
  * にすると、SQLite は並べ替えのための一時 B-tree を作り、**LIMIT を掛ける前に運営の公開作品を
  * 全件読む**（実測。`test/home-feed.test.ts` が実行計画で固定している）。
- * `created_at desc, id desc` は `migrations/0008_games_author_id_idx.sql` の
- * `games_author_id_created_at_idx`（`author_id, created_at DESC, id DESC`）の列順その
+ * `created_at desc, id desc` は専用の部分索引
+ * （`migrations/0023_official_samples_idx.sql` の `games_official_samples_idx`）の列順その
  * ものなので、**索引を順に 8 行読んで止まる。**
  *
  * **公式サンプルは運営が選んだ固定の集合である**（#43 の 10 本）。並びの軸が「生成」か
  * 「公開」かは利用者の判断に効かないので、**上限が固い側を採る。**
+ *
+ * # 部分索引で引く（0008 の索引では足りない）
+ *
+ * `0008` の `games_author_id_created_at_idx` でも並びは合うが、**あちらは審査と公開状態の
+ * 条件を含まない。** 運営の下書きと、審査で止められた作品が `author_id` の下に並ぶので、
+ * **8 件を集めるまでに挟まった数だけ余分に読む。** 運営アカウントは #43 のサンプルを作る
+ * 過程で下書きを溜める側であり、その数は 0〜数件には収まらない。`0023` は節が引く条件
+ * そのもの（`status = 'published'` と `reviewVisibleSql`）で絞る（`0020` と同じ判断）。
  *
  * # 索引の名前をここへ書かない
  *
@@ -118,8 +126,8 @@ export function officialSamplesSql(): string {
   // **`users` を行ごと持ってこない**——`display_name` 1 列だけである（仕様 2.3.6。
   // `email` と `invited_by` がカードへ届く経路を作らない）。
   //
-  // 並べ替えに使う `created_at` は選ばない。**節をまたいで並べ直す必要が無い**
-  // （作者 1 人ぶんの結果が既に並んでおり、{@link listOfficialSamples} は前から詰めるだけ）。
+  // 並べ替えに使う `created_at` は選ばない。**運営アカウントをまたいで並べ直さない**
+  // （{@link listOfficialSamples} が、アカウントごとの結果を前から詰めるだけである）。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
             g.ogp_state, u.display_name as author_name
        from games g
@@ -163,22 +171,41 @@ function toPublicWork(row: OfficialSampleRow): PublicWork {
 /**
  * 公式サンプルを引く。
  *
- * **作者 1 人につき 1 本の問い合わせを出す。** 1 本の SQL に畳んで
- * `author_id in (…)` と書くと、SQLite は並べ替えのための一時 B-tree を作り、
- * **運営の公開作品を全件読んでから 8 件へ切る**（実測）。作者ごとに引けば、
- * どの 1 本も**索引を 8 行読んで止まる。**
+ * # 並びは「運営アカウントの順に、それぞれの中で生成の新しい順」である
  *
- * 運営アカウントは 1 つだけ立てる運用なので（`docs/operator-account.md`）、
- * **実際に出る問い合わせは 2 本**（作者の一覧 ＋ その 1 人ぶん）である。
- * 上限は {@link MAX_OPERATOR_ACCOUNTS} で押さえてあり、最悪でも 1 + 4 本、
- * D1 の 1 呼び出しあたり 50 クエリ（5.8）の中に収まる。
+ * **全体を生成日時で並べ直さない。** 並べ直すには**全アカウントぶんを読んでから**
+ * 切ることになり、読み取りの上限が {@link MAX_OPERATOR_ACCOUNTS} 倍に増える
+ * （1 本の SQL に畳んで `author_id in (…)` と書いた場合も同じで、そちらは
+ * 一時 B-tree が入る。どちらも実測で確かめた）。
+ *
+ * **代償はこうである**——運営アカウントが 2 つあるとき、**先のアカウントの古い作品が、
+ * 後のアカウントの新しい作品より前に出る。** 意図した振る舞いであり、
+ * `test/home-feed.test.ts` が明示的に固定している。
+ *
+ * **払える代償である。** 公式サンプルは運営が選んだ固定の集合（#43 の 10 本）で、
+ * **運用上は 1 アカウントで完結する**（`docs/operator-account.md`）。アカウントが 1 つなら
+ * 「運営アカウントの順」は何も意味を持たず、節の中は素直に生成の新しい順になる。
+ * 「運営アカウントの順」そのものは `users.id` の昇順である（{@link operatorIdsSql}）
+ * ——意味のある順ではないが、**実行のたびに変わらない。**
+ *
+ * # 残り枠だけを渡す
+ *
+ * **各アカウントに毎回 8 件を要求して最後に切る形にしない**（PR #349 の Copilot code review
+ * の指摘）。1 つ目で 8 件埋まれば 2 つ目は 1 行も引かないし、6 件で埋まれば次に頼むのは
+ * 2 件である。**捨てるために読む行が 1 行も出ない。**
+ *
+ * # 問い合わせの本数
+ *
+ * 運営アカウントは 1 つだけ立てる運用なので、**実際に出るのは 2 本**（アカウントの一覧
+ * ＋ その 1 人ぶん）である。最悪でも 1 + {@link MAX_OPERATOR_ACCOUNTS} 本で、D1 の
+ * 1 呼び出しあたり 50 クエリ（5.8）の中に収まる。
  *
  * **足りない分を他の作者で埋めない。** 8 件に届かなければ届かないまま出す
  * （公式サンプルの節に公式でないものを混ぜたら、節の意味が消える）。
  *
  * @param env バインディングと環境変数
  * @param limit 引く最大件数
- * @returns 公式サンプル（生成の新しい順）
+ * @returns 公式サンプル（運営アカウントの順、その中で生成の新しい順）
  */
 export async function listOfficialSamples(
   env: Env,
@@ -190,15 +217,17 @@ export async function listOfficialSamples(
 
   const works: PublicWork[] = [];
   for (const operator of operators.results) {
-    if (works.length >= limit) {
+    const remaining = limit - works.length;
+    // **埋まったら、次のアカウントには問い合わせない。**
+    if (remaining <= 0) {
       break;
     }
     const rows = await env.DB.prepare(officialSamplesSql())
-      .bind(operator.id, PUBLISHED_STATUS, limit)
+      .bind(operator.id, PUBLISHED_STATUS, remaining)
       .all<OfficialSampleRow>();
     works.push(...rows.results.map(toPublicWork));
   }
-  return works.slice(0, limit);
+  return works;
 }
 
 /** Cache API へ載せる、トップ 1 枚ぶんのデータ。 */

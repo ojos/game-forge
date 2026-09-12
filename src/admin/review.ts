@@ -19,32 +19,35 @@
  * 決めた 2.4.3 が、実装では片道になる。
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 3 つ目の節: 改名のあとに通報が付いた `cleared`（#367）
+ * 3 つ目の節: 問題なしとしたあとに通報が付いた `cleared`（#367 / #394）
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **#366 が開けた経路を、画面の側でも塞ぐ。** 「穏当な題名で公開 → 通報 → `cleared`
- * → 改名」のあとに付いた通報は、`queued` だけを引く一覧には出ない。
- * `scripts/report-queue.sh` は既にそれを出しており、**画面だけが古い**状態だった。
+ * **`cleared` は終端なので、そのあとに付いた通報は `queued` だけを引く一覧に出ない。**
+ * #367 は「改名のあとに通報が付いた作品」としてこの節を足し、**#394 で「最後に問題なしに
+ * した時刻以降に通報が付いた作品」へ一般化した**（改名はその 1 つの場合である。理由は
+ * `src/reports.ts` の {@link REVIEW_REPORTED_AFTER_CLEAR_SQL}）。
  *
- * **条件を書き写さない。** 正本は `src/reports.ts` の {@link REVIEW_RENAMED_SQL} 1 か所で、
- * この画面もスクリプトもそれを借りる（スクリプトはソースから取り出す）。**`games` の
- * 別名は `g` 固定**なので、この画面の SQL も `g` で書き、**外側で `r` を使わない**
- * （相関副問い合わせの `r` と取り違えるため。あちらの但し書き）。
+ * **条件を書き写さない。** 正本は `src/reports.ts` の {@link REVIEW_REPORTED_AFTER_CLEAR_SQL}
+ * 1 か所で、この画面もスクリプトもそれを借りる（スクリプトはソースから取り出す）。
+ * **`games` の別名は `g` 固定**なので、この画面の SQL も `g` で書き、**外側で `r` / `a` を
+ * 使わない**（相関副問い合わせの `r` / `a` と取り違えるため。あちらの但し書き）。
  *
  * **`cleared` の節とは分ける。** 同じ `cleared` だが、**運営にとっての意味が違う**
- * ——`cleared` の節は「見終わった作品」で、こちらは「見たあとで名前が変わり、
- * また通報が付いた作品」である。**同じ節に混ぜると区別が付かない**（#367 の受け入れ）。
- * 行は片方にしか出さない（`cleared` の節は `not REVIEW_RENAMED_SQL` で引く）——
- * 両方に出すと、同じ作品に同じ操作のフォームが 2 つ並ぶ。
+ * ——`cleared` の節は「見終わった作品」で、こちらは「見たあとで、また通報が付いた
+ * 作品」である。**同じ節に混ぜると区別が付かない**（#367 の受け入れ）。
+ * 行は片方にしか出さない（`cleared` の節は `not REVIEW_REPORTED_AFTER_CLEAR_SQL` で引く）
+ * ——両方に出すと、同じ作品に同じ操作のフォームが 2 つ並ぶ。
  *
- * **操作は増やさない**（#367 の scope.out）。この節の行が持つのは `cleared` の行と同じ
- * 「審査待ちへ戻す」だけである。「見たので一覧から外す」操作は無い——下記の穴を参照。
+ * **操作は増やさない**（#367 / #394 の scope.out）。この節の行が持つのは `cleared` の行と
+ * 同じ「審査待ちへ戻す」だけである。**見終えたら「審査待ちへ戻す」→「問題なしにする」で
+ * 節から外れる**——問題なしにした時刻が新しい基準になるので、それより前の通報では
+ * 当たらない（#367 のときは、次に改名されるまで出続けていた。#394 で塞いだ）。
  *
- * **既知の穴（この画面では塞がない）。** `renameGame` は `cleared` を `NULL` へ戻すので、
- * 改名のあとの通報は**まず `queued` へ入る**（閾値は 1 人）。それを運営が `cleared` に
- * すると、**改名以降の通報が残っているので、この節に戻ってくる**——次に改名される
- * まで出続ける。直すなら条件そのもの（`src/reports.ts`）であり、**スクリプトと画面が
- * 同時に直る**ように 1 か所に置いてある。画面の注記はこの挙動をそのまま書く。
+ * **履歴の無い `cleared`（#361 より前に端末で問題なしにした作品）は、通報があればこの節に
+ * 出す**（黙って落とさない。理由は `src/reports.ts`）。上の往復で 1 度通せば外れる。
+ *
+ * **最終改名の時刻は、条件ではなく手がかりとして出す。** 改名は「問題なしとした時点から
+ * 作品が変わった」主な場合であり、運営が作品ページで何を確かめるかが変わる。
  *
  * **`review_state` が NULL の作品は出さない。** それは「通報の閾値に達していない」
  * 大多数の作品であり（0017）、**審査の対象ではない。** 運営が手で止める操作も
@@ -68,7 +71,7 @@ import { workPagePath } from '../paths.js';
 import {
   REVIEW_CLEARED,
   REVIEW_QUEUED,
-  REVIEW_RENAMED_SQL,
+  REVIEW_REPORTED_AFTER_CLEAR_SQL,
   TITLE_CHANGES_TABLE,
 } from '../reports.js';
 import type { ReviewState } from '../reports.js';
@@ -93,12 +96,12 @@ interface ReviewRow {
   readonly title: string;
   readonly published_at: number | null;
   readonly author_name: string | null;
-  /** 最後の改名の時刻（UNIX 秒）。**改名の節だけが引く**（ほかの節では常に null）。 */
+  /** 最後の改名の時刻（UNIX 秒）。**問題なしのあとに通報が付いた節だけが引く**（ほかの節では常に null）。 */
   readonly renamed_at: number | null;
 }
 
 /** 節の識別子。**フォームの要素 id に入る**ので、節ごとに違う綴りである。 */
-type ReviewSectionKey = 'queued' | 'renamed' | 'cleared';
+type ReviewSectionKey = 'queued' | 'reported' | 'cleared';
 
 /** 節ごとの条件・札と、押したときに向かう先。 */
 interface ReviewSection {
@@ -115,12 +118,13 @@ interface ReviewSection {
   /** 行に最後の改名の時刻を出すか。 */
   readonly showsRename: boolean;
   /**
-   * 条件が `title_changes` を読むか（`REVIEW_RENAMED_SQL` を含むか）。
+   * 条件か列が、あとから足した履歴の表を読むか（`admin_actions` / `title_changes`）。
    *
-   * **読めないときに読み直す節を決める**（{@link readSections}）。`0027` が未適用の D1 で
-   * 落ちるのはこれが真の節である。
+   * **読めないときに読み直す節を決める**（{@link readSections}）。`0026` / `0027` が未適用の
+   * D1 で落ちるのはこれが真の節である（`REVIEW_REPORTED_AFTER_CLEAR_SQL` は
+   * `admin_actions` を、最終改名の時刻は `title_changes` を読む）。
    */
-  readonly readsRenames: boolean;
+  readonly readsHistory: boolean;
   /** 行の頭に付ける札（`queued` の行と見分けるため）。付けない節は null。 */
   readonly badge: string | null;
   readonly heading: string;
@@ -133,8 +137,8 @@ interface ReviewSection {
  * 3 つの節の条件と文言。
  *
  * **`Record` ではなく配列で持つ。** 画面に並べる順序そのものを表しているためである
- * （審査待ちが先。運営が最初に見るものが上にある。**改名の節は `cleared` より上**
- * ——こちらは「まだ見ていない可能性がある」作品である）。
+ * （審査待ちが先。運営が最初に見るものが上にある。**問題なしのあとに通報が付いた節は
+ * `cleared` より上**——こちらは「まだ見ていない可能性がある」作品である）。
  */
 const SECTIONS: readonly ReviewSection[] = [
   {
@@ -142,7 +146,7 @@ const SECTIONS: readonly ReviewSection[] = [
     state: REVIEW_QUEUED,
     where: `g.review_state = '${REVIEW_QUEUED}'`,
     showsRename: false,
-    readsRenames: false,
+    readsHistory: false,
     badge: null,
     heading: '審査待ち',
     empty: 'いま審査待ちの作品はありません。',
@@ -150,34 +154,36 @@ const SECTIONS: readonly ReviewSection[] = [
     button: '問題なしにする（新規露出を戻す）',
   },
   {
-    key: 'renamed',
+    key: 'reported',
     state: REVIEW_CLEARED,
     // **条件の正本はここではない**（`src/reports.ts`。このファイルの冒頭）。
-    where: REVIEW_RENAMED_SQL,
+    where: REVIEW_REPORTED_AFTER_CLEAR_SQL,
     showsRename: true,
-    readsRenames: true,
-    badge: '改名後に通報あり',
-    heading: '問題なしとしたあと、改名されて通報が付いた作品',
+    readsHistory: true,
+    badge: '問題なしのあとに通報あり',
+    heading: '問題なしとしたあとに通報が付いた作品',
     empty: 'いま該当する作品はありません。',
     note:
-      '一度「問題なし」とした作品のうち、作者が題名を変え、その改名以降に通報が付いたものです。' +
-      '露出は止まっていません。改名後の題名を作品ページで確かめ、止めるべきなら審査待ちへ戻してください。' +
-      '審査待ちへ戻してから再び問題なしにしても、次に改名されるまではこの節に残ります。',
+      '「問題なし」とした作品のうち、最後に問題なしとした時刻以降に通報が付いたものです' +
+      '（作者が題名を変えたあとの通報もここに出ます）。' +
+      '管理画面ができる前に問題なしとした作品は、その時刻の記録が無いため、通報があればここに出ます。' +
+      '露出は止まっていません。作品ページで確かめ、止めるべきなら審査待ちへ戻してください。' +
+      '確かめて問題が無ければ、審査待ちへ戻してから再び問題なしにすると、この節から外れます。',
     button: '審査待ちへ戻す（新規露出を止める）',
   },
   {
     key: 'cleared',
     state: REVIEW_CLEARED,
-    // **改名の節に出す行を除く**（同じ作品にフォームを 2 つ並べない）。
-    where: `g.review_state = '${REVIEW_CLEARED}' and not ${REVIEW_RENAMED_SQL}`,
+    // **上の節に出す行を除く**（同じ作品にフォームを 2 つ並べない）。
+    where: `g.review_state = '${REVIEW_CLEARED}' and not ${REVIEW_REPORTED_AFTER_CLEAR_SQL}`,
     showsRename: false,
-    readsRenames: true,
+    readsHistory: true,
     badge: null,
     heading: '問題なしとした作品',
     empty: 'まだ 1 件もありません。',
     note:
       '露出は戻っています。再び閾値に達してもキューへは戻りません（通報の側では戻せない状態です）。' +
-      '改名のあとに通報が付いた作品は、上の節に出します。',
+      '問題なしとしたあとに通報が付いた作品は、上の節に出します。',
     button: '審査待ちへ戻す（新規露出を止める）',
   },
 ];
@@ -192,9 +198,10 @@ const SECTIONS: readonly ReviewSection[] = [
  * **索引を張っていない**（0017 が「全走査で足りる規模でしか呼ばれない」と書いた
  * とおり。運用が数日に 1 度開く画面である）。**張る契機は、公開作品が数千本になった
  * ときである**——`limit` は走査を止めないので、そのときは `review_state` の部分索引が要る。
- * 改名の条件の相関副問い合わせは `cleared` の行ごとに走るが、`reports` と
- * `title_changes` はどちらも `game_id` を先頭に持つ索引がある（0017 の
- * `reports_game_reporter_uq` / 0027 の `title_changes_game_changed_idx`）。
+ * 問題なしのあとの通報を見る条件の相関副問い合わせは `cleared` の行ごとに走るが、
+ * 引く表にはどれも対象の id を先頭に持つ索引がある（0017 の `reports_game_reporter_uq` /
+ * 0027 の `title_changes_game_changed_idx` / 0029 の `admin_actions_target_idx`）。
+ * **0029 が無いと `admin_actions` の全走査が `cleared` の行ごとに走る**（実測は 0029）。
  *
  * **公開中の作品だけを並べる**（PR #364 のレビューで足した条件）。`removeGame` は
  * `status` だけを動かして `review_state` を残すので（`src/games.ts`）、**審査待ちのまま
@@ -219,8 +226,8 @@ function sectionStatement(
   section: ReviewSection,
   limit: number = ADMIN_LIST_LIMIT,
 ): D1PreparedStatement {
-  // **別名は `tc` にする。** `REVIEW_RENAMED_SQL` の中の `c` と同じ綴りでも SQL の上は
-  // 衝突しないが、読む人が「どちらの `c` か」を追わずに済むようにする。
+  // **別名は `tc` にする。** `REVIEW_REPORTED_AFTER_CLEAR_SQL` の中の別名（`r` / `a`）と
+  // 綴りを重ねず、読む人が「どちらの別名か」を追わずに済むようにする。
   const renamedAt = section.showsRename
     ? `(select max(tc.changed_at) from ${TITLE_CHANGES_TABLE} tc where tc.game_id = g.id)`
     : 'null';
@@ -256,15 +263,15 @@ type SectionRead =
  * トランザクションなので、3 本の SELECT が同じ状態を見る。
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 読めなければ、`title_changes` に依らない節だけを読み直す
+ * 読めなければ、履歴の表に依らない節だけを読み直す
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **#367 で読む表が 1 つ増えた**（`title_changes`。`migrations/0027`）。本番の D1 へ
- * `0027` を適用し忘れると、改名の条件を含む 2 つの節が「no such table」で落ち、
+ * **#367 / #394 で読む表が増えた**（`title_changes` / `admin_actions`。`migrations/0027` /
+ * `0026`）。本番の D1 へ適用し忘れると、それを読む 2 つの節が「no such table」で落ち、
  * batch ごと落ちる。例外をそのまま上へ投げると**審査待ちの節まで見えなくなる**
- * ——#367 が足したものの失敗で、#361 から動いていた一覧を巻き添えにしない。
+ * ——あとから足した読み取りの失敗で、#361 から動いていた一覧を巻き添えにしない。
  *
- * **読み直すのは {@link ReviewSection.readsRenames} が偽の節（審査待ち）だけ**で、
+ * **読み直すのは {@link ReviewSection.readsHistory} が偽の節（審査待ち）だけ**で、
  * ほかの節は「読めなかった」とする。**1 節だけなので、時点のずれによる重複は
  * 起こりえない。**
  *
@@ -289,7 +296,7 @@ async function readSections(env: Env): Promise<readonly SectionRead[]> {
 
   return await Promise.all(
     SECTIONS.map(async (section): Promise<SectionRead> => {
-      if (section.readsRenames) {
+      if (section.readsHistory) {
         return { ok: false };
       }
       try {
@@ -312,8 +319,9 @@ async function readSections(env: Env): Promise<readonly SectionRead[]> {
  * **理由の欄に `size` を付けない**（`test/admin-page-shell.test.ts` が見ている。
  * `size` / `cols` は layout viewport を広げ、狭い端末で崩れる原因になる。#282）。
  *
- * **理由の欄の id に節の識別子を入れる。** 状態（`cleared`）で作ると、改名の節と
- * `cleared` の節が同じ綴りを持ちうる——`label` の `for` が別の行の入力を指す。
+ * **理由の欄の id に節の識別子を入れる。** 状態（`cleared`）で作ると、問題なしのあとに
+ * 通報が付いた節と `cleared` の節が同じ綴りを持ちうる——`label` の `for` が別の行の入力を
+ * 指す。
  *
  * @param row 作品の行
  * @param section 節の定義
@@ -382,7 +390,7 @@ function renderSection(section: ReviewSection, read: SectionRead, appHost: strin
   if (!read.ok) {
     return `<h2>${escapeHtml(section.heading)}（読み込めませんでした）</h2>
 <p class="error" role="alert">この節を読み込めませんでした。0 件という意味ではありません。
-   マイグレーションの適用漏れ（改名の履歴 <code>title_changes</code> など）の可能性があります。</p>`;
+   マイグレーションの適用漏れ（操作の履歴 <code>admin_actions</code>・改名の履歴 <code>title_changes</code> など）の可能性があります。</p>`;
   }
   const { rows } = read;
   const body =
@@ -399,7 +407,7 @@ ${body}`;
 /**
  * 審査キューの画面を返す。
  *
- * **読み取りは節ごとに 1 本**（審査待ち・改名のあとに通報が付いた作品・問題なし）で、
+ * **読み取りは節ごとに 1 本**（審査待ち・問題なしのあとに通報が付いた作品・問題なし）で、
  * それぞれ件数を固定し、**3 本を 1 つの batch で送る**（{@link readSections}）。
  *
  * @param request 受信したリクエスト

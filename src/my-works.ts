@@ -61,6 +61,14 @@
  * 出す条件が整うのは #35 が (a) 実際に掃除を走らせ、(b) `games` の行の扱いを決めた
  * ときである。**そのときこのモジュールへ残り日数を足す**（`createdAt` は既に出ている）。
  *
+ * ## 統計と、今日の残り生成回数を置く（2.3.13 / #382）
+ *
+ * 一覧の上に、自分の作品の統計カードと「本日の残り生成枠 N回」を出す。**集計と描画は
+ * `src/my-works-stats.ts` が持ち、残枠は生成画面と同じ経路から引く**
+ * （`src/generate-page.ts` の `resolveAvailability`）。**利用者ごとの枠は 1 人 1 日 10 回の
+ * 日次枠で、JST の 0 時に戻る**（4.4 / 確定25）。#382 の起票時は「今月の残量」と書いていたが、
+ * **1 人あたりの月次の回数という値は仕様に無い**（同 issue の訂正）。
+ *
  * ## JavaScript もスタイルシートも要求しない
  *
  * MVP の画面は SSR の素の HTML に留める（9.3）。自動更新（`<meta http-equiv="refresh">`）も
@@ -71,6 +79,10 @@ import { siteFooter } from './legal.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import type { AuthoredGame, GenerationState } from './games.js';
 import { UNTITLED_TITLE, listAuthoredGames } from './games.js';
+// 残枠は生成画面と同じ経路で引き、同じ文言で出す（2.3.13「数え方を 2 か所に持たない」/ #382）。
+import { availabilityNotice, resolveAvailability } from './generate-page.js';
+import type { MyWorksStats } from './my-works-stats.js';
+import { loadMyWorksStats, renderMyWorksStats } from './my-works-stats.js';
 import { loginRequiredRedirect } from './auth/google.js';
 import { GENERATE_PAGE_PATH } from './paths.js';
 // **「いいねした作品」への導線はここに置く**（2.3.7 / 5.8 / #340）。v1.57 でヘッダの
@@ -211,6 +223,13 @@ export interface MyWorksView {
   readonly truncated: boolean;
   /** 現在時刻（UNIX 秒）。 */
   readonly now: number;
+  /** 統計カードの数（2.3.13 / #382）。読めなかったときは null。 */
+  readonly stats: MyWorksStats | null;
+  /**
+   * 残枠の文言（4.4）。**生成画面が `id="generate-quota"` に出すものと同じ文字列である**
+   * （`src/generate-page.ts` の `availabilityNotice`）。
+   */
+  readonly quotaNotice: string;
 }
 
 /**
@@ -246,6 +265,8 @@ ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
     viewer: siteViewerAt(MY_WORKS_PATH, true),
   })}
 <h1>あなたの作品</h1>
+${renderMyWorksStats(view.stats, view.quotaNotice)}
+<h2>作品の一覧</h2>
 <p>生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>
 <p><a href="${LIKED_WORKS_PATH}">いいねした作品</a></p>
 <p><a href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>
@@ -253,6 +274,32 @@ ${body}
 ${truncated}
 <p><a class="gf-cta" href="${GENERATE_PAGE_PATH}">新しく生成する</a></p>
 ${siteFooter()}`;
+}
+
+/**
+ * 統計を引く。**読めなかったときは null を返し、画面ごと落とさない。**
+ *
+ * 統計は一覧の付加情報である。**この画面の仕事は作品へ戻る道であり**（冒頭）、
+ * 集計 1 本の失敗でその道まで 500 にしない（`src/generate-page.ts` の
+ * `resolveAvailability` が残枠で同じ判断をしている）。**「0 本」とは兼ねない**——
+ * 読めなかったことを別の文言で出す（`src/my-works-stats.ts` の `STATS_UNAVAILABLE_NOTICE`）。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 対象の利用者
+ * @returns 統計。読めなかったときは null
+ */
+async function loadStatsOrNull(env: Env, userId: string): Promise<MyWorksStats | null> {
+  try {
+    return await loadMyWorksStats(env, userId);
+  } catch (error) {
+    // 例外の種類だけを出す（利用者の作品名はここに無いが、D1 のメッセージに SQL が載る）。
+    console.error(
+      `[my-works] 統計を取得できませんでした: ${
+        error instanceof Error ? error.name : typeof error
+      }`,
+    );
+    return null;
+  }
 }
 
 /**
@@ -279,12 +326,20 @@ async function showMyWorks(request: Request, env: Env): Promise<Response> {
     return await loginRequiredRedirect(env, MY_WORKS_PATH);
   }
 
-  const fetched = await listAuthoredGames(env, session.userId, MAX_LISTED_WORKS + 1);
+  // **3 つは互いに依存しないので並べて引く。** 一覧・統計（集計 1 回）・残枠
+  // （生成画面と同じ経路。`resolveAvailability` は読めなくても投げない）。
+  const [fetched, stats, availability] = await Promise.all([
+    listAuthoredGames(env, session.userId, MAX_LISTED_WORKS + 1),
+    loadStatsOrNull(env, session.userId),
+    resolveAvailability(env, session.userId),
+  ]);
   return html(
     renderMyWorksPage({
       works: fetched.slice(0, MAX_LISTED_WORKS),
       truncated: fetched.length > MAX_LISTED_WORKS,
       now: Math.floor(Date.now() / 1000),
+      stats,
+      quotaNotice: availabilityNotice(availability),
     }),
   );
 }

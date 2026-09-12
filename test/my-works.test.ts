@@ -2,7 +2,25 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { LOGIN_PATH, OAUTH_COOKIE } from '../src/auth/google.js';
-import { DRAFT_STATUS, UNTITLED_TITLE } from '../src/games.js';
+import { DRAFT_STATUS, PUBLISHED_STATUS, REMOVED_STATUS, UNTITLED_TITLE } from '../src/games.js';
+import { DEFAULT_GENERATION_MODEL_KEY } from '../src/generation-models.js';
+import {
+  DAILY_QUOTA_MESSAGE_KEY,
+  GENERATE_MESSAGES,
+  remainingQuotaNotice,
+} from '../src/generate-page.js';
+import {
+  EMPTY_MY_WORKS_STATS,
+  LIKES_DELAY_NOTE,
+  STATS_UNAVAILABLE_NOTICE,
+  STAT_CARDS,
+  loadMyWorksStats,
+  myWorksStatsBinds,
+  myWorksStatsSql,
+  renderMyWorksStats,
+} from '../src/my-works-stats.js';
+import { GENERATE_PAGE_PATH } from '../src/paths.js';
+import { DAILY_QUOTA_PER_USER } from '../src/quota.js';
 import { HOME_PATH } from '../src/home.js';
 import { formatJstMinutes, toIsoTimestamp } from '../src/jst.js';
 import {
@@ -81,12 +99,15 @@ async function seedGame(
     readonly title?: string;
     readonly createdAt?: number;
     readonly generationState?: string;
+    readonly forkCount?: number;
+    readonly likeCount?: number;
   } = {},
 ): Promise<string> {
   const id = crypto.randomUUID();
   await env.DB.prepare(
-    `insert into games (id, author_id, status, title, go_version, created_at, generation_state)
-     values (?, ?, ?, ?, '', ?, ?)`,
+    `insert into games
+       (id, author_id, status, title, go_version, created_at, generation_state, fork_count, like_count)
+     values (?, ?, ?, ?, '', ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -95,6 +116,8 @@ async function seedGame(
       overrides.title ?? 'タイトル',
       overrides.createdAt ?? Math.floor(Date.now() / 1000),
       overrides.generationState ?? 'ready',
+      overrides.forkCount ?? 0,
+      overrides.likeCount ?? 0,
     )
     .run();
   return id;
@@ -458,5 +481,250 @@ describe('「いいねした作品」への導線（2.3.7 / 5.8 / #340）', () =
     const response = await openList();
     expect(response.status).toBe(303);
     expect(await response.text()).not.toContain(LIKED_WORKS_PATH);
+  });
+});
+
+/**
+ * 生成の台帳に 1 行置く（枠の判定が数える単位。確定25）。
+ *
+ * **`/api/generate` を呼ばない**（呼べば実際に課金される）。枠の判定が見るのは
+ * `user_id` / `created_at` / `cost_jpy` だけなので、そこを直接置く
+ * （`test/generate-page.test.ts` の `seedLedgerRow` と同じ方針）。**費用は 0 円にする**——
+ * 月次上限はサービス全体の金額なので、ここで積むと同じ D1 を見る他の検査の状態を変える。
+ *
+ * @param userId 利用者の id
+ * @returns なし
+ */
+async function seedLedgerRow(userId: string): Promise<void> {
+  await env.DB.prepare(
+    `insert into generations
+       (id, game_id, user_id, prompt, model,
+        input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+        cost_jpy, succeeded, created_at)
+     values (?, null, ?, 'ゲーム', ?, 0, 0, 0, 0, 0, 1, ?)`,
+  )
+    .bind(crypto.randomUUID(), userId, DEFAULT_GENERATION_MODEL_KEY, Math.floor(Date.now() / 1000))
+    .run();
+}
+
+/**
+ * 画面から、指定した `id` の `<p>` の中身を取り出す。
+ *
+ * @param page 画面の HTML
+ * @param id 取り出す要素の id
+ * @returns 中身（出ていなければ「(出ていない)」）
+ */
+function paragraphById(page: string, id: string): string {
+  return page.match(new RegExp(`<p[^>]* id="${id}">([^<]*)</p>`, 'u'))?.[1] ?? '(出ていない)';
+}
+
+/**
+ * 統計カードを「見出し: 数」の並びへ落とす。
+ *
+ * @param page 画面の HTML
+ * @returns 見出しから数への対応
+ */
+function statCardsOf(page: string): Record<string, string> {
+  const cards: Record<string, string> = {};
+  for (const match of pageBodyOf(page).matchAll(/<dt>([^<]*)<\/dt><dd>([^<]*)<\/dd>/gu)) {
+    cards[match[1]!] = match[2]!;
+  }
+  return cards;
+}
+
+/**
+ * `DB.prepare` に渡った SQL を記録する（あるいは、指定した SQL で失敗させる）env を作る。
+ *
+ * @param options `failOn` に一致した SQL の `prepare` で投げる
+ * @returns 差し替えた env と、記録した SQL
+ */
+function recordingEnv(options: { readonly failOn?: string } = {}): {
+  readonly env: Env;
+  readonly prepared: string[];
+} {
+  const prepared: string[] = [];
+  const db = new Proxy(env.DB, {
+    get(target, property) {
+      if (property === 'prepare') {
+        return (sql: string) => {
+          prepared.push(sql);
+          if (sql === options.failOn) {
+            throw new Error('D1 の不調を模した失敗');
+          }
+          return target.prepare(sql);
+        };
+      }
+      const value: unknown = Reflect.get(target, property);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { env: { ...testEnv(), DB: db }, prepared };
+}
+
+describe('統計カード（2.3.13 / #382）', () => {
+  it('作品が 0 本でも 200 で、全部のカードが 0 を出す', async () => {
+    const userId = await seedUser();
+    const response = await openList(await sessionCookie(userId));
+    expect(response.status).toBe(200);
+
+    const body = await response.text();
+    expect(statCardsOf(body)).toEqual(
+      Object.fromEntries(STAT_CARDS.map(({ label }) => [label, '0'])),
+    );
+    // 一覧の空の案内も残る（統計が一覧を押しのけていない）。
+    expect(body).toContain('まだ作品がありません');
+    // 枠はまだ 1 回も使っていない。
+    expect(paragraphById(body, 'works-quota')).toBe(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
+  });
+
+  it('作品数・公開中・下書き・合計改造された数・合計いいね数を、自分の作品だけで数える', async () => {
+    const userId = await seedUser();
+    const other = await seedUser();
+    await seedGame(userId, { status: DRAFT_STATUS, likeCount: 0 });
+    // 生成中・生成に失敗した作品も下書きである（一覧にも出ている行）。
+    await seedGame(userId, { status: DRAFT_STATUS, generationState: 'failed' });
+    await seedGame(userId, { status: PUBLISHED_STATUS, forkCount: 2, likeCount: 5 });
+    await seedGame(userId, { status: PUBLISHED_STATUS, forkCount: 1, likeCount: 7 });
+    // **removed は数えない**（一覧に出ない作品を数に入れると、作品数と行数が合わない）。
+    await seedGame(userId, { status: REMOVED_STATUS, forkCount: 100, likeCount: 100 });
+    // 他人の作品は数えない。
+    await seedGame(other, { status: PUBLISHED_STATUS, forkCount: 50, likeCount: 50 });
+
+    const body = await (await openList(await sessionCookie(userId))).text();
+    expect(statCardsOf(body)).toEqual({
+      作品数: '4',
+      公開中: '2',
+      下書き: '2',
+      合計改造された数: '3',
+      合計いいね数: '12',
+    });
+  });
+
+  it('合計プレイ数のカードはまだ出さない（列は #377 が足す）', async () => {
+    // **列の無い数を 0 と出さない。** 遊ばれていないのか数えていないのかを区別できない。
+    // #377 が入ったら、この検査を「出す」側へ書き換える。
+    const userId = await seedUser();
+    await seedGame(userId, { status: PUBLISHED_STATUS });
+    const body = await (await openList(await sessionCookie(userId))).text();
+    expect(pageBodyOf(body)).not.toContain('プレイ数');
+    expect(STAT_CARDS.map(({ label }) => label)).not.toContain('合計プレイ数');
+  });
+
+  it('いいね数が遅れて反映されることを書き添える（5.8）', async () => {
+    const userId = await seedUser();
+    const body = await (await openList(await sessionCookie(userId))).text();
+    expect(pageBodyOf(body)).toContain(LIKES_DELAY_NOTE);
+  });
+
+  it('統計を読めなくても画面ごと落とさず、「0 本」とも言わない', async () => {
+    const userId = await seedUser();
+    const gameId = await seedGame(userId, { title: '読めても出る作品' });
+    const { env: failing } = recordingEnv({ failOn: myWorksStatsSql() });
+
+    const response = await handleAppRequest(
+      new Request(`${APP_ORIGIN}${MY_WORKS_PATH}`, {
+        headers: { accept: 'text/html', cookie: await sessionCookie(userId) },
+      }),
+      failing,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain(STATS_UNAVAILABLE_NOTICE);
+    expect(statCardsOf(body)).toEqual({});
+    // 作品へ戻る道は残る。
+    expect(body).toContain(gameId);
+  });
+
+  it('描画は作品 0 本の統計でも、読めなかったときでも壊れない（純関数）', () => {
+    const empty = renderMyWorksStats(EMPTY_MY_WORKS_STATS, remainingQuotaNotice(3));
+    expect(statCardsOf(empty)).toEqual(
+      Object.fromEntries(STAT_CARDS.map(({ label }) => [label, '0'])),
+    );
+    const unavailable = renderMyWorksStats(null, remainingQuotaNotice(3));
+    expect(unavailable).toContain(STATS_UNAVAILABLE_NOTICE);
+    expect(paragraphById(unavailable, 'works-quota')).toBe(remainingQuotaNotice(3));
+  });
+});
+
+describe('今日の残り生成回数は、生成画面と同じ経路から引く（2.3.13 / 4.4 / #382）', () => {
+  /**
+   * 生成画面と「あなたの作品」を同じ利用者で開き、残枠の文言を並べる。
+   *
+   * @param userId 利用者の id
+   * @returns 両画面の文言
+   */
+  async function quotaOnBothPages(
+    userId: string,
+  ): Promise<{ readonly generate: string; readonly mine: string }> {
+    const cookie = await sessionCookie(userId);
+    const generate = await (
+      await handleAppRequest(
+        new Request(`${APP_ORIGIN}${GENERATE_PAGE_PATH}`, {
+          headers: { accept: 'text/html', cookie },
+        }),
+        testEnv(),
+      )
+    ).text();
+    const mine = await (await openList(cookie)).text();
+    return {
+      generate: paragraphById(generate, 'generate-quota'),
+      mine: paragraphById(mine, 'works-quota'),
+    };
+  }
+
+  it('枠が残っているとき、生成画面と同じ「本日の残り生成枠 N回」を出す', async () => {
+    const userId = await seedUser();
+    for (let index = 0; index < 3; index += 1) {
+      await seedLedgerRow(userId);
+    }
+    const shown = await quotaOnBothPages(userId);
+    expect(shown.mine).toBe(shown.generate);
+    expect(shown.mine).toBe(remainingQuotaNotice(DAILY_QUOTA_PER_USER - 3));
+  });
+
+  it('日次の枠が尽きたとき、生成画面と同じ文言を出す（「残り 0 回」を別に作らない）', async () => {
+    const userId = await seedUser();
+    for (let index = 0; index < DAILY_QUOTA_PER_USER; index += 1) {
+      await seedLedgerRow(userId);
+    }
+    const shown = await quotaOnBothPages(userId);
+    expect(shown.mine).toBe(shown.generate);
+    // **同じ状態に 2 つの文言を作らない**（`src/generate-page.ts` の `availabilityNotice`）。
+    expect(shown.mine).toBe(GENERATE_MESSAGES[DAILY_QUOTA_MESSAGE_KEY]);
+  });
+
+  it('他人の生成は自分の残り回数を減らさない', async () => {
+    const userId = await seedUser();
+    const other = await seedUser();
+    await seedLedgerRow(other);
+    const shown = await quotaOnBothPages(userId);
+    expect(shown.mine).toBe(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
+  });
+});
+
+describe('統計の読み取り（2.3.3 の条件 1 / #382 の訂正）', () => {
+  it('統計は集計 1 回で引く（カードの数だけ問い合わせを出さない）', async () => {
+    const userId = await seedUser();
+    await seedGame(userId, { status: PUBLISHED_STATUS });
+    await seedGame(userId, { status: DRAFT_STATUS });
+    const { env: recording, prepared } = recordingEnv();
+
+    await loadMyWorksStats(recording, userId);
+    expect(prepared).toEqual([myWorksStatsSql()]);
+  });
+
+  it('作者で絞った SEARCH であり、games を全件 SCAN しない（公開作品の総数に比例しない）', async () => {
+    // **索引が「存在すること」ではなく、この問い合わせが実際に使うことを見る。**
+    // SEARCH（`author_id=?`）であれば、読む行はその作者の作品に限られる——自分の作品数には
+    // 比例するが、母数（公開作品の総数）には比例しない（#382 の訂正で読み替えた基準）。
+    const plan = await env.DB.prepare(`explain query plan ${myWorksStatsSql()}`)
+      .bind(...myWorksStatsBinds('someone'))
+      .all<{ detail: string }>();
+    const detail = plan.results.map((row) => row.detail).join(' | ');
+
+    expect(detail).toContain('SEARCH');
+    expect(detail).toContain('games_author_id_created_at_idx');
+    expect(detail).toContain('author_id=?');
+    expect(detail).not.toMatch(/\bSCAN games\b/u);
   });
 });

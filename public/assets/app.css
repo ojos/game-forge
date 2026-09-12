@@ -69,7 +69,7 @@
  * | home | トップ（#329） |
  * | legal | 法務ページ（**予約**。#373 が使う） |
  * | news | お知らせ（**予約**。#375 が使う） |
- * | stats | 統計カード（**予約**。#382 が使う） |
+ * | stats | 統計カード（#382。`/works/mine`） |
  *
  * ============================================================================
  * なぜ 1 枚のままなのか（`@import` で分けない理由。#371）
@@ -1345,14 +1345,69 @@ a.gf-card-author {
  */
 
 /* ==========================================================================
-   @section stats — 統計カード（予約。#382 が使う）
+   @section stats — 統計カード（#382。`/works/mine`）
    ========================================================================== */
 
 /*
- * **まだ空である。** `/works/mine` の統計カード（2.3.13。**横に 6 枚並ぶ**）の見た目を、
- * #382 がここへ書く。
+ * `/works/mine` の統計カード（2.3.13 / #382。組み立ては `src/my-works-stats.ts`）。
  *
- * **断点を書かないこと**（冒頭「区画の規約」3）。`.gf-cards` と同じく `auto-fit` /
- * `auto-fill` の格子にすれば、幅ごとの列数を書かずに 6 枚が並ぶ。器は段 3 で内容 1000px
- * 以上を渡すので、1 枚 9rem でも 6 枚が 1 行に収まる（`@section shell` の根拠）。
+ * **断点を書かない**（冒頭「区画の規約」3）。`auto-fit` の格子で、列の数は器が渡す幅だけで
+ * 決まる。1 枚の下限は 9rem（144px）、列間は 1rem である。
+ *
+ * | 段 | 内容の幅 | 並び |
+ * |---|---|---|
+ * | スマホ（390px） | 358px | 2 列（144 × 2 + 16 = 304） |
+ * | タブレット（768px） | 720px | 4 列（144 × 4 + 16 × 3 = 624） |
+ * | デスクトップ（1080px〜） | 1000px 以上 | **6 枚まで 1 行**（144 × 6 + 16 × 5 = 944） |
+ *
+ * **いまは 5 枚である。** 6 枚目の「合計プレイ数」は列が #377 で入ってから足す
+ * （`src/my-works-stats.ts` の冒頭）。**`auto-fit` は空の列を畳む**ので、5 枚でも 1 行を
+ * 埋めて並び、6 枚になっても CSS は触らなくてよい（`auto-fill` だと空の列が右に残る）。
+ *
+ * **`dl` の `max-width: var(--gf-measure)` を外す。** 文字を持つ塊の上限（`@section shell`）
+ * が `dl` にも掛かっており、42rem のままでは段 3 でも 4 列で折り返す。カードは 1 枚ずつが
+ * 短い文字の塊なので、読みやすさの上限は要らない（`.gf-cards` と同じ扱い）。
  */
+.gf-stats-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--gf-gap-3);
+  width: 100%;
+  max-width: none;
+  margin: var(--gf-gap-3) 0 var(--gf-gap-2);
+  padding: 0;
+}
+
+.gf-stats-card {
+  min-width: 0;
+  padding: var(--gf-gap-2) var(--gf-gap-3);
+  border: 1px solid var(--gf-rule);
+  border-radius: var(--gf-radius);
+  background: var(--gf-surface);
+}
+
+.gf-stats-card dt {
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+/* 数は大きく、桁を揃える。**色は付けない**（プラットフォーム側は無彩色。冒頭）。 */
+.gf-stats-card dd {
+  margin: 0;
+  font-size: var(--gf-text-h2);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 今日の残り生成回数（4.4）。**利用者がいちばん知りたい数なので、カードより先に置いて
+ * 太字にする**（2.3.13）。文言は生成画面と同じものである（`src/generate-page.ts`）。
+ */
+.gf-stats-quota {
+  font-weight: 700;
+}
+
+.gf-stats-note {
+  color: var(--gf-ink-faint);
+  font-size: var(--gf-text-small);
+}

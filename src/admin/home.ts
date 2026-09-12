@@ -24,7 +24,6 @@
 import type { Route } from '../routes.js';
 import { html } from '../routes.js';
 import { ADMIN_HOME_PATH } from '../admin-paths.js';
-import { requireAdmin } from './guard.js';
 import { adminFooter, adminHead } from './shell.js';
 
 /**
@@ -67,9 +66,13 @@ ${adminFooter()}`);
 /**
  * 管理画面のトップの経路。
  *
- * **`requireAdmin` で包む**（`src/admin/guard.ts`）。包み忘れた経路が無いことは
- * `test/admin-guard.test.ts` が admin の経路表を歩いて確かめる。
+ * **ここで権限を確かめない。** 守るのは `handleAdminRequest`（`src/admin/routes.ts`）で、
+ * **経路表を引く手前**にある。経路ごとに包む形は `dispatch` のメソッド照合をすり抜け、
+ * **未ログインの `POST /` が 405 と `Allow` を返していた**（#359 の Copilot の指摘）。
+ *
+ * **したがって、この経路が無防備に見えるのは正しい。** admin ホストの既定は「閉」で、
+ * 開いているのは `ADMIN_OPEN_ROUTES` に挙げた 3 つだけである。
  */
 export const adminHomeRoutes: readonly Route[] = [
-  { method: 'GET', path: ADMIN_HOME_PATH, handler: requireAdmin(() => renderAdminHome()) },
+  { method: 'GET', path: ADMIN_HOME_PATH, handler: () => renderAdminHome() },
 ];

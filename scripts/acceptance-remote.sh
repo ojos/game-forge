@@ -731,8 +731,11 @@ check_pages_dns_records() {
     return 1
   fi
 
+  # 3 ホストを回る（#356 で admin が増えた）。**一覧をここへ書き並べているのではなく、
+  # terraform output の名前を並べている**——ホスト名そのものは output から取るので、
+  # 宣言を変えれば追随する。**足し忘れると、その CNAME が無くても緑のまま通る。**
   local output_name host actual
-  for output_name in app_host sandbox_host; do
+  for output_name in app_host sandbox_host admin_host; do
     host="$(tf_output "$output_name")" || return 1
     if [[ -z "$host" ]]; then
       echo "terraform output ${output_name} が空です。"
@@ -760,14 +763,18 @@ check_pages_dns_records() {
 # 同じホスト名が 2 か所（terraform/dns.tf と wrangler.toml）にある。**片方だけを
 # 変えると、DNS は張れているのに Worker が「unknown host」で 404 を返す**という、
 # どちらの側を見ても正しく見える壊れ方をする（src/index.ts は APP_HOST /
-# SANDBOX_HOST と一致しないホストを通さない）。文書での呼びかけではなく照合で塞ぐ
-# （shared-ai-rules.md 12 章「一覧の複製は機械照合で担保する」）。
+# SANDBOX_HOST / ADMIN_HOST と一致しないホストを通さない）。文書での呼びかけではなく
+# 照合で塞ぐ（shared-ai-rules.md 12 章「一覧の複製は機械照合で担保する」）。
+#
+# **admin は #356 で増えた。** 管理画面は運営しか開かないので、**ずれても誰も踏まない
+# まま残りうる**——利用者向けの画面と違い、壊れていることに気づく人が居ない。
+# 照合が要る度合いはむしろ高い。
 #
 # 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
 ##
 check_wrangler_production_hosts() {
   local rc=0 output_name key declared actual
-  for pair in "app_host:APP_HOST" "sandbox_host:SANDBOX_HOST"; do
+  for pair in "app_host:APP_HOST" "sandbox_host:SANDBOX_HOST" "admin_host:ADMIN_HOST"; do
     output_name="${pair%%:*}"
     key="${pair##*:}"
     declared="$(tf_output "$output_name")" || return 1

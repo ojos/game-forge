@@ -34,22 +34,34 @@ read_var() {
 
 APP_HOST="$(read_var APP_HOST)"
 SANDBOX_HOST="$(read_var SANDBOX_HOST)"
+# 運営の管理画面（仕様 2.4.1。#356）。**3 つ目のホストである。**
+#
+# **足さないと、ローカルで admin ホストの TLS 検証が通らない。** ブラウザの検査は
+# `--ignore-certificate-errors` で、curl は `-k` で走るため**失敗として現れない**
+# ——「証明書が合っていないこと」に気づけないまま検証したことになる（#359 の Copilot の
+# 指摘）。`--cacert certs/dev.crt` で検証する使い方（このファイルの末尾が案内している）
+# では、ここが欠けた瞬間に admin だけが落ちる。
+ADMIN_HOST="$(read_var ADMIN_HOST)"
 
-if [[ -z "$APP_HOST" || -z "$SANDBOX_HOST" ]]; then
-  echo "[certs] wrangler.toml から APP_HOST / SANDBOX_HOST を読めませんでした。" >&2
+if [[ -z "$APP_HOST" || -z "$SANDBOX_HOST" || -z "$ADMIN_HOST" ]]; then
+  echo "[certs] wrangler.toml から APP_HOST / SANDBOX_HOST / ADMIN_HOST を読めませんでした。" >&2
   exit 1
 fi
 
 command -v openssl >/dev/null 2>&1 || { echo "[certs] openssl が見つかりません。" >&2; exit 1; }
 
-SAN="DNS:${APP_HOST},DNS:${SANDBOX_HOST},DNS:localhost,IP:127.0.0.1"
+SAN="DNS:${APP_HOST},DNS:${SANDBOX_HOST},DNS:${ADMIN_HOST},DNS:localhost,IP:127.0.0.1"
 
 # 既存の証明書が「まだ有効」かつ「必要な SAN をすべて含む」なら作り直さない。
 # 有効期限だけを見ると、ホスト名を増やしたときに古い証明書を使い続けてしまう。
+#
+# **増やしたホストをここへ足し忘れると、古い証明書が使われ続ける。** 3 つ目を足した
+# 2026-09-12 の時点で、手元に 2 ホストぶんの証明書を持っている環境が実在する。
 if [[ -f "$KEY_PATH" && -f "$CRT_PATH" ]]; then
   existing_san="$(openssl x509 -in "$CRT_PATH" -noout -ext subjectAltName 2>/dev/null || true)"
   if openssl x509 -in "$CRT_PATH" -noout -checkend 86400 >/dev/null 2>&1 \
-     && [[ "$existing_san" == *"$APP_HOST"* && "$existing_san" == *"$SANDBOX_HOST"* ]]; then
+     && [[ "$existing_san" == *"$APP_HOST"* && "$existing_san" == *"$SANDBOX_HOST"* \
+           && "$existing_san" == *"$ADMIN_HOST"* ]]; then
     echo "[certs] 既存の証明書をそのまま使います: $CRT_PATH"
     exit 0
   fi

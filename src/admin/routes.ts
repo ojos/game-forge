@@ -5,16 +5,20 @@
  * 守る経路の境界（この issue が決めたこと）
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **admin ホストでも OAuth の 3 経路は未ログインで通す。** ほかのすべては
- * `requireAdmin` で包み、権限が無ければ **404**（2.4.2。403 は画面の存在を教える）。
+ * **admin ホストで未ログインのまま通すのは OAuth の 3 つだけ。** ほかのすべての要求は
+ * **メソッドの照合より前に** {@link resolveAdminUser} を通し、権限が無ければ **404**
+ * （2.4.2。403 は画面の存在を教える）。
  *
- * | 経路 | 未ログイン | `is_admin = 0` | `is_admin = 1` |
+ * | 要求 | 未ログイン | `is_admin = 0` | `is_admin = 1` |
  * |---|---|---|---|
  * | `GET /auth/google/start` | **通す**（Google へ 303） | 通す | 通す |
  * | `GET /auth/google/callback` | **通す**（セッションを発行） | 通す | 通す |
  * | `POST /auth/logout` | **通す**（cookie を消す） | 通す | 通す |
  * | `GET /`（管理画面） | 404 | 404 | 200 |
- * | 上記以外 | 404 | 404 | 404 |
+ * | **上記以外のすべて**（`POST /` や `GET /auth/logout` を含む） | 404 | 404 | 経路表が決める |
+ *
+ * **開いているのは「パス」ではなく「メソッドとパスの組」である**（{@link ADMIN_OPEN_ROUTES}）。
+ * これが #359 の Copilot の指摘で直した点で、経緯は下記「なぜ経路ごとに包まないのか」。
  *
  * **なぜ OAuth を通すのか。** そこまで 404 にすると**ログインへ到達できない。**
  * セッション cookie は `__Host-` 接頭辞で `Domain` 属性を持てないため（7.2 必須要件 2 /
@@ -26,6 +30,37 @@
  * 終わらせられない。** `handleLogout` は D1 も秘密も読まず（`src/auth/google.ts`）、
  * cookie を消して `/` へ送るだけである。**ログアウト直後の `/` は 404 になる**
  * ——正しい（もう管理者ではない）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * なぜ経路ごとに包まないのか（#359 の Copilot の指摘で直した）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **最初は経路ごとに `requireAdmin(handler)` で包んでいた。それは破れていた。**
+ *
+ * `src/routes.ts` の `dispatch` は、**パスが一致した集合の中でメソッドを照合し、
+ * 合わなければ 405 と `Allow` を返す。** その判定は**ハンドラを呼ぶ前**に起きるので、
+ * **包みはメソッド違いの要求を 1 つも見られない。**
+ *
+ *   - 未ログインの `POST /` → **405 + `Allow: GET, HEAD`**（「`/` に GET の経路がある」）
+ *   - 未ログインの `GET /auth/logout` → **405 + `Allow: POST`**
+ *
+ * **405 は 403 と同じ情報を漏らす。** 「その呼び方は違う」と答えることは「そこに経路が
+ * ある」と答えることであり、2.4.2 が 403 を退けた理由がそのまま戻ってくる。
+ *
+ * **したがって判定を経路表の手前へ移した**（{@link handleAdminRequest}）。副産物として
+ * **失敗の向きが閉じる側になった。**
+ *
+ *   - 包む形は **既定が「開」** だった——包み忘れた経路が黙って開く（検査で塞いでいた）
+ *   - いまは **既定が「閉」** である——{@link ADMIN_OPEN_ROUTES} に無い要求は、
+ *     **経路表に在るかどうかに関わらず** 404 になる
+ *
+ * **M10-3 が経路を足しても、何もしなければ守られる。** 開けたいときだけ、
+ * {@link ADMIN_OPEN_ROUTES} へ 1 行足して理由を書くことになる
+ * （`src/page-paths.ts` の「一覧を持つのは画面ではなく例外の側である」と同じ向き）。
+ *
+ * **405 が消えるわけではない。** 権限のある管理者が `POST /` を叩けば 405 が返る
+ * ——**通してよい相手に対しては、正しい HTTP の意味を返す。** 隠すのは
+ * 「入れない相手から見た経路の存在」だけである。
  *
  * ══════════════════════════════════════════════════════════════════════════════
  * 引き受けた代償
@@ -56,24 +91,59 @@
  */
 import type { AuthDependencies } from '../auth/google.js';
 import { CALLBACK_PATH, LOGIN_PATH, LOGOUT_PATH, createAuthRoutes } from '../auth/google.js';
-import type { Route } from '../routes.js';
+import type { Route, RouteMethod } from '../routes.js';
 import { dispatch } from '../routes.js';
+import { adminNotFound, resolveAdminUser } from './guard.js';
 import { adminHomeRoutes } from './home.js';
 
+/** 未ログインで通す要求の 1 つ。**メソッドまで含めて指定する**（下記）。 */
+export interface AdminOpenRoute {
+  readonly method: RouteMethod;
+  readonly path: string;
+}
+
 /**
- * 未ログインで通す経路（**境界の正本**）。
+ * 未ログインで通す要求（**境界の正本**）。
+ *
+ * **パスではなくメソッドとパスの組である。** パスだけで開けると、`GET /auth/logout` の
+ * ようなメソッド違いの要求まで経路表へ届き、`dispatch` が 405 と `Allow` を返す
+ * （このファイルの「なぜ経路ごとに包まないのか」）。**開ける範囲は、実際に通したい
+ * 呼び方 1 つに限る。**
  *
  * **綴りを書き写さない。** `src/auth/google.ts` の定数から組み立てる——写すと、
  * ログインのパスを変えた日に**境界だけが古い綴りを見続ける**（開いているつもりの経路が
- * 閉じ、閉じているつもりの経路が開く）。
+ * 閉じ、閉じているつもりの経路が開く）。**メソッドも `createAuthRoutes` の登録と
+ * 一致していなければならない**ので、`test/admin-guard.test.ts` が経路表と突き合わせる。
  *
- * この一覧は `test/admin-guard.test.ts` が 3 方向から使う。
+ * この一覧は `test/admin-guard.test.ts` が 4 方向から使う。
  *
- *   1. ここに無い経路は、未ログインで **404 になる**（包み忘れを捕まえる）
- *   2. ここに在る経路は、**本当に経路表へ登録されている**（腐った例外を捕まえる）
- *   3. ここに在る経路は、未ログインで **404 にならない**（ログインへ到達できる）
+ *   1. ここに無い要求は、未ログインで **404 になる**（経路表に在るものも、無いものも）
+ *   2. ここに在る要求は、**本当に経路表へ同じメソッドで登録されている**（腐った例外を捕まえる）
+ *   3. ここに在る要求は、未ログインで **404 にならない**（ログインへ到達できる）
+ *   4. ここに在る経路への**メソッド違い**は、未ログインで **404 になる**（405 を漏らさない）
  */
-export const ADMIN_OPEN_PATHS: readonly string[] = [LOGIN_PATH, CALLBACK_PATH, LOGOUT_PATH];
+export const ADMIN_OPEN_ROUTES: readonly AdminOpenRoute[] = [
+  { method: 'GET', path: LOGIN_PATH },
+  { method: 'GET', path: CALLBACK_PATH },
+  { method: 'POST', path: LOGOUT_PATH },
+];
+
+/**
+ * この要求を未ログインで通してよいかを判定する。
+ *
+ * **`HEAD` は `GET` として見る。** `dispatch` が同じ畳み方をするため（HTTP 上 HEAD は
+ * 「GET と同じヘッダを、本文なしで」返すもの）。**ここで畳まないと、判定とその後の
+ * 振り分けが「この要求のメソッドは何か」について食い違う**——`HEAD /auth/google/start` が
+ * 権限を要求され、通ったあとで GET の経路へ落ちる、という読みにくい形になる。
+ *
+ * @param request 受信したリクエスト
+ * @returns 未ログインで通すなら true
+ */
+function isOpenRequest(request: Request): boolean {
+  const method = request.method === 'HEAD' ? 'GET' : request.method;
+  const path = new URL(request.url).pathname;
+  return ADMIN_OPEN_ROUTES.some((open) => open.method === method && open.path === path);
+}
 
 /**
  * 管理画面ホストの経路表を組み立てる。
@@ -81,6 +151,9 @@ export const ADMIN_OPEN_PATHS: readonly string[] = [LOGIN_PATH, CALLBACK_PATH, L
  * **`env` を取らない。** `src/app.ts` が関数なのは `devRoutes` を本番で落とすためだが、
  * **admin ホストに診断経路を置かない**ので、env を見る理由が無い。関数にしてあるのは
  * 認証の依存を差し替えられるようにするためである（下記）。
+ *
+ * **この表は権限を持たない。** 守るのは {@link handleAdminRequest} で、ここは
+ * 「どの呼び方にどのハンドラが対応するか」だけを持つ。
  *
  * @param authOverrides 認証の依存の差し替え（テストがコールバックをネットワークなしで
  *   通すために使う。既定は本番の振る舞い）
@@ -101,10 +174,19 @@ export function createAdminRoutes(
 /**
  * 管理画面ホストへのリクエストを処理する。
  *
+ * **ここが境界である。** 経路表を引く前に権限を確かめるので、**メソッドが合わない要求も、
+ * 経路が存在しない要求も、同じ 404 になる**（このファイルの「なぜ経路ごとに包まないのか」）。
+ *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
  * @returns レスポンス
  */
 export async function handleAdminRequest(request: Request, env: Env): Promise<Response> {
+  if (!isOpenRequest(request)) {
+    const admin = await resolveAdminUser(request, env);
+    if (!admin.ok) {
+      return adminNotFound(request);
+    }
+  }
   return await dispatch(createAdminRoutes(), request, env);
 }

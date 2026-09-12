@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { ADMIN_OPEN_PATHS, createAdminRoutes, handleAdminRequest } from '../src/admin/routes.js';
+import { ADMIN_OPEN_ROUTES, createAdminRoutes, handleAdminRequest } from '../src/admin/routes.js';
 import { ADMIN_FOOTER_MARK, ADMIN_HEADER_MARK } from '../src/admin/shell.js';
 import { ACCOUNT_PATH } from '../src/account-paths.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
@@ -134,13 +134,13 @@ describe('admin の画面一覧の導出（2.4.5）', () => {
     // `src/page-paths.ts` の `NON_PAGE_PATHS` は app のために書かれたが、**admin も
     // 同じ 2 経路を持つ**。片方のホストにしか効かない例外を作っていないことを見る。
     const paths = getPaths();
-    for (const open_ of ADMIN_OPEN_PATHS) {
-      if (open_ === '/auth/logout') {
-        // ログアウトは POST なので、GET の導出には最初から入らない。
-        continue;
-      }
-      expect(NON_PAGE_PATHS, `${open_} が例外一覧に無い`).toContain(open_);
-      expect(paths, `${open_} が画面として導かれている`).not.toContain(open_);
+    // **GET の分だけを見る。** ログアウトは POST なので、GET の導出には最初から入らない
+    // （`ADMIN_OPEN_ROUTES` はメソッドとパスの組を持つ。#359）。
+    const openGets = ADMIN_OPEN_ROUTES.filter((open_) => open_.method === 'GET');
+    expect(openGets.length, '開いている GET が 1 つも無い（検査が空振りする）').toBeGreaterThan(0);
+    for (const { path } of openGets) {
+      expect(NON_PAGE_PATHS, `${path} が例外一覧に無い`).toContain(path);
+      expect(paths, `${path} が画面として導かれている`).not.toContain(path);
     }
   });
 

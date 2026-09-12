@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { ADMIN_OPEN_PATHS, createAdminRoutes, handleAdminRequest } from '../src/admin/routes.js';
+import { ADMIN_OPEN_ROUTES, createAdminRoutes, handleAdminRequest } from '../src/admin/routes.js';
 import { adminNotFound, resolveAdminUser } from '../src/admin/guard.js';
 import { ADMIN_HOME_PATH } from '../src/admin-paths.js';
 import { CALLBACK_PATH, LOGIN_PATH, LOGOUT_PATH } from '../src/auth/google.js';
@@ -15,16 +15,30 @@ import { applySchema } from './helpers/schema.js';
  * 境界（この issue が決めたこと）
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **OAuth の 3 経路は未ログインで通し、それ以外は 404。** 正本は
- * `src/admin/routes.ts` の `ADMIN_OPEN_PATHS` で、このファイルはそれを**経路表と
- * 突き合わせる**。3 方向から見る。
+ * **OAuth の 3 つ（メソッドとパスの組）は未ログインで通し、それ以外はすべて 404。**
+ * 正本は `src/admin/routes.ts` の `ADMIN_OPEN_ROUTES` で、このファイルはそれを
+ * **経路表と突き合わせる**。4 方向から見る。
  *
- *   1. 開いていない経路は、未ログインで 404 になる（**包み忘れを捕まえる**）
- *   2. 開いている経路は、本当に経路表へ登録されている（**腐った例外を捕まえる**）
- *   3. 開いている経路は、未ログインで 404 にならない（**ログインへ到達できる**）
+ *   1. 開いていない要求は、未ログインで 404 になる（**経路表に在るものも、無いものも**）
+ *   2. 開いている要求は、本当に経路表へ同じメソッドで登録されている（**腐った例外**）
+ *   3. 開いている要求は、未ログインで 404 にならない（**ログインへ到達できる**）
+ *   4. 開いている経路への**メソッド違い**は、未ログインで 404 になる（**405 を漏らさない**）
  *
- * **1 が M10-3 のための仕掛けである。** 審査キューや BAN の経路を足した人が
- * `requireAdmin` で包み忘れたら、**その経路を名指しせずに**赤くなる。
+ * **1 と 4 が M10-3 のための仕掛けである。**
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 4 が要る理由（#359 の Copilot の指摘。実際に破れていた）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * 最初の実装は経路ごとに `requireAdmin(handler)` で包んでいた。**`dispatch` は
+ * パスが一致した集合の中でメソッドを照合し、合わなければハンドラを呼ぶ前に 405 と
+ * `Allow` を返す。** そのため:
+ *
+ *   - 未ログインの `POST /` → **405 + `Allow: GET, HEAD`**
+ *   - 未ログインの `GET /auth/logout` → **405 + `Allow: POST`**
+ *
+ * **405 は 403 と同じものを漏らす**（「そこに経路がある」）。判定を経路表の手前へ
+ * 移して直した。**この検査群が無いと、同じ形へ戻しても緑のまま通る。**
  *
  * ══════════════════════════════════════════════════════════════════════════════
  * なぜ 404 の「形」まで見るのか
@@ -33,7 +47,7 @@ import { applySchema } from './helpers/schema.js';
  * **ステータスだけ揃えても、本文やヘッダが違えば区別できる。** 存在する画面の 404 と
  * 存在しない経路の 404 が別物なら、**403 を返しているのと情報量は同じ**である
  * （2.4.2 が 403 を退けた理由がそのまま戻ってくる）。**実際に両方を叩いて
- * 突き合わせる**——記述で守ると写しが腐る。
+ * 突き合わせる**——記述で守ると写しが腐る。**`Allow` ヘッダが無いことも見る。**
  */
 
 const ADMIN_ORIGIN = `https://${env.ADMIN_HOST}`;
@@ -125,8 +139,14 @@ beforeAll(async () => {
 async function open(
   path: string,
   cookie?: string,
-  method: 'GET' | 'POST' = 'GET',
-): Promise<{ status: number; body: string; type: string; location: string }> {
+  method: 'GET' | 'HEAD' | 'POST' | 'PUT' = 'GET',
+): Promise<{
+  status: number;
+  body: string;
+  type: string;
+  location: string;
+  allow: string | null;
+}> {
   const response = await handleAdminRequest(
     new Request(`${ADMIN_ORIGIN}${path}`, {
       method,
@@ -136,57 +156,135 @@ async function open(
   );
   return {
     status: response.status,
-    body: await response.text(),
+    // HEAD の応答は本文を持たない（ランタイムが落とす）。
+    body: method === 'HEAD' ? '' : await response.text(),
     type: response.headers.get('content-type') ?? '',
     location: response.headers.get('location') ?? '',
+    // **`Allow` は「そこに経路がある」ことを教えるヘッダである。** 拒否の応答に
+    // 付いていないことを見る。
+    allow: response.headers.get('allow'),
   };
 }
 
+/**
+ * ある要求が「未ログインで通す」集合に入っているか。
+ *
+ * **判定の写しをここへ書かない**ために、実装が輸出している一覧をそのまま引く。
+ *
+ * @param method メソッド
+ * @param path パス
+ * @returns 開いていれば true
+ */
+function isOpen(method: string, path: string): boolean {
+  return ADMIN_OPEN_ROUTES.some((open) => open.method === method && open.path === path);
+}
+
 describe('守る経路の境界（2.4.2 / #356）', () => {
-  it('未ログインで通すのは OAuth の 3 経路だけである（綴りは実装の定数から取る）', () => {
+  it('未ログインで通すのは OAuth の 3 つだけである（綴りもメソッドも実装の定数から取る）', () => {
     // **一覧をここへ書き並べない。** `src/auth/google.ts` の定数と突き合わせるので、
-    // ログインのパスを変えれば必ずどちらかが赤くなる。
-    expect([...ADMIN_OPEN_PATHS].sort()).toEqual(
-      [LOGIN_PATH, CALLBACK_PATH, LOGOUT_PATH].sort(),
+    // ログインのパスを変えれば必ずどちらかが赤くなる。**メソッドまで固定する**
+    // ——パスだけで開けると、メソッド違いが経路表へ届いて 405 を漏らす（#359）。
+    expect([...ADMIN_OPEN_ROUTES].sort((a, b) => a.path.localeCompare(b.path))).toEqual(
+      [
+        { method: 'GET', path: CALLBACK_PATH },
+        { method: 'GET', path: LOGIN_PATH },
+        { method: 'POST', path: LOGOUT_PATH },
+      ].sort((a, b) => a.path.localeCompare(b.path)),
     );
   });
 
-  it('開いていると宣言した経路は、本当に経路表へ登録されている', () => {
+  it('開いていると宣言した要求は、本当に経路表へ同じメソッドで登録されている', () => {
     // 逆向き。**例外一覧だけが生き残った状態を緑にしない**（消えた経路を「開いている」と
-    // 言い続ける形）。
-    const registered = createAdminRoutes().map((route) => route.path);
-    for (const path of ADMIN_OPEN_PATHS) {
-      expect(registered, `${path} が admin の経路表に無い`).toContain(path);
+    // 言い続ける形）。**メソッドまで突き合わせる**——`POST /auth/logout` を開けたつもりで
+    // 経路表が GET で登録していたら、開けた先が無い。
+    const registered = createAdminRoutes().map((route) => `${route.method} ${route.path}`);
+    for (const open_ of ADMIN_OPEN_ROUTES) {
+      expect(registered, `${open_.method} ${open_.path} が admin の経路表に無い`).toContain(
+        `${open_.method} ${open_.path}`,
+      );
     }
   });
 
   it('開いていない経路は、すべて未ログインで 404 になる（経路表を歩く）', async () => {
     // **これが M10-3 のための仕掛けである。** 審査キューや BAN の経路を足した人が
-    // `requireAdmin` で包み忘れたら、名指しせずに赤くなる。
-    const guarded = createAdminRoutes().filter(
-      (route) => !ADMIN_OPEN_PATHS.includes(route.path),
-    );
-    // **1 本も無い状態を緑にしない**（包まれた経路が消えても通る形を置かない）。
-    expect(guarded.length, '包まれた経路が 1 本も無い（検査が空振りする）').toBeGreaterThan(0);
+    // 何もしなくても守られ、**開けたときだけ `ADMIN_OPEN_ROUTES` へ理由を書くことになる。**
+    const guarded = createAdminRoutes().filter((route) => !isOpen(route.method, route.path));
+    // **1 本も無い状態を緑にしない**（守られた経路が消えても通る形を置かない）。
+    expect(guarded.length, '守られた経路が 1 本も無い（検査が空振りする）').toBeGreaterThan(0);
 
     for (const route of guarded) {
-      const { status, body } = await open(route.path, undefined, route.method);
+      const { status, body, allow } = await open(route.path, undefined, route.method);
       expect(status, `${route.method} ${route.path} が未ログインで 404 ではない`).toBe(404);
       // **画面の中身が漏れていないこと**まで見る（404 なのに本文が出ている形を塞ぐ）。
       expect(body, `${route.path} の 404 に本文が混ざっている`).not.toContain('<h1>');
+      expect(allow, `${route.method} ${route.path} の 404 に Allow が付いている`).toBeNull();
     }
   });
 
-  it('開いている経路は、未ログインでも 404 にならない（ログインへ到達できる）', async () => {
+  it('開いている要求は、未ログインでも 404 にならない（ログインへ到達できる）', async () => {
     // **ここを 404 にすると、誰も管理画面へ入れない。** cookie は `__Host-` で
     // `Domain` を持てず、app のセッションは admin へ届かない（2.4.1）。
-    for (const route of createAdminRoutes()) {
-      if (!ADMIN_OPEN_PATHS.includes(route.path)) {
-        continue;
-      }
-      const { status } = await open(route.path, undefined, route.method);
-      expect(status, `${route.method} ${route.path} が未ログインで 404 になった`).not.toBe(404);
+    expect(ADMIN_OPEN_ROUTES.length, '開いている要求が 1 つも無い').toBeGreaterThan(0);
+    for (const open_ of ADMIN_OPEN_ROUTES) {
+      const { status } = await open(open_.path, undefined, open_.method);
+      expect(status, `${open_.method} ${open_.path} が未ログインで 404 になった`).not.toBe(404);
     }
+  });
+
+  it('メソッドが合わない要求は、未ログインで 405 ではなく 404 になる（#359）', async () => {
+    // **`dispatch` はハンドラを呼ぶ前にメソッドを照合し、405 と `Allow` を返す。**
+    // 経路ごとに包む形では、その 405 を 1 つも止められなかった——**405 は 403 と同じ
+    // ものを漏らす**（「そこに経路がある」）。
+    //
+    // **経路表に実在する組み合わせを狙う**（`POST /` は `/` に GET があるので 405 に
+    // なりうる。`GET /auth/logout` は `/auth/logout` に POST があるので同じ）。
+    const mismatches: readonly { method: 'GET' | 'POST' | 'PUT'; path: string }[] = [
+      { method: 'POST', path: ADMIN_HOME_PATH },
+      { method: 'PUT', path: ADMIN_HOME_PATH },
+      { method: 'GET', path: LOGOUT_PATH },
+      { method: 'POST', path: LOGIN_PATH },
+      { method: 'POST', path: CALLBACK_PATH },
+    ];
+    for (const { method, path } of mismatches) {
+      // **狙いが外れていないことを先に確かめる。** 開いている組み合わせを混ぜると、
+      // この検査は「通ったから緑」になってしまう。
+      expect(isOpen(method, path), `${method} ${path} は開いている要求である`).toBe(false);
+
+      const { status, allow, body } = await open(path, undefined, method);
+      expect(status, `${method} ${path} が 404 ではない`).toBe(404);
+      expect(allow, `${method} ${path} の応答に Allow が付いている`).toBeNull();
+      expect(JSON.parse(body), `${method} ${path} の本文`).toEqual({
+        error: 'not found',
+        path,
+      });
+    }
+  });
+
+  it('メソッドが合わない要求への 404 は、経路が無いときと同じ形である（#359）', async () => {
+    // 上の検査に「同じ形であること」を足す。**別の 404 を返していたら、状態を
+    // 数えるだけで経路の存在が読める。**
+    const mismatch = await open(ADMIN_HOME_PATH, undefined, 'POST');
+    const missing = await open('/definitely-not-an-admin-route', undefined, 'POST');
+    expect(mismatch.status).toBe(missing.status);
+    expect(mismatch.type).toBe(missing.type);
+    expect(mismatch.allow).toBe(missing.allow);
+  });
+
+  it('権限のある管理者には 405 を返す（隠すのは「入れない相手から見た存在」だけ）', async () => {
+    // **405 を消したのではない。** 通してよい相手には、正しい HTTP の意味を返す。
+    // これが無いと、上の検査は「admin ホストは何でも 404 を返す」実装でも緑になる。
+    const { status, allow } = await open(ADMIN_HOME_PATH, await cookieFor(users.admin), 'POST');
+    expect(status).toBe(405);
+    expect(allow).toContain('GET');
+  });
+
+  it('HEAD は GET として判定する（境界と振り分けが食い違わない）', async () => {
+    // `dispatch` は HEAD を GET の経路で解決する。**境界が畳まないと、
+    // `HEAD /auth/google/start` だけが権限を要求される。**
+    const { status } = await open(LOGIN_PATH, undefined, 'HEAD');
+    expect(status).toBe(303);
+    // 守られた側の HEAD は 404 のまま（GET が守られているので HEAD も守られる）。
+    expect((await open(ADMIN_HOME_PATH, undefined, 'HEAD')).status).toBe(404);
   });
 
   it('OAuth の開始は、未ログインで Google へ送る', async () => {

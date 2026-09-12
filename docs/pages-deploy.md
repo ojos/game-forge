@@ -1,7 +1,11 @@
 # Cloudflare Pages への配備手順
 
 - 位置づけ: 確定22（アプリと API は Pages Functions）を実際に配備するための手順書。
-- 対象: `app.game-forge.ojos.jp`（アプリ）と `sandbox.game-forge.ojos.jp`（UGC）。
+- 対象: `app.game-forge.ojos.jp`（アプリ）/ `sandbox.game-forge.ojos.jp`（UGC）/
+  `admin.game-forge.ojos.jp`（運営の管理画面。仕様 2.4 / #356）の **3 ホスト**。
+  **どれも同じ Pages プロジェクトで、`src/index.ts` が `Host` ヘッダで振り分けます。**
+  **admin だけに固有の段取り**（Google OAuth のリダイレクト URI の登録、`users.is_admin` の
+  最初の 1 人、`0025` の適用、順序、壊れうる点）は [admin-host.md](admin-host.md) にあります。
 - **この文書は手順であって、実行の記録ではない。** 実際の配備は外部状態の変更なので、
   行った時点で `terraform/` か本文書に結果を残すこと。
 - **日常の配備は自動である（#95）。** `main` へマージすると GitHub Actions が本番へ
@@ -460,6 +464,13 @@ gh secret list --repo ojos/game-forge    # 名前と更新日時だけが読め�
 
 **Cloudflare 側と Route53 側の両方に作業があります。** 片方だけでは張れません。
 
+**ホストは 3 つあります**（`app.` / `sandbox.` / `admin.`）。**運営の管理画面
+（`admin.game-forge.ojos.jp`。仕様 2.4 / #356）の手順は
+[admin-host.md](admin-host.md) にまとめてあります**——あちらは**利用者の手作業 2 つ**
+（Google OAuth のリダイレクト URI の登録、`users.is_admin` の最初の 1 人）と、
+本番 D1 への `0025` の適用を含む順序を持ちます。**この章が扱うのは 3 ホストに共通の
+やり方**で、admin を張るときも下のコマンドと同じ形です。
+
 ### Cloudflare 側
 
 **`wrangler` にカスタムドメインのコマンドはありません**（4.121 で確認。`wrangler pages`
@@ -470,7 +481,7 @@ gh secret list --repo ojos/game-forge    # 名前と更新日時だけが読め�
 set -a; source scripts/load-project-env.sh; set +a
 API="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/game-forge/domains"
 
-for H in app.game-forge.ojos.jp sandbox.game-forge.ojos.jp; do
+for H in app.game-forge.ojos.jp sandbox.game-forge.ojos.jp admin.game-forge.ojos.jp; do
   curl -s -X POST "$API" \
     -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
     -H "Content-Type: application/json" \
@@ -495,16 +506,24 @@ terraform -chdir=terraform plan
 terraform -chdir=terraform apply
 ```
 
-宣言されるのは、ホストゾーン `game-forge.ojos.jp` の中の CNAME 2 本です。
+宣言されるのは、ホストゾーン `game-forge.ojos.jp` の中の CNAME 3 本です
+（**3 本目は #356 で増えました**）。
 
 | 名前 | 型 | 値 |
 |---|---|---|
 | `app.game-forge.ojos.jp` | CNAME | `game-forge.pages.dev` |
 | `sandbox.game-forge.ojos.jp` | CNAME | `game-forge.pages.dev` |
+| `admin.game-forge.ojos.jp` | CNAME | `game-forge.pages.dev` |
 
 ホスト名はゾーン名から導き（`local.app_host`）、向き先は
 `var.cloudflare_pages_project` から組み立てます。完全修飾名を書き写さないのは、
 ゾーン名を変えたときに片方だけが古い名前を指さないようにするためです。
+
+**3 本とも外部層の検査に入っています**（`scripts/acceptance-remote.sh` の
+`pages custom domain records match` と `wrangler production hosts match dns`）。
+**`terraform/outputs.tf` に出力を足さないと、その CNAME は検査の対象になりません**
+——ホスト名は output から取る作りなので、**足し忘れたホストだけが黙って外れます**
+（#359 で実際に admin が外れていました）。
 
 ### サンドボックス用ホストを同じプロジェクトに載せてよい理由
 
@@ -533,6 +552,15 @@ https://app.game-forge.ojos.jp/auth/google/callback
 ```
 
 **サンドボックス側は登録しません。** あちらは cookie も認証も持ちません（7.2）。
+
+**運営の管理画面（`admin.`）は別に登録が要ります**（#356）。`redirect_uri` は要求の
+ホストから組み立てるため（`src/auth/google.ts` の `redirectUri`）、**app 用の登録では
+代用できません。** 手順と、登録が無いときの現れ方（同意画面が `redirect_uri_mismatch` で
+止まり、**アプリのログには何も出ない**）は [admin-host.md](admin-host.md) にあります。
+
+```
+https://admin.game-forge.ojos.jp/auth/google/callback
+```
 
 **テストユーザーの登録も要ります。** 同意画面は Testing のまま運用するため、
 招待した相手のメールアドレスを Console のテストユーザーへ手登録しないと、

@@ -20,11 +20,15 @@
  *
  * ## 守る経路の境界（この issue が決めたこと）
  *
- * **OAuth の開始とコールバックは未ログインで通す。** そこまで 404 にすると
- * **ログインへ到達できず、誰も管理画面へ入れない。** 境界の正本は
- * `src/admin/routes.ts` の `ADMIN_OPEN_PATHS` で、**経路表を歩いて「開いていない経路が
- * 未ログインで 404 になること」を機械照合する**（`test/admin-guard.test.ts`）。
- * M10-3 が経路を足したとき、包み忘れがあれば赤くなる。
+ * **OAuth の 3 つ（開始・コールバック・ログアウト）は未ログインで通す。** そこまで 404 に
+ * すると**ログインへ到達できず、誰も管理画面へ入れない。** 境界の正本は
+ * `src/admin/routes.ts` の `ADMIN_OPEN_ROUTES` で、**判定を掛ける場所は
+ * `handleAdminRequest`（経路表を引く手前）である。**
+ *
+ * **ここに `requireAdmin` のような「経路を包む」道具を置かない。** 包む形は
+ * `dispatch` のメソッド照合をすり抜け、**未ログインの `POST /` が 405 と `Allow` を
+ * 返していた**（#359 の Copilot の指摘。経緯は `src/admin/routes.ts` の
+ * 「なぜ経路ごとに包まないのか」）。**405 は 403 と同じものを漏らす。**
  *
  * ## 認証そのものは写さない
  *
@@ -117,24 +121,16 @@ export function adminNotFound(request: Request): Response {
   return json({ error: 'not found', path: new URL(request.url).pathname }, 404);
 }
 
-/**
- * 管理者だけが通れるハンドラへ包む。
+/*
+ * ## M10-3 へ: 実行者の id が要るとき
  *
- * **包むのは経路の登録側である**（`src/admin/routes.ts`）。ハンドラ本文の中で
- * 判定を書くと、**書き忘れた経路が黙って開く。** ここを通す形にすれば、
- * 経路表を歩く検査が「包まれていない経路」を見つけられる。
+ * `admin_actions`（2.4.4）は**実行者**を残す。いまの `handleAdminRequest` は
+ * {@link resolveAdminUser} の戻り値を捨てている——**この画面が利用者の値を 1 つも
+ * 出さないため、要る場面が無い**（`src/admin/home.ts`）。
  *
- * @param handler 管理者として実行するハンドラ（判定済みの利用者 id を受け取る）
- * @returns 経路表へ渡せるハンドラ
+ * **要るようになったら、境界を 2 か所に増やさずに渡すこと。** 経路表を組み立てる関数へ
+ * 判定済みの id を渡し、ハンドラがそれを閉じ込める形にすれば、**判定は 1 回のまま**に
+ * なる（`createAdminRoutes` は既に引数を取る関数である）。**ハンドラの中で
+ * `resolveAdminUser` を呼び直さないこと**——D1 を 2 回読むだけでなく、
+ * 「そこでも拒否できる」形になり、**どちらが境界なのかが読めなくなる。**
  */
-export function requireAdmin(
-  handler: (request: Request, env: Env, userId: string) => Response | Promise<Response>,
-): (request: Request, env: Env) => Promise<Response> {
-  return async (request: Request, env: Env): Promise<Response> => {
-    const admin = await resolveAdminUser(request, env);
-    if (!admin.ok) {
-      return adminNotFound(request);
-    }
-    return await handler(request, env, admin.userId);
-  };
-}

@@ -30,7 +30,7 @@
  * **まさにこのモジュールが避けている「2 つの一覧」が復活する。**
  *
  * **下の例外一覧も両ホストで共有する。** admin ホストも OAuth の 2 経路を持つため
- * （`src/admin/routes.ts` の `ADMIN_OPEN_PATHS`）、綴りは同じで、外すべき理由も同じ
+ * （`src/admin/routes.ts` の `ADMIN_OPEN_ROUTES`）、綴りは同じで、外すべき理由も同じ
  * である。**片方のホストにしか無い例外は、いまは 1 つも無い。**
  *
  * **乗る先は 3 検査のうち 2 つである。** 外枠（`test/admin-page-shell.test.ts`）と

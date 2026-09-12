@@ -21,6 +21,8 @@
 |---|---|
 | ホスト名 | `admin.game-forge.ojos.jp`（`wrangler.toml` の `ADMIN_HOST`。3 環境すべて） |
 | DNS | `terraform/dns.tf` の `aws_route53_record.admin`（CNAME → `game-forge.pages.dev`） |
+| 外部層の検査 | `terraform/outputs.tf` の `admin_host` → `scripts/acceptance-remote.sh`（CNAME の実在と `wrangler.toml` との一致） |
+| ローカル HTTPS | `scripts/dev-certs.sh` の SAN に入っている（**3 ホストぶん**） |
 | カスタムドメイン | Cloudflare API（`wrangler` にコマンドが無い。下記） |
 | 権限の列 | `users.is_admin`（`migrations/0025_users_is_admin.sql`。既定 0） |
 | 振り分け | `src/index.ts` |
@@ -32,15 +34,29 @@
 
 ## 守る経路の境界
 
-**admin ホストでも OAuth の 3 経路は未ログインで通す。ほかはすべて 404。**
+**admin ホストで未ログインのまま通すのは OAuth の 3 つだけ。ほかはすべて 404。**
 
-| 経路 | 未ログイン | `is_admin = 0` | `is_admin = 1` |
+| 要求 | 未ログイン | `is_admin = 0` | `is_admin = 1` |
 |---|---|---|---|
 | `GET /auth/google/start` | **通す**（Google へ 303） | 通す | 通す |
 | `GET /auth/google/callback` | **通す**（セッションを発行） | 通す | 通す |
 | `POST /auth/logout` | **通す**（cookie を消す） | 通す | 通す |
 | `GET /`（管理画面） | 404 | 404 | 200 |
-| 上記以外 | 404 | 404 | 404 |
+| **上記以外のすべて**（`POST /` や `GET /auth/logout` を含む） | 404 | 404 | 経路表が決める |
+
+**開いているのは「パス」ではなく「メソッドとパスの組」である。** 判定は経路表を引く
+**手前**（`handleAdminRequest`）で掛かる。**#359 のレビューで直した点で、それまでは
+破れていた**——`dispatch` はハンドラを呼ぶ前にメソッドを照合して 405 と `Allow` を
+返すため、経路ごとに包む形では**未ログインの `POST /` が
+`405 + Allow: GET, HEAD` を返していた。405 は 403 と同じものを漏らす**
+（「そこに経路がある」）。
+
+**いまは既定が「閉」である。** `ADMIN_OPEN_ROUTES` に無い要求は、**経路表に在るか
+どうかに関わらず** 404 になる。M10-3 が経路を足しても、何もしなければ守られる。
+
+**405 が消えたわけではない。** 権限のある管理者が `POST /` を叩けば 405 が返る
+——**通してよい相手には正しい HTTP の意味を返す。** 隠すのは「入れない相手から見た
+経路の存在」だけである。
 
 **なぜ OAuth を通すのか。** そこまで 404 にすると**ログインへ到達できない。** セッション
 cookie は `__Host-` 接頭辞で `Domain` 属性を持てないため（7.2 必須要件 2）、**app ホストの
@@ -59,8 +75,10 @@ https://admin.game-forge.ojos.jp/auth/google/start
 **引き受けた代償。** admin ホストに OAuth の口があることは外から分かる（`/auth/google/start`
 が Google へ 303 を返す）。隠すには入口も 404 にするしかなく、それは画面ごと使えなくする
 ことである。**漏れるのは「ログインの口がある」ことまで**で、画面の綴りも、管理者が誰かも、
-機能が何かも漏れない。境界の正本は `src/admin/routes.ts` の `ADMIN_OPEN_PATHS` で、
-`test/admin-guard.test.ts` が経路表を歩いて機械照合する。
+機能が何かも漏れない。境界の正本は `src/admin/routes.ts` の `ADMIN_OPEN_ROUTES` で、
+`test/admin-guard.test.ts` が経路表を歩いて 4 方向から機械照合する（開いていない要求が
+404 / 開いている要求が登録されている / 開いている要求が通る / **メソッド違いが 405 を
+漏らさない**）。
 
 ---
 
@@ -207,6 +225,10 @@ curl -s https://admin.game-forge.ojos.jp/ | head -5
 
 # ログインの入口が Google へ送ること
 curl -si https://admin.game-forge.ojos.jp/auth/google/start | grep -i '^location:'
+
+# **メソッド違いが 405 を漏らさないこと**（#359 で直した点。`Allow` が出たら回帰）
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://admin.game-forge.ojos.jp/
+curl -si -X POST https://admin.game-forge.ojos.jp/ | grep -i '^allow:' && echo '↑ 出てはいけない'
 ```
 
 そのうえで**ブラウザで `/auth/google/start` を開き、管理画面が出ることを見る。**
@@ -244,9 +266,17 @@ curl -si https://admin.game-forge.ojos.jp/auth/google/start | grep -i '^location
 失われても、検査はすべて緑のまま通る**——D1 の行データに機械照合は置けない
 （`docs/operator-account.md` が `is_operator` について書いているのと同じ限界）。
 
-**同じことがカスタムドメインと OAuth の登録にも当てはまる。** どちらも外部状態で、
-`terraform plan` が見るのは Route53 の CNAME だけである。**OAuth クライアントは API から
-列挙できない**（仕様 8.1 の「Google 側の登録は API から列挙できない」）。
+**カスタムドメインと OAuth の登録も、見ている範囲が違う。** `terraform plan` が見るのは
+Route53 の CNAME だけで、**Pages のカスタムドメインが `active` かどうかは見ていない。**
+**OAuth クライアントは API から列挙できない**（仕様 8.1 の「Google 側の登録は API から
+列挙できない」）。
+
+**CNAME と `wrangler.toml` の一致だけは機械が見る**（`scripts/acceptance-remote.sh` の
+`pages custom domain records match` / `wrangler production hosts match dns`）。
+**ただし `terraform/outputs.tf` に出力がある分だけである**——#359 のレビューまで
+`admin_host` の出力が無く、**admin の CNAME が無くても宣言とずれていても緑のまま
+通っていた。** ホストを増やす人は、**宣言・`wrangler.toml`・出力・検査の 4 つ**を
+揃えること。
 
 ---
 

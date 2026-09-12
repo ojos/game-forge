@@ -15,6 +15,14 @@
  *     completeGame       … 成果物が揃った。R2 のキーと preview_key がここで入る
  *     failGame           … もう成果物は来ない
  *
+ * ## 題名はあとから変えられる（#366）
+ *
+ * **`title` に値が入るのは行を作る瞬間だけ、ではなくなった。** {@link renameGame} が
+ * 作者の改名を書く（口は作品ページ。5.4）。**生成側の初期値（{@link
+ * draftTitleFromPrompt}）と改名は、正規化の規則を {@link normalizeTitle} で共有する。**
+ * 改名は履歴（`migrations/0027_title_changes.sql`）と同じ batch で書き、審査済み
+ * （`cleared`）の作品は `NULL` へ戻る（理由は {@link renameGame}）。
+ *
  * ## 状態は `games.status` ではなく `generation_state` が持つ
  *
  * 5.4 は「生成 → 作者が試遊 → 「公開」操作で初めて URL が有効になる」と定める。
@@ -54,7 +62,13 @@
  * 根拠と、そのときの選択肢は仕様書 5.1 にある。
  */
 import { ipNoticeOf } from './ip-substitution.js';
-import { reviewVisibleSql } from './reports.js';
+import {
+  REVIEW_CLEARED,
+  REVIEW_STATE_COLUMN,
+  TITLE_CHANGES_TABLE,
+  reviewVisibleSql,
+} from './reports.js';
+import { inspectText } from './output-moderation.js';
 import type { BuildOutcome } from './build-client.js';
 import type { BuildCacheRecord } from './build-cache.js';
 import { artifactKeysOf, buildCacheRecordOf } from './build-client.js';
@@ -235,16 +249,137 @@ export async function hashJobToken(token: string): Promise<string> {
 }
 
 /**
- * プロンプトから仮のタイトルを作る。
+ * タイトルの宣言行を見分ける綴り（#365）。
  *
- * # なぜ仮のタイトルが要るのか
+ * **行が丸ごと宣言のときだけ当たるように、両端を留めてある。** 本文の途中に
+ * 書かれた「〜のタイトル: 〜」を拾わないためで、位置の規則は
+ * {@link declaredTitleOf} が持つ（当てる対象を「先頭の空行を飛ばした最初の行」
+ * 1 本に絞る）。
+ *
+ * - 見出しは `タイトル` / `題名` / `title`。`title` は大文字小文字を問わない
+ *   （`i` フラグ。`Title` も `TITLE` も同じ宣言として扱う）。
+ * - 区切りは半角 `:` と全角 `：` の両方。**日本語入力のまま打つと全角になる**ので、
+ *   半角だけを認める形は「書いたのに効かない」を量産する。
+ * - 見出しの前後と区切りのまわりの空白は無視する（`\s` は全角空白 U+3000 も含む）。
+ *
+ * 捕獲するのは区切りより後ろの全体で、**空でもよい**（`タイトル:` だけの行は
+ * 「空の宣言」として扱い、{@link normalizeTitle} が {@link UNTITLED_TITLE} へ倒す）。
+ */
+const TITLE_DECLARATION_PATTERN = /^(?:タイトル|題名|title)\s*[:：]\s*(.*)$/iu;
+
+/**
+ * タイトルとして表示してよい形へ整える（#365）。
+ *
+ * # この関数が「正規化の規則」の唯一の置き場である
+ *
+ * **同じ規則を 2 か所に置かない。** 宣言の経路（{@link draftTitleFromPrompt} が
+ * 宣言行から取った値）も、宣言が無いときのフォールバック（プロンプトの 1 行目）も、
+ * **必ずこの関数を通す。** 片方だけに規則を足すと、宣言したときだけ 41 文字が
+ * 通る、といった食い違いが黙って生まれる。
+ *
+ * **改名（#366）もこの関数を共有する。** 作者が入力した題名と、プロンプト由来の
+ * 仮の題が、別の規則で切られてはならない。そのため引数は「プロンプト」ではなく
+ * 「タイトルの候補文字列」にしてある。
+ *
+ * # 規則
+ *
+ * 1. **制御文字と行区切りを空白へ潰す。** 出どころは利用者の自由入力で、表示面へ
+ *    そのまま出る。改行もこの範囲に入るため、複数行を渡しても 1 行に畳まれる
+ *    （**行の選別はこの関数の責務ではない**。呼ぶ側が 1 行に絞ってから渡す）。
+ *
+ *    **範囲は表示名（5.9 / `src/account.ts` の `FORBIDDEN_CHARACTER`）と同じ組にする。**
+ *    `\p{Cc}` は C0 と DEL に加えて **C1 制御文字（U+0085 NEL を含む）** を、
+ *    `\p{Zl}` / `\p{Zp}` は Unicode 上の行区切り（U+2028 / U+2029）を拾う。
+ *    **コードポイントの範囲を書き並べると C1 が落ちる**——実際 #365 の初版は
+ *    `[\u0000-\u001f\u007f]` と書いており、NEL がタイトルへ残った（PR #385 の
+ *    Copilot レビュー）。題名は作品カードで作者名の隣に並ぶので、**名前の側で
+ *    禁じた文字が題名の側から入れる状態にしない。**
+ * 2. **前後の空白を落とす。**
+ * 3. **空なら {@link UNTITLED_TITLE}。** `games.title` は `NOT NULL` で、空文字で
+ *    埋めると一覧に無地の行が並ぶ（5.1）。
+ * 4. **{@link MAX_TITLE_LENGTH} 文字で切る。** バイト数ではなく文字数で数え、
+ *    **サロゲートペアで割らない**（`slice` はコードユニット単位なので、絵文字を
+ *    半分にした文字列が D1 へ入りうる）。
+ *
+ * @param candidate タイトルの候補文字列（宣言の値、またはプロンプトの 1 行目）
+ * @returns 表示してよいタイトル（**空にならない**）
+ */
+export function normalizeTitle(candidate: string): string {
+  // 制御文字と行区切りを空白へ潰す。出どころは利用者の自由入力で、表示面へそのまま
+  // 出る。**範囲は `src/account.ts` の表示名と同じ組である**（上の「規則」1）。
+  const cleaned = candidate.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, ' ').trim();
+  if (cleaned === '') {
+    return UNTITLED_TITLE;
+  }
+  // **サロゲートペアで切らない。** `slice` はコードユニット単位なので、絵文字を
+  // 半分に割った文字列が D1 へ入りうる。
+  const characters = [...cleaned];
+  if (characters.length <= MAX_TITLE_LENGTH) {
+    return cleaned;
+  }
+  return characters.slice(0, MAX_TITLE_LENGTH).join('');
+}
+
+/**
+ * プロンプトの先頭にあるタイトルの宣言を取り出す（#365）。
+ *
+ * # 位置の規則——「先頭の空行を飛ばした最初の行」だけを見る
+ *
+ * **見るのは 1 本の行だけである。** 全行を走査して宣言を探す形にすると、
+ * 「操作説明のタイトル: の行を出してください」のような**本文中の指示**が題名として
+ * 採られる。先頭の空行を飛ばすのは、貼り付けの都合で空行が入っただけの
+ * プロンプトを取りこぼさないためで、**飛ばすのは宣言の判定にだけ効く**
+ * （フォールバックの側は従来どおり素の 1 行目を使う。{@link draftTitleFromPrompt}）。
+ *
+ * **その行が丸ごと宣言のときだけ採る。** 判定は {@link TITLE_DECLARATION_PATTERN} が
+ * 両端を留めて行う。
+ *
+ * @param prompt 利用者が入力した自然文プロンプト
+ * @returns 宣言されたタイトルの値（**空文字もありうる**）。宣言が無ければ `null`
+ */
+function declaredTitleOf(prompt: string): string | null {
+  // `\r\n` の `\r` は行ごとの `trim()` が落とす。
+  const firstFilledLine = prompt.split('\n').find((line) => line.trim() !== '');
+  if (firstFilledLine === undefined) {
+    return null;
+  }
+  const matched = TITLE_DECLARATION_PATTERN.exec(firstFilledLine.trim());
+  return matched === null ? null : (matched[1] ?? '');
+}
+
+/**
+ * プロンプトからタイトルを決める。
+ *
+ * # なぜプロンプトから取るのか
  *
  * `games.title` は `NOT NULL` である（5.1 / `migrations/0001_init.sql`）。**一方、
- * 3.3 の経路にタイトルを決める段は無い。** 空文字で埋めると「タイトルが無い」ことが
- * 表現できず、一覧に無地の行が並ぶ。**プロンプトの 1 行目を借りる**のが、追加の
- * 生成も追加の入力も要らずに意味のある文字列を得る唯一の手段である。
+ * 3.3 の経路にタイトルを決める段は無く、公開時に入力させる段も置かない**（5.4 の
+ * 決定）。空文字で埋めると「タイトルが無い」ことが表現できず、一覧に無地の行が
+ * 並ぶ。**プロンプトから借りる**のが、追加の生成も追加の画面も要らずに意味のある
+ * 文字列を得る唯一の手段である。
  *
- * **これは暫定である。** 作者がタイトルを付ける口は公開フロー（5.4 / M3）が持つ。
+ * # #365 で「借りる」から「宣言できる」へ変わった
+ *
+ * **以前は 1 行目を 40 字で切った値しか入らなかった。** 作者が題名を決める経路が
+ * どこにも無く、文の途中で切れた仮の題がそのまま作品名として公開されていた
+ * （トップのカードと `og:title`）。
+ *
+ *     タイトル: 紙飛行機のたたかい      → 「紙飛行機のたたかい」（宣言）
+ *     縦スクロールのシューティング。…   → 「縦スクロールのシューティング。…」（従来）
+ *
+ * **宣言が無いときの結果は 1 文字も変わらない。** 宣言は経路を 1 本増やすだけで、
+ * 既存の入力の見え方を動かさない。
+ *
+ * **宣言行はプロンプトから削らない。** そのまま Bedrock へ渡し、
+ * `generations.prompt`（5.1）にも利用者が入力した文面のまま残す。削る形にすると、
+ * 切り出しの規則が `buildConverseRequest` 側にも要る——すなわち**同じ規則が 2 か所に
+ * 増える**（`src/bedrock.ts`）。増える入力は 20〜40 トークンで、`cachePoint` は
+ * システムプロンプトの末尾にあるためキャッシュも割れない（#365）。
+ *
+ * **あとから題名を変える口はここが持たない。** 改名は {@link renameGame} が持ち
+ * （#366。口は作品ページの作者にだけ出る）、**正規化の規則だけを
+ * {@link normalizeTitle} として共有する。** すなわちこの関数が入れるのは
+ * **初期値**であって、作品名の最終形ではない。
  *
  * # 生成物ではなく入力から取る
  *
@@ -256,24 +391,28 @@ export async function hashJobToken(token: string): Promise<string> {
  * **出すのは作者本人にだけ**である（プロンプト由来の文字列なので、id を知っている
  * だけの相手には見せない。`src/work-page.ts`）。
  *
+ * # フォークと推敲
+ *
+ * **フォークの差分プロンプトも同じ規則で動く。** 子の行を作るのは
+ * `createForkedGame` で、新規生成と同じ挿入経路（`insertPendingGame`）を通るため、
+ * 宣言もフォールバックも書き分けが無い（5.3）。推敲（5.7）は同じ行を置き換える
+ * だけで題名を触らない。
+ *
  * @param prompt 利用者が入力した自然文プロンプト
- * @returns 仮のタイトル（空にならない）
+ * @returns タイトル（空にならない）
  */
 export function draftTitleFromPrompt(prompt: string): string {
-  // 改行以降は落とす。**1 行目だけを使う**（複数行のプロンプトで一覧が崩れる）。
-  const firstLine = prompt.split('\n')[0] ?? '';
-  // 制御文字を空白へ潰す。プロンプトは利用者の自由入力で、表示面へそのまま出る。
-  const cleaned = firstLine.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim();
-  if (cleaned === '') {
-    return UNTITLED_TITLE;
+  const declared = declaredTitleOf(prompt);
+  if (declared !== null) {
+    // **空の宣言（`タイトル:` だけ）もここへ来る。** 本文の 1 行目へ落とさないのは、
+    // 作者が「題名はここで決める」と表明した以上、文の途中で切れた仮の題を代わりに
+    // 出すほうが驚きが大きいため。`normalizeTitle` が `UNTITLED_TITLE` へ倒す。
+    return normalizeTitle(declared);
   }
-  // **サロゲートペアで切らない。** `slice` はコードユニット単位なので、絵文字を
-  // 半分に割った文字列が D1 へ入りうる。
-  const characters = [...cleaned];
-  if (characters.length <= MAX_TITLE_LENGTH) {
-    return cleaned;
-  }
-  return characters.slice(0, MAX_TITLE_LENGTH).join('');
+  // 宣言が無ければ従来どおり。**改行以降は落とし、素の 1 行目だけを使う**
+  // （複数行のプロンプトで一覧が崩れる）。**ここで空行を飛ばさない**のは、
+  // 宣言を足したことで既存の入力の結果が動かないようにするためである。
+  return normalizeTitle(prompt.split('\n')[0] ?? '');
 }
 
 /** 作った作品行と、そのジョブを動かすためのトークン。 */
@@ -864,6 +1003,193 @@ export async function removeGame(
     return { ok: true, firstTime: false };
   }
   return { ok: false, reason: 'not-published' };
+}
+
+/**
+ * 改名の結果（5.4 / #366）。
+ *
+ * 形は {@link RemoveOutcome} に揃えてある。**「できなかった」を 1 つにまとめない**
+ * のも同じ理由で、呼び出し側（`src/work-page.ts`）が返すステータスと文言が理由ごとに違う。
+ */
+export type RenameOutcome =
+  | {
+      readonly ok: true;
+      /**
+       * 保存されている題名（**正規化後**）。
+       *
+       * **同じ題名を入れ直したときは、いま入っている値がそのまま返る。**
+       */
+      readonly title: string;
+      /** **この呼び出しが実際に題名を変えたか。** 同じ題名の入れ直しは false。 */
+      readonly changed: boolean;
+    }
+  | { readonly ok: false; readonly reason: RenameRejection };
+
+/**
+ * 改名を受け付けなかった理由（#366）。
+ *
+ * **`denied-term` に語も分類も添えない。** 8.2 が検出箇所を返さないのと同じ方針で、
+ * **当てては消しを繰り返せば表（`src/denied-terms.ts`）が 1 語ずつ復元できる**口を、
+ * 利用者の自由入力に対して開かない。呼び出し側も分類を出さない。
+ */
+export type RenameRejection = 'not-found' | 'removed' | 'not-ready' | 'denied-term';
+
+/**
+ * 作者が作品の題名を変える（5.4 / #366）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 正規化は {@link normalizeTitle} を通す（規則を 2 か所に置かない）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **生成側と同じ関数である。** 制御文字・前後の空白・40 文字・空の既定（`無題の作品`）は
+ * すべてあちらの規則で、**ここには 1 つも書かない。** 書き足すと「宣言したときだけ
+ * 41 文字が通る」たぐいの食い違いが黙って生まれる（#365 が同じことを書いている）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 8.3 の表を掛ける（8.2 は通せない）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **現在の題名は必ず 8.2（Guardrail）を通ったプロンプト由来である**（遮断されれば
+ * `games` の行すら作られない）。改名はその前提を崩すが、`withInputModeration` は
+ * オーケストレータ Lambda の中だけにあり、**Worker から呼ぶ経路が無い**
+ * （`src/orchestrator/pipeline.ts`）。そこで 8.3 の表（`src/denied-terms.ts`）を掛ける
+ * ——同期の純粋関数で、エッジ側が既に借りている層である。**8.2 の代わりではない。**
+ * 残りは 8.4 の通報が受ける（issue #366 の決定）。
+ *
+ * **検査するのは正規化した後の値である。** 40 文字で切った後を見るので、**保存される
+ * 文字列そのもの**が検査に掛かる（切られて消える語で断らない／切った結果を素通ししない）。
+ *
+ * **行を引く前に検査する。** 表に当たる要求は、対象が誰の作品であっても 1 行も書かない
+ * ——**成功経路の読み取りを 1 件も増やさない**ためでもある（3.6）。そのぶん、存在しない
+ * 作品への要求が `not-found` ではなく `denied-term` で返りうるが、**どちらも「何も
+ * 起きなかった」であり、作品の実在は漏れない**（むしろ表に当たった時点で id を見に
+ * 行かないほうが漏れが少ない）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 改名と履歴を 1 つの batch で書く（履歴の無い改名を作らない）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **順序に意味がある。履歴を先に積む。** 旧題名は `games` の行から取るので、
+ * UPDATE の後では読めない（`src/admin/actions.ts` が「先に状態を動かす」のと逆なのは、
+ * あちらの履歴が**動いた後の状態**を `exists` で見るためである）。
+ *
+ * **2 文の WHERE は同じである。** `src/revisions.ts` の `claimRevisionSlot` と同じ形で、
+ * 条件がそろっていなければ**どちらも 0 行**になる（断られた要求で履歴だけが積まれない）。
+ * そして履歴の insert が落ちれば（0027 の CHECK・D1 の障害）**batch ごと巻き戻り、
+ * 題名も変わらない。**
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * `cleared` は `NULL` へ戻す。`queued` にはしない
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **審査で見たのは改名前の題名である。** 別の題名になった作品について「見た結果、
+ * 問題なし」と言い続けることはできないので、終端（`REVIEW_CLEARED`）を解く。
+ *
+ * **`queued` にはしない。** あれは新規露出を止める状態なので（`reviewVisibleSql`）、
+ * **善意の改名で作品がトップから消える。** `NULL` へ戻せば、以後の通報は 8.4 の
+ * 閾値を通って普通にキューへ入る。
+ *
+ * **`nullif` で書く。** `queued` の作品はそのまま `queued` で残り（審査待ちのまま
+ * 題名だけが変わる）、`NULL` の作品は `NULL` のままである。**分岐をアプリ側に持たない**
+ * ——先に読んでから決める形にすると、読みと書きの隙間に通報が入ったときに、
+ * キューへ入ったばかりの作品を `NULL` へ戻しうる。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 取り下げた作品と、まだ完成していない作品は改名できない
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * tombstone は「もう見せない」という作者の意思表示で（{@link removeGame}）、
+ * 題名はどの画面にも出ない。**押せば断られる操作を口だけ開けておかない**
+ * （`src/work-page.ts` は同じ条件でフォームを出さない）。
+ *
+ * **`generation_state = 'ready'` も SQL の条件に置く**（PR #391 の Copilot レビュー）。
+ * 画面側は `state === 'ready'` のときしかフォームを出さないが、**画面の条件は経路の
+ * 関門ではない**——`POST` を直接投げれば `pending` / `running` / `failed` の行も改名
+ * できてしまい、5.4 の「生成が完了している作品だけ」と食い違う。{@link publishGame} が
+ * 同じ条件を 1 本の UPDATE の WHERE に置いているのと同じ形にする。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param authorId 操作している利用者（**作者本人でなければ通らない**）
+ * @param candidate 作者が入力した題名（**正規化前**）
+ * @param now 改名時刻（UNIX 秒。既定は現在時刻）
+ * @returns 改名の結果
+ */
+export async function renameGame(
+  env: Env,
+  gameId: string,
+  authorId: string,
+  candidate: string,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<RenameOutcome> {
+  const title = normalizeTitle(candidate);
+
+  // **語も分類も外へ出さない**（{@link RenameRejection}）。
+  if (!inspectText(title).ok) {
+    return { ok: false, reason: 'denied-term' };
+  }
+
+  // **条件の綴りを 1 つにする。** 2 文へ書き分けると、片方だけを直した日に
+  // 「断られた要求で履歴だけが積まれる」形ができる。**別名を付けない**ので、
+  // どちらの文へもそのまま置ける（`insert ... select` 側は `from games` が
+  // 1 つしかなく、列の解決に曖昧さが無い）。
+  const conditions =
+    "id = ? and author_id = ? and status <> ? and generation_state = 'ready' and title <> ?";
+  const bindings = [gameId, authorId, REMOVED_STATUS, title] as const;
+
+  const results = await env.DB.batch([
+    // **履歴を先に積む。** 旧題名は UPDATE の前の行からしか取れない（上記）。
+    env.DB.prepare(
+      `insert into ${TITLE_CHANGES_TABLE} (id, game_id, old_title, new_title, changed_at)
+       select ?, id, title, ?, ?
+         from games
+        where ${conditions}`,
+    ).bind(crypto.randomUUID(), title, now, ...bindings),
+    env.DB.prepare(
+      `update games
+          set title = ?, ${REVIEW_STATE_COLUMN} = nullif(${REVIEW_STATE_COLUMN}, ?)
+        where ${conditions}`,
+    ).bind(title, REVIEW_CLEARED, ...bindings),
+  ]);
+
+  // **添字で読む**（`noUncheckedIndexedAccess`。`src/admin/actions.ts` と同じ形）。
+  const historyRows = results[0]?.meta.changes ?? 0;
+  const renamedRows = results[1]?.meta.changes ?? 0;
+
+  if (renamedRows > 0) {
+    // **履歴の無い改名は構造上ありえない**（同じ条件・同じ batch）。ありえない形を
+    // 黙って通さない（`src/admin/actions.ts` と同じ扱い）。出るとすれば D1 の意味が
+    // 変わったときで、それは気づきたい。
+    if (historyRows === 0) {
+      console.error('[games] 履歴の無い改名が入りました（batch の意味が変わっています）');
+    }
+    return { ok: true, title, changed: true };
+  }
+
+  // **0 行だったときだけ、理由を引きに行く**（{@link publishGame} と同じ方針。
+  // 理由を引く SELECT にも `author_id = ?` を入れる——他人の作品に対して理由を
+  // 撃ち分けると、任意の id が実在するかを外から確かめられる手がかりになる）。
+  const row = await env.DB.prepare(
+    'select status, generation_state, title from games where id = ? and author_id = ?',
+  )
+    .bind(gameId, authorId)
+    .first<{ status: string; generation_state: string; title: string }>();
+
+  if (row === null) {
+    return { ok: false, reason: 'not-found' };
+  }
+  if (row.status === REMOVED_STATUS) {
+    return { ok: false, reason: 'removed' };
+  }
+  if (row.generation_state !== 'ready') {
+    // まだ成果物が無い（`pending` / `running` / `failed`）。**題名だけ先に付けさせない**
+    // ——失敗した行の題名を変えても出る場所が無く、生成中の行は完成時に何ができるかも
+    // 決まっていない。
+    return { ok: false, reason: 'not-ready' };
+  }
+  // 残る理由は「同じ題名だった」である。**失敗にしない**（二度押しと、正規化の結果が
+  // いまの題名と一致した場合の両方がここへ来る。{@link removeGame} の二度押しと同じ扱い）。
+  return { ok: true, title: row.title, changed: false };
 }
 
 /**

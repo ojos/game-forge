@@ -7,7 +7,7 @@ import { SIGNUP_PATH, WAITLIST_PATH, WAITLIST_THANKS_PATH } from '../src/paths.j
 import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
 import { ACCOUNT_PATH } from '../src/account-paths.js';
-import { LOGIN_PATH } from '../src/auth/google.js';
+import { LOGIN_PATH, LOGIN_REQUIRED_REASON } from '../src/auth/google.js';
 import {
   SESSION_COOKIE,
   buildSessionCookie,
@@ -434,6 +434,21 @@ describe('登録画面', () => {
     );
     expect(response.status).toBe(400);
     expect(await response.text()).toContain('登録には招待コードが必要です。');
+  });
+
+  it('ログインが必要な画面から送られてきた人に、そう言う（2.3.11 / #374）', async () => {
+    // 「登録には招待コードが必要です」だけだと、押した操作と着地した画面がつながらない
+    // （開こうとしたのは登録画面ではない）。
+    const response = await dispatch(
+      routes,
+      new Request(`${APP_ORIGIN}${SIGNUP_PATH}?reason=${LOGIN_REQUIRED_REASON}`),
+      testEnv(),
+    );
+    expect(response.status).toBe(400);
+    const body = await response.text();
+    expect(body).toContain('この画面にはログインが必要です。');
+    // 戻り先そのものは画面へ出さない（query に載っていないものは出しようがない）。
+    expect(body).not.toContain(`${SIGNUP_PATH}?reason=`);
   });
 
   it('JSON では受け付けない', async () => {

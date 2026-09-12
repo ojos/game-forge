@@ -828,7 +828,7 @@ M9-7 いいねの基盤（#339）→ M9-8 いいねの画面（#340）→ M9-3 �
 - **依存:** M9-2 / **M9-6**（`/account` が実在してから、ヘッダへ出す）
 
 ### M9-6 表示名の変更（登録情報画面）
-- **issue:** #341
+- **issue:** #341（**完了**。2026-09-11 / PR #345。本番配備済み。0022 適用済み。`/account` が未ログインでログインへ送ることを本番で確認）
 - **goal:** サインインした利用者が、自分の表示名を決められ、以後ログインで Google の名前へ戻らないようにする。
 - **scope.in:** `/account`（表示名・メールアドレス・登録日。メールアドレスは本人にだけ出す）、`POST /api/account/display-name`、`users.display_name_set_at` の追加（マイグレーション）、`src/auth/google.ts` のログイン時の UPDATE を「NULL の間だけ表示名を上書きする」へ変える。
 - **scope.out:** プロフィール画像・自己紹介・外部リンク、「Google の名前に戻す」ボタン、語の一覧による検査、管理 UI、ヘッダへの導線（M9-5）。
@@ -839,7 +839,7 @@ M9-7 いいねの基盤（#339）→ M9-8 いいねの画面（#340）→ M9-3 �
 - **依存:** #334
 
 ### M9-7 いいねの基盤（Durable Objects・窓口・同期）
-- **issue:** #339
+- **issue:** #339（**実装・配備済み。受け入れ確認が残る**。2026-09-11 / PR #346。0020 適用済み。残るのは**本番での付与・取り消し・同期の 1 往復**——押す UI は M9-8 で作るため、そこまで待つ。**`scope.in` の「連打の防波堤」は未達で対象外になった**——Pages Functions の宣言が Workers Rate Limiting のバインディングを受け付けないことが分かった（仕様 5.8 / v1.52）。置き直すなら likes Worker 側の RPC 入口）
 - **goal:** いいねの正本を D1 の外（Durable Objects）に置き、付け外しの連打で D1 が止まらない形で、付与・取り消し・数の同期ができるようにする。
 - **scope.in:** 別 Worker `game-forge-likes` と Durable Object `LikeHub`（SQLite 版。いいね・1 人 1 日の操作回数）、Pages からのバインディング、窓口 `src/likes.ts`（押せる作品かの判定を D1 で行い、通ったものだけ DO へ渡す）、`POST /api/like` と `POST /api/like/cancel`（冪等）、1 人 1 日 100 操作の上限（JST）、アラームによる 5 分ごとの同期（変わった作品だけ `games.like_count` を実数で上書き。BAN の状態が変わった利用者の分を数え直す）、`games.like_count` と索引 `(status, like_count DESC, published_at DESC, id DESC)` の追加（マイグレーション。**審査の可視条件を含む部分索引**にする——`reviewVisibleSql` と同じ条件。仕様 2.3.3 の v1.51 注記）、配備の段の追加（**DO の Worker を Pages より先に**配ることを機構で担保する）、`/works` の並べ替え `liked` の追加、**連打の防波堤**（Workers Rate Limiting。Workers Free で使えるかを確かめる。5.8）。
 - **scope.out:** 作品ページのボタンと `/works/liked`（M9-8）、トップ（M9-3）、作者ページ（M9-4）、B2（分割。契機は 2.3.8）、いいねの通知メール。

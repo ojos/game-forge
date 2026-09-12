@@ -1,0 +1,165 @@
+/*
+ * admin.css — 運営の管理画面だけが読む見た目の規則（2.4.1 / #361。M10-3）
+ *
+ * ============================================================================
+ * app.css の上に重ねる 1 枚である（置き換えではない）
+ * ============================================================================
+ *
+ * **`app.css` を先に読み、その後にこれを読む**（`src/admin/shell.ts` の `adminHead`）。
+ * 同じ詳細度なら後勝ちなので、**上書きする側がこちらになる。**
+ *
+ * **トークンを 1 つも定義しない。** 色・余白・文字・版面の幅・ダークモードの切り替えは
+ * すべて `app.css` の `:root` が持っている。ここで `--gf-*` を再定義すると、**値の写しが
+ * でき、片方だけが腐る**（`.ai-playbook/shared-ai-rules.md` 12 章）。**使うのはトークンの
+ * 参照だけ**である。
+ *
+ * **`body` の版面も触らない。** 狭い端末で崩れないことの根拠（`max-width` /
+ * `overflow-wrap` / `-webkit-text-size-adjust`）はあちらにあり、**ここで上書きすると
+ * その根拠ごと外れる。**
+ *
+ * ============================================================================
+ * なぜ M10-3 で足したのか
+ * ============================================================================
+ *
+ * M10-2 は「admin 固有の規則が要るようになったら、そのとき足す。**M10-3 が審査キューの
+ * 表を置くときが、その契機にあたる**」と書いて先送りした（`src/admin/shell.ts`）。
+ * **その契機が来た**——一覧の行に「題名・作者・id・理由の入力・ボタン」が縦に積まれ、
+ * `app.css` の既定（`form` が `flex-direction: column` で `margin-bottom` を持つ）だけでは
+ * **行と行の境目が読めない。**
+ *
+ * ============================================================================
+ * ここに書かないもの
+ * ============================================================================
+ *
+ * - **利用者向けの画面に効く規則**（`app.css` が持つ。こちらは admin ホストしか読まない）
+ * - **表（`<table>`）の規則。** 一覧は `<ul>` で組んである——**390px の幅に 5 列は
+ *   収まらず**、横スクロールする表を狭い端末で操作させることになる（M8-1 が
+ *   「主役は作品」として外枠を削いだのと同じ判断で、**運営の画面でも操作対象が主役**である）
+ * - **JavaScript を前提にした状態**（#266 の制約。素の `<form>` だけで組む）
+ */
+
+/* ==========================================================================
+   ヘッダ / フッタ（利用者向けの gf-header・gf-footer とは別物である。2.4.1）
+   ========================================================================== */
+
+/*
+ * **横に 1 行で並べようとしない。** 390px では「Game Forge 管理 / 審査キュー / 利用者 /
+ * 操作の履歴」が収まらない。`flex-wrap` で折り返させる（`app.css` の `.gf-header` が
+ * 同じ理由で同じ形にしてある——**規則は写しているのではなく、同じ制約から同じ形が
+ * 出ている**。値はトークンを参照している）。
+ */
+.gf-admin-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+  margin-bottom: var(--gf-gap-4);
+  padding-bottom: var(--gf-gap-2);
+  /* **利用者向けより濃い線にする。** 「いまどちらのホストを見ているか」を取り違えない
+     ための差である（2.4.1 が外枠を別にした 2 つ目の理由）。 */
+  border-bottom: 2px solid var(--gf-rule);
+  font-size: var(--gf-text-small);
+  font-weight: 700;
+}
+
+.gf-admin-header a {
+  color: var(--gf-ink-soft);
+  text-decoration: none;
+}
+
+.gf-admin-header a:hover {
+  color: var(--gf-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+/* ナビはサービス名より弱く出す（太字を外す。`app.css` の `.gf-header-nav` と同じ判断）。 */
+.gf-admin-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+  font-weight: 400;
+}
+
+.gf-admin-footer {
+  margin-top: var(--gf-gap-5);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+/* ==========================================================================
+   一覧の行（審査キュー・利用者・操作の履歴が共有する）
+   ========================================================================== */
+
+.gf-admin-list {
+  margin: 0 0 var(--gf-gap-5);
+  padding: 0;
+  list-style: none;
+}
+
+/*
+ * 1 行。**枠で囲う。** 行ごとに理由の入力とボタンが付くので、**どのボタンがどの対象の
+ * ものか**が見た目で決まっていなければ、**取り違えて押せる**（BAN も審査も対象を
+ * 取り違えたときの損害が大きい。2.4.3 が取り下げを置かなかった理由と同じ向き）。
+ */
+.gf-admin-row {
+  margin: 0 0 var(--gf-gap-3);
+  padding: var(--gf-gap-3);
+  border: 1px solid var(--gf-rule);
+  border-radius: var(--gf-radius);
+  background: var(--gf-surface);
+}
+
+.gf-admin-row-title {
+  margin: 0 0 var(--gf-gap-1);
+  font-weight: 700;
+}
+
+.gf-admin-meta {
+  margin: 0 0 var(--gf-gap-2);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+/* 理由は運営が書いた自由記述である。**折り返す**（`overflow-wrap` は body から継ぐ）。 */
+.gf-admin-reason {
+  margin: 0;
+}
+
+/*
+ * 行の中のフォーム。**`app.css` の `form` は下に余白を持つ**（画面に 1 つだけ置く
+ * 前提の値である）。行の中では最後の要素なので、その余白を外す。
+ */
+.gf-admin-row form {
+  margin: 0;
+  gap: var(--gf-gap-2);
+}
+
+/*
+ * 理由の入力。**`size` 属性を使わない**（`test/admin-page-shell.test.ts` が見ている。
+ * `size` / `cols` は layout viewport を広げ、狭い端末で横スクロールを生む。#282）。
+ * **幅は CSS で決める**——`width: 100%` と `max-width: 100%` の組で、
+ * 390px でも版面からはみ出さない。
+ */
+.gf-admin-row input[type='text'] {
+  width: 100%;
+  max-width: 100%;
+  padding: 0.5em 0.6em;
+  border: 1px solid var(--gf-rule);
+  border-radius: var(--gf-radius);
+  background: var(--gf-ground);
+  color: var(--gf-ink);
+  font: inherit;
+}
+
+/* id は長い（UUID）。**等幅で出し、折り返させる。** */
+.gf-admin-row code {
+  font-family: var(--gf-font-mono);
+  font-size: var(--gf-text-small);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * 知らせ（操作の結果）。**`app.css` の `.error` と `.gf-notice` をそのまま使う**ので、
+ * ここには何も置かない——置くと、同じ意味の見た目が 2 か所で決まる。
+ */

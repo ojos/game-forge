@@ -122,15 +122,19 @@ export function adminNotFound(request: Request): Response {
 }
 
 /*
- * ## M10-3 へ: 実行者の id が要るとき
+ * ## 実行者の id の渡し方（M10-3 / #361 でそのとおりにした）
  *
- * `admin_actions`（2.4.4）は**実行者**を残す。いまの `handleAdminRequest` は
- * {@link resolveAdminUser} の戻り値を捨てている——**この画面が利用者の値を 1 つも
- * 出さないため、要る場面が無い**（`src/admin/home.ts`）。
+ * `admin_actions`（2.4.4）は**実行者**を残す。M10-2 の `handleAdminRequest` は
+ * {@link resolveAdminUser} の戻り値を捨てていて、ここには次の申し送りが書いてあった
+ * ——「要るようになったら、**境界を 2 か所に増やさずに渡すこと。** 経路表を組み立てる
+ * 関数へ判定済みの id を渡し、ハンドラがそれを閉じ込める形にすれば、**判定は 1 回の
+ * まま**になる」。
  *
- * **要るようになったら、境界を 2 か所に増やさずに渡すこと。** 経路表を組み立てる関数へ
- * 判定済みの id を渡し、ハンドラがそれを閉じ込める形にすれば、**判定は 1 回のまま**に
- * なる（`createAdminRoutes` は既に引数を取る関数である）。**ハンドラの中で
- * `resolveAdminUser` を呼び直さないこと**——D1 を 2 回読むだけでなく、
+ * **M10-3 はその形で渡している**（`createAdminRoutes(authOverrides, adminUserId)`）。
+ * **ハンドラの中で `resolveAdminUser` を呼び直さないこと**——D1 を 2 回読むだけでなく、
  * 「そこでも拒否できる」形になり、**どちらが境界なのかが読めなくなる。**
+ *
+ * **id を受け取らなかった口は 404 へ倒す**（`src/admin/review.ts` /
+ * `src/admin/users.ts`）。守られた経路なので通常は起こらないが、**起こったときに
+ * 「実行者不明の履歴」を積むより、断るほうがよい。**
  */

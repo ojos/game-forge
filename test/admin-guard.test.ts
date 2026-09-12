@@ -320,19 +320,19 @@ describe('権限が無い要求は 404（2.4.2。403 を使わない）', () => 
     const { status, body, type } = await open(ADMIN_HOME_PATH, await cookieFor(users.admin));
     expect(status).toBe(200);
     expect(type).toContain('text/html');
-    expect(body).toContain('<h1>管理</h1>');
+    expect(body).toContain('<h1>審査キュー</h1>');
   });
 
   it('is_admin = 0 の利用者は 404 になる', async () => {
     const { status, body } = await open(ADMIN_HOME_PATH, await cookieFor(users.plain));
     expect(status).toBe(404);
-    expect(body).not.toContain('<h1>管理</h1>');
+    expect(body).not.toContain('<h1>審査キュー</h1>');
   });
 
   it('未ログインは 404 になる', async () => {
     const { status, body } = await open(ADMIN_HOME_PATH);
     expect(status).toBe(404);
-    expect(body).not.toContain('<h1>管理</h1>');
+    expect(body).not.toContain('<h1>審査キュー</h1>');
   });
 
   it('BAN された管理者は 404 になる（認証の判定を写していないことの確認）', async () => {

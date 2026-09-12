@@ -4,6 +4,7 @@ import { createAppRoutes } from '../src/app.js';
 import { dispatch } from '../src/routes.js';
 import type { Route } from '../src/routes.js';
 import {
+  FOOTER_CONTACT_ITEMS,
   TAKEDOWN_FIELDS,
   TAKEDOWN_PATH,
   TAKEDOWN_SUBMIT_PATH,
@@ -213,13 +214,23 @@ describe('削除申請フォームが全ページのフッターから到達で�
     expect(footer).toContain(`href="${TAKEDOWN_PATH}"`);
   });
 
-  it('行き先の無い区画を置かない（会社情報・SNS・お問い合わせ。2.3.7 / 4.4 / 2.2）', () => {
-    // **AivisHub の 5 区画のうち 3 つは、このサービスに行き先が実在しない。**
-    // 空の区画を置くことは「出来ていないものを出来ているように書く」ことである。
+  it('行き先の無い区画を置かない（会社情報・SNS。2.3.7 / 4.4 / 2.2）', () => {
+    // **AivisHub の 5 区画のうち、会社情報と SNS はこのサービスに行き先が実在しない**
+    // （v1.57 でも維持。2.3.14）。空の区画を置くことは「出来ていないものを出来ているように
+    // 書く」ことである。
     const footer = siteFooter();
-    for (const absent of ['会社情報', 'お問い合わせ', 'SNS']) {
+    for (const absent of ['会社情報', 'SNS']) {
       expect(footer, `フッターに ${absent} の区画がある`).not.toContain(absent);
     }
+  });
+
+  it('お問い合わせは枠だけを置き、行き先が入るまで見出しごと出さない（2.3.7 v1.57 / #372）', () => {
+    // **行き先（一般の問い合わせ窓口・よくある質問）は #373 が作る。** それまでは
+    // `FOOTER_CONTACT_ITEMS` が空で、見出しも出ない。**#373 が項目を足した日に、この it は
+    // 「見出しと項目が一緒に出る」へ書き換える**（足した行き先が画面であることは
+    // `test/page-shell.test.ts` が全画面で見る）。
+    expect(FOOTER_CONTACT_ITEMS).toEqual([]);
+    expect(siteFooter()).not.toContain('お問い合わせ');
   });
 
   it('フッターはログイン状態を引数に取らない（出し分けはヘッダだけが持つ）', () => {

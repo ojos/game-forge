@@ -22,6 +22,7 @@ import { buildSessionCookie, signSession } from '../src/session.js';
 import { authorPagePath } from '../src/users-page-paths.js';
 import { OPERATOR_MARK, workPagePath } from '../src/work-page.js';
 import { applySchema } from './helpers/schema.js';
+import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
  * 登録情報の画面と表示名の変更（#341 / 仕様 5.9）。
@@ -311,10 +312,10 @@ describe('登録情報の画面（GET /account）', () => {
     expect(await response.text()).toContain('表示名を変更しました。');
   });
 
-  it('ログアウトを POST のフォームで 1 つだけ置く（#362）', async () => {
-    // **画面から辿れる導線がここしかない。** `POST /auth/logout` は #12 から動いていたが、
-    // それを呼ぶ HTML がリポジトリに 1 つも無く、ログイン済みの利用者に残っていた手段は
-    // DevTools で cookie を消すことだけだった。
+  it('ログアウトは POST のフォームで 1 つだけで、本文ではなくヘッダのメニューにある（#362 → #372）', async () => {
+    // #362 はこの画面の末尾に置いた。**v1.57 で 2.3.7 が置き場所をヘッダのアカウントの
+    // メニューへ移した**（#372）。この画面にもヘッダは出るので導線は失われないが、
+    // **本文に残すと同じボタンが 1 画面に 2 つ並ぶ。**
     //
     // **`<form>` の開始タグを数える。** 本文に `/auth/logout` という文字列があることだけを
     // 見ると、押せない場所（説明文やコメント）にあっても緑になる。
@@ -326,13 +327,13 @@ describe('登録情報の画面（GET /account）', () => {
     );
     expect(logoutForms).toHaveLength(1);
     expect(logoutForms[0]).toContain('method="post"');
+    expect(pageBodyOf(body)).not.toContain(LOGOUT_PATH);
   });
 
   it('ログアウトを GET で押せる形にしない（`href` を置かない。#362）', async () => {
     // **GET の口を足し戻したら赤くする。** GET なら `<img src="/auth/logout">` を踏ませる
-    // だけで他人をログアウトさせられる（`src/auth/google.ts` の経路表）。`<a href>` は
-    // ヘッダのナビが作る唯一の形でもあるので、**ここを緑に保つことがナビへ足し戻す変更も
-    // 止める**（ナビの項目数そのものは `test/page-shell.test.ts` が見ている）。
+    // だけで他人をログアウトさせられる（`src/auth/google.ts` の経路表）。全画面のヘッダに
+    // ついては `test/page-shell.test.ts` が同じことを見ている。
     const userId = await seedUser();
     const body = await (await openAccount(await cookieFor(userId))).text();
 

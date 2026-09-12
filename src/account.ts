@@ -45,25 +45,22 @@
  * `/account` の query（固定の分類名だけ）で運び、**入力した名前そのものは URL に載せない**
  * （載せると、断られた名前が履歴やログに残り、画面へ反射する口にもなる）。
  *
- * ## ログアウトをこの画面が持つ理由（#362 / 2.3.7）
+ * ## ログアウトは、もうこの画面の本文に無い（#362 → #372 / 2.3.7）
  *
- * 機構（`POST /auth/logout`）は #12 で入っていたが、**それを呼ぶ HTML が 1 つも無く**、
- * ログイン済みの利用者に残っていた手段は DevTools で cookie を消すことだけだった。
+ * #362 はログアウトをこの画面の末尾に置いた。**当時のヘッダのナビは `<a href>` しか
+ * 作らず**、GET を受けないログアウト（`<img src="/auth/logout">` を踏ませるだけで他人を
+ * ログアウトさせられる）の `<form method="post">` を収める場所が、ログイン必須の
+ * この画面しか無かったためである。
  *
- * **ヘッダには置けない。** ログアウトは GET を受けない（`<img src="/auth/logout">` を
- * 踏ませるだけで他人をログアウトさせられる。理由は `src/auth/google.ts` の経路表）ので
- * `<form method="post">` が要るが、**ヘッダのナビは `<a href>` しか作らない**
- * （`src/html.ts` の `navLinks`）。`NavItem` へ POST を持ち込むと、仕様 2.3.7 の項目列挙と
- * `test/page-shell.test.ts` の全画面 × ログイン両状態の照合まで動く。
- *
- * **この画面は既にログイン必須で、セッションを解決済みである。** 上の 2 節（CSRF を
- * トークンで守らない根拠、JavaScript を要求しない作法）がそのまま当てはまるので、
- * ログアウトはここに収まる。**`handleLogout` の振る舞いには触れていない**——着地は `/` の
- * ままで、秘密が未設定でもログアウトが成立する性質（`missingSecrets` を見ない）も保つ。
+ * **v1.57 で 2.3.7 がそれを覆し、#372 がヘッダのアカウントのメニュー（`<details>`）へ
+ * 移した**（`src/html.ts` の `accountMenu`）。**POST でしか受けない理由は 1 つも
+ * 変わっておらず、変わったのは置き場所だけである。** この画面にもヘッダは出るので、
+ * ログアウトへの導線は失われていない。**2 つ置かない**——同じ操作のボタンが 1 画面に
+ * 2 つ並ぶと、どちらが正かを読む人に考えさせる。
  */
 import { ACCOUNT_DISPLAY_NAME_PATH, ACCOUNT_PATH, DISPLAY_NAME_FIELD } from './account-paths.js';
-import { LOGOUT_PATH, loginRequiredRedirect } from './auth/google.js';
-import { VIEWER_SIGNED_IN, escapeHtml, siteHead } from './html.js';
+import { loginRequiredRedirect } from './auth/google.js';
+import { escapeHtml, siteHead, siteViewerAt } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { siteFooter } from './legal.js';
 import type { Route } from './routes.js';
@@ -373,15 +370,11 @@ export function renderAccountPage(view: AccountView): string {
   // こちらの規則（コードポイントで 30）と食い違い、絵文字を含む名前が 30 文字に
   // 届く前に打てなくなる。長さは送信後に 1 つの規則で断る（{@link validateDisplayName}）。
   // **ログイン済みとして組む**（`src/my-works.ts` と同じ扱い。2.3.7 / #331）。
-  //
-  // **末尾のログアウトを `<a href="${LOGOUT_PATH}">` にしない**（#362。冒頭の
-  // 「ログアウトをこの画面が持つ理由」）。リンクにした瞬間に GET の口ができ、
-  // `<img src>` 1 つで他人をログアウトさせられる。`test/account.test.ts` が
-  // 「`href` が無いこと」を見ているのは、それを足し戻す変更を赤くするためである。
+  // ログアウトはヘッダのアカウントのメニューが持つ（冒頭。#372）。
   return `${siteHead({
     title: '登録情報 - Game Forge',
     noindex: true,
-    viewer: VIEWER_SIGNED_IN,
+    viewer: siteViewerAt(ACCOUNT_PATH, true),
   })}
 <h1>登録情報</h1>
 ${notice}
@@ -401,9 +394,6 @@ ${following}
   <dd>${created}</dd>
 </dl>
 <p>メールアドレスはあなたにだけ表示しています。ほかの人には見えません。</p>
-<form class="gf-logout" method="post" action="${LOGOUT_PATH}">
-  <button type="submit">ログアウト</button>
-</form>
 ${siteFooter()}`;
 }
 

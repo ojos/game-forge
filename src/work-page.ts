@@ -122,11 +122,10 @@ import { resolveSessionUser } from './session-user.js';
 import {  signupPathFrom } from './signup.js';
 import type { SiteViewer } from './html.js';
 import {
-  VIEWER_SIGNED_IN,
-  VIEWER_SIGNED_OUT,
   escapeHtml,
   resolveSiteViewer,
   siteHead,
+  siteViewerAt,
 } from './html.js';
 
 /**
@@ -2108,7 +2107,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
     // **ヘッダの出し分けには、既に引いてあるセッションを使う**（2.3.7 / #331）。
     // **`owner` ではない**——他人の作品を見ているログイン済みの利用者にも、自分の作品と
     // 登録情報への導線が要る。**署名を 2 度検証しない**（`resolveSessionUser` が正本）。
-    session.ok ? VIEWER_SIGNED_IN : VIEWER_SIGNED_OUT,
+    siteViewerAt(pathname, session.ok),
     ),
   );
 }

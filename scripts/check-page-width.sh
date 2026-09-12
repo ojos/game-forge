@@ -62,6 +62,22 @@
 # **段を足すときは、この秒数を測り直すこと**——2.3.9 は「収まらなければ段を減らす」と
 # 定めている。
 #
+# ══════════════════════════════════════════════════════════════════════════════
+# アカウントのメニューを、JavaScript を止めて開閉する（#372）
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# **ヘッダのアバターのドロップダウンは JavaScript を要求しない**（2.3.7 v1.57。
+# `<details>` / `<summary>`）。幅ごとにトップを **JavaScript を止めて**開き直し、
+# 閉じた状態で配られること、**Enter で開いて閉じ、クリックで開くこと**、開いた中身
+# （ログアウトのボタンまで）が**その幅に収まること**、読み上げに名前と開閉の状態が
+# 渡ることを見る。
+#
+# **ここに載せるのは、開いた中身も「幅に収まっているか」の対象だからである。** 閉じた
+# 状態だけを見る判定は、開くと横にはみ出すメニューを通してしまう。**開くのは 1 画面だけ**
+# で足りる——メニューは全画面で同じ外枠が出しており、それは `test/page-shell.test.ts`
+# が全画面 × ログイン両状態で照合している。**開く画面はトップ（`/`）にする。** 経路表に
+# 必ずあり、ログイン済みの cookie で開けばメニューが出る。
+#
 # 使い方:
 #   bash scripts/check-page-width.sh
 #   GF_BROWSER_BIN=/path/to/headless_shell bash scripts/check-page-width.sh
@@ -129,7 +145,8 @@ node scripts/page-width-probe.mjs \
   --paths "$PATHS" \
   --widths "$WIDTHS" \
   --cookie "__Host-gf_session=$COOKIE_VALUE" \
-  --timeout-ms "$TIMEOUT_MS" >"$WORK/probe.json" ||
+  --timeout-ms "$TIMEOUT_MS" \
+  --menu-path / >"$WORK/probe.json" ||
   fail "ブラウザでの観測ができませんでした。"
 
 # ── 判定 ──────────────────────────────────────────────────────────────────────
@@ -150,8 +167,65 @@ if (got !== wanted) {
   process.exit(1);
 }
 let failed = 0;
-for (const { width, observations } of runs) {
+/**
+ * アカウントのメニューの観測値を判定する（#372。観測は scripts/page-width-probe.mjs）。
+ *
+ * **観測が 1 つでも欠けたら落とす。** メニューが無い・読み込めなかった状態を
+ * 「開閉の問題は無かった」で通さない。
+ */
+function menuProblems(width, menu) {
+  const where = menu && menu.url ? new URL(menu.url).pathname : "（未観測）";
   const problems = [];
+  const fail = (message) => problems.push(`アカウントのメニュー（${where}）: ${message}`);
+  if (menu === null || menu === undefined) {
+    fail("観測されていません（--menu-path が渡っていない）");
+    return problems;
+  }
+  if (!menu.loaded) {
+    fail("JavaScript を止めた状態で読み込みが完了しませんでした");
+    return problems;
+  }
+  if (menu.scriptsDisabled !== true) {
+    fail("JavaScript が止まっていません（止めた状態での開閉を確かめられない）");
+  }
+  if (!menu.initial || menu.initial.present !== true) {
+    fail("ヘッダにメニューがありません（ログイン済みの cookie で開いているか確認）");
+    return problems;
+  }
+  if (menu.initial.open !== false || menu.initial.logoutRendered !== false) {
+    fail("読み込んだ直後から開いています");
+  }
+  const within = (label, state) => {
+    if (!state || state.open !== true) {
+      fail(`${label}で開きませんでした`);
+      return;
+    }
+    if (state.logoutRendered !== true) {
+      fail(`${label}で開いたのに、ログアウトのボタンが描かれていません`);
+    }
+    if (state.listLeft < 0 || state.listRight > width) {
+      fail(`${label}で開いた中身が幅からはみ出しています（left=${state.listLeft} / right=${state.listRight} / 端末 ${width}px）`);
+    }
+    if (state.innerWidth !== width || state.scrollWidth > width) {
+      fail(`${label}で開くと横にはみ出します（innerWidth=${state.innerWidth} / scrollWidth=${state.scrollWidth}）`);
+    }
+  };
+  within("Enter", menu.openedByKey);
+  if (!menu.closedByKey || menu.closedByKey.open !== false || menu.closedByKey.logoutRendered !== false) {
+    fail("もう一度 Enter を押しても閉じませんでした");
+  }
+  within("クリック", menu.openedByClick);
+  const ax = menu.accessible || {};
+  if (ax.name !== "アカウントのメニュー") {
+    fail(`読み上げに渡る名前が「${ax.name}」です（role=${ax.role}）`);
+  }
+  if (ax.expanded !== true) {
+    fail(`開いたのに、読み上げに「開いている」が渡っていません（expanded=${ax.expanded}）`);
+  }
+  return problems;
+}
+for (const { width, observations, menu } of runs) {
+  const problems = menuProblems(width, menu);
   for (const o of observations) {
     if (!o.loaded) {
       problems.push(`${o.path}: 読み込みが完了しませんでした`);
@@ -190,11 +264,14 @@ for (const { width, observations } of runs) {
     console.error(`[page-width] 幅 ${width}px / ${problem}`);
   }
   if (problems.length > 0) {
-    console.error(`[page-width] 幅 ${width}px: ${problems.length} 経路が収まっていません。`);
+    console.error(`[page-width] 幅 ${width}px: ${problems.length} 件の問題があります。`);
     failed += problems.length;
     continue;
   }
-  console.log(`[page-width] 幅 ${width}px: ${observations.length} 経路すべてが収まっています。`);
+  console.log(
+    `[page-width] 幅 ${width}px: ${observations.length} 経路すべてが収まっています` +
+      `（アカウントのメニューは JavaScript を止めて開閉でき、開いても収まっています）。`,
+  );
 }
 if (failed > 0) {
   process.exit(1);

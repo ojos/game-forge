@@ -29,6 +29,7 @@ import { authorPagePath } from '../src/users-page-paths.js';
 import { WORK_PAGE_PREFIX, workPagePath } from '../src/work-page.js';
 import { MY_WORKS_PATH } from '../src/works-paths.js';
 import { applySchema } from './helpers/schema.js';
+import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
  * 「いいねした作品」（`/works/liked`。仕様 5.8 / 2.3.1 / M9-8 / #340）。
@@ -543,15 +544,12 @@ describe('空のとき（4.4 / 押せない導線を出さない）', () => {
 });
 
 describe('「あなたの作品」からの導線（2.3.7 / 5.8）', () => {
-  it('この一覧から「あなたの作品」へ戻れる（ヘッダには置かない）', async () => {
+  it('この一覧から「あなたの作品」へ本文で戻れる', async () => {
     const userId = await seedUser();
     const body = await (await openLiked(await sessionCookie(userId))).text();
-    expect(body).toContain(`href="${MY_WORKS_PATH}"`);
-    // **ヘッダに置かない**（2.3.7。本人だけの画面が 2 枚並ぶので項目を増やさない）。
-    // ヘッダは `siteHead` が出す 1 行だけである。
-    const header = /<header class="gf-header">[\s\S]*?<\/header>/u.exec(body);
-    expect(header, 'ヘッダが無い').not.toBeNull();
-    expect(header![0]).not.toContain(LIKED_WORKS_PATH);
+    // **本文だけを見る。** ヘッダのアカウントのメニューも「自分の作品」を持つ（2.3.7 v1.57 /
+    // #372）ので、全文で見るとメニューに当たって緑になり、本文の導線が消えても気づけない。
+    expect(pageBodyOf(body)).toContain(`href="${MY_WORKS_PATH}"`);
   });
 });
 

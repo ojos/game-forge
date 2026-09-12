@@ -81,3 +81,47 @@ export function ssrPagePaths(routes: readonly Route[]): string[] {
     .filter((path) => !NON_PAGE_PATHS.includes(path));
   return [...new Set(paths)].sort();
 }
+
+/**
+ * パンくずに出す親の候補を、パスの末尾を 1 段ずつ削って導く（2.3.10 / #372）。
+ *
+ * # 新しい構造を持ち込まない
+ *
+ * **階層は URL が既に持っている**（#152 / 2.3.2。`/works/<game_id>` の親は `/works`）。
+ * ここはそれを取り出すだけで、「この画面の親はこれ」という表を画面の側に持たせない。
+ * **画面を 1 枚足しても、ここへ書き足すものは無い。**
+ *
+ * # 候補であって、親そのものではない
+ *
+ * 削って出来たパスが画面とは限らない（`/users/<id>` を削った `/users` は経路表に無い）。
+ * **画面かどうかを決めるのは経路表**で、呼び出し側が突き合わせる。実行時の外枠
+ * （`src/html.ts` の `siteBreadcrumb`）は親の名前の表を引き、**表に無いものは出さない**。
+ * 表が経路表と噛み合っていること（画面である親が 1 つも漏れていないこと、表の行き先が
+ * すべて画面であること）は `test/page-shell.test.ts` が {@link ssrPagePaths} と
+ * 突き合わせて見る。**一覧を持つのは例外（親になる画面）の側で、葉の画面は自動で乗る。**
+ *
+ * # トップは返さない
+ *
+ * `/` は全画面の親なので、呼び出し側が常に先頭へ置く。ここで返すと、`/` だけが
+ * 「削って出来た候補」と「必ず出す起点」の 2 役を持つことになる。
+ *
+ * **末尾の `/` は 1 段として数える。** 前方一致の経路（`/works/`）を渡しても、
+ * 実際のパス（`/works/<id>`）を渡しても、同じ親（`/works`）が出る。
+ *
+ * @param path いま開いている画面のパス（`URL#pathname`。前方一致の経路の接頭辞でもよい）
+ * @returns 浅い順の親の候補（`/` は含まない。重複なし）
+ */
+export function ancestorPathsOf(path: string): string[] {
+  const segments = path.split('/');
+  const ancestors: string[] = [];
+  // `segments` の先頭は `/` の前の空文字、末尾はいま開いている画面そのものなので、
+  // その間だけを親の候補にする。
+  for (let end = 2; end < segments.length; end++) {
+    const candidate = segments.slice(0, end).join('/');
+    // `//x` のような綴りでは空の段が出来る。`/` と空文字は候補にしない。
+    if (candidate !== '' && candidate !== '/' && !ancestors.includes(candidate)) {
+      ancestors.push(candidate);
+    }
+  }
+  return ancestors;
+}

@@ -25,9 +25,20 @@
 // 段の数だけ払うことになる。**同じターゲットへ `Emulation.setDeviceMetricsOverride` を
 // 掛け直して回る**（`scripts/shoot-pages.mjs` が先に採っている形）。
 //
+// # アカウントのメニューを、JavaScript を止めて開閉する（#372）
+//
+// **ヘッダのアバターのドロップダウンは `<details>` / `<summary>` で、JavaScript を
+// 要求しない**（2.3.7 v1.57）。HTML の文字列照合で分かるのは「そう書いてある」までで、
+// **本当に開くか・開いた中身が幅に収まるか・読み上げに名前と開閉の状態が渡るか**は、
+// レイアウトを組んだブラウザでしか分からない。`--menu-path` を渡すと、幅ごとに
+// その画面を **JavaScript を止めて**開き直し、キーボード（Enter）とポインタ（クリック）で
+// 開閉して観測する。**開いた中身もこの検査の幅に収まっていなければならない**——閉じた
+// 状態だけを見る幅の検査は、開くと横にはみ出すメニューを通してしまう。
+//
 // 使い方:
 //   node scripts/page-width-probe.mjs --browser <path> --base <origin> \
-//     --paths </a,/b,...> --widths 390,768,1280 [--cookie <name=value>] [--timeout-ms 20000]
+//     --paths </a,/b,...> --widths 390,768,1280 [--cookie <name=value>] [--timeout-ms 20000] \
+//     [--menu-path /]
 //
 // `--width`（単数）も受ける。1 つの幅だけを見たいときの綴りである。
 //
@@ -46,7 +57,7 @@ const DEFAULT_TIMEOUT_MS = 20_000;
  * コマンドライン引数を読む。
  *
  * @param {string[]} argv `process.argv.slice(2)`
- * @returns {{browser: string, base: string, paths: string[], widths: number[], cookie: string | null, timeoutMs: number}} 読み取った設定
+ * @returns {{browser: string, base: string, paths: string[], widths: number[], cookie: string | null, timeoutMs: number, menuPath: string | null}} 読み取った設定
  */
 function parseArgs(argv) {
   /** @type {Record<string, string>} */
@@ -94,6 +105,7 @@ function parseArgs(argv) {
     widths,
     cookie: values['cookie'] ?? null,
     timeoutMs,
+    menuPath: values['menu-path'] ?? null,
   };
 }
 
@@ -130,6 +142,34 @@ const PAGE_STATE_EXPRESSION = `(() => {
     widest,
     widestRight: Math.round(right),
     title: document.title,
+  };
+})()`;
+
+/**
+ * アカウントのメニューの状態（`src/html.ts` の `accountMenu`）。
+ *
+ * **中身が描かれているかは、ログアウトのボタンの `checkVisibility()` で見る。箱の大きさでは
+ * 見ない**——Chromium は閉じた `<details>` の中身を `content-visibility: hidden` で隠すので、
+ * **閉じていても箱は幅と高さを持つ**（実測。箱で見ると「読み込んだ直後から開いている」と
+ * 誤って赤くなった）。開いたときは、中身の枠（`.gf-account-menu-list`）が**端末の幅の
+ * 内側にあること**を返す（判定は `scripts/check-page-width.sh`）。
+ */
+const MENU_STATE_EXPRESSION = `(() => {
+  const menu = document.querySelector('header.gf-header details.gf-account-menu');
+  if (menu === null) {
+    return { present: false };
+  }
+  const list = menu.querySelector('.gf-account-menu-list');
+  const logout = menu.querySelector('form[method="post"] button');
+  const listBox = list === null ? null : list.getBoundingClientRect();
+  return {
+    present: true,
+    open: menu.open,
+    logoutRendered: logout !== null && logout.checkVisibility(),
+    listLeft: listBox === null ? null : Math.floor(listBox.left),
+    listRight: listBox === null ? null : Math.ceil(listBox.right),
+    innerWidth: window.innerWidth,
+    scrollWidth: document.documentElement.scrollWidth,
   };
 })()`;
 
@@ -200,6 +240,163 @@ try {
     }
   });
 
+  /**
+   * 1 画面を開き、`load` と `readyState` の両方が揃うまで待つ。
+   *
+   * @param {string} url 開く URL
+   * @returns {Promise<boolean>} 期限内に読み込みが終わったか
+   */
+  async function navigate(url) {
+    status = null;
+    responseUrl = null;
+    loadFired = false;
+    await cdp.send('Page.navigate', { url }, sessionId);
+
+    // まず `load` を待ち、そのうえで `readyState` を確かめる。**片方だけにしない**
+    // ——`load` は前の文書では発火せず、`readyState` は「解析まで終わったか」を
+    // 別の角度から見る。両方が揃ってから観測する。
+    const deadline = Date.now() + args.timeoutMs;
+    while (Date.now() < deadline) {
+      if (loadFired) {
+        const result = await cdp.send(
+          'Runtime.evaluate',
+          { expression: 'document.readyState', returnByValue: true },
+          sessionId,
+        );
+        if (result.result?.value === 'complete') {
+          return true;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+    return false;
+  }
+
+  /**
+   * いまの画面のアカウントのメニューの状態を読む。
+   *
+   * **読むのは DevTools の評価であって、ページのスクリプトではない。**
+   * `Emulation.setScriptExecutionDisabled` が止めるのはページが持つスクリプトで、
+   * `Runtime.evaluate` はその外から読める（止めたまま読めることは実測で確かめた）。
+   *
+   * @returns {Promise<any>} {@link MENU_STATE_EXPRESSION} の値
+   */
+  async function readMenu() {
+    const state = await cdp.send(
+      'Runtime.evaluate',
+      { expression: MENU_STATE_EXPRESSION, returnByValue: true },
+      sessionId,
+    );
+    return state.result.value;
+  }
+
+  /**
+   * `<summary>` にキーボードの焦点を置き、キーを 1 回押して離す。
+   *
+   * **焦点は `DOM.focus` で置く**（ページのスクリプトを使わない）。押すのは Enter で、
+   * `<summary>` は押されると自分の `<details>` を開閉する（ブラウザの既定の振る舞い）。
+   *
+   * @param {number} nodeId `<summary>` の DOM ノード
+   */
+  async function pressEnterOn(nodeId) {
+    await cdp.send('DOM.focus', { nodeId }, sessionId);
+    const key = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...key, text: '\r' }, sessionId);
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...key }, sessionId);
+  }
+
+  /**
+   * `<summary>` の真ん中をポインタで 1 回押す。
+   *
+   * @param {number} nodeId `<summary>` の DOM ノード
+   */
+  async function clickOn(nodeId) {
+    const { model } = await cdp.send('DOM.getBoxModel', { nodeId }, sessionId);
+    const [x1, y1, , , x3, y3] = model.content;
+    const x = (x1 + x3) / 2;
+    const y = (y1 + y3) / 2;
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await cdp.send(
+        'Input.dispatchMouseEvent',
+        { type, x, y, button: 'left', clickCount: 1 },
+        sessionId,
+      );
+    }
+  }
+
+  /**
+   * JavaScript を止めた状態で、アカウントのメニューを開閉して観測する（#372）。
+   *
+   * 順に「読み込んだ直後（閉じている）→ Enter で開く → Enter で閉じる → クリックで開く」を
+   * 観測し、開いたときは**読み上げに渡る名前と開閉の状態**も読む。
+   *
+   * @param {string} url 開く URL
+   * @returns {Promise<any>} 観測値
+   */
+  async function probeMenu(url) {
+    await cdp.send('Emulation.setScriptExecutionDisabled', { value: true }, sessionId);
+    try {
+      const loaded = await navigate(url);
+      const scriptsDisabled = (
+        await cdp.send(
+          'Runtime.evaluate',
+          // `<noscript>` の中身は、スクリプトが止まっているときだけ要素として解析される。
+          // **止めたつもりで動いていた**を観測値で塞ぐ。
+          {
+            expression: `(() => { const n = document.createElement('div'); n.innerHTML = '<noscript><p></p></noscript>'; return n.querySelector('noscript p') !== null; })()`,
+            returnByValue: true,
+          },
+          sessionId,
+        )
+      ).result.value;
+      const initial = await readMenu();
+      if (!loaded || initial.present !== true) {
+        return { url, loaded, scriptsDisabled, initial };
+      }
+      const { root } = await cdp.send('DOM.getDocument', { depth: 0 }, sessionId);
+      const { nodeId } = await cdp.send(
+        'DOM.querySelector',
+        { nodeId: root.nodeId, selector: 'header.gf-header details.gf-account-menu > summary' },
+        sessionId,
+      );
+
+      await pressEnterOn(nodeId);
+      const openedByKey = await readMenu();
+      const { nodes } = await cdp.send(
+        'Accessibility.getPartialAXTree',
+        { nodeId, fetchRelatives: false },
+        sessionId,
+      );
+      const summaryAx = nodes.find((node) => node.ignored !== true) ?? null;
+      const accessible = {
+        role: summaryAx?.role?.value ?? null,
+        name: summaryAx?.name?.value ?? null,
+        expanded:
+          summaryAx?.properties?.find((property) => property.name === 'expanded')?.value?.value ??
+          null,
+      };
+
+      await pressEnterOn(nodeId);
+      const closedByKey = await readMenu();
+
+      await clickOn(nodeId);
+      const openedByClick = await readMenu();
+
+      return {
+        url,
+        loaded,
+        scriptsDisabled,
+        initial,
+        openedByKey,
+        accessible,
+        closedByKey,
+        openedByClick,
+      };
+    } finally {
+      await cdp.send('Emulation.setScriptExecutionDisabled', { value: false }, sessionId);
+    }
+  }
+
   // **幅を外側の輪にする。** `Emulation.setDeviceMetricsOverride` は 1 幅につき 1 回で
   // 済み、内側の輪は #282 のときと同じ「経路を順に開く」形のまま変わらない。
   const runs = [];
@@ -212,31 +409,8 @@ try {
 
     const observations = [];
     for (const path of args.paths) {
-      status = null;
-      responseUrl = null;
-      loadFired = false;
       const url = `${args.base}${path}`;
-      await cdp.send('Page.navigate', { url }, sessionId);
-
-      // まず `load` を待ち、そのうえで `readyState` を確かめる。**片方だけにしない**
-      // ——`load` は前の文書では発火せず、`readyState` は「解析まで終わったか」を
-      // 別の角度から見る。両方が揃ってから観測する。
-      let loaded = false;
-      const deadline = Date.now() + args.timeoutMs;
-      while (Date.now() < deadline) {
-        if (loadFired) {
-          const result = await cdp.send(
-            'Runtime.evaluate',
-            { expression: 'document.readyState', returnByValue: true },
-            sessionId,
-          );
-          if (result.result?.value === 'complete') {
-            loaded = true;
-            break;
-          }
-        }
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-      }
+      const loaded = await navigate(url);
 
       const state = await cdp.send(
         'Runtime.evaluate',
@@ -247,7 +421,8 @@ try {
       observations.push({ path, url, loaded, status, responseUrl, ...state.result.value });
     }
 
-    runs.push({ width, observations });
+    const menu = args.menuPath === null ? null : await probeMenu(`${args.base}${args.menuPath}`);
+    runs.push({ width, observations, menu });
   }
 
   cdp.socket.close();

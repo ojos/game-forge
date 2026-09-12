@@ -46,6 +46,7 @@ import { buildSessionCookie, signSession } from '../src/session.js';
 import { GENERATE_CALLBACK_PATH, generateCallbackRoutes } from '../src/generate-callback.js';
 import { MAX_TITLE_LENGTH, createPendingGame, draftTitleFromPrompt } from '../src/games.js';
 import { applySchema } from './helpers/schema.js';
+import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
  * 生成画面（5.2-1 / 4.4 / 8.3 / #128）。
@@ -796,7 +797,8 @@ describe('残枠と停止状態の常時表示（acceptance 1 / 4.4 / #24）', (
    * #331 でヘッダにサイト内のナビが入り、**どの画面からでもトップと一覧へ行ける**ように
    * なったが、それは外枠であって 4.4 が求めているものではない。4.4 が求めているのは
    * **生成が止まったときに、プレイと共有への導線を本文で押せるリンクとして出すこと**で、
-   * ここはそれだけを見る（ヘッダのロゴは `class` 付きなのでこの綴りに当たらない）。
+   * ここはそれだけを見る（ヘッダのロゴは `class` 付きなのでこの綴りに当たらない。**#372 で
+   * パンくずの「トップ」が同じ綴りになったので、外枠を取り除いてから探す**）。
    * **外枠まで数えると、止まっていない状態でも真になり、この行は何も見分けなくなる。**
    *
    * @param page 画面の HTML
@@ -809,7 +811,7 @@ describe('残枠と停止状態の常時表示（acceptance 1 / 4.4 / #24）', (
       `入力フォーム: ${page.includes('id="generate-form"')}`,
       `送信ボタン: ${page.includes('id="generate-submit"')}`,
       `埋め込みスクリプト: ${page.includes('<script>')}`,
-      `プレイ導線（本文。4.4）: ${page.includes(`<a href="${HOME_PATH}"`)}`,
+      `プレイ導線（本文。4.4）: ${pageBodyOf(page).includes(`<a href="${HOME_PATH}"`)}`,
     ].join('\n');
   }
 

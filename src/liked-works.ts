@@ -446,16 +446,6 @@ function someHidden(view: LikedWorksView): boolean {
 }
 
 /**
- * 303 See Other を返す。
- *
- * @param location 遷移先
- * @returns レスポンス
- */
-function seeOther(location: string): Response {
-  return new Response(null, { status: 303, headers: { location, 'cache-control': 'no-store' } });
-}
-
-/**
  * 一覧を表示する。
  *
  * **未ログインならログインへ送る。** 401 の JSON を返しても、画面を開いた利用者にできる

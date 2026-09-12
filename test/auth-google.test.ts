@@ -140,6 +140,24 @@ function base64UrlJson(value: unknown): string {
 }
 
 /**
+ * PKCE の `code_challenge`（S256）を計算する。
+ *
+ * **実装から import せず、テスト側で計算する。** 実装の関数を借りると「同じ式を
+ * 2 回通しただけ」になり、式そのものが間違っていても緑になる。
+ *
+ * @param codeVerifier 検証子
+ * @returns base64url した SHA-256 ハッシュ
+ */
+async function pkceChallengeOf(codeVerifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(codeVerifier));
+  let binary = '';
+  for (const byte of new Uint8Array(digest)) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+}
+
+/**
  * ID トークン（JWT）を組み立てる。
  *
  * 署名部分は検証されない（`parseGoogleIdToken` の JSDoc を参照）。トークンの
@@ -352,17 +370,9 @@ describe('ログインの開始（8.1）', () => {
     });
     const started = await startLogin(routes, testEnv());
 
-    const digest = await crypto.subtle.digest(
-      'SHA-256',
-      new TextEncoder().encode(FIXED_VERIFIER),
+    expect(started.authorize.searchParams.get('code_challenge')).toBe(
+      await pkceChallengeOf(FIXED_VERIFIER),
     );
-    let binary = '';
-    for (const byte of new Uint8Array(digest)) {
-      binary += String.fromCharCode(byte);
-    }
-    const expected = btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
-
-    expect(started.authorize.searchParams.get('code_challenge')).toBe(expected);
     expect(started.cookieHeader).toContain(FIXED_VERIFIER);
   });
 
@@ -828,9 +838,14 @@ describe('state と一時 cookie による CSRF 対策', () => {
     });
     const started = await startLogin(routes, testEnv());
     // 1 文字だけ変える。全体を差し替えるより、実際に起こる改竄に近い。
+    //
+    // **署名は必ず最後の要素である**（`signOAuthState`）。位置を直書きすると、
+    // 要素が増えた日に別の要素（招待コードの印など）を書き換えることになり、
+    // **署名の検証まで届かないまま緑になる**——実際に v3 で 1 つ増えた（#374）。
     const parts = started.cookieHeader.split('.');
-    const signature = parts[3]!;
-    parts[3] = signature.startsWith('A') ? `B${signature.slice(1)}` : `A${signature.slice(1)}`;
+    const last = parts.length - 1;
+    const signature = parts[last]!;
+    parts[last] = signature.startsWith('A') ? `B${signature.slice(1)}` : `A${signature.slice(1)}`;
 
     const response = await rejected(
       `code=x&state=${FIXED_STATE}`,
@@ -1197,6 +1212,12 @@ describe('ログインの後は、開こうとしていた画面へ戻す（2.3.
     expect(guard.headers.get('location')).not.toContain(ACCOUNT_PATH);
     const pending = findCookie(guard, OAUTH_COOKIE);
     expect(pending).toBeDefined();
+    // 画面は既定の乱数源で `state` と `code_verifier` を作る。**固定値ではない**ので、
+    // 下の「作り直している」の検査が値の一致だけで緑になることがない。
+    const pendingBody = toCookieHeader(pending!).slice(`${OAUTH_COOKIE}=`.length).split('.');
+    const [pendingState, pendingVerifier] = pendingBody;
+    expect(pendingState).not.toBe(FIXED_STATE);
+    expect(pendingVerifier).not.toBe(FIXED_VERIFIER);
 
     const overrides = {
       exchange: recordExchange(buildIdToken({ sub, email: `${sub}@example.com` })).exchange,
@@ -1205,9 +1226,17 @@ describe('ログインの後は、開こうとしていた画面へ戻す（2.3.
     };
     const routes = createAuthRoutes(overrides);
     const started = await startLoginWith(routes, testEnv(), toCookieHeader(pending!));
-    // ログインの開始は `state` を作り直す（CSRF と PKCE を守る値は、Google へ送る
-    // 要求が持たなければならない）。引き継ぐのは戻り先だけである。
+    // ログインの開始は `state` と `code_verifier` を**作り直す**（CSRF と PKCE を
+    // 守る値は、Google へ送る要求が持たなければならない）。引き継ぐのは戻り先だけ
+    // である。**画面が積んだ値と違うこと**を、両方について見る。
     expect(started.authorize.searchParams.get('state')).toBe(FIXED_STATE);
+    expect(started.authorize.searchParams.get('state')).not.toBe(pendingState);
+    expect(started.cookieHeader).toContain(FIXED_VERIFIER);
+    expect(started.cookieHeader).not.toContain(pendingVerifier!);
+    // PKCE の challenge も、作り直した verifier から作られている。
+    expect(started.authorize.searchParams.get('code_challenge')).toBe(
+      await pkceChallengeOf(FIXED_VERIFIER),
+    );
 
     const response = await callback(
       routes,

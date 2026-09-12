@@ -1292,9 +1292,10 @@ export type DescriptionValidation =
  * # 規則
  *
  * 1. **`\r\n` と `\r` を `\n` へ畳む。** ブラウザは `<textarea>` の改行を `\r\n` で送る
- * 2. **前後の空白（改行を含む）を除く**（表示名と同じ。空白だけなら空文字＝説明なし）
- * 3. **禁じた文字を含めば断る**（{@link DESCRIPTION_FORBIDDEN_CHARACTER} /
- *    {@link DESCRIPTION_DIRECTION_CHARACTER}）
+ * 2. **禁じた文字を含めば断る**（{@link DESCRIPTION_FORBIDDEN_CHARACTER} /
+ *    {@link DESCRIPTION_DIRECTION_CHARACTER}）。**前後の空白を除く前に見る**——`trim` は
+ *    U+2028 / U+2029 とタブも除くので、後に見ると端の禁じた文字が黙って消えて通る
+ * 3. **前後の空白（改行を含む）を除く**（空白だけなら空文字＝説明なし）
  * 4. **{@link MAX_DESCRIPTION_LENGTH} を超えれば断る**（コードポイントで数える）
  *
  * **空文字は通す。** 説明を消すのは正当な操作である。
@@ -1306,10 +1307,18 @@ export type DescriptionValidation =
  * @returns 保存する値、または断る理由
  */
 export function validateDescription(raw: string): DescriptionValidation {
-  const value = raw.replace(/\r\n?/gu, '\n').trim();
-  if (DESCRIPTION_FORBIDDEN_CHARACTER.test(value) || DESCRIPTION_DIRECTION_CHARACTER.test(value)) {
+  const unified = raw.replace(/\r\n?/gu, '\n');
+  // **禁じた文字は `trim` の前に見る**（PR #401 の Copilot レビュー）。`String#trim` は
+  // ECMAScript の行終端として U+2028 / U+2029 も、空白としてタブも除くので、後に見ると
+  // **先頭や末尾に置かれた禁じた文字が黙って削られて通る**——「置き換えずに断る」と
+  // 食い違う。
+  if (
+    DESCRIPTION_FORBIDDEN_CHARACTER.test(unified) ||
+    DESCRIPTION_DIRECTION_CHARACTER.test(unified)
+  ) {
     return { ok: false, reason: 'forbidden-character' };
   }
+  const value = unified.trim();
   if ([...value].length > MAX_DESCRIPTION_LENGTH) {
     return { ok: false, reason: 'too-long' };
   }

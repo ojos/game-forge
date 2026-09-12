@@ -14,7 +14,7 @@ import {
 import { ADMIN_LIST_LIMIT, listAdminActions } from '../src/admin/actions.js';
 import { ADMIN_OPEN_ROUTES, createAdminRoutes, handleAdminRequest } from '../src/admin/routes.js';
 import { BAN_NEXT_ACTIVE, BAN_NEXT_BANNED } from '../src/admin/users.js';
-import { PUBLISHED_STATUS, renameGame } from '../src/games.js';
+import { DESCRIPTION_CHANGES_TABLE, PUBLISHED_STATUS, renameGame } from '../src/games.js';
 import { ssrPagePaths } from '../src/page-paths.js';
 import {
   REVIEW_CLEARED,
@@ -205,6 +205,8 @@ beforeEach(async () => {
   await env.DB.prepare('delete from admin_actions').run();
   // **作品を指す表を先に消す**（外部キー。#367 で通報と改名の履歴を仕込むようになった）。
   await env.DB.prepare(`delete from ${TITLE_CHANGES_TABLE}`).run();
+  // 説明の履歴（#388 / `migrations/0028`）も作品を外部キーで指す。
+  await env.DB.prepare(`delete from ${DESCRIPTION_CHANGES_TABLE}`).run();
   await env.DB.prepare('delete from reports').run();
   await env.DB.prepare('delete from games').run();
   await env.DB.prepare('update users set banned_at = null').run();

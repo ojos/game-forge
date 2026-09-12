@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   DESCRIPTION_CHANGES_TABLE,
   DESCRIPTION_CHANGE_INTERVAL_SECONDS,
@@ -230,6 +230,20 @@ async function openWork(gameId: string, cookie?: string): Promise<string> {
 
 beforeAll(async () => {
   await applySchema();
+});
+
+// **このファイルが作った行を片付ける**（PR #401 の Copilot レビュー）。`description_changes`
+// は `games` を外部キーで指すので、**履歴を残したままにすると、`games` を丸ごと消す別の
+// テスト（`test/admin-screens.test.ts` の beforeEach）が外部キーに阻まれうる。** 順序は
+// 履歴 → 作品（`title_changes` は作らないが、念のため同じ作者の分を先に消す）。
+afterAll(async () => {
+  const mine = "(select id from games where author_id like 'describe-user-%')";
+  await env.DB.batch([
+    env.DB.prepare(`delete from ${DESCRIPTION_CHANGES_TABLE} where game_id in ${mine}`),
+    env.DB.prepare(`delete from title_changes where game_id in ${mine}`),
+    env.DB.prepare(`delete from reports where game_id in ${mine}`),
+    env.DB.prepare("delete from games where author_id like 'describe-user-%'"),
+  ]);
 });
 
 describe('説明のフォームは、公開済みの作品の作者にだけ出る（#388）', () => {
@@ -486,6 +500,16 @@ describe('形の検査（長さは切らずに断る・禁じた文字は表示�
     expect(validateDescription('🐱'.repeat(MAX_DESCRIPTION_LENGTH + 1)).ok).toBe(false);
     const withNewlines = `${'あ\r\n'.repeat(MAX_DESCRIPTION_LENGTH / 2 - 1)}ああ`;
     expect(validateDescription(withNewlines).ok).toBe(true);
+  });
+
+  it('先頭や末尾に置いた禁じた文字も、trim で消さずに断る', () => {
+    // `String#trim` は U+2028 / U+2029 とタブを除く（PR #401 の Copilot レビュー）。
+    for (const character of ['\u2028', '\u2029', '\t', '\u202e']) {
+      expect(validateDescription(`${character}遊び方`).ok).toBe(false);
+      expect(validateDescription(`遊び方${character}`).ok).toBe(false);
+    }
+    // 前後の空白と改行は除いて通す。
+    expect(validateDescription('\n  遊び方 \r\n')).toEqual({ ok: true, value: '遊び方' });
   });
 
   it('改行（LF / CR / CRLF）は通り、LF へ畳まれる', () => {

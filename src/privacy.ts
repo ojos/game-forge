@@ -14,6 +14,7 @@
  * |---|---|
  * | Google の識別子・メールアドレス・名前 | `src/auth/google.ts`（scope `openid email profile`、`users` への insert）/ `migrations/0001_init.sql` |
  * | 表示名 | `src/account.ts` / `migrations/0022_*` |
+ * | 表示名の変更履歴（Google の名前への追随を含む・公開しない） | `migrations/0030_display_name_changes.sql`（追記のみの `display_name_changes`）/ `src/display-name-changes.ts` / `src/account.ts` の `changeDisplayName` / `src/auth/google.ts` の `refreshExistingUser` / 読むのは管理画面の審査キューだけ（`src/admin/report-evidence.ts`。#405 が同じ変更で追記した） |
  * | 招待関係 | `migrations/0001_init.sql`（`invites` / `users.invited_by`）/ `src/invites.ts` |
  * | 指示文・生成の記録 | `src/cost-ledger.ts`（`generations.prompt`）/ `migrations/0009_game_revisions.sql` |
  * | 遮断された指示文（90 日） | `migrations/0016_moderation_blocks.sql` / `scripts/moderation-prune.sh` |
@@ -112,6 +113,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <h3>利用者が登録・入力する情報</h3>
 <ul>
   <li><strong>表示名</strong>（登録情報の画面で変更できます）</li>
+  <li><strong>表示名の変更の履歴</strong>: 表示名が変わったときの、変える前と後の表示名と、変えた日時。登録情報の画面で変えた場合のほか、Google アカウントの名前に合わせて表示名が変わった場合も残します。通報への対応のために運営者が確かめるもので、公開しません。変更の履歴は書き換えず、追記だけで残します。Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>招待の情報</strong>: 招待コード、誰が誰を招待したか、コードを使った日時</li>
   <li><strong>作品を作るときの指示文</strong>（生成・改造・推敲の指示）</li>
   <li><strong>作品</strong>: 題名とその変更履歴、生成されたソースコード、遊ぶためのファイル、紹介用の画像、公開・取り下げの状態、改造元の作品</li>
@@ -160,7 +162,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <p>公開する前の作品でも、作品ページの URL を知っている人がそのページを開くと、題名と、まだ公開されていないことが表示されます（遊ぶことはできません）。</p>
 <p>公開した作品のソースコードは、他の利用者がその作品を改造するときに、生成の材料として使われます。</p>
 <p><strong>次の情報は公開しません。</strong>メールアドレス、指示文、いいねした作品の一覧、
-   誰が誰を招待したか、通報の内容。</p>
+   誰が誰を招待したか、通報の内容、表示名の変更の履歴。</p>
 
 <h2>4. 第三者への提供と、外部の事業者への送信</h2>
 <p>上の 3 に書いた情報は、利用者が表示名を設定したり作品を公開したりすることで、誰でも見られるようになります。</p>

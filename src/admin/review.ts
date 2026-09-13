@@ -54,12 +54,21 @@
  * 置いていない（投入するのは通報の側である。8.4）。
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 中身はここに出さない
+ * 中身はここに出さない。ただし、通報された時点の題名・説明・作者名は出す（#405）
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **題名と作者名までで、通報の理由も本文も出さない**（`scripts/report-queue.sh` が
+ * **通報の理由と作品の中身（遊べる形）は出さない**（`scripts/report-queue.sh` が
  * 同じ判断をしている——「中身は作品ページで見てください」）。作品そのものは
  * **app ホストの作品ページで開く**ので、行ごとに絶対 URL のリンクを置く。
+ *
+ * **通報ごとに、通報された時点の題名・説明・作者の表示名を、いまの値と並べて出す**（#405）。
+ * 作品ページが見せるのは**いまの**値だけで、作者が改名や説明の書き換え、名前の変更で
+ * 言い逃れていても運営には分からない——#404 が作品をキューへ戻しても、判断の材料が
+ * 無かった。**復元の規則と、同じ秒・記録の無い時点の扱いは `src/admin/report-evidence.ts`
+ * にある。** どれも利用者が書いた値なので、すべて `escapeHtml` を通す。
+ *
+ * **読み取りは節ごとに 1 本足すだけで、通報の数に比例しない**（一覧の 3 本と合わせて
+ * 6 本を 1 つの batch で送る。{@link readQueue}）。
  *
  * **`games.status` を 1 ビットも動かさない**（0017 / 8.4）。この画面が動かすのは
  * `review_state` だけで、**共有済みの URL は切れない。**
@@ -74,6 +83,13 @@ import {
   REVIEW_REPORTED_AFTER_CLEAR_SQL,
   TITLE_CHANGES_TABLE,
 } from '../reports.js';
+import {
+  REPORT_EVIDENCE_PER_GAME,
+  differsFromNow,
+  reportEvidenceSql,
+  toReportEvidence,
+} from './report-evidence.js';
+import type { ReportEvidence, ReportEvidenceRow, RestoredValue } from './report-evidence.js';
 import type { ReviewState } from '../reports.js';
 import type { Route } from '../routes.js';
 import { html } from '../routes.js';
@@ -120,7 +136,7 @@ interface ReviewSection {
   /**
    * 条件か列が、あとから足した履歴の表を読むか（`admin_actions` / `title_changes`）。
    *
-   * **読めないときに読み直す節を決める**（{@link readSections}）。`0026` / `0027` が未適用の
+   * **読めないときに読み直す節を決める**（{@link readQueue}）。`0026` / `0027` が未適用の
    * D1 で落ちるのはこれが真の節である（`REVIEW_REPORTED_AFTER_CLEAR_SQL` は
    * `admin_actions` を、最終改名の時刻は `title_changes` を読む）。
    */
@@ -212,9 +228,10 @@ const SECTIONS: readonly ReviewSection[] = [
  * 管理画面にも出さない）。
  *
  * **改名の時刻は、出す節でだけ引く。** ほかの節まで `title_changes` を読むと、
- * `0027` が未適用の D1 で**審査待ちの節まで読めなくなる**（下記 {@link readSections}）。
- * **旧題名・新題名は引かない**——出すのは時刻だけで、題名はいまの 1 つを出す
- * （`scripts/report-queue.sh` が `last_rename` で同じ線を引いている）。
+ * `0027` が未適用の D1 で**審査待ちの節まで読めなくなる**（下記 {@link readQueue}）。
+ * **旧題名・新題名はこの文では引かない**——ここで出すのは時刻だけで、行の見出しの題名は
+ * いまの 1 つである（`scripts/report-queue.sh` が `last_rename` で同じ線を引いている）。
+ * **通報の時点の題名は、通報ごとに別の文で復元して出す**（#405。{@link evidenceStatement}）。
  *
  * @param env バインディングと環境変数
  * @param section 節の定義
@@ -231,18 +248,56 @@ function sectionStatement(
   const renamedAt = section.showsRename
     ? `(select max(tc.changed_at) from ${TITLE_CHANGES_TABLE} tc where tc.game_id = g.id)`
     : 'null';
-  // **並びは公開の新しい順である。** 通報の時刻で並べるには `reports` を集計する
-  // 必要があり（`scripts/report-queue.sh` はそうしている）、**画面 1 枚のために
-  // 読み取りを増やす理由が無い**——平常時のキューは数件である。
   return env.DB.prepare(
     `select g.id, g.title, g.published_at, u.display_name as author_name,
             ${renamedAt} as renamed_at
-       from games g
+       ${sectionScopeSql(section)}`,
+  ).bind(PUBLISHED_STATUS, limit);
+}
+
+/**
+ * 節に並べる作品を選ぶ `from` 以降（条件・並び・件数）。
+ *
+ * **一覧の文と、通報の時点の値を引く文（#405）が同じ断片を使う。** 2 か所に書くと、片方の
+ * 並びや件数だけが変わった日に、**一覧に出ている作品の通報が引けない**（あるいは出ていない
+ * 作品の通報を引く）。束縛は `status` → 件数の 2 つである。
+ *
+ * **並びは公開の新しい順である。** 通報の時刻で並べるには `reports` を集計する
+ * 必要があり（`scripts/report-queue.sh` はそうしている）、**画面 1 枚のために
+ * 読み取りを増やす理由が無い**——平常時のキューは数件である。
+ *
+ * @param section 節の定義
+ * @returns `from games g ...` から `limit ?` まで（**`games` の別名は `g`、`users` は `u`**）
+ */
+function sectionScopeSql(section: ReviewSection): string {
+  return `from games g
        left join users u on u.id = g.author_id
       where ${section.where} and g.status = ?
       order by g.published_at desc, g.id desc
-      limit ?`,
-  ).bind(PUBLISHED_STATUS, limit);
+      limit ?`;
+}
+
+/**
+ * ある節に並ぶ作品の通報と、通報の時点の値を引く文（#405。**節ごとに 1 本**）。
+ *
+ * **作品の選び方は一覧の文と同じ断片である**（{@link sectionScopeSql}）。文の中身と規則は
+ * `src/admin/report-evidence.ts`。
+ *
+ * @param env バインディングと環境変数
+ * @param section 節の定義
+ * @param limit 節の件数の上限（一覧の文と同じ値を渡す）
+ * @returns 準備済みの文
+ */
+function evidenceStatement(
+  env: Env,
+  section: ReviewSection,
+  limit: number = ADMIN_LIST_LIMIT,
+): D1PreparedStatement {
+  return env.DB.prepare(reportEvidenceSql(`select g.id ${sectionScopeSql(section)}`)).bind(
+    PUBLISHED_STATUS,
+    limit,
+    REPORT_EVIDENCE_PER_GAME,
+  );
 }
 
 /** 1 つの節を読んだ結果。**読めなかったことを 0 行と区別する。** */
@@ -251,50 +306,122 @@ type SectionRead =
   | { readonly ok: false };
 
 /**
- * 3 つの節を読む。**同じ時点の状態から読み、失敗しても画面ごと落とさない。**
+ * 1 つの節の通報の時点の値を読んだ結果（#405）。**読めなかったことを「通報が無い」と区別する。**
+ *
+ * `byGame` は作品の id から、その作品の通報（新しい順）を引く。
+ */
+type EvidenceRead =
+  | { readonly ok: true; readonly byGame: ReadonlyMap<string, readonly ReportEvidence[]> }
+  | { readonly ok: false };
+
+/** 審査キューの画面が読むもの（節ごとの一覧と、節ごとの通報の時点の値）。 */
+interface QueueRead {
+  /** {@link SECTIONS} と同じ順。 */
+  readonly sections: readonly SectionRead[];
+  /** {@link SECTIONS} と同じ順。 */
+  readonly evidence: readonly EvidenceRead[];
+}
+
+/** 読めなかった通報の時点の値（読み直しの経路で使う）。 */
+const EVIDENCE_UNREAD: EvidenceRead = { ok: false };
+
+/**
+ * 通報の時点の値の行を、作品ごとにまとめる。
+ *
+ * @param rows {@link evidenceStatement} の行（作品ごとに新しい順）
+ * @returns 作品の id から通報の並び
+ */
+function groupEvidence(rows: readonly ReportEvidenceRow[]): EvidenceRead {
+  const byGame = new Map<string, ReportEvidence[]>();
+  for (const row of rows) {
+    const evidence = toReportEvidence(row);
+    const list = byGame.get(evidence.gameId);
+    if (list === undefined) {
+      byGame.set(evidence.gameId, [evidence]);
+    } else {
+      list.push(evidence);
+    }
+  }
+  return { ok: true, byGame };
+}
+
+/**
+ * 3 つの節と、節ごとの通報の時点の値を読む。**同じ時点の状態から読み、失敗しても画面ごと落とさない。**
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 1 つの batch で読む（PR #392 の Copilot レビュー）
+ * 1 つの batch で読む（PR #392 の Copilot レビュー / #405）
  * ══════════════════════════════════════════════════════════════════════════════
  *
  * **節ごとに別々に読むと、節ごとに違う時点の状態になる。** 読み取りの間に別の管理者が
  * 作品を `queued` ↔ `cleared` へ動かすと、**同じ作品が 2 つの節に、向きの違う
  * ボタン付きで並ぶ**——「行は片方にしか出さない」が破れる。`D1.batch` は 1 つの
- * トランザクションなので、3 本の SELECT が同じ状態を見る。
+ * トランザクションなので、SELECT がすべて同じ状態を見る。
+ *
+ * **#405 で、節ごとに通報の時点の値を引く文を 1 本ずつ足した**（3 本 + 3 本）。同じ batch に
+ * 入れるので、一覧に並んだ作品と通報を引いた作品が食い違わない。**本数は通報の数に依らない**
+ * （通報ごとに文を発行しない。`test/admin-screens.test.ts` が通報の数を変えて突き合わせる）。
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 読めなければ、履歴の表に依らない節だけを読み直す
+ * 読めなければ、読める範囲だけを読み直す
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **#367 / #394 で読む表が増えた**（`title_changes` / `admin_actions`。`migrations/0027` /
- * `0026`）。本番の D1 へ適用し忘れると、それを読む 2 つの節が「no such table」で落ち、
- * batch ごと落ちる。例外をそのまま上へ投げると**審査待ちの節まで見えなくなる**
- * ——あとから足した読み取りの失敗で、#361 から動いていた一覧を巻き添えにしない。
+ * **あとから足した表を読む文ほど、適用漏れで落ちうる**（`title_changes` / `admin_actions` /
+ * `description_changes` / `display_name_changes`。`migrations/0026`〜`0030`）。1 本でも落ちると
+ * batch ごと落ちるので、**段階を踏んで読み直す。**
  *
- * **読み直すのは {@link ReviewSection.readsHistory} が偽の節（審査待ち）だけ**で、
- * ほかの節は「読めなかった」とする。**1 節だけなので、時点のずれによる重複は
- * 起こりえない。**
+ *   1. **通報の時点の値を諦め、一覧の 3 本だけを読み直す**（#405 で足した表の適用漏れでは、
+ *      #367 / #394 から動いていた一覧を巻き添えにしない）
+ *   2. それも落ちれば、**{@link ReviewSection.readsHistory} が偽の節（審査待ち）だけ**を読み直す
+ *      （#367 / #394 で足した表の適用漏れで、#361 から動いていた一覧を巻き添えにしない）。
+ *      **1 節だけなので、時点のずれによる重複は起こりえない**
  *
  * **0 行として描かない。** 「該当なし」と「読めていない」を区別できなくなる
  * （`scripts/report-queue.sh` が終了コード 1 と 2 を分けているのと同じ線）。
  *
  * @param env バインディングと環境変数
- * @returns 節ごとの結果（{@link SECTIONS} と同じ順）
+ * @returns 節ごとの結果と、節ごとの通報の時点の値
  */
-async function readSections(env: Env): Promise<readonly SectionRead[]> {
+async function readQueue(env: Env): Promise<QueueRead> {
+  try {
+    const results = await env.DB.batch<Record<string, unknown>>([
+      ...SECTIONS.map((section) => sectionStatement(env, section)),
+      ...SECTIONS.map((section) => evidenceStatement(env, section)),
+    ]);
+    return {
+      sections: SECTIONS.map((_, index): SectionRead => {
+        const result = results[index];
+        return result === undefined
+          ? { ok: false }
+          : { ok: true, rows: result.results as unknown as readonly ReviewRow[] };
+      }),
+      evidence: SECTIONS.map((_, index): EvidenceRead => {
+        const result = results[SECTIONS.length + index];
+        return result === undefined
+          ? EVIDENCE_UNREAD
+          : groupEvidence(result.results as unknown as readonly ReportEvidenceRow[]);
+      }),
+    };
+  } catch (error) {
+    console.error('[admin] 審査キューを読めませんでした。通報の時点の値を除いて読み直します', error);
+  }
+
+  const evidence = SECTIONS.map(() => EVIDENCE_UNREAD);
   try {
     const results = await env.DB.batch<ReviewRow>(
       SECTIONS.map((section) => sectionStatement(env, section)),
     );
-    return SECTIONS.map((_, index) => {
-      const result = results[index];
-      return result === undefined ? { ok: false } : { ok: true, rows: result.results };
-    });
+    return {
+      sections: SECTIONS.map((_, index): SectionRead => {
+        const result = results[index];
+        return result === undefined ? { ok: false } : { ok: true, rows: result.results };
+      }),
+      evidence,
+    };
   } catch (error) {
-    console.error('[admin] 審査キューを読めませんでした。審査待ちの節だけを読み直します', error);
+    console.error('[admin] 審査キューの一覧も読めませんでした。審査待ちの節だけを読み直します', error);
   }
 
-  return await Promise.all(
+  const sections = await Promise.all(
     SECTIONS.map(async (section): Promise<SectionRead> => {
       if (section.readsHistory) {
         return { ok: false };
@@ -307,6 +434,7 @@ async function readSections(env: Env): Promise<readonly SectionRead[]> {
       }
     }),
   );
+  return { sections, evidence };
 }
 
 /**
@@ -314,7 +442,7 @@ async function readSections(env: Env): Promise<readonly SectionRead[]> {
  *
  * **D1 から来る値は題名と作者名と id の 3 つで、すべて `escapeHtml` を通す**
  * （`src/work-card.ts` の規律。題名は利用者が名乗った値である）。時刻は数値から
- * 組み立てる。
+ * 組み立てる。**通報の時点の値（#405）も同じく `escapeHtml` を通す**（{@link renderEvidence}）。
  *
  * **理由の欄に `size` を付けない**（`test/admin-page-shell.test.ts` が見ている。
  * `size` / `cols` は layout viewport を広げ、狭い端末で崩れる原因になる。#282）。
@@ -325,10 +453,16 @@ async function readSections(env: Env): Promise<readonly SectionRead[]> {
  *
  * @param row 作品の行
  * @param section 節の定義
+ * @param evidence この節の通報の時点の値
  * @param appHost app ホストの綴り（作品ページのリンクに使う）
  * @returns HTML
  */
-function renderRow(row: ReviewRow, section: ReviewSection, appHost: string): string {
+function renderRow(
+  row: ReviewRow,
+  section: ReviewSection,
+  evidence: EvidenceRead,
+  appHost: string,
+): string {
   const id = escapeHtml(row.id);
   // **作品ページは app ホストにある。** 絶対 URL で組み立てる——admin ホストの
   // 相対リンクにすると 404 へ送ることになる（4.4 / 2.2 が禁じている形）。
@@ -343,6 +477,7 @@ function renderRow(row: ReviewRow, section: ReviewSection, appHost: string): str
   <p class="gf-admin-row-title"><a href="${workUrl}">${escapeHtml(row.title)}</a></p>
   <p class="gf-admin-meta">作者: ${escapeHtml(row.author_name ?? '（不明）')} ／ 公開: ${timeOrDash(row.published_at, '未公開')}${renamed}<br>
      <code>${id}</code></p>
+${renderEvidence(evidence.ok ? (evidence.byGame.get(row.id) ?? []) : null)}
   <form method="post" action="${ADMIN_REVIEW_API_PATH}">
     <input type="hidden" name="${ADMIN_GAME_ID_FIELD}" value="${id}">
     <input type="hidden" name="${ADMIN_NEXT_FIELD}" value="${oppositeReviewState(section.state)}">
@@ -352,6 +487,124 @@ function renderRow(row: ReviewRow, section: ReviewSection, appHost: string): str
   </form>
 </li>`;
 }
+
+/**
+ * 1 作品の通報と、通報の時点の値を組み立てる（#405）。
+ *
+ * **通報ごとに、題名・説明・作者名の「通報の時点」と「いま」を並べる。** 変わっていれば
+ * 項目の見出しに**文字で**「変わっています」と付ける（色に頼らない。節の札と同じ）。
+ *
+ * **読めなかったとき（null）は「読み込めませんでした」と書く**——「通報が無い」と区別する
+ * （{@link readQueue}）。
+ *
+ * @param reports その作品の通報（新しい順。読めなければ null）
+ * @returns HTML
+ */
+function renderEvidence(reports: readonly ReportEvidence[] | null): string {
+  if (reports === null) {
+    return `  <p class="gf-admin-evidence-note error">通報の時点の題名・説明・作者名を読み込めませんでした（通報が無いという意味ではありません）。</p>`;
+  }
+  const first = reports[0];
+  if (first === undefined) {
+    return `  <p class="gf-admin-evidence-note">この作品の通報は見つかりませんでした。</p>`;
+  }
+  const hidden = first.reportCount - reports.length;
+  const summary =
+    hidden > 0
+      ? `通報 ${first.reportCount} 件のうち、新しい ${reports.length} 件の時点の値です（ほかに古い通報が ${hidden} 件あります）。`
+      : `通報 ${first.reportCount} 件の、それぞれの時点の値です。`;
+  return `  <div class="gf-admin-evidence">
+  <p class="gf-admin-evidence-note">${escapeHtml(summary)}</p>
+  <ol class="gf-admin-evidence-list">
+${reports.map(renderReport).join('\n')}
+  </ol>
+  </div>`;
+}
+
+/**
+ * 通報 1 件を組み立てる（#405）。
+ *
+ * @param report 通報と、その時点の値
+ * @returns HTML
+ */
+function renderReport(report: ReportEvidence): string {
+  return `  <li class="gf-admin-evidence-report">
+    <p class="gf-admin-evidence-when">通報: ${timeOrDash(report.reportedAt)}</p>
+    <dl class="gf-admin-evidence-fields">
+${renderField('題名', report.title.atReport, report.title.now)}
+${renderField('説明', report.description.atReport, report.description.now)}
+${renderField('作者名', report.authorName.atReport, report.authorName.now)}
+    </dl>
+  </li>`;
+}
+
+/**
+ * 1 つの項目の「通報の時点」と「いま」を組み立てる（#405）。
+ *
+ * **3 つの場合を文字で言い分ける**（`src/admin/report-evidence.ts` の {@link RestoredValue}）。
+ *
+ *   - 値が 1 つに決まる … 「通報の時点」と「いま」を並べ、違えば「変わっています」
+ *   - 通報と同じ秒に変更がある … **どちらかに倒さず**、その秒の変更の前と後を両方出し、
+ *     「通報と同じ秒に変更がありました」と書く
+ *   - 記録が無い … **いまの値を当時の値として出さない。** 「この時点の〜の記録はありません」
+ *
+ * @param label 項目の名前（題名・説明・作者名）
+ * @param atReport 通報の時点の値
+ * @param now いまの値（引けなければ null）
+ * @returns HTML
+ */
+function renderField(label: string, atReport: RestoredValue, now: string | null): string {
+  const differs = differsFromNow(atReport, now);
+  const mark =
+    atReport.kind === 'same-second'
+      ? '通報と同じ秒に変更がありました'
+      : differs === null
+        ? '記録がありません'
+        : differs
+          ? '変わっています'
+          : '変わっていません';
+  const lines =
+    atReport.kind === 'known'
+      ? [evidenceLine('通報の時点', atReport.value)]
+      : atReport.kind === 'same-second'
+        ? [
+            evidenceLine('同じ秒の変更の前', atReport.before),
+            evidenceLine('同じ秒の変更の後', atReport.after),
+            `        <p class="gf-admin-evidence-note">通報と変更の前後は秒より細かく記録していないため、どちらの値だったかは分かりません。</p>`,
+          ]
+        : [
+            `        <p><span class="gf-admin-evidence-label">通報の時点</span> <span class="gf-admin-evidence-none">この時点の${escapeHtml(label)}の記録はありません</span></p>`,
+          ];
+  const current =
+    now === null
+      ? `        <p><span class="gf-admin-evidence-label">いま</span> <span class="gf-admin-evidence-none">（不明）</span></p>`
+      : evidenceLine('いま', now);
+  return `      <dt>${escapeHtml(label)} <span class="gf-admin-evidence-mark">${escapeHtml(mark)}</span></dt>
+      <dd>
+${[...lines, current].join('\n')}
+      </dd>`;
+}
+
+/**
+ * 「通報の時点」「いま」などの 1 行を組み立てる（#405）。
+ *
+ * **値は利用者が書いたもので、必ず `escapeHtml` を通す。** 説明の改行は CSS
+ * （`white-space: pre-wrap`）で保つ——`<br>` へ置き換える処理をここに持たない
+ * （作品ページの段落の組み方と、運営が確かめる生の文章は別物である）。
+ * **空文字は「（空）」と書く**（説明なし。空の行を「値が無い」と取り違えない）。
+ *
+ * @param caption 行の見出し
+ * @param value 値
+ * @returns HTML
+ */
+function evidenceLine(caption: string, value: string): string {
+  const body =
+    value === ''
+      ? '<span class="gf-admin-evidence-none">（空）</span>'
+      : `<span class="gf-admin-evidence-value">${escapeHtml(value)}</span>`;
+  return `        <p><span class="gf-admin-evidence-label">${escapeHtml(caption)}</span> ${body}</p>`;
+}
+
 
 /**
  * 時刻を `<time>` で出す。
@@ -379,25 +632,31 @@ function timeOrDash(epochSeconds: number | null, missing = '—'): string {
  * 書かなければ分からない（`scripts/report-queue.sh` が `REPORT_QUEUE_EMPTY` を出すのと
  * 同じ——**静かに 0 行にすると「審査待ちが無い」のか「読めていない」のかが区別できない**）。
  *
- * **読めなかった節は、件数の代わりにそう書く**（{@link readSections}）。
+ * **読めなかった節は、件数の代わりにそう書く**（{@link readQueue}）。
  *
  * @param section 節の定義
  * @param read 読んだ結果
+ * @param evidence この節の通報の時点の値（#405）
  * @param appHost app ホストの綴り
  * @returns HTML
  */
-function renderSection(section: ReviewSection, read: SectionRead, appHost: string): string {
+function renderSection(
+  section: ReviewSection,
+  read: SectionRead,
+  evidence: EvidenceRead,
+  appHost: string,
+): string {
   if (!read.ok) {
     return `<h2>${escapeHtml(section.heading)}（読み込めませんでした）</h2>
 <p class="error" role="alert">この節を読み込めませんでした。0 件という意味ではありません。
-   マイグレーションの適用漏れ（操作の履歴 <code>admin_actions</code>・改名の履歴 <code>title_changes</code> など）の可能性があります。</p>`;
+   マイグレーションの適用漏れ（操作の履歴 <code>admin_actions</code>・改名の履歴 <code>title_changes</code>・表示名の履歴 <code>display_name_changes</code> など）の可能性があります。</p>`;
   }
   const { rows } = read;
   const body =
     rows.length === 0
       ? `<p>${escapeHtml(section.empty)}</p>`
       : `<ul class="gf-admin-list">
-${rows.map((row) => renderRow(row, section, appHost)).join('\n')}
+${rows.map((row) => renderRow(row, section, evidence, appHost)).join('\n')}
 </ul>`;
   return `<h2>${escapeHtml(section.heading)}（${rows.length} 件）</h2>
 <p>${escapeHtml(section.note)}</p>
@@ -407,17 +666,20 @@ ${body}`;
 /**
  * 審査キューの画面を返す。
  *
- * **読み取りは節ごとに 1 本**（審査待ち・問題なしのあとに通報が付いた作品・問題なし）で、
- * それぞれ件数を固定し、**3 本を 1 つの batch で送る**（{@link readSections}）。
+ * **読み取りは節ごとに 2 本**（一覧と、並んだ作品の通報の時点の値。#405）で、
+ * それぞれ件数を固定し、**6 本を 1 つの batch で送る**（{@link readQueue}）。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
  * @returns レスポンス
  */
 async function showReviewQueue(request: Request, env: Env): Promise<Response> {
-  const reads = await readSections(env);
+  const reads = await readQueue(env);
   const outcome = new URL(request.url).searchParams.get(ADMIN_OUTCOME_QUERY);
-  const unreadable = reads.some((read) => !read.ok);
+  // **通報の時点の値が読めなかったときも「一部を読めなかった」に数える**（#405。証拠を
+  // 欠いた画面を、欠けていないかのように 200 で返さない）。
+  const unreadable =
+    reads.sections.some((read) => !read.ok) || reads.evidence.some((read) => !read.ok);
 
   // **読めなかった節があれば 500 にする。** 本文は描くが、成功したかのように
   // ログへ残さない（下の 400 と同じ考え方）。
@@ -440,7 +702,16 @@ ${notice}
    作品の取り下げはこの画面に置いていません</strong>（仕様 2.4.3。戻せない操作のため、
    引き続き D1 への直接 UPDATE で行います）。</p>
 <p>どちらの操作も理由が必須で、<strong>操作と履歴は 1 つの書き込みで残ります</strong>（仕様 2.4.4）。</p>
-${SECTIONS.map((section, index) => renderSection(section, reads[index] ?? { ok: false }, env.APP_HOST)).join('\n')}
+<p>各作品の下に、<strong>通報ごとに、通報された時点の題名・説明・作者名と、いまの値を並べます</strong>
+   （変更の履歴から復元しています。表示名の履歴を残し始める前の通報では、作者名の記録はありません）。</p>
+${SECTIONS.map((section, index) =>
+  renderSection(
+    section,
+    reads.sections[index] ?? { ok: false },
+    reads.evidence[index] ?? EVIDENCE_UNREAD,
+    env.APP_HOST,
+  ),
+).join('\n')}
 ${adminFooter()}`,
     // **失敗の後始末で開かれた画面には、失敗のステータスを付ける**
     // （`src/account.ts` と同じ扱い。成功したかのようにログへ残さない）。

@@ -440,6 +440,165 @@ bash scripts/report-queue.sh --remote --format json | jq -r '.rows[].game_id' | 
 
 ---
 
+## #405（通報された時点の題名・説明・作者名）を出すときに増える手順
+
+**審査キュー（`/`）の行ごとに、通報ごとの「通報の時点」と「いま」の値が並ぶ。** 題名・説明・
+作者名の 3 つで、変わっていれば「変わっています」、通報と同じ秒に変更があれば前後の両方と
+「通報と同じ秒に変更がありました」、表示名の履歴を書き始める前の通報では「この時点の作者名の
+記録はありません」と出る。**操作・口・経路は増えない**（`ADMIN_OPEN_ROUTES` にも足していない）。
+
+**表示名の変更の履歴（`display_name_changes`）と、書き始めた時刻の 1 行（`display_name_history_start`）
+を足す**（`migrations/0030_display_name_changes.sql`）。**`/account` での変更と Google の名前への
+追随の両方が、名前が実際に変わったときだけ 1 行積む。**
+
+```
+Ⓘ PR のツリー（main を取り込み済み）から、マージの直前に 0030 を適用する（利用者の端末）
+Ⓙ main へマージする → deploy ジョブが関門を通り、配備される
+Ⓚ 配備を確かめたら、表示名の履歴の基準の時刻をその時刻へ進める
+Ⓛ 画面で 1 件確かめる
+```
+
+**マージの前に適用する**（`.claude/skills/land/SKILL.md` の手順 5。`0026` の Ⓐ・`0027` の Ⓕ と同じ）。
+**当てる前にこの Worker を配ると、既存の利用者のログインが落ちる**（履歴の表が無いと
+`src/auth/google.ts` の `refreshExistingUser` の batch ごと失敗する）。deploy ジョブの関門
+（「未適用のマイグレーションが無いこと」）がそれを防ぐが、**関門は止めるだけで、適用はしない。**
+
+> **経緯（PR #413 のレビュー）。** はじめは「マージの直前に `origin/main` のツリーから当てる」と
+> 書いていたが、**マージ前の `origin/main` には `0030` が無く、その手順では表を作れない**（Copilot の
+> 指摘）。いったん「マージしてから main で当て、関門で止まった deploy ジョブを再実行する」へ
+> 書き換えたが、**それは land の手順 5（マージの前に適用を済ませる）と食い違っていた**ので、
+> 「**PR のツリーから、マージの直前に当てる**」へ直した。
+
+### Ⓘ 0030 を適用する（マージの直前）
+
+```bash
+# PR のブランチを checkout したツリーで。main を取り込み済みであることを先に確かめる
+# （古いツリーで打つと未適用を見落とす。docs/handoff.md 1 章）
+git fetch origin main
+git merge-base --is-ancestor origin/main HEAD && echo UP_TO_DATE   # 出なければ main を取り込んでから
+set -a; source scripts/load-project-env.sh; set +a
+npx wrangler d1 migrations list DB --remote --env production    # 0030 が未適用として出る
+npx wrangler d1 migrations apply DB --remote --env production
+npx wrangler d1 execute DB --remote --env production \
+  --command "select id, started_at from display_name_history_start;"   # 1 行、適用した時刻
+```
+
+**適用してから、マージした deploy ジョブが Pages を配り終えるまでの間は、表示名の変更が記録されない**
+（古いコードが動いており、履歴を書かない）。**適用の時刻が「表示名の履歴を書き始めた時刻」として
+記録される**ので、その間に付いた通報のあとにその間に名前が変わると、いまの名前が通報の時点の名前として
+出てしまう。**当てたらすぐマージし、Ⓚ で詰める。**
+
+### Ⓙ マージする
+
+**適用が済んでいれば、deploy ジョブは関門を通り、そのまま配備される。**
+
+**先にマージしてしまった場合**（適用を忘れた）: deploy ジョブは関門で落ち、**新しいコードは配られない**
+（古いコードのまま動くので本番は壊れない。赤いジョブを「壊れた」と読まないこと）。main にした
+プライマリツリーから Ⓘ と同じ `migrations apply` を打ち、`gh run rerun <run-id> --failed` で止まった
+ジョブを再実行する。
+
+### Ⓚ 基準の時刻を、配備を確かめた時刻へ進める
+
+`docs/pages-deploy.md` の「配備ずれの検知」（`production deployment matches main HEAD`）で配備を確かめたら、
+**その時刻（UNIX 秒）**へ進める。
+
+```bash
+now=$(date +%s)
+npx wrangler d1 execute DB --remote --env production \
+  --command "update display_name_history_start set started_at = ${now} where id = 1 and started_at < ${now};"
+```
+
+**進める向きは「記録がありません」を増やす側だけである**——誤った名前を出す側へは動かない。
+打ち忘れても壊れはしないが、Ⓘ から配備までの窓の分だけ上の誤りが残りうる。**戻す（小さくする）
+コマンドは打たないこと。**
+
+### Ⓛ 画面で確かめる
+
+- 既存の審査待ちの作品の行に、通報ごとの塊が出ていること。**配備より前の通報では、作者名が
+  「この時点の作者名の記録はありません」になっている**（正しい。いまの名前を当時の名前として出さない）
+- 題名と説明は、配備より前の通報でも「通報の時点」が出ていること（履歴は 0027 / 0028 からある）
+- **確認のためだけに通報や名前の変更を作らない**（Ⓒ〜Ⓓ と同じ理由）
+
+**0030 の表が読めないとき**（適用が壊れたなど）、画面は落とさない——一覧の 3 節は出し、行ごとに
+「通報の時点の題名・説明・作者名を読み込めませんでした」と書いて **500** を返す（`src/admin/review.ts` の
+`readQueue`）。
+
+### 運営が D1 を直接 UPDATE して表示名を直すとき（5.9）
+
+**履歴も 1 行積むこと。** 積まないと、その作者に付いた通報の時点の名前の復元を誤らせる
+（変更が 1 件も記録されていない作者では、直した後の名前が通報の時点の名前として出る）。
+
+```bash
+set -a; source scripts/load-project-env.sh; set +a
+# 1. いまの名前を目で確かめる（下の old に写す）
+npx wrangler d1 execute DB --remote --env production \
+  --command "select id, display_name, display_name_set_at from users where id = '<利用者の id>';"
+
+# 2. 値を 1 度だけ決める（名前に ' を含めるなら '' と重ねる）。**時刻もここで 1 度だけ取る**
+id='<利用者の id>'; old='<1 で見たいまの名前>'; name='<直した名前>'; now=$(date +%s)
+
+# 3. 名前を直し、「直った後の状態になっている行」についてだけ履歴を積む（**打ち直しても結果が同じ**）
+npx wrangler d1 execute DB --remote --env production --command "
+update users set display_name = '${name}', display_name_set_at = ${now}
+ where id = '${id}' and display_name = '${old}';
+insert into display_name_changes (id, user_id, old_display_name, new_display_name, changed_at)
+  select lower(hex(randomblob(16))), id, '${old}', '${name}', ${now}
+    from users
+   where id = '${id}' and display_name = '${name}' and display_name_set_at = ${now}
+     and '${old}' <> '${name}'
+     and not exists (select 1 from display_name_changes
+                      where user_id = '${id}' and changed_at = ${now} and new_display_name = '${name}');"
+
+# 4. 名前と履歴の両方を確かめる
+npx wrangler d1 execute DB --remote --env production --command "
+select display_name, display_name_set_at from users where id = '${id}';
+select old_display_name, new_display_name, changed_at from display_name_changes
+ where user_id = '${id}' order by rowid desc limit 1;"
+```
+
+**時刻は `date +%s` で 1 度だけ取り、両方の文に同じ値を渡す**（文ごとに `strftime('%s', 'now')` を
+評価すると、秒の境界をまたいだときに履歴の時刻と実際の変更が 1 秒ずれ、その秒の通報で誤った名前を
+復元しうる。PR #413 の Copilot レビュー）。
+
+#### 2 文が 1 つのトランザクションになるか（確かめた範囲）
+
+**アプリの経路は `D1.batch` で、1 つのトランザクションである**（Cloudflare の D1 Worker API の文書:
+「Batched statements are SQL transactions. If a statement in the sequence fails, then an error is returned
+for that specific statement, and it aborts or rolls back the entire sequence.」）。**端末からの
+`wrangler d1 execute` はそうとは書かれていない。**
+
+- **手元の D1 では巻き戻った**（2026-09-13。wrangler 4.121.0、`--local --persist-to` の使い捨ての D1）。
+  `--command` に 2 文（1 文目は通る insert、2 文目は CHECK 違反の insert）を送ると終了コード 1 で、**1 文目の
+  行は残らなかった。** `--file` に同じ 2 文を書いても、2 文目を「無い表への insert」にしても同じだった。
+  **対照として**、2 文とも通る組を送ると両方の行が入った（1 文目がそもそも実行されていない、ではない）。
+  UPDATE → 失敗する insert の組でも、UPDATE は巻き戻った
+- **本番（`--remote`）の振る舞いを保証する記述は見つからなかった。** `wrangler d1 execute` のコマンドの文書は
+  「複数の文をセミコロンで区切って渡せる」とだけ書き、トランザクションに触れていない。取り込みの文書
+  （Import and export data）は、ダンプから `BEGIN TRANSACTION` / `COMMIT` を外すよう求めているだけである。
+  `exec()` の文書も「エラーが起きたら以降の文を実行しない」としか書いていない。**本番では実測していない**
+  （確認のために本番の表で失敗を起こさない）
+
+**したがって、巻き戻ることを前提にしない。** 文の順序と条件を、**どちらの文が落ちても嘘の履歴が残らない**
+形にしてある。
+
+- **名前を先に直し、履歴は「直った後の状態になっている行」（`display_name = name` かつ
+  `display_name_set_at = now`）についてだけ積む。** 1 文目が落ちれば 2 文目は何も積まない
+- **2 文目だけが落ちたとき**に残るのは「履歴の無い変更」である。**4 で気づき、3 をそのまま打ち直せば
+  埋まる**（1 文目は `display_name = old` が偽になって何もせず、2 文目は同じ時刻・同じ値の行が無いときだけ積む）
+- **逆の順序（履歴を先に積む）は採らない。** 2 文目（名前の UPDATE）が落ちると**実際には起きていない変更が
+  履歴に残り**、審査キューがそれを証拠として復元する——**後から見分ける手段が無い**。「履歴の無い変更」は
+  4 で見分けられ、打ち直しで直せるので、**害が小さいのはこちらである**
+- **`old` は 1 で目で確かめた値を渡す**（直したあとの行からは旧い名前を取れないため）。1 と 3 の間に
+  利用者が名前を変えていれば、1 文目が当たらず何も起きない——4 で名前が変わっていなければ 1 からやり直す
+
+### 幅 390px
+
+**`scripts/check-page-width.sh` に admin は乗っていない**（上記「残した穴」は変わっていない）。
+増えた塊は行の枠の中に積み、**利用者が書いた値は `overflow-wrap: anywhere` と `white-space: pre-wrap`**
+で折り返す（`public/assets/admin.css`）。
+
+---
+
 ## 壊れうる点
 
 | 症状 | いちばんありそうな原因 |

@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   ADMIN_ACTIONS_PATH,
   ADMIN_BAN_API_PATH,
@@ -11,7 +11,9 @@ import {
   ADMIN_USERS_PATH,
   ADMIN_USER_ID_FIELD,
 } from '../src/admin-paths.js';
+import { changeDisplayName } from '../src/account.js';
 import { ADMIN_LIST_LIMIT, listAdminActions } from '../src/admin/actions.js';
+import { REPORT_EVIDENCE_PER_GAME } from '../src/admin/report-evidence.js';
 import { ADMIN_OPEN_ROUTES, createAdminRoutes, handleAdminRequest } from '../src/admin/routes.js';
 import { BAN_NEXT_ACTIVE, BAN_NEXT_BANNED } from '../src/admin/users.js';
 import {
@@ -27,6 +29,10 @@ import {
   TITLE_CHANGES_TABLE,
   reviewAttentionSql,
 } from '../src/reports.js';
+import {
+  DISPLAY_NAME_CHANGES_TABLE,
+  DISPLAY_NAME_HISTORY_START_TABLE,
+} from '../src/display-name-changes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -112,9 +118,14 @@ async function insertUser(label: string): Promise<string> {
  *
  * @param reviewState 審査状態
  * @param title 題名
+ * @param authorId 作者（既定は `users.author`。表示名の履歴を見るテストは作者を分ける）
  * @returns 作品の id
  */
-async function insertGame(reviewState: string | null, title = '審査の対象'): Promise<string> {
+async function insertGame(
+  reviewState: string | null,
+  title = '審査の対象',
+  authorId: string = users.author,
+): Promise<string> {
   const id = crypto.randomUUID();
   await env.DB.prepare(
     `insert into games
@@ -122,7 +133,7 @@ async function insertGame(reviewState: string | null, title = '審査の対象')
         published_at, fork_count, like_count, ogp_state, review_state)
      values (?, ?, ?, ?, '', 1, 'ready', 1, 0, 0, 'ready', ?)`,
   )
-    .bind(id, users.author, PUBLISHED_STATUS, title, reviewState)
+    .bind(id, authorId, PUBLISHED_STATUS, title, reviewState)
     .run();
   return id;
 }
@@ -567,7 +578,8 @@ describe('審査キューに「問題なしとしたあとに通報が付いた�
     const queuedSection = sectionOf(body, 'queued');
 
     expect(reportedSection).toContain('<p class="gf-admin-badge">問題なしのあとに通報あり</p>');
-    // **いつ改名されたか**を出す（題名の旧新は出さない。どちらも UGC で、いまの題名は行にある）。
+    // **いつ改名されたか**を出す。**通報の時点の題名は通報ごとに出す**（#405）が、この作品の
+    // 通報は改名より後なので、通報の時点の題名も改名後であり、改名前の題名はどこにも出ない。
     expect(reportedSection).toContain('最終改名: <time datetime="');
     expect(reportedSection).toContain('改名後の題名');
     expect(reportedSection).not.toContain('改名前の題名');
@@ -753,7 +765,7 @@ describe('審査キューに「問題なしとしたあとに通報が付いた�
     }
   });
 
-  it('3 つの節を 1 つの batch で読む（同じ時点の状態から描き、同じ作品を 2 節に出さない）', async () => {
+  it('3 つの節（と、節ごとの通報の時点の値。#405）を 1 つの batch で読む（同じ時点の状態から描き、同じ作品を 2 節に出さない）', async () => {
     // **節ごとに別々に読むと、間に別の管理者の操作が挟まったとき、同じ作品が
     // 向きの違うボタン付きで 2 節に並ぶ**（PR #392 の Copilot レビュー）。D1 の batch は
     // 1 つの SQL トランザクションで、文を順に・並行せずに実行する（Cloudflare の D1
@@ -778,7 +790,9 @@ describe('審査キューに「問題なしとしたあとに通報が付いた�
       { ...testEnv(), DB: spied } as Env,
     );
     expect(response.status).toBe(200);
-    expect(batches).toEqual([3]);
+    // **一覧 3 本と、通報の時点の値 3 本**（#405）。本数が通報の数に依らないことは
+    // #405 の describe が見る。
+    expect(batches).toEqual([6]);
   });
 
   it('操作が成功した直後に一覧が読めなければ、成功の知らせと読み取り失敗の知らせを両方出す', async () => {
@@ -818,6 +832,428 @@ describe('審査キューに「問題なしとしたあとに通報が付いた�
       }
     });
   }
+});
+
+describe('通報された時点の題名・説明・作者名を、いまの値と並べて出す（#405）', () => {
+  /*
+   * **変異で確かめた**（2026-09-13。`src/admin/report-evidence.ts` / `src/admin/review.ts` を
+   * 1 か所ずつ書き換え、この describe と `test/report-evidence.test.ts` を回した）。
+   *
+   *   - 規則を無視していまの値を出す … 題名・説明・作者名の「通報の時点」と、規則の単体テストが赤
+   *   - 規則の 1 と 2 の順を入れ替える … 「履歴が繋がっていないとき」と単体テストが赤（**履歴が
+   *     繋がっていれば 2 つは同じ値になり、画面の他のテストでは区別できない**）
+   *   - 同じ秒を無視する（関数で／SQL の `exists` を常に偽にして）… 「同じ秒」が赤
+   *   - SQL の境界を 1 つずつずらす（`<=` → `<` / `<` → `<=` / `>=` → `>`）… 「同じ秒」か
+   *     「履歴が繋がっていないとき」が赤。**`old_after` の `>` → `>=` だけは等価な変異である**
+   *     （その列を使うのは T 以前に変更が無いときで、そのとき T と同じ秒の変更も無い）
+   *   - 同じ秒の「前」の規則の順を入れ替える … 「履歴が繋がっていないとき」が赤
+   *   - 記録の有無を見ない／履歴を書き始めた時刻と同じ秒を記録ありへ倒す … 「記録前の通報」
+   *     「同じ秒の通報」と単体テストが赤
+   *   - `??` を `||` にする … 単体テストの「空文字は値である」が赤
+   *   - 表示名の履歴を作品の id で引く … 「表示名を変えた作者」「同じ秒」が赤
+   *   - 1 作品の件数の上限を外す … 「5 件まで」が赤
+   *   - 「変わっています」を常に偽にする … 3 つの「変わった」テストが赤
+   *   - 通報の時点の値を `escapeHtml` に通さない … 「エスケープ」が赤
+   *   - batch のあと、通報 1 件ごとに `select` を 1 本発行する … 「本数は通報の数に比例しない」が赤
+   *   - 読み直しの中段（一覧の 3 本だけを読む）を外す … 「表示名の履歴が読めなくても」が赤
+   */
+
+  /** 表示名の履歴を書き始めた時刻（migration が書いた値。describe の後で戻す）。 */
+  let originalStart = 0;
+
+  /** 通報者（同じ人は同じ作品を 2 度通報できないので、何人か用意する）。 */
+  const reporters: string[] = [];
+
+  /** 表示名の履歴を書き始めた時刻として、テストが置く値（通報の時刻より十分前）。 */
+  const RECORDED_SINCE = 1_600_000_000;
+
+  beforeAll(async () => {
+    const row = await env.DB.prepare(
+      `select started_at from ${DISPLAY_NAME_HISTORY_START_TABLE} where id = 1`,
+    ).first<{ started_at: number }>();
+    originalStart = row?.started_at ?? 0;
+    for (let index = 0; index < REPORT_EVIDENCE_PER_GAME + 2; index += 1) {
+      reporters.push(await insertUser(`通報者${index}`));
+    }
+  });
+
+  beforeEach(async () => {
+    // **migration が書く時刻は「テストを走らせた瞬間」で、仕込む通報（2023 年）より後になる。**
+    // そのままだと表示名はすべて「記録がありません」になるので、この describe では前へ置く。
+    await setRecordedSince(RECORDED_SINCE);
+  });
+
+  afterAll(async () => {
+    await setRecordedSince(originalStart);
+  });
+
+  /**
+   * 表示名の履歴を書き始めた時刻を置き換える。
+   *
+   * @param startedAt 時刻（UNIX 秒）
+   */
+  async function setRecordedSince(startedAt: number): Promise<void> {
+    await env.DB.prepare(`update ${DISPLAY_NAME_HISTORY_START_TABLE} set started_at = ? where id = 1`)
+      .bind(startedAt)
+      .run();
+  }
+
+  /**
+   * 本文から、ある作品の行を切り出す。
+   *
+   * @param body 画面の本文
+   * @param gameId 作品の id
+   * @returns 行の HTML（見つからなければ空文字）
+   */
+  function rowOf(body: string, gameId: string): string {
+    return body.split('<li class="gf-admin-row">').find((row) => row.includes(`value="${gameId}"`)) ?? '';
+  }
+
+  /**
+   * 行から、通報 1 件の塊を切り出す（新しい順で何件目か）。
+   *
+   * @param row 行の HTML
+   * @param index 0 始まりの位置
+   * @returns 通報 1 件の HTML（無ければ空文字）
+   */
+  function reportOf(row: string, index = 0): string {
+    return row.split('<li class="gf-admin-evidence-report">')[index + 1]?.split('</li>')[0] ?? '';
+  }
+
+  /**
+   * 通報 1 件の塊から、項目 1 つ（見出しと値）を切り出す。
+   *
+   * @param report 通報 1 件の HTML
+   * @param label 項目の名前（題名・説明・作者名）
+   * @returns 項目の HTML（無ければ空文字）
+   */
+  function fieldOf(report: string, label: '題名' | '説明' | '作者名'): string {
+    const start = report.indexOf(`<dt>${label} `);
+    if (start < 0) {
+      return '';
+    }
+    return report.slice(start, report.indexOf('</dd>', start));
+  }
+
+  /**
+   * 「通報の時点」などの 1 行の値を出す形（エスケープ済みの本文と突き合わせる）。
+   *
+   * @param caption 行の見出し
+   * @param value 値
+   * @returns HTML の断片
+   */
+  function line(caption: string, value: string): string {
+    return `<span class="gf-admin-evidence-label">${caption}</span> <span class="gf-admin-evidence-value">${value}</span>`;
+  }
+
+  it('通報のあとに改名された作品で、通報の時点の題名といまの題名を並べ、変わったと分かる', async () => {
+    // **#405 の acceptance の 1 行目。**
+    const gameId = await insertGame(REVIEW_QUEUED, '通報された題名');
+    await insertReport(gameId, 1_700_002_000);
+    expect(await renameGame(env, gameId, users.author, '穏当な題名', 1_700_003_000)).toMatchObject({
+      ok: true,
+      changed: true,
+    });
+
+    const { status, body } = await open(ADMIN_HOME_PATH, adminCookie);
+    expect(status).toBe(200);
+    const title = fieldOf(reportOf(rowOf(body, gameId)), '題名');
+    expect(title).toContain('<span class="gf-admin-evidence-mark">変わっています</span>');
+    expect(title).toContain(line('通報の時点', '通報された題名'));
+    expect(title).toContain(line('いま', '穏当な題名'));
+  });
+
+  it('通報の前に改名し、通報のあとにもう一度改名した作品では、通報の時点の題名は中間のもの', async () => {
+    // **規則の 1（T 以前で最後の変更の新しい値）と 2（T より後で最初の変更の古い値）を
+    // 1 つの作品の 2 件の通報で見る。** 1 件目は最初の改名より前、2 件目は 2 回の改名の間。
+    const gameId = await insertGame(REVIEW_QUEUED, '最初の題名');
+    await insertReport(gameId, 1_700_000_500, reporters[0]);
+    await renameGame(env, gameId, users.author, '中間の題名', 1_700_001_000);
+    await insertReport(gameId, 1_700_002_000, reporters[1]);
+    await renameGame(env, gameId, users.author, '最後の題名', 1_700_003_000);
+
+    const row = rowOf((await open(ADMIN_HOME_PATH, adminCookie)).body, gameId);
+    // **新しい順に並ぶ**（2 件目が先）。
+    expect(fieldOf(reportOf(row, 0), '題名')).toContain(line('通報の時点', '中間の題名'));
+    expect(fieldOf(reportOf(row, 1), '題名')).toContain(line('通報の時点', '最初の題名'));
+    expect(fieldOf(reportOf(row, 1), '題名')).toContain(line('いま', '最後の題名'));
+  });
+
+  it('変更が 1 件も無ければ、いまの値を通報の時点の値として出し、変わっていないと書く（題名・説明）', async () => {
+    // **題名と説明は、履歴を足す前にも変える経路が無かった**（`src/admin/report-evidence.ts` の
+    // 冒頭）ので、変更が無ければいまの値でよい。
+    const gameId = await insertGame(REVIEW_QUEUED, '変えていない題名');
+    await insertReport(gameId, 1_700_002_000);
+
+    const report = reportOf(rowOf((await open(ADMIN_HOME_PATH, adminCookie)).body, gameId));
+    expect(fieldOf(report, '題名')).toContain('<span class="gf-admin-evidence-mark">変わっていません</span>');
+    expect(fieldOf(report, '題名')).toContain(line('通報の時点', '変えていない題名'));
+    // 説明は空（書いていない）。**空を「値が無い」と取り違えない**ように「（空）」と書く。
+    expect(fieldOf(report, '説明')).toContain('変わっていません');
+    expect(fieldOf(report, '説明')).toContain(
+      '<span class="gf-admin-evidence-label">通報の時点</span> <span class="gf-admin-evidence-none">（空）</span>',
+    );
+  });
+
+  it('通報のあとに説明を書き換えた作品で、通報の時点の説明が出る', async () => {
+    // **#405 の acceptance の 2 行目。**
+    const gameId = await insertGame(REVIEW_QUEUED, '説明のある作品');
+    expect(await describeGame(env, gameId, users.author, '通報された説明\n2 行目', 1_700_001_000)).toMatchObject({
+      ok: true,
+    });
+    await insertReport(gameId, 1_700_002_000);
+    expect(await describeGame(env, gameId, users.author, '穏当な説明', 1_700_003_000)).toMatchObject({
+      ok: true,
+      changed: true,
+    });
+
+    const description = fieldOf(
+      reportOf(rowOf((await open(ADMIN_HOME_PATH, adminCookie)).body, gameId)),
+      '説明',
+    );
+    expect(description).toContain('変わっています');
+    // **改行はそのまま残す**（CSS の `pre-wrap` で保つ）。
+    expect(description).toContain(line('通報の時点', '通報された説明\n2 行目'));
+    expect(description).toContain(line('いま', '穏当な説明'));
+  });
+
+  it('通報のあとに表示名を変えた作者で、通報の時点の表示名が出る', async () => {
+    // **#405 の acceptance の 3 行目。** 変更は本物の関数で行う（履歴を書く経路を通す）。
+    const author = await insertUser('運営を名乗った作者');
+    const gameId = await insertGame(REVIEW_QUEUED, 'なりすましの作品', author);
+    await insertReport(gameId, 1_700_002_000);
+    expect(await changeDisplayName(env.DB, author, '穏当な名前', 1_700_003_000)).toEqual({ ok: true });
+
+    const { body } = await open(ADMIN_HOME_PATH, adminCookie);
+    const name = fieldOf(reportOf(rowOf(body, gameId)), '作者名');
+    expect(name).toContain('変わっています');
+    expect(name).toContain(line('通報の時点', '運営を名乗った作者'));
+    expect(name).toContain(line('いま', '穏当な名前'));
+  });
+
+  it('表示名の履歴を書き始める前の通報では、いまの名前を通報の時点の名前として出さない', async () => {
+    // **#405 の acceptance の 4 行目。** 通報は履歴を書き始める前、名前の変更（記録されない）も
+    // その前にあったとすると、いまの名前は通報の時点の名前ではない。**見分けられないので、
+    // 記録が無いと書く。**
+    const author = await insertUser('記録前の作者');
+    const gameId = await insertGame(REVIEW_QUEUED, '記録前に通報された作品', author);
+    await insertReport(gameId, 1_700_002_000);
+    await setRecordedSince(1_700_002_500);
+
+    const { body } = await open(ADMIN_HOME_PATH, adminCookie);
+    const name = fieldOf(reportOf(rowOf(body, gameId)), '作者名');
+    expect(name).toContain('<span class="gf-admin-evidence-mark">記録がありません</span>');
+    expect(name).toContain('この時点の作者名の記録はありません');
+    expect(name).not.toContain(line('通報の時点', '記録前の作者'));
+    // **いまの値は出す**（並べる片方として。当時の値としてではない）。
+    expect(name).toContain(line('いま', '記録前の作者'));
+    // **題名は同じ通報でも復元する**（表示名だけの扱いである）。
+    expect(fieldOf(reportOf(rowOf(body, gameId)), '題名')).toContain(
+      line('通報の時点', '記録前に通報された作品'),
+    );
+  });
+
+  it('履歴を書き始めた時刻と同じ秒の通報も、記録が無い側に倒す', async () => {
+    const author = await insertUser('境界の作者');
+    const gameId = await insertGame(REVIEW_QUEUED, '境界の作品', author);
+    await insertReport(gameId, 1_700_002_000);
+    await setRecordedSince(1_700_002_000);
+
+    const name = fieldOf(reportOf(rowOf((await open(ADMIN_HOME_PATH, adminCookie)).body, gameId)), '作者名');
+    expect(name).toContain('この時点の作者名の記録はありません');
+
+    // 1 秒前へずらせば記録がある。
+    await setRecordedSince(1_700_001_999);
+    const recorded = fieldOf(
+      reportOf(rowOf((await open(ADMIN_HOME_PATH, adminCookie)).body, gameId)),
+      '作者名',
+    );
+    expect(recorded).toContain(line('通報の時点', '境界の作者'));
+  });
+
+  it('通報と同じ秒の変更は、どちらかに倒さず、前と後の両方を出して同じ秒だと書く', async () => {
+    const author = await insertUser('同じ秒の作者');
+    const gameId = await insertGame(REVIEW_QUEUED, '同じ秒の前の題名', author);
+    await insertReport(gameId, 1_700_002_000);
+    await renameGame(env, gameId, author, '同じ秒の後の題名', 1_700_002_000);
+    await changeDisplayName(env.DB, author, '同じ秒の後の名前', 1_700_002_000);
+
+    const report = reportOf(rowOf((await open(ADMIN_HOME_PATH, adminCookie)).body, gameId));
+    for (const [label, before, after] of [
+      ['題名', '同じ秒の前の題名', '同じ秒の後の題名'],
+      ['作者名', '同じ秒の作者', '同じ秒の後の名前'],
+    ] as const) {
+      const field = fieldOf(report, label);
+      expect(field, label).toContain(
+        '<span class="gf-admin-evidence-mark">通報と同じ秒に変更がありました</span>',
+      );
+      expect(field, label).toContain(line('同じ秒の変更の前', before));
+      expect(field, label).toContain(line('同じ秒の変更の後', after));
+      // **「通報の時点」として 1 つの値を出さない。**
+      expect(field, label).not.toContain('<span class="gf-admin-evidence-label">通報の時点</span>');
+    }
+  });
+
+  it('履歴が繋がっていないとき（記録されない変更を挟んだとき）も、規則の順と秒の境界を守る', async () => {
+    // **履歴が繋がっていれば「T 以前で最後の新しい値」と「T より後で最初の古い値」は同じ値**に
+    // なり、規則の順や `<=` / `<` の取り違えが画面に出ない。運営の直接 UPDATE（5.9）は履歴を
+    // 書かないので、実際には繋がらない履歴がありうる。**行を直接積んで、その形を作る。**
+    const gameId = await insertGame(REVIEW_QUEUED, 'いまの題名');
+    /**
+     * 改名の履歴を 1 行、時刻と値を決めて積む。
+     *
+     * @param oldTitle 旧い題名
+     * @param newTitle 新しい題名
+     * @param changedAt 時刻（UNIX 秒）
+     */
+    const history = async (oldTitle: string, newTitle: string, changedAt: number): Promise<void> => {
+      await env.DB.prepare(
+        `insert into ${TITLE_CHANGES_TABLE} (id, game_id, old_title, new_title, changed_at) values (?, ?, ?, ?, ?)`,
+      )
+        .bind(crypto.randomUUID(), gameId, oldTitle, newTitle, changedAt)
+        .run();
+    };
+    await history('A', 'B', 1_700_001_000);
+    await history('C', 'D', 1_700_002_000);
+    await history('E', 'いまの題名', 1_700_003_000);
+    // 1 件目: 2 つの変更の間（同じ秒の変更なし）。**規則の 1（B）を、規則の 2（E ではなく C）より先に使う。**
+    await insertReport(gameId, 1_700_001_500, reporters[0]);
+    // 2 件目: 2 つ目の変更と同じ秒。**前は B**（境界を 1 秒手前へずらした規則の 1——その秒より
+    // 前で最後の変更の新しい値を、その秒の変更の古い値 C より先に使う）、**後は D。**
+    await insertReport(gameId, 1_700_002_000, reporters[1]);
+
+    const row = rowOf((await open(ADMIN_HOME_PATH, adminCookie)).body, gameId);
+    const sameSecond = fieldOf(reportOf(row, 0), '題名');
+    expect(sameSecond).toContain(line('同じ秒の変更の前', 'B'));
+    expect(sameSecond).toContain(line('同じ秒の変更の後', 'D'));
+    expect(fieldOf(reportOf(row, 1), '題名')).toContain(line('通報の時点', 'B'));
+  });
+
+  it('通報の時点の値もエスケープして出す（利用者が書いた値である）', async () => {
+    const gameId = await insertGame(REVIEW_QUEUED, '<img src=x onerror=alert(1)>');
+    await insertReport(gameId, 1_700_002_000);
+    await renameGame(env, gameId, users.author, '改名後', 1_700_003_000);
+
+    const { body } = await open(ADMIN_HOME_PATH, adminCookie);
+    expect(body).not.toContain('<img src=x');
+    expect(fieldOf(reportOf(rowOf(body, gameId)), '題名')).toContain(
+      line('通報の時点', '&lt;img src=x onerror=alert(1)&gt;'),
+    );
+  });
+
+  it(`1 作品に出す通報は新しい順に ${REPORT_EVIDENCE_PER_GAME} 件までで、残りの件数を書く`, async () => {
+    const gameId = await insertGame(REVIEW_QUEUED, '通報の多い作品');
+    for (let index = 0; index < REPORT_EVIDENCE_PER_GAME + 2; index += 1) {
+      await insertReport(gameId, 1_700_002_000 + index, reporters[index]);
+    }
+
+    const row = rowOf((await open(ADMIN_HOME_PATH, adminCookie)).body, gameId);
+    expect(row.split('<li class="gf-admin-evidence-report">').length - 1).toBe(REPORT_EVIDENCE_PER_GAME);
+    expect(row).toContain(
+      `通報 ${REPORT_EVIDENCE_PER_GAME + 2} 件のうち、新しい ${REPORT_EVIDENCE_PER_GAME} 件の時点の値です（ほかに古い通報が 2 件あります）。`,
+    );
+  });
+
+  it('読み取りの本数は、通報の数に比例しない（通報ごとに問い合わせを発行しない）', async () => {
+    // **#405 の acceptance。** 通報が少ない画面と多い画面で、`prepare` の回数と batch の形を
+    // 突き合わせる。**すべての文が 1 つの batch に入り、本数が変わらない**ことを見る
+    // （batch の外で `.all()` / `.first()` を呼ぶ文があれば、`prepare` の回数が batch の本数を超える）。
+    /**
+     * 画面を開き、D1 の呼ばれ方を数える。
+     *
+     * @returns `prepare` の回数と、batch ごとの文の本数
+     */
+    const measure = async (): Promise<{ prepares: number; batches: number[] }> => {
+      let prepares = 0;
+      const batches: number[] = [];
+      const spied = new Proxy(env.DB, {
+        get(target, property) {
+          if (property === 'prepare') {
+            return (sql: string) => {
+              prepares += 1;
+              return target.prepare(sql);
+            };
+          }
+          if (property === 'batch') {
+            return (statements: D1PreparedStatement[]) => {
+              batches.push(statements.length);
+              return target.batch(statements);
+            };
+          }
+          const value = Reflect.get(target, property) as unknown;
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      const response = await handleAdminRequest(
+        new Request(`${ADMIN_ORIGIN}${ADMIN_HOME_PATH}`, { headers: { cookie: adminCookie } }),
+        { ...testEnv(), DB: spied } as Env,
+      );
+      expect(response.status).toBe(200);
+      return { prepares, batches };
+    };
+
+    const games = [
+      await insertGame(REVIEW_QUEUED, '比べる作品 1'),
+      await insertGame(REVIEW_QUEUED, '比べる作品 2'),
+    ];
+    const cleared = await insertGame(REVIEW_CLEARED, '比べる作品 3');
+    await insertReport(games[0]!, 1_700_002_000, reporters[0]);
+    const few = await measure();
+
+    // 通報を 1 件から 15 件へ増やす（3 つの節にまたがる）。
+    for (const gameId of [...games, cleared]) {
+      for (let index = 1; index < REPORT_EVIDENCE_PER_GAME + 1; index += 1) {
+        await insertReport(gameId, 1_700_002_000 + index, reporters[index]);
+      }
+    }
+    const many = await measure();
+
+    // **認可の読み取り（`handleAdminRequest` が batch の手前で行う）も同じ本数である**ので、
+    // 回数そのものを比べてよい。
+    expect(many).toEqual(few);
+    expect(many.batches).toEqual([6]);
+    // 増やした通報が実際に画面に出ている（読み取りを減らして「出していない」ではない）。
+    const body = (await open(ADMIN_HOME_PATH, adminCookie)).body;
+    expect(rowOf(body, cleared).split('<li class="gf-admin-evidence-report">').length - 1).toBe(
+      REPORT_EVIDENCE_PER_GAME,
+    );
+  });
+
+  it('表示名の履歴が読めなくても、一覧の 3 節は出し、通報の時点の値だけを読めなかったと書く', async () => {
+    // **#405 で足した表の適用漏れで、#367 / #394 から動いていた一覧を巻き添えにしない。**
+    const queued = await insertGame(REVIEW_QUEUED, '審査待ちの作品');
+    await insertReport(queued, 1_700_002_000);
+    const reported = await insertReportedAfterClear();
+    await env.DB.prepare(`alter table ${DISPLAY_NAME_CHANGES_TABLE} rename to ${DISPLAY_NAME_CHANGES_TABLE}_hidden`).run();
+    try {
+      const { status, body } = await open(ADMIN_HOME_PATH, adminCookie);
+      // **成功したかのようにログへ残さない。**
+      expect(status).toBe(500);
+      expect(body).toContain('一覧の一部を読み込めませんでした。下の一覧は不完全です。');
+      expect(sectionOf(body, 'queued')).toContain(queued);
+      expect(sectionOf(body, 'reported')).toContain(reported);
+      expect(body).not.toContain('（読み込めませんでした）</h2>');
+      // **「通報が無い」と書かない**（読めていないだけである）。
+      expect(rowOf(body, queued)).toContain('通報の時点の題名・説明・作者名を読み込めませんでした');
+      expect(rowOf(body, queued)).not.toContain('この作品の通報は見つかりませんでした。');
+    } finally {
+      await env.DB.prepare(`alter table ${DISPLAY_NAME_CHANGES_TABLE}_hidden rename to ${DISPLAY_NAME_CHANGES_TABLE}`).run();
+    }
+  });
+
+  it('権限が無ければ 404 のままで、通報の時点の値は本文に 1 バイトも出ない', async () => {
+    const gameId = await insertGame(REVIEW_QUEUED, '改名前の漏れてはいけない題名');
+    await insertReport(gameId, 1_700_002_000);
+    await renameGame(env, gameId, users.author, '改名後の漏れてはいけない題名', 1_700_003_000);
+    expect(ADMIN_OPEN_ROUTES.some((route) => route.path === ADMIN_HOME_PATH)).toBe(false);
+
+    for (const cookie of [undefined, await cookieFor(users.other)]) {
+      const { status, body } = await open(ADMIN_HOME_PATH, cookie);
+      expect(status).toBe(404);
+      expect(body).not.toContain('漏れてはいけない題名');
+      expect(body).not.toContain('gf-admin-evidence');
+    }
+  });
 });
 
 describe('審査の往復（口を通す。2.4.3）', () => {

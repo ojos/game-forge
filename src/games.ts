@@ -1332,7 +1332,11 @@ export const DESCRIPTION_CHANGE_INTERVAL_SECONDS = 60;
  * あるのは #366 の条件（`REVIEW_RENAMED_SQL`。#394 で `REVIEW_REPORTED_AFTER_CLEAR_SQL` へ
  * 置き換わった）が引いていた名残で（循環参照を避けた）、この表を引く審査の条件は無い
  * （説明の変更は、改名と同じ {@link reviewStateAfterAuthorEditSql} で審査状態を決める。#404）。
- * **引く側ができたら、その側へ移すこと。**
+ *
+ * **#405 で引く側ができた**（審査キューが通報の時点の説明を復元する。`src/admin/report-evidence.ts`）
+ * **が、ここに残す。** 引く側は admin の画面のモジュールで、このモジュールがそこから import
+ * すると、**オーケストレータの束（このモジュールが入る）に admin のコードが載る。**
+ * admin の側がここから import する向きなら、束に余計なものは入らない。
  */
 export const DESCRIPTION_CHANGES_TABLE = 'description_changes';
 

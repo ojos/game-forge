@@ -181,3 +181,83 @@
  * 知らせ（操作の結果）。**`app.css` の `.error` と `.gf-notice` をそのまま使う**ので、
  * ここには何も置かない——置くと、同じ意味の見た目が 2 か所で決まる。
  */
+
+/* ==========================================================================
+   通報の時点の値（審査キューの行の中。#405）
+   ========================================================================== */
+
+/*
+ * **行の中に、通報ごとの小さな塊を積む。** 行そのもの（`.gf-admin-row`）は枠で囲ってあり、
+ * その中でさらに枠を重ねると境目が読めなくなる。**左の線 1 本で「この行に属する通報」を
+ * 表す**（色のトークンは足さない。冒頭）。
+ */
+.gf-admin-evidence {
+  margin: 0 0 var(--gf-gap-2);
+}
+
+.gf-admin-evidence-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gf-admin-evidence-report {
+  margin: 0 0 var(--gf-gap-2);
+  padding-left: var(--gf-gap-2);
+  border-left: 2px solid var(--gf-rule);
+}
+
+.gf-admin-evidence-note,
+.gf-admin-evidence-when {
+  margin: 0 0 var(--gf-gap-1);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-admin-evidence-fields {
+  margin: 0;
+}
+
+.gf-admin-evidence-fields dt {
+  margin: var(--gf-gap-1) 0 0;
+  font-weight: 700;
+}
+
+.gf-admin-evidence-fields dd {
+  margin: 0;
+}
+
+.gf-admin-evidence-fields dd p {
+  margin: 0;
+}
+
+/*
+ * 「変わっています」「記録がありません」などの印。**文字で出し、色に頼らない**
+ * （`.gf-admin-badge` と同じ考え方で、線と太さだけで目立たせる）。
+ */
+.gf-admin-evidence-mark {
+  display: inline-block;
+  margin-left: 0.5em;
+  padding: 0 0.4em;
+  border: 1px solid var(--gf-ink);
+  border-radius: var(--gf-radius);
+  font-size: var(--gf-text-small);
+}
+
+.gf-admin-evidence-label {
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+/*
+ * 利用者が書いた値。**説明の改行を保ち、長い語は折り返す**（390px の版面からはみ出さない。
+ * `<br>` へ置き換えずに CSS で保つ理由は `src/admin/review.ts` の `evidenceLine`）。
+ */
+.gf-admin-evidence-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.gf-admin-evidence-none {
+  color: var(--gf-ink-soft);
+}

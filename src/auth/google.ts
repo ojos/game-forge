@@ -29,6 +29,7 @@ import { normalizeInviteCode } from '../invite-code.js';
 import { HOME_PATH, SIGNUP_PATH } from '../paths.js';
 import type { InviteRejection } from '../invites.js';
 import { consumeInvite } from '../invites.js';
+import { displayNameHistoryInsert } from '../display-name-changes.js';
 
 /** 認可エンドポイント（ここへ利用者をリダイレクトする）。 */
 const GOOGLE_AUTHORIZE_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -669,7 +670,7 @@ async function resolveUser(
   inviteCode: string | null,
   nowSeconds: number,
 ): Promise<UserResolution> {
-  const existing = await refreshExistingUser(db, identity);
+  const existing = await refreshExistingUser(db, identity, nowSeconds);
   if (existing !== null) {
     // 既存利用者は招待を消費しない。再ログインのたびに枠が減ると、招待が
     // 「1 人を呼ぶ権利」ではなく「1 回ログインする権利」になってしまう。
@@ -738,25 +739,59 @@ async function resolveUser(
  * `google_sub` で見る）。`users.email` は招待や改造通知（5.5）の宛先であり、古いまま
  * 残すと届かなくなる。
  *
+ * ## Google の名前へ追随して名前が変わったら、履歴を積む（#405）
+ *
+ * **この経路の変更も `display_name_changes`（`migrations/0030`）へ残す。** なりすましの
+ * 証拠としては、`/account` で変えても Google アカウントの名前を変えてログインし直しても
+ * 意味が同じである——書かない経路を 1 つ残すと、そちらが証拠を消す道になる。
+ *
+ * **名前が実際に変わったログインでだけ積む。** この UPDATE は名前の変わらないログインでも
+ * 毎回走るので、毎回積むとログインのたびに 1 行増える（3.6）。履歴の文と UPDATE は 1 つの
+ * `D1.batch`（1 つのトランザクション）で、**履歴の条件は UPDATE の `case` が名前を書き換える
+ * 条件と同じ綴り**にしてある（`src/display-name-changes.ts`）。同時に走った `/account` の
+ * 変更と交差しても、2 文は同じ時点の行を見る。
+ *
+ * **マイグレーションの適用漏れでログインが止まる形になる**（履歴の表が無いと batch ごと落ちる）。
+ * **本番へ配る前に未適用のマイグレーションを CI が止める**（`scripts/check-migrations-applied.sh`）
+ * ので、それを前提にする——止まらずに配られた場合に履歴を書かずにログインを通すと、
+ * 記録されない変更ができ、通報の時点の名前の復元が黙って誤る。
+ *
  * @param db D1 バインディング
  * @param identity ID トークンから取り出した同一性
+ * @param nowSeconds 現在時刻（UNIX 秒。履歴の時刻に使う）
  * @returns 既存行、または存在しなければ null
  */
 async function refreshExistingUser(
   db: D1Database,
   identity: GoogleIdentity,
+  nowSeconds: number,
 ): Promise<{ readonly id: string; readonly banned: boolean } | null> {
-  const row = await db
-    .prepare(
-      `update users
-          set email = ?,
-              display_name = case when display_name_set_at is null then ? else display_name end
-        where google_sub = ?
-        returning id, banned_at`,
-    )
-    .bind(identity.email, identity.displayName, identity.sub)
-    .first<{ id: string; banned_at: number | null }>();
+  const [history, refreshed] = await db.batch<{ id: string; banned_at: number | null }>([
+    // **名前が実際に変わるときだけ、履歴を先に積む**（#405。`src/display-name-changes.ts`）。
+    // 条件は下の UPDATE の `case` が名前を書き換える条件と同じで、**利用者が名前を決めて
+    // いれば 0 行、Google の名前が変わっていなければ 0 行**になる。
+    displayNameHistoryInsert(db, {
+      where: 'google_sub = ? and display_name_set_at is null',
+      bindings: [identity.sub],
+      newName: identity.displayName,
+      changedAt: nowSeconds,
+    }),
+    db
+      .prepare(
+        `update users
+            set email = ?,
+                display_name = case when display_name_set_at is null then ? else display_name end
+          where google_sub = ?
+          returning id, banned_at`,
+      )
+      .bind(identity.email, identity.displayName, identity.sub),
+  ]);
 
+  const row = refreshed?.results[0] ?? null;
+  if (row === null && (history?.meta.changes ?? 0) > 0) {
+    // **構造上ありえない**（同じ batch で同じ行を見る）。`src/account.ts` と同じ扱い。
+    console.error('[auth] 行が無いのに表示名の履歴が入りました（batch の意味が変わっています）');
+  }
   return row === null ? null : { id: row.id, banned: row.banned_at !== null };
 }
 

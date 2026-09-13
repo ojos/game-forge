@@ -39,6 +39,15 @@ export const ACCOUNT_PATH = '/account';
  */
 export const ACCOUNT_DETAILS_PATH = '/account/details';
 
+/**
+ * 登録情報の画面の、メール配信のタブ（#384 / 5.11。ログイン必須）。
+ *
+ * 改造通知の受け取りの設定と、**設定にかかわらず送る種別の一覧**を出す。
+ * **`/account` の下にパスで置く**（{@link ACCOUNT_DETAILS_PATH} と同じ理由。外枠の検査と幅の検査に
+ * 何も書き足さずに乗る）。
+ */
+export const ACCOUNT_MAIL_PATH = '/account/mail';
+
 /** 登録情報の画面のタブ 1 つ。 */
 export interface AccountTab {
   /** タブの行き先（経路表の GET の画面）。 */
@@ -51,12 +60,13 @@ export interface AccountTab {
  * 登録情報の画面のタブ（#379 / 5.10。並び順どおりに出す）。
  *
  * **タブを足すときは、ここへ 1 行と、`src/account.ts` の経路表へ GET の画面を 1 本足す**
- * （メール配信のタブは #384 / 5.11 が足す）。行き先がすべて経路表の画面であることは
+ * （メール配信のタブは #384 / 5.11 が足した）。行き先がすべて経路表の画面であることは
  * `test/account.test.ts` が照合するので、片方だけを足すと赤くなる。
  */
 export const ACCOUNT_TABS: readonly AccountTab[] = [
   { path: ACCOUNT_PATH, label: 'プロフィール' },
   { path: ACCOUNT_DETAILS_PATH, label: 'アカウント' },
+  { path: ACCOUNT_MAIL_PATH, label: 'メール配信' },
 ];
 
 /**
@@ -76,3 +86,25 @@ export const ACCOUNT_DISPLAY_NAME_PATH = '/api/account/display-name';
  * 気づきにくい）。
  */
 export const DISPLAY_NAME_FIELD = 'display_name';
+
+/**
+ * メール配信の設定の保存（API。#384 / 5.11）。
+ *
+ * **画面のパスと分ける**（{@link ACCOUNT_DISPLAY_NAME_PATH} と同じ判断）。
+ */
+export const ACCOUNT_MAIL_API_PATH = '/api/account/mail';
+
+/**
+ * フォームの項目名（改造通知を受け取るか）。
+ *
+ * **値は {@link FORK_NOTICE_RECEIVE} か {@link FORK_NOTICE_MUTE} の 2 つだけを受ける。**
+ * チェックボックスにしない——外したチェックボックスは項目ごと送られず、「受け取らない」と
+ * 「項目の無い壊れた要求」を見分けられない。
+ */
+export const FORK_NOTICE_FIELD = 'fork_notice';
+
+/** {@link FORK_NOTICE_FIELD} の値（受け取る）。 */
+export const FORK_NOTICE_RECEIVE = 'receive';
+
+/** {@link FORK_NOTICE_FIELD} の値（受け取らない）。 */
+export const FORK_NOTICE_MUTE = 'mute';

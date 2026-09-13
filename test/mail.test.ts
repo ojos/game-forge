@@ -9,6 +9,7 @@ import {
   sendMail,
 } from '../src/mail/resend.js';
 import { forkNoticeMessage, notifyForkPublished } from '../src/mail/fork-notice.js';
+import { notifyGenerationFinished } from '../src/mail/generation-notice.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -517,5 +518,94 @@ describe('1 フォークにつき 1 通（#36 acceptance 1）', () => {
       }),
     ).toBe('already-sent');
     expect(retried).toHaveLength(0);
+  });
+});
+
+/**
+ * 利用者を「改造通知を受け取らない」設定にする（`/account/mail` で止めたのと同じ列。#384）。
+ *
+ * @param userId 利用者の id
+ * @param at 止めた時刻（UNIX 秒）
+ */
+async function muteForkNotice(userId: string, at = 1): Promise<void> {
+  await env.DB.prepare('update users set fork_notice_muted_at = ? where id = ?').bind(at, userId).run();
+}
+
+describe('メール配信の設定（5.11 / #384）', () => {
+  beforeAll(async () => {
+    await applySchema();
+  });
+
+  it('既定は受け取る——設定の列に触れていない利用者へは、改造通知が送られる', async () => {
+    // **既存の利用者の挙動を黙って変えない**（5.11）。列を指定せずに作った利用者は NULL で、
+    // NULL は「受け取る」である。
+    const parentAuthor = await seedNoticeUser('prefs-default-parent');
+    const forkAuthor = await seedNoticeUser('prefs-default-forker');
+    await seedNoticeGame('fn-prefs-default-parent', parentAuthor, null);
+    await seedNoticeGame('fn-prefs-default-child', forkAuthor, 'fn-prefs-default-parent');
+    const muted = await env.DB.prepare('select fork_notice_muted_at from users where id = ?')
+      .bind(parentAuthor)
+      .first<{ fork_notice_muted_at: number | null }>();
+    expect(muted).toEqual({ fork_notice_muted_at: null });
+
+    const { requests, fetcher } = recording();
+    expect(
+      await notifyForkPublished(forkNoticeEnv(), 'fn-prefs-default-child', { fetcher, send: sendMail }),
+    ).toBe('sent');
+    expect(requests).toHaveLength(1);
+  });
+
+  it('受け取らない設定の作者へは、改造通知を送らず、握りもしない', async () => {
+    const parentAuthor = await seedNoticeUser('prefs-muted-parent');
+    const forkAuthor = await seedNoticeUser('prefs-muted-forker');
+    await muteForkNotice(parentAuthor);
+    await seedNoticeGame('fn-prefs-muted-parent', parentAuthor, null);
+    await seedNoticeGame('fn-prefs-muted-child', forkAuthor, 'fn-prefs-muted-parent');
+
+    const { requests, fetcher } = recording();
+    expect(
+      await notifyForkPublished(forkNoticeEnv(), 'fn-prefs-muted-child', { fetcher, send: sendMail }),
+    ).toBe('muted');
+    expect(requests).toHaveLength(0);
+    // **握らない**（`fork_notices.outcome` の CHECK に値を足さない。自分自身のフォークと同じ扱い）。
+    expect(await readForkNotice('fn-prefs-muted-child')).toBeNull();
+  });
+
+  it('止めるのは受け取らない設定の本人宛てだけで、改造した側の設定は効かない', async () => {
+    // **判定を読むのは宛先（親の作者）の行である。** 改造した人の行を読み違えると、止めていない
+    // 作者への通知が消える。
+    const parentAuthor = await seedNoticeUser('prefs-other-parent');
+    const forkAuthor = await seedNoticeUser('prefs-other-forker');
+    await muteForkNotice(forkAuthor);
+    await seedNoticeGame('fn-prefs-other-parent', parentAuthor, null);
+    await seedNoticeGame('fn-prefs-other-child', forkAuthor, 'fn-prefs-other-parent');
+
+    const { requests, fetcher } = recording();
+    expect(
+      await notifyForkPublished(forkNoticeEnv(), 'fn-prefs-other-child', { fetcher, send: sendMail }),
+    ).toBe('sent');
+    expect(requests).toHaveLength(1);
+  });
+
+  it('止められない種別（生成の完了・失敗）は、受け取らない設定の利用者にも送られる', async () => {
+    // **明示した以上、そのとおりに動くこと**（5.11）。`src/mail/kinds.ts` で止められないと
+    // した種別のうち、送る実体があるのは生成の完了だけである（`test/mail-kinds.test.ts` が固定）。
+    const author = await seedNoticeUser('prefs-generation');
+    await muteForkNotice(author);
+    await seedNoticeGame('fn-prefs-generation', author, null);
+
+    for (const outcome of [{ kind: 'ready' }, { kind: 'failed', errorCode: 'compile' }] as const) {
+      const { requests, fetcher } = recording();
+      expect(
+        await notifyGenerationFinished(forkNoticeEnv(), 'fn-prefs-generation', outcome, {
+          fetcher,
+          send: sendMail,
+        }),
+        outcome.kind,
+      ).toBe('sent');
+      expect(requests, outcome.kind).toHaveLength(1);
+      const body = (await requests[0]!.json()) as { to: string[] };
+      expect(body.to).toEqual([`${author}@example.com`]);
+    }
   });
 });

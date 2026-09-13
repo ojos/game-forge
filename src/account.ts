@@ -1,7 +1,9 @@
 /**
- * 登録情報の画面（`/account` と `/account/details`）と、表示名の変更
- * （`POST /api/account/display-name`）・自己紹介と外部リンクの保存（`POST /api/account/profile`）。
- * **仕様 5.9 の実体であり、5.10 の自己紹介と外部リンクの口である**（#341 / M9-6 / #379 / M12-11）。
+ * 登録情報の画面（`/account` と `/account/details` と `/account/mail`）と、表示名の変更
+ * （`POST /api/account/display-name`）・自己紹介と外部リンクの保存（`POST /api/account/profile`）・
+ * メール配信の設定の保存（`POST /api/account/mail`）。
+ * **仕様 5.9 の実体であり、5.10 の自己紹介と外部リンクの口であり、5.11 のメール配信設定の口である**
+ * （#341 / M9-6 / #379 / M12-11 / #384 / M12-16）。
  * 自己紹介と外部リンクの形の検査と書き込みは `src/profile.ts` が持つ。
  *
  * ## なぜ表示名を変えられるようにするのか
@@ -67,7 +69,7 @@
  * `ACCOUNT_TABS` が持つ。**表示名をプロフィールの側に置く**——作者ページに出る値をまとめ、
  * 本人にしか出ない値（メールアドレス）を別のタブへ分けた。
  *
- * **タブを足す人（メール配信。#384 / 5.11）がすること**は 3 つである。
+ * **タブを足す人がすること**は 3 つである（メール配信のタブ。#384 / 5.11 がこの手順で足した）。
  *
  *   1. `src/account-paths.ts` にパスを足し、`ACCOUNT_TABS` へ 1 行足す
  *   2. この経路表（{@link createAccountRoutes}）へ GET の画面を 1 本足す（`resolveSessionUser` を
@@ -85,19 +87,40 @@
  * 全部打ち直させないためである。**送られた値は本文へ `escapeHtml` を通して戻すだけで、
  * URL にもログにも載せない**——表示名が query を避けた理由（履歴・ログ・反射）はこの形でも
  * 守られる。
+ *
+ * ## メール配信のタブ（#384 / 5.11）
+ *
+ * **改造通知を受け取るかどうかを 1 つ選び、設定にかかわらず送る種別を並べる。**
+ *
+ * - **既定は受け取る**（`users.fork_notice_muted_at` が NULL）。既存の利用者の挙動を変えない
+ * - **止められない種別の一覧は `src/mail/kinds.ts` から出す**（画面に書き写さない。種別を足した日に
+ *   画面だけが古くならない）
+ * - **この画面は設定を書くだけで、送らない判定は送信の口（`src/mail/fork-notice.ts`）が持つ**
+ *   ——判定を 2 か所に持たない（5.11）
+ * - **書き込みは WHERE で絞る**（{@link changeForkNoticePreference}）。同じ値の入れ直しは 0 行で、
+ *   **受け取る設定へ戻すのは、止めてから {@link FORK_NOTICE_UNMUTE_INTERVAL_SECONDS} 秒以上
+ *   空いたときだけ**（3.6。1 列で連打を絞る形。マイグレーションの fork_notice_mute の本文）
+ * - **素のフォームと POST-redirect-GET で組む**（JavaScript を要求しない。結果は `/account/mail` の
+ *   query に固定の分類名だけで運ぶ）
  */
 import {
   ACCOUNT_DETAILS_PATH,
   ACCOUNT_DISPLAY_NAME_PATH,
+  ACCOUNT_MAIL_API_PATH,
+  ACCOUNT_MAIL_PATH,
   ACCOUNT_PATH,
   ACCOUNT_TABS,
   DISPLAY_NAME_FIELD,
+  FORK_NOTICE_FIELD,
+  FORK_NOTICE_MUTE,
+  FORK_NOTICE_RECEIVE,
 } from './account-paths.js';
 import { loginRequiredRedirect } from './auth/google.js';
 import { displayNameHistoryInsert } from './display-name-changes.js';
 import { escapeHtml, siteHead, siteViewerAt } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { siteFooter } from './legal.js';
+import { FORK_NOTICE_KIND_LABEL, MAIL_KINDS, unmutableUserMailKinds } from './mail/kinds.js';
 import type { ProfileFormView, ProfileRejection } from './profile.js';
 import {
   PROFILE_REASON_MESSAGES,
@@ -868,9 +891,261 @@ async function handleProfileChange(
   }
 }
 
+/**
+ * 改造通知を受け取らない設定にしてから、受け取る設定へ戻せるようになるまでの秒数（#384 / 3.6）。
+ *
+ * **連打で D1 の書き込みを増やさないための間隔である**（表示名の
+ * {@link DISPLAY_NAME_CHANGE_INTERVAL_SECONDS} と同じ理由）。**1 列（止めた時刻）で絞るので、
+ * 間隔を置けるのは戻す側だけである**——止める・戻すの 1 往復が 60 秒に 1 回へ絞られ、1 人が
+ * 1 日張り付いても 2,880 行に収まる（無料枠 10 万行/日 の 2.9%）。
+ */
+export const FORK_NOTICE_UNMUTE_INTERVAL_SECONDS = 60;
+
+/** メール配信の設定の書き込みの結果。 */
+export type ForkNoticePreferenceChange =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'too-soon' };
+
+/**
+ * 改造通知を受け取るかどうかを書き込む（#384 / 5.11）。
+ *
+ * ## 断った要求と、同じ値の入れ直しは書き込まない
+ *
+ * **判定を `WHERE` に置く**（{@link changeDisplayName} と同じ理由）。
+ *
+ * - **止める**: `fork_notice_muted_at is null` の行だけを書く（既に止めていれば 0 行）
+ * - **戻す**: `fork_notice_muted_at <= 現在 - 60 秒` の行だけを書く（受け取っていれば NULL で
+ *   当たらず 0 行、止めたばかりなら 0 行）
+ *
+ * **0 行だったときだけ、理由を分けるために 1 回読む。** 「戻したいのに、止めたままの行がある」なら
+ * 間隔が足りない。それ以外は、望んだ状態が既にそうなっている（成功として返す）。読みと書きの間に
+ * 別の要求が入っても、**書き込みの判定は WHERE が済ませてある**ので、ずれるのは知らせの文言だけである。
+ *
+ * **BAN の検査はここに無い。** 呼び出し側（{@link handleForkNoticePreference}）が
+ * `resolveSessionUser` を通した後にしか呼ばない。
+ *
+ * @param db D1 バインディング
+ * @param userId 利用者の id
+ * @param receive 受け取るなら true
+ * @param nowSeconds 現在時刻（UNIX 秒）
+ * @returns 書いた（または既にそうなっていた）か、間隔が足りずに断ったか
+ */
+export async function changeForkNoticePreference(
+  db: D1Database,
+  userId: string,
+  receive: boolean,
+  nowSeconds: number,
+): Promise<ForkNoticePreferenceChange> {
+  const result = receive
+    ? await db
+        .prepare(
+          `update users set fork_notice_muted_at = null
+            where id = ? and fork_notice_muted_at is not null and fork_notice_muted_at <= ?`,
+        )
+        .bind(userId, nowSeconds - FORK_NOTICE_UNMUTE_INTERVAL_SECONDS)
+        .run()
+    : await db
+        .prepare(
+          'update users set fork_notice_muted_at = ? where id = ? and fork_notice_muted_at is null',
+        )
+        .bind(nowSeconds, userId)
+        .run();
+  if ((result.meta.changes ?? 0) > 0 || !receive) {
+    // 止める側の 0 行は「既に止めている」だけである（止める側に間隔は無い）。
+    return { ok: true };
+  }
+  const row = await db
+    .prepare('select fork_notice_muted_at from users where id = ?')
+    .bind(userId)
+    .first<{ fork_notice_muted_at: number | null }>();
+  return row !== null && row.fork_notice_muted_at !== null
+    ? { ok: false, reason: 'too-soon' }
+    : { ok: true };
+}
+
+/**
+ * メール配信のタブへ運ぶ分類（`/account/mail?reason=`）。
+ *
+ * **query に載るのはこの綴りだけである**（{@link AccountReason} と同じ方針。値そのものは出さない）。
+ */
+export type MailPreferenceReason = 'too-soon' | 'invalid-request' | 'failed';
+
+/** 分類ごとの文言（メール配信のタブ）。 */
+const MAIL_REASON_MESSAGES: Readonly<Record<MailPreferenceReason, string>> = {
+  // **待てば通ることを言う**（表示名の `too-soon` と同じ理由）。
+  'too-soon': `受け取らない設定にしてから ${FORK_NOTICE_UNMUTE_INTERVAL_SECONDS} 秒のあいだは、受け取る設定に戻せません。少し待ってからもう一度お試しください。`,
+  'invalid-request': '要求の形が正しくありません。画面を開き直してからもう一度お試しください。',
+  failed: 'メール配信の設定を保存できませんでした。時間をおいてもう一度お試しください。',
+};
+
+/** 未知の分類を受けたときの文言（メール配信のタブ）。 */
+const DEFAULT_MAIL_REASON_MESSAGE = 'メール配信の設定を保存できませんでした。';
+
+/** メール配信のタブ（`/account/mail`）を組み立てるのに必要なものだけを集めた入力。 */
+export interface AccountMailView {
+  /** 改造通知を受け取るか（`users.fork_notice_muted_at` が NULL なら true）。 */
+  readonly receiveForkNotice: boolean;
+  /** 上部に出す知らせ（無ければ null）。 */
+  readonly notice: { readonly kind: 'error'; readonly message: string } | { readonly kind: 'saved' } | null;
+}
+
+/**
+ * 登録情報の画面（メール配信のタブ。`/account/mail`）を組み立てる（#384 / 5.11）。
+ *
+ * **種別の名前と補足は `src/mail/kinds.ts` から出す**（冒頭の「メール配信のタブ」）。どれも
+ * コードに置いた固定の文字列だが、`escapeHtml` を通しておく（出どころが変わっても安全側が既定になる）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+export function renderAccountMailPage(view: AccountMailView): string {
+  const notice =
+    view.notice === null
+      ? ''
+      : view.notice.kind === 'saved'
+        ? '<p class="gf-notice" role="status">メール配信の設定を保存しました。</p>'
+        : `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
+
+  const forkKind = MAIL_KINDS.find((kind) => kind.label === FORK_NOTICE_KIND_LABEL);
+  const forkName = forkKind?.name ?? '改造のお知らせ';
+  const forkNote = forkKind?.note ?? '';
+  const choice = (value: string, label: string, checked: boolean): string =>
+    `<label><input type="radio" name="${FORK_NOTICE_FIELD}" value="${value}"${checked ? ' checked' : ''}> ${label}</label>`;
+
+  const unmutable = unmutableUserMailKinds()
+    .map((kind) => `  <li><strong>${escapeHtml(kind.name)}</strong>: ${escapeHtml(kind.note)}</li>`)
+    .join('\n');
+
+  return accountShell({
+    path: ACCOUNT_MAIL_PATH,
+    title: 'メール配信 - Game Forge',
+    body: `${notice}
+<form method="post" action="${ACCOUNT_MAIL_API_PATH}">
+  <fieldset class="gf-mail-choice">
+    <legend>${escapeHtml(forkName)}</legend>
+    <p>${escapeHtml(forkNote)}</p>
+    ${choice(FORK_NOTICE_RECEIVE, '受け取る', view.receiveForkNotice)}
+    ${choice(FORK_NOTICE_MUTE, '受け取らない', !view.receiveForkNotice)}
+  </fieldset>
+  <p>受け取らない設定にしていたあいだに公開された改造は、あとで受け取る設定に戻してもお知らせしません。</p>
+  <button type="submit">保存する</button>
+</form>
+<p>お知らせは、<a href="${ACCOUNT_DETAILS_PATH}">アカウント</a>のタブに出ているメールアドレスへ送ります。</p>
+<h2>設定にかかわらず送るメール</h2>
+<p>次のメールは、上の設定にかかわらず送ります。</p>
+<ul class="gf-mail-kinds">
+${unmutable}
+</ul>`,
+  });
+}
+
+/**
+ * 登録情報の画面（メール配信のタブ）を返す（#384）。
+ *
+ * **引くのは本人の行だけである**（{@link showAccount} と同じ）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function showAccountMail(request: Request, env: Env): Promise<Response> {
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return await loginRequiredRedirect(env, ACCOUNT_MAIL_PATH);
+  }
+  const row = await env.DB.prepare('select fork_notice_muted_at from users where id = ?')
+    .bind(session.userId)
+    .first<{ fork_notice_muted_at: number | null }>();
+  if (row === null) {
+    return await loginRequiredRedirect(env, ACCOUNT_MAIL_PATH);
+  }
+
+  const params = new URL(request.url).searchParams;
+  const reason = params.get('reason');
+  const notice: AccountMailView['notice'] =
+    reason !== null
+      ? {
+          kind: 'error',
+          message: Object.hasOwn(MAIL_REASON_MESSAGES, reason)
+            ? MAIL_REASON_MESSAGES[reason as MailPreferenceReason]
+            : DEFAULT_MAIL_REASON_MESSAGE,
+        }
+      : params.get(SAVED_QUERY) !== null
+        ? { kind: 'saved' }
+        : null;
+
+  return html(
+    renderAccountMailPage({ receiveForkNotice: row.fork_notice_muted_at === null, notice }),
+    reason === null ? 200 : 400,
+  );
+}
+
+/**
+ * メール配信の設定を保存する（`POST /api/account/mail`。#384 / 5.11）。**終わったら必ず
+ * `/account/mail` へ戻す**（POST-redirect-GET）。
+ *
+ * **受けるのは素のフォームで、値は「受け取る」「受け取らない」の 2 つだけである。** 項目が無い・
+ * 同じ項目が重なっている・知らない値は `invalid-request` で断り、D1 に触れない（「知らない値は受け取らない」と読むと、
+ * 壊れた要求で通知が黙って止まる）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param now 現在時刻（UNIX 秒）を返す関数
+ * @returns レスポンス
+ */
+async function handleForkNoticePreference(
+  request: Request,
+  env: Env,
+  now: () => number,
+): Promise<Response> {
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return await loginRequiredRedirect(env, ACCOUNT_MAIL_PATH);
+  }
+
+  const mediaType = (request.headers.get('content-type') ?? '')
+    .split(';')[0]!
+    .trim()
+    .toLowerCase();
+  if (mediaType !== FORM_MEDIA_TYPE) {
+    return seeOther(`${ACCOUNT_MAIL_PATH}?reason=invalid-request`);
+  }
+  const read = await readLimitedText(request, MAX_BODY_BYTES);
+  if (!read.ok) {
+    return seeOther(`${ACCOUNT_MAIL_PATH}?reason=invalid-request`);
+  }
+  // **値がちょうど 1 つのときだけ受け付ける。** `fork_notice=receive&fork_notice=mute` のように
+  // 同じ項目が重なった本文は、先頭を黙って採らずに断る——画面のラジオボタンは 1 つしか送らないので、
+  // 重なった要求は壊れた要求である（`src/signup.ts` / `src/waitlist.ts` と同じ判断）。
+  const values = new URLSearchParams(read.text).getAll(FORK_NOTICE_FIELD);
+  const value = values.length === 1 ? values[0] : undefined;
+  if (value !== FORK_NOTICE_RECEIVE && value !== FORK_NOTICE_MUTE) {
+    return seeOther(`${ACCOUNT_MAIL_PATH}?reason=invalid-request`);
+  }
+
+  try {
+    const changed = await changeForkNoticePreference(
+      env.DB,
+      session.userId,
+      value === FORK_NOTICE_RECEIVE,
+      now(),
+    );
+    return seeOther(
+      changed.ok
+        ? `${ACCOUNT_MAIL_PATH}?${SAVED_QUERY}=1`
+        : `${ACCOUNT_MAIL_PATH}?reason=${changed.reason}`,
+    );
+  } catch (error) {
+    console.error(
+      `[account] メール配信の設定の保存に失敗しました: ${error instanceof Error ? error.name : 'unknown'}`,
+    );
+    return seeOther(`${ACCOUNT_MAIL_PATH}?reason=failed`);
+  }
+}
+
 /** {@link createAccountRoutes} に渡す差し替え。 */
 export interface AccountRouteOptions {
-  /** 現在時刻（UNIX 秒）。既定は `Date.now()` から。テストが 60 秒の境界を固定するために使う。 */
+  /** 現在時刻（UNIX 秒）。既定は `Date.now()` から。テストが 60 秒の境界を固定するために使う（表示名・プロフィール・メール配信）。 */
   readonly now?: () => number;
 }
 
@@ -889,6 +1164,7 @@ export function createAccountRoutes(options: AccountRouteOptions = {}): readonly
   return [
     { method: 'GET', path: ACCOUNT_PATH, handler: showAccount },
     { method: 'GET', path: ACCOUNT_DETAILS_PATH, handler: showAccountDetails },
+    { method: 'GET', path: ACCOUNT_MAIL_PATH, handler: showAccountMail },
     {
       method: 'POST',
       path: ACCOUNT_DISPLAY_NAME_PATH,
@@ -899,8 +1175,13 @@ export function createAccountRoutes(options: AccountRouteOptions = {}): readonly
       path: ACCOUNT_PROFILE_PATH,
       handler: (request, env) => handleProfileChange(request, env, now),
     },
+    {
+      method: 'POST',
+      path: ACCOUNT_MAIL_API_PATH,
+      handler: (request, env) => handleForkNoticePreference(request, env, now),
+    },
   ];
 }
 
-/** アプリの経路表へ連結する登録情報の経路（#341 / #379）。 */
+/** アプリの経路表へ連結する登録情報の経路（#341 / #379 / #384）。 */
 export const accountRoutes: readonly Route[] = createAccountRoutes();

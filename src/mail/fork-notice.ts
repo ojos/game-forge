@@ -52,6 +52,22 @@
  * **理由はマイグレーションの本文に書いた**（あとから「未送信を拾う」運用を書いた人が、
  * 空の表を「1 通も送っていない」と読めるため。#202 / #203 と同じ形）。
  *
+ * ## 受け取らない設定の利用者には送らない（5.11 / #384）
+ *
+ * **改造通知は、利用者が `/account` のメール配信タブで止められる唯一の種別である**
+ * （種別の一覧は `src/mail/kinds.ts`）。**この関数がその種別の唯一の送信の口**なので、
+ * 設定の判定もここに 1 つだけ置く（5.11「判定をその手前へ 1 つだけ置く」）。
+ *
+ * - **宛先を引く問い合わせの中で読む**（`users.fork_notice_muted_at`。NULL なら受け取る）。
+ *   同じ行から引くので、読み取りの往復は増えない
+ * - **握る前に降りる**（`muted`）。握ると `fork_notices.outcome` に「止めていたので送らなかった」を
+ *   表す値が要り、0013 の CHECK を張り替えることになる。自分自身のフォークと同じく、行を残さない
+ * - **受け取る設定へ戻しても、止めていたあいだの改造は送らない**——契機は公開の 1 回だけで、
+ *   未送信を探して回る経路を作らない（上の「既存のフォークへ撒かない」と同じ）
+ *
+ * **判定は送信の設定の検査より後に置く。** 未設定の環境（ローカル・テスト）で D1 を触らない
+ * 順序（下の `notifyForkPublished`）を崩さない。
+ *
  * ## 送信の失敗で公開を壊さない
  *
  * **投げない。** 呼び出し元は公開を終えたあとの経路で、通知の失敗で公開を
@@ -83,6 +99,7 @@ const MAX_NAME_LENGTH = 60;
  * - `not-configured`: 送信の設定が無い（ローカル・テスト）
  * - `not-a-fork`: 親を持たない作品だった（新規生成・推敲。**異常ではない**）
  * - `self-fork`: 自分の作品を自分で改造した（送らない）
+ * - `muted`: 元の作者が改造通知を受け取らない設定にしている（送らない。5.11 / #384）
  * - `no-recipient`: 親の作者の宛先が引けなかった・綴りが壊れていた
  * - `already-sent`: このフォークは通知済み（`fork_notices` に行がある）
  * - `send-failed`: 送信に失敗した
@@ -92,6 +109,7 @@ export type ForkNoticeOutcome =
   | 'not-configured'
   | 'not-a-fork'
   | 'self-fork'
+  | 'muted'
   | 'no-recipient'
   | 'already-sent'
   | 'send-failed';
@@ -123,6 +141,11 @@ interface ForkNoticeTarget {
   readonly parentAuthorId: string;
   /** 元の作者の宛先（`users.email`）。 */
   readonly parentAuthorEmail: string;
+  /**
+   * 元の作者が改造通知を受け取らない設定にしているか（`users.fork_notice_muted_at` が NULL でない）。
+   * **既定は受け取る**（5.11）。
+   */
+  readonly parentAuthorMuted: boolean;
   /** 元の作品の仮タイトル（**受け取る本人の作品**である）。 */
   readonly parentTitle: string;
 }
@@ -182,7 +205,8 @@ export function forkNoticeMessage(
  * 子作品から、親の作者の宛先と表示名を 1 回で引く。
  *
  * **1 往復で引く**（`src/mail/generation-notice.ts` の `noticeTarget` と同じ理由。
- * D1 は読み取りも従量である。3.6）。
+ * D1 は読み取りも従量である。3.6）。**受け取るかどうかの設定も、宛先と同じ行から引く**
+ * （モジュール冒頭の「受け取らない設定の利用者には送らない」）。
  *
  * **親の `status` で絞らない。** 親が `removed`（8.4）でも、改造された事実は変わらず、
  * 受け取るべき人も変わらない。絞ると M5-4 の tombstone が入った日に通知が黙って
@@ -198,7 +222,8 @@ async function forkNoticeTarget(env: Env, gameId: string): Promise<ForkNoticeTar
             f.display_name as fork_author_name,
             p.author_id as parent_author_id,
             p.title as parent_title,
-            a.email as parent_author_email
+            a.email as parent_author_email,
+            a.fork_notice_muted_at as parent_author_muted_at
        from games c
        join users f on f.id = c.author_id
        join games p on p.id = c.parent_id
@@ -212,6 +237,7 @@ async function forkNoticeTarget(env: Env, gameId: string): Promise<ForkNoticeTar
       parent_author_id: string;
       parent_title: string;
       parent_author_email: string;
+      parent_author_muted_at: number | null;
     }>();
   if (row === null) {
     return null;
@@ -221,6 +247,7 @@ async function forkNoticeTarget(env: Env, gameId: string): Promise<ForkNoticeTar
     forkAuthorName: row.fork_author_name,
     parentAuthorId: row.parent_author_id,
     parentAuthorEmail: row.parent_author_email.trim(),
+    parentAuthorMuted: row.parent_author_muted_at !== null,
     parentTitle: row.parent_title,
   };
 }
@@ -309,6 +336,12 @@ export async function notifyForkPublished(
     if (target.forkAuthorId === target.parentAuthorId) {
       // 自分の作品を自分で改造した（#36 の受け入れ条件）。
       return 'self-fork';
+    }
+    if (target.parentAuthorMuted) {
+      // **握る前に降りる**（モジュール冒頭。5.11 / #384）。止めたのは本人の選択で、
+      // 異常ではないのでログを出さない。**宛先の綴りの検査より前に置く**——受け取らない人の
+      // 宛先が壊れていても、送らないことに変わりはない。
+      return 'muted';
     }
     if (!isMailAddress(target.parentAuthorEmail)) {
       // **握る前に落とす**（`src/mail/cost-alert.ts` の「目印より前」と同じ判断）。

@@ -182,6 +182,32 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     expect(notPublished).toContain('自己紹介と外部リンクの変更の履歴');
   });
 
+  it('メール配信の設定を、取得する情報・利用目的・公開しない情報に書く（#384）', async () => {
+    // **収集を始めた変更で書く**（#373 の constraints）。設定は `/account/mail` で変え、
+    // `users.fork_notice_muted_at` に止めた日時を D1 に残し、公開しない。**止められるのは改造の
+    // お知らせだけで、生成の完了・失敗は止められない**（5.11 / `src/mail/kinds.ts`）——画面と
+    // 食い違わないように、利用目的の側でも言い分ける。
+    const body = pageBodyOf((await openPrivacy()).body);
+    const collected = body.slice(body.indexOf('1. 取得する情報'), body.indexOf('2. 利用目的'));
+    const start = collected.indexOf('<strong>メール配信の設定</strong>');
+    expect(start, '取得する情報に項目が無い').toBeGreaterThanOrEqual(0);
+    const rest = collected.slice(start);
+    const line = rest.slice(0, rest.indexOf('</li>'));
+    expect(line).toContain('作品が改造されたときのお知らせを受け取るかどうかと、受け取らない設定にした日時');
+    expect(line).toContain('公開しません');
+    expect(line).toContain('D1');
+
+    const purposes = body.slice(body.indexOf('2. 利用目的'), body.indexOf('3. 公開される情報'));
+    expect(purposes).toContain('作品が改造されたことのお知らせは、登録情報の画面で受け取らない設定にできます');
+    expect(purposes).toContain('生成の完了・失敗のお知らせは、その設定にかかわらず送ります');
+
+    const notPublished = body.slice(
+      body.indexOf('<strong>次の情報は公開しません。</strong>'),
+      body.indexOf('4. 第三者への提供'),
+    );
+    expect(notPublished).toContain('メール配信の設定');
+  });
+
   it('表示名の変更の履歴を、取得する情報に書き、公開しない情報にも挙げる（#405）', async () => {
     // **収集を始めた変更で書く**（#373 の constraints）。履歴は `/account` での変更と Google の
     // 名前への追随の両方で積み（`migrations/0030`）、運営が審査キューで確かめるだけで公開しない。

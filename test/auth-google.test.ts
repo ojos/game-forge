@@ -19,6 +19,7 @@ import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, buildSessionCookie, signSession, verifySession } from '../src/session.js';
 import { createAccountRoutes } from '../src/account.js';
 import { ACCOUNT_DISPLAY_NAME_PATH, ACCOUNT_PATH, DISPLAY_NAME_FIELD } from '../src/account-paths.js';
+import { DISPLAY_NAME_CHANGES_TABLE } from '../src/display-name-changes.js';
 import { normalizeInviteCode } from '../src/invite-code.js';
 import { SIGNUP_PATH } from '../src/paths.js';
 import { applySchema } from './helpers/schema.js';
@@ -738,6 +739,67 @@ describe('表示名は、利用者が決めたらログインで上書きしな�
       email: 'changed@example.com',
       display_name_set_at: NOW,
     });
+  });
+
+  /**
+   * その利用者の表示名の変更の履歴（#405）。
+   *
+   * @param sub Google のアカウント識別子
+   * @returns 旧い名前・新しい名前・時刻（書いた順）
+   */
+  async function nameHistory(
+    sub: string,
+  ): Promise<{ old_display_name: string; new_display_name: string; changed_at: number }[]> {
+    const rows = await env.DB.prepare(
+      `select h.old_display_name, h.new_display_name, h.changed_at
+         from ${DISPLAY_NAME_CHANGES_TABLE} h join users u on u.id = h.user_id
+        where u.google_sub = ? order by h.rowid`,
+    )
+      .bind(sub)
+      .all<{ old_display_name: string; new_display_name: string; changed_at: number }>();
+    return rows.results;
+  }
+
+  it('Google の名前へ追随して名前が変わったログインは、履歴を 1 行積む（#405）', async () => {
+    // **この経路の変更も証拠として残す。** Google アカウントの名前を変えてログインし直せば、
+    // `/account` を通らずに名前を変えられる（`migrations/0030` の「書く経路は 2 つある」）。
+    const sub = 'google-sub-history-follows';
+    await seedExistingUser(sub, 'Google の旧名');
+
+    await relogin(sub, { name: 'Google の新名', email: 'history@example.com' });
+
+    expect(await nameHistory(sub)).toEqual([
+      { old_display_name: 'Google の旧名', new_display_name: 'Google の新名', changed_at: NOW },
+    ]);
+  });
+
+  it('名前が変わらないログインでは、履歴を積まない（ログインのたびに行を増やさない。#405）', async () => {
+    // **この経路の UPDATE は名前が変わらなくても毎回走る。** `display_name <> ?` を外すと、
+    // ここで 2 行積まれて赤くなる。
+    const sub = 'google-sub-history-same-name';
+    await seedExistingUser(sub, '変わらない名前');
+
+    await relogin(sub, { name: '変わらない名前', email: 'same1@example.com' });
+    await relogin(sub, { name: '変わらない名前', email: 'same2@example.com' });
+
+    expect(await nameHistory(sub)).toEqual([]);
+    // ログインそのものは進んでいる（メールアドレスは更新された）。
+    expect((await nameColumns(sub)).email).toBe('same2@example.com');
+  });
+
+  it('名前を決めた利用者のログインでは、Google の名前が違っても履歴を積まない（#405）', async () => {
+    // **名前は変わらない**（`display_name_set_at` が埋まっている）。`display_name_set_at is null` を
+    // 履歴の条件から外すと、変わっていない名前について 1 行積まれて赤くなる。
+    const sub = 'google-sub-history-own-name';
+    const userId = await seedExistingUser(sub, '自分で決めた名前');
+    await env.DB.prepare('update users set display_name_set_at = ? where id = ?')
+      .bind(NOW - 3600, userId)
+      .run();
+
+    await relogin(sub, { name: 'Google の別の名前', email: 'own@example.com' });
+
+    expect((await nameColumns(sub)).display_name).toBe('自分で決めた名前');
+    expect(await nameHistory(sub)).toEqual([]);
   });
 
   it('運営フラグ（is_operator）は、再ログインで消えない（#334）', async () => {

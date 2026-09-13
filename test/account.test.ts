@@ -3,9 +3,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   DISPLAY_NAME_CHANGE_INTERVAL_SECONDS,
   DISPLAY_NAME_MAX_LENGTH,
+  changeDisplayName,
   createAccountRoutes,
   validateDisplayName,
 } from '../src/account.js';
+import { DISPLAY_NAME_CHANGES_TABLE } from '../src/display-name-changes.js';
 import {
   ACCOUNT_DISPLAY_NAME_PATH,
   ACCOUNT_PATH,
@@ -443,7 +445,7 @@ describe('表示名の変更（POST /api/account/display-name）', () => {
     expect(await updatesOf(userId)).toBe(1);
   });
 
-  it('同じ名前を入れ直しても書く（Google に追随するのをやめる唯一の方法）', async () => {
+  it('同じ名前を入れ直しても書く（Google に追随するのをやめる唯一の方法。履歴は #405 の describe）', async () => {
     const userId = await seedUser({ displayName: 'そのままの名前' });
     const routes = createAccountRoutes({ now: () => NOW });
     const response = await postName(routes, await cookieFor(userId), 'そのままの名前');
@@ -559,6 +561,90 @@ describe('表示名の変更（POST /api/account/display-name）', () => {
     const body = await (await openAccount(cookie, '?saved=1')).text();
     expect(body).toContain('value="往復した名前"');
     expect(body).toContain('ログインしても Google アカウントの名前には戻りません');
+  });
+});
+
+/**
+ * その利用者の表示名の変更の履歴（`display_name_changes`。#405）を、書いた順に引く。
+ *
+ * @param userId 利用者の id
+ * @returns 旧い名前・新しい名前・時刻
+ */
+async function historyOf(
+  userId: string,
+): Promise<{ old_display_name: string; new_display_name: string; changed_at: number }[]> {
+  const rows = await env.DB.prepare(
+    `select old_display_name, new_display_name, changed_at
+       from ${DISPLAY_NAME_CHANGES_TABLE} where user_id = ? order by rowid`,
+  )
+    .bind(userId)
+    .all<{ old_display_name: string; new_display_name: string; changed_at: number }>();
+  return rows.results;
+}
+
+describe('表示名の変更の履歴（#405 / migrations/0030）', () => {
+  /*
+   * **変異で確かめた**（2026-09-13。`src/display-name-changes.ts` と `src/account.ts` を
+   * 1 か所ずつ書き換えて、この describe を回した）。
+   *
+   *   - 履歴の文から間隔の条件を外す（`where` を `id = ?` だけにする）… 「断られた変更」が赤
+   *   - 履歴の文から `display_name <> ?` を外す … 「同じ名前の入れ直し」と、`test/auth-google.test.ts`
+   *     の「名前が変わらないログイン」が赤
+   *   - UPDATE を先に単独で送り、履歴をその後に別の文で送る（batch にしない。失敗は握る）…
+   *     「1 行積む」「断られた変更」「履歴が書けなければ名前も変わらない」と、画面の表示名の 2 本が赤
+   *
+   * Google の経路（`src/auth/google.ts`）の変異は `test/auth-google.test.ts` の 3 本が受ける
+   * （履歴の文を `select 1` に差し替える → 「1 行積む」が赤、`display_name_set_at is null` を外す →
+   * 「名前を決めた利用者」が赤）。
+   */
+  it('名前を変えると、旧い名前と新しい名前と時刻を 1 行積む', async () => {
+    const userId = await seedUser({ displayName: 'Google の名前' });
+    const routes = createAccountRoutes({ now: () => NOW });
+    const response = await postName(routes, await cookieFor(userId), '決めた名前');
+    expect(response.headers.get('location')).toBe(`${ACCOUNT_PATH}?saved=1`);
+    expect(await historyOf(userId)).toEqual([
+      { old_display_name: 'Google の名前', new_display_name: '決めた名前', changed_at: NOW },
+    ]);
+  });
+
+  it(`頻度の上限（${DISPLAY_NAME_CHANGE_INTERVAL_SECONDS} 秒）で断られた変更は、履歴を書かない`, async () => {
+    // **#405 の acceptance。** 断った要求で履歴だけが積まれると、「その名前だった時刻」が
+    // 実在しないのに記録に残り、通報の時点の名前の復元を誤らせる。
+    const userId = await seedUser({ displayName: 'Google の名前' });
+    const cookie = await cookieFor(userId);
+    let now = NOW;
+    const routes = createAccountRoutes({ now: () => now });
+
+    await postName(routes, cookie, '1 回目');
+    now = NOW + DISPLAY_NAME_CHANGE_INTERVAL_SECONDS - 1;
+    const tooSoon = await postName(routes, cookie, '断られる名前');
+    expect(tooSoon.headers.get('location')).toBe(`${ACCOUNT_PATH}?reason=too-soon`);
+    expect(await nameOf(userId)).toEqual({ display_name: '1 回目', display_name_set_at: NOW });
+    expect(await historyOf(userId)).toEqual([
+      { old_display_name: 'Google の名前', new_display_name: '1 回目', changed_at: NOW },
+    ]);
+
+    // **間隔が空けば積む**（条件が常に偽になっていないことを、同じ利用者で確かめる）。
+    now = NOW + DISPLAY_NAME_CHANGE_INTERVAL_SECONDS;
+    await postName(routes, cookie, '2 回目');
+    expect((await historyOf(userId)).map((row) => row.new_display_name)).toEqual(['1 回目', '2 回目']);
+  });
+
+  it('同じ名前の入れ直しは、名前が変わらないので履歴を書かない（印は付く）', async () => {
+    const userId = await seedUser({ displayName: 'そのままの名前' });
+    const routes = createAccountRoutes({ now: () => NOW });
+    await postName(routes, await cookieFor(userId), 'そのままの名前');
+    expect(await nameOf(userId)).toEqual({ display_name: 'そのままの名前', display_name_set_at: NOW });
+    expect(await historyOf(userId)).toEqual([]);
+  });
+
+  it('履歴が書けなければ、名前も変わらない（1 つの batch である）', async () => {
+    // **`changed_at > 0` の CHECK で履歴の insert を落とす**（0027 / 0028 のテストと同じ使い方）。
+    // 時刻 0 でも間隔の条件は `display_name_set_at is null` で通るので、落ちるのは履歴だけである。
+    const userId = await seedUser({ displayName: 'Google の名前' });
+    await expect(changeDisplayName(env.DB, userId, '入らない名前', 0)).rejects.toThrow();
+    expect(await nameOf(userId)).toEqual({ display_name: 'Google の名前', display_name_set_at: null });
+    expect(await historyOf(userId)).toEqual([]);
   });
 });
 

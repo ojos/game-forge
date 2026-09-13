@@ -440,6 +440,97 @@ bash scripts/report-queue.sh --remote --format json | jq -r '.rows[].game_id' | 
 
 ---
 
+## #405（通報された時点の題名・説明・作者名）を出すときに増える手順
+
+**審査キュー（`/`）の行ごとに、通報ごとの「通報の時点」と「いま」の値が並ぶ。** 題名・説明・
+作者名の 3 つで、変わっていれば「変わっています」、通報と同じ秒に変更があれば前後の両方と
+「通報と同じ秒に変更がありました」、表示名の履歴を書き始める前の通報では「この時点の作者名の
+記録はありません」と出る。**操作・口・経路は増えない**（`ADMIN_OPEN_ROUTES` にも足していない）。
+
+**表示名の変更の履歴（`display_name_changes`）と、書き始めた時刻の 1 行（`display_name_history_start`）
+を足す**（`migrations/0030_display_name_changes.sql`）。**`/account` での変更と Google の名前への
+追随の両方が、名前が実際に変わったときだけ 1 行積む。**
+
+```
+Ⓘ 本番 D1 へ 0030 を適用（利用者の端末。**マージの直前に**）
+Ⓙ main へマージ → Pages が配備される
+Ⓚ 配備を確かめたら、表示名の履歴の基準の時刻をその時刻へ進める
+Ⓛ 画面で 1 件確かめる
+```
+
+### Ⓘ 0030 の適用（**マージの直前に**）
+
+```bash
+npx wrangler d1 migrations list DB --remote --env production   # 0030 が未適用なら出る
+npx wrangler d1 migrations apply DB --remote --env production
+npx wrangler d1 execute DB --remote --env production \
+  --command "select id, started_at from display_name_history_start;"   # 1 行、適用した時刻
+```
+
+**`origin/main` を checkout したツリーから打つこと**（上記 ⑤ / Ⓐ と同じ理由）。
+
+**マージより後にしてはいけない。** CI の配備は未適用のマイグレーションがあると止まる
+（`scripts/check-migrations-applied.sh`）が、**止まらずに出た場合はログインが落ちる**
+——既存の利用者のログインは、履歴の表が無いと batch ごと失敗する（`src/auth/google.ts` の
+`refreshExistingUser`）。
+
+**早すぎてもいけない（直前に当てる理由）。** 適用した時刻が「表示名の履歴を書き始めた時刻」として
+記録されるが、**実際に履歴を書くのは新しいコードが配られてから**である。その間に古いコードが名前を
+変えると記録されず、**その間に付いた通報では、いまの名前が通報の時点の名前として出てしまう。**
+窓を狭くするために直前に当て、Ⓚ で詰める。
+
+### Ⓚ 基準の時刻を、配備を確かめた時刻へ進める
+
+`docs/pages-deploy.md` の「配備ずれの検知」（`production deployment matches main HEAD`）で配備を確かめたら、
+**その時刻（UNIX 秒）**へ進める。
+
+```bash
+now=$(date +%s)
+npx wrangler d1 execute DB --remote --env production \
+  --command "update display_name_history_start set started_at = ${now} where id = 1 and started_at < ${now};"
+```
+
+**進める向きは「記録がありません」を増やす側だけである**——誤った名前を出す側へは動かない。
+打ち忘れても壊れはしないが、Ⓘ から配備までの窓の分だけ上の誤りが残りうる。**戻す（小さくする）
+コマンドは打たないこと。**
+
+### Ⓛ 画面で確かめる
+
+- 既存の審査待ちの作品の行に、通報ごとの塊が出ていること。**配備より前の通報では、作者名が
+  「この時点の作者名の記録はありません」になっている**（正しい。いまの名前を当時の名前として出さない）
+- 題名と説明は、配備より前の通報でも「通報の時点」が出ていること（履歴は 0027 / 0028 からある）
+- **確認のためだけに通報や名前の変更を作らない**（Ⓒ〜Ⓓ と同じ理由）
+
+**忘れるとどうなるか（0030 の適用漏れ）。** 画面は落とさない——一覧の 3 節は出し、行ごとに
+「通報の時点の題名・説明・作者名を読み込めませんでした」と書いて **500** を返す（`src/admin/review.ts` の
+`readQueue`）。**ログインと名前の変更は失敗する**（上記）。
+
+### 運営が D1 を直接 UPDATE して表示名を直すとき（5.9）
+
+**同じコマンドで履歴も 1 行積むこと。** 積まないと、その作者に付いた通報の時点の名前の復元を誤らせる
+（変更が 1 件も記録されていない作者では、直した後の名前が通報の時点の名前として出る）。
+
+```bash
+id='<利用者の id>'; name='<直した名前>'   # 名前に ' を含めるなら '' と重ねる
+npx wrangler d1 execute DB --remote --env production --command "
+insert into display_name_changes (id, user_id, old_display_name, new_display_name, changed_at)
+  select lower(hex(randomblob(16))), id, display_name, '${name}', cast(strftime('%s', 'now') as integer)
+    from users where id = '${id}' and display_name <> '${name}';
+update users set display_name = '${name}', display_name_set_at = cast(strftime('%s', 'now') as integer)
+ where id = '${id}';"
+```
+
+**アプリの経路と違い、2 文が 1 つのトランザクションになる保証は無い。** 打ったあとに
+`select * from display_name_changes where user_id = '<id>' order by rowid desc limit 1` で行を確かめること。
+
+### 幅 390px
+
+**`scripts/check-page-width.sh` に admin は乗っていない**（上記「残した穴」は変わっていない）。
+増えた塊は行の枠の中に積み、**利用者が書いた値は `overflow-wrap: anywhere` と `white-space: pre-wrap`**
+で折り返す（`public/assets/admin.css`）。
+
+---
+
 ## 壊れうる点
 
 | 症状 | いちばんありそうな原因 |

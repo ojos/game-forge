@@ -60,6 +60,7 @@
  */
 import { ACCOUNT_DISPLAY_NAME_PATH, ACCOUNT_PATH, DISPLAY_NAME_FIELD } from './account-paths.js';
 import { loginRequiredRedirect } from './auth/google.js';
+import { displayNameHistoryInsert } from './display-name-changes.js';
 import { escapeHtml, siteHead, siteViewerAt } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { siteFooter } from './legal.js';
@@ -84,8 +85,9 @@ export const DISPLAY_NAME_MAX_LENGTH = 30;
  *
  * **連打で D1 の書き込みを増やさないための間隔である。** 書き込みの無料枠は読み取りより
  * 桁で小さく、**枯れると D1 全体が止まる**（3.6。生成もログインも止まる）。
- * 1 回の変更は 1 行の書き込みで、60 秒に 1 回なら 1 人が 1 日張り付いても 1,440 行に
- * 収まる（無料枠 10 万行/日 の 1.4%）。
+ * 1 回の変更は `users` の 1 行と、名前が変わったときは履歴（`display_name_changes`。#405）の
+ * 1 行と索引の 1 行で、最大 3 行の書き込みである。60 秒に 1 回なら 1 人が 1 日張り付いても
+ * 4,320 行に収まる（無料枠 10 万行/日 の 4.3%。履歴を足す前は 1,440 行・1.4% だった）。
  */
 export const DISPLAY_NAME_CHANGE_INTERVAL_SECONDS = 60;
 
@@ -214,7 +216,16 @@ export type DisplayNameChange = { readonly ok: true } | { readonly ok: false; re
  *
  * 同じ名前を入れ直す要求も書く。**それが「Google の名前に追随するのをやめる」唯一の
  * 方法である**（今の名前のまま `display_name_set_at` を埋める）。5.9 が「Google の名前に
- * 戻す」ボタンを持たないのと対になっている。
+ * 戻す」ボタンを持たないのと対になっている。**ただし履歴は積まない**（名前は変わっていない。
+ * 下記）。
+ *
+ * ## 名前が変わったら、履歴を同じ batch で 1 行積む（#405）
+ *
+ * **通報された作者が名前を変えると、なりすましの証拠が消える。** 審査キューが通報の時点の
+ * 名前を復元できるよう、`display_name_changes`（`migrations/0030`）へ旧い名前と新しい名前を
+ * 積む。**履歴と UPDATE は 1 つの `D1.batch` で、条件の綴りを共有する**
+ * （`src/display-name-changes.ts`）——**間隔で断った要求では履歴も 0 行になり**、履歴の
+ * insert が落ちれば名前も変わらない（`test/account.test.ts` が両方を見る）。
  *
  * **BAN の検査はここに無い。** 呼び出し側（{@link handleDisplayNameChange}）が
  * `resolveSessionUser` を通した後にしか呼ばない。
@@ -231,18 +242,36 @@ export async function changeDisplayName(
   name: string,
   nowSeconds: number,
 ): Promise<DisplayNameChange> {
-  const result = await db
-    .prepare(
-      `update users
-          set display_name = ?, display_name_set_at = ?
-        where id = ?
-          and (display_name_set_at is null or display_name_set_at <= ?)`,
-    )
-    .bind(name, nowSeconds, userId, nowSeconds - DISPLAY_NAME_CHANGE_INTERVAL_SECONDS)
-    .run();
+  // **条件の綴りを 1 つにする**（`src/games.ts` の `renameGame` と同じ理由）。履歴の文と
+  // UPDATE が同じ条件を見るので、**間隔で断った要求では履歴も 0 行になる**（#405）。
+  const conditions = 'id = ? and (display_name_set_at is null or display_name_set_at <= ?)';
+  const bindings = [userId, nowSeconds - DISPLAY_NAME_CHANGE_INTERVAL_SECONDS] as const;
+
+  const results = await db.batch([
+    // **履歴を先に積む**（旧い名前は UPDATE の前の行からしか取れない。名前が変わらない
+    // 入れ直しでは積まない。`src/display-name-changes.ts`）。
+    displayNameHistoryInsert(db, {
+      where: conditions,
+      bindings,
+      newName: name,
+      changedAt: nowSeconds,
+    }),
+    db
+      .prepare(`update users set display_name = ?, display_name_set_at = ? where ${conditions}`)
+      .bind(name, nowSeconds, ...bindings),
+  ]);
+
+  // **添字で読む**（`noUncheckedIndexedAccess`。`src/games.ts` の `renameGame` と同じ形）。
+  const historyRows = results[0]?.meta.changes ?? 0;
+  const updatedRows = results[1]?.meta.changes ?? 0;
+  if (historyRows > 0 && updatedRows === 0) {
+    // **構造上ありえない**（履歴の条件は UPDATE の条件を含み、同じ batch で同じ行を見る）。
+    // 出るとすれば D1 の batch の意味が変わったときで、それは気づきたい。
+    console.error('[account] 名前を変えていないのに表示名の履歴が入りました（batch の意味が変わっています）');
+  }
   // 0 行なら間隔が足りない。**利用者が居ない場合も 0 行になる**が、直前に
   // `resolveSessionUser` が行の存在を確かめているので、ここで区別しない。
-  return (result.meta.changes ?? 0) > 0 ? { ok: true } : { ok: false, reason: 'too-soon' };
+  return updatedRows > 0 ? { ok: true } : { ok: false, reason: 'too-soon' };
 }
 
 /**

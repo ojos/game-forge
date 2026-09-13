@@ -1179,7 +1179,7 @@ BAN（`users.banned_at`）も削除申請（`takedown_requests`）も動いて�
 - **acceptance:** `javascript:` を含むリンクが弾かれる（**変異で確認**）/ 自己紹介の HTML がそのまま描画されない / 未検証である旨の表示が出る / `/privacy` に収集項目が追記されている / `scripts/check-page-width.sh` が 3 幅すべてで通る / `bash scripts/verify.sh` が `VERIFY_PASS`。
 - **priority:** medium
 - **参照:** 5.6 / 5.10 / 5.9 / 8.2
-- **依存:** M12-10
+- **依存:** M12-10（**※ 2026-09-13: 並びを 2 系統にしたため、いまの依存は M12-4（外枠。`/account` と作者ページが乗る）と M12-5（`/privacy`。scope.in の収集項目の追記先）で、どちらも完了済み**。M12-10 は待たない。「並び」の注記）
 
 ### M12-12 アイコン画像
 - **issue:** #380

@@ -33,12 +33,11 @@
  * （`src/admin/routes.ts` の `ADMIN_OPEN_ROUTES`）、綴りは同じで、外すべき理由も同じ
  * である。**片方のホストにしか無い例外は、いまは 1 つも無い。**
  *
- * **乗る先は 3 検査のうち 2 つである。** 外枠（`test/admin-page-shell.test.ts`）と
- * 画面一覧の導出（ここ）には乗っている。**幅 390px の実ブラウザ検査
- * （`scripts/check-page-width.sh`）は、まだ `app` ホストだけを見る**
- * ——あれは `Host` を 1 つしか立てない下ごしらえ（`scripts/lib/dev-fixture.sh`）を
- * 使っており、admin を乗せるには 2 ホスト目の起動と管理者のセッションが要る。
- * **残した穴として `docs/admin-host.md` に書いてある。**
+ * **3 検査のすべてに乗っている。** 外枠（`test/admin-page-shell.test.ts`）と画面一覧の
+ * 導出（ここ）に加え、**幅 390px の実ブラウザ検査（`scripts/check-page-width.sh`）も
+ * #398 で admin を開くようになった**——一覧は `/__dev/pages` の `adminPaths`（`src/app.ts`）
+ * から受け取り、dev サーバは 1 つのまま `Host` で振り分ける（`*.localtest.me` は
+ * 127.0.0.1 を返す）。
  */
 import type { Route } from './routes.js';
 

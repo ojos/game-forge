@@ -59,6 +59,8 @@
 # 実行時間は 14 経路 × 3 幅で**実測 12.0 秒**である（2026-09-12。1 幅だった #282 のときが
 # 8.9 秒で、増えたのは 3.1 秒——**ブラウザと dev サーバの起動が費用の大半で、幅を足しても
 # 増えない**。ブラウザの起動は 1 回だけ。`scripts/page-width-probe.mjs`）。
+# **#398 で admin の 3 経路を足して、app 19 経路 ＋ admin 3 経路 × 3 幅で実測 17.2 秒**
+# （2026-09-13。ブラウザの起動は観測 1 回につき 1 度なので、admin の観測で 1 回増えた）。
 # **段を足すときは、この秒数を測り直すこと**——2.3.9 は「収まらなければ段を減らす」と
 # 定めている。
 #
@@ -77,6 +79,28 @@
 # で足りる——メニューは全画面で同じ外枠が出しており、それは `test/page-shell.test.ts`
 # が全画面 × ログイン両状態で照合している。**開く画面はトップ（`/`）にする。** 経路表に
 # 必ずあり、ログイン済みの cookie で開けばメニューが出る。
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# admin の画面も同じ網に乗せる（2.4.5 / #398）
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# **運営の管理画面（`ADMIN_HOST`）も 3 幅すべてで開く。** 2.4.5 は「乗せない選択を
+# 採らない」と定め、その理由に「#282 が捕まえたい失敗は、**運営しか見ない画面でこそ
+# 起きやすい**」を挙げている。
+#
+#   - **dev サーバは 1 つのまま**である。`*.localtest.me` は公開 DNS が 127.0.0.1 を返し、
+#     `src/index.ts` が `Host` で振り分けるので、2 つ目を起動する必要が無い
+#   - **一覧は `/__dev/pages` の `adminPaths` から受け取る**（`scripts/lib/dev-fixture.sh` の
+#     `dev_fixture_admin_paths`）。admin ホストに診断経路は置いていない
+#   - **仕込む利用者に `is_admin = 1` を立ててある**（同ファイル）。**立て忘れると、ブラウザが
+#     見るのは 404 だけになる**——#330 が実際に踏んだ「画面を 1 度も開かずに緑」の形
+#
+# **admin では 404 を通さない。** app の側は作品ページの「見つかりません」があるので 404 を
+# 通すが、**admin の画面は権限が無いときにだけ 404 を返す**（2.4.2）。admin で 404 を見た
+# ことは、そのまま「仕込みか cookie が効いていない」ことを意味する。
+#
+# **アカウントのメニューは admin では開かない。** admin の外枠はメニューを持たない
+# （`src/admin/shell.ts`。ヘッダとフッタは app と別）。
 #
 # 使い方:
 #   bash scripts/check-page-width.sh
@@ -137,6 +161,13 @@ note "対象 ${COUNT} 経路 / 幅 ${WIDTHS}"
 # 「すべて収まっている」を返してしまう。
 [[ "$COUNT" -ge 5 ]] || fail "検査対象が ${COUNT} 経路しかありません。/__dev/pages の導出を確認してください。"
 
+ADMIN_PATHS="$(dev_fixture_admin_paths)"
+ADMIN_COUNT="$(printf '%s\n' "$ADMIN_PATHS" | tr ',' '\n' | wc -l | tr -d ' ')"
+note "admin の対象 ${ADMIN_COUNT} 経路 / 幅 ${WIDTHS}"
+
+# **admin も空を緑にしない。** いまは審査キュー・利用者・履歴の 3 枚がある（2.3.1 の admin の表）。
+[[ "$ADMIN_COUNT" -ge 3 ]] || fail "admin の検査対象が ${ADMIN_COUNT} 経路しかありません。/__dev/pages の adminPaths を確認してください。"
+
 # ── 実ブラウザで開く ──────────────────────────────────────────────────────────
 
 node scripts/page-width-probe.mjs \
@@ -149,6 +180,17 @@ node scripts/page-width-probe.mjs \
   --menu-path / >"$WORK/probe.json" ||
   fail "ブラウザでの観測ができませんでした。"
 
+# admin は同じ cookie を admin のホストへ載せて開く（セッションの読み方は app と同じ
+# `resolveSessionUser`。cookie は host-only なので、base のホストへ付け直される）。
+node scripts/page-width-probe.mjs \
+  --browser "$BROWSER_BIN" \
+  --base "$ADMIN_BASE" \
+  --paths "$ADMIN_PATHS" \
+  --widths "$WIDTHS" \
+  --cookie "__Host-gf_session=$COOKIE_VALUE" \
+  --timeout-ms "$TIMEOUT_MS" >"$WORK/admin-probe.json" ||
+  fail "admin の画面をブラウザで観測できませんでした。"
+
 # ── 判定 ──────────────────────────────────────────────────────────────────────
 #
 # 判定はここが持つ（観測と判定を分ける理由は scripts/page-width-probe.mjs の冒頭）。
@@ -157,15 +199,7 @@ node scripts/page-width-probe.mjs \
 # どの画面か」が出ないと、3 段になった分だけ原因の切り分けが遠くなる。
 node -e '
 const fs = require("node:fs");
-const { runs } = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-// **頼んだ幅がそのまま返ってきたことを先に見る。** 観測が 1 段も無い（または段が
-// 欠けた）状態は、以下の判定では「すべて収まっている」になる。
 const wanted = process.argv[2];
-const got = runs.map((run) => run.width).join(",");
-if (got !== wanted) {
-  console.error(`[page-width] 観測した幅が ${got || "（無し）"} で、頼んだ ${wanted} と違います。`);
-  process.exit(1);
-}
 let failed = 0;
 /**
  * アカウントのメニューの観測値を判定する（#372。観測は scripts/page-width-probe.mjs）。
@@ -224,58 +258,83 @@ function menuProblems(width, menu) {
   }
   return problems;
 }
-for (const { width, observations, menu } of runs) {
-  const problems = menuProblems(width, menu);
-  for (const o of observations) {
-    if (!o.loaded) {
-      problems.push(`${o.path}: 読み込みが完了しませんでした`);
-      continue;
-    }
-    if (o.status !== 200 && o.status !== 404) {
-      // 404 は作品ページの「見つかりません」があるので通す。それ以外の非 200 は、
-      // **画面を見ずに緑になっている**ことの現れなので落とす。
-      problems.push(`${o.path}: 応答が ${o.status}（最終 URL: ${o.responseUrl}）`);
-      continue;
-    }
-    // **ステータスだけではリダイレクトを検出できない。** 303 を返した経路でも、
-    // ブラウザが追跡した先の 200 で上書きされる。**要求したパスと最終パスを突き合わせる**
-    // ——そうしないと、ログインへ飛ばされた画面を「幅は正しい」で通してしまう
-    // （第二意見の指摘。#282）。
-    const finalPath = o.responseUrl === null ? null : new URL(o.responseUrl).pathname;
-    if (finalPath !== o.path) {
-      problems.push(`${o.path}: 別の画面へ移動しました（最終 URL: ${o.responseUrl}）`);
-      continue;
-    }
-    if (o.innerWidth !== width) {
-      problems.push(
-        `${o.path}: layout viewport が ${o.innerWidth}px（端末は ${width}px）。` +
-          `いちばん右まで出ている要素: ${o.widest} → right=${o.widestRight}`,
-      );
-      continue;
-    }
-    if (o.scrollWidth > width) {
-      problems.push(
-        `${o.path}: 横に ${o.scrollWidth}px はみ出しています（端末は ${width}px）。` +
-          `いちばん右まで出ている要素: ${o.widest} → right=${o.widestRight}`,
-      );
-    }
+/**
+ * 1 つのホストの観測を判定する。
+ *
+ * @param file 観測の JSON（scripts/page-width-probe.mjs の出力）
+ * @param host 報告に出すホストの名前
+ * @param expectMenu アカウントのメニューを観測しているはずか（app だけ）
+ * @param allow404 404 を通すか（app だけ。admin の 404 は「権限が効いていない」である）
+ */
+function judge(file, host, { expectMenu, allow404 }) {
+  const { runs } = JSON.parse(fs.readFileSync(file, "utf8"));
+  // **頼んだ幅がそのまま返ってきたことを先に見る。** 観測が 1 段も無い（または段が
+  // 欠けた）状態は、以下の判定では「すべて収まっている」になる。
+  const got = runs.map((run) => run.width).join(",");
+  if (got !== wanted) {
+    console.error(`[page-width] ${host}: 観測した幅が ${got || "（無し）"} で、頼んだ ${wanted} と違います。`);
+    failed += 1;
+    return;
   }
-  for (const problem of problems) {
-    console.error(`[page-width] 幅 ${width}px / ${problem}`);
+  for (const { width, observations, menu } of runs) {
+    const problems = expectMenu ? menuProblems(width, menu) : [];
+    if (!expectMenu && menu !== null && menu !== undefined) {
+      problems.push("アカウントのメニューを観測しています（このホストでは開かない）");
+    }
+    for (const o of observations) {
+      if (!o.loaded) {
+        problems.push(`${o.path}: 読み込みが完了しませんでした`);
+        continue;
+      }
+      if (o.status !== 200 && !(allow404 && o.status === 404)) {
+        // app の 404 は作品ページの「見つかりません」があるので通す。それ以外の非 200 は、
+        // **画面を見ずに緑になっている**ことの現れなので落とす。**admin は 404 も落とす**
+        // ——admin の 404 は権限が無いときの応答で（2.4.2）、仕込みか cookie が効いていない。
+        problems.push(`${o.path}: 応答が ${o.status}（最終 URL: ${o.responseUrl}）`);
+        continue;
+      }
+      // **ステータスだけではリダイレクトを検出できない。** 303 を返した経路でも、
+      // ブラウザが追跡した先の 200 で上書きされる。**要求したパスと最終パスを突き合わせる**
+      // ——そうしないと、ログインへ飛ばされた画面を「幅は正しい」で通してしまう
+      // （第二意見の指摘。#282）。
+      const finalPath = o.responseUrl === null ? null : new URL(o.responseUrl).pathname;
+      if (finalPath !== o.path) {
+        problems.push(`${o.path}: 別の画面へ移動しました（最終 URL: ${o.responseUrl}）`);
+        continue;
+      }
+      if (o.innerWidth !== width) {
+        problems.push(
+          `${o.path}: layout viewport が ${o.innerWidth}px（端末は ${width}px）。` +
+            `いちばん右まで出ている要素: ${o.widest} → right=${o.widestRight}`,
+        );
+        continue;
+      }
+      if (o.scrollWidth > width) {
+        problems.push(
+          `${o.path}: 横に ${o.scrollWidth}px はみ出しています（端末は ${width}px）。` +
+            `いちばん右まで出ている要素: ${o.widest} → right=${o.widestRight}`,
+        );
+      }
+    }
+    for (const problem of problems) {
+      console.error(`[page-width] ${host} / 幅 ${width}px / ${problem}`);
+    }
+    if (problems.length > 0) {
+      console.error(`[page-width] ${host} / 幅 ${width}px: ${problems.length} 件の問題があります。`);
+      failed += problems.length;
+      continue;
+    }
+    console.log(
+      `[page-width] ${host} / 幅 ${width}px: ${observations.length} 経路すべてが収まっています` +
+        (expectMenu ? "（アカウントのメニューは JavaScript を止めて開閉でき、開いても収まっています）。" : "。"),
+    );
   }
-  if (problems.length > 0) {
-    console.error(`[page-width] 幅 ${width}px: ${problems.length} 件の問題があります。`);
-    failed += problems.length;
-    continue;
-  }
-  console.log(
-    `[page-width] 幅 ${width}px: ${observations.length} 経路すべてが収まっています` +
-      `（アカウントのメニューは JavaScript を止めて開閉でき、開いても収まっています）。`,
-  );
 }
+judge(process.argv[1], "app", { expectMenu: true, allow404: true });
+judge(process.argv[3], "admin", { expectMenu: false, allow404: false });
 if (failed > 0) {
   process.exit(1);
 }
-' "$WORK/probe.json" "$WIDTHS" || fail "幅の検査が通りませんでした。"
+' "$WORK/probe.json" "$WIDTHS" "$WORK/admin-probe.json" || fail "幅の検査が通りませんでした。"
 
 echo "PAGE_WIDTH_PASS"

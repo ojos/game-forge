@@ -594,6 +594,7 @@ for that specific statement, and it aborts or rolls back the entire sequence.」
 ### 幅 390px
 
 **`scripts/check-page-width.sh` に admin は乗っていない**（上記「残した穴」は変わっていない）。
+**→ #398 で乗った**（下の「幅 390px の検査に admin が乗った（#398 で塞いだ）」）。**#405 の表も 3 幅で収まっている。**
 増えた塊は行の枠の中に積み、**利用者が書いた値は `overflow-wrap: anywhere` と `white-space: pre-wrap`**
 で折り返す（`public/assets/admin.css`）。
 
@@ -656,15 +657,29 @@ Route53 の CNAME だけで、**Pages のカスタムドメインが `active` �
 
 ---
 
-## 幅 390px の検査に admin が乗っていない（残した穴）
+## 幅 390px の検査に admin が乗った（#398 で塞いだ）
 
-**M8-1 の 3 検査のうち、admin が乗っているのは 2 つである。**
+**M8-1 の 3 検査のすべてに admin が乗った**（2026-09-13 / #398）。
 
 | 検査 | admin | 実体 |
 |---|---|---|
 | 外枠（ヘッダ・フッタ・CSS・viewport） | **乗っている** | `test/admin-page-shell.test.ts` |
 | 画面一覧の導出 | **乗っている** | `src/page-paths.ts` の `ssrPagePaths` を admin の経路表へ通す |
-| 幅 390px（実ブラウザ） | **乗っていない** | `scripts/check-page-width.sh` は `app` ホストだけを見る |
+| 幅 390px（実ブラウザ） | **乗っている**（#398） | `scripts/check-page-width.sh` が admin の画面も 3 幅で開く |
+
+**下の 3 つをこう解いた。**
+
+1. **2 ホスト目の起動は要らなかった。** dev サーバは 1 つのまま、`ADMIN_HOST` も `wrangler.toml`
+   から読み、ブラウザを `https://<ADMIN_HOST>:<PORT>` へ向ける（`src/index.ts` が `Host` で振り分ける）
+2. **仕込む利用者に `is_admin = 1` を立てた**（`scripts/lib/dev-fixture.sh`）。あわせて**審査キューの
+   作品・通報・履歴を 1 行ずつ仕込み**、空の画面ではなく行のある表を測る。**admin では 404 を通さない**
+   ——立て忘れると 3 画面 × 3 幅がすべて 404 で落ちることを変異で確かめた
+3. **一覧は app の `/__dev/pages` が `adminPaths` として返す**（`src/app.ts`）。**admin ホストに診断経路は
+   置かない**——置くと `is_admin` の境界の外に経路が 1 本増える。口は `test/admin-page-shell.test.ts` が固定する
+
+**以下は乗せる前の記録として残す。**
+
+### 乗せる前の状態（#398 より前）
 
 **乗せるのに要るもの。** `scripts/lib/dev-fixture.sh` は `wrangler.toml` の `APP_HOST` を
 1 つだけ読み、`BASE=https://<APP_HOST>:<PORT>` へブラウザを向ける。admin を乗せるには

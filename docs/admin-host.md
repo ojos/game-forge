@@ -452,32 +452,46 @@ bash scripts/report-queue.sh --remote --format json | jq -r '.rows[].game_id' | 
 追随の両方が、名前が実際に変わったときだけ 1 行積む。**
 
 ```
-Ⓘ 本番 D1 へ 0030 を適用（利用者の端末。**マージの直前に**）
-Ⓙ main へマージ → Pages が配備される
+Ⓘ main へマージする → deploy ジョブが「未適用のマイグレーションが無いこと」で止まる（Worker は配られない）
+Ⓙ main にしたプライマリツリーから 0030 を適用し、止まった deploy ジョブを再実行する
 Ⓚ 配備を確かめたら、表示名の履歴の基準の時刻をその時刻へ進める
 Ⓛ 画面で 1 件確かめる
 ```
 
-### Ⓘ 0030 の適用（**マージの直前に**）
+**0028 / 0029 と同じ順である**（PR #413 の Copilot レビューで直した。はじめは「マージの直前に
+`origin/main` のツリーから当てる」と書いていたが、**マージ前の `origin/main` には `0030` が無く、
+その手順では表を作れない**）。
+
+### Ⓘ マージする（deploy ジョブは関門で止まる）
+
+**マージすると、main の deploy ジョブは「未適用のマイグレーションが無いこと」の段で落ちる**
+（`.github/workflows/verify.yml` の `scripts/check-migrations-applied.sh --remote`）。**その段は Pages と
+likes Worker の配備より前にある**ので、**新しいコードは配られず、本番は壊れない**（古いコードのまま動く）。
+**これが正しい状態である**——赤くなった deploy ジョブを「壊れた」と読まないこと。
+
+### Ⓙ 0030 を適用し、deploy ジョブを再実行する
 
 ```bash
-npx wrangler d1 migrations list DB --remote --env production   # 0030 が未適用なら出る
+# プライマリツリーを main にしてから（古いブランチで打つと未適用を見落とす。docs/handoff.md 1 章）
+git switch main && git pull --ff-only
+set -a; source scripts/load-project-env.sh; set +a
+npx wrangler d1 migrations list DB --remote --env production    # 0030 が未適用として出る
 npx wrangler d1 migrations apply DB --remote --env production
 npx wrangler d1 execute DB --remote --env production \
   --command "select id, started_at from display_name_history_start;"   # 1 行、適用した時刻
+
+gh run list --workflow verify.yml --branch main --limit 3          # 止まった run の id を確かめる
+gh run rerun <run-id> --failed
 ```
 
-**`origin/main` を checkout したツリーから打つこと**（上記 ⑤ / Ⓐ と同じ理由）。
+**適用してから再実行した deploy ジョブが Pages を配り終えるまでの間は、表示名の変更が記録されない**
+（古いコードが動いており、履歴を書かない）。**適用の時刻が「表示名の履歴を書き始めた時刻」として
+記録される**ので、その間に付いた通報のあとにその間に名前が変わると、いまの名前が通報の時点の名前として
+出てしまう。**適用したらすぐ再実行し、Ⓚ で詰める。**
 
-**マージより後にしてはいけない。** CI の配備は未適用のマイグレーションがあると止まる
-（`scripts/check-migrations-applied.sh`）が、**止まらずに出た場合はログインが落ちる**
-——既存の利用者のログインは、履歴の表が無いと batch ごと失敗する（`src/auth/google.ts` の
-`refreshExistingUser`）。
-
-**早すぎてもいけない（直前に当てる理由）。** 適用した時刻が「表示名の履歴を書き始めた時刻」として
-記録されるが、**実際に履歴を書くのは新しいコードが配られてから**である。その間に古いコードが名前を
-変えると記録されず、**その間に付いた通報では、いまの名前が通報の時点の名前として出てしまう。**
-窓を狭くするために直前に当て、Ⓚ で詰める。
+**逆（新しいコードが先に出る）は起きない**——関門がある限り、配備は必ず適用の後になる。**関門を
+迂回して先に配ると、既存の利用者のログインが落ちる**（履歴の表が無いと `src/auth/google.ts` の
+`refreshExistingUser` の batch ごと失敗する）。
 
 ### Ⓚ 基準の時刻を、配備を確かめた時刻へ進める
 
@@ -491,7 +505,7 @@ npx wrangler d1 execute DB --remote --env production \
 ```
 
 **進める向きは「記録がありません」を増やす側だけである**——誤った名前を出す側へは動かない。
-打ち忘れても壊れはしないが、Ⓘ から配備までの窓の分だけ上の誤りが残りうる。**戻す（小さくする）
+打ち忘れても壊れはしないが、Ⓙ の窓の分だけ上の誤りが残りうる。**戻す（小さくする）
 コマンドは打たないこと。**
 
 ### Ⓛ 画面で確かめる
@@ -501,27 +515,77 @@ npx wrangler d1 execute DB --remote --env production \
 - 題名と説明は、配備より前の通報でも「通報の時点」が出ていること（履歴は 0027 / 0028 からある）
 - **確認のためだけに通報や名前の変更を作らない**（Ⓒ〜Ⓓ と同じ理由）
 
-**忘れるとどうなるか（0030 の適用漏れ）。** 画面は落とさない——一覧の 3 節は出し、行ごとに
+**0030 の表が読めないとき**（適用が壊れたなど）、画面は落とさない——一覧の 3 節は出し、行ごとに
 「通報の時点の題名・説明・作者名を読み込めませんでした」と書いて **500** を返す（`src/admin/review.ts` の
-`readQueue`）。**ログインと名前の変更は失敗する**（上記）。
+`readQueue`）。
 
 ### 運営が D1 を直接 UPDATE して表示名を直すとき（5.9）
 
-**同じコマンドで履歴も 1 行積むこと。** 積まないと、その作者に付いた通報の時点の名前の復元を誤らせる
+**履歴も 1 行積むこと。** 積まないと、その作者に付いた通報の時点の名前の復元を誤らせる
 （変更が 1 件も記録されていない作者では、直した後の名前が通報の時点の名前として出る）。
 
 ```bash
-id='<利用者の id>'; name='<直した名前>'   # 名前に ' を含めるなら '' と重ねる
+set -a; source scripts/load-project-env.sh; set +a
+# 1. いまの名前を目で確かめる（下の old に写す）
+npx wrangler d1 execute DB --remote --env production \
+  --command "select id, display_name, display_name_set_at from users where id = '<利用者の id>';"
+
+# 2. 値を 1 度だけ決める（名前に ' を含めるなら '' と重ねる）。**時刻もここで 1 度だけ取る**
+id='<利用者の id>'; old='<1 で見たいまの名前>'; name='<直した名前>'; now=$(date +%s)
+
+# 3. 名前を直し、「直った後の状態になっている行」についてだけ履歴を積む（**打ち直しても結果が同じ**）
 npx wrangler d1 execute DB --remote --env production --command "
+update users set display_name = '${name}', display_name_set_at = ${now}
+ where id = '${id}' and display_name = '${old}';
 insert into display_name_changes (id, user_id, old_display_name, new_display_name, changed_at)
-  select lower(hex(randomblob(16))), id, display_name, '${name}', cast(strftime('%s', 'now') as integer)
-    from users where id = '${id}' and display_name <> '${name}';
-update users set display_name = '${name}', display_name_set_at = cast(strftime('%s', 'now') as integer)
- where id = '${id}';"
+  select lower(hex(randomblob(16))), id, '${old}', '${name}', ${now}
+    from users
+   where id = '${id}' and display_name = '${name}' and display_name_set_at = ${now}
+     and '${old}' <> '${name}'
+     and not exists (select 1 from display_name_changes
+                      where user_id = '${id}' and changed_at = ${now} and new_display_name = '${name}');"
+
+# 4. 名前と履歴の両方を確かめる
+npx wrangler d1 execute DB --remote --env production --command "
+select display_name, display_name_set_at from users where id = '${id}';
+select old_display_name, new_display_name, changed_at from display_name_changes
+ where user_id = '${id}' order by rowid desc limit 1;"
 ```
 
-**アプリの経路と違い、2 文が 1 つのトランザクションになる保証は無い。** 打ったあとに
-`select * from display_name_changes where user_id = '<id>' order by rowid desc limit 1` で行を確かめること。
+**時刻は `date +%s` で 1 度だけ取り、両方の文に同じ値を渡す**（文ごとに `strftime('%s', 'now')` を
+評価すると、秒の境界をまたいだときに履歴の時刻と実際の変更が 1 秒ずれ、その秒の通報で誤った名前を
+復元しうる。PR #413 の Copilot レビュー）。
+
+#### 2 文が 1 つのトランザクションになるか（確かめた範囲）
+
+**アプリの経路は `D1.batch` で、1 つのトランザクションである**（Cloudflare の D1 Worker API の文書:
+「Batched statements are SQL transactions. If a statement in the sequence fails, then an error is returned
+for that specific statement, and it aborts or rolls back the entire sequence.」）。**端末からの
+`wrangler d1 execute` はそうとは書かれていない。**
+
+- **手元の D1 では巻き戻った**（2026-09-13。wrangler 4.121.0、`--local --persist-to` の使い捨ての D1）。
+  `--command` に 2 文（1 文目は通る insert、2 文目は CHECK 違反の insert）を送ると終了コード 1 で、**1 文目の
+  行は残らなかった。** `--file` に同じ 2 文を書いても、2 文目を「無い表への insert」にしても同じだった。
+  **対照として**、2 文とも通る組を送ると両方の行が入った（1 文目がそもそも実行されていない、ではない）。
+  UPDATE → 失敗する insert の組でも、UPDATE は巻き戻った
+- **本番（`--remote`）の振る舞いを保証する記述は見つからなかった。** `wrangler d1 execute` のコマンドの文書は
+  「複数の文をセミコロンで区切って渡せる」とだけ書き、トランザクションに触れていない。取り込みの文書
+  （Import and export data）は、ダンプから `BEGIN TRANSACTION` / `COMMIT` を外すよう求めているだけである。
+  `exec()` の文書も「エラーが起きたら以降の文を実行しない」としか書いていない。**本番では実測していない**
+  （確認のために本番の表で失敗を起こさない）
+
+**したがって、巻き戻ることを前提にしない。** 文の順序と条件を、**どちらの文が落ちても嘘の履歴が残らない**
+形にしてある。
+
+- **名前を先に直し、履歴は「直った後の状態になっている行」（`display_name = name` かつ
+  `display_name_set_at = now`）についてだけ積む。** 1 文目が落ちれば 2 文目は何も積まない
+- **2 文目だけが落ちたとき**に残るのは「履歴の無い変更」である。**4 で気づき、3 をそのまま打ち直せば
+  埋まる**（1 文目は `display_name = old` が偽になって何もせず、2 文目は同じ時刻・同じ値の行が無いときだけ積む）
+- **逆の順序（履歴を先に積む）は採らない。** 2 文目（名前の UPDATE）が落ちると**実際には起きていない変更が
+  履歴に残り**、審査キューがそれを証拠として復元する——**後から見分ける手段が無い**。「履歴の無い変更」は
+  4 で見分けられ、打ち直しで直せるので、**害が小さいのはこちらである**
+- **`old` は 1 で目で確かめた値を渡す**（直したあとの行からは旧い名前を取れないため）。1 と 3 の間に
+  利用者が名前を変えていれば、1 文目が当たらず何も起きない——4 で名前が変わっていなければ 1 からやり直す
 
 ### 幅 390px
 

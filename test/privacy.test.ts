@@ -146,6 +146,27 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     expect(published).toContain('作者が書いた説明');
   });
 
+  it('表示名の変更の履歴を、取得する情報に書き、公開しない情報にも挙げる（#405）', async () => {
+    // **収集を始めた変更で書く**（#373 の constraints）。履歴は `/account` での変更と Google の
+    // 名前への追随の両方で積み（`migrations/0030`）、運営が審査キューで確かめるだけで公開しない。
+    // **どの記述が消えても赤くなるように、語を 1 つずつ見る**（PR #413 の Copilot レビュー）。
+    const body = pageBodyOf((await openPrivacy()).body);
+    const collected = body.slice(body.indexOf('1. 取得する情報'), body.indexOf('2. 利用目的'));
+    const item = collected.slice(collected.indexOf('<strong>表示名の変更の履歴</strong>'));
+    expect(item, '取得する情報に項目が無い').toContain('<strong>表示名の変更の履歴</strong>');
+    const line = item.slice(0, item.indexOf('</li>'));
+    expect(line).toContain('変える前と後の表示名と、変えた日時');
+    expect(line).toContain('Google アカウントの名前に合わせて表示名が変わった場合も残します');
+    expect(line).toContain('公開しません');
+    expect(line).toContain('追記だけで残します');
+    expect(line).toContain('D1');
+    const notPublished = body.slice(
+      body.indexOf('<strong>次の情報は公開しません。</strong>'),
+      body.indexOf('4. 第三者への提供'),
+    );
+    expect(notPublished).toContain('表示名の変更の履歴');
+  });
+
   it('Cookie の有効期間は、発行する側の定数と一致する', async () => {
     const body = pageBodyOf((await openPrivacy()).body);
     expect(body).toContain(`有効期間は ${SESSION_MAX_AGE / (60 * 60 * 24)} 日です。`);

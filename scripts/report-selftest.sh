@@ -1200,11 +1200,26 @@ else
     echo "  FAIL HEAD の判定用のコミットを積めません" >&2
     failed=1
   else
+    # **本番の段と同じ呼び方（`--sha` を渡さない）を先に見る。** verify.yml の関門は作業ツリーの
+    # HEAD（`git rev-parse HEAD`）を比べる値にする。`--sha` を渡す検査だけだと、その既定の経路が
+    # 壊れても緑のまま通る（PR #429 の Copilot の指摘）。
+    head_out="$(cd "$HEAD_SANDBOX/work" && bash "$ROOT/scripts/deploy-is-head.sh" --remote "$HEAD_SANDBOX/remote.git" --branch main 2>/dev/null)"
+    expect_eq "--sha なし（本番の呼び方）で HEAD なら 0"             "0"              "$?"
+    expect_eq "--sha なし（本番の呼び方）で HEAD なら DEPLOY_IS_HEAD" "DEPLOY_IS_HEAD" "$(printf '%s\n' "$head_out" | tail -1)"
+
     head_out="$(bash scripts/deploy-is-head.sh --remote "$HEAD_SANDBOX/remote.git" --branch main --sha "$old_sha" 2>/dev/null)"
     expect_eq "HEAD と一致すれば 0"             "0"                "$?"
     expect_eq "HEAD と一致すれば DEPLOY_IS_HEAD" "DEPLOY_IS_HEAD"   "$(printf '%s\n' "$head_out" | tail -1)"
 
     new_sha="$(head_selftest_commit second)" || new_sha=""
+    # 作業ツリーを古いコミットへ戻し、**`--sha` なしで**「もう HEAD ではない」を見る（本番で起きた形）。
+    if git -C "$HEAD_SANDBOX/work" checkout -q --detach "$old_sha" >/dev/null 2>&1; then
+      head_out="$(cd "$HEAD_SANDBOX/work" && bash "$ROOT/scripts/deploy-is-head.sh" --remote "$HEAD_SANDBOX/remote.git" --branch main 2>/dev/null)"
+      expect_eq "--sha なしで古いコミットなら DEPLOY_SUPERSEDED" "DEPLOY_SUPERSEDED" "$(printf '%s\n' "$head_out" | tail -1)"
+    else
+      echo "  FAIL 使い捨ての作業ツリーを古いコミットへ戻せません" >&2
+      failed=1
+    fi
     head_out="$(bash scripts/deploy-is-head.sh --remote "$HEAD_SANDBOX/remote.git" --branch main --sha "$old_sha" 2>/dev/null)"
     expect_eq "HEAD が進んでいても 0（落とさない）"         "0"                 "$?"
     expect_eq "HEAD が進んでいれば DEPLOY_SUPERSEDED"       "DEPLOY_SUPERSEDED" "$(printf '%s\n' "$head_out" | tail -1)"

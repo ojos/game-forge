@@ -32,7 +32,7 @@
 #    9. マイグレーションの関門が、未適用を実際に見つけること（#275）
 #   10. 撤退条件の判定手順が、実際に使える形であること（#44）
 #   11. 審査キューの読み出しが、既知の行に対して正しいこと（#40 / #366 / #394）
-#   12. 削除申請の読み出しと、手順書の整合（#41）
+#   12. 削除依頼の読み出しと、手順書の整合（#41）
 #   13. 参加者の人数と未使用の招待コードの読み出し（#397）
 #   14. 配備が、main の HEAD でなくなったコミットで走らないこと（#427）
 #   15. R2 のライフサイクルの判定が、宣言の外の削除規則を落とすこと（#380）
@@ -1005,15 +1005,15 @@ for missing in --format --persist-to; do
   expect_missing_value_exits scripts/report-queue.sh "$missing"
 done
 
-# ── 12. 削除申請の読み出しと、手順書の整合（#41）────────────────────────────
-echo "[selftest] 削除申請の読み出し（#41）"
+# ── 12. 削除依頼の読み出しと、手順書の整合（#41）────────────────────────────
+echo "[selftest] 削除依頼の読み出し（#41）"
 
 TD_SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/td-selftest.XXXXXX")" || exit 1
 trap 'rm -rf "$SANDBOX" "$KPI_SANDBOX" "$MIG_SANDBOX" "$QUEUE_SANDBOX" "$TD_SANDBOX"' EXIT
 
 if ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
      npx wrangler d1 migrations apply DB --local --persist-to "$TD_SANDBOX" >/dev/null 2>&1; then
-  echo "  FAIL 削除申請用の使い捨て D1 へマイグレーションを適用できません" >&2
+  echo "  FAIL 削除依頼用の使い捨て D1 へマイグレーションを適用できません" >&2
   failed=1
 else
   CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
@@ -1023,17 +1023,17 @@ else
   values
     ('t1','g-1','権利者A','a@example.invalid','削除を求めます。',100,null,null,null),
     ('t2','g-2','権利者B','b@example.invalid','対応済み',50,60,'rejected','根拠不明');
-  " >/dev/null 2>&1 || { echo "  FAIL 削除申請の既知の行を入れられません" >&2; failed=1; }
+  " >/dev/null 2>&1 || { echo "  FAIL 削除依頼の既知の行を入れられません" >&2; failed=1; }
 
   td_json="$(bash scripts/takedown-queue.sh --persist-to "$TD_SANDBOX" --format json 2>/dev/null)"
   td_code=$?
   expect_eq "未対応が有れば 1 で落ちる" "1"  "$td_code"
   expect_eq "未対応は 1 件"            "1"  "$(jq -r '.count' <<<"$td_json")"
-  # **対応済みを出さない。** 出すと、判断した申請が何度もキューへ戻る。
+  # **対応済みを出さない。** 出すと、判断した依頼が何度もキューへ戻る。
   expect_eq "出るのは未対応だけ"       "t1" "$(jq -r '.rows[0].id' <<<"$td_json")"
-  # **中身を出す。** report-queue.sh とは判断が違う——権利者の申請は読まないと
+  # **中身を出す。** report-queue.sh とは判断が違う——権利者の依頼は読まないと
   # 判断できない（docs/takedown.md）。
-  expect_eq "申請の本文が出る"         "削除を求めます。" "$(jq -r '.rows[0].body' <<<"$td_json")"
+  expect_eq "依頼の本文が出る"         "削除を求めます。" "$(jq -r '.rows[0].body' <<<"$td_json")"
 
   CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
     npx wrangler d1 execute DB --local --persist-to "$TD_SANDBOX" \

@@ -285,7 +285,7 @@ describe('admin の外枠が app の行き先を持たない（2.4 の constrain
 
   it('どの画面のフッタにも app の行き先が無い', async () => {
     // **利用者向けの 2 区画（サービス / 法務）を持ち込まない。** #41 の「全ページの
-    // フッターから削除申請へ到達できる」は**利用者向けの画面についての要求**である。
+    // フッターから削除依頼へ到達できる」は**利用者向けの画面についての要求**である。
     for (const path of getPaths()) {
       const { body } = await open(path);
       const footer = /<footer class="gf-admin-footer">[\s\S]*?<\/footer>/u.exec(body)?.[0] ?? '';

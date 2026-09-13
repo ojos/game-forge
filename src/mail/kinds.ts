@@ -124,7 +124,7 @@ export const MAIL_KINDS: readonly MailKind[] = [
     audience: 'operator',
     mutable: false,
     implemented: true,
-    name: '削除申請の受付',
+    name: '削除依頼の受付',
     note: '運用者へ送ります（src/takedown.ts）。',
   },
 ];

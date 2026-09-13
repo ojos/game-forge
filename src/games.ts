@@ -2058,7 +2058,7 @@ export interface AuthoredGame {
  *
  * # `removed` を除く
  *
- * `status='removed'` は 8.4 の削除申請と 5.3 の tombstone 化が作る状態で、**作者が
+ * `status='removed'` は 8.4 の削除依頼と 5.3 の tombstone 化が作る状態で、**作者が
  * 戻るための作品ではない。** 出しても辿れる先は無い（`/p/` は `status <> 'removed'`
  * でしか引けず、`/g/` は `published` でしか引けない）。**行き先の無いリンクを一覧に
  * 並べない。**

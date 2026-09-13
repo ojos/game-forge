@@ -108,7 +108,7 @@ describe('ヘッダの出し分けに使う状態（resolveSiteViewer）', () =>
 
   it('秘密鍵の設定が壊れていても投げない（画面ごと 500 にしない）', async () => {
     // **外枠が原因で本文まで消える形を作らない**（`src/html.ts` の理由）。
-    // ヘッダの 1 行のために、規約や削除申請の画面が 500 になってはいけない。
+    // ヘッダの 1 行のために、規約や削除依頼の画面が 500 になってはいけない。
     const logged: string[] = [];
     const spy = vi.spyOn(console, 'error').mockImplementation((message: unknown) => {
       logged.push(String(message));

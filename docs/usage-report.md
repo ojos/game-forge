@@ -11,7 +11,7 @@
 | ビルド時間が天井へ近づいていないか（#166） | `scripts/build-time-report.sh` | CloudWatch の `REPORT` 行 |
 | 10 章の KPI（#42） | `scripts/kpi-report.sh` | D1 の `games` / `generations` / `waitlist` / `game_revisions` |
 | 審査待ちの作品（#40） | `scripts/report-queue.sh` | D1 の `games` / `reports` |
-| 未対応の削除申請（#41） | `scripts/takedown-queue.sh` | D1 の `takedown_requests`（手順は [takedown.md](takedown.md)） |
+| 未対応の削除依頼（#41） | `scripts/takedown-queue.sh` | D1 の `takedown_requests`（手順は [takedown.md](takedown.md)） |
 | 遮断の記録の掃除（#37） | `scripts/moderation-prune.sh` | D1 の `moderation_blocks` |
 | 数え方の定義（両方が共有する） | `scripts/report-window.sh` | — |
 | 自己検査 | `scripts/report-selftest.sh` | 使い捨ての手元 D1 と宣言 |
@@ -478,7 +478,7 @@ M5-4 の tombstone は行を消さず `status` だけを変えるので、`paren
 ## 審査待ちの作品を読む（#40 / M6-4）
 
 **仕様書 8.4 は運用画面を要求していません。** 求めているのは通報 UI・審査キューへの投入・
-削除申請フォーム・記録の 4 つで、画面はどこにも出てきません（#40 の intake / 2026-09-03）。
+削除依頼フォーム・記録の 4 つで、画面はどこにも出てきません（#40 の intake / 2026-09-03）。
 
 ```bash
 bash scripts/report-queue.sh --remote            # 本番（読み取りのみ）

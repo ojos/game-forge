@@ -245,7 +245,7 @@ export function headerAvatarUrl(request: Request, env: Env, userId: string): str
  * ここが欲しいのは「ヘッダにどちらの項目を出すか」だけで、**判断の重さが違う。**
  *
  * - **`src/legal.ts` は D1 に触らないモジュールである**（あのファイルの冒頭）。
- *   外枠のためにそこへ D1 を持ち込むと、規約と削除申請の画面が D1 の可用性に
+ *   外枠のためにそこへ D1 を持ち込むと、規約と削除依頼の画面が D1 の可用性に
  *   ぶら下がる——**権利者向けの窓口は、いちばん落としてはいけない画面である。**
  * - **BAN を素通りさせても漏れない。** ヘッダが出すのは本人だけの画面への**リンク**と
  *   ログアウトの**フォーム**で、リンクの先は `resolveSessionUser` が改めて見る（BAN された
@@ -554,7 +554,7 @@ export function newsBreadcrumbParents(articles: readonly NewsArticle[]): readonl
 export const BREADCRUMB_PARENTS: readonly NavItem[] = [
   { path: PUBLIC_WORKS_PATH, label: '作品をさがす' },
   { path: SIGNUP_PATH, label: 'Game Forge に登録する' },
-  { path: TAKEDOWN_PATH, label: '削除申請' },
+  { path: TAKEDOWN_PATH, label: '削除依頼' },
   { path: ACCOUNT_PATH, label: '登録情報' },
   ...newsBreadcrumbParents(NEWS_ARTICLES),
 ];

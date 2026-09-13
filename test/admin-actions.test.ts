@@ -197,7 +197,7 @@ describe('admin_actions の形（仕様 2.4.4。0026 / 0031）', () => {
     expect(valuesOf('target_kind').sort()).toEqual([...ADMIN_ACTION_TARGET_KINDS].sort());
   });
 
-  it('削除申請の措置の綴りは、措置の正本（TAKEDOWN_ACTIONS）から導かれている（#406）', () => {
+  it('削除依頼の措置の綴りは、措置の正本（TAKEDOWN_ACTIONS）から導かれている（#406）', () => {
     // **措置を 1 つ足した日に、履歴の綴りだけが古いまま残らない。**
     expect([...TAKEDOWN_ADMIN_ACTIONS].sort()).toEqual(
       TAKEDOWN_ACTIONS.map((action) => `takedown-${action}`).sort(),
@@ -548,10 +548,10 @@ describe('履歴の読み取り（2.4.4）', () => {
 });
 
 /**
- * 削除申請を 1 件入れる（受付の口を通さず、行だけを作る。通知の経路は `test/legal.test.ts`）。
+ * 削除依頼を 1 件入れる（受付の口を通さず、行だけを作る。通知の経路は `test/legal.test.ts`）。
  *
- * @param gameId 申請に書かれた作品の id（実在しなくてよい）
- * @returns 申請の id
+ * @param gameId 依頼に書かれた作品の id（実在しなくてよい）
+ * @returns 依頼の id
  */
 async function insertTakedown(gameId: string): Promise<string> {
   const id = crypto.randomUUID();
@@ -565,7 +565,7 @@ async function insertTakedown(gameId: string): Promise<string> {
   return id;
 }
 
-/** 申請の行（措置の側と、申請の内容）。 */
+/** 依頼の行（措置の側と、依頼の内容）。 */
 interface TakedownRecordRow {
   readonly claimant_name: string;
   readonly claimant_contact: string;
@@ -576,9 +576,9 @@ interface TakedownRecordRow {
 }
 
 /**
- * 申請の行を読む。
+ * 依頼の行を読む。
  *
- * @param id 申請の id
+ * @param id 依頼の id
  * @returns 行
  */
 async function takedownOf(id: string): Promise<TakedownRecordRow | null> {
@@ -601,8 +601,8 @@ async function historyLines(): Promise<string[]> {
   return rows.results.map((row) => `${row.action} ${row.target_kind} ${row.target_id}`);
 }
 
-describe('削除申請の措置の記録（8.4 / 2.4.3 / #406）', () => {
-  it('rejected: 措置を記録し、履歴が 1 行増え、申請の内容と作品は動かない', async () => {
+describe('削除依頼の措置の記録（8.4 / 2.4.3 / #406）', () => {
+  it('rejected: 措置を記録し、履歴が 1 行増え、依頼の内容と作品は動かない', async () => {
     const gameId = await insertGame(users.author, null);
     const id = await insertTakedown(gameId);
 
@@ -615,7 +615,7 @@ describe('削除申請の措置の記録（8.4 / 2.4.3 / #406）', () => {
     });
 
     expect(outcome).toEqual({ ok: true, queued: false });
-    // **申請の内容は 1 文字も変わらない。** 変わるのは措置の側だけ（0018 の「追記のみ」）。
+    // **依頼の内容は 1 文字も変わらない。** 変わるのは措置の側だけ（0018 の「追記のみ」）。
     expect(await takedownOf(id)).toEqual({
       claimant_name: '権利者',
       claimant_contact: 'owner@example.invalid',
@@ -636,7 +636,7 @@ describe('削除申請の措置の記録（8.4 / 2.4.3 / #406）', () => {
       requestId: id,
       action: 'restricted',
       actorId: users.admin,
-      reason: '権利者の申請により新規露出を止める',
+      reason: '権利者の依頼により新規露出を止める',
       now: 200,
     });
 
@@ -647,7 +647,7 @@ describe('削除申請の措置の記録（8.4 / 2.4.3 / #406）', () => {
       `takedown-restricted takedown ${id}`,
       `review-queued game ${gameId}`,
     ]);
-    // **審査の履歴だけを読んでも、どの申請で止めたかが分かる**（2.4.4）。
+    // **審査の履歴だけを読んでも、どの依頼で止めたかが分かる**（2.4.4）。
     const queued = await env.DB.prepare(
       "select reason from admin_actions where action = 'review-queued'",
     ).first<{ reason: string }>();
@@ -662,7 +662,7 @@ describe('削除申請の措置の記録（8.4 / 2.4.3 / #406）', () => {
       requestId: id,
       action: 'restricted',
       actorId: users.admin,
-      reason: '権利者の申請',
+      reason: '権利者の依頼',
     });
 
     expect(outcome).toEqual({ ok: true, queued: true });
@@ -670,7 +670,7 @@ describe('削除申請の措置の記録（8.4 / 2.4.3 / #406）', () => {
   });
 
   it('restricted: 作品が実在しなくても措置は記録し、審査キューには何も入れない', async () => {
-    // **申請に書かれた id は実在しないことがある**（0018）。記録を落とさない。
+    // **依頼に書かれた id は実在しないことがある**（0018）。記録を落とさない。
     const id = await insertTakedown(`missing-${crypto.randomUUID()}`);
 
     const outcome = await recordTakedownAction(env, {
@@ -710,7 +710,7 @@ describe('削除申請の措置の記録（8.4 / 2.4.3 / #406）', () => {
       requestId: id,
       action: 'removed',
       actorId: users.admin,
-      reason: '申請を認める',
+      reason: '依頼を認める',
     });
 
     expect(outcome).toEqual({ ok: true, queued: false });
@@ -721,7 +721,7 @@ describe('削除申請の措置の記録（8.4 / 2.4.3 / #406）', () => {
     expect(await historyLines()).toEqual([`takedown-removed takedown ${id}`]);
   });
 
-  it('記録済みの申請へもう 1 度送っても、措置も作品も履歴も動かない（同じ秒でも）', async () => {
+  it('記録済みの依頼へもう 1 度送っても、措置も作品も履歴も動かない（同じ秒でも）', async () => {
     const gameId = await insertGame(users.author, null);
     const id = await insertTakedown(gameId);
     await recordTakedownAction(env, {
@@ -751,7 +751,7 @@ describe('削除申請の措置の記録（8.4 / 2.4.3 / #406）', () => {
     expect(await reviewStateOf(gameId)).toBe(REVIEW_CLEARED);
   });
 
-  it('存在しない申請は not-found で、何も書かない', async () => {
+  it('存在しない依頼は not-found で、何も書かない', async () => {
     const outcome = await recordTakedownAction(env, {
       requestId: `missing-${crypto.randomUUID()}`,
       action: 'rejected',

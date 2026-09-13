@@ -1,9 +1,9 @@
 /**
- * 利用規約と、権利者向けの削除申請フォーム（5.6 / 8.4 / #41）。
+ * 利用規約と、権利者向けの削除依頼フォーム（5.6 / 8.4 / #41）。
  *
  * ## 共通フッターはここが持つ
  *
- * #41 の acceptance は「**削除申請フォームが全ページのフッターから到達できる**」を
+ * #41 の acceptance は「**削除依頼フォームが全ページのフッターから到達できる**」を
  * 求めている。**各ページが自分でリンクを書く形にすると、次に画面を足した日に
  * 書き忘れる**——書き忘れても見た目は正しいので、動作では気づけない。
  * {@link siteFooter} を 1 か所に置き、**全 SSR 画面がそれを呼ぶことを
@@ -41,7 +41,7 @@ import { MAX_BODY_LENGTH, MAX_CLAIMANT_LENGTH } from './takedown.js';
 // ここから再輸出するのは、既存の import（`src/takedown-routes.ts` やテスト）を動かさないため。
 export { TAKEDOWN_PATH, TAKEDOWN_THANKS_PATH, TERMS_PATH } from './legal-paths.js';
 
-/** 削除申請の受け口。 */
+/** 削除依頼の受け口。 */
 export const TAKEDOWN_SUBMIT_PATH = '/api/takedown';
 
 /** フォームの項目名（`name` と JSON の鍵の両方）。 */
@@ -55,13 +55,13 @@ export const TAKEDOWN_FIELDS = {
 /**
  * フッタの法務の区画（2.3.7）。
  *
- * 規約と削除申請は実在し、削除申請は #41 の acceptance 2 が「全ページのフッターから
+ * 規約と削除依頼は実在し、削除依頼は #41 の acceptance 2 が「全ページのフッターから
  * 到達できる」ことを求めている唯一の窓口である。**プライバシーポリシーは v1.57 で足した**
  * （2.3.7 の v1.57 注記 / #373。画面は `src/privacy.ts`）。
  */
 const FOOTER_LEGAL_ITEMS: readonly NavItem[] = [
   { path: TERMS_PATH, label: '利用規約' },
-  { path: TAKEDOWN_PATH, label: '権利者の方へ（削除申請）' },
+  { path: TAKEDOWN_PATH, label: '権利者の方へ（削除依頼）' },
   { path: PRIVACY_PATH, label: 'プライバシーポリシー' },
 ];
 
@@ -136,7 +136,7 @@ ${sections.join('\n')}
 /**
  * 規約が「まだ専門家の確認を受けていない」ことの但し書き。
  *
- * **画面にも出す**（冒頭の理由）。文言を 1 か所に置くのは、規約と削除申請の両方へ
+ * **画面にも出す**（冒頭の理由）。文言を 1 か所に置くのは、規約と削除依頼の両方へ
  * 出すためである。
  */
 const DRAFT_NOTICE = `<p class="gf-draft-notice"><strong>この規約はクローズドβ向けの暫定版です。</strong>
@@ -210,7 +210,7 @@ ${DRAFT_NOTICE}
    事前の通知なく削除または非表示にすることができます。</strong></p>
 <p>あわせて、違反した利用者のアカウントを停止し、その利用者を招待した利用者の招待枠を
    停止することがあります。</p>
-<p>権利者の方からの削除申請は、<a href="${TAKEDOWN_PATH}">削除申請フォーム</a>で受け付けます。</p>
+<p>権利者の方からの削除依頼は、<a href="${TAKEDOWN_PATH}">削除依頼フォーム</a>で受け付けます。</p>
 
 <h2>8. 免責</h2>
 <p>本サービスは現状有姿で提供され、特定の目的への適合性、継続的な提供、
@@ -247,27 +247,27 @@ ${siteFooter()}
 }
 
 /**
- * 削除申請フォーム（8.4 / #41 の acceptance 2）。
+ * 削除依頼フォーム（8.4 / #41 の acceptance 2）。
  *
  * **ログインを要求しない。** 権利者は本サービスの利用者とは限らない。
  *
  * **JavaScript を要求しない**（素の `<form>`。`src/publish.ts` と同じ形）。
  *
- * @param error 直前の申請が断られた理由（無ければ null）
+ * @param error 直前の依頼が断られた理由（無ければ null）
  * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns HTML
  */
 function takedownPage(error: string | null, viewer: SiteViewer): string {
   const message =
     error === null ? '' : `<p class="error" role="alert">${escapeHtml(error)}</p>`;
-  return `${siteHead({ title: '削除申請 - Game Forge', viewer })}
-<h1>権利者の方へ（削除申請）</h1>
+  return `${siteHead({ title: '削除依頼 - Game Forge', viewer })}
+<h1>権利者の方へ（削除依頼）</h1>
 ${message}
 <p>本サービス上の作品が、あなたの権利を侵害していると思われる場合、
    このフォームからご連絡ください。<strong>ログインは不要です。</strong></p>
 <p>お送りいただいた内容は記録され、運営者が確認します。
-   <strong>申請をいただいた時点で作品が自動的に消えることはありません</strong>——
-   内容を確認したうえで、削除・表示制限・申請を認めない、のいずれかを判断し、
+   <strong>依頼をいただいた時点で作品が自動的に消えることはありません</strong>——
+   内容を確認したうえで、削除・表示制限・依頼を認めない、のいずれかを判断し、
    その結果を記録します。</p>
 
 <!-- 入力欄に size / cols を置かない。size="50" は幅 390px の端末で layout viewport を
@@ -287,11 +287,11 @@ ${message}
     <input type="text" name="${TAKEDOWN_FIELDS.contact}" required maxlength="${MAX_CLAIMANT_LENGTH}">
   </label></p>
 
-  <p><label>申請の内容（どの権利に基づき、何を求めるか。${MAX_BODY_LENGTH} 文字まで）<br>
+  <p><label>依頼の内容（どの権利に基づき、何を求めるか。${MAX_BODY_LENGTH} 文字まで）<br>
     <textarea name="${TAKEDOWN_FIELDS.body}" required maxlength="${MAX_BODY_LENGTH}" rows="8"></textarea>
   </label></p>
 
-  <button type="submit">申請を送る</button>
+  <button type="submit">依頼を送る</button>
 </form>
 ${siteFooter()}
 `;
@@ -304,8 +304,8 @@ ${siteFooter()}
  * @returns HTML
  */
 function takedownThanksPage(viewer: SiteViewer): string {
-  return `${siteHead({ title: '削除申請を受け付けました - Game Forge', viewer })}
-<h1>削除申請を受け付けました</h1>
+  return `${siteHead({ title: '削除依頼を受け付けました - Game Forge', viewer })}
+<h1>削除依頼を受け付けました</h1>
 <p>ご連絡ありがとうございます。内容を確認し、記録したうえで対応します。</p>
 <p><strong>確認には数日いただくことがあります。</strong>
    緊急を要する場合は、その旨を追記のうえ再度お送りください。</p>
@@ -314,7 +314,7 @@ ${siteFooter()}
 }
 
 /**
- * 規約と削除申請の経路。
+ * 規約と削除依頼の経路。
  *
  * **受け口（POST）はここに置かない。** `src/takedown-routes.ts` が持つ——
  * このモジュールは画面（GET）だけを持ち、**D1 に触らない。**
@@ -361,9 +361,9 @@ export function takedownMessageOf(reason: string): string {
     'invalid-game-id': '対象の作品 URL または ID をご確認ください。',
     'missing-field': 'すべての項目にご記入ください。',
     'claimant-too-long': `お名前とご連絡先は ${MAX_CLAIMANT_LENGTH} 文字までです。`,
-    'body-too-long': `申請の内容は ${MAX_BODY_LENGTH} 文字までです。`,
+    'body-too-long': `依頼の内容は ${MAX_BODY_LENGTH} 文字までです。`,
   };
   return Object.prototype.hasOwnProperty.call(messages, reason)
     ? messages[reason]!
-    : '申請を受け付けられませんでした。内容をご確認ください。';
+    : '依頼を受け付けられませんでした。内容をご確認ください。';
 }

@@ -140,8 +140,8 @@ dev_fixture_up() {
   # まさにその格子である。
   PUBLISHED_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
 
-  # **admin の画面が「測る対象」を持つように、審査キュー・履歴・削除申請へ 1 行ずつ仕込む**
-  # （#398 / #406。削除申請は未対応のまま置き、措置の選択肢と理由の入力を測る）。
+  # **admin の画面が「測る対象」を持つように、審査キュー・履歴・削除依頼へ 1 行ずつ仕込む**
+  # （#398 / #406。削除依頼は未対応のまま置き、措置の選択肢と理由の入力を測る）。
   # 空のままだと、審査キューの表も履歴の表も「まだありません」の 1 文になり、**狭い端末で
   # 崩れうる行（題名・理由の入力・ボタン）を 1 度も測らないまま緑になる**——公開済みの
   # 作品を仕込んだ理由（上）と同じ形である。
@@ -197,9 +197,9 @@ dev_fixture_up() {
               '幅の検査の履歴の理由');
     insert into takedown_requests
       (id, game_id, claimant_name, claimant_contact, body, received_at, handled_at, action, note)
-      values ('width-check-takedown', '$PUBLISHED_GAME_ID', '幅の検査の申請者',
+      values ('width-check-takedown', '$PUBLISHED_GAME_ID', '幅の検査の依頼者',
               'width-check-claimant-with-a-long-address@example.invalid',
-              '幅の検査の削除申請の本文です。改行を含み、1 行に収まらない長さにしてあります。', 4,
+              '幅の検査の削除依頼の本文です。改行を含み、1 行に収まらない長さにしてあります。', 4,
               null, null, null);
   " >"$WORK/seed.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/seed.log" >&2; fail "検査用の行を作れませんでした。"; }

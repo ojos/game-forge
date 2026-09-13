@@ -27,7 +27,7 @@
  * | プレイ数（作品ごとの起動回数・利用者と結び付けない・カードと作品ページで誰でも見られる）と、ブラウザの sessionStorage に置く作品ごとの最終計上時刻（30 分・サーバへ送らない） | `workers/likes/src/play-hub.ts`（Durable Object の `plays(game_id, count)`。利用者の列が無い）/ `migrations/` の games_play_count（`games.play_count`）/ `src/plays.ts` の `playReportScript`（`sessionStorage` の鍵 `gf-play:<作品 id>`、`credentials: 'omit'`、`PLAY_REPORT_WINDOW_MS`）（#377 が同じ変更で追記した） |
  * | 通報 | `src/reports.ts` / `migrations/0001_init.sql`（`reports`） |
  * | 待機リスト | `src/waitlist.ts` / `migrations/0001_init.sql`（`waitlist`） |
- * | 削除申請 | `src/takedown.ts` / `migrations/0018_takedown_requests.sql` |
+ * | 削除依頼 | `src/takedown.ts` / `migrations/0018_takedown_requests.sql` |
  * | 運営の措置の記録 | `migrations/0026_admin_actions.sql` |
  * | Cookie 2 種 | `src/session.ts`（`__Host-gf_session`、7 日）/ `src/auth/google.ts`（`__Host-gf_oauth`、10 分） |
  * | AWS 上の処理の記録（生成・ビルド・撮影は 14 日 / 費用ガードは 30 日） | `terraform/orchestrator.tf`・`terraform/build-function.tf`・`terraform/ogp-function.tf` の `retention_in_days = 14` と、`terraform/bedrock-guard.tf` の `retention_in_days = 30`（**ひとまとめに 14 日と書いていた誤りを PR #400 の Copilot の指摘で分けた。値を変えたら本文も直すこと**） |
@@ -149,7 +149,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <h3>ログインせずに送っていただく情報</h3>
 <ul>
   <li><strong>待機リスト</strong>: メールアドレスと、どの画面から登録したか</li>
-  <li><strong>削除申請</strong>（<a href="${TAKEDOWN_PATH}">権利者の方へ</a>）: お名前または団体名、ご連絡先、申請の内容</li>
+  <li><strong>削除依頼</strong>（<a href="${TAKEDOWN_PATH}">権利者の方へ</a>）: お名前または団体名、ご連絡先、依頼の内容</li>
   <li><strong>お問い合わせ</strong>: メールでお送りいただいた内容と、送信元のメールアドレス</li>
 </ul>
 
@@ -160,7 +160,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li>1 人あたりの生成枠と、サービス全体の費用の上限を管理するため</li>
   <li>生成の完了・失敗や、作品が改造されたことを、メールでお知らせするため（作品が改造されたことのお知らせは、登録情報の画面で受け取らない設定にできます。生成の完了・失敗のお知らせは、その設定にかかわらず送ります）</li>
   <li>招待の仕組みを運用し、待機リストに登録された方へ招待についてご連絡するため</li>
-  <li>不正な利用や規約に反する内容を防ぎ、通報・削除申請に対応するため</li>
+  <li>不正な利用や規約に反する内容を防ぎ、通報・削除依頼に対応するため</li>
   <li>お問い合わせに回答するため</li>
   <li>障害の調査と、利用状況の集計によるサービスの改善のため</li>
 </ul>

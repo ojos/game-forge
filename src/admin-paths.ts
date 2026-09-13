@@ -69,13 +69,13 @@ export const ADMIN_REVIEW_API_PATH = '/api/review';
  */
 export const ADMIN_BAN_API_PATH = '/api/ban';
 
-/** 削除申請の一覧と、措置の記録（#406。仕様 2.3.1 の admin の表の綴り）。 */
+/** 削除依頼の一覧と、措置の記録（#406。仕様 2.3.1 の admin の表の綴り）。 */
 export const ADMIN_TAKEDOWNS_PATH = '/takedowns';
 
-/** 削除申請に措置を記録する口（#406）。 */
+/** 削除依頼に措置を記録する口（#406）。 */
 export const ADMIN_TAKEDOWN_API_PATH = '/api/takedown';
 
-/** 措置を記録する削除申請の id（`takedown_requests.id`）。 */
+/** 措置を記録する削除依頼の id（`takedown_requests.id`）。 */
 export const ADMIN_TAKEDOWN_ID_FIELD = 'takedown_id';
 
 /**

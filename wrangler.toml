@@ -130,6 +130,15 @@ name = "LIKE_HUB"
 class_name = "LikeHub"
 script_name = "game-forge-likes"
 
+# プレイ数の正本（2.3.5 / #377）。**いいねと同じ Worker `game-forge-likes` の別クラス `PlayHub`
+# を指す**（仕様 3.6 の「いいねと同じ Durable Objects」は「同じ Worker に載せる」と読む）。
+# **この binding を読むのは `src/plays.ts` だけ**（`scripts/check-likes-worker.sh` が見る）。
+# 宣言を置く場所と理由は `LIKE_HUB` と同じである（トップレベル・production・preview の 3 か所）。
+[[durable_objects.bindings]]
+name = "PLAY_HUB"
+class_name = "PlayHub"
+script_name = "game-forge-likes"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 配備される環境（#89）。
 #
@@ -225,7 +234,17 @@ name = "LIKE_HUB"
 class_name = "LikeHub"
 script_name = "game-forge-likes"
 
+[[env.production.durable_objects.bindings]]
+name = "PLAY_HUB"
+class_name = "PlayHub"
+script_name = "game-forge-likes"
+
 [[env.preview.durable_objects.bindings]]
 name = "LIKE_HUB"
 class_name = "LikeHub"
+script_name = "game-forge-likes"
+
+[[env.preview.durable_objects.bindings]]
+name = "PLAY_HUB"
+class_name = "PlayHub"
 script_name = "game-forge-likes"

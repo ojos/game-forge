@@ -179,7 +179,7 @@ export const MAX_USER_ID_LENGTH = 64;
  */
 export function authorWorksSql(): string {
   // **タグの枠を選ぶのはカードに出すためである**（#376。`publishedGamesSql` と揃える）。
-  return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
+  return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
             g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3
        from games g
       where g.author_id = ? and g.status = ? and ${reviewVisibleSql('g')}
@@ -479,6 +479,7 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
         published_at: number | null;
         fork_count: number;
         like_count: number;
+        play_count: number;
         parent_id: string | null;
         ogp_state: string | null;
         author_id: string | null;
@@ -501,6 +502,7 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
         publishedAt: row.published_at,
         forkCount: row.fork_count,
         likeCount: row.like_count,
+        playCount: row.play_count,
         hasParent: row.parent_id !== null,
         hasShot: row.ogp_state === 'ready',
         // タグ（#376）。語彙に照らして描くのはカードの側である（`src/work-card.ts` の

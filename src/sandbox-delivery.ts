@@ -517,7 +517,9 @@ function documentResponse(target: SandboxTarget, context: ResponseContext): Resp
     frameAncestorOrigin: context.appOrigin,
   });
 
-  return new Response(loaderHtml({ wasmPath, wasmExecPath }), {
+  // **合図の送り先は `frame-ancestors` と同じ親アプリのオリジンである**（#377。
+  // `src/sandbox-loader.ts` の「起動の合図を親へ送る」）。
+  return new Response(loaderHtml({ wasmPath, wasmExecPath, parentOrigin: context.appOrigin }), {
     status: 200,
     headers: sandboxHeaders(csp, {
       'content-type': 'text/html; charset=utf-8',

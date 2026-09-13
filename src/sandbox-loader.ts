@@ -18,12 +18,30 @@
  * その経路が最初から存在しない。
  */
 
-/** ローダーが読む 2 つの資材のパス。**同一ホスト上の絶対パス**で渡す。 */
+/**
+ * ローダーが Wasm を起動した直後に、親（作品ページ）へ送る合図（#377）。
+ *
+ * **中身はこの固定の文字列 1 つだけである。** 作品 id も時刻も載せない——受け手
+ * （`src/plays.ts` の作品ページのスクリプト）は、どの作品のページかを自分で知っている。
+ * 送り手の文書では UGC（Wasm）が動くので、**合図の中身を信じる形にしない**（受け手が
+ * 信じるのは「自分の iframe から届いたこと」だけである）。
+ */
+export const LOADER_STARTED_MESSAGE = 'gf-loader-started';
+
+/** ローダーが読む 2 つの資材のパスと、合図の送り先。 */
 export interface LoaderAssetPaths {
-  /** `wasm_exec.js` のパス（例: `/p/<key>/wasm_exec.js`）。 */
+  /** `wasm_exec.js` のパス（例: `/p/<key>/wasm_exec.js`）。**同一ホスト上の絶対パス**で渡す。 */
   readonly wasmExecPath: string;
-  /** `.wasm` のパス（例: `/p/<key>/game.wasm`）。 */
+  /** `.wasm` のパス（例: `/p/<key>/game.wasm`）。**同一ホスト上の絶対パス**で渡す。 */
   readonly wasmPath: string;
+  /**
+   * 親アプリのオリジン（例: `https://game-forge.ojos.jp`）。起動の合図
+   * （{@link LOADER_STARTED_MESSAGE}）を `postMessage` で送る先に使う（#377）。
+   *
+   * **配信側が知っている値を渡す**（`src/sandbox-delivery.ts` の `responseContextOf`。
+   * `frame-ancestors` と同じ値）。**UGC 由来ではない。**
+   */
+  readonly parentOrigin: string;
 }
 
 /**
@@ -68,6 +86,23 @@ export interface LoaderAssetPaths {
  * `<progress>` は値を持たない（不確定）。**知らないことを知らないと言う形**であり、
  * 進んでいないのに進んで見える棒よりも正確である。
  *
+ * # 起動の合図を親へ送る（#377 / 仕様 2.3.5）
+ *
+ * **プレイ数は「Wasm が実際に起動したとき」に数える**（issue #377 の constraints）。起動を
+ * 知っているのはこの文書だけなので、`instantiateStreaming` が解決して `#gf-status` を隠し、
+ * **`go.run` を呼んだ後**に、**親へ {@link LOADER_STARTED_MESSAGE} を 1 回だけ送る**（`go.run` が
+ * 同期的に投げたら送らない。PR #425 の Copilot の指摘）。 数える
+ * のは受け取った作品ページの側である（`src/plays.ts`）。
+ *
+ * - **親が居ないときは送らない**（`window.parent === window`）。**OGP の撮影
+ *   （`docker/ogp-shot`）は `/g/<id>/` をトップレベルで開く**ので、合図は出ず、受け手の
+ *   スクリプトもそもそも存在しない——**撮影は仕組みの上で数えられない。**
+ * - **送り先のオリジンを `'*'` にしない。** 親アプリのオリジン（{@link LoaderAssetPaths.parentOrigin}）
+ *   だけへ送る。`frame-ancestors` が同じオリジンに絞っているので通常は他に届かないが、
+ *   二重に閉じる。
+ * - **この文書は外へ通信しない**（`connect-src` はその作品の `.wasm` 1 本のまま。
+ *   `postMessage` は CSP の管轄ではなく、許可集合を 1 要素も広げていない）。
+ *
  * @param paths ローダーが読む資材のパス
  * @returns HTML 文書
  */
@@ -76,7 +111,9 @@ export function loaderHtml(paths: LoaderAssetPaths): string {
   // 埋め込みの安全は**埋め込む側**で閉じる。属性は HTML エスケープ、スクリプトは
   // JSON リテラルとして書き出す。
   const wasmExecAttribute = escapeHtml(paths.wasmExecPath);
-  const wasmLiteral = JSON.stringify(paths.wasmPath);
+  const wasmLiteral = scriptLiteral(paths.wasmPath);
+  const parentOriginLiteral = scriptLiteral(paths.parentOrigin);
+  const startedLiteral = scriptLiteral(LOADER_STARTED_MESSAGE);
 
   return `<!doctype html>
 <meta charset="utf-8">
@@ -136,7 +173,19 @@ export function loaderHtml(paths: LoaderAssetPaths): string {
   WebAssembly.instantiateStreaming(fetch(${wasmLiteral}), go.importObject)
     .then(function (result) {
       status.hidden = true;
-      return go.run(result.instance);
+      // **先に起動する。** go.run が同期的に投げたら、合図を送らずにそのまま投げる
+      // （起動していないものを数えない）。
+      var running = go.run(result.instance);
+      // **起動の合図（#377）。** 親が居るときだけ、親アプリのオリジンへ 1 回送る。
+      // トップレベルで開かれた文書（OGP の撮影を含む）は送らない。送れなくても起動は止めない。
+      if (window.parent !== window) {
+        try {
+          window.parent.postMessage(${startedLiteral}, ${parentOriginLiteral});
+        } catch (error) {
+          // 合図はプレイ数のためだけにある。**遊ぶことを妨げない。**
+        }
+      }
+      return running;
     })
     .catch(function (error) {
       // ここに到達するのは、取得の失敗・MIME type 不一致・wasm の不正のいずれか。
@@ -146,6 +195,19 @@ export function loaderHtml(paths: LoaderAssetPaths): string {
 })();
 </script>
 `;
+}
+
+/**
+ * `<script>` の中へ文字列リテラルとして埋めてよい形へ落とす。
+ *
+ * `JSON.stringify` だけでは `</script>` を閉じられる（`<` がそのまま残る）ので、`<` を
+ * `\u003c` へ置き換える。値は配信側の固定の材料だけだが、**埋め込みの安全は埋め込む側で閉じる。**
+ *
+ * @param value 埋め込む文字列
+ * @returns JavaScript の文字列リテラル
+ */
+function scriptLiteral(value: string): string {
+  return JSON.stringify(value).replace(/</gu, '\\u003c');
 }
 
 /**

@@ -126,7 +126,9 @@ export function likedWorksSql(count: number): string {
   // この一覧だけ作者名がリンクにならない）。`users` から選ぶ列は増えていない。
   //
   // **タグの枠を選ぶのはカードに出すためである**（#376。`publishedGamesSql` と揃える）。
-  return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
+  //
+  // **`g.play_count` を選ぶのはカードに出すためである**（#377。`publishedGamesSql` と揃える）。
+  return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
             g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name
        from games g
        left join users u on u.id = g.author_id
@@ -196,6 +198,7 @@ export async function listLikedWorks(
       published_at: number | null;
       fork_count: number;
       like_count: number;
+      play_count: number;
       parent_id: string | null;
       ogp_state: string | null;
       author_id: string | null;
@@ -225,6 +228,7 @@ export async function listLikedWorks(
       publishedAt: row.published_at,
       forkCount: row.fork_count,
       likeCount: row.like_count,
+      playCount: row.play_count,
       hasParent: row.parent_id !== null,
       hasShot: row.ogp_state === 'ready',
       // タグ（#376）。語彙に照らして描くのはカードの側である。

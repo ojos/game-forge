@@ -133,7 +133,9 @@ export function officialSamplesSql(): string {
   // この節だけ作者名がリンクにならない）。`users` から選ぶ列は増えていない。
   //
   // **タグの枠を選ぶのはカードに出すためである**（#376。`publishedGamesSql` と揃える）。
-  return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
+  //
+  // **`g.play_count` を選ぶのはカードに出すためである**（#377。`publishedGamesSql` と揃える）。
+  return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
             g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name
        from games g
        left join users u on u.id = g.author_id
@@ -149,6 +151,7 @@ interface OfficialSampleRow {
   readonly published_at: number | null;
   readonly fork_count: number;
   readonly like_count: number;
+  readonly play_count: number;
   readonly parent_id: string | null;
   readonly ogp_state: string | null;
   readonly author_id: string | null;
@@ -175,6 +178,7 @@ function toPublicWork(row: OfficialSampleRow): PublicWork {
     publishedAt: row.published_at,
     forkCount: row.fork_count,
     likeCount: row.like_count,
+    playCount: row.play_count,
     hasParent: row.parent_id !== null,
     hasShot: row.ogp_state === 'ready',
     // タグ（#376）。語彙に照らして描くのはカードの側である（`src/work-card.ts` の `knownWorkTags`）。
@@ -336,6 +340,9 @@ export const HOME_SORT_TITLES: Readonly<Record<PublicWorkSort, string>> = {
   recent: '新着',
   forked: '改造された数の順',
   liked: 'いいねの多い順',
+  // **トップにプレイ数の節は置かない**（#377。2.3.4 の v1.57 注記「トップは 4 節のまま」）。
+  // 見出しは `Record` の型を満たすためだけにあり、{@link homeSections} は使わない。
+  played: 'プレイ数の多い順',
 };
 
 /** 公式サンプルの節の見出し。**正本は同じく仕様 2.3.1 である。** */

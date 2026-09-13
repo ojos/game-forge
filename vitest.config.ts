@@ -44,7 +44,11 @@ export default defineConfig({
         // 指す。テストではそれを**自分自身の SQLite 版 DO** へ差し替える（#339）。
         // `useSQLite` を落とすと `ctx.storage.sql` が使えず、本番（`new_sqlite_classes`）と
         // 違う保存形式で走ることになる。
-        durableObjects: { LIKE_HUB: { className: 'LikeHub', useSQLite: true } },
+        // `PLAY_HUB`（プレイ数。#377）も同じ理由で同じ差し替えをする。
+        durableObjects: {
+          LIKE_HUB: { className: 'LikeHub', useSQLite: true },
+          PLAY_HUB: { className: 'PlayHub', useSQLite: true },
+        },
         bindings: { TEST_MIGRATIONS: migrations },
         // `.dev.vars.example` の中身をテキストとして渡す。
         //

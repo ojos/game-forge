@@ -154,9 +154,9 @@ dev_fixture_up() {
     insert into games (id, author_id, status, title, go_version, created_at, generation_state)
       values ('$GAME_ID', '$USER_ID', 'draft', '幅の検査の作品', '', 1, 'ready');
     insert into games (id, author_id, status, title, go_version, created_at, published_at,
-                       generation_state, preview_key, like_count, tag1, tag2, tag3)
+                       generation_state, preview_key, like_count, play_count, tag1, tag2, tag3)
       values ('$PUBLISHED_GAME_ID', '$USER_ID', 'published', '幅の検査の公開作品', '', 1, 1,
-              'ready', 'width-check-preview', 3, 'puzzle', 'race-sports', 'rhythm-sound');
+              'ready', 'width-check-preview', 3, 123456, 'puzzle', 'race-sports', 'rhythm-sound');
     update users set is_admin = 1 where id = '$USER_ID';
     insert into games (id, author_id, status, title, go_version, created_at, published_at,
                        generation_state, preview_key, review_state)

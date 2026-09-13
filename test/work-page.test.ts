@@ -36,6 +36,7 @@ import {
   LIKE_PATH,
 } from '../src/like-paths.js';
 import { changeLike } from '../src/likes.js';
+import { PLAY_PATH, playReportScript } from '../src/plays.js';
 import { REVIEW_QUEUED } from '../src/reports.js';
 import { authorPagePath } from '../src/users-page-paths.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
@@ -1090,6 +1091,9 @@ const baseView: WorkPageView = {
   retaggableId: null,
   removableId: null,
   likeCount: 0,
+  // プレイ数（#377）。**既定は数を出さず、数えるスクリプトも置かない。**
+  playCount: 0,
+  playCountableId: null,
   likableId: null,
   unlikableId: null,
 };
@@ -1785,6 +1789,110 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
       const rule = new RegExp(`^\\.${selector}\\s*\\{([^}]*)\\}`, 'mu').exec(env.TEST_APP_CSS);
       expect(rule, `app.css に .${selector} の規則が無い`).not.toBeNull();
       // **色は作品だけが持つ**（app.css 冒頭の方針）。無彩色のトークンだけを参照する。
+      expect(rule![1]!, selector).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/iu);
+    }
+  });
+});
+
+describe('プレイ数（#377 / 仕様 2.3.6）', () => {
+  /**
+   * 公開済みの作品を 1 件用意する。
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @returns 作者の id と作品 id
+   */
+  async function seedPublished(suffix: string): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(`play-${suffix}`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: `sha-play-${suffix}` }));
+    const published = await publishGame(env, id, userId);
+    expect(published.ok).toBe(true);
+    return { userId, id };
+  }
+
+  /**
+   * プレイ数の DO のバインディングへの触り方を記録する env を作る（いいねの `recordingHubEnv` と
+   * 同じ形。**プロパティへ 1 度も触っていなければ呼んでいない**）。
+   *
+   * @returns 差し替えた env と、触ったプロパティ名の記録
+   */
+  function recordingPlayHubEnv(): { env: Env; touched: string[] } {
+    const touched: string[] = [];
+    const proxy = new Proxy(env.PLAY_HUB as unknown as object, {
+      get(target, property) {
+        if (typeof property === 'string') {
+          touched.push(property);
+        }
+        const value: unknown = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    return {
+      env: { ...env, SESSION_SECRET: SECRET, PLAY_HUB: proxy } as unknown as Env,
+      touched,
+    };
+  }
+
+  it('0 なら出さず、1 以上ならいいねの数の隣に出す', () => {
+    expect(renderWorkPage({ ...baseView, published: true, playCount: 0 })).not.toContain('gf-plays');
+    const body = renderWorkPage({ ...baseView, published: true, playCount: 8, likeCount: 2 });
+    expect(body).toContain('<p class="gf-plays">プレイ 8</p>');
+    // **いいねの数の直前に置く**（隣。#383 の詳細パネルが後で作り替える）。
+    expect(body).toContain('<p class="gf-plays">プレイ 8</p>\n<p class="gf-likes">いいね 2</p>');
+  });
+
+  it('公開済みの作品ページは D1 の写しを出し、計上のスクリプトを iframe の直前に置き、DO を呼ばない', async () => {
+    const { id, userId } = await seedPublished('shown');
+    const updated = await env.DB.prepare('update games set play_count = 5 where id = ?').bind(id).run();
+    expect(updated.meta.changes).toBe(1);
+
+    for (const cookie of [undefined, await sessionCookie(userId)]) {
+      const recording = recordingPlayHubEnv();
+      const headers: Record<string, string> = cookie === undefined ? {} : { cookie };
+      const response = await dispatch(
+        workPageRoutes,
+        new Request(`${APP_ORIGIN}${workPagePath(id)}`, { headers }),
+        recording.env,
+      );
+      const body = await response.text();
+
+      // **画面の経路は DO を呼ばない**（数えるのはブラウザのスクリプトで、口は別にある）。
+      expect(recording.touched, 'プレイ数の DO に触れている').toEqual([]);
+      expect(body).toContain('<p class="gf-plays">プレイ 5</p>');
+      // スクリプトは 1 つで、中身は窓口が組み立てたものそのままである（書き写さない）。
+      expect(body).toContain(playReportScript(id));
+      expect(body.split(`fetch(${JSON.stringify(PLAY_PATH)}`).length - 1).toBe(1);
+      // **iframe の直前**（合図より先にリスナーを登録する。PR #425 の Copilot の指摘）。ヘッダには置かない。
+      expect(body).toContain(`${playReportScript(id)}\n<iframe class="gf-frame"`);
+      expect(body.indexOf('</header>')).toBeLessThan(body.indexOf(playReportScript(id)));
+      // 数える iframe は `/g/` を指し、`sandbox` は `allow-scripts` だけのまま（7.2）。
+      expect(body).toContain(`src="https://${env.SANDBOX_HOST}/g/${id}/" sandbox="allow-scripts"`);
+    }
+  });
+
+  it('未公開（試遊の /p/）と取り下げた作品には、数もスクリプトも出さない', async () => {
+    const draft = await seedPending('play-draft');
+    await claimGenerationJob(env, draft.id, await hashJobToken(draft.jobToken));
+    await completeGame(env, draft.id, fakeBuildOutcome({ sourceSha256: 'sha-play-draft' }));
+    await env.DB.prepare('update games set play_count = 9 where id = ?').bind(draft.id).run();
+    // **作者が試遊する `/p/` は数えない**（iframe はあるがスクリプトを置かない）。
+    const draftBody = await (await open(workPagePath(draft.id), await sessionCookie(draft.userId))).text();
+    expect(draftBody).toContain('/p/');
+    expect(draftBody).not.toContain(PLAY_PATH);
+    expect(draftBody).not.toContain('gf-plays');
+
+    const { id, userId } = await seedPublished('removed');
+    await env.DB.prepare('update games set play_count = 9 where id = ?').bind(id).run();
+    expect((await removeGame(env, id, userId)).ok).toBe(true);
+    const removedBody = await (await open(workPagePath(id))).text();
+    expect(removedBody).not.toContain(PLAY_PATH);
+    expect(removedBody).not.toContain('gf-plays');
+  });
+
+  it('プレイ数の見た目は app.css に規則を持ち、色の値を直に書かない', () => {
+    for (const selector of ['gf-plays', 'gf-card-plays']) {
+      const rule = new RegExp(`^\\.${selector}\\s*\\{([^}]*)\\}`, 'mu').exec(env.TEST_APP_CSS);
+      expect(rule, `app.css に .${selector} の規則が無い`).not.toBeNull();
       expect(rule![1]!, selector).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/iu);
     }
   });

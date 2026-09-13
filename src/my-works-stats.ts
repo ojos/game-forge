@@ -7,7 +7,7 @@
  *
  * ## 読み取りは集計 1 回である（2.3.3 の条件 1）
  *
- * **カードの数だけ問い合わせを出さない。** 5 つの数を 1 本の `select` で引く
+ * **カードの数だけ問い合わせを出さない。** 6 つの数を 1 本の `select` で引く
  * （{@link myWorksStatsSql}）。作者で絞るのは既存の索引
  * `games_author_id_created_at_idx`（`migrations/0008`。`author_id, created_at DESC, id DESC`）で、
  * **新しい索引もマイグレーションも足していない。**
@@ -28,18 +28,22 @@
  * - **公開中は `status = 'published'` である。** 8.4 の審査で新規露出を止めた作品も含める。
  *   作者から見て「公開の操作を済ませた作品」の数であり、露出の状態は作品ページが 1 件ずつ
  *   知らせる（作品ごとの内訳は #382 の scope.out）。
- * - **合計いいね数・合計改造された数は D1 の非正規化列を読み、DO を呼ばない**
- *   （`games.like_count` / `games.fork_count`。いいねは最大 5 分遅れる。5.8）。
+ * - **合計いいね数・合計改造された数・合計プレイ数は D1 の非正規化列を読み、DO を呼ばない**
+ *   （`games.like_count` / `games.fork_count` / `games.play_count`。いいねとプレイ数は最大 5 分
+ *   遅れる。5.8 / #377）。
  *
- * ## 合計プレイ数はまだ出さない（#377 待ち）
+ * ## 合計プレイ数（#377）
  *
- * 2.3.13 は 6 枚目に「合計プレイ数」を置くが、**プレイ数の列は #377 が足すもので、まだ
- * `games` に無い。** 列の無い数を 0 と出すと、**遊ばれていないのか数えていないのかを
- * 利用者が区別できない。** だからカードごと出さない。
+ * **6 枚目に「合計プレイ数」を置いた**（2.3.13。`games.play_count` の合計。DO から 5 分おきに
+ * 写した数で、最大 5 分遅れる）。#382 の時点では列が無く、「遊ばれていない」と「数えていない」を
+ * 区別できないのでカードごと出していなかった。
  *
- * **#377 が入ったら足す場所は 3 つである**——{@link MyWorksStats} に数を 1 つ、
- * {@link myWorksStatsSql} に `coalesce(sum(<列>), 0)` を 1 列、{@link STAT_CARDS} に 1 行。
- * 描画と CSS（`@section stats` の `auto-fit` の格子）は枚数を知らないので、触らなくてよい。
+ * **数え始める前の起動は含まない**（埋め戻せない。`migrations/` の `games_play_count`）。
+ * 0 が「数え始めてから遊ばれていない」の意味になるよう、**数え始めた時期を書き添える**
+ * （{@link PLAYS_SINCE_NOTE}）。
+ *
+ * 足した場所は #382 が残した 3 つ——{@link MyWorksStats} の数、{@link myWorksStatsSql} の
+ * `coalesce(sum(play_count), 0)`、{@link STAT_CARDS} の 1 行——と、但し書き 1 つである。
  */
 import { DRAFT_STATUS, PUBLISHED_STATUS, REMOVED_STATUS } from './games.js';
 import { escapeHtml } from './html.js';
@@ -56,6 +60,8 @@ export interface MyWorksStats {
   readonly forks: number;
   /** 合計いいね数（`like_count` の合計。最大 5 分遅れる）。 */
   readonly likes: number;
+  /** 合計プレイ数（`play_count` の合計。最大 5 分遅れる。数え始める前の起動は含まない。#377）。 */
+  readonly plays: number;
 }
 
 /** 作品が 1 本も無い利用者の統計。 */
@@ -65,12 +71,13 @@ export const EMPTY_MY_WORKS_STATS: MyWorksStats = {
   drafts: 0,
   forks: 0,
   likes: 0,
+  plays: 0,
 };
 
 /**
  * カードの並びと見出し。**並びは AivisHub のダッシュボードに揃えた**（2.3.13 の列挙順）。
  *
- * 表として持つのは、**#377 がプレイ数を足すときに描画を触らせない**ためである（冒頭）。
+ * 表として持つのは、**カードを足すときに描画を触らせない**ためである（#377 はここへ 1 行足しただけ）。
  */
 export const STAT_CARDS: readonly { readonly key: keyof MyWorksStats; readonly label: string }[] = [
   { key: 'works', label: '作品数' },
@@ -78,6 +85,7 @@ export const STAT_CARDS: readonly { readonly key: keyof MyWorksStats; readonly l
   { key: 'drafts', label: '下書き' },
   { key: 'forks', label: '合計改造された数' },
   { key: 'likes', label: '合計いいね数' },
+  { key: 'plays', label: '合計プレイ数' },
 ];
 
 /**
@@ -99,7 +107,8 @@ export function myWorksStatsSql(): string {
             coalesce(sum(status = ?), 0) as published,
             coalesce(sum(status = ?), 0) as drafts,
             coalesce(sum(fork_count), 0) as forks,
-            coalesce(sum(like_count), 0) as likes
+            coalesce(sum(like_count), 0) as likes,
+            coalesce(sum(play_count), 0) as plays
        from games
       where author_id = ? and status <> ?`;
 }
@@ -150,6 +159,7 @@ export async function loadMyWorksStats(env: Env, authorId: string): Promise<MyWo
     drafts: countOf(row.drafts),
     forks: countOf(row.forks),
     likes: countOf(row.likes),
+    plays: countOf(row.plays),
   };
 }
 
@@ -159,6 +169,16 @@ export const STATS_UNAVAILABLE_NOTICE =
 
 /** いいね数の遅れの但し書き（5.8。同期は数分おきである）。 */
 export const LIKES_DELAY_NOTE = 'いいね数は、反映されるまで数分かかることがあります。';
+
+/**
+ * プレイ数の但し書き（#377）。**数え始めた時期と、遅れの両方を言う。**
+ *
+ * **数え始める前の起動は含まない**ので、「合計プレイ数 0」が「一度も遊ばれていない」と
+ * 読まれないようにする（#382 がカードを出さなかった理由への応答）。時期は月の粒度で書く
+ * ——配備の日が決まる前に書く文言であり、日付まで書くと配備の日とずれうる。
+ */
+export const PLAYS_SINCE_NOTE =
+  'プレイ数は 2026 年 9 月から数えています（それより前に遊ばれた回数は含みません）。反映されるまで数分かかることがあります。';
 
 /**
  * 統計の区画を組み立てる。
@@ -184,7 +204,8 @@ ${STAT_CARDS.map(
     `  <div class="gf-stats-card"><dt>${label}</dt><dd>${countOf(stats[key])}</dd></div>`,
 ).join('\n')}
 </dl>
-<p class="gf-stats-note">${LIKES_DELAY_NOTE}</p>`;
+<p class="gf-stats-note">${LIKES_DELAY_NOTE}</p>
+<p class="gf-stats-note">${PLAYS_SINCE_NOTE}</p>`;
   return `<section class="gf-stats" aria-labelledby="works-stats-heading">
 <h2 id="works-stats-heading">統計</h2>
 <p class="gf-stats-quota" id="works-quota">${escapeHtml(quotaNotice)}</p>

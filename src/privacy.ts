@@ -6,7 +6,7 @@
  * #373 の constraints は「**書いていない収集をしないのと同じくらい、していない収集を
  * 書かないことが要る**」と定めている。**M12 でこれから増える項目（アイコンなど）は、
  * ここへ先回りして書かない。** 収集を始める issue が、同じ変更の中でこの本文へ追記する
- * （自己紹介と外部リンクは #379 が、メール配信の設定は #384 が追記した）。
+ * （自己紹介と外部リンクは #379 が、メール配信の設定は #384 が、プレイ数は #377 が追記した）。
  *
  * 各項目が実在することは、2026-09-12 に次の場所で確かめた（PR #373 の本文にも一覧を置く）。
  *
@@ -23,6 +23,7 @@
  * | 作品・題名の変更履歴 | `migrations/0001_init.sql`（`games`）/ `migrations/0027_title_changes.sql` / R2 |
  * | 作品の説明とその変更履歴（公開済みの作品だけ・作品ページで誰でも見られる） | `migrations/0028_game_descriptions.sql`（`games.description` / 追記のみの `description_changes`）/ `src/games.ts` の `describeGame` / `src/work-page.ts`（#388 が同じ変更で追記した） |
  * | いいね・1 日の操作回数 | `workers/likes/src/hub.ts`（Durable Object の `likes` / `daily_ops`） |
+ * | プレイ数（作品ごとの起動回数・利用者と結び付けない・カードと作品ページで誰でも見られる）と、ブラウザの sessionStorage に置く作品ごとの最終計上時刻（30 分・サーバへ送らない） | `workers/likes/src/play-hub.ts`（Durable Object の `plays(game_id, count)`。利用者の列が無い）/ `migrations/` の games_play_count（`games.play_count`）/ `src/plays.ts` の `playReportScript`（`sessionStorage` の鍵 `gf-play:<作品 id>`、`credentials: 'omit'`、`PLAY_REPORT_WINDOW_MS`）（#377 が同じ変更で追記した） |
  * | 通報 | `src/reports.ts` / `migrations/0001_init.sql`（`reports`） |
  * | 待機リスト | `src/waitlist.ts` / `migrations/0001_init.sql`（`waitlist`） |
  * | 削除申請 | `src/takedown.ts` / `migrations/0018_takedown_requests.sql` |
@@ -132,6 +133,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li><strong>生成の記録</strong>: 日時、使ったモデル、処理した文字量（トークン数）、費用、成否</li>
   <li><strong>入力の検査で止めた指示文</strong>と、止めた理由の分類</li>
   <li><strong>いいねの操作回数</strong>（1 日の上限を判定するため）</li>
+  <li><strong>プレイ数</strong>: 作品ごとの、ゲームが起動した回数。誰が遊んだかとは結び付けずに数え、ログインしていない方の起動も同じく数えます。数は作品カードと作品ページで誰でも見られます。Cloudflare（Durable Objects とデータベース（D1））に保存します</li>
   <li><strong>登録日時</strong>、および運営者が行った措置（利用停止など）とその理由</li>
   <li><strong>処理の記録（ログ）</strong>: 障害を調べるための、作品の識別子や処理の結果</li>
 </ul>
@@ -160,7 +162,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <p><strong>次の情報は、ログインしていない人を含め、誰でも見られます。</strong></p>
 <ul>
   <li>表示名（作者ページや、公開した作品の作者名として表示されます）</li>
-  <li>公開した作品（題名・遊べる形・紹介用の画像・改造元の作品）と、そのいいねの数</li>
+  <li>公開した作品（題名・遊べる形・紹介用の画像・改造元の作品）と、そのいいねの数とプレイ数</li>
   <li>公開した作品に作者が書いた説明（作品ページに表示されます）</li>
   <li>自己紹介と外部リンク（作者ページに表示されます。外部リンクは本人の申告として表示し、運営者はリンク先がその人のものかを確認していません）</li>
 </ul>
@@ -180,7 +182,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <p>本サービスは、次の事業者のサービスを使って運営しています。
    <strong>それぞれに、下に書いた情報が送られ、または保存されます。</strong></p>
 <ul>
-  <li><strong>Cloudflare</strong>: 本サービスの配信（ホスティング）と、データベース・ファイル・いいねの記録の保存。上の 1 に挙げた情報の主な保存先です。</li>
+  <li><strong>Cloudflare</strong>: 本サービスの配信（ホスティング）と、データベース・ファイル・いいねとプレイ数の記録の保存。上の 1 に挙げた情報の主な保存先です。</li>
   <li><strong>Amazon Web Services（AWS）</strong>: 作品の生成・ビルド・紹介用の画像の撮影を行う処理の実行。
     <ul>
       <li>生成には <strong>Amazon Bedrock</strong>（Anthropic 社の Claude モデル）を使います。指示文と、改造・推敲のときは元の作品のソースコードを送ります。</li>
@@ -198,13 +200,16 @@ export function privacyBody(contact: PrivacyContact): string {
   <li><strong>ログインの状態</strong>: 利用者の識別子と有効期限を、改ざんを検知できる形で持ちます。有効期間は ${sessionDays} 日です。</li>
   <li><strong>ログイン手続き中の一時的な情報</strong>: Google のログイン画面との往復のあいだだけ使います（入力された招待コードと、ログイン後に戻る画面を含みます）。有効期間は ${oauthMinutes} 分です。</li>
 </ul>
+<p><strong>ブラウザの保存領域（sessionStorage）</strong>: 同じ作品を短い時間に何度も開いたときにプレイ数を重ねて数えないよう、
+   作品ページを開いたブラウザの sessionStorage に、作品ごとに最後に数えた時刻を置きます（30 分以内は数え直しません）。
+   この値はサーバへは送らず、ブラウザのタブを閉じると消えます。Cookie ではありません。</p>
 <p><strong>アクセス解析や広告のための Cookie・外部のスクリプトは使っていません。</strong></p>
 
 <h2>7. 保存期間</h2>
 <ul>
   <li>入力の検査で止めた指示文は、90 日を目安に削除します。</li>
   <li>AWS 上の処理の記録（ログ）のうち、作品の生成・ビルド・紹介用の画像の撮影の記録は 14 日で、費用の上限を監視する処理の記録は 30 日で、自動的に削除されます。</li>
-  <li>Cookie は、上の 6 に書いた有効期間で失効します。</li>
+  <li>Cookie は、上の 6 に書いた有効期間で失効します。ブラウザの sessionStorage に置く時刻は、タブを閉じると消えます。</li>
   <li>それ以外の情報は、期限を定めた自動の削除を行っておらず、本サービスの提供に必要なあいだ保存します。</li>
 </ul>
 <p>本サービスには、現在、利用者自身で退会する機能がありません。

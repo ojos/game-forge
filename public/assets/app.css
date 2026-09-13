@@ -602,6 +602,16 @@ button:disabled {
 }
 
 /*
+ * プレイ数（仕様 2.3.6 / #377）。**いいねの数と同じ扱いにする**——数とボタンを横に並べず、
+ * いいねの数の直前に同じ弱さで置く（2.3.12 の詳細パネルが後で作り替える）。
+ */
+.gf-plays {
+  margin: var(--gf-gap-3) 0 0;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+/*
  * 作品カードのいいねの数（仕様 2.3.6 / #340）。
  *
  * **`.gf-card-forks` と同じ扱いにする**（下の「作品カード」の区画にある）。カードの
@@ -900,6 +910,11 @@ button:disabled {
 
 .gf-card-tag,
 .gf-card-forks {
+  color: var(--gf-ink-faint);
+}
+
+/* 作品カードのプレイ数（仕様 2.3.6 / #377）。`.gf-card-likes` と同じ弱さに置く。 */
+.gf-card-plays {
   color: var(--gf-ink-faint);
 }
 

@@ -23,6 +23,7 @@ import { newsRoutes } from './news.js';
 import { worksListRoutes } from './works-list.js';
 import { usersPageRoutes } from './users-page.js';
 import { likeRoutes } from './likes.js';
+import { playRoutes } from './plays.js';
 import { likedWorksRoutes } from './liked-works.js';
 import { ogpRecaptureRoutes } from './ogp-recapture.js';
 import { ogpRoutes } from './ogp.js';
@@ -314,6 +315,7 @@ export function createAppRoutes(env: Env): readonly Route[] {
     ...reviseRoutes,
     ...forkRoutes,
     ...likeRoutes,
+    ...playRoutes,
     ...likedWorksRoutes,
     ...generateCallbackRoutes,
     ...generatePageRoutes,

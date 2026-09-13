@@ -1,9 +1,9 @@
 /**
  * `game-forge-likes` の入口（5.8 / #339）。
  *
- * **この Worker の仕事は Durable Object `LikeHub` を載せることだけである。** Pages は
- * DO のクラスを自分で持てないので、クラスをここに置き、Pages がバインディング
- * （`script_name`）で直接呼ぶ。
+ * **この Worker の仕事は Durable Objects `LikeHub` と `PlayHub`（プレイ数。#377）を載せる
+ * ことだけである。** Pages は DO のクラスを自分で持てないので、クラスをここに置き、Pages が
+ * バインディング（`script_name`）で直接呼ぶ。
  *
  * # `fetch` は何も受け取らない
  *
@@ -15,6 +15,7 @@
  * セッションを持たない呼び出し元が id を偽装できる。
  */
 export { LikeHub } from './hub.js';
+export { PlayHub } from './play-hub.js';
 
 export default {
   /**

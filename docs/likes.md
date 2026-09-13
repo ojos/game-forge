@@ -1,10 +1,11 @@
 # いいね（Durable Objects）の運用手順
 
-いいねの正本を D1 の外（Durable Objects）に置いた経路（仕様 5.8 / #339）の、配備と確認の手順。
+いいねの正本を D1 の外（Durable Objects）に置いた経路（仕様 5.8 / #339）と、同じ Worker に
+載せたプレイ数（#377。下の「プレイ数（#377）」）の、配備と確認の手順。
 
-**コードの正本は `workers/likes/`（Worker `game-forge-likes` と DO `LikeHub`）と
-`src/likes.ts`（Pages 側の窓口）** で、**宣言の正本は `workers/likes/wrangler.toml` と、
-ルートの `wrangler.toml` の `LIKE_HUB`** である。この文書が持つのは、宣言で表せない手順
+**コードの正本は `workers/likes/`（Worker `game-forge-likes` と DO `LikeHub` / `PlayHub`）と
+`src/likes.ts` / `src/plays.ts`（Pages 側の窓口）** で、**宣言の正本は `workers/likes/wrangler.toml` と、
+ルートの `wrangler.toml` の `LIKE_HUB` / `PLAY_HUB`** である。この文書が持つのは、宣言で表せない手順
 ——初回の配備、権限、確認のしかた——だけである。
 
 ## なぜ 2 つ目の Cloudflare のデプロイ単位が要るのか
@@ -23,10 +24,12 @@
 |---|---|---|
 | Worker | `game-forge-likes`（**公開の入口なし**: `workers_dev = false` / `preview_urls = false` / ルートなし） | `workers/likes/wrangler.toml` |
 | DO | `LikeHub`（**SQLite 版**。全員のいいねを 1 個に集める。B1） | `workers/likes/src/hub.ts` |
+| DO（#377） | `PlayHub`（**SQLite 版**。全作品のプレイ数を 1 個に集める。DO のマイグレーションはタグ `v2`） | `workers/likes/src/play-hub.ts` |
 | DO の中の表 | `likes`（利用者 × 作品）/ `daily_ops`（1 人 1 日の操作回数）/ `dirty_games`（同期待ち）/ `banned_users`（同期が最後に見た BAN） | 同上（起動時に `create table if not exists`） |
 | 同期 | アラーム（5 分ごと）→ D1 の `games.like_count` を**実数で上書き** | 同上 |
 | D1 の列と索引 | `games.like_count` / `games_status_like_count_idx`（部分索引）/ `users_banned_idx`（部分索引） | `migrations/0020_games_like_count.sql` |
 | 窓口 | `POST /api/like` / `POST /api/like/cancel` | `src/likes.ts`（綴りは `src/like-paths.ts`） |
+| 窓口（#377） | `POST /api/plays`（作品ページのスクリプトだけが叩く）→ 同期で `games.play_count` | `src/plays.ts` / `migrations/` の `games_play_count` |
 | 配備 | `scripts/deploy-likes.sh`（マージ後は deploy ジョブが **Pages より先に**叩く） | `.github/workflows/verify.yml` |
 | 宣言の検査 | `scripts/check-likes-worker.sh`（`scripts/acceptance.sh` から呼ぶ） | — |
 
@@ -210,8 +213,8 @@ npm run dev
 `ratelimits` を知らないキーとして落とす）。**Workers Free で使えるかも公式の記述に無い。**
 
 **その結果として受け入れている状態**: 日次の上限を超えた要求も DO まで届き、DO の
-リクエストの枠（Workers Free で 1 日 10 万）を減らす。**枠が尽きても止まるのはいいねだけ**で、
-D1（生成・ログイン）は巻き込まれない。
+リクエストの枠（Workers Free で 1 日 10 万）を減らす。**枠が尽きても止まるのはいいねとプレイ数だけ**
+（DO の無料枠はアカウント共通で、プレイ数も同じ枠を使う。#377）で、D1（生成・ログイン）は巻き込まれない。
 
 **置き直すなら**: `game-forge-likes` に `WorkerEntrypoint` の RPC 入口を足し、Pages から
 Service binding で呼んで、そこで Rate Limiting を数えてから DO を呼ぶ。Service binding は
@@ -311,6 +314,98 @@ dev registry に居ないため、`/works/liked` は常に「読み込めませ�
 （`scripts/check-page-width.sh` が通るのはこの degrade した頁である）。**中身の入った一覧を
 ローカルで見るには、`npx wrangler dev --config workers/likes/wrangler.toml` を別に走らせる。**
 
+## プレイ数（#377）
+
+**プレイ数は、いいねと同じ Worker の別クラス `PlayHub` に載る**（#377 の利用者の決定。仕様 3.6 の
+実装注記）。**共有しているのは Worker と「同期待ちの印から D1 へ写す」コード**（`workers/likes/src/hub.ts`
+の `planCountSync` / `writeCountSync` / `ensureSyncAlarm` / `runSyncAlarm`）で、口・記録の形・連打の
+畳み方は別に設計した（理由の全文は `src/plays.ts` の冒頭）。
+
+```text
+作品ページ（公開済みの作品だけ、iframe の直前に計上のスクリプト）
+  └ iframe /g/<id>/ のローダー: Wasm の起動が解決した直後、親が居れば postMessage('gf-loader-started')
+  ← スクリプト: 自分の iframe（event.source）からか → sessionStorage で 30 分畳む → POST /api/plays
+       └ src/plays.ts: D1 を主キーで 1 行読む（公開済みか。違えば 404）→ PlayHub.record(gameId)
+            └ 累計 +1・同期待ちの印（1 つのトランザクション）→ 204
+
+PlayHub のアラーム（5 分ごと。写し残しがある間だけ）
+  └ 印の付いた作品を 40 件まで、累計で games.play_count へ上書き（値が同じなら書かない）
+```
+
+- **OGP の撮影は数えられない。** 撮影は `/g/<id>/` をトップレベルで開くので、ローダーは合図を送らず、
+  数えるスクリプト（作品ページ）もそこには無い
+- **計上は D1 へ 1 行も書かない。** D1 への書き込みは同期だけで、「変わった作品 1 本につき 2 行」
+- **DO への書き込みは計上 1 回で最大 3 行**（印が既にある作品なら 1 行。`test/play-hub.test.ts` の実測）
+- **この口を直接叩く要求は畳めない**（公開済みの作品なら 1 ずつ数える）。精密なボット除外は #377 の scope.out
+
+### 配備（初回だけ増えるもの）
+
+**順序はいいねと同じ**（マイグレーション → likes Worker → Pages）。`.github/workflows/verify.yml` の
+deploy ジョブが、未適用のマイグレーションがあれば止め、likes Worker を Pages の直前に配る。
+
+1. **マイグレーション `games_play_count` を本番に当てる**（上の「2.」と同じ手順。列の追加（既定値 0）と
+   部分索引 1 本だけで、既存の読み書きを壊さない）。**マージより前に、PR のツリーから当てる**
+   ——当てないとマージ後の配備が `MIGRATIONS_PENDING` で止まる。いまの Pages は `play_count` を読まないので、
+   列が先にあっても害が無い
+2. **likes Worker を配る**（`bash scripts/deploy-likes.sh`。マージ後は deploy ジョブが叩く）。**DO の
+   マイグレーション（タグ `v2`、`new_sqlite_classes = ["PlayHub"]`）がここで当たる。** 既存の `LikeHub`
+   （タグ `v1`）の行には触れない。**トークンの権限は増えない**（Workers Scripts: Edit は #339 で足してある）
+3. **Pages を配る**（マージ）。`PLAY_HUB` は `script_name = "game-forge-likes"` の `PlayHub` を指すので、
+   2 より先に配ると計上の口が 503 になる（作品ページは応答を読まないので、利用者には見えない。ログに
+   `[plays] プレイ数を数えられませんでした` が出る）
+
+### 本番で「起動 → 5 分後に同期」を確かめる（#377 の acceptance。親と利用者が行う）
+
+1. **公開済みの作品を 1 つ決め、同期前の数を読む**（読み取りなので実行環境からも叩ける）
+
+   ```bash
+   npx wrangler d1 execute DB --remote --env production \
+     --command "select id, play_count from games where id = '<作品 id>'"
+   ```
+
+2. **ブラウザの新しいタブで作品ページ（`https://app.game-forge.ojos.jp/works/<作品 id>`）を開き、ゲームが
+   起動するまで待つ。** DevTools の Network に `POST /api/plays` が 1 本、**204** で出ることを見る
+   （出ないなら、Console で `sessionStorage.getItem('gf-play:<作品 id>')` が 30 分以内の時刻を持っていないか見る）
+3. **同じタブで再読み込みしても、2 本目の `POST /api/plays` が出ない**ことを見る（30 分の窓）
+4. **`https://sandbox.game-forge.ojos.jp/g/<作品 id>/` をトップレベルで開いても `POST /api/plays` が出ない**
+   ことを見る（撮影と同じ開き方。ローダーは親が居ないので合図を送らない）
+5. **5 分待ってから（最大 10 分）** 1 の SQL をもう一度打ち、**2 で数えた 1 回ぶん増えている**ことを見る
+   （他の閲覧者の起動が混ざりうるので、増えていれば足りる。変わらなければ likes Worker のログ
+   `[plays] 同期しました` / `[plays] 同期に失敗しました` を `npx wrangler tail game-forge-likes` で見る）
+6. **本番と同じ束縛値で実行計画を取る**（#377 の acceptance の 2 つ目。`status` は `'published'`、1 頁目は
+   `limit 21 offset 0`）
+
+   ```bash
+   npx wrangler d1 execute DB --remote --env production --command "explain query plan
+     select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
+            g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name
+       from games g left join users u on u.id = g.author_id
+      where g.status = 'published' and (g.review_state is null or g.review_state = 'cleared')
+      order by g.play_count desc, g.published_at desc, g.id desc limit 21 offset 0"
+   ```
+
+   `SEARCH g USING INDEX games_status_play_count_idx (status=?)` が出て、`USE TEMP B-TREE` と `SCAN g` が
+   出ないこと
+7. 結果を `docs/handoff.md` へ書き戻す
+
+### ローカルで通した記録（2026-09-13 / #377）
+
+**本物の結線（Pages → `script_name = "game-forge-likes"` の `PlayHub`）で、計上と同期を 1 往復通した。**
+本番・リモートには触れていない。状態は使い捨ての `--persist-to` に置き、Pages を 8827（検査用 9257）、
+likes Worker を 8828（9258）で立てた（上の「本物の結線で 1 往復する」の手順のポートだけを変えた）。
+
+状態は同じ `--persist-to` に `npx wrangler d1 migrations apply DB --local` で `games_play_count` まで当て、
+利用者 1 人・公開作品 1 件・下書き 1 件を入れた。
+
+| 時刻（UTC） | 操作 | 観測 |
+|---|---|---|
+| 05:56 | 両方を起動 | Pages の表示: `env.PLAY_HUB (PlayHub, defined in game-forge-likes)  Durable Object  local [connected]` |
+| 05:57 | `POST /api/plays`（cookie なし・JSON）を公開作品へ 2 回、下書きへ 1 回 | 公開作品は `204` が 2 回。下書きは `404 {"error":"not-found"}`。**直後の `play_count` は 0 のまま**（計上は D1 に書かない） |
+| 05:57 | 作品ページとローダーの文書を取得 | 作品ページに合図の文字列（`gf-loader-started`）を持つスクリプトが 1 つ。ローダーは `window.parent.postMessage("gf-loader-started", "https://game-forge.localtest.me:8827")` |
+| （途中） | 同じ作業ツリーで変異の検査と rebase を行い、likes Worker が古いツリーで再読み込みされて止まった | likes Worker のログ: `Could not resolve "./play-hub.js"`。**アラームは DO の保存領域に残っていた** |
+| 06:03 | likes Worker だけ立て直し、`POST /api/plays` を 3 回 | `204` が 3 回。起動と同時に期限切れのアラームが走り `[plays] 同期しました: 1 件（残り 0 件）`、`play_count` が **0 → 2**（最初の 2 回ぶん）。**写している間に届いた 3 回ぶんは印が付け直された** |
+| 06:08 | 次のアラーム（5 分後） | `[plays] 同期しました: 1 件（残り 0 件）`。`play_count` が **2 → 5** |
+
 ## 確かめられていないこと
 
 - **Pages → 別 Worker の DO の結線は、ローカル（dev registry）でだけ通した**（上の記録）。
@@ -320,3 +415,7 @@ dev registry に居ないため、`/works/liked` は常に「読み込めませ�
   `src/index.ts` のホスト検査で全経路が 404 になるので、実際には届かない）
 - **DO の配置**: 最初に呼んだ場所の近くに作られる（Pages の呼び出し元＝日本の利用者の
   近く）。場所を指定していない
+- **プレイ数の合図（`postMessage`）を実ブラウザで通したのは本番の確認（上の 2〜4）が最初である**（#377）。
+  自動テストは workerd の上で走り、ローダーと作品ページのスクリプトの綴り（親の判定の内側でしか送らない・
+  `event.source` で自分の iframe に絞る）を見ている。ローカルの記録は口と同期までで、Wasm の起動は通していない
+  （ローカルの R2 に作品の `.wasm` が無い）

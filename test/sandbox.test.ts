@@ -2,6 +2,7 @@ import { SELF, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createPreviewKey } from '../src/games.js';
 import { parseSandboxPath, wasmExecKey } from '../src/sandbox-delivery.js';
+import { LOADER_STARTED_MESSAGE, loaderHtml } from '../src/sandbox-loader.js';
 import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
@@ -673,5 +674,81 @@ describe('ローダー文書（3.4-2 / #29 acceptance 2）', () => {
     const game = await seedGame({ suffix: 'nostore', status: 'published' });
     const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`);
     expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+});
+
+describe('起動の合図（#377。プレイ数）', () => {
+  /**
+   * ローダー文書のスクリプトから、起動が解決したあとの枝（`.then` の中）を切り出す。
+   *
+   * @param body 文書
+   * @returns `.then(function (result) {` から `.catch(` の手前まで
+   */
+  function startedBranchOf(body: string): string {
+    const start = body.indexOf('.then(function (result) {');
+    const end = body.indexOf('.catch(', start);
+    expect(start, '起動が解決したあとの枝が無い').toBeGreaterThan(-1);
+    return body.slice(start, end);
+  }
+
+  it('親が居るときだけ、親アプリのオリジンへ合図を 1 回送る（撮影は親を持たないので送らない）', async () => {
+    // **OGP の撮影（`docker/ogp-shot`）は `/g/<id>/` をトップレベルで開く。** 親が居ないときに
+    // 合図を送らないこと——と、合図を受けて数えるのが作品ページだけであること——が、
+    // 「撮影は仕組みの上で数えられない」の根拠である。
+    const game = await seedGame({ suffix: 'started', status: 'published' });
+    const body = await (await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`)).text();
+    const branch = startedBranchOf(body);
+
+    expect(branch).toContain('if (window.parent !== window) {');
+    expect(branch).toContain(
+      `window.parent.postMessage(${JSON.stringify(LOADER_STARTED_MESSAGE)}, ${JSON.stringify(APP_ORIGIN)});`,
+    );
+    // **送り先を '*' にしない。** 合図は 1 か所でしか送らない。
+    expect(body).not.toContain(`postMessage(${JSON.stringify(LOADER_STARTED_MESSAGE)}, '*')`);
+    expect(body.split('postMessage(').length - 1).toBe(1);
+    // **合図は `#gf-status` を隠し（撮影が待つのと同じ時点）、`go.run` を呼んだ後に置く。**
+    // `go.run` が同期的に投げたら、合図の行へ到達しない（起動していないものを数えない）。
+    expect(branch.indexOf('status.hidden = true;')).toBeLessThan(branch.indexOf('go.run('));
+    expect(branch).toContain('var running = go.run(result.instance);');
+    expect(branch.indexOf('var running = go.run(')).toBeLessThan(branch.indexOf('postMessage('));
+    // `go.run` の結果（Promise）はそのまま返す（合図を送っても、起動の失敗は `.catch` へ届く）。
+    expect(branch.indexOf('postMessage(')).toBeLessThan(branch.indexOf('return running;'));
+    expect(branch.split('go.run(').length - 1).toBe(1);
+  });
+
+  it('合図は親が居るかの判定の内側にしかない（判定を外すと撮影も合図を送る）', () => {
+    const body = loaderHtml({
+      wasmPath: '/g/x/game.wasm',
+      wasmExecPath: '/g/x/wasm_exec.js',
+      parentOrigin: APP_ORIGIN,
+    });
+    const branch = startedBranchOf(body);
+    const guard = branch.indexOf('if (window.parent !== window) {');
+    const post = branch.indexOf('postMessage(');
+    const close = branch.indexOf('\n      }\n', guard);
+    expect(guard).toBeGreaterThan(-1);
+    expect(post).toBeGreaterThan(guard);
+    expect(post).toBeLessThan(close);
+  });
+
+  it('ローダーはプレイ数の口へ通信しない（connect-src は .wasm 1 本のまま）', async () => {
+    const game = await seedGame({ suffix: 'noconnect', status: 'published' });
+    const response = await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`);
+    const body = await response.text();
+    expect(body).not.toContain('/api/plays');
+    expect(body.split('fetch(').length - 1).toBe(1);
+    expect(directiveOf(response.headers.get('content-security-policy') ?? '', 'connect-src')).toBe(
+      `connect-src ${SANDBOX_ORIGIN}/g/${game.id}/game.wasm`,
+    );
+  });
+
+  it('埋め込む親のオリジンは </script> を閉じられない', () => {
+    const body = loaderHtml({
+      wasmPath: '/g/x/game.wasm',
+      wasmExecPath: '/g/x/wasm_exec.js',
+      parentOrigin: 'https://evil</script><script>alert(1)//',
+    });
+    expect(body).not.toContain('evil</script>');
+    expect(body).toContain('evil\\u003c/script>');
   });
 });

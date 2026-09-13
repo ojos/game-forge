@@ -6,7 +6,17 @@
  * **D1 は日次の書き込み上限を超えると、アカウント全体のクエリがすべて失敗する**（3.6）。
  * いいねの付け外しは索引込みで 1 回最大約 6 行になり、連打だけで生成もログインも
  * 止められる。正本を D1 と別の枠（Durable Objects）に置き、**D1 へは数だけを 5 分おきに
- * 写す**（{@link LikeHub.alarm}）。DO の枠が尽きても止まるのはいいねだけである。
+ * 写す**（{@link LikeHub.alarm}）。DO の枠が尽きても止まるのはいいねとプレイ数だけである
+ * （プレイ数は同じ Worker の別クラス `PlayHub` に載る。DO の無料枠はアカウント共通なので、
+ * 尽きるときは両方が止まる。`./play-hub.ts`。#377）。
+ *
+ * # 同期と D1 への写しは `PlayHub` と共有する（#377）
+ *
+ * **「同期待ちの印を 40 件ずつ写し、写している間に変わった作品は印を末尾へ付け直す」**
+ * 部分は、いいねとプレイ数で同じである。その部分をこのモジュールの関数
+ * （{@link planCountSync} / {@link writeCountSync} / {@link ensureSyncAlarm} /
+ * {@link runSyncAlarm}）に切り出し、`PlayHub` が借りる。**違うのは「実数の数え方」と
+ * 「どの列へ写すか」だけ**で、それは呼び出し側が渡す。
  *
  * # 1 個にまとめる理由
  *
@@ -146,12 +156,169 @@ export interface LikeViewerState {
   readonly count: number;
 }
 
-/** 1 回の同期で何をしたか。 */
-export interface LikeSyncReport {
+/** 1 回の同期で何をしたか（いいねとプレイ数で同じ形。#377）。 */
+export interface CountSyncReport {
   /** D1 へ数を送った作品の数。 */
   readonly synced: number;
   /** 上限（{@link MAX_GAMES_PER_SYNC}）に当たって次の回へ回した作品の数。 */
   readonly deferred: number;
+}
+
+/** 1 回の同期で何をしたか（いいね）。**形は {@link CountSyncReport} と同じである。** */
+export type LikeSyncReport = CountSyncReport;
+
+/** 1 回の同期で写す 1 件（作品と、同期の区間で数えた実数）。 */
+export interface CountSyncEntry {
+  readonly gameId: string;
+  readonly count: number;
+}
+
+/** 同期の区間で決めた、写す作品と残りの件数。 */
+export interface CountSyncPlan {
+  readonly planned: readonly CountSyncEntry[];
+  readonly deferred: number;
+}
+
+/**
+ * 同期待ちの印の表を作る SQL（いいねとプレイ数で同じ。#377）。
+ *
+ * **rowid を残す。** 同期は印を付けた順（rowid の順）に {@link MAX_GAMES_PER_SYNC} 件ずつ
+ * 写す。作品 id の順にすると、写しても写しても印が付き直す作品が先頭を占め、後ろの作品が
+ * いつまでも写らない（{@link writeCountSync} が印を末尾へ付け直す理由と同じ）。
+ */
+export const DIRTY_GAMES_TABLE_SQL = `create table if not exists dirty_games (
+        game_id text primary key
+      );`;
+
+/**
+ * 同期待ちの印から、写す作品とその実数を決める（5.8 / #377）。
+ *
+ * **`transactionSync` の中で呼ぶこと。** 印を読んでから数えるまでに `await` を挟むと、
+ * 割り込んだ操作の分を数え落とす。
+ *
+ * @param sql DO の SQL
+ * @param countFor 作品の実数を数える関数（いいねは BAN を除いた数、プレイ数は累計）
+ * @returns 写す作品（印を付けた順）と、次の回へ回す件数
+ */
+export function planCountSync(
+  sql: SqlStorage,
+  countFor: (gameId: string) => number,
+): CountSyncPlan {
+  const dirty = sql
+    .exec<{ game_id: string }>(
+      'select game_id from dirty_games order by rowid limit ?',
+      MAX_GAMES_PER_SYNC,
+    )
+    .toArray();
+  const total = sql.exec<{ n: number }>('select count(*) as n from dirty_games').one().n;
+  return {
+    planned: dirty.map((row) => ({ gameId: row.game_id, count: countFor(row.game_id) })),
+    deferred: total - dirty.length,
+  };
+}
+
+/**
+ * 決めた数を D1 へ写し、印を片付ける（5.8 / #377）。
+ *
+ * # 手順
+ *
+ * 1. D1 の列を上書きする（batch 1 回。`updateSql` は `(count, gameId, count)` を束縛する形）
+ * 2. 写した作品の印を消す。**写したあとに実数が変わっていた作品は、印を末尾へ付け直す**
+ *
+ * # なぜ 2 で数え直すのか
+ *
+ * **1 の `await` のあいだに、別の操作が割り込める**（外への I/O を待つ間、DO は次の要求を
+ * 受け付ける）。写した値と今の実数が違えば、その作品はまた変わっているので印が要る。
+ * **印を先に消す形にすると、割り込んだ操作の分を取り残す。**
+ *
+ * **残すのではなく、末尾へ付け直す。** 古い印を残すと rowid が古いまま先頭に居座り、
+ * 同期のたびに変わり続ける作品が {@link MAX_GAMES_PER_SYNC} 件を超えると、後ろの作品が
+ * 1 度も写らない（飢餓）。付け直せば、写し損ねた作品は後ろへ回り、待っていた作品が
+ * 次の回に先頭へ来る。
+ *
+ * @param storage DO の保存領域
+ * @param db 本番の D1
+ * @param updateSql 列を上書きする SQL（**値が同じなら書かない形**にしておくこと）
+ * @param plan {@link planCountSync} が決めたもの
+ * @param countFor 作品の実数を数える関数（{@link planCountSync} に渡したものと同じ）
+ * @returns 何をしたか
+ */
+export async function writeCountSync(
+  storage: DurableObjectStorage,
+  db: D1Database,
+  updateSql: string,
+  plan: CountSyncPlan,
+  countFor: (gameId: string) => number,
+): Promise<CountSyncReport> {
+  if (plan.planned.length === 0) {
+    return { synced: 0, deferred: plan.deferred };
+  }
+
+  await db.batch(
+    plan.planned.map(({ gameId, count }) => db.prepare(updateSql).bind(count, gameId, count)),
+  );
+
+  const sql = storage.sql;
+  storage.transactionSync(() => {
+    for (const { gameId, count } of plan.planned) {
+      sql.exec('delete from dirty_games where game_id = ?', gameId);
+      if (countFor(gameId) !== count) {
+        // **写している間に変わった。印を末尾へ付け直す**（新しい rowid を取る）。
+        // 印を残すだけにすると古い rowid のまま先頭に居座り、変わり続ける作品が
+        // {@link MAX_GAMES_PER_SYNC} 件を超えると、後ろの作品がいつまでも写らない
+        // （操作の側は `insert or ignore` なので、印が付き直しても rowid は変わらない）。
+        sql.exec('insert into dirty_games (game_id) values (?)', gameId);
+      }
+    }
+  });
+  return { synced: plan.planned.length, deferred: plan.deferred };
+}
+
+/**
+ * 同期の予約が無ければ入れる（いいねとプレイ数で同じ。#377）。
+ *
+ * **既にあれば動かさない。** 操作のたびに 5 分後へずらすと、操作が続く間は 1 度も同期
+ * されない。
+ *
+ * @param storage DO の保存領域
+ */
+export async function ensureSyncAlarm(storage: DurableObjectStorage): Promise<void> {
+  if ((await storage.getAlarm()) === null) {
+    await storage.setAlarm(Date.now() + SYNC_INTERVAL_MS);
+  }
+}
+
+/**
+ * アラームの本体（いいねとプレイ数で同じ。#377）。
+ *
+ * **例外で落とさない。** 失敗しても同期待ちの印は残るので、次の回に写る。落とすと
+ * 実行環境の再試行（指数的に間隔を空ける）に任せることになり、5 分おきという約束が
+ * 崩れる。**続ける理由があれば、失敗しても必ず次を予約する。**
+ *
+ * @param label ログの接頭辞（`likes` / `plays`）
+ * @param storage DO の保存領域
+ * @param sync 同期の本体
+ * @param hasPendingWork 次の同期を予約すべきか
+ */
+export async function runSyncAlarm(
+  label: string,
+  storage: DurableObjectStorage,
+  sync: () => Promise<CountSyncReport>,
+  hasPendingWork: () => boolean,
+): Promise<void> {
+  try {
+    const report = await sync();
+    if (report.synced > 0 || report.deferred > 0) {
+      console.log(`[${label}] 同期しました: ${report.synced} 件（残り ${report.deferred} 件）`);
+    }
+  } catch (error) {
+    console.error(
+      `[${label}] 同期に失敗しました。次の回に写します: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (hasPendingWork()) {
+    await storage.setAlarm(Date.now() + SYNC_INTERVAL_MS);
+  }
 }
 
 /** この Worker のバインディング（`workers/likes/wrangler.toml`）。 */
@@ -276,9 +443,7 @@ export class LikeHub extends DurableObject<LikesEnv> {
         ops integer not null,
         primary key (user_id, day)
       ) without rowid;
-      create table if not exists dirty_games (
-        game_id text primary key
-      );
+      ${DIRTY_GAMES_TABLE_SQL}
       create table if not exists banned_users (
         user_id text primary key
       ) without rowid;
@@ -396,28 +561,18 @@ export class LikeHub extends DurableObject<LikesEnv> {
   }
 
   /**
-   * D1 へ数を写す（5.8）。
-   *
-   * **例外で落とさない。** 失敗しても同期待ちの印は残るので、次の回に写る。落とすと
-   * 実行環境の再試行（指数的に間隔を空ける）に任せることになり、5 分おきという約束が
-   * 崩れる。**次の回は失敗しても必ず予約する。**
+   * D1 へ数を写す（5.8）。**例外で落とさず、続ける理由があれば次を予約する**
+   * （{@link runSyncAlarm}。`PlayHub` と共有する）。
    */
   override async alarm(): Promise<void> {
-    try {
-      const report = await this.sync(Math.floor(Date.now() / 1000));
-      if (report.synced > 0 || report.deferred > 0) {
-        console.log(`[likes] 同期しました: ${report.synced} 件（残り ${report.deferred} 件）`);
-      }
-    } catch (error) {
-      console.error(
-        `[likes] 同期に失敗しました。次の回に写します: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
     // **いいねが 1 件も無ければ止める。** BAN の差分も、写す数も無い。次に押されたとき
-    // {@link LikeHub.ensureAlarm} が再び予約する。
-    if (this.hasPendingWork()) {
-      await this.ctx.storage.setAlarm(Date.now() + SYNC_INTERVAL_MS);
-    }
+    // {@link ensureSyncAlarm} が再び予約する。
+    await runSyncAlarm(
+      'likes',
+      this.ctx.storage,
+      () => this.sync(Math.floor(Date.now() / 1000)),
+      () => this.hasPendingWork(),
+    );
   }
 
   /**
@@ -432,20 +587,12 @@ export class LikeHub extends DurableObject<LikesEnv> {
    * 1. D1 から BAN されている利用者を引く（{@link BANNED_USERS_SQL}）
    * 2. **同期の区間で**（`await` を挟まずに）、前回見た BAN の一覧と比べ、状態が変わった
    *    利用者の押した作品に同期待ちの印を付ける。一覧を置き換える。古い日の操作回数を
-   *    消す。写す作品と、その実数を決める
-   * 3. D1 の `games.like_count` を上書きする（batch 1 回）
-   * 4. 写した作品の印を消す。**写したあとに実数が変わっていた作品は、印を末尾へ付け直す**
+   *    消す。写す作品と、その実数を決める（{@link planCountSync}）
+   * 3. D1 の `games.like_count` を上書きし、印を片付ける（{@link writeCountSync}。
+   *    **写している間に変わった作品の印を末尾へ付け直す理由は、そちらにある**）
    *
-   * # なぜ 4 で数え直すのか
-   *
-   * **3 の `await` のあいだに、別の付与・取り消しが割り込める**（外への I/O を待つ間、
-   * DO は次の要求を受け付ける）。写した値と今の実数が違えば、その作品はまた変わって
-   * いるので印が要る。**印を先に消す形にすると、割り込んだ操作の分を取り残す。**
-   *
-   * **残すのではなく、末尾へ付け直す。** 古い印を残すと rowid が古いまま先頭に居座り、
-   * 同期のたびに変わり続ける作品が {@link MAX_GAMES_PER_SYNC} 件を超えると、後ろの作品が
-   * 1 度も写らない（飢餓）。付け直せば、写し損ねた作品は後ろへ回り、待っていた作品が
-   * 次の回に先頭へ来る。
+   * **3 は `PlayHub` と共有する**（#377）。いいねに固有なのは 1 と 2 の BAN の扱いと、
+   * 日次の操作回数の掃除だけである。
    *
    * @param at 同期の時刻（UNIX 秒）。古い日の操作回数を消す境界に使う
    * @returns 何をしたか
@@ -456,7 +603,8 @@ export class LikeHub extends DurableObject<LikesEnv> {
     const bannedNow = new Set(banned.results.map((row) => row.id));
 
     const sql = this.ctx.storage.sql;
-    const { planned, deferred } = this.ctx.storage.transactionSync(() => {
+    const countFor = (gameId: string): number => this.countFor(gameId);
+    const plan = this.ctx.storage.transactionSync(() => {
       const known = new Set(
         sql
           .exec<{ user_id: string }>('select user_id from banned_users')
@@ -482,42 +630,16 @@ export class LikeHub extends DurableObject<LikesEnv> {
       // （消すのは日が変わった後の最初の 1 回だけで、以後は 0 行）。
       sql.exec('delete from daily_ops where day < ?', today);
 
-      const dirty = sql
-        .exec<{ game_id: string }>(
-          'select game_id from dirty_games order by rowid limit ?',
-          MAX_GAMES_PER_SYNC,
-        )
-        .toArray();
-      const total = sql.exec<{ n: number }>('select count(*) as n from dirty_games').one().n;
-      return {
-        planned: dirty.map((row) => ({ gameId: row.game_id, count: this.countFor(row.game_id) })),
-        deferred: total - dirty.length,
-      };
+      return planCountSync(sql, countFor);
     });
 
-    if (planned.length === 0) {
-      return { synced: 0, deferred };
-    }
-
-    await this.env.DB.batch(
-      planned.map(({ gameId, count }) =>
-        this.env.DB.prepare(UPDATE_LIKE_COUNT_SQL).bind(count, gameId, count),
-      ),
+    return await writeCountSync(
+      this.ctx.storage,
+      this.env.DB,
+      UPDATE_LIKE_COUNT_SQL,
+      plan,
+      countFor,
     );
-
-    this.ctx.storage.transactionSync(() => {
-      for (const { gameId, count } of planned) {
-        sql.exec('delete from dirty_games where game_id = ?', gameId);
-        if (this.countFor(gameId) !== count) {
-          // **写している間に変わった。印を末尾へ付け直す**（新しい rowid を取る）。
-          // 印を残すだけにすると古い rowid のまま先頭に居座り、変わり続ける作品が
-          // {@link MAX_GAMES_PER_SYNC} 件を超えると、後ろの作品がいつまでも写らない
-          // （付与の側は `insert or ignore` なので、印が付き直しても rowid は変わらない）。
-          sql.exec('insert into dirty_games (game_id) values (?)', gameId);
-        }
-      }
-    });
-    return { synced: planned.length, deferred };
   }
 
   /**
@@ -584,21 +706,9 @@ export class LikeHub extends DurableObject<LikesEnv> {
     });
 
     if (outcome === 'liked' || outcome === 'unliked') {
-      await this.ensureAlarm();
+      await ensureSyncAlarm(this.ctx.storage);
     }
     return { outcome };
-  }
-
-  /**
-   * 同期の予約が無ければ入れる。
-   *
-   * **既にあれば動かさない。** 押されるたびに 5 分後へずらすと、押され続ける間は
-   * 1 度も同期されない。
-   */
-  private async ensureAlarm(): Promise<void> {
-    if ((await this.ctx.storage.getAlarm()) === null) {
-      await this.ctx.storage.setAlarm(Date.now() + SYNC_INTERVAL_MS);
-    }
   }
 
   /**

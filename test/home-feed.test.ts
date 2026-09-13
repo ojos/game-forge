@@ -520,6 +520,23 @@ describe('節の出し入れ（issue #329 の constraints）', () => {
     expect(section!.works.map((work) => work.id)).toContain(liked);
   });
 
+  it('プレイ数の節は置かない（#377。トップは 4 節のまま）', () => {
+    const work = {
+      id: 'x',
+      title: 't',
+      authorName: null,
+      publishedAt: 1,
+      forkCount: 0,
+      likeCount: 3,
+      playCount: 1_000,
+      hasParent: false,
+      hasShot: false,
+    } as const;
+    const sections = homeSections({ official: [work], recent: [work], forked: [work], liked: [work] });
+    expect(sections.map((section) => section.key)).not.toContain('played');
+    expect(sections).toHaveLength(4);
+  });
+
   it('「もっと見る」は軸ごとの一覧へ送り、公式サンプルには置かない', () => {
     const work = {
       id: 'x',
@@ -665,5 +682,19 @@ describe('公式サンプルのカードにもタグが出る（#376 / 仕様 2.
     await purgeListCache(HOME_CACHE_KEY);
     const feed = await loadHomeFeed(env);
     expect(feed.recent.find((work) => work.id === game)?.tags).toEqual(['shooting']);
+  });
+});
+
+describe('公式サンプルのカードにもプレイ数が出る（#377 / 仕様 2.3.6）', () => {
+  it('公式サンプルの SQL が play_count を選び、PublicWork にプレイ数が載る', async () => {
+    // **公式サンプルは `listPublishedGames` を通らない**（選び忘れると、この節だけ数が消える）。
+    await clearOperators();
+    const operator = await seedUser({ operator: true });
+    const official = await seedGame(operator);
+    await env.DB.prepare('update games set play_count = 77 where id = ?').bind(official).run();
+
+    const works = await listOfficialSamples(env);
+    expect(works.find((work) => work.id === official)?.playCount).toBe(77);
+    expect(officialSamplesSql()).toContain('g.play_count');
   });
 });

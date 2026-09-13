@@ -7,6 +7,9 @@
 import { createAdminRoutes } from './admin/routes.js';
 import { authRoutes } from './auth/google.js';
 import { accountRoutes } from './account.js';
+import { createAccountHandleRoutes } from './account-handle.js';
+import { reservedHandlesOf } from './handle.js';
+import { SANDBOX_PATH_PREFIXES } from './sandbox.js';
 import { describeOriginRelation } from './origins.js';
 import { forkRoutes } from './fork.js';
 import { generateRoutes } from './generate.js';
@@ -283,19 +286,19 @@ const devRoutes: readonly Route[] = [
 ];
 
 /**
- * アプリ用ホストの経路表を組み立てる。
+ * アプリ用ホストの経路表を並べる（{@link createAppRoutes} と {@link appReservedHandles} が共有する）。
  *
  * M1 以降で経路を足すときは、機能ごとの `Route[]` を別ファイルに置き、この配列へ
  * 連結する。ここへハンドラ本文を書き足さないこと（並行する PR が同じ行を取り合う）。
  *
- * **定数ではなく関数にしている理由**は `devRoutes` だけである。本番で `/__dev/*` を
- * 遮断する（#89）には env を見る必要があり、モジュール読み込み時には env が無い。
- * 組み立ては配列の連結だけなので、リクエストごとに呼んでも実質的な費用は無い。
+ * **並べるのを 1 か所にする**（#381）。ハンドル名の予約語は経路表から導くので、**表を 2 か所で
+ * 並べると、片方にだけ足した経路が予約語から漏れる。**
  *
- * @param env バインディングと環境変数
+ * @param includeDevRoutes 開発用の経路（`/__dev/*`）を含めるか
+ * @param accountHandleRoutes ハンドル名のタブの経路（予約語を渡して組み立てたもの）
  * @returns 経路表
  */
-export function createAppRoutes(env: Env): readonly Route[] {
+function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: readonly Route[]): readonly Route[] {
   return [
     ...homeRoutes,
     ...newsRoutes,
@@ -307,9 +310,10 @@ export function createAppRoutes(env: Env): readonly Route[] {
     // 到達でき、D1 を読まない**（静的な画面）。
     ...privacyRoutes,
     ...faqRoutes,
-    ...(devRoutesEnabled(env) ? devRoutes : []),
+    ...(includeDevRoutes ? devRoutes : []),
     ...authRoutes,
     ...accountRoutes,
+    ...accountHandleRoutes,
     ...signupRoutes,
     ...waitlistRoutes,
     ...generateRoutes,
@@ -330,6 +334,50 @@ export function createAppRoutes(env: Env): readonly Route[] {
     ...ogpRecaptureRoutes,
     ...inviteRoutes,
   ];
+}
+
+/**
+ * アプリ用ホストの経路表を組み立てる。
+ *
+ * **定数ではなく関数にしている理由**は `devRoutes` だけである。本番で `/__dev/*` を
+ * 遮断する（#89）には env を見る必要があり、モジュール読み込み時には env が無い。
+ * 組み立ては配列の連結だけなので、リクエストごとに呼んでも実質的な費用は無い。
+ *
+ * **ハンドル名のタブ（#381）には、予約語を導く関数を渡す**（{@link appReservedHandles}）。導くのは
+ * 保存の口が呼ばれたときだけである（画面を開くたびに経路表を組み直さない）。
+ *
+ * @param env バインディングと環境変数
+ * @returns 経路表
+ */
+export function createAppRoutes(env: Env): readonly Route[] {
+  return assembleAppRoutes(
+    devRoutesEnabled(env),
+    createAccountHandleRoutes({ reservedHandles: () => appReservedHandles(env) }),
+  );
+}
+
+/**
+ * ハンドル名の予約語を、経路表から導く（#381 / 5.10。`src/handle.ts` の `reservedHandlesOf`）。
+ *
+ * **ここで導いて口へ注入する**——`src/account-handle.ts` や `src/handle.ts` がこのモジュールを import すると、
+ * 経路表がそれらを含むので循環参照になる。
+ *
+ * - **アプリ用ホストの経路は、開発用の経路（`/__dev/*`）を含めて導く。** 本番では落とす経路でも、
+ *   **環境によって予約語が変わる形にしない**（手元で断られた名前が本番で通る、を作らない）
+ * - **管理画面ホストの経路表**（`createAdminRoutes()`。権限を持たない表なので id を知らずに組める）
+ * - **サンドボックス用ホストの接頭辞**（`src/sandbox.ts` の `SANDBOX_PATH_PREFIXES`）
+ * - **3 つのホスト名のラベル**
+ *
+ * @param env バインディングと環境変数
+ * @returns 予約語（小文字）
+ */
+export function appReservedHandles(env: Env): ReadonlySet<string> {
+  return reservedHandlesOf({
+    appRoutes: assembleAppRoutes(true, createAccountHandleRoutes({ reservedHandles: () => appReservedHandles(env) })),
+    adminRoutes: createAdminRoutes(),
+    sandboxPrefixes: SANDBOX_PATH_PREFIXES,
+    hosts: [env.APP_HOST, env.SANDBOX_HOST, env.ADMIN_HOST],
+  });
 }
 
 /**

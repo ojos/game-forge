@@ -25,8 +25,23 @@ export type RouteHandler = (request: Request, env: Env) => Response | Promise<Re
  *
  * **`prefix` を後付けにして、既定を変えない。** `match` を省いた経路は今までと
  * 1 ビットも変わらない挙動になるので、既存の経路の振る舞いを見直す必要が無い。
+ *
+ * # `segment`（#381。`/@handle`）
+ *
+ * **接頭辞の後ろに、`/` を含まない 1 セグメントが続くパスだけに一致する。** `/@` で登録すると
+ * `/@foo` に一致し、`/@`（続きが空）と `/@foo/bar`（2 セグメント）には一致しない。
+ *
+ * **`prefix` で書けなかった理由。** 前方一致の接頭辞は `/` で終える規約である
+ * （{@link findMalformedPrefixRoutes}）。`/@` は `/` で終えられない（`/@/foo` は AivisHub の形
+ * `/@ozchat` ではない）。**規約を緩めて `/@` を前方一致として許すと、同じ緩みで `/works` のような
+ * 綴りの誤り（`/worksmith` を飲み込む）も通る。** そこで種類を分け、`segment` には別の規約を置く
+ * ——**接頭辞は `/` で始まり、英数字でも `/` でもない記号で終わる**（`/@`）。記号で終わる接頭辞は、
+ * 既存の語の経路（`/works` `/users`）を飲み込みようがない。
+ *
+ * **優先順位は `prefix` と同じ段で扱う。** 完全一致を先に見て、無ければ `prefix` と `segment` の
+ * 候補のうち**いちばん長い接頭辞**を採る（{@link dispatch}）。
  */
-export type RouteMatch = 'exact' | 'prefix';
+export type RouteMatch = 'exact' | 'prefix' | 'segment';
 
 /** 経路表の 1 行。 */
 export interface Route {
@@ -52,6 +67,49 @@ export interface Route {
  */
 function isPrefixRoute(route: Route): boolean {
   return route.match === 'prefix';
+}
+
+/**
+ * 経路が 1 セグメントの経路（`segment`。#381）かどうか。
+ *
+ * @param route 経路
+ * @returns 1 セグメントの経路なら true
+ */
+function isSegmentRoute(route: Route): boolean {
+  return route.match === 'segment';
+}
+
+/**
+ * パスが、完全一致でない経路（`prefix` / `segment`）に一致するか。
+ *
+ * @param route 経路
+ * @param pathname 要求されたパス
+ * @returns 一致すれば true（完全一致の経路は常に false）
+ */
+function matchesOpenRoute(route: Route, pathname: string): boolean {
+  if (isPrefixRoute(route)) {
+    return pathname.startsWith(route.path);
+  }
+  if (isSegmentRoute(route)) {
+    if (!pathname.startsWith(route.path)) {
+      return false;
+    }
+    const rest = pathname.slice(route.path.length);
+    return rest !== '' && !rest.includes('/');
+  }
+  return false;
+}
+
+/**
+ * 1 セグメントの経路の接頭辞が規約に合うか（{@link RouteMatch} の `segment`）。
+ *
+ * **`/` で始まり、英数字・`_`・`-`・`.`・`~`・`/` のどれでもない記号で終わること**（`/@`）。
+ *
+ * @param path 接頭辞
+ * @returns 規約に合えば true
+ */
+function isWellFormedSegmentPrefix(path: string): boolean {
+  return /^\/.*[^A-Za-z0-9_.~/-]$/u.test(path);
 }
 
 /**
@@ -83,13 +141,13 @@ export async function dispatch(
   // `/works/new` のような固定の経路を足しても、前方一致の経路に飲み込まれない。
   // 完全一致が 1 つでもあれば、そこで決める（405 の判定もその集合の中で行う）。
   const exactPath = routes.filter(
-    (route) => !isPrefixRoute(route) && route.path === url.pathname,
+    (route) => !isPrefixRoute(route) && !isSegmentRoute(route) && route.path === url.pathname,
   );
   // 前方一致は**いちばん長い接頭辞だけ**を採る。短いほうも候補に混ぜると、より具体的な
   // 経路が登録順しだいで届かなくなり、405 の `Allow` にも無関係なメソッドが混ざる。
-  const matchedPrefixes = routes.filter(
-    (route) => isPrefixRoute(route) && url.pathname.startsWith(route.path),
-  );
+  //
+  // **1 セグメントの経路（`segment`。#381）も同じ段の候補にする**（{@link RouteMatch}）。
+  const matchedPrefixes = routes.filter((route) => matchesOpenRoute(route, url.pathname));
   const longestPrefix = matchedPrefixes.reduce<string | null>(
     (longest, route) =>
       longest === null || route.path.length > longest.length ? route.path : longest,
@@ -155,7 +213,8 @@ export function findDuplicateRoutes(routes: readonly Route[]): string[] {
     // **一致のさせ方まで含めて鍵にする。** 同じパスに完全一致と前方一致の両方を
     // 登録するのは正当（`/works/` の下に固定の経路を足す場合）なので、混ぜて重複と
     // 判定しない。`dispatch` も完全一致を先に見るので、この 2 つは共存できる。
-    const key = `${route.method} ${route.path}${isPrefixRoute(route) ? '*' : ''}`;
+    // 1 セグメントの経路（#381）は `+` を付けて、同じ綴りの完全一致・前方一致と区別する。
+    const key = `${route.method} ${route.path}${isPrefixRoute(route) ? '*' : isSegmentRoute(route) ? '+' : ''}`;
     if (seen.has(key)) {
       if (!duplicated.includes(key)) {
         duplicated.push(key);
@@ -175,16 +234,23 @@ export function findDuplicateRoutes(routes: readonly Route[]): string[] {
  * （飲み込まれた側がまだ存在しないなら、何も壊れていないように見える）。
  * {@link findDuplicateRoutes} と同じ理由で、呼びかけではなく機械で検出してテストで落とす。
  *
+ * **1 セグメントの経路（`segment`。#381）も同じ関数で見る**——規約は
+ * {@link isWellFormedSegmentPrefix}（`/` で始まり、記号で終わる）。`/` で終わる綴りは
+ * `segment` では規約違反である（続きの 1 セグメントが `/` の後ろになり、`/@/foo` の形になる）。
+ *
  * @param routes 経路表
  * @returns 規約に反している `"METHOD /path"` の一覧（重複なし・出現順）
  */
 export function findMalformedPrefixRoutes(routes: readonly Route[]): string[] {
   const malformed: string[] = [];
   for (const route of routes) {
-    if (!isPrefixRoute(route)) {
+    if (isSegmentRoute(route)) {
+      if (isWellFormedSegmentPrefix(route.path)) {
+        continue;
+      }
+    } else if (!isPrefixRoute(route)) {
       continue;
-    }
-    if (route.path.startsWith('/') && route.path.endsWith('/') && route.path.length > 1) {
+    } else if (route.path.startsWith('/') && route.path.endsWith('/') && route.path.length > 1) {
       continue;
     }
     const key = `${route.method} ${route.path}`;

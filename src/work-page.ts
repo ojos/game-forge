@@ -103,7 +103,8 @@ import {
 } from './paths.js';
 import { UNKNOWN_AUTHOR, knownWorkTags, workTagListPath } from './work-card.js';
 import { MAX_WORK_TAGS, WORK_TAGS, WORK_TAG_FIELD } from './work-tags.js';
-import { authorPagePath } from './users-page-paths.js';
+import { authorPagePathFor } from './users-page-paths.js';
+import { authorHandleColumnSql } from './handle-sql.js';
 import {
   LIKE_CANCEL_GAME_ID_FIELD,
   LIKE_CANCEL_PATH,
@@ -371,6 +372,8 @@ interface WorkRow {
    * 列は `NOT NULL` で 0 か 1 だが、**結合が空振りしたら null になる**（`left join`）。
    */
   author_is_operator: number | null;
+  /** 作者がいま使っているハンドル名（`handles`。決めていなければ null。#381）。 */
+  author_handle: string | null;
   /**
    * この作品が指す親の id（`games.parent_id` そのもの）。オリジナルなら null。
    *
@@ -440,6 +443,7 @@ export const WORK_ROW_SQL = `select g.author_id, g.status, g.title, g.generation
             (g.source_key is not null) as has_source,
             b.compressed_bytes as wasm_bytes,
             a.display_name as author_name, a.is_operator as author_is_operator,
+            ${authorHandleColumnSql('g.author_id')},
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
        from games g
        left join users a on a.id = g.author_id
@@ -736,6 +740,13 @@ export interface WorkPageView {
    * `authorPagePath` が `encodeURIComponent` を通す（`src/users-page-paths.ts`）。
    */
   readonly authorPageId: string | null;
+  /**
+   * 作者がいま使っているハンドル名（#381 / 5.10）。**あれば作者名のリンクを `/@handle` へ向ける**
+   * （`src/users-page-paths.ts` の `authorPagePathFor`）。
+   *
+   * **省略可にする**（描画を直接呼ぶテストが、ハンドル名に関係しない検査で値を用意しなくて済む）。
+   */
+  readonly authorHandle?: string | null;
   /**
    * 作者が運営か（#334）。**公開済みのときだけ立ちうる**（{@link authorName} と同じ条件）。
    *
@@ -2191,7 +2202,7 @@ function authorLabel(view: WorkPageView): string {
   if (view.authorPageId === null) {
     return name;
   }
-  return `<a class="gf-author-link" href="${authorPagePath(view.authorPageId)}">${name}</a>`;
+  return `<a class="gf-author-link" href="${authorPagePathFor(view.authorPageId, view.authorHandle)}">${name}</a>`;
 }
 
 /**
@@ -2663,6 +2674,8 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // 判定を `author_name` で行うのは、それが「`users` の行が引けたか」そのもの
       // だからである。
       authorPageId: published && row.author_name !== null ? row.author_id : null,
+      // いまのハンドル名（#381）。**`authorPageId` と同じ条件で渡す**（リンクを出さない画面に綴りだけを渡さない）。
+      authorHandle: published && row.author_name !== null ? row.author_handle : null,
       // **運営かどうかは列だけで決める**（#334）。`author_name` を見ない——表示名は
       // ログインのたびに Google の名前で上書きされ、5.9 以後は誰でも「運営」と名乗れる。
       // なぜ導出せず列で持つのかは `migrations/0021_users_operator.sql` にある。

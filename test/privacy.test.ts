@@ -1,4 +1,5 @@
 import { AVATAR_HISTORY_RETENTION_DAYS, AVATAR_OUTPUT_SIZE } from '../src/avatar.js';
+import { HANDLE_RESERVATION_DAYS } from '../src/handle.js';
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { createAppRoutes } from '../src/app.js';
@@ -126,7 +127,10 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     const body = pageBodyOf((await openPrivacy()).body);
     // **プレイ数は #377 が数え始め、この一覧から外して本文へ足した**（下の it）。
     // **アイコンは #380 が収集を始め、この一覧から外して本文へ足した**（下の it）。
-    for (const notYet of ['ハンドル']) {
+    // **ハンドル名は #381 が収集を始め、この一覧から外して本文へ足した**（下の it）。M12 で先回りして
+    // 書く恐れのある語は、これで残っていない（一覧は空になった）。
+    const notYetCollected: readonly string[] = [];
+    for (const notYet of notYetCollected) {
       expect(body, `まだ収集していない「${notYet}」が書いてある`).not.toContain(notYet);
     }
     // 2.3.14 が「収集しない」と決めたもの。
@@ -153,6 +157,19 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     const retention = body.slice(body.indexOf('7. 保存期間'), body.indexOf('8. 開示'));
     expect(retention).toContain(`差し替えた・外した日から ${AVATAR_HISTORY_RETENTION_DAYS} 日で自動的に削除されます`);
     expect(retention).toContain('いまのアイコンと前の画像の両方を削除します');
+  });
+
+  it('ハンドル名・転送で前後が同じ人だと分かること・予約の日数・変更の履歴を書く（#381）', async () => {
+    // **収集を始めた変更で書く**（#373 の constraints）。**日数は実装の値の写しなので、実装と照合する**。
+    const body = pageBodyOf((await openPrivacy()).body);
+    const entered = body.slice(body.indexOf('利用者が登録・入力する情報'), body.indexOf('利用に伴って記録する情報'));
+    expect(entered).toContain('<strong>ハンドル名</strong>');
+    expect(entered).toContain(`前のハンドル名を ${HANDLE_RESERVATION_DAYS} 日間ほかの方が使えないように残し`);
+    expect(entered).toContain('ほかの方がそのハンドル名を使うまではデータベースに残ります');
+    expect(entered).toContain('<strong>ハンドル名の変更の履歴</strong>');
+    const published = body.slice(body.indexOf('3. 公開される情報'), body.indexOf('4. 第三者への提供'));
+    expect(published).toContain('前と後のハンドル名が同じ方のものだと分かります');
+    expect(published).toContain('ハンドル名の変更の履歴');
   });
 
   it('プレイ数を、利用者と結び付けずに数えることと、sessionStorage に置く時刻を書く（#377）', async () => {

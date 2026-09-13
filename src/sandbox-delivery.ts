@@ -41,6 +41,12 @@ import { loaderHtml } from './sandbox-loader.js';
 const PREVIEW_PREFIX = 'p';
 const PUBLISHED_PREFIX = 'g';
 
+/**
+ * 配信の入口の接頭辞（`/p/` と `/g/`）。**ハンドル名の予約語を導くために輸出する**（#381。
+ * `src/handle.ts` の `reservedHandlesOf`）。綴りは上の 2 つから組み立て、書き写さない。
+ */
+export const SANDBOX_DELIVERY_PREFIXES: readonly string[] = [`/${PREVIEW_PREFIX}/`, `/${PUBLISHED_PREFIX}/`];
+
 /** `.wasm` のパス末尾。 */
 export const WASM_FILE = 'game.wasm';
 

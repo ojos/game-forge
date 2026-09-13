@@ -1,6 +1,32 @@
 /**
- * 作者ページ（`/users/<user_id>`）。**作品から作者へ辿れるようにする 1 枚である**
- * （仕様 2.3.1 / 2.3.6 / 5.8 / #330 / M9-4）。
+ * 作者ページ（`/users/<user_id>` と `/@handle`）。**作品から作者へ辿れるようにする 1 枚である**
+ * （仕様 2.3.1 / 2.3.6 / 5.8 / 5.10 / #330 / M9-4 / #381 / M12-13）。
+ *
+ * ## `/@handle` と `/users/<user_id>`（#381 / 5.10）
+ *
+ * **ハンドル名を決めた作者の作者ページは `/@handle` である。** `/users/<user_id>` は死なせない
+ * （共有されている可能性がある）。
+ *
+ * | 要求 | 応答 |
+ * |---|---|
+ * | `/users/<user_id>`（ハンドル名あり） | **301** で `/@handle` へ（`cache-control: no-store`） |
+ * | `/users/<user_id>`（ハンドル名なし） | いままでどおり作者ページ（**ハンドル名を強制しない・自動で作らない**） |
+ * | `/@handle`（いま使っている） | 作者ページ |
+ * | `/@旧ハンドル`（改名から 90 日以内） | **302** で `/@新ハンドル` へ（`cache-control: no-store`） |
+ * | `/@旧ハンドル`（90 日を過ぎた）・知らない名前 | 404 |
+ * | `/@Handle`（大文字を含む） | **301** で小文字の綴りへ（大文字小文字違いは同じハンドル名。5.10） |
+ *
+ * **`/users/<id>` → `/@handle` を 301 にし、`no-store` を付ける。** 301 は「この URL の正しい綴りは
+ * 移った」を検索エンジンと共有先に伝える（2.3.1 の「恒久的なリダイレクト」）。**ただし行き先は改名で
+ * 変わる**ので、ブラウザに 301 を覚えさせない——覚えさせると、改名の後もブラウザが古い `/@handle` へ
+ * 送り続け、90 日を過ぎた日に 404 になる。
+ *
+ * **`/@旧` → `/@新` は 302 にする。** この転送は **90 日で終わる期限付きのもの**で、しかも**その間に
+ * 本人がまた改名しうる**（30 日に 1 回）。「恒久的に移った」とは言えないものを 301 と言うと、検索エンジンと
+ * キャッシュに誤った事実を覚えさせる。`no-store` も付ける（期限を過ぎた転送を残さない）。
+ *
+ * **転送先は、旧ハンドルの持ち主が「いま」使っているハンドル名である**——改名を重ねても、旧い綴りから
+ * 直接いまの綴りへ 1 回で着く（転送を鎖にしない）。
  *
  * ## なぜ要るのか
  *
@@ -121,6 +147,8 @@ import { cachedRows, listCacheKey } from './list-cache.js';
 import { reviewVisibleSql } from './reports.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
+import { HANDLE_RESERVATION_SECONDS, HANDLES_TABLE } from './handle.js';
+import { HANDLE_PAGE_PREFIX, handlePagePath, isStoredHandle } from './handle-paths.js';
 import { AUTHOR_PAGE_PREFIX, authorPagePath } from './users-page-paths.js';
 import { renderWorkCards } from './work-card.js';
 import { MAX_PAGE, PUBLIC_WORKS_PATH, WORKS_PER_PAGE, toPageNumber } from './works-list.js';
@@ -255,8 +283,15 @@ export function authorCacheKey(userId: string, page: number): string {
 export interface AuthorPageView {
   /** 表示名（`users.display_name`）。**UGC 由来なので画面側で escape する。** */
   readonly displayName: string;
-  /** 利用者 id（頁送りのリンクに入る）。 */
+  /** 利用者 id。 */
   readonly userId: string;
+  /**
+   * この画面のパス（頁送りのリンクに入る。#381）。**`/@handle` で開いた画面の頁送りは `/@handle?page=` へ送る。**
+   *
+   * **省略可にする**（描画を直接呼ぶテストが、ハンドル名に関係しない検査で値を用意しなくて済む）。
+   * 省いたら `/users/<user_id>` である。
+   */
+  readonly pagePath?: string;
   /** 並べる作品（既に {@link WORKS_PER_PAGE} 件へ切ってある）。 */
   readonly works: readonly PublicWork[];
   /** 被いいね数。 */
@@ -325,7 +360,8 @@ function likesLine(count: number): string {
  */
 function renderPager(view: AuthorPageView): string {
   const links: string[] = [];
-  const to = (page: number): string => `${authorPagePath(view.userId)}?page=${page}`;
+  const base = view.pagePath ?? authorPagePath(view.userId);
+  const to = (page: number): string => `${escapeHtml(base)}?page=${page}`;
   if (view.page > 1) {
     links.push(`<a href="${to(view.page - 1)}">前の ${WORKS_PER_PAGE} 件</a>`);
   }
@@ -485,21 +521,132 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
 
   // 自己紹介と外部リンク（#379）も同じ 1 行から引く（キャッシュに載せない理由は表示名と同じ）。
   // アイコン（#380）も同じ 1 行から引く。**版は `avatar_sha256` が無ければ使わない**（外した後も進む）。
+  // **いま使っているハンドル名（#381）も同じ 1 回で引く**（部分索引の 1 行。あれば `/@handle` へ 301）。
   const user = await env.DB.prepare(
-    'select display_name, bio, profile_links, avatar_sha256, avatar_set_at from users where id = ?',
+    `select display_name, bio, profile_links, avatar_sha256, avatar_set_at,
+            (select h.handle from ${HANDLES_TABLE} h where h.user_id = users.id and h.released_at is null) as handle
+       from users where id = ?`,
   )
     .bind(userId)
-    .first<{
-      display_name: string | null;
-      bio: string | null;
-      profile_links: string | null;
-      avatar_sha256: string | null;
-      avatar_set_at: number | null;
-    }>();
+    .first<AuthorUserRow & { handle: string | null }>();
   if (user === null) {
     return notFound(viewer);
   }
+  if (isStoredHandle(user.handle)) {
+    // **301 に `no-store` を付ける**（モジュール冒頭の表）。**query（頁）を持ち越す。**
+    return redirectTo(`${handlePagePath(user.handle)}${url.search}`, 301);
+  }
+  return await renderAuthorResponse(request, env, viewer, userId, user, null);
+}
 
+/** 作者ページの描画に要る `users` の列（**公開してよい列だけ**。モジュール冒頭）。 */
+interface AuthorUserRow {
+  readonly display_name: string | null;
+  readonly bio: string | null;
+  readonly profile_links: string | null;
+  readonly avatar_sha256: string | null;
+  readonly avatar_set_at: number | null;
+}
+
+/**
+ * 転送の応答を返す（`cache-control: no-store`。モジュール冒頭の表）。
+ *
+ * @param location 転送先（アプリ用ホスト上の絶対パス）
+ * @param status 301 か 302
+ * @returns レスポンス
+ */
+function redirectTo(location: string, status: 301 | 302): Response {
+  return new Response(null, { status, headers: { location, 'cache-control': 'no-store' } });
+}
+
+/**
+ * パスからハンドル名を取り出す（`/@handle` の `handle`。**大文字小文字はそのまま**）。
+ *
+ * **パーセント符号を戻さない。** ハンドル名の文字（ASCII の英字・数字・`_`）は符号化されないので、
+ * `%` を含む綴りはハンドル名ではない（404）。
+ *
+ * @param pathname 要求されたパス
+ * @returns ハンドル名の綴り（形を満たさなければ null）
+ */
+export function handleFromPath(pathname: string): string | null {
+  const raw = pathname.slice(HANDLE_PAGE_PREFIX.length);
+  return isStoredHandle(raw.toLowerCase()) && /^[A-Za-z0-9_]+$/u.test(raw) ? raw : null;
+}
+
+/**
+ * ハンドル名の作者ページを表示する（`/@handle`。#381 / 5.10）。
+ *
+ * **1 回の問い合わせで、ハンドル名の行・持ち主の `users` の列・持ち主がいま使っているハンドル名を引く。**
+ * 行が無ければ 404、いま使っている行なら作者ページ、手放してから 90 日以内なら持ち主のいまのハンドル名へ
+ * 302、それより古ければ 404（モジュール冒頭の表）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param now 現在時刻（UNIX 秒）を返す関数
+ * @returns レスポンス
+ */
+async function showHandlePage(request: Request, env: Env, now: () => number): Promise<Response> {
+  const url = new URL(request.url);
+  const viewer = await resolveSiteViewer(request, env);
+  const raw = handleFromPath(url.pathname);
+  if (raw === null) {
+    return notFound(viewer);
+  }
+  const handle = raw.toLowerCase();
+  if (raw !== handle) {
+    return redirectTo(`${handlePagePath(handle)}${url.search}`, 301);
+  }
+
+  const row = await env.DB.prepare(
+    `select h.user_id, h.released_at,
+            u.display_name, u.bio, u.profile_links, u.avatar_sha256, u.avatar_set_at,
+            (select c.handle from ${HANDLES_TABLE} c where c.user_id = h.user_id and c.released_at is null)
+              as current_handle
+       from ${HANDLES_TABLE} h
+       join users u on u.id = h.user_id
+      where h.handle = ?`,
+  )
+    .bind(handle)
+    .first<AuthorUserRow & { user_id: string; released_at: number | null; current_handle: string | null }>();
+  if (row === null) {
+    return notFound(viewer);
+  }
+  if (row.released_at === null) {
+    return await renderAuthorResponse(request, env, viewer, row.user_id, row, handle);
+  }
+  if (row.released_at > now() - HANDLE_RESERVATION_SECONDS) {
+    // **持ち主のいまのハンドル名へ直接送る**（転送を鎖にしない）。いまのハンドル名が無い行は構造上
+    // 作られない（手放すのは別の名前を取る batch の中だけ）が、無ければ `/users/<id>` へ倒す。
+    const location = isStoredHandle(row.current_handle)
+      ? handlePagePath(row.current_handle)
+      : authorPagePath(row.user_id);
+    return redirectTo(`${location}${url.search}`, 302);
+  }
+  return notFound(viewer);
+}
+
+/**
+ * 作者ページの本体を組み立てて返す（`/users/<user_id>` と `/@handle` が共有する）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param viewer いま見ている人の状態
+ * @param userId 作者の利用者 id
+ * @param user 作者の `users` の列
+ * @param handle 作者のいまのハンドル名（`/@handle` で開いたとき。無ければ null）
+ * @returns レスポンス
+ */
+async function renderAuthorResponse(
+  request: Request,
+  env: Env,
+  viewer: SiteViewer,
+  userId: string,
+  user: AuthorUserRow,
+  handle: string | null,
+): Promise<Response> {
+  // **頁送りとカードの作者名のリンクは、この画面の綴りに揃える**（`/@handle` で開いたら `/@handle`）。
+  const pagePath = handle === null ? authorPagePath(userId) : handlePagePath(handle);
+  const url = new URL(request.url);
   const page = toPageNumber(url.searchParams.get('page'));
   const offset = (page - 1) * WORKS_PER_PAGE;
 
@@ -565,6 +712,7 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
       {
         displayName: name ?? UNKNOWN_AUTHOR_HEADING,
         userId,
+        pagePath,
         // **カードの名前を毎回差し替える**（{@link AuthorWorksData}）。並ぶのは 1 人の
         // 作者の作品だけなので、全件に同じ名前を入れてよい。
         //
@@ -576,7 +724,7 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
         // 古い版で出さない）。
         works: works
           .slice(0, WORKS_PER_PAGE)
-          .map((work) => ({ ...work, authorName: name, authorAvatarSetAt: avatarVersion })),
+          .map((work) => ({ ...work, authorName: name, authorAvatarSetAt: avatarVersion, authorHandle: handle })),
         likesReceived: data.likesReceived ?? 0,
         page,
         hasNext: works.length > WORKS_PER_PAGE && page < MAX_PAGE,
@@ -608,13 +756,37 @@ function displayNameOf(value: string | null): string | null {
   return value === null || value.trim() === '' ? null : value;
 }
 
+/** {@link createUsersPageRoutes} に渡す差し替え。 */
+export interface UsersPageRouteOptions {
+  /** 現在時刻（UNIX 秒）。既定は `Date.now()` から。テストが 90 日の境界を固定するために使う。 */
+  readonly now?: () => number;
+}
+
 /**
- * 作者ページの経路（#330 / M9-4）。
+ * 作者ページの経路（#330 / M9-4 / #381）。
  *
- * `src/app.ts` の経路表へ連結する。**前方一致で登録する**（`/users/<user_id>` の
- * `<user_id>` を拾う。`src/routes.ts` は完全一致を前方一致より先に見るので、将来
- * `/users/mine` のような固定の経路を足しても飲み込まれない）。
+ * `src/app.ts` の経路表へ連結する。
+ *
+ * - **`/users/` は前方一致で登録する**（`<user_id>` を拾う。`src/routes.ts` は完全一致を前方一致より
+ *   先に見るので、将来 `/users/mine` のような固定の経路を足しても飲み込まれない）
+ * - **`/@` は 1 セグメントの経路で登録する**（`src/routes.ts` の `RouteMatch` の `segment`。`/@foo/bar` には
+ *   一致しない）
+ *
+ * @param options 差し替え
+ * @returns 経路表
  */
-export const usersPageRoutes: readonly Route[] = [
-  { method: 'GET', path: AUTHOR_PAGE_PREFIX, match: 'prefix', handler: showAuthorPage },
-];
+export function createUsersPageRoutes(options: UsersPageRouteOptions = {}): readonly Route[] {
+  const now = options.now ?? (() => Math.floor(Date.now() / 1000));
+  return [
+    { method: 'GET', path: AUTHOR_PAGE_PREFIX, match: 'prefix', handler: showAuthorPage },
+    {
+      method: 'GET',
+      path: HANDLE_PAGE_PREFIX,
+      match: 'segment',
+      handler: (request, env) => showHandlePage(request, env, now),
+    },
+  ];
+}
+
+/** アプリの経路表へ連結する作者ページの経路。 */
+export const usersPageRoutes: readonly Route[] = createUsersPageRoutes();

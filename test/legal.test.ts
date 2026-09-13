@@ -180,6 +180,9 @@ describe('削除申請フォームが全ページのフッターから到達で�
       (route: Route) =>
         route.method === 'GET' &&
         route.match !== 'prefix' &&
+        // 1 セグメントの経路（`/@handle`。#381）も続きを補わないと開けない。フッタは外枠の検査
+        // （`test/page-shell.test.ts`）がハンドル名を補って見る。
+        route.match !== 'segment' &&
         !route.path.startsWith('/api/') &&
         !route.path.startsWith('/auth/') &&
         !route.path.startsWith('/__dev'),

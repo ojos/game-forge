@@ -27,6 +27,7 @@
  */
 import type { PublicWork, PublicWorkSort } from './games.js';
 import { PUBLISHED_STATUS, listPublishedGames, workTagsOf } from './games.js';
+import { authorHandleColumnSql } from './handle-sql.js';
 import { cachedRows, listCacheKey } from './list-cache.js';
 import { reviewVisibleSql } from './reports.js';
 import { worksListPath } from './works-list.js';
@@ -137,7 +138,8 @@ export function officialSamplesSql(): string {
   // **`g.play_count` を選ぶのはカードに出すためである**（#377。`publishedGamesSql` と揃える）。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
             g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name,
-            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at
+            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at,
+            ${authorHandleColumnSql('g.author_id')}
        from games g
        left join users u on u.id = g.author_id
       where g.author_id = ? and g.status = ? and ${reviewVisibleSql('g')}
@@ -161,6 +163,7 @@ interface OfficialSampleRow {
   readonly tag3: string | null;
   readonly author_name: string | null;
   readonly author_avatar_set_at: number | null;
+  readonly author_handle: string | null;
 }
 
 /**
@@ -178,6 +181,8 @@ function toPublicWork(row: OfficialSampleRow): PublicWork {
     // （`src/work-card.ts` の `cardAuthorId`）。
     authorId: row.author_id,
     authorAvatarSetAt: row.author_avatar_set_at,
+    // いまのハンドル名（#381）。あれば作者名のリンクが `/@handle` になる。
+    authorHandle: row.author_handle,
     publishedAt: row.published_at,
     forkCount: row.fork_count,
     likeCount: row.like_count,

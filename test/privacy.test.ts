@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createAppRoutes } from '../src/app.js';
 import { OAUTH_COOKIE, OAUTH_COOKIE_MAX_AGE, SESSION_MAX_AGE } from '../src/auth/google.js';
 import { FAQ_PATH, PRIVACY_PATH, TAKEDOWN_PATH, TERMS_PATH } from '../src/legal-paths.js';
+import { PLAY_REPORT_WINDOW_MS } from '../src/plays.js';
 import { PRIVACY_TITLE, privacyBody } from '../src/privacy.js';
 import { dispatch } from '../src/routes.js';
 import type { Route } from '../src/routes.js';
@@ -122,13 +123,41 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     // **作品の説明は #388 が、自己紹介と外部リンクは #379 が収集を始め、この一覧から外して
     // 本文へ足した**（下の it）。
     const body = pageBodyOf((await openPrivacy()).body);
-    for (const notYet of ['アイコン', 'プレイ数', 'ハンドル']) {
+    // **プレイ数は #377 が数え始め、この一覧から外して本文へ足した**（下の it）。
+    for (const notYet of ['アイコン', 'ハンドル']) {
       expect(body, `まだ収集していない「${notYet}」が書いてある`).not.toContain(notYet);
     }
     // 2.3.14 が「収集しない」と決めたもの。
     for (const never of ['誕生', '性別']) {
       expect(body, `収集しないと決めた「${never}」が書いてある`).not.toContain(never);
     }
+  });
+
+  it('プレイ数を、利用者と結び付けずに数えることと、sessionStorage に置く時刻を書く（#377）', async () => {
+    // **収集を始めた変更で書く**（#373 の constraints）。プレイ数は作品ごとの起動回数で、誰が遊んだかを
+    // 記録しない（`workers/likes/src/play-hub.ts` の表に利用者の列が無い）。連打を畳むために、作品ページの
+    // スクリプトがブラウザの sessionStorage に作品ごとの最終計上時刻を置き、サーバへは送らない
+    // （`src/plays.ts` の `playReportScript` は `credentials: 'omit'` で、本文は作品 id だけ）。
+    const body = pageBodyOf((await openPrivacy()).body);
+    const recorded = body.slice(body.indexOf('利用に伴って記録する情報'), body.indexOf('ログインせずに送っていただく情報'));
+    expect(recorded).toContain('<strong>プレイ数</strong>');
+    expect(recorded).toContain('誰が遊んだかとは結び付けずに数え');
+    expect(recorded).toContain('ログインしていない方の起動も同じく数えます');
+    const published = body.slice(
+      body.indexOf('3. 公開される情報'),
+      body.indexOf('4. 第三者への提供'),
+    );
+    expect(published).toContain('いいねの数とプレイ数');
+    const cookie = body.slice(body.indexOf('6. Cookie'), body.indexOf('7. 保存期間'));
+    expect(cookie).toContain('sessionStorage');
+    expect(cookie).toContain('作品ごとに最後に数えた時刻');
+    expect(cookie).toContain('サーバへは送らず');
+    // **窓の長さは実装の値の写しなので、実装と照合する**（shared-ai-rules 12 章）。
+    expect(cookie).toContain(`${PLAY_REPORT_WINDOW_MS / 60_000} 分以内は数え直しません`);
+    // **Cookie は 2 つのまま**（sessionStorage は Cookie ではない）。
+    expect(cookie).toContain('Cookie は次の 2 つだけです');
+    const retention = body.slice(body.indexOf('7. 保存期間'), body.indexOf('8. 開示'));
+    expect(retention).toContain('sessionStorage に置く時刻は、タブを閉じると消えます');
   });
 
   it('作品の説明を、取得する情報と公開される情報の両方に書く（#388）', async () => {

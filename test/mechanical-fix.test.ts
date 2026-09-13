@@ -24,6 +24,8 @@ import {
 import { recordGenerationCost } from '../src/cost-ledger.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
+import { captureLogs } from './helpers/capture-logs.js';
+import { isAllowedBuildDiagnosticsLine } from './helpers/build-diagnostics-log.js';
 
 /**
  * 未使用 import を 1 つだけ持つソース。
@@ -834,6 +836,30 @@ function isAllowedLogLine(line: string): boolean {
 }
 
 /**
+ * 生成経路に出てよい行か。**機械修正の行か、ビルド診断の行（#443）のどちらかの形に限る。**
+ *
+ * 生成経路を回して捕まえたログには、ビルドが落ちた試行ごとに `[build-diagnostics]` の行も
+ * 並ぶ（`src/build-diagnostics.ts`）。**あちらの形も「許した形だけを通す」で見る**ので、
+ * どちらにも合致しない行が 1 つでも出れば落ちる。
+ *
+ * @param line ログ 1 行
+ * @returns 許された形なら true
+ */
+function isAllowedGenerationLogLine(line: string): boolean {
+  return isAllowedLogLine(line) || isAllowedBuildDiagnosticsLine(line);
+}
+
+/**
+ * 機械修正の行だけを取り出す（巡回数を数える検査で使う）。
+ *
+ * @param lines 捕まえたログ
+ * @returns `[mechanical-fix]` で始まる行
+ */
+function mechanicalFixLines(lines: readonly string[]): string[] {
+  return lines.filter((line) => line.startsWith('[mechanical-fix] '));
+}
+
+/**
  * 捕まえたログに現れてしまった、生成物由来の断片を返す。
  *
  * @param lines 捕まえたログ
@@ -842,49 +868,6 @@ function isAllowedLogLine(line: string): boolean {
 function leakedFragments(lines: readonly string[]): string[] {
   const joined = lines.join('\n');
   return FORBIDDEN_IN_LOG.filter((fragment) => joined.includes(fragment));
-}
-
-/**
- * 実行中の `console` への出力をすべて捕まえる。
- *
- * **5 つのメソッドを全部差し替える。** 1 つでも素通しにすると、そこへ出したものが
- * 検査の外に落ちる。文字列以外の引数も JSON にして記録するので、オブジェクトに
- * 包んで渡した文字列も捕まる。
- *
- * @param run 実行するもの
- * @returns 戻り値と、捕まえた行
- */
-async function captureLogs<T>(run: () => T | Promise<T>): Promise<{ value: T; lines: string[] }> {
-  const lines: string[] = [];
-  const original = {
-    log: console.log,
-    info: console.info,
-    warn: console.warn,
-    error: console.error,
-    debug: console.debug,
-  };
-  const record = (...values: unknown[]): void => {
-    lines.push(
-      values
-        .map((value) => (typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value))))
-        .join(' '),
-    );
-  };
-  console.log = record;
-  console.info = record;
-  console.warn = record;
-  console.error = record;
-  console.debug = record;
-  try {
-    const value = await run();
-    return { value, lines };
-  } finally {
-    console.log = original.log;
-    console.info = original.info;
-    console.warn = original.warn;
-    console.error = original.error;
-    console.debug = original.debug;
-  }
 }
 
 describe('機械修正の観測（4.2 の #133 注記）', () => {
@@ -944,9 +927,11 @@ describe('機械修正の観測（4.2 の #133 注記）', () => {
       return fakeBuildOutcome();
     });
 
-    const { lines } = await captureLogs(() =>
+    const { lines: captured } = await captureLogs(() =>
       startGeneration(env, 'mech-user-observed', { prompt: LOGGED_PROMPT }, pipeline),
     );
+    // ビルド診断の行（#443）も同じ経路に出るので、巡回数を数える前に取り除く。
+    const lines = mechanicalFixLines(captured);
 
     // **行数が巡回数である。** 2 行なら 2 巡した、と読める。
     expect(lines.length).toBe(MAX_MECHANICAL_FIX_PASSES);
@@ -972,10 +957,10 @@ describe('機械修正の観測（4.2 の #133 注記）', () => {
       ),
     );
 
-    expect(lines.length).toBeGreaterThan(0);
-    // 1. 許した形にしか合致しない（分類名と 3 つの件数以外は 1 文字も出ない）。
+    expect(mechanicalFixLines(lines).length).toBeGreaterThan(0);
+    // 1. 許した形にしか合致しない（分類名と件数以外は 1 文字も出ない）。
     for (const line of lines) {
-      expect(isAllowedLogLine(line)).toBe(true);
+      expect(isAllowedGenerationLogLine(line)).toBe(true);
     }
     // 2. 禁じた断片が 1 つも無い（1 の裏側から、もう一度見る）。
     expect(leakedFragments(lines)).toEqual([]);
@@ -993,9 +978,9 @@ describe('機械修正の観測（4.2 の #133 注記）', () => {
       ).rejects.toBeInstanceOf(BuildRetriesExhausted);
     });
 
-    expect(lines.length).toBe(MAX_GENERATION_ATTEMPTS);
+    expect(mechanicalFixLines(lines).length).toBe(MAX_GENERATION_ATTEMPTS);
     for (const line of lines) {
-      expect(isAllowedLogLine(line)).toBe(true);
+      expect(isAllowedGenerationLogLine(line)).toBe(true);
     }
     expect(leakedFragments(lines)).toEqual([]);
   });

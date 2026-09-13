@@ -75,6 +75,7 @@ import {
   withBuildDiagnostics,
 } from './build-retry.js';
 import type { BuildRejected } from './build-client.js';
+import { logBuildDiagnostics, summarizeBuildDiagnostics } from './build-diagnostics.js';
 import { MAX_MECHANICAL_FIX_PASSES, removeUnusedImports } from './mechanical-fix.js';
 import { startJobOnLambda } from './orchestrator/start-job.js';
 import {
@@ -685,6 +686,11 @@ export async function runGenerationJob(
         if (rejected === null) {
           throw error;
         }
+
+        // **この試行の LLM が書いたソースが、どの種類の誤りで落ちたか**を 1 行出す（#443）。
+        // 機械修正より前に出すので、数えるのは LLM の出力そのものに対する診断である
+        // （未使用 import もここで数える）。出るのは分類名と件数だけで、診断は出ない（8.3）。
+        logBuildDiagnostics(attempt, summarizeBuildDiagnostics(rejected));
 
         // **4.2 の 1 段目（費用ゼロの機械修正 / #129）。** ここが挿入位置である
         // （ビルドが `kind='build'` で落ちた直後）。**LLM を呼ばず**に未使用 import を

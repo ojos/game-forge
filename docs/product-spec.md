@@ -4894,6 +4894,79 @@ handler → callbacks → generate-callback` の 6 段すべてに項目を足�
 現れないこと**と、**行が上の形にしか合致しないこと**を検査する（**その検査を変異させると
 落ちること**も確かめてある）。
 
+#### ビルドで落ちた試行の誤りの種類を観測する（2026-09-13 実装 / #443）
+
+**生成が `build-failed` で終わったとき、原因を追う手段が 1 つも無かった。** 2026-09-14 00:00 JST の
+作品 `91de0745`（横スクロールのシューティング）は 2 回とも `stage=build` で落ちたが、オーケストレータの
+ログにもビルド関数のログにも手掛かりが無く、失敗したソースも保存されないため、**どの種類の誤りで
+落ちたのかすら分からなかった**（本番の `build-failed` は、この時点で 36 件中 2 件）。上の機械修正の行が
+教えるのは未使用 import の件数だけで、それ以外の失敗は `no-unused-imports` の 1 語に潰れる。
+
+**#133 と同じ線の内側で開けた。** 出すのは**実装が持つ固定の分類名ごとの件数**と、試行番号・段・
+打ち切りの有無だけで、**Go の診断・識別子・import のパス・生成ソース・プロンプトは 1 つも出さない。**
+「診断とソースを非公開の場所へ期限付きで残す」案は、/privacy と本節の判断を変える代償があるので採らなかった。
+
+**出すのは `src/build-diagnostics.ts` である。** 呼ぶのは `src/generate.ts` のループで、**ビルドが
+`kind='build'` で落ちた直後、機械修正より前**に 1 回だけ呼ぶ。したがって**行は LLM の試行 1 回につき
+1 行**で、数えるのは **LLM の出力そのものに対する診断**である（機械修正の後の再ビルドが落ちても行は
+増えない。未使用 import もここで数える）。台帳の行は作らない。
+
+```
+[build-diagnostics] {"attempt":1,"stage":"build","total":10,"truncated":true,"unpositioned":0,"counts":{"syntax":0,"not-implemented":1,"missing-field-or-method":1,"undefined-package-member":0,"undefined-name":1,"type-mismatch":2,"argument-count":1,"assignment-count":1,"unused-variable":1,"unused-import":2,"redeclared":0,"missing-return":0,"other":0}}
+```
+
+| 項目 | 意味 |
+|---|---|
+| `attempt` | 何回目の試行か（1 始まり。**台帳の行と同じ単位**） |
+| `stage` | ビルド関数が止まった段。`request` / `build` / `compress` のほかは `unknown` へ落とす |
+| `total` | `<ファイル>:<行>:<桁>: <本文>` の形の行の数（見出し・タブで始まる続きの行・`too many errors` を除く） |
+| `truncated` | `go build` が `too many errors` で打ち切ったか（10 件で打ち切る）。**true なら、実際の誤りはもっと多い** |
+| `unpositioned` | 見出しでも続きの行でもなく、位置の形にも合わなかった行の数（関数の 8 KiB の切り詰めの末尾、`go` コマンド自身のエラー） |
+| `counts` | 分類ごとの件数。**全分類を必ず持つ**（0 件も書く）。合計は `total` と一致する |
+
+**ビルド診断の分類名は次の 13 個で、これがすべてである。** 判定は**表の上から順**に行い、最初に
+当たったものを採る。実装（`src/build-diagnostics.ts` の `BUILD_DIAGNOSTIC_CATEGORIES`）と並びまで
+機械照合する（`test/build-diagnostics.test.ts`）。**各分類の文面は実物である**（2026-09-13。ビルド関数の
+イメージと同じ Go 1.27.0・`GOOS=js GOARCH=wasm`・`-mod=vendor` で、誤りを並べたソースを `go build` に通した）。
+
+| 分類名 | 実物の文面の例 | 読み方 |
+|---|---|---|
+| `syntax` | `syntax error: unexpected newline in argument list; possibly missing comma or )` | **型検査より前で止まる**ので 1〜2 件しか出ず、ほかの誤りが隠れている |
+| `not-implemented` | `*Game does not implement ebiten.Game (missing method Layout)` | Ebitengine の `Game` の 3 メソッドを揃えていない（書き忘れか、シグネチャの取り違え） |
+| `missing-field-or-method` | `screen.DrawRect undefined (type *ebiten.Image has no field or method DrawRect)` | 型に無いメソッド・フィールド。**API の捏造か、自分で定義し忘れた構造体の項目** |
+| `undefined-package-member` | `undefined: ebiten.KeyFoo` | パッケージに無い名前。**API の捏造（版の違いの取り違え）が主** |
+| `undefined-name` | `undefined: undefinedFunc` | 修飾の無い名前。**書くと言った関数を書き忘れた**（長いソースで起きやすい） |
+| `type-mismatch` | `cannot use w (variable of type int) as float32 value in argument to vector.DrawFilledRect` | 型の不一致（`(mismatched types float64 and int)` も含む）。**`float32` / `float64` / `int` の混在が主** |
+| `argument-count` | `not enough arguments in call to vector.DrawFilledRect` | 引数の数。**API の版違い（引数が増えた関数）を疑う** |
+| `assignment-count` | `assignment mismatch: 2 variables but single returns 1 value` | 戻り値の数 |
+| `unused-variable` | `declared and not used: unused` | 未使用の変数。**機械修正は消さない**（消せば直るとは限らない） |
+| `unused-import` | `"os" imported and not used` | 未使用 import。**機械修正（上の節）が消す対象**で、これだけの失敗は機械修正の行が `removed` になる |
+| `redeclared` | `g redeclared in this block` / `method Game.Update already declared at ...` / `no new variables on left side of :=` | 重複した宣言。**長いソースで同じ関数を 2 回書いた** |
+| `missing-return` | `missing return` | 戻り値のある関数の末尾に `return` が無い |
+| `other` | `non-boolean condition in if statement` / `continue is not in a loop` | 上のどれにも当たらない。**これが多ければ分類を足す契機**（足すときは実物の文面を採ってから） |
+
+**何を見れば何が分かるか。**
+
+- **`build-failed` の作品の原因の種類。** 作品 id はオーケストレータの `[orchestrator] failed: <id>` の行にあり、
+  **同じリクエストの中の `[build-diagnostics]` の行**（試行の数だけ並ぶ）がその生成の分である。
+- **API の捏造か、書き忘れか。** `undefined-package-member` / `missing-field-or-method` / `argument-count` が
+  支配的なら前者（システムプロンプトへ API の要点を足す方向）、`undefined-name` / `redeclared` が支配的なら
+  後者（ソースが長すぎる方向。5.3 の上限と併せて読む）。
+- **2 回目で直っているか。** 同じ生成の `attempt: 1` と `attempt: 2` を比べる。分類が変わらなければ、
+  診断を添えた再生成（4.2 の 2 段目）が効いていない。
+- **`truncated: true` の比率。** 高ければ、再生成へ添える診断が 10 件で切れていることが効いている。
+- **`unpositioned` が 0 でない。** 診断が Go の型検査の形をしていない（関数の切り詰め、`go` コマンドの
+  エラー）。**分類の件数だけで判断しない。**
+
+**分類は文面の先頭一致・部分一致の最小限である。** Go の版が上がって文言が変われば、その行は `other` に
+落ちるだけで、`total` は変わらない（数え漏れにはならない）。**版を上げたら `other` の比率を見る。**
+
+**出さないものは上の節と同じで、構造で塞ぐのも同じである。** ログを出す関数
+（`logBuildDiagnostics`）が受け取れるのは試行番号と、件数・真偽値・固定語彙だけの器で、**出す直前に
+項目を 1 つずつ入れ直す**（器に余分な項目を足して渡しても外へは出ない）。`test/build-diagnostics.test.ts`
+は実際の生成経路を回してログを捕まえ、**行が許した形にしか合致しないこと**と、**診断・識別子・import の
+パス・ソース・プロンプトが 1 つも現れないこと**を検査し、**その検査を変異させると落ちること**も確かめる。
+
 ### 4.3 月次上限機構（必須実装）
 
 - **上限額: 2万円/月**（#284 で 1 万円から引き上げた。確定6）。実質の生成枠は

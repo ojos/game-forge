@@ -103,6 +103,28 @@ else
   echo "[acceptance] (go-version) skip: docker/isolated-build/Dockerfile not found"
 fi
 
+# ロゴの PNG が書き出しの一覧と一致していること（#438 / shared-ai-rules 12 章）。
+#
+# **前寄りに置く。** 依存パッケージを持たない Node のスクリプトで、46 枚を描き直して
+# 照合しても 1 秒かからない。ネットワークもブラウザも要らない。
+#
+# **見るのは 2 つの取り違え。** 一覧（tools/logobake/variants.mjs）やロゴの形を変えて
+# PNG を書き出し忘れること、そして tools/fontbake がグリフを焼き直したのにロゴの文字が
+# 古い焼き結果のまま残ること（ワードマークは glyphs_gen.go を直接読む）。どちらも
+# 画像を開かない限り気づけない。**画素で照合する理由**は tools/logobake/main.mjs の冒頭。
+#
+# `node --test` にはディレクトリではなくファイルを渡す（Node 24 はディレクトリを
+# テストファイルとして読もうとして落ちる）。
+if [[ -f tools/logobake/main.mjs ]]; then
+  echo "[acceptance] (logo) node tools/logobake/main.mjs --check"
+  node tools/logobake/main.mjs --check
+  echo "[acceptance] (logo) node --test tools/logobake/logobake.test.mjs"
+  node --test tools/logobake/logobake.test.mjs
+  ran_any=1
+else
+  echo "[acceptance] (logo) skip: tools/logobake/main.mjs not found"
+fi
+
 # 基盤のリトライが 0 と宣言されていること（#160 / 4.3）。
 #
 # **前寄りに置く。** grep 数本で終わり、npm test より 2 桁安い。しかも外すと

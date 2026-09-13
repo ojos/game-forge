@@ -55,11 +55,13 @@ import type {
   GenerationErrorCode,
   GenerationState,
   RenameRejection,
+  RetagRejection,
 } from './games.js';
 import {
   DESCRIPTION_CHANGE_INTERVAL_SECONDS,
   MAX_DESCRIPTION_LENGTH,
   MAX_TITLE_LENGTH,
+  WORK_TAGS_CHANGE_INTERVAL_SECONDS,
   countPublishedForks,
   describeGame,
   listPublishedForks,
@@ -67,6 +69,8 @@ import {
   REMOVED_STATUS,
   removeGame,
   renameGame,
+  retagGame,
+  workTagsOf,
 } from './games.js';
 import {
   OGP_IMAGE_HEIGHT,
@@ -91,7 +95,8 @@ import {
   WORK_PAGE_PREFIX,
   workPagePath,
 } from './paths.js';
-import { UNKNOWN_AUTHOR } from './work-card.js';
+import { UNKNOWN_AUTHOR, knownWorkTags, workTagListPath } from './work-card.js';
+import { MAX_WORK_TAGS, WORK_TAGS, WORK_TAG_FIELD } from './work-tags.js';
 import { authorPagePath } from './users-page-paths.js';
 import {
   LIKE_CANCEL_GAME_ID_FIELD,
@@ -216,6 +221,24 @@ export const WORK_DESCRIBE_GAME_ID_FIELD = 'game_id';
 export const WORK_DESCRIBE_TEXT_FIELD = 'description';
 
 /**
+ * 公開後にタグを付け直す口（#376）。
+ *
+ * **{@link WORK_RENAME_PATH} と同じ理由で `src/paths.ts` に置かない**——フォームも受け口も
+ * このモジュールが持つ（しかも `src/paths.ts` はオーケストレータの束に入る。#336）。
+ *
+ * **公開（`/api/publish`）にも説明の口にも畳まない。** 公開の口に畳むと「公開済みの作品へ
+ * 公開を押し直すとタグが変わる」ことになり、二度押しでタグを上書きしないという公開の性質
+ * （`src/publish.ts`）が崩れる。説明の口とは検査の規則も書く列も違う（通報と取り下げを分けた
+ * のと同じ理由）。
+ *
+ * タグの値の項目名は公開フォームと同じ `WORK_TAG_FIELD`（`src/work-tags.ts`）である。
+ */
+export const WORK_RETAG_PATH = '/api/works/retag';
+
+/** 付け直しの対象を指す項目名（フォームの `name` と JSON の鍵の両方）。 */
+export const WORK_RETAG_GAME_ID_FIELD = 'game_id';
+
+/**
  * `games.id` の綴り（`crypto.randomUUID()` が返す形）。
  *
  * **経路の入口で形を確かめる。** 確かめずに SQL のプレースホルダへ渡しても injection には
@@ -300,6 +323,14 @@ interface WorkRow {
    * （`like_count` と同じ扱い）。空文字と null はどちらも「説明なし」として読む。
    */
   description: string | null;
+  /**
+   * タグの枠（`games.tag1` / `tag2` / `tag3`。`migrations/` の `games_tags`。#376）。NULL はタグ無し。
+   *
+   * **語彙に照らして描くのは画面の側**（`src/work-card.ts` の `knownWorkTags`）で、ここは値を運ぶだけ。
+   */
+  tag1: string | null;
+  tag2: string | null;
+  tag3: string | null;
   /**
    * いいねの数（`games.like_count`。`migrations/0020_games_like_count.sql`）。
    *
@@ -689,6 +720,21 @@ export interface WorkPageView {
    * 説明の欄を出さない。**画面でこの条件を組み立てない**（`revisable` と同じ方針）。
    */
   readonly describableId: string | null;
+  /**
+   * 作品のタグの識別子（#376）。**公開済みのときだけ入る**（未公開ならタグは付いていない。
+   * 公開フォームで選ぶ）。タグ無しなら空配列。
+   *
+   * **誰にでも出す**（カードと同じ情報である）。語彙に照らして描くのは {@link tagsSection}。
+   */
+  readonly tags: readonly string[];
+  /**
+   * この作品 id（タグの付け直しのフォームに入れる。#376）。付け直せないなら null。
+   *
+   * **`describableId` と同じ条件**（本人・公開済み・完成済み）だが、**兼ねない**——条件が
+   * 違う値を 1 つに畳まない（`forkableId` を分けたのと同じ理由。どちらかの条件を変えた日に、
+   * もう片方が黙って変わらないようにする）。**画面でこの条件を組み立てない。**
+   */
+  readonly retaggableId: string | null;
   /**
    * この作品 id（取り下げのフォームに入れる。5.3 / M5-4 / #35）。取り下げられないなら null。
    *
@@ -1197,6 +1243,12 @@ function describeSection(view: WorkPageView): string {
  * だけである**（{@link renameSection}）。**この導線には 1 文字も足していない**
  * ——改名の口は別のフォームで、公開の手数は変わらない。
  *
+ * **#376 で、同じフォームに任意のタグのチェックボックスを並べた。ボタンは 1 つのまま**で、
+ * 何も選ばずに押せばタグ無しで公開される（**公開の入力を必須にしない**。#376 の constraints）。
+ * 押す回数は 1 回のままなので、5.4 の 1 タップは崩していない。**上限（{@link MAX_WORK_TAGS} 個）は
+ * 文言で知らせ、超えた要求はサーバが断る**——チェックの数を JavaScript で数えない（このモジュール
+ * 冒頭の方針）。公開した後に変えたいときは {@link retagSection}。
+ *
  * **JavaScript を要求しない。** 素の `<form method="post">` で、押した結果は
  * POST-redirect-GET でこのページへ戻る（`src/publish.ts`）。
  *
@@ -1206,8 +1258,34 @@ function describeSection(view: WorkPageView): string {
 function publishForm(gameId: string): string {
   return `<form method="post" action="${PUBLISH_PATH}">
   <input type="hidden" name="${PUBLISH_GAME_ID_FIELD}" value="${gameId}">
+${tagChoices('publish-tag', [])}
   <button type="submit">公開して共有</button>
 </form>`;
+}
+
+/**
+ * タグのチェックボックスの組（#376）。**公開フォームと付け直しのフォームが同じ 1 つを使う。**
+ *
+ * - **語彙の順に並べる**（`src/work-tags.ts`。保存の順と同じ）
+ * - **値は識別子、見える文字はラベル**（どちらも語彙の固定の文字列で、UGC ではない）
+ * - **`required` を付けない**（タグ無しを許す）。上限は凡例の文言で知らせ、超えればサーバが断る
+ * - `id` の接頭辞を分けるのは、同じ画面に 2 つの組が並んでも `label for` が衝突しないためである
+ *   （いまは未公開と公開済みで出る組が違うが、含意に寄りかからない）
+ *
+ * @param idPrefix 要素の `id` の接頭辞
+ * @param checked 最初から選ばれているタグの識別子
+ * @returns HTML（`<fieldset>`）
+ */
+function tagChoices(idPrefix: string, checked: readonly string[]): string {
+  const boxes = WORK_TAGS.map((tag) => {
+    const id = `${idPrefix}-${tag.id}`;
+    const on = checked.includes(tag.id) ? ' checked' : '';
+    return `    <label for="${id}"><input id="${id}" type="checkbox" name="${WORK_TAG_FIELD}" value="${tag.id}"${on}> ${tag.label}</label>`;
+  });
+  return `  <fieldset class="gf-tag-choices">
+    <legend>タグ（任意・${MAX_WORK_TAGS} 個まで）</legend>
+${boxes.join('\n')}
+  </fieldset>`;
 }
 
 /**
@@ -1477,9 +1555,64 @@ function publishedSection(view: WorkPageView): string {
   // **説明は作者名・元ゲームの後に置く**（#388）。遊ぶ前に読む来歴（3.4-5 の 4 要素）を
   // 押し下げない。**説明を書くフォームは改名の隣**に置く——どちらも作品ページの
   // 「作者だけの設定」で、公開の導線（5.4）の外にある。
+  //
+  // **タグは説明の前に置き、付け直しのフォームは説明のフォームの後に置く**（#376）。
   return `<h2>公開しています</h2>
-${loadingScreen(view)}${likeSection(view)}${descriptionSection(view)}${share}
-${forkList(view.forks)}${recaptureSection(view)}${renameSection(view)}${describeSection(view)}${removeSection(view)}`;
+${loadingScreen(view)}${likeSection(view)}${tagsSection(view)}${descriptionSection(view)}${share}
+${forkList(view.forks)}${recaptureSection(view)}${renameSection(view)}${describeSection(view)}${retagSection(view)}${removeSection(view)}`;
+}
+
+/**
+ * 作品のタグ（#376）。**誰にでも出す**（カードと同じ情報である）。
+ *
+ * **1 つずつ、そのタグで絞り込んだ一覧へのリンクにする**（カードと同じ行き先。
+ * `src/work-card.ts` の `workTagListPath`）。**語彙に無い値は出さない**（{@link knownWorkTags}）。
+ * タグ無しなら何も出さない（「タグはありません」を全作品に並べない。{@link descriptionSection} と
+ * 同じ判断）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（出すタグが無ければ空文字）
+ */
+function tagsSection(view: WorkPageView): string {
+  const tags = knownWorkTags(view.tags);
+  if (tags.length === 0) {
+    return '';
+  }
+  const links = tags.map((tag) => `<a href="${workTagListPath(tag.id)}">${tag.label}</a>`);
+  return `
+<p class="gf-work-tags">タグ: ${links.join(' / ')}</p>`;
+}
+
+/**
+ * タグを付け直す口（#376）。
+ *
+ * # 作者にだけ、公開後にだけ出す
+ *
+ * 門番は {@link WorkPageView.retaggableId} で、ここは null かどうかだけを見る
+ * （{@link describeSection} と同じ形）。**未公開の作品では公開フォームのチェックボックスで選ぶ**
+ * ので、この口は公開した後の画面にしか現れない。
+ *
+ * # いまのタグを最初から選んでおく
+ *
+ * 全部外して押せばタグ無しになる（外すのも正当な操作である）。上限と間隔は文言で知らせ、
+ * 超えればサーバが断る。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（付け直せなければ空文字）
+ */
+function retagSection(view: WorkPageView): string {
+  if (view.retaggableId === null) {
+    return '';
+  }
+  return `
+<h3>タグを付け直す</h3>
+<p>作品をさがす画面で、選んだタグから絞り込まれるようになります。何も選ばなければタグ無しになります。
+   変更は ${WORK_TAGS_CHANGE_INTERVAL_SECONDS} 秒に 1 回までです。</p>
+<form method="post" action="${WORK_RETAG_PATH}">
+  <input type="hidden" name="${WORK_RETAG_GAME_ID_FIELD}" value="${view.retaggableId}">
+${tagChoices('retag-tag', knownWorkTags(view.tags).map((tag) => tag.id))}
+  <button type="submit">このタグにする</button>
+</form>`;
 }
 
 /**
@@ -2033,7 +2166,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
     `select g.author_id, g.status, g.title, g.generation_state, g.generation_error,
             g.preview_key, g.created_at, g.generation_started_at,
             g.ogp_state, g.ogp_started_at, g.published_at, g.like_count, g.ip_notice,
-            g.description,
+            g.description, g.tag1, g.tag2, g.tag3,
             a.display_name as author_name, a.is_operator as author_is_operator,
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
        from games g
@@ -2268,6 +2401,12 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // 関門は `describeGame` の `status = 'published'` で、そちらを外すと
       // `test/work-description.test.ts` の「下書きの作品には書けない」が赤くなる。
       describableId: owner && published && state === 'ready' ? gameId : null,
+      // **タグは公開済みのときだけ渡す**（#376。未公開の作品にはタグが付いておらず、取り下げた
+      // 作品の画面は本文ごと差し替わる）。
+      tags: published ? workTagsOf(row) : [],
+      // **付け直せるのは、本人・公開済み・完成済みの作品である**（#376。説明と同じ条件）。押した
+      // 結果を決めるのは `retagGame` の SQL で、ここは口を出すかだけを決める。
+      retaggableId: owner && published && state === 'ready' ? gameId : null,
       // **取り下げられるのは、公開してしまった作品だけである**（5.3 / #35）。
       // 押した結果を決めるのは `removeGame` の SQL で、ここは口を出すかだけを決める。
       removableId: owner && published ? gameId : null,
@@ -2603,6 +2742,144 @@ async function handleDescribe(request: Request, env: Env): Promise<Response> {
   return asHtml
     ? seeOther(workPagePath(target.gameId))
     : json({ described: true, description: outcome.description, changed: outcome.changed }, 200);
+}
+
+/**
+ * タグを付け直す（`POST /api/works/retag`。#376）。
+ *
+ * **形は {@link handleDescribe} を写してある**（`accept` で HTML と JSON を分け、素の `<form>` でも
+ * 動く。CSRF はセッション cookie の `SameSite=Lax` が受ける）。**判定はすべて `retagGame` が持つ**
+ * ——作者の一致も、公開済みかも、語彙と個数も、変更の間隔も、ここに `if` を置かない。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function handleRetag(request: Request, env: Env): Promise<Response> {
+  const asHtml = (request.headers.get('accept') ?? '').includes('text/html');
+
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return asHtml ? seeOther(LOGIN_PATH) : json({ error: 'unauthorized' }, 401);
+  }
+
+  const target = await readGameTagsTarget(request);
+  if (!target.ok) {
+    const refused = REMOVE_BODY_REFUSALS[target.reason];
+    return asHtml
+      ? removeRefusal('タグを付け直せません', refused.body, refused.status)
+      : json({ error: target.reason }, refused.status);
+  }
+
+  const outcome = await retagGame(env, target.gameId, session.userId, target.tags);
+  if (!outcome.ok) {
+    const refused = RETAG_OUTCOME_REFUSALS[outcome.reason];
+    return asHtml
+      ? removeRefusal(refused.heading, refused.body, refused.status)
+      : json({ error: outcome.reason }, refused.status);
+  }
+
+  // POST-redirect-GET。戻り先は作品ページで、そこに新しいタグが出る。
+  return asHtml
+    ? seeOther(workPagePath(target.gameId))
+    : json({ retagged: true, tags: outcome.tags, changed: outcome.changed }, 200);
+}
+
+/**
+ * 付け直しを断ったときに出すもの。
+ *
+ * **鍵を `RetagRejection` で縛る**（{@link RENAME_OUTCOME_REFUSALS} と同じ理由）。
+ */
+const RETAG_OUTCOME_REFUSALS: Readonly<
+  Record<RetagRejection, { status: number; heading: string; body: string }>
+> = {
+  'not-found': {
+    status: 404,
+    heading: '作品が見つかりません',
+    body: 'URL が正しいかご確認ください。',
+  },
+  removed: {
+    status: 409,
+    heading: 'タグを付け直せません',
+    body: 'この作品は公開を取り下げています。取り下げた作品のタグは変えられません。',
+  },
+  'not-published': {
+    status: 409,
+    heading: 'タグを付け直せません',
+    body: 'この作品はまだ公開されていません。タグは公開するときに選べます。',
+  },
+  'too-soon': {
+    status: 429,
+    heading: 'タグを付け直せません',
+    body: `タグの変更は ${WORK_TAGS_CHANGE_INTERVAL_SECONDS} 秒に 1 回までです。少し待ってからもう一度お試しください。`,
+  },
+  'too-many-tags': {
+    status: 400,
+    heading: 'タグを付け直せません',
+    body: `タグは ${MAX_WORK_TAGS} 個まで選べます。選び直してからもう一度お試しください（タグは変わっていません）。`,
+  },
+  'unknown-tag': {
+    status: 400,
+    heading: 'タグを付け直せません',
+    body: '選べないタグが含まれています。画面を開き直して、もう一度お試しください（タグは変わっていません）。',
+  },
+};
+
+/** 作品 id とタグの並びを運ぶ本文を読んだ結果（付け直し）。 */
+type GameTagsTarget =
+  | { readonly ok: true; readonly gameId: string; readonly tags: readonly string[] }
+  | { readonly ok: false; readonly reason: RemoveRejection };
+
+/**
+ * 付け直しの本文を読む（#376）。
+ *
+ * **{@link readGameTextTarget} と同じ規律である**（媒体型を絞り、大きさを縛り、id の綴りを見る）。
+ * 違うのは、タグが**同じ名前の項目の並び**で来ること（フォームは `getAll`、JSON は文字列の配列。
+ * **項目が無ければ空配列＝タグを外す**——チェックボックスを全部外して送ると項目ごと来ない）。
+ *
+ * **語彙と個数はここで検査しない**（`retagGame` が公開と同じ関数で見る）。
+ *
+ * @param request 受信したリクエスト
+ * @returns 読めた対象、読めなければ理由
+ */
+async function readGameTagsTarget(request: Request): Promise<GameTagsTarget> {
+  const mediaType = (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+  if (mediaType !== FORM_MEDIA_TYPE && mediaType !== JSON_MEDIA_TYPE) {
+    return { ok: false, reason: 'unsupported-content-type' };
+  }
+
+  const read = await readLimitedText(request, REMOVE_MAX_BODY_BYTES);
+  if (!read.ok) {
+    return { ok: false, reason: read.reason };
+  }
+
+  let rawId: unknown;
+  let rawTags: unknown;
+  if (mediaType === FORM_MEDIA_TYPE) {
+    const form = new URLSearchParams(read.text);
+    rawId = form.get(WORK_RETAG_GAME_ID_FIELD) ?? undefined;
+    rawTags = form.getAll(WORK_TAG_FIELD);
+  } else {
+    try {
+      const parsed: unknown = JSON.parse(read.text);
+      const record =
+        typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+      rawId = record[WORK_RETAG_GAME_ID_FIELD];
+      // **項目が無い（`undefined`）ときだけタグを外す。`null` は下で形の誤りとして断る**
+      // （`src/publish.ts` と同じ。PR #419 の Copilot レビュー）。
+      rawTags = record[WORK_TAG_FIELD] === undefined ? [] : record[WORK_TAG_FIELD];
+    } catch {
+      return { ok: false, reason: 'invalid-game-id' };
+    }
+  }
+
+  if (typeof rawId !== 'string' || !GAME_ID_PATTERN.test(rawId)) {
+    return { ok: false, reason: 'invalid-game-id' };
+  }
+  if (!Array.isArray(rawTags) || !rawTags.every((value) => typeof value === 'string')) {
+    return { ok: false, reason: 'invalid-game-id' };
+  }
+  return { ok: true, gameId: rawId, tags: rawTags };
 }
 
 /**
@@ -3010,4 +3287,6 @@ export const workPageRoutes: readonly Route[] = [
   { method: 'POST', path: WORK_RENAME_PATH, handler: handleRename },
   // **説明（#388）も完全一致である**（同じ規約）。
   { method: 'POST', path: WORK_DESCRIBE_PATH, handler: handleDescribe },
+  // **タグの付け直し（#376）も完全一致である**（同じ規約）。
+  { method: 'POST', path: WORK_RETAG_PATH, handler: handleRetag },
 ];

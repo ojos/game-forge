@@ -6,7 +6,10 @@ import {
   PUBLIC_WORK_SORTS,
   PUBLISHED_STATUS,
   REMOVED_STATUS,
+  TAGGED_WORK_SORTS,
   publishedGamesSql,
+  taggedGamesSql,
+  toTaggedWorkSort,
 } from '../src/games.js';
 import { cachedRows, listCacheKey, purgeListCache } from '../src/list-cache.js';
 import { MY_WORKS_PATH } from '../src/my-works.js';
@@ -17,9 +20,15 @@ import {
   MAX_PAGE,
   MOVED_NOTICE,
   PUBLIC_WORKS_PATH,
+  TAG_FILTER_NOTICE,
   WORKS_PER_PAGE,
+  renderWorksListPage,
   toPageNumber,
+  toWorkTagFilter,
+  worksListPath,
 } from '../src/works-list.js';
+import { WORK_TAGS, WORK_TAG_FIELD } from '../src/work-tags.js';
+import { siteViewerAt } from '../src/html.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -103,14 +112,17 @@ async function seedGame(
     readonly ogpState?: string | null;
     readonly reviewState?: string | null;
     readonly parentId?: string | null;
+    /** タグの枠（`[tag1, tag2, tag3]`。省略するとタグ無し。#376）。 */
+    readonly tags?: readonly (string | null)[];
   } = {},
 ): Promise<string> {
   const id = crypto.randomUUID();
   await env.DB.prepare(
     `insert into games
        (id, author_id, status, title, go_version, created_at, generation_state,
-        published_at, fork_count, like_count, ogp_state, review_state, parent_id)
-     values (?, ?, ?, ?, '', 1, 'ready', ?, ?, ?, ?, ?, ?)`,
+        published_at, fork_count, like_count, ogp_state, review_state, parent_id,
+        tag1, tag2, tag3)
+     values (?, ?, ?, ?, '', 1, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -123,6 +135,9 @@ async function seedGame(
       overrides.ogpState === undefined ? 'ready' : overrides.ogpState,
       overrides.reviewState ?? null,
       overrides.parentId ?? null,
+      overrides.tags?.[0] ?? null,
+      overrides.tags?.[1] ?? null,
+      overrides.tags?.[2] ?? null,
     )
     .run();
   return id;
@@ -138,9 +153,16 @@ async function seedGame(
  */
 async function openList(query = ''): Promise<Response> {
   const url = new URL(`${APP_ORIGIN}${PUBLIC_WORKS_PATH}${query}`);
-  const sort = url.searchParams.get('sort') ?? 'recent';
   const page = toPageNumber(url.searchParams.get('page'));
-  await purgeListCache(listCacheKey('works', { sort, page }));
+  // **絞り込むときは、経路と同じ鍵を捨てる**（#376。鍵にタグが入り、軸は 2 つへ落ちる）。
+  const tag = toWorkTagFilter(url.searchParams.get(WORK_TAG_FIELD));
+  if (tag === null) {
+    const sort = url.searchParams.get('sort') ?? 'recent';
+    await purgeListCache(listCacheKey('works', { sort, page }));
+  } else {
+    const sort = toTaggedWorkSort(url.searchParams.get('sort'));
+    await purgeListCache(listCacheKey('works', { sort, page, [WORK_TAG_FIELD]: tag }));
+  }
   return await handleAppRequest(new Request(url, { headers: { accept: 'text/html' } }), env);
 }
 
@@ -314,6 +336,176 @@ describe('索引が効いている（仕様 2.3.3 の条件 2）', () => {
     // 軸を足したのに索引の検査へ足し忘れると、その軸だけが全表走査のまま通る。
     expect([...PUBLIC_WORK_SORTS].sort()).toEqual(['forked', 'liked', 'recent']);
   });
+
+  it('タグで絞り込むと、2 軸とも枠ごとの部分索引を順に読んで併合する（#376）', async () => {
+    // **本番と同じ `bind` で掛ける**（`status` と `tag` は束縛。部分索引の条件と照合される）。
+    for (const [sort, axis] of [
+      ['recent', 'published_at'],
+      ['forked', 'fork_count'],
+    ] as const) {
+      const plan = await env.DB.prepare(`explain query plan ${taggedGamesSql(sort)}`)
+        .bind('puzzle', PUBLISHED_STATUS, 'puzzle', PUBLISHED_STATUS, 'puzzle', PUBLISHED_STATUS, WORKS_PER_PAGE + 1, 0)
+        .all<{ detail: string }>();
+      const detail = plan.results.map((row) => row.detail).join(' | ');
+
+      for (const slot of [1, 2, 3]) {
+        expect(detail, `${sort} の実行計画: ${detail}`).toContain(`games_tag${slot}_${axis}_idx`);
+      }
+      // **枠ごとの結果を並べ替えずに併合している**（各枠が索引の順で読めている）。
+      expect(detail, `${sort} の実行計画: ${detail}`).toContain('MERGE (UNION ALL)');
+      expect(detail, `${sort} の実行計画: ${detail}`).not.toContain('USE TEMP B-TREE');
+      expect(detail, `${sort} の実行計画: ${detail}`).not.toMatch(/SCAN g(?! USING)/u);
+      // **`users` は主キーで引く**（結合を `UNION ALL` の外に置いた形。全表走査しない）。
+      expect(detail, `${sort} の実行計画: ${detail}`).not.toMatch(/SCAN u(?! USING)/u);
+    }
+  });
+
+  it('絞り込み中の軸は新着と改造された数だけで、どちらも絞り込まない軸に含まれる（#376）', () => {
+    expect([...TAGGED_WORK_SORTS].sort()).toEqual(['forked', 'recent']);
+    for (const sort of TAGGED_WORK_SORTS) {
+      expect(PUBLIC_WORK_SORTS).toContain(sort);
+    }
+  });
+});
+
+describe('タグで絞り込む（#376 / 仕様 2.3.5）', () => {
+  it('タグ無しの作品が、絞り込まない一覧に出る', async () => {
+    const author = await seedUser('タグ無しの作者');
+    const untagged = await seedGame(author);
+    const tagged = await seedGame(author, { tags: ['puzzle'] });
+
+    const body = await (await openList()).text();
+    expect(body).toContain(workPagePath(untagged));
+    expect(body).toContain(workPagePath(tagged));
+  });
+
+  it('?tag= で、どの枠に入っていても そのタグの作品だけが出る', async () => {
+    const author = await seedUser('絞り込みの作者');
+    const inSlot1 = await seedGame(author, { tags: ['puzzle'] });
+    const inSlot2 = await seedGame(author, { tags: ['action', 'puzzle'] });
+    const inSlot3 = await seedGame(author, { tags: ['action', 'board-card', 'puzzle'] });
+    const otherTag = await seedGame(author, { tags: ['action'] });
+    const untagged = await seedGame(author);
+
+    const body = await (await openList('?tag=puzzle')).text();
+    expect(body).toContain(workPagePath(inSlot1));
+    expect(body).toContain(workPagePath(inSlot2));
+    expect(body).toContain(workPagePath(inSlot3));
+    expect(body).not.toContain(workPagePath(otherTag));
+    expect(body).not.toContain(workPagePath(untagged));
+    // **同じ作品が 2 度並ばない**（枠は重複しない。`UNION ALL` で束ねている）。
+    expect(body.split(`href="${workPagePath(inSlot2)}"`).length - 1).toBe(1);
+    // 絞り込んでいることを結果の側にも書く。
+    expect(body).toContain('タグ「パズル」の作品');
+  });
+
+  it('絞り込んでも draft・removed・審査待ちは出ない', async () => {
+    const author = await seedUser('絞り込みの可視条件の作者');
+    const draft = await seedGame(author, { status: DRAFT_STATUS, tags: ['puzzle'] });
+    const removed = await seedGame(author, { status: REMOVED_STATUS, tags: ['puzzle'] });
+    const queued = await seedGame(author, { reviewState: REVIEW_QUEUED, tags: ['puzzle'] });
+
+    const body = await (await openList('?tag=puzzle')).text();
+    expect(body).not.toContain(workPagePath(draft));
+    expect(body).not.toContain(workPagePath(removed));
+    expect(body).not.toContain(workPagePath(queued));
+  });
+
+  it('語彙に無い ?tag= は無視して、絞り込まない一覧を出す（400 にしない）', async () => {
+    const author = await seedUser('未知のタグの作者');
+    const untagged = await seedGame(author);
+
+    for (const query of ['?tag=unknown', '?tag=', '?tag=Puzzle', `?tag=${encodeURIComponent('パズル')}`]) {
+      const response = await openList(query);
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain(workPagePath(untagged));
+      expect(body).toContain('<strong class="gf-tag-current" aria-current="page">すべて</strong>');
+    }
+  });
+
+  it('左カラムは <a href> だけで組み、絞り込むとタグの付いた作品だけが出ることを書く', async () => {
+    const body = await (await openList('?tag=idle')).text();
+    const nav = body.slice(body.indexOf('<nav class="gf-tag-filter"'));
+    const filter = nav.slice(0, nav.indexOf('</nav>'));
+
+    expect(filter).toContain(TAG_FILTER_NOTICE);
+    expect(filter).toContain(`<a href="${worksListPath('recent', 1)}">すべて</a>`);
+    for (const tag of WORK_TAGS) {
+      if (tag.id === 'idle') {
+        // **いま選んでいるものはリンクにしない。**
+        expect(filter).toContain(`aria-current="page">${tag.label}</strong>`);
+      } else {
+        expect(filter).toContain(`<a href="${worksListPath('recent', 1, tag.id)}">${tag.label}</a>`);
+      }
+    }
+    // **JavaScript もフォームも使わない**（9.3）。
+    expect(filter).not.toContain('<script');
+    expect(filter).not.toContain('<form');
+    expect(filter).not.toContain('onclick');
+  });
+
+  it('絞り込み中は、いいね順のリンクを出さず、?sort=liked も未知の軸も新着にする', async () => {
+    const author = await seedUser('絞り込みの並べ替えの作者');
+    const mostLiked = await seedGame(author, { tags: ['shooting'], likeCount: 999 });
+    const newest = await seedGame(author, { tags: ['shooting'] });
+
+    for (const query of ['?tag=shooting&sort=liked', '?tag=shooting&sort=played', '?tag=shooting&sort=x']) {
+      const body = await (await openList(query)).text();
+      const sortNav = body.slice(body.indexOf('<nav class="gf-sort"'));
+      const nav = sortNav.slice(0, sortNav.indexOf('</nav>'));
+      expect(nav).not.toContain('いいねの数');
+      expect(nav).toContain('<strong class="gf-sort-current">新着</strong>');
+      expect(nav).toContain(`<a href="${worksListPath('forked', 1, 'shooting')}">改造された数</a>`);
+      expect(body.indexOf(workPagePath(newest))).toBeLessThan(body.indexOf(workPagePath(mostLiked)));
+    }
+  });
+
+  it('絞り込み中も改造された数で並べられる', async () => {
+    const author = await seedUser('絞り込みの改造の作者');
+    const mostForked = await seedGame(author, { tags: ['board-card'], forkCount: 9_999 });
+    const newest = await seedGame(author, { tags: ['board-card'] });
+
+    const recent = await (await openList('?tag=board-card&sort=recent')).text();
+    const forked = await (await openList('?tag=board-card&sort=forked')).text();
+    expect(recent.indexOf(workPagePath(newest))).toBeLessThan(recent.indexOf(workPagePath(mostForked)));
+    expect(forked.indexOf(workPagePath(mostForked))).toBeLessThan(forked.indexOf(workPagePath(newest)));
+  });
+
+  it('頁送りでタグを保ち、21 件目が次の頁で取得できる', async () => {
+    const author = await seedUser('絞り込みの頁送りの作者');
+    const ids: string[] = [];
+    for (let count = 0; count < WORKS_PER_PAGE + 1; count += 1) {
+      ids.push(await seedGame(author, { tags: ['rhythm-sound'] }));
+    }
+    const oldest = ids[0]!;
+
+    const first = await (await openList('?tag=rhythm-sound&sort=recent&page=1')).text();
+    const second = await (await openList('?tag=rhythm-sound&sort=recent&page=2')).text();
+
+    expect(first).not.toContain(workPagePath(oldest));
+    expect(first).toContain(`href="${worksListPath('recent', 2, 'rhythm-sound')}"`);
+    expect(second).toContain(workPagePath(oldest));
+    expect(second).toContain(`href="${worksListPath('recent', 1, 'rhythm-sound')}"`);
+  });
+
+  it('「このタグの作品はまだない」と「公開作品が 0 本」を書き分ける', () => {
+    const viewer = siteViewerAt(PUBLIC_WORKS_PATH, false);
+    const filtered = renderWorksListPage(
+      { works: [], sort: 'recent', page: 1, hasNext: false, tag: 'idle' },
+      viewer,
+    );
+    const unfiltered = renderWorksListPage(
+      { works: [], sort: 'recent', page: 1, hasNext: false, tag: null },
+      viewer,
+    );
+
+    expect(filtered).toContain('このタグの作品はまだありません。');
+    expect(filtered).not.toContain('まだ公開された作品がありません。');
+    expect(filtered).toContain(`<a href="${worksListPath('recent', 1)}">すべての作品を見る</a>`);
+    expect(unfiltered).toContain('まだ公開された作品がありません。');
+    expect(unfiltered).not.toContain('このタグの作品はまだありません。');
+  });
 });
 
 describe('カードの見え方（仕様 2.3.6）', () => {
@@ -379,6 +571,28 @@ describe('Cache API の前段（仕様 2.3.3 の条件 3）', () => {
     } finally {
       Reflect.set(globalThis, 'caches', original);
     }
+  });
+
+  it('絞り込んだ一覧と絞り込まない一覧は、別の鍵に載る（#376）', async () => {
+    const author = await seedUser('鍵のタグの作者');
+    const tagged = `${APP_ORIGIN}${PUBLIC_WORKS_PATH}?tag=other&sort=recent&page=1`;
+    const plain = `${APP_ORIGIN}${PUBLIC_WORKS_PATH}?sort=recent&page=1`;
+    await purgeListCache(listCacheKey('works', { sort: 'recent', page: 1, [WORK_TAG_FIELD]: 'other' }));
+    await purgeListCache(listCacheKey('works', { sort: 'recent', page: 1 }));
+
+    // 絞り込んだ一覧を先に溜める。
+    await (await handleAppRequest(new Request(tagged), env)).text();
+    const after = await seedGame(author, { tags: ['other'] });
+
+    // **同じ鍵なら、絞り込まない一覧も溜めた行を返してしまう。**
+    expect(await (await handleAppRequest(new Request(plain), env)).text()).toContain(workPagePath(after));
+    // 絞り込んだ一覧は溜めた行のまま（キャッシュが効いている）。
+    expect(await (await handleAppRequest(new Request(tagged), env)).text()).not.toContain(
+      workPagePath(after),
+    );
+    expect(
+      listCacheKey('works', { sort: 'recent', page: 1, [WORK_TAG_FIELD]: 'other' }),
+    ).not.toBe(listCacheKey('works', { sort: 'recent', page: 1, [WORK_TAG_FIELD]: 'idle' }));
   });
 
   it('鍵は並べ替え軸と頁で分かれる', () => {

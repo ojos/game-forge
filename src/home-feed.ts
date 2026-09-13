@@ -26,7 +26,7 @@
  * 並べ替えも節を出すかどうかの判定も、`games.like_count`（5 分おきに写した数）で行う。
  */
 import type { PublicWork, PublicWorkSort } from './games.js';
-import { PUBLISHED_STATUS, listPublishedGames } from './games.js';
+import { PUBLISHED_STATUS, listPublishedGames, workTagsOf } from './games.js';
 import { cachedRows, listCacheKey } from './list-cache.js';
 import { reviewVisibleSql } from './reports.js';
 import { worksListPath } from './works-list.js';
@@ -131,8 +131,10 @@ export function officialSamplesSql(): string {
   //
   // **`g.author_id` を選ぶのは作者ページへのリンクのためである**（#330。選ばないと
   // この節だけ作者名がリンクにならない）。`users` から選ぶ列は増えていない。
+  //
+  // **タグの枠を選ぶのはカードに出すためである**（#376。`publishedGamesSql` と揃える）。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
-            g.ogp_state, g.author_id, u.display_name as author_name
+            g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name
        from games g
        left join users u on u.id = g.author_id
       where g.author_id = ? and g.status = ? and ${reviewVisibleSql('g')}
@@ -150,6 +152,9 @@ interface OfficialSampleRow {
   readonly parent_id: string | null;
   readonly ogp_state: string | null;
   readonly author_id: string | null;
+  readonly tag1: string | null;
+  readonly tag2: string | null;
+  readonly tag3: string | null;
   readonly author_name: string | null;
 }
 
@@ -172,6 +177,8 @@ function toPublicWork(row: OfficialSampleRow): PublicWork {
     likeCount: row.like_count,
     hasParent: row.parent_id !== null,
     hasShot: row.ogp_state === 'ready',
+    // タグ（#376）。語彙に照らして描くのはカードの側である（`src/work-card.ts` の `knownWorkTags`）。
+    tags: workTagsOf(row),
   };
 }
 

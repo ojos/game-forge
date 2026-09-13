@@ -178,8 +178,9 @@ export const MAX_USER_ID_LENGTH = 64;
  * @returns 束縛パラメータが 4 つ（author_id / status / limit / offset）の SELECT 文
  */
 export function authorWorksSql(): string {
+  // **タグの枠を選ぶのはカードに出すためである**（#376。`publishedGamesSql` と揃える）。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
-            g.ogp_state, g.author_id
+            g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3
        from games g
       where g.author_id = ? and g.status = ? and ${reviewVisibleSql('g')}
       order by g.published_at desc, g.id desc
@@ -481,6 +482,9 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
         parent_id: string | null;
         ogp_state: string | null;
         author_id: string | null;
+        tag1: string | null;
+        tag2: string | null;
+        tag3: string | null;
       }>();
     const counted = await env.DB.prepare(likesReceivedSql())
       .bind(userId, PUBLISHED_STATUS)
@@ -499,6 +503,11 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
         likeCount: row.like_count,
         hasParent: row.parent_id !== null,
         hasShot: row.ogp_state === 'ready',
+        // タグ（#376）。語彙に照らして描くのはカードの側である（`src/work-card.ts` の
+        // `knownWorkTags`）。**読み方は `src/games.ts` の `workTagsOf` と同じ**（枠の順に、NULL を
+        // 除く）だが、ここでは import を足さない——このファイルの冒頭は並行して別の issue
+        // （#379）が触っており、共有する区画を作品の SQL と写しの箇所だけに閉じるためである。
+        tags: [row.tag1, row.tag2, row.tag3].filter((tag): tag is string => tag !== null),
       })),
       // `coalesce` が 0 に倒しているが、**キャッシュを経由する値は JSON である**ので
       // 数でないものが入りうる（`src/work-card.ts` の `cardLikeCount` と同じ備え）。

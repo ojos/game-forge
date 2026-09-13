@@ -6,7 +6,13 @@ import type { PublicWork } from '../src/games.js';
 import { cachedRows, listCacheKey, purgeListCache } from '../src/list-cache.js';
 import { PUBLIC_WORKS_PATH } from '../src/works-paths.js';
 import { authorPagePath } from '../src/users-page-paths.js';
-import { cardAuthorId, cardLikeCount, renderWorkCard, renderWorkCards } from '../src/work-card.js';
+import {
+  cardAuthorId,
+  cardLikeCount,
+  renderWorkCard,
+  renderWorkCards,
+  workTagListPath,
+} from '../src/work-card.js';
 import { workPagePath } from '../src/work-page.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -294,5 +300,79 @@ describe('作者名から作者ページへ辿れる（#330 / 仕様 2.3.1）', 
 
     expect(body).toContain(workPagePath(id));
     expect(body).toContain(`<a class="gf-card-author" href="${authorPagePath(author)}">`);
+  });
+});
+
+describe('カードのタグ（#376 / 仕様 2.3.6）', () => {
+  it('語彙にあるタグだけを、絞り込んだ一覧へのリンクとして下段に出す', () => {
+    const card = renderWorkCard({ ...baseWork, tags: ['puzzle', 'not-in-vocabulary', 'idle'] });
+    expect(card).toContain(`<a class="gf-card-genre" href="${workTagListPath('puzzle')}">パズル</a>`);
+    expect(card).toContain(`<a class="gf-card-genre" href="${workTagListPath('idle')}">放置</a>`);
+    expect(card).not.toContain('not-in-vocabulary');
+    // **カード全体を包むリンクの外に置く**（入れ子のリンクにしない）。
+    const link = card.slice(card.indexOf('<a class="gf-card-link"'), card.indexOf('</a>') + 4);
+    expect(link).not.toContain('gf-card-genre');
+  });
+
+  it('タグ無し・欠けた値・壊れた値では何も出さず、壊れない', () => {
+    for (const broken of [[], undefined, null, 'puzzle', [1, null], { 0: 'puzzle' }]) {
+      const card = renderWorkCard({ ...baseWork, tags: broken } as unknown as PublicWork);
+      expect(card, JSON.stringify(broken)).not.toContain('gf-card-genre');
+      expect(card, JSON.stringify(broken)).not.toContain('undefined');
+    }
+  });
+
+  it('公開一覧のカードに、D1 の枠から引いたタグが出る', async () => {
+    const author = await seedUser('タグの出る作者');
+    const id = await seedGame(author, 0);
+    await env.DB.prepare("update games set tag1 = 'shooting', tag2 = 'other' where id = ?")
+      .bind(id)
+      .run();
+
+    await purgeListCache(FIRST_PAGE_KEY);
+    const body = await openList();
+    const card = body.slice(body.indexOf(`href="${workPagePath(id)}"`));
+    const first = card.slice(0, card.indexOf('</li>'));
+
+    expect(first).toContain('>シューティング</a>');
+    expect(first).toContain('>その他</a>');
+  });
+
+  it('tags を持たない古い行がキャッシュから返っても、一覧は 200 でタグを出さないだけ', async () => {
+    // **配備の直後 60 秒の窓**（`likeCount` の #340 と同じ形）。本番と同じ経路で古い形の行を仕込む。
+    const author = await seedUser('タグの古い行の作者');
+    const id = await seedGame(author, 0);
+    await env.DB.prepare("update games set tag1 = 'action' where id = ?").bind(id).run();
+
+    await purgeListCache(FIRST_PAGE_KEY);
+    const stale = [
+      {
+        id,
+        title: 'カードの題',
+        authorName: 'タグの古い行の作者',
+        authorId: author,
+        publishedAt: publishedAtSeq,
+        forkCount: 0,
+        likeCount: 0,
+        hasParent: false,
+        hasShot: true,
+      },
+    ];
+    await cachedRows(FIRST_PAGE_KEY, async () => stale as unknown as readonly PublicWork[]);
+
+    const response = await handleAppRequest(
+      new Request(`${APP_ORIGIN}${PUBLIC_WORKS_PATH}`, { headers: { accept: 'text/html' } }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain(workPagePath(id));
+    // **左カラムの絞り込みにも同じラベルが並ぶ**ので、カードのタグの形だけを探す。
+    const cardTag = `<a class="gf-card-genre" href="${workTagListPath('action')}">アクション</a>`;
+    expect(body, 'キャッシュを読んでいない（D1 のタグが出ている）').not.toContain(cardTag);
+    expect(body).not.toContain('undefined');
+
+    await purgeListCache(FIRST_PAGE_KEY);
+    expect(await openList()).toContain(cardTag);
   });
 });

@@ -41,6 +41,17 @@
  * **「誰に送るか」「送ってよいか」はここに書かない。** 親の作者の解決も、自分自身の
  * フォークの除外も、1 フォーク 1 通の抑止も、すべて `notifyForkPublished` の中にある。
  *
+ * ## タグは公開と同じ 1 本で書く（#376）
+ *
+ * **公開フォームには任意のチェックボックス（タグ）が並ぶが、ボタンは「公開して共有」の 1 つの
+ * ままである**（5.4 の 1 タップを変えない。選ばずに押せばタグ無しで公開される）。
+ *
+ * - **語彙に無い値・4 個以上は、公開もせず 1 行も書かずに断り、理由を画面に出す**
+ *   （`publishGame` の `validateWorkTags`。**判定はこの経路に書かない**——上の表と同じ規律）
+ * - **二度押しの 2 回目はタグを上書きしない**（タグは公開の UPDATE と同じ WHERE に載っており、
+ *   2 回目は `status = 'draft'` で 0 行になる）
+ * - **公開した後に変えるのは作品ページの別の口**（`src/work-page.ts` の `POST /api/works/retag`）
+ *
  * ## CSRF について
  *
  * セッション cookie は `SameSite=Lax`（8.1 / `src/session.ts`）で、他サイトからの
@@ -65,6 +76,7 @@ import { startOgpCaptureOnLambda } from './ogp-client.js';
 import type { CaptureStartOutcome } from './ogp.js';
 import { startOgpCapture } from './ogp.js';
 import { PUBLISH_GAME_ID_FIELD, PUBLISH_PATH } from './paths.js';
+import { MAX_WORK_TAGS, WORK_TAG_FIELD } from './work-tags.js';
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
@@ -85,7 +97,8 @@ import { workPagePath } from './work-page.js';
 /**
  * 受け付ける本文の最大バイト数。
  *
- * **1 KiB。** 載るのは UUID 1 つだけ（`game_id=` ＋ 36 文字）である。
+ * **1 KiB。** 載るのは UUID 1 つ（`game_id=` ＋ 36 文字）と、選ばれたタグ（`&tag=` ＋ 識別子。
+ * 3 個で 60 バイトに届かない。#376）である。
  * `src/generate-callback.ts` の 16 KiB はプロンプトが載るための値で、
  * **載らないものに合わせた上限を置かない。**
  */
@@ -156,7 +169,7 @@ ${siteFooter()}`,
 
 /** 断りの理由ごとの、ステータスと文言。 */
 const REFUSALS: Readonly<
-  Record<'not-found' | 'not-ready' | 'removed', { status: number; heading: string; body: string }>
+  Record<PublishOutcomeRejection, { status: number; heading: string; body: string }>
 > = {
   // **他人の作品と、存在しない作品を区別しない**（`src/games.ts` の `publishGame`）。
   'not-found': {
@@ -174,7 +187,27 @@ const REFUSALS: Readonly<
     heading: '公開できません',
     body: 'この作品は公開を停止しています。',
   },
+  // **タグ（#376）。** チェックボックスから来る限り起きないが、起きたら**何も書いていない**
+  // ことと、直し方を言う。400 にするのは、送った内容の問題だからである。
+  'too-many-tags': {
+    status: 400,
+    heading: '公開できません',
+    body: `タグは ${MAX_WORK_TAGS} 個まで選べます。選び直してからもう一度お試しください（まだ公開していません）。`,
+  },
+  'unknown-tag': {
+    status: 400,
+    heading: '公開できません',
+    body: '選べないタグが含まれています。画面を開き直して、もう一度お試しください（まだ公開していません）。',
+  },
 };
+
+/**
+ * 公開の結果のうち、断ったときの理由。
+ *
+ * **鍵を `PublishOutcome` から導く**——`publishGame` が理由を 1 つ増やした日に、表へ足し忘れると
+ * 型の検査で落ちる（#376 でタグの 2 つが増えたときに、ここが実際に落ちた）。
+ */
+type PublishOutcomeRejection = Extract<PublishOutcome, { ok: false }>['reason'];
 
 /**
  * 要求を受け付けられなかった理由。
@@ -222,7 +255,12 @@ const BODY_REFUSALS: Readonly<Record<PublishRejection, { status: number; body: s
 
 /** 本文から取り出した対象。 */
 type GameIdResult =
-  | { readonly ok: true; readonly gameId: string }
+  | {
+      readonly ok: true;
+      readonly gameId: string;
+      /** 選ばれたタグ（**検査前**。選ばれていなければ空配列。#376）。 */
+      readonly tags: readonly string[];
+    }
   | { readonly ok: false; readonly reason: PublishRejection };
 
 /**
@@ -232,8 +270,12 @@ type GameIdResult =
  * ならないが、任意の文字列が D1 への問い合わせとして通ることになる
  * （`src/work-page.ts` / `src/sandbox-delivery.ts` と同じ方針）。
  *
+ * **タグは取り出すだけで、語彙に照らさない**（#376）。語彙と個数の検査は `publishGame` が
+ * 1 か所で持つ（付け直しの口と同じ関数を通る）。ここが見るのは「文字列の並びであること」まで
+ * で、フォームなら同じ名前の項目をすべて（`getAll`）、JSON なら文字列の配列を受ける。
+ *
  * @param request 受信したリクエスト
- * @returns 作品 id、または理由
+ * @returns 作品 id とタグ、または理由
  */
 async function readGameId(request: Request): Promise<GameIdResult> {
   const mediaType = (request.headers.get('content-type') ?? '')
@@ -252,15 +294,21 @@ async function readGameId(request: Request): Promise<GameIdResult> {
   }
 
   let raw: unknown;
+  let rawTags: unknown;
   if (mediaType === FORM_MEDIA_TYPE) {
-    raw = new URLSearchParams(read.text).get(PUBLISH_GAME_ID_FIELD) ?? undefined;
+    const form = new URLSearchParams(read.text);
+    raw = form.get(PUBLISH_GAME_ID_FIELD) ?? undefined;
+    rawTags = form.getAll(WORK_TAG_FIELD);
   } else {
     try {
       const parsed: unknown = JSON.parse(read.text);
-      raw =
-        typeof parsed === 'object' && parsed !== null
-          ? (parsed as Record<string, unknown>)[PUBLISH_GAME_ID_FIELD]
-          : undefined;
+      const record =
+        typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+      raw = record[PUBLISH_GAME_ID_FIELD];
+      // **項目ごと無ければタグ無し**（JSON から公開する既存の呼び出しを壊さない）。
+      // **`null` は「無い」に畳まない**（PR #419 の Copilot レビュー）。`?? []` にすると
+      // `{"tag": null}` がタグ無しとして通る——配列でない値は下で形の誤りとして断る。
+      rawTags = record[WORK_TAG_FIELD] === undefined ? [] : record[WORK_TAG_FIELD];
     } catch {
       return { ok: false, reason: 'invalid-game-id' };
     }
@@ -269,7 +317,11 @@ async function readGameId(request: Request): Promise<GameIdResult> {
   if (typeof raw !== 'string' || !GAME_ID_PATTERN.test(raw)) {
     return { ok: false, reason: 'invalid-game-id' };
   }
-  return { ok: true, gameId: raw };
+  // **文字列の配列でなければ、形の誤りとして断る**（語彙の検査より手前の、要求の形の問題である）。
+  if (!Array.isArray(rawTags) || !rawTags.every((value) => typeof value === 'string')) {
+    return { ok: false, reason: 'invalid-game-id' };
+  }
+  return { ok: true, gameId: raw, tags: rawTags };
 }
 
 /**
@@ -346,7 +398,14 @@ async function handlePublish(
       : json({ error: target.reason }, refused.status);
   }
 
-  const outcome = await publishGame(env, target.gameId, session.userId);
+  // **タグの検査も `publishGame` の中にある**（語彙に無い値・4 個以上は 1 行も書かずに断る。#376）。
+  const outcome = await publishGame(
+    env,
+    target.gameId,
+    session.userId,
+    Math.floor(Date.now() / 1000),
+    target.tags,
+  );
 
   // **撮影は「この呼び出しが実際に公開したとき」だけ起こす**（5.4 の「公開時まで
   // 遅延する」）。二度押しの 2 回目で呼んでも `claimOgpCapture` が止めるが、

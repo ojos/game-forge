@@ -831,3 +831,19 @@ describe('いいねした作品のカードも作者ページへ辿れる（#330
     expect(likedWorksSql(1)).toContain('g.author_id');
   });
 });
+
+describe('いいねした作品のカードにもタグが出る（#376 / 仕様 2.3.6）', () => {
+  it('`likedWorksSql` がタグの枠を選び、画面でカードにラベルが出る', async () => {
+    // **この一覧は `listPublishedGames` を通らない**（上の #330 の検査と同じ理由）。選び忘れると、
+    // この一覧だけカードからタグが消える。画面は正しく出るので、綴りと画面の両方で見る。
+    const author = await seedUser('タグの付いた作品の作者');
+    const me = await seedUser('タグを見る人');
+    const game = await seedGame(author);
+    await env.DB.prepare("update games set tag1 = 'race-sports' where id = ?").bind(game).run();
+    await like(me, game);
+
+    const body = await (await openLiked(await sessionCookie(me))).text();
+    expect(body).toContain('<a class="gf-card-genre" href="/works?tag=race-sports">レース・スポーツ</a>');
+    expect(likedWorksSql(1)).toContain('g.tag1, g.tag2, g.tag3');
+  });
+});

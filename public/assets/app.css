@@ -694,6 +694,46 @@ button:disabled {
   font-size: var(--gf-text-small);
 }
 
+/*
+ * タグのチェックボックス（#376）。公開フォームと、公開後の付け直しのフォームが共有する。
+ *
+ * **`label` の既定（`@section forms` の `display: block` と太字）を外す。** 既定のままだと
+ * 8 個が 1 行ずつ太字で縦に並び、「公開して共有」のボタンが画面の下へ押し出される——
+ * **5.4 の 1 タップを、見た目の側から遠ざけない。** 横に並べて折り返す。
+ *
+ * **`min-width: 0` を置く。** `fieldset` の既定の最小幅は中身の幅（`min-content`）で、
+ * 折り返せない中身が来ると器を押し広げる（`scripts/check-page-width.sh` が見ている回帰）。
+ * 枠線も外す——フォームの中の 1 項目であって、別の塊ではない。
+ */
+.gf-tag-choices {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.gf-tag-choices legend {
+  margin-bottom: var(--gf-gap-1);
+  padding: 0;
+  font-weight: 700;
+}
+
+.gf-tag-choices label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gf-gap-1);
+  margin: 0 var(--gf-gap-3) var(--gf-gap-1) 0;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+/* 作品ページのタグの行（#376）。いいねの数と同じ強さの補助の 1 行である。 */
+.gf-work-tags {
+  margin: var(--gf-gap-2) 0 0;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
 /* ==========================================================================
    @section signed-in — ログイン後の画面（#268）
    ========================================================================== */
@@ -863,6 +903,24 @@ button:disabled {
   color: var(--gf-ink-faint);
 }
 
+/*
+ * カードのタグ（#376 / 仕様 2.3.6）。**1 つずつ、そのタグで絞り込んだ一覧へのリンクである。**
+ *
+ * **色を持たせない**（リンクは下線で示す。冒頭の方針）。下段の他の項目と同じ薄さに揃え、
+ * 主役のスクリーンショットより強く出さない。タグどうしの間は `.gf-card-meta > * + *` の
+ * 余白と同じだけ空ける。
+ */
+.gf-card-genres > * + * {
+  margin-left: var(--gf-gap-2);
+}
+
+a.gf-card-genre {
+  color: var(--gf-ink-faint);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  white-space: nowrap;
+}
+
 /* ==========================================================================
    @section author — 作者ページ（#330 / 仕様 2.3.1）
    ========================================================================== */
@@ -966,6 +1024,53 @@ a.gf-card-author {
 
 .gf-sort-current {
   color: var(--gf-ink);
+}
+
+/*
+ * タグの絞り込み（#376 / 仕様 2.3.5）。**器の `.gf-split` の補助カラムに置く**
+ * （段 3 では左、狭い段では結果の上。断点は `@section shell` が持つ）。
+ *
+ * **並べ替えと同じく、素朴なリンクの並びにする**（9.3。JavaScript を足したくなる見た目にしない）。
+ * **項目を横に並べて折り返す。** 縦 1 列にすると、狭い段では結果の上に 9 行が積まれ、作品が
+ * 画面の外へ押し出される。補助カラム（16rem）の中でも同じ規則で 2〜3 列に折り返す。
+ */
+.gf-tag-filter {
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-tag-filter h2 {
+  margin: 0 0 var(--gf-gap-2);
+  font-size: var(--gf-text);
+}
+
+.gf-tag-filter ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-1) var(--gf-gap-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gf-tag-current {
+  color: var(--gf-ink);
+}
+
+.gf-tag-filter-note {
+  margin: var(--gf-gap-2) 0 0;
+  color: var(--gf-ink-faint);
+}
+
+/* 結果の側の見出しの代わり（絞り込み中だけ出る）。**狭い段では左カラムと結果が離れる**ので、ここにも書く。 */
+.gf-tag-filtered {
+  margin: 0 0 var(--gf-gap-1);
+  font-weight: 700;
+}
+
+/* 結果の塊の先頭に余白を持たせない（補助カラムと上端を揃える）。 */
+.gf-works-results > :first-child {
+  margin-top: 0;
 }
 
 /* ==========================================================================

@@ -692,3 +692,22 @@ describe('作品から作者へ辿る導線（#330 の goal）', () => {
     expect(await response.text()).toContain('<h1>往復する作者</h1>');
   });
 });
+
+describe('作者ページのカードにもタグが出る（#376 / 仕様 2.3.6）', () => {
+  it('作品の SQL がタグの枠を選び、カードに語彙のラベルが出る', async () => {
+    const author = await seedUser('タグの作者');
+    const tagged = await seedGame(author);
+    const untagged = await seedGame(author);
+    await env.DB.prepare("update games set tag1 = 'puzzle', tag2 = 'idle' where id = ?")
+      .bind(tagged)
+      .run();
+
+    const body = await bodyOf(author);
+    const card = body.slice(body.indexOf(`href="${workPagePath(tagged)}"`));
+    const taggedCard = card.slice(0, card.indexOf('</li>'));
+    expect(taggedCard).toContain('<a class="gf-card-genre" href="/works?tag=puzzle">パズル</a>');
+    expect(taggedCard).toContain('<a class="gf-card-genre" href="/works?tag=idle">放置</a>');
+    // **タグ無しの作品も並ぶ**（作者ページはタグで絞らない）。
+    expect(body).toContain(workPagePath(untagged));
+  });
+});

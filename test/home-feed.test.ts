@@ -640,3 +640,30 @@ describe('公式サンプルの作者名も作者ページへのリンクにな�
     expect(section).toContain(`<a class="gf-card-author" href="${authorPagePath(operator)}">`);
   });
 });
+
+describe('公式サンプルのカードにもタグが出る（#376 / 仕様 2.3.6）', () => {
+  it('公式サンプルの SQL がタグの枠を選び、PublicWork にタグが載る', async () => {
+    // **公式サンプルは `listPublishedGames` を通らない**（このモジュールが自前で引く）。選び忘れると、
+    // トップの公式サンプルの節だけカードからタグが消える。
+    await clearOperators();
+    const operator = await seedUser({ operator: true });
+    const official = await seedGame(operator);
+    await env.DB.prepare("update games set tag1 = 'action', tag3 = 'other' where id = ?")
+      .bind(official)
+      .run();
+
+    const works = await listOfficialSamples(env);
+    expect(works.find((work) => work.id === official)?.tags).toEqual(['action', 'other']);
+    expect(officialSamplesSql()).toContain('g.tag1, g.tag2, g.tag3');
+  });
+
+  it('トップの 3 節（一覧と同じ引き方）にもタグが載る', async () => {
+    const author = await seedUser();
+    const game = await seedGame(author);
+    await env.DB.prepare("update games set tag1 = 'shooting' where id = ?").bind(game).run();
+
+    await purgeListCache(HOME_CACHE_KEY);
+    const feed = await loadHomeFeed(env);
+    expect(feed.recent.find((work) => work.id === game)?.tags).toEqual(['shooting']);
+  });
+});

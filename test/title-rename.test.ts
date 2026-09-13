@@ -48,7 +48,9 @@ import { applySchema } from './helpers/schema.js';
  *   2. 正規化が生成側（`draftTitleFromPrompt`）と 1 文字も違わないこと
  *   3. 8.3 の語で断り、**語も分類も応答に出さない**こと
  *   4. 改名と履歴が 1 つの batch であること（**履歴が落ちれば題名も変わらない**）
- *   5. `cleared` が `NULL` へ戻り、**`queued` にはならない**こと（**変異で確認した**）
+ *   5. **通報の無い** `cleared` が `NULL` へ戻り、**`queued` にはならない**こと（**変異で確認した**）。
+ *      **`cleared` のあとに届いた通報があれば `queued` へ入る**こと（#404）は
+ *      `test/review-attention.test.ts` が説明の変更と並べて見る（規則を共有しているため）
  *   6. 作品の行を消すときに履歴も消せること（確定26 / 3.7 の削除規約）
  *
  * **改名のあとの通報を運営へ出す条件は、ここでは見ない。** #366 はそれを「最後の改名より
@@ -522,8 +524,8 @@ describe('改名と履歴は 1 つの batch で書く（#366 / #361 の規律）
   });
 });
 
-describe('改名は審査状態を戻す（#366）', () => {
-  it('cleared の作品を改名すると NULL へ戻る', async () => {
+describe('改名は審査状態を戻す（#366 / #404）', () => {
+  it('通報の無い cleared の作品を改名すると NULL へ戻る', async () => {
     const { userId, id } = await seedReady('review-cleared', 'もとの題名');
     await env.DB.prepare(`update games set ${REVIEW_STATE_COLUMN} = ? where id = ?`)
       .bind(REVIEW_CLEARED, id)
@@ -534,9 +536,10 @@ describe('改名は審査状態を戻す（#366）', () => {
     expect(await reviewStateOf(id)).toBeNull();
   });
 
-  it('queued にはならない（善意の改名で作品がトップから消えない）', async () => {
-    // **`cleared` からも `NULL` からも `queued` へ行かない。** `queued` は新規露出を
-    // 止める状態である（`reviewVisibleSql`）。
+  it('通報が無ければ queued にはならない（善意の改名で作品がトップから消えない）', async () => {
+    // **通報の無い作品は `cleared` からも `NULL` からも `queued` へ行かない。** `queued` は
+    // 新規露出を止める状態である（`reviewVisibleSql`）。**`cleared` のあとに届いた通報が
+    // あるときだけ `queued` へ入る**（#404。`test/review-attention.test.ts`）。
     const cleared = await seedReady('review-not-queued-cleared', 'もとの題名');
     await env.DB.prepare(`update games set ${REVIEW_STATE_COLUMN} = ? where id = ?`)
       .bind(REVIEW_CLEARED, cleared.id)

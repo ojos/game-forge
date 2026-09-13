@@ -21,12 +21,14 @@
  * 作者の改名を書く（口は作品ページ。5.4）。**生成側の初期値（{@link
  * draftTitleFromPrompt}）と改名は、正規化の規則を {@link normalizeTitle} で共有する。**
  * 改名は履歴（`migrations/0027_title_changes.sql`）と同じ batch で書き、審査済み
- * （`cleared`）の作品は `NULL` へ戻る（理由は {@link renameGame}）。
+ * （`cleared`）の作品は `NULL` へ戻る——**ただし `cleared` にしたあとの通報が届いていれば
+ * `queued` へ入る**（#404。規則は {@link reviewStateAfterAuthorEditSql}）。
  *
  * ## 作者は公開後に説明を書ける（#388）
  *
  * **{@link describeGame} が改名と同じ形で書く**（口は作品ページ。履歴は
- * `migrations/0028_game_descriptions.sql`、同じ batch、`cleared` は `NULL` へ戻る）。
+ * `migrations/0028_game_descriptions.sql`、同じ batch、審査状態の戻し方も改名と同じ
+ * {@link reviewStateAfterAuthorEditSql}）。
  * 違いは、**公開済みの作品だけに書けること**と、**長すぎる説明を切らずに断ること**
  * （{@link validateDescription}）である。
  *
@@ -71,6 +73,8 @@
 import { ipNoticeOf } from './ip-substitution.js';
 import {
   REVIEW_CLEARED,
+  REVIEW_QUEUED,
+  REVIEW_REPORTED_AFTER_CLEAR_SQL,
   REVIEW_STATE_COLUMN,
   TITLE_CHANGES_TABLE,
   reviewVisibleSql,
@@ -1042,6 +1046,94 @@ export type RenameOutcome =
 export type RenameRejection = 'not-found' | 'removed' | 'not-ready' | 'denied-term';
 
 /**
+ * 作者が題名や説明を変えたときの、審査状態の新しい値を表す SQL の式（8.4 / #366 / #388 / #404）。
+ *
+ * **{@link renameGame} と {@link describeGame} の UPDATE が、`set review_state = <この式>` として
+ * 共有する。** 戻し方を 2 か所に書くと、片方だけが古くなる。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 規則（変更前の状態 → 変更後の状態）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ *   - `cleared` で、**最後に `cleared` にした時刻以降の通報がある** → **`queued`**（#404）
+ *   - `cleared` で、そういう通報が無い → `NULL`（#366。審査で見たのは変更前の題名・説明である）
+ *   - `queued` → `queued` のまま（変更で審査待ちを解けてはいけない）
+ *   - `NULL` → `NULL` のまま
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * なぜ `NULL` ではなく `queued` にする場合があるのか（#404）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **`NULL` へ戻すだけだと、`cleared` のあとに届いていた通報が誰にも見えなくなる。**
+ * その通報は {@link REVIEW_REPORTED_AFTER_CLEAR_SQL}（`cleared` を求める）で運営に出ていたが、
+ * `NULL` になると条件から外れる。`recordReport` が `queued` へ上げるのは通報が届いた時点
+ * だけで、同じ人は同じ作品を 2 度通報できない（`reports_game_reporter_uq`）——**届いていた
+ * 通報は、作者の改名 1 回で埋もれた。** #366 が塞ごうとした「穏当な題名で公開 → 通報 →
+ * `cleared` → 改名」の悪用が、形を変えて残っていた。
+ *
+ * **#366 の「`queued` にはしない」は、ここで覆していない。** あの決定の理由は「善意の改名で
+ * 作品がトップから消える」だった。**この式が `queued` にするのは、運営がまだ見ていない
+ * 通報が届いている作品だけ**で、通報の無い作品の善意の改名は、これまでどおり `NULL` へ
+ * 戻るだけで露出を止めない。**止まるのは「通報を受けたあとに作者が題名や説明を変えた」
+ * ときで、それは #366 が塞ごうとした形そのもの**である。しかも通報が閾値（1 人）に達して
+ * いる以上、`NULL` の作品に同じ通報が届いていれば `recordReport` が `queued` にしていた
+ * ——**`cleared` を解いた結果として、通報のある `NULL` の作品と同じ扱いに揃う**だけである。
+ *
+ * **審査キューの条件は変えない**（issue #404 の案 B を採らなかった）。案 B（キューの条件を
+ * 「`cleared` または `NULL`」へ広げる）は、「閾値が 1 人である限り、通報のある `NULL` の作品は
+ * この戻しの経路でしか生まれない」という前提に乗り、閾値を上げた日に意味が変わる。
+ * **この式は状態を「未審査の通報がある」という実態に合わせるので、閾値に依らない。**
+ *
+ * **履歴の無い `cleared`（#361 より前に端末で `cleared` にした作品）は、通報が 1 件でも
+ * あれば `queued` へ入る**（{@link REVIEW_REPORTED_AFTER_CLEAR_SQL} の `coalesce(…, 0)`。#394 の
+ * 決定）。運営がその通報を端末で見終えていても、D1 はそれを区別できない——#394 が審査キューの
+ * 節に出すと決めた作品と同じ集合で、**運営が画面から 1 度往復させれば外れる。** その前に作者が
+ * 変更すると露出が止まるのが、この扱いの代償である（仕様書 5.4 の実装注記）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 条件は {@link REVIEW_REPORTED_AFTER_CLEAR_SQL} をそのまま使う（書き直さない）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **「最後に `cleared` にした時刻以降の通報がある」の定義を 2 か所に置かない。** 審査キューの
+ * 節（`src/admin/review.ts`）・`scripts/report-queue.sh`・この式が同じ文字列を使うので、
+ * #361 より前の `cleared` の扱いも、同じ秒を拾う側へ倒す `>=` も、ひとりでに揃う。
+ * その条件が `cleared` を含んでいるので、`case` の側で状態を見直さない。
+ *
+ * **あちらは `games` の別名を `g` に固定している**（あちらの但し書き）。**この式を置く
+ * UPDATE は `update games as g` で書くこと。**
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 判定と書き込みを 1 つの式にする（読みと書きの隙間を作らない）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **先に読んで分岐してから書く形にしない。** 読みと書きの間に運営が状態を動かしたり通報が
+ * 届いたりすると、読んだ時点の状態で書いてしまう。**UPDATE の `set` の式として判定すれば、
+ * SQLite は書き換える行を読んだその場で式を評価する**（D1 は文を 1 本ずつ直列に流し、
+ * batch は 1 つのトランザクションである）。同じ batch で先に積む履歴の insert は
+ * `reports` / `admin_actions` を触らないので、判定の結果を変えない。
+ *
+ * **通報がこの UPDATE の後に届いた場合**は、状態が既に `NULL` なので `recordReport` が
+ * `queued` へ上げる（あちらの「読んだ状態で諦めない」但し書き）。**前に届いた場合**は
+ * この式が拾う。どちらの順でも埋もれない。
+ *
+ * **定数だけから組み立てる**（利用者の入力は 1 文字も入らない）ので、束縛にしない
+ * （`reviewVisibleSql` / `reviewAttentionSql` と同じ扱い）。
+ *
+ * **モジュールの定数にせず、関数にする。** 他のモジュールの定数を差し込むテンプレート
+ * リテラルは、esbuild から見ると副作用を持ちうる式で、**オーケストレータが 1 度も呼ばない
+ * この式のために束（CodeSha256）が変わりうる**（{@link containsDirectionCharacter} と同じ
+ * 事情。PR #401）。関数に閉じれば、呼ばれない関数ごと束から落ちる。
+ *
+ * @returns `set review_state = ` の右辺に置ける式（**`games` の別名は `g`**）
+ */
+function reviewStateAfterAuthorEditSql(): string {
+  return (
+    `case when ${REVIEW_REPORTED_AFTER_CLEAR_SQL} then '${REVIEW_QUEUED}'` +
+    ` else nullif(g.${REVIEW_STATE_COLUMN}, '${REVIEW_CLEARED}') end`
+  );
+}
+
+/**
  * 作者が作品の題名を変える（5.4 / #366）。
  *
  * ══════════════════════════════════════════════════════════════════════════════
@@ -1086,20 +1178,23 @@ export type RenameRejection = 'not-found' | 'removed' | 'not-ready' | 'denied-te
  * 題名も変わらない。**
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * `cleared` は `NULL` へ戻す。`queued` にはしない
+ * `cleared` は解く。届いていた通報があれば `queued`、無ければ `NULL`
  * ══════════════════════════════════════════════════════════════════════════════
  *
  * **審査で見たのは改名前の題名である。** 別の題名になった作品について「見た結果、
  * 問題なし」と言い続けることはできないので、終端（`REVIEW_CLEARED`）を解く。
  *
- * **`queued` にはしない。** あれは新規露出を止める状態なので（`reviewVisibleSql`）、
- * **善意の改名で作品がトップから消える。** `NULL` へ戻せば、以後の通報は 8.4 の
- * 閾値を通って普通にキューへ入る。
+ * **通報の無い作品は `NULL` へ戻し、`queued` にはしない**（#366）。`queued` は新規露出を
+ * 止める状態なので（`reviewVisibleSql`）、**善意の改名で作品がトップから消える。** `NULL`
+ * へ戻せば、以後の通報は 8.4 の閾値を通って普通にキューへ入る。
  *
- * **`nullif` で書く。** `queued` の作品はそのまま `queued` で残り（審査待ちのまま
- * 題名だけが変わる）、`NULL` の作品は `NULL` のままである。**分岐をアプリ側に持たない**
- * ——先に読んでから決める形にすると、読みと書きの隙間に通報が入ったときに、
- * キューへ入ったばかりの作品を `NULL` へ戻しうる。
+ * **`cleared` にしたあとの通報が届いていれば `queued` にする**（#404）。`NULL` へ戻すと
+ * その通報が埋もれるためで、理由と #366 との関係は {@link reviewStateAfterAuthorEditSql}。
+ * `queued` の作品は `queued` のまま（審査待ちのまま題名だけが変わる）、`NULL` の作品は
+ * `NULL` のままである。
+ *
+ * **分岐をアプリ側に持たない**（UPDATE の式で判定する）——先に読んでから決める形にすると、
+ * 読みと書きの隙間に通報や運営の操作が入ったときに、読んだ時点の状態で書いてしまう。
  *
  * ══════════════════════════════════════════════════════════════════════════════
  * 取り下げた作品と、まだ完成していない作品は改名できない
@@ -1152,11 +1247,13 @@ export async function renameGame(
          from games
         where ${conditions}`,
     ).bind(crypto.randomUUID(), title, now, ...bindings),
+    // **別名 `g` は審査状態の式が求める**（{@link reviewStateAfterAuthorEditSql}）。
+    // `conditions` は別名を付けずに書いてあり、`g` の列としてそのまま解決される。
     env.DB.prepare(
-      `update games
-          set title = ?, ${REVIEW_STATE_COLUMN} = nullif(${REVIEW_STATE_COLUMN}, ?)
+      `update games as g
+          set title = ?, ${REVIEW_STATE_COLUMN} = ${reviewStateAfterAuthorEditSql()}
         where ${conditions}`,
-    ).bind(title, REVIEW_CLEARED, ...bindings),
+    ).bind(title, ...bindings),
   ]);
 
   // **添字で読む**（`noUncheckedIndexedAccess`。`src/admin/actions.ts` と同じ形）。
@@ -1403,12 +1500,13 @@ export type DescribeRejection =
  * UPDATE の側が当たって必ず 0 行になる（`migrations/0028_game_descriptions.sql`）。
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 4. `cleared` は `NULL` へ戻す（改名と同じ）
+ * 4. `cleared` は改名と同じ規則で解く（{@link reviewStateAfterAuthorEditSql} を共有する）
  * ══════════════════════════════════════════════════════════════════════════════
  *
  * **審査で見たのは変更前の説明である。** 穏当な説明で公開し、通報されて `cleared` に
- * なった後で書き換える、という経路を改名と同じ扱いで塞ぐ。**`queued` にはしない**
- * （善意の変更で作品がトップから消える）。`queued` の作品は `queued` のまま残る。
+ * なった後で書き換える、という経路を改名と同じ扱いで塞ぐ。通報の無い作品は `NULL` へ
+ * 戻り（善意の変更で作品がトップから消えない）、**`cleared` にしたあとの通報が届いて
+ * いれば `queued` へ入る**（#404）。`queued` の作品は `queued` のまま残る。
  *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
@@ -1457,12 +1555,13 @@ export async function describeGame(
          from games
         where ${conditions}`,
     ).bind(crypto.randomUUID(), description, now, ...bindings),
+    // 審査状態の式と別名 `g` は {@link renameGame} と同じ（{@link reviewStateAfterAuthorEditSql}）。
     env.DB.prepare(
-      `update games
+      `update games as g
           set description = ?, description_set_at = ?,
-              ${REVIEW_STATE_COLUMN} = nullif(${REVIEW_STATE_COLUMN}, ?)
+              ${REVIEW_STATE_COLUMN} = ${reviewStateAfterAuthorEditSql()}
         where ${conditions}`,
-    ).bind(description, now, REVIEW_CLEARED, ...bindings),
+    ).bind(description, now, ...bindings),
   ]);
 
   const historyRows = results[0]?.meta.changes ?? 0;

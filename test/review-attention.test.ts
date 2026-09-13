@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ADMIN_ACTIONS, ADMIN_ACTION_TARGET_KINDS, setReviewState } from '../src/admin/actions.js';
-import { PUBLISHED_STATUS, renameGame } from '../src/games.js';
+import { PUBLISHED_STATUS, describeGame, renameGame } from '../src/games.js';
 import {
   REVIEW_CLEARED,
   REVIEW_QUEUED,
@@ -9,6 +9,7 @@ import {
   REVIEW_STATE_COLUMN,
   recordReport,
   reviewAttentionSql,
+  reviewVisibleSql,
 } from '../src/reports.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -23,6 +24,9 @@ import { applySchema } from './helpers/schema.js';
  *   4. **履歴の無い `cleared`（#361 より前）は、通報があれば出る**こと
  *   5. 基準は「その作品の」「作品を対象にした」「`review-cleared` の」時刻であること
  *   6. 履歴の行数を増やしても、条件の読み取り行数が増えないこと（`0029` の索引）
+ *   7. **作者が題名や説明を変えても、`cleared` のあとに届いていた通報が埋もれない**こと
+ *      （#404。変更で `cleared` が解けると 2 の条件から外れるので、`queued` へ入れる）。
+ *      通報の受付と変更が交差しても埋もれないこと。**届いた通報が無ければ露出を止めない**こと
  *
  * **変異で確かめた**（2026-09-12。条件の文字列を 1 か所ずつ書き換え、このファイルと
  * `test/admin-screens.test.ts` を回した。どの変異も少なくとも 1 本が赤くなった）。
@@ -36,7 +40,18 @@ import { applySchema } from './helpers/schema.js';
  *   - `a.target_kind = 'game'` を外す … 5 の「対象の種類」と 6 が赤（索引の先頭列を
  *     使えなくなり、読み取りが履歴の行数に比例する）
  *
- * **状態は本物の関数で動かす**（`recordReport` / `setReviewState` / `renameGame`）。
+ * **#404 の 7 も変異で確かめた**（2026-09-13。`src/games.ts` と `src/reports.ts` を 1 か所ずつ
+ * 書き換え、このファイルと `test/admin-screens.test.ts` を回した）。
+ *
+ *   - 審査状態の式を #366 の `nullif(review_state, 'cleared')` へ戻す … 7 の「改名」「説明の変更」
+ *     両方の「審査待ちに入る」「同じ秒」「履歴の無い cleared」と交差、画面の節の移動が赤
+ *   - `renameGame` の UPDATE だけを戻す … 7 の「改名」だけが赤（「説明の変更」は緑のまま）
+ *   - `describeGame` の UPDATE だけを戻す … 7 の「説明の変更」だけが赤
+ *   - 式の `then` を `NULL` 以外の常に `queued` にする（通報を見ない）… 「届いた通報が無ければ
+ *     露出を止めない」が赤
+ *   - `recordReport` の「冒頭で読んだ状態で諦めない」を戻す … 交差の it が赤
+ *
+ * **状態は本物の関数で動かす**（`recordReport` / `setReviewState` / `renameGame` / `describeGame`）。
  * 直接 UPDATE で状態を作ると、**履歴を積まない経路**を作ってしまい、それ自体が 4 の
  * 「履歴の無い `cleared`」になる——確かめたい区別がテストの側で潰れる。直接 UPDATE を
  * 使うのは、4 を作るとき（#361 より前の運用の再現）だけである。
@@ -414,5 +429,239 @@ describe('読み取りは索引で抑える（migrations/0029）', () => {
 
     expect(before).toBeGreaterThan(0);
     expect(after).toBe(before);
+  });
+});
+
+/** 作者の変更 1 回（題名か説明）。**同じ規則を共有していることを両方の経路で見る**（#404）。 */
+interface AuthorEdit {
+  readonly name: string;
+  /**
+   * 作品を変更する（毎回違う値にする。同じ値の入れ直しは何も変えない）。
+   *
+   * @param gameId 作品 id
+   * @param now 時刻（UNIX 秒）
+   */
+  readonly edit: (gameId: string, now: number) => Promise<void>;
+}
+
+const AUTHOR_EDITS: readonly AuthorEdit[] = [
+  {
+    name: '改名',
+    edit: async (gameId, now) => {
+      const outcome = await renameGame(env, gameId, users.author, `題名 ${now}`, now);
+      expect(outcome, '改名が通っていない（仕込みの前提が崩れている）').toMatchObject({
+        ok: true,
+        changed: true,
+      });
+    },
+  },
+  {
+    name: '説明の変更',
+    edit: async (gameId, now) => {
+      const outcome = await describeGame(env, gameId, users.author, `説明 ${now}`, now);
+      expect(outcome, '説明の変更が通っていない（仕込みの前提が崩れている）').toMatchObject({
+        ok: true,
+        changed: true,
+      });
+    },
+  },
+];
+
+describe.each(AUTHOR_EDITS)('$name で、問題なしのあとに届いた通報が埋もれない（#404）', ({ edit }) => {
+  it('問題なし → 通報 → 変更 のあと、審査待ちに入り、運営が見るべき作品に残る', async () => {
+    // **issue #404 の再現である。** 変更前は「問題なしとしたあとに通報が付いた」作品として
+    // 出ており、#366 / #388 の `nullif` は変更で `NULL` へ戻して**どの一覧からも消していた。**
+    const gameId = await insertGame();
+    await report(gameId, 0, 1_700_020_100);
+    await review(gameId, REVIEW_CLEARED, 1_700_020_200);
+    await report(gameId, 1, 1_700_020_300);
+    expect(await matches(REVIEW_REPORTED_AFTER_CLEAR_SQL, gameId)).toBe(true);
+
+    await edit(gameId, 1_700_020_400);
+
+    expect(await stateOf(gameId)).toBe(REVIEW_QUEUED);
+    expect(await matches(reviewAttentionSql(), gameId)).toBe(true);
+    // **通報を受けたあとの変更なので、新規露出は止まる**（審査待ちと同じ扱い）。
+    expect(await matches(reviewVisibleSql('g'), gameId)).toBe(false);
+  });
+
+  it('問題なしと同じ秒の通報も拾う（`>=`。#394 と同じ定義を使う）', async () => {
+    const gameId = await insertGame();
+    await report(gameId, 0, 1_700_021_100);
+    await review(gameId, REVIEW_CLEARED, 1_700_021_200);
+    await report(gameId, 1, 1_700_021_200);
+
+    await edit(gameId, 1_700_021_300);
+
+    expect(await stateOf(gameId)).toBe(REVIEW_QUEUED);
+  });
+
+  it('届いた通報が問題なしより前のものだけなら NULL へ戻り、露出を止めない（善意の変更。#366）', async () => {
+    const gameId = await insertGame();
+    await report(gameId, 0, 1_700_022_100);
+    await review(gameId, REVIEW_CLEARED, 1_700_022_200);
+
+    await edit(gameId, 1_700_022_300);
+
+    expect(await stateOf(gameId)).toBeNull();
+    expect(await matches(reviewVisibleSql('g'), gameId)).toBe(true);
+    expect(await matches(reviewAttentionSql(), gameId)).toBe(false);
+  });
+
+  it('通報が 1 件も無い作品は、cleared でも NULL でも露出を止めない', async () => {
+    const cleared = await insertGame();
+    await env.DB.prepare(`update games set ${REVIEW_STATE_COLUMN} = ? where id = ?`)
+      .bind(REVIEW_CLEARED, cleared)
+      .run();
+    await edit(cleared, 1_700_023_100);
+    expect(await stateOf(cleared)).toBeNull();
+    expect(await matches(reviewVisibleSql('g'), cleared)).toBe(true);
+
+    const plain = await insertGame();
+    await edit(plain, 1_700_023_200);
+    expect(await stateOf(plain)).toBeNull();
+    expect(await matches(reviewVisibleSql('g'), plain)).toBe(true);
+  });
+
+  it('審査待ちの作品は審査待ちのまま（変更で審査待ちを解けない）', async () => {
+    const gameId = await insertGame();
+    await report(gameId, 0, 1_700_024_100);
+    expect(await stateOf(gameId)).toBe(REVIEW_QUEUED);
+
+    await edit(gameId, 1_700_024_200);
+
+    expect(await stateOf(gameId)).toBe(REVIEW_QUEUED);
+  });
+
+  it('履歴の無い cleared（#361 より前）は、通報があれば審査待ちに入る（#394 の扱いに揃える）', async () => {
+    const gameId = await insertGame();
+    await report(gameId, 0, 1_700_025_100);
+    await env.DB.prepare(`update games set ${REVIEW_STATE_COLUMN} = ? where id = ?`)
+      .bind(REVIEW_CLEARED, gameId)
+      .run();
+    expect(await matches(REVIEW_REPORTED_AFTER_CLEAR_SQL, gameId)).toBe(true);
+
+    await edit(gameId, 1_700_025_200);
+
+    expect(await stateOf(gameId)).toBe(REVIEW_QUEUED);
+  });
+
+  it('断られた変更（他人の要求）は審査状態を動かさない', async () => {
+    const gameId = await insertGame();
+    await report(gameId, 0, 1_700_026_100);
+    await review(gameId, REVIEW_CLEARED, 1_700_026_200);
+    await report(gameId, 1, 1_700_026_300);
+
+    const renamed = await renameGame(env, gameId, users.admin, '他人の題名', 1_700_026_400);
+    const described = await describeGame(env, gameId, users.admin, '他人の説明', 1_700_026_400);
+
+    expect(renamed).toEqual({ ok: false, reason: 'not-found' });
+    expect(described).toEqual({ ok: false, reason: 'not-found' });
+    expect(await stateOf(gameId)).toBe(REVIEW_CLEARED);
+    expect(await matches(REVIEW_REPORTED_AFTER_CLEAR_SQL, gameId)).toBe(true);
+  });
+});
+
+describe('通報の受付と作者の変更が交差しても、通報が埋もれない（#404）', () => {
+  /**
+   * 通報の insert を送る直前に、別の操作を 1 回割り込ませる env を作る。
+   *
+   * **`recordReport` が作品の行を読んだ後、通報を書く前**という隙間を再現する。D1 は
+   * 文を直列に流すので、実際の競合はこの順序のどれかになる。
+   *
+   * @param interleave 割り込ませる操作
+   * @returns `DB.prepare` だけを包んだ env
+   */
+  function envInterleavedBeforeReportInsert(interleave: () => Promise<void>): Env {
+    const db = env.DB;
+    const prepare = (sql: string): D1PreparedStatement => {
+      const statement = db.prepare(sql);
+      if (!sql.trimStart().startsWith('insert into reports')) {
+        return statement;
+      }
+      return new Proxy(statement, {
+        get(target, property) {
+          if (property !== 'bind') {
+            const value: unknown = Reflect.get(target, property);
+            return typeof value === 'function' ? value.bind(target) : value;
+          }
+          return (...values: unknown[]) => {
+            const bound = target.bind(...values);
+            return new Proxy(bound, {
+              get(inner, innerProperty) {
+                const value: unknown = Reflect.get(inner, innerProperty);
+                if (innerProperty === 'run') {
+                  return async () => {
+                    await interleave();
+                    return await inner.run();
+                  };
+                }
+                return typeof value === 'function' ? value.bind(inner) : value;
+              },
+            });
+          };
+        },
+      });
+    };
+    const wrapped = new Proxy(db, {
+      get(target, property) {
+        if (property === 'prepare') {
+          return prepare;
+        }
+        const value: unknown = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    return { ...env, DB: wrapped };
+  }
+
+  it('通報の受付が cleared を読んだあと、通報を書く前に改名されても、審査待ちに入る', async () => {
+    // **改名の UPDATE はまだ書かれていない通報を見られない**ので `NULL` へ戻す。そのあと
+    // 書かれた通報は、`recordReport` が冒頭で読んだ `cleared` を理由に諦めると、
+    // **`NULL` の作品に付いたまま、どの一覧にも出ない。**
+    const gameId = await insertGame();
+    await report(gameId, 0, 1_700_027_100);
+    await review(gameId, REVIEW_CLEARED, 1_700_027_200);
+
+    const interleaved = envInterleavedBeforeReportInsert(async () => {
+      const renamed = await renameGame(env, gameId, users.author, '割り込んだ題名', 1_700_027_300);
+      expect(renamed.ok).toBe(true);
+      expect(await stateOf(gameId), '割り込みの時点では、まだ通報が無い').toBeNull();
+    });
+    const outcome = await recordReport(
+      interleaved,
+      gameId,
+      users.reporters[1]!,
+      '改名と交差した通報',
+      1_700_027_300,
+    );
+
+    expect(outcome).toEqual({ ok: true, outcome: { queued: true, reporters: 2 } });
+    expect(await stateOf(gameId)).toBe(REVIEW_QUEUED);
+    expect(await matches(reviewAttentionSql(), gameId)).toBe(true);
+  });
+
+  it('通報が先に書かれていれば、改名の UPDATE の式が拾う（逆の順序）', async () => {
+    const gameId = await insertGame();
+    await report(gameId, 0, 1_700_028_100);
+    await review(gameId, REVIEW_CLEARED, 1_700_028_200);
+    await report(gameId, 1, 1_700_028_300);
+    // `cleared` なので通報の受付は状態を動かしていない。
+    expect(await stateOf(gameId)).toBe(REVIEW_CLEARED);
+
+    await renameGame(env, gameId, users.author, '後から改名', 1_700_028_300);
+
+    expect(await stateOf(gameId)).toBe(REVIEW_QUEUED);
+  });
+
+  it('cleared の作品への通報は、割り込みが無ければ状態を動かさない（終端は保つ）', async () => {
+    const gameId = await insertGame();
+    await report(gameId, 0, 1_700_029_100);
+    await review(gameId, REVIEW_CLEARED, 1_700_029_200);
+
+    const outcome = await recordReport(env, gameId, users.reporters[1]!, '通報', 1_700_029_300);
+
+    expect(outcome).toEqual({ ok: true, outcome: { queued: false, reporters: 2 } });
+    expect(await stateOf(gameId)).toBe(REVIEW_CLEARED);
   });
 });

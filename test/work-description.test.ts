@@ -45,7 +45,9 @@ import { pageBodyOf } from './helpers/site-shell.js';
  *   3. 下書きの作品には書けないこと（公開後に書くもの）
  *   4. HTML を入れてもそのまま描画されないこと
  *   5. 8.3 の表の語で断り、**語も分類も応答に出さない**こと
- *   6. `cleared` の作品の説明を変えると `NULL` へ戻ること
+ *   6. **通報の無い** `cleared` の作品の説明を変えると `NULL` へ戻ること（**`cleared` のあとに
+ *      届いた通報があれば `queued` へ入る**ことは、改名と規則を共有しているので
+ *      `test/review-attention.test.ts` が並べて見る。#404）
  *   7. 変更で履歴が 1 行増え、**履歴の追記に失敗すれば説明も変わらない**こと
  *
  * それに加えて、issue の constraints（長さの上限で断る・禁じた文字の組が表示名と
@@ -642,8 +644,8 @@ describe('説明と履歴は 1 つの batch で書く（#366 / #361 の規律）
   });
 });
 
-describe('説明の変更は審査状態を戻す（#366 に揃える）', () => {
-  it('cleared の作品の説明を変えると NULL へ戻る', async () => {
+describe('説明の変更は審査状態を戻す（#366 に揃える / #404）', () => {
+  it('通報の無い cleared の作品の説明を変えると NULL へ戻る', async () => {
     const { userId, id } = await seedPublished('review-cleared');
     await setReviewState(id, REVIEW_CLEARED);
 
@@ -652,7 +654,7 @@ describe('説明の変更は審査状態を戻す（#366 に揃える）', () =>
     expect(await reviewStateOf(id)).toBeNull();
   });
 
-  it('queued にはならず、queued の作品は queued のまま', async () => {
+  it('通報が無ければ queued にはならず、queued の作品は queued のまま', async () => {
     const plain = await seedPublished('review-null');
     await describeGame(env, plain.id, plain.userId, '説明');
     expect(await reviewStateOf(plain.id)).toBeNull();

@@ -22,7 +22,6 @@ import {
   MAX_BODY_LENGTH,
   MAX_CLAIMANT_LENGTH,
   TAKEDOWN_ACTIONS,
-  recordTakedownAction,
   recordTakedownRequest,
 } from '../src/takedown.js';
 import { applySchema } from './helpers/schema.js';
@@ -302,60 +301,10 @@ describe('送信防止措置の記録（8.4 / #41 の acceptance 3）', () => {
     void sent;
   });
 
-  it('措置を追記できる。申請の内容は書き換わらない', async () => {
-    const { send } = recordingSend();
-    const outcome = await recordTakedownRequest(
-      env,
-      {
-        gameId: 'td-game-2',
-        claimantName: '権利者B',
-        claimantContact: 'b@example.invalid',
-        body: '削除を求めます。',
-      },
-      { send, now: 100 },
-    );
-    expect(outcome.ok).toBe(true);
-    const id = outcome.ok ? outcome.receipt.id : '';
-
-    expect(await recordTakedownAction(env, id, 'removed', '権利者からの申請により削除', 200)).toBe(
-      true,
-    );
-
-    const row = await env.DB.prepare(
-      'select claimant_name, body, handled_at, action, note from takedown_requests where id = ?',
-    )
-      .bind(id)
-      .first<{
-        claimant_name: string;
-        body: string;
-        handled_at: number;
-        action: string;
-        note: string;
-      }>();
-    // **申請の内容は 1 文字も変わっていない。** これが「追記のみ」の実体である。
-    expect(row?.claimant_name).toBe('権利者B');
-    expect(row?.body).toBe('削除を求めます。');
-    expect(row?.handled_at).toBe(200);
-    expect(row?.action).toBe('removed');
-  });
-
-  it('措置を 2 度上書きしない', async () => {
-    const { send } = recordingSend();
-    const outcome = await recordTakedownRequest(
-      env,
-      { gameId: 'td-game-3', claimantName: 'C', claimantContact: 'c@example.invalid', body: 'x' },
-      { send, now: 100 },
-    );
-    const id = outcome.ok ? outcome.receipt.id : '';
-    expect(await recordTakedownAction(env, id, 'rejected', '権利の根拠が不明', 200)).toBe(true);
-    // 2 度目は 0 行更新。
-    expect(await recordTakedownAction(env, id, 'removed', 'やっぱり削除', 300)).toBe(false);
-
-    const row = await env.DB.prepare('select action from takedown_requests where id = ?')
-      .bind(id)
-      .first<{ action: string }>();
-    expect(row?.action).toBe('rejected');
-  });
+  // **措置の記録は運営の管理画面の口へ移した**（#406。`src/admin/actions.ts` の
+  // `recordTakedownAction`）。「申請の内容は書き換わらない」「措置を 2 度上書きしない」は、
+  // 実行者と履歴まで含めて `test/admin-actions.test.ts` の「削除申請の措置の記録」が確かめる
+  // ——**履歴を残さずに措置を書ける関数を `src/takedown.ts` に残さない**ため、ここからは外した。
 
   it('申請を認めなかったことも記録できる', () => {
     // **残さないと「見ていない」と区別がつかない。**

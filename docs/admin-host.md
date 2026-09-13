@@ -600,6 +600,78 @@ for that specific statement, and it aborts or rolls back the entire sequence.」
 
 ---
 
+## #406（削除申請の一覧と措置の記録）を出すときに増える手順
+
+**画面が 1 枚増える**（`/takedowns`。ヘッダのナビに「削除申請」）。**口も 1 本増える**
+（`POST /api/takedown`）。**どちらも `ADMIN_OPEN_ROUTES` に足していない**ので、何もしなくても
+権限の無い要求は 404 になる（`test/admin-screens.test.ts` が確かめる）。
+
+| 措置 | 画面を押したときに起きること |
+|---|---|
+| `removed` | 措置と履歴を記録する。**作品は取り下げない**（2.4.3）。行に「作品はまだ公開中です」と出るあいだは手作業が残っている（`docs/takedown.md` の 4 章） |
+| `restricted` | 措置と履歴を記録し、**作品を審査キューへ入れる**（`review-queued` の履歴も積む）。作品が見つからないか公開中でなければ、記録だけして「審査キューへは入れていません」と出す |
+| `rejected` | 措置と履歴を記録する。作品は動かさない |
+
+**`admin_actions` を作り直す**（`migrations/0031_admin_actions_takedown.sql`）。**本番の履歴の表を 1 度
+消して作り直す**ので、ここだけは #405 までの「列や表を足す」適用と重みが違う。
+
+```
+Ⓜ 適用の前に、D1 を戻せる地点（Time Travel のブックマーク）を控え、履歴の行数を数える
+Ⓝ PR のツリー（main を取り込み済み）から、マージの直前に 0031 を適用する（利用者の端末）
+Ⓞ 行数と索引が保たれたことを確かめてから、main へマージする
+Ⓟ 画面で確かめる
+```
+
+**マージの前に適用する**（`.claude/skills/land/SKILL.md` の手順 5。0026 の Ⓐ・0030 の Ⓘ と同じ）。
+**当てる前にこの Worker を配ると、措置の記録が CHECK で batch ごと落ちる**（`write-failed`。措置も
+履歴も入らない）。**先に当てて壊れるものは無い**——古い Worker は既存の 4 つの綴りしか書かない。
+
+### Ⓜ 戻せる地点を控える
+
+```bash
+set -a; source scripts/load-project-env.sh; set +a
+npx wrangler d1 time-travel info DB --env production        # 出たブックマークを控える
+npx wrangler d1 execute DB --remote --env production \
+  --command "select count(*) as n from admin_actions;"       # 行数を控える
+```
+
+**作り直しが途中で壊れたときは、控えたブックマークへ戻す**
+（`npx wrangler d1 time-travel restore DB --env production --bookmark=<控えた値>`）。
+**戻すと、適用のあとに書かれた D1 の変更もすべて消える**ので、Ⓝ と Ⓞ の間に時間を空けない。
+
+### Ⓝ 0031 を適用する（マージの直前）
+
+```bash
+# PR のブランチを checkout したツリーで。main を取り込み済みであることを先に確かめる
+git fetch origin main
+git merge-base --is-ancestor origin/main HEAD && echo UP_TO_DATE   # 出なければ main を取り込んでから
+npx wrangler d1 migrations list DB --remote --env production    # 0031 が未適用として出る
+npx wrangler d1 migrations apply DB --remote --env production
+```
+
+### Ⓞ 保たれたことを確かめてからマージする
+
+```bash
+npx wrangler d1 execute DB --remote --env production \
+  --command "select count(*) as n from admin_actions;"                                   # Ⓜ と同じ数
+npx wrangler d1 execute DB --remote --env production \
+  --command "select name from sqlite_master where name in ('admin_actions_target_idx', 'admin_actions_new');"
+  # admin_actions_target_idx の 1 行だけ（作業用の admin_actions_new が残っていない）
+```
+
+**行数が合わなければマージしない。** Ⓜ のブックマークへ戻し、原因を調べる。
+
+**審査キューの「問題なしとしたあとに通報が付いた作品」の節（#394 / #404）が、適用の前後で同じ作品を
+出していること**も見る（あの節は `admin_actions` の `review-cleared` を読む。綴りも行も変えていない）。
+
+### Ⓟ 画面で確かめる
+
+- ヘッダのナビに「削除申請」があり、`/takedowns` が 200 で開くこと
+- 操作の履歴（`/actions`）に、適用前の行がそのまま並んでいること（同じ秒の並びも変わらない）
+- **確認のためだけに削除申請や措置を作らない**（Ⓒ〜Ⓓ と同じ理由。記録は申請への回答に使う正本である）。
+  **本番で最初の 1 件を受けたとき**に、`docs/takedown.md` の 6 章とあわせて 1 件通し、ここへ書き戻す
+
+
 ## 壊れうる点
 
 | 症状 | いちばんありそうな原因 |

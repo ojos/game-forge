@@ -6,12 +6,15 @@ import {
   ADMIN_LIST_LIMIT,
   ADMIN_REASON_MAX_LENGTH,
   listAdminActions,
+  TAKEDOWN_ADMIN_ACTIONS,
   oppositeReviewState,
+  recordTakedownAction,
   setReviewState,
   setUserBan,
   validateReason,
 } from '../src/admin/actions.js';
-import { PUBLISHED_STATUS, listPublishedGames } from '../src/games.js';
+import { PUBLISHED_STATUS, REMOVED_STATUS, listPublishedGames } from '../src/games.js';
+import { TAKEDOWN_ACTIONS } from '../src/takedown.js';
 import { REVIEW_CLEARED, REVIEW_QUEUED } from '../src/reports.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -42,10 +45,11 @@ import { applySchema } from './helpers/schema.js';
  * 綴りの一覧は書き写さない
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * `migrations/0026_admin_actions.sql` の CHECK と `src/admin/actions.ts` の定数は
- * **同じ 4 つ（と 2 つ）でなければならない。** ここでは**マイグレーションの SQL から
- * 取り出して突き合わせる**（`.ai-playbook/shared-ai-rules.md` 12 章。
- * `test/schema-admin.test.ts` が 0025 の ALTER を取り出しているのと同じ形）。
+ * `admin_actions` の CHECK と `src/admin/actions.ts` の定数は **同じ 7 つ（と 3 つ）で
+ * なければならない。** ここでは**適用済みの表の定義（`sqlite_master`）から取り出して
+ * 突き合わせる**（`.ai-playbook/shared-ai-rules.md` 12 章）。**#406 で 0031 が表を作り直した**
+ * ので、特定のマイグレーションのファイルを名指しで読むと、次に作り直した日に古い定義を
+ * 見続ける。
  */
 
 /** 仕込む利用者（管理者・作者・BAN の対象）。 */
@@ -141,7 +145,7 @@ beforeEach(async () => {
   await env.DB.prepare('update users set banned_at = null where id = ?').bind(users.target).run();
 });
 
-describe('0026 の形（仕様 2.4.4）', () => {
+describe('admin_actions の形（仕様 2.4.4。0026 / 0031）', () => {
   /** `pragma table_info` の 1 行。 */
   interface ColumnInfo {
     readonly name: string;
@@ -168,12 +172,14 @@ describe('0026 の形（仕様 2.4.4）', () => {
     expect(byName.get('created_at')!.type).toBe('INTEGER');
   });
 
-  it('CHECK の綴りが src/admin/actions.ts の定数と一致する（写しを腐らせない）', () => {
-    // **マイグレーションの SQL から取り出して突き合わせる。** 期待値をここへ書き並べると、
+  it('CHECK の綴りが src/admin/actions.ts の定数と一致する（写しを腐らせない）', async () => {
+    // **適用済みの表の定義から取り出して突き合わせる。** 期待値をここへ書き並べると、
     // **同じ写しが 3 つ目に増える**だけで、ずれは捕まらない。
-    const migration = env.TEST_MIGRATIONS.find((entry) => entry.name.startsWith('0026_'));
-    expect(migration, '0026 のマイグレーション').toBeDefined();
-    const sql = migration!.queries.join('\n');
+    const table = await env.DB.prepare(
+      "select sql from sqlite_master where type = 'table' and name = 'admin_actions'",
+    ).first<{ sql: string }>();
+    expect(table, 'admin_actions の定義').not.toBeNull();
+    const sql = table!.sql;
 
     /**
      * `<column> IN ('a', 'b')` の綴りを取り出す。
@@ -183,12 +189,22 @@ describe('0026 の形（仕様 2.4.4）', () => {
      */
     const valuesOf = (column: string): string[] => {
       const matched = new RegExp(`${column}\\s+IN\\s*\\(([^)]*)\\)`, 'iu').exec(sql);
-      expect(matched, `0026 に ${column} の CHECK が無い`).not.toBeNull();
+      expect(matched, `admin_actions に ${column} の CHECK が無い`).not.toBeNull();
       return [...matched![1]!.matchAll(/'([^']+)'/gu)].map((hit) => hit[1]!);
     };
 
     expect(valuesOf('action').sort()).toEqual([...ADMIN_ACTIONS].sort());
     expect(valuesOf('target_kind').sort()).toEqual([...ADMIN_ACTION_TARGET_KINDS].sort());
+  });
+
+  it('削除申請の措置の綴りは、措置の正本（TAKEDOWN_ACTIONS）から導かれている（#406）', () => {
+    // **措置を 1 つ足した日に、履歴の綴りだけが古いまま残らない。**
+    expect([...TAKEDOWN_ADMIN_ACTIONS].sort()).toEqual(
+      TAKEDOWN_ACTIONS.map((action) => `takedown-${action}`).sort(),
+    );
+    for (const action of TAKEDOWN_ADMIN_ACTIONS) {
+      expect([...ADMIN_ACTIONS], action).toContain(action);
+    }
   });
 
   it('取り下げ（removed）の綴りが無く、書こうとしても入らない（2.4.3）', async () => {
@@ -528,5 +544,240 @@ describe('履歴の読み取り（2.4.4）', () => {
       '同じ秒に押した',
       '先に押した',
     ]);
+  });
+});
+
+/**
+ * 削除申請を 1 件入れる（受付の口を通さず、行だけを作る。通知の経路は `test/legal.test.ts`）。
+ *
+ * @param gameId 申請に書かれた作品の id（実在しなくてよい）
+ * @returns 申請の id
+ */
+async function insertTakedown(gameId: string): Promise<string> {
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `insert into takedown_requests
+       (id, game_id, claimant_name, claimant_contact, body, received_at, handled_at, action, note)
+     values (?, ?, '権利者', 'owner@example.invalid', '当社の著作物です。', 100, null, null, null)`,
+  )
+    .bind(id, gameId)
+    .run();
+  return id;
+}
+
+/** 申請の行（措置の側と、申請の内容）。 */
+interface TakedownRecordRow {
+  readonly claimant_name: string;
+  readonly claimant_contact: string;
+  readonly body: string;
+  readonly handled_at: number | null;
+  readonly action: string | null;
+  readonly note: string | null;
+}
+
+/**
+ * 申請の行を読む。
+ *
+ * @param id 申請の id
+ * @returns 行
+ */
+async function takedownOf(id: string): Promise<TakedownRecordRow | null> {
+  return await env.DB.prepare(
+    'select claimant_name, claimant_contact, body, handled_at, action, note from takedown_requests where id = ?',
+  )
+    .bind(id)
+    .first<TakedownRecordRow>();
+}
+
+/**
+ * 履歴の綴りと対象を、積んだ順に読む。
+ *
+ * @returns `action target_kind target_id` の配列
+ */
+async function historyLines(): Promise<string[]> {
+  const rows = await env.DB.prepare(
+    'select action, target_kind, target_id from admin_actions order by rowid',
+  ).all<{ action: string; target_kind: string; target_id: string }>();
+  return rows.results.map((row) => `${row.action} ${row.target_kind} ${row.target_id}`);
+}
+
+describe('削除申請の措置の記録（8.4 / 2.4.3 / #406）', () => {
+  it('rejected: 措置を記録し、履歴が 1 行増え、申請の内容と作品は動かない', async () => {
+    const gameId = await insertGame(users.author, null);
+    const id = await insertTakedown(gameId);
+
+    const outcome = await recordTakedownAction(env, {
+      requestId: id,
+      action: 'rejected',
+      actorId: users.admin,
+      reason: '権利の根拠が示されていない',
+      now: 200,
+    });
+
+    expect(outcome).toEqual({ ok: true, queued: false });
+    // **申請の内容は 1 文字も変わらない。** 変わるのは措置の側だけ（0018 の「追記のみ」）。
+    expect(await takedownOf(id)).toEqual({
+      claimant_name: '権利者',
+      claimant_contact: 'owner@example.invalid',
+      body: '当社の著作物です。',
+      handled_at: 200,
+      action: 'rejected',
+      note: '権利の根拠が示されていない',
+    });
+    expect(await historyLines()).toEqual([`takedown-rejected takedown ${id}`]);
+    expect(await reviewStateOf(gameId)).toBeNull();
+  });
+
+  it('restricted: 作品が審査キューへ入り、履歴が 2 行増える（措置と review-queued）', async () => {
+    const gameId = await insertGame(users.author, null);
+    const id = await insertTakedown(gameId);
+
+    const outcome = await recordTakedownAction(env, {
+      requestId: id,
+      action: 'restricted',
+      actorId: users.admin,
+      reason: '権利者の申請により新規露出を止める',
+      now: 200,
+    });
+
+    expect(outcome).toEqual({ ok: true, queued: true });
+    expect(await reviewStateOf(gameId)).toBe(REVIEW_QUEUED);
+    expect((await takedownOf(id))?.action).toBe('restricted');
+    expect(await historyLines()).toEqual([
+      `takedown-restricted takedown ${id}`,
+      `review-queued game ${gameId}`,
+    ]);
+    // **審査の履歴だけを読んでも、どの申請で止めたかが分かる**（2.4.4）。
+    const queued = await env.DB.prepare(
+      "select reason from admin_actions where action = 'review-queued'",
+    ).first<{ reason: string }>();
+    expect(queued?.reason).toContain(id);
+  });
+
+  it('restricted: 審査で「問題なし」にした作品も、審査キューへ戻す', async () => {
+    const gameId = await insertGame(users.author, REVIEW_CLEARED);
+    const id = await insertTakedown(gameId);
+
+    const outcome = await recordTakedownAction(env, {
+      requestId: id,
+      action: 'restricted',
+      actorId: users.admin,
+      reason: '権利者の申請',
+    });
+
+    expect(outcome).toEqual({ ok: true, queued: true });
+    expect(await reviewStateOf(gameId)).toBe(REVIEW_QUEUED);
+  });
+
+  it('restricted: 作品が実在しなくても措置は記録し、審査キューには何も入れない', async () => {
+    // **申請に書かれた id は実在しないことがある**（0018）。記録を落とさない。
+    const id = await insertTakedown(`missing-${crypto.randomUUID()}`);
+
+    const outcome = await recordTakedownAction(env, {
+      requestId: id,
+      action: 'restricted',
+      actorId: users.admin,
+      reason: '該当作品が見つからないが記録する',
+    });
+
+    expect(outcome).toEqual({ ok: true, queued: false });
+    expect((await takedownOf(id))?.action).toBe('restricted');
+    expect(await historyLines()).toEqual([`takedown-restricted takedown ${id}`]);
+  });
+
+  it('restricted: 取り下げ済みの作品は審査キューへ入れない（往復の外側）', async () => {
+    const gameId = await insertGame(users.author, null);
+    await env.DB.prepare('update games set status = ? where id = ?').bind(REMOVED_STATUS, gameId).run();
+    const id = await insertTakedown(gameId);
+
+    const outcome = await recordTakedownAction(env, {
+      requestId: id,
+      action: 'restricted',
+      actorId: users.admin,
+      reason: '既に取り下げ済み',
+    });
+
+    expect(outcome).toEqual({ ok: true, queued: false });
+    expect(await reviewStateOf(gameId)).toBeNull();
+    expect(await historyLines()).toEqual([`takedown-restricted takedown ${id}`]);
+  });
+
+  it('removed: 措置を記録するだけで、作品を取り下げない（2.4.3）', async () => {
+    const gameId = await insertGame(users.author, null);
+    const id = await insertTakedown(gameId);
+
+    const outcome = await recordTakedownAction(env, {
+      requestId: id,
+      action: 'removed',
+      actorId: users.admin,
+      reason: '申請を認める',
+    });
+
+    expect(outcome).toEqual({ ok: true, queued: false });
+    const game = await env.DB.prepare('select status, review_state from games where id = ?')
+      .bind(gameId)
+      .first<{ status: string; review_state: string | null }>();
+    expect(game).toEqual({ status: PUBLISHED_STATUS, review_state: null });
+    expect(await historyLines()).toEqual([`takedown-removed takedown ${id}`]);
+  });
+
+  it('記録済みの申請へもう 1 度送っても、措置も作品も履歴も動かない（同じ秒でも）', async () => {
+    const gameId = await insertGame(users.author, null);
+    const id = await insertTakedown(gameId);
+    await recordTakedownAction(env, {
+      requestId: id,
+      action: 'restricted',
+      actorId: users.admin,
+      reason: '1 回目',
+      now: 300,
+    });
+    // 審査で戻したあとに、**同じ秒・同じ措置**でもう 1 度送る（履歴を後から照合する形だと
+    // ここで 2 回目の履歴だけが積まれる。`recordTakedownAction` の「順序が逆である理由」）。
+    await env.DB.prepare('update games set review_state = ? where id = ?').bind(REVIEW_CLEARED, gameId).run();
+    const before = await historyLines();
+    const recordBefore = await takedownOf(id);
+
+    const outcome = await recordTakedownAction(env, {
+      requestId: id,
+      action: 'restricted',
+      actorId: users.admin,
+      reason: '1 回目',
+      now: 300,
+    });
+
+    expect(outcome).toEqual({ ok: false, reason: 'already-handled' });
+    expect(await takedownOf(id)).toEqual(recordBefore);
+    expect(await historyLines()).toEqual(before);
+    expect(await reviewStateOf(gameId)).toBe(REVIEW_CLEARED);
+  });
+
+  it('存在しない申請は not-found で、何も書かない', async () => {
+    const outcome = await recordTakedownAction(env, {
+      requestId: `missing-${crypto.randomUUID()}`,
+      action: 'rejected',
+      actorId: users.admin,
+      reason: '理由',
+    });
+
+    expect(outcome).toEqual({ ok: false, reason: 'not-found' });
+    expect(await historyCount()).toBe(0);
+  });
+
+  it('履歴の insert が落ちたら、措置も審査キューへの投入も入らない（1 つの batch）', async () => {
+    // **理由を空にして履歴の CHECK で落とす**（`setReviewState` の検査と同じ手口）。
+    const gameId = await insertGame(users.author, null);
+    const id = await insertTakedown(gameId);
+
+    const outcome = await recordTakedownAction(env, {
+      requestId: id,
+      action: 'restricted',
+      actorId: users.admin,
+      reason: '   ',
+    });
+
+    expect(outcome).toEqual({ ok: false, reason: 'write-failed' });
+    expect((await takedownOf(id))?.handled_at).toBeNull();
+    expect(await reviewStateOf(gameId)).toBeNull();
+    expect(await historyCount()).toBe(0);
   });
 });

@@ -103,6 +103,7 @@ import { dispatch } from '../routes.js';
 import { adminNotFound, resolveAdminUser } from './guard.js';
 import { adminHistoryRoutes } from './history.js';
 import { adminReviewRoutes } from './review.js';
+import { adminTakedownRoutes } from './takedowns.js';
 import { adminUsersRoutes } from './users.js';
 
 /** 未ログインで通す要求の 1 つ。**メソッドまで含めて指定する**（下記）。 */
@@ -190,6 +191,7 @@ export function createAdminRoutes(
     ...createAuthRoutes(authOverrides),
     ...adminReviewRoutes(adminUserId),
     ...adminUsersRoutes(adminUserId),
+    ...adminTakedownRoutes(adminUserId),
     ...adminHistoryRoutes(),
   ];
 }

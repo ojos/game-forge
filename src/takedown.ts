@@ -20,8 +20,10 @@
  *
  * **申請が来ても、作品は 1 ビットも動かない。** 8.4 が通報について「自動非表示は
  * 組織的通報で正常なコンテンツを消せてしまう」と書いているのと同じ理由が、削除申請にも
- * そのまま当てはまる——**申請は主張であって、認定ではない。** 措置は人が決めて
- * `recordTakedownAction` で記録する。
+ * そのまま当てはまる——**申請は主張であって、認定ではない。** 措置は人が決めて、
+ * **運営の管理画面（`/takedowns`）から記録する**（#406。記録の口は `src/admin/actions.ts` の
+ * `recordTakedownAction`——実行者と理由を `admin_actions` へ同じ batch で残すため、
+ * **履歴の無い措置を書ける関数をここに置かない**）。
  */
 import { sendMail } from './mail/resend.js';
 
@@ -185,38 +187,4 @@ export async function recordTakedownRequest(
   }
 
   return { ok: true, receipt: { id, notified } };
-}
-
-/**
- * 採った措置を記録する（8.4）。
- *
- * **申請の内容は書き換えない。** 変わるのは措置の側だけで、これが
- * 「追記のみ」（#41 の acceptance）の実体である。
- *
- * **既に記録済みの行を上書きしない。** 条件付き UPDATE にしてあるので、2 度目は
- * 0 行更新になる——**あとから判断を変えたい場合は、変えた事実ごと分かるように
- * 新しい申請として扱うか、`note` を運用が追記する**（この関数は使わない）。
- *
- * @param env バインディングと環境変数
- * @param id 申請の id
- * @param action 採った措置
- * @param note 判断の理由
- * @param now 記録した時刻（UNIX 秒）
- * @returns 1 行記録できたら true
- */
-export async function recordTakedownAction(
-  env: Env,
-  id: string,
-  action: TakedownAction,
-  note: string,
-  now: number = Math.floor(Date.now() / 1000),
-): Promise<boolean> {
-  const result = await env.DB.prepare(
-    `update takedown_requests
-        set handled_at = ?, action = ?, note = ?
-      where id = ? and handled_at is null`,
-  )
-    .bind(now, action, note, id)
-    .run();
-  return (result.meta.changes ?? 0) > 0;
 }

@@ -1041,6 +1041,19 @@ a.gf-card-genre {
   white-space: nowrap;
 }
 
+/*
+ * カードの作者名の前に置くアイコン（#380。`src/work-card.ts` の `renderAuthor`）。
+ *
+ * **円の寸法は `.gf-avatar` のまま**（`@section header`）で、行の中に文字と並べる。名前と同じリンクの
+ * 中にあるので、下線は名前の文字だけに付く（画像には付かない）。**設定していない作者には要素ごと
+ * 出ない**ので、カードの見た目は今までと変わらない。
+ */
+.gf-card-author .gf-avatar {
+  display: inline-block;
+  margin-right: var(--gf-gap-1);
+  vertical-align: middle;
+}
+
 /* ==========================================================================
    @section author — 作者ページ（#330 / 仕様 2.3.1）
    ========================================================================== */
@@ -1090,6 +1103,15 @@ a.gf-card-genre {
   margin: 0;
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
+}
+
+/*
+ * 作者名（`<h1>`）の直前に置くアイコン（#380。`src/users-page.ts` の `authorAvatar`）。
+ *
+ * **見出しの文字に入れない**（見出しの文字を画像の有無で変えない）。円の寸法は `.gf-avatar` のまま。
+ */
+.gf-author-avatar {
+  margin: 0 0 var(--gf-gap-2);
 }
 
 /* 一覧へ戻る行。本文の終わりに置く補助の導線である。 */
@@ -1329,6 +1351,24 @@ a.gf-card-author {
     radial-gradient(circle at 50% 38%, var(--gf-ink-faint) 0 22%, transparent 23%),
     radial-gradient(circle at 50% 100%, var(--gf-ink-faint) 0 40%, transparent 41%),
     var(--gf-surface);
+}
+
+/*
+ * アバターの円に差し込むアイコンの画像（#380。`src/html.ts` の `avatarImage`）。
+ *
+ * **寸法・正円・枠は `.gf-avatar` のまま、画像を中へ差し込むだけにする**（#433 の見た目の規約が
+ * 決まるまで。利用者の決定）。画像は円いっぱいに広げて円で切る。**アイコンが無いときは配信が透明な
+ * 1px の画像を返すので、下の既定の図形が見える**（`src/avatar-delivery.ts`）。`<img>` の `width` / `height`（256）は
+ * 読み込み前の縦横比のためだけにあり、見た目の大きさはここが持つ。
+ *
+ * ヘッダ・カード・作者ページ・登録情報のどこでも同じ円に入るので、この区画に 1 つだけ置く。
+ */
+.gf-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 /*
@@ -1662,6 +1702,33 @@ a.gf-card-author {
   margin-bottom: var(--gf-gap-2);
   padding: 0;
   font-weight: 700;
+}
+
+/*
+ * アイコンの設定（#380。`src/avatar.ts` の `renderAvatarForm`）。
+ *
+ * **いまのアイコンと、その状態の 1 行を横に並べる**（円は `.gf-avatar` の寸法のまま）。折り返せるように
+ * しておく（390px で横に溢れさせない）。
+ *
+ * **ファイルの入力欄は幅を持たせない**——`@section forms` の既定は `type="text"` にしか効かず、ブラウザの
+ * 既定の幅（ボタンとファイル名）が版面に収まる。長いファイル名は省略される。**`max-width: 100%`** で、
+ * 狭い段でも版面を押し広げない。
+ */
+.gf-avatar-current {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-2);
+  margin: 0 0 var(--gf-gap-3);
+}
+
+.gf-avatar-current p {
+  margin: 0;
+}
+
+.gf-avatar-form input[type='file'] {
+  max-width: 100%;
+  font: inherit;
 }
 
 /*

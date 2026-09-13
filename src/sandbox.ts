@@ -20,7 +20,14 @@
  * - CSP `sandbox allow-scripts`（7.2 必須要件 1）を全レスポンスに付ける。
  * - **`allow-same-origin` を決して付けない。**
  * - **cookie を一切設定しない**（7.2 必須要件 3。この経路に cookie を発行する口が無い）。
+ *
+ * # アイコン画像もここから配る（#380 / 仕様 7.2 の実装注記）
+ *
+ * `/avatars/<user_id>.webp` は利用者が上げた画像で、**アプリのオリジンで配らない**
+ * （`src/avatar-delivery.ts`）。**作品の配信（`/p/` / `/g/`）とは接頭辞で分ける**——あちらの
+ * URL の解釈（`parseSandboxPath`）に画像の綴りを混ぜない。
  */
+import { deliverAvatar, isAvatarPath } from './avatar-delivery.js';
 import { deliverSandboxRequest } from './sandbox-delivery.js';
 
 /**
@@ -31,5 +38,8 @@ import { deliverSandboxRequest } from './sandbox-delivery.js';
  * @returns 配信レスポンス（CSP `sandbox` ヘッダ付き）
  */
 export async function handleSandboxRequest(request: Request, env: Env): Promise<Response> {
+  if (isAvatarPath(new URL(request.url).pathname)) {
+    return await deliverAvatar(request, env);
+  }
   return await deliverSandboxRequest(request, env);
 }

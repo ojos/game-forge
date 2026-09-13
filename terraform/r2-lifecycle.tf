@@ -43,6 +43,23 @@
  * 1 つも無いことが、ここでの正しい結論である。「設定しないと 3.7 に反するのでは」と
  * 読める箇所（3.7 の旧記述）は、同節の確定13 に関する追記が既に改めている。
  *
+ * # 年齢で消してよい接頭辞が 1 つできた: `avatars/history/`（#380）
+ *
+ *   avatars/<user_id>.webp                                   … 現行のアイコン。**年齢で消さない**
+ *   avatars/history/<user_id>/<changed_at>-<sha256>-<操作の id>.webp … 差し替え・外す前の画像の写し
+ *
+ * **写しは、どの `games` 行からも・どの `users` 行からも配信に使われない**（`src/avatar.ts`。配信は
+ * 現行のキーだけを読む。`src/avatar-delivery.ts`）。**利用者の決定は「差し替え前の画像は 30 日だけ
+ * 残す」で、30 日を過ぎた写しは消えなければならない**（`/privacy` に保存期間として書いた）。
+ * 3.7 の削除規約 3 が求める「共有されないことが保証できる」をこの接頭辞は満たす——**書くのは
+ * `src/avatar.ts` の 1 か所だけで、そこは写ししか置かない。**
+ *
+ * **削除規則は、この接頭辞だけに絞る**（`conditions.prefix`）。**`avatars/` にしない**——現行の
+ * アイコンまで 30 日で消える。`builds/` / `runtime/` / `ogp/` には、いまも置かない。
+ * `scripts/check-r2-lifecycle.sh` は「宣言した接頭辞に限った削除規則だけを許し、それ以外の接頭辞や
+ * 全体を対象にした削除規則は不合格」を実物で見る（許す接頭辞は下の output から読み、スクリプトに
+ * 書き写さない）。
+ *
  * # では何を宣言するのか
  *
  * **未完了のマルチパートアップロードの打ち切り**だけを宣言する。これは
@@ -90,14 +107,52 @@ locals {
    */
   r2_abort_multipart_max_age_days    = 7
   r2_abort_multipart_max_age_seconds = local.r2_abort_multipart_max_age_days * 24 * 60 * 60
+
+  /** 未完了マルチパートアップロードの打ち切り規則の id。 */
+  r2_abort_multipart_rule_id = "abort-incomplete-multipart-uploads"
+
+  /**
+   * 差し替え前のアイコンの写しを置く接頭辞（#380）。
+   *
+   * **`src/avatar-paths.ts` の `AVATAR_HISTORY_PREFIX` と同じ値でなければならない。** ずれると、写しが
+   * 30 日で消えない（`/privacy` の保存期間が嘘になる）か、別の接頭辞の画像を消す。突き合わせは
+   * `scripts/check-avatar-copies.sh` が行う。**末尾の `/` を落とさない**——`avatars/history` にすると
+   * `avatars/historyX...` にも当たる。
+   */
+  avatar_history_prefix = "avatars/history/"
+
+  /**
+   * 写しを残す日数（**30 日**。利用者の決定）。
+   *
+   * **`src/avatar.ts` の `AVATAR_HISTORY_RETENTION_DAYS` と `/privacy` の文言がこの写しを持つ**
+   * （突き合わせは `scripts/check-avatar-copies.sh`）。R2 のライフサイクルは期限を過ぎてから 24 時間ほどの
+   * うちに消すので、実際に消えるのは 30〜31 日目である。
+   */
+  avatar_history_retention_days    = 30
+  avatar_history_retention_seconds = local.avatar_history_retention_days * 24 * 60 * 60
+
+  /**
+   * **年齢で消す規則の一覧。これ以外の削除規則を置かない。**
+   *
+   * 下のリソースの `rules` も、外部層の検査が読む output（`r2_lifecycle_delete_rules`）も、この 1 つの
+   * 定義から作る（`terraform/build-function.tf` の `build_role_actions` と同じ形。宣言と検査の期待値を
+   * 別々に書かない）。
+   */
+  r2_age_delete_rules = [
+    {
+      id              = "delete-replaced-avatars"
+      prefix          = local.avatar_history_prefix
+      max_age_seconds = local.avatar_history_retention_seconds
+    },
+  ]
 }
 
 /**
  * バケットのライフサイクル設定。
  *
  * **この 1 リソースがバケットのライフサイクル全体を持つ。** すなわち、ここに
- * `delete_objects_transition` が 1 つも無いことが「年齢で消すルールは存在しない」ことの
- * 宣言そのものである。実状態との一致は `scripts/check-r2-lifecycle.sh` が
+ * `delete_objects_transition` が `local.r2_age_delete_rules` の分しか無いことが「年齢で消すルールは
+ * 宣言した接頭辞の外に存在しない」ことの宣言そのものである。実状態との一致は `scripts/check-r2-lifecycle.sh` が
  * Cloudflare の API を叩いて確かめる（ダッシュボードで足された削除ルールも落ちる）。
  */
 # **このリソースは terraform から destroy できない**（プロバイダが作成時に警告する）。
@@ -111,9 +166,9 @@ resource "cloudflare_r2_bucket_lifecycle" "artifacts" {
   account_id  = var.cloudflare_account_id
   bucket_name = local.r2_bucket_name
 
-  rules = [
+  rules = concat([
     {
-      id      = "abort-incomplete-multipart-uploads"
+      id      = local.r2_abort_multipart_rule_id
       enabled = true
 
       # 接頭辞を絞らない。**未完了のアップロードはどの接頭辞の下でも作品ではない**ので、
@@ -130,10 +185,25 @@ resource "cloudflare_r2_bucket_lifecycle" "artifacts" {
       }
 
       # **delete_objects_transition は置かない。** 冒頭の理由（確定26 / 3.7 の規約 3）に
-      # よる。置いてよい接頭辞がこのバケットには存在しない。
+      # よる。この規則は接頭辞を絞らないので、置けばバケット全体が年齢で消える。
       # **storage_class_transitions も置かない。** Infrequent Access は最低保存期間と
       # 取り出し課金を伴い、3.7 が「保存量はコスト圧力にならない」と実測している以上、
       # 得るものが無い。
     },
-  ]
+    ], [
+    # **年齢で消す規則は、`local.r2_age_delete_rules` に書いた接頭辞だけに置く**（冒頭の #380 の節）。
+    for rule in local.r2_age_delete_rules : {
+      id      = rule.id
+      enabled = true
+      conditions = {
+        prefix = rule.prefix
+      }
+      delete_objects_transition = {
+        condition = {
+          type    = "Age"
+          max_age = rule.max_age_seconds
+        }
+      }
+    }
+  ])
 }

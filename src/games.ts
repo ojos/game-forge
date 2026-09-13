@@ -2239,6 +2239,19 @@ export interface PublicWork {
    * だけである——`email` と `invited_by` がカードへ届く経路は 1 本も増えていない。
    */
   readonly authorId?: string | null;
+  /**
+   * 作者のアイコンの版（`users.avatar_set_at`。**アイコンを設定していなければ null**。#380 / 仕様 2.3.6）。
+   *
+   * **カードは `?v=<この値>` を付けた URL で画像を出す**（`src/work-card.ts`。配信は版が一致すれば
+   * `immutable`。仕様 2.3.8）。**選ぶのは SQL の `case` で、`avatar_sha256` が NULL なら NULL に倒す**
+   * ——外した後も `avatar_set_at` は進むので、列をそのまま選ぶと「無い画像の版」になる。
+   *
+   * **{@link authorId} と同じ理由で省略可である**（一覧の行は Cache API に載っており、配備の直後の
+   * 最大 60 秒はこの列を選んでいなかった頃の行が返りうる）。欠けていれば、カードは画像を出さない
+   * だけである。**`users` から選ぶ列は、表示名とこの 1 つ（と画像の有無）だけ**で、`email` と
+   * `invited_by` がカードへ届く経路は増えていない。
+   */
+  readonly authorAvatarSetAt?: number | null;
   /** 公開した時刻（UNIX 秒）。0001 以前の行では null になりうる。 */
   readonly publishedAt: number | null;
   /** この作品から生まれた公開済みのフォークの数（非正規化列。5.1）。 */
@@ -2324,7 +2337,8 @@ export function publishedGamesSql(sort: PublicWorkSort): string {
   //
   // **`g.play_count` を選ぶのはカードに出すためである**（#377 / 2.3.6）。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
-            g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name
+            g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name,
+            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at
        from games g
        left join users u on u.id = g.author_id
       where g.status = ? and ${reviewVisibleSql('g')}
@@ -2347,6 +2361,7 @@ interface PublicWorkRow {
   readonly tag2: string | null;
   readonly tag3: string | null;
   readonly author_name: string | null;
+  readonly author_avatar_set_at: number | null;
 }
 
 /**
@@ -2361,6 +2376,7 @@ function toPublicWork(row: PublicWorkRow): PublicWork {
     title: row.title,
     authorName: row.author_name,
     authorId: row.author_id,
+    authorAvatarSetAt: row.author_avatar_set_at,
     publishedAt: row.published_at,
     forkCount: row.fork_count,
     likeCount: row.like_count,
@@ -2426,7 +2442,8 @@ export function taggedGamesSql(sort: TaggedWorkSort): string {
           where g.tag${slot} = ? and g.status = ? and ${reviewVisibleSql('g')}`,
   );
   return `select t.id, t.title, t.published_at, t.fork_count, t.like_count, t.play_count, t.parent_id,
-            t.ogp_state, t.author_id, t.tag1, t.tag2, t.tag3, u.display_name as author_name
+            t.ogp_state, t.author_id, t.tag1, t.tag2, t.tag3, u.display_name as author_name,
+            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at
        from (${branches.join(' union all ')}
          order by ${columns.map((column) => `${column} desc`).join(', ')}
          limit ? offset ?) t

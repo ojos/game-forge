@@ -2101,7 +2101,9 @@ run "r2 credentials are outside the declaration" check_r2_credentials_placement
 # 出どころ」になりうる**（親が別の経路で TF_DIR を決めた日に、渡す値と子の既定が
 # 食い違う）。渡さないことが配線である。
 run "wasm_exec objects exist for every delivered go_version" bash scripts/check-wasm-exec-objects.sh --remote
-run "r2 lifecycle has no age-based delete rules" bash scripts/check-r2-lifecycle.sh
+# **#380 で名前を変えた。** 年齢で消す規則が 1 つ（`avatars/history/` の 30 日）宣言されたので、
+# 「1 つも無い」ではなく「宣言した接頭辞の外に無い」を見る（判定は scripts/lib/r2-lifecycle-judge.sh）。
+run "r2 lifecycle deletes by age only under declared prefixes" bash scripts/check-r2-lifecycle.sh
 
 # ── 配信の実物検査（#180 / #181）─────────────────────────────────────────────
 #

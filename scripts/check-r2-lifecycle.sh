@@ -6,16 +6,26 @@
 #
 # # 何を見るのか
 #
-#   1. **年齢だけで消すルールが 1 つも無いこと。** #31 の受け入れ条件
-#      「公開済み作品が削除対象に含まれないこと」を、いちばん強い形で見る。
-#      確定26 のとおり R2 のオブジェクトは作品をまたいで共有され、R2 のライフサイクルは
-#      `games` を引けない（3.7 の削除規約 3）。このバケットには `delete` を置いてよい
-#      接頭辞が 1 つも無いので、**1 つでも在れば不合格**でよい。
+#   1. **年齢で消すルールが、宣言した接頭辞の外に 1 つも無いこと。** #31 の受け入れ条件
+#      「公開済み作品が削除対象に含まれないこと」を見る。確定26 のとおり R2 のオブジェクトは
+#      作品をまたいで共有され、R2 のライフサイクルは `games` を引けない（3.7 の削除規約 3）。
 #      とくに `runtime/<版>/wasm_exec.js` は、消すとその版の作品すべてが配信 500 に
 #      なる共有資材である（3.5 / #139）。
-#   2. **宣言したルールが実在すること。** ルールの id と、打ち切りまでの秒数を
+#
+#      > **#380 で「1 つでも在れば不合格」から変えた。** 差し替え前のアイコンの写し
+#      > （`avatars/history/`）は 30 日で消えなければならず（利用者の決定・`/privacy`）、
+#      > **写ししか置かない接頭辞なので削除規約 3 を満たす**（`terraform/r2-lifecycle.tf`）。
+#      > **許すのは、宣言（`local.r2_age_delete_rules`）に書いた接頭辞・秒数と id まで一致する規則だけ**で、
+#      > それ以外の接頭辞・バケット全体（接頭辞が空）・秒数を変えた規則は不合格である。
+#      > **許す接頭辞は terraform の出力（`r2_lifecycle_delete_rules`）から読み、ここへ書き写さない。**
+#   2. **宣言したルールが実在すること。** ルールの id・打ち切りまでの秒数・削除規則の接頭辞と秒数を
 #      terraform の出力から読み、実状態と突き合わせる。**期待値をこのスクリプトへ
 #      書き写さない**（shared-ai-rules.md 12 章「一覧の複製は機械照合で担保する」）。
+#
+#   **判定そのものは `scripts/lib/r2-lifecycle-judge.sh` にある。** このスクリプトは期待値（terraform の
+#   出力）と実物（Cloudflare の API）を集めて渡すだけである。判定は `scripts/report-selftest.sh` の 15 節が
+#   作った JSON を食わせて確かめる（宣言の外の削除規則・全体の削除規則・秒数の違いが赤になること）。
+#   **このスクリプトに JSON を差し替える口は作らない**——差し替えられる外部層の検査は、差し替えたまま緑になる。
 #
 # # なぜ terraform plan だけでは足りないのか
 #
@@ -57,6 +67,8 @@ cd "$ROOT" || exit 1
 # ルートへ cd した後に読み込むこと（既定値が相対パスのため）。
 # shellcheck source=scripts/lib/tf-dir.sh
 . "$HERE/lib/tf-dir.sh"
+# shellcheck source=scripts/lib/r2-lifecycle-judge.sh
+. "$HERE/lib/r2-lifecycle-judge.sh"
 
 fail() {
   printf '[check-r2-lifecycle] %s\n' "$@" >&2
@@ -107,9 +119,27 @@ bucket="$(tf_output r2_bucket_name)" \
 expected_max_age="$(tf_output r2_abort_multipart_max_age_seconds)" \
   || fail "terraform の出力 r2_abort_multipart_max_age_seconds を読めません。"
 
-expected_ids="$(terraform -chdir="$TF_DIR" output -json r2_lifecycle_rule_ids 2>/dev/null \
-  | jq -r '.[]?' | sort)"
-[[ -n "$expected_ids" ]] || fail "terraform の出力 r2_lifecycle_rule_ids を読めません。"
+abort_rule_id="$(tf_output r2_abort_multipart_rule_id)" \
+  || fail "terraform の出力 r2_abort_multipart_rule_id を読めません。"
+
+expected_ids_json="$(terraform -chdir="$TF_DIR" output -json r2_lifecycle_rule_ids 2>/dev/null)"
+jq -e 'type == "array" and length > 0' <<<"$expected_ids_json" >/dev/null 2>&1 \
+  || fail "terraform の出力 r2_lifecycle_rule_ids を読めません。"
+
+# **許す削除規則の一覧も terraform の出力から読む**（#380。接頭辞をこのスクリプトへ書き写さない）。
+# **空の配列は「読めた」として扱う**（削除規則を 1 つも宣言しない形も正しい宣言である）。
+# 読めない（出力が無い・配列でない）ときだけ落とす——読めないことを「削除規則なし」に倒さない。
+delete_rules_json="$(terraform -chdir="$TF_DIR" output -json r2_lifecycle_delete_rules 2>/dev/null)"
+jq -e 'type == "array"' <<<"$delete_rules_json" >/dev/null 2>&1 \
+  || fail "terraform の出力 r2_lifecycle_delete_rules を読めません。"
+
+expected_json="$(jq -n \
+  --argjson ids "$expected_ids_json" \
+  --arg abort_id "$abort_rule_id" \
+  --argjson abort_max "$expected_max_age" \
+  --argjson deletes "$delete_rules_json" \
+  '{rule_ids: $ids, abort_rule_id: $abort_id, abort_max_age: $abort_max, delete_rules: $deletes}')" \
+  || fail "期待値を組み立てられません（r2_abort_multipart_max_age_seconds が数でない可能性があります）。"
 
 body="$(curl -sS --max-time 30 \
   -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
@@ -123,67 +153,13 @@ echo "[check-r2-lifecycle] bucket=${bucket}"
 
 failed=0
 
-# ── 1. 年齢だけで消すルールが無いこと ────────────────────────────────────────
-delete_ids="$(jq -r '[.result.rules[]? | select((.deleteObjectsTransition // .delete_objects_transition) != null) | .id] | .[]' <<<"$body")"
-if [[ -n "$delete_ids" ]]; then
-  echo "[check-r2-lifecycle] 年齢で消すルールが在ります（3.7 の削除規約 3 に反します）:" >&2
-  sed 's/^/  /' <<<"$delete_ids" >&2
-  echo "  R2 のライフサイクルは games を引けないため、共有されうるオブジェクトを載せられません。" >&2
-  echo "  14 日の掃除は M5-4 のゴミ掃除が持ちます（確定13 / 確定26）。" >&2
-  failed=$((failed + 1))
+# ── 判定（scripts/lib/r2-lifecycle-judge.sh）────────────────────────────────
+if ! r2_lifecycle_judge "$expected_json" "$body"; then
+  failed=1
 fi
-
-# 綴りが変わっても気づけるようにする。上の jq は 2 つの綴りしか見ておらず、
-# **見ていない綴りの削除ルールは黙って通る。** 生の JSON を走査して、delete を含む鍵が
-# 現れたら（上で拾えていてもいなくても）人へ見せる。
-suspicious="$(jq -r '.result.rules // [] | tostring' <<<"$body" | grep -oi 'delete[a-zA-Z]*' | sort -u)"
-if [[ -n "$suspicious" && -z "$delete_ids" ]]; then
-  echo "[check-r2-lifecycle] 削除に関わりうる未知の綴りが応答に在ります:" >&2
-  sed 's/^/  /' <<<"$suspicious" >&2
-  echo "  上の判定が拾えていない可能性があります。本スクリプトを直すこと。" >&2
-  failed=$((failed + 1))
-fi
-
-# ── 2. 宣言したルールが実在すること ──────────────────────────────────────────
-actual_ids="$(jq -r '[.result.rules[]?.id] | .[]' <<<"$body" | sort)"
-if [[ "$actual_ids" != "$expected_ids" ]]; then
-  echo "[check-r2-lifecycle] ルールの id が宣言と一致しません。" >&2
-  echo "  宣言: $(tr '\n' ' ' <<<"$expected_ids")" >&2
-  echo "  実状態: $(tr '\n' ' ' <<<"${actual_ids:-（無し）}")" >&2
-  echo "  terraform -chdir=${TF_DIR} apply が未実施なら、それが原因です。" >&2
-  failed=$((failed + 1))
-fi
-
-# ── 3. 打ち切りまでの秒数が宣言どおりであること ──────────────────────────────
-while IFS= read -r rule_id; do
-  [[ -z "$rule_id" ]] && continue
-  actual_max_age="$(jq -r --arg id "$rule_id" \
-    '.result.rules[]? | select(.id == $id)
-     | (.abortMultipartUploadsTransition // .abort_multipart_uploads_transition).condition.maxAge // empty' <<<"$body")"
-  if [[ -z "$actual_max_age" ]]; then
-    echo "[check-r2-lifecycle] ルール ${rule_id} に打ち切りの条件がありません。" >&2
-    failed=$((failed + 1))
-    continue
-  fi
-  if [[ "$actual_max_age" != "$expected_max_age" ]]; then
-    echo "[check-r2-lifecycle] ルール ${rule_id} の maxAge が宣言と違います: 宣言=${expected_max_age} 実状態=${actual_max_age}" >&2
-    failed=$((failed + 1))
-    continue
-  fi
-  enabled="$(jq -r --arg id "$rule_id" '.result.rules[]? | select(.id == $id) | .enabled' <<<"$body")"
-  if [[ "$enabled" != "true" ]]; then
-    echo "[check-r2-lifecycle] ルール ${rule_id} が有効になっていません。" >&2
-    failed=$((failed + 1))
-    continue
-  fi
-  # **ここで「削除ルールなし」と書かない。** 削除ルールの判定はバケット全体に対して
-  # 上で済ませてあり、この行は 1 ルールぶんの照合結果である。混ぜると、別のルールに
-  # 削除が在るのに「削除ルールなし」と読める行が出る。
-  echo "[check-r2-lifecycle] OK ${rule_id}（有効 / maxAge=${actual_max_age} 秒）"
-done <<<"$expected_ids"
 
 if [[ "$failed" -gt 0 ]]; then
-  echo "[check-r2-lifecycle] ${failed} 件の乖離があります。" >&2
+  echo "[check-r2-lifecycle] 乖離があります（理由は上）。" >&2
   echo "R2_LIFECYCLE_FAIL"
   exit 1
 fi

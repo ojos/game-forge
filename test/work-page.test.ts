@@ -100,7 +100,7 @@ const SECRET = 'test-secret-value-for-work-page-endpoint-1';
  * @returns HTML
  */
 function renderWorkPage(view: WorkPageView): string {
-  return renderWorkPageFor(view, siteViewerAt(WORK_PAGE_PREFIX, false));
+  return renderWorkPageFor(view, siteViewerAt(WORK_PAGE_PREFIX, false, null));
 }
 
 /**

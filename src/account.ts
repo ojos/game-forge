@@ -1,7 +1,8 @@
 /**
  * 登録情報の画面（`/account` と `/account/details` と `/account/mail`）と、表示名の変更
  * （`POST /api/account/display-name`）・自己紹介と外部リンクの保存（`POST /api/account/profile`）・
- * メール配信の設定の保存（`POST /api/account/mail`）。
+ * メール配信の設定の保存（`POST /api/account/mail`）・アイコンの設定と外すこと
+ * （`POST /api/account/avatar` / `POST /api/account/avatar/remove`。#380。部品は `src/avatar.ts`）。
  * **仕様 5.9 の実体であり、5.10 の自己紹介と外部リンクの口であり、5.11 のメール配信設定の口である**
  * （#341 / M9-6 / #379 / M12-11 / #384 / M12-16）。
  * 自己紹介と外部リンクの形の検査と書き込みは `src/profile.ts` が持つ。
@@ -116,8 +117,23 @@ import {
   FORK_NOTICE_RECEIVE,
 } from './account-paths.js';
 import { loginRequiredRedirect } from './auth/google.js';
+import type { AvatarFormView, AvatarRejection } from './avatar.js';
+import {
+  AVATAR_REASON_MESSAGES,
+  acquireAvatarLock,
+  avatarUploadRejection,
+  convertAvatar,
+  readAvatarUpload,
+  releaseAvatarLock,
+  removeAvatar,
+  renderAvatarForm,
+  saveAvatar,
+} from './avatar.js';
+import type { EncodeAvatar } from './avatar-client.js';
+import { encodeAvatarOnLambda } from './avatar-client.js';
+import { ACCOUNT_AVATAR_PATH, ACCOUNT_AVATAR_REMOVE_PATH, avatarUrl, sandboxOriginOf } from './avatar-paths.js';
 import { displayNameHistoryInsert } from './display-name-changes.js';
-import { escapeHtml, siteHead, siteViewerAt } from './html.js';
+import { escapeHtml, headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { siteFooter } from './legal.js';
 import { FORK_NOTICE_KIND_LABEL, MAIL_KINDS, unmutableUserMailKinds } from './mail/kinds.js';
@@ -353,7 +369,8 @@ export type AccountReason =
   | 'too-soon'
   | 'invalid-request'
   | 'failed'
-  | ProfileRejection;
+  | ProfileRejection
+  | AvatarRejection;
 
 /**
  * 分類ごとの文言。
@@ -375,6 +392,8 @@ const REASON_MESSAGES: Readonly<Record<AccountReason, string>> = {
   // 自己紹介と外部リンクの理由（#379）。**綴りは表示名の理由と重ならない**（`bio-` / `link-` /
   // `profile-` の接頭辞）ので、同じ query の名前へ載せても取り違えない。
   ...PROFILE_REASON_MESSAGES,
+  // アイコンの理由（#380）。**綴りは `avatar-` で始まる**ので、上の理由と取り違えない。
+  ...AVATAR_REASON_MESSAGES,
 };
 
 /** 未知の分類を受けたときの文言。 */
@@ -396,6 +415,12 @@ const SAVED_QUERY = 'saved';
  */
 const SAVED_PROFILE_VALUE = 'profile';
 
+/** アイコンを設定できたことを示す値（`/account?saved=avatar`。#380）。 */
+const SAVED_AVATAR_VALUE = 'avatar';
+
+/** アイコンを外せたことを示す値（`/account?saved=avatar-removed`。#380）。 */
+const SAVED_AVATAR_REMOVED_VALUE = 'avatar-removed';
+
 /**
  * 分類から画面に出す文言を選ぶ。
  *
@@ -412,7 +437,9 @@ function reasonMessage(reason: string): string {
 export type AccountNotice =
   | { readonly kind: 'error'; readonly message: string }
   | { readonly kind: 'saved' }
-  | { readonly kind: 'saved-profile' };
+  | { readonly kind: 'saved-profile' }
+  | { readonly kind: 'saved-avatar' }
+  | { readonly kind: 'removed-avatar' };
 
 /** プロフィールのタブ（`/account`）を組み立てるのに必要なものだけを集めた入力。 */
 export interface AccountView {
@@ -424,6 +451,10 @@ export interface AccountView {
   readonly displayNameSetAt: number | null;
   /** 自己紹介と外部リンクのフォームに入れる値（#379）。 */
   readonly profile: ProfileFormView;
+  /** アイコンのフォームに入れる値（#380）。 */
+  readonly avatar: AvatarFormView;
+  /** ヘッダのアバターの画像の URL（`src/html.ts` の `headerAvatarUrl`。#380）。 */
+  readonly headerAvatar: string | null;
   /** 上部に出す知らせ（無ければ null）。 */
   readonly notice: AccountNotice | null;
 }
@@ -434,6 +465,8 @@ export interface AccountDetailsView {
   readonly email: string;
   /** 登録した時刻（`users.created_at`。UNIX 秒）。 */
   readonly createdAt: number;
+  /** ヘッダのアバターの画像の URL（#380）。 */
+  readonly headerAvatar: string | null;
 }
 
 /**
@@ -469,6 +502,8 @@ export function accountShell(options: {
   readonly path: string;
   readonly title: string;
   readonly body: string;
+  /** ヘッダのアバターの画像の URL（#380。**必須にする**——タブを足す人が渡し忘れない）。 */
+  readonly headerAvatar: string | null;
 }): string {
   const tabs = ACCOUNT_TABS.map((tab) =>
     tab.path === options.path
@@ -478,7 +513,7 @@ export function accountShell(options: {
   return `${siteHead({
     title: options.title,
     noindex: true,
-    viewer: siteViewerAt(options.path, true),
+    viewer: siteViewerAt(options.path, true, options.headerAvatar),
   })}
 <h1>登録情報</h1>
 <nav class="gf-account-tabs" aria-label="登録情報の項目">
@@ -508,7 +543,11 @@ export function renderAccountPage(view: AccountView): string {
         ? '<p class="gf-notice" role="status">表示名を変更しました。</p>'
         : view.notice.kind === 'saved-profile'
           ? '<p class="gf-notice" role="status">自己紹介と外部リンクを保存しました。</p>'
-          : // 文言は表から選んだ固定文字列だが、`escapeHtml` を通しておく
+          : view.notice.kind === 'saved-avatar'
+            ? '<p class="gf-notice" role="status">アイコンを設定しました。</p>'
+            : view.notice.kind === 'removed-avatar'
+              ? '<p class="gf-notice" role="status">アイコンを外しました。</p>'
+              : // 文言は表から選んだ固定文字列だが、`escapeHtml` を通しておく
             // （`src/invite-issuance.ts` と同じ理由。出どころが変わっても安全側が既定になる）。
             `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
 
@@ -529,6 +568,7 @@ export function renderAccountPage(view: AccountView): string {
   return accountShell({
     path: ACCOUNT_PATH,
     title: '登録情報 - Game Forge',
+    headerAvatar: view.headerAvatar,
     body: `${notice}
 <form method="post" action="${ACCOUNT_DISPLAY_NAME_PATH}">
   <label for="display-name">表示名</label>
@@ -539,6 +579,7 @@ export function renderAccountPage(view: AccountView): string {
 </form>
 ${following}
 <p>表示名は作品ページや作品の一覧に出て、ログインしていない人にも見えます。</p>
+${renderAvatarForm(view.avatar)}
 ${renderProfileForm(view.profile)}
 <p><a href="${escapeHtml(authorPagePath(view.userId))}">自分の作者ページを見る</a></p>`,
   });
@@ -560,6 +601,7 @@ export function renderAccountDetailsPage(view: AccountDetailsView): string {
   return accountShell({
     path: ACCOUNT_DETAILS_PATH,
     title: 'アカウント - Game Forge',
+    headerAvatar: view.headerAvatar,
     body: `<dl class="gf-account">
   <dt>メールアドレス</dt>
   <dd>${escapeHtml(view.email)}</dd>
@@ -591,6 +633,8 @@ interface AccountRow {
   readonly display_name_set_at: number | null;
   readonly bio: string;
   readonly profile_links: string;
+  readonly avatar_sha256: string | null;
+  readonly avatar_set_at: number | null;
 }
 
 /**
@@ -605,10 +649,29 @@ interface AccountRow {
  */
 async function loadAccountRow(env: Env, userId: string): Promise<AccountRow | null> {
   return await env.DB.prepare(
-    'select display_name, display_name_set_at, bio, profile_links from users where id = ?',
+    'select display_name, display_name_set_at, bio, profile_links, avatar_sha256, avatar_set_at from users where id = ?',
   )
     .bind(userId)
     .first<AccountRow>();
+}
+
+/**
+ * 登録情報の画面に出すアイコンの値（版つきの URL）を組み立てる（#380）。
+ *
+ * **版を付ける**——設定した直後の画面は新しい `avatar_set_at` を持つので、ブラウザの古いキャッシュに
+ * 当たらない（`src/avatar-delivery.ts`）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param userId 利用者の id
+ * @param row アカウントの行
+ * @returns フォームに入れる値
+ */
+function avatarFormViewOf(request: Request, env: Env, userId: string, row: AccountRow): AvatarFormView {
+  if (row.avatar_sha256 === null || row.avatar_set_at === null) {
+    return { url: null };
+  }
+  return { url: avatarUrl(sandboxOriginOf(request, env.SANDBOX_HOST), userId, row.avatar_set_at) };
 }
 
 /**
@@ -647,9 +710,13 @@ async function showAccount(request: Request, env: Env): Promise<Response> {
       ? { kind: 'error', message: reasonMessage(reason) }
       : saved === SAVED_PROFILE_VALUE
         ? { kind: 'saved-profile' }
-        : saved !== null
-          ? { kind: 'saved' }
-          : null;
+        : saved === SAVED_AVATAR_VALUE
+          ? { kind: 'saved-avatar' }
+          : saved === SAVED_AVATAR_REMOVED_VALUE
+            ? { kind: 'removed-avatar' }
+            : saved !== null
+              ? { kind: 'saved' }
+              : null;
 
   return html(
     renderAccountPage({
@@ -658,6 +725,8 @@ async function showAccount(request: Request, env: Env): Promise<Response> {
       displayNameSetAt: row.display_name_set_at,
       // **表示の直前の検査を通したリンクだけを欄へ入れる**（`src/profile.ts`）。
       profile: { bio: row.bio ?? '', links: parseStoredProfileLinks(row.profile_links) },
+      avatar: avatarFormViewOf(request, env, session.userId, row),
+      headerAvatar: headerAvatarUrl(request, env, session.userId),
       notice,
     }),
     // 失敗の後始末で開かれた画面には、失敗のステータスを付ける（`src/invite-issuance.ts`
@@ -771,7 +840,13 @@ async function showAccountDetails(request: Request, env: Env): Promise<Response>
   if (row === null) {
     return await loginRequiredRedirect(env, ACCOUNT_DETAILS_PATH);
   }
-  return html(renderAccountDetailsPage({ email: row.email, createdAt: row.created_at }));
+  return html(
+    renderAccountDetailsPage({
+      email: row.email,
+      createdAt: row.created_at,
+      headerAvatar: headerAvatarUrl(request, env, session.userId),
+    }),
+  );
 }
 
 /**
@@ -787,6 +862,7 @@ const MAX_PROFILE_BODY_BYTES = 16 * 1024;
 /**
  * 断った自己紹介と外部リンクを、送られた値を入れたままの画面で返す（#379。冒頭）。
  *
+ * @param request 受信したリクエスト（アイコンの URL のスキームとポートを借りる。#380）
  * @param env バインディングと環境変数
  * @param userId セッションの利用者 id
  * @param reason 断った理由
@@ -795,6 +871,7 @@ const MAX_PROFILE_BODY_BYTES = 16 * 1024;
  * @returns レスポンス
  */
 async function profileRefusal(
+  request: Request,
   env: Env,
   userId: string,
   reason: ProfileRejection,
@@ -811,6 +888,8 @@ async function profileRefusal(
       displayName: row.display_name,
       displayNameSetAt: row.display_name_set_at,
       profile: submitted,
+      avatar: avatarFormViewOf(request, env, userId, row),
+      headerAvatar: headerAvatarUrl(request, env, userId),
       notice: { kind: 'error', message: reasonMessage(reason) },
     }),
     status,
@@ -867,7 +946,7 @@ async function handleProfileChange(
 
   const validated = validateProfile(rawBio, rawLinks);
   if (!validated.ok) {
-    return await profileRefusal(env, session.userId, validated.reason, submitted, 400);
+    return await profileRefusal(request, env, session.userId, validated.reason, submitted, 400);
   }
 
   try {
@@ -876,6 +955,7 @@ async function handleProfileChange(
       return seeOther(`${ACCOUNT_PATH}?${SAVED_QUERY}=${SAVED_PROFILE_VALUE}`);
     }
     return await profileRefusal(
+      request,
       env,
       session.userId,
       changed.reason,
@@ -987,6 +1067,8 @@ export interface AccountMailView {
   readonly receiveForkNotice: boolean;
   /** 上部に出す知らせ（無ければ null）。 */
   readonly notice: { readonly kind: 'error'; readonly message: string } | { readonly kind: 'saved' } | null;
+  /** ヘッダのアバターの画像の URL（#380）。 */
+  readonly headerAvatar: string | null;
 }
 
 /**
@@ -1019,6 +1101,7 @@ export function renderAccountMailPage(view: AccountMailView): string {
   return accountShell({
     path: ACCOUNT_MAIL_PATH,
     title: 'メール配信 - Game Forge',
+    headerAvatar: view.headerAvatar,
     body: `${notice}
 <form method="post" action="${ACCOUNT_MAIL_API_PATH}">
   <fieldset class="gf-mail-choice">
@@ -1075,7 +1158,11 @@ async function showAccountMail(request: Request, env: Env): Promise<Response> {
         : null;
 
   return html(
-    renderAccountMailPage({ receiveForkNotice: row.fork_notice_muted_at === null, notice }),
+    renderAccountMailPage({
+      receiveForkNotice: row.fork_notice_muted_at === null,
+      notice,
+      headerAvatar: headerAvatarUrl(request, env, session.userId),
+    }),
     reason === null ? 200 : 400,
   );
 }
@@ -1143,10 +1230,108 @@ async function handleForkNoticePreference(
   }
 }
 
+/**
+ * アイコンを設定する（`POST /api/account/avatar`。#380 / 5.10）。
+ *
+ * **断ったら `/account?reason=avatar-…` へ送り直す**（POST-redirect-GET）。自己紹介と違って
+ * 画面をその場で組み直さない——ファイルの入力欄は値を戻せない（ブラウザが許さない）ので、
+ * 組み直しても利用者が選び直す手間は変わらない。**画像そのものはログにも URL にも載せない。**
+ *
+ * **判定の順**: ログイン → 本文の形と大きさ → 先頭のバイト → 排他（間隔を含む）→ 変換 → 保存。
+ * **排他を変換の前に取る**——断る要求（二度押し・間隔）で Lambda を呼ばない。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param now 現在時刻（UNIX 秒）を返す関数
+ * @param encode 変換の段（テストから差し替える）
+ * @returns レスポンス
+ */
+async function handleAvatarUpload(
+  request: Request,
+  env: Env,
+  now: () => number,
+  encode: EncodeAvatar,
+): Promise<Response> {
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return await loginRequiredRedirect(env, ACCOUNT_PATH);
+  }
+  const upload = await readAvatarUpload(request);
+  if (!upload.ok) {
+    return seeOther(`${ACCOUNT_PATH}?reason=${upload.reason}`);
+  }
+  const rejection = avatarUploadRejection(upload.bytes);
+  if (rejection !== null) {
+    return seeOther(`${ACCOUNT_PATH}?reason=${rejection}`);
+  }
+
+  try {
+    // **変換の前に、D1 で利用者ごとの排他を取る**（`src/avatar.ts` の `acquireAvatarLock`）。二度押しの 2 本目は
+    // ここで断られ、Lambda も R2 も触らない。間隔（60 秒）の判定もここに入っている。
+    const locked = await acquireAvatarLock(env.DB, session.userId, now());
+    if (!locked.ok) {
+      return seeOther(`${ACCOUNT_PATH}?reason=${locked.reason}`);
+    }
+    const converted = await convertAvatar(env, upload.bytes, encode);
+    if (!converted.ok) {
+      // **R2 に何も書いていないので、排他を解くだけでよい**（間隔も進めない。混雑なら、すぐ上げ直せる）。
+      await releaseAvatarLock(env.DB, locked.lock);
+      return seeOther(`${ACCOUNT_PATH}?reason=${converted.reason}`);
+    }
+    // 保存は成功しても失敗しても排他を解いて戻る。
+    const saved = await saveAvatar(env, locked.lock, converted.webp);
+    return seeOther(
+      saved.ok ? `${ACCOUNT_PATH}?${SAVED_QUERY}=${SAVED_AVATAR_VALUE}` : `${ACCOUNT_PATH}?reason=${saved.reason}`,
+    );
+  } catch (error) {
+    // D1 / R2 の失敗。**画像はログに出さない。**
+    console.error(`[account] アイコンの保存に失敗しました: ${error instanceof Error ? error.name : 'unknown'}`);
+    return seeOther(`${ACCOUNT_PATH}?reason=avatar-failed`);
+  }
+}
+
+/**
+ * アイコンを外す（`POST /api/account/avatar/remove`。#380）。
+ *
+ * **本文を読まない**（載せるものが無い）。**外した画像も 30 日だけ残す**（`src/avatar.ts`）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param now 現在時刻（UNIX 秒）を返す関数
+ * @returns レスポンス
+ */
+async function handleAvatarRemove(request: Request, env: Env, now: () => number): Promise<Response> {
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return await loginRequiredRedirect(env, ACCOUNT_PATH);
+  }
+  try {
+    const locked = await acquireAvatarLock(env.DB, session.userId, now());
+    if (!locked.ok) {
+      return seeOther(`${ACCOUNT_PATH}?reason=${locked.reason}`);
+    }
+    const removed = await removeAvatar(env, locked.lock);
+    return seeOther(
+      removed.ok
+        ? `${ACCOUNT_PATH}?${SAVED_QUERY}=${SAVED_AVATAR_REMOVED_VALUE}`
+        : `${ACCOUNT_PATH}?reason=${removed.reason}`,
+    );
+  } catch (error) {
+    console.error(`[account] アイコンを外せませんでした: ${error instanceof Error ? error.name : 'unknown'}`);
+    return seeOther(`${ACCOUNT_PATH}?reason=avatar-failed`);
+  }
+}
+
 /** {@link createAccountRoutes} に渡す差し替え。 */
 export interface AccountRouteOptions {
   /** 現在時刻（UNIX 秒）。既定は `Date.now()` から。テストが 60 秒の境界を固定するために使う（表示名・プロフィール・メール配信）。 */
   readonly now?: () => number;
+  /**
+   * アイコンの変換の段（#380）。既定は Lambda の同期呼び出し（`src/avatar-client.ts`）。
+   *
+   * **テストが実 Lambda を呼ばずに、変換の結果（成功・断った・落ちた）を差し替えるために使う。**
+   */
+  readonly encodeAvatar?: EncodeAvatar;
 }
 
 /**
@@ -1161,6 +1346,7 @@ export interface AccountRouteOptions {
  */
 export function createAccountRoutes(options: AccountRouteOptions = {}): readonly Route[] {
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
+  const encode = options.encodeAvatar ?? encodeAvatarOnLambda;
   return [
     { method: 'GET', path: ACCOUNT_PATH, handler: showAccount },
     { method: 'GET', path: ACCOUNT_DETAILS_PATH, handler: showAccountDetails },
@@ -1180,8 +1366,18 @@ export function createAccountRoutes(options: AccountRouteOptions = {}): readonly
       path: ACCOUNT_MAIL_API_PATH,
       handler: (request, env) => handleForkNoticePreference(request, env, now),
     },
+    {
+      method: 'POST',
+      path: ACCOUNT_AVATAR_PATH,
+      handler: (request, env) => handleAvatarUpload(request, env, now, encode),
+    },
+    {
+      method: 'POST',
+      path: ACCOUNT_AVATAR_REMOVE_PATH,
+      handler: (request, env) => handleAvatarRemove(request, env, now),
+    },
   ];
 }
 
-/** アプリの経路表へ連結する登録情報の経路（#341 / #379 / #384）。 */
+/** アプリの経路表へ連結する登録情報の経路（#341 / #379 / #384 / #380）。 */
 export const accountRoutes: readonly Route[] = createAccountRoutes();

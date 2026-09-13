@@ -49,7 +49,8 @@
 import { loginRequiredRedirect } from './auth/google.js';
 import type { PublicWork } from './games.js';
 import { PUBLISHED_STATUS, workTagsOf } from './games.js';
-import { siteHead, siteViewerAt } from './html.js';
+import { sandboxOriginOf } from './avatar-paths.js';
+import { headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
 import { siteFooter } from './legal.js';
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';
 import { listLikedGameIds } from './likes.js';
@@ -129,7 +130,8 @@ export function likedWorksSql(count: number): string {
   //
   // **`g.play_count` を選ぶのはカードに出すためである**（#377。`publishedGamesSql` と揃える）。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
-            g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name
+            g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name,
+            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at
        from games g
        left join users u on u.id = g.author_id
       where g.id in (${placeholders}) and g.status = ? and ${reviewVisibleSql('g')}`;
@@ -206,6 +208,7 @@ export async function listLikedWorks(
       tag2: string | null;
       tag3: string | null;
       author_name: string | null;
+      author_avatar_set_at: number | null;
     }>();
 
   const rows = new Map(result.results.map((row) => [row.id, row]));
@@ -225,6 +228,7 @@ export async function listLikedWorks(
       // 作者ページへのリンク（#330）。**欠けている行はリンクにならない**だけである
       // （`src/work-card.ts` の `cardAuthorId`）。
       authorId: row.author_id,
+    authorAvatarSetAt: row.author_avatar_set_at,
       publishedAt: row.published_at,
       forkCount: row.fork_count,
       likeCount: row.like_count,
@@ -285,6 +289,10 @@ export interface LikedWorksView {
    * 嘘をつく（`src/home.ts` の「出来ていないものを出来ているように書かない」の裏返し）。
    */
   readonly unavailable: boolean;
+  /** ヘッダのアバターの画像の URL（#380。`src/html.ts` の `headerAvatarUrl`）。 */
+  readonly headerAvatar?: string | null;
+  /** カードの作者のアイコンを配るサンドボックス用ホストのオリジン（#380。無ければ画像を出さない）。 */
+  readonly avatarOrigin?: string | null;
   /**
    * いいねの正本（DO）がこの頁で返した作品の件数（**絞り込みの前**）。
    *
@@ -388,7 +396,7 @@ function renderPager(view: LikedWorksView): string {
  * @returns HTML
  */
 export function renderLikedWorksPage(view: LikedWorksView): string {
-  const cards = renderWorkCards(view.works);
+  const cards = renderWorkCards(view.works, view.avatarOrigin ?? null);
   // **空に見える 4 つの状態を書き分ける**（PR #348 の Copilot の指摘）。どれも `works` が
   // 空だが、**利用者にとっての意味が違う。**
   //
@@ -425,7 +433,7 @@ export function renderLikedWorksPage(view: LikedWorksView): string {
   return `${siteHead({
     title: 'いいねした作品 - Game Forge',
     noindex: true,
-    viewer: siteViewerAt(LIKED_WORKS_PATH, true),
+    viewer: siteViewerAt(LIKED_WORKS_PATH, true, view.headerAvatar ?? null),
   })}
 <h1>いいねした作品</h1>
 <p>あなたがいいねを付けた作品が、押した新しい順に並んでいます。<strong>この一覧はあなたにしか見えません。</strong></p>
@@ -485,7 +493,17 @@ async function showLikedWorks(request: Request, env: Env): Promise<Response> {
     session.userId,
     page,
   );
-  return html(renderLikedWorksPage({ works, page, hasNext, unavailable, likedOnPage }));
+  return html(
+    renderLikedWorksPage({
+      works,
+      page,
+      hasNext,
+      unavailable,
+      likedOnPage,
+      headerAvatar: headerAvatarUrl(request, env, session.userId),
+      avatarOrigin: sandboxOriginOf(request, env.SANDBOX_HOST),
+    }),
+  );
 }
 
 /**

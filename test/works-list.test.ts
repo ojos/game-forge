@@ -539,7 +539,7 @@ describe('タグで絞り込む（#376 / 仕様 2.3.5）', () => {
   });
 
   it('「このタグの作品はまだない」と「公開作品が 0 本」を書き分ける', () => {
-    const viewer = siteViewerAt(PUBLIC_WORKS_PATH, false);
+    const viewer = siteViewerAt(PUBLIC_WORKS_PATH, false, null);
     const filtered = renderWorksListPage(
       { works: [], sort: 'recent', page: 1, hasNext: false, tag: 'idle' },
       viewer,

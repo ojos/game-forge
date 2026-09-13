@@ -1,3 +1,4 @@
+import { AVATAR_HISTORY_RETENTION_DAYS, AVATAR_OUTPUT_SIZE } from '../src/avatar.js';
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { createAppRoutes } from '../src/app.js';
@@ -124,13 +125,34 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     // 本文へ足した**（下の it）。
     const body = pageBodyOf((await openPrivacy()).body);
     // **プレイ数は #377 が数え始め、この一覧から外して本文へ足した**（下の it）。
-    for (const notYet of ['アイコン', 'ハンドル']) {
+    // **アイコンは #380 が収集を始め、この一覧から外して本文へ足した**（下の it）。
+    for (const notYet of ['ハンドル']) {
       expect(body, `まだ収集していない「${notYet}」が書いてある`).not.toContain(notYet);
     }
     // 2.3.14 が「収集しない」と決めたもの。
     for (const never of ['誕生', '性別']) {
       expect(body, `収集しないと決めた「${never}」が書いてある`).not.toContain(never);
     }
+  });
+
+  it('アイコンの画像・メタデータを落とすこと・前の画像の保存期間・変更の履歴を書く（#380）', async () => {
+    // **収集を始めた変更で書く**（#373 の constraints）。**日数と大きさは実装の値の写しなので、実装と照合する**。
+    const body = pageBodyOf((await openPrivacy()).body);
+    const entered = body.slice(body.indexOf('利用者が登録・入力する情報'), body.indexOf('利用に伴って記録する情報'));
+    expect(entered).toContain('<strong>アイコンの画像</strong>');
+    expect(entered).toContain(`${AVATAR_OUTPUT_SIZE} ピクセル四方の WebP に作り直した`);
+    expect(entered).toContain('元のファイルは保存せず');
+    expect(entered).toContain('Exif などのメタデータ');
+    expect(entered).toContain('アイコンの変更の履歴');
+    expect(entered).toContain(`前の画像（${AVATAR_HISTORY_RETENTION_DAYS} 日間だけ保存します）`);
+    const published = body.slice(body.indexOf('3. 公開される情報'), body.indexOf('4. 第三者への提供'));
+    expect(published).toContain('アイコンの画像（作者ページ・作品の一覧・ヘッダに表示されます）');
+    expect(published).toContain('差し替える前・外す前のアイコンの画像とアイコンの変更の履歴');
+    const services = body.slice(body.indexOf('5. 外部のサービスの利用'), body.indexOf('6. Cookie'));
+    expect(services).toContain('アイコンの画像の作り直し');
+    const retention = body.slice(body.indexOf('7. 保存期間'), body.indexOf('8. 開示'));
+    expect(retention).toContain(`差し替えた・外した日から ${AVATAR_HISTORY_RETENTION_DAYS} 日で自動的に削除されます`);
+    expect(retention).toContain('いまのアイコンと前の画像の両方を削除します');
   });
 
   it('プレイ数を、利用者と結び付けずに数えることと、sessionStorage に置く時刻を書く（#377）', async () => {
@@ -282,7 +304,8 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     // Copilot の指摘）。
     const body = pageBodyOf((await openPrivacy()).body);
     expect(body).not.toContain('AWS 上の処理の記録（ログ）は、14 日');
-    expect(body).toContain('作品の生成・ビルド・紹介用の画像の撮影の記録は 14 日');
+    // アイコンの作り直し（#380）のロググループも 14 日（`terraform/avatar-function.tf`）。
+    expect(body).toContain('作品の生成・ビルド・紹介用の画像の撮影・アイコンの画像の作り直しの記録は 14 日');
     expect(body).toContain('費用の上限を監視する処理の記録は 30 日');
     expect(body).toContain('90 日を目安に削除');
   });

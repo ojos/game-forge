@@ -61,6 +61,7 @@ import { homeSections, loadHomeFeed } from './home-feed.js';
 // **カードは共通部品を借りる**（仕様 2.3.6。一覧・トップ・作者ページが同じ 1 枚を使う。
 // 項目を足したり減らしたりするのは `src/work-card.ts` の仕事で、ここではない）。
 import { renderWorkCards } from './work-card.js';
+import { sandboxOriginOf } from './avatar-paths.js';
 // お知らせの節（#375 / M12-7）。**記事は静的な定義で、D1 を 1 行も読まない**（`src/news.ts`）。
 import type { NewsArticle } from './news-articles.js';
 import { NEWS_ARTICLES } from './news-articles.js';
@@ -90,9 +91,10 @@ export { HOME_PATH };
  * （`scripts/check-page-width.sh` が見ている回帰の側）。
  *
  * @param section 節
+ * @param avatarOrigin アイコンを配るサンドボックス用ホストのオリジン（#380）
  * @returns HTML
  */
-function renderSection(section: HomeSection): string {
+function renderSection(section: HomeSection, avatarOrigin: string | null): string {
   const headingId = `gf-home-${section.key}`;
   const more =
     section.moreHref === null
@@ -102,7 +104,7 @@ function renderSection(section: HomeSection): string {
   return `
 <section class="gf-home-section" aria-labelledby="${headingId}">
 <h2 id="${headingId}">${section.title}</h2>
-${renderWorkCards(section.works)}${more}
+${renderWorkCards(section.works, avatarOrigin)}${more}
 </section>`;
 }
 
@@ -159,12 +161,14 @@ ${renderWorkCards(section.works)}${more}
  * @param sections 並べる節（空の節は既に落としてある。`src/home-feed.ts`）
  * @param news お知らせの記事（新しい順。静的な定義なので D1 は読まない）
  * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
+ * @param avatarOrigin カードのアイコンを配るサンドボックス用ホストのオリジン（#380）
  * @returns HTML
  */
 function renderHomePage(
   sections: readonly HomeSection[],
   news: readonly NewsArticle[],
   viewer: SiteViewer,
+  avatarOrigin: string | null,
 ): string {
   return `${siteHead({
     title: 'Game Forge',
@@ -175,7 +179,7 @@ function renderHomePage(
 <h1>Game Forge</h1>
 <p>プロンプト 1 行から、ブラウザで遊べる 2D ゲームが生まれます。
    気に入った作品は<strong>改造（フォーク）</strong>して、自分の 1 本として公開できます。</p>
-${sections.map(renderSection).join('\n')}
+${sections.map((section) => renderSection(section, avatarOrigin)).join('\n')}
 ${renderHomeNewsSection(news)}
 
 <h2>いまの状態</h2>
@@ -261,7 +265,15 @@ async function showHome(request: Request, env: Env): Promise<Response> {
   // **キャッシュに載るのはこの下で引く行だけ**である（`src/list-cache.ts`）——
   // ヘッダが出し分かる以上、HTML を共有キャッシュへ載せてはいけない（2.3.3 の条件 3）。
   const viewer = await resolveSiteViewer(request, env);
-  return html(renderHomePage(homeSections(await homeFeed(env)), NEWS_ARTICLES, viewer));
+  return html(
+    renderHomePage(
+      homeSections(await homeFeed(env)),
+      NEWS_ARTICLES,
+      viewer,
+      // カードの作者のアイコン（#380）。**本文はログイン状態で変わらない**（オリジンは宣言と要求だけで決まる）。
+      sandboxOriginOf(request, env.SANDBOX_HOST),
+    ),
+  );
 }
 
 /**

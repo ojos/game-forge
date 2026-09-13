@@ -109,6 +109,9 @@ export default defineConfig({
      *
      * 既定の除外を捨てないよう defaultExclude を展開してから足す。
      */
-    exclude: [...defaultExclude, '**/.claude/worktrees/**'],
+    //
+    // **`lambda/` も外す**（#380）。中身は AWS Lambda（Node）のコードとそのテストで、sharp（ネイティブの
+    // ライブラリ）を import するので workerd では動かない。`scripts/acceptance.sh` が `node --test` で回す。
+    exclude: [...defaultExclude, '**/.claude/worktrees/**', 'lambda/**'],
   },
 });

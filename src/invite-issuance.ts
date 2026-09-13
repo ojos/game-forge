@@ -37,7 +37,7 @@ import { inviteQuotaHalted } from './reports.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, json } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { escapeHtml, siteHead, siteViewerAt } from './html.js';
+import { escapeHtml, headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { HOME_PATH } from './home.js';
 import { INVITES_PATH, SIGNUP_PATH } from './paths.js';
@@ -212,6 +212,7 @@ function balanceLine(balance: InviteBalance): string {
  * @param message 画面上部に出す文言（無ければ null）
  * @param halt 発行を止めている理由（無ければ null）
  * @param nowSeconds 現在時刻（UNIX 秒）
+ * @param headerAvatar ヘッダのアバターの画像の URL（#380）
  * @returns HTML
  */
 function invitePage(
@@ -219,6 +220,7 @@ function invitePage(
   message: string | null,
   halt: IssuanceHalt | null,
   nowSeconds: number,
+  headerAvatar: string | null,
 ): string {
   // 文言は上の対応表から選んだ固定文字列だが、`escapeHtml` を通しておく
   // （`src/signup.ts` と同じ理由。引数の出どころが変わっても安全側が既定になる）。
@@ -253,7 +255,7 @@ ${invites
 </ul>`;
 
   // **ログイン済みとして組む**（`src/my-works.ts` と同じ扱い。2.3.7 / #331）。
-  return `${siteHead({ title: '招待を発行する', viewer: siteViewerAt(INVITES_PATH, true) })}
+  return `${siteHead({ title: '招待を発行する', viewer: siteViewerAt(INVITES_PATH, true, headerAvatar) })}
 <h1>招待を発行する</h1>
 ${error}
 ${balanceLine(balance)}
@@ -336,7 +338,10 @@ const showInvitePage: RouteHandler = async (request, env) => {
   const message = reason === null || reason === halt ? null : reasonMessage(reason);
   // 失敗の後始末で開かれた画面には、失敗のステータスを付ける（`src/signup.ts` の
   // `GET /signup?reason=` と同じ扱い）。成功したかのようにログへ残さない。
-  return html(invitePage(invites, message, halt, nowSeconds()), reason === null ? 200 : 400);
+  return html(
+    invitePage(invites, message, halt, nowSeconds(), headerAvatarUrl(request, env, session.userId)),
+    reason === null ? 200 : 400,
+  );
 };
 
 /**

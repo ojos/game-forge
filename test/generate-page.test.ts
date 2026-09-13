@@ -871,7 +871,7 @@ describe('残枠と停止状態の常時表示（acceptance 1 / 4.4 / #24）', (
     const rendered = STATES.map(
       (state) =>
         `## ${state.label}\n${summarize(
-          renderGeneratePage(state.signedIn, { availability: state.availability }),
+          renderGeneratePage(state.signedIn, { availability: state.availability, headerAvatar: null }),
         )}`,
     ).join('\n\n');
     expect(rendered).toMatchInlineSnapshot(`

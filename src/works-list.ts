@@ -78,6 +78,7 @@ import { GENERATE_PAGE_PATH } from './paths.js';
 import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './works-paths.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
+import { sandboxOriginOf } from './avatar-paths.js';
 import { renderWorkCards } from './work-card.js';
 import { WORK_TAGS, WORK_TAG_FIELD } from './work-tags.js';
 import type { WorkTagId } from './work-tags.js';
@@ -221,6 +222,13 @@ function queryOf(search: WorkSearch | undefined): string | null {
 export interface WorksListView {
   /** 並べる作品（既に {@link WORKS_PER_PAGE} 件へ切ってある）。 */
   readonly works: readonly PublicWork[];
+  /**
+   * カードの作者のアイコンを配るサンドボックス用ホストのオリジン（#380。無ければ画像を出さない）。
+   *
+   * **省略可にする**（`tag` / `search` と同じ。描画を直接呼ぶテストが、アイコンに関係しない検査で
+   * 値を用意しなくて済む）。
+   */
+  readonly avatarOrigin?: string | null;
   /** 並べ替え軸。 */
   readonly sort: PublicWorkSort;
   /** 頁番号（1 始まり）。 */
@@ -416,7 +424,7 @@ ${clear}`;
  * @returns HTML
  */
 export function renderWorksListPage(view: WorksListView, viewer: SiteViewer): string {
-  const cards = renderWorkCards(view.works);
+  const cards = renderWorkCards(view.works, view.avatarOrigin ?? null);
   const body = cards === '' ? renderEmpty(view) : cards;
   const tag = view.tag ?? null;
   const tagLabel = WORK_TAGS.find((entry) => entry.id === tag)?.label ?? null;
@@ -541,6 +549,7 @@ async function showWorksList(request: Request, env: Env): Promise<Response> {
         hasNext: fetched.length > WORKS_PER_PAGE && page < MAX_PAGE,
         tag,
         search,
+        avatarOrigin: sandboxOriginOf(request, env.SANDBOX_HOST),
       },
       // **ヘッダだけが出し分かる**（2.3.7 / #331）。**鍵に混ぜない**——上のキャッシュに
       // 載るのは D1 から引いた行だけで、HTML はこのリクエストの状態で毎回組む

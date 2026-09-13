@@ -273,9 +273,9 @@ describe('表示名は数を足したあともエスケープされる（5.9）'
     const cards = renderWorkCards([
       { ...baseWork, id: '00000000-0000-4000-8000-000000000001', likeCount: 1 },
       { ...baseWork, id: '00000000-0000-4000-8000-000000000002', likeCount: 0 },
-    ]);
+    ], null);
     expect(cards.match(/いいね /gu) ?? []).toHaveLength(1);
-    expect(renderWorkCards([])).toBe('');
+    expect(renderWorkCards([], null)).toBe('');
   });
 });
 

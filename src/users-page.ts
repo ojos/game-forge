@@ -114,7 +114,8 @@ import { renderAuthorProfile } from './author-profile.js';
 import type { PublicWork } from './games.js';
 import { PUBLISHED_STATUS } from './games.js';
 import type { SiteViewer } from './html.js';
-import { escapeHtml, resolveSiteViewer, siteHead } from './html.js';
+import { avatarUrl, sandboxOriginOf } from './avatar-paths.js';
+import { avatarImage, escapeHtml, resolveSiteViewer, siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import { cachedRows, listCacheKey } from './list-cache.js';
 import { reviewVisibleSql } from './reports.js';
@@ -266,6 +267,15 @@ export interface AuthorPageView {
   readonly hasNext: boolean;
   /** 自己紹介と外部リンク（#379。描画は `src/author-profile.ts`。無ければ出さない）。 */
   readonly profile?: AuthorProfileView;
+  /**
+   * 作者のアイコンの URL（版つき。設定していなければ null。#380）。**見出しの直前に出す。**
+   *
+   * **省略可にする**（`profile` と同じ。描画を直接呼ぶテストが、アイコンに関係しない検査で値を
+   * 用意しなくて済む）。
+   */
+  readonly avatarUrl?: string | null;
+  /** カードのアイコンの URL を組み立てるサンドボックス用ホストのオリジン（#380。無ければカードに画像を出さない）。 */
+  readonly avatarOrigin?: string | null;
 }
 
 /** 作品が 1 件も無いときの文言。 */
@@ -348,7 +358,7 @@ function renderPager(view: AuthorPageView): string {
  */
 export function renderAuthorPage(view: AuthorPageView, viewer: SiteViewer): string {
   const name = escapeHtml(view.displayName);
-  const cards = renderWorkCards(view.works);
+  const cards = renderWorkCards(view.works, view.avatarOrigin ?? null);
   // **空のときに「この作者の作品」の見出しだけを残さない**（`src/home.ts` の規律。
   // 出来ていないものを出来ているように見せない）。
   const body = cards === '' ? `<p>${NO_WORKS_NOTICE}</p>` : cards;
@@ -359,13 +369,30 @@ export function renderAuthorPage(view: AuthorPageView, viewer: SiteViewer): stri
     extraHead:
       '\n<meta name="description" content="Game Forge の作者ページ。この作者が公開したブラウザ2Dゲームが並びます。">',
   })}
-<h1>${name}</h1>
+${authorAvatar(view.avatarUrl ?? null)}<h1>${name}</h1>
 ${likesLine(view.likesReceived)}
 ${renderAuthorProfile(view.profile)}
 ${body}
 ${renderPager(view)}
 <p class="gf-author-back"><a href="${PUBLIC_WORKS_PATH}">ほかの作品をさがす</a></p>
 ${siteFooter()}`;
+}
+
+/**
+ * 見出しの直前に出す作者のアイコン（#380）。
+ *
+ * **`<h1>` の中に入れない**——見出しの文字（作者名）を、画像の有無で変えない（`<h1>` の文字を
+ * 照合する検査と、読み上げの見出しの一覧をそのままにする）。**設定していなければ何も出さない**
+ * （既定の図形を全作者に並べない。見た目は #433 の規約が決まるまで、既存のアバターの寸法のまま）。
+ *
+ * @param url アイコンの URL（無ければ null）
+ * @returns HTML（無ければ空文字）
+ */
+function authorAvatar(url: string | null): string {
+  if (url === null) {
+    return '';
+  }
+  return `<p class="gf-author-avatar"><span class="gf-avatar" aria-hidden="true">${avatarImage(url)}</span></p>\n`;
 }
 
 /**
@@ -457,9 +484,18 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
   }
 
   // 自己紹介と外部リンク（#379）も同じ 1 行から引く（キャッシュに載せない理由は表示名と同じ）。
-  const user = await env.DB.prepare('select display_name, bio, profile_links from users where id = ?')
+  // アイコン（#380）も同じ 1 行から引く。**版は `avatar_sha256` が無ければ使わない**（外した後も進む）。
+  const user = await env.DB.prepare(
+    'select display_name, bio, profile_links, avatar_sha256, avatar_set_at from users where id = ?',
+  )
     .bind(userId)
-    .first<{ display_name: string | null; bio: string | null; profile_links: string | null }>();
+    .first<{
+      display_name: string | null;
+      bio: string | null;
+      profile_links: string | null;
+      avatar_sha256: string | null;
+      avatar_set_at: number | null;
+    }>();
   if (user === null) {
     return notFound(viewer);
   }
@@ -522,6 +558,8 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
   // 1 つの名前について 2 つのことを言う**（PR #350 の Copilot code review の指摘。
   // 空の表示名で、見出しは既定値・カードは空文字のリンクになっていた）。
   const name = displayNameOf(user.display_name);
+  const avatarVersion = user.avatar_sha256 === null ? null : user.avatar_set_at;
+  const avatarOrigin = sandboxOriginOf(request, env.SANDBOX_HOST);
   return html(
     renderAuthorPage(
       {
@@ -533,11 +571,18 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
         // **引けなければ null を渡す。** カードは自分の既定値（`UNKNOWN_AUTHOR`）へ倒し、
         // **リンクにもしない**（`src/work-card.ts` の `cardAuthorId` が `authorName` が
         // null の行をリンクにしない）。空文字がリンクになる形を作らない。
-        works: works.slice(0, WORKS_PER_PAGE).map((work) => ({ ...work, authorName: name })),
+        //
+        // **アイコンの版も同じく毎回差し替える**（#380。キャッシュの 60 秒の間に差し替えた画像を
+        // 古い版で出さない）。
+        works: works
+          .slice(0, WORKS_PER_PAGE)
+          .map((work) => ({ ...work, authorName: name, authorAvatarSetAt: avatarVersion })),
         likesReceived: data.likesReceived ?? 0,
         page,
         hasNext: works.length > WORKS_PER_PAGE && page < MAX_PAGE,
         profile: { bio: user.bio, links: user.profile_links },
+        avatarUrl: avatarVersion === null ? null : avatarUrl(avatarOrigin, userId, avatarVersion),
+        avatarOrigin,
       },
       viewer,
     ),

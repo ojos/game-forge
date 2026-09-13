@@ -33,10 +33,10 @@ const SECRET = 'test-secret-value-for-site-viewer-checks-1';
 const REQUEST_PATH = '/terms';
 
 /** 未ログインとして解決されたときの状態。 */
-const SIGNED_OUT = siteViewerAt(REQUEST_PATH, false);
+const SIGNED_OUT = siteViewerAt(REQUEST_PATH, false, null);
 
 /** ログイン済みとして解決されたときの状態。 */
-const SIGNED_IN = siteViewerAt(REQUEST_PATH, true);
+const SIGNED_IN = siteViewerAt(REQUEST_PATH, true, null);
 
 /**
  * 有効なセッション cookie を作る。
@@ -184,8 +184,8 @@ function accountMenuOf(html: string): string | null {
 }
 
 describe('アカウントのメニュー（2.3.7 v1.57 / #372）', () => {
-  const signedIn = siteHead({ title: 'x', viewer: siteViewerAt('/terms', true) });
-  const signedOut = siteHead({ title: 'x', viewer: siteViewerAt('/terms', false) });
+  const signedIn = siteHead({ title: 'x', viewer: siteViewerAt('/terms', true, null) });
+  const signedOut = siteHead({ title: 'x', viewer: siteViewerAt('/terms', false, null) });
 
   it('ログイン済みのヘッダは、アバターのメニューに 4 つを収める', () => {
     const menu = accountMenuOf(signedIn);
@@ -261,7 +261,7 @@ describe('パンくず（2.3.10 / #372）', () => {
 
   it('トップには出さない', () => {
     for (const signedIn of [true, false]) {
-      expect(breadcrumbOf(siteHead({ title: 'Game Forge', viewer: siteViewerAt(HOME_PATH, signedIn) }))).toBeNull();
+      expect(breadcrumbOf(siteHead({ title: 'Game Forge', viewer: siteViewerAt(HOME_PATH, signedIn, null) }))).toBeNull();
     }
   });
 
@@ -270,14 +270,14 @@ describe('パンくず（2.3.10 / #372）', () => {
   });
 
   it('ヘッダの直後に出る（本文より前）', () => {
-    const head = siteHead({ title: '登録情報 - Game Forge', viewer: siteViewerAt(ACCOUNT_PATH, true) });
+    const head = siteHead({ title: '登録情報 - Game Forge', viewer: siteViewerAt(ACCOUNT_PATH, true, null) });
     expect(head.indexOf('<nav class="gf-breadcrumb"')).toBeGreaterThan(head.indexOf('</header>'));
     expect(head.trimEnd().endsWith('</nav>')).toBe(true);
   });
 
   it('階層の無い画面は「トップ › いまの画面」になり、末尾はリンクにしない', () => {
     const crumb = breadcrumbOf(
-      siteHead({ title: '登録情報 - Game Forge', viewer: siteViewerAt(ACCOUNT_PATH, true) }),
+      siteHead({ title: '登録情報 - Game Forge', viewer: siteViewerAt(ACCOUNT_PATH, true, null) }),
     )!;
     expect(crumb).toContain('aria-label="パンくずリスト"');
     const items = crumb.match(/<li>[\s\S]*?<\/li>/gu) ?? [];
@@ -289,7 +289,7 @@ describe('パンくず（2.3.10 / #372）', () => {
 
   it('親は URL の末尾を削って導き、名前は表から引く（作品ページ）', () => {
     const crumb = breadcrumbOf(
-      siteHead({ title: '<b>作品</b> - Game Forge', viewer: siteViewerAt('/works/abc', false) }),
+      siteHead({ title: '<b>作品</b> - Game Forge', viewer: siteViewerAt('/works/abc', false, null) }),
     )!;
     const items = crumb.match(/<li>[\s\S]*?<\/li>/gu) ?? [];
     expect(items).toEqual([
@@ -302,7 +302,7 @@ describe('パンくず（2.3.10 / #372）', () => {
 
   it('画面でない親（表に無い親）は飛ばす（作者ページの `/users`）', () => {
     const crumb = breadcrumbOf(
-      siteHead({ title: '作者 の作品 - Game Forge', viewer: siteViewerAt('/users/u1', false) }),
+      siteHead({ title: '作者 の作品 - Game Forge', viewer: siteViewerAt('/users/u1', false, null) }),
     )!;
     expect(crumb.match(/<a /gu)).toHaveLength(1);
     expect(crumb).not.toContain('href="/users"');
@@ -310,7 +310,7 @@ describe('パンくず（2.3.10 / #372）', () => {
 
   it('要求のパスそのものは HTML へ出さない（親を引く鍵にしか使わない）', () => {
     const crumb = breadcrumbOf(
-      siteHead({ title: 'x', viewer: siteViewerAt('/works/"><script>', false) }),
+      siteHead({ title: 'x', viewer: siteViewerAt('/works/"><script>', false, null) }),
     )!;
     expect(crumb).not.toContain('<script>');
     expect(crumb).not.toContain('"><');

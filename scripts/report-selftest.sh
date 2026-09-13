@@ -35,6 +35,7 @@
 #   12. 削除申請の読み出しと、手順書の整合（#41）
 #   13. 参加者の人数と未使用の招待コードの読み出し（#397）
 #   14. 配備が、main の HEAD でなくなったコミットで走らないこと（#427）
+#   15. R2 のライフサイクルの判定が、宣言の外の削除規則を落とすこと（#380）
 #
 # **この一覧は下の節見出しの写しである。** 節を足したらここへも足すこと——足し忘れると、
 # 冒頭だけを読んだ人が「検査されていない」と思って同じ検査をもう一度書く
@@ -1289,6 +1290,71 @@ else
     fi
   fi
 fi
+
+# ── 15. R2 のライフサイクルの判定が、宣言の外の削除規則を落とすこと（#380）──────────
+#
+# **scripts/check-r2-lifecycle.sh は外部層の検査で、Cloudflare の API と apply 済みの state が無いと
+# 回らない。** #380 で判定が「削除規則が 1 つも無い」から「宣言した接頭辞に限った削除規則だけが在る」
+# へ変わったので、**判定だけを scripts/lib/r2-lifecycle-judge.sh へ出し、ここで作った JSON を食わせる。**
+# 本番の検査の側には、JSON を差し替える口を作っていない（あちらの冒頭）。
+#
+# 見るのは、**正しい宣言と実物が緑になること**と、**次の 6 つの壊し方がそれぞれ赤になること**である。
+#
+#   (a) 宣言の外の接頭辞（builds/）の削除規則を足した（ダッシュボードで足した形）
+#   (b) 宣言した規則の接頭辞を広げた（avatars/ … 現行のアイコンまで消える）
+#   (c) バケット全体（接頭辞が空）の削除規則を足した
+#   (d) 秒数を縮めた（/privacy の 30 日が嘘になる）
+#   (e) 宣言した削除規則が実物に無い（apply していない）
+#   (f) 宣言そのものが全体の削除規則を持つ
+echo "[selftest] R2 のライフサイクルの判定が、宣言の外の削除規則を落とすこと（#380）"
+
+# shellcheck source=scripts/lib/r2-lifecycle-judge.sh
+. "$HERE/lib/r2-lifecycle-judge.sh"
+
+r2_expected='{"rule_ids":["abort-incomplete-multipart-uploads","delete-replaced-avatars"],"abort_rule_id":"abort-incomplete-multipart-uploads","abort_max_age":604800,"delete_rules":[{"id":"delete-replaced-avatars","prefix":"avatars/history/","max_age_seconds":2592000}]}'
+r2_abort_rule='{"id":"abort-incomplete-multipart-uploads","enabled":true,"conditions":{"prefix":""},"abortMultipartUploadsTransition":{"condition":{"maxAge":604800,"type":"Age"}}}'
+r2_delete_rule='{"id":"delete-replaced-avatars","enabled":true,"conditions":{"prefix":"avatars/history/"},"deleteObjectsTransition":{"condition":{"maxAge":2592000,"type":"Age"}}}'
+
+##
+# 規則の配列から API の応答を作る。
+#
+# 引数: $@ = 規則の JSON
+##
+r2_response() {
+  local joined
+  joined="$(IFS=,; printf '%s' "$*")"
+  printf '{"success":true,"result":{"rules":[%s]}}' "$joined"
+}
+
+##
+# 判定の終了コードを見る。
+#
+# 引数: $1 = 説明 / $2 = 期待する終了コード（0 か 1） / $3 = 期待値の JSON / $4 = 応答の JSON
+##
+expect_judge() {
+  local rc=0
+  r2_lifecycle_judge "$3" "$4" >/dev/null 2>&1 || rc=$?
+  expect_eq "$1" "$2" "$rc"
+}
+
+expect_judge "正しい宣言と実物は緑" 0 "$r2_expected" "$(r2_response "$r2_abort_rule" "$r2_delete_rule")"
+expect_judge "(a) 宣言の外の接頭辞（builds/）の削除規則は赤" 1 \
+  "$(jq -c '.rule_ids += ["x"]' <<<"$r2_expected")" \
+  "$(r2_response "$r2_abort_rule" "$r2_delete_rule" '{"id":"x","enabled":true,"conditions":{"prefix":"builds/"},"deleteObjectsTransition":{"condition":{"maxAge":2592000,"type":"Age"}}}')"
+expect_judge "(b) 宣言した規則の接頭辞を広げた（avatars/）ら赤" 1 "$r2_expected" \
+  "$(r2_response "$r2_abort_rule" "$(jq -c '.conditions.prefix = "avatars/"' <<<"$r2_delete_rule")")"
+expect_judge "(c) 打ち切りの規則（接頭辞が空）に削除を足したら赤" 1 "$r2_expected" \
+  "$(r2_response "$(jq -c '.deleteObjectsTransition = {"condition":{"maxAge":2592000,"type":"Age"}}' <<<"$r2_abort_rule")" "$r2_delete_rule")"
+expect_judge "(d) 秒数を縮めたら赤" 1 "$r2_expected" \
+  "$(r2_response "$r2_abort_rule" "$(jq -c '.deleteObjectsTransition.condition.maxAge = 86400' <<<"$r2_delete_rule")")"
+expect_judge "(e) 宣言した削除規則が実物に無ければ赤" 1 "$r2_expected" "$(r2_response "$r2_abort_rule")"
+expect_judge "(f) 宣言が全体の削除規則を持てば、実物と一致していても赤" 1 \
+  "$(jq -c '.delete_rules[0].prefix = ""' <<<"$r2_expected")" \
+  "$(r2_response "$r2_abort_rule" "$(jq -c '.conditions.prefix = ""' <<<"$r2_delete_rule")")"
+# **id の集合は宣言と揃えておく**（id の不一致で赤になり、綴りの検査が空振りしても緑に見えないように）。
+expect_judge "未知の綴りの削除（deleteMarkerTransition）は赤" 1 "$(jq -c '.rule_ids += ["y"]' <<<"$r2_expected")" \
+  "$(r2_response "$r2_abort_rule" "$r2_delete_rule" '{"id":"y","enabled":true,"conditions":{"prefix":"ogp/"},"deleteMarkerTransition":{"condition":{"maxAge":1,"type":"Age"}}}')"
+
 
 if (( failed )); then
   echo "REPORT_SELFTEST_FAIL"

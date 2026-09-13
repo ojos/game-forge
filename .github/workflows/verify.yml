@@ -235,9 +235,18 @@ jobs:
     # 戻る**ことがある。
     #
     # 固定の鍵にすると、実行中の 1 本が終わるまで後続は待つ。待っているあいだに
-    # さらに新しい実行が来ると、GitHub は**待機中の古い方を取り消す**ため、最後に
-    # 残るのは常に最新のコミットになる。cancel-in-progress: false は、走り出した
-    # 配備を途中で切らないためである（wrangler の途中終了は成果が中途半端になる）。
+    # さらに新しい実行が来ると、GitHub は**待機中の古い方を取り消す**。cancel-in-progress:
+    # false は、走り出した配備を途中で切らないためである（wrangler の途中終了は成果が
+    # 中途半端になる）。
+    #
+    # **ただし、これだけでは「最後に残るのは常に最新のコミット」にならない**（#427）。
+    # このジョブが group に入る順は、コミットの順ではなく**前段の verify が終わった順**である。
+    # 2026-09-13、#426（ad1da2b）と #425（8241cfc）が 6 秒差でマージされ、**8241cfc の配備が
+    # 終わった後に ad1da2b の配備が group へ入った**——待機が重ならないので取り消されず、
+    # 古いコミットが後から走った（likes Worker の段で偶然落ち、Pages は上書きされなかった）。
+    # **そこで、下の最初の段「このコミットがいまも main の HEAD か」で、もう HEAD でなければ
+    # 以降の段をすべて飛ばす。** 判定と配備が同じ group の中にあるので、判定の後に入った
+    # マージの配備は、この配備が終わるまで待つ。
     concurrency:
       group: deploy-production
       cancel-in-progress: false
@@ -251,7 +260,39 @@ jobs:
         with:
           fetch-depth: 2
 
+      # ── このコミットがいまも main の HEAD か（#427）──────────────────────────
+      #
+      # **もう HEAD でなければ、以降の段をすべて飛ばして成功で終える。** 新しいコミットの配備が
+      # このコミットの変更も含むので、古い方を配る理由は無い（上の concurrency の注記）。
+      #
+      # **以降のすべての段に `if: steps.head-gate.outputs.deploy == 'true'` を付ける。**
+      # Actions には「段からジョブを成功で終える」手段が無い。**付け忘れた段は古いコミットでも
+      # 走る**ので、`scripts/report-selftest.sh` の 14 節がこのジョブの段を読んで落とす。
+      #
+      # **判定できないとき（HEAD を取れない）は配らずに落とす。** 「HEAD である」に倒すと、
+      # GitHub の不調のたびにこの関門が黙って外れる。合図が無いときも落とす
+      # （下の「オーケストレータの束が変わったか」と同じ受け方）。
+      - name: このコミットがいまも main の HEAD か
+        id: head-gate
+        run: |
+          set -euo pipefail
+          if ! out="$(bash scripts/deploy-is-head.sh --remote origin --branch main)"; then
+            echo "::error::このコミットが main の HEAD かを判定できませんでした（判定スクリプトが失敗）。配りません。"
+            exit 1
+          fi
+          echo "$out"
+          if printf '%s\n' "$out" | grep -q '^DEPLOY_IS_HEAD$'; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$out" | grep -q '^DEPLOY_SUPERSEDED$'; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::このコミットはもう main の HEAD ではありません。新しいコミットの配備に任せ、配りません（#427）。"
+          else
+            echo "::error::このコミットが main の HEAD かを判定できませんでした（合図がありません）。配りません。"
+            exit 1
+          fi
+
       - name: Set up Node.js
+        if: steps.head-gate.outputs.deploy == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -260,13 +301,16 @@ jobs:
       # wrangler は devDependencies に固定されている（package.json）。npx が
       # レジストリから別の版を引かないよう、ここで入れたものを使う。
       # prepare（wrangler types）は Cloudflare の資格情報を要さない。
-      - run: npm ci
+      - name: npm ci
+        if: steps.head-gate.outputs.deploy == 'true'
+        run: npm ci
 
       # **未設定を skip にしない。** deploy-compiler.yml の VPS 側は「まだ存在しない
       # 相手」なので skip が正しいが、こちらは**すでに本番が動いている**。設定漏れを
       # skip にすると、#95 で起きたこと（マージしても本番が変わらないのに、どのゲートも
       # 緑）をそのまま作り直すことになる。落として気づけるようにする。
       - name: Secrets が揃っているか
+        if: steps.head-gate.outputs.deploy == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -293,6 +337,7 @@ jobs:
       # Worker を配れなくなる——外部の可用性を配備の前提条件へ持ち込まない
       # （.github/project-ai-rules.md「外部層を単一入口へ含めない理由」と同じ線）。
       - name: オーケストレータの束が変わったか
+        if: steps.head-gate.outputs.deploy == 'true'
         id: orchestrator-diff
         run: |
           set -euo pipefail
@@ -332,14 +377,14 @@ jobs:
           fi
 
       - name: AWS の読み取り権を得る（OIDC）
-        if: steps.orchestrator-diff.outputs.changed == 'true'
+        if: steps.head-gate.outputs.deploy == 'true' && steps.orchestrator-diff.outputs.changed == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ORCHESTRATOR_FRESHNESS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: オーケストレータが手元の束と一致すること
-        if: steps.orchestrator-diff.outputs.changed == 'true'
+        if: steps.head-gate.outputs.deploy == 'true' && steps.orchestrator-diff.outputs.changed == 'true'
         env:
           ORCHESTRATOR_FUNCTION_NAME: ${{ vars.ORCHESTRATOR_FUNCTION_NAME }}
         run: |
@@ -379,10 +424,11 @@ jobs:
       # **適用はしない。** 本番のスキーマ変更は利用者の端末に留める（`docs/handoff.md`）。
       # ここは止めるだけで、何を当てることになるのかを出力に並べる。
       #
-      # **常に見る**（束の関門と違って `if` を付けない）。判定は本番 D1 への
+      # **常に見る**（束の関門と違って差分の `if` を付けない。付けるのは #427 の HEAD の関門だけ）。判定は本番 D1 への
       # 読み取り 1 回で、マイグレーションを足したかどうかに関係なく**ずれは起こりうる**
       # ——過去の PR で当て忘れたものが残っていれば、今日の PR が踏む。
       - name: 未適用のマイグレーションが無いこと
+        if: steps.head-gate.outputs.deploy == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -410,12 +456,14 @@ jobs:
       #
       # **PR の実行では走らない**（このジョブ全体が push(main) だけ。上の `if`）。
       - name: Deploy likes Worker (game-forge-likes)
+        if: steps.head-gate.outputs.deploy == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bash scripts/deploy-likes.sh
 
       - name: Deploy to Cloudflare Pages
+        if: steps.head-gate.outputs.deploy == 'true'
         env:
           # wrangler がこの 2 つの名前を直接読む（.env と同じ名前・同じ値）。
           # 保管先が 2 か所になる理由は docs/pages-deploy.md に書いてある。

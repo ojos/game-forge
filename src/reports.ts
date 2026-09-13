@@ -32,11 +32,14 @@ export const REVIEW_QUEUED = 'queued' as const;
 /**
  * 見た結果、問題なし。露出を戻す。**再び閾値に達しても戻さない。**
  *
- * **例外が 1 つある（#366）。** 作者が題名を変えると `NULL` へ戻る
- * （`src/games.ts` の `renameGame`）——**審査で見たのは改名前の題名**であり、
- * 別の題名になった作品について「見た結果、問題なし」と言い続けることはできない。
- * **戻す先は `NULL` であって {@link REVIEW_QUEUED} ではない**（`queued` は新規露出を
- * 止める状態なので、善意の改名で作品がトップから消える）。
+ * **例外が 1 つある（#366 / #388）。** 作者が題名や説明を変えると解ける
+ * （`src/games.ts` の `renameGame` / `describeGame`）——**審査で見たのは変更前の題名・説明**
+ * であり、別の作品になったものについて「見た結果、問題なし」と言い続けることはできない。
+ * **戻す先は、通報が無ければ `NULL` であって {@link REVIEW_QUEUED} ではない**（`queued` は
+ * 新規露出を止める状態なので、善意の改名で作品がトップから消える）。**ただし
+ * {@link REVIEW_REPORTED_AFTER_CLEAR_SQL} に当たる（`cleared` にしたあとの通報が届いている）
+ * なら `queued` へ入る**（#404。`NULL` へ戻すとその通報が埋もれる。規則の全文は
+ * `src/games.ts` の `reviewStateAfterAuthorEditSql`）。
  *
  * **`cleared` のまま付いた通報は、状態を動かさない**（{@link recordReport} は `NULL` の
  * 作品しか `queued` へ上げない）。それを運営へ出すのは
@@ -109,11 +112,9 @@ export async function recordReport(
     return { ok: false, reason: 'reason-too-long' };
   }
 
-  const game = await env.DB.prepare(
-    `select author_id, ${REVIEW_STATE_COLUMN} as review_state from games where id = ?`,
-  )
+  const game = await env.DB.prepare('select author_id from games where id = ?')
     .bind(gameId)
-    .first<{ author_id: string; review_state: string | null }>();
+    .first<{ author_id: string }>();
   if (game === null) {
     return { ok: false, reason: 'game-not-found' };
   }
@@ -150,7 +151,15 @@ export async function recordReport(
   //
   // **条件付き UPDATE で入れる。** 先に読んでから書く形にすると、同時に 2 件の通報が
   // 来たときに 2 度入れうる（`games.status` の遷移が一貫して採っている形）。
-  if (reporters < REVIEW_THRESHOLD_REPORTERS || game.review_state !== null) {
+  //
+  // **冒頭で読んだ状態で諦めない**（#404）。読んだ時点で `cleared` でも、通報の insert までの
+  // 間に作者が改名・説明の変更をすると `NULL` へ戻る（`src/games.ts` の
+  // `reviewStateAfterAuthorEditSql`。その UPDATE はまだ届いていないこの通報を見られない）。
+  // 読んだ値で打ち切ると、**その通報は `NULL` の作品に付いたまま、どの一覧にも出ない**
+  // ——#404 が塞いだ埋もれ方が、競合の形で残る。判定は下の UPDATE の WHERE に任せる
+  // （`cleared` / `queued` の作品では 0 行で終わる。通報は例外的な出来事なので、主キーで
+  // 1 行を読む費用は事実上ゼロである）。
+  if (reporters < REVIEW_THRESHOLD_REPORTERS) {
     return { ok: true, outcome: { queued: false, reporters } };
   }
   const queued = await env.DB.prepare(
@@ -284,12 +293,17 @@ export const TITLE_CHANGES_TABLE = 'title_changes';
  * 綴りを 2 か所に置かない
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **借りる側が 2 つある。**
+ * **借りる側が 3 つある。**
  *
  *   - `scripts/report-queue.sh` … この定数を**ソースから取り出して** SQL へ差し込む
  *     （`REVIEW_QUEUED` を sed で取り出しているのと同じ規律。書き写すと、片方だけが
  *     古くなったときに**キューに入っているのに 0 件と報告する**）
  *   - admin の審査キュー画面（#367 / `src/admin/review.ts`） … この定数を直接
+ *   - 作者の改名・説明の変更（#404 / `src/games.ts` の `reviewStateAfterAuthorEditSql`）
+ *     … **この条件に当たる作品は、`NULL` ではなく `queued` へ入れる。** `NULL` へ戻すと
+ *     この条件（`cleared` を求める）から外れ、届いていた通報が埋もれるためである。
+ *     **条件を書き直さずにこの定数を使う**ので、キューの節に出る作品と、変更で
+ *     `queued` へ入る作品が同じ定義で決まる
  *
  * **1 行の文字列リテラルで書く。** 他の定数を差し込むテンプレートリテラルにすると、
  * シェル側が取り出せない（あちらに TypeScript の評価器は無い）。**そのぶん、綴りが
@@ -308,7 +322,8 @@ export const TITLE_CHANGES_TABLE = 'title_changes';
  * あちらは別名を引数で受けるが、こちらは**相関副問い合わせを含む**ので、綴りを可変に
  * すると文字列の組み立てが増える（そしてシェル側から取り出せなくなる）。**借りる側が
  * `games g` に合わせる。** admin の一覧（`src/admin/review.ts`）も
- * `scripts/report-queue.sh` も、既に `g` で書いている。
+ * `scripts/report-queue.sh` も、既に `g` で書いている。**UPDATE で使う側も
+ * `update games as g` と書く**（`src/games.ts` の `renameGame` / `describeGame`。#404）。
  *
  * **`reports` と `admin_actions` の別名（`r` / `a`）は副問い合わせの中で閉じている**
  * ので、外側の別名と衝突しない（外側が `r` を使っていても、内側の `r` が優先される

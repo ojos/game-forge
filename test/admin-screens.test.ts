@@ -14,7 +14,12 @@ import {
 import { ADMIN_LIST_LIMIT, listAdminActions } from '../src/admin/actions.js';
 import { ADMIN_OPEN_ROUTES, createAdminRoutes, handleAdminRequest } from '../src/admin/routes.js';
 import { BAN_NEXT_ACTIVE, BAN_NEXT_BANNED } from '../src/admin/users.js';
-import { DESCRIPTION_CHANGES_TABLE, PUBLISHED_STATUS, renameGame } from '../src/games.js';
+import {
+  DESCRIPTION_CHANGES_TABLE,
+  PUBLISHED_STATUS,
+  describeGame,
+  renameGame,
+} from '../src/games.js';
 import { ssrPagePaths } from '../src/page-paths.js';
 import {
   REVIEW_CLEARED,
@@ -610,6 +615,76 @@ describe('審査キューに「問題なしとしたあとに通報が付いた�
     expect(allIds.filter((id) => shown.includes(`value="${id}"`)).sort()).toEqual(
       [...expected].sort(),
     );
+  });
+
+  it('作者が題名や説明を変えると、この節から審査待ちの節へ移り、reviewAttentionSql の集合は変わらない（#404）', async () => {
+    // **#366 / #388 は変更で `cleared` を `NULL` へ戻し、この節の作品をどの節からも消していた**
+    // （届いていた通報が埋もれる）。#404 からは審査待ちの節へ移る。**スクリプトと画面が
+    // 同じ集合を返すことは、変更の前後の両方で見る。**
+    const renamed = await insertGame(REVIEW_CLEARED, '改名される作品');
+    const described = await insertGame(REVIEW_CLEARED, '説明が変わる作品');
+    for (const gameId of [renamed, described]) {
+      await insertClearedAction(gameId, 1_700_001_500);
+      await insertReport(gameId, 1_700_002_000);
+    }
+    // 通報が問題なしより前の作品は、変更で `NULL` へ戻り、どの節にも出ない（露出を止めない）。
+    const quiet = await insertGame(REVIEW_CLEARED, '見終えた作品');
+    await insertReport(quiet, 1_700_000_500);
+    await insertClearedAction(quiet, 1_700_001_500);
+
+    /**
+     * スクリプトと同じ条件の集合と、画面の審査待ち・この節に出た作品を読む。
+     *
+     * @returns 条件の集合と、画面の節ごとの作品
+     */
+    const snapshot = async (): Promise<{
+      attention: string[];
+      queued: string[];
+      reported: string[];
+      cleared: string[];
+    }> => {
+      const attention = await env.DB.prepare(
+        `select g.id from games g where ${reviewAttentionSql()} and g.status = ? order by g.id`,
+      )
+        .bind(PUBLISHED_STATUS)
+        .all<{ id: string }>();
+      const { body } = await open(ADMIN_HOME_PATH, adminCookie);
+      const ids = [renamed, described, quiet];
+      const inSection = (key: keyof typeof HEADINGS): string[] =>
+        ids.filter((id) => sectionOf(body, key).includes(`value="${id}"`)).sort();
+      return {
+        attention: attention.results.map((row) => row.id),
+        queued: inSection('queued'),
+        reported: inSection('reported'),
+        cleared: inSection('cleared'),
+      };
+    };
+
+    const before = await snapshot();
+    expect(before.reported).toEqual([renamed, described].sort());
+    expect(before.queued).toEqual([]);
+    expect(before.attention).toEqual([renamed, described].sort());
+
+    expect(await renameGame(env, renamed, users.author, '改名後の題名', 1_700_003_000)).toMatchObject({
+      ok: true,
+      changed: true,
+    });
+    expect(await describeGame(env, described, users.author, '書き足した説明', 1_700_003_000)).toMatchObject({
+      ok: true,
+      changed: true,
+    });
+    expect(await renameGame(env, quiet, users.author, '見終えた作品の新しい題名', 1_700_003_000)).toMatchObject({
+      ok: true,
+      changed: true,
+    });
+
+    const after = await snapshot();
+    expect(after.queued).toEqual([renamed, described].sort());
+    expect(after.reported).toEqual([]);
+    expect(after.cleared).toEqual([]);
+    expect(after.attention).toEqual(before.attention);
+    expect([...after.queued, ...after.reported].sort()).toEqual(after.attention);
+    expect(await reviewStateOf(quiet)).toBeNull();
   });
 
   it('この節も件数を固定する（2.3.3 の条件 1 と同じ考え方）', async () => {

@@ -452,46 +452,50 @@ bash scripts/report-queue.sh --remote --format json | jq -r '.rows[].game_id' | 
 追随の両方が、名前が実際に変わったときだけ 1 行積む。**
 
 ```
-Ⓘ main へマージする → deploy ジョブが「未適用のマイグレーションが無いこと」で止まる（Worker は配られない）
-Ⓙ main にしたプライマリツリーから 0030 を適用し、止まった deploy ジョブを再実行する
+Ⓘ PR のツリー（main を取り込み済み）から、マージの直前に 0030 を適用する（利用者の端末）
+Ⓙ main へマージする → deploy ジョブが関門を通り、配備される
 Ⓚ 配備を確かめたら、表示名の履歴の基準の時刻をその時刻へ進める
 Ⓛ 画面で 1 件確かめる
 ```
 
-**0028 / 0029 と同じ順である**（PR #413 の Copilot レビューで直した。はじめは「マージの直前に
-`origin/main` のツリーから当てる」と書いていたが、**マージ前の `origin/main` には `0030` が無く、
-その手順では表を作れない**）。
+**マージの前に適用する**（`.claude/skills/land/SKILL.md` の手順 5。`0026` の Ⓐ・`0027` の Ⓕ と同じ）。
+**当てる前にこの Worker を配ると、既存の利用者のログインが落ちる**（履歴の表が無いと
+`src/auth/google.ts` の `refreshExistingUser` の batch ごと失敗する）。deploy ジョブの関門
+（「未適用のマイグレーションが無いこと」）がそれを防ぐが、**関門は止めるだけで、適用はしない。**
 
-### Ⓘ マージする（deploy ジョブは関門で止まる）
+> **経緯（PR #413 のレビュー）。** はじめは「マージの直前に `origin/main` のツリーから当てる」と
+> 書いていたが、**マージ前の `origin/main` には `0030` が無く、その手順では表を作れない**（Copilot の
+> 指摘）。いったん「マージしてから main で当て、関門で止まった deploy ジョブを再実行する」へ
+> 書き換えたが、**それは land の手順 5（マージの前に適用を済ませる）と食い違っていた**ので、
+> 「**PR のツリーから、マージの直前に当てる**」へ直した。
 
-**マージすると、main の deploy ジョブは「未適用のマイグレーションが無いこと」の段で落ちる**
-（`.github/workflows/verify.yml` の `scripts/check-migrations-applied.sh --remote`）。**その段は Pages と
-likes Worker の配備より前にある**ので、**新しいコードは配られず、本番は壊れない**（古いコードのまま動く）。
-**これが正しい状態である**——赤くなった deploy ジョブを「壊れた」と読まないこと。
-
-### Ⓙ 0030 を適用し、deploy ジョブを再実行する
+### Ⓘ 0030 を適用する（マージの直前）
 
 ```bash
-# プライマリツリーを main にしてから（古いブランチで打つと未適用を見落とす。docs/handoff.md 1 章）
-git switch main && git pull --ff-only
+# PR のブランチを checkout したツリーで。main を取り込み済みであることを先に確かめる
+# （古いツリーで打つと未適用を見落とす。docs/handoff.md 1 章）
+git fetch origin main
+git merge-base --is-ancestor origin/main HEAD && echo UP_TO_DATE   # 出なければ main を取り込んでから
 set -a; source scripts/load-project-env.sh; set +a
 npx wrangler d1 migrations list DB --remote --env production    # 0030 が未適用として出る
 npx wrangler d1 migrations apply DB --remote --env production
 npx wrangler d1 execute DB --remote --env production \
   --command "select id, started_at from display_name_history_start;"   # 1 行、適用した時刻
-
-gh run list --workflow verify.yml --branch main --limit 3          # 止まった run の id を確かめる
-gh run rerun <run-id> --failed
 ```
 
-**適用してから再実行した deploy ジョブが Pages を配り終えるまでの間は、表示名の変更が記録されない**
+**適用してから、マージした deploy ジョブが Pages を配り終えるまでの間は、表示名の変更が記録されない**
 （古いコードが動いており、履歴を書かない）。**適用の時刻が「表示名の履歴を書き始めた時刻」として
 記録される**ので、その間に付いた通報のあとにその間に名前が変わると、いまの名前が通報の時点の名前として
-出てしまう。**適用したらすぐ再実行し、Ⓚ で詰める。**
+出てしまう。**当てたらすぐマージし、Ⓚ で詰める。**
 
-**逆（新しいコードが先に出る）は起きない**——関門がある限り、配備は必ず適用の後になる。**関門を
-迂回して先に配ると、既存の利用者のログインが落ちる**（履歴の表が無いと `src/auth/google.ts` の
-`refreshExistingUser` の batch ごと失敗する）。
+### Ⓙ マージする
+
+**適用が済んでいれば、deploy ジョブは関門を通り、そのまま配備される。**
+
+**先にマージしてしまった場合**（適用を忘れた）: deploy ジョブは関門で落ち、**新しいコードは配られない**
+（古いコードのまま動くので本番は壊れない。赤いジョブを「壊れた」と読まないこと）。main にした
+プライマリツリーから Ⓘ と同じ `migrations apply` を打ち、`gh run rerun <run-id> --failed` で止まった
+ジョブを再実行する。
 
 ### Ⓚ 基準の時刻を、配備を確かめた時刻へ進める
 
@@ -505,7 +509,7 @@ npx wrangler d1 execute DB --remote --env production \
 ```
 
 **進める向きは「記録がありません」を増やす側だけである**——誤った名前を出す側へは動かない。
-打ち忘れても壊れはしないが、Ⓙ の窓の分だけ上の誤りが残りうる。**戻す（小さくする）
+打ち忘れても壊れはしないが、Ⓘ から配備までの窓の分だけ上の誤りが残りうる。**戻す（小さくする）
 コマンドは打たないこと。**
 
 ### Ⓛ 画面で確かめる

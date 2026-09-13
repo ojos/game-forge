@@ -1475,6 +1475,34 @@ a.gf-card-author {
   font-weight: 700;
 }
 
+/*
+ * メール配信のタブの選択肢（#384。`src/account.ts` の `renderAccountMailPage`）。
+ *
+ * **枠を消す理由は `.gf-profile-links` と同じ**（390px の版面で中身を狭めない・`min-width: 0`）。
+ * **選択肢の `label` は太字にしない**——`@section forms` の `label` の既定（太字の見出し）は
+ * 入力欄の名前のためのもので、ここでは見出しの役を `legend` が持つ。
+ */
+.gf-mail-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.gf-mail-choice legend {
+  margin-bottom: var(--gf-gap-2);
+  padding: 0;
+  font-weight: 700;
+}
+
+.gf-mail-choice label {
+  margin: 0;
+  font-weight: 400;
+}
+
 /* ==========================================================================
    @section home — トップ（#329）
    ========================================================================== */

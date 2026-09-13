@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   DISPLAY_NAME_CHANGE_INTERVAL_SECONDS,
   DISPLAY_NAME_MAX_LENGTH,
+  FORK_NOTICE_UNMUTE_INTERVAL_SECONDS,
   changeDisplayName,
   createAccountRoutes,
   validateDisplayName,
@@ -11,10 +12,18 @@ import { DISPLAY_NAME_CHANGES_TABLE } from '../src/display-name-changes.js';
 import {
   ACCOUNT_DETAILS_PATH,
   ACCOUNT_DISPLAY_NAME_PATH,
+  ACCOUNT_MAIL_API_PATH,
+  ACCOUNT_MAIL_PATH,
   ACCOUNT_PATH,
   ACCOUNT_TABS,
   DISPLAY_NAME_FIELD,
+  FORK_NOTICE_FIELD,
+  FORK_NOTICE_MUTE,
+  FORK_NOTICE_RECEIVE,
 } from '../src/account-paths.js';
+import { notifyForkPublished } from '../src/mail/fork-notice.js';
+import { MAIL_KINDS, unmutableUserMailKinds } from '../src/mail/kinds.js';
+import { sendMail } from '../src/mail/resend.js';
 import { ACCOUNT_PROFILE_PATH } from '../src/profile-paths.js';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { PUBLISHED_STATUS } from '../src/games.js';
@@ -228,6 +237,63 @@ async function openDetails(cookie: string | null, query = ''): Promise<Response>
   );
 }
 
+/**
+ * 登録情報の画面のメール配信のタブ（`/account/mail`。#384）を開く。
+ *
+ * @param cookie `Cookie` ヘッダ（未ログインなら null）
+ * @param query query 文字列（`?` を含む。省略可）
+ * @returns レスポンス
+ */
+async function openMail(cookie: string | null, query = ''): Promise<Response> {
+  return await handleAppRequest(
+    new Request(`${APP_ORIGIN}${ACCOUNT_MAIL_PATH}${query}`, {
+      headers: cookie === null ? {} : { cookie },
+    }),
+    testEnv(),
+  );
+}
+
+/**
+ * メール配信の設定を送る。
+ *
+ * @param routes 経路表
+ * @param cookie `Cookie` ヘッダ（未ログインなら null）
+ * @param value 送る値（項目ごと省くなら null）
+ * @param contentType `Content-Type`
+ * @returns レスポンス
+ */
+async function postMail(
+  routes: readonly Route[],
+  cookie: string | null,
+  value: string | null,
+  contentType = 'application/x-www-form-urlencoded',
+): Promise<Response> {
+  const body = value === null ? '' : new URLSearchParams({ [FORK_NOTICE_FIELD]: value }).toString();
+  const headers: Record<string, string> = { 'content-type': contentType, accept: 'text/html' };
+  if (cookie !== null) {
+    headers['cookie'] = cookie;
+  }
+  return await dispatch(
+    routes,
+    new Request(`${APP_ORIGIN}${ACCOUNT_MAIL_API_PATH}`, { method: 'POST', headers, body }),
+    testEnv(),
+  );
+}
+
+/**
+ * `users.fork_notice_muted_at` を引く。
+ *
+ * @param userId 利用者の id
+ * @returns 止めた時刻（受け取っているなら null）
+ */
+async function mutedAtOf(userId: string): Promise<number | null> {
+  const row = await env.DB.prepare('select fork_notice_muted_at from users where id = ?')
+    .bind(userId)
+    .first<{ fork_notice_muted_at: number | null }>();
+  expect(row, `${userId} の行`).not.toBeNull();
+  return row!.fork_notice_muted_at;
+}
+
 describe('経路の登録（#341）', () => {
   it('画面と変更の口がアプリの経路表に載っている', () => {
     const registered = createAppRoutes(testEnv()).map((route) => `${route.method} ${route.path}`);
@@ -235,6 +301,8 @@ describe('経路の登録（#341）', () => {
     expect(registered).toContain(`GET ${ACCOUNT_DETAILS_PATH}`);
     expect(registered).toContain(`POST ${ACCOUNT_DISPLAY_NAME_PATH}`);
     expect(registered).toContain(`POST ${ACCOUNT_PROFILE_PATH}`);
+    expect(registered).toContain(`GET ${ACCOUNT_MAIL_PATH}`);
+    expect(registered).toContain(`POST ${ACCOUNT_MAIL_API_PATH}`);
     expect(findDuplicateRoutes(createAppRoutes(testEnv()))).toEqual([]);
   });
 
@@ -246,13 +314,15 @@ describe('経路の登録（#341）', () => {
     expect(paths).toContain(ACCOUNT_PATH);
     expect(paths).not.toContain(ACCOUNT_DISPLAY_NAME_PATH);
     expect(paths).not.toContain(ACCOUNT_PROFILE_PATH);
+    expect(paths).not.toContain(ACCOUNT_MAIL_API_PATH);
   });
 
   it('タブの行き先はすべて経路表の画面である（タブを足した人が経路を書き忘れると赤くなる。#379）', () => {
     // **タブはパスで分ける**（`src/account-paths.ts`）。画面であれば外枠の検査と幅の検査に
     // 自動で乗る。**#384 がメール配信のタブを足すときも、ここが両方の追随を見る。**
     const paths = ssrPagePaths(createAppRoutes(testEnv()));
-    expect(ACCOUNT_TABS.length).toBeGreaterThanOrEqual(2);
+    expect(ACCOUNT_TABS.length).toBeGreaterThanOrEqual(3);
+    expect(ACCOUNT_TABS.map((tab) => tab.path)).toContain(ACCOUNT_MAIL_PATH);
     for (const tab of ACCOUNT_TABS) {
       expect(paths, `${tab.path} が経路表の画面に無い`).toContain(tab.path);
     }
@@ -267,6 +337,7 @@ describe('登録情報のタブ（#379）', () => {
     for (const [path, response] of [
       [ACCOUNT_PATH, await openAccount(cookie)],
       [ACCOUNT_DETAILS_PATH, await openDetails(cookie)],
+      [ACCOUNT_MAIL_PATH, await openMail(cookie)],
     ] as const) {
       expect(response.status, path).toBe(200);
       const body = pageBodyOf(await response.text());
@@ -804,5 +875,216 @@ describe('運営フラグ（#334）との組み合わせ', () => {
       const body = await publishedPageOf(userId);
       expect(body.match(BADGE_ELEMENT), name).toBeNull();
     }
+  });
+});
+
+describe('メール配信のタブ（GET /account/mail。#384 / 5.11）', () => {
+  it('未ログインならログインへ送る', async () => {
+    const response = await openMail(null);
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(LOGIN_PATH);
+  });
+
+  it('既定は「受け取る」が選ばれている', async () => {
+    const userId = await seedUser();
+    const response = await openMail(await cookieFor(userId));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    const body = pageBodyOf(await response.text());
+    expect(body).toContain(`action="${ACCOUNT_MAIL_API_PATH}"`);
+    expect(body).toContain(`name="${FORK_NOTICE_FIELD}" value="${FORK_NOTICE_RECEIVE}" checked`);
+    expect(body).not.toContain(`value="${FORK_NOTICE_MUTE}" checked`);
+  });
+
+  it('受け取らない設定なら「受け取らない」が選ばれている', async () => {
+    const userId = await seedUser();
+    await env.DB.prepare('update users set fork_notice_muted_at = ? where id = ?').bind(NOW, userId).run();
+    const body = pageBodyOf(await (await openMail(await cookieFor(userId))).text());
+    expect(body).toContain(`value="${FORK_NOTICE_MUTE}" checked`);
+    expect(body).not.toContain(`value="${FORK_NOTICE_RECEIVE}" checked`);
+  });
+
+  it('止められない種別を、登録簿のとおりに設定の外として並べる（書き写さない）', async () => {
+    const userId = await seedUser();
+    const body = pageBodyOf(await (await openMail(await cookieFor(userId))).text());
+    const unmutable = body.slice(body.indexOf('設定にかかわらず送るメール'));
+    expect(unmutable, '止められない種別の節が無い').not.toBe('');
+    const kinds = unmutableUserMailKinds();
+    // 5.11 の「アカウントのセキュリティに関わる通知、重要な仕様変更の告知」と、利用者の決定の生成の完了。
+    expect(kinds.length).toBeGreaterThanOrEqual(3);
+    for (const kind of kinds) {
+      expect(unmutable, kind.label).toContain(`<strong>${kind.name}</strong>: ${kind.note}`);
+    }
+    // **止められる種別を、止められない側に並べない。**
+    for (const kind of MAIL_KINDS.filter((entry) => entry.mutable)) {
+      expect(unmutable, kind.label).not.toContain(kind.name);
+    }
+    // **運用者宛ての種別は利用者の画面に出さない。**
+    for (const kind of MAIL_KINDS.filter((entry) => entry.audience === 'operator')) {
+      expect(body, kind.label).not.toContain(kind.name);
+    }
+  });
+
+  it('断った理由を固定の文言で 400 で出し、query の値そのものは出さない', async () => {
+    const userId = await seedUser();
+    const cookie = await cookieFor(userId);
+    const tooSoon = await openMail(cookie, '?reason=too-soon');
+    expect(tooSoon.status).toBe(400);
+    expect(await tooSoon.text()).toContain(`${FORK_NOTICE_UNMUTE_INTERVAL_SECONDS} 秒のあいだは`);
+
+    const injected = await openMail(cookie, `?reason=${encodeURIComponent('<b>x</b>')}`);
+    expect(injected.status).toBe(400);
+    const body = await injected.text();
+    expect(body).not.toContain('<b>x</b>');
+    expect(body).toContain('メール配信の設定を保存できませんでした。');
+
+    const saved = await openMail(cookie, '?saved=1');
+    expect(saved.status).toBe(200);
+    expect(await saved.text()).toContain('メール配信の設定を保存しました。');
+  });
+});
+
+describe('メール配信の設定の保存（POST /api/account/mail。#384 / 5.11）', () => {
+  it('受け取らない設定にして /account/mail へ戻し、止めた時刻を書く', async () => {
+    const userId = await seedUser();
+    const routes = createAccountRoutes({ now: () => NOW });
+    const response = await postMail(routes, await cookieFor(userId), FORK_NOTICE_MUTE);
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(`${ACCOUNT_MAIL_PATH}?saved=1`);
+    expect(await mutedAtOf(userId)).toBe(NOW);
+    expect(await updatesOf(userId)).toBe(1);
+  });
+
+  it('同じ設定の入れ直しは書き込まない（止める側も、受け取る側も）', async () => {
+    const userId = await seedUser();
+    const cookie = await cookieFor(userId);
+    let now = NOW;
+    const routes = createAccountRoutes({ now: () => now });
+
+    // 受け取っている人が「受け取る」を送る。
+    expect((await postMail(routes, cookie, FORK_NOTICE_RECEIVE)).headers.get('location')).toBe(
+      `${ACCOUNT_MAIL_PATH}?saved=1`,
+    );
+    expect(await updatesOf(userId)).toBe(0);
+
+    // 止めてから、もう一度「受け取らない」を送る。**止めた時刻を上書きしない**——上書きすると、
+    // 受け取る設定へ戻す間隔が入れ直しのたびに延びる。
+    await postMail(routes, cookie, FORK_NOTICE_MUTE);
+    expect(await updatesOf(userId)).toBe(1);
+    now = NOW + 300;
+    expect((await postMail(routes, cookie, FORK_NOTICE_MUTE)).headers.get('location')).toBe(
+      `${ACCOUNT_MAIL_PATH}?saved=1`,
+    );
+    expect(await mutedAtOf(userId)).toBe(NOW);
+    expect(await updatesOf(userId)).toBe(1);
+  });
+
+  it(`止めてから ${FORK_NOTICE_UNMUTE_INTERVAL_SECONDS} 秒以内は受け取る設定へ戻さず、空けば戻す`, async () => {
+    const userId = await seedUser();
+    const cookie = await cookieFor(userId);
+    let now = NOW;
+    const routes = createAccountRoutes({ now: () => now });
+    await postMail(routes, cookie, FORK_NOTICE_MUTE);
+    expect(await updatesOf(userId)).toBe(1);
+
+    // **境界の 1 秒手前。** 断り、UPDATE を 1 回も届かせない。
+    now = NOW + FORK_NOTICE_UNMUTE_INTERVAL_SECONDS - 1;
+    const tooSoon = await postMail(routes, cookie, FORK_NOTICE_RECEIVE);
+    expect(tooSoon.headers.get('location')).toBe(`${ACCOUNT_MAIL_PATH}?reason=too-soon`);
+    expect(await mutedAtOf(userId)).toBe(NOW);
+    expect(await updatesOf(userId)).toBe(1);
+
+    // **ちょうど 60 秒で戻す。**
+    now = NOW + FORK_NOTICE_UNMUTE_INTERVAL_SECONDS;
+    const later = await postMail(routes, cookie, FORK_NOTICE_RECEIVE);
+    expect(later.headers.get('location')).toBe(`${ACCOUNT_MAIL_PATH}?saved=1`);
+    expect(await mutedAtOf(userId)).toBeNull();
+    expect(await updatesOf(userId)).toBe(2);
+  });
+
+  it('知らない値・項目の無い本文・フォーム以外の形式は受けず、書かない', async () => {
+    // **「知らない値は受け取らない」と読まない。** 壊れた要求で通知が黙って止まる。
+    const userId = await seedUser();
+    const cookie = await cookieFor(userId);
+    const routes = createAccountRoutes({ now: () => NOW });
+    for (const response of [
+      await postMail(routes, cookie, 'off'),
+      await postMail(routes, cookie, ''),
+      await postMail(routes, cookie, null),
+      await postMail(routes, cookie, FORK_NOTICE_MUTE, 'application/json'),
+    ]) {
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toBe(`${ACCOUNT_MAIL_PATH}?reason=invalid-request`);
+    }
+    expect(await mutedAtOf(userId)).toBeNull();
+    expect(await updatesOf(userId)).toBe(0);
+  });
+
+  it('未ログインならログインへ送り、何も書かない', async () => {
+    const userId = await seedUser();
+    const routes = createAccountRoutes({ now: () => NOW });
+    const response = await postMail(routes, null, FORK_NOTICE_MUTE);
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(LOGIN_PATH);
+    expect(await updatesOf(userId)).toBe(0);
+  });
+
+  it('BAN された利用者は変えられない', async () => {
+    const userId = await seedUser();
+    await env.DB.prepare('update users set banned_at = 1 where id = ?').bind(userId).run();
+    const before = await updatesOf(userId);
+    const routes = createAccountRoutes({ now: () => NOW });
+    const response = await postMail(routes, await cookieFor(userId), FORK_NOTICE_MUTE);
+    expect(response.headers.get('location')).toBe(LOGIN_PATH);
+    expect(await updatesOf(userId)).toBe(before);
+    expect(await mutedAtOf(userId)).toBeNull();
+  });
+
+  it('画面で止めると改造通知が送られなくなり、戻すとまた送られる（往復）', async () => {
+    // **この画面が書いた列を、送信の口が実際に読んでいること**を 1 本で通す（5.11「配信の口が、
+    // この設定を実際に見る」）。送信は `fetcher` を差し替えて手前で止める（`test/mail.test.ts`）。
+    const parentAuthor = await seedUser();
+    const forker = await seedUser();
+    const cookie = await cookieFor(parentAuthor);
+    let now = NOW;
+    const routes = createAccountRoutes({ now: () => now });
+    const mailEnv = {
+      ...testEnv(),
+      RESEND_API_KEY: 'test-api-key',
+      MAIL_FROM: 'Game Forge <no-reply@example.com>',
+    } as Env;
+    const requests: Request[] = [];
+    const deps = {
+      fetcher: async (request: Request) => {
+        requests.push(request);
+        return new Response('{}', { status: 200 });
+      },
+      send: sendMail,
+    };
+    const seedFork = async (suffix: string): Promise<string> => {
+      const parentId = `${USER_PREFIX}mail-parent-${suffix}-${crypto.randomUUID()}`;
+      const childId = `${USER_PREFIX}mail-child-${suffix}-${crypto.randomUUID()}`;
+      for (const [id, author, parent] of [
+        [parentId, parentAuthor, null],
+        [childId, forker, parentId],
+      ] as const) {
+        await env.DB.prepare(
+          `insert into games (id, author_id, parent_id, status, title, go_version, created_at, published_at)
+           values (?, ?, ?, 'published', 'ねこのゲーム', 'go1.25.0', 1, 2)`,
+        )
+          .bind(id, author, parent)
+          .run();
+      }
+      return childId;
+    };
+
+    await postMail(routes, cookie, FORK_NOTICE_MUTE);
+    expect(await notifyForkPublished(mailEnv, await seedFork('muted'), deps)).toBe('muted');
+    expect(requests).toHaveLength(0);
+
+    now = NOW + FORK_NOTICE_UNMUTE_INTERVAL_SECONDS;
+    await postMail(routes, cookie, FORK_NOTICE_RECEIVE);
+    expect(await notifyForkPublished(mailEnv, await seedFork('receiving'), deps)).toBe('sent');
+    expect(requests).toHaveLength(1);
   });
 });

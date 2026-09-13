@@ -6,7 +6,7 @@
  * #373 の constraints は「**書いていない収集をしないのと同じくらい、していない収集を
  * 書かないことが要る**」と定めている。**M12 でこれから増える項目（アイコンなど）は、
  * ここへ先回りして書かない。** 収集を始める issue が、同じ変更の中でこの本文へ追記する
- * （自己紹介と外部リンクは #379 が追記した）。
+ * （自己紹介と外部リンクは #379 が、メール配信の設定は #384 が追記した）。
  *
  * 各項目が実在することは、2026-09-12 に次の場所で確かめた（PR #373 の本文にも一覧を置く）。
  *
@@ -16,6 +16,7 @@
  * | 表示名 | `src/account.ts` / `migrations/0022_*` |
  * | 表示名の変更履歴（Google の名前への追随を含む・公開しない） | `migrations/0030_display_name_changes.sql`（追記のみの `display_name_changes`）/ `src/display-name-changes.ts` / `src/account.ts` の `changeDisplayName` / `src/auth/google.ts` の `refreshExistingUser` / 読むのは管理画面の審査キューだけ（`src/admin/report-evidence.ts`。#405 が同じ変更で追記した） |
  * | 自己紹介と外部リンク（作者ページで誰でも見られる）とその変更の履歴（公開しない） | `migrations/` の user_profile（`users.bio` / `users.profile_links` / 追記のみの `profile_changes`）/ `src/profile.ts` の `changeProfile` / `src/account.ts` の `/account` / `src/author-profile.ts`（作者ページ）。**履歴を読む画面はまだ無い**（運営が D1 で確かめる。#379 が同じ変更で追記した） |
+ * | メール配信の設定（改造のお知らせを受け取るかと、止めた日時・公開しない）と、止められないお知らせ | `migrations/` の fork_notice_mute（`users.fork_notice_muted_at`）/ `src/account.ts` の `/account/mail` / 送信の口で読むのは `src/mail/fork-notice.ts` だけ / 種別の一覧は `src/mail/kinds.ts`（#384 が同じ変更で追記した） |
  * | 招待関係 | `migrations/0001_init.sql`（`invites` / `users.invited_by`）/ `src/invites.ts` |
  * | 指示文・生成の記録 | `src/cost-ledger.ts`（`generations.prompt`）/ `migrations/0009_game_revisions.sql` |
  * | 遮断された指示文（90 日） | `migrations/0016_moderation_blocks.sql` / `scripts/moderation-prune.sh` |
@@ -117,6 +118,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li><strong>表示名の変更の履歴</strong>: 表示名が変わったときの、変える前と後の表示名と、変えた日時。登録情報の画面で変えた場合のほか、Google アカウントの名前に合わせて表示名が変わった場合も残します。通報への対応のために運営者が確かめるもので、公開しません。変更の履歴は書き換えず、追記だけで残します。Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>自己紹介と外部リンク</strong>（登録情報の画面で設定できます）: 自己紹介の文章と、外部のページへのリンク（3 本まで）。作者ページで誰でも見られます。Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>自己紹介と外部リンクの変更の履歴</strong>: 自己紹介か外部リンクを変えたときの、変える前と後の自己紹介と外部リンクと、変えた日時。通報への対応のために運営者が確かめるもので、公開しません。変更の履歴は書き換えず、追記だけで残します。Cloudflare のデータベース（D1）に保存します</li>
+  <li><strong>メール配信の設定</strong>（登録情報の画面で変更できます）: 作品が改造されたときのお知らせを受け取るかどうかと、受け取らない設定にした日時。公開しません。Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>招待の情報</strong>: 招待コード、誰が誰を招待したか、コードを使った日時</li>
   <li><strong>作品を作るときの指示文</strong>（生成・改造・推敲の指示）</li>
   <li><strong>作品</strong>: 題名とその変更履歴、生成されたソースコード、遊ぶためのファイル、紹介用の画像、公開・取り下げの状態、改造元の作品</li>
@@ -147,7 +149,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li>ログインの状態を保ち、利用者を見分けるため</li>
   <li>作品の生成・改造・推敲・公開・表示を行うため</li>
   <li>1 人あたりの生成枠と、サービス全体の費用の上限を管理するため</li>
-  <li>生成の完了・失敗や、作品が改造されたことを、メールでお知らせするため</li>
+  <li>生成の完了・失敗や、作品が改造されたことを、メールでお知らせするため（作品が改造されたことのお知らせは、登録情報の画面で受け取らない設定にできます。生成の完了・失敗のお知らせは、その設定にかかわらず送ります）</li>
   <li>招待の仕組みを運用し、待機リストに登録された方へ招待についてご連絡するため</li>
   <li>不正な利用や規約に反する内容を防ぎ、通報・削除申請に対応するため</li>
   <li>お問い合わせに回答するため</li>
@@ -166,7 +168,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <p>公開する前の作品でも、作品ページの URL を知っている人がそのページを開くと、題名と、まだ公開されていないことが表示されます（遊ぶことはできません）。</p>
 <p>公開した作品のソースコードは、他の利用者がその作品を改造するときに、生成の材料として使われます。</p>
 <p><strong>次の情報は公開しません。</strong>メールアドレス、指示文、いいねした作品の一覧、
-   誰が誰を招待したか、通報の内容、表示名の変更の履歴、自己紹介と外部リンクの変更の履歴。</p>
+   誰が誰を招待したか、通報の内容、表示名の変更の履歴、自己紹介と外部リンクの変更の履歴、メール配信の設定。</p>
 
 <h2>4. 第三者への提供と、外部の事業者への送信</h2>
 <p>上の 3 に書いた情報は、利用者が表示名や自己紹介・外部リンクを設定したり作品を公開したりすることで、誰でも見られるようになります。</p>

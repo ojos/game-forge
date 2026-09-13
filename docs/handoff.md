@@ -81,74 +81,94 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 - 4 の WHERE は `writeAvatarBatch` と同じ「自分のトークンを持っている」です
 - 持ち時間は `AVATAR_LOCK_SECONDS`（60 秒）です
 
-**本番では実行していません。** 綴りは `src/avatar.ts` と 4.5 の既存のコマンドを読んで合わせ、手元では構文（`bash -n` / `zsh -n`）と、偽の JSON からの取り出しだけを確かめました。
+**ブロックをまとめて貼って実行してよい形にしています。** `id` だけを外から渡し、`set -euo pipefail` の bash のサブシェルで動くので、**排他が取れない・JSON が読めない・R2 の削除が落ちる・確定が当たらない、のどれでも、その場で止まり先へ進みません**（止まっても対話シェルは閉じない）。
+
+**本番では実行していません。** 綴りは `src/avatar.ts` と 4.5 の既存のコマンドを読んで合わせ、手元で、`PATH` の先頭に置いた偽の `npx`（D1 の応答と R2 の成否を場面ごとに返すスクリプト）で、**1 で held=0 なら 3 に進まない / 2 の JSON が壊れていたら 3 に進まない / 3 の削除が落ちたら 4 に進まない**ことを確かめました（2026-09-13。外側が bash でも zsh でも同じ。標準入力を読む `npx` でもヒアドキュメントを食わない）。
 
 ```bash
+# 利用者の id だけを外から渡し、bash のサブシェルで実行する（exit で対話シェルを閉じない）。
+# 本体は関数にしてから呼ぶ——bash は関数を最後まで読んでから動かすので、中のコマンドが標準入力（このヒアドキュメント）を食わない。
+# リポジトリのルートで打つ（scripts/load-project-env.sh を相対パスで読む）
+id='<利用者の id>' bash -s <<'SCRIPT'
 set -a; source scripts/load-project-env.sh; set +a
-id='<利用者の id>'
+set -euo pipefail
 
-# 本番の D1 に 1 文を投げ、JSON の配列だけを返す（wrangler は前置きの行を混ぜることがある）
-d1() {
-  CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
-    npx wrangler d1 execute DB --remote --env production --json --command "$1" | sed -n '/^\[/,$p'
+main() {
+  [[ "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
+    || { echo "id が UUID の形ではありません: ${id}" >&2; exit 1; }
+
+  # 本番の D1 に 1 文を投げ、JSON の配列だけを返す（wrangler は前置きの行を混ぜることがある。失敗は pipefail で止まる）
+  d1() {
+    CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+      npx wrangler d1 execute DB --remote --env production --json --command "$1" | sed -n '/^\[/,$p'
+  }
+  r2() { CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler r2 object "$@" --remote; }
+
+  # 1. 排他を取る。トークンと時刻は、ここで 1 度だけ作る
+  token=$(node -e 'console.log(crypto.randomUUID())')
+  now=$(date +%s)
+  d1 "update users set avatar_lock_token = '${token}', avatar_lock_at = ${now}
+       where id = '${id}'
+         and (avatar_lock_token is null or avatar_lock_at is null or avatar_lock_at <= ${now} - 60);" >/dev/null
+  #    取れたかは meta.changes ではなく、行を読み直して確かめる
+  held=$(d1 "select count(*) as n from users where id = '${id}' and avatar_lock_token = '${token}';" \
+    | node -e 'console.log(JSON.parse(require("fs").readFileSync(0, "utf8"))[0].results[0].n)')
+  [ "$held" = 1 ] || { echo '利用者が保存中です。60 秒待ってやり直してください' >&2; exit 1; }
+
+  # 2. 値を D1 から実行時に読む（手で写さない）。JSON が読めない・排他を持っていない・想定外のキーなら止まる
+  old=$(d1 "select avatar_sha256 as s from users where id = '${id}' and avatar_lock_token = '${token}';" \
+    | node -e 'const r = JSON.parse(require("fs").readFileSync(0, "utf8"))[0].results;
+               if (r.length !== 1) { console.error("排他を持っていません。やり直してください"); process.exit(1); }
+               console.log(r[0].s ?? "")')
+  keys=$(d1 "select history_key as k from avatar_changes
+              where user_id = '${id}' and history_key is not null order by changed_at;" \
+    | node -e 'const id = process.argv[1];
+               for (const r of JSON.parse(require("fs").readFileSync(0, "utf8"))[0].results) {
+                 if (!r.k.startsWith(`avatars/history/${id}/`) || /\s/.test(r.k)) { console.error(`想定外のキー: ${r.k}`); process.exit(1); }
+                 console.log(r.k);
+               }' "$id")
+  echo "old=${old}"; echo "keys:"; echo "${keys}"
+
+  # 3. R2 から消す。現行のキーと、2 で読んだ history_key をすべて（無いキーの削除は失敗しない。失敗は set -e で止まる）
+  for k in "avatars/${id}.webp" $keys; do
+    r2 delete "game-forge/${k}"
+  done
+
+  # 4. 確定する。WHERE は「自分の排他を持っている」。履歴は、同じ時刻・同じ old の行が無いときだけ積む
+  #    （履歴を先に、列を後に書く。打ち直しても履歴が 2 行にならない）。old が空（もう外れていた）なら履歴は積まない
+  d1 "insert into avatar_changes (id, user_id, old_sha256, new_sha256, history_key, changed_at)
+        select lower(hex(randomblob(16))), id, avatar_sha256, null, null, ${now}
+          from users
+         where id = '${id}' and avatar_lock_token = '${token}' and avatar_sha256 = '${old}'
+           and not exists (select 1 from avatar_changes
+                            where user_id = '${id}' and changed_at = ${now} and old_sha256 = '${old}');" >/dev/null
+  d1 "update users set avatar_sha256 = null, avatar_set_at = ${now}, avatar_lock_token = null, avatar_lock_at = null
+       where id = '${id}' and avatar_lock_token = '${token}';" >/dev/null
+
+  # 5. 確かめる。列（sha も排他も NULL で、avatar_set_at が 1 の時刻）でなければ、割り込まれている
+  settled=$(d1 "select count(*) as n from users
+                 where id = '${id}' and avatar_sha256 is null and avatar_lock_token is null and avatar_set_at = ${now};" \
+    | node -e 'console.log(JSON.parse(require("fs").readFileSync(0, "utf8"))[0].results[0].n)')
+  [ "$settled" = 1 ] || { echo '確定が当たっていません（割り込まれた）。1 からやり直してください' >&2; exit 1; }
+  d1 "select old_sha256, new_sha256, history_key, changed_at from avatar_changes
+       where user_id = '${id}' order by changed_at desc limit 1;"
+  #    R2 の get は「見つからない」で失敗するのが正しいので、ここだけ止めない
+  left=0
+  for k in "avatars/${id}.webp" $keys; do
+    if r2 get "game-forge/${k}" --pipe >/dev/null 2>&1; then echo "まだ残っています: ${k}"; left=1; else echo "消えています: ${k}"; fi
+  done
+  [ "$left" = 0 ] || { echo 'R2 に残っています。1 からやり直してください' >&2; exit 1; }
+  echo AVATAR_REMOVE_DONE
 }
 
-# 1. 排他を取る。**トークンと時刻は、ここで 1 度だけ作る**
-token=$(node -e 'console.log(crypto.randomUUID())'); now=$(date +%s)
-d1 "update users set avatar_lock_token = '${token}', avatar_lock_at = ${now}
-     where id = '${id}'
-       and (avatar_lock_token is null or avatar_lock_at is null or avatar_lock_at <= ${now} - 60);" >/dev/null
-#    取れたかは meta.changes ではなく、行を読み直して確かめる
-held=$(d1 "select count(*) as n from users where id = '${id}' and avatar_lock_token = '${token}';" \
-  | node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8")); console.log(j[0].results[0].n)')
-echo "held=${held}"
-#    **held=1 でなければ、利用者が保存中です。ここで止め、60 秒待って 1 からやり直す**
-
-# 2. 値を D1 から実行時に読む。**手で写さない**
-old=$(d1 "select avatar_sha256 as s from users where id = '${id}' and avatar_lock_token = '${token}';" \
-  | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8"))[0].results;
-             if (r.length !== 1) { console.error("排他を持っていません。止めて 1 からやり直す"); process.exit(1); }
-             console.log(r[0].s ?? "")')
-keys=$(d1 "select history_key as k from avatar_changes
-            where user_id = '${id}' and history_key is not null order by changed_at;" \
-  | node -e 'const id=process.argv[1];
-             for (const r of JSON.parse(require("fs").readFileSync(0,"utf8"))[0].results)
-               if (r.k.startsWith(`avatars/history/${id}/`)) console.log(r.k);' "$id")
-echo "old=${old}"; printf '%s\n' "$keys"
-#    **2 の node が失敗したら（排他を持っていない・JSON が読めない）、3 へ進まない**
-
-# 3. R2 から消す。現行のキーと、2 で読んだ history_key をすべて（無いキーの削除は失敗しない）
-CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler r2 object delete "game-forge/avatars/${id}.webp" --remote
-printf '%s\n' "$keys" | while IFS= read -r k; do
-  [ -n "$k" ] || continue
-  CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler r2 object delete "game-forge/${k}" --remote </dev/null
-done
-
-# 4. 確定する。**WHERE は「自分の排他を持っている」**。履歴は、同じ時刻・同じ old の行が無いときだけ積む
-#    （履歴を先に、列を後に書く。打ち直しても履歴が 2 行にならない）。old が空（もう外れていた）なら履歴は積まない
-d1 "insert into avatar_changes (id, user_id, old_sha256, new_sha256, history_key, changed_at)
-      select lower(hex(randomblob(16))), id, avatar_sha256, null, null, ${now}
-        from users
-       where id = '${id}' and avatar_lock_token = '${token}' and avatar_sha256 = '${old}'
-         and not exists (select 1 from avatar_changes
-                          where user_id = '${id}' and changed_at = ${now} and old_sha256 = '${old}');" >/dev/null
-d1 "update users set avatar_sha256 = null, avatar_set_at = ${now}, avatar_lock_token = null, avatar_lock_at = null
-     where id = '${id}' and avatar_lock_token = '${token}';" >/dev/null
-
-# 5. 確かめる: 列（sha も排他も NULL）・履歴の最新の行・R2（get は「見つからない」で失敗するのが正しい）
-d1 "select avatar_sha256, avatar_set_at, avatar_lock_token from users where id = '${id}';"
-d1 "select old_sha256, new_sha256, history_key, changed_at from avatar_changes
-     where user_id = '${id}' order by changed_at desc limit 1;"
-printf '%s\n' "avatars/${id}.webp" "$keys" | while IFS= read -r k; do
-  [ -n "$k" ] || continue
-  CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler r2 object get "game-forge/${k}" --remote --pipe >/dev/null </dev/null \
-    && echo "**まだ残っています: ${k}**" || echo "消えています: ${k}"
-done
+main </dev/null
+SCRIPT
 ```
 
-- **途中で落ちたら、排他は 60 秒で解けます**（`acquireAvatarLock` の `avatar_lock_at <= now - 60`）。1 からやり直せば、そのとき D1 にある値で消し直します
+- **途中で落ちたら、排他は 60 秒で解けます**（`acquireAvatarLock` の `avatar_lock_at <= now - 60`）。もう一度打てば、そのとき D1 にある値で消し直します
 - **1 の後に利用者の保存が割り込んで、R2 を上書きすることはありません。** アプリは排他を取れなければ変換も R2 も触らず（`acquireAvatarLock`）、取った後も R2 に書く直前に自分のトークンを確かめます（`saveAvatar` / `removeAvatar` の `holdsAvatarLock`）。確定と戻しも、自分のトークンを持っているときだけです（`writeAvatarBatch` / `restoreIfHeld`）
-- **1 から 4 は 60 秒以内に終えてください。** 過ぎると、利用者の次の保存が排他を取り直せます。**5 で `avatar_lock_token` が残っている・`avatar_sha256` が NULL でないときは、割り込まれています。1 からやり直します**（写しが多くて 3 が長くなるときに起こりうる）
+- **1 から 4 は 60 秒以内に終わる必要があります。** 過ぎると、利用者の次の保存が排他を取り直せます。**そのときは 5 が「確定が当たっていません」で止まるので、もう一度打ちます**（写しが多くて 3 が長くなるときに起こりうる）
+- **最後に `AVATAR_REMOVE_DONE` が出なければ、完了していません**（どこで止まったかは、直前に出た文言で分かる）
 - **利用者はそこから 60 秒、新しいアイコンを設定できません**（4 で `avatar_set_at` を進めるため。4.5 と同じ）
 - **措置の記録は 4.5 の末尾と同じです**（削除の申し出から来たときは、その申し出にも措置と理由を記録する。アイコンそのものの記録は 4 で積んだ `avatar_changes` の 1 行）
 

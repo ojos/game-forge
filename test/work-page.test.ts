@@ -4,7 +4,7 @@ import { escapeHtml, siteViewerAt } from '../src/html.js';
 import { pageBodyOf } from './helpers/site-shell.js';
 import { dispatch } from '../src/routes.js';
 import { renderWorkPage as renderWorkPageFor } from '../src/work-page.js';
-import type { WorkPageView } from '../src/work-page.js';
+import type { WorkDetails, WorkPageView } from '../src/work-page.js';
 import {
   FORKS_OFFSET_PARAM,
   FORKS_PER_PAGE,
@@ -12,7 +12,11 @@ import {
   FORK_TIDY_QUOTA_NOTICE,
   GENERATION_RETRY_QUOTA_NOTICE,
   OPERATOR_MARK,
+  PUBLISH_SOURCE_NOTICE,
+  WORK_ROW_SQL,
+  formatWasmSize,
   storedLikeCount,
+  storedWasmBytes,
   WORK_PAGE_PREFIX,
   WORK_REMOVE_GAME_ID_FIELD,
   WORK_REMOVE_PATH,
@@ -59,6 +63,7 @@ import { appendRevision, claimRevisionSlot, failRevision } from '../src/revision
 import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
 import { TIDY_ATTEMPTS } from '../src/source-size.js';
 import { NEWS_ARTICLES } from '../src/news-articles.js';
+import { workSourcePath } from '../src/work-source.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -1096,7 +1101,49 @@ const baseView: WorkPageView = {
   playCountableId: null,
   likableId: null,
   unlikableId: null,
+  // 詳細情報パネル（#383）。**既定は出さない**（公開済み・取り下げていない作品のときだけ入る）。
+  details: null,
 };
+
+/**
+ * 詳細情報パネルを出すときの値（#383）。描画だけを見る検査で使う。
+ *
+ * @param gameId 作品 id
+ * @returns パネルの値
+ */
+function sampleDetails(gameId = '00000000-0000-4000-8000-0000000000aa'): WorkDetails {
+  return { gameId, createdAt: 1, publishedAt: 2, wasmBytes: null, sourcePath: null };
+}
+
+/**
+ * いいねのボタンの隣に出る数（#340。#383 でも位置を変えていない）。
+ *
+ * @param count いいねの数
+ * @returns HTML の断片
+ */
+function likeRow(count: number): string {
+  return `<p class="gf-likes">いいね ${count}</p>`;
+}
+
+/**
+ * 詳細情報パネルのいいねの行（#383。ボタンの隣の数と同じ値を並べる）。
+ *
+ * @param count いいねの数
+ * @returns HTML の断片
+ */
+function panelLikeRow(count: number): string {
+  return `<div><dt>いいね</dt><dd>${count}</dd></div>`;
+}
+
+/**
+ * 詳細情報パネルのプレイ数の行（#383）。
+ *
+ * @param count プレイ数
+ * @returns HTML の断片
+ */
+function playRow(count: number): string {
+  return `<div class="gf-plays"><dt>プレイ</dt><dd>${count}</dd></div>`;
+}
 
 describe('著名 IP 名の置換を作者へ開示する（6.2 / #39）', () => {
   it('作者には開示が出る', async () => {
@@ -1599,7 +1646,7 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
     expect(body).not.toMatch(LIKE_FORM);
     expect(body).not.toMatch(CANCEL_FORM);
     // 数は出す（5.8。外部の閲覧者は「数を見るだけ」）。値は D1 の写しである。
-    expect(body).toContain('いいね 3');
+    expect(body).toContain(likeRow(3));
   });
 
   it('ログイン中は DO へ 1 回だけ問い合わせ、D1 の写しより DO の実数を出す', async () => {
@@ -1614,8 +1661,8 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
     // **1 回だけ**（5.8）。stub を取るのは 1 度で、名前空間への触り方も 1 つだけである。
     expect(touched).toEqual(['getByName']);
     // DO が数えた実数が出る。**D1 の写し（99）は出ない。**
-    expect(body).toContain('いいね 1');
-    expect(body).not.toContain('いいね 99');
+    expect(body).toContain(likeRow(1));
+    expect(body).not.toContain(likeRow(99));
     // 押しているので、出るのは取り消しだけである。
     expect(body).toMatch(CANCEL_FORM);
     expect(body).not.toMatch(LIKE_FORM);
@@ -1631,20 +1678,20 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
     expect(before.body).toMatch(LIKE_FORM);
     expect(before.body).not.toMatch(CANCEL_FORM);
     // まだ 0 なので数は出さない（2.3.6）。
-    expect(before.body).not.toContain('いいね 1');
+    expect(before.body).not.toContain(likeRow(1));
 
     const at = Math.floor(Date.now() / 1000);
     expect(await changeLike(env, 'like', fan, id, at)).toBe('liked');
     const liked = await openRecording(workPagePath(id), cookie);
     expect(liked.body).toMatch(CANCEL_FORM);
     expect(liked.body).not.toMatch(LIKE_FORM);
-    expect(liked.body).toContain('いいね 1');
+    expect(liked.body).toContain(likeRow(1));
 
     expect(await changeLike(env, 'unlike', fan, id, at)).toBe('unliked');
     const cancelled = await openRecording(workPagePath(id), cookie);
     expect(cancelled.body).toMatch(LIKE_FORM);
     expect(cancelled.body).not.toMatch(CANCEL_FORM);
-    expect(cancelled.body).not.toContain('いいね 1');
+    expect(cancelled.body).not.toContain(likeRow(1));
   });
 
   it('作者の作品ページにはボタンが出ない（被いいね数を自己申告にしない）', async () => {
@@ -1658,7 +1705,7 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
     expect(body).not.toMatch(LIKE_FORM);
     expect(body).not.toMatch(CANCEL_FORM);
     // 数は出す（5.8「数は作品と作者に公開し」）。
-    expect(body).toContain('いいね 1');
+    expect(body).toContain(likeRow(1));
   });
 
   it('審査で新規露出を止めた作品にはボタンを出さない（口が 404 にするものを出さない）', async () => {
@@ -1708,8 +1755,14 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
     // **DO を呼ぶかどうかの門番**（`likeViewer` の条件）を止めており、そちらから
     // `published` を外すと赤くなる（実測した）。ここでは第 1 層そのものを見る。
     const id = '00000000-0000-4000-8000-000000000003';
-    const removed = renderWorkPage({ ...baseView, removed: true, likeCount: 4, likableId: id });
-    expect(removed).not.toContain('いいね 4');
+    const removed = renderWorkPage({
+      ...baseView,
+      removed: true,
+      likeCount: 4,
+      likableId: id,
+      details: sampleDetails(id),
+    });
+    expect(removed).not.toContain(likeRow(4));
     expect(removed).not.toMatch(LIKE_FORM);
     // 同じ view で `removed` だけを倒すと出る（この検査が空振りしていない）。
     const shown = renderWorkPage({
@@ -1718,8 +1771,9 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
       removed: false,
       likeCount: 4,
       likableId: id,
+      details: sampleDetails(id),
     });
-    expect(shown).toContain('いいね 4');
+    expect(shown).toContain(likeRow(4));
     expect(shown).toMatch(LIKE_FORM);
   });
 
@@ -1738,7 +1792,7 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
     // 経路を通さず `renderWorkPage` に直に渡す。**経路側の条件を全部満たしていない
     // view でも、載っていればそのまま描く**——押せるかの判定は窓口が持つ（5.8）。
     const id = '00000000-0000-4000-8000-000000000001';
-    const view: WorkPageView = { ...baseView, published: true, forkableId: id };
+    const view: WorkPageView = { ...baseView, published: true, forkableId: id, details: sampleDetails(id) };
 
     expect(renderWorkPage(view)).not.toMatch(LIKE_FORM);
     expect(renderWorkPage(view)).not.toMatch(CANCEL_FORM);
@@ -1754,7 +1808,7 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
 
     // 0 のときは数を出さない（2.3.6）。**1 以上なら出す**（空振りしないことを対で見る）。
     expect(renderWorkPage({ ...view, likeCount: 0 })).not.toContain('いいね');
-    expect(renderWorkPage({ ...view, likeCount: 1 })).toContain('いいね 1');
+    expect(renderWorkPage({ ...view, likeCount: 1 })).toContain(likeRow(1));
   });
 
   it('JavaScript を要さない（素の form と button だけで組む）', () => {
@@ -1833,12 +1887,17 @@ describe('プレイ数（#377 / 仕様 2.3.6）', () => {
     };
   }
 
-  it('0 なら出さず、1 以上ならいいねの数の隣に出す', () => {
-    expect(renderWorkPage({ ...baseView, published: true, playCount: 0 })).not.toContain('gf-plays');
-    const body = renderWorkPage({ ...baseView, published: true, playCount: 8, likeCount: 2 });
-    expect(body).toContain('<p class="gf-plays">プレイ 8</p>');
-    // **いいねの数の直前に置く**（隣。#383 の詳細パネルが後で作り替える）。
-    expect(body).toContain('<p class="gf-plays">プレイ 8</p>\n<p class="gf-likes">いいね 2</p>');
+  it('0 なら出さず、1 以上なら詳細情報パネルにいいねの数と並べて出す（#383 で移した）', () => {
+    const published = { ...baseView, published: true, details: sampleDetails() };
+    expect(renderWorkPage({ ...published, playCount: 0 })).not.toContain('gf-plays');
+    const body = renderWorkPage({ ...published, playCount: 8, likeCount: 2 });
+    // **パネルのいいねの行の直後に置く**（#377 ではボタンの隣でいいねの直前だった。#383 でパネルの行になった）。
+    expect(body).toContain(`${panelLikeRow(2)}\n${playRow(8)}`);
+    // いいねの数はボタンの隣にも残る（5.8 の対。同じ値）。
+    expect(body).toContain(likeRow(2));
+    // **同じ数を 2 か所に出さない**（パネルの外にプレイ数の表示が残っていない）。
+    expect(body.split('gf-plays').length - 1).toBe(1);
+    expect(body).not.toContain('プレイ 8');
   });
 
   it('公開済みの作品ページは D1 の写しを出し、計上のスクリプトを iframe の直前に置き、DO を呼ばない', async () => {
@@ -1858,7 +1917,7 @@ describe('プレイ数（#377 / 仕様 2.3.6）', () => {
 
       // **画面の経路は DO を呼ばない**（数えるのはブラウザのスクリプトで、口は別にある）。
       expect(recording.touched, 'プレイ数の DO に触れている').toEqual([]);
-      expect(body).toContain('<p class="gf-plays">プレイ 5</p>');
+      expect(body).toContain(playRow(5));
       // スクリプトは 1 つで、中身は窓口が組み立てたものそのままである（書き写さない）。
       expect(body).toContain(playReportScript(id));
       expect(body.split(`fetch(${JSON.stringify(PLAY_PATH)}`).length - 1).toBe(1);
@@ -1895,5 +1954,182 @@ describe('プレイ数（#377 / 仕様 2.3.6）', () => {
       expect(rule, `app.css に .${selector} の規則が無い`).not.toBeNull();
       expect(rule![1]!, selector).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/iu);
     }
+  });
+});
+
+describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
+  /** 64 桁の 16 進（本番のキャッシュ鍵と同じ形。キーの綴り `builds/<sha>/...` を本番に揃える）。 */
+  function randomSha(): string {
+    return Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('');
+  }
+
+  /**
+   * 公開済みの作品を 1 件用意する（**`build_cache` の行も `completeGame` が書く**）。
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @param sha ソースの SHA-256
+   * @returns 作者の id と作品 id
+   */
+  async function seedPublished(
+    suffix: string,
+    sha: string = randomSha(),
+  ): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(`details-${suffix}`, `パネル${suffix}\n本文`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: sha }));
+    expect((await publishGame(env, id, userId)).ok).toBe(true);
+    return { userId, id };
+  }
+
+  /**
+   * 本文からパネルだけを取り出す。
+   *
+   * @param body 画面の HTML
+   * @returns パネルの HTML（無ければ null）
+   */
+  function panelOf(body: string): string | null {
+    return /<aside class="gf-details"[\s\S]*?<\/aside>/u.exec(body)?.[0] ?? null;
+  }
+
+  it('来歴を並べる（作品 ID・日時・元ゲーム・配信サイズ・改造された数・いいね・プレイ）とソースへのリンク', async () => {
+    const parent = await seedPublished('parent');
+    const { id } = await seedPublished('shown');
+    await env.DB.prepare('update games set parent_id = ?, like_count = 3, play_count = 12 where id = ?')
+      .bind(parent.id, id)
+      .run();
+    // 親の側から見て、改造された数が実件数で出る（`fork_count` 列は読まない。5.5）。
+    await env.DB.prepare('update games set fork_count = 99 where id = ?').bind(parent.id).run();
+
+    const panel = panelOf(await (await open(workPagePath(id))).text());
+    expect(panel, 'パネルが無い').not.toBeNull();
+    expect(panel).toContain(`<dt>作品 ID</dt><dd><code>${id}</code></dd>`);
+    expect(panel).toMatch(/<dt>生成日時<\/dt><dd><time datetime="[^"]+">\d{4}-\d{2}-\d{2} \d{2}:\d{2}<\/time>/u);
+    expect(panel).toMatch(/<dt>公開日時<\/dt><dd><time datetime="[^"]+">/u);
+    expect(panel).toContain(`<dt>元ゲーム</dt><dd><a href="${workPagePath(parent.id)}">パネルparent</a></dd>`);
+    // `fakeBuildOutcome` の圧縮後のバイト数（2,282,839）。**配信している大きさ**である。
+    expect(panel).toContain('<dt>Wasm のサイズ</dt><dd>2.3 MB（配信時の圧縮後）</dd>');
+    expect(panel).toContain('<dt>改造された数</dt><dd>0 件</dd>');
+    expect(panel).toContain(panelLikeRow(3));
+    expect(panel).toContain(playRow(12));
+    expect(panel).toContain(`<a href="${workSourcePath(id)}">ソースコードを見る</a>`);
+    // **モデル名の行は無い**（確定27。作品からモデルへ辿れない）。
+    expect(panel).not.toContain('モデル');
+
+    const parentPanel = panelOf(await (await open(workPagePath(parent.id))).text());
+    expect(parentPanel).toContain('<dt>改造された数</dt><dd>1 件</dd>');
+  });
+
+  it('ロード中画面と枠は全幅のまま、その下を「本文 | パネル」にする（本文が先）', async () => {
+    const { id } = await seedPublished('layout');
+    const body = await (await open(workPagePath(id))).text();
+    const split = body.indexOf('<div class="gf-split-end">');
+    expect(split, '2 カラムの器が無い').toBeGreaterThan(0);
+    // 枠・ロード中画面は器より前（全幅）。
+    expect(body.indexOf('<iframe class="gf-frame"')).toBeLessThan(split);
+    expect(body.indexOf('<div class="gf-context">')).toBeLessThan(split);
+    // 本文（改造の一覧）が先、パネルが後（狭い段では本文の下に積まれる）。
+    const main = body.indexOf('<div class="gf-work-main">');
+    expect(main).toBeGreaterThan(split);
+    expect(body.indexOf('このゲームからの改造')).toBeGreaterThan(main);
+    expect(body.indexOf('<aside class="gf-details"')).toBeGreaterThan(body.indexOf('このゲームからの改造'));
+    // 説明（#388）はパネルに入れない。
+    expect(panelOf(body)).not.toContain('作品の説明');
+  });
+
+  it('審査で新規露出を止めた作品では、パネルは出すがソースへのリンクを出さない', async () => {
+    const { id } = await seedPublished('queued');
+    expect(panelOf(await (await open(workPagePath(id))).text())).toContain(workSourcePath(id));
+
+    await env.DB.prepare('update games set review_state = ? where id = ?').bind(REVIEW_QUEUED, id).run();
+    const panel = panelOf(await (await open(workPagePath(id))).text());
+    expect(panel, 'パネルごと消えている').not.toBeNull();
+    // **押せば 404 になるリンクを出さない**（4.4）。変異: `row.review_visible === 1 &&` を外すと赤。
+    expect(panel).not.toContain(workSourcePath(id));
+    expect(panel).not.toContain('ソースコードを見る');
+  });
+
+  it('未公開と取り下げた作品にはパネルを出さない', async () => {
+    const draft = await seedPending('details-draft');
+    await claimGenerationJob(env, draft.id, await hashJobToken(draft.jobToken));
+    await completeGame(env, draft.id, fakeBuildOutcome({ sourceSha256: randomSha() }));
+    const draftBody = await (await open(workPagePath(draft.id), await sessionCookie(draft.userId))).text();
+    expect(panelOf(draftBody)).toBeNull();
+    expect(draftBody).not.toContain(workSourcePath(draft.id));
+
+    const { id, userId } = await seedPublished('removed');
+    expect((await removeGame(env, id, userId)).ok).toBe(true);
+    const removedBody = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(panelOf(removedBody)).toBeNull();
+    expect(removedBody).not.toContain(workSourcePath(id));
+  });
+
+  it('索引の行が引けない・別の成果物を指すときは、サイズの行ごと出さない（0 と書かない）', async () => {
+    const sha = randomSha();
+    const { id } = await seedPublished('no-index', sha);
+    expect(panelOf(await (await open(workPagePath(id))).text())).toContain('Wasm のサイズ');
+
+    // Go の更新などで、同じソースの索引が別の成果物を指すようになった場合。
+    // 変異: 結合から `and b.wasm_key = g.wasm_key` を外すと、別の成果物のサイズが出て赤（2026-09-13）。
+    await env.DB.prepare('update build_cache set wasm_key = ? where source_sha256 = ?')
+      .bind(`builds/${sha}/go9.99.9/game.wasm.br`, sha)
+      .run();
+    expect(panelOf(await (await open(workPagePath(id))).text())).not.toContain('Wasm のサイズ');
+
+    await env.DB.prepare('delete from build_cache where source_sha256 = ?').bind(sha).run();
+    const panel = panelOf(await (await open(workPagePath(id))).text());
+    expect(panel).not.toBeNull();
+    expect(panel).not.toContain('Wasm のサイズ');
+  });
+
+  it('build_cache は主キーで 1 行だけ引く（索引の全行を読まない）', async () => {
+    // 変異: 結合を `on b.wasm_key = g.wasm_key` だけにすると `SCAN b` になって赤（2026-09-13）。
+    const plan = await env.DB.prepare(`explain query plan ${WORK_ROW_SQL}`)
+      .bind('00000000-0000-4000-8000-000000000383')
+      .all<{ detail: string }>();
+    const details = plan.results.map((row) => row.detail);
+    const cache = details.filter((detail) => /\bb\b/u.test(detail));
+    expect(cache.length, details.join(' / ')).toBeGreaterThan(0);
+    for (const detail of cache) {
+      expect(detail, details.join(' / ')).toMatch(/^SEARCH b USING INDEX sqlite_autoindex_build_cache_1 \(source_sha256=\?\)/u);
+    }
+  });
+
+  it('サイズの表記と、読めない値の倒し方', () => {
+    expect(formatWasmSize(2_282_839)).toBe('2.3 MB');
+    expect(formatWasmSize(1_000_000)).toBe('1.0 MB');
+    expect(formatWasmSize(999_499)).toBe('999 KB');
+    expect(formatWasmSize(12)).toBe('1 KB');
+    for (const broken of [undefined, null, Number.NaN, '3', -1, 0]) {
+      expect(storedWasmBytes(broken), String(broken)).toBeNull();
+    }
+    expect(storedWasmBytes(2_282_839.5)).toBe(2_282_839);
+  });
+
+  it('パネルの見た目は app.css の @section work に規則を持ち、色の値を直に書かない', () => {
+    for (const selector of ['gf-details', 'gf-source']) {
+      const rule = new RegExp(`^\\.${selector}\\s*\\{([^}]*)\\}`, 'mu').exec(env.TEST_APP_CSS);
+      expect(rule, `app.css に .${selector} の規則が無い`).not.toBeNull();
+      expect(rule![1]!, selector).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/iu);
+    }
+    // **ソースの `<pre>` だけを横に送り、ページ全体を横スクロールさせない。**
+    const source = /^\.gf-source\s*\{([^}]*)\}/mu.exec(env.TEST_APP_CSS)![1]!;
+    expect(source).toContain('overflow-x: auto');
+    expect(source).toContain('max-width: 100%');
+  });
+});
+
+describe('公開フォームは「ソースも公開される」ことを押す前に言う（#383 の決定 1）', () => {
+  it('公開のボタンと同じフォームの中に、ボタンより前にある', async () => {
+    const { userId, id, jobToken } = await seedPending('publish-source-notice');
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: 'sha-publish-source-notice' }));
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const form = /<form method="post" action="[^"]*publish[^"]*">[\s\S]*?<\/form>/u.exec(body)?.[0] ?? '';
+    expect(form, '公開フォームが無い').toContain('公開して共有');
+    expect(form).toContain(PUBLISH_SOURCE_NOTICE);
+    expect(form.indexOf(PUBLISH_SOURCE_NOTICE)).toBeLessThan(form.indexOf('<button'));
+    expect(PUBLISH_SOURCE_NOTICE).toContain('ソースコード');
   });
 });

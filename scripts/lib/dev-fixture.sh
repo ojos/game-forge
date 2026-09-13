@@ -17,7 +17,7 @@
 #   ADMIN_BASE          https://<ADMIN_HOST>:<PORT>（同じ dev サーバ。`src/index.ts` がホストで振り分ける）
 #   COOKIE_VALUE        `__Host-gf_session` の値
 #   GAME_ID             仕込んだ draft の作品の id（`/works/` の続きに使う）
-#   PUBLISHED_GAME_ID   仕込んだ公開済みの作品の id（カードが並ぶ画面のため）
+#   PUBLISHED_GAME_ID   仕込んだ公開済みの作品の id（カードが並ぶ画面と、`/source/` の続きのため）
 #   USER_ID             仕込んだ利用者の id（`/users/` の続きに使う）。**`is_admin = 1` を立ててある**
 #                       （admin の画面を 404 でなく本体で開くため。#398）
 #   WORK                使い捨ての作業場
@@ -145,6 +145,18 @@ dev_fixture_up() {
   # 題名は 1 行に収まらない長さにする（行が折り返したときの高さと幅を測るため）。
   QUEUED_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
 
+  # **公開済みの作品に、ソースと配信サイズの索引を持たせる**（#383）。無いと、作品ページの
+  # 詳細情報パネルは「Wasm のサイズ」とソースへのリンクを出さず、`/source/<id>` は
+  # 「読み出せませんでした」の 1 文だけになり、**長い行を持つ `<pre>` を 3 幅で 1 度も
+  # 測らないまま緑になる。** キーの綴りは本番と同じ形（`builds/<64 桁>/...`）にする
+  # ——パネルは綴りから索引の主キーを切り出して引く（`src/work-page.ts` の `WORK_ROW_SQL`）。
+  SOURCE_SHA="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')"
+  SOURCE_KEY="builds/${SOURCE_SHA}/source.go"
+  WASM_KEY="builds/${SOURCE_SHA}/go1.26.5/game.wasm.br"
+  # バケットの名前は wrangler.toml の宣言から読む（**先頭の 1 つが開発の値**。APP_HOST と同じ）。
+  BUCKET_NAME="$(sed -nE 's/^[[:space:]]*bucket_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' wrangler.toml | head -1)"
+  [[ -n "$BUCKET_NAME" ]] || fail "wrangler.toml から R2 の bucket_name を読めませんでした。"
+
   note "seeding an admin user, three games (draft + published + queued), a report, a history row and a takedown request"
   npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     insert into users (id, google_sub, email, display_name, created_at, bio, profile_links)
@@ -154,9 +166,15 @@ dev_fixture_up() {
     insert into games (id, author_id, status, title, go_version, created_at, generation_state)
       values ('$GAME_ID', '$USER_ID', 'draft', '幅の検査の作品', '', 1, 'ready');
     insert into games (id, author_id, status, title, go_version, created_at, published_at,
-                       generation_state, preview_key, like_count, play_count, tag1, tag2, tag3)
+                       generation_state, preview_key, like_count, play_count, tag1, tag2, tag3,
+                       source_key, wasm_key)
       values ('$PUBLISHED_GAME_ID', '$USER_ID', 'published', '幅の検査の公開作品', '', 1, 1,
-              'ready', 'width-check-preview', 3, 123456, 'puzzle', 'race-sports', 'rhythm-sound');
+              'ready', 'width-check-preview', 3, 123456, 'puzzle', 'race-sports', 'rhythm-sound',
+              '$SOURCE_KEY', '$WASM_KEY');
+    insert into build_cache (source_sha256, go_version, source_key, wasm_key, wasm_bytes, wasm_sha256,
+                             compressed_bytes, compressed_sha256, content_encoding, created_at)
+      values ('$SOURCE_SHA', 'go1.26.5', '$SOURCE_KEY', '$WASM_KEY', 11404411, '$SOURCE_SHA',
+              2282839, '$SOURCE_SHA', 'br', 1);
     update users set is_admin = 1 where id = '$USER_ID';
     insert into games (id, author_id, status, title, go_version, created_at, published_at,
                        generation_state, preview_key, review_state)
@@ -176,6 +194,29 @@ dev_fixture_up() {
               null, null, null);
   " >"$WORK/seed.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/seed.log" >&2; fail "検査用の行を作れませんでした。"; }
+
+  # **ソースの本体を R2 へ置く**（#383）。**空白を持たない長い行**（配列リテラル・文字列）と、
+  # 日本語の長いコメントを含める——`<pre>` は折り返さないので、`<pre>` の中だけが横に送られ、
+  # ページ全体が横スクロールしないことを 390px で測る。
+  node -e '
+const long = Array.from({ length: 120 }, (_, i) => `0x${(i * 2654435761 % 4294967296).toString(16).padStart(8, "0")}`).join(",");
+const text = [
+  "package main",
+  "",
+  "// 幅の検査のソースです。長い行が折り返されず、pre の中だけが横に送られることを確かめます。",
+  "import \"github.com/hajimehoshi/ebiten/v2\"",
+  "",
+  `var table = []uint32{${long}}`,
+  `var label = "${"とても長い文字列".repeat(40)}"`,
+  "",
+  "func main() { _ = ebiten.RunGame(nil) }",
+  "",
+].join("\n");
+require("node:fs").writeFileSync(process.argv[1], text);
+' "$WORK/source.go" || fail "検査用のソースを作れませんでした。"
+  npx wrangler r2 object put "$BUCKET_NAME/$SOURCE_KEY" --local --persist-to "$STATE" \
+    --file "$WORK/source.go" --content-type 'text/plain; charset=utf-8' >"$WORK/r2.log" 2>&1 ||
+    { sed 's/^/    /' "$WORK/r2.log" >&2; fail "検査用のソースを R2 へ置けませんでした。"; }
 
   # セッションの署名は `src/session.ts` と同じ形（`<base64url(JSON)>.<base64url(HMAC)>`）。
   # **秘密はこの検査の中だけで作って渡す。** `.dev.vars` を読まないのは、開発者の環境に
@@ -263,7 +304,8 @@ dev_fixture_down() {
 # 1 度も開かないまま緑になる。** #330 の実装中に実際にそうなっていた。
 #
 # **綴りの正本はコードにある**——`/works/` は `src/paths.ts` の `WORK_PAGE_PREFIX`、
-# `/users/` は `src/users-page-paths.ts` の `AUTHOR_PAGE_PREFIX`。**シェルからは
+# `/users/` は `src/users-page-paths.ts` の `AUTHOR_PAGE_PREFIX`、`/source/` は
+# `src/work-source.ts` の `WORK_SOURCE_PREFIX`。**シェルからは
 # import できないので、ここは写しである。** 腐らせないために、**知らない接頭辞が来たら
 # 落とす**（下）。同じ規則を `test/page-shell.test.ts` の `prefixIds` が定数から組み立てて
 # いるので、綴りを変えれば必ずどちらかが赤くなる。
@@ -287,6 +329,8 @@ if (!Array.isArray(paths) || paths.length === 0) {
 const ids = new Map([
   ["/works/", process.argv[2]],
   ["/users/", process.argv[3]],
+  // ソースの閲覧（#383）は公開済みの作品にしか開けない。draft の id では 404 しか測れない。
+  ["/source/", process.argv[4]],
 ]);
 
 const filled = paths.map((path) => {
@@ -306,7 +350,7 @@ const filled = paths.map((path) => {
   return path + id;
 });
 console.log(filled.join(","));
-' "$WORK/pages.json" "$GAME_ID" "$USER_ID" || fail "画面の一覧を読めませんでした。"
+' "$WORK/pages.json" "$GAME_ID" "$USER_ID" "$PUBLISHED_GAME_ID" || fail "画面の一覧を読めませんでした。"
 }
 
 ##

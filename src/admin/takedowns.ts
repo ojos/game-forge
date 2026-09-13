@@ -1,14 +1,14 @@
 /**
- * 削除申請の一覧と、採った措置の記録（仕様 2.4.3 / 8.4 / #406。M10-4）。
+ * 削除依頼の一覧と、採った措置の記録（仕様 2.4.3 / 8.4 / #406。M10-4）。
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 申請は主張であって、認定ではない
+ * 依頼は主張であって、認定ではない
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **申請が来ても作品は 1 ビットも動かない**（`src/takedown.ts` の冒頭）。この画面は
+ * **依頼が来ても作品は 1 ビットも動かない**（`src/takedown.ts` の冒頭）。この画面は
  * **人が読んで決めた措置を記録する口**であり、措置を自動で選ばない。
  *
- * **申請者が名乗った氏名・連絡先・本文は、検証していない値である**（0018）。画面でも
+ * **依頼者が名乗った氏名・連絡先・本文は、検証していない値である**（0018）。画面でも
  * そう分かるように「未検証」と書き、**連絡先をリンクにしない**——`mailto:` や URL に
  * すると、未検証の値を「押せば届く宛先」として扱うことになる（5.6 が `x_handle` について
  * 「未検証の自称値をリンク化しない」と書いたのと同じ線）。
@@ -71,7 +71,7 @@ import { adminFooter, adminHead } from './shell.js';
  */
 const ACTION_CHOICES: Readonly<Record<TakedownAction, { readonly label: string; readonly note: string }>> = {
   removed: {
-    label: '削除（申請を認める）',
+    label: '削除（依頼を認める）',
     note: '記録だけです。作品の取り下げは D1 の手作業で行います（docs/takedown.md の 4 章）。',
   },
   restricted: {
@@ -105,9 +105,9 @@ interface TakedownRow {
 }
 
 /**
- * 削除申請を引く。**未対応を先に、それぞれ新しい順。**
+ * 削除依頼を引く。**未対応を先に、それぞれ新しい順。**
  *
- * **件数を固定する**（{@link ADMIN_LIST_LIMIT}。2.3.3 の条件 1 と同じ考え方）。削除申請は
+ * **件数を固定する**（{@link ADMIN_LIST_LIMIT}。2.3.3 の条件 1 と同じ考え方）。削除依頼は
  * 例外的な出来事で（0018 の「平常時この表はほとんど増えず」）、**未対応が 50 件を超える
  * ことを想定していない**——超えたときが頁送りを設計する契機である（`ADMIN_LIST_LIMIT`）。
  *
@@ -116,7 +116,7 @@ interface TakedownRow {
  *
  * @param env バインディングと環境変数
  * @param limit 取得件数の上限
- * @returns 申請の行
+ * @returns 依頼の行
  */
 async function listTakedowns(
   env: Env,
@@ -172,16 +172,16 @@ function isTakedownAction(value: string | null): value is TakedownAction {
  * 対象の作品の欄を組み立てる。
  *
  * **作品ページは app ホストにある**ので絶対 URL で送る（`src/admin/review.ts` と同じ）。
- * **実在しない申請も壊さずに出す**（0018）——申請に書かれた id をそのまま見せる。
+ * **実在しない依頼も壊さずに出す**（0018）——依頼に書かれた id をそのまま見せる。
  *
- * @param row 申請の行
+ * @param row 依頼の行
  * @param appHost app ホスト
  * @returns HTML
  */
 function renderGame(row: TakedownRow, appHost: string): string {
   const gameId = escapeHtml(row.game_id);
   if (row.game_status === null) {
-    return `<p class="gf-admin-meta">対象の作品: <strong>見つかりません</strong>（申請に書かれた id: <code>${gameId}</code>）</p>`;
+    return `<p class="gf-admin-meta">対象の作品: <strong>見つかりません</strong>（依頼に書かれた id: <code>${gameId}</code>）</p>`;
   }
   const workUrl = `https://${escapeHtml(appHost)}${escapeHtml(workPagePath(row.game_id))}`;
   const state =
@@ -199,7 +199,7 @@ function renderGame(row: TakedownRow, appHost: string): string {
 /**
  * 措置を記録するフォーム（未対応の行だけ）。
  *
- * @param row 申請の行
+ * @param row 依頼の行
  * @returns HTML
  */
 function renderForm(row: TakedownRow): string {
@@ -217,7 +217,7 @@ function renderForm(row: TakedownRow): string {
     <legend>採る措置（1 度記録したら上書きしません）</legend>
     ${choices}
     </fieldset>
-    <label for="reason-${id}">理由（必須。履歴に残り、申請への回答に使います）</label>
+    <label for="reason-${id}">理由（必須。履歴に残り、依頼への回答に使います）</label>
     <input id="reason-${id}" name="${ADMIN_REASON_FIELD}" type="text" required>
     <button type="submit">措置を記録する</button>
   </form>`;
@@ -226,7 +226,7 @@ function renderForm(row: TakedownRow): string {
 /**
  * 記録済みの措置の欄（措置済みの行だけ）。
  *
- * @param row 申請の行（`handled_at` が入っているもの）
+ * @param row 依頼の行（`handled_at` が入っているもの）
  * @returns HTML
  */
 function renderHandled(row: TakedownRow): string {
@@ -251,10 +251,10 @@ function renderHandled(row: TakedownRow): string {
 /**
  * 1 行を組み立てる。
  *
- * **D1 から来る値はすべて `escapeHtml` を通す。** 申請の中身は非ログインの誰でも書ける値で
+ * **D1 から来る値はすべて `escapeHtml` を通す。** 依頼の中身は非ログインの誰でも書ける値で
  * あり（`src/takedown-routes.ts`）、作品の題名は作者が書いた値である。
  *
- * @param row 申請の行
+ * @param row 依頼の行
  * @param appHost app ホスト
  * @returns HTML
  */
@@ -264,7 +264,7 @@ function renderRow(row: TakedownRow, appHost: string): string {
   <p class="gf-admin-badge">${handled ? '措置済み' : '未対応'}</p>
   <p class="gf-admin-row-title">受付: ${timeOf(row.received_at)}</p>
   ${renderGame(row, appHost)}
-  <p class="gf-admin-meta">申請者（未検証）: <span class="gf-admin-unverified">${escapeHtml(row.claimant_name)}</span>
+  <p class="gf-admin-meta">依頼者（未検証）: <span class="gf-admin-unverified">${escapeHtml(row.claimant_name)}</span>
      ／ 連絡先（未検証）: <span class="gf-admin-unverified">${escapeHtml(row.claimant_contact)}</span></p>
   <p class="gf-admin-takedown-body">${escapeHtml(row.body)}</p>
   <p class="gf-admin-meta">受付 id: <code>${escapeHtml(row.id)}</code></p>
@@ -273,7 +273,7 @@ function renderRow(row: TakedownRow, appHost: string): string {
 }
 
 /**
- * 削除申請の一覧を返す。
+ * 削除依頼の一覧を返す。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -287,24 +287,24 @@ async function showTakedowns(request: Request, env: Env): Promise<Response> {
   // 「措置は 上書きしません」のように文節の途中に隙間が出る（本番の画面で見つかった）。
   // ソースの行を短く保ちたいときは、テンプレートの外で文字列を連結する。
   const intro =
-    '<p><strong>申請は主張であって、認定ではありません。</strong>届いただけでは作品は動きません。' +
+    '<p><strong>依頼は主張であって、認定ではありません。</strong>届いただけでは作品は動きません。' +
     '読んで判断し、採った措置を記録してください（仕様 8.4 / <code>docs/takedown.md</code>）。</p>';
   const caution =
-    '<p>申請者の氏名・連絡先・本文は<strong>検証していない値</strong>です。' +
+    '<p>依頼者の氏名・連絡先・本文は<strong>検証していない値</strong>です。' +
     '<strong>1 度記録した措置は上書きしません。</strong>' +
     '「削除」を記録しても作品は取り下げられません——取り下げは戻せない操作なので、' +
     'この画面に置いていません（仕様 2.4.3）。</p>';
 
   return html(
-    `${adminHead('削除申請')}
-<h1>削除申請</h1>
+    `${adminHead('削除依頼')}
+<h1>削除依頼</h1>
 ${renderOutcomeNotice(outcome)}
 ${intro}
 ${caution}
 <h2>未対応を先に、新しい順（未対応 ${pending} 件 ／ 表示 ${rows.length} 件）</h2>
 ${
   rows.length === 0
-    ? '<p>削除申請はまだありません。</p>'
+    ? '<p>削除依頼はまだありません。</p>'
     : `<ul class="gf-admin-list">
 ${rows.map((row) => renderRow(row, env.APP_HOST)).join('\n')}
 </ul>`
@@ -331,7 +331,7 @@ async function handleTakedownAction(
   adminUserId: string | null,
 ): Promise<Response> {
   if (adminUserId === null) {
-    console.error('[admin] 実行者が分からない要求を削除申請の口で受けました');
+    console.error('[admin] 実行者が分からない要求を削除依頼の口で受けました');
     return adminNotFound(request);
   }
 
@@ -375,7 +375,7 @@ async function handleTakedownAction(
 }
 
 /**
- * 削除申請の経路。
+ * 削除依頼の経路。
  *
  * **ここで権限を確かめない**（`src/admin/review.ts` と同じ。守るのは
  * `handleAdminRequest` で、**既定は「閉」**である）。

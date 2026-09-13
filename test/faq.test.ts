@@ -128,7 +128,7 @@ describe('仕様と食い違わない（#373 の constraints。4.3 / 4.4 / 5.6 /
     expect(answer).not.toContain('本まで招待コードを発行できます');
   });
 
-  it('権利は規約（5.6）へ、削除申請は削除申請の画面（8.4）へ導く', () => {
+  it('権利は規約（5.6）へ、削除依頼は削除依頼の画面（8.4）へ導く', () => {
     const rights = answerOf('rights');
     expect(rights).toContain('生成した利用者に帰属');
     expect(rights).toContain('非独占');

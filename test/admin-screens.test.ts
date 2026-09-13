@@ -230,7 +230,7 @@ beforeEach(async () => {
   await env.DB.prepare(`delete from ${DESCRIPTION_CHANGES_TABLE}`).run();
   await env.DB.prepare('delete from reports').run();
   await env.DB.prepare('delete from games').run();
-  // 削除申請（#406）。作品を外部キーで指さないが、画面の件数を毎回 0 から数える。
+  // 削除依頼（#406）。作品を外部キーで指さないが、画面の件数を毎回 0 から数える。
   await env.DB.prepare('delete from takedown_requests').run();
   await env.DB.prepare('update users set banned_at = null').run();
 });
@@ -309,7 +309,7 @@ describe('足した経路は、権限が無いと 404 になる（2.4.2 / ADMIN_
 describe('画面が経路表から導かれる（2.4.5。一覧を書き写さない）', () => {
   it('導出した画面が 4 枚あり、綴りが正本と一致する', () => {
     // **`ssrPagePaths` は `test/admin-page-shell.test.ts` が外枠の検査に使う導出である。**
-    // ここでは「M10-3 の 3 枚と #406 の削除申請がその網に入った」ことだけを見る
+    // ここでは「M10-3 の 3 枚と #406 の削除依頼がその網に入った」ことだけを見る
     // （`/api/*` の 3 本は POST なので、画面としては導かれない）。
     expect(ssrPagePaths(createAdminRoutes()).sort()).toEqual(
       [ADMIN_HOME_PATH, ADMIN_USERS_PATH, ADMIN_TAKEDOWNS_PATH, ADMIN_ACTIONS_PATH].sort(),
@@ -1523,11 +1523,11 @@ describe('操作の履歴の画面（2.4.4）', () => {
 });
 
 /**
- * 削除申請を 1 件入れる（受付の口は `test/legal.test.ts` が見る）。
+ * 削除依頼を 1 件入れる（受付の口は `test/legal.test.ts` が見る）。
  *
- * @param gameId 申請に書かれた作品の id（実在しなくてよい）
+ * @param gameId 依頼に書かれた作品の id（実在しなくてよい）
  * @param fields 上書きする列
- * @returns 申請の id
+ * @returns 依頼の id
  */
 async function insertTakedown(
   gameId: string,
@@ -1559,9 +1559,9 @@ async function insertTakedown(
   return id;
 }
 
-describe('削除申請の一覧と措置の記録（2.4.3 / 8.4 / #406）', () => {
-  it('未対応の申請が先に出て、フォームを持つ。措置済みはフォームを持たない', async () => {
-    const gameId = await insertGame(null, '申請された作品');
+describe('削除依頼の一覧と措置の記録（2.4.3 / 8.4 / #406）', () => {
+  it('未対応の依頼が先に出て、フォームを持つ。措置済みはフォームを持たない', async () => {
+    const gameId = await insertGame(null, '依頼された作品');
     const handled = await insertTakedown(gameId, {
       receivedAt: 500,
       handledAt: 600,
@@ -1575,13 +1575,13 @@ describe('削除申請の一覧と措置の記録（2.4.3 / 8.4 / #406）', () =
     // **受付が新しくても、措置済みは未対応より後に出る。**
     expect(body.indexOf(`takedown-${pending}`)).toBeGreaterThan(-1);
     expect(body.indexOf(`takedown-${pending}`)).toBeLessThan(body.indexOf(`takedown-${handled}`));
-    // 未対応の行にだけ、その申請の id を運ぶフォームがある。
+    // 未対応の行にだけ、その依頼の id を運ぶフォームがある。
     expect(body).toContain(`name="${ADMIN_TAKEDOWN_ID_FIELD}" value="${pending}"`);
     expect(body).not.toContain(`name="${ADMIN_TAKEDOWN_ID_FIELD}" value="${handled}"`);
     expect(body).toContain('根拠が無い');
-    expect(body).toContain('申請された作品');
-    // **申請者の値は未検証だと書く**（0018）。
-    expect(body).toContain('申請者（未検証）');
+    expect(body).toContain('依頼された作品');
+    // **依頼者の値は未検証だと書く**（0018）。
+    expect(body).toContain('依頼者（未検証）');
     expect(body).toContain('連絡先（未検証）');
     // **連絡先をリンクにしない。**
     expect(body).not.toContain('mailto:owner@example.invalid');
@@ -1589,7 +1589,7 @@ describe('削除申請の一覧と措置の記録（2.4.3 / 8.4 / #406）', () =
     expect(body).toContain('履歴なし');
   });
 
-  it('実在しない作品の申請も壊れずに出る（0018）', async () => {
+  it('実在しない作品の依頼も壊れずに出る（0018）', async () => {
     const missing = `missing-${crypto.randomUUID()}`;
     await insertTakedown(missing);
 
@@ -1599,7 +1599,7 @@ describe('削除申請の一覧と措置の記録（2.4.3 / 8.4 / #406）', () =
     expect(body).toContain(missing);
   });
 
-  it('申請の中身と作品の題名をエスケープして出す（非ログインの誰でも書ける値である）', async () => {
+  it('依頼の中身と作品の題名をエスケープして出す（非ログインの誰でも書ける値である）', async () => {
     const gameId = await insertGame(null, '<b>題名</b>');
     await insertTakedown(gameId, { claimantName: '<script>alert(1)</script>' });
 
@@ -1618,7 +1618,7 @@ describe('削除申請の一覧と措置の記録（2.4.3 / 8.4 / #406）', () =
       {
         [ADMIN_TAKEDOWN_ID_FIELD]: id,
         [ADMIN_TAKEDOWN_ACTION_FIELD]: 'restricted',
-        [ADMIN_REASON_FIELD]: '権利者の申請により新規露出を止める',
+        [ADMIN_REASON_FIELD]: '権利者の依頼により新規露出を止める',
       },
       adminCookie,
     );
@@ -1656,7 +1656,7 @@ describe('削除申請の一覧と措置の記録（2.4.3 / 8.4 / #406）', () =
     expect(body).toContain('審査キューへは入れていません');
   });
 
-  it('記録済みの申請へもう 1 度送ると断り、何も書かない', async () => {
+  it('記録済みの依頼へもう 1 度送ると断り、何も書かない', async () => {
     const gameId = await insertGame(null);
     const id = await insertTakedown(gameId);
     const fields = {
@@ -1722,7 +1722,7 @@ describe('削除申請の一覧と措置の記録（2.4.3 / 8.4 / #406）', () =
       {
         [ADMIN_TAKEDOWN_ID_FIELD]: id,
         [ADMIN_TAKEDOWN_ACTION_FIELD]: 'removed',
-        [ADMIN_REASON_FIELD]: '申請を認める',
+        [ADMIN_REASON_FIELD]: '依頼を認める',
       },
       adminCookie,
     );
@@ -1735,7 +1735,7 @@ describe('削除申請の一覧と措置の記録（2.4.3 / 8.4 / #406）', () =
     expect(body).toContain('作品はまだ公開中です');
   });
 
-  it('操作の履歴に、削除申請の措置と一覧の該当行へのリンクが出る', async () => {
+  it('操作の履歴に、削除依頼の措置と一覧の該当行へのリンクが出る', async () => {
     const id = await insertTakedown(`missing-${crypto.randomUUID()}`);
     await post(
       ADMIN_TAKEDOWN_API_PATH,
@@ -1763,7 +1763,7 @@ describe('削除申請の一覧と措置の記録（2.4.3 / 8.4 / #406）', () =
     expect(text).toContain('戻せない操作なので、この画面に置いていません');
   });
 
-  it('ヘッダのナビから削除申請の画面へ行ける', async () => {
+  it('ヘッダのナビから削除依頼の画面へ行ける', async () => {
     const { body } = await open(ADMIN_ACTIONS_PATH, adminCookie);
     expect(body).toContain(`href="${ADMIN_TAKEDOWNS_PATH}"`);
   });

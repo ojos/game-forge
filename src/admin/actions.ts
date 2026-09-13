@@ -66,7 +66,7 @@ import { TAKEDOWN_ACTIONS } from '../takedown.js';
 import type { TakedownAction } from '../takedown.js';
 
 /**
- * 削除申請の措置を履歴に残すときの綴り（#406 / 8.4）。
+ * 削除依頼の措置を履歴に残すときの綴り（#406 / 8.4）。
  *
  * **措置の綴りの正本は `src/takedown.ts` の `TAKEDOWN_ACTIONS` で、ここはそこから導く。**
  * 書き写すと、措置を 1 つ足した日に履歴だけが古い綴りを見続ける。
@@ -97,7 +97,7 @@ export function takedownAdminAction(action: TakedownAction): `takedown-${Takedow
  * 増えた状態を検査で落とす）。
  *
  * **先頭の 4 つは「戻せる操作」である**（2.4.3）。`queued` ↔ `cleared` と BAN の付け外しが、
- * それぞれ往復で 2 つずつ。**残りの 3 つは削除申請に採った措置の記録**（#406 / 8.4。
+ * それぞれ往復で 2 つずつ。**残りの 3 つは削除依頼に採った措置の記録**（#406 / 8.4。
  * {@link TAKEDOWN_ADMIN_ACTIONS}）で、**状態を戻す操作ではない**——1 度記録した措置は
  * 上書きしない（0018）。
  */
@@ -161,7 +161,7 @@ export type ReasonValidation =
 /**
  * 理由を検査し、保存する形（前後の空白を除いたもの）へ落とす（2.4.4）。
  *
- * **空を受け付けない。** 2.4.4 が「理由を必須にする」と定めた理由は、**削除申請への
+ * **空を受け付けない。** 2.4.4 が「理由を必須にする」と定めた理由は、**削除依頼への
  * 回答に使うため**である（「誰が何をした」だけでは答えられない）。
  *
  * **`String#trim` で判定する。** 全角空白（U+3000）も空白として落ちるので、
@@ -427,7 +427,7 @@ export async function setUserBan(
   );
 }
 
-/** 削除申請の措置を記録した結果。 */
+/** 削除依頼の措置を記録した結果。 */
 export type TakedownRecordOutcome =
   | {
       readonly ok: true;
@@ -441,7 +441,7 @@ export type TakedownRecordOutcome =
   | { readonly ok: false; readonly reason: 'already-handled' | 'not-found' | 'write-failed' };
 
 /**
- * 削除申請に採った措置を記録する（8.4 / 2.4.3 / #406）。
+ * 削除依頼に採った措置を記録する（8.4 / 2.4.3 / #406）。
  *
  * ══════════════════════════════════════════════════════════════════════════════
  * 2 か所へ 1 つの batch で書く
@@ -462,7 +462,7 @@ export type TakedownRecordOutcome =
  * ══════════════════════════════════════════════════════════════════════════════
  *
  * **ここでは履歴を先に積む。** 審査の往復は「操作した後の状態」を `exists` で確かめられる
- * が、**削除申請で守りたいのは「まだ措置が記録されていない」という操作前の状態**であり、
+ * が、**削除依頼で守りたいのは「まだ措置が記録されていない」という操作前の状態**であり、
  * UPDATE がそれを消してしまう。後から「`handled_at` がこの時刻で、`action` がこの綴りか」を
  * 見る形にすると、**同じ秒に同じ措置をもう 1 度送ったとき**に 2 回目の履歴だけが積まれる。
  *
@@ -474,24 +474,24 @@ export type TakedownRecordOutcome =
  *   4. `restricted` なら、`review-queued` の履歴（**1 の行が在り、作品が `queued` のときだけ**）
  *
  * **`changes()` は使わない**（このファイルの冒頭と同じ理由）。条件はすべて素の SQL の
- * `exists` で決まる。**記録済みの申請へもう 1 度送ると、1 が入らず、2〜4 もすべて空振りする**
+ * `exists` で決まる。**記録済みの依頼へもう 1 度送ると、1 が入らず、2〜4 もすべて空振りする**
  * ——措置も作品の状態も履歴も、1 ビットも動かない。
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 作品が実在しない申請
+ * 作品が実在しない依頼
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **申請の `game_id` は申請者が書いた値で、実在しないことがある**（0018 が外部キーを
+ * **依頼の `game_id` は依頼者が書いた値で、実在しないことがある**（0018 が外部キーを
  * 張らなかった理由）。そのときも**措置と `takedown-*` の履歴は記録する**——受け取った
- * 申請の記録を落とすほうが 8.4 に反する。`restricted` でも 3 と 4 は空振りし、結果の
+ * 依頼の記録を落とすほうが 8.4 に反する。`restricted` でも 3 と 4 は空振りし、結果の
  * `queued` が false になる。取り下げ済み（`status = 'removed'`）の作品も同じ扱いである
  * （{@link setReviewState} が往復の外側に置いたのと同じ理由）。
  *
  * **`cleared` の作品も `queued` へ戻す。** 審査で「問題なし」とした作品にも、権利者からの
- * 申請で新規露出を止める判断はありうる（通報と削除申請は別の経路である）。
+ * 依頼で新規露出を止める判断はありうる（通報と削除依頼は別の経路である）。
  *
  * @param env バインディングと環境変数
- * @param params 申請の id・措置・実行者・理由・時刻
+ * @param params 依頼の id・措置・実行者・理由・時刻
  * @returns 記録の結果
  */
 export async function recordTakedownAction(
@@ -559,8 +559,8 @@ export async function recordTakedownAction(
         params.actorId,
         createdAt,
         // **審査の履歴だけを読んでも、なぜ止めたかが分かるようにする**（2.4.4。理由は
-        // 削除申請への回答に使う）。
-        `削除申請 ${params.requestId} に「新規露出の停止」を記録: ${params.reason}`,
+        // 削除依頼への回答に使う）。
+        `削除依頼 ${params.requestId} に「新規露出の停止」を記録: ${params.reason}`,
         params.requestId,
         PUBLISHED_STATUS,
         REVIEW_QUEUED,
@@ -574,7 +574,7 @@ export async function recordTakedownAction(
     results = await env.DB.batch(statements);
   } catch (error) {
     // 履歴の CHECK 違反（理由が空・未適用の 0031）や D1 の障害。**batch ごと巻き戻る。**
-    console.error('[admin] 削除申請の措置と履歴を書けませんでした', error);
+    console.error('[admin] 削除依頼の措置と履歴を書けませんでした', error);
     return { ok: false, reason: 'write-failed' };
   }
 
@@ -590,7 +590,7 @@ export async function recordTakedownAction(
   if ((results[1]?.meta.changes ?? 0) === 0) {
     // **履歴だけが入って措置が無い形は、構造上ありえない**（同じトランザクションの中で
     // 1 が `handled_at is null` を見ている）。ありえない形を黙って通さない。
-    console.error('[admin] 措置の無い削除申請の履歴が入りました（batch の意味が変わっています）');
+    console.error('[admin] 措置の無い削除依頼の履歴が入りました（batch の意味が変わっています）');
   }
 
   return { ok: true, queued: restricted && (results[3]?.meta.changes ?? 0) > 0 };

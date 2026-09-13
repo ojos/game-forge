@@ -1,5 +1,5 @@
 /**
- * 削除申請の受け口（8.4 / #41）。
+ * 削除依頼の受け口（8.4 / #41）。
  *
  * **画面（GET）は `src/legal.ts` が持ち、ここは POST だけを持つ。** 分けるのは、
  * あちらが D1 に触らないことを構造で保つためである——**画面を足す作業が、
@@ -34,7 +34,7 @@ const JSON_MEDIA_TYPE = 'application/json';
  * 作品 URL からでも ID を受け取れるようにする。
  *
  * **権利者は作品ページの URL をそのまま貼る。** ID だけを求めると、URL を貼った人が
- * 「受け付けられません」と言われる——**こちらが 1 行書けば済むことを、申請者に
+ * 「受け付けられません」と言われる——**こちらが 1 行書けば済むことを、依頼者に
  * やらせない。**
  *
  * @param raw 入力された文字列
@@ -47,7 +47,7 @@ export function gameIdFromInput(raw: string): string {
 }
 
 /**
- * 削除申請を受け付ける。
+ * 削除依頼を受け付ける。
  *
  * **ログインを要求しない**（`src/takedown.ts` の冒頭）。
  *
@@ -110,7 +110,7 @@ async function handleTakedown(request: Request, env: Env): Promise<Response> {
     : json({ received: true }, 200);
 }
 
-/** 削除申請の受け口の経路。 */
+/** 削除依頼の受け口の経路。 */
 export const takedownRoutes: readonly Route[] = [
   { method: 'POST', path: TAKEDOWN_SUBMIT_PATH, handler: handleTakedown },
 ];

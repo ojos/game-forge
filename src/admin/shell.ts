@@ -67,7 +67,7 @@ export const ADMIN_CSS_PATH = '/assets/admin.css';
 const ADMIN_NAV: readonly { readonly path: string; readonly label: string }[] = [
   { path: ADMIN_HOME_PATH, label: '審査キュー' },
   { path: ADMIN_USERS_PATH, label: '利用者' },
-  { path: ADMIN_TAKEDOWNS_PATH, label: '削除申請' },
+  { path: ADMIN_TAKEDOWNS_PATH, label: '削除依頼' },
   { path: ADMIN_ACTIONS_PATH, label: '操作の履歴' },
 ];
 
@@ -96,7 +96,7 @@ export const ADMIN_FOOTER_MARK = '<footer class="gf-admin-footer">';
  * 引数にしないのは、**出し分ける理由が 1 つも無い**からである（付け忘れる余地を作らない）。
  *
  * **ナビを出す**（M10-3 で足した）。画面が複数あるので、**どこからでも全部の画面へ
- * 行ける**必要がある（#406 で削除申請を足して 4 枚）——`app` ホストの行き先は 1 本も混ぜない（2.4.1 / 4.4。
+ * 行ける**必要がある（#406 で削除依頼を足して 4 枚）——`app` ホストの行き先は 1 本も混ぜない（2.4.1 / 4.4。
  * `test/admin-page-shell.test.ts` が照合する）。
  *
  * @param title `<title>` の中身（接尾辞はこの関数が足す）
@@ -124,8 +124,8 @@ export function adminHead(title: string): string {
  * 管理画面のフッタ。
  *
  * **利用者向けのフッタ（`src/legal.ts` の `siteFooter`）を呼ばない。** あれは規約と
- * 削除申請への窓口で、**どちらも `app` ホストにしか無い**（置けば 404 へのリンクになる）。
- * #41 の「削除申請フォームが全ページのフッターから到達できる」は**利用者向けの画面に
+ * 削除依頼への窓口で、**どちらも `app` ホストにしか無い**（置けば 404 へのリンクになる）。
+ * #41 の「削除依頼フォームが全ページのフッターから到達できる」は**利用者向けの画面に
  * ついての要求**であり、運営しか見ない画面がその窓口を持つ意味は無い。
  *
  * **ログイン状態で出し分けない。** そもそも管理画面はログイン済みの管理者しか開けない

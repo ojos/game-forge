@@ -161,7 +161,7 @@ describe('規約に、仕様が名指しした条項が含まれている（5.6 
   });
 });
 
-describe('削除申請フォームが全ページのフッターから到達できる（#41 の acceptance 2）', () => {
+describe('削除依頼フォームが全ページのフッターから到達できる（#41 の acceptance 2）', () => {
   it('経路表から導いた全 SSR 画面にフッターが出る', async () => {
     // **一覧を手で書かない。** 経路表から導くので、**画面を 1 枚足してフッターを
     // 書き忘れると、この検査が赤くなる。**
@@ -279,7 +279,7 @@ describe('削除申請フォームが全ページのフッターから到達で�
     expect(siteFooter()).toBe(siteFooter());
   });
 
-  it('削除申請フォームはログイン無しで開ける', async () => {
+  it('削除依頼フォームはログイン無しで開ける', async () => {
     const { status, body } = await get(TAKEDOWN_PATH);
     expect(status).toBe(200);
     expect(body).toContain(TAKEDOWN_SUBMIT_PATH);
@@ -288,7 +288,7 @@ describe('削除申請フォームが全ページのフッターから到達で�
 });
 
 describe('送信防止措置の記録（8.4 / #41 の acceptance 3）', () => {
-  it('申請を追記し、作品には触らない', async () => {
+  it('依頼を追記し、作品には触らない', async () => {
     const { sent, send } = recordingSend();
     const outcome = await recordTakedownRequest(
       env,
@@ -315,11 +315,11 @@ describe('送信防止措置の記録（8.4 / #41 の acceptance 3）', () => {
   });
 
   // **措置の記録は運営の管理画面の口へ移した**（#406。`src/admin/actions.ts` の
-  // `recordTakedownAction`）。「申請の内容は書き換わらない」「措置を 2 度上書きしない」は、
-  // 実行者と履歴まで含めて `test/admin-actions.test.ts` の「削除申請の措置の記録」が確かめる
+  // `recordTakedownAction`）。「依頼の内容は書き換わらない」「措置を 2 度上書きしない」は、
+  // 実行者と履歴まで含めて `test/admin-actions.test.ts` の「削除依頼の措置の記録」が確かめる
   // ——**履歴を残さずに措置を書ける関数を `src/takedown.ts` に残さない**ため、ここからは外した。
 
-  it('申請を認めなかったことも記録できる', () => {
+  it('依頼を認めなかったことも記録できる', () => {
     // **残さないと「見ていない」と区別がつかない。**
     expect(TAKEDOWN_ACTIONS).toContain('rejected');
   });
@@ -396,7 +396,7 @@ describe('通知は同じ作品につき 1 通（#41 の intake）', () => {
     expect(rows?.n).toBe(3);
   });
 
-  it('通知に申請者の連絡先も本文も載らない', async () => {
+  it('通知に依頼者の連絡先も本文も載らない', async () => {
     const { sent, send } = recordingSend();
     await recordTakedownRequest(
       mailEnv(),
@@ -418,7 +418,7 @@ describe('通知は同じ作品につき 1 通（#41 の intake）', () => {
 
 describe('受付の入口（非ログイン）', () => {
   it('作品 URL を貼っても ID を取り出せる', () => {
-    // **こちらが 1 行書けば済むことを、申請者にやらせない。**
+    // **こちらが 1 行書けば済むことを、依頼者にやらせない。**
     expect(gameIdFromInput('https://app.example.invalid/works/abc-123')).toBe('abc-123');
     expect(gameIdFromInput('  /works/abc-123?forks=20  ')).toBe('abc-123');
     expect(gameIdFromInput('abc-123')).toBe('abc-123');

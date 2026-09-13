@@ -1841,7 +1841,7 @@ describe('プレイ数（#377 / 仕様 2.3.6）', () => {
     expect(body).toContain('<p class="gf-plays">プレイ 8</p>\n<p class="gf-likes">いいね 2</p>');
   });
 
-  it('公開済みの作品ページは D1 の写しを出し、計上のスクリプトをフッタの後ろに置き、DO を呼ばない', async () => {
+  it('公開済みの作品ページは D1 の写しを出し、計上のスクリプトを iframe の直前に置き、DO を呼ばない', async () => {
     const { id, userId } = await seedPublished('shown');
     const updated = await env.DB.prepare('update games set play_count = 5 where id = ?').bind(id).run();
     expect(updated.meta.changes).toBe(1);
@@ -1862,8 +1862,9 @@ describe('プレイ数（#377 / 仕様 2.3.6）', () => {
       // スクリプトは 1 つで、中身は窓口が組み立てたものそのままである（書き写さない）。
       expect(body).toContain(playReportScript(id));
       expect(body.split(`fetch(${JSON.stringify(PLAY_PATH)}`).length - 1).toBe(1);
-      // **フッタの後ろ**（ヘッダにスクリプトを置かない。`src/generate-page.ts` と同じ置き方）。
-      expect(body.lastIndexOf('</footer>')).toBeLessThan(body.indexOf(playReportScript(id)));
+      // **iframe の直前**（合図より先にリスナーを登録する。PR #425 の Copilot の指摘）。ヘッダには置かない。
+      expect(body).toContain(`${playReportScript(id)}\n<iframe class="gf-frame"`);
+      expect(body.indexOf('</header>')).toBeLessThan(body.indexOf(playReportScript(id)));
       // 数える iframe は `/g/` を指し、`sandbox` は `allow-scripts` だけのまま（7.2）。
       expect(body).toContain(`src="https://${env.SANDBOX_HOST}/g/${id}/" sandbox="allow-scripts"`);
     }

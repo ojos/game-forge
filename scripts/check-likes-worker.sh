@@ -64,8 +64,22 @@ LIKES_CONFIG="workers/likes/wrangler.toml"
 PAGES_CONFIG="wrangler.toml"
 # 束縛の名前と、それを読んでよい唯一のファイル（窓口）の組。**プレイ数（#377）は同じ Worker の
 # 別クラスなので、同じ検査を同じ形で当てる。**
+#
+# **連想配列を使わない。** macOS の `/bin/bash`（3.2）には `declare -A` が無く、利用者が
+# `scripts/deploy-likes.sh` から叩くこの検査が起動の時点で落ちる。対応は `case` で引く。
 BINDINGS="LIKE_HUB PLAY_HUB"
-declare -A WINDOWS=([LIKE_HUB]="src/likes.ts" [PLAY_HUB]="src/plays.ts")
+
+# 束縛の名前から、それを読んでよい唯一のファイルを返す。
+#
+# 引数: $1 = 束縛の名前
+# 出力: 窓口のファイルのパス（知らない名前なら何も出さずに 1 を返す）
+window_of() {
+  case "$1" in
+    LIKE_HUB) echo "src/likes.ts" ;;
+    PLAY_HUB) echo "src/plays.ts" ;;
+    *) return 1 ;;
+  esac
+}
 
 fail() {
   printf '[likes-worker] %s\n' "$1" >&2
@@ -76,7 +90,8 @@ fail() {
 [[ -f "$LIKES_CONFIG" ]] || fail "$LIKES_CONFIG がありません。"
 [[ -f "$PAGES_CONFIG" ]] || fail "$PAGES_CONFIG がありません。"
 for binding in $BINDINGS; do
-  [[ -f "${WINDOWS[$binding]}" ]] || fail "${WINDOWS[$binding]} がありません。"
+  window="$(window_of "$binding")" || fail "$binding の窓口が決まっていません（window_of に足すこと）。"
+  [[ -f "$window" ]] || fail "$window がありません。"
 done
 command -v node >/dev/null 2>&1 || fail "node が見つかりません。Node.js を導入してください。"
 [[ -d node_modules/wrangler ]] || fail "node_modules/wrangler がありません。npm ci を実行してください。"
@@ -173,7 +188,7 @@ fi
 # **コメントも数える。** 「読んでいるのはコメントだけ」を見分けるには構文解析が要り、
 # そこで緩めると検査が空振りする形を作れる。窓口の外でこの名前に触れる必要は無い。
 for binding in $BINDINGS; do
-  window="${WINDOWS[$binding]}"
+  window="$(window_of "$binding")" || fail "$binding の窓口が決まっていません（window_of に足すこと）。"
   readers="$(grep -rlF "$binding" src || true)"
   if [[ "$readers" != "$window" ]]; then
     printf '[likes-worker]   %s を含むファイル:\n' "$binding" >&2

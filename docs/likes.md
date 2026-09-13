@@ -322,7 +322,7 @@ dev registry に居ないため、`/works/liked` は常に「読み込めませ�
 畳み方は別に設計した（理由の全文は `src/plays.ts` の冒頭）。
 
 ```text
-作品ページ（公開済みの作品だけ、フッタの後ろに計上のスクリプト）
+作品ページ（公開済みの作品だけ、iframe の直前に計上のスクリプト）
   └ iframe /g/<id>/ のローダー: Wasm の起動が解決した直後、親が居れば postMessage('gf-loader-started')
   ← スクリプト: 自分の iframe（event.source）からか → sessionStorage で 30 分畳む → POST /api/plays
        └ src/plays.ts: D1 を主キーで 1 行読む（公開済みか。違えば 404）→ PlayHub.record(gameId)

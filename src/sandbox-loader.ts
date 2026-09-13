@@ -89,8 +89,9 @@ export interface LoaderAssetPaths {
  * # 起動の合図を親へ送る（#377 / 仕様 2.3.5）
  *
  * **プレイ数は「Wasm が実際に起動したとき」に数える**（issue #377 の constraints）。起動を
- * 知っているのはこの文書だけなので、`instantiateStreaming` が解決して `#gf-status` を隠した
- * 直後（`go.run` の手前）に、**親へ {@link LOADER_STARTED_MESSAGE} を 1 回だけ送る。** 数える
+ * 知っているのはこの文書だけなので、`instantiateStreaming` が解決して `#gf-status` を隠し、
+ * **`go.run` を呼んだ後**に、**親へ {@link LOADER_STARTED_MESSAGE} を 1 回だけ送る**（`go.run` が
+ * 同期的に投げたら送らない。PR #425 の Copilot の指摘）。 数える
  * のは受け取った作品ページの側である（`src/plays.ts`）。
  *
  * - **親が居ないときは送らない**（`window.parent === window`）。**OGP の撮影
@@ -172,6 +173,9 @@ export function loaderHtml(paths: LoaderAssetPaths): string {
   WebAssembly.instantiateStreaming(fetch(${wasmLiteral}), go.importObject)
     .then(function (result) {
       status.hidden = true;
+      // **先に起動する。** go.run が同期的に投げたら、合図を送らずにそのまま投げる
+      // （起動していないものを数えない）。
+      var running = go.run(result.instance);
       // **起動の合図（#377）。** 親が居るときだけ、親アプリのオリジンへ 1 回送る。
       // トップレベルで開かれた文書（OGP の撮影を含む）は送らない。送れなくても起動は止めない。
       if (window.parent !== window) {
@@ -181,7 +185,7 @@ export function loaderHtml(paths: LoaderAssetPaths): string {
           // 合図はプレイ数のためだけにある。**遊ぶことを妨げない。**
         }
       }
-      return go.run(result.instance);
+      return running;
     })
     .catch(function (error) {
       // ここに到達するのは、取得の失敗・MIME type 不一致・wasm の不正のいずれか。

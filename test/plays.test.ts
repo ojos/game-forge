@@ -202,7 +202,12 @@ describe('連打を畳む規則（#377）', () => {
     // sandbox の iframe と区別できない）。
     expect(script).toContain("event.source !== frame.contentWindow || event.origin !== 'null'");
     expect(script).toContain(`event.data !== ${JSON.stringify(LOADER_STARTED_MESSAGE)}`);
-    expect(script).toContain("document.querySelector('iframe.gf-frame')");
+    // **iframe は合図が届いた時点で引く**（スクリプトは iframe より前にあり、登録の時点ではまだ無い。
+    // 登録の時点で引くと、iframe が見つからずにリスナーを登録しないまま終わる。PR #425）。
+    expect(script.split('document.querySelector(').length - 1).toBe(1);
+    expect(script.indexOf("window.addEventListener('message'")).toBeLessThan(
+      script.indexOf("document.querySelector('iframe.gf-frame')"),
+    );
     expect(script).toContain('reported = true;');
     // 未ログインも数える（cookie を送らない）。送り先は計上の口。
     expect(script).toContain("credentials: 'omit'");

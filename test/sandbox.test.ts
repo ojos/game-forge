@@ -706,9 +706,14 @@ describe('起動の合図（#377。プレイ数）', () => {
     // **送り先を '*' にしない。** 合図は 1 か所でしか送らない。
     expect(body).not.toContain(`postMessage(${JSON.stringify(LOADER_STARTED_MESSAGE)}, '*')`);
     expect(body.split('postMessage(').length - 1).toBe(1);
-    // **合図は `#gf-status` を隠した後（撮影が待つのと同じ時点）、`go.run` の手前に置く。**
-    expect(branch.indexOf('status.hidden = true;')).toBeLessThan(branch.indexOf('postMessage('));
-    expect(branch.indexOf('postMessage(')).toBeLessThan(branch.indexOf('go.run('));
+    // **合図は `#gf-status` を隠し（撮影が待つのと同じ時点）、`go.run` を呼んだ後に置く。**
+    // `go.run` が同期的に投げたら、合図の行へ到達しない（起動していないものを数えない）。
+    expect(branch.indexOf('status.hidden = true;')).toBeLessThan(branch.indexOf('go.run('));
+    expect(branch).toContain('var running = go.run(result.instance);');
+    expect(branch.indexOf('var running = go.run(')).toBeLessThan(branch.indexOf('postMessage('));
+    // `go.run` の結果（Promise）はそのまま返す（合図を送っても、起動の失敗は `.catch` へ届く）。
+    expect(branch.indexOf('postMessage(')).toBeLessThan(branch.indexOf('return running;'));
+    expect(branch.split('go.run(').length - 1).toBe(1);
   });
 
   it('合図は親が居るかの判定の内側にしかない（判定を外すと撮影も合図を送る）', () => {

@@ -165,9 +165,12 @@ export function playReportStorageKey(gameId: string): string {
 /**
  * 作品ページに埋め込む計上のスクリプト（#377）。
  *
- * **フッタの後ろに `<script>` として置く**（`src/generate-page.ts` と同じ置き方。ヘッダに
- * スクリプトを置かない）。作品ページはアプリ用ホストにあり、CSP を持たない（生成画面と
- * 同じ扱い）。**画面を 1 文字も書き換えない**——DOM へは何も書かず、応答も読まない。
+ * **作品ページの iframe の直前に `<script>` として置く**（ヘッダには置かない）。**iframe より前に
+ * 置くのは、合図より先にリスナーを登録するためである**——iframe の後ろに置くと、キャッシュの
+ * 効いた速い起動では合図がリスナーより先に届き、そのページの起動は二度と数えられない
+ * （PR #425 の Copilot の指摘）。**だから iframe はスクリプトの時点で引かず、合図が届いた時点で
+ * 引く**（スクリプトの時点では iframe がまだ無くてよい）。作品ページはアプリ用ホストにあり、
+ * CSP を持たない（生成画面と同じ扱い）。**画面を 1 文字も書き換えない**——DOM へは何も書かず、応答も読まない。
  * JavaScript を切っていても作品ページは同じように遊べる（数えられないだけである）。
  *
  * 素朴な書き方（`var` と関数式）に寄せているのは、この 1 枚がビルド工程を通らずそのまま
@@ -183,16 +186,18 @@ export function playReportScript(gameId: string): string {
   const literal = (value: string): string => JSON.stringify(value).replace(/</gu, '\\u003c');
   return `<script>
 (function () {
-  var frame = document.querySelector('iframe.gf-frame');
-  if (frame === null || typeof window.fetch !== 'function') { return; }
+  if (typeof window.fetch !== 'function') { return; }
   var shouldReport = ${String(shouldReportPlay)};
   var gameId = ${literal(gameId)};
   var storageKey = ${literal(playReportStorageKey(gameId))};
   var reported = false;
   window.addEventListener('message', function (event) {
-    // **自分の iframe から届いた合図だけを受ける。** 不透明オリジンなので origin は 'null' で、
-    // それだけでは他の sandbox の iframe と区別できない。束縛の本体は source の一致である。
-    if (reported || event.source !== frame.contentWindow || event.origin !== 'null') { return; }
+    if (reported) { return; }
+    // **iframe は合図が届いた時点で引く**（このスクリプトは iframe より前にあり、登録の時点では
+    // まだ無い）。**自分の iframe から届いた合図だけを受ける。** 不透明オリジンなので origin は
+    // 'null' で、それだけでは他の sandbox の iframe と区別できない。束縛の本体は source の一致である。
+    var frame = document.querySelector('iframe.gf-frame');
+    if (frame === null || event.source !== frame.contentWindow || event.origin !== 'null') { return; }
     if (event.data !== ${literal(LOADER_STARTED_MESSAGE)}) { return; }
     // **このページでは 1 回だけ。** iframe の中で読み直されても数え直さない。
     reported = true;

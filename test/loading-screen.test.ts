@@ -15,7 +15,8 @@
  *
  * - 4 要素が**文書順で iframe より前**にあること（HTML は上から解釈される）
  * - 作品ページの `<script>` が、プレイ数の計上のスクリプト（#377。画面を書き換えない）1 つだけで、
- *   iframe と 4 要素より後ろにあること（**どの要素も load イベントに依存しえない**）
+ *   4 要素より後ろ・iframe より前にあること（**どの要素も load イベントに依存しえない**。iframe より
+ *   前にあるのは、合図より先にリスナーを登録するため）
  * - iframe の中の文書（サンドボックス）に 4 要素の UGC が 1 つも現れないこと（7.2）
  *
  * を見る。この 3 つが揃って初めて「ロード完了前に描かれている」が構造として言える。
@@ -299,16 +300,19 @@ describe('#30 の acceptance: Wasm のロード完了前に 4 要素すべてが
     }
 
     // **この画面が持つスクリプトは、プレイ数の計上のスクリプト（#377）1 つだけである。** それは
-    // DOM を 1 文字も書き換えず、iframe と 4 要素より後ろ（フッタの後ろ）にある。したがって、
-    // どの要素も「読み込みが終わってから描く」ことが原理的にできない。
+    // DOM を 1 文字も書き換えず、4 要素より後ろにある。したがって、どの要素も「読み込みが
+    // 終わってから描く」ことが原理的にできない。**iframe より前にある**のは、iframe の合図より
+    // 先にリスナーを登録するためである（後ろに置くと、速い起動を数え落とす。PR #425）。
     const script = playReportScript(child.id);
     expect(script).not.toBe('');
     expect(body.split('<script').length - 1, 'スクリプトが計上の 1 つだけではない').toBe(1);
     const scriptAt = indexOf(body, script);
-    expect(scriptAt).toBeGreaterThan(frameAt);
+    expect(scriptAt, '計上のスクリプトが iframe より後ろにある').toBeLessThan(frameAt);
     for (const element of [shot, author, parentName, fork]) {
       expect(indexOf(body, element), element).toBeLessThan(scriptAt);
     }
+    // **画面を書き換えない**（DOM へ書く口を 1 つも持たない）。
+    expect(script).not.toMatch(/innerHTML|outerHTML|textContent|insertAdjacent|appendChild|document\.write|\.hidden\s*=/u);
     expect(body.replace(script, '')).not.toContain('<script');
   });
 

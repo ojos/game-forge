@@ -43,7 +43,7 @@
  * JS を切っていても、通信が不安定でも、再読み込みさえできれば状態が読める。
  *
  * > **#377 注記。公開済みの作品ページには、プレイ数を数える小さなスクリプトが入る**
- * > （`src/plays.ts` の `playReportScript`。フッタの後ろ）。**「要求しない」は崩していない**
+ * > （`src/plays.ts` の `playReportScript`。iframe の直前——合図より先にリスナーを登録する）。**「要求しない」は崩していない**
  * > ——スクリプトは画面を 1 文字も書き換えず、JS を切っても遊べる（数えられないだけである）。
  * > 起動を知っているのは iframe の中のローダーだけで、それを受けられるのがこの画面だけなので、
  * > ここに置く（理由の全文は `src/plays.ts` の冒頭）。
@@ -849,22 +849,27 @@ export function renderWorkPage(view: WorkPageView, viewer: SiteViewer): string {
 <h1>${escapeHtml(workNameOf(view))}</h1>
 ${sectionFor(view)}
 ${ipNotice}${reportSection(view)}
-${siteFooter()}${playScript(view)}`;
+${siteFooter()}`;
 }
 
 /**
- * プレイ数を数えるスクリプト（#377）。**フッタの後ろに置く**（`src/generate-page.ts` と同じ
- * 置き方。ヘッダにスクリプトを置かない）。数えない画面では何も出さない。
+ * プレイ数を数えるスクリプト（#377）。**iframe の直前に置く**（{@link loadingScreen}）。
+ *
+ * **iframe より後ろに置かない。** 合図（`postMessage`）がリスナーの登録より先に届くと、そのページの
+ * 起動は二度と数えられない（PR #425 の Copilot の指摘）。スクリプトは iframe を合図が届いた時点で
+ * 引くので、登録の時点で iframe が無くてよい（`src/plays.ts` の `playReportScript`）。**4 要素より
+ * 後ろではある**——スクリプトは DOM を書き換えないので、4 要素の描画は何も待たない（#30）。
+ * 数えない画面では何も出さない。
  *
  * @param view 表示に必要な値
- * @returns `<script>` 要素（前に改行を 1 つ付ける）。数えないなら空文字
+ * @returns `<script>` 要素（後ろに改行を 1 つ付ける）。数えないなら空文字
  */
 function playScript(view: WorkPageView): string {
   if (view.playCountableId === null) {
     return '';
   }
   const script = playReportScript(view.playCountableId);
-  return script === '' ? '' : `\n${script}`;
+  return script === '' ? '' : `${script}\n`;
 }
 
 /**
@@ -1901,7 +1906,7 @@ ${screenshot(view)}
 <p class="gf-parent">${parentLine(view.parent)}</p>
 ${forkCta(view)}
 </div>
-${frame}`;
+${view.playUrl === null ? '' : playScript(view)}${frame}`;
 }
 
 /**

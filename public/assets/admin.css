@@ -88,7 +88,7 @@
 }
 
 /* ==========================================================================
-   一覧の行（審査キュー・利用者・操作の履歴が共有する）
+   一覧の行（審査キュー・利用者・削除申請・操作の履歴が共有する）
    ========================================================================== */
 
 .gf-admin-list {
@@ -260,4 +260,41 @@
 
 .gf-admin-evidence-none {
   color: var(--gf-ink-soft);
+}
+
+/* ==========================================================================
+   削除申請（#406）
+   ========================================================================== */
+
+/* 申請者が書いた本文。**改行を保ち、区切りの無い綴り（URL など）でも幅を越えない**
+   （#282 の 390px の判定。`scripts/check-page-width.sh` が admin も見る）。 */
+.gf-admin-takedown-body {
+  margin: 0 0 var(--gf-gap-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 未検証の値（氏名・連絡先）。長いメールアドレスでも幅を越えない。 */
+.gf-admin-unverified {
+  overflow-wrap: anywhere;
+}
+
+/* 措置の選択肢。枠線を消し、行の枠の中に積む。 */
+.gf-admin-choices {
+  margin: 0 0 var(--gf-gap-2);
+  padding: 0;
+  border: 0;
+}
+
+.gf-admin-choices legend {
+  margin: 0 0 var(--gf-gap-1);
+  padding: 0;
+  font-weight: 700;
+}
+
+.gf-admin-choice {
+  display: flex;
+  gap: var(--gf-gap-1);
+  align-items: baseline;
+  margin: 0 0 var(--gf-gap-1);
 }

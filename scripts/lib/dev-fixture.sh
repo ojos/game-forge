@@ -131,7 +131,8 @@ dev_fixture_up() {
   # まさにその格子である。
   PUBLISHED_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
 
-  # **admin の画面が「測る対象」を持つように、審査キューと履歴へ 1 行ずつ仕込む**（#398）。
+  # **admin の画面が「測る対象」を持つように、審査キュー・履歴・削除申請へ 1 行ずつ仕込む**
+  # （#398 / #406。削除申請は未対応のまま置き、措置の選択肢と理由の入力を測る）。
   # 空のままだと、審査キューの表も履歴の表も「まだありません」の 1 文になり、**狭い端末で
   # 崩れうる行（題名・理由の入力・ボタン）を 1 度も測らないまま緑になる**——公開済みの
   # 作品を仕込んだ理由（上）と同じ形である。
@@ -141,7 +142,7 @@ dev_fixture_up() {
   # 題名は 1 行に収まらない長さにする（行が折り返したときの高さと幅を測るため）。
   QUEUED_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
 
-  note "seeding an admin user, three games (draft + published + queued), a report and a history row"
+  note "seeding an admin user, three games (draft + published + queued), a report, a history row and a takedown request"
   npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     insert into users (id, google_sub, email, display_name, created_at)
       values ('$USER_ID', 'sub-$USER_ID', '$USER_ID@example.invalid', '幅の検査', 1);
@@ -162,6 +163,12 @@ dev_fixture_up() {
     insert into admin_actions (id, actor_id, created_at, action, target_kind, target_id, reason)
       values ('width-check-action', '$USER_ID', 3, 'review-queued', 'game', '$QUEUED_GAME_ID',
               '幅の検査の履歴の理由');
+    insert into takedown_requests
+      (id, game_id, claimant_name, claimant_contact, body, received_at, handled_at, action, note)
+      values ('width-check-takedown', '$PUBLISHED_GAME_ID', '幅の検査の申請者',
+              'width-check-claimant-with-a-long-address@example.invalid',
+              '幅の検査の削除申請の本文です。改行を含み、1 行に収まらない長さにしてあります。', 4,
+              null, null, null);
   " >"$WORK/seed.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/seed.log" >&2; fail "検査用の行を作れませんでした。"; }
 

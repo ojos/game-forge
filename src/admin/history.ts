@@ -25,7 +25,7 @@ import { formatJstMinutes, toIsoTimestamp } from '../jst.js';
 import { workPagePath } from '../paths.js';
 import type { Route } from '../routes.js';
 import { html } from '../routes.js';
-import { ADMIN_ACTIONS_PATH } from '../admin-paths.js';
+import { ADMIN_ACTIONS_PATH, ADMIN_TAKEDOWNS_PATH } from '../admin-paths.js';
 import type { AdminActionEntry, AdminActionName } from './actions.js';
 import { ADMIN_LIST_LIMIT, listAdminActions } from './actions.js';
 import { adminFooter, adminHead } from './shell.js';
@@ -42,7 +42,25 @@ const ACTION_LABELS: Readonly<Record<AdminActionName, string>> = {
   'review-cleared': '問題なしにした（新規露出を戻した）',
   'user-banned': 'BAN した（ログインを要する操作を止めた）',
   'user-unbanned': 'BAN を解除した',
+  // **措置の記録であって、実行ではない**ことを取り違えない書き方にする（#406）。とくに
+  // `removed` は取り下げを画面に置いていない（2.4.3）ので、「削除した」と書かない。
+  'takedown-removed': '削除申請に「削除」の措置を記録した（取り下げは D1 の手作業）',
+  'takedown-restricted': '削除申請に「新規露出の停止」の措置を記録した',
+  'takedown-rejected': '削除申請に「認めない」の措置を記録した',
 };
+
+/**
+ * 削除申請の一覧の中で、その申請の行を指す断片の id。
+ *
+ * **削除申請の一覧（`src/admin/takedowns.ts`）が行に振る id と同じ綴りでなければならない**
+ * ので、ここを正本にしてあちらが使う。
+ *
+ * @param requestId `takedown_requests.id`
+ * @returns 断片の id（`#` を含まない）
+ */
+export function takedownAnchorId(requestId: string): string {
+  return `takedown-${requestId}`;
+}
 
 /**
  * 1 行を組み立てる。
@@ -70,10 +88,13 @@ function renderEntry(entry: AdminActionEntry, appHost: string): string {
   // **作品は app ホストの作品ページへ送る**（`src/admin/review.ts` と同じ理由で
   // 絶対 URL にする）。利用者は送り先が無い——**admin に利用者の個別画面は無く**、
   // app の作者ページは公開作品しか出さないので、id をそのまま出す。
+  // **削除申請は admin の一覧の該当行へ送る**（#406。個別の画面は置いていない）。
   const target =
     entry.targetKind === 'game'
       ? `作品 <a href="https://${escapeHtml(appHost)}${escapeHtml(workPagePath(entry.targetId))}"><code>${targetId}</code></a>`
-      : `利用者 <code>${targetId}</code>`;
+      : entry.targetKind === 'takedown'
+        ? `削除申請 <a href="${ADMIN_TAKEDOWNS_PATH}#${escapeHtml(takedownAnchorId(entry.targetId))}"><code>${targetId}</code></a>`
+        : `利用者 <code>${targetId}</code>`;
 
   return `<li class="gf-admin-row">
   <p class="gf-admin-row-title">${when}　${escapeHtml(ACTION_LABELS[entry.action])}</p>

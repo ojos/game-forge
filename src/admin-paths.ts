@@ -69,6 +69,23 @@ export const ADMIN_REVIEW_API_PATH = '/api/review';
  */
 export const ADMIN_BAN_API_PATH = '/api/ban';
 
+/** 削除申請の一覧と、措置の記録（#406。仕様 2.3.1 の admin の表の綴り）。 */
+export const ADMIN_TAKEDOWNS_PATH = '/takedowns';
+
+/** 削除申請に措置を記録する口（#406）。 */
+export const ADMIN_TAKEDOWN_API_PATH = '/api/takedown';
+
+/** 措置を記録する削除申請の id（`takedown_requests.id`）。 */
+export const ADMIN_TAKEDOWN_ID_FIELD = 'takedown_id';
+
+/**
+ * 採った措置（`src/takedown.ts` の `TAKEDOWN_ACTIONS` のどれか）。
+ *
+ * **`ADMIN_NEXT_FIELD` を使い回さない。** あちらは「往復のどちらにしたいか」で、措置は
+ * 往復ではない（1 度記録したら上書きしない）。同じ名前で違う意味を運ばない。
+ */
+export const ADMIN_TAKEDOWN_ACTION_FIELD = 'takedown_action';
+
 /**
  * フォームの項目名（対象の作品）。
  *

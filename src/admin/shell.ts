@@ -36,7 +36,12 @@
  * **admin の経路表を歩いて**行う。**一覧をどこにも書き写さない。**
  */
 import { APP_CSS_PATH, escapeHtml } from '../html.js';
-import { ADMIN_ACTIONS_PATH, ADMIN_HOME_PATH, ADMIN_USERS_PATH } from '../admin-paths.js';
+import {
+  ADMIN_ACTIONS_PATH,
+  ADMIN_HOME_PATH,
+  ADMIN_TAKEDOWNS_PATH,
+  ADMIN_USERS_PATH,
+} from '../admin-paths.js';
 
 /**
  * 管理画面だけが読む見た目の規則（#361。M10-3 で足した）。
@@ -62,6 +67,7 @@ export const ADMIN_CSS_PATH = '/assets/admin.css';
 const ADMIN_NAV: readonly { readonly path: string; readonly label: string }[] = [
   { path: ADMIN_HOME_PATH, label: '審査キュー' },
   { path: ADMIN_USERS_PATH, label: '利用者' },
+  { path: ADMIN_TAKEDOWNS_PATH, label: '削除申請' },
   { path: ADMIN_ACTIONS_PATH, label: '操作の履歴' },
 ];
 
@@ -89,8 +95,8 @@ export const ADMIN_FOOTER_MARK = '<footer class="gf-admin-footer">';
  * **`noindex` を必ず付ける。** 管理画面は検索結果に出てよいものではない。
  * 引数にしないのは、**出し分ける理由が 1 つも無い**からである（付け忘れる余地を作らない）。
  *
- * **ナビを出す**（M10-3 で足した）。画面が 3 枚になったので、**どこからでも 3 枚へ
- * 行ける**必要がある——`app` ホストの行き先は 1 本も混ぜない（2.4.1 / 4.4。
+ * **ナビを出す**（M10-3 で足した）。画面が複数あるので、**どこからでも全部の画面へ
+ * 行ける**必要がある（#406 で削除申請を足して 4 枚）——`app` ホストの行き先は 1 本も混ぜない（2.4.1 / 4.4。
  * `test/admin-page-shell.test.ts` が照合する）。
  *
  * @param title `<title>` の中身（接尾辞はこの関数が足す）

@@ -62,34 +62,64 @@
 import { PUBLISHED_STATUS } from '../games.js';
 import { REVIEW_CLEARED, REVIEW_QUEUED } from '../reports.js';
 import type { ReviewState } from '../reports.js';
+import { TAKEDOWN_ACTIONS } from '../takedown.js';
+import type { TakedownAction } from '../takedown.js';
+
+/**
+ * 削除申請の措置を履歴に残すときの綴り（#406 / 8.4）。
+ *
+ * **措置の綴りの正本は `src/takedown.ts` の `TAKEDOWN_ACTIONS` で、ここはそこから導く。**
+ * 書き写すと、措置を 1 つ足した日に履歴だけが古い綴りを見続ける。
+ *
+ * **`takedown-removed` は「削除の措置を記録した」であって、作品を取り下げたことではない。**
+ * 取り下げ（`games.status = 'removed'`）は画面に置かない操作のままである（2.4.3）。
+ */
+export const TAKEDOWN_ADMIN_ACTIONS = TAKEDOWN_ACTIONS.map(
+  (action) => `takedown-${action}` as const,
+);
+
+/**
+ * 措置の綴りを、履歴の綴りへ移す。
+ *
+ * @param action 採った措置
+ * @returns 履歴に残す綴り
+ */
+export function takedownAdminAction(action: TakedownAction): `takedown-${TakedownAction}` {
+  return `takedown-${action}`;
+}
 
 /**
  * 履歴に残す操作の綴り（**正本**）。
  *
- * **`migrations/0026_admin_actions.sql` の CHECK と同じ 4 つである。** 一致は
- * `test/admin-actions.test.ts` が機械照合する（`.ai-playbook/shared-ai-rules.md` 12 章。
- * **書き写した一覧は必ず腐る**ので、片方だけ増えた状態を検査で落とす）。
+ * **`admin_actions` の CHECK（`migrations/0031_admin_actions_takedown.sql`）と同じ 7 つである。**
+ * 一致は `test/admin-actions.test.ts` が、適用済みの表の定義から取り出して機械照合する
+ * （`.ai-playbook/shared-ai-rules.md` 12 章。**書き写した一覧は必ず腐る**ので、片方だけ
+ * 増えた状態を検査で落とす）。
  *
- * **4 つとも「戻せる操作」である**（2.4.3）。`queued` ↔ `cleared` と BAN の付け外しが、
- * それぞれ往復で 2 つずつ。
+ * **先頭の 4 つは「戻せる操作」である**（2.4.3）。`queued` ↔ `cleared` と BAN の付け外しが、
+ * それぞれ往復で 2 つずつ。**残りの 3 つは削除申請に採った措置の記録**（#406 / 8.4。
+ * {@link TAKEDOWN_ADMIN_ACTIONS}）で、**状態を戻す操作ではない**——1 度記録した措置は
+ * 上書きしない（0018）。
  */
 export const ADMIN_ACTIONS = [
   'review-queued',
   'review-cleared',
   'user-banned',
   'user-unbanned',
+  ...TAKEDOWN_ADMIN_ACTIONS,
 ] as const;
 
 /** 履歴に残す操作。 */
 export type AdminActionName = (typeof ADMIN_ACTIONS)[number];
 
 /**
- * 対象の種類（**正本**。`migrations/0026` の CHECK と機械照合する）。
+ * 対象の種類（**正本**。`admin_actions` の CHECK と機械照合する）。
  *
  * **列名は `target_kind` である**（仕様 5.1 の表の綴り。`target_type` ではない
- * ——PR #364 のレビューで直した）。
+ * ——PR #364 のレビューで直した）。**`takedown` の `target_id` は `takedown_requests.id`**
+ * である（#406。0031）。
  */
-export const ADMIN_ACTION_TARGET_KINDS = ['game', 'user'] as const;
+export const ADMIN_ACTION_TARGET_KINDS = ['game', 'user', 'takedown'] as const;
 
 /** 対象の種類。 */
 export type AdminActionTargetKind = (typeof ADMIN_ACTION_TARGET_KINDS)[number];
@@ -395,6 +425,175 @@ export async function setUserBan(
       [params.userId],
     ),
   );
+}
+
+/** 削除申請の措置を記録した結果。 */
+export type TakedownRecordOutcome =
+  | {
+      readonly ok: true;
+      /**
+       * **`restricted` のとき、対象の作品が審査キューに入っているか**（この記録で入った場合と、
+       * 既に入っていた場合の両方）。`removed` / `rejected` では常に false。
+       * **false の `restricted` は、作品が実在しないか公開中でない**ことを意味する。
+       */
+      readonly queued: boolean;
+    }
+  | { readonly ok: false; readonly reason: 'already-handled' | 'not-found' | 'write-failed' };
+
+/**
+ * 削除申請に採った措置を記録する（8.4 / 2.4.3 / #406）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 2 か所へ 1 つの batch で書く
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **措置は `takedown_requests`（`handled_at` / `action` / `note`）に、誰がいつ何を理由に
+ * したかは `admin_actions` に書く。** 0018 は実行者の列を持たず、8.4 は「採った措置は
+ * `admin_actions` に残す」と定めている。**片方だけが入った状態を作らない**ので、
+ * {@link setReviewState} と同じく 1 つの `D1.batch` で書く。
+ *
+ * **`restricted` は作品を審査キューへ入れる**（`review_state` を `queued` にする。8.4 の
+ * 「新規露出のみ停止」。`docs/takedown.md` の 4 章）。**戻せる操作であり、画面に置くと
+ * 決まっている**（2.4.3）。その操作の履歴（`review-queued`）も同じ batch で積む。
+ * **`removed` は記録だけで、作品に触らない**——取り下げは画面に置かない操作である（2.4.3）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 順序が {@link runWithHistory} と逆である理由
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **ここでは履歴を先に積む。** 審査の往復は「操作した後の状態」を `exists` で確かめられる
+ * が、**削除申請で守りたいのは「まだ措置が記録されていない」という操作前の状態**であり、
+ * UPDATE がそれを消してしまう。後から「`handled_at` がこの時刻で、`action` がこの綴りか」を
+ * 見る形にすると、**同じ秒に同じ措置をもう 1 度送ったとき**に 2 回目の履歴だけが積まれる。
+ *
+ * そこで次の順にする。**呼び出しごとに新しい履歴の id を作り、それを以後の条件の鍵にする。**
+ *
+ *   1. 履歴の insert（**`handled_at is null` のときだけ**）
+ *   2. 措置の UPDATE（**1 の行が在るときだけ**）
+ *   3. `restricted` なら、作品を `queued` へ（**1 の行が在り、作品が公開中のときだけ**）
+ *   4. `restricted` なら、`review-queued` の履歴（**1 の行が在り、作品が `queued` のときだけ**）
+ *
+ * **`changes()` は使わない**（このファイルの冒頭と同じ理由）。条件はすべて素の SQL の
+ * `exists` で決まる。**記録済みの申請へもう 1 度送ると、1 が入らず、2〜4 もすべて空振りする**
+ * ——措置も作品の状態も履歴も、1 ビットも動かない。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 作品が実在しない申請
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **申請の `game_id` は申請者が書いた値で、実在しないことがある**（0018 が外部キーを
+ * 張らなかった理由）。そのときも**措置と `takedown-*` の履歴は記録する**——受け取った
+ * 申請の記録を落とすほうが 8.4 に反する。`restricted` でも 3 と 4 は空振りし、結果の
+ * `queued` が false になる。取り下げ済み（`status = 'removed'`）の作品も同じ扱いである
+ * （{@link setReviewState} が往復の外側に置いたのと同じ理由）。
+ *
+ * **`cleared` の作品も `queued` へ戻す。** 審査で「問題なし」とした作品にも、権利者からの
+ * 申請で新規露出を止める判断はありうる（通報と削除申請は別の経路である）。
+ *
+ * @param env バインディングと環境変数
+ * @param params 申請の id・措置・実行者・理由・時刻
+ * @returns 記録の結果
+ */
+export async function recordTakedownAction(
+  env: Env,
+  params: {
+    readonly requestId: string;
+    readonly action: TakedownAction;
+    readonly actorId: string;
+    /** **未検査でよい**（{@link runWithHistory} と同じく、空は表の CHECK が弾く）。 */
+    readonly reason: string;
+    readonly now?: number;
+  },
+): Promise<TakedownRecordOutcome> {
+  const createdAt = params.now ?? Math.floor(Date.now() / 1000);
+  const historyId = crypto.randomUUID();
+  const restricted = params.action === 'restricted';
+
+  const statements: D1PreparedStatement[] = [
+    // 1. 履歴（まだ措置が無いときだけ）
+    env.DB.prepare(
+      `insert into admin_actions
+         (id, actor_id, created_at, action, target_kind, target_id, reason)
+       select ?, ?, ?, ?, 'takedown', ?, ?
+        where exists (select 1 from takedown_requests where id = ? and handled_at is null)`,
+    ).bind(
+      historyId,
+      params.actorId,
+      createdAt,
+      takedownAdminAction(params.action),
+      params.requestId,
+      params.reason,
+      params.requestId,
+    ),
+    // 2. 措置（1 が入ったときだけ）
+    env.DB.prepare(
+      `update takedown_requests
+          set handled_at = ?, action = ?, note = ?
+        where id = ? and handled_at is null
+          and exists (select 1 from admin_actions where id = ?)`,
+    ).bind(createdAt, params.action, params.reason, params.requestId, historyId),
+  ];
+
+  if (restricted) {
+    statements.push(
+      // 3. 作品を審査キューへ（1 が入り、作品が公開中のときだけ）
+      env.DB.prepare(
+        `update games
+            set review_state = ?
+          where id = (select game_id from takedown_requests where id = ?)
+            and status = ?
+            and (review_state is null or review_state = ?)
+            and exists (select 1 from admin_actions where id = ?)`,
+      ).bind(REVIEW_QUEUED, params.requestId, PUBLISHED_STATUS, REVIEW_CLEARED, historyId),
+      // 4. その履歴（1 が入り、作品がいま `queued` のときだけ）
+      env.DB.prepare(
+        `insert into admin_actions
+           (id, actor_id, created_at, action, target_kind, target_id, reason)
+         select ?, ?, ?, 'review-queued', 'game', g.id, ?
+           from takedown_requests t
+           join games g on g.id = t.game_id
+          where t.id = ? and g.status = ? and g.review_state = ?
+            and exists (select 1 from admin_actions where id = ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        params.actorId,
+        createdAt,
+        // **審査の履歴だけを読んでも、なぜ止めたかが分かるようにする**（2.4.4。理由は
+        // 削除申請への回答に使う）。
+        `削除申請 ${params.requestId} に「新規露出の停止」を記録: ${params.reason}`,
+        params.requestId,
+        PUBLISHED_STATUS,
+        REVIEW_QUEUED,
+        historyId,
+      ),
+    );
+  }
+
+  let results: readonly D1Result[];
+  try {
+    results = await env.DB.batch(statements);
+  } catch (error) {
+    // 履歴の CHECK 違反（理由が空・未適用の 0031）や D1 の障害。**batch ごと巻き戻る。**
+    console.error('[admin] 削除申請の措置と履歴を書けませんでした', error);
+    return { ok: false, reason: 'write-failed' };
+  }
+
+  if ((results[0]?.meta.changes ?? 0) === 0) {
+    // **何も書いていない。** 見つからないのか、既に記録済みなのかを読み分ける
+    // （画面が「押し直しても同じ」ことを伝えるため。書き込みの判定には使っていない）。
+    const row = await env.DB.prepare('select handled_at from takedown_requests where id = ?')
+      .bind(params.requestId)
+      .first<{ handled_at: number | null }>();
+    return { ok: false, reason: row === null ? 'not-found' : 'already-handled' };
+  }
+
+  if ((results[1]?.meta.changes ?? 0) === 0) {
+    // **履歴だけが入って措置が無い形は、構造上ありえない**（同じトランザクションの中で
+    // 1 が `handled_at is null` を見ている）。ありえない形を黙って通さない。
+    console.error('[admin] 措置の無い削除申請の履歴が入りました（batch の意味が変わっています）');
+  }
+
+  return { ok: true, queued: restricted && (results[3]?.meta.changes ?? 0) > 0 };
 }
 
 /** 履歴の 1 行（画面が出す形）。 */

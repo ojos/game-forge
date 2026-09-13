@@ -57,19 +57,34 @@ bash scripts/takedown-queue.sh --remote
 
 | 措置 | 意味 | 実際にすること |
 |---|---|---|
-| `removed` | 申請を認め、作品を削除する | 作品ページから取り下げる、または `games.status` を `removed` にする |
-| `restricted` | 新規露出だけ止める | `games.review_state` を `queued` にする（8.4 の「新規露出のみ停止」） |
+| `removed` | 申請を認め、作品を削除する | **画面で記録したあと、手作業で** `games.status` を `removed` にする（画面は取り下げない。仕様 2.4.3） |
+| `restricted` | 新規露出だけ止める | **画面で記録すると、作品が審査キューへ入る**（`review_state = 'queued'`。8.4 の「新規露出のみ停止」。審査キューから戻せる） |
 | `rejected` | 申請を認めない | 作品は動かさない |
 
 **`rejected` も必ず記録します。** 残さないと「見ていない」と区別がつきません——
 8.4 が求めているのは**措置の記録**であって、措置をしたことの記録ではありません。
 
-記録は `recordTakedownAction` で行います。**申請の内容（申請者・連絡先・本文）は
-書き換わりません。** 変わるのは措置の側だけで、これが #41 の acceptance が求める
-「追記のみ」の実体です。
+**記録は運営の管理画面の「削除申請」（`/takedowns`）で行います**（#406）。未対応の申請に
+措置と理由を選んで「措置を記録する」を押すと、**措置が `takedown_requests` に、誰がいつ何を
+理由にしたかが `admin_actions`（操作の履歴）に、同時に残ります。** 理由は申請への回答に使うので、
+必須です。
 
-> **1 度記録した行は上書きできません**（条件付き UPDATE）。判断を変える場合は、
-> **変えた事実ごと分かるように**新しい申請として扱うか、運用として別途記録してください。
+**申請の内容（申請者・連絡先・本文）は書き換わりません。** 変わるのは措置の側だけで、これが
+#41 の acceptance が求める「追記のみ」の実体です。
+
+> **1 度記録した行は上書きできません。** 画面は措置済みの行にフォームを出さず、口も断ります。
+> 判断を変える場合は、**変えた事実ごと分かるように**新しい申請として扱うか、運用として別途記録してください。
+
+> **`removed` を記録しても、作品は取り下げられません。** 画面の行に「作品はまだ公開中です」と出るあいだは、
+> 取り下げの手作業が残っています。
+>
+> ```bash
+> npx wrangler d1 execute DB --remote --env production \
+>   --command "update games set status = 'removed' where id = '<作品の id>' and status = 'published';"
+> ```
+
+> **画面より前（#406 以前）に端末で記録した措置には、実行者の履歴がありません。** 画面はその行に
+> 「履歴なし」と出します。
 
 ---
 
@@ -99,5 +114,6 @@ bash scripts/takedown-queue.sh --remote
 ## 関連
 
 - 条文: `/terms`（`src/legal.ts`）
-- 受付と記録: `src/takedown.ts` / `migrations/0018_takedown_requests.sql`
+- 受付: `src/takedown.ts` / `migrations/0018_takedown_requests.sql`
+- 措置の記録（管理画面）: `src/admin/takedowns.ts` / `src/admin/actions.ts` の `recordTakedownAction` / `migrations/0031_admin_actions_takedown.sql`（手順は `docs/admin-host.md`）
 - 通報と審査キュー（利用者からの通報。**権利者からの申請とは別経路**）: [usage-report.md](usage-report.md)

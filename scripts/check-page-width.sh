@@ -165,8 +165,9 @@ ADMIN_PATHS="$(dev_fixture_admin_paths)"
 ADMIN_COUNT="$(printf '%s\n' "$ADMIN_PATHS" | tr ',' '\n' | wc -l | tr -d ' ')"
 note "admin の対象 ${ADMIN_COUNT} 経路 / 幅 ${WIDTHS}"
 
-# **admin も空を緑にしない。** いまは審査キュー・利用者・履歴の 3 枚がある（2.3.1 の admin の表）。
-[[ "$ADMIN_COUNT" -ge 3 ]] || fail "admin の検査対象が ${ADMIN_COUNT} 経路しかありません。/__dev/pages の adminPaths を確認してください。"
+# **admin も空を緑にしない。** いまは審査キュー・利用者・削除申請・履歴の 4 枚がある
+# （2.3.1 の admin の表。#406 で削除申請を足した）。
+[[ "$ADMIN_COUNT" -ge 4 ]] || fail "admin の検査対象が ${ADMIN_COUNT} 経路しかありません。/__dev/pages の adminPaths を確認してください。"
 
 # ── 実ブラウザで開く ──────────────────────────────────────────────────────────
 

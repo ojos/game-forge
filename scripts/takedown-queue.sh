@@ -25,7 +25,8 @@
 #
 # ── 進めるのはこのスクリプトの仕事ではない ──────────────────────────────────
 #
-# 措置の記録は `recordTakedownAction`（`src/takedown.ts`）が行う。ここに `--handle` の
+# 措置の記録は運営の管理画面の `/takedowns`（`src/admin/takedowns.ts`。記録の口は
+# `src/admin/actions.ts` の `recordTakedownAction`。#406）が行う。ここに `--handle` の
 # ような口を付けない。**読むことと変えることを、別の操作に分ける。**
 #
 # **GNU 拡張を使わない**（利用者の端末は macOS / bash 3.2。docs/handoff.md 3 章）。

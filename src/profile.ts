@@ -212,26 +212,30 @@ export function validateBio(
  *   **見た目の先頭と実際の行き先が違う**——なりすましの踏み台の典型である
  * - **制御文字・行区切り・向きを変える書式文字を含む入力。** URL の解析はタブや改行を黙って
  *   除くので、**利用者が見ている綴りと保存される行き先が食い違う**（自己紹介と同じ理由で、
- *   置き換えずに断る）
- * - **{@link PROFILE_LINK_MAX_LENGTH} を超えるもの**（入力と `href` の両方で見る）
+ *   置き換えずに断る）。**`trim` の前に、入力そのものへ掛ける**（{@link validateBio} と同じ規律。
+ *   PR #418 の Copilot レビュー）——`String#trim` はタブ・改行・U+2028 / U+2029 も除くので、
+ *   後に見ると先頭や末尾に置かれた禁じた文字が黙って消えて通る。前後の普通の空白（U+0020）は
+ *   禁じた文字ではないので、除いて通す
+ * - **{@link PROFILE_LINK_MAX_LENGTH} を超えるもの**（前後の空白を除いた入力と `href` の両方で見る）
  *
  * # 国際化ドメイン名は punycode のまま出す
  *
  * `URL#href` は国際化ドメイン名を `xn--` の形にする。**表示にもそれを使う**——見た目の似た
  * 別の文字で綴ったドメイン（ホモグラフ）を、画面の上で本物と見分けられるようにするため。
  *
- * @param raw 入力された URL（前後の空白は除く）
+ * @param raw 入力された URL（**前後の空白を除く前**の、フォームから受け取ったままの値）
  * @returns 表示と保存に使う `href`、または断る理由
  */
 export function normalizeProfileLink(
   raw: string,
 ): { readonly ok: true; readonly href: string } | { readonly ok: false; readonly reason: ProfileLinkRejection } {
+  // **禁じた文字は `trim` の前に見る**（上の「断るもの」）。
+  if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(raw) || DIRECTION_CHARACTER.test(raw)) {
+    return { ok: false, reason: 'link-invalid' };
+  }
   const value = raw.trim();
   if ([...value].length > PROFILE_LINK_MAX_LENGTH) {
     return { ok: false, reason: 'link-too-long' };
-  }
-  if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value) || DIRECTION_CHARACTER.test(value)) {
-    return { ok: false, reason: 'link-invalid' };
   }
   let url: URL;
   try {
@@ -264,7 +268,7 @@ export function normalizeProfileLink(
  * 拾わない」の範囲である。
  *
  * @param profile 形の検査を通ったプロフィール
- * @param rawLinks 入力されたリンク（空でないもの。`profile.links` と同じ順）
+ * @param rawLinks 入力されたリンク（空でない欄の、受け取ったままの値。`profile.links` と同じ順）
  * @returns 表に当たれば true
  */
 function containsDeniedTerm(profile: Profile, rawLinks: readonly string[]): boolean {
@@ -295,6 +299,11 @@ function containsDeniedTerm(profile: Profile, rawLinks: readonly string[]): bool
  * **空のリンク欄は無視する**（3 つの欄のうち 1 つだけ埋める人が普通である）。並びは入力の
  * 順を保つ。**重複は断らない**（害が無く、断ると理由の文言が 1 つ増えるだけである）。
  *
+ * **`trim` を使うのは「空の欄か」の判定だけである。** {@link normalizeProfileLink} と 8.3 の
+ * 突き合わせには、**受け取ったままの文字列**を渡す——ここで先に `trim` すると、端に置かれた
+ * タブや改行や U+2028 が黙って消え、あちらの「置き換えずに断る」が効かなくなる
+ * （PR #418 の Copilot レビュー）。
+ *
  * @param rawBio 入力された自己紹介
  * @param rawLinks 入力されたリンク（欄の数だけ。空の欄を含んでよい）
  * @returns 保存する形、または断る理由
@@ -304,7 +313,7 @@ export function validateProfile(rawBio: string, rawLinks: readonly string[]): Pr
   if (!bio.ok) {
     return { ok: false, reason: bio.reason };
   }
-  const filled = rawLinks.map((raw) => raw.trim()).filter((raw) => raw !== '');
+  const filled = rawLinks.filter((raw) => raw.trim() !== '');
   if (filled.length > PROFILE_LINK_MAX_COUNT) {
     return { ok: false, reason: 'too-many-links' };
   }

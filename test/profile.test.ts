@@ -225,6 +225,21 @@ describe('外部リンクは構文解析してから https: に限る（5.6 / 5.
     }
   });
 
+  it('先頭や末尾に置いた禁じた文字も、trim で消さずに断る（前後の普通の空白は除いて通す）', () => {
+    // **`String#trim` はタブ・改行・U+2028 / U+2029 も除く**（PR #418 の Copilot レビュー）。
+    // 検査を trim の後に置くと、端の禁じた文字が黙って消えて通る。関数と、フォームから受け取った
+    // 値をそのまま渡す `validateProfile` の両方で見る。
+    for (const raw of ['\thttps://example.com/', 'https://example.com/\n', 'https://example.com/\u2028']) {
+      expect(normalizeProfileLink(raw), JSON.stringify(raw)).toEqual({ ok: false, reason: 'link-invalid' });
+      expect(validateProfile('', [raw]), JSON.stringify(raw)).toEqual({ ok: false, reason: 'link-invalid' });
+    }
+    expect(normalizeProfileLink(' https://example.com/ ')).toEqual({ ok: true, href: 'https://example.com/' });
+    expect(validateProfile('', [' https://example.com/ '])).toEqual({
+      ok: true,
+      profile: { bio: '', links: ['https://example.com/'] },
+    });
+  });
+
   it('ユーザー情報を含む URL（見た目の先頭と行き先が違う）を断る', () => {
     for (const raw of ['https://a@b.example/', 'https://example.com@evil.example/', 'https://user:pass@example.com/']) {
       expect(normalizeProfileLink(raw), raw).toEqual({ ok: false, reason: 'link-credentials' });
@@ -393,6 +408,24 @@ describe('保存（POST /api/account/profile）', () => {
     expect(body).toContain('value="https://example.org/"');
     // 書く人にも「運営は検証していない」旨を見せる。
     expect(body).toContain(PROFILE_LINKS_UNVERIFIED_NOTICE);
+  });
+
+  it('端にタブ・改行・U+2028 を置いたリンクは画面の口でも断り、何も書かない（前後の普通の空白は通す）', async () => {
+    const userId = await seedUser();
+    const cookie = await cookieFor(userId);
+    const routes = createAccountRoutes({ now: () => NOW });
+    for (const raw of ['\thttps://example.com/', 'https://example.com/\n', 'https://example.com/\u2028']) {
+      const response = await postProfile(routes, cookie, '', [raw]);
+      expect(response.status, JSON.stringify(raw)).toBe(400);
+      expect(pageBodyOf(await response.text()), JSON.stringify(raw)).toContain(
+        '<p class="error" role="alert">外部リンクに、URL として読めないものがあります。',
+      );
+    }
+    expect(await profileOf(userId)).toEqual({ bio: '', profile_links: '[]', profile_set_at: null });
+
+    const spaced = await postProfile(routes, cookie, '', [' https://example.com/ ']);
+    expect(spaced.headers.get('location')).toBe(`${ACCOUNT_PATH}?saved=profile`);
+    expect((await profileOf(userId)).profile_links).toBe('["https://example.com/"]');
   });
 
   it('javascript: のリンクは画面の口でも断り、送った値を欄へ戻すだけで何も書かない', async () => {

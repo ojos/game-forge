@@ -107,6 +107,9 @@ import { isPressableGame, readLikeViewerState } from './likes.js';
 import { UNKNOWN_FAILURE_MESSAGE, failureMessageOf } from './generation-failure.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
+// **値を読むだけである**（#402）。`src/build-retry.ts` はオーケストレータの束に入っており、
+// 書き換えると束が変わって配り直すまで配備が止まる。ここは定数を import するだけにする。
+import { MAX_GENERATION_ATTEMPTS } from './build-retry.js';
 import {
   generationQuotaStatus,
   QUOTA_UNKNOWN_NOTICE,
@@ -1240,6 +1243,33 @@ ${play}${publish}${reviseSection(view)}${revisionList(view)}${renameSection(view
 }
 
 /**
+ * 推敲とフォークの口に出す、1 回の操作で使う生成枠の説明（#402）。
+ *
+ * **枠は最大 {@link MAX_GENERATION_ATTEMPTS} 回分減る。** 推敲もフォークも新規生成と同じ
+ * 試行のループ（`src/generate.ts`）を通り、生成されたコードがコンパイルできなかったときは
+ * 自動でやり直す（5.2-7）。枠は成否に関わらず LLM を呼んだ回数で数える（4.3「数えるのは
+ * 台帳の行数である」「成否で絞らない」）。**#402 までは「生成枠を 1 回使います」と
+ * 書いていた**——この文を見て残りを数えた利用者は、実際より多く残っていると見積もる。
+ *
+ * **回数を書き写さず、定数から作る**（shared-ai-rules 12 章）。直値だと、やり直しの
+ * 回数を見直した日にこの画面だけが古い回数を案内する。
+ *
+ * **言い回しはお知らせの記事（`src/news-articles.ts` の `generation-quota`）に揃える。**
+ * 同じ事実を 2 か所で違う言い方にすると、どちらが正しいのか利用者には分からない。
+ * 一致は `test/work-page.test.ts` が記事の本文から拾って照合する。記事は日付の付いた
+ * 写しで回数を直書きしているので、**定数を動かすとその照合が落ちる**——記事を直すか、
+ * 新しい記事を足す合図である。
+ *
+ * **整理パス（5.3 の確定18）はここに含めない。** 整理の同意を問う画面が
+ * 「生成枠を 1 回使います」と別に言っており（`src/fork.ts`）、整理パスは
+ * `TIDY_ATTEMPTS`（1）で打ち切るので、そちらは正しい。フォークの口の「最大」は、
+ * 整理に回った場合も超えない。
+ */
+export const GENERATION_RETRY_QUOTA_NOTICE =
+  `生成されたコードがコンパイルできなかったときは自動で ${MAX_GENERATION_ATTEMPTS - 1} 回だけやり直すため、` +
+  `1 回の操作で枠を最大 ${MAX_GENERATION_ATTEMPTS} 回分使うことがあります。`;
+
+/**
  * 推敲の入力（5.7 / #193）。
  *
  * # 主ボタンは「公開して共有」のままである
@@ -1321,7 +1351,7 @@ function reviseSection(view: WorkPageView): string {
   return `${failed}
 <h3>気になるところを直す</h3>
 <p>どう直したいかを書くと、いまのソースをもとに作り直します。
-   <strong>1 回につき 1〜2 分かかり、生成枠を 1 回使います。</strong></p>
+   <strong>1 回につき 1〜2 分かかり、生成枠を使います。${GENERATION_RETRY_QUOTA_NOTICE}</strong></p>
 ${remaining}${daily}${form}`;
 }
 
@@ -1882,7 +1912,7 @@ function forkCta(view: WorkPageView): string {
 
   return `<p class="gf-fork">${FORK_LABEL}</p>
 <p class="gf-fork-note">どう改造したいかを書くと、このゲームのソースをもとに新しい作品を作ります。
-   <strong>1 回につき 1〜2 分かかり、生成枠を 1 回使います。</strong>元の作品はそのまま残ります。</p>
+   <strong>1 回につき 1〜2 分かかり、生成枠を使います。${GENERATION_RETRY_QUOTA_NOTICE}</strong>元の作品はそのまま残ります。</p>
 ${daily}${form}`;
 }
 

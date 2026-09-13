@@ -47,6 +47,7 @@ import { GENERATE_CALLBACK_PATH, generateCallbackRoutes } from '../src/generate-
 import { MAX_TITLE_LENGTH, createPendingGame, draftTitleFromPrompt } from '../src/games.js';
 import { applySchema } from './helpers/schema.js';
 import { pageBodyOf } from './helpers/site-shell.js';
+import { MY_WORKS_PATH } from '../src/works-paths.js';
 
 /**
  * 生成画面（5.2-1 / 4.4 / 8.3 / #128）。
@@ -367,6 +368,37 @@ describe('失敗の種別ごとの文言（acceptance 2 / 4.4 / 3.8）', () => {
     // 経路層の既定の catch に落ち、500 になる。3.8 は「プレイ側には一切影響を出さない」
     // と定めるので、そこまでを文言に含める。
     expect(GENERATE_MESSAGES['500:']).toContain('プレイと共有');
+  });
+
+  it('202 の文言は、作品ページへ移れなかったときの受け皿として「準備中」を言わない（#402）', async () => {
+    // **202 は通常、作品ページへ送られて表示されない**（#150。上の遷移の検査）。出るのは
+    // 202 なのに `gameId` を読めなかったとき（本文が読めない・綴りが合わない）だけである。
+    // **表から消すと既定の鍵まで落ちる**——生成は受け付けられ枠も使ったのに、画面は
+    // 「生成に失敗しました」と言い、利用者はもう一度押す。
+    expect(selectGenerateMessageKey(202, '')).toBe('202:');
+    const accepted = GENERATE_MESSAGES['202:']!;
+    expect(accepted).not.toBe(GENERATE_MESSAGES[DEFAULT_MESSAGE_KEY]);
+    expect(accepted).not.toContain('失敗');
+    expect(accepted).toContain('受け付けました');
+    // 作品ページでは既に遊べて公開もできる。**開く手段が無いと読める文を残さない。**
+    for (const [key, message] of Object.entries(GENERATE_MESSAGES)) {
+      expect(message, key).not.toContain('準備中');
+    }
+
+    // **文言が指す行き先が、この画面から実際に押せること。** ヘッダのメニューの綴りを
+    // 写さず、描かれた画面から拾う（外枠に載るので `pageBodyOf` を通さない）。
+    const user = await seedUser('accepted-fallback');
+    const html = await (await openPage(await sessionCookie(user))).text();
+    const label = /<a href="([^"]+)">([^<]+)<\/a>/gu;
+    const myWorksLabels = [...html.matchAll(label)]
+      .filter((matched) => matched[1] === MY_WORKS_PATH)
+      .map((matched) => matched[2]!);
+    expect(myWorksLabels, '自分の作品へのリンクが無い').not.toEqual([]);
+    expect(myWorksLabels.some((name) => accepted.includes(`「${name}」`)), myWorksLabels.join('/')).toBe(
+      true,
+    );
+    // 文言そのものは本文の側に描かれている。
+    expect(pageBodyOf(html)).toContain(accepted);
   });
 
   it('応答が返らなかった場合の文言を持つ', () => {

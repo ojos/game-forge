@@ -9,6 +9,7 @@ import {
   FORKS_OFFSET_PARAM,
   FORKS_PER_PAGE,
   GENERATION_IS_SYNCHRONOUS,
+  GENERATION_RETRY_QUOTA_NOTICE,
   OPERATOR_MARK,
   storedLikeCount,
   WORK_PAGE_PREFIX,
@@ -53,10 +54,30 @@ import {
   REVISIONS_PER_GAME,
 } from '../src/quota.js';
 import { appendRevision, claimRevisionSlot, failRevision } from '../src/revisions.js';
+import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
+import { NEWS_ARTICLES } from '../src/news-articles.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
+
+/**
+ * お知らせの記事「生成枠の扱いについて」から、自動のやり直しと枠の消費を言う 1 文を拾う（#402）。
+ *
+ * **作品ページの推敲とフォークの文言は、この 1 文と同じ言い方にする。** 記事は回数を
+ * 直書きした日付の付いた写しで、`test/news.test.ts` が `MAX_GENERATION_ATTEMPTS` と照合して
+ * いる。作品ページは定数から文言を作るので、**定数を動かすと作品ページだけが動き、
+ * ここでの一致が崩れて落ちる。**
+ *
+ * @returns 記事の 1 文（句点まで）
+ */
+function quotaArticleRetrySentence(): string {
+  const article = NEWS_ARTICLES.find((candidate) => candidate.id === 'generation-quota');
+  expect(article, '生成枠の記事が無い').toBeDefined();
+  const sentence = /生成されたコードがコンパイルできなかったときは[^。]*。/u.exec(article!.body.join(''));
+  expect(sentence, '記事にやり直しの 1 文が無い').not.toBeNull();
+  return sentence![0];
+}
 const SECRET = 'test-secret-value-for-work-page-endpoint-1';
 
 /**
@@ -402,6 +423,19 @@ describe('画面の文言が、いまの実行形態と食い違わない（#150
   });
 });
 
+describe('推敲とフォークで使う生成枠の説明（#402 / 5.2-7 / 4.3）', () => {
+  it('お知らせの記事と同じ 1 文で、回数は `MAX_GENERATION_ATTEMPTS` から作る', () => {
+    // **枠は成否に関わらず LLM を呼んだ回数で数える**（4.3）。コンパイルに失敗すると
+    // 自動で 1 回やり直すので、1 回の操作で最大 `MAX_GENERATION_ATTEMPTS` 回分減る。
+    expect(GENERATION_RETRY_QUOTA_NOTICE).toContain(
+      `枠を最大 ${MAX_GENERATION_ATTEMPTS} 回分使うことがあります`,
+    );
+    // **同じ事実を記事と画面で別の言い方にしない。** 記事は回数を直書きしているので、
+    // 定数だけを動かすとここが落ちる（記事を直すか、新しい記事を足す合図）。
+    expect(GENERATION_RETRY_QUOTA_NOTICE).toBe(quotaArticleRetrySentence());
+  });
+});
+
 describe('推敲の口と版の一覧（5.7 / #193）', () => {
   /**
    * 完成した未公開の作品を 1 件用意し、初回の版まで積む。
@@ -433,8 +467,12 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
 
     expect(body).toContain(REVISE_PATH);
     expect(body).toContain('気になるところを直す');
-    // **待ち時間と費用を隠さない**（5.7）。
-    expect(body).toContain('生成枠を 1 回使います');
+    // **待ち時間と費用を隠さない**（5.7）。**枠は 1 回ではなく最大
+    // `MAX_GENERATION_ATTEMPTS` 回分減る**（5.2-7 の自動のやり直し。#402）。
+    const shown = pageBodyOf(body);
+    expect(shown).not.toContain('生成枠を 1 回使います');
+    expect(shown).toContain(`枠を最大 ${MAX_GENERATION_ATTEMPTS} 回分使う`);
+    expect(shown).toContain(quotaArticleRetrySentence());
   });
 
   it('作者以外には推敲の口が出ない', async () => {
@@ -590,8 +628,12 @@ describe('フォークの口（5.3 / M5-1 / #32）', () => {
     // **親はこの作品である。** 送り先の項目名も綴りを書き写さない（`src/paths.ts`）。
     expect(body).toContain(`<input type="hidden" name="${FORK_PARENT_ID_FIELD}" value="${id}">`);
     expect(body).toContain('どう改造しますか');
-    // **待ち時間と費用を隠さない**（5.7 の推敲と同じ扱い。1 回は生成 1 回そのもの）。
-    expect(body).toContain('生成枠を 1 回使います');
+    // **待ち時間と費用を隠さない**（5.7 の推敲と同じ扱い。1 回は生成 1 回そのもので、
+    // 自動のやり直しが乗ると枠は最大 `MAX_GENERATION_ATTEMPTS` 回分減る。#402）。
+    const shown = pageBodyOf(body);
+    expect(shown).not.toContain('生成枠を 1 回使います');
+    expect(shown).toContain(`枠を最大 ${MAX_GENERATION_ATTEMPTS} 回分使う`);
+    expect(shown).toContain(quotaArticleRetrySentence());
     expect(body).toContain(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
   });
 

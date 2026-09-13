@@ -9,6 +9,7 @@ import {
   FORKS_OFFSET_PARAM,
   FORKS_PER_PAGE,
   GENERATION_IS_SYNCHRONOUS,
+  FORK_TIDY_QUOTA_NOTICE,
   GENERATION_RETRY_QUOTA_NOTICE,
   OPERATOR_MARK,
   storedLikeCount,
@@ -55,6 +56,7 @@ import {
 } from '../src/quota.js';
 import { appendRevision, claimRevisionSlot, failRevision } from '../src/revisions.js';
 import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
+import { TIDY_ATTEMPTS } from '../src/source-size.js';
 import { NEWS_ARTICLES } from '../src/news-articles.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
@@ -473,6 +475,8 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     expect(shown).not.toContain('生成枠を 1 回使います');
     expect(shown).toContain(`枠を最大 ${MAX_GENERATION_ATTEMPTS} 回分使う`);
     expect(shown).toContain(quotaArticleRetrySentence());
+    // 整理パスはフォークだけの経路である。推敲の口には添えない。
+    expect(shown).not.toContain(FORK_TIDY_QUOTA_NOTICE);
   });
 
   it('作者以外には推敲の口が出ない', async () => {
@@ -634,6 +638,11 @@ describe('フォークの口（5.3 / M5-1 / #32）', () => {
     expect(shown).not.toContain('生成枠を 1 回使います');
     expect(shown).toContain(`枠を最大 ${MAX_GENERATION_ATTEMPTS} 回分使う`);
     expect(shown).toContain(quotaArticleRetrySentence());
+    // **整理パスは `TIDY_ATTEMPTS` で打ち切り、自動のやり直しが乗らない**（5.3 の確定18）。
+    // 口は親の大きさを読まないので、例外を言葉で添える（PR #407 のレビュー指摘）。
+    expect(TIDY_ATTEMPTS).toBe(1);
+    expect(shown).toContain(FORK_TIDY_QUOTA_NOTICE);
+    expect(FORK_TIDY_QUOTA_NOTICE).toContain('自動のやり直しは行わず');
     expect(body).toContain(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
   });
 

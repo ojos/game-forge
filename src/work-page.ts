@@ -1260,14 +1260,27 @@ ${play}${publish}${reviseSection(view)}${revisionList(view)}${renameSection(view
  * 写しで回数を直書きしているので、**定数を動かすとその照合が落ちる**——記事を直すか、
  * 新しい記事を足す合図である。
  *
- * **整理パス（5.3 の確定18）はここに含めない。** 整理の同意を問う画面が
- * 「生成枠を 1 回使います」と別に言っており（`src/fork.ts`）、整理パスは
- * `TIDY_ATTEMPTS`（1）で打ち切るので、そちらは正しい。フォークの口の「最大」は、
- * 整理に回った場合も超えない。
+ * **整理パス（5.3 の確定18）はこの 1 文の外である。** 整理パスは `TIDY_ATTEMPTS`（1）で
+ * 打ち切り、**自動のやり直しが乗らない**ので、この 1 文の「自動で やり直す」は当てはまらない。
+ * 作品ページの口は親ソースの大きさを読まないため、フォークの口にだけ
+ * {@link FORK_TIDY_QUOTA_NOTICE} を添えて例外を言う。整理の同意を問う画面
+ * （`src/fork.ts`）は押す前に「生成枠を 1 回使います」と言うので、そちらは正しい。
  */
 export const GENERATION_RETRY_QUOTA_NOTICE =
   `生成されたコードがコンパイルできなかったときは自動で ${MAX_GENERATION_ATTEMPTS - 1} 回だけやり直すため、` +
   `1 回の操作で枠を最大 ${MAX_GENERATION_ATTEMPTS} 回分使うことがあります。`;
+
+/**
+ * フォークの口に添える、整理パスの例外（#402 / 5.3 の確定18）。
+ *
+ * **親が上限を超えているフォークは、自動のやり直しの経路を通らない。** 押すと整理の
+ * 同意を問う画面（`src/fork.ts`）へ送られ、そこで使う枠の回数を先に言う。作品ページは
+ * 親ソースの大きさを読まない（R2 を 1 回読むことになる）ので、**場合分けせずに例外を
+ * 言葉で添える。** {@link GENERATION_RETRY_QUOTA_NOTICE} を「どの場合も自動でやり直す」と
+ * 読ませないためである（PR #407 のレビュー指摘）。
+ */
+export const FORK_TIDY_QUOTA_NOTICE =
+  '元の作品が大きく、整理してから改造する場合は、自動のやり直しは行わず、使う枠の回数を確認の画面で先にお知らせします。';
 
 /**
  * 推敲の入力（5.7 / #193）。
@@ -1912,7 +1925,8 @@ function forkCta(view: WorkPageView): string {
 
   return `<p class="gf-fork">${FORK_LABEL}</p>
 <p class="gf-fork-note">どう改造したいかを書くと、このゲームのソースをもとに新しい作品を作ります。
-   <strong>1 回につき 1〜2 分かかり、生成枠を使います。${GENERATION_RETRY_QUOTA_NOTICE}</strong>元の作品はそのまま残ります。</p>
+   <strong>1 回につき 1〜2 分かかり、生成枠を使います。${GENERATION_RETRY_QUOTA_NOTICE}</strong>元の作品はそのまま残ります。
+   ${FORK_TIDY_QUOTA_NOTICE}</p>
 ${daily}${form}`;
 }
 

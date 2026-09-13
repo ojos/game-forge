@@ -33,6 +33,7 @@
 #   10. 撤退条件の判定手順が、実際に使える形であること（#44）
 #   11. 審査キューの読み出しが、既知の行に対して正しいこと（#40 / #366 / #394）
 #   12. 削除申請の読み出しと、手順書の整合（#41）
+#   13. 参加者の人数と未使用の招待コードの読み出し（#397）
 #
 # **この一覧は下の節見出しの写しである。** 節を足したらここへも足すこと——足し忘れると、
 # 冒頭だけを読んだ人が「検査されていない」と思って同じ検査をもう一度書く
@@ -1072,6 +1073,89 @@ fi
 
 for missing in --format --persist-to; do
   expect_missing_value_exits scripts/takedown-queue.sh "$missing"
+done
+
+# ── 13. 参加者の人数と未使用の招待コードの読み出し（#397）───────────────────────
+#
+# **人数の上限（8.1）は発行を止めるだけの緩い締め切りで、未使用のコードの本数だけ参加者は
+# 上限を超えうる。** その本数を運営が数える唯一の手段が scripts/invite-stock.sh である。
+# SQL や wrangler の応答の形が変わってもアプリのテストは緑のまま通るので、ここで既知の行に
+# 対して数と終了コードを見る（PR #422 の Copilot の指摘）。
+#
+# **スクリプトを実際に走らせることが、定数の取り出しの検査を兼ねる。** `src/participant-cap.ts`
+# の宣言の書き方が変わって `sed` が取り出せなくなると、スクリプトは 2 で落ち、下の期待値が外れる。
+echo "[selftest] 参加者の人数と未使用の招待コード（#397）"
+
+STOCK_SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/stock-selftest.XXXXXX")" || exit 1
+trap 'rm -rf "$SANDBOX" "$KPI_SANDBOX" "$MIG_SANDBOX" "$QUEUE_SANDBOX" "$TD_SANDBOX" "$STOCK_SANDBOX"' EXIT
+
+if ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+     npx wrangler d1 migrations apply DB --local --persist-to "$STOCK_SANDBOX" >/dev/null 2>&1; then
+  echo "  FAIL 招待の在庫用の使い捨て D1 へマイグレーションを適用できません" >&2
+  failed=1
+else
+  # 参加者 2 人（BAN 済み 1 人は数えない）。招待は 5 本で、数えるのは「未使用で期限内」の 2 本だけ
+  # ——使用済み・期限切れ・`expires_at` が 1（遠い過去）の行は数えない。
+  CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+    npx wrangler d1 execute DB --local --persist-to "$STOCK_SANDBOX" --command "
+  insert into users (id, google_sub, email, display_name, created_at, banned_at) values
+    ('su1','ss1','su1@example.invalid','a',1,null),
+    ('su2','ss2','su2@example.invalid','b',1,null),
+    ('su3','ss3','su3@example.invalid','c',1,5);
+  insert into invites (code, issued_by, used_by, used_at, expires_at) values
+    ('STOCKUNUSED1','su1',null,null,null),
+    ('STOCKFUTURE1','su1',null,null,4102444800),
+    ('STOCKUSED001','su1','su2',10,null),
+    ('STOCKEXPIRE1','su2',null,null,1),
+    ('STOCKUSEDEXP','su2','su3',10,2);
+  " >/dev/null 2>&1 || { echo "  FAIL 招待の在庫の既知の行を入れられません" >&2; failed=1; }
+
+  stock_json="$(bash scripts/invite-stock.sh --persist-to "$STOCK_SANDBOX" --format json 2>/dev/null)"
+  stock_code=$?
+  expect_eq "上限未満なら 0 で通る"             "0"     "$stock_code"
+  expect_eq "上限は src/participant-cap.ts の値" "50"    "$(jq -r '.cap' <<<"$stock_json")"
+  expect_eq "BAN 済みを参加者に数えない"         "2"     "$(jq -r '.participants' <<<"$stock_json")"
+  expect_eq "BAN 済みの人数"                     "1"     "$(jq -r '.banned' <<<"$stock_json")"
+  expect_eq "未使用で期限内のコードだけを数える" "2"     "$(jq -r '.unused' <<<"$stock_json")"
+  expect_eq "すべて使われたときの人数"           "4"     "$(jq -r '.worstCase' <<<"$stock_json")"
+  expect_eq "上限に達していない"                 "false" "$(jq -r '.capReached' <<<"$stock_json")"
+  # **コードそのものを出さない**（端末のログに使える招待を残さない）。
+  if grep -q 'STOCK' <<<"$stock_json"; then
+    echo "  FAIL 招待コードそのものが出力に含まれています" >&2
+    failed=1
+  else
+    echo "  ok   招待コードそのものを出さない"
+  fi
+
+  # **50 人ちょうどで達したとみなす**（src/participant-cap.ts の participantCapReached と同じ境界）。
+  CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+    npx wrangler d1 execute DB --local --persist-to "$STOCK_SANDBOX" --command "
+  insert into users (id, google_sub, email, display_name, created_at)
+    with recursive n(i) as (select 1 union all select i + 1 from n where i < 48)
+    select 'sb' || i, 'sbs' || i, 'sb' || i || '@example.invalid', 'bulk', 1 from n;
+  " >/dev/null 2>&1 || { echo "  FAIL 招待の在庫の利用者を 50 人にできません" >&2; failed=1; }
+  run_bounded 60 bash scripts/invite-stock.sh --persist-to "$STOCK_SANDBOX"
+  expect_eq "参加者 50 人なら 1 で落ちる" "1" "$?"
+fi
+
+# **条件を書き写していないこと。** 参加者の条件は src/participant-cap.ts から取り出す。
+if grep -q 'PARTICIPANT_WHERE_SQL' scripts/invite-stock.sh && ! grep -q 'banned_at is null' scripts/invite-stock.sh; then
+  echo "  ok   参加者の条件を src/participant-cap.ts から取り出している"
+else
+  echo "  FAIL 参加者の条件を書き写しています（src/participant-cap.ts の PARTICIPANT_WHERE_SQL を使ってください）" >&2
+  failed=1
+fi
+
+# **本番へは select しか送らないこと。**
+if grep -Fq 'select で始まらない文は送りません' scripts/invite-stock.sh; then
+  echo "  ok   読み取りのみの guard がある"
+else
+  echo "  FAIL 読み取りのみの guard がありません" >&2
+  failed=1
+fi
+
+for missing in --format --persist-to; do
+  expect_missing_value_exits scripts/invite-stock.sh "$missing"
 done
 
 if (( failed )); then

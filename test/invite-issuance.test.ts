@@ -332,6 +332,31 @@ describe('招待枠の停止（7.3 / #40）は残高に関わらず効く（#396
     const page = await call(INVITES_API_PATH, { method: 'POST', cookie, accept: 'text/html' });
     expect(page.headers.get('location')).toBe(`${INVITES_PATH}?reason=quota-halted`);
   });
+
+  it('停止中の画面は、枠が残っていても発行のボタンを出さない（4.4 / #397）', async () => {
+    // #396 までは、停止中でも残高と発行のボタンを出していた（押すと 409 で断られる）。
+    const inviter = await seedUser();
+    const invitee = `inv-${crypto.randomUUID()}`;
+    await env.DB.prepare(
+      'insert into users (id, google_sub, email, display_name, created_at, invited_by, banned_at) values (?, ?, ?, ?, 1, ?, 1)',
+    )
+      .bind(invitee, `sub-${invitee}`, `${invitee}@example.com`, invitee, inviter)
+      .run();
+    const cookie = await sessionCookie(inviter);
+
+    const body = await (await call(INVITES_PATH, { cookie, accept: 'text/html' })).text();
+    expect(pageBodyOf(body)).not.toContain('<form');
+    expect(body).toContain('招待枠を停止しています。');
+
+    const listed = (await (await call(INVITES_API_PATH, { cookie })).json()) as { halt: unknown };
+    expect(listed.halt).toBe('quota-halted');
+
+    // 断られて戻ってきたときに、同じ文言を 2 回並べない。
+    const again = await (
+      await call(`${INVITES_PATH}?reason=quota-halted`, { cookie, accept: 'text/html' })
+    ).text();
+    expect(again.split('招待枠を停止しています。').length - 1).toBe(1);
+  });
 });
 
 describe('自分が発行した招待を自分では使えない（#91 acceptance 4）', () => {
@@ -360,6 +385,7 @@ describe('自分が発行した招待の一覧と残枠', () => {
       issued: 1,
       remaining: INVITE_QUOTA - 1,
       nextRecoveryAt: expect.any(Number),
+      halt: null,
       invites: [{ code: myCode, state: '未使用', usedAt: null, expiresAt: null }],
     });
   });

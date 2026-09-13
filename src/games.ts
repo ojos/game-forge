@@ -23,6 +23,13 @@
  * 改名は履歴（`migrations/0027_title_changes.sql`）と同じ batch で書き、審査済み
  * （`cleared`）の作品は `NULL` へ戻る（理由は {@link renameGame}）。
  *
+ * ## 作者は公開後に説明を書ける（#388）
+ *
+ * **{@link describeGame} が改名と同じ形で書く**（口は作品ページ。履歴は
+ * `migrations/0028_game_descriptions.sql`、同じ batch、`cleared` は `NULL` へ戻る）。
+ * 違いは、**公開済みの作品だけに書けること**と、**長すぎる説明を切らずに断ること**
+ * （{@link validateDescription}）である。
+ *
  * ## 状態は `games.status` ではなく `generation_state` が持つ
  *
  * 5.4 は「生成 → 作者が試遊 → 「公開」操作で初めて URL が有効になる」と定める。
@@ -1190,6 +1197,308 @@ export async function renameGame(
   // 残る理由は「同じ題名だった」である。**失敗にしない**（二度押しと、正規化の結果が
   // いまの題名と一致した場合の両方がここへ来る。{@link removeGame} の二度押しと同じ扱い）。
   return { ok: true, title: row.title, changed: false };
+}
+
+/**
+ * 作品の説明の最大の長さ（**コードポイントで数える**。#388）。
+ *
+ * **1000 文字。** 説明に入れたいのは、遊び方の数行と、5.6 のクレジット表記（原作・素材・
+ * 二次利用の条件）である。参照元の AivisHub のモデル説明もこの範囲に収まる。**長さを
+ * 利用者の文章量の上限としてではなく、D1 の 1 行と作品ページの 1 画面を守る値として置く**
+ * ——履歴（`description_changes`）は変更のたびに旧い説明と新しい説明の両方を持つので、
+ * 1 回の変更で最大 2 倍の文字列が積まれる（3.6）。
+ *
+ * **数え方は表示名（`src/account.ts` の `DISPLAY_NAME_MAX_LENGTH`）と同じである**
+ * ——UTF-16 の長さでも書記素でもなく、コードポイント。**改行は 1 文字に数える**
+ * （`\r\n` は {@link validateDescription} が `\n` へ畳んでから数える。ブラウザは
+ * `<textarea>` の改行を `\r\n` で送るので、畳まずに数えると改行が 2 文字になる）。
+ */
+export const MAX_DESCRIPTION_LENGTH = 1000;
+
+/**
+ * 説明を変えてから、次の変更を受け付けるまでの秒数（#388 / 3.6）。
+ *
+ * **表示名の `DISPLAY_NAME_CHANGE_INTERVAL_SECONDS` と同じ考え方・同じ値である。** 連打で
+ * D1 の書き込みを増やさない。説明の変更は 1 回で 2 行（履歴と `games`）を書くので、
+ * 60 秒に 1 回なら 1 作品に 1 日張り付いても 2,880 行（無料枠 10 万行/日 の 2.9%）に収まる。
+ *
+ * **数え方は作品ごとである**（`games.description_set_at`）。作者ごとにすると、ある作品の
+ * 説明を直した直後に別の作品のクレジットを書けない——止めたいのは連打であって、
+ * 作品を並べて手入れすることではない。
+ */
+export const DESCRIPTION_CHANGE_INTERVAL_SECONDS = 60;
+
+/**
+ * 説明の変更の履歴を持つ表の名前（`migrations/0028_game_descriptions.sql`）。
+ *
+ * **`TITLE_CHANGES_TABLE` と違い、このモジュールが持つ。** あちらが `src/reports.ts` に
+ * あるのは `REVIEW_RENAMED_SQL` が引くためで（循環参照を避けた）、この表を引く審査の
+ * 条件はまだ無い。**引く側ができたら、その側へ移すこと。**
+ */
+export const DESCRIPTION_CHANGES_TABLE = 'description_changes';
+
+/**
+ * 説明に含めてはいけない文字（#388）。**改行（LF）だけを除いた、表示名と同じ組である。**
+ *
+ * - **`\p{Cc}`（制御文字）から LF を除いたもの。** タブ・NUL・DEL・C1 制御文字（NEL を
+ *   含む）を弾く。CR は {@link validateDescription} が先に LF へ畳むので、ここへは来ない
+ * - **`\p{Zl}` / `\p{Zp}`（U+2028 / U+2029）。** Unicode 上の行区切りで、改行として
+ *   扱う経路（LF）と別の綴りを残すと、表示する側によって段落の割れ方が変わる
+ *
+ * **範囲は `src/account.ts` の `FORBIDDEN_CHARACTER` と同じ組にする**（題名の
+ * {@link normalizeTitle} が同じ組を持つのと同じ理由——名前の側で禁じた文字を別の欄から
+ * 入れさせない）。**あちらを import しない**のは、このモジュールがオーケストレータの束に
+ * 入っており（`scripts/bundle-orchestrator.sh`）、`src/account.ts` を辿ると画面の外枠まで
+ * 束へ連れてくるためである。**組が一致していることは `test/work-description.test.ts` が
+ * 表示名の検査と文字ごとに突き合わせる**（書き写した組は必ず腐る。shared-ai-rules 12 章）。
+ *
+ * **LF だけを許すのは、説明が複数行の文章だからである**（#388 の scope.out は「改行以外の
+ * 装飾」を扱わないと書いており、改行は持つ）。**クレジット表記は行を分けて書くのが普通**で、
+ * 1 行に畳ませると読めない。
+ */
+const DESCRIPTION_FORBIDDEN_CHARACTER = /(?!\n)[\p{Cc}\p{Zl}\p{Zp}]/u;
+
+/**
+ * 説明に含めてはいけない、文字の向きを変える書式文字（#388）。
+ *
+ * **`src/account.ts` の `DIRECTION_FORMATTING_CHARACTER` と同じ特性（`Bidi_Control`）で
+ * 引く。** 説明は作者名・運営の印と同じ画面に並ぶので、表示名が弾く理由（5.9「名前の
+ * 側から印の見え方を動かせてはいけない」）がそのまま当てはまる。
+ *
+ * **モジュールの定数にせず、関数の中に置く。** esbuild は `\p{Bidi_Control}` を
+ * `new RegExp(...)` へ書き換え、**例外を投げうる式として束から落とさない**——定数に
+ * すると、オーケストレータが 1 度も呼ばない説明の検査のために束（CodeSha256）が変わる
+ * （`scripts/bundle-orchestrator.sh`。PR #401 で実測した）。関数に閉じれば、呼ばれない
+ * 関数ごと束から落ちる。
+ *
+ * @param value 検査する文字列
+ * @returns 向きを変える書式文字を含めば true
+ */
+function containsDirectionCharacter(value: string): boolean {
+  return /\p{Bidi_Control}/u.test(value);
+}
+
+/** 説明の形を受け付けなかった理由（#388）。 */
+export type DescriptionFormRejection = 'too-long' | 'forbidden-character';
+
+/** 説明の形の検査の結果。 */
+export type DescriptionValidation =
+  | { readonly ok: true; readonly value: string }
+  | { readonly ok: false; readonly reason: DescriptionFormRejection };
+
+/**
+ * 説明を検査し、保存する形へ落とす（#388）。
+ *
+ * # 題名の {@link normalizeTitle} と性質が違う（切らずに断る）
+ *
+ * **長すぎる説明は断る。黙って切らない。** `normalizeTitle` が切るのは、あれが
+ * プロンプトから**仮の題を作る**関数でもあるからで（生成側の初期値と改名が同じ規則を
+ * 通る）、説明にはその事情が無い。**文章の末尾を黙って落とすと、クレジットの最後の
+ * 1 行が消えたまま公開される。**
+ *
+ * **禁じた文字も空白へ潰さずに断る。** 題名は 1 行に畳む関数なので改行を空白へ潰すが、
+ * 説明は改行を持ち、しかも作者が貼り付けた文章をそのまま出す欄である。**見えない文字を
+ * 黙って置き換えると、作者が見ている文章と保存された文章が食い違う。**
+ *
+ * # 規則
+ *
+ * 1. **`\r\n` と `\r` を `\n` へ畳む。** ブラウザは `<textarea>` の改行を `\r\n` で送る
+ * 2. **禁じた文字を含めば断る**（{@link DESCRIPTION_FORBIDDEN_CHARACTER} /
+ *    {@link containsDirectionCharacter}）。**前後の空白を除く前に見る**——`trim` は
+ *    U+2028 / U+2029 とタブも除くので、後に見ると端の禁じた文字が黙って消えて通る
+ * 3. **前後の空白（改行を含む）を除く**（空白だけなら空文字＝説明なし）
+ * 4. **{@link MAX_DESCRIPTION_LENGTH} を超えれば断る**（コードポイントで数える）
+ *
+ * **空文字は通す。** 説明を消すのは正当な操作である。
+ *
+ * **HTML に効く文字（`<` `"` など）は通す。** 防ぐのは出力側のエスケープである
+ * （5.9「保存時の制約は XSS を防がない」）。
+ *
+ * @param raw 作者が入力した説明（**正規化前**）
+ * @returns 保存する値、または断る理由
+ */
+export function validateDescription(raw: string): DescriptionValidation {
+  const unified = raw.replace(/\r\n?/gu, '\n');
+  // **禁じた文字は `trim` の前に見る**（PR #401 の Copilot レビュー）。`String#trim` は
+  // ECMAScript の行終端として U+2028 / U+2029 も、空白としてタブも除くので、後に見ると
+  // **先頭や末尾に置かれた禁じた文字が黙って削られて通る**——「置き換えずに断る」と
+  // 食い違う。
+  if (
+    DESCRIPTION_FORBIDDEN_CHARACTER.test(unified) ||
+    containsDirectionCharacter(unified)
+  ) {
+    return { ok: false, reason: 'forbidden-character' };
+  }
+  const value = unified.trim();
+  if ([...value].length > MAX_DESCRIPTION_LENGTH) {
+    return { ok: false, reason: 'too-long' };
+  }
+  return { ok: true, value };
+}
+
+/**
+ * 説明の変更の結果（#388）。形は {@link RenameOutcome} に揃えてある。
+ */
+export type DescribeOutcome =
+  | {
+      readonly ok: true;
+      /** 保存されている説明（**正規化後**。空文字なら説明なし）。 */
+      readonly description: string;
+      /** **この呼び出しが実際に説明を変えたか。** 同じ説明の入れ直しは false。 */
+      readonly changed: boolean;
+    }
+  | { readonly ok: false; readonly reason: DescribeRejection };
+
+/**
+ * 説明の変更を受け付けなかった理由（#388）。
+ *
+ * - `not-found` … 作品が無い、または**他人の作品**（撃ち分けない。{@link renameGame} と同じ）
+ * - `removed` … 取り下げた作品
+ * - `not-published` … まだ公開していない作品（**説明は公開後に書くもの**。5.4 を変えない）
+ * - `too-soon` … 前回の変更から {@link DESCRIPTION_CHANGE_INTERVAL_SECONDS} 秒経っていない
+ * - `denied-term` … 8.3 の表に当たった。**語も分類も添えない**（{@link RenameRejection} と
+ *   同じ理由——当てては消しを繰り返せば表が 1 語ずつ復元できる）
+ * - {@link DescriptionFormRejection} … 長すぎる・禁じた文字を含む
+ */
+export type DescribeRejection =
+  | 'not-found'
+  | 'removed'
+  | 'not-published'
+  | 'too-soon'
+  | 'denied-term'
+  | DescriptionFormRejection;
+
+/**
+ * 作者が公開済みの作品に説明を書く（#388）。
+ *
+ * **形は {@link renameGame} を写してある。** 違うのは次の 4 点だけで、それ以外の判断
+ * （行を引く前に 8.3 を掛ける・履歴を先に積む・2 文の WHERE を同じ綴りにする・0 行の
+ * ときだけ理由を引く・理由を引く SELECT にも `author_id` を入れる）は向こうの説明が
+ * そのまま当てはまる。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 1. 正規化は {@link validateDescription} で、切らずに断る
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * 理由はあちらに書いた（説明は仮の題を作る関数ではない）。**8.3 に掛けるのは保存される
+ * 値そのもの**（改行を畳み、前後の空白を除いた後）である。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 2. 書けるのは公開済みの作品だけである（`status = 'published'`）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **5.4 の 1 タップの導線を変えない**（#388）。公開の前に説明の欄を置くと、公開までの
+ * 画面に入力欄が 1 つ増える。改名が公開の前後を問わないのと違うのは、**未公開の作品には
+ * 説明を読む人が作者しかいない**からである（題名は未公開でも作者の一覧に出る）。
+ * `status = 'published'` は `removed` も `draft` も除く。`generation_state = 'ready'` も
+ * 置く——公開は `ready` の行にしか起きない（{@link publishGame}）ので冗長だが、
+ * **画面の条件と経路の関門を、改名と同じ綴りで読めるようにしておく。**
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 3. 変更の間隔を WHERE に置く（断った要求は 1 行も書かない）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * `src/account.ts` の `changeDisplayName` と同じ形である。**時刻は `games` の行に持つ**
+ * （`description_set_at`）。履歴の表から引くと、同じ batch で先に積んだ履歴の行に
+ * UPDATE の側が当たって必ず 0 行になる（`migrations/0028_game_descriptions.sql`）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 4. `cleared` は `NULL` へ戻す（改名と同じ）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **審査で見たのは変更前の説明である。** 穏当な説明で公開し、通報されて `cleared` に
+ * なった後で書き換える、という経路を改名と同じ扱いで塞ぐ。**`queued` にはしない**
+ * （善意の変更で作品がトップから消える）。`queued` の作品は `queued` のまま残る。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param authorId 操作している利用者（**作者本人でなければ通らない**）
+ * @param candidate 作者が入力した説明（**正規化前**）
+ * @param now 変更時刻（UNIX 秒。既定は現在時刻）
+ * @returns 変更の結果
+ */
+export async function describeGame(
+  env: Env,
+  gameId: string,
+  authorId: string,
+  candidate: string,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<DescribeOutcome> {
+  const validated = validateDescription(candidate);
+  if (!validated.ok) {
+    return { ok: false, reason: validated.reason };
+  }
+  const description = validated.value;
+
+  // **語も分類も外へ出さない**（{@link DescribeRejection}）。**空文字は掛けない**
+  // ——当たる語が無く、説明を消す操作を 8.3 の都合で断る余地を残さない。
+  if (description !== '' && !inspectText(description).ok) {
+    return { ok: false, reason: 'denied-term' };
+  }
+
+  // **条件の綴りを 1 つにする**（{@link renameGame} と同じ理由）。
+  const conditions =
+    "id = ? and author_id = ? and status = ? and generation_state = 'ready' and description <> ?" +
+    ' and (description_set_at is null or description_set_at <= ?)';
+  const bindings = [
+    gameId,
+    authorId,
+    PUBLISHED_STATUS,
+    description,
+    now - DESCRIPTION_CHANGE_INTERVAL_SECONDS,
+  ] as const;
+
+  const results = await env.DB.batch([
+    // **履歴を先に積む。** 旧い説明は UPDATE の前の行からしか取れない。
+    env.DB.prepare(
+      `insert into ${DESCRIPTION_CHANGES_TABLE}
+              (id, game_id, old_description, new_description, changed_at)
+       select ?, id, description, ?, ?
+         from games
+        where ${conditions}`,
+    ).bind(crypto.randomUUID(), description, now, ...bindings),
+    env.DB.prepare(
+      `update games
+          set description = ?, description_set_at = ?,
+              ${REVIEW_STATE_COLUMN} = nullif(${REVIEW_STATE_COLUMN}, ?)
+        where ${conditions}`,
+    ).bind(description, now, REVIEW_CLEARED, ...bindings),
+  ]);
+
+  const historyRows = results[0]?.meta.changes ?? 0;
+  const describedRows = results[1]?.meta.changes ?? 0;
+
+  if (describedRows > 0) {
+    // **履歴の無い変更は構造上ありえない**（同じ条件・同じ batch）。{@link renameGame} と同じ扱い。
+    if (historyRows === 0) {
+      console.error('[games] 履歴の無い説明の変更が入りました（batch の意味が変わっています）');
+    }
+    return { ok: true, description, changed: true };
+  }
+
+  // **0 行だったときだけ、理由を引きに行く。** `author_id = ?` を入れる理由は {@link renameGame}。
+  const row = await env.DB.prepare(
+    'select status, generation_state, description from games where id = ? and author_id = ?',
+  )
+    .bind(gameId, authorId)
+    .first<{ status: string; generation_state: string; description: string }>();
+
+  if (row === null) {
+    return { ok: false, reason: 'not-found' };
+  }
+  if (row.status === REMOVED_STATUS) {
+    return { ok: false, reason: 'removed' };
+  }
+  if (row.status !== PUBLISHED_STATUS || row.generation_state !== 'ready') {
+    return { ok: false, reason: 'not-published' };
+  }
+  if (row.description === description) {
+    // **同じ説明の入れ直しは失敗にしない**（二度押し。改名と同じ扱い）。**間隔の内側でも
+    // こちらを先に見る**——同じ文章を 2 度送った人に「待ってください」と言う理由が無い。
+    return { ok: true, description: row.description, changed: false };
+  }
+  // 残る理由は「前回の変更から間隔が空いていない」である。
+  return { ok: false, reason: 'too-soon' };
 }
 
 /**

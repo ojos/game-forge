@@ -45,19 +45,23 @@
  * ## 応答本文の文字列を表示面へ持ち込まない（8.3）
  *
  * 出すのは**このモジュールが持つ固定の文言**と、D1 から読んだ値のうち
- * **利用者自身の入力（仮タイトル）だけ**である。`generation_error` は固定語彙の
+ * **利用者自身の入力（仮タイトル、公開後は作者の説明。#388）だけ**である。`generation_error` は固定語彙の
  * 分類名で、**値そのものは出さない**（どの固定文言を出すかの鍵として使う）。
  */
 import { siteFooter } from './legal.js';
 import type {
+  DescribeRejection,
   ForkChild,
   GenerationErrorCode,
   GenerationState,
   RenameRejection,
 } from './games.js';
 import {
+  DESCRIPTION_CHANGE_INTERVAL_SECONDS,
+  MAX_DESCRIPTION_LENGTH,
   MAX_TITLE_LENGTH,
   countPublishedForks,
+  describeGame,
   listPublishedForks,
   PUBLISHED_STATUS,
   REMOVED_STATUS,
@@ -190,6 +194,25 @@ export const WORK_RENAME_GAME_ID_FIELD = 'game_id';
 export const WORK_RENAME_TITLE_FIELD = 'title';
 
 /**
+ * 作品の説明を書く口（#388）。
+ *
+ * **{@link WORK_RENAME_PATH} と同じ理由で `src/paths.ts` に置かない**——フォームも受け口も
+ * このモジュールが持つ（しかも `src/paths.ts` はオーケストレータの束に入る。#328 / #336）。
+ *
+ * **改名の口に畳まない。** 題名と説明は正規化の規則が違い（題名は切る・説明は断る）、
+ * 書ける作品も違う（題名は公開の前後を問わない・説明は公開後だけ）。**1 つの口にすると、
+ * 片方の項目だけを送った要求の意味が本文の中身でしか決まらなくなる**（通報と取り下げを
+ * 分けたのと同じ理由）。
+ */
+export const WORK_DESCRIBE_PATH = '/api/works/describe';
+
+/** 説明を書く対象を指す項目名（フォームの `name` と JSON の鍵の両方）。 */
+export const WORK_DESCRIBE_GAME_ID_FIELD = 'game_id';
+
+/** 説明の本文を載せる項目名。 */
+export const WORK_DESCRIBE_TEXT_FIELD = 'description';
+
+/**
  * `games.id` の綴り（`crypto.randomUUID()` が返す形）。
  *
  * **経路の入口で形を確かめる。** 確かめずに SQL のプレースホルダへ渡しても injection には
@@ -267,6 +290,13 @@ interface WorkRow {
   ogp_started_at: number | null;
   /** 公開した時刻。未公開なら null。**撮影を始めた時刻の代用**に使う（#235）。 */
   published_at: number | null;
+  /**
+   * 作者が書いた説明（`games.description`。`migrations/0028_game_descriptions.sql`）。
+   *
+   * 列は `NOT NULL DEFAULT ''` だが、**型の上で必須であることは実行時の保証ではない**
+   * （`like_count` と同じ扱い）。空文字と null はどちらも「説明なし」として読む。
+   */
+  description: string | null;
   /**
    * いいねの数（`games.like_count`。`migrations/0020_games_like_count.sql`）。
    *
@@ -641,6 +671,22 @@ export interface WorkPageView {
    */
   readonly renamableId: string | null;
   /**
+   * 作者が書いた説明（#388）。**公開済みのときだけ入る。** 説明が無ければ空文字。
+   *
+   * **UGC である**ので、画面へ出すときは `escapeHtml` を通す（{@link descriptionSection} /
+   * {@link describeSection}）。**公開済みでなければ null**——説明は公開後にしか書けず
+   * （`src/games.ts` の `describeGame`）、取り下げた作品の画面は本文ごと差し替わる。
+   */
+  readonly description: string | null;
+  /**
+   * この作品 id（説明のフォームに入れる。#388）。書けないなら null。
+   *
+   * **`renamableId` と兼ねない。** 条件が違う——こちらは「**本人・公開済み**・完成済み」で、
+   * 改名は公開の前後を問わない。**5.4 の 1 タップの導線を変えない**ため、未公開の作品に
+   * 説明の欄を出さない。**画面でこの条件を組み立てない**（`revisable` と同じ方針）。
+   */
+  readonly describableId: string | null;
+  /**
    * この作品 id（取り下げのフォームに入れる。5.3 / M5-4 / #35）。取り下げられないなら null。
    *
    * **`publishableId` / `forkableId` / `recapturableId` と兼ねない**（同時に非 null に
@@ -682,7 +728,8 @@ export interface WorkPageView {
 /**
  * 作品ページの HTML を組み立てる。
  *
- * **`escapeHtml` を通すのは `title` だけである。** 他はすべてこのモジュールが持つ
+ * **`escapeHtml` を通すのは利用者の入力である。** 題名（`title`）と作者名に加えて、
+ * #388 で作者の説明（`description`）が加わった。他はすべてこのモジュールが持つ
  * 固定の文字列か、正規表現で形を確かめた URL である。
  *
  * @param view 表示に必要な値
@@ -1090,6 +1137,49 @@ function renameSection(view: WorkPageView): string {
 }
 
 /**
+ * 説明を書く口（#388）。
+ *
+ * # 作者にだけ、公開後にだけ出す
+ *
+ * 門番は {@link WorkPageView.describableId} で、ここは null かどうかだけを見る
+ * （{@link renameSection} と同じ形）。**5.4 の「公開して共有」の 1 タップは 1 文字も
+ * 変わらない**——このフォームは公開した後の画面にしか現れない。
+ *
+ * # `maxlength` を付けない
+ *
+ * {@link renameSection} と同じ理由である（HTML の `maxlength` は UTF-16 の長さで数え、
+ * こちらの規則はコードポイント）。**違うのは、超えた分を切らずに断ること**で、上限は
+ * 押す前に文言で知らせる。
+ *
+ * # 素の `<textarea>` で組む
+ *
+ * クラスを付けない（`public/assets/app.css` の要素セレクタが幅と行の高さを持つ）。
+ * **`cols` を付けない**——幅を文字数で固定すると、狭い端末で layout viewport を広げる
+ * （#282 の `size="50"` と同じ壊れ方）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（書けなければ空文字）
+ */
+function describeSection(view: WorkPageView): string {
+  if (view.describableId === null) {
+    return '';
+  }
+  // **説明は UGC である。** `<textarea>` の中身へ入れるので `escapeHtml` を通す
+  // （`</textarea>` を書かれても要素から抜け出せない）。
+  return `
+<h3>作品の説明を書く</h3>
+<p>遊び方や、使った素材・原作のクレジットなどを書けます。<strong>作品ページを開いた人なら誰でも読めます。</strong>
+   ${MAX_DESCRIPTION_LENGTH} 文字まで。改行はそのまま出ます（リンクや太字などの書式は使えません）。
+   変更は ${DESCRIPTION_CHANGE_INTERVAL_SECONDS} 秒に 1 回までです。</p>
+<form method="post" action="${WORK_DESCRIBE_PATH}">
+  <input type="hidden" name="${WORK_DESCRIBE_GAME_ID_FIELD}" value="${view.describableId}">
+  <label for="work-description">作品の説明</label>
+  <textarea id="work-description" name="${WORK_DESCRIBE_TEXT_FIELD}" rows="6">${escapeHtml(view.description ?? '')}</textarea>
+  <button type="submit">この説明にする</button>
+</form>`;
+}
+
+/**
  * 試遊画面の主ボタン（5.4）。
  *
  * **文言は 5.4 が定めている**（「試遊画面の主ボタンは「**公開して共有**」とし、
@@ -1341,10 +1431,50 @@ function publishedSection(view: WorkPageView): string {
       ? ''
       : `
 <p>共有する URL: <code>${view.shareUrl}</code></p>`;
+  // **説明は作者名・元ゲームの後に置く**（#388）。遊ぶ前に読む来歴（3.4-5 の 4 要素）を
+  // 押し下げない。**説明を書くフォームは改名の隣**に置く——どちらも作品ページの
+  // 「作者だけの設定」で、公開の導線（5.4）の外にある。
   return `<h2>公開しています</h2>
-${loadingScreen(view)}${likeSection(view)}${share}
-${forkList(view.forks)}${recaptureSection(view)}${renameSection(view)}${removeSection(view)}`;
+${loadingScreen(view)}${likeSection(view)}${descriptionSection(view)}${share}
+${forkList(view.forks)}${recaptureSection(view)}${renameSection(view)}${describeSection(view)}${removeSection(view)}`;
 }
+
+/**
+ * 作者が書いた説明（#388）。**誰にでも出す**（公開済みの作品の本文の一部である）。
+ *
+ * # HTML として描かない
+ *
+ * **1 文字ずつ `escapeHtml` を通してから、改行だけを構造へ戻す。** 空行で段落を分け、
+ * 段落の中の改行は `<br>` にする。**書式はそれだけである**（#388 の scope.out は
+ * Markdown・リンク・改行以外の装飾を扱わない）。URL を書いてもリンクにならない
+ * ——5.6 の外部リンクの緩和策（`rel` / スキームの制限）を、この欄へ持ち込まない。
+ *
+ * **エスケープの後で改行を置き換える**（順序に意味がある）。先に `<br>` を入れてから
+ * エスケープすると `&lt;br&gt;` になり、エスケープの前に利用者の `<br>` を残す形は
+ * 作らない。
+ *
+ * # 空なら何も出さない
+ *
+ * 「説明はありません」を全作品に並べない（`likeSection` が 0 件を出さないのと同じ判断）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（説明が無ければ空文字）
+ */
+function descriptionSection(view: WorkPageView): string {
+  if (view.description === null || view.description === '') {
+    return '';
+  }
+  const paragraphs = view.description
+    .split(/\n\s*\n/u)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph !== '')
+    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/gu, '<br>\n')}</p>`)
+    .join('\n');
+  return `
+<h3>作品の説明</h3>
+${paragraphs}`;
+}
+
 
 /**
  * いいねの数と、付け外しのボタン（5.8 / #340）。
@@ -1859,6 +1989,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
     `select g.author_id, g.status, g.title, g.generation_state, g.generation_error,
             g.preview_key, g.created_at, g.generation_started_at,
             g.ogp_state, g.ogp_started_at, g.published_at, g.like_count, g.ip_notice,
+            g.description,
             a.display_name as author_name, a.is_operator as author_is_operator,
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
        from games g
@@ -2080,6 +2211,19 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // その画面は「生成中です」だけを出す場所で、**まだ何ができたかも分からない作品に
       // 名前を付け直させない**（推敲の口が同じ理由で `ready` を見ている）。
       renamableId: owner && !removed && state === 'ready' ? gameId : null,
+      // **説明は公開済みのときだけ渡す**（#388）。未公開の作品には書けず、取り下げた作品の
+      // 画面は本文ごと差し替わる（`published` は `removed` を含まない）。
+      description: published ? (row.description ?? '') : null,
+      // **書けるのは、本人・公開済み・完成済みの作品である**（#388）。押した結果を決めるのは
+      // `describeGame` の SQL で、ここは口を出すかだけを決める。**未公開の作品に出さない**
+      // ——5.4 の 1 タップの導線（公開までの画面）に入力欄を増やさない。
+      //
+      // **`published` は第 2 層である。** 描画側の第 1 層は、フォームを `publishedSection`
+      // にしか置いていないこと（未公開の `readySection` は `describeSection` を呼ばない）。
+      // **したがってここだけを外しても画面は変わらない**（変異を当てて確かめた）。経路の
+      // 関門は `describeGame` の `status = 'published'` で、そちらを外すと
+      // `test/work-description.test.ts` の「下書きの作品には書けない」が赤くなる。
+      describableId: owner && published && state === 'ready' ? gameId : null,
       // **取り下げられるのは、公開してしまった作品だけである**（5.3 / #35）。
       // 押した結果を決めるのは `removeGame` の SQL で、ここは口を出すかだけを決める。
       removableId: owner && published ? gameId : null,
@@ -2235,7 +2379,7 @@ async function handleRename(request: Request, env: Env): Promise<Response> {
     return asHtml ? seeOther(LOGIN_PATH) : json({ error: 'unauthorized' }, 401);
   }
 
-  const target = await readRenameTarget(request);
+  const target = await readGameTextTarget(request, WORK_RENAME_TITLE_FIELD, RENAME_MAX_BODY_BYTES);
   if (!target.ok) {
     const refused = REMOVE_BODY_REFUSALS[target.reason];
     return asHtml
@@ -2243,7 +2387,7 @@ async function handleRename(request: Request, env: Env): Promise<Response> {
       : json({ error: target.reason }, refused.status);
   }
 
-  const outcome = await renameGame(env, target.gameId, session.userId, target.title);
+  const outcome = await renameGame(env, target.gameId, session.userId, target.text);
   if (!outcome.ok) {
     const refused = RENAME_OUTCOME_REFUSALS[outcome.reason];
     return asHtml
@@ -2293,46 +2437,57 @@ const RENAME_OUTCOME_REFUSALS: Readonly<
   },
 };
 
-/** 改名の本文を読んだ結果。 */
-type RenameTarget =
-  | { readonly ok: true; readonly gameId: string; readonly title: string }
+/** 作品 id と自由文 1 つを運ぶ本文を読んだ結果（改名・説明）。 */
+type GameTextTarget =
+  | { readonly ok: true; readonly gameId: string; readonly text: string }
   | { readonly ok: false; readonly reason: RemoveRejection };
 
 /**
- * 改名の本文を読む。
+ * 作品 id と自由文 1 つを運ぶ本文を読む（改名 #366 / 説明 #388）。
  *
  * **`readReportTarget` と同じ規律である**（媒体型を絞り、大きさを縛り、id の綴りを見る）。
+ * **改名と説明で 1 つの読み方を共有する**——2 つに書き写すと、片方だけが媒体型や
+ * 型の検査を緩めた形になる。違うのは項目名と本文の上限だけで、どちらも引数で受ける。
  *
- * **題名の中身はここで検査しない。** 長さも制御文字も 8.3 の語も `renameGame` が
- * 1 か所で見る（**規則を 2 か所に置かない**）。ここが見るのは「文字列であること」までである。
+ * **自由文の中身はここで検査しない。** 長さも制御文字も 8.3 の語も、`renameGame` /
+ * `describeGame` が 1 か所で見る（**規則を 2 か所に置かない**）。ここが見るのは
+ * 「文字列であること」までである。
  *
  * @param request 受信したリクエスト
+ * @param textField 自由文を載せる項目名（フォームの `name` と JSON の鍵の両方）
+ * @param maxBodyBytes 本文の最大バイト数
  * @returns 読めた対象、読めなければ理由
  */
-async function readRenameTarget(request: Request): Promise<RenameTarget> {
+async function readGameTextTarget(
+  request: Request,
+  textField: string,
+  maxBodyBytes: number,
+): Promise<GameTextTarget> {
   const mediaType = (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
   if (mediaType !== FORM_MEDIA_TYPE && mediaType !== JSON_MEDIA_TYPE) {
     return { ok: false, reason: 'unsupported-content-type' };
   }
 
-  const read = await readLimitedText(request, RENAME_MAX_BODY_BYTES);
+  const read = await readLimitedText(request, maxBodyBytes);
   if (!read.ok) {
     return { ok: false, reason: read.reason };
   }
 
+  // **作品 id の項目名は改名と説明で同じ綴りである**（`WORK_RENAME_GAME_ID_FIELD` /
+  // `WORK_DESCRIBE_GAME_ID_FIELD`。取り下げ・通報とも同じ `game_id`）。
   let rawId: unknown;
-  let rawTitle: unknown;
+  let rawText: unknown;
   if (mediaType === FORM_MEDIA_TYPE) {
     const form = new URLSearchParams(read.text);
     rawId = form.get(WORK_RENAME_GAME_ID_FIELD) ?? undefined;
-    rawTitle = form.get(WORK_RENAME_TITLE_FIELD) ?? undefined;
+    rawText = form.get(textField) ?? undefined;
   } else {
     try {
       const parsed: unknown = JSON.parse(read.text);
       const record =
         typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
       rawId = record[WORK_RENAME_GAME_ID_FIELD];
-      rawTitle = record[WORK_RENAME_TITLE_FIELD];
+      rawText = record[textField];
     } catch {
       return { ok: false, reason: 'invalid-game-id' };
     }
@@ -2341,10 +2496,10 @@ async function readRenameTarget(request: Request): Promise<RenameTarget> {
   if (typeof rawId !== 'string' || !GAME_ID_PATTERN.test(rawId)) {
     return { ok: false, reason: 'invalid-game-id' };
   }
-  if (typeof rawTitle !== 'string') {
+  if (typeof rawText !== 'string') {
     return { ok: false, reason: 'invalid-game-id' };
   }
-  return { ok: true, gameId: rawId, title: rawTitle };
+  return { ok: true, gameId: rawId, text: rawText };
 }
 
 /**
@@ -2359,6 +2514,109 @@ async function readRenameTarget(request: Request): Promise<RenameTarget> {
  * そのまま受けて切り詰められる。
  */
 const RENAME_MAX_BODY_BYTES = 4096;
+
+/**
+ * 説明を書く（`POST /api/works/describe`。#388）。
+ *
+ * **形は {@link handleRename} を写してある**（`accept` で HTML と JSON を分け、素の
+ * `<form>` でも動く。CSRF はセッション cookie の `SameSite=Lax` が受ける）。**判定は
+ * すべて `describeGame` が持つ**——作者の一致も、公開済みかも、長さ・文字・8.3 の語・
+ * 変更の間隔も、ここに `if` を置かない。
+ *
+ * # 落ちた理由を、語でも分類でも言わない
+ *
+ * 8.3 に当たったときに返すのは固定の 1 文だけである（{@link DESCRIBE_OUTCOME_REFUSALS}）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function handleDescribe(request: Request, env: Env): Promise<Response> {
+  const asHtml = (request.headers.get('accept') ?? '').includes('text/html');
+
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return asHtml ? seeOther(LOGIN_PATH) : json({ error: 'unauthorized' }, 401);
+  }
+
+  const target = await readGameTextTarget(request, WORK_DESCRIBE_TEXT_FIELD, DESCRIBE_MAX_BODY_BYTES);
+  if (!target.ok) {
+    const refused = REMOVE_BODY_REFUSALS[target.reason];
+    return asHtml
+      ? removeRefusal('作品の説明を変えられません', refused.body, refused.status)
+      : json({ error: target.reason }, refused.status);
+  }
+
+  const outcome = await describeGame(env, target.gameId, session.userId, target.text);
+  if (!outcome.ok) {
+    const refused = DESCRIBE_OUTCOME_REFUSALS[outcome.reason];
+    return asHtml
+      ? removeRefusal(refused.heading, refused.body, refused.status)
+      : json({ error: outcome.reason }, refused.status);
+  }
+
+  // POST-redirect-GET。戻り先は作品ページで、そこに新しい説明が出る。
+  return asHtml
+    ? seeOther(workPagePath(target.gameId))
+    : json({ described: true, description: outcome.description, changed: outcome.changed }, 200);
+}
+
+/**
+ * 説明の変更を断ったときに出すもの。
+ *
+ * **鍵を `DescribeRejection` で縛る**（{@link RENAME_OUTCOME_REFUSALS} と同じ理由）。
+ */
+const DESCRIBE_OUTCOME_REFUSALS: Readonly<
+  Record<DescribeRejection, { status: number; heading: string; body: string }>
+> = {
+  'not-found': {
+    status: 404,
+    heading: '作品が見つかりません',
+    body: 'URL が正しいかご確認ください。',
+  },
+  removed: {
+    status: 409,
+    heading: '作品の説明を変えられません',
+    body: 'この作品は公開を取り下げています。取り下げた作品の説明は変えられません。',
+  },
+  'not-published': {
+    status: 409,
+    heading: '作品の説明を変えられません',
+    body: 'この作品はまだ公開されていません。説明は公開してから書けます。',
+  },
+  'too-soon': {
+    status: 429,
+    heading: '作品の説明を変えられません',
+    body: `説明の変更は ${DESCRIPTION_CHANGE_INTERVAL_SECONDS} 秒に 1 回までです。少し待ってからもう一度お試しください。`,
+  },
+  'too-long': {
+    status: 400,
+    heading: '作品の説明を変えられません',
+    body: `説明が長すぎます（${MAX_DESCRIPTION_LENGTH} 文字まで）。短くしてからもう一度お試しください。`,
+  },
+  'forbidden-character': {
+    status: 400,
+    heading: '作品の説明を変えられません',
+    body: '説明に使えない文字（改行以外の制御文字や、文字の向きを変える記号）が含まれています。',
+  },
+  // **語も分類も出さない**（{@link handleDescribe}）。言い直せる程度のことだけを伝える。
+  'denied-term': {
+    status: 400,
+    heading: '作品の説明を変えられません',
+    body: 'この説明には使えない表現が含まれています。書き直してください。',
+  },
+};
+
+/**
+ * 説明で受け付ける本文の最大バイト数（#388）。
+ *
+ * **16 KiB。** 説明は {@link MAX_DESCRIPTION_LENGTH} 文字で、フォーム符号化は 1 文字あたり
+ * 最大 12 バイト（UTF-8 の 4 バイト × `%XX`）なので、上限いっぱいの説明が最大 12,000
+ * バイトになる。**上限を超えた説明に 413 ではなく「長すぎます」を返す**ため、その上に
+ * 余裕を取る（`src/account.ts` の表示名が同じ判断をしている）。上限そのものは、本文を
+ * 際限なく読まないために置く。
+ */
+const DESCRIBE_MAX_BODY_BYTES = 16 * 1024;
 
 /** 通報を断ったときに出すもの。 */
 // **鍵を `ReportRejection` で縛る。** `Record<string, …>` にすると、`recordReport` が
@@ -2706,4 +2964,6 @@ export const workPageRoutes: readonly Route[] = [
   // **改名（#366）も完全一致である。** `/api/works/rename` は `/works/` の前方一致に
   // 当たらない綴りにしてある（取り下げ・通報と同じ規約）。
   { method: 'POST', path: WORK_RENAME_PATH, handler: handleRename },
+  // **説明（#388）も完全一致である**（同じ規約）。
+  { method: 'POST', path: WORK_DESCRIBE_PATH, handler: handleDescribe },
 ];

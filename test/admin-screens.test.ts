@@ -1752,6 +1752,17 @@ describe('削除申請の一覧と措置の記録（2.4.3 / 8.4 / #406）', () =
     expect(body).toContain(`href="${ADMIN_TAKEDOWNS_PATH}#takedown-${id}"`);
   });
 
+  it('本文の文の途中に、改行が作る空白を入れない', async () => {
+    // **日本語の文の途中で HTML を改行すると、ブラウザはそこを空白 1 つとして描く**
+    // （「措置は 上書きしません」。本番の画面で見つかった）。タグを落とした本文で、
+    // 文が続いていることを見る。
+    const { body } = await open(ADMIN_TAKEDOWNS_PATH, adminCookie);
+    const text = body.replace(/<[^>]+>/gu, '').replace(/\s+/gu, ' ');
+    expect(text).toContain('届いただけでは作品は動きません。読んで判断し');
+    expect(text).toContain('1 度記録した措置は上書きしません。');
+    expect(text).toContain('戻せない操作なので、この画面に置いていません');
+  });
+
   it('ヘッダのナビから削除申請の画面へ行ける', async () => {
     const { body } = await open(ADMIN_ACTIONS_PATH, adminCookie);
     expect(body).toContain(`href="${ADMIN_TAKEDOWNS_PATH}"`);

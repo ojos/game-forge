@@ -16,10 +16,8 @@ import {
 import {
   REVIEW_CLEARED,
   REVIEW_QUEUED,
-  REVIEW_RENAMED_SQL,
   REVIEW_STATE_COLUMN,
   TITLE_CHANGES_TABLE,
-  reviewAttentionSql,
 } from '../src/reports.js';
 import { DENIED_TERMS } from '../src/denied-terms.js';
 import { inspectText } from '../src/output-moderation.js';
@@ -51,12 +49,12 @@ import { applySchema } from './helpers/schema.js';
  *   3. 8.3 の語で断り、**語も分類も応答に出さない**こと
  *   4. 改名と履歴が 1 つの batch であること（**履歴が落ちれば題名も変わらない**）
  *   5. `cleared` が `NULL` へ戻り、**`queued` にはならない**こと（**変異で確認した**）
- *   6. 改名後の通報を拾う条件（`REVIEW_RENAMED_SQL`）が、既知の行に対して正しいこと
- *   7. 作品の行を消すときに履歴も消せること（確定26 / 3.7 の削除規約）
+ *   6. 作品の行を消すときに履歴も消せること（確定26 / 3.7 の削除規約）
  *
- * **6 をシェル側で見るのは `scripts/report-selftest.sh` の 11 節である**（あちらは
- * `scripts/report-queue.sh` をスクリプトとして走らせる）。ここで見るのは条件そのものの
- * 意味で、あちらが見るのは取り出しと差し込みが繋がっていることである。
+ * **改名のあとの通報を運営へ出す条件は、ここでは見ない。** #366 はそれを「最後の改名より
+ * 後の通報」として書き、この検査が持っていたが、**#394 で「最後に `cleared` にした時刻
+ * 以降の通報」へ一般化した**（改名はその 1 つの場合になった）。条件の意味と綴りの照合は
+ * `test/review-attention.test.ts`、シェル側は `scripts/report-selftest.sh` の 11 節が見る。
  */
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
@@ -562,109 +560,6 @@ describe('改名は審査状態を戻す（#366）', () => {
     // **改名で審査待ちを解けてはいけない**（解けるなら、通報された作品は改名だけで
     // キューから出られる）。
     expect(await reviewStateOf(id)).toBe(REVIEW_QUEUED);
-  });
-});
-
-describe('改名後の通報を拾う条件（#366 / #367 が借りる）', () => {
-  it('綴りは定数から組み立てられている（書き写していない）', () => {
-    // **一覧の複製は機械照合で担保する**（shared-ai-rules 12 章）。1 行の文字列
-    // リテラルにしてあるのはシェルから取り出すためで、そのぶん綴りをここで見る。
-    expect(REVIEW_RENAMED_SQL).toContain(`'${REVIEW_CLEARED}'`);
-    expect(REVIEW_RENAMED_SQL).toContain(TITLE_CHANGES_TABLE);
-    expect(REVIEW_RENAMED_SQL).toContain(`g.${REVIEW_STATE_COLUMN}`);
-    expect(REVIEW_RENAMED_SQL).toContain('reports');
-    // 和のほうは審査待ちも含む。
-    expect(reviewAttentionSql()).toContain(`'${REVIEW_QUEUED}'`);
-    expect(reviewAttentionSql()).toContain(REVIEW_RENAMED_SQL);
-  });
-
-  /**
-   * 条件に当たる作品 id を引く。
-   *
-   * @param sql where 句に置く断片
-   * @returns 当たった作品 id（昇順）
-   */
-  async function matching(sql: string): Promise<readonly string[]> {
-    const rows = await env.DB.prepare(
-      `select g.id from games g where ${sql} order by g.id`,
-    ).all<{ id: string }>();
-    return rows.results.map((row) => row.id);
-  }
-
-  it('cleared かつ最後の改名より後に通報があれば当たる', async () => {
-    const { userId, id } = await seedReady('attention-hit', 'もとの題名');
-    const reporter = await seedUser('attention-reporter');
-    await renameGame(env, id, userId, 'あたらしい題名', 1_700_001_000);
-    await env.DB.prepare(`update games set ${REVIEW_STATE_COLUMN} = ? where id = ?`)
-      .bind(REVIEW_CLEARED, id)
-      .run();
-    await env.DB.prepare(
-      'insert into reports (id, game_id, reporter_id, reason, created_at) values (?, ?, ?, ?, ?)',
-    )
-      .bind(`report-${id}`, id, reporter, '改名後の通報', 1_700_002_000)
-      .run();
-
-    expect(await matching(REVIEW_RENAMED_SQL)).toContain(id);
-    expect(await matching(reviewAttentionSql())).toContain(id);
-  });
-
-  it('改名と通報が同じ秒でも当たる（拾う側へ倒す）', async () => {
-    // **時刻はどちらも UNIX 秒である。** 改名の直後の通報は同じ秒に入りうるので、
-    // `>` で書くとこの作品が一覧から落ちる（PR #391 の Copilot レビュー）。
-    const { userId, id } = await seedReady('attention-same-second', 'もとの題名');
-    const reporter = await seedUser('attention-same-second-reporter');
-    await renameGame(env, id, userId, 'あたらしい題名', 1_700_005_000);
-    await env.DB.prepare(`update games set ${REVIEW_STATE_COLUMN} = ? where id = ?`)
-      .bind(REVIEW_CLEARED, id)
-      .run();
-    await env.DB.prepare(
-      'insert into reports (id, game_id, reporter_id, reason, created_at) values (?, ?, ?, ?, ?)',
-    )
-      .bind(`report-${id}`, id, reporter, '同じ秒の通報', 1_700_005_000)
-      .run();
-
-    expect(await matching(REVIEW_RENAMED_SQL)).toContain(id);
-  });
-
-  it('通報が改名より前なら当たらない', async () => {
-    const { userId, id } = await seedReady('attention-old-report', 'もとの題名');
-    const reporter = await seedUser('attention-old-reporter');
-    await env.DB.prepare(
-      'insert into reports (id, game_id, reporter_id, reason, created_at) values (?, ?, ?, ?, ?)',
-    )
-      .bind(`report-${id}`, id, reporter, '改名前の通報', 1_700_001_000)
-      .run();
-    await renameGame(env, id, userId, 'あたらしい題名', 1_700_002_000);
-    await env.DB.prepare(`update games set ${REVIEW_STATE_COLUMN} = ? where id = ?`)
-      .bind(REVIEW_CLEARED, id)
-      .run();
-
-    expect(await matching(REVIEW_RENAMED_SQL)).not.toContain(id);
-  });
-
-  it('改名していない cleared は当たらない（審査は終わっている）', async () => {
-    const { id } = await seedReady('attention-no-rename', 'もとの題名');
-    const reporter = await seedUser('attention-no-rename-reporter');
-    await env.DB.prepare(`update games set ${REVIEW_STATE_COLUMN} = ? where id = ?`)
-      .bind(REVIEW_CLEARED, id)
-      .run();
-    await env.DB.prepare(
-      'insert into reports (id, game_id, reporter_id, reason, created_at) values (?, ?, ?, ?, ?)',
-    )
-      .bind(`report-${id}`, id, reporter, '通報', 1_700_002_000)
-      .run();
-
-    expect(await matching(REVIEW_RENAMED_SQL)).not.toContain(id);
-  });
-
-  it('審査待ちは和のほうに当たる', async () => {
-    const { id } = await seedReady('attention-queued', 'もとの題名');
-    await env.DB.prepare(`update games set ${REVIEW_STATE_COLUMN} = ? where id = ?`)
-      .bind(REVIEW_QUEUED, id)
-      .run();
-
-    expect(await matching(reviewAttentionSql())).toContain(id);
-    expect(await matching(REVIEW_RENAMED_SQL)).not.toContain(id);
   });
 });
 

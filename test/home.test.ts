@@ -16,6 +16,7 @@ import { findDuplicateRoutes } from '../src/routes.js';
 import { workPagePath } from '../src/work-page.js';
 import { worksListPath } from '../src/works-list.js';
 import { applySchema } from './helpers/schema.js';
+import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
  * 公開トップと、`/__dev/*` の本番遮断（#89 / #329）。
@@ -183,6 +184,19 @@ describe('公開トップ（#89）', () => {
     expect(body).toContain(`href="${LOGIN_PATH}"`);
   });
 
+  it('「いまの状態」が、作品ページで遊べて公開できることに合っている（#402）', async () => {
+    const body = pageBodyOf(await (await SELF.fetch(`${APP_ORIGIN}${HOME_PATH}`)).text());
+    const start = body.indexOf('<h2>いまの状態</h2>');
+    const end = body.indexOf('<h2>はじめる</h2>');
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const status = body.slice(start, end);
+
+    // #128 の時点の「試遊と公開の画面はまだ準備中」を残さない。**作った作品を開く手段が
+    // 無いと読める。** 作品ページ（`/works/<game_id>`）では既に遊べて公開もできる。
+    expect(status).not.toContain('準備中');
+    expect(status).toContain('作品ページで遊んで確かめてから公開できます');
+  });
 });
 
 describe('ハブ型のトップ（#329 / M9-3。仕様 2.3.1 / 2.3.3）', () => {

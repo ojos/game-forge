@@ -119,9 +119,10 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
   it('M12 でこれから増える収集項目を先回りして書かない', async () => {
     // **「していない収集を書かない」を機械で見る。** 収集を始める issue（M12-11 / M12-12 /
     // 作品の説明）は、実装と同じ変更でこの一覧から語を外し、本文へ追記すること。
-    // **作品の説明は #388 が収集を始め、この一覧から外して本文へ足した**（下の it）。
+    // **作品の説明は #388 が、自己紹介と外部リンクは #379 が収集を始め、この一覧から外して
+    // 本文へ足した**（下の it）。
     const body = pageBodyOf((await openPrivacy()).body);
-    for (const notYet of ['アイコン', '自己紹介', '外部リンク', 'プレイ数', 'ハンドル']) {
+    for (const notYet of ['アイコン', 'プレイ数', 'ハンドル']) {
       expect(body, `まだ収集していない「${notYet}」が書いてある`).not.toContain(notYet);
     }
     // 2.3.14 が「収集しない」と決めたもの。
@@ -144,6 +145,41 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
       body.indexOf('4. 第三者への提供'),
     );
     expect(published).toContain('作者が書いた説明');
+  });
+
+  it('自己紹介と外部リンクとその変更の履歴を、取得する情報・公開される情報・公開しない情報に書く（#379）', async () => {
+    // **収集を始めた変更で書く**（#373 の constraints）。自己紹介と外部リンクは `/account` で
+    // 設定し、作者ページで誰でも見られる。履歴（`profile_changes`）は追記だけで D1 に残し、
+    // 公開しない。**どの記述が消えても赤くなるように、項目の行ごとに語を見る。**
+    const body = pageBodyOf((await openPrivacy()).body);
+    const collected = body.slice(body.indexOf('1. 取得する情報'), body.indexOf('2. 利用目的'));
+    const lineOf = (heading: string): string => {
+      const start = collected.indexOf(`<strong>${heading}</strong>`);
+      expect(start, `取得する情報に「${heading}」の項目が無い`).toBeGreaterThanOrEqual(0);
+      const rest = collected.slice(start);
+      return rest.slice(0, rest.indexOf('</li>'));
+    };
+    const profile = lineOf('自己紹介と外部リンク');
+    expect(profile).toContain('3 本まで');
+    expect(profile).toContain('作者ページで誰でも見られます');
+    expect(profile).toContain('D1');
+    const history = lineOf('自己紹介と外部リンクの変更の履歴');
+    expect(history).toContain('変える前と後の自己紹介と外部リンクと、変えた日時');
+    expect(history).toContain('公開しません');
+    expect(history).toContain('追記だけで残します');
+    expect(history).toContain('D1');
+
+    const published = body.slice(
+      body.indexOf('3. 公開される情報'),
+      body.indexOf('<strong>次の情報は公開しません。</strong>'),
+    );
+    expect(published).toContain('自己紹介と外部リンク（作者ページに表示されます');
+    expect(published).toContain('運営者はリンク先がその人のものかを確認していません');
+    const notPublished = body.slice(
+      body.indexOf('<strong>次の情報は公開しません。</strong>'),
+      body.indexOf('4. 第三者への提供'),
+    );
+    expect(notPublished).toContain('自己紹介と外部リンクの変更の履歴');
   });
 
   it('表示名の変更の履歴を、取得する情報に書き、公開しない情報にも挙げる（#405）', async () => {

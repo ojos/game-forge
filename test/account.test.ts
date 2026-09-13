@@ -9,10 +9,13 @@ import {
 } from '../src/account.js';
 import { DISPLAY_NAME_CHANGES_TABLE } from '../src/display-name-changes.js';
 import {
+  ACCOUNT_DETAILS_PATH,
   ACCOUNT_DISPLAY_NAME_PATH,
   ACCOUNT_PATH,
+  ACCOUNT_TABS,
   DISPLAY_NAME_FIELD,
 } from '../src/account-paths.js';
+import { ACCOUNT_PROFILE_PATH } from '../src/profile-paths.js';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { PUBLISHED_STATUS } from '../src/games.js';
 import { LOGIN_PATH, LOGOUT_PATH, OAUTH_COOKIE } from '../src/auth/google.js';
@@ -209,11 +212,29 @@ async function openAccount(cookie: string | null, query = ''): Promise<Response>
   );
 }
 
+/**
+ * 登録情報の画面のアカウントのタブ（`/account/details`。#379）を開く。
+ *
+ * @param cookie `Cookie` ヘッダ（未ログインなら null）
+ * @param query query 文字列（`?` を含む。省略可）
+ * @returns レスポンス
+ */
+async function openDetails(cookie: string | null, query = ''): Promise<Response> {
+  return await handleAppRequest(
+    new Request(`${APP_ORIGIN}${ACCOUNT_DETAILS_PATH}${query}`, {
+      headers: cookie === null ? {} : { cookie },
+    }),
+    testEnv(),
+  );
+}
+
 describe('経路の登録（#341）', () => {
   it('画面と変更の口がアプリの経路表に載っている', () => {
     const registered = createAppRoutes(testEnv()).map((route) => `${route.method} ${route.path}`);
     expect(registered).toContain(`GET ${ACCOUNT_PATH}`);
+    expect(registered).toContain(`GET ${ACCOUNT_DETAILS_PATH}`);
     expect(registered).toContain(`POST ${ACCOUNT_DISPLAY_NAME_PATH}`);
+    expect(registered).toContain(`POST ${ACCOUNT_PROFILE_PATH}`);
     expect(findDuplicateRoutes(createAppRoutes(testEnv()))).toEqual([]);
   });
 
@@ -224,6 +245,55 @@ describe('経路の登録（#341）', () => {
     const paths = ssrPagePaths(createAppRoutes(testEnv()));
     expect(paths).toContain(ACCOUNT_PATH);
     expect(paths).not.toContain(ACCOUNT_DISPLAY_NAME_PATH);
+    expect(paths).not.toContain(ACCOUNT_PROFILE_PATH);
+  });
+
+  it('タブの行き先はすべて経路表の画面である（タブを足した人が経路を書き忘れると赤くなる。#379）', () => {
+    // **タブはパスで分ける**（`src/account-paths.ts`）。画面であれば外枠の検査と幅の検査に
+    // 自動で乗る。**#384 がメール配信のタブを足すときも、ここが両方の追随を見る。**
+    const paths = ssrPagePaths(createAppRoutes(testEnv()));
+    expect(ACCOUNT_TABS.length).toBeGreaterThanOrEqual(2);
+    for (const tab of ACCOUNT_TABS) {
+      expect(paths, `${tab.path} が経路表の画面に無い`).toContain(tab.path);
+    }
+    expect(ACCOUNT_TABS[0]?.path).toBe(ACCOUNT_PATH);
+  });
+});
+
+describe('登録情報のタブ（#379）', () => {
+  it('どのタブにも同じタブの列が出て、いまのタブだけがリンクでない', async () => {
+    const userId = await seedUser();
+    const cookie = await cookieFor(userId);
+    for (const [path, response] of [
+      [ACCOUNT_PATH, await openAccount(cookie)],
+      [ACCOUNT_DETAILS_PATH, await openDetails(cookie)],
+    ] as const) {
+      expect(response.status, path).toBe(200);
+      const body = pageBodyOf(await response.text());
+      const nav = /<nav class="gf-account-tabs"[\s\S]*?<\/nav>/u.exec(body)?.[0] ?? '';
+      expect(nav, `${path} にタブが無い`).not.toBe('');
+      for (const tab of ACCOUNT_TABS) {
+        if (tab.path === path) {
+          expect(nav).toContain(`<span aria-current="page">${tab.label}</span>`);
+          expect(nav).not.toContain(`href="${tab.path}"`);
+        } else {
+          expect(nav).toContain(`<a href="${tab.path}">${tab.label}</a>`);
+        }
+      }
+    }
+  });
+
+  it('アカウントのタブも未ログインならログインへ送る', async () => {
+    const response = await openDetails(null);
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(LOGIN_PATH);
+  });
+
+  it('メールアドレスはアカウントのタブにだけ出て、プロフィールのタブには出ない', async () => {
+    const userId = await seedUser({ email: 'tab-split@example.com' });
+    const cookie = await cookieFor(userId);
+    expect(await (await openDetails(cookie)).text()).toContain('tab-split@example.com');
+    expect(await (await openAccount(cookie)).text()).not.toContain('tab-split@example.com');
   });
 });
 
@@ -252,7 +322,7 @@ describe('登録情報の画面（GET /account）', () => {
     expect(response.headers.get('location')).toBe(LOGIN_PATH);
   });
 
-  it('表示名・メールアドレス・登録日（日本時間）を出す', async () => {
+  it('プロフィールのタブに表示名、アカウントのタブにメールアドレス・登録日（日本時間）を出す', async () => {
     // 2026-09-10T15:30:00Z は日本時間で 2026-09-11 00:30。**日付が繰り上がる時刻を選ぶ**
     // ——UTC のまま日付を出す実装なら 09-10 になって赤くなる。
     const createdAt = Date.UTC(2026, 8, 10, 15, 30, 0) / 1000;
@@ -265,18 +335,24 @@ describe('登録情報の画面（GET /account）', () => {
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(body).toContain('value="登録情報の人"');
-    expect(body).toContain('account-owner@example.com');
-    expect(body).toContain(`<time datetime="${toIsoTimestamp(createdAt)}">2026-09-11</time>`);
     // 本人にしか出ない画面である。
     expect(body).toContain('<meta name="robots" content="noindex">');
     expect(response.headers.get('cache-control')).toBe('no-store');
+
+    const details = await openDetails(await cookieFor(userId));
+    expect(details.status).toBe(200);
+    const detailsBody = await details.text();
+    expect(detailsBody).toContain('account-owner@example.com');
+    expect(detailsBody).toContain(`<time datetime="${toIsoTimestamp(createdAt)}">2026-09-11</time>`);
+    expect(detailsBody).toContain('<meta name="robots" content="noindex">');
+    expect(details.headers.get('cache-control')).toBe('no-store');
   });
 
   it('メールアドレスは本人のものしか出ない', async () => {
     // **画面は利用者を引数に取らない。** 他人の id を query に付けても本人の行を引く。
     const other = await seedUser({ email: 'someone-else@example.com' });
     const me = await seedUser({ email: 'me-myself@example.com' });
-    const response = await openAccount(await cookieFor(me), `?user=${other}&id=${other}`);
+    const response = await openDetails(await cookieFor(me), `?user=${other}&id=${other}`);
     const body = await response.text();
     expect(body).toContain('me-myself@example.com');
     expect(body).not.toContain('someone-else@example.com');

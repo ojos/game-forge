@@ -307,10 +307,15 @@ describe('引く時点で絞る（#152 の規律 / 5.4 / 8.4）', () => {
     expect(before).toContain(workPagePath(kept));
     expect(before).toContain(workPagePath(withdrawn));
 
-    const removed = await env.DB.prepare('update games set status = ? where id = ?')
+    await env.DB.prepare('update games set status = ? where id = ?')
       .bind(REMOVED_STATUS, withdrawn)
       .run();
-    expect(removed.meta.changes).toBe(1);
+    // **行数ではなく、行を読み直して確かめる**（#378。`games` の検索の索引のトリガが書いた行も
+    // `meta.changes` に数えられ、1 にならない）。
+    const removed = await env.DB.prepare('select status from games where id = ?')
+      .bind(withdrawn)
+      .first<{ status: string }>();
+    expect(removed?.status).toBe(REMOVED_STATUS);
 
     const body = await (await openLiked(await sessionCookie(me))).text();
     expect(body).toContain(workPagePath(kept));

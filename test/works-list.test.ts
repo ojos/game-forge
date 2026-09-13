@@ -20,13 +20,17 @@ import {
   MAX_PAGE,
   MOVED_NOTICE,
   PUBLIC_WORKS_PATH,
+  SEARCH_REJECTION_MESSAGES,
+  SEARCH_SORT_NOTICE,
   TAG_FILTER_NOTICE,
   WORKS_PER_PAGE,
   renderWorksListPage,
   toPageNumber,
   toWorkTagFilter,
   worksListPath,
+  worksSearchCacheKey,
 } from '../src/works-list.js';
+import { WORK_SEARCH_FIELD, parseWorkSearch } from '../src/work-search.js';
 import { WORK_TAGS, WORK_TAG_FIELD } from '../src/work-tags.js';
 import { siteViewerAt } from '../src/html.js';
 import { applySchema } from './helpers/schema.js';
@@ -159,7 +163,11 @@ async function openList(query = ''): Promise<Response> {
   const page = toPageNumber(url.searchParams.get('page'));
   // **絞り込むときは、経路と同じ鍵を捨てる**（#376。鍵にタグが入り、軸は 2 つへ落ちる）。
   const tag = toWorkTagFilter(url.searchParams.get(WORK_TAG_FIELD));
-  if (tag === null) {
+  // **検索するときも、経路と同じ鍵を捨てる**（#378。鍵に整えた検索語が入る）。
+  const search = parseWorkSearch(url.searchParams.get(WORK_SEARCH_FIELD));
+  if (search.kind === 'accepted') {
+    await purgeListCache(worksSearchCacheKey(search.text, page, tag));
+  } else if (tag === null) {
     const sort = url.searchParams.get('sort') ?? 'recent';
     await purgeListCache(listCacheKey('works', { sort, page }));
   } else {
@@ -647,5 +655,132 @@ describe('Cache API の前段（仕様 2.3.3 の条件 3）', () => {
     expect(listCacheKey('works', { page: 1, sort: 'recent' })).toBe(
       listCacheKey('works', { sort: 'recent', page: 1 }),
     );
+  });
+});
+
+describe('キーワード検索の画面（#378 / 仕様 2.3.5）', () => {
+  it('?q= で当たった作品だけが並び、並べ替えの軸は出さずに新着順だと書く', async () => {
+    const author = await seedUser('検索の画面の作者');
+    const older = await seedGame(author, { title: '宇宙シューティング' });
+    const newer = await seedGame(author, { title: '宇宙の果ての灯台' });
+    const other = await seedGame(author, { title: '海底たんけん' });
+
+    const body = await (await openList(`?q=${encodeURIComponent('宇宙')}&sort=forked`)).text();
+    expect(body).toContain(workPagePath(older));
+    expect(body).toContain(workPagePath(newer));
+    expect(body).not.toContain(workPagePath(other));
+    expect(body.indexOf(workPagePath(newer))).toBeLessThan(body.indexOf(workPagePath(older)));
+    expect(body).toContain('<p class="gf-search-filtered">「宇宙」の検索結果</p>');
+    // **並べ替えの軸を出さない**（決定 4）。`?sort=forked` を付けても新着のまま。
+    expect(body).not.toContain('<nav class="gf-sort"');
+    expect(body).toContain(SEARCH_SORT_NOTICE);
+    // **検索結果の画面は索引させない**。検索窓に語が戻る。
+    expect(body).toContain('<meta name="robots" content="noindex">');
+    expect(body).toMatch(/<input id="gf-header-search-q"[^>]* value="宇宙">/u);
+  });
+
+  it('検索しない一覧は #378 の前と同じで、noindex も検索の見出しも出ない', async () => {
+    const body = await (await openList()).text();
+    expect(body).not.toContain('noindex');
+    expect(body).not.toContain('gf-search-filtered');
+    expect(body).toContain('<nav class="gf-sort"');
+    expect(worksListPath('recent', 2)).toBe(`${PUBLIC_WORKS_PATH}?sort=recent&page=2`);
+    expect(worksListPath('forked', 1, 'puzzle')).toBe(`${PUBLIC_WORKS_PATH}?tag=puzzle&sort=forked&page=1`);
+  });
+
+  it('検索語は escape して出す（見出し・空の結果・検索窓・リンク）', async () => {
+    const raw = '<img src=x onerror=alert(1)>"';
+    const body = await (await openList(`?q=${encodeURIComponent(raw)}`)).text();
+    expect(body).not.toContain('<img src=x');
+    expect(body).toContain('&lt;img');
+    expect(body).toContain('に当たる作品はありませんでした。');
+    expect(body).toContain(`<a href="${worksListPath('recent', 1)}">検索をやめて一覧を見る</a>`);
+  });
+
+  it('タグの絞り込みと併用でき、タグを選び直しても検索語を保つ', async () => {
+    const author = await seedUser('検索とタグの作者');
+    const tagged = await seedGame(author, { title: '星降る迷宮パズル', tags: ['puzzle'] });
+    const untagged = await seedGame(author, { title: '星降る迷宮パズル' });
+
+    const body = await (await openList(`?tag=puzzle&q=${encodeURIComponent('星降る')}`)).text();
+    expect(body).toContain(workPagePath(tagged));
+    expect(body).not.toContain(workPagePath(untagged));
+    expect(body).toContain('タグ「パズル」の作品');
+    const nav = body.slice(body.indexOf('<nav class="gf-tag-filter"'));
+    const filter = nav.slice(0, nav.indexOf('</nav>'));
+    expect(filter).toContain(`<a href="${worksListPath('recent', 1, null, '星降る')}">すべて</a>`);
+    expect(filter).toContain(`<a href="${worksListPath('recent', 1, 'action', '星降る')}">アクション</a>`);
+    expect(worksListPath('recent', 1, 'action', '星降る')).toBe(
+      `${PUBLIC_WORKS_PATH}?tag=action&q=${encodeURIComponent('星降る')}&page=1`,
+    );
+  });
+
+  it('頁送りで検索語とタグを保ち、21 件目が次の頁に来る', async () => {
+    const author = await seedUser('検索の頁送りの作者');
+    const ids: string[] = [];
+    for (let count = 0; count < WORKS_PER_PAGE + 1; count += 1) {
+      ids.push(await seedGame(author, { title: '頁をめくる羅針盤', tags: ['idle'] }));
+    }
+    const query = `?tag=idle&q=${encodeURIComponent('羅針盤')}`;
+    const first = await (await openList(`${query}&page=1`)).text();
+    const second = await (await openList(`${query}&page=2`)).text();
+
+    expect(first).not.toContain(workPagePath(ids[0]!));
+    expect(first).toContain(`href="${worksListPath('recent', 2, 'idle', '羅針盤')}"`);
+    expect(second).toContain(workPagePath(ids[0]!));
+    expect(second).toContain(`href="${worksListPath('recent', 1, 'idle', '羅針盤')}"`);
+    // **頁の上限は一覧と同じ。**
+    const capped = await openList(`${query}&page=999999`);
+    expect(capped.status).toBe(200);
+  });
+
+  it('断った検索は理由を書き、D1 を 1 回も引かない（400 にしない）', async () => {
+    const throwingDb = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === 'prepare' || property === 'batch') {
+          return () => {
+            throw new Error('断った検索で D1 を引いた');
+          };
+        }
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    const noDb = { ...env, DB: throwingDb } as Env;
+    for (const [q, reason] of [
+      ['宇', 'too-short'],
+      ['あい かき さし たち なに はひ', 'too-many-terms'],
+      ['あ'.repeat(41), 'too-long'],
+    ] as const) {
+      const response = await handleAppRequest(
+        new Request(`${APP_ORIGIN}${PUBLIC_WORKS_PATH}?${WORK_SEARCH_FIELD}=${encodeURIComponent(q)}`),
+        noDb,
+      );
+      expect(response.status, q).toBe(200);
+      const body = await response.text();
+      expect(body, q).toContain(SEARCH_REJECTION_MESSAGES[reason]);
+      expect(body, q).not.toContain('gf-search-filtered');
+    }
+  });
+
+  it('非公開化は、一覧と同じくキャッシュの TTL（60 秒）の後に検索から消える', async () => {
+    // **検索の鍵に検索語が入る**ことと、**捨てれば取り下げが反映される**ことを見る。
+    const author = await seedUser('検索のキャッシュの作者');
+    const id = await seedGame(author, { title: '消える前の砂時計' });
+    const url = `${APP_ORIGIN}${PUBLIC_WORKS_PATH}?q=${encodeURIComponent('砂時計')}`;
+    const key = worksSearchCacheKey('砂時計', 1, null);
+    await purgeListCache(key);
+
+    expect(await (await handleAppRequest(new Request(url), env)).text()).toContain(workPagePath(id));
+    await env.DB.prepare(`update games set status = '${REMOVED_STATUS}' where id = ?`).bind(id).run();
+    // 溜めた行が返る間は残る（一覧と同じ。仕様 2.3.3 の条件 3）。
+    expect(await (await handleAppRequest(new Request(url), env)).text()).toContain(workPagePath(id));
+    expect(await purgeListCache(key)).toBe(true);
+    expect(await (await handleAppRequest(new Request(url), env)).text()).not.toContain(workPagePath(id));
+
+    // 空白の数や語の重複が違うだけの URL は同じ鍵に載り、語が違えば別の鍵になる。
+    expect(parseWorkSearch(' 砂時計　 砂時計 ')).toMatchObject({ kind: 'accepted', text: '砂時計' });
+    expect(worksSearchCacheKey('砂時計 迷路', 1, null)).not.toBe(key);
+    expect(worksSearchCacheKey('砂時計', 1, 'puzzle')).not.toBe(key);
+    expect(key).not.toBe(listCacheKey('works', { sort: 'recent', page: 1 }));
   });
 });

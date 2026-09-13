@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createAppRoutes } from '../src/app.js';
 import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
 import { FAQ_ENTRIES, FAQ_TITLE, faqBody } from '../src/faq.js';
+import { INVITE_RECOVERY_DAYS } from '../src/invite-balance.js';
 import { INVITE_QUOTA } from '../src/invite-issuance.js';
 import { FAQ_PATH, PRIVACY_PATH, TAKEDOWN_PATH, TERMS_PATH } from '../src/legal-paths.js';
 import { SIGNUP_PATH } from '../src/paths.js';
@@ -117,13 +118,14 @@ describe('仕様と食い違わない（#373 の constraints。4.3 / 4.4 / 5.6 /
     expect(answer).toContain('枠は減りません');
   });
 
-  it('招待は実装済みの枠の数だけを書き、時限回復は書かない（8.1。#355 は未実装）', () => {
+  it('招待枠は溜まる上限と戻る速さを、定数から書く（8.1。#396 で時限回復を実装した）', () => {
     const answer = answerOf('invite');
-    expect(answer).toContain(`1 人 ${INVITE_QUOTA} 本まで`);
+    expect(answer).toContain(
+      `1 人 ${INVITE_QUOTA} 本まで溜まり、使うと ${INVITE_RECOVERY_DAYS} 日ごとに 1 本ずつ戻ります`,
+    );
     expect(answer).toContain(`href="${SIGNUP_PATH}"`);
-    // **回復を実装する issue が、この検査ごと書き換える。**
-    expect(answer).not.toContain('30 日');
-    expect(answer).not.toContain('戻ります');
+    // #396 より前の「発行できる総数」の書き方を残さない。
+    expect(answer).not.toContain('本まで招待コードを発行できます');
   });
 
   it('権利は規約（5.6）へ、削除申請は削除申請の画面（8.4）へ導く', () => {

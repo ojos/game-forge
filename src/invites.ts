@@ -1,5 +1,5 @@
 /**
- * 招待の永続化・二重使用の防止・招待枠の残数管理（8.1 / 7.3 / 11.1）。
+ * 招待の永続化・二重使用の防止・招待枠の残高の判定（8.1 / 7.3 / 11.1）。
  *
  * コードの生成・正規化・期限判定は `src/invite-code.ts` が持つ（#13 T3）。こちらは
  * **D1 に触る側**だけを受け持ち、「同じコードが 2 回使われないこと」を保証する。
@@ -38,6 +38,7 @@
  * 決まっていない仕様を先回りして実装すると、決まったときに作り直しになる。
  */
 
+import { computeInviteBalance, type InviteBalance } from './invite-balance.js';
 import { generateInviteCode, isInviteExpired, normalizeInviteCode } from './invite-code.js';
 
 /** `invites` の 1 行。列名は camelCase へ寄せる（SQL の外へ snake_case を漏らさない）。 */
@@ -52,6 +53,13 @@ export interface InviteRecord {
   readonly usedAt: number | null;
   /** 失効時刻（UNIX 秒）。無期限なら null。 */
   readonly expiresAt: number | null;
+  /**
+   * 発行時刻（UNIX 秒。`migrations/0034_invites_issued_at.sql`）。
+   *
+   * **0 は「列ができる前に発行された」**である（既存の行の埋め戻し）。残高の計算では
+   * 十分に古い発行として数える（`src/invite-balance.ts`）。
+   */
+  readonly issuedAt: number;
 }
 
 /**
@@ -88,8 +96,18 @@ export type InviteIssueRejection = 'quota-exhausted';
 
 /** 発行の結果。 */
 export type InviteIssuance =
-  | { readonly ok: true; readonly invite: InviteRecord }
-  | { readonly ok: false; readonly reason: InviteIssueRejection };
+  | {
+      readonly ok: true;
+      readonly invite: InviteRecord;
+      /** 発行した後の残高。呼び出し側が数え直さずに返せるようにする。 */
+      readonly balance: InviteBalance;
+    }
+  | {
+      readonly ok: false;
+      readonly reason: InviteIssueRejection;
+      /** 断った時点の残高（`available` は 0）。次に戻る時刻を画面と API へ出すために返す。 */
+      readonly balance: InviteBalance;
+    };
 
 /** D1 から返る生の行。 */
 interface InviteRow {
@@ -98,7 +116,11 @@ interface InviteRow {
   readonly used_by: string | null;
   readonly used_at: number | null;
   readonly expires_at: number | null;
+  readonly issued_at: number;
 }
+
+/** 行を引くときの列。`InviteRow` と揃える（1 か所に置き、select ごとに書き写さない）。 */
+const INVITE_COLUMNS = 'code, issued_by, used_by, used_at, expires_at, issued_at';
 
 /**
  * コード衝突時に発行を試みる回数。
@@ -124,6 +146,7 @@ function toRecord(row: InviteRow): InviteRecord {
     usedBy: row.used_by,
     usedAt: row.used_at,
     expiresAt: row.expires_at,
+    issuedAt: row.issued_at,
   };
 }
 
@@ -140,7 +163,7 @@ export async function lookupInvite(db: D1Database, code: string): Promise<Invite
     return null;
   }
   const row = await db
-    .prepare('select code, issued_by, used_by, used_at, expires_at from invites where code = ?')
+    .prepare(`select ${INVITE_COLUMNS} from invites where code = ?`)
     .bind(normalized)
     .first<InviteRow>();
   return row === null ? null : toRecord(row);
@@ -314,35 +337,34 @@ async function explainRejection(
 }
 
 /**
- * 発行者が発行済みの招待の件数を数える。
+ * 発行者の招待の発行時刻を、すべて返す（残高の計算の入力）。
  *
- * 使用済みも期限切れも含めた**発行の総数**を数える。招待枠は「同時に持てる未使用の
- * 枚数」ではなく「何人を呼べるか」であり（8.1 の「既存参加者への招待枠付与」）、
- * 使い終わった枠が戻るなら、コードを配り直すだけで無制限に呼べてしまう。
- * `invites_issued_by_idx` がこの数え上げのために張られている。
+ * 使用済みも期限切れも含める。**枠を減らすのは「発行したこと」であって、「使われたこと」
+ * ではない**（8.1）。未使用のまま期限が切れたコードを数えないと、期限付きで発行しては
+ * 切らす、を繰り返すだけで無制限に配れる。`invites_issued_by_idx` で行を絞る。
  *
  * @param db D1
  * @param issuedBy 発行者の `users.id`
- * @returns 発行済みの件数
+ * @returns 発行時刻（UNIX 秒。並びは保証しない）
  */
-export async function countIssuedInvites(db: D1Database, issuedBy: string): Promise<number> {
-  const row = await db
-    .prepare('select count(*) as issued from invites where issued_by = ?')
+async function listIssuedAt(db: D1Database, issuedBy: string): Promise<number[]> {
+  const rows = await db
+    .prepare('select issued_at from invites where issued_by = ?')
     .bind(issuedBy)
-    .first<{ issued: number }>();
-  return row?.issued ?? 0;
+    .all<{ issued_at: number }>();
+  return rows.results.map((row) => row.issued_at);
 }
 
 /**
  * 発行者が発行した招待を、発行者向けの一覧として返す。
  *
- * **招待枠は 1 人 3 本**（`src/invite-issuance.ts` の `INVITE_QUOTA`）で、行が増え続ける
- * 列ではないため、件数の上限も改ページも置かない。上限を上げるとしても、招待は
- * 「何人を呼べるか」の枠であり（8.1）、一覧が画面に収まらない桁にはならない。
+ * **1 人の招待は多くても数十行**（8.1。30 日に 1 本の速さ）で、件数の上限も改ページも
+ * 置かない。**残高は、この一覧の `issuedAt` から数え直さずに計算できる**
+ * （`src/invite-issuance.ts`）。
  *
- * 並び順を `code` にするのは、`invites` に**作成時刻の列が無い**ためである（5.1）。
- * 順序を指定しなければ SQLite の返す順は保証されず、再読み込みのたびに一覧の並びが
- * 変わりうる。時刻順に見せたくなったら列を足す話であって、指定を省く理由にはならない。
+ * 並び順は `code` のままにする（#396 で `issued_at` を足したが、並びは変えていない）。
+ * 列ができる前の行はすべて `issued_at = 0` で、時刻順にしても古い行どうしの順は決まらない。
+ * 順序を指定しなければ SQLite の返す順は保証されず、再読み込みのたびに並びが変わりうる。
  *
  * @param db D1
  * @param issuedBy 発行者の `users.id`
@@ -353,89 +375,119 @@ export async function listIssuedInvites(
   issuedBy: string,
 ): Promise<readonly InviteRecord[]> {
   const rows = await db
-    .prepare(
-      'select code, issued_by, used_by, used_at, expires_at from invites' +
-        ' where issued_by = ? order by code',
-    )
+    .prepare(`select ${INVITE_COLUMNS} from invites where issued_by = ? order by code`)
     .bind(issuedBy)
     .all<InviteRow>();
   return rows.results.map(toRecord);
 }
 
 /**
- * 招待枠の残数を返す（表示用）。
+ * 招待枠の残高を読む（8.1。計算は `src/invite-balance.ts`）。
  *
- * **上限値は引数で受け取る。** 招待枠の枚数は仕様書に定義が無く（12 章の未確定事項
- * にも挙がっていない）、ここで定数を決めると、決まったときに直す場所がモジュールの
- * 内側になる。運用で変える値なので、設定を持つ側（経路層）から渡す。
+ * **容量は引数で受け取る。** 容量は経路層の定数（`INVITE_QUOTA`）で、招待枠の停止中（#40）は
+ * 経路層が 0 を渡す。ここで定数を読むと、停止を「0 を渡す」ことで表す設計が崩れる。
  *
  * @param db D1
  * @param issuedBy 発行者の `users.id`
- * @param quota 招待枠の上限（0 以上の整数）
- * @returns 残数（0 未満にはならない）
- * @throws `quota` が 0 以上の整数でない場合
+ * @param capacity 溜まる上限（0 以上の整数）
+ * @param nowSeconds 現在時刻（UNIX 秒）。既定は実時刻。テストから固定できるようにする
+ * @returns 残高と次に戻る時刻
+ * @throws `capacity` が 0 以上の整数でない場合、または D1 の失敗
  */
-export async function remainingInviteQuota(
+export async function readInviteBalance(
   db: D1Database,
   issuedBy: string,
-  quota: number,
-): Promise<number> {
-  assertQuota(quota);
-  return Math.max(0, quota - (await countIssuedInvites(db, issuedBy)));
+  capacity: number,
+  nowSeconds: number = Math.floor(Date.now() / 1000),
+): Promise<InviteBalance> {
+  assertQuota(capacity);
+  return computeInviteBalance(await listIssuedAt(db, issuedBy), capacity, nowSeconds);
 }
 
 /**
  * 招待コードを発行する（CRUD の C）。
  *
- * 招待枠の判定は、件数を数えてから INSERT する形にしない。`consumeInvite` と同じ
- * 理由で、数えた後に別のリクエストが発行すれば上限を超える。件数の判定を INSERT の
- * `WHERE` へ畳み、**影響行数**で発行できたかを決める。
+ * ## 残高の判定を INSERT の `WHERE` で守る
+ *
+ * **数えてから入れる形にしない**（`consumeInvite` と同じ理由）。数えた後に別の要求が
+ * 発行すれば、上限を超える。ただし残高は容量のあるバケツで（`src/invite-balance.ts`）、
+ * **SQL の式 1 本では書けない。** そこで次の形にする。
+ *
+ * 1. 発行時刻の並びを読み、残高を計算する。0 本なら断る
+ * 2. INSERT の `WHERE` に「**その人の発行件数が、読んだときの件数のまま**」を置く
+ * 3. 影響行数が 0 なら、読んでから入れるまでの間に**別の要求が発行した**。読み直して 1 へ戻る
+ *
+ * **件数が同じなら、履歴も同じである。** `invites` の行は消さず（招待の取り消しは作らない。
+ * 冒頭）、発行は行を足すだけなので、件数が変わっていなければ 1 で読んだ並びは今もそのままで、
+ * 計算した残高も正しい。**判定の根拠を INSERT の 1 文に閉じ込める点は、総数の上限だった
+ * ころ（`count(*) < quota`）と変わらない。**
+ *
+ * **競合に負けるたびに、その人の発行は 1 本増えている。** 残高は負けるたびに 1 本ずつ減るので、
+ * 読み直しは容量の回数で必ず尽きる（0 本で断る側に抜ける）。それでも上限を置くのは、
+ * 前提（行を消さない）が崩れたときに無限に回らないためである。
+ *
+ * **発行時刻は必ず書く。** `issued_at` の既定値 0 は「列ができる前の発行」を表し、書き忘れた
+ * 行は枠を減らさない（`migrations/0034_invites_issued_at.sql`）。
  *
  * @param db D1
  * @param issuedBy 発行者の `users.id`
- * @param quota 招待枠の上限（0 以上の整数）。呼び出し側が決める
+ * @param capacity 招待枠の溜まる上限（0 以上の整数）。呼び出し側が決める。停止中（#40）は 0
  * @param expiresAt 失効時刻（UNIX 秒）。無期限なら null（既定）
- * @returns 発行の結果
- * @throws `quota` が 0 以上の整数でない場合、または D1 の失敗
+ * @param nowSeconds 発行時刻（UNIX 秒）。既定は実時刻。テストから固定できるようにする
+ * @returns 発行の結果（どちらの場合も、その時点の残高を持つ）
+ * @throws `capacity` が 0 以上の整数でない場合、または D1 の失敗
  */
 export async function issueInvite(
   db: D1Database,
   issuedBy: string,
-  quota: number,
+  capacity: number,
   expiresAt: number | null = null,
+  nowSeconds: number = Math.floor(Date.now() / 1000),
 ): Promise<InviteIssuance> {
-  assertQuota(quota);
+  assertQuota(capacity);
 
-  for (let attempt = 1; attempt <= ISSUE_ATTEMPTS; attempt += 1) {
+  let collisions = 0;
+  let conflicts = 0;
+  while (conflicts <= capacity + ISSUE_ATTEMPTS) {
+    const issuedAts = await listIssuedAt(db, issuedBy);
+    const balance = computeInviteBalance(issuedAts, capacity, nowSeconds);
+    if (balance.available < 1) {
+      return { ok: false, reason: 'quota-exhausted', balance };
+    }
+
     const code = generateInviteCode();
     try {
       const inserted = await db
         .prepare(
-          'insert into invites (code, issued_by, expires_at)' +
-            ' select ?, ?, ?' +
-            ' where (select count(*) from invites where issued_by = ?) < ?',
+          'insert into invites (code, issued_by, expires_at, issued_at)' +
+            ' select ?, ?, ?, ?' +
+            ' where (select count(*) from invites where issued_by = ?) = ?',
         )
-        .bind(code, issuedBy, expiresAt, issuedBy, quota)
+        .bind(code, issuedBy, expiresAt, nowSeconds, issuedBy, issuedAts.length)
         .run();
 
       if (inserted.meta.changes !== 1) {
-        return { ok: false, reason: 'quota-exhausted' };
+        // 読んでから入れるまでの間に、同じ人の別の要求が発行した。読み直す。
+        conflicts += 1;
+        continue;
       }
       return {
         ok: true,
-        invite: { code, issuedBy, usedBy: null, usedAt: null, expiresAt },
+        invite: { code, issuedBy, usedBy: null, usedAt: null, expiresAt, issuedAt: nowSeconds },
+        balance: computeInviteBalance([...issuedAts, nowSeconds], capacity, nowSeconds),
       };
     } catch (error) {
       // 主キーの衝突だけを再試行する。外部キー違反（発行者が実在しない）や接続の
       // 失敗を再試行しても同じ結果になり、本当の原因を隠すだけになる。
-      if (attempt === ISSUE_ATTEMPTS || !isCodeCollision(error)) {
+      collisions += 1;
+      if (collisions >= ISSUE_ATTEMPTS || !isCodeCollision(error)) {
         throw error;
       }
     }
   }
 
-  // ループは必ず return か throw で抜ける。ここへ到達したら制御フローの誤り。
-  throw new Error('招待コードの発行が試行回数を使い切りました。');
+  // 競合に負けるたびに残高は減るので、ここへは来ない。来たら「行を消さない」前提が崩れている。
+  throw new Error('招待の発行が、同じ利用者の別の発行との競合に負け続けました。');
 }
 
 /**

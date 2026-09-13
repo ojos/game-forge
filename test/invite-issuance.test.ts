@@ -7,8 +7,10 @@ import {
   INVITE_QUOTA,
   inviteRoutes,
 } from '../src/invite-issuance.js';
-import { formatInviteCode, normalizeInviteCode } from '../src/invite-code.js';
+import { INVITE_RECOVERY_DAYS, INVITE_RECOVERY_SECONDS } from '../src/invite-balance.js';
+import { formatInviteCode, generateInviteCode, normalizeInviteCode } from '../src/invite-code.js';
 import { consumeInvite, lookupInvite } from '../src/invites.js';
+import { formatJstMinutes } from '../src/jst.js';
 import { INVITES_PATH } from '../src/paths.js';
 import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, buildSessionCookie, signSession } from '../src/session.js';
@@ -206,9 +208,19 @@ describe('ログイン済み利用者が招待を発行できる（#91 acceptanc
     const response = await call(INVITES_API_PATH, { method: 'POST', cookie });
 
     expect(response.status).toBe(201);
-    const body = (await response.json()) as { code: string; quota: number; remaining: number };
+    const body = (await response.json()) as {
+      code: string;
+      quota: number;
+      remaining: number;
+      nextRecoveryAt: number | null;
+    };
     expect(body.quota).toBe(INVITE_QUOTA);
     expect(body.remaining).toBe(INVITE_QUOTA - 1);
+    // 1 本減った時点から 30 日（#396）。発行の時刻は実時刻なので幅で見る。
+    expect(body.nextRecoveryAt).not.toBeNull();
+    const untilRecovery = (body.nextRecoveryAt ?? 0) - Math.floor(Date.now() / 1000);
+    expect(untilRecovery).toBeGreaterThan(INVITE_RECOVERY_SECONDS - 60);
+    expect(untilRecovery).toBeLessThanOrEqual(INVITE_RECOVERY_SECONDS);
 
     // 返すのは正規形だけ（表示用の区切りは表示側が足す）。
     expect(normalizeInviteCode(body.code)).toBe(body.code);
@@ -220,7 +232,9 @@ describe('ログイン済み利用者が招待を発行できる（#91 acceptanc
       usedBy: null,
       usedAt: null,
       expiresAt: null,
+      issuedAt: stored?.issuedAt,
     });
+    expect(stored?.issuedAt).toBeGreaterThan(0);
   });
 
   it('画面からの発行は 303 で一覧へ戻す（POST-redirect-GET）', async () => {
@@ -233,8 +247,8 @@ describe('ログイン済み利用者が招待を発行できる（#91 acceptanc
   });
 });
 
-describe('招待枠は 1 人 3 本（#91 acceptance 2）', () => {
-  it('4 本目が quota-exhausted で断られ、行は 3 本のまま', async () => {
+describe('招待枠は 1 人 3 本まで溜まる（#91 acceptance 2 / #396）', () => {
+  it('4 本目が quota-exhausted（429）で断られ、行は 3 本のまま', async () => {
     const userId = await seedUser();
     const cookie = await sessionCookie(userId);
     for (let issued = 0; issued < INVITE_QUOTA; issued += 1) {
@@ -242,13 +256,20 @@ describe('招待枠は 1 人 3 本（#91 acceptance 2）', () => {
     }
 
     const extra = await call(INVITES_API_PATH, { method: 'POST', cookie });
-    // 429 ではなく 409。招待枠は総数の上限で、待っても戻らない。
-    expect(extra.status).toBe(409);
-    expect(await extra.json()).toEqual({
+    // **409 ではなく 429**（#396）。枠は時間で戻るので「待てば解ける」制限である。
+    expect(extra.status).toBe(429);
+    const body = (await extra.json()) as Record<string, unknown>;
+    expect(body).toEqual({
       error: 'quota-exhausted',
       quota: INVITE_QUOTA,
       remaining: 0,
+      nextRecoveryAt: expect.any(Number),
     });
+    // `Retry-After` は次の 1 本が戻るまでの秒数で、`nextRecoveryAt` と食い違わない。
+    const retryAfter = Number(extra.headers.get('retry-after'));
+    const untilRecovery = (body['nextRecoveryAt'] as number) - Math.floor(Date.now() / 1000);
+    expect(Math.abs(retryAfter - untilRecovery)).toBeLessThanOrEqual(2);
+    expect(retryAfter).toBeGreaterThan(INVITE_RECOVERY_SECONDS - 60);
 
     const mine = await env.DB.prepare('select count(*) as total from invites where issued_by = ?')
       .bind(userId)
@@ -268,7 +289,7 @@ describe('招待枠は 1 人 3 本（#91 acceptance 2）', () => {
     );
 
     expect(responses.filter((response) => response.status === 201)).toHaveLength(INVITE_QUOTA);
-    expect(responses.filter((response) => response.status === 409)).toHaveLength(1);
+    expect(responses.filter((response) => response.status === 429)).toHaveLength(1);
   });
 
   it('使い切った後の画面からの発行は理由付きで戻す', async () => {
@@ -280,6 +301,36 @@ describe('招待枠は 1 人 3 本（#91 acceptance 2）', () => {
     const response = await call(INVITES_API_PATH, { method: 'POST', cookie, accept: 'text/html' });
     expect(response.status).toBe(303);
     expect(response.headers.get('location')).toBe(`${INVITES_PATH}?reason=quota-exhausted`);
+  });
+});
+
+describe('招待枠の停止（7.3 / #40）は残高に関わらず効く（#396 acceptance 4）', () => {
+  it('3 本残っていても、招待した相手が BAN されていれば 409 で断り、行を作らない', async () => {
+    const inviter = await seedUser();
+    const invitee = `inv-${crypto.randomUUID()}`;
+    await env.DB.prepare(
+      'insert into users (id, google_sub, email, display_name, created_at, invited_by, banned_at) values (?, ?, ?, ?, 1, ?, 1)',
+    )
+      .bind(invitee, `sub-${invitee}`, `${invitee}@example.com`, invitee, inviter)
+      .run();
+    const cookie = await sessionCookie(inviter);
+
+    // 残高は満杯（1 本も発行していない）。
+    const listed = (await (await call(INVITES_API_PATH, { cookie })).json()) as {
+      remaining: number;
+    };
+    expect(listed.remaining).toBe(INVITE_QUOTA);
+
+    const before = await countAllInvites();
+    const response = await call(INVITES_API_PATH, { method: 'POST', cookie });
+    // **409 のまま。** 停止は待っても解けないので、429 も `Retry-After` も返さない。
+    expect(response.status).toBe(409);
+    expect(response.headers.get('retry-after')).toBeNull();
+    expect(await response.json()).toEqual({ error: 'quota-halted', quota: 0, remaining: 0 });
+    expect(await countAllInvites()).toBe(before);
+
+    const page = await call(INVITES_API_PATH, { method: 'POST', cookie, accept: 'text/html' });
+    expect(page.headers.get('location')).toBe(`${INVITES_PATH}?reason=quota-halted`);
   });
 });
 
@@ -308,6 +359,7 @@ describe('自分が発行した招待の一覧と残枠', () => {
       quota: INVITE_QUOTA,
       issued: 1,
       remaining: INVITE_QUOTA - 1,
+      nextRecoveryAt: expect.any(Number),
       invites: [{ code: myCode, state: '未使用', usedAt: null, expiresAt: null }],
     });
   });
@@ -335,8 +387,41 @@ describe('招待を発行する画面', () => {
     expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
     const body = await response.text();
     expect(body).toContain(`action="${INVITES_API_PATH}"`);
-    expect(body).toContain(`招待枠は 1 人 ${INVITE_QUOTA} 本`);
-    expect(body).toContain(`残り ${INVITE_QUOTA} 本`);
+    expect(body).toContain(
+      `招待枠は 1 人 ${INVITE_QUOTA} 本まで溜まり、使うと ${INVITE_RECOVERY_DAYS} 日ごとに 1 本ずつ戻ります。`,
+    );
+    expect(body).toContain(`いま発行できるのは <strong>${INVITE_QUOTA} 本</strong>です。`);
+    // 満杯なら戻る先が無いので、戻る日時は出さない。
+    expect(body).not.toContain('次の 1 本は');
+  });
+
+  it('本数と、次の 1 本が戻る日時（日本時間）を出す（#396 acceptance 5）', async () => {
+    const userId = await seedUser();
+    const cookie = await sessionCookie(userId);
+    await issueOne(cookie);
+
+    const listed = (await (await call(INVITES_API_PATH, { cookie })).json()) as {
+      nextRecoveryAt: number;
+    };
+    const body = await (await call(INVITES_PATH, { cookie, accept: 'text/html' })).text();
+    expect(body).toContain(`いま発行できるのは <strong>${INVITE_QUOTA - 1} 本</strong>です。`);
+    expect(body).toContain(`次の 1 本は <time datetime=`);
+    expect(body).toContain(`>${formatJstMinutes(listed.nextRecoveryAt)}</time> に戻ります。`);
+  });
+
+  it('列ができる前の発行（issued_at = 0）だけの利用者は、3 本発行できると出る', async () => {
+    // マイグレーションの既定値が埋める状態（`migrations/0034_invites_issued_at.sql`）。
+    const userId = await seedUser();
+    for (let row = 0; row < INVITE_QUOTA; row += 1) {
+      await env.DB.prepare('insert into invites (code, issued_by) values (?, ?)')
+        .bind(generateInviteCode(), userId)
+        .run();
+    }
+    const body = await (
+      await call(INVITES_PATH, { cookie: await sessionCookie(userId), accept: 'text/html' })
+    ).text();
+    expect(body).toContain(`いま発行できるのは <strong>${INVITE_QUOTA} 本</strong>です。`);
+    expect(body).toContain(`action="${INVITES_API_PATH}"`);
   });
 
   it('発行済みのコードを表示用の区切り付きで並べる', async () => {
@@ -359,7 +444,8 @@ describe('招待を発行する画面', () => {
     const body = await (await call(INVITES_PATH, { cookie, accept: 'text/html' })).text();
     // **本文だけを見る。** ヘッダのアカウントのメニューはログアウトの `<form>` を持つ（#372）。
     expect(pageBodyOf(body)).not.toContain('<form');
-    expect(body).toContain('招待枠を使い切りました');
+    expect(body).toContain('いま発行できるのは <strong>0 本</strong>です。');
+    expect(body).toContain('次の 1 本は');
   });
 
   it('reason 付きの再訪に文言と 400 を返す', async () => {
@@ -370,7 +456,9 @@ describe('招待を発行する画面', () => {
     });
 
     expect(response.status).toBe(400);
-    expect(await response.text()).toContain('招待枠を使い切りました');
+    expect(await response.text()).toContain(
+      `招待枠を使い切りました。枠は ${INVITE_RECOVERY_DAYS} 日ごとに 1 本ずつ戻ります。`,
+    );
   });
 
   it('未知の reason を画面へ流さない', async () => {
@@ -390,14 +478,17 @@ describe('招待を発行する画面', () => {
 
 describe('仕様書との機械照合（shared-ai-rules 12 章）', () => {
   /**
-   * 仕様書 8.1 から招待枠の本数を取り出す。
+   * 仕様書 8.1 の規則の 1 文（招待枠が溜まる上限と、戻る速さ）を取り出す。
    *
    * 一覧や定数を文書へ書き写す以上、一致するかを機械で見る。「更新したか」ではなく
    * 「一致しているか」を見るので、空更新では通過しない。
    *
-   * @returns 仕様書に書かれている本数
+   * **本数と日数を 1 つの正規表現で拾う。** 8.1 には旧記述を引用した注記があり、別々に
+   * 拾うと片方が注記に当たりうる（8.1 の v1.55 注記）。規則の 1 文だけが両方を並べて持つ。
+   *
+   * @returns 仕様書に書かれている本数と日数
    */
-  function quotaFromSpec(): number {
+  function ruleFromSpec(): { capacity: number; days: number } {
     const spec = env.TEST_PRODUCT_SPEC;
     const heading = '### 8.1 認証と招待';
     const start = spec.indexOf(heading);
@@ -405,13 +496,21 @@ describe('仕様書との機械照合（shared-ai-rules 12 章）', () => {
     const rest = spec.slice(start + heading.length);
     const end = rest.search(/\n#{1,3} /u);
     const section = end === -1 ? rest : rest.slice(0, end);
-    const matched = /招待枠は 1 人 (\d+) 本/u.exec(section);
-    expect(matched, '仕様書 8.1 に「招待枠は 1 人 N 本」の記述がありません').not.toBeNull();
-    return Number(matched![1]);
+    const matched = /招待枠は 1 人 (\d+) 本まで溜まり、使うと (\d+) 日ごとに 1 本ずつ戻る/u.exec(section);
+    expect(
+      matched,
+      '仕様書 8.1 に「招待枠は 1 人 N 本まで溜まり、使うと D 日ごとに 1 本ずつ戻る」の記述がありません',
+    ).not.toBeNull();
+    return { capacity: Number(matched![1]), days: Number(matched![2]) };
   }
 
-  it('仕様書 8.1 の本数が INVITE_QUOTA と一致する', () => {
-    expect(quotaFromSpec()).toBe(INVITE_QUOTA);
+  it('仕様書 8.1 の溜まる上限が INVITE_QUOTA と一致する', () => {
+    // #396 より前は「発行できる総数」との照合だった。値（3）は同じで、意味が「溜まる上限」に変わった。
+    expect(ruleFromSpec().capacity).toBe(INVITE_QUOTA);
+  });
+
+  it('仕様書 8.1 の戻る日数が INVITE_RECOVERY_DAYS と一致する', () => {
+    expect(ruleFromSpec().days).toBe(INVITE_RECOVERY_DAYS);
   });
 });
 

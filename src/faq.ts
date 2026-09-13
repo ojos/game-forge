@@ -13,9 +13,9 @@
  *
  * ## 実装済みのものだけを書く
  *
- * **招待枠の時限回復（v1.55 / #355）は、2026-09-12 時点で実装されていない**
- * （`invites` に発行日時の列が無い）。だから「戻る」とも「戻らない」とも書かず、
- * 実装済みの「1 人 N 本まで」だけを書く。**回復を実装する issue が、この答えを書き換える。**
+ * **招待枠の時限回復（v1.55 / #355）は #396 で実装した**ので、溜まる上限と戻る速さを
+ * 書く（どちらも定数から。`INVITE_QUOTA` / `INVITE_RECOVERY_DAYS`）。#396 より前は未実装で、
+ * 「戻る」とも「戻らない」とも書かずに「1 人 N 本まで」だけを書いていた。
  *
  * **対応ブラウザは、確かめている範囲だけを書く。** 実ブラウザの検査
  * （`scripts/check-sandbox-browser.sh` / `scripts/check-page-width.sh`）が回しているのは
@@ -28,6 +28,7 @@
 import { MAX_GENERATION_ATTEMPTS } from './build-retry.js';
 import type { SiteViewer } from './html.js';
 import { escapeHtml, resolveSiteViewer, siteHead } from './html.js';
+import { INVITE_RECOVERY_DAYS } from './invite-balance.js';
 import { INVITE_QUOTA } from './invite-issuance.js';
 import { siteFooter } from './legal.js';
 import { FAQ_PATH, PRIVACY_PATH, TAKEDOWN_PATH, TERMS_PATH } from './legal-paths.js';
@@ -72,8 +73,8 @@ export const FAQ_ENTRIES: readonly FaqEntry[] = [
     question: '招待はどうすれば受けられますか？',
     answer: `<p>本サービスはクローズドβです。<strong>作品を作る・改造するには招待コードが必要です。</strong>
    作品を遊ぶことと URL を共有することには、招待は要りません。</p>
-<p>招待コードは、すでに参加している方から受け取ってください。参加している方は、
-   1 人 ${INVITE_QUOTA} 本まで招待コードを発行できます。</p>
+<p>招待コードは、すでに参加している方から受け取ってください。参加している方の招待枠は
+   1 人 ${INVITE_QUOTA} 本まで溜まり、使うと ${INVITE_RECOVERY_DAYS} 日ごとに 1 本ずつ戻ります。</p>
 <p>招待コードをお持ちでない方は、<a href="${SIGNUP_PATH}">登録の画面</a>から待機リストに登録できます。
    招待枠が空いたらご連絡します。</p>`,
   },

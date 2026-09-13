@@ -455,7 +455,10 @@ describe('保存（POST /api/account/profile）', () => {
     expect(refused.status).toBe(400);
     const refusedBody = await refused.text();
     expect(refusedBody).not.toContain('<script>alert(1)</script>');
-    expect(refusedBody).not.toContain('"><img');
+    // **欄へ戻した値そのもの**を探す。`"><img` の断片だけで探すと、ヘッダのロゴの `<picture>`（`<source …><img …>`）に
+    // 当たる（#440）——正当なマークアップと、エスケープされなかった入力を区別できない。
+    expect(refusedBody).not.toContain('"><img src=x>');
+    expect(refusedBody).toContain('&quot;&gt;&lt;img src=x&gt;');
     expect(refusedBody).toContain('&lt;/textarea&gt;&lt;script&gt;');
 
     // 通る長さなら保存され、次に開いたフォームでもエスケープされる。

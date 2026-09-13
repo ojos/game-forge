@@ -27,20 +27,27 @@
  * スタイルシートも要求しない。
  */
 import { siteFooter } from './legal.js';
+import type { InviteBalance } from './invite-balance.js';
+import { INVITE_RECOVERY_DAYS, computeInviteBalance } from './invite-balance.js';
 import { formatInviteCode, isInviteExpired } from './invite-code.js';
 import type { InviteRecord } from './invites.js';
-import { issueInvite, listIssuedInvites, remainingInviteQuota } from './invites.js';
+import { issueInvite, listIssuedInvites } from './invites.js';
 import { inviteQuotaHalted } from './reports.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, json } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 import { escapeHtml, siteHead, siteViewerAt } from './html.js';
+import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { HOME_PATH } from './home.js';
 import { INVITES_PATH } from './paths.js';
 import { loginRequiredRedirect } from './auth/google.js';
 
 /**
- * 1 人あたりの招待枠（発行できる総数）。
+ * 1 人あたりの招待枠が**溜まる上限**（8.1 v1.55 / #396）。
+ *
+ * **総数の上限ではない。** 枠は使うと `INVITE_RECOVERY_DAYS` 日ごとに 1 本ずつ戻り、この本数まで
+ * 溜まる（計算は `src/invite-balance.ts`）。#396 より前は「発行できる総数」で、使い終わった枠は
+ * 戻らなかった。**値（3）は変えていない**——変わったのは意味だけである。
  *
  * **環境変数にしない。** 招待枠は 8.1 が定めるコミュニティの設計そのもので、環境ごとに
  * 違ってよい値ではない。変えるときは仕様書の記述とこの定数を同時に変える（両者の一致は
@@ -52,7 +59,8 @@ import { loginRequiredRedirect } from './auth/google.js';
  * 1 人あたりの枠は「呼びたい人を呼べる」最小限でよいこと。数十人規模のクローズドβ
  * （2.1）では、3 本 × 招待の連鎖で十分に広がる。
  *
- * 使い終わった枠は戻らない（`countIssuedInvites` が使用済みも数える理由）。
+ * **戻る速さだけでは費用の上限を守れない**（全員が使えば人数は倍々に増える。8.1 の試算）。
+ * 全体の人数の上限（50 人）は M11-3（#397）が持つ。
  */
 export const INVITE_QUOTA = 3;
 
@@ -72,9 +80,9 @@ export const INVITES_API_PATH = '/api/invites';
  * なる。表に無いものは既定の文言へ倒す。
  */
 const REASON_MESSAGES: Readonly<Record<string, string>> = {
-  'quota-exhausted': `招待枠を使い切りました（1 人 ${INVITE_QUOTA} 本まで）。`,
+  'quota-exhausted': `招待枠を使い切りました。枠は ${INVITE_RECOVERY_DAYS} 日ごとに 1 本ずつ戻ります。`,
   // 7.3 の「BAN 時に招待元の招待枠を停止する」（#40）。**「使い切った」と混ぜない**
-  // ——利用者にできることが違う（枠は待っても戻らないが、こちらは運用の判断による）。
+  // ——利用者にできることが違う（使い切った枠は待てば戻るが、こちらは運用の判断による）。
   'quota-halted':
     '招待枠を停止しています。招待した方の利用が停止されたためです。お心当たりがない場合はお問い合わせください。',
   failed: '招待を発行できませんでした。時間をおいて試してください。',
@@ -105,6 +113,43 @@ function inviteState(invite: InviteRecord, nowSeconds: number): InviteState {
 }
 
 /**
+ * 自分の招待の一覧から、残高を計算する。
+ *
+ * **D1 を引き直さない。** 一覧は発行時刻を持っており（`InviteRecord.issuedAt`）、同じ行を
+ * もう一度読むのは D1 の読み取りを 2 倍にするだけになる（3.6）。
+ *
+ * @param invites 自分が発行した招待
+ * @param nowSeconds 現在時刻（UNIX 秒）
+ * @returns 残高と次に戻る時刻
+ */
+function balanceOf(invites: readonly InviteRecord[], nowSeconds: number): InviteBalance {
+  return computeInviteBalance(
+    invites.map((invite) => invite.issuedAt),
+    INVITE_QUOTA,
+    nowSeconds,
+  );
+}
+
+/**
+ * 残高の 1 文を組み立てる（「いま何本」と「次の 1 本が戻る日時」。8.1）。
+ *
+ * **戻る日時は分まで出す。** 日付だけだと、その日の朝に開いた人には「今日のはずなのに
+ * 0 本」と見える。日時は日本時間で出し、機械が読む `datetime` には UTC の絶対時刻を入れる
+ * （`src/jst.ts`）。
+ *
+ * @param balance 残高
+ * @returns HTML の断片
+ */
+function balanceLine(balance: InviteBalance): string {
+  const next =
+    balance.nextRecoveryAt === null
+      ? ''
+      : ` 次の 1 本は <time datetime="${toIsoTimestamp(balance.nextRecoveryAt)}">${formatJstMinutes(balance.nextRecoveryAt)}</time> に戻ります。`;
+  return `<p>招待枠は 1 人 ${INVITE_QUOTA} 本まで溜まり、使うと ${INVITE_RECOVERY_DAYS} 日ごとに 1 本ずつ戻ります。</p>
+<p>いま発行できるのは <strong>${balance.available} 本</strong>です。${next}</p>`;
+}
+
+/**
  * 招待の画面を組み立てる。
  *
  * @param invites 自分が発行した招待（コード順）
@@ -121,12 +166,12 @@ function invitePage(
   // （`src/signup.ts` と同じ理由。引数の出どころが変わっても安全側が既定になる）。
   const error = message === null ? '' : `<p class="error" role="alert">${escapeHtml(message)}</p>`;
 
-  const remaining = Math.max(0, INVITE_QUOTA - invites.length);
+  const balance = balanceOf(invites, nowSeconds);
 
   // 枠が残っているときだけフォームを出す。押しても必ず断られるボタンを出すと、
   // 利用者から見て「壊れている」ことと「枠が無い」ことの区別がつかない。
   const form =
-    remaining > 0
+    balance.available > 0
       ? `<form method="post" action="${INVITES_API_PATH}">
   <button type="submit">招待コードを 1 本発行する</button>
 </form>`
@@ -150,7 +195,7 @@ ${invites
   return `${siteHead({ title: '招待を発行する', viewer: siteViewerAt(INVITES_PATH, true) })}
 <h1>招待を発行する</h1>
 ${error}
-<p>招待枠は 1 人 ${INVITE_QUOTA} 本です。残り ${remaining} 本（発行済み ${invites.length} 本）。</p>
+${balanceLine(balance)}
 ${form}
 
 <h2>発行した招待</h2>
@@ -231,9 +276,11 @@ const showInvitePage: RouteHandler = async (request, env) => {
 /**
  * 自分が発行した招待の一覧と残枠を返す（API）。
  *
- * **残枠を `remainingInviteQuota` で数え直さない。** 一覧を引いた時点で発行済みの
- * 件数は分かっており、同じ行をもう一度 `count(*)` で数えるのは D1 の読み取りを 2 倍に
- * するだけになる（3.6）。
+ * **残枠を D1 から数え直さない。** 一覧が発行時刻を持っているので、そこから計算する
+ * （`balanceOf`）。
+ *
+ * `quota` は**溜まる上限**（#396 より前は発行の総数）、`remaining` は**いま発行できる本数**、
+ * `nextRecoveryAt` は次の 1 本が戻る時刻（UNIX 秒。満杯なら null）である。
  *
  * **`used_by` をそのまま返さない。** 誰が使ったかは招待者に見える情報だが、返すのは
  * 他人の `users.id` そのものであり、この画面が必要としているのは「使われたかどうか」
@@ -251,10 +298,12 @@ const listInvites: RouteHandler = async (request, env) => {
 
   const invites = await listIssuedInvites(env.DB, session.userId);
   const now = nowSeconds();
+  const balance = balanceOf(invites, now);
   return json({
     quota: INVITE_QUOTA,
     issued: invites.length,
-    remaining: Math.max(0, INVITE_QUOTA - invites.length),
+    remaining: balance.available,
+    nextRecoveryAt: balance.nextRecoveryAt,
     invites: invites.map((invite) => ({
       code: invite.code,
       state: inviteState(invite, now),
@@ -267,9 +316,9 @@ const listInvites: RouteHandler = async (request, env) => {
 /**
  * 招待を 1 本発行する。
  *
- * **枠の判定を呼び出し側で行わない。** `issueInvite` は件数の判定を INSERT の `WHERE`
- * へ畳んであり、ここで「数えてから入れる」形にすると、同時に 2 本送られたときに上限を
- * 超える。断られたかどうかは戻り値だけで決める。
+ * **枠の判定を呼び出し側で行わない。** `issueInvite` は残高の判定を INSERT の `WHERE`
+ * で守っており（`src/invites.ts`）、ここで「数えてから入れる」形にすると、同時に 2 本
+ * 送られたときに上限を超える。断られたかどうかは戻り値だけで決める。
  *
  * 本文を読まないのは、発行に**引数が無い**ためである。受け取らない値のために
  * `Content-Type` や本文の検査を置くと、素のフォームからの空の POST を弾く条件を
@@ -297,18 +346,25 @@ const handleIssueInvite: RouteHandler = async (request, env) => {
     // INSERT の `WHERE` に閉じ込めた設計（`src/invites.ts`）がそのまま効く。
     const halted = await inviteQuotaHalted(env, session.userId);
     const quota = halted ? 0 : INVITE_QUOTA;
-    const issued = await issueInvite(env.DB, session.userId, quota);
+    const now = nowSeconds();
+    const issued = await issueInvite(env.DB, session.userId, quota, null, now);
     if (!issued.ok) {
       // **「使い切った」と「止められた」を分けて返す。** `issueInvite` はどちらも
       // `quota-exhausted` として返す（あちらは理由を知らない）ので、ここで言い分ける。
-      //
-      // 409 を使う。429（Too Many Requests）は時間あたりの制限に対する応答で、待てば
-      // 解けることを意味するが、**招待枠は総数の上限であり待っても戻らない**（停止の
-      // ほうも、待って戻るものではない）。
-      const reason = halted ? 'quota-halted' : issued.reason;
+      if (halted) {
+        // 409 のまま。**停止は待っても解けない**（運用の判断による。#40）ので、
+        // 待てば解けることを意味する 429 を返さない。
+        return asHtml
+          ? seeOther(`${INVITES_PATH}?reason=quota-halted`)
+          : json({ error: 'quota-halted', quota, remaining: 0 }, 409);
+      }
+      // **使い切ったほうは 429 にする**（#396）。#396 より前は、招待枠が総数の上限で
+      // **待っても戻らない**ことを理由に 409 を返していた。枠は時間で戻るようになったので、
+      // その理由は成り立たない。429 は「時間あたりの制限。待てば解ける」を意味し、
+      // **`Retry-After` で次の 1 本が戻るまでの秒数を示せる**。
       return asHtml
-        ? seeOther(`${INVITES_PATH}?reason=${reason}`)
-        : json({ error: reason, quota, remaining: 0 }, 409);
+        ? seeOther(`${INVITES_PATH}?reason=${issued.reason}`)
+        : quotaExhausted(issued.balance, quota, now);
     }
     if (asHtml) {
       // POST-redirect-GET。発行の結果を同じ URL に描くと、再読み込みで再送信の確認が
@@ -322,7 +378,9 @@ const handleIssueInvite: RouteHandler = async (request, env) => {
       {
         code: issued.invite.code,
         quota: INVITE_QUOTA,
-        remaining: await remainingInviteQuota(env.DB, session.userId, INVITE_QUOTA),
+        // 発行した後の残高。**D1 から数え直さない**（`issueInvite` が入れた行を知っている）。
+        remaining: issued.balance.available,
+        nextRecoveryAt: issued.balance.nextRecoveryAt,
       },
       201,
     );
@@ -335,6 +393,34 @@ const handleIssueInvite: RouteHandler = async (request, env) => {
       : json({ error: 'internal error' }, 500);
   }
 };
+
+/**
+ * 招待枠を使い切ったときの応答（API。429）を組み立てる。
+ *
+ * `Retry-After` は**秒数**で入れる（HTTP 日付の形も許されるが、時計のずれに左右されない）。
+ * 次に戻る時刻が無い（容量 0 など）ときは付けない——待っても解けないのに「待て」と言わない。
+ *
+ * @param balance 断った時点の残高
+ * @param quota 判定に使った容量
+ * @param nowSeconds 判定に使った現在時刻（UNIX 秒）
+ * @returns レスポンス
+ */
+function quotaExhausted(balance: InviteBalance, quota: number, nowSeconds: number): Response {
+  const headers: Record<string, string> =
+    balance.nextRecoveryAt === null
+      ? {}
+      : { 'retry-after': String(Math.max(1, balance.nextRecoveryAt - nowSeconds)) };
+  return json(
+    {
+      error: 'quota-exhausted',
+      quota,
+      remaining: balance.available,
+      nextRecoveryAt: balance.nextRecoveryAt,
+    },
+    429,
+    headers,
+  );
+}
 
 /**
  * 例外を、ログへ出してよい 1 行の文字列へ落とす。
@@ -356,8 +442,8 @@ function describeIssueError(error: unknown): string {
 /**
  * 現在時刻（UNIX 秒）。
  *
- * 表示用の期限判定にしか使わない。消費の可否は SQL 側の条件が正である
- * （`src/invites.ts` の `consumeInvite`）。
+ * 表示用の期限判定と、招待枠の残高の計算・発行時刻に使う。消費の可否は SQL 側の
+ * 条件が正である（`src/invites.ts` の `consumeInvite`）。
  *
  * @returns UNIX 秒
  */

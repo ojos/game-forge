@@ -1,18 +1,21 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { INVITE_RECOVERY_SECONDS } from '../src/invite-balance.js';
 import { formatInviteCode, generateInviteCode } from '../src/invite-code.js';
 import {
   checkInvite,
   consumeInvite,
-  countIssuedInvites,
   issueInvite,
   listIssuedInvites,
   lookupInvite,
-  remainingInviteQuota,
+  readInviteBalance,
 } from '../src/invites.js';
 import { applySchema } from './helpers/schema.js';
 
 const NOW = 1_770_000_000;
+
+/** 1 本が戻るまでの秒数（30 日）。 */
+const RECOVERY = INVITE_RECOVERY_SECONDS;
 
 beforeAll(async () => {
   await applySchema();
@@ -57,6 +60,19 @@ async function insertInvite(issuedBy: string, expiresAt: number | null = null): 
 }
 
 /**
+ * 発行者の招待の行数を、実装の関数を通さずに数える。
+ *
+ * @param issuedBy 発行者の `users.id`
+ * @returns 行数
+ */
+async function countRows(issuedBy: string): Promise<number> {
+  const row = await env.DB.prepare('select count(*) as total from invites where issued_by = ?')
+    .bind(issuedBy)
+    .first<{ total: number }>();
+  return row?.total ?? 0;
+}
+
+/**
  * 招待の行をそのまま読む（実装の写像を通さずに検査するため）。
  *
  * @param code 正規形の招待コード
@@ -83,10 +99,10 @@ async function invitedBy(userId: string): Promise<string | null> {
   return row?.invited_by ?? null;
 }
 
-describe('招待の発行と招待枠の残数（#13 scope.in）', () => {
-  it('発行したコードが正規形で保存され、引き直せる', async () => {
+describe('招待の発行と招待枠の残高（#13 scope.in / #396）', () => {
+  it('発行したコードが正規形で保存され、発行時刻とともに引き直せる', async () => {
     const issuer = await insertUser();
-    const issued = await issueInvite(env.DB, issuer, 5);
+    const issued = await issueInvite(env.DB, issuer, 5, null, NOW);
     expect(issued.ok).toBe(true);
     if (!issued.ok) {
       return;
@@ -99,7 +115,21 @@ describe('招待の発行と招待枠の残数（#13 scope.in）', () => {
       usedBy: null,
       usedAt: null,
       expiresAt: null,
+      issuedAt: NOW,
     });
+  });
+
+  it('発行時刻を書く（既定値 0 のままにしない）', async () => {
+    // `issued_at` の既定値 0 は「列ができる前の発行」で、**枠を減らさない**
+    // （`migrations/0034_invites_issued_at.sql`）。書かなくてもトリガーが時刻を入れるが、
+    // 発行の口は判定に使った時刻そのものを書く。
+    const issuer = await insertUser();
+    const issued = await issueInvite(env.DB, issuer, 3);
+    const row = await env.DB.prepare('select issued_at from invites where code = ?')
+      .bind(issued.ok ? issued.invite.code : '')
+      .first<{ issued_at: number }>();
+    expect(row?.issued_at).toBeGreaterThan(0);
+    expect(Math.abs((row?.issued_at ?? 0) - Math.floor(Date.now() / 1000))).toBeLessThan(60);
   });
 
   it('失効時刻を指定して発行できる', async () => {
@@ -111,56 +141,131 @@ describe('招待の発行と招待枠の残数（#13 scope.in）', () => {
     expect(found?.expiresAt).toBe(NOW + 3600);
   });
 
-  it('招待枠を超える発行を断る', async () => {
+  it('残高を超える発行を断り、断った時点の残高と次に戻る時刻を返す', async () => {
     const issuer = await insertUser();
-    expect((await issueInvite(env.DB, issuer, 2)).ok).toBe(true);
-    expect((await issueInvite(env.DB, issuer, 2)).ok).toBe(true);
+    expect((await issueInvite(env.DB, issuer, 2, null, NOW)).ok).toBe(true);
+    const second = await issueInvite(env.DB, issuer, 2, null, NOW);
+    expect(second.ok && second.balance).toEqual({ available: 0, nextRecoveryAt: NOW + RECOVERY });
 
-    const third = await issueInvite(env.DB, issuer, 2);
-    expect(third).toEqual({ ok: false, reason: 'quota-exhausted' });
-    expect(await countIssuedInvites(env.DB, issuer)).toBe(2);
+    const third = await issueInvite(env.DB, issuer, 2, null, NOW);
+    expect(third).toEqual({
+      ok: false,
+      reason: 'quota-exhausted',
+      balance: { available: 0, nextRecoveryAt: NOW + RECOVERY },
+    });
+    expect(await countRows(issuer)).toBe(2);
   });
 
   it('招待枠 0 では 1 枚も発行できない', async () => {
     const issuer = await insertUser();
-    expect(await issueInvite(env.DB, issuer, 0)).toEqual({ ok: false, reason: 'quota-exhausted' });
+    expect(await issueInvite(env.DB, issuer, 0, null, NOW)).toEqual({
+      ok: false,
+      reason: 'quota-exhausted',
+      balance: { available: 0, nextRecoveryAt: null },
+    });
   });
 
-  it('残数が発行者ごとに独立している', async () => {
-    // `invites_issued_by_idx` が数えるのは発行者ごとの件数。ここが混ざると、
+  it('残高が発行者ごとに独立している', async () => {
+    // `invites_issued_by_idx` で絞るのは発行者ごとの行。ここが混ざると、
     // 誰か 1 人が発行しただけで全員の枠が減る。
     const issuer = await insertUser();
     const other = await insertUser();
-    await issueInvite(env.DB, other, 3);
-    await issueInvite(env.DB, other, 3);
+    await issueInvite(env.DB, other, 3, null, NOW);
+    await issueInvite(env.DB, other, 3, null, NOW);
 
-    expect(await countIssuedInvites(env.DB, issuer)).toBe(0);
-    expect(await remainingInviteQuota(env.DB, issuer, 3)).toBe(3);
-    expect(await remainingInviteQuota(env.DB, other, 3)).toBe(1);
+    expect(await readInviteBalance(env.DB, issuer, 3, NOW)).toEqual({
+      available: 3,
+      nextRecoveryAt: null,
+    });
+    expect((await readInviteBalance(env.DB, other, 3, NOW)).available).toBe(1);
   });
 
-  it('使用済みになった枠は戻らない', async () => {
-    // 招待枠は「同時に持てる未使用の枚数」ではなく「何人を呼べるか」。戻る設計に
-    // すると、コードを配り直すだけで無制限に呼べる。
+  it('使い切った枠は 30 日で 1 本戻り、その時点から再び発行できる', async () => {
+    // **使われたかどうかは関係しない。** 枠を減らすのは発行で、使用済みにしても戻らない。
     const issuer = await insertUser();
     const guest = await insertUser();
-    const issued = await issueInvite(env.DB, issuer, 1);
+    const issued = await issueInvite(env.DB, issuer, 1, null, NOW);
     expect(issued.ok).toBe(true);
     if (!issued.ok) {
       return;
     }
-
     expect((await consumeInvite(env.DB, issued.invite.code, guest, NOW)).ok).toBe(true);
-    expect(await remainingInviteQuota(env.DB, issuer, 1)).toBe(0);
-    expect(await issueInvite(env.DB, issuer, 1)).toEqual({ ok: false, reason: 'quota-exhausted' });
+
+    expect((await readInviteBalance(env.DB, issuer, 1, NOW)).available).toBe(0);
+    expect((await issueInvite(env.DB, issuer, 1, null, NOW + RECOVERY - 1)).ok).toBe(false);
+    expect((await issueInvite(env.DB, issuer, 1, null, NOW + RECOVERY)).ok).toBe(true);
   });
 
-  it('残数が負にならない', async () => {
-    // 上限を後から下げる運用（7.3 の BAN 時の枠停止など）で、既発行が上限を超える。
+  it('未使用のまま期限が切れたコードも枠を減らす', async () => {
+    // 数えないと、期限付きで発行しては切らす、を繰り返すだけで無制限に配れる。
     const issuer = await insertUser();
-    await issueInvite(env.DB, issuer, 3);
-    await issueInvite(env.DB, issuer, 3);
-    expect(await remainingInviteQuota(env.DB, issuer, 1)).toBe(0);
+    expect((await issueInvite(env.DB, issuer, 1, NOW + 1, NOW)).ok).toBe(true);
+    expect((await issueInvite(env.DB, issuer, 1, null, NOW + 3600)).ok).toBe(false);
+  });
+
+  it('列ができる前の発行（issued_at が既定値 0）は、3 本あっても 3 本に戻っている（#396 acceptance 3）', async () => {
+    // マイグレーションの `ADD COLUMN ... DEFAULT 0` が既存の行を埋めるのと同じ状態を作る。
+    // **INSERT だけではトリガーが時刻を入れる**ので、入れた後に UPDATE で 0 へ戻す
+    // （`migrations/0034_invites_issued_at.sql`）。
+    const issuer = await insertUser();
+    const guest = await insertUser();
+    const used = await insertInvite(issuer);
+    await insertInvite(issuer);
+    await insertInvite(issuer);
+    await env.DB.prepare('update invites set issued_at = 0 where issued_by = ?').bind(issuer).run();
+    expect((await consumeInvite(env.DB, used, guest, NOW)).ok).toBe(true);
+
+    expect(await readInviteBalance(env.DB, issuer, 3, NOW)).toEqual({
+      available: 3,
+      nextRecoveryAt: null,
+    });
+    expect((await issueInvite(env.DB, issuer, 3, null, NOW)).ok).toBe(true);
+  });
+
+  it('時刻を書かない INSERT（移行の窓の旧 Worker）にも、トリガーが発行時刻を入れて枠を減らす', async () => {
+    // マイグレーションを当ててから新しい Worker が出るまで、旧 `issueInvite` は `issued_at` を
+    // 書かずに INSERT する（PR #420 の Copilot の指摘）。0 のまま残ると枠を減らさない。
+    const issuer = await insertUser();
+    const before = Math.floor(Date.now() / 1000);
+    for (let row = 0; row < 3; row += 1) {
+      await env.DB.prepare('insert into invites (code, issued_by) values (?, ?)')
+        .bind(generateInviteCode(), issuer)
+        .run();
+    }
+
+    const rows = await env.DB.prepare('select issued_at from invites where issued_by = ?')
+      .bind(issuer)
+      .all<{ issued_at: number }>();
+    for (const row of rows.results) {
+      expect(row.issued_at).toBeGreaterThanOrEqual(before - 1);
+    }
+    expect((await readInviteBalance(env.DB, issuer, 3)).available).toBe(0);
+  });
+
+  it('時刻を明示した INSERT は、トリガーが書き換えない', async () => {
+    const issuer = await insertUser();
+    const issued = await issueInvite(env.DB, issuer, 3, null, NOW);
+    const found = await lookupInvite(env.DB, issued.ok ? issued.invite.code : '');
+    expect(found?.issuedAt).toBe(NOW);
+  });
+
+  it('上限を後から下げても残高は負にならない', async () => {
+    // 上限を下げる運用（7.3 の BAN 時の枠停止など）で、既発行が上限を超える。
+    const issuer = await insertUser();
+    await issueInvite(env.DB, issuer, 3, null, NOW);
+    await issueInvite(env.DB, issuer, 3, null, NOW);
+    expect((await readInviteBalance(env.DB, issuer, 1, NOW)).available).toBe(0);
+  });
+
+  it('同時に送っても残高を超えない', async () => {
+    // **INSERT の WHERE が「読んだときの件数のまま」を見ている**ことに依存している。
+    // WHERE を外して「計算してから入れる」だけにすると、ここで 3 本を超えて入る。
+    const issuer = await insertUser();
+    const results = await Promise.all(
+      Array.from({ length: 6 }, () => issueInvite(env.DB, issuer, 3, null, NOW)),
+    );
+    expect(results.filter((result) => result.ok)).toHaveLength(3);
+    expect(await countRows(issuer)).toBe(3);
   });
 
   it('招待枠の上限が不正なら例外にする', async () => {
@@ -169,7 +274,7 @@ describe('招待の発行と招待枠の残数（#13 scope.in）', () => {
     const issuer = await insertUser();
     for (const invalid of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY]) {
       await expect(issueInvite(env.DB, issuer, invalid), String(invalid)).rejects.toThrow();
-      await expect(remainingInviteQuota(env.DB, issuer, invalid), String(invalid)).rejects.toThrow();
+      await expect(readInviteBalance(env.DB, issuer, invalid), String(invalid)).rejects.toThrow();
     }
   });
 
@@ -429,8 +534,8 @@ describe('発行者向けの一覧（#91）', () => {
   });
 
   it('コード順に並ぶ', async () => {
-    // `invites` に作成時刻の列が無いため、順序を指定しないと再読み込みのたびに
-    // 並びが変わりうる（5.1）。
+    // 順序を指定しないと再読み込みのたびに並びが変わりうる（5.1）。`issued_at` は
+    // 列ができる前の行がすべて 0 で、時刻順では古い行どうしの順が決まらない（#396）。
     const issuer = await insertUser();
     await insertInvite(issuer);
     await insertInvite(issuer);
@@ -447,7 +552,7 @@ describe('発行者向けの一覧（#91）', () => {
     expect((await consumeInvite(env.DB, code, guest, NOW)).ok).toBe(true);
 
     expect(await listIssuedInvites(env.DB, issuer)).toEqual([
-      { code, issuedBy: issuer, usedBy: guest, usedAt: NOW, expiresAt: null },
+      { code, issuedBy: issuer, usedBy: guest, usedAt: NOW, expiresAt: null, issuedAt: expect.any(Number) },
     ]);
   });
 

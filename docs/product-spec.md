@@ -5152,7 +5152,7 @@ v0.9 までの「プロバイダ層が先に発火したらアプリ層のバグ
 | テーブル | 主な列 |
 |---|---|
 | `users` | `google_sub`（一意）、`email`、`display_name`、`display_name_set_at`（利用者が表示名を決めた日時。NULL なら Google の表示名に追随する。5.9）、`x_handle`（任意・未検証）、`invited_by`、`created_at`、`banned_at`、`is_operator`（運営フラグ。0/1、既定 0。**表示だけで権限は与えない**。BAN と同じく直接 UPDATE で立てる。#334 / `docs/operator-account.md`）、`is_admin`（管理画面の権限。0/1、既定 0。**`is_operator` とは別の列**——表示と権限を一体にしない。2.4.2。最初の 1 人は直接 UPDATE） |
-| `invites` | `code`、`issued_by`、`used_by`、`used_at`、`expires_at` |
+| `invites` | `code`、`issued_by`、`used_by`、`used_at`、`expires_at`、`issued_at`（発行時刻。招待枠の残高の計算に使う。**列ができる前の行は 0**＝十分に古い発行。8.1 / #396） |
 | `games` | `id`、`author_id`、`parent_id`、`status`（draft/published/removed）、`title`、`go_version`、`source_key`、`wasm_key`、`fork_count`、`like_count`（5.8。Durable Objects から写した数）、`created_at`、`published_at`、`description`（作者が公開後に書く説明。空文字なら無し。5.4 / #388）、`description_set_at`（最後に説明を変えた時刻。変更の間隔の判定に使う。#388） |
 | `generations` | `id`、`game_id`、`user_id`、`prompt`、`model`、`input_tokens`、`output_tokens`、`cache_*_tokens`、`cost_jpy`、`succeeded`、`created_at`（**D1 の列名。** Bedrock のレスポンスは camelCase で、そこから写す。4.5） |
 | `reports` | `id`、`game_id`、`reporter_id`、`reason`、`created_at` |
@@ -7117,6 +7117,16 @@ docker run --rm \
 | 90 日 | 3 本 | 3 本 |
 
 **長期の速さは同じで、待たされ方だけが違う。** 説明のしやすさも違う——窓は「90 日前に何をしたか」で今日の本数が決まるのに対し、溜める形は**「次の 1 本が戻る日」を画面に出せる**。
+
+> **実装注記（#396。2026-09-13）。** 残高の計算は `src/invite-balance.ts`、発行の口は `src/invites.ts` の `issueInvite`。実装で決めたことを 5 つ書き戻す。
+>
+> 1. **登録日時は計算に使っていない。** 登録直後は満杯から始まるので、最初の発行より前の時刻は残高に効かない（満杯のバケツはどれだけ置いても満杯）。上の「登録日時と発行履歴から」は、**発行履歴だけで決まる**と読み替える。
+> 2. **既存行の埋め戻しは「30 日以上前」では足りなかった。** 3 本使い切った人の 3 本が同じ 30 日前に並ぶと、移行直後に戻っているのは 1 本だけになる。**`issued_at` を `NOT NULL DEFAULT 0` で足し、既存の行を 0（UNIX 紀元）で埋めた**（`migrations/0034_invites_issued_at.sql`）。**既定値 0 は新しい行にも効く**ので、**`issued_at = 0` で入った行を現在時刻へ書き換える INSERT トリガーを同じマイグレーションに置いた**——マイグレーションを当ててから新しい Worker が出るまでの間、**旧 Worker は時刻を書かずに発行する**（PR #420 の Copilot の指摘）。トリガーは既存の行を埋めた後に作るので、移行時点で全員が 3 本から始まることは変わらない。
+> 3. **「30 日」は発行からの経過秒で判定する**（日本時間の日付の切り替わりではない）。画面に出すときだけ日本時間へ直し、**戻る日時は分まで出す**（日付だけだと「今日のはずなのに 0 本」と見える）。
+> 4. **同時の発行は、INSERT の `WHERE` に「読んだときの発行件数のまま」を置いて防ぐ。** バケツは SQL の式 1 本では書けないので、残高はアプリで計算し、件数が変わっていたら読み直す。**招待の行は消さない**ので、件数が同じなら履歴も同じである。
+> 5. **使い切ったときの応答を 409 から 429 に変え、`Retry-After` と `nextRecoveryAt` を返す。** 409 の根拠は「総数の上限で待っても戻らない」だった。**#40 の停止は待っても解けないので 409 のまま**にした。
+>
+> **機械照合は本数と日数を 1 つの正規表現で拾う**（`招待枠は 1 人 N 本まで溜まり、使うと D 日ごとに 1 本ずつ戻る`）。上の v1.55 注記が旧記述を引用しているため、別々に拾うと片方が注記に当たりうる。
 
 #### 50 人の上限は費用から出ている
 

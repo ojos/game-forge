@@ -57,7 +57,8 @@ export interface InviteRecord {
    * 発行時刻（UNIX 秒。`migrations/0034_invites_issued_at.sql`）。
    *
    * **0 は「列ができる前に発行された」**である（既存の行の埋め戻し）。残高の計算では
-   * 十分に古い発行として数える（`src/invite-balance.ts`）。
+   * 十分に古い発行として数える（`src/invite-balance.ts`）。列ができた後の INSERT が 0 のまま
+   * 残ることは無い（トリガーが時刻を入れる）。
    */
   readonly issuedAt: number;
 }
@@ -426,8 +427,9 @@ export async function readInviteBalance(
  * 読み直しは容量の回数で必ず尽きる（0 本で断る側に抜ける）。それでも上限を置くのは、
  * 前提（行を消さない）が崩れたときに無限に回らないためである。
  *
- * **発行時刻は必ず書く。** `issued_at` の既定値 0 は「列ができる前の発行」を表し、書き忘れた
- * 行は枠を減らさない（`migrations/0034_invites_issued_at.sql`）。
+ * **発行時刻は、判定に使った時刻そのものを書く。** `issued_at` の既定値 0 は「列ができる前の
+ * 発行」を表す。書かなければトリガーが INSERT の時点の時刻を入れる（移行の窓の旧 Worker の
+ * ため。`migrations/0034_invites_issued_at.sql`）が、それは判定に使った時刻とずれうる。
  *
  * @param db D1
  * @param issuedBy 発行者の `users.id`

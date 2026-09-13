@@ -119,9 +119,10 @@ describe('招待の発行と招待枠の残高（#13 scope.in / #396）', () => 
     });
   });
 
-  it('発行時刻を必ず書く（既定値 0 のままにしない）', async () => {
+  it('発行時刻を書く（既定値 0 のままにしない）', async () => {
     // `issued_at` の既定値 0 は「列ができる前の発行」で、**枠を減らさない**
-    // （`migrations/0034_invites_issued_at.sql`）。書き忘れると、何本発行しても枠が減らない。
+    // （`migrations/0034_invites_issued_at.sql`）。書かなくてもトリガーが時刻を入れるが、
+    // 発行の口は判定に使った時刻そのものを書く。
     const issuer = await insertUser();
     const issued = await issueInvite(env.DB, issuer, 3);
     const row = await env.DB.prepare('select issued_at from invites where code = ?')
@@ -203,13 +204,15 @@ describe('招待の発行と招待枠の残高（#13 scope.in / #396）', () => 
   });
 
   it('列ができる前の発行（issued_at が既定値 0）は、3 本あっても 3 本に戻っている（#396 acceptance 3）', async () => {
-    // マイグレーションの `ADD COLUMN ... DEFAULT 0` が既存の行を埋めるのと同じ状態を、
-    // 列を指定しない INSERT で作る（`insertInvite` は `issued_at` を書かない）。
+    // マイグレーションの `ADD COLUMN ... DEFAULT 0` が既存の行を埋めるのと同じ状態を作る。
+    // **INSERT だけではトリガーが時刻を入れる**ので、入れた後に UPDATE で 0 へ戻す
+    // （`migrations/0034_invites_issued_at.sql`）。
     const issuer = await insertUser();
     const guest = await insertUser();
     const used = await insertInvite(issuer);
     await insertInvite(issuer);
     await insertInvite(issuer);
+    await env.DB.prepare('update invites set issued_at = 0 where issued_by = ?').bind(issuer).run();
     expect((await consumeInvite(env.DB, used, guest, NOW)).ok).toBe(true);
 
     expect(await readInviteBalance(env.DB, issuer, 3, NOW)).toEqual({
@@ -217,6 +220,33 @@ describe('招待の発行と招待枠の残高（#13 scope.in / #396）', () => 
       nextRecoveryAt: null,
     });
     expect((await issueInvite(env.DB, issuer, 3, null, NOW)).ok).toBe(true);
+  });
+
+  it('時刻を書かない INSERT（移行の窓の旧 Worker）にも、トリガーが発行時刻を入れて枠を減らす', async () => {
+    // マイグレーションを当ててから新しい Worker が出るまで、旧 `issueInvite` は `issued_at` を
+    // 書かずに INSERT する（PR #420 の Copilot の指摘）。0 のまま残ると枠を減らさない。
+    const issuer = await insertUser();
+    const before = Math.floor(Date.now() / 1000);
+    for (let row = 0; row < 3; row += 1) {
+      await env.DB.prepare('insert into invites (code, issued_by) values (?, ?)')
+        .bind(generateInviteCode(), issuer)
+        .run();
+    }
+
+    const rows = await env.DB.prepare('select issued_at from invites where issued_by = ?')
+      .bind(issuer)
+      .all<{ issued_at: number }>();
+    for (const row of rows.results) {
+      expect(row.issued_at).toBeGreaterThanOrEqual(before - 1);
+    }
+    expect((await readInviteBalance(env.DB, issuer, 3)).available).toBe(0);
+  });
+
+  it('時刻を明示した INSERT は、トリガーが書き換えない', async () => {
+    const issuer = await insertUser();
+    const issued = await issueInvite(env.DB, issuer, 3, null, NOW);
+    const found = await lookupInvite(env.DB, issued.ok ? issued.invite.code : '');
+    expect(found?.issuedAt).toBe(NOW);
   });
 
   it('上限を後から下げても残高は負にならない', async () => {
@@ -522,7 +552,7 @@ describe('発行者向けの一覧（#91）', () => {
     expect((await consumeInvite(env.DB, code, guest, NOW)).ok).toBe(true);
 
     expect(await listIssuedInvites(env.DB, issuer)).toEqual([
-      { code, issuedBy: issuer, usedBy: guest, usedAt: NOW, expiresAt: null, issuedAt: 0 },
+      { code, issuedBy: issuer, usedBy: guest, usedAt: NOW, expiresAt: null, issuedAt: expect.any(Number) },
     ]);
   });
 

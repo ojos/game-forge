@@ -25,12 +25,31 @@
 -- issued_at = ...` を置くと、「列を足す」と「埋める」の間に発行された行（本番へ当ててから
 -- 配り終えるまでの窓）まで古い時刻で上書きしうる。既定値なら、列ができた瞬間の行だけが埋まる。
 --
--- ## 新しい行は、発行の口が必ず時刻を書く
+-- ## 時刻を書かない INSERT には、トリガーがその時点の時刻を入れる
 --
--- **既定値 0 は新しい行にも効く。** 時刻を書き忘れた INSERT は「十分に古い発行」になり、
--- **その 1 本は枠を減らさない。** 招待の行を作るのは `issueInvite`（`src/invites.ts`）
--- 1 か所だけで、そこが `issued_at` を必ず書く（`test/invites.test.ts` が発行時刻の記録を
--- 固定する）。**`invites` へ INSERT する経路を足すときは、この列を書くこと。**
+-- **既定値 0 は新しい行にも効く。** そのままだと、時刻を書かない INSERT は「十分に古い発行」に
+-- なり、**その 1 本は枠を減らさない。** これが起きる経路が 2 つある。
+--
+-- 1. **移行の窓（PR #420 の Copilot の指摘）。** このマイグレーションは配備の**前**に当てる
+--    （`.claude/skills/land/SKILL.md` の手順 5）。当ててから新しい Worker が出るまでの間、
+--    **旧 Worker の `issueInvite` は `issued_at` を書かずに INSERT する。** その行が 0 のままだと、
+--    配備の後に「移行前の発行」として数えられ、窓の間に発行した分だけ枠が減らない。
+-- 2. **将来の書き忘れ。** `invites` へ INSERT する経路を足したときに、この列を書き忘れる。
+--
+-- そこで **`issued_at = 0` で入った行を、INSERT の直後に現在時刻へ書き換えるトリガー**を置く。
+-- **既存の行はトリガーを作る前に既定値で埋まる**ので、移行時点で全員が 3 本から始まることは
+-- 変わらない。発行の口（`issueInvite`）は時刻を明示して書くので、トリガーは発火せず、
+-- 書き込みも増えない（`WHEN` で絞っている）。
+--
+-- **列を持たない形（NULL を「窓の間の発行」とする）は採らない。** NULL の行をいつの発行として
+-- 数えるかを、残高の計算が知ることになる（窓の時刻はどこにも残らない）。トリガーなら、
+-- どの経路から入った行も「発行した時刻」という 1 つの意味に揃う。
+--
+-- **発行時刻を 0 にしたい行（テストで移行前の行を作るなど）は、INSERT の後に UPDATE する。**
+-- UPDATE にはトリガーを張っていない。
+--
+-- 時刻は `strftime('%s', 'now')` を整数にして取る（0001 の方針どおり UNIX 秒）。`unixepoch()` は
+-- SQLite 3.38 以降にしか無い。
 --
 -- 既定値を持たない形（`NOT NULL` だけ）は SQLite の `ADD COLUMN` では作れない。表を作り直せば
 -- 作れるが、そのために `invites`（`users.invited_by` の系統と一体の表）を作り直す形にしない。
@@ -50,3 +69,11 @@
 -- （`games_tags`）が取った**（どちらも M12。別セッションと番号を確かめ合った。2026-09-13）。
 
 ALTER TABLE invites ADD COLUMN issued_at INTEGER NOT NULL DEFAULT 0;
+
+CREATE TRIGGER invites_issued_at_on_insert
+AFTER INSERT ON invites
+FOR EACH ROW
+WHEN NEW.issued_at = 0
+BEGIN
+  UPDATE invites SET issued_at = CAST(strftime('%s', 'now') AS INTEGER) WHERE code = NEW.code;
+END;

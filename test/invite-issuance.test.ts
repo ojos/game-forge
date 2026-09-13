@@ -411,12 +411,14 @@ describe('招待を発行する画面', () => {
 
   it('列ができる前の発行（issued_at = 0）だけの利用者は、3 本発行できると出る', async () => {
     // マイグレーションの既定値が埋める状態（`migrations/0034_invites_issued_at.sql`）。
+    // INSERT だけではトリガーが時刻を入れるので、UPDATE で 0 へ戻す。
     const userId = await seedUser();
     for (let row = 0; row < INVITE_QUOTA; row += 1) {
       await env.DB.prepare('insert into invites (code, issued_by) values (?, ?)')
         .bind(generateInviteCode(), userId)
         .run();
     }
+    await env.DB.prepare('update invites set issued_at = 0 where issued_by = ?').bind(userId).run();
     const body = await (
       await call(INVITES_PATH, { cookie: await sessionCookie(userId), accept: 'text/html' })
     ).text();

@@ -8,8 +8,13 @@
 # 求める対象そのものにあたる。
 #
 # 保証するのは「黙ってマージしない」ことであって「マージさせない」ことではない。判定は
-# deny ではなく ask を返し、利用者が承認すればマージは実行される。指示に従うマージまで
-# 塞ぐと「PR を作り、指示を待ち、指示されたらマージする」という本来の運用が成り立たない。
+# deny ではなく ask を返し、利用者が承認すればマージは実行される。この確認そのものが
+# マージの承認である（.claude/skills/land/SKILL.md）。塞ぐと、承認されたマージまで
+# 実行できなくなる。
+#
+# 以前は /land の起動も承認の記録として扱っていたが、この確認と合わせて承認が 2 回に
+# なっていた。機構で保証しているのはこちらなので、承認をここへ一本化した（#411）。
+# そのため、この確認は省略も自動承認もしない。承認の手段がほかに無くなる。
 #
 # ── なぜ settings.json の permissions.ask で足りないか ────────────────────────
 #
@@ -152,7 +157,7 @@ else
   # パイプは使わずヒアストリングで渡す。grep -q は一致した時点で終了するため、上流を
   # パイプにすると SIGPIPE で pipefail が発火し、一致したのに条件が偽になる経路ができる。
   if grep -qE "${cmd_pos}gh[[:space:]]+pr[[:space:]]+merge${word_end}" <<<"$norm_target"; then
-    reason='gh pr merge をコマンド位置で実行しようとしています。既定の merge 方針は手動承認です。承認の記録を確認してください。'
+    reason='gh pr merge をコマンド位置で実行しようとしています。既定の merge 方針は手動承認で、この確認がその承認です。対象の PR と、直前に示された判定根拠を確かめてから承認してください。'
   else
     # REST 経由の merge。PUT の指定と merge エンドポイントが同じ行にあることを条件に
     # する。GET は「マージ済みか」を調べるだけで状態を変えないため対象にしない。
@@ -169,12 +174,12 @@ else
     if [[ -n "$merge_endpoint_lines" ]] \
       && grep -qE "(--method(=|[[:space:]]+)|-X[[:space:]]*)[Pp][Uu][Tt]${word_end}" \
         <<<"$merge_endpoint_lines"; then
-      reason='PR の merge エンドポイントへ PUT を実行しようとしています（REST 経由の merge）。既定の merge 方針は手動承認です。承認の記録を確認してください。'
+      reason='PR の merge エンドポイントへ PUT を実行しようとしています（REST 経由の merge）。既定の merge 方針は手動承認で、この確認がその承認です。対象の PR と、直前に示された判定根拠を確かめてから承認してください。'
     elif grep -qF 'mergePullRequest' <<<"$norm_target" \
       && grep -qE "${cmd_pos}gh[[:space:]]+api[[:space:]]+graphql${word_end}" <<<"$norm_target"; then
       # graphql だけは行をまたぐ判定にする。クエリはヒアドキュメントや複数行の
       # -f query=... で渡されることがあり、同じ行にあることを条件にすると外れる。
-      reason='gh api graphql から mergePullRequest を実行しようとしています。既定の merge 方針は手動承認です。承認の記録を確認してください。'
+      reason='gh api graphql から mergePullRequest を実行しようとしています。既定の merge 方針は手動承認で、この確認がその承認です。対象の PR と、直前に示された判定根拠を確かめてから承認してください。'
     fi
   fi
 fi

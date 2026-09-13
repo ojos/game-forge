@@ -109,6 +109,16 @@ describe('満杯のあいだの回復は捨てる（8.1 のバケツ。#396 acce
     expect(computeInviteBalance(issued, CAPACITY, at(160)).available).toBe(3);
   });
 
+  it('発行と発行のあいだに満杯へ戻った分も、上限を超えて溜めない', () => {
+    // 0 日目に 1 本使い、30 日目に満杯へ戻る。そのあと 200 日目まで置いた分は捨てる。
+    // **繰り越すと 200 日目に使っても 3 本のまま**に見える（上限を超えて溜まっている）。
+    const issued = [at(0), at(200)];
+    expect(computeInviteBalance(issued, CAPACITY, at(200))).toEqual({
+      available: 2,
+      nextRecoveryAt: at(230),
+    });
+  });
+
   it('1 本戻った後に使っても、戻りかけの分は失われない', () => {
     // 0 日目に 3 本 → 30 日目に 1 本戻る → 45 日目に使う。2 本目の 30 日は 30 日目から
     // 数えているので、45 日目の時点で半分溜まっている——次は 60 日目。

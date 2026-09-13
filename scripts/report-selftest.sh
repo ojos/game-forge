@@ -34,6 +34,7 @@
 #   11. 審査キューの読み出しが、既知の行に対して正しいこと（#40 / #366 / #394）
 #   12. 削除申請の読み出しと、手順書の整合（#41）
 #   13. 参加者の人数と未使用の招待コードの読み出し（#397）
+#   14. 配備が、main の HEAD でなくなったコミットで走らないこと（#427）
 #
 # **この一覧は下の節見出しの写しである。** 節を足したらここへも足すこと——足し忘れると、
 # 冒頭だけを読んだ人が「検査されていない」と思って同じ検査をもう一度書く
@@ -1157,6 +1158,122 @@ fi
 for missing in --format --persist-to; do
   expect_missing_value_exits scripts/invite-stock.sh "$missing"
 done
+
+# ── 14. 配備が、main の HEAD でなくなったコミットで走らないこと（#427）──────────────
+#
+# **2026-09-13、古いコミットの配備が、先に配り終えた新しいコミットの本番を上書きしかけた**
+# （scripts/deploy-is-head.sh の冒頭）。関門は 2 つの部品でできていて、どちらが欠けても外れる。
+#
+#   (a) 判定: scripts/deploy-is-head.sh が HEAD と一致 / 不一致 / 判定できない、を正しく返す
+#   (b) 配線: verify.yml の deploy ジョブで、関門より後ろの**すべての段**が関門の出力を条件に持つ
+#       ——Actions には「段からジョブを成功で終える」手段が無く、**条件を付け忘れた段は古い
+#       コミットでも走る**（段を足した日に付け忘れる種類の依存である）
+#
+# **本物の GitHub には触れない。** 使い捨ての bare リポジトリを「リモート」として、git の
+# ls-remote をそのまま通す。
+echo "[selftest] 配備が main の HEAD でないコミットで走らないこと（#427）"
+
+HEAD_SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/head-selftest.XXXXXX")" || exit 1
+trap 'rm -rf "$SANDBOX" "$KPI_SANDBOX" "$MIG_SANDBOX" "$QUEUE_SANDBOX" "$TD_SANDBOX" "$STOCK_SANDBOX" "$HEAD_SANDBOX"' EXIT
+
+##
+# 使い捨てのリポジトリへ空のコミットを 1 つ積み、リモートの main へ push してハッシュを返す。
+# **このリポジトリの identity を使わない**（コミットは使い捨てで、ここから外へ出ない）。
+#
+# @param $1 コミットの件名
+##
+head_selftest_commit() {
+  git -C "$HEAD_SANDBOX/work" -c user.name=selftest -c user.email=selftest@example.invalid \
+    commit --allow-empty -q -m "$1" >/dev/null 2>&1 || return 1
+  git -C "$HEAD_SANDBOX/work" push -q origin HEAD:refs/heads/main >/dev/null 2>&1 || return 1
+  git -C "$HEAD_SANDBOX/work" rev-parse HEAD
+}
+
+if ! git init -q --bare "$HEAD_SANDBOX/remote.git" >/dev/null 2>&1 \
+   || ! git init -q "$HEAD_SANDBOX/work" >/dev/null 2>&1 \
+   || ! git -C "$HEAD_SANDBOX/work" remote add origin "$HEAD_SANDBOX/remote.git" >/dev/null 2>&1; then
+  echo "  FAIL HEAD の判定用の使い捨てリポジトリを作れません" >&2
+  failed=1
+else
+  old_sha="$(head_selftest_commit first)" || old_sha=""
+  if [[ -z "$old_sha" ]]; then
+    echo "  FAIL HEAD の判定用のコミットを積めません" >&2
+    failed=1
+  else
+    head_out="$(bash scripts/deploy-is-head.sh --remote "$HEAD_SANDBOX/remote.git" --branch main --sha "$old_sha" 2>/dev/null)"
+    expect_eq "HEAD と一致すれば 0"             "0"                "$?"
+    expect_eq "HEAD と一致すれば DEPLOY_IS_HEAD" "DEPLOY_IS_HEAD"   "$(printf '%s\n' "$head_out" | tail -1)"
+
+    new_sha="$(head_selftest_commit second)" || new_sha=""
+    head_out="$(bash scripts/deploy-is-head.sh --remote "$HEAD_SANDBOX/remote.git" --branch main --sha "$old_sha" 2>/dev/null)"
+    expect_eq "HEAD が進んでいても 0（落とさない）"         "0"                 "$?"
+    expect_eq "HEAD が進んでいれば DEPLOY_SUPERSEDED"       "DEPLOY_SUPERSEDED" "$(printf '%s\n' "$head_out" | tail -1)"
+    head_out="$(bash scripts/deploy-is-head.sh --remote "$HEAD_SANDBOX/remote.git" --branch main --sha "$new_sha" 2>/dev/null)"
+    expect_eq "新しい HEAD では DEPLOY_IS_HEAD"             "DEPLOY_IS_HEAD"    "$(printf '%s\n' "$head_out" | tail -1)"
+
+    # **判定できないときは「配る」に倒さない。** 合図を出さずに 2 で落ちる。
+    head_out="$(bash scripts/deploy-is-head.sh --remote "$HEAD_SANDBOX/no-such.git" --branch main --sha "$old_sha" 2>/dev/null)"
+    expect_eq "リモートを読めなければ 2"       "2" "$?"
+    expect_eq "リモートを読めなければ合図を出さない" "" "$(printf '%s\n' "$head_out" | grep -E '^DEPLOY_' || true)"
+    bash scripts/deploy-is-head.sh --remote "$HEAD_SANDBOX/remote.git" --branch no-such --sha "$old_sha" >/dev/null 2>&1
+    expect_eq "ブランチが無ければ 2"           "2" "$?"
+    bash scripts/deploy-is-head.sh --remote "$HEAD_SANDBOX/remote.git" --branch main --sha "abc" >/dev/null 2>&1
+    expect_eq "40 桁でないハッシュは 2"         "2" "$?"
+  fi
+fi
+
+for missing in --remote --branch --sha; do
+  expect_missing_value_exits scripts/deploy-is-head.sh "$missing"
+done
+
+# (b) 配線。deploy ジョブの段を上から読み、段ごとに「関門の段か」「checkout か」「関門の出力を
+# 条件に持つか」を 1 行で出す。**YAML の構文解析器は依存に無い**ので、段の始まり
+# （6 字下げの `- `）と、その段の中の `id:` / `uses:` / `if:` だけを見る。
+WORKFLOW=".github/workflows/verify.yml"
+steps_table="$(awk -v cond="steps.head-gate.outputs.deploy == 'true'" '
+  /^  deploy:[[:space:]]*$/ { in_job = 1; next }
+  in_job && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { in_job = 0 }
+  !in_job { next }
+  /^    steps:[[:space:]]*$/ { in_steps = 1; next }
+  !in_steps { next }
+  /^      - / {
+    if (n > 0) print n "\t" gate "\t" checkout "\t" gated "\t" name
+    n++; gate = 0; checkout = 0; gated = 0; name = $0
+  }
+  /^      (- |  )id: head-gate[[:space:]]*$/ { gate = 1 }
+  /^      (- |  )uses: actions\/checkout@/ { checkout = 1 }
+  /^      (- |  )if: / && index($0, cond) > 0 { gated = 1 }
+  END { if (n > 0) print n "\t" gate "\t" checkout "\t" gated "\t" name }
+' "$WORKFLOW")"
+
+if [[ -z "$steps_table" ]]; then
+  echo "  FAIL ${WORKFLOW} の deploy ジョブの段を読めません" >&2
+  failed=1
+else
+  gate_index="$(awk -F '\t' '$2 == 1 { print $1; exit }' <<<"$steps_table")"
+  if [[ -z "$gate_index" ]]; then
+    echo "  FAIL deploy ジョブに HEAD の関門（id: head-gate）がありません" >&2
+    failed=1
+  else
+    echo "  ok   deploy ジョブに HEAD の関門がある（${gate_index} 段目）"
+    # **関門より前に置いてよいのは checkout だけ**（判定に作業ツリーが要る）。
+    early="$(awk -F '\t' -v g="$gate_index" '$1 < g && $3 != 1 { print $5 }' <<<"$steps_table")"
+    if [[ -z "$early" ]]; then
+      echo "  ok   関門より前にあるのは checkout だけ"
+    else
+      echo "  FAIL 関門より前に checkout 以外の段があります: ${early}" >&2
+      failed=1
+    fi
+    ungated="$(awk -F '\t' -v g="$gate_index" '$1 > g && $4 != 1 { print $5 }' <<<"$steps_table")"
+    later_count="$(awk -F '\t' -v g="$gate_index" '$1 > g' <<<"$steps_table" | wc -l | tr -d ' ')"
+    if [[ "$later_count" -gt 0 && -z "$ungated" ]]; then
+      echo "  ok   関門より後ろの ${later_count} 段すべてが関門の出力を条件に持つ"
+    else
+      echo "  FAIL 関門の出力を条件に持たない段があります（古いコミットでも走ります）: ${ungated:-（後ろの段がありません）}" >&2
+      failed=1
+    fi
+  fi
+fi
 
 if (( failed )); then
   echo "REPORT_SELFTEST_FAIL"

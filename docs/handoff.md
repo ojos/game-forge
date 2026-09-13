@@ -237,7 +237,7 @@ wrangler の SQL 分割が壊れることはありません。**
 項目列挙、`test/page-shell.test.ts` の全画面 × ログイン両状態の照合。**`<form method="post">` の
 ままにすること**（`<a href>` にした瞬間、`<img src>` 1 つで他人をログアウトさせられます）。
 
-#### admin は幅 390px の検査にまだ乗っていません（仕様との不一致・#398）
+#### admin が幅 390px の検査に乗りました（#398。仕様 2.4.5 との不一致を解消）
 
 > **→ #398 で乗りました**（2026-09-13）。`scripts/check-page-width.sh` が admin の 3 画面も 3 幅で開き、
 > admin では 404 を通しません。解き方は `docs/admin-host.md` の「幅 390px の検査に admin が乗った」。

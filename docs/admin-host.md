@@ -593,8 +593,8 @@ for that specific statement, and it aborts or rolls back the entire sequence.」
 
 ### 幅 390px
 
-**`scripts/check-page-width.sh` に admin は乗っていない**（上記「残した穴」は変わっていない）。
-**→ #398 で乗った**（下の「幅 390px の検査に admin が乗った（#398 で塞いだ）」）。**#405 の表も 3 幅で収まっている。**
+**#398 で `scripts/check-page-width.sh` に admin が乗った**（下の「幅 390px の検査に admin が乗った（#398 で塞いだ）」）。
+**#405 の表も 3 幅で収まっている。**（#405 の時点では「admin は乗っていない」と書いていた。）
 増えた塊は行の枠の中に積み、**利用者が書いた値は `overflow-wrap: anywhere` と `white-space: pre-wrap`**
 で折り返す（`public/assets/admin.css`）。
 
@@ -610,7 +610,7 @@ for that specific statement, and it aborts or rolls back the entire sequence.」
 | ログインは通るのに `/` が 404 | ⑥ の `is_admin` が立っていない。または ⑤ の適用漏れ |
 | ログイン後 `/signup` へ飛んで 404 | その Google アカウントに `users` 行が無い（招待が要る）。**先に app ホストでログインして行を作る** |
 | 全ホストが 500 | `ADMIN_HOST` とは無関係（`configuredHost` が未設定を 404 へ倒すため、宣言漏れで 500 にはならない） |
-| 管理画面が急に 404 になった | 本番の `is_admin` が失われた（行の作り直し・誤った UPDATE・復元）。**検査は緑のまま通る**（下記「限界」） |
+| 管理画面が急に 404 になった | 本番の `is_admin` が失われた（行の作り直し・誤った UPDATE・復元）。**検査は緑のまま通る**（下記「限界」）。**#398 で幅の検査は admin の 404 を落とすようになったが、あちらが見るのは使い捨ての D1 に仕込んだ行で、本番の `is_admin` ではない** |
 | 押すと「書き込めませんでした」と出る | **`0026` の適用漏れ**（`admin_actions` が無い）。**状態は動いていない**（batch ごと巻き戻る） |
 | `/actions` だけ 500 | 同上（`admin_actions` が無い） |
 | BAN したのに作品が一覧に出ている | **仕様どおり**（7.3。BAN は露出を止めない）。作品を止めるのは審査キューの操作である |

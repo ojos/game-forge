@@ -6,6 +6,7 @@ import { ACCOUNT_PATH } from '../src/account-paths.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
 import { APP_CSS_PATH } from '../src/html.js';
 import { TAKEDOWN_PATH, TERMS_PATH } from '../src/legal.js';
+import { handleAppRequest } from '../src/app.js';
 import { NON_PAGE_PATHS, ssrPagePaths } from '../src/page-paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from '../src/works-paths.js';
@@ -36,17 +37,13 @@ import { applySchema } from './helpers/schema.js';
  * （足した画面が外枠に乗らない）は運営しか見ない画面でこそ起きやすい**ことである。
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 乗っていない 1 つ（幅 390px の実ブラウザ検査）
+ * 3 つ目（幅 390px の実ブラウザ検査）は #398 で乗った
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **`scripts/check-page-width.sh` は、まだ `app` ホストだけを見る。** あれは
- * `scripts/lib/dev-fixture.sh` が立てる 1 ホスト（`APP_HOST`）へ実ブラウザを向ける形で、
- * admin を乗せるには **2 ホスト目の起動と `is_admin = 1` のセッション**が要る
- * （未ログインでは 404 しか見られない——`check-page-width.sh` は 404 を通すので、
- * **画面の本体を 1 度も開かないまま緑になる。** #330 が実際に踏んだ形である）。
- *
- * **残した穴として `docs/admin-host.md` に書いてある。** この PR の範囲では、
- * admin の 1 枚を 390px で開いた観測を手で取っている（同文書の「幅の検査」）。
+ * **`scripts/check-page-width.sh` は admin の画面も 3 幅で開く。** 一覧は `/__dev/pages` の
+ * `adminPaths` から受け取り（下の「/__dev/pages が admin の一覧を返す」がその口を固定する）、
+ * 仕込む利用者に `is_admin = 1` を立て、**admin では 404 を通さない**（404 は権限が効いて
+ * いないことの現れで、#330 が踏んだ「本体を 1 度も開かずに緑」の形になる）。
  */
 
 const ADMIN_ORIGIN = `https://${env.ADMIN_HOST}`;
@@ -155,6 +152,24 @@ describe('admin の画面一覧の導出（2.4.5）', () => {
       }
     }
     expect(notHtml).toEqual([]);
+  });
+
+  it('/__dev/pages が admin の一覧を返し、ここの導出と一致する（幅の検査が受け取る口。#398）', async () => {
+    // **`scripts/check-page-width.sh` はこの口から admin の画面を受け取る**（シェルから
+    // 経路表は読めない）。口が admin の一覧を返さなくなると、幅の検査は admin を 1 枚も
+    // 開かなくなる——あちらも空を落とすが、**どの層で壊れたかをここで先に言う。**
+    const response = await handleAppRequest(
+      new Request(`https://${env.APP_HOST}/__dev/pages`),
+      testEnv(),
+    );
+    expect(response.status).toBe(200);
+    const { paths, adminPaths } = (await response.json()) as {
+      paths: string[];
+      adminPaths: string[];
+    };
+    expect(adminPaths).toEqual(getPaths());
+    // **app の一覧を admin として返していない**ことも見る（取り違えても件数だけなら通る）。
+    expect(paths).not.toEqual(adminPaths);
   });
 
   it('画面は 404 ではなく本体を開いている', async () => {
@@ -291,8 +306,10 @@ describe('admin の外枠が app の行き先を持たない（2.4 の constrain
 });
 
 describe('狭い端末で崩れる書き方をしていない（幅 390px の代理検査）', () => {
-  // **実ブラウザの検査（`scripts/check-page-width.sh`）に admin は乗っていない**
-  // （このファイルの冒頭）。**代理検査は本物の代わりにならない**——#282 の 2 件目は
+  // **実ブラウザの検査（`scripts/check-page-width.sh`）にも admin は乗っている**（#398。
+  // このファイルの冒頭）。それでもここを残すのは、**実ブラウザの検査が単一入口
+  // （`scripts/verify.sh`）に入っていない**ためである（ブラウザの実行ファイルを前提にする）。
+  // **代理検査は本物の代わりにならない**——#282 の 2 件目は
   // 機械的な代理検査を全部すり抜けた。ここで見るのは、**そのとき原因になった 1 つの
   // 書き方**だけである（`size` / `cols` 属性が layout viewport を広げる）。
   it('input の size / textarea の cols を使っていない', async () => {

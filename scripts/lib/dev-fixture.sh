@@ -14,10 +14,12 @@
 #
 #   BROWSER_BIN         ブラウザの実行ファイル
 #   BASE                https://<APP_HOST>:<PORT>
+#   ADMIN_BASE          https://<ADMIN_HOST>:<PORT>（同じ dev サーバ。`src/index.ts` がホストで振り分ける）
 #   COOKIE_VALUE        `__Host-gf_session` の値
 #   GAME_ID             仕込んだ draft の作品の id（`/works/` の続きに使う）
 #   PUBLISHED_GAME_ID   仕込んだ公開済みの作品の id（カードが並ぶ画面のため）
-#   USER_ID             仕込んだ利用者の id（`/users/` の続きに使う）
+#   USER_ID             仕込んだ利用者の id（`/users/` の続きに使う）。**`is_admin = 1` を立ててある**
+#                       （admin の画面を 404 でなく本体で開くため。#398）
 #   WORK                使い捨ての作業場
 #
 # ══════════════════════════════════════════════════════════════════════════════
@@ -91,6 +93,9 @@ dev_fixture_up() {
   # 検査だけが古いホストを見続ける（shared-ai-rules.md 12 章）。
   APP_HOST="$(sed -nE 's/^[[:space:]]*APP_HOST[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' wrangler.toml | head -1)"
   [[ -n "$APP_HOST" ]] || fail "wrangler.toml から APP_HOST を読めませんでした。"
+  # admin も同じ宣言から読む（#398）。**先頭の 1 つが開発の値である**（APP_HOST と同じ並び）。
+  ADMIN_HOST="$(sed -nE 's/^[[:space:]]*ADMIN_HOST[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' wrangler.toml | head -1)"
+  [[ -n "$ADMIN_HOST" ]] || fail "wrangler.toml から ADMIN_HOST を読めませんでした。"
 
   # ── 使い捨ての作業場 ──────────────────────────────────────────────────────────
   #
@@ -126,7 +131,17 @@ dev_fixture_up() {
   # まさにその格子である。
   PUBLISHED_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
 
-  note "seeding a user and two games (draft + published)"
+  # **admin の画面が「測る対象」を持つように、審査キューと履歴へ 1 行ずつ仕込む**（#398）。
+  # 空のままだと、審査キューの表も履歴の表も「まだありません」の 1 文になり、**狭い端末で
+  # 崩れうる行（題名・理由の入力・ボタン）を 1 度も測らないまま緑になる**——公開済みの
+  # 作品を仕込んだ理由（上）と同じ形である。
+  #
+  # **審査キューの作品は、上の 2 件とは別に作る。** 公開済みの作品を `queued` にすると、
+  # 新規露出の面（トップ・公開一覧）から消え、**`.gf-cards` の格子を測れなくなる。**
+  # 題名は 1 行に収まらない長さにする（行が折り返したときの高さと幅を測るため）。
+  QUEUED_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
+
+  note "seeding an admin user, three games (draft + published + queued), a report and a history row"
   npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     insert into users (id, google_sub, email, display_name, created_at)
       values ('$USER_ID', 'sub-$USER_ID', '$USER_ID@example.invalid', '幅の検査', 1);
@@ -136,6 +151,17 @@ dev_fixture_up() {
                        generation_state, preview_key, like_count)
       values ('$PUBLISHED_GAME_ID', '$USER_ID', 'published', '幅の検査の公開作品', '', 1, 1,
               'ready', 'width-check-preview', 3);
+    update users set is_admin = 1 where id = '$USER_ID';
+    insert into games (id, author_id, status, title, go_version, created_at, published_at,
+                       generation_state, preview_key, review_state)
+      values ('$QUEUED_GAME_ID', '$USER_ID', 'published',
+              '幅の検査の審査キューに入っている作品で、題名が 1 行に収まらない長さになっているもの', '', 1, 1,
+              'ready', 'width-check-queued', 'queued');
+    insert into reports (id, game_id, reporter_id, reason, created_at)
+      values ('width-check-report', '$QUEUED_GAME_ID', '$USER_ID', '幅の検査の通報', 2);
+    insert into admin_actions (id, actor_id, created_at, action, target_kind, target_id, reason)
+      values ('width-check-action', '$USER_ID', 3, 'review-queued', 'game', '$QUEUED_GAME_ID',
+              '幅の検査の履歴の理由');
   " >"$WORK/seed.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/seed.log" >&2; fail "検査用の行を作れませんでした。"; }
 
@@ -175,6 +201,7 @@ dev_fixture_up() {
   set +m
 
   BASE="https://${APP_HOST}:${GF_FIXTURE_PORT}"
+  ADMIN_BASE="https://${ADMIN_HOST}:${GF_FIXTURE_PORT}"
 
   # 起動を待つ。**固定の sleep にしない**——遅い環境で「起動前に叩いて赤」になると、
   # 実装の問題と区別できない。
@@ -268,4 +295,40 @@ const filled = paths.map((path) => {
 });
 console.log(filled.join(","));
 ' "$WORK/pages.json" "$GAME_ID" "$USER_ID" || fail "画面の一覧を読めませんでした。"
+}
+
+##
+# admin ホストの SSR 画面のパスを受け取る（`/__dev/pages` の `adminPaths`。2.4.5 / #398）。
+#
+# **口は app ホストの `/__dev/pages` を使う。** admin ホストに診断経路は置いていない
+# （`src/app.ts` の `/__dev/pages` の注記）。**`dev_fixture_paths` を先に呼んでおくこと**
+# ——取得した JSON を使い回す。
+#
+# **admin にはまだ前方一致の経路が無い。** 来たら黙って裸の接頭辞を返さず落とす
+# （`test/admin-page-shell.test.ts` の getPaths と同じ規律）。
+#
+# @return カンマ区切りのパス（標準出力）
+#
+dev_fixture_admin_paths() {
+  [[ -f "$WORK/pages.json" ]] || fail "dev_fixture_paths を先に呼んでください（/__dev/pages を取得していません）。"
+
+  node -e '
+const fs = require("node:fs");
+const { adminPaths } = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (!Array.isArray(adminPaths) || adminPaths.length === 0) {
+  console.error("/__dev/pages が admin の画面のパスを返しませんでした（adminPaths）");
+  process.exit(1);
+}
+for (const path of adminPaths) {
+  if (path.endsWith("/") && path !== "/") {
+    console.error(
+      `admin の前方一致の経路 ${path} に補う id が決まっていません。` +
+        "scripts/lib/dev-fixture.sh の dev_fixture_admin_paths と" +
+        " test/admin-page-shell.test.ts の getPaths の両方へ足してください。",
+    );
+    process.exit(1);
+  }
+}
+console.log(adminPaths.join(","));
+' "$WORK/pages.json" || fail "admin の画面の一覧を読めませんでした。"
 }

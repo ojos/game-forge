@@ -4,6 +4,7 @@
  * M0.5-3 の範囲は「環境が動くこと」の確認に限る。D1 のスキーマ（5.1 の 5 テーブル）は
  * M1-1 が所有するため、ここでは**スキーマに依存しない疎通確認**だけを行う。
  */
+import { createAdminRoutes } from './admin/routes.js';
 import { authRoutes } from './auth/google.js';
 import { accountRoutes } from './account.js';
 import { describeOriginRelation } from './origins.js';
@@ -204,7 +205,7 @@ const devRoutes: readonly Route[] = [
   <li><a href="/">/</a> — 公開トップ</li>
   <li><a href="/__dev/health">/__dev/health</a> — D1 / R2 の疎通</li>
   <li><a href="/__dev/session">/__dev/session</a> — <code>${DEV_SESSION_COOKIE}</code> を発行</li>
-  <li><a href="/__dev/pages">/__dev/pages</a> — SSR 画面のパス一覧（#282）</li>
+  <li><a href="/__dev/pages">/__dev/pages</a> — SSR 画面のパス一覧（app と admin。#282 / #398）</li>
   <li><a href="/__dev/cookies">/__dev/cookies</a> — 届いた cookie 名の一覧</li>
 </ul>`),
   },
@@ -258,7 +259,17 @@ const devRoutes: readonly Route[] = [
     //
     // **`devRoutes` に置くので本番には出ない。** 経路表の形を外へ晒す口を、
     // 本番で開けたままにしない。
-    handler: (_request, env) => json({ paths: ssrPagePaths(createAppRoutes(env)) }),
+    //
+    // **admin の画面の一覧も同じ口から返す**（`adminPaths`。2.4.5 / #398）。admin ホストに
+    // 診断経路は置いていない（`docs/admin-host.md`）——**置くと、`is_admin` の境界の外に
+    // 経路を 1 本増やすことになる。** 導出はホストを知らない `ssrPagePaths` へ admin の
+    // 経路表を渡すだけで（`src/page-paths.ts` の「導出はホストで分けない」）、ここに
+    // 置いても admin の側へ何も漏れない。
+    handler: (_request, env) =>
+      json({
+        paths: ssrPagePaths(createAppRoutes(env)),
+        adminPaths: ssrPagePaths(createAdminRoutes()),
+      }),
   },
   {
     method: 'GET',

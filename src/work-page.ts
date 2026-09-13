@@ -2865,7 +2865,9 @@ async function readGameTagsTarget(request: Request): Promise<GameTagsTarget> {
       const record =
         typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
       rawId = record[WORK_RETAG_GAME_ID_FIELD];
-      rawTags = record[WORK_TAG_FIELD] ?? [];
+      // **項目が無い（`undefined`）ときだけタグを外す。`null` は下で形の誤りとして断る**
+      // （`src/publish.ts` と同じ。PR #419 の Copilot レビュー）。
+      rawTags = record[WORK_TAG_FIELD] === undefined ? [] : record[WORK_TAG_FIELD];
     } catch {
       return { ok: false, reason: 'invalid-game-id' };
     }

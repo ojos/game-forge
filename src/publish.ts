@@ -306,7 +306,9 @@ async function readGameId(request: Request): Promise<GameIdResult> {
         typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
       raw = record[PUBLISH_GAME_ID_FIELD];
       // **項目ごと無ければタグ無し**（JSON から公開する既存の呼び出しを壊さない）。
-      rawTags = record[WORK_TAG_FIELD] ?? [];
+      // **`null` は「無い」に畳まない**（PR #419 の Copilot レビュー）。`?? []` にすると
+      // `{"tag": null}` がタグ無しとして通る——配列でない値は下で形の誤りとして断る。
+      rawTags = record[WORK_TAG_FIELD] === undefined ? [] : record[WORK_TAG_FIELD];
     } catch {
       return { ok: false, reason: 'invalid-game-id' };
     }

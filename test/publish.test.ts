@@ -567,6 +567,39 @@ describe('公開のときにタグを選ぶ（#376 / 5.4）', () => {
     expect((await readGame(id)).status).toBe('draft');
   });
 
+  it('JSON の tag が null なら断り、項目が無ければタグ無しで通る（PR #419 のレビュー）', async () => {
+    const spy = captureSpy();
+    const post = async (id: string, userId: string, body: Record<string, unknown>): Promise<Response> =>
+      await dispatch(
+        createPublishRoutes(spy.start),
+        new Request(`${APP_ORIGIN}${PUBLISH_PATH}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie: await sessionCookie(userId) },
+          body: JSON.stringify(body),
+        }),
+        testEnv(),
+      );
+
+    // **`null` を「項目が無い」と同じに扱わない。** 公開もせず、D1 に何も書かない。
+    const nulled = await seedReadyGame('tags-null');
+    const refused = await post(nulled.id, nulled.userId, {
+      [PUBLISH_GAME_ID_FIELD]: nulled.id,
+      [WORK_TAG_FIELD]: null,
+    });
+    expect(refused.status).toBe(400);
+    const row = await readGame(nulled.id);
+    expect(row.status).toBe('draft');
+    expect(row.published_at).toBeNull();
+    expect(await tagSlotsOf(nulled.id)).toEqual([null, null, null]);
+    expect(spy.calls).toEqual([]);
+
+    // 対照: 項目ごと無ければ、今までどおりタグ無しで公開される。
+    const absent = await seedReadyGame('tags-absent');
+    expect((await post(absent.id, absent.userId, { [PUBLISH_GAME_ID_FIELD]: absent.id })).status).toBe(200);
+    expect((await readGame(absent.id)).status).toBe('published');
+    expect(await tagSlotsOf(absent.id)).toEqual([null, null, null]);
+  });
+
   it('二度押しの 2 回目は、別のタグを運んでいてもタグを上書きしない', async () => {
     // **公開の遷移とタグを同じ UPDATE に置いた理由そのもの**（`src/games.ts` の `publishGame`）。
     // 2 回目は `status = 'draft'` で 0 行になり、タグにも触らない。

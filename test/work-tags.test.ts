@@ -448,6 +448,32 @@ describe('付け直せるのは公開済みの作品の作者だけである（#
     expect(notArray.status).toBe(400);
     expect((await slotsOf(id)).tag1).toBe('shooting');
   });
+
+  it('JSON の tag が null なら断ってタグを外さず、項目が無ければタグを外す（PR #419 のレビュー）', async () => {
+    const { userId, id } = await seedPublished('json-null-retag', ['idle', 'puzzle']);
+    const cookie = await sessionCookie(userId);
+    const post = async (body: unknown): Promise<Response> =>
+      await dispatch(
+        workPageRoutes,
+        new Request(`${APP_ORIGIN}${WORK_RETAG_PATH}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie },
+          body: JSON.stringify(body),
+        }),
+        testEnv(),
+      );
+
+    // **`null` を「項目が無い」と同じに扱わない**——扱うと、壊れた要求がタグを全部外す。
+    const refused = await post({ [WORK_RETAG_GAME_ID_FIELD]: id, [WORK_TAG_FIELD]: null });
+    expect(refused.status).toBe(400);
+    expect(await slotsOf(id)).toEqual({ tag1: 'puzzle', tag2: 'idle', tag3: null, tags_set_at: null });
+
+    // 対照: 項目ごと無ければタグを外す（チェックを全部外したフォームと同じ意味）。
+    const cleared = await post({ [WORK_RETAG_GAME_ID_FIELD]: id });
+    expect(cleared.status).toBe(200);
+    const slots = await slotsOf(id);
+    expect([slots.tag1, slots.tag2, slots.tag3]).toEqual([null, null, null]);
+  });
 });
 
 describe('付け直しの間隔と、同じ組の入れ直し（#376 / 3.6）', () => {

@@ -32,6 +32,7 @@ import { INVITE_RECOVERY_DAYS, computeInviteBalance } from './invite-balance.js'
 import { formatInviteCode, isInviteExpired } from './invite-code.js';
 import type { InviteRecord } from './invites.js';
 import { issueInvite, listIssuedInvites } from './invites.js';
+import { participantCapReached, PARTICIPANT_CAP } from './participant-cap.js';
 import { inviteQuotaHalted } from './reports.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, json } from './routes.js';
@@ -39,7 +40,7 @@ import { resolveSessionUser } from './session-user.js';
 import { escapeHtml, siteHead, siteViewerAt } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { HOME_PATH } from './home.js';
-import { INVITES_PATH } from './paths.js';
+import { INVITES_PATH, SIGNUP_PATH } from './paths.js';
 import { loginRequiredRedirect } from './auth/google.js';
 
 /**
@@ -60,7 +61,7 @@ import { loginRequiredRedirect } from './auth/google.js';
  * （2.1）では、3 本 × 招待の連鎖で十分に広がる。
  *
  * **戻る速さだけでは費用の上限を守れない**（全員が使えば人数は倍々に増える。8.1 の試算）。
- * 全体の人数の上限（50 人）は M11-3（#397）が持つ。
+ * 全体の人数の上限は `src/participant-cap.ts`（#397）が持つ。
  */
 export const INVITE_QUOTA = 3;
 
@@ -85,11 +86,66 @@ const REASON_MESSAGES: Readonly<Record<string, string>> = {
   // ——利用者にできることが違う（使い切った枠は待てば戻るが、こちらは運用の判断による）。
   'quota-halted':
     '招待枠を停止しています。招待した方の利用が停止されたためです。お心当たりがない場合はお問い合わせください。',
+  // 8.1 の人数の上限（#397）。**利用者にできることが違う**——自分の枠でも自分の招待でもなく、
+  // サービス全体の状態である。招待したい相手には待機リストを案内してもらう（画面の本文が導く）。
+  'participant-cap': `参加者が上限（${PARTICIPANT_CAP} 人）に達したため、いまは招待を発行できません。`,
   failed: '招待を発行できませんでした。時間をおいて試してください。',
 };
 
 /** 既定の文言。未知の `reason` を受けたときに使う。 */
 const DEFAULT_REASON_MESSAGE = '招待を発行できませんでした。';
+
+/**
+ * 招待を発行できない理由のうち、**本人の残高によらないもの**。
+ *
+ * - `participant-cap`: 参加者が上限に達した（8.1 / #397）
+ * - `quota-halted`: 招待した相手が BAN され、招待枠が止まっている（7.3 / #40）
+ */
+type IssuanceHalt = 'participant-cap' | 'quota-halted';
+
+/**
+ * 発行を止める理由があるかを調べる（画面・一覧の API・発行の口が同じものを使う）。
+ *
+ * **3 か所で別々に判定しない。** 画面だけがこれを見ないと、押しても必ず断られるボタンが出る
+ * （#396 までは停止中の画面がそうだった）。口だけが見ないと、画面が隠したものを直接の POST が通す。
+ *
+ * **人数の上限を先に見る。** どちらも発行を止めるが、上限はサービス全体の状態で、画面は
+ * 待機リストへの導線を出す必要がある。停止のほうは、本人に関わる運用の判断である。
+ * 2 本の読み取りは独立しているので並べて送る。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 発行しようとしている利用者
+ * @returns 止める理由。無ければ null
+ * @throws D1 の失敗
+ */
+async function issuanceHalt(env: Env, userId: string): Promise<IssuanceHalt | null> {
+  const [capReached, halted] = await Promise.all([
+    participantCapReached(env.DB),
+    inviteQuotaHalted(env, userId),
+  ]);
+  if (capReached) {
+    return 'participant-cap';
+  }
+  return halted ? 'quota-halted' : null;
+}
+
+/**
+ * 発行を止めている理由を、画面の本文として組み立てる。
+ *
+ * **人数の上限では、待機リストへの導線を出す**（8.1 / #397）。招待を渡せない相手が次に
+ * 取れる行動は、登録の画面から待機リストに登録することだけである。
+ *
+ * @param halt 止めている理由
+ * @returns HTML の断片
+ */
+function haltNotice(halt: IssuanceHalt): string {
+  if (halt === 'participant-cap') {
+    return `<p class="gf-notice"><strong>参加者が上限（${PARTICIPANT_CAP} 人）に達したため、いまは招待を発行できません。</strong>
+   招待したい方には、<a href="${SIGNUP_PATH}">登録の画面</a>から待機リストに登録してもらってください。
+   枠が空いたらご連絡します。</p>`;
+  }
+  return `<p class="gf-notice">${escapeHtml(reasonMessage(halt))}</p>`;
+}
 
 /** 招待 1 本の表示用の状態。 */
 type InviteState = '未使用' | '使用済み' | '期限切れ';
@@ -154,12 +210,14 @@ function balanceLine(balance: InviteBalance): string {
  *
  * @param invites 自分が発行した招待（コード順）
  * @param message 画面上部に出す文言（無ければ null）
+ * @param halt 発行を止めている理由（無ければ null）
  * @param nowSeconds 現在時刻（UNIX 秒）
  * @returns HTML
  */
 function invitePage(
   invites: readonly InviteRecord[],
   message: string | null,
+  halt: IssuanceHalt | null,
   nowSeconds: number,
 ): string {
   // 文言は上の対応表から選んだ固定文字列だが、`escapeHtml` を通しておく
@@ -168,14 +226,17 @@ function invitePage(
 
   const balance = balanceOf(invites, nowSeconds);
 
-  // 枠が残っているときだけフォームを出す。押しても必ず断られるボタンを出すと、
-  // 利用者から見て「壊れている」ことと「枠が無い」ことの区別がつかない。
+  // 発行できるときだけフォームを出す。押しても必ず断られるボタンを出すと、
+  // 利用者から見て「壊れている」ことと「枠が無い」ことの区別がつかない（4.4）。
+  // **止めている理由を、枠の残りより先に見る**——枠が残っていても、上限や停止では断られる。
   const form =
-    balance.available > 0
-      ? `<form method="post" action="${INVITES_API_PATH}">
+    halt !== null
+      ? haltNotice(halt)
+      : balance.available > 0
+        ? `<form method="post" action="${INVITES_API_PATH}">
   <button type="submit">招待コードを 1 本発行する</button>
 </form>`
-      : '<p>招待枠を使い切りました。</p>';
+        : '<p>招待枠を使い切りました。</p>';
 
   // コードは正規形（英数字のみ）だが、`escapeHtml` を通す。ここが D1 から来る値を
   // HTML へ入れる唯一の場所であり、「中身は安全なはず」を根拠にしない。
@@ -265,12 +326,17 @@ const showInvitePage: RouteHandler = async (request, env) => {
     return await loginRequiredRedirect(env, INVITES_PATH);
   }
 
-  const invites = await listIssuedInvites(env.DB, session.userId);
+  const [invites, halt] = await Promise.all([
+    listIssuedInvites(env.DB, session.userId),
+    issuanceHalt(env, session.userId),
+  ]);
   const reason = new URL(request.url).searchParams.get('reason');
-  const message = reason === null ? null : reasonMessage(reason);
+  // 断られた理由が、いま止めている理由と同じなら上部の文言を出さない。本文（`haltNotice`）が
+  // 同じことを言っており、2 回並ぶだけになる。
+  const message = reason === null || reason === halt ? null : reasonMessage(reason);
   // 失敗の後始末で開かれた画面には、失敗のステータスを付ける（`src/signup.ts` の
   // `GET /signup?reason=` と同じ扱い）。成功したかのようにログへ残さない。
-  return html(invitePage(invites, message, nowSeconds()), reason === null ? 200 : 400);
+  return html(invitePage(invites, message, halt, nowSeconds()), reason === null ? 200 : 400);
 };
 
 /**
@@ -280,7 +346,9 @@ const showInvitePage: RouteHandler = async (request, env) => {
  * （`balanceOf`）。
  *
  * `quota` は**溜まる上限**（#396 より前は発行の総数）、`remaining` は**いま発行できる本数**、
- * `nextRecoveryAt` は次の 1 本が戻る時刻（UNIX 秒。満杯なら null）である。
+ * `nextRecoveryAt` は次の 1 本が戻る時刻（UNIX 秒。満杯なら null）、`halt` は残高によらず
+ * 発行を止めている理由（`participant-cap` / `quota-halted`。無ければ null。#397）である。
+ * **`halt` があるとき、`remaining` が 1 以上でも発行は断られる。**
  *
  * **`used_by` をそのまま返さない。** 誰が使ったかは招待者に見える情報だが、返すのは
  * 他人の `users.id` そのものであり、この画面が必要としているのは「使われたかどうか」
@@ -296,7 +364,10 @@ const listInvites: RouteHandler = async (request, env) => {
     return json({ error: 'unauthorized' }, 401);
   }
 
-  const invites = await listIssuedInvites(env.DB, session.userId);
+  const [invites, halt] = await Promise.all([
+    listIssuedInvites(env.DB, session.userId),
+    issuanceHalt(env, session.userId),
+  ]);
   const now = nowSeconds();
   const balance = balanceOf(invites, now);
   return json({
@@ -304,6 +375,7 @@ const listInvites: RouteHandler = async (request, env) => {
     issued: invites.length,
     remaining: balance.available,
     nextRecoveryAt: balance.nextRecoveryAt,
+    halt,
     invites: invites.map((invite) => ({
       code: invite.code,
       state: inviteState(invite, now),
@@ -341,10 +413,19 @@ const handleIssueInvite: RouteHandler = async (request, env) => {
   }
 
   try {
+    const halt = await issuanceHalt(env, session.userId);
+    if (halt === 'participant-cap') {
+      // 8.1 の人数の上限（#397）。**行を作らずに断る。** 409 を使う——待っても解けない
+      // （人数は減らない。上限を見直すのは運営の判断である）ので、429 ではない。
+      // **判定は INSERT に閉じ込めない**（緩い締め切り。`src/participant-cap.ts`）。
+      return asHtml
+        ? seeOther(`${INVITES_PATH}?reason=participant-cap`)
+        : json({ error: 'participant-cap', cap: PARTICIPANT_CAP }, 409);
+    }
     // 7.3 の招待枠の停止（#40）。**`issueInvite` は枠を引数で受ける**ので、
     // 止めることは「0 を渡す」ことに等しい。**別の分岐を足さない**——枠の判定を
     // INSERT の `WHERE` に閉じ込めた設計（`src/invites.ts`）がそのまま効く。
-    const halted = await inviteQuotaHalted(env, session.userId);
+    const halted = halt === 'quota-halted';
     const quota = halted ? 0 : INVITE_QUOTA;
     const now = nowSeconds();
     const issued = await issueInvite(env.DB, session.userId, quota, null, now);

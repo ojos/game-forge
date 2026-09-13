@@ -34,7 +34,6 @@ import {
   TAKEDOWN_THANKS_PATH,
   TERMS_PATH,
 } from './legal-paths.js';
-import { HOME_PATH } from './paths.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from './service-contact.js';
 import { MAX_BODY_LENGTH, MAX_CLAIMANT_LENGTH } from './takedown.js';
 
@@ -112,6 +111,9 @@ export const FOOTER_CONTACT_ITEMS: readonly NavItem[] = [
  * フッタが持っていたのは、ヘッダがサービス名 1 行だけだった時期の名残である。
  * 同じ行き先への導線を 1 画面に 2 つ置かない。
  *
+ * **だからフッタのロゴ（#440）はリンクにしない。** 置くのはサービスの印としての画像だけで、
+ * `/` への導線はヘッダのロゴが持つ（PR #442 の Copilot code review）。
+ *
  * @returns HTML
  */
 export function siteFooter(): string {
@@ -124,7 +126,7 @@ export function siteFooter(): string {
   return `
 <hr>
 <footer class="gf-footer">
-  <a class="gf-footer-logo" href="${HOME_PATH}">${siteLogo()}</a>
+  <div class="gf-footer-logo">${siteLogo()}</div>
   <nav class="gf-footer-nav" aria-label="フッタの行き先">
 ${sections.join('\n')}
   </nav>

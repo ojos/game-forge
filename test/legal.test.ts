@@ -141,10 +141,10 @@ describe('規約に、仕様が名指しした条項が含まれている（5.6 
     // **著作権表示は同梱の NOTICE と同じ綴り**（書き写しがずれると表示の意味が無くなる）。
     expect(LOGO_FONT_NOTICE).toContain('Copyright 2020 The DotGothic16 Project Authors');
     expect(LOGO_FONT_NOTICE).toContain('SIL Open Font License 1.1');
-    const notice = body.indexOf(LOGO_FONT_NOTICE);
-    const lastSection = body.lastIndexOf('<h2>');
-    expect(notice, '最後の見出しの後にある').toBeGreaterThan(lastSection);
-    expect(notice, 'フッタより前にある').toBeLessThan(body.indexOf('<footer class="gf-footer">'));
+    // **フッタより前の本文だけで見る。** フッタも区画の見出しに <h2> を使う（PR #442 の Copilot code review）。
+    const main = body.slice(0, body.indexOf('<footer class="gf-footer">'));
+    expect(main, 'フッタより前にある').toContain(LOGO_FONT_NOTICE);
+    expect(main.indexOf(LOGO_FONT_NOTICE), '本文の最後の見出しの後にある').toBeGreaterThan(main.lastIndexOf('<h2'));
   });
 
   it('生成物の正確性についての通知がある', async () => {

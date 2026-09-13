@@ -121,15 +121,20 @@ if [[ -f tools/logobake/main.mjs ]]; then
   node tools/logobake/main.mjs --check
   echo "[acceptance] (logo) node --test tools/logobake/logobake.node-test.mjs"
   node --test tools/logobake/logobake.node-test.mjs
-  # **サイトが配る写し（public/assets/logo/）が正本と一致すること**（#440）。上の --check は
-  # brand/logo/ しか見ないので、書き出し直して写し忘れるとサイトだけが古いロゴのまま残る
-  # （判定と理由は scripts/check-logo-copies.sh の冒頭）。
-  echo "[acceptance] (logo) scripts/check-logo-copies.sh"
-  bash scripts/check-logo-copies.sh
   ran_any=1
 else
   echo "[acceptance] (logo) skip: tools/logobake/main.mjs not found"
 fi
+
+# **サイトが配るロゴの写し（public/assets/logo/）が正本と一致すること**（#440）。上の --check は
+# brand/logo/ しか見ないので、書き出し直して写し忘れるとサイトだけが古いロゴのまま残る
+# （判定と理由は scripts/check-logo-copies.sh の冒頭）。
+#
+# **生成器の有無で分岐させない**（PR #442 の Copilot code review）。写しは全画面のヘッダが参照する
+# 配信物で、生成器が無くても配られる。**不在は検査の側が落とす**（app.css の検査と同じ扱い）。
+# ran_any は立てない（上の app.css の検査と同じ理由）。
+echo "[acceptance] (logo) scripts/check-logo-copies.sh"
+bash scripts/check-logo-copies.sh
 
 # 基盤のリトライが 0 と宣言されていること（#160 / 4.3）。
 #

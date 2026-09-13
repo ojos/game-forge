@@ -1594,9 +1594,12 @@ a.gf-card-author {
   margin: 0;
 }
 
-/* フッタの先頭のロゴ（#440）。区画の並び（下の `.gf-footer-nav`）とは行を分ける。 */
+/*
+ * フッタの先頭のロゴ（#440）。区画の並び（下の `.gf-footer-nav`）とは行を分ける。
+ * **リンクにしない**——`/` への導線はヘッダのロゴが持つ（`src/legal.ts` の `siteFooter`「トップへを持たない」）。
+ */
 .gf-footer-logo {
-  display: inline-block;
+  display: block;
   margin-bottom: var(--gf-gap-3);
 }
 

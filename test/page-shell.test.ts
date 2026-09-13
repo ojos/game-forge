@@ -409,7 +409,7 @@ describe('全 SSR 画面の外枠', () => {
     }
   });
 
-  it('どの画面のヘッダとフッタにも、トップへのリンクとしてロゴの画像が 1 つずつある（#440）', async () => {
+  it('どの画面のヘッダにもトップへのリンクとして、フッタにも画像として、ロゴが 1 つずつある（#440）', async () => {
     for (const path of getPaths()) {
       const { body } = await open(path);
       const header = headerOf(body);
@@ -421,9 +421,9 @@ describe('全 SSR 画面の外枠', () => {
       expect(header, `${path} のヘッダのロゴはトップへのリンク`).toContain(
         `<a class="gf-header-logo" href="${HOME_PATH}">${siteLogo()}</a>`,
       );
-      expect(footer, `${path} のフッタのロゴはトップへのリンク`).toContain(
-        `<a class="gf-footer-logo" href="${HOME_PATH}">${siteLogo()}</a>`,
-      );
+      // **フッタのロゴはリンクにしない**（`src/legal.ts` の `siteFooter`「トップへを持たない」）。
+      expect(footer, `${path} のフッタのロゴは画像だけ`).toContain(`<div class="gf-footer-logo">${siteLogo()}</div>`);
+      expect(footer, `${path} のフッタにトップへのリンクが無い`).not.toContain(`href="${HOME_PATH}"`);
     }
   });
 

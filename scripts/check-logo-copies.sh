@@ -32,7 +32,6 @@ cd "$(dirname "$HERE")"
 
 HTML_TS="src/html.ts"
 SOURCE_DIR="brand/logo/lockup-horizontal"
-COPY_DIR="public/assets/logo"
 
 fail() {
   echo "[logo-copies] $1" >&2
@@ -41,7 +40,13 @@ fail() {
 
 [[ -f "$HTML_TS" ]] || fail "照合の対象がありません: $HTML_TS（見ていないことを合格にしない）"
 [[ -d "$SOURCE_DIR" ]] || fail "正本がありません: $SOURCE_DIR"
-[[ -d "$COPY_DIR" ]] || fail "写しがありません: $COPY_DIR"
+
+# **写しの置き場は `src/html.ts` の `LOGO_DIR` から導く**（書き写さない。PR #442 の Copilot code review）。
+# 固定の綴りにすると、`LOGO_DIR` を変えた日に、配っていないディレクトリを照合し続けて合格にする。
+logo_dir="$(grep -E "^export const LOGO_DIR = '/[^']+';" "$HTML_TS" | sed -E "s/^[^']*'([^']+)'.*/\1/" || true)"
+[[ -n "$logo_dir" ]] || fail "$HTML_TS に LOGO_DIR が見つかりません"
+COPY_DIR="public${logo_dir}"
+[[ -d "$COPY_DIR" ]] || fail "写しがありません: $COPY_DIR（LOGO_DIR = $logo_dir）"
 
 # `export const LOGO_SCALES = [1, 2, 4] as const;` から倍率を取り出す。
 scales_line="$(grep -E '^export const LOGO_SCALES = \[' "$HTML_TS" || true)"

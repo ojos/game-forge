@@ -283,16 +283,24 @@ async function showTakedowns(request: Request, env: Env): Promise<Response> {
   const rows = await listTakedowns(env);
   const outcome = new URL(request.url).searchParams.get(ADMIN_OUTCOME_QUERY);
   const pending = rows.filter((row) => row.handled_at === null).length;
+  // **日本語の文の途中で HTML を改行しない。** ブラウザは改行を空白 1 つとして描くので、
+  // 「措置は 上書きしません」のように文節の途中に隙間が出る（本番の画面で見つかった）。
+  // ソースの行を短く保ちたいときは、テンプレートの外で文字列を連結する。
+  const intro =
+    '<p><strong>申請は主張であって、認定ではありません。</strong>届いただけでは作品は動きません。' +
+    '読んで判断し、採った措置を記録してください（仕様 8.4 / <code>docs/takedown.md</code>）。</p>';
+  const caution =
+    '<p>申請者の氏名・連絡先・本文は<strong>検証していない値</strong>です。' +
+    '<strong>1 度記録した措置は上書きしません。</strong>' +
+    '「削除」を記録しても作品は取り下げられません——取り下げは戻せない操作なので、' +
+    'この画面に置いていません（仕様 2.4.3）。</p>';
 
   return html(
     `${adminHead('削除申請')}
 <h1>削除申請</h1>
 ${renderOutcomeNotice(outcome)}
-<p><strong>申請は主張であって、認定ではありません。</strong>届いただけでは作品は動きません。
-   読んで判断し、採った措置を記録してください（仕様 8.4 / <code>docs/takedown.md</code>）。</p>
-<p>申請者の氏名・連絡先・本文は<strong>検証していない値</strong>です。<strong>1 度記録した措置は
-   上書きしません。</strong>「削除」を記録しても作品は取り下げられません——取り下げは戻せない操作なので、
-   この画面に置いていません（仕様 2.4.3）。</p>
+${intro}
+${caution}
 <h2>未対応を先に、新しい順（未対応 ${pending} 件 ／ 表示 ${rows.length} 件）</h2>
 ${
   rows.length === 0

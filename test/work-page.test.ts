@@ -1085,6 +1085,9 @@ const baseView: WorkPageView = {
   // 出し分けそのものは `test/work-description.test.ts` が見る）。
   description: null,
   describableId: null,
+  // タグ（#376）。**既定はタグ無し・口を出さない**（出し分けそのものは `test/work-tags.test.ts` が見る）。
+  tags: [],
+  retaggableId: null,
   removableId: null,
   likeCount: 0,
   likableId: null,

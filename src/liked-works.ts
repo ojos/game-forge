@@ -48,7 +48,7 @@
  */
 import { loginRequiredRedirect } from './auth/google.js';
 import type { PublicWork } from './games.js';
-import { PUBLISHED_STATUS } from './games.js';
+import { PUBLISHED_STATUS, workTagsOf } from './games.js';
 import { siteHead, siteViewerAt } from './html.js';
 import { siteFooter } from './legal.js';
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';
@@ -124,8 +124,10 @@ export function likedWorksSql(count: number): string {
   const placeholders = new Array<string>(count).fill('?').join(', ');
   // **`g.author_id` を選ぶのは作者ページへのリンクのためである**（#330。選ばないと
   // この一覧だけ作者名がリンクにならない）。`users` から選ぶ列は増えていない。
+  //
+  // **タグの枠を選ぶのはカードに出すためである**（#376。`publishedGamesSql` と揃える）。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
-            g.ogp_state, g.author_id, u.display_name as author_name
+            g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name
        from games g
        left join users u on u.id = g.author_id
       where g.id in (${placeholders}) and g.status = ? and ${reviewVisibleSql('g')}`;
@@ -197,6 +199,9 @@ export async function listLikedWorks(
       parent_id: string | null;
       ogp_state: string | null;
       author_id: string | null;
+      tag1: string | null;
+      tag2: string | null;
+      tag3: string | null;
       author_name: string | null;
     }>();
 
@@ -222,6 +227,8 @@ export async function listLikedWorks(
       likeCount: row.like_count,
       hasParent: row.parent_id !== null,
       hasShot: row.ogp_state === 'ready',
+      // タグ（#376）。語彙に照らして描くのはカードの側である。
+      tags: workTagsOf(row),
     });
   }
   // **`likedOnPage` は絞り込みの前の件数である。** `works.length` との差が、この頁で D1 に

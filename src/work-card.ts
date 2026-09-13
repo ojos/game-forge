@@ -14,11 +14,21 @@
  * カードが誤って出す経路が無い。**「出さない」を表示側の注意ではなく、引く形で担保する**
  * （#152 の絞り込みと同じ規律）。
  *
- * **プレイ数とタグは出さない。** 仕様 2.3.5 が「持たない」と決めている。
+ * **プレイ数は出さない**（M12-9 がまだ持っていない）。
  *
  * > **#340 注記。** 起票時（#328）はここが「**いいね数**・プレイ数・タグも出さない」
  * > だった。**いいねは持つことになった**（v1.51 / 仕様 2.3.5 / 5.8）ので、数を
  * > 出している（{@link cardLikeCount}）。**プレイ数とタグは変わらず持たない。**
+ * >
+ * > **#376 注記。タグを出すようになった**（v1.57 の 2.3.5 / 2.3.6。M12-8）。判断は
+ * > {@link knownWorkTags} と {@link renderTags} にある。
+ *
+ * ## タグは語彙に照らしてから出す（#376）
+ *
+ * **カードが出すのは、`src/work-tags.ts` の語彙にある識別子のラベルだけである。** 行の値を
+ * そのまま本文へ入れない——識別子は固定の語彙から選ばれて保存されるが、**キャッシュを経由した
+ * 行（JSON）には何でも入りうる**うえ、語彙から外した識別子が古い行に残ることもある。
+ * 欠けていれば（配備の直後 60 秒の古い形の行）タグを出さないだけで、壊れない。
  *
  * ## 作者名から作者ページへ辿れる（#330）
  *
@@ -51,6 +61,9 @@ import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH, ogpImagePath } from './ogp.js';
 import { workPagePath } from './paths.js';
 import { authorPagePath } from './users-page-paths.js';
+import { MAX_WORK_TAGS, WORK_TAGS, WORK_TAG_FIELD } from './work-tags.js';
+import type { WorkTagId } from './work-tags.js';
+import { PUBLIC_WORKS_PATH } from './works-paths.js';
 
 /**
  * 作者名が引けなかったときに出す名前。
@@ -172,6 +185,83 @@ export function cardAuthorId(work: PublicWork): string | null {
   return work.authorName === null ? null : value;
 }
 
+/** 語彙に照らしたタグ 1 つ（識別子とラベル）。 */
+export interface KnownWorkTag {
+  readonly id: WorkTagId;
+  readonly label: string;
+}
+
+/**
+ * 行のタグの値を、語彙にあるものだけに絞ってラベルを添える（#376 / 仕様 2.3.6）。
+ *
+ * **カードと作品ページが同じ 1 つを使う**（作品ページは `src/work-page.ts` がここから借りる）。
+ *
+ * # 読み方
+ *
+ * - **配列でなければタグ無し**（`tags` を持たない古い形の行・JSON の `null`）
+ * - **語彙に無い値・文字列でない値は読み飛ばす**（本文へ 1 文字も入れない）
+ * - **重複は 1 つにする**（枠は重複しないように書くが、画面が含意に寄りかからない）
+ * - **並びは行の枠の順のまま**（保存時に語彙の順へ並べてある。`src/games.ts` の `validateWorkTags`）
+ * - **{@link MAX_WORK_TAGS} 個で打ち切る**（枠は 3 つだが、キャッシュの値は長さを約束しない）
+ *
+ * @param value `PublicWork.tags`（型の上は文字列の配列だが、実行時には何でも来うる）
+ * @returns 出してよいタグ（0〜{@link MAX_WORK_TAGS} 個）
+ */
+export function knownWorkTags(value: unknown): readonly KnownWorkTag[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const known: KnownWorkTag[] = [];
+  for (const item of value as readonly unknown[]) {
+    const tag = WORK_TAGS.find((entry) => entry.id === item);
+    if (tag !== undefined && !known.some((entry) => entry.id === tag.id)) {
+      known.push({ id: tag.id, label: tag.label });
+    }
+  }
+  return known.slice(0, MAX_WORK_TAGS);
+}
+
+/**
+ * そのタグで絞り込んだ公開一覧のパス（`/works?tag=<識別子>`。#376）。
+ *
+ * **ここで組み立てる。** 一覧（`src/works-list.ts`）はこのモジュールを import しているので、
+ * 向こうの `worksListPath` を借りると循環参照になる。並べ替えと頁を付けないのは、**タグから
+ * 辿った人は既定の並び（新着・1 頁目）で見る**ためである（一覧が既定へ落とす）。
+ *
+ * 識別子は語彙の値（小文字の ASCII とハイフン）なので、`encodeURIComponent` を通しても形は
+ * 変わらないが、**語彙の形に寄りかからずに閉じておく。**
+ *
+ * @param tag タグの識別子
+ * @returns アプリ用ホスト上の絶対パス
+ */
+export function workTagListPath(tag: WorkTagId): string {
+  return `${PUBLIC_WORKS_PATH}?${WORK_TAG_FIELD}=${encodeURIComponent(tag)}`;
+}
+
+/**
+ * カードのタグを組み立てる（#376 / 仕様 2.3.6）。
+ *
+ * **1 つずつ、絞り込んだ一覧へのリンクにする。** 下段（`.gf-card-meta`）はカード全体を包む
+ * リンクの外にあるので、入れ子にならない（作者名と同じ置き方）。
+ *
+ * **クラスは `gf-card-genre` にする。** `gf-card-tag` は「改造された作品」の印が先に使っており、
+ * 意味の違うものに同じクラスを付けない。
+ *
+ * @param work 作品
+ * @returns HTML。出すタグが無ければ空文字
+ */
+function renderTags(work: PublicWork): string {
+  const tags = knownWorkTags(work.tags);
+  if (tags.length === 0) {
+    return '';
+  }
+  // **ラベルは語彙の固定の文字列で、UGC ではない**（行の値は照合の鍵にしか使っていない）。
+  const links = tags.map(
+    (tag) => `<a class="gf-card-genre" href="${workTagListPath(tag.id)}">${tag.label}</a>`,
+  );
+  return `<span class="gf-card-genres">${links.join(' ')}</span>`;
+}
+
 /**
  * カードの作者名を組み立てる（仕様 2.3.6 / 2.3.1 / #330）。
  *
@@ -195,7 +285,7 @@ function renderAuthor(work: PublicWork): string {
 }
 
 /**
- * カードの下段（作者・改造された数・いいねの数・公開日時）を組み立てる。
+ * カードの下段（作者・改造された数・いいねの数・公開日時・タグ）を組み立てる。
  *
  * **`fork_count` が 0 の作品には何も出さない。** 全行に「改造 0」が並ぶ一覧は区別を
  * 何も運ばない（`src/my-works.ts` が全行に同じ警告を並べないと決めたのと同じ）。
@@ -224,6 +314,11 @@ function renderMeta(work: PublicWork): string {
   const iso = work.publishedAt === null ? '' : toIsoTimestamp(work.publishedAt);
   if (iso !== '') {
     parts.push(`<time datetime="${iso}">${formatJstMinutes(work.publishedAt!)}</time>`);
+  }
+  // **タグは下段の最後に置く**（#376）。作者・数・日時の並びを動かさない。
+  const tags = renderTags(work);
+  if (tags !== '') {
+    parts.push(tags);
   }
   return `<p class="gf-card-meta">${parts.join(' ')}</p>`;
 }

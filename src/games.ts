@@ -32,6 +32,13 @@
  * 違いは、**公開済みの作品だけに書けること**と、**長すぎる説明を切らずに断ること**
  * （{@link validateDescription}）である。
  *
+ * ## タグは公開時に選び、公開後に付け直せる（#376）
+ *
+ * **{@link publishGame} が公開の UPDATE と同じ 1 本でタグの枠を書き**（二度押しの 2 回目は
+ * `status = 'draft'` の条件で 0 行になり、タグを上書きしない）、**{@link retagGame} が
+ * 公開後の付け直しを書く。** どちらも {@link validateWorkTags} を通り、語彙に無い値と 4 個以上を
+ * **1 行も書かずに**断る。語彙そのものは値だけの葉 `src/work-tags.ts` にある。
+ *
  * ## 状態は `games.status` ではなく `generation_state` が持つ
  *
  * 5.4 は「生成 → 作者が試遊 → 「公開」操作で初めて URL が有効になる」と定める。
@@ -80,6 +87,8 @@ import {
   reviewVisibleSql,
 } from './reports.js';
 import { inspectText } from './output-moderation.js';
+import { MAX_WORK_TAGS, WORK_TAGS } from './work-tags.js';
+import type { WorkTagId } from './work-tags.js';
 import type { BuildOutcome } from './build-client.js';
 import type { BuildCacheRecord } from './build-cache.js';
 import { artifactKeysOf, buildCacheRecordOf } from './build-client.js';
@@ -816,7 +825,10 @@ export type PublishOutcome =
       /** `games.published_at`（UNIX 秒）。 */
       readonly publishedAt: number;
     }
-  | { readonly ok: false; readonly reason: 'not-found' | 'not-ready' | 'removed' };
+  | {
+      readonly ok: false;
+      readonly reason: 'not-found' | 'not-ready' | 'removed' | WorkTagsRejection;
+    };
 
 /**
  * 作品を公開する（5.4 / #26）。
@@ -873,10 +885,25 @@ export type PublishOutcome =
  * 加算ではなく**数え直し**である（{@link refreshParentForkCount}）。理由はそちらに
  * ある。
  *
+ * # タグは同じ UPDATE で書く（#376）
+ *
+ * **公開の遷移と同じ 1 本に置く。** 別の UPDATE にすると、二度押しの 2 回目（`status` は既に
+ * `published`）でタグだけが書き換わりうる——**2 回目が別のチェックボックスの組を運んでいれば、
+ * 公開した瞬間の選択が黙って上書きされる。** 同じ WHERE に載せれば、2 回目は 0 行でタグにも
+ * 触らない。公開した後に変えたい作者は {@link retagGame} を使う。
+ *
+ * **検査は行を引く前に行う**（{@link validateWorkTags}。{@link renameGame} が 8.3 を先に掛けるのと
+ * 同じ形）。語彙に無い値や 4 個以上は、**公開もせず、1 行も書かずに**理由を返す。**タグ無し
+ * （空配列）は通す**——公開の入力を必須にしない（#376 の constraints）。
+ *
+ * **`tags_set_at` は書かない。** あれは付け直しの間隔を数える起点で、公開した直後に付け間違いに
+ * 気づいた作者を待たせない（`migrations/` の `games_tags`）。
+ *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
  * @param authorId 操作している利用者（**作者本人でなければ通らない**）
  * @param now 公開時刻（UNIX 秒。既定は現在時刻）
+ * @param tags 公開フォームで選ばれたタグの識別子（**検査前**。既定はタグ無し）
  * @returns 公開の結果
  */
 export async function publishGame(
@@ -884,13 +911,20 @@ export async function publishGame(
   gameId: string,
   authorId: string,
   now: number = Math.floor(Date.now() / 1000),
+  tags: readonly string[] = [],
 ): Promise<PublishOutcome> {
+  const validated = validateWorkTags(tags);
+  if (!validated.ok) {
+    return { ok: false, reason: validated.reason };
+  }
+  const [tag1, tag2, tag3] = workTagSlots(validated.tags);
+
   const result = await env.DB.prepare(
     `update games
-        set status = ?, published_at = ?
+        set status = ?, published_at = ?, tag1 = ?, tag2 = ?, tag3 = ?
       where id = ? and author_id = ? and status = ? and generation_state = 'ready'`,
   )
-    .bind(PUBLISHED_STATUS, now, gameId, authorId, DRAFT_STATUS)
+    .bind(PUBLISHED_STATUS, now, tag1, tag2, tag3, gameId, authorId, DRAFT_STATUS)
     .run();
 
   if ((result.meta.changes ?? 0) > 0) {
@@ -1607,6 +1641,235 @@ export async function describeGame(
 }
 
 /**
+ * タグの検査で断る理由（#376）。
+ *
+ * - `unknown-tag` … 語彙（`src/work-tags.ts` の `WORK_TAGS`）に無い値を含む
+ * - `too-many-tags` … 異なるタグが {@link MAX_WORK_TAGS} 個を超える
+ */
+export type WorkTagsRejection = 'unknown-tag' | 'too-many-tags';
+
+/** タグの検査の結果。 */
+export type WorkTagsValidation =
+  | {
+      readonly ok: true;
+      /** 保存する形（**語彙の順に並び、重複しない**。0〜{@link MAX_WORK_TAGS} 個）。 */
+      readonly tags: readonly WorkTagId[];
+    }
+  | { readonly ok: false; readonly reason: WorkTagsRejection };
+
+/**
+ * タグを検査し、保存する形へ落とす（#376）。**公開と付け直しの 2 つの口が、この 1 つを通る。**
+ *
+ * # 規則
+ *
+ * 1. **語彙に無い値を 1 つでも含めば断る。** 空文字も語彙に無い。**黙って読み飛ばさない**
+ *    ——作者が選んだつもりのタグが保存されないまま「公開しました」と戻ると、作者から見て
+ *    理由の見えない欠けになる（チェックボックスから来る限り起きないので、起きたら要求の
+ *    作り方がおかしい）
+ * 2. **同じ値の重複は 1 つに畳む**（`tag=puzzle&tag=puzzle`）。数えるのは畳んだ後である
+ * 3. **{@link MAX_WORK_TAGS} 個を超えれば断る。** 先頭の 3 個を採る形にしない——どれを
+ *    捨てたかが作者に見えない（説明を切らずに断る {@link validateDescription} と同じ判断）
+ * 4. **語彙の順に並べ直す。** 枠は tag1 から詰めるので、並べ直しておけば「同じ組か」を
+ *    枠ごとの比較で判定でき（{@link retagGame}）、**同じ組が枠の並びだけ違う 2 つの行に
+ *    ならない**
+ *
+ * **0 個は通す**（タグ無しを許す。#376 の決定）。
+ *
+ * **語彙を `Set` にしない。** `WORK_TAGS` は 8 行で、`includes` の線形探索で足りる。
+ * 最上位に `new Set` を置くと、このモジュールが入るオーケストレータの束に副作用を持ちうる
+ * 式が残る（`src/work-tags.ts` の冒頭）。
+ *
+ * @param raw 要求から取り出した値（**検査前**）
+ * @returns 保存する形、または断る理由
+ */
+export function validateWorkTags(raw: readonly string[]): WorkTagsValidation {
+  const vocabulary: readonly string[] = WORK_TAGS.map((tag) => tag.id);
+  if (raw.some((value) => !vocabulary.includes(value))) {
+    return { ok: false, reason: 'unknown-tag' };
+  }
+  const tags = WORK_TAGS.map((tag) => tag.id).filter((id) => raw.includes(id));
+  if (tags.length > MAX_WORK_TAGS) {
+    return { ok: false, reason: 'too-many-tags' };
+  }
+  return { ok: true, tags };
+}
+
+/**
+ * 検査済みのタグを `games` の 3 つの枠へ詰める（**tag1 から詰め、空きは NULL**）。
+ *
+ * @param tags {@link validateWorkTags} が返した形
+ * @returns `[tag1, tag2, tag3]`
+ */
+function workTagSlots(tags: readonly WorkTagId[]): readonly [string | null, string | null, string | null] {
+  return [tags[0] ?? null, tags[1] ?? null, tags[2] ?? null];
+}
+
+/**
+ * `games` の行からタグを読む（**枠の順に、空でない文字列だけ**。#376）。
+ *
+ * **語彙に照らさない。** ここは D1 の値を運ぶだけで、画面に出すかは描く側が語彙で決める
+ * （`src/work-card.ts` の `knownWorkTags`）。**キャッシュを経由した行も同じ関数で描く**ので、
+ * 判断を 1 か所に置く。
+ *
+ * **型ではなく実際の値を見る。** 行はキャッシュ（JSON）を経由しうる。
+ *
+ * @param row `tag1` / `tag2` / `tag3` を選んだ行
+ * @returns タグの識別子（0〜3 個）
+ */
+export function workTagsOf(row: {
+  readonly tag1?: unknown;
+  readonly tag2?: unknown;
+  readonly tag3?: unknown;
+}): readonly string[] {
+  return [row.tag1, row.tag2, row.tag3].filter(
+    (value): value is string => typeof value === 'string' && value !== '',
+  );
+}
+
+/**
+ * 付け直してから、次の付け直しを受け付けるまでの秒数（#376 / 3.6）。
+ *
+ * **説明の変更（{@link DESCRIPTION_CHANGE_INTERVAL_SECONDS}）と同じ考え方・同じ値である。**
+ * 改名は間隔を持たないが、**タグは改名より書き込みが重い**——付け直し 1 回で、6 本の部分索引の
+ * 項目が最大 6 行抜けて 6 行入る（`migrations/` の `games_tags`）。60 秒に 1 回なら、1 作品に
+ * 1 日張り付いても約 18,700 行（無料枠 10 万行/日 の 19%）で止まる。**数え方は作品ごと**
+ * （`games.tags_set_at`）で、理由は説明と同じである（止めたいのは連打であって、作品を並べて
+ * 手入れすることではない）。
+ */
+export const WORK_TAGS_CHANGE_INTERVAL_SECONDS = 60;
+
+/** 付け直しの結果（#376）。形は {@link DescribeOutcome} に揃えてある。 */
+export type RetagOutcome =
+  | {
+      readonly ok: true;
+      /** 保存されているタグ（語彙の順）。 */
+      readonly tags: readonly string[];
+      /** **この呼び出しが実際に変えたか。** 同じ組の入れ直しは false。 */
+      readonly changed: boolean;
+    }
+  | { readonly ok: false; readonly reason: RetagRejection };
+
+/**
+ * 付け直しを受け付けなかった理由（#376）。
+ *
+ * - `not-found` … 作品が無い、または**他人の作品**（撃ち分けない。{@link renameGame} と同じ）
+ * - `removed` … 取り下げた作品
+ * - `not-published` … まだ公開していない作品（**タグは公開フォームで選ぶ**。5.4 の導線を変えない）
+ * - `too-soon` … 前回の付け直しから {@link WORK_TAGS_CHANGE_INTERVAL_SECONDS} 秒経っていない
+ * - {@link WorkTagsRejection} … 語彙に無い値・4 個以上
+ */
+export type RetagRejection =
+  | 'not-found'
+  | 'removed'
+  | 'not-published'
+  | 'too-soon'
+  | WorkTagsRejection;
+
+/**
+ * 作者が公開済みの作品のタグを付け直す（#376）。
+ *
+ * **形は {@link describeGame} を写してある**（検査を行の前に置く・0 行のときだけ理由を引く・
+ * 理由を引く SELECT にも `author_id` を入れる・同じ値の入れ直しを成功にする・間隔を WHERE に
+ * 置く）。違うのは次の 3 点だけである。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 1. 履歴を持たない（1 本の UPDATE で書く）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **語彙が固定で、利用者の自由文が 1 文字も入らない**（#376 の利用者の決定）。題名と説明の
+ * 履歴は、8.4 の審査が「通報された時点の値」を復元するために要る（#405）が、タグはどの値でも
+ * 8 個の語彙のどれかであり、モデレーションの対象にならない。**batch にしない**のもそのためで、
+ * 書く文が 1 本なので原子性は UPDATE そのものが持つ。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 2. 審査状態を戻さない
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **{@link reviewStateAfterAuthorEditSql} を通さない。** あれは「審査で見たのは変更前の題名・
+ * 説明である」ことを理由に `cleared` を解く式で、タグを変えても作品の中身も、利用者が読む
+ * 文章も変わらない。**付け直しで審査待ちが解けることも無い**（`review_state` に触れない）。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 3. 「同じ組か」は枠ごとに `is` で比べる
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **NULL を含む比較なので `=` ではなく `is` を使う**（`NULL = NULL` は真にならず、タグ無しの
+ * 作品にタグ無しを入れ直すたびに書き込みと間隔の消費が起きる）。検査が語彙の順に並べ直して
+ * いるので、枠ごとの比較が組の比較になる。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param authorId 操作している利用者（**作者本人でなければ通らない**）
+ * @param rawTags 作者が選んだタグ（**検査前**。空ならタグをすべて外す）
+ * @param now 付け直しの時刻（UNIX 秒。既定は現在時刻）
+ * @returns 付け直しの結果
+ */
+export async function retagGame(
+  env: Env,
+  gameId: string,
+  authorId: string,
+  rawTags: readonly string[],
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<RetagOutcome> {
+  const validated = validateWorkTags(rawTags);
+  if (!validated.ok) {
+    return { ok: false, reason: validated.reason };
+  }
+  const slots = workTagSlots(validated.tags);
+
+  const result = await env.DB.prepare(
+    `update games
+        set tag1 = ?, tag2 = ?, tag3 = ?, tags_set_at = ?
+      where id = ? and author_id = ? and status = ? and generation_state = 'ready'
+        and (tags_set_at is null or tags_set_at <= ?)
+        and not (tag1 is ? and tag2 is ? and tag3 is ?)`,
+  )
+    .bind(
+      ...slots,
+      now,
+      gameId,
+      authorId,
+      PUBLISHED_STATUS,
+      now - WORK_TAGS_CHANGE_INTERVAL_SECONDS,
+      ...slots,
+    )
+    .run();
+
+  if ((result.meta.changes ?? 0) > 0) {
+    return { ok: true, tags: validated.tags, changed: true };
+  }
+
+  // **0 行だったときだけ、理由を引きに行く。** `author_id = ?` を入れる理由は {@link renameGame}。
+  const row = await env.DB.prepare(
+    'select status, generation_state, tag1, tag2, tag3 from games where id = ? and author_id = ?',
+  )
+    .bind(gameId, authorId)
+    .first<{
+      status: string;
+      generation_state: string;
+      tag1: string | null;
+      tag2: string | null;
+      tag3: string | null;
+    }>();
+
+  if (row === null) {
+    return { ok: false, reason: 'not-found' };
+  }
+  if (row.status === REMOVED_STATUS) {
+    return { ok: false, reason: 'removed' };
+  }
+  if (row.status !== PUBLISHED_STATUS || row.generation_state !== 'ready') {
+    return { ok: false, reason: 'not-published' };
+  }
+  if (row.tag1 === slots[0] && row.tag2 === slots[1] && row.tag3 === slots[2]) {
+    // **同じ組の入れ直しは失敗にしない**（二度押し。説明と同じ扱いで、間隔の内側でも先に見る）。
+    return { ok: true, tags: workTagsOf(row), changed: false };
+  }
+  // 残る理由は「前回の付け直しから間隔が空いていない」である。
+  return { ok: false, reason: 'too-soon' };
+}
+
+/**
  * ある作品の**親**の `fork_count` を、実件数で置き直す（5.1 / 5.5 / M5-3 / #34）。
  *
  * # 加算しない。数え直す
@@ -1910,6 +2173,35 @@ export function toPublicWorkSort(value: string | null): PublicWorkSort {
     : 'recent';
 }
 
+/**
+ * タグで絞り込んでいる間の並べ替え軸（#376 の利用者の決定）。
+ *
+ * **「新着」と「改造された数」の 2 つだけである。** `liked`（`like_count`）を絞り込みの索引に
+ * 載せると、5 分おきの同期が書く列が 3 本の枠の索引へも伸びる（`migrations/` の `games_tags`）。
+ * 4 軸すべてを索引で保証すると、最悪で書き込みの無料枠を超える見積もりになった。
+ *
+ * **{@link PUBLIC_WORK_SORTS} の部分集合である**（`PublicWorkSort` へそのまま渡せる）。
+ */
+export const TAGGED_WORK_SORTS = ['recent', 'forked'] as const;
+
+/** 絞り込み中の並べ替え軸。 */
+export type TaggedWorkSort = (typeof TAGGED_WORK_SORTS)[number];
+
+/**
+ * 絞り込み中の `?sort=` を軸へ落とす。**未知の綴りも `liked` も新着へ落とす**（#376）。
+ *
+ * **落とすのであって、失敗させない**（{@link toPublicWorkSort} と同じ理由）。いいね順で
+ * 並べている一覧からタグを選んだ人は、新着の並びで絞り込みの結果を見る。
+ *
+ * @param value クエリから来た値（未指定なら null）
+ * @returns 絞り込み中に使える軸。それ以外は `recent`
+ */
+export function toTaggedWorkSort(value: string | null): TaggedWorkSort {
+  return (TAGGED_WORK_SORTS as readonly string[]).includes(value ?? '')
+    ? (value as TaggedWorkSort)
+    : 'recent';
+}
+
 /** 公開作品の一覧に出す 1 件（仕様 2.3.6）。 */
 export interface PublicWork {
   /** `games.id`。作品ページ（`/works/<id>`）の URL に入る。 */
@@ -1955,6 +2247,15 @@ export interface PublicWork {
   readonly hasParent: boolean;
   /** スクリーンショットが撮れているか。撮れていなければカードは代替表示にする。 */
   readonly hasShot: boolean;
+  /**
+   * タグの識別子（`games.tag1` / `tag2` / `tag3` の枠の順。#376 / 仕様 2.3.6）。タグ無しなら空配列。
+   *
+   * **{@link authorId} と同じ理由で省略可である**——一覧の行は Cache API に載っており、配備の
+   * 直後の最大 60 秒は、タグの列を選んでいなかった頃の行が返りうる。**語彙に照らして描くのは
+   * カードの側**（`src/work-card.ts` の `knownWorkTags`）で、欠けていても語彙に無い値でも、
+   * タグを出さないだけで壊れない。
+   */
+  readonly tags?: readonly string[];
 }
 
 /**
@@ -2000,13 +2301,149 @@ export function publishedGamesSql(sort: PublicWorkSort): string {
   // **`g.author_id` を選ぶのは作者ページへのリンクのためである**（#330）。`users` 側から
   // 選ぶ列は増やしていない——増えたのは `games` の列 1 つで、これは既にこの表の中で
   // 誰にでも見える値である（作品ページが同じ列を引いて作者名を出している）。
+  //
+  // **タグの枠を選ぶのはカードに出すためである**（#376 / 2.3.6）。**絞り込まない一覧は枠で
+  // 絞らない**——タグ無しの作品もここに並ぶ（#376 の constraints）。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
-            g.ogp_state, g.author_id, u.display_name as author_name
+            g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name
        from games g
        left join users u on u.id = g.author_id
       where g.status = ? and ${reviewVisibleSql('g')}
       order by ${orderBy}
       limit ? offset ?`;
+}
+
+/** 一覧の問い合わせ（{@link publishedGamesSql} / {@link taggedGamesSql}）が返す行の形。 */
+interface PublicWorkRow {
+  readonly id: string;
+  readonly title: string;
+  readonly published_at: number | null;
+  readonly fork_count: number;
+  readonly like_count: number;
+  readonly parent_id: string | null;
+  readonly ogp_state: string | null;
+  readonly author_id: string | null;
+  readonly tag1: string | null;
+  readonly tag2: string | null;
+  readonly tag3: string | null;
+  readonly author_name: string | null;
+}
+
+/**
+ * 一覧の行をカードの入力へ落とす。**絞り込む一覧と絞り込まない一覧が同じ 1 つを使う。**
+ *
+ * @param row D1 の行
+ * @returns 作品カードの入力
+ */
+function toPublicWork(row: PublicWorkRow): PublicWork {
+  return {
+    id: row.id,
+    title: row.title,
+    authorName: row.author_name,
+    authorId: row.author_id,
+    publishedAt: row.published_at,
+    forkCount: row.fork_count,
+    likeCount: row.like_count,
+    hasParent: row.parent_id !== null,
+    hasShot: row.ogp_state === 'ready',
+    tags: workTagsOf(row),
+  };
+}
+
+/**
+ * 絞り込み中の軸ごとの並びの列（**すべて降順**。列順は `games_tags` の部分索引と揃えてある）。
+ *
+ * `Record` にしてあるので、軸を足して列を書き忘れると型の検査で落ちる（{@link PUBLIC_WORK_ORDER_BY}
+ * と同じ理由）。**別名を付けない**——`UNION ALL` の `order by` は結果の列名で書き、外側の
+ * 並べ直しは `t.` を付けて同じ列を指す。
+ */
+const TAGGED_WORK_ORDER_COLUMNS: Readonly<Record<TaggedWorkSort, readonly string[]>> = {
+  recent: ['published_at', 'id'],
+  forked: ['fork_count', 'published_at', 'id'],
+};
+
+/**
+ * タグで絞り込んだ公開作品を引く SQL を組み立てる（#376 / 仕様 2.3.3 の条件 2）。
+ *
+ * # 3 つの枠を `UNION ALL` で束ねる
+ *
+ * タグは `games.tag1` / `tag2` / `tag3` のどれにでも入りうる。`(tag1 = ? or tag2 = ? or tag3 = ?)`
+ * と 1 本に書くと、SQLite は絞り込まない一覧の索引（`status, published_at`）を新しい順に読み、
+ * **1 行ずつタグを見て捨てる**（手元の `EXPLAIN QUERY PLAN` で確かめた）。20 件を集めるまでに
+ * 読む行が「そのタグの無い新しい作品の数」だけ増え、珍しいタグでは**公開作品の総数に比例する。**
+ * 枠ごとに 1 本ずつ引いて `UNION ALL` で
+ * 束ねると、**どの枠も部分索引（`games_tags`）を並びの順に読み、SQLite が 3 本を併合する**
+ * （`MERGE (UNION ALL)`）。読む行は枠ごとに高々「読み飛ばし＋件数」で、**タグの付いた作品の
+ * 総数には比例しない。**
+ *
+ * **同じ作品が 2 度並ばない。** 枠は重複しないように書いてある（{@link validateWorkTags}）ので、
+ * 1 つの作品が 2 つの枠で同じタグに当たることは無い。`UNION`（重複除去）にしないのは、除去の
+ * ための一時 B-tree が入るからである。
+ *
+ * # `users` の結合は `UNION ALL` の外に置く
+ *
+ * **枠ごとの問い合わせの中で結合すると、読み飛ばす行（`OFFSET`）の分まで `users` を引く**
+ * （併合は結合した後の行で行われる）。外で結合すれば、引くのは頁に載る件数だけである。外側の `order by` は併合した順を言い直す
+ * だけで、実行計画に一時 B-tree は出ない（`test/works-list.test.ts` が見る）。**SQL の結果の順を
+ * 保証するのは `order by` だけなので、省かない。**
+ *
+ * # 条件は枠ごとに同じ綴りで書く
+ *
+ * `status = ?` と {@link reviewVisibleSql} は部分索引の条件と同じ綴りである（索引が使われる
+ * 前提）。**文字列を組み立てるが、材料は枠の番号と {@link TaggedWorkSort} の 2 値だけ**で、
+ * タグの値は束縛で渡す。
+ *
+ * @param sort 並べ替え軸（新着か改造された数）
+ * @returns 束縛パラメータが 8 つ（tag / status を枠ごとに 3 組、limit / offset）の SELECT 文
+ */
+export function taggedGamesSql(sort: TaggedWorkSort): string {
+  const columns = TAGGED_WORK_ORDER_COLUMNS[sort];
+  const branches = [1, 2, 3].map(
+    (slot) => `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
+                g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3
+           from games g
+          where g.tag${slot} = ? and g.status = ? and ${reviewVisibleSql('g')}`,
+  );
+  return `select t.id, t.title, t.published_at, t.fork_count, t.like_count, t.parent_id,
+            t.ogp_state, t.author_id, t.tag1, t.tag2, t.tag3, u.display_name as author_name
+       from (${branches.join(' union all ')}
+         order by ${columns.map((column) => `${column} desc`).join(', ')}
+         limit ? offset ?) t
+       left join users u on u.id = t.author_id
+      order by ${columns.map((column) => `t.${column} desc`).join(', ')}`;
+}
+
+/**
+ * タグで絞り込んだ公開作品を一覧で引く（#376）。
+ *
+ * **絞り込みの条件（公開済み・審査の可視条件）は {@link listPublishedGames} と同じで、引く時点で
+ * 行う**（#152 の規律）。違うのはタグで絞ることと、並べ替えが 2 軸であることだけである。
+ *
+ * **タグの値は呼び出し側が語彙へ落としてから渡す**（`src/works-list.ts`）。型で縛るのは、
+ * 語彙に無い値で問い合わせを 1 本も起こさないためである。
+ *
+ * @param env バインディングと環境変数
+ * @param tag 絞り込むタグ（語彙の識別子）
+ * @param sort 並べ替え軸
+ * @param limit 引く最大件数（0 以上の整数）
+ * @param offset 読み飛ばす件数（0 以上の整数）
+ * @returns 指定した軸の順に並んだ、そのタグの公開作品
+ * @throws `limit` / `offset` が 0 以上の整数でない場合
+ */
+export async function listTaggedGames(
+  env: Env,
+  tag: WorkTagId,
+  sort: TaggedWorkSort,
+  limit: number,
+  offset = 0,
+): Promise<readonly PublicWork[]> {
+  assertLimit(limit);
+  assertLimit(offset, '読み飛ばし件数');
+
+  const result = await env.DB.prepare(taggedGamesSql(sort))
+    .bind(tag, PUBLISHED_STATUS, tag, PUBLISHED_STATUS, tag, PUBLISHED_STATUS, limit, offset)
+    .all<PublicWorkRow>();
+  return result.results.map(toPublicWork);
 }
 
 /**
@@ -2057,27 +2494,7 @@ export async function listPublishedGames(
 
   const result = await env.DB.prepare(publishedGamesSql(sort))
     .bind(PUBLISHED_STATUS, limit, offset)
-    .all<{
-      id: string;
-      title: string;
-      published_at: number | null;
-      fork_count: number;
-      like_count: number;
-      parent_id: string | null;
-      ogp_state: string | null;
-      author_id: string | null;
-      author_name: string | null;
-    }>();
+    .all<PublicWorkRow>();
 
-  return result.results.map((row) => ({
-    id: row.id,
-    title: row.title,
-    authorName: row.author_name,
-    authorId: row.author_id,
-    publishedAt: row.published_at,
-    forkCount: row.fork_count,
-    likeCount: row.like_count,
-    hasParent: row.parent_id !== null,
-    hasShot: row.ogp_state === 'ready',
-  }));
+  return result.results.map(toPublicWork);
 }

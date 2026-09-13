@@ -20,6 +20,7 @@ import type { OgpCaptureJob } from '../src/ogp-client.js';
 import { handleSandboxRequest } from '../src/sandbox.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { workPagePath } from '../src/work-page.js';
+import { MAX_WORK_TAGS, WORK_TAG_FIELD } from '../src/work-tags.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -424,6 +425,171 @@ describe('publishGame（SQL の条件そのもの）', () => {
       ok: false,
       reason: 'not-found',
     });
+  });
+});
+
+/**
+ * タグを選んで公開を要求する（素の `<form>` と同じ形。チェックした項目だけが同じ名前で並ぶ）。
+ *
+ * @param gameId 作品 id
+ * @param tags 選んだタグ
+ * @param cookie `Cookie` ヘッダ
+ * @param start 撮影を投げる段
+ * @returns レスポンス
+ */
+async function publishWithTags(
+  gameId: string,
+  tags: readonly string[],
+  cookie: string,
+  start: (env: Env, job: OgpCaptureJob) => Promise<void>,
+): Promise<Response> {
+  const body = new URLSearchParams([
+    [PUBLISH_GAME_ID_FIELD, gameId],
+    ...tags.map((tag): [string, string] => [WORK_TAG_FIELD, tag]),
+  ]).toString();
+  return await dispatch(
+    createPublishRoutes(start),
+    new Request(`${APP_ORIGIN}${PUBLISH_PATH}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        accept: 'text/html,application/xhtml+xml',
+        cookie,
+      },
+      body,
+    }),
+    testEnv(),
+  );
+}
+
+/**
+ * タグの枠を読む。
+ *
+ * @param id 作品 id
+ * @returns `[tag1, tag2, tag3]`
+ */
+async function tagSlotsOf(id: string): Promise<readonly (string | null)[]> {
+  const row = await env.DB.prepare('select tag1, tag2, tag3 from games where id = ?')
+    .bind(id)
+    .first<{ tag1: string | null; tag2: string | null; tag3: string | null }>();
+  return [row?.tag1 ?? null, row?.tag2 ?? null, row?.tag3 ?? null];
+}
+
+describe('公開のときにタグを選ぶ（#376 / 5.4）', () => {
+  it('選んだタグが公開と同時に、語彙の順で tag1 から詰めて入る', async () => {
+    const { userId, id } = await seedReadyGame('tags-happy');
+    const spy = captureSpy();
+
+    const response = await publishWithTags(
+      id,
+      ['other', 'puzzle'],
+      await sessionCookie(userId),
+      spy.start,
+    );
+
+    expect(response.status).toBe(303);
+    expect((await readGame(id)).status).toBe('published');
+    expect(await tagSlotsOf(id)).toEqual(['puzzle', 'other', null]);
+    expect(spy.calls).toHaveLength(1);
+  });
+
+  it('何も選ばなくても公開でき、タグ無しになる（入力を必須にしない）', async () => {
+    const { userId, id } = await seedReadyGame('tags-none');
+    const spy = captureSpy();
+
+    expect((await publishWithTags(id, [], await sessionCookie(userId), spy.start)).status).toBe(303);
+
+    expect((await readGame(id)).status).toBe('published');
+    expect(await tagSlotsOf(id)).toEqual([null, null, null]);
+  });
+
+  it('4 個以上は公開もせず何も書かずに断り、理由を出す', async () => {
+    const { userId, id } = await seedReadyGame('tags-too-many');
+    const spy = captureSpy();
+
+    const response = await publishWithTags(
+      id,
+      ['action', 'puzzle', 'shooting', 'idle'],
+      await sessionCookie(userId),
+      spy.start,
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain(`${MAX_WORK_TAGS} 個まで`);
+    const row = await readGame(id);
+    expect(row.status).toBe('draft');
+    expect(row.published_at).toBeNull();
+    expect(await tagSlotsOf(id)).toEqual([null, null, null]);
+    expect(spy.calls).toEqual([]);
+  });
+
+  it('語彙に無い値は公開もせず何も書かずに断る（JSON でも同じ）', async () => {
+    const { userId, id } = await seedReadyGame('tags-unknown');
+    const cookie = await sessionCookie(userId);
+    const spy = captureSpy();
+
+    const fromForm = await publishWithTags(id, ['puzzle', 'パズル'], cookie, spy.start);
+    expect(fromForm.status).toBe(400);
+    expect(await fromForm.text()).toContain('選べないタグ');
+
+    const fromApi = await dispatch(
+      createPublishRoutes(spy.start),
+      new Request(`${APP_ORIGIN}${PUBLISH_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ [PUBLISH_GAME_ID_FIELD]: id, [WORK_TAG_FIELD]: ['nope'] }),
+      }),
+      testEnv(),
+    );
+    expect(fromApi.status).toBe(400);
+    expect(((await fromApi.json()) as Record<string, unknown>)['error']).toBe('unknown-tag');
+
+    expect((await readGame(id)).status).toBe('draft');
+    expect(await tagSlotsOf(id)).toEqual([null, null, null]);
+    expect(spy.calls).toEqual([]);
+  });
+
+  it('JSON のタグが文字列の配列でなければ、形の誤りとして断る', async () => {
+    const { userId, id } = await seedReadyGame('tags-shape');
+    const spy = captureSpy();
+
+    const response = await dispatch(
+      createPublishRoutes(spy.start),
+      new Request(`${APP_ORIGIN}${PUBLISH_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: await sessionCookie(userId) },
+        body: JSON.stringify({ [PUBLISH_GAME_ID_FIELD]: id, [WORK_TAG_FIELD]: 'puzzle' }),
+      }),
+      testEnv(),
+    );
+
+    expect(response.status).toBe(400);
+    expect((await readGame(id)).status).toBe('draft');
+  });
+
+  it('二度押しの 2 回目は、別のタグを運んでいてもタグを上書きしない', async () => {
+    // **公開の遷移とタグを同じ UPDATE に置いた理由そのもの**（`src/games.ts` の `publishGame`）。
+    // 2 回目は `status = 'draft'` で 0 行になり、タグにも触らない。
+    const { userId, id } = await seedReadyGame('tags-double');
+    const cookie = await sessionCookie(userId);
+    const spy = captureSpy();
+
+    expect((await publishWithTags(id, ['puzzle'], cookie, spy.start)).status).toBe(303);
+    expect((await publishWithTags(id, ['action', 'idle'], cookie, spy.start)).status).toBe(303);
+
+    expect(await tagSlotsOf(id)).toEqual(['puzzle', null, null]);
+    expect(spy.calls).toHaveLength(1);
+  });
+
+  it('他人が公開を押しても、タグは書かれない', async () => {
+    const { id } = await seedReadyGame('tags-stranger');
+    const stranger = await seedUser('tags-stranger-2');
+    const spy = captureSpy();
+
+    const response = await publishWithTags(id, ['puzzle'], await sessionCookie(stranger), spy.start);
+
+    expect(response.status).toBe(404);
+    expect(await tagSlotsOf(id)).toEqual([null, null, null]);
   });
 });
 

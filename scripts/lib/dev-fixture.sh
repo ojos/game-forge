@@ -125,6 +125,9 @@ dev_fixture_up() {
   npx wrangler d1 migrations apply DB --local --persist-to "$STATE" >"$WORK/d1.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/d1.log" >&2; fail "D1 のマイグレーションに失敗しました。"; }
 
+  # **公開済みの作品には、ラベルの長いタグを 3 つ付ける**（#376）。タグ無しだと、カードの下段が
+  # いちばん長くなる形（作者・いいね・日時・タグ 3 つ）を 390px で 1 度も測らないまま緑になる。
+  #
   # **公開済みの作品も 1 件仕込む**（#330 / PR #350）。draft だけだと、カードが並ぶ画面
   # （トップ・公開一覧・作者ページ）がすべて「まだ公開された作品がありません」になり、
   # **`.gf-cards` の格子を 390px で 1 度も測らないまま緑になる。** 幅の検査が見たいのは
@@ -149,9 +152,9 @@ dev_fixture_up() {
     insert into games (id, author_id, status, title, go_version, created_at, generation_state)
       values ('$GAME_ID', '$USER_ID', 'draft', '幅の検査の作品', '', 1, 'ready');
     insert into games (id, author_id, status, title, go_version, created_at, published_at,
-                       generation_state, preview_key, like_count)
+                       generation_state, preview_key, like_count, tag1, tag2, tag3)
       values ('$PUBLISHED_GAME_ID', '$USER_ID', 'published', '幅の検査の公開作品', '', 1, 1,
-              'ready', 'width-check-preview', 3);
+              'ready', 'width-check-preview', 3, 'puzzle', 'race-sports', 'rhythm-sound');
     update users set is_admin = 1 where id = '$USER_ID';
     insert into games (id, author_id, status, title, go_version, created_at, published_at,
                        generation_state, preview_key, review_state)

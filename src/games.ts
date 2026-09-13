@@ -77,6 +77,7 @@
  * 結び付けないという決定である**（確定27 / #124）。読む側が存在しないためで、
  * 根拠と、そのときの選択肢は仕様書 5.1 にある。
  */
+import { authorHandleColumnSql } from './handle-sql.js';
 import { ipNoticeOf } from './ip-substitution.js';
 import {
   REVIEW_CLEARED,
@@ -2252,6 +2253,17 @@ export interface PublicWork {
    * `invited_by` がカードへ届く経路は増えていない。
    */
   readonly authorAvatarSetAt?: number | null;
+  /**
+   * 作者がいま使っているハンドル名（`handles`。**決めていなければ null**。#381 / 仕様 5.10）。
+   *
+   * **カードは、これがあれば作者名のリンクを `/@handle` へ向ける**（`src/users-page-paths.ts` の
+   * `authorPagePathFor`）。**予約中の旧ハンドル名は選ばない**（`src/handle-sql.ts`）。
+   *
+   * **{@link authorId} と同じ理由で省略可である**（一覧の行は Cache API に載っており、配備の直後と改名の直後の
+   * 最大 60 秒は古い値か欠けた行が返りうる）。欠けていれば `/users/<user_id>` へリンクし、そちらがハンドル名へ
+   * 301 で送る。古い値なら旧ハンドル名の `/@` が 90 日のあいだ新しいハンドル名へ 302 で送る。
+   */
+  readonly authorHandle?: string | null;
   /** 公開した時刻（UNIX 秒）。0001 以前の行では null になりうる。 */
   readonly publishedAt: number | null;
   /** この作品から生まれた公開済みのフォークの数（非正規化列。5.1）。 */
@@ -2338,7 +2350,8 @@ export function publishedGamesSql(sort: PublicWorkSort): string {
   // **`g.play_count` を選ぶのはカードに出すためである**（#377 / 2.3.6）。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
             g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name,
-            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at
+            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at,
+            ${authorHandleColumnSql('g.author_id')}
        from games g
        left join users u on u.id = g.author_id
       where g.status = ? and ${reviewVisibleSql('g')}
@@ -2362,6 +2375,7 @@ interface PublicWorkRow {
   readonly tag3: string | null;
   readonly author_name: string | null;
   readonly author_avatar_set_at: number | null;
+  readonly author_handle: string | null;
 }
 
 /**
@@ -2377,6 +2391,7 @@ function toPublicWork(row: PublicWorkRow): PublicWork {
     authorName: row.author_name,
     authorId: row.author_id,
     authorAvatarSetAt: row.author_avatar_set_at,
+    authorHandle: row.author_handle,
     publishedAt: row.published_at,
     forkCount: row.fork_count,
     likeCount: row.like_count,
@@ -2443,7 +2458,8 @@ export function taggedGamesSql(sort: TaggedWorkSort): string {
   );
   return `select t.id, t.title, t.published_at, t.fork_count, t.like_count, t.play_count, t.parent_id,
             t.ogp_state, t.author_id, t.tag1, t.tag2, t.tag3, u.display_name as author_name,
-            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at
+            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at,
+            ${authorHandleColumnSql('t.author_id')}
        from (${branches.join(' union all ')}
          order by ${columns.map((column) => `${column} desc`).join(', ')}
          limit ? offset ?) t

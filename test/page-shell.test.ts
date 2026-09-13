@@ -21,6 +21,7 @@ import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH } from '../src/ogp.js';
 import { NON_PAGE_PATHS, ancestorPathsOf, ssrPagePaths } from '../src/page-paths.js';
 import { GENERATE_PAGE_PATH, HOME_PATH } from '../src/paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { HANDLE_PAGE_PREFIX } from '../src/handle-paths.js';
 import { AUTHOR_PAGE_PREFIX } from '../src/users-page-paths.js';
 import { WORK_PAGE_PREFIX } from '../src/work-page.js';
 import { MAX_SEARCH_LENGTH, WORK_SEARCH_FIELD } from '../src/work-search.js';
@@ -82,19 +83,36 @@ function testEnv(): Env {
 let cookie = '';
 let gameId = '';
 let publishedGameId = '';
-/** 作者ページ（`/users/<user_id>`）へ補う利用者 id（#330）。 */
-let authorId = '';
+/** 作品を持つ作者のハンドル名（`/@` へ補う。#381。作者ページの本体はこの綴りで開く）。 */
+let authorHandle = '';
+/**
+ * `/users/` へ補う利用者 id（#381）。**ハンドル名を決めていない利用者である**——決めている利用者の
+ * `/users/<id>` は `/@handle` へ 301 で送るので、200 の画面の本体を見られない。
+ */
+let plainAuthorId = '';
 
 beforeAll(async () => {
   await applySchema();
 
   const userId = `shell-${crypto.randomUUID()}`;
-  authorId = userId;
   await env.DB.prepare(
     `insert into users (id, google_sub, email, display_name, created_at)
      values (?, ?, ?, ?, ?)`,
   )
     .bind(userId, `sub-${userId}`, `${userId}@example.test`, '外枠検査', Math.floor(Date.now() / 1000))
+    .run();
+
+  // **作者にハンドル名を決めておく**（#381）。テストファイルをまたいで表を共有するので、綴りに乱数を入れる。
+  authorHandle = `shell_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+  await env.DB.prepare('insert into handles (handle, user_id, claimed_at) values (?, ?, 1)')
+    .bind(authorHandle, userId)
+    .run();
+  plainAuthorId = `shell-plain-${crypto.randomUUID()}`;
+  await env.DB.prepare(
+    `insert into users (id, google_sub, email, display_name, created_at)
+     values (?, ?, ?, ?, ?)`,
+  )
+    .bind(plainAuthorId, `sub-${plainAuthorId}`, `${plainAuthorId}@example.test`, '外枠検査（ハンドル名なし）', 1)
     .run();
 
   gameId = crypto.randomUUID();
@@ -149,7 +167,9 @@ function prefixIds(): Record<string, string> {
   // **ソースの閲覧（#383）は公開済みの作品の id を補う。** draft の id では 404 しか見られない。
   return {
     [WORK_PAGE_PREFIX]: gameId,
-    [AUTHOR_PAGE_PREFIX]: authorId,
+    [AUTHOR_PAGE_PREFIX]: plainAuthorId,
+    // **ハンドル名の作者ページ（#381）は 1 セグメントの経路である**（`src/routes.ts` の `segment`）。
+    [HANDLE_PAGE_PREFIX]: authorHandle,
     [WORK_SOURCE_PREFIX]: publishedGameId,
   };
 }
@@ -169,8 +189,14 @@ function prefixIds(): Record<string, string> {
  */
 function getPaths(): string[] {
   const ids = prefixIds();
-  return ssrPagePaths(createAppRoutes(testEnv())).map((path) => {
-    if (!path.endsWith('/') || path === '/') {
+  const routes = createAppRoutes(testEnv());
+  // **続きを補う経路は、経路表の `match` から決める**（前方一致と、1 セグメントの経路。#381）。
+  // `/@` は `/` で終わらないので、綴りの末尾だけを見ると裸のまま開いて 404 を見る。
+  const openEnded = new Set(
+    routes.filter((route) => route.match === 'prefix' || route.match === 'segment').map((route) => route.path),
+  );
+  return ssrPagePaths(routes).map((path) => {
+    if (!openEnded.has(path)) {
       return path;
     }
     const id = ids[path];
@@ -362,7 +388,9 @@ describe('全 SSR 画面の外枠', () => {
     // を通るので、外枠（フッタ・CSS・viewport）はすべて揃っている——**足した画面の本体を
     // 1 度も開かないまま「乗っている」と言える。** #330 の前は `/users/` が実際にそう
     // なっていた（裸の接頭辞を開いていた）。
-    const paths = getPaths().filter((path) => path !== '/' && path.split('/').length > 2);
+    const paths = getPaths().filter((path) =>
+      Object.keys(prefixIds()).some((prefix) => path.startsWith(prefix) && path.length > prefix.length),
+    );
     // 前方一致の経路が 1 本も無い状態を緑にしない（`prefixIds` が空になっても通る形を置かない）。
     expect(Object.keys(prefixIds()).length).toBeGreaterThan(1);
 
@@ -378,7 +406,7 @@ describe('全 SSR 画面の外枠', () => {
 
     // **作者ページは、作者の名前を出す本体であること**まで見る（200 を返す別の画面に
     // すり替わっても落ちるようにする）。
-    const authorBody = (await open(`${AUTHOR_PAGE_PREFIX}${authorId}`)).body;
+    const authorBody = (await open(`${HANDLE_PAGE_PREFIX}${authorHandle}`)).body;
     expect(authorBody).toContain('<h1>外枠検査</h1>');
     // 公開済みの作品を仕込んであるので、カードも並ぶ（作者ページの主役である）。
     expect(authorBody).toContain(publishedGameId);

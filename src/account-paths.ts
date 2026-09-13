@@ -48,6 +48,18 @@ export const ACCOUNT_DETAILS_PATH = '/account/details';
  */
 export const ACCOUNT_MAIL_PATH = '/account/mail';
 
+/**
+ * 登録情報の画面の、ハンドル名のタブ（#381 / 5.10。ログイン必須）。
+ *
+ * ハンドル名（`/@handle`）を決める・変えるフォームを出す。**`/account` の下にパスで置く**
+ * （{@link ACCOUNT_DETAILS_PATH} と同じ理由。外枠の検査と幅の検査に何も書き足さずに乗る）。
+ *
+ * **プロフィールのタブに同居させない。** ハンドル名は 30 日に 1 回しか変えられず、変えると URL が変わる
+ * （旧い URL の転送は 90 日で終わる）。**その説明を、60 秒ごとに変えられる表示名や自己紹介と同じ画面の
+ * 途中に置くと読まれない**——1 枚を割いて、変える前に読む場所にする。
+ */
+export const ACCOUNT_HANDLE_PATH = '/account/handle';
+
 /** 登録情報の画面のタブ 1 つ。 */
 export interface AccountTab {
   /** タブの行き先（経路表の GET の画面）。 */
@@ -65,6 +77,7 @@ export interface AccountTab {
  */
 export const ACCOUNT_TABS: readonly AccountTab[] = [
   { path: ACCOUNT_PATH, label: 'プロフィール' },
+  { path: ACCOUNT_HANDLE_PATH, label: 'ハンドル名' },
   { path: ACCOUNT_DETAILS_PATH, label: 'アカウント' },
   { path: ACCOUNT_MAIL_PATH, label: 'メール配信' },
 ];
@@ -86,6 +99,16 @@ export const ACCOUNT_DISPLAY_NAME_PATH = '/api/account/display-name';
  * 気づきにくい）。
  */
 export const DISPLAY_NAME_FIELD = 'display_name';
+
+/**
+ * ハンドル名の保存（API。#381 / 5.10）。
+ *
+ * **画面のパスと分ける**（{@link ACCOUNT_DISPLAY_NAME_PATH} と同じ判断）。
+ */
+export const ACCOUNT_HANDLE_API_PATH = '/api/account/handle';
+
+/** フォームの項目名（ハンドル名）。画面と API が同じ綴りを使う（{@link DISPLAY_NAME_FIELD} と同じ理由）。 */
+export const HANDLE_FIELD = 'handle';
 
 /**
  * メール配信の設定の保存（API。#384 / 5.11）。

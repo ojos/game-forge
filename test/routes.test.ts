@@ -226,3 +226,78 @@ describe('前方一致の接頭辞の綴り（#150）', () => {
     ]);
   });
 });
+
+describe('1 セグメントの経路（#381。`/@handle`）', () => {
+  /** 1 セグメントの経路と、前方一致・完全一致を混ぜた経路表。 */
+  const segmentRoutes: readonly Route[] = [
+    { method: 'GET', path: '/@', match: 'segment', handler: () => json({ hit: 'segment' }) },
+    { method: 'GET', path: '/@fixed', handler: () => json({ hit: 'fixed' }) },
+    { method: 'GET', path: '/works/', match: 'prefix', handler: () => json({ hit: 'works' }) },
+    { method: 'GET', path: '/works', handler: () => json({ hit: 'works-exact' }) },
+  ];
+
+  /**
+   * 経路を 1 つ引く。
+   *
+   * @param path パス
+   * @param method メソッド
+   * @returns レスポンス
+   */
+  async function hit(path: string, method = 'GET'): Promise<Response> {
+    return await dispatch(segmentRoutes, new Request(`${APP_ORIGIN}${path}`, { method }), env);
+  }
+
+  it('接頭辞の後ろに 1 セグメントが続くパスにだけ一致する', async () => {
+    expect(await (await hit('/@someone')).json()).toEqual({ hit: 'segment' });
+    expect((await hit('/@')).status).toBe(404);
+    expect((await hit('/@someone/works')).status).toBe(404);
+    expect((await hit('/@someone/')).status).toBe(404);
+  });
+
+  it('完全一致を先に見る（`/@fixed` は飲み込まれない）', async () => {
+    expect(await (await hit('/@fixed')).json()).toEqual({ hit: 'fixed' });
+  });
+
+  it('語の経路（`/works`・`/works/<id>`）を飲み込まない', async () => {
+    expect(await (await hit('/works')).json()).toEqual({ hit: 'works-exact' });
+    expect(await (await hit('/works/abc')).json()).toEqual({ hit: 'works' });
+  });
+
+  it('メソッド違いは 405 と Allow を返す', async () => {
+    const response = await hit('/@someone', 'POST');
+    expect(response.status).toBe(405);
+    expect(response.headers.get('allow')).toBe('GET, HEAD');
+  });
+
+  it('同じ綴りの完全一致・前方一致・1 セグメントを重複と見なさず、1 セグメントどうしの重複は検出する', () => {
+    expect(findDuplicateRoutes(segmentRoutes)).toEqual([]);
+    expect(
+      findDuplicateRoutes([
+        { method: 'GET', path: '/@', match: 'segment', handler: () => json({}) },
+        { method: 'GET', path: '/@', match: 'segment', handler: () => json({}) },
+        { method: 'GET', path: '/@', handler: () => json({}) },
+      ]),
+    ).toEqual(['GET /@+']);
+  });
+
+  it('接頭辞は `/` で始まり記号で終わる規約を、機械で検出する（前方一致の規約は崩さない）', () => {
+    expect(findMalformedPrefixRoutes(segmentRoutes)).toEqual([]);
+    const malformed: readonly Route[] = [
+      // 語で終わると `/worksmith` のような綴りまで飲み込む。
+      { method: 'GET', path: '/works', match: 'segment', handler: () => json({}) },
+      // `/` で終わる綴りは前方一致の形で、1 セグメントの経路では `/@/foo` になる。
+      { method: 'GET', path: '/@/', match: 'segment', handler: () => json({}) },
+      { method: 'GET', path: '@', match: 'segment', handler: () => json({}) },
+      { method: 'GET', path: '/', match: 'segment', handler: () => json({}) },
+      // 前方一致の規約はそのまま（`/@` は前方一致としては規約違反）。
+      { method: 'GET', path: '/@', match: 'prefix', handler: () => json({}) },
+    ];
+    expect(findMalformedPrefixRoutes(malformed)).toEqual(['GET /works', 'GET /@/', 'GET @', 'GET /', 'GET /@']);
+  });
+
+  it('アプリの経路表の `/@` は規約を満たす', () => {
+    const routes = createAppRoutes(env);
+    expect(routes.some((route) => route.path === '/@' && route.match === 'segment')).toBe(true);
+    expect(findMalformedPrefixRoutes(routes)).toEqual([]);
+  });
+});

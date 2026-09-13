@@ -18,8 +18,11 @@
 #   COOKIE_VALUE        `__Host-gf_session` の値
 #   GAME_ID             仕込んだ draft の作品の id（`/works/` の続きに使う）
 #   PUBLISHED_GAME_ID   仕込んだ公開済みの作品の id（カードが並ぶ画面と、`/source/` の続きのため）
-#   USER_ID             仕込んだ利用者の id（`/users/` の続きに使う）。**`is_admin = 1` を立ててある**
-#                       （admin の画面を 404 でなく本体で開くため。#398）
+#   USER_ID             仕込んだ利用者の id。**`is_admin = 1` を立ててある**
+#                       （admin の画面を 404 でなく本体で開くため。#398）。**ハンドル名 `$HANDLE` を決めてある**（#381）
+#   HANDLE              仕込んだ利用者のハンドル名（`/@` の続きに使う。#381。作品を持つ作者ページの本体はこの綴りで測る）
+#   PLAIN_USER_ID       ハンドル名を決めていない利用者の id（`/users/` の続きに使う。#381——ハンドル名を決めた
+#                       利用者の `/users/<id>` は `/@handle` へ 301 で送り、幅の検査は「別の画面へ移動した」として落とす）
 #   WORK                使い捨ての作業場
 #
 # ══════════════════════════════════════════════════════════════════════════════
@@ -119,6 +122,9 @@ dev_fixture_up() {
 
   SESSION_SECRET="page-width-check-secret-value-0123456789"
   USER_ID="pagewidth"
+  PLAIN_USER_ID="pagewidth-plain"
+  # ハンドル名（#381）。`/@` の続きに補う。形は `src/handle-paths.ts` の `HANDLE_PATTERN`。
+  HANDLE="width_check"
   GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
 
   note "applying migrations"
@@ -176,6 +182,9 @@ dev_fixture_up() {
       values ('$SOURCE_SHA', 'go1.26.5', '$SOURCE_KEY', '$WASM_KEY', 11404411, '$SOURCE_SHA',
               2282839, '$SOURCE_SHA', 'br', 1);
     update users set is_admin = 1 where id = '$USER_ID';
+    insert into users (id, google_sub, email, display_name, created_at)
+      values ('$PLAIN_USER_ID', 'sub-$PLAIN_USER_ID', '$PLAIN_USER_ID@example.invalid', '幅の検査（ハンドル名なし）', 1);
+    insert into handles (handle, user_id, claimed_at) values ('$HANDLE', '$USER_ID', 1);
     insert into games (id, author_id, status, title, go_version, created_at, published_at,
                        generation_state, preview_key, review_state)
       values ('$QUEUED_GAME_ID', '$USER_ID', 'published',
@@ -305,7 +314,8 @@ dev_fixture_down() {
 #
 # **綴りの正本はコードにある**——`/works/` は `src/paths.ts` の `WORK_PAGE_PREFIX`、
 # `/users/` は `src/users-page-paths.ts` の `AUTHOR_PAGE_PREFIX`、`/source/` は
-# `src/work-source.ts` の `WORK_SOURCE_PREFIX`。**シェルからは
+# `src/work-source.ts` の `WORK_SOURCE_PREFIX`、`/@` は `src/handle-paths.ts` の `HANDLE_PAGE_PREFIX`（#381）。
+# **シェルからは
 # import できないので、ここは写しである。** 腐らせないために、**知らない接頭辞が来たら
 # 落とす**（下）。同じ規則を `test/page-shell.test.ts` の `prefixIds` が定数から組み立てて
 # いるので、綴りを変えれば必ずどちらかが赤くなる。
@@ -331,10 +341,18 @@ const ids = new Map([
   ["/users/", process.argv[3]],
   // ソースの閲覧（#383）は公開済みの作品にしか開けない。draft の id では 404 しか測れない。
   ["/source/", process.argv[4]],
+  // ハンドル名の作者ページ（#381）。1 セグメントの経路で、接頭辞は `/` で終わらない。
+  ["/@", process.argv[5]],
 ]);
 
+// **続きを補う経路**: `/` で終わる前方一致の接頭辞と、**記号で終わる 1 セグメントの経路の接頭辞**
+// （`src/routes.ts` の `segment` の規約。`/@`）。**JSON は `match` を運ばないので綴りで見る**——
+// 完全一致の画面は英字・数字・`/` で終わる。
+const openEnded = (path) =>
+  (path.endsWith("/") && path !== "/") || /[^A-Za-z0-9_.~\/-]$/u.test(path);
+
 const filled = paths.map((path) => {
-  if (!path.endsWith("/") || path === "/") {
+  if (!openEnded(path)) {
     return path;
   }
   const id = ids.get(path);
@@ -350,7 +368,7 @@ const filled = paths.map((path) => {
   return path + id;
 });
 console.log(filled.join(","));
-' "$WORK/pages.json" "$GAME_ID" "$USER_ID" "$PUBLISHED_GAME_ID" || fail "画面の一覧を読めませんでした。"
+' "$WORK/pages.json" "$GAME_ID" "$PLAIN_USER_ID" "$PUBLISHED_GAME_ID" "$HANDLE" || fail "画面の一覧を読めませんでした。"
 }
 
 ##

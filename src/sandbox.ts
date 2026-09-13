@@ -27,8 +27,18 @@
  * （`src/avatar-delivery.ts`）。**作品の配信（`/p/` / `/g/`）とは接頭辞で分ける**——あちらの
  * URL の解釈（`parseSandboxPath`）に画像の綴りを混ぜない。
  */
+import { AVATAR_PATH_PREFIX } from './avatar-paths.js';
 import { deliverAvatar, isAvatarPath } from './avatar-delivery.js';
-import { deliverSandboxRequest } from './sandbox-delivery.js';
+import { SANDBOX_DELIVERY_PREFIXES, deliverSandboxRequest } from './sandbox-delivery.js';
+
+/**
+ * サンドボックス用ホストが受ける接頭辞のすべて（作品の配信 `/p/` `/g/` と、アイコン `/avatars/`）。
+ *
+ * **ハンドル名の予約語を導くために輸出する**（#381 / 5.10。`src/app.ts` が `src/handle.ts` の
+ * `reservedHandlesOf` へ渡す）。**接頭辞を足すときは、この配列へも足すこと**（下の振り分けと同じ場所に
+ * 置いてあるので、足した人の目に入る）。
+ */
+export const SANDBOX_PATH_PREFIXES: readonly string[] = [...SANDBOX_DELIVERY_PREFIXES, AVATAR_PATH_PREFIX];
 
 /**
  * サンドボックス用ホストへのリクエストに対するレスポンスを返す。

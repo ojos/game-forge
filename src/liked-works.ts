@@ -49,6 +49,7 @@
 import { loginRequiredRedirect } from './auth/google.js';
 import type { PublicWork } from './games.js';
 import { PUBLISHED_STATUS, workTagsOf } from './games.js';
+import { authorHandleColumnSql } from './handle-sql.js';
 import { sandboxOriginOf } from './avatar-paths.js';
 import { headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
 import { siteFooter } from './legal.js';
@@ -131,7 +132,8 @@ export function likedWorksSql(count: number): string {
   // **`g.play_count` を選ぶのはカードに出すためである**（#377。`publishedGamesSql` と揃える）。
   return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
             g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name,
-            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at
+            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at,
+            ${authorHandleColumnSql('g.author_id')}
        from games g
        left join users u on u.id = g.author_id
       where g.id in (${placeholders}) and g.status = ? and ${reviewVisibleSql('g')}`;
@@ -209,6 +211,7 @@ export async function listLikedWorks(
       tag3: string | null;
       author_name: string | null;
       author_avatar_set_at: number | null;
+      author_handle: string | null;
     }>();
 
   const rows = new Map(result.results.map((row) => [row.id, row]));
@@ -229,6 +232,8 @@ export async function listLikedWorks(
       // （`src/work-card.ts` の `cardAuthorId`）。
       authorId: row.author_id,
     authorAvatarSetAt: row.author_avatar_set_at,
+      // いまのハンドル名（#381）。あれば作者名のリンクが `/@handle` になる。
+      authorHandle: row.author_handle,
       publishedAt: row.published_at,
       forkCount: row.fork_count,
       likeCount: row.like_count,

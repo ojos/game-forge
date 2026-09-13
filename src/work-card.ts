@@ -62,7 +62,7 @@ import { avatarImage, escapeHtml } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH, ogpImagePath } from './ogp.js';
 import { workPagePath } from './paths.js';
-import { authorPagePath } from './users-page-paths.js';
+import { authorPagePathFor } from './users-page-paths.js';
 import { MAX_WORK_TAGS, WORK_TAGS, WORK_TAG_FIELD } from './work-tags.js';
 import type { WorkTagId } from './work-tags.js';
 import { PUBLIC_WORKS_PATH } from './works-paths.js';
@@ -315,7 +315,8 @@ function renderAuthor(work: PublicWork, avatarOrigin: string | null): string {
   const url = cardAvatarUrl(work, authorId, avatarOrigin);
   const avatar =
     url === null ? '' : `<span class="gf-avatar" aria-hidden="true">${avatarImage(url, { lazy: true })}</span>`;
-  return `<a class="gf-card-author" href="${authorPagePath(authorId)}">${avatar}${name}</a>`;
+  // **ハンドル名があれば `/@handle` へ向ける**（#381。欠けていれば `/users/<id>` で、そちらが 301 で送る）。
+  return `<a class="gf-card-author" href="${authorPagePathFor(authorId, work.authorHandle)}">${avatar}${name}</a>`;
 }
 
 /**

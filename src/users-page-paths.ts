@@ -25,6 +25,7 @@
  * 画面モジュールに置くと循環参照になる（`src/works-paths.ts` が `PUBLIC_WORKS_PATH` と
  * `MY_WORKS_PATH` について書いているのと同じ形）。
  */
+import { handlePagePath, isStoredHandle } from './handle-paths.js';
 
 /**
  * 作者ページの接頭辞（2.3.1 / #330）。
@@ -54,4 +55,24 @@ export const AUTHOR_PAGE_PREFIX = '/users/';
  */
 export function authorPagePath(userId: string): string {
   return `${AUTHOR_PAGE_PREFIX}${encodeURIComponent(userId)}`;
+}
+
+/**
+ * 作者ページへのリンクの行き先を決める（#381 / 5.10）。**ハンドル名があれば `/@handle`、無ければ
+ * `/users/<user_id>`。**
+ *
+ * **作者名のリンクを出す場所（作品カード・作品ページ）は、すべてこれを通す。** 片方だけが `/@handle` を
+ * 知っていると、同じ作者への導線が画面によって違う URL になる（どちらも開けるが、共有される綴りが割れる）。
+ *
+ * **ハンドル名は実行時の値を見る**（{@link isStoredHandle}）。一覧の行は Cache API を通った JSON で、
+ * 配備の直後の最大 60 秒はハンドル名の列を選んでいなかった頃の行が返りうる（`src/games.ts` の
+ * `PublicWork.authorId` と同じ窓）。**欠けていても形が崩れていても `/users/<user_id>` へ倒す**——
+ * そちらはハンドル名があれば `/@handle` へ 301 で送るので、行き先は同じ画面になる。
+ *
+ * @param userId 利用者 id（`users.id`）
+ * @param handle いま使っているハンドル名（無ければ null。実行時には何が来てもよい）
+ * @returns アプリ用ホスト上の絶対パス
+ */
+export function authorPagePathFor(userId: string, handle: unknown): string {
+  return isStoredHandle(handle) ? handlePagePath(handle) : authorPagePath(userId);
 }

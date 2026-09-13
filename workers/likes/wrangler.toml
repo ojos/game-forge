@@ -38,6 +38,14 @@ preview_urls = false
 name = "LIKE_HUB"
 class_name = "LikeHub"
 
+# プレイ数の DO（2.3.5 / #377）。**いいねと同じ Worker の別クラスにする**（#377 の利用者の
+# 決定）——いいねの同期と 1 本のスレッドや 1 回 40 件の同期枠を取り合わず、2.3.8 の分割の
+# 契機をいいねとプレイ数で分けて測れるようにするため。同期と D1 への写しのコードは
+# `LikeHub` と共有する（`src/hub.ts`）。宣言しておく理由は `LIKE_HUB` と同じである。
+[[durable_objects.bindings]]
+name = "PLAY_HUB"
+class_name = "PlayHub"
+
 # **SQLite 版で作る。** Workers Free で使えるのは SQLite 版の DO だけである（5.8）。
 # 一度作ったクラスの保存形式は後から変えられないので、`new_classes`（KV 版）と
 # 取り違えないこと。タグは配った後に書き換えない（配備済みの版の記録として残る）。
@@ -45,12 +53,18 @@ class_name = "LikeHub"
 tag = "v1"
 new_sqlite_classes = ["LikeHub"]
 
-# 同期（アラーム）が `games.like_count` を書き、`users.banned_at` を読む先。
+# `PlayHub`（#377）。**v1 を書き換えずに、新しいタグで足す**（v1 は配備済みの版の記録である）。
+# 保存形式は同じ理由で SQLite 版にする（`scripts/check-likes-worker.sh` が見る）。
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PlayHub"]
+
+# 同期（アラーム）が `games.like_count` / `games.play_count`（#377）を書き、`users.banned_at` を読む先。
 # **Pages と同じ本番の D1 を指す。** `database_id` はルートの `wrangler.toml` の
 # `[[env.production.d1_databases]]` の写しで、`scripts/check-likes-worker.sh` が一致を
 # 機械で照合する（片方だけ書き換えると、同期が別のデータベースへ書く）。
 #
-# **いいねの付与・取り消しではここを使わない。** D1 への書き込みは同期だけである（3.6）。
+# **いいねの付与・取り消しとプレイの計上ではここを使わない。** D1 への書き込みは同期だけである（3.6）。
 #
 # **`preview_database_id` はローカル専用である**（`wrangler dev` が `database_id` より先に
 # 使う。配備は `database_id` だけを読む）。値はルートの `wrangler.toml` のトップレベル

@@ -42,6 +42,12 @@
  * **ここへその例外を広げない。** 自動更新は `<meta http-equiv="refresh">` で行う。
  * JS を切っていても、通信が不安定でも、再読み込みさえできれば状態が読める。
  *
+ * > **#377 注記。公開済みの作品ページには、プレイ数を数える小さなスクリプトが入る**
+ * > （`src/plays.ts` の `playReportScript`。フッタの後ろ）。**「要求しない」は崩していない**
+ * > ——スクリプトは画面を 1 文字も書き換えず、JS を切っても遊べる（数えられないだけである）。
+ * > 起動を知っているのは iframe の中のローダーだけで、それを受けられるのがこの画面だけなので、
+ * > ここに置く（理由の全文は `src/plays.ts` の冒頭）。
+ *
  * ## 応答本文の文字列を表示面へ持ち込まない（8.3）
  *
  * 出すのは**このモジュールが持つ固定の文言**と、D1 から読んだ値のうち
@@ -109,6 +115,9 @@ import {
 // 2 つで、どちらも窓口（`src/likes.ts`）が輸出しているものである。**DO のバインディングの
 // 綴りはこの画面に現れない**（`scripts/check-likes-worker.sh` の 4 番がそれを機械で見る）。
 import { isPressableGame, readLikeViewerState } from './likes.js';
+// **プレイ数は窓口のスクリプトを埋めるだけである**（#377）。数えるのは作品ページのブラウザで、
+// この画面の経路は DO を呼ばない。
+import { playReportScript } from './plays.js';
 import { UNKNOWN_FAILURE_MESSAGE, failureMessageOf } from './generation-failure.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
@@ -342,6 +351,14 @@ interface WorkRow {
    * （1.2.50 / #340）。読み方は {@link storedLikeCount} が 1 か所で持つ。
    */
   like_count: number | null;
+  /**
+   * プレイ数（`games.play_count`。`migrations/` の `games_play_count`。#377）。
+   *
+   * **正本は Durable Objects（`PlayHub`）にあり**、この列は 5 分おきに上書きした写しである。
+   * **ログイン中も含めて、画面はこの列だけを読む**（いいねと違い、ログイン中に DO を引いて
+   * 正確な数を出す理由が無い——押す操作が無い）。読み方は {@link storedLikeCount} を借りる。
+   */
+  play_count: number | null;
   /** 作者の表示名（`users.display_name`）。結合が空振りしたら null。 */
   author_name: string | null;
   /**
@@ -753,6 +770,20 @@ export interface WorkPageView {
    */
   readonly likeCount: number;
   /**
+   * プレイ数（#377 / 仕様 2.3.6）。**0 のときは出さない**（いいねの数と同じ扱い）。
+   *
+   * **D1 の `games.play_count`（最大 5 分遅れる）である。** 誰が見ていても DO を引かない。
+   */
+  readonly playCount: number;
+  /**
+   * この作品 id（プレイ数を数えるスクリプトに入れる。#377）。数えないなら null。
+   *
+   * **条件は「公開済み・取り下げていない・遊ぶ URL を組み立てられた」である**（数えるのは
+   * `/g/` の iframe から届いた起動の合図だけで、未公開のプレビュー `/p/` は数えない）。
+   * **画面でこの条件を組み立てない**（`likableId` と同じ方針）。
+   */
+  readonly playCountableId: string | null;
+  /**
    * この作品 id（いいねを**付ける**フォームに入れる。5.8）。付けられないなら null。
    *
    * **`unlikableId` と兼ねない**（`publishableId` / `forkableId` を分けたのと同じ理由
@@ -818,7 +849,22 @@ export function renderWorkPage(view: WorkPageView, viewer: SiteViewer): string {
 <h1>${escapeHtml(workNameOf(view))}</h1>
 ${sectionFor(view)}
 ${ipNotice}${reportSection(view)}
-${siteFooter()}`;
+${siteFooter()}${playScript(view)}`;
+}
+
+/**
+ * プレイ数を数えるスクリプト（#377）。**フッタの後ろに置く**（`src/generate-page.ts` と同じ
+ * 置き方。ヘッダにスクリプトを置かない）。数えない画面では何も出さない。
+ *
+ * @param view 表示に必要な値
+ * @returns `<script>` 要素（前に改行を 1 つ付ける）。数えないなら空文字
+ */
+function playScript(view: WorkPageView): string {
+  if (view.playCountableId === null) {
+    return '';
+  }
+  const script = playReportScript(view.playCountableId);
+  return script === '' ? '' : `\n${script}`;
 }
 
 /**
@@ -1681,6 +1727,10 @@ ${paragraphs}`;
  * @returns HTML。数もボタンも無ければ空文字
  */
 function likeSection(view: WorkPageView): string {
+  // **プレイ数はいいねの数の隣に置く**（#377。2.3.12 の詳細パネルが後で作り替える）。
+  // 0 のときは出さない（2.3.6）。
+  const plays =
+    view.playCount > 0 ? `\n<p class="gf-plays">プレイ ${view.playCount}</p>` : '';
   const count =
     view.likeCount > 0 ? `\n<p class="gf-likes">いいね ${view.likeCount}</p>` : '';
 
@@ -1699,7 +1749,7 @@ function likeSection(view: WorkPageView): string {
           )
         : '';
 
-  return `${count}${form}`;
+  return `${plays}${count}${form}`;
 }
 
 /**
@@ -2165,7 +2215,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   const row = await env.DB.prepare(
     `select g.author_id, g.status, g.title, g.generation_state, g.generation_error,
             g.preview_key, g.created_at, g.generation_started_at,
-            g.ogp_state, g.ogp_started_at, g.published_at, g.like_count, g.ip_notice,
+            g.ogp_state, g.ogp_started_at, g.published_at, g.like_count, g.play_count, g.ip_notice,
             g.description, g.tag1, g.tag2, g.tag3,
             a.display_name as author_name, a.is_operator as author_is_operator,
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
@@ -2428,6 +2478,12 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // `pressable` は窓口の SQL が返した判定で、**未ログイン（`likeViewer === null`）と
       // 作者では必ず false** になる。押していないことを `likeViewer` の側から見るので、
       // 「押せるが状態が読めない」という組み合わせは現れない。
+      // **プレイ数は D1 の写しだけを読む**（#377。ログイン中も DO を引かない）。条件は
+      // `likeCount` と同じ（未公開・取り下げ済みでは 0。第 1 層は `sectionFor` の tombstone 分岐）。
+      playCount: published && !removed ? storedLikeCount(row.play_count) : 0,
+      // **数えるのは公開済みの `/g/` の iframe だけである**（#377）。公開済みなら `playUrl` は
+      // 必ず `/g/` を指す（上）。未公開のプレビュー（`/p/`）を開く作者の試遊は数えない。
+      playCountableId: published && !removed ? gameId : null,
       likableId: pressable && likeViewer !== null && !likeViewer.liked ? gameId : null,
       unlikableId: pressable && likeViewer !== null && likeViewer.liked ? gameId : null,
     },

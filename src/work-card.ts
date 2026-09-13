@@ -14,14 +14,15 @@
  * カードが誤って出す経路が無い。**「出さない」を表示側の注意ではなく、引く形で担保する**
  * （#152 の絞り込みと同じ規律）。
  *
- * **プレイ数は出さない**（M12-9 がまだ持っていない）。
- *
  * > **#340 注記。** 起票時（#328）はここが「**いいね数**・プレイ数・タグも出さない」
  * > だった。**いいねは持つことになった**（v1.51 / 仕様 2.3.5 / 5.8）ので、数を
  * > 出している（{@link cardLikeCount}）。**プレイ数とタグは変わらず持たない。**
  * >
  * > **#376 注記。タグを出すようになった**（v1.57 の 2.3.5 / 2.3.6。M12-8）。判断は
  * > {@link knownWorkTags} と {@link renderTags} にある。
+ * >
+ * > **#377 注記。プレイ数を出すようになった**（v1.57 の 2.3.5 / 2.3.6。M12-9）。判断は
+ * > {@link cardPlayCount} にある。
  *
  * ## タグは語彙に照らしてから出す（#376）
  *
@@ -145,6 +146,28 @@ function renderShot(work: PublicWork): string {
  */
 export function cardLikeCount(work: PublicWork): number {
   const value: unknown = work.likeCount;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  return Math.floor(value);
+}
+
+/**
+ * カードに出すプレイ数（仕様 2.3.6 / #377）。
+ *
+ * **{@link cardLikeCount} とまったく同じ扱いにする**——`PublicWork.playCount` は省略可で
+ * （`src/games.ts`。配備の直後 60 秒はキャッシュから列の無い行が返りうる）、キャッシュを
+ * 経由する値は JSON なので何でも入りうる。**読めなければ 0 に倒し、0 は「出さない」と同義**
+ * である（2.3.6「0 のときは出さない」）。**誤った数を 1 つも出さない。**
+ *
+ * **数は最大 5 分遅れる**（D1 へ写した値。正本は Durable Objects `PlayHub`）。**一覧を描く
+ * ことで DO を呼ばない。**
+ *
+ * @param work 作品
+ * @returns 0 以上の整数。読めなければ 0
+ */
+export function cardPlayCount(work: PublicWork): number {
+  const value: unknown = work.playCount;
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     return 0;
   }
@@ -285,12 +308,12 @@ function renderAuthor(work: PublicWork): string {
 }
 
 /**
- * カードの下段（作者・改造された数・いいねの数・公開日時・タグ）を組み立てる。
+ * カードの下段（作者・改造された数・いいねの数・プレイ数・公開日時・タグ）を組み立てる。
  *
  * **`fork_count` が 0 の作品には何も出さない。** 全行に「改造 0」が並ぶ一覧は区別を
  * 何も運ばない（`src/my-works.ts` が全行に同じ警告を並べないと決めたのと同じ）。
  * **いいねの数も同じ扱いである**（2.3.6 が両方について「0 のときは出さない」と
- * 決めている）。
+ * 決めている）。**プレイ数も同じである**（2.3.6 の v1.57。#377）。
  *
  * @param work 作品
  * @returns HTML
@@ -308,6 +331,11 @@ function renderMeta(work: PublicWork): string {
   const likes = cardLikeCount(work);
   if (likes > 0) {
     parts.push(`<span class="gf-card-likes">いいね ${likes}</span>`);
+  }
+  // **プレイ数はいいねの隣に置く**（#377。同じく D1 へ写した値で、最大 5 分遅れる）。
+  const plays = cardPlayCount(work);
+  if (plays > 0) {
+    parts.push(`<span class="gf-card-plays">プレイ ${plays}</span>`);
   }
   // **読めない日時では `<time>` ごと落とす。** `datetime=""` は不正であり、空の属性を
   // 出すくらいなら出さない（`src/my-works.ts` と同じ扱い）。カードは残る。

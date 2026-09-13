@@ -19,3 +19,4 @@
  */
 export { default } from '../../src/index.js';
 export { LikeHub } from './src/hub.js';
+export { PlayHub } from './src/play-hub.js';

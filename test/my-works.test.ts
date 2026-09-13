@@ -12,6 +12,7 @@ import {
 import {
   EMPTY_MY_WORKS_STATS,
   LIKES_DELAY_NOTE,
+  PLAYS_SINCE_NOTE,
   STATS_UNAVAILABLE_NOTICE,
   STAT_CARDS,
   loadMyWorksStats,
@@ -101,13 +102,16 @@ async function seedGame(
     readonly generationState?: string;
     readonly forkCount?: number;
     readonly likeCount?: number;
+    /** `games.play_count`（#377）。 */
+    readonly playCount?: number;
   } = {},
 ): Promise<string> {
   const id = crypto.randomUUID();
   await env.DB.prepare(
     `insert into games
-       (id, author_id, status, title, go_version, created_at, generation_state, fork_count, like_count)
-     values (?, ?, ?, ?, '', ?, ?, ?, ?)`,
+       (id, author_id, status, title, go_version, created_at, generation_state, fork_count, like_count,
+        play_count)
+     values (?, ?, ?, ?, '', ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -118,6 +122,7 @@ async function seedGame(
       overrides.generationState ?? 'ready',
       overrides.forkCount ?? 0,
       overrides.likeCount ?? 0,
+      overrides.playCount ?? 0,
     )
     .run();
   return id;
@@ -577,18 +582,18 @@ describe('統計カード（2.3.13 / #382）', () => {
     expect(paragraphById(body, 'works-quota')).toBe(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
   });
 
-  it('作品数・公開中・下書き・合計改造された数・合計いいね数を、自分の作品だけで数える', async () => {
+  it('作品数・公開中・下書き・合計改造された数・合計いいね数・合計プレイ数を、自分の作品だけで数える', async () => {
     const userId = await seedUser();
     const other = await seedUser();
     await seedGame(userId, { status: DRAFT_STATUS, likeCount: 0 });
     // 生成中・生成に失敗した作品も下書きである（一覧にも出ている行）。
     await seedGame(userId, { status: DRAFT_STATUS, generationState: 'failed' });
-    await seedGame(userId, { status: PUBLISHED_STATUS, forkCount: 2, likeCount: 5 });
-    await seedGame(userId, { status: PUBLISHED_STATUS, forkCount: 1, likeCount: 7 });
+    await seedGame(userId, { status: PUBLISHED_STATUS, forkCount: 2, likeCount: 5, playCount: 30 });
+    await seedGame(userId, { status: PUBLISHED_STATUS, forkCount: 1, likeCount: 7, playCount: 12 });
     // **removed は数えない**（一覧に出ない作品を数に入れると、作品数と行数が合わない）。
-    await seedGame(userId, { status: REMOVED_STATUS, forkCount: 100, likeCount: 100 });
+    await seedGame(userId, { status: REMOVED_STATUS, forkCount: 100, likeCount: 100, playCount: 100 });
     // 他人の作品は数えない。
-    await seedGame(other, { status: PUBLISHED_STATUS, forkCount: 50, likeCount: 50 });
+    await seedGame(other, { status: PUBLISHED_STATUS, forkCount: 50, likeCount: 50, playCount: 50 });
 
     const body = await (await openList(await sessionCookie(userId))).text();
     expect(statCardsOf(body)).toEqual({
@@ -597,17 +602,20 @@ describe('統計カード（2.3.13 / #382）', () => {
       下書き: '2',
       合計改造された数: '3',
       合計いいね数: '12',
+      合計プレイ数: '42',
     });
   });
 
-  it('合計プレイ数のカードはまだ出さない（列は #377 が足す）', async () => {
-    // **列の無い数を 0 と出さない。** 遊ばれていないのか数えていないのかを区別できない。
-    // #377 が入ったら、この検査を「出す」側へ書き換える。
+  it('合計プレイ数のカードを出し、数え始めた時期を書き添える（#377。#382 の申し送り）', async () => {
+    // **#382 は列が無いのでカードを出さなかった**（0 と出すと「遊ばれていない」と「数えていない」を
+    // 区別できない）。列を持ったので出す。**数え始める前の起動は含まないので、時期を書き添える。**
     const userId = await seedUser();
     await seedGame(userId, { status: PUBLISHED_STATUS });
     const body = await (await openList(await sessionCookie(userId))).text();
-    expect(pageBodyOf(body)).not.toContain('プレイ数');
-    expect(STAT_CARDS.map(({ label }) => label)).not.toContain('合計プレイ数');
+    expect(STAT_CARDS.map(({ label }) => label)).toContain('合計プレイ数');
+    expect(statCardsOf(body)['合計プレイ数']).toBe('0');
+    expect(pageBodyOf(body)).toContain(PLAYS_SINCE_NOTE);
+    expect(PLAYS_SINCE_NOTE).toContain('から数えています');
   });
 
   it('いいね数が遅れて反映されることを書き添える（5.8）', async () => {

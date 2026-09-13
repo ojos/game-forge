@@ -2151,8 +2151,13 @@ function assertLimit(limit: number, what = '取得件数'): void {
  * **綴りの正本はここである。** URL のクエリ（`?sort=`）も索引の名前
  * （`migrations/0019_games_public_list_idx.sql` / `0020_games_like_count.sql`）もこの 3 語に
  * 揃える。
+ *
+ * > **#377 注記。4 つになった**（仕様 2.3.4 の v1.57）。`played` は `games.play_count`
+ * > （Durable Objects `PlayHub` から 5 分おきに写した数。`migrations/` の `games_play_count`）を
+ * > 読み、`liked` とまったく同じ形で並ぶ——**並び順は最大 5 分遅れる。** **タグで絞り込んでいる
+ * > 間は出さない**（{@link TAGGED_WORK_SORTS} は変えていない。#376 の決定）。
  */
-export const PUBLIC_WORK_SORTS = ['recent', 'forked', 'liked'] as const;
+export const PUBLIC_WORK_SORTS = ['recent', 'forked', 'liked', 'played'] as const;
 
 /** 並べ替え軸。 */
 export type PublicWorkSort = (typeof PUBLIC_WORK_SORTS)[number];
@@ -2243,6 +2248,16 @@ export interface PublicWork {
    * 遅れる。** 正本は DO にあり、ずれたら DO の側が正しい（5.1）。
    */
   readonly likeCount: number;
+  /**
+   * プレイ数（`games.play_count`。#377 / 仕様 2.3.6）。**Durable Objects（`PlayHub`）から写した数で、
+   * 最大 5 分遅れる。**
+   *
+   * **{@link authorId} と同じ理由で省略可である**——一覧の行は Cache API に載っており、配備の
+   * 直後の最大 60 秒は `play_count` を選んでいなかった頃の行が返りうる。**型を必須にしても、
+   * 実行時に欠けている行は来る。** 欠けていれば、カードは数を出さないだけである
+   * （`src/work-card.ts` の `cardPlayCount`）。
+   */
+  readonly playCount?: number;
   /** 親を持つか（改造された作品か）。系統の詳細は作品ページが持つ（5.5）。 */
   readonly hasParent: boolean;
   /** スクリーンショットが撮れているか。撮れていなければカードは代替表示にする。 */
@@ -2272,6 +2287,8 @@ const PUBLIC_WORK_ORDER_BY: Readonly<Record<PublicWorkSort, string>> = {
   recent: 'g.published_at desc, g.id desc',
   forked: 'g.fork_count desc, g.published_at desc, g.id desc',
   liked: 'g.like_count desc, g.published_at desc, g.id desc',
+  // `migrations/` の `games_play_count` の部分索引（#377。`liked` と同じ形）。
+  played: 'g.play_count desc, g.published_at desc, g.id desc',
 };
 
 /**
@@ -2283,8 +2300,8 @@ const PUBLIC_WORK_ORDER_BY: Readonly<Record<PublicWorkSort, string>> = {
  * **書き写す**ことになり、片方だけが古くなる（`.ai-playbook/shared-ai-rules.md` 12 章）。
  * `test/works-list.test.ts` はここが返す文字列に `EXPLAIN QUERY PLAN` を付けて実行する。
  *
- * **文字列を組み立てるが、材料は `PublicWorkSort` の 3 値だけである。** 利用者の入力は
- * {@link toPublicWorkSort} が既に既知の 3 語へ落としており、SQL へ届く経路が無い。
+ * **文字列を組み立てるが、材料は `PublicWorkSort` の 4 値だけである。** 利用者の入力は
+ * {@link toPublicWorkSort} が既に既知の 4 語へ落としており、SQL へ届く経路が無い。
  *
  * 並び順の末尾に `id desc` を置くのは、同値の行の順序を決めるためである
  * （`migrations/0019_games_public_list_idx.sql`。索引の列順もこれに合わせてある）。
@@ -2304,7 +2321,9 @@ export function publishedGamesSql(sort: PublicWorkSort): string {
   //
   // **タグの枠を選ぶのはカードに出すためである**（#376 / 2.3.6）。**絞り込まない一覧は枠で
   // 絞らない**——タグ無しの作品もここに並ぶ（#376 の constraints）。
-  return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
+  //
+  // **`g.play_count` を選ぶのはカードに出すためである**（#377 / 2.3.6）。
+  return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
             g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name
        from games g
        left join users u on u.id = g.author_id
@@ -2320,6 +2339,7 @@ interface PublicWorkRow {
   readonly published_at: number | null;
   readonly fork_count: number;
   readonly like_count: number;
+  readonly play_count: number;
   readonly parent_id: string | null;
   readonly ogp_state: string | null;
   readonly author_id: string | null;
@@ -2344,6 +2364,7 @@ function toPublicWork(row: PublicWorkRow): PublicWork {
     publishedAt: row.published_at,
     forkCount: row.fork_count,
     likeCount: row.like_count,
+    playCount: row.play_count,
     hasParent: row.parent_id !== null,
     hasShot: row.ogp_state === 'ready',
     tags: workTagsOf(row),
@@ -2399,12 +2420,12 @@ const TAGGED_WORK_ORDER_COLUMNS: Readonly<Record<TaggedWorkSort, readonly string
 export function taggedGamesSql(sort: TaggedWorkSort): string {
   const columns = TAGGED_WORK_ORDER_COLUMNS[sort];
   const branches = [1, 2, 3].map(
-    (slot) => `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.parent_id,
+    (slot) => `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
                 g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3
            from games g
           where g.tag${slot} = ? and g.status = ? and ${reviewVisibleSql('g')}`,
   );
-  return `select t.id, t.title, t.published_at, t.fork_count, t.like_count, t.parent_id,
+  return `select t.id, t.title, t.published_at, t.fork_count, t.like_count, t.play_count, t.parent_id,
             t.ogp_state, t.author_id, t.tag1, t.tag2, t.tag3, u.display_name as author_name
        from (${branches.join(' union all ')}
          order by ${columns.map((column) => `${column} desc`).join(', ')}

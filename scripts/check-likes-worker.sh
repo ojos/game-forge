@@ -20,17 +20,18 @@
 #    - `preview_urls = false` を**明示している**（既定は workers_dev に従うが、既定に頼らない）
 #    - `route` / `routes` を持たない（カスタムドメインも `routes` の中に書く）
 #    - `env` を持たない（環境ごとに上の 3 つを上書きできるため、環境そのものを置かせない）
-# 2. **SQLite 版で作る**（`new_sqlite_classes` に LikeHub がある。`new_classes` に無い）
+# 2. **SQLite 版で作る**（`new_sqlite_classes` に LikeHub と PlayHub がある。`new_classes` に無い）
 #    ——Workers Free で使えるのは SQLite 版だけで、一度作ると保存形式を変えられない
 # 3. **Pages との結線が揃っている**（ルートの wrangler.toml）
-#    - トップレベル・`env.production`・`env.preview` のすべてに `LIKE_HUB` があり、
+#    - トップレベル・`env.production`・`env.preview` のすべてに `LIKE_HUB` と `PLAY_HUB`（#377）があり、
 #      `class_name` と `script_name` が likes Worker の宣言と一致する
 #      （durable_objects は環境へ引き継がれないので、1 か所でも欠けると本番から消える）
 #    - likes Worker の D1（同期の書き込み先）が、Pages の本番 D1 と同じ `database_id`
 #      （片方だけ書き換えると、同期が別のデータベースへ書く）
 #    - likes Worker の `preview_database_id`（`wrangler dev` だけが使う）が、Pages のローカル D1
 #      （トップレベルの `database_id`）と同じ（ずれるとローカルの同期が空の D1 へ書く。実測済み）
-# 4. **`env.LIKE_HUB` を読むのは src/likes.ts だけ**（窓口を 1 つにする。5.8）
+# 4. **`env.LIKE_HUB` を読むのは src/likes.ts だけ、`env.PLAY_HUB` を読むのは src/plays.ts だけ**
+#    （窓口を 1 つにする。5.8 / #377）
 # 5. **配る順序**: `.github/workflows/verify.yml` の deploy ジョブで、likes Worker を配る段が
 #    Pages を配る段より前にある（5.8。Pages が存在しない DO を指さないように）
 # 6. **likes Worker が束ねられる**（`wrangler deploy --dry-run`。資格情報もネットワークも
@@ -61,8 +62,10 @@ cd "$(dirname "$HERE")"
 
 LIKES_CONFIG="workers/likes/wrangler.toml"
 PAGES_CONFIG="wrangler.toml"
-WINDOW="src/likes.ts"
-BINDING="LIKE_HUB"
+# 束縛の名前と、それを読んでよい唯一のファイル（窓口）の組。**プレイ数（#377）は同じ Worker の
+# 別クラスなので、同じ検査を同じ形で当てる。**
+BINDINGS="LIKE_HUB PLAY_HUB"
+declare -A WINDOWS=([LIKE_HUB]="src/likes.ts" [PLAY_HUB]="src/plays.ts")
 
 fail() {
   printf '[likes-worker] %s\n' "$1" >&2
@@ -72,17 +75,19 @@ fail() {
 
 [[ -f "$LIKES_CONFIG" ]] || fail "$LIKES_CONFIG がありません。"
 [[ -f "$PAGES_CONFIG" ]] || fail "$PAGES_CONFIG がありません。"
-[[ -f "$WINDOW" ]] || fail "$WINDOW がありません。"
+for binding in $BINDINGS; do
+  [[ -f "${WINDOWS[$binding]}" ]] || fail "${WINDOWS[$binding]} がありません。"
+done
 command -v node >/dev/null 2>&1 || fail "node が見つかりません。Node.js を導入してください。"
 [[ -d node_modules/wrangler ]] || fail "node_modules/wrangler がありません。npm ci を実行してください。"
 
 # ── 1〜3. 宣言 ───────────────────────────────────────────────────────────────
-if ! report="$(LIKES_CONFIG="$LIKES_CONFIG" PAGES_CONFIG="$PAGES_CONFIG" BINDING="$BINDING" \
+if ! report="$(LIKES_CONFIG="$LIKES_CONFIG" PAGES_CONFIG="$PAGES_CONFIG" BINDINGS="$BINDINGS" \
   node --input-type=module - 2>&1 <<'JS'
 const { experimental_readRawConfig } = await import('wrangler');
 const likes = experimental_readRawConfig({ config: process.env.LIKES_CONFIG }).rawConfig;
 const pages = experimental_readRawConfig({ config: process.env.PAGES_CONFIG }).rawConfig;
-const binding = process.env.BINDING;
+const bindings = process.env.BINDINGS.split(' ');
 const problems = [];
 
 // 1. 公開の入口
@@ -101,39 +106,45 @@ if (likes.env !== undefined) {
   problems.push(`環境（env）を宣言しています。環境ごとに workers_dev / routes を上書きできるので置かない: ${Object.keys(likes.env).join(', ')}`);
 }
 
-// 2. SQLite 版
-const own = (likes.durable_objects?.bindings ?? []).find((b) => b.name === binding);
-const className = own?.class_name;
-if (className === undefined) {
-  problems.push(`${process.env.LIKES_CONFIG} に ${binding} の durable_objects.bindings がありません`);
-}
+// 2. SQLite 版（束縛ごと）
 const migrations = likes.migrations ?? [];
 const sqlite = migrations.flatMap((m) => m.new_sqlite_classes ?? []);
 const kv = migrations.flatMap((m) => m.new_classes ?? []);
-if (className !== undefined && !sqlite.includes(className)) {
-  problems.push(`${className} が new_sqlite_classes にありません（Workers Free で使えるのは SQLite 版だけ）`);
+const tags = migrations.map((m) => m.tag);
+if (new Set(tags).size !== tags.length) {
+  problems.push(`migrations のタグが重複しています: ${tags.join(', ')}`);
 }
-if (className !== undefined && kv.includes(className)) {
-  problems.push(`${className} が new_classes（KV 版）にあります。保存形式は後から変えられない`);
-}
+for (const binding of bindings) {
+  const own = (likes.durable_objects?.bindings ?? []).find((b) => b.name === binding);
+  const className = own?.class_name;
+  if (className === undefined) {
+    problems.push(`${process.env.LIKES_CONFIG} に ${binding} の durable_objects.bindings がありません`);
+  }
+  if (className !== undefined && !sqlite.includes(className)) {
+    problems.push(`${className} が new_sqlite_classes にありません（Workers Free で使えるのは SQLite 版だけ）`);
+  }
+  if (className !== undefined && kv.includes(className)) {
+    problems.push(`${className} が new_classes（KV 版）にあります。保存形式は後から変えられない`);
+  }
 
-// 3. Pages との結線
-const scopes = [
-  ['トップレベル', pages],
-  ['env.production', pages.env?.production ?? {}],
-  ['env.preview', pages.env?.preview ?? {}],
-];
-for (const [label, scope] of scopes) {
-  const found = (scope.durable_objects?.bindings ?? []).find((b) => b.name === binding);
-  if (found === undefined) {
-    problems.push(`${process.env.PAGES_CONFIG} の ${label} に ${binding} がありません（durable_objects は環境へ引き継がれない）`);
-    continue;
-  }
-  if (found.script_name !== likes.name) {
-    problems.push(`${label} の ${binding}.script_name（${found.script_name}）が likes Worker の name（${likes.name}）と一致しません`);
-  }
-  if (className !== undefined && found.class_name !== className) {
-    problems.push(`${label} の ${binding}.class_name（${found.class_name}）が likes Worker の宣言（${className}）と一致しません`);
+  // 3. Pages との結線
+  const scopes = [
+    ['トップレベル', pages],
+    ['env.production', pages.env?.production ?? {}],
+    ['env.preview', pages.env?.preview ?? {}],
+  ];
+  for (const [label, scope] of scopes) {
+    const found = (scope.durable_objects?.bindings ?? []).find((b) => b.name === binding);
+    if (found === undefined) {
+      problems.push(`${process.env.PAGES_CONFIG} の ${label} に ${binding} がありません（durable_objects は環境へ引き継がれない）`);
+      continue;
+    }
+    if (found.script_name !== likes.name) {
+      problems.push(`${label} の ${binding}.script_name（${found.script_name}）が likes Worker の name（${likes.name}）と一致しません`);
+    }
+    if (className !== undefined && found.class_name !== className) {
+      problems.push(`${label} の ${binding}.class_name（${found.class_name}）が likes Worker の宣言（${className}）と一致しません`);
+    }
   }
 }
 const likesDb = (likes.d1_databases ?? []).find((d) => d.binding === 'DB');
@@ -161,12 +172,15 @@ fi
 # ── 4. 窓口を 1 つにする ──────────────────────────────────────────────────────
 # **コメントも数える。** 「読んでいるのはコメントだけ」を見分けるには構文解析が要り、
 # そこで緩めると検査が空振りする形を作れる。窓口の外でこの名前に触れる必要は無い。
-readers="$(grep -rlF "$BINDING" src || true)"
-if [[ "$readers" != "$WINDOW" ]]; then
-  printf '[likes-worker]   %s を含むファイル:\n' "$BINDING" >&2
-  printf '%s\n' "${readers:-（なし）}" | while IFS= read -r line; do printf '[likes-worker]     %s\n' "$line" >&2; done
-  fail "src/ で ${BINDING} に触れてよいのは ${WINDOW} だけです（窓口を 1 つにする。仕様 5.8）。"
-fi
+for binding in $BINDINGS; do
+  window="${WINDOWS[$binding]}"
+  readers="$(grep -rlF "$binding" src || true)"
+  if [[ "$readers" != "$window" ]]; then
+    printf '[likes-worker]   %s を含むファイル:\n' "$binding" >&2
+    printf '%s\n' "${readers:-（なし）}" | while IFS= read -r line; do printf '[likes-worker]     %s\n' "$line" >&2; done
+    fail "src/ で ${binding} に触れてよいのは ${window} だけです（窓口を 1 つにする。仕様 5.8）。"
+  fi
+done
 
 # ── 5. 配る順序 ───────────────────────────────────────────────────────────────
 # **likes Worker を Pages より先に配る**（5.8）。順序は verify.yml の deploy ジョブの段の

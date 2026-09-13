@@ -109,6 +109,8 @@ async function seedGame(
     readonly publishedAt?: number | null;
     readonly forkCount?: number;
     readonly likeCount?: number;
+    /** プレイ数（`games.play_count`。#377）。 */
+    readonly playCount?: number;
     readonly ogpState?: string | null;
     readonly reviewState?: string | null;
     readonly parentId?: string | null;
@@ -120,9 +122,9 @@ async function seedGame(
   await env.DB.prepare(
     `insert into games
        (id, author_id, status, title, go_version, created_at, generation_state,
-        published_at, fork_count, like_count, ogp_state, review_state, parent_id,
+        published_at, fork_count, like_count, play_count, ogp_state, review_state, parent_id,
         tag1, tag2, tag3)
-     values (?, ?, ?, ?, '', 1, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     values (?, ?, ?, ?, '', 1, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -132,6 +134,7 @@ async function seedGame(
       overrides.publishedAt === undefined ? nextPublishedAt() : overrides.publishedAt,
       overrides.forkCount ?? 0,
       overrides.likeCount ?? 0,
+      overrides.playCount ?? 0,
       overrides.ogpState === undefined ? 'ready' : overrides.ogpState,
       overrides.reviewState ?? null,
       overrides.parentId ?? null,
@@ -274,6 +277,40 @@ describe('並べ替えと頁送り（仕様 2.3.3 / 2.3.4）', () => {
     expect(body).not.toContain(workPagePath(queued));
   });
 
+  it('プレイ数の順で、よく遊ばれた作品が先頭に来て、カードに数が出る（#377）', async () => {
+    // 値は `games.play_count`（DO から写した数）を読む。一覧は DO を呼ばない。
+    const author = await seedUser('プレイ数の作者');
+    const mostPlayed = await seedGame(author, { playCount: 98_765 });
+    const newest = await seedGame(author, { playCount: 0 });
+
+    const recent = await (await openList('?sort=recent')).text();
+    const played = await (await openList('?sort=played')).text();
+
+    expect(recent.indexOf(workPagePath(newest))).toBeLessThan(
+      recent.indexOf(workPagePath(mostPlayed)),
+    );
+    expect(played.indexOf(workPagePath(mostPlayed))).toBeLessThan(
+      played.indexOf(workPagePath(newest)),
+    );
+    expect(played).toContain('<span class="gf-card-plays">プレイ 98765</span>');
+    // 並べ替えの札に「プレイ数」が並び、いま選んでいる軸はリンクにしない。
+    const sortNav = played.slice(played.indexOf('<nav class="gf-sort"'));
+    expect(sortNav.slice(0, sortNav.indexOf('</nav>'))).toContain(
+      '<strong class="gf-sort-current">プレイ数</strong>',
+    );
+    expect(recent).toContain(`<a href="${worksListPath('played', 1)}">プレイ数</a>`);
+  });
+
+  it('プレイ数の順でも、draft と審査待ちは出ない（#377）', async () => {
+    const author = await seedUser('プレイ数の絞り込みの作者');
+    const draft = await seedGame(author, { status: DRAFT_STATUS, playCount: 10_000_000 });
+    const queued = await seedGame(author, { reviewState: REVIEW_QUEUED, playCount: 10_000_000 });
+
+    const body = await (await openList('?sort=played')).text();
+    expect(body).not.toContain(workPagePath(draft));
+    expect(body).not.toContain(workPagePath(queued));
+  });
+
   it('21 件目が次の頁で取得できる', async () => {
     const author = await seedUser('頁送りの作者');
     const ids: string[] = [];
@@ -305,7 +342,7 @@ describe('並べ替えと頁送り（仕様 2.3.3 / 2.3.4）', () => {
 });
 
 describe('索引が効いている（仕様 2.3.3 の条件 2）', () => {
-  it('3 軸とも全表走査ではなく、軸ごとの索引を使う', async () => {
+  it('4 軸とも全表走査ではなく、軸ごとの索引を使う', async () => {
     // **検査が SQL を書き写さない。** `publishedGamesSql` が返す文字列をそのまま
     // 実行計画に掛ける（`.ai-playbook/shared-ai-rules.md` 12 章）。
     //
@@ -317,6 +354,8 @@ describe('索引が効いている（仕様 2.3.3 の条件 2）', () => {
       ['recent', 'games_status_published_at_idx'],
       ['forked', 'games_status_fork_count_idx'],
       ['liked', 'games_status_like_count_idx'],
+      // `played` は `games_play_count` の部分索引（#377。`liked` と同じ形・同じ条件の綴り）。
+      ['played', 'games_status_play_count_idx'],
     ] as const) {
       const plan = await env.DB.prepare(`explain query plan ${publishedGamesSql(sort)}`)
         .bind(PUBLISHED_STATUS, WORKS_PER_PAGE, 0)
@@ -334,7 +373,7 @@ describe('索引が効いている（仕様 2.3.3 の条件 2）', () => {
 
   it('並べ替えの軸と索引が 1 対 1 に揃っている（#339）', () => {
     // 軸を足したのに索引の検査へ足し忘れると、その軸だけが全表走査のまま通る。
-    expect([...PUBLIC_WORK_SORTS].sort()).toEqual(['forked', 'liked', 'recent']);
+    expect([...PUBLIC_WORK_SORTS].sort()).toEqual(['forked', 'liked', 'played', 'recent']);
   });
 
   it('タグで絞り込むと、2 軸とも枠ごとの部分索引を順に読んで併合する（#376）', async () => {
@@ -455,6 +494,8 @@ describe('タグで絞り込む（#376 / 仕様 2.3.5）', () => {
       const sortNav = body.slice(body.indexOf('<nav class="gf-sort"'));
       const nav = sortNav.slice(0, sortNav.indexOf('</nav>'));
       expect(nav).not.toContain('いいねの数');
+      // **プレイ数順も絞り込み中は出さない**（#377。#376 の決定で `TAGGED_WORK_SORTS` は変えない）。
+      expect(nav).not.toContain('プレイ数');
       expect(nav).toContain('<strong class="gf-sort-current">新着</strong>');
       expect(nav).toContain(`<a href="${worksListPath('forked', 1, 'shooting')}">改造された数</a>`);
       expect(body.indexOf(workPagePath(newest))).toBeLessThan(body.indexOf(workPagePath(mostLiked)));

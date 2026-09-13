@@ -9,6 +9,7 @@ import { authorPagePath } from '../src/users-page-paths.js';
 import {
   cardAuthorId,
   cardLikeCount,
+  cardPlayCount,
   renderWorkCard,
   renderWorkCards,
   workTagListPath,
@@ -206,6 +207,40 @@ describe('likeCount を持たない古い行（キャッシュの 60 秒の窓�
     // 空振りしないことを対で見る。
     expect(cardLikeCount({ ...baseWork, likeCount: 3 })).toBe(3);
     expect(cardLikeCount({ ...baseWork, likeCount: 3.9 }), '整数へ落とす').toBe(3);
+  });
+});
+
+describe('プレイ数を出す（2.3.6 / #377）', () => {
+  it('1 以上なら出し、0・欠けている・数でないなら出さない（いいねの数と同じ扱い）', () => {
+    expect(renderWorkCard({ ...baseWork, playCount: 12 })).toContain(
+      '<span class="gf-card-plays">プレイ 12</span>',
+    );
+    // **欠けた行は、配備の直後 60 秒のキャッシュから返りうる**（`playCount` は省略可）。
+    expect(renderWorkCard(baseWork)).not.toContain('プレイ');
+    for (const broken of [0, -1, Number.NaN, null, '3', undefined]) {
+      const work = { ...baseWork, playCount: broken } as unknown as PublicWork;
+      expect(cardPlayCount(work), String(broken)).toBe(0);
+      expect(renderWorkCard(work), String(broken)).not.toContain('プレイ');
+    }
+    expect(cardPlayCount({ ...baseWork, playCount: 7.9 }), '整数へ落とす').toBe(7);
+  });
+
+  it('いいねの数の隣に並ぶ', () => {
+    const card = renderWorkCard({ ...baseWork, likeCount: 5, playCount: 9 });
+    expect(card.indexOf('いいね 5')).toBeLessThan(card.indexOf('プレイ 9'));
+    expect(card.indexOf('プレイ 9')).toBeLessThan(card.indexOf('<time'));
+  });
+
+  it('公開一覧のカードに、D1 へ写したプレイ数が出る', async () => {
+    const author = await seedUser('プレイ数の出る作者');
+    const played = await seedGame(author, 0);
+    await env.DB.prepare('update games set play_count = 31 where id = ?').bind(played).run();
+
+    await purgeListCache(FIRST_PAGE_KEY);
+    const body = await openList();
+
+    expect(body).toContain(workPagePath(played));
+    expect(body).toContain('プレイ 31');
   });
 });
 

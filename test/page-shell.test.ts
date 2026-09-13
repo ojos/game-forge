@@ -4,7 +4,16 @@ import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { ACCOUNT_PATH } from '../src/account-paths.js';
 import { LOGIN_PATH, LOGOUT_PATH } from '../src/auth/google.js';
 import { DRAFT_STATUS } from '../src/games.js';
-import { APP_CSS_PATH, BREADCRUMB_PARENTS, breadcrumbLabelOf } from '../src/html.js';
+import {
+  APP_CSS_PATH,
+  BREADCRUMB_PARENTS,
+  LOGO_DIR,
+  LOGO_HEIGHT,
+  LOGO_SCALES,
+  LOGO_WIDTH,
+  breadcrumbLabelOf,
+  siteLogo,
+} from '../src/html.js';
 import { TAKEDOWN_PATH, TERMS_PATH } from '../src/legal.js';
 import { FAQ_PATH, PRIVACY_PATH } from '../src/legal-paths.js';
 import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
@@ -397,6 +406,56 @@ describe('全 SSR 画面の外枠', () => {
     for (const path of getPaths()) {
       const { body } = await open(path);
       expect(body.split(HEADER_MARK).length - 1, `${path} のヘッダの数`).toBe(1);
+    }
+  });
+
+  it('どの画面のヘッダにもトップへのリンクとして、フッタにも画像として、ロゴが 1 つずつある（#440）', async () => {
+    for (const path of getPaths()) {
+      const { body } = await open(path);
+      const header = headerOf(body);
+      const footer = footerOf(body);
+      expect(header, `${path} のヘッダ`).not.toBeNull();
+      expect(footer, `${path} のフッタ`).not.toBeNull();
+      expect(header!.split(siteLogo()).length - 1, `${path} のヘッダのロゴ`).toBe(1);
+      expect(footer!.split(siteLogo()).length - 1, `${path} のフッタのロゴ`).toBe(1);
+      expect(header, `${path} のヘッダのロゴはトップへのリンク`).toContain(
+        `<a class="gf-header-logo" href="${HOME_PATH}">${siteLogo()}</a>`,
+      );
+      // **フッタのロゴはリンクにしない**（`src/legal.ts` の `siteFooter`「トップへを持たない」）。
+      expect(footer, `${path} のフッタのロゴは画像だけ`).toContain(`<div class="gf-footer-logo">${siteLogo()}</div>`);
+      expect(footer, `${path} のフッタにトップへのリンクが無い`).not.toContain(`href="${HOME_PATH}"`);
+    }
+  });
+
+  it('ロゴの画像は明暗で切り替わり、読み上げに「Game Forge」を渡す（#440）', () => {
+    const logo = siteLogo();
+    expect(logo).toContain('<source media="(prefers-color-scheme: dark)"');
+    expect(logo).toContain('alt="Game Forge"');
+    expect(logo).toContain(`width="${LOGO_WIDTH}" height="${LOGO_HEIGHT}"`);
+    for (const scale of LOGO_SCALES) {
+      expect(logo, `${scale} 倍の明るい地の画像`).toContain(`${LOGO_DIR}/lockup-horizontal-x${scale}-for-light-bg.png ${scale}x`);
+      expect(logo, `${scale} 倍の暗い地の画像`).toContain(`${LOGO_DIR}/lockup-horizontal-x${scale}-for-dark-bg.png ${scale}x`);
+    }
+    // 暗い地の画像は <source> にだけ、明るい地の画像は <img> にだけある（取り違えるとロゴが消える）。
+    const source = /<source[^>]*>/u.exec(logo)![0];
+    const img = /<img[^>]*>/u.exec(logo)![0];
+    expect(source).not.toContain('for-light-bg');
+    expect(img).not.toContain('for-dark-bg');
+  });
+
+  it('ロゴの画像のパスが、経路表のどの path とも衝突しない（#440）', () => {
+    // 見た目の土台（app.css）と同じ理由で見る——衝突すると Pages が静的ファイルを先に返し、経路が黙って消える。
+    for (const scale of LOGO_SCALES) {
+      for (const bg of ['light', 'dark'] as const) {
+        const asset = `${LOGO_DIR}/lockup-horizontal-x${scale}-for-${bg}-bg.png`;
+        for (const route of createAppRoutes(testEnv())) {
+          if (route.match === 'prefix') {
+            expect(asset.startsWith(route.path), `${asset} が prefix 経路 ${route.path} に飲み込まれます`).toBe(false);
+          } else {
+            expect(route.path, `経路とロゴの画像のパスが同じです: ${asset}`).not.toBe(asset);
+          }
+        }
+      }
     }
   });
 

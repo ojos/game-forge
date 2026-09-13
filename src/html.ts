@@ -86,6 +86,70 @@ import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './works-paths.js';
 export const APP_CSS_PATH = '/assets/app.css';
 
 /**
+ * ロゴの画像を置くディレクトリ（#440）。
+ *
+ * **正本は `brand/logo/lockup-horizontal/` で、ここにあるのはその写しである**（`docs/logo.md`）。
+ * Pages が配るのは `public/` の下だけなので、正本を直接は参照できない。写しが正本と
+ * 一致していることは `scripts/check-logo-copies.sh` が見る——**ロゴを書き出し直して
+ * 写し忘れると、サイトだけが古いロゴのまま黙って残る。**
+ */
+export const LOGO_DIR = '/assets/logo';
+
+/**
+ * ロゴを描く倍率（#440）。**1 倍で表示し、2 倍と 4 倍は高密度の画面のための画像である。**
+ *
+ * **ドットのロゴは整数倍でしか拡大・縮小しない**（`docs/logo.md` 3 章）。表示の大きさを
+ * 1 倍（{@link LOGO_WIDTH} × {@link LOGO_HEIGHT}）に固定し、画面の画素密度に合う画像を
+ * `srcset` でブラウザに選ばせる。**画素密度が整数でない端末（1.5 倍など）では、選ばれた
+ * 画像が縮小されてドットの幅が揃わない**——これは保証しない（#440 の constraints）。
+ *
+ * **3 倍の画像は持たない**（書き出しの一覧 `tools/logobake/variants.mjs` に無い）。3 倍の
+ * 端末は 4 倍の画像を縮小して描く。
+ */
+export const LOGO_SCALES = [1, 2, 4] as const;
+
+/** ロゴを 1 倍で描いたときの寸法（px）。`scripts/check-logo-copies.sh` が 1 倍の画像の実寸と照合する。 */
+export const LOGO_WIDTH = 122;
+export const LOGO_HEIGHT = 31;
+
+/**
+ * 置く地の明るさごとの `srcset`。
+ *
+ * @param bg 置く地の明るさ（`docs/logo.md` 3 章の `for-light-bg` / `for-dark-bg`）
+ * @returns `srcset` の値
+ */
+function logoSrcset(bg: 'light' | 'dark'): string {
+  return LOGO_SCALES.map((scale) => `${LOGO_DIR}/lockup-horizontal-x${scale}-for-${bg}-bg.png ${scale}x`).join(', ');
+}
+
+/**
+ * ロゴの画像（横組み。#440 / `docs/logo.md`）。ヘッダ・フッタ・管理画面のヘッダが共有する。
+ *
+ * ## 明暗は `<picture>` で切り替える
+ *
+ * **暗い地に `for-light-bg` を置くと、金床と文字が消える**（`docs/logo.md` 3 章）。サイトの
+ * 明暗は `prefers-color-scheme` だけで切り替わる（`app.css` の `@section tokens`。画面に切り替えの
+ * 操作は無い）ので、**同じ条件の `<source media>` で画像を選べば、地と画像が必ず揃う。**
+ * JavaScript を使わない（#266）。
+ *
+ * ## 読み上げには「Game Forge」を渡す
+ *
+ * **リンクの名前は画像の `alt` から付く。** 文字のロゴだった頃の「Game Forge」と同じ名前に
+ * しておく——読み上げの利用者から見ると、#440 の前と後で何も変わらない。
+ *
+ * ## アンバーはロゴの中だけの例外である
+ *
+ * **火花のアンバー（`#F59E0B`）は、「色を持つのは作品だけ」（`app.css` の冒頭）の例外である**
+ * （#440 の intake で利用者が選んだ）。**例外はこの画像の中に閉じる**——アンバーを CSS の
+ * トークンにしない。トークンにすると、ボタンやリンクへ広がる入口ができる。
+ *
+ * @returns HTML（`<picture>`。リンクで包むのは呼ぶ側）
+ */
+export function siteLogo(): string {
+  return `<picture class="gf-logo"><source media="(prefers-color-scheme: dark)" srcset="${logoSrcset('dark')}"><img src="${LOGO_DIR}/lockup-horizontal-x1-for-light-bg.png" srcset="${logoSrcset('light')}" width="${LOGO_WIDTH}" height="${LOGO_HEIGHT}" alt="Game Forge"></picture>`;
+}
+
+/**
  * 外枠の出し分けに要る、いま見ている人と、いま開いている画面（2.3.7 / 2.3.10 / #331 / #372）。
  *
  * **持つのは 3 つだけである。** ヘッダが変えるのは「ログイン」とアカウントのメニューの
@@ -425,7 +489,7 @@ function headerSearch(query: string | undefined): string {
  * @returns HTML
  */
 function siteHeader(viewer: SiteViewer | undefined, searchQuery: string | undefined): string {
-  const logo = `<a class="gf-header-logo" href="${HOME_PATH}">Game Forge</a>`;
+  const logo = `<a class="gf-header-logo" href="${HOME_PATH}">${siteLogo()}</a>`;
   if (viewer === undefined) {
     return `\n<header class="gf-header">${logo}</header>`;
   }

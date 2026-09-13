@@ -51,7 +51,9 @@
 .gf-admin-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  /* **縦は中央で揃える**（#440 で `baseline` から変えた）。ロゴは画像で、`baseline` のままだと
+     画像の下端が行の基準線になり、ナビの文字だけが下へ落ちる（`app.css` の `.gf-header` と同じ理由）。 */
+  align-items: center;
   gap: var(--gf-gap-2) var(--gf-gap-3);
   margin-bottom: var(--gf-gap-4);
   padding-bottom: var(--gf-gap-2);
@@ -65,6 +67,13 @@
 .gf-admin-header a {
   color: var(--gf-ink-soft);
   text-decoration: none;
+}
+
+/* ロゴと「管理」を 1 つのリンクに並べる（#440。`src/admin/shell.ts` の `adminHead`）。 */
+.gf-admin-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gf-gap-2);
 }
 
 .gf-admin-header a:hover {

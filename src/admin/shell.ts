@@ -35,7 +35,7 @@
  * 関数で、ホストを知らない）、外枠の検査は `test/admin-page-shell.test.ts` が
  * **admin の経路表を歩いて**行う。**一覧をどこにも書き写さない。**
  */
-import { APP_CSS_PATH, escapeHtml } from '../html.js';
+import { APP_CSS_PATH, escapeHtml, siteLogo } from '../html.js';
 import {
   ADMIN_ACTIONS_PATH,
   ADMIN_HOME_PATH,
@@ -113,7 +113,7 @@ export function adminHead(title: string): string {
 <link rel="stylesheet" href="${ADMIN_CSS_PATH}">
 <meta name="robots" content="noindex">
 <title>${escapeHtml(title + ADMIN_TITLE_SUFFIX)}</title>
-<header class="gf-admin-header"><a href="${ADMIN_HOME_PATH}">Game Forge 管理</a>
+<header class="gf-admin-header"><a class="gf-admin-logo" href="${ADMIN_HOME_PATH}">${siteLogo()}<span>管理</span></a>
   <nav class="gf-admin-nav">
     ${nav}
   </nav>

@@ -209,4 +209,13 @@ describe('設定は既定値を持たない（config.mjs）', () => {
     assert.throws(() => readConfig({ ...full, WEBP_QUALITY: '101' }), /WEBP_QUALITY/);
     assert.throws(() => readConfig({ ...full, AVATAR_SIZE: 'abc' }), /AVATAR_SIZE/);
   });
+
+  it('文字列全体が正の整数の綴りでなければ落ちる（parseInt のように先頭の数だけを読まない）', () => {
+    const full = { AVATAR_SIZE: '256', MAX_INPUT_BYTES: '4194304', MAX_INPUT_DIMENSION: '4096', WEBP_QUALITY: '80' };
+    for (const bad of ['256junk', '4096.9', '', ' ', '0', '-1', '+256', '0256', ' 256', '256 ', '1e3', '0x100']) {
+      for (const name of REQUIRED_ENV) {
+        assert.throws(() => readConfig({ ...full, [name]: bad }), new RegExp(name), `${name}=${JSON.stringify(bad)}`);
+      }
+    }
+  });
 });

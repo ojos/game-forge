@@ -75,6 +75,12 @@ locals {
    * **アカウントの同時実行総枠に注意すること。** 予約を付けると未予約の残りが最低値（10）を割っては
    * ならず、#103 ではそれで `InvalidParameterValueException` が出た。**apply が同じ例外で落ちたら
    * ここを `null` にすること**（外している間の上限はアカウント総枠になる）。
+   *
+   * **2 のままにする理由（PR #436 の Copilot レビュー）。** 参加者が同時に 3 人アイコンを上げると、3 本目は
+   * `429 TooManyRequestsException` で断られる。**それでも増やさない**——増やした分は上の総枠の制約で
+   * ビルド関数・オーケストレータ・OGP 撮影の予約と取り合う（#103）。代わりに **Worker が 429 に限って短く待って
+   * 2 回まで投げ直し**（合計 450 ms。`src/avatar-client.ts` の `THROTTLE_RETRY_DELAYS_MS`）、それでも空かなければ
+   * 「混み合っています」と返す。1 回の変換は 1 秒未満なので、枠が埋まる時間は短い。
    */
   avatar_function_reserved_concurrency = 2
 

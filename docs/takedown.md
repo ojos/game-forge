@@ -128,7 +128,7 @@ old='<1 で見た avatar_sha256>'; now=$(date +%s)
 #    history_key は NULL（画像を残さないため）
 npx wrangler d1 execute DB --remote --env production --command "
 update users set avatar_sha256 = null, avatar_set_at = ${now}
- where id = '${id}' and avatar_sha256 = '${old}';
+ where id = '${id}' and avatar_sha256 = '${old}' and avatar_lock_token is null;
 insert into avatar_changes (id, user_id, old_sha256, new_sha256, history_key, changed_at)
   select lower(hex(randomblob(16))), id, '${old}', null, null, ${now}
     from users
@@ -144,6 +144,12 @@ select old_sha256, new_sha256, history_key, changed_at from avatar_changes
 CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler r2 object get "game-forge/avatars/${id}.webp" --remote --pipe >/dev/null \
   && echo '**まだ残っています**' || echo '消えています'
 ```
+
+**4 の後の 5 で列が空になっていなければ、利用者がちょうど保存の途中です**（`avatar_lock_token` が入っている。
+アプリは保存のあいだ利用者ごとの排他を持ち、確定のときに外す。`src/avatar.ts`）。**60 秒待って 1 からやり直します**
+（保存が終われば新しい画像が現行のキーに入っているので、2 でそれも消す。排他を持ったまま落ちた要求も 60 秒で解ける）。
+**排他を無視して列を直さないこと**——保存の途中の要求が「確定が当たらなかった」として現行のキーを戻し、消した画像が
+R2 に戻りうる。
 
 **時刻は `date +%s` で 1 度だけ取り、両方の文に同じ値を渡します**（表示名を直す手順と同じ理由。
 `docs/admin-host.md` の「運営が D1 を直接 UPDATE して表示名を直すとき」）。

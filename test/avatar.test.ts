@@ -3,11 +3,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createAccountRoutes } from '../src/account.js';
 import { ACCOUNT_PATH } from '../src/account-paths.js';
 import { handleAppRequest } from '../src/app.js';
+import type { AvatarChange, AvatarLockResult } from '../src/avatar.js';
 import {
   AVATAR_CHANGES_TABLE,
   AVATAR_CHANGE_INTERVAL_SECONDS,
   AVATAR_CROP_NOTICE,
   AVATAR_HISTORY_RETENTION_DAYS,
+  AVATAR_LOCK_SECONDS,
+  acquireAvatarLock,
   avatarHistoryImageState,
   removeAvatar,
   saveAvatar,
@@ -16,9 +19,11 @@ import {
 import type { AvatarEncodeResult, EncodeAvatar } from '../src/avatar-client.js';
 import {
   AVATAR_FUNCTION_NAME_VAR,
+  AvatarEncodeBusy,
   AvatarEncodeFailed,
   AvatarNotConfigured,
   SYNC_INVOCATION_TYPE,
+  THROTTLE_RETRY_DELAYS_MS,
   bytesToBase64,
   createAvatarEncode,
 } from '../src/avatar-client.js';
@@ -145,15 +150,80 @@ interface FakeEncode {
  * @param result 返す結果（関数なら呼ばれるたびに作る。例外を投げてもよい）
  * @returns 差し替えた段と、呼ばれた記録
  */
-function fakeEncode(result: AvatarEncodeResult | (() => AvatarEncodeResult)): FakeEncode {
+function fakeEncode(result: AvatarEncodeResult | (() => AvatarEncodeResult), delayMs = 0): FakeEncode {
   const calls: Uint8Array[] = [];
   return {
     calls,
     encode: async (_env, image) => {
       calls.push(image);
+      if (delayMs > 0) {
+        // **変換を待つ間に、同じ利用者のもう 1 本が来る**形を作る（二度押しの検査）。
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
       return typeof result === 'function' ? result() : result;
     },
   };
+}
+
+/**
+ * R2 への書き込み（put / delete）を数える env を作る（**要求ごとに別の env を渡し、どちらが書いたかを見る**）。
+ *
+ * @returns env と、書いたキーの記録
+ */
+function countingEnv(): { env: Env; writes: string[] } {
+  const writes: string[] = [];
+  const bucket = new Proxy(env.BUCKET, {
+    get(target, property) {
+      const value = Reflect.get(target, property) as unknown;
+      if (typeof value !== 'function') {
+        return value;
+      }
+      return (...args: unknown[]) => {
+        if (property === 'put' || property === 'delete') {
+          writes.push(`${String(property)} ${String(args[0])}`);
+        }
+        return (value as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  });
+  return { env: { ...testEnv(), BUCKET: bucket }, writes };
+}
+
+/**
+ * 口を通さずに保存する（排他を取ってから `saveAvatar`）。
+ *
+ * @param userId 利用者の id
+ * @param webp 変換した画像
+ * @param now 時刻
+ * @returns 保存の結果、または排他で断られた結果
+ */
+async function saveDirect(userId: string, webp: Uint8Array, now: number): Promise<AvatarChange | AvatarLockResult> {
+  const locked = await acquireAvatarLock(env.DB, userId, now);
+  return locked.ok ? await saveAvatar(env, locked.lock, webp) : locked;
+}
+
+/**
+ * 口を通さずに外す（排他を取ってから `removeAvatar`）。
+ *
+ * @param userId 利用者の id
+ * @param now 時刻
+ * @returns 外した結果、または排他で断られた結果
+ */
+async function removeDirect(userId: string, now: number): Promise<AvatarChange | AvatarLockResult> {
+  const locked = await acquireAvatarLock(env.DB, userId, now);
+  return locked.ok ? await removeAvatar(env, locked.lock) : locked;
+}
+
+/**
+ * 排他の 2 列。
+ *
+ * @param userId 利用者の id
+ * @returns 2 列
+ */
+async function lockColumns(userId: string): Promise<{ avatar_lock_token: string | null; avatar_lock_at: number | null }> {
+  return (await env.DB.prepare('select avatar_lock_token, avatar_lock_at from users where id = ?')
+    .bind(userId)
+    .first<{ avatar_lock_token: string | null; avatar_lock_at: number | null }>())!;
 }
 
 /**
@@ -181,6 +251,7 @@ async function postAvatar(
   cookie: string | null,
   bytes: Uint8Array | null,
   fileName = 'icon.png',
+  requestEnv: Env = testEnv(),
 ): Promise<Response> {
   const form = new FormData();
   if (bytes !== null) {
@@ -193,7 +264,7 @@ async function postAvatar(
   return await dispatch(
     routes,
     new Request(`${APP_ORIGIN}${ACCOUNT_AVATAR_PATH}`, { method: 'POST', headers, body: form }),
-    testEnv(),
+    requestEnv,
   );
 }
 
@@ -291,8 +362,9 @@ describe('設定する（POST /api/account/avatar）', () => {
 
     const firstSha = await sha256Hex(first);
     const secondSha = await sha256Hex(second);
-    const historyKey = avatarHistoryKey(userId, later, firstSha);
-    expect(historyKey.startsWith(AVATAR_HISTORY_PREFIX)).toBe(true);
+    const historyKey = (await historyOf(userId)).at(-1)?.history_key ?? '';
+    // **キーは操作ごとに一意**（時刻・古い画像の SHA-256・操作の id）。
+    expect(historyKey).toMatch(new RegExp(`^${AVATAR_HISTORY_PREFIX}${userId}/${later}-${firstSha}-[0-9a-f-]{36}\\.webp$`, 'u'));
     // **古い画像は現行のキーから消え（上書き）、履歴の接頭辞にだけ残る。**
     expect(await r2Bytes(avatarObjectKey(userId))).toEqual(second);
     expect(await r2Bytes(historyKey)).toEqual(first);
@@ -418,9 +490,11 @@ describe('設定する（POST /api/account/avatar）', () => {
   it('同じ画像の上げ直しは成功にし、書かない（履歴も積まない）', async () => {
     const userId = await seedUser();
     const webp = encodedWebp(10);
-    expect(await saveAvatar(env, userId, webp, NOW)).toEqual({ ok: true, changed: true });
-    expect(await saveAvatar(env, userId, webp, NOW + 1)).toEqual({ ok: true, changed: false });
+    expect(await saveDirect(userId, webp, NOW)).toEqual({ ok: true, changed: true });
+    expect(await saveDirect(userId, webp, NOW + AVATAR_CHANGE_INTERVAL_SECONDS)).toEqual({ ok: true, changed: false });
     expect(await historyOf(userId)).toHaveLength(1);
+    // **書かなかった操作も、排他を解いて終わる。**
+    expect(await lockColumns(userId)).toEqual({ avatar_lock_token: null, avatar_lock_at: null });
   });
 });
 
@@ -428,37 +502,134 @@ describe('履歴と R2 は食い違わない（#405 の申し送り）', () => {
   it('履歴の追記が落ちたら、列も R2 の現行の画像も元に戻る（初めての設定では画像が消える）', async () => {
     // **`changed_at > 0` の CHECK を踏ませる**（時刻 0。間隔の条件は `avatar_set_at is null` で通る）。
     const userId = await seedUser();
-    await expect(saveAvatar(env, userId, encodedWebp(11), 0)).rejects.toThrow();
+    await expect(saveDirect(userId, encodedWebp(11), 0)).rejects.toThrow();
     expect(await r2Bytes(avatarObjectKey(userId))).toBeNull();
     expect(await avatarColumns(userId)).toEqual({ avatar_sha256: null, avatar_set_at: null });
     expect(await historyOf(userId)).toEqual([]);
+    expect(await lockColumns(userId)).toEqual({ avatar_lock_token: null, avatar_lock_at: null });
   });
 
   it('差し替えで履歴の追記が落ちたら、現行のキーは前の画像へ戻る', async () => {
     const userId = await seedUser();
     const first = encodedWebp(12);
-    await saveAvatar(env, userId, first, NOW);
+    await saveDirect(userId, first, NOW);
     // 間隔の条件を通すために時刻の列だけを空にし、時刻 0 で CHECK を踏ませる。
     await env.DB.prepare('update users set avatar_set_at = null where id = ?').bind(userId).run();
-    await expect(saveAvatar(env, userId, encodedWebp(13), 0)).rejects.toThrow();
+    await expect(saveDirect(userId, encodedWebp(13), 0)).rejects.toThrow();
     expect(await r2Bytes(avatarObjectKey(userId))).toEqual(first);
     expect((await env.BUCKET.head(avatarObjectKey(userId)))?.customMetadata?.['setAt']).toBe(String(NOW));
     expect(await avatarColumns(userId)).toEqual({ avatar_sha256: await sha256Hex(first), avatar_set_at: null });
     expect(await historyOf(userId)).toHaveLength(1);
   });
 
-  it('読んでから書くまでに別の変更が入った要求は、先に勝った画像を壊さない', async () => {
+  it('同じ利用者の 2 本がほぼ同時に来ても、1 本だけが変換と R2 に進み、D1・R2・履歴が食い違わない（二度押し）', async () => {
     const userId = await seedUser();
-    await saveAvatar(env, userId, encodedWebp(14), NOW);
-    // 別の要求が先に勝った状態を作る（列だけが進んでいる）。
-    const winner = encodedWebp(15);
-    await saveAvatar(env, userId, winner, NOW + AVATAR_CHANGE_INTERVAL_SECONDS);
-    // 間隔の内側の 3 本目は断られ、現行のキーは勝った側のまま。
-    expect(await saveAvatar(env, userId, encodedWebp(16), NOW + AVATAR_CHANGE_INTERVAL_SECONDS + 1)).toEqual({
+    const cookie = await cookieFor(userId);
+    await saveDirect(userId, encodedWebp(14), NOW);
+    const later = NOW + AVATAR_CHANGE_INTERVAL_SECONDS;
+    // **変換を 50 ms 待たせる**——勝った側が変換を待つ間に、もう 1 本の排他の取り合いが必ず起きる。
+    const a = fakeEncode({ ok: true, webp: encodedWebp(15) }, 50);
+    const b = fakeEncode({ ok: true, webp: encodedWebp(16) }, 50);
+    const envA = countingEnv();
+    const envB = countingEnv();
+    const [responseA, responseB] = await Promise.all([
+      postAvatar(routesWith(a.encode, later), cookie, pngBytes(10, 10), 'a.png', envA.env),
+      postAvatar(routesWith(b.encode, later), cookie, pngBytes(12, 12), 'b.png', envB.env),
+    ]);
+    const locations = [responseA, responseB].map((response) => response.headers.get('location')).sort();
+    expect(locations).toEqual([`${ACCOUNT_PATH}?reason=avatar-saving`, `${ACCOUNT_PATH}?saved=avatar`].sort());
+
+    // **負けた側は変換も R2 も 1 度も触らない。**
+    expect(a.calls.length + b.calls.length).toBe(1);
+    expect([envA.writes.length, envB.writes.length].sort()).toEqual([0, 2]);
+
+    // **D1 の現行の SHA-256 と、R2 の現行の画像が一致する。**
+    const columns = await avatarColumns(userId);
+    expect(columns.avatar_sha256).toBe(await sha256Hex((await r2Bytes(avatarObjectKey(userId)))!));
+    // **履歴の行が指すキーには、その行の古い画像がある。**
+    const history = await historyOf(userId);
+    expect(history).toHaveLength(2);
+    for (const row of history.filter((entry) => entry.history_key !== null)) {
+      expect(await sha256Hex((await r2Bytes(row.history_key!))!)).toBe(row.old_sha256);
+    }
+    expect(await lockColumns(userId)).toEqual({ avatar_lock_token: null, avatar_lock_at: null });
+  });
+
+  it('排他を持ったまま落ちた要求の排他は、持ち時間を過ぎれば取り直せ、切れた排他の持ち主は R2 に書かない', async () => {
+    const userId = await seedUser();
+    const stale = await acquireAvatarLock(env.DB, userId, NOW);
+    expect(stale.ok).toBe(true);
+    // 持ち時間の内側は「保存中」。
+    expect(await acquireAvatarLock(env.DB, userId, NOW + AVATAR_LOCK_SECONDS - 1)).toEqual({ ok: false, reason: 'avatar-saving' });
+    // 持ち時間を過ぎれば取り直せる。
+    const fresh = await acquireAvatarLock(env.DB, userId, NOW + AVATAR_LOCK_SECONDS);
+    expect(fresh.ok).toBe(true);
+    // **切れた排他の持ち主が遅れて保存しようとしても、R2 に 1 バイトも書かない。**
+    const counted = countingEnv();
+    expect(await saveAvatar(counted.env, (stale as { lock: Parameters<typeof saveAvatar>[1] }).lock, encodedWebp(17))).toEqual({
       ok: false,
-      reason: 'avatar-too-soon',
+      reason: 'avatar-failed',
     });
-    expect(await r2Bytes(avatarObjectKey(userId))).toEqual(winner);
+    expect(counted.writes).toEqual([]);
+    // 新しい持ち主は保存できる。
+    expect(await saveAvatar(env, (fresh as { lock: Parameters<typeof saveAvatar>[1] }).lock, encodedWebp(18))).toEqual({
+      ok: true,
+      changed: true,
+    });
+  });
+
+  it('確定の前に排他を奪われた要求は、R2 を戻さない（奪った側の書き込みを壊さない）', async () => {
+    const userId = await seedUser();
+    const first = encodedWebp(20);
+    await saveDirect(userId, first, NOW);
+    const later = NOW + AVATAR_CHANGE_INTERVAL_SECONDS;
+    const locked = await acquireAvatarLock(env.DB, userId, later);
+    expect(locked.ok).toBe(true);
+    const mine = encodedWebp(21);
+    // **現行のキーへ書いた直後に、排他が他の要求へ移った**形を作る（持ち時間が切れて取り直された場合）。
+    const bucket = new Proxy(env.BUCKET, {
+      get(target, property) {
+        const value = Reflect.get(target, property) as unknown;
+        if (typeof value !== 'function') {
+          return value;
+        }
+        return async (...args: unknown[]) => {
+          const result = await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+          if (property === 'put' && args[0] === avatarObjectKey(userId)) {
+            await env.DB.prepare('update users set avatar_lock_token = ? where id = ?').bind('taken-over', userId).run();
+          }
+          return result;
+        };
+      },
+    });
+    const change = await saveAvatar({ ...env, BUCKET: bucket }, (locked as { lock: Parameters<typeof saveAvatar>[1] }).lock, mine);
+    expect(change).toEqual({ ok: false, reason: 'avatar-failed' });
+    // **戻していない**（奪った側がこの後に書く。前の画像で上書きしない）。D1 も変わっていない。
+    expect(await r2Bytes(avatarObjectKey(userId))).toEqual(mine);
+    expect((await avatarColumns(userId)).avatar_sha256).toBe(await sha256Hex(first));
+    expect((await lockColumns(userId)).avatar_lock_token).toBe('taken-over');
+  });
+
+  it('履歴の R2 のキーは、同じ利用者・同じ秒・同じ画像でも操作ごとに違う', () => {
+    const userId = crypto.randomUUID();
+    const sha = 'a'.repeat(64);
+    expect(avatarHistoryKey(userId, NOW, sha, crypto.randomUUID())).not.toBe(avatarHistoryKey(userId, NOW, sha, crypto.randomUUID()));
+  });
+
+  it('関数の同時実行の枠が埋まっていたら「混み合っています」と返し、排他を解いて R2 に書かない', async () => {
+    const userId = await seedUser();
+    const cookie = await cookieFor(userId);
+    const busy = fakeEncode(() => {
+      throw new AvatarEncodeBusy(3);
+    });
+    const counted = countingEnv();
+    const response = await postAvatar(routesWith(busy.encode), cookie, pngBytes(10, 10), 'icon.png', counted.env);
+    expect(response.headers.get('location')).toBe(`${ACCOUNT_PATH}?reason=avatar-congested`);
+    expect(counted.writes).toEqual([]);
+    expect(await lockColumns(userId)).toEqual({ avatar_lock_token: null, avatar_lock_at: null });
+    // **間隔も進めていない**——すぐ上げ直せる。
+    const retried = await postAvatar(routesWith(fakeEncode({ ok: true, webp: encodedWebp(19) }).encode), cookie, pngBytes(10, 10));
+    expect(retried.headers.get('location')).toBe(`${ACCOUNT_PATH}?saved=avatar`);
   });
 });
 
@@ -467,14 +638,15 @@ describe('外す（POST /api/account/avatar/remove）', () => {
     const userId = await seedUser();
     const cookie = await cookieFor(userId);
     const webp = encodedWebp(17);
-    await saveAvatar(env, userId, webp, NOW);
+    await saveDirect(userId, webp, NOW);
     const later = NOW + AVATAR_CHANGE_INTERVAL_SECONDS;
 
     const response = await postRemove(routesWith(fakeEncode({ ok: false, reason: 'broken' }).encode, later), cookie);
     expect(response.headers.get('location')).toBe(`${ACCOUNT_PATH}?saved=avatar-removed`);
 
     const sha = await sha256Hex(webp);
-    const historyKey = avatarHistoryKey(userId, later, sha);
+    const historyKey = (await historyOf(userId)).at(-1)?.history_key ?? '';
+    expect(historyKey.startsWith(`${AVATAR_HISTORY_PREFIX}${userId}/${later}-${sha}-`)).toBe(true);
     expect(await r2Bytes(avatarObjectKey(userId))).toBeNull();
     expect(await r2Bytes(historyKey)).toEqual(webp);
     expect(await avatarColumns(userId)).toEqual({ avatar_sha256: null, avatar_set_at: later });
@@ -488,12 +660,12 @@ describe('外す（POST /api/account/avatar/remove）', () => {
 
   it('設定していなければ成功にして何も書かず、外した直後の設定は間隔で断る', async () => {
     const userId = await seedUser();
-    expect(await removeAvatar(env, userId, NOW)).toEqual({ ok: true, changed: false });
+    expect(await removeDirect(userId, NOW)).toEqual({ ok: true, changed: false });
     expect(await historyOf(userId)).toEqual([]);
 
-    await saveAvatar(env, userId, encodedWebp(18), NOW);
-    await removeAvatar(env, userId, NOW + AVATAR_CHANGE_INTERVAL_SECONDS);
-    expect(await saveAvatar(env, userId, encodedWebp(19), NOW + AVATAR_CHANGE_INTERVAL_SECONDS + 1)).toEqual({
+    await saveDirect(userId, encodedWebp(18), NOW + AVATAR_CHANGE_INTERVAL_SECONDS);
+    await removeDirect(userId, NOW + AVATAR_CHANGE_INTERVAL_SECONDS * 2);
+    expect(await saveDirect(userId, encodedWebp(19), NOW + AVATAR_CHANGE_INTERVAL_SECONDS * 2 + 1)).toEqual({
       ok: false,
       reason: 'avatar-too-soon',
     });
@@ -509,7 +681,7 @@ describe('配信（サンドボックス用ホストの /avatars/）', () => {
   async function seededAvatar(): Promise<{ userId: string; webp: Uint8Array }> {
     const userId = await seedUser();
     const webp = encodedWebp(20);
-    await saveAvatar(env, userId, webp, NOW);
+    await saveDirect(userId, webp, NOW);
     return { userId, webp };
   }
 
@@ -644,9 +816,9 @@ describe('表示（ヘッダ・カード・作者ページ・登録情報）', (
     const find = async () => (await listPublishedGames(env, 'recent', 50)).find((work) => work.id === gameId);
 
     expect((await find())?.authorAvatarSetAt).toBeNull();
-    await saveAvatar(env, userId, encodedWebp(21), NOW);
+    await saveDirect(userId, encodedWebp(21), NOW);
     expect((await find())?.authorAvatarSetAt).toBe(NOW);
-    await removeAvatar(env, userId, NOW + AVATAR_CHANGE_INTERVAL_SECONDS);
+    await removeDirect(userId, NOW + AVATAR_CHANGE_INTERVAL_SECONDS);
     expect((await find())?.authorAvatarSetAt).toBeNull();
   });
 
@@ -659,11 +831,11 @@ describe('表示（ヘッダ・カード・作者ページ・登録情報）', (
       return await response.text();
     };
     expect(await open()).not.toContain('gf-author-avatar');
-    await saveAvatar(env, userId, encodedWebp(22), NOW);
+    await saveDirect(userId, encodedWebp(22), NOW);
     const body = await open();
     expect(body).toContain(`<p class="gf-author-avatar"><span class="gf-avatar" aria-hidden="true"><img src="${SANDBOX_ORIGIN}/avatars/${userId}.webp?v=${NOW}"`);
     expect(body).toContain('<h1>アイコンの作者</h1>');
-    await removeAvatar(env, userId, NOW + AVATAR_CHANGE_INTERVAL_SECONDS);
+    await removeDirect(userId, NOW + AVATAR_CHANGE_INTERVAL_SECONDS);
     expect(await open()).not.toContain('gf-author-avatar');
   });
 
@@ -680,7 +852,7 @@ describe('表示（ヘッダ・カード・作者ページ・登録情報）', (
     expect(before).toContain('accept="image/png,image/jpeg,image/webp"');
     expect(before).not.toContain(ACCOUNT_AVATAR_REMOVE_PATH);
 
-    await saveAvatar(env, userId, encodedWebp(23), NOW);
+    await saveDirect(userId, encodedWebp(23), NOW);
     const after = await open();
     expect(after).toContain(`${SANDBOX_ORIGIN}/avatars/${userId}.webp?v=${NOW}`);
     expect(after).toContain(`action="${ACCOUNT_AVATAR_REMOVE_PATH}"`);
@@ -690,7 +862,7 @@ describe('表示（ヘッダ・カード・作者ページ・登録情報）', (
 describe('差し替え前の画像の保存期間（30 日）', () => {
   it(`履歴の行は ${AVATAR_HISTORY_RETENTION_DAYS} 日を過ぎたら「消えた」と扱い、写していない行は「無い」`, () => {
     const day = 24 * 60 * 60;
-    const key = avatarHistoryKey(crypto.randomUUID(), NOW, 'a'.repeat(64));
+    const key = avatarHistoryKey(crypto.randomUUID(), NOW, 'a'.repeat(64), crypto.randomUUID());
     expect(avatarHistoryImageState(key, NOW, NOW + AVATAR_HISTORY_RETENTION_DAYS * day - 1)).toBe('available');
     expect(avatarHistoryImageState(key, NOW, NOW + AVATAR_HISTORY_RETENTION_DAYS * day)).toBe('expired');
     expect(avatarHistoryImageState(null, NOW, NOW)).toBe('none');
@@ -744,9 +916,89 @@ describe('変換の呼び出し（src/avatar-client.ts）', () => {
     await expect(respond('not json')(invokeEnv(), pngBytes(1, 1))).rejects.toBeInstanceOf(AvatarEncodeFailed);
   });
 
+  it('同時実行の枠（429 / TooManyRequestsException）で断られたら、短く待って投げ直し、2 回目で通れば画像を戻す', async () => {
+    const webp = encodedWebp(40);
+    const waits: number[] = [];
+    let calls = 0;
+    const encode = createAvatarEncode({
+      fetch: async () => {
+        calls += 1;
+        return calls === 1
+          ? new Response('{"message":"Rate Exceeded."}', {
+              status: 429,
+              headers: { 'x-amzn-errortype': 'TooManyRequestsException:http://internal.amazon.com/coral/' },
+            })
+          : new Response(JSON.stringify({ ok: true, webp: bytesToBase64(webp) }), { status: 200 });
+      },
+      sleep: async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    });
+    expect(await encode(invokeEnv(), pngBytes(1, 1))).toEqual({ ok: true, webp });
+    expect(calls).toBe(2);
+    expect(waits).toEqual([THROTTLE_RETRY_DELAYS_MS[0]]);
+  });
+
+  it(`枠が空かないまま ${THROTTLE_RETRY_DELAYS_MS.length} 回投げ直したら「混み合っています」の例外にし、それ以外の失敗は投げ直さない`, async () => {
+    const waits: number[] = [];
+    let calls = 0;
+    const throttled = createAvatarEncode({
+      fetch: async () => {
+        calls += 1;
+        return new Response('{}', { status: 429 });
+      },
+      sleep: async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+    });
+    await expect(throttled(invokeEnv(), pngBytes(1, 1))).rejects.toBeInstanceOf(AvatarEncodeBusy);
+    expect(calls).toBe(THROTTLE_RETRY_DELAYS_MS.length + 1);
+    expect(waits).toEqual([...THROTTLE_RETRY_DELAYS_MS]);
+    // **合計の待ちは 1 秒未満**（Worker が利用者のフォームを待たせている）。
+    expect(THROTTLE_RETRY_DELAYS_MS.reduce((sum, value) => sum + value, 0)).toBeLessThan(1000);
+
+    let serverErrors = 0;
+    const failing = createAvatarEncode({
+      fetch: async () => {
+        serverErrors += 1;
+        return new Response('{}', { status: 500 });
+      },
+      sleep: async () => undefined,
+    });
+    await expect(failing(invokeEnv(), pngBytes(1, 1))).rejects.toBeInstanceOf(AvatarEncodeFailed);
+    expect(serverErrors).toBe(1);
+  });
+
   it('設定が足りなければ、送る前に名前だけを出して落ちる', async () => {
     const encode = createAvatarEncode({ fetch: async () => new Response('{}') });
     const broken = { ...invokeEnv(), [AVATAR_FUNCTION_NAME_VAR]: '' } as unknown as Env;
     await expect(encode(broken, pngBytes(1, 1))).rejects.toBeInstanceOf(AvatarNotConfigured);
+  });
+});
+
+describe('スキーマ（SHA-256 の CHECK は小文字の 16 進 64 桁だけ）', () => {
+  it('users.avatar_sha256 は、大文字・16 進の外の文字・長さ違いを弾き、小文字の 16 進 64 桁と NULL を通す', async () => {
+    const userId = await seedUser();
+    const write = (value: string | null) =>
+      env.DB.prepare('update users set avatar_sha256 = ? where id = ?').bind(value, userId).run();
+    for (const bad of ['A'.repeat(64), 'g'.repeat(64), `${'a'.repeat(63)} `, 'a'.repeat(63), 'a'.repeat(65), `${'a'.repeat(63)}-`]) {
+      await expect(write(bad), JSON.stringify(bad)).rejects.toThrow();
+    }
+    await write('0123456789abcdef'.repeat(4));
+    await write(null);
+  });
+
+  it('avatar_changes の old_sha256 / new_sha256 も同じ CHECK を持つ', async () => {
+    const userId = await seedUser();
+    const insert = (oldSha: string | null, newSha: string | null) =>
+      env.DB.prepare(
+        `insert into ${AVATAR_CHANGES_TABLE} (id, user_id, old_sha256, new_sha256, history_key, changed_at) values (?, ?, ?, ?, null, ?)`,
+      )
+        .bind(crypto.randomUUID(), userId, oldSha, newSha, NOW)
+        .run();
+    await expect(insert('F'.repeat(64), null)).rejects.toThrow();
+    await expect(insert(null, 'z'.repeat(64))).rejects.toThrow();
+    await insert('a'.repeat(64), null);
+    await insert(null, 'b'.repeat(64));
   });
 });

@@ -46,7 +46,7 @@
  * # 年齢で消してよい接頭辞が 1 つできた: `avatars/history/`（#380）
  *
  *   avatars/<user_id>.webp                                   … 現行のアイコン。**年齢で消さない**
- *   avatars/history/<user_id>/<changed_at>-<sha256>.webp     … 差し替え・外す前の画像の写し
+ *   avatars/history/<user_id>/<changed_at>-<sha256>-<操作の id>.webp … 差し替え・外す前の画像の写し
  *
  * **写しは、どの `games` 行からも・どの `users` 行からも配信に使われない**（`src/avatar.ts`。配信は
  * 現行のキーだけを読む。`src/avatar-delivery.ts`）。**利用者の決定は「差し替え前の画像は 30 日だけ

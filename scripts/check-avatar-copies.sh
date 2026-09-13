@@ -181,6 +181,19 @@ if require "terraform の avatar_history_retention_days" "$tf_days" && require "
   compare "差し替え前の画像の保存日数" "$tf_days" "$ts_days"
 fi
 
+# ── 4.5 排他の持ち時間は、関数のタイムアウトの 2 倍以上（PR #436）────────────
+# **短いと、変換を待っている間に排他が切れ、同じ利用者のもう 1 本が R2 に書き始める**（src/avatar.ts）。
+tf_timeout="$(tf_number "$TF" avatar_function_timeout_seconds)"
+ts_lock="$(ts_number "$AVATAR_TS" AVATAR_LOCK_SECONDS)"
+if require "terraform の avatar_function_timeout_seconds" "$tf_timeout" && require "src/avatar.ts の AVATAR_LOCK_SECONDS" "$ts_lock"; then
+  if (( ts_lock < tf_timeout * 2 )); then
+    echo "[avatar-copies] 排他の持ち時間（${ts_lock} 秒）が、関数のタイムアウト（${tf_timeout} 秒）の 2 倍より短いです。" >&2
+    fail=1
+  else
+    echo "[avatar-copies] ok 排他の持ち時間 ${ts_lock} 秒 >= タイムアウト ${tf_timeout} 秒 × 2"
+  fi
+fi
+
 # ── 5. 関数が要求する環境変数の名前と、terraform の environment（両方向）──────
 tf_env_names="$(awk '/^  environment {/,/^  }$/' "$TF" |
   sed -n 's/^[[:space:]]*\([A-Z][A-Z0-9_]*\)[[:space:]]*=.*/\1/p' | LC_ALL=C sort)"

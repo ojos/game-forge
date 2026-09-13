@@ -1,10 +1,11 @@
 -- アイコン画像（5.10 / 3.7 / 7.2 / #380 / M12-12）と、その変更の履歴。
 --
--- ## 列を 2 つ足す（画像そのものは R2 に置く）
+-- ## 列を 4 つ足す（画像そのものは R2 に置く）
 --
 --   - `avatar_sha256` … いま使っているアイコン（再エンコードした後の WebP）の SHA-256（16 進 64 桁）。
 --     **NULL が「設定していない」**（既定の図形を出す）
 --   - `avatar_set_at` … アイコンを最後に設定した・外した時刻（UNIX 秒）。NULL は「1 度も触っていない」
+--   - `avatar_lock_token` / `avatar_lock_at` … **保存・外す操作の、利用者ごとの排他**（下記）
 --
 -- **画像の在り処（R2 のキー）は列に持たない。** 利用者ごとに 1 つに固定する
 -- （`avatars/<user_id>.webp`。`src/avatar-paths.ts`）。**ヘッダのアバターは D1 を読まずに
@@ -18,6 +19,20 @@
 -- 2. **変更の間隔**（60 秒。表示名・自己紹介と同じ形で WHERE に置く）。**外したときも進める**
 --    ——外して付け直す連打を、付け替えの連打と同じ間隔で絞る（1 回の設定は Lambda の呼び出し
 --    1 回と R2 の書き込み 2 回を伴う）
+--
+-- ## 利用者ごとの排他を持つ（`avatar_lock_token` / `avatar_lock_at`。PR #436 の Copilot レビューで足した）
+--
+-- **同じ利用者の要求が 2 本ほぼ同時に来る（二度押し）と、排他の無い形は R2 と D1 を食い違わせた**
+-- ——2 本が同じ現行の画像を履歴へ写して互いを上書きし、D1 に負けた側の「戻す」が勝った側の画像を
+-- 古い画像へ戻す。**R2 に触る前に、1 本の条件付き UPDATE で排他を取る**（`src/avatar.ts` の
+-- `acquireAvatarLock`）。条件は「排他が無いか 60 秒より古い」かつ「前回の変更から 60 秒」。
+--
+--   - `avatar_lock_token` … 操作ごとの乱数（UUID）。**これを持つ要求だけが R2 を書き、D1 を確定し、戻す。**
+--     履歴の R2 のキーにも入れる（操作ごとに一意にする）
+--   - `avatar_lock_at` … 排他を取った時刻。**持ったまま落ちても 60 秒で自然に解ける**
+--
+-- 確定の UPDATE（履歴と同じ batch）が 2 列を NULL に戻す。失敗した操作は自分の token のときだけ解く。
+-- **運営が端末で列を直すときは、排他が無い（`avatar_lock_token is null`）行だけを直す**（`docs/takedown.md`）。
 --
 -- ## 変更の履歴を追記だけで持つ（`avatar_changes`。#405 の申し送り）
 --
@@ -69,24 +84,29 @@
 -- ## CHECK は 3 つ
 --
 -- - **`changed_at` は 0 より大きい**（0027 / 0030 と同じ理由）
--- - **SHA-256 は 16 進 64 桁**（NULL か、`length = 64`）。**表示の URL には使わない**が、運営が
---   端末で書いた値の綴りを揃えておく
+-- - **SHA-256 は小文字の 16 進 64 桁だけ**（NULL か、`length = 64` かつ `0-9a-f` の外の文字を含まない。
+--   `GLOB` は大文字小文字を区別する）。**表示の URL には使わない**が、運営が端末で書いた値の綴りを
+--   アプリの値（`src/avatar.ts` の `sha256Hex`）と揃えておく——大文字や空白が混ざると、`avatar_sha256 is ?` の
+--   比較が黙って外れる。長さだけの CHECK は PR #436 の Copilot レビューで直した
 --
 -- ## 連番について
 --
 -- **コードとテストと文書にはこの番号を書かない**（ファイル名だけが番号を持つ。並行する作業が
 -- マージの順で振り直すことがある。`docs/handoff.md` 4 章）。
 
-ALTER TABLE users ADD COLUMN avatar_sha256 TEXT CHECK (avatar_sha256 IS NULL OR length(avatar_sha256) = 64);
+ALTER TABLE users ADD COLUMN avatar_sha256 TEXT
+  CHECK (avatar_sha256 IS NULL OR (length(avatar_sha256) = 64 AND avatar_sha256 NOT GLOB '*[^0-9a-f]*'));
 ALTER TABLE users ADD COLUMN avatar_set_at INTEGER;
+ALTER TABLE users ADD COLUMN avatar_lock_token TEXT;
+ALTER TABLE users ADD COLUMN avatar_lock_at INTEGER;
 
 CREATE TABLE avatar_changes (
   id TEXT PRIMARY KEY,
   -- 変えた利用者。**実在する利用者しか入らない**（書く経路は `users` を引いて書く）。
   user_id TEXT NOT NULL REFERENCES users(id),
   -- 変える前と後の画像の SHA-256（NULL は「無い」）。
-  old_sha256 TEXT CHECK (old_sha256 IS NULL OR length(old_sha256) = 64),
-  new_sha256 TEXT CHECK (new_sha256 IS NULL OR length(new_sha256) = 64),
+  old_sha256 TEXT CHECK (old_sha256 IS NULL OR (length(old_sha256) = 64 AND old_sha256 NOT GLOB '*[^0-9a-f]*')),
+  new_sha256 TEXT CHECK (new_sha256 IS NULL OR (length(new_sha256) = 64 AND new_sha256 NOT GLOB '*[^0-9a-f]*')),
   -- 変える前の画像を移した R2 のキー（無ければ NULL）。**30 日で R2 から消える**（上記）。
   history_key TEXT,
   -- 変えた時刻（UNIX 秒）。**0 以下は入らない**（上記）。

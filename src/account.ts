@@ -120,11 +120,11 @@ import { loginRequiredRedirect } from './auth/google.js';
 import type { AvatarFormView, AvatarRejection } from './avatar.js';
 import {
   AVATAR_REASON_MESSAGES,
-  avatarIntervalElapsed,
+  acquireAvatarLock,
   avatarUploadRejection,
   convertAvatar,
-  loadAvatarRow,
   readAvatarUpload,
+  releaseAvatarLock,
   removeAvatar,
   renderAvatarForm,
   saveAvatar,
@@ -1237,8 +1237,8 @@ async function handleForkNoticePreference(
  * 画面をその場で組み直さない——ファイルの入力欄は値を戻せない（ブラウザが許さない）ので、
  * 組み直しても利用者が選び直す手間は変わらない。**画像そのものはログにも URL にも載せない。**
  *
- * **判定の順**: ログイン → 本文の形と大きさ → 先頭のバイト → 間隔 → 変換 → 保存。
- * **間隔を変換の前に見る**——断る要求で Lambda を呼ばない（判定の正本は保存の batch の WHERE）。
+ * **判定の順**: ログイン → 本文の形と大きさ → 先頭のバイト → 排他（間隔を含む）→ 変換 → 保存。
+ * **排他を変換の前に取る**——断る要求（二度押し・間隔）で Lambda を呼ばない。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -1266,19 +1266,20 @@ async function handleAvatarUpload(
   }
 
   try {
-    const row = await loadAvatarRow(env.DB, session.userId);
-    if (row === null) {
-      return await loginRequiredRedirect(env, ACCOUNT_PATH);
-    }
-    const nowSeconds = now();
-    if (!avatarIntervalElapsed(row, nowSeconds)) {
-      return seeOther(`${ACCOUNT_PATH}?reason=avatar-too-soon`);
+    // **変換の前に、D1 で利用者ごとの排他を取る**（`src/avatar.ts` の `acquireAvatarLock`）。二度押しの 2 本目は
+    // ここで断られ、Lambda も R2 も触らない。間隔（60 秒）の判定もここに入っている。
+    const locked = await acquireAvatarLock(env.DB, session.userId, now());
+    if (!locked.ok) {
+      return seeOther(`${ACCOUNT_PATH}?reason=${locked.reason}`);
     }
     const converted = await convertAvatar(env, upload.bytes, encode);
     if (!converted.ok) {
+      // **R2 に何も書いていないので、排他を解くだけでよい**（間隔も進めない。混雑なら、すぐ上げ直せる）。
+      await releaseAvatarLock(env.DB, locked.lock);
       return seeOther(`${ACCOUNT_PATH}?reason=${converted.reason}`);
     }
-    const saved = await saveAvatar(env, session.userId, converted.webp, nowSeconds);
+    // 保存は成功しても失敗しても排他を解いて戻る。
+    const saved = await saveAvatar(env, locked.lock, converted.webp);
     return seeOther(
       saved.ok ? `${ACCOUNT_PATH}?${SAVED_QUERY}=${SAVED_AVATAR_VALUE}` : `${ACCOUNT_PATH}?reason=${saved.reason}`,
     );
@@ -1305,7 +1306,11 @@ async function handleAvatarRemove(request: Request, env: Env, now: () => number)
     return await loginRequiredRedirect(env, ACCOUNT_PATH);
   }
   try {
-    const removed = await removeAvatar(env, session.userId, now());
+    const locked = await acquireAvatarLock(env.DB, session.userId, now());
+    if (!locked.ok) {
+      return seeOther(`${ACCOUNT_PATH}?reason=${locked.reason}`);
+    }
+    const removed = await removeAvatar(env, locked.lock);
     return seeOther(
       removed.ok
         ? `${ACCOUNT_PATH}?${SAVED_QUERY}=${SAVED_AVATAR_REMOVED_VALUE}`

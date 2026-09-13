@@ -90,16 +90,19 @@ export function avatarObjectKey(userId: string): string {
 /**
  * 差し替え前の画像を写す R2 のキー。
  *
- * **時刻と SHA-256 を綴りに入れる。** 同じ利用者が 30 日のうちに何度差し替えても、写しが
- * 互いを上書きしない。
+ * **操作ごとに一意にする**（時刻・SHA-256 に加えて、操作の id を綴りに入れる）。時刻と SHA-256 だけだと、
+ * 同じ秒に同じ画像を写す 2 つの操作（二度押し）が同じキーになり、**後の写しが先の写しを上書きして、
+ * 履歴の行が別の操作の画像を指す**（PR #436 の Copilot レビュー）。操作の id は排他の token
+ * （`src/avatar.ts` の `acquireAvatarLock`）である。
  *
  * @param userId 利用者の id
  * @param changedAt 差し替えた時刻（UNIX 秒）
  * @param sha256 差し替え前の画像の SHA-256（16 進）
- * @returns `avatars/history/<user_id>/<changed_at>-<sha256>.webp`
+ * @param operationId 操作ごとの id（UUID）
+ * @returns `avatars/history/<user_id>/<changed_at>-<sha256>-<operation_id>.webp`
  */
-export function avatarHistoryKey(userId: string, changedAt: number, sha256: string): string {
-  return `${AVATAR_HISTORY_PREFIX}${userId}/${changedAt}-${sha256}${AVATAR_FILE_SUFFIX}`;
+export function avatarHistoryKey(userId: string, changedAt: number, sha256: string, operationId: string): string {
+  return `${AVATAR_HISTORY_PREFIX}${userId}/${changedAt}-${sha256}-${operationId}${AVATAR_FILE_SUFFIX}`;
 }
 
 /**

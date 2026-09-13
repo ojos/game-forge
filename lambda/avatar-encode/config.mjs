@@ -17,16 +17,27 @@
  */
 export const REQUIRED_ENV = ['AVATAR_SIZE', 'MAX_INPUT_BYTES', 'MAX_INPUT_DIMENSION', 'WEBP_QUALITY'];
 
+/** 正の整数の綴り（先頭の 0・符号・小数点・空白・後ろに続く文字を許さない）。 */
+const POSITIVE_INT = /^[1-9][0-9]*$/u;
+
 /**
  * 正の整数として読む（読めない値はそこで落とす。値は出さず、名前だけを出す）。
+ *
+ * **`Number.parseInt` を使わない**（PR #436 の Copilot レビュー）。`parseInt('256junk')` は 256、
+ * `parseInt('4096.9')` は 4096 を返し、**宣言の書き間違いが黙って別の値として通る。** 文字列全体が
+ * 正の整数の綴りのときだけ数にする。
  *
  * @param {string} name 環境変数の名前
  * @param {Record<string, string | undefined>} source 読み取り元
  * @returns {number} 正の整数
  */
 function readPositiveInt(name, source) {
-  const value = Number.parseInt(String(source[name]), 10);
-  if (!Number.isSafeInteger(value) || value <= 0) {
+  const raw = source[name];
+  if (typeof raw !== 'string' || !POSITIVE_INT.test(raw)) {
+    throw new Error(`環境変数が正の整数ではありません: ${name}`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
     throw new Error(`環境変数が正の整数ではありません: ${name}`);
   }
   return value;

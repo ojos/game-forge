@@ -38,10 +38,17 @@
  * **足すのは許可 1 つだけ**である——`game-forge-build-invoker` に「この関数を `lambda:InvokeFunction`
  * する」を加える（`terraform/avatar-function.tf` の `avatar_invoke`）。
  *
- * ## リトライしない
+ * ## 投げ直すのは、同時実行の枠で断られたときだけ（PR #436 の Copilot レビュー）
  *
- * **失敗は利用者へ返す**（「時間をおいてもう一度」）。自分で投げ直すと、関数が壊れた日に 1 回の
- * 送信が何回もの変換になる。
+ * **関数の予約同時実行数は 2 である**（`terraform/avatar-function.tf`。アカウントの総枠の制約で増やせない）。
+ * 参加者が同時に 3 人アイコンを上げると、3 本目は `429 TooManyRequestsException` で**関数が 1 度も走らずに**
+ * 断られる。**このときだけ、短く待って {@link THROTTLE_RETRY_DELAYS_MS} の回数まで投げ直す**（合計 450 ms。
+ * Worker が応答を待つ時間の中に収まる）。**関数が走らずに断られた要求なので、投げ直しても変換が重ならない。**
+ * それでも枠が空かなければ {@link AvatarEncodeBusy} を投げ、利用者には「混み合っています」と返す
+ * （一時的な失敗と分ける）。
+ *
+ * **それ以外の失敗は投げ直さない**（関数の例外・5xx・読めない応答）。関数が壊れた日に 1 回の送信が何回もの
+ * 変換になるだけである。失敗は利用者へ返す（「時間をおいてもう一度」）。
  */
 import { AwsClient } from 'aws4fetch';
 
@@ -105,6 +112,43 @@ export class AvatarNotConfigured extends Error {
   }
 }
 
+/**
+ * 同時実行の枠で断られたまま、投げ直しの回数を使い切った（{@link THROTTLE_RETRY_DELAYS_MS}）。
+ *
+ * **{@link AvatarEncodeFailed} と分ける**——利用者に返す文言が違う（「混み合っています」）。
+ */
+export class AvatarEncodeBusy extends Error {
+  constructor(readonly attempts: number) {
+    super(`アイコンの変換が混み合っていて、${attempts} 回とも同時実行の枠で断られました`);
+    this.name = 'AvatarEncodeBusy';
+  }
+}
+
+/**
+ * 同時実行の枠で断られたときに、投げ直す前に待つ時間（ミリ秒）。**要素の数が投げ直しの回数である**（2 回・合計 450 ms）。
+ *
+ * 1 回の変換は数百ミリ秒（冷えていても 1〜2 秒）なので、150 ms・300 ms 待てば先の要求が抜けていることが多い。
+ * **これ以上長く・多くしない**——Worker は利用者のフォームの送信を待たせている。
+ */
+export const THROTTLE_RETRY_DELAYS_MS: readonly number[] = [150, 300];
+
+/**
+ * 同時実行の枠（とスロットリング）で断られた応答か。
+ *
+ * Lambda の Invoke は、予約同時実行数を超えると `429` と `x-amzn-errortype: TooManyRequestsException` を返す
+ * （アカウントの API のレート超過も 429 である）。**本文は読まない**（状態と見出しで決める）。
+ *
+ * @param response Lambda の応答
+ * @returns 投げ直してよい断りなら true
+ */
+export function isThrottled(response: Response): boolean {
+  if (response.status === 429) {
+    return true;
+  }
+  const type = (response.headers.get('x-amzn-errortype') ?? '').split(':')[0] ?? '';
+  return type === 'TooManyRequestsException' || type === 'ThrottlingException';
+}
+
 /** 呼び出しに失敗した（送れなかった・関数が落ちた・応答が読めない）。 */
 export class AvatarEncodeFailed extends Error {
   constructor(
@@ -122,6 +166,8 @@ export interface AvatarEncodeDependencies {
    * 送信に使う `fetch`。**テストから差し替えるための継ぎ目**（既定にすると単体テストが実 Lambda を要求する）。
    */
   readonly fetch?: (request: Request) => Promise<Response>;
+  /** 投げ直す前に待つ関数（テストが時間を使わずに回すための継ぎ目。既定は `setTimeout`）。 */
+  readonly sleep?: (milliseconds: number) => Promise<void>;
 }
 
 /** 変換を呼ぶ段。`src/avatar.ts` がこの形で受け取る。 */
@@ -181,22 +227,40 @@ export function createAvatarEncode(deps: AvatarEncodeDependencies = {}): EncodeA
       region,
     });
     const send = deps.fetch ?? ((request: Request) => fetch(request));
+    const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+    const endpoint = invokeEndpoint(region, values[AVATAR_FUNCTION_NAME_VAR]!.trim());
+    const body = JSON.stringify({ image: bytesToBase64(image) });
 
-    let response: Response;
-    try {
-      const signed = await aws.sign(invokeEndpoint(region, values[AVATAR_FUNCTION_NAME_VAR]!.trim()), {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          // **`Event` に戻さない。** 戻すと応答に画像が載らない。
-          'x-amz-invocation-type': SYNC_INVOCATION_TYPE,
-        },
-        body: JSON.stringify({ image: bytesToBase64(image) }),
-      });
-      response = await send(signed);
-    } catch (error) {
-      // **ペイロード（利用者の画像）はログにも例外にも入れない。**
-      throw new AvatarEncodeFailed(0, error instanceof Error ? `${error.name}: ${error.message}` : 'unknown send error');
+    let response: Response | null = null;
+    for (let attempt = 0; attempt <= THROTTLE_RETRY_DELAYS_MS.length; attempt += 1) {
+      if (attempt > 0) {
+        await sleep(THROTTLE_RETRY_DELAYS_MS[attempt - 1]!);
+      }
+      try {
+        // **投げ直すたびに署名し直す**（署名は時刻を含む。同じ要求の本文は 1 度しか読めない）。
+        const signed = await aws.sign(endpoint, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            // **`Event` に戻さない。** 戻すと応答に画像が載らない。
+            'x-amz-invocation-type': SYNC_INVOCATION_TYPE,
+          },
+          body,
+        });
+        response = await send(signed);
+      } catch (error) {
+        // **ペイロード（利用者の画像）はログにも例外にも入れない。** 送れなかったことは投げ直さない。
+        throw new AvatarEncodeFailed(0, error instanceof Error ? `${error.name}: ${error.message}` : 'unknown send error');
+      }
+      if (!isThrottled(response)) {
+        break;
+      }
+      // 本文を読み捨てる（接続を返す）。
+      await response.body?.cancel();
+      response = null;
+    }
+    if (response === null) {
+      throw new AvatarEncodeBusy(THROTTLE_RETRY_DELAYS_MS.length + 1);
     }
 
     // 同期呼び出しの成功は 200。**関数の中で投げた例外も 200 で返り、`X-Amz-Function-Error` が付く。**

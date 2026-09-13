@@ -25,7 +25,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listVariants } from './variants.mjs';
 import { renderVariant } from './render.mjs';
-import { encodePng, decodePng, toRgba } from './png.mjs';
+import { encodePng, decodePng, readPngHeader, toRgba } from './png.mjs';
 
 /** 書き出し先（リポジトリの brand/logo/）。 */
 export const OUT_DIR = fileURLToPath(new URL('../../brand/logo/', import.meta.url));
@@ -76,17 +76,20 @@ export function checkAll(dir = OUT_DIR) {
     const image = renderVariant(v);
     const actual = readFileSync(file);
     if (actual.equals(encodePng(image))) continue;
+    // 寸法は展開する前に比べる（巨大な寸法を名乗る壊れた PNG で検査が止まらないように）。
     let got;
     try {
+      const head = readPngHeader(actual);
+      if (head.width !== image.width || head.height !== image.height) {
+        problems.push(`寸法が違う: ${v.path}（${head.width}×${head.height}、一覧では ${image.width}×${image.height}）`);
+        continue;
+      }
       got = decodePng(actual);
     } catch (e) {
       problems.push(`読めない: ${v.path}（${e instanceof Error ? e.message : String(e)}）`);
       continue;
     }
-    const want = toRgba(image);
-    if (got.width !== want.width || got.height !== want.height) {
-      problems.push(`寸法が違う: ${v.path}（${got.width}×${got.height}、一覧では ${want.width}×${want.height}）`);
-    } else if (!Buffer.from(got.rgba).equals(Buffer.from(want.rgba))) {
+    if (!Buffer.from(got.rgba).equals(Buffer.from(toRgba(image).rgba))) {
       problems.push(`画素が違う: ${v.path}`);
     }
   }

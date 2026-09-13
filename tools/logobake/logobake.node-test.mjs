@@ -93,12 +93,41 @@ test('PNG: 書いたものを復号すると同じ画素に戻る', () => {
 });
 
 test('PNG: フィルタ付きの RGBA でも画素で読める（別の道具で書き直された場合）', () => {
-  const header = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(2, 0); ihdr.writeUInt32BE(1, 4); ihdr[8] = 8; ihdr[9] = 6;
+  const header = PNG_SIGNATURE;
+  const ihdr = pngIhdr(2, 1, 6);
   // 2×1 の RGBA、フィルタ 1（左との差分）。画素 [10,20,30,255] と [15,25,35,255]。
   const raw = Buffer.from([1, 10, 20, 30, 255, 5, 5, 5, 0]);
   const png = Buffer.concat([header, pngChunk('IHDR', ihdr), pngChunk('IDAT', deflateSync(raw)), pngChunk('IEND', Buffer.alloc(0))]);
   assert.deepEqual([...decodePng(png).rgba], [10, 20, 30, 255, 15, 25, 35, 255]);
+});
+
+test('PNG: RGB の tRNS（透明にする 1 色）を透明として読む', () => {
+  const ihdr = pngIhdr(2, 1, 2);
+  const trns = Buffer.from([0, 0, 0, 0, 0, 0]); // (0, 0, 0) を透明に
+  const raw = Buffer.from([0, 0, 0, 0, 9, 8, 7]);
+  const png = Buffer.concat([PNG_SIGNATURE, pngChunk('IHDR', ihdr), pngChunk('tRNS', trns), pngChunk('IDAT', deflateSync(raw)), pngChunk('IEND', Buffer.alloc(0))]);
+  assert.deepEqual([...decodePng(png).rgba], [0, 0, 0, 0, 9, 8, 7, 255]);
+});
+
+test('PNG: 巨大な寸法を名乗る PNG は展開せずに例外にする（検査が止まらない）', () => {
+  const png = Buffer.concat([PNG_SIGNATURE, pngChunk('IHDR', pngIhdr(40000, 40000, 3)), pngChunk('PLTE', Buffer.from([0, 0, 0])), pngChunk('IDAT', deflateSync(Buffer.alloc(1000))), pngChunk('IEND', Buffer.alloc(0))]);
+  assert.throws(() => decodePng(png), /上限/);
+  // 上限の内側でも、名乗った寸法より展開結果が短ければ例外にする。
+  const short = Buffer.concat([PNG_SIGNATURE, pngChunk('IHDR', pngIhdr(64, 64, 3)), pngChunk('PLTE', Buffer.from([0, 0, 0])), pngChunk('IDAT', deflateSync(Buffer.alloc(10))), pngChunk('IEND', Buffer.alloc(0))]);
+  assert.throws(() => decodePng(short), /合わない/);
+});
+
+test('照合: 寸法が違う PNG は展開する前に「寸法が違う」と報告する', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'logobake-'));
+  try {
+    writeAll(dir);
+    const target = 'symbol/symbol-16-for-light-bg.png';
+    const huge = Buffer.concat([PNG_SIGNATURE, pngChunk('IHDR', pngIhdr(40000, 40000, 3)), pngChunk('PLTE', Buffer.from([0, 0, 0])), pngChunk('IDAT', deflateSync(Buffer.alloc(10))), pngChunk('IEND', Buffer.alloc(0))]);
+    writeFileSync(join(dir, target), huge);
+    assert.deepEqual(checkAll(dir), [`寸法が違う: ${target}（40000×40000、一覧では 16×16）`]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('照合: 書き出した直後は一致し、1 画素・欠落・余分をそれぞれ検出する', () => {
@@ -139,6 +168,22 @@ test('照合: 書き出した直後は一致し、1 画素・欠落・余分を�
 test('照合: コミット済みの brand/logo/ が一覧と一致する', () => {
   assert.deepEqual(checkAll(), []);
 });
+
+/** PNG の署名（テストで PNG を手で組むため）。 */
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * 8 ビット・非インターレースの IHDR の中身を組む。
+ * @param {number} width
+ * @param {number} height
+ * @param {number} colorType
+ * @returns {Buffer}
+ */
+function pngIhdr(width, height, colorType) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = colorType;
+  return ihdr;
+}
 
 /**
  * PNG のチャンクを組む（テストで壊れた・別形式の PNG を作るため）。

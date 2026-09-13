@@ -150,22 +150,42 @@ function unfilter(type, line, prev, bpp) {
 }
 
 /**
+ * PNG の IHDR だけを読み、寸法と色型を返す（画素を展開しない）。
+ *
+ * 照合はこれで寸法を先に比べる。**壊れた PNG が巨大な寸法を名乗っていても、展開する前に
+ * 「寸法が違う」と報告できる**——先に展開すると、数 GB を確保しようとして検査そのものが
+ * 止まる（Copilot の指摘。2026-09-13 に 40000×40000 で再現した）。
+ * @param {Buffer} buf
+ * @returns {{ width: number, height: number, colorType: number }}
+ */
+export function readPngHeader(buf) {
+  if (buf.length < 33 || !buf.subarray(0, 8).equals(SIGNATURE)) throw new Error('PNG の署名ではない');
+  if (buf.toString('ascii', 12, 16) !== 'IHDR') throw new Error('先頭のチャンクが IHDR ではない');
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20), colorType: buf[25] };
+}
+
+/**
  * PNG を RGBA へ復号する。受け付けるのは 8 ビットのパレット・RGB・RGBA で、
  * インターレースは受け付けない（このツールが書く形と、一般的な最適化ツールが
- * 書き直しうる形だけを読めればよい）。
+ * 書き直しうる形だけを読めればよい）。透明はパレットの tRNS と、RGB の tRNS（透明にする
+ * 1 色の指定）の両方を読む。
  * @param {Buffer} buf
+ * @param {{ maxPixels?: number }} [opts] 展開してよい画素数の上限（既定 4096×4096）
  * @returns {RgbaImage}
  */
-export function decodePng(buf) {
-  if (!buf.subarray(0, 8).equals(SIGNATURE)) throw new Error('PNG の署名ではない');
-  let off = 8, width = 0, height = 0, colorType = -1, plte = null, trns = null;
+export function decodePng(buf, { maxPixels = 4096 * 4096 } = {}) {
+  const { width, height } = readPngHeader(buf);
+  if (width === 0 || height === 0 || width * height > maxPixels) {
+    throw new Error(`寸法 ${width}×${height} は展開の上限（${maxPixels} 画素）を超える`);
+  }
+  let off = 8, colorType = -1, plte = null, trns = null;
   const idat = [];
   while (off < buf.length) {
     const len = buf.readUInt32BE(off);
     const type = buf.toString('ascii', off + 4, off + 8);
     const data = buf.subarray(off + 8, off + 8 + len);
     if (type === 'IHDR') {
-      width = data.readUInt32BE(0); height = data.readUInt32BE(4); colorType = data[9];
+      colorType = data[9];
       if (data[8] !== 8) throw new Error(`ビット深度 ${data[8]} は受け付けない`);
       if (data[12] !== 0) throw new Error('インターレースは受け付けない');
     } else if (type === 'PLTE') plte = data;
@@ -176,8 +196,14 @@ export function decodePng(buf) {
   }
   const bpp = { 3: 1, 2: 3, 6: 4 }[colorType];
   if (!bpp) throw new Error(`色型 ${colorType} は受け付けない`);
-  const raw = inflateSync(Buffer.concat(idat));
+  if (colorType === 3 && !plte) throw new Error('パレット形式なのに PLTE が無い');
   const stride = width * bpp;
+  const expected = (stride + 1) * height;
+  // 名乗った寸法より多く展開しない（圧縮爆弾で止まらないように）。
+  const raw = inflateSync(Buffer.concat(idat), { maxOutputLength: expected });
+  if (raw.length !== expected) throw new Error(`展開したバイト数 ${raw.length} が寸法から決まる ${expected} と合わない`);
+  // RGB の tRNS は 16 ビットの R, G, B。ビット深度 8 なので下位バイトだけを見る。
+  const key = colorType === 2 && trns && trns.length >= 6 ? [trns[1], trns[3], trns[5]] : null;
   const rgba = new Uint8Array(width * height * 4);
   let prev = new Uint8Array(stride);
   for (let y = 0; y < height; y++) {
@@ -191,7 +217,8 @@ export function decodePng(buf) {
         const i = line[x];
         px = [plte[i * 3], plte[i * 3 + 1], plte[i * 3 + 2], trns && i < trns.length ? trns[i] : 255];
       } else if (colorType === 2) {
-        px = [line[x * 3], line[x * 3 + 1], line[x * 3 + 2], 255];
+        const r = line[x * 3], g = line[x * 3 + 1], b = line[x * 3 + 2];
+        px = [r, g, b, key && r === key[0] && g === key[1] && b === key[2] ? 0 : 255];
       } else {
         px = [line[x * 4], line[x * 4 + 1], line[x * 4 + 2], line[x * 4 + 3]];
       }

@@ -109,11 +109,19 @@ node tools/logobake/main.mjs --check    # 一覧と brand/logo/ の画素を照�
 ## 5. 書体のライセンス
 
 DotGothic16 は **SIL Open Font License 1.1** です（著作権表示と全文は
-`third_party/dotgothic16/`）。**Reserved Font Name の指定はありません。**
+`third_party/dotgothic16/`）。**Reserved Font Name の指定はありません**。
 
-OFL が条件を課すのはフォントソフトウェアの再配布であり、**フォントで描いた画像（このロゴの
-PNG）はその対象ではありません。** それでも出どころは `third_party/dotgothic16/` から
-辿れるようにしておきます。
+`third_party/dotgothic16/NOTICE.md` が著作権表示とライセンス全文の同梱を求めているのは、
+**焼いたビットマップを書体として組み込んだ配布物**（`glyphs_gen.go`、隔離ビルドのイメージ、
+ゲームの wasm）です。ロゴの PNG は書体として使える形ではなく、書体で描いた画像なので、
+これと同じ扱いになるとは限りません。**ただし、ここで要否を断定しません**（これは法的助言
+ではありません）。**安全側に倒し、ロゴを配布するときは表示を添えます。**
+
+- `brand/logo/` の PNG をまとめて渡すとき（プレスキットなど）は、
+  `third_party/dotgothic16/` の 2 ファイルを同梱する。
+- 画像を 1 枚だけ使う場面（SNS のアイコンなど）で同梱できないときは、表示できる場所に
+  「ロゴの文字: DotGothic16（Copyright 2020 The DotGothic16 Project Authors、
+  SIL Open Font License 1.1）」と書く。
 
 ---
 
@@ -129,8 +137,8 @@ PNG）はその対象ではありません。** それでも出どころは `thi
 - 画面の色: ほぼ無彩色で「作品が主役」。**赤はエラー表示の専用色**（`app.css`）。
 - 明暗の両テーマに対応している。**ロゴは明るい地でも暗い地でも読める必要がある。**
 
-Canva に渡したプロンプトは次の 4 つです（画像生成は英語のほうが意図が通りやすいため、
-日本語版は予備です）。
+最初に用意したプロンプトは次の 4 つです（画像生成は英語のほうが意図が通りやすいため、
+日本語版は予備です）。**生成に使ったのはメイン案で**、2 回目のプロンプトは 6.2 にあります。
 
 **メイン案（シンボル＋文字）**
 
@@ -182,7 +190,8 @@ Wordmark logo reading "GAME FORGE". Bold geometric sans-serif with subtle pixel-
 4. **色が指定からずれている**（橙が #FF9100 前後、黒どうしも不一致）。
 5. **余白が大きすぎる。**
 
-直すための 2 回目のプロンプトは次のとおりです。
+直すために用意した 2 回目のプロンプトは次のとおりです（**これで生成し直す前に、6.3 の
+Claude Design へ移りました**）。
 
 ```
 Flat vector logo for "Game Forge". Pixel-art anvil seen from the side with a clearly pointed horn extending to the left, built on a strict square pixel grid with equal-size pixels. From the anvil face rises an amber (#F59E0B) pixel spark that splits into two branches (Y shape), with 2-3 small loose ember pixels scattered around the branch tips. Anvil in charcoal (#16181A). Two colors only, no gradients, no shadows, no anti-aliasing. Symbol only, no text, white background, tightly framed.

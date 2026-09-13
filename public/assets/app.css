@@ -684,6 +684,27 @@ button:disabled {
   tab-size: 4;
 }
 
+/*
+ * **焦点の枠は全画面の `:focus-visible`（`@section base`）と同じ形にする。** `<pre>` は
+ * `tabindex="0"` で焦点を持つ（キーボードで横に送るため）。角だけを箱の丸みに揃える。
+ */
+.gf-source:focus-visible {
+  outline: 2px solid var(--gf-ink);
+  outline-offset: 2px;
+  border-radius: var(--gf-radius);
+}
+
+/*
+ * 文字の向きを変える制御文字の印（`⟨U+202E⟩`。`src/work-source.ts` の `markDirectionControls`）。
+ * **ソースの文字と取り違えない見た目にする**——点線の枠で囲み、補助の濃さで出す。色は持たない。
+ */
+.gf-source-bidi {
+  padding: 0 0.15em;
+  border: 1px dashed var(--gf-ink-soft);
+  border-radius: 2px;
+  color: var(--gf-ink-soft);
+}
+
 .gf-source code {
   padding: 0;
   background: none;

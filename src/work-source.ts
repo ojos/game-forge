@@ -52,6 +52,7 @@ import { reviewVisibleSql } from './reports.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { readStoredSource } from './source-store.js';
+import { MAX_SOURCE_BYTES } from './source-size.js';
 
 /**
  * ソースの閲覧の接頭辞（2.3.1 / 2.3.12 / #383）。
@@ -112,9 +113,76 @@ export interface WorkSourceView {
   readonly gameId: string;
   /** 作品の題名（UGC。公開済みなので誰にでも出す）。 */
   readonly title: string;
-  /** ソース本文。読めなかったら null。 */
-  readonly source: string | null;
+  /** ソース本文、または読めなかった理由。 */
+  readonly source: WorkSourceContent;
 }
+
+/**
+ * ソースの中身（#383）。**読めなかった理由を畳まない**——一時的に読めない（もう一度開けば
+ * 読めるかもしれない）ことと、上限を超えていて何度開いても読めないことでは、利用者への
+ * 案内が変わる（`src/source-store.ts` の「上限超を『読めなかった』と同じ扱いにしない」）。
+ *
+ * - `missing` … R2 に実体が無い・空・キーが NULL・R2 の障害。**やり直す価値がある**
+ * - `too-large` … 5.3 の上限を超えている。**何度やっても表示できない**
+ */
+export type WorkSourceContent =
+  | { readonly kind: 'ok'; readonly text: string }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'too-large' };
+
+/**
+ * 文字の向きを変える書式文字（Unicode の `Bidi_Control`。#383）。
+ *
+ * **判定の組は `src/profile.ts` の `DIRECTION_CHARACTER` と同じ `\p{Bidi_Control}` である**
+ * （あちらは自己紹介で弾く。こちらは表示のときに見える形へ置き換える）。組が揃っていることは
+ * `test/work-source.test.ts` が、`validateBio` が弾く文字の組と突き合わせて確かめる
+ * （import しないのは、あちらの非公開の定数だから）。
+ */
+const DIRECTION_CONTROL = /\p{Bidi_Control}/gu;
+
+/**
+ * エスケープ済みのソースの中の `Bidi_Control` を、見える印（`⟨U+202E⟩`）に置き換える（#383）。
+ *
+ * # なぜ要るのか
+ *
+ * 生成されたソースの文字列やコメントに `U+202E`（右から左への上書き）などが入ると、**画面に
+ * 見えている並びと、コンパイラが読む並びが食い違う**（いわゆる Trojan Source）。閲覧は
+ * 「どんなコードか」を読むための画面なので、**見えない文字で読み違えさせない。**
+ *
+ * # 表示のときだけ置き換える
+ *
+ * **R2 の生のソース（フォークで渡るもの）は変えない。** ここは画面の文字列だけを作る。
+ *
+ * # `escapeHtml` の後に置き換える
+ *
+ * **入力はエスケープ済みの文字列である。** 印は固定の ASCII と `⟨⟩` と `<span>` だけで、
+ * 生成物由来の文字を 1 つも含まない。先に置き換えると、印の `<span>` がエスケープされて
+ * `&lt;span` になる。`Bidi_Control` は `escapeHtml` が触る 5 文字に含まれないので、
+ * エスケープの後でも同じ位置に残っている。
+ *
+ * @param escaped `escapeHtml` を通したソース
+ * @returns 印に置き換えた HTML
+ */
+export function markDirectionControls(escaped: string): string {
+  return escaped.replace(DIRECTION_CONTROL, (character) => {
+    const code = `U+${character.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`;
+    return `<span class="gf-source-bidi" title="文字の向きを変える制御文字 ${code}">⟨${code}⟩</span>`;
+  });
+}
+
+/** 上限（5.3）を KB で言う。**値を書き写さない**（`MAX_SOURCE_BYTES` から作る）。 */
+const MAX_SOURCE_KB = Math.floor(MAX_SOURCE_BYTES / 1024);
+
+/** 一時的に読めなかったときの文言。テストが同じ綴りを見るために export している。 */
+export const SOURCE_MISSING_NOTICE =
+  'この作品のソースコードを、いま読み出せませんでした。時間をおいてもう一度お試しください。';
+
+/**
+ * 上限を超えていて表示できないときの文言。**再試行を促さない**（何度開いても同じである）。
+ * テストが同じ綴りを見るために export している。
+ */
+export const SOURCE_TOO_LARGE_NOTICE =
+  `この作品のソースコードは、表示できる大きさ（${MAX_SOURCE_KB}KB）を超えているため表示できません。`;
 
 /**
  * ソースの閲覧の画面を組み立てる。
@@ -131,12 +199,18 @@ export function renderWorkSourcePage(view: WorkSourceView, viewer: SiteViewer): 
   // **読めなかったときも 404 にしない。** 作品は公開済みで、ソースを出してよいことまでは
   // 決まっている——404 の「見つかりません」は「URL が違う」と読める（`src/work-page.ts` の
   // `removedSection` が取り下げた作品を 404 にしないのと同じ理由）。
+  //
+  // **`<pre>` はキーボードで横に送れるようにする**（`tabindex="0"`）。中身がはみ出して横に
+  // スクロールする領域は、焦点を持てないとマウスやタッチでしか読めない。焦点が入ったときに
+  // 何の領域かが読み上げで分かるよう、名前を付ける（`aria-label`）。
   const body =
-    view.source === null
-      ? `<p>この作品のソースコードを、いま読み出せませんでした。時間をおいてもう一度お試しください。</p>`
-      : `<p class="gf-source-note">この作品を作ったときに生成された Go のソースコードです。
+    view.source.kind === 'missing'
+      ? `<p>${SOURCE_MISSING_NOTICE}</p>`
+      : view.source.kind === 'too-large'
+        ? `<p>${SOURCE_TOO_LARGE_NOTICE}</p>`
+        : `<p class="gf-source-note">この作品を作ったときに生成された Go のソースコードです。
    「このゲームを改造する」と、このソースをもとに新しい作品が作られます。</p>
-<pre class="gf-source"><code>${escapeHtml(view.source)}</code></pre>`;
+<pre class="gf-source" tabindex="0" aria-label="ソースコード"><code>${markDirectionControls(escapeHtml(view.source.text))}</code></pre>`;
   // **検索避けする。** 拡散の着地点は作品ページであり（5.4）、ソースの画面が検索結果で
   // 作品ページと並ぶ理由が無い。リンクは作品ページから辿れる。
   return `${siteHead({
@@ -167,25 +241,25 @@ ${siteFooter()}`,
 }
 
 /**
- * 公開済みの作品のソースを R2 から読む。**読めなければ null。**
+ * 公開済みの作品のソースを R2 から読む。**読めなければ理由を返す。**
  *
  * **上限は既定（5.3 の 64KB）のまま使う。** 公開済みの作品のソースは上限の内側にある
  * （上限を超えたフォークは整理のあとも超えれば断られる。確定18 の条件 3）。超えていたら
- * 「読めなかった」に倒す——**切り詰めて見せない**（`src/source-store.ts` の規約）。
+ * `too-large` を返す——**切り詰めて見せない**（`src/source-store.ts` の規約）。
  *
  * @param env バインディングと環境変数
  * @param sourceKey R2 のキー（**呼ぶ側が {@link PUBLISHED_SOURCE_SQL} で資格を確かめたもの**）
- * @returns ソース本文、または null
+ * @returns ソース本文、または読めなかった理由
  */
-async function readPublishedSource(env: Env, sourceKey: string): Promise<string | null> {
+async function readPublishedSource(env: Env, sourceKey: string): Promise<WorkSourceContent> {
   try {
     const result = await readStoredSource(env, sourceKey);
     if (!result.ok) {
       // **キーをログへ出さない**（内部の識別子）。理由は固定語彙なので出してよい。
       console.error(`[work-source] ソースを読めませんでした: ${result.reason}`);
-      return null;
+      return result.reason === 'source-too-large' ? { kind: 'too-large' } : { kind: 'missing' };
     }
-    return result.source;
+    return { kind: 'ok', text: result.source };
   } catch (error) {
     // R2 の障害。**画面ごと落とさない**——作品ページへ戻る道は残す。
     console.error(
@@ -193,7 +267,7 @@ async function readPublishedSource(env: Env, sourceKey: string): Promise<string 
         error instanceof Error ? error.name : 'unknown'
       }`,
     );
-    return null;
+    return { kind: 'missing' };
   }
 }
 
@@ -221,7 +295,10 @@ async function showWorkSource(request: Request, env: Env): Promise<Response> {
     return notFound(viewer);
   }
 
-  const source = row.source_key === null ? null : await readPublishedSource(env, row.source_key);
+  // **キーが NULL の公開作品は、一時的に読めないものとして扱う**（不変条件に寄りかからない。
+  // {@link PUBLISHED_SOURCE_SQL}）。
+  const source: WorkSourceContent =
+    row.source_key === null ? { kind: 'missing' } : await readPublishedSource(env, row.source_key);
   return html(renderWorkSourcePage({ gameId, title: row.title, source }, viewer));
 }
 

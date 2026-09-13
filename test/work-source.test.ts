@@ -30,11 +30,15 @@ import { siteViewerAt } from '../src/html.js';
 import { REVIEW_CLEARED, REVIEW_QUEUED } from '../src/reports.js';
 import { dispatch, findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { validateBio } from '../src/profile.js';
 import { MAX_SOURCE_BYTES } from '../src/source-size.js';
 import { SYSTEM_PROMPT_SECTIONS } from '../src/system-prompt.js';
 import { workPagePath, workPageRoutes } from '../src/work-page.js';
 import {
+  SOURCE_MISSING_NOTICE,
+  SOURCE_TOO_LARGE_NOTICE,
   WORK_SOURCE_PREFIX,
+  markDirectionControls,
   renderWorkSourcePage,
   workSourcePath,
   workSourceRoutes,
@@ -242,7 +246,7 @@ describe('公開済みの作品のソースが読める（acceptance 1）', () =
     const { status, body } = await open(workSourcePath(id));
     expect(status).toBe(200);
     expect(body).toContain(SOURCE_MARK);
-    expect(body).toContain('<pre class="gf-source"><code>package main');
+    expect(body).toContain('<pre class="gf-source" tabindex="0" aria-label="ソースコード"><code>package main');
     // **ソースを HTML として解釈させない。** 生成物の文字列リテラルは 8.3 が語を見るだけで、
     // HTML は見ない。
     expect(body).toContain(
@@ -278,19 +282,56 @@ describe('公開済みの作品のソースが読める（acceptance 1）', () =
     expect(body).toContain(source.slice(-100));
   });
 
-  it('R2 から読めなければ 404 にせず、読めなかったことを言う（上限超も同じ）', async () => {
+  it('R2 に実体が無ければ 404 にせず、時間をおいて開き直すよう言う', async () => {
     const missing = await seedPublished('missing');
     await env.BUCKET.delete((await artifactKeysOf(missing.id)).sourceKey);
     const gone = await open(workSourcePath(missing.id));
     expect(gone.status).toBe(200);
-    expect(gone.body).toContain('ソースコードを、いま読み出せませんでした');
+    expect(gone.body).toContain(SOURCE_MISSING_NOTICE);
+    expect(gone.body).not.toContain(SOURCE_TOO_LARGE_NOTICE);
     expect(gone.body).not.toContain('<pre');
+  });
 
+  it('上限超は「大きすぎて表示できない」と言い、再試行を促さない（理由を畳まない）', async () => {
+    // 変異: `readPublishedSource` で `source-too-large` を `missing` に倒すと赤（2026-09-13）。
     const large = await seedPublished('too-large', `// ${'y'.repeat(MAX_SOURCE_BYTES)}`);
     const big = await open(workSourcePath(large.id));
     expect(big.status).toBe(200);
-    expect(big.body).toContain('ソースコードを、いま読み出せませんでした');
+    expect(big.body).toContain(SOURCE_TOO_LARGE_NOTICE);
+    expect(big.body).not.toContain(SOURCE_MISSING_NOTICE);
     expect(big.body).not.toContain('y'.repeat(100));
+    expect(big.body).not.toContain('<pre');
+    // **何度開いても同じなので、時間をおいてと言わない。** 上限の値は定数から作っている。
+    expect(SOURCE_TOO_LARGE_NOTICE).not.toContain('もう一度');
+    expect(SOURCE_TOO_LARGE_NOTICE).toContain(`${MAX_SOURCE_BYTES / 1024}KB`);
+    expect(SOURCE_MISSING_NOTICE).toContain('もう一度');
+  });
+
+  it('公開済みで source_key が NULL の行でも壊れず、200 で読み出せない旨を言う', async () => {
+    const work = await seedPublished('null-key');
+    await env.DB.prepare('update games set source_key = null where id = ?').bind(work.id).run();
+    const row = await env.DB.prepare('select source_key from games where id = ?')
+      .bind(work.id)
+      .first<{ source_key: string | null }>();
+    expect(row, '作品の行が無い').not.toBeNull();
+    expect(row!.source_key).toBeNull();
+
+    const { status, body } = await open(workSourcePath(work.id));
+    expect(status).toBe(200);
+    expect(body).toContain(SOURCE_MISSING_NOTICE);
+    expect(body).not.toContain('<pre');
+    // R2 の実体は残っているが、キーが無い以上は読まない（キーを推測しない）。
+    expect(body).not.toContain(SOURCE_MARK);
+  });
+
+  it('横にスクロールする <pre> はキーボードで焦点を持て、読み上げの名前を持つ', async () => {
+    const { id } = await seedPublished('focusable');
+    const { body } = await open(workSourcePath(id));
+    expect(body).toContain('<pre class="gf-source" tabindex="0" aria-label="ソースコード"><code>');
+    // 焦点の枠は app.css の `@section work` が持つ（全画面の `:focus-visible` と同じ形）。
+    const focus = /^\.gf-source:focus-visible\s*\{([^}]*)\}/mu.exec(env.TEST_APP_CSS);
+    expect(focus, 'app.css に .gf-source:focus-visible の規則が無い').not.toBeNull();
+    expect(focus![1]).toContain('outline: 2px solid var(--gf-ink)');
   });
 });
 
@@ -430,7 +471,11 @@ describe('システムプロンプト・入力プロンプト・内部の識別�
 
   it('画面の型に R2 のキーの置き場所が無い（描画は id・題名・本文だけで決まる）', () => {
     const body = renderWorkSourcePage(
-      { gameId: '00000000-0000-4000-8000-000000000383', title: '<b>題</b>', source: 'x := 1' },
+      {
+        gameId: '00000000-0000-4000-8000-000000000383',
+        title: '<b>題</b>',
+        source: { kind: 'ok', text: 'x := 1' },
+      },
       siteViewerAt('/source/00000000-0000-4000-8000-000000000383', false),
     );
     expect(body).toContain('<h1>&lt;b&gt;題&lt;/b&gt; のソースコード</h1>');
@@ -449,5 +494,76 @@ describe('作品ページからの導線（#383）', () => {
     const body = await page.text();
     expect(body).toContain(`<a href="${workSourcePath(id)}">ソースコードを見る</a>`);
     expect((await open(workSourcePath(id))).status).toBe(200);
+  });
+});
+
+describe('文字の向きを変える制御文字を、表示のときだけ見える印にする（#383 / Trojan Source）', () => {
+  /** `\p{Bidi_Control}` に当たる符号位置（BMP を総当たりで数える。組の正本は Unicode のデータ）。 */
+  function bidiControls(): number[] {
+    const found: number[] = [];
+    for (let code = 0; code <= 0xffff; code++) {
+      if (/\p{Bidi_Control}/u.test(String.fromCharCode(code))) {
+        found.push(code);
+      }
+    }
+    return found;
+  }
+
+  it('判定の組は、自己紹介（src/profile.ts の DIRECTION_CHARACTER）が弾く組と同じである', () => {
+    const controls = bidiControls();
+    // 親の指示に挙がった 12 個（U+061C / U+200E / U+200F / U+202A〜202E / U+2066〜2069）。
+    expect(controls).toEqual([
+      0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069,
+    ]);
+    // **import せずに突き合わせる**（あちらの定数は非公開）。`validateBio` が「向きの文字」として弾く
+    // 符号位置（制御文字・行区切り・段落区切りとして弾くものを除く）と、この画面が印にする符号位置が
+    // 一致すること。
+    const rejectedByBio: number[] = [];
+    const markedHere: number[] = [];
+    for (let code = 0; code <= 0xffff; code++) {
+      if (code >= 0xd800 && code <= 0xdfff) {
+        continue;
+      }
+      const character = String.fromCharCode(code);
+      if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(character)) {
+        continue;
+      }
+      if (!validateBio(`a${character}b`).ok) {
+        rejectedByBio.push(code);
+      }
+      if (markDirectionControls(`a${character}b`) !== `a${character}b`) {
+        markedHere.push(code);
+      }
+    }
+    expect(markedHere).toEqual(controls);
+    expect(rejectedByBio).toEqual(controls);
+  });
+
+  it('画面では印に置き換わり、生の制御文字は 1 つも残らない。R2 のソースは変えない', async () => {
+    // 変異: `renderWorkSourcePage` から `markDirectionControls(...)` を外すと赤（2026-09-13）。
+    const tricky = `package main\n// ${SOURCE_MARK}\nvar s = "admin\u202e \u2066// user\u2069\u2066"\nvar t = "<b>\u200f</b>"\n`;
+    const work = await seedPublished('bidi', tricky);
+    const { status, body } = await open(workSourcePath(work.id));
+    expect(status).toBe(200);
+    expect(body).not.toMatch(/\p{Bidi_Control}/u);
+    for (const code of ['U+202E', 'U+2066', 'U+2069', 'U+200F']) {
+      expect(body).toContain(
+        `<span class="gf-source-bidi" title="文字の向きを変える制御文字 ${code}">⟨${code}⟩</span>`,
+      );
+    }
+    // **印の `<span>` はエスケープされていない**（エスケープの後に置き換える）。周りのソースは
+    // エスケープされたままである。
+    expect(body).not.toContain('&lt;span class=&quot;gf-source-bidi');
+    expect(body).toContain('&lt;b&gt;<span class="gf-source-bidi"');
+
+    // **R2 の生のソース（フォークで渡るもの）は 1 文字も変わっていない。**
+    const stored = await env.BUCKET.get((await artifactKeysOf(work.id)).sourceKey);
+    expect(await stored!.text()).toBe(tricky);
+  });
+
+  it('印の見た目は app.css に規則を持ち、色の値を直に書かない', () => {
+    const rule = /^\.gf-source-bidi\s*\{([^}]*)\}/mu.exec(env.TEST_APP_CSS);
+    expect(rule, 'app.css に .gf-source-bidi の規則が無い').not.toBeNull();
+    expect(rule![1]!).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/iu);
   });
 });

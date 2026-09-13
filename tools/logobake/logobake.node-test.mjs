@@ -1,4 +1,10 @@
-// logobake.test.mjs — ロゴの書き出しのテスト（#438）。`node --test tools/logobake/` で走る。
+// logobake.node-test.mjs — ロゴの書き出しのテスト（#438）。
+//
+// `node --test tools/logobake/logobake.node-test.mjs` で走る（scripts/acceptance.sh が呼ぶ）。
+//
+// **名前を `*.test.mjs` にしないのは、vitest に拾わせないため。** vitest はこのリポジトリで
+// workerd の上でテストを走らせ、そこには node:fs / node:os が無い。vitest.config.ts の
+// exclude に足す手もあるが、あの行は並行する #436 も触っており、名前で避けるほうが衝突しない。
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

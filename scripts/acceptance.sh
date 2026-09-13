@@ -114,12 +114,13 @@ fi
 # 画像を開かない限り気づけない。**画素で照合する理由**は tools/logobake/main.mjs の冒頭。
 #
 # `node --test` にはディレクトリではなくファイルを渡す（Node 24 はディレクトリを
-# テストファイルとして読もうとして落ちる）。
+# テストファイルとして読もうとして落ちる）。テストの名前が `*.test.mjs` でない理由は
+# そのファイルの冒頭（vitest に拾わせないため）。
 if [[ -f tools/logobake/main.mjs ]]; then
   echo "[acceptance] (logo) node tools/logobake/main.mjs --check"
   node tools/logobake/main.mjs --check
-  echo "[acceptance] (logo) node --test tools/logobake/logobake.test.mjs"
-  node --test tools/logobake/logobake.test.mjs
+  echo "[acceptance] (logo) node --test tools/logobake/logobake.node-test.mjs"
+  node --test tools/logobake/logobake.node-test.mjs
   ran_any=1
 else
   echo "[acceptance] (logo) skip: tools/logobake/main.mjs not found"

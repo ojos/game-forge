@@ -144,8 +144,10 @@ dev_fixture_up() {
 
   note "seeding an admin user, three games (draft + published + queued), a report, a history row and a takedown request"
   npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
-    insert into users (id, google_sub, email, display_name, created_at)
-      values ('$USER_ID', 'sub-$USER_ID', '$USER_ID@example.invalid', '幅の検査', 1);
+    insert into users (id, google_sub, email, display_name, created_at, bio, profile_links)
+      values ('$USER_ID', 'sub-$USER_ID', '$USER_ID@example.invalid', '幅の検査', 1,
+              '幅の検査の自己紹介です。外部リンクは空白を持たない長い URL にしてあり、390px の版面で折り返すことを測ります。',
+              '[\"https://example.com/width-check/a-very-long-path-without-any-spaces-that-must-wrap-at-390px-0123456789\"]');
     insert into games (id, author_id, status, title, go_version, created_at, generation_state)
       values ('$GAME_ID', '$USER_ID', 'draft', '幅の検査の作品', '', 1, 'ready');
     insert into games (id, author_id, status, title, go_version, created_at, published_at,

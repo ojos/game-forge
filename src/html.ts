@@ -385,6 +385,7 @@ export const BREADCRUMB_PARENTS: readonly NavItem[] = [
   { path: PUBLIC_WORKS_PATH, label: '作品をさがす' },
   { path: SIGNUP_PATH, label: 'Game Forge に登録する' },
   { path: TAKEDOWN_PATH, label: '削除申請' },
+  { path: ACCOUNT_PATH, label: '登録情報' },
   ...newsBreadcrumbParents(NEWS_ARTICLES),
 ];
 

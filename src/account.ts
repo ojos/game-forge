@@ -1,6 +1,8 @@
 /**
- * 登録情報の画面（`/account`）と、表示名の変更（`POST /api/account/display-name`）。
- * **仕様 5.9 の実体である**（#341 / M9-6）。
+ * 登録情報の画面（`/account` と `/account/details`）と、表示名の変更
+ * （`POST /api/account/display-name`）・自己紹介と外部リンクの保存（`POST /api/account/profile`）。
+ * **仕様 5.9 の実体であり、5.10 の自己紹介と外部リンクの口である**（#341 / M9-6 / #379 / M12-11）。
+ * 自己紹介と外部リンクの形の検査と書き込みは `src/profile.ts` が持つ。
  *
  * ## なぜ表示名を変えられるようにするのか
  *
@@ -57,16 +59,58 @@
  * 変わっておらず、変わったのは置き場所だけである。** この画面にもヘッダは出るので、
  * ログアウトへの導線は失われていない。**2 つ置かない**——同じ操作のボタンが 1 画面に
  * 2 つ並ぶと、どちらが正かを読む人に考えさせる。
+ *
+ * ## タブはパスで分ける（#379 / 5.10）
+ *
+ * **`/account` はプロフィールのタブ**（表示名・自己紹介・外部リンク）、**`/account/details` は
+ * アカウントのタブ**（メールアドレス・登録日）である。並びと名前は `src/account-paths.ts` の
+ * `ACCOUNT_TABS` が持つ。**表示名をプロフィールの側に置く**——作者ページに出る値をまとめ、
+ * 本人にしか出ない値（メールアドレス）を別のタブへ分けた。
+ *
+ * **タブを足す人（メール配信。#384 / 5.11）がすること**は 3 つである。
+ *
+ *   1. `src/account-paths.ts` にパスを足し、`ACCOUNT_TABS` へ 1 行足す
+ *   2. この経路表（{@link createAccountRoutes}）へ GET の画面を 1 本足す（`resolveSessionUser` を
+ *      通し、未ログインなら {@link loginRequiredRedirect} へ送る）
+ *   3. 画面は {@link accountShell} で組む（見出し・タブ・ヘッダの状態を揃える）
+ *
+ * `ACCOUNT_TABS` の行き先がすべて経路表の画面であることは `test/account.test.ts` が照合する。
+ * パスで分けてあるので、**外枠の検査と幅の検査には何も書き足さずに乗る。**
+ *
+ * ## 自己紹介と外部リンクは、断ったときに入力を失わせない（#379）
+ *
+ * **表示名の口は、断ると `/account?reason=` へ送り直す**（入力した名前は URL に載せない。上）。
+ * **自己紹介の口は、形の検査や 8.3 で断ったとき、その場で画面を組み直して返す**
+ * （{@link handleProfileChange}）。500 文字の文章と 3 本の URL を、1 語が表に当たっただけで
+ * 全部打ち直させないためである。**送られた値は本文へ `escapeHtml` を通して戻すだけで、
+ * URL にもログにも載せない**——表示名が query を避けた理由（履歴・ログ・反射）はこの形でも
+ * 守られる。
  */
-import { ACCOUNT_DISPLAY_NAME_PATH, ACCOUNT_PATH, DISPLAY_NAME_FIELD } from './account-paths.js';
+import {
+  ACCOUNT_DETAILS_PATH,
+  ACCOUNT_DISPLAY_NAME_PATH,
+  ACCOUNT_PATH,
+  ACCOUNT_TABS,
+  DISPLAY_NAME_FIELD,
+} from './account-paths.js';
 import { loginRequiredRedirect } from './auth/google.js';
 import { displayNameHistoryInsert } from './display-name-changes.js';
 import { escapeHtml, siteHead, siteViewerAt } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { siteFooter } from './legal.js';
+import type { ProfileFormView, ProfileRejection } from './profile.js';
+import {
+  PROFILE_REASON_MESSAGES,
+  changeProfile,
+  parseStoredProfileLinks,
+  renderProfileForm,
+  validateProfile,
+} from './profile.js';
+import { ACCOUNT_PROFILE_PATH, BIO_FIELD, PROFILE_LINK_FIELD } from './profile-paths.js';
 import type { Route } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
+import { authorPagePath } from './users-page-paths.js';
 
 /**
  * 表示名の最大の長さ（**コードポイントで数える**。5.9）。
@@ -281,7 +325,12 @@ export async function changeDisplayName(
  * 固定の文言へ引き直し、**値そのものは出力へ通さない**（`src/invite-issuance.ts` と
  * 同じ方針。未知の値を通すと反射型の差し込みになる）。
  */
-export type AccountReason = DisplayNameRejection | 'too-soon' | 'invalid-request' | 'failed';
+export type AccountReason =
+  | DisplayNameRejection
+  | 'too-soon'
+  | 'invalid-request'
+  | 'failed'
+  | ProfileRejection;
 
 /**
  * 分類ごとの文言。
@@ -300,6 +349,9 @@ const REASON_MESSAGES: Readonly<Record<AccountReason, string>> = {
   'too-soon': `表示名の変更は ${DISPLAY_NAME_CHANGE_INTERVAL_SECONDS} 秒に 1 回までです。少し待ってからもう一度お試しください。`,
   'invalid-request': '要求の形が正しくありません。画面を開き直してからもう一度お試しください。',
   failed: '表示名を変更できませんでした。時間をおいてもう一度お試しください。',
+  // 自己紹介と外部リンクの理由（#379）。**綴りは表示名の理由と重ならない**（`bio-` / `link-` /
+  // `profile-` の接頭辞）ので、同じ query の名前へ載せても取り違えない。
+  ...PROFILE_REASON_MESSAGES,
 };
 
 /** 未知の分類を受けたときの文言。 */
@@ -312,6 +364,14 @@ const DEFAULT_REASON_MESSAGE = '表示名を変更できませんでした。';
  * （{@link showAccount}）ので、同じ名前に載せると成功まで 400 になる。
  */
 const SAVED_QUERY = 'saved';
+
+/**
+ * 自己紹介と外部リンクを保存できたことを示す値（`/account?saved=profile`。#379）。
+ *
+ * **表示名の `saved=1` と値で分ける。** 同じ値にすると、自己紹介を保存した人に
+ * 「表示名を変更しました」と出る。
+ */
+const SAVED_PROFILE_VALUE = 'profile';
 
 /**
  * 分類から画面に出す文言を選ぶ。
@@ -328,20 +388,29 @@ function reasonMessage(reason: string): string {
 /** 画面の上部に出す知らせ。 */
 export type AccountNotice =
   | { readonly kind: 'error'; readonly message: string }
-  | { readonly kind: 'saved' };
+  | { readonly kind: 'saved' }
+  | { readonly kind: 'saved-profile' };
 
-/** 画面を組み立てるのに必要なものだけを集めた入力。 */
+/** プロフィールのタブ（`/account`）を組み立てるのに必要なものだけを集めた入力。 */
 export interface AccountView {
+  /** 利用者の id（自分の作者ページへのリンクに使う）。 */
+  readonly userId: string;
   /** 表示名（`users.display_name`）。**利用者の入力であり、エスケープして出す。** */
   readonly displayName: string;
+  /** 表示名を決めた時刻（`users.display_name_set_at`）。NULL なら Google に追随している。 */
+  readonly displayNameSetAt: number | null;
+  /** 自己紹介と外部リンクのフォームに入れる値（#379）。 */
+  readonly profile: ProfileFormView;
+  /** 上部に出す知らせ（無ければ null）。 */
+  readonly notice: AccountNotice | null;
+}
+
+/** アカウントのタブ（`/account/details`）を組み立てるのに必要なものだけを集めた入力。 */
+export interface AccountDetailsView {
   /** メールアドレス（`users.email`）。**本人にだけ出す。** */
   readonly email: string;
   /** 登録した時刻（`users.created_at`。UNIX 秒）。 */
   readonly createdAt: number;
-  /** 表示名を決めた時刻（`users.display_name_set_at`）。NULL なら Google に追随している。 */
-  readonly displayNameSetAt: number | null;
-  /** 上部に出す知らせ（無ければ null）。 */
-  readonly notice: AccountNotice | null;
 }
 
 /**
@@ -359,13 +428,51 @@ function formatJstDate(epochSeconds: number): string {
 }
 
 /**
- * 登録情報の画面を組み立てる。
+ * 登録情報の画面の外枠（見出しとタブ）を組み立てる（#379）。
  *
- * **D1 から来る値は表示名とメールアドレスの 2 つで、どちらも `escapeHtml` を通す。**
- * 表示名は属性値（`value="..."`）へ入るので、`"` を含む名前が属性を閉じて要素を
- * 差し込む形になりうる。`escapeHtml` は `"` と `'` まで置き換える（`src/html.ts`）。
+ * **タブの画面はすべてこれを通す**（冒頭の「タブはパスで分ける」）。**`noindex` を付ける。**
+ * 本人にしか出ない画面である（`src/my-works.ts` と同じ扱い）。**ログイン済みとして組む**
+ * （2.3.7 / #331）。ログアウトはヘッダのアカウントのメニューが持つ（冒頭。#372）。
  *
- * **`noindex` を付ける。** 本人にしか出ない画面である（`src/my-works.ts` と同じ扱い）。
+ * **タブは `<nav>` のリンクで、`role="tablist"` にしない。** 押すと別の URL の画面へ移る
+ * 普通のリンクであり、WAI-ARIA のタブ（同じ画面の中で中身を切り替える部品）とは振る舞いが
+ * 違う。**いま開いているタブには `aria-current="page"` を付けてリンクにしない**
+ * （パンくずの末尾と同じ扱い。自分自身へのリンクを置かない）。
+ *
+ * @param options 画面のパス・`<title>`・本文
+ * @returns HTML
+ */
+export function accountShell(options: {
+  readonly path: string;
+  readonly title: string;
+  readonly body: string;
+}): string {
+  const tabs = ACCOUNT_TABS.map((tab) =>
+    tab.path === options.path
+      ? `<li><span aria-current="page">${escapeHtml(tab.label)}</span></li>`
+      : `<li><a href="${escapeHtml(tab.path)}">${escapeHtml(tab.label)}</a></li>`,
+  ).join('\n  ');
+  return `${siteHead({
+    title: options.title,
+    noindex: true,
+    viewer: siteViewerAt(options.path, true),
+  })}
+<h1>登録情報</h1>
+<nav class="gf-account-tabs" aria-label="登録情報の項目">
+<ul>
+  ${tabs}
+</ul>
+</nav>
+${options.body}
+${siteFooter()}`;
+}
+
+/**
+ * 登録情報の画面（プロフィールのタブ。`/account`）を組み立てる。
+ *
+ * **D1 から来る値（表示名・自己紹介・リンク）は、すべて `escapeHtml` を通す。** 表示名は
+ * 属性値（`value="..."`）へ入るので、`"` を含む名前が属性を閉じて要素を差し込む形になりうる。
+ * `escapeHtml` は `"` と `'` まで置き換える（`src/html.ts`）。
  *
  * @param view 表示に必要な値
  * @returns HTML
@@ -376,9 +483,11 @@ export function renderAccountPage(view: AccountView): string {
       ? ''
       : view.notice.kind === 'saved'
         ? '<p class="gf-notice" role="status">表示名を変更しました。</p>'
-        : // 文言は表から選んだ固定文字列だが、`escapeHtml` を通しておく
-          // （`src/invite-issuance.ts` と同じ理由。出どころが変わっても安全側が既定になる）。
-          `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
+        : view.notice.kind === 'saved-profile'
+          ? '<p class="gf-notice" role="status">自己紹介と外部リンクを保存しました。</p>'
+          : // 文言は表から選んだ固定文字列だが、`escapeHtml` を通しておく
+            // （`src/invite-issuance.ts` と同じ理由。出どころが変わっても安全側が既定になる）。
+            `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
 
   // **追随しているかどうかを言う。** 変えない限りログインのたびに Google の名前へ
   // 合わせる、という振る舞いは画面の外からは見えない。決めた後は「戻らない」ことを言う
@@ -388,25 +497,16 @@ export function renderAccountPage(view: AccountView): string {
       ? '<p>いまは Google アカウントの名前をそのまま使っています。ここで変更するまでは、ログインのたびに Google 側の名前に合わせます。</p>'
       : '<p>この名前はあなたが決めたものです。ログインしても Google アカウントの名前には戻りません。</p>';
 
-  // **読めない日時では `<time>` ごと落とす**（`src/my-works.ts` と同じ扱い。`datetime=""` は不正）。
-  const iso = toIsoTimestamp(view.createdAt);
-  const created = iso === '' ? '不明' : `<time datetime="${iso}">${formatJstDate(view.createdAt)}</time>`;
-
-  // **見出し（`<h2>`）で区切らない。** 表示名の欄は `<label>` が名前を持っており、上に
-  // 同じ語の見出しを置くと「表示名 / 表示名」と 2 度並ぶ（撮影で確かめた）。
+  // **表示名の欄の上に見出し（`<h2>`）を置かない。** 表示名の欄は `<label>` が名前を持っており、
+  // 上に同じ語の見出しを置くと「表示名 / 表示名」と 2 度並ぶ（撮影で確かめた）。
   //
   // **`maxlength` を付けない。** HTML の `maxlength` は UTF-16 の長さで数えるので、
   // こちらの規則（コードポイントで 30）と食い違い、絵文字を含む名前が 30 文字に
   // 届く前に打てなくなる。長さは送信後に 1 つの規則で断る（{@link validateDisplayName}）。
-  // **ログイン済みとして組む**（`src/my-works.ts` と同じ扱い。2.3.7 / #331）。
-  // ログアウトはヘッダのアカウントのメニューが持つ（冒頭。#372）。
-  return `${siteHead({
+  return accountShell({
+    path: ACCOUNT_PATH,
     title: '登録情報 - Game Forge',
-    noindex: true,
-    viewer: siteViewerAt(ACCOUNT_PATH, true),
-  })}
-<h1>登録情報</h1>
-${notice}
+    body: `${notice}
 <form method="post" action="${ACCOUNT_DISPLAY_NAME_PATH}">
   <label for="display-name">表示名</label>
   <input id="display-name" name="${DISPLAY_NAME_FIELD}" type="text" autocomplete="nickname"
@@ -416,14 +516,36 @@ ${notice}
 </form>
 ${following}
 <p>表示名は作品ページや作品の一覧に出て、ログインしていない人にも見えます。</p>
-<dl class="gf-account">
+${renderProfileForm(view.profile)}
+<p><a href="${escapeHtml(authorPagePath(view.userId))}">自分の作者ページを見る</a></p>`,
+  });
+}
+
+/**
+ * 登録情報の画面（アカウントのタブ。`/account/details`）を組み立てる（#379）。
+ *
+ * **D1 から来る値はメールアドレスで、`escapeHtml` を通す。** 中身は #379 より前に `/account` の
+ * 末尾にあったものを移しただけである。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+export function renderAccountDetailsPage(view: AccountDetailsView): string {
+  // **読めない日時では `<time>` ごと落とす**（`src/my-works.ts` と同じ扱い。`datetime=""` は不正）。
+  const iso = toIsoTimestamp(view.createdAt);
+  const created = iso === '' ? '不明' : `<time datetime="${iso}">${formatJstDate(view.createdAt)}</time>`;
+  return accountShell({
+    path: ACCOUNT_DETAILS_PATH,
+    title: 'アカウント - Game Forge',
+    body: `<dl class="gf-account">
   <dt>メールアドレス</dt>
   <dd>${escapeHtml(view.email)}</dd>
   <dt>登録日</dt>
   <dd>${created}</dd>
 </dl>
 <p>メールアドレスはあなたにだけ表示しています。ほかの人には見えません。</p>
-${siteFooter()}`;
+<p>ログインには Google アカウントを使っています。メールアドレスは、ログインのたびに Google アカウントのものに合わせます。</p>`,
+  });
 }
 
 /**
@@ -440,16 +562,34 @@ function seeOther(location: string): Response {
   return new Response(null, { status: 303, headers: { location, 'cache-control': 'no-store' } });
 }
 
-/** 登録情報の画面が読む `users` の列。 */
+/** 登録情報の画面（プロフィールのタブ）が読む `users` の列。 */
 interface AccountRow {
   readonly display_name: string;
-  readonly email: string;
-  readonly created_at: number;
   readonly display_name_set_at: number | null;
+  readonly bio: string;
+  readonly profile_links: string;
 }
 
 /**
- * 登録情報の画面を返す。
+ * プロフィールのタブに要る本人の行を引く。
+ *
+ * **引くのは本人の行だけである**（`where id = ?` にセッションの id を束縛する）。
+ * **メールアドレスを選ばない**——この画面には出さない（アカウントのタブが引く）。
+ *
+ * @param env バインディングと環境変数
+ * @param userId セッションの利用者 id
+ * @returns 行（無ければ null）
+ */
+async function loadAccountRow(env: Env, userId: string): Promise<AccountRow | null> {
+  return await env.DB.prepare(
+    'select display_name, display_name_set_at, bio, profile_links from users where id = ?',
+  )
+    .bind(userId)
+    .first<AccountRow>();
+}
+
+/**
+ * 登録情報の画面（プロフィールのタブ）を返す。
  *
  * **未ログインならログインへ送る**（`src/my-works.ts` の `showMyWorks` と同じ扱い）。
  * 401 を返しても、画面を開いた利用者にできることは結局ログインである。
@@ -469,11 +609,7 @@ async function showAccount(request: Request, env: Env): Promise<Response> {
     return await loginRequiredRedirect(env, ACCOUNT_PATH);
   }
 
-  const row = await env.DB.prepare(
-    'select display_name, email, created_at, display_name_set_at from users where id = ?',
-  )
-    .bind(session.userId)
-    .first<AccountRow>();
+  const row = await loadAccountRow(env, session.userId);
   if (row === null) {
     // 解決の直後に行が消えた（手動の削除など）。`resolveSessionUser` が居ないと
     // 答えたときと同じ扱いにする。
@@ -482,19 +618,23 @@ async function showAccount(request: Request, env: Env): Promise<Response> {
 
   const params = new URL(request.url).searchParams;
   const reason = params.get('reason');
+  const saved = params.get(SAVED_QUERY);
   const notice: AccountNotice | null =
     reason !== null
       ? { kind: 'error', message: reasonMessage(reason) }
-      : params.get(SAVED_QUERY) !== null
-        ? { kind: 'saved' }
-        : null;
+      : saved === SAVED_PROFILE_VALUE
+        ? { kind: 'saved-profile' }
+        : saved !== null
+          ? { kind: 'saved' }
+          : null;
 
   return html(
     renderAccountPage({
+      userId: session.userId,
       displayName: row.display_name,
-      email: row.email,
-      createdAt: row.created_at,
       displayNameSetAt: row.display_name_set_at,
+      // **表示の直前の検査を通したリンクだけを欄へ入れる**（`src/profile.ts`）。
+      profile: { bio: row.bio ?? '', links: parseStoredProfileLinks(row.profile_links) },
       notice,
     }),
     // 失敗の後始末で開かれた画面には、失敗のステータスを付ける（`src/invite-issuance.ts`
@@ -587,6 +727,147 @@ async function handleDisplayNameChange(
   }
 }
 
+/**
+ * 登録情報の画面（アカウントのタブ）を返す（#379）。
+ *
+ * **引くのは本人の行だけである**（{@link showAccount} と同じ。メールアドレスを本人以外に
+ * 出さないことは、この 1 行が担っている）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function showAccountDetails(request: Request, env: Env): Promise<Response> {
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return await loginRequiredRedirect(env, ACCOUNT_DETAILS_PATH);
+  }
+  const row = await env.DB.prepare('select email, created_at from users where id = ?')
+    .bind(session.userId)
+    .first<{ email: string; created_at: number }>();
+  if (row === null) {
+    return await loginRequiredRedirect(env, ACCOUNT_DETAILS_PATH);
+  }
+  return html(renderAccountDetailsPage({ email: row.email, createdAt: row.created_at }));
+}
+
+/**
+ * 自己紹介と外部リンクの本文の最大バイト数（#379）。
+ *
+ * **16 KiB。** 載るのは自己紹介（500 文字）とリンク 3 本（1 本 500 文字）で、4 バイト文字を
+ * パーセント符号化すると 1 文字 12 バイトになる（自己紹介だけで 6,000 バイト）。上限そのものは
+ * 本文を際限なく読まないために置く。**超えたら `profile-too-large` で断る**（どの欄が長いかは
+ * 読まないと分からない）。
+ */
+const MAX_PROFILE_BODY_BYTES = 16 * 1024;
+
+/**
+ * 断った自己紹介と外部リンクを、送られた値を入れたままの画面で返す（#379。冒頭）。
+ *
+ * @param env バインディングと環境変数
+ * @param userId セッションの利用者 id
+ * @param reason 断った理由
+ * @param submitted 送られた値（欄へ戻す）
+ * @param status 返すステータス
+ * @returns レスポンス
+ */
+async function profileRefusal(
+  env: Env,
+  userId: string,
+  reason: ProfileRejection,
+  submitted: ProfileFormView,
+  status: number,
+): Promise<Response> {
+  const row = await loadAccountRow(env, userId);
+  if (row === null) {
+    return await loginRequiredRedirect(env, ACCOUNT_PATH);
+  }
+  return html(
+    renderAccountPage({
+      userId,
+      displayName: row.display_name,
+      displayNameSetAt: row.display_name_set_at,
+      profile: submitted,
+      notice: { kind: 'error', message: reasonMessage(reason) },
+    }),
+    status,
+  );
+}
+
+/**
+ * 自己紹介と外部リンクを保存する（`POST /api/account/profile`。#379 / 5.10）。
+ *
+ * - **保存できたら `/account?saved=profile` へ戻す**（POST-redirect-GET）
+ * - **形の検査・8.3・間隔で断ったら、送られた値を入れた画面をその場で返す**（冒頭）。
+ *   間隔は 429、それ以外は 400
+ * - **本文を読めない（形式が違う・大きすぎる）ときは `/account?reason=` へ送る**——戻す値が無い
+ *
+ * **断った要求は書き込まない**——検査で断ったものは D1 に触れず、間隔で断ったものは 0 行の
+ * 更新で終わる（`src/profile.ts` の `changeProfile`）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param now 現在時刻（UNIX 秒）を返す関数
+ * @returns レスポンス
+ */
+async function handleProfileChange(
+  request: Request,
+  env: Env,
+  now: () => number,
+): Promise<Response> {
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return await loginRequiredRedirect(env, ACCOUNT_PATH);
+  }
+
+  const mediaType = (request.headers.get('content-type') ?? '')
+    .split(';')[0]!
+    .trim()
+    .toLowerCase();
+  if (mediaType !== FORM_MEDIA_TYPE) {
+    return seeOther(`${ACCOUNT_PATH}?reason=invalid-request`);
+  }
+  const read = await readLimitedText(request, MAX_PROFILE_BODY_BYTES);
+  if (!read.ok) {
+    return seeOther(
+      `${ACCOUNT_PATH}?reason=${read.reason === 'body-too-large' ? 'profile-too-large' : 'invalid-request'}`,
+    );
+  }
+  const params = new URLSearchParams(read.text);
+  const rawBio = params.get(BIO_FIELD) ?? '';
+  const rawLinks = params.getAll(PROFILE_LINK_FIELD);
+  // 欄へ戻す値。空の欄を詰め、画面の欄の数だけにする（手で組んだ 4 本目以降は戻さない）。
+  const submitted: ProfileFormView = {
+    bio: rawBio,
+    links: rawLinks.map((link) => link.trim()).filter((link) => link !== ''),
+  };
+
+  const validated = validateProfile(rawBio, rawLinks);
+  if (!validated.ok) {
+    return await profileRefusal(env, session.userId, validated.reason, submitted, 400);
+  }
+
+  try {
+    const changed = await changeProfile(env.DB, session.userId, validated.profile, now());
+    if (changed.ok) {
+      return seeOther(`${ACCOUNT_PATH}?${SAVED_QUERY}=${SAVED_PROFILE_VALUE}`);
+    }
+    return await profileRefusal(
+      env,
+      session.userId,
+      changed.reason,
+      submitted,
+      changed.reason === 'profile-too-soon' ? 429 : 400,
+    );
+  } catch (error) {
+    // D1 の失敗。**入力はログに出さない**（利用者の入力であり、ここで残す理由が無い）。
+    console.error(
+      `[account] 自己紹介と外部リンクの保存に失敗しました: ${error instanceof Error ? error.name : 'unknown'}`,
+    );
+    return seeOther(`${ACCOUNT_PATH}?reason=profile-failed`);
+  }
+}
+
 /** {@link createAccountRoutes} に渡す差し替え。 */
 export interface AccountRouteOptions {
   /** 現在時刻（UNIX 秒）。既定は `Date.now()` から。テストが 60 秒の境界を固定するために使う。 */
@@ -607,13 +888,19 @@ export function createAccountRoutes(options: AccountRouteOptions = {}): readonly
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   return [
     { method: 'GET', path: ACCOUNT_PATH, handler: showAccount },
+    { method: 'GET', path: ACCOUNT_DETAILS_PATH, handler: showAccountDetails },
     {
       method: 'POST',
       path: ACCOUNT_DISPLAY_NAME_PATH,
       handler: (request, env) => handleDisplayNameChange(request, env, now),
     },
+    {
+      method: 'POST',
+      path: ACCOUNT_PROFILE_PATH,
+      handler: (request, env) => handleProfileChange(request, env, now),
+    },
   ];
 }
 
-/** アプリの経路表へ連結する登録情報の経路（#341）。 */
+/** アプリの経路表へ連結する登録情報の経路（#341 / #379）。 */
 export const accountRoutes: readonly Route[] = createAccountRoutes();

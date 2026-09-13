@@ -880,6 +880,40 @@ button:disabled {
   font-size: var(--gf-text-small);
 }
 
+/*
+ * 自己紹介と外部リンク（#379。`src/author-profile.ts`）。
+ *
+ * **見出しを付けず、被いいね数の下に本文の大きさで置く。** 主役は下に並ぶ作品であり、
+ * 自己紹介はそこへ入る前の数行である。
+ *
+ * **リンクは任意の位置で折り返す**（`overflow-wrap: anywhere`）。URL は空白を持たず、
+ * 折らないと版面を押し広げて横スクロールを生む（`scripts/check-page-width.sh` が見ている回帰）。
+ */
+.gf-author-profile {
+  margin: 0 0 var(--gf-gap-4);
+}
+
+.gf-author-bio p {
+  margin: 0 0 var(--gf-gap-2);
+  overflow-wrap: anywhere;
+}
+
+.gf-author-links {
+  margin: var(--gf-gap-2) 0 var(--gf-gap-1);
+  padding-left: 1.2em;
+}
+
+.gf-author-links li {
+  overflow-wrap: anywhere;
+}
+
+/* 「運営は検証していない」の但し書き。**リンクの直下に、小さく・淡く、しかし省かずに出す。** */
+.gf-author-links-note {
+  margin: 0;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
 /* 一覧へ戻る行。本文の終わりに置く補助の導線である。 */
 .gf-author-back {
   margin-top: var(--gf-gap-4);
@@ -1284,6 +1318,56 @@ a.gf-card-author {
 .gf-account dd {
   margin: 0 0 var(--gf-gap-2);
   overflow-wrap: anywhere;
+}
+
+/*
+ * 登録情報のタブ（#379。`src/account.ts` の `accountShell`）。
+ *
+ * **普通のリンクの列である**（押すと別の URL の画面へ移る）。いま開いているタブは
+ * `aria-current` の `<span>` で、下線の代わりに下の罫線で示す（色で示さない。app.css 冒頭）。
+ *
+ * **折り返す。** タブは #384 で 3 つになる。390px で横に溢れさせない（`flex-wrap`）。
+ */
+.gf-account-tabs ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-1) var(--gf-gap-4);
+  margin: 0 0 var(--gf-gap-4);
+  padding: 0 0 var(--gf-gap-1);
+  border-bottom: 1px solid var(--gf-rule);
+  list-style: none;
+}
+
+.gf-account-tabs li {
+  margin: 0;
+}
+
+.gf-account-tabs [aria-current='page'] {
+  font-weight: 700;
+  border-bottom: 2px solid var(--gf-ink);
+}
+
+/*
+ * 外部リンクの欄をまとめる枠（#379。`src/profile.ts` の `renderProfileForm`）。
+ *
+ * **枠線を消し、フォームと同じ縦積みにする。** `<fieldset>` の既定の枠と内側の余白は、
+ * 390px の版面で入力欄をさらに狭める。**`min-width: 0`** は、`<fieldset>` の既定
+ * （`min-width: min-content`）が長い値の入った入力欄に合わせて版面を押し広げるのを止める。
+ */
+.gf-profile-links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.gf-profile-links legend {
+  margin-bottom: var(--gf-gap-2);
+  padding: 0;
+  font-weight: 700;
 }
 
 /* ==========================================================================

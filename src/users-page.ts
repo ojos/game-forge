@@ -109,6 +109,8 @@
  * 一方、**5.9 の表示名の変更が 60 秒遅れて見えるのは、変えた本人にとって「変わって
  * いない」と読める。** 存在しない利用者の判定（404）も同じ 1 行で済む。
  */
+import type { AuthorProfileView } from './author-profile.js';
+import { renderAuthorProfile } from './author-profile.js';
 import type { PublicWork } from './games.js';
 import { PUBLISHED_STATUS } from './games.js';
 import type { SiteViewer } from './html.js';
@@ -261,6 +263,8 @@ export interface AuthorPageView {
   readonly page: number;
   /** 次の頁があるか。 */
   readonly hasNext: boolean;
+  /** 自己紹介と外部リンク（#379。描画は `src/author-profile.ts`。無ければ出さない）。 */
+  readonly profile?: AuthorProfileView;
 }
 
 /** 作品が 1 件も無いときの文言。 */
@@ -356,6 +360,7 @@ export function renderAuthorPage(view: AuthorPageView, viewer: SiteViewer): stri
   })}
 <h1>${name}</h1>
 ${likesLine(view.likesReceived)}
+${renderAuthorProfile(view.profile)}
 ${body}
 ${renderPager(view)}
 <p class="gf-author-back"><a href="${PUBLIC_WORKS_PATH}">ほかの作品をさがす</a></p>
@@ -426,8 +431,8 @@ export function userIdFromPath(pathname: string): string | null {
  * 3. **キャッシュに存在しない利用者の結果を溜めない。** 実在しない id の要求を
  *    キャッシュしても D1 の読み取りは 1 行も減らない（鍵が毎回違う）
  *
- * **選ぶのは `display_name` 1 列だけである。** `email` と `invited_by` を選ばない
- * （モジュール冒頭。選ばなければ漏れようがない）。**`banned_at` も選ばない**——見ない
+ * **選ぶのは `display_name` と、公開する自己紹介・外部リンク（`bio` / `profile_links`。#379）
+ * だけである。** `email` と `invited_by` を選ばない（モジュール冒頭。選ばなければ漏れようがない）。**`banned_at` も選ばない**——見ない
  * と決めた値を引くと、次に読む人が「見るつもりだったのでは」と読む。
  *
  * **上限より 1 件多く引く。** 「ちょうど 20 件あった」と「次の頁がある」は引いた件数だけ
@@ -450,9 +455,10 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
     return notFound(viewer);
   }
 
-  const user = await env.DB.prepare('select display_name from users where id = ?')
+  // 自己紹介と外部リンク（#379）も同じ 1 行から引く（キャッシュに載せない理由は表示名と同じ）。
+  const user = await env.DB.prepare('select display_name, bio, profile_links from users where id = ?')
     .bind(userId)
-    .first<{ display_name: string | null }>();
+    .first<{ display_name: string | null; bio: string | null; profile_links: string | null }>();
   if (user === null) {
     return notFound(viewer);
   }
@@ -520,6 +526,7 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
         likesReceived: data.likesReceived ?? 0,
         page,
         hasNext: works.length > WORKS_PER_PAGE && page < MAX_PAGE,
+        profile: { bio: user.bio, links: user.profile_links },
       },
       viewer,
     ),

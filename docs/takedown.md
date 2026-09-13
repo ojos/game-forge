@@ -118,10 +118,11 @@ R2 の現行の画像だけが消え、D1 の UPDATE は 0 行、写しが 1 つ
 - **確定は最後に、自分の排他を持っている行だけに当てます。** 持ち時間が切れて利用者が取り直していれば 0 行になり、
   5 で止まります
 
-**ブロックをまとめて貼って実行します。** `set -euo pipefail` の bash のサブシェルで動くので、**排他が取れない・
-JSON が読めない・想定外の値がある・R2 の削除が落ちる・確定が当たらない・R2 に残っている、のどれでも、その場で止まり
-先へ進みません**（止まっても対話シェルは閉じない）。**最後に `AVATAR_REMOVE_DONE` が出なければ、完了していません**
-（どこで止まったかは、直前に出た文言で分かる）。
+**ブロックをまとめて貼って実行します。** `set -euo pipefail` の bash のサブシェルで動くので、**利用者がいない・排他が
+取れない・JSON が読めない・想定外の値がある・R2 の削除が落ちる・排他を失った・確定が当たらない・R2 に残っている・
+R2 を確かめられない・60 秒後に現行のキーへ書かれていた、のどれでも、その場で止まり先へ進みません**（止まっても対話
+シェルは閉じない）。**最後に `AVATAR_REMOVE_DONE` が出なければ、完了していません**（どこで止まったかは、直前に出た
+文言で分かる）。**5 の最後で 60 秒待つので、全体で 1 分あまりかかります。**
 
 ```bash
 # リポジトリのルートで打つ（scripts/load-project-env.sh を相対パスで読む）。
@@ -143,10 +144,30 @@ main() {
   # `select count(*) as n ...` の n を返す（JSON が読めなければ止まる）
   n() { node -e 'console.log(JSON.parse(require("fs").readFileSync(0, "utf8"))[0].results[0].n)'; }
   r2() { CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler r2 object "$@" --remote; }
+  # 排他を持ち続ける。自分のトークンを持つ行の avatar_lock_at を今の時刻へ進め、読み直して持っていなければ止まる
+  keep() {
+    local h
+    d1 "update users set avatar_lock_at = $(date +%s) where id = '${id}' and avatar_lock_token = '${token}';" >/dev/null
+    h=$(d1 "select count(*) as n from users where id = '${id}' and avatar_lock_token = '${token}';" | n)
+    [ "$h" = 1 ] || { echo '排他を失いました（持ち時間が切れて、利用者の操作が取り直した）。1 からやり直してください' >&2; exit 1; }
+  }
+  # R2 にキーが無いと確かめられたら 0、在れば 1 を返す。「見つからない」以外の失敗（認証・権限・一時的な失敗）なら止まる
+  #   wrangler 4 の `r2 object get --remote` は、API が 404 を返したときだけ "The specified key does not exist." を出して 1 で終わる
+  #   （それ以外の失敗は "Failed to fetch ... - <status>: ..." で、同じく 1 で終わる。終了コードでは見分けられない）
+  gone() {
+    local err
+    if err=$(r2 get "game-forge/$1" --pipe 2>&1 >/dev/null); then return 1; fi
+    if grep -qF 'The specified key does not exist.' <<<"$err"; then return 0; fi
+    printf 'R2 を確かめられません（見つからない以外の失敗）。やり直してください: %s\n%s\n' "$1" "$err" >&2; exit 1
+  }
 
-  # 1. 排他を取る。トークンと時刻は、ここで 1 度だけ作る（以降の文はすべてこの 2 つを使う）
+  # 0. 利用者の行があるかを読む（無い id を「保存中」と取り違えない）
+  exists=$(d1 "select count(*) as n from users where id = '${id}';" | n)
+  [ "$exists" = 1 ] || { echo "その id の利用者がいません。id を確かめてください: ${id}" >&2; exit 1; }
+
+  # 1. 排他を取る。トークンと時刻は、ここで 1 度だけ作る（以降の文はすべてこの 2 つを使う。3 の keep だけが avatar_lock_at を今へ進める）
   #    条件は acquireAvatarLock（src/avatar.ts）の WHERE から、間隔（avatar_set_at）の条件だけを外したもの
-  #    利用者が保存中なら取れずに止まる。1〜4 が 60 秒を超えると利用者が取り直せ、5 で止まる（下の「途中で利用者の保存・外すが割り込んだら」）
+  #    利用者が保存中なら取れずに止まる。持ち時間が切れて利用者が取り直したら、3 の keep か 5 で止まる（下の「途中で利用者の保存・外すが割り込んだら」）
   token=$(node -e 'console.log(crypto.randomUUID())')
   now=$(date +%s)
   d1 "update users set avatar_lock_token = '${token}', avatar_lock_at = ${now}
@@ -154,7 +175,7 @@ main() {
          and (avatar_lock_token is null or avatar_lock_at is null or avatar_lock_at <= ${now} - 60);" >/dev/null
   #    取れたかは meta.changes ではなく、行を読み直して確かめる
   held=$(d1 "select count(*) as n from users where id = '${id}' and avatar_lock_token = '${token}';" | n)
-  [ "$held" = 1 ] || { echo '排他を取れません（利用者が保存中か、その id の利用者がいません）。60 秒待ってやり直してください' >&2; exit 1; }
+  [ "$held" = 1 ] || { echo '排他が生きています（利用者が保存中か、途中で止まった前回の手順の排他）。60 秒待ってやり直してください' >&2; exit 1; }
 
   # 2. 値を D1 から実行時に読む（手で写さない）。排他を持っていない・想定外の値なら止まる
   old=$(d1 "select avatar_sha256 as s from users where id = '${id}' and avatar_lock_token = '${token}';" \
@@ -163,8 +184,11 @@ main() {
                const s = r[0].s ?? "";
                if (s !== "" && !/^[0-9a-f]{64}$/.test(s)) { console.error(`想定外の sha: ${s}`); process.exit(1); }
                console.log(s)')
+  #    写しは、保存期間（30 日。terraform/r2-lifecycle.tf の avatar_history_retention_days）に余裕 2 日を足した範囲だけを回す。
+  #    それより古い写しはライフサイクル規則が R2 から消している（履歴の行は D1 に残り続けるので、絞らないと回す数が増え続ける）
   keys=$(d1 "select history_key as k from avatar_changes
-              where user_id = '${id}' and history_key is not null order by changed_at;" \
+              where user_id = '${id}' and history_key is not null and changed_at >= ${now} - (30 + 2) * 86400
+              order by changed_at;" \
     | node -e 'const re = new RegExp(`^avatars/history/${process.argv[1]}/[0-9]+-[0-9a-f]{64}-[0-9a-f-]{36}\\.webp$`);
                for (const r of JSON.parse(require("fs").readFileSync(0, "utf8"))[0].results) {
                  if (!re.test(r.k)) { console.error(`想定外のキー: ${r.k}`); process.exit(1); }
@@ -175,11 +199,14 @@ main() {
   echo "old=${old:-（なし）}"; echo "keys:"; echo "${keys}"
 
   # 3. R2 から消す。現行のキーと、2 で読んだ history_key をすべて（無いキーの削除は失敗しない。失敗は set -e で止まる）
+  #    削除のたびに keep で排他を今へ進める（写しが多くて直列の削除が 60 秒を超えても、持ち時間を切らさない）
   for k in "avatars/${id}.webp" $keys; do
+    keep
     r2 delete "game-forge/${k}"
   done
+  keep
 
-  # 4. 確定する。WHERE は writeAvatarBatch と同じ「id・自分のトークン・読んだときの画像」
+  # 4. 確定する。WHERE は writeAvatarBatch と同じ「id・自分のトークン・読んだときの画像」（avatar_lock_at は見ないので、keep で進めても当たる）
   #    履歴を先に、列を後に書く（端末からの 2 文は 1 つのトランザクションにならない。落ちたら履歴が欠ける側ではなく、残る側に倒す）
   #    履歴は、いまの画像を運営が消した行がまだ無いときだけ積む（4 の途中で落ちて打ち直しても 2 行にならない）
   #    old が空（もう外れていた）なら履歴は積まない
@@ -208,12 +235,17 @@ main() {
   fi
   d1 "select old_sha256, new_sha256, history_key, changed_at from avatar_changes
        where user_id = '${id}' order by changed_at desc limit 1;"
-  #    R2 の get は「見つからない」で失敗するのが正しいので、ここだけ止めない
+  #    R2 は「見つからない」と確かめられたキーだけを「消えています」にする（gone）
   left=0
   for k in "avatars/${id}.webp" $keys; do
-    if r2 get "game-forge/${k}" --pipe >/dev/null 2>&1; then echo "まだ残っています: ${k}"; left=1; else echo "消えています: ${k}"; fi
+    if gone "$k"; then echo "消えています: ${k}"; else echo "まだ残っています: ${k}"; left=1; fi
   done
   [ "$left" = 0 ] || { echo 'R2 に残っています。1 からやり直してください' >&2; exit 1; }
+  #    遅れた書き込みを見張る。60 秒おいて、現行のキーをもう一度確かめる（在れば、遅れて届いたアプリの書き込みなので 1 からやり直す）
+  echo '60 秒おいて、現行のキーをもう一度確かめます'
+  sleep 60
+  gone "avatars/${id}.webp" \
+    || { echo "60 秒後に現行のキーへ画像が書かれていました（遅れた書き込み）。1 からやり直してください: avatars/${id}.webp" >&2; exit 1; }
   echo AVATAR_REMOVE_DONE
 }
 
@@ -233,8 +265,15 @@ SCRIPT
 | 1 間隔 | **置かない**（下） | 382 行の `avatar_set_at is null or avatar_set_at <= ?`（`AVATAR_CHANGE_INTERVAL_SECONDS`。92 行） |
 | 1 取れたか | 行を読み直し、`avatar_lock_token = <自分のトークン>` の行が 1 行あること | アプリは `meta.changes`（386 行）。持っているかの判定は `holdsAvatarLock` の `id = ? and avatar_lock_token = ?`（431 行） |
 | 2 値を読む | `avatar_lock_token = <自分のトークン>` の行から `avatar_sha256` を読む | `holdsAvatarLock`（431 行）の後に列を読む `saveAvatar` / `removeAvatar`（454・458 行 / 502・505 行） |
+| 3 排他を持ち続ける | 削除のたびに `avatar_lock_at = <今の時刻>`（`id = <id> and avatar_lock_token = <自分のトークン>` の行だけ）へ進め、読み直して持っていなければ止まる | **アプリには無い**（1 回の操作の R2 の書き込みは 2 回で、変換の関数のタイムアウト 15 秒の 2 倍以上の 60 秒に収まる前提。326〜331 行）。持っているかの見方は `holdsAvatarLock`（431 行）と同じ |
 | 4 確定する | 履歴も列も `id = <id> and avatar_lock_token = <自分のトークン> and avatar_sha256 is <読んだ値>`。列は sha と排他を NULL にし、`avatar_set_at` を 1 の時刻にする | `writeAvatarBatch` の `conditions`（624 行）を履歴の insert（629〜633 行）と列の update（638〜639 行）の両方に使う。update が書く 4 列も同じ |
+| 5 確かめる | 列が `avatar_sha256 is null and avatar_lock_token is null and avatar_lock_at is null and avatar_set_at = <1 の時刻>` | 確定の update（638 行）が書いた後の形 |
 | 失敗したとき | 解かない。60 秒で自然に解ける | 失敗した操作は `releaseAvatarLock`（412 行）で自分のトークンのときだけ解き、解けなくても 60 秒で解ける（404 行） |
+
+**3 で進める `avatar_lock_at` は、4 と 5 と矛盾しません。** 4 の WHERE はトークンだけで排他を見て（`avatar_lock_at` を
+見ない）、4 の update が `avatar_lock_at` を NULL に戻し、5 は NULL を確かめます。`avatar_set_at` と履歴の `changed_at`
+には、3 で進めた時刻ではなく 1 の時刻を使います。**アプリの側から見ると、3 で進めているあいだ排他は生きていて、
+利用者の保存・外すは `avatar-saving` で断られ続けます。**
 
 **運営の手順だけが、間隔（`avatar_set_at`）の条件を外しています。** 間隔は利用者の連打（1 回の設定が Lambda の
 呼び出し 1 回と R2 の書き込み 2 回を伴う）を絞るための条件で、R2 と D1 の食い違いを防ぐのは排他の条件だけです。
@@ -245,29 +284,50 @@ SCRIPT
 `history_key` が NULL・`changed_at` がその画像を設定した時刻以降）が既にあれば積まない。②は、4 の履歴を積んだ後・
 列を書く前に落ちて打ち直したときに、同じ削除を 2 行にしないためです（アプリは 1 つの `D1.batch` で書くので要らない）。
 
+**回す写しは、`changed_at` が「保存期間 30 日＋余裕 2 日」より新しい行だけです。** 保存期間は
+`terraform/r2-lifecycle.tf` の `avatar_history_retention_days`（`src/avatar.ts` の `AVATAR_HISTORY_RETENTION_DAYS` は
+その写し）で、それより古い写しはライフサイクル規則が R2 から消しています（規則は期限の後 24 時間ほどで消すので、
+余裕を 2 日とった）。**`avatar_changes` の行は消えないので、絞らないと、削除のたびに回す数が増え続けます。**
+**30 日後に規則が写しを消すことは、本番ではまだ確かめていません**（`docs/handoff.md`）。規則が効いていなければ、
+32 日より古い写しはこの手順では消えません。
+
 **端末の時計を使います**（`date +%s`）。**Worker の時計と大きくずれていると、持ち時間と間隔がそのぶんずれます。**
 端末の時刻が合っていることを前提にします。
 
+**R2 の「消えています」は、wrangler が「見つからない」と答えたときだけです。** wrangler 4（手元の 4.121.0 の
+`wrangler-dist/cli.js`）の `r2 object get --remote` は、API が 404 を返したときだけ `The specified key does not exist.`
+を出して終了コード 1 で終わり、それ以外の失敗（認証・権限・一時的な失敗）は `Failed to fetch ... - <status>` を出して
+同じく 1 で終わります。**終了コードでは見分けられないので、文言で見分け、それ以外の失敗は止めてやり直させます。**
+wrangler を上げてこの文言が変わると、5 は「確かめられません」で止まります（黙って「消えています」にはならない）。
+
 ### 途中で利用者の保存・外すが割り込んだら
 
-- **1 の時点で利用者が保存中（排他が生きている）なら、1 で排他が取れず「排他を取れません」で止まります。** R2 にも
-  D1 にも触っていません。**60 秒待って、もう一度打ちます**（保存が終わっていれば、新しい画像も 3 で消える）
+- **1 の時点で利用者が保存中（排他が生きている）なら、1 で排他が取れず「排他が生きています」で止まります。** R2 にも
+  D1 にも触っていません。**60 秒待って、もう一度打ちます**（保存が終わっていれば、新しい画像も 3 で消える）。
+  **id の利用者がいないときは、その前に「その id の利用者がいません」で止まります**（待っても直らないので、id を確かめる）
 - **1〜4 のあいだに利用者が保存・外すを押しても、アプリは排他を取れずに断ります**（`acquireAvatarLock` が 0 行で、
   生きている排他を見て `avatar-saving` を返す。396〜398 行。画面には「アイコンを保存しています。少し待ってから画面を
   開き直してください。」。157 行）。**変換にも R2 にも触らないので、手順はそのまま進みます**
-- **1〜4 が 60 秒を超えると、排他は期限切れになり、利用者の次の保存・外すが排他を取り直せます**（写しが多くて 3 が
-  長いときに起こりうる）。取り直した操作が確定すると列と排他が書き換わるので、**4 の確定は自分のトークンを持たずに
-  0 行になり、5 が「確定が当たっていません」で止まります。** このとき 3 で利用者の新しい画像を消しているかもしれず、
-  R2 と D1 は食い違っていることがあります。**必ず 1 からやり直します**（そのとき D1 にある値で消し直す。利用者の
-  操作がまだ続いていれば、1 で止まる）
+- **写しが多くて 3 が 60 秒を超えても、排他は切れません**（削除のたびに `avatar_lock_at` を今へ進める）。
+  **切れるのは、1 つの削除か D1 の 1 文が 60 秒以上止まったときです。** その間に利用者の保存・外すが排他を取り直すと、
+  **次の削除の前の確かめが「排他を失いました」で止まります**（4 と 5 に進まない）。3 の最後の削除の後に取り直された
+  ときは、4 の確定が自分のトークンを持たずに 0 行になり、**5 が「確定が当たっていません」で止まります。** どちらの
+  場合も、利用者の新しい画像を 3 で消しているかもしれず、R2 と D1 は食い違っていることがあります。**必ず 1 から
+  やり直します**（そのとき D1 にある値で消し直す。利用者の操作がまだ続いていれば、1 で止まる）
 - **期限切れの排他を運営が取り直した後に、遅れていたアプリの操作が R2 の現行のキーへ書くと**（アプリは R2 に書く
-  直前に `holdsAvatarLock` で確かめるが、確かめてから書くまでの間は防げない。454 行）、アプリの確定は当たらず戻しも
-  しません（`writeAvatarBatch` が 0 行、`restoreIfHeld` は排他を持たないので何もしない。673 行）。**4 は当たりますが、
-  5 の R2 の確かめが「まだ残っています」で止まるので、1 からやり直します**
-- **途中で落ちたら（端末を閉じた・ネットワーク・R2 の削除の失敗）、排他は 60 秒で解けます**（1 の条件の
-  `avatar_lock_at <= now - 60`。アプリの 381 行と同じ）。4 より前なら列は元のままなので、**60 秒待って打ち直せば、
-  そのとき D1 にある値で消し直します。** 4 の履歴を積んだ後・列を書く前に落ちたときも、打ち直しで履歴は 2 行に
-  なりません（上の②）
+  直前に `holdsAvatarLock` で確かめるが、確かめてから書くまで（454 行から 474 行）の間は防げない）、アプリの確定は
+  当たらず戻しもしません（`writeAvatarBatch` が 0 行、`restoreIfHeld` は排他を持たないので何もしない。673 行）。
+  **書き込みが 5 の確かめより前に届けば「まだ残っています」で、後に届けば「60 秒後に現行のキーへ画像が書かれて
+  いました」で止まるので、1 からやり直します**（窓は狭い。運営が 1 で排他を取れるのはアプリの排他が 60 秒以上前に
+  取られたときだけで、アプリの要求はふつう変換のタイムアウト 15 秒を含めてそれより前に終わる）
+- **途中で落ちたら（端末を閉じた・ネットワーク・R2 の削除の失敗）、排他は最後に進めた時刻から 60 秒で解けます**
+  （1 の条件の `avatar_lock_at <= now - 60`。アプリの 381 行と同じ）。4 より前なら列は元のままなので、**60 秒待って
+  打ち直せば、そのとき D1 にある値で消し直します**（60 秒たたずに打ち直すと、自分の前回の排他で「排他が生きています」と止まる）。4 の履歴を積んだ後・列を書く前に落ちたときも、打ち直しで履歴は
+  2 行になりません（上の②）
+
+**遅れた書き込みは、手順で見張るだけで、塞げてはいません。** 5 の 60 秒の見張りより後に届く書き込みは見逃します。
+**アプリ側で塞ぐなら、現行のキーへの書き込みを排他のトークンに結び付ける必要があります**（例: 確定で行が指すまで、
+トークンを含む別のキーに置き、確定の後に現行のキーへ移す）。**別 issue の候補です**（`src/` の変更は #445 の範囲外）。
 
 **排他を無視して列を直さないこと**——保存の途中の要求が「確定が当たらなかった」として現行のキーを戻し
 （`restoreIfHeld`。自分のトークンを持っている間だけ戻す）、消した画像が R2 に戻りえます。

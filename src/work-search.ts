@@ -100,8 +100,16 @@ export type SearchRejection = 'too-short' | 'too-many-terms' | 'too-long';
 /** 受け付けた検索。 */
 export interface AcceptedSearch {
   readonly kind: 'accepted';
-  /** 語を 1 つの空白でつないだもの（重複を除いた後）。URL とキャッシュの鍵に使う。 */
+  /** 語を 1 つの空白でつないだもの（重複を除いた後。最初に現れた綴りを残す）。URL・見出し・検索窓に使う。 */
   readonly text: string;
+  /**
+   * キャッシュの鍵に使う綴り（{@link text} の英字を小文字に揃えたもの）。
+   *
+   * **検索は英字の大文字小文字を区別しない**ので、`Puzzle` と `puzzle` の結果は同じである。
+   * 鍵を分けると、同じ結果が 2 本溜まる。**揃えるのは ASCII の英字だけ**——2 文字以下の語を絞る
+   * `lower()` が ASCII しか揃えないので、それ以外を揃えると結果の違う検索が同じ鍵に載る。
+   */
+  readonly key: string;
   /** FTS5 で引く語（{@link INDEXED_TERM_MIN_LENGTH} 文字以上）。 */
   readonly indexedTerms: readonly string[];
   /** 結合した行で絞る語（2 文字以下）。 */
@@ -130,10 +138,41 @@ function characterCount(value: string): number {
 }
 
 /**
+ * 英字（ASCII）だけを小文字にする。
+ *
+ * **`String#toLowerCase` を使わない。** あちらは全角英字なども揃えるが、2 文字以下の語を絞る SQLite の
+ * `lower()` は ASCII しか揃えない。揃え方を検索の側と合わせる。
+ *
+ * @param value 文字列
+ * @returns ASCII の英大文字を小文字にした文字列
+ */
+function foldAsciiCase(value: string): string {
+  return value.replace(/[A-Z]/gu, (letter) => letter.toLowerCase());
+}
+
+/**
+ * 長さの上限で切る。**サロゲートペアの途中で切らない。**
+ *
+ * `String#slice` は UTF-16 の単位で切るので、境界に絵文字が跨ると上位サロゲートが 1 つだけ残る。
+ * **孤立したサロゲートは `encodeURIComponent` が `URIError` を投げる**——断った検索の語はタグの
+ * リンクへ載るので、画面が 500 になる（PR #432 の Copilot の指摘）。末尾に残った上位サロゲートを落とす。
+ *
+ * @param value 文字列
+ * @param limit UTF-16 の単位での上限
+ * @returns 上限以内で、末尾に孤立した上位サロゲートを持たない文字列
+ */
+function truncateUtf16(value: string, limit: number): string {
+  const cut = value.slice(0, limit);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+}
+
+/**
  * `?q=` を検索語へ落とす。
  *
  * - **空白（全角の空白を含む）で区切り、すべての語を含む作品を引く**（AND）
- * - **同じ語は 1 つにまとめる**（数の上限と、キャッシュの鍵を揃えるため）
+ * - **同じ語は 1 つにまとめる**（数の上限と、キャッシュの鍵を揃えるため）。**英字の大文字小文字だけが
+ *   違う語も同じ語とみなす**（検索が区別しないので、別の語として上限を食わせない。最初の綴りを残す）
  * - **大文字と小文字を区別しない**（trigram の既定。2 文字以下の語も `lower` で揃える。ASCII のみ）
  * - **全角と半角は揃えない。** 保存している題名を正規化していないので、揃えると当たらなくなる
  *
@@ -148,9 +187,17 @@ export function parseWorkSearch(value: string | null): WorkSearch {
     return { kind: 'none' };
   }
   if (raw.length > MAX_RAW_SEARCH_LENGTH) {
-    return { kind: 'rejected', text: raw.slice(0, MAX_RAW_SEARCH_LENGTH), reason: 'too-long' };
+    return { kind: 'rejected', text: truncateUtf16(raw, MAX_RAW_SEARCH_LENGTH), reason: 'too-long' };
   }
-  const terms = [...new Set(raw.split(/\s+/u).filter((term) => term !== ''))];
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const term of raw.split(/\s+/u)) {
+    const folded = foldAsciiCase(term);
+    if (term !== '' && !seen.has(folded)) {
+      seen.add(folded);
+      terms.push(term);
+    }
+  }
   const text = terms.join(' ');
   if (characterCount(text) > MAX_SEARCH_LENGTH) {
     return { kind: 'rejected', text, reason: 'too-long' };
@@ -166,6 +213,7 @@ export function parseWorkSearch(value: string | null): WorkSearch {
   return {
     kind: 'accepted',
     text,
+    key: foldAsciiCase(text),
     indexedTerms: terms.filter((term) => characterCount(term) >= INDEXED_TERM_MIN_LENGTH),
     shortTerms: terms.filter((term) => characterCount(term) < INDEXED_TERM_MIN_LENGTH),
   };

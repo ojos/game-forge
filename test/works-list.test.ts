@@ -166,7 +166,7 @@ async function openList(query = ''): Promise<Response> {
   // **検索するときも、経路と同じ鍵を捨てる**（#378。鍵に整えた検索語が入る）。
   const search = parseWorkSearch(url.searchParams.get(WORK_SEARCH_FIELD));
   if (search.kind === 'accepted') {
-    await purgeListCache(worksSearchCacheKey(search.text, page, tag));
+    await purgeListCache(worksSearchCacheKey(search.key, page, tag));
   } else if (tag === null) {
     const sort = url.searchParams.get('sort') ?? 'recent';
     await purgeListCache(listCacheKey('works', { sort, page }));
@@ -762,6 +762,17 @@ describe('キーワード検索の画面（#378 / 仕様 2.3.5）', () => {
     }
   });
 
+  it('上限の境界に絵文字が跨る長い検索語でも 500 にならず、断る画面になる（PR #432 の Copilot の指摘）', async () => {
+    // 区切る前の上限（UTF-16 で 160）の 159 番目の直後に絵文字を置き、`slice` で切ると上位サロゲートが
+    // 1 つだけ残る形にする。**残ると、タグのリンクを組む `encodeURIComponent` が `URIError` を投げる。**
+    const q = `${'a'.repeat(159)}🎮🎮`;
+    const response = await openList(`?q=${encodeURIComponent(q)}&tag=puzzle`);
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain(SEARCH_REJECTION_MESSAGES['too-long']);
+    expect(body).toContain(`<a href="${worksListPath('recent', 1, 'action', 'a'.repeat(159))}">アクション</a>`);
+  });
+
   it('非公開化は、一覧と同じくキャッシュの TTL（60 秒）の後に検索から消える', async () => {
     // **検索の鍵に検索語が入る**ことと、**捨てれば取り下げが反映される**ことを見る。
     const author = await seedUser('検索のキャッシュの作者');
@@ -781,6 +792,14 @@ describe('キーワード検索の画面（#378 / 仕様 2.3.5）', () => {
     expect(parseWorkSearch(' 砂時計　 砂時計 ')).toMatchObject({ kind: 'accepted', text: '砂時計' });
     expect(worksSearchCacheKey('砂時計 迷路', 1, null)).not.toBe(key);
     expect(worksSearchCacheKey('砂時計', 1, 'puzzle')).not.toBe(key);
+    // **英字の大文字小文字だけが違う検索は、同じ鍵に載る**（検索が区別しないので結果が同じ）。
+    const upper = parseWorkSearch('Puzzle 砂時計');
+    const lower = parseWorkSearch('puzzle 砂時計');
+    expect(upper.kind === 'accepted' && lower.kind === 'accepted').toBe(true);
+    if (upper.kind === 'accepted' && lower.kind === 'accepted') {
+      expect(upper.text).toBe('Puzzle 砂時計');
+      expect(worksSearchCacheKey(upper.key, 1, null)).toBe(worksSearchCacheKey(lower.key, 1, null));
+    }
     expect(key).not.toBe(listCacheKey('works', { sort: 'recent', page: 1 }));
   });
 });

@@ -1411,7 +1411,9 @@ a.gf-card-author {
  * 検索窓（2.3.7 v1.57 / #378。`src/html.ts` の `headerSearch`）。
  *
  * **素の GET のフォームである。** `@section forms` の既定（縦積み・下の余白・版面の上限）を外し、
- * 入力欄とボタンを横 1 行に並べる。
+ * 入力欄とボタンを横 1 行に並べる。**`flex-direction: row` を明示する**——`display: flex` を書き直す
+ * だけでは、共通の `form` の `flex-direction: column` が残り、入力欄とボタンが縦に積まれる
+ * （PR #432 の Copilot の指摘。`test/page-shell.test.ts` がこの宣言を見る）。
  *
  * **幅は CSS が持つ**（`size` 属性は使わない。#282）。入力欄は `11em` を基準に**縮めてよい**
  * （`min-width: 0`）——狭い段ではナビが折り返し、窓が行の途中に来ても版面を越えない。
@@ -1421,6 +1423,7 @@ a.gf-card-author {
  */
 .gf-header-search {
   display: flex;
+  flex-direction: row;
   flex-wrap: nowrap;
   align-items: center;
   gap: var(--gf-gap-1);

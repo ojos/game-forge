@@ -195,6 +195,7 @@ describe('検索語の解釈（#378 の利用者の決定 2）', () => {
     expect(parseWorkSearch('  宇宙　シューティング 宇宙  ')).toEqual({
       kind: 'accepted',
       text: '宇宙 シューティング',
+      key: '宇宙 シューティング',
       indexedTerms: ['シューティング'],
       shortTerms: ['宇宙'],
     });
@@ -202,6 +203,19 @@ describe('検索語の解釈（#378 の利用者の決定 2）', () => {
     expect(INDEXED_TERM_MIN_LENGTH).toBe(3);
     expect(accepted('迷路').indexedTerms).toEqual([]);
     expect(accepted('迷路島').indexedTerms).toEqual(['迷路島']);
+  });
+
+  it('英字の大文字小文字だけが違う語は 1 つにまとめ、語の数の上限を食わない（最初の綴りを残す）', () => {
+    // **検索は英字の大文字小文字を区別しない**ので、別の語として数えると 6 通りで上限（5 語）を越える。
+    expect(parseWorkSearch('Puzzle puzzle PUZZLE pUzzle puzZle PuZzLe')).toEqual({
+      kind: 'accepted',
+      text: 'Puzzle',
+      key: 'puzzle',
+      indexedTerms: ['Puzzle'],
+      shortTerms: [],
+    });
+    // **揃えるのは ASCII の英字だけ**（全角英字は SQLite の `lower()` が揃えないので、別の語のまま）。
+    expect(accepted('ＡＢ ａｂ').shortTerms).toEqual(['ＡＢ', 'ａｂ']);
   });
 
   it('1 文字の語だけの検索は断り、2 文字以上の語と並んでいれば受け付ける', () => {
@@ -220,6 +234,10 @@ describe('検索語の解釈（#378 の利用者の決定 2）', () => {
     expect(parseWorkSearch('🎮'.repeat(MAX_SEARCH_LENGTH + 1))).toMatchObject({ reason: 'too-long' });
     // **区切る前にも切る**（空白を大量に挟んだ入力を分割しない）。
     expect(parseWorkSearch(`あい${' '.repeat(10_000)}かき`)).toMatchObject({ reason: 'too-long' });
+    // **切るときにサロゲートペアの途中で切らない**（孤立したサロゲートは `encodeURIComponent` が投げる）。
+    const straddling = parseWorkSearch(`${'a'.repeat(159)}🎮🎮`);
+    expect(straddling).toMatchObject({ kind: 'rejected', reason: 'too-long', text: 'a'.repeat(159) });
+    expect(() => encodeURIComponent((straddling as { text: string }).text)).not.toThrow();
   });
 
   it('FTS5 の式は語ごとのフレーズで、中の " を二重にする', () => {
@@ -258,6 +276,21 @@ describe('日本語で引ける（#378 の acceptance / 利用者の決定 1）'
     expect(ids).not.toContain(titleOnly);
     // 2 文字の語どうしの AND。
     expect(await searchIds('迷路 宝を')).toEqual([both]);
+  });
+
+  it('3 文字以上の語 2 つは AND で引く（両方を含む作品だけが当たり、片方だけの囮は当たらない）', async () => {
+    // **FTS5 の `match` の中の AND を実際に引いて確かめる**（フレーズを空白でつなぐと AND。` OR ` でつなぐと
+    // 囮も当たる）。語は題名と説明をまたいでよい。
+    const author = await seedUser('AND の作者');
+    const both = await seedGame(author, { title: '銀河を渡る夜汽車', description: '星めぐりの歌が流れる' });
+    const titleOnly = await seedGame(author, { title: '銀河を渡る夜汽車', description: 'ほかの歌が流れる' });
+    const descriptionOnly = await seedGame(author, { title: '海を渡る船', description: '星めぐりの歌が流れる' });
+
+    expect(await searchIds('夜汽車 星めぐり')).toEqual([both]);
+    expect(await searchIds('星めぐり 夜汽車')).toEqual([both]);
+    // 対照: 片方だけなら、囮もそれぞれ当たる（上の検査が「何も当たらない」で緑になっていない）。
+    expect(await searchIds('夜汽車')).toEqual([titleOnly, both]);
+    expect(await searchIds('星めぐり')).toEqual([descriptionOnly, both]);
   });
 
   it('英字は大文字と小文字を区別しない（3 文字以上も 2 文字以下も）', async () => {

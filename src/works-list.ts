@@ -405,8 +405,11 @@ ${clear}`;
 /**
  * 一覧の HTML を組み立てる。
  *
- * **`noindex` を付けない。** ここは誰にでも見せる発見の面であり、`src/my-works.ts` や
- * 作品ページの下書き表示とは性質が違う。
+ * **検索しない一覧には `noindex` を付けない。** ここは誰にでも見せる発見の面であり、
+ * `src/my-works.ts` や作品ページの下書き表示とは性質が違う。
+ *
+ * **検索しているとき（`?q=` を受け付けた検索と、断った検索）だけ `noindex` を付ける**（#378）。
+ * 利用者が打った語を見出しと検索窓に含むので、任意の語で索引される頁を外から作らせない。
  *
  * @param view 表示に必要な値
  * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
@@ -459,7 +462,7 @@ ${siteFooter()}`;
  * 固定なので `sort=recent` を入れる（検索しない新着の一覧とは `q` の項で分かれる）。検査が同じ鍵を
  * 捨てられるように輸出する。
  *
- * @param query 検索語（`src/work-search.ts` が整えた綴り）
+ * @param query 検索語の鍵（`src/work-search.ts` の `AcceptedSearch.key`。英字を小文字に揃えた綴り）
  * @param page 頁番号
  * @param tag 絞り込むタグ（絞り込まないなら null）
  * @returns 鍵に使う URL
@@ -488,8 +491,8 @@ export function worksSearchCacheKey(query: string, page: number, tag: WorkTagId 
  * 配備の直後 60 秒は `tags` を持たない行が返りうるが、カードはタグを出さないだけで壊れない
  * （`src/work-card.ts` の `knownWorkTags`）。
  *
- * **検索するときは鍵に検索語も入れる**（#378。`src/work-search.ts` が整えた綴り——空白の数や
- * 語の重複が違うだけの URL は同じ鍵に載る）。**検索しない一覧の鍵は #378 の前と同じ**である。
+ * **検索するときは鍵に検索語も入れる**（#378。`src/work-search.ts` の `AcceptedSearch.key`——空白の数、
+ * 語の重複、英字の大文字小文字が違うだけの URL は同じ鍵に載る）。**検索しない一覧の鍵は #378 の前と同じ**である。
  * **断った検索は鍵も D1 も使わない。**
  *
  * @param request 受信したリクエスト
@@ -515,7 +518,7 @@ async function showWorksList(request: Request, env: Env): Promise<Response> {
   if (search.kind === 'rejected') {
     fetched = [];
   } else if (search.kind === 'accepted') {
-    fetched = await cachedRows(worksSearchCacheKey(search.text, page, tag), async () =>
+    fetched = await cachedRows(worksSearchCacheKey(search.key, page, tag), async () =>
       listSearchedGames(env, search, tag, WORKS_PER_PAGE + 1, offset),
     );
   } else if (tag === null) {

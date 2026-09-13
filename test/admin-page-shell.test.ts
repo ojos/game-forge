@@ -4,12 +4,13 @@ import { ADMIN_OPEN_ROUTES, createAdminRoutes, handleAdminRequest } from '../src
 import { ADMIN_FOOTER_MARK, ADMIN_HEADER_MARK } from '../src/admin/shell.js';
 import { ACCOUNT_PATH } from '../src/account-paths.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
-import { APP_CSS_PATH } from '../src/html.js';
+import { APP_CSS_PATH, siteLogo } from '../src/html.js';
 import { TAKEDOWN_PATH, TERMS_PATH } from '../src/legal.js';
 import { handleAppRequest } from '../src/app.js';
 import { NON_PAGE_PATHS, ssrPagePaths } from '../src/page-paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from '../src/works-paths.js';
+import { ADMIN_HOME_PATH } from '../src/admin-paths.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -186,6 +187,16 @@ describe('admin の全画面の外枠（2.4.5 / #266 と同じ 3 項目）', () 
     for (const path of getPaths()) {
       const { body } = await open(path);
       expect(body.split(ADMIN_HEADER_MARK).length - 1, `${path} のヘッダの数`).toBe(1);
+    }
+  });
+
+  it('どの画面の admin のヘッダにも、ロゴの画像と「管理」が 1 つのリンクにある（#440）', async () => {
+    for (const path of getPaths()) {
+      const { body } = await open(path);
+      expect(body.split(siteLogo()).length - 1, `${path} のロゴの数`).toBe(1);
+      expect(body, `${path} のロゴは審査キューへのリンク`).toContain(
+        `<a class="gf-admin-logo" href="${ADMIN_HOME_PATH}">${siteLogo()}<span>管理</span></a>`,
+      );
     }
   });
 

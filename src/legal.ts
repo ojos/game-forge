@@ -25,6 +25,7 @@ import {
   footerSection,
   resolveSiteViewer,
   siteHead,
+  siteLogo,
 } from './html.js';
 import {
   FAQ_PATH,
@@ -33,6 +34,7 @@ import {
   TAKEDOWN_THANKS_PATH,
   TERMS_PATH,
 } from './legal-paths.js';
+import { HOME_PATH } from './paths.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from './service-contact.js';
 import { MAX_BODY_LENGTH, MAX_CLAIMANT_LENGTH } from './takedown.js';
 
@@ -122,6 +124,7 @@ export function siteFooter(): string {
   return `
 <hr>
 <footer class="gf-footer">
+  <a class="gf-footer-logo" href="${HOME_PATH}">${siteLogo()}</a>
   <nav class="gf-footer-nav" aria-label="フッタの行き先">
 ${sections.join('\n')}
   </nav>
@@ -136,6 +139,20 @@ ${sections.join('\n')}
  */
 const DRAFT_NOTICE = `<p class="gf-draft-notice"><strong>この規約はクローズドβ向けの暫定版です。</strong>
    法律の専門家による確認を受ける前の文面であり、正式公開までに変更されることがあります。</p>`;
+
+/**
+ * ロゴの書体の表示（#440 / `docs/logo.md` 5 章）。
+ *
+ * **ロゴの文字は DotGothic16（SIL Open Font License 1.1）のグリフで描いてある。** ロゴの画像に
+ * 表示が要るかは断定していない（法的助言ではない）が、`docs/logo.md` 5 章は**安全側に倒して、
+ * 画像を 1 枚だけ使う場面では表示を添える**と決めている。サイトのヘッダとフッタはその場面に
+ * あたるので、**全画面のフッタから 1 手で届く利用規約の末尾に置く**（#440 の intake で利用者が
+ * 選んだ。フッタの項目は増やさない）。
+ *
+ * **著作権表示の文字列は `third_party/dotgothic16/NOTICE.md` と同じにする。**
+ */
+export const LOGO_FONT_NOTICE =
+  'ロゴの文字: DotGothic16（Copyright 2020 The DotGothic16 Project Authors、SIL Open Font License 1.1）';
 
 /**
  * 利用規約の本文（5.6 / 8.4）。
@@ -206,7 +223,10 @@ ${DRAFT_NOTICE}
 
 <h2>10. 準拠法および管轄</h2>
 <p>本規約は日本法に準拠します。本サービスに関して紛争が生じた場合、
-   運営者の所在地を管轄する裁判所を第一審の専属的合意管轄裁判所とします。</p>`;
+   運営者の所在地を管轄する裁判所を第一審の専属的合意管轄裁判所とします。</p>
+
+<h2>ロゴの書体について</h2>
+<p>${LOGO_FONT_NOTICE}</p>`;
 
 /**
  * 利用規約の画面を組み立てる。

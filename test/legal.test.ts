@@ -5,6 +5,7 @@ import { dispatch } from '../src/routes.js';
 import type { Route } from '../src/routes.js';
 import {
   FOOTER_CONTACT_ITEMS,
+  LOGO_FONT_NOTICE,
   TAKEDOWN_FIELDS,
   TAKEDOWN_PATH,
   TAKEDOWN_SUBMIT_PATH,
@@ -132,6 +133,18 @@ describe('規約に、仕様が名指しした条項が含まれている（5.6 
     const { body } = await get(TERMS_PATH);
     // 8.4:「利用規約で即時削除権限を明示する」
     expect(body).toContain('事前の通知なく削除');
+  });
+
+  it('ロゴの書体の表示が、規約の末尾（フッタの直前）にある（#440 / docs/logo.md 5 章）', async () => {
+    const { body } = await get(TERMS_PATH);
+    expect(body).toContain(LOGO_FONT_NOTICE);
+    // **著作権表示は同梱の NOTICE と同じ綴り**（書き写しがずれると表示の意味が無くなる）。
+    expect(LOGO_FONT_NOTICE).toContain('Copyright 2020 The DotGothic16 Project Authors');
+    expect(LOGO_FONT_NOTICE).toContain('SIL Open Font License 1.1');
+    const notice = body.indexOf(LOGO_FONT_NOTICE);
+    const lastSection = body.lastIndexOf('<h2>');
+    expect(notice, '最後の見出しの後にある').toBeGreaterThan(lastSection);
+    expect(notice, 'フッタより前にある').toBeLessThan(body.indexOf('<footer class="gf-footer">'));
   });
 
   it('生成物の正確性についての通知がある', async () => {

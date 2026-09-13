@@ -12,6 +12,11 @@
  * **例外は 1 つだけ、エラーの赤である。** これは装飾ではなく意味であり、
  * 「送信に失敗した」を灰色で伝えると気づけない。
  *
+ * **ロゴの火花のアンバー（`#F59E0B`）は、画像の中にだけある例外である**（#440。`docs/logo.md`）。
+ * ロゴは装飾ではなくサービスの印で、利用者が「ロゴに限って例外にする」を選んだ。**この CSS には
+ * アンバーを 1 か所も書かない**——トークンにすると、ボタンやリンクへ広がる入口ができる
+ * （`src/html.ts` の `siteLogo`）。
+ *
  * ============================================================================
  * ここに書かないもの
  * ============================================================================
@@ -1259,6 +1264,25 @@ a.gf-card-author {
   letter-spacing: 0.02em;
 }
 
+/*
+ * ロゴの画像（#440。`src/html.ts` の `siteLogo`）。**フッタ（`@section footer`）も同じ `.gf-logo` を使う。**
+ *
+ * - **`image-rendering: pixelated`**: 画素密度が整数でない端末で画像が拡大・縮小されるとき、
+ *   ドットの輪郭をぼかさない（`docs/logo.md` 3 章「補間するとぼやける」）
+ * - **`display: block`**: 画像を行の中に置くと、下に文字の下がり（ディセンダ）の隙間ができ、
+ *   リンクの高さが画像より数 px 高くなる
+ * - **寸法は HTML の `width` / `height` が持つ**（読み込む前から場所を取り、ずれない）
+ */
+.gf-logo img {
+  display: block;
+  image-rendering: pixelated;
+}
+
+.gf-header-logo {
+  display: block;
+  flex: none;
+}
+
 .gf-header a {
   color: var(--gf-ink-soft);
   text-decoration: none;
@@ -1568,6 +1592,12 @@ a.gf-card-author {
 
 .gf-footer p {
   margin: 0;
+}
+
+/* フッタの先頭のロゴ（#440）。区画の並び（下の `.gf-footer-nav`）とは行を分ける。 */
+.gf-footer-logo {
+  display: inline-block;
+  margin-bottom: var(--gf-gap-3);
 }
 
 /*

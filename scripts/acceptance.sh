@@ -121,6 +121,11 @@ if [[ -f tools/logobake/main.mjs ]]; then
   node tools/logobake/main.mjs --check
   echo "[acceptance] (logo) node --test tools/logobake/logobake.node-test.mjs"
   node --test tools/logobake/logobake.node-test.mjs
+  # **サイトが配る写し（public/assets/logo/）が正本と一致すること**（#440）。上の --check は
+  # brand/logo/ しか見ないので、書き出し直して写し忘れるとサイトだけが古いロゴのまま残る
+  # （判定と理由は scripts/check-logo-copies.sh の冒頭）。
+  echo "[acceptance] (logo) scripts/check-logo-copies.sh"
+  bash scripts/check-logo-copies.sh
   ran_any=1
 else
   echo "[acceptance] (logo) skip: tools/logobake/main.mjs not found"

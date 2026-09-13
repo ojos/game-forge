@@ -14,6 +14,7 @@ import { GENERATE_PAGE_PATH, HOME_PATH } from '../src/paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { AUTHOR_PAGE_PREFIX } from '../src/users-page-paths.js';
 import { WORK_PAGE_PREFIX } from '../src/work-page.js';
+import { WORK_SOURCE_PREFIX } from '../src/work-source.js';
 import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from '../src/works-paths.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -135,7 +136,12 @@ beforeAll(async () => {
  * @returns 接頭辞 → 補う id
  */
 function prefixIds(): Record<string, string> {
-  return { [WORK_PAGE_PREFIX]: gameId, [AUTHOR_PAGE_PREFIX]: authorId };
+  // **ソースの閲覧（#383）は公開済みの作品の id を補う。** draft の id では 404 しか見られない。
+  return {
+    [WORK_PAGE_PREFIX]: gameId,
+    [AUTHOR_PAGE_PREFIX]: authorId,
+    [WORK_SOURCE_PREFIX]: publishedGameId,
+  };
 }
 
 /**

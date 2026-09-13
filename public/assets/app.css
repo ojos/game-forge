@@ -597,16 +597,121 @@ button:disabled {
   font-size: var(--gf-text-small);
 }
 
+/*
+ * プレイ数（仕様 2.3.6 / #377）。**詳細情報パネル（`.gf-details`）の 1 行である**（#383 で
+ * いいねの数の隣から移した）。余白は `.gf-details dl > div` が持つ。
+ */
+.gf-plays {
+  color: var(--gf-ink-soft);
+}
+
 .gf-like {
   margin-top: var(--gf-gap-2);
 }
 
 /*
- * プレイ数（仕様 2.3.6 / #377）。**いいねの数と同じ扱いにする**——数とボタンを横に並べず、
- * いいねの数の直前に同じ弱さで置く（2.3.12 の詳細パネルが後で作り替える）。
+ * 詳細情報パネル（仕様 2.3.12 / #383）。器の `.gf-split-end` の補助カラムに置く
+ * （段 3 では右、狭い段では本文の下。断点は `@section shell` が持つ）。
+ *
+ * **作品より弱く置く。** 地を `--gf-surface` にして本文と分けるが、枠線は細い 1 本だけにする
+ * ——色を持つのは作品だけである（冒頭の方針）。
+ *
+ * **項目名と値を横に並べない**（`@section account` / `@section legal` と同じ理由）。補助カラムは
+ * 16rem しかなく、作品 ID（36 文字）が 1 文字ずつ折れる。長い値は任意の位置で折り返させる。
  */
-.gf-plays {
+.gf-work-main {
+  min-width: 0;
+}
+
+.gf-details {
+  min-width: 0;
+  padding: var(--gf-gap-3);
+  border: 1px solid var(--gf-rule-soft);
+  border-radius: var(--gf-radius);
+  background: var(--gf-surface);
+  font-size: var(--gf-text-small);
+}
+
+.gf-details h3 {
+  margin-top: 0;
+}
+
+.gf-details dl {
+  margin: 0;
+}
+
+.gf-details dl > div {
+  margin: 0 0 var(--gf-gap-2);
+}
+
+.gf-details dt {
+  color: var(--gf-ink-soft);
+}
+
+.gf-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.gf-details-source {
   margin: var(--gf-gap-3) 0 0;
+  font-weight: 700;
+}
+
+/*
+ * ソースコードの閲覧（`/source/<id>`。仕様 2.3.12 / #383）。
+ *
+ * **ページ全体を横スクロールさせない。** 生成されたソースには 1 行が長いもの（配列リテラル・
+ * 長い文字列）がある。`<pre>` は折り返さないので、**`<pre>` の中だけを横に送る**
+ * （`overflow-x: auto`）。`max-width: 100%` がないと、`<pre>` の中身の幅が body を押し広げる
+ * （`scripts/check-page-width.sh` が見ている回帰）。
+ *
+ * **折り返さない。** Go のソースを任意の位置で折ると、行の区切りが読めなくなる。
+ */
+.gf-source {
+  max-width: 100%;
+  margin: var(--gf-gap-3) 0;
+  padding: var(--gf-gap-3);
+  overflow-x: auto;
+  border: 1px solid var(--gf-rule-soft);
+  border-radius: var(--gf-radius);
+  background: var(--gf-surface);
+  font-family: var(--gf-font-mono);
+  font-size: var(--gf-text-small);
+  line-height: 1.6;
+  white-space: pre;
+  overflow-wrap: normal;
+  tab-size: 4;
+}
+
+/*
+ * **焦点の枠は全画面の `:focus-visible`（`@section base`）と同じ形にする。** `<pre>` は
+ * `tabindex="0"` で焦点を持つ（キーボードで横に送るため）。角だけを箱の丸みに揃える。
+ */
+.gf-source:focus-visible {
+  outline: 2px solid var(--gf-ink);
+  outline-offset: 2px;
+  border-radius: var(--gf-radius);
+}
+
+/*
+ * 文字の向きを変える制御文字の印（`⟨U+202E⟩`。`src/work-source.ts` の `markDirectionControls`）。
+ * **ソースの文字と取り違えない見た目にする**——点線の枠で囲み、補助の濃さで出す。色は持たない。
+ */
+.gf-source-bidi {
+  padding: 0 0.15em;
+  border: 1px dashed var(--gf-ink-soft);
+  border-radius: 2px;
+  color: var(--gf-ink-soft);
+}
+
+.gf-source code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+}
+
+.gf-source-note {
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
 }

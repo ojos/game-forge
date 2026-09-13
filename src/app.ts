@@ -35,6 +35,7 @@ import { dispatch, html, json } from './routes.js';
 import { signupRoutes } from './signup.js';
 import { waitlistRoutes } from './waitlist.js';
 import { workPageRoutes } from './work-page.js';
+import { workSourceRoutes } from './work-source.js';
 
 /**
  * 開発用セッション cookie の名前。
@@ -320,6 +321,7 @@ export function createAppRoutes(env: Env): readonly Route[] {
     ...generateCallbackRoutes,
     ...generatePageRoutes,
     ...workPageRoutes,
+    ...workSourceRoutes,
     ...worksListRoutes,
     ...usersPageRoutes,
     ...myWorksRoutes,

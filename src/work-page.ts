@@ -118,6 +118,9 @@ import { isPressableGame, readLikeViewerState } from './likes.js';
 // **プレイ数は窓口のスクリプトを埋めるだけである**（#377）。数えるのは作品ページのブラウザで、
 // この画面の経路は DO を呼ばない。
 import { playReportScript } from './plays.js';
+// **ソースの閲覧は別の経路である**（#383 / 2.3.12）。この画面が借りるのは綴りだけで、R2 は読まない。
+import { workSourcePath } from './work-source.js';
+import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { UNKNOWN_FAILURE_MESSAGE, failureMessageOf } from './generation-failure.js';
 import { LOGIN_PATH } from './auth/google.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
@@ -135,7 +138,7 @@ import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { parseIpNotice } from './ip-substitution.js';
 import { MODERATION_CATEGORY_SEPARATOR } from './input-moderation.js';
-import { MAX_REASON_LENGTH, hasReported, recordReport } from './reports.js';
+import { MAX_REASON_LENGTH, hasReported, recordReport, reviewVisibleSql } from './reports.js';
 import type { ReportRejection } from './reports.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/invite-issuance.ts` も
@@ -386,6 +389,91 @@ interface WorkRow {
    * **画面はどちらも「開示を出さない」に倒す**（無いことを断言しない）。
    */
   ip_notice: string | null;
+  /**
+   * 8.4 の審査で新規露出を止めていないか（`reviewVisibleSql` の真偽。#383）。
+   *
+   * **ソースへのリンクを出すかだけに使う。** 作品ページそのものは審査中も開ける
+   * （止めるのは新規露出であって、既に共有された URL ではない）が、ソースの閲覧
+   * （`src/work-source.ts`）は同じ条件で 404 にするので、押せば必ず 404 になるリンクを出さない。
+   */
+  review_visible: number | null;
+  /**
+   * `games.source_key` が入っているか（#383）。**キーそのものは選ばない**——内部の識別子で
+   * あり（2.3.12）、選ばなければ画面の側で書き間違えても漏れようがない（`users.email` を
+   * 選ばないのと同じ理由）。
+   */
+  has_source: number | null;
+  /**
+   * 配信している Wasm（`.wasm.br`）のバイト数（`build_cache.compressed_bytes`。#383）。
+   * 索引の行が引けなければ null（{@link WORK_ROW_SQL} の結合）。
+   */
+  wasm_bytes: number | null;
+}
+
+/**
+ * ビルドの成果物の R2 キーの接頭辞（#383）。**綴りの正本はビルド関数である**
+ * （`docker/isolated-build/handler/r2.go` の `builds/<source_sha256>/...`。#21 が持つ）。
+ *
+ * **ここでは索引（`build_cache`）を主キーで引くための手がかりにだけ使う。** `games` は
+ * キャッシュ鍵（ソースの SHA-256）を持たない（5.1。`src/build-cache.ts` の
+ * `takeBuildCacheByArtifact`）ので、キーから鍵を切り出す。**正しさは切り出しに頼らない**
+ * ——結合の条件に `b.wasm_key = g.wasm_key` を必ず添えるので、綴りが変わった日には
+ * 結合が空振りし、「サイズを出さない」に倒れる（誤ったサイズは出ない）。
+ */
+const BUILD_KEY_PREFIX = 'builds/';
+
+/**
+ * 作品ページの 1 行を引く SQL（{@link WorkRow}）。
+ *
+ * **1 回の問い合わせで引く**（{@link showWorkPage} の説明）。#383 で `build_cache` を
+ * 結合した——**主キー（`source_sha256`）で 1 行だけ引く**（R2 に `head` を打たない。
+ * `games` に列を足さない）。`wasm_key` 側に索引は無いので、`b.wasm_key = g.wasm_key` だけで
+ * 結合すると索引の全行を読む。主キーで引けていることは `test/work-page.test.ts` が
+ * クエリプランで確かめる（export はそのため）。
+ */
+export const WORK_ROW_SQL = `select g.author_id, g.status, g.title, g.generation_state, g.generation_error,
+            g.preview_key, g.created_at, g.generation_started_at,
+            g.ogp_state, g.ogp_started_at, g.published_at, g.like_count, g.play_count, g.ip_notice,
+            g.description, g.tag1, g.tag2, g.tag3,
+            (${reviewVisibleSql('g')}) as review_visible,
+            (g.source_key is not null) as has_source,
+            b.compressed_bytes as wasm_bytes,
+            a.display_name as author_name, a.is_operator as author_is_operator,
+            g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
+       from games g
+       left join users a on a.id = g.author_id
+       left join games p on p.id = g.parent_id
+       left join build_cache b
+              on b.source_sha256 = substr(g.wasm_key, ${BUILD_KEY_PREFIX.length + 1}, 64)
+             and b.wasm_key = g.wasm_key
+      where g.id = ?`;
+
+/**
+ * 詳細情報パネルに出す値のうち、{@link WorkPageView} の他の項目から取れないもの（2.3.12 / #383）。
+ *
+ * **改造された数・いいね数・プレイ数・元ゲームは持たない。** それぞれ `forks.total`（その場で
+ * 数えた実件数。5.5）・`likeCount`・`playCount`・`parent` を画面の他の場所と同じ値で使う
+ * ——**同じ数を 2 か所で別々に持つと、片方だけが古くなる。**
+ *
+ * **出さないもの**（2.3.12）: モデル名（確定27 で作品から辿れない）・R2 のキー・ビルドの
+ * ジョブ ID・SHA-256。**型に置き場所を作らない。**
+ */
+export interface WorkDetails {
+  /** 作品 ID（`games.id`。公開識別子である）。 */
+  readonly gameId: string;
+  /** 生成日時（`games.created_at`。UNIX 秒）。 */
+  readonly createdAt: number;
+  /** 公開日時（`games.published_at`。UNIX 秒）。読めなければ null。 */
+  readonly publishedAt: number | null;
+  /** 配信している Wasm の圧縮後のバイト数。索引が引けなければ null（行ごと出さない）。 */
+  readonly wasmBytes: number | null;
+  /**
+   * ソースの閲覧のパス（`/source/<id>`）。出さないなら null。
+   *
+   * **条件は `src/work-source.ts` の SQL と同じ**（公開済み・審査で止めていない）に、
+   * キーがあることを足したもの。**画面でこの条件を組み立てない**（`revisable` と同じ方針）。
+   */
+  readonly sourcePath: string | null;
 }
 
 /**
@@ -803,6 +891,13 @@ export interface WorkPageView {
    * 置き方の理由は {@link likableId} と同じである。**押している人にだけ非 null になる。**
    */
   readonly unlikableId: string | null;
+  /**
+   * 詳細情報パネル（2.3.12 / #383）。**公開済み・取り下げていない作品のときだけ入る。**
+   *
+   * null ならパネルを出さない（未公開の作品ページは作者のための状態画面で、来歴を並べる
+   * 場所ではない）。
+   */
+  readonly details: WorkDetails | null;
 }
 
 /**
@@ -1307,12 +1402,24 @@ function describeSection(view: WorkPageView): string {
  * @returns HTML
  */
 function publishForm(gameId: string): string {
+  // **ソースも公開されることを、押す前に言う**（#383 の決定 1 / 2.3.12）。公開した作品の Go の
+  // ソースは `/source/<id>` で誰でも読める。**生成されたコードのコメントや文字列には、入力した
+  // 文章の言い換えが写ることがある**——入力そのものは出さないが、写ったものは生成物として出る。
   return `<form method="post" action="${PUBLISH_PATH}">
   <input type="hidden" name="${PUBLISH_GAME_ID_FIELD}" value="${gameId}">
 ${tagChoices('publish-tag', [])}
+  <p class="gf-fork-note">${PUBLISH_SOURCE_NOTICE}</p>
   <button type="submit">公開して共有</button>
 </form>`;
 }
+
+/**
+ * 公開フォームに添える「ソースも公開される」の 1 文（#383 の決定 1）。テストが同じ綴りを見るために
+ * export している（書き写さない）。
+ */
+export const PUBLISH_SOURCE_NOTICE =
+  '公開すると、この作品の Go のソースコードも誰でも読めるようになります。' +
+  '入力した文章そのものは公開されませんが、生成されたコードのコメントや文字列に、その内容が反映されていることがあります。';
 
 /**
  * タグのチェックボックスの組（#376）。**公開フォームと付け直しのフォームが同じ 1 つを使う。**
@@ -1608,9 +1715,147 @@ function publishedSection(view: WorkPageView): string {
   // 「作者だけの設定」で、公開の導線（5.4）の外にある。
   //
   // **タグは説明の前に置き、付け直しのフォームは説明のフォームの後に置く**（#376）。
+  //
+  // **詳細情報パネル（#383 / 2.3.12）は、ロード中画面と枠の下を「本文 | パネル」に分けて置く。**
+  // 枠とロード中画面は全幅のまま残す——主役は作品であり（M8）、1080〜1280px で枠を縮めない。
+  // 分けるのは器の `.gf-split-end`（`public/assets/app.css` の `@section shell`）で、段 3 でだけ
+  // 横に並び、狭い段では本文の下へ積む（HTML の順が縦の順である）。
+  //
+  // **作者だけの設定（撮り直し・改名・説明・タグ・取り下げ）は 2 カラムの外、下に置く。**
+  // 本文の列へ入れると、狭い段でパネルがそのフォームの山の下へ押し出され、閲覧者から遠くなる。
   return `<h2>公開しています</h2>
-${loadingScreen(view)}${likeSection(view)}${tagsSection(view)}${descriptionSection(view)}${share}
-${forkList(view.forks)}${recaptureSection(view)}${renameSection(view)}${describeSection(view)}${retagSection(view)}${removeSection(view)}`;
+${loadingScreen(view)}${splitWithDetails(
+    `${likeSection(view)}${tagsSection(view)}${descriptionSection(view)}${share}
+${forkList(view.forks)}`,
+    view,
+  )}${recaptureSection(view)}${renameSection(view)}${describeSection(view)}${retagSection(view)}${removeSection(view)}`;
+}
+
+/**
+ * 本文とパネルを器の 2 カラム（`.gf-split-end`）に入れる（#383）。パネルが無ければ本文だけを返す。
+ *
+ * **本文を先に書く。** 狭い段では HTML の順に縦へ積まれ、パネルは本文の下になる
+ * （2.3.12「狭い端末では本文の下」）。
+ *
+ * @param main 本文の HTML
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function splitWithDetails(main: string, view: WorkPageView): string {
+  if (view.details === null) {
+    return main;
+  }
+  return `
+<div class="gf-split-end">
+<div class="gf-work-main">${main}
+</div>
+${detailsPanel(view, view.details)}
+</div>`;
+}
+
+/**
+ * Wasm のバイト数を読める大きさにする（#383）。
+ *
+ * **10 進の単位（1 MB = 1,000,000 バイト）で、小数 1 桁。** `toLocaleString` を使わない
+ * （ロケールで出力が変わる。`src/jst.ts` と同じ理由）。1 MB に満たなければ KB の整数で出す。
+ *
+ * @param bytes バイト数（正の整数）
+ * @returns 表記
+ */
+export function formatWasmSize(bytes: number): string {
+  if (bytes >= 1_000_000) {
+    return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  }
+  return `${Math.max(1, Math.round(bytes / 1_000))} KB`;
+}
+
+/**
+ * 日時を `<time>` にする。**読めない値なら null**（`datetime=""` は不正。`src/work-card.ts` と同じ扱い）。
+ *
+ * @param epochSeconds UNIX 秒
+ * @returns HTML、または null
+ */
+function timeElement(epochSeconds: number | null): string | null {
+  if (epochSeconds === null) {
+    return null;
+  }
+  const iso = toIsoTimestamp(epochSeconds);
+  const shown = formatJstMinutes(epochSeconds);
+  return iso === '' || shown === '' ? null : `<time datetime="${iso}">${shown}</time>`;
+}
+
+/**
+ * 詳細情報パネル（2.3.12 / #383）。**作品の来歴を、項目名と値の組で並べる。**
+ *
+ * # 並べるもの
+ *
+ * 作品 ID / 生成日時 / 公開日時 / 元ゲーム / Wasm のサイズ / 改造された数 / いいね数 / プレイ数、
+ * と、ソースコードの閲覧へのリンク。
+ *
+ * - **モデル名は出さない。** 確定27 が「`generations.game_id` は結び付けない」と決めており、
+ *   作品からモデルへ辿る経路が無い（#383 の訂正）。**確定27 は覆していない。**
+ * - **説明（#388）はパネルに入れない。** 補助カラム（16rem）の幅では 1000 字を読めないので、
+ *   本文に残す。
+ * - **プレイ数は、ここにだけ出す**（#377 まではいいねのボタンの隣にあった）。**いいねの数は
+ *   ボタンの隣にも残る**——数とボタンは 5.8 の対であり、`test/liked-works.test.ts` が DO の障害時に
+ *   ボタンの側の数（D1 の写し）へ倒れることを見ている。パネルは来歴の一覧として**同じ値**
+ *   （`likeCount`）を並べる。**0 のときは行ごと出さない**——2.3.6 / #340 の「0 を並べない」を
+ *   パネルでも崩さない。
+ * - **改造された数は 0 でも出す。** 本文の「このゲームからの改造: N 件」（5.5）と同じ値
+ *   （`forks.total`。その場で数えた実件数で、`fork_count` 列は読まない）であり、あちらが 0 件を
+ *   消さないのと揃える。
+ * - **Wasm のサイズは、配信している圧縮後のバイト数である**（利用者の端末が実際に受け取る量）。
+ *   索引が引けなければ行ごと出さない（分からない値を 0 と書かない）。
+ *
+ * # 項目名と値を縦に積む
+ *
+ * パネルは段 3 でも 16rem しかない。横に並べると値の欄が狭くなり、作品 ID（36 文字）が
+ * 1 文字ずつ折れる（`@section account` / `@section legal` と同じ判断）。
+ *
+ * @param view 表示に必要な値
+ * @param details パネルの値
+ * @returns HTML
+ */
+function detailsPanel(view: WorkPageView, details: WorkDetails): string {
+  const rows: string[] = [];
+  const row = (label: string, value: string, className = ''): void => {
+    const attr = className === '' ? '' : ` class="${className}"`;
+    rows.push(`<div${attr}><dt>${label}</dt><dd>${value}</dd></div>`);
+  };
+
+  row('作品 ID', `<code>${escapeHtml(details.gameId)}</code>`);
+  const created = timeElement(details.createdAt);
+  if (created !== null) {
+    row('生成日時', created);
+  }
+  const published = timeElement(details.publishedAt);
+  if (published !== null) {
+    row('公開日時', published);
+  }
+  row('元ゲーム', parentValue(view.parent));
+  if (details.wasmBytes !== null) {
+    row('Wasm のサイズ', `${formatWasmSize(details.wasmBytes)}（配信時の圧縮後）`);
+  }
+  row('改造された数', `${view.forks.total} 件`);
+  if (view.likeCount > 0) {
+    row('いいね', `${view.likeCount}`);
+  }
+  if (view.playCount > 0) {
+    row('プレイ', `${view.playCount}`, 'gf-plays');
+  }
+
+  const source =
+    details.sourcePath === null
+      ? ''
+      : `
+<p class="gf-details-source"><a href="${details.sourcePath}">ソースコードを見る</a></p>`;
+
+  return `<aside class="gf-details" aria-labelledby="gf-details-heading">
+<h3 id="gf-details-heading">作品の情報</h3>
+<dl>
+${rows.join('\n')}
+</dl>${source}
+</aside>`;
 }
 
 /**
@@ -1732,10 +1977,9 @@ ${paragraphs}`;
  * @returns HTML。数もボタンも無ければ空文字
  */
 function likeSection(view: WorkPageView): string {
-  // **プレイ数はいいねの数の隣に置く**（#377。2.3.12 の詳細パネルが後で作り替える）。
-  // 0 のときは出さない（2.3.6）。
-  const plays =
-    view.playCount > 0 ? `\n<p class="gf-plays">プレイ ${view.playCount}</p>` : '';
+  // **いいねの数はボタンの隣に残す**（#340 / 5.8。数とボタンは対である）。**プレイ数は詳細情報パネル
+  // （{@link detailsPanel}）へ移した**（#383。#377 まではここにあった）——プレイ数には押す操作が無く、
+  // ボタンの隣に置く理由が無い。0 のときは出さない（2.3.6）。
   const count =
     view.likeCount > 0 ? `\n<p class="gf-likes">いいね ${view.likeCount}</p>` : '';
 
@@ -1754,7 +1998,7 @@ function likeSection(view: WorkPageView): string {
           )
         : '';
 
-  return `${plays}${count}${form}`;
+  return `${count}${form}`;
 }
 
 /**
@@ -2037,15 +2281,28 @@ function screenshot(view: WorkPageView): string {
  * @returns HTML
  */
 function parentLine(parent: ParentWork): string {
+  return `元ゲーム: ${parentValue(parent)}`;
+}
+
+/**
+ * 「元ゲーム」の値の部分（{@link parentLine} と詳細情報パネルが共有する。#383）。
+ *
+ * **言い回しを 2 か所に持たない。** パネルの行とロード中画面の 1 行が別々の文言を持つと、
+ * 同じ作品について 2 通りのことを言う。
+ *
+ * @param parent 親作品
+ * @returns HTML
+ */
+function parentValue(parent: ParentWork): string {
   switch (parent.kind) {
     case 'none':
-      return '元ゲーム: ありません（この作品がオリジナルです）';
+      return 'ありません（この作品がオリジナルです）';
     case 'published':
-      return `元ゲーム: <a href="${parent.path}">${escapeHtml(parent.title)}</a>`;
+      return `<a href="${parent.path}">${escapeHtml(parent.title)}</a>`;
     case 'unlisted':
-      return '元ゲーム: まだ公開されていない作品から派生';
+      return 'まだ公開されていない作品から派生';
     case 'removed':
-      return '元ゲーム: 削除済みの作品から派生';
+      return '削除済みの作品から派生';
   }
 }
 
@@ -2189,6 +2446,23 @@ export function storedLikeCount(value: unknown): number {
 }
 
 /**
+ * 索引から引いた Wasm のバイト数を、画面に出せる値へ落とす（#383）。
+ *
+ * **0 以下・数でない値は「出さない」（null）に倒す。** 「Wasm のサイズ 0 B」は嘘であり、
+ * 分からないなら行ごと出さない（{@link storedLikeCount} が 0 へ倒すのと同じ考え方で、
+ * 倒した先の見た目が「索引の無い作品」と同じになる）。
+ *
+ * @param value 引いた値
+ * @returns 正の整数、または null
+ */
+export function storedWasmBytes(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.floor(value);
+}
+
+/**
  * 作品ページを表示する。
  *
  * @param request 受信したリクエスト
@@ -2217,18 +2491,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   // `email` と `invited_by` は選ばない——前者は本人にしか出さない値で、後者は公開すると
   // 招待の連鎖が外から辿れる（仕様 2.3.6 の「出さないもの」）。選ばなければ、画面の側で
   // 書き間違えても漏れようがない。
-  const row = await env.DB.prepare(
-    `select g.author_id, g.status, g.title, g.generation_state, g.generation_error,
-            g.preview_key, g.created_at, g.generation_started_at,
-            g.ogp_state, g.ogp_started_at, g.published_at, g.like_count, g.play_count, g.ip_notice,
-            g.description, g.tag1, g.tag2, g.tag3,
-            a.display_name as author_name, a.is_operator as author_is_operator,
-            g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
-       from games g
-       left join users a on a.id = g.author_id
-       left join games p on p.id = g.parent_id
-      where g.id = ?`,
-  )
+  const row = await env.DB.prepare(WORK_ROW_SQL)
     .bind(gameId)
     .first<WorkRow>();
   if (row === null) {
@@ -2491,6 +2754,22 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       playCountableId: published && !removed ? gameId : null,
       likableId: pressable && likeViewer !== null && !likeViewer.liked ? gameId : null,
       unlikableId: pressable && likeViewer !== null && likeViewer.liked ? gameId : null,
+      // **詳細情報パネル（2.3.12 / #383）は公開済み・取り下げていない作品にだけ出す**（第 1 層は
+      // `sectionFor` の tombstone 分岐）。追加の問い合わせは 0 件——値はすべて上の 1 行にある。
+      details:
+        published && !removed
+          ? {
+              gameId,
+              createdAt: row.created_at,
+              publishedAt: row.published_at,
+              wasmBytes: storedWasmBytes(row.wasm_bytes),
+              // **ソースへのリンクは、押して開けるときだけ出す。** 審査で新規露出を止めた作品では
+              // `src/work-source.ts` が 404 を返すので出さない（4.4 の「押せないものを出さない」）。
+              // `=== 1` で読む——結合も式も null を返しうる値を「見せてよい」へ倒さない。
+              sourcePath:
+                row.review_visible === 1 && row.has_source === 1 ? workSourcePath(gameId) : null,
+            }
+          : null,
     },
     // **ヘッダの出し分けには、既に引いてあるセッションを使う**（2.3.7 / #331）。
     // **`owner` ではない**——他人の作品を見ているログイン済みの利用者にも、自分の作品と

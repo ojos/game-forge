@@ -32,6 +32,7 @@ gh pr view N --json number,title,state,isDraft,mergeable,headRefName,headRefOid,
 次のどれかにあたれば、止めて報告します。
 
 - open でない、あるいは draft である
+- **利用者の指示なしに始めたのに、作業ディレクトリで checkout しているブランチ（`git branch --show-current`）が `headRefName` と一致しない。** 「この会話で作った PR だけ」を、文章だけでなく確かめられる形にしたものです。別セッションは自分の worktree で作業するため、その PR のブランチはここに checkout されていません。番号を示した指示や `/land N` で始めた場合は、この条件を見ません
 - `baseRefName` が `main` でない。**この手順は、main へのマージとその配備を前提にしています。** 別のブランチ向けの PR に使うと、9 で無関係な main の実行を見届け、配備が済んだと誤って報告することになります。
 
 ### 2. CI とリモート最終ゲートの完了を待つ

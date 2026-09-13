@@ -1493,7 +1493,9 @@ degrade の信号は永久に立たず、黙って #24 の近似に戻る）と�
   - 作り直しは cherry-pick ＋ `git commit --amend --reset-author` で行います
     （`git rebase --exec` は再スケジュールで止まりやすい）。**作り直したら、元の差分と
     新しい差分を md5 で照合**して内容が変わっていないことを確かめること
-- **マージは squash のみ。利用者の明示的な指示があるまでマージしません**
+- **マージは squash のみ。承認は、マージ直前に `scripts/confirm-merge-hook.sh` が出す確認 1 回です**
+  （#411）。この会話で作った PR は、指示を待たずに確認からその確認まで進めます。それ以外の PR は、
+  番号を示した指示か `/land N` のときだけです。手順は `.claude/skills/land/SKILL.md`
 
 ---
 

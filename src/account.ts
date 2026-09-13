@@ -1085,7 +1085,7 @@ async function showAccountMail(request: Request, env: Env): Promise<Response> {
  * `/account/mail` へ戻す**（POST-redirect-GET）。
  *
  * **受けるのは素のフォームで、値は「受け取る」「受け取らない」の 2 つだけである。** 項目が無い・
- * 知らない値は `invalid-request` で断り、D1 に触れない（「知らない値は受け取らない」と読むと、
+ * 同じ項目が重なっている・知らない値は `invalid-request` で断り、D1 に触れない（「知らない値は受け取らない」と読むと、
  * 壊れた要求で通知が黙って止まる）。
  *
  * @param request 受信したリクエスト
@@ -1114,7 +1114,11 @@ async function handleForkNoticePreference(
   if (!read.ok) {
     return seeOther(`${ACCOUNT_MAIL_PATH}?reason=invalid-request`);
   }
-  const value = new URLSearchParams(read.text).get(FORK_NOTICE_FIELD);
+  // **値がちょうど 1 つのときだけ受け付ける。** `fork_notice=receive&fork_notice=mute` のように
+  // 同じ項目が重なった本文は、先頭を黙って採らずに断る——画面のラジオボタンは 1 つしか送らないので、
+  // 重なった要求は壊れた要求である（`src/signup.ts` / `src/waitlist.ts` と同じ判断）。
+  const values = new URLSearchParams(read.text).getAll(FORK_NOTICE_FIELD);
+  const value = values.length === 1 ? values[0] : undefined;
   if (value !== FORK_NOTICE_RECEIVE && value !== FORK_NOTICE_MUTE) {
     return seeOther(`${ACCOUNT_MAIL_PATH}?reason=invalid-request`);
   }

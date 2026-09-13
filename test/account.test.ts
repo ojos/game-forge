@@ -1020,6 +1020,42 @@ describe('メール配信の設定の保存（POST /api/account/mail。#384 / 5.
     expect(await updatesOf(userId)).toBe(0);
   });
 
+  it('同じ項目が重なった本文は、先頭の値で受けずに断り、書かない（PR #423 の Copilot の指摘）', async () => {
+    // **先頭を黙って採らない**（`src/signup.ts` の招待コードと同じ判断）。受け取っている人にも、
+    // 止めている人にも、どちらの並びでも D1 を変えないことを見る。
+    const receiving = await seedUser();
+    const muted = await seedUser();
+    await env.DB.prepare('update users set fork_notice_muted_at = ? where id = ?').bind(NOW - 600, muted).run();
+    const routes = createAccountRoutes({ now: () => NOW });
+    for (const [userId, before] of [
+      [receiving, null],
+      [muted, NOW - 600],
+    ] as const) {
+      const cookie = await cookieFor(userId);
+      const updates = await updatesOf(userId);
+      for (const order of [
+        [FORK_NOTICE_MUTE, FORK_NOTICE_RECEIVE],
+        [FORK_NOTICE_RECEIVE, FORK_NOTICE_MUTE],
+        [FORK_NOTICE_MUTE, FORK_NOTICE_MUTE],
+      ]) {
+        const body = order.map((value) => `${FORK_NOTICE_FIELD}=${value}`).join('&');
+        const response = await dispatch(
+          routes,
+          new Request(`${APP_ORIGIN}${ACCOUNT_MAIL_API_PATH}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded', cookie },
+            body,
+          }),
+          testEnv(),
+        );
+        expect(response.status, body).toBe(303);
+        expect(response.headers.get('location'), body).toBe(`${ACCOUNT_MAIL_PATH}?reason=invalid-request`);
+      }
+      expect(await mutedAtOf(userId)).toBe(before);
+      expect(await updatesOf(userId)).toBe(updates);
+    }
+  });
+
   it('未ログインならログインへ送り、何も書かない', async () => {
     const userId = await seedUser();
     const routes = createAccountRoutes({ now: () => NOW });

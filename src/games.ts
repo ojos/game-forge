@@ -1329,8 +1329,10 @@ export const DESCRIPTION_CHANGE_INTERVAL_SECONDS = 60;
  * 説明の変更の履歴を持つ表の名前（`migrations/0028_game_descriptions.sql`）。
  *
  * **`TITLE_CHANGES_TABLE` と違い、このモジュールが持つ。** あちらが `src/reports.ts` に
- * あるのは `REVIEW_RENAMED_SQL` が引くためで（循環参照を避けた）、この表を引く審査の
- * 条件はまだ無い。**引く側ができたら、その側へ移すこと。**
+ * あるのは #366 の条件（`REVIEW_RENAMED_SQL`。#394 で `REVIEW_REPORTED_AFTER_CLEAR_SQL` へ
+ * 置き換わった）が引いていた名残で（循環参照を避けた）、この表を引く審査の条件は無い
+ * （説明の変更は、改名と同じ {@link reviewStateAfterAuthorEditSql} で審査状態を決める。#404）。
+ * **引く側ができたら、その側へ移すこと。**
  */
 export const DESCRIPTION_CHANGES_TABLE = 'description_changes';
 

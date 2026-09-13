@@ -244,7 +244,8 @@ export function ftsMatchExpression(terms: readonly string[]): string {
  * 選ぶ列と照合する。`.ai-playbook/shared-ai-rules.md` 12 章）。
  */
 const SEARCH_COLUMNS = `g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
-            g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name`;
+            g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name,
+            case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at`;
 
 /** 束縛する値。 */
 type Bind = string | number;
@@ -346,6 +347,7 @@ interface SearchRow {
   readonly tag2: string | null;
   readonly tag3: string | null;
   readonly author_name: string | null;
+  readonly author_avatar_set_at: number | null;
 }
 
 /**
@@ -363,6 +365,7 @@ function toPublicWork(row: SearchRow): PublicWork {
     title: row.title,
     authorName: row.author_name,
     authorId: row.author_id,
+    authorAvatarSetAt: row.author_avatar_set_at,
     publishedAt: row.published_at,
     forkCount: row.fork_count,
     likeCount: row.like_count,

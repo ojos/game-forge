@@ -133,7 +133,7 @@ import { buildPathStopped } from './build-health.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { escapeHtml, siteHead, siteViewerAt } from './html.js';
+import { escapeHtml, headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
 
 /**
  * 文言を選ぶ鍵が 1 つも当たらなかったときに使う鍵。
@@ -420,6 +420,8 @@ export type GenerateAvailability =
 export interface GeneratePageView {
   /** 4.4 の残枠と停止状態（#24）。 */
   readonly availability: GenerateAvailability;
+  /** ヘッダのアバターの画像の URL（#380。未ログインなら null）。 */
+  readonly headerAvatar: string | null;
 }
 
 /**
@@ -756,7 +758,7 @@ export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): s
   // {@link showGeneratePage} の `resolveSessionUser` である。
   return `${siteHead({
     title: 'ゲームを生成する',
-    viewer: siteViewerAt(GENERATE_PAGE_PATH, signedIn),
+    viewer: siteViewerAt(GENERATE_PAGE_PATH, signedIn, view.headerAvatar),
   })}
 <h1>ゲームを生成する</h1>
 <p>作りたいゲームを 1 行で書くと、ブラウザで遊べる 2D ゲームの下書きができます。
@@ -851,10 +853,13 @@ const showGeneratePage: RouteHandler = async (request, env) => {
   if (!session.ok) {
     // 未ログインの画面は残枠を出さない。`availability` は使われないが、型として
     // 1 つ選ぶ必要があるので「読めていない」を渡す（「残り N 回」を作らない値）。
-    return html(renderGeneratePage(false, { availability: { kind: 'unknown' } }));
+    return html(renderGeneratePage(false, { availability: { kind: 'unknown' }, headerAvatar: null }));
   }
   return html(
-    renderGeneratePage(true, { availability: await resolveAvailability(env, session.userId) }),
+    renderGeneratePage(true, {
+      availability: await resolveAvailability(env, session.userId),
+      headerAvatar: headerAvatarUrl(request, env, session.userId),
+    }),
   );
 };
 

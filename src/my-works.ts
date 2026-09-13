@@ -94,7 +94,7 @@ import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/work-page.ts` もそこから取っている）。
-import { escapeHtml, siteHead, siteViewerAt } from './html.js';
+import { escapeHtml, headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
 import { looksStalled, workPagePath } from './work-page.js';
 
 /**
@@ -230,6 +230,8 @@ export interface MyWorksView {
    * （`src/generate-page.ts` の `availabilityNotice`）。
    */
   readonly quotaNotice: string;
+  /** ヘッダのアバターの画像の URL（#380。`src/html.ts` の `headerAvatarUrl`）。 */
+  readonly headerAvatar: string | null;
 }
 
 /**
@@ -262,7 +264,7 @@ ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
   return `${siteHead({
     title: 'あなたの作品 - Game Forge',
     noindex: true,
-    viewer: siteViewerAt(MY_WORKS_PATH, true),
+    viewer: siteViewerAt(MY_WORKS_PATH, true, view.headerAvatar),
   })}
 <h1>あなたの作品</h1>
 ${renderMyWorksStats(view.stats, view.quotaNotice)}
@@ -340,6 +342,7 @@ async function showMyWorks(request: Request, env: Env): Promise<Response> {
       now: Math.floor(Date.now() / 1000),
       stats,
       quotaNotice: availabilityNotice(availability),
+      headerAvatar: headerAvatarUrl(request, env, session.userId),
     }),
   );
 }

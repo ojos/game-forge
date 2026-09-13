@@ -476,7 +476,7 @@ describe('システムプロンプト・入力プロンプト・内部の識別�
         title: '<b>題</b>',
         source: { kind: 'ok', text: 'x := 1' },
       },
-      siteViewerAt('/source/00000000-0000-4000-8000-000000000383', false),
+      siteViewerAt('/source/00000000-0000-4000-8000-000000000383', false, null),
     );
     expect(body).toContain('<h1>&lt;b&gt;題&lt;/b&gt; のソースコード</h1>');
     expect(body).toContain('<code>x := 1</code>');

@@ -95,6 +95,9 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       // 宣言する（`APP_HOST` / `SANDBOX_HOST` と同じ扱い。2.4.1）。
       'ADMIN_HOST',
       'APP_HOST',
+      // アイコンの再エンコード関数の宛先（#380）。**秘密ではなく構成**なので wrangler.toml が
+      // 宣言する（OGP_FUNCTION_NAME と同じ扱い）。
+      'AVATAR_FUNCTION_NAME',
       'BUCKET',
       // ビルド関数の宛先（#19）。**秘密ではなく構成**なので wrangler.toml が宣言する。
       'BUILD_FUNCTION_NAME',

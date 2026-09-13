@@ -433,6 +433,25 @@ output "r2_abort_multipart_max_age_seconds" {
   value       = local.r2_abort_multipart_max_age_seconds
 }
 
+output "r2_abort_multipart_rule_id" {
+  description = <<-EOF
+    未完了マルチパートアップロードを打ち切る規則の id（#380 で、規則が 1 本ではなくなったので分けた）。
+    外部層の検査は、この id の規則にだけ打ち切りの条件を求める。
+  EOF
+  value       = local.r2_abort_multipart_rule_id
+}
+
+output "r2_lifecycle_delete_rules" {
+  description = <<-EOF
+    年齢で消す規則の一覧（id・接頭辞・秒数。#380）。**これ以外の削除規則は存在してはならない。**
+
+    scripts/check-r2-lifecycle.sh は、実状態の削除規則がすべてこの一覧のどれかと id・接頭辞・秒数まで
+    一致すること、接頭辞が空（バケット全体）でないことを確かめる。**許す接頭辞を検査スクリプトへ
+    書き写さない**（共通規範 12 章「一覧の複製」）。いまは avatars/history/ の 30 日だけである。
+  EOF
+  value       = local.r2_age_delete_rules
+}
+
 /**
  * オーケストレータ（3.3 の再配置。#160）の照合値。
  *
@@ -528,6 +547,54 @@ output "orchestrator_callback_base_url" {
 }
 
 # ── OGP 撮影関数（5.4 / 11.2 / #26） ─────────────────────────────────────────
+
+# ── アイコンの再エンコード関数（5.10 / #380） ────────────────────────────────
+
+output "avatar_function_name" {
+  description = <<-EOT
+    アイコンの再エンコード関数の名前。**この値の正本は terraform/avatar-function.tf の
+    local.avatar_function_name である。** wrangler.toml の AVATAR_FUNCTION_NAME（3 か所）はその写しで、
+    突き合わせは scripts/check-avatar-copies.sh が行う。
+  EOT
+  value       = aws_lambda_function.avatar.function_name
+}
+
+output "avatar_function_arn" {
+  description = "アイコンの再エンコード関数の ARN。呼び出し側の許可（avatar_invoke_resources）の対象。"
+  value       = aws_lambda_function.avatar.arn
+}
+
+output "avatar_function_memory_mb" {
+  description = "アイコンの再エンコード関数のメモリ（MB）。**見積もりであって実測ではない**（terraform/avatar-function.tf）。"
+  value       = aws_lambda_function.avatar.memory_size
+}
+
+output "avatar_function_role_actions" {
+  description = <<-EOT
+    実行ロールへ与えている動作の一覧。**自分のログを書くことだけである。**
+    R2 の資格情報を渡していないこと（変換した画像は応答で Worker へ戻り、Worker が R2 へ書く。
+    src/avatar.ts）を、この一覧が機械で読める形にしている。
+  EOT
+  value       = local.avatar_role_actions
+}
+
+output "avatar_function_log_group" {
+  description = "アイコンの再エンコード関数のロググループ。断った理由と変換の失敗はここに出る。"
+  value       = aws_cloudwatch_log_group.avatar.name
+}
+
+output "avatar_invoke_actions" {
+  description = "エッジからこの関数を呼ぶために足した動作。**1 つだけである。**"
+  value       = local.avatar_invoke_actions
+}
+
+output "avatar_invoke_resources" {
+  description = <<-EOT
+    エッジからの呼び出しを許す対象。**この関数 1 つだけである。**
+    許可は terraform/build-invoker.tf ではなく terraform/avatar-function.tf が持つ。
+  EOT
+  value       = local.avatar_invoke_resources
+}
 
 output "ogp_function_name" {
   description = <<-EOT

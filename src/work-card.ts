@@ -57,7 +57,8 @@
  */
 import { UNTITLED_TITLE } from './games.js';
 import type { PublicWork } from './games.js';
-import { escapeHtml } from './html.js';
+import { avatarUrl } from './avatar-paths.js';
+import { avatarImage, escapeHtml } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH, ogpImagePath } from './ogp.js';
 import { workPagePath } from './paths.js';
@@ -295,16 +296,45 @@ function renderTags(work: PublicWork): string {
  * スクリーンショットと題名だけを包んでおり、**下段（`.gf-card-meta`）はその外側にある**
  * （`renderWorkCard`）。入れ子のリンクは HTML として不正である。
  *
+ * ## アイコンは名前の直前に、名前と同じリンクの中へ置く（#380）
+ *
+ * **設定していない作者には何も足さない**（既定の図形を全カードに並べない）。**リンクにならない
+ * 行（作者の id が欠けている・名前が引けない）にも出さない**——誰のアイコンかを名前で言えない。
+ * 見た目は既存のアバター（`.gf-avatar`）の寸法のまま、画像を差し込むだけにする（#433 が決まるまで）。
+ *
  * @param work 作品
+ * @param avatarOrigin アイコンを配るサンドボックス用ホストのオリジン（無ければ画像を出さない）
  * @returns HTML
  */
-function renderAuthor(work: PublicWork): string {
+function renderAuthor(work: PublicWork, avatarOrigin: string | null): string {
   const name = escapeHtml(work.authorName ?? UNKNOWN_AUTHOR);
   const authorId = cardAuthorId(work);
   if (authorId === null) {
     return `<span class="gf-card-author">${name}</span>`;
   }
-  return `<a class="gf-card-author" href="${authorPagePath(authorId)}">${name}</a>`;
+  const url = cardAvatarUrl(work, authorId, avatarOrigin);
+  const avatar =
+    url === null ? '' : `<span class="gf-avatar" aria-hidden="true">${avatarImage(url, { lazy: true })}</span>`;
+  return `<a class="gf-card-author" href="${authorPagePath(authorId)}">${avatar}${name}</a>`;
+}
+
+/**
+ * カードに出す作者のアイコンの URL（版つき。#380）。
+ *
+ * **キャッシュを経由する値は JSON である**（{@link cardLikeCount} と同じ備え）。版が正の整数で
+ * ないなら出さない。
+ *
+ * @param work 作品
+ * @param authorId {@link cardAuthorId} を通った作者の id
+ * @param avatarOrigin サンドボックス用ホストのオリジン（無ければ null）
+ * @returns URL（出さないなら null）
+ */
+export function cardAvatarUrl(work: PublicWork, authorId: string, avatarOrigin: string | null): string | null {
+  const version: unknown = work.authorAvatarSetAt;
+  if (avatarOrigin === null || typeof version !== 'number') {
+    return null;
+  }
+  return avatarUrl(avatarOrigin, authorId, version);
 }
 
 /**
@@ -318,8 +348,8 @@ function renderAuthor(work: PublicWork): string {
  * @param work 作品
  * @returns HTML
  */
-function renderMeta(work: PublicWork): string {
-  const parts = [renderAuthor(work)];
+function renderMeta(work: PublicWork, avatarOrigin: string | null): string {
+  const parts = [renderAuthor(work, avatarOrigin)];
   if (work.hasParent) {
     parts.push('<span class="gf-card-tag">改造された作品</span>');
   }
@@ -364,15 +394,19 @@ function renderMeta(work: PublicWork): string {
  * （`src/paths.ts`）は閉じていないが、**あちらは作品ページの経路が受け取る側で
  * UUID の形を検査している**（`src/work-page.ts` の `GAME_ID_PATTERN`）。
  *
+ * **アイコンの URL は属性値（`src`）へ入る**（#380）。オリジンは宣言と要求から作り、id は UUID の
+ * 形を通ったものだけ、版は整数だけである（`src/avatar-paths.ts` の `avatarUrl`）。
+ *
  * @param work 作品
+ * @param avatarOrigin アイコンを配るサンドボックス用ホストのオリジン（無ければ画像を出さない）
  * @returns `<li>` 1 つ
  */
-export function renderWorkCard(work: PublicWork): string {
+export function renderWorkCard(work: PublicWork, avatarOrigin: string | null = null): string {
   return (
     `  <li class="gf-card"><a class="gf-card-link" href="${workPagePath(work.id)}">` +
     `${renderShot(work)}` +
     `<span class="gf-card-title">${escapeHtml(cardTitleOf(work.title))}</span></a>` +
-    `${renderMeta(work)}</li>`
+    `${renderMeta(work, avatarOrigin)}</li>`
   );
 }
 
@@ -383,11 +417,13 @@ export function renderWorkCard(work: PublicWork): string {
  * 「まだ無い」ことは呼び出し側が文で言うほうがよい（画面ごとに言うべきことが違う）。
  *
  * @param works 作品（既に並べ替えと件数の上限を適用してある）
+ * @param avatarOrigin アイコンを配るサンドボックス用ホストのオリジン（#380。**必須にする**——
+ *   カードを並べる画面を足す人が渡し忘れると、その画面だけアイコンが消える。出さないなら null）
  * @returns HTML。作品が 0 件なら空文字
  */
-export function renderWorkCards(works: readonly PublicWork[]): string {
+export function renderWorkCards(works: readonly PublicWork[], avatarOrigin: string | null): string {
   if (works.length === 0) {
     return '';
   }
-  return `<ul class="gf-cards">\n${works.map(renderWorkCard).join('\n')}\n</ul>`;
+  return `<ul class="gf-cards">\n${works.map((work) => renderWorkCard(work, avatarOrigin)).join('\n')}\n</ul>`;
 }

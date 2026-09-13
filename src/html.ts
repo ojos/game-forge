@@ -14,7 +14,7 @@
  * ## ここが import してよいのは、葉と「戻らない側」だけである（#331）
  *
  * ヘッダのナビとパンくず（2.3.7 / 2.3.10）は行き先の綴りを要るので、このモジュールは
- * `src/works-paths.ts` / `src/account-paths.ts` / `src/liked-works-paths.ts` /
+ * `src/works-paths.ts` / `src/account-paths.ts` / `src/avatar-paths.ts` / `src/liked-works-paths.ts` /
  * `src/legal-paths.ts` / `src/news-paths.ts` / `src/paths.ts` / `src/page-paths.ts` / `src/session.ts` と
  * **`src/auth/google.ts` の `LOGIN_PATH` / `LOGOUT_PATH`** を読む。**どれもここへ戻ってこない**
  * ——`src/auth/google.ts` が辿るのは経路表・セッション・招待だけで、画面を 1 枚も
@@ -53,6 +53,7 @@ export function escapeHtml(value: string): string {
 }
 
 import { ACCOUNT_PATH } from './account-paths.js';
+import { AVATAR_OUTPUT_SIZE, avatarUrl, sandboxOriginOf } from './avatar-paths.js';
 import { LOGIN_PATH, LOGOUT_PATH } from './auth/google.js';
 import { TAKEDOWN_PATH } from './legal-paths.js';
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';
@@ -87,10 +88,19 @@ export const APP_CSS_PATH = '/assets/app.css';
 /**
  * 外枠の出し分けに要る、いま見ている人と、いま開いている画面（2.3.7 / 2.3.10 / #331 / #372）。
  *
- * **持つのは 2 つだけである。** ヘッダが変えるのは「ログイン」とアカウントのメニューの
- * 入れ替えだけで、利用者 id も表示名も要らない。**要らない値を運ぶと、全画面の外枠が
+ * **持つのは 3 つだけである。** ヘッダが変えるのは「ログイン」とアカウントのメニューの
+ * 入れ替えと、メニューのアバターの画像だけで、表示名は要らない。**要らない値を運ぶと、全画面の外枠が
  * それを出せる場所になる**（`src/work-card.ts` が「D1 の値を HTML へ入れる場所は 2 つに
  * 限られる」と書いている前提を、外枠の側から崩さないため）。
+ *
+ * ## `avatarUrl` を足した理由（#380）
+ *
+ * **ヘッダのアバターに、本人のアイコンを出す。** 運ぶのは**画像の URL だけ**で、利用者の id を
+ * そのまま外枠へ渡さない（URL の中には入る。本人の画面にしか出ない）。**D1 は読まない**——URL は
+ * 署名の中の利用者の id とサンドボックス用ホストだけで決まる（`src/avatar-paths.ts`。R2 のキーを
+ * 利用者ごとに固定した理由）。**設定していない利用者でも URL は出る**。画像が無ければ配信は**透明な
+ * 1px の画像**を返し、下の既定の図形が見える（`src/avatar-delivery.ts`。404 にすると、Chromium は
+ * `alt=""` でも壊れた画像の印を描く——実ブラウザで確かめた）。
  *
  * ## `path` を足した理由（#372）
  *
@@ -114,6 +124,12 @@ export interface SiteViewer {
    * 親は末尾を削って導く（`src/page-paths.ts` の `ancestorPathsOf`）ので、同じ親になる。
    */
   readonly path: string;
+  /**
+   * ヘッダのアバターに差し込む画像の URL（ログイン済みのときだけ。版を付けない。`src/avatar-paths.ts`）。
+   *
+   * **null なら既定の図形だけを出す**（未ログイン・URL を組み立てられない利用者の id）。
+   */
+  readonly avatarUrl: string | null;
 }
 
 /**
@@ -123,12 +139,37 @@ export interface SiteViewer {
  * あちらは既に署名を検証しているので、外枠のためにもう一度 HMAC を回す理由が無い。
  * そうでない画面は {@link resolveSiteViewer} を使う。
  *
+ * **`avatarUrl` を必須の引数にする**（#380）。ログイン済みの画面を足す人が渡し忘れると、その画面だけ
+ * ヘッダのアバターが既定の図形に戻る——**型で止める**（`path` を必須にしたのと同じ判断）。
+ * 組み立ては {@link headerAvatarUrl} を使う。
+ *
  * @param path いま開いている画面のパス（{@link SiteViewer.path}）
  * @param signedIn 署名の通ったセッションを持っているか
+ * @param avatar ヘッダのアバターの画像の URL（未ログインなら null）
  * @returns 外枠の出し分けに使う状態
  */
-export function siteViewerAt(path: string, signedIn: boolean): SiteViewer {
-  return { signedIn, path };
+export function siteViewerAt(path: string, signedIn: boolean, avatar: string | null): SiteViewer {
+  return { signedIn, path, avatarUrl: signedIn ? avatar : null };
+}
+
+/**
+ * ヘッダのアバターの画像の URL を組み立てる（#380）。
+ *
+ * **版を付けない**（D1 を読まないので版を知らない）。配信は毎回の再検証にする
+ * （`src/avatar-delivery.ts`）。**宣言が欠けていれば null**（`src/index.ts` の `configuredHost` と
+ * 同じく、宣言 1 つの書き忘れで外枠ごと落とさない）。
+ *
+ * @param request 受信したリクエスト（スキームとポートを借りる）
+ * @param env バインディングと環境変数
+ * @param userId ログインしている利用者の id
+ * @returns 画像の URL（組み立てられなければ null）
+ */
+export function headerAvatarUrl(request: Request, env: Env, userId: string): string | null {
+  const host: unknown = env.SANDBOX_HOST;
+  if (typeof host !== 'string' || host.trim() === '') {
+    return null;
+  }
+  return avatarUrl(sandboxOriginOf(request, host.trim()), userId, null);
 }
 
 /**
@@ -163,11 +204,13 @@ export async function resolveSiteViewer(request: Request, env: Env): Promise<Sit
   const path = new URL(request.url).pathname;
   const token = readSessionCookie(request.headers.get('cookie'));
   if (token === null) {
-    return siteViewerAt(path, false);
+    return siteViewerAt(path, false, null);
   }
   try {
     const verified = await verifySession(token, env.SESSION_SECRET);
-    return siteViewerAt(path, verified.ok);
+    return verified.ok
+      ? siteViewerAt(path, true, headerAvatarUrl(request, env, verified.payload.userId))
+      : siteViewerAt(path, false, null);
   } catch (error) {
     // 鍵の設定そのものが壊れている。**黙らせない**が、画面は返す。
     console.error(
@@ -175,7 +218,7 @@ export async function resolveSiteViewer(request: Request, env: Env): Promise<Sit
         error instanceof Error ? error.name : typeof error
       }`,
     );
-    return siteViewerAt(path, false);
+    return siteViewerAt(path, false, null);
   }
 }
 
@@ -267,24 +310,48 @@ function navLinks(items: readonly NavItem[]): string {
  * 置いていたとき（#362）と同じ根拠が、置き場所を変えてもそのまま当てはまる。
  * **cookie の属性を緩めるなら、その時点でここも見直すこと。**
  *
- * ## アバターは既定の図形である
+ * ## アバターは既定の図形の上に、本人のアイコンを重ねる（#380）
  *
- * **画像を受け取る経路が、まだ無い**（M12-12 / #380 が作る）。いまは CSS の円で、
- * 読み上げには「アカウントのメニュー」という名前だけを渡す（図形は `aria-hidden`）。
+ * **既定の図形（CSS の円）はそのまま残し、その中へ画像を差し込む**（#433 の見た目の規約が決まる
+ * まで、寸法も枠も変えない。利用者の決定）。**アイコンを設定していなければ配信は透明な 1px の画像を
+ * 返すので、図形だけが見える**——D1 を読まずに「設定していない」を表せる形である（{@link SiteViewer}）。読み上げには「アカウントのメニュー」という名前だけを渡す
+ * （図形も画像も `aria-hidden` の内側）。
  *
+ * @param avatar アバターの画像の URL（無ければ null）
  * @returns HTML
  */
-function accountMenu(): string {
+function accountMenu(avatar: string | null): string {
   const items = ACCOUNT_MENU_ITEMS.map(
     (item) => `<li><a href="${item.path}">${escapeHtml(item.label)}</a></li>`,
   ).join('\n        ');
   return `<details class="gf-account-menu">
-      <summary><span class="gf-avatar" aria-hidden="true"></span><span class="gf-account-menu-name">アカウントのメニュー</span></summary>
+      <summary><span class="gf-avatar" aria-hidden="true">${avatarImage(avatar)}</span><span class="gf-account-menu-name">アカウントのメニュー</span></summary>
       <ul class="gf-account-menu-list">
         ${items}
         <li><form method="post" action="${LOGOUT_PATH}"><button type="submit">ログアウト</button></form></li>
       </ul>
     </details>`;
+}
+
+/**
+ * アバターの円に差し込む画像（#380。ヘッダ・カード・作者ページ・登録情報が同じ 1 つを使う）。
+ *
+ * **`alt=""` にする**——名前は隣の文字（「アカウントのメニュー」・作者名）が持つ。**ただし `alt=""` は
+ * 壊れた画像の印を消さない**（Chromium は大きさを持つ `<img>` が読み込めないと印を描く）。だから配信は、
+ * 無いアイコンにも 404 ではなく透明な 1px の画像を返す（`src/avatar-delivery.ts`）。**URL は `escapeHtml` を通す**
+ * （組み立てた綴りだが、出どころが変わっても安全側が既定になる）。**`loading="lazy"` にしない**
+ * ——ヘッダは画面の最上部にあり、遅らせる理由が無い（カードは画面の下まで並ぶので遅らせる）。
+ *
+ * @param url 画像の URL（無ければ null）
+ * @param options `lazy` … `loading="lazy"` を付けるか（既定は付けない）
+ * @returns HTML（URL が無ければ空文字）
+ */
+export function avatarImage(url: string | null, options: { readonly lazy?: boolean } = {}): string {
+  if (url === null) {
+    return '';
+  }
+  const loading = options.lazy === true ? ' loading="lazy"' : '';
+  return `<img src="${escapeHtml(url)}" width="${AVATAR_OUTPUT_SIZE}" height="${AVATAR_OUTPUT_SIZE}" alt="" decoding="async"${loading}>`;
 }
 
 /**
@@ -364,7 +431,7 @@ function siteHeader(viewer: SiteViewer | undefined, searchQuery: string | undefi
   }
   // **アカウントのメニューはナビの末尾に置く。** 広い段では器がナビを右へ寄せる
   // （app.css の `@section shell` の段 2）ので、末尾がそのまま右上になる。
-  const tail = viewer.signedIn ? accountMenu() : navLinks(HEADER_SIGNED_OUT_ITEMS);
+  const tail = viewer.signedIn ? accountMenu(viewer.avatarUrl ?? null) : navLinks(HEADER_SIGNED_OUT_ITEMS);
   return `
 <header class="gf-header">${logo}
   <nav class="gf-header-nav" aria-label="サイト内の主な行き先">

@@ -90,6 +90,18 @@ ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
 # 決まる（`BUILD_FUNCTION_NAME` と同じ事情。確定20）。**入れなければ、公開は成立し、
 # 撮影だけが設定不足として起動の手前で止まる**（src/ogp.ts の startOgpCapture）。
 OGP_FUNCTION_NAME = "game-forge-ogp"
+# アイコンの再エンコード関数（AWS Lambda）の関数名（5.10 / #380）。
+#
+# **シークレットではないので `[vars]` に置く**（`OGP_FUNCTION_NAME` と同じ扱い）。資格情報は
+# `BUILD_AWS_*`（増やさない理由は src/avatar-client.ts）。
+#
+# 値の正本は `terraform/avatar-function.tf` の `local.avatar_function_name` である。ここはその写しで、
+# 3 か所（ここ・production・preview）との一致は scripts/check-avatar-copies.sh が見る。
+#
+# **ローカルでも同じ値を置く**（Dev アカウントに Lambda は無い。`OGP_FUNCTION_NAME` と同じ事情）。
+# **資格情報を入れなければ、アイコンの設定だけが「保存できませんでした」で止まる**
+# （src/avatar.ts の convertAvatar が設定不足をログへ残す）。
+AVATAR_FUNCTION_NAME = "game-forge-avatar"
 # 開発用の診断経路（`/__dev/*`）を登録するかどうか（#89）。
 #
 # **`enabled` はここ（トップレベル＝ローカル）にしか無い。** 配備される 2 つの環境は
@@ -174,6 +186,7 @@ GENERATION_MODEL = "sonnet-4-6"
 BUILD_FUNCTION_NAME = "game-forge-build"
 ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
 OGP_FUNCTION_NAME = "game-forge-ogp"
+AVATAR_FUNCTION_NAME = "game-forge-avatar"
 DEV_ROUTES = "disabled"
 
 [env.preview.vars]
@@ -191,6 +204,7 @@ GENERATION_MODEL = "sonnet-4-6"
 BUILD_FUNCTION_NAME = "game-forge-build"
 ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
 OGP_FUNCTION_NAME = "game-forge-ogp"
+AVATAR_FUNCTION_NAME = "game-forge-avatar"
 DEV_ROUTES = "disabled"
 
 # 本番の D1。**ローカル用とは別のデータベース**である（9.1 / 確定20: クラウド環境は

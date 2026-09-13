@@ -1,0 +1,10 @@
+{
+  "name": "game-forge-avatar-encode",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "アイコン画像を中央で正方形に切り抜き、メタデータを落とした WebP に作り直す Lambda（仕様 5.10 / issue 380）",
+  "dependencies": {
+    "sharp": "0.35.2"
+  }
+}

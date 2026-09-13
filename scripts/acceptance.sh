@@ -177,6 +177,19 @@ else
   echo "[acceptance] (ogp) skip: terraform/ogp-function.tf not found"
 fi
 
+# アイコン画像の「写し」の機械照合（#380 / shared-ai-rules 12 章）。
+#
+# **前寄りに置く**（sed と awk だけで数十 ms）。外すと、関数名・出力の一辺・入力の上限・
+# **差し替え前の画像を消す接頭辞と日数**（`/privacy` に書いた約束）のずれが、どれも黙って本番へ出る
+# （判定と理由は scripts/check-avatar-copies.sh の冒頭）。
+if [[ -f terraform/avatar-function.tf ]]; then
+  echo "[acceptance] (avatar) scripts/check-avatar-copies.sh"
+  bash scripts/check-avatar-copies.sh
+  ran_any=1
+else
+  echo "[acceptance] (avatar) skip: terraform/avatar-function.tf not found"
+fi
+
 # 検査が読む terraform output が、宣言側に実在すること（#160 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く。** grep 数本で終わる。外すと、宣言側で output を改名・削除したときに
@@ -269,6 +282,14 @@ if [[ -f package.json ]]; then
   fi
   echo "[acceptance] (node) npm test"
   npm test
+  # アイコンの再エンコード関数のテスト（#380）。**Node で走らせる**——sharp はネイティブのライブラリで、
+  # workerd（npm test）では動かない。**Exif が残らないこと・SVG とアニメーションを断ること**という
+  # acceptance の半分はここにしか無い（Worker 側の一次判定は npm test の test/avatar-image.test.ts）。
+  # sharp はルートの devDependencies が入れる（版は関数と同じ。scripts/check-avatar-copies.sh が見る）。
+  if [[ -d lambda/avatar-encode/test ]]; then
+    echo "[acceptance] (node) node --test lambda/avatar-encode/test/encode.test.mjs"
+    node --test lambda/avatar-encode/test/encode.test.mjs
+  fi
   echo "[acceptance] (node) npm run typecheck"
   npm run --silent typecheck
   # オーケストレータが Node へ束ねられること（#160）。

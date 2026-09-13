@@ -1182,8 +1182,12 @@ a.gf-card-author {
   color: var(--gf-ink-faint);
 }
 
-/* 結果の側の見出しの代わり（絞り込み中だけ出る）。**狭い段では左カラムと結果が離れる**ので、ここにも書く。 */
-.gf-tag-filtered {
+/*
+ * 結果の側の見出しの代わり（絞り込み中だけ出る）。**狭い段では左カラムと結果が離れる**ので、ここにも書く。
+ * **検索中の「「…」の検索結果」も同じ形で出す**（#378。語は利用者の入力で、画面側で escape 済み）。
+ */
+.gf-tag-filtered,
+.gf-search-filtered {
   margin: 0 0 var(--gf-gap-1);
   font-weight: 700;
 }
@@ -1401,6 +1405,71 @@ a.gf-card-author {
   opacity: 1;
   text-decoration: underline;
   text-underline-offset: 0.2em;
+}
+
+/*
+ * 検索窓（2.3.7 v1.57 / #378。`src/html.ts` の `headerSearch`）。
+ *
+ * **素の GET のフォームである。** `@section forms` の既定（縦積み・下の余白・版面の上限）を外し、
+ * 入力欄とボタンを横 1 行に並べる。**`flex-direction: row` を明示する**——`display: flex` を書き直す
+ * だけでは、共通の `form` の `flex-direction: column` が残り、入力欄とボタンが縦に積まれる
+ * （PR #432 の Copilot の指摘。`test/page-shell.test.ts` がこの宣言を見る）。
+ *
+ * **幅は CSS が持つ**（`size` 属性は使わない。#282）。入力欄は `11em` を基準に**縮めてよい**
+ * （`min-width: 0`）——狭い段ではナビが折り返し、窓が行の途中に来ても版面を越えない。
+ * **幅に反応する規則は置かない**（規約 3）。
+ *
+ * **文字は 16px を下回らせない**（`@section forms` と同じ理由。iOS は小さい文字の入力欄で拡大する）。
+ */
+.gf-header-search {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--gf-gap-1);
+  max-width: 100%;
+  margin: 0;
+}
+
+.gf-header-search input {
+  flex: 0 1 11em;
+  width: 11em;
+  min-width: 0;
+  padding: 0.3em 0.6em;
+  border: 1px solid var(--gf-rule);
+  border-radius: var(--gf-radius);
+  background: var(--gf-ground);
+  color: var(--gf-ink);
+  font: inherit;
+  font-size: max(1rem, var(--gf-text));
+  font-weight: 400;
+}
+
+.gf-header-search input::placeholder {
+  color: var(--gf-ink-faint);
+}
+
+.gf-header-search button {
+  flex: none;
+  align-self: auto;
+  padding: 0.3em 0.8em;
+  font-weight: 400;
+}
+
+/*
+ * 読み上げにだけ渡すラベル（「作品を検索」）。**`display: none` にしない**——読み上げからも消える。
+ * `.gf-account-menu-name` と同じ畳み方である。
+ */
+.gf-header-search-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ==========================================================================

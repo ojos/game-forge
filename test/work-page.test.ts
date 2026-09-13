@@ -1716,10 +1716,15 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
     // 止める前は出る（**この検査が空振りしていない**ことを先に見る）。
     expect((await openRecording(workPagePath(id), cookie)).body).toMatch(LIKE_FORM);
 
-    const queued = await env.DB.prepare('update games set review_state = ? where id = ?')
+    await env.DB.prepare('update games set review_state = ? where id = ?')
       .bind(REVIEW_QUEUED, id)
       .run();
-    expect(queued.meta.changes).toBe(1);
+    // **行数ではなく、行を読み直して確かめる**（#378。`games` の検索の索引のトリガが書いた行も
+    // `meta.changes` に数えられ、1 にならない）。
+    const queued = await env.DB.prepare('select review_state from games where id = ?')
+      .bind(id)
+      .first<{ review_state: string | null }>();
+    expect(queued?.review_state).toBe(REVIEW_QUEUED);
 
     const { body } = await openRecording(workPagePath(id), cookie);
     // 4.4: 押せば窓口が 404 で断る操作を、押せる形で出さない。

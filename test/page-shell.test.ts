@@ -14,6 +14,7 @@ import { GENERATE_PAGE_PATH, HOME_PATH } from '../src/paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { AUTHOR_PAGE_PREFIX } from '../src/users-page-paths.js';
 import { WORK_PAGE_PREFIX } from '../src/work-page.js';
+import { MAX_SEARCH_LENGTH, WORK_SEARCH_FIELD } from '../src/work-search.js';
 import { WORK_SOURCE_PREFIX } from '../src/work-source.js';
 import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from '../src/works-paths.js';
 import { applySchema } from './helpers/schema.js';
@@ -631,6 +632,44 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
         );
       }
     }
+  });
+
+  it('全画面のヘッダに、公開一覧へ GET で送る検索窓が 1 つある（ログイン状態によらない。#378）', async () => {
+    // **2.3.7 v1.57 の「検索窓」**。素の GET のフォームで、JavaScript を要求しない。
+    // **`size` 属性を使わない**（#282 で 390px の版面を押し広げた）。ラベルは見えないが読み上げに渡す。
+    const { pages } = await anonymousPages();
+    const signedIn: { path: string; body: string }[] = [];
+    for (const path of getPaths()) {
+      signedIn.push({ path, body: (await open(path)).body });
+    }
+    for (const { path, body } of [...pages, ...signedIn]) {
+      const header = headerOf(body)!;
+      const forms = header.match(/<form class="gf-header-search"[\s\S]*?<\/form>/gu) ?? [];
+      expect(forms, `${path} のヘッダの検索窓の数`).toHaveLength(1);
+      const form = forms[0]!;
+      expect(form, `${path} の検索窓`).toMatch(
+        new RegExp(`^<form class="gf-header-search" role="search" method="get" action="${PUBLIC_WORKS_PATH}">`, 'u'),
+      );
+      expect(form, `${path} の検索窓の入力欄`).toContain(`name="${WORK_SEARCH_FIELD}"`);
+      expect(form, `${path} の検索窓の上限`).toContain(`maxlength="${MAX_SEARCH_LENGTH}"`);
+      expect(form, `${path} の検索窓のラベル`).toContain('<label class="gf-header-search-label" for="gf-header-search-q">');
+      expect(form, `${path} の検索窓の入力欄の id`).toContain('id="gf-header-search-q"');
+      expect(form, `${path} の検索窓に size 属性がある`).not.toMatch(/\ssize=/u);
+      expect(form, `${path} の検索窓にイベント属性がある`).not.toMatch(/\son[a-z]+=/u);
+    }
+  });
+
+  it('ヘッダの検索窓は、入力欄とボタンを横 1 行に並べる宣言を持つ（共通の form の縦積みを上書きする。#378）', () => {
+    // **共通の `form` は `flex-direction: column`**（`@section forms`）。検索窓の規則が `row` を明示しないと、
+    // 入力欄とボタンが縦に積まれる。**縦に積まれても版面には収まる**ので、幅の検査（`scripts/check-page-width.sh`）
+    // では捕まらない——宣言をここで見る（PR #432 の Copilot の指摘）。
+    const form = /^form\s*\{([^}]*)\}/mu.exec(env.TEST_APP_CSS);
+    expect(form?.[1], 'app.css に共通の form の規則が見つかりません').toMatch(/flex-direction:\s*column;/u);
+    const search = /^\.gf-header-search\s*\{([^}]*)\}/mu.exec(env.TEST_APP_CSS);
+    expect(search, 'app.css に .gf-header-search の規則が見つかりません').not.toBeNull();
+    expect(search![1]).toMatch(/display:\s*flex;/u);
+    expect(search![1]).toMatch(/flex-direction:\s*row;/u);
+    expect(search![1]).toMatch(/flex-wrap:\s*nowrap;/u);
   });
 
   it('ログアウトは全画面で POST のフォーム 1 つだけで、GET の口（href）を作らない（#372）', async () => {

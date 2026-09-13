@@ -20,6 +20,9 @@
  * ——`src/auth/google.ts` が辿るのは経路表・セッション・招待だけで、画面を 1 枚も
  * import しない（確かめずに足さないこと。上の循環参照はそれで生まれた）。
  *
+ * **検索窓の綴り（#378）は `src/work-search.ts` から読む。** あちらが辿るのは `src/games.ts` と
+ * `src/reports.ts` だけで、どちらもここへ戻らない（esbuild の metafile で確かめた。2026-09-13）。
+ *
  * **画面のモジュールからは綴りを借りない。** 画面は `siteHead` を呼ぶので、必ず
  * 循環参照になる。綴りは値だけの葉に置く（`src/account-paths.ts` の冒頭が、この
  * issue を名指しでそう書いている）。
@@ -59,6 +62,7 @@ import { NEWS_PATH } from './news-paths.js';
 import { ancestorPathsOf } from './page-paths.js';
 import { GENERATE_PAGE_PATH, HOME_PATH, SIGNUP_PATH } from './paths.js';
 import { readSessionCookie, verifySession } from './session.js';
+import { MAX_SEARCH_LENGTH, WORK_SEARCH_FIELD } from './work-search.js';
 import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './works-paths.js';
 
 /**
@@ -284,6 +288,33 @@ function accountMenu(): string {
 }
 
 /**
+ * ヘッダの検索窓（2.3.7 v1.57 / #378）。
+ *
+ * ## 素の GET のフォームである
+ *
+ * **JavaScript を使わない**（9.3）。送ると `/works?q=…` を開き、公開一覧が結果を描く
+ * （`src/works-list.ts`）。**`action` は公開一覧の綴りの正本から取る**（書き写さない）。
+ *
+ * - **ラベルは見えないが、読み上げには渡す**（`<label>` を 1px に畳む。`display: none` にしない）
+ * - **`size` 属性を使わない。** 既定の幅（20 文字ぶん）に文字の大きさが掛かり、390px で版面を
+ *   押し広げた（#282）。幅は CSS（`@section header`）が持つ
+ * - **`maxlength` は検索語の上限と同じ**（`src/work-search.ts` の `MAX_SEARCH_LENGTH`）。越えて
+ *   送られても、画面が断る（ここは打ちすぎを早めに止めるだけである）
+ * - **いま検索している語を戻す**（`value`）。利用者の入力なので escape する
+ *
+ * @param query 窓に戻す検索語（検索していなければ undefined）
+ * @returns HTML
+ */
+function headerSearch(query: string | undefined): string {
+  const value = query === undefined ? '' : ` value="${escapeHtml(query)}"`;
+  return `<form class="gf-header-search" role="search" method="get" action="${PUBLIC_WORKS_PATH}">
+      <label class="gf-header-search-label" for="gf-header-search-q">作品を検索</label>
+      <input id="gf-header-search-q" type="search" name="${WORK_SEARCH_FIELD}" maxlength="${MAX_SEARCH_LENGTH}" placeholder="作品を検索"${value}>
+      <button type="submit">検索</button>
+    </form>`;
+}
+
+/**
  * 全画面の先頭に出すヘッダ（#266。#331 でナビを、#372 でアカウントのメニューを入れた）。
  *
  * ここが要るのは、**共有された URL から `/works/<id>` へ直接来た人**である。
@@ -316,10 +347,17 @@ function accountMenu(): string {
  * 画面（GET）の側で省き忘れることは `test/page-shell.test.ts` が塞ぐ——経路表から
  * 導いた全画面について、両方の状態でナビを照合する。
  *
+ * ## 検索窓はナビの共通の項目の後に置く（#378）
+ *
+ * **2.3.7 v1.57 の並び（ロゴ / 作品をさがす / つくる / 検索窓 / ログイン）どおりである。**
+ * ナビを出さない画面（`viewer` を省いた POST の結果）には置かない——ナビと同じ判断で、
+ * そこはログイン済みの利用者が操作の直後に見る画面である。
+ *
  * @param viewer いま見ている人の状態（省略するとナビを出さない）
+ * @param searchQuery 検索窓に戻す語（{@link SiteHeadOptions.searchQuery}）
  * @returns HTML
  */
-function siteHeader(viewer: SiteViewer | undefined): string {
+function siteHeader(viewer: SiteViewer | undefined, searchQuery: string | undefined): string {
   const logo = `<a class="gf-header-logo" href="${HOME_PATH}">Game Forge</a>`;
   if (viewer === undefined) {
     return `\n<header class="gf-header">${logo}</header>`;
@@ -331,6 +369,7 @@ function siteHeader(viewer: SiteViewer | undefined): string {
 <header class="gf-header">${logo}
   <nav class="gf-header-nav" aria-label="サイト内の主な行き先">
     ${navLinks(HEADER_COMMON_ITEMS)}
+    ${headerSearch(searchQuery)}
     ${tail}
   </nav>
 </header>`;
@@ -513,6 +552,10 @@ export interface SiteHeadOptions {
    * {@link resolveSiteViewer} の戻り値を渡す。
    */
   readonly viewer?: SiteViewer;
+  /**
+   * ヘッダの検索窓に戻す語（#378）。**公開一覧が検索を描くときだけ渡す。** エスケープはこの関数が行う。
+   */
+  readonly searchQuery?: string;
 }
 
 /**
@@ -551,7 +594,7 @@ export function siteHead(options: SiteHeadOptions): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="${APP_CSS_PATH}">${beforeTitle}${robots}
-<title>${escapeHtml(options.title)}</title>${extraHead}${siteHeader(options.viewer)}${siteBreadcrumb(
+<title>${escapeHtml(options.title)}</title>${extraHead}${siteHeader(options.viewer, options.searchQuery)}${siteBreadcrumb(
     options.viewer,
     options.title,
   )}`;

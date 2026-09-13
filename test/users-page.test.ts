@@ -429,12 +429,17 @@ describe('BAN 済みの利用者（issue #330 が決めた / 7.3 / 8.4）', () =
     const game = await seedGame(author);
     expect(await bodyOf(author)).toContain(workPagePath(game));
 
-    const updated = await env.DB.prepare('update games set status = ? where id = ?')
+    await env.DB.prepare('update games set status = ? where id = ?')
       .bind(REMOVED_STATUS, game)
       .run();
     // **変異が当たったことを先に確かめる**（0 行の UPDATE のあとで「消えた」を見ても
     // 何も確かめていない。`docs/handoff.md` 4 章）。
-    expect(updated.meta.changes).toBe(1);
+    // **行数ではなく、行を読み直して確かめる**（#378。`games` の検索の索引のトリガが書いた行も
+    // `meta.changes` に数えられ、1 にならない）。
+    const updated = await env.DB.prepare('select status from games where id = ?')
+      .bind(game)
+      .first<{ status: string }>();
+    expect(updated?.status).toBe(REMOVED_STATUS);
 
     const body = await bodyOf(author);
     expect(body).not.toContain(workPagePath(game));

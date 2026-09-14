@@ -13,6 +13,7 @@
 | 審査待ちの作品（#40） | `scripts/report-queue.sh` | D1 の `games` / `reports` |
 | 未対応の削除依頼（#41） | `scripts/takedown-queue.sh` | D1 の `takedown_requests`（手順は [takedown.md](takedown.md)） |
 | 遮断の記録の掃除（#37） | `scripts/moderation-prune.sh` | D1 の `moderation_blocks` |
+| 作品が読むキーの欠けの点検と埋め戻し（#493） | `scripts/input-keys-backfill.sh` | D1 の `games` / `game_revisions` / `source_input_keys` と R2 のソース |
 | 数え方の定義（両方が共有する） | `scripts/report-window.sh` | — |
 | 自己検査 | `scripts/report-selftest.sh` | 使い捨ての手元 D1 と宣言 |
 
@@ -588,6 +589,61 @@ bash scripts/report-queue.sh --remote --format json
 **招待した相手が BAN されているかどうかから導けます**（`inviteQuotaHalted`）。別の列で
 持つと、**BAN を取り消したときに戻し忘れる余地**ができます。
 
+
+## 作品が読むキーの欠けを点検し、埋め戻す（#493 / M14-4）
+
+**仕様 3.9.5 の「欠けの回復」の運用の手順です。** 作品が読むキー（`source_input_keys`）は、完成を確定させた直後に
+エッジが R2 のソースを読んで書きます（完成のコールバックと同期実行。`src/source-input-keys.ts`）。**完成を確定させた後、
+拾う前に処理が落ちると行が欠けます。** このアプリには定期処理が無いので、**このスクリプトで点検し、欠けていれば埋めます。**
+行が欠けた作品は、仮想パッド（3.9.6 / M14-5）が出ないだけで、遊べなくはなりません。
+
+```bash
+bash scripts/input-keys-backfill.sh --remote            # 本番の欠けを数える（読み取りのみ。既定）
+bash scripts/input-keys-backfill.sh --remote --apply    # 本番へ埋める
+bash scripts/input-keys-backfill.sh --remote            # もう一度数える（0 件になっていること）
+```
+
+| 引数 | 意味 |
+|---|---|
+| `--local`（既定） / `--remote` | 手元の D1 / R2 か、本番（`--env production`）か |
+| `--apply` | **書く。** 付けなければ 1 行も書かない（対象の件数と一覧を出して終わる） |
+| `--persist-to` | 手元の D1 / R2 の置き場所を差し替える（手元専用） |
+
+### 対象
+
+**`games.source_key`（NULL を除く）と `game_revisions.source_key` の和集合のうち、行が無いか `rule_version` が
+古いもの**です（仕様 3.9.5）。**綴りは `src/source-input-keys.ts` の `SOURCE_INPUT_KEYS_TARGETS_SQL` をそのまま使い、
+抽出も `src/input-keys.ts` の同じ関数で行います**（スクリプトが TypeScript のモジュールを束ねて借ります）。
+**対象の一覧もソースの本文も、実行時に読みます**（事前に取った値を使う口を持ちません。#380 の教訓）。
+
+### 読み方
+
+| 最終行 | 終了コード | 意味 |
+|---|---|---|
+| `INPUT_KEYS_BACKFILL_PASS` | 0 | dry-run で数えた / `--apply` で書いて、対象が 0 件になった |
+| `INPUT_KEYS_BACKFILL_INCOMPLETE` | 1 | **R2 から読めないソースが残った**（`NG` の行）か、**形の合わないキーがある**（`INVALID` の行。dry-run でも出ます） |
+| （なし） | 2 | 前提の不成立（引数・道具・D1 の応答の形。**0040 が未適用なら「表がありません」と出ます**） |
+
+- **dry-run の「埋め戻しの対象」が 0 件でなければ、欠けがあります。** 何度流しても冪等です——書き込みは
+  `insert ... on conflict ... where excluded.rule_version > source_input_keys.rule_version` の 1 文で、
+  **今の版の行は上書きしません。** 2 回目の `--apply` は「書き込みを送った文: 0 件」になります。
+- **書いたあとは、対象を数え直して報告します**（`meta.changes` を信じない。`scripts/moderation-prune.sh` と同じ規律）。
+- **`INPUT_KEYS_BACKFILL_INCOMPLETE` で残るのは、R2 に実体の無いソースです。** 版の表だけが指している昔のソースが
+  消えている、などです。**これは書き込みの失敗ではないので、何度流しても残ります。** 件数が増えていないかを見てください。
+- **キーは `builds/<sha256>/source.go` の形（ビルド関数が決める綴り）に合うものだけを扱います。** 合わないキーは R2 を読まず、
+  書かず、`INVALID` の行に **JSON の文字列として符号化して**出します（改行などで出力の行を崩させないため）。
+- エッジで拾えなかったときのログは **`[source-input-keys]`** で始まる 1 行です（`source-unreadable <理由> <source_key>` /
+  `failed <例外のクラス名> <source_key>` / `invalid-source-key`（**キーは出しません**） / `callback-failed <例外のクラス名>`）。**行が欠けたら、まずこのタグで Workers の
+  ログを引いてください。**
+
+### いつ流すか
+
+- **0040 を本番へ当て、M14-4 を配備した後に 1 回**（既存作品の埋め戻し。**M14-5 の配備より前に済ませる**。仕様 3.9.5）
+- **パッドが出ないはずのない作品に、パッドが出ないと気づいたとき**（欠けの点検）
+- **抽出の規則の版（`INPUT_KEYS_RULE_VERSION`）を上げて配備した後**（古い版の行が対象に入ります）
+
+**書くのは `source_input_keys` だけです。** `games` と `game_revisions` は読むだけで、R2 にも書きません。
+`--remote` は `CLOUDFLARE_API_TOKEN` を要します（`scripts/load-project-env.sh` で環境へ移すだけで、値はスクリプトへ持ち込みません）。
 
 ## 気づく経路は作っていません
 

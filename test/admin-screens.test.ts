@@ -1246,6 +1246,9 @@ describe('通報された時点の題名・説明・作者名を、いまの値�
       expect(body).not.toContain('（読み込めませんでした）</h2>');
       // **「通報が無い」と書かない**（読めていないだけである）。
       expect(rowOf(body, queued)).toContain('通報の時点の題名・説明・作者名を読み込めませんでした');
+      // **エラーの知らせは `.error` の見た目のまま**（赤はエラーの意味。`admin.css` は `:not(.error)` にだけ淡い文字を当てる。
+      // CSS の中身はテストから読めないので、ここでは `.error` が付いていることを見る。PR #495 の Copilot の指摘）。
+      expect(rowOf(body, queued)).toContain('<p class="gf-admin-evidence-note error">');
       expect(rowOf(body, queued)).not.toContain('この作品の通報は見つかりませんでした。');
     } finally {
       await env.DB.prepare(`alter table ${DISPLAY_NAME_CHANGES_TABLE}_hidden rename to ${DISPLAY_NAME_CHANGES_TABLE}`).run();

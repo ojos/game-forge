@@ -182,7 +182,7 @@ describe('作品ページの作者名のリンク', () => {
       env,
     );
     const body = await response.text();
-    expect(body).toContain(`<a class="gf-author-link" href="${handlePagePath(handle)}">`);
+    expect(body).toContain(`<a class="gf-author-link gf-link-quiet" href="${handlePagePath(handle)}">`);
     expect(body).not.toContain(`href="${authorPagePath(userId)}"`);
   });
 });

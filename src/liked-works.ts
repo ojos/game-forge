@@ -369,6 +369,8 @@ export const UNAVAILABLE_MESSAGE =
  * **無限スクロールを置かない**（仕様 2.3.3）。JavaScript も増やさない（9.3）。
  * 押しても何も起きない導線を出さない（4.4。次が無ければ「次へ」を出さない）。
  *
+ * **小さい副のボタンにし、「次」は右端に寄せる**（`.gf-pager-next`。仕様 2.5.5 / #474。`src/works-list.ts` の頁送りと同じ形）。
+ *
  * @param view 表示に必要な値
  * @returns HTML。前も次も無ければ空文字
  */
@@ -376,19 +378,25 @@ function renderPager(view: LikedWorksView): string {
   const links: string[] = [];
   if (view.page > 1) {
     links.push(
-      `<a href="${likedWorksPath(view.page - 1)}">前の ${LIKED_WORKS_PER_PAGE} 件</a>`,
+      `<a class="${SMALL_SECONDARY_BUTTON}" href="${likedWorksPath(view.page - 1)}">前の ${LIKED_WORKS_PER_PAGE} 件</a>`,
     );
   }
   if (view.hasNext) {
     links.push(
-      `<a href="${likedWorksPath(view.page + 1)}">次の ${LIKED_WORKS_PER_PAGE} 件</a>`,
+      `<a class="${SMALL_SECONDARY_BUTTON} gf-pager-next" href="${likedWorksPath(view.page + 1)}">次の ${LIKED_WORKS_PER_PAGE} 件</a>`,
     );
   }
   if (links.length === 0) {
     return '';
   }
-  return `<nav class="gf-pager" aria-label="頁送り">${links.join(' ')}</nav>`;
+  return `<nav class="gf-pager" aria-label="頁送り">${links.join('\n')}</nav>`;
 }
+
+/**
+ * 小さい副のボタン（仕様 2.5.5。#474）。頁送りと、空のときの「公開されている作品をさがす」に当てる。
+ * 見た目の正本は `public/assets/app.css` の `@section buttons` で、ここは当てる部品の名前だけを持つ。
+ */
+const SMALL_SECONDARY_BUTTON = 'gf-button gf-button-secondary gf-button-sm';
 
 /**
  * 一覧の HTML を組み立てる。
@@ -414,27 +422,34 @@ export function renderLikedWorksPage(view: LikedWorksView): string {
   //
   // **2 つ目を「まだいいねした作品がありません」に混ぜない。** 押した本人に対して画面が
   // 嘘をつく（{@link ALL_HIDDEN_MESSAGE}）。
+  //
+  // **4 つとも知らせは面のブロックにする**（#474 / 仕様 2.5.4）。導線は小さい副のボタン（2.5.5）。
   const emptyBody = view.unavailable
     ? // **読めなかったことを、読めたことのように書かない。** 頁送りも出さない
       // （次の頁があるかどうかも分かっていない。押しても何も起きない導線を出さない。4.4）。
-      `<p>${UNAVAILABLE_MESSAGE}</p>`
+      `<p class="gf-block">${UNAVAILABLE_MESSAGE}</p>`
     : view.likedOnPage > 0
-      ? `<p>${ALL_HIDDEN_MESSAGE}</p>`
+      ? `<p class="gf-block">${ALL_HIDDEN_MESSAGE}</p>`
       : view.page === 1
-        ? `<p>まだいいねした作品がありません。</p>
-<p><a href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>`
-        : `<p>この頁に並ぶ作品がありません。</p>`;
+        ? `<div class="gf-block gf-liked-empty">
+<p>まだいいねした作品がありません。</p>
+<p><a class="${SMALL_SECONDARY_BUTTON}" href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>
+</div>`
+        : `<p class="gf-block">この頁に並ぶ作品がありません。</p>`;
   const body = cards === '' || view.unavailable ? emptyBody : cards;
 
   // **欠けている頁にだけ断りを出す**（{@link someHidden}）。**全部落ちた頁では出さない**
   // ——本文がすでに {@link ALL_HIDDEN_MESSAGE} で同じことを言っており、2 度言う理由が無い。
   const hidden =
     someHidden(view) && view.works.length > 0
-      ? `\n<p class="gf-notice">${HIDDEN_NOTICE}</p>`
+      ? `\n<p class="gf-block gf-liked-hidden">${HIDDEN_NOTICE}</p>`
       : '';
   const pager = view.unavailable ? '' : renderPager(view);
 
   // **ログイン済みとして組む**（`src/my-works.ts` と同じ扱い。2.3.7 / #331）。
+  //
+  // **「あなたの作品」も小さい副のボタンにする**（#474。同じ画面の「公開されている作品をさがす」と頁送りと揃える。
+  // 仕様 2.5.5 の「主な導線」。PR #499 の Copilot code review）。
   return `${siteHead({
     title: 'いいねした作品 - Game Forge',
     noindex: true,
@@ -442,7 +457,7 @@ export function renderLikedWorksPage(view: LikedWorksView): string {
   })}
 <h1>いいねした作品</h1>
 <p>あなたがいいねを付けた作品が、押した新しい順に並んでいます。<strong>この一覧はあなたにしか見えません。</strong></p>
-<p><a href="${MY_WORKS_PATH}">あなたの作品</a></p>
+<p class="gf-liked-mine"><a class="${SMALL_SECONDARY_BUTTON}" href="${MY_WORKS_PATH}">あなたの作品</a></p>
 ${body}${hidden}
 ${pager}
 ${siteFooter()}`;

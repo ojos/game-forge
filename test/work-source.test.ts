@@ -492,7 +492,10 @@ describe('作品ページからの導線（#383）', () => {
       testEnv(),
     );
     const body = await page.text();
-    expect(body).toContain(`<a href="${workSourcePath(id)}">ソースコードを見る</a>`);
+    // 見た目は小さい副のボタン（#474 / 仕様 2.5.5）。
+    expect(body).toContain(
+      `<a class="gf-button gf-button-secondary gf-button-sm" href="${workSourcePath(id)}">ソースコードを見る</a>`,
+    );
     expect((await open(workSourcePath(id))).status).toBe(200);
   });
 });

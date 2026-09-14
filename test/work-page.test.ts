@@ -889,8 +889,8 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     const body = await (await open(workPagePath(id))).text();
 
     expect(body).toContain('このゲームからの改造: 2 件');
-    expect(body).toContain(`<a href="${workPagePath(newer)}">新しい改造</a>`);
-    expect(body).toContain(`<a href="${workPagePath(older)}">古い改造</a>`);
+    expect(body).toContain(`<a class="gf-link-quiet" href="${workPagePath(newer)}">新しい改造</a>`);
+    expect(body).toContain(`<a class="gf-link-quiet" href="${workPagePath(older)}">古い改造</a>`);
     // **新しい順である**（5.5）。
     expect(body.indexOf('新しい改造')).toBeLessThan(body.indexOf('古い改造'));
   });
@@ -905,7 +905,7 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     const body = await (await open(workPagePath(id))).text();
 
     expect(body).toContain('このゲームからの改造: 1 件');
-    expect(body).toContain(`<a href="${workPagePath(shown)}">公開された改造</a>`);
+    expect(body).toContain(`<a class="gf-link-quiet" href="${workPagePath(shown)}">公開された改造</a>`);
     // **題名はプロンプト由来である。** 出せば 5.4 の「公開して初めて有効になる」の
     // 抜け道になる。
     expect(body).not.toContain('未公開の改造');
@@ -924,20 +924,22 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     const first = await (await open(workPagePath(id))).text();
     expect(first).toContain('このゲームからの改造: 21 件');
     // 20 件だけ出て、21 件目（＝いちばん古い 1 件）は出ていない。
-    expect(first).toContain(`<a href="${workPagePath(newestFirst[19]!)}">改造 1</a>`);
-    expect(first).not.toContain(`<a href="${workPagePath(newestFirst[20]!)}">改造 0</a>`);
+    expect(first).toContain(`<a class="gf-link-quiet" href="${workPagePath(newestFirst[19]!)}">改造 1</a>`);
+    // **行き先だけで見る**（クラスの綴りに依らず、21 件目へのリンクが 1 本も無いこと）。
+    expect(first).not.toContain(`href="${workPagePath(newestFirst[20]!)}"`);
 
     const morePath = `${workPagePath(id)}?${FORKS_OFFSET_PARAM}=${FORKS_PER_PAGE}`;
-    expect(first).toContain(`<a href="${morePath}">もっと見る</a>`);
+    // **小さい副のボタンである**（#474 / 仕様 2.5.5）。
+    expect(first).toContain(`<a class="gf-button gf-button-secondary gf-button-sm" href="${morePath}">もっと見る</a>`);
 
     // **画面に出ているリンクをそのまま辿る**（テストが URL を組み立て直すと、
     // 画面の綴りが変わっても緑のままになる）。
     const second = await (await open(morePath)).text();
-    expect(second).toContain(`<a href="${workPagePath(newestFirst[20]!)}">改造 0</a>`);
+    expect(second).toContain(`<a class="gf-link-quiet" href="${workPagePath(newestFirst[20]!)}">改造 0</a>`);
     // 2 頁目には次が無いので「もっと見る」は出ない。
     expect(second).not.toContain('もっと見る');
     // 戻る道はある。
-    expect(second).toContain(`<a href="${workPagePath(id)}">前へ</a>`);
+    expect(second).toContain(`<a class="gf-button gf-button-secondary gf-button-sm" href="${workPagePath(id)}">前へ</a>`);
   });
 
   it('改造が 1 件も無ければ 0 件と言い、一覧は出さない', async () => {
@@ -945,7 +947,8 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     const body = await (await open(workPagePath(id))).text();
     // **見出しを消さない。**「まだ誰も改造していない」と「機能が無い」を区別できる形にする。
     expect(body).toContain('このゲームからの改造: 0 件');
-    expect(body).not.toContain('<ul class="gf-fork-list">');
+    // **クラスの綴りの前方だけで見る**（#474 で `gf-block gf-block-rows` が足された。完全一致だと空振りする）。
+    expect(body).not.toContain('<ul class="gf-fork-list');
     expect(body).not.toContain('もっと見る');
   });
 
@@ -1372,7 +1375,7 @@ describe('著名 IP 名の置換を作者へ開示する（6.2 / #39）', () => 
 
 describe('運営の印（#334）', () => {
   /** 印の要素そのもの。**文言は `OPERATOR_MARK` から取る**（書き写さない）。 */
-  const MARK_ELEMENT = `<span class="gf-operator">${OPERATOR_MARK}</span>`;
+  const MARK_ELEMENT = `<span class="gf-chip gf-operator">${OPERATOR_MARK}</span>`;
 
   /**
    * `gf-operator` のクラスを持つ要素（タグとして解釈される形）。引用符の有無と種類を問わない。
@@ -1447,7 +1450,7 @@ describe('運営の印（#334）', () => {
    * @returns `<p class="gf-author">…</p>`
    */
   function expectedAuthorLine(userId: string, name: string, mark = ''): string {
-    const link = `<a class="gf-author-link" href="${authorPagePath(userId)}">${escapeHtml(name)}</a>`;
+    const link = `<a class="gf-author-link gf-link-quiet" href="${authorPagePath(userId)}">${escapeHtml(name)}</a>`;
     return `<p class="gf-author">作者: <strong>${link}</strong>${mark}</p>`;
   }
 
@@ -2117,7 +2120,7 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
    * @returns パネルの HTML（無ければ null）
    */
   function panelOf(body: string): string | null {
-    return /<aside class="gf-details"[\s\S]*?<\/aside>/u.exec(body)?.[0] ?? null;
+    return /<aside class="gf-details[ "][\s\S]*?<\/aside>/u.exec(body)?.[0] ?? null;
   }
 
   it('来歴を並べる（作品 ID・日時・元ゲーム・配信サイズ・改造された数・いいね・プレイ）とソースへのリンク', async () => {
@@ -2140,7 +2143,12 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
     expect(panel).toContain('<dt>改造された数</dt><dd>0 件</dd>');
     expect(panel).toContain(panelLikeRow(3));
     expect(panel).toContain(playRow(12));
-    expect(panel).toContain(`<a href="${workSourcePath(id)}">ソースコードを見る</a>`);
+    expect(panel).toContain(
+      `<a class="gf-button gf-button-secondary gf-button-sm" href="${workSourcePath(id)}">ソースコードを見る</a>`,
+    );
+    // **項目名と値の並び（`.gf-kv`）で、パネルは面のブロックである**（#474 / 仕様 2.5.4）。
+    expect(panel).toContain('<aside class="gf-details gf-block"');
+    expect(panel).toContain('<dl class="gf-kv">');
     // **モデル名の行は無い**（確定27。作品からモデルへ辿れない）。
     expect(panel).not.toContain('モデル');
 
@@ -2155,12 +2163,12 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
     expect(split, '2 カラムの器が無い').toBeGreaterThan(0);
     // 枠・ロード中画面は器より前（全幅）。
     expect(body.indexOf('<iframe class="gf-frame"')).toBeLessThan(split);
-    expect(body.indexOf('<div class="gf-context">')).toBeLessThan(split);
+    expect(body.indexOf('<div class="gf-context gf-block">')).toBeLessThan(split);
     // 本文（改造の一覧）が先、パネルが後（狭い段では本文の下に積まれる）。
     const main = body.indexOf('<div class="gf-work-main">');
     expect(main).toBeGreaterThan(split);
     expect(body.indexOf('このゲームからの改造')).toBeGreaterThan(main);
-    expect(body.indexOf('<aside class="gf-details"')).toBeGreaterThan(body.indexOf('このゲームからの改造'));
+    expect(body.indexOf('<aside class="gf-details gf-block"')).toBeGreaterThan(body.indexOf('このゲームからの改造'));
     // 説明（#388）はパネルに入れない。
     expect(panelOf(body)).not.toContain('作品の説明');
   });
@@ -2258,5 +2266,187 @@ describe('公開フォームは「ソースも公開される」ことを押す�
     expect(form).toContain(PUBLISH_SOURCE_NOTICE);
     expect(form.indexOf(PUBLISH_SOURCE_NOTICE)).toBeLessThan(form.indexOf('<button'));
     expect(PUBLISH_SOURCE_NOTICE).toContain('ソースコード');
+  });
+});
+
+describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
+  /** 主のボタンの部品のクラス。**1 画面に 1 つまで**（仕様 2.5.5）。 */
+  const PRIMARY = /\bgf-button-primary\b/gu;
+
+  /**
+   * 主のボタンの要素（`<a>` か `<button>`）をすべて拾う。
+   *
+   * @param html 画面の HTML（外枠を含む。ヘッダとフッタにも主を置かない）
+   * @returns 要素の開始タグから閉じタグまで
+   */
+  function primaries(html: string): string[] {
+    return html.match(/<(a|button)\b[^>]*\bgf-button-primary\b[^>]*>[\s\S]*?<\/\1>/gu) ?? [];
+  }
+
+  /**
+   * 本文の `<button>` のうち、部品のクラスを持たないもの（`<button>` の既定の見た目に寄りかかっているもの）。
+   *
+   * **既定の見た目は M13 の最後の 1 本が副へ切り替える**ので、強さを部品で明示していないボタンは、切り替えの
+   * 前後で見え方が変わる（主に見えたり、主が副に見えたりする）。外枠（ヘッダのメニューのログアウト）は #469 の範囲なので外す。
+   *
+   * @param html 画面の HTML
+   * @returns 部品のクラスを持たない `<button>` の開始タグ
+   */
+  function bareButtons(html: string): string[] {
+    return (pageBodyOf(html).match(/<button\b[^>]*>/gu) ?? []).filter((tag) => !/\bgf-button\b/u.test(tag));
+  }
+
+  /**
+   * 公開済みの作品を 1 件用意する。
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @returns 作者の id と作品 id
+   */
+  async function seedPublished(suffix: string): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(`parts-${suffix}`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: `sha-parts-${suffix}` }));
+    expect((await publishGame(env, id, userId)).ok).toBe(true);
+    return { userId, id };
+  }
+
+  it('公開済みの作品ページの主のボタンは「改造する」の 1 つだけ（未ログイン・ログイン済み・作者本人）', async () => {
+    const { userId, id } = await seedPublished('primary');
+    const visitor = await seedUser('parts-primary-visitor');
+
+    const anonymous = await (await open(workPagePath(id))).text();
+    const member = await (await open(workPagePath(id), await sessionCookie(visitor))).text();
+    const owner = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+
+    // 未ログインは登録へ送る `<a>`（移動）、ログイン済みと作者は差分プロンプトの送信 `<button>`（動作）。
+    expect(anonymous.match(PRIMARY) ?? []).toHaveLength(1);
+    expect(primaries(anonymous)[0]).toMatch(/^<a class="gf-fork-link gf-button gf-button-primary" href="[^"]*from=fork-cta[^"]*">このゲームを改造する<\/a>$/u);
+    for (const [name, body] of [
+      ['ログイン済み', member],
+      ['作者本人', owner],
+    ] as const) {
+      expect(body.match(PRIMARY) ?? [], name).toHaveLength(1);
+      expect(primaries(body)[0], name).toBe('<button type="submit" class="gf-button gf-button-primary">この内容で改造する</button>');
+      // **主はフォークのフォームの中にある**（見た目だけ主の別の送信ではない）。
+      const fork = body.slice(body.indexOf(`action="${FORK_PATH}"`));
+      expect(fork.slice(0, fork.indexOf('</form>')), name).toContain('gf-button-primary');
+      expect(bareButtons(body), name).toEqual([]);
+    }
+    // 作者本人には設定の口（副のボタン）が並ぶが、主は増えない。
+    expect(owner).toContain('<section class="gf-block gf-block-rows gf-work-settings" aria-label="作品の設定">');
+    expect(owner).toContain('<button type="submit" class="gf-button gf-button-secondary">公開を取り下げる</button>');
+    expect(bareButtons(anonymous)).toEqual([]);
+  });
+
+  it('描画: 口がすべて出ている状態でも主は 1 つで、ほかの動作と導線は副（いいね・設定・通報・もっと見る・ソース）', () => {
+    const id = '00000000-0000-4000-8000-000000000474';
+    const body = renderWorkPage({
+      ...baseView,
+      published: true,
+      owner: true,
+      signedIn: true,
+      dailyRemaining: 3,
+      title: '題',
+      playUrl: 'https://sandbox.example/g/x/',
+      shareUrl: `https://app.example${workPagePath(id)}`,
+      forkableId: id,
+      reportableId: id,
+      likableId: id,
+      likeCount: 2,
+      tags: ['action', 'puzzle'],
+      description: '説明',
+      recapturableId: id,
+      renamableId: id,
+      describableId: id,
+      retaggableId: id,
+      removableId: id,
+      forks: {
+        total: 21,
+        items: [{ id, title: '子', publishedAt: 1 }],
+        morePath: `${workPagePath(id)}?${FORKS_OFFSET_PARAM}=${FORKS_PER_PAGE}`,
+        backPath: workPagePath(id),
+      },
+      details: { ...sampleDetails(id), wasmBytes: 2_282_839, sourcePath: workSourcePath(id) },
+    });
+
+    expect(body.match(PRIMARY) ?? []).toHaveLength(1);
+    expect(bareButtons(body)).toEqual([]);
+    // いいね・もっと見る・前へ・ソース・通報は小さい副のボタン。設定の 5 つは副のボタン。
+    expect(body).toContain(`<button type="submit" class="gf-button gf-button-secondary gf-button-sm">いいね</button>`);
+    expect(body).toContain('<button type="submit" class="gf-button gf-button-secondary gf-button-sm">通報する</button>');
+    for (const label of ['スクリーンショットを撮り直す', 'この名前にする', 'この説明にする', 'このタグにする', '公開を取り下げる']) {
+      expect(body, label).toContain(`<button type="submit" class="gf-button gf-button-secondary">${label}</button>`);
+    }
+    // 設定は 1 つのブロックの行で、並びは #474 の前と同じ（撮り直し → 作品名 → 説明 → タグ → 取り下げ）。
+    const settings = body.slice(body.indexOf('gf-work-settings'));
+    const order = ['スクリーンショット', '作品名を変える', '作品の説明を書く', 'タグを付け直す', '公開の取り下げ'].map((heading) =>
+      settings.indexOf(`<h3>${heading}</h3>`),
+    );
+    expect(order.every((at) => at > 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // タグはチップ、共有する URL はブロックの面、改造の一覧はブロックの行、パネルは `.gf-kv`。
+    expect(body).toContain('<p class="gf-work-tags"><span class="gf-work-tags-label">タグ</span><a class="gf-chip"');
+    expect(body).toContain(`<p class="gf-block gf-work-share-url"><code>https://app.example${workPagePath(id)}</code></p>`);
+    expect(body).toContain('<ul class="gf-fork-list gf-block gf-block-rows">');
+    expect(body).toContain('<aside class="gf-details gf-block" aria-labelledby="gf-details-heading">');
+    expect(body).toContain('<div><dt>Wasm のサイズ</dt><dd>2.3 MB（配信時の圧縮後）</dd></div>');
+    // 4 要素のブロックの並びは今のまま（スクリーンショット → 作者 → 元ゲーム → 改造する。3.4-5）。
+    const context = body.slice(body.indexOf('<div class="gf-context gf-block">'), body.indexOf('<iframe'));
+    const elements = ['gf-shot', '<p class="gf-author">', '<p class="gf-parent">', '<p class="gf-fork">'].map((needle) =>
+      context.indexOf(needle),
+    );
+    expect(elements.every((at) => at > 0)).toBe(true);
+    expect([...elements].sort((a, b) => a - b)).toEqual(elements);
+    // **iframe の属性は変えない**（7.2）。
+    expect(body).toContain('<iframe class="gf-frame" src="https://sandbox.example/g/x/" sandbox="allow-scripts" title="ゲーム"></iframe>');
+  });
+
+  it('描画: 本日の枠が尽きたログイン済みでは、主のボタンを出さない（押せない主を置かない。4.4）', () => {
+    const id = '00000000-0000-4000-8000-000000000475';
+    const body = renderWorkPage({ ...baseView, published: true, signedIn: true, dailyRemaining: 0, forkableId: id });
+    expect(body.match(PRIMARY) ?? []).toHaveLength(0);
+    expect(body).toContain('<p class="gf-fork">このゲームを改造する</p>');
+  });
+
+  it('未公開の作品（作者）の主は「公開して共有」だけで、手直し・版に戻す・改名は副', async () => {
+    const { userId, id, jobToken } = await seedPending('parts-draft');
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: 'sha-parts-draft' }));
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+
+    expect(primaries(body)).toEqual(['<button type="submit" class="gf-button gf-button-primary">公開して共有</button>']);
+    expect(bareButtons(body)).toEqual([]);
+    expect(body).toContain('<div class="gf-block gf-work-state">\n<h2>できました</h2>');
+    expect(body).toContain('<button type="submit" class="gf-button gf-button-secondary">この名前にする</button>');
+  });
+
+  it('状態の知らせ（生成中・生成できませんでした・取り下げ・見つかりません）は面のブロック', async () => {
+    const working = renderWorkPage({ ...baseView, state: 'working' });
+    expect(working).toContain('<div class="gf-block gf-work-state">\n<h2>生成中です</h2>');
+    const failed = renderWorkPage({ ...baseView, state: 'failed' });
+    expect(failed).toContain('<div class="gf-block gf-work-state">\n<h2>生成できませんでした</h2>');
+    const removed = renderWorkPage({ ...baseView, removed: true });
+    expect(removed).toContain('<div class="gf-block gf-work-state">\n<h2>この作品は取り下げられました</h2>');
+
+    const missing = await (await open(workPagePath('00000000-0000-4000-8000-00000000dead'))).text();
+    expect(missing).toContain('<h1>作品が見つかりません</h1>\n<p class="gf-block">URL が正しいかご確認ください。</p>');
+  });
+
+  it('作品の情報パネルと 4 要素のブロックの規則は、枠線・影・並べ替え・幅の断点を持たない（app.css の `@section work`）', () => {
+    const css = env.TEST_APP_CSS;
+    const start = css.indexOf('\n   @section work ');
+    const end = css.indexOf('\n   @section ', start + 1);
+    expect(start, '`@section work` が見つかりません').toBeGreaterThan(0);
+    const section = css.slice(start, end).replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+    for (const selector of ['.gf-details', '.gf-context', '.gf-context-body', '.gf-work-settings']) {
+      const rules = [...section.matchAll(new RegExp(`(?:^|\\n)${selector.replace('.', '\\.')}\\s*\\{([^}]*)\\}`, 'gu'))];
+      expect(rules.length, `${selector} の規則が無い`).toBeGreaterThan(0);
+      for (const rule of rules) {
+        // 面で区切り、枠線も影も使わない（2.5.4）。**段で並べ替えない**（2.5.6 の #469 実装注記）。
+        expect(rule[1], selector).not.toMatch(/(^|\s)border(-(top|right|bottom|left))?\s*:|box-shadow\s*:|order\s*:|display:\s*contents/u);
+      }
+    }
+    // **補助カラムの幅は変えない**（`--gf-aside` を画面の区画で定義しない）。
+    expect(section).not.toMatch(/--gf-aside\s*:/u);
   });
 });

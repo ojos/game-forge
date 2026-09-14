@@ -2,6 +2,8 @@
  * GCP プロジェクト（M1-2 / #12 の P1）。
  *
  * Google OAuth ログイン（仕様書 8.1）に使う OAuth クライアントを置く器を宣言する。
+ * 器は本番用（game_forge）と開発用（game_forge_dev。#479）の 2 つで、2 つの対照は
+ * docs/gcp-oauth-setup.md 1 章にある。
  *
  * この宣言が持つのはプロジェクト（請求先アカウントの紐付けを含む）までで、OAuth
  * クライアントそのものは持たない。
@@ -58,4 +60,73 @@ resource "google_project" "game_forge" {
   # OAuth クライアントも消え、再発行した client_id は別の値になるため、実機の
   # ログインが黙って壊れる。意図して消すときはこの値を変えてから destroy する。
   deletion_policy = "PREVENT"
+}
+
+/**
+ * 開発用の GCP プロジェクト（#479）。
+ *
+ * ローカル開発のログインに使う OAuth クライアント（game-forge-dev）を置く器。
+ * 2026-09-14 に利用者が Console で手作成し、後追いでこの宣言へ取り込んだ
+ * （共通規範 4 章「手動で変更した場合は、後追いで宣言側へ反映する」）。
+ *
+ * 本番と分けた理由: 本番の同意画面を外部・本番環境へ切り替え、ブランド確認に出すには、
+ * 承認済みドメインをすべて Search Console で所有証明する必要がある。他人のドメインである
+ * localtest.me は証明できないため、ローカル用のリダイレクト URI を本番のクライアントに
+ * 置けなくなった（docs/gcp-oauth-setup.md 1 章）。
+ *
+ * 本番（google_project.game_forge）との違いは、請求先アカウントを持たないことだけである。
+ * 同意画面（内部）と OAuth クライアントは、本番と同じく宣言できないので手順書が持つ。
+ */
+resource "google_project" "game_forge_dev" {
+  project_id = var.gcp_dev_project_id
+  name       = var.gcp_dev_project_name
+  org_id     = var.gcp_org_id
+
+  # auto_create_network は、本番と同じく既定の true のままにする（明示しない）。
+  #
+  # 理由は本番の注記と同じで、false はネットワークを消すために Compute Engine API の
+  # 有効化を要求する。このプロジェクトは下記のとおり請求先アカウントを持たないので、
+  # 有効化は UREQ_PROJECT_BILLING_NOT_FOUND で落ちる（本番の構築時に踏んだ失敗）。
+  # 取り込み（import）でもプロバイダは state に true を入れるため、明示しなければ
+  # 取り込みの直後に差分が出ない。
+  #
+  # 実測した現状（2026-09-14、読み取りのみ）: compute/v1/projects/<project_id>/global/networks
+  # は PERMISSION_DENIED / accessNotConfigured を返した。Compute Engine API は無効で、
+  # 既定ネットワークは無い。Console が作成時に有効にした API（BigQuery など）は残っているが、
+  # その整理は #479 の範囲外である。
+
+  # 請求先アカウントは紐付けない（billing_account を書かない）。OAuth クライアントの
+  # 発行と利用に課金は要らず、開発用の器に課金の経路を作る理由が無いため。
+  # 本番はブランド確認のために紐付けた（#487）が、開発用の同意画面は内部で、
+  # ブランド確認に出さない。
+  #
+  # **Console でプロジェクトを作ると、既定の請求先アカウントが自動で紐付くことがある。**
+  # 2026-09-14 に手作成したこのプロジェクトも、取り込みの前に Cloud Billing API を
+  # 読むと billingEnabled = true（本番と同じ請求先アカウント）だった。したがって取り込みの
+  # plan には、billing_account を外す in-place の差分が 1 件出る。これはこの宣言の意図
+  # どおりの差分であり、apply すると紐付けが外れる（docs/gcp-oauth-setup.md 3 章）。
+
+  # 本番と同じく、誤った destroy でプロジェクトごと消えることを防ぐ。消すと配下の
+  # OAuth クライアントも消え、ローカルのログインが黙って壊れる。
+  deletion_policy = "PREVENT"
+}
+
+# 開発用プロジェクトの取り込み（#479）。
+#
+# CLI の terraform import ではなく import ブロックにした理由: CLI の import は plan を
+# 見せずに state を書き換える。import ブロックなら、取り込みも plan に並ぶので、置き換えや
+# 削除の差分が無いことを、state を 1 行も書き換える前に確かめられる。
+#
+# **取り込んだ後も消さずに残す。** state に既にあるリソースへの import ブロックは何もしない
+# （Terraform 1.5 以降）。残しておけば、state を作り直したときも「作成」ではなく「取り込み」
+# の plan になり、手作成が起点であるという経緯も宣言に残る。
+#
+# id は文字列リテラルで書く。import ブロックの id に変数を使えるのは Terraform 1.6
+# からで、versions.tf の required_version は >= 1.5.0 のためである。
+# **var.gcp_dev_project_id の既定値を変えるときは、ここも合わせて変えること。** 合わない
+# まま plan すると project_id が変わる置き換えの差分になる（apply しないで止める。
+# deletion_policy = "PREVENT" により destroy の段でも失敗する）。
+import {
+  to = google_project.game_forge_dev
+  id = "projects/ojos-game-forge-dev"
 }

@@ -154,9 +154,21 @@ Pages 構成に対して「Workers 用のコマンドです」と言って落ち
 
 ### ログインを試す
 
-1. `.dev.vars` に `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`（[gcp-oauth-setup.md](gcp-oauth-setup.md)）と
+1. `.dev.vars` に `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` と
    `SESSION_SECRET`（32 文字以上の乱数。`openssl rand -base64 48` など）を入れる。
-2. **招待コードを 1 枚用意する。** 8.1 の「生成は招待コード保有者のみ」を機構にしているため、
+   **Google の 2 つは、開発用のプロジェクト `ojos-game-forge-dev` のクライアント `game-forge-dev` の値にする**
+   （[gcp-oauth-setup.md](gcp-oauth-setup.md) の 1.1 と 5.2。#479）。
+   - **本番のクライアント（`ojos-game-forge` の `game-forge-prod`）の値を入れない。** 2026-09-14 から本番の
+     クライアントにはローカル用のリダイレクト URI が無いので、Google の画面が `redirect_uri_mismatch` で止まる
+     （アプリのログには何も出ない）。`client_id` の先頭が開発用のプロジェクト番号 `558074593204` であることで見分けられる
+   - **ログインできるのは Workspace `ojos.jp` のアカウントだけ。** 開発用の同意画面は「内部」である
+2. **ローカルの D1 のマイグレーションを最新にしておく**（上の「D1 スキーマの適用」の `npm run db:migrate`）。
+   **遅れていると、Google の認証を通ったあとのコールバックが `{"error":"internal error"}`（500）になる。**
+   コールバックは D1 の利用者の行を引いて作るので、足りない表や列があると例外になり、
+   `src/auth/google.ts` は応答に中身を出さず `internal error` だけを返す（原因は `npm run dev` の端末のログに出る）。**Google の設定の誤りに見えるが、原因は手元の D1 である。**
+   2026-09-14 には 21 本（`0019`〜`0039`）遅れていて、これを踏んだ（#479）。`npm run db:migrate:list` で未適用が
+   無いことを確かめる。
+3. **招待コードを 1 枚用意する。** 8.1 の「生成は招待コード保有者のみ」を機構にしているため、
    招待の無い新規アカウントは作られない（`/signup` へ戻される）。
 
    ```bash
@@ -164,9 +176,12 @@ Pages 構成に対して「Workers 用のコマンドです」と言って落ち
      "insert into invites (code, issued_by) values ('SMKETEST0001', '<既存の users.id>')"
    ```
 
-   **コードの文字集合は Crockford Base32 で、`I` `L` `O` `U` を含められない**（`src/invite-code.ts`）。
-   含むと正規化で別の文字へ寄り、入力したコードが保存した行に一致しない。
-3. <https://game-forge.localtest.me:8787/signup> でコードを入れる。検証を通ると Google の同意画面へ進む。
+   **コードは 12 文字の Crockford Base32 で、`I` `L` `O` `U` を含められない**（`src/invite-code.ts` の
+   `INVITE_CODE_LENGTH` と `INVITE_CODE_ALPHABET`）。含むと正規化で別の文字へ寄り、入力したコードが保存した行に一致しない。
+   **12 文字でないコードは画面で受け付けられない**——2026-09-14 には、手元の D1 に古い試験用の行（`UNUSED01` など、
+   8 文字で `U` を含む）が残っていて使えなかった（#479）。行を足すときは、上の `SMKETEST0001` のように 12 文字で、
+   文字集合の中の文字だけにする。
+4. <https://game-forge.localtest.me:8787/signup> でコードを入れる。検証を通ると Google の同意画面へ進む。
 
 最初の 1 人だけは招待の発行元が存在しないため、`users` 行を直接入れて起点にする。
 

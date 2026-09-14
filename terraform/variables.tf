@@ -206,6 +206,35 @@ variable "gcp_project_name" {
   default     = "game-forge"
 }
 
+variable "gcp_dev_project_id" {
+  description = <<-EOT
+    開発用の GCP プロジェクト ID（#479）。ローカル開発のログインに使う OAuth クライアントの発行先。
+
+    gcp_project_id と同じく、全世界で一意、かつ作成後は変更できない。2026-09-14 に
+    Console で手作成したものを取り込んだので、既定値は実在するプロジェクトの ID である。
+    **変えると、取り込みではなく別プロジェクトの新規作成（置き換え）の差分になる。**
+    gcp.tf の import ブロックの id も同じ値を文字列で持っているので、変えるときは両方を変える。
+  EOT
+  type        = string
+  default     = "ojos-game-forge-dev"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.gcp_dev_project_id))
+    error_message = "gcp_dev_project_id は小文字英字で始まり、小文字英数字とハイフンのみ、6〜30 文字である必要があります。"
+  }
+}
+
+variable "gcp_dev_project_name" {
+  description = <<-EOT
+    開発用の GCP プロジェクトの表示名（#479）。ID と違い後から変更できる。
+
+    既定値は Console で手作成したときの表示名（2026-09-14 に Resource Manager API で読んだ値）。
+    違う値にすると、取り込みの plan に表示名を変える in-place の差分が出る。
+  EOT
+  type        = string
+  default     = "game-forge-dev"
+}
+
 variable "cloudflare_pages_project" {
   description = <<-EOT
     Cloudflare Pages のプロジェクト名（#89）。

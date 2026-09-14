@@ -235,6 +235,32 @@ variable "gcp_dev_project_name" {
   default     = "game-forge-dev"
 }
 
+variable "gcp_dev_billing_account" {
+  description = <<-EOT
+    開発用の GCP プロジェクト（gcp_dev_project_id）に紐付いている請求先アカウントの ID（#479）。
+    形式は gcp_billing_account と同じ（大文字英数字 6 桁をハイフンで 3 つ。"billingAccounts/" は付けない）。
+
+    google_project.game_forge_dev の billing_account に渡す。2026-09-14 に Console で
+    プロジェクトを作成したときに自動で紐付いたもので、利用者の判断で残し、宣言を実物に合わせた
+    （gcp.tf の注記）。
+
+    **本番と同じアカウントかどうかは宣言で決め打ちしない。** いまは同じ値だが、本番の
+    gcp_billing_account を流用すると、片方だけを付け替えたときに黙ってもう片方の差分になる。
+
+    **既定値は置かない。** 値の無い環境で plan / apply すると、紐付けを外す差分になるためである。
+    必須にしておけば、値が無いときは差分を出す前に変数の不足で止まる。
+
+    機密ではないが、このリポジトリは公開であり公開する必要も無いため、gcp_billing_account と
+    同じ扱いで宣言へ直接書かず terraform.tfvars（*.tfvars は追跡外）から受ける。
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9A-Z]{6}-[0-9A-Z]{6}-[0-9A-Z]{6}$", var.gcp_dev_billing_account))
+    error_message = "gcp_dev_billing_account は大文字英数字 6 桁をハイフンで 3 つつないだ形式である必要があります（billingAccounts/ の接頭辞は付けない）。"
+  }
+}
+
 variable "cloudflare_pages_project" {
   description = <<-EOT
     Cloudflare Pages のプロジェクト名（#89）。

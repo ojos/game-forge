@@ -11,6 +11,26 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 ## 1. 現在地
 
+### #479 開発用の GCP プロジェクトを terraform に取り込みます（W2。2026-09-14）
+
+**Console で手作成した開発用プロジェクト `ojos-game-forge-dev`（番号 558074593204、表示名 `game-forge-dev`、組織 `ojos.jp` の配下）を、
+`google_project.game_forge_dev` として `import {}` ブロックで取り込む PR です。** `docs/gcp-oauth-setup.md` は本番と開発の 2 プロジェクト構成に、
+`docs/local-dev.md` の「ログインを試す」は 3 つの注意（開発用クライアント / D1 のマイグレーションの遅れで `internal error` / 12 文字の招待コード）つきに書き直しました。
+
+**外部状態の変化（terraform の state）:**
+
+- **取り込みの apply の日時・plan の結果・`state list` の件数は、親がプライマリで実測して PR のコメントに書く**（この節は推測で埋めない）。
+  期待する plan は「1 to import, 0 to add, 0 to change, 0 to destroy」。**置き換えや削除の差分が出たら apply しない**
+- **`import {}` ブロックは取り込んだ後も残す**（state に既にあれば何もしない。`id` は文字列の `projects/ojos-game-forge-dev` で、変数 `gcp_dev_project_id` を変えるときは両方を変える）
+- **開発用プロジェクトにも請求先アカウントが紐付いている。** Console で作成したときに自動で紐付いていた（2026-09-14 に Cloud Billing API の読み取りで確認。本番と同じアカウント）。
+  **利用者の判断で残し、宣言を実物に合わせた**——issue #479 の本文の「課金なし」「紐付いていないことを確かめ」は、この判断で読み替える（PR の冒頭）。
+  値はプライマリの追跡外の `terraform/terraform.tfvars` の **`gcp_dev_billing_account`**（必須。既定値なし。本番の `gcp_billing_account` とは別の変数）。**ID は追跡ファイル・issue・PR に書かない**
+- **Console が作成時に既定で有効にした API（BigQuery など約 30 個）は残っている。Compute Engine API は無効で、既定ネットワークは無い**（2026-09-14 の読み取り。API の整理は #479 の scope.out）
+- **同意画面（内部）とクライアント `game-forge-dev` は宣言できず、正本は `docs/gcp-oauth-setup.md`。`ojos.jp` の Search Console の TXT は dns.ne.jp 側で terraform の外**（消すと所有証明が外れる）
+
+**残り:** 利用者が Console で開発用プロジェクトに請求先アカウントが紐付いていることを確かめ、`docs/gcp-oauth-setup.md` 3.3 の「確認結果」の欄を埋める（未）。
+**このレーンで踏んだこと:** gcloud CLI の認証が切れていた（`gcloud auth login` が要る）。ADC は有効で、読み取りは ADC のトークンで REST を叩いて行った。
+
 ### W1（#481 / #478 / #480 / #469）が本番に出ました（2026-09-14）
 
 **M13 の実装 6 本と、#455 の残り 2 件（#480 / #481）・Google OAuth の本番環境への追随（#478）を合わせて作業計画を立て、W1 の 4 本を 4 レーン並列で本番に出しました。所有の衝突は 0 です。**
@@ -1813,6 +1833,7 @@ Cloudflare / AWS の資格情報そのものになります）。
 | **#478 の招待画面を実物で確かめる（人が本番で行う作業）** | **未**（2026-09-14 に本番配備。上の「`/invites` の本番目視: 済み」は #396 の時点の画面で、#478 の変更後ではない）。ログインして `/invites` を開き、**「コードを渡す前に」（Console へのテストユーザー登録の案内）が出ない**こと。`docs/gcp-oauth-setup.md` の Testing の記述は #479 で直す |
 | **#481 の確認で見つかった所有外の未起票項目: `terraform/orchestrator.tf:170-171` のコメントの古い参照** | 「Lambda の実行時間の上限（900 秒）と、`src/work-page.ts` の `STALE_AFTER_SECONDS`」のまま（正本は #455 で `src/games.ts` へ移った）。**PR #483 の scope.in の確認で見つけ、所有外なので直していない**（#481 の acceptance の残りではない）。起票するかは利用者の判断 |
 | **#487 請求先アカウントを terraform の宣言に取り込む** | **PR #488 でマージ済み（`efa5d0d`。#487 は CLOSED。main のverify・deploy が success）**（2026-09-14 追記（2 回目）。PR の head で直す前・直した後の 2 回、`terraform plan` の終了コードが 0・No changes（PR #488 のコメント）。**apply はしていない**。Copilot の指摘で、`terraform/gcp.tf` の `auto_create_network` の注記を「実測した現状」と「新規作成時の挙動」に書き分けた。**#479 は lane-456 で進行中**で、handoff への書き足しは #479 の PR が行う）。以下は前の記述: **PR #488 で対応中**（2026-09-14 に起票。W2）。#481 の `terraform plan` で見つけたドリフト（宣言は紐付けない・実物は紐付いている）。**#479 より先にマージする。apply はしない。** **請求先アカウントの ID は追跡ファイル・issue・PR に書かない** |
+| **#479 開発用の GCP プロジェクト（`ojos-game-forge-dev`）を terraform に取り込み、OAuth の手順書を 2 プロジェクト構成にする** | **PR 作成済み（W2。2026-09-14）**（1 章の「#479 開発用の GCP プロジェクトを terraform に取り込みます」）。**マージの前に、親がプライマリで PR の head の plan を回し、利用者の承認を得て import の apply を行い、結果を PR のコメントに書く**（tfvars に `gcp_billing_account` と `gcp_dev_billing_account` の 2 つが要る）。**請求先アカウントは利用者の判断で残した。** 利用者が Console で紐付いていることを確かめ、`docs/gcp-oauth-setup.md` 3.3 の欄を埋める（未） |
 | 撤退条件の判定日 | **書き込んだ**（2026-09-14）。**2026-09-14 追記: 開始は日ではなく時刻になり、2.1 の集計はその時刻で絞れるようになった**（#456 / PR #468。値の正本は `docs/retreat-review.md` 1 章の表で、**ほかの文書へ書き写すと `scripts/report-selftest.sh` の節 10 が落ちる**）。以下は前の記述: **開始日 2026-09-14 / 判定日 2026-12-14**（JST。#43 の 10 本目を公開した日が M7 の完了日）。**判定日に `docs/retreat-review.md` の 2 章の手順で数を取り、3 章へ 1 行追記する**。以下は前の記述: **M7 完了時に `docs/retreat-review.md` へ書き込む。** 空欄のまま β を始めないこと |
 | 規約の法務確認 | **`/terms` は暫定版です。** 一般条項は根拠のない雛形で、**β 公開前に専門家の確認が要ります** |
 | 削除申請の初回 | **本番でまだ 1 件も受けていません。** 最初の 1 件で確かめることは `docs/takedown.md` 6 章 |

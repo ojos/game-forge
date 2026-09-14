@@ -74,7 +74,7 @@ resource "google_project" "game_forge" {
  * localtest.me は証明できないため、ローカル用のリダイレクト URI を本番のクライアントに
  * 置けなくなった（docs/gcp-oauth-setup.md 1 章）。
  *
- * 本番（google_project.game_forge）との違いは、請求先アカウントを持たないことだけである。
+ * 本番（google_project.game_forge）と同じく請求先アカウントが紐付いている（下の注記）。
  * 同意画面（内部）と OAuth クライアントは、本番と同じく宣言できないので手順書が持つ。
  */
 resource "google_project" "game_forge_dev" {
@@ -84,27 +84,30 @@ resource "google_project" "game_forge_dev" {
 
   # auto_create_network は、本番と同じく既定の true のままにする（明示しない）。
   #
-  # 理由は本番の注記と同じで、false はネットワークを消すために Compute Engine API の
-  # 有効化を要求する。このプロジェクトは下記のとおり請求先アカウントを持たないので、
-  # 有効化は UREQ_PROJECT_BILLING_NOT_FOUND で落ちる（本番の構築時に踏んだ失敗）。
-  # 取り込み（import）でもプロバイダは state に true を入れるため、明示しなければ
-  # 取り込みの直後に差分が出ない。
+  # 理由は本番の注記と同じで、false はネットワークを消すためだけに、課金が発生しうる
+  # Compute Engine API の有効化を要求する。このプロジェクトは下記のとおり請求先アカウントが
+  # 紐付いているので、UREQ_PROJECT_BILLING_NOT_FOUND（本番の構築時に踏んだ失敗）は
+  # 歯止めにならない。取り込み（import）でもプロバイダは state に true を入れるため、
+  # 明示しなければ取り込みの直後に差分が出ない。
   #
   # 実測した現状（2026-09-14、読み取りのみ）: compute/v1/projects/<project_id>/global/networks
   # は PERMISSION_DENIED / accessNotConfigured を返した。Compute Engine API は無効で、
   # 既定ネットワークは無い。Console が作成時に有効にした API（BigQuery など）は残っているが、
   # その整理は #479 の範囲外である。
 
-  # 請求先アカウントは紐付けない（billing_account を書かない）。OAuth クライアントの
-  # 発行と利用に課金は要らず、開発用の器に課金の経路を作る理由が無いため。
-  # 本番はブランド確認のために紐付けた（#487）が、開発用の同意画面は内部で、
-  # ブランド確認に出さない。
+  # 請求先アカウントが紐付いている。**2026-09-14 に Console でプロジェクトを作成したときに
+  # 自動で紐付いた**（取り込みの前に Cloud Billing API を読み取りで確かめ、billingEnabled = true
+  # だった）。利用者の判断で残し、この宣言を実物に合わせた（#479）。ID は公開する必要が無いため、
+  # 宣言へ直接書かず terraform.tfvars（追跡外）の gcp_dev_billing_account から受ける。
+  # 本番と同じアカウントかどうかは宣言で決め打ちせず、本番とは別の変数にしてある。
   #
-  # **Console でプロジェクトを作ると、既定の請求先アカウントが自動で紐付くことがある。**
-  # 2026-09-14 に手作成したこのプロジェクトも、取り込みの前に Cloud Billing API を
-  # 読むと billingEnabled = true（本番と同じ請求先アカウント）だった。したがって取り込みの
-  # plan には、billing_account を外す in-place の差分が 1 件出る。これはこの宣言の意図
-  # どおりの差分であり、apply すると紐付けが外れる（docs/gcp-oauth-setup.md 3 章）。
+  # 紐付けは課金が要る API を使っていることを意味しない。このサービスが開発用プロジェクトで
+  # 使うのは OAuth クライアントだけで、課金は要らない。Console が作成時に既定で有効にした
+  # API（BigQuery など）は残っているが、その整理は #479 の範囲外である。
+  #
+  # 外すときは、この行と変数 gcp_dev_billing_account を消し、plan で billing_account を外す
+  # in-place の差分だけが出ることを確かめてから apply する（docs/gcp-oauth-setup.md 3.3）。
+  billing_account = var.gcp_dev_billing_account
 
   # 本番と同じく、誤った destroy でプロジェクトごと消えることを防ぐ。消すと配下の
   # OAuth クライアントも消え、ローカルのログインが黙って壊れる。

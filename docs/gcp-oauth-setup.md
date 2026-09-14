@@ -14,7 +14,7 @@
 | 対象 | 持ち主 | 理由 |
 |---|---|---|
 | GCP プロジェクト（本番・開発の 2 つ） | `terraform/gcp.tf`（`google_project`） | 宣言できる |
-| 請求先アカウントの紐付け（本番だけ。#487） | `terraform/gcp.tf`（`billing_account`。ID は `terraform.tfvars`） | 宣言できる |
+| 請求先アカウントの紐付け（本番は #487、開発は #479） | `terraform/gcp.tf`（`billing_account`。ID は `terraform.tfvars`） | 宣言できる |
 | OAuth 同意画面（Google Auth Platform） | この文書（手作業） | 宣言できない |
 | OAuth クライアント（ウェブアプリ） | この文書（手作業） | 宣言できない |
 | `ojos.jp` の所有証明（Search Console の TXT レコード） | この文書（手作業。4.3） | `ojos.jp` のゾーンはさくら側（dns.ne.jp）にあり、DNS の API が無い（`terraform/dns.tf` の冒頭） |
@@ -44,7 +44,7 @@ OAuth Admin API 自体も、Google の告知により **2026-01-19 以降は新�
 | 親 | 組織 `ojos.jp` | 組織 `ojos.jp` |
 | 作り方 | terraform で作成 | 2026-09-14 に Console で手作成し、terraform に取り込んだ（3.2） |
 | terraform のリソース | `google_project.game_forge` | `google_project.game_forge_dev` |
-| 請求先アカウント | **紐付けた**（ブランド確認のため。#487） | **紐付けない**（3.3） |
+| 請求先アカウント | **紐付けた**（ブランド確認のため。#487） | **紐付いている**（Console の作成時に自動で紐付いた。利用者の判断で残した。3.3） |
 | 同意画面の対象（Audience） | **外部** | **内部** |
 | 公開ステータス | **本番環境**（In production） | —（内部のアプリには無い） |
 | ログインできるアカウント | Google アカウントなら誰でも（絞るのはアプリ側の招待コード） | **Workspace `ojos.jp` のアカウントだけ** |
@@ -149,7 +149,7 @@ Compute Engine API を有効にする指定になることは変わらないの�
 | プロジェクト番号 | `558074593204` |
 | 表示名 | `game-forge-dev`（変数 `gcp_dev_project_name` の既定値） |
 | 親 | 組織 `ojos.jp`（本番と同じ `gcp_org_id`） |
-| 請求先アカウント | **紐付けない**（3.3） |
+| 請求先アカウント | **紐付いている**（変数 `gcp_dev_billing_account`。3.3） |
 | `deletion_policy` | `PREVENT`（本番と同じ） |
 
 **2026-09-14 に利用者が Console で手作成し、後追いで宣言へ取り込んだ**（#479）。取り込みは
@@ -167,28 +167,38 @@ Compute Engine API を有効にする指定になることは変わらないの�
 **ゼロから作り直すとき**は、Console で作らず `import` ブロックを外して `terraform apply` で作る
 （削除したプロジェクトの ID は再利用できないので、別の ID になる。変数と `import` ブロックの両方を変える）。
 
-### 3.3 開発用プロジェクトに請求先アカウントを紐付けない
+### 3.3 開発用プロジェクトの請求先アカウント（紐付いている。利用者の判断で残した）
 
-**OAuth クライアントの発行と利用に課金は要らない。** 開発用の同意画面は内部で、ブランド確認にも
-出さないので、本番のように紐付ける理由が無い。紐付ければ、開発用の器に意図しない課金の経路を
-作ることになる。宣言では `billing_account` を書かない（書かないことが「紐付けない」の宣言になる）。
+**開発用プロジェクトにも請求先アカウントが紐付いている。** 2026-09-14 に Console でプロジェクトを
+作成したときに、**自動で紐付いた**（取り込みの前に Cloud Billing API を読み取りで確かめ、`billingEnabled` が
+`true` だった）。**Console でプロジェクトを作ると、既定の請求先アカウントが自動で紐付くことがある**ので、
+作り直すときも作成後に確かめる。
 
-**Console でプロジェクトを作ると、既定の請求先アカウントが自動で紐付くことがある。** 2026-09-14 に
-手作成した `ojos-game-forge-dev` も、取り込みの前に Cloud Billing API を読むと `billingEnabled` が
-`true`（本番と同じ請求先アカウント）だった。したがって**取り込みの plan には、`billing_account` を
-外す in-place の差分が 1 件出る**。宣言の意図どおりの差分で、apply すると紐付けが外れる。
+**利用者の判断で残し、宣言を実物に合わせた**（2026-09-14。#479）。`google_project.game_forge_dev` の
+`billing_account` は、`terraform.tfvars` の `gcp_dev_billing_account` から受ける。ID は宣言にもこの文書にも
+書かない。**本番と同じアカウントかどうかは宣言で決め打ちせず**、本番の `gcp_billing_account` とは別の変数に
+してある。**変数に既定値は無い**——値の無い環境で plan すると、紐付けを外す差分を出す前に変数の不足で止まる。
+
+- **紐付けは、課金が要る API を使っていることを意味しない。** このサービスが開発用プロジェクトで使うのは
+  OAuth クライアントだけで、発行と利用に課金は要らない。Console が作成時に既定で有効にした API（BigQuery
+  など）は残っている（整理は #479 の範囲外）
+- **外すときは**、`terraform/gcp.tf` の `billing_account` の行と変数 `gcp_dev_billing_account` を消し、
+  `terraform plan` で `billing_account` を外す in-place の差分だけが出ることを確かめてから apply する
+
+> **注記（#479）。** issue #479 の起票時は、開発用プロジェクトを「課金なし」（請求先アカウントを紐付けない）で
+> 取り込む前提だった。取り込みの前の読み取りで紐付いていることが分かり、利用者が残すと判断した（2026-09-14）。
 
 **確認の手順（利用者が Console で行う）。** 取り込みの apply の後に行う。
 
 1. <https://console.cloud.google.com/billing/linkedaccount?project=ojos-game-forge-dev> を開く
    （Console の「お支払い」で、プロジェクトの選択を `ojos-game-forge-dev` にする）
-2. リンクされた請求先アカウントが表示されない（紐付いていない）ことを確かめる
+2. 請求先アカウントがリンクされている（紐付いている）ことを確かめる
 
 CLI でも確かめられる（請求先アカウントの ID を表示しない形にしてある）。
 
 ```bash
 gcloud billing projects describe ojos-game-forge-dev --format="value(billingEnabled)"
-# => False であること
+# => True であること
 ```
 
 **2026-09-14 時点の確認結果:** （利用者の確認待ち）
@@ -356,7 +366,7 @@ terraform -chdir=terraform state show google_project.game_forge_dev
 # => project_id = "ojos-game-forge-dev" / number = "558074593204"
 ```
 
-開発用プロジェクトに請求先アカウントが無いことは 3.3 の手順で確かめる。
+開発用プロジェクトの請求先アカウントの紐付けは 3.3 の手順で確かめる。
 
 同意画面と OAuth クライアントは API から列挙できない（1 章）。**Console での目視が唯一の確認手段**
 であり、`scripts/acceptance-remote.sh` に検査を置けない。宣言と実状態の乖離を機械照合できない

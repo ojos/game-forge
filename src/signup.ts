@@ -1,5 +1,5 @@
 /**
- * 登録画面と、招待コードの検証を先に置くフロー（8.1 / 2.2-4 / 10.2）。
+ * ログイン・登録の画面と、招待コードの検証を先に置くフロー（8.1 / 2.2-4 / 10.2 / #472）。
  *
  * 8.1 は登録フローを **「招待コードの検証が先、Google OAuth が後」** と定める。
  * 逆にすると、無効なコードしか持たない利用者にログインだけさせて弾くことになる。
@@ -28,7 +28,7 @@ import { escapeHtml, resolveSiteViewer, siteHead } from './html.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import type { AuthDependencies } from './auth/google.js';
-import { LOGIN_REQUIRED_REASON, startInvitedLogin } from './auth/google.js';
+import { LOGIN_PATH, LOGIN_REQUIRED_REASON, startInvitedLogin } from './auth/google.js';
 import { normalizeInviteCode } from './invite-code.js';
 import { checkInvite } from './invites.js';
 import { SIGNUP_PATH, WAITLIST_PATH, WAITLIST_THANKS_PATH } from './paths.js';
@@ -168,8 +168,32 @@ function reasonMessage(reason: string): string {
     : DEFAULT_REASON_MESSAGE;
 }
 
+/** 画面の名前（`<title>` から ` - Game Forge` を落としたもの。パンくずの親の名前と同じ綴り）。 */
+const SIGNUP_HEADING = 'ログイン・登録';
+
 /**
- * 登録画面を組み立てる。
+ * ログイン・登録の画面を組み立てる（仕様 2.3.1 / 2.3.11 の #435 注記 / #472）。
+ *
+ * ## 3 つのブロックを、ログインを先頭に並べる
+ *
+ * **ヘッダの「ログイン」から来る人の大半は、既にアカウントを持つ人である**（2.3.1 の #435 注記）。
+ * だから並びは「すでにアカウントをお持ちの方 → 招待コードをお持ちの方 → 招待コードをお持ちでない方」にする。
+ *
+ * - **主のボタンは「Google でログイン」の 1 つだけ**（仕様 2.5.5「1 画面に 1 つまで」）。移動なので `<a>` のまま
+ *   （2.5.5「要素は役割で選ぶ」）。行き先は `/auth/google/start` への素のリンクで、招待を持たない人が押しても
+ *   `resolveUser` がアカウントを作らずにここへ戻す（2.3.11 の #435 注記 / 8.1）
+ * - **招待コードと待機リストの送信は副のボタン**で、要素は `<button>` のまま（動作である）。**素の
+ *   `<form method="post">` を保つ**——JavaScript を要求しない（冒頭の理由）
+ *
+ * ## 並びは HTML の順だけで決める（仕様 2.5.6 の #469 実装注記）
+ *
+ * **広い段で横に 3 つ、狭い段で縦に積む形は、折り返し（app.css の `@section signup` の flex の `wrap`）で作る。**
+ * `order` で並べ替えず、幅の `@media` も足さない——**どの段でも DOM の順＝見た目の順＝Tab の順**になる。
+ *
+ * ## 知らせと前置きはブロックの前に置く
+ *
+ * エラー（ログインが必要な画面から戻ってきた通知を含む。2.3.11）と「改造する」から来た人への前置き（2.2-4）は、
+ * **3 つのどれにも属さない**ので、`<h1>` の直後に置く。読み上げでも見た目でも、選ぶ前に目に入る。
  *
  * @param message 画面上部に出すエラー文言（無ければ null）
  * @param waitingCount 待機リストの登録数（丸め済み）。0 のときは出さない
@@ -192,37 +216,48 @@ function signupPage(
   // 件数は 10 件単位に丸めた値（`src/waitlist.ts` の理由）。0 のときに「0 人待ち」と
   // 出すと、丸めの下限がそのまま「まだ誰もいない」と読めてしまうため出さない。
   const waiting =
-    waitingCount > 0 ? `<p>現在 ${waitingCount} 人以上が登録して待っています。</p>` : '';
+    waitingCount > 0
+      ? `\n  <p class="gf-signup-note">現在 ${waitingCount} 人以上が登録して待っています。</p>`
+      : '';
 
-  return `${siteHead({ title: 'Game Forge に登録する', viewer })}
-<h1>Game Forge に登録する</h1>
+  return `${siteHead({ title: `${SIGNUP_HEADING} - Game Forge`, viewer })}
+<h1>${SIGNUP_HEADING}</h1>
 ${error}
 ${fromForkSection(source)}
-<h2>招待コードをお持ちの方</h2>
-<form method="post" action="${SIGNUP_PATH}">
-  <label for="code">招待コード</label>
-  <input id="code" name="code" type="text" autocomplete="off" autocapitalize="characters"
-         spellcheck="false" placeholder="ABCD-EFGH-JKMN" required>
-  <button type="submit">コードを確認して Google でログイン</button>
-</form>
-<p>コードを確認したあとに Google のログイン画面へ進みます。</p>
-
-<h2>招待コードをお持ちでない方</h2>
-${waiting}
-<form method="post" action="${WAITLIST_PATH}">
-  <label for="email">メールアドレス</label>
-  <input id="email" name="email" type="email" autocomplete="email" required>
-  <input type="hidden" name="source" value="${source}">
-  <button type="submit">待機リストに登録する</button>
-</form>
-
-<h2>すでにアカウントをお持ちの方</h2>
-<p><a href="/auth/google/start">Google でログイン</a></p>
+<div class="gf-signup-options">
+<section class="gf-block gf-signup-option" aria-labelledby="signup-login">
+  <h2 id="signup-login">すでにアカウントをお持ちの方</h2>
+  <p>Google アカウントでログインします。</p>
+  <p><a class="gf-button gf-button-primary" href="${LOGIN_PATH}">Google でログイン</a></p>
+</section>
+<section class="gf-block gf-signup-option" aria-labelledby="signup-invite">
+  <h2 id="signup-invite">招待コードをお持ちの方</h2>
+  <form method="post" action="${SIGNUP_PATH}">
+    <p><label for="code">招待コード</label>
+    <input id="code" name="code" type="text" autocomplete="off" autocapitalize="characters"
+           spellcheck="false" placeholder="ABCD-EFGH-JKMN" required></p>
+    <button class="gf-button gf-button-secondary" type="submit">コードを確認して Google でログイン</button>
+  </form>
+  <p class="gf-signup-note">コードを確認したあとに Google のログイン画面へ進みます。</p>
+</section>
+<section class="gf-block gf-signup-option" aria-labelledby="signup-waitlist">
+  <h2 id="signup-waitlist">招待コードをお持ちでない方</h2>
+  <form method="post" action="${WAITLIST_PATH}">
+    <p><label for="email">メールアドレス</label>
+    <input id="email" name="email" type="email" autocomplete="email" required></p>
+    <input type="hidden" name="source" value="${source}">
+    <button class="gf-button gf-button-secondary" type="submit">待機リストに登録する</button>
+  </form>
+  <p class="gf-signup-note">招待枠が空いたらご連絡します。</p>${waiting}
+</section>
+</div>
 ${siteFooter()}`;
 }
 
 /**
  * 待機リスト登録後の受け皿。
+ *
+ * **戻り先の文言は、戻る画面の名前に合わせる**（「ログイン・登録の画面へ戻る」。#472）。
  *
  * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns HTML
@@ -231,7 +266,7 @@ function waitlistThanksPage(viewer: SiteViewer): string {
   return `${siteHead({ title: '待機リストに登録しました', viewer })}
 <h1>待機リストに登録しました</h1>
 <p>招待枠が空いたらご連絡します。</p>
-<p><a href="${SIGNUP_PATH}">登録画面へ戻る</a></p>
+<p><a href="${SIGNUP_PATH}">${SIGNUP_HEADING}の画面へ戻る</a></p>
 ${siteFooter()}`;
 }
 

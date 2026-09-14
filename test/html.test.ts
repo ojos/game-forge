@@ -12,7 +12,7 @@ import {
 } from '../src/html.js';
 import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
 import { ancestorPathsOf } from '../src/page-paths.js';
-import { GENERATE_PAGE_PATH, HOME_PATH, INVITES_PATH } from '../src/paths.js';
+import { GENERATE_PAGE_PATH, HOME_PATH, INVITES_PATH, SIGNUP_PATH } from '../src/paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from '../src/works-paths.js';
 
@@ -132,6 +132,7 @@ describe('siteHead のヘッダ', () => {
     const head = siteHead({ title: '公開しました - Game Forge' });
     expect(head).toContain('<header class="gf-header">');
     expect(head).not.toContain('gf-header-nav');
+    expect(head).not.toContain(`href="${SIGNUP_PATH}"`);
     expect(head).not.toContain(`href="${LOGIN_PATH}"`);
     expect(head).not.toContain(`href="${MY_WORKS_PATH}"`);
     expect(head).not.toContain(`href="${ACCOUNT_PATH}"`);
@@ -139,12 +140,15 @@ describe('siteHead のヘッダ', () => {
 
   it('渡せばその状態のナビを出す', () => {
     const anonymous = siteHead({ title: 'x', viewer: SIGNED_OUT });
-    expect(anonymous).toContain(`href="${LOGIN_PATH}"`);
+    expect(anonymous).toContain(`href="${SIGNUP_PATH}"`);
+    // **ヘッダは Google の認証へ直接送らない**（行き先はログイン・登録。2.3.7 の #435 注記 / #472）。
+    expect(anonymous).not.toContain(`href="${LOGIN_PATH}"`);
     expect(anonymous).not.toContain(`href="${MY_WORKS_PATH}"`);
 
     const signedIn = siteHead({ title: 'x', viewer: SIGNED_IN });
     expect(signedIn).toContain(`href="${MY_WORKS_PATH}"`);
     expect(signedIn).toContain(`href="${ACCOUNT_PATH}"`);
+    expect(signedIn).not.toContain(`href="${SIGNUP_PATH}"`);
     expect(signedIn).not.toContain(`href="${LOGIN_PATH}"`);
   });
 
@@ -163,10 +167,10 @@ describe('siteHead のヘッダ', () => {
       // 「検索」は広い段用と狭い段用の 2 か所にある（同時に見えるのは片方。下の describe）。
       expect(header.match(/gf-button-secondary/gu), '副は「つくる」と 2 か所の「検索」だけ').toHaveLength(3);
     }
-    // **「ログイン」は控えめで、行き先は Google の認証のまま**（M13-8 へ持ち越し。#469 の scope.out）。
-    expect(headerOf(siteHead({ title: 'x', viewer: SIGNED_OUT }))).toContain(
-      `<a class="gf-button gf-button-tertiary gf-button-sm gf-header-login" href="${LOGIN_PATH}">ログイン</a>`,
-    );
+    // **「ログイン」は控えめで、行き先はログイン・登録（`/signup`）**（M13-6 から持ち越した M13-8。#472）。
+    // 広い段用と狭い段用の 2 か所が、どちらも同じ形である。
+    const login = `<a class="gf-button gf-button-tertiary gf-button-sm gf-header-login" href="${SIGNUP_PATH}">ログイン</a>`;
+    expect(headerOf(siteHead({ title: 'x', viewer: SIGNED_OUT })).split(login)).toHaveLength(3);
   });
 
   it('トップだけ、ヘッダのロゴを <h1> で包む（仕様 2.5.6 / #469）', () => {
@@ -274,9 +278,9 @@ describe('ヘッダの段ごとの置き場所（HTML の順＝見た目の順�
   it('未ログインの「ログイン」はナビの末尾（広い段用）と 2 行目の検索窓の後ろ（狭い段用）にあり、ログイン済みはアバターがナビの末尾', () => {
     const signedOut = partsOf(siteHead({ title: 'x', viewer: SIGNED_OUT }));
     for (const part of [signedOut.nav, signedOut.row2]) {
-      const login = part.indexOf(`href="${LOGIN_PATH}"`);
+      const login = part.indexOf(`href="${SIGNUP_PATH}"`);
       expect(login, 'ログインが無い').toBeGreaterThan(-1);
-      expect(part, 'ログインに目印のクラスが無い').toContain(`gf-header-login" href="${LOGIN_PATH}"`);
+      expect(part, 'ログインに目印のクラスが無い').toContain(`gf-header-login" href="${SIGNUP_PATH}"`);
       // **検索窓の後ろ**（HTML の順＝見た目の順）。
       expect(login).toBeGreaterThan(part.indexOf('</form>'));
     }
@@ -285,7 +289,7 @@ describe('ヘッダの段ごとの置き場所（HTML の順＝見た目の順�
     const signedIn = partsOf(siteHead({ title: 'x', viewer: SIGNED_IN }));
     expect(signedIn.nav.indexOf('<details class="gf-account-menu">')).toBeGreaterThan(signedIn.nav.indexOf('</form>'));
     expect(signedIn.row2).not.toContain('gf-account-menu');
-    expect(signedIn.row2).not.toContain(`href="${LOGIN_PATH}"`);
+    expect(signedIn.row2).not.toContain(`href="${SIGNUP_PATH}"`);
     // **メニューは 1 つだけ**（段で置き場所を変えない）。
     expect(headerOf(siteHead({ title: 'x', viewer: SIGNED_IN })).split('<details').length - 1).toBe(1);
   });
@@ -366,7 +370,7 @@ describe('アカウントのメニュー（2.3.7 v1.57 / #372）', () => {
     expect(accountMenuOf(signedOut)).toBeNull();
     expect(signedOut).not.toContain(LOGOUT_PATH);
     expect(headerOf(signedOut)).not.toContain(`href="${INVITES_PATH}"`);
-    expect(headerOf(signedOut)).toContain(`href="${LOGIN_PATH}"`);
+    expect(headerOf(signedOut)).toContain(`href="${SIGNUP_PATH}"`);
   });
 });
 

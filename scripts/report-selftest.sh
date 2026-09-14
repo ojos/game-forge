@@ -29,6 +29,7 @@
 #    6. 天井を動かした直後に、過去の完走が「打ち切り」に化けないこと（#211）
 #    7. A/B の読み出しが、既知の行に対して期待どおりに出ること（#238）
 #    8. KPI の集計が、既知の行に対して期待どおりに出ること（#42）
+#       8b. 開始の時刻で絞ることと、生成に失敗した行を外すこと（#456）
 #    9. マイグレーションの関門が、未適用を実際に見つけること（#275）
 #   10. 撤退条件の判定手順が、実際に使える形であること（#44）
 #   11. 審査キューの読み出しが、既知の行に対して正しいこと（#40 / #366 / #394）
@@ -633,6 +634,167 @@ select (select count(*) from (select root from lineage group by root having max(
 " 2>/dev/null | sed -n '/^\[/,$p' | jq -r '.[0].results[0].n' 2>/dev/null)"
 expect_eq "変異（status で絞る）が 0 本になる" "0" "$KPI_MUTANT"
 
+# ── 8b. 開始の時刻で絞ることと、生成に失敗した行を外すこと（#456）─────────────
+#
+# **撤退判定（10.3）は開始の時刻より後に作られた作品で数える。** 開始前の開発・試用の
+# 作品が勘定に入ると、「サンプルが無い期間のフォーク率を撤退の根拠に含めない」が崩れる。
+# **生成に失敗した行**（`generation_state = 'failed'`）は 10.1 の「作品を生まない試行」
+# なので、期間の指定の有無によらず数えない。
+#
+# **境界はここだけの架空の時刻にする。** 実際の開始の時刻の正本は
+# docs/retreat-review.md 1 章の表の 1 か所だけであり、ここへ書き写すと 2 か所になる
+# （表の値で実際に回せることは節 10 が見る）。**秒が 0 でない・JST の 0 時でもない**
+# 時刻を選んでいるのは、境界を日に丸める変異を赤くするためである。
+#
+# 仕込み（E = 境界の UNIX 秒。**「より後」は E を含まない**）:
+#
+#   系統 A  sa1(E-100) → sa2(E-50, removed) → sa3(E+100)   … 根が開始前・3 世代目が開始後 → 数える
+#   系統 B  sb1(E-300) → sb2(E-200) → sb3(E-100)            … 3 世代目まで開始前 → 期間を指定すると数えない
+#   系統 C  sc1(E-300) → sc2(E+10) → sc3(E+20, failed)      … 3 世代目が failed → 数えない
+#   境界    sd1(E ちょうど・新規)、sg1(E ちょうど・sb1 のフォーク) … 数えない
+#   開始後  sd2(E+1・新規)、sh1(E+50・新規) → sk1(E+60・フォーク)
+#   開始前  sm1(E-400・新規)
+#   失敗    se1(E+30・新規・failed)、sf1(E+40・sa1 のフォーク・failed) … 数えない
+#
+# 期待（期間あり）: 作品 5（フォーク sa3 / sc2 / sk1、新規 sd2 / sh1）→ 0.6。
+#                  系統 1 本（A）、根 4（sa1 / sc1 / sd2 / sh1）、最大 3 世代。
+# 期待（期間なし）: failed でない 14 作品（フォーク 7 / 新規 7）→ 0.5。
+#                  系統 2 本（A / B。C は 3 世代目が failed）、根 7、最大 3 世代。
+echo "[selftest] KPI を開始の時刻で絞り、生成に失敗した行を外すこと（#456）"
+
+KPI_SINCE_AT="2031-03-15T21:07:53+09:00"
+KPI_SINCE_EPOCH="$(date -u -d "$KPI_SINCE_AT" +%s 2>/dev/null)"
+# **wrangler は使い捨ての置き場所ごとに D1 を作る。** 節 8 の仕込みと混ぜないよう、
+# KPI_SANDBOX の下に別の置き場所を切る（後始末は KPI_SANDBOX ごと消える）。
+KPI_SINCE_SANDBOX="$KPI_SANDBOX/since"
+if [[ ! "$KPI_SINCE_EPOCH" =~ ^[0-9]+$ ]]; then
+  echo "  FAIL 検査用の境界を UNIX 秒へ写せません: ${KPI_SINCE_AT}" >&2
+  failed=1
+elif ! mkdir -p "$KPI_SINCE_SANDBOX" || ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+     npx wrangler d1 migrations apply DB --local --persist-to "$KPI_SINCE_SANDBOX" >/dev/null 2>&1; then
+  echo "  FAIL #456 用の使い捨て D1 へマイグレーションを適用できません" >&2
+  failed=1
+else
+  E="$KPI_SINCE_EPOCH"
+  if ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+       npx wrangler d1 execute DB --local --persist-to "$KPI_SINCE_SANDBOX" --command "
+insert into users (id, google_sub, email, display_name, created_at) values
+  ('s1','ss1','s1@example.invalid','S1',0);
+insert into games (id, author_id, parent_id, status, title, go_version, fork_count, created_at, generation_state) values
+  ('sa1','s1',null,'published','a1','1.23',1,$((E-100)),'ready'),
+  ('sa2','s1','sa1','removed','a2','1.23',1,$((E-50)),'ready'),
+  ('sa3','s1','sa2','published','a3','1.23',0,$((E+100)),'ready'),
+  ('sb1','s1',null,'published','b1','1.23',1,$((E-300)),'ready'),
+  ('sb2','s1','sb1','published','b2','1.23',1,$((E-200)),'ready'),
+  ('sb3','s1','sb2','published','b3','1.23',0,$((E-100)),'ready'),
+  ('sc1','s1',null,'published','c1','1.23',1,$((E-300)),'ready'),
+  ('sc2','s1','sc1','published','c2','1.23',1,$((E+10)),'ready'),
+  ('sc3','s1','sc2','draft','c3','1.23',0,$((E+20)),'failed'),
+  ('sd1','s1',null,'published','d1','1.23',0,${E},'ready'),
+  ('sg1','s1','sb1','published','g1','1.23',0,${E},'ready'),
+  ('sd2','s1',null,'published','d2','1.23',0,$((E+1)),'ready'),
+  ('sh1','s1',null,'published','h1','1.23',1,$((E+50)),'ready'),
+  ('sk1','s1','sh1','published','k1','1.23',0,$((E+60)),'ready'),
+  ('sm1','s1',null,'published','m1','1.23',0,$((E-400)),'ready'),
+  ('se1','s1',null,'draft','e1','1.23',0,$((E+30)),'failed'),
+  ('sf1','s1','sa1','draft','f1','1.23',0,$((E+40)),'failed');
+" >/dev/null 2>&1; then
+    echo "  FAIL #456 用の既知の行を入れられません" >&2
+    failed=1
+  fi
+
+  SINCE_JSON="$(bash scripts/kpi-report.sh --persist-to "$KPI_SINCE_SANDBOX" --since "$KPI_SINCE_AT" --format json 2>/dev/null)"
+  ALL_JSON="$(bash scripts/kpi-report.sh --persist-to "$KPI_SINCE_SANDBOX" --format json 2>/dev/null)"
+  if [[ -z "$SINCE_JSON" || -z "$ALL_JSON" ]]; then
+    echo "  FAIL kpi-report.sh が JSON を返しません（#456 の仕込み）" >&2
+    failed=1
+  else
+    # **4 つの数を 1 行に束ねて比べる。** 率だけを見ると、分子と分母が同じ比で崩れた
+    # ときに緑のまま通る（期間なしの 0.5 は、失敗の行を数えても境界を外しても作れる）。
+    kpi_fork_row() { jq -r '[.forkRate.forkGames, .forkRate.newGames, .forkRate.totalGames, .forkRate.rate] | map(tostring) | join(" ")' <<<"$1"; }
+    kpi_lineage_row() { jq -r '[.deepLineages.count, .deepLineages.roots, .deepLineages.maxDepth] | map(tostring) | join(" ")' <<<"$1"; }
+
+    expect_eq "期間あり: フォーク率は開始より後の failed でない作品だけ（フォーク 新規 全 率）" \
+      "3 2 5 0.6" "$(kpi_fork_row "$SINCE_JSON")"
+    expect_eq "期間あり: 系統は根が開始前でも数え、3 世代目まで開始前・3 世代目が failed は数えない（本数 根 最大）" \
+      "1 4 3" "$(kpi_lineage_row "$SINCE_JSON")"
+    expect_eq "期間あり: 出力に境界の UNIX 秒が載る（date で独立に写した値と一致）" \
+      "$KPI_SINCE_EPOCH" "$(jq -r '.since.epoch' <<<"$SINCE_JSON")"
+
+    expect_eq "期間なし: failed を外したことを除き全期間（フォーク 新規 全 率）" \
+      "7 7 14 0.5" "$(kpi_fork_row "$ALL_JSON")"
+    expect_eq "期間なし: 系統は全期間で、3 世代目が failed の系統だけを数えない（本数 根 最大）" \
+      "2 7 3" "$(kpi_lineage_row "$ALL_JSON")"
+    expect_eq "期間なし: 出力の since は null" "null" "$(jq -r '.since' <<<"$ALL_JSON")"
+
+    # **期間なしは「failed を外したこと以外は変わらない」こと。** 変える前の SQL
+    # （#42 のまま。全行を数え、根は parent_id が NULL の全行）を、**failed の行を除いた
+    # 同じ台帳の写し**に当てて、kpi-report.sh の期間なしの出力と突き合わせる。
+    # 写しは節 8 の置き場所とも分けて、元の仕込みを壊さない。
+    KPI_SINCE_COPY="$KPI_SANDBOX/since-copy"
+    if cp -R "$KPI_SINCE_SANDBOX" "$KPI_SINCE_COPY" 2>/dev/null \
+       && CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+          npx wrangler d1 execute DB --local --persist-to "$KPI_SINCE_COPY" \
+          --command "delete from games where generation_state = 'failed'" >/dev/null 2>&1; then
+      kpi_legacy() {
+        CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+          npx wrangler d1 execute DB --local --persist-to "$KPI_SINCE_COPY" --json --command "$1" 2>/dev/null \
+          | sed -n '/^\[/,$p' | jq -r '.[0].results[0] | map(tostring) | join(" ")' 2>/dev/null
+      }
+      legacy_fork="$(kpi_legacy "select sum(case when parent_id is not null then 1 else 0 end) as f,
+        sum(case when parent_id is null then 1 else 0 end) as n, count(*) as t from games")"
+      legacy_lineage="$(kpi_legacy "with recursive lineage(id, root, depth) as (
+          select id, id, 1 from games where parent_id is null
+        union all
+          select g.id, lineage.root, lineage.depth + 1 from games g join lineage on g.parent_id = lineage.id
+      )
+      select (select count(*) from (select root from lineage group by root having max(depth) >= 3)) as d,
+        (select count(distinct root) from lineage) as r, (select max(depth) from lineage) as m")"
+      expect_eq "期間なし: 変える前の SQL を failed を除いた台帳へ当てた数と一致する（フォーク率）" \
+        "$legacy_fork" "$(jq -r '[.forkRate.forkGames, .forkRate.newGames, .forkRate.totalGames] | map(tostring) | join(" ")' <<<"$ALL_JSON")"
+      expect_eq "期間なし: 変える前の SQL を failed を除いた台帳へ当てた数と一致する（系統）" \
+        "$legacy_lineage" "$(kpi_lineage_row "$ALL_JSON")"
+    else
+      echo "  FAIL 変える前の SQL と突き合わせる写しを作れません" >&2
+      failed=1
+    fi
+  fi
+fi
+
+# **仕込みが空振りしないこと。** 失敗の行を外さず、期間でも絞らない数え方（#42 の
+# まま）では、同じ台帳から別の数が出ることを独立に確かめる。**同じ数が出るなら、上の
+# 検査は「何も変えていない実装」を通してしまう。**
+if [[ -d "$KPI_SINCE_SANDBOX" ]]; then
+  KPI_SINCE_MUTANT="$(CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+    npx wrangler d1 execute DB --local --persist-to "$KPI_SINCE_SANDBOX" --json \
+    --command "select sum(case when parent_id is not null then 1 else 0 end) as f, count(*) as t from games" 2>/dev/null \
+    | sed -n '/^\[/,$p' | jq -r '.[0].results[0] | "\(.f) \(.t)"' 2>/dev/null)"
+  expect_eq "変異（failed も全期間も数える）ではフォーク 9 / 全 17 になる" "9 17" "$KPI_SINCE_MUTANT"
+fi
+
+# **--since は時差つきの秒までの時刻だけを受け付けること。** 日付だけを受け付けると
+# 日に丸めることになり、時差の無い時刻は UTC か JST かが読み手で変わる。存在しない
+# 日時を翌月へ繰り越すと、打ち間違えた境界で数えたことに気づけない。**D1 に触る前に
+# 2 で落ちる**ので、仕込みの有無によらず見られる。
+# **同じ瞬間を別の時差で綴っても、同じ境界になること。** `Z` と負の時差の分岐は、
+# 撤退判定の +09:00 だけでは通らない。**UTC では前の年の大晦日になる瞬間**を選び、
+# 月と年の繰り下がり（1 月を前年の 13 月として数える箇所）も通す。期待値は
+# `date -u -d` で独立に求める。
+KPI_SPELL_REF="2031-01-01T02:07:53+09:00"
+KPI_SPELL_EPOCH="$(date -u -d "$KPI_SPELL_REF" +%s 2>/dev/null)"
+for spelled in "$KPI_SPELL_REF" 2030-12-31T17:07:53Z 2030-12-31T12:07:53-05:00 2030-12-31T22:37:53+05:30; do
+  expect_eq "--since ${spelled} の綴りを date で写すと基準と同じ瞬間（仕込みの検算）" \
+    "$KPI_SPELL_EPOCH" "$(date -u -d "$spelled" +%s 2>/dev/null)"
+  expect_eq "--since ${spelled} の境界の UNIX 秒が date で求めた値と一致する" "$KPI_SPELL_EPOCH" \
+    "$(bash scripts/kpi-report.sh --persist-to "$KPI_SANDBOX" --since "$spelled" --format json 2>/dev/null | jq -r '.since.epoch' 2>/dev/null)"
+done
+
+for bad_since in "" 2031-03-15 2031-03-15T21:07:53 "2031-03-15 21:07:53+09:00" 2031-02-29T00:00:00+09:00 2031-03-15T24:00:00+09:00; do
+  bash scripts/kpi-report.sh --persist-to "$KPI_SANDBOX" --since "$bad_since" --format json >/dev/null 2>&1
+  bad_code=$?
+  expect_eq "--since ${bad_since:-（空の値）} は 2 で落ちる" "2" "$bad_code"
+done
+
 # **値の無いオプションで止まらないこと（3 本すべて）。**
 #
 # `shift 2` は残りが 1 個のとき**シフトせずに失敗する**。`set -e` を使っていないので
@@ -676,7 +838,7 @@ expect_missing_value_exits() {
 # **3 本まとめて見る。** 同じ形の不具合が 3 本にあった（kpi-report.sh は #42 の PR で
 # Copilot が見つけ、残る 2 本はそれを受けて確かめたら同じだった）。**1 本だけ直すと、
 # 次に同じ形を書いた日にまた入る。**
-for missing in --format --persist-to; do
+for missing in --format --persist-to --since; do
   expect_missing_value_exits scripts/kpi-report.sh "$missing"
 done
 for missing in --format --rows-file; do
@@ -840,6 +1002,81 @@ if grep -E '0\.40|40 ?%' "$RETREAT_DOC" 2>/dev/null | grep -q 'forkRate'; then
   echo "  ok   その 1 度は判定コマンドの中にある"
 else
   echo "  FAIL 閾値の数値が判定コマンドの外にあります" >&2
+  failed=1
+fi
+
+# **開始の時刻が 1 か所にだけあり、2.1 のコマンドがそれを渡していること（#456）。**
+#
+# 2 か所に置くと、片方だけを直した日に判定が古い境界で数えられる。**値そのものは
+# ここへ書き写さない**——表の行から取り出し、その値がリポジトリの追跡ファイルの
+# どこに現れるかを数える。
+#
+# **手順書の行を実行しない**（PR #468 の Copilot の指摘）。追跡している Markdown の
+# 1 行を eval すると、文書が CI の中で実行元になる。代わりに、2.1 の `since=` の行が
+# **下に置いた期待のコマンドの文面と 1 字違わず一致すること**を見て、値はここの
+# 正規表現で表から取り出す。**期待の文面はコマンドであって値ではない**ので、ここに
+# 置いても開始の時刻の写しにはならない。
+if grep -q '未解決' "$RETREAT_DOC" 2>/dev/null; then
+  echo "  FAIL 手順書に「未解決」の注記が残っています（#456 で解消したはずです）" >&2
+  grep -n '未解決' "$RETREAT_DOC" >&2
+  failed=1
+else
+  echo "  ok   手順書に「未解決」の注記が残っていない"
+fi
+
+since_lines="$(grep -cE '^since=' "$RETREAT_DOC" 2>/dev/null || true)"
+expect_eq "2.1 に開始の時刻を表から読む行が 1 行だけある" "1" "$since_lines"
+
+# 表から時差つきの時刻を取り出す正規表現。2.1 の期待の文面もこれを使う。
+SINCE_VALUE_RE='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}'
+SINCE_ROW_RE='^\| 開始（M7 完了の時刻'
+IFS= read -r SINCE_CMD_EXPECTED <<'SINCE_CMD'
+since="$(grep -E '^\| 開始（M7 完了の時刻' docs/retreat-review.md | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}')"
+SINCE_CMD
+since_cmd_hits="$(grep -cxF -- "$SINCE_CMD_EXPECTED" "$RETREAT_DOC" 2>/dev/null || true)"
+expect_eq "2.1 の since= の行が期待のコマンドの文面と完全に一致する" "1" "$since_cmd_hits"
+if grep -F 'bash scripts/kpi-report.sh --remote' "$RETREAT_DOC" 2>/dev/null | grep -qF -- '--since "$since"'; then
+  echo "  ok   2.1 の kpi-report.sh が --since で開始の時刻を渡している"
+else
+  echo "  FAIL 2.1 の kpi-report.sh が --since で開始の時刻を渡していません" >&2
+  failed=1
+fi
+
+# 値は表の行からここで取り出す（手順書の行は実行しない）。**行が 1 つ・値が 1 つ**で
+# なければ空にして下で落とす（複数の値を黙って 1 つ目で済ませない）。
+doc_since=""
+since_rows="$(grep -cE "$SINCE_ROW_RE" "$RETREAT_DOC" 2>/dev/null || true)"
+if [[ "$since_rows" -eq 1 ]]; then
+  doc_since_values="$(grep -E "$SINCE_ROW_RE" "$RETREAT_DOC" | grep -oE "$SINCE_VALUE_RE")"
+  if [[ "$(printf '%s\n' "$doc_since_values" | grep -c .)" -eq 1 ]]; then
+    doc_since="$doc_since_values"
+  fi
+fi
+doc_since_epoch="$(date -u -d "$doc_since" +%s 2>/dev/null || true)"
+if [[ "$doc_since" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$ \
+      && "$doc_since_epoch" =~ ^[0-9]+$ ]]; then
+  echo "  ok   表の開始の行から時差つきの時刻を 1 つ取り出せる"
+
+  # **追跡ファイルのどこに現れるか**を、綴りを変えて 3 通りで数える。時刻の部分
+  # （HH:MM:SS）で数えるのは、「YYYY-MM-DD HH:MM:SS JST」のように散文へ別の綴りで
+  # 書き写したものも拾うためである。UNIX 秒は、スクリプトへ写したものを拾う。
+  for needle in "$doc_since" "${doc_since:11:8}" "$doc_since_epoch"; do
+    hits="$(git grep -lF -- "$needle" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+    if [[ "$needle" == "$doc_since_epoch" ]]; then
+      expect_eq "開始の時刻の UNIX 秒はどの追跡ファイルにも無い" "" "$hits"
+    else
+      expect_eq "開始の時刻（${#needle} 文字の綴り）は ${RETREAT_DOC} にだけある" "$RETREAT_DOC" "$hits"
+      count="$(grep -cF -- "$needle" "$RETREAT_DOC" 2>/dev/null || true)"
+      expect_eq "開始の時刻（${#needle} 文字の綴り）は ${RETREAT_DOC} の 1 行にだけある" "1" "$count"
+    fi
+  done
+
+  # **表の値で実際に回せること。** 形は合っても kpi-report.sh が受け付けない値だと、
+  # 判定日に初めて 2 で落ちる。境界の UNIX 秒は date で独立に写した値と突き合わせる。
+  expect_eq "表の値を kpi-report.sh へ渡すと、境界が date で写した値と一致する" "$doc_since_epoch" \
+    "$(bash scripts/kpi-report.sh --persist-to "$KPI_SANDBOX" --since "$doc_since" --format json 2>/dev/null | jq -r '.since.epoch' 2>/dev/null)"
+else
+  echo "  FAIL 表の開始の行から時差つきの時刻を 1 つに取り出せません（取り出した値: ${doc_since:-（空）}）" >&2
   failed=1
 fi
 

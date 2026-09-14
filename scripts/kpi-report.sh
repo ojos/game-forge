@@ -12,10 +12,15 @@
 #   bash scripts/kpi-report.sh --remote              # 本番（読み取りのみ）
 #   bash scripts/kpi-report.sh --format json
 #   bash scripts/kpi-report.sh --persist-to <dir>    # 使い捨ての手元 D1（自己検査用）
+#   bash scripts/kpi-report.sh --since <時刻>         # 開始の時刻より後に作られた作品で数える
+#
+# --since の時刻は `YYYY-MM-DDTHH:MM:SS+09:00` の形（`Z` / 任意の `±HH:MM` も可）。
+# **日付だけ・時差の無い時刻は受け付けない**（秒の単位で切る。日に丸めない）。
+# 撤退判定で渡す値の正本は docs/retreat-review.md 1 章の表である（ここへ書き写さない）。
 #
 # 終了コード:
 #   0 = KPI_REPORT_PASS（出力した）
-#   2 = 前提の不成立（未認証・道具が無い・応答の形が違う）
+#   2 = 前提の不成立（未認証・道具が無い・応答の形が違う・引数が不正）
 #
 # **1 を使わない。** このスクリプトは「良い / 悪い」を判定しない。判定するのは #44 の
 # 手順であり、ここは数を出すだけである。`ogp-stale-report.sh` が 1 と 2 を分けたのは
@@ -30,6 +35,28 @@
 #
 # **分子・分母はどちらも `games` から数える**（10.1 / 確定27）。`generations` からは
 # 数えない——リトライ（5.2-7）で 1 作品に複数行が対応するためである。
+#
+# ── 生成に失敗した行（`generation_state = 'failed'`）を数えない（#456）─────────
+#
+# 10.1 は「作品を生まない試行は分子にも分母にも現れない」とする。失敗した下書きは
+# `games` に行が残るので、**そのまま数えると作品を生まなかった試行が「新規」や
+# 「フォーク」になる。** フォーク率の分子・分母から外し、系統でも 3 世代目以降に
+# いることの根拠に使わない。**--since の有無によらず効かせる。**
+#
+# ── --since は作成日時で切る。系統の根は開始前でもよい（#456）────────────────
+#
+# 10.3 は「サンプルが無い期間のフォーク率を撤退の根拠に含めない」とする。
+#
+# - **フォーク率:** 開始より後に作られた作品だけで数える。**開始前の作品へのフォークも、
+#   開始より後に作られていれば数える**（サンプルを改造するのがまさに測りたいことである）
+# - **3 世代以上の系統:** 開始より後に作られた作品が 3 世代目以降にいる系統を数える。
+#   **根は開始前でもよい。** 根で切ると、サンプルから伸びた系統が 1 本も数えられない
+#
+# **境界は「より後」（`created_at > 開始`）で、秒の単位である。** 日の境界
+# （scripts/report-window.sh）には合わせない——開始の時刻は 10 本目の公開時刻であり、
+# 同じ日の開始前にはサンプルづくりの行がある。**それを 1 行も入れないため**に丸めない。
+#
+# **補助指標（招待者あたりの生成数・推敲回数など）は期間で絞らない**（#456 の scope.out）。
 #
 # ── 系統は `status` ではなく `parent_id` で数える ───────────────────────────
 #
@@ -58,6 +85,8 @@ cd "$ROOT" || exit 2
 SCOPE="--local"
 PERSIST_TO=""
 FORMAT="table"
+SINCE=""
+SINCE_GIVEN=0
 
 ##
 # 値を取る引数に、値が付いていることを確かめる。**無ければ落とす。**
@@ -85,7 +114,8 @@ while [[ $# -gt 0 ]]; do
     --local)      SCOPE="--local"; shift ;;
     --persist-to) require_value "$1" "$#"; PERSIST_TO="$2"; shift 2 ;;
     --format)     require_value "$1" "$#"; FORMAT="$2"; shift 2 ;;
-    -h|--help)    sed -n '2,25p' "${BASH_SOURCE[0]}" >&2; exit 0 ;;
+    --since)      require_value "$1" "$#"; SINCE="$2"; SINCE_GIVEN=1; shift 2 ;;
+    -h|--help)    sed -n '2,31p' "${BASH_SOURCE[0]}" >&2; exit 0 ;;
     *) echo "[kpi] 不明な引数です: $1" >&2; exit 2 ;;
   esac
 done
@@ -101,6 +131,71 @@ fi
 if ! command -v jq >/dev/null 2>&1; then
   echo "[kpi] jq がありません（応答の形を確かめるのに要ります）。" >&2
   exit 2
+fi
+
+##
+# 時差つきの時刻（`YYYY-MM-DDTHH:MM:SS` ＋ `Z` か `±HH:MM`）を UNIX 秒へ写す。
+#
+# **`date` を使わない。** GNU の `date -d` と BSD の `date -j -f` は綴りが違い、利用者の
+# 端末は macOS である（冒頭）。暦日から通日を出す計算（proleptic Gregorian）を算術で行う。
+#
+# **形が合っても、存在しない日時は落とす**（2 月 30 日・25 時など）。黙って翌月へ繰り越すと、
+# 打ち間違えた境界で数えたことに気づけない。
+#
+# **日付だけ・時差の無い時刻は受け付けない。** 前者は日に丸めることになり、後者は
+# UTC か JST かが読み手によって変わる。
+#
+# @param $1 時刻の文字列
+# @return 標準出力へ UNIX 秒。形が違えば 1
+##
+since_to_epoch() {
+  local re='^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(Z|([+-])([0-9]{2}):([0-9]{2}))$'
+  if [[ ! "$1" =~ $re ]]; then
+    return 1
+  fi
+  local y=$((10#${BASH_REMATCH[1]})) m=$((10#${BASH_REMATCH[2]})) d=$((10#${BASH_REMATCH[3]}))
+  local hh=$((10#${BASH_REMATCH[4]})) mi=$((10#${BASH_REMATCH[5]})) ss=$((10#${BASH_REMATCH[6]}))
+  local offset=0
+  if [[ "${BASH_REMATCH[7]}" != "Z" ]]; then
+    local oh=$((10#${BASH_REMATCH[9]})) om=$((10#${BASH_REMATCH[10]}))
+    if (( oh > 23 || om > 59 )); then
+      return 1
+    fi
+    offset=$(( oh * 3600 + om * 60 ))
+    if [[ "${BASH_REMATCH[8]}" == "-" ]]; then
+      offset=$(( -offset ))
+    fi
+  fi
+  if (( y < 1970 || m < 1 || m > 12 || d < 1 || hh > 23 || mi > 59 || ss > 59 )); then
+    return 1
+  fi
+  local dim=31
+  case "$m" in
+    4|6|9|11) dim=30 ;;
+    2) if (( (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 )); then dim=29; else dim=28; fi ;;
+  esac
+  if (( d > dim )); then
+    return 1
+  fi
+  # 通日（1970-01-01 からの日数）。1 月・2 月を前年の 13・14 月として数える定石。
+  local yy=$y mm=$m
+  if (( mm <= 2 )); then
+    yy=$(( yy - 1 )); mm=$(( mm + 12 ))
+  fi
+  local days=$(( 365 * yy + yy / 4 - yy / 100 + yy / 400 + (153 * (mm - 3) + 2) / 5 + d - 719469 ))
+  echo $(( days * 86400 + hh * 3600 + mi * 60 + ss - offset ))
+}
+
+# **--since に空の値が来たら落とす。黙って全期間へ倒さない。** 撤退判定の手順は表から
+# 読んだ値を渡すので、表の行を見つけ損ねると空になる。そこで全期間を数えると、
+# 開始前の作品が入った数で判定することになり、しかも出力だけでは気づけない。
+SINCE_EPOCH=""
+if [[ "$SINCE_GIVEN" -eq 1 ]]; then
+  if ! SINCE_EPOCH="$(since_to_epoch "$SINCE")"; then
+    echo "[kpi] --since は時差つきの時刻です（例: 2030-01-02T03:04:05+09:00）: ${SINCE}" >&2
+    echo "[kpi]   日付だけ・時差の無い時刻・存在しない日時は受け付けません（日に丸めません）。" >&2
+    exit 2
+  fi
 fi
 
 ##
@@ -171,24 +266,42 @@ send_query() {
 
 # ── 問い合わせ ──────────────────────────────────────────────────────────────
 
-# 10.1 主 KPI。**分母は games の全行**である（新規＋フォーク）。
+# フォーク率と系統で「数える作品」の条件。**failed は --since の有無によらず外す**（冒頭）。
+# 開始の時刻は数字だけになっている（since_to_epoch を通った値）ので、SQL へ直接置いてよい。
+COUNTED_GAME="generation_state <> 'failed'"
+if [[ -n "$SINCE_EPOCH" ]]; then
+  COUNTED_GAME="${COUNTED_GAME} and created_at > ${SINCE_EPOCH}"
+fi
+
+# 10.1 主 KPI。**分母は数える作品の全行**である（新規＋フォーク）。
 SQL_FORK="select
   count(*) as total_games,
   sum(case when parent_id is not null then 1 else 0 end) as fork_games,
   sum(case when parent_id is null then 1 else 0 end) as new_games
-from games"
+from games
+where ${COUNTED_GAME}"
 
 # 10.2 3 世代以上の系統の本数。**status を見ない**（冒頭の但し書き）。
+#
+# **辿るのは全行、数えるのは条件を満たす作品だけ**である。系統は parent_id で辿るので、
+# 開始前の根や、途中の removed / 開始前の世代を経由してよい。**そのうえで、条件を満たす
+# 作品（失敗していない・開始より後）が 3 世代目以降にいる系統だけを数える。**
+# 根の数と最大の世代も、条件を満たす作品について出す（根は、その系統の根）。
 SQL_LINEAGE="with recursive lineage(id, root, depth) as (
     select id, id, 1 from games where parent_id is null
   union all
     select g.id, lineage.root, lineage.depth + 1
       from games g join lineage on g.parent_id = lineage.id
+),
+counted as (
+  select lineage.root, lineage.depth
+    from lineage join games on games.id = lineage.id
+   where ${COUNTED_GAME}
 )
 select
-  (select count(*) from (select root from lineage group by root having max(depth) >= 3)) as deep_lineages,
-  (select count(distinct root) from lineage) as roots,
-  (select max(depth) from lineage) as max_depth"
+  (select count(*) from (select root from counted group by root having max(depth) >= 3)) as deep_lineages,
+  (select count(distinct root) from counted) as roots,
+  (select max(depth) from counted) as max_depth"
 
 # 10.2 招待者あたりの生成数。
 SQL_PER_USER="select
@@ -224,10 +337,16 @@ REVISE="$(send_query "$SQL_REVISE")"   || exit 2
 
 REPORT="$(jq -n \
   --argjson fork "$FORK" --argjson lineage "$LINEAGE" --argjson perUser "$PER_USER" \
-  --argjson forkCta "$FORK_CTA" --argjson cost "$COST" --argjson revise "$REVISE" '
+  --argjson forkCta "$FORK_CTA" --argjson cost "$COST" --argjson revise "$REVISE" \
+  --arg since "$SINCE" --arg sinceEpoch "$SINCE_EPOCH" '
   def num(v): (v // 0);
   def ratio(a; b): if num(b) == 0 then null else (num(a) / num(b)) end;
   {
+    since: (if $since == "" then null else {
+      at: $since,
+      epoch: ($sinceEpoch | tonumber),
+      appliesTo: ["forkRate", "deepLineages"]
+    } end),
     forkRate: {
       totalGames: num($fork.total_games),
       forkGames: num($fork.fork_games),
@@ -274,6 +393,12 @@ fi
 
 echo "[kpi] 対象: ${SCOPE}${PERSIST_TO:+（--persist-to ${PERSIST_TO}）}"
 echo "[kpi] 定義の正本は仕様書 10.1 / 10.2 です。ここへ書き写していません。"
+if [[ -n "$SINCE" ]]; then
+  echo "[kpi] 期間: 作成が ${SINCE}（UNIX ${SINCE_EPOCH}）より後の作品（フォーク率と 3 世代以上の系統だけに効きます）"
+else
+  echo "[kpi] 期間: 指定なし（全期間）"
+fi
+echo "[kpi] 生成に失敗した作品（generation_state = 'failed'）は、フォーク率と系統に数えていません。"
 echo
 jq -r '
   def pct(v): if v == null then "—" else ((v * 1000 | floor) / 10 | tostring) + "%" end;

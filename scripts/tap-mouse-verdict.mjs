@@ -90,6 +90,9 @@ function problemsOf(result) {
   if (plan === undefined || plan === null) {
     return ['タッチを送っていません（probe に --touch が渡っていない）。この状態では何も確かめていません。'];
   }
+  if (typeof result.touch.error === 'string') {
+    return [`タッチを送れませんでした（probe の例外）: ${result.touch.error}`];
+  }
   const state = loaderStateOf(result);
   if (state === null) {
     return [

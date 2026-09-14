@@ -340,7 +340,9 @@ async function readExecutionContexts(connection, sessionId) {
 /**
  * 主文書の座標で、ローダー文書の左上がどこにあるかを返す（層 6）。
  *
- * **直接開いた形（主文書で wasm が走った）は原点である。** 埋め込んだ形では、最初の iframe を
+ * **直接開いた形（主文書が不透明オリジン＝ローダー文書そのもの）は原点である。** 判定を
+ * `wasmRan` で行わない——直接開いた形で wasm が起動に失敗すると埋め込みの分岐へ入り、iframe が
+ * 無いことで例外になる（PR #503 の Copilot の指摘）。埋め込んだ形では、最初の iframe を
  * 画面の中へ入れてから、その内容の左上（枠線の内側）を返す。`Input.dispatchTouchEvent` は
  * 画面の外の座標へは当たらないためである。
  *
@@ -350,7 +352,7 @@ async function readExecutionContexts(connection, sessionId) {
  * @returns {Promise<{x: number, y: number}>} ローダー文書の原点（主文書の座標）
  */
 async function loaderOriginOf(connection, sessionId, mainState) {
-  if (mainState?.wasmRan !== null && mainState?.wasmRan !== undefined) {
+  if (mainState?.settingsOrigin === 'null') {
     return { x: 0, y: 0 };
   }
   const evaluated = await connection.send(
@@ -471,19 +473,28 @@ async function probe(options) {
 
     // **層 6（#491）。起動を見届けてから、指 1 本のタッチを送る。** 起動前に送ると canvas が
     // 無く、ローダーは何も送らない（仕様 3.9.3-4）。それは変換の不在と区別できない。
-    /** @type {{origin: {x: number, y: number}, plan: TouchPlan} | null} */
+    //
+    // **タッチの準備や送信で例外が出ても、観測そのものは止めない。** 例外を `touch.error` に
+    // 残して先へ進み、層 0〜5 の観測値はそのまま返す（層 6 だけが判定で落ちる）。ここで投げると
+    // probe が JSON を返さず、層 1〜3 の失敗の診断まで隠れる（PR #503 の Copilot の指摘）。
+    /** @type {{origin: {x: number, y: number} | null, plan: TouchPlan, error: string | null} | null} */
     let touch = null;
     if (options.touch !== null) {
-      const origin = await loaderOriginOf(connection, sessionId, state);
-      await dispatchTouch(connection, sessionId, options.touch, origin);
-      touch = { origin, plan: options.touch };
-      const touchDeadline = Date.now() + TOUCH_SETTLE_TIMEOUT_MS;
-      while (Date.now() < touchDeadline) {
-        frameContexts = await readExecutionContexts(connection, sessionId);
-        if (touchSettled(frameContexts.map((context) => context.state))) {
-          break;
+      touch = { origin: null, plan: options.touch, error: null };
+      try {
+        const origin = await loaderOriginOf(connection, sessionId, state);
+        touch.origin = origin;
+        await dispatchTouch(connection, sessionId, options.touch, origin);
+        const touchDeadline = Date.now() + TOUCH_SETTLE_TIMEOUT_MS;
+        while (Date.now() < touchDeadline) {
+          frameContexts = await readExecutionContexts(connection, sessionId);
+          if (touchSettled(frameContexts.map((context) => context.state))) {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
         }
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      } catch (error) {
+        touch.error = String(error);
       }
     }
 

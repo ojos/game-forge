@@ -49,6 +49,8 @@ export const LOADER_STARTED_MESSAGE = 'gf-loader-started';
  * - その指について、canvas へ `mousemove` → `mousedown`（始まり）/ `mousemove`（動き）/
  *   `mouseup`（離れた・取り消された。最後の座標で）を送る。左ボタン、座標は指の値そのまま。
  * - **canvas がまだ無いとき（起動前）は送らない。** 起動前の座標は Ebitengine が捨てる。
+ *   **その指の追跡も始めない**——起動後にその指を動かして離したときに、`mousedown` の無い
+ *   `mousemove` / `mouseup` を送らないためである（PR #503 の Copilot の指摘）。
  *
  * # 起動の経路と分けて置く
  *
@@ -99,6 +101,13 @@ export const TAP_TO_MOUSE_SCRIPT = `(function () {
     // 指が 1 本も触れていなかったときだけ始める（touches には今触れた指も含まれる）。
     // それ以外は、追っている指があるか、後から足された指なので無視する。
     if (event.touches.length !== event.changedTouches.length) {
+      return;
+    }
+    // 指が 1 本も触れていないので、前のジェスチャーの追跡は残っていても古い。
+    trackedId = null;
+    // canvas がまだ無い（起動前）なら、この指は追わない。起動後にその指を動かして離しても、
+    // mousedown の無い mousemove / mouseup を送らない（1 回のジェスチャーを壊さない）。
+    if (document.querySelector('canvas') === null) {
       return;
     }
     var touch = event.changedTouches[0];

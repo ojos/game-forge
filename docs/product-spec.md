@@ -4757,7 +4757,8 @@ M14-2 / M14-5 の検査が行う）。
 > （`instantiateStreaming` の経路と起動の合図（#377）には手を入れていない）。**埋め込む値を持たない固定の文字列**なので、
 > UGC 由来の文字列が入る経路は無い。CSP と iframe の `sandbox` 属性は変えていない。上の 1〜4 のとおりで、
 > 「指が 1 本も触れていない状態」は `touches.length === changedTouches.length` で判定し、`mouseup` は最後に見た
-> `touchstart` / `touchmove` の座標で送る。単体テスト（`test/sandbox.test.ts`）は、文書に入ること・値の差し込みが無いこと・
+> `touchstart` / `touchmove` の座標で送る。**canvas が無いとき（起動前）に始まった指は追跡も始めない**（起動後にその指を
+> 動かして離しても、`mousedown` の無い `mousemove` / `mouseup` を送らない。PR #503 の Copilot の指摘で直した）。単体テスト（`test/sandbox.test.ts`）は、文書に入ること・値の差し込みが無いこと・
 > 止める API を呼ばないこと・表の対応を文字列で見る。**実ブラウザの検査は `scripts/check-sandbox-browser.sh` の層 6** で、
 > 検査用の作品（その場でビルドする Go。Ebitengine と同じく canvas を作って `mousedown` / `mousemove` / `mouseup` を聞き、
 > `touch*` で `preventDefault` を呼ぶ）へ CDP の `Input.dispatchTouchEvent` で「触れる→動かす→離す」を送り、

@@ -822,6 +822,19 @@ describe('タップ→マウス変換（#491 / 仕様 3.9.3）', () => {
     expect(functionBodyOf('onEnd')).toContain('findTracked(event.changedTouches) === null');
   });
 
+  it('canvas が無いとき（起動前）に始まった指は追わない（起動後に動かして離しても、mousedown の無い mousemove / mouseup を送らない）', () => {
+    const start = functionBodyOf('onStart');
+    const guard = start.indexOf("if (document.querySelector('canvas') === null) {");
+    expect(guard, 'canvas の有無を見ていない').toBeGreaterThan(-1);
+    // 古い追跡を捨ててから canvas を見て、有るときだけ指を覚える。
+    expect(start.indexOf('trackedId = null;')).toBeLessThan(guard);
+    expect(guard).toBeLessThan(start.indexOf('trackedId = touch.identifier;'));
+    expect(start.slice(guard, start.indexOf('trackedId = touch.identifier;'))).toContain('return;');
+    // 追っていなければ、動きも離すことも送らない。
+    expect(functionBodyOf('onMove')).toContain('if (trackedId === null) {');
+    expect(functionBodyOf('onEnd')).toContain('if (trackedId === null ||');
+  });
+
   it('touchstart → mousemove・mousedown、touchmove → mousemove、touchend / touchcancel → mouseup（最後の座標）', () => {
     const start = functionBodyOf('onStart');
     expect(start.indexOf("sendMouse('mousemove', 1);")).toBeGreaterThan(start.indexOf('lastX = touch.clientX;'));

@@ -776,6 +776,19 @@ fi
 # 日に丸めることになり、時差の無い時刻は UTC か JST かが読み手で変わる。存在しない
 # 日時を翌月へ繰り越すと、打ち間違えた境界で数えたことに気づけない。**D1 に触る前に
 # 2 で落ちる**ので、仕込みの有無によらず見られる。
+# **同じ瞬間を別の時差で綴っても、同じ境界になること。** `Z` と負の時差の分岐は、
+# 撤退判定の +09:00 だけでは通らない。**UTC では前の年の大晦日になる瞬間**を選び、
+# 月と年の繰り下がり（1 月を前年の 13 月として数える箇所）も通す。期待値は
+# `date -u -d` で独立に求める。
+KPI_SPELL_REF="2031-01-01T02:07:53+09:00"
+KPI_SPELL_EPOCH="$(date -u -d "$KPI_SPELL_REF" +%s 2>/dev/null)"
+for spelled in "$KPI_SPELL_REF" 2030-12-31T17:07:53Z 2030-12-31T12:07:53-05:00 2030-12-31T22:37:53+05:30; do
+  expect_eq "--since ${spelled} の綴りを date で写すと基準と同じ瞬間（仕込みの検算）" \
+    "$KPI_SPELL_EPOCH" "$(date -u -d "$spelled" +%s 2>/dev/null)"
+  expect_eq "--since ${spelled} の境界の UNIX 秒が date で求めた値と一致する" "$KPI_SPELL_EPOCH" \
+    "$(bash scripts/kpi-report.sh --persist-to "$KPI_SANDBOX" --since "$spelled" --format json 2>/dev/null | jq -r '.since.epoch' 2>/dev/null)"
+done
+
 for bad_since in "" 2031-03-15 2031-03-15T21:07:53 "2031-03-15 21:07:53+09:00" 2031-02-29T00:00:00+09:00 2031-03-15T24:00:00+09:00; do
   bash scripts/kpi-report.sh --persist-to "$KPI_SANDBOX" --since "$bad_since" --format json >/dev/null 2>&1
   bad_code=$?
@@ -995,8 +1008,14 @@ fi
 # **開始の時刻が 1 か所にだけあり、2.1 のコマンドがそれを渡していること（#456）。**
 #
 # 2 か所に置くと、片方だけを直した日に判定が古い境界で数えられる。**値そのものは
-# ここへ書き写さない**——2.1 のコマンドの `since=` の行を**そのまま実行して**表から
-# 読み、その値がリポジトリの追跡ファイルのどこに現れるかを数える。
+# ここへ書き写さない**——表の行から取り出し、その値がリポジトリの追跡ファイルの
+# どこに現れるかを数える。
+#
+# **手順書の行を実行しない**（PR #468 の Copilot の指摘）。追跡している Markdown の
+# 1 行を eval すると、文書が CI の中で実行元になる。代わりに、2.1 の `since=` の行が
+# **下に置いた期待のコマンドの文面と 1 字違わず一致すること**を見て、値はここの
+# 正規表現で表から取り出す。**期待の文面はコマンドであって値ではない**ので、ここに
+# 置いても開始の時刻の写しにはならない。
 if grep -q '未解決' "$RETREAT_DOC" 2>/dev/null; then
   echo "  FAIL 手順書に「未解決」の注記が残っています（#456 で解消したはずです）" >&2
   grep -n '未解決' "$RETREAT_DOC" >&2
@@ -1005,8 +1024,17 @@ else
   echo "  ok   手順書に「未解決」の注記が残っていない"
 fi
 
-since_lines="$(grep -cE '^since="\$\(' "$RETREAT_DOC" 2>/dev/null || true)"
+since_lines="$(grep -cE '^since=' "$RETREAT_DOC" 2>/dev/null || true)"
 expect_eq "2.1 に開始の時刻を表から読む行が 1 行だけある" "1" "$since_lines"
+
+# 表から時差つきの時刻を取り出す正規表現。2.1 の期待の文面もこれを使う。
+SINCE_VALUE_RE='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}'
+SINCE_ROW_RE='^\| 開始（M7 完了の時刻'
+IFS= read -r SINCE_CMD_EXPECTED <<'SINCE_CMD'
+since="$(grep -E '^\| 開始（M7 完了の時刻' docs/retreat-review.md | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}')"
+SINCE_CMD
+since_cmd_hits="$(grep -cxF -- "$SINCE_CMD_EXPECTED" "$RETREAT_DOC" 2>/dev/null || true)"
+expect_eq "2.1 の since= の行が期待のコマンドの文面と完全に一致する" "1" "$since_cmd_hits"
 if grep -F 'bash scripts/kpi-report.sh --remote' "$RETREAT_DOC" 2>/dev/null | grep -qF -- '--since "$since"'; then
   echo "  ok   2.1 の kpi-report.sh が --since で開始の時刻を渡している"
 else
@@ -1014,15 +1042,20 @@ else
   failed=1
 fi
 
-# 2.1 の行をそのまま実行する（読むのは手順書だけで、書き込みも本番も無い）。
+# 値は表の行からここで取り出す（手順書の行は実行しない）。**行が 1 つ・値が 1 つ**で
+# なければ空にして下で落とす（複数の値を黙って 1 つ目で済ませない）。
 doc_since=""
-if [[ "$since_lines" -eq 1 ]]; then
-  doc_since="$(since=""; eval "$(grep -E '^since="\$\(' "$RETREAT_DOC")" && printf '%s' "$since")"
+since_rows="$(grep -cE "$SINCE_ROW_RE" "$RETREAT_DOC" 2>/dev/null || true)"
+if [[ "$since_rows" -eq 1 ]]; then
+  doc_since_values="$(grep -E "$SINCE_ROW_RE" "$RETREAT_DOC" | grep -oE "$SINCE_VALUE_RE")"
+  if [[ "$(printf '%s\n' "$doc_since_values" | grep -c .)" -eq 1 ]]; then
+    doc_since="$doc_since_values"
+  fi
 fi
 doc_since_epoch="$(date -u -d "$doc_since" +%s 2>/dev/null || true)"
 if [[ "$doc_since" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}$ \
       && "$doc_since_epoch" =~ ^[0-9]+$ ]]; then
-  echo "  ok   2.1 の行が表から時差つきの時刻を 1 つ読める"
+  echo "  ok   表の開始の行から時差つきの時刻を 1 つ取り出せる"
 
   # **追跡ファイルのどこに現れるか**を、綴りを変えて 3 通りで数える。時刻の部分
   # （HH:MM:SS）で数えるのは、「YYYY-MM-DD HH:MM:SS JST」のように散文へ別の綴りで
@@ -1043,7 +1076,7 @@ if [[ "$doc_since" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-]
   expect_eq "表の値を kpi-report.sh へ渡すと、境界が date で写した値と一致する" "$doc_since_epoch" \
     "$(bash scripts/kpi-report.sh --persist-to "$KPI_SANDBOX" --since "$doc_since" --format json 2>/dev/null | jq -r '.since.epoch' 2>/dev/null)"
 else
-  echo "  FAIL 2.1 の行が表から時差つきの時刻を読めません（読めた値: ${doc_since:-（空）}）" >&2
+  echo "  FAIL 表の開始の行から時差つきの時刻を 1 つに取り出せません（取り出した値: ${doc_since:-（空）}）" >&2
   failed=1
 fi
 

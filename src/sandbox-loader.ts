@@ -1,10 +1,11 @@
 /**
  * サンドボックス用ホストが返すローダー文書を組み立てる（3.4 / 3.5 / #29）。
  *
- * この文書がやることは 2 つだけである。
+ * この文書がやることは 3 つだけである。
  *
  *   1. `go_version` に対応する `wasm_exec.js` を読む（3.5）
  *   2. `WebAssembly.instantiateStreaming` で `.wasm` を起動する（3.4-2）
+ *   3. タップをマウスの操作として canvas へ渡す（3.9.3 / #491。{@link TAP_TO_MOUSE_SCRIPT}）
  *
  * # UGC 由来の文字列を 1 つも入れない
  *
@@ -27,6 +28,117 @@
  * 信じるのは「自分の iframe から届いたこと」だけである）。
  */
 export const LOADER_STARTED_MESSAGE = 'gf-loader-started';
+
+/**
+ * タップをマウスの操作として canvas へ渡すスクリプト（仕様 3.9.3 / #491。M14-2）。
+ *
+ * # なぜ要るのか
+ *
+ * **Ebitengine はブラウザで `touchstart` の `preventDefault` を呼ぶ**ので、ブラウザは互換の
+ * マウスイベントを作らない。マウスを読む作品（`CursorPosition` / `IsMouseButton*`）は、
+ * タッチ端末ではタップに反応しない（仕様 3.9.1）。Ebitengine はマウスを canvas の
+ * リスナーで受けて `button` と `clientX` / `clientY` だけを読み、`isTrusted` を見ないので、
+ * **ここで合成したイベントで補える。**
+ *
+ * # 何をするか（仕様 3.9.3 の表のとおり）
+ *
+ * - `document` に `touchstart` / `touchmove` / `touchend` / `touchcancel` を**捕捉段・passive** で付ける。
+ *   **`preventDefault` も `stopPropagation` も呼ばない**——Ebitengine の canvas のリスナーは、
+ *   これまでどおり本物のタッチを受ける。
+ * - **指が 1 本も触れていない状態で始まった `touchstart` の最初の指だけ**を追う（マルチタッチは扱わない）。
+ * - その指について、canvas へ `mousemove` → `mousedown`（始まり）/ `mousemove`（動き）/
+ *   `mouseup`（離れた・取り消された。最後の座標で）を送る。左ボタン、座標は指の値そのまま。
+ * - **canvas がまだ無いとき（起動前）は送らない。** 起動前の座標は Ebitengine が捨てる。
+ *
+ * # 起動の経路と分けて置く
+ *
+ * **起動スクリプト（`instantiateStreaming` の経路。#180 / #181）とは別の `<script>` にする。**
+ * 2 度壊れた経路の中へ入力の処理を混ぜない。起動の成否にも依らない（canvas が無ければ何もしない）。
+ *
+ * # 固定の文字列である
+ *
+ * **埋め込む値を 1 つも持たない**（テンプレートの差し込みが無い）。したがって UGC 由来の文字列が
+ * 入る経路は、この定数には最初から存在しない。CSP の `script-src 'unsafe-inline'` は
+ * 起動スクリプトのために既にあり、**許可集合を 1 要素も広げていない**（仕様 3.9.8）。
+ *
+ * デスクトップの操作は変わらない。マウスとペンではタッチイベントが発火しないためである。
+ */
+export const TAP_TO_MOUSE_SCRIPT = `(function () {
+  // 追っている指の identifier。null は「追っていない」。
+  var trackedId = null;
+  // 最後に見た指の座標。mouseup はこの座標で送る。
+  var lastX = 0;
+  var lastY = 0;
+
+  function findTracked(touches) {
+    for (var i = 0; i < touches.length; i++) {
+      if (touches[i].identifier === trackedId) {
+        return touches[i];
+      }
+    }
+    return null;
+  }
+
+  // canvas は Ebitengine が起動時に作る。無ければ（起動前は）何も送らない。
+  function sendMouse(type, buttons) {
+    var canvas = document.querySelector('canvas');
+    if (canvas === null) {
+      return;
+    }
+    canvas.dispatchEvent(new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      buttons: buttons,
+      clientX: lastX,
+      clientY: lastY
+    }));
+  }
+
+  function onStart(event) {
+    // 指が 1 本も触れていなかったときだけ始める（touches には今触れた指も含まれる）。
+    // それ以外は、追っている指があるか、後から足された指なので無視する。
+    if (event.touches.length !== event.changedTouches.length) {
+      return;
+    }
+    var touch = event.changedTouches[0];
+    trackedId = touch.identifier;
+    lastX = touch.clientX;
+    lastY = touch.clientY;
+    // 押す前にそこへ動いている、という本物のマウスの順序に合わせる。
+    sendMouse('mousemove', 1);
+    sendMouse('mousedown', 1);
+  }
+
+  function onMove(event) {
+    if (trackedId === null) {
+      return;
+    }
+    var touch = findTracked(event.changedTouches);
+    if (touch === null) {
+      return;
+    }
+    lastX = touch.clientX;
+    lastY = touch.clientY;
+    sendMouse('mousemove', 1);
+  }
+
+  function onEnd(event) {
+    if (trackedId === null || findTracked(event.changedTouches) === null) {
+      return;
+    }
+    trackedId = null;
+    sendMouse('mouseup', 0);
+  }
+
+  // 捕捉段・passive。既定の動作も伝播も止めない（Ebitengine の canvas は本物のタッチを受け続ける）。
+  // テストがこの綴りの不在を見るので、止める API の名前をこのスクリプトに書かない。
+  var options = { capture: true, passive: true };
+  document.addEventListener('touchstart', onStart, options);
+  document.addEventListener('touchmove', onMove, options);
+  document.addEventListener('touchend', onEnd, options);
+  document.addEventListener('touchcancel', onEnd, options);
+})();`;
 
 /** ローダーが読む 2 つの資材のパスと、合図の送り先。 */
 export interface LoaderAssetPaths {
@@ -140,6 +252,9 @@ export function loaderHtml(paths: LoaderAssetPaths): string {
     <progress id="gf-progress"></progress>
   </div>
 </div>
+<script>
+${TAP_TO_MOUSE_SCRIPT}
+</script>
 <script src="${wasmExecAttribute}"></script>
 <script>
 (function () {

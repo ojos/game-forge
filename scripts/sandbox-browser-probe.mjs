@@ -21,8 +21,19 @@
 // 開いて、観測して、JSON を出すだけである。**合否は scripts/check-sandbox-browser.sh が
 // 決める。** 観測と判定を混ぜると、失敗したときに「何が観測されたのか」が読めなくなる。
 //
+// # タッチを送る（層 6。#491）
+//
+// `--touch x1,y1,x2,y2` を渡すと、wasm の起動を見届けたあとに **CDP の `Input.dispatchTouchEvent`**
+// で指 1 本のタッチ（`(x1,y1)` で触れ、`(x2,y2)` へ動かし、離す）を送り、送った後の状態を読む。
+// 座標は**ローダー文書のビューポートの CSS ピクセル**で渡す。作品ページに埋め込んだ形では、
+// iframe の位置を足して主文書の座標へ直す（`Input.dispatchTouchEvent` は主文書の座標を取る）。
+//
+// **これは利用者の指の代わりであり、観測対象を作ることではない。** `Runtime.evaluate` で
+// イベントを合成すると、ローダーの変換が見るのと違う経路（本物のタッチではない）を通る。
+// 入力の層から送るので、ブラウザは本物のタッチとして当たり判定から配送までを行う。
+//
 // 使い方:
-//   node scripts/sandbox-browser-probe.mjs --browser <path> --url <url> [--timeout-ms 30000]
+//   node scripts/sandbox-browser-probe.mjs --browser <path> --url <url> [--timeout-ms 30000] [--touch x1,y1,x2,y2]
 //
 // 標準出力: 観測結果 1 個の JSON
 // 終了コード: 0 = 観測できた（合否とは無関係） / 1 = 観測そのものができなかった
@@ -41,11 +52,14 @@ const LAUNCH_TIMEOUT_MS = 20_000;
 /** ページの状態を読む間隔。 */
 const POLL_INTERVAL_MS = 100;
 
+/** タッチを送ったあと、作品のリスナーへ届くのを待つ上限（層 6）。 */
+const TOUCH_SETTLE_TIMEOUT_MS = 5_000;
+
 /**
  * コマンドライン引数を読む。
  *
  * @param {string[]} argv `process.argv.slice(2)`
- * @returns {{browser: string, url: string, timeoutMs: number}} 読み取った設定
+ * @returns {{browser: string, url: string, timeoutMs: number, touch: TouchPlan | null}} 読み取った設定
  */
 function parseArgs(argv) {
   /** @type {Record<string, string>} */
@@ -67,7 +81,28 @@ function parseArgs(argv) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error(`--timeout-ms の値が不正です: ${String(values['timeout-ms'])}`);
   }
-  return { browser, url, timeoutMs };
+  return { browser, url, timeoutMs, touch: values['touch'] === undefined ? null : parseTouch(values['touch']) };
+}
+
+/**
+ * 送るタッチ（層 6）。座標はローダー文書のビューポートの CSS ピクセル。
+ *
+ * @typedef {{startX: number, startY: number, endX: number, endY: number}} TouchPlan
+ */
+
+/**
+ * `--touch x1,y1,x2,y2` を読む。
+ *
+ * @param {string} value 引数の値
+ * @returns {TouchPlan} 送るタッチ
+ */
+function parseTouch(value) {
+  const numbers = value.split(',').map(Number);
+  if (numbers.length !== 4 || !numbers.every((number) => Number.isFinite(number) && number >= 0)) {
+    throw new Error(`--touch の値が不正です（x1,y1,x2,y2）: ${value}`);
+  }
+  const [startX, startY, endX, endY] = /** @type {[number, number, number, number]} */ (numbers);
+  return { startX, startY, endX, endY };
 }
 
 /**
@@ -250,6 +285,9 @@ const PAGE_STATE_EXPRESSION = `(() => {
     statusText: status === null ? null : String(status.textContent ?? ''),
     statusHidden: status === null ? null : Boolean(status.hidden),
     hasCanvas: document.querySelector('canvas') !== null,
+    // 層 6（#491）。検査用の作品が canvas で受けたマウスイベントと、本物のタッチを受けた回数。
+    mouseLog: globalThis.__gfMouseLog ?? null,
+    touchCount: globalThis.__gfTouchCount ?? null,
   };
 })()`;
 
@@ -300,9 +338,80 @@ async function readExecutionContexts(connection, sessionId) {
 }
 
 /**
+ * 主文書の座標で、ローダー文書の左上がどこにあるかを返す（層 6）。
+ *
+ * **直接開いた形（主文書で wasm が走った）は原点である。** 埋め込んだ形では、最初の iframe を
+ * 画面の中へ入れてから、その内容の左上（枠線の内側）を返す。`Input.dispatchTouchEvent` は
+ * 画面の外の座標へは当たらないためである。
+ *
+ * @param {CdpConnection} connection CDP 接続
+ * @param {string} sessionId 対象のセッション
+ * @param {any} mainState 主文書の観測値
+ * @returns {Promise<{x: number, y: number}>} ローダー文書の原点（主文書の座標）
+ */
+async function loaderOriginOf(connection, sessionId, mainState) {
+  if (mainState?.wasmRan !== null && mainState?.wasmRan !== undefined) {
+    return { x: 0, y: 0 };
+  }
+  const evaluated = await connection.send(
+    'Runtime.evaluate',
+    {
+      expression: `(() => {
+        const frame = document.querySelector('iframe');
+        if (frame === null) {
+          return null;
+        }
+        frame.scrollIntoView({ block: 'center', inline: 'center' });
+        const rect = frame.getBoundingClientRect();
+        return { x: rect.left + frame.clientLeft, y: rect.top + frame.clientTop };
+      })()`,
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  const origin = evaluated.exceptionDetails === undefined ? evaluated.result?.value : null;
+  if (origin === null || origin === undefined) {
+    throw new Error('タッチを送る先の iframe が主文書にありません');
+  }
+  return origin;
+}
+
+/**
+ * 指 1 本で触れ、動かし、離す（層 6）。
+ *
+ * @param {CdpConnection} connection CDP 接続
+ * @param {string} sessionId 対象のセッション
+ * @param {TouchPlan} plan ローダー文書の座標で表したタッチ
+ * @param {{x: number, y: number}} origin ローダー文書の原点（主文書の座標）
+ * @returns {Promise<void>}
+ */
+async function dispatchTouch(connection, sessionId, plan, origin) {
+  const start = { x: origin.x + plan.startX, y: origin.y + plan.startY, id: 0 };
+  const end = { x: origin.x + plan.endX, y: origin.y + plan.endY, id: 0 };
+  await connection.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [start] }, sessionId);
+  await connection.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [end] }, sessionId);
+  await connection.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }, sessionId);
+}
+
+/**
+ * 観測値のどれかに、タッチの後始末（`mouseup` か、本物のタッチの受信）が現れたか。
+ *
+ * **`mouseup` が来ないことも観測結果である**（変換を外した形がそれ）。そのときは
+ * {@link TOUCH_SETTLE_TIMEOUT_MS} まで待って打ち切る。
+ *
+ * @param {any[]} states 主文書と各文脈の観測値
+ * @returns {boolean} 届いたとみなせるか
+ */
+function touchSettled(states) {
+  return states.some(
+    (state) => Array.isArray(state?.mouseLog) && state.mouseLog.some((entry) => entry?.type === 'mouseup'),
+  );
+}
+
+/**
  * 1 ページを開いて観測する。
  *
- * @param {{browser: string, url: string, timeoutMs: number}} options 設定
+ * @param {{browser: string, url: string, timeoutMs: number, touch: TouchPlan | null}} options 設定
  * @returns {Promise<object>} 観測結果
  */
 async function probe(options) {
@@ -360,6 +469,24 @@ async function probe(options) {
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
 
+    // **層 6（#491）。起動を見届けてから、指 1 本のタッチを送る。** 起動前に送ると canvas が
+    // 無く、ローダーは何も送らない（仕様 3.9.3-4）。それは変換の不在と区別できない。
+    /** @type {{origin: {x: number, y: number}, plan: TouchPlan} | null} */
+    let touch = null;
+    if (options.touch !== null) {
+      const origin = await loaderOriginOf(connection, sessionId, state);
+      await dispatchTouch(connection, sessionId, options.touch, origin);
+      touch = { origin, plan: options.touch };
+      const touchDeadline = Date.now() + TOUCH_SETTLE_TIMEOUT_MS;
+      while (Date.now() < touchDeadline) {
+        frameContexts = await readExecutionContexts(connection, sessionId);
+        if (touchSettled(frameContexts.map((context) => context.state))) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      }
+    }
+
     // **抜けた時点の値をもう一度、両方まとめて読む。**
     //
     // ループを抜ける契機は「主文書か、いずれかの文脈のどちらか一方に印が立った」ことで
@@ -385,6 +512,8 @@ async function probe(options) {
       state,
       // 主文書を含む、読めたすべての実行文脈（層 4 の判定材料）。
       frameContexts,
+      // 送ったタッチ（層 6。送らなかったときは null）。
+      touch,
       // 判定には使わないが、失敗したときに読む材料。
       console: connection.events
         .filter((event) => event.method === 'Runtime.consoleAPICalled')

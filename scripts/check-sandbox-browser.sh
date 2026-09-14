@@ -44,7 +44,7 @@
 #   script-src に blob: 有り → ok（`connect-src` はその作品の .wasm 1 本のまま）
 #
 # ══════════════════════════════════════════════════════════════════════════════
-# 何を見るか（6 層。どこで落ちたかが分かる形にする）
+# 何を見るか（7 層。どこで落ちたかが分かる形にする）
 # ══════════════════════════════════════════════════════════════════════════════
 #
 #   層 0  配信された `.wasm` の本文を**1 回展開**すると `00 61 73 6d`（`\0asm`）で
@@ -61,6 +61,16 @@
 #         6.1 が許した音（`ebiten/v2/audio`）は oto を通じて AudioWorklet を使い、
 #         そのモジュールを `blob:` から読む。**直接開いた形（層 1〜3）と埋め込んだ形
 #         （層 4）の両方で見る**——CSP は同じでも、iframe の中では別の制約が乗りうる。
+#   層 6  **タップがマウスの操作として作品へ届くこと**（#491 / 仕様 3.9.3）。CDP の
+#         `Input.dispatchTouchEvent` で指 1 本のタッチを送り、**マウスを読む検査用の作品**が
+#         canvas で `mousemove → mousedown → mousemove → mouseup` を受けたことを見る。
+#         判定は `scripts/tap-mouse-verdict.mjs` が持つ。**直接開いた形と埋め込んだ形の両方で見る。**
+#
+# 層 6 が効いていることの実測（2026-09-14、この環境）:
+#   ローダーの変換を外した状態 → 「canvas が受けたマウスイベントが 0 個です」で赤
+#                                 （検査用の作品が touchstart の preventDefault を呼ぶので、
+#                                 ブラウザは互換のマウスイベントを作らない。本番の症状の再現）
+#   変換を入れた状態           → 4 個が順に、指の座標で届く（直接・埋め込みの両方）
 #
 # **層 0 だけは単体テストで代替できない**（実測）。`SELF.fetch`（vitest の workers
 # pool）は内部サブリクエストで **HTTP のエンコード境界を通らない**ため、
@@ -351,20 +361,78 @@ func probeAudioWorklet() (verdict string, parked bool) {
 	}
 }
 
+// installInputProbe は、**マウスを読む作品**の入力の受け方を再現する（層 6。#491 / 仕様 3.9.3）。
+//
+// Ebitengine v2.9.9 と同じ形にする（仕様 3.9.1）:
+//
+//   - canvas を自分で作って body へ足し、**入力のリスナーを canvas に付ける**
+//   - マウスは `button` と `clientX` / `clientY` を読む（`isTrusted` を見ない）
+//   - **`touchstart` / `touchmove` / `touchend` で `preventDefault` を呼ぶ**。本番の症状（仕様 3.9.1。
+//     ブラウザが互換のマウスイベントを作らない）はこの呼び出しから来る。呼ばない作品を相手にすると、
+//     ブラウザが作る互換のイベントとローダーの変換の区別が付かず、**本番と違う条件で緑になりうる。**
+//
+// 受け取ったマウスイベントは `__gfMouseLog` へ、本物のタッチを受けた回数は `__gfTouchCount` へ残す。
+// **判定はしない**（判定は下の node が持つ）。リスナーは解放しない——Go が終わらない理由の 1 つである。
+func installInputProbe() {
+	global := js.Global()
+	document := global.Get("document")
+	canvas := document.Call("createElement", "canvas")
+	style := canvas.Get("style")
+	style.Set("width", "100vw")
+	style.Set("height", "100vh")
+	document.Get("body").Call("appendChild", canvas)
+
+	// 下で `map[string]any` を `Call` の引数に渡す。**`js.ValueOf` が JS のオブジェクトへ変換する**
+	// （`syscall/js` の変換表。probeAudioWorklet の `Blob` と同じ使い方で、層 6 の緑がその実測である）。
+	mouseLog := global.Get("Array").New()
+	global.Set("__gfMouseLog", mouseLog)
+	global.Set("__gfTouchCount", 0)
+
+	onMouse := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		event := args[0]
+		mouseLog.Call("push", map[string]any{
+			"type":      event.Get("type").String(),
+			"button":    event.Get("button").Int(),
+			"buttons":   event.Get("buttons").Int(),
+			"clientX":   event.Get("clientX").Float(),
+			"clientY":   event.Get("clientY").Float(),
+			"isTrusted": event.Get("isTrusted").Bool(),
+		})
+		return nil
+	})
+	for _, name := range []string{"mousedown", "mousemove", "mouseup"} {
+		canvas.Call("addEventListener", name, onMouse)
+	}
+
+	onTouch := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		args[0].Call("preventDefault")
+		global.Set("__gfTouchCount", global.Get("__gfTouchCount").Int()+1)
+		return nil
+	})
+	for _, name := range []string{"touchstart", "touchmove", "touchend", "touchcancel"} {
+		// passive: false でないと preventDefault が効かない（Ebitengine も同じ指定をする）。
+		canvas.Call("addEventListener", name, onTouch, map[string]any{"passive": false})
+	}
+}
+
 func main() {
-	verdict, parked := probeAudioWorklet()
+	installInputProbe()
+	verdict, _ := probeAudioWorklet()
 	js.Global().Set("__gfAudioWorklet", verdict)
 	// **`__gfWasmRan` は最後に立てる。** 観測側（`scripts/sandbox-browser-probe.mjs`）は
 	// この印が立った時点で読み取りを打ち切るため、先に立てるとワークレットの結果が
 	// 間に合わず、層 5 が「観測できなかった」で不安定になる。
 	js.Global().Set("__gfWasmRan", "ok")
 
-	if parked {
-		// **観測に要る値は上で立て終えている。** ここから先は「終わらないこと」だけが
-		// 仕事である（理由は probeAudioWorklet の注記）。解放していない js.Func が
-		// 残っているため、ランタイムはこれを deadlock と見なさない。
-		select {}
-	}
+	// **観測に要る値は上で立て終えている。** ここから先は「終わらないこと」だけが
+	// 仕事である。理由は 2 つある。
+	//
+	//   - ワークレットが時間切れのとき（probeAudioWorklet の注記）
+	//   - **層 6 のマウスのリスナーが、この後に届くイベントを受ける**（終わると
+	//     `Go program has already exited` を投げる）。実物の ebiten も終わらない
+	//
+	// 解放していない js.Func が残っているため、ランタイムはこれを deadlock と見なさない。
+	select {}
 }
 EOF
 
@@ -516,9 +584,15 @@ fi
 # ── 層 1〜3・層 5: 実ブラウザで開く ─────────────────────────────────────────────────
 
 note "opening $DOC_URL"
+# 層 6（#491）のタッチの座標。**ローダー文書のビューポートの CSS ピクセル**で、
+# 触れた位置と動かした先を分ける（mouseup が「最後の座標」で来ることを見分けるため）。
+# 直接開いた形（既定 800×600）にも、埋め込んだ枠の中にも収まる値にする。
+TOUCH_PLAN="120,80,200,150"
+
 node scripts/sandbox-browser-probe.mjs \
   --browser "$BROWSER_BIN" \
   --url "$DOC_URL" \
+  --touch "$TOUCH_PLAN" \
   --timeout-ms "$TIMEOUT_MS" >"$WORK/probe.json" ||
   { fail "ブラウザでの観測ができませんでした。"; }
 
@@ -585,6 +659,10 @@ if (problems.length > 0) {
 }
 ' "$WORK/probe.json" || fail "実ブラウザでプレイ経路が通りませんでした。"
 
+# ── 層 6: タップがマウスの操作として作品へ届くこと（#491 / 仕様 3.9.3）──────────
+node scripts/tap-mouse-verdict.mjs --probe "$WORK/probe.json" --label "[browser-check] 層 6 (#491)" ||
+  fail "層 6 (#491): タップがマウスの操作として作品へ届きませんでした。"
+
 # ── 層 4: 作品ページに埋め込んだ状態でも同じことが起きること（#30 / 3.4-5）─────
 #
 # **層 1〜3 が見ているのはサンドボックス URL を直接開いた場合である。** ところが
@@ -603,6 +681,7 @@ note "層 4: opening $WORK_PAGE_URL"
 node scripts/sandbox-browser-probe.mjs \
   --browser "$BROWSER_BIN" \
   --url "$WORK_PAGE_URL" \
+  --touch "$TOUCH_PLAN" \
   --timeout-ms "$TIMEOUT_MS" >"$WORK/embed.json" ||
   { fail "層 4: ブラウザでの観測ができませんでした。"; }
 
@@ -650,4 +729,9 @@ if (problems.length > 0) {
 }
 ' "$WORK/embed.json" || fail "層 4: 作品ページに埋め込んだプレイ経路が通りませんでした。"
 
-note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走り、音のワークレットが読み込めました（直接・埋め込みの両方）。"
+# 層 6 を埋め込んだ形でも見る（#491）。**直接開いた形の緑からは導けない**——タッチは親の文書で
+# 当たり判定され、iframe（`sandbox="allow-scripts"`）の中へ配送される。
+node scripts/tap-mouse-verdict.mjs --probe "$WORK/embed.json" --label "[browser-check] 層 6 (#491, 埋め込み)" ||
+  fail "層 6 (#491): 作品ページに埋め込んだ形で、タップがマウスの操作として作品へ届きませんでした。"
+
+note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走り、音のワークレットが読み込め、タップがマウスとして作品へ届きました（直接・埋め込みの両方）。"

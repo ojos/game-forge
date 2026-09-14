@@ -407,9 +407,9 @@ amd64 のイメージでも同じ値）。**だからといって片方をもう
 1. `GOOS=js GOARCH=wasm` で**本物の Go の wasm** をビルドし、brotli で圧縮して R2 へ置く
 2. **ビルドに使ったツールチェイン**に同梱の `wasm_exec.js` を `runtime/<版>/` へ置く（3.5 の版一致）
 3. `games` 行を 1 つ作る（**使い捨ての `--persist-to` へ。手元の `.wrangler/state` は汚しません**）
-4. `wrangler pages dev` を HTTPS で起動し、Chromium で `/p/<key>/` を開く
+4. `wrangler pages dev` を HTTPS で起動し、Chromium で `/p/<key>/` と作品ページ（`/works/<id>`）を開く
 
-見るのは 3 層で、**どこで落ちたかが分かる形**になっています。
+見るのは次の層で、**どこで落ちたかが分かる形**になっています。
 
 | 層 | 見るもの | 落ちたときの意味 |
 |---|---|---|
@@ -417,6 +417,9 @@ amd64 のイメージでも同じ値）。**だからといって片方をもう
 | 1 | 文書が**不透明オリジン**であること（`self.origin === "null"`、`localStorage` が投げる） | 7.2 必須要件 1 が効いていない。**この状態の緑は無意味です** |
 | 2 | `.wasm` の取得が CORS で破棄されないこと | #180 そのもの |
 | 3 | wasm が起動し Go が実際に走ること | プレイ経路が通っていない |
+| 4 | 作品ページに埋め込んだ状態でも 1 と 3 が成り立つこと（#30） | `frame-ancestors` か iframe の `sandbox` で止まっている |
+| 5 | 音のワークレットのモジュールを `blob:` から読めること（直接・埋め込みの両方。#306） | `script-src` に `blob:` が無いなど |
+| 6 | CDP の `Input.dispatchTouchEvent` で送った指 1 本のタッチが、マウスを読む検査用の作品の canvas に `mousemove → mousedown → mousemove → mouseup` として届くこと（直接・埋め込みの両方。#491 / 仕様 3.9.3） | ローダーのタップ→マウス変換が効いていない。判定は `scripts/tap-mouse-verdict.mjs` |
 
 **層 0 の判定は `scripts/wasm-body-verdict.mjs` が持ちます**（`check-sandbox-cors.sh` と
 **同じ判定体**を使います）。**応答の `Content-Encoding` を見ずに判定してはいけません** —

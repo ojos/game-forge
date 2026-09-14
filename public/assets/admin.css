@@ -108,100 +108,203 @@
   background: var(--gf-surface);
 }
 
+
+/*
+ * 管理画面のフッタ（仕様 2.5.3 / 2.5.7 / #475）。**上の罫線を器の端から端まで引く**——ヘッダの下と同じ
+ * `--gf-rule-soft` で、`<hr>` は置かない（app.css の `.gf-footer` と同じ理由。`<hr>` は `@section base` の
+ * 余白と一段濃い線を持ち、ヘッダの下の線と揃わない）。body 直下に置くので、幅は器そのものである。
+ */
 .gf-admin-footer {
   margin-top: var(--gf-gap-5);
+  padding-top: var(--gf-gap-4);
+  border-top: 1px solid var(--gf-rule-soft);
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
 }
 
 /* ==========================================================================
-   一覧の行（審査キュー・利用者・削除依頼・操作の履歴が共有する）
+   本文（審査キュー・利用者・削除依頼・操作の履歴が共有する。仕様 2.5.4 / 2.5.5 / #475）
    ========================================================================== */
 
+/*
+ * **面の作法は app.css の部品が持つ**（`.gf-block` / `.gf-block-rows` / `.gf-chip` / `.gf-button-secondary` /
+ * `.gf-link-quiet`）。ここが持つのは、**管理画面の 1 件の中の並べ方だけ**である（面の色・角丸・枠の値を書かない）。
+ *
+ * **幅の `@media` を置かない**（ヘッダの注記と同じ。app.css の区画の規約 3）。狭い段（〜767px）で縦に積むのは、
+ * **折り返し（`flex-wrap`）と各要素の基準の幅だけ**で決める——「理由の入力欄とボタン」と「証跡の 2 つの値」は、
+ * 横に並ぶ幅が無ければ次の行へ回る。**並びは HTML の順のままで、`order` も `display: contents` も使わない**
+ * （DOM の順＝見た目の順＝Tab の順）。
+ */
+
+/* 冒頭の説明。**器いっぱいのブロックに収める**（仕様 2.5.3。1〜2 行の文を並べる画面なので、段落の上限を外す）。 */
+.gf-admin-intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-2);
+  margin: 0 0 var(--gf-gap-3);
+}
+
+.gf-admin-intro p {
+  max-width: none;
+  margin: 0;
+}
+
+/* 面の上の `code`。app.css の既定の地（`--gf-surface`）は面と同じ色で見えなくなるので、地の色へ戻す。 */
+.gf-admin-intro code {
+  background: var(--gf-ground);
+}
+
+/* 節の見出しの下の注記。 */
+.gf-admin-note {
+  max-width: none;
+  margin: 0 0 var(--gf-gap-3);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+/*
+ * 一覧。**1 件ずつをブロックにし、ブロックの間を空ける**（仕様 2.5.4 の表の「一覧の間隔 24px（`--gf-gap-4`）」。
+ * ブロックの内側の余白 16px より広くし、中身の塊と塊どうしの境目を区別する。PR #495 の Copilot の指摘で 16px から直した）。`ul` の上限（`--gf-measure`）を外し、
+ * ブロックの右端を器の右端に揃える（仕様 2.5.3）。
+ */
 .gf-admin-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-4);
+  max-width: none;
   margin: 0 0 var(--gf-gap-5);
   padding: 0;
   list-style: none;
 }
 
 /*
- * 1 行。**枠で囲う。** 行ごとに理由の入力とボタンが付くので、**どのボタンがどの対象の
- * ものか**が見た目で決まっていなければ、**取り違えて押せる**（BAN も審査も対象を
- * 取り違えたときの損害が大きい。2.4.3 が取り下げを置かなかった理由と同じ向き）。
+ * 1 件（`<li class="gf-block gf-admin-row">`）。**枠線で囲わず、面で区切る**（仕様 2.5.4。#475 の前は枠線と面の
+ * 両方を持っていた）。**どのボタンがどの対象のものか**は、面の切れ目で決まる——BAN も審査も対象を取り違えた
+ * ときの損害が大きい（2.4.3 が取り下げを置かなかった理由と同じ向き）。
  */
 .gf-admin-row {
-  margin: 0 0 var(--gf-gap-3);
-  padding: var(--gf-gap-3);
-  border: 1px solid var(--gf-rule);
-  border-radius: var(--gf-radius);
-  background: var(--gf-surface);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-2);
+  margin: 0;
+}
+
+.gf-admin-row > p {
+  max-width: none;
+  margin: 0;
+}
+
+/* 行の頭（状態のチップ。利用者の画面では名前とチップ）。チップが増えても折り返す。 */
+.gf-admin-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-2);
 }
 
 .gf-admin-row-title {
-  margin: 0 0 var(--gf-gap-1);
   font-weight: 700;
 }
 
 .gf-admin-meta {
-  margin: 0 0 var(--gf-gap-2);
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
 }
 
 /*
- * 行の頭の札（審査キューの「改名後に通報あり」。#367）。
- *
- * **文字で区別し、色に頼らない。** 新しい色のトークンを足さない（この 1 枚はトークンを
- * 定義しない。冒頭）——`--gf-ink` の枠線と太字だけで、明暗どちらのテーマでも同じ強さに
- * 見える。**`queued` の行には付かない**ので、同じ枠の行が並んでも取り違えない。
+ * 補助の行の中のリンク（削除依頼の対象の作品）。**文章の外のリンク**（`.gf-link-quiet`）で下線を常には出さない
+ * ので、**淡い補助の文字に埋もれないよう主の文字で太く出す**（承認したモックアップの形）。
  */
-.gf-admin-badge {
-  display: inline-block;
-  margin: 0 0 var(--gf-gap-1);
-  padding: 0 0.5em;
-  border: 1px solid var(--gf-ink);
-  border-radius: var(--gf-radius);
+.gf-admin-meta .gf-link-quiet {
   color: var(--gf-ink);
-  font-size: var(--gf-text-small);
   font-weight: 700;
+}
+
+/* 補助の行の中で太くした語（削除依頼の措置の名前など）も、主の文字で出す。 */
+.gf-admin-meta strong {
+  color: var(--gf-ink);
 }
 
 /* 理由は運営が書いた自由記述である。**折り返す**（`overflow-wrap` は body から継ぐ）。 */
 .gf-admin-reason {
-  margin: 0;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+/* id は長い（UUID）。**等幅で出し、折り返させる。** 面の上なので `code` の地（面と同じ色）と余白を外す。 */
+.gf-admin-row code,
+.gf-admin-history code {
+  padding: 0;
+  background: none;
+  font-family: var(--gf-font-mono);
+  font-size: var(--gf-text-small);
+  overflow-wrap: anywhere;
 }
 
 /*
- * 行の中のフォーム。**`app.css` の `form` は下に余白を持つ**（画面に 1 つだけ置く
- * 前提の値である）。行の中では最後の要素なので、その余白を外す。
+ * 行の中のフォーム。**ブロックの中の罫線の下に置く**（仕様 2.5.4 の「ブロックの中で行を分けるときは
+ * `--gf-rule-soft` の罫線」）。`app.css` の `form` は下に余白と段落の上限を持つ（画面に 1 つだけ置く前提の値）
+ * ので、行の中では外す。
  */
 .gf-admin-row form {
+  gap: var(--gf-gap-2);
+  max-width: none;
   margin: 0;
+  padding-top: var(--gf-gap-3);
+  border-top: 1px solid var(--gf-rule-soft);
+}
+
+.gf-admin-row form label {
+  margin: 0;
+  font-size: var(--gf-text-small);
+}
+
+/*
+ * 理由の入力欄と送るボタンの 1 行（`<div class="gf-admin-submit">`）。
+ *
+ * **狭い段（〜767px）では必ず縦に積み、768px 以上では必ず横に並べる。** 幅の `@media` を使わず（この区画の冒頭）、
+ * **2 つの基準の幅の和で決める**——ボタンの基準の幅を文言の幅（`auto`）にせず固定するので、文言の長さによらない。
+ *
+ * | 段 | フォームの幅（器 − ガター × 2 − ブロックの内側の余白 × 2） | 入力欄 24rem ＋ 間 8px ＋ ボタン 16rem = 648px |
+ * |---|---|---|
+ * | 狭い段（〜767px） | **最大 608px**（器の上限 `--gf-shell` = 42rem = 672px − 16px × 2 − 16px × 2） | 収まらない → 折り返す（余裕 40px） |
+ * | 768px | **688px**（768px − 24px × 2 − 16px × 2。器の上限は 80rem に広がる） | 収まる → 並ぶ（余裕 40px） |
+ * | それより広い | 688px より広い | 並ぶ |
+ *
+ * - **余りは入力欄とボタンに 3:1 で配る**（1280px ではボタンが文言の幅まで広がる）。基準の幅より長い文言
+ *   （「BAN する（ログインを要する操作を止める）」）は、768px ではボタンの中で折り返す
+ * - **折り返したあとは、それぞれがその行いっぱいに伸びる**（入力欄の基準の幅 384px は 390px の版面より広いが、
+ *   `flex-shrink` で縮む）
+ * - **ボタンの文言は折り返してよい。** 部品（`.gf-button`）は 1 行の文言を前提に `nowrap` を持つ
+ * - **狭い段で積むことは、文字の大きさ（1rem の px）によらない。** 狭い段のフォームの幅は最大 38rem（42rem − 1rem × 2
+ *   − 1rem × 2）で、和は 40rem ＋ 8px なので必ず収まらない。**768px で並ぶことは 1rem = 16px を前提にする**——
+ *   1rem が約 16.9px を超えると 768px でも積む（崩れる向きは「積む」側だけである）。縦のスクロールバーが幅を
+ *   15〜17px 取る端末でも、768px の余裕 40px の中に収まる
+ */
+.gf-admin-submit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--gf-gap-2);
 }
 
 /*
- * 理由の入力。**`size` 属性を使わない**（`test/admin-page-shell.test.ts` が見ている。
- * `size` / `cols` は layout viewport を広げ、狭い端末で横スクロールを生む。#282）。
- * **幅は CSS で決める**——`width: 100%` と `max-width: 100%` の組で、
- * 390px でも版面からはみ出さない。
+ * 入力欄の枠は app.css の `@section forms` の既定（`--gf-rule-input`。地に対して 3:1）のまま。**高さをボタンの
+ * 中（40px）に揃える。** `size` 属性は使わない（`test/admin-page-shell.test.ts` が見ている。#282）。
  */
-.gf-admin-row input[type='text'] {
-  width: 100%;
-  max-width: 100%;
-  padding: 0.5em 0.6em;
-  border: 1px solid var(--gf-rule);
-  border-radius: var(--gf-radius);
-  background: var(--gf-ground);
-  color: var(--gf-ink);
-  font: inherit;
+.gf-admin-submit input[type='text'] {
+  flex: 3 1 24rem;
+  min-width: 0;
+  min-height: var(--gf-control-md);
+  padding-block: 0;
 }
 
-/* id は長い（UUID）。**等幅で出し、折り返させる。** */
-.gf-admin-row code {
-  font-family: var(--gf-font-mono);
-  font-size: var(--gf-text-small);
-  overflow-wrap: anywhere;
+.gf-admin-submit .gf-button {
+  flex: 1 1 16rem;
+  align-self: stretch;
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
 }
 
 /*
@@ -210,70 +313,111 @@
  */
 
 /* ==========================================================================
-   通報の時点の値（審査キューの行の中。#405）
+   通報の時点の値（審査キューの行の中。#405 / #475）
    ========================================================================== */
 
 /*
- * **行の中に、通報ごとの小さな塊を積む。** 行そのもの（`.gf-admin-row`）は枠で囲ってあり、
- * その中でさらに枠を重ねると境目が読めなくなる。**左の線 1 本で「この行に属する通報」を
- * 表す**（色のトークンは足さない。冒頭）。
+ * **ブロックの中に、地の色の面で置く**（承認したモックアップの形。面の上にもう一段の面を重ねると区別が付かない
+ * ので、地へ戻す）。枠線は使わない（仕様 2.5.4）。
  */
 .gf-admin-evidence {
-  margin: 0 0 var(--gf-gap-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-2);
+  padding: var(--gf-gap-3);
+  border-radius: var(--gf-radius);
+  background: var(--gf-ground);
 }
 
 .gf-admin-evidence-list {
+  max-width: none;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/* 通報ごとの塊。2 件目からは淡い罫線で分ける。 */
 .gf-admin-evidence-report {
-  margin: 0 0 var(--gf-gap-2);
-  padding-left: var(--gf-gap-2);
-  border-left: 2px solid var(--gf-rule);
+  margin: 0;
+}
+
+.gf-admin-evidence-report + .gf-admin-evidence-report {
+  margin-top: var(--gf-gap-3);
+  padding-top: var(--gf-gap-3);
+  border-top: 1px solid var(--gf-rule-soft);
 }
 
 .gf-admin-evidence-note,
 .gf-admin-evidence-when {
-  margin: 0 0 var(--gf-gap-1);
-  color: var(--gf-ink-soft);
-  font-size: var(--gf-text-small);
-}
-
-.gf-admin-evidence-fields {
-  margin: 0;
-}
-
-.gf-admin-evidence-fields dt {
-  margin: var(--gf-gap-1) 0 0;
-  font-weight: 700;
-}
-
-.gf-admin-evidence-fields dd {
-  margin: 0;
-}
-
-.gf-admin-evidence-fields dd p {
+  max-width: none;
   margin: 0;
 }
 
 /*
- * 「変わっています」「記録がありません」などの印。**文字で出し、色に頼らない**
- * （`.gf-admin-badge` と同じ考え方で、線と太さだけで目立たせる）。
+ * **読み取りに失敗した知らせ（`class="gf-admin-evidence-note error"`）には淡い文字を当てない**（PR #495 の Copilot の
+ * 指摘）。`.error`（app.css の `@section notices`）と同じ詳細度で後から読まれるので、そのまま書くとエラーの赤が
+ * 淡い灰に負ける。**赤はエラーの意味である**（仕様 2.5.2）ので、`:not(.error)` で外し、エラーの見た目は `.error` に任せる。
  */
-.gf-admin-evidence-mark {
-  display: inline-block;
-  margin-left: 0.5em;
-  padding: 0 0.4em;
-  border: 1px solid var(--gf-ink);
-  border-radius: var(--gf-radius);
+.gf-admin-evidence-note:not(.error),
+.gf-admin-evidence-when {
+  color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
+}
+
+.gf-admin-evidence-when {
+  margin-bottom: var(--gf-gap-1);
+  color: var(--gf-ink);
+  font-weight: 700;
+}
+
+.gf-admin-evidence-fields {
+  max-width: none;
+  margin: 0;
+  font-size: var(--gf-text-small);
+}
+
+/* 項目 1 つ（`<div>` に `<dt>` と `<dd>` を 1 組）。 */
+.gf-admin-evidence-field + .gf-admin-evidence-field {
+  margin-top: var(--gf-gap-2);
+}
+
+/* 項目名と、状態のチップ（「変わっています」など）。チップが長くても折り返す。 */
+.gf-admin-evidence-fields dt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-1) var(--gf-gap-2);
+  margin: 0 0 var(--gf-gap-1);
+  font-weight: 700;
+}
+
+/*
+ * 「通報の時点」と「いま」の 2 つの値。**狭い段（〜767px）では必ず 1 列に積み、768px 以上では必ず 2 列に並べる**
+ * （幅の `@media` を使わない。この区画の冒頭）。基準の幅 18.75rem（300px）× 2 ＋ 間 16px = 616px で決める——
+ * 値を置く幅（フォームの幅 − 証跡の面の内側の余白 16px × 2）は、**狭い段で最大 576px**（収まらない → 積む。余裕 40px）、
+ * **768px で 656px**（収まる → 並ぶ。余裕 40px）である（`.gf-admin-submit` の表と同じ計算）。狭い段で積むことは
+ * 文字の大きさによらない（最大 36rem に対して 37.5rem ＋ 16px）。**どちらの段でも値の頭に「通報の時点」「いま」を書く**——同じ秒の
+ * 変更では片側に値が 2 つ入り、見出しの行 1 つでは言い分けられない（`src/admin/review.ts` の `renderField`）。
+ */
+.gf-admin-evidence-fields dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-1) var(--gf-gap-3);
+  margin: 0;
+}
+
+.gf-admin-evidence-cell {
+  flex: 1 1 18.75rem;
+  min-width: 0;
+}
+
+.gf-admin-evidence-cell p {
+  max-width: none;
+  margin: 0;
 }
 
 .gf-admin-evidence-label {
   color: var(--gf-ink-soft);
-  font-size: var(--gf-text-small);
 }
 
 /*
@@ -286,17 +430,19 @@
 }
 
 .gf-admin-evidence-none {
-  color: var(--gf-ink-soft);
+  color: var(--gf-ink-faint);
 }
 
 /* ==========================================================================
-   削除依頼（#406）
+   削除依頼（#406 / #475）
    ========================================================================== */
 
-/* 依頼者が書いた本文。**改行を保ち、区切りの無い綴り（URL など）でも幅を越えない**
-   （#282 の 390px の判定。`scripts/check-page-width.sh` が admin も見る）。 */
-.gf-admin-takedown-body {
-  margin: 0 0 var(--gf-gap-2);
+/* 依頼者が書いた本文。**ブロックの中に地の色の面で置く**（審査キューの証跡と同じ形）。**改行を保ち、区切りの
+   無い綴り（URL など）でも幅を越えない**（#282 の 390px の判定。`scripts/check-page-width.sh` が admin も見る）。 */
+.gf-admin-row > .gf-admin-takedown-body {
+  padding: var(--gf-gap-2) var(--gf-gap-3);
+  border-radius: var(--gf-radius);
+  background: var(--gf-ground);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -306,22 +452,74 @@
   overflow-wrap: anywhere;
 }
 
-/* 措置の選択肢。枠線を消し、行の枠の中に積む。 */
+/* 措置の選択肢。**3 つを縦に並べる**（仕様 2.4.3 の 3 択）。枠線を消し、罫線の下に積む。 */
 .gf-admin-choices {
-  margin: 0 0 var(--gf-gap-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-2);
+  min-width: 0;
+  margin: 0;
   padding: 0;
   border: 0;
 }
 
 .gf-admin-choices legend {
-  margin: 0 0 var(--gf-gap-1);
+  margin: 0 0 var(--gf-gap-2);
   padding: 0;
+  font-size: var(--gf-text-small);
   font-weight: 700;
 }
 
 .gf-admin-choice {
   display: flex;
-  gap: var(--gf-gap-1);
+  gap: var(--gf-gap-2);
   align-items: baseline;
-  margin: 0 0 var(--gf-gap-1);
+  max-width: none;
+  margin: 0;
+  font-size: var(--gf-text-small);
+}
+
+/* 選択肢の文言は太字にしない（措置の名前だけを `<strong>` で太くする）。`@section forms` の `label` の既定を外す。 */
+.gf-admin-row form .gf-admin-choice label {
+  font-weight: 400;
+}
+
+/* ==========================================================================
+   操作の履歴（#361 / #475）
+   ========================================================================== */
+
+/*
+ * **1 つのブロックの中に行を並べ、行の間に淡い罫線を引く**（`.gf-block-rows`。仕様 2.5.4）。読むだけの画面で
+ * 行ごとに操作が無いので、1 件ずつのブロックに分けない（承認したモックアップの形）。
+ */
+.gf-admin-history {
+  max-width: none;
+  margin: 0 0 var(--gf-gap-5);
+  list-style: none;
+}
+
+.gf-admin-history > li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-1);
+  margin: 0;
+}
+
+.gf-admin-history p {
+  max-width: none;
+  margin: 0;
+}
+
+/* 行の頭（日時と操作）。狭い段では折り返す。 */
+.gf-admin-history-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--gf-gap-1) var(--gf-gap-3);
+}
+
+.gf-admin-history-when {
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+  font-variant-numeric: tabular-nums;
 }

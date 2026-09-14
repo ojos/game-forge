@@ -370,7 +370,7 @@ describe('審査キューの画面（2.4.3 / 8.4）', () => {
 
     const { body } = await open(ADMIN_HOME_PATH, adminCookie);
     // **行の数を数える。** 母数が増えても読み取りが増えない形であることの現れである。
-    expect(body.split('<li class="gf-admin-row">').length - 1).toBe(ADMIN_LIST_LIMIT);
+    expect(body.split('<li class="gf-block gf-admin-row">').length - 1).toBe(ADMIN_LIST_LIMIT);
   });
 
   it('取り下げ済み（removed）の作品は、審査待ちのままでも並べない', async () => {
@@ -585,7 +585,10 @@ describe('審査キューに「問題なしとしたあとに通報が付いた�
     const reportedSection = sectionOf(body, 'reported');
     const queuedSection = sectionOf(body, 'queued');
 
-    expect(reportedSection).toContain('<p class="gf-admin-badge">問題なしのあとに通報あり</p>');
+    // **札はチップの部品である**（仕様 2.5.5 / #475。止まっていない露出に目を向けさせる印なので強調のチップ）。
+    expect(reportedSection).toContain(
+      '<p class="gf-admin-row-head"><span class="gf-chip gf-chip-emphasis">問題なしのあとに通報あり</span></p>',
+    );
     // **いつ改名されたか**を出す。**通報の時点の題名は通報ごとに出す**（#405）が、この作品の
     // 通報は改名より後なので、通報の時点の題名も改名後であり、改名前の題名はどこにも出ない。
     expect(reportedSection).toContain('最終改名: <time datetime="');
@@ -593,11 +596,11 @@ describe('審査キューに「問題なしとしたあとに通報が付いた�
     expect(reportedSection).not.toContain('改名前の題名');
 
     expect(queuedSection).toContain(queued);
-    expect(queuedSection).not.toContain('gf-admin-badge');
+    expect(queuedSection).not.toContain('問題なしのあとに通報あり');
     expect(queuedSection).not.toContain('最終改名');
     // **押す操作も違う**（この節の行は `cleared` なので、向かう先は `queued`）。
     const reportedRow = reportedSection
-      .split('<li class="gf-admin-row">')
+      .split('<li class="gf-block gf-admin-row">')
       .find((row) => row.includes(reported));
     expect(reportedRow).toContain(`name="${ADMIN_NEXT_FIELD}" value="${REVIEW_QUEUED}"`);
   });
@@ -713,7 +716,7 @@ describe('審査キューに「問題なしとしたあとに通報が付いた�
     }
 
     const { body } = await open(ADMIN_HOME_PATH, adminCookie);
-    expect(sectionOf(body, 'reported').split('<li class="gf-admin-row">').length - 1).toBe(
+    expect(sectionOf(body, 'reported').split('<li class="gf-block gf-admin-row">').length - 1).toBe(
       ADMIN_LIST_LIMIT,
     );
   });
@@ -914,7 +917,7 @@ describe('通報された時点の題名・説明・作者名を、いまの値�
    * @returns 行の HTML（見つからなければ空文字）
    */
   function rowOf(body: string, gameId: string): string {
-    return body.split('<li class="gf-admin-row">').find((row) => row.includes(`value="${gameId}"`)) ?? '';
+    return body.split('<li class="gf-block gf-admin-row">').find((row) => row.includes(`value="${gameId}"`)) ?? '';
   }
 
   /**
@@ -966,7 +969,7 @@ describe('通報された時点の題名・説明・作者名を、いまの値�
     const { status, body } = await open(ADMIN_HOME_PATH, adminCookie);
     expect(status).toBe(200);
     const title = fieldOf(reportOf(rowOf(body, gameId)), '題名');
-    expect(title).toContain('<span class="gf-admin-evidence-mark">変わっています</span>');
+    expect(title).toContain('<span class="gf-chip">変わっています</span>');
     expect(title).toContain(line('通報の時点', '通報された題名'));
     expect(title).toContain(line('いま', '穏当な題名'));
   });
@@ -994,7 +997,7 @@ describe('通報された時点の題名・説明・作者名を、いまの値�
     await insertReport(gameId, 1_700_002_000);
 
     const report = reportOf(rowOf((await open(ADMIN_HOME_PATH, adminCookie)).body, gameId));
-    expect(fieldOf(report, '題名')).toContain('<span class="gf-admin-evidence-mark">変わっていません</span>');
+    expect(fieldOf(report, '題名')).toContain('<span class="gf-chip">変わっていません</span>');
     expect(fieldOf(report, '題名')).toContain(line('通報の時点', '変えていない題名'));
     // 説明は空（書いていない）。**空を「値が無い」と取り違えない**ように「（空）」と書く。
     expect(fieldOf(report, '説明')).toContain('変わっていません');
@@ -1050,7 +1053,7 @@ describe('通報された時点の題名・説明・作者名を、いまの値�
 
     const { body } = await open(ADMIN_HOME_PATH, adminCookie);
     const name = fieldOf(reportOf(rowOf(body, gameId)), '作者名');
-    expect(name).toContain('<span class="gf-admin-evidence-mark">記録がありません</span>');
+    expect(name).toContain('<span class="gf-chip">記録がありません</span>');
     expect(name).toContain('この時点の作者名の記録はありません');
     expect(name).not.toContain(line('通報の時点', '記録前の作者'));
     // **いまの値は出す**（並べる片方として。当時の値としてではない）。
@@ -1093,7 +1096,7 @@ describe('通報された時点の題名・説明・作者名を、いまの値�
     ] as const) {
       const field = fieldOf(report, label);
       expect(field, label).toContain(
-        '<span class="gf-admin-evidence-mark">通報と同じ秒に変更がありました</span>',
+        '<span class="gf-chip">通報と同じ秒に変更がありました</span>',
       );
       expect(field, label).toContain(line('同じ秒の変更の前', before));
       expect(field, label).toContain(line('同じ秒の変更の後', after));
@@ -1243,6 +1246,9 @@ describe('通報された時点の題名・説明・作者名を、いまの値�
       expect(body).not.toContain('（読み込めませんでした）</h2>');
       // **「通報が無い」と書かない**（読めていないだけである）。
       expect(rowOf(body, queued)).toContain('通報の時点の題名・説明・作者名を読み込めませんでした');
+      // **エラーの知らせは `.error` の見た目のまま**（赤はエラーの意味。`admin.css` は `:not(.error)` にだけ淡い文字を当てる。
+      // CSS の中身はテストから読めないので、ここでは `.error` が付いていることを見る。PR #495 の Copilot の指摘）。
+      expect(rowOf(body, queued)).toContain('<p class="gf-admin-evidence-note error">');
       expect(rowOf(body, queued)).not.toContain('この作品の通報は見つかりませんでした。');
     } finally {
       await env.DB.prepare(`alter table ${DISPLAY_NAME_CHANGES_TABLE}_hidden rename to ${DISPLAY_NAME_CHANGES_TABLE}`).run();
@@ -1390,7 +1396,7 @@ describe('利用者の一覧と BAN（2.4.3 / 7.3）', () => {
   it('自分自身には BAN のボタンを出さない', async () => {
     const { body } = await open(ADMIN_USERS_PATH, adminCookie);
     const ownRow = body
-      .split('<li class="gf-admin-row">')
+      .split('<li class="gf-block gf-admin-row">')
       .find((chunk) => chunk.includes(users.admin));
     expect(ownRow, '自分の行が無い').toBeDefined();
     expect(ownRow!).toContain('自分自身は BAN できません');
@@ -1766,5 +1772,158 @@ describe('削除依頼の一覧と措置の記録（2.4.3 / 8.4 / #406）', () =
   it('ヘッダのナビから削除依頼の画面へ行ける', async () => {
     const { body } = await open(ADMIN_ACTIONS_PATH, adminCookie);
     expect(body).toContain(`href="${ADMIN_TAKEDOWNS_PATH}"`);
+  });
+});
+
+describe('管理画面の本文が見た目の規約の部品で組まれている（仕様 2.5 / #475）', () => {
+  /** 4 画面（**綴りは正本の定数から取る**）。 */
+  const SCREENS = [ADMIN_HOME_PATH, ADMIN_USERS_PATH, ADMIN_TAKEDOWNS_PATH, ADMIN_ACTIONS_PATH] as const;
+
+  /** 1 件のブロックの開始タグ（審査キュー・利用者。削除依頼は `id` 属性が続く）。 */
+  const ROW = '<li class="gf-block gf-admin-row">';
+
+  /**
+   * 本文から、ある id を含む 1 件を切り出す。
+   *
+   * @param body 画面の本文
+   * @param id 行が含む id
+   * @returns 行の HTML（見つからなければ空文字）
+   */
+  function rowContaining(body: string, id: string): string {
+    return body.split(ROW).find((chunk) => chunk.includes(id)) ?? '';
+  }
+
+  /**
+   * 4 画面のどれにも行と操作が出るように仕込む。
+   *
+   * @returns 仕込んだ作品と削除依頼の id
+   */
+  async function seedAll(): Promise<{ queued: string; pendingTakedown: string; handledTakedown: string }> {
+    const queued = await insertGame(REVIEW_QUEUED, '審査待ちの作品');
+    await insertReport(queued, 1_700_002_000);
+    await insertReportedAfterClear();
+    await insertGame(REVIEW_CLEARED, '問題なしとした作品');
+    const pendingTakedown = await insertTakedown(queued, { receivedAt: 100 });
+    const handledTakedown = await insertTakedown(queued, {
+      receivedAt: 50,
+      handledAt: 60,
+      action: 'rejected',
+      note: '根拠が無い',
+    });
+    await insertClearedAction(queued, 1_700_000_100);
+    return { queued, pendingTakedown, handledTakedown };
+  }
+
+  it('4 画面で、行の操作のボタンがすべて副で、主のボタンが無い', async () => {
+    // **行ごとに操作がある画面では主のボタンを使わない**（2.5.10 の第 4 版の決定。「主は 1 画面に 1 つ」を保つ）。
+    // **BAN や措置の記録も副にし、赤くしない**（赤はエラーの意味だけ。2.5.2）。
+    await seedAll();
+    for (const path of SCREENS) {
+      const { status, body } = await open(path, adminCookie);
+      expect(status, path).toBe(200);
+      const buttons = body.match(/<button\b[^>]*>/gu) ?? [];
+      if (path !== ADMIN_ACTIONS_PATH) {
+        // 操作の履歴は読むだけの画面で、ボタンを持たない（`src/admin/history.ts`）。
+        expect(buttons.length, `${path} のボタンの数`).toBeGreaterThan(0);
+      }
+      for (const button of buttons) {
+        expect(button, `${path} のボタン`).toBe('<button type="submit" class="gf-button gf-button-secondary">');
+      }
+      expect(body, `${path} に主のボタン`).not.toContain('gf-button-primary');
+    }
+  });
+
+  it('4 画面で、フォームの中の並びがラベル → 入力欄 → ボタンのまま（DOM の順＝Tab の順）', async () => {
+    // **見た目で並べ替えない**（`admin.css` は `order` も `display: contents` も使わない。下のテスト）。
+    await seedAll();
+    for (const path of SCREENS) {
+      const { body } = await open(path, adminCookie);
+      for (const form of body.match(/<form\b[\s\S]*?<\/form>/gu) ?? []) {
+        const label = form.indexOf('<label for="reason-');
+        const input = form.indexOf(`name="${ADMIN_REASON_FIELD}"`);
+        const button = form.indexOf('<button ');
+        expect(label, `${path} の理由のラベル`).toBeGreaterThan(-1);
+        expect(label, path).toBeLessThan(input);
+        expect(input, path).toBeLessThan(button);
+        // **入力欄とボタンは 1 つの並びに入る**（狭い段では折り返して縦に積む。`admin.css` の `.gf-admin-submit`）。
+        expect(form, path).toMatch(
+          /<div class="gf-admin-submit">\s*<input [^>]*type="text" required>\s*<button [^>]*>[^<]*<\/button>\s*<\/div>/u,
+        );
+      }
+    }
+  });
+
+  it('1 件ずつがブロックで、冒頭の説明もブロックにある', async () => {
+    const { queued, pendingTakedown } = await seedAll();
+    for (const path of SCREENS) {
+      const { body } = await open(path, adminCookie);
+      expect(body.split('<div class="gf-block gf-admin-intro">').length - 1, `${path} の冒頭の説明`).toBe(1);
+      // **日本語の文の途中で HTML を改行しない**（ブラウザが空白 1 つとして描く。削除依頼の画面のテストと同じ理由）。
+      const intro = /<div class="gf-block gf-admin-intro">([\s\S]*?)<\/div>/u.exec(body)?.[1] ?? '';
+      for (const paragraph of intro.match(/<p>[\s\S]*?<\/p>/gu) ?? []) {
+        expect(paragraph, `${path} の冒頭の説明の段落`).not.toContain('\n');
+      }
+    }
+    expect(rowContaining((await open(ADMIN_HOME_PATH, adminCookie)).body, queued)).not.toBe('');
+    const usersBody = (await open(ADMIN_USERS_PATH, adminCookie)).body;
+    expect(usersBody.split(ROW).length - 1).toBeGreaterThanOrEqual(3);
+    expect((await open(ADMIN_TAKEDOWNS_PATH, adminCookie)).body).toContain(
+      `<li class="gf-block gf-admin-row" id="takedown-${pendingTakedown}">`,
+    );
+    // **操作の履歴は 1 つのブロックの中の行である**（行ごとに操作が無いので、1 件ずつのブロックに分けない）。
+    expect((await open(ADMIN_ACTIONS_PATH, adminCookie)).body).toContain(
+      '<ul class="gf-block gf-block-rows gf-admin-history">',
+    );
+  });
+
+  it('審査キューの証跡・削除依頼の本文が、ブロックの中の地の色の面にある', async () => {
+    const { queued, pendingTakedown } = await seedAll();
+
+    const row = rowContaining((await open(ADMIN_HOME_PATH, adminCookie)).body, `value="${queued}"`);
+    expect(row).toContain('<div class="gf-admin-evidence">');
+    const takedownRow =
+      (await open(ADMIN_TAKEDOWNS_PATH, adminCookie)).body
+        .split('<li class="gf-block gf-admin-row"')
+        .find((chunk) => chunk.includes(`id="takedown-${pendingTakedown}"`)) ?? '';
+    expect(takedownRow).toContain('<p class="gf-admin-takedown-body">当社の著作物です。');
+
+    // **地の色の面は `admin.css` の `.gf-admin-evidence` / `.gf-admin-row > .gf-admin-takedown-body` が塗る**
+    // （`background: var(--gf-ground)`）。**CSS の中身はこのテストから読めない**——`public/` の下のファイルは Vite が
+    // `?raw` で中身を渡さず（空文字になる）、`vitest.config.ts` の束縛にあるのは app.css だけである。面の色は撮影で確かめる（#475 の PR の本文）。
+    // ここでは、**その面の要素が 1 件のブロック（`.gf-block`）の中にある**ことを見る。
+    expect(row.length, '審査キューの行が無い').toBeGreaterThan(0);
+    expect(takedownRow.length, '削除依頼の行が無い').toBeGreaterThan(0);
+  });
+
+  it('状態の印（変更あり・BAN 中・未対応 など）がチップの部品である', async () => {
+    const { queued } = await seedAll();
+    await renameGame(env, queued, users.author, '改名した題名', 1_700_003_000);
+    await env.DB.prepare('update users set banned_at = 1 where id = ?').bind(users.other).run();
+    await env.DB.prepare('update users set is_operator = 1 where id = ?').bind(users.admin).run();
+    try {
+      // 審査キュー: 節の札は強調のチップ、証跡の印は押せない札のチップ。
+      const review = (await open(ADMIN_HOME_PATH, adminCookie)).body;
+      expect(review).toContain('<span class="gf-chip gf-chip-emphasis">問題なしのあとに通報あり</span>');
+      expect(rowContaining(review, `value="${queued}"`)).toContain(
+        `<dt>題名 <span class="gf-chip">変わっています</span></dt>`,
+      );
+
+      // 利用者: 管理者・運営はチップ、**BAN 中だけ強調のチップ**。「通常」の札は付けない。
+      const usersBody = (await open(ADMIN_USERS_PATH, adminCookie)).body;
+      const rowFor = (id: string): string => rowContaining(usersBody, id);
+      expect(rowFor(users.admin)).toContain('<span class="gf-chip">管理者</span>');
+      expect(rowFor(users.admin)).toContain('<span class="gf-chip">運営</span>');
+      expect(rowFor(users.admin)).not.toContain('BAN 中');
+      expect(rowFor(users.other)).toContain('<span class="gf-chip gf-chip-emphasis">BAN 中</span>');
+      expect(rowFor(users.author)).not.toContain('gf-chip');
+      expect(usersBody).not.toContain('通常');
+
+      // 削除依頼: **未対応だけ強調のチップ**、措置済みは押せない札のチップ。
+      const takedowns = (await open(ADMIN_TAKEDOWNS_PATH, adminCookie)).body;
+      expect(takedowns).toContain('<p class="gf-admin-row-head"><span class="gf-chip gf-chip-emphasis">未対応</span></p>');
+      expect(takedowns).toContain('<p class="gf-admin-row-head"><span class="gf-chip">措置済み</span></p>');
+    } finally {
+      await env.DB.prepare('update users set is_operator = 0 where id = ?').bind(users.admin).run();
+    }
   });
 });

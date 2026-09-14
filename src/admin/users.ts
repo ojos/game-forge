@@ -86,6 +86,8 @@ interface UserRow {
   readonly created_at: number;
   readonly banned_at: number | null;
   readonly is_admin: number;
+  /** 運営フラグ（0021）。**表示だけの列で、権限を与えない**（2.4.2）。行の頭のチップにだけ使う（#475）。 */
+  readonly is_operator: number;
 }
 
 /**
@@ -104,7 +106,7 @@ interface UserRow {
  */
 async function listUsers(env: Env, limit: number = ADMIN_LIST_LIMIT): Promise<readonly UserRow[]> {
   const result = await env.DB.prepare(
-    `select id, display_name, created_at, banned_at, is_admin
+    `select id, display_name, created_at, banned_at, is_admin, is_operator
        from users
       order by created_at desc, id desc
       limit ?`,
@@ -121,6 +123,14 @@ async function listUsers(env: Env, limit: number = ADMIN_LIST_LIMIT): Promise<re
  * 決められる値である（5.9。`src/account.ts` は「保存時の制約は XSS を防がない」と
  * 書いており、**防ぐのは出力側のエスケープである**）。
  *
+ * ## 見た目の部品（仕様 2.5 / #475）
+ *
+ * - **1 件を 1 つのブロックにし、名前の横に状態のチップを並べる**（管理者・運営・BAN 中）。**BAN 中だけを
+ *   `.gf-chip-emphasis` にする**——いま止めている利用者を一覧で見落とさないため。**赤くしない**（赤はエラーの
+ *   意味だけ。2.5.2）。BAN していない行に「通常」の札は付けない（チップが無いことが通常である）
+ * - **BAN する・解除するのボタンはどちらも副にする**（`.gf-button-secondary`）。取り返しの付きにくい操作でも
+ *   主にも赤にもしない（2.5.10 の第 4 版の決定）
+ *
  * @param row 利用者の行
  * @param actorId 操作している管理者（自分自身には BAN の口を出さない）
  * @returns HTML
@@ -131,10 +141,11 @@ function renderUser(row: UserRow, actorId: string): string {
   const created =
     iso === '' ? '不明' : `<time datetime="${iso}">${escapeHtml(formatJstMinutes(row.created_at))}</time>`;
   const banned = row.banned_at !== null;
-  const marks = [
-    banned ? '<strong>BAN 中</strong>' : '通常',
-    row.is_admin === 1 ? '管理者' : '',
-  ].filter((mark) => mark !== '');
+  const chips = [
+    row.is_admin === 1 ? '<span class="gf-chip">管理者</span>' : '',
+    row.is_operator === 1 ? '<span class="gf-chip">運営</span>' : '',
+    banned ? '<span class="gf-chip gf-chip-emphasis">BAN 中</span>' : '',
+  ].filter((chip) => chip !== '');
 
   // **自分自身には出さない**（このファイルの冒頭）。**押せない理由を書く**
   // ——ボタンだけ消すと、運営は「なぜこの行だけ違うのか」を読めない。
@@ -145,14 +156,15 @@ function renderUser(row: UserRow, actorId: string): string {
     <input type="hidden" name="${ADMIN_USER_ID_FIELD}" value="${id}">
     <input type="hidden" name="${ADMIN_NEXT_FIELD}" value="${banned ? BAN_NEXT_ACTIVE : BAN_NEXT_BANNED}">
     <label for="reason-${id}">理由（必須。履歴に残ります）</label>
-    <input id="reason-${id}" name="${ADMIN_REASON_FIELD}" type="text" required>
-    <button type="submit">${banned ? 'BAN を解除する' : 'BAN する（ログインを要する操作を止める）'}</button>
+    <div class="gf-admin-submit">
+      <input id="reason-${id}" name="${ADMIN_REASON_FIELD}" type="text" required>
+      <button type="submit" class="gf-button gf-button-secondary">${banned ? 'BAN を解除する' : 'BAN する（ログインを要する操作を止める）'}</button>
+    </div>
   </form>`;
 
-  return `<li class="gf-admin-row">
-  <p class="gf-admin-row-title">${escapeHtml(row.display_name)}</p>
-  <p class="gf-admin-meta">${marks.join(' ／ ')} ／ 登録: ${created}<br>
-     <code>${id}</code></p>
+  return `<li class="gf-block gf-admin-row">
+  <p class="gf-admin-row-head"><span class="gf-admin-row-title">${escapeHtml(row.display_name)}</span>${chips.map((chip) => ` ${chip}`).join('')}</p>
+  <p class="gf-admin-meta">登録: ${created} ／ <code>${id}</code></p>
   ${form}
 </li>`;
 }
@@ -177,16 +189,14 @@ async function showUsers(
     `${adminHead('利用者')}
 <h1>利用者</h1>
 ${renderOutcomeNotice(outcome)}
-<p><strong>BAN するとログインが通らなくなり、生成・公開・いいね・招待コードの発行など、
-   ログインを要する操作がすべて止まります。</strong>止まらないのは露出です——その人の
-   公開済みの作品は、一覧にも作品ページにも残ります（仕様 7.3）。作品を止めるのは
-   審査キューの操作です。</p>
-<p>運営フラグ（<code>is_operator</code>）の付け外しと、管理者を増やすことは、この画面に
-   置いていません（仕様 2.4.2 / 2.4.3）。</p>
+<div class="gf-block gf-admin-intro">
+<p><strong>BAN するとログインが通らなくなり、生成・公開・いいね・招待コードの発行など、ログインを要する操作がすべて止まります。</strong>止まらないのは露出です——その人の公開済みの作品は、一覧にも作品ページにも残ります（仕様 7.3）。作品を止めるのは審査キューの操作です。</p>
+<p>運営フラグ（<code>is_operator</code>）の付け外しと、管理者を増やすことは、この画面に置いていません（仕様 2.4.2 / 2.4.3）。</p>
+</div>
 <h2>新しい順（${rows.length} 件）</h2>
 ${
   rows.length === 0
-    ? '<p>利用者がいません。</p>'
+    ? '<p class="gf-admin-note">利用者がいません。</p>'
     : `<ul class="gf-admin-list">
 ${rows.map((row) => renderUser(row, adminUserId ?? '')).join('\n')}
 </ul>`

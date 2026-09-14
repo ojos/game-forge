@@ -451,6 +451,16 @@ async function readQueue(env: Env): Promise<QueueRead> {
  * 通報が付いた節と `cleared` の節が同じ綴りを持ちうる——`label` の `for` が別の行の入力を
  * 指す。
  *
+ * ## 見た目の部品（仕様 2.5 / #475）
+ *
+ * - **1 件を 1 つのブロックにする**（`.gf-block`。面で区切り、枠線を使わない。2.5.4）
+ * - **ボタンは副にする**（`.gf-button-secondary`）。行ごとに操作があるので、**主のボタンは使わない**
+ *   （「主は 1 画面に 1 つ」を保つ。2.5.10 の第 4 版の決定）
+ * - **節の札はチップにする**（`.gf-chip-emphasis`。止まっていない露出に目を向けさせる印である）
+ * - **題名は文章の外のリンク**（`.gf-link-quiet`。一覧の行の題名。2.5.5）
+ * - **理由の入力欄とボタンは 1 つの `div` に並べる**（`.gf-admin-submit`。狭い段では折り返して縦に積む。
+ *   `admin.css`）。**要素の順（ラベル → 入力欄 → ボタン）は変えていない**——DOM の順＝見た目の順＝Tab の順
+ *
  * @param row 作品の行
  * @param section 節の定義
  * @param evidence この節の通報の時点の値
@@ -470,11 +480,13 @@ function renderRow(
   const reasonId = `reason-${section.key}-${id}`;
   // **札は文字で出す**（色だけで区別しない。明暗どちらのテーマでも、読み上げでも同じに届く）。
   const badge =
-    section.badge === null ? '' : `\n  <p class="gf-admin-badge">${escapeHtml(section.badge)}</p>`;
+    section.badge === null
+      ? ''
+      : `\n  <p class="gf-admin-row-head"><span class="gf-chip gf-chip-emphasis">${escapeHtml(section.badge)}</span></p>`;
   const renamed = section.showsRename ? ` ／ 最終改名: ${timeOrDash(row.renamed_at)}` : '';
 
-  return `<li class="gf-admin-row">${badge}
-  <p class="gf-admin-row-title"><a href="${workUrl}">${escapeHtml(row.title)}</a></p>
+  return `<li class="gf-block gf-admin-row">${badge}
+  <p class="gf-admin-row-title"><a class="gf-link-quiet" href="${workUrl}">${escapeHtml(row.title)}</a></p>
   <p class="gf-admin-meta">作者: ${escapeHtml(row.author_name ?? '（不明）')} ／ 公開: ${timeOrDash(row.published_at, '未公開')}${renamed}<br>
      <code>${id}</code></p>
 ${renderEvidence(evidence.ok ? (evidence.byGame.get(row.id) ?? []) : null)}
@@ -482,8 +494,10 @@ ${renderEvidence(evidence.ok ? (evidence.byGame.get(row.id) ?? []) : null)}
     <input type="hidden" name="${ADMIN_GAME_ID_FIELD}" value="${id}">
     <input type="hidden" name="${ADMIN_NEXT_FIELD}" value="${oppositeReviewState(section.state)}">
     <label for="${reasonId}">理由（必須。履歴に残ります）</label>
-    <input id="${reasonId}" name="${ADMIN_REASON_FIELD}" type="text" required>
-    <button type="submit">${escapeHtml(section.button)}</button>
+    <div class="gf-admin-submit">
+      <input id="${reasonId}" name="${ADMIN_REASON_FIELD}" type="text" required>
+      <button type="submit" class="gf-button gf-button-secondary">${escapeHtml(section.button)}</button>
+    </div>
   </form>
 </li>`;
 }
@@ -496,6 +510,8 @@ ${renderEvidence(evidence.ok ? (evidence.byGame.get(row.id) ?? []) : null)}
  *
  * **読めなかったとき（null）は「読み込めませんでした」と書く**——「通報が無い」と区別する
  * （{@link readQueue}）。
+ *
+ * **通報があれば、ブロックの中に地の色の面で置く**（`.gf-admin-evidence`。承認したモックアップの形。#475）。
  *
  * @param reports その作品の通報（新しい順。読めなければ null）
  * @returns HTML
@@ -548,6 +564,11 @@ ${renderField('作者名', report.authorName.atReport, report.authorName.now)}
  *     「通報と同じ秒に変更がありました」と書く
  *   - 記録が無い … **いまの値を当時の値として出さない。** 「この時点の〜の記録はありません」
  *
+ * **印はチップにする**（`.gf-chip`。仕様 2.5.5 の押せない札。#475）。**値は「通報の時点」と「いま」の 2 つの
+ * 塊に分ける**（`.gf-admin-evidence-cell`）——広い段では 2 列に並び、狭い段では 1 列に積む（`admin.css`）。
+ * **塊の中の行の頭には、どちらの段でも「通報の時点」「いま」を書く**——同じ秒の変更では片側に値が 2 つ入り、
+ * 見出しの行 1 つでは言い分けられない。
+ *
  * @param label 項目の名前（題名・説明・作者名）
  * @param atReport 通報の時点の値
  * @param now いまの値（引けなければ null）
@@ -579,10 +600,17 @@ function renderField(label: string, atReport: RestoredValue, now: string | null)
     now === null
       ? `        <p><span class="gf-admin-evidence-label">いま</span> <span class="gf-admin-evidence-none">（不明）</span></p>`
       : evidenceLine('いま', now);
-  return `      <dt>${escapeHtml(label)} <span class="gf-admin-evidence-mark">${escapeHtml(mark)}</span></dt>
+  return `      <div class="gf-admin-evidence-field">
+      <dt>${escapeHtml(label)} <span class="gf-chip">${escapeHtml(mark)}</span></dt>
       <dd>
-${[...lines, current].join('\n')}
-      </dd>`;
+        <div class="gf-admin-evidence-cell">
+${lines.join('\n')}
+        </div>
+        <div class="gf-admin-evidence-cell">
+${current}
+        </div>
+      </dd>
+      </div>`;
 }
 
 /**
@@ -654,12 +682,12 @@ function renderSection(
   const { rows } = read;
   const body =
     rows.length === 0
-      ? `<p>${escapeHtml(section.empty)}</p>`
+      ? `<p class="gf-admin-note">${escapeHtml(section.empty)}</p>`
       : `<ul class="gf-admin-list">
 ${rows.map((row) => renderRow(row, section, evidence, appHost)).join('\n')}
 </ul>`;
   return `<h2>${escapeHtml(section.heading)}（${rows.length} 件）</h2>
-<p>${escapeHtml(section.note)}</p>
+<p class="gf-admin-note">${escapeHtml(section.note)}</p>
 ${body}`;
 }
 
@@ -698,12 +726,11 @@ async function showReviewQueue(request: Request, env: Env): Promise<Response> {
     `${adminHead('審査キュー')}
 <h1>審査キュー</h1>
 ${notice}
-<p>通報が閾値に達した作品がここへ入ります（仕様 8.4）。<strong>止まるのは新規露出だけで、
-   作品の取り下げはこの画面に置いていません</strong>（仕様 2.4.3。戻せない操作のため、
-   引き続き D1 への直接 UPDATE で行います）。</p>
+<div class="gf-block gf-admin-intro">
+<p>通報が閾値に達した作品がここへ入ります（仕様 8.4）。<strong>止まるのは新規露出だけで、作品の取り下げはこの画面に置いていません</strong>（仕様 2.4.3。戻せない操作のため、引き続き D1 への直接 UPDATE で行います）。</p>
 <p>どちらの操作も理由が必須で、<strong>操作と履歴は 1 つの書き込みで残ります</strong>（仕様 2.4.4）。</p>
-<p>各作品の下に、<strong>通報ごとに、通報された時点の題名・説明・作者名と、いまの値を並べます</strong>
-   （変更の履歴から復元しています。表示名の履歴を残し始める前の通報では、作者名の記録はありません）。</p>
+<p>各作品の下に、<strong>通報ごとに、通報された時点の題名・説明・作者名と、いまの値を並べます</strong>（変更の履歴から復元しています。表示名の履歴を残し始める前の通報では、作者名の記録はありません）。</p>
+</div>
 ${SECTIONS.map((section, index) =>
   renderSection(
     section,

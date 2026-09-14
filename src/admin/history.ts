@@ -74,6 +74,9 @@ export function takedownAnchorId(requestId: string): string {
  * **理由は運営が書いた自由記述である**——書いた本人しか読まない値であっても、
  * 出力側でエスケープする（`src/account.ts` の「保存時の制約は XSS を防がない」）。
  *
+ * **1 件は、1 つのブロックの中の 1 行である**（`.gf-block-rows` の子。仕様 2.5.4 / #475）。行の頭に日時と操作を
+ * 並べ、その下に実行者と対象、理由を置く。
+ *
  * @param entry 履歴の 1 行
  * @param appHost app ホストの綴り（作品ページのリンクに使う）
  * @returns HTML
@@ -96,8 +99,8 @@ function renderEntry(entry: AdminActionEntry, appHost: string): string {
         ? `削除依頼 <a href="${ADMIN_TAKEDOWNS_PATH}#${escapeHtml(takedownAnchorId(entry.targetId))}"><code>${targetId}</code></a>`
         : `利用者 <code>${targetId}</code>`;
 
-  return `<li class="gf-admin-row">
-  <p class="gf-admin-row-title">${when}　${escapeHtml(ACTION_LABELS[entry.action])}</p>
+  return `<li>
+  <p class="gf-admin-history-head"><span class="gf-admin-history-when">${when}</span> <span class="gf-admin-row-title">${escapeHtml(ACTION_LABELS[entry.action])}</span></p>
   <p class="gf-admin-meta">実行: ${escapeHtml(entry.actorName ?? '（不明）')}
      <code>${escapeHtml(entry.actorId)}</code> ／ 対象: ${target}</p>
   <p class="gf-admin-reason">理由: ${escapeHtml(entry.reason)}</p>
@@ -119,14 +122,13 @@ async function showHistory(env: Env): Promise<Response> {
 
   return html(`${adminHead('操作の履歴')}
 <h1>操作の履歴</h1>
-<p>新しい順に最大 ${ADMIN_LIST_LIMIT} 件を出します（仕様 2.4.4）。<strong>この一覧は追記のみで、
-   画面からも口からも書き換えられません。</strong>ただし D1 の資格情報を持つ端末からは
-   書き換えられます——保証できるのは画面と口までです（<code>docs/admin-host.md</code> の
-   「限界」）。</p>
+<div class="gf-block gf-admin-intro">
+<p>新しい順に最大 ${ADMIN_LIST_LIMIT} 件を出します（仕様 2.4.4）。<strong>この一覧は追記のみで、画面からも口からも書き換えられません。</strong>ただし D1 の資格情報を持つ端末からは書き換えられます——保証できるのは画面と口までです（<code>docs/admin-host.md</code> の「限界」）。</p>
+</div>
 ${
   entries.length === 0
-    ? '<p>まだ 1 件もありません。</p>'
-    : `<ul class="gf-admin-list">
+    ? '<p class="gf-admin-note">まだ 1 件もありません。</p>'
+    : `<ul class="gf-block gf-block-rows gf-admin-history">
 ${entries.map((entry) => renderEntry(entry, env.APP_HOST)).join('\n')}
 </ul>`
 }

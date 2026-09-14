@@ -48,6 +48,10 @@
  * > 起動を知っているのは iframe の中のローダーだけで、それを受けられるのがこの画面だけなので、
  * > ここに置く（理由の全文は `src/plays.ts` の冒頭）。
  *
+ * > **#502 注記。公開済みの作品ページの iframe はスクリプトが作る**（`src/work-play.ts`。仕様 3.9.4）。タッチ端末では
+ * > 開いた時点でゲームを読み込まず、スクリーンショットのタップで全画面の覆いを開くためである。**「要求しない」は崩していない**
+ * > ——JavaScript を切ると `<noscript>` の中の今の埋め込みで遊べる。4 要素はスクリプトより前にあり、スクリプトは 4 要素を書き換えない。
+ *
  * ## 応答本文の文字列を表示面へ持ち込まない（8.3）
  *
  * 出すのは**このモジュールが持つ固定の文言**と、D1 から読んだ値のうち
@@ -120,6 +124,8 @@ import { isPressableGame, readLikeViewerState } from './likes.js';
 // **プレイ数は窓口のスクリプトを埋めるだけである**（#377）。数えるのは作品ページのブラウザで、
 // この画面の経路は DO を呼ばない。
 import { playReportScript } from './plays.js';
+// **ゲームの iframe と、タッチ端末の全画面の覆い**（M14-3 / #502 / 仕様 3.9.4）。iframe の属性の出どころはあちらの 1 か所である。
+import { playEmbed, playEntry } from './work-play.js';
 // **ソースの閲覧は別の経路である**（#383 / 2.3.12）。この画面が借りるのは綴りだけで、R2 は読まない。
 import { workSourcePath } from './work-source.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
@@ -967,7 +973,8 @@ ${siteFooter()}`;
 }
 
 /**
- * プレイ数を数えるスクリプト（#377）。**iframe の直前に置く**（{@link loadingScreen}）。
+ * プレイ数を数えるスクリプト（#377）。**iframe の直前に置く**（{@link loadingScreen}。#502 からは、iframe を作るスクリプトが
+ * デスクトップで iframe を差し込む `<noscript>` の直前）。
  *
  * **iframe より後ろに置かない。** 合図（`postMessage`）がリスナーの登録より先に届くと、そのページの
  * 起動は二度と数えられない（PR #425 の Copilot の指摘）。スクリプトは iframe を合図が届いた時点で
@@ -2272,18 +2279,23 @@ const FORK_LABEL = 'このゲームを改造する';
  * @returns HTML
  */
 function loadingScreen(view: WorkPageView): string {
+  // **iframe を HTML に直接置かない**（M14-3 / #502 / 仕様 3.9.4）。タッチ端末では開いた時点でゲームを読み込まないためで、
+  // iframe はスクリプトが作る（デスクトップはすぐに今と同じ位置へ、タッチ端末はタップで開く覆いの中へ）。JavaScript が
+  // 無いときは `<noscript>` の中の今の埋め込みで遊べる。**iframe の属性の出どころは `src/work-play.ts` の 1 か所**で、
+  // `sandbox` は `allow-scripts` だけのまま（7.2）。
   const frame =
     view.playUrl === null
       ? '<p>公開されていますが、遊ぶための URL を組み立てられませんでした。</p>'
-      : // **`sandbox` は `allow-scripts` だけである**（7.2）。属性を足すときは 7.2 を先に読むこと。
-        `<iframe class="gf-frame" src="${view.playUrl}" sandbox="allow-scripts" title="ゲーム"></iframe>`;
+      : playEmbed(view.playUrl);
 
   // **4 要素を 1 つのブロックに入れる**（#474 / 仕様 2.5.4。承認したモックアップ Version 6 の形）。**並びは今のまま**
   // （スクリーンショット → 作者 → 元ゲーム → 改造する。2026-09-13 に利用者が確認）で、広い面ではスクリーンショットを左、
   // 残りの 3 つを右に置き、狭い面では縦に積む。**段で並べ替えない**——折り返しは `@section work` の flex の `wrap` だけで
   // 決まり、DOM の順＝見た目の順＝Tab の順のまま（仕様 2.5.6 の #469 実装注記）。
+  //
+  // **スクリーンショットは「遊ぶ」の口で包む**（#502）。タッチ端末ではスクリプトが「遊ぶ」のボタンを見せ、口のタップで覆いを開く。
   return `<div class="gf-context gf-block">
-${screenshot(view)}
+${playEntry(screenshot(view), view.playUrl !== null)}
 <div class="gf-context-body">
 <p class="gf-author">作者: <strong>${authorLabel(view)}</strong>${operatorMark(view)}</p>
 <p class="gf-parent">${parentLine(view.parent)}</p>

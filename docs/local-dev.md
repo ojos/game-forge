@@ -420,6 +420,7 @@ amd64 のイメージでも同じ値）。**だからといって片方をもう
 | 4 | 作品ページに埋め込んだ状態でも 1 と 3 が成り立つこと（#30） | `frame-ancestors` か iframe の `sandbox` で止まっている |
 | 5 | 音のワークレットのモジュールを `blob:` から読めること（直接・埋め込みの両方。#306） | `script-src` に `blob:` が無いなど |
 | 6 | CDP の `Input.dispatchTouchEvent` で送った指 1 本のタッチが、マウスを読む検査用の作品の canvas に `mousemove → mousedown → mousemove → mouseup` として届くこと（直接・埋め込みの両方。#491 / 仕様 3.9.3） | ローダーのタップ→マウス変換が効いていない。判定は `scripts/tap-mouse-verdict.mjs` |
+| 7 | **タッチ端末の作品ページ**（CDP でタッチをエミュレートし、`pointer: coarse` になったことも読む）が、タップの前にサンドボックス用ホストへ要求を出さず、口のタップで全画面の覆いが開いて iframe から起動の合図が届き、「閉じる」・戻る操作・iframe の 2 回目の `load`・全画面の解除で閉じて iframe が消えること。計上（`POST /api/plays`）は 2 回開いても 1 回。**デスクトップ**（開いた時点で同じ属性の iframe）と **JavaScript を止めた形**（`<noscript>` の iframe）も見る（#502 / 仕様 3.9.4）。`GF_TAP_SHOT_DIR` を渡すと口と覆い（390×844 / 844×390）を撮る | タッチ端末で開いた時点に読み込んでいる、閉じる手段が効かない、属性の出どころが割れた、など。判定は `scripts/tap-to-fullscreen-verdict.mjs` |
 
 **層 0 の判定は `scripts/wasm-body-verdict.mjs` が持ちます**（`check-sandbox-cors.sh` と
 **同じ判定体**を使います）。**応答の `Content-Encoding` を見ずに判定してはいけません** —

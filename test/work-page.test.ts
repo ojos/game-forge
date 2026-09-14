@@ -2052,7 +2052,8 @@ describe('プレイ数（#377 / 仕様 2.3.6）', () => {
       expect(body).toContain(playReportScript(id));
       expect(body.split(`fetch(${JSON.stringify(PLAY_PATH)}`).length - 1).toBe(1);
       // **iframe の直前**（合図より先にリスナーを登録する。PR #425 の Copilot の指摘）。ヘッダには置かない。
-      expect(body).toContain(`${playReportScript(id)}\n<iframe class="gf-frame"`);
+      // #502 から iframe はスクリプトが作り、デスクトップでは `<noscript>` の直前（＝計上のスクリプトの直後）に入る。
+      expect(body).toContain(`${playReportScript(id)}\n<noscript class="gf-play-noscript"><iframe class="gf-frame"`);
       expect(body.indexOf('</header>')).toBeLessThan(body.indexOf(playReportScript(id)));
       // 数える iframe は `/g/` を指し、`sandbox` は `allow-scripts` だけのまま（7.2）。
       expect(body).toContain(`src="https://${env.SANDBOX_HOST}/g/${id}/" sandbox="allow-scripts"`);

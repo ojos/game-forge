@@ -4858,6 +4858,36 @@ M14-2 / M14-5 の検査が行う）。
 トップレベルで開くので作品ページを通らない）・デスクトップの `.gf-frame` の比と `test/page-shell.test.ts` の比率の照合。
 **M13-5 のトークンと部品だけを使い、新しい色の値を足さない**（覆いの黒は既存の `.gf-frame` の地と同じ値）。
 
+> **実装注記（#502。実装日 2026-09-14）。** 口・覆い・スクリプトは `src/work-play.ts` に置き、`src/work-page.ts` の
+> `loadingScreen` が呼ぶ。**iframe の属性は `playFrameAttributes` の配列 1 つ**で、`<noscript>` の HTML（`playFrameHtml`。
+> #502 の前の埋め込みと 1 文字も違わない）も、スクリプトが作る iframe（配列を JSON で埋めて `setAttribute` を同じ順に呼ぶ）も
+> そこから作る。CSP・iframe の `sandbox` 属性・起動の合図と計上のスクリプト（`src/plays.ts`）は変えていない。実装で決めたことを書き戻す。
+>
+> - **並び**: 4 要素のブロック → 計上のスクリプト → `<noscript class="gf-play-noscript">` → 覆いの骨組み（`hidden`）→ iframe を作る
+>   スクリプト。**デスクトップの iframe は `<noscript>` の直前に差し込む**ので、#502 の前と同じ「計上のスクリプトの直後」に入る。
+>   `pointer: coarse` でないとき（ヘッドレスの Chromium は `pointer: none`）と、覆いの部品が 1 つでも引けないときはデスクトップの形に倒す。
+> - **口**: スクリーンショット（または固定の文言のパネル）を `.gf-play-entry` で包み、副のボタン「遊ぶ」を `hidden` で重ねて配る。
+>   タッチ端末でだけスクリプトが見せ、口（包み全体）のクリックで開く。**包みを足してもデスクトップの版面は変えていない**
+>   ——#474 の `.gf-context > .gf-shot` の値を包みへ移し、1280×900 と 390×844 で要素の矩形が変更前と小数まで一致することを実測した。
+> - **覆い**: `role="dialog"`・`aria-modal`・`aria-label="ゲーム"`。中は「閉じる」の行（副のボタン）・ゲームの領域・空のパッドの置き場所 2 つ
+>   （十字・ボタン）の格子で、`@media (orientation: landscape)` で並べ替える。**向きの `@media` は `@section work` に置いた**
+>   （app.css の区画の規約 3 と `scripts/check-app-css.sh` が縛るのは幅の `min-width` / `max-width`）。横持ちの「閉じる」は右の列の上
+>   （ゲームに重ねない）。部品の `display` が UA の `[hidden]` に勝つので、`hidden` の `display: none` を宣言した。スクロールは
+>   `<html>` に付ける `.gf-play-locked`（`overflow: hidden`）で止める。セーフエリアの `env()` は、メタの viewport に
+>   `viewport-fit=cover` が無いので今は 0 である（全画面に共通のメタは変えていない）。
+> - **閉じる**: ボタン・`popstate`・`fullscreenchange`・2 回目の `load` を 1 つの `close` に集め、開いていなければ何もしない。
+>   戻る操作以外で閉じたときは `history.back()` で積んだ履歴を戻し、その `popstate` は数えて読み飛ばす。閉じると全画面も解除し、
+>   焦点を「遊ぶ」のボタンへ戻す。**パッドの「すべて離す」を送る場所は `releasePad`（今は空。M14-5 が入れる）**。全画面の要求が決着する前に
+>   閉じた場合に備え、隠れた覆いが全画面に入ったら解除する。
+> - **実ブラウザの検査は `scripts/check-sandbox-browser.sh` の層 7**（観測 `scripts/tap-to-fullscreen-probe.mjs`、判定
+>   `scripts/tap-to-fullscreen-verdict.mjs`）。本物の wasm と公開済みの作品があり、起動の合図を観測できるのがこの検査だけだからである。
+>   タッチをエミュレートして `pointer: coarse` を読んだうえで、タップの前にサンドボックス用ホストへの要求が 0 件・口のタップで覆いが
+>   画面いっぱいに開き iframe から合図が届く・「閉じる」/ 戻る操作 / iframe の中の読み直し（2 回目の `load`）/ 全画面の解除のそれぞれで
+>   閉じて iframe が消える・sessionStorage を消して開き直しても計上は 1 回・デスクトップは開いた時点で `<noscript>` の直前に iframe がある・
+>   JavaScript を止めると `<noscript>` の iframe がある・3 つの形の iframe の属性が順序まで同じ、を見る。**判定を外す（常にデスクトップの形）
+>   変異と、判定より前に iframe を作る変異のどちらでも、層 7 は「タップの前にサンドボックス用ホストへ要求が出ています」で落ちた**
+>   （2026-09-14 に実測）。ヘッドレスの Chromium では覆いの全画面は実際に入った。本番の実機での確認（「モグラぽん」）は配備の後に行う。
+
 #### 3.9.5 作品が読むキーの抽出と保存（M14-4）
 
 **パッド（3.9.6）に出すボタンを作品ごとに決めるための土台である。** 保存するのは「ソースが読むキーの全集合」で、

@@ -182,7 +182,7 @@ describe('上限に達したときの画面（#397 acceptance 3）', () => {
     expect(body).toContain('いま発行できるのは <strong>3 本</strong>です。');
     expect(pageBodyOf(body)).not.toContain('<form');
     expect(body).toContain(`参加者が上限（${PARTICIPANT_CAP} 人）に達したため、いまは招待を発行できません。`);
-    expect(body).toContain(`<a href="${SIGNUP_PATH}">登録の画面</a>から待機リストに登録してもらってください`);
+    expect(body).toContain(`<a href="${SIGNUP_PATH}">ログイン・登録の画面</a>から待機リストに登録してもらってください`);
 
     const listed = (await (await call(INVITES_API_PATH, { cookie })).json()) as { halt: unknown };
     expect(listed.halt).toBe('participant-cap');

@@ -558,6 +558,58 @@ describe('共有された成果物の削除（確定26 / 3.4-7 / 3.7 / #116）',
     });
   });
 
+  it('他の作品の版だけが参照しているキーは残す（#516）', async () => {
+    // **版も参照者である**（5.7 / 確定28）。B の `games` 行はもう別の成果物を指しているが、
+    // B の古い版がこのキーを持っている——B の作者が「版に戻す」を押すと配信に戻る。
+    // `games` だけを数えると、A の削除でこのキーが消え、**戻した瞬間に B の配信が壊れる。**
+    const entry = record('0'.repeat(63) + '1');
+    await putArtifacts(entry);
+    await recordBuildCache(env, entry);
+
+    const author = await insertUser('revision-ref');
+    await insertGame('g-rev-a', author, { sourceKey: entry.sourceKey, wasmKey: entry.wasmKey });
+    await insertGame(
+      'g-rev-b',
+      author,
+      { sourceKey: 'sources/other.go', wasmKey: 'wasm/other.wasm.br' },
+      'published',
+    );
+    await env.DB.prepare(
+      `insert into game_revisions (game_id, seq, source_key, wasm_key, go_version, prompt, created_at)
+       values ('g-rev-b', 1, ?, ?, 'go1.26.5', null, 1)`,
+    )
+      .bind(entry.sourceKey, entry.wasmKey)
+      .run();
+
+    expect(await countArtifactReferences(env, entry.wasmKey, 'g-rev-a')).toBe(1);
+    const plan = await deleteUnreferencedArtifacts(env, 'g-rev-a');
+    expect(plan.deletable).toEqual([]);
+    expect(plan.retained).toEqual([
+      { key: entry.sourceKey, referencedBy: 1 },
+      { key: entry.wasmKey, referencedBy: 1 },
+    ]);
+    expect(await exists(entry.wasmKey)).toBe(true);
+    expect(await exists(entry.sourceKey)).toBe(true);
+  });
+
+  it('削除する作品自身の版は参照に数えない（#516）', async () => {
+    // 自分の版を数えると、推敲した作品の成果物は永久に消せなくなる。
+    const entry = record('0'.repeat(63) + '2');
+    await putArtifacts(entry);
+    const author = await insertUser('own-revision');
+    await insertGame('g-own-rev', author, { sourceKey: entry.sourceKey, wasmKey: entry.wasmKey });
+    await env.DB.prepare(
+      `insert into game_revisions (game_id, seq, source_key, wasm_key, go_version, prompt, created_at)
+       values ('g-own-rev', 1, ?, ?, 'go1.26.5', null, 1)`,
+    )
+      .bind(entry.sourceKey, entry.wasmKey)
+      .run();
+
+    const plan = await deleteUnreferencedArtifacts(env, 'g-own-rev');
+    expect(plan.deletable).toEqual([entry.sourceKey, entry.wasmKey]);
+    expect(await exists(entry.wasmKey)).toBe(false);
+  });
+
   it('被参照チェックが使う索引が張られている（0004）', async () => {
     // 3.6 は「読み取りも従量である」と書いており、被参照チェックは削除のたびに走る。
     // 索引が無いと `games` の全走査になり、フォークで行が伸びるほど読み取り行数も伸びる。

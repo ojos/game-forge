@@ -192,7 +192,7 @@ describe('推敲の受け口（5.7 / #192）', () => {
     expect(spy.calls).toHaveLength(0);
   });
 
-  // **1 作品あたりの上限（3 回）はなくした**（#515 / 仕様 5.7 / 確定31）。回数を縛るのは日次枠だけである。
+  // **1 作品あたりの上限（3 回）はなくした**（#515 / 仕様 5.7 / 確定32）。回数を縛るのは日次枠だけである。
   for (const reviseCount of [3, 4, 50]) {
     it(`revise_count が ${reviseCount} の draft でも、日次枠が残っていれば起動される（#515）`, async () => {
       const userId = await createUser(`revise-no-per-game-limit-${reviseCount}`);

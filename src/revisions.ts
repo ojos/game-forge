@@ -28,6 +28,7 @@
  * | 作者本人だけが推敲できる | {@link claimRevisionSlot} の `author_id = ?` |
  * | 公開済みは推敲できない（5.7） | 同 `status = 'draft'` |
  * | 完成していない作品は推敲できない | 同 `generation_state = 'ready'` |
+ * | 削除を掴まれた作品は推敲も復元もできない（#516） | {@link claimRevisionSlot} / {@link restoreRevision} の `deletion_started_at is null`（`src/game-deletion.ts`） |
  * | 同時に走る推敲は 1 本 | `game_revision_jobs.game_id` が主キー＋ UPSERT の `where`（`failed`、または区切りを過ぎた `pending` / `running` だけを上書きする。#455） |
  * | 利用者に進行中の生成・フォーク・推敲があれば始めない（#455） | {@link claimRevisionSlot} の `inFlightGuardSql`（`src/games.ts`） |
  * | 戻す操作は費用を出さない | この経路が LLM も台帳も呼ばないこと（{@link restoreRevision}） |
@@ -344,6 +345,7 @@ export async function claimRevisionSlot(
          from games g
         where g.id = ? and g.author_id = ? and g.status = 'draft'
           and g.generation_state = 'ready'
+          and g.deletion_started_at is null
           and g.source_key is not null and g.wasm_key is not null
           and not exists (select 1 from game_revisions r where r.game_id = g.id)
           and ${inFlightGuardSql()}`,
@@ -354,6 +356,7 @@ export async function claimRevisionSlot(
          from games g
         where g.id = ? and g.author_id = ? and g.status = 'draft'
           and g.generation_state = 'ready'
+          and g.deletion_started_at is null
           and ${inFlightGuardSql()}
        on conflict(game_id) do update
           set job_token_hash = excluded.job_token_hash,
@@ -588,6 +591,7 @@ export async function restoreRevision(
                           where r.game_id = games.id and r.seq = ?),
             preview_key = ?
       where id = ? and author_id = ? and status = 'draft' and generation_state = 'ready'
+        and deletion_started_at is null
         and exists (select 1 from game_revisions r where r.game_id = games.id and r.seq = ?)
         and not exists (select 1 from game_revision_jobs j
                          where j.game_id = games.id and j.state in ('pending', 'running')

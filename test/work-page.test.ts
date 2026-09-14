@@ -32,6 +32,7 @@ import {
   hashJobToken,
   publishGame,
   removeGame,
+  STALE_AFTER_SECONDS,
 } from '../src/games.js';
 import {
   LIKE_CANCEL_GAME_ID_FIELD,
@@ -59,7 +60,12 @@ import {
   remainingQuotaNotice,
   REVISIONS_PER_GAME,
 } from '../src/quota.js';
-import { appendRevision, claimRevisionSlot, failRevision } from '../src/revisions.js';
+import {
+  appendRevision,
+  claimRevisionJob,
+  claimRevisionSlot,
+  failRevision,
+} from '../src/revisions.js';
 import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
 import { TIDY_ATTEMPTS } from '../src/source-size.js';
 import { NEWS_ARTICLES } from '../src/news-articles.js';
@@ -550,6 +556,121 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     expect(body).toContain('手直しをしています');
     // **`state` は `ready` のままなので、この検査が無いと画面は止まって見える。**
     expect(body).toContain('http-equiv="refresh"');
+  });
+
+  /**
+   * 2 つ目の版を積み、作品をそちらへ差し替える（「版に戻す」の口が出る状態を作る）。
+   *
+   * @param id 作品 id
+   */
+  async function addSecondRevision(id: string): Promise<void> {
+    await appendRevision(
+      env,
+      id,
+      { goVersion: 'go1.27.0', sourceKey: `builds/${id}/source.go`, wasmKey: `builds/${id}/game.wasm.br` },
+      '玉を速く',
+    );
+    await env.DB.prepare(
+      'update games set source_key = ?, wasm_key = ?, go_version = ? where id = ?',
+    )
+      .bind(`builds/${id}/source.go`, `builds/${id}/game.wasm.br`, 'go1.27.0', id)
+      .run();
+  }
+
+  /**
+   * 推敲ジョブを 1 本、指定の時刻に始まったものとして残す（経路の関数に時刻だけを与える）。
+   *
+   * @param userId 作者
+   * @param id 作品 id
+   * @param since ジョブの作成（running なら開始も）の時刻
+   * @param state 残す状態
+   */
+  async function leaveRevisionJob(
+    userId: string,
+    id: string,
+    since: number,
+    state: 'pending' | 'running',
+  ): Promise<void> {
+    const hash = `work-page-left-${id}-${state}`;
+    expect(await claimRevisionSlot(env, id, userId, '止まった手直し', hash, since)).toBe(true);
+    if (state === 'running') {
+      expect(await claimRevisionJob(env, id, hash, since)).toBe(true);
+    }
+  }
+
+  for (const state of ['pending', 'running'] as const) {
+    it(`区切りを過ぎた ${state} の推敲では中断を知らせ、自動更新せず、推敲の口と「版に戻す」を出す（#480）`, async () => {
+      const { userId, id } = await seedReady(`stalled-${state}`);
+      await addSecondRevision(id);
+      await leaveRevisionJob(
+        userId,
+        id,
+        Math.floor(Date.now() / 1000) - STALE_AFTER_SECONDS - 1,
+        state,
+      );
+
+      const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+      expect(body).toContain('手直しが中断した可能性があります');
+      expect(body).toContain('作品はそのまま残っています');
+      expect(body).not.toContain('手直しをしています');
+      // **待っても画面は変わらない**ので、読み取りを続けない。
+      expect(body).not.toContain('http-equiv="refresh"');
+      // 止まった行は次の推敲が引き取る（`claimRevisionSlot`）ので、口を出す。
+      expect(body).toContain(REVISE_PATH);
+      expect(body).toContain('気になるところを直す');
+      // 戻す操作も断らない（`restoreRevision`）。いまの版以外の 1 つに口が出る。
+      expect(body).toContain('これまでの版');
+      expect([...body.matchAll(new RegExp(RESTORE_PATH, 'gu'))]).toHaveLength(1);
+    });
+
+    it(`区切りの内側の ${state} の推敲は、いまと同じく「手直しをしています」と自動更新で、口も戻す口も出さない（#480）`, async () => {
+      const { userId, id } = await seedReady(`live-${state}`);
+      await addSecondRevision(id);
+      await leaveRevisionJob(
+        userId,
+        id,
+        Math.floor(Date.now() / 1000) - STALE_AFTER_SECONDS + 60,
+        state,
+      );
+
+      const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+      expect(body).toContain('手直しをしています');
+      expect(body).toContain('http-equiv="refresh"');
+      expect(body).not.toContain('中断した可能性');
+      expect(body).not.toContain(REVISE_PATH);
+      // 版の一覧は出すが、戻す口は出さない（90 秒後に黙って上書きされるため）。
+      expect(body).toContain('これまでの版');
+      expect(body).not.toContain(RESTORE_PATH);
+    });
+  }
+
+  it('止まった推敲の案内は作者にだけ出る（#480）', async () => {
+    const { userId, id } = await seedReady('stalled-stranger');
+    await leaveRevisionJob(
+      userId,
+      id,
+      Math.floor(Date.now() / 1000) - STALE_AFTER_SECONDS - 1,
+      'running',
+    );
+    const stranger = await seedUser('rev-stalled-outsider');
+
+    for (const cookie of [undefined, await sessionCookie(stranger)]) {
+      const body = await (await open(workPagePath(id), cookie)).text();
+      expect(body).not.toContain('中断した可能性');
+      expect(body).not.toContain(REVISE_PATH);
+    }
+  });
+
+  it('描画: 止まった推敲（revisionStalled）は自動更新を付けず、走っている推敲は付ける（#480）', () => {
+    const owned = { ...baseView, owner: true, revisable: false };
+    const stalled = renderWorkPage({ ...owned, revisionStalled: true });
+    expect(stalled).not.toContain('http-equiv="refresh"');
+    expect(stalled).toContain('手直しが中断した可能性があります');
+
+    const running = renderWorkPage({ ...owned, revisionRunning: true });
+    expect(running).toContain('http-equiv="refresh"');
+    expect(running).toContain('手直しをしています');
+    expect(running).not.toContain('中断した可能性');
   });
 
   it('失敗した推敲は理由を出し、作品が無事であることを言う', async () => {
@@ -1081,6 +1202,7 @@ const baseView: WorkPageView = {
   dailyRemaining: null,
   revisionsRemaining: null,
   revisionRunning: false,
+  revisionStalled: false,
   revisionError: null,
   revisions: [],
   recapturableId: null,

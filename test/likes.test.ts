@@ -300,6 +300,39 @@ async function opsToday(userId: string): Promise<number> {
   });
 }
 
+/**
+ * 上限まで実際の操作で送るテストの時間上限（#512）。
+ *
+ * 付与と取り消しを {@link DAILY_OPERATION_LIMIT} 回往復する。負荷の下では既定の 5 秒を
+ * 超えた（並列のレーンと CI の verify で観測）ので、余裕を持たせる。**全体の上限は変えない。**
+ */
+const LIMIT_BY_REAL_OPERATIONS_TIMEOUT_MS = 60_000;
+
+/**
+ * ある利用者の今日の操作回数を DO に置く（下準備）。
+ *
+ * **日付の鍵は本体と同じ {@link jstDayKey} で作り、表は {@link opsToday} / {@link dumpHub} と
+ * 同じく DO の `daily_ops` を直接読み書きする。** 上限の値は書き写さず、呼ぶ側が
+ * {@link DAILY_OPERATION_LIMIT} を渡す。置いた値は {@link opsToday} で読み戻して確かめる
+ * （書き込みが空振りしたまま、別の理由の 429 で緑にならないように）。
+ *
+ * @param userId 利用者
+ * @param ops 置く回数
+ */
+async function seedOpsToday(userId: string, ops: number): Promise<void> {
+  const day = jstDayKey(Math.floor(Date.now() / 1000));
+  await inHub(hub(), (_instance, state) => {
+    state.storage.sql.exec(
+      `insert into daily_ops (user_id, day, ops) values (?, ?, ?)
+         on conflict (user_id, day) do update set ops = excluded.ops`,
+      userId,
+      day,
+      ops,
+    );
+  });
+  expect(await opsToday(userId), '下準備の回数が DO に入っていない').toBe(ops);
+}
+
 describe('経路の登録（5.8）', () => {
   it('付与と取り消しが別の口として登録されている', () => {
     const routes = createAppRoutes(env);
@@ -476,30 +509,42 @@ describe('断るときは何も書かない（5.8）', () => {
     expect(await dumpHub()).toEqual(hubBefore);
   });
 
-  it('101 回目の操作は 429 で断られ、DO に書き込まれない', async () => {
-    const author = await seedUser('作者');
-    const fan = await seedUser('押し続ける人');
-    const game = await seedGame(author);
+  /**
+   * **上限まで実際の操作で送るのは、このテストだけにする**（#512）。
+   *
+   * 1 往復は速いが 100 往復を積むので、並列のレーンや CI で負荷が高いと vitest の既定の
+   * 時間上限（5 秒）を超えて落ちていた。**実際に 100 回送ることは保証として残し**、
+   * このテストにだけ個別の上限（{@link LIMIT_BY_REAL_OPERATIONS_TIMEOUT_MS}）を設ける。
+   * ほかのテストで上限の状態が要るときは {@link seedOpsToday} で下準備する。
+   */
+  it(
+    '101 回目の操作は 429 で断られ、DO に書き込まれない',
+    { timeout: LIMIT_BY_REAL_OPERATIONS_TIMEOUT_MS },
+    async () => {
+      const author = await seedUser('作者');
+      const fan = await seedUser('押し続ける人');
+      const game = await seedGame(author);
 
-    // 付与と取り消しを交互に 100 回（**合計で数える**。5.8）。
-    for (let count = 0; count < DAILY_OPERATION_LIMIT; count += 1) {
-      const { response } = await send(count % 2 === 0 ? 'like' : 'cancel', game, { userId: fan });
-      expect(response.status, `${count + 1} 回目`).toBe(303);
-    }
-    expect(await opsToday(fan)).toBe(DAILY_OPERATION_LIMIT);
-    const hubBefore = await dumpHub();
+      // 付与と取り消しを交互に 100 回（**合計で数える**。5.8）。
+      for (let count = 0; count < DAILY_OPERATION_LIMIT; count += 1) {
+        const { response } = await send(count % 2 === 0 ? 'like' : 'cancel', game, { userId: fan });
+        expect(response.status, `${count + 1} 回目`).toBe(303);
+      }
+      expect(await opsToday(fan)).toBe(DAILY_OPERATION_LIMIT);
+      const hubBefore = await dumpHub();
 
-    const { response, record } = await send('like', game, { userId: fan });
+      const { response, record } = await send('like', game, { userId: fan });
 
-    expect(response.status).toBe(429);
-    const body = await response.text();
-    expect(body).toContain(DAILY_LIMIT_MESSAGE);
-    // 戻り先は作品ページ（上限の案内を読んでから戻れる）。
-    expect(body).toContain(workPagePath(game));
-    expectNoD1Writes(record);
-    expect(await dumpHub(), '101 回目で DO に書かれた').toEqual(hubBefore);
-    expect(await readLikeViewerState(env, fan, game)).toEqual({ liked: false, count: 0 });
-  });
+      expect(response.status).toBe(429);
+      const body = await response.text();
+      expect(body).toContain(DAILY_LIMIT_MESSAGE);
+      // 戻り先は作品ページ（上限の案内を読んでから戻れる）。
+      expect(body).toContain(workPagePath(game));
+      expectNoD1Writes(record);
+      expect(await dumpHub(), '101 回目で DO に書かれた').toEqual(hubBefore);
+      expect(await readLikeViewerState(env, fan, game)).toEqual({ liked: false, count: 0 });
+    },
+  );
 });
 
 describe('上限に達したときの案内（5.8 / M9-8 / #340）', () => {
@@ -521,13 +566,14 @@ describe('上限に達したときの案内（5.8 / M9-8 / #340）', () => {
     const fan = await seedUser('上限まで押す人');
     const game = await seedGame(author);
 
-    for (let count = 0; count < DAILY_OPERATION_LIMIT; count += 1) {
-      const { response } = await send(count % 2 === 0 ? 'like' : 'cancel', game, { userId: fan });
-      expect(response.status, `${count + 1} 回目`).toBe(303);
-    }
+    // **上限まで実際に送ることは「101 回目の操作は 429 で断られ…」が保証する。** ここは
+    // 画面の導線だけを見るので、DO の回数を上限に置いてから押す（#512。100 往復を積むと
+    // 負荷の下で既定の時間上限を超える）。回数の置き方が本体の数え方（日付の鍵・表・上限）と
+    // 食い違えば、次の 1 回は 429 にならずここで落ちる。
+    await seedOpsToday(fan, DAILY_OPERATION_LIMIT);
 
     const asHtml = await send('like', game, { userId: fan });
-    expect(asHtml.response.status).toBe(429);
+    expect(asHtml.response.status, '下準備した回数を本体が上限と数えていない').toBe(429);
     const body = await asHtml.response.text();
     expect(body).toContain(DAILY_LIMIT_MESSAGE);
     // **戻り先はリンクで出す**（303 で戻すと断られたことが URL にもステータスにも
@@ -538,5 +584,7 @@ describe('上限に達したときの案内（5.8 / M9-8 / #340）', () => {
     const asJson = await send('like', game, { userId: fan, accept: 'application/json' });
     expect(asJson.response.status).toBe(429);
     expect(await asJson.response.json()).toEqual({ error: 'daily-limit' });
+    // 断った 2 回は数えない（下準備の値のまま）。
+    expect(await opsToday(fan)).toBe(DAILY_OPERATION_LIMIT);
   });
 });

@@ -5055,17 +5055,25 @@ CREATE TABLE source_input_keys (
 >   空の置き場所は中に空白も入れず（`:empty` で余白を持たない）、ゲームが残りを使う。
 > - **規則で決まらなかった細部:** WASD を十字に出したときも、文字は矢印（←↑→↓）で読み上げの名前を持つ（方向のボタンだから）。
 >   **左右の組は修飾キーの 4 つ（Shift / Control / Alt / Meta）だけ**とした——`BracketLeft` / `BracketRight` は `[` と `]` の別のキーである。
->   組の片方（右だけ）しか読まない作品では右を出す。文字は `KeyZ` → `Z`・`Digit1` → `1`・`ControlLeft` → `Ctrl`・修飾キーは左右を落とした名前で、
->   それ以外は `code` そのもの（許可表の値）。
+>   組の片方（右だけ）しか読まない作品では右を出す。**文字は 5 文字以下の固定の短い文字の表**（`src/virtual-pad.ts` の `FIXED_LABELS` と、
+>   `KeyZ` → `Z`・`Digit1` → `1`・`Numpad1` → `Num1` の規則）で、`ControlLeft` → `Ctrl`・`NumpadMultiply` → `Num*`・`PrintScreen` → `PrtSc` のように縮める。
+>   許可表のすべての `code` に文字があり 5 文字以下であることは、単体テストが許可表から回して見る。**縮めたキーは読み上げの名前に正式な名前
+>   （`code`）を持つ**（英字・数字のキーと、文字が `code` と同じキーは持たない）。最初の実装は表に無い `code` をそのまま文字にしており、
+>   `NumpadMultiply` のような長いキーを含む作品で縦持ちの 2 列からはみ出しえた（PR #524 の Copilot の指摘）。
 > - **押せる大きさは 1 つ 56px（`3.5rem`）**、十字は 3×3 の格子で読まない方向のマスを空けたまま、ボタンは 2 列。押しているあいだは
 >   `gf-play-pad-held` を付け、副のボタンのホバーと同じ既存のトークンで色を変える（新しい色の値は足していない）。置き場所は
->   `user-select: none` と `-webkit-touch-callout: none`、`contextmenu` はスクリプトが抑える。
-> - **`window` の `blur` でも「すべて離す」ので、パッドを押したままゲームの領域（iframe）をタップすると、フォーカスが iframe へ移って
->   押しているキーが離れる**（仕様どおりの振る舞い。マウスとキーの両方を読む作品で起きうる）。
+>   `user-select: none` と `-webkit-touch-callout: none`、`contextmenu` はスクリプトが抑える。**歯止めとして、ボタンの列の幅を `3.5rem`〜`4.5rem` に閉じ、
+>   キーは列いっぱいに広げて収まらない文字を折り返す**（部品の `white-space: nowrap` をパッドのキーでだけ外す。`@section buttons` は変えていない）。
+> - **`window` の `blur` は、フォーカスの行き先が自分のゲームの iframe なら離さない。** `blur` を「すべて離す」契機にしたのは画面が隠れたときに
+>   押しっぱなしを残さないためだが、パッドを押したままゲームをタップしてフォーカスが iframe へ移ったときにも発火し、キーとマウスの両方を読む作品
+>   （公開済みで 4 本）で「押しながら画面をタップ」が効かなくなる（PR #524 のレビューで親が指摘）。`blur` の後に `setTimeout(…, 0)` で決着を待ち、
+>   `document.activeElement` が覆いの中の iframe なら何もしない。それ以外（別の要素・別のウィンドウ）へ移ったときと、`visibilitychange`（`hidden`）・
+>   `pagehide`・覆いを閉じるときは、これまでどおり離す。
 > - **実ブラウザの検査は `scripts/check-sandbox-browser.sh` の層 8**（観測 `scripts/virtual-pad-probe.mjs`、判定
 >   `scripts/virtual-pad-verdict.mjs`）。パッドのキーが副のボタンの部品・48px 以上・十字は読み上げの名前を持つこと、縦持ちと横持ちの並べ方、
 >   フォーカスがパッドへ移らないこと、デスクトップでは出ないこと、キーの集合が空の作品（層 7 の作品）では置き場所が空でゲームが残りを使う
->   ことを見る（送信と受け手の検査は 3.9.7 の注記）。
+>   こと、長いキー名を 4 つ含む作品でも縦持ち 390px・横持ちでボタンが画面と置き場所の幅を超えず文字がキーに収まること、パッドを押したまま
+>   ゲームの iframe へフォーカスを移しても keyup が届かず指を離すと届くことを見る（送信と受け手の検査は 3.9.7 の注記）。
 
 #### 3.9.7 親→子の `postMessage` の契約（M14-5）
 
@@ -5137,8 +5145,8 @@ CREATE TABLE source_input_keys (
 >   子の文書はメッセージを処理する前に破棄される。**押したまま閉じたときの keyup は、取り除かれたローダー自身の `pagehide`（上の
 >   「ローダー自身も…」）で届く**——親の閉じる処理の release を外しても層 8 は緑のままで、ローダーの `pagehide` / `visibilitychange` を
 >   外すと「押したまま覆いを閉じても keyup が届かない」で落ちた。取り除きを遅らせて親の release を届ける形は、#502 の閉じる処理（ゲーム・音・CPU を
->   すぐ止める）を変えるので採らなかった。**親の release そのものは、iframe を残したまま `window` の `blur` を起こす手順で見る**（親の release を
->   送らない変異で「keyup ArrowUp が届かない」で落ちた）。
+>   すぐ止める）を変えるので採らなかった。**親の release そのものは、iframe を残したまま、ゲーム以外（同じオリジンの別の iframe）へフォーカスを
+>   移す手順で見る**（親の release を送らない変異で「keyup ArrowUp が届かない」で落ちた）。
 > - **実ブラウザの検査は `scripts/check-sandbox-browser.sh` の層 8。** 検査用の作品（Go）は canvas の keydown / keyup を記録し、CDP の
 >   `Runtime.addBinding` で観測側へも渡す（閉じると iframe ごと記録が消えるため）。キーの集合は手元の D1 の `source_input_keys` へ入れる
 >   （層 7 の作品には `[]`、層 8 の作品には矢印・Space・Z）。パッドへのタッチが `keydown` → `keyup`（`isTrusted: false`・`key` は空・`repeat: false`）

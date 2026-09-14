@@ -10,8 +10,9 @@
 // | 2 | 同時押し（左を押したまま Space）が、離しを挟まずに 2 つの押下として届き、離した指のキーだけが離れる |
 // | 3 | 許可表に無いキー名・形の違うメッセージ（親から）、親と同じオリジンの別の iframe から、直接開いたローダーの自己送信は、どれも作品へ届かない。**対照として、親から送った許可表のキーは届き、2 回目の down / up は重ならない** |
 // | 4 | デスクトップでは覆いが開かず、パッドのキーは表示されず、作品へキーが届かない |
-// | 5 | 押したまま `window` の `blur` で、iframe を残したまま `keyup` が届き（親の release）、その後に指を離しても何も届かない。押したまま覆いを閉じると `keyup` が届き、閉じた後に指を離しても何も届かない |
+// | 5 | 押したままゲームの iframe へフォーカスを移しても `keyup` は届かず、指を離すと届く。押したままゲーム以外へフォーカスを移すと、iframe を残したまま `keyup` が届き（親の release）、その後に指を離しても何も届かない。押したまま覆いを閉じると `keyup` が届き、閉じた後に指を離しても何も届かない |
 // | 6 | キーの集合が空の作品では、パッドの置き場所が空で、ゲームの領域が覆いの残りいっぱいを使う |
+// | 7 | 長いキー名を 4 つ含む作品でも、縦持ち 390px・横持ちで、ボタンが画面と置き場所の幅を超えず、文字がキーに収まり、正式な名前を読み上げに持つ |
 //
 // **表示規則（どのキーをどこに出すか）はここへ書き写さない。** 規則は `src/virtual-pad.ts` の単体テストが見る。ここは、出したキーが
 // 保存した集合の中にあること（`--codes`）と、観測に使う ArrowLeft / ArrowRight / Space があることだけを見る。
@@ -261,21 +262,49 @@ function problemsOf(result, storedCodes) {
     }
   }
 
-  // ── 5. 隠れる・閉じると離す ─────────────────────────────────────────────────
-  // **閉じるときの keyup は、iframe を取り除いたときのローダー自身の pagehide でも届く**ので、親の release はここ（iframe を残す blur）で見る。
+  // ── 5. フォーカスの移動・閉じると離す ───────────────────────────────────────
+  // 5a. 押したままゲームの iframe へフォーカスを移しても離さない（PR #524）。
+  const game = touch.afterFocusGame;
   if (!sameSequence(touch.holdUp, ['keydown:ArrowUp'])) {
-    problems.push(`5 の前提: 上のキーを押しても keydown ArrowUp が届きませんでした（${JSON.stringify(sequenceOf(touch.holdUp))}）。`);
-  } else if (!sameSequence(touch.blurWhileHeld, ['keyup:ArrowUp']) || touch.afterBlur?.overlayHidden !== false || touch.afterBlur?.frames !== 1) {
+    problems.push(`5a の前提: 上のキーを押しても keydown ArrowUp が届きませんでした（${JSON.stringify(sequenceOf(touch.holdUp))}）。`);
+  } else if (game?.activeIsGameFrame !== true || !(game?.blurs > game?.blursBefore)) {
     problems.push(
-      `5: 押したまま window の blur で、覆いを開いたまま keyup ArrowUp が 1 つだけ届きませんでした（${JSON.stringify(sequenceOf(touch.blurWhileHeld))}、` +
-        `覆いが開いている=${String(touch.afterBlur?.overlayHidden === false)}）。親の releasePad が release を送っていません。`,
+      `5a の前提: ゲームの iframe へフォーカスが移り、親の window の blur が起きた状態になりませんでした（行き先がゲーム=${String(game?.activeIsGameFrame)}、` +
+        `blur ${String(game?.blursBefore)} → ${String(game?.blurs)}）。この状態の緑は無意味です。`,
+    );
+  } else {
+    if (!sameSequence(touch.focusGameWhileHeld, [])) {
+      problems.push(
+        `5a: パッドを押したままゲームの iframe へフォーカスを移すと、キーが届きました（${JSON.stringify(sequenceOf(touch.focusGameWhileHeld))}）。` +
+          ' blur の行き先が自分のゲームの iframe なら離さないはずです（src/work-play.ts）。',
+      );
+    }
+    if (!sameSequence(touch.liftAfterFocusGame, ['keyup:ArrowUp'])) {
+      problems.push(`5a: ゲームへフォーカスを移した後にパッドから指を離しても、keyup ArrowUp が 1 つだけ届きませんでした（${JSON.stringify(sequenceOf(touch.liftAfterFocusGame))}）。`);
+    }
+  }
+  // 5b. ゲーム以外へフォーカスを移すと、iframe を残したまま親の release で離す。**閉じるときの keyup は、iframe を取り除いたときの
+  // ローダー自身の pagehide でも届く**ので、親の release はここで見る。
+  const other = touch.afterFocusOther;
+  if (!sameSequence(touch.holdUpAgain, ['keydown:ArrowUp'])) {
+    problems.push(`5b の前提: 上のキーをもう一度押しても keydown ArrowUp が届きませんでした（${JSON.stringify(sequenceOf(touch.holdUpAgain))}）。`);
+  } else if (touch.activeIsOther !== true || !(other?.blurs > other?.blursBefore)) {
+    problems.push(
+      `5b の前提: ゲーム以外の iframe へフォーカスが移り、親の window の blur が起きた状態になりませんでした（行き先=${String(touch.activeIsOther)}、` +
+        `blur ${String(other?.blursBefore)} → ${String(other?.blurs)}）。`,
+    );
+  } else if (!sameSequence(touch.focusOtherWhileHeld, ['keyup:ArrowUp']) || other?.overlayHidden !== false || other?.frames !== 1) {
+    problems.push(
+      `5b: 押したままゲーム以外へフォーカスを移しても、覆いを開いたまま keyup ArrowUp が 1 つだけ届きませんでした（${JSON.stringify(sequenceOf(touch.focusOtherWhileHeld))}、` +
+        `覆いが開いている=${String(other?.overlayHidden === false)}）。親の releasePad が release を送っていません。`,
     );
   }
-  if (touch.heldAfterBlur !== 0 || !sameSequence(touch.liftAfterBlur, [])) {
+  if (touch.heldAfterFocusOther !== 0 || !sameSequence(touch.liftAfterFocusOther, [])) {
     problems.push(
-      `5: blur の後に押している印が残ったか、指を離すとキーが届きました（印 ${String(touch.heldAfterBlur)}、${JSON.stringify(sequenceOf(touch.liftAfterBlur))}）。`,
+      `5b: 離した後に押している印が残ったか、指を離すとキーが届きました（印 ${String(touch.heldAfterFocusOther)}、${JSON.stringify(sequenceOf(touch.liftAfterFocusOther))}）。`,
     );
   }
+  // 5c. 押したまま覆いを閉じる。
   if (!sameSequence(touch.holdRight, ['keydown:ArrowRight'])) {
     problems.push(`5 の前提: 右のキーを押しても keydown ArrowRight が届きませんでした（${JSON.stringify(sequenceOf(touch.holdRight))}）。`);
   } else if (touch.closed?.reached !== true) {
@@ -314,6 +343,44 @@ function problemsOf(result, storedCodes) {
     const l = empty.landscape;
     if (l?.stageRect && Math.abs(l.stageRect.x) > TOLERANCE) {
       problems.push(`6: キーの集合が空の作品で、横持ちのゲームの領域が左端から始まっていません（${JSON.stringify(l.stageRect)}）。`);
+    }
+  }
+
+  // ── 7. 長いキー名でも、ボタンが列の幅を超えない（PR #524）─────────────────────
+  const long = result.long ?? {};
+  if (typeof long.error === 'string') {
+    problems.push(`長いキー名の作品の観測が途中で止まりました: ${long.error}`);
+  } else if (long.opened?.reached !== true) {
+    problems.push(`7 の前提: 長いキー名の作品で覆いが開きませんでした。最後の状態: ${JSON.stringify(long.opened?.state ?? null)}`);
+  } else {
+    for (const [name, state] of [
+      ['縦持ち', long.portrait],
+      ['横持ち', long.landscape],
+    ]) {
+      const keys = (state?.keys ?? []).filter((key) => key.place === 'buttons');
+      if (keys.length !== 4) {
+        problems.push(`7 の前提: 長いキー名の作品の${name}で、ボタンが 4 つではありません（${JSON.stringify(keys.map((key) => key.code))}）。`);
+        continue;
+      }
+      const box = state.buttonsRect;
+      for (const key of keys) {
+        const where = `${name}の ${String(key.code)}（${JSON.stringify(key.label)}）`;
+        if (key.rect.x < -TOLERANCE || key.rect.x + key.rect.width > state.viewport.width + TOLERANCE) {
+          problems.push(`7: ${where} が画面の幅からはみ出しています（${JSON.stringify(key.rect)} / 幅 ${String(state.viewport.width)}）。`);
+        }
+        if (box && (key.rect.x < box.x - TOLERANCE || key.rect.x + key.rect.width > box.x + box.width + TOLERANCE)) {
+          problems.push(`7: ${where} がボタンの置き場所からはみ出しています（${JSON.stringify(key.rect)} / 置き場所 ${JSON.stringify(box)}）。`);
+        }
+        if (key.scrollWidth > key.clientWidth + TOLERANCE) {
+          problems.push(`7: ${where} の文字がキーの幅に収まっていません（scrollWidth ${String(key.scrollWidth)} / clientWidth ${String(key.clientWidth)}）。`);
+        }
+        if (!(key.rect.width >= MIN_KEY_SIZE - TOLERANCE && key.rect.height >= MIN_KEY_SIZE - TOLERANCE)) {
+          problems.push(`7: ${where} の押せる大きさが ${MIN_KEY_SIZE}px に届きません（${JSON.stringify(key.rect)}）。`);
+        }
+        if (typeof key.ariaLabel !== 'string' || key.ariaLabel !== key.code) {
+          problems.push(`7: ${where} は文字を縮めたキーなのに、読み上げの名前に正式な名前がありません（${String(key.ariaLabel)}）。`);
+        }
+      }
     }
   }
   return problems;

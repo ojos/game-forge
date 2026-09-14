@@ -305,13 +305,15 @@ describe('仮想パッドのスクリプトの形（#494 / 仕様 3.9.6 / 3.9.7�
     expect(click.indexOf("sendPad('down', padCodes[index]);")).toBeLessThan(click.indexOf("sendPad('up', padCodes[index]);"));
   });
 
-  it('すべて離すは visibilitychange（hidden）・pagehide・window の blur と閉じるときで、release を 1 回送る', () => {
+  it('すべて離すは visibilitychange（hidden）・pagehide・window の blur（行き先がゲームの iframe なら除く）と閉じるときで、release を 1 回送る', () => {
     const release = functionBody('releasePad');
     expect(release.split('postPad(').length - 1).toBe(1);
     expect(release).toContain(`op: 'release'`);
     expect(script).toMatch(/document\.addEventListener\('visibilitychange', function \(\) \{\n\s+if \(document\.visibilityState === 'hidden'\) \{ releaseOnHide\(\); \}/u);
     expect(script).toContain("window.addEventListener('pagehide', releaseOnHide);");
-    expect(script).toContain("window.addEventListener('blur', releaseOnHide);");
+    // blur はフォーカスの行き先の決着を待ち、自分のゲームの iframe なら離さない（PR #524）。
+    expect(script).toMatch(/window\.addEventListener\('blur', function \(\) \{\n\s+setTimeout\(function \(\) \{\n\s+if \(frame !== null && document\.activeElement === frame\) \{ return; \}\n\s+releaseOnHide\(\);\n\s+\}, 0\);/u);
+    expect(script).not.toContain("window.addEventListener('blur', releaseOnHide);");
   });
 
   it('長押しのメニューを抑える', () => {

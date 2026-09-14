@@ -44,7 +44,7 @@
 #   script-src に blob: 有り → ok（`connect-src` はその作品の .wasm 1 本のまま）
 #
 # ══════════════════════════════════════════════════════════════════════════════
-# 何を見るか（9 層。どこで落ちたかが分かる形にする）
+# 何を見るか（層ごとに。どこで落ちたかが分かる形にする）
 # ══════════════════════════════════════════════════════════════════════════════
 #
 #   層 0  配信された `.wasm` の本文を**1 回展開**すると `00 61 73 6d`（`\0asm`）で
@@ -177,8 +177,13 @@ node -e 'if (typeof WebSocket !== "function") { process.exit(1) }' 2>/dev/null |
 
 # `GF_SKIP_BROWSER=1` は**層 0 だけ**を回す（ブラウザを要求しない）。層 0 は実 HTTP さえ
 # 通れば見えるためで、**ブラウザを入れられない環境でも #181 の回帰は見られる。**
-# **層 1〜5 を飛ばしたことは最後に明示する**（黙って一部だけ回して緑に見せない）。
+# **層 1 以降を飛ばしたことは最後に明示する**（黙って一部だけ回して緑に見せない）。
 SKIP_BROWSER="${GF_SKIP_BROWSER:-0}"
+
+# 最後の層の番号は、このファイルの冒頭の層の表（`#   層 N  …` の行）から読む。**案内の文字列へ層の数を書き写さない**
+# ——層を足した日に案内だけが古いまま残る（PR #524 の Copilot の指摘。層 8 を足したとき「層 1〜5」のままだった）。
+LAST_LAYER="$(sed -nE 's/^#   層 ([0-9]+)  .*/\1/p' "${BASH_SOURCE[0]}" | tail -1)"
+[[ -n "$LAST_LAYER" ]] || fail "冒頭の層の表（#   層 N  …）から最後の層の番号を読めませんでした。表の綴りを変えたなら、ここも直してください。"
 
 BROWSER_BIN=""
 if [[ "$SKIP_BROWSER" != "1" ]]; then
@@ -532,6 +537,10 @@ PAD_ID="$(node -e 'console.log(crypto.randomUUID())')"
 PAD_PREVIEW_KEY="$(node -e 'console.log([...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join(""))')"
 # 層 8 のパッドに出すキー（表示規則で十字の左・右・上と、ボタンの Space・Z になる集合）。
 PAD_CODES='["ArrowLeft","ArrowRight","ArrowUp","KeyZ","Space"]'
+# 層 8 の、**長いキー名を 4 つ含む**作品（ボタンの文字が縦持ち 390px の列の幅を超えないか。PR #524）。ソースのキーも分ける。
+LONG_ID="$(node -e 'console.log(crypto.randomUUID())')"
+LONG_PREVIEW_KEY="$(node -e 'console.log([...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join(""))')"
+LONG_CODES='["ArrowLeft","NumpadMultiply","NumpadSubtract","PrintScreen","ScrollLock"]'
 
 note "applying migrations"
 npx wrangler d1 migrations apply DB --local --persist-to "$STATE" >"$WORK/d1.log" 2>&1 ||
@@ -551,6 +560,10 @@ npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     values ('builds/browsercheck/source.go', '[]', 1, 1);
   insert into source_input_keys (source_key, codes, rule_version, extracted_at)
     values ('builds/browsercheck-pad/source.go', '$PAD_CODES', 1, 1);
+  insert into games (id, author_id, status, title, go_version, source_key, wasm_key, created_at, published_at, preview_key)
+    values ('$LONG_ID', 'browsercheck', 'published', 't4', '$GO_VERSION', 'builds/browsercheck-long/source.go', '$WASM_KEY', 1, 1, '$LONG_PREVIEW_KEY');
+  insert into source_input_keys (source_key, codes, rule_version, extracted_at)
+    values ('builds/browsercheck-long/source.go', '$LONG_CODES', 1, 1);
 " >"$WORK/seed.log" 2>&1 ||
   { sed 's/^/    /' "$WORK/seed.log" >&2; fail "games 行を作れませんでした。"; }
 
@@ -631,7 +644,7 @@ node scripts/wasm-body-verdict.mjs \
 
 if [[ "$SKIP_BROWSER" == "1" ]]; then
   note "OK (層 0 のみ): 配信された .wasm の本文は正しい形です。"
-  note "**層 1〜5（実ブラウザ）は見ていません。** GF_SKIP_BROWSER を外すと見ます。"
+  note "**層 1〜${LAST_LAYER}（実ブラウザ）は見ていません。** GF_SKIP_BROWSER を外すと見ます。"
   exit 0
 fi
 
@@ -829,6 +842,7 @@ node scripts/virtual-pad-probe.mjs \
   --browser "$BROWSER_BIN" \
   --url "$PAD_PAGE_URL" \
   --empty-url "$WORK_PAGE_URL" \
+  --long-url "https://${APP_HOST}:${PORT}/works/${LONG_ID}" \
   --direct-url "${BASE}/g/${PAD_ID}/" \
   --timeout-ms "$TIMEOUT_MS" \
   ${PAD_SHOT_ARGS[@]+"${PAD_SHOT_ARGS[@]}"} >"$WORK/pad.json" ||

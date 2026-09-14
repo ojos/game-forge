@@ -7,10 +7,12 @@
 //    - **パッドへのタッチ**（CDP の `Input.dispatchTouchEvent`）: 左を押して離す／左を押したまま Space を押し、Space・左の順に離す
 //    - **無視されるべきメッセージ**: 親の文書から、許可表に無いキー名・形の違うメッセージを送る（対照として、同じ親から許可表のキーも送る）。
 //      親と同じオリジンの**別の iframe** から、形の正しいメッセージを送る
-//    - **押したまま `window` の `blur`**（iframe を残したまま、親の「すべて離す」だけを試す）と、**押したまま覆いを閉じる**（「閉じる」の `click()`）
+//    - **押したままゲームの iframe へフォーカスを移す**（離さない）・**押したままゲーム以外の iframe へフォーカスを移す**（iframe を残したまま
+//      親の「すべて離す」を試す）・**押したまま覆いを閉じる**（「閉じる」の `click()`）
 // 2. **サンドボックス URL を直接開いた**ローダー文書で、自分自身へ形の正しいメッセージを送る（親の居ない文書）
 // 3. **デスクトップ**（1280×900、タッチなし）で同じ作品ページを開く
 // 4. **キーの集合が空の作品**の作品ページを、タッチ端末の形で開いて覆いを開く
+// 5. **長いキー名を 4 つ含む作品**の作品ページを、縦持ち 390px と横持ちで開いて覆いを開く（ボタンが列の幅を超えないか。`--shot-dir` で撮る）
 //
 // # 作品が受けたキーの観測
 //
@@ -24,7 +26,7 @@
 //
 // 使い方:
 //   node scripts/virtual-pad-probe.mjs --browser <path> --url <キーを読む作品のページ> --empty-url <キーの無い作品のページ> \
-//     --direct-url <サンドボックス URL> [--timeout-ms 45000] [--shot-dir <dir>]
+//     --long-url <長いキー名の作品のページ> --direct-url <サンドボックス URL> [--timeout-ms 45000] [--shot-dir <dir>]
 //
 // 標準出力: 観測結果 1 個の JSON
 // 終了コード: 0 = 観測できた（合否とは無関係） / 1 = 観測そのものができなかった
@@ -54,7 +56,7 @@ const KEY_BINDING = '__gfKeyBinding';
  * コマンドライン引数を読む。
  *
  * @param {string[]} argv `process.argv.slice(2)`
- * @returns {{browser: string, url: string, emptyUrl: string, directUrl: string, timeoutMs: number, shotDir: string | null}} 設定
+ * @returns {{browser: string, url: string, emptyUrl: string, longUrl: string, directUrl: string, timeoutMs: number, shotDir: string | null}} 設定
  */
 function parseArgs(argv) {
   /** @type {Record<string, string>} */
@@ -69,15 +71,16 @@ function parseArgs(argv) {
   }
   const { browser, url } = values;
   const emptyUrl = values['empty-url'];
+  const longUrl = values['long-url'];
   const directUrl = values['direct-url'];
-  if (browser === undefined || url === undefined || emptyUrl === undefined || directUrl === undefined) {
-    throw new Error('--browser と --url と --empty-url と --direct-url は必須です');
+  if (browser === undefined || url === undefined || emptyUrl === undefined || longUrl === undefined || directUrl === undefined) {
+    throw new Error('--browser と --url と --empty-url と --long-url と --direct-url は必須です');
   }
   const timeoutMs = values['timeout-ms'] === undefined ? DEFAULT_TIMEOUT_MS : Number(values['timeout-ms']);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error(`--timeout-ms の値が不正です: ${String(values['timeout-ms'])}`);
   }
-  return { browser, url, emptyUrl, directUrl, timeoutMs, shotDir: values['shot-dir'] ?? null };
+  return { browser, url, emptyUrl, longUrl, directUrl, timeoutMs, shotDir: values['shot-dir'] ?? null };
 }
 
 /**
@@ -86,6 +89,9 @@ function parseArgs(argv) {
 const SIGNAL_RECORDER = `(() => {
   if (window.top !== window) { return; }
   window.__gfSignals = [];
+  // 親の window の blur が実際に起きたか（フォーカスの手順が空振りしていないことを見る）。
+  window.__gfBlurs = 0;
+  window.addEventListener('blur', () => { window.__gfBlurs += 1; });
   window.addEventListener('message', (event) => {
     const frame = document.querySelector('iframe.gf-frame');
     window.__gfSignals.push({
@@ -116,6 +122,9 @@ const STATE_EXPRESSION = `(() => {
     place: dpad !== null && dpad.contains(key) ? 'dpad' : buttons !== null && buttons.contains(key) ? 'buttons' : 'other',
     rect: rectOf(key),
     display: getComputedStyle(key).display,
+    // 文字がキーの中に収まっているか（はみ出し・切り取り）。
+    scrollWidth: key.scrollWidth,
+    clientWidth: key.clientWidth,
   }));
   return {
     coarse: typeof matchMedia === 'function' ? matchMedia('(pointer: coarse)').matches : null,
@@ -131,6 +140,8 @@ const STATE_EXPRESSION = `(() => {
     padUserSelect: dpad === null ? null : getComputedStyle(dpad).userSelect,
     keys,
     activeIsPadKey: document.activeElement !== null && document.activeElement.classList.contains('gf-play-pad-key'),
+    activeIsGameFrame: document.activeElement !== null && document.activeElement.matches('.gf-play-stage iframe.gf-frame'),
+    blurs: typeof window.__gfBlurs === 'number' ? window.__gfBlurs : null,
     signals: Array.isArray(window.__gfSignals) ? window.__gfSignals.slice() : null,
   };
 })()`;
@@ -374,6 +385,8 @@ async function observeTouch(cdp, options) {
   try {
     await tab.resize(PORTRAIT, true);
     await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }, tab.sessionId);
+    // ヘッドレスのタブは前面にないので、focus / blur を実際に起こすには焦点のエミュレートが要る（5a / 5b）。
+    await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true }, tab.sessionId);
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: SIGNAL_RECORDER }, tab.sessionId);
     await tab.navigate(options.url);
     steps.beforeTap = await tab.state();
@@ -471,28 +484,72 @@ async function observeTouch(cdp, options) {
     steps.sibling = tab.keysIn('sibling');
     await tab.evaluate(REMOVE_SIBLING);
 
-    // 5a. 押したまま window の blur（隠れた・フォーカスが外へ出た）。**iframe を取り除かない**ので、届く keyup は親の release による
-    // （閉じるときの keyup は、iframe を取り除いたときのローダー自身の pagehide でも届き、親の release と見分けられない。2026-09-14 に実測）。
+    // 5a. 押したままゲームの iframe をタップしてフォーカスを移しても、離さない（PR #524）。**iframe を取り除かない**ので、
+    // 届く keyup は親の release による（閉じるときの keyup は、iframe を取り除いたときのローダー自身の pagehide でも届き、親の release と
+    // 見分けられない。2026-09-14 に実測）。
     const up = await tab.centerOf('.gf-play-pad-key[data-code="ArrowUp"]');
+    const stage = await tab.centerOf('.gf-play-stage');
     steps.points.up = up;
-    tab.setPhase('hold-up');
-    if (up !== null) {
-      await tab.touch('touchStart', [{ ...up, id: 4 }]);
+    steps.points.stage = stage;
+    if (up === null || stage === null) {
+      throw new Error('パッドに ArrowUp のボタンか、ゲームの領域がありません（検査の前提が崩れています）');
     }
+    tab.setPhase('hold-up');
+    await tab.touch('touchStart', [{ ...up, id: 4 }]);
     await sleep(DELIVERY_MS);
     steps.holdUp = tab.keysIn('hold-up');
-    tab.setPhase('blur-while-held');
-    await tab.evaluate(`window.dispatchEvent(new Event('blur'))`);
+    const blursBeforeGame = (await tab.state()).blurs;
+    tab.setPhase('focus-game-while-held');
+    // 指をもう 1 本ゲームに置いて離し、フォーカスをゲームの iframe へ移す（タップで移らない作品もあるので、移す操作を明示的にも行う）。
+    await tab.touch('touchStart', [
+      { ...up, id: 4 },
+      { ...stage, id: 5 },
+    ]);
+    await tab.touch('touchEnd', [{ ...stage, id: 5 }]);
+    await tab.evaluate(`document.querySelector('.gf-play-stage iframe.gf-frame').focus()`);
     await sleep(DELIVERY_MS);
-    steps.blurWhileHeld = tab.keysIn('blur-while-held');
-    steps.afterBlur = await tab.state();
-    steps.heldAfterBlur = await tab.evaluate(`document.querySelectorAll('.gf-play-pad-held').length`);
-    tab.setPhase('lift-after-blur');
+    steps.focusGameWhileHeld = tab.keysIn('focus-game-while-held');
+    steps.afterFocusGame = await tab.state();
+    steps.afterFocusGame.blursBefore = blursBeforeGame;
+    tab.setPhase('lift-after-focus-game');
+    await tab.touch('touchEnd', [{ ...up, id: 4 }]);
+    await sleep(DELIVERY_MS);
+    steps.liftAfterFocusGame = tab.keysIn('lift-after-focus-game');
+
+    // 5b. 押したままゲーム以外（親と同じオリジンの別の iframe）へフォーカスを移すと、親の release で離す。
+    await tab.evaluate(`document.querySelector('.gf-play-close').focus()`);
+    await sleep(DELIVERY_MS);
+    tab.setPhase('hold-up-again');
+    await tab.touch('touchStart', [{ ...up, id: 6 }]);
+    await sleep(DELIVERY_MS);
+    steps.holdUpAgain = tab.keysIn('hold-up-again');
+    const blursBeforeOther = (await tab.state()).blurs;
+    tab.setPhase('focus-other-while-held');
+    await tab.evaluate(`(() => {
+      const other = document.createElement('iframe');
+      other.setAttribute('title', 'gf-virtual-pad-probe-focus');
+      document.body.appendChild(other);
+      other.focus();
+      return true;
+    })()`);
+    await sleep(DELIVERY_MS);
+    steps.focusOtherWhileHeld = tab.keysIn('focus-other-while-held');
+    steps.afterFocusOther = await tab.state();
+    steps.afterFocusOther.blursBefore = blursBeforeOther;
+    steps.heldAfterFocusOther = await tab.evaluate(`document.querySelectorAll('.gf-play-pad-held').length`);
+    steps.activeIsOther = await tab.evaluate(`document.activeElement !== null && document.activeElement.getAttribute('title') === 'gf-virtual-pad-probe-focus'`);
+    tab.setPhase('lift-after-focus-other');
     await tab.touch('touchEnd', []);
     await sleep(DELIVERY_MS);
-    steps.liftAfterBlur = tab.keysIn('lift-after-blur');
+    steps.liftAfterFocusOther = tab.keysIn('lift-after-focus-other');
+    await tab.evaluate(`(() => {
+      const other = document.querySelector('iframe[title="gf-virtual-pad-probe-focus"]');
+      if (other !== null) { other.remove(); }
+      document.querySelector('.gf-play-close').focus();
+      return true;
+    })()`);
 
-    // 5b. 押したまま覆いを閉じる。
+    // 5c. 押したまま覆いを閉じる。
     tab.setPhase('hold-right');
     await tab.touch('touchStart', [{ ...right, id: 3 }]);
     await sleep(DELIVERY_MS);
@@ -616,6 +673,40 @@ async function observeEmpty(cdp, options) {
 }
 
 /**
+ * 長いキー名の作品を、縦持ちの 390px で開いて覆いを開く（ボタンの文字が列の幅を超えないか。PR #524）。
+ *
+ * @param {CdpConnection} cdp 接続
+ * @param {ReturnType<typeof parseArgs>} options 設定
+ * @returns {Promise<object>} 観測結果
+ */
+async function observeLong(cdp, options) {
+  const tab = await openTab(cdp, options);
+  /** @type {Record<string, any>} */
+  const steps = {};
+  try {
+    await tab.resize(PORTRAIT, true);
+    await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }, tab.sessionId);
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: SIGNAL_RECORDER }, tab.sessionId);
+    await tab.navigate(options.longUrl);
+    steps.tapEntry = await tab.tap('.gf-play-entry');
+    steps.opened = await tab.waitFor(openedWithSignal);
+    await sleep(500);
+    steps.portrait = await tab.state();
+    steps.shotPortrait = await tab.shoot(options.shotDir === null ? null : join(options.shotDir, 'pad-long-keys-portrait-390x844.png'));
+    await tab.resize(LANDSCAPE, true);
+    await sleep(500);
+    steps.landscape = await tab.state();
+    steps.shotLandscape = await tab.shoot(options.shotDir === null ? null : join(options.shotDir, 'pad-long-keys-landscape-844x390.png'));
+    return steps;
+  } catch (error) {
+    steps.error = String(error);
+    return steps;
+  } finally {
+    await tab.close().catch(() => {});
+  }
+}
+
+/**
  * 観測する。
  *
  * @param {ReturnType<typeof parseArgs>} options 設定
@@ -636,11 +727,13 @@ async function probe(options) {
     return {
       url: options.url,
       emptyUrl: options.emptyUrl,
+      longUrl: options.longUrl,
       directUrl: options.directUrl,
       touch: await observeTouch(cdp, options),
       direct: await observeDirect(cdp, options),
       desktop: await observeDesktop(cdp, options),
       empty: await observeEmpty(cdp, options),
+      long: await observeLong(cdp, options),
     };
   } finally {
     child.kill('SIGKILL');

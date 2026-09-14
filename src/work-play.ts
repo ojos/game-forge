@@ -38,6 +38,7 @@
  *   `lostpointercapture` で `up` を送る。ボタンごとに指を覚えるので、同時押しが成り立つ
  * - **キーボード・支援技術**（`click` の `detail === 0`）: `down` と `up` を続けて送る
  * - **すべて離す**: `visibilitychange`（`hidden`）・`pagehide`・`window` の `blur` と、覆いを閉じるとき（`releasePad`）。
+ *   **`blur` は、フォーカスの行き先が自分のゲームの iframe なら離さない**（押したままゲームをタップする操作を壊さない）。
  *   **閉じるときの release は、直後に iframe を取り除くので作品へは届かない**（実測）。押したまま閉じたときの keyup は、取り除かれた
  *   ローダー自身の `pagehide`（`src/sandbox-loader.ts` の `padReceiverScript`）が送る。親の release が効くのは iframe を残す場面である
  * - **送信**: `iframe.contentWindow.postMessage({ type: 'gf-pad', op, code }, '*')`。宛先は `'*'` で、確認は受け手
@@ -369,7 +370,14 @@ export function playFrameScript(playUrl: string): string {
     if (document.visibilityState === 'hidden') { releaseOnHide(); }
   });
   window.addEventListener('pagehide', releaseOnHide);
-  window.addEventListener('blur', releaseOnHide);
+  // **フォーカスが自分のゲームの iframe へ移っただけなら離さない**（パッドを押したままゲームをタップする操作。PR #524）。
+  // blur の時点ではフォーカスの行き先が決まっていないので、決着を待ってから行き先を見る。それ以外（別の要素・別のウィンドウ）は離す。
+  window.addEventListener('blur', function () {
+    setTimeout(function () {
+      if (frame !== null && document.activeElement === frame) { return; }
+      releaseOnHide();
+    }, 0);
+  });
   var close = function (fromHistory) {
     if (frame === null) { return; }
     var closing = frame;

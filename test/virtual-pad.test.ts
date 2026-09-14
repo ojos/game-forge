@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { INPUT_KEY_CODES } from '../src/input-keys.js';
-import { PAD_BUTTON_LIMIT, padKeyLabel, padLayoutOf, readInputKeyCodes } from '../src/virtual-pad.js';
+import { PAD_BUTTON_LIMIT, PAD_LABEL_MAX_LENGTH, padKeyAriaLabel, padKeyLabel, padLayoutOf, readInputKeyCodes } from '../src/virtual-pad.js';
 
 /**
  * 仮想パッドの表示規則（仕様 3.9.6 / #494 / M14-5）と、D1 の値の読み方（許可表で絞る）。
@@ -144,14 +144,43 @@ describe('ボタンの文字は code ごとの固定の文字列（仕様 3.9.6 
     expect(padKeyLabel('ArrowLeft')).toBe('←');
     expect(padKeyLabel('Digit1')).toBe('1');
     expect(padKeyLabel('ControlLeft')).toBe('Ctrl');
+    expect(padKeyLabel('AltRight')).toBe('Alt');
+    expect(padKeyLabel('MetaLeft')).toBe('Meta');
+    expect(padKeyLabel('Numpad1')).toBe('Num1');
+    expect(padKeyLabel('NumpadMultiply')).toBe('Num*');
+    expect(padKeyLabel('F12')).toBe('F12');
   });
 
-  it('許可表のすべての code に、空でなく HTML の特別な文字を含まない文字がある', () => {
+  it(`許可表のすべての code に、空でなく ${PAD_LABEL_MAX_LENGTH} 文字以下の文字がある（許可表から回す。PR #524 の Copilot の指摘）`, () => {
+    expect(PAD_LABEL_MAX_LENGTH).toBe(5);
+    const tooLong: string[] = [];
     for (const code of INPUT_KEY_CODES) {
       const label = padKeyLabel(code);
       expect(label, code).not.toBe('');
-      expect(label, code).not.toMatch(/[<>&"']/u);
+      expect(label, code).not.toMatch(/[<>&"]/u);
+      if ([...label].length > PAD_LABEL_MAX_LENGTH) {
+        tooLong.push(`${code} → ${label}`);
+      }
     }
+    expect(tooLong, '表（src/virtual-pad.ts の FIXED_LABELS）に短い文字を書く').toEqual([]);
+  });
+
+  it('文字を縮めたキーは、読み上げの名前に正式な名前（code）を持つ', () => {
+    expect(padKeyAriaLabel('NumpadMultiply')).toBe('NumpadMultiply');
+    expect(padKeyAriaLabel('Escape')).toBe('Escape');
+    expect(padKeyAriaLabel('ShiftLeft')).toBe('ShiftLeft');
+    expect(padKeyAriaLabel('BracketLeft')).toBe('BracketLeft');
+    // 文字が code と同じもの・英字と数字のキーは持たない。
+    expect(padKeyAriaLabel('Space')).toBeNull();
+    expect(padKeyAriaLabel('F1')).toBeNull();
+    expect(padKeyAriaLabel('KeyZ')).toBeNull();
+    expect(padKeyAriaLabel('Digit1')).toBeNull();
+    for (const code of INPUT_KEY_CODES) {
+      if (padKeyLabel(code).length < code.length && !/^(Key|Digit|Arrow)/u.test(code)) {
+        expect(padKeyAriaLabel(code), code).toBe(code);
+      }
+    }
+    expect(padLayoutOf(['NumpadMultiply']).buttons).toEqual([{ code: 'NumpadMultiply', label: 'Num*', ariaLabel: 'NumpadMultiply' }]);
   });
 });
 

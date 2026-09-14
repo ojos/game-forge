@@ -34,7 +34,7 @@ export interface PadKey {
   readonly code: string;
   /** ボタンに出す文字（固定の文字列）。 */
   readonly label: string;
-  /** 読み上げの名前。十字のボタンだけが持つ（「左」「上」など）。 */
+  /** 読み上げの名前。十字のボタンは「左」「上」など、文字を縮めたボタンは正式な名前（`code`）。無ければ null。 */
   readonly ariaLabel: string | null;
 }
 
@@ -79,13 +79,63 @@ const TRAILING_BUTTON = 'Escape';
  */
 const SIDED_MODIFIERS: readonly string[] = ['Shift', 'Control', 'Alt', 'Meta'];
 
-/** `code` ごとの固定の文字（規則で決まらないものだけを書く）。 */
+/**
+ * ボタンの文字の長さの上限（文字数）。**縦持ちの 2 列（幅 390px）で、キーの幅からはみ出さない長さ**にする（PR #524 の Copilot の指摘）。
+ * 許可表のすべての `code` がこの長さに収まることは `test/virtual-pad.test.ts` が許可表から回して見る。
+ */
+export const PAD_LABEL_MAX_LENGTH = 5;
+
+/**
+ * `code` ごとの固定の短い文字（**下の規則で決まらないものをすべて書く**）。
+ *
+ * 規則で決まるのは `Key*`（英字 1 字）・`Digit*`（数字）・`F*`（そのまま）・`Numpad0`〜`Numpad9`（`Num0` の形）・矢印（←↑→↓）。
+ * 許可表（`INPUT_KEY_CODES`）にそれ以外の `code` が増えたら、ここに書かないと単体テストが落ちる（`code` そのものは長さの上限を超えうる）。
+ */
 const FIXED_LABELS: Readonly<Record<string, string>> = {
-  Space: 'Space',
-  Enter: 'Enter',
-  Escape: 'Esc',
+  AltLeft: 'Alt',
+  AltRight: 'Alt',
+  Backquote: '`',
+  Backslash: '\\',
+  Backspace: 'BS',
+  BracketLeft: '[',
+  BracketRight: ']',
+  CapsLock: 'Caps',
+  Comma: ',',
+  ContextMenu: 'Menu',
   ControlLeft: 'Ctrl',
   ControlRight: 'Ctrl',
+  Delete: 'Del',
+  End: 'End',
+  Enter: 'Enter',
+  Equal: '=',
+  Escape: 'Esc',
+  Home: 'Home',
+  Insert: 'Ins',
+  IntlBackslash: '\\',
+  MetaLeft: 'Meta',
+  MetaRight: 'Meta',
+  Minus: '-',
+  NumLock: 'NumLk',
+  NumpadAdd: 'Num+',
+  NumpadDecimal: 'Num.',
+  NumpadDivide: 'Num/',
+  NumpadEnter: 'NumEn',
+  NumpadEqual: 'Num=',
+  NumpadMultiply: 'Num*',
+  NumpadSubtract: 'Num-',
+  PageDown: 'PgDn',
+  PageUp: 'PgUp',
+  Pause: 'Pause',
+  Period: '.',
+  PrintScreen: 'PrtSc',
+  Quote: "'",
+  ScrollLock: 'ScrLk',
+  Semicolon: ';',
+  ShiftLeft: 'Shift',
+  ShiftRight: 'Shift',
+  Slash: '/',
+  Space: 'Space',
+  Tab: 'Tab',
 };
 
 /**
@@ -121,10 +171,10 @@ export function readInputKeyCodes(raw: unknown): string[] {
 }
 
 /**
- * ボタンに出す文字（`code` ごとの固定の文字列。仕様 3.9.6 の 3）。
+ * ボタンに出す文字（`code` ごとの固定の短い文字列。仕様 3.9.6 の 3）。**{@link PAD_LABEL_MAX_LENGTH} 文字以下。**
  *
- * `KeyZ` → `Z`、`Digit1` → `1`、`ShiftLeft` → `Shift`、`Escape` → `Esc`。規則で決まらない `code` は `code` そのもの
- * （許可表の値であり、UGC ではない）。
+ * `KeyZ` → `Z`、`Digit1` → `1`、`Numpad1` → `Num1`、`ShiftLeft` → `Shift`、`Escape` → `Esc`、`NumpadMultiply` → `Num*`。
+ * 表にも規則にも無い `code` は `code` そのもの（許可表の外の値で、`padLayoutOf` がボタンにしない）。
  *
  * @param code `KeyboardEvent.code`
  * @returns 文字
@@ -145,10 +195,24 @@ export function padKeyLabel(code: string): string {
   if (/^Digit[0-9]$/u.test(code)) {
     return code.slice(5);
   }
-  for (const modifier of SIDED_MODIFIERS) {
-    if (code === `${modifier}Left` || code === `${modifier}Right`) {
-      return modifier;
-    }
+  if (/^Numpad[0-9]$/u.test(code)) {
+    return `Num${code.slice(6)}`;
+  }
+  // `F1`〜`F24` はそのまま（3 文字以下）。
+  return code;
+}
+
+/**
+ * ボタンの読み上げの名前。**文字を縮めたキーは、正式な名前（`code`）を持たせる**（`Esc` → `Escape`、`Num*` → `NumpadMultiply`）。
+ *
+ * 文字が `code` と同じもの（`Space` / `F1`）と、英字・数字のキー（`Z` / `1`。読み上げでもそのまま分かる）は持たない。
+ *
+ * @param code `KeyboardEvent.code`
+ * @returns 読み上げの名前（持たなければ null）
+ */
+export function padKeyAriaLabel(code: string): string | null {
+  if (padKeyLabel(code) === code || /^(Key[A-Z]|Digit[0-9])$/u.test(code)) {
+    return null;
   }
   return code;
 }
@@ -213,7 +277,7 @@ export function padLayoutOf(codes: readonly string[]): PadLayout {
   const buttons = [...remaining]
     .sort((a, b) => buttonRank(a) - buttonRank(b) || (a < b ? -1 : a > b ? 1 : 0))
     .slice(0, PAD_BUTTON_LIMIT)
-    .map((code) => ({ code, label: padKeyLabel(code), ariaLabel: null }));
+    .map((code) => ({ code, label: padKeyLabel(code), ariaLabel: padKeyAriaLabel(code) }));
 
   return { dpad, buttons };
 }

@@ -230,12 +230,31 @@ describe('トップの節（renderHomeNewsSection）', () => {
     expect(html).toContain(`>${NEWS_TITLE}</h2>`);
     expect(html).toContain('<time datetime="2026-09-10">2026-09-10</time>');
     expect(html).toContain(NEWS_CATEGORY_LABELS.generation);
-    expect(html).toContain(`<a href="${newsArticlePath('a')}">見出し</a>`);
+    expect(html).toContain(`<a class="gf-link-quiet" href="${newsArticlePath('a')}">見出し</a>`);
     expect(html).toContain('<p>1 段落目</p>');
     // **2 段落目以降は記事の画面で読む。**
     expect(html).not.toContain('2 段落目');
     expect(html).toContain('最終更新日: <time datetime="2026-09-11">');
     expect(html).toContain(`href="${NEWS_PATH}"`);
+  });
+
+  it('見出しの行は 見出し・最終更新日 → 「すべて見る」の副ボタン、記事はブロックの中の行、分類はチップ（#471）', () => {
+    // **仕様 2.5.3 / 2.5.4 / 2.5.5。** HTML の順＝見た目の順＝Tab の順（見出し → 最終更新日 → ボタン → 記事の行）。
+    const html = renderHomeNewsSection([
+      article({ id: 'a', publishedOn: '2026-09-10', category: 'generation' }),
+    ]);
+    const heading = html.indexOf('<h2 id="gf-news-heading">');
+    const updated = html.indexOf('class="gf-news-updated"');
+    const more = html.indexOf(`<a class="gf-button gf-button-secondary gf-button-sm" href="${NEWS_PATH}">お知らせをすべて見る</a>`);
+    const list = html.indexOf('<ul class="gf-news-list gf-block gf-block-rows">');
+    expect(html).toContain('<div class="gf-home-head">');
+    expect(heading).toBeGreaterThan(0);
+    expect(updated).toBeGreaterThan(heading);
+    expect(more).toBeGreaterThan(updated);
+    expect(list).toBeGreaterThan(more);
+    expect(html).toContain(
+      `<span class="gf-chip gf-news-category">${NEWS_CATEGORY_LABELS.generation}</span>`,
+    );
   });
 
   it(`並べるのは ${HOME_NEWS_LIMIT} 本までである`, () => {
@@ -281,6 +300,9 @@ describe('一覧と記事の画面（/news・/news/<id>）', () => {
       expect(page, item.id).toContain(`href="${newsArticlePath(item.id)}"`);
     }
     expect(page).toContain(`最終更新日: <time datetime="${newsLastUpdatedOn(NEWS_ARTICLES)}">`);
+    // 記事はブロックの中の行（仕様 2.5.4。#471）。トップの節と同じ形である。
+    expect(page.split('<ul class="gf-news-list gf-block gf-block-rows">').length - 1).toBe(1);
+    expect(page.split('<li class="gf-news-item">').length - 1).toBe(NEWS_ARTICLES.length);
   });
 
   it('記事の画面に全段落が出て、パンくずの親が一覧である', async () => {
@@ -291,6 +313,10 @@ describe('一覧と記事の画面（/news・/news/<id>）', () => {
       for (const paragraph of item.body) {
         expect(page, item.id).toContain(`<p>${paragraph}</p>`);
       }
+      // 一覧へ戻る導線は小さい副のボタン（仕様 2.5.5。#471）。
+      expect(page, item.id).toContain(
+        `<a class="gf-button gf-button-secondary gf-button-sm" href="${NEWS_PATH}">お知らせの一覧へ</a>`,
+      );
       expect(body, item.id).toContain(`<li><a href="${NEWS_PATH}">${NEWS_TITLE}</a></li>`);
     }
   });
@@ -307,13 +333,18 @@ describe('一覧と記事の画面（/news・/news/<id>）', () => {
 });
 
 describe('トップへの表示（#375。仕様 2.3.3 の条件 1）', () => {
-  it('トップにお知らせの節が出る（作品の節の後ろ、案内の前）', async () => {
+  it('トップにお知らせの節が出る（作品の節の後ろ、フッタの前）', async () => {
+    // **#471 で案内を告知 1 つに絞り、告知はヘッダの直下へ移った**（仕様 2.3.3 の #435 注記。並びは ヘッダ →
+    // 告知 → 作品の 4 節 → お知らせの節 → フッタ）。
     await purgeListCache(HOME_CACHE_KEY);
     const { status, body } = await open(HOME_PATH);
     expect(status).toBe(200);
     expect(body).toContain('<section class="gf-news-section"');
     expect(body).toContain(`href="${newsArticlePath(NEWS_ARTICLES[0]!.id)}"`);
-    expect(body.indexOf('gf-news-section')).toBeLessThan(body.indexOf('<h2>いまの状態</h2>'));
+    const news = body.indexOf('gf-news-section');
+    expect(news).toBeGreaterThan(body.indexOf('gf-home-notice'));
+    expect(news).toBeGreaterThan(body.lastIndexOf('<section class="gf-home-section"'));
+    expect(news).toBeLessThan(body.indexOf('<footer class="gf-footer">'));
   });
 
   it('トップの D1 の問い合わせは、作品の節を引く本数から 1 本も増えていない', async () => {

@@ -15,6 +15,11 @@ import {
   workTagListPath,
 } from '../src/work-card.js';
 import { workPagePath } from '../src/work-page.js';
+import { HOME_CACHE_KEY } from '../src/home-feed.js';
+import { HOME_PATH } from '../src/paths.js';
+import { LIKED_WORKS_PATH } from '../src/liked-works.js';
+import { changeLike } from '../src/likes.js';
+import { buildSessionCookie, signSession } from '../src/session.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -282,7 +287,7 @@ describe('表示名は数を足したあともエスケープされる（5.9）'
 describe('作者名から作者ページへ辿れる（#330 / 仕様 2.3.1）', () => {
   it('`authorId` があれば作者名がリンクになる', () => {
     const html = renderWorkCard({ ...baseWork, authorId: 'u-1' });
-    expect(html).toContain(`<a class="gf-card-author" href="${authorPagePath('u-1')}">`);
+    expect(html).toContain(`<a class="gf-card-author gf-link-quiet" href="${authorPagePath('u-1')}">`);
     // 名前はリンクの中身になるだけである（エスケープは変わらない）。
     expect(html).toContain('>カードの作者</a>');
   });
@@ -294,7 +299,7 @@ describe('作者名から作者ページへ辿れる（#330 / 仕様 2.3.1）', 
     //
     // **空の `href` や 404 へ行くリンクを出さない**（4.4）。
     expect(renderWorkCard(baseWork)).toContain('<span class="gf-card-author">カードの作者</span>');
-    expect(renderWorkCard(baseWork)).not.toContain('gf-card-author" href');
+    expect(renderWorkCard(baseWork)).not.toContain('<a class="gf-card-author');
   });
 
   it('数でない値・空文字も同じ扱いにする（キャッシュを経由する値は JSON である）', () => {
@@ -319,7 +324,7 @@ describe('作者名から作者ページへ辿れる（#330 / 仕様 2.3.1）', 
     // `.gf-card-link` が包むのはスクリーンショットと題名だけで、下段はその外側にある。
     const html = renderWorkCard({ ...baseWork, authorId: 'u-4' });
     const cardLinkEnd = html.indexOf('</a>');
-    const authorLink = html.indexOf('class="gf-card-author"');
+    const authorLink = html.indexOf('class="gf-card-author');
     expect(cardLinkEnd).toBeGreaterThan(0);
     expect(authorLink, '作者のリンクがカードのリンクより前にある').toBeGreaterThan(cardLinkEnd);
   });
@@ -334,15 +339,15 @@ describe('作者名から作者ページへ辿れる（#330 / 仕様 2.3.1）', 
     const body = await openList();
 
     expect(body).toContain(workPagePath(id));
-    expect(body).toContain(`<a class="gf-card-author" href="${authorPagePath(author)}">`);
+    expect(body).toContain(`<a class="gf-card-author gf-link-quiet" href="${authorPagePath(author)}">`);
   });
 });
 
 describe('カードのタグ（#376 / 仕様 2.3.6）', () => {
   it('語彙にあるタグだけを、絞り込んだ一覧へのリンクとして下段に出す', () => {
     const card = renderWorkCard({ ...baseWork, tags: ['puzzle', 'not-in-vocabulary', 'idle'] });
-    expect(card).toContain(`<a class="gf-card-genre" href="${workTagListPath('puzzle')}">パズル</a>`);
-    expect(card).toContain(`<a class="gf-card-genre" href="${workTagListPath('idle')}">放置</a>`);
+    expect(card).toContain(`<a class="gf-chip gf-card-genre" href="${workTagListPath('puzzle')}">パズル</a>`);
+    expect(card).toContain(`<a class="gf-chip gf-card-genre" href="${workTagListPath('idle')}">放置</a>`);
     expect(card).not.toContain('not-in-vocabulary');
     // **カード全体を包むリンクの外に置く**（入れ子のリンクにしない）。
     const link = card.slice(card.indexOf('<a class="gf-card-link"'), card.indexOf('</a>') + 4);
@@ -403,11 +408,108 @@ describe('カードのタグ（#376 / 仕様 2.3.6）', () => {
     const body = await response.text();
     expect(body).toContain(workPagePath(id));
     // **左カラムの絞り込みにも同じラベルが並ぶ**ので、カードのタグの形だけを探す。
-    const cardTag = `<a class="gf-card-genre" href="${workTagListPath('action')}">アクション</a>`;
+    const cardTag = `<a class="gf-chip gf-card-genre" href="${workTagListPath('action')}">アクション</a>`;
     expect(body, 'キャッシュを読んでいない（D1 のタグが出ている）').not.toContain(cardTag);
     expect(body).not.toContain('undefined');
 
     await purgeListCache(FIRST_PAGE_KEY);
     expect(await openList()).toContain(cardTag);
+  });
+});
+
+describe('4 画面が同じカードの部品を使い、面で区切る（#471 / 仕様 2.5.4）', () => {
+  /** セッションの署名に使う秘密（いいねした作品を開くため。この describe だけで使う）。 */
+  const SECRET = 'test-secret-value-for-work-card-471-0001';
+
+  /**
+   * カード 1 枚を本文から切り出す。
+   *
+   * @param body 画面の HTML
+   * @param id 作品の id
+   * @returns その作品の `<li>`（見つからなければ空文字）
+   */
+  function cardOf(body: string, id: string): string {
+    const link = body.indexOf(`<a class="gf-card-link" href="${workPagePath(id)}">`);
+    if (link < 0) {
+      return '';
+    }
+    const start = body.lastIndexOf('<li', link);
+    return body.slice(start, body.indexOf('</li>', link) + '</li>'.length);
+  }
+
+  it('トップ・作品をさがす・作者ページ・いいねした作品が、同じ形のカードを出す', async () => {
+    const testEnv = { ...env, SESSION_SECRET: SECRET } as unknown as Env;
+    const author = await seedUser('4 画面に並ぶ作者');
+    const viewer = await seedUser('いいねする人');
+    const id = crypto.randomUUID();
+    // **どの一覧でも 1 頁目の先頭に来るよう、公開時刻をいちばん新しくする**（D1 はテストファイルをまたいで共有される）。
+    await env.DB.prepare(
+      `insert into games
+         (id, author_id, status, title, go_version, created_at, generation_state,
+          published_at, fork_count, like_count, ogp_state, tag1)
+       values (?, ?, ?, '4 画面のカード', '', 1, 'ready', ?, 0, 0, 'ready', 'puzzle')`,
+    )
+      .bind(id, author, PUBLISHED_STATUS, 9_999_000_000 + Math.floor(Math.random() * 1000))
+      .run();
+    expect(await changeLike(testEnv, 'like', viewer, id, 1_900_000_000)).toBe('liked');
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const token = await signSession({ userId: viewer, issuedAt, expiresAt: issuedAt + 3600 }, SECRET);
+    const cookie = buildSessionCookie(token, 3600).split(';')[0]!;
+
+    await purgeListCache(HOME_CACHE_KEY);
+    await purgeListCache(FIRST_PAGE_KEY);
+    const screens: readonly (readonly [string, string])[] = [
+      ['トップ', HOME_PATH],
+      ['作品をさがす', PUBLIC_WORKS_PATH],
+      ['作者ページ', authorPagePath(author)],
+      ['いいねした作品', LIKED_WORKS_PATH],
+    ];
+    for (const [name, path] of screens) {
+      const response = await handleAppRequest(
+        new Request(`${APP_ORIGIN}${path}`, { headers: { accept: 'text/html', cookie } }),
+        testEnv,
+      );
+      expect(response.status, name).toBe(200);
+      const card = cardOf(await response.text(), id);
+      // **面はカードの `<li>` が持つブロックの部品**（`.gf-block`）である。
+      expect(card, name).toMatch(/^<li class="gf-card gf-block"><a class="gf-card-link" href="/u);
+      expect(card, name).toContain('<span class="gf-card-title">4 画面のカード</span></a><p class="gf-card-meta">');
+      // 作者名は文章の外のリンク、タグはチップで、補助の行の後ろの別の行（HTML の順＝見た目の順）。
+      expect(card, name).toContain(`<a class="gf-card-author gf-link-quiet" href="${authorPagePath(author)}">`);
+      expect(card, name).toContain(
+        `</p><p class="gf-card-genres"><a class="gf-chip gf-card-genre" href="${workTagListPath('puzzle')}">パズル</a></p></li>`,
+      );
+    }
+    await purgeListCache(HOME_CACHE_KEY);
+    await purgeListCache(FIRST_PAGE_KEY);
+  });
+
+  it('作品カードの規則は枠線も影も持たず、ホバーで面を濃くしない（app.css の `@section work-card`）', () => {
+    const css = env.TEST_APP_CSS;
+    // **区画の見出しの行で切る**（コメントの中の「`@section parts`」などの言及で切らない）。
+    const start = css.indexOf('\n   @section work-card');
+    const end = css.indexOf('\n   @section ', start + 1);
+    expect(start, '`@section work-card` が見つかりません').toBeGreaterThan(0);
+    const section = css.slice(start, end).replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+    // **`border-radius` 以外の border の宣言と、影を置かない**（仕様 2.5.4 の表「枠線・影: 使わない」）。
+    expect(section).not.toMatch(/border(-(top|right|bottom|left))?(-(width|style|color))?\s*:/u);
+    expect(section).not.toMatch(/box-shadow\s*:/u);
+    // **ホバーで面の色を変えない・浮かせない**（`.gf-card:hover` の規則を持たない）。
+    expect(section).not.toMatch(/\.gf-card(\.gf-block)?:(hover|focus-within)/u);
+    expect(section).not.toMatch(/transform\s*:/u);
+  });
+
+  it('作者名の項目は縮められ、長い名前はその中で折り返す（PR #496 の Copilot code review）', () => {
+    // **補助の行は flex で、項目の既定の `min-width: auto` のままだと**、上限（30 文字）いっぱいの区切りの無い ASCII の
+    // 表示名とアイコンが 16rem のカードの内容幅を越える。`body` から継ぐ `overflow-wrap` に寄りかからず、項目が自分で持つ
+    // （実ブラウザで継承を外すと、直す前は 1280px の 4 列で 75px ほどはみ出し、直した後は 0 だった）。
+    const css = env.TEST_APP_CSS;
+    const start = css.indexOf('\n   @section work-card');
+    const section = css.slice(start, css.indexOf('\n   @section ', start + 1)).replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+    const rule = /(?:^|\n)\.gf-card-author\s*\{([^}]*)\}/u.exec(section);
+    expect(rule, '`@section work-card` に `.gf-card-author` の規則がありません').not.toBeNull();
+    expect(rule![1]).toMatch(/min-width:\s*0;/u);
+    expect(rule![1]).toMatch(/max-width:\s*100%;/u);
+    expect(rule![1]).toMatch(/overflow-wrap:\s*anywhere;/u);
   });
 });

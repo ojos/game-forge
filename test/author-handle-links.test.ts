@@ -163,11 +163,11 @@ describe('作品カードの作者名のリンク', () => {
 
   it('ハンドル名があれば `/@handle`、無い・欠けている・形が崩れていれば `/users/<id>`', () => {
     expect(renderWorkCard({ ...base, authorHandle: 'someone' })).toContain(
-      `<a class="gf-card-author" href="${handlePagePath('someone')}">`,
+      `<a class="gf-card-author gf-link-quiet" href="${handlePagePath('someone')}">`,
     );
     for (const broken of [null, undefined, '', 'Upper', 'a"b', 42, '../x']) {
       const card = renderWorkCard({ ...base, authorHandle: broken as unknown as string | null });
-      expect(card, String(broken)).toContain(`<a class="gf-card-author" href="${authorPagePath('user-381')}">`);
+      expect(card, String(broken)).toContain(`<a class="gf-card-author gf-link-quiet" href="${authorPagePath('user-381')}">`);
     }
     expect(authorPagePathFor('user-381', 'someone')).toBe('/@someone');
   });

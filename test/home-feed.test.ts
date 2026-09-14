@@ -654,7 +654,7 @@ describe('公式サンプルの作者名も作者ページへのリンクにな�
     const section = body.slice(start, end);
 
     expect(section).toContain('公式サンプル（画面）');
-    expect(section).toContain(`<a class="gf-card-author" href="${authorPagePath(operator)}">`);
+    expect(section).toContain(`<a class="gf-card-author gf-link-quiet" href="${authorPagePath(operator)}">`);
   });
 });
 

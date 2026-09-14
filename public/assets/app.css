@@ -1299,14 +1299,33 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   list-style: none;
 }
 
+/*
+ * カード 1 枚（仕様 2.5.4 / #471）。**面の色と角丸は `<li>` が持つブロックの部品（`.gf-block`。`@section parts`）である。**
+ *
+ * - **枠線も影も使わない**（利用者がモックアップの比較で B を選んだ。暗いテーマでは影が効かない）
+ * - **ブロックの内側の余白（16px）を外し、中身の側で取る**——スクリーンショットは面いっぱいに置き、題名と補助の行と
+ *   タグの行にだけ 16px を取る（2.5.4 の表「内側の余白。スクリーンショットには掛けない」）。この区画は `@section parts`
+ *   より後ろにあるので、同じ詳細度で `.gf-block` の余白に勝つ
+ * - **`overflow: hidden` で角を切らない。** 中のリンクとチップの焦点の輪郭（要素から 2px 外）が面の端で切れる。
+ *   スクリーンショットの上の 2 隅は、画像の側に角丸を付けて合わせる（`.gf-card-shot`）
+ * - **ホバーで面を濃くしない・浮かせない**（2.5.4）。題名に下線を出すだけ（`.gf-card-link`）
+ * - **面の上のチップのホバーの地は `.gf-block` の規則が一段濃くする**（地の色のままだと、ホバーの地が面と同じ色になる）
+ */
 .gf-card {
+  display: flex;
+  flex-direction: column;
   margin: 0;
+  padding: 0 0 var(--gf-gap-3);
 }
 
 /*
- * カード全体を 1 本のリンクにする。
+ * スクリーンショットと題名を 1 本のリンクにする。
  *
- * 画像と題名を別々のリンクにすると、同じ行き先が読み上げに 2 度現れる。
+ * 画像と題名を別々のリンクにすると、同じ行き先が読み上げに 2 度現れる。**カード全体は包まない**——作者名とタグは
+ * 別の行き先を持つ（仕様 2.5.4）。
+ *
+ * **題名は文章の外のリンクの見せ方にする**（仕様 2.5.5。下線はホバーとキーボードの焦点だけ）。`.gf-link-quiet` を
+ * このリンクに付けないのは、下線が題名だけでなく「画面の準備中」の文字にも伝わるためで、下線の当て先を題名に絞る。
  */
 .gf-card-link {
   display: block;
@@ -1314,9 +1333,10 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   text-decoration: none;
 }
 
-.gf-card-link:hover .gf-card-title {
+.gf-card-link:is(:hover, :focus-visible) .gf-card-title {
   text-decoration: underline;
   text-underline-offset: 0.2em;
+  text-decoration-thickness: 1px;
 }
 
 /*
@@ -1325,6 +1345,8 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
  * **縦横比は撮影の大きさと揃える**（`src/ogp.ts` の定数の写しであり、
  * `test/page-shell.test.ts` が機械照合する）。揃っていないと、画像が届いた瞬間に
  * 格子全体が飛ぶ。
+ *
+ * **角丸は上の 2 隅だけ**（カードの面の角に合わせる。仕様 2.5.4 の表）。下の 2 隅は題名の面に続く。
  */
 .gf-card-shot {
   display: block;
@@ -1332,7 +1354,7 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   height: auto;
   aspect-ratio: 1200 / 630;
   background: #111;
-  border-radius: var(--gf-radius);
+  border-radius: var(--gf-radius) var(--gf-radius) 0 0;
   object-fit: cover;
 }
 
@@ -1347,20 +1369,29 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   text-align: center;
 }
 
+/* 題名。面の内側の余白（16px）を上と左右に取る。 */
 .gf-card-title {
   display: block;
-  margin-top: var(--gf-gap-2);
+  padding: var(--gf-gap-3) var(--gf-gap-3) 0;
   font-weight: 700;
+  line-height: 1.5;
 }
 
+/*
+ * 補助の行（作者・数・日時）。**項目の間は折り返しても揃うよう `gap` で空ける**（項目ごとの左の余白にすると、
+ * 折り返した行の先頭だけが右へずれる）。
+ */
 .gf-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--gf-gap-2);
+  max-width: none;
   margin: var(--gf-gap-1) 0 0;
+  padding: 0 var(--gf-gap-3);
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
-}
-
-.gf-card-meta > * + * {
-  margin-left: var(--gf-gap-2);
+  line-height: 1.7;
 }
 
 .gf-card-tag,
@@ -1374,21 +1405,54 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
 }
 
 /*
- * カードのタグ（#376 / 仕様 2.3.6）。**1 つずつ、そのタグで絞り込んだ一覧へのリンクである。**
+ * カードの作者名は**文章の外のリンク**（`.gf-link-quiet`。仕様 2.5.5 の表がカードの作者名を名指しする）。
  *
- * **色を持たせない**（リンクは下線で示す。冒頭の方針）。下段の他の項目と同じ薄さに揃え、
- * 主役のスクリーンショットより強く出さない。タグどうしの間は `.gf-card-meta > * + *` の
- * 余白と同じだけ空ける。
+ * **`@section author` の `a.gf-card-author`（#330。常に下線）がこの区画より後ろにあり、詳細度も `.gf-link-quiet` より
+ * 高い**ので、部品のクラスを付けただけでは下線が消えない。**カードの中に限って 1 段強く打ち消し、ホバーと焦点の
+ * 下線を `.gf-link-quiet` と同じ形で戻す。** 作品ページの作者名（`.gf-author-link`）は M13-10 の範囲で、ここでは変えない。
  */
-.gf-card-genres > * + * {
-  margin-left: var(--gf-gap-2);
+.gf-card a.gf-card-author {
+  text-decoration: none;
 }
 
-a.gf-card-genre {
-  color: var(--gf-ink-faint);
+.gf-card a.gf-card-author:is(:hover, :focus-visible) {
   text-decoration: underline;
   text-underline-offset: 0.2em;
-  white-space: nowrap;
+  text-decoration-thickness: 1px;
+}
+
+/*
+ * 作者名の項目は、カードの内容幅より広がらない（PR #496 の Copilot code review）。
+ *
+ * **補助の行は flex で、項目の既定は `min-width: auto`（中身の最小幅）である。** 表示名は上限（30 文字）いっぱいまで
+ * 区切りの無い ASCII にでき、アイコンと並ぶと 16rem のカードの内容幅を越えうる。**いまは `body` から継いだ
+ * `overflow-wrap: anywhere` が最小幅を縮めて収まっているが、継承に寄りかからない**——項目を縮められるようにし
+ * （`min-width: 0` / `max-width: 100%`）、長い名前はこの項目の中で折り返す。**アイコンの円は縮まない**（名前と同じリンクの中の
+ * `inline-block` で、寸法は `.gf-avatar` が固定で持つ。flex の項目ではない）。日本語の名前・短い名前は 1 行に収まるので、見た目は変わらない。
+ */
+.gf-card-author {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* 公開日時。数字の幅を揃える（並んだカードで日時の桁が揺れない）。 */
+.gf-card-meta time {
+  color: var(--gf-ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * タグの行（#376 / 仕様 2.3.6）。**1 つずつ、そのタグで絞り込んだ一覧へのリンクで、見た目はチップ（`a.gf-chip`）である**
+ * （仕様 2.5.5 / #471）。チップの見た目は `@section parts` が持ち、ここは並べ方だけを決める。
+ */
+.gf-card-genres {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-2);
+  max-width: none;
+  margin: var(--gf-gap-2) 0 0;
+  padding: 0 var(--gf-gap-3);
 }
 
 /*
@@ -2217,37 +2281,62 @@ a.gf-card-author {
    ========================================================================== */
 
 /*
- * ハブ型のトップの節（`src/home.ts`。仕様 2.3.1 / 2.3.3）。
+ * ハブ型のトップ（`src/home.ts`。仕様 2.3.1 / 2.3.3 / 2.5.3 / #471）。
  *
- * **4 節が縦に並ぶ。** 節の間を余白で分けるだけにして、枠も地色も付けない——
- * **主役はカードの絵**であり（M8-1 の「作品を主役にする」）、節ごとに枠を描くと
- * 絵より枠のほうが強く出る。
- *
- * 見出しの直後にカードの格子が来るので、`.gf-cards` の上マージンと二重にならない
- * ように節の側では下だけを空ける。
+ * **並びは 告知 → 作品の 4 節 → お知らせの節**（2.3.3 の #435 注記）。**節の間は 40px**（2.5.8 の「節の変わり目」）。
+ * 節そのものに枠も地色も付けない——面を持つのはカードと告知とお知らせのブロックで、節まで囲むと面が二重になる。
  */
+
+/*
+ * 「いまの状態」の告知（`CLOSED_BETA_NOTICE`）。**ブロックの部品（`.gf-block`）で、器の幅いっぱいに面を置く**
+ * （2.5.3。短い文は行長を絞らない）。ヘッダとの間はヘッダの下の余白（24px）がそのまま取る。
+ */
+.gf-home-notice {
+  margin: 0;
+}
+
+.gf-home-notice p {
+  max-width: none;
+  margin: 0;
+}
+
 .gf-home-section {
   margin: var(--gf-gap-5) 0;
 }
 
-.gf-home-section h2 {
-  margin-bottom: 0;
+/*
+ * 節の見出しの行（2.5.3）。**左に見出し、右に「もっと見る」などの導線を同じ行の両端に置く。**
+ *
+ * - **並びは HTML の順のまま**（見出し → 導線）で、見た目の順＝Tab の順である。右へ寄せるのは `space-between` だけで、
+ *   `order` は使わない
+ * - **折り返さない。** 導線（ボタン）は `white-space: nowrap` で縮まず、左の見出しの側が縮んで中で折り返す——390px の
+ *   お知らせの行では「最終更新日」が見出しの下の行へ回り、ボタンは右端に残る（承認したモックアップの 390px の形）
+ * - **高さは中のボタンと同じ 40px を下限にする**（見出しの行の高さが、導線の有る節と無い節で揃う）
+ * - **お知らせの節も同じ行を使う**（`src/news.ts` の `renderHomeNewsSection`。トップにだけ出る節なのでこの区画に置く）
+ */
+.gf-home-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gf-gap-3);
+  min-height: var(--gf-control-md);
 }
 
-/*
- * 「もっと見る」。
- *
- * **並べ替えの切り替え（`.gf-sort`）と同じ扱いにする**——本文の一部として素朴に置き、
- * ボタンの見た目にしない（9.3 は素の HTML に留めると定めている）。見えている文字は
- * 「もっと見る」だけで、どの軸かは直上の見出しと `aria-label` が担う（`src/home.ts`）。
- *
- * **右へ寄せない。** 390px では見出しとカードが左揃えで積まれるので、1 行だけ右にあると
- * 視線が戻る。
- */
-.gf-home-more {
+.gf-home-head > :first-child {
+  min-width: 0;
+}
+
+.gf-home-head h2 {
   margin: 0;
-  color: var(--gf-ink-soft);
-  font-size: var(--gf-text-small);
+}
+
+.gf-home-head .gf-button {
+  flex: none;
+}
+
+/* 見出しの行とカードの格子の間（塊の中の 16px。2.5.8）。 */
+.gf-home-section .gf-cards {
+  margin: var(--gf-gap-3) 0 0;
 }
 
 /* ==========================================================================
@@ -2255,14 +2344,29 @@ a.gf-card-author {
    ========================================================================== */
 
 /*
- * `/privacy`（`src/privacy.ts`）と `/faq`（`src/faq.ts`）の本文（2.3.1 / #373）。
+ * `/privacy`（`src/privacy.ts`）・`/faq`（`src/faq.ts`）・`/terms`（`src/legal.ts`。#471 で同じ器に乗せた）の本文
+ * （2.3.1 / #373）。
  *
- * **読み物の画面である。** 見出しの段（`<h2>` の節と `<h3>` の小見出し）で区切るだけで、
- * 色も枠も足さない（冒頭の方針）。**幅の `@media` は置かない**（冒頭「区画の規約」3）。
+ * **読み物の画面である。** 見出しの段（`<h2>` の節と `<h3>` の小見出し）で区切る。**本文の段落は 42rem のまま**で、
+ * **ブロック（暫定版の但し書き・FAQ の質問の一覧）と見出しの区切りの罫線は器の端まで届かせる**（仕様 2.5.3。行長を
+ * 絞るのは段落の中身であって、面や罫線ではない）。**幅の `@media` は置かない**（冒頭「区画の規約」3）。
  *
  * **特定商取引法に基づく表記は置かない**（2.3.1 の表。金銭の受け取りが無く記載義務が
  * 生じないため、M12-5 の scope.out である）。
  */
+
+/*
+ * 暫定版の但し書き（`.gf-block gf-draft-notice`。#471）。**ブロックの部品で、器の幅いっぱいに面を置く。**
+ *
+ * `@section notices` の `.gf-draft-notice`（左の太い線・狭い余白・左だけ角の無い形）は、知らせの見た目として全画面に
+ * 効いている。**読み物の器の中に限って 1 段強く打ち消し、ブロックの形（面と角丸 6px と 16px の余白）に揃える。**
+ */
+.gf-legal .gf-draft-notice {
+  margin: 0 0 var(--gf-gap-4);
+  padding: var(--gf-gap-3);
+  border-left: 0;
+  border-radius: var(--gf-radius);
+}
 
 /*
  * 小見出し。base は `<h3>` に余白を与えていないので、節の中の区切りとして上に余白を取る。
@@ -2295,16 +2399,40 @@ a.gf-card-author {
 /*
  * よくある質問の一覧と、1 問ずつの区切り。
  *
+ * **質問の一覧はブロック（`.gf-block`）で、器の幅いっぱい。** 一覧のリンクは箇条の中のリンクなので、`a` の既定の
+ * 下線のまま（仕様 2.5.5「文章の中」）。
+ *
  * **質問どうしを線で区切る。** 答えが複数段落になるので、見出しの大きさだけでは
- * 「どこからが次の質問か」が 390px の幅で読みにくい。
+ * 「どこからが次の質問か」が 390px の幅で読みにくい。**線は器の端まで**（`.gf-faq-item` は幅の上限を持たない。
+ * 仕様 2.5.3）、色はブロックの行の区切りと同じ淡い段（`--gf-rule-soft`。2.5.4）。
  */
 .gf-faq-index {
-  margin-bottom: var(--gf-gap-5);
+  margin-bottom: var(--gf-gap-4);
+}
+
+.gf-faq-index-title {
+  margin: 0 0 var(--gf-gap-2);
+  font-weight: 700;
+}
+
+.gf-faq-index ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-1);
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gf-faq-index li {
+  margin: 0;
 }
 
 .gf-faq-item {
-  padding-top: var(--gf-gap-3);
-  border-top: 1px solid var(--gf-rule);
+  margin-top: var(--gf-gap-4);
+  padding-top: var(--gf-gap-4);
+  border-top: 1px solid var(--gf-rule-soft);
 }
 
 .gf-faq-item h2 {
@@ -2316,75 +2444,84 @@ a.gf-card-author {
    ========================================================================== */
 
 /*
- * お知らせ（`src/news.ts`。仕様 2.3.1 / #375）。トップの節・一覧（`/news`）・記事（`/news/<id>`）。
+ * お知らせ（`src/news.ts`。仕様 2.3.1 / 2.5.3 / 2.5.4 / #375 / #471）。トップの節・一覧（`/news`）・記事（`/news/<id>`）。
  *
- * **枠も地色も付けない。** トップでは作品の節の後ろに並ぶので、ここが箱で囲まれると
- * カードの絵より強く出る（`@section home` と同じ理由）。項目の間は細い罫線で分けるだけにする。
+ * **記事の一覧は 1 つのブロック（`.gf-block`）の中の行（`.gf-block-rows`）である**——面は器の幅いっぱい、行の間に淡い
+ * 罫線（`@section parts`）。#375 の「枠も地色も付けない」は仕様 2.5.3 / 2.5.4 が覆した（お知らせも作品カードと同じ面で囲む）。
  *
- * **分類は色で塗らない。** 色を持つのは作品だけである（app.css 冒頭の方針）。
- * 文字の濃さと細い枠で、日付と区別が付けば足りる。
+ * **分類は色で塗らない。** 押せない札のチップ（`span.gf-chip`）で、日付と区別が付けば足りる。
  */
 .gf-news-section {
   margin: var(--gf-gap-5) 0;
 }
 
-.gf-news-section h2 {
-  margin-bottom: 0;
+/* トップの見出しの行の左側（見出しと最終更新日）。狭い段では最終更新日が見出しの下の行へ回る。 */
+.gf-news-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--gf-gap-3);
 }
 
-/* 最終更新日。見出しの直下に置く補助の 1 行である。 */
+/* 最終更新日。見出しの横（トップ）か、一覧の説明の下に置く補助の 1 行である。 */
 .gf-news-updated {
-  margin: var(--gf-gap-1) 0 0;
+  margin: 0;
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
 }
 
 .gf-news-list {
   margin: var(--gf-gap-3) 0 0;
-  padding: 0;
   list-style: none;
 }
 
 .gf-news-item {
-  padding: var(--gf-gap-3) 0;
-  border-top: 1px solid var(--gf-rule-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-1);
+  margin: 0;
 }
 
-.gf-news-item:last-child {
-  border-bottom: 1px solid var(--gf-rule-soft);
+/* **抜粋と見出しは行長を絞らない**（1〜2 行で終わる短い文。仕様 2.5.3。記事の画面の本文は `.gf-news-article` で 42rem のまま）。 */
+.gf-news-item :is(p, h2, h3) {
+  max-width: none;
+  margin: 0;
 }
 
-.gf-news-item p {
-  margin: var(--gf-gap-2) 0 0;
-}
-
-/* 日付と分類の 1 行。 */
+/* 日付と分類の 1 行。チップ（28px）と日付の文字を縦の中央で揃える。 */
 .gf-news-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-1) var(--gf-gap-2);
   margin: 0;
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
+  line-height: 1.7;
 }
 
-.gf-news-item .gf-news-meta {
-  margin: 0;
-}
-
-.gf-news-category {
-  display: inline-block;
-  margin-left: var(--gf-gap-2);
-  padding: 0 var(--gf-gap-2);
-  border: 1px solid var(--gf-rule);
-  border-radius: var(--gf-radius);
+.gf-news-meta time {
+  font-variant-numeric: tabular-nums;
 }
 
 /*
- * 項目の見出し。**トップの節の中（`h3`）でも一覧（`h2`）でも同じ大きさにする**
- * ——階層が違うのは文書の構造の都合で、読む側にとっては同じ 1 項目である。
+ * 項目の見出し。**トップの節の中（`h3`）は本文と同じ大きさ、一覧の画面（`h2`）は見出しの大きさ**
+ * （承認したモックアップの形。#471 で一覧の側を h2 の段へ戻した）。リンクは文章の外のリンク（`.gf-link-quiet`）。
  */
 .gf-news-title {
-  margin: var(--gf-gap-1) 0 0;
+  margin: 0;
   font-size: var(--gf-text);
+  line-height: 1.6;
   overflow-wrap: anywhere;
+}
+
+h2.gf-news-title {
+  font-size: var(--gf-text-h2);
+  line-height: 1.5;
+}
+
+.gf-news-article .gf-news-meta {
+  margin-top: var(--gf-gap-3);
 }
 
 .gf-news-article h1 {
@@ -2392,10 +2529,9 @@ a.gf-card-author {
   overflow-wrap: anywhere;
 }
 
-/* 一覧へ・すべて見る。本文の終わりに置く補助の導線である。 */
+/* 一覧へ戻る導線（小さい副のボタン）。本文の終わりに、塊どうしの間（24px）を空けて置く。 */
 .gf-news-more {
-  margin: var(--gf-gap-3) 0 0;
-  font-size: var(--gf-text-small);
+  margin: var(--gf-gap-4) 0 0;
 }
 
 /* ==========================================================================

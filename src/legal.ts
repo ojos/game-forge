@@ -139,8 +139,11 @@ ${items}
  *
  * **画面にも出す**（冒頭の理由）。文言を 1 か所に置くのは、規約と削除依頼の両方へ
  * 出すためである。
+ *
+ * **見た目はブロック（`.gf-block`）である**（仕様 2.5.3 / 2.5.4 / #471）。器の幅いっぱいに面を置き、左の太い線は
+ * 持たない（app.css の `@section legal`）。
  */
-const DRAFT_NOTICE = `<p class="gf-draft-notice"><strong>この規約はクローズドβ向けの暫定版です。</strong>
+const DRAFT_NOTICE = `<p class="gf-block gf-draft-notice"><strong>この規約はクローズドβ向けの暫定版です。</strong>
    法律の専門家による確認を受ける前の文面であり、正式公開までに変更されることがあります。</p>`;
 
 /**
@@ -163,8 +166,12 @@ export const LOGO_FONT_NOTICE =
  * **仕様が名指しした項目には、どの節が求めているかを添えてある。** あとから読む人が
  * 「これは仕様に紐づいた条項か、一般的な雛形か」を見分けられるようにするため
  * （冒頭の但し書き）。
+ *
+ * **読み物の器（`.gf-legal`）で包む**（#471）。`/privacy` と `/faq` と同じ器に乗せ、但し書きのブロックと小見出しの
+ * 見た目を 3 画面で揃える（app.css の `@section legal`）。
  */
-const TERMS_BODY = `<h1>利用規約</h1>
+const TERMS_BODY = `<div class="gf-legal">
+<h1>利用規約</h1>
 ${DRAFT_NOTICE}
 
 <h2>1. 適用</h2>
@@ -229,7 +236,8 @@ ${DRAFT_NOTICE}
    運営者の所在地を管轄する裁判所を第一審の専属的合意管轄裁判所とします。</p>
 
 <h2>ロゴの書体について</h2>
-<p>${LOGO_FONT_NOTICE}</p>`;
+<p>${LOGO_FONT_NOTICE}</p>
+</div>`;
 
 /**
  * 利用規約の画面を組み立てる。

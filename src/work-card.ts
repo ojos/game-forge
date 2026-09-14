@@ -1,5 +1,18 @@
 /**
- * 作品カード。**一覧・トップ・作者ページが同じ 1 つの部品を使う**（仕様 2.3.6 / #328）。
+ * 作品カード。**一覧・トップ・作者ページ・いいねした作品が同じ 1 つの部品を使う**（仕様 2.3.6 / #328）。
+ *
+ * ## 見た目は面で区切る（仕様 2.5.4 / #471）
+ *
+ * **カードの `<li>` がブロックの部品（`.gf-block`）を持ち、面の色（`--gf-surface`）と角丸 6px で 1 枚ずつ区切る。
+ * 枠線と影は使わない**（モックアップの比較で利用者が B を選んだ）。組み方は app.css の `@section work-card` にある。
+ *
+ * - **題名は文章の外のリンク**（下線はホバーと焦点だけ。`.gf-card-link` が包むスクリーンショットと題名）
+ * - **作者名も文章の外のリンク**（`.gf-link-quiet`）
+ * - **タグはチップ**（`a.gf-chip`）。題名と補助の行の下に、1 行で並べる
+ * - **ホバーで面を濃くしない**（濃い面の上では三次の文字が AA に届かない。2.5.4）。題名に下線を出すだけ
+ *
+ * **4 画面の本体（`src/works-list.ts` / `src/users-page.ts` / `src/liked-works.ts` / `src/home.ts`）は
+ * {@link renderWorkCards} を呼ぶだけで、カードの綴りを持たない。** ここを変えれば 4 画面に同じだけ当たる。
  *
  * ## なぜ部品として切り出すのか
  *
@@ -265,10 +278,14 @@ export function workTagListPath(tag: WorkTagId): string {
 /**
  * カードのタグを組み立てる（#376 / 仕様 2.3.6）。
  *
- * **1 つずつ、絞り込んだ一覧へのリンクにする。** 下段（`.gf-card-meta`）はカード全体を包む
+ * **1 つずつ、絞り込んだ一覧へのリンクにする。** タグの行（`.gf-card-genres`）はカード全体を包む
  * リンクの外にあるので、入れ子にならない（作者名と同じ置き方）。
  *
- * **クラスは `gf-card-genre` にする。** `gf-card-tag` は「改造された作品」の印が先に使っており、
+ * **見た目はチップ（`a.gf-chip`）である**（仕様 2.5.5 の表「タグ」。#471）。**補助の行（`.gf-card-meta`）とは
+ * 別の行に置く**——高さ 28px のチップを 14px の文字の行に混ぜると行の高さが揃わず、承認したモックアップも
+ * 別の行に並べている。**並びは HTML の順のまま**（補助の行 → タグの行）で、見た目の順と Tab の順も同じである。
+ *
+ * **クラスは `gf-card-genre` を残す。** `gf-card-tag` は「改造された作品」の印が先に使っており、
  * 意味の違うものに同じクラスを付けない。
  *
  * @param work 作品
@@ -281,16 +298,17 @@ function renderTags(work: PublicWork): string {
   }
   // **ラベルは語彙の固定の文字列で、UGC ではない**（行の値は照合の鍵にしか使っていない）。
   const links = tags.map(
-    (tag) => `<a class="gf-card-genre" href="${workTagListPath(tag.id)}">${tag.label}</a>`,
+    (tag) => `<a class="gf-chip gf-card-genre" href="${workTagListPath(tag.id)}">${tag.label}</a>`,
   );
-  return `<span class="gf-card-genres">${links.join(' ')}</span>`;
+  return `<p class="gf-card-genres">${links.join(' ')}</p>`;
 }
 
 /**
  * カードの作者名を組み立てる（仕様 2.3.6 / 2.3.1 / #330）。
  *
  * **クラスは `gf-card-author` のままにする。** 要素が `<span>` から `<a>` へ変わっても、
- * 見た目と検査の当て先を動かさない。
+ * 見た目と検査の当て先を動かさない。**リンクには文章の外のリンクの部品（`.gf-link-quiet`）を足す**
+ * （仕様 2.5.5 の表がカードの作者名を名指しする。#471）——下線はホバーと焦点だけに出る。
  *
  * **`<a>` を入れ子にしていない。** カード全体を包む 1 本のリンク（`.gf-card-link`）は
  * スクリーンショットと題名だけを包んでおり、**下段（`.gf-card-meta`）はその外側にある**
@@ -316,7 +334,7 @@ function renderAuthor(work: PublicWork, avatarOrigin: string | null): string {
   const avatar =
     url === null ? '' : `<span class="gf-avatar" aria-hidden="true">${avatarImage(url, { lazy: true })}</span>`;
   // **ハンドル名があれば `/@handle` へ向ける**（#381。欠けていれば `/users/<id>` で、そちらが 301 で送る）。
-  return `<a class="gf-card-author" href="${authorPagePathFor(authorId, work.authorHandle)}">${avatar}${name}</a>`;
+  return `<a class="gf-card-author gf-link-quiet" href="${authorPagePathFor(authorId, work.authorHandle)}">${avatar}${name}</a>`;
 }
 
 /**
@@ -339,7 +357,9 @@ export function cardAvatarUrl(work: PublicWork, authorId: string, avatarOrigin: 
 }
 
 /**
- * カードの下段（作者・改造された数・いいねの数・プレイ数・公開日時・タグ）を組み立てる。
+ * カードの補助の行（作者・改造された数・いいねの数・プレイ数・公開日時）を組み立てる。
+ *
+ * **タグはこの行に入れない**（{@link renderTags}。#471 で別の行へ移した）。
  *
  * **`fork_count` が 0 の作品には何も出さない。** 全行に「改造 0」が並ぶ一覧は区別を
  * 何も運ばない（`src/my-works.ts` が全行に同じ警告を並べないと決めたのと同じ）。
@@ -374,11 +394,6 @@ function renderMeta(work: PublicWork, avatarOrigin: string | null): string {
   if (iso !== '') {
     parts.push(`<time datetime="${iso}">${formatJstMinutes(work.publishedAt!)}</time>`);
   }
-  // **タグは下段の最後に置く**（#376）。作者・数・日時の並びを動かさない。
-  const tags = renderTags(work);
-  if (tags !== '') {
-    parts.push(tags);
-  }
   return `<p class="gf-card-meta">${parts.join(' ')}</p>`;
 }
 
@@ -403,11 +418,12 @@ function renderMeta(work: PublicWork, avatarOrigin: string | null): string {
  * @returns `<li>` 1 つ
  */
 export function renderWorkCard(work: PublicWork, avatarOrigin: string | null = null): string {
+  // **並びは スクリーンショットと題名（1 本のリンク）→ 補助の行 → タグの行**（#376 以来、タグは最後）。
   return (
-    `  <li class="gf-card"><a class="gf-card-link" href="${workPagePath(work.id)}">` +
+    `  <li class="gf-card gf-block"><a class="gf-card-link" href="${workPagePath(work.id)}">` +
     `${renderShot(work)}` +
     `<span class="gf-card-title">${escapeHtml(cardTitleOf(work.title))}</span></a>` +
-    `${renderMeta(work, avatarOrigin)}</li>`
+    `${renderMeta(work, avatarOrigin)}${renderTags(work)}</li>`
   );
 }
 

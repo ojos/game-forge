@@ -395,8 +395,16 @@ describe('トップからの導線（#152 goal）', () => {
   it('公開トップから一覧へ辿れる', async () => {
     // 導線が無ければ「その URL を知っている人だけが使える一覧」になり、#152 が
     // 解こうとしている問題をそのまま繰り返す。
+    //
+    // **#471 でトップの本文の「参加している方へ」を外し、導線はアカウントのメニュー（「自分の作品」）だけになった**
+    // （仕様 2.3.3 の #435 注記の表。メニューは #469 で全画面の外枠に入っている）。ログインの着地点は `/` なので、
+    // **ログインした人がトップで辿れる**ことを見る。
+    const userId = await seedUser();
     const body = await (
-      await handleAppRequest(new Request(`${APP_ORIGIN}${HOME_PATH}`), env)
+      await handleAppRequest(
+        new Request(`${APP_ORIGIN}${HOME_PATH}`, { headers: { cookie: await sessionCookie(userId) } }),
+        testEnv(),
+      )
     ).text();
     expect(body).toContain(`href="${MY_WORKS_PATH}"`);
   });

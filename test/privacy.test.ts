@@ -77,6 +77,13 @@ describe('プライバシーポリシーの画面（#373）', () => {
     expect(body).toContain('暫定版');
     expect(body).toContain('法律の専門家による確認を受ける前');
   });
+
+  it('暫定版の但し書きはブロックである（仕様 2.5.3 / #471）', async () => {
+    const body = pageBodyOf((await openPrivacy()).body);
+    expect(body).toContain(
+      '<p class="gf-block gf-draft-notice"><strong>このプライバシーポリシーはクローズドβ向けの暫定版です。</strong>',
+    );
+  });
 });
 
 describe('事業者の名称と窓口は 1 か所から来る（#373）', () => {

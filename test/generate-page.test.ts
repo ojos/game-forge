@@ -1310,13 +1310,13 @@ describe('公開トップの書き換え（#128）', () => {
   it('「生成機能はまだ公開していません」が消え、生成画面への導線がある', async () => {
     const body = await (await handleAppRequest(new Request(`${APP_ORIGIN}${HOME_PATH}`), env)).text();
     expect(body).not.toContain('生成機能はまだ公開していません');
+    // 生成画面への導線はヘッダの「つくる」が持つ（#471 でトップの本文の「はじめる」を外した）。
     expect(body).toContain(`href="${GENERATE_PAGE_PATH}"`);
-    // 押した先で何分も待つことを、押す前に知らせる（1.2.27）。**待ち時間の説明を
-    // 2 つ持たない。** 正本は生成画面の `TYPICAL_WAIT_TEXT` で、公開トップはそれを
-    // 書き写している（`src/home.ts` は循環参照になるため import できない）。
-    // **書き写しは機械照合で担保する**（shared-ai-rules 12 章）。ここが落ちたときに
-    // 直すのは `src/home.ts` である。
-    expect(body).toContain(TYPICAL_WAIT_TEXT);
+    // **待ち時間の説明を 2 つ持たない。** 正本は生成画面の `TYPICAL_WAIT_TEXT` である。公開トップは #128 以来
+    // それを書き写していた（`src/home.ts` は循環参照になるため import できない）が、**#471 でトップから外し、
+    // FAQ の「生成した作品はどうなりますか？」へ移した**——FAQ は定数を import して差し込むので、写しは残っていない
+    // （`test/faq.test.ts` が差し込みを見る）。トップに写しが戻ったら赤くする。
+    expect(body).not.toContain(TYPICAL_WAIT_TEXT);
     // ビルド単体の実測（3.8）を、生成の待ち時間として出したままにしない。
     expect(body).not.toContain('20〜30 秒');
   });

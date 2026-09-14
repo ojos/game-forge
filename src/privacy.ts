@@ -97,9 +97,10 @@ export function privacyBody(contact: PrivacyContact): string {
   // 寿命の正本は発行する側（`src/auth/google.ts`）である。本文へ数字を書き写さない。
   const sessionDays = Math.round(SESSION_MAX_AGE / (60 * 60 * 24));
   const oauthMinutes = Math.round(OAUTH_COOKIE_MAX_AGE / 60);
+  // **暫定版の但し書きはブロック（`.gf-block`）で、器の幅いっぱいに面を置く**（仕様 2.5.3 / #471）。本文は 42rem のまま。
   return `<div class="gf-legal">
 <h1>プライバシーポリシー</h1>
-<p class="gf-draft-notice"><strong>このプライバシーポリシーはクローズドβ向けの暫定版です。</strong>
+<p class="gf-block gf-draft-notice"><strong>このプライバシーポリシーはクローズドβ向けの暫定版です。</strong>
    法律の専門家による確認を受ける前の文面であり、正式公開までに変更されることがあります。</p>
 
 <p>${operator}（以下「運営者」）は、Game Forge（以下「本サービス」）における利用者の情報の

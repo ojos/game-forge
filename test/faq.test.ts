@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createAppRoutes } from '../src/app.js';
 import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
 import { FAQ_ENTRIES, FAQ_TITLE, faqBody } from '../src/faq.js';
+import { TYPICAL_WAIT_TEXT } from '../src/generate-page.js';
 import { INVITE_RECOVERY_DAYS } from '../src/invite-balance.js';
 import { INVITE_QUOTA } from '../src/invite-issuance.js';
 import { FAQ_PATH, PRIVACY_PATH, TAKEDOWN_PATH, TERMS_PATH } from '../src/legal-paths.js';
@@ -87,9 +88,50 @@ describe('よくある質問の画面（#373）', () => {
     }
   });
 
+  it('質問の一覧はブロックで、本文の質問より前にある（仕様 2.5.3 / 2.5.4。#471）', async () => {
+    const body = pageBodyOf((await openFaq()).body);
+    expect(body.split('<div class="gf-block gf-faq-index">').length - 1).toBe(1);
+    expect(body.indexOf('gf-faq-index')).toBeLessThan(body.indexOf('<section class="gf-faq-item"'));
+  });
+
   it('質問はエスケープして出す', () => {
     const body = faqBody([{ id: 'x', question: '<script>', answer: '<p>a</p>' }]);
     expect(body).not.toContain('<script>');
+  });
+});
+
+describe('トップから移した 2 項目（#471。仕様 2.3.3 の #435 注記の表）', () => {
+  it('先頭に「どんなサービスか」「生成した作品はどうなるか」がこの順で並ぶ', () => {
+    expect(FAQ_ENTRIES[0]?.id).toBe('about');
+    expect(FAQ_ENTRIES[0]?.question).toBe('Game Forge はどんなサービスですか？');
+    expect(FAQ_ENTRIES[1]?.id).toBe('after-generation');
+    expect(FAQ_ENTRIES[1]?.question).toBe('生成した作品はどうなりますか？');
+  });
+
+  it('サービスの説明: 1 行から生まれる・改造して公開できる・クローズドβで遊ぶことと共有に登録は要らない', () => {
+    const answer = answerOf('about');
+    expect(answer).toContain('プロンプト 1 行から、ブラウザで遊べる 2D ゲームが生まれる');
+    expect(answer).toContain('<strong>改造（フォーク）</strong>して、自分の 1 本として公開できます');
+    expect(answer).toContain('招待制のクローズドβ');
+    expect(answer).toContain('作品の URL を共有することには、登録も招待も要りません');
+    expect(answer).toContain('href="#invite"');
+  });
+
+  it('生成した作品の扱い: 待ち時間は正本の定数から差し込み、下書き・作品ページで確かめて公開・URL の見え方はリンク', () => {
+    const answer = answerOf('after-generation');
+    // **数字を書き写さない**（正本は生成画面の `TYPICAL_WAIT_TEXT`）。定数を変えた日にここも追随する。
+    expect(answer).toContain(`生成には${TYPICAL_WAIT_TEXT}。`);
+    expect(TYPICAL_WAIT_TEXT).toContain('1〜2 分');
+    expect(answer).toContain('<strong>下書き</strong>として保存されます');
+    expect(answer).toContain('作品ページで遊んで確かめてから、公開できます');
+    // **URL の見え方は重ねて書かず、既存の項目へリンクする**（同じ表）。
+    expect(answer).toContain('href="#no-fork"');
+    expect(answer).not.toContain('作った本人にしか表示されません');
+  });
+
+  it('画面の本文に、差し込んだ待ち時間が出る', async () => {
+    const body = pageBodyOf((await openFaq()).body);
+    expect(body).toContain(`生成には${TYPICAL_WAIT_TEXT}。`);
   });
 });
 

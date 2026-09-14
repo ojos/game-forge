@@ -8,6 +8,10 @@
  * が持つ。**書き写すと、枠を変えた日にこの画面だけが古い数を案内し続ける**——しかも
  * 利用者はそれを見て「押しても動かない」と感じる（4.4 / 2.2）。
  *
+ * **生成の待ち時間（#471 で足した「生成した作品はどうなりますか？」）も同じである。** 正本は生成画面の
+ * `TYPICAL_WAIT_TEXT`（`src/generate-page.ts`）で、ここは import して差し込む。公開トップは #128 以来その写しを
+ * 持っていた（循環参照で import できなかった）が、#471 でトップから外して FAQ へ移したので、写しは無くなった。
+ *
  * 権利（5.6）と削除依頼（8.4）は、**規約と削除依頼の画面が正本である**。ここは要点だけを
  * 書き、行き先へリンクする。
  *
@@ -30,6 +34,7 @@ import type { SiteViewer } from './html.js';
 import { escapeHtml, resolveSiteViewer, siteHead } from './html.js';
 import { INVITE_RECOVERY_DAYS } from './invite-balance.js';
 import { INVITE_QUOTA } from './invite-issuance.js';
+import { TYPICAL_WAIT_TEXT } from './generate-page.js';
 import { siteFooter } from './legal.js';
 import { FAQ_PATH, PRIVACY_PATH, TAKEDOWN_PATH, TERMS_PATH } from './legal-paths.js';
 import { SIGNUP_PATH } from './paths.js';
@@ -52,10 +57,33 @@ export interface FaqEntry {
 }
 
 /**
- * 質問の一覧。**並びは #373 の scope.in の順**（生成枠 / 招待 / 権利 / 改造されたくない /
+ * 質問の一覧。
+ *
+ * **先頭の 2 項目は #471 で新設した**（仕様 2.3.3 の #435 注記の表「外す文面の行き先」）——公開トップから外した
+ * サイト説明の全文と、生成の待ち時間・下書き・公開の説明の行き先である。**初めて来た人がいちばん先に知りたいこと**
+ * なので先頭に置く。**公開するまでの URL の見え方は重ねて書かず、既存の「自分の作品を改造されたくないときは」へ
+ * リンクする**（同じ注記の表）。
+ *
+ * **3 項目目からは #373 の scope.in の順**（生成枠 / 招待 / 権利 / 改造されたくない /
  * 生成失敗時の枠 / 対応ブラウザ）で、そのあとに窓口の案内を足した。
  */
 export const FAQ_ENTRIES: readonly FaqEntry[] = [
+  {
+    id: 'about',
+    question: 'Game Forge はどんなサービスですか？',
+    answer: `<p>プロンプト 1 行から、ブラウザで遊べる 2D ゲームが生まれるサービスです。
+   気に入った作品は<strong>改造（フォーク）</strong>して、自分の 1 本として公開できます。</p>
+<p>現在は<strong>招待制のクローズドβ</strong>です。公開されている作品を遊ぶことと、作品の URL を共有することには、登録も招待も要りません。
+   作品を作る・改造するには招待コードが必要です（<a href="#invite">招待はどうすれば受けられますか？</a>）。</p>`,
+  },
+  {
+    id: 'after-generation',
+    question: '生成した作品はどうなりますか？',
+    answer: `<p><strong>生成には${TYPICAL_WAIT_TEXT}。</strong>
+   生成した作品は、まず<strong>下書き</strong>として保存されます。</p>
+<p>作品ページで遊んで確かめてから、公開できます。
+   公開するまでの URL の見え方は、<a href="#no-fork">自分の作品を改造されたくないときは、どうすればよいですか？</a>をご覧ください。</p>`,
+  },
   {
     id: 'quota',
     question: '生成枠はいつ戻りますか？',
@@ -127,8 +155,15 @@ export const FAQ_ENTRIES: readonly FaqEntry[] = [
 /**
  * よくある質問の本文を組み立てる。
  *
- * **質問の一覧を先頭に置く**——390px の幅で 7 件を順に読ませると、知りたい答えまで
+ * **質問の一覧を先頭に置く**——390px の幅で 9 件を順に読ませると、知りたい答えまで
  * スクロールが長い。一覧から `#id` で飛べるようにする（JavaScript を使わない）。
+ *
+ * ## 見た目（仕様 2.5.3 / 2.5.4 / #471）
+ *
+ * - **質問の一覧はブロック（`.gf-block`）**で、器の幅いっぱいに面を置く。一覧のリンクは段落と箇条の中のリンクなので
+ *   下線を常に出す（2.5.5「文章の中」）
+ * - **質問と質問の間の罫線は器の端まで**（`.gf-faq-item` の上の線）。**答えの本文は 42rem のまま**（長い文を読ませる
+ *   画面。行長を絞るのは段落の中身で、罫線ではない。2.5.3）
  *
  * @param entries 質問の一覧
  * @returns HTML（外枠を含まない）
@@ -147,9 +182,12 @@ ${entry.answer}
     .join('\n\n');
   return `<div class="gf-legal">
 <h1>よくある質問</h1>
-<ul class="gf-faq-index">
+<div class="gf-block gf-faq-index">
+<p class="gf-faq-index-title">質問の一覧</p>
+<ul>
 ${index}
 </ul>
+</div>
 
 ${items}
 </div>`;

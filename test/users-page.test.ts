@@ -647,7 +647,7 @@ describe('表示名が引けないとき', () => {
     // カードは自分の既定値（`UNKNOWN_AUTHOR`）へ倒し、**`<span>` のままである。**
     expect(body).toContain(`<span class="gf-card-author">${UNKNOWN_AUTHOR}</span>`);
     // 空のリンクが 1 つも無い（クラスが付いた `<a>` そのものを探す）。
-    expect(body).not.toContain('<a class="gf-card-author"');
+    expect(body).not.toContain('<a class="gf-card-author');
     expect(body).not.toMatch(/<a[^>]*>\s*<\/a>/u);
     // 見出しとカードで倒し先の文言が違うのは意図である（`<h1>` に「不明」だけを出さない）。
     expect(UNKNOWN_AUTHOR_HEADING).not.toBe(UNKNOWN_AUTHOR);
@@ -665,7 +665,7 @@ describe('作品から作者へ辿る導線（#330 の goal）', () => {
       await handleAppRequest(new Request(`${APP_ORIGIN}${PUBLIC_WORKS_PATH}?sort=recent&page=1`), env)
     ).text();
 
-    expect(body).toContain(`<a class="gf-card-author" href="${authorPagePath(author)}">`);
+    expect(body).toContain(`<a class="gf-card-author gf-link-quiet" href="${authorPagePath(author)}">`);
   });
 
   it('作品ページの作者名が作者ページを指す', async () => {
@@ -710,8 +710,8 @@ describe('作者ページのカードにもタグが出る（#376 / 仕様 2.3.6
     const body = await bodyOf(author);
     const card = body.slice(body.indexOf(`href="${workPagePath(tagged)}"`));
     const taggedCard = card.slice(0, card.indexOf('</li>'));
-    expect(taggedCard).toContain('<a class="gf-card-genre" href="/works?tag=puzzle">パズル</a>');
-    expect(taggedCard).toContain('<a class="gf-card-genre" href="/works?tag=idle">放置</a>');
+    expect(taggedCard).toContain('<a class="gf-chip gf-card-genre" href="/works?tag=puzzle">パズル</a>');
+    expect(taggedCard).toContain('<a class="gf-chip gf-card-genre" href="/works?tag=idle">放置</a>');
     // **タグ無しの作品も並ぶ**（作者ページはタグで絞らない）。
     expect(body).toContain(workPagePath(untagged));
   });

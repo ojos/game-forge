@@ -161,6 +161,11 @@ describe('規約に、仕様が名指しした条項が含まれている（5.6 
     expect(body).toContain('暫定版');
     expect(body).toContain('法律の専門家による確認を受ける前');
   });
+
+  it('暫定版の但し書きはブロックで、本文は読み物の器に乗る（仕様 2.5.3 / #471）', async () => {
+    const { body } = await get(TERMS_PATH);
+    expect(body).toContain('<div class="gf-legal">\n<h1>利用規約</h1>\n<p class="gf-block gf-draft-notice">');
+  });
 });
 
 describe('削除依頼フォームが全ページのフッターから到達できる（#41 の acceptance 2）', () => {

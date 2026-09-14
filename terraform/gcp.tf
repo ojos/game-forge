@@ -21,18 +21,26 @@ resource "google_project" "game_forge" {
 
   # auto_create_network は既定の true のままにする（明示しない）。
   #
-  # プロバイダは false を「プロジェクトを作ってから既定ネットワークを削除する」手順で
-  # 実装しており、その削除のために Compute Engine API の有効化を要求する。構築時は
-  # 請求先アカウントを紐付けていなかったため、API の有効化が
-  # Error 400 UREQ_PROJECT_BILLING_NOT_FOUND で失敗し、apply が落ちた。
+  # false にしない理由: プロバイダは false を「プロジェクトを作ってから既定ネットワークを
+  # 削除する」手順で実装しており、その削除のために Compute Engine API の有効化を要求する。
+  # 構築時は請求先アカウントを紐付けていなかったため、API の有効化が
+  # Error 400 UREQ_PROJECT_BILLING_NOT_FOUND で失敗し、apply が落ちた。下記のとおり今は
+  # 請求先アカウントを紐付けているので、この失敗はもう歯止めにならない（有効化が
+  # 通りうる）。それでも、ネットワークを消すためだけに、課金が発生しうる Compute Engine
+  # API を有効にする指定になることは変わらないため、false にしない。
   #
-  # 下記のとおり今は請求先アカウントを紐付けているので、この失敗はもう歯止めに
-  # ならない（有効化が通りうる）。それでも false にしない理由は変わらない。既定 VPC は
-  # Compute Engine API を有効にしない限り実体化せず、この宣言は API を 1 つも有効に
-  # しない（google_project_service を持たない）ため、既定のままでもネットワークは
-  # 存在しない。false は「存在しないものを消すために、課金が発生しうる Compute Engine
-  # API を有効にする」指定になり、逆効果である。Compute Engine を使う段階が来たら、
-  # そのときに併せて扱う。
+  # (a) 実測した現状（2026-09-14、読み取りのみ）: このプロジェクトの
+  # compute.googleapis.com/compute/v1/projects/<project_id>/global/networks を読むと
+  # PERMISSION_DENIED / accessNotConfigured（Compute Engine API が無効）が返った。
+  # Compute Engine API は無効で、既定ネットワークは存在しない。
+  #
+  # (b) 新規作成・API 有効化時の挙動: プロバイダのドキュメントは、true なら既定
+  # ネットワークが作られ、false でも一度作られてから Terraform が削除する、としている。
+  # GCP の既定ネットワークは、Compute Engine API を有効にした時点で作られうる。
+  # この宣言は API を有効にしない（google_project_service を持たない）ので、(a) のとおり
+  # 今はネットワークが無い。ただし (a) は既存のこのプロジェクトの実測であり、新規作成時に
+  # 既定ネットワークが作られないことを確かめたものではない。Compute Engine API を有効に
+  # する段階では、既定ネットワークの扱い（auto_create_network を含む）を併せて決め直す。
 
   # 請求先アカウントを紐付けている。2026-09-14 に利用者が Google OAuth のブランド確認の
   # ために Console で紐付け、後追いでこの宣言へ取り込んだ（#487）。ID は公開する必要が

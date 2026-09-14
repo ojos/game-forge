@@ -579,7 +579,11 @@ button:disabled {
   text-decoration: none;
 }
 
-.gf-button[data-state='focus'] {
+/*
+ * **焦点を固定して見せる属性は、押せる部品のすべてに効かせる**（ボタン・チップ・文章の外のリンク・タブ。PR #466）。
+ * 見た目は `@section base` の `:focus-visible` と同じ輪郭である。
+ */
+:is(.gf-button, .gf-chip, .gf-link-quiet, .gf-tabs a)[data-state='focus'] {
   outline: 2px solid var(--gf-ink);
   outline-offset: 2px;
 }
@@ -621,7 +625,8 @@ button:disabled {
   white-space: nowrap;
 }
 
-a.gf-chip:is(:hover, [data-state='hover']) {
+/* **選んでいるタグ（`.gf-chip-current`）はホバーで戻さない**——戻すと、ホバー中に現在地が分からなくなる（PR #466）。 */
+a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   border-color: var(--gf-rule-strong);
   background: var(--gf-surface);
   color: var(--gf-ink);
@@ -650,7 +655,7 @@ a.gf-chip:is(:hover, [data-state='hover']) {
   text-decoration: none;
 }
 
-.gf-link-quiet:is(:hover, :focus-visible, [data-state='hover']) {
+.gf-link-quiet:is(:hover, :focus-visible, [data-state='hover'], [data-state='focus']) {
   text-decoration: underline;
   text-underline-offset: 0.2em;
   text-decoration-thickness: 1px;
@@ -713,7 +718,7 @@ a.gf-chip:is(:hover, [data-state='hover']) {
   background: var(--gf-surface);
 }
 
-.gf-block :is(.gf-button-secondary, .gf-button-tertiary, a.gf-chip):is(:hover, [data-state='hover']) {
+.gf-block :is(.gf-button-secondary, .gf-button-tertiary, a.gf-chip:not(.gf-chip-current)):is(:hover, [data-state='hover']) {
   background: var(--gf-rule-soft);
 }
 

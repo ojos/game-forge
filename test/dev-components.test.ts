@@ -35,6 +35,10 @@ describe('部品の一覧（/__dev/components。#457）', () => {
     expect(page).toContain('data-state="hover"');
     expect(page).toContain('data-state="focus"');
     expect(page).toContain(' disabled>');
+    // 焦点の見本は、ボタン以外の押せる部品（文章の外のリンク・タブ・チップ）にもある（PR #466）。
+    expect(page).toContain('class="gf-link-quiet" href="#dev-links" data-state="focus"');
+    expect(page).toContain('class="gf-chip" href="#dev-chips" data-state="focus"');
+    expect(page).toContain('<li><a href="#dev-links" data-state="focus">');
   });
 
   it('色の段の見本に、新設の 2 つのトークンが並ぶ（仕様 2.5.2）', () => {

@@ -121,19 +121,20 @@ ${buttonRows}
 <section class="dev-section" aria-labelledby="dev-links">
 <h2 id="dev-links">リンクの見せ方</h2>
 <p>文章の中のリンクは<a href="#dev-links">下線を常に出します</a>（<code>a</code> の既定のまま）。</p>
-<p class="dev-row"><a class="gf-link-quiet" href="#dev-links">文章の外のリンク</a><a class="gf-link-quiet" href="#dev-links" data-state="hover">文章の外（ホバー時）</a></p>
+<p class="dev-row"><a class="gf-link-quiet" href="#dev-links">文章の外のリンク</a><a class="gf-link-quiet" href="#dev-links" data-state="hover">文章の外（ホバー時）</a><a class="gf-link-quiet" href="#dev-links" data-state="focus">文章の外（焦点）</a></p>
 <nav aria-label="タブの見本">
 <ul class="gf-tabs">
   <li><span aria-current="page">新着</span></li>
   <li><a href="#dev-links">改造された数</a></li>
   <li><a href="#dev-links" data-state="hover">いいねの数（ホバー時）</a></li>
+  <li><a href="#dev-links" data-state="focus">プレイ数（焦点）</a></li>
 </ul>
 </nav>
 </section>
 
 <section class="dev-section" aria-labelledby="dev-chips">
 <h2 id="dev-chips">チップ</h2>
-<p class="dev-row"><a class="gf-chip" href="#dev-chips">アクション</a><a class="gf-chip" href="#dev-chips" data-state="hover">パズル（ホバー時）</a><a class="gf-chip gf-chip-current" href="#dev-chips" aria-current="true">選んでいるタグ</a></p>
+<p class="dev-row"><a class="gf-chip" href="#dev-chips">アクション</a><a class="gf-chip" href="#dev-chips" data-state="hover">パズル（ホバー時）</a><a class="gf-chip gf-chip-current" href="#dev-chips" aria-current="true">選んでいるタグ</a><a class="gf-chip gf-chip-current" href="#dev-chips" aria-current="true" data-state="hover">選んでいるタグ（ホバー時）</a><a class="gf-chip" href="#dev-chips" data-state="focus">シューティング（焦点）</a></p>
 <p class="dev-row"><span class="gf-chip">生成枠</span><span class="gf-chip gf-chip-emphasis">生成中</span><span class="gf-chip">下書き</span></p>
 </section>
 

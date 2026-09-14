@@ -738,6 +738,23 @@ function mediaTypeOf(header: string | null): string {
 }
 
 /**
+ * 作品が削除の途中か、既に消えているか（#516。{@link handleOgpCallback} が断ったあとにだけ読む）。
+ *
+ * **行が無い**（行ごと消えた）か、**`deletion_started_at` が立っている**（削除が掴んだ・中身を消した）
+ * なら true。どちらの行にも、正当な OGP 画像は無い（`src/game-deletion.ts`）。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 作品 id
+ * @returns 削除の途中か消えていれば true
+ */
+async function ogpOwnerIsBeingDeleted(env: Env, gameId: string): Promise<boolean> {
+  const row = await env.DB.prepare('select deletion_started_at from games where id = ?')
+    .bind(gameId)
+    .first<{ deletion_started_at: number | null }>();
+  return row === null || row.deletion_started_at !== null;
+}
+
+/**
  * 撮影の結果を受け取る。
  *
  * # 認証はトークンだけである
@@ -810,8 +827,20 @@ async function handleOgpCallback(request: Request, env: Env): Promise<Response> 
 
   const recorded = await completeOgpCapture(env, gameId, tokenHash, key);
   if (!recorded) {
-    // トークンが合わない・既に終わっている。**R2 のオブジェクトは消さない**——
+    // トークンが合わない・既に終わっている。**重複配信なら R2 のオブジェクトは消さない**——
     // キーは作品 id から決まるので、上書きしたのは同じ作品の画像である。
+    //
+    // **ただし、作品の削除が照合と R2 の書き込みのあいだに走っていたら消す**（#516）。削除は
+    // 掴む文で撮影のトークンを捨て、R2 の `ogp/<id>.png` を消してから D1 を確定する
+    // （`src/game-deletion.ts`）。その後にこちらが書いた画像は、どの行からも指されない孤児に
+    // なる（退会した作者の画像が残る）。**掴まれた行と消えた行に正当な画像は無い**ので、
+    // 行を読んで見分ける。読むのは断られた要求だけで、成功の経路の往復は増えない。
+    //
+    // **競合は残らない。** 削除の掴みは `completeOgpCapture` が 0 行になるより前に起きている
+    // （掴む文がトークンを捨てたから 0 行になった）ので、ここで読む行には必ず掴んだ印が見える。
+    if (await ogpOwnerIsBeingDeleted(env, gameId)) {
+      await env.BUCKET.delete(key);
+    }
     return json({ error: 'not found' }, 404);
   }
   return json({ accepted: true, state: 'ready' satisfies OgpState }, 200);

@@ -304,9 +304,9 @@ describe('並べ替えと頁送り（仕様 2.3.3 / 2.3.4）', () => {
     // 並べ替えの札に「プレイ数」が並び、いま選んでいる軸はリンクにしない。
     const sortNav = played.slice(played.indexOf('<nav class="gf-sort"'));
     expect(sortNav.slice(0, sortNav.indexOf('</nav>'))).toContain(
-      '<strong class="gf-sort-current">プレイ数</strong>',
+      '<li><span aria-current="page">プレイ数</span></li>',
     );
-    expect(recent).toContain(`<a href="${worksListPath('played', 1)}">プレイ数</a>`);
+    expect(recent).toContain(`<li><a href="${worksListPath('played', 1)}">プレイ数</a></li>`);
   });
 
   it('プレイ数の順でも、draft と審査待ちは出ない（#377）', async () => {
@@ -467,23 +467,23 @@ describe('タグで絞り込む（#376 / 仕様 2.3.5）', () => {
       expect(response.status).toBe(200);
       const body = await response.text();
       expect(body).toContain(workPagePath(untagged));
-      expect(body).toContain('<strong class="gf-tag-current" aria-current="page">すべて</strong>');
+      expect(body).toContain('<span class="gf-chip gf-chip-current" aria-current="page">すべて</span>');
     }
   });
 
   it('左カラムは <a href> だけで組み、絞り込むとタグの付いた作品だけが出ることを書く', async () => {
     const body = await (await openList('?tag=idle')).text();
-    const nav = body.slice(body.indexOf('<nav class="gf-tag-filter"'));
+    const nav = body.slice(body.indexOf('<nav class="gf-tag-filter gf-block"'));
     const filter = nav.slice(0, nav.indexOf('</nav>'));
 
     expect(filter).toContain(TAG_FILTER_NOTICE);
-    expect(filter).toContain(`<a href="${worksListPath('recent', 1)}">すべて</a>`);
+    expect(filter).toContain(`<a class="gf-chip" href="${worksListPath('recent', 1)}">すべて</a>`);
     for (const tag of WORK_TAGS) {
       if (tag.id === 'idle') {
-        // **いま選んでいるものはリンクにしない。**
-        expect(filter).toContain(`aria-current="page">${tag.label}</strong>`);
+        // **いま選んでいるものはリンクにしない。** 見た目は選んでいるチップ（#474）。
+        expect(filter).toContain(`<span class="gf-chip gf-chip-current" aria-current="page">${tag.label}</span>`);
       } else {
-        expect(filter).toContain(`<a href="${worksListPath('recent', 1, tag.id)}">${tag.label}</a>`);
+        expect(filter).toContain(`<a class="gf-chip" href="${worksListPath('recent', 1, tag.id)}">${tag.label}</a>`);
       }
     }
     // **JavaScript もフォームも使わない**（9.3）。
@@ -504,8 +504,8 @@ describe('タグで絞り込む（#376 / 仕様 2.3.5）', () => {
       expect(nav).not.toContain('いいねの数');
       // **プレイ数順も絞り込み中は出さない**（#377。#376 の決定で `TAGGED_WORK_SORTS` は変えない）。
       expect(nav).not.toContain('プレイ数');
-      expect(nav).toContain('<strong class="gf-sort-current">新着</strong>');
-      expect(nav).toContain(`<a href="${worksListPath('forked', 1, 'shooting')}">改造された数</a>`);
+      expect(nav).toContain('<li><span aria-current="page">新着</span></li>');
+      expect(nav).toContain(`<li><a href="${worksListPath('forked', 1, 'shooting')}">改造された数</a></li>`);
       expect(body.indexOf(workPagePath(newest))).toBeLessThan(body.indexOf(workPagePath(mostLiked)));
     }
   });
@@ -551,7 +551,9 @@ describe('タグで絞り込む（#376 / 仕様 2.3.5）', () => {
 
     expect(filtered).toContain('このタグの作品はまだありません。');
     expect(filtered).not.toContain('まだ公開された作品がありません。');
-    expect(filtered).toContain(`<a href="${worksListPath('recent', 1)}">すべての作品を見る</a>`);
+    expect(filtered).toContain(
+      `<a class="gf-button gf-button-secondary gf-button-sm" href="${worksListPath('recent', 1)}">すべての作品を見る</a>`,
+    );
     expect(unfiltered).toContain('まだ公開された作品がありません。');
     expect(unfiltered).not.toContain('このタグの作品はまだありません。');
   });
@@ -694,7 +696,9 @@ describe('キーワード検索の画面（#378 / 仕様 2.3.5）', () => {
     expect(body).not.toContain('<img src=x');
     expect(body).toContain('&lt;img');
     expect(body).toContain('に当たる作品はありませんでした。');
-    expect(body).toContain(`<a href="${worksListPath('recent', 1)}">検索をやめて一覧を見る</a>`);
+    expect(body).toContain(
+      `<a class="gf-button gf-button-secondary gf-button-sm" href="${worksListPath('recent', 1)}">検索をやめて一覧を見る</a>`,
+    );
   });
 
   it('タグの絞り込みと併用でき、タグを選び直しても検索語を保つ', async () => {
@@ -706,10 +710,10 @@ describe('キーワード検索の画面（#378 / 仕様 2.3.5）', () => {
     expect(body).toContain(workPagePath(tagged));
     expect(body).not.toContain(workPagePath(untagged));
     expect(body).toContain('タグ「パズル」の作品');
-    const nav = body.slice(body.indexOf('<nav class="gf-tag-filter"'));
+    const nav = body.slice(body.indexOf('<nav class="gf-tag-filter gf-block"'));
     const filter = nav.slice(0, nav.indexOf('</nav>'));
-    expect(filter).toContain(`<a href="${worksListPath('recent', 1, null, '星降る')}">すべて</a>`);
-    expect(filter).toContain(`<a href="${worksListPath('recent', 1, 'action', '星降る')}">アクション</a>`);
+    expect(filter).toContain(`<a class="gf-chip" href="${worksListPath('recent', 1, null, '星降る')}">すべて</a>`);
+    expect(filter).toContain(`<a class="gf-chip" href="${worksListPath('recent', 1, 'action', '星降る')}">アクション</a>`);
     expect(worksListPath('recent', 1, 'action', '星降る')).toBe(
       `${PUBLIC_WORKS_PATH}?tag=action&q=${encodeURIComponent('星降る')}&page=1`,
     );
@@ -770,7 +774,9 @@ describe('キーワード検索の画面（#378 / 仕様 2.3.5）', () => {
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(body).toContain(SEARCH_REJECTION_MESSAGES['too-long']);
-    expect(body).toContain(`<a href="${worksListPath('recent', 1, 'action', 'a'.repeat(159))}">アクション</a>`);
+    expect(body).toContain(
+      `<a class="gf-chip" href="${worksListPath('recent', 1, 'action', 'a'.repeat(159))}">アクション</a>`,
+    );
   });
 
   it('非公開化は、一覧と同じくキャッシュの TTL（60 秒）の後に検索から消える', async () => {
@@ -801,5 +807,76 @@ describe('キーワード検索の画面（#378 / 仕様 2.3.5）', () => {
       expect(worksSearchCacheKey(upper.key, 1, null)).toBe(worksSearchCacheKey(lower.key, 1, null));
     }
     expect(key).not.toBe(listCacheKey('works', { sort: 'recent', page: 1 }));
+  });
+});
+
+describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
+  const viewer = siteViewerAt(PUBLIC_WORKS_PATH, false, null);
+
+  it('並べ替えはタブ（.gf-tabs）で、いまの軸だけに aria-current があり、リンクにしない', () => {
+    for (const sort of PUBLIC_WORK_SORTS) {
+      const body = renderWorksListPage({ works: [], sort, page: 1, hasNext: false }, viewer);
+      const start = body.indexOf('<nav class="gf-sort" aria-label="並べ替え">\n<ul class="gf-tabs">');
+      expect(start, sort).toBeGreaterThan(0);
+      const nav = body.slice(start, body.indexOf('</nav>', start));
+      expect(nav.match(/aria-current="page"/gu) ?? [], sort).toHaveLength(1);
+      expect(nav).toContain(`<li><span aria-current="page">`);
+      // いまの軸へのリンクは無く、ほかの軸はリンクである。
+      expect(nav).not.toContain(`href="${worksListPath(sort, 1)}"`);
+      expect(nav.match(/<li><a href="/gu) ?? [], sort).toHaveLength(PUBLIC_WORK_SORTS.length - 1);
+    }
+  });
+
+  it('タグの絞り込みはブロックの中のチップで、選んでいるタグにだけ .gf-chip-current と aria-current がある', () => {
+    for (const current of [null, ...WORK_TAGS.map((tag) => tag.id)]) {
+      const body = renderWorksListPage({ works: [], sort: 'recent', page: 1, hasNext: false, tag: current }, viewer);
+      const start = body.indexOf('<nav class="gf-tag-filter gf-block" aria-label="タグで絞り込む">');
+      expect(start, String(current)).toBeGreaterThan(0);
+      const nav = body.slice(start, body.indexOf('</nav>', start));
+      expect(nav.match(/gf-chip-current/gu) ?? [], String(current)).toHaveLength(1);
+      expect(nav.match(/aria-current="page"/gu) ?? [], String(current)).toHaveLength(1);
+      // 選んでいるチップの要素に、クラスと aria-current の両方が付いている。
+      expect(nav).toMatch(/<span class="gf-chip gf-chip-current" aria-current="page">[^<]+<\/span>/u);
+      // 選んでいないものはすべて押せるチップ（`a.gf-chip`）。
+      expect(nav.match(/<a class="gf-chip" href="/gu) ?? [], String(current)).toHaveLength(WORK_TAGS.length);
+    }
+  });
+
+  it('頁送りは小さい副のボタンで、次は右端へ寄せるクラスを持つ（DOM の順は前 → 次）', () => {
+    const body = renderWorksListPage({ works: [], sort: 'recent', page: 2, hasNext: true }, viewer);
+    const start = body.indexOf('<nav class="gf-pager" aria-label="頁送り">');
+    expect(start).toBeGreaterThan(0);
+    const nav = body.slice(start, body.indexOf('</nav>', start));
+    const back = nav.indexOf(
+      `<a class="gf-button gf-button-secondary gf-button-sm" href="${worksListPath('recent', 1)}">前の ${WORKS_PER_PAGE} 件</a>`,
+    );
+    const next = nav.indexOf(
+      `<a class="gf-button gf-button-secondary gf-button-sm gf-pager-next" href="${worksListPath('recent', 3)}">次の ${WORKS_PER_PAGE} 件</a>`,
+    );
+    expect(back).toBeGreaterThan(0);
+    expect(next).toBeGreaterThan(back);
+  });
+
+  it('移設の案内・断った検索・0 件の知らせは面のブロックで、主のボタンを置かない', () => {
+    const empty = renderWorksListPage({ works: [], sort: 'recent', page: 1, hasNext: false }, viewer);
+    expect(empty).toContain(`<p class="gf-block gf-works-moved">${MOVED_NOTICE}</p>`);
+    expect(empty).toContain('<div class="gf-block gf-works-empty">\n<p>まだ公開された作品がありません。</p>');
+    expect(empty).not.toContain('gf-button-primary');
+
+    const rejected = renderWorksListPage(
+      { works: [], sort: 'recent', page: 1, hasNext: false, search: parseWorkSearch('宇') },
+      viewer,
+    );
+    expect(rejected).toContain(`<p class="gf-block gf-search-rejected">${SEARCH_REJECTION_MESSAGES['too-short']}</p>`);
+    expect(rejected).not.toContain('gf-button-primary');
+  });
+
+  it('@section sort-pager は幅の断点も並べ替えも持たない', () => {
+    const css = env.TEST_APP_CSS;
+    const start = css.indexOf('\n   @section sort-pager');
+    const end = css.indexOf('\n   @section ', start + 1);
+    expect(start).toBeGreaterThan(0);
+    const section = css.slice(start, end).replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+    expect(section).not.toMatch(/@media|(^|[\s;{])order\s*:|display:\s*contents/u);
   });
 });

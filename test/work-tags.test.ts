@@ -302,8 +302,9 @@ describe('作品ページのタグと付け直しの口（#376）', () => {
   it('公開済みの作品のタグは誰にでも出て、絞り込んだ一覧へのリンクになる', async () => {
     const { id } = await seedPublished('page-tags', ['rhythm-sound', 'action']);
     const body = await openWork(id);
-    expect(body).toContain(`<a href="${workTagListPath('action')}">アクション</a>`);
-    expect(body).toContain(`<a href="${workTagListPath('rhythm-sound')}">リズム・音</a>`);
+    // **1 つずつがチップ**（#474 / 仕様 2.5.5）。
+    expect(body).toContain(`<a class="gf-chip" href="${workTagListPath('action')}">アクション</a>`);
+    expect(body).toContain(`<a class="gf-chip" href="${workTagListPath('rhythm-sound')}">リズム・音</a>`);
   });
 
   it('語彙に無い値が行に入っていても、本文に出さず 200 を返す', async () => {

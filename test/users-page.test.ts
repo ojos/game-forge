@@ -249,7 +249,8 @@ describe('出すもの（仕様 2.3.1 / 5.8）', () => {
     await seedGame(author, { status: DRAFT_STATUS });
 
     const body = await bodyOf(author);
-    expect(body).toContain(NO_WORKS_NOTICE);
+    // 知らせは面のブロック（#474 / 仕様 2.5.4）。
+    expect(body).toContain(`<p class="gf-block">${NO_WORKS_NOTICE}</p>`);
     // **空の `<ul>` を出さない**（`renderWorkCards` が空文字を返す）。
     expect(body).not.toContain('<ul class="gf-cards">');
   });
@@ -257,7 +258,10 @@ describe('出すもの（仕様 2.3.1 / 5.8）', () => {
   it('一覧へ戻る導線がある', async () => {
     const author = await seedUser('戻る導線の作者');
     await seedGame(author);
-    expect(await bodyOf(author)).toContain(`href="${PUBLIC_WORKS_PATH}"`);
+    // **小さい副のボタン**（#474 / 仕様 2.5.5）。
+    expect(await bodyOf(author)).toContain(
+      `<p class="gf-author-back"><a class="gf-button gf-button-secondary gf-button-sm" href="${PUBLIC_WORKS_PATH}">ほかの作品をさがす</a></p>`,
+    );
   });
 
   it('検索避けを付けない（誰にでも見せる発見の面である）', async () => {
@@ -497,6 +501,9 @@ describe('頁送り（仕様 2.3.3 の条件 1）', () => {
     expect(first).toContain(`次の ${WORKS_PER_PAGE} 件`);
     expect(second).toContain(workPagePath(oldest));
     expect(second).toContain(`前の ${WORKS_PER_PAGE} 件`);
+    // **頁送りは小さい副のボタンで、次は右端へ寄せる**（#474 / 仕様 2.5.5）。
+    expect(first).toMatch(/<a class="gf-button gf-button-secondary gf-button-sm gf-pager-next" href="[^"]+\?page=2">次の /u);
+    expect(second).toMatch(/<a class="gf-button gf-button-secondary gf-button-sm" href="[^"]+\?page=1">前の /u);
   });
 
   it('1 頁で収まるなら頁送りを出さない（押しても何も起きないものを出さない）', async () => {
@@ -688,7 +695,7 @@ describe('作品から作者へ辿る導線（#330 の goal）', () => {
     const workBody = await (
       await handleAppRequest(new Request(`${APP_ORIGIN}${workPagePath(game)}`), env)
     ).text();
-    const href = /<a class="gf-author-link" href="([^"]+)"/u.exec(workBody)?.[1];
+    const href = /<a class="gf-author-link[ "][^>]*href="([^"]+)"/u.exec(workBody)?.[1];
     expect(href, '作品ページに作者ページへのリンクが無い').toBeDefined();
 
     await purgeListCache(authorCacheKey(author, 1));

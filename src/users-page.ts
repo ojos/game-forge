@@ -353,7 +353,8 @@ function likesLine(count: number): string {
  * 頁送りを組み立てる。
  *
  * **無限スクロールを置かない**（仕様 2.3.3）。JavaScript も増やさない（9.3）。
- * 綴りは `src/works-list.ts` の頁送りと同じ形にしてある。
+ * 綴りは `src/works-list.ts` の頁送りと同じ形にしてある——**小さい副のボタン**で、「次」は右端に寄せる
+ * （`.gf-pager-next`。仕様 2.5.5 / #474）。
  *
  * @param view 表示に必要な値
  * @returns HTML。前も次も無ければ空文字
@@ -363,15 +364,40 @@ function renderPager(view: AuthorPageView): string {
   const base = view.pagePath ?? authorPagePath(view.userId);
   const to = (page: number): string => `${escapeHtml(base)}?page=${page}`;
   if (view.page > 1) {
-    links.push(`<a href="${to(view.page - 1)}">前の ${WORKS_PER_PAGE} 件</a>`);
+    links.push(`<a class="${SMALL_SECONDARY_BUTTON}" href="${to(view.page - 1)}">前の ${WORKS_PER_PAGE} 件</a>`);
   }
   if (view.hasNext) {
-    links.push(`<a href="${to(view.page + 1)}">次の ${WORKS_PER_PAGE} 件</a>`);
+    links.push(
+      `<a class="${SMALL_SECONDARY_BUTTON} gf-pager-next" href="${to(view.page + 1)}">次の ${WORKS_PER_PAGE} 件</a>`,
+    );
   }
   if (links.length === 0) {
     return '';
   }
-  return `<nav class="gf-pager" aria-label="頁送り">${links.join(' ')}</nav>`;
+  return `<nav class="gf-pager" aria-label="頁送り">${links.join('\n')}</nav>`;
+}
+
+/**
+ * 小さい副のボタン（仕様 2.5.5。#474）。頁送りと「ほかの作品をさがす」に当てる。見た目の正本は
+ * `public/assets/app.css` の `@section buttons` で、ここは当てる部品の名前だけを持つ。
+ */
+const SMALL_SECONDARY_BUTTON = 'gf-button gf-button-secondary gf-button-sm';
+
+/**
+ * 自己紹介・外部リンク・但し書きを、面のブロックで囲む（仕様 2.5.4 / #474）。
+ *
+ * **中身は `src/author-profile.ts` が組む**（エスケープと `rel` の規律はあちらが持つ）。ここは外側の面だけを足す。
+ * **何も書いていない作者には、空のブロックを出さない**（あちらが空文字を返す）。
+ *
+ * **受け取ったいいねはブロックの外、見出しの直下に残す**（承認したモックアップ Version 6 の作者ページの形）。
+ * 数はプロフィールの有無に関わらず出る値で、ブロックに入れると「自己紹介の無い作者」でだけ 1 行のブロックが残る。
+ *
+ * @param view 作者の自己紹介と外部リンク
+ * @returns HTML（書いていなければ空文字）
+ */
+function profileBlock(view: AuthorProfileView | undefined): string {
+  const profile = renderAuthorProfile(view);
+  return profile === '' ? '' : `<div class="gf-block gf-author-block">\n${profile}\n</div>`;
 }
 
 /**
@@ -397,7 +423,8 @@ export function renderAuthorPage(view: AuthorPageView, viewer: SiteViewer): stri
   const cards = renderWorkCards(view.works, view.avatarOrigin ?? null);
   // **空のときに「この作者の作品」の見出しだけを残さない**（`src/home.ts` の規律。
   // 出来ていないものを出来ているように見せない）。
-  const body = cards === '' ? `<p>${NO_WORKS_NOTICE}</p>` : cards;
+  // **作品が無い知らせは面のブロックにする**（#474 / 仕様 2.5.4）。
+  const body = cards === '' ? `<p class="gf-block">${NO_WORKS_NOTICE}</p>` : cards;
 
   return `${siteHead({
     title: `${view.displayName} の作品 - Game Forge`,
@@ -407,10 +434,10 @@ export function renderAuthorPage(view: AuthorPageView, viewer: SiteViewer): stri
   })}
 ${authorAvatar(view.avatarUrl ?? null)}<h1>${name}</h1>
 ${likesLine(view.likesReceived)}
-${renderAuthorProfile(view.profile)}
+${profileBlock(view.profile)}
 ${body}
 ${renderPager(view)}
-<p class="gf-author-back"><a href="${PUBLIC_WORKS_PATH}">ほかの作品をさがす</a></p>
+<p class="gf-author-back"><a class="${SMALL_SECONDARY_BUTTON}" href="${PUBLIC_WORKS_PATH}">ほかの作品をさがす</a></p>
 ${siteFooter()}`;
 }
 

@@ -253,6 +253,10 @@ export interface WorksListView {
 /**
  * 並べ替えの切り替えを組み立てる。
  *
+ * **見た目はタブ（`.gf-tabs`）である**（仕様 2.5.5 / #474）。選択肢の中の現在地であって動作ではないので、
+ * ボタンにしない。**いまの軸は `aria-current="page"` で示す**（読み上げにも現在地が渡る。見た目の下線 2px と太字も
+ * `.gf-tabs [aria-current]` が付ける）。
+ *
  * **いま選ばれている軸をリンクにしない。** 押しても同じ場所へ来るリンクは、
  * 「押せるが何も起きないもの」である（2.2 / 4.4 が出さないと定めているもの）。
  *
@@ -274,16 +278,24 @@ function renderSortNav(view: WorksListView): string {
     tag === null ? (Object.keys(SORT_LABELS) as PublicWorkSort[]) : TAGGED_WORK_SORTS;
   const items = sorts.map((sort) =>
     sort === view.sort
-      ? `<strong class="gf-sort-current">${SORT_LABELS[sort]}</strong>`
-      : `<a href="${worksListPath(sort, 1, tag)}">${SORT_LABELS[sort]}</a>`,
+      ? `<li><span aria-current="page">${SORT_LABELS[sort]}</span></li>`
+      : `<li><a href="${worksListPath(sort, 1, tag)}">${SORT_LABELS[sort]}</a></li>`,
   );
-  return `<nav class="gf-sort" aria-label="並べ替え">並べ替え: ${items.join(' / ')}</nav>`;
+  return `<nav class="gf-sort" aria-label="並べ替え">
+<ul class="gf-tabs">
+${items.join('\n')}
+</ul>
+</nav>`;
 }
 
 /**
  * 頁送りを組み立てる。
  *
  * **無限スクロールを置かない**（仕様 2.3.3）。JavaScript も増やさない（9.3）。
+ *
+ * **小さい副のボタンにする**（仕様 2.5.5 の表が頁送りを「主な導線」として名指しする。#474）。移動なので `<a>` のまま。
+ * **「次」は右端に寄せる**（`.gf-pager-next`。`@section sort-pager`）——前が無い 1 頁目でも、次へ進む口の位置が
+ * 頁によって動かない。**DOM の順は前 → 次のまま**で、並べ替えない（見た目の順＝Tab の順。仕様 2.5.6 の #469 実装注記）。
  *
  * @param view 表示に必要な値
  * @returns HTML。前も次も無ければ空文字
@@ -295,19 +307,27 @@ function renderPager(view: WorksListView): string {
   // **頁を送ってもタグと検索語を保つ**（#376 / #378）。
   if (view.page > 1) {
     links.push(
-      `<a href="${worksListPath(view.sort, view.page - 1, tag, query)}">前の ${WORKS_PER_PAGE} 件</a>`,
+      `<a class="${PAGER_BUTTON_CLASS}" href="${worksListPath(view.sort, view.page - 1, tag, query)}">前の ${WORKS_PER_PAGE} 件</a>`,
     );
   }
   if (view.hasNext) {
     links.push(
-      `<a href="${worksListPath(view.sort, view.page + 1, tag, query)}">次の ${WORKS_PER_PAGE} 件</a>`,
+      `<a class="${PAGER_BUTTON_CLASS} gf-pager-next" href="${worksListPath(view.sort, view.page + 1, tag, query)}">次の ${WORKS_PER_PAGE} 件</a>`,
     );
   }
   if (links.length === 0) {
     return '';
   }
-  return `<nav class="gf-pager" aria-label="頁送り">${links.join(' ')}</nav>`;
+  return `<nav class="gf-pager" aria-label="頁送り">${links.join('\n')}</nav>`;
 }
+
+/**
+ * 頁送りと、一覧の中の導線（「すべての作品を見る」など）に付けるクラス（仕様 2.5.5 の小さい副のボタン。#474）。
+ *
+ * 見た目の正本は `public/assets/app.css` の `@section buttons` の部品で、ここが持つのは「どの部品を当てるか」だけである。
+ * 作者ページ（`src/users-page.ts`）といいねした作品（`src/liked-works.ts`）の頁送りも同じ部品を当てる。
+ */
+const PAGER_BUTTON_CLASS = 'gf-button gf-button-secondary gf-button-sm';
 
 /**
  * 絞り込みの但し書き（#376）。**タグ無しを許したので、絞り込むと出ない作品があることを書く。**
@@ -342,6 +362,12 @@ export const SEARCH_REJECTION_MESSAGES: Readonly<Record<SearchRejection, string>
  * **JavaScript もフォームも使わない**（9.3）。選べるのは 1 つだけで、押せばその URL へ移る。
  * **いま選んでいるものはリンクにしない**（{@link renderSortNav} と同じ理由）。
  *
+ * # 見た目はブロックの中のチップ（#474 / 仕様 2.5.4 / 2.5.5）
+ *
+ * 1 つずつを押せるチップ（`a.gf-chip`）にし、**いま選んでいるものは `.gf-chip-current`（白黒の反転）と
+ * `aria-current="page"`** にする。選んでいるものはリンクにしないので `<span>` である（見た目は同じ部品）。
+ * 絞り込みの全体は面のブロック（`.gf-block`）で囲む。
+ *
  * # 行き先の並べ替え
  *
  * タグを選ぶと 1 頁目へ戻る（件数が変わるので、同じ頁番号に意味が無い）。並べ替えは、
@@ -362,15 +388,15 @@ function renderTagFilter(view: WorksListView): string {
   const query = queryOf(view.search);
   const items = [
     current === null
-      ? '<li><strong class="gf-tag-current" aria-current="page">すべて</strong></li>'
-      : `<li><a href="${worksListPath(view.sort, 1, null, query)}">すべて</a></li>`,
+      ? '<li><span class="gf-chip gf-chip-current" aria-current="page">すべて</span></li>'
+      : `<li><a class="gf-chip" href="${worksListPath(view.sort, 1, null, query)}">すべて</a></li>`,
     ...WORK_TAGS.map((tag) =>
       tag.id === current
-        ? `<li><strong class="gf-tag-current" aria-current="page">${tag.label}</strong></li>`
-        : `<li><a href="${worksListPath(toTaggedWorkSort(view.sort), 1, tag.id, query)}">${tag.label}</a></li>`,
+        ? `<li><span class="gf-chip gf-chip-current" aria-current="page">${tag.label}</span></li>`
+        : `<li><a class="gf-chip" href="${worksListPath(toTaggedWorkSort(view.sort), 1, tag.id, query)}">${tag.label}</a></li>`,
     ),
   ];
-  return `<nav class="gf-tag-filter" aria-label="タグで絞り込む">
+  return `<nav class="gf-tag-filter gf-block" aria-label="タグで絞り込む">
 <h2>タグ</h2>
 <ul>
 ${items.join('\n')}
@@ -386,6 +412,9 @@ ${items.join('\n')}
  * 公開作品はあるかもしれないので、前者で「最初の 1 本を作る」を勧めると嘘になる。前者には
  * 「すべて」へ戻る道を置く（押せば作品が並ぶかもしれない場所である）。
  *
+ * **知らせは面のブロック、導線は小さい副のボタンにする**（#474 / 仕様 2.5.4 / 2.5.5）。「最初の 1 本を作る」も副である
+ * ——主のボタンは生成画面の送信の側にあり（2.5.5 の表）、ここは一覧の中の導線の 1 つである。
+ *
  * @param view 表示に必要な値
  * @returns HTML
  */
@@ -395,19 +424,27 @@ function renderEmpty(view: WorksListView): string {
   // **検索の結果が空でも、公開作品はあるかもしれない**（#378）。検索をやめる道を置く
   // （タグは保つ——タグだけの一覧へ戻る）。断った検索では文言を上に出しているので、ここは道だけにする。
   if (search.kind !== 'none') {
-    const clear = `<p><a href="${worksListPath('recent', 1, tag)}">検索をやめて一覧を見る</a></p>`;
+    const clear = `<p class="gf-works-empty-action"><a class="${PAGER_BUTTON_CLASS}" href="${worksListPath('recent', 1, tag)}">検索をやめて一覧を見る</a></p>`;
+    // **断った検索では、断った理由のブロックが結果の上に既にある**（{@link renderWorksListPage}）。ここは導線だけにし、
+    // 同じ面を 2 枚重ねない。
     if (search.kind === 'rejected') {
       return clear;
     }
-    return `<p>「${escapeHtml(search.text)}」に当たる作品はありませんでした。</p>
-${clear}`;
+    return `<div class="gf-block gf-works-empty">
+<p>「${escapeHtml(search.text)}」に当たる作品はありませんでした。</p>
+${clear}
+</div>`;
   }
   if (tag !== null) {
-    return `<p>このタグの作品はまだありません。</p>
-<p><a href="${worksListPath(view.sort, 1)}">すべての作品を見る</a></p>`;
+    return `<div class="gf-block gf-works-empty">
+<p>このタグの作品はまだありません。</p>
+<p class="gf-works-empty-action"><a class="${PAGER_BUTTON_CLASS}" href="${worksListPath(view.sort, 1)}">すべての作品を見る</a></p>
+</div>`;
   }
-  return `<p>まだ公開された作品がありません。</p>
-<p><a class="gf-cta" href="${GENERATE_PAGE_PATH}">最初の 1 本を作る</a>（招待コードでの登録が必要です）</p>`;
+  return `<div class="gf-block gf-works-empty">
+<p>まだ公開された作品がありません。</p>
+<p class="gf-works-empty-action"><a class="${PAGER_BUTTON_CLASS}" href="${GENERATE_PAGE_PATH}">最初の 1 本を作る</a>（招待コードでの登録が必要です）</p>
+</div>`;
 }
 
 /**
@@ -437,7 +474,7 @@ export function renderWorksListPage(view: WorksListView, viewer: SiteViewer): st
     search.kind === 'accepted'
       ? `\n<p class="gf-search-filtered">「${escapeHtml(search.text)}」の検索結果</p>`
       : search.kind === 'rejected'
-        ? `\n<p class="gf-notice gf-search-rejected">${SEARCH_REJECTION_MESSAGES[search.reason]}</p>`
+        ? `\n<p class="gf-block gf-search-rejected">${SEARCH_REJECTION_MESSAGES[search.reason]}</p>`
         : '';
 
   return `${siteHead({
@@ -451,7 +488,7 @@ export function renderWorksListPage(view: WorksListView, viewer: SiteViewer): st
   })}
 <h1>作品をさがす</h1>
 <p>公開された作品が並んでいます。遊ぶのに登録は要りません。</p>
-<p class="gf-notice">${MOVED_NOTICE}</p>
+<p class="gf-block gf-works-moved">${MOVED_NOTICE}</p>
 <div class="gf-split">
 ${renderTagFilter(view)}
 <div class="gf-works-results">${filtered}${searched}

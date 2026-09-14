@@ -875,6 +875,57 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   max-width: none;
 }
 
+/*
+ * 4 要素のブロック（#474 / 仕様 2.5.4 / 承認したモックアップ Version 6）。**面は `.gf-block`（`@section parts`）が持つ。**
+ *
+ * **広い面ではスクリーンショットを左（20rem）、作者・元ゲーム・改造するを右に置き、狭い面では縦に積む。** 断点を
+ * 書かない——**折り返しは flex の `wrap` だけで決まる**（右の塊が面の 55% を取れなくなったら次の行へ回る。1080px 以上の
+ * 段では横に並び、768px の段と 390px では縦に積む）。**幅の `@media` を画面の区画に置かない**規約（冒頭の規約 3）の中で、
+ * 段ごとの並べ替えも使わない——`order` も `display: contents` も無く、**DOM の順＝見た目の順＝Tab の順**のまま
+ * （仕様 2.5.6 の #469 実装注記）。
+ *
+ * - スクリーンショットは右の塊と並ぶときも縦に積むときも `flex-grow` で残りを取るが、横に並ぶ間は右の塊が 999 倍で
+ *   取るので、ほぼ 20rem のまま残る。縦に積むと面の幅いっぱいになる（390px のモックアップの形）
+ * - `.gf-shot` の `<p>`（撮影中の枠）は `@section shell` の `p { max-width: var(--gf-measure) }` を受けるので、ここで外す
+ */
+.gf-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--gf-gap-3);
+}
+
+.gf-context > .gf-shot {
+  flex: 1 1 20rem;
+  max-width: none;
+  margin: 0;
+}
+
+.gf-context-body {
+  display: flex;
+  flex: 999 1 0;
+  flex-direction: column;
+  gap: var(--gf-gap-2);
+  min-width: 55%;
+}
+
+/*
+ * 4 要素のブロック・ゲーム枠・「本文 | パネル」の間は、塊どうしの間隔（24px。仕様 2.5.8）で空ける（#474。モックアップ Version 6）。
+ * ブロックの面が枠の黒に接すると、どこまでが面かが読めない。**枠と iframe の属性には触れず**、外側の余白だけを足す。
+ */
+.gf-context {
+  margin-bottom: var(--gf-gap-4);
+}
+
+.gf-context ~ .gf-split-end {
+  margin-top: var(--gf-gap-4);
+}
+
+/* 塊の中の間は `gap` だけで取る（段落とフォームの既定の下の余白を外す）。 */
+.gf-context-body > * {
+  margin: 0;
+}
+
 .gf-shot {
   width: 100%;
   height: auto;
@@ -899,12 +950,9 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   background: #000;
 }
 
-.gf-author,
-.gf-parent,
-.gf-fork,
-.gf-fork-note,
-.gf-forks {
-  margin: var(--gf-gap-1) 0;
+/* 元ゲームの行は補助の文字にする（モックアップ Version 6。作者の行は主の文字のまま）。 */
+.gf-parent {
+  color: var(--gf-ink-soft);
 }
 
 /*
@@ -915,20 +963,18 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
  * 揃ってしまう。名前は `<strong>` の中にエスケープして出るので、利用者は枠も背景も
  * 持ち込めない——**枠と地を持つバッジにして、文字の並びでは作れない差にする。**
  *
+ * **#474 で見た目をチップ（`span.gf-chip`。`@section parts`）にした**（仕様 2.5.5 の表「チップ: 押せない札」。
+ * モックアップ Version 6 の作者の行）。**枠と地はこの規則でも宣言する**——チップの部品の値が変わっても、5.9 の
+ * 「名前の文字では作れない差」がこの印から消えないようにする（値はチップと同じ段。面の上に置くので地の色で塗る。2.5.4）。
+ *
  * **無彩色のまま**（冒頭の方針。色は作品だけが持つ）。`--gf-ink` で塗りつぶさないのは、
- * 黒い箱が「改造する」の CTA（`.gf-fork-link`）と同じ強さで競うためである。
- * 行の中で折り返すとバッジが 2 行に割れて枠の形が崩れるので、折り返さない。
+ * 黒い箱が「改造する」の主のボタンと同じ強さで競うためである。
+ * 折り返さない（`.gf-chip` の `white-space: nowrap`）——バッジが 2 行に割れると枠の形が崩れる。
  */
 .gf-operator {
-  display: inline-block;
-  padding: 0 var(--gf-gap-2);
-  border: 1px solid var(--gf-ink-soft);
-  border-radius: var(--gf-radius);
-  background: var(--gf-surface);
-  color: var(--gf-ink);
-  font-size: var(--gf-text-small);
-  line-height: 1.6;
-  white-space: nowrap;
+  border: 1px solid var(--gf-rule);
+  background: var(--gf-ground);
+  vertical-align: middle;
 }
 
 /*
@@ -936,13 +982,21 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
  *
  * **主ボタンにしない。** このページの主 CTA は「このゲームを改造する」（`.gf-fork`）で、
  * 10.1 の主 KPI（フォーク率）の入口である。いいねは 10.2 の補助指標であり、
- * **強さの順序をそのまま見た目の順序にする**——素のボタンのまま、作品の枠の下に置く。
+ * **強さの順序をそのまま見た目の順序にする**——小さい副のボタン（#474 / 仕様 2.5.5）にして、作品の枠の下に置く。
  *
- * **数とボタンを横に並べない。** 縦に積むと、幅 390px の端末（`scripts/check-page-width.sh`）
- * で折り返しの相談が要らない。
+ * **数とボタンを 1 行に並べ、収まらなければ折り返す**（#474。モックアップ Version 6 の形）。#340 では縦に積んでいたが、
+ * ボタンが小さい副（32px）になり、390px でも「いいね 999」と「いいねを取り消す」は 1 行に収まる。折り返しは
+ * `wrap` だけで決まる。
  */
+.gf-work-like {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+}
+
 .gf-likes {
-  margin: var(--gf-gap-3) 0 0;
+  margin: 0;
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
 }
@@ -956,56 +1010,47 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
 }
 
 .gf-like {
-  margin-top: var(--gf-gap-2);
+  margin: 0;
+}
+
+/*
+ * 本文の列（枠の下の左。#383）。**塊どうしの間は `gap` で取る**（#474。モックアップ Version 6 の 16px）——いいね・タグ・
+ * 説明・共有する URL・改造の一覧を 1 つずつの塊にしてあり（`src/work-page.ts`）、塊の外側の余白は外す。
+ */
+.gf-work-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-3);
+  min-width: 0;
+}
+
+.gf-work-main > * {
+  margin: 0;
 }
 
 /*
  * 詳細情報パネル（仕様 2.3.12 / #383）。器の `.gf-split-end` の補助カラムに置く
  * （段 3 では右、狭い段では本文の下。断点は `@section shell` が持つ）。
  *
- * **作品より弱く置く。** 地を `--gf-surface` にして本文と分けるが、枠線は細い 1 本だけにする
- * ——色を持つのは作品だけである（冒頭の方針）。
+ * **#474 で面のブロック（`.gf-block`）と項目名と値の並び（`.gf-kv`）にした**（仕様 2.5.4）。枠線は持たない。
+ * **値が 1 行に収まらないときは、値だけを項目名の下の行へ回す**（`.gf-kv` の `wrap`。「Wasm のサイズ」の長い値）。
+ * 補助カラムの幅（`--gf-aside`。16rem）は変えない。作品 ID（36 文字）のように補助カラムより長い値だけは、
+ * 値の中で折る（`.gf-kv dd` の `overflow-wrap`）。
  *
- * **項目名と値を横に並べない**（`@section account` / `@section legal` と同じ理由）。補助カラムは
- * 16rem しかなく、作品 ID（36 文字）が 1 文字ずつ折れる。長い値は任意の位置で折り返させる。
+ * > #474 の前は「項目名と値を横に並べない」（16rem では作品 ID が 1 文字ずつ折れる）としていた。2.5.4 の
+ * > 「値だけを下の行へ回す」は値を縮めないので、その懸念に当たらない。
  */
-.gf-work-main {
-  min-width: 0;
-}
-
 .gf-details {
   min-width: 0;
-  padding: var(--gf-gap-3);
-  border: 1px solid var(--gf-rule-soft);
-  border-radius: var(--gf-radius);
-  background: var(--gf-surface);
-  font-size: var(--gf-text-small);
 }
 
 .gf-details h3 {
-  margin-top: 0;
-}
-
-.gf-details dl {
-  margin: 0;
-}
-
-.gf-details dl > div {
-  margin: 0 0 var(--gf-gap-2);
-}
-
-.gf-details dt {
-  color: var(--gf-ink-soft);
-}
-
-.gf-details dd {
-  margin: 0;
-  overflow-wrap: anywhere;
+  margin: 0 0 var(--gf-gap-1);
+  font-size: var(--gf-text);
 }
 
 .gf-details-source {
   margin: var(--gf-gap-3) 0 0;
-  font-weight: 700;
 }
 
 /*
@@ -1086,12 +1131,16 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
  *
  * **主 KPI（フォーク率）の入口である。** ページの中で本文より強く、しかし作品の絵と
  * 枠より弱く置く——目立たせたいのは作品で、CTA はその次である。
+ *
+ * **ログイン済みでは見出しの 1 行、未ログインでは主のボタン（`<a class="gf-button gf-button-primary">`）を包む段落である。**
+ * 上下の余白は 4 要素のブロックの `gap` が持ち（`.gf-context-body`）、見出しの上だけを 1 段足して元ゲームの行と分ける
+ * （モックアップ Version 6）。#474 の前の塗りつぶしのリンク（`.gf-fork-link`）の見た目は、主のボタンの部品へ移した。
  */
+.gf-context-body > .gf-fork {
+  margin-top: var(--gf-gap-2);
+}
+
 .gf-fork {
-  /* **余白はこのブロックで完結させる。** `margin-top` だけを書くと、上の
-     まとめ書き（`.gf-author, .gf-parent, ...`）の下余白に暗黙で依存し、
-     あちらを触った日にここだけ崩れる（Copilot の指摘。2026-09-04）。 */
-  margin: var(--gf-gap-4) 0 var(--gf-gap-1);
   font-size: var(--gf-text-h2);
   font-weight: 700;
   line-height: 1.5;
@@ -1104,6 +1153,9 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
  *
  * **箇条書きの中では塗りつぶさない。** 項目 1 つだけが黒い箱になると、行の高さが揃わず
  * 添え書きが箱に巻き付く（幅 390px で確認した）。**リンクのまま、太さと大きさで示す。**
+ *
+ * > #474 で作品をさがすの「最初の 1 本を作る」は小さい副のボタンになった。**いま使うのは「あなたの作品」
+ * > （`src/my-works.ts`）だけ**で、M13-9（#473）の範囲なので規則は残してある。
  */
 .gf-cta {
   font-weight: 700;
@@ -1112,27 +1164,10 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
 }
 
 /*
- * 登録へ送る側の改造 CTA は、単独の段落に置かれた 1 本のリンクである。
- * ここは押せることを形でも示してよい。
- */
-.gf-fork-link {
-  display: inline-block;
-  padding: 0.6em 1.3em;
-  border: 1px solid var(--gf-ink);
-  border-radius: var(--gf-radius);
-  background: var(--gf-ink);
-  color: var(--gf-ground);
-  text-decoration: none;
-}
-
-.gf-fork-link:hover {
-  opacity: 0.85;
-  text-decoration: none;
-}
-
-/*
  * 通報は `<details>` で畳んである（`src/work-page.ts` の `reportSection`）。
  * **開く前は目立たせない。** 作品を見に来た人の視線を奪う位置ではない。
+ *
+ * **畳んだ口は文章の外のリンクの見せ方にする**（#474 / 仕様 2.5.5）——下線を常には出さず、ホバーとキーボードの焦点で出す。
  */
 .gf-report {
   margin-top: var(--gf-gap-4);
@@ -1144,13 +1179,39 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   cursor: pointer;
 }
 
+.gf-report summary:is(:hover, :focus-visible) {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 1px;
+}
+
 .gf-report[open] {
   color: var(--gf-ink);
 }
 
+/*
+ * 「このゲームからの改造: N 件」の塊（#474）。件数の行は太字、一覧は面のブロックの行（`.gf-block-rows`）、
+ * 題名は文章の外のリンク（`.gf-link-quiet`）、「もっと見る」「前へ」は小さい副のボタンである（仕様 2.5.4 / 2.5.5）。
+ */
+.gf-work-forks > * {
+  margin: 0;
+}
+
+.gf-work-forks > * + * {
+  margin-top: var(--gf-gap-2);
+}
+
+.gf-forks {
+  font-weight: 700;
+}
+
 .gf-fork-list {
   list-style: none;
-  padding-left: 0;
+}
+
+.gf-fork-list li {
+  margin: 0;
+  font-weight: 700;
 }
 
 .gf-report,
@@ -1192,11 +1253,83 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   white-space: nowrap;
 }
 
-/* 作品ページのタグの行（#376）。いいねの数と同じ強さの補助の 1 行である。 */
+/*
+ * 作品ページのタグの行（#376）。いいねの数と同じ強さの補助の 1 行である。
+ * **#474 でタグをチップ（`a.gf-chip`）にした**（仕様 2.5.5）。項目名「タグ」とチップを並べて折り返す。
+ */
 .gf-work-tags {
-  margin: var(--gf-gap-2) 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-2);
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
+}
+
+/* 作品の説明（#388）。見出しと段落を 1 つの塊にし、見出しの上の余白を外す。 */
+.gf-work-description h3 {
+  margin: 0 0 var(--gf-gap-1);
+  font-size: var(--gf-text);
+}
+
+.gf-work-description p:last-child {
+  margin-bottom: 0;
+}
+
+/*
+ * 共有する URL（#474 / 仕様 2.5.4）。**項目名は面の外に小さく、URL は面のブロックの上に置く。**
+ * `code` の既定の地（`@section base`）は面と同じ色なので外し、余白はブロックの側で詰める（モックアップ Version 6 の 8px / 16px）。
+ */
+.gf-work-share-label {
+  margin: 0 0 var(--gf-gap-1);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-work-share-url {
+  margin: 0;
+  padding: var(--gf-gap-2) var(--gf-gap-3);
+  overflow-wrap: anywhere;
+}
+
+.gf-work-share-url code {
+  padding: 0;
+  background: none;
+}
+
+/*
+ * 状態の知らせ（生成中・生成できませんでした・できました・取り下げ。#474 / 仕様 2.5.4）。面は `.gf-block` が持つ。
+ * 見出しの上の余白（`@section base` の `h2` の 40px）と、最後の要素の下の余白を外し、面の内側の余白を 16px だけにする。
+ */
+.gf-work-state > h2 {
+  margin-top: 0;
+}
+
+.gf-work-state > :last-child {
+  margin-bottom: 0;
+}
+
+/*
+ * 作者だけの設定（撮り直し・作品名・説明・タグ・取り下げ、未公開の画面では手直し・版・作品名。#474 / 仕様 2.5.4）。
+ * **1 つのブロックに行で並べ、行の間を淡い罫線で区切る**（`.gf-block-rows`）。モックアップには描いていないので、
+ * 規約の部品だけで組んだ。ボタンは副（`src/work-page.ts` の `settingsBlock`）。
+ */
+.gf-work-settings {
+  margin-top: var(--gf-gap-5);
+}
+
+.gf-work-settings h3 {
+  margin: 0 0 var(--gf-gap-2);
+  font-size: var(--gf-text);
+}
+
+.gf-work-settings > * > :last-child {
+  margin-bottom: 0;
+}
+
+/* 版の一覧（5.7）。行ごとに「この版に戻す」を小さい副のボタンで置く。 */
+.gf-revisions form {
+  margin: var(--gf-gap-1) 0 var(--gf-gap-2);
 }
 
 /* ==========================================================================
@@ -1491,11 +1624,18 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
  * **見出しを付けず、被いいね数の下に本文の大きさで置く。** 主役は下に並ぶ作品であり、
  * 自己紹介はそこへ入る前の数行である。
  *
+ * **#474 で面のブロック（`.gf-author-block`。`src/users-page.ts` の `profileBlock`）で囲んだ**（仕様 2.5.4。
+ * モックアップ Version 6 の作者ページ）。自己紹介・外部リンク・但し書きが 1 枚の面に入る。
+ *
  * **リンクは任意の位置で折り返す**（`overflow-wrap: anywhere`）。URL は空白を持たず、
  * 折らないと版面を押し広げて横スクロールを生む（`scripts/check-page-width.sh` が見ている回帰）。
  */
-.gf-author-profile {
+.gf-author-block {
   margin: 0 0 var(--gf-gap-4);
+}
+
+.gf-author-profile {
+  margin: 0;
 }
 
 .gf-author-bio p {
@@ -1528,10 +1668,9 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   margin: 0 0 var(--gf-gap-2);
 }
 
-/* 一覧へ戻る行。本文の終わりに置く補助の導線である。 */
+/* 一覧へ戻る行。本文の終わりに置く補助の導線である（#474 で小さい副のボタンにした。仕様 2.5.5）。 */
 .gf-author-back {
   margin-top: var(--gf-gap-4);
-  font-size: var(--gf-text-small);
 }
 
 /*
@@ -1539,9 +1678,13 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
  * （`a.gf-card-author`）。**どちらも名前そのものがリンクである**（同じ操作に 2 つの
  * 見せ方を作らない）。
  *
- * **色を持たせない。** リンクは色ではなく下線で示す（app.css 冒頭の方針）。
- * `color: inherit` にしておくと、作品ページでは作者の行と同じ濃さ、カードの下段では
+ * **色を持たせない。** `color: inherit` にしておくと、作品ページでは作者の行と同じ濃さ、カードの下段では
  * `.gf-card-meta` の薄い灰と揃う——**どちらの文脈でも、隣に並ぶ文字と同じ色になる。**
+ *
+ * **下線はここで付けない**（#474）。どちらも仕様 2.5.5 の「文章の外のリンク」で、下線はホバーと焦点だけに出す
+ * （`.gf-link-quiet`。`@section parts`）。#330 のときは常に下線を出していた（「リンクは色ではなく下線で示す」。2.5.9 が覆した）。
+ * > **カードの側は #471 が `@section work-card` で下線を打ち消していた**（この規則が後ろにあり、詳細度も高かったため）。
+ * > この規則から下線を外したので、あちらの打ち消しは無くても同じ見た目になる（所有外なので残してある）。
  *
  * **大きさも太さも足さない。** `.gf-author-link` は `<strong>` の内側にあり
  * （`src/work-page.ts`）、太字は `<strong>` が持つ。ここで字を変えると、**運営の印
@@ -1550,8 +1693,6 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
 .gf-author-link,
 a.gf-card-author {
   color: inherit;
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
 }
 
 /* ==========================================================================
@@ -1561,34 +1702,59 @@ a.gf-card-author {
 /*
  * 並べ替えの切り替え（仕様 2.3.4 の 2 軸）と頁送り。
  *
- * **どちらも本文の一部として素朴に置く。** タブやボタンの見た目にすると、
- * JavaScript を足したくなる。9.3 は素の HTML に留めると定めている。
+ * **#474 で並べ替えをタブ（`.gf-tabs`）、頁送りを小さい副のボタン（`.gf-button-sm`）にした**（仕様 2.5.5）。
+ * 見た目は `@section parts` / `@section buttons` の部品が持ち、ここは置き方だけを決める。**素の `<a href>` のまま**で、
+ * JavaScript は足していない（9.3）。#474 の前の「タブやボタンの見た目にすると JavaScript を足したくなる」は、
+ * 部品が CSS だけで状態を示すので当たらない。
+ *
+ * - **検索中は軸を出さず、新着順に並ぶことを書く 1 文だけになる**（`p.gf-sort`。#378）
+ * - **頁送りは前を左、次を右に置く**（`.gf-pager-next` を右端へ寄せる）。前が無い 1 頁目でも次の位置が動かない。
+ *   DOM の順は前 → 次のままで、並べ替えない（仕様 2.5.6 の #469 実装注記）
+ * - **作品をさがす・作者ページ・いいねした作品の 3 画面が同じ頁送りを使う**（`src/works-list.ts` / `src/users-page.ts` /
+ *   `src/liked-works.ts`）
  */
-.gf-sort,
-.gf-pager {
+p.gf-sort {
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
 }
 
+.gf-sort .gf-tabs {
+  margin: var(--gf-gap-2) 0 var(--gf-gap-4);
+}
+
 .gf-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-2);
+  max-width: none;
   margin-top: var(--gf-gap-4);
 }
 
-.gf-pager a + a {
-  margin-left: var(--gf-gap-3);
+.gf-pager-next {
+  margin-left: auto;
 }
 
-.gf-sort-current {
-  color: var(--gf-ink);
+/*
+ * 一覧の画面の知らせ（#474 / 仕様 2.5.4）。**面のブロックで囲み、導線は小さい副のボタンにする。**
+ * 作品をさがすの移設の案内・断った検索・0 件、いいねした作品の空の状態と「表示されないもの」の断り、作者ページの 0 件。
+ * ブロックの中の最後の段落の下の余白は外す（面の内側の余白を 16px だけにする）。
+ */
+:is(.gf-works-empty, .gf-liked-empty) > :last-child {
+  margin-bottom: 0;
+}
+
+.gf-works-empty-action {
+  margin: 0;
 }
 
 /*
  * タグの絞り込み（#376 / 仕様 2.3.5）。**器の `.gf-split` の補助カラムに置く**
  * （段 3 では左、狭い段では結果の上。断点は `@section shell` が持つ）。
  *
- * **並べ替えと同じく、素朴なリンクの並びにする**（9.3。JavaScript を足したくなる見た目にしない）。
+ * **#474 で面のブロック（`.gf-block`）の中のチップ（`.gf-chip`）にした**（仕様 2.5.4 / 2.5.5）。選んでいるタグは
+ * `.gf-chip-current`（白黒の反転）と `aria-current`。**素の `<a href>` のまま**で、JavaScript は足していない（9.3）。
  * **項目を横に並べて折り返す。** 縦 1 列にすると、狭い段では結果の上に 9 行が積まれ、作品が
- * 画面の外へ押し出される。補助カラム（16rem）の中でも同じ規則で 2〜3 列に折り返す。
+ * 画面の外へ押し出される。補助カラム（16rem）の中でも同じ規則で折り返す。
  */
 .gf-tag-filter {
   color: var(--gf-ink-soft);
@@ -1597,25 +1763,26 @@ a.gf-card-author {
 
 .gf-tag-filter h2 {
   margin: 0 0 var(--gf-gap-2);
+  color: var(--gf-ink);
   font-size: var(--gf-text);
 }
 
 .gf-tag-filter ul {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--gf-gap-1) var(--gf-gap-3);
+  gap: var(--gf-gap-2);
+  max-width: none;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.gf-tag-current {
-  color: var(--gf-ink);
+.gf-tag-filter li {
+  margin: 0;
 }
 
 .gf-tag-filter-note {
   margin: var(--gf-gap-2) 0 0;
-  color: var(--gf-ink-faint);
 }
 
 /*

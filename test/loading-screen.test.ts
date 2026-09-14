@@ -456,7 +456,8 @@ describe('「改造する」の行き先（2.2-4 / 4.4 / #30）', () => {
   it('押せないボタンにしない（disabled も、行き先の無い button も出さない）', async () => {
     const { id } = await seedPlayableGame('fork-not-dead');
     const body = await workPage(id);
-    expect(body).toContain('<a class="gf-fork-link"');
+    // **移動なので `<a>`、見た目はこの画面でただ 1 つの主のボタン**（#474 / 仕様 2.5.5）。
+    expect(body).toContain('<a class="gf-fork-link gf-button gf-button-primary"');
     expect(body).not.toContain('disabled');
   });
 });

@@ -27,7 +27,7 @@ import {
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { authorPagePath } from '../src/users-page-paths.js';
 import { WORK_PAGE_PREFIX, workPagePath } from '../src/work-page.js';
-import { MY_WORKS_PATH } from '../src/works-paths.js';
+import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from '../src/works-paths.js';
 import { applySchema } from './helpers/schema.js';
 import { pageBodyOf } from './helpers/site-shell.js';
 
@@ -545,6 +545,15 @@ describe('空のとき（4.4 / 押せない導線を出さない）', () => {
     expect(later).not.toContain('まだいいねした作品がありません');
     // 2 頁目以降には前へ戻る導線がある（戻る道が URL の手編集だけにならない）。
     expect(later).toContain(likedWorksPath(2));
+    // **知らせは面のブロック、導線と頁送りは小さい副のボタン**（#474 / 仕様 2.5.4 / 2.5.5）。
+    expect(first).toContain(
+      `<p><a class="gf-button gf-button-secondary gf-button-sm" href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>`,
+    );
+    expect(first).toContain('<div class="gf-block gf-liked-empty">');
+    expect(later).toContain('<p class="gf-block">この頁に並ぶ作品がありません。</p>');
+    expect(later).toContain(
+      `<a class="gf-button gf-button-secondary gf-button-sm" href="${likedWorksPath(2)}">前の ${LIKED_WORKS_PER_PAGE} 件</a>`,
+    );
   });
 });
 

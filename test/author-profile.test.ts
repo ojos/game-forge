@@ -105,6 +105,8 @@ describe('作者ページの自己紹介（#379）', () => {
   it('何も設定していなければ、節も但し書きも出さない', async () => {
     const body = await openAuthor(await seedUser());
     expect(body).not.toContain('gf-author-profile');
+    // **空の面のブロックも残さない**（#474。`src/users-page.ts` の `profileBlock`）。
+    expect(body).not.toContain('gf-author-block');
     expect(body).not.toContain(PROFILE_LINKS_UNVERIFIED_NOTICE);
     expect(renderAuthorProfile(undefined)).toBe('');
     expect(renderAuthorProfile({ bio: null, links: null })).toBe('');
@@ -135,6 +137,12 @@ describe('作者ページの外部リンク（#379 / 5.6 の覆しの受け方�
     expect(list).toBeGreaterThanOrEqual(0);
     expect(note).toBeGreaterThan(list);
     expect(body.slice(list, note)).not.toContain('<h');
+    // **自己紹介・外部リンク・但し書きは 1 枚の面のブロックに入る**（#474 / 仕様 2.5.4）。
+    const block = body.indexOf('<div class="gf-block gf-author-block">');
+    expect(block).toBeGreaterThanOrEqual(0);
+    expect(block).toBeLessThan(list);
+    expect(body.indexOf('</div>', note)).toBeGreaterThan(note);
+    expect(body.slice(block, note)).not.toContain('</div>');
   });
 
   it('D1 を直接書き換えた javascript: / data: / 属性を閉じる綴りは、href に出さない', async () => {

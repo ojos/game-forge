@@ -1017,6 +1017,9 @@ async function listBlockedCategories(env: Env, gameId: string): Promise<readonly
  *
  * **JavaScript を要求しない**（`src/publish.ts` と同じ形。素の `<form>`）。
  *
+ * **畳んだ口は文章の外のリンクの見せ方にする**（#474 / 仕様 2.5.5）。`<summary>` に下線を常には出さず、ホバーと
+ * キーボードの焦点で出す（`@section work` の `.gf-report summary`）。送信のボタンは小さい副のボタンである。
+ *
  * **押した結果がどうなるかを書かない。** 「N 件で非表示になります」と出すと、
  * **閾値を外から測れる**——8.4 が警戒している通報爆撃の設計図になる。
  *
@@ -1055,7 +1058,7 @@ function reportSection(view: WorkPageView): string {
     <p><label>理由（任意・${MAX_REASON_LENGTH} 文字まで）<br>
       <textarea name="${WORK_REPORT_REASON_FIELD}" maxlength="${MAX_REASON_LENGTH}" rows="3"></textarea>
     </label></p>
-    <button type="submit">通報する</button>
+    <button type="submit" class="${SECONDARY_BUTTON} gf-button-sm">通報する</button>
   </form>
 </details>`;
 }
@@ -1201,7 +1204,7 @@ function sectionFor(view: WorkPageView): string {
       // **文言は `GENERATION_IS_SYNCHRONOUS` が決める。** #160 で非同期実行になった
       // ので「閉じてよい」が正しい。同期側の文言は消さずに残す——段を戻したときに
       // 書き直すのではなく、定数 1 つで両方の実行形態を言い当てられるようにしておく。
-      return GENERATION_IS_SYNCHRONOUS
+      return stateBlock(GENERATION_IS_SYNCHRONOUS
         ? `<h2>生成中です</h2>
 <p><strong>生成が終わるまで、このタブを開いたままにしてください。</strong>
    いま閉じると生成は中断します。</p>
@@ -1210,22 +1213,78 @@ function sectionFor(view: WorkPageView): string {
         : `<h2>生成中です</h2>
 <p><strong>このページは開いたままにしなくて構いません。</strong>
    タブを閉じても生成は進みます。この URL をもう一度開けば、続きから状態が読めます。</p>
-<p>通常 1〜2 分かかります。この画面は自動で更新されます。</p>`;
+<p>通常 1〜2 分かかります。この画面は自動で更新されます。</p>`);
     case 'stalled':
-      return `<h2>生成中です</h2>
+      return stateBlock(`<h2>生成中です</h2>
 <p><strong>時間がかかりすぎています。中断した可能性があります。</strong>
    しばらく待っても変わらない場合は、お手数ですがもう一度生成してください。</p>
-<p>この画面は自動で更新されます。</p>`;
+<p>この画面は自動で更新されます。</p>`);
     case 'ready':
       return view.published ? publishedSection(view) : readySection(view);
     case 'failed':
-      return `<h2>生成できませんでした</h2>
-<p>${view.owner ? escapeHtml(failureMessageOf(view.errorCode)) : escapeHtml(UNKNOWN_FAILURE_MESSAGE)}</p>${blockedCategoriesSection(view)}`;
+      // **遮断された分類の知らせはブロックの外、直後に置く**（`@section notices` の知らせの見た目を持ち、面の上に
+      // 重ねると面が二重になる）。並びは #474 の前と同じである。
+      return `${stateBlock(`<h2>生成できませんでした</h2>
+<p>${view.owner ? escapeHtml(failureMessageOf(view.errorCode)) : escapeHtml(UNKNOWN_FAILURE_MESSAGE)}</p>`)}${blockedCategoriesSection(view)}`;
     case 'unknown':
-      return `<h2>状態を読み取れませんでした</h2>
-<p>この作品の状態が想定外の値になっています。時間をおいてもう一度お試しください。</p>`;
+      return stateBlock(`<h2>状態を読み取れませんでした</h2>
+<p>この作品の状態が想定外の値になっています。時間をおいてもう一度お試しください。</p>`);
   }
 }
+
+/**
+ * 状態の知らせ（生成中・生成できませんでした・取り下げ など）を、面のブロックで囲む（#474 / 仕様 2.5.4）。
+ *
+ * **中身の文言と並びは変えない**——外側に面を足すだけである。見出しの上の余白と最後の段落の下の余白は
+ * `@section work` の `.gf-work-state` が打ち消す（面の内側の余白は `.gf-block` の 16px だけにする）。
+ *
+ * @param inner 知らせの HTML（`<h2>` と段落）
+ * @returns HTML
+ */
+function stateBlock(inner: string): string {
+  return `<div class="gf-block gf-work-state">
+${inner}
+</div>`;
+}
+
+/**
+ * 作者だけの設定の口を、1 つの面のブロックに行で並べる（#474 / 仕様 2.5.4）。
+ *
+ * **行の間は `.gf-block-rows` の淡い罫線で区切る**（ブロックの中で行を分ける作法。お知らせの行と同じ）。
+ * 空の口（その作者・その状態で出さないもの）は行ごと落とし、**1 つも無ければブロックごと出さない**
+ * （空の面を残さない）。**並びは渡された順のまま**である（呼ぶ側が #474 の前と同じ順で渡す）。
+ *
+ * **ボタンはすべて副にする**（2.5.5。主は 1 画面に 1 つまでで、公開済みの画面では「改造する」、未公開の画面では
+ * 「公開して共有」が持つ）。**取り下げも赤くしない**——赤はエラーの意味だけに使う（2.5.10 の第 4 版の決定）。
+ *
+ * @param parts 口ごとの HTML（出さない口は空文字）
+ * @returns HTML（出す口が無ければ空文字）
+ */
+function settingsBlock(parts: readonly string[]): string {
+  const rows = parts.filter((part) => part.trim() !== '').map((part) => `<div>${part}\n</div>`);
+  if (rows.length === 0) {
+    return '';
+  }
+  return `
+<section class="gf-block gf-block-rows gf-work-settings" aria-label="作品の設定">
+${rows.join('\n')}
+</section>`;
+}
+
+/**
+ * 副のボタン（仕様 2.5.5）。作品ページの主以外の動作（いいね・保存・撮り直し・取り下げ・通報・版に戻す）に当てる。
+ *
+ * **`<button>` の既定の見た目（黒地に白文字）に寄りかからない。** 既定は M13-6〜M13-11 の最後の 1 本が副へ切り替える
+ * （`docs/mvp-roadmap.md` の M13 の節）ので、ここで強さを明示しておかないと、切り替えの前は主に見え、後は主の
+ * 「公開して共有」「改造する」まで副に見える。見た目の正本は `public/assets/app.css` の `@section buttons` である。
+ */
+const SECONDARY_BUTTON = 'gf-button gf-button-secondary';
+
+/**
+ * 主のボタン（仕様 2.5.5）。**1 画面に 1 つまで**——公開済みの画面では「改造する」、未公開の作者の画面では
+ * 「公開して共有」（5.4 の試遊画面の主ボタン）にだけ当てる。
+ */
+const PRIMARY_BUTTON = 'gf-button gf-button-primary';
 
 /**
  * 取り下げられた作品の本文（5.3 / M5-4 / #35）。
@@ -1260,8 +1319,8 @@ function removedSection(view: WorkPageView): string {
   // **段落を明示的に閉じる。** ブラウザの自動補正（`<p>` が次の `<p>` で閉じる）に
   // 寄りかからない——このモジュールの他の枝はどれも閉じており、ここだけ崩すと
   // 「閉じなくてよい」と読まれる。
-  return `<h2>この作品は取り下げられました</h2>
-<p>作者がこの作品の公開を取り下げました。</p>${owned}`;
+  return stateBlock(`<h2>この作品は取り下げられました</h2>
+<p>作者がこの作品の公開を取り下げました。</p>${owned}`);
 }
 
 /**
@@ -1291,7 +1350,7 @@ function removeSection(view: WorkPageView): string {
    <strong>この作品を改造した作品は、そのまま公開されたままです</strong>（連鎖して消えることはありません）。</p>
 <form method="post" action="${WORK_REMOVE_PATH}">
   <input type="hidden" name="${WORK_REMOVE_GAME_ID_FIELD}" value="${view.removableId}">
-  <button type="submit">公開を取り下げる</button>
+  <button type="submit" class="${SECONDARY_BUTTON}">公開を取り下げる</button>
 </form>`;
 }
 
@@ -1346,7 +1405,7 @@ function renameSection(view: WorkPageView): string {
   <label for="work-title">作品名</label>
   <input id="work-title" name="${WORK_RENAME_TITLE_FIELD}" type="text"
          value="${escapeHtml(view.title)}" required>
-  <button type="submit">この名前にする</button>
+  <button type="submit" class="${SECONDARY_BUTTON}">この名前にする</button>
 </form>`;
 }
 
@@ -1389,7 +1448,7 @@ function describeSection(view: WorkPageView): string {
   <input type="hidden" name="${WORK_DESCRIBE_GAME_ID_FIELD}" value="${view.describableId}">
   <label for="work-description">作品の説明</label>
   <textarea id="work-description" name="${WORK_DESCRIBE_TEXT_FIELD}" rows="6">${escapeHtml(view.description ?? '')}</textarea>
-  <button type="submit">この説明にする</button>
+  <button type="submit" class="${SECONDARY_BUTTON}">この説明にする</button>
 </form>`;
 }
 
@@ -1428,7 +1487,7 @@ function publishForm(gameId: string): string {
   <input type="hidden" name="${PUBLISH_GAME_ID_FIELD}" value="${gameId}">
 ${tagChoices('publish-tag', [])}
   <p class="gf-fork-note">${PUBLISH_SOURCE_NOTICE}</p>
-  <button type="submit">公開して共有</button>
+  <button type="submit" class="${PRIMARY_BUTTON}">公開して共有</button>
 </form>`;
 }
 
@@ -1477,8 +1536,8 @@ ${boxes.join('\n')}
  */
 function readySection(view: WorkPageView): string {
   if (!view.owner) {
-    return `<h2>できました</h2>
-<p>この作品はまだ公開されていません。</p>`;
+    return stateBlock(`<h2>できました</h2>
+<p>この作品はまだ公開されていません。</p>`);
   }
   const play =
     view.playUrl === null
@@ -1493,8 +1552,11 @@ function readySection(view: WorkPageView): string {
 ${publishForm(view.publishableId)}`;
   // **改名は推敲より後に置く。** 5.4 の 1 タップ（公開して共有）と、5.7 の手直しが
   // 先で、題名の変更はそのどちらの導線も押し下げない位置に入れる（#366）。
-  return `<h2>できました</h2>
-${play}${publish}${reviseSection(view)}${revisionList(view)}${renameSection(view)}`;
+  //
+  // **「できました」と遊ぶ URL と公開の口は状態のブロック、手直し・版・改名は設定のブロックの行にする**（#474）。
+  // 並びは #474 の前と同じで、外側に面を足しただけである。**このブロックの主は「公開して共有」だけ**である。
+  return `${stateBlock(`<h2>できました</h2>
+${play}${publish}`)}${settingsBlock([reviseSection(view), revisionList(view), renameSection(view)])}`;
 }
 
 /**
@@ -1630,7 +1692,7 @@ function reviseSection(view: WorkPageView): string {
   <textarea id="revise-prompt" name="${REVISE_PROMPT_FIELD}" rows="3"
             maxlength="${MAX_PROMPT_LENGTH}" required
             placeholder="例: 玉の動きをもっと速くして、当たったら音を鳴らす"></textarea>
-  <button type="submit">この内容で直す</button>
+  <button type="submit" class="${SECONDARY_BUTTON}">この内容で直す</button>
 </form>`;
 
   return `${failed}
@@ -1681,7 +1743,7 @@ function revisionList(view: WorkPageView): string {
     <form method="post" action="${RESTORE_PATH}">
       <input type="hidden" name="${REVISE_GAME_ID_FIELD}" value="${restorable}">
       <input type="hidden" name="${REVISE_SEQ_FIELD}" value="${revision.seq}">
-      <button type="submit">この版に戻す</button>
+      <button type="submit" class="${SECONDARY_BUTTON} gf-button-sm">この版に戻す</button>
     </form>`;
       return `  <li>${label}${current}${restore}</li>`;
     })
@@ -1690,7 +1752,7 @@ function revisionList(view: WorkPageView): string {
   return `
 <h3>これまでの版</h3>
 <p>戻すのに生成枠は使いません。</p>
-<ul>
+<ul class="gf-revisions">
 ${items}
 </ul>`;
 }
@@ -1742,11 +1804,15 @@ ${items}
  * @returns HTML
  */
 function publishedSection(view: WorkPageView): string {
+  // **共有する URL はブロックの面に置く**（#474 / 仕様 2.5.4）。項目名は面の外、上の行に小さく出す。
   const share =
     view.shareUrl === null
       ? ''
       : `
-<p>共有する URL: <code>${view.shareUrl}</code></p>`;
+<div class="gf-work-share">
+<p class="gf-work-share-label">共有する URL</p>
+<p class="gf-block gf-work-share-url"><code>${view.shareUrl}</code></p>
+</div>`;
   // **説明は作者名・元ゲームの後に置く**（#388）。遊ぶ前に読む来歴（3.4-5 の 4 要素）を
   // 押し下げない。**説明を書くフォームは改名の隣**に置く——どちらも作品ページの
   // 「作者だけの設定」で、公開の導線（5.4）の外にある。
@@ -1760,12 +1826,19 @@ function publishedSection(view: WorkPageView): string {
   //
   // **作者だけの設定（撮り直し・改名・説明・タグ・取り下げ）は 2 カラムの外、下に置く。**
   // 本文の列へ入れると、狭い段でパネルがそのフォームの山の下へ押し出され、閲覧者から遠くなる。
+  // **#474 で 1 つのブロックの行にした**（{@link settingsBlock}。並びは前と同じ）。
   return `<h2>公開しています</h2>
 ${loadingScreen(view)}${splitWithDetails(
     `${likeSection(view)}${tagsSection(view)}${descriptionSection(view)}${share}
 ${forkList(view.forks)}`,
     view,
-  )}${recaptureSection(view)}${renameSection(view)}${describeSection(view)}${retagSection(view)}${removeSection(view)}`;
+  )}${settingsBlock([
+    recaptureSection(view),
+    renameSection(view),
+    describeSection(view),
+    retagSection(view),
+    removeSection(view),
+  ])}`;
 }
 
 /**
@@ -1844,10 +1917,17 @@ function timeElement(epochSeconds: number | null): string | null {
  * - **Wasm のサイズは、配信している圧縮後のバイト数である**（利用者の端末が実際に受け取る量）。
  *   索引が引けなければ行ごと出さない（分からない値を 0 と書かない）。
  *
- * # 項目名と値を縦に積む
+ * # 項目名と値の並び（`.gf-kv`。#474 / 仕様 2.5.4）
  *
- * パネルは段 3 でも 16rem しかない。横に並べると値の欄が狭くなり、作品 ID（36 文字）が
- * 1 文字ずつ折れる（`@section account` / `@section legal` と同じ判断）。
+ * **1 行に項目名を左、値を右に置き、値が 1 行に収まらないときは値だけを項目名の下の行へ回す。** 値を途中で
+ * 折り返さない（「2.3 MB（配信時の圧縮後）」が 2 行に割れると、どこまでが 1 つの値か読みにくい）。行ごとに
+ * 「長い値」の印を付けない——折り返しは `.gf-kv` の flex の `wrap` だけで決まる。**補助カラムの幅（`--gf-aside`。
+ * 16rem）は変えない。** 補助カラムより長い値（作品 ID の 36 文字）だけは、値の中で折る（`.gf-kv dd` の `overflow-wrap`）。
+ *
+ * > **#474 の前は項目名と値を縦に積んでいた**（16rem では横に並べると作品 ID が 1 文字ずつ折れる、という判断）。
+ * > 2.5.4 の「値だけを下の行へ回す」で、その懸念は値を縮めない形で解けた。
+ *
+ * パネルは面のブロック（`.gf-block`）で、「ソースコードを見る」は小さい副のボタンである（2.5.5）。
  *
  * @param view 表示に必要な値
  * @param details パネルの値
@@ -1885,11 +1965,11 @@ function detailsPanel(view: WorkPageView, details: WorkDetails): string {
     details.sourcePath === null
       ? ''
       : `
-<p class="gf-details-source"><a href="${details.sourcePath}">ソースコードを見る</a></p>`;
+<p class="gf-details-source"><a class="${SECONDARY_BUTTON} gf-button-sm" href="${details.sourcePath}">ソースコードを見る</a></p>`;
 
-  return `<aside class="gf-details" aria-labelledby="gf-details-heading">
+  return `<aside class="gf-details gf-block" aria-labelledby="gf-details-heading">
 <h3 id="gf-details-heading">作品の情報</h3>
-<dl>
+<dl class="gf-kv">
 ${rows.join('\n')}
 </dl>${source}
 </aside>`;
@@ -1903,6 +1983,9 @@ ${rows.join('\n')}
  * タグ無しなら何も出さない（「タグはありません」を全作品に並べない。{@link descriptionSection} と
  * 同じ判断）。
  *
+ * **1 つずつをチップ（`a.gf-chip`）にする**（#474 / 仕様 2.5.5。カードのタグと同じ部品）。区切りの「/」は
+ * チップの間の余白に置き換えた。
+ *
  * @param view 表示に必要な値
  * @returns HTML（出すタグが無ければ空文字）
  */
@@ -1911,9 +1994,9 @@ function tagsSection(view: WorkPageView): string {
   if (tags.length === 0) {
     return '';
   }
-  const links = tags.map((tag) => `<a href="${workTagListPath(tag.id)}">${tag.label}</a>`);
+  const links = tags.map((tag) => `<a class="gf-chip" href="${workTagListPath(tag.id)}">${tag.label}</a>`);
   return `
-<p class="gf-work-tags">タグ: ${links.join(' / ')}</p>`;
+<p class="gf-work-tags"><span class="gf-work-tags-label">タグ</span>${links.join('')}</p>`;
 }
 
 /**
@@ -1944,7 +2027,7 @@ function retagSection(view: WorkPageView): string {
 <form method="post" action="${WORK_RETAG_PATH}">
   <input type="hidden" name="${WORK_RETAG_GAME_ID_FIELD}" value="${view.retaggableId}">
 ${tagChoices('retag-tag', knownWorkTags(view.tags).map((tag) => tag.id))}
-  <button type="submit">このタグにする</button>
+  <button type="submit" class="${SECONDARY_BUTTON}">このタグにする</button>
 </form>`;
 }
 
@@ -1979,9 +2062,13 @@ function descriptionSection(view: WorkPageView): string {
     .filter((paragraph) => paragraph !== '')
     .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/gu, '<br>\n')}</p>`)
     .join('\n');
+  // **見出しと段落を 1 つの塊に包む**（#474。本文の列は塊どうしの間を `gap` で空けるので、見出しと段落を
+  // 別の塊にすると、その間まで塊どうしの間隔になる）。
   return `
+<div class="gf-work-description">
 <h3>作品の説明</h3>
-${paragraphs}`;
+${paragraphs}
+</div>`;
 }
 
 
@@ -2035,7 +2122,9 @@ function likeSection(view: WorkPageView): string {
           )
         : '';
 
-  return `${count}${form}`;
+  // **数とボタンを 1 行に並べる**（#474。承認したモックアップの形。並びは数 → ボタンのまま）。どちらも無ければ何も出さない。
+  const inner = `${count}${form}`;
+  return inner === '' ? '' : `\n<div class="gf-work-like">${inner}\n</div>`;
 }
 
 /**
@@ -2054,7 +2143,7 @@ function likeForm(action: string, field: string, gameId: string, label: string):
   return `
 <form class="gf-like" method="post" action="${action}">
   <input type="hidden" name="${field}" value="${gameId}">
-  <button type="submit">${label}</button>
+  <button type="submit" class="${SECONDARY_BUTTON} gf-button-sm">${label}</button>
 </form>`;
 }
 
@@ -2092,29 +2181,37 @@ function forkList(forks: ForkNeighbors): string {
   const more =
     forks.morePath === null
       ? ''
-      : `\n<p class="gf-forks-more"><a href="${forks.morePath}">もっと見る</a></p>`;
+      : `\n<p class="gf-forks-more"><a class="${SECONDARY_BUTTON} gf-button-sm" href="${forks.morePath}">もっと見る</a></p>`;
   const back =
     forks.backPath === null
       ? ''
-      : `\n<p class="gf-forks-back"><a href="${forks.backPath}">前へ</a></p>`;
+      : `\n<p class="gf-forks-back"><a class="${SECONDARY_BUTTON} gf-button-sm" href="${forks.backPath}">前へ</a></p>`;
 
   // **条件付きにしてよいのは `<ul>` だけである。** 一覧が空でも頁送りは落とさない
   // ——落とすと、空の頁を引いた読み手の戻る道が URL の手編集しか無くなる。
   // 通常この枝へ来るのは総数 0 のとき（どちらのパスも null）だが、**その含意に
   // 寄りかからない。**
+  //
+  // **#474: 塊を 1 つに包み、一覧はブロックの行、題名は文章の外のリンク、頁送りは小さい副のボタンにした**
+  // （仕様 2.5.4 / 2.5.5）。
   if (forks.items.length === 0) {
-    return `${heading}${back}${more}`;
+    return `<div class="gf-work-forks">
+${heading}${back}${more}
+</div>`;
   }
 
   const items = forks.items
     .map(
-      (child) => `<li><a href="${workPagePath(child.id)}">${escapeHtml(child.title)}</a></li>`,
+      (child) =>
+        `<li><a class="gf-link-quiet" href="${workPagePath(child.id)}">${escapeHtml(child.title)}</a></li>`,
     )
     .join('\n');
-  return `${heading}
-<ul class="gf-fork-list">
+  return `<div class="gf-work-forks">
+${heading}
+<ul class="gf-fork-list gf-block gf-block-rows">
 ${items}
-</ul>${back}${more}`;
+</ul>${back}${more}
+</div>`;
 }
 
 /**
@@ -2151,7 +2248,7 @@ function recaptureSection(view: WorkPageView): string {
 <p>この作品のスクリーンショットの撮影が、途中で止まったままです。共有した URL に画像が出ません。</p>
 <form method="post" action="${OGP_RECAPTURE_PATH}">
   <input type="hidden" name="${OGP_RECAPTURE_GAME_ID_FIELD}" value="${view.recapturableId}">
-  <button type="submit">スクリーンショットを撮り直す</button>
+  <button type="submit" class="${SECONDARY_BUTTON}">スクリーンショットを撮り直す</button>
 </form>`;
 }
 
@@ -2181,11 +2278,17 @@ function loadingScreen(view: WorkPageView): string {
       : // **`sandbox` は `allow-scripts` だけである**（7.2）。属性を足すときは 7.2 を先に読むこと。
         `<iframe class="gf-frame" src="${view.playUrl}" sandbox="allow-scripts" title="ゲーム"></iframe>`;
 
-  return `<div class="gf-context">
+  // **4 要素を 1 つのブロックに入れる**（#474 / 仕様 2.5.4。承認したモックアップ Version 6 の形）。**並びは今のまま**
+  // （スクリーンショット → 作者 → 元ゲーム → 改造する。2026-09-13 に利用者が確認）で、広い面ではスクリーンショットを左、
+  // 残りの 3 つを右に置き、狭い面では縦に積む。**段で並べ替えない**——折り返しは `@section work` の flex の `wrap` だけで
+  // 決まり、DOM の順＝見た目の順＝Tab の順のまま（仕様 2.5.6 の #469 実装注記）。
+  return `<div class="gf-context gf-block">
 ${screenshot(view)}
+<div class="gf-context-body">
 <p class="gf-author">作者: <strong>${authorLabel(view)}</strong>${operatorMark(view)}</p>
 <p class="gf-parent">${parentLine(view.parent)}</p>
 ${forkCta(view)}
+</div>
 </div>
 ${view.playUrl === null ? '' : playScript(view)}${frame}`;
 }
@@ -2227,7 +2330,8 @@ function authorLabel(view: WorkPageView): string {
   if (view.authorPageId === null) {
     return name;
   }
-  return `<a class="gf-author-link" href="${authorPagePathFor(view.authorPageId, view.authorHandle)}">${name}</a>`;
+  // **文章の外のリンクの見せ方にする**（#474 / 仕様 2.5.5）。下線はホバーと焦点だけで、太字は外側の `<strong>` が持つ。
+  return `<a class="gf-author-link gf-link-quiet" href="${authorPagePathFor(view.authorPageId, view.authorHandle)}">${name}</a>`;
 }
 
 /**
@@ -2269,7 +2373,9 @@ function operatorMark(view: WorkPageView): string {
   if (!view.authorIsOperator) {
     return '';
   }
-  return ` <span class="gf-operator">${OPERATOR_MARK}</span>`;
+  // **見た目はチップ**（#474。仕様 2.5.5 の表「チップ: 押せない札」）。枠と地は `.gf-operator` も自分で持つ
+  // （`@section work`。チップの部品の値が変わっても、名前の文字では作れない差を失わない）。
+  return ` <span class="gf-chip gf-operator">${OPERATOR_MARK}</span>`;
 }
 
 // 作者名を引けなかったときの表示（**空欄にしない**）は `src/work-card.ts` が持つ。
@@ -2377,8 +2483,10 @@ function parentValue(parent: ParentWork): string {
  * @returns HTML
  */
 function forkCta(view: WorkPageView): string {
+  // **どちらの側でも、この画面の主のボタンはここの 1 つだけである**（#474 / 仕様 2.5.5「1 画面に 1 つまで」）。未ログインは
+  // 移動なので `<a>`、ログイン済みは送信なので `<button>`（要素は役割で選び、見た目は同じ部品）。
   if (!view.signedIn) {
-    return `<p class="gf-fork"><a class="gf-fork-link" href="${signupPathFrom('fork-cta')}">${FORK_LABEL}</a></p>
+    return `<p class="gf-fork"><a class="gf-fork-link ${PRIMARY_BUTTON}" href="${signupPathFrom('fork-cta')}">${FORK_LABEL}</a></p>
 <p class="gf-fork-note">改造には招待が必要です。招待コードをお持ちでない方は待機リストにご登録いただけます。</p>`;
   }
 
@@ -2402,7 +2510,7 @@ function forkCta(view: WorkPageView): string {
   <textarea id="fork-prompt" name="${FORK_PROMPT_FIELD}" rows="3"
             maxlength="${MAX_PROMPT_LENGTH}" required
             placeholder="例: 玉の色を赤にして、敵を 2 体に増やす"></textarea>
-  <button type="submit">この内容で改造する</button>
+  <button type="submit" class="${PRIMARY_BUTTON}">この内容で改造する</button>
 </form>`;
 
   return `<p class="gf-fork">${FORK_LABEL}</p>
@@ -2429,7 +2537,7 @@ function notFound(viewer: SiteViewer): Response {
   return html(
     `${siteHead({ title: '作品が見つかりません - Game Forge', noindex: true, viewer })}
 <h1>作品が見つかりません</h1>
-<p>URL が正しいかご確認ください。</p>
+<p class="gf-block">URL が正しいかご確認ください。</p>
 ${siteFooter()}`,
     404,
   );

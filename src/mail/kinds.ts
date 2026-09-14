@@ -82,8 +82,8 @@ export const MAIL_KINDS: readonly MailKind[] = [
     audience: 'user',
     mutable: true,
     implemented: true,
-    name: '改造のお知らせ',
-    note: 'ほかの人があなたの作品を改造して公開したときに、1 通お知らせします。',
+    name: 'フォークのお知らせ',
+    note: 'ほかの人があなたの作品をフォークして公開したときに、1 通お知らせします。',
   },
   {
     // **利用者の決定（#384 の着手前の決定 1）。** あなたが始めた生成の結果であり、失敗したときに

@@ -210,7 +210,7 @@ export function renderWorkSourcePage(view: WorkSourceView, viewer: SiteViewer): 
       : view.source.kind === 'too-large'
         ? `<p>${SOURCE_TOO_LARGE_NOTICE}</p>`
         : `<p class="gf-source-note">この作品を作ったときに生成された Go のソースコードです。
-   「このゲームを改造する」と、このソースをもとに新しい作品が作られます。</p>
+   「このゲームをフォークする」と、このソースをもとに新しい作品が作られます。</p>
 <pre class="gf-source" tabindex="0" aria-label="ソースコード"><code>${markDirectionControls(escapeHtml(view.source.text))}</code></pre>`;
   // **検索避けする。** 拡散の着地点は作品ページであり（5.4）、ソースの画面が検索結果で
   // 作品ページと並ぶ理由が無い。リンクは作品ページから辿れる。

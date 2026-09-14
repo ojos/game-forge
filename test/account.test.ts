@@ -36,6 +36,7 @@ import { buildSessionCookie, signSession } from '../src/session.js';
 import { authorPagePath } from '../src/users-page-paths.js';
 import { OPERATOR_MARK, workPagePath } from '../src/work-page.js';
 import { applySchema } from './helpers/schema.js';
+import { oldOperationNamesIn } from './helpers/old-names.js';
 import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
@@ -925,6 +926,23 @@ describe('メール配信のタブ（GET /account/mail。#384 / 5.11）', () => 
     // **運用者宛ての種別は利用者の画面に出さない。**
     for (const kind of MAIL_KINDS.filter((entry) => entry.audience === 'operator')) {
       expect(body, kind.label).not.toContain(kind.name);
+    }
+  });
+
+  it('フォーク通知の設定は「フォークのお知らせ」と書き、旧い呼び名（改造・推敲・手直し）を出さない（#513）', async () => {
+    const userId = await seedUser();
+    const cookie = await cookieFor(userId);
+    // **登録簿（`src/mail/kinds.ts`）から写さず、画面の文言をそのまま書く。** 写すと、登録簿の name / note に
+    // 旧語が戻っても、ここは同じ値を期待して緑になる。
+    for (const query of ['', '?saved=1', '?reason=too-soon']) {
+      const html = await (await openMail(cookie, query)).text();
+      expect(oldOperationNamesIn(html), query || '(既定)').toEqual([]);
+      const body = pageBodyOf(html);
+      expect(body, query || '(既定)').toContain('<legend>フォークのお知らせ</legend>');
+      expect(body, query || '(既定)').toContain(
+        '<p>ほかの人があなたの作品をフォークして公開したときに、1 通お知らせします。</p>',
+      );
+      expect(body, query || '(既定)').toContain('受け取らない設定にしていたあいだに公開されたフォークは');
     }
   });
 

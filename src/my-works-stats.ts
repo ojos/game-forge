@@ -83,7 +83,7 @@ export const STAT_CARDS: readonly { readonly key: keyof MyWorksStats; readonly l
   { key: 'works', label: '作品数' },
   { key: 'published', label: '公開中' },
   { key: 'drafts', label: '下書き' },
-  { key: 'forks', label: '合計改造された数' },
+  { key: 'forks', label: '合計フォークされた数' },
   { key: 'likes', label: '合計いいね数' },
   { key: 'plays', label: '合計プレイ数' },
 ];

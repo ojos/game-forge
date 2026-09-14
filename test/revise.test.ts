@@ -18,7 +18,8 @@ import {
   REVISE_SEQ_FIELD,
   RESTORE_PATH,
 } from '../src/paths.js';
-import { REVISIONS_PER_GAME } from '../src/quota.js';
+import { DEFAULT_GENERATION_MODEL_KEY } from '../src/generation-models.js';
+import { DAILY_QUOTA_PER_USER, QUOTA_EXCEEDED_STATUS } from '../src/quota.js';
 import { MAX_SOURCE_BYTES } from '../src/system-prompt.js';
 import { createReviseRoutes } from '../src/revise.js';
 import {
@@ -191,16 +192,48 @@ describe('推敲の受け口（5.7 / #192）', () => {
     expect(spy.calls).toHaveLength(0);
   });
 
-  it('上限に達すると断られる', async () => {
-    const userId = await createUser('revise-limit');
+  // **1 作品あたりの上限（3 回）はなくした**（#515 / 仕様 5.7 / 確定32）。回数を縛るのは日次枠だけである。
+  for (const reviseCount of [3, 4, 50]) {
+    it(`revise_count が ${reviseCount} の draft でも、日次枠が残っていれば起動される（#515）`, async () => {
+      const userId = await createUser(`revise-no-per-game-limit-${reviseCount}`);
+      const gameId = await createReadyGame(userId);
+      await env.DB.prepare('update games set revise_count = ? where id = ?')
+        .bind(reviseCount, gameId)
+        .run();
+      const spy = startSpy();
+
+      const response = await postRevise(userId, gameId, 'もう 1 回', spy.pipeline);
+
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toBe(workPagePath(gameId));
+      expect(spy.calls).toHaveLength(1);
+      // **数えることはやめていない**（10.2 の観測に使う。#515 の scope.out）。
+      expect((await revisionStatus(env, gameId)).used).toBe(reviseCount + 1);
+    });
+  }
+
+  it('日次枠を使い切っていれば、これまでどおり 429 で断られ、起動も枠の取得もしない（#515）', async () => {
+    const userId = await createUser('revise-daily-spent');
     const gameId = await createReadyGame(userId);
-    await env.DB.prepare('update games set revise_count = ? where id = ?')
-      .bind(REVISIONS_PER_GAME, gameId)
-      .run();
+    // **費用の出る呼び出しを日次の上限まで積む**（確定25 は台帳の行数で数える）。
+    const now = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < DAILY_QUOTA_PER_USER; i += 1) {
+      await env.DB.prepare(
+        `insert into generations
+           (id, game_id, user_id, prompt, model,
+            input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+            cost_jpy, succeeded, created_at)
+         values (?, null, ?, 'ゲーム', ?, 0, 0, 0, 0, 1, 1, ?)`,
+      )
+        .bind(`gen-revise-daily-${gameId}-${i}`, userId, DEFAULT_GENERATION_MODEL_KEY, now)
+        .run();
+    }
     const spy = startSpy();
 
-    expect((await postRevise(userId, gameId, 'もう 1 回', spy.pipeline)).status).toBe(409);
+    expect((await postRevise(userId, gameId, 'もう 1 回', spy.pipeline)).status).toBe(QUOTA_EXCEEDED_STATUS);
+    expect(QUOTA_EXCEEDED_STATUS).toBe(429);
     expect(spy.calls).toHaveLength(0);
+    expect((await revisionStatus(env, gameId)).used).toBe(0);
   });
 
   it('空のプロンプトは 400 で、枠を消費しない', async () => {
@@ -220,7 +253,7 @@ describe('推敲の受け口（5.7 / #192）', () => {
     expect((await postRevise(userId, gameId, '玉を速く', spy.pipeline)).status).toBe(500);
 
     const status = await revisionStatus(env, gameId);
-    // **枠は返さない。** 返すと、失敗を繰り返すことで上限を無限に迂回できる。
+    // **枠は返さない。** 起動を試みたあとは、相手が走り出している可能性を否定できない（`src/revise.ts`）。
     expect(status.used).toBe(1);
     expect(status.running).toBe(false);
     expect(status.failed).toBe('internal');
@@ -381,7 +414,7 @@ describe('版へ戻す受け口（5.7）', () => {
       expect(response.status).toBe(409);
       const body = await response.text();
       expect(body).toContain('いま戻せません');
-      expect(body).toContain('手直しが終わってから、もう一度お試しください。');
+      expect(body).toContain('リフォージが終わってから、もう一度お試しください。');
       const row = await env.DB.prepare('select source_key from games where id = ?')
         .bind(gameId)
         .first<{ source_key: string }>();

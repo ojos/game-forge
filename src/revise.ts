@@ -15,13 +15,12 @@
  * | 守るもの | どこで守るか |
  * |---|---|
  * | 作者本人・`draft`・完成済みだけ | `claimRevisionSlot` の SQL 条件（`src/revisions.ts`） |
- * | 1 作品あたりの上限（5.7） | 同 `revise_count < ?` |
  * | 同時に走る推敲は 1 本 | `game_revision_jobs.game_id` が主キー |
  * | 利用者に進行中の生成・フォーク・推敲があれば始めない（#455） | `claimRevisionSlot` の `inFlightGuardSql`（`src/games.ts`） |
  * | 日次クォータ（確定25） | {@link handleRevise} が `checkGenerationQuota` を**先に**呼ぶ |
  *
- * **枠の判定を 2 つとも通さなければ走らない。** 日次は「1 人・1 日」、推敲上限は
- * 「1 作品・生涯」で軸が違い、**どちらか一方では止められない**（`src/quota.ts`）。
+ * **回数を縛るのは日次クォータ（「1 人・1 日」）だけである。** 1 作品あたりの上限は #515 でなくした
+ * （仕様 5.7 / 確定32）。月の費用は 4.3 のサービス全体の上限が守る。
  *
  * ## 順序: 日次 → 推敲の枠 → ソースの取得 → 起動
  *
@@ -38,8 +37,8 @@
  * | 起動を試みて失敗した | **返さない** | 非同期呼び出しは、エラーを受け取っても**相手が走り出している可能性を否定できない** |
  * | ビルドが通らなかった（コールバック経由） | **返さない** | 費用が出ている。確定25 の「リトライは含む」と同じ線 |
  *
- * **上限超は、何度やっても成功しない。** 整理パスは M5-2（#33）が持つ。ここで枠を
- * 食うと、大きい作品の作者は**1 回も生成させないまま上限へ達する。**
+ * **上限超は、何度やっても成功しない。** 整理パスは M5-2（#33）が持つ。ここで数えると、
+ * 10.2 の「1 作品あたりのリフォージ回数」に**1 回も生成していない試行が混ざる。**
  *
  * ## CSRF について
  *
@@ -147,14 +146,14 @@ const REFUSALS: Readonly<
     { status: number; heading: string; body: string }
   >
 > = {
-  // **他人の作品・存在しない作品・公開済み・生成中・上限超過・推敲中を区別しない。**
+  // **他人の作品・存在しない作品・公開済み・生成中・推敲中を区別しない。**
   // 区別すると、任意の id が存在するかを外から確かめられる手がかりになる
   // （`src/generate-callback.ts` と同じ考え方）。**作者から見た区別は画面が出す**
-  // ——作品ページは残り回数も走っているジョブも表示できる（M4.5-3）。
+  // ——作品ページは走っているジョブを表示できる（M4.5-3）。
   'not-revisable': {
     status: 409,
-    heading: 'いま推敲できません',
-    body: '公開前の自分の作品を、上限の回数まで手直しできます。前の手直しが終わるまでお待ちください。',
+    heading: 'いまリフォージできません',
+    body: 'リフォージできるのは、公開前の自分の作品だけです。前のリフォージが終わるまでお待ちください。',
   },
   'source-missing': {
     status: 500,
@@ -164,12 +163,12 @@ const REFUSALS: Readonly<
   // **「もう一度」と言わない。** 何度やっても同じ結果になる（整理パスは M5-2 が持つ）。
   'source-too-large': {
     status: 409,
-    heading: 'この作品は手直しできる大きさを超えています',
-    body: 'ソースが大きくなりすぎているため、いまは手直しできません。',
+    heading: 'この作品はリフォージできる大きさを超えています',
+    body: 'ソースが大きくなりすぎているため、いまはリフォージできません。',
   },
   'start-failed': {
     status: 500,
-    heading: '手直しを始められませんでした',
+    heading: 'リフォージを始められませんでした',
     body: '時間をおいて、もう一度お試しください。',
   },
   // **#455。利用者に進行中の生成・フォーク・推敲がある。** 文言は 3 経路で共有する
@@ -281,7 +280,7 @@ async function handleRevise(
       : json(body, QUOTA_EXCEEDED_STATUS);
   }
 
-  // **ここが 5.7 の対象条件と上限を同時に確かめる唯一の関門である**（`src/revisions.ts`）。
+  // **ここが 5.7 の対象条件を確かめる唯一の関門である**（`src/revisions.ts`）。
   const jobToken = createJobToken();
   const jobTokenHash = await hashJobToken(jobToken);
   const claimed = await claimRevisionSlot(
@@ -395,7 +394,7 @@ async function handleRestore(request: Request, env: Env): Promise<Response> {
   const heading = outcome === 'busy' ? 'いま戻せません' : 'その版が見つかりません';
   const detail =
     outcome === 'busy'
-      ? '手直しが終わってから、もう一度お試しください。'
+      ? 'リフォージが終わってから、もう一度お試しください。'
       : 'URL が正しいかご確認ください。';
   return wantsHtml(request)
     ? refusal(heading, detail, outcome === 'busy' ? 409 : 404)

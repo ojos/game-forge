@@ -58,7 +58,6 @@ import {
 import {
   DAILY_QUOTA_PER_USER,
   remainingQuotaNotice,
-  REVISIONS_PER_GAME,
 } from '../src/quota.js';
 import {
   appendRevision,
@@ -72,6 +71,15 @@ import { NEWS_ARTICLES } from '../src/news-articles.js';
 import { workSourcePath } from '../src/work-source.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
+import { oldOperationNamesIn } from './helpers/old-names.js';
+
+/**
+ * 1 作品あたりの回数の上限を言う文の形（#515 でなくした）。
+ *
+ * **#515 より前の文言は「この作品はあと N 回手直しできます」だった**（#513 で「リフォージできます」）。
+ * 呼び名が変わっても当たるよう、語ではなく「あと N 回」「N 回まで」の形で見る。
+ */
+const PER_WORK_LIMIT_WORDING = /あと ?[0-9]+ ?回|1 作品につき|[0-9]+ ?回まで(?:リフォージ|手直し|推敲)/u;
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 
@@ -502,14 +510,15 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     }
   });
 
-  it('日次の残枠と、この作品の残り回数が出る', async () => {
+  it('日次の残枠は出し、1 作品あたりの残り回数は出さない（#515）', async () => {
     const { userId, id } = await seedReady('remaining');
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
 
     // **4.4 の文言を書き写さない。** 正本の組み立て関数と突き合わせる
     // （`src/quota.ts`。あちらが 4.4 の本文と機械照合されている）。
     expect(body).toContain(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
-    expect(body).toContain(`あと ${REVISIONS_PER_GAME} 回手直しできます`);
+    // **1 作品あたりの上限はなくした**（#515）。回数の上限を言う文を出さない。
+    expect(pageBodyOf(body)).not.toMatch(PER_WORK_LIMIT_WORDING);
   });
 
   it('本日の枠が尽きていたらフォームを出さず、残数は出す（4.4）', async () => {
@@ -536,14 +545,15 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     expect(body).toContain(remainingQuotaNotice(0));
   });
 
-  it('上限に達したら口を出さない', async () => {
+  it('revise_count が 3 以上でも、日次枠が残っていれば口を出す（1 作品あたりの上限は無い。#515）', async () => {
     const { userId, id } = await seedReady('exhausted');
     await env.DB.prepare('update games set revise_count = ? where id = ?')
-      .bind(REVISIONS_PER_GAME, id)
+      .bind(3, id)
       .run();
 
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(body).not.toContain(REVISE_PATH);
+    expect(body).toContain(REVISE_PATH);
+    expect(pageBodyOf(body)).not.toMatch(PER_WORK_LIMIT_WORDING);
   });
 
   it('推敲が走っているあいだは口を出さず、自動更新する', async () => {
@@ -553,7 +563,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     // **二重送信をボタンの無効化ではなく「フォームが無い」ことで防ぐ**（JS を要求しない）。
     expect(body).not.toContain(REVISE_PATH);
-    expect(body).toContain('手直しをしています');
+    expect(body).toContain('リフォージしています');
     // **`state` は `ready` のままなので、この検査が無いと画面は止まって見える。**
     expect(body).toContain('http-equiv="refresh"');
   });
@@ -610,9 +620,9 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
       );
 
       const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-      expect(body).toContain('手直しが中断した可能性があります');
+      expect(body).toContain('リフォージが中断した可能性があります');
       expect(body).toContain('作品はそのまま残っています');
-      expect(body).not.toContain('手直しをしています');
+      expect(body).not.toContain('リフォージしています');
       // **待っても画面は変わらない**ので、読み取りを続けない。
       expect(body).not.toContain('http-equiv="refresh"');
       // 止まった行は次の推敲が引き取る（`claimRevisionSlot`）ので、口を出す。
@@ -634,7 +644,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
       );
 
       const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-      expect(body).toContain('手直しをしています');
+      expect(body).toContain('リフォージしています');
       expect(body).toContain('http-equiv="refresh"');
       expect(body).not.toContain('中断した可能性');
       expect(body).not.toContain(REVISE_PATH);
@@ -665,11 +675,11 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     const owned = { ...baseView, owner: true, revisable: false };
     const stalled = renderWorkPage({ ...owned, revisionStalled: true });
     expect(stalled).not.toContain('http-equiv="refresh"');
-    expect(stalled).toContain('手直しが中断した可能性があります');
+    expect(stalled).toContain('リフォージが中断した可能性があります');
 
     const running = renderWorkPage({ ...owned, revisionRunning: true });
     expect(running).toContain('http-equiv="refresh"');
-    expect(running).toContain('手直しをしています');
+    expect(running).toContain('リフォージしています');
     expect(running).not.toContain('中断した可能性');
   });
 
@@ -679,7 +689,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     await failRevision(env, id, 'build-failed');
 
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(body).toContain('前回の手直しはうまくいきませんでした');
+    expect(body).toContain('前回のリフォージはうまくいきませんでした');
     expect(body).toContain('作品はそのまま残っています');
     // 作品は壊れていないので、次の手直しの口はそのまま出ている。
     expect(body).toContain(REVISE_PATH);
@@ -758,7 +768,7 @@ describe('フォークの口（5.3 / M5-1 / #32）', () => {
     expect(body).toContain(`action="${FORK_PATH}"`);
     // **親はこの作品である。** 送り先の項目名も綴りを書き写さない（`src/paths.ts`）。
     expect(body).toContain(`<input type="hidden" name="${FORK_PARENT_ID_FIELD}" value="${id}">`);
-    expect(body).toContain('どう改造しますか');
+    expect(body).toContain('どう変えてフォークしますか');
     // **待ち時間と費用を隠さない**（5.7 の推敲と同じ扱い。1 回は生成 1 回そのもので、
     // 自動のやり直しが乗ると枠は最大 `MAX_GENERATION_ATTEMPTS` 回分減る。#402）。
     const shown = pageBodyOf(body);
@@ -785,7 +795,7 @@ describe('フォークの口（5.3 / M5-1 / #32）', () => {
 
     // **この綴りが 10.2 の分子である**（`src/waitlist.ts` の受け皿と対になっている）。
     expect(body).toContain('href="/signup?from=fork-cta"');
-    expect(body).toContain('改造には招待が必要です');
+    expect(body).toContain('フォークには招待が必要です');
     // 押しても 401 になる口を、未ログインの人へ出さない。
     expect(body).not.toContain(FORK_PATH);
   });
@@ -823,7 +833,7 @@ describe('フォークの口（5.3 / M5-1 / #32）', () => {
     // **押せば 429 で断られる操作を、押せる形で出さない**（4.4 の裏返し）。
     expect(body).not.toContain(FORK_PATH);
     // **3.4-5 の 4 要素は 1 つも条件付きにしない。** 見出しと残数は残る。
-    expect(body).toContain('このゲームを改造する');
+    expect(body).toContain('このゲームをフォークする');
     expect(body).toContain(remainingQuotaNotice(0));
   });
 });
@@ -880,7 +890,7 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     return id;
   }
 
-  it('公開済みの作品に「このゲームからの改造: N 件」と子へのリンクが出る', async () => {
+  it('公開済みの作品に「このゲームからのフォーク: N 件」と子へのリンクが出る', async () => {
     const { id } = await seedPublishedWork('list');
     const forker = await seedUser('lin-list-forker');
     const older = await seedChild(forker, id, { title: '古い改造', publishedAt: 100 });
@@ -888,7 +898,7 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
 
     const body = await (await open(workPagePath(id))).text();
 
-    expect(body).toContain('このゲームからの改造: 2 件');
+    expect(body).toContain('このゲームからのフォーク: 2 件');
     expect(body).toContain(`<a class="gf-link-quiet" href="${workPagePath(newer)}">新しい改造</a>`);
     expect(body).toContain(`<a class="gf-link-quiet" href="${workPagePath(older)}">古い改造</a>`);
     // **新しい順である**（5.5）。
@@ -904,7 +914,7 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
 
     const body = await (await open(workPagePath(id))).text();
 
-    expect(body).toContain('このゲームからの改造: 1 件');
+    expect(body).toContain('このゲームからのフォーク: 1 件');
     expect(body).toContain(`<a class="gf-link-quiet" href="${workPagePath(shown)}">公開された改造</a>`);
     // **題名はプロンプト由来である。** 出せば 5.4 の「公開して初めて有効になる」の
     // 抜け道になる。
@@ -922,7 +932,7 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     const newestFirst = [...children].reverse();
 
     const first = await (await open(workPagePath(id))).text();
-    expect(first).toContain('このゲームからの改造: 21 件');
+    expect(first).toContain('このゲームからのフォーク: 21 件');
     // 20 件だけ出て、21 件目（＝いちばん古い 1 件）は出ていない。
     expect(first).toContain(`<a class="gf-link-quiet" href="${workPagePath(newestFirst[19]!)}">改造 1</a>`);
     // **行き先だけで見る**（クラスの綴りに依らず、21 件目へのリンクが 1 本も無いこと）。
@@ -946,7 +956,7 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     const { id } = await seedPublishedWork('empty');
     const body = await (await open(workPagePath(id))).text();
     // **見出しを消さない。**「まだ誰も改造していない」と「機能が無い」を区別できる形にする。
-    expect(body).toContain('このゲームからの改造: 0 件');
+    expect(body).toContain('このゲームからのフォーク: 0 件');
     // **クラスの綴りの前方だけで見る**（#474 で `gf-block gf-block-rows` が足された。完全一致だと空振りする）。
     expect(body).not.toContain('<ul class="gf-fork-list');
     expect(body).not.toContain('もっと見る');
@@ -977,7 +987,7 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
       await open(`${workPagePath(id)}?${FORKS_OFFSET_PARAM}=${FORKS_PER_PAGE}`)
     ).text();
 
-    expect(body).toContain('このゲームからの改造: 1 件');
+    expect(body).toContain('このゲームからのフォーク: 1 件');
     expect(body).toContain('唯一の改造');
     // 1 頁目なので「前へ」も「もっと見る」も出ない。
     expect(body).not.toContain('前へ');
@@ -1003,7 +1013,7 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     await completeGame(env, id, fakeBuildOutcome({ sourceSha256: 'sha-lin-unpublished' }));
 
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(body).not.toContain('このゲームからの改造');
+    expect(body).not.toContain('このゲームからのフォーク');
   });
 });
 
@@ -1205,7 +1215,6 @@ const baseView: WorkPageView = {
   signedIn: false,
   revisable: false,
   dailyRemaining: null,
-  revisionsRemaining: null,
   revisionRunning: false,
   revisionStalled: false,
   revisionError: null,
@@ -2143,7 +2152,7 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
     expect(panel).toContain(`<dt>元ゲーム</dt><dd><a href="${workPagePath(parent.id)}">パネルparent</a></dd>`);
     // `fakeBuildOutcome` の圧縮後のバイト数（2,282,839）。**配信している大きさ**である。
     expect(panel).toContain('<dt>Wasm のサイズ</dt><dd>2.3 MB（配信時の圧縮後）</dd>');
-    expect(panel).toContain('<dt>改造された数</dt><dd>0 件</dd>');
+    expect(panel).toContain('<dt>フォークされた数</dt><dd>0 件</dd>');
     expect(panel).toContain(panelLikeRow(3));
     expect(panel).toContain(playRow(12));
     expect(panel).toContain(
@@ -2156,7 +2165,7 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
     expect(panel).not.toContain('モデル');
 
     const parentPanel = panelOf(await (await open(workPagePath(parent.id))).text());
-    expect(parentPanel).toContain('<dt>改造された数</dt><dd>1 件</dd>');
+    expect(parentPanel).toContain('<dt>フォークされた数</dt><dd>1 件</dd>');
   });
 
   it('ロード中画面と枠は全幅のまま、その下を「本文 | パネル」にする（本文が先）', async () => {
@@ -2170,8 +2179,8 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
     // 本文（改造の一覧）が先、パネルが後（狭い段では本文の下に積まれる）。
     const main = body.indexOf('<div class="gf-work-main">');
     expect(main).toBeGreaterThan(split);
-    expect(body.indexOf('このゲームからの改造')).toBeGreaterThan(main);
-    expect(body.indexOf('<aside class="gf-details gf-block"')).toBeGreaterThan(body.indexOf('このゲームからの改造'));
+    expect(body.indexOf('このゲームからのフォーク')).toBeGreaterThan(main);
+    expect(body.indexOf('<aside class="gf-details gf-block"')).toBeGreaterThan(body.indexOf('このゲームからのフォーク'));
     // 説明（#388）はパネルに入れない。
     expect(panelOf(body)).not.toContain('作品の説明');
   });
@@ -2323,13 +2332,13 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
 
     // 未ログインは登録へ送る `<a>`（移動）、ログイン済みと作者は差分プロンプトの送信 `<button>`（動作）。
     expect(anonymous.match(PRIMARY) ?? []).toHaveLength(1);
-    expect(primaries(anonymous)[0]).toMatch(/^<a class="gf-fork-link gf-button gf-button-primary" href="[^"]*from=fork-cta[^"]*">このゲームを改造する<\/a>$/u);
+    expect(primaries(anonymous)[0]).toMatch(/^<a class="gf-fork-link gf-button gf-button-primary" href="[^"]*from=fork-cta[^"]*">このゲームをフォークする<\/a>$/u);
     for (const [name, body] of [
       ['ログイン済み', member],
       ['作者本人', owner],
     ] as const) {
       expect(body.match(PRIMARY) ?? [], name).toHaveLength(1);
-      expect(primaries(body)[0], name).toBe('<button type="submit" class="gf-button gf-button-primary">この内容で改造する</button>');
+      expect(primaries(body)[0], name).toBe('<button type="submit" class="gf-button gf-button-primary">この内容でフォークする</button>');
       // **主はフォークのフォームの中にある**（見た目だけ主の別の送信ではない）。
       const fork = body.slice(body.indexOf(`action="${FORK_PATH}"`));
       expect(fork.slice(0, fork.indexOf('</form>')), name).toContain('gf-button-primary');
@@ -2408,7 +2417,7 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     const id = '00000000-0000-4000-8000-000000000475';
     const body = renderWorkPage({ ...baseView, published: true, signedIn: true, dailyRemaining: 0, forkableId: id });
     expect(body.match(PRIMARY) ?? []).toHaveLength(0);
-    expect(body).toContain('<p class="gf-fork">このゲームを改造する</p>');
+    expect(body).toContain('<p class="gf-fork">このゲームをフォークする</p>');
   });
 
   it('未公開の作品（作者）の主は「公開して共有」だけで、手直し・版に戻す・改名は副', async () => {
@@ -2546,5 +2555,57 @@ describe('仮想パッドのキーを読む（#494 / 仕様 3.9.5 / 3.9.6）', (
     for (const detail of keys) {
       expect(detail, details.join(' / ')).toMatch(/^SEARCH k USING INDEX sqlite_autoindex_source_input_keys_1 \(source_key=\?\)/u);
     }
+  });
+});
+
+describe('作品ページの出力に旧い呼び名（改造・推敲・手直し）が出ない（#513）', () => {
+  const id = '00000000-0000-4000-8000-0000000000b1';
+  const published: WorkPageView = {
+    ...baseView,
+    published: true,
+    title: 'よけて跳ねる箱',
+    playUrl: '/g/00000000-0000-4000-8000-0000000000b1/',
+    forkableId: id,
+    shareUrl: `https://app.example.invalid${workPagePath(id)}`,
+    authorName: '作者',
+    parent: { kind: 'published', title: '元の箱', path: workPagePath('00000000-0000-4000-8000-0000000000b2') },
+    forks: { total: 1, items: [{ id: '00000000-0000-4000-8000-0000000000b3', title: '跳ねる箱', publishedAt: 3 }], morePath: null, backPath: null },
+    details: sampleDetails(id),
+  };
+  const draftOwner: WorkPageView = {
+    ...baseView,
+    owner: true,
+    title: 'よけて跳ねる箱',
+    playUrl: '/g/00000000-0000-4000-8000-0000000000b1/preview/',
+    publishableId: id,
+    revisable: true,
+    dailyRemaining: DAILY_QUOTA_PER_USER,
+    renamableId: id,
+  };
+
+  const cases: readonly (readonly [string, WorkPageView])[] = [
+    ['公開済み（未ログイン。フォークの導線は待機リストへ）', published],
+    ['公開済み（ログイン済み。フォークの入力）', { ...published, signedIn: true, dailyRemaining: DAILY_QUOTA_PER_USER }],
+    ['公開済み（作者本人。取り下げの口）', { ...published, owner: true, signedIn: true, dailyRemaining: 1, removableId: id }],
+    ['取り下げた作品（作者本人）', { ...baseView, owner: true, removed: true, title: 'よけて跳ねる箱' }],
+    ['未公開（作者の画面。リフォージの入力）', draftOwner],
+    ['未公開（リフォージの実行中）', { ...draftOwner, revisable: false, revisionRunning: true }],
+    ['未公開（リフォージの失敗）', { ...draftOwner, revisionError: 'build-failed' }],
+    ['未公開（リフォージの中断）', { ...draftOwner, revisionStalled: true }],
+  ];
+
+  for (const [name, view] of cases) {
+    it(name, () => {
+      expect(oldOperationNamesIn(renderWorkPage(view)), name).toEqual([]);
+    });
+  }
+
+  it('検査が空振りしていない: 同じ画面にフォーク・リフォージの語が出ている', () => {
+    expect(renderWorkPage({ ...published, signedIn: true, dailyRemaining: 1 })).toContain('この内容でフォークする');
+    expect(renderWorkPage(draftOwner)).toContain('この内容でリフォージする');
+    expect(renderWorkPage({ ...draftOwner, revisionRunning: true })).toContain('リフォージしています');
+    expect(renderWorkPage({ ...draftOwner, revisionError: 'build-failed' })).toContain('前回のリフォージはうまくいきませんでした');
+    expect(renderWorkPage({ ...draftOwner, revisionStalled: true })).toContain('リフォージが中断した可能性があります');
+    expect(renderWorkPage(published)).toContain('このゲームからのフォーク: 1 件');
   });
 });

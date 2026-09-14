@@ -255,12 +255,12 @@ function sizeWarningPage(parentId: string, prompt: string, bytes: number): Respo
     `${siteHead({ title: 'この作品はすでに大きめです - Game Forge', noindex: true })}
 <h1>この作品はすでに大きめです</h1>
 <p>元のソースは ${groupDigits(bytes)} バイトあり、上限 ${groupDigits(MAX_SOURCE_BYTES)} バイトの 80%（${groupDigits(SOURCE_SIZE_WARNING_BYTES)} バイト）を超えています。</p>
-<p>このまま改造できます。ただし出来上がったソースが上限を超えると、収め直すためにもう 1 回ぶんの生成枠が要ることがあります。</p>
+<p>このままフォークできます。ただし出来上がったソースが上限を超えると、収め直すためにもう 1 回ぶんの生成枠が要ることがあります。</p>
 <form method="post" action="${FORK_PATH}">
   <input type="hidden" name="${FORK_PARENT_ID_FIELD}" value="${escapeHtml(parentId)}">
   <input type="hidden" name="${FORK_PROMPT_FIELD}" value="${escapeHtml(prompt)}">
   <input type="hidden" name="${FORK_SIZE_CONSENT_FIELD}" value="${FORK_SIZE_CONSENT_PROCEED}">
-  <button type="submit" class="gf-button gf-button-primary">このまま改造する</button>
+  <button type="submit" class="gf-button gf-button-primary">このままフォークする</button>
 </form>
 <p><a href="${workPagePath(parentId)}">やめる</a></p>`,
     SIZE_WARNING_STATUS,
@@ -291,17 +291,17 @@ function sizeWarningPage(parentId: string, prompt: string, bytes: number): Respo
  */
 function tidyOfferPage(parentId: string, prompt: string, bytes: number): Response {
   return html(
-    `${siteHead({ title: '整理してから改造しますか - Game Forge', noindex: true })}
-<h1>整理してから改造しますか</h1>
-<p>元のソースは ${groupDigits(bytes)} バイトあり、改造できる上限 ${groupDigits(MAX_SOURCE_BYTES)} バイトを超えています。</p>
-<p>このまま改造することはできませんが、<strong>いったん整理して ${groupDigits(MAX_SOURCE_BYTES)} バイト以内に収めてから</strong>、指示のとおりに改造できます。</p>
+    `${siteHead({ title: '整理してからフォークしますか - Game Forge', noindex: true })}
+<h1>整理してからフォークしますか</h1>
+<p>元のソースは ${groupDigits(bytes)} バイトあり、フォークできる上限 ${groupDigits(MAX_SOURCE_BYTES)} バイトを超えています。</p>
+<p>このままフォークすることはできませんが、<strong>いったん整理して ${groupDigits(MAX_SOURCE_BYTES)} バイト以内に収めてから</strong>、指示のとおりにフォークできます。</p>
 <p><strong>整理して続けますか（生成枠を 1 回使います）。</strong></p>
 <p>整理では、重なった処理をまとめ、遊びの中心から遠い要素を削ります。<strong>元の作品は変わりませんが、出来上がるゲームは元と細かい部分が変わることがあります。</strong>できあがったものを試してから公開してください。</p>
 <form method="post" action="${FORK_PATH}">
   <input type="hidden" name="${FORK_PARENT_ID_FIELD}" value="${escapeHtml(parentId)}">
   <input type="hidden" name="${FORK_PROMPT_FIELD}" value="${escapeHtml(prompt)}">
   <input type="hidden" name="${FORK_SIZE_CONSENT_FIELD}" value="${FORK_SIZE_CONSENT_TIDY}">
-  <button type="submit" class="gf-button gf-button-primary">整理して改造する</button>
+  <button type="submit" class="gf-button gf-button-primary">整理してフォークする</button>
 </form>
 <p><a href="${workPagePath(parentId)}">やめる</a></p>`,
     SIZE_WARNING_STATUS,
@@ -321,8 +321,8 @@ const REFUSALS: Readonly<
   // 未公開なら「まだ公開されていません」と言い、そこに改造の口は出ない。
   'not-forkable': {
     status: 409,
-    heading: 'この作品は改造できません',
-    body: '改造できるのは公開されている作品だけです。',
+    heading: 'この作品はフォークできません',
+    body: 'フォークできるのは公開されている作品だけです。',
   },
   'source-missing': {
     status: 500,
@@ -334,12 +334,12 @@ const REFUSALS: Readonly<
   // `src/source-size.ts` にある。**「いまは」と書いてあるのはそのためである。**
   'source-too-large': {
     status: 409,
-    heading: 'この作品は改造できる大きさを超えています',
-    body: 'ソースが大きくなりすぎているため、いまは改造できません。',
+    heading: 'この作品はフォークできる大きさを超えています',
+    body: 'ソースが大きくなりすぎているため、いまはフォークできません。',
   },
   'start-failed': {
     status: 500,
-    heading: '改造を始められませんでした',
+    heading: 'フォークを始められませんでした',
     body: '時間をおいて、もう一度お試しください。',
   },
   // **#455。進行中の生成・フォーク・推敲があるので子の行を作らなかった。** 文言は 3 経路で
@@ -538,7 +538,7 @@ async function handleFork(
   const input = await parseForkInput(request);
   if (input === null) {
     return wantsHtml(request)
-      ? refusal('入力を読み取れませんでした', 'どう改造したいかを入力してから送信してください。', 400)
+      ? refusal('入力を読み取れませんでした', 'どう変えたいかを入力してから送信してください。', 400)
       : json({ error: 'invalid request' }, 400);
   }
 

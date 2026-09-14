@@ -76,6 +76,7 @@ import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { looksStalled } from '../src/work-page.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
+import { oldOperationNamesIn } from './helpers/old-names.js';
 import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
@@ -705,9 +706,24 @@ async function exhaustDailyQuota(userId: string): Promise<void> {
  * @returns `<h1>` の中身
  */
 async function headingOf(response: Response): Promise<string> {
-  const body = await response.text();
+  return headingIn(await response.text());
+}
+
+/**
+ * 画面の HTML から `<h1>` の文字を取り出す。
+ *
+ * @param body 画面の HTML
+ * @returns 見出し（無ければ空文字）
+ */
+function headingIn(body: string): string {
   return /<h1>([^<]*)<\/h1>/u.exec(body)?.[1] ?? '';
 }
+
+/**
+ * 進行中の断りの本文の 1 文目（#455 / #513）。**定数（`IN_FLIGHT_BODY`）から写さない**——写すと、定数に
+ * 旧い呼び名が戻っても同じ値を期待して緑になる。
+ */
+const IN_FLIGHT_BODY_TEXT = '生成・フォーク・リフォージは 1 つずつ行えます。いま進んでいるものが終わってから、もう一度お試しください。';
 
 describe('応答の区別（acceptance 4）', () => {
   it('3 経路とも、進行中の断りは日次枠切れ（429）と別のステータス・分類名・見出しで返る', async () => {
@@ -746,8 +762,13 @@ describe('応答の区別（acceptance 4）', () => {
         html,
       );
       expect(inFlightHtml.status, route).toBe(IN_FLIGHT_STATUS);
-      expect(await headingOf(inFlightHtml), route).toBe(IN_FLIGHT_HEADING);
+      const inFlightText = await inFlightHtml.text();
+      expect(headingIn(inFlightText), route).toBe(IN_FLIGHT_HEADING);
       expect(await headingOf(dailyHtml), route).not.toBe(IN_FLIGHT_HEADING);
+      // **断りの画面に旧い呼び名（改造・推敲・手直し）を出さない**（#513）。本文は 3 経路で共有する
+      // `IN_FLIGHT_BODY`（`src/quota.ts`）なので、定数から写さず画面の文言をそのまま書いて照合する。
+      expect(oldOperationNamesIn(inFlightText), route).toEqual([]);
+      expect(inFlightText, route).toContain(IN_FLIGHT_BODY_TEXT);
     }
   });
 
@@ -759,6 +780,9 @@ describe('応答の区別（acceptance 4）', () => {
 
     const message = GENERATE_MESSAGES[IN_FLIGHT_MESSAGE_KEY]!;
     expect(message).toContain(IN_FLIGHT_HEADING);
+    // 生成画面の断りにも同じ本文が出る。旧い呼び名を出さない（#513）。
+    expect(message).toContain(IN_FLIGHT_BODY_TEXT);
+    expect(oldOperationNamesIn(message)).toEqual([]);
     // **4.4 の 2 つの停止の言い回しを混ぜない**（枠は尽きていない）。
     expect(message).not.toContain('本日の枠は終了しました');
     expect(message).not.toContain('今月の生成は終了しました');

@@ -142,7 +142,7 @@ ${buttonRows}
 <nav aria-label="タブの見本">
 <ul class="gf-tabs">
   <li><span aria-current="page">新着</span></li>
-  <li><a href="#dev-links">改造された数</a></li>
+  <li><a href="#dev-links">フォークされた数</a></li>
   <li><a href="#dev-links" data-state="hover">いいねの数（ホバー時）</a></li>
   <li><a href="#dev-links" data-state="focus">プレイ数（焦点）</a></li>
 </ul>

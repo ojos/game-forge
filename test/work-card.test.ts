@@ -142,10 +142,10 @@ describe('いいねの数を出す（2.3.6 / 5.8）', () => {
 
   it('改造された数と並んで出る（どちらも 0 なら両方出ない）', () => {
     const both = renderWorkCard({ ...baseWork, forkCount: 2, likeCount: 5 });
-    expect(both).toContain('改造 2');
+    expect(both).toContain('フォーク 2');
     expect(both).toContain('いいね 5');
     const neither = renderWorkCard({ ...baseWork, forkCount: 0, likeCount: 0 });
-    expect(neither).not.toContain('改造');
+    expect(neither).not.toContain('フォーク');
     expect(neither).not.toContain('いいね');
   });
 

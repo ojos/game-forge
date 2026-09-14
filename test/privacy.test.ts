@@ -11,6 +11,7 @@ import { dispatch } from '../src/routes.js';
 import type { Route } from '../src/routes.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO, OPERATOR_NAME } from '../src/service-contact.js';
 import { SESSION_COOKIE } from '../src/session.js';
+import { oldOperationNamesIn } from './helpers/old-names.js';
 import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
@@ -268,12 +269,12 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     expect(start, '取得する情報に項目が無い').toBeGreaterThanOrEqual(0);
     const rest = collected.slice(start);
     const line = rest.slice(0, rest.indexOf('</li>'));
-    expect(line).toContain('作品が改造されたときのお知らせを受け取るかどうかと、受け取らない設定にした日時');
+    expect(line).toContain('作品がフォークされたときのお知らせを受け取るかどうかと、受け取らない設定にした日時');
     expect(line).toContain('公開しません');
     expect(line).toContain('D1');
 
     const purposes = body.slice(body.indexOf('2. 利用目的'), body.indexOf('3. 公開される情報'));
-    expect(purposes).toContain('作品が改造されたことのお知らせは、登録情報の画面で受け取らない設定にできます');
+    expect(purposes).toContain('作品がフォークされたことのお知らせは、登録情報の画面で受け取らない設定にできます');
     expect(purposes).toContain('生成の完了・失敗のお知らせは、その設定にかかわらず送ります');
 
     const notPublished = body.slice(
@@ -359,5 +360,14 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     for (const path of [TERMS_PATH, TAKEDOWN_PATH, FAQ_PATH]) {
       expect(body, `${path} へのリンクが無い`).toContain(`href="${path}"`);
     }
+  });
+});
+
+describe('旧い呼び名（改造・推敲・手直し）を出さない（#513）', () => {
+  it('画面の出力に旧い呼び名が出ず、フォーク・リフォージと書く（表記の変更だけで、意味は変えていない）', async () => {
+    const { body } = await openPrivacy();
+    expect(oldOperationNamesIn(body)).toEqual([]);
+    expect(body).toContain('作品の生成・フォーク・リフォージ・公開・表示を行うため');
+    expect(body).toContain('フォーク元の作品');
   });
 });

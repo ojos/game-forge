@@ -189,14 +189,14 @@ export function forkNoticeMessage(
   return {
     // **件名に UGC を入れない**（`src/mail/resend.ts` は件名の改行を弾くが、
     // 弾かれると通知そのものが消える。固定文なら消えようが無い）。
-    subject: '[Game Forge] あなたの作品が改造されました',
+    subject: '[Game Forge] あなたの作品がフォークされました',
     text: [
-      `${oneLine(forkAuthorName)} さんが、あなたの作品を改造して公開しました。`,
+      `${oneLine(forkAuthorName)} さんが、あなたの作品をフォークして公開しました。`,
       '',
       `元の作品: ${oneLine(parentTitle)}`,
-      `改造された作品: ${forkUrl}`,
+      `フォーク作品: ${forkUrl}`,
       '',
-      'このページから遊べます。改造された作品は、改造した人の作品として公開されています。',
+      'このページから遊べます。フォーク作品は、フォークした人の作品として公開されています。',
     ].join('\n'),
   };
 }

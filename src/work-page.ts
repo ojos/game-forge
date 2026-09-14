@@ -1573,9 +1573,16 @@ function reviseSection(view: WorkPageView): string {
   //
   // **止まった推敲も同じ場所で言う**（#480）。行は `pending` / `running` のままで
   // 失敗の分類名を持たないので、生成の `looksStalled` と同じく「中断した可能性」と言う。
-  // **推敲の口と「版に戻す」はそのまま出す**——止まった行は次の推敲が引き取り
-  // （`claimRevisionSlot`）、戻す操作も断らない（`restoreRevision`）。2 つは同じジョブ行の
-  // 状態から導くので、同時には出ない。
+  //
+  // **同時に真にならないのは案内どうしである。** `revisionError`（失敗の案内）と
+  // `revisionStalled`（中断の案内）は、1 作品 1 行のジョブの状態（`failed` か、区切りを
+  // 過ぎた `pending` / `running` か）から導くので、どちらか一方しか出ない。
+  // `revisionRunning` と `revisionStalled` も同じ理由で同時に真にならない
+  // （`revisionRunning` なら上で返している）。
+  //
+  // **止まった推敲では、推敲の口と「版に戻す」は両方とも出る。** 止まった行は次の推敲が
+  // 引き取り（`claimRevisionSlot`）、戻す操作も断らない（`restoreRevision`）。推敲の口は
+  // 下の `revisable` と日次の枠の条件で、「版に戻す」は {@link revisionList} で出す。
   const failed =
     view.revisionError !== null
       ? `

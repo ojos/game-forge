@@ -546,6 +546,19 @@ export type RestoreOutcome = 'restored' | 'not-found' | 'busy';
  * **区切りの内側は、いまと同じく断る**（{@link revisionStatus} と同じ境界）。
  * 止まった行そのものは書き換えない（掃除は #480 の scope.out）。
  *
+ * # 走っている推敲が無いことは、戻す文そのものの条件で見る（PR #485 のレビュー）
+ *
+ * **先に select で確かめてから update する形にしない。** その隙間で
+ * {@link claimRevisionSlot} が止まった行を新しい `pending` に引き取ると、戻した結果が
+ * その推敲の完成で黙って上書きされる（上の「戻せないより悪い」そのもの）。
+ * `update` の `where` に「区切りの内側の `pending` / `running` が無い」を入れ、
+ * **判定と書き込みを 1 文にする**（{@link claimRevisionSlot} の `inFlightGuardSql` と同じ規約）。
+ * D1 は文を 1 本ずつ直列に走らせるので、先に入った方が後の方の条件に見える。
+ *
+ * **0 行だったときだけ、同じ条件で読み直して `busy` と `not-found` を分ける。**
+ * 読み直しは文言を選ぶための分類で、**書き込みの判定には使わない**（書くかどうかは
+ * 既に上の 1 文が決めている）。
+ *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
  * @param userId 要求した利用者（作者本人でなければ通らない）
@@ -560,18 +573,7 @@ export async function restoreRevision(
   seq: number,
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<RestoreOutcome> {
-  const busy = await env.DB.prepare(
-    `select 1 as running from game_revision_jobs
-      where game_id = ? and state in ('pending', 'running')
-        and coalesce(started_at, created_at) > ?`,
-  )
-    .bind(gameId, inFlightCutoff(now))
-    .first<{ running: number }>();
-
-  if (busy !== null) {
-    return 'busy';
-  }
-
+  const cutoff = inFlightCutoff(now);
   const result = await env.DB.prepare(
     `update games
         set go_version = (select r.go_version from game_revisions r
@@ -582,10 +584,27 @@ export async function restoreRevision(
                           where r.game_id = games.id and r.seq = ?),
             preview_key = ?
       where id = ? and author_id = ? and status = 'draft' and generation_state = 'ready'
-        and exists (select 1 from game_revisions r where r.game_id = games.id and r.seq = ?)`,
+        and exists (select 1 from game_revisions r where r.game_id = games.id and r.seq = ?)
+        and not exists (select 1 from game_revision_jobs j
+                         where j.game_id = games.id and j.state in ('pending', 'running')
+                           and coalesce(j.started_at, j.created_at) > ?)`,
   )
-    .bind(seq, seq, seq, createPreviewKey(), gameId, userId, seq)
+    .bind(seq, seq, seq, createPreviewKey(), gameId, userId, seq, cutoff)
     .run();
 
-  return (result.meta.changes ?? 0) > 0 ? 'restored' : 'not-found';
+  if ((result.meta.changes ?? 0) > 0) {
+    return 'restored';
+  }
+
+  // **分類のためだけに読む**（書き込みの判定は上の文が済ませている）。条件は上の
+  // `not exists` と同じ区切りである。
+  const busy = await env.DB.prepare(
+    `select 1 as running from game_revision_jobs
+      where game_id = ? and state in ('pending', 'running')
+        and coalesce(started_at, created_at) > ?`,
+  )
+    .bind(gameId, cutoff)
+    .first<{ running: number }>();
+
+  return busy !== null ? 'busy' : 'not-found';
 }

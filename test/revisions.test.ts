@@ -471,6 +471,24 @@ describe('止まったまま残った推敲ジョブ（#480）', () => {
   }
 
   /**
+   * 作品の成果物 3 点と `preview_key` を読む（戻す操作が動かす列のすべて）。
+   *
+   * @param gameId 作品 id
+   * @returns 列の値
+   */
+  async function gameArtifactsOf(
+    gameId: string,
+  ): Promise<{ go_version: string; source_key: string; wasm_key: string; preview_key: string }> {
+    const row = await env.DB.prepare(
+      'select go_version, source_key, wasm_key, preview_key from games where id = ?',
+    )
+      .bind(gameId)
+      .first<{ go_version: string; source_key: string; wasm_key: string; preview_key: string }>();
+    expect(row).not.toBeNull();
+    return row!;
+  }
+
+  /**
    * 開始からの経過秒と、そのとき「走っている」と見なすか。
    *
    * **境界は #455 と同じである**（開始から `STALE_AFTER_SECONDS` 未満が進行中。ちょうどで外れる）。
@@ -519,15 +537,19 @@ describe('止まったまま残った推敲ジョブ（#480）', () => {
         const gameId = await createGameWithTwoRevisions(userId, suffix);
         const since = 3_000_000;
         const hash = await leaveRevisionJob(userId, gameId, since, state);
+        const before = await gameArtifactsOf(gameId);
 
         const outcome = await restoreRevision(env, gameId, userId, 1, since + elapsed);
         expect({ elapsed, outcome }).toEqual({ elapsed, outcome: running ? 'busy' : 'restored' });
 
-        const after = await env.DB.prepare('select go_version from games where id = ?')
-          .bind(gameId)
-          .first<{ go_version: string }>();
+        const after = await gameArtifactsOf(gameId);
         // 断ったなら成果物は推敲後（seq = 2）のまま、通ったなら最初の版（seq = 1）。
-        expect(after!.go_version).toBe(running ? 'go1.27.0' : 'go1.26.9');
+        expect(after.go_version).toBe(running ? 'go1.27.0' : 'go1.26.9');
+        if (running) {
+          // **断ったときは `preview_key` も含めて 1 列も動かない**——戻す `update` 自体が
+          // 0 行である（事前の select は無い。PR #485 のレビュー）。
+          expect(after).toEqual(before);
+        }
 
         // **止まった行は書き換えない**（掃除は scope.out）。次の推敲の UPSERT が引き取る。
         const job = await env.DB.prepare(
@@ -539,6 +561,46 @@ describe('止まったまま残った推敲ジョブ（#480）', () => {
       }
     });
   }
+
+  for (const state of ['pending', 'running'] as const) {
+    it(`止まった ${state} の行を次の推敲が引き取ったあとの「版に戻す」は、戻す文そのものが 0 行で busy になる（PR #485 のレビュー）`, async () => {
+      const suffix = `rev-stalled-takeover-${state}`;
+      const userId = await createUser(suffix);
+      const gameId = await createGameWithTwoRevisions(userId, suffix);
+      const since = 3_000_000;
+      await leaveRevisionJob(userId, gameId, since, state);
+      const now = since + STALE_AFTER_SECONDS + 5;
+
+      // 止まった行は戻す理由にならない…はずの時刻に、**先に**推敲の要求が行を引き取る。
+      // これがレビューで指摘された「確かめてから書く」の隙間に入る順序である。
+      expect(await claimRevisionSlot(env, gameId, userId, '引き取った手直し', `taken-${suffix}`, now)).toBe(
+        true,
+      );
+      const before = await gameArtifactsOf(gameId);
+
+      // 同じ時刻の「版に戻す」。引き取られた行は区切りの内側の `pending` なので、断る。
+      expect(await restoreRevision(env, gameId, userId, 1, now)).toBe('busy');
+      // **成果物も `preview_key` も動かない。** 戻した結果が推敲の完成で上書きされる形を作らない。
+      expect(await gameArtifactsOf(gameId)).toEqual(before);
+    });
+  }
+
+  it('走っている推敲があっても、他人の要求では何も書かない（分類は busy のまま）', async () => {
+    const suffix = 'rev-live-stranger';
+    const userId = await createUser(suffix);
+    const other = await createUser(`${suffix}-other`);
+    const gameId = await createGameWithTwoRevisions(userId, suffix);
+    const since = 3_000_000;
+    await leaveRevisionJob(userId, gameId, since, 'running');
+    const before = await gameArtifactsOf(gameId);
+
+    // **分類は main と同じく busy**（以前は作者を見る前に busy を返していた）。書き込みは 0 行。
+    expect(await restoreRevision(env, gameId, other, 1, since + 1)).toBe('busy');
+    expect(await gameArtifactsOf(gameId)).toEqual(before);
+    // 区切りを過ぎても、他人の要求は見つからない扱いのまま。
+    expect(await restoreRevision(env, gameId, other, 1, since + STALE_AFTER_SECONDS)).toBe('not-found');
+    expect(await gameArtifactsOf(gameId)).toEqual(before);
+  });
 
   it('失敗したジョブは stalled にならない（失敗の表示のまま）', async () => {
     const userId = await createUser('rev-stalled-failed');

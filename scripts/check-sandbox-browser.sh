@@ -44,7 +44,7 @@
 #   script-src に blob: 有り → ok（`connect-src` はその作品の .wasm 1 本のまま）
 #
 # ══════════════════════════════════════════════════════════════════════════════
-# 何を見るか（7 層。どこで落ちたかが分かる形にする）
+# 何を見るか（8 層。どこで落ちたかが分かる形にする）
 # ══════════════════════════════════════════════════════════════════════════════
 #
 #   層 0  配信された `.wasm` の本文を**1 回展開**すると `00 61 73 6d`（`\0asm`）で
@@ -65,6 +65,17 @@
 #         `Input.dispatchTouchEvent` で指 1 本のタッチを送り、**マウスを読む検査用の作品**が
 #         canvas で `mousemove → mousedown → mousemove → mouseup` を受けたことを見る。
 #         判定は `scripts/tap-mouse-verdict.mjs` が持つ。**直接開いた形と埋め込んだ形の両方で見る。**
+#   層 7  **タッチ端末の作品ページは、タップするまでゲームを読み込まず、タップで全画面の覆いの中で遊べること**
+#         （#502 / 仕様 3.9.4）。CDP でタッチをエミュレートし（`pointer: coarse` になったことも読む）、タップの前に
+#         サンドボックス用ホストへ要求が出ないこと・口のタップで覆いが開き iframe から起動の合図が届くこと・
+#         「閉じる」/ 戻る操作 / iframe の 2 回目の `load` / 全画面の解除で閉じて iframe が消えること・計上が 1 回だけで
+#         あることを見る。**デスクトップ（開いた時点で同じ属性の iframe）と JavaScript を止めた形（`<noscript>`）も同じ層で見る。**
+#         観測は `scripts/tap-to-fullscreen-probe.mjs`、判定は `scripts/tap-to-fullscreen-verdict.mjs`。
+#         `GF_TAP_SHOT_DIR` を渡すと、口と覆い（縦持ち 390×844・横持ち 844×390）を PNG で撮る（撮るだけで判定しない）。
+#
+# 層 7 をこの検査に置く理由: **起動の合図が本物である必要がある。** 合図はローダーが wasm を起動した後に送るので、
+# 本物の Go の wasm と、公開済みの作品と、サンドボックス用ホストの配信が揃っている場所でしか「合図が届く」を観測できない。
+# それが揃っているのはこの検査だけである（`scripts/check-page-width.sh` の仕込みは draft の作品で、iframe を持たない）。
 #
 # 層 6 が効いていることの実測（2026-09-14、この環境）:
 #   ローダーの変換を外した状態 → 「canvas が受けたマウスイベントが 0 個です」で赤
@@ -734,4 +745,28 @@ if (problems.length > 0) {
 node scripts/tap-mouse-verdict.mjs --probe "$WORK/embed.json" --label "[browser-check] 層 6 (#491, 埋め込み)" ||
   fail "層 6 (#491): 作品ページに埋め込んだ形で、タップがマウスの操作として作品へ届きませんでした。"
 
-note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走り、音のワークレットが読み込め、タップがマウスとして作品へ届きました（直接・埋め込みの両方）。"
+# ── 層 7: タッチ端末ではタップするまで読み込まず、全画面の覆いで遊ぶこと（#502 / 仕様 3.9.4）───────
+#
+# **層 4 の緑からは導けない。** 層 4 のブラウザは `pointer: coarse` ではない（ヘッドレスは `pointer: none`）ので、
+# デスクトップの形（スクリプトがすぐに iframe を作る）しか通らない。タッチ端末の形は、エミュレートして開き直さないと見えない。
+note "層 7: opening $WORK_PAGE_URL (touch / desktop / JavaScript off)"
+TAP_SHOT_ARGS=()
+if [[ -n "${GF_TAP_SHOT_DIR:-}" ]]; then
+  mkdir -p "$GF_TAP_SHOT_DIR"
+  TAP_SHOT_ARGS=(--shot-dir "$GF_TAP_SHOT_DIR")
+fi
+node scripts/tap-to-fullscreen-probe.mjs \
+  --browser "$BROWSER_BIN" \
+  --url "$WORK_PAGE_URL" \
+  --sandbox-host "$SANDBOX_HOST" \
+  --timeout-ms "$TIMEOUT_MS" \
+  ${TAP_SHOT_ARGS[@]+"${TAP_SHOT_ARGS[@]}"} >"$WORK/tap.json" ||
+  { fail "層 7: ブラウザでの観測ができませんでした。"; }
+
+node scripts/tap-to-fullscreen-verdict.mjs \
+  --probe "$WORK/tap.json" \
+  --expected-src "https://${SANDBOX_HOST}:${PORT}/g/${PUBLISHED_ID}/" \
+  --label "[browser-check] 層 7 (#502)" ||
+  fail "層 7 (#502): タッチ端末の作品ページの「タップして全画面で遊ぶ」が通りませんでした。"
+
+note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走り、音のワークレットが読み込め、タップがマウスとして作品へ届きました（直接・埋め込みの両方）。タッチ端末の作品ページはタップするまで読み込まず、全画面の覆いで遊べます。"

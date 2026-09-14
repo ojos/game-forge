@@ -14,9 +14,9 @@
  * 引き、4 要素がすべて揃っていることを見る。あわせて、
  *
  * - 4 要素が**文書順で iframe より前**にあること（HTML は上から解釈される）
- * - 作品ページの `<script>` が、プレイ数の計上のスクリプト（#377。画面を書き換えない）1 つだけで、
- *   4 要素より後ろ・iframe より前にあること（**どの要素も load イベントに依存しえない**。iframe より
- *   前にあるのは、合図より先にリスナーを登録するため）
+ * - 作品ページの `<script>` が、プレイ数の計上のスクリプト（#377。画面を書き換えない）と、iframe を作る
+ *   スクリプト（#502）の 2 つだけで、どちらも 4 要素より後ろにあること（**どの要素も load イベントに依存しえない**）。
+ *   計上のスクリプトは iframe より前（合図より先にリスナーを登録するため）
  * - iframe の中の文書（サンドボックス）に 4 要素の UGC が 1 つも現れないこと（7.2）
  *
  * を見る。この 3 つが揃って初めて「ロード完了前に描かれている」が構造として言える。
@@ -47,6 +47,7 @@ import { waitlistRoutes } from '../src/waitlist.js';
 import { WASM_FILE } from '../src/sandbox-delivery.js';
 import { parentWorkOf, workPagePath, workPageRoutes } from '../src/work-page.js';
 import { playReportScript } from '../src/plays.js';
+import { playFrameScript } from '../src/work-play.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -299,21 +300,27 @@ describe('#30 の acceptance: Wasm のロード完了前に 4 要素すべてが
       expect(indexOf(body, element), element).toBeLessThan(frameAt);
     }
 
-    // **この画面が持つスクリプトは、プレイ数の計上のスクリプト（#377）1 つだけである。** それは
-    // DOM を 1 文字も書き換えず、4 要素より後ろにある。したがって、どの要素も「読み込みが
-    // 終わってから描く」ことが原理的にできない。**iframe より前にある**のは、iframe の合図より
-    // 先にリスナーを登録するためである（後ろに置くと、速い起動を数え落とす。PR #425）。
+    // **この画面が持つスクリプトは、プレイ数の計上のスクリプト（#377）と、iframe を作るスクリプト（#502）の 2 つだけである。**
+    // どちらも 4 要素より後ろにある。したがって、どの要素も「読み込みが終わってから描く」ことが原理的にできない。
+    // 計上のスクリプトは DOM を 1 文字も書き換えず、**iframe より前にある**——iframe の合図より先にリスナーを登録する
+    // ためである（後ろに置くと、速い起動を数え落とす。PR #425）。iframe は HTML に直接置かず（タッチ端末では開いた時点で
+    // 読み込まない。仕様 3.9.4）、`<noscript>` の中に今の埋め込みがある。
     const script = playReportScript(child.id);
     expect(script).not.toBe('');
-    expect(body.split('<script').length - 1, 'スクリプトが計上の 1 つだけではない').toBe(1);
+    const frameScript = playFrameScript(`${SANDBOX_ORIGIN}/g/${child.id}/`);
+    expect(body.split('<script').length - 1, 'スクリプトが計上と iframe の 2 つだけではない').toBe(2);
     const scriptAt = indexOf(body, script);
+    const frameScriptAt = indexOf(body, frameScript);
     expect(scriptAt, '計上のスクリプトが iframe より後ろにある').toBeLessThan(frameAt);
+    expect(scriptAt, '計上のスクリプトが iframe を作るスクリプトより後ろにある').toBeLessThan(frameScriptAt);
     for (const element of [shot, author, parentName, fork]) {
       expect(indexOf(body, element), element).toBeLessThan(scriptAt);
     }
-    // **画面を書き換えない**（DOM へ書く口を 1 つも持たない）。
+    // **計上のスクリプトは画面を書き換えない**（DOM へ書く口を 1 つも持たない）。
     expect(script).not.toMatch(/innerHTML|outerHTML|textContent|insertAdjacent|appendChild|document\.write|\.hidden\s*=/u);
-    expect(body.replace(script, '')).not.toContain('<script');
+    expect(body.replace(script, '').replace(frameScript, '')).not.toContain('<script');
+    // iframe を作るスクリプトも、4 要素を書き換える口を持たない（作るのは iframe だけで、見せるのは「遊ぶ」のボタンと覆い）。
+    expect(frameScript).not.toMatch(/innerHTML|outerHTML|textContent|insertAdjacent|document\.write/u);
   });
 
   it('スクリーンショットの URL は実際に引ける（枠だけ描いて 404 にしない）', async () => {
@@ -350,7 +357,8 @@ describe('4 要素をアプリ用ホスト側に描く（7.2 を崩さないた�
     const { id } = await seedPlayableGame('sandbox-attr');
     const body = await workPage(id);
 
-    expect(body).toContain(`<iframe class="gf-frame" src="${SANDBOX_ORIGIN}/g/${id}/" `);
+    // **iframe は `<noscript>` の中の埋め込みにだけ HTML として現れる**（スクリプトが作る iframe も同じ属性の出どころを使う。#502）。
+    expect(body).toContain(`<noscript class="gf-play-noscript"><iframe class="gf-frame" src="${SANDBOX_ORIGIN}/g/${id}/" `);
     expect(body).toContain('sandbox="allow-scripts"');
     // **1 つでも足りたら 7.2 が崩れる。**
     expect(body).not.toContain('allow-same-origin');

@@ -100,6 +100,136 @@ import { recordBuildCache } from './build-cache.js';
 export const DRAFT_STATUS = 'draft';
 
 /**
+ * 生成中の行を「もう返ってこない」と見なすまでの秒数（開始から数える）。
+ *
+ * **900 秒（15 分）。** 根拠は 3 つある。
+ *
+ * - 実測の待ち時間は #284 の前が 90.9 秒（1.2.38）、いまは**上限 64KB を出し切る想定で
+ *   297 秒**（4.2）である。5.2-7 のリトライ（2 試行）とビルドを足した最悪ケースは
+ *   **829 秒**で、オーケストレータの `timeout`（870 秒）がその外側にある。
+ *   **正常な生成が誤って「中断」と表示されない**余裕が要る。
+ *   **順序は 829 < 870 < 900 で、余裕は 30 秒しかない**（#284 の前は 60 秒）。
+ *   `scripts/check-orchestrator-retry.sh` が不等式 2（timeout < この値）を機械で見る。
+ *   **この 900 を下げると、まだ走っている生成を画面が「中断」と呼び、#455 の判定が
+ *   走っている生成を「終わった」と見なして次の要求を通す。**
+ * - AWS Lambda の実行時間の上限が 15 分である。オーケストレータがどれだけ粘っても、
+ *   これを超えて走ることはない。**超えたなら、もう返ってこない。**
+ * - **`pending` のまま（起動を待っている）行も同じ値で切ってよい。** 非同期呼び出しの
+ *   イベントは `maximum_event_age_in_seconds`（300 秒。`terraform/orchestrator.tf`）を
+ *   過ぎると配信されない。**作ってから 900 秒 `pending` の行は、もう `running` に
+ *   ならない**（300 < 900）。
+ *
+ * # 読み手は 2 つある
+ *
+ * 1. **作品ページの表示**（`src/work-page.ts` の `looksStalled`。「中断した可能性」）
+ * 2. **進行中の要求の判定**（#455。{@link inFlightGuardSql}）。止まったまま残った
+ *    `pending` / `running` の行で、利用者を締め出さないための区切り
+ *
+ * **正本をここ（`src/games.ts`）に置く。** 以前は `src/work-page.ts` にあったが、
+ * 2 の判定は `src/generate.ts` の `startGeneration` から呼ばれ、そこはオーケストレータの
+ * 束に入る。束から画面を import すると `scripts/check-orchestrator-bundle.sh`（#290）が
+ * 落ちる。**書き写すと 2 つの読み手の区切りが割れる**ので、束に入ってよい側へ移し、
+ * `src/work-page.ts` は再 export で互換を保つ。
+ *
+ * **D1 は書き換えない。** GET が状態を書き換える形にすると、ページを開いた人が
+ * 行を壊せることになる。表示の上でだけ「中断した可能性」と言い、行は 3.7 の掃除
+ * （未公開のまま 14 日で自動削除。確定13）に任せる（止まった行を `failed` にする掃除は
+ * #455 の scope.out）。
+ */
+export const STALE_AFTER_SECONDS = 900;
+
+/**
+ * 「その利用者に進行中の要求が無い」ことを表す SQL の条件（#455 / 3.3-2 / 4.3）。
+ *
+ * **生成・フォーク・推敲の 3 経路が、互いの進行中を見る。** 進行中とは次のどちらかで、
+ * どちらも開始（`started_at`、まだ握られていなければ作成時刻）から
+ * {@link STALE_AFTER_SECONDS} 秒以内のものに限る。
+ *
+ * - 自分の `games` の `generation_state` が `pending` / `running`（新規生成・フォーク）
+ * - 自分の作品の `game_revision_jobs.state` が `pending` / `running`（推敲。作品は
+ *   `ready` のまま。`src/revisions.ts`）
+ *
+ * # なぜ条件の断片として配るのか
+ *
+ * **判定と行の作成の間に窓を残さない**ためである（`invites.used_by` と同じ規約。
+ * `migrations/0001_init.sql`）。先に select で確かめてから insert すると、その隙間で
+ * 同時に届いた 2 本目が同じ「進行中は無い」を読んで通る。**この断片は行を作る文の
+ * `where` に入り、条件を満たさなければ 1 行も入らない。** D1 は文を 1 本ずつ直列に
+ * 走らせるので、先に入った 1 本が後の 1 本の `not exists` に見える。
+ *
+ * **往復は増えない。** 判定は行を作る文そのものの中にあり、別の問い合わせを投げない。
+ * 引く行は既存の索引で利用者 1 人の作品に絞られる（`games(author_id, …)`（0008）から
+ * 入り、推敲ジョブは主キーで突き合わせる。**マイグレーションは足していない**。
+ * 全走査にならないことは `test/schema-in-flight.test.ts` が実行計画で見る）。
+ *
+ * 束縛する値は 4 つで、順に `userId, cutoff, userId, cutoff` である
+ * （{@link inFlightGuardBindings}）。
+ *
+ * @returns `where` に `and` で連ねられる条件
+ */
+export function inFlightGuardSql(): string {
+  return `not exists (
+            select 1 from games inflight_g
+             where inflight_g.author_id = ?
+               and inflight_g.generation_state in ('pending', 'running')
+               and coalesce(inflight_g.generation_started_at, inflight_g.created_at) > ?)
+          and not exists (
+            select 1 from game_revision_jobs inflight_j
+              join games inflight_owner on inflight_owner.id = inflight_j.game_id
+             where inflight_j.state in ('pending', 'running')
+               and inflight_owner.author_id = ?
+               and coalesce(inflight_j.started_at, inflight_j.created_at) > ?)`;
+}
+
+/**
+ * {@link inFlightGuardSql} に束縛する値を並べる。
+ *
+ * **区切りは `now - STALE_AFTER_SECONDS` より新しい開始時刻である**（`>`）。
+ * `src/work-page.ts` の `looksStalled` は `now - since >= STALE_AFTER_SECONDS` を
+ * 止まっていると見なすので、**表示が「中断した可能性」と言い始める瞬間に、判定も
+ * 進行中と見なさなくなる**（境界がずれない）。
+ *
+ * @param userId 要求した利用者
+ * @param now 判定時刻（UNIX 秒）
+ * @returns 束縛する値（4 つ）
+ */
+export function inFlightGuardBindings(
+  userId: string,
+  now: number,
+): readonly [string, number, string, number] {
+  const cutoff = now - STALE_AFTER_SECONDS;
+  return [userId, cutoff, userId, cutoff];
+}
+
+/**
+ * その利用者に進行中の要求があるかを読む（**断ったあとの分類にだけ使う**）。
+ *
+ * **判定には使わない。** 判定は行を作る文の中で {@link inFlightGuardSql} が行う。
+ * これを先に呼んでから行を作る形にすると、窓が開く（#455 の constraints）。
+ *
+ * 推敲（`src/revise.ts`）は枠の取得（`claimRevisionSlot`）が複数の理由で 0 行になり、
+ * **断った理由が「進行中」なのか「推敲できない作品」なのかを文の結果から区別できない。**
+ * 断られた要求だけがこれを 1 回読み、文言を選ぶ。通った要求の読み取りは増えない。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 利用者
+ * @param now 判定時刻（UNIX 秒。既定は現在時刻）
+ * @returns 進行中の要求があれば true
+ */
+export async function hasInFlightRequest(
+  env: Env,
+  userId: string,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `select case when ${inFlightGuardSql()} then 0 else 1 end as busy`,
+  )
+    .bind(...inFlightGuardBindings(userId, now))
+    .first<{ busy: number }>();
+  return row?.busy === 1;
+}
+
+/**
  * 生成の進行状態（`games.generation_state`）。
  *
  * 綴りの正本は `migrations/0007_games_generation_state.sql` の CHECK である。
@@ -504,7 +634,13 @@ export async function createPendingGame(
   request: GenerateRequest,
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<PendingGame> {
-  return await insertPendingGame(env, userId, request, null, now);
+  const created = await insertPendingGame(env, userId, request, null, now, false);
+  // 排他を掛けていないので必ず入る（null になるのは排他の枝だけである）。
+  // **それでも黙って `!` で潰さない。** 来たら不具合なので投げる。
+  if (created === null) {
+    throw new Error('作品行を作れませんでした（排他を掛けていない挿入が 0 行でした）');
+  }
+  return created;
 }
 
 /**
@@ -538,7 +674,62 @@ export async function createForkedGame(
   parentId: string,
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<PendingGame> {
-  return await insertPendingGame(env, userId, request, parentId, now);
+  const created = await insertPendingGame(env, userId, request, parentId, now, false);
+  // 排他を掛けていないので必ず入る（null になるのは排他の枝だけである）。
+  // **それでも黙って `!` で潰さない。** 来たら不具合なので投げる。
+  if (created === null) {
+    throw new Error('作品行を作れませんでした（排他を掛けていない挿入が 0 行でした）');
+  }
+  return created;
+}
+
+/**
+ * 進行中の要求が無ければ、作品行を `pending` で作る（**3.3-2.5 の経路の入口**。#455）。
+ *
+ * **{@link createPendingGame} との違いは「進行中の要求があれば 1 行も作らない」ことだけ
+ * である。** 判定は行を作る文そのものの `where` にある（{@link inFlightGuardSql}）ので、
+ * **同時に届いた 2 本のうち通るのは 1 本だけ**になる。
+ *
+ * **経路（`src/generate.ts` の `startGeneration`）はこちらを呼ぶ。** 排他の無い
+ * {@link createPendingGame} を残すのは、テストや運用の道具が 1 人に複数の生成中の行を
+ * 用意する必要があるためで、**利用者の要求を受ける経路からは呼ばない。**
+ *
+ * @param env バインディングと環境変数
+ * @param userId 作者
+ * @param request 生成リクエスト（仮のタイトルに使う）
+ * @param now 作成時刻（UNIX 秒。既定は現在時刻）
+ * @returns 作品の id と、ジョブトークンの平文。進行中の要求があれば null
+ */
+export async function createPendingGameIfIdle(
+  env: Env,
+  userId: string,
+  request: GenerateRequest,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<PendingGame | null> {
+  return await insertPendingGame(env, userId, request, null, now, true);
+}
+
+/**
+ * 進行中の要求が無ければ、フォークの子を `pending` で作る（5.3 の経路の入口。#455）。
+ *
+ * {@link createForkedGame} に、{@link createPendingGameIfIdle} と同じ排他を掛けたもの。
+ * **経路（`src/fork.ts`）はこちらを呼ぶ。**
+ *
+ * @param env バインディングと環境変数
+ * @param userId 改造する利用者
+ * @param request 生成リクエスト（差分プロンプト。仮のタイトルに使う）
+ * @param parentId 親の作品 id
+ * @param now 作成時刻（UNIX 秒。既定は現在時刻）
+ * @returns 作品の id と、ジョブトークンの平文。進行中の要求があれば null
+ */
+export async function createForkedGameIfIdle(
+  env: Env,
+  userId: string,
+  request: GenerateRequest,
+  parentId: string,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<PendingGame | null> {
+  return await insertPendingGame(env, userId, request, parentId, now, true);
 }
 
 /**
@@ -546,14 +737,18 @@ export async function createForkedGame(
  *
  * **SQL をこの 1 か所に置く。** 新規生成とフォークで文を書き分けると、列を足した日に
  * 片方だけが古くなる（shared-ai-rules 12 章「一覧の複製を作らない」）。違いは
- * `parent_id` に何を束ねるかだけである。
+ * `parent_id` に何を束ねるかと、進行中の要求を見るかどうかだけである。
+ *
+ * **排他は `insert ... select ... where` の 1 文で行う**（#455）。値の並びは排他の有無で
+ * 変わらず、変わるのは末尾の `where` だけである。
  *
  * @param env バインディングと環境変数
  * @param userId 作者
  * @param request 生成リクエスト（仮のタイトルに使う）
  * @param parentId 親の作品 id（オリジナルなら null）
  * @param now 作成時刻（UNIX 秒）
- * @returns 作品の id と、ジョブトークンの平文
+ * @param exclusive true なら、進行中の要求があるとき 1 行も作らない
+ * @returns 作品の id と、ジョブトークンの平文。排他で断られたら null
  */
 async function insertPendingGame(
   env: Env,
@@ -561,18 +756,20 @@ async function insertPendingGame(
   request: GenerateRequest,
   parentId: string | null,
   now: number,
-): Promise<PendingGame> {
+  exclusive: boolean,
+): Promise<PendingGame | null> {
   const id = crypto.randomUUID();
   const jobToken = createJobToken();
 
-  await env.DB.prepare(
+  const result = await env.DB.prepare(
     `insert into games
        (id, author_id, parent_id, status, title, go_version, source_key, wasm_key,
         fork_count, created_at, published_at, preview_key,
         generation_state, generation_error, job_token_hash, generation_started_at,
         ip_notice)
-     values (?, ?, ?, ?, ?, ?, null, null, 0, ?, null, null, 'pending', null, ?, null,
-             ?)`,
+     select ?, ?, ?, ?, ?, ?, null, null, 0, ?, null, null, 'pending', null, ?, null,
+            ?
+      where ${exclusive ? inFlightGuardSql() : '1 = 1'}`,
   )
     .bind(
       id,
@@ -590,9 +787,14 @@ async function insertPendingGame(
       // **入るのはこちらの一覧が持つ正式名だけで、利用者が書いた文字列は入らない**
       // （`migrations/0015_games_ip_notice.sql`）。当たらなければ null。
       ipNoticeOf(request.prompt),
+      ...(exclusive ? inFlightGuardBindings(userId, now) : []),
     )
     .run();
 
+  // **0 行なら進行中の要求があった**（排他の枝でしか起きない。条件はそれ 1 つだけ）。
+  if ((result.meta.changes ?? 0) === 0) {
+    return null;
+  }
   return { id, jobToken };
 }
 

@@ -56,13 +56,19 @@ import type { GenerationErrorCode } from './games.js';
 import {
   claimGenerationJob,
   completeGame,
-  createPendingGame,
+  createPendingGameIfIdle,
   failGame,
   hashJobToken,
 } from './games.js';
 import { workPagePath } from './paths.js';
 import { recordGenerationCost } from './cost-ledger.js';
-import { QUOTA_EXCEEDED_STATUS, checkGenerationQuota, describeQuotaRejection } from './quota.js';
+import {
+  IN_FLIGHT_REASON,
+  IN_FLIGHT_STATUS,
+  QUOTA_EXCEEDED_STATUS,
+  checkGenerationQuota,
+  describeQuotaRejection,
+} from './quota.js';
 import type { MonthlyCostWarning } from './quota.js';
 import type { BuildRetryContext } from './build-retry.js';
 import {
@@ -526,7 +532,20 @@ export async function parseGenerateRequest(request: Request): Promise<GeneratePa
  *
  *   1. **3.3-2 クォータ判定**（4.3 の「上限の判定は 3.3-2 の 1 か所で行う」）
  *   2. **3.3-2.5 作品行の作成**（`pending`。id とジョブトークンがここで決まる）
+ *      ——**進行中の要求があれば作らずに断る**（#455。下記）
  *   3. **3.3-2.6 ジョブの起動**（差し替え可能な段）
+ *
+ * # 進行中の要求があれば断る（#455）
+ *
+ * **日次枠の判定は「要求の手前で 1 回だけ」で、台帳の行は LLM の応答が返ってから入る。**
+ * 1 人が生成中に別の要求を出すと、古い回数を読んで判定を通り抜ける（`src/quota.ts` の
+ * `DAILY_QUOTA_PER_USER`）。そこで**行を作る文そのものに「進行中の要求が無いこと」を
+ * 条件として持たせる**（`createPendingGameIfIdle`）。断られた要求は行を 1 つも作らず、
+ * ジョブも起動しない＝**LLM を呼ばない。**
+ *
+ * **判定を段（`checkQuota`）へ入れない。** 段は差し替えられ、しかも「確かめる」だけで
+ * 行を作らない——確かめてから作る形は、その隙間で 2 本目が通る。**オーケストレータにも
+ * 持ち込まない**（`src/orchestrator/pipeline.ts` の表。判定は 3.3-2 の 1 か所）。
  *
  * **行を先に作ることは「クォータ判定より前に書く」ことではない。** 判定は依然として
  * 最初にあり、超過した要求は行を 1 つも作らない。**枠の数え方も変わらない**
@@ -555,7 +574,12 @@ export async function startGeneration(
   }
 
   // 3.3-2.5: ここで id と URL が決まる。**LLM はまだ 1 回も呼んでいない。**
-  const pending = await createPendingGame(env, userId, request);
+  // **進行中の要求があれば 1 行も作らない**（#455）。判定は insert の条件にあり、
+  // 先に読んで確かめる形にしない（同時に届いた 2 本目が隙間を通る）。
+  const pending = await createPendingGameIfIdle(env, userId, request);
+  if (pending === null) {
+    throw new GenerationInFlight();
+  }
   const job: GenerationJob = {
     gameId: pending.id,
     jobToken: pending.jobToken,
@@ -928,6 +952,20 @@ export class QuotaExceeded extends Error {
 }
 
 /**
+ * 進行中の要求があるために断った（#455）。
+ *
+ * **{@link QuotaExceeded} と別の例外にする。** あちらは枠が尽きた（429）で、こちらは
+ * 枠が残っていて、いま走っている 1 本が終われば通る（409）。同じ例外に畳むと、
+ * 経路層が分類名で分岐し直すことになり、分類を知らない差し替え実装の 429 と混ざる。
+ */
+export class GenerationInFlight extends Error {
+  constructor() {
+    super('進行中の要求があるため受け付けませんでした');
+    this.name = 'GenerationInFlight';
+  }
+}
+
+/**
  * 生成リクエストを処理する。
  *
  * @param request 受信したリクエスト
@@ -974,6 +1012,10 @@ async function handleGenerate(
         describeQuotaRejection(error.detail, error.resetsAt),
         QUOTA_EXCEEDED_STATUS,
       );
+    }
+    if (error instanceof GenerationInFlight) {
+      // #455。**429 にしない**（枠は尽きていない）。載せるのは固定の分類名だけである（8.3）。
+      return json({ error: IN_FLIGHT_REASON }, IN_FLIGHT_STATUS);
     }
     if (error instanceof GeneratedSourceRejected) {
       // 5.2-5 の「違反時は再生成に回さず即拒否」。**500 にしない**（段は正常に働いた）。

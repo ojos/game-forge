@@ -33,7 +33,13 @@
  * 公開後の作り直しはこの経路しか無い。**条件は「公開済みであること」だけ**で、
  * 誰の作品かは見ない。
  *
- * ## 順序: 日次 → 親の資格 → ソースの取得 → 行の作成 → 起動
+ * ## 順序: 日次 → 親の資格 → ソースの取得 → 行の作成（進行中なら断る）→ 起動
+ *
+ * **進行中の要求の判定は行の作成と同じ文にある**（#455 / `createForkedGameIfIdle`）。
+ * 先に読んで確かめる段を足していないので、同時に届いた 2 本のうち通るのは 1 本だけである。
+ * 代償として、進行中の利用者の要求も親のソースまでは読む（R2 の読み取り 1 回）。
+ * **窓を開けずに先に断るには、判定をもう 1 回読むことになる**——読み取りの追加を
+ * 判定の 1 回に収めるほうを採った。
  *
  * **日次を先に見る**（3.3-2 / 4.3。`src/revise.ts` と同じ）。断られる要求のために
  * D1 も R2 も引かない。
@@ -92,11 +98,19 @@
  */
 import { siteFooter } from './legal.js';
 import { LOGIN_PATH } from './auth/google.js';
-import { createForkedGame, failGame, PUBLISHED_STATUS } from './games.js';
+import { createForkedGameIfIdle, failGame, PUBLISHED_STATUS } from './games.js';
 import type { GenerationJob, GenerationPipeline } from './generate.js';
 import { defaultPipeline, MAX_PROMPT_LENGTH } from './generate.js';
 import { FORK_PARENT_ID_FIELD, FORK_PATH, FORK_PROMPT_FIELD } from './paths.js';
-import { checkGenerationQuota, describeQuotaRejection, QUOTA_EXCEEDED_STATUS } from './quota.js';
+import {
+  checkGenerationQuota,
+  describeQuotaRejection,
+  IN_FLIGHT_BODY,
+  IN_FLIGHT_HEADING,
+  IN_FLIGHT_REASON,
+  IN_FLIGHT_STATUS,
+  QUOTA_EXCEEDED_STATUS,
+} from './quota.js';
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
@@ -291,7 +305,7 @@ function tidyOfferPage(parentId: string, prompt: string, bytes: number): Respons
 /** フォークを断る理由ごとの、ステータスと文言。 */
 const REFUSALS: Readonly<
   Record<
-    'not-forkable' | 'source-missing' | 'source-too-large' | 'start-failed',
+    'not-forkable' | 'source-missing' | 'source-too-large' | 'start-failed' | 'in-flight',
     { status: number; heading: string; body: string }
   >
 > = {
@@ -321,6 +335,13 @@ const REFUSALS: Readonly<
     status: 500,
     heading: '改造を始められませんでした',
     body: '時間をおいて、もう一度お試しください。',
+  },
+  // **#455。進行中の生成・フォーク・推敲があるので子の行を作らなかった。** 文言は 3 経路で
+  // 共有する（`src/quota.ts`）。**日次枠切れ（429）と混ぜない**——枠は残っている。
+  'in-flight': {
+    status: IN_FLIGHT_STATUS,
+    heading: IN_FLIGHT_HEADING,
+    body: IN_FLIGHT_BODY,
   },
 };
 
@@ -596,7 +617,21 @@ async function handleFork(
 
   // **ここで初めて行ができる。** 5.3 の「新しい作品行が生まれる」であり、
   // 5.7 の推敲と分かれる唯一の点である（`src/games.ts` の `createForkedGame`）。
-  const child = await createForkedGame(env, session.userId, { prompt: input.prompt }, input.parentId);
+  //
+  // **進行中の要求があれば作らない**（#455）。判定はこの insert の条件にあり、先に読んで
+  // 確かめる形にしない。**断られた要求は行も台帳も増やさず、ジョブも起動しない。**
+  const child = await createForkedGameIfIdle(
+    env,
+    session.userId,
+    { prompt: input.prompt },
+    input.parentId,
+  );
+  if (child === null) {
+    const refused = REFUSALS['in-flight'];
+    return wantsHtml(request)
+      ? refusal(refused.heading, refused.body, refused.status)
+      : json({ error: IN_FLIGHT_REASON }, refused.status);
+  }
 
   // **整理パスを通ったことを残す**（5.3「整理したことは作者に開示する」/
   // `migrations/0014_source_tidy.sql`）。

@@ -118,6 +118,10 @@ import { MAX_TITLE_LENGTH } from './games.js';
 import { WORK_PAGE_PREFIX } from './work-page.js';
 import {
   DAILY_QUOTA_REASON,
+  IN_FLIGHT_BODY,
+  IN_FLIGHT_HEADING,
+  IN_FLIGHT_REASON,
+  IN_FLIGHT_STATUS,
   MONTHLY_LIMIT_REASON,
   QUOTA_EXCEEDED_STATUS,
   generationQuotaStatus,
@@ -160,6 +164,14 @@ export const DAILY_QUOTA_MESSAGE_KEY = `${QUOTA_EXCEEDED_STATUS}:${DAILY_QUOTA_R
 
 /** 月次上限で止まったときの文言の鍵（{@link DAILY_QUOTA_MESSAGE_KEY} と同じ作り）。 */
 export const MONTHLY_LIMIT_MESSAGE_KEY = `${QUOTA_EXCEEDED_STATUS}:${MONTHLY_LIMIT_REASON}`;
+
+/**
+ * 進行中の要求があるために断られたときの文言の鍵（#455）。
+ *
+ * **429 の鍵と分ける。** 枠は尽きていないので「本日の枠は終了しました」と言わない。
+ * ステータスも分類名も正本は `src/quota.ts` で、ここで書き写さない。
+ */
+export const IN_FLIGHT_MESSAGE_KEY = `${IN_FLIGHT_STATUS}:${IN_FLIGHT_REASON}`;
 
 /** 分類を持たない 429 へ倒す鍵（ステータスだけの項目）。 */
 export const UNCLASSIFIED_QUOTA_MESSAGE_KEY = `${QUOTA_EXCEEDED_STATUS}:`;
@@ -239,6 +251,8 @@ export const GENERATE_MESSAGES: Readonly<Record<string, string>> = {
   [UNCLASSIFIED_QUOTA_MESSAGE_KEY]:
     '生成の上限に達したため、いまは生成できません。' +
     'プレイと共有は引き続きご利用いただけます。',
+  // #455。**文言はフォークと推敲の断りと同じもの**（`src/quota.ts`）。
+  [IN_FLIGHT_MESSAGE_KEY]: `${IN_FLIGHT_HEADING}。${IN_FLIGHT_BODY}`,
   '500:':
     '生成に失敗しました。ビルドの経路が停止している可能性があります。' +
     '時間をおいてお試しください。すでにある作品のプレイと共有には影響ありません。',

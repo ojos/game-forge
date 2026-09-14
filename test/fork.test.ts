@@ -37,6 +37,7 @@ import {
   claimGenerationJob,
   completeGame,
   createPendingGame,
+  failGame,
   hashJobToken,
   publishGame,
   REMOVED_STATUS,
@@ -96,6 +97,22 @@ function startSpy(fail = false): { calls: GenerationJob[]; pipeline: GenerationP
       },
     },
   };
+}
+
+/**
+ * 起動済みのジョブを終わらせる（**同じ利用者が続けてフォークする検査のため**。#455）。
+ *
+ * `startSpy` はジョブを起動したことにするだけで、子の行は `pending` のまま残る。
+ * #455 から、進行中の要求がある利用者の次の要求は断られるので、**1 本目が終わった
+ * 状態**を作ってから 2 本目を送る。終わらせ方（失敗）は、これらの検査が見ているもの
+ * （起動されたジョブの中身・`parent_id`）に影響しない。
+ *
+ * @param calls 起動されたジョブの記録
+ */
+async function finishStartedJobs(calls: readonly GenerationJob[]): Promise<void> {
+  for (const job of calls) {
+    await failGame(env, job.gameId, 'internal');
+  }
 }
 
 /** @returns セッション cookie を載せたヘッダ */
@@ -302,6 +319,7 @@ describe('子が生まれ、親を指す（acceptance 1 / 5.3）', () => {
     const spy = startSpy();
 
     await postFork(forker, parentId, '1 回目', spy.pipeline);
+    await finishStartedJobs(spy.calls);
     await postFork(forker, parentId, '2 回目', spy.pipeline);
 
     const children = await gamesOf(forker);
@@ -920,6 +938,7 @@ describe('親ソースは messages の先頭に載り、2 回目はキャッシ�
     // **差分プロンプトは毎回違う。** 同じ文言で 2 回叩くと、キャッシュではなく
     // 「本文がまるごと同じ」ことを見てしまう。
     await postFork(forker, parentId, '敵を 2 体にする', spy.pipeline);
+    await finishStartedJobs(spy.calls);
     await postFork(forker, parentId, '玉を速くする', spy.pipeline);
     expect(spy.calls).toHaveLength(2);
 
@@ -966,6 +985,7 @@ describe('親ソースは messages の先頭に載り、2 回目はキャッシ�
     const spy = startSpy();
 
     await postFork(forker, parentA, '敵を 2 体にする', spy.pipeline);
+    await finishStartedJobs(spy.calls);
     await postFork(forker, parentB, '敵を 2 体にする', spy.pipeline);
 
     const bedrock = cachingBedrock();

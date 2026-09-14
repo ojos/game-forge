@@ -128,7 +128,7 @@ describe('`/@handle` の作者ページ', () => {
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(body).toContain('<h1>アットの作者</h1>');
-    expect(body).toContain(`<a class="gf-card-author" href="${handlePagePath(handle)}">`);
+    expect(body).toContain(`<a class="gf-card-author gf-link-quiet" href="${handlePagePath(handle)}">`);
     expect(body).not.toContain(`href="${authorPagePath(userId)}"`);
     expect(body).toContain(`href="${handlePagePath(handle)}?page=2"`);
   });

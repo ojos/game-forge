@@ -101,6 +101,23 @@ function lastUpdatedLine(articles: readonly NewsArticle[]): string {
 }
 
 /**
+ * お知らせの一覧（ブロックの中の行）。**トップの節と一覧の画面が同じ形を使う**（仕様 2.5.4 / #471）。
+ *
+ * **1 つのブロック（`.gf-block`）の中に記事を行（`.gf-block-rows`）で並べ、行の間に淡い罫線を引く。** 面は器の幅
+ * いっぱいに置く（2.5.3。記事の抜粋は 1〜2 行で終わる短い文なので、行長を 42rem で止めない）。
+ *
+ * @param articles 並べる記事（新しい順。1 本以上）
+ * @param headingLevel 見出しの階層（トップの節の中なら 3、一覧なら 2）
+ * @returns HTML
+ */
+function renderList(articles: readonly NewsArticle[], headingLevel: 2 | 3): string {
+  const items = articles.map((article) => renderListItem(article, headingLevel)).join('\n');
+  return `<ul class="gf-news-list gf-block gf-block-rows">
+${items}
+</ul>`;
+}
+
+/**
  * 記事の日付と分類の 1 行。
  *
  * @param article 記事
@@ -109,14 +126,16 @@ function lastUpdatedLine(articles: readonly NewsArticle[]): string {
 function articleMeta(article: NewsArticle): string {
   const updated =
     article.updatedOn === undefined ? '' : `（更新: ${timeTag(article.updatedOn)}）`;
+  // **分類はチップ（押せない札の `span.gf-chip`）である**（仕様 2.5.5 の表「お知らせの分類」。#471）。
   return `<p class="gf-news-meta">${timeTag(article.publishedOn)}${updated}` +
-    ` <span class="gf-news-category">${escapeHtml(NEWS_CATEGORY_LABELS[article.category])}</span></p>`;
+    ` <span class="gf-chip gf-news-category">${escapeHtml(NEWS_CATEGORY_LABELS[article.category])}</span></p>`;
 }
 
 /**
  * 一覧とトップに並べる 1 項目（日付・分類・見出し・本文の 1 段落目）。
  *
- * **見出しを記事へのリンクにする。** 2 段落目以降は記事の画面で読む。
+ * **見出しを記事へのリンクにする。** 2 段落目以降は記事の画面で読む。リンクは**文章の外のリンク**
+ * （`.gf-link-quiet`。仕様 2.5.5 の表「一覧の行の題名」。下線はホバーと焦点だけ）。
  *
  * @param article 記事
  * @param headingLevel 見出しの階層（トップの節の中なら 3、一覧なら 2）
@@ -126,7 +145,7 @@ function renderListItem(article: NewsArticle, headingLevel: 2 | 3): string {
   const tag = `h${headingLevel}`;
   return `<li class="gf-news-item">
 ${articleMeta(article)}
-<${tag} class="gf-news-title"><a href="${newsArticlePath(article.id)}">${escapeHtml(article.title)}</a></${tag}>
+<${tag} class="gf-news-title"><a class="gf-link-quiet" href="${newsArticlePath(article.id)}">${escapeHtml(article.title)}</a></${tag}>
 <p>${escapeHtml(article.body[0])}</p>
 </li>`;
 }
@@ -139,6 +158,12 @@ ${articleMeta(article)}
  * **一覧へのリンクは、トップに出しきれない記事があるときだけではなく常に置く。**
  * 一覧には最終更新日と全記事があり、行き先は記事が 1 本でもあれば実在する。
  *
+ * ## 見出しの行（仕様 2.5.3 / #471）
+ *
+ * **左に見出しと最終更新日、右に「お知らせをすべて見る」（小さい副のボタン）を同じ行に置く。** 作品の節の見出しの行
+ * （`src/home.ts` の `.gf-home-head`）と同じ行の部品を使う。**HTML の順は 見出し → 最終更新日 → ボタン → 記事の行**で、
+ * 見た目の順と Tab の順も同じである。
+ *
  * **クラス名に `gf-home-section` を使わない。** そちらは作品の 4 節の目印で、
  * `test/home.test.ts` が節の数を数えている。
  *
@@ -149,18 +174,16 @@ export function renderHomeNewsSection(articles: readonly NewsArticle[]): string 
   if (articles.length === 0) {
     return '';
   }
-  const items = articles
-    .slice(0, HOME_NEWS_LIMIT)
-    .map((article) => renderListItem(article, 3))
-    .join('\n');
   return `
 <section class="gf-news-section" aria-labelledby="gf-news-heading">
+<div class="gf-home-head">
+<div class="gf-news-heading">
 <h2 id="gf-news-heading">${NEWS_TITLE}</h2>
 ${lastUpdatedLine(articles)}
-<ul class="gf-news-list">
-${items}
-</ul>
-<p class="gf-news-more"><a href="${NEWS_PATH}">お知らせをすべて見る</a></p>
+</div>
+<a class="gf-button gf-button-secondary gf-button-sm" href="${NEWS_PATH}">お知らせをすべて見る</a>
+</div>
+${renderList(articles.slice(0, HOME_NEWS_LIMIT), 3)}
 </section>`;
 }
 
@@ -172,14 +195,11 @@ ${items}
  * @returns HTML
  */
 function newsListPage(articles: readonly NewsArticle[], viewer: SiteViewer): string {
-  const items = articles.map((article) => renderListItem(article, 2)).join('\n');
   return `${siteHead({ title: `${NEWS_TITLE} - Game Forge`, viewer })}
 <h1>${NEWS_TITLE}</h1>
 <p>Game Forge の運営からのお知らせです。</p>
 ${lastUpdatedLine(articles)}
-<ul class="gf-news-list">
-${items}
-</ul>
+${renderList(articles, 2)}
 ${siteFooter()}
 `;
 }
@@ -188,6 +208,8 @@ ${siteFooter()}
  * 記事 1 本の画面。
  *
  * **`<title>` は記事の見出しである**——パンくずの末尾の名前になる（2.3.10）。
+ *
+ * **本文は 42rem のまま**（長い文を読ませる画面。仕様 2.5.3）。**一覧へ戻る導線は小さい副のボタン**（2.5.5。移動なので `<a>`）。
  *
  * @param article 記事
  * @param viewer いま見ている人と画面
@@ -201,7 +223,7 @@ ${articleMeta(article)}
 <h1>${escapeHtml(article.title)}</h1>
 ${paragraphs}
 </article>
-<p class="gf-news-more"><a href="${NEWS_PATH}">お知らせの一覧へ</a></p>
+<p class="gf-news-more"><a class="gf-button gf-button-secondary gf-button-sm" href="${NEWS_PATH}">お知らせの一覧へ</a></p>
 ${siteFooter()}
 `;
 }

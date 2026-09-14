@@ -830,7 +830,7 @@ describe('いいねした作品のカードも作者ページへ辿れる（#330
 
     const body = await (await openLiked(await sessionCookie(me))).text();
     expect(body).toContain(workPagePath(game));
-    expect(body).toContain(`<a class="gf-card-author" href="${authorPagePath(author)}">`);
+    expect(body).toContain(`<a class="gf-card-author gf-link-quiet" href="${authorPagePath(author)}">`);
     expect(body).toContain('>リンクになる作者</a>');
     // 綴りの側も見る（選ばなくなったら赤くなる）。
     expect(likedWorksSql(1)).toContain('g.author_id');
@@ -848,7 +848,7 @@ describe('いいねした作品のカードにもタグが出る（#376 / 仕様
     await like(me, game);
 
     const body = await (await openLiked(await sessionCookie(me))).text();
-    expect(body).toContain('<a class="gf-card-genre" href="/works?tag=race-sports">レース・スポーツ</a>');
+    expect(body).toContain('<a class="gf-chip gf-card-genre" href="/works?tag=race-sports">レース・スポーツ</a>');
     expect(likedWorksSql(1)).toContain('g.tag1, g.tag2, g.tag3');
   });
 });

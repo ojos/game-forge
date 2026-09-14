@@ -794,7 +794,7 @@ describe('表示（ヘッダ・カード・作者ページ・登録情報）', (
       hasShot: false,
     };
     expect(renderWorkCard({ ...base, authorAvatarSetAt: NOW }, SANDBOX_ORIGIN)).toContain(
-      `<a class="gf-card-author" href="${authorPagePath(authorId)}"><span class="gf-avatar" aria-hidden="true"><img src="${SANDBOX_ORIGIN}/avatars/${authorId}.webp?v=${NOW}"`,
+      `<a class="gf-card-author gf-link-quiet" href="${authorPagePath(authorId)}"><span class="gf-avatar" aria-hidden="true"><img src="${SANDBOX_ORIGIN}/avatars/${authorId}.webp?v=${NOW}"`,
     );
     for (const version of [null, undefined, '1800200000', 0, -1, 1.5]) {
       const html = renderWorkCard({ ...base, authorAvatarSetAt: version as never }, SANDBOX_ORIGIN);

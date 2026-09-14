@@ -2,7 +2,7 @@ import { SELF, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes, devRoutesEnabled, handleAppRequest } from '../src/app.js';
 import { PUBLISHED_STATUS } from '../src/games.js';
-import { HOME_PATH } from '../src/home.js';
+import { CLOSED_BETA_NOTICE, HOME_PATH } from '../src/home.js';
 import {
   HOME_CACHE_KEY,
   HOME_SECTION_LIMIT,
@@ -10,8 +10,8 @@ import {
   OFFICIAL_SECTION_TITLE,
 } from '../src/home-feed.js';
 import { purgeListCache } from '../src/list-cache.js';
-import { SIGNUP_PATH } from '../src/paths.js';
-import { LOGIN_PATH } from '../src/auth/google.js';
+import { GENERATE_PAGE_PATH, INVITES_PATH, SIGNUP_PATH } from '../src/paths.js';
+import { MY_WORKS_PATH } from '../src/works-paths.js';
 import { findDuplicateRoutes } from '../src/routes.js';
 import { workPagePath } from '../src/work-page.js';
 import { worksListPath } from '../src/works-list.js';
@@ -181,24 +181,40 @@ describe('公開トップ（#89）', () => {
     expect(body).not.toContain('ローカル開発用の索引');
   });
 
-  it('`/` から登録とログインの両方へ辿れる', async () => {
-    const body = await (await SELF.fetch(`${APP_ORIGIN}${HOME_PATH}`)).text();
-    expect(body).toContain(`href="${SIGNUP_PATH}"`);
-    expect(body).toContain(`href="${LOGIN_PATH}"`);
+});
+
+describe('トップの案内を「いまの状態」の告知 1 つに絞る（#471。仕様 2.3.3 の #435 注記）', () => {
+  it('告知のブロックがちょうど 1 つあり、ヘッダの直後（作品の節より前）に置かれる', async () => {
+    // 節が 1 つも無いと並びを確かめられないので、公開作品を 1 件仕込む。
+    await seedPublished();
+    const body = pageBodyOf(await openHome());
+    expect(body.split('class="gf-block gf-home-notice"').length - 1).toBe(1);
+    expect(body).toContain(`<p>${CLOSED_BETA_NOTICE}</p>`);
+    // **告知が本文の先頭のブロックである**（ヘッダ → 告知 → 作品の 4 節 → お知らせ）。
+    const notice = body.indexOf('gf-home-notice');
+    expect(notice).toBeGreaterThan(0);
+    expect(notice).toBeLessThan(body.indexOf('<section class="gf-home-section"'));
+    // 文面は 2.3.3 の注記の案。冒頭の半文がサイトの正体を示すただ 1 つの文である。
+    expect(CLOSED_BETA_NOTICE).toContain('プロンプト 1 行から 2D ゲームを作れるサービスです。');
+    expect(CLOSED_BETA_NOTICE).toContain('招待制のクローズドβ');
+    expect(CLOSED_BETA_NOTICE).toContain('生成は招待コードをお持ちの方に限ります');
   });
 
-  it('「いまの状態」が、作品ページで遊べて公開できることに合っている（#402）', async () => {
-    const body = pageBodyOf(await (await SELF.fetch(`${APP_ORIGIN}${HOME_PATH}`)).text());
-    const start = body.indexOf('<h2>いまの状態</h2>');
-    const end = body.indexOf('<h2>はじめる</h2>');
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
-    const status = body.slice(start, end);
-
-    // #128 の時点の「試遊と公開の画面はまだ準備中」を残さない。**作った作品を開く手段が
-    // 無いと読める。** 作品ページ（`/works/<game_id>`）では既に遊べて公開もできる。
-    expect(status).not.toContain('準備中');
-    expect(status).toContain('作品ページで遊んで確かめてから公開できます');
+  it('「はじめる」「参加している方へ」と冒頭のサイト説明が無い', async () => {
+    const body = pageBodyOf(await openHome());
+    expect(body).not.toContain('はじめる');
+    expect(body).not.toContain('参加している方へ');
+    expect(body).not.toContain('<h2>いまの状態</h2>');
+    // 冒頭のサイト説明の全文（FAQ の先頭へ移した。`src/faq.ts` の `about`）。
+    expect(body).not.toContain('ブラウザで遊べる 2D ゲームが生まれます');
+    // 生成の説明（待ち時間・下書き・公開。FAQ の `after-generation` へ移した）。
+    expect(body).not.toContain('下書きとして保存されます');
+    expect(body).not.toContain('1〜2 分');
+    // **本文から外した導線**（行き先はヘッダとアカウントのメニュー。2.3.3 の注記の表）。
+    for (const path of [SIGNUP_PATH, GENERATE_PAGE_PATH, MY_WORKS_PATH, INVITES_PATH]) {
+      expect(body, path).not.toContain(`href="${path}"`);
+    }
+    expect(body).not.toContain('gf-cta');
   });
 });
 
@@ -251,7 +267,8 @@ describe('ハブ型のトップ（#329 / M9-3。仕様 2.3.1 / 2.3.3）', () => 
     expect(response.status).toBe(200);
     const body = await response.text();
     expect(body).toContain('<h1 class="gf-header-title">');
-    expect(body).toContain(`href="${SIGNUP_PATH}"`);
+    // **告知は D1 を読まないので残る**（仕様 2.3.3 の #435 注記。#471 で案内を告知 1 つに絞った）。
+    expect(body).toContain(CLOSED_BETA_NOTICE);
     expect(body).not.toContain('gf-home-section');
   });
 
@@ -295,7 +312,14 @@ describe('ハブ型のトップ（#329 / M9-3。仕様 2.3.1 / 2.3.3）', () => 
     }
     // **公式サンプルの節には置かない**（`/works` の 3 軸はどれも公式サンプルを絞らない。
     // 行き先が実在しないリンクを置かない。2.3.7 / 4.4）。
-    expect(body.split('class="gf-home-more"').length - 1).toBe(3);
+    expect(body.split('gf-home-more"').length - 1).toBe(3);
+    // **見出しの行の右に置く小さい副のボタン**（仕様 2.5.3 / 2.5.5。#471）。HTML の順は 見出し → ボタン。
+    const recent = body.slice(body.indexOf('<section class="gf-home-section" aria-labelledby="gf-home-recent"'));
+    const head = recent.slice(0, recent.indexOf('</div>'));
+    expect(head).toContain('<div class="gf-home-head">');
+    expect(head.indexOf('</h2>')).toBeLessThan(
+      head.indexOf('<a class="gf-button gf-button-secondary gf-button-sm gf-home-more"'),
+    );
   });
 
   it('1 節に並ぶカードは 8 枚までである', async () => {
@@ -307,7 +331,7 @@ describe('ハブ型のトップ（#329 / M9-3。仕様 2.3.1 / 2.3.3）', () => 
     const sections = body.split('<section class="gf-home-section"').slice(1);
     expect(sections.length).toBe(4);
     for (const section of sections) {
-      const cards = section.split('<li class="gf-card">').length - 1;
+      const cards = section.split('<li class="gf-card gf-block">').length - 1;
       expect(cards).toBeGreaterThan(0);
       expect(cards).toBeLessThanOrEqual(HOME_SECTION_LIMIT);
     }
@@ -315,12 +339,12 @@ describe('ハブ型のトップ（#329 / M9-3。仕様 2.3.1 / 2.3.3）', () => 
 
   it('作品が 0 本でも 200 を返し、節を 1 つも出さない', async () => {
     // **空の節を出さない**（見出しだけが並ぶ画面は、出来ていないものを出来ているように
-    // 見せる）。案内と導線は残る。
+    // 見せる）。告知は残る。
     const body = await openHome({ ...env, DB: EMPTY_DB } as unknown as Env);
     expect(body).toContain('<h1 class="gf-header-title">');
     expect(body).not.toContain('gf-home-section');
     expect(body).not.toContain(OFFICIAL_SECTION_TITLE);
-    expect(body).toContain(`href="${SIGNUP_PATH}"`);
+    expect(body).toContain(CLOSED_BETA_NOTICE);
     // 後のテストが空の保存物を読まないよう捨てる（TTL 60 秒を待たない）。
     await purgeListCache(HOME_CACHE_KEY);
   });

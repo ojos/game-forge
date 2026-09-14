@@ -190,13 +190,34 @@ describe('admin の全画面の外枠（2.4.5 / #266 と同じ 3 項目）', () 
     }
   });
 
-  it('どの画面の admin のヘッダにも、ロゴの画像と「管理」が 1 つのリンクにある（#440）', async () => {
+  it('どの画面の admin のヘッダにも、ロゴの画像と「管理」のチップが 1 つのリンクにある（#440 / 仕様 2.5.6 / #469）', async () => {
     for (const path of getPaths()) {
       const { body } = await open(path);
       expect(body.split(siteLogo()).length - 1, `${path} のロゴの数`).toBe(1);
+      // **「管理」は押せない札のチップ**（`<span class="gf-chip">`）で、リンクの名前は「Game Forge 管理」のまま。
       expect(body, `${path} のロゴは審査キューへのリンク`).toContain(
-        `<a class="gf-admin-logo" href="${ADMIN_HOME_PATH}">${siteLogo()}<span>管理</span></a>`,
+        `<a class="gf-admin-logo" href="${ADMIN_HOME_PATH}">${siteLogo()}<span class="gf-chip">管理</span></a>`,
       );
+    }
+  });
+
+  it('どの画面の admin のヘッダのナビも控えめの小さいボタンで、いまの画面の項目にだけ aria-current がある（仕様 2.5.6 / #469）', async () => {
+    // **経路表の全画面で「印がちょうど 1 つで、その行き先がその画面である」を見る。** 現在地は題名とナビの札の
+    // 一致で決めている（`src/admin/shell.ts` の `adminNav`）ので、札と違う題名の画面を足すとここで赤くなる。
+    const paths = getPaths();
+    expect(paths.length).toBeGreaterThan(1);
+    for (const path of paths) {
+      const { body } = await open(path);
+      const nav = /<nav class="gf-admin-nav"[^>]*>([\s\S]*?)<\/nav>/u.exec(body)?.[1] ?? '';
+      const links = nav.match(/<a\b[^>]*>/gu) ?? [];
+      expect(links.length, `${path} のナビの項目の数`).toBeGreaterThan(1);
+      for (const link of links) {
+        expect(link, `${path} のナビの項目の見た目`).toMatch(/^<a class="gf-button gf-button-tertiary gf-button-sm" href="/u);
+      }
+      const current = links.filter((link) => link.includes('aria-current="page"'));
+      expect(current, `${path} のナビの現在地の印`).toEqual([
+        `<a class="gf-button gf-button-tertiary gf-button-sm" href="${path}" aria-current="page">`,
+      ]);
     }
   });
 

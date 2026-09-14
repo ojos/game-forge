@@ -19,7 +19,8 @@ import { FAQ_PATH, PRIVACY_PATH } from '../src/legal-paths.js';
 import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH } from '../src/ogp.js';
 import { NON_PAGE_PATHS, ancestorPathsOf, ssrPagePaths } from '../src/page-paths.js';
-import { GENERATE_PAGE_PATH, HOME_PATH } from '../src/paths.js';
+import { NEWS_PATH } from '../src/news-paths.js';
+import { GENERATE_PAGE_PATH, HOME_PATH, INVITES_PATH } from '../src/paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { HANDLE_PAGE_PREFIX } from '../src/handle-paths.js';
 import { AUTHOR_PAGE_PREFIX } from '../src/users-page-paths.js';
@@ -646,15 +647,20 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
       expect(header!, `${path} のヘッダに登録情報が出ている`).not.toContain(
         `href="${ACCOUNT_PATH}"`,
       );
+      // **招待コードの発行もログイン済みのメニューの中だけ**（2.3.7 の #435 注記 / #469）。
+      expect(header!, `${path} のヘッダに招待コードの発行が出ている`).not.toContain(
+        `href="${INVITES_PATH}"`,
+      );
       // **ログアウトするものが無い人に、アカウントのメニューもログアウトも出さない**（#372）。
       expect(accountMenuOf(header!), `${path} の未ログインのヘッダにメニューがある`).toBeNull();
       expect(logoutFormsOf(body), `${path} の未ログインの画面にログアウトがある`).toEqual([]);
     }
   });
 
-  it('ログイン済みのヘッダは、アカウントのメニューに 4 つを収める（ログインは出さない。#372）', async () => {
+  it('ログイン済みのヘッダは、アカウントのメニューに 5 つを収める（ログインは出さない。#372 / #469）', async () => {
     // **v1.57 で 2.3.7 を覆した形である。** 自分の作品・いいねした作品・登録情報・ログアウトを
     // アバターのドロップダウンへ収め、**閉じたヘッダの項目列には本人だけの画面を出さない。**
+    // **#435 の注記で招待コードの発行（`/invites`）を足した**（トップの本文が唯一の入口だった）。
     for (const path of getPaths()) {
       const header = headerOf((await open(path)).body);
       expect(header, `${path} にヘッダが無い`).not.toBeNull();
@@ -663,13 +669,14 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
       for (const [link, label] of [
         [MY_WORKS_PATH, '自分の作品'],
         [LIKED_WORKS_PATH, 'いいねした作品'],
+        [INVITES_PATH, '招待コードを発行する'],
         [ACCOUNT_PATH, '登録情報'],
       ] as const) {
-        expect(menu!, `${path} のメニューに「${label}」が無い`).toContain(`href="${link}"`);
+        expect(menu!, `${path} のメニューに「${label}」が無い`).toContain(`href="${link}">${label}</a>`);
       }
       expect(logoutFormsOf(menu!), `${path} のメニューにログアウトが無い`).toHaveLength(1);
       const outside = header!.replace(menu!, '');
-      for (const link of [MY_WORKS_PATH, LIKED_WORKS_PATH, ACCOUNT_PATH]) {
+      for (const link of [MY_WORKS_PATH, LIKED_WORKS_PATH, INVITES_PATH, ACCOUNT_PATH]) {
         expect(outside, `${path} のヘッダの項目列（メニューの外）に ${link} がある`).not.toContain(
           `href="${link}"`,
         );
@@ -721,9 +728,11 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
     }
   });
 
-  it('全画面のヘッダに、公開一覧へ GET で送る検索窓が 1 つある（ログイン状態によらない。#378）', async () => {
+  it('全画面のヘッダに、公開一覧へ GET で送る検索窓が置き場所ごとに 1 つずつある（ログイン状態によらない。#378 / #469）', async () => {
     // **2.3.7 v1.57 の「検索窓」**。素の GET のフォームで、JavaScript を要求しない。
     // **`size` 属性を使わない**（#282 で 390px の版面を押し広げた）。ラベルは見えないが読み上げに渡す。
+    // **#469 で、広い段用（ナビの中）と狭い段用（2 行目）の 2 か所に置いた。** 見えるのは段ごとに片方だけで、
+    // 見えない側は `display: none`（下の CSS の検査）。`id` は置き場所ごとに別の値である。
     const { pages } = await anonymousPages();
     const signedIn: { path: string; body: string }[] = [];
     for (const path of getPaths()) {
@@ -732,18 +741,54 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
     for (const { path, body } of [...pages, ...signedIn]) {
       const header = headerOf(body)!;
       const forms = header.match(/<form class="gf-header-search"[\s\S]*?<\/form>/gu) ?? [];
-      expect(forms, `${path} のヘッダの検索窓の数`).toHaveLength(1);
-      const form = forms[0]!;
-      expect(form, `${path} の検索窓`).toMatch(
-        new RegExp(`^<form class="gf-header-search" role="search" method="get" action="${PUBLIC_WORKS_PATH}">`, 'u'),
+      expect(forms, `${path} のヘッダの検索窓の数`).toHaveLength(2);
+      for (const [form, id] of [
+        [forms[0]!, 'gf-header-search-q'],
+        [forms[1]!, 'gf-header-search-q-narrow'],
+      ] as const) {
+        expect(form, `${path} の検索窓`).toMatch(
+          new RegExp(`^<form class="gf-header-search" role="search" method="get" action="${PUBLIC_WORKS_PATH}">`, 'u'),
+        );
+        expect(form, `${path} の検索窓の入力欄`).toContain(`name="${WORK_SEARCH_FIELD}"`);
+        expect(form, `${path} の検索窓の上限`).toContain(`maxlength="${MAX_SEARCH_LENGTH}"`);
+        expect(form, `${path} の検索窓のラベル`).toContain(`<label class="gf-header-search-label" for="${id}">`);
+        expect(form, `${path} の検索窓の入力欄の id`).toContain(`id="${id}"`);
+        expect(form, `${path} の検索窓に size 属性がある`).not.toMatch(/\ssize=/u);
+        expect(form, `${path} の検索窓にイベント属性がある`).not.toMatch(/\son[a-z]+=/u);
+      }
+      // **広い段用はナビの中、狭い段用はナビの後ろの 2 行目にある**（HTML の順＝見た目の順）。
+      const nav = /<nav class="gf-header-nav"[\s\S]*?<\/nav>/u.exec(header)?.[0] ?? '';
+      expect(nav, `${path} のナビに広い段用の検索窓が無い`).toContain(forms[0]!);
+      expect(nav, `${path} のナビに狭い段用の検索窓がある`).not.toContain(forms[1]!);
+      expect(header.indexOf(forms[1]!), `${path} の狭い段用の検索窓がナビより前にある`).toBeGreaterThan(
+        header.indexOf('</nav>'),
       );
-      expect(form, `${path} の検索窓の入力欄`).toContain(`name="${WORK_SEARCH_FIELD}"`);
-      expect(form, `${path} の検索窓の上限`).toContain(`maxlength="${MAX_SEARCH_LENGTH}"`);
-      expect(form, `${path} の検索窓のラベル`).toContain('<label class="gf-header-search-label" for="gf-header-search-q">');
-      expect(form, `${path} の検索窓の入力欄の id`).toContain('id="gf-header-search-q"');
-      expect(form, `${path} の検索窓に size 属性がある`).not.toMatch(/\ssize=/u);
-      expect(form, `${path} の検索窓にイベント属性がある`).not.toMatch(/\son[a-z]+=/u);
     }
+  });
+
+  it('ヘッダは段ごとの並びを CSS で入れ替えず、段ごとに検索窓とログインの片方だけを見せる宣言を持つ（#469 / PR #486）', () => {
+    // **HTML の順＝見た目の順＝Tab の順にする。** `order` で並びを入れ替えると Tab の順と見た目がずれ、
+    // `display: contents` は一部の支援技術で `<nav>` のランドマークを消す（PR #486 の Copilot code review）。
+    const css = env.TEST_APP_CSS;
+    // 宣言だけを見る（コメントの中の説明は数えない）。
+    expect(css.replaceAll(/\/\*[\s\S]*?\*\//gu, ''), 'app.css に display: contents の宣言がある').not.toMatch(
+      /display:\s*contents/u,
+    );
+    const headerSection = css.slice(css.indexOf('@section header'), css.indexOf('@section breadcrumb'));
+    const shellSection = css.slice(css.indexOf('@section shell'), css.indexOf('@section base'));
+    for (const [name, section] of [
+      ['header', headerSection],
+      ['shell', shellSection],
+    ] as const) {
+      expect(section.length, `@section ${name} が見つかりません`).toBeGreaterThan(0);
+      expect(section.replaceAll(/\/\*[\s\S]*?\*\//gu, ''), `@section ${name} に order がある`).not.toMatch(/\border:/u);
+    }
+    // 狭い段（既定）: ナビの中の広い段用を消す。広い段（@media）: 2 行目を消し、ナビの中を出す。
+    expect(headerSection).toMatch(/\.gf-header-nav \.gf-header-search,\s*\.gf-header-nav \.gf-header-login\s*\{\s*display:\s*none;/u);
+    const wide = /@media \(min-width: 768px\) \{([\s\S]*?)\n\}/u.exec(shellSection)?.[1] ?? '';
+    expect(wide).toMatch(/\.gf-header-row2\s*\{\s*display:\s*none;/u);
+    expect(wide).toMatch(/\.gf-header-nav \.gf-header-search\s*\{\s*display:\s*flex;/u);
+    expect(wide).toMatch(/\.gf-header-nav \.gf-header-login\s*\{\s*display:\s*inline-flex;/u);
   });
 
   it('ヘッダの検索窓は、入力欄とボタンを横 1 行に並べる宣言を持つ（共通の form の縦積みを上書きする。#378）', () => {
@@ -846,32 +891,57 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
     }
   });
 
-  it('フッタはサービス / 法務 / お問い合わせを持ち、空の区画と置かないと決めた区画が無い', async () => {
+  it('フッタは見出しの無い 6 項目を持ち、ヘッダと重複する行き先と置かないと決めた項目が無い（#435 / #469）', async () => {
+    // **並びと文言の正本の検査は `test/legal.test.ts` が持つ。** ここは全画面に同じフッタが乗っていることを見る。
     for (const path of getPaths()) {
       const footer = footerOf((await open(path)).body);
       expect(footer, `${path} にフッタが無い`).not.toBeNull();
-      for (const link of [
-        PUBLIC_WORKS_PATH,
-        GENERATE_PAGE_PATH,
-        TERMS_PATH,
-        TAKEDOWN_PATH,
-        PRIVACY_PATH,
+      const links = hrefsOf(footer!);
+      expect(links, `${path} のフッタの行き先`).toEqual([
+        NEWS_PATH,
         FAQ_PATH,
-      ]) {
-        expect(footer!, `${path} のフッタに ${link} が無い`).toContain(`href="${link}"`);
+        TERMS_PATH,
+        PRIVACY_PATH,
+        links[4]!,
+        TAKEDOWN_PATH,
+      ]);
+      expect(links[4], `${path} のフッタのお問い合わせ`).toMatch(/^mailto:/u);
+      // **区画の見出しを置かない**（#331 の 3 区画を #435 が覆した）。
+      expect(footer!, `${path} のフッタに見出しがある`).not.toMatch(/<h[1-6]\b/u);
+      // **ヘッダにある「作品をさがす」「つくる」は置かない**（同じ行き先を 1 画面に 2 度並べない）。
+      for (const absent of [PUBLIC_WORKS_PATH, GENERATE_PAGE_PATH]) {
+        expect(footer!, `${path} のフッタに ${absent} がある`).not.toContain(`href="${absent}"`);
       }
-      // **見出しだけの区画を出さない**（#372）。お問い合わせは #372 が枠だけを置き、
-      // #373 が行き先（窓口のメールアドレスとよくある質問）を入れた。
-      const groups = footer!.split('<div class="gf-footer-group">').slice(1);
-      expect(groups.length, `${path} のフッタの区画が 3 つ未満`).toBeGreaterThanOrEqual(3);
-      for (const group of groups) {
-        expect(group, `${path} のフッタに項目の無い区画がある`).toContain('<li><a href=');
-      }
-      // **行き先が実在しない区画は、枠も置かない**（2.3.7 / 2.3.14。v1.57 でも維持）。
+      // **行き先が実在しない項目は、枠も置かない**（2.3.7 / 2.3.14。v1.57 でも #435 でも維持）。
       for (const absent of ['会社情報', 'SNS']) {
         expect(footer!, `${path} のフッタに ${absent} の区画がある`).not.toContain(absent);
       }
     }
+  });
+
+  it('トップの <h1> はちょうど 1 つでヘッダのロゴであり、トップ以外ではロゴが <h1> でない（仕様 2.5.6 / #469）', async () => {
+    // **本文の `<h1>Game Forge</h1>` を消し、ロゴを `<h1>` で包むことを同じ PR で行った**——`<h1>` が 2 つ / 0 個の
+    // 期間を作らないため（#469 の intake）。全画面 × ログイン両状態で見る。
+    const { pages } = await anonymousPages();
+    const signedIn: { path: string; body: string }[] = [];
+    for (const path of getPaths()) {
+      signedIn.push({ path, body: (await open(path)).body });
+    }
+    let topSeen = 0;
+    for (const { path, body } of [...pages, ...signedIn]) {
+      const header = headerOf(body)!;
+      if (path === HOME_PATH) {
+        topSeen += 1;
+        expect(body.match(/<h1\b/gu), `${path} の <h1> の数`).toHaveLength(1);
+        expect(header, `${path} のヘッダのロゴが <h1> でない`).toContain(
+          `<h1 class="gf-header-title"><a class="gf-header-logo" href="${HOME_PATH}">${siteLogo()}</a></h1>`,
+        );
+        continue;
+      }
+      expect(header, `${path} のヘッダに <h1> がある`).not.toMatch(/<h1\b/u);
+    }
+    // **トップを 1 度も開かないまま緑にしない**（未ログインとログイン済みの 2 回）。
+    expect(topSeen).toBe(2);
   });
 
   it('フッタはログイン状態で変わらない（出し分けはヘッダだけが持つ）', async () => {
@@ -882,8 +952,8 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
       expect(footer, `${path} のフッタがログイン状態で変わっている`).toBe(
         footerOf((await open(path)).body),
       );
-      // 本人だけの画面と、ログインの導線はフッタに置かない（2.3.7 の 2 区画に無い）。
-      for (const absent of [MY_WORKS_PATH, ACCOUNT_PATH, LIKED_WORKS_PATH, LOGIN_PATH]) {
+      // 本人だけの画面と、ログインの導線はフッタに置かない（2.3.7 の #435 注記の 6 項目に無い）。
+      for (const absent of [MY_WORKS_PATH, ACCOUNT_PATH, LIKED_WORKS_PATH, INVITES_PATH, LOGIN_PATH]) {
         expect(footer!, `${path} のフッタに ${absent} がある`).not.toContain(`href="${absent}"`);
       }
     }

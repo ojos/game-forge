@@ -176,7 +176,6 @@ function renderHomePage(
     extraHead:
       '\n<meta name="description" content="プロンプト1行で生まれるブラウザ2Dゲームと、フォーク型 UGC コミュニティ。招待制クローズドβ。">',
   })}
-<h1>Game Forge</h1>
 <p>プロンプト 1 行から、ブラウザで遊べる 2D ゲームが生まれます。
    気に入った作品は<strong>改造（フォーク）</strong>して、自分の 1 本として公開できます。</p>
 ${sections.map((section) => renderSection(section, avatarOrigin)).join('\n')}

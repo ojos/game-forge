@@ -90,6 +90,33 @@ export const ADMIN_HEADER_MARK = '<header class="gf-admin-header">';
 export const ADMIN_FOOTER_MARK = '<footer class="gf-admin-footer">';
 
 /**
+ * ヘッダのナビを組み立てる（仕様 2.5.6 / #469）。
+ *
+ * **項目は小さい控えめのボタン**（`.gf-button-tertiary`。利用者向けのヘッダのナビと同じ段）で、**いま開いている
+ * 画面の項目に `aria-current="page"` を付ける**——見た目（面の色）は `admin.css` がこの属性で付けるので、読み上げと
+ * 見た目が同じ 1 つの印から決まる。
+ *
+ * ## いまの画面は、題名とナビの札の一致で決める
+ *
+ * **管理画面の題名は、ナビの札と同じ語である**（審査キュー / 利用者 / 削除依頼 / 操作の履歴）。`adminHead` の
+ * 呼び出しを 4 画面とも変えずに現在地を出せる。**一致しない画面を足した日は、どの項目にも印が付かない**——
+ * `test/admin-page-shell.test.ts` が経路表の全画面について「印がちょうど 1 つで、その行き先がその画面である」を
+ * 見るので、そこで赤くなる。
+ *
+ * **いまの画面もリンクのまま残す**（`<span>` に置き換えない）。どの画面からも全部の画面へ辿れることを
+ * `test/admin-screens.test.ts` がリンクで見ている。
+ *
+ * @param title `adminHead` に渡された題名（接尾辞を足す前）
+ * @returns HTML
+ */
+function adminNav(title: string): string {
+  return ADMIN_NAV.map((item) => {
+    const current = item.label === title ? ' aria-current="page"' : '';
+    return `<a class="gf-button gf-button-tertiary gf-button-sm" href="${item.path}"${current}>${escapeHtml(item.label)}</a>`;
+  }).join('\n    ');
+}
+
+/**
  * 管理画面の文書の頭とヘッダを組み立てる。
  *
  * **`noindex` を必ず付ける。** 管理画面は検索結果に出てよいものではない。
@@ -99,13 +126,14 @@ export const ADMIN_FOOTER_MARK = '<footer class="gf-admin-footer">';
  * 行ける**必要がある（#406 で削除依頼を足して 4 枚）——`app` ホストの行き先は 1 本も混ぜない（2.4.1 / 4.4。
  * `test/admin-page-shell.test.ts` が照合する）。
  *
+ * **ロゴの横に「管理」のチップを置く**（仕様 2.5.6 / #469）。利用者向けのホストと見分けるための印で、押せない札の
+ * チップ（`<span class="gf-chip">`）を**ロゴと同じリンクの中**に置く——リンクの名前は「Game Forge 管理」のまま
+ * （#440 から変えない）。
+ *
  * @param title `<title>` の中身（接尾辞はこの関数が足す）
  * @returns `<!doctype html>` から始まる文書の頭と、管理画面のヘッダ
  */
 export function adminHead(title: string): string {
-  const nav = ADMIN_NAV.map(
-    (item) => `<a href="${item.path}">${escapeHtml(item.label)}</a>`,
-  ).join('\n    ');
   return `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -113,9 +141,9 @@ export function adminHead(title: string): string {
 <link rel="stylesheet" href="${ADMIN_CSS_PATH}">
 <meta name="robots" content="noindex">
 <title>${escapeHtml(title + ADMIN_TITLE_SUFFIX)}</title>
-<header class="gf-admin-header"><a class="gf-admin-logo" href="${ADMIN_HOME_PATH}">${siteLogo()}<span>管理</span></a>
-  <nav class="gf-admin-nav">
-    ${nav}
+<header class="gf-admin-header"><a class="gf-admin-logo" href="${ADMIN_HOME_PATH}">${siteLogo()}<span class="gf-chip">管理</span></a>
+  <nav class="gf-admin-nav" aria-label="管理画面の行き先">
+    ${adminNav(title)}
   </nav>
 </header>`;
 }

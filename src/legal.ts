@@ -20,9 +20,8 @@ import type { Route } from './routes.js';
 import { html } from './routes.js';
 import type { NavItem, SiteViewer } from './html.js';
 import {
-  FOOTER_SERVICE_ITEMS,
   escapeHtml,
-  footerSection,
+  newsBreadcrumbParents,
   resolveSiteViewer,
   siteHead,
   siteLogo,
@@ -34,7 +33,9 @@ import {
   TAKEDOWN_THANKS_PATH,
   TERMS_PATH,
 } from './legal-paths.js';
-import { CONTACT_EMAIL, CONTACT_MAILTO } from './service-contact.js';
+import type { NewsArticle } from './news-articles.js';
+import { NEWS_ARTICLES } from './news-articles.js';
+import { CONTACT_MAILTO } from './service-contact.js';
 import { MAX_BODY_LENGTH, MAX_CLAIMANT_LENGTH } from './takedown.js';
 
 // 画面の綴りの正本は値だけの葉である（外枠がパンくずのために借りる。`src/legal-paths.ts`）。
@@ -53,51 +54,53 @@ export const TAKEDOWN_FIELDS = {
 } as const;
 
 /**
- * フッタの法務の区画（2.3.7）。
+ * フッタの項目を並べる（2.3.7 の #435 注記 / 仕様 2.5.7 / #469）。
  *
- * 規約と削除依頼は実在し、削除依頼は #41 の acceptance 2 が「全ページのフッターから
- * 到達できる」ことを求めている唯一の窓口である。**プライバシーポリシーは v1.57 で足した**
- * （2.3.7 の v1.57 注記 / #373。画面は `src/privacy.ts`）。
+ * ## 見出しの無い 6 項目である
+ *
+ * **お知らせ / よくある質問 / 利用規約 / プライバシーポリシー / お問い合わせ（メール） / 削除依頼（権利者の方）**
+ * の順に並べ、**区画の見出しを置かない**（#331 の 3 区画を #435 が覆した）。並びと文言の正本は仕様 2.3.7 の
+ * #435 注記で、ここはその写しである。
+ *
+ * - **「作品をさがす」「つくる」を置かない**——全画面のヘッダにあり、同じ行き先を 1 画面に 2 度並べない
+ * - **お問い合わせのラベルにアドレスを出さない**（#373 の実装注記を #435 が覆した）。アドレスは FAQ と
+ *   `/privacy` の窓口に文字で出ている。ラベルは「押すとメールが開く」ことを伝える役に絞り、2 列の幅を押し広げない
+ * - **削除依頼は窓口の名前を先に置く**（「削除依頼（権利者の方）」）。6 項目がどれも行き先の名前から始まる
+ * - **会社情報・SNS は置かない**（行き先が実在しない。2.3.14）
+ *
+ * ## お知らせの記事が 0 本なら「お知らせ」を出さない
+ *
+ * **そのとき `src/news.ts` は一覧の経路を登録しない**（空の一覧を置かない。2.3.1 の #375 注記）ので、残すと
+ * 行き先の無いリンクになる（4.4 / 2.2）。パンくずの親と同じ条件で決める（`src/html.ts` の `newsBreadcrumbParents`）。
+ *
+ * **`/takedown` と一般の問い合わせ（`mailto:`）を混ぜない。** 前者は権利者向けの窓口で、一般の利用者の
+ * 不具合報告の行き先ではない（2.3.7 v1.57 の注記）——別の項目として並べる。
+ *
+ * @param articles お知らせの記事（画面が使う {@link NEWS_ARTICLES} を渡す。検査は 0 本も渡す）
+ * @returns 並べる項目（6 項目。記事が 0 本なら 5 項目）
  */
-const FOOTER_LEGAL_ITEMS: readonly NavItem[] = [
-  { path: TERMS_PATH, label: '利用規約' },
-  { path: TAKEDOWN_PATH, label: '権利者の方へ（削除依頼）' },
-  { path: PRIVACY_PATH, label: 'プライバシーポリシー' },
-];
+export function footerItems(articles: readonly NewsArticle[]): readonly NavItem[] {
+  return [
+    ...newsBreadcrumbParents(articles),
+    { path: FAQ_PATH, label: 'よくある質問' },
+    { path: TERMS_PATH, label: '利用規約' },
+    { path: PRIVACY_PATH, label: 'プライバシーポリシー' },
+    { path: CONTACT_MAILTO, label: 'お問い合わせ（メール）' },
+    { path: TAKEDOWN_PATH, label: '削除依頼（権利者の方）' },
+  ];
+}
 
 /**
- * フッタのお問い合わせの区画（2.3.7 v1.57 / #372 / #373）。
- *
- * **#372 が枠だけを先に置き、#373 が行き先を入れた。** 中身は 2.3.7 の v1.57 注記どおり
- * **一般の問い合わせ窓口**と**よくある質問（`/faq`）**の 2 つである。
- *
- * **窓口は画面ではなくメールアドレスである**（#373 の scope.out。問い合わせをフォームで
- * 受けて D1 へ保存しない）。宛先は `src/service-contact.ts` の 1 か所にあり、プライバシー
- * ポリシーの窓口もそこから組み立てる。**サイト内の行き先は経路表の GET 経路であること、
- * メールの窓口は `mailto:` の形であることを `test/page-shell.test.ts` が全画面で見る。**
- *
- * **ラベルにアドレスそのものを出す。** `mailto:` はメールの道具が設定されていない端末では
- * 押しても何も起きない（4.4 / 2.2）ので、書き写せる形でも見せる。
- *
- * `/takedown` をここへ入れないこと。あれは**権利者向け**の窓口で、一般の利用者の
- * 不具合報告の行き先ではない（2.3.7 v1.57 の注記）。
- */
-export const FOOTER_CONTACT_ITEMS: readonly NavItem[] = [
-  { path: CONTACT_MAILTO, label: `メールでのお問い合わせ（${CONTACT_EMAIL}）` },
-  { path: FAQ_PATH, label: 'よくある質問' },
-];
-
-/**
- * 全ページ共通のフッター（#41 の acceptance 2。#331 で 2 区画にした）。
+ * 全ページ共通のフッター（#41 の acceptance 2。#469 で仕様 2.5.7 の形にした）。
  *
  * **各ページで組み立てない。** 1 か所に置き、全画面がこれを呼ぶ。
  *
- * ## 区画は、行き先が実在するものだけである（2.3.7）
+ * ## 左にロゴ、右に項目を 2 列（仕様 2.5.7）
  *
- * いま出るのはサービス / 法務 / お問い合わせの 3 区画である（お問い合わせは #372 が枠を
- * 置き、#373 が行き先を入れた。{@link FOOTER_CONTACT_ITEMS}）。**会社情報・SNS は枠も置かない**
- * ——v1.57 でも行き先が実在しないと決めたままである（2.3.14）。判断の正本は仕様 2.3.7 で、
- * ここはその写しである。
+ * 並べる項目は {@link footerItems} が持つ。**上の罫線は器の端から端まで**で、フッタ自身の上の線として引く
+ * （#469 の前は `<hr>` を置いていた。`<hr>` は `@section base` の余白と濃い線を持ち、ヘッダの下の線と揃わない）。
+ * **項目は文章の外のリンク**（`.gf-link-quiet`。仕様 2.5.5）。組み方（2 列の格子・狭い段で縦に積む）は
+ * app.css の `@section footer` と `@section shell` が持つ。
  *
  * ## ログイン状態で出し分けない
  *
@@ -117,18 +120,16 @@ export const FOOTER_CONTACT_ITEMS: readonly NavItem[] = [
  * @returns HTML
  */
 export function siteFooter(): string {
-  // 空の区画は `footerSection` が空文字を返すので、行ごと落として空行を残さない。
-  const sections = [
-    footerSection('サービス', FOOTER_SERVICE_ITEMS),
-    footerSection('法務', FOOTER_LEGAL_ITEMS),
-    footerSection('お問い合わせ', FOOTER_CONTACT_ITEMS),
-  ].filter((section) => section !== '');
+  const items = footerItems(NEWS_ARTICLES)
+    .map((item) => `      <li><a class="gf-link-quiet" href="${item.path}">${escapeHtml(item.label)}</a></li>`)
+    .join('\n');
   return `
-<hr>
 <footer class="gf-footer">
   <div class="gf-footer-logo">${siteLogo()}</div>
   <nav class="gf-footer-nav" aria-label="フッタの行き先">
-${sections.join('\n')}
+    <ul>
+${items}
+    </ul>
   </nav>
 </footer>`;
 }

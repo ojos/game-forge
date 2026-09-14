@@ -61,7 +61,7 @@ import type { NewsArticle } from './news-articles.js';
 import { NEWS_ARTICLES } from './news-articles.js';
 import { NEWS_PATH } from './news-paths.js';
 import { ancestorPathsOf } from './page-paths.js';
-import { GENERATE_PAGE_PATH, HOME_PATH, SIGNUP_PATH } from './paths.js';
+import { GENERATE_PAGE_PATH, HOME_PATH, INVITES_PATH, SIGNUP_PATH } from './paths.js';
 import { readSessionCookie, verifySession } from './session.js';
 import { MAX_SEARCH_LENGTH, WORK_SEARCH_FIELD } from './work-search.js';
 import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './works-paths.js';
@@ -298,15 +298,28 @@ export interface NavItem {
 }
 
 /**
+ * ヘッダのナビの 1 項目（#469）。**見た目の強さ（仕様 2.5.5 のボタンの段）を項目が持つ。**
+ *
+ * **ナビは「控えめ」、「つくる」だけ「副」**（仕様 2.5.6）。**「主」は選べない形にする**——ヘッダは全画面に
+ * 出るので、主を置くと「1 画面に 1 つ」の枠を全画面で使い切り、作品ページの「改造する」とぶつかる（2.5.5）。
+ */
+interface HeaderNavItem extends NavItem {
+  /** ボタンの段（`.gf-button-tertiary` / `.gf-button-secondary`）。 */
+  readonly emphasis: 'tertiary' | 'secondary';
+}
+
+/**
  * ログイン状態によらずヘッダに出る項目（2.3.7）。
  *
  * **`/generate` は未ログインでも出す。** 行き先は実在し、未ログインで開けば登録と
  * ログインの導線が出る（`src/generate-page.ts` の `signedOutSection`）。4.4 / 2.2 が
  * 禁じているのは**押しても何も起きない**ボタンで、これはそれに当たらない。
+ *
+ * **フッタには置かない**（#435。全画面のヘッダにあるので、同じ行き先を 1 画面に 2 度並べない）。
  */
-const HEADER_COMMON_ITEMS: readonly NavItem[] = [
-  { path: PUBLIC_WORKS_PATH, label: '作品をさがす' },
-  { path: GENERATE_PAGE_PATH, label: 'つくる' },
+const HEADER_COMMON_ITEMS: readonly HeaderNavItem[] = [
+  { path: PUBLIC_WORKS_PATH, label: '作品をさがす', emphasis: 'tertiary' },
+  { path: GENERATE_PAGE_PATH, label: 'つくる', emphasis: 'secondary' },
 ];
 
 /**
@@ -321,29 +334,49 @@ const HEADER_COMMON_ITEMS: readonly NavItem[] = [
  * 外していた。**ドロップダウンの中身は、ヘッダの項目ではない**——増えるのは畳まれた
  * 中身で、閉じているヘッダの幅は 1 項目（アバター）ぶんのままである。「あなたの作品」の
  * 本文にある導線（`src/my-works.ts`）はそのまま残す。
+ *
+ * ## 招待コードの発行をここへ入れた（#435 / #469）
+ *
+ * **`/invites` の入口はトップの本文だけだった**（「参加している方へ」）。#435 がトップからその節を外すと決めたので、
+ * 入口を全画面のメニューへ移す（2.3.7 の #435 注記）。並びは注記のとおり、自分の作品 / いいねした作品 /
+ * 招待コードを発行する / 登録情報 / ログアウト である。
  */
 const ACCOUNT_MENU_ITEMS: readonly NavItem[] = [
   { path: MY_WORKS_PATH, label: '自分の作品' },
   { path: LIKED_WORKS_PATH, label: 'いいねした作品' },
+  { path: INVITES_PATH, label: '招待コードを発行する' },
   { path: ACCOUNT_PATH, label: '登録情報' },
 ];
 
-/** 未ログインのときだけ出る項目（2.3.7）。 */
-const HEADER_SIGNED_OUT_ITEMS: readonly NavItem[] = [{ path: LOGIN_PATH, label: 'ログイン' }];
+/**
+ * 未ログインのときだけ出る項目（2.3.7）。
+ *
+ * **行き先は Google の認証のまま**（#469 の scope.out）。`/signup` へ向けるのは M13-8（#472）で、
+ * `/signup` の作り替えと一緒に行う——先に切り替えると、ログインしたい人が「登録する」の画面に着く期間ができる。
+ */
+const HEADER_SIGNED_OUT_ITEMS: readonly HeaderNavItem[] = [
+  { path: LOGIN_PATH, label: 'ログイン', emphasis: 'tertiary' },
+];
 
 /**
- * 項目をリンクの列へ落とす。
+ * ヘッダのナビの項目を、小さいボタンの見た目のリンクの列へ落とす（仕様 2.5.5 / 2.5.6 / #469）。
+ *
+ * **要素は `<a>` のまま**——移動なので、見た目がボタンでもボタン要素にしない（2.5.5「要素は役割で選ぶ」）。
  *
  * **`label` も `escapeHtml` を通す。** いまはこのファイルが持つ固定文字列だが、
  * 出どころが変わったときに安全側が既定になっている形にしておく
  * （`src/invite-issuance.ts` と同じ理由）。
  *
  * @param items 並べる項目
+ * @param extraClass 足すクラス（狭い段で並びを変える目印。無ければ空文字）
  * @returns HTML
  */
-function navLinks(items: readonly NavItem[]): string {
+function headerButtons(items: readonly HeaderNavItem[], extraClass = ''): string {
   return items
-    .map((item) => `<a href="${item.path}">${escapeHtml(item.label)}</a>`)
+    .map(
+      (item) =>
+        `<a class="gf-button gf-button-${item.emphasis} gf-button-sm${extraClass}" href="${item.path}">${escapeHtml(item.label)}</a>`,
+    )
     .join('\n    ');
 }
 
@@ -376,8 +409,9 @@ function navLinks(items: readonly NavItem[]): string {
  *
  * ## アバターは既定の図形の上に、本人のアイコンを重ねる（#380）
  *
- * **既定の図形（CSS の円）はそのまま残し、その中へ画像を差し込む**（#433 の見た目の規約が決まる
- * まで、寸法も枠も変えない。利用者の決定）。**アイコンを設定していなければ配信は透明な 1px の画像を
+ * **既定の図形（CSS の円）はそのまま残し、その中へ画像を差し込む**（#380 の利用者の決定）。**ヘッダの円だけ
+ * 32px にした**（仕様 2.5.6。ナビのボタンと高さを揃える。#469）——寸法は app.css の `@section header` が持ち、
+ * カードや作者ページの円は変えていない。**アイコンを設定していなければ配信は透明な 1px の画像を
  * 返すので、図形だけが見える**——D1 を読まずに「設定していない」を表せる形である（{@link SiteViewer}）。読み上げには「アカウントのメニュー」という名前だけを渡す
  * （図形も画像も `aria-hidden` の内側）。
  *
@@ -432,18 +466,37 @@ export function avatarImage(url: string | null, options: { readonly lazy?: boole
  * - **`maxlength` は検索語の上限と同じ**（`src/work-search.ts` の `MAX_SEARCH_LENGTH`）。越えて
  *   送られても、画面が断る（ここは打ちすぎを早めに止めるだけである）
  * - **いま検索している語を戻す**（`value`）。利用者の入力なので escape する
+ * - **「検索」は小さい副のボタン**（#469。仕様 2.5.5 の部品を当てる）。要素は `<button>` のまま——送信は動作である
  *
- * @param query 窓に戻す検索語（検索していなければ undefined）
+ * ## 同じ窓を 2 か所に置き、段ごとに片方だけを見せる（#469）
+ *
+ * 広い段ではナビの中（「つくる」の後）、狭い段ではヘッダの 2 行目に出す（{@link siteHeader}）。**見えない側は
+ * `display: none`** なので、読み上げの木にも Tab の順にも入らず、**同時に見える窓は常に 1 つ**である。**`id` と
+ * `<label for>` は置き場所ごとに別の値にする**（同じ文書に同じ `id` を 2 つ置かない）。
+ *
+ * @param query 窓に戻す検索語（検索していなければ undefined）。**両方の窓に戻す**
+ * @param inputId 入力欄の `id`（{@link HEADER_SEARCH_INPUT_IDS}）
  * @returns HTML
  */
-function headerSearch(query: string | undefined): string {
+function headerSearch(query: string | undefined, inputId: string): string {
   const value = query === undefined ? '' : ` value="${escapeHtml(query)}"`;
   return `<form class="gf-header-search" role="search" method="get" action="${PUBLIC_WORKS_PATH}">
-      <label class="gf-header-search-label" for="gf-header-search-q">作品を検索</label>
-      <input id="gf-header-search-q" type="search" name="${WORK_SEARCH_FIELD}" maxlength="${MAX_SEARCH_LENGTH}" placeholder="作品を検索"${value}>
-      <button type="submit">検索</button>
+      <label class="gf-header-search-label" for="${inputId}">作品を検索</label>
+      <input id="${inputId}" type="search" name="${WORK_SEARCH_FIELD}" maxlength="${MAX_SEARCH_LENGTH}" placeholder="作品を検索"${value}>
+      <button class="gf-button gf-button-secondary gf-button-sm" type="submit">検索</button>
     </form>`;
 }
+
+/**
+ * ヘッダの検索窓の入力欄の `id`（置き場所ごと。#469）。
+ *
+ * **広い段の窓は #378 からの `gf-header-search-q` のまま**にする（公開一覧の検査が、検索語が窓に戻ることをこの
+ * `id` で見ている）。狭い段の窓だけ別の値を持つ。
+ */
+export const HEADER_SEARCH_INPUT_IDS = {
+  wide: 'gf-header-search-q',
+  narrow: 'gf-header-search-q-narrow',
+} as const;
 
 /**
  * 全画面の先頭に出すヘッダ（#266。#331 でナビを、#372 でアカウントのメニューを入れた）。
@@ -484,25 +537,57 @@ function headerSearch(query: string | undefined): string {
  * ナビを出さない画面（`viewer` を省いた POST の結果）には置かない——ナビと同じ判断で、
  * そこはログイン済みの利用者が操作の直後に見る画面である。
  *
+ * ## トップだけ、ロゴを `<h1>` で包む（仕様 2.5.6 / #469）
+ *
+ * **トップの `<h1>` はヘッダのロゴである**（本文の `<h1>Game Forge</h1>` は同じ PR で消した。`src/home.ts`）。
+ * **トップ以外ではロゴを `<h1>` にしない**——その画面の `<h1>` は作品の題名や画面の名前である。見出しの名前は
+ * 画像の `alt`（「Game Forge」）から付くので、読み上げと検索にはこれまでと同じ名前が渡る。
+ *
+ * **トップかどうかは `viewer.path` で決める**（パンくずを出さない判断と同じ鍵。{@link siteBreadcrumb}）。`viewer` を
+ * 省いた画面（POST の結果）はトップではないので包まない。
+ *
+ * ## 段ごとの布置は、HTML の順で作る（#469。PR #486 の Copilot code review）
+ *
+ * **どの段でも、HTML の順＝見た目の順＝Tab と読み上げの順にする。** CSS の `order` で並びを入れ替えず、
+ * `display: contents` も使わない（`<nav>` のランドマークが一部の支援技術から消える）。
+ *
+ * - **広い段（1 行）**: ロゴ →`<nav>`（作品をさがす / つくる / 検索窓 / アバター または ログイン）
+ * - **狭い段（2 行）**: ロゴ →`<nav>`（作品をさがす / つくる / アバター）→ 2 行目（検索窓 / ログイン）
+ *
+ * **段で置き場所の変わる検索窓と「ログイン」は、両方の置き場所に書き**、見えない側を app.css の `@section shell`
+ * が `display: none` にする。`display: none` の要素は読み上げの木にも Tab の順にも入らないので、どちらの段でも
+ * 利用者に届くのは 1 つだけである。
+ *
+ * **2 行目は `<nav>` の外（ヘッダの直下）に置く。** 検索窓を 2 行目の幅いっぱい（ロゴの下から）に伸ばすには、
+ * ロゴの右から始まる `<nav>` の箱の外にある必要がある——`<nav>` の中に収めると、ロゴの幅を打ち消す負の余白を
+ * CSS に書くことになり、ロゴの寸法と CSS が結び付く。**代償は、狭い段の「ログイン」がナビのランドマークの外に
+ * 出ること**だが、ヘッダ（`<header>` のバナー）の中には残り、検索窓は自身が `role="search"` のランドマークである。
+ *
  * @param viewer いま見ている人の状態（省略するとナビを出さない）
  * @param searchQuery 検索窓に戻す語（{@link SiteHeadOptions.searchQuery}）
  * @returns HTML
  */
 function siteHeader(viewer: SiteViewer | undefined, searchQuery: string | undefined): string {
-  const logo = `<a class="gf-header-logo" href="${HOME_PATH}">${siteLogo()}</a>`;
+  const link = `<a class="gf-header-logo" href="${HOME_PATH}">${siteLogo()}</a>`;
+  const logo = viewer?.path === HOME_PATH ? `<h1 class="gf-header-title">${link}</h1>` : link;
   if (viewer === undefined) {
     return `\n<header class="gf-header">${logo}</header>`;
   }
   // **アカウントのメニューはナビの末尾に置く。** 広い段では器がナビを右へ寄せる
   // （app.css の `@section shell` の段 2）ので、末尾がそのまま右上になる。
-  const tail = viewer.signedIn ? accountMenu(viewer.avatarUrl ?? null) : navLinks(HEADER_SIGNED_OUT_ITEMS);
+  // **「ログイン」は広い段ではナビの末尾、狭い段では 2 行目**（上の「段ごとの布置」）。目印のクラスは両方に付ける。
+  const login = viewer.signedIn ? '' : headerButtons(HEADER_SIGNED_OUT_ITEMS, ' gf-header-login');
+  const tail = viewer.signedIn ? accountMenu(viewer.avatarUrl ?? null) : login;
   return `
 <header class="gf-header">${logo}
   <nav class="gf-header-nav" aria-label="サイト内の主な行き先">
-    ${navLinks(HEADER_COMMON_ITEMS)}
-    ${headerSearch(searchQuery)}
+    ${headerButtons(HEADER_COMMON_ITEMS)}
+    ${headerSearch(searchQuery, HEADER_SEARCH_INPUT_IDS.wide)}
     ${tail}
   </nav>
+  <div class="gf-header-row2">
+    ${headerSearch(searchQuery, HEADER_SEARCH_INPUT_IDS.narrow)}${login === '' ? '' : `\n    ${login}`}
+  </div>
 </header>`;
 }
 
@@ -595,6 +680,9 @@ export function breadcrumbLabelOf(title: string): string {
  *   文字として出す。自分自身へのリンクは押しても何も起きない（4.4 / 2.2）
  * - **区切りの記号は CSS が出す**（app.css の `@section breadcrumb`）。HTML に置くと
  *   読み上げが項目ごとに記号を読む
+ * - **親へのリンクは「文章の外のリンク」の見せ方にする**（仕様 2.5.5 の表がパンくずを名指ししている。#469）
+ *   ——下線を常には出さず、ホバーと焦点で出す。**見た目は app.css の `@section breadcrumb` が `a` に当てる**
+ *   （HTML にクラスを足さない。パンくずの綴りを見ている画面ごとの検査を動かさないため）
  *
  * **構造化データ（JSON-LD の `BreadcrumbList`）は置かない**（#372 の scope.out）。
  *
@@ -619,41 +707,6 @@ function siteBreadcrumb(viewer: SiteViewer | undefined, title: string): string {
     <li><span aria-current="page">${escapeHtml(breadcrumbLabelOf(title))}</span></li>
   </ol>
 </nav>`;
-}
-
-/**
- * フッタの区画（2.3.7）。
- *
- * **`src/legal.ts` の `siteFooter` が使う。** ここに置くのは、ヘッダの
- * {@link HEADER_COMMON_ITEMS} と同じ「サービス」の 2 項目を**2 度書かない**ためである。
- */
-export const FOOTER_SERVICE_ITEMS: readonly NavItem[] = HEADER_COMMON_ITEMS;
-
-/**
- * フッタの 1 区画を組み立てる。
- *
- * **項目が 1 つも無い区画は、見出しごと出さない**（#372）。空の区画を置くことは
- * 「出来ていないものを出来ているように書く」ことである（2.3.7 / `src/home.ts`）。
- * これで、行き先がまだ無い区画（お問い合わせ。#373 が行き先を作る）を**枠だけ先に
- * 置いておける**——項目を足した日に、見出しと一緒に現れる。
- *
- * @param heading 区画の見出し
- * @param items 並べる項目
- * @returns HTML（項目が無ければ空文字）
- */
-export function footerSection(heading: string, items: readonly NavItem[]): string {
-  if (items.length === 0) {
-    return '';
-  }
-  const list = items
-    .map((item) => `      <li><a href="${item.path}">${escapeHtml(item.label)}</a></li>`)
-    .join('\n');
-  return `  <div class="gf-footer-group">
-    <h2 class="gf-footer-heading">${escapeHtml(heading)}</h2>
-    <ul>
-${list}
-    </ul>
-  </div>`;
 }
 
 /** {@link siteHead} に渡す設定。 */

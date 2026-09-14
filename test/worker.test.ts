@@ -211,7 +211,7 @@ describe('ホストによる出し分け（#51 acceptance 3）', () => {
     // 見たいのは Host による出し分けなので、アプリ側にしか無い見出しで判定する。
     const response = await SELF.fetch(`${APP_ORIGIN}/`);
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain('<h1>Game Forge</h1>');
+    expect(await response.text()).toContain('<h1 class="gf-header-title">');
   });
 
   it('サンドボックス用ホストがサンドボックス側を返す', async () => {

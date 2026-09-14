@@ -4,18 +4,20 @@ import { createAppRoutes } from '../src/app.js';
 import { dispatch } from '../src/routes.js';
 import type { Route } from '../src/routes.js';
 import {
-  FOOTER_CONTACT_ITEMS,
   LOGO_FONT_NOTICE,
   TAKEDOWN_FIELDS,
   TAKEDOWN_PATH,
   TAKEDOWN_SUBMIT_PATH,
   TAKEDOWN_THANKS_PATH,
   TERMS_PATH,
+  footerItems,
   siteFooter,
   takedownMessageOf,
 } from '../src/legal.js';
 import { FAQ_PATH, PRIVACY_PATH } from '../src/legal-paths.js';
-import { GENERATE_PAGE_PATH } from '../src/paths.js';
+import { NEWS_ARTICLES } from '../src/news-articles.js';
+import { NEWS_PATH } from '../src/news-paths.js';
+import { GENERATE_PAGE_PATH, HOME_PATH } from '../src/paths.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from '../src/service-contact.js';
 import { gameIdFromInput } from '../src/takedown-routes.js';
 import { PUBLIC_WORKS_PATH } from '../src/works-paths.js';
@@ -141,7 +143,7 @@ describe('規約に、仕様が名指しした条項が含まれている（5.6 
     // **著作権表示は同梱の NOTICE と同じ綴り**（書き写しがずれると表示の意味が無くなる）。
     expect(LOGO_FONT_NOTICE).toContain('Copyright 2020 The DotGothic16 Project Authors');
     expect(LOGO_FONT_NOTICE).toContain('SIL Open Font License 1.1');
-    // **フッタより前の本文だけで見る。** フッタも区画の見出しに <h2> を使う（PR #442 の Copilot code review）。
+    // **フッタより前の本文だけで見る。** #469 までフッタも区画の見出しに <h2> を使っていた（PR #442 の Copilot code review）。
     const main = body.slice(0, body.indexOf('<footer class="gf-footer">'));
     expect(main, 'フッタより前にある').toContain(LOGO_FONT_NOTICE);
     expect(main.indexOf(LOGO_FONT_NOTICE), '本文の最後の見出しの後にある').toBeGreaterThan(main.lastIndexOf('<h2'));
@@ -224,55 +226,58 @@ describe('削除依頼フォームが全ページのフッターから到達で�
     expect(footer).toContain(TAKEDOWN_PATH);
   });
 
-  it('フッターは 3 区画（サービス / 法務 / お問い合わせ）である（2.3.7 v1.57 / #331 / #373）', () => {
+  it('フッターは見出しの無い 6 項目を、この並びと文言で持つ（2.3.7 の #435 注記 / 仕様 2.5.7 / #469）', () => {
+    // **並びと文言まで見る。** リンクの有無だけを見ると、並びを崩しても、文言を古いまま残しても通る。
+    // **綴りは提供する側の定数から取り、期待値の文言はここに書く**（実装の定数どうしを比べると必ず緑になる）。
+    expect(NEWS_ARTICLES.length, 'お知らせの記事が 0 本だと、6 項目の検査が空振りする').toBeGreaterThan(0);
     const footer = siteFooter();
-    // **区画の名前で見る。** リンクの数で見ると、区画を 1 つ潰して項目を寄せた形でも
-    // 通ってしまう（2.3.7 が定めているのは区画の構成である）。
-    expect(footer).toContain('>サービス<');
-    expect(footer).toContain('>法務<');
-    expect(footer).toContain('>お問い合わせ<');
-    expect(footer.split('<div class="gf-footer-group">')).toHaveLength(4);
-    // サービスの 2 項目は実在する画面を指す（綴りは提供する側の定数から取る）。
-    expect(footer).toContain(`href="${PUBLIC_WORKS_PATH}"`);
-    expect(footer).toContain(`href="${GENERATE_PAGE_PATH}"`);
-    expect(footer).toContain(`href="${TERMS_PATH}"`);
-    expect(footer).toContain(`href="${TAKEDOWN_PATH}"`);
+    const links = [...footer.matchAll(/<a class="gf-link-quiet" href="([^"]*)">([^<]*)<\/a>/gu)].map(
+      (match) => [match[1], match[2]] as const,
+    );
+    expect(links).toEqual([
+      [NEWS_PATH, 'お知らせ'],
+      [FAQ_PATH, 'よくある質問'],
+      [TERMS_PATH, '利用規約'],
+      [PRIVACY_PATH, 'プライバシーポリシー'],
+      [CONTACT_MAILTO, 'お問い合わせ（メール）'],
+      [TAKEDOWN_PATH, '削除依頼（権利者の方）'],
+    ]);
+    // **リンクはこの 6 つだけ**（ロゴはリンクにしない。上の正規表現に当たらないリンクも数える）。
+    expect(footer.match(/<a\b/gu)).toHaveLength(6);
+    // **区画の見出しを置かない**（#331 の 3 区画を #435 が覆した）。
+    expect(footer).not.toMatch(/<h[1-6]\b/u);
+    expect(footer).not.toContain('gf-footer-group');
+    // **ヘッダと重複する「作品をさがす」「つくる」と、トップへのリンクを持たない。**
+    for (const absent of [PUBLIC_WORKS_PATH, GENERATE_PAGE_PATH, HOME_PATH]) {
+      expect(footer, `フッターに ${absent} へのリンクがある`).not.toContain(`href="${absent}"`);
+    }
+    // **お問い合わせのラベルにアドレスを出さない**（#373 の実装注記を #435 が覆した。アドレスは FAQ と /privacy に出る）。
+    expect(CONTACT_MAILTO).toBe(`mailto:${CONTACT_EMAIL}`);
+    expect(footer).not.toContain(`>メールでのお問い合わせ（${CONTACT_EMAIL}）<`);
   });
 
-  it('行き先の無い区画を置かない（会社情報・SNS。2.3.7 / 4.4 / 2.2）', () => {
+  it('お知らせの記事が 0 本なら「お知らせ」を出さず、5 項目になる（2.3.7 の #435 注記）', () => {
+    // **記事が 0 本のとき、一覧の経路は登録されない**（`src/news.ts`）。残すと行き先の無いリンクになる。
+    const items = footerItems([]);
+    expect(items.map((item) => item.label)).toEqual([
+      'よくある質問',
+      '利用規約',
+      'プライバシーポリシー',
+      'お問い合わせ（メール）',
+      '削除依頼（権利者の方）',
+    ]);
+    expect(items.map((item) => item.path)).not.toContain(NEWS_PATH);
+    // **記事があれば先頭に出る**（画面が渡すのと同じ記事で見る）。
+    expect(footerItems(NEWS_ARTICLES)[0]).toEqual({ path: NEWS_PATH, label: 'お知らせ' });
+  });
+
+  it('行き先の無い項目を置かない（会社情報・SNS。2.3.7 / 4.4 / 2.2）', () => {
     // **AivisHub の 5 区画のうち、会社情報と SNS はこのサービスに行き先が実在しない**
-    // （v1.57 でも維持。2.3.14）。空の区画を置くことは「出来ていないものを出来ているように
-    // 書く」ことである。
+    // （v1.57 でも #435 でも維持。2.3.14）。
     const footer = siteFooter();
     for (const absent of ['会社情報', 'SNS']) {
-      expect(footer, `フッターに ${absent} の区画がある`).not.toContain(absent);
+      expect(footer, `フッターに ${absent} がある`).not.toContain(absent);
     }
-  });
-
-  it('お問い合わせの区画は、窓口のメールアドレスとよくある質問を持つ（2.3.7 v1.57 / #372 / #373）', () => {
-    // **#372 が置いた「枠だけ」の検査を反転させた。** 行き先（一般の問い合わせ窓口と
-    // よくある質問）を #373 が作ったので、見出しと項目が一緒に出る。
-    expect(FOOTER_CONTACT_ITEMS.map((item) => item.path)).toEqual([CONTACT_MAILTO, FAQ_PATH]);
-    const footer = siteFooter();
-    const contact = footer.split('<div class="gf-footer-group">').find((group) =>
-      group.includes('>お問い合わせ<'),
-    );
-    expect(contact, 'お問い合わせの区画が無い').toBeDefined();
-    expect(contact!).toContain(`href="mailto:${CONTACT_EMAIL}"`);
-    // **アドレスを文字でも見せる**（メールの道具が無い端末では `mailto:` が動かない）。
-    expect(contact!).toContain(`>メールでのお問い合わせ（${CONTACT_EMAIL}）<`);
-    expect(contact!).toContain(`href="${FAQ_PATH}"`);
-    // **権利者向けの窓口を一般の問い合わせへ混ぜない**（2.3.7 v1.57 の注記）。
-    expect(contact!).not.toContain(TAKEDOWN_PATH);
-  });
-
-  it('法務の区画はプライバシーポリシーを持つ（2.3.7 v1.57 / #373）', () => {
-    const footer = siteFooter();
-    const legal = footer.split('<div class="gf-footer-group">').find((group) =>
-      group.includes('>法務<'),
-    );
-    expect(legal, '法務の区画が無い').toBeDefined();
-    expect(legal!).toContain(`href="${PRIVACY_PATH}"`);
   });
 
   it('フッターはログイン状態を引数に取らない（出し分けはヘッダだけが持つ）', () => {

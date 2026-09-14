@@ -192,12 +192,16 @@ function renderGame(row: TakedownRow, appHost: string): string {
         : row.game_review_state === REVIEW_QUEUED
           ? '公開中（審査待ち。新規露出は止まっています）'
           : '公開中';
-  return `<p class="gf-admin-meta">対象の作品: <a href="${workUrl}">${escapeHtml(row.game_title ?? '')}</a> ／ ${state}<br>
+  return `<p class="gf-admin-meta">対象の作品: <a class="gf-link-quiet" href="${workUrl}">${escapeHtml(row.game_title ?? '')}</a> ／ ${state}<br>
      <code>${gameId}</code></p>`;
 }
 
 /**
  * 措置を記録するフォーム（未対応の行だけ）。
+ *
+ * **3 つの措置を縦に並べ、送るボタンは副にする**（`.gf-button-secondary`。仕様 2.5.10 の第 4 版の決定——行ごとに
+ * 操作があるので主のボタンを使わず、取り返しの付きにくい「削除」の記録も赤くしない）。要素の順（措置 → 理由の
+ * ラベル → 入力欄 → ボタン）は変えていない。
  *
  * @param row 依頼の行
  * @returns HTML
@@ -218,8 +222,10 @@ function renderForm(row: TakedownRow): string {
     ${choices}
     </fieldset>
     <label for="reason-${id}">理由（必須。履歴に残り、依頼への回答に使います）</label>
-    <input id="reason-${id}" name="${ADMIN_REASON_FIELD}" type="text" required>
-    <button type="submit">措置を記録する</button>
+    <div class="gf-admin-submit">
+      <input id="reason-${id}" name="${ADMIN_REASON_FIELD}" type="text" required>
+      <button type="submit" class="gf-button gf-button-secondary">措置を記録する</button>
+    </div>
   </form>`;
 }
 
@@ -254,14 +260,21 @@ function renderHandled(row: TakedownRow): string {
  * **D1 から来る値はすべて `escapeHtml` を通す。** 依頼の中身は非ログインの誰でも書ける値で
  * あり（`src/takedown-routes.ts`）、作品の題名は作者が書いた値である。
  *
+ * **1 件を 1 つのブロックにし（`.gf-block`）、状態の印をチップにする**（仕様 2.5 / #475）。**未対応だけを
+ * `.gf-chip-emphasis` にする**——手が付いていない依頼を一覧で見落とさないため。**依頼の本文はブロックの中に
+ * 地の色の面で置く**（`admin.css` の `.gf-admin-takedown-body`）。
+ *
  * @param row 依頼の行
  * @param appHost app ホスト
  * @returns HTML
  */
 function renderRow(row: TakedownRow, appHost: string): string {
   const handled = row.handled_at !== null;
-  return `<li class="gf-admin-row" id="${escapeHtml(takedownAnchorId(row.id))}">
-  <p class="gf-admin-badge">${handled ? '措置済み' : '未対応'}</p>
+  const chip = handled
+    ? '<span class="gf-chip">措置済み</span>'
+    : '<span class="gf-chip gf-chip-emphasis">未対応</span>';
+  return `<li class="gf-block gf-admin-row" id="${escapeHtml(takedownAnchorId(row.id))}">
+  <p class="gf-admin-row-head">${chip}</p>
   <p class="gf-admin-row-title">受付: ${timeOf(row.received_at)}</p>
   ${renderGame(row, appHost)}
   <p class="gf-admin-meta">依頼者（未検証）: <span class="gf-admin-unverified">${escapeHtml(row.claimant_name)}</span>
@@ -299,12 +312,14 @@ async function showTakedowns(request: Request, env: Env): Promise<Response> {
     `${adminHead('削除依頼')}
 <h1>削除依頼</h1>
 ${renderOutcomeNotice(outcome)}
+<div class="gf-block gf-admin-intro">
 ${intro}
 ${caution}
+</div>
 <h2>未対応を先に、新しい順（未対応 ${pending} 件 ／ 表示 ${rows.length} 件）</h2>
 ${
   rows.length === 0
-    ? '<p>削除依頼はまだありません。</p>'
+    ? '<p class="gf-admin-note">削除依頼はまだありません。</p>'
     : `<ul class="gf-admin-list">
 ${rows.map((row) => renderRow(row, env.APP_HOST)).join('\n')}
 </ul>`

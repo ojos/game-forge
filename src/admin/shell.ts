@@ -163,11 +163,14 @@ export function adminHead(title: string): string {
  * 出来たが、**行き先はヘッダのナビが持っている**（{@link ADMIN_NAV}）。フッタにも置くと
  * 同じ行き先が 2 か所になり、**画面を足したときの追随箇所が 2 つになる。**
  *
+ * **`<hr>` を置かない**（仕様 2.5.3 / #475）。フッタの上の罫線は `admin.css` の `.gf-admin-footer` が器の端から端まで
+ * 引く——利用者向けのフッタ（`src/legal.ts` の `siteFooter`）が #469 で同じ形にした。`<hr>` は app.css の
+ * `@section base` の余白と一段濃い線を持ち、ヘッダの下の線と揃わない。
+ *
  * @returns HTML
  */
 export function adminFooter(): string {
   return `
-<hr>
 <footer class="gf-admin-footer">
   <small>運営専用の画面です（仕様 2.4）。</small>
 </footer>`;

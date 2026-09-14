@@ -228,6 +228,15 @@ describe('admin の全画面の外枠（2.4.5 / #266 と同じ 3 項目）', () 
     }
   });
 
+  it('どの画面にも <hr> が無い（フッタの上の罫線は admin.css が器の端から端まで引く。仕様 2.5.3 / #475）', async () => {
+    // **`<hr>` は app.css の `@section base` の余白と一段濃い線を持ち、ヘッダの下の線と揃わない**
+    // （利用者向けのフッタが #469 で外したのと同じ理由）。
+    for (const path of getPaths()) {
+      const { body } = await open(path);
+      expect(body, `${path} に <hr> がある`).not.toMatch(/<hr\b/u);
+    }
+  });
+
   it('どの画面も見た目の土台を 1 本だけ参照している', async () => {
     // **`app.css` を共有する**（`src/admin/shell.ts` の「それでも見た目の土台は共有する」）。
     // 狭い端末で崩れないことの根拠（`max-width` / `overflow-wrap`）があの 1 枚にあり、

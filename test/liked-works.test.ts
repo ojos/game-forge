@@ -550,6 +550,14 @@ describe('空のとき（4.4 / 押せない導線を出さない）', () => {
       `<p><a class="gf-button gf-button-secondary gf-button-sm" href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>`,
     );
     expect(first).toContain('<div class="gf-block gf-liked-empty">');
+    // 「あなたの作品」への導線も同じ小さい副のボタン（PR #499 の Copilot code review）。素のリンクで残っていないこと。
+    for (const body of [first, later]) {
+      expect(body).toContain(
+        `<p class="gf-liked-mine"><a class="gf-button gf-button-secondary gf-button-sm" href="${MY_WORKS_PATH}">あなたの作品</a></p>`,
+      );
+      // 外枠（ヘッダのメニューの「あなたの作品」。#469 の範囲）は外して、本文だけを見る。
+      expect(pageBodyOf(body)).not.toContain(`<a href="${MY_WORKS_PATH}"`);
+    }
     expect(later).toContain('<p class="gf-block">この頁に並ぶ作品がありません。</p>');
     expect(later).toContain(
       `<a class="gf-button gf-button-secondary gf-button-sm" href="${likedWorksPath(2)}">前の ${LIKED_WORKS_PER_PAGE} 件</a>`,

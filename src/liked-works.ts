@@ -447,6 +447,9 @@ export function renderLikedWorksPage(view: LikedWorksView): string {
   const pager = view.unavailable ? '' : renderPager(view);
 
   // **ログイン済みとして組む**（`src/my-works.ts` と同じ扱い。2.3.7 / #331）。
+  //
+  // **「あなたの作品」も小さい副のボタンにする**（#474。同じ画面の「公開されている作品をさがす」と頁送りと揃える。
+  // 仕様 2.5.5 の「主な導線」。PR #499 の Copilot code review）。
   return `${siteHead({
     title: 'いいねした作品 - Game Forge',
     noindex: true,
@@ -454,7 +457,7 @@ export function renderLikedWorksPage(view: LikedWorksView): string {
   })}
 <h1>いいねした作品</h1>
 <p>あなたがいいねを付けた作品が、押した新しい順に並んでいます。<strong>この一覧はあなたにしか見えません。</strong></p>
-<p><a href="${MY_WORKS_PATH}">あなたの作品</a></p>
+<p class="gf-liked-mine"><a class="${SMALL_SECONDARY_BUTTON}" href="${MY_WORKS_PATH}">あなたの作品</a></p>
 ${body}${hidden}
 ${pager}
 ${siteFooter()}`;

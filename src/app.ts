@@ -15,6 +15,7 @@ import { describeOriginRelation } from './origins.js';
 import { forkRoutes } from './fork.js';
 import { generateRoutes } from './generate.js';
 import { generateCallbackRoutes } from './generate-callback.js';
+import { withSourceInputKeyRecording } from './source-input-keys-routes.js';
 import { generatePageRoutes } from './generate-page.js';
 import { homeRoutes } from './home.js';
 import { legalRoutes } from './legal.js';
@@ -331,7 +332,9 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     ...likeRoutes,
     ...playRoutes,
     ...likedWorksRoutes,
-    ...generateCallbackRoutes,
+    // 完成のコールバックの後で、作品が読むキーを拾う（仕様 3.9.5 / #493）。**包むのはここだけ**
+    // ——`src/generate-callback.ts` の中に書くとオーケストレータの束が変わる（`src/source-input-keys.ts`）。
+    ...withSourceInputKeyRecording(generateCallbackRoutes),
     ...generatePageRoutes,
     ...workPageRoutes,
     ...workSourceRoutes,

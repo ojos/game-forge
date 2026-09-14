@@ -4926,6 +4926,33 @@ CREATE TABLE source_input_keys (
 - **dry-run で対象の件数を出し、実行後にもう一度流すと書き込みが 0 件になる**（冪等）。
 - **M14-4 のマイグレーションはマージの前に PR のツリーから本番へ当て、埋め戻しは M14-5 の配備より前に済ませる。**
 
+> **実装注記（#493。実装日 2026-09-14）。** 抽出は `src/input-keys.ts`（`extractInputKeyCodes` / `INPUT_KEYS_RULE_VERSION` /
+> 許可表の `INPUT_KEY_CODES`）、保存は `src/source-input-keys.ts`（`recordSourceInputKeys`）、表は `migrations/0040_source_input_keys.sql`、
+> 埋め戻しは `scripts/input-keys-backfill.sh`（手順は `docs/usage-report.md`「作品が読むキーの欠けを点検し、埋め戻す」）。
+> 実装で決めたことを 5 つ書き戻す。
+>
+> - **キーの表は Ebitengine のソースから生成する**（`src/ebiten-keys.generated.ts`。`node scripts/ebiten-keys-table.mjs --write`）。
+>   `keys.go` の `Key(ui.Key*)` の形の定数をすべて写すので、**上の例に挙げた別名のほかに `KeyKP0` → `Numpad0`・`KeyMenu` → `ContextMenu`
+>   などの非推奨の別名も写す。** `keys_js.go` の表に無い `ui.Key*` は `Alt` / `Control` / `Meta` / `Shift` だけを左へ寄せ、
+>   それ以外の形が現れたら生成を失敗させる。**照合（`--check`。`scripts/acceptance.sh` が呼ぶ）は 2 段で、** 版と go.sum の h1 の一致は
+>   どこでも見る。**表の中身はモジュールキャッシュのある手元でだけ作り直して比べ、CI（`CI=true`）はキャッシュが無いので
+>   `EBITEN_KEYS_VERSION_ONLY` と明示して抜ける**（合格とは出さない。手元でキャッシュが無ければ落とす）。
+> - **完成のコールバックで拾う箇所は、`handleCallback` の中ではなく、アプリの経路表でコールバックの経路を包んだところに置いた**
+>   （`src/source-input-keys-routes.ts` の `withSourceInputKeyRecording`。`src/app.ts` が包む）。**`src/generate-callback.ts` は
+>   オーケストレータの束に丸ごと入っており、`handleCallback` に 1 行足すと束が変わる**——上の「オーケストレータで拾わない理由」の ① と
+>   同じ事情である。拾うのは、成果物を持つ `finish` の応答が `accepted: true`（ジョブトークンが一致した）のときで、**`finished` は見ない。**
+>   同期実行の側は `runJobInline` が段の `completeGame` を包む（`runGenerationJob` は束に入るので触らない）。束が変わらないことは
+>   `scripts/orchestrator-bundle-changed.sh` で確かめた。
+> - **重複配信で回復できるのは、ジョブトークンがまだ生きている配信だけである。** 完成は `games.job_token_hash` を NULL にし
+>   （推敲はジョブ行を消し）、**そのあとに届いた `finish` は完成の分岐まで来ずに `accepted: false` で返る**（`runningJob`）。
+>   完成と同時に届いた 2 通目（戻り値が false）は拾うが、**完成後に落ちて後から届く再送では拾えない。欠けの回復の主は埋め戻しの
+>   スクリプトである。**
+> - **拾えなかったときのログは `[source-input-keys] <結果> <理由> <source_key>` の固定の形**（例外の文面もソースの本文も出さない）。
+>   R2 は `readStoredSource` の既定の上限で読むので、上限を超えたソースはエッジでは `source-too-large` で拾えず、埋め戻しが拾う。
+> - **埋め戻しは、同じ SQL（`SOURCE_INPUT_KEYS_TARGETS_SQL` / `UPSERT_SOURCE_INPUT_KEYS_SQL`）と同じ抽出の関数を、TypeScript のモジュールを
+>   esbuild で束ねて借りる。** 既定は数えるだけで、`--apply` で書き、書いたあとに対象を数え直す。R2 に実体の無いソースは
+>   `INPUT_KEYS_BACKFILL_INCOMPLETE`（終了コード 1）として一覧を出し、何度流しても残る。
+
 #### 3.9.6 仮想パッド（B2 / M14-5）
 
 **出す条件:** 全画面の覆い（3.9.4）の中で、下の表示規則の結果が 1 つ以上ある（方向かボタン）とき。覆いを開くのは

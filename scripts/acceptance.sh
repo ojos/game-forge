@@ -112,6 +112,21 @@ else
   echo "[acceptance] (go-version) skip: docker/isolated-build/Dockerfile not found"
 fi
 
+# Ebitengine のキーの表（src/ebiten-keys.generated.ts）を、Ebitengine のソースと機械照合する
+# （#493 / 仕様 3.9.5 / shared-ai-rules 12 章）。
+#
+# **ソースが無い環境の扱いはスクリプト側が持つ**（scripts/ebiten-keys-table.mjs の冒頭）。
+# 手元（devcontainer）ではモジュールキャッシュから中身まで照合し、無ければ落とす。CI（CI=true）は
+# Go のモジュールキャッシュを持たないので、版と go.sum の h1 の一致だけを確かめ、
+# EBITEN_KEYS_VERSION_ONLY と明示して抜ける（PASS とは出さない）。
+if [[ -f docker/isolated-build/template/go.mod ]]; then
+  echo "[acceptance] (ebiten-keys) node scripts/ebiten-keys-table.mjs --check"
+  node scripts/ebiten-keys-table.mjs --check
+  ran_any=1
+else
+  echo "[acceptance] (ebiten-keys) skip: docker/isolated-build/template/go.mod not found"
+fi
+
 # ロゴの PNG が書き出しの一覧と一致していること（#438 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く。** 依存パッケージを持たない Node のスクリプトで、46 枚を描き直して

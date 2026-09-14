@@ -26,6 +26,7 @@ import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 import { captureLogs } from './helpers/capture-logs.js';
 import { isAllowedBuildDiagnosticsLine } from './helpers/build-diagnostics-log.js';
+import { isAllowedSourceInputKeysLine } from './helpers/source-input-keys-log.js';
 
 /**
  * 未使用 import を 1 つだけ持つソース。
@@ -836,17 +837,21 @@ function isAllowedLogLine(line: string): boolean {
 }
 
 /**
- * 生成経路に出てよい行か。**機械修正の行か、ビルド診断の行（#443）のどちらかの形に限る。**
+ * 生成経路に出てよい行か。**機械修正の行か、ビルド診断の行（#443）か、作品が読むキーを拾えなかった
+ * 行（#493）のどれかの形に限る。**
  *
  * 生成経路を回して捕まえたログには、ビルドが落ちた試行ごとに `[build-diagnostics]` の行も
  * 並ぶ（`src/build-diagnostics.ts`）。**あちらの形も「許した形だけを通す」で見る**ので、
- * どちらにも合致しない行が 1 つでも出れば落ちる。
+ * どれにも合致しない行が 1 つでも出れば落ちる。
+ *
+ * **完成したあとには `[source-input-keys]` の行が出る**（`runJobInline` が完成の後でキーを拾い、
+ * この一群の段は R2 にソースを置かないので「読めない」になる。仕様 3.9.5）。
  *
  * @param line ログ 1 行
  * @returns 許された形なら true
  */
 function isAllowedGenerationLogLine(line: string): boolean {
-  return isAllowedLogLine(line) || isAllowedBuildDiagnosticsLine(line);
+  return isAllowedLogLine(line) || isAllowedBuildDiagnosticsLine(line) || isAllowedSourceInputKeysLine(line);
 }
 
 /**

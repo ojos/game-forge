@@ -496,6 +496,9 @@ export interface ProfileFormView {
 /**
  * 自己紹介と外部リンクのフォームを組み立てる（`/account` のプロフィールのタブ）。
  *
+ * **面のブロックは呼ぶ側（`src/account.ts` の `renderAccountPage`）が包む**（#473）。見出しの id はブロックの `aria-labelledby` が指す。
+ * **保存のボタンは副**（登録情報のタブは主を置かない。仕様 2.5.5 / #473）。
+ *
  * **`maxlength` を付けない**（表示名と同じ理由。HTML の `maxlength` は UTF-16 の長さで数え、
  * こちらの規則と食い違う）。**`type="url"` にしない**——ブラウザの検査は `javascript:` も
  * 「正しい URL」として通すので守りにならず、しかも `app.css` の入力欄の既定が `type="text"`
@@ -513,7 +516,7 @@ export function renderProfileForm(view: ProfileFormView): string {
   <input id="${id}" name="${PROFILE_LINK_FIELD}" type="text" inputmode="url" autocomplete="url"
          placeholder="https://" value="${escapeHtml(value)}">`);
   }
-  return `<h2>自己紹介と外部リンク</h2>
+  return `<h2 id="account-profile-heading">自己紹介と外部リンク</h2>
 <form class="gf-profile-form" method="post" action="${ACCOUNT_PROFILE_PATH}">
   <label for="profile-bio">自己紹介</label>
   <textarea id="profile-bio" name="${BIO_FIELD}">${escapeHtml(view.bio)}</textarea>
@@ -523,7 +526,7 @@ export function renderProfileForm(view: ProfileFormView): string {
 ${inputs.join('\n')}
   </fieldset>
   <p>https:// から始まる URL だけを使えます。作者ページにリンクとして表示され、「${PROFILE_LINKS_UNVERIFIED_NOTICE}」と添えられます。</p>
-  <button type="submit">自己紹介と外部リンクを保存する</button>
+  <button type="submit" class="gf-button gf-button-secondary">自己紹介と外部リンクを保存する</button>
 </form>
 <p>自己紹介と外部リンクは作者ページに出て、ログインしていない人にも見えます。変更の履歴は、通報への対応のために運営者が確かめられる形で残ります（公開しません）。</p>`;
 }

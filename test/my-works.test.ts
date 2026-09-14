@@ -744,3 +744,72 @@ describe('統計の読み取り（2.3.3 の条件 1 / #382 の訂正）', () => 
     expect(detail).not.toMatch(/\bSCAN games\b/u);
   });
 });
+
+describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
+  it('主のボタンは「新しく生成する」の 1 つだけで、「作品の一覧」の見出しの行の右にある', async () => {
+    const userId = await seedUser();
+    await seedGame(userId, { generationState: 'ready' });
+    const body = await (await openList(await sessionCookie(userId))).text();
+    // 外枠（ヘッダ）は主を持たないので、画面全体で数える。
+    expect(body.match(/\bgf-button-primary\b/gu) ?? []).toHaveLength(1);
+    expect(pageBodyOf(body)).toMatch(
+      new RegExp(
+        `<div class="gf-heading-row">\\s*<h2>作品の一覧</h2>\\s*<a class="gf-button gf-button-primary gf-button-sm" href="${GENERATE_PAGE_PATH}">新しく生成する</a>\\s*</div>`,
+        'u',
+      ),
+    );
+  });
+
+  it('作品が 0 本でも主のボタンは 1 つで、知らせはブロックである', async () => {
+    const body = await (await openList(await sessionCookie(await seedUser()))).text();
+    expect(body.match(/\bgf-button-primary\b/gu) ?? []).toHaveLength(1);
+    expect(pageBodyOf(body)).toContain('<div class="gf-block gf-my-works-empty">\n<p>まだ作品がありません。</p>');
+    // 見出しの行の主と同じ行き先の導線は、小さい副のボタン（主と素のリンクを並べない。PR #505 の Copilot code review）。
+    expect(pageBodyOf(body)).toContain(
+      `<p class="gf-my-works-empty-action"><a class="gf-button gf-button-secondary gf-button-sm" href="${GENERATE_PAGE_PATH}">最初のゲームを生成する</a></p>`,
+    );
+    const generateLinks = pageBodyOf(body).match(new RegExp(`<a [^>]*href="${GENERATE_PAGE_PATH}"`, 'gu')) ?? [];
+    expect(generateLinks.every((link) => link.includes('class="gf-button ')), generateLinks.join(' / ')).toBe(true);
+  });
+
+  it('「いいねした作品」「公開されている作品をさがす」は、一覧の後ろの小さい副のボタンである', async () => {
+    const userId = await seedUser();
+    const listed = await seedGame(userId);
+    const main = pageBodyOf(await (await openList(await sessionCookie(userId))).text());
+    const liked = main.indexOf(`<a class="gf-button gf-button-secondary gf-button-sm" href="${LIKED_WORKS_PATH}">いいねした作品</a>`);
+    const browse = main.indexOf(
+      `<a class="gf-button gf-button-secondary gf-button-sm" href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a>`,
+    );
+    expect(liked).toBeGreaterThan(main.indexOf(workPagePath(listed)));
+    expect(browse).toBeGreaterThan(liked);
+  });
+
+  it('一覧はブロックの行で、状態の札はチップ（生成中と時間がかかっているだけ地を塗る）', async () => {
+    const userId = await seedUser();
+    const now = Math.floor(Date.now() / 1000);
+    const ready = await seedGame(userId, { generationState: 'ready', createdAt: now - 40 });
+    const failed = await seedGame(userId, { generationState: 'failed', createdAt: now - 30 });
+    const working = await seedGame(userId, { generationState: 'pending', createdAt: now - 20 });
+    const stalled = await seedGame(userId, { generationState: 'running', createdAt: now - STALE_AFTER_SECONDS - 60 });
+
+    const main = pageBodyOf(await (await openList(await sessionCookie(userId))).text());
+    expect(main).toContain('<ul class="gf-block gf-block-rows gf-works">');
+    const rowOf = (id: string): string => new RegExp(`<li><a class="gf-link-quiet gf-works-title" href="${workPagePath(id)}">[^<]*</a> <span class="[^"]*">[^<]*</span>`, 'u').exec(main)?.[0] ?? '';
+    expect(rowOf(ready)).toContain('<span class="gf-chip">できました</span>');
+    expect(rowOf(failed)).toContain('<span class="gf-chip">生成できませんでした</span>');
+    expect(rowOf(working)).toContain('<span class="gf-chip gf-chip-emphasis">生成中</span>');
+    expect(rowOf(stalled)).toMatch(/<span class="gf-chip gf-chip-emphasis">[^<]*時間がかかっています[^<]*<\/span>$/u);
+    // #473 の前の札（`.gf-state`）は残さない。
+    expect(main).not.toContain('gf-state');
+  });
+
+  it('統計のカードはブロックで、残枠は「統計」の見出しの行の右にある', () => {
+    const section = renderMyWorksStats(EMPTY_MY_WORKS_STATS, remainingQuotaNotice(4));
+    expect(section).toMatch(
+      /<div class="gf-heading-row">\s*<h2 id="works-stats-heading">統計<\/h2>\s*<p class="gf-stats-quota" id="works-quota">/u,
+    );
+    expect(section.match(/<div class="gf-block gf-stats-card">/gu) ?? []).toHaveLength(STAT_CARDS.length);
+    // 読めなかったときの知らせもブロックである。
+    expect(renderMyWorksStats(null, remainingQuotaNotice(4))).toContain(`<p class="gf-block">${STATS_UNAVAILABLE_NOTICE}</p>`);
+  });
+});

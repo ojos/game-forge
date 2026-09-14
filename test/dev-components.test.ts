@@ -41,6 +41,18 @@ describe('部品の一覧（/__dev/components。#457）', () => {
     expect(page).toContain('<li><a href="#dev-links" data-state="focus">');
   });
 
+  it('部品のクラスを持たない `<button>` の見本（既定は副の見た目。#473）が、副の部品と並ぶ', () => {
+    const page = renderDevComponentsPage();
+    const samples = /<h3 id="dev-button-default">[\s\S]*?<p class="dev-row">([\s\S]*?)<\/p>/u.exec(page)?.[1] ?? '';
+    expect(samples, '既定の見本が無い').not.toBe('');
+    expect(samples).toContain('<button type="button" data-dev-sample="default">');
+    expect(samples).toContain('<button type="button" data-dev-sample="default" data-state="hover">');
+    expect(samples).toContain('<button type="button" data-dev-sample="default" disabled>');
+    // 見比べる相手は副のボタンの部品である（主ではない）。
+    expect(samples).toContain('class="gf-button gf-button-secondary"');
+    expect(samples).not.toContain('gf-button-primary');
+  });
+
   it('色の段の見本に、新設の 2 つのトークンが並ぶ（仕様 2.5.2）', () => {
     const page = renderDevComponentsPage();
     expect(page).toContain('var(--gf-rule-strong)');

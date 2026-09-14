@@ -209,9 +209,12 @@ function renderRow(work: AuthoredGame, now: number): string {
   // 空の属性を出すくらいなら出さないほうがよい。行そのものは残る（作品へ辿れることが
   // この一覧の仕事で、日時はその付加情報である）。
   const created = iso === '' ? '' : ` <time datetime="${iso}">${formatJstMinutes(work.createdAt)}</time>`;
+  // **状態の札はチップの部品で、まだ動いている行（生成中・時間がかかっている）だけ地を塗る**（`.gf-chip-emphasis`。仕様 2.5.5 / #473）。
+  // 区別は色ではなく文言が言う（無彩色）。題名は文章の外のリンク（`.gf-link-quiet`。一覧の行の題名。2.5.5）。
+  const chip = state === 'working' || state === 'stalled' ? 'gf-chip gf-chip-emphasis' : 'gf-chip';
   return (
-    `  <li><a href="${workPagePath(work.id)}">${escapeHtml(displayTitleOf(work.title))}</a>` +
-    ` <span class="gf-state gf-state-${state}">${STATE_LABELS[state]}</span>${created}</li>`
+    `  <li><a class="gf-link-quiet gf-works-title" href="${workPagePath(work.id)}">${escapeHtml(displayTitleOf(work.title))}</a>` +
+    ` <span class="${chip}">${STATE_LABELS[state]}</span>${created}</li>`
   );
 }
 
@@ -244,11 +247,16 @@ export interface MyWorksView {
  * @returns HTML
  */
 export function renderMyWorksPage(view: MyWorksView): string {
+  // **作品が 0 本のときの「最初のゲームを生成する」は小さい副のボタン**（PR #505 の Copilot code review）。見出しの行の主
+  // 「新しく生成する」と同じ行き先で、素のリンクのままだと主と並んで強さの違う導線が 2 つになる。作品をさがすの空の知らせの
+  // 「最初の 1 本を作る」（`src/works-list.ts`）と同じ形である。
   const body =
     view.works.length === 0
-      ? `<p>まだ作品がありません。</p>
-<p><a href="${GENERATE_PAGE_PATH}">最初のゲームを生成する</a></p>`
-      : `<ul class="gf-works">
+      ? `<div class="gf-block gf-my-works-empty">
+<p>まだ作品がありません。</p>
+<p class="gf-my-works-empty-action"><a class="gf-button gf-button-secondary gf-button-sm" href="${GENERATE_PAGE_PATH}">最初のゲームを生成する</a></p>
+</div>`
+      : `<ul class="gf-block gf-block-rows gf-works">
 ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
 </ul>`;
 
@@ -261,6 +269,10 @@ ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
 
   // **ログイン済みとして組む。** この画面は未ログインでは開けない（{@link showMyWorks} が
   // ログインへ送る）ので、**外枠のためにセッションを 2 度検証しない**（2.3.7 / #331）。
+  //
+  // **「新しく生成する」は見出しの行の右の主のボタン（小）で、この画面の主はこの 1 つだけ**（仕様 2.5.5 / #473。承認した
+  // モックアップ Version 6）。「いいねした作品」「公開されている作品をさがす」は一覧の下の副のボタン（小）である。
+  // **並びは HTML の順**（見出し → 新しく生成する → 説明 → 一覧 → 副のボタン）で、見た目の順と Tab の順が割れない。
   return `${siteHead({
     title: 'あなたの作品 - Game Forge',
     noindex: true,
@@ -268,13 +280,15 @@ ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
   })}
 <h1>あなたの作品</h1>
 ${renderMyWorksStats(view.stats, view.quotaNotice)}
+<div class="gf-heading-row">
 <h2>作品の一覧</h2>
+<a class="gf-button gf-button-primary gf-button-sm" href="${GENERATE_PAGE_PATH}">新しく生成する</a>
+</div>
 <p>生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>
-<p><a href="${LIKED_WORKS_PATH}">いいねした作品</a></p>
-<p><a href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>
 ${body}
 ${truncated}
-<p><a class="gf-cta" href="${GENERATE_PAGE_PATH}">新しく生成する</a></p>
+<p class="gf-works-links"><a class="gf-button gf-button-secondary gf-button-sm" href="${LIKED_WORKS_PATH}">いいねした作品</a>
+<a class="gf-button gf-button-secondary gf-button-sm" href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>
 ${siteFooter()}`;
 }
 

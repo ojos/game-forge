@@ -343,6 +343,9 @@ describe('登録情報のタブ（#379）', () => {
       const body = pageBodyOf(await response.text());
       const nav = /<nav class="gf-account-tabs"[\s\S]*?<\/nav>/u.exec(body)?.[0] ?? '';
       expect(nav, `${path} にタブが無い`).not.toBe('');
+      // **見た目はタブの部品（`.gf-tabs`）で、いまのタブは `aria-current`**（仕様 2.5.5 / #473）。
+      expect(nav, path).toContain('<ul class="gf-tabs">');
+      expect(nav.match(/aria-current="page"/gu) ?? [], path).toHaveLength(1);
       for (const tab of ACCOUNT_TABS) {
         if (tab.path === path) {
           expect(nav).toContain(`<span aria-current="page">${tab.label}</span>`);
@@ -1122,5 +1125,72 @@ describe('メール配信の設定の保存（POST /api/account/mail。#384 / 5.
     await postMail(routes, cookie, FORK_NOTICE_RECEIVE);
     expect(await notifyForkPublished(mailEnv, await seedFork('receiving'), deps)).toBe('sent');
     expect(requests).toHaveLength(1);
+  });
+});
+
+describe('登録情報の見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
+  /**
+   * 画面全体の主のボタンの数（外枠のヘッダは主を持たない。`test/html.test.ts`）。
+   *
+   * @param page 画面の HTML
+   * @returns 主のボタンの数
+   */
+  function primaryButtonsOf(page: string): number {
+    return (page.match(/\bgf-button-primary\b/gu) ?? []).length;
+  }
+
+  it('どのタブにも主のボタンを置かない（保存のボタンはすべて副）', async () => {
+    const userId = await seedUser();
+    const cookie = await cookieFor(userId);
+    for (const [path, response] of [
+      [ACCOUNT_PATH, await openAccount(cookie)],
+      [ACCOUNT_DETAILS_PATH, await openDetails(cookie)],
+      [ACCOUNT_MAIL_PATH, await openMail(cookie)],
+    ] as const) {
+      const body = await response.text();
+      expect(primaryButtonsOf(body), path).toBe(0);
+      // 本文のボタンはどれも副の部品である（ログアウトはヘッダのメニューが持つ）。
+      for (const tag of pageBodyOf(body).match(/<button[^>]*>/gu) ?? []) {
+        expect(tag, path).toContain('class="gf-button gf-button-secondary"');
+      }
+    }
+  });
+
+  it('プロフィールのタブは、表示名・アイコン・自己紹介と外部リンクを 1 つずつブロックにし、この順に並べる', async () => {
+    const userId = await seedUser();
+    const body = pageBodyOf(await (await openAccount(await cookieFor(userId))).text());
+    const blocks = /<div class="gf-account-blocks">([\s\S]*)<\/div>\n<p class="gf-account-author">/u.exec(body)?.[1] ?? '';
+    expect(blocks, 'ブロックの並びが無い').not.toBe('');
+    const order = [
+      `action="${ACCOUNT_DISPLAY_NAME_PATH}"`,
+      '<section class="gf-block gf-account-block" aria-labelledby="account-avatar-heading">\n<h2 id="account-avatar-heading">アイコン</h2>',
+      '<section class="gf-block gf-account-block" aria-labelledby="account-profile-heading">\n<h2 id="account-profile-heading">自己紹介と外部リンク</h2>',
+    ].map((part) => blocks.indexOf(part));
+    expect(order.every((position) => position >= 0), order.join(',')).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(blocks.match(/class="gf-block gf-account-block"/gu) ?? []).toHaveLength(3);
+    // 自分の作者ページへの導線は小さい副のボタン（移動なので `<a>`）。
+    expect(body).toContain(
+      `<p class="gf-account-author"><a class="gf-button gf-button-secondary gf-button-sm" href="${authorPagePath(userId)}">自分の作者ページを見る</a></p>`,
+    );
+  });
+
+  it('変更の完了の知らせはブロックである', async () => {
+    const userId = await seedUser();
+    const cookie = await cookieFor(userId);
+    for (const [query, message] of [
+      ['?saved=1', '表示名を変更しました。'],
+      ['?saved=profile', '自己紹介と外部リンクを保存しました。'],
+      ['?saved=avatar', 'アイコンを設定しました。'],
+      ['?saved=avatar-removed', 'アイコンを外しました。'],
+    ] as const) {
+      expect(pageBodyOf(await (await openAccount(cookie, query)).text()), query).toContain(
+        `<p class="gf-block" role="status">${message}</p>`,
+      );
+    }
+    const mail = pageBodyOf(await (await openMail(cookie, '?saved=1')).text());
+    expect(mail).toContain('<p class="gf-block" role="status">メール配信の設定を保存しました。</p>');
+    // メール配信のフォームもブロックである。
+    expect(mail).toContain(`<form class="gf-block" method="post" action="${ACCOUNT_MAIL_API_PATH}">`);
   });
 });

@@ -112,6 +112,8 @@ export interface AccountHandleView {
  *
  * **`maxlength` を付けない。** 長さは送信後に 1 つの規則で断る（`src/account.ts` の表示名と同じ扱い）。
  *
+ * **フォームは面のブロックで、保存のボタンは副**（仕様 2.5.4 / 2.5.5 / #473。登録情報のタブは主を置かない）。保存の知らせもブロックである。
+ *
  * @param view 表示に必要な値
  * @returns HTML
  */
@@ -120,7 +122,7 @@ export function renderAccountHandlePage(view: AccountHandleView): string {
     view.notice === null
       ? ''
       : view.notice.kind === 'saved'
-        ? '<p class="gf-notice" role="status">ハンドル名を保存しました。</p>'
+        ? '<p class="gf-block" role="status">ハンドル名を保存しました。</p>'
         : `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
 
   const current = view.current;
@@ -142,12 +144,12 @@ export function renderAccountHandlePage(view: AccountHandleView): string {
     body: `${notice}
 ${summary}
 ${waiting}
-<form method="post" action="${ACCOUNT_HANDLE_API_PATH}">
+<form class="gf-block" method="post" action="${ACCOUNT_HANDLE_API_PATH}">
   <label for="handle">ハンドル名</label>
   <input id="handle" name="${HANDLE_FIELD}" type="text" autocomplete="username" autocapitalize="none"
          spellcheck="false" value="${escapeHtml(current?.handle ?? '')}" required>
   <p>半角の英字・数字・アンダースコア（_）で ${HANDLE_MIN_LENGTH}〜${HANDLE_MAX_LENGTH} 文字。大文字は小文字として保存します（Foo と foo は同じハンドル名です）。</p>
-  <button type="submit">${current === null ? 'ハンドル名を決める' : 'ハンドル名を変更する'}</button>
+  <button type="submit" class="gf-button gf-button-secondary">${current === null ? 'ハンドル名を決める' : 'ハンドル名を変更する'}</button>
 </form>
 <h2>変更する前にお読みください</h2>
 <ul class="gf-account-handle-rules">

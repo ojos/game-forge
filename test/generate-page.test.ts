@@ -186,16 +186,24 @@ async function seedLedgerRow(userId: string, costJpy = 0): Promise<void> {
 }
 
 describe('未ログインの導線（acceptance 1 / 8.1）', () => {
-  it('未ログインで開くと登録導線が出る', async () => {
+  it('未ログインで開くと、案内の文と `/signup`（ログイン・登録）への主のボタン 1 つが出る（#473）', async () => {
     const response = await openPage();
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
 
     const body = await response.text();
-    expect(body).toContain(`href="${SIGNUP_PATH}"`);
-    expect(body).toContain(`href="${LOGIN_PATH}"`);
+    const main = pageBodyOf(body);
+    // **案内の文は残す**（#473 の scope.in）。
+    expect(main).toContain('<h2>生成には招待コードでの登録が必要です</h2>');
+    expect(main).toContain('<strong>生成は招待コードをお持ちの方に限ります</strong>');
+    // **#473 までの 3 つのリンク（招待コードで登録 / 待機リスト / Google でログイン）を、主のボタン 1 つにまとめた。**
+    // 待機リストとログインは `/signup` の 3 つのブロックが持つ（#472）。
+    expect(main).toContain(`<p><a class="gf-button gf-button-primary" href="${SIGNUP_PATH}">ログイン・登録</a></p>`);
+    expect(main.match(/<a [^>]*href="[^"]*"/gu) ?? [], '本文のリンクはボタン 1 つだけ').toHaveLength(1);
+    expect(main).not.toContain(`href="${LOGIN_PATH}"`);
+    expect(main.match(/gf-button-primary/gu) ?? []).toHaveLength(1);
+    // ヘッダの「ログイン」も `/signup` を指す（#472）。プレイの導線はヘッダが持つ。
     expect(body).toContain(`href="${HOME_PATH}"`);
-    expect(body).toContain('待機リスト');
   });
 
   it('未ログインにはプロンプトの入力フォームを出さない', async () => {
@@ -837,7 +845,8 @@ describe('残枠と停止状態の常時表示（acceptance 1 / 4.4 / #24）', (
    * @returns スナップショットに取る形
    */
   function summarize(page: string): string {
-    const notice = page.match(/<p id="generate-quota">([^<]*)<\/p>/u)?.[1] ?? '(出ていない)';
+    // 残枠の段落はクラスを持つ（入力欄の名前の行の右 / 止まっているときはブロック。#473）。id で拾う。
+    const notice = page.match(/<p[^>]* id="generate-quota">([^<]*)<\/p>/u)?.[1] ?? '(出ていない)';
     return [
       `常時表示: ${notice}`,
       `入力フォーム: ${page.includes('id="generate-form"')}`,
@@ -1319,5 +1328,72 @@ describe('公開トップの書き換え（#128）', () => {
     expect(body).not.toContain(TYPICAL_WAIT_TEXT);
     // ビルド単体の実測（3.8）を、生成の待ち時間として出したままにしない。
     expect(body).not.toContain('20〜30 秒');
+  });
+});
+
+describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
+  /**
+   * 画面全体の主のボタンの数（外枠のヘッダは主を持たない。`test/html.test.ts`）。
+   *
+   * @param page 画面の HTML
+   * @returns 主のボタンの数
+   */
+  function primaryButtonsOf(page: string): number {
+    return (page.match(/\bgf-button-primary\b/gu) ?? []).length;
+  }
+
+  const ALL_STATES: readonly { readonly label: string; readonly signedIn: boolean; readonly availability: GenerateAvailability }[] = [
+    { label: '生成できる', signedIn: true, availability: { kind: 'available', remaining: DAILY_QUOTA_PER_USER } },
+    { label: '日次の枠が尽きた', signedIn: true, availability: { kind: DAILY_QUOTA_REASON } },
+    { label: '月次上限', signedIn: true, availability: { kind: MONTHLY_LIMIT_REASON } },
+    { label: '生成停止中', signedIn: true, availability: { kind: 'build-stopped' } },
+    { label: '残枠を読めなかった', signedIn: true, availability: { kind: 'unknown' } },
+    { label: '未ログイン', signedIn: false, availability: { kind: 'unknown' } },
+  ];
+
+  it('どの状態でも主のボタンは 1 つ以下で、送れる状態と未ログインではちょうど 1 つ', () => {
+    for (const state of ALL_STATES) {
+      const page = renderGeneratePage(state.signedIn, { availability: state.availability, headerAvatar: null });
+      const expected = !state.signedIn || canSubmit(state.availability) ? 1 : 0;
+      expect(primaryButtonsOf(page), state.label).toBe(expected);
+    }
+  });
+
+  it('入力欄の名前・残枠・ヒント・入力欄・「生成する」が 1 つのブロックに、この順で並ぶ', () => {
+    const page = pageBodyOf(
+      renderGeneratePage(true, { availability: { kind: 'available', remaining: 3 }, headerAvatar: null }),
+    );
+    const form = /<form id="generate-form" class="gf-block[^"]*"[\s\S]*?<\/form>/u.exec(page)?.[0] ?? '';
+    expect(form, 'フォームがブロックでない').not.toBe('');
+    const order = [
+      '<label for="generate-prompt">',
+      `id="generate-quota">${remainingQuotaNotice(3)}</p>`,
+      'id="generate-title-hint"',
+      '<textarea id="generate-prompt"',
+      '<button id="generate-submit" class="gf-button gf-button-primary" type="submit" disabled>生成する</button>',
+    ].map((part) => form.indexOf(part));
+    expect(order.every((position) => position >= 0), order.join(',')).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // 名前と残枠は同じ見出しの行にある（狭い段では残枠が下へ折り返す。並べ替えはしない）。
+    expect(form).toMatch(/<div class="gf-heading-row gf-generate-head">\s*<label[^>]*>[^<]*<\/label>\s*<p class="gf-generate-quota" id="generate-quota">/u);
+    // 残枠はブロックの外に 2 つ目を出さない（常時表示は 1 つ）。
+    expect(page.match(/id="generate-quota"/gu) ?? []).toHaveLength(1);
+  });
+
+  it('生成が止まっている状態の知らせ（常時表示の文言）はブロックで、フォームは無い', () => {
+    for (const availability of [
+      { kind: DAILY_QUOTA_REASON },
+      { kind: MONTHLY_LIMIT_REASON },
+      { kind: 'build-stopped' },
+    ] as const satisfies readonly GenerateAvailability[]) {
+      const page = pageBodyOf(renderGeneratePage(true, { availability, headerAvatar: null }));
+      expect(page, availability.kind).toContain(`<p class="gf-block" id="generate-quota">${availabilityNotice(availability)}</p>`);
+      expect(page, availability.kind).not.toContain('id="generate-form"');
+    }
+  });
+
+  it('送信の後に出す「生成停止中」の知らせもブロックである（スクリプトは hidden を外すだけ）', () => {
+    const page = renderGeneratePage(true, { availability: { kind: 'available', remaining: 1 }, headerAvatar: null });
+    expect(page).toContain('<p id="generate-degraded" class="gf-block" role="status" aria-live="polite" hidden>');
   });
 });

@@ -804,6 +804,9 @@ export interface AvatarFormView {
  *
  * **`accept` は選ぶ画面の絞り込みにすぎない**（守りではない。判定は送られた中身で行う）。
  *
+ * **面のブロックは呼ぶ側（`src/account.ts` の `renderAccountPage`）が包む**（#473）。見出しの id はブロックの `aria-labelledby` が指す。
+ * **「アイコンを設定する」「アイコンを外す」はどちらも副のボタン**（登録情報のタブは主を置かない。仕様 2.5.5 / #473）。
+ *
  * @param view フォームに入れる値
  * @returns HTML
  */
@@ -817,15 +820,15 @@ export function renderAvatarForm(view: AvatarFormView): string {
     view.url === null
       ? ''
       : `\n<form class="gf-avatar-remove" method="post" action="${ACCOUNT_AVATAR_REMOVE_PATH}">
-  <button type="submit">アイコンを外す</button>
+  <button type="submit" class="gf-button gf-button-secondary">アイコンを外す</button>
 </form>`;
-  return `<h2>アイコン</h2>
+  return `<h2 id="account-avatar-heading">アイコン</h2>
 <div class="gf-avatar-current"><span class="gf-avatar" aria-hidden="true">${image}</span>${state}</div>
 <form class="gf-avatar-form" method="post" action="${ACCOUNT_AVATAR_PATH}" enctype="multipart/form-data">
   <label for="avatar-file">アイコンの画像</label>
   <input id="avatar-file" name="${AVATAR_FILE_FIELD}" type="file" accept="image/png,image/jpeg,image/webp" required>
   <p>PNG・JPEG・WebP の画像を ${AVATAR_MAX_BYTES / (1024 * 1024)} MB まで、幅と高さはそれぞれ ${AVATAR_MAX_DIMENSION} ピクセルまで使えます。<strong>${AVATAR_CROP_NOTICE}</strong>SVG・GIF・動く画像は使えません。</p>
-  <button type="submit">アイコンを設定する</button>
+  <button type="submit" class="gf-button gf-button-secondary">アイコンを設定する</button>
 </form>${remove}
 <p>アイコンは作者ページ・作品の一覧・ヘッダに出て、ログインしていない人にも見えます。画像は保存するときに ${AVATAR_OUTPUT_SIZE} ピクセル四方の WebP に作り直し、撮影した場所などの情報（Exif）は残しません。差し替えたり外したりする前の画像は、通報への対応のために ${AVATAR_HISTORY_RETENTION_DAYS} 日間だけ保存してから消します（公開しません）。</p>`;
 }

@@ -144,12 +144,13 @@ async function issuanceHalt(env: Env, userId: string): Promise<IssuanceHalt | nu
  * @returns HTML の断片
  */
 function haltNotice(halt: IssuanceHalt): string {
+  // **残りの本数と同じブロックの中の段落にする**（#473。{@link invitePage}）。面の上にもう 1 段の知らせの形を重ねない。
   if (halt === 'participant-cap') {
-    return `<p class="gf-notice"><strong>参加者が上限（${PARTICIPANT_CAP} 人）に達したため、いまは招待を発行できません。</strong>
+    return `<p><strong>参加者が上限（${PARTICIPANT_CAP} 人）に達したため、いまは招待を発行できません。</strong>
    招待したい方には、<a href="${SIGNUP_PATH}">登録の画面</a>から待機リストに登録してもらってください。
    枠が空いたらご連絡します。</p>`;
   }
-  return `<p class="gf-notice">${escapeHtml(reasonMessage(halt))}</p>`;
+  return `<p>${escapeHtml(reasonMessage(halt))}</p>`;
 }
 
 /** 招待 1 本の表示用の状態。 */
@@ -241,7 +242,7 @@ function invitePage(
       ? haltNotice(halt)
       : balance.available > 0
         ? `<form method="post" action="${INVITES_API_PATH}">
-  <button type="submit">招待コードを 1 本発行する</button>
+  <button type="submit" class="gf-button gf-button-primary">招待コードを 1 本発行する</button>
 </form>`
         : '<p>招待枠を使い切りました。</p>';
 
@@ -250,11 +251,11 @@ function invitePage(
   const list =
     invites.length === 0
       ? '<p>まだ招待を発行していません。</p>'
-      : `<ul>
+      : `<ul class="gf-block gf-block-rows gf-invites">
 ${invites
   .map(
     (invite) =>
-      `  <li><code>${escapeHtml(formatInviteCode(invite.code))}</code> — ${inviteState(invite, nowSeconds)}</li>`,
+      `  <li><code>${escapeHtml(formatInviteCode(invite.code))}</code> <span class="gf-chip">${inviteState(invite, nowSeconds)}</span></li>`,
   )
   .join('\n')}
 </ul>`;
@@ -264,11 +265,18 @@ ${invites
   // **コードを渡す前の手順は案内しない**（#478）。2026-09-14 に Google OAuth を本番環境へ
   // 切り替えたので、コードを渡すだけで相手は登録できる（8.1）。#478 までは、Google Console への
   // 手登録を促す節をここに置いていた——参加者は Console を触れないうえ、もう要らない作業である。
+  //
+  // **残りの本数と「招待コードを 1 本発行する」（主のボタン）を 1 つのブロックに、発行した招待をブロックの行にし、状態
+  // （未使用・使用済み・期限切れ）をチップにする**（仕様 2.5.4 / 2.5.5 / #473。承認したモックアップ Version 6）。**主はこの画面で
+  // この 1 つだけ**で、発行を止めているときと使い切ったときは主のボタンを出さない（上）。状態のチップは押せない札で、
+  // どれも地を塗らない（まだ動いている状態ではない）。
   return `${siteHead({ title: '招待を発行する', viewer: siteViewerAt(INVITES_PATH, true, headerAvatar) })}
 <h1>招待を発行する</h1>
 ${error}
+<div class="gf-block gf-invite-balance">
 ${balanceLine(balance)}
 ${form}
+</div>
 
 <h2>発行した招待</h2>
 ${list}

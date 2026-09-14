@@ -197,18 +197,22 @@ export const PLAYS_SINCE_NOTE =
 export function renderMyWorksStats(stats: MyWorksStats | null, quotaNotice: string): string {
   const cards =
     stats === null
-      ? `<p>${STATS_UNAVAILABLE_NOTICE}</p>`
+      ? `<p class="gf-block">${STATS_UNAVAILABLE_NOTICE}</p>`
       : `<dl class="gf-stats-cards">
 ${STAT_CARDS.map(
   ({ key, label }) =>
-    `  <div class="gf-stats-card"><dt>${label}</dt><dd>${countOf(stats[key])}</dd></div>`,
+    `  <div class="gf-block gf-stats-card"><dt>${label}</dt><dd>${countOf(stats[key])}</dd></div>`,
 ).join('\n')}
 </dl>
 <p class="gf-stats-note">${LIKES_DELAY_NOTE}</p>
 <p class="gf-stats-note">${PLAYS_SINCE_NOTE}</p>`;
+  // **残枠は見出しの行の右に置く**（#473。承認したモックアップ Version 6）。並びは HTML の順（見出し → 残枠）のままで、
+  // 狭い段で収まらなければ見出しの下へ回る。**カードはブロックの面**（`.gf-block`。仕様 2.5.4「統計カードにも同じ面の作法」）。
   return `<section class="gf-stats" aria-labelledby="works-stats-heading">
+<div class="gf-heading-row">
 <h2 id="works-stats-heading">統計</h2>
 <p class="gf-stats-quota" id="works-quota">${escapeHtml(quotaNotice)}</p>
+</div>
 ${cards}
 </section>`;
 }

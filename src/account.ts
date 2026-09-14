@@ -495,6 +495,9 @@ function formatJstDate(epochSeconds: number): string {
  * 違う。**いま開いているタブには `aria-current="page"` を付けてリンクにしない**
  * （パンくずの末尾と同じ扱い。自分自身へのリンクを置かない）。
  *
+ * **見た目はタブの部品（`.gf-tabs`。仕様 2.5.5「タブ」）**で、いま開いているタブに下線 2px と太字が付く（#473）。並べ替えの
+ * タブ（`src/works-list.ts`）と同じ見た目である。
+ *
  * @param options 画面のパス・`<title>`・本文
  * @returns HTML
  */
@@ -517,7 +520,7 @@ export function accountShell(options: {
   })}
 <h1>登録情報</h1>
 <nav class="gf-account-tabs" aria-label="登録情報の項目">
-<ul>
+<ul class="gf-tabs">
   ${tabs}
 </ul>
 </nav>
@@ -540,13 +543,13 @@ export function renderAccountPage(view: AccountView): string {
     view.notice === null
       ? ''
       : view.notice.kind === 'saved'
-        ? '<p class="gf-notice" role="status">表示名を変更しました。</p>'
+        ? '<p class="gf-block" role="status">表示名を変更しました。</p>'
         : view.notice.kind === 'saved-profile'
-          ? '<p class="gf-notice" role="status">自己紹介と外部リンクを保存しました。</p>'
+          ? '<p class="gf-block" role="status">自己紹介と外部リンクを保存しました。</p>'
           : view.notice.kind === 'saved-avatar'
-            ? '<p class="gf-notice" role="status">アイコンを設定しました。</p>'
+            ? '<p class="gf-block" role="status">アイコンを設定しました。</p>'
             : view.notice.kind === 'removed-avatar'
-              ? '<p class="gf-notice" role="status">アイコンを外しました。</p>'
+              ? '<p class="gf-block" role="status">アイコンを外しました。</p>'
               : // 文言は表から選んだ固定文字列だが、`escapeHtml` を通しておく
             // （`src/invite-issuance.ts` と同じ理由。出どころが変わっても安全側が既定になる）。
             `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
@@ -559,6 +562,11 @@ export function renderAccountPage(view: AccountView): string {
       ? '<p>いまは Google アカウントの名前をそのまま使っています。ここで変更するまでは、ログインのたびに Google 側の名前に合わせます。</p>'
       : '<p>この名前はあなたが決めたものです。ログインしても Google アカウントの名前には戻りません。</p>';
 
+  // **表示名・アイコン・自己紹介と外部リンクを、1 つずつ面のブロックにする**（仕様 2.5.4 / #473。承認したモックアップ Version 6）。
+  // **保存のボタンはすべて副で、この画面に主を置かない**（#473 の scope.in。フォームが 3 つ並ぶ画面で、どれか 1 つだけを
+  // 「いちばんしてほしいこと」にしない）。**変更の完了の知らせもブロック**である。ブロックの並べ方（広い段で 2 列）は
+  // app.css の `@section account` の `.gf-account-blocks` が持ち、**並びは HTML の順**（表示名 → アイコン → 自己紹介）のまま。
+  //
   // **表示名の欄の上に見出し（`<h2>`）を置かない。** 表示名の欄は `<label>` が名前を持っており、
   // 上に同じ語の見出しを置くと「表示名 / 表示名」と 2 度並ぶ（撮影で確かめた）。
   //
@@ -570,18 +578,26 @@ export function renderAccountPage(view: AccountView): string {
     title: '登録情報 - Game Forge',
     headerAvatar: view.headerAvatar,
     body: `${notice}
+<div class="gf-account-blocks">
+<div class="gf-block gf-account-block">
 <form method="post" action="${ACCOUNT_DISPLAY_NAME_PATH}">
   <label for="display-name">表示名</label>
   <input id="display-name" name="${DISPLAY_NAME_FIELD}" type="text" autocomplete="nickname"
          value="${escapeHtml(view.displayName)}" required>
   <p>前後の空白を除いて ${DISPLAY_NAME_MAX_LENGTH} 文字まで。改行は使えません。ほかの人と同じ名前でもかまいません。</p>
-  <button type="submit">表示名を変更する</button>
+  <button type="submit" class="gf-button gf-button-secondary">表示名を変更する</button>
 </form>
 ${following}
 <p>表示名は作品ページや作品の一覧に出て、ログインしていない人にも見えます。</p>
+</div>
+<section class="gf-block gf-account-block" aria-labelledby="account-avatar-heading">
 ${renderAvatarForm(view.avatar)}
+</section>
+<section class="gf-block gf-account-block" aria-labelledby="account-profile-heading">
 ${renderProfileForm(view.profile)}
-<p><a href="${escapeHtml(authorPagePath(view.userId))}">自分の作者ページを見る</a></p>`,
+</section>
+</div>
+<p class="gf-account-author"><a class="gf-button gf-button-secondary gf-button-sm" href="${escapeHtml(authorPagePath(view.userId))}">自分の作者ページを見る</a></p>`,
   });
 }
 
@@ -1074,6 +1090,8 @@ export interface AccountMailView {
 /**
  * 登録情報の画面（メール配信のタブ。`/account/mail`）を組み立てる（#384 / 5.11）。
  *
+ * **フォームは面のブロックで、「保存する」は副のボタン**（仕様 2.5.4 / 2.5.5 / #473。登録情報のタブは主を置かない）。
+ *
  * **種別の名前と補足は `src/mail/kinds.ts` から出す**（冒頭の「メール配信のタブ」）。どれも
  * コードに置いた固定の文字列だが、`escapeHtml` を通しておく（出どころが変わっても安全側が既定になる）。
  *
@@ -1085,7 +1103,7 @@ export function renderAccountMailPage(view: AccountMailView): string {
     view.notice === null
       ? ''
       : view.notice.kind === 'saved'
-        ? '<p class="gf-notice" role="status">メール配信の設定を保存しました。</p>'
+        ? '<p class="gf-block" role="status">メール配信の設定を保存しました。</p>'
         : `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
 
   const forkKind = MAIL_KINDS.find((kind) => kind.label === FORK_NOTICE_KIND_LABEL);
@@ -1103,7 +1121,7 @@ export function renderAccountMailPage(view: AccountMailView): string {
     title: 'メール配信 - Game Forge',
     headerAvatar: view.headerAvatar,
     body: `${notice}
-<form method="post" action="${ACCOUNT_MAIL_API_PATH}">
+<form class="gf-block" method="post" action="${ACCOUNT_MAIL_API_PATH}">
   <fieldset class="gf-mail-choice">
     <legend>${escapeHtml(forkName)}</legend>
     <p>${escapeHtml(forkNote)}</p>
@@ -1111,7 +1129,7 @@ export function renderAccountMailPage(view: AccountMailView): string {
     ${choice(FORK_NOTICE_MUTE, '受け取らない', !view.receiveForkNotice)}
   </fieldset>
   <p>受け取らない設定にしていたあいだに公開された改造は、あとで受け取る設定に戻してもお知らせしません。</p>
-  <button type="submit">保存する</button>
+  <button type="submit" class="gf-button gf-button-secondary">保存する</button>
 </form>
 <p>お知らせは、<a href="${ACCOUNT_DETAILS_PATH}">アカウント</a>のタブに出ているメールアドレスへ送ります。</p>
 <h2>設定にかかわらず送るメール</h2>

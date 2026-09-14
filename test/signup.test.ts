@@ -645,7 +645,7 @@ describe('ログイン・登録の画面（#472）', () => {
 
   it('「改造する」から来た人への前置きを残し、待機リストの記録には導線を渡す（2.2-4 / 10.2）', async () => {
     const main = await mainOf('?from=fork-cta');
-    const intro = main.indexOf('改造（フォーク）できるのは招待された方だけです');
+    const intro = main.indexOf('フォークできるのは招待された方だけです');
     expect(intro).toBeGreaterThan(-1);
     expect(intro).toBeLessThan(main.indexOf('<div class="gf-signup-options">'));
     expect(blocksOf(main)[2]).toContain('<input type="hidden" name="source" value="fork-cta">');

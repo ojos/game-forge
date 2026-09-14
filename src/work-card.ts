@@ -372,10 +372,10 @@ export function cardAvatarUrl(work: PublicWork, authorId: string, avatarOrigin: 
 function renderMeta(work: PublicWork, avatarOrigin: string | null): string {
   const parts = [renderAuthor(work, avatarOrigin)];
   if (work.hasParent) {
-    parts.push('<span class="gf-card-tag">改造された作品</span>');
+    parts.push('<span class="gf-card-tag">フォーク作品</span>');
   }
   if (work.forkCount > 0) {
-    parts.push(`<span class="gf-card-forks">改造 ${work.forkCount}</span>`);
+    parts.push(`<span class="gf-card-forks">フォーク ${work.forkCount}</span>`);
   }
   // **数は最大 5 分遅れる**（2.3.6。D1 へ写した値を読んでおり、正本は DO にある。5.8）。
   // **一覧を描くことで DO を呼ばない**——閲覧数で DO の枠を減らさない。

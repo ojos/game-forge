@@ -1107,7 +1107,7 @@ export function renderAccountMailPage(view: AccountMailView): string {
         : `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
 
   const forkKind = MAIL_KINDS.find((kind) => kind.label === FORK_NOTICE_KIND_LABEL);
-  const forkName = forkKind?.name ?? '改造のお知らせ';
+  const forkName = forkKind?.name ?? 'フォークのお知らせ';
   const forkNote = forkKind?.note ?? '';
   const choice = (value: string, label: string, checked: boolean): string =>
     `<label><input type="radio" name="${FORK_NOTICE_FIELD}" value="${value}"${checked ? ' checked' : ''}> ${label}</label>`;
@@ -1128,7 +1128,7 @@ export function renderAccountMailPage(view: AccountMailView): string {
     ${choice(FORK_NOTICE_RECEIVE, '受け取る', view.receiveForkNotice)}
     ${choice(FORK_NOTICE_MUTE, '受け取らない', !view.receiveForkNotice)}
   </fieldset>
-  <p>受け取らない設定にしていたあいだに公開された改造は、あとで受け取る設定に戻してもお知らせしません。</p>
+  <p>受け取らない設定にしていたあいだに公開されたフォークは、あとで受け取る設定に戻してもお知らせしません。</p>
   <button type="submit" class="gf-button gf-button-secondary">保存する</button>
 </form>
 <p>お知らせは、<a href="${ACCOUNT_DETAILS_PATH}">アカウント</a>のタブに出ているメールアドレスへ送ります。</p>

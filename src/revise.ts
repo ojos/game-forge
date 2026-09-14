@@ -153,8 +153,8 @@ const REFUSALS: Readonly<
   // ——作品ページは残り回数も走っているジョブも表示できる（M4.5-3）。
   'not-revisable': {
     status: 409,
-    heading: 'いま推敲できません',
-    body: '公開前の自分の作品を、上限の回数まで手直しできます。前の手直しが終わるまでお待ちください。',
+    heading: 'いまリフォージできません',
+    body: '公開前の自分の作品を、上限の回数までリフォージできます。前のリフォージが終わるまでお待ちください。',
   },
   'source-missing': {
     status: 500,
@@ -164,12 +164,12 @@ const REFUSALS: Readonly<
   // **「もう一度」と言わない。** 何度やっても同じ結果になる（整理パスは M5-2 が持つ）。
   'source-too-large': {
     status: 409,
-    heading: 'この作品は手直しできる大きさを超えています',
-    body: 'ソースが大きくなりすぎているため、いまは手直しできません。',
+    heading: 'この作品はリフォージできる大きさを超えています',
+    body: 'ソースが大きくなりすぎているため、いまはリフォージできません。',
   },
   'start-failed': {
     status: 500,
-    heading: '手直しを始められませんでした',
+    heading: 'リフォージを始められませんでした',
     body: '時間をおいて、もう一度お試しください。',
   },
   // **#455。利用者に進行中の生成・フォーク・推敲がある。** 文言は 3 経路で共有する
@@ -395,7 +395,7 @@ async function handleRestore(request: Request, env: Env): Promise<Response> {
   const heading = outcome === 'busy' ? 'いま戻せません' : 'その版が見つかりません';
   const detail =
     outcome === 'busy'
-      ? '手直しが終わってから、もう一度お試しください。'
+      ? 'リフォージが終わってから、もう一度お試しください。'
       : 'URL が正しいかご確認ください。';
   return wantsHtml(request)
     ? refusal(heading, detail, outcome === 'busy' ? 409 : 404)

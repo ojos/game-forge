@@ -141,7 +141,7 @@ export const MOVED_NOTICE = `自分の作品は ${MY_WORKS_PATH} へ移りまし
  */
 const SORT_LABELS: Record<PublicWorkSort, string> = {
   recent: '新着',
-  forked: '改造された数',
+  forked: 'フォークされた数',
   liked: 'いいねの数',
   played: 'プレイ数',
 };
@@ -484,7 +484,7 @@ export function renderWorksListPage(view: WorksListView, viewer: SiteViewer): st
     noindex: search.kind !== 'none',
     searchQuery: queryOf(search) ?? undefined,
     extraHead:
-      '\n<meta name="description" content="Game Forge で公開されているブラウザ2Dゲームの一覧。新着順・改造された数の順・いいねの数の順・プレイ数の順に並べ替えられます。">',
+      '\n<meta name="description" content="Game Forge で公開されているブラウザ2Dゲームの一覧。新着順・フォークされた数の順・いいねの数の順・プレイ数の順に並べ替えられます。">',
   })}
 <h1>作品をさがす</h1>
 <p>公開された作品が並んでいます。遊ぶのに登録は要りません。</p>

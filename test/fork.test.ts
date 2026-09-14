@@ -1014,8 +1014,8 @@ describe('改造の確認画面のボタン（#473 / 仕様 2.5.5）', () => {
     const forker = await createUser('fork-parts-forker');
     const spy = startSpy();
     for (const [source, label] of [
-      [NEAR_LIMIT_SOURCE, 'このまま改造する'],
-      [OVER_LIMIT_SOURCE, '整理して改造する'],
+      [NEAR_LIMIT_SOURCE, 'このままフォークする'],
+      [OVER_LIMIT_SOURCE, '整理してフォークする'],
     ] as const) {
       const parentId = await createPublishedGame(author, source);
       const page = await (await postFork(forker, parentId, '敵を増やす', spy.pipeline)).text();

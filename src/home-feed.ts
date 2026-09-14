@@ -346,7 +346,7 @@ export interface HomeSection {
  */
 export const HOME_SORT_TITLES: Readonly<Record<PublicWorkSort, string>> = {
   recent: '新着',
-  forked: '改造された数の順',
+  forked: 'フォークされた数の順',
   liked: 'いいねの多い順',
   // **トップにプレイ数の節は置かない**（#377。2.3.4 の v1.57 注記「トップは 4 節のまま」）。
   // 見出しは `Record` の型を満たすためだけにあり、{@link homeSections} は使わない。

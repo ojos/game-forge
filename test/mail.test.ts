@@ -10,6 +10,7 @@ import {
 } from '../src/mail/resend.js';
 import { forkNoticeMessage, notifyForkPublished } from '../src/mail/fork-notice.js';
 import { notifyGenerationFinished } from '../src/mail/generation-notice.js';
+import { oldOperationNamesIn } from './helpers/old-names.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -316,7 +317,7 @@ describe('改造通知の本文（#36 acceptance 3）', () => {
     expect(message.text).toContain('https://app.example/works/abc');
     expect(message.text).toContain('ねこのゲーム');
     // 件名は固定文（UGC を入れると、改行 1 つで通知そのものが消える）。
-    expect(message.subject).toBe('[Game Forge] あなたの作品が改造されました');
+    expect(message.subject).toBe('[Game Forge] あなたの作品がフォークされました');
   });
 
   it('表示名の改行では本文の行を偽造できない', () => {
@@ -327,7 +328,7 @@ describe('改造通知の本文（#36 acceptance 3）', () => {
     const forged = 'https://evil.example/';
     const honest = forkNoticeMessage('カニ', 'T', 'https://app.example/works/abc');
     const attacked = forkNoticeMessage(
-      `カニ\n改造された作品: ${forged}`,
+      `カニ\nフォーク作品: ${forged}`,
       'T',
       'https://app.example/works/abc',
     );
@@ -335,8 +336,8 @@ describe('改造通知の本文（#36 acceptance 3）', () => {
     // 行数が増えていない（＝行が 1 本も足されていない）。
     expect(attacked.text.split('\n')).toHaveLength(honest.text.split('\n').length);
     // 「改造された作品: 」で始まる行はちょうど 1 本で、その中身は本物の URL である。
-    const lines = attacked.text.split('\n').filter((line) => line.startsWith('改造された作品: '));
-    expect(lines).toEqual(['改造された作品: https://app.example/works/abc']);
+    const lines = attacked.text.split('\n').filter((line) => line.startsWith('フォーク作品: '));
+    expect(lines).toEqual(['フォーク作品: https://app.example/works/abc']);
     // 偽の URL は 1 行目（名前の行）の中に押し込められている。
     expect(attacked.text.split('\n')[0]).toContain(forged);
   });
@@ -607,5 +608,15 @@ describe('メール配信の設定（5.11 / #384）', () => {
       const body = (await requests[0]!.json()) as { to: string[] };
       expect(body.to).toEqual([`${author}@example.com`]);
     }
+  });
+});
+
+describe('フォーク通知のメールに旧い呼び名（改造・推敲・手直し）が出ない（#513）', () => {
+  it('件名と本文', () => {
+    const message = forkNoticeMessage('カニ', 'ねこのゲーム', 'https://app.example/works/abc');
+    expect(oldOperationNamesIn(message.subject)).toEqual([]);
+    expect(oldOperationNamesIn(message.text)).toEqual([]);
+    expect(message.subject).toBe('[Game Forge] あなたの作品がフォークされました');
+    expect(message.text).toContain('カニ さんが、あなたの作品をフォークして公開しました。');
   });
 });

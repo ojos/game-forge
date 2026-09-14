@@ -1336,7 +1336,7 @@ function removedSection(view: WorkPageView): string {
   const owned = view.owner
     ? `
 <p>この作品はあなたが取り下げました。共有した URL からは遊べなくなっています。</p>
-<p><strong>この作品を改造した作品は、そのまま公開されたままです。</strong>
+<p><strong>この作品をフォークした作品は、そのまま公開されたままです。</strong>
    取り下げは、そこから派生した作品を巻き込みません。</p>`
     : '';
   // **段落を明示的に閉じる。** ブラウザの自動補正（`<p>` が次の `<p>` で閉じる）に
@@ -1370,7 +1370,7 @@ function removeSection(view: WorkPageView): string {
   return `
 <h3>公開の取り下げ</h3>
 <p>この作品の公開をやめられます。共有した URL からは遊べなくなります。
-   <strong>この作品を改造した作品は、そのまま公開されたままです</strong>（連鎖して消えることはありません）。</p>
+   <strong>この作品をフォークした作品は、そのまま公開されたままです</strong>（連鎖して消えることはありません）。</p>
 <form method="post" action="${WORK_REMOVE_PATH}">
   <input type="hidden" name="${WORK_REMOVE_GAME_ID_FIELD}" value="${view.removableId}">
   <button type="submit" class="${SECONDARY_BUTTON}">公開を取り下げる</button>
@@ -1620,7 +1620,7 @@ export const GENERATION_RETRY_QUOTA_NOTICE =
  * 読ませないためである（PR #407 のレビュー指摘）。
  */
 export const FORK_TIDY_QUOTA_NOTICE =
-  '元の作品が大きく、整理してから改造する場合は、自動のやり直しは行わず、使う枠の回数を確認の画面で先にお知らせします。';
+  '元の作品が大きく、整理してからフォークする場合は、自動のやり直しは行わず、使う枠の回数を確認の画面で先にお知らせします。';
 
 /**
  * 推敲の入力（5.7 / #193）。
@@ -1647,7 +1647,7 @@ function reviseSection(view: WorkPageView): string {
   }
   if (view.revisionRunning) {
     return `
-<h3>手直しをしています</h3>
+<h3>リフォージしています</h3>
 <p><strong>このページは開いたままにしなくて構いません。</strong>
    通常 1〜2 分かかります。この画面は自動で更新されます。</p>
 <p>できあがるまで、上の URL では<strong>いまの版</strong>が遊べます。</p>`;
@@ -1671,12 +1671,12 @@ function reviseSection(view: WorkPageView): string {
   const failed =
     view.revisionError !== null
       ? `
-<p><strong>前回の手直しはうまくいきませんでした。</strong>
+<p><strong>前回のリフォージはうまくいきませんでした。</strong>
    ${escapeHtml(failureMessageOf(view.revisionError))}
    作品はそのまま残っています。</p>`
       : view.revisionStalled
         ? `
-<p><strong>時間がかかりすぎています。手直しが中断した可能性があります。</strong>
+<p><strong>時間がかかりすぎています。リフォージが中断した可能性があります。</strong>
    作品はそのまま残っています。</p>`
         : '';
 
@@ -1691,7 +1691,7 @@ function reviseSection(view: WorkPageView): string {
   const remaining =
     view.revisionsRemaining === null
       ? ''
-      : `<p>この作品はあと ${Math.max(0, Math.trunc(view.revisionsRemaining))} 回手直しできます。</p>`;
+      : `<p>この作品はあと ${Math.max(0, Math.trunc(view.revisionsRemaining))} 回リフォージできます。</p>`;
   const daily =
     view.dailyRemaining === null
       ? `<p>${QUOTA_UNKNOWN_NOTICE}</p>`
@@ -1715,11 +1715,11 @@ function reviseSection(view: WorkPageView): string {
   <textarea id="revise-prompt" name="${REVISE_PROMPT_FIELD}" rows="3"
             maxlength="${MAX_PROMPT_LENGTH}" required
             placeholder="例: 玉の動きをもっと速くして、当たったら音を鳴らす"></textarea>
-  <button type="submit" class="${SECONDARY_BUTTON}">この内容で直す</button>
+  <button type="submit" class="${SECONDARY_BUTTON}">この内容でリフォージする</button>
 </form>`;
 
   return `${failed}
-<h3>気になるところを直す</h3>
+<h3>リフォージ（気になるところを直す）</h3>
 <p>どう直したいかを書くと、いまのソースをもとに作り直します。
    <strong>1 回につき 1〜2 分かかり、生成枠を使います。${GENERATION_RETRY_QUOTA_NOTICE}</strong></p>
 ${remaining}${daily}${form}`;
@@ -1976,7 +1976,7 @@ function detailsPanel(view: WorkPageView, details: WorkDetails): string {
   if (details.wasmBytes !== null) {
     row('Wasm のサイズ', `${formatWasmSize(details.wasmBytes)}（配信時の圧縮後）`);
   }
-  row('改造された数', `${view.forks.total} 件`);
+  row('フォークされた数', `${view.forks.total} 件`);
   if (view.likeCount > 0) {
     row('いいね', `${view.likeCount}`);
   }
@@ -2196,7 +2196,7 @@ function likeForm(action: string, field: string, gameId: string, label: string):
  * @returns HTML
  */
 function forkList(forks: ForkNeighbors): string {
-  const heading = `<p class="gf-forks">このゲームからの改造: ${forks.total} 件</p>`;
+  const heading = `<p class="gf-forks">このゲームからのフォーク: ${forks.total} 件</p>`;
 
   // **「もっと見る」も「前へ」も素のリンクである**（このモジュール冒頭の「JavaScript を
   // 要求しない」）。次が無ければ出さない——押しても何も起きない導線を出さない
@@ -2278,7 +2278,7 @@ function recaptureSection(view: WorkPageView): string {
 /**
  * 「改造する」の文言（2.2-4）。**仕様の言い回しをここで言い換えない。**
  */
-const FORK_LABEL = 'このゲームを改造する';
+const FORK_LABEL = 'このゲームをフォークする';
 
 /**
  * ロード中画面（3.4-5 / 2.2-2 / #30）。
@@ -2515,7 +2515,7 @@ function forkCta(view: WorkPageView): string {
   // 移動なので `<a>`、ログイン済みは送信なので `<button>`（要素は役割で選び、見た目は同じ部品）。
   if (!view.signedIn) {
     return `<p class="gf-fork"><a class="gf-fork-link ${PRIMARY_BUTTON}" href="${signupPathFrom('fork-cta')}">${FORK_LABEL}</a></p>
-<p class="gf-fork-note">改造には招待が必要です。招待コードをお持ちでない方は待機リストにご登録いただけます。</p>`;
+<p class="gf-fork-note">フォークには招待が必要です。招待コードをお持ちでない方は待機リストにご登録いただけます。</p>`;
   }
 
   // **枠の文言はこのモジュールで組み立てない**（正本は `src/quota.ts`）。読めなかった
@@ -2534,15 +2534,15 @@ function forkCta(view: WorkPageView): string {
       : `
 <form method="post" action="${FORK_PATH}">
   <input type="hidden" name="${FORK_PARENT_ID_FIELD}" value="${view.forkableId}">
-  <label for="fork-prompt">どう改造しますか</label>
+  <label for="fork-prompt">どう変えてフォークしますか</label>
   <textarea id="fork-prompt" name="${FORK_PROMPT_FIELD}" rows="3"
             maxlength="${MAX_PROMPT_LENGTH}" required
             placeholder="例: 玉の色を赤にして、敵を 2 体に増やす"></textarea>
-  <button type="submit" class="${PRIMARY_BUTTON}">この内容で改造する</button>
+  <button type="submit" class="${PRIMARY_BUTTON}">この内容でフォークする</button>
 </form>`;
 
   return `<p class="gf-fork">${FORK_LABEL}</p>
-<p class="gf-fork-note">どう改造したいかを書くと、このゲームのソースをもとに新しい作品を作ります。
+<p class="gf-fork-note">どう変えたいかを書くと、このゲームのソースをもとに新しい作品を作ります。
    <strong>1 回につき 1〜2 分かかり、生成枠を使います。${GENERATION_RETRY_QUOTA_NOTICE}</strong>元の作品はそのまま残ります。
    ${FORK_TIDY_QUOTA_NOTICE}</p>
 ${daily}${form}`;

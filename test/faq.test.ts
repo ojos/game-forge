@@ -11,6 +11,7 @@ import { SIGNUP_PATH } from '../src/paths.js';
 import { DAILY_QUOTA_PER_USER, REVISIONS_PER_GAME } from '../src/quota.js';
 import { dispatch } from '../src/routes.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from '../src/service-contact.js';
+import { oldOperationNamesIn } from './helpers/old-names.js';
 import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
@@ -111,7 +112,7 @@ describe('トップから移した 2 項目（#471。仕様 2.3.3 の #435 注�
   it('サービスの説明: 1 行から生まれる・改造して公開できる・クローズドβで遊ぶことと共有に登録は要らない', () => {
     const answer = answerOf('about');
     expect(answer).toContain('プロンプト 1 行から、ブラウザで遊べる 2D ゲームが生まれる');
-    expect(answer).toContain('<strong>改造（フォーク）</strong>して、自分の 1 本として公開できます');
+    expect(answer).toContain('<strong>フォーク</strong>して、自分の 1 本として公開できます');
     expect(answer).toContain('招待制のクローズドβ');
     expect(answer).toContain('作品の URL を共有することには、登録も招待も要りません');
     expect(answer).toContain('href="#invite"');
@@ -141,7 +142,7 @@ describe('仕様と食い違わない（#373 の constraints。4.3 / 4.4 / 5.6 /
     const answer = answerOf('quota');
     expect(answer).toContain(`1 人 1 日 ${DAILY_QUOTA_PER_USER} 回`);
     expect(answer).toContain('日本時間の 0 時に戻ります');
-    expect(answer).toContain(`1 作品につき ${REVISIONS_PER_GAME} 回まで`);
+    expect(answer).toContain(`リフォージは 1 作品につき ${REVISIONS_PER_GAME} 回まで`);
   });
 
   it('月次の上限はサービス全体のもので、達すると全体の生成が止まると書く（4.3 / 4.4）', () => {
@@ -181,8 +182,8 @@ describe('仕様と食い違わない（#373 の constraints。4.3 / 4.4 / 5.6 /
 
   it('取り下げは既に改造された作品に及ばないと書く（5.3 / 規約 4）', () => {
     const answer = answerOf('no-fork');
-    expect(answer).toContain('公開しなければ、改造されることはありません');
-    expect(answer).toContain('取り下げる前に作られた改造作品は消えません');
+    expect(answer).toContain('公開しなければ、フォークされることはありません');
+    expect(answer).toContain('取り下げる前に作られたフォーク作品は消えません');
     // **未公開の作品ページそのものは誰でも開ける**（状態だけを出す。`src/work-page.ts` の
     // `readySection`）。本人に限るのは遊べる URL である（PR #400 の Copilot の指摘）。
     expect(answer).not.toContain('作品ページは作った本人にしか開けません');
@@ -195,5 +196,38 @@ describe('仕様と食い違わない（#373 の constraints。4.3 / 4.4 / 5.6 /
     expect(answer).toContain(`href="${CONTACT_MAILTO}"`);
     expect(answer).toContain(CONTACT_EMAIL);
     expect(answer).toContain(`href="${PRIVACY_PATH}"`);
+  });
+});
+
+describe('フォークとリフォージの用語集（#513）', () => {
+  it('画面の出力に旧い呼び名（改造・推敲・手直し）が出ない', async () => {
+    const { body } = await openFaq();
+    expect(oldOperationNamesIn(body)).toEqual([]);
+    // 空振りしていない: 同じ画面に新しい呼び名が出ている。
+    expect(body).toContain('フォーク');
+    expect(body).toContain('リフォージ');
+  });
+
+  it('用語集の項目があり、2 つの語の対象と結果の違いを仕様 5.3 / 5.7 のとおりに書く', () => {
+    const answer = answerOf('glossary');
+    // 5.3: 公開済みの作品を親にし、新しい作品行が生まれる（元は残る）。
+    expect(answer).toContain('<strong>フォーク</strong>: <strong>公開されている作品</strong>をもとに、<strong>新しい作品</strong>を作ります');
+    expect(answer).toContain('元の作品はそのまま残り');
+    expect(answer).toContain('「このゲームからのフォーク」に数えられます');
+    // 5.7: 自分の draft を対象にし、同じ作品行が置き換わる。版は残り戻せる。系統に載せない。
+    expect(answer).toContain('<strong>リフォージ</strong>: <strong>公開する前の自分の作品</strong>を作り直します');
+    expect(answer).toContain('<strong>同じ作品が作り直したものに置き換わります</strong>');
+    expect(answer).toContain('前の版は残り、作品ページからいつでも戻せます');
+    expect(answer).toContain('フォークの数には数えません');
+    // 5.7「公開後の作り直しは扱わない。公開後に手を入れたい作者はフォークする」。
+    expect(answer).toContain('公開したあとに手を加えたいときは、フォークしてください');
+    // 回数は 1 日の枠を共有する（確定25）。
+    expect(answer).toContain('新しく作るときと同じ<a href="#quota">1 日の生成枠</a>を共有します');
+  });
+
+  it('既存の項目から、ページ内リンクで用語集へ飛べる', () => {
+    for (const id of ['about', 'quota', 'no-fork']) {
+      expect(answerOf(id), `質問 ${id} から用語集へのリンクが無い`).toContain('href="#glossary"');
+    }
   });
 });

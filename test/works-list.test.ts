@@ -505,7 +505,7 @@ describe('タグで絞り込む（#376 / 仕様 2.3.5）', () => {
       // **プレイ数順も絞り込み中は出さない**（#377。#376 の決定で `TAGGED_WORK_SORTS` は変えない）。
       expect(nav).not.toContain('プレイ数');
       expect(nav).toContain('<li><span aria-current="page">新着</span></li>');
-      expect(nav).toContain(`<li><a href="${worksListPath('forked', 1, 'shooting')}">改造された数</a></li>`);
+      expect(nav).toContain(`<li><a href="${worksListPath('forked', 1, 'shooting')}">フォークされた数</a></li>`);
       expect(body.indexOf(workPagePath(newest))).toBeLessThan(body.indexOf(workPagePath(mostLiked)));
     }
   });

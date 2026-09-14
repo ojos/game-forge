@@ -381,7 +381,7 @@ describe('版へ戻す受け口（5.7）', () => {
       expect(response.status).toBe(409);
       const body = await response.text();
       expect(body).toContain('いま戻せません');
-      expect(body).toContain('手直しが終わってから、もう一度お試しください。');
+      expect(body).toContain('リフォージが終わってから、もう一度お試しください。');
       const row = await env.DB.prepare('select source_key from games where id = ?')
         .bind(gameId)
         .first<{ source_key: string }>();

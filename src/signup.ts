@@ -103,7 +103,7 @@ function waitlistSourceOf(value: string | null): WaitlistSource {
  */
 function fromForkSection(source: WaitlistSource): string {
   return source === 'fork-cta'
-    ? `<p>改造（フォーク）できるのは招待された方だけです（8.1）。
+    ? `<p>フォークできるのは招待された方だけです（8.1）。
    <strong>遊ぶことと URL の共有に招待は要りません。</strong></p>`
     : '';
 }

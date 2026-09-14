@@ -287,7 +287,7 @@ describe('#30 の acceptance: Wasm のロード完了前に 4 要素すべてが
     const shot = `<img class="gf-shot" src="${ogpImagePath(child.id)}"`;
     const author = 'ゴリラ太郎';
     const parentName = 'おやゲーム';
-    const fork = '改造する';
+    const fork = 'フォークする';
     expect(body).toContain(shot);
     expect(body).toContain(author);
     expect(body).toContain(parentName);
@@ -348,7 +348,7 @@ describe('#30 の acceptance: Wasm のロード完了前に 4 要素すべてが
     expect(body).not.toContain('<img class="gf-shot"');
     expect(body).toContain('作者:');
     expect(body).toContain('元ゲーム:');
-    expect(body).toContain('改造する');
+    expect(body).toContain('フォークする');
   });
 });
 
@@ -414,7 +414,7 @@ describe('「改造する」の行き先（2.2-4 / 4.4 / #30）', () => {
     const { id } = await seedPlayableGame('fork-anon');
     const body = await workPage(id);
     expect(body).toContain('href="/signup?from=fork-cta"');
-    expect(body).toContain('改造には招待が必要です');
+    expect(body).toContain('フォークには招待が必要です');
 
     // **押した先が実際に開く。** 行き先の無いボタンを描かない（4.4）。
     const landing = await dispatch(
@@ -426,7 +426,7 @@ describe('「改造する」の行き先（2.2-4 / 4.4 / #30）', () => {
     const landingBody = await landing.text();
     // そこで実際に登録できる（10.2 が見る導線として記録される形で）。
     expect(landingBody).toContain('<input type="hidden" name="source" value="fork-cta">');
-    expect(landingBody).toContain('改造（フォーク）できるのは招待された方だけです');
+    expect(landingBody).toContain('フォークできるのは招待された方だけです');
   });
 
   it('その導線からの登録が fork-cta として記録される（10.2 の分子）', async () => {

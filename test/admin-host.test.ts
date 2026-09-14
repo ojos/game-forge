@@ -138,7 +138,7 @@ describe('3 つ目のホストとしての振り分け（#356 / 2.4.1）', () =>
   it('admin ホストはアプリ側のトップを返さない', async () => {
     // 振り分けが app へ落ちていたら、ここに公開トップの見出しが出る。
     const response = await SELF.fetch(`${ADMIN_ORIGIN}/`);
-    expect(await response.text()).not.toContain('<h1>Game Forge</h1>');
+    expect(await response.text()).not.toContain('<h1 class="gf-header-title">');
   });
 
   it('admin ホストはサンドボックスの CSP を付けない', async () => {
@@ -221,7 +221,7 @@ describe('2 つの経路表が混ざらない（#356 の constraints）', () => 
     const response = await SELF.fetch(`${APP_ORIGIN}/`);
     expect(response.status).toBe(200);
     const body = await response.text();
-    expect(body).toContain('<h1>Game Forge</h1>');
+    expect(body).toContain('<h1 class="gf-header-title">');
     expect(body).not.toContain('<h1>審査キュー</h1>');
     expect(body).not.toContain('gf-admin-header');
   });

@@ -317,6 +317,67 @@ blockquote {
   .gf-header-nav {
     margin-left: auto;
   }
+
+  /* #469: ヘッダとフッタ（仕様 2.5.6 / 2.5.7）——ここから。
+   *
+   * **ヘッダは高さ 64px の横 1 行に戻す**（`@section header` の既定は狭い段の 2 行）。`<nav>` を flex の箱に戻し、
+   * 検索窓と「ログイン」を HTML の並びの位置へ戻す。改行の印（`::after`）は消す。ナビの間は 8px、検索窓と
+   * アバターの前だけもう 8px 空ける（承認したモックアップの間隔）。
+   *
+   * **フッタはロゴを左、項目を右に分け**、項目の 2 列を文言の幅に詰めて、右の列の外側を器の右端に揃える
+   * （仕様 2.5.7）。列の間はモックアップの 48px ではなく余白の段の 40px（`--gf-gap-5`。2.5.8「足す段は無い」）。
+   *
+   * **どのセレクタにも `body` を前に付けて 1 段だけ強くする。** この区画はファイルの先頭の側にあり、
+   * `@section header` / `@section footer` の既定（狭い段の形）が後ろにある。`@media` は詳細度を足さないので、
+   * 同じ詳細度のまま書くと後ろの既定が勝ち、広い段の形にならない。
+   */
+  body .gf-header {
+    column-gap: var(--gf-gap-3);
+    padding-block: 0;
+  }
+
+  body .gf-header::after {
+    content: none;
+  }
+
+  body .gf-header-nav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--gf-gap-2);
+  }
+
+  body .gf-header-nav > :first-child,
+  body .gf-header-nav > * + * {
+    margin-left: 0;
+  }
+
+  body .gf-header-search,
+  body .gf-header-login {
+    order: 0;
+  }
+
+  body .gf-header-search {
+    flex: none;
+  }
+
+  body .gf-header-search,
+  body .gf-account-menu {
+    margin-left: var(--gf-gap-2);
+  }
+
+  body .gf-footer {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--gf-gap-5);
+  }
+
+  body .gf-footer-nav ul {
+    grid-template-columns: repeat(2, max-content);
+    column-gap: var(--gf-gap-5);
+  }
+  /* #469: ここまで */
 }
 
 /* ── 段 3: デスクトップ（1080px〜）──────────────────────────────────────────── */
@@ -1518,24 +1579,42 @@ a.gf-card-author {
 }
 
 /* ==========================================================================
-   @section header — ヘッダ（#266 / #331）
+   @section header — ヘッダ（#266 / #331 / #372 / #469）
    ========================================================================== */
 
 /*
- * サービス名と、サイト内の主な行き先（#266。#331 でナビを入れた）。**見出しではない。**
+ * サービスのロゴと、サイト内の主な行き先（仕様 2.5.6。#469 で見た目の規約の部品を当てた）。
  *
- * 大きくすると、その画面の `<h1>` と主役を争う。小さく・淡くして、
- * 「いまどこに居るか」と「どこへ行けるか」の手がかりに留める。
+ * ## 形（仕様 2.5.6 / 承認したモックアップ Version 6）
  *
- * **横に 1 行で並べようとしない。** 390px では「Game Forge / 作品をさがす / つくる /
- * 自分の作品 / 登録情報」が 1 行に収まらない。`flex-wrap` で折り返させ、**折り返しても
- * 版面の幅を超えない**形にする（`scripts/check-page-width.sh` が見ている回帰である）。
+ * - **広い段（768px〜）は高さ 64px の 1 行**: ロゴ / 作品をさがす / つくる / 検索窓 / アバター（または「ログイン」）。
+ *   ナビを右へ寄せて横 1 行に戻すのは器の側である（`@section shell` の段 2）
+ * - **狭い段（〜767px）は 2 行**: 1 行目にロゴ・ナビ・アバター、2 行目に検索窓。高さは固定しない
+ * - **ナビは小さい控えめのボタン、「つくる」だけ小さい副のボタン**（`.gf-button`。`src/html.ts` の `headerButtons`）
+ * - **下の罫線は器の端から端まで**（`--gf-rule-soft`。仕様 2.5.3）
  *
- * **広い段でナビを右へ寄せるのは器の側である**（`@section shell` の段 2。2.3.9 の
- * 「breakpoint を画面ごとに書かない」）。ここには幅に反応する規則を置かないこと。
+ * ## 「小さく・淡く」を覆した（仕様 2.5.9）
  *
- * **`position: sticky` にしない。** 狭い端末で縦の場所を常時 1 行ぶん食う。
- * 主役は作品であり（M8-1）、外枠は上に置いたまま流れるだけでよい。
+ * #266 は「大きくすると、その画面の `<h1>` と主役を争う」としてヘッダを小さく淡くしていた。**主役を争うのは色と
+ * 面積であって、ロゴの大きさではない**——作品ページの主役は作品枠である。**トップだけロゴを `<h1>` で包む**
+ * （`src/html.ts` の `siteHeader`）。
+ *
+ * ## 狭い段で 2 行にする仕組み
+ *
+ * **HTML の並びは変えない**（ロゴ / 作品をさがす / つくる / 検索窓 / ログイン。2.3.7 の並びで、Tab と読み上げの
+ * 順もこれである）。狭い段では `<nav>` を `display: contents` にしてナビの項目をヘッダの flex の項目へ上げ、
+ * **`order` で検索窓を改行の印（`::after`）の後ろへ回す**。広い段では `<nav>` を flex の箱に戻す（`@section shell`）。
+ *
+ * - **未ログインの「ログイン」も 2 行目へ回す**（`.gf-header-login`）。**1 行目に収まらないため**である——390px の
+ *   版面は 358px で、ロゴ 122px ＋「作品をさがす」110px ＋「つくる」68px ＋「ログイン」82px は間を足さなくても越える。
+ *   アバター（円 32px ＋開閉の印）なら 1 行目に収まる
+ * - **並びを `order` で変えるのは狭い段の検索窓と「ログイン」だけ**である。見た目の順と Tab の順が食い違うのは
+ *   この 2 つが「1 行目の右端より後ろ」に来ることだけで、行の中の順は HTML のままである
+ * - **`display: contents` の `<nav>` は、古いブラウザの読み上げでランドマークとして扱われないことがある**
+ *   （中のリンクと検索窓は残る）。狭い段で HTML の並びを保つことを優先した
+ *
+ * **幅に反応する規則をここに置かない**（区画の規約 3）。**`position: sticky` にしない**——390px では高さ 1 行
+ * ぶんが常に作品の絵を隠す（仕様 2.5.6）。
  */
 .gf-header {
   /* アカウントのメニューの中身を、ヘッダの右端に揃えて重ねる基準（下の `.gf-account-menu-list`）。 */
@@ -1544,17 +1623,31 @@ a.gf-card-author {
   flex-wrap: wrap;
   /*
    * **縦は中央で揃える**（#372 で `baseline` から変えた）。アバターは文字を持たない図形で、
-   * `baseline` のままだと図形の下端が行の基準線になり、ロゴとナビの文字だけが下へ落ちる
-   * （撮影で確かめた）。
+   * `baseline` のままだと図形の下端が行の基準線になり、ロゴとナビの文字だけが下へ落ちる。
    */
   align-items: center;
-  gap: var(--gf-gap-2) var(--gf-gap-3);
-  margin-bottom: var(--gf-gap-4);
-  padding-bottom: var(--gf-gap-2);
+  /*
+   * 行の間は、改行の印（`::after`。高さ 0 で 1 行ぶんを取る）の上下に 1 つずつ入るので、合わせて 8px になる。
+   * **狭い段では列の間を持たない**——ロゴとナビの間は先頭の項目の `margin-left: auto` が取り、ナビの項目の間は
+   * 項目の側が 4px ずつ持つ（下の `.gf-header-nav > * + *`）。列の間で空けると、ロゴとナビの間にも 4px が掛かり、
+   * 390px の 1 行目（ロゴ 122px ＋ 110px ＋ 68px ＋アバター 44px ＋間 8px ＝ 352px。版面は 358px）に収まらない。
+   */
+  gap: var(--gf-gap-1) 0;
+  min-height: 4rem;
+  /*
+   * **器の上端から始める。** body の上の余白（`@section shell` の `body`）をヘッダのぶんだけ打ち消し、高さ 64px の
+   * 中でロゴを上下中央に置く（承認したモックアップの形）。ヘッダを持たない画面（`/__dev/components`）の余白は変わらない。
+   */
+  margin: calc(-1 * var(--gf-gap-5)) 0 var(--gf-gap-4);
+  padding-block: var(--gf-gap-2);
   border-bottom: 1px solid var(--gf-rule-soft);
-  font-size: var(--gf-text-small);
-  font-weight: 700;
-  letter-spacing: 0.02em;
+}
+
+/* 狭い段の改行の印。**検索窓（`order: 2`）と「ログイン」（`order: 3`）をこの後ろの 2 行目へ送る。** */
+.gf-header::after {
+  content: '';
+  order: 1;
+  flex-basis: 100%;
 }
 
 /*
@@ -1576,29 +1669,47 @@ a.gf-card-author {
   flex: none;
 }
 
-.gf-header a {
-  color: var(--gf-ink-soft);
-  text-decoration: none;
-}
-
-.gf-header a:hover {
-  color: var(--gf-ink);
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
+/*
+ * トップだけ、ロゴを包む `<h1>`（仕様 2.5.6 / #469）。**見出しの大きさと余白を持たせない**——見た目はほかの画面の
+ * ロゴと同じで、違うのは要素だけである（`@section base` の `h1` の余白と、`@section shell` の上限を外す）。
+ */
+.gf-header-title {
+  flex: none;
+  max-width: none;
+  margin: 0;
+  font-size: inherit;
+  line-height: 0;
 }
 
 /*
- * ナビの項目。
- *
- * **サービス名より弱く出す**（太字を外す）。ロゴと同じ太さで並べると、5 つが対等に
- * 見えて「いまどこに居るか」の手がかりが消える。
+ * ナビの箱。**狭い段では箱を作らず**、項目をヘッダの flex の項目として並べる（冒頭の「狭い段で 2 行にする仕組み」）。
+ * 広い段で flex の箱に戻すのは `@section shell` である。
  */
 .gf-header-nav {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--gf-gap-2) var(--gf-gap-3);
-  font-weight: 400;
+  display: contents;
+}
+
+/* 狭い段では、ナビの先頭の項目がロゴとの間の余りを取り、ナビとアバターを右端へ寄せる。 */
+.gf-header-nav > :first-child {
+  margin-left: auto;
+}
+
+/* 狭い段のナビの項目の間（ヘッダの列の間を 0 にした代わり）。2 行目の先頭に来る検索窓は、下で 0 に戻す。 */
+.gf-header-nav > * + * {
+  margin-left: var(--gf-gap-1);
+}
+
+/*
+ * ナビのボタン（`.gf-button`）の縦の揃え。**部品の既定の `align-self: flex-start` を外す**——ヘッダの行では、
+ * 高さの違うロゴ（31px）とアバター（32px）と中央で揃える。
+ */
+.gf-header .gf-button {
+  align-self: center;
+}
+
+/* 狭い段の「ログイン」は、検索窓の右の 2 行目に置く（冒頭の理由）。 */
+.gf-header-login {
+  order: 3;
 }
 
 /*
@@ -1612,9 +1723,7 @@ a.gf-card-author {
  *
  * **`<details>` 自身を基準にしない。** 基準をヘッダ（`.gf-header` の `position: relative`）
  * にして `right: 0` で置くと、**アバターがどこに折り返されても、中身は必ず版面の内側に
- * 収まる**——狭い段ではナビが右へ寄らない（`@section shell`）のでアバターは行の途中に
- * あり、アバター基準で右揃えにすると中身が左の画面外へはみ出す。幅は
- * `min(16rem, 100%)` で、ヘッダより広くならない。**だから幅の `@media` が要らない**
+ * 収まる**。幅は `min(16rem, 100%)` で、ヘッダより広くならない。**だから幅の `@media` が要らない**
  * （規約 3。広い段では器がナビを右へ寄せるので、アバターの真下に揃う）。
  *
  * **押し下げずに重ねる。** 流れの中で開くと、開くたびに本文が 1 画面ぶん下がり、
@@ -1624,7 +1733,6 @@ a.gf-card-author {
   display: flex;
   align-items: center;
   gap: var(--gf-gap-1);
-  padding: var(--gf-gap-1);
   border-radius: 999px;
   cursor: pointer;
   /* 既定の三角（`list-item` の marker）を消し、下の `::after` の印に置き換える。 */
@@ -1643,20 +1751,22 @@ a.gf-card-author {
   content: '';
   width: 0;
   height: 0;
-  border-left: 0.3em solid transparent;
-  border-right: 0.3em solid transparent;
-  border-top: 0.35em solid var(--gf-ink-soft);
+  border-left: 0.25rem solid transparent;
+  border-right: 0.25rem solid transparent;
+  border-top: 0.3125rem solid var(--gf-ink-soft);
 }
 
 .gf-account-menu[open] > summary::after {
   border-top: 0;
-  border-bottom: 0.35em solid var(--gf-ink-soft);
+  border-bottom: 0.3125rem solid var(--gf-ink-soft);
 }
 
 /*
  * アバターの既定の図形（**画像そのものは M12-12 / #380 が持つ**）。
  *
  * 無彩色の円に、頭と肩の形を重ねる。**色を持たせない**（冒頭の方針。色を持つのは作品だけ）。
+ *
+ * **この寸法（28px）は、カード・作者ページ・登録情報の円のものである。** ヘッダの円は下で 32px にする（#469）。
  */
 .gf-avatar {
   display: block;
@@ -1671,12 +1781,20 @@ a.gf-card-author {
 }
 
 /*
+ * ヘッダのアバターは 32px の正円（仕様 2.5.6。小さいボタンと高さを揃える。#469）。**カードなどの円は変えない**
+ * ——あちらの見た目は M13-7 以降の issue が決める。
+ */
+.gf-account-menu .gf-avatar {
+  width: 2rem;
+  height: 2rem;
+}
+
+/*
  * アバターの円に差し込むアイコンの画像（#380。`src/html.ts` の `avatarImage`）。
  *
- * **寸法・正円・枠は `.gf-avatar` のまま、画像を中へ差し込むだけにする**（#433 の見た目の規約が
- * 決まるまで。利用者の決定）。画像は円いっぱいに広げて円で切る。**アイコンが無いときは配信が透明な
- * 1px の画像を返すので、下の既定の図形が見える**（`src/avatar-delivery.ts`）。`<img>` の `width` / `height`（256）は
- * 読み込み前の縦横比のためだけにあり、見た目の大きさはここが持つ。
+ * **寸法・正円・枠は `.gf-avatar` のまま、画像を中へ差し込むだけにする。** 画像は円いっぱいに広げて円で切る。
+ * **アイコンが無いときは配信が透明な 1px の画像を返すので、下の既定の図形が見える**（`src/avatar-delivery.ts`）。
+ * `<img>` の `width` / `height`（256）は読み込み前の縦横比のためだけにあり、見た目の大きさはここが持つ。
  *
  * ヘッダ・カード・作者ページ・登録情報のどこでも同じ円に入るので、この区画に 1 つだけ置く。
  */
@@ -1704,6 +1822,10 @@ a.gf-card-author {
   border: 0;
 }
 
+/*
+ * メニューの中身。**浮かぶ物なので角丸は 12px**（`--gf-radius-float`。仕様 2.5.8。PR #466 の Copilot code review
+ * からの持ち越し）。**影は使わない**——枠線と地の色で面を分ける（2.5.8「浮かぶ物にも影を使わない」）。
+ */
 .gf-account-menu-list {
   position: absolute;
   top: 100%;
@@ -1711,13 +1833,13 @@ a.gf-card-author {
   z-index: 1;
   width: min(16rem, 100%);
   margin: var(--gf-gap-1) 0 0;
-  padding: var(--gf-gap-1) 0;
+  padding: var(--gf-gap-1);
   list-style: none;
   border: 1px solid var(--gf-rule);
-  border-radius: var(--gf-radius);
+  border-radius: var(--gf-radius-float);
   background: var(--gf-ground);
   font-size: var(--gf-text);
-  letter-spacing: normal;
+  line-height: 1.5;
 }
 
 .gf-account-menu-list li {
@@ -1726,14 +1848,23 @@ a.gf-card-author {
 
 /*
  * 項目（リンクとログアウトのボタン）を同じ形に揃える。**押せる範囲を行いっぱいにする**
- * ——狭い端末の指で、文字の上だけを狙わせない。
+ * ——狭い端末の指で、文字の上だけを狙わせない。**見た目は控えめのボタンの作法**（仕様 2.5.5「ドロップダウンの中身」）
+ * で、枠も地も持たず、ホバーで地に一段色が付く。
  */
 .gf-account-menu-list a,
 .gf-account-menu-list button {
   display: block;
   width: 100%;
-  padding: var(--gf-gap-2) var(--gf-gap-3);
+  padding: var(--gf-gap-2) 0.75rem;
+  border-radius: var(--gf-radius);
+  color: var(--gf-ink);
   text-align: left;
+  text-decoration: none;
+}
+
+.gf-account-menu-list a:hover,
+.gf-account-menu-list button:hover {
+  background: var(--gf-surface);
 }
 
 /*
@@ -1751,17 +1882,15 @@ a.gf-card-author {
 
 .gf-account-menu-list button {
   border: 0;
-  border-radius: 0;
   background: transparent;
   color: var(--gf-ink-soft);
   font-weight: 400;
+  line-height: inherit;
 }
 
 .gf-account-menu-list button:hover {
   color: var(--gf-ink);
   opacity: 1;
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
 }
 
 /*
@@ -1772,11 +1901,12 @@ a.gf-card-author {
  * だけでは、共通の `form` の `flex-direction: column` が残り、入力欄とボタンが縦に積まれる
  * （PR #432 の Copilot の指摘。`test/page-shell.test.ts` がこの宣言を見る）。
  *
- * **幅は CSS が持つ**（`size` 属性は使わない。#282）。入力欄は `11em` を基準に**縮めてよい**
- * （`min-width: 0`）——狭い段ではナビが折り返し、窓が行の途中に来ても版面を越えない。
- * **幅に反応する規則は置かない**（規約 3）。
+ * **狭い段では 2 行目に置き、行いっぱいに伸ばす**（`order` と `flex`。冒頭の「狭い段で 2 行にする仕組み」）。
+ * 広い段で横 1 行の中へ戻すのは `@section shell` である。
  *
- * **文字は 16px を下回らせない**（`@section forms` と同じ理由。iOS は小さい文字の入力欄で拡大する）。
+ * **高さは小さいボタンと揃えて 32px**（仕様 2.5.6。「検索」は小さい副のボタン）。**幅は CSS が持つ**（`size` 属性は
+ * 使わない。#282）。入力欄は 12.5rem を基準に**縮めてよい**（`min-width: 0`）。**文字は 16px を下回らせない**
+ * （`@section forms` と同じ理由。iOS は小さい文字の入力欄で拡大する）。
  */
 .gf-header-search {
   display: flex;
@@ -1784,15 +1914,18 @@ a.gf-card-author {
   flex-wrap: nowrap;
   align-items: center;
   gap: var(--gf-gap-1);
+  order: 2;
+  flex: 1 1 auto;
   max-width: 100%;
   margin: 0;
 }
 
 .gf-header-search input {
-  flex: 0 1 11em;
-  width: 11em;
+  flex: 1 1 12.5rem;
+  width: 12.5rem;
   min-width: 0;
-  padding: 0.3em 0.6em;
+  height: var(--gf-control-sm);
+  padding: 0 0.625rem;
   /* 入力欄なので 3:1 を満たす段（`@section forms` と同じ。#457）。 */
   border: 1px solid var(--gf-rule-input);
   border-radius: var(--gf-radius);
@@ -1801,17 +1934,15 @@ a.gf-card-author {
   font: inherit;
   font-size: max(1rem, var(--gf-text));
   font-weight: 400;
+  line-height: 1;
 }
 
 .gf-header-search input::placeholder {
   color: var(--gf-ink-faint);
 }
 
-.gf-header-search button {
+.gf-header-search .gf-button {
   flex: none;
-  align-self: auto;
-  padding: 0.3em 0.8em;
-  font-weight: 400;
 }
 
 /*
@@ -1837,7 +1968,10 @@ a.gf-card-author {
 /*
  * いまどこに居るか（2.3.10。`src/html.ts` の `siteBreadcrumb`）。
  *
- * **ヘッダと同じく小さく・淡く出す。** 外枠であり、その画面の `<h1>` と主役を争わない。
+ * **小さく・淡く出す**（仕様 2.5.9 は、ヘッダの「小さく・淡く」を覆してもパンくずは淡いまま、としている）。
+ * 外枠であり、その画面の `<h1>` と主役を争わない。**親へのリンクは文章の外のリンクの見せ方**（仕様 2.5.5。#469）
+ * ——下線を常には出さず、ホバーと焦点で出す。`.gf-link-quiet` と同じ宣言をここで `a` に当てる（HTML にクラスを
+ * 足さない。`src/html.ts` の `siteBreadcrumb`）。色はここの淡い文字を継ぐ。
  *
  * **区切りの記号は CSS が出す。** HTML に置くと、読み上げが項目ごとに記号を読む。
  * `content` の `/ ""` は代替テキストを空にする書き方で、対応していない環境では記号が
@@ -1864,6 +1998,17 @@ a.gf-card-author {
   margin: 0;
 }
 
+.gf-breadcrumb a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.gf-breadcrumb a:is(:hover, :focus-visible) {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 1px;
+}
+
 .gf-breadcrumb li + li::before {
   content: '›' / '';
   margin: 0 var(--gf-gap-2);
@@ -1875,68 +2020,53 @@ a.gf-card-author {
 }
 
 /* ==========================================================================
-   @section footer — フッタ（#331）
+   @section footer — フッタ（#331 / #469）
    ========================================================================== */
 
+/*
+ * 左にロゴ、右に項目を 2 列（仕様 2.5.7。`src/legal.ts` の `siteFooter`）。
+ *
+ * - **上の罫線は器の端から端まで**（ヘッダの下と同じ `--gf-rule-soft`。仕様 2.5.3）。`<hr>` は置かない
+ * - **区画の見出しを置かない**（#435）。項目は文章の外のリンク（`.gf-link-quiet`）で、色はここの淡い文字を継ぐ
+ * - **狭い段ではロゴと項目を縦に積み、項目は 2 列のまま**（下の既定）。広い段でロゴを左、項目を右に分けるのは
+ *   `@section shell` である（規約 3）
+ * - **2 列は `minmax(0, 1fr)`** にして、収まらない文言は項目の中で折り返させる——2 列を保つより折り返しを許す
+ *   （仕様 2.5.7）。いまの 6 項目は 390px の半分に収まる（いちばん長い「削除依頼（権利者の方）」で 14px × 11 字）
+ */
 .gf-footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-3);
   margin-top: var(--gf-gap-5);
+  padding-top: var(--gf-gap-4);
+  border-top: 1px solid var(--gf-rule-soft);
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
-}
-
-.gf-footer p {
-  margin: 0;
+  line-height: 1.7;
 }
 
 /*
- * フッタの先頭のロゴ（#440）。区画の並び（下の `.gf-footer-nav`）とは行を分ける。
- * **リンクにしない**——`/` への導線はヘッダのロゴが持つ（`src/legal.ts` の `siteFooter`「トップへを持たない」）。
+ * フッタのロゴ（#440）。**リンクにしない**——`/` への導線はヘッダのロゴが持つ（`src/legal.ts` の `siteFooter`
+ * 「トップへを持たない」）。
  */
 .gf-footer-logo {
   display: block;
-  margin-bottom: var(--gf-gap-3);
-}
-
-/*
- * 2 区画（サービス / 法務。2.3.7 / #331）。
- *
- * **横に並べるが、狭い端末では折り返す。** `flex-wrap` と `min-width` の組で、390px では
- * 縦に積み、広い画面では横に 2 列になる。**`grid-template-columns: 1fr 1fr` にしない**
- * ——狭い幅でも 2 列を保とうとして、「権利者の方へ（削除依頼）」が 1 文字ずつ折れる。
- */
-.gf-footer-nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--gf-gap-3) var(--gf-gap-5);
-}
-
-.gf-footer-group {
-  min-width: 12rem;
-}
-
-/*
- * 区画の見出し。
- *
- * **`<h2>` だが、本文の見出しの大きさでは出さない。** ここは外枠であり、その画面の
- * `<h2>` と主役を争ってはいけない（ヘッダを小さく・淡くしているのと同じ理由）。
- * 要素を `<p>` にしないのは、区画に名前があること自体が支援技術にとっての手がかりで
- * あるためである。
- */
-.gf-footer-heading {
-  margin: 0 0 var(--gf-gap-1);
-  color: var(--gf-ink-faint);
-  font-size: var(--gf-text-small);
-  font-weight: 700;
+  flex: none;
+  line-height: 0;
 }
 
 .gf-footer-nav ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gf-gap-1) var(--gf-gap-3);
+  max-width: none;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .gf-footer-nav li {
-  margin-bottom: var(--gf-gap-1);
+  margin: 0;
 }
 
 /* ==========================================================================

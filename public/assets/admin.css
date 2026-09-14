@@ -43,51 +43,69 @@
    ========================================================================== */
 
 /*
- * **横に 1 行で並べようとしない。** 390px では「Game Forge 管理 / 審査キュー / 利用者 /
- * 操作の履歴」が収まらない。`flex-wrap` で折り返させる（`app.css` の `.gf-header` が
- * 同じ理由で同じ形にしてある——**規則は写しているのではなく、同じ制約から同じ形が
- * 出ている**。値はトークンを参照している）。
+ * 管理画面のヘッダ（仕様 2.5.6 / #469）。**利用者向けのヘッダと同じ形にする**——ロゴの横に「管理」のチップ、
+ * ナビは小さい控えめのボタン（`.gf-button-tertiary`）、いまの画面は面の色、下の罫線は器の端から端まで。
+ *
+ * - **広い段は高さ 64px の 1 行で、ナビを右へ寄せる。** 狭い端末では折り返し、ナビは 2 行目の左端から並ぶ
+ *   ——**`justify-content: space-between` で両方を満たす**（1 行に並べばロゴが左端・ナビが右端、ナビが折り返して
+ *   1 つだけの行になれば左端）。**だから幅の `@media` が要らない**（app.css の区画の規約 3 は、幅の断点を
+ *   `@section shell` だけに置くと決めている。こちらにも断点を散らさない）
+ * - **器の上端から始める**（app.css の `.gf-header` と同じ理由。body の上の余白をヘッダのぶんだけ打ち消す）
+ * - **「いまどちらのホストを見ているか」はチップで見分ける**（仕様 2.5.6）。#469 の前は罫線を利用者向けより
+ *   濃くしていたが、見分けの印をチップへ移し、罫線は利用者向けと同じ段に揃えた
  */
 .gf-admin-header {
   display: flex;
   flex-wrap: wrap;
-  /* **縦は中央で揃える**（#440 で `baseline` から変えた）。ロゴは画像で、`baseline` のままだと
-     画像の下端が行の基準線になり、ナビの文字だけが下へ落ちる（`app.css` の `.gf-header` と同じ理由）。 */
+  /* **縦は中央で揃える**（#440。ロゴは画像で、`baseline` のままだと画像の下端が行の基準線になる）。 */
   align-items: center;
+  justify-content: space-between;
   gap: var(--gf-gap-2) var(--gf-gap-3);
-  margin-bottom: var(--gf-gap-4);
-  padding-bottom: var(--gf-gap-2);
-  /* **利用者向けより濃い線にする。** 「いまどちらのホストを見ているか」を取り違えない
-     ための差である（2.4.1 が外枠を別にした 2 つ目の理由）。 */
-  border-bottom: 2px solid var(--gf-rule);
-  font-size: var(--gf-text-small);
-  font-weight: 700;
+  min-height: 4rem;
+  margin: calc(-1 * var(--gf-gap-5)) 0 var(--gf-gap-4);
+  padding-block: var(--gf-gap-2);
+  border-bottom: 1px solid var(--gf-rule-soft);
 }
 
-.gf-admin-header a {
-  color: var(--gf-ink-soft);
+/*
+ * ロゴと「管理」のチップを 1 つのリンクに並べる（#440。`src/admin/shell.ts` の `adminHead`）。
+ *
+ * **チップの地は枠線と同じ段で塗る**（承認したモックアップの形。押せない札のチップ `.gf-chip` の既定は地の色で、
+ * それだとロゴの横で文字だけに見える）。新しい色は足さず、トークンを参照するだけである（冒頭）。
+ */
+.gf-admin-logo {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--gf-gap-2);
+  color: var(--gf-ink);
   text-decoration: none;
 }
 
-/* ロゴと「管理」を 1 つのリンクに並べる（#440。`src/admin/shell.ts` の `adminHead`）。 */
-.gf-admin-logo {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--gf-gap-2);
-}
-
-.gf-admin-header a:hover {
+.gf-admin-logo .gf-chip {
+  background: var(--gf-rule);
   color: var(--gf-ink);
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
 }
 
-/* ナビはサービス名より弱く出す（太字を外す。`app.css` の `.gf-header-nav` と同じ判断）。 */
+/* ナビ。項目はボタンの部品が形を持つので、ここは並べ方だけを持つ。 */
 .gf-admin-nav {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--gf-gap-2) var(--gf-gap-3);
-  font-weight: 400;
+  align-items: center;
+  gap: var(--gf-gap-1);
+}
+
+/* 部品の既定の `align-self: flex-start` を外し、行の中で中央に揃える（app.css の `.gf-header .gf-button` と同じ）。 */
+.gf-admin-nav .gf-button {
+  align-self: center;
+}
+
+/*
+ * いまの画面（`aria-current="page"`。`src/admin/shell.ts` の `adminNav`）。**面の色で示す**——読み上げに渡す印と
+ * 見た目の印を同じ属性から決める。
+ */
+.gf-admin-nav [aria-current='page'] {
+  background: var(--gf-surface);
 }
 
 .gf-admin-footer {

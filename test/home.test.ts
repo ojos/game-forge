@@ -171,7 +171,10 @@ describe('公開トップ（#89）', () => {
     expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8');
 
     const body = await response.text();
-    expect(body).toContain('<h1>Game Forge</h1>');
+    expect(body).toContain('<h1 class="gf-header-title">');
+    // **トップの `<h1>` はヘッダのロゴだけ**（仕様 2.5.6 / #469）。本文の `<h1>Game Forge</h1>` は消した。
+    expect(body.match(/<h1\b/gu)).toHaveLength(1);
+    expect(pageBodyOf(body)).not.toMatch(/<h1\b/u);
     // 開発用の索引にしか無い文言が残っていないこと。受け入れ条件
     // 「`/` が開発用ページではない」を、見た目ではなく文字列で固定する。
     expect(body).not.toContain('/__dev/health');
@@ -247,7 +250,7 @@ describe('ハブ型のトップ（#329 / M9-3。仕様 2.3.1 / 2.3.3）', () => 
     const response = await handleAppRequest(new Request(`${APP_ORIGIN}${HOME_PATH}`), broken);
     expect(response.status).toBe(200);
     const body = await response.text();
-    expect(body).toContain('<h1>Game Forge</h1>');
+    expect(body).toContain('<h1 class="gf-header-title">');
     expect(body).toContain(`href="${SIGNUP_PATH}"`);
     expect(body).not.toContain('gf-home-section');
   });
@@ -314,7 +317,7 @@ describe('ハブ型のトップ（#329 / M9-3。仕様 2.3.1 / 2.3.3）', () => 
     // **空の節を出さない**（見出しだけが並ぶ画面は、出来ていないものを出来ているように
     // 見せる）。案内と導線は残る。
     const body = await openHome({ ...env, DB: EMPTY_DB } as unknown as Env);
-    expect(body).toContain('<h1>Game Forge</h1>');
+    expect(body).toContain('<h1 class="gf-header-title">');
     expect(body).not.toContain('gf-home-section');
     expect(body).not.toContain(OFFICIAL_SECTION_TITLE);
     expect(body).toContain(`href="${SIGNUP_PATH}"`);

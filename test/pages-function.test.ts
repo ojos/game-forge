@@ -32,7 +32,7 @@ describe('Pages Functions の入口（#71）', () => {
     // `/` は #89 で公開トップ（src/home.ts）になった。アプリ側にしか無い見出しで判定する。
     const response = await onRequest(pagesContext(new Request(`${APP_ORIGIN}/`)));
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain('<h1>Game Forge</h1>');
+    expect(await response.text()).toContain('<h1 class="gf-header-title">');
   });
 
   it('サンドボックス用ホストをサンドボックス側へ渡す', async () => {

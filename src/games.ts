@@ -182,6 +182,22 @@ export function inFlightGuardSql(): string {
 }
 
 /**
+ * 進行中と見なす開始時刻の下限（#455）。**この値より新しく始まった行だけが進行中である**
+ * （`>`）。この値以下で始まった `pending` / `running` の行は「止まったまま残った行」で、
+ * 次の要求を止めない。
+ *
+ * **区切りを使う側はここから取る。** `now - STALE_AFTER_SECONDS` を呼び出し側で組み立てると、
+ * `>` と `>=` の向きや、どの時刻から引くかが場所ごとに割れる（{@link inFlightGuardBindings}
+ * と、推敲ジョブの上書き条件（`src/revisions.ts` の `claimRevisionSlot`）が同じ値を読む）。
+ *
+ * @param now 判定時刻（UNIX 秒）
+ * @returns 区切り（UNIX 秒）
+ */
+export function inFlightCutoff(now: number): number {
+  return now - STALE_AFTER_SECONDS;
+}
+
+/**
  * {@link inFlightGuardSql} に束縛する値を並べる。
  *
  * **区切りは `now - STALE_AFTER_SECONDS` より新しい開始時刻である**（`>`）。
@@ -197,7 +213,7 @@ export function inFlightGuardBindings(
   userId: string,
   now: number,
 ): readonly [string, number, string, number] {
-  const cutoff = now - STALE_AFTER_SECONDS;
+  const cutoff = inFlightCutoff(now);
   return [userId, cutoff, userId, cutoff];
 }
 

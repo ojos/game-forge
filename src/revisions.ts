@@ -29,14 +29,19 @@
  * | 公開済みは推敲できない（5.7） | 同 `status = 'draft'` |
  * | 完成していない作品は推敲できない | 同 `generation_state = 'ready'` |
  * | 1 作品あたりの上限（5.7） | 同 `revise_count < ?` |
- * | 同時に走る推敲は 1 本 | `game_revision_jobs.game_id` が主キー＋ UPSERT の `where state = 'failed'` |
+ * | 同時に走る推敲は 1 本 | `game_revision_jobs.game_id` が主キー＋ UPSERT の `where`（`failed`、または区切りを過ぎた `pending` / `running` だけを上書きする。#455） |
  * | 利用者に進行中の生成・フォーク・推敲があれば始めない（#455） | {@link claimRevisionSlot} の `inFlightGuardSql`（`src/games.ts`） |
  * | 戻す操作は費用を出さない | この経路が LLM も台帳も呼ばないこと（{@link restoreRevision}） |
  *
  * **呼び出し側の `if` で守る形にしない**（`src/publish.ts` と同じ判断）。経路を足した人が
  * 書き忘れても、動作では気づけない。
  */
-import { createPreviewKey, inFlightGuardBindings, inFlightGuardSql } from './games.js';
+import {
+  createPreviewKey,
+  inFlightCutoff,
+  inFlightGuardBindings,
+  inFlightGuardSql,
+} from './games.js';
 import { REVISIONS_PER_GAME } from './quota.js';
 
 /** 推敲ジョブの状態。**成功は状態を持たない**——行が消える（0009）。 */
@@ -208,8 +213,22 @@ export async function revisionStatus(env: Env, gameId: string): Promise<Revision
  *
  * # 走っている推敲があれば断る
  *
- * `game_id` が主キーなので 2 本目は衝突する。**`state = 'failed'` のときだけ上書きする**
- * ので、走っている最中の要求は 0 行で返る。失敗した行は次の推敲が引き取る。
+ * `game_id` が主キーなので 2 本目は衝突する。**上書きするのは `state = 'failed'` の行と、
+ * 止まったまま残った行（区切りを過ぎた `pending` / `running`）だけ**なので、走っている
+ * 最中の要求は 0 行で返る。失敗した行と止まった行は次の推敲が引き取る。
+ *
+ * **止まった行を引き取るのは #455 からである。** それまでは `failed` だけを上書きしていた
+ * ので、同じ作品に `pending` / `running` のまま止まったジョブが残ると、その作品は
+ * 二度と推敲できなかった（利用者側の進行中の判定は区切りで通るのに、この UPSERT が
+ * 0 行になる）。**区切りは進行中の判定と同じ値である**（`src/games.ts` の
+ * `inFlightCutoff`。同じ `now` から導く）。判定が「終わった」と見なす行を、ここだけが
+ * 「まだ走っている」と見なすと、締め出しが作品単位で残る。
+ *
+ * **遅れて戻った古いジョブは何も書けない。** 上書きで `job_token_hash` が新しいトークンの
+ * ハッシュに変わるので、古いトークンの `claim`（{@link claimRevisionJob}）も完成
+ * （{@link completeRevision}）も 0 行になる。区切り（`STALE_AFTER_SECONDS`）は
+ * オーケストレータの `timeout` より長い（`scripts/check-orchestrator-retry.sh`）ので、
+ * 区切りを過ぎた `running` がまだ走っていることは無い。
  *
  * # 利用者に進行中の要求があれば断る（#455）
  *
@@ -298,7 +317,9 @@ export async function claimRevisionSlot(
               prompt = excluded.prompt,
               state = 'pending', error = null, started_at = null,
               created_at = excluded.created_at
-        where game_revision_jobs.state = 'failed'`,
+        where game_revision_jobs.state = 'failed'
+           or (game_revision_jobs.state in ('pending', 'running')
+               and coalesce(game_revision_jobs.started_at, game_revision_jobs.created_at) <= ?)`,
     ).bind(
       jobTokenHash,
       prompt,
@@ -307,6 +328,7 @@ export async function claimRevisionSlot(
       userId,
       REVISIONS_PER_GAME,
       ...inFlightGuardBindings(userId, now),
+      inFlightCutoff(now),
     ),
     env.DB.prepare(
       `update games set revise_count = revise_count + 1

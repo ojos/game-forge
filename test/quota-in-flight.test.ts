@@ -66,7 +66,12 @@ import {
   QUOTA_EXCEEDED_STATUS,
 } from '../src/quota.js';
 import { createReviseRoutes } from '../src/revise.js';
-import { claimRevisionSlot } from '../src/revisions.js';
+import {
+  claimRevisionJob,
+  claimRevisionSlot,
+  completeRevision,
+  revisionStatus,
+} from '../src/revisions.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { looksStalled } from '../src/work-page.js';
@@ -503,6 +508,113 @@ describe('時間の区切り（acceptance 2）', () => {
       ),
     ).not.toBeNull();
   });
+});
+
+/** 推敲ジョブ 1 本ぶんの状態（D1 の列そのもの）。 */
+interface RevisionJobRow {
+  job_token_hash: string;
+  state: string;
+  created_at: number;
+  started_at: number | null;
+}
+
+/**
+ * 作品の推敲ジョブの行を読む。
+ *
+ * @param gameId 作品 id
+ * @returns 行（無ければ null）
+ */
+async function revisionJobOf(gameId: string): Promise<RevisionJobRow | null> {
+  return await env.DB.prepare(
+    'select job_token_hash, state, created_at, started_at from game_revision_jobs where game_id = ?',
+  )
+    .bind(gameId)
+    .first<RevisionJobRow>();
+}
+
+describe('同じ作品に止まったまま残った推敲ジョブ（acceptance 2 / PR #467 のレビュー）', () => {
+  /**
+   * 同じ作品に、指定の時刻に始まった推敲ジョブを 1 本残す（**経路を通さず、直接**）。
+   *
+   * @param userId 作者
+   * @param gameId 作品
+   * @param since ジョブの作成（running なら開始も）の時刻
+   * @param state 残す状態
+   * @returns 残したジョブのトークンのハッシュ
+   */
+  async function leaveRevisionJob(
+    userId: string,
+    gameId: string,
+    since: number,
+    state: 'pending' | 'running',
+  ): Promise<string> {
+    const oldHash = `stuck-${gameId}-${state}`;
+    expect(await claimRevisionSlot(env, gameId, userId, '止まった手直し', oldHash, since)).toBe(true);
+    if (state === 'running') {
+      expect(await claimRevisionJob(env, gameId, oldHash, since)).toBe(true);
+    }
+    return oldHash;
+  }
+
+  for (const state of ['pending', 'running'] as const) {
+    it(`区切りを過ぎた ${state} のジョブがあっても同じ作品を推敲でき、ジョブは新しいトークンの pending に置き換わる`, async () => {
+      const { userId, first } = await prepareUser(`in-flight-stuck-revision-${state}`);
+      const oldHash = await leaveRevisionJob(
+        userId,
+        first.draftId,
+        nowSeconds() - STALE_AFTER_SECONDS - 1,
+        state,
+      );
+
+      const probe = probePipeline();
+      const response = await send('revise', userId, first, probe.pipeline);
+
+      // **断りの文言（not-revisable / generation-in-flight）のどちらも選ばない。** 通る。
+      expect(response.status).toBe(ACCEPTED);
+      expect(probe.llmCalls).toHaveLength(1);
+      const job = await revisionJobOf(first.draftId);
+      expect(job?.state).toBe('pending');
+      expect(job?.started_at).toBeNull();
+      expect(job?.job_token_hash).not.toBe(oldHash);
+      expect(job?.job_token_hash).toBe(await hashJobToken(probe.llmCalls[0]!.jobToken));
+      // 止まった 1 回も枠は返さない（費用が出ていた可能性がある）。新しい 1 回を足す。
+      expect((await revisionStatus(env, first.draftId)).used).toBe(2);
+
+      // **遅れて戻った古いジョブは何も書けない。** トークンが入れ替わっている。
+      expect(await claimRevisionJob(env, first.draftId, oldHash)).toBe(false);
+      expect(await claimGenerationJob(env, first.draftId, oldHash)).toBe(false);
+      expect(
+        await completeRevision(env, first.draftId, oldHash, {
+          goVersion: 'go1.26.5',
+          sourceKey: 'builds/stale/source.go',
+          wasmKey: 'builds/stale/game.wasm.br',
+        }),
+      ).toBe(false);
+      expect((await revisionJobOf(first.draftId))?.job_token_hash).toBe(job?.job_token_hash);
+    });
+
+    it(`区切りの内側の ${state} のジョブがあれば、同じ作品の推敲は進行中の文言で断られる`, async () => {
+      const { userId, first } = await prepareUser(`in-flight-live-revision-${state}`);
+      const oldHash = await leaveRevisionJob(
+        userId,
+        first.draftId,
+        nowSeconds() - STALE_AFTER_SECONDS + 60,
+        state,
+      );
+
+      const probe = probePipeline();
+      const response = await send('revise', userId, first, probe.pipeline);
+
+      expect(response.status).toBe(IN_FLIGHT_STATUS);
+      // **理由の分類を誤らない。** まだ走っている推敲なので「推敲できない作品」ではない。
+      expect(await response.json()).toEqual({ error: IN_FLIGHT_REASON });
+      expect(probe.llmCalls).toHaveLength(0);
+      const job = await revisionJobOf(first.draftId);
+      expect(job?.job_token_hash).toBe(oldHash);
+      expect(job?.state).toBe(state);
+      expect((await revisionStatus(env, first.draftId)).used).toBe(1);
+    });
+  }
 });
 
 describe('同時に届いた 2 本（acceptance 3）', () => {

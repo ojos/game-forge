@@ -232,9 +232,11 @@ export type CaptureStartOutcome =
  * 公開時の 5 枚は 7,850〜16,907 ms だった（`docs/ogp-capture.md` 9 章）。**900 秒は
  * 最悪実測の 53 倍**で、遅い撮影を中断と読み違える余地は無い。
  *
- * # `src/work-page.ts` の `STALE_AFTER_SECONDS` と同じ値だが、別の定数である
+ * # `src/games.ts` の `STALE_AFTER_SECONDS` と同じ値だが、別の定数である
  *
  * あちらは生成（オーケストレータ Lambda の 15 分上限と実測 90.9 秒）から出た値で、
+ * **#455 で正本が `src/work-page.ts` から `src/games.ts` へ移った**（作品ページの表示と、
+ * 進行中の要求の判定が同じ値を読む。`src/work-page.ts` は再 export）。
  * **導出が違う。** 数が一致しているのは偶然であり、import で結ぶと**どちらかの宣言を
  * 動かした日に、もう片方が黙って追随する。** 一方は「画面に中断と書く」閾値、もう一方は
  * **「本番の行を掴み直してよい」閾値**である（`src/work-page.ts` の `FAILURE_MESSAGES`

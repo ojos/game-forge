@@ -7,7 +7,7 @@
 //    - **パッドへのタッチ**（CDP の `Input.dispatchTouchEvent`）: 左を押して離す／左を押したまま Space を押し、Space・左の順に離す
 //    - **無視されるべきメッセージ**: 親の文書から、許可表に無いキー名・形の違うメッセージを送る（対照として、同じ親から許可表のキーも送る）。
 //      親と同じオリジンの**別の iframe** から、形の正しいメッセージを送る
-//    - **押したまま覆いを閉じる**（「閉じる」の `click()`）
+//    - **押したまま `window` の `blur`**（iframe を残したまま、親の「すべて離す」だけを試す）と、**押したまま覆いを閉じる**（「閉じる」の `click()`）
 // 2. **サンドボックス URL を直接開いた**ローダー文書で、自分自身へ形の正しいメッセージを送る（親の居ない文書）
 // 3. **デスクトップ**（1280×900、タッチなし）で同じ作品ページを開く
 // 4. **キーの集合が空の作品**の作品ページを、タッチ端末の形で開いて覆いを開く
@@ -471,7 +471,28 @@ async function observeTouch(cdp, options) {
     steps.sibling = tab.keysIn('sibling');
     await tab.evaluate(REMOVE_SIBLING);
 
-    // 5. 押したまま覆いを閉じる。
+    // 5a. 押したまま window の blur（隠れた・フォーカスが外へ出た）。**iframe を取り除かない**ので、届く keyup は親の release による
+    // （閉じるときの keyup は、iframe を取り除いたときのローダー自身の pagehide でも届き、親の release と見分けられない。2026-09-14 に実測）。
+    const up = await tab.centerOf('.gf-play-pad-key[data-code="ArrowUp"]');
+    steps.points.up = up;
+    tab.setPhase('hold-up');
+    if (up !== null) {
+      await tab.touch('touchStart', [{ ...up, id: 4 }]);
+    }
+    await sleep(DELIVERY_MS);
+    steps.holdUp = tab.keysIn('hold-up');
+    tab.setPhase('blur-while-held');
+    await tab.evaluate(`window.dispatchEvent(new Event('blur'))`);
+    await sleep(DELIVERY_MS);
+    steps.blurWhileHeld = tab.keysIn('blur-while-held');
+    steps.afterBlur = await tab.state();
+    steps.heldAfterBlur = await tab.evaluate(`document.querySelectorAll('.gf-play-pad-held').length`);
+    tab.setPhase('lift-after-blur');
+    await tab.touch('touchEnd', []);
+    await sleep(DELIVERY_MS);
+    steps.liftAfterBlur = tab.keysIn('lift-after-blur');
+
+    // 5b. 押したまま覆いを閉じる。
     tab.setPhase('hold-right');
     await tab.touch('touchStart', [{ ...right, id: 3 }]);
     await sleep(DELIVERY_MS);

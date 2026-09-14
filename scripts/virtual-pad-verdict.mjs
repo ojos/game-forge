@@ -10,7 +10,7 @@
 // | 2 | 同時押し（左を押したまま Space）が、離しを挟まずに 2 つの押下として届き、離した指のキーだけが離れる |
 // | 3 | 許可表に無いキー名・形の違うメッセージ（親から）、親と同じオリジンの別の iframe から、直接開いたローダーの自己送信は、どれも作品へ届かない。**対照として、親から送った許可表のキーは届き、2 回目の down / up は重ならない** |
 // | 4 | デスクトップでは覆いが開かず、パッドのキーは表示されず、作品へキーが届かない |
-// | 5 | 押したまま覆いを閉じると、iframe を取り除く前に `keyup` が届く（release）。閉じた後に指を離しても何も届かない |
+// | 5 | 押したまま `window` の `blur` で、iframe を残したまま `keyup` が届き（親の release）、その後に指を離しても何も届かない。押したまま覆いを閉じると `keyup` が届き、閉じた後に指を離しても何も届かない |
 // | 6 | キーの集合が空の作品では、パッドの置き場所が空で、ゲームの領域が覆いの残りいっぱいを使う |
 //
 // **表示規則（どのキーをどこに出すか）はここへ書き写さない。** 規則は `src/virtual-pad.ts` の単体テストが見る。ここは、出したキーが
@@ -261,7 +261,21 @@ function problemsOf(result, storedCodes) {
     }
   }
 
-  // ── 5. 閉じると離す ─────────────────────────────────────────────────────────
+  // ── 5. 隠れる・閉じると離す ─────────────────────────────────────────────────
+  // **閉じるときの keyup は、iframe を取り除いたときのローダー自身の pagehide でも届く**ので、親の release はここ（iframe を残す blur）で見る。
+  if (!sameSequence(touch.holdUp, ['keydown:ArrowUp'])) {
+    problems.push(`5 の前提: 上のキーを押しても keydown ArrowUp が届きませんでした（${JSON.stringify(sequenceOf(touch.holdUp))}）。`);
+  } else if (!sameSequence(touch.blurWhileHeld, ['keyup:ArrowUp']) || touch.afterBlur?.overlayHidden !== false || touch.afterBlur?.frames !== 1) {
+    problems.push(
+      `5: 押したまま window の blur で、覆いを開いたまま keyup ArrowUp が 1 つだけ届きませんでした（${JSON.stringify(sequenceOf(touch.blurWhileHeld))}、` +
+        `覆いが開いている=${String(touch.afterBlur?.overlayHidden === false)}）。親の releasePad が release を送っていません。`,
+    );
+  }
+  if (touch.heldAfterBlur !== 0 || !sameSequence(touch.liftAfterBlur, [])) {
+    problems.push(
+      `5: blur の後に押している印が残ったか、指を離すとキーが届きました（印 ${String(touch.heldAfterBlur)}、${JSON.stringify(sequenceOf(touch.liftAfterBlur))}）。`,
+    );
+  }
   if (!sameSequence(touch.holdRight, ['keydown:ArrowRight'])) {
     problems.push(`5 の前提: 右のキーを押しても keydown ArrowRight が届きませんでした（${JSON.stringify(sequenceOf(touch.holdRight))}）。`);
   } else if (touch.closed?.reached !== true) {
@@ -269,7 +283,7 @@ function problemsOf(result, storedCodes) {
   } else if (!sameSequence(touch.closeWhileHeld, ['keyup:ArrowRight'])) {
     problems.push(
       `5: 押したまま覆いを閉じても、作品へ keyup ArrowRight が届きませんでした（${JSON.stringify(sequenceOf(touch.closeWhileHeld))}）。` +
-        ' 閉じる処理（releasePad）が iframe を取り除く前に release を送っていません。',
+        ' 閉じる処理（releasePad）の release も、iframe を取り除いたときのローダー自身の pagehide も効いていません。',
     );
   }
   if (!sameSequence(touch.afterClose, []) || touch.heldAfterClose !== 0) {

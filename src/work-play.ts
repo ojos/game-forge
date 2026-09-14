@@ -37,7 +37,9 @@
  *   押しているキーをすべて離す）と `setPointerCapture` をしてから `down` を送る。`pointerup` / `pointercancel` /
  *   `lostpointercapture` で `up` を送る。ボタンごとに指を覚えるので、同時押しが成り立つ
  * - **キーボード・支援技術**（`click` の `detail === 0`）: `down` と `up` を続けて送る
- * - **すべて離す**: `visibilitychange`（`hidden`）・`pagehide`・`window` の `blur` と、覆いを閉じるとき（`releasePad`）
+ * - **すべて離す**: `visibilitychange`（`hidden`）・`pagehide`・`window` の `blur` と、覆いを閉じるとき（`releasePad`）。
+ *   **閉じるときの release は、直後に iframe を取り除くので作品へは届かない**（実測）。押したまま閉じたときの keyup は、取り除かれた
+ *   ローダー自身の `pagehide`（`src/sandbox-loader.ts` の `padReceiverScript`）が送る。親の release が効くのは iframe を残す場面である
  * - **送信**: `iframe.contentWindow.postMessage({ type: 'gf-pad', op, code }, '*')`。宛先は `'*'` で、確認は受け手
  *   （`src/sandbox-loader.ts` の `padReceiverScript`）が行う。**送り始めるのは、その iframe から起動の合図を受けた後**
  *   （検査は `src/plays.ts` と同じ `event.source === frame.contentWindow`）。**2 回目の `load`（遷移）の後は送らない**

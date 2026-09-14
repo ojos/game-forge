@@ -498,7 +498,7 @@ output "orchestrator_memory_mb" {
 }
 
 output "orchestrator_timeout_seconds" {
-  description = "オーケストレータのタイムアウト（秒）。src/work-page.ts の STALE_AFTER_SECONDS より短いこと。"
+  description = "オーケストレータのタイムアウト（秒）。src/games.ts の STALE_AFTER_SECONDS より短いこと。"
   value       = local.orchestrator_timeout_seconds
 }
 

@@ -802,8 +802,6 @@ export interface WorkPageView {
    * しか置かない。**
    */
   readonly dailyRemaining: number | null;
-  /** この作品にあと何回推敲できるか（5.7）。作者でなければ null。 */
-  readonly revisionsRemaining: number | null;
   /**
    * いま推敲が走っているか。走っているあいだは新しく始められない。
    *
@@ -1688,10 +1686,7 @@ function reviseSection(view: WorkPageView): string {
     return failed;
   }
 
-  const remaining =
-    view.revisionsRemaining === null
-      ? ''
-      : `<p>この作品はあと ${Math.max(0, Math.trunc(view.revisionsRemaining))} 回リフォージできます。</p>`;
+  // **1 作品あたりの残り回数は出さない**（#515。上限をなくした）。回数として出すのは日次枠だけである。
   const daily =
     view.dailyRemaining === null
       ? `<p>${QUOTA_UNKNOWN_NOTICE}</p>`
@@ -1722,7 +1717,7 @@ function reviseSection(view: WorkPageView): string {
 <h3>リフォージ（気になるところを直す）</h3>
 <p>どう直したいかを書くと、いまのソースをもとに作り直します。
    <strong>1 回につき 1〜2 分かかり、生成枠を使います。${GENERATION_RETRY_QUOTA_NOTICE}</strong></p>
-${remaining}${daily}${form}`;
+${daily}${form}`;
 }
 
 /**
@@ -2858,9 +2853,8 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **走っているあいだは口を出さない。** 二重送信をボタンの無効化ではなく
       // 「フォームが無い」ことで防ぐ（JavaScript を要求しない）。
       revisable:
-        revisableNow && revisionQuota !== null && !revisionQuota.running && revisionQuota.remaining > 0,
+        revisableNow && revisionQuota !== null && !revisionQuota.running,
       dailyRemaining,
-      revisionsRemaining: revisionQuota?.remaining ?? null,
       revisionRunning: revisionQuota?.running ?? false,
       revisionStalled: revisionQuota?.stalled ?? false,
       revisionError: revisionQuota?.failed ?? null,

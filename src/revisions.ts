@@ -28,10 +28,13 @@
  * | 作者本人だけが推敲できる | {@link claimRevisionSlot} の `author_id = ?` |
  * | 公開済みは推敲できない（5.7） | 同 `status = 'draft'` |
  * | 完成していない作品は推敲できない | 同 `generation_state = 'ready'` |
- * | 1 作品あたりの上限（5.7） | 同 `revise_count < ?` |
  * | 同時に走る推敲は 1 本 | `game_revision_jobs.game_id` が主キー＋ UPSERT の `where`（`failed`、または区切りを過ぎた `pending` / `running` だけを上書きする。#455） |
  * | 利用者に進行中の生成・フォーク・推敲があれば始めない（#455） | {@link claimRevisionSlot} の `inFlightGuardSql`（`src/games.ts`） |
  * | 戻す操作は費用を出さない | この経路が LLM も台帳も呼ばないこと（{@link restoreRevision}） |
+ *
+ * **1 作品あたりの回数の上限は持たない**（#515。回数を縛るのは確定25 の日次枠だけで、
+ * それは `src/revise.ts` が枠を取る前に見る）。`games.revise_count` は数え続けるが、判定には使わない
+ * （10.2 の「1 作品あたりのリフォージ回数」の観測に使う）。
  *
  * **呼び出し側の `if` で守る形にしない**（`src/publish.ts` と同じ判断）。経路を足した人が
  * 書き忘れても、動作では気づけない。
@@ -42,7 +45,6 @@ import {
   inFlightGuardBindings,
   inFlightGuardSql,
 } from './games.js';
-import { REVISIONS_PER_GAME } from './quota.js';
 
 /** 推敲ジョブの状態。**成功は状態を持たない**——行が消える（0009）。 */
 export type RevisionJobState = 'pending' | 'running' | 'failed';
@@ -150,12 +152,15 @@ export async function listRevisions(env: Env, gameId: string): Promise<readonly 
   }));
 }
 
-/** 推敲の枠の残り（5.7 / 4.4 の表示に使う）。 */
+/**
+ * 推敲の状態（5.7 の表示に使う）。
+ *
+ * **あと何回できるか（`remaining`）は持たない**（#515。1 作品あたりの上限をなくした）。
+ * 残りの回数として画面に出すのは、確定25 の日次枠だけである。
+ */
 export interface RevisionStatus {
   /** これまでに走らせた推敲の回数（失敗を含む）。 */
   readonly used: number;
-  /** あと何回できるか。 */
-  readonly remaining: number;
   /**
    * いま推敲が走っているか。走っていれば新しくは始められない。
    *
@@ -179,7 +184,7 @@ export interface RevisionStatus {
  * 推敲の枠と、走っているジョブの有無を返す。
  *
  * **判定（{@link claimRevisionSlot}）と同じ値から導く。** 画面が別の数え方をすると、
- * 表示の残数と経路の判断が割れる（`src/quota.ts` が `generationQuotaStatus` と
+ * 表示と経路の判断が割れる（`src/quota.ts` が `generationQuotaStatus` と
  * `checkGenerationQuota` を同じ状態から導いているのと同じ理由）。
  *
  * # 区切りを過ぎたジョブは「走っている」と言わない（#480）
@@ -198,7 +203,7 @@ export interface RevisionStatus {
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
  * @param now 判定時刻（UNIX 秒。既定は現在時刻）
- * @returns 枠の状態（作品が無ければ used = 0 / remaining = 0）
+ * @returns 枠の状態（作品が無ければ used = 0）
  */
 export async function revisionStatus(
   env: Env,
@@ -215,7 +220,7 @@ export async function revisionStatus(
     .first<{ used: number; state: string | null; error: string | null; since: number | null }>();
 
   if (row === null) {
-    return { used: 0, remaining: 0, running: false, stalled: false, failed: null };
+    return { used: 0, running: false, stalled: false, failed: null };
   }
 
   const inFlight = row.state === 'pending' || row.state === 'running';
@@ -224,7 +229,6 @@ export async function revisionStatus(
   const withinWindow = row.since === null || row.since > inFlightCutoff(now);
   return {
     used: row.used,
-    remaining: Math.max(0, REVISIONS_PER_GAME - row.used),
     running: inFlight && withinWindow,
     stalled: inFlight && !withinWindow,
     failed: row.state === 'failed' ? row.error : null,
@@ -235,7 +239,10 @@ export async function revisionStatus(
  * 推敲の枠を 1 つ取り、ジョブ行を作る（5.7）。
  *
  * **ここが「推敲してよいか」を決める唯一の場所である。** 5.7 の対象条件（自作・
- * `draft`・完成済み）と上限を、**すべて SQL の条件として**同時に評価する。
+ * `draft`・完成済み）を、**すべて SQL の条件として**同時に評価する。
+ *
+ * **1 作品あたりの回数の上限は見ない**（#515）。`revise_count` は 3 文目で増やし続けるが、
+ * 条件には入れない。回数を縛るのは、呼び出し側が先に見る確定25 の日次枠だけである。
  *
  * # 2 文を 1 つの batch で走らせる
  *
@@ -319,7 +326,7 @@ export async function claimRevisionSlot(
     // **枠を取るより先に積む。** 同じ batch なので、枠が取れなければこの行も残らない
     // （D1 の `batch` は暗黙のトランザクションで走る）。
     //
-    // **5.7 の対象条件は下の UPSERT とそろえてある**（作者・`draft`・`ready`・上限）。
+    // **5.7 の対象条件は下の UPSERT とそろえてある**（作者・`draft`・`ready`）。
     // そろえないと、断られた要求で版だけが積まれる経路ができる。
     //
     // **そのうえで、こちらにだけ `source_key` / `wasm_key` の非 NULL がある。**
@@ -336,17 +343,17 @@ export async function claimRevisionSlot(
        select g.id, 1, g.source_key, g.wasm_key, g.go_version, null, g.created_at
          from games g
         where g.id = ? and g.author_id = ? and g.status = 'draft'
-          and g.generation_state = 'ready' and g.revise_count < ?
+          and g.generation_state = 'ready'
           and g.source_key is not null and g.wasm_key is not null
           and not exists (select 1 from game_revisions r where r.game_id = g.id)
           and ${inFlightGuardSql()}`,
-    ).bind(gameId, userId, REVISIONS_PER_GAME, ...inFlightGuardBindings(userId, now)),
+    ).bind(gameId, userId, ...inFlightGuardBindings(userId, now)),
     env.DB.prepare(
       `insert into game_revision_jobs (game_id, job_token_hash, prompt, state, error, started_at, created_at)
        select g.id, ?, ?, 'pending', null, null, ?
          from games g
         where g.id = ? and g.author_id = ? and g.status = 'draft'
-          and g.generation_state = 'ready' and g.revise_count < ?
+          and g.generation_state = 'ready'
           and ${inFlightGuardSql()}
        on conflict(game_id) do update
           set job_token_hash = excluded.job_token_hash,
@@ -362,7 +369,6 @@ export async function claimRevisionSlot(
       now,
       gameId,
       userId,
-      REVISIONS_PER_GAME,
       ...inFlightGuardBindings(userId, now),
       inFlightCutoff(now),
     ),
@@ -466,8 +472,8 @@ export async function completeRevision(
  * 5.3 が上限超の整理パスについて「コンパイルに失敗しても元のソースへ戻して拒否する」
  * と定めているのと同じ扱いである。**失敗の記録はジョブ行にだけ残り、作品は無傷のまま。**
  *
- * **枠は戻さない。** 5.7 の上限は推敲という行為にかかっており、失敗した推敲でも
- * 費用は出ている（確定25 が「リトライは含む」としているのと同じ線。0009）。
+ * **枠は戻さない。** `revise_count` は推敲という行為を数えており（#515 で上限の判定には使わなく
+ * なったが、10.2 の観測のために数え続ける）、失敗した推敲でも費用は出ている（確定25 が「リトライは含む」としているのと同じ線。0009）。
  *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
@@ -490,11 +496,9 @@ export async function failRevision(env: Env, gameId: string, code: string): Prom
  *
  * **確定28 が失敗した推敲を回数に数える根拠は「費用は出ている」ことである。**
  * LLM を 1 度も呼んでいない失敗には、その根拠が当てはまらない。**呼ぶ前に確定的に
- * 失敗する経路（元のソースが読めない・大きすぎる）で枠を食うと、作者は 1 回も
- * 生成させないまま上限へ達する。**
- *
- * **「失敗を繰り返して上限を迂回できる」にはならない。** 迂回して得られるのは
- * 費用の出る生成の回数だが、ここで返すのは**費用が 1 円も出ていない試行**である。
+ * 失敗する経路（元のソースが読めない・大きすぎる）で数えると、10.2 の「1 作品あたりの
+ * リフォージ回数」に、1 回も生成していない試行が混ざる。**（#515 より前は、作者が 1 回も
+ * 生成させないまま 1 作品あたりの上限へ達する、が理由だった。上限はなくした。）
  *
  * **起動を試みたあとには使わない。** 非同期呼び出しは、こちらがエラーとして受け取っても
  * 相手が走り出している可能性を否定できない。走っているジョブの枠を返すと、

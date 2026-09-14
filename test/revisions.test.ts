@@ -9,7 +9,6 @@ import {
   STALE_AFTER_SECONDS,
 } from '../src/games.js';
 import type { GenerateRequest } from '../src/generate.js';
-import { REVISIONS_PER_GAME } from '../src/quota.js';
 import {
   appendRevision,
   claimRevisionJob,
@@ -109,7 +108,6 @@ describe('推敲の枠（5.7 / 確定28）', () => {
 
     const status = await revisionStatus(env, gameId);
     expect(status.used).toBe(1);
-    expect(status.remaining).toBe(REVISIONS_PER_GAME - 1);
     expect(status.running).toBe(true);
   });
 
@@ -142,25 +140,33 @@ describe('推敲の枠（5.7 / 確定28）', () => {
     expect((await revisionStatus(env, gameId)).used).toBe(1);
   });
 
-  it('上限に達すると断られる。失敗した推敲も回数に数える', async () => {
+  it('1 作品あたりの上限は無い: 3 回を超えても枠を取れる。失敗した推敲も回数に数える（#515）', async () => {
     const userId = await createUser('rev-limit');
     const gameId = await createReadyGame(userId);
 
-    for (let attempt = 1; attempt <= REVISIONS_PER_GAME; attempt += 1) {
+    // **#515 より前は 3 回で断っていた**（`revise_count < 3`）。4 回目・5 回目も通ることを見る。
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
       expect(await claimRevisionSlot(env, gameId, userId, `${attempt} 回目`, `hash-5-${attempt}`)).toBe(
         true,
       );
-      // **失敗させる。** 版は 1 つも積まれないが、枠は戻らない（0009）。
+      // **失敗させる。** 版は 1 つも積まれないが、回数は戻らない（0009）。
       expect(await failRevision(env, gameId, 'build-failed')).toBe(true);
     }
 
-    expect(await claimRevisionSlot(env, gameId, userId, '4 回目', 'hash-5-over')).toBe(false);
-
     const status = await revisionStatus(env, gameId);
-    expect(status.used).toBe(REVISIONS_PER_GAME);
-    expect(status.remaining).toBe(0);
+    expect(status.used).toBe(5);
+    expect(status).not.toHaveProperty('remaining');
     expect(status.failed).toBe('build-failed');
     expect(await listRevisions(env, gameId)).toHaveLength(1);
+  });
+
+  it('revise_count が大きい draft でも枠を取れる（判定に revise_count を使わない。#515）', async () => {
+    const userId = await createUser('rev-large-count');
+    const gameId = await createReadyGame(userId);
+    await env.DB.prepare('update games set revise_count = 3 where id = ?').bind(gameId).run();
+
+    expect(await claimRevisionSlot(env, gameId, userId, '4 回目', 'hash-large-count')).toBe(true);
+    expect((await revisionStatus(env, gameId)).used).toBe(4);
   });
 });
 
@@ -518,7 +524,6 @@ describe('止まったまま残った推敲ジョブ（#480）', () => {
         // 止まった推敲は失敗ではない（分類名を持たない）。枠の数え方も変わらない。
         expect(status.failed).toBeNull();
         expect(status.used).toBe(1);
-        expect(status.remaining).toBe(REVISIONS_PER_GAME - 1);
       }
 
       // **読むだけで行を書き換えない**（掃除は #480 の scope.out。作品ページは GET で呼ぶ）。

@@ -38,7 +38,7 @@ import { TYPICAL_WAIT_TEXT } from './generate-page.js';
 import { siteFooter } from './legal.js';
 import { FAQ_PATH, PRIVACY_PATH, TAKEDOWN_PATH, TERMS_PATH } from './legal-paths.js';
 import { SIGNUP_PATH } from './paths.js';
-import { DAILY_QUOTA_PER_USER, REVISIONS_PER_GAME } from './quota.js';
+import { DAILY_QUOTA_PER_USER } from './quota.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from './service-contact.js';
@@ -102,8 +102,7 @@ export const FAQ_ENTRIES: readonly FaqEntry[] = [
     answer: `<p><strong>生成枠は 1 人 1 日 ${DAILY_QUOTA_PER_USER} 回で、日本時間の 0 時に戻ります。</strong>
    残りの回数は生成の画面に表示されます。</p>
 <p>枠は「できた作品の数」ではなく、<strong>生成のために AI を呼び出した回数</strong>で数えます。
-   新しく作る・フォークする・リフォージする（<a href="#glossary">フォークとリフォージの違い</a>）のいずれも、同じ枠を使います。
-   リフォージは 1 作品につき ${REVISIONS_PER_GAME} 回までです。</p>
+   新しく作る・フォークする・リフォージする（<a href="#glossary">フォークとリフォージの違い</a>）のいずれも、同じ枠を使います。</p>
 <p>これとは別に、<strong>サービス全体で 1 か月あたりの費用の上限</strong>があります。
    上限に達すると、個人の残りの回数にかかわらず、その月はサービス全体で生成が止まります。
    作品を遊ぶことと共有することは引き続きご利用いただけます。生成は翌月（日本時間）に再開します。</p>`,

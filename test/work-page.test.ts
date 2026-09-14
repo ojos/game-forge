@@ -58,7 +58,6 @@ import {
 import {
   DAILY_QUOTA_PER_USER,
   remainingQuotaNotice,
-  REVISIONS_PER_GAME,
 } from '../src/quota.js';
 import {
   appendRevision,
@@ -73,6 +72,14 @@ import { workSourcePath } from '../src/work-source.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
+
+/**
+ * 1 作品あたりの回数の上限を言う文の形（#515 でなくした）。
+ *
+ * **#515 より前の文言は「この作品はあと N 回手直しできます」だった**（#513 で「リフォージできます」）。
+ * 呼び名が変わっても当たるよう、語ではなく「あと N 回」「N 回まで」の形で見る。
+ */
+const PER_WORK_LIMIT_WORDING = /あと ?[0-9]+ ?回|1 作品につき|[0-9]+ ?回まで(?:リフォージ|手直し|推敲)/u;
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 
@@ -503,14 +510,15 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     }
   });
 
-  it('日次の残枠と、この作品の残り回数が出る', async () => {
+  it('日次の残枠は出し、1 作品あたりの残り回数は出さない（#515）', async () => {
     const { userId, id } = await seedReady('remaining');
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
 
     // **4.4 の文言を書き写さない。** 正本の組み立て関数と突き合わせる
     // （`src/quota.ts`。あちらが 4.4 の本文と機械照合されている）。
     expect(body).toContain(remainingQuotaNotice(DAILY_QUOTA_PER_USER));
-    expect(body).toContain(`あと ${REVISIONS_PER_GAME} 回リフォージできます`);
+    // **1 作品あたりの上限はなくした**（#515）。回数の上限を言う文を出さない。
+    expect(pageBodyOf(body)).not.toMatch(PER_WORK_LIMIT_WORDING);
   });
 
   it('本日の枠が尽きていたらフォームを出さず、残数は出す（4.4）', async () => {
@@ -537,14 +545,15 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     expect(body).toContain(remainingQuotaNotice(0));
   });
 
-  it('上限に達したら口を出さない', async () => {
+  it('revise_count が 3 以上でも、日次枠が残っていれば口を出す（1 作品あたりの上限は無い。#515）', async () => {
     const { userId, id } = await seedReady('exhausted');
     await env.DB.prepare('update games set revise_count = ? where id = ?')
-      .bind(REVISIONS_PER_GAME, id)
+      .bind(3, id)
       .run();
 
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(body).not.toContain(REVISE_PATH);
+    expect(body).toContain(REVISE_PATH);
+    expect(pageBodyOf(body)).not.toMatch(PER_WORK_LIMIT_WORDING);
   });
 
   it('推敲が走っているあいだは口を出さず、自動更新する', async () => {
@@ -1206,7 +1215,6 @@ const baseView: WorkPageView = {
   signedIn: false,
   revisable: false,
   dailyRemaining: null,
-  revisionsRemaining: null,
   revisionRunning: false,
   revisionStalled: false,
   revisionError: null,
@@ -2572,7 +2580,6 @@ describe('作品ページの出力に旧い呼び名（改造・推敲・手直�
     publishableId: id,
     revisable: true,
     dailyRemaining: DAILY_QUOTA_PER_USER,
-    revisionsRemaining: REVISIONS_PER_GAME,
     renamableId: id,
   };
 

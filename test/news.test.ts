@@ -17,7 +17,7 @@ import {
   newsLastUpdatedOn,
   renderHomeNewsSection,
 } from '../src/news.js';
-import { DAILY_QUOTA_PER_USER, REVISIONS_PER_GAME, jstDayRange } from '../src/quota.js';
+import { DAILY_QUOTA_PER_USER, jstDayRange } from '../src/quota.js';
 import { applySchema } from './helpers/schema.js';
 import { pageBodyOf } from './helpers/site-shell.js';
 
@@ -196,8 +196,18 @@ describe('記事に書いた数字が正本と一致する（shared-ai-rules 12 
     expect(text).not.toContain('月が替わる');
   });
 
-  it('1 作品あたりの直せる回数が `REVISIONS_PER_GAME` と一致する', () => {
-    expect(quotaArticleText()).toContain(`1 作品につき ${REVISIONS_PER_GAME} 回まで`);
+  it('1 作品あたりの直せる回数の上限を書かない（#515 で上限をなくした）', () => {
+    const text = quotaArticleText();
+    expect(text).not.toContain('1 作品につき');
+    expect(text).not.toMatch(/[0-9]+ ?回までです。$/mu);
+    // 自分の作品を直す操作が日次の枠を共有することは、引き続き書く。
+    expect(text).toContain('自分の作品を直す操作も、同じ 1 日の枠から使います。');
+  });
+
+  it('直したので `updatedOn` を付け、公開日は変えない（#515）', () => {
+    const found = NEWS_ARTICLES.find((item) => item.id === 'generation-quota');
+    expect(found?.publishedOn).toBe('2026-09-12');
+    expect(found?.updatedOn).toBe('2026-09-14');
   });
 });
 

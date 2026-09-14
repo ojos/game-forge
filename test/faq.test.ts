@@ -8,7 +8,7 @@ import { INVITE_RECOVERY_DAYS } from '../src/invite-balance.js';
 import { INVITE_QUOTA } from '../src/invite-issuance.js';
 import { FAQ_PATH, PRIVACY_PATH, TAKEDOWN_PATH, TERMS_PATH } from '../src/legal-paths.js';
 import { SIGNUP_PATH } from '../src/paths.js';
-import { DAILY_QUOTA_PER_USER, REVISIONS_PER_GAME } from '../src/quota.js';
+import { DAILY_QUOTA_PER_USER } from '../src/quota.js';
 import { dispatch } from '../src/routes.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from '../src/service-contact.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
@@ -142,7 +142,9 @@ describe('仕様と食い違わない（#373 の constraints。4.3 / 4.4 / 5.6 /
     const answer = answerOf('quota');
     expect(answer).toContain(`1 人 1 日 ${DAILY_QUOTA_PER_USER} 回`);
     expect(answer).toContain('日本時間の 0 時に戻ります');
-    expect(answer).toContain(`リフォージは 1 作品につき ${REVISIONS_PER_GAME} 回まで`);
+    // **1 作品あたりの上限はなくした**（#515）。回数の上限を言う文を残さない。
+    expect(answer).not.toContain('1 作品につき');
+    expect(answer).toContain('新しく作る・フォークする・リフォージする');
   });
 
   it('月次の上限はサービス全体のもので、達すると全体の生成が止まると書く（4.3 / 4.4）', () => {
@@ -206,6 +208,12 @@ describe('フォークとリフォージの用語集（#513）', () => {
     // 空振りしていない: 同じ画面に新しい呼び名が出ている。
     expect(body).toContain('フォーク');
     expect(body).toContain('リフォージ');
+  });
+
+  it('画面の出力に、1 作品あたりの回数の上限を出さない（#515）', async () => {
+    const { body } = await openFaq();
+    expect(body).not.toContain('1 作品につき');
+    expect(body).not.toMatch(/(?:リフォージ|推敲|手直し)[^<]{0,20}[0-9]+ ?回まで/u);
   });
 
   it('用語集の項目があり、2 つの語の対象と結果の違いを仕様 5.3 / 5.7 のとおりに書く', () => {

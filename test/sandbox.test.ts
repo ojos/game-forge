@@ -2,7 +2,7 @@ import { SELF, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createPreviewKey } from '../src/games.js';
 import { parseSandboxPath, wasmExecKey } from '../src/sandbox-delivery.js';
-import { LOADER_STARTED_MESSAGE, loaderHtml } from '../src/sandbox-loader.js';
+import { LOADER_STARTED_MESSAGE, TAP_TO_MOUSE_SCRIPT, loaderHtml } from '../src/sandbox-loader.js';
 import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
@@ -750,5 +750,125 @@ describe('起動の合図（#377。プレイ数）', () => {
     });
     expect(body).not.toContain('evil</script>');
     expect(body).toContain('evil\\u003c/script>');
+  });
+});
+
+describe('タップ→マウス変換（#491 / 仕様 3.9.3）', () => {
+  /**
+   * 変換のスクリプトから、1 つの関数の本体を切り出す。
+   *
+   * @param name 関数名
+   * @returns `function <name>(` から次の `\n  }\n` まで
+   */
+  function functionBodyOf(name: string): string {
+    const start = TAP_TO_MOUSE_SCRIPT.indexOf(`function ${name}(`);
+    expect(start, `${name} が無い`).toBeGreaterThan(-1);
+    return TAP_TO_MOUSE_SCRIPT.slice(start, TAP_TO_MOUSE_SCRIPT.indexOf('\n  }\n', start));
+  }
+
+  it('配信されたローダー文書に、変換のスクリプトが起動スクリプトと別の <script> で入る', async () => {
+    const game = await seedGame({ suffix: 'tap', status: 'published' });
+    const body = await (await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`)).text();
+
+    expect(body).toContain(`<script>\n${TAP_TO_MOUSE_SCRIPT}\n</script>`);
+    // **起動の経路（#180 / #181）へ混ぜない。** 変換は wasm_exec.js と起動スクリプトより前に、独立して置く。
+    const tap = body.indexOf(TAP_TO_MOUSE_SCRIPT);
+    expect(tap).toBeLessThan(body.indexOf('<script src='));
+    expect(tap).toBeLessThan(body.indexOf('WebAssembly.instantiateStreaming(fetch('));
+    expect(body.slice(body.indexOf('<script src='))).not.toContain('touchstart');
+    // 変換は UGC を含まない（既存の検査と同じ材料で見る）。
+    expect(body).not.toContain('タイトル');
+    expect(body).not.toContain('sandbox-author');
+  });
+
+  it('固定の文字列で、資材のパスや親のオリジンが変わっても同じものが入る（UGC の経路が無い）', () => {
+    const one = loaderHtml({ wasmPath: '/g/a/game.wasm', wasmExecPath: '/g/a/wasm_exec.js', parentOrigin: APP_ORIGIN });
+    const other = loaderHtml({
+      wasmPath: '/p/b/game.wasm',
+      wasmExecPath: '/p/b/wasm_exec.js',
+      parentOrigin: 'https://evil</script><script>alert(1)//',
+    });
+    expect(one).toContain(TAP_TO_MOUSE_SCRIPT);
+    expect(other).toContain(TAP_TO_MOUSE_SCRIPT);
+    // テンプレートの差し込みを持たない。`</script>` で文書を閉じる綴りも無い。
+    expect(TAP_TO_MOUSE_SCRIPT).not.toContain('${');
+    expect(TAP_TO_MOUSE_SCRIPT).not.toContain('</script');
+  });
+
+  it('document の 4 つのタッチイベントを捕捉段・passive で聞き、preventDefault も stopPropagation も呼ばない', () => {
+    expect(TAP_TO_MOUSE_SCRIPT).toContain('var options = { capture: true, passive: true };');
+    for (const [type, handler] of [
+      ['touchstart', 'onStart'],
+      ['touchmove', 'onMove'],
+      ['touchend', 'onEnd'],
+      ['touchcancel', 'onEnd'],
+    ] as const) {
+      expect(TAP_TO_MOUSE_SCRIPT).toContain(`document.addEventListener('${type}', ${handler}, options);`);
+    }
+    expect(TAP_TO_MOUSE_SCRIPT.split('addEventListener(').length - 1).toBe(4);
+    // Ebitengine の canvas のリスナーは、これまでどおり本物のタッチを受ける。
+    expect(TAP_TO_MOUSE_SCRIPT).not.toContain('preventDefault');
+    expect(TAP_TO_MOUSE_SCRIPT).not.toContain('stopPropagation');
+    expect(TAP_TO_MOUSE_SCRIPT).not.toContain('stopImmediatePropagation');
+  });
+
+  it('指が 1 本も触れていない状態で始まった touchstart の最初の指だけを追う', () => {
+    const start = functionBodyOf('onStart');
+    expect(start).toContain('if (event.touches.length !== event.changedTouches.length) {');
+    expect(start).toContain('var touch = event.changedTouches[0];');
+    expect(start).toContain('trackedId = touch.identifier;');
+    // 追っている指だけを見る。
+    expect(functionBodyOf('onMove')).toContain('findTracked(event.changedTouches)');
+    expect(functionBodyOf('onEnd')).toContain('findTracked(event.changedTouches) === null');
+  });
+
+  it('canvas が無いとき（起動前）に始まった指は追わない（起動後に動かして離しても、mousedown の無い mousemove / mouseup を送らない）', () => {
+    const start = functionBodyOf('onStart');
+    const guard = start.indexOf("if (document.querySelector('canvas') === null) {");
+    expect(guard, 'canvas の有無を見ていない').toBeGreaterThan(-1);
+    // 古い追跡を捨ててから canvas を見て、有るときだけ指を覚える。
+    expect(start.indexOf('trackedId = null;')).toBeLessThan(guard);
+    expect(guard).toBeLessThan(start.indexOf('trackedId = touch.identifier;'));
+    expect(start.slice(guard, start.indexOf('trackedId = touch.identifier;'))).toContain('return;');
+    // 追っていなければ、動きも離すことも送らない。
+    expect(functionBodyOf('onMove')).toContain('if (trackedId === null) {');
+    expect(functionBodyOf('onEnd')).toContain('if (trackedId === null ||');
+  });
+
+  it('touchstart → mousemove・mousedown、touchmove → mousemove、touchend / touchcancel → mouseup（最後の座標）', () => {
+    const start = functionBodyOf('onStart');
+    expect(start.indexOf("sendMouse('mousemove', 1);")).toBeGreaterThan(start.indexOf('lastX = touch.clientX;'));
+    expect(start.indexOf("sendMouse('mousemove', 1);")).toBeLessThan(start.indexOf("sendMouse('mousedown', 1);"));
+
+    const move = functionBodyOf('onMove');
+    expect(move).toContain('lastX = touch.clientX;');
+    expect(move).toContain('lastY = touch.clientY;');
+    expect(move).toContain("sendMouse('mousemove', 1);");
+    expect(move).not.toContain('mousedown');
+
+    // 離したときは座標を読み直さない（最後に見た座標で送る）。
+    const end = functionBodyOf('onEnd');
+    expect(end).toContain("sendMouse('mouseup', 0);");
+    expect(end).not.toContain('clientX');
+  });
+
+  it('canvas へ左ボタン・指の座標のまま・bubbles / cancelable で送り、canvas が無ければ送らない', () => {
+    const send = functionBodyOf('sendMouse');
+    expect(send).toContain("var canvas = document.querySelector('canvas');");
+    expect(send.indexOf('if (canvas === null) {')).toBeLessThan(send.indexOf('canvas.dispatchEvent('));
+    expect(send).toContain('bubbles: true,');
+    expect(send).toContain('cancelable: true,');
+    expect(send).toContain('button: 0,');
+    expect(send).toContain('buttons: buttons,');
+    expect(send).toContain('clientX: lastX,');
+    expect(send).toContain('clientY: lastY');
+    expect(TAP_TO_MOUSE_SCRIPT.split('dispatchEvent(').length - 1).toBe(1);
+  });
+
+  it('変換は通信も親への送信もしない（7.2 の到達範囲を広げない。仕様 3.9.8）', () => {
+    expect(TAP_TO_MOUSE_SCRIPT).not.toContain('fetch(');
+    expect(TAP_TO_MOUSE_SCRIPT).not.toContain('postMessage');
+    expect(TAP_TO_MOUSE_SCRIPT).not.toContain('window.parent');
+    expect(TAP_TO_MOUSE_SCRIPT).not.toContain("'message'");
   });
 });

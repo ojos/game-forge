@@ -4752,6 +4752,22 @@ M14-2 / M14-5 の検査が行う）。
 - **本物のタッチから互換のマウスイベントが出て二重になることは無い。** Ebitengine が `preventDefault` を呼ぶため、
   ブラウザは互換のマウスイベントを作らない（それが 3.9.1 の症状そのものである）。
 
+> **実装注記（#491。実装日 2026-09-14）。** 変換は `src/sandbox-loader.ts` の `TAP_TO_MOUSE_SCRIPT` に置き、
+> ローダー文書へ**起動スクリプトとは別の `<script>`** として、`wasm_exec.js` と起動スクリプトより前に入れた
+> （`instantiateStreaming` の経路と起動の合図（#377）には手を入れていない）。**埋め込む値を持たない固定の文字列**なので、
+> UGC 由来の文字列が入る経路は無い。CSP と iframe の `sandbox` 属性は変えていない。上の 1〜4 のとおりで、
+> 「指が 1 本も触れていない状態」は `touches.length === changedTouches.length` で判定し、`mouseup` は最後に見た
+> `touchstart` / `touchmove` の座標で送る。**canvas が無いとき（起動前）に始まった指は追跡も始めない**（起動後にその指を
+> 動かして離しても、`mousedown` の無い `mousemove` / `mouseup` を送らない。PR #503 の Copilot の指摘で直した）。単体テスト（`test/sandbox.test.ts`）は、文書に入ること・値の差し込みが無いこと・
+> 止める API を呼ばないこと・表の対応を文字列で見る。**実ブラウザの検査は `scripts/check-sandbox-browser.sh` の層 6** で、
+> 検査用の作品（その場でビルドする Go。Ebitengine と同じく canvas を作って `mousedown` / `mousemove` / `mouseup` を聞き、
+> `touch*` で `preventDefault` を呼ぶ）へ CDP の `Input.dispatchTouchEvent` で「触れる→動かす→離す」を送り、
+> canvas がちょうど 4 個（`mousemove → mousedown → mousemove → mouseup`、`button` 0、`buttons` 1・1・1・0、指の座標、
+> すべて `isTrusted: false`）を受け、本物のタッチも受けたことを見る（判定は `scripts/tap-mouse-verdict.mjs`。
+> サンドボックス URL を直接開いた形と、作品ページに埋め込んだ形の両方）。**変換を文書から外すと、層 6 は直接・埋め込みの
+> 両方で「canvas が受けたマウスイベントが 0 個」で落ちる**（本物のタッチは 3 回届いている。2026-09-14 に実測）。
+> 本番の実機での確認（「モグラぽん」）は配備の後に行う。
+
 #### 3.9.4 タッチ端末では、スクリーンショットをタップして全画面で遊ぶ（B3 / M14-3）
 
 **タッチ端末（`pointer: coarse`）の作品ページは、開いた時点ではゲームを読み込まない。** スクリーンショット（3.4-5 の

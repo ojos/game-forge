@@ -6,6 +6,7 @@ import {
   createPendingGame,
   hashJobToken,
   publishGame,
+  STALE_AFTER_SECONDS,
 } from '../src/games.js';
 import type { GenerateRequest } from '../src/generate.js';
 import { REVISIONS_PER_GAME } from '../src/quota.js';
@@ -420,5 +421,195 @@ describe('版が記録されていない作品の推敲（#202）', () => {
     expect((await publishGame(env, gameId, userId)).ok).toBe(true);
     expect(await claimRevisionSlot(env, gameId, userId, '直したい', 'hash-legacy-5')).toBe(false);
     expect(await listRevisions(env, gameId)).toHaveLength(0);
+  });
+});
+
+describe('止まったまま残った推敲ジョブ（#480）', () => {
+  /**
+   * 同じ作品に、指定の時刻に始まった推敲ジョブを 1 本残す（**経路の関数で、時刻だけを与える**）。
+   *
+   * @param userId 作者
+   * @param gameId 作品
+   * @param since ジョブの作成（running なら開始も）の時刻
+   * @param state 残す状態
+   * @returns 残したジョブのトークンのハッシュ
+   */
+  async function leaveRevisionJob(
+    userId: string,
+    gameId: string,
+    since: number,
+    state: 'pending' | 'running',
+  ): Promise<string> {
+    const hash = `left-${gameId}-${state}-${since}`;
+    expect(await claimRevisionSlot(env, gameId, userId, '止まった手直し', hash, since)).toBe(true);
+    if (state === 'running') {
+      expect(await claimRevisionJob(env, gameId, hash, since)).toBe(true);
+    }
+    return hash;
+  }
+
+  /**
+   * 推敲を 1 回完成させ、版を 2 つにする（戻す先を作る）。
+   *
+   * @param userId 作者
+   * @param suffix 利用者ごとに一意な接尾辞
+   * @returns 作品 id
+   */
+  async function createGameWithTwoRevisions(userId: string, suffix: string): Promise<string> {
+    const gameId = await createReadyGame(userId, 'go1.26.9');
+    const hash = `done-${suffix}`;
+    expect(await claimRevisionSlot(env, gameId, userId, '玉を速く', hash)).toBe(true);
+    expect(await claimRevisionJob(env, gameId, hash)).toBe(true);
+    expect(
+      await completeRevision(env, gameId, hash, {
+        goVersion: 'go1.27.0',
+        sourceKey: `builds/${suffix}/source.go`,
+        wasmKey: `builds/${suffix}/game.wasm.br`,
+      }),
+    ).toBe(true);
+    return gameId;
+  }
+
+  /**
+   * 作品の成果物 3 点と `preview_key` を読む（戻す操作が動かす列のすべて）。
+   *
+   * @param gameId 作品 id
+   * @returns 列の値
+   */
+  async function gameArtifactsOf(
+    gameId: string,
+  ): Promise<{ go_version: string; source_key: string; wasm_key: string; preview_key: string }> {
+    const row = await env.DB.prepare(
+      'select go_version, source_key, wasm_key, preview_key from games where id = ?',
+    )
+      .bind(gameId)
+      .first<{ go_version: string; source_key: string; wasm_key: string; preview_key: string }>();
+    expect(row).not.toBeNull();
+    return row!;
+  }
+
+  /**
+   * 開始からの経過秒と、そのとき「走っている」と見なすか。
+   *
+   * **境界は #455 と同じである**（開始から `STALE_AFTER_SECONDS` 未満が進行中。ちょうどで外れる）。
+   * 値は `src/games.ts` から読み、書き写さない。
+   */
+  const BOUNDARY: readonly { readonly elapsed: number; readonly running: boolean }[] = [
+    { elapsed: STALE_AFTER_SECONDS - 60, running: true },
+    { elapsed: STALE_AFTER_SECONDS - 1, running: true },
+    { elapsed: STALE_AFTER_SECONDS, running: false },
+    { elapsed: STALE_AFTER_SECONDS + 1, running: false },
+  ];
+
+  for (const state of ['pending', 'running'] as const) {
+    it(`revisionStatus: ${state} のジョブは開始から区切り未満だけ running、ちょうど区切りから stalled になる`, async () => {
+      const userId = await createUser(`rev-stalled-status-${state}`);
+      const gameId = await createReadyGame(userId);
+      const since = 3_000_000;
+      await leaveRevisionJob(userId, gameId, since, state);
+
+      for (const { elapsed, running } of BOUNDARY) {
+        const status = await revisionStatus(env, gameId, since + elapsed);
+        expect({ elapsed, running: status.running, stalled: status.stalled }).toEqual({
+          elapsed,
+          running,
+          stalled: !running,
+        });
+        // 止まった推敲は失敗ではない（分類名を持たない）。枠の数え方も変わらない。
+        expect(status.failed).toBeNull();
+        expect(status.used).toBe(1);
+        expect(status.remaining).toBe(REVISIONS_PER_GAME - 1);
+      }
+
+      // **読むだけで行を書き換えない**（掃除は #480 の scope.out。作品ページは GET で呼ぶ）。
+      const row = await env.DB.prepare(
+        'select state, error from game_revision_jobs where game_id = ?',
+      )
+        .bind(gameId)
+        .first<{ state: string; error: string | null }>();
+      expect(row).toEqual({ state, error: null });
+    });
+
+    it(`restoreRevision: ${state} のジョブは区切り未満なら busy、ちょうど区切りからは戻せる`, async () => {
+      for (const { elapsed, running } of BOUNDARY) {
+        const suffix = `rev-stalled-restore-${state}-${elapsed}`;
+        const userId = await createUser(suffix);
+        const gameId = await createGameWithTwoRevisions(userId, suffix);
+        const since = 3_000_000;
+        const hash = await leaveRevisionJob(userId, gameId, since, state);
+        const before = await gameArtifactsOf(gameId);
+
+        const outcome = await restoreRevision(env, gameId, userId, 1, since + elapsed);
+        expect({ elapsed, outcome }).toEqual({ elapsed, outcome: running ? 'busy' : 'restored' });
+
+        const after = await gameArtifactsOf(gameId);
+        // 断ったなら成果物は推敲後（seq = 2）のまま、通ったなら最初の版（seq = 1）。
+        expect(after.go_version).toBe(running ? 'go1.27.0' : 'go1.26.9');
+        if (running) {
+          // **断ったときは `preview_key` も含めて 1 列も動かない**——戻す `update` 自体が
+          // 0 行である（事前の select は無い。PR #485 のレビュー）。
+          expect(after).toEqual(before);
+        }
+
+        // **止まった行は書き換えない**（掃除は scope.out）。次の推敲の UPSERT が引き取る。
+        const job = await env.DB.prepare(
+          'select state, job_token_hash from game_revision_jobs where game_id = ?',
+        )
+          .bind(gameId)
+          .first<{ state: string; job_token_hash: string }>();
+        expect(job).toEqual({ state, job_token_hash: hash });
+      }
+    });
+  }
+
+  for (const state of ['pending', 'running'] as const) {
+    it(`止まった ${state} の行を次の推敲が引き取ったあとの「版に戻す」は、戻す文そのものが 0 行で busy になる（PR #485 のレビュー）`, async () => {
+      const suffix = `rev-stalled-takeover-${state}`;
+      const userId = await createUser(suffix);
+      const gameId = await createGameWithTwoRevisions(userId, suffix);
+      const since = 3_000_000;
+      await leaveRevisionJob(userId, gameId, since, state);
+      const now = since + STALE_AFTER_SECONDS + 5;
+
+      // 止まった行は戻す理由にならない…はずの時刻に、**先に**推敲の要求が行を引き取る。
+      // これがレビューで指摘された「確かめてから書く」の隙間に入る順序である。
+      expect(await claimRevisionSlot(env, gameId, userId, '引き取った手直し', `taken-${suffix}`, now)).toBe(
+        true,
+      );
+      const before = await gameArtifactsOf(gameId);
+
+      // 同じ時刻の「版に戻す」。引き取られた行は区切りの内側の `pending` なので、断る。
+      expect(await restoreRevision(env, gameId, userId, 1, now)).toBe('busy');
+      // **成果物も `preview_key` も動かない。** 戻した結果が推敲の完成で上書きされる形を作らない。
+      expect(await gameArtifactsOf(gameId)).toEqual(before);
+    });
+  }
+
+  it('走っている推敲があっても、他人の要求では何も書かない（分類は busy のまま）', async () => {
+    const suffix = 'rev-live-stranger';
+    const userId = await createUser(suffix);
+    const other = await createUser(`${suffix}-other`);
+    const gameId = await createGameWithTwoRevisions(userId, suffix);
+    const since = 3_000_000;
+    await leaveRevisionJob(userId, gameId, since, 'running');
+    const before = await gameArtifactsOf(gameId);
+
+    // **分類は main と同じく busy**（以前は作者を見る前に busy を返していた）。書き込みは 0 行。
+    expect(await restoreRevision(env, gameId, other, 1, since + 1)).toBe('busy');
+    expect(await gameArtifactsOf(gameId)).toEqual(before);
+    // 区切りを過ぎても、他人の要求は見つからない扱いのまま。
+    expect(await restoreRevision(env, gameId, other, 1, since + STALE_AFTER_SECONDS)).toBe('not-found');
+    expect(await gameArtifactsOf(gameId)).toEqual(before);
+  });
+
+  it('失敗したジョブは stalled にならない（失敗の表示のまま）', async () => {
+    const userId = await createUser('rev-stalled-failed');
+    const gameId = await createReadyGame(userId);
+    const since = 3_000_000;
+    await leaveRevisionJob(userId, gameId, since, 'running');
+    expect(await failRevision(env, gameId, 'build-failed')).toBe(true);
+
+    const status = await revisionStatus(env, gameId, since + STALE_AFTER_SECONDS * 10);
+    expect(status).toMatchObject({ running: false, stalled: false, failed: 'build-failed' });
   });
 });

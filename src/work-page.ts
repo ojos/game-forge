@@ -782,8 +782,20 @@ export interface WorkPageView {
   readonly dailyRemaining: number | null;
   /** この作品にあと何回推敲できるか（5.7）。作者でなければ null。 */
   readonly revisionsRemaining: number | null;
-  /** いま推敲が走っているか。走っているあいだは新しく始められない。 */
+  /**
+   * いま推敲が走っているか。走っているあいだは新しく始められない。
+   *
+   * **開始から区切りの内側だけである**（#480。`src/revisions.ts` の `revisionStatus`）。
+   */
   readonly revisionRunning: boolean;
+  /**
+   * 区切りを過ぎても `pending` / `running` のまま残った推敲があるか（#480）。
+   *
+   * **画面で経過時間を測らない。** 区切りの判定は `revisionStatus` が `src/games.ts` の
+   * `inFlightCutoff` で行い、ここへ来るのは判定済みの真偽だけである（`revisable` と
+   * 同じ方針）。`revisionRunning` と同時に真にならない。
+   */
+  readonly revisionStalled: boolean;
   /** 直前の推敲が失敗していれば、その分類名。 */
   readonly revisionError: string | null;
   /** 版の一覧（新しい順）。作者でなければ空。 */
@@ -921,6 +933,10 @@ export function renderWorkPage(view: WorkPageView, viewer: SiteViewer): string {
   // 作者が待っているあいだ画面が変わらないことを許さない。**`state` は `ready` のまま
   // なので、この条件を足さないと止まって見える**（推敲は `games` の状態機械を動かさない。
   // `migrations/0009_game_revisions.sql`）。
+  //
+  // **止まった推敲では更新しない**（#480）。区切りを過ぎた行は `revisionRunning` に
+  // 入らない（`revisionStalled` に分かれる）。待っても画面は変わらないので、生成の
+  // 「中断した可能性」と違って読み取りを続ける理由が無い。
   const refresh =
     view.state === 'working' || view.state === 'stalled' || view.revisionRunning
       ? `\n<meta http-equiv="refresh" content="${REFRESH_SECONDS}">`
@@ -1554,13 +1570,30 @@ function reviseSection(view: WorkPageView): string {
 
   // **失敗は残す。** 作品は無傷なので画面は「できました」のままだが、押した操作が
   // どうなったかを言わないと、作者からは何も起きなかったように見える。
+  //
+  // **止まった推敲も同じ場所で言う**（#480）。行は `pending` / `running` のままで
+  // 失敗の分類名を持たないので、生成の `looksStalled` と同じく「中断した可能性」と言う。
+  //
+  // **同時に真にならないのは案内どうしである。** `revisionError`（失敗の案内）と
+  // `revisionStalled`（中断の案内）は、1 作品 1 行のジョブの状態（`failed` か、区切りを
+  // 過ぎた `pending` / `running` か）から導くので、どちらか一方しか出ない。
+  // `revisionRunning` と `revisionStalled` も同じ理由で同時に真にならない
+  // （`revisionRunning` なら上で返している）。
+  //
+  // **止まった推敲では、推敲の口と「版に戻す」は両方とも出る。** 止まった行は次の推敲が
+  // 引き取り（`claimRevisionSlot`）、戻す操作も断らない（`restoreRevision`）。推敲の口は
+  // 下の `revisable` と日次の枠の条件で、「版に戻す」は {@link revisionList} で出す。
   const failed =
-    view.revisionError === null
-      ? ''
-      : `
+    view.revisionError !== null
+      ? `
 <p><strong>前回の手直しはうまくいきませんでした。</strong>
    ${escapeHtml(failureMessageOf(view.revisionError))}
-   作品はそのまま残っています。</p>`;
+   作品はそのまま残っています。</p>`
+      : view.revisionStalled
+        ? `
+<p><strong>時間がかかりすぎています。手直しが中断した可能性があります。</strong>
+   作品はそのまま残っています。</p>`
+        : '';
 
   // **`publishableId` が無ければフォームを描かない。** ここは推敲の対象そのものの id で、
   // `revisable` が真ならこちらも非 null である（`showWorkPage` が同じ条件から作る）。
@@ -1619,7 +1652,8 @@ ${remaining}${daily}${form}`;
  * 出せば作者は選べる**ので、そのために値を 3 か所目へ複製しない。
  *
  * **推敲が走っているあいだは戻す口を出さない。** 戻しても 90 秒後に黙って上書き
- * されるので、経路側も断る（`src/revisions.ts` の `restoreRevision`）。
+ * されるので、経路側も断る（`src/revisions.ts` の `restoreRevision`）。**止まった推敲
+ * （`revisionStalled`）では出す**（#480）——もう完成を書き戻せないので、経路も断らない。
  *
  * @param view 表示に必要な値
  * @returns HTML
@@ -2541,7 +2575,8 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   // **作者のときだけ引く。** 公開作品のページは拡散の着地点であり、閲覧者ごとに
   // 版と枠を引く理由が無い（3.6 の読み取りがそのまま費用になる）。
   const revisions = owner ? await listRevisions(env, gameId) : [];
-  const revisionQuota = owner ? await revisionStatus(env, gameId) : null;
+  // **区切りは `looksStalled` と同じ `now` で測る**（#480）。
+  const revisionQuota = owner ? await revisionStatus(env, gameId, now) : null;
 
   // **枠を読むのは、その数を出す口が画面にあるときだけである**（3.6 の読み取りが
   // そのまま費用になる）。口は 2 つある——未公開の作者に出す推敲（5.7）と、公開済みの
@@ -2688,6 +2723,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       dailyRemaining,
       revisionsRemaining: revisionQuota?.remaining ?? null,
       revisionRunning: revisionQuota?.running ?? false,
+      revisionStalled: revisionQuota?.stalled ?? false,
       revisionError: revisionQuota?.failed ?? null,
       revisions,
       // **撮影が中断したまま残ったときだけ、作者に口を出す**（5.4 / #235）。

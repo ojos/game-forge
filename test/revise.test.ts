@@ -9,6 +9,7 @@ import {
   createPendingGame,
   hashJobToken,
   publishGame,
+  STALE_AFTER_SECONDS,
 } from '../src/games.js';
 import {
   REVISE_GAME_ID_FIELD,
@@ -20,7 +21,13 @@ import {
 import { REVISIONS_PER_GAME } from '../src/quota.js';
 import { MAX_SOURCE_BYTES } from '../src/system-prompt.js';
 import { createReviseRoutes } from '../src/revise.js';
-import { appendRevision, listRevisions, revisionStatus } from '../src/revisions.js';
+import {
+  appendRevision,
+  claimRevisionJob,
+  claimRevisionSlot,
+  listRevisions,
+  revisionStatus,
+} from '../src/revisions.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { workPagePath } from '../src/work-page.js';
@@ -310,6 +317,77 @@ describe('版へ戻す受け口（5.7）', () => {
 
     expect((await postRestore(userId, gameId, 1)).status).toBe(409);
   });
+
+  for (const state of ['pending', 'running'] as const) {
+    /**
+     * 版を 2 つにし（作品は 2 つ目を指す）、推敲ジョブを 1 本、指定の時刻に始まったものとして残す。
+     *
+     * @param suffix 利用者ごとに一意な接尾辞
+     * @param since ジョブの作成（running なら開始も）の時刻
+     * @returns 作者と作品 id
+     */
+    async function prepareLeftJob(
+      suffix: string,
+      since: number,
+    ): Promise<{ userId: string; gameId: string }> {
+      const userId = await createUser(`restore-${suffix}-${state}`);
+      const gameId = await createReadyGame(userId);
+      await appendRevision(
+        env,
+        gameId,
+        { goVersion: 'go1.27.0', sourceKey: 'builds/n/source.go', wasmKey: 'builds/n/game.wasm.br' },
+        '玉を速く',
+      );
+      await env.DB.prepare('update games set source_key = ? where id = ?')
+        .bind('builds/n/source.go', gameId)
+        .run();
+      const hash = `restore-left-${gameId}`;
+      expect(await claimRevisionSlot(env, gameId, userId, '止まった手直し', hash, since)).toBe(true);
+      if (state === 'running') {
+        expect(await claimRevisionJob(env, gameId, hash, since)).toBe(true);
+      }
+      return { userId, gameId };
+    }
+
+    it(`区切りを過ぎた ${state} の推敲が残っていても戻せる（#480）`, async () => {
+      const { userId, gameId } = await prepareLeftJob(
+        'stalled',
+        Math.floor(Date.now() / 1000) - STALE_AFTER_SECONDS - 1,
+      );
+
+      const response = await postRestore(userId, gameId, 1);
+
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toBe(workPagePath(gameId));
+      const row = await env.DB.prepare('select source_key from games where id = ?')
+        .bind(gameId)
+        .first<{ source_key: string }>();
+      expect(row!.source_key).not.toBe('builds/n/source.go');
+      // **止まった行は書き換えない**（掃除は #480 の scope.out）。
+      const job = await env.DB.prepare('select state from game_revision_jobs where game_id = ?')
+        .bind(gameId)
+        .first<{ state: string }>();
+      expect(job!.state).toBe(state);
+    });
+
+    it(`区切りの内側の ${state} の推敲があれば、いまと同じく 409「いま戻せません」（#480）`, async () => {
+      const { userId, gameId } = await prepareLeftJob(
+        'live',
+        Math.floor(Date.now() / 1000) - STALE_AFTER_SECONDS + 60,
+      );
+
+      const response = await postRestore(userId, gameId, 1);
+
+      expect(response.status).toBe(409);
+      const body = await response.text();
+      expect(body).toContain('いま戻せません');
+      expect(body).toContain('手直しが終わってから、もう一度お試しください。');
+      const row = await env.DB.prepare('select source_key from games where id = ?')
+        .bind(gameId)
+        .first<{ source_key: string }>();
+      expect(row!.source_key).toBe('builds/n/source.go');
+    });
+  }
 
   it('存在しない版は 404', async () => {
     const userId = await createUser('restore-missing');

@@ -156,8 +156,21 @@ export interface RevisionStatus {
   readonly used: number;
   /** あと何回できるか。 */
   readonly remaining: number;
-  /** いま推敲が走っているか。走っていれば新しくは始められない。 */
+  /**
+   * いま推敲が走っているか。走っていれば新しくは始められない。
+   *
+   * **開始から区切り（`src/games.ts` の `inFlightCutoff`）の内側の `pending` / `running`
+   * だけである**（#480）。区切りを過ぎた行は {@link RevisionStatus.stalled} に分ける。
+   */
   readonly running: boolean;
+  /**
+   * 区切りを過ぎても `pending` / `running` のまま残った推敲があるか（#480）。
+   *
+   * **`running` と同時に真にならない。** 止まった行は次の推敲が引き取り
+   * （{@link claimRevisionSlot} の UPSERT）、「版に戻す」も断らない
+   * （{@link restoreRevision}）。画面はこれを見て「中断した可能性」と言う。
+   */
+  readonly stalled: boolean;
   /** 直前の推敲が失敗していれば、その分類名。 */
   readonly failed: string | null;
 }
@@ -169,28 +182,51 @@ export interface RevisionStatus {
  * 表示の残数と経路の判断が割れる（`src/quota.ts` が `generationQuotaStatus` と
  * `checkGenerationQuota` を同じ状態から導いているのと同じ理由）。
  *
+ * # 区切りを過ぎたジョブは「走っている」と言わない（#480）
+ *
+ * **判定は区切りを過ぎた `pending` / `running` を終わったものとして扱う**
+ * （{@link claimRevisionSlot} の UPSERT と `inFlightGuardSql`。#455）。ここだけが
+ * 経過時間を見ずに `running` と言うと、**経路は次の推敲を通すのに、画面は
+ * 「手直しをしています」を出し続けて口を出さない**——作者は作品を触れなくなる。
+ * 区切りは同じ `inFlightCutoff`（`src/games.ts`）から取り、**開始（`started_at`、
+ * まだ握られていなければ作成時刻）がそれより新しい行だけを走っていると見なす**
+ * （`>`。ちょうど `STALE_AFTER_SECONDS` で外れ、`looksStalled` と境界がそろう）。
+ *
+ * **行は書き換えない。** 読むだけで、止まった行を `failed` にする掃除はしない
+ * （#480 の scope.out。作品ページは GET で呼ぶ）。
+ *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
+ * @param now 判定時刻（UNIX 秒。既定は現在時刻）
  * @returns 枠の状態（作品が無ければ used = 0 / remaining = 0）
  */
-export async function revisionStatus(env: Env, gameId: string): Promise<RevisionStatus> {
+export async function revisionStatus(
+  env: Env,
+  gameId: string,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<RevisionStatus> {
   const row = await env.DB.prepare(
-    `select g.revise_count as used, j.state as state, j.error as error
+    `select g.revise_count as used, j.state as state, j.error as error,
+            coalesce(j.started_at, j.created_at) as since
        from games g left join game_revision_jobs j on j.game_id = g.id
       where g.id = ?`,
   )
     .bind(gameId)
-    .first<{ used: number; state: string | null; error: string | null }>();
+    .first<{ used: number; state: string | null; error: string | null; since: number | null }>();
 
   if (row === null) {
-    return { used: 0, remaining: 0, running: false, failed: null };
+    return { used: 0, remaining: 0, running: false, stalled: false, failed: null };
   }
 
-  const running = row.state === 'pending' || row.state === 'running';
+  const inFlight = row.state === 'pending' || row.state === 'running';
+  // **`since` が null の行は作れない**（`created_at` は NOT NULL。0009）。null を
+  // 「走っている」へ倒すのは、読めない値で口を開けないためである（いまの挙動のまま）。
+  const withinWindow = row.since === null || row.since > inFlightCutoff(now);
   return {
     used: row.used,
     remaining: Math.max(0, REVISIONS_PER_GAME - row.used),
-    running,
+    running: inFlight && withinWindow,
+    stalled: inFlight && !withinWindow,
     failed: row.state === 'failed' ? row.error : null,
   };
 }
@@ -503,10 +539,31 @@ export type RestoreOutcome = 'restored' | 'not-found' | 'busy';
  * ので、その手前で戻しても**90 秒後に黙って上書きされる。** 作者から見れば
  * 「戻したのに戻っていない」であり、それは戻せないより悪い。
  *
+ * **区切りを過ぎた `pending` / `running` は断る理由にしない**（#480）。区切り
+ * （`src/games.ts` の `inFlightCutoff`）はオーケストレータの `timeout` とイベントの
+ * 有効期限より長いので、**その行はもう完成を書き戻せない**——上書きの心配が無い。
+ * 断り続けると、止まったジョブが 1 本残っただけで作者は二度と版を戻せなくなる。
+ * **区切りの内側は、いまと同じく断る**（{@link revisionStatus} と同じ境界）。
+ * 止まった行そのものは書き換えない（掃除は #480 の scope.out）。
+ *
+ * # 走っている推敲が無いことは、戻す文そのものの条件で見る（PR #485 のレビュー）
+ *
+ * **先に select で確かめてから update する形にしない。** その隙間で
+ * {@link claimRevisionSlot} が止まった行を新しい `pending` に引き取ると、戻した結果が
+ * その推敲の完成で黙って上書きされる（上の「戻せないより悪い」そのもの）。
+ * `update` の `where` に「区切りの内側の `pending` / `running` が無い」を入れ、
+ * **判定と書き込みを 1 文にする**（{@link claimRevisionSlot} の `inFlightGuardSql` と同じ規約）。
+ * D1 は文を 1 本ずつ直列に走らせるので、先に入った方が後の方の条件に見える。
+ *
+ * **0 行だったときだけ、同じ条件で読み直して `busy` と `not-found` を分ける。**
+ * 読み直しは文言を選ぶための分類で、**書き込みの判定には使わない**（書くかどうかは
+ * 既に上の 1 文が決めている）。
+ *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
  * @param userId 要求した利用者（作者本人でなければ通らない）
  * @param seq 戻したい版の番号
+ * @param now 判定時刻（UNIX 秒。既定は現在時刻）
  * @returns 復元の結果
  */
 export async function restoreRevision(
@@ -514,18 +571,9 @@ export async function restoreRevision(
   gameId: string,
   userId: string,
   seq: number,
+  now: number = Math.floor(Date.now() / 1000),
 ): Promise<RestoreOutcome> {
-  const busy = await env.DB.prepare(
-    `select 1 as running from game_revision_jobs
-      where game_id = ? and state in ('pending', 'running')`,
-  )
-    .bind(gameId)
-    .first<{ running: number }>();
-
-  if (busy !== null) {
-    return 'busy';
-  }
-
+  const cutoff = inFlightCutoff(now);
   const result = await env.DB.prepare(
     `update games
         set go_version = (select r.go_version from game_revisions r
@@ -536,10 +584,27 @@ export async function restoreRevision(
                           where r.game_id = games.id and r.seq = ?),
             preview_key = ?
       where id = ? and author_id = ? and status = 'draft' and generation_state = 'ready'
-        and exists (select 1 from game_revisions r where r.game_id = games.id and r.seq = ?)`,
+        and exists (select 1 from game_revisions r where r.game_id = games.id and r.seq = ?)
+        and not exists (select 1 from game_revision_jobs j
+                         where j.game_id = games.id and j.state in ('pending', 'running')
+                           and coalesce(j.started_at, j.created_at) > ?)`,
   )
-    .bind(seq, seq, seq, createPreviewKey(), gameId, userId, seq)
+    .bind(seq, seq, seq, createPreviewKey(), gameId, userId, seq, cutoff)
     .run();
 
-  return (result.meta.changes ?? 0) > 0 ? 'restored' : 'not-found';
+  if ((result.meta.changes ?? 0) > 0) {
+    return 'restored';
+  }
+
+  // **分類のためだけに読む**（書き込みの判定は上の文が済ませている）。条件は上の
+  // `not exists` と同じ区切りである。
+  const busy = await env.DB.prepare(
+    `select 1 as running from game_revision_jobs
+      where game_id = ? and state in ('pending', 'running')
+        and coalesce(started_at, created_at) > ?`,
+  )
+    .bind(gameId, cutoff)
+    .first<{ running: number }>();
+
+  return busy !== null ? 'busy' : 'not-found';
 }

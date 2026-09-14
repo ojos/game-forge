@@ -321,6 +321,29 @@ describe('一覧と記事の画面（/news・/news/<id>）', () => {
     }
   });
 
+  it('直した記事は、一覧と記事の画面の日付の行に「（更新: …）」が出る（#509）', async () => {
+    // **「招待制のクローズドβについて」は 2026-09-14 に画面名を直した**（#472 で /signup が「ログイン・登録」になった）。
+    const closedBeta = NEWS_ARTICLES.find((item) => item.id === 'closed-beta');
+    expect(closedBeta, 'クローズドβの記事').toBeDefined();
+    expect(closedBeta!.updatedOn).toBe('2026-09-14');
+    const text = closedBeta!.body.join('\n');
+    const screenName = 'ログイン・登録の画面';
+    expect(text).toContain(`${screenName}から待機リストに登録できます`);
+    // 旧い呼び名（「ログイン・」の無い形）が残っていない。**旧い綴りを直に書かない**のは、#509 の acceptance の
+    // grep（旧い呼び名が src と test に残っていないこと）にこの行が当たらないようにするため。
+    expect(text.replaceAll(screenName, '')).not.toContain(screenName.slice('ログイン・'.length));
+
+    const edited = NEWS_ARTICLES.filter((item) => item.updatedOn !== undefined);
+    expect(edited.map((item) => item.id)).toContain('closed-beta');
+    const list = pageBodyOf((await open(NEWS_PATH)).body);
+    for (const item of edited) {
+      const meta = `<p class="gf-news-meta"><time datetime="${item.publishedOn}">${item.publishedOn}</time>` +
+        `（更新: <time datetime="${item.updatedOn!}">${item.updatedOn!}</time>）`;
+      expect(list, item.id).toContain(meta);
+      expect(pageBodyOf((await open(newsArticlePath(item.id))).body), item.id).toContain(meta);
+    }
+  });
+
   it('存在しない id は 404 である', async () => {
     const { status } = await open(newsArticlePath('no-such-article'));
     expect(status).toBe(404);

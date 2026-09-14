@@ -138,7 +138,7 @@ async function issuanceHalt(env: Env, userId: string): Promise<IssuanceHalt | nu
  * 発行を止めている理由を、画面の本文として組み立てる。
  *
  * **人数の上限では、待機リストへの導線を出す**（8.1 / #397）。招待を渡せない相手が次に
- * 取れる行動は、登録の画面から待機リストに登録することだけである。
+ * 取れる行動は、ログイン・登録の画面から待機リストに登録することだけである。
  *
  * @param halt 止めている理由
  * @returns HTML の断片
@@ -147,7 +147,7 @@ function haltNotice(halt: IssuanceHalt): string {
   // **残りの本数と同じブロックの中の段落にする**（#473。{@link invitePage}）。面の上にもう 1 段の知らせの形を重ねない。
   if (halt === 'participant-cap') {
     return `<p><strong>参加者が上限（${PARTICIPANT_CAP} 人）に達したため、いまは招待を発行できません。</strong>
-   招待したい方には、<a href="${SIGNUP_PATH}">登録の画面</a>から待機リストに登録してもらってください。
+   招待したい方には、<a href="${SIGNUP_PATH}">ログイン・登録の画面</a>から待機リストに登録してもらってください。
    枠が空いたらご連絡します。</p>`;
   }
   return `<p>${escapeHtml(reasonMessage(halt))}</p>`;

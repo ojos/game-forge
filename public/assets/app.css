@@ -1009,6 +1009,21 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   transform: translate(-50%, -50%);
 }
 
+/*
+ * 撮影中の固定の文言のパネルでは、ボタンを下へ置き、文言をボタンの上の残りで中央に揃える（中央に重ねると文言が隠れる）。
+ * 文言を逃がす余白は、スクリプトが口に `.gf-play-entry-touch` を付けたときだけ効く（デスクトップの版面を変えない）。
+ */
+.gf-play-entry > .gf-shot-pending ~ .gf-play-open {
+  top: auto;
+  bottom: var(--gf-gap-3);
+  transform: translateX(-50%);
+}
+
+.gf-play-entry-touch > .gf-shot-pending {
+  box-sizing: border-box;
+  padding-bottom: calc(var(--gf-control-md) + var(--gf-gap-3) * 2);
+}
+
 .gf-play-open[hidden],
 .gf-play-overlay[hidden] {
   display: none;

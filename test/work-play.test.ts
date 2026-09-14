@@ -3,6 +3,7 @@ import { playReportScript } from '../src/plays.js';
 import {
   PLAY_CLOSE_CLASS,
   PLAY_ENTRY_CLASS,
+  PLAY_ENTRY_TOUCH_CLASS,
   PLAY_FRAME_CLASS,
   PLAY_LOCKED_CLASS,
   PLAY_NOSCRIPT_CLASS,
@@ -158,6 +159,14 @@ describe('スクリプトの形（3.9.4）', () => {
     expect(script).toContain('history.pushState({ gfPlay: true }, \'\');');
     expect(script).toContain('skipPops += 1;\n        history.back();');
     expect(script.split('history.back()').length - 1).toBe(1);
+  });
+
+  it('タッチ端末でだけ「遊ぶ」のボタンを見せ、口に印を付ける（デスクトップの分岐より後ろ）', () => {
+    const shown = script.indexOf('openButton.hidden = false;');
+    const marked = script.indexOf(`entry.classList.add(${JSON.stringify(PLAY_ENTRY_TOUCH_CLASS)});`);
+    const desktop = script.indexOf('noscript.parentNode.insertBefore(createFrame(), noscript);');
+    expect(shown).toBeGreaterThan(desktop);
+    expect(marked).toBeGreaterThan(desktop);
   });
 
   it('開いているあいだは下のページをスクロールさせない印を付け、閉じると外す', () => {

@@ -42,6 +42,12 @@ export const PLAY_FRAME_CLASS = 'gf-frame';
 /** 「遊ぶ」の口（スクリーンショットと「遊ぶ」のボタンを包む要素）の `class`。 */
 export const PLAY_ENTRY_CLASS = 'gf-play-entry';
 
+/**
+ * タッチ端末で口に付ける `class`（スクリプトが付ける）。撮影中の固定の文言のパネルでは、文言を「遊ぶ」のボタンの上へ逃がす
+ * （`public/assets/app.css` の `@section work`）。**デスクトップと JavaScript の無い形では付かない**ので、版面は変わらない。
+ */
+export const PLAY_ENTRY_TOUCH_CLASS = 'gf-play-entry-touch';
+
 /** 「遊ぶ」のボタンの `class`（部品のクラスの後ろに足す）。 */
 export const PLAY_OPEN_CLASS = 'gf-play-open';
 
@@ -269,6 +275,7 @@ export function playFrameScript(playUrl: string): string {
       if (leaving && typeof leaving.catch === 'function') { leaving.catch(function () {}); }
     }
   });
+  entry.classList.add(${literal(PLAY_ENTRY_TOUCH_CLASS)});
   openButton.hidden = false;
 })();
 </script>`;

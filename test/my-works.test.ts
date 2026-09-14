@@ -764,6 +764,12 @@ describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
     const body = await (await openList(await sessionCookie(await seedUser()))).text();
     expect(body.match(/\bgf-button-primary\b/gu) ?? []).toHaveLength(1);
     expect(pageBodyOf(body)).toContain('<div class="gf-block gf-my-works-empty">\n<p>まだ作品がありません。</p>');
+    // 見出しの行の主と同じ行き先の導線は、小さい副のボタン（主と素のリンクを並べない。PR #505 の Copilot code review）。
+    expect(pageBodyOf(body)).toContain(
+      `<p class="gf-my-works-empty-action"><a class="gf-button gf-button-secondary gf-button-sm" href="${GENERATE_PAGE_PATH}">最初のゲームを生成する</a></p>`,
+    );
+    const generateLinks = pageBodyOf(body).match(new RegExp(`<a [^>]*href="${GENERATE_PAGE_PATH}"`, 'gu')) ?? [];
+    expect(generateLinks.every((link) => link.includes('class="gf-button ')), generateLinks.join(' / ')).toBe(true);
   });
 
   it('「いいねした作品」「公開されている作品をさがす」は、一覧の後ろの小さい副のボタンである', async () => {

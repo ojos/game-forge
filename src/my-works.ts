@@ -247,11 +247,14 @@ export interface MyWorksView {
  * @returns HTML
  */
 export function renderMyWorksPage(view: MyWorksView): string {
+  // **作品が 0 本のときの「最初のゲームを生成する」は小さい副のボタン**（PR #505 の Copilot code review）。見出しの行の主
+  // 「新しく生成する」と同じ行き先で、素のリンクのままだと主と並んで強さの違う導線が 2 つになる。作品をさがすの空の知らせの
+  // 「最初の 1 本を作る」（`src/works-list.ts`）と同じ形である。
   const body =
     view.works.length === 0
       ? `<div class="gf-block gf-my-works-empty">
 <p>まだ作品がありません。</p>
-<p><a href="${GENERATE_PAGE_PATH}">最初のゲームを生成する</a></p>
+<p class="gf-my-works-empty-action"><a class="gf-button gf-button-secondary gf-button-sm" href="${GENERATE_PAGE_PATH}">最初のゲームを生成する</a></p>
 </div>`
       : `<ul class="gf-block gf-block-rows gf-works">
 ${view.works.map((work) => renderRow(work, view.now)).join('\n')}

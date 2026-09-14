@@ -166,11 +166,42 @@ function hasPartClasses(tokens: ReadonlySet<string>): boolean {
 }
 
 /**
+ * 定数で解決できない差し込みを、段のクラスとして認める場所（ファイル・差し込みの名前・値の出どころの配列）。
+ *
+ * **保守的にする**（PR #505 の Copilot code review）。#505 の最初の形は「`gf-button` が書いてあり、同じファイルのどこかに
+ * 3 段の綴りがある」だけで認めていたので、`${cls}` に段でない値が入っても、段の綴りが残るファイルでは緑になった。
+ * いまは次の 2 つしか認めない。
+ *
+ * 1. **同じファイルの文字列の定数で、値が `gf-button` と段のクラスを持つもの**（`SECONDARY_BUTTON` など。{@link classTokensOf}）
+ * 2. **この表に書いた差し込み**で、しかも**値の出どころの配列の要素の先頭がすべて段のクラスであること**を、ソースから読んで確かめる
+ *    （`src/dev-components.ts` の `buttonOf` の `cls` は `BUTTON_KINDS` の 1 列目から来る）
+ */
+const ALLOWED_INTERPOLATIONS: readonly {
+  readonly path: string;
+  readonly name: string;
+  readonly source: string;
+}[] = [{ path: DEFAULT_SAMPLE_FILE, name: 'cls', source: 'BUTTON_KINDS' }];
+
+/**
+ * 配列の定数（`const NAME ... = [['gf-button-primary', '主'], ...];`）の、各要素の先頭の文字列を読む。
+ *
+ * @param text ソース
+ * @param name 定数の名前
+ * @returns 先頭の文字列の一覧（定数が無ければ空）
+ */
+function firstColumnOf(text: string, name: string): string[] {
+  const declared = new RegExp(`\\bconst\\s+${name}\\b[^=]*=\\s*\\[([\\s\\S]*?)\\];`, 'u').exec(text);
+  if (declared === null) {
+    return [];
+  }
+  return [...declared[1]!.matchAll(/\[\s*(['"])([^'"]*)\1\s*,/gu)].map((found) => found[2]!);
+}
+
+/**
  * 開始タグが部品のクラスを持つか。
  *
- * **`class="…"` のほかに、`class="gf-button ${cls}"` のように段を式で渡す形**（`src/dev-components.ts` の `buttonOf`）がある。
- * その式は同じファイルの中で段のクラスの一覧から来ているので、**`gf-button` が書いてあり、残りの差し込みがどれも解決できない式**
- * のときは、ファイルに段のクラスの綴りが現れていることを条件に認める。
+ * **`class="…"` の値に、書いてある語と、段を持つ定数の差し込みを解決した語を集め、`gf-button` と段のクラスがあるかを見る。**
+ * 解決できない差し込み（`${cls}`）は、{@link ALLOWED_INTERPOLATIONS} に書いたものだけを段のクラスとして数える。
  *
  * @param tag 開始タグ
  * @param text ソース
@@ -183,11 +214,37 @@ function tagHasPartClasses(tag: ButtonTag, text: string): boolean {
   }
   const value = classAttribute[1]!;
   const tokens = classTokensOf(value, stringConstantsOf(text));
-  if (hasPartClasses(tokens)) {
+  if (!tokens.has('gf-button')) {
+    return false;
+  }
+  if (KIND_CLASSES.some((kind) => tokens.has(kind))) {
     return true;
   }
-  const dynamic = /\$\{\s*[A-Za-z_][A-Za-z0-9_]*\s*\}/u.test(value);
-  return dynamic && tokens.has('gf-button') && KIND_CLASSES.every((kind) => text.includes(`'${kind}'`));
+  const names = [...value.matchAll(/\$\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}/gu)].map((found) => found[1]!);
+  return ALLOWED_INTERPOLATIONS.some((allowed) => {
+    if (allowed.path !== tag.path || !names.includes(allowed.name)) {
+      return false;
+    }
+    const kinds = firstColumnOf(text, allowed.source);
+    return kinds.length > 0 && kinds.every((kind) => (KIND_CLASSES as readonly string[]).includes(kind));
+  });
+}
+
+/**
+ * 開始タグ 1 つが検査を通るか（コメントの中の言及・既定の見本の例外・部品のクラス）。
+ *
+ * @param tag 開始タグ
+ * @param text ソース
+ * @returns 通れば true
+ */
+function tagPasses(tag: ButtonTag, text: string): boolean {
+  if (isCommentMention(text, tag)) {
+    return true;
+  }
+  if (tag.path === DEFAULT_SAMPLE_FILE && tag.tag.includes(DEFAULT_SAMPLE_MARK) && !/\sclass=/u.test(tag.tag)) {
+    return true;
+  }
+  return tagHasPartClasses(tag, text);
 }
 
 /**
@@ -245,13 +302,7 @@ describe('`<button>` はすべて部品のクラスを持つ（#473 / 仕様 2.5
     const offenders: string[] = [];
     for (const [path, text] of Object.entries(SOURCES)) {
       for (const tag of buttonTagsOf(path, text)) {
-        if (isCommentMention(text, tag)) {
-          continue;
-        }
-        if (path === DEFAULT_SAMPLE_FILE && tag.tag.includes(DEFAULT_SAMPLE_MARK) && !/\sclass=/u.test(tag.tag)) {
-          continue;
-        }
-        if (!tagHasPartClasses(tag, text)) {
+        if (!tagPasses(tag, text)) {
           offenders.push(`${path}:${tag.line} ${tag.tag}`);
         }
       }
@@ -277,11 +328,12 @@ describe('`<button>` はすべて部品のクラスを持つ（#473 / 仕様 2.5
      * 1 つのソースを検査にかける。
      *
      * @param text ソース
+     * @param path ファイルのパス（差し込みを認める場所かどうかに効く）
      * @returns 部品のクラスを持たないタグ
      */
-    function offendersIn(text: string): string[] {
-      return buttonTagsOf('../src/sample.ts', text)
-        .filter((tag) => !isCommentMention(text, tag) && !tagHasPartClasses(tag, text))
+    function offendersIn(text: string, path = '../src/sample.ts'): string[] {
+      return buttonTagsOf(path, text)
+        .filter((tag) => !tagPasses(tag, text))
         .map((tag) => tag.tag);
     }
 
@@ -301,6 +353,22 @@ describe('`<button>` はすべて部品のクラスを持つ（#473 / 仕様 2.5
       expect(
         offendersIn("const B = 'gf-button gf-button-secondary';\nconst a = `<button type=\"submit\" class=\"${B} gf-button-sm\">送る</button>`;"),
       ).toEqual([]);
+    });
+
+    it('解決できない差し込みは、段でない値や、認めていない場所では通さない（PR #505 の Copilot code review）', () => {
+      // 段の綴りがファイルに残っていても、差し込みの値が段である根拠にしない。
+      const kindsInFile = "const K = ['gf-button-primary', 'gf-button-secondary', 'gf-button-tertiary'];\n";
+      expect(offendersIn(`${kindsInFile}const cls = 'not-a-kind';\nconst a = \`<button type="button" class="gf-button \${cls}">x</button>\`;`)).toHaveLength(1);
+      // 定数でも、値が段のクラスを持たなければ通さない。
+      expect(offendersIn("const B = 'gf-button not-a-kind';\nconst a = `<button type=\"submit\" class=\"${B}\">送る</button>`;")).toHaveLength(1);
+      // 認めた場所（/__dev/components の cls）でも、出どころの配列に段でない値が入れば落とす。
+      const devComponents = SOURCES[DEFAULT_SAMPLE_FILE]!;
+      expect(offendersIn(devComponents, DEFAULT_SAMPLE_FILE)).toEqual([]);
+      const mutated = devComponents.replace("['gf-button-tertiary', '控えめ']", "['not-a-kind', '控えめ']");
+      expect(mutated, '変異を入れられなかった（BUTTON_KINDS の綴りが変わった）').not.toBe(devComponents);
+      expect(offendersIn(mutated, DEFAULT_SAMPLE_FILE).length).toBeGreaterThan(0);
+      // 同じ書き方でも、認めていないファイルでは通さない。
+      expect(offendersIn(devComponents, '../src/sample.ts').length).toBeGreaterThan(0);
     });
 
     it('コメントの中の要素の名前は数えない', () => {
@@ -327,8 +395,46 @@ describe('`<button>` の既定は副の見た目である（#473 / public/assets
   function ruleBodies(css: string, predicate: (selectors: string[]) => boolean): string[] {
     const withoutComments = css.replaceAll(/\/\*[\s\S]*?\*\//gu, '');
     return [...withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/gu)]
-      .filter((matched) => predicate(matched[1]!.split(',').map((selector) => selector.trim())))
+      .filter((matched) => predicate(selectorsOf(matched[1]!)))
       .map((matched) => matched[2]!);
+  }
+
+  /**
+   * セレクタの一覧を `,` で分ける。**括弧の中の `,` では分けない**（`:where(button:hover, button[data-state='hover'])`）。
+   *
+   * @param list セレクタの一覧の文字列
+   * @returns セレクタ（前後の空白を除き、空白を 1 つに詰めたもの）
+   */
+  function selectorsOf(list: string): string[] {
+    const selectors: string[] = [];
+    let depth = 0;
+    let current = '';
+    for (const character of list) {
+      if (character === '(') {
+        depth += 1;
+      } else if (character === ')') {
+        depth -= 1;
+      }
+      if (character === ',' && depth === 0) {
+        selectors.push(current);
+        current = '';
+      } else {
+        current += character;
+      }
+    }
+    selectors.push(current);
+    return selectors.map((selector) => selector.replaceAll(/\s+/gu, ' ').trim());
+  }
+
+  /**
+   * 規則の中身から、1 つの宣言の値を読む。
+   *
+   * @param body 規則の中身
+   * @param property プロパティ名
+   * @returns 値（無ければ null）
+   */
+  function declarationOf(body: string, property: string): string | null {
+    return new RegExp(`(?:^|[;{\\s])${property}:\\s*([^;]+);`, 'u').exec(body)?.[1]?.trim() ?? null;
   }
 
   it('クラスを持たない `<button>` の既定は、地の色に 1px の枠線（副）で、詳細度 0 の `:where()` に置く', () => {
@@ -343,6 +449,31 @@ describe('`<button>` の既定は副の見た目である（#473 / public/assets
       (selectors) => selectors.includes(':where(button)') && selectors.includes('.gf-button'),
     );
     expect(sharedWithPart, '既定と .gf-button が同じ規則でない').toBeDefined();
+  });
+
+  it('ホバーと押せないも副と同じで、既定と副の部品が同じ規則を共有する（値を書き写さない。PR #505 の Copilot code review）', () => {
+    const css = env.TEST_APP_CSS;
+    const [hover] = ruleBodies(css, (selectors) => selectors.includes(":where(button:hover, button[data-state='hover'])"));
+    expect(hover, '既定のホバーの規則が無い').toBeDefined();
+    expect(declarationOf(hover!, 'border-color')).toBe('var(--gf-rule-strong)');
+    expect(declarationOf(hover!, 'background')).toBe('var(--gf-surface)');
+    // 副のホバーは同じ規則の中にある（片方だけを変えられない）。
+    const [sharedHover] = ruleBodies(
+      css,
+      (selectors) =>
+        selectors.includes(":where(button:hover, button[data-state='hover'])") &&
+        selectors.includes(".gf-button-secondary:is(:hover, [data-state='hover'])"),
+    );
+    expect(sharedHover, '既定のホバーと副のホバーが同じ規則でない').toBe(hover);
+
+    const [disabled] = ruleBodies(
+      css,
+      (selectors) =>
+        selectors.includes(':where(button:disabled)') && selectors.includes(".gf-button:is(:disabled, [aria-disabled='true'])"),
+    );
+    expect(disabled, '既定の押せないと部品の押せないが同じ規則でない').toBeDefined();
+    expect(declarationOf(disabled!, 'color')).toBe('var(--gf-ink-faint)');
+    expect(declarationOf(disabled!, 'background')).toBe('var(--gf-surface)');
   });
 
   it('主の見た目（地を文字色で塗る）は、要素の `button` を狙う規則に無い', () => {

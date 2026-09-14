@@ -1421,6 +1421,21 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   text-decoration-thickness: 1px;
 }
 
+/*
+ * 作者名の項目は、カードの内容幅より広がらない（PR #496 の Copilot code review）。
+ *
+ * **補助の行は flex で、項目の既定は `min-width: auto`（中身の最小幅）である。** 表示名は上限（30 文字）いっぱいまで
+ * 区切りの無い ASCII にでき、アイコンと並ぶと 16rem のカードの内容幅を越えうる。**いまは `body` から継いだ
+ * `overflow-wrap: anywhere` が最小幅を縮めて収まっているが、継承に寄りかからない**——項目を縮められるようにし
+ * （`min-width: 0` / `max-width: 100%`）、長い名前はこの項目の中で折り返す。**アイコンの円は縮まない**（名前と同じリンクの中の
+ * `inline-block` で、寸法は `.gf-avatar` が固定で持つ。flex の項目ではない）。日本語の名前・短い名前は 1 行に収まるので、見た目は変わらない。
+ */
+.gf-card-author {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 /* 公開日時。数字の幅を揃える（並んだカードで日時の桁が揺れない）。 */
 .gf-card-meta time {
   color: var(--gf-ink-faint);

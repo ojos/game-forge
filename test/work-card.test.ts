@@ -486,8 +486,9 @@ describe('4 画面が同じカードの部品を使い、面で区切る（#471 
 
   it('作品カードの規則は枠線も影も持たず、ホバーで面を濃くしない（app.css の `@section work-card`）', () => {
     const css = env.TEST_APP_CSS;
-    const start = css.indexOf('@section work-card');
-    const end = css.indexOf('@section', start + 1);
+    // **区画の見出しの行で切る**（コメントの中の「`@section parts`」などの言及で切らない）。
+    const start = css.indexOf('\n   @section work-card');
+    const end = css.indexOf('\n   @section ', start + 1);
     expect(start, '`@section work-card` が見つかりません').toBeGreaterThan(0);
     const section = css.slice(start, end).replaceAll(/\/\*[\s\S]*?\*\//gu, '');
     // **`border-radius` 以外の border の宣言と、影を置かない**（仕様 2.5.4 の表「枠線・影: 使わない」）。
@@ -496,5 +497,19 @@ describe('4 画面が同じカードの部品を使い、面で区切る（#471 
     // **ホバーで面の色を変えない・浮かせない**（`.gf-card:hover` の規則を持たない）。
     expect(section).not.toMatch(/\.gf-card(\.gf-block)?:(hover|focus-within)/u);
     expect(section).not.toMatch(/transform\s*:/u);
+  });
+
+  it('作者名の項目は縮められ、長い名前はその中で折り返す（PR #496 の Copilot code review）', () => {
+    // **補助の行は flex で、項目の既定の `min-width: auto` のままだと**、上限（30 文字）いっぱいの区切りの無い ASCII の
+    // 表示名とアイコンが 16rem のカードの内容幅を越える。`body` から継ぐ `overflow-wrap` に寄りかからず、項目が自分で持つ
+    // （実ブラウザで継承を外すと、直す前は 1280px の 4 列で 75px ほどはみ出し、直した後は 0 だった）。
+    const css = env.TEST_APP_CSS;
+    const start = css.indexOf('\n   @section work-card');
+    const section = css.slice(start, css.indexOf('\n   @section ', start + 1)).replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+    const rule = /(?:^|\n)\.gf-card-author\s*\{([^}]*)\}/u.exec(section);
+    expect(rule, '`@section work-card` に `.gf-card-author` の規則がありません').not.toBeNull();
+    expect(rule![1]).toMatch(/min-width:\s*0;/u);
+    expect(rule![1]).toMatch(/max-width:\s*100%;/u);
+    expect(rule![1]).toMatch(/overflow-wrap:\s*anywhere;/u);
   });
 });

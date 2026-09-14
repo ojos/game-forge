@@ -176,6 +176,30 @@ variable "gcp_project_id" {
   }
 }
 
+variable "gcp_billing_account" {
+  description = <<-EOT
+    本番の GCP プロジェクト（gcp_project_id）に紐付ける請求先アカウントの ID（#487）。
+    Google の形式どおり、大文字英数字 6 桁をハイフンで 3 つつないだもの。
+    "billingAccounts/" の接頭辞は付けない。
+
+    google_project の billing_account に渡す。2026-09-14 に利用者が Google OAuth の
+    ブランド確認のために Console で紐付けたものを、宣言へ取り込んだ（gcp.tf の注記）。
+
+    **既定値は置かない。** 値の無い環境で plan / apply すると、紐付けを外す差分になり、
+    ブランド確認に影響しうるためである。必須にしておけば、値が無いときは差分を出す前に
+    変数の不足で止まる。
+
+    機密ではないが、このリポジトリは公開であり公開する必要も無いため、aws_account_id_prod
+    と同じ扱いで宣言へ直接書かず terraform.tfvars（*.tfvars は追跡外）から受ける。
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[0-9A-Z]{6}-[0-9A-Z]{6}-[0-9A-Z]{6}$", var.gcp_billing_account))
+    error_message = "gcp_billing_account は大文字英数字 6 桁をハイフンで 3 つつないだ形式である必要があります（billingAccounts/ の接頭辞は付けない）。"
+  }
+}
+
 variable "gcp_project_name" {
   description = "GCP プロジェクトの表示名。ID と違い後から変更できる。"
   type        = string

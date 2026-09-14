@@ -4,6 +4,7 @@
  * M0.5-3 の範囲は「環境が動くこと」の確認に限る。D1 のスキーマ（5.1 の 5 テーブル）は
  * M1-1 が所有するため、ここでは**スキーマに依存しない疎通確認**だけを行う。
  */
+import { DEV_COMPONENTS_PATH, renderDevComponentsPage } from './dev-components.js';
 import { createAdminRoutes } from './admin/routes.js';
 import { authRoutes } from './auth/google.js';
 import { accountRoutes } from './account.js';
@@ -212,6 +213,7 @@ const devRoutes: readonly Route[] = [
   <li><a href="/__dev/session">/__dev/session</a> — <code>${DEV_SESSION_COOKIE}</code> を発行</li>
   <li><a href="/__dev/pages">/__dev/pages</a> — SSR 画面のパス一覧（app と admin。#282 / #398）</li>
   <li><a href="/__dev/cookies">/__dev/cookies</a> — 届いた cookie 名の一覧</li>
+  <li><a href="${DEV_COMPONENTS_PATH}">${DEV_COMPONENTS_PATH}</a> — 見た目の部品の一覧（仕様 2.5。#457）</li>
 </ul>`),
   },
   {
@@ -282,6 +284,13 @@ const devRoutes: readonly Route[] = [
     // 値は返さない。名前だけで「届いたか」は判定でき、値を返すと将来この経路が
     // 本物のセッションを覗く穴になる。
     handler: (request) => json({ cookieNames: cookieNames(request.headers.get('cookie')) }),
+  },
+  {
+    method: 'GET',
+    path: DEV_COMPONENTS_PATH,
+    // 見た目の部品の一覧（#457 / 仕様 2.5）。**部品を画面へ当てる前に、規約どおりに描かれることを確かめる場所**
+    // （`src/dev-components.ts` の冒頭）。`devRoutes` に置くので本番には出ない。
+    handler: () => html(renderDevComponentsPage()),
   },
 ];
 

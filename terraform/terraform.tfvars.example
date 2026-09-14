@@ -39,6 +39,17 @@ gcp_billing_account = "000000-000000-000000"
 # gcp_project_id   = "ojos-game-forge"
 # gcp_project_name = "game-forge"
 
+# 開発用の GCP プロジェクト（#479）に紐付いている請求先アカウントの ID。形式は gcp_billing_account と同じ。
+# Console で作成したときに自動で紐付き、利用者の判断で残した。本番と同じ値でも、別のキーで受ける。
+# 既定値は無い。値を入れずに plan すると変数の不足で止まる（紐付けを外す差分を出させない）。
+# 機密ではないが、このリポジトリは公開のため宣言側には書かない。
+gcp_dev_billing_account = "000000-000000-000000"
+
+# 開発用の GCP プロジェクト（#479）。既定値は実在するプロジェクトなので、ふつうは指定しない。
+# gcp_dev_project_id を変えるときは、terraform/gcp.tf の import ブロックの id も変える。
+# gcp_dev_project_id   = "ojos-game-forge-dev"
+# gcp_dev_project_name = "game-forge-dev"
+
 # 費用ガードの層 3（AWS Budgets）が通知を送る宛先（#82 / 仕様 4.3）。
 # Budgets Actions は subscriber を必須としているため省略できない。
 # 機密ではないが、このリポジトリは公開のため宣言側には書かない。

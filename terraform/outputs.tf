@@ -78,6 +78,21 @@ output "gcp_project_number" {
   value       = google_project.game_forge.number
 }
 
+output "gcp_dev_project_id" {
+  description = <<-EOT
+    開発用の GCP プロジェクト ID（#479）。ローカル開発用の OAuth クライアントの発行先。
+
+    gcp_project_id と同じ理由で、外部層の検査（scripts/acceptance-remote.sh）はこれを見ていない
+    （docs/gcp-oauth-setup.md 7 章）。用途は手順書とコマンドが参照する識別子。
+  EOT
+  value       = google_project.game_forge_dev.project_id
+}
+
+output "gcp_dev_project_number" {
+  description = "開発用の GCP プロジェクト番号（#479）。ローカル用の client_id の先頭と一致することが、正しいプロジェクトで発行した確認になる。"
+  value       = google_project.game_forge_dev.number
+}
+
 output "app_host" {
   description = <<-EOT
     アプリ用ホスト名（#89）。

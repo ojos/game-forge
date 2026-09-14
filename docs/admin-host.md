@@ -121,7 +121,12 @@ https://admin.game-forge.ojos.jp/auth/google/start
 <https://console.cloud.google.com/auth/clients?project=ojos-game-forge>
 
 既存のクライアントの「承認済みのリダイレクト URI」へ次を**追加**する
-（**既存の URI を消さないこと。** app 用とローカル用がある）。
+（**既存の app 用の URI を消さないこと。** 2026-09-14 から、本番のクライアントに置くのは
+app 用とこの admin 用の 2 本だけで、ローカル用は開発用のプロジェクト `ojos-game-forge-dev`
+のクライアントにある。手順書の追随は #479）。
+
+> **注記（#478）。旧記述**——「（**既存の URI を消さないこと。** app 用とローカル用がある）」。
+> 本番の同意画面を本番環境へ切り替えたときに、ローカル用の URI を開発用のプロジェクトへ移した。
 
 ```
 https://admin.game-forge.ojos.jp/auth/google/callback
@@ -131,8 +136,11 @@ https://admin.game-forge.ojos.jp/auth/google/callback
   （`src/auth/google.ts` の `redirectUri`）。ホストごとに登録が要る。
 - **登録が無いと、失敗するのは同意画面である。** ログインの開始（303）は成功し、
   Google 側が `redirect_uri_mismatch` で止まる。**アプリのログには何も出ない。**
-- **テストユーザーの登録は要らない**（既に登録済みの運営のアカウントで入るため）。
-  同意画面は Testing のまま運用する（仕様 8.1）。
+- **Google 側で利用者を登録する作業は無い。** 同意画面は 2026-09-14 から外部・本番環境で
+  運用している（仕様 8.1「Google OAuth を本番環境で運用する」）。
+
+  > **注記（#478）。2026-09-14 までの旧記述**——「**テストユーザーの登録は要らない**（既に
+  > 登録済みの運営のアカウントで入るため）。同意画面は Testing のまま運用する（仕様 8.1）。」
 
 ### ② Route53 の CNAME（terraform。**宣言はこのリポジトリが持つ**）
 

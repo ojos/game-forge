@@ -461,6 +461,25 @@ describe('招待を発行する画面', () => {
     expect(body).toContain('未使用');
   });
 
+  it('Google Console へのテストユーザー登録を案内しない（8.1 v1.70 / #478）', async () => {
+    // 2026-09-14 に Google OAuth を本番環境へ切り替え、手登録は要らなくなった。参加者は
+    // Console を触れないので、案内が残ると「できない作業」を全員に求めることになる。
+    // **発行の前と後の両方を見る**——一覧の有無で画面の組み立てが分かれる。外枠も含めた
+    // 画面全体で見る（案内がヘッダやフッタへ移っても落とす）。
+    const cookie = await sessionCookie(await seedUser());
+    const before = await (await call(INVITES_PATH, { cookie, accept: 'text/html' })).text();
+    await issueOne(cookie);
+    const after = await (await call(INVITES_PATH, { cookie, accept: 'text/html' })).text();
+
+    for (const body of [before, after]) {
+      expect(body).toContain('<h1>招待を発行する</h1>');
+      expect(body).not.toContain('テストユーザー');
+      expect(body).not.toContain('Google Cloud Console');
+      expect(body).not.toContain('Testing');
+      expect(body).not.toContain('コードを渡す前に');
+    }
+  });
+
   it('使い切ったらフォームを出さない', async () => {
     // 押しても必ず断られるボタンを出すと、「壊れている」ことと「枠が無い」ことの
     // 区別がつかない。

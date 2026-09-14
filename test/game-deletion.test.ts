@@ -11,7 +11,7 @@ import {
 } from '../src/games.js';
 import { ogpObjectKey } from '../src/ogp.js';
 import { recordReport } from '../src/reports.js';
-import { claimRevisionSlot, restoreRevision } from '../src/revisions.js';
+import { appendRevision, claimRevisionSlot, restoreRevision } from '../src/revisions.js';
 import { dispatch } from '../src/routes.js';
 import { authorWorksSql } from '../src/users-page.js';
 import { listSearchedGames, parseWorkSearch } from '../src/work-search.js';
@@ -306,7 +306,7 @@ describe('被参照判定に版を含める（#516 の acceptance 1）', () => {
     const holders = await env.DB.prepare(
       'select count(*) as n from games where id <> ? and (source_key = ? or wasm_key = ?)',
     )
-      .bind(a.id, a.wasmKey, a.wasmKey)
+      .bind(a.id, a.sourceKey, a.wasmKey)
       .first<{ n: number }>();
     expect(holders?.n).toBe(0);
 
@@ -670,6 +670,35 @@ describe('削除を掴んだ行は、公開・改名・推敲・版の復元が 
     const { author, gameId } = await claimedDraft();
     expect(await claimRevisionSlot(env, gameId, author, '直して', 'token-hash', 1_000)).toBe(false);
     expect(await countRows(gameId)).toMatchObject({ game_revision_jobs: 0, game_revisions: 2 });
+  });
+
+  it('完成の処理が遅れて版を積もうとしても、版は積まれず投げない（0041 のトリガ。PR #523 のレビュー）', async () => {
+    const { gameId } = await claimedDraft();
+    const artifacts = {
+      goVersion: 'go1.27.0',
+      sourceKey: `builds/late-${gameId}.go`,
+      wasmKey: `builds/late-${gameId}.wasm.br`,
+    };
+    await expect(appendRevision(env, gameId, artifacts, null, 1_000)).resolves.toBeUndefined();
+    expect((await countRows(gameId))['game_revisions']).toBe(2);
+
+    // 打ち直して行ごと消えた後も、外部キーで投げない（コールバックを 500 にしない）。
+    expect(await deleteGame(env, gameId, 1_100)).toEqual({ ok: true, result: 'deleted' });
+    await expect(appendRevision(env, gameId, artifacts, null, 1_200)).resolves.toBeUndefined();
+    expect((await countRows(gameId))['game_revisions']).toBe(0);
+  });
+
+  it('掴まれていない作品には、版はこれまでどおり積まれる（トリガが広すぎないこと）', async () => {
+    const author = await seedUser('トリガの対照');
+    const game = await seedGame({ authorId: author });
+    await appendRevision(
+      env,
+      game.id,
+      { goVersion: 'go1.27.0', sourceKey: `builds/next-${game.id}.go`, wasmKey: `builds/next-${game.id}.wasm.br` },
+      '推敲',
+      1_000,
+    );
+    expect((await countRows(game.id))['game_revisions']).toBe(2);
   });
 
   it('版に戻せない', async () => {

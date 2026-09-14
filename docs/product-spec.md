@@ -4576,6 +4576,7 @@ Workers Free で日次の上限を超えると、**そのアカウントの D1 �
 >
 > - **被参照判定**（`src/build-cache.ts` の `planArtifactDeletion` / `countArtifactReferences`）: 参照者に**すべての作品の版**（`game_revisions.source_key` / `wasm_key`）を足し、候補を**対象の作品の `games` 行と全版**から集める。**判定は 1 文である**——候補の収集と数えを同じ SELECT で行い、キーを束縛しない（束縛は作品 id を 6 つ）。版の表のキーには索引を 2 本足した（`migrations/0041_game_deletion.sql`。0004 と同じ形）。索引の出し入れ（`takeBuildCacheByArtifact`）もキーの一覧を JSON の配列 1 つとして `json_each` で展開し、**2 文で済ませる**。**D1 の文の本数は、戻す索引が無ければ 4 本で、版の数に比例しない**（#116 の実装はキーごとに数える形で、そのまま候補を版まで広げると、版が 30 個の作品で 120 本を超える）。
 > - **削除する関数**（`src/game-deletion.ts` の `deleteGame`）: **掴む（条件付き UPDATE 1 本）→ R2 を消す（上の規約 1・2 と、`ogp/<game_id>.png` は判定なし）→ D1 を確定する（batch 1 つ）** の順。**R2 を先にする**のは、確定の前に落ちても行と版が残り、同じ呼び出しを打ち直せば続きをやれるためである（掴みは入り直せる）。行を残すか消すかは確定の batch の中で判定する。規約 4 の「参照する側の表を先に消す」は、行ごと消す枝で `game_revisions`・`game_revision_jobs`・`title_changes`・`description_changes`・`fork_notices` に適用した。**版が 30 個の作品で D1 の文は 14 本**（`test/game-deletion.test.ts` が数える）。
+> - **完成の処理の後ろ半分との競合**（PR #523 のレビュー）: 生成の完成は `generation_state = 'ready'` にしたあと別の文で索引と版を書くので、その隙間に削除が確定しうる。**版は `game_revisions` の BEFORE INSERT トリガ（0041）が、掴まれた行・消えた行への挿入を飛ばす**（コールバックと束の SQL は変えない）。**索引は消えたキーを指す行が書かれうるが、ヒットの判定が R2 の実在を確かめて落とすので自己修復する。** OGP の撮影のコールバックが削除を挟んで画像を書いた場合は、コールバックの側が掴まれた行・消えた行を見てその画像を消す。
 > - **消さないもの**: `source_input_keys`・`build_health`・`takedown_notices` の行（#516 の scope.out）。**確定13 の「未公開のまま 14 日で自動削除」の掃除と、その定期実行の置き場所は、まだ無い。**
 
 ### 3.8 ビルド実行環境（AWS Lambda / コンテナイメージ）（確定24）

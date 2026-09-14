@@ -31,6 +31,8 @@ import {
   invokeEndpoint,
   missingOgpSecrets,
 } from '../src/ogp-client.js';
+import { deleteGame } from '../src/game-deletion.js';
+import { removeGame } from '../src/games.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { workPageRoutes, workPagePath } from '../src/work-page.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
@@ -519,5 +521,123 @@ describe('撮影関数の呼び出し（src/ogp-client.ts）', () => {
   it('不足している設定の名前を返す', () => {
     expect(missingOgpSecrets(env)).toContain('BUILD_AWS_REGION');
     expect(missingOgpSecrets(testEnv())).toEqual([]);
+  });
+});
+
+describe('撮影のコールバックと作品の削除の競合（#516 / PR #523 のレビュー）', () => {
+  /**
+   * 撮影の照合（`ogpCaptureIsPending` の読み取り）が終わった直後に、1 度だけ出来事を差し込む `Env`。
+   *
+   * **照合と R2 の書き込みのあいだに削除が走る**順序を、決定的に作るために使う。
+   *
+   * @param between 差し込む出来事
+   * @returns 差し替えた `DB` を持つ `Env`
+   */
+  function afterPendingCheck(between: () => Promise<void>): Env {
+    let fired = false;
+    const base = testEnv();
+    const db = new Proxy(base.DB, {
+      get(target, property, receiver) {
+        if (property !== 'prepare') {
+          const value = Reflect.get(target, property, receiver) as unknown;
+          return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+        }
+        return (sql: string): D1PreparedStatement => {
+          const statement = target.prepare(sql);
+          if (!sql.startsWith('select ogp_token_hash')) return statement;
+          return new Proxy(statement, {
+            get(inner, key, innerReceiver) {
+              const value = Reflect.get(inner, key, innerReceiver) as unknown;
+              if (typeof value !== 'function') return value;
+              return (...args: unknown[]): unknown => {
+                const result = (value as (...a: unknown[]) => unknown).apply(inner, args);
+                if (key === 'bind') {
+                  const bound = result as D1PreparedStatement;
+                  return new Proxy(bound, {
+                    get(b, k, r) {
+                      const v = Reflect.get(b, k, r) as unknown;
+                      if (typeof v !== 'function') return v;
+                      return async (...a: unknown[]): Promise<unknown> => {
+                        const resolved = await (v as (...x: unknown[]) => Promise<unknown>).apply(b, a);
+                        if (k === 'first' && !fired) {
+                          fired = true;
+                          await between();
+                        }
+                        return resolved;
+                      };
+                    },
+                  });
+                }
+                return result;
+              };
+            },
+          });
+        };
+      },
+    });
+    return { ...base, DB: db } as Env;
+  }
+
+  /**
+   * 撮影の結果（PNG）を、差し替えた `Env` で送る。
+   *
+   * @param target 送り先の `Env`
+   * @param gameId 作品 id
+   * @param token 撮影のトークン
+   * @returns レスポンス
+   */
+  async function sendPng(target: Env, gameId: string, token: string): Promise<Response> {
+    return await dispatch(
+      ogpRoutes,
+      new Request(`${APP_ORIGIN}${OGP_CALLBACK_PATH}`, {
+        method: 'POST',
+        headers: {
+          [OGP_GAME_ID_HEADER]: gameId,
+          [OGP_TOKEN_HEADER]: token,
+          'content-type': 'image/png',
+        },
+        body: PNG_BYTES,
+      }),
+      target,
+    );
+  }
+
+  it('削除が掴んで確定した後に届いた画像は、R2 に残らない（行ごと消えた場合）', async () => {
+    const { userId, id, ogpToken } = await seedPublishedGame('race-deleted');
+    expect(await removeGame(env, id, userId)).toEqual({ ok: true, firstTime: true });
+
+    const raced = afterPendingCheck(async () => {
+      expect(await deleteGame(env, id)).toEqual({ ok: true, result: 'deleted' });
+    });
+    expect((await sendPng(raced, id, ogpToken)).status).toBe(404);
+
+    expect(await env.BUCKET.head(ogpObjectKey(id))).toBeNull();
+  });
+
+  it('削除が掴んだ後に届いた画像は、R2 に残らない（行を残して中身を消した場合）', async () => {
+    const { userId, id, ogpToken } = await seedPublishedGame('race-purged');
+    // 子がいるので行は残る（中身を消した tombstone）。
+    const child = await seedReadyGame('race-purged-child');
+    await env.DB.prepare('update games set parent_id = ? where id = ?').bind(id, child.id).run();
+    expect(await removeGame(env, id, userId)).toEqual({ ok: true, firstTime: true });
+
+    const raced = afterPendingCheck(async () => {
+      expect(await deleteGame(env, id)).toEqual({ ok: true, result: 'purged' });
+    });
+    expect((await sendPng(raced, id, ogpToken)).status).toBe(404);
+
+    expect(await env.BUCKET.head(ogpObjectKey(id))).toBeNull();
+  });
+
+  it('重複配信（削除されていない行）では、書いた画像を消さない', async () => {
+    const { id, ogpToken } = await seedPublishedGame('race-duplicate');
+    // 照合の直後に、同じトークンのもう 1 通が先に完成させる。
+    const raced = afterPendingCheck(async () => {
+      expect((await sendCallback(id, ogpToken, PNG_BYTES)).status).toBe(200);
+    });
+    expect((await sendPng(raced, id, ogpToken)).status).toBe(404);
+
+    expect(await env.BUCKET.head(ogpObjectKey(id))).not.toBeNull();
+    expect((await readOgp(id)).ogp_state).toBe('ready');
   });
 });

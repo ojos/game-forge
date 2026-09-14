@@ -50,6 +50,37 @@
 -- 完成のたびに 1 行（月数百〜千行）で、無料枠 10 万行/日 に対して桁で下にある。
 --
 --
+-- ## 掴まれた作品と消えた作品には、版を積まない（BEFORE INSERT トリガ）
+--
+-- **完成の処理は 1 文ではない。** 生成の完成（`src/generate-callback.ts` の finish）は
+-- `completeGameWithArtifacts` で `generation_state = 'ready'` にしたあと、**別の文で**索引を書き、
+-- さらに `appendRevision` で `seq = 1` の版を積む。**その隙間に削除が掴んで R2 と D1 を確定すると**、
+-- 中身を消した行に消えたキーを指す版が積まれるか、行ごと消えた後なら `game_revisions` の外部キーで
+-- `appendRevision` が投げる（コールバックが 500 になる）。
+--
+-- **コールバックと `appendRevision` の SQL は変えない**（オーケストレータの束に入る。変えれば
+-- `CodeSha256` が変わり、配り直すまで main の配備が止まる）。**D1 の側で塞ぐ**——`games` に
+-- 掴まれていない行が無ければ、`RAISE(IGNORE)` でその 1 行の挿入を黙って飛ばす。
+--
+-- - **`IGNORE` にする（`ABORT` にしない）。** 投げるとコールバックが 500 になり、行ごと消えた後の
+--   現状と変わらない。飛ばされた挿入は 0 行で、文そのものは成功する
+-- - **BEFORE なので外部キーの検査より先に効く**（行ごと消えた後でも投げない）
+-- - **本体は `SELECT` だけで何も書かない**ので、`meta.changes` を膨らませない（0037 のトリガとは違う）。
+--   版の挿入の行数を読む判定はアプリに無い（`appendRevision` は結果を読まない。推敲の枠の取得は
+--   ジョブ行の文の結果を読む）
+-- - **推敲の完成（`completeRevision`）は当たらない。** 削除は進行中の推敲のジョブがある行を掴まない
+--
+-- **索引（`build_cache`）の側は塞がない。** 同じ隙間で、消えたキーを指す索引の行が後から書かれうるが、
+-- ヒットの判定（`src/build-cache.ts` の `readBuildCache`）が R2 の実在を確かめて行を落とすので、
+-- 次の同一ソースの生成で自己修復する（その生成は再ビルドになるだけで、壊れた作品は生まれない）。
+CREATE TRIGGER game_revisions_skip_deleting_game
+BEFORE INSERT ON game_revisions
+WHEN NOT EXISTS (SELECT 1 FROM games WHERE id = NEW.game_id AND deletion_started_at IS NULL)
+BEGIN
+  SELECT RAISE(IGNORE);
+END;
+
+--
 -- ## 連番が 0041 である理由
 --
 -- 着手時に空いている最小の番号である（origin/main `52f28ea` の `migrations/` の最大が `0040`）。

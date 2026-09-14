@@ -137,6 +137,9 @@ const STATE_EXPRESSION = `(() => {
     fullscreen: document.fullscreenElement === null ? null : document.fullscreenElement === overlay ? 'overlay' : 'other',
     signals: Array.isArray(window.__gfSignals) ? window.__gfSignals.slice() : null,
     historyLength: history.length,
+    // 覆いを開くときに積む状態の上にいるか（覆いの開閉と履歴が食い違っていないかを見る。PR #508）。
+    onPlayHistoryEntry: history.state !== null && typeof history.state === 'object' && history.state.gfPlay === true,
+    activeIsClose: closeButton !== null && document.activeElement === closeButton,
   };
 })()`;
 
@@ -349,7 +352,8 @@ function openedWithSignals(count) {
  * @returns {boolean} 閉じたか
  */
 function closed(state) {
-  return state?.overlayHidden === true && state.frames.length === 0;
+  // **積んだ履歴の戻りが決着するまで待つ**（決着の前は開き直しを受け付けない。src/work-play.ts）。
+  return state?.overlayHidden === true && state.frames.length === 0 && state.onPlayHistoryEntry === false;
 }
 
 /**
@@ -372,12 +376,15 @@ async function observeTouch(cdp, options) {
     await tab.navigate(options.url);
     await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
     steps.beforeTap = await tab.state();
+    // **タップの前の要求はここで確定させる**（後の手順が途中で止まっても、1 の判定材料を失わない）。
+    steps.sandboxRequestsBeforeTap = tab.sandboxRequestsIn('before-tap');
     steps.shotEntry = await tab.shoot(options.shotDir === null ? null : join(options.shotDir, 'entry-portrait-390x844.png'));
 
     // 1 回目: 口をタップして開く。
     tab.setPhase('open-1');
     steps.tapEntry = await tab.tap('.gf-play-entry');
     steps.opened = await tab.waitFor(openedWithSignals(1));
+    steps.sandboxRequestsAfterTap = tab.sandboxRequestsIn('open-1');
     steps.shotPortrait = await tab.shoot(options.shotDir === null ? null : join(options.shotDir, 'overlay-portrait-390x844.png'));
     await tab.resize(LANDSCAPE, true);
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -426,8 +433,26 @@ async function observeTouch(cdp, options) {
       steps.closedByFullscreenExit = await tab.waitFor(closed);
     }
 
-    steps.sandboxRequestsBeforeTap = tab.sandboxRequestsIn('before-tap');
-    steps.sandboxRequestsAfterTap = tab.sandboxRequestsIn('open-1');
+    // 5 回目: 開いて、「閉じる」を押した直後（戻りの popstate が届く前）に口を押す。**同じタスクの中で 2 つを押す**ので、
+    // 間に popstate は入らない。覆いと履歴が食い違わず、その後にもう一度タップすれば開けることを見る（PR #508）。
+    tab.setPhase('open-5');
+    steps.tapEntryFifth = await tab.tap('.gf-play-entry');
+    steps.fifthOpened = await tab.waitFor(openedWithSignals(5));
+    steps.fifthOpened = { reached: steps.fifthOpened.reached, onPlayHistoryEntry: steps.fifthOpened.state?.onPlayHistoryEntry ?? null };
+    await tab.evaluate(`(() => {
+      const closeButton = document.querySelector('.gf-play-close');
+      const entry = document.querySelector('.gf-play-entry');
+      if (closeButton !== null) { closeButton.click(); }
+      if (entry !== null) { entry.click(); }
+    })()`);
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    steps.afterCloseThenReopen = await tab.state();
+    steps.tapEntrySixth = await tab.tap('.gf-play-entry');
+    steps.sixthOpened = await tab.waitFor(openedWithSignals(6));
+    tab.setPhase('close-6');
+    await tab.tap('.gf-play-close');
+    steps.closedSixth = await tab.waitFor(closed);
+
     steps.playsTotal = tab.postsTo('/api/plays');
     return steps;
   } catch (error) {

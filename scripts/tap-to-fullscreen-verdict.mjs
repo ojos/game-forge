@@ -7,7 +7,8 @@
 // | 前提 | タッチ端末の形で `matchMedia('(pointer: coarse)')` が true、デスクトップの形で false だった（**エミュレートが効いていない緑は無意味**） |
 // | 1 | タッチ端末では、タップの前にサンドボックス用ホストへ要求を 1 つも出さず、iframe も無い。「遊ぶ」のボタンは見えている |
 // | 2 | 口をタップすると覆いが画面いっぱいに開き、iframe が覆いのゲームの領域いっぱいに作られ、その iframe から起動の合図が届く |
-// | 3 | 「閉じる」のボタン・戻る操作・iframe の 2 回目の `load`（3.9.7）・全画面の解除（入れた環境だけ）のそれぞれで覆いが閉じ、iframe が取り除かれる |
+// | 3 | 「閉じる」のボタン・戻る操作・iframe の 2 回目の `load`（3.9.7）・全画面の解除（入れた環境だけ）のそれぞれで覆いが閉じ、iframe が取り除かれる。閉じた直後（戻りの `popstate` の前）に口を押しても覆いと履歴が食い違わず、その後のタップで開ける |
+// | 焦点・全画面 | 開いた後の焦点が「閉じる」にあり、覆いが全画面に入っている（検査の Chromium は要素の全画面に入れる） |
 // | 4 | デスクトップでは、開いた時点で iframe が `<noscript>` の直前にある |
 // | 5 | JavaScript を止めると、`<noscript>` の中の iframe がある |
 // | 属性 | 3 つの形の iframe の属性が、順序まで同じ（**出どころが 1 か所であることの実物での裏取り**）。`src` は作品の `/g/<id>/`、`sandbox` は `allow-scripts` だけ、`allowfullscreen` も `allow` も無い |
@@ -139,6 +140,18 @@ function problemsOf(result, expectedSrc) {
     if (!sameRect(state.frames[0].rect, state.stageRect)) {
       problems.push(`2: iframe がゲームの領域いっぱいではありません（iframe ${JSON.stringify(state.frames[0].rect)} / 領域 ${JSON.stringify(state.stageRect)}）。`);
     }
+    if (state.activeIsClose !== true) {
+      problems.push('2: 覆いを開いた後の焦点が「閉じる」にありません（role="dialog" / aria-modal の中へ移す。PR #508）。');
+    }
+    if (state.fullscreen !== 'overlay') {
+      problems.push(
+        `2: タップで開いた覆いが全画面に入っていません（${String(state.fullscreen)}）。検査のブラウザ（Chromium）は要素の全画面に入れるので、` +
+          ' requestFullscreen() がタップの処理の外に出たか、焦点の移動などで断られています。',
+      );
+    }
+    if (state.onPlayHistoryEntry !== true) {
+      problems.push('2: 覆いを開いたのに、開くときに積む履歴の上にいません。');
+    }
     if (state.locked !== true) {
       problems.push('2: 覆いを開いているのに、下のページのスクロールを止める印（html.gf-play-locked）がありません。');
     }
@@ -200,6 +213,27 @@ function problemsOf(result, expectedSrc) {
   }
   if (touch.fullscreenAfterOpen === 'other') {
     problems.push('3: 全画面になっているのが覆いの要素ではありません（全画面にするのは親の文書の覆いである。3.9.4）。');
+  }
+
+  // 閉じた直後（戻りの popstate の前）に口を押しても、覆いと履歴が食い違わない（PR #508）。
+  const race = touch.afterCloseThenReopen;
+  if (touch.fifthOpened?.reached !== true || touch.fifthOpened?.onPlayHistoryEntry !== true) {
+    problems.push('3: 閉じた直後に開き直す手順の前に、覆いを開けませんでした。');
+  } else if (race === undefined || race === null) {
+    problems.push('3: 閉じた直後に開き直す手順を観測できていません。');
+  } else if (race.overlayPresent !== true) {
+    problems.push(
+      '3: 「閉じる」の直後（popstate の前）に口を押すと、作品ページから離れました（戻りと開き直しの履歴が食い違い、' +
+        'history.back() が作品ページの手前まで戻った）。src/work-play.ts の open が、戻りの決着を待っているかを確認してください。',
+    );
+  } else if ((race.overlayHidden === false) !== (race.onPlayHistoryEntry === true)) {
+    problems.push(
+      `3: 「閉じる」の直後（popstate の前）に口を押すと、覆いと履歴が食い違いました（覆いが開いている=${String(race.overlayHidden === false)}、` +
+        `開くときに積む履歴の上にいる=${String(race.onPlayHistoryEntry)}、iframe ${String(race.frames?.length)} 個）。`,
+    );
+  }
+  if (touch.sixthOpened?.reached !== true || touch.closedSixth?.reached !== true) {
+    problems.push('3: 閉じた直後に口を押した後、もう一度タップしても開けない（または閉じられない）状態が残りました。');
   }
 
   // ── #377. 同じページでは 1 回だけ数える ─────────────────────────────────────

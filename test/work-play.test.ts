@@ -157,7 +157,7 @@ describe('スクリプトの形（3.9.4）', () => {
 
   it('開くときに履歴を 1 つ積み、戻る操作以外で閉じたときは積んだ履歴を戻す', () => {
     expect(script).toContain('history.pushState({ gfPlay: true }, \'\');');
-    expect(script).toContain('skipPops += 1;\n        history.back();');
+    expect(script).toMatch(/skipPops \+= 1;[\s\S]*?history\.back\(\);/u);
     expect(script.split('history.back()').length - 1).toBe(1);
   });
 
@@ -167,6 +167,22 @@ describe('スクリプトの形（3.9.4）', () => {
     const desktop = script.indexOf('noscript.parentNode.insertBefore(createFrame(), noscript);');
     expect(shown).toBeGreaterThan(desktop);
     expect(marked).toBeGreaterThan(desktop);
+  });
+
+  it('開くと焦点を「閉じる」へ移し、全画面の要求は同じ処理の中で後に呼ぶ。閉じると「遊ぶ」へ戻す（PR #508）', () => {
+    const shown = script.indexOf('overlay.hidden = false;');
+    const focused = script.indexOf('closeButton.focus({ preventScroll: true });');
+    const fullscreen = script.indexOf('overlay.requestFullscreen()');
+    expect(shown).toBeGreaterThan(0);
+    expect(focused).toBeGreaterThan(shown);
+    expect(fullscreen).toBeGreaterThan(focused);
+    expect(script.indexOf('openButton.focus({ preventScroll: true });')).toBeLessThan(script.indexOf('var open = function'));
+  });
+
+  it('閉じるときに始めた戻りが決着するまで開き直さず、決着しなくても上限で解く（PR #508）', () => {
+    expect(script).toContain('if (frame !== null || skipPops > 0) { return; }');
+    expect(script).toMatch(/skipTimer = setTimeout\(function \(\) \{\n\s+skipPops = 0;/u);
+    expect(script.indexOf('skipPops += 1;')).toBeLessThan(script.indexOf('history.back();'));
   });
 
   it('開いているあいだは下のページをスクロールさせない印を付け、閉じると外す', () => {

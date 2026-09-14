@@ -66,6 +66,12 @@ export const PLAY_NOSCRIPT_CLASS = 'gf-play-noscript';
 /** 覆いを開いているあいだ、`<html>` に付けて下のページをスクロールさせない `class`。 */
 export const PLAY_LOCKED_CLASS = 'gf-play-locked';
 
+/**
+ * 閉じたときに始めた `history.back()` の決着（その `popstate`）を待つ上限（ミリ秒）。待っているあいだは開き直しを受け付けない。
+ * **普通は 1 フレームほどで届く。** 届かない環境で開けなくなったままにしないための上限である。
+ */
+const PLAY_BACK_SETTLE_LIMIT_MS = 1000;
+
 /** 覆いを開くときに `history.pushState` で積む状態（戻る操作で閉じる。3.9.4）。 */
 const PLAY_HISTORY_STATE_KEY = 'gfPlay';
 
@@ -169,7 +175,8 @@ function literal(value: unknown): string {
  * - **閉じる**: 「閉じる」のボタン・戻る操作（`popstate`）・全画面の解除（`fullscreenchange`）・iframe の 2 回目の `load`
  *   （遷移した。3.9.7）を、**何度呼んでも 1 回と同じ結果になる 1 つの処理**に集める。パッドの「すべて離す」を送る場所
  *   （`releasePad`。中身は M14-5）を通ってから iframe を取り除く。ボタン・全画面の解除・遷移で閉じたときは、
- *   積んだ履歴を `history.back()` で戻す（その `popstate` は数えて読み飛ばす）
+ *   積んだ履歴を `history.back()` で戻す（その `popstate` は数えて読み飛ばし、届くまでは開き直しを受け付けない）
+ * - **焦点**: 開くと「閉じる」へ、閉じると「遊ぶ」へ移す
  *
  * @param playUrl 遊ぶ URL
  * @returns `<script>` 要素
@@ -204,6 +211,7 @@ export function playFrameScript(playUrl: string): string {
   var loads = 0;
   var pushed = false;
   var skipPops = 0;
+  var skipTimer = null;
   // **パッドの「すべて離す」を送る場所**（仕様 3.9.4 / 3.9.6。中身は M14-5 / #494 が入れる）。
   var releasePad = function (target) {
     void target;
@@ -223,14 +231,23 @@ export function playFrameScript(playUrl: string): string {
     if (pushed) {
       pushed = false;
       if (!fromHistory) {
+        // **戻りが決着する（その popstate が届く）まで、開き直しを受け付けない**（open の冒頭。PR #508 の Copilot の指摘）。
+        // 決着の前に開き直すと、新しく積んだ状態と古い popstate の順序がブラウザしだいになり、覆いと履歴が食い違う。
+        // 回ごとの印で popstate を結び付ける形は採らなかった——戻りと pushState の処理順が決まらないので、印を見ても
+        // 「新しい回を閉じるべきか」を決められない。**popstate が来ない環境で開けなくなったままにしない**よう、上限で解く。
         skipPops += 1;
+        if (skipTimer !== null) { clearTimeout(skipTimer); }
+        skipTimer = setTimeout(function () {
+          skipPops = 0;
+          skipTimer = null;
+        }, ${PLAY_BACK_SETTLE_LIMIT_MS});
         history.back();
       }
     }
     try { openButton.focus({ preventScroll: true }); } catch (error) {}
   };
   var open = function () {
-    if (frame !== null) { return; }
+    if (frame !== null || skipPops > 0) { return; }
     var opened = createFrame();
     frame = opened;
     loads = 0;
@@ -243,6 +260,9 @@ export function playFrameScript(playUrl: string): string {
     stage.appendChild(opened);
     overlay.hidden = false;
     root.classList.add(${literal(PLAY_LOCKED_CLASS)});
+    // **焦点を覆いの中（「閉じる」）へ移す**（role="dialog" / aria-modal。PR #508 の Copilot の指摘）。閉じると「遊ぶ」へ戻す。
+    // 焦点を移しても利用者の操作による起動は消えないので、下の requestFullscreen() は同じタップの処理の中のままである。
+    try { closeButton.focus({ preventScroll: true }); } catch (error) {}
     try {
       history.pushState({ ${PLAY_HISTORY_STATE_KEY}: true }, '');
       pushed = true;
@@ -262,6 +282,10 @@ export function playFrameScript(playUrl: string): string {
   window.addEventListener('popstate', function () {
     if (skipPops > 0) {
       skipPops -= 1;
+      if (skipPops === 0 && skipTimer !== null) {
+        clearTimeout(skipTimer);
+        skipTimer = null;
+      }
       return;
     }
     close(true);

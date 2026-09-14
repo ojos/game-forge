@@ -25,7 +25,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 | M13-2 | #435 | PR #437 / `1a8f589` | —（文書） | トップ・フッタ・ログインの中身を絞る決定（仕様 2.3 の注記。v1.65） |
 | M13-3 | #440 | PR #442 / `c56df4a` | **確認済み** | ヘッダとフッタのロゴを #438 のロゴ画像に。アンバーはロゴの中だけの例外 |
 | M13-4 | #441 | PR #448 / `ce16311` | **一部確認** | 「削除申請」→「削除依頼」の統一。**管理画面の一覧と受付メールの件名は本番で未確認**（#441 のコメント） |
-| M13-5 | #457 | PR #466 / `43748ce` | **確認済み** | トークンの値と部品（`.gf-button` / `.gf-chip` / `.gf-link-quiet` / `.gf-tabs` / `.gf-block` / `.gf-kv`）。**どの画面にもまだ当てていない** |
+| M13-5 | #457 | PR #466 / `43748ce` | **一部確認**（配られている CSS の値で確認。**画面の目視は未**——部品を当てた画面がまだ無い） | トークンの値と部品（`.gf-button` / `.gf-chip` / `.gf-link-quiet` / `.gf-tabs` / `.gf-block` / `.gf-kv`）。**どの画面にもまだ当てていない** |
 
 **承認したモックアップ:** https://claude.ai/code/artifact/058efa0b-1e7f-45c4-8fa9-241ae02e6dff の **Version 6（第 5 版）**。
 **キャンバスは後から保存し直せるので、「Version 6」が承認の対象です**（仕様 2.5.10）。**決定の正本は仕様 2.5 の本文**で、
@@ -63,7 +63,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
   ホバーと焦点は `data-state` 属性で固定して見せている（画面では付けない）
 - **`node scripts/check-token-contrast.mjs`**: 色のトークンが明暗の両テーマで AA を満たすかを値から計算する（acceptance から回る）
 - **`bash scripts/check-logo-copies.sh`**: `public/assets/logo/` の写しが `brand/logo/` と一致するか（acceptance から回る）
-- **撮影**: `~/.cache/ms-playwright/chromium_headless_shell-1234/chrome-linux/headless_shell` で `--screenshot`。暗いテーマは
+- **撮影**: Chromium 系の実行ファイルを `GF_BROWSER_BIN` で渡す既存の作法（`scripts/check-sandbox-browser.sh` の冒頭。版番号に依存しない探し方も書いてある）で `--screenshot`。暗いテーマは
   `--force-dark-mode --blink-settings=preferredColorScheme=0`。**このコンテナの headless では日本語の太字が細く見える**（フォントが無いだけで、実ブラウザでは太い）
 
 #### まだ確かめていないこと・残した懸念

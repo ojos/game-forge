@@ -165,7 +165,8 @@ describe('仕様と食い違わない（#373 の constraints。4.3 / 4.4 / 5.6 /
     expect(answer).toContain(
       `1 人 ${INVITE_QUOTA} 本まで溜まり、使うと ${INVITE_RECOVERY_DAYS} 日ごとに 1 本ずつ戻ります`,
     );
-    expect(answer).toContain(`href="${SIGNUP_PATH}"`);
+    // **行き先の画面の名前で呼ぶ**（`/signup` は「ログイン・登録」。#472）。
+    expect(answer).toContain(`<a href="${SIGNUP_PATH}">ログイン・登録の画面</a>から待機リストに登録できます`);
     // #396 より前の「発行できる総数」の書き方を残さない。
     expect(answer).not.toContain('本まで招待コードを発行できます');
   });

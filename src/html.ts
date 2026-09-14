@@ -16,7 +16,7 @@
  * ヘッダのナビとパンくず（2.3.7 / 2.3.10）は行き先の綴りを要るので、このモジュールは
  * `src/works-paths.ts` / `src/account-paths.ts` / `src/avatar-paths.ts` / `src/liked-works-paths.ts` /
  * `src/legal-paths.ts` / `src/news-paths.ts` / `src/paths.ts` / `src/page-paths.ts` / `src/session.ts` と
- * **`src/auth/google.ts` の `LOGIN_PATH` / `LOGOUT_PATH`** を読む。**どれもここへ戻ってこない**
+ * **`src/auth/google.ts` の `LOGOUT_PATH`** を読む。**どれもここへ戻ってこない**
  * ——`src/auth/google.ts` が辿るのは経路表・セッション・招待だけで、画面を 1 枚も
  * import しない（確かめずに足さないこと。上の循環参照はそれで生まれた）。
  *
@@ -54,7 +54,7 @@ export function escapeHtml(value: string): string {
 
 import { ACCOUNT_PATH } from './account-paths.js';
 import { AVATAR_OUTPUT_SIZE, avatarUrl, sandboxOriginOf } from './avatar-paths.js';
-import { LOGIN_PATH, LOGOUT_PATH } from './auth/google.js';
+import { LOGOUT_PATH } from './auth/google.js';
 import { TAKEDOWN_PATH } from './legal-paths.js';
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';
 import type { NewsArticle } from './news-articles.js';
@@ -351,11 +351,18 @@ const ACCOUNT_MENU_ITEMS: readonly NavItem[] = [
 /**
  * 未ログインのときだけ出る項目（2.3.7）。
  *
- * **行き先は Google の認証のまま**（#469 の scope.out）。`/signup` へ向けるのは M13-8（#472）で、
- * `/signup` の作り替えと一緒に行う——先に切り替えると、ログインしたい人が「登録する」の画面に着く期間ができる。
+ * **「ログイン」の行き先は `/signup`（ログイン・登録）である**（2.3.7 / 2.3.11 の #435 注記 / #472）。全画面に出る
+ * ヘッダの導線がログインだけを Google の認証へ直接送ると、登録（招待コード・待機リスト）へは画面ごとの本文からしか
+ * 届かない。1 枚のログイン・登録へまとめれば、項目を増やさずにどの画面からも両方へ届く。
+ *
+ * **ログインが必要な画面から送る先は `/auth/google/start` のまま**（`src/auth/google.ts` の `LOGIN_PATH`。2.3.11 の
+ * #435 注記）——ここが変えるのはヘッダの項目だけで、既にアカウントを持つ人の日常のログインに 1 画面を挟まない。
+ * `/signup` の作り替えと同じ変更で切り替えた（先に切り替えると、ログインしたい人が「登録する」の画面に着く期間ができる）。
+ *
+ * **広い段用と狭い段用の 2 か所に出る**が、どちらもこの 1 つの表から組む（{@link siteHeader}）ので、行き先がずれない。
  */
 const HEADER_SIGNED_OUT_ITEMS: readonly HeaderNavItem[] = [
-  { path: LOGIN_PATH, label: 'ログイン', emphasis: 'tertiary' },
+  { path: SIGNUP_PATH, label: 'ログイン', emphasis: 'tertiary' },
 ];
 
 /**
@@ -638,7 +645,7 @@ export function newsBreadcrumbParents(articles: readonly NewsArticle[]): readonl
  */
 export const BREADCRUMB_PARENTS: readonly NavItem[] = [
   { path: PUBLIC_WORKS_PATH, label: '作品をさがす' },
-  { path: SIGNUP_PATH, label: 'Game Forge に登録する' },
+  { path: SIGNUP_PATH, label: 'ログイン・登録' },
   { path: TAKEDOWN_PATH, label: '削除依頼' },
   { path: ACCOUNT_PATH, label: '登録情報' },
   ...newsBreadcrumbParents(NEWS_ARTICLES),

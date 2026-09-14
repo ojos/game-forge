@@ -520,6 +520,138 @@ describe('登録画面', () => {
   });
 });
 
+/**
+ * ログイン・登録の画面の形（仕様 2.3.1 / 2.3.11 の #435 注記 / 2.5.5 / #472）。
+ *
+ * **並びは HTML の順だけで決まる**（app.css は `order` を使わない。仕様 2.5.6 の #469 実装注記）ので、
+ * 本文の中の出現順を見れば、見た目の順と Tab の順も見たことになる。実ブラウザでの並びは PR で確かめた。
+ */
+describe('ログイン・登録の画面（#472）', () => {
+  const routes = createSignupRoutes({ now: () => NOW });
+
+  /**
+   * 画面を開いて本文（パンくずの後からフッタの前まで）を返す。
+   *
+   * @param query 付ける query（無ければ空文字）
+   * @returns 本文の HTML
+   */
+  async function mainOf(query = ''): Promise<string> {
+    const response = await dispatch(routes, new Request(`${APP_ORIGIN}${SIGNUP_PATH}${query}`), testEnv());
+    const body = await response.text();
+    const start = body.indexOf('<h1>');
+    const end = body.indexOf('<footer');
+    expect(start, '本文の <h1> が無い').toBeGreaterThan(-1);
+    expect(end, 'フッタが無い').toBeGreaterThan(start);
+    return body.slice(start, end);
+  }
+
+  /**
+   * 3 つのブロックを HTML の順に取り出す。
+   *
+   * @param main 本文の HTML
+   * @returns ブロックごとの HTML
+   */
+  function blocksOf(main: string): string[] {
+    return [...main.matchAll(/<section class="gf-block gf-signup-option"[\s\S]*?<\/section>/gu)].map((match) => match[0]);
+  }
+
+  it('題名と <h1> が「ログイン・登録」である', async () => {
+    const response = await dispatch(routes, new Request(`${APP_ORIGIN}${SIGNUP_PATH}`), testEnv());
+    const body = await response.text();
+    expect(body).toContain('<title>ログイン・登録 - Game Forge</title>');
+    expect(body.match(/<h1\b[^>]*>[\s\S]*?<\/h1>/gu)).toEqual(['<h1>ログイン・登録</h1>']);
+    expect(body).not.toContain('Game Forge に登録する');
+  });
+
+  it('3 つのブロックが、ログイン・招待コード・待機リストの順に並ぶ', async () => {
+    const blocks = blocksOf(await mainOf());
+    expect(blocks.map((block) => /<h2[^>]*>([^<]*)<\/h2>/u.exec(block)?.[1])).toEqual([
+      'すでにアカウントをお持ちの方',
+      '招待コードをお持ちの方',
+      '招待コードをお持ちでない方',
+    ]);
+    // 中身もその順で入っている（見出しだけを並べ替えた形を通さない）。
+    expect(blocks[0]).toContain('Google でログイン');
+    expect(blocks[1]).toContain(`action="${SIGNUP_PATH}"`);
+    expect(blocks[1]).toContain('name="code"');
+    expect(blocks[2]).toContain(`action="${WAITLIST_PATH}"`);
+    expect(blocks[2]).toContain('name="email"');
+    // 3 つはひとつの並べ枠の中にある（折り返しで並べる枠。app.css の `@section signup`）。
+    expect(await mainOf()).toMatch(/<div class="gf-signup-options">\s*<section class="gf-block gf-signup-option"/u);
+  });
+
+  it('主のボタンは「Google でログイン」の 1 つだけで、`<a>` で Google の認証へ送る（仕様 2.5.5 / 2.3.11 の #435 注記）', async () => {
+    const main = await mainOf();
+    const primaries = [...main.matchAll(/<(a|button)\b[^>]*\bgf-button-primary\b[^>]*>([^<]*)<\/\1>/gu)];
+    expect(primaries.map((match) => match[0])).toEqual([
+      `<a class="gf-button gf-button-primary" href="${LOGIN_PATH}">Google でログイン</a>`,
+    ]);
+    // 残る 2 つの送信は副のボタン（要素は動作なので <button>）。
+    expect(main.match(/<button class="gf-button gf-button-secondary" type="submit">[^<]*<\/button>/gu)).toEqual([
+      '<button class="gf-button gf-button-secondary" type="submit">コードを確認して Google でログイン</button>',
+      '<button class="gf-button gf-button-secondary" type="submit">待機リストに登録する</button>',
+    ]);
+  });
+
+  it('JavaScript を要求しない（素の <form method="post"> で、スクリプトを持たない）', async () => {
+    const main = await mainOf();
+    const forms = main.match(/<form\b[^>]*>/gu) ?? [];
+    expect(forms).toEqual([
+      `<form method="post" action="${SIGNUP_PATH}">`,
+      `<form method="post" action="${WAITLIST_PATH}">`,
+    ]);
+    expect(main).not.toContain('<script');
+  });
+
+  it('ログインが必要な画面から戻ってきたときの通知は、3 つのブロックより前に出る（2.3.11）', async () => {
+    const main = await mainOf(`?reason=${LOGIN_REQUIRED_REASON}`);
+    const alert = main.indexOf('<p class="error" role="alert">この画面にはログインが必要です。');
+    expect(alert).toBeGreaterThan(-1);
+    expect(alert).toBeLessThan(main.indexOf('<div class="gf-signup-options">'));
+  });
+
+  it('「改造する」から来た人への前置きを残し、待機リストの記録には導線を渡す（2.2-4 / 10.2）', async () => {
+    const main = await mainOf('?from=fork-cta');
+    const intro = main.indexOf('改造（フォーク）できるのは招待された方だけです');
+    expect(intro).toBeGreaterThan(-1);
+    expect(intro).toBeLessThan(main.indexOf('<div class="gf-signup-options">'));
+    expect(blocksOf(main)[2]).toContain('<input type="hidden" name="source" value="fork-cta">');
+  });
+
+  it('待機人数と案内は、待機リストのブロックの中に出す（丸めて 0 のときは人数を出さない）', async () => {
+    // **件数は 10 件単位に丸めて出す**（`coarsenWaitlistCount`）。この describe の時点での件数から、丸めた値が
+    // 0 か否かを決めて見る——ほかの検査が積んだ行で結果が変わっても、空振りも誤検知もしない。
+    const countNow = async (): Promise<number> =>
+      (await env.DB.prepare('select count(*) as n from waitlist').first<{ n: number }>())!.n;
+    const blockNow = async (): Promise<string> => blocksOf(await mainOf())[2]!;
+
+    const before = await countNow();
+    const first = await blockNow();
+    expect(first).toContain('<p class="gf-signup-note">招待枠が空いたらご連絡します。</p>');
+    if (before < 10) {
+      expect(await mainOf()).not.toContain('人以上が登録して待っています');
+    }
+
+    await env.DB.batch(
+      Array.from({ length: 10 }, (_, index) =>
+        env.DB.prepare('insert into waitlist (id, email, source, created_at) values (?, ?, ?, ?)').bind(
+          `signup-count-${index}`,
+          `signup-count-${index}@example.com`,
+          'signup',
+          NOW,
+        ),
+      ),
+    );
+    const expected = Math.floor((before + 10) / 10) * 10;
+    const main = await mainOf();
+    expect(blocksOf(main)[2]).toContain(
+      `<p class="gf-signup-note">現在 ${expected} 人以上が登録して待っています。</p>`,
+    );
+    // ほかのブロックには出さない。
+    expect(main.split('人以上が登録して待っています')).toHaveLength(2);
+  });
+});
+
 describe('待機リストの no-JS 送信（#14 acceptance 2）', () => {
   const routes = [...createSignupRoutes({ now: () => NOW }), ...waitlistRoutes];
 
@@ -562,7 +694,11 @@ describe('待機リストの no-JS 送信（#14 acceptance 2）', () => {
       testEnv(),
     );
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain('待機リストに登録しました');
+    const body = await response.text();
+    expect(body).toContain('待機リストに登録しました');
+    // **戻り先の文言は、戻る画面の名前に合わせる**（#472）。
+    expect(body).toContain(`<a href="${SIGNUP_PATH}">ログイン・登録の画面へ戻る</a>`);
+    expect(body).not.toContain('登録画面へ戻る');
   });
 
   it('不正な入力でも JSON を返さず画面へ戻す', async () => {
@@ -622,11 +758,13 @@ describe('断られた登録画面のヘッダ（2.3.7）', () => {
     return header![0];
   }
 
-  it('未ログインで断られたら、ヘッダはログインへ送る', async () => {
+  it('未ログインで断られたら、ヘッダの「ログイン」はログイン・登録（この画面）へ送る', async () => {
     const response = await submitCode(routes, 'ZZZZZZZZZZZZ');
     expect(response.status).toBe(400);
     const header = headerOf(await response.text());
-    expect(header).toContain(`href="${LOGIN_PATH}"`);
+    // **ヘッダの「ログイン」の行き先は `/signup`**（2.3.7 の #435 注記 / #472）。Google の認証へは直接送らない。
+    expect(header).toContain(`href="${SIGNUP_PATH}"`);
+    expect(header).not.toContain(`href="${LOGIN_PATH}"`);
     expect(header).not.toContain(`href="${MY_WORKS_PATH}"`);
   });
 
@@ -648,6 +786,7 @@ describe('断られた登録画面のヘッダ（2.3.7）', () => {
     const header = headerOf(await response.text());
     expect(header).toContain(`href="${MY_WORKS_PATH}"`);
     expect(header).toContain(`href="${ACCOUNT_PATH}"`);
+    expect(header).not.toContain(`href="${SIGNUP_PATH}"`);
     expect(header).not.toContain(`href="${LOGIN_PATH}"`);
   });
 });

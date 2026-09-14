@@ -20,7 +20,7 @@ import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH } from '../src/ogp.js';
 import { NON_PAGE_PATHS, ancestorPathsOf, ssrPagePaths } from '../src/page-paths.js';
 import { NEWS_PATH } from '../src/news-paths.js';
-import { GENERATE_PAGE_PATH, HOME_PATH, INVITES_PATH } from '../src/paths.js';
+import { GENERATE_PAGE_PATH, HOME_PATH, INVITES_PATH, SIGNUP_PATH } from '../src/paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { HANDLE_PAGE_PREFIX } from '../src/handle-paths.js';
 import { AUTHOR_PAGE_PREFIX } from '../src/users-page-paths.js';
@@ -634,12 +634,22 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
     return { pages, toLogin };
   }
 
-  it('未ログインのヘッダは、ログインへ送る（本人だけの画面へは送らない）', async () => {
+  it('未ログインのヘッダの「ログイン」は、ログイン・登録（/signup）へ送る（本人だけの画面へは送らない。#472）', async () => {
     const { pages } = await anonymousPages();
     for (const { path, body } of pages) {
       const header = headerOf(body);
       expect(header, `${path} にヘッダが無い`).not.toBeNull();
-      expect(header!, `${path} のヘッダにログインの導線が無い`).toContain(`href="${LOGIN_PATH}"`);
+      // **「ログイン」は広い段用と狭い段用の 2 か所にあり、どちらも `/signup` を指す**（2.3.7 の #435 注記 / #472）。
+      // Google の認証（`LOGIN_PATH`）へ直接送るリンクはヘッダに残さない——片方の置き場所だけ古い行き先のまま、を塞ぐ。
+      const logins = [...header!.matchAll(/<a class="[^"]*\bgf-header-login\b[^"]*" href="([^"]*)">([^<]*)<\/a>/gu)];
+      expect(
+        logins.map((match) => [match[1], match[2]]),
+        `${path} のヘッダの「ログイン」の行き先`,
+      ).toEqual([
+        [SIGNUP_PATH, 'ログイン'],
+        [SIGNUP_PATH, 'ログイン'],
+      ]);
+      expect(header!, `${path} のヘッダが Google の認証へ直接送っている`).not.toContain(`href="${LOGIN_PATH}"`);
       // **押した先で必ずログインへ送られるリンクを、未ログインに出さない**（4.4 / 2.2）。
       expect(header!, `${path} のヘッダに本人だけの画面が出ている`).not.toContain(
         `href="${MY_WORKS_PATH}"`,
@@ -683,6 +693,9 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
       }
       expect(header!, `${path} のヘッダにログインが出ている`).not.toContain(
         `href="${LOGIN_PATH}"`,
+      );
+      expect(header!, `${path} のヘッダにログイン・登録が出ている`).not.toContain(
+        `href="${SIGNUP_PATH}"`,
       );
     }
   });
@@ -953,7 +966,7 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
         footerOf((await open(path)).body),
       );
       // 本人だけの画面と、ログインの導線はフッタに置かない（2.3.7 の #435 注記の 6 項目に無い）。
-      for (const absent of [MY_WORKS_PATH, ACCOUNT_PATH, LIKED_WORKS_PATH, INVITES_PATH, LOGIN_PATH]) {
+      for (const absent of [MY_WORKS_PATH, ACCOUNT_PATH, LIKED_WORKS_PATH, INVITES_PATH, LOGIN_PATH, SIGNUP_PATH]) {
         expect(footer!, `${path} のフッタに ${absent} がある`).not.toContain(`href="${absent}"`);
       }
     }

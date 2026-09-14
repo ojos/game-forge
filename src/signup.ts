@@ -190,6 +190,19 @@ const SIGNUP_HEADING = 'ログイン・登録';
  * **広い段で横に 3 つ、狭い段で縦に積む形は、折り返し（app.css の `@section signup` の flex の `wrap`）で作る。**
  * `order` で並べ替えず、幅の `@media` も足さない——**どの段でも DOM の順＝見た目の順＝Tab の順**になる。
  *
+ * ## 見出しは文節の区切りでだけ折り返す（#510）
+ *
+ * **3 つの見出しに `<wbr>` で文節の区切りを入れ、app.css の `@section signup` が区切りの外で折らせない**
+ * （`word-break: keep-all`）。段 3 の入り口（1080px）ではブロックの内側が狭く、何もしないと
+ * 「すでにアカウン／トをお持ちの方」と語の途中で割れる（`body` の `overflow-wrap: anywhere` と日本語の既定の折り返し）。
+ *
+ * - **サイト全体の `<html lang>` と `word-break: auto-phrase` は採らない**（利用者の判断。2026-09-14。
+ *   `lang` が無いと効かず、効くのも Chrome / Edge だけ）。区切りはこの画面の見出しにだけ手で入れる
+ * - **`<wbr>` は文字を足さない**ので、`aria-labelledby` が読む見出しの名前も、`id` も変わらない
+ * - **区切りは文節の境目にだけ置く**（「すでに／アカウントを／お持ちの方」「招待コードを／お持ちの方」
+ *   「招待コードを／お持ちでない方」）。「お持ちの方」「お持ちでない方」は割らない——短く、割ると読みにくい
+ * - 器より長い塊だけは `body` の `overflow-wrap: anywhere` が最後に折るので、はみ出さない
+ *
  * ## 知らせと前置きはブロックの前に置く
  *
  * エラー（ログインが必要な画面から戻ってきた通知を含む。2.3.11）と「改造する」から来た人への前置き（2.2-4）は、
@@ -226,12 +239,12 @@ ${error}
 ${fromForkSection(source)}
 <div class="gf-signup-options">
 <section class="gf-block gf-signup-option" aria-labelledby="signup-login">
-  <h2 id="signup-login">すでにアカウントをお持ちの方</h2>
+  <h2 id="signup-login">すでに<wbr>アカウントを<wbr>お持ちの方</h2>
   <p>Google アカウントでログインします。</p>
   <p><a class="gf-button gf-button-primary" href="${LOGIN_PATH}">Google でログイン</a></p>
 </section>
 <section class="gf-block gf-signup-option" aria-labelledby="signup-invite">
-  <h2 id="signup-invite">招待コードをお持ちの方</h2>
+  <h2 id="signup-invite">招待コードを<wbr>お持ちの方</h2>
   <form method="post" action="${SIGNUP_PATH}">
     <p><label for="code">招待コード</label>
     <input id="code" name="code" type="text" autocomplete="off" autocapitalize="characters"
@@ -241,7 +254,7 @@ ${fromForkSection(source)}
   <p class="gf-signup-note">コードを確認したあとに Google のログイン画面へ進みます。</p>
 </section>
 <section class="gf-block gf-signup-option" aria-labelledby="signup-waitlist">
-  <h2 id="signup-waitlist">招待コードをお持ちでない方</h2>
+  <h2 id="signup-waitlist">招待コードを<wbr>お持ちでない方</h2>
   <form method="post" action="${WAITLIST_PATH}">
     <p><label for="email">メールアドレス</label>
     <input id="email" name="email" type="email" autocomplete="email" required></p>

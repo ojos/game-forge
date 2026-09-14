@@ -2910,6 +2910,19 @@ p.gf-sort {
   margin: 0;
 }
 
+/*
+ * ブロックの見出しは、`src/signup.ts` が `<wbr>` で入れた文節の区切りでだけ折り返す（#510）。
+ *
+ * - **`word-break: keep-all` で、日本語の字と字の間を折り返しの候補から外す。** 残る候補は `<wbr>` と空白だけになる。
+ *   既定のままだと、段 3 の入り口（1080px）で「すでにアカウン／トをお持ちの方」と語の途中で割れる
+ * - **器より長い塊だけは折る。** `body` の `overflow-wrap: anywhere` が、候補の無いまま器を越える塊を最後に折るので、
+ *   はみ出さない（段 3 のボタンの文言と同じ組み合わせ。`@section shell` の「#472:」の塊）
+ * - サイト全体の `<html lang>` と `word-break: auto-phrase` は採らない（利用者の判断。2026-09-14）。幅の `@media` も置かない
+ */
+.gf-signup-option > h2 {
+  word-break: keep-all;
+}
+
 /* 補足の文（コードを確認したあとの流れ・待機リストの案内と人数）。モックアップの小さい補助の文字。 */
 .gf-signup-note {
   color: var(--gf-ink-soft);

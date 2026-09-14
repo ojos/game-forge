@@ -525,13 +525,17 @@ async function observeTouch(cdp, options) {
     steps.holdUpAgain = tab.keysIn('hold-up-again');
     const blursBeforeOther = (await tab.state()).blurs;
     tab.setPhase('focus-other-while-held');
-    await tab.evaluate(`(() => {
+    // 読み込みを待ってから、その iframe の窓へフォーカスを移す（読み込み前の iframe の要素に focus() を呼んでもフォーカスは移らなかった。実測）。
+    await tab.evaluate(`new Promise((resolve) => {
       const other = document.createElement('iframe');
       other.setAttribute('title', 'gf-virtual-pad-probe-focus');
+      other.srcdoc = '<input>';
+      other.addEventListener('load', () => {
+        other.contentWindow.focus();
+        resolve(true);
+      }, { once: true });
       document.body.appendChild(other);
-      other.focus();
-      return true;
-    })()`);
+    })`);
     await sleep(DELIVERY_MS);
     steps.focusOtherWhileHeld = tab.keysIn('focus-other-while-held');
     steps.afterFocusOther = await tab.state();

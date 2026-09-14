@@ -96,8 +96,9 @@ resource "google_project" "game_forge_dev" {
   # その整理は #479 の範囲外である。
 
   # 請求先アカウントが紐付いている。**2026-09-14 に Console でプロジェクトを作成したときに
-  # 自動で紐付いた**（取り込みの前に Cloud Billing API を読み取りで確かめ、billingEnabled = true
-  # だった）。利用者の判断で残し、この宣言を実物に合わせた（#479）。ID は公開する必要が無いため、
+  # 自動で紐付いた**とみられる。本番の gcp_billing_account と同じ値を gcp_dev_billing_account に
+  # 入れた plan で billing_account に差分が出なかったので、本番と同じアカウントである（PR #497）。
+  # 利用者の判断で残し、この宣言を実物に合わせた（#479）。ID は公開する必要が無いため、
   # 宣言へ直接書かず terraform.tfvars（追跡外）の gcp_dev_billing_account から受ける。
   # 本番と同じアカウントかどうかは宣言で決め打ちせず、本番とは別の変数にしてある。
   #

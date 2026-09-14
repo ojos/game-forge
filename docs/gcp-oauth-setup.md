@@ -158,7 +158,7 @@ Compute Engine API を有効にする指定になることは変わらないの�
 ためである。**`import` ブロックは取り込んだ後も残す**（state に既にあれば何もしない）。
 
 - **plan に置き換え（replace）や削除の差分が出たら、apply しないで止める**
-- `import` ブロックの `id` は文字列で `ojos-game-forge-dev` を持つ（変数を使えるのは Terraform 1.6 から）。
+- `import` ブロックの `id` は文字列で `projects/ojos-game-forge-dev` を持つ（変数を使えるのは Terraform 1.6 から）。
   `gcp_dev_project_id` を変えるときは両方を変える。合わないと置き換えの差分になる
 - `auto_create_network` は本番と同じく既定の `true` のまま。取り込みでもプロバイダは state に `true` を
   入れるので、差分は出ない。Compute Engine API は無効で、既定ネットワークは無い（2026-09-14 の実測）
@@ -170,9 +170,17 @@ Compute Engine API を有効にする指定になることは変わらないの�
 ### 3.3 開発用プロジェクトの請求先アカウント（紐付いている。利用者の判断で残した）
 
 **開発用プロジェクトにも請求先アカウントが紐付いている。** 2026-09-14 に Console でプロジェクトを
-作成したときに、**自動で紐付いた**（取り込みの前に Cloud Billing API を読み取りで確かめ、`billingEnabled` が
-`true` だった）。**Console でプロジェクトを作ると、既定の請求先アカウントが自動で紐付くことがある**ので、
-作り直すときも作成後に確かめる。
+作成したときに、**自動で紐付いた**とみられる（手作成のときに紐付けの操作はしていない）。
+**Console でプロジェクトを作ると、既定の請求先アカウントが自動で紐付くことがある**ので、作り直すときも作成後に確かめる。
+
+**根拠は terraform の plan である**（2026-09-14、PR #497 のコメント）。本番の `gcp_billing_account` と同じ値を
+`gcp_dev_billing_account` に入れた plan で `billing_account` に差分が出なかったので、**本番と同じ請求先アカウントが
+紐付いている。** 取り込みは「Plan: 1 to import, 0 to add, 0 to change, 0 to destroy.」で、2026-09-14 08:37 UTC に
+apply した（`Apply complete! Resources: 1 imported, 0 added, 0 changed, 0 destroyed.`）。apply 後の plan は
+終了コード 0 / No changes で、`state show` に `project_id = "ojos-game-forge-dev"` / `number = "558074593204"` /
+`deletion_policy = "PREVENT"` が出た。紐付いていることに最初に気づいたのは、レーンが ADC で Cloud Billing API を
+読んだとき（`billingEnabled` が `true`）だが、親の環境では Cloud Billing API が両プロジェクトとも無効で読めず、
+再現できなかったので、根拠にはしない。
 
 **利用者の判断で残し、宣言を実物に合わせた**（2026-09-14。#479）。`google_project.game_forge_dev` の
 `billing_account` は、`terraform.tfvars` の `gcp_dev_billing_account` から受ける。ID は宣言にもこの文書にも
@@ -186,7 +194,7 @@ Compute Engine API を有効にする指定になることは変わらないの�
   `terraform plan` で `billing_account` を外す in-place の差分だけが出ることを確かめてから apply する
 
 > **注記（#479）。** issue #479 の起票時は、開発用プロジェクトを「課金なし」（請求先アカウントを紐付けない）で
-> 取り込む前提だった。取り込みの前の読み取りで紐付いていることが分かり、利用者が残すと判断した（2026-09-14）。
+> 取り込む前提だった。取り込みの準備中に紐付いていることが分かり、利用者が残すと判断した（2026-09-14）。
 
 **確認の手順（利用者が Console で行う）。** 取り込みの apply の後に行う。
 

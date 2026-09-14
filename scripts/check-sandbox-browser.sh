@@ -44,7 +44,7 @@
 #   script-src に blob: 有り → ok（`connect-src` はその作品の .wasm 1 本のまま）
 #
 # ══════════════════════════════════════════════════════════════════════════════
-# 何を見るか（8 層。どこで落ちたかが分かる形にする）
+# 何を見るか（9 層。どこで落ちたかが分かる形にする）
 # ══════════════════════════════════════════════════════════════════════════════
 #
 #   層 0  配信された `.wasm` の本文を**1 回展開**すると `00 61 73 6d`（`\0asm`）で
@@ -72,6 +72,12 @@
 #         あることを見る。**デスクトップ（開いた時点で同じ属性の iframe）と JavaScript を止めた形（`<noscript>`）も同じ層で見る。**
 #         観測は `scripts/tap-to-fullscreen-probe.mjs`、判定は `scripts/tap-to-fullscreen-verdict.mjs`。
 #         `GF_TAP_SHOT_DIR` を渡すと、口と覆い（縦持ち 390×844・横持ち 844×390）を PNG で撮る（撮るだけで判定しない）。
+#   層 8  **キーで操作する作品に、タッチ端末で仮想パッドが出て、パッドのタッチがキーとして作品へ届くこと**（#494 / 仕様 3.9.6 / 3.9.7）。
+#         キーを読む作品（`source_input_keys` にキーの集合を入れた公開済みの作品）の覆いを開き、CDP の `Input.dispatchTouchEvent` で
+#         パッドに触れて、検査用の作品の canvas が keydown / keyup を受けること・同時押し・許可外のキー名と親以外（同じオリジンの
+#         別の iframe・直接開いたローダーの自己送信）からのメッセージを捨てること・デスクトップでは出ないこと・押したまま閉じると
+#         keyup が届くこと・キーの集合が空の作品（層 7 の作品）では出ないことを見る。観測は `scripts/virtual-pad-probe.mjs`、
+#         判定は `scripts/virtual-pad-verdict.mjs`。`GF_PAD_SHOT_DIR` を渡すと、パッドの出た覆い（縦持ち・横持ち）を PNG で撮る。
 #
 # 層 7 をこの検査に置く理由: **起動の合図が本物である必要がある。** 合図はローダーが wasm を起動した後に送るので、
 # 本物の Go の wasm と、公開済みの作品と、サンドボックス用ホストの配信が揃っている場所でしか「合図が届く」を観測できない。
@@ -424,6 +430,31 @@ func installInputProbe() {
 		// passive: false でないと preventDefault が効かない（Ebitengine も同じ指定をする）。
 		canvas.Call("addEventListener", name, onTouch, map[string]any{"passive": false})
 	}
+
+	// **層 8（#494 / 仕様 3.9.7）: キーを読む作品**の受け方も再現する。Ebitengine と同じく canvas で keydown / keyup を聞き、
+	// `code` を読む（`isTrusted` を見ない）。受けたものは `__gfKeyLog` へ残し、観測側が CDP のバインディング
+	// （`__gfKeyBinding`。`scripts/virtual-pad-probe.mjs` が足す）を用意していれば、その場でも渡す——**覆いを閉じると iframe は
+	// 取り除かれて `__gfKeyLog` ごと消える**ので、閉じるときの keyup はこの経路でしか観測できない。判定はしない。
+	keyLog := global.Get("Array").New()
+	global.Set("__gfKeyLog", keyLog)
+	onKey := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		event := args[0]
+		entry := map[string]any{
+			"type":      event.Get("type").String(),
+			"code":      event.Get("code").String(),
+			"key":       event.Get("key").String(),
+			"repeat":    event.Get("repeat").Bool(),
+			"isTrusted": event.Get("isTrusted").Bool(),
+		}
+		keyLog.Call("push", entry)
+		if binding := global.Get("__gfKeyBinding"); binding.Type() == js.TypeFunction {
+			binding.Invoke(global.Get("JSON").Call("stringify", entry))
+		}
+		return nil
+	})
+	for _, name := range []string{"keydown", "keyup"} {
+		canvas.Call("addEventListener", name, onKey)
+	}
 }
 
 func main() {
@@ -495,6 +526,12 @@ GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
 # 作品を埋め込むのは公開済みのときだけで、状態を変えると層 1〜3 の対象まで変わる。
 PUBLISHED_ID="$(node -e 'console.log(crypto.randomUUID())')"
 PUBLISHED_PREVIEW_KEY="$(node -e 'console.log([...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join(""))')"
+# 層 8（#494）が開く、**キーを読む**公開済みの作品。**ソースのキーを層 7 の作品と分ける**——キーの集合はソースに紐づく
+# （`source_input_keys`。仕様 3.9.5）ので、同じソースだと層 7 の作品にもパッドが出て、「キーの集合が空の作品」を見られなくなる。
+PAD_ID="$(node -e 'console.log(crypto.randomUUID())')"
+PAD_PREVIEW_KEY="$(node -e 'console.log([...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join(""))')"
+# 層 8 のパッドに出すキー（表示規則で十字の左・右・上と、ボタンの Space・Z になる集合）。
+PAD_CODES='["ArrowLeft","ArrowRight","ArrowUp","KeyZ","Space"]'
 
 note "applying migrations"
 npx wrangler d1 migrations apply DB --local --persist-to "$STATE" >"$WORK/d1.log" 2>&1 ||
@@ -508,6 +545,12 @@ npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     values ('$GAME_ID', 'browsercheck', 'draft', 't', '$GO_VERSION', 'builds/browsercheck/source.go', '$WASM_KEY', 1, '$PREVIEW_KEY');
   insert into games (id, author_id, status, title, go_version, source_key, wasm_key, created_at, published_at, preview_key)
     values ('$PUBLISHED_ID', 'browsercheck', 'published', 't2', '$GO_VERSION', 'builds/browsercheck/source.go', '$WASM_KEY', 1, 1, '$PUBLISHED_PREVIEW_KEY');
+  insert into games (id, author_id, status, title, go_version, source_key, wasm_key, created_at, published_at, preview_key)
+    values ('$PAD_ID', 'browsercheck', 'published', 't3', '$GO_VERSION', 'builds/browsercheck-pad/source.go', '$WASM_KEY', 1, 1, '$PAD_PREVIEW_KEY');
+  insert into source_input_keys (source_key, codes, rule_version, extracted_at)
+    values ('builds/browsercheck/source.go', '[]', 1, 1);
+  insert into source_input_keys (source_key, codes, rule_version, extracted_at)
+    values ('builds/browsercheck-pad/source.go', '$PAD_CODES', 1, 1);
 " >"$WORK/seed.log" 2>&1 ||
   { sed 's/^/    /' "$WORK/seed.log" >&2; fail "games 行を作れませんでした。"; }
 
@@ -769,4 +812,35 @@ node scripts/tap-to-fullscreen-verdict.mjs \
   --label "[browser-check] 層 7 (#502)" ||
   fail "層 7 (#502): タッチ端末の作品ページの「タップして全画面で遊ぶ」が通りませんでした。"
 
-note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走り、音のワークレットが読み込め、タップがマウスとして作品へ届きました（直接・埋め込みの両方）。タッチ端末の作品ページはタップするまで読み込まず、全画面の覆いで遊べます。"
+# ── 層 8: キーで操作する作品に、タッチ端末で仮想パッドを出す（#494 / 仕様 3.9.6 / 3.9.7）─────────────────
+#
+# **層 7 の緑からは導けない。** 層 7 の作品はキーの集合が空（`[]`）で、パッドを出さない。キーを読む作品を開き、パッドへの
+# タッチがキーの押下と離しとして作品へ届くこと・同時押し・許可外のキー名と親以外からのメッセージを捨てること・デスクトップでは
+# 出ないこと・閉じると release で離れること・キーの集合が空なら出ないことを見る。観測は `scripts/virtual-pad-probe.mjs`、
+# 判定は `scripts/virtual-pad-verdict.mjs`。`GF_PAD_SHOT_DIR` を渡すと、パッドの出た覆い（縦持ち・横持ち）を PNG で撮る。
+PAD_PAGE_URL="https://${APP_HOST}:${PORT}/works/${PAD_ID}"
+note "層 8: opening $PAD_PAGE_URL (touch / direct / desktop / empty keys)"
+PAD_SHOT_ARGS=()
+if [[ -n "${GF_PAD_SHOT_DIR:-}" ]]; then
+  mkdir -p "$GF_PAD_SHOT_DIR"
+  PAD_SHOT_ARGS=(--shot-dir "$GF_PAD_SHOT_DIR")
+fi
+node scripts/virtual-pad-probe.mjs \
+  --browser "$BROWSER_BIN" \
+  --url "$PAD_PAGE_URL" \
+  --empty-url "$WORK_PAGE_URL" \
+  --direct-url "${BASE}/g/${PAD_ID}/" \
+  --timeout-ms "$TIMEOUT_MS" \
+  ${PAD_SHOT_ARGS[@]+"${PAD_SHOT_ARGS[@]}"} >"$WORK/pad.json" ||
+  { fail "層 8: ブラウザでの観測ができませんでした。"; }
+if [[ -n "${GF_PAD_PROBE_OUT:-}" ]]; then
+  cp "$WORK/pad.json" "$GF_PAD_PROBE_OUT"
+fi
+
+node scripts/virtual-pad-verdict.mjs \
+  --probe "$WORK/pad.json" \
+  --codes "$PAD_CODES" \
+  --label "[browser-check] 層 8 (#494)" ||
+  fail "層 8 (#494): キーで操作する作品の仮想パッドが通りませんでした。"
+
+note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走り、音のワークレットが読み込め、タップがマウスとして作品へ届きました（直接・埋め込みの両方）。タッチ端末の作品ページはタップするまで読み込まず、全画面の覆いで遊べます。仮想パッドのタッチはキーとして作品へ届きます。"

@@ -83,6 +83,15 @@ bash scripts/check-table-breaks.sh
 echo "[acceptance] (hygiene) scripts/check-app-css.sh"
 bash scripts/check-app-css.sh
 
+# 色のトークンが WCAG 2.2 の AA を満たすこと（#457 / 仕様 2.5.2）。
+#
+# **app.css の検査と同じ層に置く**（Node だけで数十 ms）。文字の段が地と面の上で 4.5:1、入力欄の枠が地の上で
+# 3:1 を、明暗の両テーマで値から計算して見る。**画面を目で見ても 4.4:1 と 4.5:1 の差は分からない**ので、
+# トークンを 1 つ淡くした日に黙って AA を割るのを、ここで落とす（判定と理由は scripts/check-token-contrast.mjs の冒頭）。
+# ran_any は立てない（上の app.css の検査と同じ理由）。
+echo "[acceptance] (hygiene) node scripts/check-token-contrast.mjs"
+node scripts/check-token-contrast.mjs
+
 # Go の版の写しと正本（ARG GO_VERSION）の機械照合（#141 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く。** 35 ms で終わり（実測。同スクリプト末尾）、npm test より 2 桁安い。

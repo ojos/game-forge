@@ -368,7 +368,7 @@ describe('`/__dev/*` の本番遮断（#89）', () => {
   });
 
   it('本番の設定では `/__dev/*` が 404 になる', async () => {
-    const paths = ['/__dev/', '/__dev/health', '/__dev/session', '/__dev/cookies'];
+    const paths = ['/__dev/', '/__dev/health', '/__dev/session', '/__dev/cookies', '/__dev/components'];
     await Promise.all(
       paths.map(async (path) => {
         const response = await handleAppRequest(

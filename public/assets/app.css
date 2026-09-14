@@ -59,7 +59,8 @@
  * | shell | 器。段の境界・版面・ガター・横に並べる枠（**幅の `@media` はここだけ**） |
  * | base | 要素の既定（見出し・段落・リンク・焦点） |
  * | forms | フォーム |
- * | buttons | ボタン |
+ * | buttons | ボタン（要素の既定と、仕様 2.5.5 の 3 段 × 2 サイズの部品。#457） |
+ * | parts | 部品（チップ・リンクの見せ方・タブ・ブロック・項目名と値の並び。仕様 2.5.4 / 2.5.5 / #457） |
  * | notices | 知らせ（エラー・但し書き） |
  * | work | 作品ページ（#267 / #340） |
  * | signed-in | ログイン後の画面（#268） |
@@ -97,9 +98,20 @@
   /* 無彩色の段階。**中間の灰を 1 つだけにしない**——線と補助文字で必要な濃さが違う。 */
   --gf-ink: #16181a;
   --gf-ink-soft: #55595e;
-  --gf-ink-faint: #797f85;
+  /*
+   * 三次の文字。**地の上でも面の上でも本文の大きさで 4.5:1 を満たす値にする**（仕様 2.5.2 / #457）。
+   * 以前の `#797f85` は地の上で 4.05:1、面の上で 3.77:1 だった。`#6b7176` は 4.94:1 / 4.61:1。
+   */
+  --gf-ink-faint: #6b7176;
   --gf-rule: #d6d9dc;
   --gf-rule-soft: #e7e9eb;
+  /* 枠線のホバー（副ボタン・押せるチップ）。仕様 2.5.2 の gray-500 の役割。 */
+  --gf-rule-strong: #aeb3b8;
+  /*
+   * 入力欄の枠線。**入力欄は枠線で見分ける部品なので、地に対して 3:1 を満たす**（WCAG 2.2 の 1.4.11。
+   * 仕様 2.5.2）。副ボタンとチップの枠線（`--gf-rule`）は文言と位置で見分けられるので 3:1 を求めない。
+   */
+  --gf-rule-input: #868c92;
   --gf-ground: #ffffff;
   --gf-surface: #f6f7f8;
 
@@ -136,7 +148,20 @@
   --gf-gutter: var(--gf-gap-3);
   --gf-aside: 16rem;
 
-  --gf-radius: 4px;
+  /*
+   * 角丸（仕様 2.5.8）。**画面に置く物は 6px、浮かぶ物（メニューの中身）は 12px、チップとアバターはいっぱい。**
+   * Geist の Materials の base / menu と同じ値である（[文書]）。
+   */
+  --gf-radius: 6px;
+  --gf-radius-float: 12px;
+
+  /*
+   * 押せる物の高さ（仕様 2.5.5）。**中 40px / 小 32px。大は持たない。** チップは 28px。
+   * Geist の中は 36px だが、本文を 16px より下げないので上下が詰まる（2.5.5 の「違える点」）。
+   */
+  --gf-control-md: 2.5rem;
+  --gf-control-sm: 2rem;
+  --gf-chip-height: 1.75rem;
 
   /*
    * 日本語を含む本文の既定スタック。**web フォントを読まない**ので、
@@ -162,6 +187,8 @@
     --gf-ink-faint: #878d93;
     --gf-rule: #34383c;
     --gf-rule-soft: #26292c;
+    --gf-rule-strong: #4a4f54;
+    --gf-rule-input: #6f757b;
     --gf-ground: #131517;
     --gf-surface: #1b1e21;
     --gf-danger: #f0918e;
@@ -416,7 +443,8 @@ textarea {
   display: block;
   width: 100%;
   padding: 0.55em 0.7em;
-  border: 1px solid var(--gf-rule);
+  /* **入力欄の枠は 3:1 を満たす段を使う**（`--gf-rule-input`。仕様 2.5.2 / #457）。 */
+  border: 1px solid var(--gf-rule-input);
   border-radius: var(--gf-radius);
   background: var(--gf-ground);
   color: var(--gf-ink);
@@ -476,6 +504,266 @@ button:disabled {
   color: var(--gf-ink-faint);
   cursor: not-allowed;
   opacity: 1;
+}
+
+/*
+ * ボタンの部品（仕様 2.5.5 / #457）。**強さ 3 段（主・副・控えめ）× 大きさ 2 つ（中・小）。**
+ *
+ * - **要素は役割で選ぶ。** 移動は `<a class="gf-button …">`、動作は `<button class="gf-button …">`。
+ *   **見た目は同じにする**ので、`<a>` の下線とボタン要素の既定（上の `button`）をどちらも打ち消す
+ * - **主は 1 画面に 1 つまで**（呼ぶ側の規律。CSS では数えられない）
+ * - **上の `button` の既定（黒地に白文字）はまだ変えない**（#457 の scope.out）。各画面に部品を当て終えた
+ *   最後の issue で、既定を副へ切り替える（`docs/mvp-roadmap.md` の M13 の節）
+ * - **`[data-state]` は `/__dev/components` で状態を固定して見せるための属性**である。画面では付けない
+ */
+.gf-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  box-sizing: border-box;
+  min-height: var(--gf-control-md);
+  padding: 0 var(--gf-gap-3);
+  border: 1px solid var(--gf-rule);
+  border-radius: var(--gf-radius);
+  background: var(--gf-ground);
+  color: var(--gf-ink);
+  font: inherit;
+  font-size: var(--gf-text);
+  font-weight: 700;
+  line-height: 1.2;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 1;
+}
+
+.gf-button-sm {
+  min-height: var(--gf-control-sm);
+  padding: 0 0.75rem;
+  font-size: var(--gf-text-small);
+}
+
+/* 主: 地を文字色で塗り、文字を地の色にする（白黒の反転）。 */
+.gf-button-primary {
+  border-color: var(--gf-ink);
+  background: var(--gf-ink);
+  color: var(--gf-ground);
+}
+
+.gf-button-primary:is(:hover, [data-state='hover']) {
+  border-color: var(--gf-ink-soft);
+  background: var(--gf-ink-soft);
+  opacity: 1;
+}
+
+/* 副: 地の色に 1px の枠線。ホバーで枠を一段濃くし、地に一段色を付ける。 */
+.gf-button-secondary:is(:hover, [data-state='hover']) {
+  border-color: var(--gf-rule-strong);
+  background: var(--gf-surface);
+  opacity: 1;
+}
+
+/* 控えめ: 枠も地も持たず、ホバーで地に一段色が付く。 */
+.gf-button-tertiary {
+  border-color: transparent;
+  background: transparent;
+}
+
+.gf-button-tertiary:is(:hover, [data-state='hover']) {
+  background: var(--gf-surface);
+  opacity: 1;
+}
+
+.gf-button:is(:hover, [data-state='hover']) {
+  text-decoration: none;
+}
+
+.gf-button[data-state='focus'] {
+  outline: 2px solid var(--gf-ink);
+  outline-offset: 2px;
+}
+
+.gf-button:is(:disabled, [aria-disabled='true']) {
+  border-color: var(--gf-rule);
+  background: var(--gf-surface);
+  color: var(--gf-ink-faint);
+  cursor: not-allowed;
+}
+
+/* ==========================================================================
+   @section parts — 部品（チップ・リンクの見せ方・タブ・ブロック・項目名と値の並び）
+   ========================================================================== */
+
+/*
+ * 仕様 2.5.4 / 2.5.5 の部品（#457）。**どの画面にもまだ当てていない**——当てるのは M13-6〜M13-11 である。
+ * 見た目は `/__dev/components`（`src/dev-components.ts`）で確かめる。
+ *
+ * **押せる物はボタン・チップ・リンクの 3 種で、リンクの見せ方は「文章の中 / 文章の外 / タブ」の 3 つ**
+ * （2.5.5）。**文章の中のリンクは `@section base` の `a` の既定のまま**で、ここには置かない。
+ */
+
+/* チップ。押せるタグは `<a class="gf-chip">`、押せない札は `<span class="gf-chip">`。 */
+.gf-chip {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: var(--gf-chip-height);
+  padding: 0 0.625rem;
+  border: 1px solid var(--gf-rule);
+  border-radius: 999px;
+  background: var(--gf-ground);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+  font-weight: 400;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+a.gf-chip:is(:hover, [data-state='hover']) {
+  border-color: var(--gf-rule-strong);
+  background: var(--gf-surface);
+  color: var(--gf-ink);
+  text-decoration: none;
+}
+
+/* 選んでいるタグ（絞り込みの現在地）。白黒を反転する。 */
+.gf-chip-current {
+  border-color: var(--gf-ink);
+  background: var(--gf-ink);
+  color: var(--gf-ground);
+}
+
+/* まだ動いている状態の札（生成中など）。地を一段塗る。 */
+.gf-chip-emphasis {
+  background: var(--gf-rule-soft);
+  color: var(--gf-ink);
+}
+
+/*
+ * 文章の外のリンク（カードの作者名・パンくず・フッタの項目・一覧の行の題名）。
+ * **下線を常には出さず、ホバーとキーボードの焦点で出す**（押せることは、行き先の文言と位置で分かる）。
+ */
+.gf-link-quiet {
+  color: inherit;
+  text-decoration: none;
+}
+
+.gf-link-quiet:is(:hover, :focus-visible, [data-state='hover']) {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  text-decoration-thickness: 1px;
+}
+
+/*
+ * タブ（並べ替え・登録情報のタブ）。**いま選んでいるものに下線 2px と太字。ボタンにしない**
+ * ——選択肢の中の現在地であって、動作ではない。現在地は `aria-current` で示す（読み上げにも渡る）。
+ */
+.gf-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--gf-gap-4);
+  max-width: none;
+  margin: 0 0 var(--gf-gap-4);
+  padding: 0;
+  border-bottom: 1px solid var(--gf-rule);
+  font-size: var(--gf-text-small);
+  line-height: 1;
+  list-style: none;
+}
+
+.gf-tabs li {
+  margin: 0;
+}
+
+.gf-tabs a,
+.gf-tabs [aria-current] {
+  display: inline-block;
+  margin-bottom: -1px;
+  padding: var(--gf-gap-2) 0 0.625rem;
+  border-bottom: 2px solid transparent;
+  color: var(--gf-ink-soft);
+  text-decoration: none;
+}
+
+.gf-tabs a:is(:hover, [data-state='hover']) {
+  color: var(--gf-ink);
+}
+
+.gf-tabs [aria-current='page'],
+.gf-tabs [aria-current='true'] {
+  border-bottom-color: var(--gf-ink);
+  color: var(--gf-ink);
+  font-weight: 700;
+}
+
+/*
+ * ブロック（カード・文字のブロック・統計カード・知らせ・管理画面の行）。**面の色と角丸で区切り、
+ * 枠線も影も使わない**（仕様 2.5.4）。面は `--gf-surface` のままで、専用の段を足さない。
+ *
+ * **面の上の押せる物は地の色で塗る**——透明にすると、ホバーの地（`--gf-surface`）が面と同じ色になって
+ * 変化が見えない。副ボタンとチップは既定で地の色なので、**ここで直すのはホバーの地だけ**である。
+ */
+.gf-block {
+  box-sizing: border-box;
+  max-width: none;
+  padding: var(--gf-gap-3);
+  border-radius: var(--gf-radius);
+  background: var(--gf-surface);
+}
+
+.gf-block :is(.gf-button-secondary, .gf-button-tertiary, a.gf-chip):is(:hover, [data-state='hover']) {
+  background: var(--gf-rule-soft);
+}
+
+/* ブロックの中で行を分ける（お知らせの行・管理画面の行）。行の間に淡い罫線を引く。 */
+.gf-block-rows {
+  padding: 0;
+}
+
+.gf-block-rows > * {
+  padding: var(--gf-gap-3);
+}
+
+.gf-block-rows > * + * {
+  border-top: 1px solid var(--gf-rule-soft);
+}
+
+/*
+ * 項目名と値の並び（作品の情報パネルなど）。**1 行に項目名を左、値を右に置き、値が 1 行に収まらないときは
+ * 値だけを項目名の下の行へ回す**（仕様 2.5.4）。**値を途中で折り返さない**——`flex: 0 0 auto` で値を縮ませず、
+ * 収まらなければ `wrap` で次の行へ送る。器より長い値だけは `overflow-wrap` で折る。
+ */
+.gf-kv {
+  max-width: none;
+  margin: 0;
+  font-size: var(--gf-text-small);
+}
+
+.gf-kv > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0 0.75rem;
+  padding: var(--gf-gap-2) 0;
+}
+
+.gf-kv > div + div {
+  border-top: 1px solid var(--gf-rule-soft);
+}
+
+.gf-kv dt {
+  color: var(--gf-ink-soft);
+}
+
+.gf-kv dd {
+  flex: 0 0 auto;
+  max-width: 100%;
+  margin: 0 0 0 auto;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 /* ==========================================================================
@@ -1500,7 +1788,8 @@ a.gf-card-author {
   width: 11em;
   min-width: 0;
   padding: 0.3em 0.6em;
-  border: 1px solid var(--gf-rule);
+  /* 入力欄なので 3:1 を満たす段（`@section forms` と同じ。#457）。 */
+  border: 1px solid var(--gf-rule-input);
   border-radius: var(--gf-radius);
   background: var(--gf-ground);
   color: var(--gf-ink);

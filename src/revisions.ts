@@ -29,13 +29,19 @@
  * | 公開済みは推敲できない（5.7） | 同 `status = 'draft'` |
  * | 完成していない作品は推敲できない | 同 `generation_state = 'ready'` |
  * | 1 作品あたりの上限（5.7） | 同 `revise_count < ?` |
- * | 同時に走る推敲は 1 本 | `game_revision_jobs.game_id` が主キー＋ UPSERT の `where state = 'failed'` |
+ * | 同時に走る推敲は 1 本 | `game_revision_jobs.game_id` が主キー＋ UPSERT の `where`（`failed`、または区切りを過ぎた `pending` / `running` だけを上書きする。#455） |
+ * | 利用者に進行中の生成・フォーク・推敲があれば始めない（#455） | {@link claimRevisionSlot} の `inFlightGuardSql`（`src/games.ts`） |
  * | 戻す操作は費用を出さない | この経路が LLM も台帳も呼ばないこと（{@link restoreRevision}） |
  *
  * **呼び出し側の `if` で守る形にしない**（`src/publish.ts` と同じ判断）。経路を足した人が
  * 書き忘れても、動作では気づけない。
  */
-import { createPreviewKey } from './games.js';
+import {
+  createPreviewKey,
+  inFlightCutoff,
+  inFlightGuardBindings,
+  inFlightGuardSql,
+} from './games.js';
 import { REVISIONS_PER_GAME } from './quota.js';
 
 /** 推敲ジョブの状態。**成功は状態を持たない**——行が消える（0009）。 */
@@ -207,8 +213,35 @@ export async function revisionStatus(env: Env, gameId: string): Promise<Revision
  *
  * # 走っている推敲があれば断る
  *
- * `game_id` が主キーなので 2 本目は衝突する。**`state = 'failed'` のときだけ上書きする**
- * ので、走っている最中の要求は 0 行で返る。失敗した行は次の推敲が引き取る。
+ * `game_id` が主キーなので 2 本目は衝突する。**上書きするのは `state = 'failed'` の行と、
+ * 止まったまま残った行（区切りを過ぎた `pending` / `running`）だけ**なので、走っている
+ * 最中の要求は 0 行で返る。失敗した行と止まった行は次の推敲が引き取る。
+ *
+ * **止まった行を引き取るのは #455 からである。** それまでは `failed` だけを上書きしていた
+ * ので、同じ作品に `pending` / `running` のまま止まったジョブが残ると、その作品は
+ * 二度と推敲できなかった（利用者側の進行中の判定は区切りで通るのに、この UPSERT が
+ * 0 行になる）。**区切りは進行中の判定と同じ値である**（`src/games.ts` の
+ * `inFlightCutoff`。同じ `now` から導く）。判定が「終わった」と見なす行を、ここだけが
+ * 「まだ走っている」と見なすと、締め出しが作品単位で残る。
+ *
+ * **遅れて戻った古いジョブは何も書けない。** 上書きで `job_token_hash` が新しいトークンの
+ * ハッシュに変わるので、古いトークンの `claim`（{@link claimRevisionJob}）も完成
+ * （{@link completeRevision}）も 0 行になる。区切り（`STALE_AFTER_SECONDS`）は
+ * オーケストレータの `timeout` より長い（`scripts/check-orchestrator-retry.sh`）ので、
+ * 区切りを過ぎた `running` がまだ走っていることは無い。
+ *
+ * # 利用者に進行中の要求があれば断る（#455）
+ *
+ * **主キーが止めるのは「同じ作品の」2 本目だけである。** 別の作品の推敲や、生成中・
+ * フォーク中の要求は止まらず、日次枠の判定（要求の手前で 1 回だけ）を並行に通り抜けていた。
+ * そこで 1 文目と 2 文目の `where` に `inFlightGuardSql`（`src/games.ts`）を足す。
+ * **確かめてから入れる形にしない**——同じ文の条件なので、同時に届いた 2 本のうち
+ * 入るのは 1 本だけである。1 文目にも足すのは、断られた要求で版だけが積まれないように
+ * するためである（下の「5.7 の対象条件は下の UPSERT とそろえてある」と同じ理由）。
+ *
+ * **戻り値は「取れた / 取れなかった」のままである。** 取れなかった理由を文から区別
+ * できないので、文言を分けたい経路（`src/revise.ts`）は断ったあとに
+ * `hasInFlightRequest` を 1 回読む（通った要求の読み取りは増えない）。
  *
  * # 版が 1 つも無ければ、いまの成果物を `seq = 1` として先に積む（#202）
  *
@@ -269,21 +302,34 @@ export async function claimRevisionSlot(
         where g.id = ? and g.author_id = ? and g.status = 'draft'
           and g.generation_state = 'ready' and g.revise_count < ?
           and g.source_key is not null and g.wasm_key is not null
-          and not exists (select 1 from game_revisions r where r.game_id = g.id)`,
-    ).bind(gameId, userId, REVISIONS_PER_GAME),
+          and not exists (select 1 from game_revisions r where r.game_id = g.id)
+          and ${inFlightGuardSql()}`,
+    ).bind(gameId, userId, REVISIONS_PER_GAME, ...inFlightGuardBindings(userId, now)),
     env.DB.prepare(
       `insert into game_revision_jobs (game_id, job_token_hash, prompt, state, error, started_at, created_at)
        select g.id, ?, ?, 'pending', null, null, ?
          from games g
         where g.id = ? and g.author_id = ? and g.status = 'draft'
           and g.generation_state = 'ready' and g.revise_count < ?
+          and ${inFlightGuardSql()}
        on conflict(game_id) do update
           set job_token_hash = excluded.job_token_hash,
               prompt = excluded.prompt,
               state = 'pending', error = null, started_at = null,
               created_at = excluded.created_at
-        where game_revision_jobs.state = 'failed'`,
-    ).bind(jobTokenHash, prompt, now, gameId, userId, REVISIONS_PER_GAME),
+        where game_revision_jobs.state = 'failed'
+           or (game_revision_jobs.state in ('pending', 'running')
+               and coalesce(game_revision_jobs.started_at, game_revision_jobs.created_at) <= ?)`,
+    ).bind(
+      jobTokenHash,
+      prompt,
+      now,
+      gameId,
+      userId,
+      REVISIONS_PER_GAME,
+      ...inFlightGuardBindings(userId, now),
+      inFlightCutoff(now),
+    ),
     env.DB.prepare(
       `update games set revise_count = revise_count + 1
         where id = ?

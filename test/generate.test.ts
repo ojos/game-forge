@@ -14,7 +14,7 @@ import {
   withTidyInstruction,
 } from '../src/generate.js';
 import { startJobOnLambda } from '../src/orchestrator/start-job.js';
-import { failGame } from '../src/games.js';
+import { completeGame, failGame } from '../src/games.js';
 import type { GenerationPipeline } from '../src/generate.js';
 import { workPagePath } from '../src/work-page.js';
 import type { GenerationResult } from '../src/generation-models.js';
@@ -169,9 +169,12 @@ function recordingPipeline(): { calls: string[]; pipeline: GenerationPipeline } 
         calls.push('build');
         return fakeBuildOutcome();
       },
-      completeGame: async () => {
+      // **行を本当に完成させる**（#455）。`true` を返すだけにすると行が `running` のまま
+      // 残り、同じ利用者の次の要求が「進行中の要求がある」で断られる——このテスト群が
+      // 見たい順序とは関係の無い理由で落ちる。
+      completeGame: async (stageEnv, gameId, built) => {
         calls.push('completeGame');
-        return true;
+        return await completeGame(stageEnv, gameId, built);
       },
       // **`startJob` は同期実行に固定する**（#150）。この一群のテストが見ているのは
       // 3.3 の**順序**であって、ジョブをどこで走らせるかではない。既定

@@ -99,7 +99,7 @@ ORCHESTRATOR_RETRY_PASS
 実装から読み、自分で計算して 3 つの不等式を見ます。
 
 1. 最悪ケース ＋ 余裕（`orchestrator_budget_margin_seconds`）≤ タイムアウト
-2. タイムアウト < `src/work-page.ts` の `STALE_AFTER_SECONDS`（900 秒）
+2. タイムアウト < `src/games.ts` の `STALE_AFTER_SECONDS`（900 秒。#455 で `src/work-page.ts` から移した。作品ページの「中断した可能性」と、進行中の要求の判定が同じ値を読む）
 3. タイムアウト ≤ Lambda の実行時間の上限（900 秒）
 
 **溢れると壊れ方が悪いので、1 を機械で見ます。** 関数が時間切れで殺されると

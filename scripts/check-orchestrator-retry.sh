@@ -41,7 +41,8 @@
 # 見るのは 3 つの不等式である。
 #
 #   1. 最悪ケース ＋ 余裕 ≤ timeout（溢れると finish が届かず、作品行が running で残る）
-#   2. timeout < STALE_AFTER_SECONDS（画面が「中断した可能性」と言う前に決着する）
+#   2. timeout < STALE_AFTER_SECONDS（画面が「中断した可能性」と言い、#455 の判定が進行中と
+#      見なさなくなる前に決着する）
 #   3. timeout ≤ Lambda の実行時間の上限（900 秒）
 #
 # ## この検査が見られないもの（読む人が誤解しないために）
@@ -68,7 +69,11 @@ RETRY_SRC="src/build-retry.ts"
 FIX_SRC="src/mechanical-fix.ts"
 BUILD_SRC="src/build-client.ts"
 BUILD_DECL="terraform/build-function.tf"
-PAGE_SRC="src/work-page.ts"
+# STALE_AFTER_SECONDS の正本。**#455 で src/work-page.ts から src/games.ts へ移した**
+# （進行中の要求の判定がオーケストレータの束に入る src/generate.ts から同じ区切りを読むため。
+# 束は画面を import できない）。src/work-page.ts は再 export するだけで字面を持たない。
+# 変数名は画面の区切りとして読まれてきた経緯のまま残す。
+PAGE_SRC="src/games.ts"
 PIPELINE_SRC="src/orchestrator/pipeline.ts"
 
 # Lambda の実行時間の上限（秒）。**AWS の制約であって、こちらが選べる値ではない。**
@@ -228,6 +233,7 @@ if [[ "$budget_ok" -eq 1 ]]; then
   if [[ "$timeout_seconds" -ge "$stale_seconds" ]]; then
     echo "[orchestrator-retry] timeout が STALE_AFTER_SECONDS 以上です（${timeout_seconds} 秒 >= ${stale_seconds} 秒）。" >&2
     echo "[orchestrator-retry] まだ走っている生成を、画面が「中断した可能性」と呼ぶことになります。" >&2
+    echo "[orchestrator-retry] 進行中の要求の判定（#455）も、まだ走っている生成を終わったものと見なして次の要求を通します。" >&2
     fail=1
   fi
 

@@ -451,7 +451,7 @@ bash scripts/ogp-stale-report.sh --format json
 | 案 | 採らなかった理由 |
 |---|---|
 | 定期実行（cron）で掃除する | **Pages に `scheduled` は無い**（確定22。このプロジェクトは Workers ではなく Pages である）。口を置く場所そのものが無い |
-| 作品ページを開いたら回収する | **GET が状態を書き換える形にしない**（`src/work-page.ts` の `STALE_AFTER_SECONDS`）。ページを開いた人が行を壊せる |
+| 作品ページを開いたら回収する | **GET が状態を書き換える形にしない**（`src/games.ts` の `STALE_AFTER_SECONDS`。作品ページ `src/work-page.ts` はそれを再 export して読む）。ページを開いた人が行を壊せる |
 | 運用スクリプトから本番 D1 を直接 UPDATE | **関門の SQL が `src/ogp.ts` の外にもう 1 本できる。** #26 が「撮影の権利は 1 本の UPDATE を通った者だけが得る」と決めた形が崩れる |
 
 **9 章の「撮り直さずに測る」は、いまも撮り直しの手段ではない。** ダミートークンでの直接呼び出しは

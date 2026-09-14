@@ -17,6 +17,7 @@
  * | 作者本人・`draft`・完成済みだけ | `claimRevisionSlot` の SQL 条件（`src/revisions.ts`） |
  * | 1 作品あたりの上限（5.7） | 同 `revise_count < ?` |
  * | 同時に走る推敲は 1 本 | `game_revision_jobs.game_id` が主キー |
+ * | 利用者に進行中の生成・フォーク・推敲があれば始めない（#455） | `claimRevisionSlot` の `inFlightGuardSql`（`src/games.ts`） |
  * | 日次クォータ（確定25） | {@link handleRevise} が `checkGenerationQuota` を**先に**呼ぶ |
  *
  * **枠の判定を 2 つとも通さなければ走らない。** 日次は「1 人・1 日」、推敲上限は
@@ -50,7 +51,7 @@ import { siteFooter } from './legal.js';
 import { LOGIN_PATH } from './auth/google.js';
 import type { GenerationJob, GenerationPipeline } from './generate.js';
 import { defaultPipeline, MAX_PROMPT_LENGTH } from './generate.js';
-import { createJobToken, hashJobToken } from './games.js';
+import { createJobToken, hasInFlightRequest, hashJobToken } from './games.js';
 import {
   REVISE_GAME_ID_FIELD,
   REVISE_PATH,
@@ -58,7 +59,15 @@ import {
   REVISE_SEQ_FIELD,
   RESTORE_PATH,
 } from './paths.js';
-import { checkGenerationQuota, describeQuotaRejection, QUOTA_EXCEEDED_STATUS } from './quota.js';
+import {
+  checkGenerationQuota,
+  describeQuotaRejection,
+  IN_FLIGHT_BODY,
+  IN_FLIGHT_HEADING,
+  IN_FLIGHT_REASON,
+  IN_FLIGHT_STATUS,
+  QUOTA_EXCEEDED_STATUS,
+} from './quota.js';
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import {
@@ -134,7 +143,7 @@ ${siteFooter()}`,
 /** 推敲を断る理由ごとの、ステータスと文言。 */
 const REFUSALS: Readonly<
   Record<
-    'not-revisable' | 'source-missing' | 'source-too-large' | 'start-failed',
+    'not-revisable' | 'source-missing' | 'source-too-large' | 'start-failed' | 'in-flight',
     { status: number; heading: string; body: string }
   >
 > = {
@@ -162,6 +171,13 @@ const REFUSALS: Readonly<
     status: 500,
     heading: '手直しを始められませんでした',
     body: '時間をおいて、もう一度お試しください。',
+  },
+  // **#455。利用者に進行中の生成・フォーク・推敲がある。** 文言は 3 経路で共有する
+  // （`src/quota.ts`）。**日次枠切れ（429）と混ぜない**——枠は残っている。
+  'in-flight': {
+    status: IN_FLIGHT_STATUS,
+    heading: IN_FLIGHT_HEADING,
+    body: IN_FLIGHT_BODY,
   },
 };
 
@@ -276,6 +292,16 @@ async function handleRevise(
     jobTokenHash,
   );
   if (!claimed) {
+    // **断ったあとにだけ理由を読む**（#455）。枠の取得は「進行中の要求がある」ことも
+    // 条件に持つが、0 行になった理由を文から区別できない。**判定はもう済んでいる**
+    // （この読み取りは文言を選ぶためで、ここで false でも枠は取らない）。
+    // 通った要求の読み取りは増えない。
+    if (await hasInFlightRequest(env, session.userId)) {
+      const busy = REFUSALS['in-flight'];
+      return wantsHtml(request)
+        ? refusal(busy.heading, busy.body, busy.status)
+        : json({ error: IN_FLIGHT_REASON }, busy.status);
+    }
     const refused = REFUSALS['not-revisable'];
     return wantsHtml(request)
       ? refusal(refused.heading, refused.body, refused.status)

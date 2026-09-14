@@ -76,6 +76,7 @@ import {
   removeGame,
   renameGame,
   retagGame,
+  STALE_AFTER_SECONDS,
   workTagsOf,
 } from './games.js';
 import {
@@ -263,25 +264,15 @@ export const WORK_RETAG_GAME_ID_FIELD = 'game_id';
 const GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 /**
- * 生成中の行を「止まっているかもしれない」と見なすまでの秒数。
+ * 生成中の行を「止まっているかもしれない」と見なすまでの秒数（{@link looksStalled}）。
  *
- * **900 秒（15 分）。** 根拠は 2 つある。
- *
- * - 実測の待ち時間は #284 の前が 90.9 秒（1.2.38）、いまは**上限 64KB を出し切る想定で
- *   297 秒**（4.2）である。5.2-7 のリトライ（2 試行）とビルドを足した最悪ケースは
- *   **829 秒**で、オーケストレータの `timeout`（870 秒）がその外側にある。
- *   **正常な生成が誤って「中断」と表示されない**余裕が要る。
- *   **順序は 829 < 870 < 900 で、余裕は 30 秒しかない**（#284 の前は 60 秒）。
- *   `scripts/check-orchestrator-retry.sh` が不等式 2（timeout < この値）を機械で見る。
- *   **この 900 を下げると、まだ走っている生成を画面が「中断」と呼ぶ。**
- * - AWS Lambda の実行時間の上限が 15 分である。オーケストレータ（別 issue）が
- *   どれだけ粘っても、これを超えて走ることはない。**超えたなら、もう返ってこない。**
- *
- * **D1 は書き換えない。** GET が状態を書き換える形にすると、ページを開いた人が
- * 行を壊せることになる。表示の上でだけ「中断した可能性」と言い、行は 3.7 の掃除
- * （未公開のまま 14 日で自動削除。確定13）に任せる。
+ * **正本は `src/games.ts` にある**（#455）。進行中の要求の判定（`inFlightGuardSql`）も
+ * 同じ区切りを読み、そちらはオーケストレータの束に入る `src/generate.ts` から呼ばれる。
+ * 束は画面を import できない（`scripts/check-orchestrator-bundle.sh`）ので、束に入って
+ * よい側へ正本を移し、ここは既存の import（`test/my-works.test.ts` など）のために
+ * 再 export する。**値の根拠（829 < 870 < 900）も `src/games.ts` 側にある。**
  */
-export const STALE_AFTER_SECONDS = 900;
+export { STALE_AFTER_SECONDS } from './games.js';
 
 /**
  * 生成が Worker の中で同期に走っているか（#150 / #160）。

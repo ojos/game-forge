@@ -2,7 +2,8 @@ import { SELF, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createPreviewKey } from '../src/games.js';
 import { parseSandboxPath, wasmExecKey } from '../src/sandbox-delivery.js';
-import { LOADER_STARTED_MESSAGE, TAP_TO_MOUSE_SCRIPT, loaderHtml } from '../src/sandbox-loader.js';
+import { LOADER_STARTED_MESSAGE, PAD_MESSAGE_TYPE, TAP_TO_MOUSE_SCRIPT, loaderHtml, padReceiverScript } from '../src/sandbox-loader.js';
+import { INPUT_KEY_CODES } from '../src/input-keys.js';
 import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
@@ -870,5 +871,110 @@ describe('タップ→マウス変換（#491 / 仕様 3.9.3）', () => {
     expect(TAP_TO_MOUSE_SCRIPT).not.toContain('postMessage');
     expect(TAP_TO_MOUSE_SCRIPT).not.toContain('window.parent');
     expect(TAP_TO_MOUSE_SCRIPT).not.toContain("'message'");
+  });
+});
+
+describe('仮想パッドの受け手（#494 / 仕様 3.9.7）', () => {
+  const receiver = padReceiverScript(APP_ORIGIN);
+
+  /**
+   * 受け手のスクリプトから、1 つのリスナーの本体を切り出す。
+   *
+   * @param start 切り出しの始まりの綴り
+   * @returns 始まりから次の `\n  });` の手前まで
+   */
+  function bodyFrom(start: string): string {
+    const index = receiver.indexOf(start);
+    expect(index, `${start} が無い`).toBeGreaterThan(-1);
+    const end = receiver.indexOf('\n  });\n', index);
+    expect(end, `${start} の閉じが無い`).toBeGreaterThan(index);
+    return receiver.slice(index, end);
+  }
+
+  it('配信されたローダー文書に、受け手が起動スクリプトと別の <script> で、wasm_exec.js と起動スクリプトより前に入る', async () => {
+    const game = await seedGame({ suffix: 'pad', status: 'published' });
+    const body = await (await SELF.fetch(`${SANDBOX_ORIGIN}/g/${game.id}/`)).text();
+    expect(body).toContain(`<script>\n${receiver}\n</script>`);
+    const at = body.indexOf(receiver);
+    expect(at).toBeGreaterThan(body.indexOf(TAP_TO_MOUSE_SCRIPT));
+    expect(at).toBeLessThan(body.indexOf('<script src='));
+    expect(at).toBeLessThan(body.indexOf('WebAssembly.instantiateStreaming(fetch('));
+    // 起動の経路には入力の処理を混ぜない。
+    expect(body.slice(body.indexOf('<script src='))).not.toContain(PAD_MESSAGE_TYPE);
+    expect(body.slice(body.indexOf('<script src='))).not.toContain('KeyboardEvent');
+  });
+
+  it('許可表は INPUT_KEY_CODES そのもの（写しを作らない）', () => {
+    const matched = /\n  var codes = (\[[^\n]*\]);\n/u.exec(receiver);
+    expect(matched, '許可表の行が無い').not.toBeNull();
+    expect(JSON.parse(matched![1]!)).toEqual([...INPUT_KEY_CODES]);
+    expect(INPUT_KEY_CODES.length).toBeGreaterThan(50);
+  });
+
+  it('埋め込む値は親のオリジンと許可表だけ（UGC を含まない。作品や資材のパスで変わらない）', () => {
+    const one = loaderHtml({ wasmPath: '/g/a/game.wasm', wasmExecPath: '/g/a/wasm_exec.js', parentOrigin: APP_ORIGIN });
+    const other = loaderHtml({ wasmPath: '/p/b/game.wasm', wasmExecPath: '/p/b/wasm_exec.js', parentOrigin: APP_ORIGIN });
+    expect(one).toContain(receiver);
+    expect(other).toContain(receiver);
+    expect(receiver).not.toContain('/g/a/');
+    // 親のオリジンは </script> を閉じられない。
+    const evil = padReceiverScript('https://evil</script><script>alert(1)//');
+    expect(evil).not.toContain('</script');
+    expect(evil.replace(JSON.stringify('https://evil</script><script>alert(1)//').replace(/</gu, '\\u003c'), JSON.stringify(APP_ORIGIN))).toBe(receiver);
+  });
+
+  it('受け手の検査: 親から・親アプリのオリジンから・形・許可表の順に、1 つでも外れたら黙って捨てる', () => {
+    const handler = bodyFrom("window.addEventListener('message', function (event) {");
+    const source = handler.indexOf('if (window.parent === window || event.source !== window.parent) {');
+    const origin = handler.indexOf('if (event.origin !== parentOrigin) {');
+    const shape = handler.indexOf(`if (data === null || typeof data !== 'object' || data.type !== ${JSON.stringify(PAD_MESSAGE_TYPE)}) {`);
+    const ops = handler.indexOf("if (op !== 'down' && op !== 'up') {");
+    const allowed = handler.indexOf("if (typeof code !== 'string' || allowed[code] !== true) {");
+    const dispatched = handler.indexOf("dispatchKey(canvas, 'keydown', code);");
+    for (const [name, at] of Object.entries({ source, origin, shape, ops, allowed, dispatched })) {
+      expect(at, name).toBeGreaterThan(-1);
+    }
+    expect(source).toBeLessThan(origin);
+    expect(origin).toBeLessThan(shape);
+    expect(shape).toBeLessThan(ops);
+    expect(ops).toBeLessThan(allowed);
+    expect(allowed).toBeLessThan(dispatched);
+    expect(receiver).toContain(`var parentOrigin = ${JSON.stringify(APP_ORIGIN)};`);
+    // 原型を持たない表で引く（'constructor' を許可表の値として読まない）。
+    expect(receiver).toContain('var allowed = Object.create(null);');
+    // 黙って捨てる（ログを出さない）。
+    expect(receiver).not.toContain('console.');
+  });
+
+  it('down は押していなければ keydown、up は押していれば keyup、release はすべてに keyup。repeat を作らず、key を与えない', () => {
+    const handler = bodyFrom("window.addEventListener('message', function (event) {");
+    expect(handler).toMatch(/if \(op === 'down'\) \{\n\s+if \(pressed\[code\] === true\) \{\n\s+return;\n\s+\}\n\s+pressed\[code\] = true;\n\s+dispatchKey\(canvas, 'keydown', code\);/u);
+    expect(handler).toMatch(/if \(pressed\[code\] !== true\) \{\n\s+return;\n\s+\}\n\s+delete pressed\[code\];\n\s+dispatchKey\(canvas, 'keyup', code\);/u);
+    expect(handler).toMatch(/if \(op === 'release'\) \{\n\s+releaseAll\(\);/u);
+    expect(receiver).toContain("canvas.dispatchEvent(new KeyboardEvent(type, { code: code, bubbles: true, cancelable: true }));");
+    expect(receiver.split('dispatchEvent(').length - 1).toBe(1);
+    expect(receiver).not.toMatch(/\bkey:/u);
+    expect(receiver).not.toContain('repeat');
+    const releaseAll = receiver.slice(receiver.indexOf('function releaseAll()'), receiver.indexOf("window.addEventListener('message'"));
+    expect(releaseAll).toContain("dispatchKey(canvas, 'keyup', held[j]);");
+    expect(releaseAll.indexOf('pressed = Object.create(null);')).toBeLessThan(releaseAll.indexOf('dispatchKey('));
+  });
+
+  it('canvas が無いとき（起動前）は、集合に足す前に捨てる', () => {
+    const handler = bodyFrom("window.addEventListener('message', function (event) {");
+    const guard = handler.indexOf("if (canvas === null) {");
+    expect(guard).toBeGreaterThan(handler.indexOf("allowed[code] !== true"));
+    expect(guard).toBeLessThan(handler.indexOf('pressed[code] = true;'));
+  });
+
+  it('ローダー自身も pagehide と visibilitychange（hidden）ですべて離す', () => {
+    expect(receiver).toContain("window.addEventListener('pagehide', releaseAll);");
+    expect(receiver).toMatch(/document\.addEventListener\('visibilitychange', function \(\) \{\n\s+if \(document\.visibilityState === 'hidden'\) \{\n\s+releaseAll\(\);/u);
+  });
+
+  it('受け手は通信も親への送信もしない（子→親の経路を増やさない。仕様 3.9.8 の 4）', () => {
+    expect(receiver).not.toContain('fetch(');
+    expect(receiver).not.toContain('postMessage');
+    expect(receiver).not.toContain('XMLHttpRequest');
   });
 });

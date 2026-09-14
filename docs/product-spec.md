@@ -5051,6 +5051,39 @@ CREATE TABLE source_input_keys (
 - **押したまま画面が隠れたとき:** 親は `visibilitychange`（`hidden`）・`pagehide`・`window` の `blur` で、
   押しているボタンをすべて離した扱いにし、**「すべて離す」を 1 回送る。** 覆いを閉じるときも同じである（3.9.4）。
 
+> **実装注記（#494。実装日 2026-09-14）。** 表示規則は `src/virtual-pad.ts`（`padLayoutOf` / `padKeyLabel`）、D1 の値の読み方は
+> 同じモジュールの `readInputKeyCodes`、パッドの HTML と送信は `src/work-play.ts`（`padKeysHtml` / `playFrameScript`）、見た目は
+> `public/assets/app.css` の `@section work` に置いた。CSP・iframe の `sandbox` 属性・起動の合図は変えていない。実装で決めたことを書き戻す。
+>
+> - **キーの集合は作品ページの 1 行の問い合わせ（`WORK_ROW_SQL`）に `source_input_keys` を主キーで結合して読む**（追加の問い合わせは 0 件。
+>   主キーで引けていることは `test/work-page.test.ts` がクエリプランで見る）。**読んだ値は許可表（`INPUT_KEY_CODES`）で絞ってから使う。**
+>   行が無い・`games.source_key` が NULL・JSON が壊れている・配列でない値は空として扱い、パッドを出さない。
+> - **パッドのボタンはサーバが HTML に置く**（スクリプトで作らない）。覆いは `hidden` で配るので、デスクトップと JavaScript の無い形では
+>   出ない。**スクリプトはボタンの `data-code` を読むだけで、本文は作品によらず同じ**（キーの集合も UGC も埋めない）。表示規則の結果が
+>   空の置き場所は中に空白も入れず（`:empty` で余白を持たない）、ゲームが残りを使う。
+> - **規則で決まらなかった細部:** WASD を十字に出したときも、文字は矢印（←↑→↓）で読み上げの名前を持つ（方向のボタンだから）。
+>   **左右の組は修飾キーの 4 つ（Shift / Control / Alt / Meta）だけ**とした——`BracketLeft` / `BracketRight` は `[` と `]` の別のキーである。
+>   組の片方（右だけ）しか読まない作品では右を出す。**文字は 5 文字以下の固定の短い文字の表**（`src/virtual-pad.ts` の `FIXED_LABELS` と、
+>   `KeyZ` → `Z`・`Digit1` → `1`・`Numpad1` → `Num1` の規則）で、`ControlLeft` → `Ctrl`・`NumpadMultiply` → `Num*`・`PrintScreen` → `PrtSc` のように縮める。
+>   許可表のすべての `code` に文字があり 5 文字以下であることは、単体テストが許可表から回して見る。**縮めたキーは読み上げの名前に正式な名前
+>   （`code`）を持つ**（英字・数字のキーと、文字が `code` と同じキーは持たない）。最初の実装は表に無い `code` をそのまま文字にしており、
+>   `NumpadMultiply` のような長いキーを含む作品で縦持ちの 2 列からはみ出しえた（PR #524 の Copilot の指摘）。
+> - **押せる大きさは 1 つ 56px（`3.5rem`）**、十字は 3×3 の格子で読まない方向のマスを空けたまま、ボタンは 2 列。押しているあいだは
+>   `gf-play-pad-held` を付け、副のボタンのホバーと同じ既存のトークンで色を変える（新しい色の値は足していない）。置き場所は
+>   `user-select: none` と `-webkit-touch-callout: none`、`contextmenu` はスクリプトが抑える。**歯止めとして、ボタンの列の幅を `3.5rem`〜`4.5rem` に閉じ、
+>   キーは列いっぱいに広げて収まらない文字を折り返す**（部品の `white-space: nowrap` をパッドのキーでだけ外す。`@section buttons` は変えていない）。
+> - **`window` の `blur` は、フォーカスの行き先が自分のゲームの iframe なら離さない。** `blur` を「すべて離す」契機にしたのは画面が隠れたときに
+>   押しっぱなしを残さないためだが、パッドを押したままゲームをタップしてフォーカスが iframe へ移ったときにも発火し、キーとマウスの両方を読む作品
+>   （公開済みで 4 本）で「押しながら画面をタップ」が効かなくなる（PR #524 のレビューで親が指摘）。`blur` の後に `setTimeout(…, 0)` で決着を待ち、
+>   `document.activeElement` が覆いの中の iframe なら何もしない。それ以外（別の要素・別のウィンドウ）へ移ったときと、`visibilitychange`（`hidden`）・
+>   `pagehide`・覆いを閉じるときは、これまでどおり離す。層 8 は、押したままゲームの iframe へフォーカスを移しても keyup が届かず、指を離すと
+>   届くことを見る。**この判定を外すと「ゲームの iframe へフォーカスを移すとキーが届いた」で赤になった**（2026-09-14 に実測）。
+> - **実ブラウザの検査は `scripts/check-sandbox-browser.sh` の層 8**（観測 `scripts/virtual-pad-probe.mjs`、判定
+>   `scripts/virtual-pad-verdict.mjs`）。パッドのキーが副のボタンの部品・48px 以上・十字は読み上げの名前を持つこと、縦持ちと横持ちの並べ方、
+>   フォーカスがパッドへ移らないこと、デスクトップでは出ないこと、キーの集合が空の作品（層 7 の作品）では置き場所が空でゲームが残りを使う
+>   こと、長いキー名を 4 つ含む作品でも縦持ち 390px・横持ちでボタンが画面と置き場所の幅を超えず文字がキーに収まること、パッドを押したまま
+>   ゲームの iframe へフォーカスを移しても keyup が届かず指を離すと届くことを見る（送信と受け手の検査は 3.9.7 の注記）。
+
 #### 3.9.7 親→子の `postMessage` の契約（M14-5）
 
 **向き:** 親（作品ページ、アプリ用ホスト）→ 子（ローダー文書、サンドボックス用ホスト）の 1 方向を**足す**。
@@ -5105,6 +5138,34 @@ CREATE TABLE source_input_keys (
 
 **許可表:** ローダーに埋める**定数**で、**3.9.5 のキーの表が写す `code` の集合と同じもの**である
 （抽出の側と同じモジュールから組み立て、写しを 2 つ作らない）。**許可表は UGC 由来ではない。**
+
+> **実装注記（#494。実装日 2026-09-14）。** 受け手は `src/sandbox-loader.ts` の `padReceiverScript(parentOrigin)` で、ローダー文書へ
+> **`TAP_TO_MOUSE_SCRIPT` の後・`wasm_exec.js` と起動スクリプトの前に、別の `<script>`** として入れた（`instantiateStreaming` の経路と
+> 起動の合図には手を入れていない）。埋め込む値は `parentOrigin`（#377 で既に埋めている値）と、`INPUT_KEY_CODES` を JSON にした許可表だけで、
+> UGC は入らない。`type` の綴りは `PAD_MESSAGE_TYPE`（`'gf-pad'`）を送り手と受け手で共有する。CSP と iframe の `sandbox` 属性は変えていない。
+> 実装で決めたことを書き戻す。
+>
+> - **許可表と「押している集合」は原型を持たない表（`Object.create(null)`）で引く**（`'constructor'` や `'__proto__'` を許可表の値として読まない）。
+> - **送り手（`src/work-play.ts`）が送ってよい iframe は 1 つの変数（`padFrame`）で持つ。** その iframe の窓から届いた起動の合図
+>   （`event.source === frame.contentWindow`・`event.origin === 'null'`・固定の文字列。`src/plays.ts` と同じ規律）でだけ入れ、
+>   **2 回目の `load` では閉じる前に空にする**（閉じる処理の release も送らない）。閉じる処理は release を送ってから空にし、iframe を取り除く。
+>   計上の受け手（`src/plays.ts`）は変えず、合図の受け手を別に 1 つ足した。
+> - **閉じるときに親が送る release は、作品へ届いていない**（2026-09-14 に層 8 で実測）。送った直後に同じタスクの中で iframe を取り除くので、
+>   子の文書はメッセージを処理する前に破棄される。**押したまま閉じたときの keyup は、取り除かれたローダー自身の `pagehide`（上の
+>   「ローダー自身も…」）で届く**——親の閉じる処理の release を外しても層 8 は緑のままで、ローダーの `pagehide` / `visibilitychange` を
+>   外すと「押したまま覆いを閉じても keyup が届かない」で落ちた。取り除きを遅らせて親の release を届ける形は、#502 の閉じる処理（ゲーム・音・CPU を
+>   すぐ止める）を変えるので採らなかった。**親の release そのものは、iframe を残したまま、ゲーム以外（同じオリジンの別の iframe）へフォーカスを
+>   移す手順で見る**（親の release を送らない変異で「keyup ArrowUp が届かない」で落ちた）。
+> - **実ブラウザの検査は `scripts/check-sandbox-browser.sh` の層 8。** 検査用の作品（Go）は canvas の keydown / keyup を記録し、CDP の
+>   `Runtime.addBinding` で観測側へも渡す（閉じると iframe ごと記録が消えるため）。キーの集合は手元の D1 の `source_input_keys` へ入れる
+>   （層 7 の作品には `[]`、層 8 の作品には矢印・Space・Z）。パッドへのタッチが `keydown` → `keyup`（`isTrusted: false`・`key` は空・`repeat: false`）
+>   として届くこと、同時押し（左を押したまま Space、離した指のキーだけが離れる）、許可表に無いキー名と形の違うメッセージ（親から。対照として
+>   許可表のキーは届き、2 回目の down / up は重ならない）・親と同じオリジンの別の iframe から・直接開いたローダーの自己送信のどれもが届かないことを見る。
+> - **変異の実測（2026-09-14）:** 受け手の source と origin の検査を外す → 「別の iframe から送ったメッセージが届いた」「直接開いたローダーの自己送信が
+>   届いた」で赤。source の検査だけを外す → 「別の iframe から」で赤。許可表の検査を外す → 「許可表に無いキー名が届いた」で赤。パッドの送信を外す →
+>   「左のキーに触れても keydown ArrowLeft が届かない」で赤。**origin の検査だけを外しても層 8 は緑のまま**である——実ブラウザでは
+>   `event.source === window.parent` を満たす送り手は親の文書だけで、そのオリジンは `frame-ancestors` が親アプリのオリジンに絞っているため、
+>   origin の検査は二重に閉じる層として残した（単体テストが順序と綴りを見る）。
 
 #### 3.9.8 7.2 に対する安全の論拠
 

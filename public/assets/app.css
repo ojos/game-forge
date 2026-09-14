@@ -999,7 +999,7 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
  * - **並べ方は画面の向きで変える**（`@media (orientation: landscape)`。**幅の `@media` ではない**ので `@section shell` の外に置く。
  *   冒頭の区画の規約 3 と `scripts/check-app-css.sh` が縛るのは `min-width` / `max-width`）。縦持ちは上に「閉じる」の行・中にゲーム・
  *   下にパッド（左に十字・右にボタン）、横持ちは左に十字・中央にゲーム・右にボタンで「閉じる」は右上の隅。**パッドの置き場所は
- *   空のまま**（中身は M14-5 / #494。3.9.6）で、空のあいだは大きさを持たず、ゲームが残りいっぱいを使う
+ *   キーを読まない作品では空**（中身は M14-5 / #494。3.9.6）で、空の置き場所は大きさを持たず、ゲームが残りいっぱいを使う
  * - **iframe はゲームの領域いっぱい**にする（デスクトップの `.gf-frame` の `1200 / 630` を覆いの中でだけ外す。比は Ebitengine が中で保つ）
  */
 .gf-play-open {
@@ -1082,6 +1082,88 @@ html.gf-play-locked body {
 
 .gf-play-pad-buttons {
   grid-area: buttons;
+}
+
+/*
+ * 仮想パッド（M14-5 / #494 / 仕様 3.9.6）。HTML とスクリプトは `src/work-play.ts`、どのキーを出すかは `src/virtual-pad.ts`。
+ *
+ * - **キーは副のボタンの部品**（`.gf-button-secondary`）で、押せる大きさは 1 つ **56px**（仕様の下限 48px を上回る。`3.5rem`）。
+ *   押しているあいだはスクリプトが `.gf-play-pad-held` を付け、副のボタンのホバーと同じ色（既存のトークン）にする。新しい色の値は足さない
+ * - **十字は 3×3 の格子**に置き、読まない方向のマスは空けたままにする（位置で方向が分かるように、詰めない）。ボタンは 2 列
+ * - **押している間に文字の選択・長押しのメニューが起きないよう、置き場所は `user-select: none`**（`contextmenu` はスクリプトが抑える）。
+ *   スクロールと拡大は覆いの `touch-action: none` が止める
+ * - **空の置き場所（キーを読まない作品・十字だけ・ボタンだけ）は余白を持たない**（`:empty`。HTML は中に空白を入れない）
+ * - **ボタンは列の幅を超えない**（PR #524 の Copilot の指摘）。文字は 5 文字以下に縮めてある（`src/virtual-pad.ts`）が、歯止めとして
+ *   列の幅を `3.5rem`〜`4.5rem` に閉じ（縦持ちの 2 列 + 余白が画面の半分 195px に収まる）、キーは列いっぱいに広げて、
+ *   収まらない文字は折り返す（部品の `white-space: nowrap` をパッドのキーでだけ外す。`@section buttons` は変えない）
+ */
+.gf-play-pad {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: none;
+}
+
+.gf-play-pad:not(:empty) {
+  display: grid;
+  gap: var(--gf-gap-2);
+  padding: var(--gf-gap-3);
+}
+
+.gf-play-pad-dpad:not(:empty) {
+  grid-template-areas:
+    '. up .'
+    'left . right'
+    '. down .';
+  grid-template-columns: repeat(3, 3.5rem);
+  grid-template-rows: repeat(3, 3.5rem);
+  justify-content: start;
+  align-content: center;
+}
+
+.gf-play-pad-buttons:not(:empty) {
+  grid-template-columns: repeat(2, minmax(3.5rem, 4.5rem));
+  grid-auto-rows: 3.5rem;
+  justify-content: end;
+  align-content: center;
+}
+
+.gf-play-pad-key {
+  align-self: stretch;
+  justify-self: stretch;
+  min-width: 3.5rem;
+  max-width: 100%;
+  min-height: 3.5rem;
+  padding: 0 var(--gf-gap-1);
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+  touch-action: none;
+}
+
+.gf-play-pad-key.gf-play-pad-held {
+  border-color: var(--gf-rule-strong);
+  background: var(--gf-surface);
+}
+
+.gf-play-pad-up {
+  grid-area: up;
+}
+
+.gf-play-pad-left {
+  grid-area: left;
+}
+
+.gf-play-pad-right {
+  grid-area: right;
+}
+
+.gf-play-pad-down {
+  grid-area: down;
 }
 
 @media (orientation: landscape) {
@@ -2908,6 +2990,19 @@ p.gf-sort {
 /* ブロックの中の間隔は上の `gap` だけが持つ（見出し・段落・フォームの既定の余白を外す）。 */
 .gf-signup-option > * {
   margin: 0;
+}
+
+/*
+ * ブロックの見出しは、`src/signup.ts` が `<wbr>` で入れた文節の区切りでだけ折り返す（#510）。
+ *
+ * - **`word-break: keep-all` で、日本語の字と字の間を折り返しの候補から外す。** 残る候補は `<wbr>` と空白だけになる。
+ *   既定のままだと、段 3 の入り口（1080px）で「すでにアカウン／トをお持ちの方」と語の途中で割れる
+ * - **器より長い塊だけは折る。** `body` の `overflow-wrap: anywhere` が、候補の無いまま器を越える塊を最後に折るので、
+ *   はみ出さない（段 3 のボタンの文言と同じ組み合わせ。`@section shell` の「#472:」の塊）
+ * - サイト全体の `<html lang>` と `word-break: auto-phrase` は採らない（利用者の判断。2026-09-14）。幅の `@media` も置かない
+ */
+.gf-signup-option > h2 {
+  word-break: keep-all;
 }
 
 /* 補足の文（コードを確認したあとの流れ・待機リストの案内と人数）。モックアップの小さい補助の文字。 */

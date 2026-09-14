@@ -565,7 +565,8 @@ describe('ログイン・登録の画面（#472）', () => {
 
   it('3 つのブロックが、ログイン・招待コード・待機リストの順に並ぶ', async () => {
     const blocks = blocksOf(await mainOf());
-    expect(blocks.map((block) => /<h2[^>]*>([^<]*)<\/h2>/u.exec(block)?.[1])).toEqual([
+    // 見出しの文節の区切り（`<wbr>`。#510）は文字を足さないので、外して文言を比べる。
+    expect(blocks.map((block) => /<h2[^>]*>((?:[^<]|<wbr>)*)<\/h2>/u.exec(block)?.[1]?.replaceAll('<wbr>', ''))).toEqual([
       'すでにアカウントをお持ちの方',
       '招待コードをお持ちの方',
       '招待コードをお持ちでない方',
@@ -578,6 +579,38 @@ describe('ログイン・登録の画面（#472）', () => {
     expect(blocks[2]).toContain('name="email"');
     // 3 つはひとつの並べ枠の中にある（折り返しで並べる枠。app.css の `@section signup`）。
     expect(await mainOf()).toMatch(/<div class="gf-signup-options">\s*<section class="gf-block gf-signup-option"/u);
+  });
+
+  it('3 つの見出しは、文節の区切りにだけ <wbr> を持ち、id と文言は変わらない（#510）', async () => {
+    const blocks = blocksOf(await mainOf());
+    // **見出しの要素をそのまま比べる。** 区切りの位置・`id`・中に他の要素が無いことを 1 度に見る
+    // （`aria-labelledby` が読む名前は `<wbr>` を除いた文字で、`id` が変わると名前を失う）。
+    expect(blocks.map((block) => /<h2\b[^>]*>[\s\S]*?<\/h2>/u.exec(block)?.[0])).toEqual([
+      '<h2 id="signup-login">すでに<wbr>アカウントを<wbr>お持ちの方</h2>',
+      '<h2 id="signup-invite">招待コードを<wbr>お持ちの方</h2>',
+      '<h2 id="signup-waitlist">招待コードを<wbr>お持ちでない方</h2>',
+    ]);
+    expect(blocks.map((block) => /aria-labelledby="([^"]+)"/u.exec(block)?.[1])).toEqual([
+      'signup-login',
+      'signup-invite',
+      'signup-waitlist',
+    ]);
+  });
+
+  it('見出しは区切りの外で折れない（app.css の `@section signup` が `word-break: keep-all` を持ち、幅の @media を置かない。#510）', () => {
+    const css = env.TEST_APP_CSS;
+    // **区画の見出しの行で切る**（`@section signup` という綴りは `@section shell` のコメントにも出てくる）。
+    const start = css.indexOf('   @section signup —');
+    const end = css.indexOf('   @section news —');
+    expect(start, '`@section signup` が無い（検査が空振りする）').toBeGreaterThan(-1);
+    expect(end, '`@section signup` の次の区画が無い').toBeGreaterThan(start);
+    const section = css.slice(start, end).replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+    const rule = /\.gf-signup-option\s*>\s*h2\s*\{([^}]*)\}/u.exec(section);
+    expect(rule, '見出しの規則が無い').not.toBeNull();
+    expect(rule![1]).toMatch(/(?:^|;)\s*word-break:\s*keep-all\s*;/u);
+    // 器より長い塊だけは折る——`body` の `overflow-wrap: anywhere` を見出しで打ち消さない。
+    expect(section).not.toMatch(/overflow-wrap:\s*normal|white-space:\s*nowrap/u);
+    expect(section).not.toContain('@media');
   });
 
   it('主のボタンは「Google でログイン」の 1 つだけで、`<a>` で Google の認証へ送る（仕様 2.5.5 / 2.3.11 の #435 注記）', async () => {

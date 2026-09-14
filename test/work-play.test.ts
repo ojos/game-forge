@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { playReportScript } from '../src/plays.js';
+import { LOADER_STARTED_MESSAGE, PAD_MESSAGE_TYPE } from '../src/sandbox-loader.js';
+import { padLayoutOf } from '../src/virtual-pad.js';
 import {
   PLAY_CLOSE_CLASS,
   PLAY_ENTRY_CLASS,
@@ -9,7 +11,9 @@ import {
   PLAY_NOSCRIPT_CLASS,
   PLAY_OPEN_CLASS,
   PLAY_OVERLAY_CLASS,
+  PLAY_PAD_KEY_CLASS,
   PLAY_STAGE_CLASS,
+  padKeysHtml,
   playEmbed,
   playEntry,
   playFrameAttributes,
@@ -33,6 +37,9 @@ import {
  */
 
 const PLAY_URL = 'https://sandbox.example/g/00000000-0000-4000-8000-000000000502/';
+
+/** キーを読まない作品（パッドを出さない）。 */
+const NO_KEYS: readonly string[] = [];
 
 describe('iframe の属性は 1 か所から組み立てる（3.9.4 / 3.9.8 の 6）', () => {
   it('属性は class・src・sandbox・title の 4 つで、sandbox は allow-scripts だけである（7.2）', () => {
@@ -63,7 +70,7 @@ describe('iframe の属性は 1 か所から組み立てる（3.9.4 / 3.9.8 の 
   });
 
   it('全画面を iframe に許さない（allowfullscreen も allow も足さない。3.9.8 の 6）', () => {
-    const embed = playEmbed(PLAY_URL);
+    const embed = playEmbed(PLAY_URL, NO_KEYS);
     expect(embed).not.toContain('allowfullscreen');
     expect(embed).not.toMatch(/\sallow=/u);
     expect(embed).not.toContain('allow-same-origin');
@@ -87,17 +94,17 @@ describe('iframe の属性は 1 か所から組み立てる（3.9.4 / 3.9.8 の 
 
 describe('SSR の骨組み（3.9.4）', () => {
   it('iframe は <noscript> の中にだけあり、HTML に直接置かない', () => {
-    const embed = playEmbed(PLAY_URL);
+    const embed = playEmbed(PLAY_URL, NO_KEYS);
     expect(embed.startsWith(`<noscript class="${PLAY_NOSCRIPT_CLASS}">${playFrameHtml(PLAY_URL)}</noscript>\n`)).toBe(true);
     expect(embed.split('<iframe').length - 1).toBe(1);
   });
 
-  it('覆いは hidden で配り、中にゲームの領域・閉じるのボタン・空のパッドの置き場所を持つ', () => {
-    const embed = playEmbed(PLAY_URL);
+  it('覆いは hidden で配り、中にゲームの領域・閉じるのボタン・パッドの置き場所を持つ（キーを読まない作品では空）', () => {
+    const embed = playEmbed(PLAY_URL, NO_KEYS);
     expect(embed).toContain(`<div class="${PLAY_OVERLAY_CLASS}" role="dialog" aria-modal="true" aria-label="ゲーム" hidden>`);
     expect(embed).toContain(`<div class="${PLAY_STAGE_CLASS}"></div>`);
     expect(embed).toContain(`<button type="button" class="gf-button gf-button-secondary ${PLAY_CLOSE_CLASS}">閉じる</button>`);
-    // パッドは置き場所だけ（中身は M14-5 / #494）。
+    // キーを読まない作品（モグラぽん）では、置き場所は空白も持たない（`:empty` で余白を持たせない。#494）。
     expect(embed).toContain('<div class="gf-play-pad gf-play-pad-dpad"></div>');
     expect(embed).toContain('<div class="gf-play-pad gf-play-pad-buttons"></div>');
     // 覆いの後ろにスクリプトがある（スクリプトの時点で覆いの要素が引ける）。
@@ -113,7 +120,7 @@ describe('SSR の骨組み（3.9.4）', () => {
   });
 
   it('足したボタンの文言は固定で、主のボタンを使わない（主は「改造する」のまま。2.5.5）', () => {
-    const html = `${playEntry('', true)}${playEmbed(PLAY_URL)}`;
+    const html = `${playEntry('', true)}${playEmbed(PLAY_URL, NO_KEYS)}`;
     expect(html).not.toContain('gf-button-primary');
     expect(html.match(/<button\b[^>]*>([^<]*)<\/button>/gu)).toEqual([
       `<button type="button" class="gf-button gf-button-secondary ${PLAY_OPEN_CLASS}" hidden>遊ぶ</button>`,
@@ -148,7 +155,7 @@ describe('スクリプトの形（3.9.4）', () => {
     expect(script).toContain("closeButton.addEventListener('click', function () { close(false); });");
     expect(script).toMatch(/addEventListener\('popstate', function \(\) \{[\s\S]*?close\(true\);/u);
     expect(script).toMatch(/addEventListener\('fullscreenchange', function \(\) \{[\s\S]*?close\(false\);/u);
-    expect(script).toContain('if (loads >= 2) { close(false); }');
+    expect(script).toMatch(/if \(loads >= 2\) \{\n\s+padFrame = null;\n\s+close\(false\);/u);
     // 冪等: 開いていなければ何もしない。
     expect(script).toContain('var close = function (fromHistory) {\n    if (frame === null) { return; }');
     // パッドの「すべて離す」の場所を通ってから iframe を取り除く。
@@ -198,5 +205,118 @@ describe('スクリプトの形（3.9.4）', () => {
   it('UGC を入れない（埋め込む値は遊ぶ URL と固定の綴りだけ）', () => {
     const other = playFrameScript('https://sandbox.example/g/11111111-1111-4111-8111-111111111111/');
     expect(other.replace('11111111-1111-4111-8111-111111111111', '00000000-0000-4000-8000-000000000502')).toBe(script);
+  });
+});
+
+describe('仮想パッドの HTML（#494 / 仕様 3.9.6）', () => {
+  const codes = ['ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'Enter', 'KeyZ', 'Space'];
+
+  it('覆いの 2 つの置き場所に、表示規則の結果を副のボタンの部品で出す（十字は位置のクラスと読み上げの名前を持つ）', () => {
+    const embed = playEmbed(PLAY_URL, codes);
+    expect(embed).toContain(padKeysHtml(padLayoutOf(codes)));
+    expect(padKeysHtml(padLayoutOf(codes))).toBe(
+      '<div class="gf-play-pad gf-play-pad-dpad">' +
+        '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key gf-play-pad-up" data-code="ArrowUp" aria-label="上">↑</button>' +
+        '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key gf-play-pad-left" data-code="ArrowLeft" aria-label="左">←</button>' +
+        '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key gf-play-pad-right" data-code="ArrowRight" aria-label="右">→</button>' +
+        '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key gf-play-pad-down" data-code="ArrowDown" aria-label="下">↓</button>' +
+        '</div>\n<div class="gf-play-pad gf-play-pad-buttons">' +
+        '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key" data-code="Space">Space</button>' +
+        '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key" data-code="KeyZ">Z</button>' +
+        '</div>',
+    );
+    // パッドは覆いの中にあり、覆いは hidden で配る（デスクトップと JavaScript の無い形では出ない）。
+    const overlayStart = embed.indexOf(`<div class="${PLAY_OVERLAY_CLASS}"`);
+    const overlayEnd = embed.indexOf('</div>\n<script>');
+    expect(embed.slice(overlayStart, overlayStart + 200)).toContain(' hidden>');
+    expect(embed.indexOf(PLAY_PAD_KEY_CLASS)).toBeGreaterThan(overlayStart);
+    expect(embed.lastIndexOf(`class="gf-button gf-button-secondary ${PLAY_PAD_KEY_CLASS}`)).toBeLessThan(overlayEnd);
+    // 主のボタンを使わない（主は「改造する」のまま）。
+    expect(embed).not.toContain('gf-button-primary');
+  });
+
+  it('スクリプトの本文はキーの集合によらず同じ（キーの集合も UGC も埋めない）', () => {
+    const withKeys = playEmbed(PLAY_URL, codes);
+    const withoutKeys = playEmbed(PLAY_URL, NO_KEYS);
+    expect(withKeys.slice(withKeys.indexOf('<script>'))).toBe(withoutKeys.slice(withoutKeys.indexOf('<script>')));
+  });
+});
+
+describe('仮想パッドのスクリプトの形（#494 / 仕様 3.9.6 / 3.9.7）', () => {
+  const script = playFrameScript(PLAY_URL);
+
+  /**
+   * スクリプトから、`var name = function (...) {` で始まる関数の本文を取り出す。
+   *
+   * @param name 変数名
+   * @returns 本文
+   */
+  function functionBody(name: string): string {
+    const start = script.indexOf(`var ${name} = function`);
+    expect(start, name).toBeGreaterThan(0);
+    return script.slice(start, script.indexOf('\n  };\n', start));
+  }
+
+  it('パッドは覆いの中のボタンから引き、タッチ端末の判定より後ろで結ぶ（デスクトップでは付けない）', () => {
+    const desktop = script.indexOf('noscript.parentNode.insertBefore(createFrame(), noscript);');
+    expect(script).toContain(`var padKeys = overlay.querySelectorAll(${JSON.stringify(`.${PLAY_PAD_KEY_CLASS}`)});`);
+    expect(script.indexOf('var padKeys')).toBeGreaterThan(desktop);
+  });
+
+  it('送信は contentWindow.postMessage の宛先 * だけで、合図を受けた iframe にしか送らない', () => {
+    expect(script.split('postMessage(').length - 1).toBe(1);
+    expect(functionBody('postPad')).toContain("if (target === null || padFrame !== target || target.contentWindow === null) { return; }");
+    expect(functionBody('postPad')).toContain("target.contentWindow.postMessage(message, '*');");
+    expect(script).toContain(`type: ${JSON.stringify(PAD_MESSAGE_TYPE)}, op: op, code: code`);
+  });
+
+  it('送ってよい iframe は、その iframe の窓から届いた起動の合図で決まる（src/plays.ts と同じ検査）', () => {
+    expect(script).toContain("if (frame === null || event.source !== frame.contentWindow || event.origin !== 'null') { return; }");
+    expect(script).toContain(`if (event.data !== ${JSON.stringify(LOADER_STARTED_MESSAGE)}) { return; }`);
+    // padFrame に iframe を入れるのは、合図の受け手の 1 か所だけ。
+    expect(script.match(/padFrame = (?!null)/gu)).toEqual(['padFrame = ']);
+  });
+
+  it('2 回目の load（遷移）では、送信を止めてから閉じる（閉じる処理の release も送らない）', () => {
+    const load = script.slice(script.indexOf("opened.addEventListener('load'"));
+    expect(load.indexOf('padFrame = null;')).toBeLessThan(load.indexOf('close(false);'));
+    // 閉じる処理は release を送ってから送信を止め、iframe を取り除く。
+    const close = functionBody('close');
+    expect(close.indexOf('releasePad(closing);')).toBeLessThan(close.indexOf('padFrame = null;'));
+    expect(close.indexOf('padFrame = null;')).toBeLessThan(close.indexOf('removeChild(closing)'));
+  });
+
+  it('pointerdown は preventDefault と setPointerCapture をしてから押下を送り、pointerup / pointercancel / lostpointercapture で離す', () => {
+    const bind = functionBody('bindPadKey');
+    const down = bind.slice(bind.indexOf("addEventListener('pointerdown'"));
+    expect(down.indexOf('event.preventDefault();')).toBeLessThan(down.indexOf('setPointerCapture(event.pointerId)'));
+    expect(down.indexOf('setPointerCapture(event.pointerId)')).toBeLessThan(down.indexOf("sendPad('down', padCodes[index]);"));
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+      expect(bind).toContain(`button.addEventListener('${type}', lift);`);
+    }
+    // 離しは、押したときの指（pointerId）だけで起きる（ボタンごとに覚えるので同時押しが成り立つ）。
+    expect(bind).toContain('if (padHeld[index] && event.pointerId === padPointers[index]) { liftPad(index); }');
+  });
+
+  it('click の detail === 0（キーボード・支援技術）では、押下と離しを続けて送る', () => {
+    const bind = functionBody('bindPadKey');
+    const click = bind.slice(bind.indexOf("addEventListener('click'"));
+    expect(click).toContain('if (event.detail !== 0 || padHeld[index]) { return; }');
+    expect(click.indexOf("sendPad('down', padCodes[index]);")).toBeLessThan(click.indexOf("sendPad('up', padCodes[index]);"));
+  });
+
+  it('すべて離すは visibilitychange（hidden）・pagehide・window の blur（行き先がゲームの iframe なら除く）と閉じるときで、release を 1 回送る', () => {
+    const release = functionBody('releasePad');
+    expect(release.split('postPad(').length - 1).toBe(1);
+    expect(release).toContain(`op: 'release'`);
+    expect(script).toMatch(/document\.addEventListener\('visibilitychange', function \(\) \{\n\s+if \(document\.visibilityState === 'hidden'\) \{ releaseOnHide\(\); \}/u);
+    expect(script).toContain("window.addEventListener('pagehide', releaseOnHide);");
+    // blur はフォーカスの行き先の決着を待ち、自分のゲームの iframe なら離さない（PR #524）。
+    expect(script).toMatch(/window\.addEventListener\('blur', function \(\) \{\n\s+setTimeout\(function \(\) \{\n\s+if \(frame !== null && document\.activeElement === frame\) \{ return; \}\n\s+releaseOnHide\(\);\n\s+\}, 0\);/u);
+    expect(script).not.toContain("window.addEventListener('blur', releaseOnHide);");
+  });
+
+  it('長押しのメニューを抑える', () => {
+    expect(script).toContain("addEventListener('contextmenu', function (event) { event.preventDefault(); });");
   });
 });

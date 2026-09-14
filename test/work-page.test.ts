@@ -1190,6 +1190,8 @@ const baseView: WorkPageView = {
   title: 'お題',
   errorCode: null,
   playUrl: null,
+  // 作品が読むキー（#494）。**既定は空＝パッドを出さない**（表示規則は `test/virtual-pad.test.ts`、覆いの HTML は `test/work-play.test.ts`）。
+  inputKeyCodes: [],
   publishableId: null,
   forkableId: null,
   shareUrl: null,
@@ -2449,5 +2451,100 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     }
     // **補助カラムの幅は変えない**（`--gf-aside` を画面の区画で定義しない）。
     expect(section).not.toMatch(/--gf-aside\s*:/u);
+  });
+});
+
+describe('仮想パッドのキーを読む（#494 / 仕様 3.9.5 / 3.9.6）', () => {
+  /**
+   * 公開済みの作品を 1 つ作り、その `source_key` を返す。
+   *
+   * @param suffix 利用者と作品を分ける接尾辞
+   * @returns 作品 id と `games.source_key`
+   */
+  async function seedPublished(suffix: string): Promise<{ userId: string; id: string; sourceKey: string }> {
+    const { userId, id, jobToken } = await seedPending(`pad-${suffix}`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    const sha = [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: sha }));
+    expect((await publishGame(env, id, userId)).ok).toBe(true);
+    const row = await env.DB.prepare('select source_key from games where id = ?').bind(id).first<{ source_key: string }>();
+    expect(row?.source_key).toBe(`builds/${sha}/source.go`);
+    return { userId, id, sourceKey: row!.source_key };
+  }
+
+  /**
+   * 保存したキーの集合を置く（`codes` は文字列のまま入れる。壊れた値も入れられる）。
+   *
+   * @param sourceKey ソースの R2 キー
+   * @param codes `source_input_keys.codes` の値
+   */
+  async function storeCodes(sourceKey: string, codes: string): Promise<void> {
+    await env.DB.prepare(
+      'insert or replace into source_input_keys (source_key, codes, rule_version, extracted_at) values (?, ?, 1, 1)',
+    )
+      .bind(sourceKey, codes)
+      .run();
+  }
+
+  /**
+   * 本文から、パッドのキー（`<button>`）の `data-code` を出てくる順に取り出す。
+   *
+   * @param body 作品ページの HTML
+   * @returns `code` の並び
+   */
+  function padCodesOf(body: string): string[] {
+    return [...body.matchAll(/<button type="button" class="[^"]*\bgf-play-pad-key\b[^"]*" data-code="([^"]*)"/gu)].map(
+      (found) => found[1]!,
+    );
+  }
+
+  it('保存したキーの集合から、表示規則のとおりに十字とボタンを出す', async () => {
+    const { id, sourceKey } = await seedPublished('shown');
+    await storeCodes(sourceKey, JSON.stringify(['ArrowLeft', 'ArrowRight', 'Enter', 'KeyA', 'Space']));
+    const body = await (await open(workPagePath(id))).text();
+    // 十字（上・左・右・下の順に、読む矢印だけ）→ ボタン（Space。Enter は Space があるので除く。WASD は矢印があるので出さない）。
+    expect(padCodesOf(body)).toEqual(['ArrowLeft', 'ArrowRight', 'Space']);
+    expect(body).toContain('data-code="ArrowLeft" aria-label="左">←</button>');
+  });
+
+  it('行が無い・壊れた JSON・配列でない・許可表外の値は、パッドを出さない（D1 の値を信じ切らない）', async () => {
+    const { id, sourceKey } = await seedPublished('broken');
+    // 行が無い（まだ拾っていない）。
+    let body = await (await open(workPagePath(id))).text();
+    expect(body, '覆いが無い（検査の前提が崩れている）').toContain('gf-play-overlay');
+    expect(padCodesOf(body)).toEqual([]);
+    expect(body).toContain('<div class="gf-play-pad gf-play-pad-dpad"></div>');
+
+    for (const broken of ['not json', '{"codes":["Space"]}', '"Space"', '[]', 'null']) {
+      await storeCodes(sourceKey, broken);
+      body = await (await open(workPagePath(id))).text();
+      expect(padCodesOf(body), broken).toEqual([]);
+    }
+
+    // 許可表外の値と文字列でない値は捨て、許可表の値だけを残す。
+    await storeCodes(sourceKey, JSON.stringify(['"><script>', 'constructor', 'KeyQQ', 1, null, 'KeyZ']));
+    body = await (await open(workPagePath(id))).text();
+    expect(padCodesOf(body)).toEqual(['KeyZ']);
+    expect(body).not.toContain('"><script>');
+  });
+
+  it('games.source_key が NULL の作品は、同じソースの行があっても引かない', async () => {
+    const { id, sourceKey } = await seedPublished('null-key');
+    await storeCodes(sourceKey, JSON.stringify(['Space']));
+    expect(padCodesOf(await (await open(workPagePath(id))).text())).toEqual(['Space']);
+    await env.DB.prepare('update games set source_key = null where id = ?').bind(id).run();
+    expect(padCodesOf(await (await open(workPagePath(id))).text())).toEqual([]);
+  });
+
+  it('source_input_keys は主キーで 1 行だけ引く（表の全行を読まない）', async () => {
+    const plan = await env.DB.prepare(`explain query plan ${WORK_ROW_SQL}`)
+      .bind('00000000-0000-4000-8000-000000000494')
+      .all<{ detail: string }>();
+    const details = plan.results.map((row) => row.detail);
+    const keys = details.filter((detail) => /\bk\b/u.test(detail));
+    expect(keys.length, details.join(' / ')).toBeGreaterThan(0);
+    for (const detail of keys) {
+      expect(detail, details.join(' / ')).toMatch(/^SEARCH k USING INDEX sqlite_autoindex_source_input_keys_1 \(source_key=\?\)/u);
+    }
   });
 });

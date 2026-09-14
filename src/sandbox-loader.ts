@@ -1,11 +1,12 @@
 /**
  * サンドボックス用ホストが返すローダー文書を組み立てる（3.4 / 3.5 / #29）。
  *
- * この文書がやることは 3 つだけである。
+ * この文書がやることは 4 つだけである。
  *
  *   1. `go_version` に対応する `wasm_exec.js` を読む（3.5）
  *   2. `WebAssembly.instantiateStreaming` で `.wasm` を起動する（3.4-2）
  *   3. タップをマウスの操作として canvas へ渡す（3.9.3 / #491。{@link TAP_TO_MOUSE_SCRIPT}）
+ *   4. 親（作品ページ）の仮想パッドの押下を、キーの操作として canvas へ渡す（3.9.7 / #494。{@link padReceiverScript}）
  *
  * # UGC 由来の文字列を 1 つも入れない
  *
@@ -18,6 +19,7 @@
  * 文字列を入れると**エスケープ漏れが即座にスクリプト実行になる。** 入れなければ、
  * その経路が最初から存在しない。
  */
+import { INPUT_KEY_CODES } from './input-keys.js';
 
 /**
  * ローダーが Wasm を起動した直後に、親（作品ページ）へ送る合図（#377）。
@@ -28,6 +30,13 @@
  * 信じるのは「自分の iframe から届いたこと」だけである）。
  */
 export const LOADER_STARTED_MESSAGE = 'gf-loader-started';
+
+/**
+ * 親（作品ページ）→ 子（ローダー）の仮想パッドのメッセージの `type`（仕様 3.9.7 / #494）。
+ *
+ * **送り手（`src/work-play.ts`）と受け手（{@link padReceiverScript}）は、この 1 つの綴りを使う。**
+ */
+export const PAD_MESSAGE_TYPE = 'gf-pad';
 
 /**
  * タップをマウスの操作として canvas へ渡すスクリプト（仕様 3.9.3 / #491。M14-2）。
@@ -149,6 +158,127 @@ export const TAP_TO_MOUSE_SCRIPT = `(function () {
   document.addEventListener('touchcancel', onEnd, options);
 })();`;
 
+/**
+ * 親（作品ページ）の仮想パッドの押下を、キーの操作として canvas へ渡すスクリプト（仕様 3.9.7 / #494。M14-5）。
+ *
+ * # なぜ要るのか
+ *
+ * **キーで操作する作品は、タッチ端末では操作できない**（仕様 3.9.1。31 本がキーを読む）。親は iframe が
+ * `allow-same-origin` を持たないので canvas の DOM に触れず、パッドの押下を `postMessage` で送る。Ebitengine は
+ * キーを canvas のリスナーで受けて `code` を読み、`isTrusted` を見ないので、**ここで合成したイベントで補える。**
+ *
+ * # 受け手の検査（仕様 3.9.7。1 つでも外れたら黙って捨てる。ログも出さない）
+ *
+ * 1. `event.source === window.parent` で、かつ `window.parent !== window`（直接開いた文書には親が無い）
+ * 2. `event.origin === parentOrigin`（#377 で既に埋めている値。`frame-ancestors` と同じ。UGC ではない）
+ * 3. `event.data` がオブジェクトで、`type` が {@link PAD_MESSAGE_TYPE}、`op` が `down` / `up` / `release` のどれか
+ * 4. `down` / `up` では、`code` が許可表にある
+ *
+ * **親は宛先を `'*'` にする**（子は不透明オリジンで、宛先に指定する綴りが無い。仕様 3.9.7）。だから確認はここが行う。
+ *
+ * # 合成するイベント
+ *
+ * - `down`: 押していなければ集合に足し、canvas へ `keydown`。**押していれば何もしない**（`repeat` を作らない）
+ * - `up`: 押していれば集合から除き、`keyup`
+ * - `release`: 集合のすべてについて `keyup` を送り、集合を空にする
+ * - `new KeyboardEvent(type, { code, bubbles: true, cancelable: true })`。**`key` は与えない**
+ * - **canvas が無いとき（起動前）は捨てる。** 集合にも足さない
+ * - **ローダー自身も `pagehide` と `visibilitychange`（`hidden`）で `release` と同じことをする**
+ *
+ * # 起動の経路と分けて置く・UGC を入れない
+ *
+ * {@link TAP_TO_MOUSE_SCRIPT} と同じく、**起動スクリプトとは別の `<script>`** にする（`instantiateStreaming` の経路と
+ * 起動の合図には手を入れない）。埋め込む値は **`parentOrigin`（配信側の値）と許可表（`INPUT_KEY_CODES` の定数）だけ**で、
+ * どちらも UGC 由来ではない。**許可表は抽出の側と同じモジュールから組み立て、写しを作らない**（仕様 3.9.7）。
+ *
+ * @param parentOrigin 親アプリのオリジン（{@link LoaderAssetPaths.parentOrigin}）
+ * @returns `<script>` の中身
+ */
+export function padReceiverScript(parentOrigin: string): string {
+  return `(function () {
+  var parentOrigin = ${scriptLiteral(parentOrigin)};
+  var codes = ${scriptLiteral(INPUT_KEY_CODES)};
+  // **原型を持たない表で引く**（'constructor' や '__proto__' を許可表の値として読まない）。
+  var allowed = Object.create(null);
+  for (var i = 0; i < codes.length; i++) {
+    allowed[codes[i]] = true;
+  }
+  // 押しているキー（code → true）。
+  var pressed = Object.create(null);
+
+  function dispatchKey(canvas, type, code) {
+    canvas.dispatchEvent(new KeyboardEvent(type, { code: code, bubbles: true, cancelable: true }));
+  }
+
+  // 押しているキーをすべて離す（親の release・pagehide・visibilitychange の hidden）。
+  function releaseAll() {
+    var held = Object.keys(pressed);
+    pressed = Object.create(null);
+    var canvas = document.querySelector('canvas');
+    if (canvas === null) {
+      return;
+    }
+    for (var j = 0; j < held.length; j++) {
+      dispatchKey(canvas, 'keyup', held[j]);
+    }
+  }
+
+  window.addEventListener('message', function (event) {
+    // 1. 親から届いたか（直接開いた文書には親が無い）。
+    if (window.parent === window || event.source !== window.parent) {
+      return;
+    }
+    // 2. 親アプリのオリジンか。
+    if (event.origin !== parentOrigin) {
+      return;
+    }
+    // 3. 形。
+    var data = event.data;
+    if (data === null || typeof data !== 'object' || data.type !== ${scriptLiteral(PAD_MESSAGE_TYPE)}) {
+      return;
+    }
+    var op = data.op;
+    if (op === 'release') {
+      releaseAll();
+      return;
+    }
+    if (op !== 'down' && op !== 'up') {
+      return;
+    }
+    // 4. 許可表。
+    var code = data.code;
+    if (typeof code !== 'string' || allowed[code] !== true) {
+      return;
+    }
+    // canvas は Ebitengine が起動時に作る。無ければ（起動前は）捨てる。
+    var canvas = document.querySelector('canvas');
+    if (canvas === null) {
+      return;
+    }
+    if (op === 'down') {
+      if (pressed[code] === true) {
+        return;
+      }
+      pressed[code] = true;
+      dispatchKey(canvas, 'keydown', code);
+      return;
+    }
+    if (pressed[code] !== true) {
+      return;
+    }
+    delete pressed[code];
+    dispatchKey(canvas, 'keyup', code);
+  });
+
+  window.addEventListener('pagehide', releaseAll);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') {
+      releaseAll();
+    }
+  });
+})();`;
+}
+
 /** ローダーが読む 2 つの資材のパスと、合図の送り先。 */
 export interface LoaderAssetPaths {
   /** `wasm_exec.js` のパス（例: `/p/<key>/wasm_exec.js`）。**同一ホスト上の絶対パス**で渡す。 */
@@ -264,6 +394,9 @@ export function loaderHtml(paths: LoaderAssetPaths): string {
 <script>
 ${TAP_TO_MOUSE_SCRIPT}
 </script>
+<script>
+${padReceiverScript(paths.parentOrigin)}
+</script>
 <script src="${wasmExecAttribute}"></script>
 <script>
 (function () {
@@ -322,15 +455,15 @@ ${TAP_TO_MOUSE_SCRIPT}
 }
 
 /**
- * `<script>` の中へ文字列リテラルとして埋めてよい形へ落とす。
+ * `<script>` の中へリテラルとして埋めてよい形へ落とす（文字列と、文字列の配列）。
  *
  * `JSON.stringify` だけでは `</script>` を閉じられる（`<` がそのまま残る）ので、`<` を
  * `\u003c` へ置き換える。値は配信側の固定の材料だけだが、**埋め込みの安全は埋め込む側で閉じる。**
  *
- * @param value 埋め込む文字列
- * @returns JavaScript の文字列リテラル
+ * @param value 埋め込む値
+ * @returns JavaScript のリテラル
  */
-function scriptLiteral(value: string): string {
+function scriptLiteral(value: string | readonly string[]): string {
   return JSON.stringify(value).replace(/</gu, '\\u003c');
 }
 

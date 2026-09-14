@@ -45,9 +45,11 @@
  * したがって削除側（M5-4 のゴミ掃除、8.4 の削除依頼）が守る規約は次の 3 つである。
  * 実装は {@link planArtifactDeletion} と {@link deleteUnreferencedArtifacts} が持つ。
  *
- * 1. **R2 のオブジェクトを消す前に、他の作品が参照していないことを `games` で確かめる。**
- *    `status` は見ない（`removed` の tombstone も、5.3 が残すと決めた `source.go` の
- *    参照者である）。
+ * 1. **R2 のオブジェクトを消す前に、他の作品が参照していないことを `games` と
+ *    `game_revisions` で確かめる。** `status` は見ない（`removed` の tombstone も、5.3 が
+ *    残すと決めた `source.go` の参照者である）。**版も参照者である**（5.7 / 確定28。
+ *    #516 で引くようになった——それまでは `games` だけを数えており、作者が戻すために
+ *    持っている版の実体を消しえた）。
  * 2. **索引を先に落とし、そのあとで数え直してから消す。** 逆順にすると、消した直後の
  *    生成がまだ索引に当たり、**消えたオブジェクトを指す新しい作品**が生まれる。
  *    **数え直した結果として消さないことに決めたら、落とした索引を戻す**（成果物は残って
@@ -236,6 +238,18 @@ export async function forgetBuildCache(env: Env, sourceSha256: string): Promise<
  * 効く。読み取りは書き込みの 1/1000 の単価であり（3.6）、いまはこの向きが正しい。
  * M5-4 が実測を持ったら見直す。
  *
+ * # 文の本数をキーの数に比例させない（#516）
+ *
+ * **キーの一覧を JSON の配列 1 つとして束縛し、`json_each` で展開する。** 版を持つ作品は
+ * 候補のキーが「版の数 × 2」あり（#515 で推敲の上限が無くなる）、キーごとに select と
+ * delete を打つと、版が 30 個で 120 本を超えて D1 の 1 呼び出しあたりの枠（50）を越える。
+ * **キーを 1 つずつ `?` に束縛する形（`in (?, ?, …)`）も採らない**——1 文あたりの束縛数の
+ * 上限（100）に、候補のキーの数が届きうる。JSON の配列なら束縛は常に 2 つである。
+ *
+ * **読むのと落とすのは 2 文のまま**（先に読んだ行だけを返す。落としてから読むことはできない）。
+ * 落とす文を `delete from build_cache` で始めるのは、並行して起きる出来事を文の直後に差し込む
+ * 検査（`test/build-cache.test.ts` の `hookedEnv`）がその綴りを見るためである。
+ *
  * @param env バインディングと環境変数
  * @param keys 落とす対象の R2 キー（`source_key` か `wasm_key` のいずれかに一致する行を落とす）
  * @returns 実際に落とした索引の行（落とす前の内容。戻すときに使う）
@@ -244,25 +258,52 @@ export async function takeBuildCacheByArtifact(
   env: Env,
   keys: readonly string[],
 ): Promise<readonly BuildCacheEntry[]> {
+  if (keys.length === 0) {
+    return [];
+  }
+  const list = JSON.stringify(keys);
+  const matches =
+    'wasm_key in (select value from json_each(?)) or source_key in (select value from json_each(?))';
+  const found = await env.DB.prepare(
+    `select source_sha256, go_version, source_key, wasm_key,
+            wasm_bytes, wasm_sha256, compressed_bytes, compressed_sha256,
+            content_encoding, created_at
+       from build_cache where ${matches}`,
+  )
+    .bind(list, list)
+    .all<BuildCacheRow>();
+  await env.DB.prepare(`delete from build_cache where ${matches}`)
+    .bind(list, list)
+    .run();
+
   const taken = new Map<string, BuildCacheEntry>();
-  for (const key of keys) {
-    const found = await env.DB.prepare(
-      `select source_sha256, go_version, source_key, wasm_key,
-              wasm_bytes, wasm_sha256, compressed_bytes, compressed_sha256,
-              content_encoding, created_at
-         from build_cache where wasm_key = ? or source_key = ?`,
-    )
-      .bind(key, key)
-      .all<BuildCacheRow>();
-    for (const row of found.results) {
-      // 2 つのキーが同じ行を指すことがある。行は 1 回だけ数える。
-      taken.set(row.source_sha256, fromRow(row));
-    }
-    await env.DB.prepare('delete from build_cache where wasm_key = ? or source_key = ?')
-      .bind(key, key)
-      .run();
+  for (const row of found.results) {
+    // 2 つのキーが同じ行を指すことがある。行は 1 回だけ数える。
+    taken.set(row.source_sha256, fromRow(row));
   }
   return [...taken.values()];
+}
+
+/**
+ * あるキーを参照している**他の作品の**行を数える式（`games` と `game_revisions` の和）。
+ *
+ * **束縛は 2 つで、順に「除く作品 id」「除く作品 id」**である。キーは外側の問い合わせの
+ * 列（`keyExpression`）を読む。**定数だけから組み立てる**（利用者の入力は入らない）。
+ *
+ * **関数にする。** モジュールの最上位にテンプレートリテラルの定数を置くと、このモジュールが
+ * 入るオーケストレータの束に、呼ばれない式が残りうる（`src/games.ts` の
+ * `reviewStateAfterAuthorEditSql` と同じ事情）。
+ *
+ * @param keyExpression キーを表す SQL の式（例: `k.key` / `?`）
+ * @returns 件数を返す SQL の式
+ */
+function referenceCountSql(keyExpression: string): string {
+  // **`or` を 1 本の副問い合わせに置く。** SQLite は 2 本の索引（0004 / 0041）を
+  // `MULTI-INDEX OR` で使う（`test/build-cache.test.ts` が実行計画を見る）。
+  return `((select count(*) from games g
+             where g.id <> ? and (g.source_key = ${keyExpression} or g.wasm_key = ${keyExpression}))
+         + (select count(*) from game_revisions r
+             where r.game_id <> ? and (r.source_key = ${keyExpression} or r.wasm_key = ${keyExpression})))`;
 }
 
 /**
@@ -275,21 +316,27 @@ export async function takeBuildCacheByArtifact(
  * **両方の列を見る。** `source_key` と `wasm_key` は別々に落ちうる（5.3 の tombstone は
  * wasm を落として source を残しうる）ため、キー 1 本がどちらの列に現れても参照とみなす。
  *
+ * **版（`game_revisions`）も数える**（5.7 / 確定28 / #516）。推敲した作品は、いま `games` が
+ * 指していない古い版の成果物も「版に戻す」ために持っている。**数えないと、戻した瞬間に
+ * 配信が壊れる**（しかも壊れるのは削除の何日も後である。`migrations/0009_game_revisions.sql`）。
+ * 除く作品の版は数えない（その作品ごと消すので、自分の版は参照者ではない）。
+ *
+ * **返すのは参照している行の数である**（作品の数ではない。同じ作品の版が 3 つ同じキーを指せば
+ * 3 と数える）。判定に使うのは 0 かどうかだけである。
+ *
  * @param env バインディングと環境変数
  * @param key R2 のキー
  * @param excludeGameId 数えから除く作品 id（削除しようとしている作品自身）
- * @returns 参照している作品の件数
+ * @returns 参照している行（他の作品の `games` 行と版）の件数
  */
 export async function countArtifactReferences(
   env: Env,
   key: string,
   excludeGameId: string,
 ): Promise<number> {
-  const row = await env.DB.prepare(
-    `select count(*) as n from games
-      where id <> ? and (source_key = ? or wasm_key = ?)`,
-  )
-    .bind(excludeGameId, key, key)
+  // キーは束縛 1 つで CTE に置き、式の中では列として読む（式の中に `?` を 4 つ散らさない）。
+  const row = await env.DB.prepare(`with k(key) as (select ?) select ${referenceCountSql('k.key')} as n from k`)
+    .bind(key, excludeGameId, excludeGameId)
     .first<{ n: number }>();
   return row?.n ?? 0;
 }
@@ -298,7 +345,7 @@ export async function countArtifactReferences(
 export interface RetainedArtifact {
   /** R2 のキー。 */
   readonly key: string;
-  /** 参照している他の作品の件数。 */
+  /** 参照している他の作品の行（`games` 行と版）の件数。 */
   readonly referencedBy: number;
 }
 
@@ -315,13 +362,54 @@ export interface ArtifactDeletionPlan {
 }
 
 /**
+ * 候補のキーと、それぞれを参照している他の作品の行数を 1 本で引く SQL（{@link planArtifactDeletion}）。
+ *
+ * **束縛は 6 つで、すべて同じ作品 id である。** 候補を集める 4 つと、数えから除く 2 つ
+ * （{@link referenceCountSql}）。**キーそのものは束縛しない**——候補は SQL の中で `games` の行と
+ * 版から集めるので、版がいくつあっても束縛数も文の本数も変わらない（#516）。
+ *
+ * **並びは「`games` の source → wasm → 版の番号順に source → wasm」**である（同じキーは最初に
+ * 現れた位置で 1 回だけ）。`deletable` / `retained` の並びが実行ごとに揺れないようにする。
+ *
+ * @returns SELECT 文（列は `key` / `referenced_by`）
+ */
+export function artifactDeletionPlanSql(): string {
+  return `with candidates(key, ord) as (
+            select source_key, 0 from games where id = ?
+            union all select wasm_key, 1 from games where id = ?
+            union all select source_key, 2 * seq from game_revisions where game_id = ?
+            union all select wasm_key, 2 * seq + 1 from game_revisions where game_id = ?
+          ),
+          keys(key, ord) as (
+            select key, min(ord) from candidates
+             where key is not null and key <> ''
+             group by key
+          )
+          select k.key as key, ${referenceCountSql('k.key')} as referenced_by
+            from keys k
+           order by k.ord`;
+}
+
+/**
  * 作品 1 件を削除するときに、R2 のどのオブジェクトを消してよいかを判定する（確定26）。
  *
- * **削除側（M5-4 のゴミ掃除、8.4 の削除依頼）は、この判定を通してから R2 を消すこと。**
- * ビルド結果キャッシュ（3.8）により **1 つのオブジェクトを複数の作品が指しうる**ため、
- * 作品を消したついでに成果物を消すと、**同じ成果物を指す公開済みの作品が壊れる**。
+ * **削除側（M5-4 のゴミ掃除、8.4 の削除依頼、作者の削除と退会。#516）は、この判定を通してから
+ * R2 を消すこと。** ビルド結果キャッシュ（3.8）により **1 つのオブジェクトを複数の作品が
+ * 指しうる**ため、作品を消したついでに成果物を消すと、**同じ成果物を指す公開済みの作品が壊れる**。
  *
- * `games` 行が無い（既に消えている）場合は、消してよいものも残すものも無い空の計画を
+ * # 候補は `games` 行と、その作品の全版から集める（#516）
+ *
+ * 推敲した作品は、いま `games` が指していない古い版の成果物も持っている。**作品ごと消すなら
+ * それも候補である**（残すと、どの行からも指されない成果物が R2 に残り続ける）。参照者の側も
+ * 版を数える（{@link countArtifactReferences}）。
+ *
+ * # 文は 1 本である（版の数に比例させない）
+ *
+ * 候補の収集と被参照の数えを {@link artifactDeletionPlanSql} の 1 文で行う。**キーごとに
+ * 数える形（#116 の実装）のまま候補を版まで広げると、版が 30 個の作品で 62 本になり**、索引の出し入れと数え直しを
+ * 足すと D1 の 1 呼び出しあたりの枠（50）を越える。
+ *
+ * `games` 行も版も無い（既に消えている）場合は、消してよいものも残すものも無い空の計画を
  * 返す。**キーを推測して消しに行かない。**
  *
  * @param env バインディングと環境変数
@@ -332,21 +420,21 @@ export async function planArtifactDeletion(
   env: Env,
   gameId: string,
 ): Promise<ArtifactDeletionPlan> {
-  const row = await env.DB.prepare('select source_key, wasm_key from games where id = ?')
-    .bind(gameId)
-    .first<{ source_key: string | null; wasm_key: string | null }>();
-
-  // 同じキーが両方の列に入っていても 1 回しか判定しない（重複して delete を呼ばない）。
-  const keys = [...new Set([row?.source_key, row?.wasm_key].filter(isPresentKey))];
+  const { results } = await env.DB.prepare(artifactDeletionPlanSql())
+    .bind(gameId, gameId, gameId, gameId, gameId, gameId)
+    .all<{ key: string; referenced_by: number }>();
 
   const deletable: string[] = [];
   const retained: RetainedArtifact[] = [];
-  for (const key of keys) {
-    const referencedBy = await countArtifactReferences(env, key, gameId);
-    if (referencedBy === 0) {
-      deletable.push(key);
+  for (const row of results) {
+    // 空文字と NULL は SQL の側で落としてある。**それでも型ではなく値を見る**（`isPresentKey`）。
+    if (!isPresentKey(row.key)) {
+      continue;
+    }
+    if (row.referenced_by === 0) {
+      deletable.push(row.key);
     } else {
-      retained.push({ key, referencedBy });
+      retained.push({ key: row.key, referencedBy: row.referenced_by });
     }
   }
   return { gameId, deletable, retained };
@@ -383,8 +471,12 @@ export async function planArtifactDeletion(
  *   ここを省くと、**消えたオブジェクトを指す索引を自分で作り直す**ことになり、規約 2 で
  *   塞いだはずの経路が復活する。
  *
- * **`games` 行そのものは触らない。** tombstone 化（5.3）と削除の順序は M5-4 が持つ。
- * ここが持つのは「R2 のオブジェクトを、参照が無いときだけ消す」ことだけである。
+ * **`games` 行そのものは触らない。** 行ごと消すか中身だけ消すか（5.3）と、R2 と D1 の
+ * 順序は `src/game-deletion.ts` が持つ（#516）。ここが持つのは「R2 のオブジェクトを、
+ * 参照が無いときだけ消す」ことだけである。
+ *
+ * **D1 の文の本数は、戻す索引が無ければ 4 本で固定である**（数える 1・索引を読んで落とす 2・
+ * 数え直す 1。#516）。版の数に比例しない。
  *
  * **残る隙間を隠さない。** 3.3 はヒット判定（3.3-5）から `games` 行の作成（3.3-8）まで
  * 数十秒あきうるため、2 の直前にヒットした生成が 3 のあとで行を作る経路は残る。**その
@@ -408,8 +500,9 @@ export async function deleteUnreferencedArtifacts(
   const suspended = await takeBuildCacheByArtifact(env, planned.deletable);
 
   const confirmed = await planArtifactDeletion(env, gameId);
-  for (const key of confirmed.deletable) {
-    await env.BUCKET.delete(key);
+  // **1 回の呼び出しで消す**（R2 の `delete` はキーの配列を受ける。版の多い作品でも往復が増えない）。
+  if (confirmed.deletable.length > 0) {
+    await env.BUCKET.delete([...confirmed.deletable]);
   }
 
   const deleted = new Set(confirmed.deletable);

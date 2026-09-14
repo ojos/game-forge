@@ -1070,6 +1070,7 @@ export type PublishOutcome =
  * | `status = 'draft'` | **二度目の公開。** これが冪等性の関門である（2 通目は 0 行更新） |
  * | `generation_state = 'ready'` | **成果物の無い作品の公開。** `pending` / `running` / `failed` の行には `preview_key` も `wasm_key` も無く（{@link completeGameWithArtifacts}）、公開しても `/g/` は 404 にしかならない |
  * | `id = ?` | 対象の特定 |
+ * | `deletion_started_at is null` | **削除を掴まれた行の公開**（#516）。R2 を消してから D1 を確定するあいだに公開されると、消しかけの成果物を指す公開作品ができる（`src/game-deletion.ts`） |
  *
  * # 0 行だったときだけ、理由を引きに行く
  *
@@ -1141,7 +1142,8 @@ export async function publishGame(
   const result = await env.DB.prepare(
     `update games
         set status = ?, published_at = ?, tag1 = ?, tag2 = ?, tag3 = ?
-      where id = ? and author_id = ? and status = ? and generation_state = 'ready'`,
+      where id = ? and author_id = ? and status = ? and generation_state = 'ready'
+        and deletion_started_at is null`,
   )
     .bind(PUBLISHED_STATUS, now, tag1, tag2, tag3, gameId, authorId, DRAFT_STATUS)
     .run();
@@ -1154,13 +1156,15 @@ export async function publishGame(
   }
 
   const row = await env.DB.prepare(
-    'select status, published_at from games where id = ? and author_id = ?',
+    'select status, published_at, deletion_started_at from games where id = ? and author_id = ?',
   )
     .bind(gameId, authorId)
-    .first<{ status: string; published_at: number | null }>();
+    .first<{ status: string; published_at: number | null; deletion_started_at: number | null }>();
 
-  if (row === null) {
+  if (row === null || (row.status !== PUBLISHED_STATUS && row.deletion_started_at !== null)) {
     // 行が無い、あるいは他人の作品。**区別しない。**
+    // **削除を掴まれた行（#516）も同じ扱いにする**——消えていく途中の作品で、公開はさせない
+    // （`src/game-deletion.ts`）。
     return { ok: false, reason: 'not-found' };
   }
   if (row.status === PUBLISHED_STATUS) {
@@ -1488,8 +1492,11 @@ export async function renameGame(
   // 「断られた要求で履歴だけが積まれる」形ができる。**別名を付けない**ので、
   // どちらの文へもそのまま置ける（`insert ... select` 側は `from games` が
   // 1 つしかなく、列の解決に曖昧さが無い）。
+  // **削除を掴まれた行は改名しない**（#516。確定の batch の直前に履歴が積まれると、行ごと消す
+  // ときに履歴の外部キーが残る。`src/game-deletion.ts`）。
   const conditions =
-    "id = ? and author_id = ? and status <> ? and generation_state = 'ready' and title <> ?";
+    "id = ? and author_id = ? and status <> ? and generation_state = 'ready' and title <> ?" +
+    ' and deletion_started_at is null';
   const bindings = [gameId, authorId, REMOVED_STATUS, title] as const;
 
   const results = await env.DB.batch([
@@ -1527,12 +1534,13 @@ export async function renameGame(
   // 理由を引く SELECT にも `author_id = ?` を入れる——他人の作品に対して理由を
   // 撃ち分けると、任意の id が実在するかを外から確かめられる手がかりになる）。
   const row = await env.DB.prepare(
-    'select status, generation_state, title from games where id = ? and author_id = ?',
+    'select status, generation_state, title, deletion_started_at from games where id = ? and author_id = ?',
   )
     .bind(gameId, authorId)
-    .first<{ status: string; generation_state: string; title: string }>();
+    .first<{ status: string; generation_state: string; title: string; deletion_started_at: number | null }>();
 
-  if (row === null) {
+  if (row === null || (row.status !== REMOVED_STATUS && row.deletion_started_at !== null)) {
+    // 削除を掴まれた行（#516）は、行が無いのと同じ扱いにする（{@link publishGame} と同じ）。
     return { ok: false, reason: 'not-found' };
   }
   if (row.status === REMOVED_STATUS) {

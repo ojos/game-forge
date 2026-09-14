@@ -4,6 +4,7 @@ import { ACCOUNT_PATH } from '../src/account-paths.js';
 import { LOGIN_PATH, LOGOUT_PATH } from '../src/auth/google.js';
 import {
   BREADCRUMB_PARENTS,
+  HEADER_SEARCH_INPUT_IDS,
   breadcrumbLabelOf,
   resolveSiteViewer,
   siteHead,
@@ -159,7 +160,8 @@ describe('siteHead のヘッダ', () => {
       );
       expect(header).toContain('<button class="gf-button gf-button-secondary gf-button-sm" type="submit">検索</button>');
       expect(header).not.toContain('gf-button-primary');
-      expect(header.match(/gf-button-secondary/gu), '副は「つくる」と「検索」の 2 つだけ').toHaveLength(2);
+      // 「検索」は広い段用と狭い段用の 2 か所にある（同時に見えるのは片方。下の describe）。
+      expect(header.match(/gf-button-secondary/gu), '副は「つくる」と 2 か所の「検索」だけ').toHaveLength(3);
     }
     // **「ログイン」は控えめで、行き先は Google の認証のまま**（M13-8 へ持ち越し。#469 の scope.out）。
     expect(headerOf(siteHead({ title: 'x', viewer: SIGNED_OUT }))).toContain(
@@ -210,6 +212,84 @@ function headerOf(html: string): string {
   expect(header, 'ヘッダが無い（検査が空振りする）').not.toBeNull();
   return header![0];
 }
+
+describe('ヘッダの段ごとの置き場所（HTML の順＝見た目の順。#469 / PR #486 の Copilot code review）', () => {
+  /**
+   * ヘッダを、ナビ（`<nav>`）と狭い段の 2 行目（`.gf-header-row2`）に分ける。
+   *
+   * @param html `siteHead` の出力
+   * @returns ナビと 2 行目の HTML
+   */
+  function partsOf(html: string): { nav: string; row2: string } {
+    const header = headerOf(html);
+    const nav = /<nav class="gf-header-nav"[^>]*>[\s\S]*?<\/nav>/u.exec(header)?.[0] ?? '';
+    const row2 = /<div class="gf-header-row2">[\s\S]*?<\/div>\s*<\/header>/u.exec(header)?.[0] ?? '';
+    expect(nav, 'ナビが無い').not.toBe('');
+    expect(row2, '2 行目が無い').not.toBe('');
+    // **2 行目はナビの後ろにある**（HTML の順＝狭い段の見た目の順）。
+    expect(header.indexOf(row2)).toBeGreaterThan(header.indexOf(nav));
+    return { nav, row2 };
+  }
+
+  /**
+   * 検索窓のフォームを取り出す。
+   *
+   * @param fragment HTML の断片
+   * @returns フォームの HTML
+   */
+  function formsOf(fragment: string): string[] {
+    return fragment.match(/<form class="gf-header-search"[\s\S]*?<\/form>/gu) ?? [];
+  }
+
+  it('検索窓はナビの中（広い段用）と 2 行目（狭い段用）に 1 つずつあり、id とラベルの対応が置き場所ごとに閉じている', () => {
+    for (const viewer of [SIGNED_OUT, SIGNED_IN]) {
+      const html = siteHead({ title: 'x', viewer });
+      const { nav, row2 } = partsOf(html);
+      const wide = formsOf(nav);
+      const narrow = formsOf(row2);
+      expect(wide).toHaveLength(1);
+      expect(narrow).toHaveLength(1);
+      const idOf = (form: string): string => /<input id="([^"]+)"/u.exec(form)?.[1] ?? '';
+      const forOf = (form: string): string => /<label [^>]*for="([^"]+)"/u.exec(form)?.[1] ?? '';
+      expect(idOf(wide[0]!)).toBe(HEADER_SEARCH_INPUT_IDS.wide);
+      expect(idOf(narrow[0]!)).toBe(HEADER_SEARCH_INPUT_IDS.narrow);
+      for (const form of [wide[0]!, narrow[0]!]) {
+        expect(forOf(form), 'ラベルが同じフォームの入力欄を指す').toBe(idOf(form));
+        expect(form).toContain('role="search"');
+      }
+      // **文書全体で id が一意である**（2 か所に同じ id を置かない）。
+      const ids = [...html.matchAll(/\sid="([^"]+)"/gu)].map((match) => match[1]!);
+      expect(new Set(ids).size, `id が重複している: ${ids.join(', ')}`).toBe(ids.length);
+    }
+  });
+
+  it('検索語は両方の窓に戻す（どちらの段で開いても語が見える）', () => {
+    const html = siteHead({ title: 'x', viewer: SIGNED_OUT, searchQuery: '"宇宙"<b>' });
+    const { nav, row2 } = partsOf(html);
+    for (const form of [...formsOf(nav), ...formsOf(row2)]) {
+      expect(form).toContain(' value="&quot;宇宙&quot;&lt;b&gt;"');
+    }
+  });
+
+  it('未ログインの「ログイン」はナビの末尾（広い段用）と 2 行目の検索窓の後ろ（狭い段用）にあり、ログイン済みはアバターがナビの末尾', () => {
+    const signedOut = partsOf(siteHead({ title: 'x', viewer: SIGNED_OUT }));
+    for (const part of [signedOut.nav, signedOut.row2]) {
+      const login = part.indexOf(`href="${LOGIN_PATH}"`);
+      expect(login, 'ログインが無い').toBeGreaterThan(-1);
+      expect(part, 'ログインに目印のクラスが無い').toContain(`gf-header-login" href="${LOGIN_PATH}"`);
+      // **検索窓の後ろ**（HTML の順＝見た目の順）。
+      expect(login).toBeGreaterThan(part.indexOf('</form>'));
+    }
+    expect(signedOut.nav).not.toContain('gf-account-menu');
+
+    const signedIn = partsOf(siteHead({ title: 'x', viewer: SIGNED_IN }));
+    expect(signedIn.nav.indexOf('<details class="gf-account-menu">')).toBeGreaterThan(signedIn.nav.indexOf('</form>'));
+    expect(signedIn.row2).not.toContain('gf-account-menu');
+    expect(signedIn.row2).not.toContain(`href="${LOGIN_PATH}"`);
+    // **メニューは 1 つだけ**（段で置き場所を変えない）。
+    expect(headerOf(siteHead({ title: 'x', viewer: SIGNED_IN })).split('<details').length - 1).toBe(1);
+  });
+});
 
 /**
  * アカウントのメニュー（`<details>`）だけを取り出す。

@@ -728,9 +728,11 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
     }
   });
 
-  it('全画面のヘッダに、公開一覧へ GET で送る検索窓が 1 つある（ログイン状態によらない。#378）', async () => {
+  it('全画面のヘッダに、公開一覧へ GET で送る検索窓が置き場所ごとに 1 つずつある（ログイン状態によらない。#378 / #469）', async () => {
     // **2.3.7 v1.57 の「検索窓」**。素の GET のフォームで、JavaScript を要求しない。
     // **`size` 属性を使わない**（#282 で 390px の版面を押し広げた）。ラベルは見えないが読み上げに渡す。
+    // **#469 で、広い段用（ナビの中）と狭い段用（2 行目）の 2 か所に置いた。** 見えるのは段ごとに片方だけで、
+    // 見えない側は `display: none`（下の CSS の検査）。`id` は置き場所ごとに別の値である。
     const { pages } = await anonymousPages();
     const signedIn: { path: string; body: string }[] = [];
     for (const path of getPaths()) {
@@ -739,18 +741,54 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
     for (const { path, body } of [...pages, ...signedIn]) {
       const header = headerOf(body)!;
       const forms = header.match(/<form class="gf-header-search"[\s\S]*?<\/form>/gu) ?? [];
-      expect(forms, `${path} のヘッダの検索窓の数`).toHaveLength(1);
-      const form = forms[0]!;
-      expect(form, `${path} の検索窓`).toMatch(
-        new RegExp(`^<form class="gf-header-search" role="search" method="get" action="${PUBLIC_WORKS_PATH}">`, 'u'),
+      expect(forms, `${path} のヘッダの検索窓の数`).toHaveLength(2);
+      for (const [form, id] of [
+        [forms[0]!, 'gf-header-search-q'],
+        [forms[1]!, 'gf-header-search-q-narrow'],
+      ] as const) {
+        expect(form, `${path} の検索窓`).toMatch(
+          new RegExp(`^<form class="gf-header-search" role="search" method="get" action="${PUBLIC_WORKS_PATH}">`, 'u'),
+        );
+        expect(form, `${path} の検索窓の入力欄`).toContain(`name="${WORK_SEARCH_FIELD}"`);
+        expect(form, `${path} の検索窓の上限`).toContain(`maxlength="${MAX_SEARCH_LENGTH}"`);
+        expect(form, `${path} の検索窓のラベル`).toContain(`<label class="gf-header-search-label" for="${id}">`);
+        expect(form, `${path} の検索窓の入力欄の id`).toContain(`id="${id}"`);
+        expect(form, `${path} の検索窓に size 属性がある`).not.toMatch(/\ssize=/u);
+        expect(form, `${path} の検索窓にイベント属性がある`).not.toMatch(/\son[a-z]+=/u);
+      }
+      // **広い段用はナビの中、狭い段用はナビの後ろの 2 行目にある**（HTML の順＝見た目の順）。
+      const nav = /<nav class="gf-header-nav"[\s\S]*?<\/nav>/u.exec(header)?.[0] ?? '';
+      expect(nav, `${path} のナビに広い段用の検索窓が無い`).toContain(forms[0]!);
+      expect(nav, `${path} のナビに狭い段用の検索窓がある`).not.toContain(forms[1]!);
+      expect(header.indexOf(forms[1]!), `${path} の狭い段用の検索窓がナビより前にある`).toBeGreaterThan(
+        header.indexOf('</nav>'),
       );
-      expect(form, `${path} の検索窓の入力欄`).toContain(`name="${WORK_SEARCH_FIELD}"`);
-      expect(form, `${path} の検索窓の上限`).toContain(`maxlength="${MAX_SEARCH_LENGTH}"`);
-      expect(form, `${path} の検索窓のラベル`).toContain('<label class="gf-header-search-label" for="gf-header-search-q">');
-      expect(form, `${path} の検索窓の入力欄の id`).toContain('id="gf-header-search-q"');
-      expect(form, `${path} の検索窓に size 属性がある`).not.toMatch(/\ssize=/u);
-      expect(form, `${path} の検索窓にイベント属性がある`).not.toMatch(/\son[a-z]+=/u);
     }
+  });
+
+  it('ヘッダは段ごとの並びを CSS で入れ替えず、段ごとに検索窓とログインの片方だけを見せる宣言を持つ（#469 / PR #486）', () => {
+    // **HTML の順＝見た目の順＝Tab の順にする。** `order` で並びを入れ替えると Tab の順と見た目がずれ、
+    // `display: contents` は一部の支援技術で `<nav>` のランドマークを消す（PR #486 の Copilot code review）。
+    const css = env.TEST_APP_CSS;
+    // 宣言だけを見る（コメントの中の説明は数えない）。
+    expect(css.replaceAll(/\/\*[\s\S]*?\*\//gu, ''), 'app.css に display: contents の宣言がある').not.toMatch(
+      /display:\s*contents/u,
+    );
+    const headerSection = css.slice(css.indexOf('@section header'), css.indexOf('@section breadcrumb'));
+    const shellSection = css.slice(css.indexOf('@section shell'), css.indexOf('@section base'));
+    for (const [name, section] of [
+      ['header', headerSection],
+      ['shell', shellSection],
+    ] as const) {
+      expect(section.length, `@section ${name} が見つかりません`).toBeGreaterThan(0);
+      expect(section.replaceAll(/\/\*[\s\S]*?\*\//gu, ''), `@section ${name} に order がある`).not.toMatch(/\border:/u);
+    }
+    // 狭い段（既定）: ナビの中の広い段用を消す。広い段（@media）: 2 行目を消し、ナビの中を出す。
+    expect(headerSection).toMatch(/\.gf-header-nav \.gf-header-search,\s*\.gf-header-nav \.gf-header-login\s*\{\s*display:\s*none;/u);
+    const wide = /@media \(min-width: 768px\) \{([\s\S]*?)\n\}/u.exec(shellSection)?.[1] ?? '';
+    expect(wide).toMatch(/\.gf-header-row2\s*\{\s*display:\s*none;/u);
+    expect(wide).toMatch(/\.gf-header-nav \.gf-header-search\s*\{\s*display:\s*flex;/u);
+    expect(wide).toMatch(/\.gf-header-nav \.gf-header-login\s*\{\s*display:\s*inline-flex;/u);
   });
 
   it('ヘッダの検索窓は、入力欄とボタンを横 1 行に並べる宣言を持つ（共通の form の縦積みを上書きする。#378）', () => {

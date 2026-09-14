@@ -320,9 +320,9 @@ blockquote {
 
   /* #469: ヘッダとフッタ（仕様 2.5.6 / 2.5.7）——ここから。
    *
-   * **ヘッダは高さ 64px の横 1 行に戻す**（`@section header` の既定は狭い段の 2 行）。`<nav>` を flex の箱に戻し、
-   * 検索窓と「ログイン」を HTML の並びの位置へ戻す。改行の印（`::after`）は消す。ナビの間は 8px、検索窓と
-   * アバターの前だけもう 8px 空ける（承認したモックアップの間隔）。
+   * **ヘッダは高さ 64px の横 1 行にする**（`@section header` の既定は狭い段の 2 行）。**2 行目を消し、ナビの中の
+   * 検索窓と「ログイン」を出す**——並びは HTML の順のままで、`order` は使わない（`@section header` の冒頭）。
+   * ナビの間は 8px、検索窓とアバターの前だけもう 8px 空ける（承認したモックアップの間隔）。
    *
    * **フッタはロゴを左、項目を右に分け**、項目の 2 列を文言の幅に詰めて、右の列の外側を器の右端に揃える
    * （仕様 2.5.7）。列の間はモックアップの 48px ではなく余白の段の 40px（`--gf-gap-5`。2.5.8「足す段は無い」）。
@@ -336,32 +336,23 @@ blockquote {
     padding-block: 0;
   }
 
-  body .gf-header::after {
-    content: none;
-  }
-
   body .gf-header-nav {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
     gap: var(--gf-gap-2);
   }
 
-  body .gf-header-nav > :first-child,
-  body .gf-header-nav > * + * {
-    margin-left: 0;
+  body .gf-header-row2 {
+    display: none;
   }
 
-  body .gf-header-search,
-  body .gf-header-login {
-    order: 0;
+  body .gf-header-nav .gf-header-search {
+    display: flex;
   }
 
-  body .gf-header-search {
-    flex: none;
+  body .gf-header-nav .gf-header-login {
+    display: inline-flex;
   }
 
-  body .gf-header-search,
+  body .gf-header-nav .gf-header-search,
   body .gf-account-menu {
     margin-left: var(--gf-gap-2);
   }
@@ -1599,19 +1590,19 @@ a.gf-card-author {
  * 面積であって、ロゴの大きさではない**——作品ページの主役は作品枠である。**トップだけロゴを `<h1>` で包む**
  * （`src/html.ts` の `siteHeader`）。
  *
- * ## 狭い段で 2 行にする仕組み
+ * ## 狭い段で 2 行にする仕組み（HTML の順で作る。PR #486 の Copilot code review）
  *
- * **HTML の並びは変えない**（ロゴ / 作品をさがす / つくる / 検索窓 / ログイン。2.3.7 の並びで、Tab と読み上げの
- * 順もこれである）。狭い段では `<nav>` を `display: contents` にしてナビの項目をヘッダの flex の項目へ上げ、
- * **`order` で検索窓を改行の印（`::after`）の後ろへ回す**。広い段では `<nav>` を flex の箱に戻す（`@section shell`）。
+ * **どの段でも HTML の順＝見た目の順＝Tab と読み上げの順にする。** `order` で並びを入れ替えず、`<nav>` を
+ * `display: contents` にもしない（ランドマークが一部の支援技術から消える）。
  *
- * - **未ログインの「ログイン」も 2 行目へ回す**（`.gf-header-login`）。**1 行目に収まらないため**である——390px の
- *   版面は 358px で、ロゴ 122px ＋「作品をさがす」110px ＋「つくる」68px ＋「ログイン」82px は間を足さなくても越える。
- *   アバター（円 32px ＋開閉の印）なら 1 行目に収まる
- * - **並びを `order` で変えるのは狭い段の検索窓と「ログイン」だけ**である。見た目の順と Tab の順が食い違うのは
- *   この 2 つが「1 行目の右端より後ろ」に来ることだけで、行の中の順は HTML のままである
- * - **`display: contents` の `<nav>` は、古いブラウザの読み上げでランドマークとして扱われないことがある**
- *   （中のリンクと検索窓は残る）。狭い段で HTML の並びを保つことを優先した
+ * - HTML は ロゴ →`<nav>`（作品をさがす / つくる / **広い段用の検索窓** / アバター または **広い段用のログイン**）→
+ *   **2 行目**（`.gf-header-row2`。**狭い段用の検索窓** / 未ログインなら**狭い段用のログイン**）の順である
+ *   （`src/html.ts` の `siteHeader`）
+ * - **狭い段（下の既定）では広い段用の 2 つを `display: none`、広い段（`@section shell`）では 2 行目を `display: none`
+ *   にする。** `display: none` の要素は読み上げの木にも Tab の順にも入らないので、利用者に届く窓は常に 1 つである
+ * - **未ログインの「ログイン」を 2 行目に置くのは、1 行目に収まらないため**である——390px の版面は 358px で、ロゴ
+ *   122px ＋「作品をさがす」110px ＋「つくる」68px ＋「ログイン」82px は間を足さなくても越える。アバター（円 32px ＋
+ *   開閉の印）なら 1 行目に収まる
  *
  * **幅に反応する規則をここに置かない**（区画の規約 3）。**`position: sticky` にしない**——390px では高さ 1 行
  * ぶんが常に作品の絵を隠す（仕様 2.5.6）。
@@ -1627,12 +1618,11 @@ a.gf-card-author {
    */
   align-items: center;
   /*
-   * 行の間は、改行の印（`::after`。高さ 0 で 1 行ぶんを取る）の上下に 1 つずつ入るので、合わせて 8px になる。
-   * **狭い段では列の間を持たない**——ロゴとナビの間は先頭の項目の `margin-left: auto` が取り、ナビの項目の間は
-   * 項目の側が 4px ずつ持つ（下の `.gf-header-nav > * + *`）。列の間で空けると、ロゴとナビの間にも 4px が掛かり、
-   * 390px の 1 行目（ロゴ 122px ＋ 110px ＋ 68px ＋アバター 44px ＋間 8px ＝ 352px。版面は 358px）に収まらない。
+   * **狭い段では列の間を持たない**——ロゴとナビの間はナビの `margin-left: auto` が取り、ナビの項目の間はナビの
+   * `gap` が持つ。列の間でも空けると、390px の 1 行目（ロゴ 122px ＋ 110px ＋ 68px ＋アバター 44px ＋間 8px ＝
+   * 352px。版面は 358px）に端数ぶん収まらず、アバターが次の行へ落ちた（実ブラウザで確かめた）。
    */
-  gap: var(--gf-gap-1) 0;
+  gap: var(--gf-gap-2) 0;
   min-height: 4rem;
   /*
    * **器の上端から始める。** body の上の余白（`@section shell` の `body`）をヘッダのぶんだけ打ち消し、高さ 64px の
@@ -1641,13 +1631,6 @@ a.gf-card-author {
   margin: calc(-1 * var(--gf-gap-5)) 0 var(--gf-gap-4);
   padding-block: var(--gf-gap-2);
   border-bottom: 1px solid var(--gf-rule-soft);
-}
-
-/* 狭い段の改行の印。**検索窓（`order: 2`）と「ログイン」（`order: 3`）をこの後ろの 2 行目へ送る。** */
-.gf-header::after {
-  content: '';
-  order: 1;
-  flex-basis: 100%;
 }
 
 /*
@@ -1664,9 +1647,14 @@ a.gf-card-author {
   image-rendering: pixelated;
 }
 
+/*
+ * ヘッダのロゴのリンク。**下線を打ち消す**——中身は block の画像だけで下線は描かれない見込みだが、`@section base` の
+ * `a` の下線を継いだままにしない（#469 で `.gf-header a` の打ち消しを外した。PR #486 の Copilot code review）。
+ */
 .gf-header-logo {
   display: block;
   flex: none;
+  text-decoration: none;
 }
 
 /*
@@ -1682,21 +1670,36 @@ a.gf-card-author {
 }
 
 /*
- * ナビの箱。**狭い段では箱を作らず**、項目をヘッダの flex の項目として並べる（冒頭の「狭い段で 2 行にする仕組み」）。
- * 広い段で flex の箱に戻すのは `@section shell` である。
+ * ナビの箱。**ロゴとの間の余りを取り、ナビとアバターを右端へ寄せる**（どちらの段でも。広い段の間隔は
+ * `@section shell` が広げる）。折り返しを許すのは、想定より広い文字で 1 行目に収まらない端末で版面を越えないためである。
  */
 .gf-header-nav {
-  display: contents;
-}
-
-/* 狭い段では、ナビの先頭の項目がロゴとの間の余りを取り、ナビとアバターを右端へ寄せる。 */
-.gf-header-nav > :first-child {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-1);
   margin-left: auto;
 }
 
-/* 狭い段のナビの項目の間（ヘッダの列の間を 0 にした代わり）。2 行目の先頭に来る検索窓は、下で 0 に戻す。 */
-.gf-header-nav > * + * {
-  margin-left: var(--gf-gap-1);
+/*
+ * **狭い段では、ナビの中の広い段用の検索窓と「ログイン」を出さない**（冒頭の「狭い段で 2 行にする仕組み」）。
+ * 代わりに 2 行目（`.gf-header-row2`）の同じ物が見える。広い段で入れ替えるのは `@section shell` である。
+ */
+.gf-header-nav .gf-header-search,
+.gf-header-nav .gf-header-login {
+  display: none;
+}
+
+/* 狭い段の 2 行目（検索窓と、未ログインなら「ログイン」）。ヘッダの幅いっぱいに取り、検索窓が伸びる。 */
+.gf-header-row2 {
+  display: flex;
+  flex: 1 1 100%;
+  align-items: center;
+  gap: var(--gf-gap-1);
+}
+
+.gf-header-row2 .gf-header-search {
+  flex: 1 1 auto;
 }
 
 /*
@@ -1705,11 +1708,6 @@ a.gf-card-author {
  */
 .gf-header .gf-button {
   align-self: center;
-}
-
-/* 狭い段の「ログイン」は、検索窓の右の 2 行目に置く（冒頭の理由）。 */
-.gf-header-login {
-  order: 3;
 }
 
 /*
@@ -1901,8 +1899,8 @@ a.gf-card-author {
  * だけでは、共通の `form` の `flex-direction: column` が残り、入力欄とボタンが縦に積まれる
  * （PR #432 の Copilot の指摘。`test/page-shell.test.ts` がこの宣言を見る）。
  *
- * **狭い段では 2 行目に置き、行いっぱいに伸ばす**（`order` と `flex`。冒頭の「狭い段で 2 行にする仕組み」）。
- * 広い段で横 1 行の中へ戻すのは `@section shell` である。
+ * **同じ窓がナビの中（広い段用）と 2 行目（狭い段用）にあり、段ごとに片方だけが見える**（冒頭の「狭い段で 2 行に
+ * する仕組み」）。2 行目の窓は行いっぱいに伸びる（上の `.gf-header-row2 .gf-header-search`）。
  *
  * **高さは小さいボタンと揃えて 32px**（仕様 2.5.6。「検索」は小さい副のボタン）。**幅は CSS が持つ**（`size` 属性は
  * 使わない。#282）。入力欄は 12.5rem を基準に**縮めてよい**（`min-width: 0`）。**文字は 16px を下回らせない**
@@ -1914,8 +1912,6 @@ a.gf-card-author {
   flex-wrap: nowrap;
   align-items: center;
   gap: var(--gf-gap-1);
-  order: 2;
-  flex: 1 1 auto;
   max-width: 100%;
   margin: 0;
 }

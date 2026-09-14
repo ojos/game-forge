@@ -47,6 +47,20 @@ const BUTTON_KINDS: readonly (readonly [cls: string, label: string])[] = [
 ];
 
 /**
+ * 部品のクラスを持たない `<button>` の見本（#473。既定は副の見た目）。
+ *
+ * **この画面だけが、クラスを持たない `<button>` を置いてよい**——既定の見た目を確かめるための見本だからである。
+ * `test/button-parts.test.ts` は `data-dev-sample="default"` を持つものを、このファイルの中でだけ許す。
+ * 状態は通常・ホバー（`data-state` で固定する）・押せないで、隣に副のボタンの部品を置いて見比べる。
+ */
+const DEFAULT_BUTTON_SAMPLES = [
+  '<button type="button" data-dev-sample="default">もっと見る</button>',
+  '<button type="button" data-dev-sample="default" data-state="hover">ホバー時</button>',
+  '<button type="button" data-dev-sample="default" disabled>押せない</button>',
+  '<button type="button" class="gf-button gf-button-secondary">副（見比べる）</button>',
+].join('');
+
+/**
  * ボタンを 1 つ描く。
  *
  * @param cls 段のクラス
@@ -116,6 +130,9 @@ ${buttonRows}
 </table>
 </div>
 <p class="dev-row"><a class="gf-button gf-button-primary" href="#dev-buttons">移動なら a 要素（主）</a><a class="gf-button gf-button-secondary gf-button-sm" href="#dev-buttons">a 要素（副・小）</a></p>
+<h3 id="dev-button-default">部品のクラスを持たない button 要素（既定）</h3>
+<p>既定は<strong>副と同じ見た目</strong>です（#473）。主の見た目は <code>gf-button-primary</code> だけが持ちます。画面のボタンは既定に寄りかからず、必ず部品のクラスを付けます（<code>test/button-parts.test.ts</code> が見ます）。</p>
+<p class="dev-row">${DEFAULT_BUTTON_SAMPLES}</p>
 </section>
 
 <section class="dev-section" aria-labelledby="dev-links">

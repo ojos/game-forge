@@ -195,7 +195,8 @@ export const SOURCE_TOO_LARGE_NOTICE =
  * @returns HTML
  */
 export function renderWorkSourcePage(view: WorkSourceView, viewer: SiteViewer): string {
-  const back = `<p><a href="${workPagePath(view.gameId)}">作品ページへ戻る</a></p>`;
+  // **「作品ページへ戻る」は小さい副のボタン**（移動なので `<a>`。仕様 2.5.5 / #473）。この画面に主のボタンは無い。
+  const back = `<p><a class="gf-button gf-button-secondary gf-button-sm" href="${workPagePath(view.gameId)}">作品ページへ戻る</a></p>`;
   // **読めなかったときも 404 にしない。** 作品は公開済みで、ソースを出してよいことまでは
   // 決まっている——404 の「見つかりません」は「URL が違う」と読める（`src/work-page.ts` の
   // `removedSection` が取り下げた作品を 404 にしないのと同じ理由）。

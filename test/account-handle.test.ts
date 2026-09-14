@@ -259,3 +259,16 @@ describe('ハンドル名の保存の口', () => {
     expect(unknownBody).not.toContain('<script>');
   });
 });
+
+describe('ハンドル名のタブの見た目（#473 / 仕様 2.5.4 / 2.5.5）', () => {
+  it('フォームはブロックで、保存のボタンは副。主のボタンを置かず、保存の知らせもブロック', async () => {
+    const userId = await seedUser();
+    const body = await (await openTab(routesAt(NOW), await cookieFor(userId), '?saved=1')).text();
+    expect(body.match(/\bgf-button-primary\b/gu) ?? []).toHaveLength(0);
+    const main = pageBodyOf(body);
+    expect(main).toContain(`<form class="gf-block" method="post" action="${ACCOUNT_HANDLE_API_PATH}">`);
+    expect(main).toContain('<button type="submit" class="gf-button gf-button-secondary">ハンドル名を決める</button>');
+    expect(main).toContain('<p class="gf-block" role="status">ハンドル名を保存しました。</p>');
+    expect(main).toContain('<ul class="gf-tabs">');
+  });
+});

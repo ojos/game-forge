@@ -363,7 +363,9 @@ describe('アカウントのメニュー（2.3.7 v1.57 / #372）', () => {
     expect(forms).toHaveLength(1);
     expect(forms[0]).toContain('method="post"');
     expect(signedIn).not.toContain(`href="${LOGOUT_PATH}"`);
-    expect(accountMenuOf(signedIn)!).toMatch(/<button type="submit">ログアウト<\/button>/u);
+    // **メニューの項目として控えめのボタンの部品を持つ**（仕様 2.5.5「ドロップダウンの中身」/ #473）。見た目はほかの項目と同じで、
+    // 形は app.css の `.gf-account-menu-list button` が揃える。
+    expect(accountMenuOf(signedIn)!).toContain('<button class="gf-button gf-button-tertiary" type="submit">ログアウト</button>');
   });
 
   it('未ログインのヘッダにはメニューもログアウトも、招待コードの発行も無い', () => {

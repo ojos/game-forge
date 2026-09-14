@@ -433,7 +433,7 @@ function accountMenu(avatar: string | null): string {
       <summary><span class="gf-avatar" aria-hidden="true">${avatarImage(avatar)}</span><span class="gf-account-menu-name">アカウントのメニュー</span></summary>
       <ul class="gf-account-menu-list">
         ${items}
-        <li><form method="post" action="${LOGOUT_PATH}"><button type="submit">ログアウト</button></form></li>
+        <li><form method="post" action="${LOGOUT_PATH}"><button class="gf-button gf-button-tertiary" type="submit">ログアウト</button></form></li>
       </ul>
     </details>`;
 }

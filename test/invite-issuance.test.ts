@@ -573,3 +573,48 @@ describe('アプリの経路表への結線', () => {
     expect(registered).toContain(`POST ${INVITES_API_PATH}`);
   });
 });
+
+describe('招待を発行する画面の見た目（#473 / 仕様 2.5.4 / 2.5.5）', () => {
+  it('残りの本数と「招待コードを 1 本発行する」（主のボタン）が 1 つのブロックにあり、主はこの 1 つだけ', async () => {
+    const cookie = await sessionCookie(await seedUser());
+    const body = await (await call(INVITES_PATH, { cookie, accept: 'text/html' })).text();
+    expect(body.match(/\bgf-button-primary\b/gu) ?? []).toHaveLength(1);
+    const block = /<div class="gf-block gf-invite-balance">([\s\S]*?)<\/div>/u.exec(pageBodyOf(body))?.[1] ?? '';
+    expect(block).toContain(`いま発行できるのは <strong>${INVITE_QUOTA} 本</strong>です。`);
+    expect(block).toContain('<button type="submit" class="gf-button gf-button-primary">招待コードを 1 本発行する</button>');
+  });
+
+  it('使い切ったら主のボタンを出さず、知らせは同じブロックの段落である', async () => {
+    const cookie = await sessionCookie(await seedUser());
+    for (let issued = 0; issued < INVITE_QUOTA; issued += 1) {
+      await call(INVITES_API_PATH, { method: 'POST', cookie });
+    }
+    const body = await (await call(INVITES_PATH, { cookie, accept: 'text/html' })).text();
+    expect(body.match(/\bgf-button-primary\b/gu) ?? []).toHaveLength(0);
+    const block = /<div class="gf-block gf-invite-balance">([\s\S]*?)<\/div>/u.exec(pageBodyOf(body))?.[1] ?? '';
+    expect(block).toContain('<p>招待枠を使い切りました。</p>');
+  });
+
+  it('発行した招待はブロックの行で、未使用・使用済み・期限切れはチップである', async () => {
+    const userId = await seedUser();
+    const cookie = await sessionCookie(userId);
+    const unused = await issueOne(cookie);
+    const used = await issueOne(cookie);
+    const expired = await issueOne(cookie);
+    const redeemer = await seedUser();
+    await env.DB.prepare('update invites set used_by = ?, used_at = ? where code = ?')
+      .bind(redeemer, Math.floor(Date.now() / 1000), used)
+      .run();
+    await env.DB.prepare('update invites set expires_at = 1 where code = ?').bind(expired).run();
+
+    const main = pageBodyOf(await (await call(INVITES_PATH, { cookie, accept: 'text/html' })).text());
+    expect(main).toContain('<ul class="gf-block gf-block-rows gf-invites">');
+    for (const [code, state] of [
+      [unused, '未使用'],
+      [used, '使用済み'],
+      [expired, '期限切れ'],
+    ] as const) {
+      expect(main, state).toContain(`<li><code>${formatInviteCode(code)}</code> <span class="gf-chip">${state}</span></li>`);
+    }
+  });
+});

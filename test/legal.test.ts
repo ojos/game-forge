@@ -528,3 +528,16 @@ describe('受付の入口（非ログイン）', () => {
     expect(takedownMessageOf('missing-field')).toContain('すべての項目');
   });
 });
+
+describe('削除依頼のフォームの見た目（#473 / 仕様 2.5.4 / 2.5.5）', () => {
+  it('入力欄はブロックのフォームにあり、「依頼を送る」がこの画面で 1 つだけの主のボタンである', async () => {
+    const { status, body } = await get(TAKEDOWN_PATH);
+    expect(status).toBe(200);
+    expect(body.match(/\bgf-button-primary\b/gu) ?? []).toHaveLength(1);
+    const form = /<form class="gf-block" method="post" action="[^"]*">([\s\S]*?)<\/form>/u.exec(body)?.[1] ?? '';
+    expect(form, 'フォームがブロックでない').not.toBe('');
+    expect(form.match(/<input type="text"/gu) ?? []).toHaveLength(3);
+    expect(form).toContain('<textarea');
+    expect(form).toContain('<button type="submit" class="gf-button gf-button-primary">依頼を送る</button>');
+  });
+});

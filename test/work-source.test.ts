@@ -570,3 +570,15 @@ describe('文字の向きを変える制御文字を、表示のときだけ見�
     expect(rule![1]!).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/iu);
   });
 });
+
+describe('ソースの画面の見た目（#473 / 仕様 2.5.5）', () => {
+  it('「作品ページへ戻る」は小さい副のボタンで、主のボタンは無い', async () => {
+    const { id } = await seedPublished('parts');
+    const { status, body } = await open(workSourcePath(id));
+    expect(status).toBe(200);
+    expect(body).toContain(
+      `<p><a class="gf-button gf-button-secondary gf-button-sm" href="${workPagePath(id)}">作品ページへ戻る</a></p>`,
+    );
+    expect(body.match(/\bgf-button-primary\b/gu) ?? []).toHaveLength(0);
+  });
+});

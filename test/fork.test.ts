@@ -1007,3 +1007,23 @@ describe('親ソースは messages の先頭に載り、2 回目はキャッシ�
     expect(usages[1]!.cacheReadInputTokens).toBe(0);
   });
 });
+
+describe('改造の確認画面のボタン（#473 / 仕様 2.5.5）', () => {
+  it('「このまま改造する」「整理して改造する」は主のボタンで、それぞれの画面で主はこの 1 つだけ', async () => {
+    const author = await createUser('fork-parts-author');
+    const forker = await createUser('fork-parts-forker');
+    const spy = startSpy();
+    for (const [source, label] of [
+      [NEAR_LIMIT_SOURCE, 'このまま改造する'],
+      [OVER_LIMIT_SOURCE, '整理して改造する'],
+    ] as const) {
+      const parentId = await createPublishedGame(author, source);
+      const page = await (await postFork(forker, parentId, '敵を増やす', spy.pipeline)).text();
+      expect(page, label).toContain(`<button type="submit" class="gf-button gf-button-primary">${label}</button>`);
+      expect(page.match(/\bgf-button-primary\b/gu) ?? [], label).toHaveLength(1);
+      // 「やめる」は作品ページへ戻る移動（`<a>`）のまま。
+      expect(page, label).toContain(`<a href="${workPagePath(parentId)}">やめる</a>`);
+    }
+    expect(spy.calls).toHaveLength(0);
+  });
+});

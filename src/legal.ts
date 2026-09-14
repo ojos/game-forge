@@ -262,6 +262,9 @@ ${siteFooter()}
  *
  * **JavaScript を要求しない**（素の `<form>`。`src/publish.ts` と同じ形）。
  *
+ * **入力欄は面のブロック（`.gf-block`）に置き、「依頼を送る」はこの画面で 1 つだけの主のボタンにする**（仕様 2.5.4 / 2.5.5 / #473）。
+ * 項目とその並びは変えていない（承認したモックアップ Version 6 は広い段で先頭の 2 欄を横に並べるが、縦に積んだまま。#473 の PR の本文）。
+ *
  * @param error 直前の依頼が断られた理由（無ければ null）
  * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns HTML
@@ -282,7 +285,7 @@ ${message}
 <!-- 入力欄に size / cols を置かない。size="50" は幅 390px の端末で layout viewport を
      498px へ広げ、ページ全体を縮めたうえで欄がはみ出す（#282 で実測）。文字数の上限は
      maxlength が持ち、見た目の幅は M8-1 の app.css が与える。 -->
-<form method="post" action="${TAKEDOWN_SUBMIT_PATH}">
+<form class="gf-block" method="post" action="${TAKEDOWN_SUBMIT_PATH}">
   <p><label>対象の作品 URL または作品 ID<br>
     <input type="text" name="${TAKEDOWN_FIELDS.gameId}" required>
   </label><br>
@@ -300,7 +303,7 @@ ${message}
     <textarea name="${TAKEDOWN_FIELDS.body}" required maxlength="${MAX_BODY_LENGTH}" rows="8"></textarea>
   </label></p>
 
-  <button type="submit">依頼を送る</button>
+  <button type="submit" class="gf-button gf-button-primary">依頼を送る</button>
 </form>
 ${siteFooter()}
 `;

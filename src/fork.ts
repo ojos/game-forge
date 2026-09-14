@@ -234,6 +234,9 @@ const SIZE_WARNING_STATUS = 409;
 /**
  * 事前警告の画面を返す（確定18 の条件 1）。
  *
+ * **「このまま改造する」は主のボタン**（仕様 2.5.5。#473）——この画面でしてほしいことは 1 つで、「やめる」は作品ページへ戻る
+ * 移動（`<a>`）である。**主はこの 1 つだけ**で、外枠のヘッダは主を持たない。
+ *
  * **警告と選択肢を 1 画面に収める**（5.3）。読んだうえで「このまま改造する」を押すと、
  * 同じ入力が同意付きで戻ってくる。**差分プロンプトを預かり直すのはこの画面である**
  * ——作者に入力し直させると、警告のたびに書いた文章が消える。
@@ -257,7 +260,7 @@ function sizeWarningPage(parentId: string, prompt: string, bytes: number): Respo
   <input type="hidden" name="${FORK_PARENT_ID_FIELD}" value="${escapeHtml(parentId)}">
   <input type="hidden" name="${FORK_PROMPT_FIELD}" value="${escapeHtml(prompt)}">
   <input type="hidden" name="${FORK_SIZE_CONSENT_FIELD}" value="${FORK_SIZE_CONSENT_PROCEED}">
-  <button type="submit">このまま改造する</button>
+  <button type="submit" class="gf-button gf-button-primary">このまま改造する</button>
 </form>
 <p><a href="${workPagePath(parentId)}">やめる</a></p>`,
     SIZE_WARNING_STATUS,
@@ -266,6 +269,9 @@ function sizeWarningPage(parentId: string, prompt: string, bytes: number): Respo
 
 /**
  * 整理するかどうかを問う画面を返す（**確定18 の条件 2**）。
+ *
+ * **「整理して改造する」は主のボタン**（仕様 2.5.5。#473）——生成枠を使う操作だが、作品ページの「この内容で改造する」
+ * （`src/work-page.ts`）と同じく、この画面でいちばんしてほしい 1 つである。費用は押す前に文で言っている（下）。
  *
  * **問いであって、断りではない。** 5.3 は「拒否のみは採らない」と定め、その理由を
  * 10.3 の撤退条件（「3 世代以上の系統が 1 本も出ていない」）に置いている——システムが
@@ -295,7 +301,7 @@ function tidyOfferPage(parentId: string, prompt: string, bytes: number): Respons
   <input type="hidden" name="${FORK_PARENT_ID_FIELD}" value="${escapeHtml(parentId)}">
   <input type="hidden" name="${FORK_PROMPT_FIELD}" value="${escapeHtml(prompt)}">
   <input type="hidden" name="${FORK_SIZE_CONSENT_FIELD}" value="${FORK_SIZE_CONSENT_TIDY}">
-  <button type="submit">整理して改造する</button>
+  <button type="submit" class="gf-button gf-button-primary">整理して改造する</button>
 </form>
 <p><a href="${workPagePath(parentId)}">やめる</a></p>`,
     SIZE_WARNING_STATUS,

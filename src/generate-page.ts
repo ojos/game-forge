@@ -110,7 +110,6 @@
  * 反応する近似のままなので、**サービス全体の状態を決めるのは前者だけ**にしてある。
  */
 import { siteFooter } from './legal.js';
-import { LOGIN_PATH } from './auth/google.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from './generate.js';
 // 題名の上限の正本は `src/games.ts` が持つ（#365）。案内文へ書き写さない。
 import { MAX_TITLE_LENGTH } from './games.js';
@@ -652,20 +651,22 @@ const GENERATE_SCRIPT = `
  * ない（公開トップからここへのリンクがある）。利用者にできるのは登録かログインなので、
  * そこまでを 1 往復で出す。
  *
- * **待機リストへの導線も `/signup` が持つ。** 8.1 は「未招待ユーザーが『改造する』を
- * 押した場合は待機リスト登録へ導線を変換する」と定めており、その受け皿は既に
- * `src/signup.ts` にある。ここで別の入口を作らない。
+ * **導線は `/signup`（ログイン・登録）への主のボタン 1 つにまとめる**（#473。intake で利用者が選んだ。仕様 2.3.7 の #435 注記の
+ * 「生成画面の案内の 3 つのリンクの整理は実装 issue で扱う」）。#472 で `/signup` がログイン・招待コード・待機リストの 3 つの
+ * ブロックを持つ画面になったので、#473 までの 3 つのリンク（招待コードで登録する / 待機リストに登録する / Google でログイン）は
+ * どれもその画面の 1 ブロックへ行く道だった。**案内の文（見出しと、生成が招待制であること）は残す。**
+ *
+ * - **主のボタンは、この画面でこの 1 つだけ**（仕様 2.5.5）。未ログインの画面にはフォームが無く、外枠のヘッダは主を持たない
+ * - **要素は `<a>`**（移動である。2.5.5「見た目がボタンでも、移動なら `<a>` のままにする」）
+ * - **待機リストへの導線も `/signup` が持つ。** 8.1 は「未招待ユーザーが『改造する』を押した場合は待機リスト登録へ導線を変換する」と
+ *   定めており、その受け皿は `src/signup.ts` にある。ここで別の入口を作らない
  *
  * @returns HTML
  */
 function signedOutSection(): string {
   return `<h2>生成には招待コードでの登録が必要です</h2>
 <p><strong>生成は招待コードをお持ちの方に限ります</strong>（8.1）。遊ぶことと URL の共有に招待は要りません。</p>
-<ul>
-  <li><a href="${SIGNUP_PATH}">招待コードで登録する</a></li>
-  <li><a href="${SIGNUP_PATH}">招待コードをお持ちでない方（待機リストに登録する）</a></li>
-  <li><a href="${LOGIN_PATH}">すでにアカウントをお持ちの方（Google でログイン）</a></li>
-</ul>`;
+<p><a class="gf-button gf-button-primary" href="${SIGNUP_PATH}">ログイン・登録</a></p>`;
 }
 
 /**
@@ -708,10 +709,11 @@ function signedInSection(view: GeneratePageView): string {
   // 4.4 の常時表示。**状態にかかわらず必ず 1 つ出る。** 文言は固定文字列だが、
   // `escapeHtml` は通す（`src/signup.ts` / `src/invite-issuance.ts` と同じ理由で、
   // 値の出どころが変わったときに安全側が既定になるようにしておく）。
-  const quota = `<p id="generate-quota">${escapeHtml(availabilityNotice(view.availability))}</p>`;
+  const notice = escapeHtml(availabilityNotice(view.availability));
 
+  // **止まっているときは、常時表示の文言そのものが知らせである**——面のブロックに入れる（仕様 2.5.4 / #473）。
   if (!canSubmit(view.availability)) {
-    return `${quota}
+    return `<p class="gf-block" id="generate-quota">${notice}</p>
 
 ${stillAvailableSection()}`;
   }
@@ -723,21 +725,27 @@ ${stillAvailableSection()}`;
     )
     .join('\n');
 
-  return `${quota}
-<form id="generate-form" method="post" action="${GENERATE_PATH}">
-  <label for="generate-prompt">どんなゲームを作りますか（日本語で、${MAX_PROMPT_LENGTH} 文字まで）</label>
-  <p id="generate-title-hint">${escapeHtml(TITLE_DECLARATION_NOTICE)}</p>
+  // **入力欄とヒントと「生成する」を 1 つのブロックにし、残枠は入力欄の名前の行の右に置く**（#473。承認したモックアップ
+  // Version 6）。並びは HTML の順のまま（名前 → 残枠 → ヒント → 入力欄 → ボタン）で、狭い段では残枠が名前の下へ折り返す
+  // ——`order` を使わないので、見た目の順と読み上げ・Tab の順が割れない（仕様 2.5.6 の #469 実装注記）。
+  // **「生成する」は主のボタンで、この画面の主はこの 1 つだけ**（2.5.5）。`disabled` で描き、スクリプトが外す扱いは変えない。
+  return `<form id="generate-form" class="gf-block gf-generate-form" method="post" action="${GENERATE_PATH}">
+  <div class="gf-heading-row gf-generate-head">
+    <label for="generate-prompt">どんなゲームを作りますか（日本語で、${MAX_PROMPT_LENGTH} 文字まで）</label>
+    <p class="gf-generate-quota" id="generate-quota">${notice}</p>
+  </div>
+  <p id="generate-title-hint" class="gf-generate-hint">${escapeHtml(TITLE_DECLARATION_NOTICE)}</p>
   <textarea id="generate-prompt" name="prompt" rows="5" maxlength="${MAX_PROMPT_LENGTH}"
             aria-describedby="generate-title-hint"
             placeholder="${TITLE_DECLARATION_EXAMPLE}" required></textarea>
-  <button id="generate-submit" type="submit" disabled>生成する</button>
+  <button id="generate-submit" class="gf-button gf-button-primary" type="submit" disabled>生成する</button>
 </form>
 
 <p id="generate-progress" role="status" aria-live="polite" hidden>生成しています…（経過 <span id="generate-elapsed">0</span> 秒）。
    <strong>${TYPICAL_WAIT_TEXT}。</strong>この画面を閉じたり再読み込みしたりしないでください。</p>
 <p id="generate-long-wait" role="status" aria-live="polite" hidden>まだ生成しています。
    <strong>失敗したわけではありません。</strong>生成の待ち時間に上限は無いため、応答が返るまで待っています。</p>
-<p id="generate-degraded" role="status" aria-live="polite" hidden>${escapeHtml(BUILD_STOPPED_NOTICE)}</p>
+<p id="generate-degraded" class="gf-block" role="status" aria-live="polite" hidden>${escapeHtml(BUILD_STOPPED_NOTICE)}</p>
 
 <div id="generate-messages" role="status" aria-live="polite">
 ${messages}

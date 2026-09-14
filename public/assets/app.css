@@ -566,41 +566,26 @@ form p {
    @section buttons — ボタン
    ========================================================================== */
 
-button {
-  align-self: flex-start;
-  padding: 0.6em 1.3em;
-  border: 1px solid var(--gf-ink);
-  border-radius: var(--gf-radius);
-  background: var(--gf-ink);
-  color: var(--gf-ground);
-  font: inherit;
-  font-weight: 700;
-  line-height: 1.4;
-  cursor: pointer;
-}
-
-button:hover {
-  opacity: 0.85;
-}
-
-button:disabled {
-  border-color: var(--gf-rule);
-  background: var(--gf-rule);
-  color: var(--gf-ink-faint);
-  cursor: not-allowed;
-  opacity: 1;
-}
-
 /*
  * ボタンの部品（仕様 2.5.5 / #457）。**強さ 3 段（主・副・控えめ）× 大きさ 2 つ（中・小）。**
  *
  * - **要素は役割で選ぶ。** 移動は `<a class="gf-button …">`、動作は `<button class="gf-button …">`。
- *   **見た目は同じにする**ので、`<a>` の下線とボタン要素の既定（上の `button`）をどちらも打ち消す
+ *   **見た目は同じにする**ので、`<a>` の下線とボタン要素の既定をどちらも打ち消す
  * - **主は 1 画面に 1 つまで**（呼ぶ側の規律。CSS では数えられない）
- * - **上の `button` の既定（黒地に白文字）はまだ変えない**（#457 の scope.out）。各画面に部品を当て終えた
- *   最後の issue で、既定を副へ切り替える（`docs/mvp-roadmap.md` の M13 の節）
  * - **`[data-state]` は `/__dev/components` で状態を固定して見せるための属性**である。画面では付けない
+ *
+ * ## `<button>` の既定は副である（#473。M13-5 の intake で「各画面に部品を当て終えた最後の issue で切り替える」と決めた）
+ *
+ * **部品のクラスを持たない `<button>` は、副（地の色に 1px の枠線）の見た目になる。** #457 までは黒地に白文字（主の見た目）で、
+ * クラスを付け忘れたボタンが 1 画面に主を 2 つ作っていた。**主の見た目は `.gf-button-primary` だけが持つ。**
+ *
+ * - **既定は `:where()` で包み、詳細度を 0 にする。** 部品の段（`.gf-button-tertiary` の透明な枠など）と、区画の側で
+ *   ボタンを包む規則（`@section header` の `.gf-account-menu-list button`）が、並び順によらず必ず勝つ。`button:hover` の
+ *   ままだと、控えめのボタンのホバーで既定の枠の色（0,1,1）が控えめの透明な枠（0,1,0）に勝ってしまう
+ * - **既定に寄りかからない。** 画面のボタンはすべて部品のクラス（`gf-button` と段のクラス）を持ち、`test/button-parts.test.ts` が
+ *   `src/` を走査して、持たない `<button>` を落とす。既定は付け忘れたときの受け皿で、見た目の決め手ではない
  */
+:where(button),
 .gf-button {
   display: inline-flex;
   align-items: center;
@@ -617,10 +602,13 @@ button:disabled {
   font-size: var(--gf-text);
   font-weight: 700;
   line-height: 1.2;
-  text-decoration: none;
-  white-space: nowrap;
   cursor: pointer;
   opacity: 1;
+}
+
+.gf-button {
+  text-decoration: none;
+  white-space: nowrap;
 }
 
 .gf-button-sm {
@@ -642,7 +630,8 @@ button:disabled {
   opacity: 1;
 }
 
-/* 副: 地の色に 1px の枠線。ホバーで枠を一段濃くし、地に一段色を付ける。 */
+/* 副: 地の色に 1px の枠線。ホバーで枠を一段濃くし、地に一段色を付ける。**クラスを持たない `<button>` も同じ。** */
+:where(button:hover, button[data-state='hover']),
 .gf-button-secondary:is(:hover, [data-state='hover']) {
   border-color: var(--gf-rule-strong);
   background: var(--gf-surface);
@@ -673,6 +662,7 @@ button:disabled {
   outline-offset: 2px;
 }
 
+:where(button:disabled),
 .gf-button:is(:disabled, [aria-disabled='true']) {
   border-color: var(--gf-rule);
   background: var(--gf-surface);
@@ -1370,64 +1360,153 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
    ========================================================================== */
 
 /*
- * 「あなたの作品」の一覧。
+ * ログイン後の画面を仕様 2.5 の部品で組む（#473 / M13-9。承認したモックアップ Version 6）。
  *
- * **作者がいちばん長く見る画面である。** 見たいのは「どれが」「いまどうなっているか」の
- * 2 つなので、題名を強く、状態を小さな札に、日時を淡くする。**並びも項目も変えていない。**
+ * **面・角丸・内側の余白は `.gf-block` / `.gf-block-rows`、状態の札は `.gf-chip`、ボタンは `.gf-button`（どれも `@section parts` /
+ * `@section buttons`）が持つ。** ここが決めるのは並べ方だけで、新しい色の値を足さない。
+ *
+ * - **幅の `@media` を置かない**（冒頭の区画の規約 3）。狭い段で折り返すのは flex の `wrap` だけで決まる
+ * - **並びは HTML の順のまま**で、`order` も `display: contents` も使わない——**DOM の順＝見た目の順＝Tab の順**（仕様 2.5.6 の
+ *   #469 実装注記）
+ * - **余白は段（4 / 8 / 16 / 24 / 40px）に丸める**（モックアップの 12px / 14px / 20px は 8px か 16px へ。仕様 2.5.4 の #471 / #475 実装注記）
+ * - **面の角を `overflow: hidden` で切らない**（中のリンクとボタンの焦点の輪郭が面の端で切れる。同じ実装注記）
  */
-.gf-works {
-  list-style: none;
-  padding-left: 0;
-}
 
-.gf-works li {
-  padding: var(--gf-gap-2) 0;
-  border-bottom: 1px solid var(--gf-rule-soft);
+/*
+ * 見出しの行（見出しを左、補助の 1 つを右）。「あなたの作品」の「統計 ／ 本日の残り生成枠」「作品の一覧 ／ 新しく生成する」と、
+ * 生成画面の「入力欄の名前 ／ 本日の残り生成枠」が使う。
+ *
+ * **右の物が収まらなければ、左の物の下の行へ回る**（`wrap`）。回ったときに右へ寄せ直さない（`justify-content` は行ごとに効くので、
+ * 1 つだけの行では左に付く）。**左右の物は `min-width: 0` と `overflow-wrap: anywhere` を自分で持つ**（仕様 2.5.4 の #471 / #475
+ * 実装注記。区切りの無い長い文言でも行からはみ出さない）。
+ */
+.gf-heading-row {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: var(--gf-gap-1) var(--gf-gap-2);
+  justify-content: space-between;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+  max-width: none;
+  margin: var(--gf-gap-5) 0 var(--gf-gap-2);
 }
 
-.gf-works li > a {
-  font-weight: 700;
+.gf-heading-row > * {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 /*
- * 状態の札。
- *
- * **色で区別しない**（プラットフォーム側は無彩色。app.css 冒頭）。区別が要るのは
- * 「終わったか、まだか」で、それは文言が言っている。札は**同じ形**にして、
- * 目が題名から状態へ移る手がかりだけを作る。
+ * 生成画面のブロック（`src/generate-page.ts` の `signedInSection`）。**入力欄の名前・残枠・ヒント・入力欄・「生成する」を 1 つの面に
+ * 置く。** 塊の中の間はフォームの既定の `gap`（16px。`@section forms`）のまま。名前と残枠の行は面の中なので、見出しの行の上下の
+ * 余白を外す。
  */
-.gf-state {
-  padding: 0.1em 0.6em;
-  border: 1px solid var(--gf-rule);
-  border-radius: 999px;
+.gf-generate-form {
+  margin-bottom: var(--gf-gap-3);
+}
+
+.gf-generate-head {
+  margin: 0;
+}
+
+.gf-generate-head label {
+  margin: 0;
+}
+
+.gf-generate-quota,
+.gf-generate-hint {
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
-  white-space: nowrap;
+  line-height: 1.7;
 }
 
-/* 生成が終わっていない行だけ、札を塗って「まだ動いている」ことを示す。 */
-.gf-state-working,
-.gf-state-stalled {
-  background: var(--gf-surface);
-  color: var(--gf-ink);
+/*
+ * 「あなたの作品」の一覧（`src/my-works.ts`）。**1 件ずつをブロックの行（`.gf-block-rows`）にする**（仕様 2.5.4 / #473）。
+ *
+ * **作者がいちばん長く見る画面である。** 見たいのは「どれが」「いまどうなっているか」の 2 つなので、題名を強く、状態を
+ * チップに、日時を淡くして右に寄せる。**並びも項目も変えていない。** 狭い段では日時が次の行へ回る（`wrap`）。
+ */
+.gf-works {
+  margin: 0 0 var(--gf-gap-3);
+  list-style: none;
 }
 
-/* 日時は付加情報である（`src/my-works.ts` の `renderRow`）。 */
+.gf-works li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+  margin: 0;
+}
+
+/* 題名は文章の外のリンク（`.gf-link-quiet`）。区切りの無い長い題名でも行からはみ出さない。 */
+.gf-works-title {
+  min-width: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+/* 日時は付加情報である（`src/my-works.ts` の `renderRow`）。行の右端に寄せる。 */
 .gf-works time {
+  margin-left: auto;
   color: var(--gf-ink-faint);
   font-size: var(--gf-text-small);
   font-variant-numeric: tabular-nums;
 }
 
+/* 作品が 0 本のときの知らせ（ブロック）。段落の既定の下の余白を外す。 */
+.gf-my-works-empty > :last-child {
+  margin-bottom: 0;
+}
+
+/* 一覧の下の副のボタンの並び（「いいねした作品」「公開されている作品をさがす」）。 */
+.gf-works-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+  max-width: none;
+  margin: var(--gf-gap-3) 0 0;
+}
+
 /*
- * 運用上いちばん間違えやすいことの但し書き（招待画面）。
+ * 招待の発行（`src/invite-issuance.ts`）。**残りの本数と「招待コードを 1 本発行する」を 1 つのブロックに**、発行した招待を
+ * ブロックの行にする（#473）。止めている理由と「使い切りました」も同じブロックの中の段落である。
+ */
+.gf-invite-balance {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-3);
+  margin: 0 0 var(--gf-gap-3);
+}
+
+.gf-invite-balance > * {
+  margin: 0;
+}
+
+.gf-invites {
+  margin: 0 0 var(--gf-gap-3);
+  list-style: none;
+}
+
+.gf-invites li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+  margin: 0;
+}
+
+.gf-invites code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * 但し書き（管理画面の操作の結果。`src/admin/outcome.ts`）。
  *
- * **本文に混ぜない。** ここを読み飛ばすと、コードを渡した相手が Google の
- * ログイン画面に到達できない（8.1）。
+ * > #473 の前は招待画面と登録情報の知らせもこの形だった。**#473 でそれらはブロック（`.gf-block`）になった**
+ * > （仕様 2.5.4「同じ面の作法を知らせにも使う」）。管理画面の本文は M13-11（#475）の範囲で、この規則を使い続けている。
  */
 .gf-notice {
   padding: var(--gf-gap-2) var(--gf-gap-3);
@@ -2374,28 +2453,48 @@ p.gf-sort {
 /*
  * 登録情報のタブ（#379。`src/account.ts` の `accountShell`）。
  *
- * **普通のリンクの列である**（押すと別の URL の画面へ移る）。いま開いているタブは
- * `aria-current` の `<span>` で、下線の代わりに下の罫線で示す（色で示さない。app.css 冒頭）。
- *
- * **折り返す。** タブは #384 で 3 つになる。390px で横に溢れさせない（`flex-wrap`）。
+ * **見た目はタブの部品（`.gf-tabs`。`@section parts`）が持つ**（仕様 2.5.5「タブ」/ #473）。#379 のときにここにあった
+ * 下線と太字の規則は、部品と二重になるので外した。`<nav class="gf-account-tabs">` はランドマークの目印として残す。
  */
-.gf-account-tabs ul {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--gf-gap-1) var(--gf-gap-4);
+
+/*
+ * プロフィールのタブのブロック（#473。`src/account.ts` の `renderAccountPage`）。**表示名・アイコン・自己紹介と外部リンクを
+ * 1 つずつ面のブロックにし、広い段では 2 列、狭い段では 1 列に積む**（承認したモックアップ Version 6）。
+ *
+ * **幅の `@media` を置かず、列の最小の幅で決める**（冒頭の区画の規約 3 / 仕様 2.5.4 の #471 / #475 実装注記）。
+ *
+ * | 器の内容の幅 | 列 |
+ * |---|---|
+ * | 狭い段の最大（42rem − ガター 2rem = **640px**） | 1 列（2 列には 20rem × 2 ＋ 24px = **664px** 要る） |
+ * | 768px の段（768 − ガター 48 = **720px**） | 2 列 |
+ * | 1280px の段（**1200px**） | **2 列のまま**（3 列は最小の幅が `(100% − 48px) / 3 + 1px` を超えるので入らない） |
+ *
+ * - **列の最小の幅を `min(100%, …)` で包む**——器が 20rem より狭い端末（文字を大きくした 390px など）で版面を越えない
+ * - **狭い段で 1 列になることは 1rem の px によらず、768px で 2 列になることは 1rem = 16px を前提にする**（崩れる向きは「積む」側だけ）
+ * - **並びは HTML の順**（行ごとに左から右）で、`order` を使わない。高さは揃えない（`align-items: start`。フォームの長さが違う）
+ */
+.gf-account-blocks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(20rem, calc((100% - 2 * var(--gf-gap-4)) / 3 + 1px))), 1fr));
+  gap: var(--gf-gap-4);
+  align-items: start;
   margin: 0 0 var(--gf-gap-4);
-  padding: 0 0 var(--gf-gap-1);
-  border-bottom: 1px solid var(--gf-rule);
-  list-style: none;
 }
 
-.gf-account-tabs li {
+/* ブロックの中は塊の間 16px で縦に積み、見出し・段落・フォームの既定の余白を外す。 */
+.gf-account-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-3);
+  min-width: 0;
+}
+
+.gf-account-block > * {
   margin: 0;
 }
 
-.gf-account-tabs [aria-current='page'] {
-  font-weight: 700;
-  border-bottom: 2px solid var(--gf-ink);
+.gf-account-author {
+  margin: 0 0 var(--gf-gap-3);
 }
 
 /*
@@ -2436,7 +2535,8 @@ p.gf-sort {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--gf-gap-2);
-  margin: 0 0 var(--gf-gap-3);
+  /* 塊の間はブロックの `gap` が持つ（`.gf-account-block`。#473）。 */
+  margin: 0;
 }
 
 .gf-avatar-current p {
@@ -2816,16 +2916,19 @@ h2.gf-news-title {
   gap: var(--gf-gap-3);
   width: 100%;
   max-width: none;
-  margin: var(--gf-gap-3) 0 var(--gf-gap-2);
+  margin: var(--gf-gap-2) 0;
   padding: 0;
 }
 
+/*
+ * カード 1 枚。**面・角丸・内側の余白（16px）は `.gf-block`（`@section parts`）が持つ**（仕様 2.5.4 / #473）。#382 の枠線は外した
+ * ——「面で囲まれた 1 件」の見た目をサイト内で 1 つにする。
+ */
 .gf-stats-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-1);
   min-width: 0;
-  padding: var(--gf-gap-2) var(--gf-gap-3);
-  border: 1px solid var(--gf-rule);
-  border-radius: var(--gf-radius);
-  background: var(--gf-surface);
 }
 
 .gf-stats-card dt {
@@ -2839,17 +2942,22 @@ h2.gf-news-title {
   font-size: var(--gf-text-h2);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 /*
  * 今日の残り生成回数（4.4）。**利用者がいちばん知りたい数なので、カードより先に置いて
  * 太字にする**（2.3.13）。文言は生成画面と同じものである（`src/generate-page.ts`）。
+ *
+ * **#473 で「統計」の見出しの行の右へ移した**（`.gf-heading-row`。`@section signed-in`）。見出しより弱く、小さい文字にする。
  */
 .gf-stats-quota {
+  font-size: var(--gf-text-small);
   font-weight: 700;
 }
 
 .gf-stats-note {
+  margin: 0 0 var(--gf-gap-1);
   color: var(--gf-ink-faint);
   font-size: var(--gf-text-small);
 }

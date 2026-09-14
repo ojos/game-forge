@@ -26,7 +26,7 @@
 //
 // 終了コード:
 //   0 = INPUT_KEYS_BACKFILL_PASS（dry-run で数えた / 書いて、対象が 0 件になった）
-//   1 = INPUT_KEYS_BACKFILL_INCOMPLETE（書いたが、読めないソースが残った。一覧を出す）
+//   1 = INPUT_KEYS_BACKFILL_INCOMPLETE（読めないソース、または形の合わないキーが残った。一覧を出す）
 //   2 = 前提の不成立（引数・道具・D1 の応答の形）
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
@@ -89,7 +89,7 @@ process.on('exit', () => rmSync(work, { recursive: true, force: true }));
 const bundled = path.join(work, 'input-keys.mjs');
 const entry = [
   `export { INPUT_KEYS_RULE_VERSION, extractInputKeyCodes } from ${JSON.stringify(path.join(ROOT, 'src', 'input-keys.ts'))};`,
-  `export { SOURCE_INPUT_KEYS_TARGETS_SQL, UPSERT_SOURCE_INPUT_KEYS_SQL } from ${JSON.stringify(path.join(ROOT, 'src', 'source-input-keys.ts'))};`,
+  `export { SOURCE_INPUT_KEYS_TARGETS_SQL, UPSERT_SOURCE_INPUT_KEYS_SQL, isStoredSourceKey } from ${JSON.stringify(path.join(ROOT, 'src', 'source-input-keys.ts'))};`,
 ].join('\n');
 const build = spawnSync(
   esbuild,
@@ -104,6 +104,7 @@ const {
   extractInputKeyCodes,
   SOURCE_INPUT_KEYS_TARGETS_SQL,
   UPSERT_SOURCE_INPUT_KEYS_SQL,
+  isStoredSourceKey,
 } = await import(pathToFileURL(bundled).href);
 
 // ── wrangler ─────────────────────────────────────────────────────────────────
@@ -242,15 +243,39 @@ function readTargets() {
 const where = scope === 'remote' ? '本番（--remote --env production）' : `手元${persistTo === '' ? '' : `（--persist-to ${persistTo}）`}`;
 console.log(`${TAG} 対象: ${where} / 規則の版: ${INPUT_KEYS_RULE_VERSION} / ${apply ? '書き込む（--apply）' : 'dry-run（書き込まない）'}`);
 
-const targets = readTargets();
-console.log(`${TAG} 埋め戻しの対象: ${targets.length} 件`);
+/**
+ * 形の合わないキーを報告する。**キーはそのまま出さず、JSON の文字列として符号化する**（改行などでログの行を崩させない）。
+ *
+ * @param {string[]} keys 形の合わないキー
+ */
+function reportInvalid(keys) {
+  if (keys.length === 0) {
+    return;
+  }
+  console.error(`${TAG} 形の合わないキーが ${keys.length} 件あります（builds/<sha256>/source.go でない。書きません）:`);
+  for (const key of keys) {
+    console.error(`${TAG}   INVALID ${JSON.stringify(key)}`);
+  }
+}
+
+const allTargets = readTargets();
+// **形を確かめてから扱う**（`src/source-input-keys.ts` の `isStoredSourceKey`。エッジと同じ判定）。
+// 形の合わないキーは R2 を読まず、書かず、ログにも生のまま出さない。
+const invalid = allTargets.filter((key) => !isStoredSourceKey(key));
+const targets = allTargets.filter((key) => isStoredSourceKey(key));
+console.log(`${TAG} 埋め戻しの対象: ${allTargets.length} 件（うち形の合わないキー ${invalid.length} 件）`);
 for (const key of targets) {
   console.log(`${TAG}   ${key}`);
 }
+reportInvalid(invalid);
 
 if (!apply) {
   if (targets.length > 0) {
     console.log(`${TAG} 書くには --apply を付けてください（既定では 1 行も書きません）。`);
+  }
+  if (invalid.length > 0) {
+    console.log('INPUT_KEYS_BACKFILL_INCOMPLETE');
+    process.exit(1);
   }
   console.log('INPUT_KEYS_BACKFILL_PASS');
   process.exit(0);
@@ -289,12 +314,17 @@ console.log(`${TAG} 書き込みを送った文: ${statements.length} 件（新�
 // **報告された数を信じない。数え直す。**
 const remaining = readTargets();
 console.log(`${TAG} 書いたあとの対象: ${remaining.length} 件`);
-const unexpected = remaining.filter((key) => !unreadable.includes(key));
+const unexpected = remaining.filter((key) => !unreadable.includes(key) && !invalid.includes(key));
 if (unexpected.length > 0) {
-  abort(['書いたはずの対象が残っています（書き込みが効いていない）:', ...unexpected]);
+  abort(['書いたはずの対象が残っています（書き込みが効いていない）:', ...unexpected.map((key) => JSON.stringify(key))]);
 }
-if (unreadable.length > 0) {
-  console.error(`${TAG} R2 から読めないソースが ${unreadable.length} 件残りました（上の NG の行）。`);
+if (unreadable.length > 0 || invalid.length > 0) {
+  if (unreadable.length > 0) {
+    console.error(`${TAG} R2 から読めないソースが ${unreadable.length} 件残りました（上の NG の行）。`);
+  }
+  if (invalid.length > 0) {
+    console.error(`${TAG} 形の合わないキーが ${invalid.length} 件残りました（上の INVALID の行）。`);
+  }
   console.log('INPUT_KEYS_BACKFILL_INCOMPLETE');
   process.exit(1);
 }

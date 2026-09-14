@@ -39,14 +39,46 @@ import { readStoredSource } from './source-store.js';
  *
  * # 行の形は固定である
  *
- * `<タグ> <結果> <理由> <source_key>` の 1 行で、結果と理由は固定の語か例外のクラス名だけにする
- * （`source-unreadable source-missing` / `source-unreadable source-too-large` / `failed <例外のクラス名>`。
- * 経路表の側は `callback-failed <例外のクラス名>`）。**例外の文面もソースの本文も出さない**——D1 の例外文には
- * SQL の断片が載りうる。生成経路のログを「許した形だけを通す」で見る検査
+ * 次の 4 つの形の 1 行だけを出す。結果と理由は固定の語か例外のクラス名、キーは {@link isStoredSourceKey} に
+ * 合ったものだけである。
+ *
+ * - `<タグ> source-unreadable source-missing|source-too-large <source_key>`
+ * - `<タグ> failed <例外のクラス名> <source_key>`
+ * - `<タグ> invalid-source-key`（**形の合わないキーは出さない**）
+ * - `<タグ> callback-failed <例外のクラス名>`（経路表の側。`src/source-input-keys-routes.ts`）
+ *
+ * **例外の文面もソースの本文も出さない**——D1 の例外文には SQL の断片が載りうる。生成経路のログを「許した形だけを通す」で見る検査
  * （`test/mechanical-fix.test.ts`）は、この形を
  * `test/helpers/source-input-keys-log.ts` で許している。
  */
 export const SOURCE_INPUT_KEYS_LOG_TAG = '[source-input-keys]';
+
+/**
+ * R2 のソースのキーの形（正規表現の本体。`^` と `$` を持たない）。
+ *
+ * **キーの綴りを決めているのはビルド関数である**（`docker/isolated-build/handler/r2.go`。内容のハッシュで
+ * `builds/<source_sha256>/source.go`）。完成のコールバックの解析（`src/generate-callback.ts`）は「空でない文字列」
+ * しか見ないので、**ここで形を確かめてから R2 と D1 に触る。** 改行を含む値でログの固定の形を崩させない。
+ *
+ * **写しを作らない。** {@link isStoredSourceKey} と、テストのログの許可パターン
+ * （`test/helpers/source-input-keys-log.ts`）と、埋め戻し（`scripts/input-keys-backfill.mjs`）はここから組み立てる。
+ */
+export const SOURCE_KEY_PATTERN_BODY = 'builds/[0-9a-f]{64}/source\\.go';
+
+/**
+ * R2 のソースのキーとして正しい形か（行全体に合わせる。`m` フラグを付けない）。
+ *
+ * **正規表現を関数の中で組み立てる。** モジュールの最上位に `new RegExp(...)` を置くと、esbuild はそれを
+ * 副作用のある文として残し、**このモジュールがオーケストレータの束へ入って束が変わる**
+ * （`src/generate.ts` の `runJobInline` がこのモジュールを import しており、あちらは束のモジュールである。
+ * 実測: PR #504 の修正の途中で `ORCHESTRATOR_BUNDLE_CHANGED` になった）。
+ *
+ * @param sourceKey 確かめる値
+ * @returns 形に合えば true
+ */
+export function isStoredSourceKey(sourceKey: string): boolean {
+  return new RegExp(`^${SOURCE_KEY_PATTERN_BODY}$`).test(sourceKey);
+}
 
 /**
  * 保存の 1 文（仕様 3.9.5）。**新しい版だけが上書きする**——同じ版の 2 回目は何も変えない。
@@ -88,7 +120,9 @@ export type SourceInputKeysOutcome =
   /** R2 のソースを読めなかった（無い・空・大きすぎる）。 */
   | 'source-unreadable'
   /** D1 か R2 が例外を投げた。 */
-  | 'failed';
+  | 'failed'
+  /** キーが {@link isStoredSourceKey} の形に合わない。R2 も D1 も触っていない。 */
+  | 'invalid-source-key';
 
 /**
  * そのソースが読むキーを保存する。**例外を投げない。**
@@ -103,6 +137,11 @@ export async function recordSourceInputKeys(
   sourceKey: string,
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<SourceInputKeysOutcome> {
+  // **形を先に確かめる。** 合わなければ R2 も D1 も触らず、キーを出さない固定の行だけを残す。
+  if (!isStoredSourceKey(sourceKey)) {
+    console.error(`${SOURCE_INPUT_KEYS_LOG_TAG} invalid-source-key`);
+    return 'invalid-source-key';
+  }
   try {
     // **行が今の版なら R2 を読まない**（キャッシュのヒット＝同じソースでは普通そうなる）。
     // `>=` にしてあるのは、新しい版の Worker を戻したときに、新しい版の行を読み直しに行かないため。

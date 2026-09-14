@@ -26,6 +26,7 @@ import {
   SOURCE_INPUT_KEYS_TARGETS_SQL,
   UPSERT_SOURCE_INPUT_KEYS_SQL,
   errorNameOf,
+  isStoredSourceKey,
   recordSourceInputKeys,
 } from '../src/source-input-keys.js';
 import { withSourceInputKeyRecording } from '../src/source-input-keys-routes.js';
@@ -98,6 +99,15 @@ async function seedUser(): Promise<string> {
     .bind(id, `sub-${id}`, `${id}@example.com`, id)
     .run();
   return id;
+}
+
+/**
+ * 形の正しい、一意なソースのキーを作る（`builds/<64 桁の 16 進>/source.go`）。
+ *
+ * @returns キー
+ */
+function hashKey(): string {
+  return `builds/${crypto.randomUUID().replaceAll('-', '').padEnd(64, '0')}/source.go`;
 }
 
 /**
@@ -259,7 +269,7 @@ describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', (
         },
       } as unknown as D1Database,
     };
-    const { value, lines } = await captureLogs(() => recordSourceInputKeys(broken, 'builds/x/source.go'));
+    const { value, lines } = await captureLogs(() => recordSourceInputKeys(broken, hashKey()));
     expect(value).toBe('failed');
     expect(lines.some((line) => line.startsWith(`${SOURCE_INPUT_KEYS_LOG_TAG} `))).toBe(true);
     // 例外の文面（SQL の断片が載りうる）をログへ出さない。
@@ -269,7 +279,7 @@ describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', (
 
 describe('保存の 1 文（新しい版だけが上書きする）', () => {
   it('同じ版の 2 回目は何も変えない', async () => {
-    const key = `builds/upsert-${unique()}/source.go`;
+    const key = hashKey();
     const write = async (codes: string, version: number, at: number): Promise<void> => {
       await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL).bind(key, codes, version, at).run();
     };
@@ -542,7 +552,7 @@ describe('埋め戻しの対象（仕様 3.9.5「既存作品への埋め戻し�
   it('行の無いソースと古い版のソースを出し、tombstone（source_key が NULL）は出さない', async () => {
     const { userId, id, keys: currentKeys } = await seedReady(ARROWS_SOURCE);
     // 版の表にだけ残るソース（推敲の前の版）。
-    const oldKeys = { sourceKey: `builds/old-${unique()}/source.go`, wasmKey: `builds/old-${unique()}/g.wasm.br` };
+    const oldKeys = { sourceKey: hashKey(), wasmKey: `builds/old-${unique()}/g.wasm.br` };
     await env.DB.prepare(
       `insert into game_revisions (game_id, seq, source_key, wasm_key, go_version, prompt, created_at)
        values (?, 99, ?, ?, 'go1.26.5', null, 1)`,
@@ -550,7 +560,7 @@ describe('埋め戻しの対象（仕様 3.9.5「既存作品への埋め戻し�
       .bind(id, oldKeys.sourceKey, oldKeys.wasmKey)
       .run();
     // 古い版の行を持つソース。
-    const staleKey = `builds/stale-${unique()}/source.go`;
+    const staleKey = hashKey();
     const staleGame = await createPendingGame(env, userId, { prompt: '古い' });
     await env.DB.prepare('update games set source_key = ? where id = ?').bind(staleKey, staleGame.id).run();
     await env.DB.prepare(
@@ -604,20 +614,20 @@ describe('埋め戻しの対象（仕様 3.9.5「既存作品への埋め戻し�
 
 describe('ログの行の形（仕様 3.9.5 の「固定のタグ」）', () => {
   it('読めなかった行・失敗した行は許した形に合い、文面や本文を含む行は合わない', async () => {
-    const hashKey = `builds/${'d'.repeat(64)}/source.go`;
-    const { lines } = await captureLogs(() => recordSourceInputKeys(env, hashKey));
-    expect(lines).toEqual([`${SOURCE_INPUT_KEYS_LOG_TAG} source-unreadable source-missing ${hashKey}`]);
+    const missingKey = `builds/${'d'.repeat(64)}/source.go`;
+    const { lines } = await captureLogs(() => recordSourceInputKeys(env, missingKey));
+    expect(lines).toEqual([`${SOURCE_INPUT_KEYS_LOG_TAG} source-unreadable source-missing ${missingKey}`]);
     expect(isAllowedSourceInputKeysLine(lines[0]!)).toBe(true);
 
     const broken = {
       ...env,
       DB: { prepare: () => { throw new TypeError('select * from secrets'); } } as unknown as D1Database,
     };
-    const failed = await captureLogs(() => recordSourceInputKeys(broken, hashKey));
-    expect(failed.lines).toEqual([`${SOURCE_INPUT_KEYS_LOG_TAG} failed TypeError ${hashKey}`]);
+    const failed = await captureLogs(() => recordSourceInputKeys(broken, missingKey));
+    expect(failed.lines).toEqual([`${SOURCE_INPUT_KEYS_LOG_TAG} failed TypeError ${missingKey}`]);
     expect(isAllowedSourceInputKeysLine(failed.lines[0]!)).toBe(true);
 
-    expect(isAllowedSourceInputKeysLine(`${SOURCE_INPUT_KEYS_LOG_TAG} failed select * from ${hashKey}`)).toBe(false);
+    expect(isAllowedSourceInputKeysLine(`${SOURCE_INPUT_KEYS_LOG_TAG} failed select * from ${missingKey}`)).toBe(false);
     expect(isAllowedSourceInputKeysLine(`${SOURCE_INPUT_KEYS_LOG_TAG} source-unreadable package main`)).toBe(false);
   });
 
@@ -627,5 +637,130 @@ describe('ログの行の形（仕様 3.9.5 の「固定のタグ」）', () => 
     expect(errorNameOf(odd)).toBe('unknown');
     expect(errorNameOf('not an error')).toBe('unknown');
     expect(errorNameOf(new RangeError('x'))).toBe('RangeError');
+  });
+});
+
+describe('キーの形を確かめる（Copilot の指摘 / PR #504）', () => {
+  /** 形の違うキー。改行・CR・別の接頭辞・大文字・長さ違い・後ろに続く文字。 */
+  const INVALID_KEYS = [
+    `builds/${'a'.repeat(64)}/source.go\n[source-input-keys] recorded forged`,
+    `builds/${'a'.repeat(64)}/source.go\r\nx`,
+    `builds/${'a'.repeat(64)}\n/source.go`,
+    `other/${'a'.repeat(64)}/source.go`,
+    `builds/${'A'.repeat(64)}/source.go`,
+    `builds/${'a'.repeat(63)}/source.go`,
+    `builds/${'a'.repeat(64)}/game.wasm.br`,
+    `builds/${'a'.repeat(64)}/source.go.bak`,
+    '',
+  ];
+
+  it('形の正しいキーだけを通す', () => {
+    expect(isStoredSourceKey(`builds/${'0123456789abcdef'.repeat(4)}/source.go`)).toBe(true);
+    for (const key of INVALID_KEYS) {
+      expect(isStoredSourceKey(key), JSON.stringify(key)).toBe(false);
+    }
+    // 複数行の値でも、行の途中に合う形を拾わない（`m` フラグを持たない）。
+    expect(isStoredSourceKey(`x\nbuilds/${'a'.repeat(64)}/source.go\ny`)).toBe(false);
+  });
+
+  it('形の違うキーでは R2 も D1 も触らず、キーを出さない固定の行だけを残す', async () => {
+    let touched = 0;
+    const untouchable = {
+      ...env,
+      DB: {
+        prepare: () => {
+          touched += 1;
+          throw new Error('D1 に触った');
+        },
+      } as unknown as D1Database,
+      BUCKET: {
+        get: () => {
+          touched += 1;
+          throw new Error('R2 に触った');
+        },
+      } as unknown as R2Bucket,
+    };
+    for (const key of INVALID_KEYS) {
+      const { value, lines } = await captureLogs(() => recordSourceInputKeys(untouchable, key));
+      expect(value).toBe('invalid-source-key');
+      expect(lines).toEqual([`${SOURCE_INPUT_KEYS_LOG_TAG} invalid-source-key`]);
+      expect(lines.every((line) => isAllowedSourceInputKeysLine(line))).toBe(true);
+    }
+    expect(touched).toBe(0);
+  });
+
+  it('完成のコールバックが改行を含む sourceKey を運んでも、R2 を読まず、許された形のログだけが出る', async () => {
+    const userId = await seedUser();
+    const pending = await createPendingGame(env, userId, { prompt: 'ゲーム' });
+    const forged = `builds/${'e'.repeat(64)}/source.go\n${SOURCE_INPUT_KEYS_LOG_TAG} recorded forged`;
+    // 同じ綴りの R2 のオブジェクトを置いておく。**読みに行けば行ができる**ので、行が無いことが「読んでいない」の証拠になる。
+    await env.BUCKET.put(forged, ARROWS_SOURCE);
+    const before = await rowCount();
+    const { value: response, lines } = await captureLogs(() =>
+      post(wrappedRoutes, {
+        gameId: pending.id,
+        jobToken: pending.jobToken,
+        kind: 'finish',
+        artifacts: artifacts({ sourceKey: forged, wasmKey: `builds/${'e'.repeat(64)}/go1.26.5/game.wasm.br` }),
+      }),
+    );
+    expect(await response.json()).toEqual({ accepted: true, finished: false });
+    expect(await rowCount()).toBe(before);
+    expect(lines).toEqual([`${SOURCE_INPUT_KEYS_LOG_TAG} invalid-source-key`]);
+    expect(lines.every((line) => isAllowedSourceInputKeysLine(line))).toBe(true);
+  });
+});
+
+describe('ログの許可パターン（Copilot の指摘 / PR #504）', () => {
+  const key = `builds/${'f'.repeat(64)}/source.go`;
+
+  it('4 つの形をそれぞれ許す', () => {
+    for (const line of [
+      `${SOURCE_INPUT_KEYS_LOG_TAG} source-unreadable source-missing ${key}`,
+      `${SOURCE_INPUT_KEYS_LOG_TAG} source-unreadable source-too-large ${key}`,
+      `${SOURCE_INPUT_KEYS_LOG_TAG} failed TypeError ${key}`,
+      `${SOURCE_INPUT_KEYS_LOG_TAG} invalid-source-key`,
+      `${SOURCE_INPUT_KEYS_LOG_TAG} callback-failed SyntaxError`,
+    ]) {
+      expect(isAllowedSourceInputKeysLine(line), line).toBe(true);
+    }
+  });
+
+  it('本文・例外の文面・形の違うキー・余計な続きを含む行を拒む', () => {
+    for (const line of [
+      `${SOURCE_INPUT_KEYS_LOG_TAG} callback-failed Unexpected token < in JSON`,
+      `${SOURCE_INPUT_KEYS_LOG_TAG} callback-failed`,
+      `${SOURCE_INPUT_KEYS_LOG_TAG} invalid-source-key ${key}`,
+      `${SOURCE_INPUT_KEYS_LOG_TAG} invalid-source-key builds/x\nforged`,
+      `${SOURCE_INPUT_KEYS_LOG_TAG} failed D1_ERROR: select * from users ${key}`,
+      `${SOURCE_INPUT_KEYS_LOG_TAG} source-unreadable source-missing builds/../secret/source.go`,
+      `${SOURCE_INPUT_KEYS_LOG_TAG} source-unreadable source-missing ${key}\npackage main`,
+      `${SOURCE_INPUT_KEYS_LOG_TAG} recorded ${key}`,
+      `[other] invalid-source-key`,
+    ]) {
+      expect(isAllowedSourceInputKeysLine(line), JSON.stringify(line)).toBe(false);
+    }
+  });
+
+  it('経路表の側の失敗は callback-failed <例外のクラス名> の形で出る', async () => {
+    const throwing: readonly Route[] = withSourceInputKeyRecording([
+      {
+        method: 'POST',
+        path: GENERATE_CALLBACK_PATH,
+        // 応答の本文が JSON でない＝`response.json()` が SyntaxError を投げる。
+        handler: () => new Response('not json', { status: 200 }),
+      },
+    ]);
+    const { value: response, lines } = await captureLogs(() =>
+      post(throwing, {
+        gameId: 'g',
+        jobToken: 'x'.repeat(43),
+        kind: 'finish',
+        artifacts: artifacts({ sourceKey: key, wasmKey: 'w' }),
+      }),
+    );
+    expect(await response.text()).toBe('not json');
+    expect(lines).toEqual([`${SOURCE_INPUT_KEYS_LOG_TAG} callback-failed SyntaxError`]);
+    expect(isAllowedSourceInputKeysLine(lines[0]!)).toBe(true);
   });
 });

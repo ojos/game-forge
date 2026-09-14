@@ -4948,6 +4948,9 @@ CREATE TABLE source_input_keys (
 >   完成と同時に届いた 2 通目（戻り値が false）は拾うが、**完成後に落ちて後から届く再送では拾えない。欠けの回復の主は埋め戻しの
 >   スクリプトである。**
 > - **拾えなかったときのログは `[source-input-keys] <結果> <理由> <source_key>` の固定の形**（例外の文面もソースの本文も出さない）。
+>   **キーは R2 と D1 に触る前に `builds/<64 桁の 16 進>/source.go` の形（ビルド関数が決める綴り）に合うかを確かめ、合わなければ
+>   何も読まず書かず、キーを出さない `invalid-source-key` の行だけを残す**（コールバックの解析は空でない文字列しか見ないため。
+>   埋め戻しも同じ判定で、合わないキーは書かずに一覧を出す。PR #504 の Copilot の指摘）。
 >   R2 は `readStoredSource` の既定の上限で読むので、上限を超えたソースはエッジでは `source-too-large` で拾えず、埋め戻しが拾う。
 > - **埋め戻しは、同じ SQL（`SOURCE_INPUT_KEYS_TARGETS_SQL` / `UPSERT_SOURCE_INPUT_KEYS_SQL`）と同じ抽出の関数を、TypeScript のモジュールを
 >   esbuild で束ねて借りる。** 既定は数えるだけで、`--apply` で書き、書いたあとに対象を数え直す。R2 に実体の無いソースは

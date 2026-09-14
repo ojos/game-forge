@@ -9,7 +9,7 @@
 #   --persist-to <DIR>                                     # 手元の D1 / R2 の置き場所を差し替える
 #
 # 終了コード:
-#   0 = INPUT_KEYS_BACKFILL_PASS / 1 = INPUT_KEYS_BACKFILL_INCOMPLETE（読めないソースが残った）/ 2 = 前提の不成立
+#   0 = INPUT_KEYS_BACKFILL_PASS / 1 = INPUT_KEYS_BACKFILL_INCOMPLETE（読めないソース・形の合わないキーが残った）/ 2 = 前提の不成立
 #
 # **本体は scripts/input-keys-backfill.mjs にある。** ここは本番の資格情報を環境へ移すだけで、値は
 # スクリプトへ持ち込まない（scripts/moderation-prune.sh と同じ形）。読み方と手順は docs/usage-report.md。

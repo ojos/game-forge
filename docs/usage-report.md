@@ -621,7 +621,7 @@ bash scripts/input-keys-backfill.sh --remote            # もう一度数える�
 | 最終行 | 終了コード | 意味 |
 |---|---|---|
 | `INPUT_KEYS_BACKFILL_PASS` | 0 | dry-run で数えた / `--apply` で書いて、対象が 0 件になった |
-| `INPUT_KEYS_BACKFILL_INCOMPLETE` | 1 | 書いたが、**R2 から読めないソースが残った**（`NG` の行に出ます） |
+| `INPUT_KEYS_BACKFILL_INCOMPLETE` | 1 | **R2 から読めないソースが残った**（`NG` の行）か、**形の合わないキーがある**（`INVALID` の行。dry-run でも出ます） |
 | （なし） | 2 | 前提の不成立（引数・道具・D1 の応答の形。**0040 が未適用なら「表がありません」と出ます**） |
 
 - **dry-run の「埋め戻しの対象」が 0 件でなければ、欠けがあります。** 何度流しても冪等です——書き込みは
@@ -630,8 +630,10 @@ bash scripts/input-keys-backfill.sh --remote            # もう一度数える�
 - **書いたあとは、対象を数え直して報告します**（`meta.changes` を信じない。`scripts/moderation-prune.sh` と同じ規律）。
 - **`INPUT_KEYS_BACKFILL_INCOMPLETE` で残るのは、R2 に実体の無いソースです。** 版の表だけが指している昔のソースが
   消えている、などです。**これは書き込みの失敗ではないので、何度流しても残ります。** 件数が増えていないかを見てください。
+- **キーは `builds/<sha256>/source.go` の形（ビルド関数が決める綴り）に合うものだけを扱います。** 合わないキーは R2 を読まず、
+  書かず、`INVALID` の行に **JSON の文字列として符号化して**出します（改行などで出力の行を崩させないため）。
 - エッジで拾えなかったときのログは **`[source-input-keys]`** で始まる 1 行です（`source-unreadable <理由> <source_key>` /
-  `failed <例外のクラス名> <source_key>` / `callback-failed <例外のクラス名>`）。**行が欠けたら、まずこのタグで Workers の
+  `failed <例外のクラス名> <source_key>` / `invalid-source-key`（**キーは出しません**） / `callback-failed <例外のクラス名>`）。**行が欠けたら、まずこのタグで Workers の
   ログを引いてください。**
 
 ### いつ流すか

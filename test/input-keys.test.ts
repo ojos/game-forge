@@ -465,6 +465,13 @@ func main() {
     // 10 進の正の整数のリテラルだけを拾う（16 進・0・文字列は拾わない）。
     expect(extractLayoutSize(program('', '\treturn 0x140, 240'))).toBeNull();
     expect(extractLayoutSize(program('', '\treturn 0, 240'))).toBeNull();
+    // Go の桁区切り（数字と数字の間に `_` を 1 つ）は読み、それ以外の `_` の置き方は拾わない。
+    expect(extractLayoutSize(program('const screenW = 1_920\nconst screenH = 1_080', '\treturn screenW, screenH'))).toEqual({
+      width: 1920,
+      height: 1080,
+    });
+    expect(extractLayoutSize(program('', '\treturn 1__920, 1080'))).toBeNull();
+    expect(extractLayoutSize(program('', '\treturn 1920_, 1080'))).toBeNull();
     expect(extractLayoutSize(program('const screenW = "320"\nconst screenH = 240', '\treturn screenW, screenH'))).toBeNull();
   });
 

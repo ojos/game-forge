@@ -405,15 +405,16 @@ function splitTopLevel(text: string, separator: string): string[] {
 
 /**
  * 10 進の整数のリテラル（正の値で、安全に扱える整数）なら値を返す。
+ * Go が許す桁区切りの `_`（`1_920`。数字と数字の間に 1 つずつ）も読む。
  *
  * @param text 値の写し（前後の空白を除いたもの）
  * @returns 値、または null
  */
 function decimalLiteralOf(text: string): number | null {
-  if (!/^[1-9][0-9]*$/u.test(text)) {
+  if (!/^[1-9](?:_?[0-9])*$/u.test(text)) {
     return null;
   }
-  const value = Number(text);
+  const value = Number(text.replaceAll('_', ''));
   return Number.isSafeInteger(value) ? value : null;
 }
 

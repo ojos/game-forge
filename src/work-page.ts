@@ -126,7 +126,7 @@ import { isPressableGame, readLikeViewerState } from './likes.js';
 import { playReportScript } from './plays.js';
 // **ゲームの iframe と、タッチ端末の全画面の覆い**（M14-3 / #502 / 仕様 3.9.4）。iframe の属性の出どころはあちらの 1 か所である。
 import { playEmbed, playEntry } from './work-play.js';
-import { readInputKeyCodes } from './virtual-pad.js';
+import { readHeldCodes, readInputKeyCodes } from './virtual-pad.js';
 // **ソースの閲覧は別の経路である**（#383 / 2.3.12）。この画面が借りるのは綴りだけで、R2 は読まない。
 import { workSourcePath } from './work-source.js';
 // **作者の削除（#517 / M15-2）。** 綴り・表示の条件・確認画面・断りの文言はあちら、経路はこのモジュールが持つ
@@ -439,6 +439,13 @@ interface WorkRow {
    * **この値をそのまま使わない**——`src/virtual-pad.ts` の `readInputKeyCodes` が許可表で絞る（D1 の値を信じ切らない）。
    */
   input_codes: string | null;
+  /**
+   * 作品のソースが押し続けて読むキーの集合（`source_input_keys.held_codes`。JSON 配列の文字列。仕様 3.9.6 の #528 / #530）。
+   *
+   * **`input_codes` と同じ 1 行から読む**（結合を増やさない）。版 1 の行・行が無い・`games.source_key` が NULL なら null。
+   * **この値をそのまま使わない**——`src/virtual-pad.ts` の `readHeldCodes` が許可表で絞り、壊れた値は null（版 1）に倒す。
+   */
+  input_held_codes: string | null;
 }
 
 /**
@@ -471,6 +478,7 @@ export const WORK_ROW_SQL = `select g.author_id, g.status, g.title, g.generation
             (g.purged_at is not null) as purged,
             b.compressed_bytes as wasm_bytes,
             k.codes as input_codes,
+            k.held_codes as input_held_codes,
             a.display_name as author_name, a.is_operator as author_is_operator,
             ${authorHandleColumnSql('g.author_id')},
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
@@ -741,6 +749,16 @@ export interface WorkPageView {
    * 読めなければ空で、パッドは出ない。**遊ぶ URL が無い画面では使わない**（覆いそのものが無い）。
    */
   readonly inputKeyCodes: readonly string[];
+  /**
+   * 作品が押し続けて読むキーの集合（**許可表で絞った値**。仕様 3.9.6 の #528 / #530）。仮想パッドの最初の形（スティック / 十字）を決める。
+   *
+   * **null は「読み方がまだ無い」（版 1 の行）で、十字で出す**（規則 6）。`[]` は「押し続けて読むキーは無い」（これも十字）。
+   */
+  readonly inputHeldCodes: readonly string[] | null;
+  /**
+   * 作品 id（`games.id`）。タッチ端末の覆いで、遊ぶ人が切り替えた形を作品ごとに覚えるキーに使う（#530。ブラウザの外へは送らない）。
+   */
+  readonly workId: string;
   /** この作品 id（公開のフォームに入れる）。公開の操作を出さないなら null。 */
   readonly publishableId: string | null;
   /**
@@ -2395,7 +2413,7 @@ function loadingScreen(view: WorkPageView): string {
   const frame =
     view.playUrl === null
       ? '<p>公開されていますが、遊ぶための URL を組み立てられませんでした。</p>'
-      : playEmbed(view.playUrl, view.inputKeyCodes);
+      : playEmbed(view.playUrl, view.workId, view.inputKeyCodes, view.inputHeldCodes);
 
   // **4 要素を 1 つのブロックに入れる**（#474 / 仕様 2.5.4。承認したモックアップ Version 6 の形）。**並びは今のまま**
   // （スクリーンショット → 作者 → 元ゲーム → 改造する。2026-09-13 に利用者が確認）で、広い面ではスクリーンショットを左、
@@ -2916,6 +2934,9 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **作品が読むキー（仕様 3.9.5 / 3.9.6 / #494）。許可表で絞ってから使う**（D1 の値を信じ切らない）。行が無い・
       // `source_key` が NULL・JSON が壊れているときは空で、パッドを出さない。追加の問い合わせは 0 件（上の 1 行の結合）。
       inputKeyCodes: readInputKeyCodes(row.input_codes),
+      // **押し続けて読むキー（#528 / #530）。** 最初の形（スティック / 十字）を決める。版 1 の行・壊れた値は null で、十字で出す。
+      inputHeldCodes: readHeldCodes(row.input_held_codes),
+      workId: gameId,
       // 公開の操作を出すのは、**本人・完成済み・未公開**のときだけである。
       // （押せない・押しても何も起きないボタンを出さない。仕様 1.2.38 の #24 と同じ方針）
       //

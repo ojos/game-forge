@@ -1060,7 +1060,23 @@ html.gf-play-locked body {
   grid-area: bar;
   display: flex;
   justify-content: flex-end;
+  gap: var(--gf-gap-2);
   padding: var(--gf-gap-2);
+}
+
+/*
+ * 方向の操作の形の切り替え（#530 / 仕様 3.9.6 の「手動の切り替え」）。**控えめのボタンの部品**（`.gf-button-tertiary`）を「閉じる」の隣に置く。
+ *
+ * **覆いの地は配色によらず黒**なので、部品の文字の色（`--gf-ink`。明るい配色では黒に近い）のままでは読めない。文字だけを、
+ * 両方の配色で黒の地に 4.5:1 を満たす既存のトークン（`--gf-rule-input`。明るい配色で 6.2:1、暗い配色で 4.5:1）にする。
+ * ホバーで地が付く（部品の `--gf-surface`）ときは、部品の文字の色に戻す。新しい色の値は足さない
+ */
+.gf-play-pad-toggle {
+  color: var(--gf-rule-input);
+}
+
+.gf-play-pad-toggle:is(:hover, [data-state='hover']) {
+  color: var(--gf-ink);
 }
 
 .gf-play-stage {
@@ -1076,7 +1092,8 @@ html.gf-play-locked body {
   border-radius: 0;
 }
 
-.gf-play-pad-dpad {
+.gf-play-pad-dpad,
+.gf-play-pad-stick {
   grid-area: dpad;
 }
 
@@ -1166,6 +1183,49 @@ html.gf-play-locked body {
   grid-area: down;
 }
 
+/*
+ * スティック（#530 / 仕様 3.9.6 の「スティックの振る舞い」）。スクリプトは `src/work-play.ts`、方向の決め方は `src/virtual-pad.ts`。
+ *
+ * - **置き場所の全体が受け付ける範囲**で、十字と同じ置き場所（縦持ちは下の左、横持ちは左の列）を使う。**大きさは十字と同じ**
+ *   （3 マス + 間 2 つ + 余白。切り替えても並べ方が跳ねない）。縦持ちの幅は列いっぱい
+ * - **待機中は何も描かない。** 触れているあいだだけ、触れた位置を中心に円（`hidden` をスクリプトが外す）とつまみを描く。円の大きさは
+ *   スクリプトが半径（`PAD_STICK_RADIUS_PX`）から決め、ここに数字を書き写さない。つまみはスクリプトが `transform` で動かす
+ * - **色は既存のトークンだけ**: 円は押しているキーの枠と同じ `--gf-rule-strong`、つまみは押しているキーと同じ地と枠
+ * - **`[hidden]` の置き場所とボタンは出さない**（`.gf-play-pad:not(:empty)` と部品の `display` が UA の `[hidden]` に勝つため、ここで宣言する）
+ */
+.gf-play-pad-stick {
+  position: relative;
+  min-height: calc(3 * 3.5rem + 2 * var(--gf-gap-2) + 2 * var(--gf-gap-3));
+}
+
+.gf-play-stick-ring {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid var(--gf-rule-strong);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.gf-play-stick-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  box-sizing: border-box;
+  width: 3rem;
+  height: 3rem;
+  margin: -1.5rem 0 0 -1.5rem;
+  border: 1px solid var(--gf-rule-strong);
+  border-radius: 50%;
+  background: var(--gf-surface);
+  pointer-events: none;
+}
+
+.gf-play-pad[hidden],
+.gf-play-pad-key[hidden] {
+  display: none;
+}
+
 @media (orientation: landscape) {
   .gf-play-overlay {
     grid-template-areas:
@@ -1176,7 +1236,12 @@ html.gf-play-locked body {
   }
 
   .gf-play-bar {
-    align-items: flex-start;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  .gf-play-pad-stick {
+    width: calc(3 * 3.5rem + 2 * var(--gf-gap-2) + 2 * var(--gf-gap-3));
   }
 }
 

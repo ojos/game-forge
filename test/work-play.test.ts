@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { playReportScript } from '../src/plays.js';
 import { LOADER_STARTED_MESSAGE, PAD_MESSAGE_TYPE } from '../src/sandbox-loader.js';
-import { padLayoutOf } from '../src/virtual-pad.js';
+import { STICK_KEYS_SOURCE, padPlanOf } from '../src/virtual-pad.js';
+import { oldOperationNamesIn } from './helpers/old-names.js';
 import {
   PLAY_CLOSE_CLASS,
   PLAY_ENTRY_CLASS,
@@ -12,6 +13,9 @@ import {
   PLAY_OPEN_CLASS,
   PLAY_OVERLAY_CLASS,
   PLAY_PAD_KEY_CLASS,
+  PLAY_PAD_MEMORY_PREFIX,
+  PLAY_PAD_TOGGLE_CLASS,
+  PLAY_PAD_TOGGLE_LABELS,
   PLAY_STAGE_CLASS,
   padKeysHtml,
   playEmbed,
@@ -37,6 +41,9 @@ import {
  */
 
 const PLAY_URL = 'https://sandbox.example/g/00000000-0000-4000-8000-000000000502/';
+
+/** 作品 id（覚えた形のキーに使う）。 */
+const WORK_ID = '00000000-0000-4000-8000-000000000530';
 
 /** キーを読まない作品（パッドを出さない）。 */
 const NO_KEYS: readonly string[] = [];
@@ -70,7 +77,7 @@ describe('iframe の属性は 1 か所から組み立てる（3.9.4 / 3.9.8 の 
   });
 
   it('全画面を iframe に許さない（allowfullscreen も allow も足さない。3.9.8 の 6）', () => {
-    const embed = playEmbed(PLAY_URL, NO_KEYS);
+    const embed = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null);
     expect(embed).not.toContain('allowfullscreen');
     expect(embed).not.toMatch(/\sallow=/u);
     expect(embed).not.toContain('allow-same-origin');
@@ -94,13 +101,13 @@ describe('iframe の属性は 1 か所から組み立てる（3.9.4 / 3.9.8 の 
 
 describe('SSR の骨組み（3.9.4）', () => {
   it('iframe は <noscript> の中にだけあり、HTML に直接置かない', () => {
-    const embed = playEmbed(PLAY_URL, NO_KEYS);
+    const embed = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null);
     expect(embed.startsWith(`<noscript class="${PLAY_NOSCRIPT_CLASS}">${playFrameHtml(PLAY_URL)}</noscript>\n`)).toBe(true);
     expect(embed.split('<iframe').length - 1).toBe(1);
   });
 
   it('覆いは hidden で配り、中にゲームの領域・閉じるのボタン・パッドの置き場所を持つ（キーを読まない作品では空）', () => {
-    const embed = playEmbed(PLAY_URL, NO_KEYS);
+    const embed = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null);
     expect(embed).toContain(`<div class="${PLAY_OVERLAY_CLASS}" role="dialog" aria-modal="true" aria-label="ゲーム" hidden>`);
     expect(embed).toContain(`<div class="${PLAY_STAGE_CLASS}"></div>`);
     expect(embed).toContain(`<button type="button" class="gf-button gf-button-secondary ${PLAY_CLOSE_CLASS}">閉じる</button>`);
@@ -120,7 +127,7 @@ describe('SSR の骨組み（3.9.4）', () => {
   });
 
   it('足したボタンの文言は固定で、主のボタンを使わない（主は「改造する」のまま。2.5.5）', () => {
-    const html = `${playEntry('', true)}${playEmbed(PLAY_URL, NO_KEYS)}`;
+    const html = `${playEntry('', true)}${playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null)}`;
     expect(html).not.toContain('gf-button-primary');
     expect(html.match(/<button\b[^>]*>([^<]*)<\/button>/gu)).toEqual([
       `<button type="button" class="gf-button gf-button-secondary ${PLAY_OPEN_CLASS}" hidden>遊ぶ</button>`,
@@ -212,15 +219,18 @@ describe('仮想パッドの HTML（#494 / 仕様 3.9.6）', () => {
   const codes = ['ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'Enter', 'KeyZ', 'Space'];
 
   it('覆いの 2 つの置き場所に、表示規則の結果を副のボタンの部品で出す（十字は位置のクラスと読み上げの名前を持つ）', () => {
-    const embed = playEmbed(PLAY_URL, codes);
-    expect(embed).toContain(padKeysHtml(padLayoutOf(codes)));
-    expect(padKeysHtml(padLayoutOf(codes))).toBe(
+    const embed = playEmbed(PLAY_URL, WORK_ID, codes, null);
+    expect(embed).toContain(padKeysHtml(padPlanOf(codes, null)));
+    // 版 1 の行（held が null）は十字で出す。スティックの置き場所は隠して置き（切り替え用）、読む軸をすべて受け付ける。
+    expect(padKeysHtml(padPlanOf(codes, null))).toBe(
       '<div class="gf-play-pad gf-play-pad-dpad">' +
         '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key gf-play-pad-up" data-code="ArrowUp" aria-label="上">↑</button>' +
         '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key gf-play-pad-left" data-code="ArrowLeft" aria-label="左">←</button>' +
         '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key gf-play-pad-right" data-code="ArrowRight" aria-label="右">→</button>' +
         '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key gf-play-pad-down" data-code="ArrowDown" aria-label="下">↓</button>' +
-        '</div>\n<div class="gf-play-pad gf-play-pad-buttons">' +
+        '</div>\n<div class="gf-play-pad gf-play-pad-stick" data-stick-up="ArrowUp" data-stick-down="ArrowDown" data-stick-left="ArrowLeft" data-stick-right="ArrowRight" hidden>' +
+        '<div class="gf-play-stick-ring" hidden><div class="gf-play-stick-knob"></div></div></div>' +
+        '\n<div class="gf-play-pad gf-play-pad-buttons">' +
         '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key" data-code="Space">Space</button>' +
         '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key" data-code="KeyZ">Z</button>' +
         '</div>',
@@ -236,8 +246,8 @@ describe('仮想パッドの HTML（#494 / 仕様 3.9.6）', () => {
   });
 
   it('スクリプトの本文はキーの集合によらず同じ（キーの集合も UGC も埋めない）', () => {
-    const withKeys = playEmbed(PLAY_URL, codes);
-    const withoutKeys = playEmbed(PLAY_URL, NO_KEYS);
+    const withKeys = playEmbed(PLAY_URL, WORK_ID, codes, null);
+    const withoutKeys = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null);
     expect(withKeys.slice(withKeys.indexOf('<script>'))).toBe(withoutKeys.slice(withoutKeys.indexOf('<script>')));
   });
 });
@@ -318,5 +328,164 @@ describe('仮想パッドのスクリプトの形（#494 / 仕様 3.9.6 / 3.9.7�
 
   it('長押しのメニューを抑える', () => {
     expect(script).toContain("addEventListener('contextmenu', function (event) { event.preventDefault(); });");
+  });
+});
+
+describe('方向の操作の形: スティックと切り替えの HTML（#530 / 仕様 3.9.6）', () => {
+  /** ←→ H・↑ J・Space（ピヨピヨジャンプの形）。 */
+  const jump = { codes: ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Space'], held: ['ArrowLeft', 'ArrowRight'] };
+
+  /**
+   * 覆いの開始タグと上の行を取り出す。
+   *
+   * @param embed 埋め込みの HTML
+   * @returns 覆いの開始タグ・上の行
+   */
+  function overlayOf(embed: string): { open: string; bar: string } {
+    const start = embed.indexOf(`<div class="${PLAY_OVERLAY_CLASS}"`);
+    const open = embed.slice(start, embed.indexOf('>', start) + 1);
+    const barStart = embed.indexOf('<div class="gf-play-bar">');
+    return { open, bar: embed.slice(barStart, embed.indexOf('</div>', barStart) + '</div>'.length) };
+  }
+
+  it('推定がスティックなら、スティックの置き場所を見せ、十字を隠し、スティックの形でだけ出すボタンを見せる', () => {
+    const html = padKeysHtml(padPlanOf(jump.codes, jump.held));
+    expect(html).toBe(
+      '<div class="gf-play-pad gf-play-pad-dpad" hidden>' +
+        '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key gf-play-pad-up" data-code="ArrowUp" aria-label="上">↑</button>' +
+        '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key gf-play-pad-left" data-code="ArrowLeft" aria-label="左">←</button>' +
+        '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key gf-play-pad-right" data-code="ArrowRight" aria-label="右">→</button>' +
+        '</div>\n' +
+        // 横だけ: 受け付ける方向は左右だけ（上下の属性を持たない）。
+        '<div class="gf-play-pad gf-play-pad-stick" data-stick-left="ArrowLeft" data-stick-right="ArrowRight">' +
+        '<div class="gf-play-stick-ring" hidden><div class="gf-play-stick-knob"></div></div></div>\n' +
+        '<div class="gf-play-pad gf-play-pad-buttons">' +
+        '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key" data-code="Space">Space</button>' +
+        '<button type="button" class="gf-button gf-button-secondary gf-play-pad-key" data-code="ArrowUp" aria-label="上" data-pad-only="stick">↑</button>' +
+        '</div>',
+    );
+  });
+
+  it('推定が十字なら、スティックの置き場所とスティックの形でだけ出すボタンを隠す。出すボタンが無ければ置き場所ごと隠す', () => {
+    const plan = padPlanOf(['ArrowLeft', 'ArrowRight', 'ArrowUp'], ['ArrowLeft', 'ArrowRight']);
+    // スティックでは ↑ のボタンだけ、十字ではボタンが無い。推定はスティックなので、ボタンの置き場所は見える。
+    expect(padKeysHtml(plan)).toContain('<div class="gf-play-pad gf-play-pad-buttons"><button');
+    const dpadFirst = { ...plan, estimated: 'dpad' as const };
+    const html = padKeysHtml(dpadFirst);
+    expect(html).toContain('<div class="gf-play-pad gf-play-pad-dpad"><button');
+    expect(html).toMatch(/<div class="gf-play-pad gf-play-pad-stick"[^>]* hidden>/u);
+    expect(html).toContain('data-pad-only="stick" hidden>↑</button>');
+    expect(html).toContain('<div class="gf-play-pad gf-play-pad-buttons" hidden><button');
+  });
+
+  it('方向の操作がある作品では、覆いに推定した形と覚えた形のキー（作品 id ごと）を持たせ、「閉じる」の前に控えめの切り替えを置く', () => {
+    const stickEmbed = playEmbed(PLAY_URL, WORK_ID, jump.codes, jump.held);
+    expect(overlayOf(stickEmbed).open).toBe(
+      `<div class="${PLAY_OVERLAY_CLASS}" role="dialog" aria-modal="true" aria-label="ゲーム" data-pad-shape="stick" data-pad-memory="${PLAY_PAD_MEMORY_PREFIX}${WORK_ID}" hidden>`,
+    );
+    expect(overlayOf(stickEmbed).bar).toBe(
+      `<div class="gf-play-bar"><button type="button" class="gf-button gf-button-tertiary ${PLAY_PAD_TOGGLE_CLASS}">` +
+        '<span data-pad-label="stick">十字にする</span><span data-pad-label="dpad" hidden>スティックにする</span></button>' +
+        `<button type="button" class="gf-button gf-button-secondary ${PLAY_CLOSE_CLASS}">閉じる</button></div>`,
+    );
+    const dpadEmbed = playEmbed(PLAY_URL, WORK_ID, jump.codes, null);
+    expect(overlayOf(dpadEmbed).open).toContain('data-pad-shape="dpad"');
+    expect(overlayOf(dpadEmbed).bar).toContain('<span data-pad-label="stick" hidden>十字にする</span><span data-pad-label="dpad">スティックにする</span></button>');
+    expect(PLAY_PAD_TOGGLE_LABELS).toEqual({ stick: '十字にする', dpad: 'スティックにする' });
+  });
+
+  it('方向の操作が無い作品（キーを読まない・ボタンだけ）では、切り替えもスティックの置き場所も出さない', () => {
+    for (const codes of [[], ['Space', 'KeyZ']]) {
+      const full = playEmbed(PLAY_URL, WORK_ID, codes, ['Space']);
+      // スクリプトは作品によらず同じで、部品の綴りを持つ。見るのは HTML の骨組み。
+      const embed = full.slice(0, full.indexOf('<script>'));
+      expect(embed).not.toContain(PLAY_PAD_TOGGLE_CLASS);
+      expect(embed).not.toContain('gf-play-pad-stick');
+      expect(embed).not.toContain('data-pad-shape');
+      expect(embed).not.toContain('data-pad-memory');
+      expect(overlayOf(embed).bar).toBe(`<div class="gf-play-bar"><button type="button" class="gf-button gf-button-secondary ${PLAY_CLOSE_CLASS}">閉じる</button></div>`);
+    }
+  });
+
+  it('足したボタンは部品のクラスを持ち、主を使わず、文言に旧い呼び名が出ない（2.5.5 / #513）', () => {
+    const embed = playEmbed(PLAY_URL, WORK_ID, jump.codes, jump.held);
+    expect(embed).not.toContain('gf-button-primary');
+    for (const tag of embed.match(/<button\b[^>]*>/gu) ?? []) {
+      expect(tag).toMatch(/class="gf-button gf-button-(secondary|tertiary) /u);
+    }
+    expect(oldOperationNamesIn(embed)).toEqual([]);
+  });
+
+  it('作品 id は属性として逃がして入れる', () => {
+    expect(playEmbed(PLAY_URL, '"><script>', jump.codes, jump.held)).toContain('data-pad-memory="gf-pad-shape:&quot;&gt;&lt;script&gt;"');
+  });
+});
+
+describe('スティックと切り替えのスクリプトの形（#530 / 仕様 3.9.6）', () => {
+  const script = playFrameScript(PLAY_URL);
+
+  /**
+   * スクリプトから、`var name = function (...) {` で始まる関数の本文を取り出す。
+   *
+   * @param name 変数名
+   * @returns 本文
+   */
+  function functionBody(name: string): string {
+    const start = script.indexOf(`var ${name} = function`);
+    expect(start, name).toBeGreaterThan(0);
+    return script.slice(start, script.indexOf('\n  };\n', start));
+  }
+
+  it('方向の決め方は src/virtual-pad.ts の本文をそのまま埋め込む（写しを持たない）', () => {
+    expect(script).toContain(`var stickKeysOf = ${STICK_KEYS_SOURCE};`);
+    expect(script.split('Math.atan2').length - 1).toBe(1);
+    expect(script).toContain('var stickRadius = 56;');
+    expect(script).toContain('var stickDeadZone = 0.3;');
+  });
+
+  it('送り方: 集合が変わったときだけ、外れたキーの up を先に、加わったキーの down を後に送る', () => {
+    const body = functionBody('setStickKeys');
+    expect(body.indexOf("sendPad('up', stickHeld[index]);")).toBeGreaterThan(0);
+    expect(body.indexOf("sendPad('up', stickHeld[index]);")).toBeLessThan(body.indexOf("sendPad('down', next[index]);"));
+    expect(body).toContain('if (next.indexOf(stickHeld[index]) === -1)');
+    expect(body).toContain('if (stickHeld.indexOf(next[index]) === -1)');
+  });
+
+  it('pointerdown で preventDefault と setPointerCapture をし、触れた位置を中心にする。離すと押しているキーをすべて up する', () => {
+    const down = script.slice(script.indexOf("stickArea.addEventListener('pointerdown'"));
+    expect(down.indexOf('event.preventDefault();')).toBeLessThan(down.indexOf('stickArea.setPointerCapture(event.pointerId)'));
+    expect(down).toMatch(/stickCenterX = event\.clientX;\n\s+stickCenterY = event\.clientY;/u);
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+      expect(script).toContain(`stickArea.addEventListener('${type}', liftStick);`);
+    }
+    expect(functionBody('liftStick')).toMatch(/setStickKeys\(\[\]\);\n\s+dropStick\(\);/u);
+    // つまみは円の縁で止める。
+    expect(script).toContain('var scale = distance > stickRadius ? stickRadius / distance : 1;');
+  });
+
+  it('すべて離すは、スティックの指も忘れる（その後に指を動かしても離しても送らない）', () => {
+    expect(functionBody('releasePad')).toContain('dropStick();');
+    expect(functionBody('dropStick')).toContain('stickPointer = null;');
+    expect(script).toContain("if (stickPointer === null || event.pointerId !== stickPointer) { return; }");
+  });
+
+  it('覚えた形は推定より優先し、読み書きの失敗は握りつぶす。切り替えは押しているキーを離してから形を変えて覚える', () => {
+    expect(script).toContain('try { remembered = window.localStorage.getItem(padMemory); } catch (error) { remembered = null; }');
+    expect(script).toContain("applyPadShape(remembered === 'stick' || remembered === 'dpad' ? remembered : padShape);");
+    const click = script.slice(script.indexOf("padToggle.addEventListener('click'"));
+    expect(click.indexOf('releasePad(frame);')).toBeLessThan(click.indexOf('applyPadShape(next);'));
+    expect(click.indexOf('applyPadShape(next);')).toBeLessThan(click.indexOf('window.localStorage.setItem(padMemory, next)'));
+    expect(click).toContain('try { window.localStorage.setItem(padMemory, next); } catch (error) {}');
+    // 文言は固定（今と逆の形の名前）で、HTML に置いた 2 つの見せ方を入れ替えるだけ（画面の文字を書き換える口を持たない）。
+    expect(functionBody('applyPadShape')).toContain(
+      "padToggleLabels[labelIndex].hidden = padToggleLabels[labelIndex].getAttribute(\"data-pad-label\") !== shape;",
+    );
+    expect(script).not.toMatch(/innerHTML|outerHTML|textContent|insertAdjacent|document\.write/u);
+  });
+
+  it('スティックと切り替えは、タッチ端末の判定より後ろで結ぶ（デスクトップでは付けない）', () => {
+    const desktop = script.indexOf('noscript.parentNode.insertBefore(createFrame(), noscript);');
+    expect(script.indexOf("stickArea.addEventListener('pointerdown'")).toBeGreaterThan(desktop);
+    expect(script.indexOf('window.localStorage.getItem')).toBeGreaterThan(desktop);
   });
 });

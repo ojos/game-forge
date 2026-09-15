@@ -2609,18 +2609,20 @@ describe('仮想パッドのキーを読む（#494 / 仕様 3.9.5 / 3.9.6）', (
         .bind(sourceKey, codes, JSON.stringify(['ArrowLeft', 'ArrowRight']), groups)
         .run();
     };
-    // Space || ↑ の組: スティックのまま、↑ のボタンを出さない。
+    // Space || ↑ の組: スティックのまま、↑ のボタンを出さない。十字にしたときの十字（隠して置く）にも ↑ を出さない（#549）。
     await store(JSON.stringify([['ArrowUp', 'Space']]));
     let body = await (await open(workPagePath(id))).text();
     expect(padShapeOf(body)).toBe('stick');
-    expect(padCodesOf(body)).toEqual(['ArrowUp', 'ArrowLeft', 'ArrowRight', 'Space']);
+    expect(padCodesOf(body)).toEqual(['ArrowLeft', 'ArrowRight', 'Space']);
     expect(body).not.toContain('data-code="ArrowUp" aria-label="上" data-pad-only="stick">↑</button>');
+    expect(body).not.toContain('gf-play-pad-up" data-code="ArrowUp"');
     // 組が未記録（NULL）・壊れた値・配列でない値・許可表の外だけ・別の組: 今の規則 5 のまま ↑ を右のボタンに回す。
     for (const groups of [null, 'not json', '{"0":["ArrowUp","Space"]}', JSON.stringify([['ArrowUp', 'constructor']]), JSON.stringify([['ArrowUp', 'KeyW']])]) {
       await store(groups);
       body = await (await open(workPagePath(id))).text();
       expect(padShapeOf(body), String(groups)).toBe('stick');
       expect(body, String(groups)).toContain('data-code="ArrowUp" aria-label="上" data-pad-only="stick">↑</button>');
+      expect(body, String(groups)).toContain('gf-play-pad-up" data-code="ArrowUp"');
     }
   });
 

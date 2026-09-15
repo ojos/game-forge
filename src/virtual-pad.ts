@@ -30,6 +30,7 @@
  * {@link padPlanOf} は、さらに**同じ条件式で読むキーの組**（`source_input_keys.alias_groups`。規則の版 3）を受け取り、規則 5 で右のボタンに
  * 回す方向のうち、**方向のボタンより前の順位（Space・KeyZ・KeyX。{@link LEADING_BUTTONS} の方向のボタンより前）でボタンに出るキーと同じ組にある方向を出さない**。
  * {@link readAliasGroups} は D1 の値を許可表で絞り、**NULL・壊れた JSON・配列でない値は「未記録」（null）**として返す（今の規則 5 のまま方向を回す）。
+ * **推定がスティックの作品を十字にしたときの十字からも、同じ判定に当たる方向を外す**（#549 / M14-12。推定が十字の作品の十字は変えない）。
  *
  * スティックの方向の決め方は、ブラウザで動かす関数の本文 {@link STICK_KEYS_SOURCE} を 1 つだけ持つ（スクリプトへ埋め込み、
  * 単体テストは同じ本文を評価して確かめる。写しを 2 つ作らない）。
@@ -391,7 +392,7 @@ export interface PadPlanButton extends PadKey {
 export interface PadPlan {
   /** 推定した最初の形（仕様 3.9.6 の規則 1〜6）。方向キーを読まなければ null。 */
   readonly estimated: PadShape | null;
-  /** 十字で出すときの十字（表示規則の 1）。 */
+  /** 十字で出すときの十字（表示規則の 1。推定がスティックなら、押し続けない軸の同じ働きの方向を外したもの。#549）。 */
   readonly dpad: readonly PadDirectionKey[];
   /** スティックで出すときに受け付ける方向。方向キーを読まなければ null。 */
   readonly stick: PadStick | null;
@@ -415,11 +416,17 @@ export interface PadPlan {
  * **同じ働きの方向をボタンに出さない（#543）:** 規則 5 で方向のボタンを並べる前に、その方向の `code` を含む組（`aliasGroups`）に、
  * 方向のボタンより前の順位のキー（Space・KeyZ・KeyX）のうち**ボタンに出るキー**があれば、その方向を出さない。組の相手がボタンに出ない
  * （読まない・上限で落ちる）ときは出す。`aliasGroups` が null（版 2 以下の行・壊れた値）なら今の規則 5 のままである。
- * 十字の中身と、推定が十字の作品をスティックにしたときの中身は変えない（どちらも方向のボタンを持たない）。
+ * 推定が十字の作品の十字と、推定が十字の作品をスティックにしたときの中身は変えない（どちらも方向のボタンを持たない）。
+ *
+ * **推定がスティックの作品を十字にしたときも、同じ働きの方向を十字に出さない（#549 / M14-12）:** 押し続けない軸の方向のうち、
+ * 上と同じ判定（組の相手が Space・KeyZ・KeyX でボタンに出る）に当たる方向を十字から外す。**押し続ける軸の方向は外さない**
+ * （スティックで受け付ける方向で、組の相手は判定しない）。推定が十字の作品（ネコくずし・迷路。4 方向と Space を `||` で並べた大きな組を
+ * 持つ）には当てない——当てると十字が消えて操作できなくなるためで、範囲は利用者が 3 案から選んだ。
  *
  * **切り替えたときの形**（手動の切り替え）:
  *
  * - **推定がスティックなら**、スティックの中身は推定のまま（受け付ける軸と方向のボタン）で、十字の中身は表示規則の 1 のとおり
+ *   （ただし上の #549 で、押し続けない軸の同じ働きの方向を外す）
  * - **推定が十字なら**、スティックにしたときは作品が読む軸（押し続けるかは問わない）をすべてスティックが受け付け、方向のボタンは出さない
  *
  * 前者は、推定の形へ戻したときに最初と同じ中身に戻すためである（「覚えた形がスティック」を「推定が十字の作品をスティックにした」と
@@ -455,11 +462,13 @@ export function padPlanOf(
   };
   const horizontalHeld = heldAxis('left', 'right');
   const verticalHeld = heldAxis('up', 'down');
+  const onHeldAxis = (direction: PadDirection): boolean => (direction === 'left' || direction === 'right' ? horizontalHeld : verticalHeld);
   // 規則 3 と 6（版 1 の行は held が null で、どちらの軸も押し続けない扱い＝十字）。
   const estimated: PadShape = horizontalHeld || verticalHeld ? 'stick' : 'dpad';
 
   let stick: PadStick;
   let directionButtons: PadDirectionKey[] = [];
+  let dpad: readonly PadDirectionKey[] = dpadLayout.dpad;
   if (estimated === 'stick') {
     // 規則 4: 押し続ける軸だけを受け付ける。
     stick = {
@@ -478,11 +487,13 @@ export function padPlanOf(
       aliasGroups !== null && aliasGroups.some((group) => group.includes(code) && group.some((other) => shownLeading.has(other)));
     for (const direction of DIRECTION_ORDER) {
       const code = codesByDirection[direction];
-      const onHeldAxis = direction === 'left' || direction === 'right' ? horizontalHeld : verticalHeld;
-      if (code !== null && !onHeldAxis && !sameAsShownButton(code)) {
+      if (code !== null && !onHeldAxis(direction) && !sameAsShownButton(code)) {
         directionButtons.push(directionKeyOf(direction, code));
       }
     }
+    // #549: 十字にしたときも、押し続けない軸の方向のうち同じ働きのもの（上の判定に当たるもの）を十字に出さない。
+    // 十字の形のボタンは方向のボタンを足す前のボタンと同じなので、「ボタンに出る」の判定をそのまま使える。
+    dpad = dpadLayout.dpad.filter((key) => onHeldAxis(key.direction) || !sameAsShownButton(key.code));
   } else {
     // 推定が十字の作品をスティックにしたとき: 読む軸をすべて受け付け、方向のボタンは出さない。
     stick = { ...codesByDirection };
@@ -506,7 +517,7 @@ export function padPlanOf(
       return { ...key, only };
     });
 
-  return { estimated, dpad: dpadLayout.dpad, stick, buttons };
+  return { estimated, dpad, stick, buttons };
 }
 
 /**

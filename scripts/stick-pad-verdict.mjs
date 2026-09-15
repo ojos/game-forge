@@ -12,6 +12,8 @@
 // | 5 | 切り替えで形が変わり（十字の ← が効く）、覚えた値が `localStorage` に入り、**文書を開き直すと覚えた形で出る**。`localStorage` が使えない状態でも推定した形で出て、切り替えが効き、ページの例外が出ない |
 // | 7 | **Space と同じ条件式で読む ↑ は右のボタンに出ない**（#543。見えているキーは Space だけで、押すと Space が届く） |
 // | 8 | **Space と別の条件式で読む ↑↓ は右のボタンに出る**（#543。ケロケロ舌合戦型。Space・Z・↑・↓ が見え、↑ と ↓ が届く） |
+// | 9 | **パッドを画面の端に寄せる**（#527。利用者の指示）。縦持ち 390×844・横持ち 844×390 で、右のボタン（1 つ・2 つ・3 つ・4 つの作品と、十字にした後）の右端が覆いのセーフエリアの右端から端の余白（`--play-pad-edge`）にあり、**右に空いた枠が無い**（どのボタンも右端にあるか、同じ段の右隣に間 1 つで次のボタンがある）。十字の左の列は左端から端の余白に、スティックの受け付ける範囲は左端から端の余白の内側にある。**キーとスティックの範囲の下端が、セーフエリアの下端から下端の余白（`--play-pad-clear-bottom`）より上にある**。余白の値は CSS から寸法にして読み、端の余白は 4〜16px、下端の余白は Android の Chrome の全画面の帯の想定（92px）以上であることも見る |
+// | 10 | **最初はスティックの作品を十字にしたとき、右のボタンと同じ働きの方向を十字に出さない**（#549）。Space と同じ組の作品（ピヨピヨジャンプ型）を十字にすると十字は ← → だけ、Space と別の組の作品（ケロケロ舌合戦型）は ↑←→↓、最初から十字のネコくずし型（4 方向と Space の大きな組）は ↑←→↓ |
 // | 6 | スティックを倒したまま右のボタン（Space）を押す同時押しが届く。スティックを倒したまま隠れる（`visibilitychange`）・閉じると keyup が届き、その後に倒し直しても離しても何も届かない |
 // | 形 | 見えているキーは 48px 以上。切り替えは控えめのボタンの部品。縦持ちはゲームの下の左にスティック・右にボタン、横持ちはゲームの左にスティック・右にボタン。触れた位置が円の中心で、つまみは倒した向きにある |
 //
@@ -31,6 +33,18 @@ const MIN_KEY_SIZE = 48;
 
 /** 矩形の比較で許す差（CSS ピクセル）。 */
 const TOLERANCE = 2;
+
+/** 端の余白として受け入れる範囲（CSS ピクセル。#527 の「最低限の余白」。0 は余白が無く、16 を超えると端に寄せたと言えない）。 */
+const EDGE_RANGE = { min: 4, max: 16 };
+
+/**
+ * 下端の余白の下限（CSS ピクセル。#527）。Android の Chrome の全画面の帯の想定範囲（札の最小の高さ 44dp と、札の窓が上に置かれる
+ * ナビゲーションバーの高さ 48dp の和。仕様 3.9.6 の #527 / #549 の決定）。CSS の値をこれより小さくすると、帯にキーが被りうる。
+ */
+const BAND_ESTIMATE_PX = 92;
+
+/** ボタンどうしの間（CSS ピクセル。`--gf-gap-2`）に許す上限。これより離れていれば、間に空いた枠がある。 */
+const BUTTON_GAP_MAX = 8 + TOLERANCE;
 
 /**
  * コマンドライン引数を読む。
@@ -339,6 +353,105 @@ function problemsOf(result) {
     }
   }
 
+  // ── 9 / 10. 端に寄せる（#527）と、十字にしたときの方向（#549）─────────────────
+  const edgeCases = [
+    { key: 'alias', name: 'Space と同じ組の作品（ピヨピヨジャンプ型・ボタン 1 つ）', shapes: { initial: 'stick', toggled: 'dpad' }, toggledDpad: ['ArrowLeft', 'ArrowRight'] },
+    { key: 'separate', name: 'Space と別の組の作品（ケロケロ舌合戦型・ボタン 4 つ）', shapes: { initial: 'stick', toggled: 'dpad' }, toggledDpad: ['ArrowUp', 'ArrowLeft', 'ArrowRight', 'ArrowDown'] },
+    { key: 'neko', name: 'ネコくずし型の作品（最初から十字・ボタン 3 つ）', shapes: { initial: 'dpad' }, initialDpad: ['ArrowUp', 'ArrowLeft', 'ArrowRight', 'ArrowDown'] },
+    { key: 'v1', name: '版 1 の行の作品（十字・ボタン 2 つ）', shapes: { initial: 'dpad' } },
+  ];
+  for (const edgeCase of edgeCases) {
+    const part = result.edges?.[edgeCase.key] ?? {};
+    if (!opened(problems, `9: ${edgeCase.name}`, part)) {
+      continue;
+    }
+    if ((part.exceptions ?? []).length > 0) {
+      problems.push(`9: ${edgeCase.name}のページで例外が出ました（${JSON.stringify(part.exceptions)}）。`);
+    }
+    for (const [shape, expectedShape] of Object.entries(edgeCase.shapes)) {
+      if (shape === 'toggled' && part.tapped !== true) {
+        problems.push(`10 の前提: ${edgeCase.name}で、切り替えのボタンを押せませんでした。`);
+        continue;
+      }
+      for (const orientation of ['portrait', 'landscape']) {
+        const where = `${edgeCase.name}（${shape === 'toggled' ? '十字にした後' : '最初の形'}・${orientation === 'portrait' ? '縦持ち' : '横持ち'}）`;
+        const observed = part[shape]?.[orientation];
+        const state = observed?.state;
+        const edges = observed?.edges;
+        if (!state || !edges?.safe) {
+          problems.push(`9: ${where}の状態か端を観測できていません（${JSON.stringify(observed ?? null)}）。`);
+          continue;
+        }
+        expectShape(problems, `9: ${where}`, state, /** @type {'stick' | 'dpad'} */ (expectedShape));
+        const { safe, edge, clearBottom } = edges;
+        if (!(edge >= EDGE_RANGE.min && edge <= EDGE_RANGE.max)) {
+          problems.push(`9: ${where}で、覆いの端の余白（--play-pad-edge）が ${EDGE_RANGE.min}〜${EDGE_RANGE.max}px にありません（${String(edge)}px）。`);
+        }
+        if (!(clearBottom >= BAND_ESTIMATE_PX)) {
+          problems.push(`9: ${where}で、覆いの下端の余白（--play-pad-clear-bottom）が全画面の帯の想定 ${BAND_ESTIMATE_PX}px に届きません（${String(clearBottom)}px）。`);
+        }
+        const keys = state.keys ?? [];
+        const buttons = keys.filter((key) => key.place === 'buttons').map((key) => ({ code: key.code, ...key.rect }));
+        const dpadKeys = keys.filter((key) => key.place === 'dpad').map((key) => ({ code: key.code, ...key.rect }));
+
+        // 9: 右のボタンは右端に寄り、右に空いた枠が無い。
+        if (buttons.length > 0) {
+          const rightmost = Math.max(...buttons.map((b) => b.x + b.width));
+          if (Math.abs(safe.right - rightmost - edge) > TOLERANCE) {
+            problems.push(
+              `9: ${where}で、右のボタンの右端が覆いの右端から端の余白 ${String(edge)}px にありません（右端 ${rightmost.toFixed(1)} / セーフエリアの右端 ${safe.right.toFixed(1)}）。` +
+                '#527: 右のボタンは画面の右端に寄せるはずです。',
+            );
+          }
+          for (const b of buttons) {
+            const atRight = Math.abs(b.x + b.width - rightmost) <= TOLERANCE;
+            const neighbor = buttons.some((other) => other !== b && Math.abs(other.y - b.y) <= TOLERANCE && other.x - (b.x + b.width) >= -TOLERANCE && other.x - (b.x + b.width) <= BUTTON_GAP_MAX);
+            if (!atRight && !neighbor) {
+              problems.push(
+                `9: ${where}で、右のボタン ${String(b.code)} の右に空いた枠があります（${JSON.stringify(buttons)}）。` +
+                  '#527: ボタンは空いた枠を詰めて右端から並べるはずです。',
+              );
+            }
+          }
+        }
+
+        // 9: 十字の左の列・スティックの受け付ける範囲は左端に寄る。
+        // 見るのは十字の ←（左の列のキー）。検査用の作品はどれも ← を読む。
+        const dpadLeft = dpadKeys.find((k) => k.code === 'ArrowLeft');
+        if (state.dpadShown === true && dpadLeft === undefined) {
+          problems.push(`9: ${where}で、十字の ← が見えません（${JSON.stringify(dpadKeys.map((k) => k.code))}）。`);
+        } else if (state.dpadShown === true && Math.abs(dpadLeft.x - safe.left - edge) > TOLERANCE) {
+          problems.push(`9: ${where}で、十字の左の列（←）が覆いの左端から端の余白 ${String(edge)}px にありません（左端 ${dpadLeft.x.toFixed(1)} / セーフエリアの左端 ${safe.left.toFixed(1)}）。#527。`);
+        }
+        if (state.stickShown === true && state.stickRect) {
+          if (!(state.stickRect.x >= safe.left - TOLERANCE && state.stickRect.x <= safe.left + edge + TOLERANCE)) {
+            problems.push(`9: ${where}で、スティックの受け付ける範囲の左端が覆いの左端から端の余白の内側にありません（範囲 ${JSON.stringify(state.stickRect)} / セーフエリアの左端 ${safe.left.toFixed(1)}）。#527。`);
+          }
+        }
+
+        // 9: 下端の余白より上に置く（キーとスティックの受け付ける範囲）。
+        const limit = safe.bottom - clearBottom + TOLERANCE;
+        for (const k of [...buttons, ...dpadKeys]) {
+          if (!(k.y + k.height <= limit)) {
+            problems.push(`9: ${where}で、キー ${String(k.code)} の下端（${(k.y + k.height).toFixed(1)}）が下端の余白より下にあります（上限 ${limit.toFixed(1)}）。#527: 全画面の帯に被らない高さに置くはずです。`);
+          }
+        }
+        if (state.stickShown === true && state.stickRect && !(state.stickRect.y + state.stickRect.height <= limit)) {
+          problems.push(`9: ${where}で、スティックの受け付ける範囲の下端（${(state.stickRect.y + state.stickRect.height).toFixed(1)}）が下端の余白より下にあります（上限 ${limit.toFixed(1)}）。#527。`);
+        }
+
+        // 10: 十字の中身。
+        const expectedDpad = shape === 'toggled' ? edgeCase.toggledDpad : edgeCase.initialDpad;
+        if (expectedDpad !== undefined && !same(dpadKeys.map((k) => k.code), expectedDpad)) {
+          problems.push(
+            `10: ${where}で、十字のキーが ${JSON.stringify(expectedDpad)} ではありません（${JSON.stringify(dpadKeys.map((k) => k.code))}）。` +
+              '#549: 最初はスティックの作品を十字にしたときだけ、右のボタンと同じ働きの方向を十字から外すはずです。',
+          );
+        }
+      }
+    }
+  }
+
   // ── 形: 並べ方と、触れている状態の描画（撮影と同じ手順）─────────────────────
   for (const [name, shots] of [
     ['横だけの作品', result.shots?.horizontal],
@@ -408,7 +521,8 @@ try {
   process.stdout.write(
     `${args.label} OK: 横だけの作品はスティック（上下を送らず ↑ は右のボタン）、8 方向の作品は斜めの同時押しで外れたキーを先に離し、` +
       '十字の作品と版 1 の行は十字、行が無い作品は何も出ません。切り替えは覚えた形で開き直し、localStorage が使えなくても推定で出ます。' +
-      'スティックとボタンの同時押し、隠れる・閉じると離れます。Space と同じ条件式で読む ↑ は右のボタンに出ず、別の条件式の ↑↓ は出て届きます。\n',
+      'スティックとボタンの同時押し、隠れる・閉じると離れます。Space と同じ条件式で読む ↑ は右のボタンに出ず、別の条件式の ↑↓ は出て届きます。' +
+      'パッドは縦持ち・横持ちで画面の端に寄り、右のボタンは右端から詰まり、下端の余白より上にあります。最初はスティックの作品を十字にすると、同じ働きの方向は十字に出ません。\n',
   );
 } catch (error) {
   process.stderr.write(`[stick-pad] 判定できませんでした: ${String(error)}\n`);

@@ -20,6 +20,12 @@
 // 5. **同じ条件式で読むキーの組を入れた作品**（#543。規則の版 3 の行）
 //    - **Space と同じ組**（←→ H・Space || ↑ || W）: 最初の形と見えているキー。右のボタンの Space を押して離す
 //    - **Space と別の組**（←→ H・↑ || W と ↓ || S。ケロケロ舌合戦型）: 最初の形と見えているキー。右のボタンの ↑ と ↓ を押して離す
+// 6. **パッドを画面の端に寄せる**（#527）と、**最初はスティックの作品を十字にしたときの方向**（#549）。縦持ち 390×844 と横持ち 844×390 で、
+//    覆いのセーフエリアの内側の端（覆いの矩形から `padding` を除いたもの）・覆いが持つ端の余白と下端の余白（`--play-pad-edge` /
+//    `--play-pad-clear-bottom` を寸法にした値）・見えているキーとスティックの矩形を読む。作品は、右のボタンが 1 つ（Space と同じ組）・
+//    4 つ（Space と別の組）・3 つで最初から十字（ネコくずし型。4 方向と Space の大きな組）・2 つで十字（版 1 の行）の 4 本で、
+//    最初がスティックの 2 本は切り替えのボタンで十字にしてからも読む。`--shot-dir` を渡せば、それぞれを撮り、
+//    下端の余白と Android の Chrome の全画面の帯の想定範囲を重ねた説明用の 1 枚も撮る（説明用で、判定には使わない）
 //
 // # 作品が受けたキーの観測
 //
@@ -33,7 +39,8 @@
 // 使い方:
 //   node scripts/stick-pad-probe.mjs --browser <path> --horizontal-url <横だけの作品> --eight-url <8 方向の作品> \
 //     --dpad-url <十字の作品> --v1-url <版 1 の行の作品> --no-row-url <行が無い作品> \
-//     --alias-url <Space と同じ組の作品> --separate-url <Space と別の組の作品> [--timeout-ms 45000] [--shot-dir <dir>]
+//     --alias-url <Space と同じ組の作品> --separate-url <Space と別の組の作品> --neko-url <ネコくずし型の作品> \
+//     [--timeout-ms 45000] [--shot-dir <dir>]
 //
 // 標準出力: 観測結果 1 個の JSON
 // 終了コード: 0 = 観測できた（合否とは無関係） / 1 = 観測そのものができなかった
@@ -63,10 +70,16 @@ const KEY_BINDING = '__gfKeyBinding';
 const TILT = 56;
 
 /**
+ * 説明用の 1 枚に重ねる、Android の Chrome の全画面の帯の想定範囲（CSS ピクセル。画面の下端から）。**判定には使わない。**
+ * 帯の札の最小の高さ 44dp と、札の窓が上に置かれるナビゲーションバーの高さ 48dp の和（仕様 3.9.6 の #527 / #549 の決定）。
+ */
+const BAND_ESTIMATE_PX = 92;
+
+/**
  * コマンドライン引数を読む。
  *
  * @param {string[]} argv `process.argv.slice(2)`
- * @returns {{browser: string, horizontalUrl: string, eightUrl: string, dpadUrl: string, v1Url: string, noRowUrl: string, aliasUrl: string, separateUrl: string, timeoutMs: number, shotDir: string | null}} 設定
+ * @returns {{browser: string, horizontalUrl: string, eightUrl: string, dpadUrl: string, v1Url: string, noRowUrl: string, aliasUrl: string, separateUrl: string, nekoUrl: string, timeoutMs: number, shotDir: string | null}} 設定
  */
 function parseArgs(argv) {
   /** @type {Record<string, string>} */
@@ -79,7 +92,7 @@ function parseArgs(argv) {
     }
     values[name.slice(2)] = value;
   }
-  const required = ['browser', 'horizontal-url', 'eight-url', 'dpad-url', 'v1-url', 'no-row-url', 'alias-url', 'separate-url'];
+  const required = ['browser', 'horizontal-url', 'eight-url', 'dpad-url', 'v1-url', 'no-row-url', 'alias-url', 'separate-url', 'neko-url'];
   for (const name of required) {
     if (values[name] === undefined) {
       throw new Error(`--${required.join(' と --')} は必須です`);
@@ -98,6 +111,7 @@ function parseArgs(argv) {
     noRowUrl: values['no-row-url'],
     aliasUrl: values['alias-url'],
     separateUrl: values['separate-url'],
+    nekoUrl: values['neko-url'],
     timeoutMs,
     shotDir: values['shot-dir'] ?? null,
   };
@@ -182,6 +196,31 @@ const STATE_EXPRESSION = `(() => {
     keys,
     signals: Array.isArray(window.__gfSignals) ? window.__gfSignals.slice() : null,
   };
+})()`;
+
+/**
+ * 覆いのセーフエリアの内側の端と、覆いが持つ端の余白・下端の余白を寸法にした値を読む式（#527）。
+ *
+ * 余白の値は CSS の 1 か所（覆いの `--play-pad-edge` / `--play-pad-clear-bottom`）が持つので、ここへ書き写さず、
+ * 覆いの中に見えない物差しを一瞬置いて寸法にする（値が無ければ物差しの大きさは 0 になる）。
+ */
+const EDGE_EXPRESSION = `(() => {
+  const overlay = document.querySelector('.gf-play-overlay');
+  if (overlay === null) { return null; }
+  const rect = overlay.getBoundingClientRect();
+  const style = getComputedStyle(overlay);
+  const safe = {
+    left: rect.left + parseFloat(style.paddingLeft),
+    right: rect.right - parseFloat(style.paddingRight),
+    top: rect.top + parseFloat(style.paddingTop),
+    bottom: rect.bottom - parseFloat(style.paddingBottom),
+  };
+  const ruler = document.createElement('div');
+  ruler.style.cssText = 'position: absolute; left: 0; top: 0; visibility: hidden; width: var(--play-pad-edge); height: var(--play-pad-clear-bottom);';
+  overlay.appendChild(ruler);
+  const measured = ruler.getBoundingClientRect();
+  ruler.remove();
+  return { safe, edge: measured.width, clearBottom: measured.height };
 })()`;
 
 /**
@@ -695,6 +734,97 @@ async function observeButtons(cdp, options, url, codes) {
 }
 
 /**
+ * パッドの端の寄せ方（#527）と、切り替えたときの十字の中身（#549）を観測する。縦持ちと横持ちで状態と端を読み、撮る。
+ *
+ * **`localStorage` を使わない形で開く**（前の段階で覚えた形に左右されず、推定した形から始める）。
+ *
+ * @param {CdpConnection} cdp 接続
+ * @param {ReturnType<typeof parseArgs>} options 設定
+ * @param {string} url 作品ページ
+ * @param {string} prefix ファイル名の接頭辞
+ * @param {boolean} toggle 切り替えのボタンを押して、もう一方の形でも読むか
+ * @returns {Promise<object>} 観測結果（`initial` と、`toggle` なら `toggled`。それぞれ `portrait` / `landscape`）
+ */
+async function observeEdges(cdp, options, url, prefix, toggle) {
+  const tab = await openTouchTab(cdp, options, [BREAK_STORAGE]);
+  /** @type {Record<string, any>} */
+  const steps = {};
+  try {
+    steps.opened = await tab.openWork(url);
+    for (const shape of toggle ? ['initial', 'toggled'] : ['initial']) {
+      if (shape === 'toggled') {
+        await tab.resize(PORTRAIT);
+        await sleep(500);
+        steps.tapped = await tab.tap('.gf-play-pad-toggle');
+        await sleep(DELIVERY_MS);
+      }
+      steps[shape] = {};
+      for (const [name, size] of [
+        ['portrait', PORTRAIT],
+        ['landscape', LANDSCAPE],
+      ]) {
+        await tab.resize(size);
+        await sleep(500);
+        steps[shape][name] = {
+          state: await tab.state(),
+          edges: await tab.evaluate(EDGE_EXPRESSION),
+          shot: await tab.shoot(
+            options.shotDir === null ? null : join(options.shotDir, `${prefix}-${shape}-${name}-${size.width}x${size.height}.png`),
+          ),
+        };
+      }
+    }
+    steps.exceptions = tab.exceptions.slice();
+    return steps;
+  } catch (error) {
+    steps.error = String(error);
+    return steps;
+  } finally {
+    await tab.close().catch(() => {});
+  }
+}
+
+/**
+ * 説明用の 1 枚を撮る（縦持ちのネコくずし型に、Android の Chrome の全画面の帯の想定範囲と、パッドの下端の余白を重ねる）。**判定には使わない。**
+ *
+ * @param {CdpConnection} cdp 接続
+ * @param {ReturnType<typeof parseArgs>} options 設定
+ * @returns {Promise<object>} 撮影のパス
+ */
+async function shootBandIllustration(cdp, options) {
+  if (options.shotDir === null) {
+    return { shot: null };
+  }
+  const tab = await openTouchTab(cdp, options, [BREAK_STORAGE]);
+  try {
+    await tab.openWork(options.nekoUrl);
+    await tab.resize(PORTRAIT);
+    await sleep(500);
+    await tab.evaluate(`(() => {
+      const overlay = document.querySelector('.gf-play-overlay');
+      const band = document.createElement('div');
+      band.style.cssText = 'position: fixed; left: 8px; right: 8px; bottom: 0; height: ${BAND_ESTIMATE_PX}px; box-sizing: border-box; ' +
+        'border: 2px solid rgba(255, 80, 80, 0.9); background: rgba(255, 80, 80, 0.3); color: #fff; font: 12px/1.4 sans-serif; ' +
+        'display: flex; align-items: center; justify-content: center; text-align: center; pointer-events: none; z-index: 1000;';
+      band.textContent = 'Android の Chrome の全画面の帯の想定範囲（下から ${BAND_ESTIMATE_PX}px）';
+      const clear = document.createElement('div');
+      clear.style.cssText = 'position: fixed; left: 0; right: 0; bottom: 0; height: var(--play-pad-clear-bottom); box-sizing: border-box; ' +
+        'border-top: 2px dashed rgba(120, 200, 255, 0.95); color: rgba(120, 200, 255, 0.95); font: 12px/1.4 sans-serif; ' +
+        'padding: 2px 8px; pointer-events: none; z-index: 1001;';
+      clear.textContent = 'パッドの下端（--play-pad-clear-bottom）';
+      overlay.appendChild(band);
+      overlay.appendChild(clear);
+    })()`);
+    await sleep(200);
+    return { shot: await tab.shoot(join(options.shotDir, `band-illustration-neko-portrait-${PORTRAIT.width}x${PORTRAIT.height}.png`)) };
+  } catch (error) {
+    return { error: String(error) };
+  } finally {
+    await tab.close().catch(() => {});
+  }
+}
+
+/**
  * 撮影する（スティックに触れて倒している状態。縦持ち・横持ち）。**判定には使わないが、並べ方の矩形とつまみの位置は残す。**
  *
  * @param {CdpConnection} cdp 接続
@@ -745,6 +875,14 @@ async function probe(options) {
       // #543: Space と同じ組の作品は Space を、別の組の作品は ↑ と ↓ を押す（見えないはずのボタンは押せずに null が残る）。
       alias: await observeButtons(cdp, options, options.aliasUrl, ['Space', 'ArrowUp']),
       separate: await observeButtons(cdp, options, options.separateUrl, ['ArrowUp', 'ArrowDown']),
+      // #527 / #549: 端の寄せ方と、最初はスティックの作品を十字にしたときの十字の中身。
+      edges: {
+        alias: await observeEdges(cdp, options, options.aliasUrl, 'edges-alias', true),
+        separate: await observeEdges(cdp, options, options.separateUrl, 'edges-separate', true),
+        neko: await observeEdges(cdp, options, options.nekoUrl, 'edges-neko', false),
+        v1: await observeEdges(cdp, options, options.v1Url, 'edges-v1', false),
+      },
+      band: await shootBandIllustration(cdp, options),
       // 撮影は localStorage を使わない形で開く（1 で覚えた十字ではなく、推定したスティックを撮る）。
       shots: {
         horizontal: await observeShots(cdp, options, options.horizontalUrl, 'stick-horizontal', { dx: TILT, dy: 0 }),

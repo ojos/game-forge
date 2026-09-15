@@ -497,9 +497,8 @@ describe('同じ働きの方向をボタンに出さない（仕様 3.9.6 の #5
     const plan = planOf(codes, held ?? LR, groups);
     expect(plan.estimated).toBe('stick');
     expect(plan.stickButtons).toEqual(stickButtons);
-    // 十字の形（ボタン・十字）は組によらず表示規則（#494）のとおり。
+    // 十字の形のボタンは組によらず表示規則（#494）のとおり。十字は #549 で同じ働きの方向を外す（下の describe が見る）。
     expect(plan.dpadButtons).toEqual(padLayoutOf(codes).buttons.map((key) => key.code));
-    expect(plan.dpad).toEqual(padLayoutOf(codes).dpad.map((key) => key.code));
     // 組が未記録（null）なら、今の規則 5 のまま方向をボタンに回す。
     const unrecorded = planOf(codes, held ?? LR, null);
     expect(unrecorded.stickButtons).toEqual(planOf(codes, held ?? LR).stickButtons);
@@ -540,6 +539,88 @@ describe('同じ働きの方向をボタンに出さない（仕様 3.9.6 の #5
     expect(planOf(codes, [], groups)).toMatchObject({ estimated: 'dpad', dpad: ['ArrowUp', 'ArrowLeft', 'ArrowRight'], stickButtons: ['Space'] });
     // 版 1 の行（held が null）も同じ。
     expect(padPlanOf(codes, null, groups)).toEqual(padPlanOf(codes, null, null));
+  });
+});
+
+describe('最初はスティックの作品を十字にしたとき、同じ働きの方向を十字から外す（仕様 3.9.6 の #549 / M14-12）', () => {
+  it.each([
+    {
+      name: 'ピヨピヨジャンプ型（←→ H・Space || ↑ || W）: 十字にすると ← → だけ',
+      codes: [...LR, 'ArrowUp', 'KeyW', 'Space'],
+      held: LR,
+      groups: [['ArrowUp', 'KeyW', 'Space']],
+      dpad: ['ArrowLeft', 'ArrowRight'],
+    },
+    {
+      name: 'ストーリーと目的型（←→ H・Z || ↑）: 相手が Z でも外す（← →）',
+      codes: [...LR, 'ArrowUp', 'KeyX', 'KeyZ', 'Space'],
+      held: LR,
+      groups: [['ArrowUp', 'KeyZ']],
+      dpad: ['ArrowLeft', 'ArrowRight'],
+    },
+    {
+      name: 'ケロケロ舌合戦型（←→ H・↑ || W と ↓ || S が Space と別の条件式）: ↑↓ も十字に出る',
+      codes: [...ARROWS, 'KeyS', 'KeyW', 'KeyZ', 'Space'],
+      held: LR,
+      groups: [
+        ['ArrowDown', 'KeyS'],
+        ['ArrowUp', 'KeyW'],
+      ],
+      dpad: ['ArrowUp', 'ArrowLeft', 'ArrowRight', 'ArrowDown'],
+    },
+    {
+      name: 'ネコくずし型（4 方向とも J・4 方向と Space の大きな組・Space・R・Esc）: 最初から十字なので 4 方向のまま',
+      codes: [...ARROWS, 'Escape', 'KeyR', 'Space'],
+      held: [],
+      groups: [['ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'Space']],
+      dpad: ['ArrowUp', 'ArrowLeft', 'ArrowRight', 'ArrowDown'],
+    },
+    {
+      name: '迷路型（版 1 の行・held が null）: 最初から十字なので、大きな組があっても 4 方向のまま',
+      codes: [...ARROWS, 'Space'],
+      held: null,
+      groups: [['ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'Space']],
+      dpad: ['ArrowUp', 'ArrowLeft', 'ArrowRight', 'ArrowDown'],
+    },
+    {
+      name: '押し続ける軸の方向は、組の相手がボタンに出ても外さない（↑↓ H・← || Space）',
+      codes: [...UD, 'ArrowLeft', 'Space'],
+      held: UD,
+      groups: [['ArrowLeft', 'ArrowUp', 'Space']],
+      dpad: ['ArrowUp', 'ArrowDown'],
+    },
+    {
+      name: 'WASD の作品（A・D を H、Space || W）: 十字にすると A・D だけ',
+      codes: ['KeyA', 'KeyD', 'KeyW', 'Space'],
+      held: ['KeyA', 'KeyD'],
+      groups: [['KeyW', 'Space']],
+      dpad: ['KeyA', 'KeyD'],
+    },
+  ])('$name', ({ codes, held, groups, dpad }) => {
+    const plan = planOf(codes, held, groups);
+    expect(plan.dpad).toEqual(dpad);
+    // 十字のキーは位置と読み上げの名前を持ったまま（表示規則の十字から外すだけ）。
+    const layout = padLayoutOf(codes).dpad;
+    expect(padPlanOf(codes, held, groups).dpad).toEqual(layout.filter((key) => dpad.includes(key.code)));
+    // ボタンは #543 のまま（十字の形のボタンは表示規則のとおり）。
+    expect(plan.dpadButtons).toEqual(padLayoutOf(codes).buttons.map((key) => key.code));
+  });
+
+  it('組が NULL（版 2 以下の行）なら、十字は表示規則のとおり（今のまま）', () => {
+    for (const codes of [
+      [...LR, 'ArrowUp', 'KeyW', 'Space'],
+      [...ARROWS, 'KeyS', 'KeyW', 'KeyZ', 'Space'],
+    ]) {
+      expect(padPlanOf(codes, LR, null).dpad).toEqual(padLayoutOf(codes).dpad);
+    }
+    expect(planOf([...LR, 'ArrowUp', 'Space'], LR, []).dpad).toEqual(['ArrowUp', 'ArrowLeft', 'ArrowRight']);
+  });
+
+  it('組の相手がボタンに出ない（読まない・Space・Z・X でない）ときは、十字に残す', () => {
+    expect(planOf([...LR, 'ArrowUp', 'Space'], LR, [['ArrowUp', 'KeyZ']]).dpad).toEqual(['ArrowUp', 'ArrowLeft', 'ArrowRight']);
+    expect(planOf([...LR, 'ArrowUp', 'KeyQ'], LR, [['ArrowUp', 'KeyQ']]).dpad).toEqual(['ArrowUp', 'ArrowLeft', 'ArrowRight']);
+    // 送る code で見る: 矢印を読む作品で W だけが Space と同じ組でも、十字の ↑（ArrowUp）は残す。
+    expect(planOf([...LR, 'ArrowUp', 'KeyW', 'Space'], LR, [['KeyW', 'Space']]).dpad).toEqual(['ArrowUp', 'ArrowLeft', 'ArrowRight']);
   });
 });
 

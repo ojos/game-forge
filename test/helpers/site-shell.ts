@@ -23,6 +23,8 @@
 export function pageBodyOf(html: string): string {
   return html
     .replace(/<header class="gf-header">[\s\S]*?<\/header>/u, '')
-    .replace(/<nav class="gf-breadcrumb"[\s\S]*?<\/nav>/u, '')
+    // 長い文を読ませる画面のパンくずは読み物の器の印（`gf-reading`）も持つ（#564）。`class` の中の `gf-breadcrumb` を
+    // 空白の境界で探し、クラスの並びを問わず外す（`gf-breadcrumbs` のような別名には当たらない）。
+    .replace(/<nav class="(?:[^"]*\s)?gf-breadcrumb(?:\s[^"]*)?"[\s\S]*?<\/nav>/u, '')
     .replace(/<footer class="gf-footer">[\s\S]*?<\/footer>/u, '');
 }

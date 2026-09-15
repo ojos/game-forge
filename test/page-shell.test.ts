@@ -11,6 +11,7 @@ import {
   LOGO_HEIGHT,
   LOGO_SCALES,
   LOGO_WIDTH,
+  READING_CLASS,
   breadcrumbLabelOf,
   siteLogo,
 } from '../src/html.js';
@@ -19,7 +20,8 @@ import { FAQ_PATH, PRIVACY_PATH } from '../src/legal-paths.js';
 import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
 import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH } from '../src/ogp.js';
 import { NON_PAGE_PATHS, ancestorPathsOf, ssrPagePaths } from '../src/page-paths.js';
-import { NEWS_PATH } from '../src/news-paths.js';
+import { NEWS_ARTICLES } from '../src/news-articles.js';
+import { NEWS_PATH, newsArticlePath } from '../src/news-paths.js';
 import { GENERATE_PAGE_PATH, HOME_PATH, INVITES_PATH, SIGNUP_PATH } from '../src/paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { HANDLE_PAGE_PREFIX } from '../src/handle-paths.js';
@@ -271,7 +273,9 @@ function accountMenuOf(header: string): string | null {
  * @returns パンくずの中身（無ければ null）
  */
 function breadcrumbOf(body: string): string | null {
-  return /<nav class="gf-breadcrumb"[\s\S]*?<\/nav>/u.exec(body)?.[0] ?? null;
+  // 長い文を読ませる画面のパンくずは読み物の器の印も持つ（#564）。`class` の中の `gf-breadcrumb` を空白の境界で探し、
+  // クラスの並びを問わず拾う（`gf-breadcrumbs` のような別名には当たらない）。
+  return /<nav class="(?:[^"]*\s)?gf-breadcrumb(?:\s[^"]*)?"[\s\S]*?<\/nav>/u.exec(body)?.[0] ?? null;
 }
 
 /**
@@ -1032,7 +1036,7 @@ describe('パンくず（2.3.10）', () => {
 
   it('トップには出さず、それ以外のすべての画面に 1 つだけ出る', async () => {
     for (const { path, body, state } of await allRendered()) {
-      const count = body.split('<nav class="gf-breadcrumb"').length - 1;
+      const count = (body.match(/<nav class="(?:[^"]*\s)?gf-breadcrumb(?:\s[^"]*)?"/gu) ?? []).length;
       expect(count, `${path}（${state}）のパンくずの数`).toBe(path === HOME_PATH ? 0 : 1);
     }
   });
@@ -1043,7 +1047,7 @@ describe('パンくず（2.3.10）', () => {
         continue;
       }
       const after = body.slice(body.indexOf('</header>') + '</header>'.length).trimStart();
-      expect(after.startsWith('<nav class="gf-breadcrumb"'), `${path}（${state}）`).toBe(true);
+      expect(/^<nav class="(?:[^"]*\s)?gf-breadcrumb(?:\s[^"]*)?"/u.test(after), `${path}（${state}）`).toBe(true);
     }
   });
 
@@ -1101,6 +1105,88 @@ describe('パンくず（2.3.10）', () => {
       expect(type, `${item.path} が HTML を返さない`).toContain('text/html');
       const { current } = readCrumb(breadcrumbOf(body)!);
       expect(current, `${item.path} の名前が表とずれている`).toBe(item.label);
+    }
+  });
+});
+
+/**
+ * 読み物の器（仕様 2.5.3 の「長い文を読ませる画面の器」/ 確定33 / #564）。
+ *
+ * # 対象の画面を、ここに列挙する理由
+ *
+ * **どの画面が「長い文を読ませる画面」かは、利用者が #550 で決めた一覧である**（`/privacy`・`/faq`・`/terms`・
+ * お知らせの記事）。経路表から導ける性質ではないので、決定をそのまま書く。**そのかわり、経路表の全画面を歩いて
+ * 「一覧の画面にだけ印があり、ほかの画面には無い」ことを見る**——画面を 1 枚足しても黙って器に乗ることは無く、
+ * 一覧から外した画面に印が残れば赤くなる。
+ *
+ * # 見ること
+ *
+ * - 対象の画面: パンくずの `<nav>` と、本文を包む要素の 2 か所に印がある
+ * - **パンくずの後ろからフッタの前までが、印を持つ 1 つの `<div>` にすべて収まる**——お知らせの記事の「一覧へ戻る」の
+ *   ボタンのように、器の外へ置き忘れた塊があれば赤くなる
+ * - 対象外の画面（トップ・お知らせの一覧・作品をさがす・`/takedown` を含む全画面）: 印が 1 つも無い
+ */
+describe('読み物の器（2.5.3 / #564）', () => {
+  /** 長い文を読ませる画面（#550 の決定。仕様 2.5.3 の「対象の画面」）。 */
+  function readingPaths(): Set<string> {
+    return new Set([PRIVACY_PATH, FAQ_PATH, TERMS_PATH, ...NEWS_ARTICLES.map((article) => newsArticlePath(article.id))]);
+  }
+
+  /** HTML の中で、`class` 属性に印を持つ要素の数。 */
+  function readingMarks(body: string): number {
+    return (body.match(new RegExp(`class="(?:[^"]*\\s)?${READING_CLASS}(?:\\s[^"]*)?"`, 'gu')) ?? []).length;
+  }
+
+  it('対象の画面がすべて経路表にあり、対象外の代表も経路表にある（空振りしない）', () => {
+    const paths = new Set(getPaths());
+    expect(NEWS_ARTICLES.length).toBeGreaterThan(0);
+    for (const path of readingPaths()) {
+      expect(paths.has(path), `${path} が経路表に無い`).toBe(true);
+    }
+    for (const path of [HOME_PATH, NEWS_PATH, PUBLIC_WORKS_PATH, TAKEDOWN_PATH, GENERATE_PAGE_PATH]) {
+      expect(paths.has(path), `${path} が経路表に無い`).toBe(true);
+    }
+  });
+
+  it('対象の画面だけが、パンくずと本文の器の 2 か所に印を持つ（ほかの全画面は 0）', async () => {
+    const reading = readingPaths();
+    for (const path of getPaths()) {
+      for (const [state, sessionCookie] of [
+        ['ログイン済み', cookie],
+        ['未ログイン', NO_COOKIE],
+      ] as const) {
+        const { body, type } = await open(path, sessionCookie);
+        if (!type.includes('text/html')) {
+          continue;
+        }
+        expect(readingMarks(body), `${path}（${state}）の印の数`).toBe(reading.has(path) ? 2 : 0);
+        if (reading.has(path)) {
+          expect(breadcrumbOf(body), `${path}（${state}）`).toContain(`<nav class="gf-breadcrumb ${READING_CLASS}"`);
+        }
+      }
+    }
+  });
+
+  it('対象の画面では、パンくずの後ろからフッタの前までが、印を持つ 1 つの `<div>` に収まる', async () => {
+    for (const path of readingPaths()) {
+      const { body } = await open(path, NO_COOKIE);
+      const crumb = breadcrumbOf(body)!;
+      const start = body.indexOf(crumb) + crumb.length;
+      const end = body.indexOf('<footer class="gf-footer">');
+      const main = body.slice(start, end).trim();
+      expect(main, path).toMatch(new RegExp(`^<div class="(?:gf-legal )?${READING_CLASS}">`, 'u'));
+      expect(main.endsWith('</div>'), path).toBe(true);
+      // 先頭で開いた `<div>` が、末尾でちょうど閉じる（途中で閉じて、後ろに器の外の塊が続いていない）。
+      let depth = 0;
+      let closedAt = -1;
+      for (const tag of main.matchAll(/<div\b|<\/div>/gu)) {
+        depth += tag[0] === '</div>' ? -1 : 1;
+        if (depth === 0) {
+          closedAt = tag.index + tag[0].length;
+          break;
+        }
+      }
+      expect(closedAt, `${path} の器が末尾より前で閉じている`).toBe(main.length);
     }
   });
 });

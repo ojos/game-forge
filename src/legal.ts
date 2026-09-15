@@ -20,6 +20,7 @@ import type { Route } from './routes.js';
 import { html } from './routes.js';
 import type { NavItem, SiteViewer } from './html.js';
 import {
+  READING_CLASS,
   escapeHtml,
   newsBreadcrumbParents,
   resolveSiteViewer,
@@ -168,9 +169,10 @@ export const LOGO_FONT_NOTICE =
  * （冒頭の但し書き）。
  *
  * **読み物の器（`.gf-legal`）で包む**（#471）。`/privacy` と `/faq` と同じ器に乗せ、但し書きのブロックと小見出しの
- * 見た目を 3 画面で揃える（app.css の `@section legal`）。
+ * 見た目を 3 画面で揃える（app.css の `@section legal`）。**器は読み物の器**（`READING_CLASS`。42rem の幅で中央に置く。
+ * 仕様 2.5.3 / #564）。
  */
-const TERMS_BODY = `<div class="gf-legal">
+const TERMS_BODY = `<div class="gf-legal ${READING_CLASS}">
 <h1>利用規約</h1>
 ${DRAFT_NOTICE}
 
@@ -252,7 +254,7 @@ ${DRAFT_NOTICE}
  * @returns HTML
  */
 function termsPage(viewer: SiteViewer): string {
-  return `${siteHead({ title: '利用規約 - Game Forge', viewer })}
+  return `${siteHead({ title: '利用規約 - Game Forge', viewer, reading: true })}
 ${TERMS_BODY}
 ${siteFooter()}
 `;

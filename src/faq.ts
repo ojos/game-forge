@@ -31,7 +31,7 @@
  */
 import { MAX_GENERATION_ATTEMPTS } from './build-retry.js';
 import type { SiteViewer } from './html.js';
-import { escapeHtml, resolveSiteViewer, siteHead } from './html.js';
+import { READING_CLASS, escapeHtml, resolveSiteViewer, siteHead } from './html.js';
 import { INVITE_RECOVERY_DAYS } from './invite-balance.js';
 import { INVITE_QUOTA } from './invite-issuance.js';
 import { TYPICAL_WAIT_TEXT } from './generate-page.js';
@@ -194,6 +194,7 @@ export const FAQ_ENTRIES: readonly FaqEntry[] = [
  *   下線を常に出す（2.5.5「文章の中」）
  * - **質問と質問の間の罫線は器の端まで**（`.gf-faq-item` の上の線）。**答えの本文は 42rem のまま**（長い文を読ませる
  *   画面。行長を絞るのは段落の中身で、罫線ではない。2.5.3）
+ * - **器は読み物の器**（`READING_CLASS`。42rem の幅で中央に置き、一覧のブロックと罫線もその端まで。仕様 2.5.3 / #564）
  *
  * @param entries 質問の一覧
  * @returns HTML（外枠を含まない）
@@ -210,7 +211,7 @@ ${entry.answer}
 </section>`,
     )
     .join('\n\n');
-  return `<div class="gf-legal">
+  return `<div class="gf-legal ${READING_CLASS}">
 <h1>よくある質問</h1>
 <div class="gf-block gf-faq-index">
 <p class="gf-faq-index-title">質問の一覧</p>
@@ -230,7 +231,7 @@ ${items}
  * @returns HTML
  */
 function faqPage(viewer: SiteViewer): string {
-  return `${siteHead({ title: FAQ_TITLE, viewer })}
+  return `${siteHead({ title: FAQ_TITLE, viewer, reading: true })}
 ${faqBody(FAQ_ENTRIES)}
 ${siteFooter()}
 `;

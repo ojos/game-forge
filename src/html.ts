@@ -86,6 +86,19 @@ import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './works-paths.js';
 export const APP_CSS_PATH = '/assets/app.css';
 
 /**
+ * 読み物の器の印（仕様 2.5.3 の「長い文を読ませる画面の器」/ 確定33 / #564）。
+ *
+ * **長い文を読ませる画面（`/privacy`・`/faq`・`/terms`・お知らせの記事）だけが持つ。** パンくずには
+ * {@link siteHead} の `reading` が付け、本文を包む要素には画面の側が付ける。見た目（42rem の幅で中央に置く）は
+ * app.css の `@section legal` が持つ。
+ *
+ * **`:has()` で見分けず、クラスにした**（#564 の scope.in）。お知らせの記事は `.gf-legal` を持たず本文の外にボタンも
+ * あるので、`body:has(> .gf-legal)` の 1 本では 4 画面を覆えない。クラスなら、対象の画面にあり対象外に無いことを
+ * HTML の文字列で確かめられる（`test/page-shell.test.ts`）。
+ */
+export const READING_CLASS = 'gf-reading';
+
+/**
  * ロゴの画像を置くディレクトリ（#440）。
  *
  * **正本は `brand/logo/lockup-horizontal/` で、ここにあるのはその写しである**（`docs/logo.md`）。
@@ -690,14 +703,17 @@ export function breadcrumbLabelOf(title: string): string {
  * - **親へのリンクは「文章の外のリンク」の見せ方にする**（仕様 2.5.5 の表がパンくずを名指ししている。#469）
  *   ——下線を常には出さず、ホバーと焦点で出す。**見た目は app.css の `@section breadcrumb` が `a` に当てる**
  *   （HTML にクラスを足さない。パンくずの綴りを見ている画面ごとの検査を動かさないため）
+ * - **長い文を読ませる画面だけ、`<nav>` に読み物の器の印（{@link READING_CLASS}）を足す**（仕様 2.5.3 / #564）。
+ *   親へのリンクの見せ方ではなく、パンくずを本文と同じ 42rem の器に載せるための印である
  *
  * **構造化データ（JSON-LD の `BreadcrumbList`）は置かない**（#372 の scope.out）。
  *
  * @param viewer いま見ている人と画面
  * @param title `siteHead` に渡された `title`
+ * @param reading 長い文を読ませる画面なら true（`siteHead` の `reading`）
  * @returns HTML（出さないときは空文字）
  */
-function siteBreadcrumb(viewer: SiteViewer | undefined, title: string): string {
+function siteBreadcrumb(viewer: SiteViewer | undefined, title: string, reading: boolean): string {
   if (viewer === undefined || viewer.path === HOME_PATH) {
     return '';
   }
@@ -708,7 +724,7 @@ function siteBreadcrumb(viewer: SiteViewer | undefined, title: string): string {
     .map((item) => `<li><a href="${item.path}">${escapeHtml(item.label)}</a></li>`)
     .join('\n    ');
   return `
-<nav class="gf-breadcrumb" aria-label="パンくずリスト">
+<nav class="gf-breadcrumb${reading ? ` ${READING_CLASS}` : ''}" aria-label="パンくずリスト">
   <ol>
     ${links}
     <li><span aria-current="page">${escapeHtml(breadcrumbLabelOf(title))}</span></li>
@@ -747,6 +763,11 @@ export interface SiteHeadOptions {
    * ヘッダの検索窓に戻す語（#378）。**公開一覧が検索を描くときだけ渡す。** エスケープはこの関数が行う。
    */
   readonly searchQuery?: string;
+  /**
+   * 長い文を読ませる画面なら true（仕様 2.5.3 / #564）。**パンくずに {@link READING_CLASS} を付ける**——本文を包む
+   * 要素と同じ読み物の器の端に揃えるため。**省くと、これまでと 1 文字も違わない HTML を出す。**
+   */
+  readonly reading?: boolean;
 }
 
 /**
@@ -788,5 +809,6 @@ export function siteHead(options: SiteHeadOptions): string {
 <title>${escapeHtml(options.title)}</title>${extraHead}${siteHeader(options.viewer, options.searchQuery)}${siteBreadcrumb(
     options.viewer,
     options.title,
+    options.reading === true,
   )}`;
 }

@@ -1292,13 +1292,21 @@ html.gf-play-locked body {
  * （`scripts/check-page-width.sh` が見ている回帰）。
  *
  * **折り返さない。** Go のソースを任意の位置で折ると、行の区切りが読めなくなる。
+ *
+ * **面はブロック（`.gf-block`。`@section parts`）と同じ見え方にする**（仕様 2.5.4 / #511）——面の色
+ * （`--gf-surface`）・角丸（`--gf-radius`）・内側の余白 16px で区切り、**枠線を持たない**。#383 のときは
+ * 1px の淡い枠線（`--gf-rule-soft`）を引いていたが、2.5.4 の「枠線は使わない」が覆した（#473 の残り）。
+ * - **`.gf-block` のクラスは足さない。** `<pre>` は上下の余白と幅の上限（`max-width: 100%`）をこの規則で持つので、
+ *   HTML（`src/work-source.ts`）は変えず、見え方の 3 つ（面の色・角丸・内側の余白）だけをここで揃える
+ * - **`overflow-x: auto` は `<pre>` の中を横に送るためだけに残し、`overflow: hidden` は足さない**（2.5.4 の #471 実装注記）。
+ *   焦点を持つのは `<pre>` 自身で、輪郭（下の `:focus-visible`）は自分の箱の外に描かれるのでスクロールで切れない
+ *   （390px / 1280px の実ブラウザで確かめた。#511）
  */
 .gf-source {
   max-width: 100%;
   margin: var(--gf-gap-3) 0;
   padding: var(--gf-gap-3);
   overflow-x: auto;
-  border: 1px solid var(--gf-rule-soft);
   border-radius: var(--gf-radius);
   background: var(--gf-surface);
   font-family: var(--gf-font-mono);

@@ -582,3 +582,70 @@ describe('ソースの画面の見た目（#473 / 仕様 2.5.5）', () => {
     expect(body.match(/\bgf-button-primary\b/gu) ?? []).toHaveLength(0);
   });
 });
+
+describe('ソースの画面のコード面は、枠線の無いブロックの面（#511 / 仕様 2.5.4）', () => {
+  /*
+   * 変異の記録（2026-09-14 / #511。当てて赤を見てから戻した）
+   *
+   * 1. `.gf-source` に `border: 1px solid var(--gf-rule-soft);` を戻す → 「枠線を持たない」の it が赤
+   * 2. `.gf-source` の `background: var(--gf-surface);` を消す → 「ブロックと同じ見え方」の it が赤
+   * 3. `.gf-source:focus-visible` の `outline: 2px solid var(--gf-ink);` を `outline: none;` にする → 「焦点の輪郭」の it が赤
+   * 4. `.gf-source` に `overflow: hidden;` を足す → 「ブロックと同じ見え方」の it が赤
+   */
+
+  /** コメントを外した app.css から、セレクタに `.gf-source`（`-bidi` / `-note` ではない）を含む規則をすべて返す。 */
+  function sourceRules(): { selector: string; body: string }[] {
+    const css = env.TEST_APP_CSS.replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+    return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/gu)]
+      .map((match) => ({ selector: match[1]!.trim(), body: match[2]! }))
+      .filter(({ selector }) => /\.gf-source(?![-\w])/u.test(selector));
+  }
+
+  function ruleBody(selector: string): string {
+    const found = sourceRules().find((rule) => rule.selector === selector);
+    expect(found, `app.css に ${selector} の規則が無い`).toBeDefined();
+    return found!.body;
+  }
+
+  function declarations(body: string): Map<string, string> {
+    return new Map(
+      body
+        .split(';')
+        .map((line) => line.trim())
+        .filter((line) => line.includes(':'))
+        .map((line) => [line.slice(0, line.indexOf(':')).trim(), line.slice(line.indexOf(':') + 1).trim()]),
+    );
+  }
+
+  it('コード面の規則は枠線も影も持たない（`border-radius` だけを持つ）', () => {
+    const rules = sourceRules();
+    // **空振りしない。** 規則が 1 つも拾えない状態を「枠線が無い」で通さない。
+    expect(rules.map((rule) => rule.selector)).toContain('.gf-source');
+    for (const { selector, body } of rules) {
+      expect(body, selector).not.toMatch(/(^|[;\s])border(-(top|right|bottom|left|block|inline)(-(start|end))?)?(-(width|style|color))?\s*:/u);
+      expect(body, selector).not.toMatch(/box-shadow\s*:/u);
+    }
+  });
+
+  it('面の色・角丸・内側の余白はブロック（`.gf-block`）と同じ値で、角を `overflow: hidden` で切らない', () => {
+    const css = env.TEST_APP_CSS.replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+    const block = /^\.gf-block\s*\{([^}]*)\}/mu.exec(css);
+    expect(block, 'app.css に .gf-block の規則が無い').not.toBeNull();
+    const blockDecl = declarations(block![1]!);
+    const sourceDecl = declarations(ruleBody('.gf-source'));
+    for (const property of ['background', 'border-radius', 'padding']) {
+      expect(blockDecl.get(property), `.gf-block の ${property}`).toBeDefined();
+      expect(sourceDecl.get(property), `.gf-source の ${property}`).toBe(blockDecl.get(property));
+    }
+    // 横に送るための `overflow-x: auto` は保つ（ページ全体を横スクロールさせない。#383）。
+    expect(sourceDecl.get('overflow-x')).toBe('auto');
+    expect(sourceDecl.has('overflow')).toBe(false);
+    expect(sourceDecl.get('overflow-y') ?? 'visible').not.toBe('hidden');
+  });
+
+  it('焦点の輪郭（キーボードで横に送るための焦点）は全画面の `:focus-visible` と同じ形のまま', () => {
+    const focus = declarations(ruleBody('.gf-source:focus-visible'));
+    expect(focus.get('outline')).toBe('2px solid var(--gf-ink)');
+    expect(focus.get('outline-offset')).toBe('2px');
+  });
+});

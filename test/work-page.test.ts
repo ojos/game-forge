@@ -1231,6 +1231,7 @@ const baseView: WorkPageView = {
   tags: [],
   retaggableId: null,
   removableId: null,
+  deletableId: null,
   likeCount: 0,
   // プレイ数（#377）。**既定は数を出さず、数えるスクリプトも置かない。**
   playCount: 0,

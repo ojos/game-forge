@@ -22,6 +22,7 @@
  * | 指示文・生成の記録 | `src/cost-ledger.ts`（`generations.prompt`）/ `migrations/0009_game_revisions.sql` |
  * | 遮断された指示文（90 日） | `migrations/0016_moderation_blocks.sql` / `scripts/moderation-prune.sh` |
  * | 作品・題名の変更履歴 | `migrations/0001_init.sql`（`games`）/ `migrations/0027_title_changes.sql` / R2 |
+ * | 作者による作品の削除（下書きと取り下げた作品だけ・子や運営の記録があれば行と履歴を残す・指示文と生成の記録は残る） | `src/game-deletion.ts` の `deleteGame`（行を残す条件・消す表）/ `migrations/0041_game_deletion.sql`（`purged_at`）/ `src/work-page.ts` の `POST /api/works/delete`（作者の確認）/ `generations` は作品と結び付けていない（確定27）（#517 が同じ変更で追記した） |
  * | 作品の説明とその変更履歴（公開済みの作品だけ・作品ページで誰でも見られる） | `migrations/0028_game_descriptions.sql`（`games.description` / 追記のみの `description_changes`）/ `src/games.ts` の `describeGame` / `src/work-page.ts`（#388 が同じ変更で追記した） |
  * | いいね・1 日の操作回数 | `workers/likes/src/hub.ts`（Durable Object の `likes` / `daily_ops`） |
  * | プレイ数（作品ごとの起動回数・利用者と結び付けない・カードと作品ページで誰でも見られる）と、ブラウザの sessionStorage に置く作品ごとの最終計上時刻（30 分・サーバへ送らない） | `workers/likes/src/play-hub.ts`（Durable Object の `plays(game_id, count)`。利用者の列が無い）/ `migrations/` の games_play_count（`games.play_count`）/ `src/plays.ts` の `playReportScript`（`sessionStorage` の鍵 `gf-play:<作品 id>`、`credentials: 'omit'`、`PLAY_REPORT_WINDOW_MS`）（#377 が同じ変更で追記した） |
@@ -221,6 +222,12 @@ export function privacyBody(contact: PrivacyContact): string {
   <li>AWS 上の処理の記録（ログ）のうち、作品の生成・ビルド・紹介用の画像の撮影・アイコンの画像の作り直しの記録は 14 日で、費用の上限を監視する処理の記録は 30 日で、自動的に削除されます（アイコンの作り直しの記録に画像そのものは含みません）。</li>
   <li><strong>差し替える前・外す前のアイコンの画像は、差し替えた・外した日から ${AVATAR_HISTORY_RETENTION_DAYS} 日で自動的に削除されます</strong>（削除の処理の都合で、実際に消えるまでさらに 1 日ほどかかることがあります）。アイコンの変更の履歴（ハッシュ値と日時）は削除しません。不適切な画像を運営者が削除する場合と、アカウントの削除を希望された場合は、この期間を待たずに、いまのアイコンと前の画像の両方を削除します。</li>
   <li>Cookie は、上の 6 に書いた有効期間で失効します。ブラウザの sessionStorage に置く時刻は、タブを閉じると消えます。</li>
+  <li><strong>作品は、作者が作品ページから削除すると削除します。</strong>削除できるのは、公開していない作品と、公開を取り下げた作品です（公開中の作品は、取り下げてから削除できます）。削除すると、題名・説明・タグ・生成されたソースコード・遊ぶためのファイル・紹介用の画像と、リフォージの前の版を削除します。ただし、次の場合は作品の行（作品の識別子・作者・フォーク元・作った日時など。題名や中身は含みません）を残します。
+    <ul>
+      <li>その作品をフォークした作品があるとき（フォークした作品に「削除済みの作品から派生」と表示するため）</li>
+      <li>通報・削除依頼・運営者の措置・入力の検査の記録がその作品にあるとき（対応を確かめられるようにするため。題名と説明の変更の履歴も残します）</li>
+    </ul>
+    作品を削除しても、作品を作るときの指示文と生成の記録は削除しません（1 人あたりの生成枠とサービス全体の費用の上限を管理するため）。</li>
   <li>それ以外の情報は、期限を定めた自動の削除を行っておらず、本サービスの提供に必要なあいだ保存します。</li>
 </ul>
 <p>本サービスには、現在、利用者自身で退会する機能がありません。

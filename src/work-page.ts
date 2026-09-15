@@ -129,9 +129,26 @@ import { playEmbed, playEntry } from './work-play.js';
 import { readInputKeyCodes } from './virtual-pad.js';
 // **ソースの閲覧は別の経路である**（#383 / 2.3.12）。この画面が借りるのは綴りだけで、R2 は読まない。
 import { workSourcePath } from './work-source.js';
+// **作者の削除（#517 / M15-2）。** 綴り・表示の条件・確認画面・断りの文言はあちら、経路はこのモジュールが持つ
+// （あちらはこのモジュールを import しない）。削除の本体は `src/game-deletion.ts` の `deleteGame` である。
+import { deleteGame } from './game-deletion.js';
+import type { DeleteRefusal, DeletionTargetRow } from './work-delete.js';
+import {
+  DELETE_REFUSALS,
+  DELETION_TARGET_SQL,
+  WORK_DELETED_REDIRECT,
+  WORK_DELETE_GAME_ID_FIELD,
+  WORK_DELETE_PATH,
+  WORK_DELETE_SUFFIX,
+  deletionBlockOf,
+  deletionStateOf,
+  renderDeleteConfirmation,
+  renderDeleteRefusal,
+  workDeletePath,
+} from './work-delete.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { UNKNOWN_FAILURE_MESSAGE, failureMessageOf } from './generation-failure.js';
-import { LOGIN_PATH } from './auth/google.js';
+import { LOGIN_PATH, loginRequiredRedirect } from './auth/google.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
 // **値を読むだけである**（#402）。`src/build-retry.ts` はオーケストレータの束に入っており、
 // 書き換えると束が変わって配り直すまで配備が止まる。ここは定数を import するだけにする。
@@ -406,6 +423,11 @@ interface WorkRow {
    */
   has_source: number | null;
   /**
+   * 作者の削除・退会で中身を消した tombstone か（`games.purged_at` が入っているか。#516 / #517）。
+   * **時刻そのものは選ばない**（画面が要るのは真偽だけである）。
+   */
+  purged: number | null;
+  /**
    * 配信している Wasm（`.wasm.br`）のバイト数（`build_cache.compressed_bytes`。#383）。
    * 索引の行が引けなければ null（{@link WORK_ROW_SQL} の結合）。
    */
@@ -446,6 +468,7 @@ export const WORK_ROW_SQL = `select g.author_id, g.status, g.title, g.generation
             g.description, g.tag1, g.tag2, g.tag3,
             (${reviewVisibleSql('g')}) as review_visible,
             (g.source_key is not null) as has_source,
+            (g.purged_at is not null) as purged,
             b.compressed_bytes as wasm_bytes,
             k.codes as input_codes,
             a.display_name as author_name, a.is_operator as author_is_operator,
@@ -694,6 +717,13 @@ export interface WorkPageView {
    * `publishGame` が `removed` で断る）。1 つの真偽で表すと、その区別が消える。
    */
   readonly removed: boolean;
+  /**
+   * 作者の削除・退会で中身を消した tombstone か（`games.purged_at`。#516 / #517）。**`removed` の内側の区別である**
+   * （中身を消した行は必ず `removed`）。取り下げ済みの表示のまま、作者本人に出す文だけを変える（{@link removedSection}）。
+   *
+   * **省略可にする**（描画を直接呼ぶテストが、削除に関係しない検査で値を用意しなくて済む。`authorHandle` と同じ）。
+   */
+  readonly purged?: boolean;
   /** 仮タイトル（プロンプト由来）。本人でも公開済みでもなければ null。 */
   readonly title: string | null;
   /** 失敗の分類名。本人でなければ null。 */
@@ -883,6 +913,23 @@ export interface WorkPageView {
    * `forkableId` を分けたのと同じ理由）。条件は「**公開済み・本人**」である。
    */
   readonly removableId: string | null;
+  /**
+   * この作品 id（削除の確認画面への導線に入れる。#517 / M15-2）。導線を出さないなら null。
+   *
+   * **`removableId` と兼ねない**（同時に非 null になりえない——取り下げは公開中、削除は公開中でない作品）。
+   * 条件は「**本人**・中身をまだ消していない・公開中でない・生成中でない・リフォージのジョブが走っていない」で、
+   * **画面でこの条件を組み立てない**——`src/work-delete.ts` の `deletionBlockOf`（表示の条件）が null を返した
+   * ときだけ入る。消せるかどうかの正本は `deleteGame` である。
+   */
+  readonly deletableId: string | null;
+  /**
+   * 削除の導線を出さない理由が「止まったまま残ったリフォージ」か（#517）。**本人の、公開中でない完成済みの作品で
+   * だけ立ちうる。** 立っていれば、削除の導線の代わりに「いまは削除できない」理由を 1 文出す
+   * （リフォージの口は区切りを過ぎたジョブを終わったものとして扱うが、`deleteGame` は経過時間で区切らない）。
+   *
+   * **省略可にする**（`purged` と同じ理由）。
+   */
+  readonly deletionStalledByRevision?: boolean;
   /**
    * いいねの数（5.8 / #340）。**0 のときは出さない**（2.3.6 の `fork_count` と同じ扱い）。
    *
@@ -1245,8 +1292,10 @@ function sectionFor(view: WorkPageView): string {
     case 'failed':
       // **遮断された分類の知らせはブロックの外、直後に置く**（`@section notices` の知らせの見た目を持ち、面の上に
       // 重ねると面が二重になる）。並びは #474 の前と同じである。
+      //
+      // **削除の導線（#517）は知らせの後ろ、設定のブロックに置く**（完成した下書きの画面と同じ形。出さないなら何も足さない）。
       return `${stateBlock(`<h2>生成できませんでした</h2>
-<p>${view.owner ? escapeHtml(failureMessageOf(view.errorCode)) : escapeHtml(UNKNOWN_FAILURE_MESSAGE)}</p>`)}${blockedCategoriesSection(view)}`;
+<p>${view.owner ? escapeHtml(failureMessageOf(view.errorCode)) : escapeHtml(UNKNOWN_FAILURE_MESSAGE)}</p>`)}${blockedCategoriesSection(view)}${settingsBlock([deleteSection(view)])}`;
     case 'unknown':
       return stateBlock(`<h2>状態を読み取れませんでした</h2>
 <p>この作品の状態が想定外の値になっています。時間をおいてもう一度お試しください。</p>`);
@@ -1331,17 +1380,27 @@ const PRIMARY_BUTTON = 'gf-button gf-button-primary';
  * @returns HTML
  */
 function removedSection(view: WorkPageView): string {
-  const owned = view.owner
-    ? `
+  // **中身を消した作品（#516 / #517）でも、見出しと誰にでも出す文は変えない**（仕様 5.3 の #516 節「作品ページは既存の
+  // 取り下げ済みの表示のまま」）。作者本人にだけ、中身が消えていることを言う——取り下げただけの作品と同じ文を出すと、
+  // 「取り下げただけで、まだ残っている」と読める。
+  const owned = !view.owner
+    ? ''
+    : view.purged === true
+      ? `
+<p>この作品はあなたが削除しました。ソースコード・遊ぶためのファイル・紹介用の画像は消えています。</p>
+<p><strong>この作品をフォークした作品は、そのまま残っています。</strong>
+   削除は、そこから派生した作品を巻き込みません。</p>`
+      : `
 <p>この作品はあなたが取り下げました。共有した URL からは遊べなくなっています。</p>
 <p><strong>この作品をフォークした作品は、そのまま公開されたままです。</strong>
-   取り下げは、そこから派生した作品を巻き込みません。</p>`
-    : '';
+   取り下げは、そこから派生した作品を巻き込みません。</p>`;
   // **段落を明示的に閉じる。** ブラウザの自動補正（`<p>` が次の `<p>` で閉じる）に
   // 寄りかからない——このモジュールの他の枝はどれも閉じており、ここだけ崩すと
   // 「閉じなくてよい」と読まれる。
-  return stateBlock(`<h2>この作品は取り下げられました</h2>
-<p>作者がこの作品の公開を取り下げました。</p>${owned}`);
+  //
+  // **削除の導線（#517）は知らせの後ろ、設定のブロックに置く**（取り下げた作品で中身をまだ消していないときだけ出る）。
+  return `${stateBlock(`<h2>この作品は取り下げられました</h2>
+<p>作者がこの作品の公開を取り下げました。</p>${owned}`)}${settingsBlock([deleteSection(view)])}`;
 }
 
 /**
@@ -1369,10 +1428,47 @@ function removeSection(view: WorkPageView): string {
 <h3>公開の取り下げ</h3>
 <p>この作品の公開をやめられます。共有した URL からは遊べなくなります。
    <strong>この作品をフォークした作品は、そのまま公開されたままです</strong>（連鎖して消えることはありません）。</p>
+<p>公開中の作品は削除できません。削除したいときは、先に公開を取り下げてください。取り下げた作品は、この作品ページから削除できます。</p>
 <form method="post" action="${WORK_REMOVE_PATH}">
   <input type="hidden" name="${WORK_REMOVE_GAME_ID_FIELD}" value="${view.removableId}">
   <button type="submit" class="${SECONDARY_BUTTON}">公開を取り下げる</button>
 </form>`;
+}
+
+/**
+ * 削除の確認画面への導線（#517 / M15-2 / 仕様 5.3 の #516 節）。
+ *
+ * # 押しても消えない。確認画面へ移動する
+ *
+ * **ここは `<a>` である**（仕様 2.5.5「移動は `<a>`」）。削除で起きること・起きないことは確認画面
+ * （`src/work-delete.ts` の `renderDeleteConfirmation`）が書き、そこで送った POST だけが消す。
+ *
+ * # 主にしない
+ *
+ * **破壊的な操作なので副のボタンの見た目にする**（#517 の constraints。取り下げと同じ段）。未公開の画面の主は
+ * 「公開して共有」のままである。
+ *
+ * # 出す条件は画面で組み立てない
+ *
+ * 門番は {@link WorkPageView.deletableId} で、null かどうかだけを見る（`revisable` と同じ方針）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（出さないなら空文字）
+ */
+function deleteSection(view: WorkPageView): string {
+  if (view.deletableId === null) {
+    // **止まったリフォージだけは黙らない**（#517）。リフォージの口は区切りを過ぎたジョブを終わったものとして扱い、
+    // 画面は完成した作品として導線を並べるので、削除の導線だけが黙って消えると理由が読めない。
+    return view.deletionStalledByRevision === true
+      ? `
+<h3>作品の削除</h3>
+<p>直前のリフォージが止まったまま残っているため、いまはこの作品を削除できません。お手数ですが、よくある質問にある窓口までご連絡ください。</p>`
+      : '';
+  }
+  return `
+<h3>作品の削除</h3>
+<p>この作品を削除できます。<strong>削除すると元に戻せません。</strong>次の画面で、削除すると何が消えるかを確かめてから削除します。</p>
+<p><a class="${SECONDARY_BUTTON}" href="${workDeletePath(view.deletableId)}">この作品を削除する</a></p>`;
 }
 
 /**
@@ -1576,8 +1672,10 @@ ${publishForm(view.publishableId)}`;
   //
   // **「できました」と遊ぶ URL と公開の口は状態のブロック、手直し・版・改名は設定のブロックの行にする**（#474）。
   // 並びは #474 の前と同じで、外側に面を足しただけである。**このブロックの主は「公開して共有」だけ**である。
+  //
+  // **削除の導線（#517）は設定のブロックの最後に置く**——戻せない操作を、公開・リフォージ・改名より先に目に入れない。
   return `${stateBlock(`<h2>できました</h2>
-${play}${publish}`)}${settingsBlock([reviseSection(view), revisionList(view), renameSection(view)])}`;
+${play}${publish}`)}${settingsBlock([reviseSection(view), revisionList(view), renameSection(view), deleteSection(view)])}`;
 }
 
 /**
@@ -2757,6 +2855,24 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       ? await isPressableGame(env, session.userId, gameId)
       : false;
 
+  // ── 削除の導線（#517 / M15-2）──────────────────────────────────────────────
+  //
+  // **作者本人にだけ出す。表示の条件は `deletionBlockOf` が持つ**（ここで `status` や `generation_state` を組み立てない）。
+  // 消せるかどうかの正本は `deleteGame` の掴みの SQL で、押した先の口もそれに任せる。
+  //
+  // **リフォージは区切りの内側（`running`）と外側（`stalled`）の両方を「走っている」に数える。** `deleteGame` は
+  // 経過時間で区切らないので、止まったジョブが残る作品に導線を出すと、押した先で必ず断られる。
+  // **追加の問い合わせは 0 件**——`purged` は上の 1 行に、リフォージの状態は作者のときだけ引いた `revisionQuota` にある。
+  const deletionBlock = owner
+    ? deletionBlockOf({
+        status: row.status,
+        generationState: row.generation_state,
+        purged: row.purged === 1,
+        revisionInFlight: revisionQuota !== null && (revisionQuota.running || revisionQuota.stalled),
+      })
+    : null;
+  const deletable = owner && deletionBlock === null;
+
   return html(
     renderWorkPage(
       {
@@ -2774,6 +2890,8 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       alreadyReported,
       published,
       removed,
+      // **中身を消した tombstone か**（#516 / #517）。取り下げ済みの表示の中で、作者本人に出す文だけを変える。
+      purged: row.purged === 1,
       // **本人か、公開済みのときだけ出す。** 仮タイトルはプロンプト由来である
       // （モジュール冒頭）が、**公開そのものが「これを作品として出す」という
       // 作者の意思表示**である（5.4 は作者を唯一のフィルタとして使う）。
@@ -2902,6 +3020,16 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **取り下げられるのは、公開してしまった作品だけである**（5.3 / #35）。
       // 押した結果を決めるのは `removeGame` の SQL で、ここは口を出すかだけを決める。
       removableId: owner && published ? gameId : null,
+      // **削除の確認画面への導線（#517）は、表示の条件が null を返した本人にだけ出す**（上の `deletable`）。
+      //
+      // **公開中の作品に出さないことは 2 層で守る。** 第 1 層は描画側で、`publishedSection` が `deleteSection` を
+      // 呼ばない。第 2 層がここ（`deletionBlockOf` の `published`）。**片方だけを外しても作品ページは変わらない**
+      // （変異を当てて確かめた。両方を外すと `test/work-delete.test.ts` の「公開中の作品には出さず」が赤になる）。
+      deletableId: deletable ? gameId : null,
+      // **止まったリフォージのせいで出せないときだけ、理由を 1 文出す**（{@link deleteSection}）。走っている最中は
+      // 画面が「リフォージしています」を出して自動で更新するので、重ねて言わない。
+      deletionStalledByRevision:
+        owner && deletionBlock === 'revising' && revisionQuota !== null && revisionQuota.stalled,
       // **ログイン中は DO が数えた実数、未ログインは D1 の写し**（5.8）。前者は
       // BAN された利用者の分を除いてあり、後者は最大 5 分遅れる。**未公開・取り下げ済みの
       // ページでは 0**（数を出さない）——`like_count` に値が残っていても、公開していない
@@ -2999,6 +3127,152 @@ async function handleRemove(request: Request, env: Env): Promise<Response> {
   return asHtml
     ? removeRefusal(refused.heading, refused.body, refused.status)
     : json({ error: outcome.reason }, refused.status);
+}
+
+/**
+ * `/works/` の前方一致の経路の入口（#150 / #517）。
+ *
+ * **`/works/<id>/delete` だけを削除の確認画面へ回し、それ以外は作品ページへ渡す。** 経路表に前方一致の経路を
+ * 足さない理由は `src/work-delete.ts` の `WORK_DELETE_SUFFIX` にある。**id の綴りが違えば作品ページへ渡す**
+ * ——作品ページが同じ規則（{@link GAME_ID_PATTERN}）で 404 にする（`/works/x/delete` を別の断り方にしない）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function handleWorksPrefix(request: Request, env: Env): Promise<Response> {
+  const pathname = new URL(request.url).pathname;
+  if (pathname.endsWith(WORK_DELETE_SUFFIX)) {
+    const gameId = pathname.slice(WORK_PAGE_PREFIX.length, -WORK_DELETE_SUFFIX.length);
+    if (GAME_ID_PATTERN.test(gameId)) {
+      return await showDeleteConfirmation(request, env, gameId, pathname);
+    }
+  }
+  return await showWorkPage(request, env);
+}
+
+/**
+ * 削除の確認画面（`GET /works/<id>/delete`。#517 / M15-2）。
+ *
+ * # 作者本人でなければ「見つからない」
+ *
+ * **他人の作品と存在しない作品を同じ 404 に畳む**（区別すると、任意の id が実在するかを外から確かめられる）。
+ * 確認画面は題名を出すので、作者本人でなければ本体を 1 文字も描かない。
+ *
+ * # 押しても断られるフォームを出さない
+ *
+ * 公開中・生成中・リフォージ中・中身を消した作品では、フォームの代わりに理由を出す。**条件は表示の条件
+ * （`deletionBlockOf`）で、消せるかどうかを決めるのは POST の先の `deleteGame` である。**
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param gameId 作品 id（綴りは確かめてある）
+ * @param pathname 要求されたパス（ヘッダとパンくずの出し分け）
+ * @returns レスポンス
+ */
+async function showDeleteConfirmation(
+  request: Request,
+  env: Env,
+  gameId: string,
+  pathname: string,
+): Promise<Response> {
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    // **戻り先は画面の定数だけを積む**（`loginRequiredRedirect` の冒頭。要求のパスを cookie へ入れない）。
+    // ログインのあとは「あなたの作品」に着く。
+    return await loginRequiredRedirect(env, WORK_DELETED_REDIRECT);
+  }
+  const viewer = siteViewerAt(pathname, true, headerAvatarUrl(request, env, session.userId));
+
+  const row = await env.DB.prepare(DELETION_TARGET_SQL).bind(gameId).first<DeletionTargetRow>();
+  if (row === null || row.author_id !== session.userId) {
+    return notFound(viewer);
+  }
+
+  const block = deletionBlockOf(deletionStateOf(row));
+  if (block !== null) {
+    const refused = DELETE_REFUSALS[block];
+    return html(renderDeleteRefusal(refused, gameId, viewer), refused.status);
+  }
+  return html(renderDeleteConfirmation({ gameId, title: row.title }, viewer));
+}
+
+/**
+ * 作品を削除する（`POST /api/works/delete`。#517 / M15-2 / 仕様 5.3 の #516 節）。
+ *
+ * # 形は {@link handleRemove} に揃える
+ *
+ * 素の `<form method="post">` と `fetch` の両方を受け、`accept` で HTML と JSON を分ける。CSRF はセッション cookie の
+ * `SameSite=Lax`（8.1）が受ける（`src/publish.ts` と同じ理由でトークンを足していない）。
+ *
+ * # 作者本人かだけを先に確かめ、状態の判定は `deleteGame` に任せる
+ *
+ * **`deleteGame` は id を受け取るだけで、権限を持たない。** 存在しない id にも `deleted` を返すので、作者を
+ * 確かめずに呼ぶと、他人の id を送った人に成功の画面が出る（行が在れば、他人の作品が消える）。**作者でない・
+ * 行が無いは、どちらも「見つからない」（404）に畳む。**
+ *
+ * **状態（公開中・生成中・リフォージ中）の `if` はここに置かない。** 断る理由は `deleteGame` が返し、
+ * ここはそれを文言の表（`DELETE_REFUSALS`）で引くだけである。確認画面を経ずに POST しても、判定は同じ所を通る。
+ *
+ * # 成功したら「あなたの作品」へ戻す
+ *
+ * POST-redirect-GET。行ごと消えた作品のページは 404 に、行を残した作品のページは取り下げ済みの表示になる。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function handleDelete(request: Request, env: Env): Promise<Response> {
+  const asHtml = (request.headers.get('accept') ?? '').includes('text/html');
+
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return asHtml ? seeOther(LOGIN_PATH) : json({ error: 'unauthorized' }, 401);
+  }
+
+  const target = await readGameIdTarget(request, WORK_DELETE_GAME_ID_FIELD);
+  if (!target.ok) {
+    const refused = REMOVE_BODY_REFUSALS[target.reason];
+    return asHtml
+      ? removeRefusal('削除できません', refused.body, refused.status)
+      : json({ error: target.reason }, refused.status);
+  }
+
+  // **作者本人か**（上の「作者本人かだけを先に確かめ」）。`author_id` は作品の作成後に変わらないので、読んでから
+  // `deleteGame` を呼ぶまでの隙間で結論が変わることは無い。
+  const row = await env.DB.prepare(DELETION_TARGET_SQL)
+    .bind(target.gameId)
+    .first<DeletionTargetRow>();
+  if (row === null || row.author_id !== session.userId) {
+    return deleteRefused('not-found', null, asHtml);
+  }
+
+  const outcome = await deleteGame(env, target.gameId);
+  if (outcome.ok) {
+    return asHtml
+      ? seeOther(WORK_DELETED_REDIRECT)
+      : json({ deleted: true, result: outcome.result }, 200);
+  }
+  return deleteRefused(outcome.reason, target.gameId, asHtml);
+}
+
+/**
+ * 削除の断りを返す（HTML なら画面、そうでなければ JSON）。
+ *
+ * @param reason 断った理由（`DELETE_REFUSALS` の鍵）
+ * @param backGameId 断りの画面から戻る先の作品 id（見つからないときは null）
+ * @param asHtml HTML で返すか
+ * @returns レスポンス
+ */
+function deleteRefused(
+  reason: keyof typeof DELETE_REFUSALS,
+  backGameId: string | null,
+  asHtml: boolean,
+): Response {
+  const refused: DeleteRefusal = DELETE_REFUSALS[reason];
+  return asHtml
+    ? html(renderDeleteRefusal(refused, backGameId), refused.status)
+    : json({ error: reason }, refused.status);
 }
 
 /**
@@ -3634,6 +3908,19 @@ type RemoveTarget =
  * @returns 作品 id、または理由
  */
 async function readRemoveTarget(request: Request): Promise<RemoveTarget> {
+  return await readGameIdTarget(request, WORK_REMOVE_GAME_ID_FIELD);
+}
+
+/**
+ * 本文から、指定した項目名の作品 id を取り出す（取り下げと削除が共有する。#517）。
+ *
+ * **形をここで確かめる**（媒体型を絞り、大きさを 1 KiB に縛り、id の綴りを見る）。
+ *
+ * @param request 受信したリクエスト
+ * @param field 作品 id を運ぶ項目名
+ * @returns 作品 id、または理由
+ */
+async function readGameIdTarget(request: Request, field: string): Promise<RemoveTarget> {
   const mediaType = (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
   if (mediaType !== FORM_MEDIA_TYPE && mediaType !== JSON_MEDIA_TYPE) {
     return { ok: false, reason: 'unsupported-content-type' };
@@ -3646,13 +3933,13 @@ async function readRemoveTarget(request: Request): Promise<RemoveTarget> {
 
   let raw: unknown;
   if (mediaType === FORM_MEDIA_TYPE) {
-    raw = new URLSearchParams(read.text).get(WORK_REMOVE_GAME_ID_FIELD) ?? undefined;
+    raw = new URLSearchParams(read.text).get(field) ?? undefined;
   } else {
     try {
       const parsed: unknown = JSON.parse(read.text);
       raw =
         typeof parsed === 'object' && parsed !== null
-          ? (parsed as Record<string, unknown>)[WORK_REMOVE_GAME_ID_FIELD]
+          ? (parsed as Record<string, unknown>)[field]
           : undefined;
     } catch {
       return { ok: false, reason: 'invalid-game-id' };
@@ -3791,10 +4078,13 @@ async function readDailyRemaining(env: Env, userId: string): Promise<number | nu
  * **既定は完全一致のままなので既存の経路は 1 つも影響を受けない。**
  */
 export const workPageRoutes: readonly Route[] = [
-  { method: 'GET', path: WORK_PAGE_PREFIX, match: 'prefix', handler: showWorkPage },
+  // **削除の確認画面（`/works/<id>/delete`。#517）も同じ入口から開く**（{@link handleWorksPrefix}）。
+  { method: 'GET', path: WORK_PAGE_PREFIX, match: 'prefix', handler: handleWorksPrefix },
   // **取り下げ（#35）は完全一致である。** `/api/works/remove` は `/works/` の
   // 前方一致に当たらない綴りにしてある（当たると作品ページの id として解釈される）。
   { method: 'POST', path: WORK_REMOVE_PATH, handler: handleRemove },
+  // **削除（#517）も完全一致である**（取り下げと同じ規約。`/api/works/delete` は `/works/` の前方一致に当たらない）。
+  { method: 'POST', path: WORK_DELETE_PATH, handler: handleDelete },
   { method: 'POST', path: WORK_REPORT_PATH, handler: handleReport },
   // **改名（#366）も完全一致である。** `/api/works/rename` は `/works/` の前方一致に
   // 当たらない綴りにしてある（取り下げ・通報と同じ規約）。

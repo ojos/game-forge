@@ -494,6 +494,28 @@ async function probe(options) {
         "window.__gfOrientation.reject(window.__gfOrientation.locks.length - 1, 'NotSupportedError')",
       );
       steps.afterRefuseLatest = await tab.settled();
+      // 押した直後に閉じ、その後で最新の入れ替えの固定が拒まれる（PR #573 の Copilot の指摘）: 閉じた後でも覚えた値を押す前に戻す。
+      await tab.resize(LANDSCAPE);
+      steps.beforeClosedRefuse = await tab.settled();
+      steps.tappedToggleBeforeClose = await tab.tap('.gf-play-orient-toggle');
+      steps.tappedCloseAfterToggle = await tab.tap('.gf-play-close');
+      steps.closedAfterToggle = await tab.waitFor(closed);
+      steps.refusedAfterClose = await tab.evaluate(
+        "window.__gfOrientation.reject(window.__gfOrientation.locks.length - 1, 'NotSupportedError')",
+      );
+      steps.afterRefuseAfterClose = await tab.settled();
+      // 押した直後に閉じ、閉じるときの unlock で最新の固定が取り消される（AbortError）: 取り消しは拒否ではないので、覚えた値は入れ替え先のまま。
+      await tab.resize(PORTRAIT);
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      steps.tappedEntryThird = await tab.tap('.gf-play-entry');
+      steps.reopenedThird = (await tab.waitFor(opened)).reached;
+      await tab.resize(LANDSCAPE);
+      steps.third = await tab.settled();
+      steps.tappedToggleThird = await tab.tap('.gf-play-orient-toggle');
+      steps.tappedCloseThird = await tab.tap('.gf-play-close');
+      steps.closedThird = await tab.waitFor(closed);
+      steps.abortedAfterClose = await tab.evaluate("window.__gfOrientation.reject(window.__gfOrientation.locks.length - 1, 'AbortError')");
+      steps.afterAbortAfterClose = await tab.settled();
       await tab.evaluate('localStorage.clear()');
     });
 

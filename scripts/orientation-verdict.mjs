@@ -234,6 +234,24 @@ function judge(result) {
       `8: 最新の入れ替えの固定を拒まれたら、覚えた値を押す前（landscape）に戻し、ボタンを出したまま・案内に回らない形になっていません（memory=${json(pending.afterRefuseLatest?.memory)}, shown=${json(pending.afterRefuseLatest?.toggleShown)}, hint=${json(pending.afterRefuseLatest?.hintShown)}）。`,
     );
   }
+  if (pending.beforeClosedRefuse?.memory !== 'landscape' || pending.closedAfterToggle?.reached !== true || pending.refusedAfterClose !== true) {
+    fail(
+      `8(e): 押した直後に閉じてから拒否を届ける段に進めませんでした（memory=${json(pending.beforeClosedRefuse?.memory)}, closed=${json(pending.closedAfterToggle?.reached)}, refused=${json(pending.refusedAfterClose)}）。`,
+    );
+  } else if (pending.afterRefuseAfterClose?.memory !== 'landscape') {
+    fail(
+      `8(e): 押した直後に閉じ、その後で最新の入れ替えの固定を拒まれたのに、覚えた値が押す前（landscape）に戻っていません（${json(pending.afterRefuseAfterClose?.memory)}）。`,
+    );
+  }
+  if (pending.reopenedThird !== true || pending.closedThird?.reached !== true || pending.abortedAfterClose !== true) {
+    fail(
+      `8(f): 押した直後に閉じてから取り消しを届ける段に進めませんでした（reopened=${json(pending.reopenedThird)}, closed=${json(pending.closedThird?.reached)}, aborted=${json(pending.abortedAfterClose)}）。`,
+    );
+  } else if (pending.afterAbortAfterClose?.memory !== 'portrait') {
+    fail(
+      `8(f): 閉じるときの取り消し（AbortError）を拒否として扱い、覚えた値を入れ替え先（portrait）から戻しました（${json(pending.afterAbortAfterClose?.memory)}）。`,
+    );
+  }
 
   // ── 4: 横長・固定を拒む ────────────────────────────────────────────────────
   const refused = result.landscapeRefused;

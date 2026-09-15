@@ -609,7 +609,7 @@ describe('作品のおすすめの向き: スクリプトの形（#514 / 仕様 
     expect(lock).toMatch(/if \(!locking \|\| typeof locking\.then !== 'function'\) \{ return false; \}/u);
     expect(lock).toMatch(/return true;$/u);
     // 解決を待つ処理は、閉じた後の解決で unlock する後始末だけで、ボタンを見せない。
-    const resolved = lock.slice(lock.indexOf('locking.then(function () {'), lock.indexOf('}, function () {'));
+    const resolved = lock.slice(lock.indexOf('locking.then(function () {'), lock.indexOf('}, function (error) {'));
     expect(resolved).not.toContain('showOrientationToggle');
     expect(resolved).not.toContain('onRefused');
     // ボタンを見せるのは showOrientationToggle の 1 か所だけで、それを呼ぶのは固定を頼めた直後の 1 か所だけ。
@@ -625,7 +625,9 @@ describe('作品のおすすめの向き: スクリプトの形（#514 / 仕様 
     expect(lock).toMatch(/orientLockSeq \+= 1;\n\s+var seq = orientLockSeq;/u);
     // 通し番号は lock を呼ぶより前に進める。
     expect(lock.indexOf('orientLockSeq += 1;')).toBeLessThan(lock.indexOf('orientation.lock(target)'));
-    expect(lock).toMatch(/\}, function \(\) \{\n\s+if \(round !== orientRound \|\| seq !== orientLockSeq \|\| frame === null\) \{ return; \}\n\s+onRefused\(round\);/u);
+    // 取り消し（AbortError。閉じるときの unlock も含む）は拒否として扱わず、回の判定は onRefused の側に任せる（PR #573 の Copilot の指摘）。
+    expect(lock).toMatch(/\}, function \(error\) \{\n\s+if \(seq !== orientLockSeq \|\| \(error && error\.name === 'AbortError'\)\) \{ return; \}\n\s+onRefused\(round\);/u);
+    expect(functionBody('hintOrientation')).toMatch(/\{\n\s*if \(round !== orientRound \|\| frame === null\) \{ return; \}/u);
   });
 
   it('ボタンの文言は HTML に置いた 2 つの見せ方を今見えている向き（orientation: portrait）で入れ替え、向きが変わるたびに見直す（#572）', () => {

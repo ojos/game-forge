@@ -742,7 +742,9 @@ export function playFrameScript(playUrl: string): string {
   };
   // 向きの固定を頼む。**API が無い・投げた・Promise でないときは false**（その場で固定できないと分かった）、頼めたら true を返す。
   // **決着は待たない**（#572。Android の Chrome の実機で、覚えた向きで固定を頼むと Promise が決着しないことがあった）。
-  // 拒まれたら、**その回の最新の固定の要求のときだけ** onRefused(回) を呼ぶ（新しい固定は前の固定を AbortError で取り消すので、古い拒否は捨てる）。
+  // 拒まれたら、**最新の固定の要求のときだけ** onRefused(回) を呼ぶ（新しい固定は前の固定を AbortError で取り消すので、古い拒否は捨てる）。
+  // **取り消し（AbortError）は拒否として扱わない**——閉じるときの unlock も待っている固定を取り消すので、扱うと閉じるたびに入れ替えが戻る。
+  // **回の判定は onRefused の側に任せる**（案内は開いている回だけ、入れ替えの覚えた値は閉じた後に拒まれても戻す。PR #573 の Copilot の指摘）。
   var lockOrientation = function (target, round, onRefused) {
     var orientation = window.screen ? window.screen.orientation : null;
     if (!orientation || typeof orientation.lock !== 'function') { return false; }
@@ -757,8 +759,8 @@ export function playFrameScript(playUrl: string): string {
         // 固定が決着する前に閉じた。**閉じたままなら**固定を残さない（開き直した回の固定は、その回が呼び直している）。
         if (frame === null) { unlockOrientation(); }
       }
-    }, function () {
-      if (round !== orientRound || seq !== orientLockSeq || frame === null) { return; }
+    }, function (error) {
+      if (seq !== orientLockSeq || (error && error.name === 'AbortError')) { return; }
       onRefused(round);
     });
     return true;

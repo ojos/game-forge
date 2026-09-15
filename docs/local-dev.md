@@ -72,28 +72,47 @@ cp .dev.vars.example .dev.vars
 `.dev.vars` は `.gitignore` で除外済みで、除外が効いていることは
 `scripts/acceptance.sh` が毎回検査する。
 
-**LLM は Amazon Bedrock を叩く（確定19 / 仕様書 4.1）。** 資格情報は `BEDROCK_AWS_*` の
-4 本で、空のままでも `wrangler pages dev` は起動する。
+**LLM は Amazon Bedrock を叩く（確定19 / 仕様書 4.1）。ただし #160 以降、Bedrock を呼ぶのは
+本番のオーケストレータ Lambda の中であり、ローカルの `wrangler pages dev` を含むエッジは Bedrock を呼ばない。**
 
-ローカルでは SSO の一時資格情報を流用できる。ただし **export しただけでは効かない。**
-`aws configure export-credentials` が出すのは `AWS_*` という別の名前で、しかも Worker が
-読むのはシェルの環境変数ではなく `.dev.vars` というファイルである。**値を転記する。**
+- 生成の入口（`/api/generate`。フォーク・推敲も同じ）がエッジで行うのは、クォータの判定・`games` 行の作成・
+  ジョブの投げ込みまでである。既定の投げ込み（`startJob`）は `src/orchestrator/start-job.ts` の
+  `startJobOnLambda` で、Bedrock を呼ぶ段（`generateSource`）はオーケストレータの中で走る
+  （`src/generate.ts` の `defaultPipeline`、`src/orchestrator/pipeline.ts`）。入力側モデレーション
+  （Guardrails）もオーケストレータ側にある（`src/input-moderation.ts` の冒頭）。
+- **したがって `BEDROCK_AWS_*` の 4 本を `.dev.vars` に入れても、ローカルの生成は通らない。**
+  ローカルの Worker がこの 4 本を読む経路が無いためである。投げ込みに要るのは `BUILD_AWS_*` のほうで、
+  **それを入れると本番の Lambda が動く。** 何が起きるかは 5.1 の C 段に書いた。
+- 4 本のキーが雛形に残っているのは、コード側の口（`src/bedrock.ts` の `BEDROCK_SECRET_NAMES`）として
+  残っているためである。オーケストレータは実行ロールの一時資格情報をこの名前へ写して使う
+  （`src/orchestrator/handler.ts`）。空のままでも `npm run dev` は起動し、`npm test` も通る。
+- **どのアカウントの資格情報をここへ書き写すかは、この文書では書かない。** 以前ここにあった転記の手順は
+  ローカルのエッジが Bedrock を叩く前提（#160 より前）で書かれており、しかも仕様 9.1 の
+  「開発の LLM は Dev アカウント」と違うアカウントを指していた。どちらに揃えるかは #534（仕様 9.1 / 9.2）が決める。
+
+**AWS の一時資格情報を `.dev.vars` へ転記する形**（`BUILD_AWS_*` など、ローカルで AWS の資格情報を
+入れるとき）。**export しただけでは効かない。** `aws configure export-credentials` が出すのは `AWS_*` という
+別の名前で、しかも Worker が読むのはシェルの環境変数ではなく `.dev.vars` というファイルである。**値を転記する。**
 
 ```bash
-eval "$(AWS_PROFILE=game-forge-prod aws configure export-credentials --format env)"
-printf 'BEDROCK_AWS_REGION=%s\nBEDROCK_AWS_ACCESS_KEY_ID=%s\nBEDROCK_AWS_SECRET_ACCESS_KEY=%s\nBEDROCK_AWS_SESSION_TOKEN=%s\n' \
+eval "$(AWS_PROFILE=<プロファイル> aws configure export-credentials --format env)"
+printf 'BUILD_AWS_REGION=%s\nBUILD_AWS_ACCESS_KEY_ID=%s\nBUILD_AWS_SECRET_ACCESS_KEY=%s\nBUILD_AWS_SESSION_TOKEN=%s\n' \
   ap-northeast-1 "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN"
 ```
 
 出力で `.dev.vars` の該当 4 行を置き換える。**SSO の資格情報は数時間で失効する**ので、
-`AccessDenied` や `401` が出たら `aws sso login` からやり直して転記し直す。
+`AccessDenied` や `401` が出たら `aws sso login` からやり直して転記し直す。**`BUILD_AWS_*` を入れる前に
+5.1 の C 段を読むこと**（呼ぶ相手は本番の Lambda である）。
 
 **Anthropic のキーは使わない。** v0.9 までの `ANTHROPIC_API_KEY` は v1.0（#80）で廃止した。
 `BEDROCK_AWS_*` に `AWS_` の接頭辞を付けていないのは、Terraform 用の資格情報と混ざらない
 ようにするため（`.dev.vars.example` のコメント）。
 
-**Claude のモデルアクセスは #82 で有効化する。** それまで `anthropic.claude-sonnet-5` は
-`AccessDeniedException` になる。`deepseek.v3.2` は agreement 不要で今すぐ叩ける。
+**以前ここにあった「Claude のモデルアクセスは #82 で有効化する。それまで `anthropic.claude-sonnet-5` は
+`AccessDeniedException` になる」は削った。** #82 は 2026-08-26 に閉じており、挙げていたモデル ID も
+いまの登録簿（`src/generation-models.ts`。Claude は `jp.anthropic.claude-sonnet-4-6`）と違う。
+そもそもローカルから Bedrock を呼ばないので、モデルアクセスの状態はローカルの手順に関わらない。
+モデルアクセスの宣言と確かめ方は [bedrock-access.md](bedrock-access.md) にある。
 
 **ログインを手元で試すには `SESSION_SECRET` と Google の OAuth クライアントが要る**
 （#12 / 8.1）。値の作り方は `.dev.vars.example` のコメントに書いてある。空のままでも
@@ -508,11 +527,81 @@ bash scripts/shoot-pages.sh
 
 ## 5. 既知の制約と注意
 
-### 5.1 ローカルで検証できないもの（仕様書 9.1）
+### 5.1 ローカルと本番で同じもの・違うもの・ローカルから動かないもの・確かめられないもの（#533）
 
-R2 ライフサイクルルール / D1 書き込み無料枠の枯渇 / OGP のクローラ検証 /
-Resend の SPF・DKIM 到達性 / 実ドメインでの CSP・cookie 挙動。
-いずれもクローズドβで踏むことを受け入れる。
+**ある機能をローカルで確かめてよいか、本番でしか確かめられないか、ローカルから触ると本番の資源が動くかを、
+次の 4 段で判断する。** 各行に根拠の文書かコードの場所を添える。
+
+| 段 | 意味 | ローカルで確かめてよいか |
+|---|---|---|
+| A | 本番とほぼ同じもの | よい |
+| B | 形は同じでも、中身や条件が違うもの | よい。ただし違いを踏まえて読む |
+| C | ローカルからは動かない、または本番の資源に触れるもの | **触る前にこの段を読む** |
+| D | ローカルでは確かめられないもの | できない（本番で確かめる） |
+
+#### A. 本番とほぼ同じもの
+
+| 項目 | 同じである根拠 |
+|---|---|
+| 画面と API の実行環境 | ローカルも本番も workerd で動く（仕様 9.1 の表。`wrangler pages dev`。3 章「起動」） |
+| D1 のスキーマ | 同じ `migrations/` を、ローカルは `--local`、本番は `--remote` で当てる（3 章「D1 スキーマの適用」、[pages-deploy.md](pages-deploy.md)）。**当て忘れると同じにならない**（3 章「ログインを試す」の 2） |
+| 3 ホストの「別オリジンで同一サイト」の関係 | アプリ・サンドボックス・管理画面の 3 ホストを `Host` ヘッダで出し分ける（`wrangler.toml` の `[vars]`、`src/index.ts`）。`npm run check:origins` が実際に起動して確かめる（4 章） |
+| `__Host-` 付きの署名付きセッション | 同じコードが発行・検証する（`src/session.ts` の `SESSION_COOKIE`）。HTTPS が要るのは 3 章「なぜ HTTPS が要るか」 |
+| サンドボックスの CSP / CORS / wasm の配信 | 同じコードが返す（`src/sandbox-csp.ts`、`src/sandbox-delivery.ts` の `ALLOW_ORIGIN`）。実ブラウザでは `bash scripts/check-sandbox-browser.sh`（4 章、5.8〜5.10） |
+
+#### B. 形は同じでも、中身や条件が違うもの
+
+| 項目 | ローカル | 本番 | 根拠 |
+|---|---|---|---|
+| ホストの関係 | `sandbox.` と `admin.` が、アプリ用ホスト `game-forge.localtest.me` の**子** | `app.` `sandbox.` `admin.` が `game-forge.ojos.jp` の下で**兄弟** | `wrangler.toml` の `[vars]` と `[env.production.vars]`、仕様 9.1 の v1.4 注記（別オリジンかつ同一サイトという関係は同じ） |
+| 証明書 | 自己署名（`scripts/dev-certs.sh`。ブラウザは初回に警告を出す） | 公的な証明書 | 3 章「起動」 |
+| Google のログイン | 開発用のクライアント `game-forge-dev`。**ログインできるのは Workspace `ojos.jp` のアカウントだけ**（同意画面が「内部」） | 本番のクライアント `game-forge-prod` | 3 章「ログインを試す」の 1、[gcp-oauth-setup.md](gcp-oauth-setup.md) の 1.1 と 5.2 |
+| D1 / R2 の実体と上限 | Miniflare のローカル SQLite / R2（`.wrangler/state`）。**書き込みの無料枠のような上限が無く**、R2 のライフサイクルも無い | Cloudflare の D1 / R2 | `wrangler.toml` の `[[d1_databases]]`（`local-only-placeholder`）、仕様 9.1 の表 |
+| データ | **空である。** 最初の利用者・招待コード・作品の行は自分で入れる。`wasm_exec.js` も `scripts/put-wasm-exec.sh` で置く | 本番の利用者と作品がある | 3 章「ログインを試す」の 3、「サンドボックス側の動作確認」の 2・3 |
+| 30 秒の打ち切り | **`ctx.waitUntil()` を 30 秒で打ち切らない。** 長い処理がローカルでだけ完走し、偽の緑が出る | 応答後 30 秒で打ち切る | [orchestrator.md](orchestrator.md)「なぜ 2 つ目のデプロイ単位が要るのか」 |
+| Durable Object（いいね・プレイ数）の結線 | `wrangler pages dev` だけでは `game-forge-likes` が居ないため、**`/works/liked` は常に「読み込めませんでした」と静かに degrade する。** 中身を見るには likes Worker を別に立てる | `game-forge-likes` を先に配った状態で結線される | [likes.md](likes.md)「`/works/liked`」の末尾と「ローカルで動かす」、`wrangler.toml` の `LIKE_HUB` / `PLAY_HUB` |
+| 隔離ビルド | ローカルの Docker（`--network=none` など）。**ローカルのほうが本番より守りが強い** | AWS Lambda。egress の遮断が無い | 仕様 9.1 の #76 注記（v1.11 で改訂）、4 章の `npm run check:isolated-build` |
+| `/__dev/*` | 登録される（`DEV_ROUTES = "enabled"`） | 登録されない（`disabled`） | `wrangler.toml` の `DEV_ROUTES`、`src/app.ts` の `devRoutesEnabled` |
+
+#### C. ローカルからは動かない、または本番の資源に触れるもの
+
+**ここに挙げた機能の呼ぶ相手は、本番にしか無い。** Dev アカウントに Lambda は無く、関数名はローカルにも本番と同じ値が
+置いてある（`wrangler.toml` の `ORCHESTRATOR_FUNCTION_NAME` などの注記、仕様 9.2）。どのアカウントの資格情報を入れるかは
+この文書では書かない（2 章「シークレットの置き場所」、#534）。以下は**コードと terraform を読んで確かめたもので、
+実際には動かしていない**（本番の Lambda と Bedrock が動き、費用が出るため）。
+
+| 機能 | 資格情報・キーが空のとき | 入れたとき | 根拠 |
+|---|---|---|---|
+| **生成**（新規・フォーク・推敲） | 投げ込みの手前で `OrchestratorNotConfigured` になり、新規生成の作品行は `failed`（`internal`）で閉じる | **本番の Lambda と Bedrock が動く側の経路に乗る。結果は本番の URL へ返り、ローカルの D1 に戻らない。** 詳しくは表の下 | `src/generate.ts` の `defaultPipeline` と `startGeneration`、`src/orchestrator/start-job.ts` の `startJobOnLambda` / `missingOrchestratorSecrets`、`terraform/orchestrator.tf` の `aws_lambda_function.orchestrator`（`CALLBACK_BASE_URL`）、`src/fork.ts` / `src/revise.ts` の `pipeline.startJob` |
+| **ビルド** | ローカルのエッジからは呼ばない | 同左。ビルドは生成の中で、本番のオーケストレータが `game-forge-build` を呼ぶ。**ローカルから触る経路は生成の行と同じ**である | `src/generate.ts` の `defaultPipeline`（`build: createLambdaBuild()` は同期実装 `runJobInline` のときだけ使われ、既定の `startJob` では通らない。`src/work-page.ts` の `GENERATION_IS_SYNCHRONOUS = false`）、`src/orchestrator/pipeline.ts` の `invokeBuildFunction` |
+| **OGP 画像の撮影**（公開時・撮り直し） | 呼ぶ手前で止まる（`skipped`。公開は成立し、`games.ogp_state` は変わらない） | 本番の `game-forge-ogp` が非同期で動く。撮る先は**本番の**サンドボックスの `/g/<ローカルの作品 id>/`、結果の送り先は**本番の** `/api/ogp/callback` で、**ローカルの D1 に戻らない**（ローカルの行は `ogp_state = 'capturing'` のまま） | `src/ogp.ts` の `runCapture` / `claimOgpCapture`、`src/ogp-client.ts` の `missingOgpSecrets`、`terraform/ogp-function.tf` の `aws_lambda_function`（`SANDBOX_BASE_URL` / `CALLBACK_BASE_URL`）、`docker/ogp-shot/index.mjs` の `capture` / `sendCallback` |
+| **アイコンの再エンコード** | 呼ぶ手前で止まる（`AvatarNotConfigured`。画面は「保存できませんでした」） | 本番の `game-forge-avatar` が**同期で**動く。変換した画像は応答で戻り、**ローカルの** Worker がローカルの R2 / D1 へ書く（この機能だけは手元で完結する。動くのは本番の関数である） | `src/avatar-client.ts` の `createAvatarEncode`（`SYNC_INVOCATION_TYPE`）、`src/avatar.ts` の `convertAvatar`、`terraform/avatar-function.tf` |
+| **メール** | 送信の手前で止まる（`not-configured`。ローカルとテストの正常な状態） | **`RESEND_API_KEY` と `MAIL_FROM` を入れれば本当に送られる。** ローカルから送信に至るのは、改造の公開通知（宛先はローカル D1 の元の作者の `users.email`）と、削除依頼の通知（`OPERATOR_EMAIL` も要る）。生成の完了通知と費用 80% の警告はコールバックから出るので、ローカルの Worker からは出ない | `src/mail/resend.ts` の `mailConfigOf` / `sendMail`（`RESEND_ENDPOINT`）、`src/publish.ts` の `notifyForkPublished`、`src/takedown.ts`、`src/generate-callback.ts`。値を入れたまま `npm test` を回すと `test/mail.test.ts` が落とす |
+
+**生成の行の中身**（`BUILD_AWS_*` を入れて、ローカルの画面から生成を押したとき）。
+
+1. ローカルの Worker がクォータを判定し、**ローカルの D1** に作品行を `pending` で作る（`startGeneration`）。
+2. **本番の Lambda `game-forge-orchestrator` へ非同期でジョブを投げる**（`startJobOnLambda`。202 が返れば投げ込みは成功）。
+   ここで本番の Lambda が起動し、費用が出る。
+3. オーケストレータの宛先 `CALLBACK_BASE_URL` は `https://${local.app_host}`、つまり**本番の URL に固定されている**。
+   ペイロードでは変えられない（`terraform/orchestrator.tf`、`src/orchestrator/payload.ts`）。
+   **結果は本番の URL へ返り、ローカルの D1 には戻らない。**
+4. ローカルの作品行は `pending` のまま残る。画面は生成中のまま進まず、15 分（`src/games.ts` の `STALE_AFTER_SECONDS`）
+   経つまで、同じ利用者の次の生成・フォーク・推敲を受け付けない（`inFlightGuardSql`）。
+5. **Bedrock まで進むかは、コードを読む限り「進まない」。未確認**（実際には動かしていない）。
+   オーケストレータの最初の動作は、本番の URL への `claim` である（`src/orchestrator/pipeline.ts` の `runJobViaCallbacks`）。
+   `claim` は**本番の D1** で作品行を `pending` → `running` に進める条件付き UPDATE で（`src/generate-callback.ts`、
+   `src/games.ts` の `claimGenerationJob`）、本番の D1 にはローカルの作品行が無いので `claimed: false` になり、
+   Bedrock を呼ばずに降りる（`src/orchestrator/handler.ts` の `claimed-elsewhere`）。**それでも本番の Lambda の起動と、
+   本番へのコールバックの 1 往復は起きる。** 本番の D1 に同じ id とトークンの行があれば Bedrock まで進むが、
+   id は乱数でトークンはハッシュで照合するので、コードの上ではその経路は無い。
+
+#### D. ローカルでは確かめられないもの
+
+**仕様 9.1 の「ローカルで検証できないもの」の表を正本とする。** ここに一覧も件数も書き写さない
+（書き写すと 9.1 の行が増えた日に片方が古くなる。以前の 5.1 は 9.1 を写した 5 点のままで、確定24 で増えた
+「本番の封じ込め構成」の行が抜けていた）。
+いずれもクローズドβで踏むことを受け入れている。
 
 > **R2 ライフサイクルについて（#31）。** ローカル R2（Miniflare）はライフサイクルを
 > 持たないため、**手元で挙動を再現することはいまも出来ない。** ただし

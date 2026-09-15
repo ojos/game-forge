@@ -453,7 +453,11 @@ describe('頁送り（#552）', () => {
     const cookie = await sessionCookie(userId);
     const firstPage = newestFirst.slice(0, MY_WORKS_PER_PAGE);
 
-    for (const value of ['0', '-1', '-20', 'abc', '', String(MAX_MY_WORKS_PAGE + 1), '999999', '1e3']) {
+    // `2abc`・`2.5`・`2e3`・前後の空白・`02` は `parseInt` なら 2 頁目になる綴りである（PR #560 の Copilot code review）。
+    for (const value of [
+      '0', '-1', '-20', 'abc', '', String(MAX_MY_WORKS_PAGE + 1), '999999', '1e3',
+      '2abc', '2.5', '2e3', ' 2', '2 ', '02', '+2', '0x2',
+    ]) {
       const page = await (await openList(cookie, `?${MY_WORKS_PAGE_PARAM}=${encodeURIComponent(value)}`)).text();
       expect(newestFirst.filter((id) => page.includes(id)), `?page=${value}`).toEqual(firstPage);
       expect(pagerOf(page), `?page=${value}`).toBe(`<nav class="gf-pager" aria-label="頁送り">${nextLink(2)}</nav>`);
@@ -471,6 +475,11 @@ describe('頁送り（#552）', () => {
     // 上限を超える値は上限の頁へ寄せず、1 頁目にする（#552 の acceptance）。
     expect(toMyWorksPageNumber(String(MAX_MY_WORKS_PAGE + 1))).toBe(1);
     expect(toMyWorksPageNumber('99999999999999999999')).toBe(1);
+    // 文字列全体が 1 から始まる 10 進の数字のときだけ数に直す（`parseInt` のように先頭の数字だけを読まない）。
+    for (const value of ['2abc', '2.5', '2e3', ' 2', '2 ', '\t2', '2\n', '02', '002', '+2', '0x2', '２']) {
+      expect(toMyWorksPageNumber(value), JSON.stringify(value)).toBe(1);
+    }
+    expect(toMyWorksPageNumber('10')).toBe(10);
     expect(MY_WORKS_PER_PAGE).toBe(20);
     expect(MAX_MY_WORKS_PAGE).toBe(50);
   });

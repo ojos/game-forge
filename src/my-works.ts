@@ -160,13 +160,25 @@ export const MAX_MY_WORKS_PAGE = 50;
 export const MY_WORKS_PAGE_PARAM = 'page';
 
 /**
+ * `?page=` として読める綴り。**1 から始まる 10 進の数字だけ**（先頭の 0・符号・小数点・指数・空白を含まない）。
+ */
+const PAGE_NUMBER_PATTERN = /^[1-9][0-9]*$/u;
+
+/**
  * `?page=` を頁番号へ落とす（#552）。
  *
- * **落とすのであって、失敗させない**（`src/works-list.ts` の `toPageNumber` と同じ扱い）。
- * 手で書き換えた URL が 400 を返すより、1 頁目が出るほうがよい。
+ * **落とすのであって、失敗させない。** 手で書き換えた URL が 400 を返すより、1 頁目が出るほうがよい
+ * （ここは `src/works-list.ts` の `toPageNumber` と同じ考え方である）。
+ *
+ * **文字列全体が 10 進の正の整数の綴り（{@link PAGE_NUMBER_PATTERN}）のときだけ数に直す**（PR #560 の Copilot code review）。
+ * `Number.parseInt` は先頭の数字だけを読むので、`2abc`・`2.5`・`2e3`・` 2` が 2 頁目になってしまう。
+ * **読み方はここが作品をさがす（`parseInt` のまま）と違う。** 前後の空白も数でない綴りとして 1 頁目にする。
+ *
+ * **`02` のような先頭の 0 も 1 頁目にする。** 頁の綴りは 1 通り（{@link myWorksPath} が作る `?page=2`）で、
+ * 先頭の 0 を許すために正規表現と正規化を足すより、「作らない綴りは読めない値」とまとめるほうが単純である。
  *
  * **上限（{@link MAX_MY_WORKS_PAGE}）を超える値も 1 頁目にする**（#552 の acceptance）。
- * ここは作品をさがす（上限の頁へ寄せる）と違う。この一覧の上限は「そこまで作品を
+ * ここも作品をさがす（上限の頁へ寄せる）と違う。この一覧の上限は「そこまで作品を
  * 持つ利用者がまだいない」値であり、上限を超えた番号は手で書き換えた URL と見なして、
  * 読めない値と同じく先頭へ戻す。
  *
@@ -174,8 +186,12 @@ export const MY_WORKS_PAGE_PARAM = 'page';
  * @returns 1 以上 {@link MAX_MY_WORKS_PAGE} 以下の整数
  */
 export function toMyWorksPageNumber(value: string | null): number {
-  const parsed = Number.parseInt(value ?? '', 10);
-  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_MY_WORKS_PAGE) {
+  if (value === null || !PAGE_NUMBER_PATTERN.test(value)) {
+    return 1;
+  }
+  const parsed = Number(value);
+  // 綴りが正しくても桁が多すぎる値（`99999999999999999999`）は安全な整数にならない。上限を超える値と同じく 1 頁目。
+  if (!Number.isSafeInteger(parsed) || parsed > MAX_MY_WORKS_PAGE) {
     return 1;
   }
   return parsed;

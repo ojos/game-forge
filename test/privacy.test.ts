@@ -371,3 +371,18 @@ describe('旧い呼び名（改造・推敲・手直し）を出さない（#513
     expect(body).toContain('フォーク元の作品');
   });
 });
+
+describe('作者による作品の削除（#517）', () => {
+  it('保存期間の節に、作品を削除すると消えるもの・残るもの・残す理由を書く', async () => {
+    const body = pageBodyOf((await openPrivacy()).body);
+    const retention = body.slice(body.indexOf('<h2>7. 保存期間</h2>'), body.indexOf('<h2>8. '));
+    expect(retention).toContain('作品は、作者が作品ページから削除すると削除します。');
+    expect(retention).toContain('公開中の作品は、取り下げてから削除できます');
+    expect(retention).toContain('生成されたソースコード・遊ぶためのファイル・紹介用の画像と、リフォージの前の版を削除します');
+    // 行を残す 2 つの場合（`src/game-deletion.ts` の「行を残すのは、次のどちらかがあるとき」）。
+    expect(retention).toContain('その作品をフォークした作品があるとき');
+    expect(retention).toContain('通報・削除依頼・運営者の措置・入力の検査の記録がその作品にあるとき');
+    // 生成の記録は作品と結び付けていない（確定27）ので、作品を消しても残る。
+    expect(retention).toContain('作品を作るときの指示文と生成の記録は削除しません');
+  });
+});

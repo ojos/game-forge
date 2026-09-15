@@ -40,20 +40,23 @@
 # 実装で（src/orchestrator/start-job.ts）、要る資格情報は下の BUILD_AWS_* である。
 # **それを入れると投げ先は本番の Lambda で、結果の返し先も本番の URL に固定されている**
 # （terraform/orchestrator.tf の CALLBACK_BASE_URL）。**結果はローカルの D1 に戻らない。**
+# 投げても本番の Lambda は claim で降り、Bedrock は呼ばれない（2026-09-15 に本番で確かめた。
+# #534 のコメント）。**ローカルからは生成を通しで回せない**（仕様 9.1）。
 # 何が起きるかは docs/local-dev.md 5.1 の C 段にある。ローカルで生成の中身を確かめる手段は
 # test/orchestrator.test.ts と scripts/bundle-orchestrator.sh である。
 #
-# **どのアカウントの資格情報をここへ入れるかは、この雛形では書かない。** 以前ここにあった
-# 転記の手順はローカルのエッジが Bedrock を叩く前提（#160 より前）で書かれ、仕様 9.1 の
-# 「開発の LLM は Dev アカウント」と違うアカウントを指していた。どちらに揃えるかは
-# #534（仕様 9.1 / 9.2）が決める。資格情報を .dev.vars へ転記する形そのものは
-# docs/local-dev.md 2 章「シークレットの置き場所」にある。
+# **ローカルでは、この 4 つにどのアカウントの資格情報も入れる必要が無い**（読む経路が無い）。
+# 以前ここにあった転記の手順はローカルのエッジが Bedrock を叩く前提（#160 より前）で書かれ、
+# 仕様 9.1 の「開発の LLM は Dev アカウント」とも違うアカウントを指していた。#534 で仕様を
+# 実態に合わせた: Dev アカウントの Bedrock はいま使っておらず、開発が本番の枠を使うことも無い
+# （仕様 9.2。構成は変えていない）。
 #
 # 空のままでも `npm run dev` は起動し、`npm test` も通る。
 BEDROCK_AWS_REGION=
 BEDROCK_AWS_ACCESS_KEY_ID=
 BEDROCK_AWS_SECRET_ACCESS_KEY=
-# 一時資格情報（SSO）を使うときだけ入れる。長命キーでは空のままにする。
+# ローカルでは空のまま。オーケストレータは実行ロールの一時資格情報をこの名前へ写して使う
+# （src/orchestrator/handler.ts）。
 BEDROCK_AWS_SESSION_TOKEN=
 
 # ビルド関数（AWS Lambda `game-forge-build`）を呼ぶための AWS 資格情報

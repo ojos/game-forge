@@ -37,32 +37,44 @@ import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 
-/** 矢印と Space を読むソース。 */
+/** 矢印と A を押し続けて読み、Space を押した瞬間に読むソース。 */
 const ARROWS_SOURCE = `package main
 
-import "github.com/hajimehoshi/ebiten/v2"
+import (
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
+)
 
 func (g *Game) Update() error {
 	if ebiten.IsKeyPressed(ebiten.KeyLeft) || ebiten.IsKeyPressed(ebiten.KeyA) {
 		g.x--
 	}
-	if ebiten.IsKeyPressed(ebiten.KeySpace) {
+	if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
 		g.fire()
 	}
 	return nil
 }
 `;
 
-/** Z と Escape を読むソース。 */
+/** {@link ARROWS_SOURCE} が押し続けて読むキー（Space は押した瞬間なので入らない）。 */
+const ARROWS_HELD = ['ArrowLeft', 'KeyA'];
+
+/** Z を押した瞬間に読み、Escape を押し続けて読むソース（`KeyPressDuration`）。 */
 const BUTTONS_SOURCE = `package main
 
-import "github.com/hajimehoshi/ebiten/v2"
+import (
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
+)
 
 func (g *Game) Update() error {
-	_ = ebiten.IsKeyPressed(ebiten.KeyZ) || ebiten.IsKeyPressed(ebiten.KeyEscape)
+	_ = inpututil.IsKeyJustPressed(ebiten.KeyZ) || inpututil.KeyPressDuration(ebiten.KeyEscape) > 30
 	return nil
 }
 `;
+
+/** {@link BUTTONS_SOURCE} が押し続けて読むキー。 */
+const BUTTONS_HELD = ['Escape'];
 
 /** 記録するだけの通知。**本物のメールを送らない**（`test/generate-callback.test.ts` と同じ理由）。 */
 const notifiers: CallbackNotifiers = {
@@ -159,15 +171,24 @@ async function post(routes: readonly Route[], body: unknown): Promise<Response> 
  * @param sourceKey ソースのキー
  * @returns 行（無ければ null）
  */
-async function rowOf(
-  sourceKey: string,
-): Promise<{ codes: string[]; rule_version: number; extracted_at: number } | null> {
+async function rowOf(sourceKey: string): Promise<{
+  codes: string[];
+  held_codes: string[] | null;
+  rule_version: number;
+  extracted_at: number;
+} | null> {
   const row = await env.DB.prepare(
-    'select codes, rule_version, extracted_at from source_input_keys where source_key = ?',
+    'select codes, held_codes, rule_version, extracted_at from source_input_keys where source_key = ?',
   )
     .bind(sourceKey)
-    .first<{ codes: string; rule_version: number; extracted_at: number }>();
-  return row === null ? null : { ...row, codes: JSON.parse(row.codes) as string[] };
+    .first<{ codes: string; held_codes: string | null; rule_version: number; extracted_at: number }>();
+  return row === null
+    ? null
+    : {
+        ...row,
+        codes: JSON.parse(row.codes) as string[],
+        held_codes: row.held_codes === null ? null : (JSON.parse(row.held_codes) as string[]),
+      };
 }
 
 /**
@@ -212,11 +233,13 @@ beforeEach(() => {
 });
 
 describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', () => {
-  it('ソースを読んで拾い、code の JSON 配列と規則の版を書く', async () => {
+  it('ソースを読んで拾い、code の JSON 配列・押し続けて読む code の JSON 配列・規則の版を書く', async () => {
     const keys = await putSource(ARROWS_SOURCE);
     expect(await recordSourceInputKeys(env, keys.sourceKey, 1_800_000_000)).toBe('recorded');
+    expect(INPUT_KEYS_RULE_VERSION).toBe(2);
     expect(await rowOf(keys.sourceKey)).toEqual({
       codes: ['ArrowLeft', 'KeyA', 'Space'],
+      held_codes: ARROWS_HELD,
       rule_version: INPUT_KEYS_RULE_VERSION,
       extracted_at: 1_800_000_000,
     });
@@ -226,6 +249,8 @@ describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', (
     const keys = await putSource('package main\n\nfunc main() {}\n');
     expect(await recordSourceInputKeys(env, keys.sourceKey)).toBe('recorded');
     expect((await rowOf(keys.sourceKey))?.codes).toEqual([]);
+    // 押し続けて読むキーも [] で、版 1 の行の NULL と区別する。
+    expect((await rowOf(keys.sourceKey))?.held_codes).toEqual([]);
   });
 
   it('今の版の行があれば R2 を読まない', async () => {
@@ -247,7 +272,26 @@ describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', (
     expect(await recordSourceInputKeys(env, keys.sourceKey, 1_800_000_000)).toBe('recorded');
     expect(await rowOf(keys.sourceKey)).toEqual({
       codes: ['Escape', 'KeyZ'],
+      held_codes: BUTTONS_HELD,
       rule_version: INPUT_KEYS_RULE_VERSION,
+      extracted_at: 1_800_000_000,
+    });
+  });
+
+  it('版 1 の行（held_codes が NULL。0042 より前に書いた形）は R2 を読み直して held_codes を埋める', async () => {
+    const keys = await putSource(ARROWS_SOURCE);
+    // M14-4 の Worker が書いた形そのまま（列 held_codes を書かない）。
+    await env.DB.prepare(
+      'insert into source_input_keys (source_key, codes, rule_version, extracted_at) values (?, ?, 1, 1)',
+    )
+      .bind(keys.sourceKey, '["ArrowLeft","KeyA","Space"]')
+      .run();
+    expect((await rowOf(keys.sourceKey))?.held_codes).toBeNull();
+    expect(await recordSourceInputKeys(env, keys.sourceKey, 1_800_000_000)).toBe('recorded');
+    expect(await rowOf(keys.sourceKey)).toEqual({
+      codes: ['ArrowLeft', 'KeyA', 'Space'],
+      held_codes: ARROWS_HELD,
+      rule_version: 2,
       extracted_at: 1_800_000_000,
     });
   });
@@ -280,24 +324,40 @@ describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', (
 describe('保存の 1 文（新しい版だけが上書きする）', () => {
   it('同じ版の 2 回目は何も変えない', async () => {
     const key = hashKey();
-    const write = async (codes: string, version: number, at: number): Promise<void> => {
-      await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL).bind(key, codes, version, at).run();
+    const write = async (codes: string, held: string, version: number, at: number): Promise<void> => {
+      await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL).bind(key, codes, held, version, at).run();
     };
-    await write('["KeyA"]', 1, 100);
-    await write('["KeyB"]', 1, 200);
-    expect(await rowOf(key)).toEqual({ codes: ['KeyA'], rule_version: 1, extracted_at: 100 });
-    await write('["KeyC"]', 2, 300);
-    expect(await rowOf(key)).toEqual({ codes: ['KeyC'], rule_version: 2, extracted_at: 300 });
-    // 古い版は新しい版を上書きしない。
-    await write('["KeyD"]', 1, 400);
-    expect(await rowOf(key)).toEqual({ codes: ['KeyC'], rule_version: 2, extracted_at: 300 });
+    await write('["KeyA"]', '[]', 2, 100);
+    await write('["KeyB"]', '["KeyB"]', 2, 200);
+    expect(await rowOf(key)).toEqual({ codes: ['KeyA'], held_codes: [], rule_version: 2, extracted_at: 100 });
+    await write('["KeyC"]', '["KeyC"]', 3, 300);
+    expect(await rowOf(key)).toEqual({ codes: ['KeyC'], held_codes: ['KeyC'], rule_version: 3, extracted_at: 300 });
+    // 古い版は新しい版を上書きしない（codes も held_codes も）。
+    await write('["KeyD"]', '["KeyD"]', 2, 400);
+    expect(await rowOf(key)).toEqual({ codes: ['KeyC'], held_codes: ['KeyC'], rule_version: 3, extracted_at: 300 });
+  });
+
+  it('版 1 の行（held_codes が NULL）を、版 2 の 1 文が codes と held_codes の両方で上書きする', async () => {
+    const key = hashKey();
+    await env.DB.prepare(
+      'insert into source_input_keys (source_key, codes, rule_version, extracted_at) values (?, ?, 1, 100)',
+    )
+      .bind(key, '["KeyA"]')
+      .run();
+    await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL).bind(key, '["KeyA","KeyB"]', '["KeyB"]', 2, 200).run();
+    expect(await rowOf(key)).toEqual({
+      codes: ['KeyA', 'KeyB'],
+      held_codes: ['KeyB'],
+      rule_version: 2,
+      extracted_at: 200,
+    });
   });
 });
 
 describe('完成のコールバックで拾う（仕様 3.9.5 の「拾う箇所」の 1）', () => {
   it('生成: 完成と同時に行ができる', async () => {
     const { keys } = await seedReady(ARROWS_SOURCE);
-    expect((await rowOf(keys.sourceKey))?.codes).toEqual(['ArrowLeft', 'KeyA', 'Space']);
+    expect(await rowOf(keys.sourceKey)).toMatchObject({ codes: ['ArrowLeft', 'KeyA', 'Space'], held_codes: ARROWS_HELD });
   });
 
   it('フォーク: 子の完成で、子のソースの行ができる', async () => {
@@ -313,7 +373,7 @@ describe('完成のコールバックで拾う（仕様 3.9.5 の「拾う箇所
       artifacts: artifacts(keys),
     });
     expect(await response.json()).toEqual({ accepted: true, finished: true });
-    expect((await rowOf(keys.sourceKey))?.codes).toEqual(['Escape', 'KeyZ']);
+    expect(await rowOf(keys.sourceKey)).toMatchObject({ codes: ['Escape', 'KeyZ'], held_codes: BUTTONS_HELD });
   });
 
   it('推敲: 差し替えたソースの行ができる。「版に戻す」は何も書かない', async () => {
@@ -329,7 +389,7 @@ describe('完成のコールバックで拾う（仕様 3.9.5 の「拾う箇所
       artifacts: artifacts(revisedKeys),
     });
     expect(await response.json()).toEqual({ accepted: true, finished: true });
-    expect((await rowOf(revisedKeys.sourceKey))?.codes).toEqual(['Escape', 'KeyZ']);
+    expect(await rowOf(revisedKeys.sourceKey)).toMatchObject({ codes: ['Escape', 'KeyZ'], held_codes: BUTTONS_HELD });
 
     const before = await rowCount();
     expect(await restoreRevision(env, id, userId, 1)).toBe('restored');
@@ -339,7 +399,7 @@ describe('完成のコールバックで拾う（仕様 3.9.5 の「拾う箇所
     expect(current?.source_key).toBe(firstKeys.sourceKey);
     // 戻した先のソースの行は、最初の完成のときの行がそのまま使える。
     expect(await rowCount()).toBe(before);
-    expect((await rowOf(firstKeys.sourceKey))?.codes).toEqual(['ArrowLeft', 'KeyA', 'Space']);
+    expect(await rowOf(firstKeys.sourceKey)).toMatchObject({ codes: ['ArrowLeft', 'KeyA', 'Space'], held_codes: ARROWS_HELD });
   });
 
   it('戻り値が false の finish（重複配信）でも、行が無ければ拾う', async () => {
@@ -355,7 +415,7 @@ describe('完成のコールバックで拾う（仕様 3.9.5 の「拾う箇所
       artifacts: artifacts(keys),
     });
     expect(await response.json()).toEqual({ accepted: true, finished: false });
-    expect((await rowOf(keys.sourceKey))?.codes).toEqual(['ArrowLeft', 'KeyA', 'Space']);
+    expect(await rowOf(keys.sourceKey)).toMatchObject({ codes: ['ArrowLeft', 'KeyA', 'Space'], held_codes: ARROWS_HELD });
   });
 
   it('推敲でも、戻り値が false の finish で拾う', async () => {
@@ -371,7 +431,7 @@ describe('完成のコールバックで拾う（仕様 3.9.5 の「拾う箇所
       artifacts: artifacts(keys),
     });
     expect(await response.json()).toEqual({ accepted: true, finished: false });
-    expect((await rowOf(keys.sourceKey))?.codes).toEqual(['Escape', 'KeyZ']);
+    expect(await rowOf(keys.sourceKey)).toMatchObject({ codes: ['Escape', 'KeyZ'], held_codes: BUTTONS_HELD });
   });
 
   it('トークンが一致しない finish では R2 を読まず、行も書かない', async () => {
@@ -445,7 +505,7 @@ describe('完成のコールバックで拾う（仕様 3.9.5 の「拾う箇所
       artifacts: artifacts(keys),
     });
     expect(await response.json()).toEqual({ accepted: true, finished: false });
-    expect((await rowOf(keys.sourceKey))?.codes).toEqual(['Escape', 'KeyZ']);
+    expect(await rowOf(keys.sourceKey)).toMatchObject({ codes: ['Escape', 'KeyZ'], held_codes: BUTTONS_HELD });
   });
 });
 
@@ -487,7 +547,7 @@ describe('同期実行の完成で拾う（仕様 3.9.5 の「拾う箇所」の
       { gameId: pending.id, jobToken: pending.jobToken, userId, request: { prompt: 'ゲーム' } },
       pipelineFor(keys),
     );
-    expect((await rowOf(keys.sourceKey))?.codes).toEqual(['ArrowLeft', 'KeyA', 'Space']);
+    expect(await rowOf(keys.sourceKey)).toMatchObject({ codes: ['ArrowLeft', 'KeyA', 'Space'], held_codes: ARROWS_HELD });
   });
 
   it('フォーク: 子の completeGame のあとで行ができる', async () => {
@@ -500,7 +560,7 @@ describe('同期実行の完成で拾う（仕様 3.9.5 の「拾う箇所」の
       { gameId: child.id, jobToken: child.jobToken, userId: forkerId, request: { prompt: '改造' } },
       pipelineFor(keys),
     );
-    expect((await rowOf(keys.sourceKey))?.codes).toEqual(['Escape', 'KeyZ']);
+    expect(await rowOf(keys.sourceKey)).toMatchObject({ codes: ['Escape', 'KeyZ'], held_codes: BUTTONS_HELD });
   });
 
   it('completeGame が false でも拾い、false はそのまま例外になる', async () => {
@@ -514,7 +574,7 @@ describe('同期実行の完成で拾う（仕様 3.9.5 の「拾う箇所」の
         pipelineFor(keys, async () => false),
       ),
     ).rejects.toBeInstanceOf(GenerationNotCompletable);
-    expect((await rowOf(keys.sourceKey))?.codes).toEqual(['Escape', 'KeyZ']);
+    expect(await rowOf(keys.sourceKey)).toMatchObject({ codes: ['Escape', 'KeyZ'], held_codes: BUTTONS_HELD });
   });
 
   it('拾うのに失敗しても、完成は失敗にならない', async () => {

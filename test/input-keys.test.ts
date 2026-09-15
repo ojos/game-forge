@@ -9,6 +9,7 @@ import {
   INPUT_KEYS_RULE_VERSION,
   INPUT_KEY_CODES,
   ebitenKeyCode,
+  extractHeldInputKeyCodes,
   extractInputKeyCodes,
 } from '../src/input-keys.js';
 
@@ -95,6 +96,154 @@ func (g *Game) Update() error {
   });
 });
 
+/**
+ * Go のソースの `Update` の本体を包む。
+ *
+ * @param body `Update` の本体
+ * @returns ソース
+ */
+function game(body: string): string {
+  return `package main
+
+import (
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
+)
+
+func (g *Game) Update() error {
+${body}
+	return nil
+}
+`;
+}
+
+describe('押し続けて読むキーの抽出（仕様 3.9.6 の「H の拾い方」/ #529）', () => {
+  it('←→ H・↑ J（横スクロール。↑ はジャンプ）: 横の矢印だけを拾う', () => {
+    const source = game(`
+	if ebiten.IsKeyPressed(ebiten.KeyArrowLeft) {
+		g.x--
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyArrowRight) {
+		g.x++
+	}
+	if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) || inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+		g.jump()
+	}`);
+    expect(extractHeldInputKeyCodes(source)).toEqual(['ArrowLeft', 'ArrowRight']);
+    expect(extractInputKeyCodes(source)).toEqual(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Space']);
+  });
+
+  it('4 方向とも J（迷路）: 押し続けて読むキーは無い', () => {
+    const source = game(`
+	switch {
+	case inpututil.IsKeyJustPressed(ebiten.KeyArrowUp):
+		g.move(0, -1)
+	case inpututil.IsKeyJustPressed(ebiten.KeyArrowDown):
+		g.move(0, 1)
+	case inpututil.IsKeyJustPressed(ebiten.KeyArrowLeft):
+		g.move(-1, 0)
+	case inpututil.IsKeyJustPressed(ebiten.KeyArrowRight):
+		g.move(1, 0)
+	}`);
+    expect(extractHeldInputKeyCodes(source)).toEqual([]);
+    expect(extractInputKeyCodes(source)).toEqual(['ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp']);
+  });
+
+  it('4 方向とも H（縦シューティング）: WASD の別名も矢印と同じ表で写す', () => {
+    const source = game(`
+	if ebiten.IsKeyPressed(ebiten.KeyUp) || ebiten.IsKeyPressed(ebiten.KeyW) {
+		g.y--
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyDown) || ebiten.IsKeyPressed(ebiten.KeyS) {
+		g.y++
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyLeft) || ebiten.IsKeyPressed(ebiten.KeyA) {
+		g.x--
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyRight) || ebiten.IsKeyPressed(ebiten.KeyD) {
+		g.x++
+	}`);
+    expect(extractHeldInputKeyCodes(source)).toEqual([
+      'ArrowDown',
+      'ArrowLeft',
+      'ArrowRight',
+      'ArrowUp',
+      'KeyA',
+      'KeyD',
+      'KeyS',
+      'KeyW',
+    ]);
+  });
+
+  it('同じ方向キーを H と J の両方で読む（タイトルの選択と移動）: H として拾う', () => {
+    const source = game(`
+	if g.title {
+		if inpututil.IsKeyJustPressed(ebiten.KeyArrowUp) {
+			g.cursor--
+		}
+		return nil
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyArrowUp) {
+		g.y--
+	}`);
+    expect(extractHeldInputKeyCodes(source)).toEqual(['ArrowUp']);
+  });
+
+  it('inpututil.KeyPressDuration も H として拾う', () => {
+    const source = game(`
+	if inpututil.KeyPressDuration(ebiten.KeySpace) > 30 {
+		g.charge()
+	}`);
+    expect(extractHeldInputKeyCodes(source)).toEqual(['Space']);
+  });
+
+  it('IsKeyJustPressed と IsKeyJustReleased は拾わない', () => {
+    expect(
+      extractHeldInputKeyCodes('inpututil.IsKeyJustPressed(ebiten.KeyZ) || inpututil.IsKeyJustReleased(ebiten.KeyX)'),
+    ).toEqual([]);
+  });
+
+  it('変数や式を渡す読み方は拾わない（その軸は押し続けない扱い）', () => {
+    const source = game(`
+	keys := []ebiten.Key{ebiten.KeyArrowLeft, ebiten.KeyArrowRight}
+	for _, k := range keys {
+		if ebiten.IsKeyPressed(k) {
+			g.move(k)
+		}
+	}
+	_ = ebiten.IsKeyPressed(g.keys[ebiten.KeyArrowUp])
+	_ = ebiten.IsKeyPressed(ebiten.KeyArrowDown + 1)`);
+    expect(extractHeldInputKeyCodes(source)).toEqual([]);
+    // 読むキーの全集合には入る（版 1 からの規則）。
+    expect(extractInputKeyCodes(source)).toEqual(['ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp']);
+  });
+
+  it('括弧の内側の空白・改行・末尾のカンマは許し、表に無い名前と ebiten 以外の名前は捨てる', () => {
+    expect(extractHeldInputKeyCodes('ebiten.IsKeyPressed( ebiten.KeyZ )')).toEqual(['KeyZ']);
+    // 引数を複数行に書くと gofmt は末尾にカンマを付ける。
+    expect(extractHeldInputKeyCodes('ebiten.IsKeyPressed(\n\t\tebiten.KeyX,\n\t)')).toEqual(['KeyX']);
+    expect(extractHeldInputKeyCodes('ebiten.IsKeyPressed(ebiten.KeyX, ebiten.KeyY)')).toEqual([]);
+    expect(extractHeldInputKeyCodes('ebiten.IsKeyPressed(\n\t\tebiten.KeyX\n\t)')).toEqual(['KeyX']);
+    expect(extractHeldInputKeyCodes('ebiten.IsKeyPressed(ebiten.KeyMax)')).toEqual([]);
+    expect(extractHeldInputKeyCodes('ebiten.IsKeyPressed(ebiten.Keyconstructor)')).toEqual([]);
+    expect(extractHeldInputKeyCodes('e.IsKeyPressed(e.KeySpace)')).toEqual([]);
+    expect(extractHeldInputKeyCodes('myebiten.IsKeyPressed(ebiten.KeySpace)')).toEqual([]);
+    expect(extractHeldInputKeyCodes('ebiten.IsKeyPressedX(ebiten.KeySpace)')).toEqual([]);
+  });
+
+  it('押し続けて読むキーは、読むキーの全集合の部分集合で、重複を除いて昇順に並ぶ', () => {
+    const source = game(`
+	_ = ebiten.IsKeyPressed(ebiten.KeySpace) || ebiten.IsKeyPressed(ebiten.KeyA)
+	_ = ebiten.IsKeyPressed(ebiten.KeySpace) || inpututil.KeyPressDuration(ebiten.KeyA) > 0
+	_ = inpututil.IsKeyJustPressed(ebiten.KeyEnter)`);
+    const held = extractHeldInputKeyCodes(source);
+    expect(held).toEqual(['KeyA', 'Space']);
+    const all = new Set(extractInputKeyCodes(source));
+    expect(held.every((code) => all.has(code))).toBe(true);
+    expect(extractHeldInputKeyCodes(source)).toEqual(held);
+  });
+});
+
 describe('キーの表と許可表（仕様 3.9.5 / 3.9.7）', () => {
   it('許可表は、キーの表が写す code の集合と同じである', () => {
     const values = [...new Set(Object.values(EBITEN_KEY_CODES))].sort();
@@ -117,9 +266,12 @@ describe('キーの表と許可表（仕様 3.9.5 / 3.9.7）', () => {
     expect(match?.[1]).toBe(EBITEN_MODULE_VERSION);
   });
 
-  it('規則の版が仕様 3.9.5 の見出しの版と一致する', () => {
+  it('規則の版が仕様の版と一致する（3.9.5 の見出しの版 1 と、#529 の実装注記が上げた版）', () => {
     const match = /\*\*抽出の規則（`rule_version = (\d+)`）:\*\*/.exec(env.TEST_PRODUCT_SPEC);
     expect(match).not.toBeNull();
-    expect(Number(match?.[1])).toBe(INPUT_KEYS_RULE_VERSION);
+    // **見出しは版 1 の規則を書いたまま残す**（#528 注記が「M14-9 で置き換わる」と書き、仕様の版を上げないため）。
+    // 今の版は、見出しの版と、実装注記の「規則の版を `rule_version = N` に上げた」の最大である。
+    const raised = [...env.TEST_PRODUCT_SPEC.matchAll(/規則の版を `rule_version = (\d+)` に上げた/g)].map((m) => Number(m[1]));
+    expect(Math.max(Number(match?.[1]), ...raised)).toBe(INPUT_KEYS_RULE_VERSION);
   });
 });

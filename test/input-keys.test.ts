@@ -321,6 +321,25 @@ describe('同じ条件式で読むキーの組の抽出（仕様 3.9.6 の「同
     ).toEqual([]);
   });
 
+  it('&& と端の呼び出しの間にコメントがあっても、&& に接する端のキーを組から外す（PR #546 の Copilot の指摘）', () => {
+    const z = 'inpututil.IsKeyJustPressed(ebiten.KeyZ)';
+    const up = 'inpututil.IsKeyJustPressed(ebiten.KeyUp)';
+    const space = 'inpututil.IsKeyJustPressed(ebiten.KeySpace)';
+    // 前側: ブロックコメント・行コメントと改行・両方を重ねた形。
+    expect(extractAliasGroups(`ok && /* grounded */ ${z} || ${up} || ${space}`)).toEqual([['ArrowUp', 'Space']]);
+    expect(extractAliasGroups(`if ok && // grounded\n\t\t${z} || ${up} || ${space} {`)).toEqual([['ArrowUp', 'Space']]);
+    expect(extractAliasGroups(`ok && /* a */ // b\n /* c */\n${z} || ${up} || ${space}`)).toEqual([['ArrowUp', 'Space']]);
+    // 後ろ側: 呼び出しの後のブロックコメント・行コメントと改行を越えた &&。
+    expect(extractAliasGroups(`${space} || ${up} || ${z} /* grounded */ && ok`)).toEqual([['ArrowUp', 'Space']]);
+    expect(extractAliasGroups(`${space} || ${up} || ${z} // grounded\n\t&& ok`)).toEqual([['ArrowUp', 'Space']]);
+    // コメントの中の && は && ではない（前側の行コメントを取り除いた残りで見る）。
+    expect(extractAliasGroups(`ok // a &&\n${up} || ${space}`)).toEqual([['ArrowUp', 'Space']]);
+    // 文字列の中の // は行コメントではない（その後ろの && を消さない）。
+    expect(extractAliasGroups(`_ = "https://example.com" == url && ${z} || ${up}`)).toEqual([]);
+    // || の続きの間のコメントは、今どおり組が切れる（方向はボタンに残る側）。
+    expect(extractAliasGroups(`${space} || /* jump */ ${up}`)).toEqual([]);
+  });
+
   it('複数行に書いた条件式（|| の前後の改行・括弧の内側の空白と末尾のカンマ）も 1 組', () => {
     const source = game(`
 	if inpututil.IsKeyJustPressed(ebiten.KeySpace) ||

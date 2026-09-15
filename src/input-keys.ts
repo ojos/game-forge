@@ -143,11 +143,13 @@ export function extractAliasGroups(source: string): string[][] {
     const names = [...match[0].matchAll(new RegExp(call, 'g'))].map((inner) => inner[1] ?? '');
     // **`&&` は `||` より強く結びつく**（Go の演算子の優先順位）。続きの外側で `&&` に接する呼び出しは、
     // `a && IsKeyJustPressed(KeyZ) || IsKeyJustPressed(KeyUp)` の Z のように `&&` の片側で、ほかのキーと同じ働きではないので組から外す。
+    // **`&&` との間の空白とコメント（`/* … */`・`// …`）を越えて見る**（`ok && /* 接地 */ IsKeyJustPressed(KeyZ) || …` でも Z を外す。PR #546 の Copilot の指摘）。
+    // ソース全体からコメントを消さない——文字列の中の `//`（URL など）で後ろのコードを消しうるので、判定に使う端だけを見る。
     const start = match.index ?? 0;
-    if (source.slice(0, start).trimEnd().endsWith('&&')) {
+    if (withoutTrailingGap(source.slice(0, start)).endsWith('&&')) {
       names.shift();
     }
-    if (source.slice(start + match[0].length).trimStart().startsWith('&&')) {
+    if (withoutLeadingGap(source.slice(start + match[0].length)).startsWith('&&')) {
       names.pop();
     }
     const codes = new Set<string>();
@@ -163,6 +165,82 @@ export function extractAliasGroups(source: string): string[][] {
     }
   }
   return [...groups.values()].sort(compareGroups);
+}
+
+/**
+ * 末尾の空白と Go のコメント（ブロックコメントと、その行の `//` からの行コメント）を、無くなるまで繰り返し取り除く（組の前側が `&&` に接するかを見るため）。
+ *
+ * **その行の `//` は、文字列（`"…"`・`` `…` ``）とルーン（`'…'`）の外にある最初のものだけを行コメントとみなす**（{@link lineCommentStart}）。
+ * 行をまたぐ生文字列とブロックコメントの中までは追わない（構文解析を持ち込まない）。
+ *
+ * @param text 組の前にあるソース
+ * @returns 取り除いた後の文字列
+ */
+function withoutTrailingGap(text: string): string {
+  let rest = text;
+  for (;;) {
+    rest = rest.trimEnd();
+    if (rest.endsWith('*/')) {
+      const open = rest.lastIndexOf('/*', rest.length - 3);
+      if (open === -1) {
+        return rest;
+      }
+      rest = rest.slice(0, open);
+      continue;
+    }
+    const lineStart = rest.lastIndexOf('\n') + 1;
+    const comment = lineCommentStart(rest.slice(lineStart));
+    if (comment === -1) {
+      return rest;
+    }
+    rest = rest.slice(0, lineStart + comment);
+  }
+}
+
+/**
+ * 先頭の空白と Go のコメント（ブロックコメントと、行末までの `//` の行コメント）を、無くなるまで繰り返し取り除く（組の後ろ側が `&&` に接するかを見るため）。
+ *
+ * 組の直後はコードの位置なので、文字列の中から始まることはない。閉じていないブロックコメントはそこで止める。
+ *
+ * @param text 組の後ろにあるソース
+ * @returns 取り除いた後の文字列
+ */
+function withoutLeadingGap(text: string): string {
+  // **正規表現を関数の中で組み立てる**（束のモジュールの最上位に副作用のある式を置かない）。
+  return text.replace(new RegExp(String.raw`^(?:\s+|/\*[\s\S]*?\*/|//[^\n]*)*`), '');
+}
+
+/**
+ * 1 行の中で、行コメントが始まる位置（文字列・ルーン・同じ行のブロックコメントの外にある最初の `//`）。
+ *
+ * @param line 1 行（改行を含まない）
+ * @returns `//` の位置。無ければ -1
+ */
+function lineCommentStart(line: string): number {
+  let quote: string | null = null;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (quote === '/*') {
+      if (char === '*' && line[index + 1] === '/') {
+        quote = null;
+        index += 1;
+      }
+    } else if (quote !== null) {
+      if (char === '\\' && quote !== '`') {
+        index += 1;
+      } else if (char === quote) {
+        quote = null;
+      }
+    } else if (char === '/' && line[index + 1] === '/') {
+      return index;
+    } else if (char === '/' && line[index + 1] === '*') {
+      quote = '/*';
+      index += 1;
+    } else if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+    }
+  }
+  return -1;
 }
 
 /**

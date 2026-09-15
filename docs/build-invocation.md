@@ -191,7 +191,7 @@ aws iam get-access-key-last-used --access-key-id <KEY_ID>
 
 9.2 のとおり **Dev アカウントに Lambda は無い。** ローカルからこの経路を通すには
 本番アカウントの資格情報が要る（`AWS_PROFILE=game-forge-prod` の SSO を `.dev.vars` へ
-転記する。手順は `.dev.vars.example` の Bedrock の項と同じ）。**これは確定20 が
+転記する。手順は `docs/local-dev.md` 2 章「シークレットの置き場所」）。**これは確定20 が
 受け入れた「本番構成をローカルで検証できない」の一部である。**
 
 ---

@@ -5,9 +5,10 @@
 // | # | 見るもの |
 // |---|---|
 // | 前提 | どの段でもタッチ端末の形（`pointer: coarse`）で覆いが開き、差し替えが入り、ページの例外が出ていない |
-// | 1 | 横長の作品で固定できる端末: **全画面に入った後で** `lock('landscape')` が 1 回呼ばれ、上の行に控えめのボタン「縦向きにする」が出て、案内は出ない |
-// | 2 | ボタンを押すと `lock('portrait')` が呼ばれ、ボタンが「横向きにする」になり、`localStorage` に `portrait` を覚える |
+// | 1 | 横長の作品で固定できる端末: **全画面に入った後で** `lock('landscape')` が 1 回呼ばれ、上の行に控えめのボタンが出て、案内は出ない。**ボタンの文言は今見えている向きの逆**（縦持ちのうちは「横向きにする」、横持ちに回すと「縦向きにする」。#572） |
+// | 2 | ボタンを押すと、今見えている向き（横）の逆の `lock('portrait')` が呼ばれ、`localStorage` に `portrait` を覚え、縦持ちに回すとボタンが「横向きにする」になる |
 // | 3 | 「閉じる」で閉じると `unlock()` が呼ばれる。開き直すと**覚えた向き（`portrait`）で固定**し、ボタンは「横向きにする」。全画面の解除で閉じても `unlock()` が呼ばれる |
+// | 8 | **固定の Promise が決着しない端末（#572）**: (a) 決着を待たずにボタンが出て、覚えた向きで開き直してもボタンが出る。(b) 文言は今見えている向きの逆（固定を頼んだ向きではない）。(c) 押すと今見えている向きの逆で `lock` が呼ばれ、覚えた値が変わる。(d) 新しい固定の後に古い固定の拒否（`AbortError`）が遅れて届いても、ボタンは隠れず案内も出ない。最新の入れ替えの固定が拒まれたら、覚えた値は押す前に戻り、ボタンは出たまま |
 // | 4 | 横長の作品で固定を拒む端末: ボタンは出ず、縦持ちでは案内「横にすると大きく遊べます」が出て、横持ちに回すと消え、縦持ちに戻すとまた出る |
 // | 5 | 横長の作品で固定の API が無い端末: `lock` は呼ばれず、ボタンは出ず、縦持ちでは案内が出る |
 // | 6 | 縦長の作品: 固定できれば `lock('portrait')` とボタン「横向きにする」、固定を拒む端末の横持ちでは案内「縦にすると大きく遊べます」 |
@@ -60,7 +61,7 @@ function judge(result) {
   const json = (value) => JSON.stringify(value);
 
   // ── 前提 ─────────────────────────────────────────────────────────────
-  for (const name of ['landscapeGranted', 'landscapeRefused', 'landscapeAbsent', 'portraitGranted', 'portraitRefused', 'square', 'noLayout']) {
+  for (const name of ['landscapeGranted', 'portraitPending', 'landscapeRefused', 'landscapeAbsent', 'portraitGranted', 'portraitRefused', 'square', 'noLayout']) {
     const steps = result?.[name];
     if (steps === undefined || steps === null) {
       fail(`前提: 段 ${name} の観測がありません。`);
@@ -92,8 +93,16 @@ function judge(result) {
   if (json(first.locks) !== json([{ orientation: 'landscape', fullscreen: 'overlay' }])) {
     fail(`1: 開いたときの固定が「全画面に入った後で landscape を 1 回」ではありません: ${json(first.locks)}`);
   }
-  if (first.toggleShown !== true || json(first.toggleLabel) !== json(['縦向きにする'])) {
-    fail(`1: 固定できたのに、ボタン「縦向きにする」が出ていません（shown=${json(first.toggleShown)}, label=${json(first.toggleLabel)}）。`);
+  if (first.portrait !== true || first.toggleShown !== true || json(first.toggleLabel) !== json(['横向きにする'])) {
+    fail(
+      `1: 縦持ちのまま（画面が回る前）で、今見えている向きの逆のボタン「横向きにする」が出ていません（portrait=${json(first.portrait)}, shown=${json(first.toggleShown)}, label=${json(first.toggleLabel)}）。`,
+    );
+  }
+  const rotatedFirst = granted.rotatedFirst;
+  if (rotatedFirst?.portrait !== false || rotatedFirst?.toggleShown !== true || json(rotatedFirst?.toggleLabel) !== json(['縦向きにする'])) {
+    fail(
+      `1: 横持ちに回したのに、ボタンが「縦向きにする」になっていません（portrait=${json(rotatedFirst?.portrait)}, shown=${json(rotatedFirst?.toggleShown)}, label=${json(rotatedFirst?.toggleLabel)}）。`,
+    );
   }
   if (!Array.isArray(first.toggleClasses) || !first.toggleClasses.includes('gf-button-tertiary')) {
     fail(`1: 向きのボタンが控えめのボタンの部品ではありません: ${json(first.toggleClasses)}`);
@@ -108,8 +117,11 @@ function judge(result) {
     if (toggled.locks?.length !== 2 || toggled.locks[1]?.orientation !== 'portrait') {
       fail(`2: ボタンを押しても portrait で固定し直していません: ${json(toggled.locks)}`);
     }
-    if (toggled.toggleShown !== true || json(toggled.toggleLabel) !== json(['横向きにする'])) {
-      fail(`2: 入れ替えた後のボタンが「横向きにする」ではありません（shown=${json(toggled.toggleShown)}, label=${json(toggled.toggleLabel)}）。`);
+    const toggledRotated = granted.afterToggleRotated;
+    if (toggledRotated?.portrait !== true || toggledRotated?.toggleShown !== true || json(toggledRotated?.toggleLabel) !== json(['横向きにする'])) {
+      fail(
+        `2: 入れ替えて縦持ちに回した後のボタンが「横向きにする」ではありません（portrait=${json(toggledRotated?.portrait)}, shown=${json(toggledRotated?.toggleShown)}, label=${json(toggledRotated?.toggleLabel)}）。`,
+      );
     }
     if (toggled.memory !== 'portrait') {
       fail(`2: 入れ替えた向きを localStorage に覚えていません（${json(toggled.memory)}, ${json(toggled.memoryError)}）。`);
@@ -138,6 +150,89 @@ function judge(result) {
     } else if (!(Number(granted.afterFullscreenExit?.unlocks) > Number(second.unlocks))) {
       fail(`3: 全画面の解除で閉じたのに unlock() が呼ばれていません（前 ${json(second.unlocks)} → 後 ${json(granted.afterFullscreenExit?.unlocks)}）。`);
     }
+  }
+
+  // ── 8: 縦長・固定の Promise が決着しない（#572）─────────────────────────────────────
+  const pending = result.portraitPending;
+  const pendingFirst = pending.first.state;
+  if (json(pendingFirst.locks) !== json([{ orientation: 'portrait', fullscreen: 'overlay' }])) {
+    fail(`8: 決着しない端末で、開いたときに全画面に入った後で portrait の固定を 1 回頼んでいません: ${json(pendingFirst.locks)}`);
+  }
+  if (pendingFirst.toggleShown !== true || pendingFirst.hintShown !== false) {
+    fail(`8(a): 固定の決着を待たずにボタンを出していません（覚えた向きが無い回。shown=${json(pendingFirst.toggleShown)}, hint=${json(pendingFirst.hintShown)}）。`);
+  }
+  if (pendingFirst.portrait !== true || json(pendingFirst.toggleLabel) !== json(['横向きにする'])) {
+    fail(`8(b): 縦持ちで開いたときのボタンが「横向きにする」ではありません（portrait=${json(pendingFirst.portrait)}, label=${json(pendingFirst.toggleLabel)}）。`);
+  }
+  const pendingToggled = pending.afterToggle;
+  if (pending.tappedToggle === null || pendingToggled === undefined) {
+    fail('8(c): 決着しない端末で、向きのボタンを押せませんでした。');
+  } else {
+    if (pendingToggled.locks?.length !== 2 || pendingToggled.locks[1]?.orientation !== 'landscape') {
+      fail(`8(c): 縦持ちでボタンを押しても、逆の landscape で固定を頼んでいません: ${json(pendingToggled.locks)}`);
+    }
+    if (pendingToggled.memory !== 'landscape') {
+      fail(`8(c): 押した時点で入れ替え先（landscape）を覚えていません（${json(pendingToggled.memory)}, ${json(pendingToggled.memoryError)}）。`);
+    }
+  }
+  if (pending.afterToggleRotated?.toggleShown !== true || json(pending.afterToggleRotated?.toggleLabel) !== json(['縦向きにする'])) {
+    fail(
+      `8(b): 横持ちに回したのに、ボタンが「縦向きにする」になっていません（shown=${json(pending.afterToggleRotated?.toggleShown)}, label=${json(pending.afterToggleRotated?.toggleLabel)}）。`,
+    );
+  }
+  if (pending.abortedOld !== true) {
+    fail(`8(d): 開いたときの固定の拒否（AbortError）を届けられませんでした（${json(pending.abortedOld)}）。`);
+  } else if (pending.afterAbort?.toggleShown !== true || pending.afterAbort?.hintShown !== false || pending.afterAbort?.memory !== 'landscape') {
+    fail(
+      `8(d): 新しい固定の後に古い固定の拒否が遅れて届いたら、ボタンが隠れた・案内が出た・覚えた値が変わりました（shown=${json(pending.afterAbort?.toggleShown)}, hint=${json(pending.afterAbort?.hintShown)}, memory=${json(pending.afterAbort?.memory)}）。`,
+    );
+  }
+  if (pending.closedByButton?.reached !== true) {
+    fail('8: 決着しない端末で、「閉じる」で覆いが閉じませんでした。');
+  } else if (!(Number(pending.afterClose?.unlocks) >= 1)) {
+    fail(`8: 決着しない端末で、「閉じる」で閉じたのに unlock() が呼ばれていません（${json(pending.afterClose?.unlocks)}）。`);
+  }
+  const pendingSecond = pending.second;
+  if (pending.reopened !== true || pendingSecond === undefined) {
+    fail('8(a): 決着しない端末で、閉じた後に開き直せませんでした。');
+  } else {
+    const last = Array.isArray(pendingSecond.locks) ? pendingSecond.locks[pendingSecond.locks.length - 1] : undefined;
+    if (last?.orientation !== 'landscape' || last?.fullscreen !== 'overlay') {
+      fail(`8(a): 開き直したときに、覚えた向き（landscape）で全画面に入った後に固定を頼んでいません: ${json(pendingSecond.locks)}`);
+    }
+    if (pendingSecond.toggleShown !== true || pendingSecond.hintShown !== false) {
+      fail(`8(a): 覚えた向きで開き直したのに、ボタンが出ていません（#572 の実機の形。shown=${json(pendingSecond.toggleShown)}, hint=${json(pendingSecond.hintShown)}）。`);
+    }
+    if (pendingSecond.portrait !== true || json(pendingSecond.toggleLabel) !== json(['横向きにする'])) {
+      fail(
+        `8(b): 覚えた向き（landscape）で固定を頼んでも画面がまだ縦のうちは、ボタンは今見えている向きの逆の「横向きにする」です（portrait=${json(pendingSecond.portrait)}, label=${json(pendingSecond.toggleLabel)}）。`,
+      );
+    }
+  }
+  if (pending.secondRotated?.toggleShown !== true || json(pending.secondRotated?.toggleLabel) !== json(['縦向きにする'])) {
+    fail(
+      `8(b): 開き直して横持ちに回したのに、ボタンが「縦向きにする」になっていません（shown=${json(pending.secondRotated?.toggleShown)}, label=${json(pending.secondRotated?.toggleLabel)}）。`,
+    );
+  }
+  const secondToggled = pending.afterSecondToggle;
+  const secondLocks = Array.isArray(secondToggled?.locks) ? secondToggled.locks : [];
+  if (pending.tappedToggleAgain === null || secondLocks[secondLocks.length - 1]?.orientation !== 'portrait' || secondLocks.length !== Number(pendingSecond?.locks?.length) + 1) {
+    fail(`8(c): 開き直して横持ちでボタンを押しても、逆の portrait で固定を頼んでいません: ${json(secondToggled?.locks)}`);
+  }
+  if (secondToggled?.memory !== 'portrait') {
+    fail(`8(c): 開き直した回で押した時点で、入れ替え先（portrait）を覚えていません（${json(secondToggled?.memory)}）。`);
+  }
+  if (pending.afterSecondToggleRotated?.toggleShown !== true || json(pending.afterSecondToggleRotated?.toggleLabel) !== json(['横向きにする'])) {
+    fail(
+      `8(b): 入れ替えて縦持ちに回した後のボタンが「横向きにする」ではありません（shown=${json(pending.afterSecondToggleRotated?.toggleShown)}, label=${json(pending.afterSecondToggleRotated?.toggleLabel)}）。`,
+    );
+  }
+  if (pending.refusedLatest !== true) {
+    fail(`8: 最新の入れ替えの固定の拒否を届けられませんでした（${json(pending.refusedLatest)}）。`);
+  } else if (pending.afterRefuseLatest?.memory !== 'landscape' || pending.afterRefuseLatest?.toggleShown !== true || pending.afterRefuseLatest?.hintShown !== false) {
+    fail(
+      `8: 最新の入れ替えの固定を拒まれたら、覚えた値を押す前（landscape）に戻し、ボタンを出したまま・案内に回らない形になっていません（memory=${json(pending.afterRefuseLatest?.memory)}, shown=${json(pending.afterRefuseLatest?.toggleShown)}, hint=${json(pending.afterRefuseLatest?.hintShown)}）。`,
+    );
   }
 
   // ── 4: 横長・固定を拒む ────────────────────────────────────────────────────
@@ -262,7 +357,7 @@ function judge(result) {
       }
       process.exit(1);
     }
-    process.stdout.write(`${options.label} OK: 横長は横向き・縦長は縦向きで固定し、固定できたときだけ入れ替えのボタンが出て覚え、閉じると外れます。固定できない端末は向きが合わないときだけ案内を出し、正方形と解像度の無い作品は何もしません。\n`);
+    process.stdout.write(`${options.label} OK: 横長は横向き・縦長は縦向きで固定し、固定を拒まれない限り（決着を待たずに）今見えている向きの逆の入れ替えのボタンが出て覚え、古い固定の拒否ではボタンが隠れず、閉じると外れます。固定できない端末は向きが合わないときだけ案内を出し、正方形と解像度の無い作品は何もしません。\n`);
   } catch (error) {
     process.stderr.write(`[orientation-verdict] 判定できませんでした: ${String(error)}\n`);
     process.exit(1);

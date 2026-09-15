@@ -89,12 +89,14 @@
 #         観測は `scripts/stick-pad-probe.mjs`、判定は `scripts/stick-pad-verdict.mjs`。
 #         `GF_STICK_SHOT_DIR` を渡すと、スティックに触れて倒している覆い（横だけ・8 方向 × 縦持ち・横持ち）と、端の寄せ方を見た作品の覆い
 #         （最初の形と十字にした後 × 縦持ち・横持ち）、全画面の帯の想定範囲を重ねた説明用の 1 枚を PNG で撮る。
-#   層 10  **作品のおすすめの向きで覆いを開き、固定できたときだけ縦 ↔ 横を入れ替えられ、固定できない端末では向きが合わないときだけ案内が出ること**
+#   層 10  **作品のおすすめの向きで覆いを開き、固定を拒まれない限り縦 ↔ 横を入れ替えられ、固定できない端末では向きが合わないときだけ案内が出ること**
 #         （#514 / 仕様 3.9.4 の「作品のおすすめの向きで開き、あとで入れ替えられる」）。論理解像度（`source_input_keys.layout_width` /
 #         `layout_height`。規則の版 4）を入れた横長・縦長・正方形の作品と、論理解像度の無い作品（層 9 の行が無い作品）の覆いを開く。
 #         **ヘッドレスの Chromium は端末の向きを持たないので、`screen.orientation.lock()` / `unlock()` を記録する差し替え（固定できる・拒む・
-#         API が無いの 3 つ）をページより先に入れ、ページのスクリプトは本物を動かす。** 全画面に入った後で固定すること・固定できたときだけ
-#         ボタンが出て押すと入れ替わり覚えること・覚えた向きで開き直すこと・「閉じる」と全画面の解除で unlock が呼ばれること・固定できない
+#         決着しない・API が無いの 4 つ）をページより先に入れ、ページのスクリプトは本物を動かす。** 固定しても画面は回らないので、回転は
+#         `Emulation.setDeviceMetricsOverride` で起こす。全画面に入った後で固定すること・固定の決着を待たずにボタンが出て、文言が今見えている
+#         向きの逆になり、押すと逆の向きで固定を頼んで覚えること・古い固定の拒否（AbortError）が遅れて届いてもボタンが隠れないこと（#572）・
+#         覚えた向きで開き直してもボタンが出ること・「閉じる」と全画面の解除で unlock が呼ばれること・固定できない
 #         端末で向きに応じて案内が出て消えること・正方形と解像度の無い作品では何もしないこと・縦持ち 390px で上の行がはみ出さないことを見る。
 #         観測は `scripts/orientation-probe.mjs`、判定は `scripts/orientation-verdict.mjs`。`GF_ORIENTATION_SHOT_DIR` を渡すと覆いを PNG で撮る。
 #
@@ -992,12 +994,14 @@ node scripts/stick-pad-verdict.mjs \
 # **層 7〜9 の緑からは導けない。** 層 7〜9 の作品は論理解像度を持たない（版 3 以下の行か、行が無い）ので、向きの操作をしない形しか通らない。
 # **層 9 に足さず層を分けた**のは、見るものが別だからである——層 9 はパッドの形とキーの送信を、層 10 は覆いの上の行と画面の向きの API を見る。
 # ヘッドレスの Chromium の固定の API は実機と同じ結果を返さないので、呼ばれ方を記録する差し替えを入れる（`scripts/orientation-probe.mjs` の冒頭）。
+# **#572 は、固定をすぐ解決する差し替えだけで確かめていたので通り抜けた。** Android の Chrome の実機で、覚えた向きで固定を頼むと Promise が
+# 決着せず、解決を待ってボタンを出す実装ではボタンも案内も出なかった。決着しない差し替えの段（`portraitPending`）はその穴である。
 ORIENTATION_SHOT_ARGS=()
 if [[ -n "${GF_ORIENTATION_SHOT_DIR:-}" ]]; then
   mkdir -p "$GF_ORIENTATION_SHOT_DIR"
   ORIENTATION_SHOT_ARGS=(--shot-dir "$GF_ORIENTATION_SHOT_DIR")
 fi
-note "層 10: opening the orientation works (landscape granted / refused / absent, portrait, square, no layout)"
+note "層 10: opening the orientation works (landscape granted / refused / absent, portrait granted / pending / refused, square, no layout)"
 node scripts/orientation-probe.mjs \
   --browser "$BROWSER_BIN" \
   --landscape-url "https://${APP_HOST}:${PORT}/works/${ORIENT_LANDSCAPE_ID}" \
@@ -1013,7 +1017,7 @@ fi
 
 node scripts/orientation-verdict.mjs \
   --probe "$WORK/orientation.json" \
-  --label "[browser-check] 層 10 (#514)" ||
-  fail "層 10 (#514): 作品のおすすめの向きで開き、あとで入れ替えられることが通りませんでした。"
+  --label "[browser-check] 層 10 (#514 / #572)" ||
+  fail "層 10 (#514 / #572): 作品のおすすめの向きで開き、あとで入れ替えられることが通りませんでした。"
 
-note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走り、音のワークレットが読み込め、タップがマウスとして作品へ届きました（直接・埋め込みの両方）。タッチ端末の作品ページはタップするまで読み込まず、全画面の覆いで遊べます。仮想パッドのタッチはキーとして作品へ届き、方向の操作は作品に合わせた形（スティック / 十字）で出て切り替えられます。覆いは作品のおすすめの向きで開き、固定できたときだけ縦と横を入れ替えられます。"
+note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走り、音のワークレットが読み込め、タップがマウスとして作品へ届きました（直接・埋め込みの両方）。タッチ端末の作品ページはタップするまで読み込まず、全画面の覆いで遊べます。仮想パッドのタッチはキーとして作品へ届き、方向の操作は作品に合わせた形（スティック / 十字）で出て切り替えられます。覆いは作品のおすすめの向きで開き、固定を拒まれない限り縦と横を入れ替えられます。"

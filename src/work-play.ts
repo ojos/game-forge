@@ -60,9 +60,10 @@
  * **論理解像度から決めた向き（横長は `landscape`、縦長は `portrait`。{@link playOrientationOf}）を覆いの属性に持たせ、スクリプトは読むだけ**
  * である（スクリプトの本文は作品によらず同じ）。正方形・解像度が分からない作品は属性もボタンも案内も置かず、向きの操作をしない。
  *
- * - **固定できる端末**: 覆いが全画面に入った後で `screen.orientation.lock()` を呼び、**固定できたときだけ**上の行の控えめのボタン
- *   （今と逆の向きの名前）を見せる。押すと固定する向きを入れ替え、入れ替えた向きを作品 id ごとの `localStorage` に覚える（十字 / スティックと同じ扱い）。
- *   次に開くと覚えた向きで固定する。閉じると `screen.orientation.unlock()` で外す
+ * - **固定できる端末**: 覆いが全画面に入った後で `screen.orientation.lock()` を呼び、**固定を拒まれない限り**上の行の控えめのボタン
+ *   （今見えている向きと逆の向きの名前）を見せる。**固定の Promise の解決は待たない**（#572。Android の Chrome の実機で、覚えた向きで固定を頼むと
+ *   Promise が決着しないことがあった）。押すと今見えている向きの逆で固定し、入れ替えた向きを作品 id ごとの `localStorage` に覚える
+ *   （十字 / スティックと同じ扱い）。次に開くと覚えた向きで固定する。閉じると `screen.orientation.unlock()` で外す
  * - **固定できない端末**（API が無い・全画面を断られた・固定を拒まれた）: ボタンは出さず、今の画面の向き
  *   （`matchMedia('(orientation: portrait)')`。覆いの並べ方の `@media` と同じ見方）がおすすめと違うときだけ、上の行に固定の文言の案内を出す。
  *   向きが変わるたびに見直す
@@ -195,12 +196,12 @@ export const PLAY_ORIENTATION_TOGGLE_CLASS = 'gf-play-orient-toggle';
 export const PLAY_ORIENTATION_HINT_CLASS = 'gf-play-orient-hint';
 
 /**
- * 向きを入れ替えるボタンの文言の `<span>` に付ける、その文言を出す「今固定している向き」の属性（値は `landscape` / `portrait`）。
+ * 向きを入れ替えるボタンの文言の `<span>` に付ける、その文言を出す「今見えている向き」の属性（値は `landscape` / `portrait`。#572）。
  * 十字 / スティックの切り替えと同じく、2 つの文言を両方とも HTML に置いて見せ方だけを入れ替える（スクリプトは画面の文字を書き換えない）。
  */
 export const PLAY_ORIENTATION_LABEL_ATTRIBUTE = 'data-orient-label';
 
-/** 向きを入れ替えるボタンの文言（**今固定している向きと逆の向きの名前**。固定の文言）。キーは今固定している向き。 */
+/** 向きを入れ替えるボタンの文言（**今見えている向きと逆の向きの名前**。固定の文言。#572）。キーは今見えている向き。 */
 export const PLAY_ORIENTATION_TOGGLE_LABELS: Readonly<Record<PlayOrientation, string>> = {
   landscape: '縦向きにする',
   portrait: '横向きにする',
@@ -381,7 +382,7 @@ function padToggleHtml(estimated: PadShape): string {
 /**
  * 向きを入れ替えるボタンと、向きが合っていないときの案内（#514 / 仕様 3.9.4）。**どちらも `hidden` で配り、スクリプトが見せる。**
  *
- * - ボタンは**控えめのボタン**で、文言は今固定している向きと逆の向きの名前（2 つの文言を置き、最初はおすすめの向きの側を見せる）
+ * - ボタンは**控えめのボタン**で、文言は今見えている向きと逆の向きの名前（2 つの文言を置き、最初はおすすめの向きの側を見せる）
  * - 案内は作品のおすすめの向きで決まる固定の文言 1 つ
  *
  * @param orientation 作品のおすすめの向き
@@ -669,9 +670,9 @@ export function playFrameScript(playUrl: string): string {
       try { window.localStorage.setItem(padMemory, next); } catch (error) {}
     });
   }
-  // ── 作品のおすすめの向き（#514 / 仕様 3.9.4）────────────────────────────────────
+  // ── 作品のおすすめの向き（#514 / #572 / 仕様 3.9.4）────────────────────────────────
   // **向きは覆いの属性から読むだけ**（正方形・解像度が分からない作品は属性が無く、何もしない）。回ごとの番号で、閉じた後や開き直した後に
-  // 決着した全画面の要求・固定の結果を捨てる。
+  // 決着した全画面の要求・固定の結果を捨てる。固定の要求ごとの通し番号で、新しい固定を頼んだ後に届いた古い固定の拒否を捨てる。
   var orientWanted = overlay.getAttribute(${literal(PLAY_ORIENTATION_ATTRIBUTE)});
   if (orientWanted !== 'landscape' && orientWanted !== 'portrait') { orientWanted = null; }
   var orientMemory = overlay.getAttribute(${literal(PLAY_ORIENTATION_MEMORY_ATTRIBUTE)});
@@ -679,10 +680,15 @@ export function playFrameScript(playUrl: string): string {
   var orientHint = overlay.querySelector(${literal(`.${PLAY_ORIENTATION_HINT_CLASS}`)});
   var orientLabels = orientToggle === null ? [] : orientToggle.querySelectorAll(${literal(`[${PLAY_ORIENTATION_LABEL_ATTRIBUTE}]`)});
   var orientRound = 0;
-  var orientLocked = null;
+  var orientLockSeq = 0;
+  var orientRequested = null;
+  var orientToggling = false;
   var orientHinting = false;
   // 今の画面の向き（覆いの並べ方の @media と同じ見方）。
   var portraitQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait)') : null;
+  var currentOrientation = function () {
+    return portraitQuery === null ? orientRequested : portraitQuery.matches ? 'portrait' : 'landscape';
+  };
   var unlockOrientation = function () {
     var orientation = window.screen ? window.screen.orientation : null;
     if (orientation && typeof orientation.unlock === 'function') {
@@ -699,56 +705,69 @@ export function playFrameScript(playUrl: string): string {
     var current = portraitQuery === null ? null : portraitQuery.matches ? 'portrait' : 'landscape';
     orientHint.hidden = !(orientHinting && frame !== null && current !== null && current !== orientWanted);
   };
+  // **ボタンの文言は、今見えている向きと逆の名前**（#572。固定を頼んだ向きではない——頼んでから画面が回るまでの間と、固定の決着が
+  // 届かない端末でも食い違わない）。HTML に置いた 2 つの見せ方を入れ替える。
+  var updateOrientToggle = function () {
+    var current = currentOrientation();
+    for (var index = 0; index < orientLabels.length; index += 1) {
+      orientLabels[index].hidden = orientLabels[index].getAttribute(${literal(PLAY_ORIENTATION_LABEL_ATTRIBUTE)}) !== current;
+    }
+  };
   var hintOrientation = function (round) {
     if (round !== orientRound || frame === null) { return; }
     orientHinting = true;
-    orientLocked = null;
+    orientToggling = false;
     if (orientToggle !== null) { orientToggle.hidden = true; }
     updateOrientHint();
   };
+  var onOrientationChange = function () {
+    updateOrientHint();
+    updateOrientToggle();
+  };
   if (portraitQuery !== null) {
     if (typeof portraitQuery.addEventListener === 'function') {
-      portraitQuery.addEventListener('change', updateOrientHint);
+      portraitQuery.addEventListener('change', onOrientationChange);
     } else if (typeof portraitQuery.addListener === 'function') {
-      portraitQuery.addListener(updateOrientHint);
+      portraitQuery.addListener(onOrientationChange);
     }
   }
-  // **固定できたときだけ**ボタンを見せる。文言は今固定している向きと逆の名前（HTML に置いた 2 つの見せ方を入れ替える）。
-  var showOrientationToggle = function (locked) {
-    orientLocked = locked;
+  // **固定を拒まれない限り**ボタンを見せる（#572。固定の決着を待たない）。
+  var showOrientationToggle = function (round) {
+    if (round !== orientRound || frame === null) { return; }
+    orientToggling = true;
     orientHinting = false;
     if (orientHint !== null) { orientHint.hidden = true; }
-    for (var index = 0; index < orientLabels.length; index += 1) {
-      orientLabels[index].hidden = orientLabels[index].getAttribute(${literal(PLAY_ORIENTATION_LABEL_ATTRIBUTE)}) !== locked;
-    }
+    updateOrientToggle();
     if (orientToggle !== null) { orientToggle.hidden = false; }
   };
-  // 向きを固定する。固定できたら onLocked(向き)、API が無い・投げた・拒まれたら onRefused(回) を呼ぶ（その回が続いているときだけ）。
-  var lockOrientation = function (target, round, onLocked, onRefused) {
+  // 向きの固定を頼む。**API が無い・投げた・Promise でないときは false**（その場で固定できないと分かった）、頼めたら true を返す。
+  // **決着は待たない**（#572。Android の Chrome の実機で、覚えた向きで固定を頼むと Promise が決着しないことがあった）。
+  // 拒まれたら、**その回の最新の固定の要求のときだけ** onRefused(回) を呼ぶ（新しい固定は前の固定を AbortError で取り消すので、古い拒否は捨てる）。
+  var lockOrientation = function (target, round, onRefused) {
     var orientation = window.screen ? window.screen.orientation : null;
+    if (!orientation || typeof orientation.lock !== 'function') { return false; }
+    orientLockSeq += 1;
+    var seq = orientLockSeq;
+    orientRequested = target;
     var locking = null;
-    if (orientation && typeof orientation.lock === 'function') {
-      try { locking = orientation.lock(target); } catch (error) { locking = null; }
-    }
-    if (!locking || typeof locking.then !== 'function') {
-      onRefused(round);
-      return;
-    }
+    try { locking = orientation.lock(target); } catch (error) { locking = null; }
+    if (!locking || typeof locking.then !== 'function') { return false; }
     locking.then(function () {
       if (round !== orientRound) {
         // 固定が決着する前に閉じた。**閉じたままなら**固定を残さない（開き直した回の固定は、その回が呼び直している）。
         if (frame === null) { unlockOrientation(); }
-        return;
       }
-      onLocked(target);
     }, function () {
+      if (round !== orientRound || seq !== orientLockSeq || frame === null) { return; }
       onRefused(round);
     });
+    return true;
   };
-  // **全画面に入った後で**、覚えた向き（無ければおすすめの向き）で固定する。全画面を要求できなかった・断られたら案内に回る。
+  // **全画面に入った後で**、覚えた向き（無ければおすすめの向き）で固定を頼み、頼めたらその場でボタンを見せる。
+  // 全画面を要求できなかった・断られた・固定を頼めなかった・拒まれたら案内に回る。
   var startOrientation = function (entering) {
     orientRound += 1;
-    orientLocked = null;
+    orientToggling = false;
     orientHinting = false;
     hideOrientationBar();
     if (orientWanted === null) { return; }
@@ -762,20 +781,34 @@ export function playFrameScript(playUrl: string): string {
     }
     entering.then(function () {
       if (round !== orientRound || frame === null) { return; }
-      lockOrientation(target, round, showOrientationToggle, hintOrientation);
+      if (lockOrientation(target, round, hintOrientation)) {
+        showOrientationToggle(round);
+      } else {
+        hintOrientation(round);
+      }
     }, function () {
       hintOrientation(round);
     });
   };
   if (orientToggle !== null && orientWanted !== null && orientMemory !== null) {
     orientToggle.addEventListener('click', function () {
-      if (orientLocked === null || frame === null) { return; }
-      var next = orientLocked === 'landscape' ? 'portrait' : 'landscape';
-      // 入れ替えを拒まれたら、今の固定とボタンのまま（案内には回らない）。
-      lockOrientation(next, orientRound, function (locked) {
-        showOrientationToggle(locked);
-        try { window.localStorage.setItem(orientMemory, locked); } catch (error) {}
-      }, function () {});
+      if (!orientToggling || frame === null) { return; }
+      // **入れ替え先は、今見えている向きの逆**（#572）。覚える値は押した時点で入れ替え先にする。
+      var next = currentOrientation() === 'landscape' ? 'portrait' : 'landscape';
+      var previous = null;
+      try { previous = window.localStorage.getItem(orientMemory); } catch (error) { previous = null; }
+      try { window.localStorage.setItem(orientMemory, next); } catch (error) {}
+      // 入れ替えを拒まれたら、覚えた値を押す前に戻し（無かったら消す）、今の固定とボタンのまま（案内には回らない）。
+      var restore = function () {
+        try {
+          if (previous === null) {
+            window.localStorage.removeItem(orientMemory);
+          } else {
+            window.localStorage.setItem(orientMemory, previous);
+          }
+        } catch (error) {}
+      };
+      if (!lockOrientation(next, orientRound, restore)) { restore(); }
     });
   }
   // **送り始めるのは、その iframe から起動の合図を受けた後**（仕様 3.9.7）。検査は計上のスクリプト（src/plays.ts）と同じ規律で、
@@ -812,7 +845,7 @@ export function playFrameScript(playUrl: string): string {
     root.classList.remove(${literal(PLAY_LOCKED_CLASS)});
     // **向きの固定を外す**（#514。全画面を出るときにも外れるが、全画面に入れなかった回や解除の前にも外す）。この回の決着は捨てる。
     orientRound += 1;
-    orientLocked = null;
+    orientToggling = false;
     orientHinting = false;
     hideOrientationBar();
     if (orientWanted !== null) { unlockOrientation(); }

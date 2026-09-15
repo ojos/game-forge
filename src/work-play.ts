@@ -698,6 +698,7 @@ export function playFrameScript(playUrl: string): string {
  * @param workId 作品 id（覚えた形のキーに使う。#530）
  * @param inputKeyCodes 作品が読むキーの集合（許可表で絞った値。`src/virtual-pad.ts` の `readInputKeyCodes`）。パッドの中身を決める
  * @param inputHeldCodes 押し続けて読むキーの集合（`readHeldCodes`。版 1 の行は null）。最初の形を決める（#530）
+ * @param inputAliasGroups 同じ条件式で読むキーの組（`readAliasGroups`。版 2 以下の行は null）。すでにボタンに出るキーと同じ働きの方向を右のボタンに出さない（#543）
  * @returns HTML
  */
 export function playEmbed(
@@ -705,8 +706,9 @@ export function playEmbed(
   workId: string,
   inputKeyCodes: readonly string[],
   inputHeldCodes: readonly string[] | null,
+  inputAliasGroups: readonly (readonly string[])[] | null,
 ): string {
   return `<noscript class="${PLAY_NOSCRIPT_CLASS}">${playFrameHtml(playUrl)}</noscript>
-${playOverlay(padPlanOf(inputKeyCodes, inputHeldCodes), workId)}
+${playOverlay(padPlanOf(inputKeyCodes, inputHeldCodes, inputAliasGroups), workId)}
 ${playFrameScript(playUrl)}`;
 }

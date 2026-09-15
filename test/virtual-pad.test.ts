@@ -11,6 +11,7 @@ import {
   padKeyLabel,
   padLayoutOf,
   padPlanOf,
+  readAliasGroups,
   readHeldCodes,
   readInputKeyCodes,
 } from '../src/virtual-pad.js';
@@ -226,10 +227,15 @@ describe('D1 の値を許可表で絞って読む（仕様 3.9.5 / 3.9.7）', ()
  *
  * @param codes キーの集合
  * @param held 押し続けて読むキーの集合（版 1 は null）
+ * @param groups 同じ条件式で読むキーの組（版 2 以下は null）
  * @returns 推定した形・十字・スティック・形ごとのボタン
  */
-function planOf(codes: readonly string[], held: readonly string[] | null) {
-  const plan = padPlanOf(codes, held);
+function planOf(
+  codes: readonly string[],
+  held: readonly string[] | null,
+  groups: readonly (readonly string[])[] | null = null,
+) {
+  const plan = padPlanOf(codes, held, groups);
   const buttonsIn = (shape: 'stick' | 'dpad'): string[] =>
     plan.buttons.filter((key) => key.only === null || key.only === shape).map((key) => key.code);
   return {
@@ -433,6 +439,130 @@ describe('最初の形を推定する規則（仕様 3.9.6 の #528 の規則 1�
       'KeyX:null',
       'ArrowUp:stick',
       'ShiftLeft:dpad',
+    ]);
+  });
+});
+
+describe('同じ働きの方向をボタンに出さない（仕様 3.9.6 の #543 / M14-11）', () => {
+  it.each([
+    {
+      // 表「Space（↑ を出さない）4 本」の代表。
+      name: 'ピヨピヨジャンプ（Space || ↑ || W で跳ぶ）: ↑ は Space と同じ組なので出さず、ボタンは Space だけ',
+      codes: [...LR, 'ArrowUp', 'KeyW', 'Space'],
+      groups: [['ArrowUp', 'KeyW', 'Space']],
+      stickButtons: ['Space'],
+    },
+    {
+      name: 'スーパーマリオ風（Space || ↑、Z は別）: Space・Z',
+      codes: [...LR, 'ArrowUp', 'KeyZ', 'Space'],
+      groups: [['ArrowUp', 'Space']],
+      stickButtons: ['Space', 'KeyZ'],
+    },
+    {
+      name: 'ストーリーと目的（Z || ↑）: ↑ は Z と同じ組なので出さず、Space・Z・X',
+      codes: [...LR, 'ArrowUp', 'KeyX', 'KeyZ', 'Space'],
+      groups: [['ArrowUp', 'KeyZ']],
+      stickButtons: ['Space', 'KeyZ', 'KeyX'],
+    },
+    {
+      // #528 の決定で生じた Shift の脱落が解消する。
+      name: '3 段ジャンプ（Space || ↑）: ↑ が消えた枠に Shift が戻る（Space・Z・X・Shift）',
+      codes: [...LR, 'ArrowUp', 'KeyX', 'KeyZ', 'ShiftLeft', 'Space'],
+      groups: [['ArrowUp', 'Space']],
+      stickButtons: ['Space', 'KeyZ', 'KeyX', 'ShiftLeft'],
+    },
+    {
+      name: 'のぼれリス（Space || ↑）: Space・Esc',
+      codes: [...LR, 'ArrowUp', 'Escape', 'Space'],
+      groups: [['ArrowUp', 'Space']],
+      stickButtons: ['Space', 'Escape'],
+    },
+    {
+      name: 'ケロケロ舌合戦（↑ || W と ↓ || S が Space と別の条件式）: ↑↓ は別の働きなので残る（Space・Z・↑・↓）',
+      codes: [...ARROWS, 'KeyS', 'KeyW', 'KeyZ', 'Space'],
+      groups: [
+        ['ArrowDown', 'KeyS'],
+        ['ArrowUp', 'KeyW'],
+      ],
+      stickButtons: ['Space', 'KeyZ', 'ArrowUp', 'ArrowDown'],
+    },
+    {
+      name: 'WASD の作品（Space || W）: W は Space と同じ組なので出さない',
+      codes: ['KeyA', 'KeyD', 'KeyW', 'Space'],
+      held: ['KeyA', 'KeyD'],
+      groups: [['KeyW', 'Space']],
+      stickButtons: ['Space'],
+    },
+  ])('$name', ({ codes, held, groups, stickButtons }) => {
+    const plan = planOf(codes, held ?? LR, groups);
+    expect(plan.estimated).toBe('stick');
+    expect(plan.stickButtons).toEqual(stickButtons);
+    // 十字の形（ボタン・十字）は組によらず表示規則（#494）のとおり。
+    expect(plan.dpadButtons).toEqual(padLayoutOf(codes).buttons.map((key) => key.code));
+    expect(plan.dpad).toEqual(padLayoutOf(codes).dpad.map((key) => key.code));
+    // 組が未記録（null）なら、今の規則 5 のまま方向をボタンに回す。
+    const unrecorded = planOf(codes, held ?? LR, null);
+    expect(unrecorded.stickButtons).toEqual(planOf(codes, held ?? LR).stickButtons);
+    expect(unrecorded.stickButtons.some((code) => ['ArrowUp', 'KeyW'].includes(code))).toBe(true);
+  });
+
+  it('上限の 4 で落ちるボタンは紙ヒコーキの K だけ（4 方向とも H は方向のボタンを持たず、組によらない）', () => {
+    const codes = [...ARROWS, 'Enter', 'KeyJ', 'KeyK', 'KeyX', 'KeyZ', 'Space'];
+    expect(planOf(codes, ARROWS, [['Enter', 'Space']]).stickButtons).toEqual(['Space', 'KeyZ', 'KeyX', 'KeyJ']);
+    // 3 段ジャンプは組があれば Shift が落ちない（上の表）。組が無ければ今どおり落ちる。
+    const triple = [...LR, 'ArrowUp', 'KeyX', 'KeyZ', 'ShiftLeft', 'Space'];
+    expect(planOf(triple, LR, null).stickButtons).toEqual(['Space', 'KeyZ', 'KeyX', 'ArrowUp']);
+    expect(padPlanOf(triple, LR, [['ArrowUp', 'Space']]).buttons.map((key) => `${key.code}:${String(key.only)}`)).toEqual([
+      'Space:null',
+      'KeyZ:null',
+      'KeyX:null',
+      'ShiftLeft:null',
+    ]);
+  });
+
+  it('組の相手がボタンに出ない（読まない・Space・Z・X でない・Space で除いた Enter）ときは、方向を出す', () => {
+    // 組の相手（Z）を読まない（壊れた行）。
+    expect(planOf([...LR, 'ArrowUp', 'Space'], LR, [['ArrowUp', 'KeyZ']]).stickButtons).toEqual(['Space', 'ArrowUp']);
+    // 相手が方向のボタンより後の順位（Enter は Space で除かれてボタンに出ない / Q はその他）。
+    expect(planOf([...LR, 'ArrowUp', 'Enter', 'Space'], LR, [['ArrowUp', 'Enter']]).stickButtons).toEqual(['Space', 'ArrowUp']);
+    expect(planOf([...LR, 'ArrowUp', 'KeyQ'], LR, [['ArrowUp', 'KeyQ']]).stickButtons).toEqual(['ArrowUp', 'KeyQ']);
+    // 組が空（[]）は「組は無い」で、方向を出す。
+    expect(planOf([...LR, 'ArrowUp', 'Space'], LR, []).stickButtons).toEqual(['Space', 'ArrowUp']);
+    // 送る code で見る: 矢印を読む作品で W だけが Space と同じ組でも、送る ↑（ArrowUp）は別の働きなので出す。
+    expect(planOf([...LR, 'ArrowUp', 'KeyW', 'Space'], LR, [['KeyW', 'Space']]).stickButtons).toEqual(['Space', 'ArrowUp']);
+  });
+
+  it('十字で出すときと、推定が十字の作品をスティックにしたときは変えない', () => {
+    // 推定が十字（押し続ける軸が無い）: 十字に ↑ を出し、スティックにしても方向のボタンは無い（組があっても同じ）。
+    const codes = [...LR, 'ArrowUp', 'Space'];
+    const groups = [['ArrowUp', 'Space']];
+    expect(padPlanOf(codes, [], groups)).toEqual(padPlanOf(codes, [], null));
+    expect(planOf(codes, [], groups)).toMatchObject({ estimated: 'dpad', dpad: ['ArrowUp', 'ArrowLeft', 'ArrowRight'], stickButtons: ['Space'] });
+    // 版 1 の行（held が null）も同じ。
+    expect(padPlanOf(codes, null, groups)).toEqual(padPlanOf(codes, null, null));
+  });
+});
+
+describe('同じ条件式で読むキーの組の読み方（D1 の値を信じ切らない。#543）', () => {
+  it('NULL・文字列でない・壊れた JSON・配列でない値は null（未記録。今の規則 5 のまま）', () => {
+    expect(readAliasGroups(null)).toBeNull();
+    expect(readAliasGroups(undefined)).toBeNull();
+    expect(readAliasGroups(42)).toBeNull();
+    expect(readAliasGroups('not json')).toBeNull();
+    expect(readAliasGroups('{"0":["ArrowUp","Space"]}')).toBeNull();
+    expect(readAliasGroups('"ArrowUp"')).toBeNull();
+    expect(readAliasGroups('null')).toBeNull();
+  });
+
+  it('[] は「組は無い」で null と区別し、組は許可表で絞って昇順にし、2 つ未満になった組と配列でない要素は捨てる', () => {
+    expect(readAliasGroups('[]')).toEqual([]);
+    expect(
+      readAliasGroups(
+        JSON.stringify([['Space', 'constructor', 'ArrowUp', 'ArrowUp'], ['KeyZ', '__proto__'], 'Space', null, [1, 'KeyX', 'KeyZ']]),
+      ),
+    ).toEqual([
+      ['ArrowUp', 'Space'],
+      ['KeyX', 'KeyZ'],
     ]);
   });
 });

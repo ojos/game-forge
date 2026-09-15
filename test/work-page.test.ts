@@ -1204,6 +1204,8 @@ const baseView: WorkPageView = {
   inputKeyCodes: [],
   // 押し続けて読むキー（#530）。既定は null（版 1 の行と同じ扱い＝十字。キーが空なのでパッドは出ない）。
   inputHeldCodes: null,
+  // 同じ条件式で読むキーの組（#543）。既定は null（版 2 以下の行と同じ扱い＝今の規則 5 のまま）。
+  inputAliasGroups: null,
   workId: '00000000-0000-4000-8000-000000000001',
   publishableId: null,
   forkableId: null,
@@ -2594,6 +2596,31 @@ describe('仮想パッドのキーを読む（#494 / 仕様 3.9.5 / 3.9.6）', (
       body = await (await open(workPagePath(id))).text();
       expect(padShapeOf(body), String(held)).toBe('dpad');
       expect(padCodesOf(body), String(held)).toEqual(['ArrowUp', 'ArrowLeft', 'ArrowRight', 'Space']);
+    }
+  });
+
+  it('同じ条件式で読むキーの組（alias_groups）を同じ行から読み、Space と同じ組の ↑ を右のボタンに出さない（#543）', async () => {
+    const { id, sourceKey } = await seedPublished('alias');
+    const codes = JSON.stringify(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Space']);
+    const store = async (groups: string | null): Promise<void> => {
+      await env.DB.prepare(
+        'insert or replace into source_input_keys (source_key, codes, held_codes, alias_groups, rule_version, extracted_at) values (?, ?, ?, ?, 3, 1)',
+      )
+        .bind(sourceKey, codes, JSON.stringify(['ArrowLeft', 'ArrowRight']), groups)
+        .run();
+    };
+    // Space || ↑ の組: スティックのまま、↑ のボタンを出さない。
+    await store(JSON.stringify([['ArrowUp', 'Space']]));
+    let body = await (await open(workPagePath(id))).text();
+    expect(padShapeOf(body)).toBe('stick');
+    expect(padCodesOf(body)).toEqual(['ArrowUp', 'ArrowLeft', 'ArrowRight', 'Space']);
+    expect(body).not.toContain('data-code="ArrowUp" aria-label="上" data-pad-only="stick">↑</button>');
+    // 組が未記録（NULL）・壊れた値・配列でない値・許可表の外だけ・別の組: 今の規則 5 のまま ↑ を右のボタンに回す。
+    for (const groups of [null, 'not json', '{"0":["ArrowUp","Space"]}', JSON.stringify([['ArrowUp', 'constructor']]), JSON.stringify([['ArrowUp', 'KeyW']])]) {
+      await store(groups);
+      body = await (await open(workPagePath(id))).text();
+      expect(padShapeOf(body), String(groups)).toBe('stick');
+      expect(body, String(groups)).toContain('data-code="ArrowUp" aria-label="上" data-pad-only="stick">↑</button>');
     }
   });
 

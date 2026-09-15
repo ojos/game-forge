@@ -82,7 +82,9 @@
 #         （#530 / 仕様 3.9.6 の「方向の操作の形」）。押し続けて読むキー（`source_input_keys.held_codes`）を入れた作品（横だけ・8 方向・
 #         4 方向とも J）と、版 1 の行（`held_codes` が NULL。層 8 の作品）・行が無い作品の覆いを開き、最初の形・スティックの軸の制限と
 #         斜め・送る順序（外れたキーの keyup が先）・スティックとボタンの同時押し・隠れる / 閉じると離れること・切り替えと覚えた形
-#         （文書を開き直す・`localStorage` が使えない）を見る。観測は `scripts/stick-pad-probe.mjs`、判定は `scripts/stick-pad-verdict.mjs`。
+#         （文書を開き直す・`localStorage` が使えない）を見る。**同じ条件式で読むキーの組（`alias_groups`。#543）を入れた作品で、Space と
+#         同じ組の ↑ が右のボタンに出ず Space が届くこと、Space と別の組の ↑↓（ケロケロ舌合戦型）は出て届くことも見る。**
+#         観測は `scripts/stick-pad-probe.mjs`、判定は `scripts/stick-pad-verdict.mjs`。
 #         `GF_STICK_SHOT_DIR` を渡すと、スティックに触れて倒している覆い（横だけ・8 方向 × 縦持ち・横持ち）を PNG で撮る。
 #
 # 層 7 をこの検査に置く理由: **起動の合図が本物である必要がある。** 合図はローダーが wasm を起動した後に送るので、
@@ -559,6 +561,17 @@ STICK_8_HELD='["ArrowDown","ArrowLeft","ArrowRight","ArrowUp"]'
 # 十字: 4 方向とも押した瞬間だけ読む（迷路）。
 STICK_J_ID="$(node -e 'console.log(crypto.randomUUID())')"
 STICK_J_CODES='["ArrowDown","ArrowLeft","ArrowRight","ArrowUp","Space"]'
+# #543: 同じ条件式で読むキーの組（alias_groups）を入れた作品。規則の版 3 の行。
+# Space と同じ組: ←→ H・Space || ↑ で跳ぶ（ピヨピヨジャンプ型）。↑ は Space と同じ働きなので右のボタンに出ない。
+ALIAS_ID="$(node -e 'console.log(crypto.randomUUID())')"
+ALIAS_CODES='["ArrowLeft","ArrowRight","ArrowUp","KeyW","Space"]'
+ALIAS_HELD='["ArrowLeft","ArrowRight"]'
+ALIAS_GROUPS='[["ArrowUp","KeyW","Space"]]'
+# Space と別の組: ←→ H・↑ || W と ↓ || S が Space と別の条件式（ケロケロ舌合戦型）。↑↓ は右のボタンに残る。
+SEPARATE_ID="$(node -e 'console.log(crypto.randomUUID())')"
+SEPARATE_CODES='["ArrowDown","ArrowLeft","ArrowRight","ArrowUp","KeyS","KeyW","KeyZ","Space"]'
+SEPARATE_HELD='["ArrowLeft","ArrowRight"]'
+SEPARATE_GROUPS='[["ArrowDown","KeyS"],["ArrowUp","KeyW"]]'
 # 行が無い作品（まだ拾っていない）。
 NO_ROW_ID="$(node -e 'console.log(crypto.randomUUID())')"
 
@@ -596,6 +609,14 @@ npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     values ('$STICK_J_ID', 'browsercheck', 'published', 't7', '$GO_VERSION', 'builds/browsercheck-stick-j/source.go', '$WASM_KEY', 1, 1);
   insert into source_input_keys (source_key, codes, held_codes, rule_version, extracted_at)
     values ('builds/browsercheck-stick-j/source.go', '$STICK_J_CODES', '[]', 2, 1);
+  insert into games (id, author_id, status, title, go_version, source_key, wasm_key, created_at, published_at)
+    values ('$ALIAS_ID', 'browsercheck', 'published', 't9', '$GO_VERSION', 'builds/browsercheck-alias/source.go', '$WASM_KEY', 1, 1);
+  insert into source_input_keys (source_key, codes, held_codes, alias_groups, rule_version, extracted_at)
+    values ('builds/browsercheck-alias/source.go', '$ALIAS_CODES', '$ALIAS_HELD', '$ALIAS_GROUPS', 3, 1);
+  insert into games (id, author_id, status, title, go_version, source_key, wasm_key, created_at, published_at)
+    values ('$SEPARATE_ID', 'browsercheck', 'published', 't10', '$GO_VERSION', 'builds/browsercheck-separate/source.go', '$WASM_KEY', 1, 1);
+  insert into source_input_keys (source_key, codes, held_codes, alias_groups, rule_version, extracted_at)
+    values ('builds/browsercheck-separate/source.go', '$SEPARATE_CODES', '$SEPARATE_HELD', '$SEPARATE_GROUPS', 3, 1);
   insert into games (id, author_id, status, title, go_version, source_key, wasm_key, created_at, published_at)
     values ('$NO_ROW_ID', 'browsercheck', 'published', 't8', '$GO_VERSION', 'builds/browsercheck-no-row/source.go', '$WASM_KEY', 1, 1);
 " >"$WORK/seed.log" 2>&1 ||
@@ -896,15 +917,19 @@ node scripts/virtual-pad-verdict.mjs \
 # **層 8 の緑からは導けない。** 層 8 の作品は版 1 の行（`held_codes` が NULL）で十字に出るので、スティックも推定も切り替えも通らない。
 # **層 8 に足さず層を分けた**のは、見るものが別だからである——層 8 は十字とボタンの送信とローダーの受け手（3.9.7 の契約）を、
 # 層 9 は押し続けて読むキーから決まる形・スティックの倒し方・切り替えと覚えた形を見る。作品も読み方ごとに別に仕込む。
+# **#543 の組の判定も層 9 で見る**（右のボタンに回す方向を決める規則 5 の続きで、同じスティックの作品の形を見るため）。横だけの作品は
+# 規則の版 2 の行（`alias_groups` が NULL）なので、↑ が右のボタンに出ることが「組が未記録なら今のまま」の実ブラウザでの確かめを兼ねる。
 STICK_SHOT_ARGS=()
 if [[ -n "${GF_STICK_SHOT_DIR:-}" ]]; then
   mkdir -p "$GF_STICK_SHOT_DIR"
   STICK_SHOT_ARGS=(--shot-dir "$GF_STICK_SHOT_DIR")
 fi
-note "層 9: opening the stick / dpad works (horizontal / eight / dpad / v1 / no row)"
+note "層 9: opening the stick / dpad works (horizontal / eight / dpad / v1 / no row / alias / separate)"
 node scripts/stick-pad-probe.mjs \
   --browser "$BROWSER_BIN" \
   --horizontal-url "https://${APP_HOST}:${PORT}/works/${STICK_H_ID}" \
+  --alias-url "https://${APP_HOST}:${PORT}/works/${ALIAS_ID}" \
+  --separate-url "https://${APP_HOST}:${PORT}/works/${SEPARATE_ID}" \
   --eight-url "https://${APP_HOST}:${PORT}/works/${STICK_8_ID}" \
   --dpad-url "https://${APP_HOST}:${PORT}/works/${STICK_J_ID}" \
   --v1-url "$PAD_PAGE_URL" \
@@ -918,7 +943,7 @@ fi
 
 node scripts/stick-pad-verdict.mjs \
   --probe "$WORK/stick.json" \
-  --label "[browser-check] 層 9 (#530)" ||
-  fail "層 9 (#530): 方向の操作の形（スティック / 十字）と切り替えが通りませんでした。"
+  --label "[browser-check] 層 9 (#530 / #543)" ||
+  fail "層 9 (#530 / #543): 方向の操作の形（スティック / 十字）と切り替え、同じ働きの方向をボタンに出さないことが通りませんでした。"
 
 note "OK: 不透明オリジンの文書が自分の wasm を取得し、Go が走り、音のワークレットが読み込め、タップがマウスとして作品へ届きました（直接・埋め込みの両方）。タッチ端末の作品ページはタップするまで読み込まず、全画面の覆いで遊べます。仮想パッドのタッチはキーとして作品へ届き、方向の操作は作品に合わせた形（スティック / 十字）で出て切り替えられます。"

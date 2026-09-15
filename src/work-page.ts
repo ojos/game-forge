@@ -126,7 +126,7 @@ import { isPressableGame, readLikeViewerState } from './likes.js';
 import { playReportScript } from './plays.js';
 // **ゲームの iframe と、タッチ端末の全画面の覆い**（M14-3 / #502 / 仕様 3.9.4）。iframe の属性の出どころはあちらの 1 か所である。
 import { playEmbed, playEntry } from './work-play.js';
-import { readHeldCodes, readInputKeyCodes } from './virtual-pad.js';
+import { readAliasGroups, readHeldCodes, readInputKeyCodes } from './virtual-pad.js';
 // **ソースの閲覧は別の経路である**（#383 / 2.3.12）。この画面が借りるのは綴りだけで、R2 は読まない。
 import { workSourcePath } from './work-source.js';
 // **作者の削除（#517 / M15-2）。** 綴り・表示の条件・確認画面・断りの文言はあちら、経路はこのモジュールが持つ
@@ -446,6 +446,13 @@ interface WorkRow {
    * **この値をそのまま使わない**——`src/virtual-pad.ts` の `readHeldCodes` が許可表で絞り、壊れた値は null（版 1）に倒す。
    */
   input_held_codes: string | null;
+  /**
+   * 作品のソースが同じ条件式で読むキーの組（`source_input_keys.alias_groups`。組の JSON 配列の文字列。仕様 3.9.6 の #543）。
+   *
+   * **`input_codes` と同じ 1 行から読む**（結合を増やさない）。版 2 以下の行・行が無い・`games.source_key` が NULL なら null。
+   * **この値をそのまま使わない**——`src/virtual-pad.ts` の `readAliasGroups` が許可表で絞り、壊れた値は null（未記録）に倒す。
+   */
+  input_alias_groups: string | null;
 }
 
 /**
@@ -479,6 +486,7 @@ export const WORK_ROW_SQL = `select g.author_id, g.status, g.title, g.generation
             b.compressed_bytes as wasm_bytes,
             k.codes as input_codes,
             k.held_codes as input_held_codes,
+            k.alias_groups as input_alias_groups,
             a.display_name as author_name, a.is_operator as author_is_operator,
             ${authorHandleColumnSql('g.author_id')},
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
@@ -755,6 +763,13 @@ export interface WorkPageView {
    * **null は「読み方がまだ無い」（版 1 の行）で、十字で出す**（規則 6）。`[]` は「押し続けて読むキーは無い」（これも十字）。
    */
   readonly inputHeldCodes: readonly string[] | null;
+  /**
+   * 作品が同じ条件式で読むキーの組（**許可表で絞った値**。仕様 3.9.6 の #543）。スティックで右のボタンに回す方向のうち、
+   * すでにボタンに出るキー（Space・Z・X）と同じ組にある方向を出さないために使う。
+   *
+   * **null は「組がまだ記録されていない」（版 2 以下の行）で、今の規則 5 のまま方向をボタンに回す。**
+   */
+  readonly inputAliasGroups: readonly (readonly string[])[] | null;
   /**
    * 作品 id（`games.id`）。タッチ端末の覆いで、遊ぶ人が切り替えた形を作品ごとに覚えるキーに使う（#530。ブラウザの外へは送らない）。
    */
@@ -2413,7 +2428,7 @@ function loadingScreen(view: WorkPageView): string {
   const frame =
     view.playUrl === null
       ? '<p>公開されていますが、遊ぶための URL を組み立てられませんでした。</p>'
-      : playEmbed(view.playUrl, view.workId, view.inputKeyCodes, view.inputHeldCodes);
+      : playEmbed(view.playUrl, view.workId, view.inputKeyCodes, view.inputHeldCodes, view.inputAliasGroups);
 
   // **4 要素を 1 つのブロックに入れる**（#474 / 仕様 2.5.4。承認したモックアップ Version 6 の形）。**並びは今のまま**
   // （スクリーンショット → 作者 → 元ゲーム → 改造する。2026-09-13 に利用者が確認）で、広い面ではスクリーンショットを左、
@@ -2936,6 +2951,8 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       inputKeyCodes: readInputKeyCodes(row.input_codes),
       // **押し続けて読むキー（#528 / #530）。** 最初の形（スティック / 十字）を決める。版 1 の行・壊れた値は null で、十字で出す。
       inputHeldCodes: readHeldCodes(row.input_held_codes),
+      // **同じ条件式で読むキーの組（#543）。** すでにボタンに出るキーと同じ働きの方向を、右のボタンに出さない。版 2 以下の行・壊れた値は null で、今のまま。
+      inputAliasGroups: readAliasGroups(row.input_alias_groups),
       workId: gameId,
       // 公開の操作を出すのは、**本人・完成済み・未公開**のときだけである。
       // （押せない・押しても何も起きないボタンを出さない。仕様 1.2.38 の #24 と同じ方針）

@@ -1,10 +1,19 @@
-# Workers からビルド関数を呼ぶ（3.3-5..7 / 3.8 / #19）
+# エッジ → オーケストレータ → ビルド関数の呼び出し（3.3-2.6 / 3.3-5..7 / 3.8 / #19 / #160）
 
-- 対象: #19（M2-5）
-- 位置づけ: **関数の器は `docs/build-function.md`（#103）が持つ。** この文書が持つのは
-  **呼び出し側**、すなわち認証・待ち時間・失敗の区別・ビルド結果キャッシュである。
-- 実装: `src/build-client.ts`（呼び出し）/ `src/build-cache.ts`（キャッシュ）/
+- 対象: #19（M2-5）。#160 以降の構成への書き直しは #570
+- 位置づけ: **ビルド関数の器は `docs/build-function.md`（#103）、オーケストレータの器と配備は
+  `docs/orchestrator.md`（#160）が持つ。** この文書が持つのは**呼び出し側**、すなわち
+  「誰が誰を、どの資格情報で呼ぶか」・待ち時間・失敗の区別・ビルド結果キャッシュである。
+- 実装: `src/orchestrator/start-job.ts`（エッジ → オーケストレータ）/ `src/orchestrator/pipeline.ts` と
+  `src/build-client.ts`（オーケストレータ → ビルド関数）/ `src/build-cache.ts`（キャッシュ）/
   `migrations/0002_build_cache.sql`（索引）
+
+> **#570 注記（2026-09-15）。この文書は #160 より前の構成（Worker がビルド関数を直接呼ぶ）のまま残っていた。**
+> 表題は「Workers からビルド関数を呼ぶ（3.3-5..7 / 3.8 / #19）」、位置づけは「関数の器は `docs/build-function.md`（#103）が
+> 持つ。この文書が持つのは呼び出し側、すなわち認証・待ち時間・失敗の区別・ビルド結果キャッシュである」、実装は
+> 「`src/build-client.ts`（呼び出し）/ `src/build-cache.ts`（キャッシュ）/ `migrations/0002_build_cache.sql`（索引）」だった。
+> **旧記述はこの注記と各章の注記に残す。** #160 で生成の本体（3.3-3..8）がオーケストレータ Lambda へ移り、
+> **エッジが呼ぶのはオーケストレータだけ、ビルド関数を呼ぶのはオーケストレータ**になった。
 
 ---
 
@@ -12,58 +21,123 @@
 
 | 対象 | 持ち主 |
 |---|---|
-| ECR / Lambda 関数の宣言・入口・配備 | **#103**（`terraform/build-function.tf` / `docker/isolated-build/`） |
-| **Workers からの呼び出し・認証・キャッシュ・失敗の区別** | **本文書（#19）** |
-| 呼び出しに使う IAM ユーザーとポリシーの宣言 | **#115**（`terraform/build-invoker.tf`） |
+| ビルド関数の ECR / Lambda 関数の宣言・入口・配備 | **#103**（`terraform/build-function.tf` / `docker/isolated-build/`） |
+| オーケストレータ関数・実行ロールの宣言と配備 | **#160**（`terraform/orchestrator.tf` / `docs/orchestrator.md`） |
+| **エッジからオーケストレータへの投げ込み・オーケストレータからビルド関数への呼び出し・認証・キャッシュ・失敗の区別** | **本文書（#19 / #160）** |
+| エッジの IAM ユーザー（`game-forge-build-invoker`）とポリシーの宣言 | **#115**（`terraform/build-invoker.tf`。OGP 撮影とアイコン変換の許可は `terraform/ogp-function.tf` / `terraform/avatar-function.tf`） |
 | その鍵の発行・投入・ローテーション（宣言では持てない） | **本文書 3 章（#115）** |
+| オーケストレータがビルド関数と Bedrock を呼ぶ許可 | **#160**（`terraform/orchestrator.tf` の `aws_iam_role_policy.orchestrator`） |
 | R2 への書き込みと `games` 行の作成（3.3-6 / 3.3-8） | **#21**（`docker/isolated-build/handler/r2.go` / `src/games.ts`。**実装済み**） |
 | コンパイル失敗時の自動リトライ | **#20** |
-| `src/generate.ts` の `build` / `createGame` への結線 | **#21 で完了**（`defaultPipeline`） |
+| 生成の段の結線 | **#160 で完了**（エッジの `defaultPipeline.startJob` は `startJobOnLambda`。ビルドの段はオーケストレータの `src/orchestrator/pipeline.ts`） |
+
+> **#570 注記（2026-09-15）。** v1 の表は「ECR / Lambda 関数の宣言・入口・配備 | #103」「**Workers からの呼び出し・認証・キャッシュ・
+> 失敗の区別** | **本文書（#19）**」「呼び出しに使う IAM ユーザーとポリシーの宣言 | #115（`terraform/build-invoker.tf`）」
+> 「`src/generate.ts` の `build` / `createGame` への結線 | #21 で完了（`defaultPipeline`）」だった。**旧記述はこの注記に残す。**
 
 ---
 
 ## 2. 呼び出しの経路
 
 ```
-Workers ──SigV4(lambda)──> POST https://lambda.<region>.amazonaws.com
-                                 /2015-03-31/functions/<name>/invocations
-                           X-Amz-Invocation-Type: RequestResponse
-                           {"source": "package main\n…"}
+利用者 → Worker（エッジ。本番の Pages Functions / ローカルの wrangler pages dev）
+           │ BUILD_AWS_*（長命キー）で SigV4(lambda)
+           │ POST https://lambda.<region>.amazonaws.com/2015-03-31/functions/game-forge-orchestrator/invocations
+           │ X-Amz-Invocation-Type: Event                ← キューに入った時点で 202。ここで利用者へ応答が返る
+           ▼
+オーケストレータ Lambda（実行ロール game-forge-orchestrator の一時資格情報）
+           │ claim → 生成（Bedrock）→ ledger → 許可パッケージ検査 → cache-lookup
+           │ ミスなら SigV4(lambda)
+           │ POST https://lambda.<region>.amazonaws.com/2015-03-31/functions/game-forge-build/invocations
+           │ X-Amz-Invocation-Type: RequestResponse      ← ビルドの結果を待つ
+           │ {"source": "package main\n…"}
+           ▼
+ビルド関数 game-forge-build
 ```
 
-- **同期呼び出し**（3.3-5）。応答は Lambda の同期上限 6 MB に収まる
-  （q9 の実測 2,282,980 bytes。1.2.21）。
+- **エッジ → オーケストレータは非同期呼び出し**（3.3-2.6。`src/orchestrator/start-job.ts` の
+  `ASYNC_INVOCATION_TYPE = 'Event'`）。呼ぶ相手は `wrangler.toml` の `[vars]` の `ORCHESTRATOR_FUNCTION_NAME`
+  （正本は `terraform/orchestrator.tf` の `local.orchestrator_function_name`）。この段が投げる例外は
+  「投げ込めなかった」ことだけで、生成そのものの失敗は `games` 行に現れる。
+- **オーケストレータ → ビルド関数は同期呼び出し**（3.3-5）。`src/orchestrator/pipeline.ts` のビルドの段が
+  `src/build-client.ts` の `invokeBuildFunction` を呼ぶ。呼ぶ相手はオーケストレータの環境変数
+  `BUILD_FUNCTION_NAME`（`terraform/orchestrator.tf` が `aws_lambda_function.build.function_name` から入れる）。
+  応答は Lambda の同期上限 6 MB に収まる（q9 の実測 2,282,980 bytes。1.2.21）。
+- **エッジはビルド関数を直接呼ばない。** エッジの鍵の許可にビルド関数は含まれない（3 章）。
+  `wrangler.toml` の `[vars]` にも `BUILD_FUNCTION_NAME` があるが、**エッジの本番経路では読まれない**
+  ——読むのは同期実装（`src/generate.ts` の `runJobInline` から呼ばれる `createLambdaBuild`）だけで、
+  `runJobInline` はどの環境にも結線されていない（テストが借りている）。
 - **署名対象サービスは `lambda`。** Bedrock（署名名 `bedrock` / ホスト名
   `bedrock-runtime`）と違い、ホスト名と署名名は一致する。
-- **`aws4fetch` の `sign` だけを使い、送信は自分で行う。** `AwsClient.fetch` は
-  5xx / 429 を自前で再試行するが、**ビルドの再送は Lambda の課金時間の再発生**であり、
+- **`aws4fetch` の `sign` だけを使い、送信は自分で行う**（エッジの投げ込みもオーケストレータのビルド呼び出しも同じ）。
+  `AwsClient.fetch` は 5xx / 429 を自前で再試行するが、**ビルドの再送は Lambda の課金時間の再発生**であり、
   3.3 の順序では費用計上（3.3-4）が既に済んでいる。再試行の判断は #20 が持つ
-  （`src/bedrock.ts` と同じ方針）。
+  （`src/bedrock.ts` と同じ方針）。投げ込みの再送は重複配信を自分で作る行為なので、これもしない
+  （`src/orchestrator/start-job.ts` の冒頭）。
+
+> **#160 注記（#570 で 2026-09-15 に書いた）。v1 のこの章は、Worker がビルド関数を直接同期で呼ぶ図だった。旧記述はこの注記に残す。**
+>
+> ```
+> Workers ──SigV4(lambda)──> POST https://lambda.<region>.amazonaws.com
+>                                  /2015-03-31/functions/<name>/invocations
+>                            X-Amz-Invocation-Type: RequestResponse
+>                            {"source": "package main\n…"}
+> ```
+>
+> - **同期呼び出し**（3.3-5）。応答は Lambda の同期上限 6 MB に収まる
+>   （q9 の実測 2,282,980 bytes。1.2.21）。
+> - **署名対象サービスは `lambda`。** Bedrock（署名名 `bedrock` / ホスト名
+>   `bedrock-runtime`）と違い、ホスト名と署名名は一致する。
+> - **`aws4fetch` の `sign` だけを使い、送信は自分で行う。** `AwsClient.fetch` は
+>   5xx / 429 を自前で再試行するが、**ビルドの再送は Lambda の課金時間の再発生**であり、
+>   3.3 の順序では費用計上（3.3-4）が既に済んでいる。再試行の判断は #20 が持つ
+>   （`src/bedrock.ts` と同じ方針）。
 
 ---
 
 ## 3. 資格情報
 
+### 誰が、どの資格情報で呼ぶか
+
+| 呼ぶ側 → 呼ばれる側 | プリンシパル | 資格情報 | 許可の宣言 |
+|---|---|---|---|
+| エッジ → オーケストレータ（3.3-2.6） | IAM ユーザー `game-forge-build-invoker` | **長命キー `BUILD_AWS_*`**（本番は Pages のシークレット） | `terraform/build-invoker.tf` の `build_invoke` |
+| エッジ → OGP 撮影関数 / アイコン変換関数 | 同上 | 同上 | `terraform/ogp-function.tf` の `ogp_invoke` / `terraform/avatar-function.tf` の `avatar_invoke` |
+| オーケストレータ → ビルド関数（3.3-5） | 実行ロール `game-forge-orchestrator` | Lambda が注入する一時資格情報（`AWS_*` を `BUILD_AWS_*` の名前へ写す。`src/orchestrator/handler.ts` の `workerLikeEnv`） | `terraform/orchestrator.tf` の `aws_iam_role_policy.orchestrator` |
+| オーケストレータ → Bedrock（3.3-3） | 同上 | 同上（`BEDROCK_AWS_*` の名前へ写す） | 同上（動作の定義は `terraform/bedrock.tf`） |
+
 | 名前 | 置き場所 |
 |---|---|
-| `BUILD_AWS_REGION` / `BUILD_AWS_ACCESS_KEY_ID` / `BUILD_AWS_SECRET_ACCESS_KEY` | `.dev.vars` / Pages のシークレット |
-| `BUILD_AWS_SESSION_TOKEN` | 同上。**SSO の一時資格情報を使うときだけ** |
-| `BUILD_FUNCTION_NAME` | **`wrangler.toml` の `[vars]`**（秘密ではなく構成） |
+| `BUILD_AWS_REGION` / `BUILD_AWS_ACCESS_KEY_ID` / `BUILD_AWS_SECRET_ACCESS_KEY` | Pages のシークレット（本番）/ `.dev.vars`（ローカル） |
+| `BUILD_AWS_SESSION_TOKEN` | `.dev.vars` だけ。**SSO の一時資格情報を使うときだけ**（本番では登録しない） |
+| `ORCHESTRATOR_FUNCTION_NAME`（ほかに `OGP_FUNCTION_NAME` / `AVATAR_FUNCTION_NAME`） | **`wrangler.toml` の `[vars]`**（秘密ではなく構成） |
+| `BUILD_FUNCTION_NAME`（ビルド関数を呼ぶ側の宛先） | **オーケストレータの環境変数**（`terraform/orchestrator.tf`）。`wrangler.toml` の `[vars]` にもあるが、エッジの本番経路では読まれない（2 章） |
 
-**Bedrock 用（`BEDROCK_AWS_*`）と分けている。** 理由は 2 つある。
+**エッジの鍵は 1 組である。** Bedrock 用（`BEDROCK_AWS_*`）は #160 でエッジから削除した（`docs/bedrock-access.md` 1 章）。
+名前を `BUILD_AWS_*` のままにしている理由は `src/orchestrator/start-job.ts` の冒頭にある（`BUILD_` が指すのは
+「AWS Lambda を呼ぶ側の鍵」であって「ビルド関数だけを呼ぶ鍵」ではない）。
 
-1. 用途が違うものには違う名前を付ける（`.dev.vars.example` の `BEDROCK_` 接頭辞と同じ方針）。
-2. **権限が違う。** `terraform/bedrock.tf` の IAM ユーザーは `bedrock:InvokeModel` と
-   `bedrock:InvokeModelWithResponseStream` だけを許しており、`lambda:InvokeFunction` を
-   通せない。**最小権限を保つなら principal ごと分かれる。**
+### IAM ロールではなくユーザーである理由
 
-### プリンシパル（#115 で宣言した）
+**エッジ（Cloudflare Pages Functions）は AWS の外で動くためである**（仕様 4.1 / 9.2）。IAM ロールを引き受ける経路
+（インスタンスプロファイル、IRSA、OIDC フェデレーション）がどれも使えず、エッジから Lambda を呼ぶには長命の
+アクセスキーを Pages のシークレットへ置くしかない。**長命キーになるのは構成上の帰結であり、選好ではない。**
+**長命キーの唯一の対処はローテーションである**（下の「ローテーション」）。
 
-**`terraform/build-invoker.tf` が `game-forge-build-invoker` という IAM ユーザーを
-宣言する。** 与えているのは `lambda:InvokeFunction` 1 つを、ビルド関数の ARN 1 つに
-限った権限だけである。**`Resource` を `*` にしない**（このアカウントには他の関数も
-置きうる。9.2。`lambda:InvokeFunction` on `*` は「アカウント内の全部の関数を呼べる鍵」
-である）。
+**オーケストレータは AWS の中で動くので、ビルド関数も Bedrock も実行ロールで呼ぶ**（鍵を持たない）。
+この理由はもともと `docs/bedrock-access.md` 1 章が Bedrock 用のユーザーについて書いていたもので、#160 で
+Bedrock 側には当てはまらなくなったため、ここへ移した（#570）。
+
+### プリンシパル（#115 で宣言。#160 で対象がオーケストレータへ移った）
+
+**`terraform/build-invoker.tf` が `game-forge-build-invoker` という IAM ユーザーを宣言する。** インラインポリシーは
+3 本で、**どれも `lambda:InvokeFunction` 1 つを関数 1 つに限った権限だけ**である。
+
+| ポリシー | 許す対象 | 宣言 |
+|---|---|---|
+| `build-invoke` | `game-forge-orchestrator` | `terraform/build-invoker.tf`（`local.build_invoke_resources`） |
+| `ogp-invoke` | `game-forge-ogp` | `terraform/ogp-function.tf` |
+| `avatar-invoke` | `game-forge-avatar` | `terraform/avatar-function.tf` |
 
 ```json
 {
@@ -71,10 +145,14 @@ Workers ──SigV4(lambda)──> POST https://lambda.<region>.amazonaws.com
   "Statement": [{
     "Effect": "Allow",
     "Action": "lambda:InvokeFunction",
-    "Resource": "arn:aws:lambda:ap-northeast-1:<account-id>:function:game-forge-build"
+    "Resource": "arn:aws:lambda:ap-northeast-1:<account-id>:function:game-forge-orchestrator"
   }]
 }
 ```
+
+**`Resource` を `*` にしない**（このアカウントには他の関数も置きうる。9.2。`lambda:InvokeFunction` on `*` は
+「アカウント内の全部の関数を呼べる鍵」である）。**ビルド関数への許可も残していない**——残すと、エッジの鍵 1 本で
+「攻撃者が制御しうるコードをコンパイルする関数」（7.1）を直接叩ける経路が残る（`terraform/build-invoker.tf`）。
 
 **`lambda:*` を与えない。** それは `UpdateFunctionCode` を含み、**攻撃者が制御しうる
 コードをコンパイルする関数**（7.1）の中身を、この鍵 1 本で差し替えられるということで
@@ -83,7 +161,58 @@ Workers ──SigV4(lambda)──> POST https://lambda.<region>.amazonaws.com
 **最小権限であることは `scripts/acceptance-remote.sh` の
 `build invoker permissions are minimal` が機械で見る。** 動作の集合・対象の ARN・
 管理ポリシーが付いていないこと・**tfstate に `aws_iam_access_key` が 1 件も無いこと**
-の 4 つで、期待値は `terraform output` から取る（検査へ書き写さない）。
+の 4 つで、期待値は `terraform output` から取る（検査へ書き写さない）。ポリシーの本数も宣言から導く。
+
+**実物で確かめたこと（2026-09-15。読み取りだけ）。** `game-forge-build-invoker` は本番の IAM に存在し、鍵は 1 本
+（Active、作成 2026-08-28、最終使用 2026-09-15・サービスは lambda）、インラインポリシーは `build-invoke` /
+`ogp-invoke` / `avatar-invoke` の 3 本である。本番の Pages のシークレット（production）には `BUILD_AWS_REGION` /
+`BUILD_AWS_ACCESS_KEY_ID` / `BUILD_AWS_SECRET_ACCESS_KEY` の 3 つがあり、`BUILD_AWS_SESSION_TOKEN` は無い
+（preview にはシークレットが無い）。
+
+> **#160 注記（#570 で 2026-09-15 に書いた）。この章の冒頭からプリンシパルの節までは、エッジがビルド関数を直接呼ぶ
+> 前提のままだった。旧記述はこの注記に残す（小見出しだけ太字へ下げた）。** 「Bedrock 用と分けている」の理由 2 に出てくる `terraform/bedrock.tf` の
+> IAM ユーザーは #160 で消え、Resource はビルド関数からオーケストレータへ移った。
+>
+> | 名前 | 置き場所 |
+> |---|---|
+> | `BUILD_AWS_REGION` / `BUILD_AWS_ACCESS_KEY_ID` / `BUILD_AWS_SECRET_ACCESS_KEY` | `.dev.vars` / Pages のシークレット |
+> | `BUILD_AWS_SESSION_TOKEN` | 同上。**SSO の一時資格情報を使うときだけ** |
+> | `BUILD_FUNCTION_NAME` | **`wrangler.toml` の `[vars]`**（秘密ではなく構成） |
+>
+> **Bedrock 用（`BEDROCK_AWS_*`）と分けている。** 理由は 2 つある。
+>
+> 1. 用途が違うものには違う名前を付ける（`.dev.vars.example` の `BEDROCK_` 接頭辞と同じ方針）。
+> 2. **権限が違う。** `terraform/bedrock.tf` の IAM ユーザーは `bedrock:InvokeModel` と
+>    `bedrock:InvokeModelWithResponseStream` だけを許しており、`lambda:InvokeFunction` を
+>    通せない。**最小権限を保つなら principal ごと分かれる。**
+>
+> **プリンシパル（#115 で宣言した）**
+>
+> **`terraform/build-invoker.tf` が `game-forge-build-invoker` という IAM ユーザーを
+> 宣言する。** 与えているのは `lambda:InvokeFunction` 1 つを、ビルド関数の ARN 1 つに
+> 限った権限だけである。**`Resource` を `*` にしない**（このアカウントには他の関数も
+> 置きうる。9.2。`lambda:InvokeFunction` on `*` は「アカウント内の全部の関数を呼べる鍵」
+> である）。
+>
+> ```json
+> {
+>   "Version": "2012-10-17",
+>   "Statement": [{
+>     "Effect": "Allow",
+>     "Action": "lambda:InvokeFunction",
+>     "Resource": "arn:aws:lambda:ap-northeast-1:<account-id>:function:game-forge-build"
+>   }]
+> }
+> ```
+>
+> **`lambda:*` を与えない。** それは `UpdateFunctionCode` を含み、**攻撃者が制御しうる
+> コードをコンパイルする関数**（7.1）の中身を、この鍵 1 本で差し替えられるということで
+> ある。配備の権限は OIDC のロール（`terraform/github-oidc.tf`）が別に持つ。
+>
+> **最小権限であることは `scripts/acceptance-remote.sh` の
+> `build invoker permissions are minimal` が機械で見る。** 動作の集合・対象の ARN・
+> 管理ポリシーが付いていないこと・**tfstate に `aws_iam_access_key` が 1 件も無いこと**
+> の 4 つで、期待値は `terraform output` から取る（検査へ書き写さない）。
 
 > **#19 時点の記述（#115 で解消）。** 上の節はもともと「**まだ宣言されていない（申し送り）**」
 > という見出しで、「本 issue は `terraform/` を触っていない。したがって次の 2 つは未了で
@@ -93,15 +222,15 @@ Workers ──SigV4(lambda)──> POST https://lambda.<region>.amazonaws.com
 > 書いていた。**旧記述はこの注記に残す。** 前者は #115 で宣言した。**後者は今も手作業で
 > あり、そちらは解消していない**（下の「鍵の発行と投入」）。
 
-**鍵を入れるまでの間、この経路は設定不足として呼び出しの手前で落ちる**
-（`BuildNotConfigured`。値ではなく**名前だけ**を報告する）。
+**鍵を入れるまでの間、投げ込みは設定不足として呼び出しの手前で落ちる**
+（`OrchestratorNotConfigured`。ビルド関数を呼ぶ側では `BuildNotConfigured`。どちらも値ではなく**名前だけ**を報告する）。
 
 ### 鍵の発行と投入（#115。**宣言では持てない範囲**）
 
 **`aws_iam_access_key` を宣言しない。** 生成された秘密鍵が **tfstate へ平文で
 書き込まれる**ためで、R2 の資格情報を `aws_ssm_parameter` で宣言しない理由
-（`docs/build-function.md`）とも、`terraform/bedrock.tf` が Bedrock 用の鍵を宣言しない
-理由とも同じ経路である。**したがって鍵の発行だけは手作業になる。**
+（`docs/build-function.md`）とも、Bedrock 用の鍵を使っていた時期に宣言しなかった理由
+（`docs/bedrock-access.md` 1 章）とも同じ経路である。**したがって鍵の発行だけは手作業になる。**
 
 **先に `terraform apply` を済ませること。** 鍵を発行する相手（IAM ユーザー）を作るのは
 宣言側である。
@@ -125,14 +254,15 @@ npx wrangler pages secret put BUILD_AWS_ACCESS_KEY_ID --project-name game-forge
 npx wrangler pages secret put BUILD_AWS_SECRET_ACCESS_KEY --project-name game-forge
 ```
 
-- **名前の正本は `src/build-client.ts` の `BUILD_SECRET_NAMES` である。** ここは写しなので、
-  あちらを変えたらこちらも直す。
+- **名前の正本は `src/build-client.ts` の `BUILD_SECRET_NAMES` である。** エッジが投げ込みに要求する
+  `ORCHESTRATOR_SECRET_NAMES`（`src/orchestrator/start-job.ts`）・`OGP_SECRET_NAMES`（`src/ogp-client.ts`）・
+  `AVATAR_SECRET_NAMES`（`src/avatar-client.ts`）も同じ 3 つである。ここは写しなので、あちらを変えたらこちらも直す。
 - **`--project-name` を必ず付ける。** 省くと wrangler が対話で選ばせにいくため、
   非対話の手順として成立しない。
 - **`BUILD_AWS_SESSION_TOKEN` は本番では登録しない。** 一時資格情報はローカルで SSO を
   使うときだけのものである（下の「ローカルで叩くとき」）。
-- **`BUILD_FUNCTION_NAME` はシークレットではない。** `wrangler.toml` の `[vars]` が
-  環境ごとに宣言するので、配備すればそのまま効く。
+- **`ORCHESTRATOR_FUNCTION_NAME` はシークレットではない。** `wrangler.toml` の `[vars]` が
+  環境ごとに宣言するので、配備すればそのまま効く（`BUILD_FUNCTION_NAME` も同じ場所にあるが、エッジの本番経路では読まれない。2 章）。
 - **値をリポジトリへ書かない。** `scripts/check-no-secrets.sh` が毎回検査するが、検査に
   頼る前に、鍵の値が出るのは `create-access-key` の出力と `wrangler` の入力だけに保つ。
 
@@ -140,19 +270,41 @@ npx wrangler pages secret put BUILD_AWS_SECRET_ACCESS_KEY --project-name game-fo
 > 入れるか」の正本だが、#115 の所有範囲外のため `BUILD_AWS_*` の行をあちらへ足して
 > いない。**生成経路を実際に開くとき（#22 / `src/generate.ts` への結線）に、あちらへも
 > 同じ 3 行を追記すること。**
+>
+> **（#570 追記。解消済み）** `docs/pages-deploy.md` 5 章に「ビルド関数を呼ぶ資格情報（`BUILD_AWS_*`。#115）」の節があり、
+> 同じ 3 行が載っている。
 
 **ローカル（`.dev.vars`）へ入れる。** 長命キーを手元へ置く必要は無い。ローカルは SSO の
 一時資格情報で足りる（下の「ローカルで叩くとき」）。雛形は `.dev.vars.example` にある。
 
 ### ローテーション
 
-**この手順が必要なのは、Workers が AWS の外で動くからである。** IAM ロールを引き受ける
-経路が無く、長命のアクセスキーを Pages のシークレットへ置くしかない（4.1）。
-**長命キーの唯一の対処がローテーションである。**
+**この手順が必要なのは、エッジが AWS の外で動くからである。** IAM ロールを引き受ける
+経路が無く、長命のアクセスキーを Pages のシークレットへ置くしかない（上の「IAM ロールではなくユーザーである理由」。4.1）。
+**長命キーの唯一の対処がローテーションである。** 漏れたときに開くのは「オーケストレータへジョブを投げる・
+OGP 撮影とアイコン変換を呼ぶ」ことで、ビルド関数も Bedrock も直接は開かない（上の表）。
 
-契機と間隔は `docs/bedrock-access.md` 4 章と同じにする（**漏洩の疑いは即時**、定期は
-**90 日**、鍵に触れた人が離れたらその時点）。**鍵が 2 本ある以上、片方だけ回して
-もう片方を忘れる形が最も起こりやすい。同じ間隔・同じ手順にしておくのはそのためである。**
+#### いつ回すか
+
+| 契機 | 期限 |
+|---|---|
+| **漏洩の疑い**（ログ・issue・PR・チャットへ値が出た、端末を紛失した） | **即時。** 先に無効化してから調べる |
+| 定期 | **90 日ごと** |
+| 鍵に触れた人が離れた | その時点 |
+
+**定期を 90 日にした理由。** 招待制の閉じたベータで、鍵は 1 本・保管先は Pages の
+シークレット 1 か所しかない。これより短くすると、回すこと自体が事故（更新漏れによる
+生成停止）の主因になる。**「回さない」より「回しすぎて壊す」ほうが起きやすい規模である。**
+
+**長く使われていない鍵は、消してよいのではなく「なぜ使われていないのか」を先に確かめる**
+（片方が本番、片方が誰かの手元、という状態を見落とさない）。最終使用日は下の手順の末尾のコマンドで読める。
+
+> **#570 注記（2026-09-15）。** v1 のこの節は、契機と間隔を「`docs/bedrock-access.md` 4 章と同じにする」とし、
+> 「**鍵が 2 本ある以上、片方だけ回してもう片方を忘れる形が最も起こりやすい。同じ間隔・同じ手順にしておくのはそのため
+> である。**」と書いていた。**旧記述はこの注記に残す。** #160 で Bedrock 用の鍵が無くなり、エッジの鍵は 1 組になったので、
+> 契機と間隔の表と 90 日の理由を `docs/bedrock-access.md` 4 章からここへ移した（あちらは #160 より前の手順として残してある）。
+
+#### 手順
 
 ```bash
 export AWS_PROFILE=game-forge-prod
@@ -189,10 +341,23 @@ aws iam get-access-key-last-used --access-key-id <KEY_ID>
 
 ### ローカルで叩くとき
 
-9.2 のとおり **Dev アカウントに Lambda は無い。** ローカルからこの経路を通すには
-本番アカウントの資格情報が要る（`AWS_PROFILE=game-forge-prod` の SSO を `.dev.vars` へ
-転記する。手順は `docs/local-dev.md` 2 章「シークレットの置き場所」）。**これは確定20 が
-受け入れた「本番構成をローカルで検証できない」の一部である。**
+9.2 のとおり **Dev アカウントに Lambda は無い。** ローカルの `wrangler pages dev` から生成を始めると、エッジと同じ
+`startJobOnLambda` が**本番の `game-forge-orchestrator`** へジョブを投げる（`ORCHESTRATOR_FUNCTION_NAME` はローカルの
+`[vars]` でも本番と同じ値）。そのため資格情報は本番アカウントのものが要る（`AWS_PROFILE=game-forge-prod` の SSO を
+`.dev.vars` の `BUILD_AWS_*` へ転記する。手順は `docs/local-dev.md` 2 章「シークレットの置き場所」）。
+
+- **投げても、生成は通しで回らない。** 結果の返し先は本番の URL（`terraform/orchestrator.tf` の `CALLBACK_BASE_URL`）に
+  固定で、本番の D1 にはローカルの作品行が無いので `claim` が通らず、オーケストレータは **Bedrock を呼ばずに降りる**
+  （2026-09-15 に本番で確かめた。#534 のコメント。`docs/local-dev.md` 5.1 の C 段）。
+- 同じ鍵で、OGP 撮影とアイコン変換の本番の Lambda も動く（`docs/local-dev.md` 5.1 の C 段）。
+- **ローカルからビルド関数は呼ばない**（エッジの鍵に許可が無い）。ビルド関数そのものの確かめ方は `docs/build-function.md` にある。
+- **これは確定20 が受け入れた「本番構成をローカルで検証できない」の一部である。**
+
+> **#570 注記（2026-09-15）。** v1 のこの節は「9.2 のとおり **Dev アカウントに Lambda は無い。** ローカルからこの経路を
+> 通すには本番アカウントの資格情報が要る（`AWS_PROFILE=game-forge-prod` の SSO を `.dev.vars` へ転記する。手順は
+> `docs/local-dev.md` 2 章「シークレットの置き場所」）。」で、「この経路」はエッジがビルド関数を直接呼ぶ経路
+> （`BUILD_FUNCTION_NAME`）を指していた。**旧記述はこの注記に残す。** 本番のプロファイルが要る点は変わらないが、
+> 呼ぶ相手は `ORCHESTRATOR_FUNCTION_NAME` になった。
 
 ---
 
@@ -252,6 +417,13 @@ aws iam get-access-key-last-used --access-key-id <KEY_ID>
 >
 > **本番の経路ではないことを承知のうえで受け入れる**——直すなら経路を非同期へ
 > 寄せる話であって、タイムアウトを短く戻す話ではない。
+
+> **#570 注記（2026-09-15）。上の #164 注記の「効き続けるのは、Workers から同期で回す経路のほうである（`src/generate.ts` の
+> `createLambdaBuild`。ローカルと、オーケストレータを構成していない環境）」は、いまはどの環境にも当てはまらない。**
+> `createLambdaBuild` は `src/build-client.ts` にあり、エッジの `defaultPipeline.startJob` は**ローカルを含めて**
+> `startJobOnLambda` である（`src/generate.ts`）。同期で回す `runJobInline` はテストでしか使われていない。
+> 下の「非同期へ変えるとしたら」は #19 時点の材料で、#160 で Lambda の非同期呼び出しへ移った（`docs/orchestrator.md`）。
+> **旧記述（上の注記と下の節）はそのまま残す。**
 
 ### 非同期へ変えるとしたら（**本 issue では変えない**）
 
@@ -371,14 +543,19 @@ build(env, generated)
 
 ## 7. 写しの追随
 
-**次の 2 つは他所の宣言の写しである。** 変えたらこちらも直す。
+**次の値は他所の宣言の写しである。** 変えたらこちらも直す。
 
 | 値 | 正本 | 写し |
 |---|---|---|
-| 関数名 `game-forge-build` | `terraform/build-function.tf` の `local.build_function_name` | `wrangler.toml` の `BUILD_FUNCTION_NAME`（3 環境） |
+| 関数名 `game-forge-orchestrator` | `terraform/orchestrator.tf` の `local.orchestrator_function_name` | `wrangler.toml` の `ORCHESTRATOR_FUNCTION_NAME`（3 環境） |
+| 関数名 `game-forge-build` | `terraform/build-function.tf` の `local.build_function_name` | `wrangler.toml` の `BUILD_FUNCTION_NAME`（3 環境。**エッジの本番経路では読まれない**。2 章）。オーケストレータの環境変数は宣言が関数を参照して入れるので写しではない |
 | タイムアウト 45 秒 | 同 `local.build_function_timeout_seconds` | `src/build-client.ts` の `BUILD_FUNCTION_TIMEOUT_SECONDS` |
-| シークレット名 `BUILD_AWS_*` | `src/build-client.ts` の `BUILD_SECRET_NAMES` | 本文書 3 章の `wrangler pages secret put` / `.dev.vars.example` |
+| シークレット名 `BUILD_AWS_*` | `src/build-client.ts` の `BUILD_SECRET_NAMES` | `src/orchestrator/start-job.ts` の `ORCHESTRATOR_SECRET_NAMES` ほか（3 章）/ 本文書 3 章の `wrangler pages secret put` / `.dev.vars.example` |
 | IAM ユーザー名 `game-forge-build-invoker` | `terraform/build-invoker.tf` | 本文書 3 章（**コマンドは `terraform output` から取るので、綴りの写しは散文だけ**） |
+
+> **#570 注記（2026-09-15）。** v1 の表には `game-forge-orchestrator` の行が無く、`game-forge-build` の写しは
+> 「`wrangler.toml` の `BUILD_FUNCTION_NAME`（3 環境）」、シークレット名の写しは「本文書 3 章の `wrangler pages secret put` /
+> `.dev.vars.example`」だけだった。冒頭は「**次の 2 つは他所の宣言の写しである。**」だった。**旧記述はこの注記に残す。**
 
 **機械照合を置いていない。** 照合するには Terraform の宣言を読む必要があり、
 ローカル層（ネットワークも外部認証も要さない層）の検査としては

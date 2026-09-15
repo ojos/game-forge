@@ -27,7 +27,8 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 
 - Actions の Secrets の値（`COPILOT_REVIEW_TOKEN` 等）。値が tfstate へ平文で残るため宣言しません。必要になった時点で GitHub 側へ直接設定します。
 - **ビルド関数に載っているイメージ**（`image_uri`）。配るのは CI です（9.3）。宣言側が固定の URI を持つと、配備のたびに `plan` へ差分が出ます。`lifecycle { ignore_changes = [image_uri] }` で宣言の外に置いています。
-- **Workers 用 IAM ユーザーのアクセスキー**（`game-forge-bedrock-invoker` / `game-forge-build-invoker`）。`aws_iam_access_key` を宣言すると、生成された秘密鍵が **tfstate へ平文で書き込まれます**。宣言が持つのはユーザーと権限だけで、鍵の発行・投入・ローテーションは `docs/bedrock-access.md` 3〜4 章と `docs/build-invocation.md` 3 章が持ちます。**「宣言していないこと」自体は `scripts/acceptance-remote.sh` が tfstate を見て機械で押さえます。**
+- **エッジ（Workers）用 IAM ユーザーのアクセスキー**（`game-forge-build-invoker`）。`aws_iam_access_key` を宣言すると、生成された秘密鍵が **tfstate へ平文で書き込まれます**。宣言が持つのはユーザーと権限だけで、鍵の発行・投入・ローテーションは `docs/build-invocation.md` 3 章が持ちます。**「宣言していないこと」自体は `scripts/acceptance-remote.sh` が tfstate を見て機械で押さえます。**
+  > **#570 注記（2026-09-15）。** この項は「（`game-forge-bedrock-invoker` / `game-forge-build-invoker`）…鍵の発行・投入・ローテーションは `docs/bedrock-access.md` 3〜4 章と `docs/build-invocation.md` 3 章が持ちます」でした。**旧記述はこの注記に残します。** #160 で Bedrock を呼ぶのはオーケストレータの実行ロール（`orchestrator.tf`）になり、`game-forge-bedrock-invoker` は宣言からも本番の IAM からも消えました（2026-09-15 に確かめました）。`docs/bedrock-access.md` 3〜4 章は「#160 より前の手順（戻すときだけ）」として残してあります。
 - **R2 の資格情報**（SSM Parameter Store の SecureString）。`aws_ssm_parameter` を宣言すると、Terraform が refresh のたびに**復号済みの値を tfstate へ書き込みます**（`aws_iam_access_key` を宣言しない理由と同じ経路）。宣言が持つのは名前と読み取り権限だけで、値の投入とローテーションは `docs/build-function.md` が持ちます。
 - **R2 バケットそのもの**（`game-forge`）と D1 / Pages プロジェクト。`wrangler` で作成済みで（`docs/pages-deploy.md` の実施記録）、宣言化するかは未決です。`r2-lifecycle.tf` は**バケットのライフサイクルだけ**を宣言します（#31）。`cloudflare_r2_bucket` を宣言すると既存バケットの作成を試みて失敗します。
 - **未公開成果物の 14 日削除**。3.7（確定13）が求める掃除ですが、**R2 のライフサイクルでは実現できません。** ライフサイクルは `games` を引けず、確定26 のとおりオブジェクトは作品をまたいで共有されるため、年齢だけで消すと公開済みの作品が壊れます（3.7 の削除規約 3）。判定は M5-4 のゴミ掃除が持ちます。理由の全文は `r2-lifecycle.tf` の冒頭にあります。

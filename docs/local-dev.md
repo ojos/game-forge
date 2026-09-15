@@ -121,7 +121,12 @@ printf 'BUILD_AWS_REGION=%s\nBUILD_AWS_ACCESS_KEY_ID=%s\nBUILD_AWS_SECRET_ACCESS
 いまの登録簿（`src/generation-models.ts`。Claude は `jp.anthropic.claude-sonnet-4-6`）と違う。
 そもそもローカルから Bedrock を呼ばないので、モデルアクセスの状態はローカルの手順に関わらない。
 モデルアクセスの確かめ方は [bedrock-access.md の「2. アクセス開通の順序」](bedrock-access.md#2-アクセス開通の順序) にある。
-**同文書の 3〜4 章（Pages への鍵の投入とローテーション）は #160 より前の手順で、ローカルの手順としては使わない。**
+同文書の 3〜4 章（Pages への鍵の投入とローテーション）は、見出しのとおり「#160 より前の手順（戻すときだけ）」として残してあり、
+今は本番でもローカルでも実行しない（#570 で同文書を今の構成に合わせた。エッジに残る `BUILD_AWS_*` の鍵の発行とローテーションは
+[build-invocation.md](build-invocation.md) 3 章）。
+
+> **#570 注記（2026-09-15）。** 上の一文は「**同文書の 3〜4 章（Pages への鍵の投入とローテーション）は #160 より前の手順で、
+> ローカルの手順としては使わない。**」だった。同文書の側が #160 以降に合わせて書き直されたので締めた。**旧記述はこの注記に残す。**
 
 **ログインを手元で試すには `SESSION_SECRET` と Google の OAuth クライアントが要る**
 （#12 / 8.1）。値の作り方は `.dev.vars.example` のコメントに書いてある。空のままでも

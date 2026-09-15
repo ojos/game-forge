@@ -59,26 +59,28 @@ BEDROCK_AWS_SECRET_ACCESS_KEY=
 # （src/orchestrator/handler.ts）。
 BEDROCK_AWS_SESSION_TOKEN=
 
-# ビルド関数（AWS Lambda `game-forge-build`）を呼ぶための AWS 資格情報
-# （確定24 / 3.3-5 / 9.2 / #19）。
+# エッジ（Worker）から AWS Lambda を呼ぶための AWS 資格情報
+# （3.3-2.6 / 9.2 / #19 / #115 / #160）。
 #
-# 認証は Bedrock と同じく **IAM の SigV4** で、実装は src/build-client.ts。Workers は
-# AWS の外で動くため IAM ロールを引き受ける経路が無く、長命のアクセスキーになる（4.1）。
+# **#160 以降、エッジが呼ぶのはオーケストレータ（`game-forge-orchestrator`）で、ビルド関数
+# （`game-forge-build`）は呼ばない。** ビルド関数を呼ぶのはオーケストレータの実行ロールである
+# （terraform/orchestrator.tf）。同じ鍵で OGP 撮影関数とアイコン変換関数も呼ぶ。実装は
+# src/orchestrator/start-job.ts・src/ogp-client.ts・src/avatar-client.ts。
 #
-# **Bedrock 用と分ける理由は 2 つある。**
-#
-#   1. 用途が違うものには違う名前を付ける（このファイルの BEDROCK_ 接頭辞と同じ方針）。
-#   2. **権限が違う。** Bedrock を呼ぶ IAM ユーザーのポリシーは bedrock:InvokeModel
-#      だけを許しており（terraform/bedrock.tf）、lambda:InvokeFunction を通せない。
-#      最小権限を保つなら principal ごと分けることになる。
+# 認証は **IAM の SigV4**。Workers は AWS の外で動くため IAM ロールを引き受ける経路が無く、
+# 長命のアクセスキーになる（4.1。理由は docs/build-invocation.md 3 章）。
+# **エッジに残る長命の AWS 資格情報はこの 1 組だけである**（Bedrock 用は #160 で削除した）。
+# 名前を BUILD_ のままにしている理由は src/orchestrator/start-job.ts の冒頭にある。
 #
 # **principal は terraform/build-invoker.tf が宣言している**（#115。IAM ユーザー
-# game-forge-build-invoker。lambda:InvokeFunction をビルド関数の ARN 1 つだけに限る）。
+# game-forge-build-invoker。インラインポリシーは 3 本で、どれも lambda:InvokeFunction を
+# 関数 1 つに限る: オーケストレータ（build-invoker.tf）・OGP 撮影（ogp-function.tf）・
+# アイコン変換（avatar-function.tf）。ビルド関数への許可は無い）。
 # **アクセスキーだけは宣言しない**（aws_iam_access_key は tfstate へ平文で落ちる）。
 # 鍵の発行・Pages への投入・ローテーションの手順は docs/build-invocation.md 3 章にある。
 #
 # **呼ぶ相手（関数名）はここに無い。** 秘密ではなく構成なので、wrangler.toml の
-# BUILD_FUNCTION_NAME が環境ごとに宣言する。
+# ORCHESTRATOR_FUNCTION_NAME（ほかに OGP_FUNCTION_NAME / AVATAR_FUNCTION_NAME）が環境ごとに宣言する。
 #
 # ローカルでは SSO の一時資格情報を使える。その場合は SESSION_TOKEN も要る
 # （転記の手順は docs/local-dev.md 2 章「シークレットの置き場所」。プロファイルは game-forge-prod）。
@@ -86,6 +88,12 @@ BEDROCK_AWS_SESSION_TOKEN=
 # docs/local-dev.md 5.1 の C 段）。
 #
 # **空のままでも npm run dev は起動する。** 呼び出しの手前で設定不足として落ちる。
+#
+# （#570 注記 2026-09-15。この項は「ビルド関数（AWS Lambda `game-forge-build`）を呼ぶための
+# AWS 資格情報」と題し、Bedrock 用と分ける理由の 2 つ目に「Bedrock を呼ぶ IAM ユーザーの
+# ポリシーは bedrock:InvokeModel だけを許しており（terraform/bedrock.tf）」、principal を
+# 「lambda:InvokeFunction をビルド関数の ARN 1 つだけに限る」、呼ぶ相手を「wrangler.toml の
+# BUILD_FUNCTION_NAME」と書いていた。#160 より前の構成である。）
 BUILD_AWS_REGION=
 BUILD_AWS_ACCESS_KEY_ID=
 BUILD_AWS_SECRET_ACCESS_KEY=

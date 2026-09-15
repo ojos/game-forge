@@ -1202,6 +1202,9 @@ const baseView: WorkPageView = {
   playUrl: null,
   // 作品が読むキー（#494）。**既定は空＝パッドを出さない**（表示規則は `test/virtual-pad.test.ts`、覆いの HTML は `test/work-play.test.ts`）。
   inputKeyCodes: [],
+  // 押し続けて読むキー（#530）。既定は null（版 1 の行と同じ扱い＝十字。キーが空なのでパッドは出ない）。
+  inputHeldCodes: null,
+  workId: '00000000-0000-4000-8000-000000000001',
   publishableId: null,
   forkableId: null,
   shareUrl: null,
@@ -2544,6 +2547,63 @@ describe('仮想パッドのキーを読む（#494 / 仕様 3.9.5 / 3.9.6）', (
     expect(padCodesOf(await (await open(workPagePath(id))).text())).toEqual(['Space']);
     await env.DB.prepare('update games set source_key = null where id = ?').bind(id).run();
     expect(padCodesOf(await (await open(workPagePath(id))).text())).toEqual([]);
+  });
+
+  /**
+   * 押し続けて読むキーの集合を置く（`held_codes` は文字列のまま入れる。NULL・壊れた値も入れられる。#530）。
+   *
+   * @param sourceKey ソースの R2 キー
+   * @param codes `source_input_keys.codes` の値
+   * @param held `source_input_keys.held_codes` の値（版 1 の行は null）
+   */
+  async function storeHeld(sourceKey: string, codes: string, held: string | null): Promise<void> {
+    await env.DB.prepare(
+      'insert or replace into source_input_keys (source_key, codes, held_codes, rule_version, extracted_at) values (?, ?, ?, 2, 1)',
+    )
+      .bind(sourceKey, codes, held)
+      .run();
+  }
+
+  /**
+   * 本文から、覆いに付けた推定の形を取り出す（方向の操作が無ければ null）。
+   *
+   * @param body 作品ページの HTML
+   * @returns `stick` / `dpad` / null
+   */
+  function padShapeOf(body: string): string | null {
+    return /<div class="gf-play-overlay"[^>]* data-pad-shape="([^"]*)"/u.exec(body)?.[1] ?? null;
+  }
+
+  it('押し続けて読むキー（held_codes）を同じ行から読み、最初の形を推定する（#530 / 仕様 3.9.6 の規則 1〜6）', async () => {
+    const { id, sourceKey } = await seedPublished('held');
+    const codes = JSON.stringify(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Space']);
+    // 横だけ H: スティック。↑ は右のボタン（スティックの形でだけ）に回る。
+    await storeHeld(sourceKey, codes, JSON.stringify(['ArrowLeft', 'ArrowRight']));
+    let body = await (await open(workPagePath(id))).text();
+    expect(padShapeOf(body)).toBe('stick');
+    expect(body).toContain('<div class="gf-play-pad gf-play-pad-stick" data-stick-left="ArrowLeft" data-stick-right="ArrowRight">');
+    expect(body).toContain(`data-pad-memory="gf-pad-shape:${id}"`);
+    expect(body).toContain('data-code="ArrowUp" aria-label="上" data-pad-only="stick">↑</button>');
+    // 押し続けて読むキーが無い（[]）: 十字。
+    await storeHeld(sourceKey, codes, '[]');
+    body = await (await open(workPagePath(id))).text();
+    expect(padShapeOf(body)).toBe('dpad');
+    // 版 1 の行（NULL）・壊れた値・配列でない値・許可表の外だけ: 十字（読み方がまだ無い）。
+    for (const held of [null, 'not json', '{"0":"ArrowLeft"}', '"ArrowLeft"', JSON.stringify(['constructor'])]) {
+      await storeHeld(sourceKey, codes, held);
+      body = await (await open(workPagePath(id))).text();
+      expect(padShapeOf(body), String(held)).toBe('dpad');
+      expect(padCodesOf(body), String(held)).toEqual(['ArrowUp', 'ArrowLeft', 'ArrowRight', 'Space']);
+    }
+  });
+
+  it('行が無い作品は、今どおりパッドも切り替えも出さない（規則 6）', async () => {
+    const { id } = await seedPublished('held-no-row');
+    const body = await (await open(workPagePath(id))).text();
+    expect(body, '覆いが無い（検査の前提が崩れている）').toContain('gf-play-overlay');
+    expect(padShapeOf(body)).toBeNull();
+    expect(padCodesOf(body)).toEqual([]);
+    expect(body).not.toContain('<button type="button" class="gf-button gf-button-tertiary gf-play-pad-toggle"');
   });
 
   it('source_input_keys は主キーで 1 行だけ引く（表の全行を読まない）', async () => {

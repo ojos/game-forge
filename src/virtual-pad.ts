@@ -18,6 +18,16 @@
  *
  * {@link padKeyLabel} は許可表の値だけから決まる文字列を返す（**UGC 由来の文字列を使わない**。3.9.6 の 3）。
  *
+ * # 方向の操作の形: 十字とスティック（#528 / #530 / M14-10）
+ *
+ * {@link padPlanOf} は、キーの全集合に加えて**押し続けて読むキーの集合**（`source_input_keys.held_codes`。M14-9）から、
+ * **最初に出す形**（仕様 3.9.6 の「最初の形を推定する規則」1〜6）と、**切り替えたときの形**の両方を決める。
+ * 画面には両方の形を HTML で置き、スクリプトは推定か覚えた形のどちらかを見せるだけである（`src/work-play.ts`）。
+ * {@link readHeldCodes} は D1 の値を許可表で絞り、**NULL・壊れた JSON・配列でない値は「版 1」（null）**として返す。
+ *
+ * スティックの方向の決め方は、ブラウザで動かす関数の本文 {@link STICK_KEYS_SOURCE} を 1 つだけ持つ（スクリプトへ埋め込み、
+ * 単体テストは同じ本文を評価して確かめる。写しを 2 つ作らない）。
+ *
  * # モジュールの最上位に副作用のある式を置かない
  *
  * `new Set(...)` や `new RegExp(...)` は関数の中で作る。最上位に置くと、esbuild がそれを副作用のある文として残し、
@@ -66,8 +76,16 @@ const DIRECTIONS: Readonly<Record<PadDirection, { arrow: string; wasd: string; l
   down: { arrow: 'ArrowDown', wasd: 'KeyS', label: '↓', ariaLabel: '下' },
 };
 
-/** 並べる順の先頭（Space → KeyZ → KeyX → Enter）。**Escape は最後**（3.9.6 の 2）。 */
-const LEADING_BUTTONS: readonly string[] = ['Space', 'KeyZ', 'KeyX', 'Enter'];
+/**
+ * 並べる順（Space → KeyZ → KeyX → 方向のボタン → Enter → その他 → Escape）。**Escape は最後**（3.9.6 の 2 と、#528 の規則 5）。
+ *
+ * 方向のボタン（スティックで出すときに押し続けない軸の方向を回したもの）は KeyX の後・Enter の前で、↑ → ↓ → ← → の順。
+ * 十字で出すときは方向のボタンが無いので、#494 の並べる順（Space → KeyZ → KeyX → Enter → その他 → Escape）のままである。
+ */
+const LEADING_BUTTONS: readonly string[] = ['Space', 'KeyZ', 'KeyX', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter'];
+
+/** WASD を方向のボタンに回したときの並べる順（矢印と同じ位置）。 */
+const WASD_BUTTON_RANK: Readonly<Record<string, string>> = { KeyW: 'ArrowUp', KeyS: 'ArrowDown', KeyA: 'ArrowLeft', KeyD: 'ArrowRight' };
 
 /** 並べる順の最後。 */
 const TRAILING_BUTTON = 'Escape';
@@ -218,13 +236,13 @@ export function padKeyAriaLabel(code: string): string | null {
 }
 
 /**
- * ボタンを並べる順の鍵（小さいほど先）。Space → KeyZ → KeyX → Enter → その他 → Escape。
+ * ボタンを並べる順の鍵（小さいほど先）。Space → KeyZ → KeyX → 方向のボタン（↑ → ↓ → ← →）→ Enter → その他 → Escape。
  *
  * @param code `KeyboardEvent.code`
  * @returns 順位（その他は同じ値で、`code` の昇順で並べる）
  */
 function buttonRank(code: string): number {
-  const leading = LEADING_BUTTONS.indexOf(code);
+  const leading = LEADING_BUTTONS.indexOf(Object.hasOwn(WASD_BUTTON_RANK, code) ? WASD_BUTTON_RANK[code]! : code);
   if (leading !== -1) {
     return leading;
   }
@@ -232,34 +250,55 @@ function buttonRank(code: string): number {
 }
 
 /**
- * キーの集合から、パッドの中身を決める（仕様 3.9.6 の表示規則）。
- *
- * 1. **十字**: 矢印を 1 つでも含めば、含む矢印だけ。**このとき WASD はボタンにも出さない。**
- *    矢印を含まず WASD を含めば、含むものを十字の同じ位置に出し、WASD の `code` を送る
- * 2. **ボタン**: 十字に使ったキーと、除いた WASD を除いた残りから。Space を含めば Enter を除き、左右の組は左だけを残し、
- *    Space → KeyZ → KeyX → Enter → その他（`code` の昇順）→ Escape の順で先頭から {@link PAD_BUTTON_LIMIT} 個
- * 3. **文字**: {@link padKeyLabel}。十字のボタンは読み上げの名前を持つ
- *
- * **許可表で絞ってから決める**（呼ぶ側が絞っていなくても、許可表に無い値はどこにも出さない）。
+ * 許可表で絞ったキーの集合（呼ぶ側が絞っていなくても、許可表に無い値はどこにも出さない）。
  *
  * @param codes キーの集合
- * @returns パッドの中身
+ * @returns 許可表の中の集合
  */
-export function padLayoutOf(codes: readonly string[]): PadLayout {
+function allowedSetOf(codes: readonly string[]): Set<string> {
   const allowed = new Set(INPUT_KEY_CODES);
-  const set = new Set(codes.filter((code) => allowed.has(code)));
+  return new Set(codes.filter((code) => allowed.has(code)));
+}
 
+/**
+ * 方向ごとに、作品が読む方向キーの `code`（読まなければ null）。**矢印を 1 つでも読めば矢印、読まなければ WASD**
+ * （表示規則の 1 と、#528 の規則 1）。
+ *
+ * @param set 許可表で絞ったキーの集合
+ * @returns 方向ごとの `code`
+ */
+function directionCodesOf(set: ReadonlySet<string>): Readonly<Record<PadDirection, string | null>> {
   const arrows = DIRECTION_ORDER.some((direction) => set.has(DIRECTIONS[direction].arrow));
-  const dpad: PadDirectionKey[] = [];
-  for (const direction of DIRECTION_ORDER) {
-    const { arrow, wasd, label, ariaLabel } = DIRECTIONS[direction];
-    const code = arrows ? arrow : wasd;
-    if (set.has(code)) {
-      dpad.push({ code, label, ariaLabel, direction });
-    }
-  }
+  const codeOf = (direction: PadDirection): string | null => {
+    const code = arrows ? DIRECTIONS[direction].arrow : DIRECTIONS[direction].wasd;
+    return set.has(code) ? code : null;
+  };
+  return { up: codeOf('up'), down: codeOf('down'), left: codeOf('left'), right: codeOf('right') };
+}
 
-  // 十字に使ったキーと、WASD（矢印があるときは除く。無いときは十字に使った）を除く。
+/**
+ * 方向のキー 1 つ（十字のキー・方向のボタン）。文字は ←↑→↓、読み上げの名前は「上」など。
+ *
+ * @param direction 方向
+ * @param code 送る `code`
+ * @returns キー
+ */
+function directionKeyOf(direction: PadDirection, code: string): PadDirectionKey {
+  const { label, ariaLabel } = DIRECTIONS[direction];
+  return { code, label, ariaLabel, direction };
+}
+
+/**
+ * ボタンを決める（表示規則の 2 と、#528 の規則 5）。
+ *
+ * 方向キー（矢印と WASD）をすべて除いた残りに、`directionButtons`（スティックで出すときに回した方向）を足し、
+ * Space を含めば Enter を除き、左右の組は左だけを残し、並べる順の先頭から {@link PAD_BUTTON_LIMIT} 個を出す。
+ *
+ * @param set 許可表で絞ったキーの集合
+ * @param directionButtons ボタンに回す方向のキー
+ * @returns ボタン
+ */
+function buttonsOf(set: ReadonlySet<string>, directionButtons: readonly PadDirectionKey[]): PadKey[] {
   const remaining = new Set(set);
   for (const direction of DIRECTION_ORDER) {
     remaining.delete(DIRECTIONS[direction].arrow);
@@ -273,11 +312,261 @@ export function padLayoutOf(codes: readonly string[]): PadLayout {
       remaining.delete(`${modifier}Right`);
     }
   }
-
-  const buttons = [...remaining]
+  const directionByCode = new Map(directionButtons.map((key) => [key.code, key]));
+  return [...remaining, ...directionByCode.keys()]
     .sort((a, b) => buttonRank(a) - buttonRank(b) || (a < b ? -1 : a > b ? 1 : 0))
     .slice(0, PAD_BUTTON_LIMIT)
-    .map((code) => ({ code, label: padKeyLabel(code), ariaLabel: padKeyAriaLabel(code) }));
-
-  return { dpad, buttons };
+    .map((code) => {
+      const direction = directionByCode.get(code);
+      // 方向のボタンは十字のキーと同じ文字と読み上げの名前を持つ（位置は持たない）。
+      return direction === undefined
+        ? { code, label: padKeyLabel(code), ariaLabel: padKeyAriaLabel(code) }
+        : { code, label: direction.label, ariaLabel: direction.ariaLabel };
+    });
 }
+
+/**
+ * キーの集合から、パッドの中身を決める（仕様 3.9.6 の表示規則。**十字で出すときの中身**）。
+ *
+ * 1. **十字**: 矢印を 1 つでも含めば、含む矢印だけ。**このとき WASD はボタンにも出さない。**
+ *    矢印を含まず WASD を含めば、含むものを十字の同じ位置に出し、WASD の `code` を送る
+ * 2. **ボタン**: 十字に使ったキーと、除いた WASD を除いた残りから。Space を含めば Enter を除き、左右の組は左だけを残し、
+ *    Space → KeyZ → KeyX → Enter → その他（`code` の昇順）→ Escape の順で先頭から {@link PAD_BUTTON_LIMIT} 個
+ * 3. **文字**: {@link padKeyLabel}。十字のボタンは読み上げの名前を持つ
+ *
+ * **許可表で絞ってから決める**（呼ぶ側が絞っていなくても、許可表に無い値はどこにも出さない）。
+ *
+ * @param codes キーの集合
+ * @returns パッドの中身
+ */
+export function padLayoutOf(codes: readonly string[]): PadLayout {
+  const set = allowedSetOf(codes);
+  const codesByDirection = directionCodesOf(set);
+  const dpad: PadDirectionKey[] = [];
+  for (const direction of DIRECTION_ORDER) {
+    const code = codesByDirection[direction];
+    if (code !== null) {
+      dpad.push(directionKeyOf(direction, code));
+    }
+  }
+  return { dpad, buttons: buttonsOf(set, []) };
+}
+
+/** 方向の操作の形（仕様 3.9.6 の #528）。 */
+export type PadShape = 'stick' | 'dpad';
+
+/** 形の名前（HTML の属性と `localStorage` の値に使う綴り）。 */
+export const PAD_SHAPES: readonly PadShape[] = ['stick', 'dpad'];
+
+/**
+ * スティックが受け付ける方向ごとの `code`（**受け付けない方向は null**）。
+ *
+ * **横の軸（左・右）がどちらも null なら、スティックは横の成分を捨てる**（縦も同じ）。軸の制限はこの値だけが持つ
+ * （{@link STICK_KEYS_SOURCE}）。
+ */
+export interface PadStick {
+  readonly up: string | null;
+  readonly down: string | null;
+  readonly left: string | null;
+  readonly right: string | null;
+}
+
+/** ボタン 1 つと、それを出す形（両方の形で出すなら null）。 */
+export interface PadPlanButton extends PadKey {
+  /** このボタンを出す形。**null なら、どちらの形でも出す。** */
+  readonly only: PadShape | null;
+}
+
+/**
+ * 作品のパッドの計画（最初の形と、2 つの形それぞれの中身）。
+ *
+ * **方向の操作が無い作品（`estimated` が null）は、切り替えを出さない**（ボタンだけ、または何も出さない）。
+ */
+export interface PadPlan {
+  /** 推定した最初の形（仕様 3.9.6 の規則 1〜6）。方向キーを読まなければ null。 */
+  readonly estimated: PadShape | null;
+  /** 十字で出すときの十字（表示規則の 1）。 */
+  readonly dpad: readonly PadDirectionKey[];
+  /** スティックで出すときに受け付ける方向。方向キーを読まなければ null。 */
+  readonly stick: PadStick | null;
+  /**
+   * ボタン（2 つの形の和。並べる順）。**それぞれの形で出すボタンは、`only` がその形か null のものを、この順に並べたもの**である
+   * ——2 つの形のボタンは同じ並べる順の先頭 {@link PAD_BUTTON_LIMIT} 個なので、和を同じ順に並べても各形の順は崩れない。
+   */
+  readonly buttons: readonly PadPlanButton[];
+}
+
+/**
+ * キーの集合と、押し続けて読むキーの集合から、パッドの計画を決める（仕様 3.9.6 の「方向の操作の形」。#528 の規則 1〜6）。
+ *
+ * 1. **方向キー**は矢印を 1 つでも読めば矢印、読まなければ WASD
+ * 2. **横の軸・縦の軸それぞれ、その軸のキー（1 の方向キー）を 1 つでも H で読めば「押し続ける軸」**（J でも読むときも H を優先）
+ * 3. **押し続ける軸が 1 本でもあればスティック、無ければ十字。** 方向キーを読まなければ方向の操作を出さない
+ * 4. スティックが受け付けるのは押し続ける軸だけ（両方なら 8 方向。決め方は {@link STICK_KEYS_SOURCE}）
+ * 5. **スティックで出すときに限り**、押し続けない軸の方向（読むもの）を右のボタンに回す
+ * 6. **`heldCodes` が null（版 1 の行）なら十字**（`codes` から表示規則のとおり）。行が無い作品は、呼ぶ側が `codes` を空にするので何も出ない
+ *
+ * **切り替えたときの形**（手動の切り替え）:
+ *
+ * - **推定がスティックなら**、スティックの中身は推定のまま（受け付ける軸と方向のボタン）で、十字の中身は表示規則の 1 のとおり
+ * - **推定が十字なら**、スティックにしたときは作品が読む軸（押し続けるかは問わない）をすべてスティックが受け付け、方向のボタンは出さない
+ *
+ * 前者は、推定の形へ戻したときに最初と同じ中身に戻すためである（「覚えた形がスティック」を「推定が十字の作品をスティックにした」と
+ * 同じ扱いにすると、スティックと十字を往復しただけで ↑ のボタンが消え、最初の形へ二度と戻れない）。
+ *
+ * @param codes キーの集合（`source_input_keys.codes`）
+ * @param heldCodes 押し続けて読むキーの集合（`source_input_keys.held_codes`。版 1 の行は null）
+ * @returns パッドの計画
+ */
+export function padPlanOf(codes: readonly string[], heldCodes: readonly string[] | null): PadPlan {
+  const set = allowedSetOf(codes);
+  const dpadLayout = padLayoutOf([...set]);
+  const codesByDirection = directionCodesOf(set);
+  const readsDirection = DIRECTION_ORDER.some((direction) => codesByDirection[direction] !== null);
+  if (!readsDirection) {
+    return { estimated: null, dpad: [], stick: null, buttons: dpadLayout.buttons.map((key) => ({ ...key, only: null })) };
+  }
+
+  // 規則 2: 押し続けて読むキーは、読むキーの集合の中だけを見る（`held_codes` は `codes` の部分集合のはずだが、信じ切らない）。
+  const held = heldCodes === null ? null : new Set(heldCodes.filter((code) => set.has(code)));
+  const heldAxis = (a: PadDirection, b: PadDirection): boolean => {
+    if (held === null) {
+      return false;
+    }
+    const first = codesByDirection[a];
+    const second = codesByDirection[b];
+    return (first !== null && held.has(first)) || (second !== null && held.has(second));
+  };
+  const horizontalHeld = heldAxis('left', 'right');
+  const verticalHeld = heldAxis('up', 'down');
+  // 規則 3 と 6（版 1 の行は held が null で、どちらの軸も押し続けない扱い＝十字）。
+  const estimated: PadShape = horizontalHeld || verticalHeld ? 'stick' : 'dpad';
+
+  let stick: PadStick;
+  let directionButtons: PadDirectionKey[] = [];
+  if (estimated === 'stick') {
+    // 規則 4: 押し続ける軸だけを受け付ける。
+    stick = {
+      up: verticalHeld ? codesByDirection.up : null,
+      down: verticalHeld ? codesByDirection.down : null,
+      left: horizontalHeld ? codesByDirection.left : null,
+      right: horizontalHeld ? codesByDirection.right : null,
+    };
+    // 規則 5: 押し続けない軸の方向（読むもの）を右のボタンへ回す。
+    for (const direction of DIRECTION_ORDER) {
+      const code = codesByDirection[direction];
+      const onHeldAxis = direction === 'left' || direction === 'right' ? horizontalHeld : verticalHeld;
+      if (code !== null && !onHeldAxis) {
+        directionButtons.push(directionKeyOf(direction, code));
+      }
+    }
+  } else {
+    // 推定が十字の作品をスティックにしたとき: 読む軸をすべて受け付け、方向のボタンは出さない。
+    stick = { ...codesByDirection };
+    directionButtons = [];
+  }
+
+  const stickButtons = buttonsOf(set, directionButtons);
+  const dpadButtons = dpadLayout.buttons;
+  const inStick = new Set(stickButtons.map((key) => key.code));
+  const inDpad = new Set(dpadButtons.map((key) => key.code));
+  const merged = new Map<string, PadKey>();
+  for (const key of [...stickButtons, ...dpadButtons]) {
+    if (!merged.has(key.code)) {
+      merged.set(key.code, key);
+    }
+  }
+  const buttons = [...merged.values()]
+    .sort((a, b) => buttonRank(a.code) - buttonRank(b.code) || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0))
+    .map((key): PadPlanButton => {
+      const only: PadShape | null = inStick.has(key.code) && inDpad.has(key.code) ? null : inStick.has(key.code) ? 'stick' : 'dpad';
+      return { ...key, only };
+    });
+
+  return { estimated, dpad: dpadLayout.dpad, stick, buttons };
+}
+
+/**
+ * D1 から読んだ `source_input_keys.held_codes` を、許可表で絞った集合にする（仕様 3.9.6 の #528 の「保存」）。
+ *
+ * - **NULL（版 1 の行・行が無い）・文字列でない・JSON が壊れている・配列でない → null**（「読み方がまだ無い」。規則 6 で十字）
+ * - 配列なら、**許可表にある文字列だけ**を残す（重複は除き、`code` の昇順）。`[]` は「押し続けて読むキーは無い」で、null と区別する
+ *
+ * @param raw 問い合わせの列の値
+ * @returns 許可表の中の `code` の昇順の配列、または null
+ */
+export function readHeldCodes(raw: unknown): string[] | null {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) {
+    return null;
+  }
+  // 許可表で絞る処理は、全集合の読み方と同じもの（写しを作らない）。
+  return readInputKeyCodes(JSON.stringify(parsed));
+}
+
+/**
+ * スティックの円の半径（CSS ピクセル。仕様 3.9.6 の「大きさと遊び」）。つまみはこの縁で止まる。
+ */
+export const PAD_STICK_RADIUS_PX = 56;
+
+/** スティックの遊び（半径に対する割合。中心からこの距離までは、どのキーも押さない）。 */
+export const PAD_STICK_DEAD_ZONE_RATIO = 0.3;
+
+/**
+ * スティックの倒し方から、押しているキーの集合を決める関数の**本文**（ブラウザでそのまま動く JavaScript の関数式）。
+ *
+ * `function (dx, dy, radius, deadZoneRatio, keys)`:
+ *
+ * - `dx` / `dy`: 触れた位置（中心）から指までのずれ（CSS ピクセル。`dy` は下向きが正）
+ * - `keys`: {@link PadStick} と同じ形（受け付けない方向は null）
+ * - 返す値: 押している `code` の配列（上 → 下 → 左 → 右の順、重複なし）
+ *
+ * 決め方（仕様 3.9.6 の「方向の決め方」）:
+ *
+ * - **両方の軸を受け付けるとき**: 中心からの距離が遊び（`radius * deadZoneRatio`）以下なら何も押さない。超えたら角度を 8 等分（45° ずつ）し、
+ *   斜めの扇では 2 つのキーを押す
+ * - **1 本の軸だけのとき**: その軸の成分だけで決め、もう一方の軸の成分は捨てる（成分が遊びを超えたら、その向きのキー）
+ * - **受け付けない方向（null）は押さない**
+ *
+ * **写しを作らない。** スクリプト（`src/work-play.ts`）はこの本文を埋め込み、単体テスト（`test/virtual-pad.test.ts`）は同じ本文を
+ * 評価して確かめる。スクリプトはビルド工程を通らずブラウザへ届くので、素朴な書き方（`var` と関数式）に寄せる。
+ */
+export const STICK_KEYS_SOURCE = `function (dx, dy, radius, deadZoneRatio, keys) {
+    var dead = radius * deadZoneRatio;
+    var horizontal = keys.left !== null || keys.right !== null;
+    var vertical = keys.up !== null || keys.down !== null;
+    var up = false;
+    var down = false;
+    var left = false;
+    var right = false;
+    if (horizontal && vertical) {
+      if (dx * dx + dy * dy > dead * dead) {
+        // 角度を 45° ずつ 8 等分する。0 が右で、画面の y は下向きなので時計回りに 1 が右下・2 が下…7 が右上。
+        var sector = (Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) + 8) % 8;
+        right = sector === 7 || sector === 0 || sector === 1;
+        down = sector === 1 || sector === 2 || sector === 3;
+        left = sector === 3 || sector === 4 || sector === 5;
+        up = sector === 5 || sector === 6 || sector === 7;
+      }
+    } else if (horizontal) {
+      left = dx < -dead;
+      right = dx > dead;
+    } else if (vertical) {
+      up = dy < -dead;
+      down = dy > dead;
+    }
+    var pressed = [];
+    if (up && keys.up !== null) { pressed.push(keys.up); }
+    if (down && keys.down !== null) { pressed.push(keys.down); }
+    if (left && keys.left !== null) { pressed.push(keys.left); }
+    if (right && keys.right !== null) { pressed.push(keys.right); }
+    return pressed;
+  }`;

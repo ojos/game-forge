@@ -45,6 +45,16 @@
  *   （`src/sandbox-loader.ts` の `padReceiverScript`）が行う。**送り始めるのは、その iframe から起動の合図を受けた後**
  *   （検査は `src/plays.ts` と同じ `event.source === frame.contentWindow`）。**2 回目の `load`（遷移）の後は送らない**
  *
+ * # 方向の操作の形: スティックと十字（#530 / 仕様 3.9.6 の「方向の操作の形」）
+ *
+ * **2 つの形の中身を両方とも HTML に置き、推定した形でない方を `hidden` で配る**（{@link padKeysHtml}。推定は `src/virtual-pad.ts` の `padPlanOf`）。
+ *
+ * - **スティック**: 置き場所の全体が受け付ける範囲で、触れた位置が中心になる（フローティング）。倒した向きから押しているキーの集合を
+ *   `STICK_KEYS_SOURCE`（`src/virtual-pad.ts`。埋め込む本文は 1 つだけ）で決め、**集合が変わったときだけ、外れたキーの `up` を先に、加わったキーの
+ *   `down` を後に**送る。離すと押しているキーをすべて `up` する。すべて離す（上の契機）ではスティックの指も忘れる
+ * - **切り替え**: 上の行の控えめのボタン。**覚えた形（作品 id ごとの `localStorage`）は推定より優先**し、読み書きに失敗する環境では推定した形で出す。
+ *   押しているキーを離してから形を変える
+ *
  * # このモジュールは画面の文字列だけを持つ
  *
  * 文言は固定で、**UGC を含まない。** 遊ぶ URL は配信側が組み立てた値で、HTML へは `escapeHtml` を通して入れる。
@@ -52,11 +62,14 @@
  */
 import { escapeHtml } from './html.js';
 import { LOADER_STARTED_MESSAGE, PAD_MESSAGE_TYPE } from './sandbox-loader.js';
-import type { PadKey, PadLayout } from './virtual-pad.js';
-import { padLayoutOf } from './virtual-pad.js';
+import type { PadKey, PadPlan, PadShape, PadStick } from './virtual-pad.js';
+import { PAD_STICK_DEAD_ZONE_RATIO, PAD_STICK_RADIUS_PX, STICK_KEYS_SOURCE, padPlanOf } from './virtual-pad.js';
 
-/** 副のボタンの部品（仕様 2.5.5）。**主は作品ページの「改造する」のまま**で、ここは副だけを使う。 */
+/** 副のボタンの部品（仕様 2.5.5）。**主は作品ページの「フォークする」のまま**で、ここは副と控えめだけを使う。 */
 const SECONDARY_BUTTON = 'gf-button gf-button-secondary';
+
+/** 控えめのボタンの部品（仕様 2.5.5）。方向の操作の形の切り替え（#528 / #530）に使う。 */
+const TERTIARY_BUTTON = 'gf-button gf-button-tertiary';
 
 /** ゲームの iframe の `class`。**計上のスクリプト（`src/plays.ts`）がこの綴りで iframe を引く。** */
 export const PLAY_FRAME_CLASS = 'gf-frame';
@@ -110,6 +123,46 @@ export const PLAY_PAD_CODE_ATTRIBUTE = 'data-code';
  * `test/work-play.test.ts` が綴りで見ている）。
  */
 export const PLAY_PAD_HELD_CLASS = 'gf-play-pad-held';
+
+/** パッドのスティックの置き場所（受け付ける範囲）の `class`（#530 / 仕様 3.9.6 の「スティックの振る舞い」）。 */
+export const PLAY_PAD_STICK_CLASS = 'gf-play-pad-stick';
+
+/** スティックの中心の円の `class`（触れているあいだだけ見せる）。 */
+export const PLAY_PAD_STICK_RING_CLASS = 'gf-play-stick-ring';
+
+/** スティックのつまみの `class`（円の中に置く）。 */
+export const PLAY_PAD_STICK_KNOB_CLASS = 'gf-play-stick-knob';
+
+/**
+ * スティックが受け付ける方向の `code` を持つ属性の接頭辞（`data-stick-up` など）。**受け付けない方向は属性を持たない。**
+ */
+export const PLAY_PAD_STICK_ATTRIBUTE_PREFIX = 'data-stick-';
+
+/** 方向の操作の形を切り替えるボタンの `class`（部品のクラスの後ろに足す）。 */
+export const PLAY_PAD_TOGGLE_CLASS = 'gf-play-pad-toggle';
+
+/** 覆いに付ける、推定した最初の形（`stick` / `dpad`）の属性。方向の操作が無い作品では付けない。 */
+export const PLAY_PAD_SHAPE_ATTRIBUTE = 'data-pad-shape';
+
+/** 覆いに付ける、覚えた形の `localStorage` のキーの属性（作品 id ごと）。 */
+export const PLAY_PAD_MEMORY_ATTRIBUTE = 'data-pad-memory';
+
+/** 覚えた形の `localStorage` のキーの接頭辞（後ろに作品 id）。 */
+export const PLAY_PAD_MEMORY_PREFIX = 'gf-pad-shape:';
+
+/** ボタンを片方の形でだけ出すときの属性（値は `stick` / `dpad`）。両方の形で出すボタンは持たない。 */
+export const PLAY_PAD_ONLY_ATTRIBUTE = 'data-pad-only';
+
+/**
+ * 切り替えのボタンの文言の `<span>` に付ける、その文言を出す形の属性（値は `stick` / `dpad`）。
+ *
+ * **2 つの文言を両方とも HTML に置き、今の形でない方を `hidden` にする**——作品ページのスクリプトは画面の文字を書き換える口
+ * （`textContent` など）を持たない（`test/loading-screen.test.ts` が見る）ので、見せ方を入れ替えるだけにする。
+ */
+export const PLAY_PAD_LABEL_ATTRIBUTE = 'data-pad-label';
+
+/** 切り替えのボタンの文言（**今と逆の形の名前**。仕様 3.9.6 の「手動の切り替え」。固定の文言）。形ごとに、その形のときに出す文言。 */
+export const PLAY_PAD_TOGGLE_LABELS: Readonly<Record<PadShape, string>> = { stick: '十字にする', dpad: 'スティックにする' };
 
 /**
  * 閉じたときに始めた `history.back()` の決着（その `popstate`）を待つ上限（ミリ秒）。待っているあいだは開き直しを受け付けない。
@@ -189,26 +242,71 @@ ${screenshot}${playable ? `\n${playOpenButton()}` : ''}
  * @param position 十字の位置（ボタンなら null）
  * @returns `<button>` 要素
  */
-function padKeyHtml(key: PadKey, position: string | null): string {
+function padKeyHtml(key: PadKey, position: string | null, only: { shape: PadShape; hidden: boolean } | null = null): string {
   const positionClass = position === null ? '' : ` gf-play-pad-${position}`;
   const ariaLabel = key.ariaLabel === null ? '' : ` aria-label="${escapeHtml(key.ariaLabel)}"`;
-  return `<button type="button" class="${SECONDARY_BUTTON} ${PLAY_PAD_KEY_CLASS}${positionClass}" ${PLAY_PAD_CODE_ATTRIBUTE}="${escapeHtml(key.code)}"${ariaLabel}>${escapeHtml(key.label)}</button>`;
+  const onlyAttribute = only === null ? '' : ` ${PLAY_PAD_ONLY_ATTRIBUTE}="${only.shape}"${only.hidden ? ' hidden' : ''}`;
+  return `<button type="button" class="${SECONDARY_BUTTON} ${PLAY_PAD_KEY_CLASS}${positionClass}" ${PLAY_PAD_CODE_ATTRIBUTE}="${escapeHtml(key.code)}"${ariaLabel}${onlyAttribute}>${escapeHtml(key.label)}</button>`;
 }
 
 /**
- * パッドの 2 つの置き場所（十字・ボタン）の HTML（仕様 3.9.6）。
+ * スティックの置き場所の HTML（#530 / 仕様 3.9.6 の「スティックの振る舞い」）。
  *
- * **キーが無い置き場所は中を空のまま置く**（空白も入れない。`public/assets/app.css` の `:empty` で余白を持たせない）。
- * 表示規則の結果が両方とも空なら、パッドは出ず、ゲームが覆いの全体を使う。
+ * **受け付ける方向の `code` を属性に持つ**（受け付けない方向は属性を持たない。スクリプトはこれを読むだけ）。中身は、触れているあいだだけ
+ * 見せる中心の円（`hidden` で配る）とつまみで、**待機中は何も描かない。**
  *
- * @param layout パッドの中身
+ * @param stick 受け付ける方向
+ * @param hidden 最初は隠すか（推定した形が十字なら隠す）
  * @returns HTML
  */
-export function padKeysHtml(layout: PadLayout): string {
-  const dpad = layout.dpad.map((key) => padKeyHtml(key, key.direction)).join('');
-  const buttons = layout.buttons.map((key) => padKeyHtml(key, null)).join('');
-  return `<div class="${PLAY_PAD_CLASS} ${PLAY_PAD_DPAD_CLASS}">${dpad}</div>
-<div class="${PLAY_PAD_CLASS} ${PLAY_PAD_BUTTONS_CLASS}">${buttons}</div>`;
+function padStickHtml(stick: PadStick, hidden: boolean): string {
+  const attributes = (['up', 'down', 'left', 'right'] as const)
+    .map((direction) => {
+      const code = stick[direction];
+      return code === null ? '' : ` ${PLAY_PAD_STICK_ATTRIBUTE_PREFIX}${direction}="${escapeHtml(code)}"`;
+    })
+    .join('');
+  return `<div class="${PLAY_PAD_CLASS} ${PLAY_PAD_STICK_CLASS}"${attributes}${hidden ? ' hidden' : ''}><div class="${PLAY_PAD_STICK_RING_CLASS}" hidden><div class="${PLAY_PAD_STICK_KNOB_CLASS}"></div></div></div>`;
+}
+
+/**
+ * パッドの置き場所（十字・スティック・ボタン）の HTML（仕様 3.9.6）。
+ *
+ * **2 つの形の中身を両方とも置き、推定した形でない方を `hidden` にする**（スクリプトは覚えた形があれば見せ方を入れ替えるだけで、
+ * ボタンを作らない）。十字とスティックは同じ置き場所（左）を使い、ボタンは 2 つの形の和を 1 つの置き場所に並べて、片方の形でだけ出す
+ * ボタンに `data-pad-only` を付ける。
+ *
+ * **キーが無い置き場所は中を空のまま置く**（空白も入れない。`public/assets/app.css` の `:empty` で余白を持たせない）。
+ * 方向キーを読まない作品にはスティックの置き場所を置かない。表示規則の結果が空なら、パッドは出ず、ゲームが覆いの全体を使う。
+ *
+ * @param plan パッドの計画（`src/virtual-pad.ts` の `padPlanOf`）
+ * @returns HTML
+ */
+export function padKeysHtml(plan: PadPlan): string {
+  const shape = plan.estimated;
+  const dpad = plan.dpad.map((key) => padKeyHtml(key, key.direction)).join('');
+  const buttons = plan.buttons
+    .map((key) => padKeyHtml(key, null, key.only === null ? null : { shape: key.only, hidden: key.only !== shape }))
+    .join('');
+  // 推定した形で出すボタンが 1 つも無い（もう一方の形でだけ出すボタンがある）なら、置き場所ごと隠す（余白を持たせない）。
+  const buttonsHidden = plan.buttons.length > 0 && plan.buttons.every((key) => key.only !== null && key.only !== shape);
+  const stick = plan.stick === null ? '' : `
+${padStickHtml(plan.stick, shape !== 'stick')}`;
+  return `<div class="${PLAY_PAD_CLASS} ${PLAY_PAD_DPAD_CLASS}"${shape === 'stick' ? ' hidden' : ''}>${dpad}</div>${stick}
+<div class="${PLAY_PAD_CLASS} ${PLAY_PAD_BUTTONS_CLASS}"${buttonsHidden ? ' hidden' : ''}>${buttons}</div>`;
+}
+
+/**
+ * 方向の操作の形を切り替えるボタン（#530 / 仕様 3.9.6 の「手動の切り替え」）。**控えめのボタン**で、文言は今と逆の形の名前（固定）。
+ *
+ * @param estimated 推定した最初の形
+ * @returns `<button>` 要素
+ */
+function padToggleHtml(estimated: PadShape): string {
+  const labels = (['stick', 'dpad'] as const)
+    .map((shape) => `<span ${PLAY_PAD_LABEL_ATTRIBUTE}="${shape}"${shape === estimated ? '' : ' hidden'}>${PLAY_PAD_TOGGLE_LABELS[shape]}</span>`)
+    .join('');
+  return `<button type="button" class="${TERTIARY_BUTTON} ${PLAY_PAD_TOGGLE_CLASS}">${labels}</button>`;
 }
 
 /**
@@ -218,14 +316,23 @@ export function padKeysHtml(layout: PadLayout): string {
  * `public/assets/app.css` の `@section work` が `@media (orientation: …)` で決める。パッドの中身は {@link padKeysHtml}
  * （M14-5 / #494。3.9.6）。
  *
- * @param layout パッドの中身
+ * **方向の操作がある作品では**、覆いに推定した形（`data-pad-shape`）と覚えた形のキー（`data-pad-memory`。作品 id ごと）を持たせ、
+ * 上の行の「閉じる」の隣（前）に切り替えのボタンを置く（#530）。
+ *
+ * @param plan パッドの計画
+ * @param workId 作品 id（覚えた形のキーに使う）
  * @returns HTML
  */
-function playOverlay(layout: PadLayout): string {
-  return `<div class="${PLAY_OVERLAY_CLASS}" role="dialog" aria-modal="true" aria-label="ゲーム" hidden>
-<div class="gf-play-bar"><button type="button" class="${SECONDARY_BUTTON} ${PLAY_CLOSE_CLASS}">閉じる</button></div>
+function playOverlay(plan: PadPlan, workId: string): string {
+  const shape =
+    plan.estimated === null
+      ? ''
+      : ` ${PLAY_PAD_SHAPE_ATTRIBUTE}="${plan.estimated}" ${PLAY_PAD_MEMORY_ATTRIBUTE}="${escapeHtml(`${PLAY_PAD_MEMORY_PREFIX}${workId}`)}"`;
+  const toggle = plan.estimated === null ? '' : padToggleHtml(plan.estimated);
+  return `<div class="${PLAY_OVERLAY_CLASS}" role="dialog" aria-modal="true" aria-label="ゲーム"${shape} hidden>
+<div class="gf-play-bar">${toggle}<button type="button" class="${SECONDARY_BUTTON} ${PLAY_CLOSE_CLASS}">閉じる</button></div>
 <div class="${PLAY_STAGE_CLASS}"></div>
-${padKeysHtml(layout)}
+${padKeysHtml(plan)}
 </div>`;
 }
 
@@ -306,12 +413,42 @@ export function playFrameScript(playUrl: string): string {
   var sendPad = function (op, code) {
     postPad(frame, { type: ${literal(PAD_MESSAGE_TYPE)}, op: op, code: code });
   };
-  // **パッドの「すべて離す」**（仕様 3.9.4 / 3.9.6）。押しているボタンをすべて離した扱いにし、release を 1 回送る。
+  // ── スティック（#530 / 仕様 3.9.6 の「スティックの振る舞い」）────────────────────────
+  // 受け付ける方向の code は置き場所の属性が持つ（受け付けない方向は null）。**方向の決め方の本文は src/virtual-pad.ts の 1 つだけ。**
+  var stickArea = overlay.querySelector(${literal(`.${PLAY_PAD_STICK_CLASS}`)});
+  var stickRing = stickArea === null ? null : stickArea.querySelector(${literal(`.${PLAY_PAD_STICK_RING_CLASS}`)});
+  var stickKnob = stickArea === null ? null : stickArea.querySelector(${literal(`.${PLAY_PAD_STICK_KNOB_CLASS}`)});
+  var stickKeysOf = ${STICK_KEYS_SOURCE};
+  var stickRadius = ${literal(PAD_STICK_RADIUS_PX)};
+  var stickDeadZone = ${literal(PAD_STICK_DEAD_ZONE_RATIO)};
+  var stickPointer = null;
+  var stickCenterX = 0;
+  var stickCenterY = 0;
+  var stickHeld = [];
+  // **押している方向のキーの集合が変わったときだけ送る。外れたキーの up を先に、加わったキーの down を後に**（仕様 3.9.6 の「送り方」）。
+  var setStickKeys = function (next) {
+    var index;
+    for (index = 0; index < stickHeld.length; index += 1) {
+      if (next.indexOf(stickHeld[index]) === -1) { sendPad('up', stickHeld[index]); }
+    }
+    for (index = 0; index < next.length; index += 1) {
+      if (stickHeld.indexOf(next[index]) === -1) { sendPad('down', next[index]); }
+    }
+    stickHeld = next;
+  };
+  // 指を忘れ、円を隠す（キーは送らない。送るのは呼ぶ側）。**忘れた指の後の pointermove / pointerup は何も送らない。**
+  var dropStick = function () {
+    stickPointer = null;
+    stickHeld = [];
+    if (stickRing !== null) { stickRing.hidden = true; }
+  };
+  // **パッドの「すべて離す」**（仕様 3.9.4 / 3.9.6）。押しているボタンとスティックをすべて離した扱いにし、release を 1 回送る。
   var releasePad = function (target) {
     for (var index = 0; index < padKeys.length; index += 1) {
       padHeld[index] = false;
       padKeys[index].classList.remove(${literal(PLAY_PAD_HELD_CLASS)});
     }
+    dropStick();
     postPad(target, { type: ${literal(PAD_MESSAGE_TYPE)}, op: 'release' });
   };
   var liftPad = function (index) {
@@ -354,6 +491,85 @@ export function playFrameScript(playUrl: string): string {
   for (var padsIndex = 0; padsIndex < pads.length; padsIndex += 1) {
     // 長押しのメニューを出さない（仕様 3.9.6）。
     pads[padsIndex].addEventListener('contextmenu', function (event) { event.preventDefault(); });
+  }
+  if (stickArea !== null && stickRing !== null && stickKnob !== null) {
+    var stickCodes = {
+      up: stickArea.getAttribute(${literal(`${PLAY_PAD_STICK_ATTRIBUTE_PREFIX}up`)}),
+      down: stickArea.getAttribute(${literal(`${PLAY_PAD_STICK_ATTRIBUTE_PREFIX}down`)}),
+      left: stickArea.getAttribute(${literal(`${PLAY_PAD_STICK_ATTRIBUTE_PREFIX}left`)}),
+      right: stickArea.getAttribute(${literal(`${PLAY_PAD_STICK_ATTRIBUTE_PREFIX}right`)})
+    };
+    stickRing.style.width = (stickRadius * 2) + 'px';
+    stickRing.style.height = (stickRadius * 2) + 'px';
+    // **フローティング**: 受け付ける範囲のどこかに触れた位置が中心になる。指が円の外へ出ても中心は動かない（つまみは縁で止める）。
+    stickArea.addEventListener('pointerdown', function (event) {
+      // フォーカスを親の文書へ移さない（十字のキーと同じ理由）。
+      event.preventDefault();
+      if (stickPointer !== null) { return; }
+      try { stickArea.setPointerCapture(event.pointerId); } catch (error) {}
+      var rect = stickArea.getBoundingClientRect();
+      stickPointer = event.pointerId;
+      stickCenterX = event.clientX;
+      stickCenterY = event.clientY;
+      stickHeld = [];
+      stickRing.style.left = (event.clientX - rect.left) + 'px';
+      stickRing.style.top = (event.clientY - rect.top) + 'px';
+      stickKnob.style.transform = 'translate(0px, 0px)';
+      stickRing.hidden = false;
+    });
+    stickArea.addEventListener('pointermove', function (event) {
+      if (stickPointer === null || event.pointerId !== stickPointer) { return; }
+      var dx = event.clientX - stickCenterX;
+      var dy = event.clientY - stickCenterY;
+      var distance = Math.sqrt(dx * dx + dy * dy);
+      var scale = distance > stickRadius ? stickRadius / distance : 1;
+      stickKnob.style.transform = 'translate(' + (dx * scale) + 'px, ' + (dy * scale) + 'px)';
+      setStickKeys(stickKeysOf(dx, dy, stickRadius, stickDeadZone, stickCodes));
+    });
+    var liftStick = function (event) {
+      if (stickPointer === null || event.pointerId !== stickPointer) { return; }
+      setStickKeys([]);
+      dropStick();
+    };
+    stickArea.addEventListener('pointerup', liftStick);
+    stickArea.addEventListener('pointercancel', liftStick);
+    stickArea.addEventListener('lostpointercapture', liftStick);
+  }
+  // ── 方向の操作の形（#530 / 仕様 3.9.6 の「手動の切り替え」）────────────────────────────
+  // **覚えた形は推定より優先する。** 覚える先は作品 id ごとの localStorage で、読み書きに失敗する環境では覚えないだけで推定した形で出す。
+  var padToggle = overlay.querySelector(${literal(`.${PLAY_PAD_TOGGLE_CLASS}`)});
+  var padDpadArea = overlay.querySelector(${literal(`.${PLAY_PAD_DPAD_CLASS}`)});
+  var padButtonsArea = overlay.querySelector(${literal(`.${PLAY_PAD_BUTTONS_CLASS}`)});
+  var padToggleLabels = padToggle === null ? [] : padToggle.querySelectorAll(${literal(`[${PLAY_PAD_LABEL_ATTRIBUTE}]`)});
+  var padMemory = overlay.getAttribute(${literal(PLAY_PAD_MEMORY_ATTRIBUTE)});
+  var padShape = overlay.getAttribute(${literal(PLAY_PAD_SHAPE_ATTRIBUTE)});
+  var applyPadShape = function (shape) {
+    padShape = shape;
+    stickArea.hidden = shape !== 'stick';
+    padDpadArea.hidden = shape !== 'dpad';
+    var shown = 0;
+    for (var index = 0; index < padKeys.length; index += 1) {
+      var only = padKeys[index].getAttribute(${literal(PLAY_PAD_ONLY_ATTRIBUTE)});
+      if (only !== null) { padKeys[index].hidden = only !== shape; }
+      if (padButtonsArea.contains(padKeys[index]) && !padKeys[index].hidden) { shown += 1; }
+    }
+    padButtonsArea.hidden = shown === 0 && padButtonsArea.firstChild !== null;
+    for (var labelIndex = 0; labelIndex < padToggleLabels.length; labelIndex += 1) {
+      padToggleLabels[labelIndex].hidden = padToggleLabels[labelIndex].getAttribute(${literal(PLAY_PAD_LABEL_ATTRIBUTE)}) !== shape;
+    }
+  };
+  if (padToggle !== null && stickArea !== null && padDpadArea !== null && padButtonsArea !== null && padMemory !== null &&
+      (padShape === 'stick' || padShape === 'dpad')) {
+    var remembered = null;
+    try { remembered = window.localStorage.getItem(padMemory); } catch (error) { remembered = null; }
+    applyPadShape(remembered === 'stick' || remembered === 'dpad' ? remembered : padShape);
+    padToggle.addEventListener('click', function () {
+      // 押しているキーを残したまま形を変えない（隠れたボタンやスティックの押下が離れなくなる）。
+      releasePad(frame);
+      var next = padShape === 'stick' ? 'dpad' : 'stick';
+      applyPadShape(next);
+      try { window.localStorage.setItem(padMemory, next); } catch (error) {}
+    });
   }
   // **送り始めるのは、その iframe から起動の合図を受けた後**（仕様 3.9.7）。検査は計上のスクリプト（src/plays.ts）と同じ規律で、
   // 自分の iframe の窓から届いた固定の文字列だけを受ける。
@@ -479,11 +695,18 @@ export function playFrameScript(playUrl: string): string {
  * デスクトップの iframe は `<noscript>` の直前に作られるので、計上のスクリプトの直後——今の iframe と同じ位置——に入る。
  *
  * @param playUrl 遊ぶ URL
+ * @param workId 作品 id（覚えた形のキーに使う。#530）
  * @param inputKeyCodes 作品が読むキーの集合（許可表で絞った値。`src/virtual-pad.ts` の `readInputKeyCodes`）。パッドの中身を決める
+ * @param inputHeldCodes 押し続けて読むキーの集合（`readHeldCodes`。版 1 の行は null）。最初の形を決める（#530）
  * @returns HTML
  */
-export function playEmbed(playUrl: string, inputKeyCodes: readonly string[]): string {
+export function playEmbed(
+  playUrl: string,
+  workId: string,
+  inputKeyCodes: readonly string[],
+  inputHeldCodes: readonly string[] | null,
+): string {
   return `<noscript class="${PLAY_NOSCRIPT_CLASS}">${playFrameHtml(playUrl)}</noscript>
-${playOverlay(padLayoutOf(inputKeyCodes))}
+${playOverlay(padPlanOf(inputKeyCodes, inputHeldCodes), workId)}
 ${playFrameScript(playUrl)}`;
 }

@@ -1054,6 +1054,19 @@ html.gf-play-locked body {
   background: #000;
   touch-action: none;
   overscroll-behavior: contain;
+  /*
+   * パッドを画面の端に寄せるときの値（#527 / 仕様 3.9.6 の #527 / #549 の決定）。**実機で調整するときは、この 2 つだけを変える。**
+   * 覆いの区画の中だけで使う値なので、トークン（`--gf-*`。冒頭の規約 4）にはしない。
+   *
+   * - `--play-pad-edge`: 十字の左端・右のボタンの右端と、覆いのセーフエリアの内側の端との間（最低限の余白。既存の余白の段 8px）
+   * - `--play-pad-clear-bottom`: パッド（十字・スティックの受け付ける範囲・右のボタン）の下端と、覆いのセーフエリアの内側の下端との間。
+   *   **Android の Chrome が全画面に入った直後に画面の下に数秒出す「全画面表示を終了するには…」の帯に、キーを被らせない**ための値。
+   *   帯は Chromium の `FullscreenToast`（`Gravity.BOTTOM`・縦のずれ 0）で、高さは最小 44dp の丸い札、窓はナビゲーションバーの
+   *   高さ（最大 48dp）の上に置かれる（Android の `ToastPresenter` の `setFitInsetsIgnoringVisibility(true)`）ので、上端は下から
+   *   おおよそ 92dp になる。文字の拡大で 2 行になる分を見込み、控えめに大きめの 112px（`7rem`）にした。実機で調整する前提である
+   */
+  --play-pad-edge: var(--gf-gap-2);
+  --play-pad-clear-bottom: 7rem;
 }
 
 .gf-play-bar {
@@ -1107,6 +1120,13 @@ html.gf-play-locked body {
  * - **キーは副のボタンの部品**（`.gf-button-secondary`）で、押せる大きさは 1 つ **56px**（仕様の下限 48px を上回る。`3.5rem`）。
  *   押しているあいだはスクリプトが `.gf-play-pad-held` を付け、副のボタンのホバーと同じ色（既存のトークン）にする。新しい色の値は足さない
  * - **十字は 3×3 の格子**に置き、読まない方向のマスは空けたままにする（位置で方向が分かるように、詰めない）。ボタンは 2 列
+ * - **十字は左端に、右のボタンは右端に寄せる**（#527。利用者の指示）。端との間は覆いの `--play-pad-edge` だけにする。
+ *   **右のボタンは右端から詰めて並べる**——置き場所を `direction: rtl` にして格子の 1 列目を右に置き（並べる順の先頭の Space が右端）、
+ *   ボタンが 1 つ・3 つでも右に空いた枠を残さない。キーの文字は `direction: ltr` に戻す（`Num+` などの記号の位置を変えない）。
+ *   隠したボタン（`data-pad-only`）は格子に並ばないので、形を切り替えても右から詰まる
+ * - **置き場所の下端は、覆いの `--play-pad-clear-bottom` だけ上に置く**（#527。Android の Chrome の全画面の帯に被らせない）。
+ *   **余白は `padding` ではなく `margin` で取る**——スティックは置き場所の箱の全体が受け付ける範囲なので、`padding` だと帯の下まで
+ *   受け付けてしまう
  * - **押している間に文字の選択・長押しのメニューが起きないよう、置き場所は `user-select: none`**（`contextmenu` はスクリプトが抑える）。
  *   スクロールと拡大は覆いの `touch-action: none` が止める
  * - **空の置き場所（キーを読まない作品・十字だけ・ボタンだけ）は余白を持たない**（`:empty`。HTML は中に空白を入れない）
@@ -1127,7 +1147,8 @@ html.gf-play-locked body {
 .gf-play-pad:not(:empty) {
   display: grid;
   gap: var(--gf-gap-2);
-  padding: var(--gf-gap-3);
+  padding: var(--gf-gap-3) var(--gf-gap-3) 0;
+  margin-bottom: var(--play-pad-clear-bottom);
 }
 
 .gf-play-pad-dpad:not(:empty) {
@@ -1139,13 +1160,16 @@ html.gf-play-locked body {
   grid-template-rows: repeat(3, 3.5rem);
   justify-content: start;
   align-content: center;
+  padding-left: var(--play-pad-edge);
 }
 
 .gf-play-pad-buttons:not(:empty) {
+  direction: rtl;
   grid-template-columns: repeat(2, minmax(3.5rem, 4.5rem));
   grid-auto-rows: 3.5rem;
-  justify-content: end;
+  justify-content: start;
   align-content: center;
+  padding-right: var(--play-pad-edge);
 }
 
 .gf-play-pad-key {
@@ -1159,6 +1183,7 @@ html.gf-play-locked body {
   white-space: normal;
   overflow-wrap: anywhere;
   text-align: center;
+  direction: ltr;
   touch-action: none;
 }
 
@@ -1187,7 +1212,8 @@ html.gf-play-locked body {
  * スティック（#530 / 仕様 3.9.6 の「スティックの振る舞い」）。スクリプトは `src/work-play.ts`、方向の決め方は `src/virtual-pad.ts`。
  *
  * - **置き場所の全体が受け付ける範囲**で、十字と同じ置き場所（縦持ちは下の左、横持ちは左の列）を使う。**大きさは十字と同じ**
- *   （3 マス + 間 2 つ + 余白。切り替えても並べ方が跳ねない）。縦持ちの幅は列いっぱい
+ *   （3 マス + 間 2 つ + 上と左右の余白。切り替えても並べ方が跳ねない）。縦持ちの幅は列いっぱいで、左端は覆いの左端（#527）。
+ *   下端は十字と同じく `--play-pad-clear-bottom` の `margin` だけ上にあり、帯の範囲は受け付けない
  * - **待機中は何も描かない。** 触れているあいだだけ、触れた位置を中心に円（`hidden` をスクリプトが外す）とつまみを描く。円の大きさは
  *   スクリプトが半径（`PAD_STICK_RADIUS_PX`）から決め、ここに数字を書き写さない。つまみはスクリプトが `transform` で動かす
  * - **色は既存のトークンだけ**: 円は押しているキーの枠と同じ `--gf-rule-strong`、つまみは押しているキーと同じ地と枠
@@ -1195,7 +1221,7 @@ html.gf-play-locked body {
  */
 .gf-play-pad-stick {
   position: relative;
-  min-height: calc(3 * 3.5rem + 2 * var(--gf-gap-2) + 2 * var(--gf-gap-3));
+  min-height: calc(3 * 3.5rem + 2 * var(--gf-gap-2) + var(--gf-gap-3));
 }
 
 .gf-play-stick-ring {
@@ -1241,7 +1267,7 @@ html.gf-play-locked body {
   }
 
   .gf-play-pad-stick {
-    width: calc(3 * 3.5rem + 2 * var(--gf-gap-2) + 2 * var(--gf-gap-3));
+    width: calc(var(--play-pad-edge) + 3 * 3.5rem + 2 * var(--gf-gap-2) + var(--gf-gap-3));
   }
 }
 

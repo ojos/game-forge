@@ -185,8 +185,9 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
     const text = renderSystemPromptText();
     // (1) Context は 1 度だけ（2 度目は panic する）。
     expect(text).toContain('audio.NewContext は初期化時に 1 度だけ');
-    // (2) 渡すのは自前の Read を持つ型である（＝ファイルを開く余地が構造的に無い）。
-    expect(text).toContain('Read(buf []byte) (int, error)');
+    // (2) 渡すのはコードで計算したバイト列である（＝ファイルを開く余地が構造的に無い）。
+    // #286 の時点では自前の Read を持つ型だった。バイト列へ変えた理由は #567 のテスト。
+    expect(text).toContain('コードで計算した []byte');
     expect(text).toContain('音声ファイルを読み込む方法はありません');
     // (3) 波形は math で作る。
     expect(text).toContain('波形は math で作ります');
@@ -214,11 +215,10 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
     // **合成の音源（自前の `Read` だけを持つ型）は必ず `seekable == false` になる**
     // （`audio/audio.go:383` が `src.(io.Seeker)` で決める）ので、この経路は必ず落ちる。
     const text = renderSystemPromptText();
-    // (1) **正しい形を先に教えていること。** 禁止だけを書くと、モデルは別の壊れ方
-    // （鳴らすたびに player を作り直す等）へ流れる。位置を戻すのは音源の側である。
-    expect(text).toContain('音源が自分で持っている位置');
-    expect(text).toContain('0 へ戻してから player.Play() を呼びます');
-    expect(text).toContain('player は作り直さず');
+    // (1) **正しい形を先に教えていること。** 禁止だけを書くと、モデルは別の壊れ方へ流れる。
+    // #301 の時点の正しい形は「音源が持つ位置を戻す」だったが、#567 で「鳴らすたびに
+    // player を作る」へ置き換えた（その形は次のテストが見る）。
+    expect(text).toContain('鳴らし直すときは、上のとおり新しい player を作ります');
     // (2) 禁止は、その理由（panic する）と一緒に書く。
     expect(text).toContain('player.Rewind と player.SetPosition');
     expect(text).toContain('io.Seeker ではないので');
@@ -227,6 +227,33 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
     // `io` の import が要るようになり、#286 で「不要」と実測して外したばかりである。
     expect(GO_IMPORT_ALLOWLIST.map((entry) => entry.path)).not.toContain('io');
     expect(text).not.toContain('func (t *tone) Seek(');
+  });
+
+  it('鳴らすたびに player を作る形を教え、1 つの player を使い回させない（#567）', () => {
+    // **本番で遅れた。** #301 の形（終わらない音源を player 1 つで流し続け、音源の位置を
+    // 戻して鳴らし直す）では、効果音が入力から約 0.5 秒遅れた。oto v3.4.0 は音源を
+    // 0.5 秒ぶん先に読んで溜める（`internal/mux/mux.go` の `defaultBufferSize`）ので、
+    // 位置を戻しても溜まった無音が先に流れる。**ビルドの成否でも 1 回鳴らす受け入れでも
+    // 捕まらない**ので、教える形そのものを照合する。
+    const text = renderSystemPromptText();
+    // (1) 波形は初期化時に 1 度だけバイト列へ作り、鳴らすたびに player を作る。
+    expect(text).toContain('shot := squareWave(440, 0.2, sampleRate/10)');
+    expect(text).toContain('player := audioContext.NewPlayerF32FromBytes(shot)');
+    expect(text).toContain('初期化時に 1 度だけ作り');
+    expect(text).toContain('毎フレームは作りません');
+    // (2) 使い回す形を、遅れるという理由と一緒に塞ぐ。
+    expect(text).toContain('player を 1 つだけ作って使い回す書き方はしません');
+    expect(text).toContain('音が入力から遅れます');
+    // (3) **#301 の形を例として出していないこと。** 残っていると、モデルは見慣れた
+    // 1 つの player の形へ戻る。
+    expect(text).not.toContain('restart()');
+    expect(text).not.toContain('audioContext.NewPlayerF32(');
+    expect(text).not.toContain('type tone struct');
+    // (4) **`SetBufferSize` で先読みを小さくする案は採らない。** 引数の `time.Duration` の
+    // `time` が一覧に無く、AudioWorklet の 1 回の要求（約 43 ms）より小さいと途切れる。
+    expect(text).not.toContain('SetBufferSize');
+    expect(GO_IMPORT_ALLOWLIST.map((entry) => entry.path)).not.toContain('time');
+    expect(GO_IMPORT_ALLOWLIST.map((entry) => entry.path)).not.toContain('bytes');
   });
 
   it('教える API は隔離ビルドで実際にコンパイルが通った形と一致する', () => {
@@ -251,14 +278,12 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
       'text.Draw(screen, "スコア "+strconv.Itoa(',
       'vector.DrawFilledRect(screen, ',
       'audio.NewContext(sampleRate)',
-      'func (t *tone) Read(buf []byte) (int, error)',
-      'shot := &tone{freq: 440, vol: 0.2}',
-      'audioContext.NewPlayerF32(shot)',
+      'func squareWave(freq, vol float64, samples int) []byte',
+      'pcm := make([]byte, samples*8)',
+      'shot := squareWave(440, 0.2, sampleRate/10)',
       'math.Float32bits(level)',
-      'func (t *tone) restart()',
-      't.pos = 0',
-      't.pos++',
-      'shot.restart()',
+      'pcm[i+7] = pcm[i+3]',
+      'audioContext.NewPlayerF32FromBytes(',
       'audioContext.IsReady()',
       'player.Play()',
       'inpututil.IsKeyJustPressed(ebiten.Key',

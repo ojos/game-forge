@@ -44,12 +44,12 @@ import (
 
 const sampleRate = 48000
 
-// 合成した矩形波（#286）。**`io` を import しない**——`Read` を生やすだけなら `io` の型は
-// 要らず、終わりの無いストリームなので `io.EOF` も返さない。**これがビルドで確かめたい
-// ことの 1 つである**（許可リストへ `io` を足していないので、足さずに音が鳴らせることは
-// 実際にコンパイルして初めて分かる）。
+// 合成した矩形波（#286）。**`io` も `bytes` も import しない**——PCM は `[]byte` へ
+// 自分で並べ、`NewPlayerF32FromBytes` へ渡すだけなので、どちらの型も要らない。
+// **これがビルドで確かめたいことの 1 つである**（許可リストへ `io` を足していないので、
+// 足さずに音が鳴らせることは実際にコンパイルして初めて分かる）。
 //
-// **32bit float で作る**（`NewPlayerF32` に合わせる）。ebiten は「新しいコードは
+// **32bit float で作る**（`NewPlayerF32FromBytes` に合わせる）。ebiten は「新しいコードは
 // `NewPlayerF32` が望ましい。将来は内部で 32bit float だけを扱う」と明記しており、
 // int16 版を教えると、それが外れた日に**既に生成された作品のフォークが壊れる**
 // （フォークは親ソースを現物のイメージで再コンパイルする）。
@@ -58,49 +58,32 @@ const sampleRate = 48000
 // 許可リストに無いので、この経路しかない**——それが実際に書けることを、配る現物の
 // イメージで確かめる。
 //
-// **長さ（`pos`）と `restart()` は #301 で足した。** `player.Rewind()` /
-// `player.SetPosition()` は、`io.Seeker` でない音源に対して panic する
-// （ebiten v2.9.9 `audio/player.go:474`。`NewPlayerF32` は渡された音源が `io.Seeker` か
-// どうかで `seekable` を決める）。**鳴らし直す手段は「音源が自分で持つ位置を 0 へ戻す」
-// しかない**ので、それが実際に書けてビルドが通ることを、教える形と同じ形で確かめる。
-// 終わりの無い矩形波のままでは「鳴らし直す」が形として現れない。
-type tone struct {
-	freq  float64
-	vol   float64
-	phase float64
-	pos   int
-}
-
-// 鳴らし直すために、音源が自分で持つ位置を 0 へ戻す（#301）。
-func (t *tone) restart() {
-	t.phase = 0
-	t.pos = 0
-}
-
-func (t *tone) Read(buf []byte) (int, error) {
-	n := len(buf) / 8 * 8
-	step := t.freq / float64(sampleRate)
-	for i := 0; i < n; i += 8 {
-		var level float32
-		if t.pos < sampleRate/10 {
-			level = float32(t.vol)
-			if math.Mod(t.phase, 1) >= 0.5 {
-				level = -level
-			}
-			t.pos++
+// **初期化時に 1 度だけ作り、鳴らすたびに player を作る形は #567 で入れた。** #301 までは
+// 終わらない音源（自前の `Read` を持つ型）を player 1 つで流し続け、音源の位置を戻して
+// 鳴らし直していた。oto v3.4.0 は音源を 0.5 秒ぶん先に読んで溜めるので、その形では
+// **溜まった無音が流れ終わるまで効果音が約 0.5 秒遅れた。** 理由の全体は
+// `src/system-prompt.ts` の #567 の節にある。
+func squareWave(freq, vol float64, samples int) []byte {
+	pcm := make([]byte, samples*8)
+	step := freq / float64(sampleRate)
+	phase := 0.0
+	for i := 0; i < len(pcm); i += 8 {
+		level := float32(vol)
+		if math.Mod(phase, 1) >= 0.5 {
+			level = -level
 		}
 		bits := math.Float32bits(level)
-		buf[i] = byte(bits)
-		buf[i+1] = byte(bits >> 8)
-		buf[i+2] = byte(bits >> 16)
-		buf[i+3] = byte(bits >> 24)
-		buf[i+4] = buf[i]
-		buf[i+5] = buf[i+1]
-		buf[i+6] = buf[i+2]
-		buf[i+7] = buf[i+3]
-		t.phase += step
+		pcm[i] = byte(bits)
+		pcm[i+1] = byte(bits >> 8)
+		pcm[i+2] = byte(bits >> 16)
+		pcm[i+3] = byte(bits >> 24)
+		pcm[i+4] = pcm[i]
+		pcm[i+5] = pcm[i+1]
+		pcm[i+6] = pcm[i+2]
+		pcm[i+7] = pcm[i+3]
+		phase += step
 	}
-	return n, nil
+	return pcm
 }
 
 type Game struct {
@@ -109,8 +92,7 @@ type Game struct {
 	face         *text.GoXFace
 	jpFace       *text.GoXFace
 	audioContext *audio.Context
-	shot         *tone
-	player       *audio.Player
+	shot         []byte
 }
 
 func (g *Game) Update() error {
@@ -120,12 +102,12 @@ func (g *Game) Update() error {
 	// **最初の入力より前に鳴らさない**（#286）。ブラウザは利用者の操作より前に音を
 	// 鳴らさず、OGP は初回フレームを撮るだけなので、ここに依存する進行を書かない。
 	//
-	// **鳴らし直しは音源の側で行う**（#301）。`player.Rewind()` は `SetPosition(0)` で、
-	// `io.Seeker` でない音源に対して panic する。**同じキーを 2 度押しても固まらない
-	// ことが、この形を教える理由である。**
+	// **鳴らすたびに player を作る**（#567）。新しい player は溜まりが空の状態から
+	// 始まるので、入力から遅れずに鳴る。**`Rewind` は呼ばない**（#301。自前の `Read` を
+	// 持つ音源では panic する）ので、同じキーを何度押しても固まらない。
 	if inpututil.IsKeyJustPressed(ebiten.KeySpace) && g.audioContext.IsReady() {
-		g.shot.restart()
-		g.player.Play()
+		player := g.audioContext.NewPlayerF32FromBytes(g.shot)
+		player.Play()
 	}
 	if ebiten.IsKeyPressed(ebiten.KeyRight) {
 		g.x += 2
@@ -158,17 +140,12 @@ func (g *Game) Layout(int, int) (int, int) { return 320, 240 }
 
 func main() {
 	audioContext := audio.NewContext(sampleRate)
-	shot := &tone{freq: 440, vol: 0.2}
-	player, err := audioContext.NewPlayerF32(shot)
-	if err != nil {
-		panic(err)
-	}
+	shot := squareWave(440, 0.2, sampleRate/10)
 	g := &Game{
 		face:         text.NewGoXFace(basicfont.Face7x13),
 		jpFace:       text.NewGoXFace(jpfont.Face16),
 		audioContext: audioContext,
 		shot:         shot,
-		player:       player,
 	}
 	ebiten.SetWindowSize(640, 480)
 	if err := ebiten.RunGame(g); err != nil && !errors.Is(err, ebiten.Termination) {

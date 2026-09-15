@@ -271,8 +271,9 @@ const ALLOWED_PACKAGES = `${renderAllowlistSection()}
  *    生成された作品のフォークが壊れる**（フォークは親ソースを現物のイメージで
  *    再コンパイルする）。**一覧はパッケージ単位なので、どちらを教えても許可の広さは
  *    変わらない。** 変わるのは寿命だけである。
- * 3. **`NewPlayerF32` へ渡すのは自前の `Read` を持つ型である。** ここが合成のみという
- *    制約の実体で、**ファイルを開く余地が構造的に無い。**
+ * 3. **player へ渡すのは、コードで計算した PCM のバイト列である。** ここが合成のみという
+ *    制約の実体で、**ファイルを開く余地が構造的に無い。**（#286 の時点では自前の `Read`
+ *    を持つ型を `NewPlayerF32` へ渡していた。バイト列へ変えた理由は下の #567 の節）
  * 4. **PCM の形（32 ビット浮動小数点・リトルエンディアン・2 チャンネル）。** 書かないと
  *    雑音になる。**雑音は「動くが壊れている」ので、コンパイルの成否では捕まらない。**
  *    バイトへ並べる手段も書く——`encoding/binary` も `unsafe` も一覧に無いので、
@@ -313,6 +314,53 @@ const ALLOWED_PACKAGES = `${renderAllowlistSection()}
  * `restart()` を足したのはこのためである。** 終わりの無い矩形波のままでは「鳴らし直す」
  * が観測できず、教える形とビルドで通した形を機械照合できない
  * （`test/system-prompt.test.ts`）。
+ *
+ * **この節の「音源が持つ位置を戻す」形は #567 で置き換えた**（次の節）。`Rewind` /
+ * `SetPosition` を呼ばない禁則と、その理由は残している。
+ *
+ * ## 鳴らすたびに player を作る形へ変えた理由（#567）
+ *
+ * **#301 の形では、効果音が入力から約 0.5 秒遅れて鳴った**（2026-09-15 の利用者の報告。
+ * 体感は約 1 秒）。#301 の形は「終わらない音源を player 1 つで流し続け、鳴らすときは
+ * 音源の位置を 0 へ戻す」ものだった。
+ *
+ * - 最初の `Play()` からあと、player は無音を読み続ける。2 回目以降の `Play()` は
+ *   再生中なので何もしない。
+ * - oto v3.4.0 は音源を **0.5 秒ぶん先に読んで溜める**（`internal/mux/mux.go` の
+ *   `defaultBufferSize`）。溜まりが減るたびに読み足す（`readSourceToBuffer`）ので、
+ *   **ほぼ常に 0.5 秒ぶん溜まっている。**
+ * - そのため位置を戻しても、**溜まっている 0.5 秒の無音が先に流れる。** さらに
+ *   AudioWorklet の溜まり（2048 フレーム単位、約 43 ms。`driver_js.go`）が乗る。
+ *
+ * **#301 と同じく、生成物の質の問題ではなくプロンプトの穴だった。** 教えたとおりに
+ * 書くと遅れる。**ビルドの成否でも、1 回鳴らす受け入れでも捕まらない**——鳴ることは
+ * 鳴るからである。
+ *
+ * **採った形は、波形を初期化時に 1 度だけ `[]byte` へ作り、鳴らすたびに
+ * `NewPlayerF32FromBytes` で player を作って `Play()` する形である。** ebiten 公式の
+ * `examples/piano` / `examples/pcm`（合成した音）と `examples/audio`（効果音）が同じ形で
+ * 鳴らしている。
+ *
+ * - **新しい player は溜まりが空の状態から始まる**ので、遅れは AudioWorklet の分だけになる。
+ *   同じバイト列から player を何個作ってもよく、**同じ音を重ねて鳴らせる。**
+ * - **`Rewind` を使わないので、#301 の禁則はそのまま残る。** 鳴らし直す手段が
+ *   「新しい player を作る」1 つだけになり、教える形が単純になる。
+ * - **import は増えない。** `NewPlayerF32FromBytes` は内部で `bytes.NewReader` を使うが、
+ *   生成コードは `bytes` も `io` も書かない（隔離ビルドのサンプルで確かめている）。
+ * - **合成のみ（#286）は崩れない。** 渡すのはコードで計算したバイト列で、ファイルを
+ *   開く経路は増えない。
+ * - **鳴り終わった player は止める処理が要らない。** ebiten の `Context` が再生中の
+ *   player を持っているので、変数に持たなくても途中で切れない（`audio/audio.go` の
+ *   `finalize` は再生中なら閉じない）。**連打しても固まらない**——鳴り終わった player は
+ *   oto の読み出しで素通りされる（`readBufferAndAdd` が `playerPlay` 以外を 0 で返す）。
+ *
+ * **採らなかった形は `player.SetBufferSize` で先読みを小さくする案である。** 引数が
+ * `time.Duration` で、`time` は一覧に無い。また、AudioWorklet の 1 回の要求（約 43 ms）より
+ * 小さくすると、読み足しが追いつかず音が途切れる。
+ *
+ * **既に生成された作品は直らない。** プロンプトが効くのは次の生成からで、既存の作品の
+ * ソースは遅れる形のまま残る（直すには推敲か作り直しが要る）。**古い形は API として
+ * 外していない**ので、既存作品のフォークは壊れない。
  *
  * ## float32 と int を混ぜないことを書く理由
  *
@@ -364,65 +412,48 @@ const API_USAGE = `許可された API の使い方（このとおりに書い�
 
 	const sampleRate = 48000
 
-	type tone struct {
-		freq  float64
-		vol   float64
-		phase float64
-		pos   int
-	}
-
-	func (t *tone) restart() {
-		t.phase = 0
-		t.pos = 0
-	}
-
-	func (t *tone) Read(buf []byte) (int, error) {
-		n := len(buf) / 8 * 8
-		step := t.freq / float64(sampleRate)
-		for i := 0; i < n; i += 8 {
-			var level float32
-			if t.pos < sampleRate/10 {
-				level = float32(t.vol)
-				if math.Mod(t.phase, 1) >= 0.5 {
-					level = -level
-				}
-				t.pos++
+	func squareWave(freq, vol float64, samples int) []byte {
+		pcm := make([]byte, samples*8)
+		step := freq / float64(sampleRate)
+		phase := 0.0
+		for i := 0; i < len(pcm); i += 8 {
+			level := float32(vol)
+			if math.Mod(phase, 1) >= 0.5 {
+				level = -level
 			}
 			bits := math.Float32bits(level)
-			buf[i] = byte(bits)
-			buf[i+1] = byte(bits >> 8)
-			buf[i+2] = byte(bits >> 16)
-			buf[i+3] = byte(bits >> 24)
-			buf[i+4] = buf[i]
-			buf[i+5] = buf[i+1]
-			buf[i+6] = buf[i+2]
-			buf[i+7] = buf[i+3]
-			t.phase += step
+			pcm[i] = byte(bits)
+			pcm[i+1] = byte(bits >> 8)
+			pcm[i+2] = byte(bits >> 16)
+			pcm[i+3] = byte(bits >> 24)
+			pcm[i+4] = pcm[i]
+			pcm[i+5] = pcm[i+1]
+			pcm[i+6] = pcm[i+2]
+			pcm[i+7] = pcm[i+3]
+			phase += step
 		}
-		return n, nil
+		return pcm
 	}
 
 	audioContext := audio.NewContext(sampleRate)
-	shot := &tone{freq: 440, vol: 0.2}
-	player, err := audioContext.NewPlayerF32(shot)
-	if err != nil {
-		panic(err)
-	}
+	shot := squareWave(440, 0.2, sampleRate/10)
 
 	if inpututil.IsKeyJustPressed(ebiten.KeySpace) && audioContext.IsReady() {
-		shot.restart()
+		player := audioContext.NewPlayerF32FromBytes(shot)
 		player.Play()
 	}
 
-- audio.NewContext は初期化時に 1 度だけ呼びます。2 度呼ぶとその場で落ちます。player も毎フレーム作らず、初期化時に作って構造体へ持たせます。
-- 再生は NewPlayerF32 で始めます。NewPlayer（16 ビット整数版）は使いません。
-- NewPlayerF32 へ渡すのは、上の tone のように Read(buf []byte) (int, error) を持つ自前の型です。音声ファイルを読み込む方法はありません（デコーダのパッケージは許可されていません）。
+- audio.NewContext は初期化時に 1 度だけ呼びます。2 度呼ぶとその場で落ちます。
+- 音の波形（上の shot）も初期化時に 1 度だけ作り、構造体へ持たせます。毎フレーム作りません。
+- 鳴らすときは、そのたびに audioContext.NewPlayerF32FromBytes(shot) で player を作り、player.Play() を呼びます。作るのはキーを押した瞬間など音を鳴らす瞬間だけで、毎フレームは作りません。同じ shot から player を何個作っても構わず、同じ音を重ねて鳴らせます。鳴り終わった player を止めたり片付けたりする処理は要りません。
+- player を 1 つだけ作って使い回す書き方はしません。終わらない音源を流し続けて、音源の位置を戻して鳴らし直す書き方もしません。player は音源を約 0.5 秒ぶん先に読んで溜めているので、溜まった分が流れ終わるまで音が入力から遅れます。
+- 再生は NewPlayerF32FromBytes で始めます。NewPlayer（16 ビット整数版）は使いません。16 ビット整数版の NewPlayerFromBytes も使いません。
+- player へ渡すのは、上の squareWave のようにコードで計算した []byte です。音声ファイルを読み込む方法はありません（デコーダのパッケージは許可されていません）。
 - 波形は math で作ります。上は矩形波（math.Mod で位相の前半と後半を切り替えたもの）です。三角波や鋸波にするなら、level の計算だけを変えます。
-- 渡すのは 32 ビット浮動小数点のリトルエンディアン・2 チャンネルです。1 サンプルが 8 バイトで、左右へ同じ 4 バイトを書きます。長さは必ず 8 の倍数にします。
+- バイト列は 32 ビット浮動小数点のリトルエンディアン・2 チャンネルです。1 サンプルが 8 バイトで、左右へ同じ 4 バイトを書きます。長さは必ず 8 の倍数にします。
 - level は -1.0 から 1.0 までの範囲にします。バイトへ並べるには math.Float32bits を使います（encoding/binary と unsafe は許可されていません）。
-- 音の長さは音源が自分で数えます。上は 0.1 秒（sampleRate/10 サンプル）だけ鳴らし、そのあとは無音（level が 0）を書き続けます。ストリームは終わらせないので、Read が返す error は常に nil です。
-- 同じ音をもう一度鳴らすときは、音源が自分で持っている位置（上の pos と phase）を 0 へ戻してから player.Play() を呼びます。上の restart がそれです。player は作り直さず、同じものを鳴らし直します。
-- player.Rewind と player.SetPosition（古い名前の player.Seek も同じものです）は呼びません。コードで作った音源は io.Seeker ではないので、呼ぶとその場で panic して画面が固まります。位置を戻すのは音源の側です。
+- 音の長さはバイト列の長さで決まります。上は 0.1 秒（sampleRate/10 サンプル）です。音程や長さの違う音が要るなら、squareWave を呼び分けて、初期化時に別のバイト列として作っておきます。
+- 鳴らし直しに player.Rewind と player.SetPosition（古い名前の player.Seek も同じものです）は使いません。自前の Read を持つ型を NewPlayerF32 へ渡した player では、音源が io.Seeker ではないので、呼ぶとその場で panic して画面が固まります。鳴らし直すときは、上のとおり新しい player を作ります。
 - 音を鳴らすのは、最初のキー入力かクリックのあとにします。ブラウザは利用者が操作するまで音を鳴らしません。鳴らせる状態かは audioContext.IsReady() で分かります。
 - ゲームの進行を音に依存させません。音が鳴らなくても、最初のフレームから画面が動いて遊べる状態にします。
 

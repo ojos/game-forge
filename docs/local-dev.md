@@ -86,16 +86,20 @@ cp .dev.vars.example .dev.vars
 - 4 本のキーが雛形に残っているのは、コード側の口（`src/bedrock.ts` の `BEDROCK_SECRET_NAMES`）として
   残っているためである。オーケストレータは実行ロールの一時資格情報をこの名前へ写して使う
   （`src/orchestrator/handler.ts`）。空のままでも `npm run dev` は起動し、`npm test` も通る。
-- **どのアカウントの資格情報をここへ書き写すかは、この文書では書かない。** 以前ここにあった転記の手順は
+- **`BEDROCK_AWS_*` にどのアカウントの資格情報を書き写すかは、この文書では書かない。** 以前ここにあった転記の手順は
   ローカルのエッジが Bedrock を叩く前提（#160 より前）で書かれており、しかも仕様 9.1 の
   「開発の LLM は Dev アカウント」と違うアカウントを指していた。どちらに揃えるかは #534（仕様 9.1 / 9.2）が決める。
 
-**AWS の一時資格情報を `.dev.vars` へ転記する形**（`BUILD_AWS_*` など、ローカルで AWS の資格情報を
-入れるとき）。**export しただけでは効かない。** `aws configure export-credentials` が出すのは `AWS_*` という
+**AWS の一時資格情報を `.dev.vars` へ転記する形**（`BUILD_AWS_*` を入れるとき）。
+**呼ぶ相手は本番の Lambda なので、プロファイルは本番の `game-forge-prod` である**（Dev アカウントに Lambda は無い。
+[build-invocation.md](build-invocation.md)「ローカルで叩くとき」、`.dev.vars.example` の `BUILD_AWS_*` の項）。
+#534 に預けているのは `BEDROCK_AWS_*` のアカウントだけで、`BUILD_AWS_*` は預けていない。
+
+**export しただけでは効かない。** `aws configure export-credentials` が出すのは `AWS_*` という
 別の名前で、しかも Worker が読むのはシェルの環境変数ではなく `.dev.vars` というファイルである。**値を転記する。**
 
 ```bash
-eval "$(AWS_PROFILE=<プロファイル> aws configure export-credentials --format env)"
+eval "$(AWS_PROFILE=game-forge-prod aws configure export-credentials --format env)"
 printf 'BUILD_AWS_REGION=%s\nBUILD_AWS_ACCESS_KEY_ID=%s\nBUILD_AWS_SECRET_ACCESS_KEY=%s\nBUILD_AWS_SESSION_TOKEN=%s\n' \
   ap-northeast-1 "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "$AWS_SESSION_TOKEN"
 ```
@@ -112,7 +116,8 @@ printf 'BUILD_AWS_REGION=%s\nBUILD_AWS_ACCESS_KEY_ID=%s\nBUILD_AWS_SECRET_ACCESS
 `AccessDeniedException` になる」は削った。** #82 は 2026-08-26 に閉じており、挙げていたモデル ID も
 いまの登録簿（`src/generation-models.ts`。Claude は `jp.anthropic.claude-sonnet-4-6`）と違う。
 そもそもローカルから Bedrock を呼ばないので、モデルアクセスの状態はローカルの手順に関わらない。
-モデルアクセスの宣言と確かめ方は [bedrock-access.md](bedrock-access.md) にある。
+モデルアクセスの確かめ方は [bedrock-access.md の「2. アクセス開通の順序」](bedrock-access.md#2-アクセス開通の順序) にある。
+**同文書の 3〜4 章（Pages への鍵の投入とローテーション）は #160 より前の手順で、ローカルの手順としては使わない。**
 
 **ログインを手元で試すには `SESSION_SECRET` と Google の OAuth クライアントが要る**
 （#12 / 8.1）。値の作り方は `.dev.vars.example` のコメントに書いてある。空のままでも
@@ -566,13 +571,13 @@ bash scripts/shoot-pages.sh
 #### C. ローカルからは動かない、または本番の資源に触れるもの
 
 **ここに挙げた機能の呼ぶ相手は、本番にしか無い。** Dev アカウントに Lambda は無く、関数名はローカルにも本番と同じ値が
-置いてある（`wrangler.toml` の `ORCHESTRATOR_FUNCTION_NAME` などの注記、仕様 9.2）。どのアカウントの資格情報を入れるかは
-この文書では書かない（2 章「シークレットの置き場所」、#534）。以下は**コードと terraform を読んで確かめたもので、
-実際には動かしていない**（本番の Lambda と Bedrock が動き、費用が出るため）。
+置いてある（`wrangler.toml` の `ORCHESTRATOR_FUNCTION_NAME` などの注記、仕様 9.2）。Lambda を呼ぶ資格情報は `BUILD_AWS_*` で、
+入れるのは本番のプロファイルのものである（2 章「シークレットの置き場所」）。以下は**コードと terraform を読んで確かめたもので、
+実際には動かしていない**（本番の Lambda が起動し（生成は Bedrock まで進む経路に乗る）、費用が出うるため）。
 
 | 機能 | 資格情報・キーが空のとき | 入れたとき | 根拠 |
 |---|---|---|---|
-| **生成**（新規・フォーク・推敲） | 投げ込みの手前で `OrchestratorNotConfigured` になり、新規生成の作品行は `failed`（`internal`）で閉じる | **本番の Lambda と Bedrock が動く側の経路に乗る。結果は本番の URL へ返り、ローカルの D1 に戻らない。** 詳しくは表の下 | `src/generate.ts` の `defaultPipeline` と `startGeneration`、`src/orchestrator/start-job.ts` の `startJobOnLambda` / `missingOrchestratorSecrets`、`terraform/orchestrator.tf` の `aws_lambda_function.orchestrator`（`CALLBACK_BASE_URL`）、`src/fork.ts` / `src/revise.ts` の `pipeline.startJob` |
+| **生成**（新規・フォーク・推敲） | 投げ込みの手前で `OrchestratorNotConfigured` になり、新規生成の作品行は `failed`（`internal`）で閉じる | **本番の Lambda が起動し、本番の Bedrock まで進む経路に乗る**（Bedrock まで実際に進むかは、コードの上では進まない。未確認。表の下の 5）。**結果は本番の URL へ返り、ローカルの D1 に戻らない。** 詳しくは表の下 | `src/generate.ts` の `defaultPipeline` と `startGeneration`、`src/orchestrator/start-job.ts` の `startJobOnLambda` / `missingOrchestratorSecrets`、`terraform/orchestrator.tf` の `aws_lambda_function.orchestrator`（`CALLBACK_BASE_URL`）、`src/fork.ts` / `src/revise.ts` の `pipeline.startJob` |
 | **ビルド** | ローカルのエッジからは呼ばない | 同左。ビルドは生成の中で、本番のオーケストレータが `game-forge-build` を呼ぶ。**ローカルから触る経路は生成の行と同じ**である | `src/generate.ts` の `defaultPipeline`（`build: createLambdaBuild()` は同期実装 `runJobInline` のときだけ使われ、既定の `startJob` では通らない。`src/work-page.ts` の `GENERATION_IS_SYNCHRONOUS = false`）、`src/orchestrator/pipeline.ts` の `invokeBuildFunction` |
 | **OGP 画像の撮影**（公開時・撮り直し） | 呼ぶ手前で止まる（`skipped`。公開は成立し、`games.ogp_state` は変わらない） | 本番の `game-forge-ogp` が非同期で動く。撮る先は**本番の**サンドボックスの `/g/<ローカルの作品 id>/`、結果の送り先は**本番の** `/api/ogp/callback` で、**ローカルの D1 に戻らない**（ローカルの行は `ogp_state = 'capturing'` のまま） | `src/ogp.ts` の `runCapture` / `claimOgpCapture`、`src/ogp-client.ts` の `missingOgpSecrets`、`terraform/ogp-function.tf` の `aws_lambda_function`（`SANDBOX_BASE_URL` / `CALLBACK_BASE_URL`）、`docker/ogp-shot/index.mjs` の `capture` / `sendCallback` |
 | **アイコンの再エンコード** | 呼ぶ手前で止まる（`AvatarNotConfigured`。画面は「保存できませんでした」） | 本番の `game-forge-avatar` が**同期で**動く。変換した画像は応答で戻り、**ローカルの** Worker がローカルの R2 / D1 へ書く（この機能だけは手元で完結する。動くのは本番の関数である） | `src/avatar-client.ts` の `createAvatarEncode`（`SYNC_INVOCATION_TYPE`）、`src/avatar.ts` の `convertAvatar`、`terraform/avatar-function.tf` |

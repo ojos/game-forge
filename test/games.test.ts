@@ -986,6 +986,51 @@ describe('listAuthoredGames（#152）', () => {
     await seedGame(userId);
     expect(await listAuthoredGames(env, userId, 0)).toEqual([]);
   });
+
+  it('offset で読み飛ばし、新しい順の続きを返す（#552）', async () => {
+    const userId = await seedUser('list-offset');
+    for (const createdAt of [10, 20, 30, 40, 50]) {
+      await seedGame(userId, { createdAt });
+    }
+
+    expect((await listAuthoredGames(env, userId, 2, 0)).map((work) => work.createdAt)).toEqual([50, 40]);
+    expect((await listAuthoredGames(env, userId, 2, 2)).map((work) => work.createdAt)).toEqual([30, 20]);
+    expect((await listAuthoredGames(env, userId, 2, 4)).map((work) => work.createdAt)).toEqual([10]);
+    expect(await listAuthoredGames(env, userId, 2, 5)).toEqual([]);
+  });
+
+  it('offset を省略すると先頭から引く（既存の呼び出しの結果を変えない。#552）', async () => {
+    const userId = await seedUser('list-offset-default');
+    for (const createdAt of [10, 20, 30]) {
+      await seedGame(userId, { createdAt });
+    }
+    expect(await listAuthoredGames(env, userId, 2)).toEqual(await listAuthoredGames(env, userId, 2, 0));
+    expect((await listAuthoredGames(env, userId, 2)).map((work) => work.createdAt)).toEqual([30, 20]);
+  });
+
+  it('offset で読み飛ばしても他人の作品と removed は混ざらない（#552）', async () => {
+    // 絞り込みが `where` にあるので、読み飛ばしは**自分の、removed でない行**の上で数える。
+    const mine = await seedUser('list-offset-mine');
+    const theirs = await seedUser('list-offset-theirs');
+    const oldest = await seedGame(mine, { createdAt: 10 });
+    await seedGame(mine, { createdAt: 30 });
+    await seedGame(mine, { createdAt: 20, status: 'removed' });
+    await seedGame(theirs, { createdAt: 25 });
+
+    expect((await listAuthoredGames(env, mine, 10, 1)).map((work) => work.id)).toEqual([oldest]);
+  });
+
+  it('不正な offset は問い合わせる前に落とす（#552）', async () => {
+    // **SQLite は `OFFSET -1` を 0 として黙って受け入れる。** 負の位置が通ると 1 頁目を返して「動いて」しまう。
+    const userId = await seedUser('list-bad-offset');
+    await seedGame(userId);
+
+    for (const offset of [-1, -20, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(listAuthoredGames(env, userId, 20, offset)).rejects.toThrow(
+        /一覧の読み飛ばし件数が不正です/u,
+      );
+    }
+  });
 });
 
 describe('フォークの子は親を指す（5.3 / M5-1 / #32）', () => {

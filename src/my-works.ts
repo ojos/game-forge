@@ -124,20 +124,75 @@ import { looksStalled, workPagePath } from './work-page.js';
 export { MY_WORKS_PATH };
 
 /**
- * 一覧に並べる最大件数。
+ * 1 頁に並べる件数。
  *
- * **50 件。** 3.6 は読み取りの単価が安いと言っているが、**一覧はページを開くたびに引く**
- * ので上限は要る。50 は次の 2 つから決めた。
+ * **20 件**（#552）。作品をさがす（`src/works-list.ts` の `WORKS_PER_PAGE`）・いいねした作品と
+ * 同じ件数で、利用者が画面ごとに「1 頁に何件か」を覚えなくて済む。
  *
- * - **1 人の生成は 1 日 10 回まで**（確定25。#284 で 12 → 10）。50 件は 5 日分にあたり、
- *   「さっき作ったものが見当たらない」が起きない幅がある（**枠が減ったぶん、50 件で
- *   カバーできる日数はむしろ伸びた**）。
- * - 素の HTML で縦に並べて読める上限として、これ以上は「探す」より「たどる」画面になる。
+ * > **#552 注記（2026-09-15）。50 件で切る扱いをやめた。** #152 の時点では `MAX_LISTED_WORKS`
+ * > （50 件）まで並べて超えた分を落とし、「新しい 50 件までを表示しています」とだけ出していた。
+ * > 頁送りは「実際に超える利用者が出てから決める」としていた。**#459 の実機確認で、31 件の
+ * > 作品を持つ利用者が「作品の一覧にページングが必要」とメモした**——超える前に、1 頁に並ぶ
+ * > 件数そのものが読みにくかった。そこで、作品をさがすと同じ形の頁送りに置き換えた。
  *
- * **超えた分は落とす。** ページ送りは作らない。作るべきかは、**実際に超える利用者が
- * 出てから**決める（超えていることは画面に出す。{@link renderMyWorksPage}）。
+ * **値をあちらから借りない**（`src/liked-works.ts` の `LIKED_WORKS_PER_PAGE` と同じ判断）。
+ * 借りると「作品をさがすの件数を変えたら、この一覧も変わる」という結び付きが生まれる。
  */
-export const MAX_LISTED_WORKS = 50;
+export const MY_WORKS_PER_PAGE = 20;
+
+/**
+ * 頁数の上限。
+ *
+ * **`OFFSET` は読み飛ばした行も数える**（`src/works-list.ts` の `MAX_PAGE` と同じ理由）。
+ * 上限が無いと `?page=999999` の 1 本で、作者の索引の上を長く走らせられる。
+ *
+ * **50 頁（＝1,000 件）。** 作品をさがすと同じ値である。**1 人の生成は 1 日 10 回まで**
+ * （確定25）なので、1,000 件は毎日使い切って 100 日分にあたる。**ここに当たる利用者が
+ * 出たら、頁送りではなく続きの鍵で辿る形（keyset）へ変える時期である**
+ * （`src/works-list.ts` が同じことを書いている）。
+ */
+export const MAX_MY_WORKS_PAGE = 50;
+
+/**
+ * `?page=` の名前。**作品をさがす・いいねした作品と同じ綴りにする**（利用者が頁の綴りを
+ * 画面ごとに覚えない）。
+ */
+export const MY_WORKS_PAGE_PARAM = 'page';
+
+/**
+ * `?page=` を頁番号へ落とす（#552）。
+ *
+ * **落とすのであって、失敗させない**（`src/works-list.ts` の `toPageNumber` と同じ扱い）。
+ * 手で書き換えた URL が 400 を返すより、1 頁目が出るほうがよい。
+ *
+ * **上限（{@link MAX_MY_WORKS_PAGE}）を超える値も 1 頁目にする**（#552 の acceptance）。
+ * ここは作品をさがす（上限の頁へ寄せる）と違う。この一覧の上限は「そこまで作品を
+ * 持つ利用者がまだいない」値であり、上限を超えた番号は手で書き換えた URL と見なして、
+ * 読めない値と同じく先頭へ戻す。
+ *
+ * @param value クエリの値（未指定なら null）
+ * @returns 1 以上 {@link MAX_MY_WORKS_PAGE} 以下の整数
+ */
+export function toMyWorksPageNumber(value: string | null): number {
+  const parsed = Number.parseInt(value ?? '', 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_MY_WORKS_PAGE) {
+    return 1;
+  }
+  return parsed;
+}
+
+/**
+ * この一覧の URL を組み立てる。
+ *
+ * **1 頁目には `?page=` を付けない**（`src/liked-works.ts` の `likedWorksPath` と同じ扱い）。
+ * 1 頁目の URL が 2 通りにならず、見出しやヘッダの導線（`MY_WORKS_PATH`）と同じ綴りになる。
+ *
+ * @param page 頁番号
+ * @returns アプリ用ホスト上の絶対パス
+ */
+export function myWorksPath(page: number): string {
+  return page <= 1 ? MY_WORKS_PATH : `${MY_WORKS_PATH}?${MY_WORKS_PAGE_PARAM}=${page}`;
+}
 
 /**
  * 一覧に出す状態の短い名前。
@@ -232,10 +287,12 @@ function renderRow(work: AuthoredGame, now: number): string {
 
 /** 画面を組み立てるのに必要なものだけを集めた入力。 */
 export interface MyWorksView {
-  /** 並べる作品（新しい順。既に {@link MAX_LISTED_WORKS} 件へ切ってある）。 */
+  /** 並べる作品（新しい順。既に {@link MY_WORKS_PER_PAGE} 件へ切ってある）。 */
   readonly works: readonly AuthoredGame[];
-  /** 上限を超えて作品があるか。 */
-  readonly truncated: boolean;
+  /** 頁番号（1 始まり。{@link toMyWorksPageNumber} を通した値）。 */
+  readonly page: number;
+  /** 次の頁があるか。 */
+  readonly hasNext: boolean;
   /** 現在時刻（UNIX 秒）。 */
   readonly now: number;
   /** 統計カードの数（2.3.13 / #382）。読めなかったときは null。 */
@@ -247,6 +304,41 @@ export interface MyWorksView {
   readonly quotaNotice: string;
   /** ヘッダのアバターの画像の URL（#380。`src/html.ts` の `headerAvatarUrl`）。 */
   readonly headerAvatar: string | null;
+}
+
+/**
+ * 頁送りと、作品が 0 本のときの導線に当てる小さい副のボタン（仕様 2.5.5。#474）。
+ * 見た目の正本は `public/assets/app.css` の `@section buttons` で、ここは当てる部品の名前だけを持つ。
+ */
+const SMALL_SECONDARY_BUTTON = 'gf-button gf-button-secondary gf-button-sm';
+
+/**
+ * 頁送りを組み立てる（#552）。
+ *
+ * **作品をさがす（`src/works-list.ts`）・いいねした作品（`src/liked-works.ts`）の頁送りと同じ形である。**
+ * 小さい副のボタンにし、「次」は右端に寄せる（`.gf-pager-next`。仕様 2.5.5 / #474）——前が無い 1 頁目でも、
+ * 次へ進む口の位置が頁によって動かない。**DOM の順は前 → 次のまま**（見た目の順＝Tab の順）。
+ * 無限スクロールも JavaScript も足さない（9.3）。押しても何も起きない導線を出さない（次が無ければ「次」を出さない）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML。前も次も無ければ空文字
+ */
+function renderPager(view: MyWorksView): string {
+  const links: string[] = [];
+  if (view.page > 1) {
+    links.push(
+      `<a class="${SMALL_SECONDARY_BUTTON}" href="${myWorksPath(view.page - 1)}">前の ${MY_WORKS_PER_PAGE} 件</a>`,
+    );
+  }
+  if (view.hasNext) {
+    links.push(
+      `<a class="${SMALL_SECONDARY_BUTTON} gf-pager-next" href="${myWorksPath(view.page + 1)}">次の ${MY_WORKS_PER_PAGE} 件</a>`,
+    );
+  }
+  if (links.length === 0) {
+    return '';
+  }
+  return `<nav class="gf-pager" aria-label="頁送り">${links.join('\n')}</nav>`;
 }
 
 /**
@@ -262,29 +354,28 @@ export function renderMyWorksPage(view: MyWorksView): string {
   // **作品が 0 本のときの「最初のゲームを生成する」は小さい副のボタン**（PR #505 の Copilot code review）。見出しの行の主
   // 「新しく生成する」と同じ行き先で、素のリンクのままだと主と並んで強さの違う導線が 2 つになる。作品をさがすの空の知らせの
   // 「最初の 1 本を作る」（`src/works-list.ts`）と同じ形である。
+  //
+  // **2 頁目以降で空なのは「まだ作品が無い」ではない**（#552。作品を消して頁が減った後の古い URL など）。
+  // 「まだ作品がありません」と言うと、作品を持つ本人に画面が嘘をつく（`src/liked-works.ts` の範囲の外の頁と同じ扱い）。
   const body =
-    view.works.length === 0
-      ? `<div class="gf-block gf-my-works-empty">
-<p>まだ作品がありません。</p>
-<p class="gf-my-works-empty-action"><a class="gf-button gf-button-secondary gf-button-sm" href="${GENERATE_PAGE_PATH}">最初のゲームを生成する</a></p>
-</div>`
-      : `<ul class="gf-block gf-block-rows gf-works">
+    view.works.length > 0
+      ? `<ul class="gf-block gf-block-rows gf-works">
 ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
-</ul>`;
-
-  // 上限に達したことを黙って隠さない。**「50 件ちょうど」と「51 件以上ある」を
-  // 区別できる形で引いている**（`showMyWorks` が 1 件多く引く）ので、本当に
-  // 溢れているときだけ出せる。
-  const truncated = view.truncated
-    ? `<p>新しい ${MAX_LISTED_WORKS} 件までを表示しています。</p>`
-    : '';
+</ul>`
+      : view.page === 1
+        ? `<div class="gf-block gf-my-works-empty">
+<p>まだ作品がありません。</p>
+<p class="gf-my-works-empty-action"><a class="${SMALL_SECONDARY_BUTTON}" href="${GENERATE_PAGE_PATH}">最初のゲームを生成する</a></p>
+</div>`
+        : `<p class="gf-block">この頁に並ぶ作品がありません。</p>`;
 
   // **ログイン済みとして組む。** この画面は未ログインでは開けない（{@link showMyWorks} が
   // ログインへ送る）ので、**外枠のためにセッションを 2 度検証しない**（2.3.7 / #331）。
   //
   // **「新しく生成する」は見出しの行の右の主のボタン（小）で、この画面の主はこの 1 つだけ**（仕様 2.5.5 / #473。承認した
   // モックアップ Version 6）。「いいねした作品」「公開されている作品をさがす」は一覧の下の副のボタン（小）である。
-  // **並びは HTML の順**（見出し → 新しく生成する → 説明 → 一覧 → 副のボタン）で、見た目の順と Tab の順が割れない。
+  // **並びは HTML の順**（見出し → 新しく生成する → 説明 → 一覧 → 頁送り → 副のボタン）で、見た目の順と Tab の順が割れない。
+  // 頁送りを一覧の直後に置くのは、作品をさがす・いいねした作品と同じ位置である（#552）。
   return `${siteHead({
     title: 'あなたの作品 - Game Forge',
     noindex: true,
@@ -298,7 +389,7 @@ ${renderMyWorksStats(view.stats, view.quotaNotice)}
 </div>
 <p>生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>
 ${body}
-${truncated}
+${renderPager(view)}
 <p class="gf-works-links"><a class="gf-button gf-button-secondary gf-button-sm" href="${LIKED_WORKS_PATH}">いいねした作品</a>
 <a class="gf-button gf-button-secondary gf-button-sm" href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a></p>
 ${siteFooter()}`;
@@ -337,10 +428,10 @@ async function loadStatsOrNull(env: Env, userId: string): Promise<MyWorksStats |
  * できることは結局ログインなので、そこまでを 1 往復で済ませる
  * （`src/invite-issuance.ts` の `showInvitePage` と同じ扱い）。
  *
- * **上限より 1 件多く引く。** 「ちょうど上限件あった」と「上限を超えている」は
- * 引いた件数だけでは区別できず、区別せずに注記を出すと**溢れていないのに溢れたと
- * 言う**ことになる。1 行余分に読むだけで区別が付く（3.6 の読み取り単価に対して
- * 無視できる）。
+ * **1 頁の件数より 1 件多く引く**（#552。いまの作法のまま）。「ちょうど 20 件で終わる」と
+ * 「21 件目がある」は引いた件数だけでは区別できず、区別せずに「次の 20 件」を出すと
+ * **押しても空の頁へ行く導線**になる。1 行余分に読むだけで区別が付く（3.6 の読み取り
+ * 単価に対して無視できる）。**統計と残枠は頁によらず同じものを引き、どの頁にも出す。**
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -356,15 +447,18 @@ async function showMyWorks(request: Request, env: Env): Promise<Response> {
 
   // **3 つは互いに依存しないので並べて引く。** 一覧・統計（集計 1 回）・残枠
   // （生成画面と同じ経路。`resolveAvailability` は読めなくても投げない）。
+  const page = toMyWorksPageNumber(new URL(request.url).searchParams.get(MY_WORKS_PAGE_PARAM));
   const [fetched, stats, availability] = await Promise.all([
-    listAuthoredGames(env, session.userId, MAX_LISTED_WORKS + 1),
+    listAuthoredGames(env, session.userId, MY_WORKS_PER_PAGE + 1, (page - 1) * MY_WORKS_PER_PAGE),
     loadStatsOrNull(env, session.userId),
     resolveAvailability(env, session.userId),
   ]);
   return html(
     renderMyWorksPage({
-      works: fetched.slice(0, MAX_LISTED_WORKS),
-      truncated: fetched.length > MAX_LISTED_WORKS,
+      works: fetched.slice(0, MY_WORKS_PER_PAGE),
+      page,
+      // 上限の頁では「次」を出さない（{@link MAX_MY_WORKS_PAGE}。出しても 1 頁目へ戻るだけの導線になる）。
+      hasNext: fetched.length > MY_WORKS_PER_PAGE && page < MAX_MY_WORKS_PAGE,
       now: Math.floor(Date.now() / 1000),
       stats,
       quotaNotice: availabilityNotice(availability),

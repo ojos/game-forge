@@ -2298,20 +2298,33 @@ export interface AuthoredGame {
  *
  * ここで既定値を持たない。**一覧は開くたびに引く**ので、上限は表示側の都合
  * （何件並べるか、次があることをどう示すか）と一体で決まる。値と根拠は
- * `src/my-works.ts` の `MAX_LISTED_WORKS` にある。
+ * `src/my-works.ts` の `MY_WORKS_PER_PAGE` / `MAX_MY_WORKS_PAGE` にある。
+ *
+ * # 続きは位置（offset）で取る（#552）
+ *
+ * 「あなたの作品」の頁送り（1 頁 20 件）のために `offset` を足した。**省略でき、既定は 0
+ * （先頭から引く）**なので、`offset` を渡さない呼び出しの結果は変わらない。
+ * {@link listPublishedForks} と同じ素朴な `limit` / `offset` の形で、**頁数の上限は
+ * 呼び出し側が置く**（`OFFSET` は読み飛ばした行も数えるため）。
+ * 読み飛ばしも作者の索引（`games_author_id_created_at_idx`）の上で行う。
  *
  * @param env バインディングと環境変数
  * @param authorId 作者の利用者 id
  * @param limit 引く最大件数（0 以上の整数）
+ * @param offset 読み飛ばす件数（0 以上の整数。既定は 0）
  * @returns 新しい順（同時刻は id の降順）の作品
- * @throws `limit` が 0 以上の整数でない場合
+ * @throws `limit` / `offset` が 0 以上の整数でない場合
  */
 export async function listAuthoredGames(
   env: Env,
   authorId: string,
   limit: number,
+  offset = 0,
 ): Promise<readonly AuthoredGame[]> {
   assertLimit(limit);
+  // **`OFFSET` にも同じ検査が要る**（{@link listPublishedForks} と同じ理由。SQLite は
+  // `OFFSET -1` を 0 として黙って受け入れる）。
+  assertLimit(offset, '読み飛ばし件数');
 
   // 並べ替えの 2 列目に `id` を置くのは、`created_at` が UNIX 秒で**同じ秒に作られた
   // 2 件の順序が決まらない**ためである（`migrations/0008_games_author_id_idx.sql`）。
@@ -2321,9 +2334,9 @@ export async function listAuthoredGames(
        from games
       where author_id = ? and status <> 'removed'
       order by created_at desc, id desc
-      limit ?`,
+      limit ? offset ?`,
   )
-    .bind(authorId, limit)
+    .bind(authorId, limit, offset)
     .all<{
       id: string;
       title: string;

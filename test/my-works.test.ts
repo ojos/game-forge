@@ -2,7 +2,13 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { LOGIN_PATH, OAUTH_COOKIE } from '../src/auth/google.js';
-import { DRAFT_STATUS, PUBLISHED_STATUS, REMOVED_STATUS, UNTITLED_TITLE } from '../src/games.js';
+import {
+  DRAFT_STATUS,
+  PUBLISHED_STATUS,
+  REMOVED_STATUS,
+  UNTITLED_TITLE,
+  listAuthoredGames,
+} from '../src/games.js';
 import { DEFAULT_GENERATION_MODEL_KEY } from '../src/generation-models.js';
 import {
   DAILY_QUOTA_MESSAGE_KEY,
@@ -25,10 +31,14 @@ import { DAILY_QUOTA_PER_USER } from '../src/quota.js';
 import { HOME_PATH } from '../src/home.js';
 import { formatJstMinutes, toIsoTimestamp } from '../src/jst.js';
 import {
-  MAX_LISTED_WORKS,
+  MAX_MY_WORKS_PAGE,
+  MY_WORKS_PAGE_PARAM,
   MY_WORKS_PATH,
+  MY_WORKS_PER_PAGE,
   displayTitleOf,
+  myWorksPath,
   rowStateOf,
+  toMyWorksPageNumber,
 } from '../src/my-works.js';
 import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
@@ -144,22 +154,70 @@ async function sessionCookie(userId: string): Promise<string> {
 }
 
 /**
+ * 作者の作品を、指定した件数だけまとめて入れる（#552 の頁送りの検査用）。
+ *
+ * **1 件ずつ `run` しない。** 1,000 件を超える検査があり、往復の数がそのまま検査の時間になる。
+ * `created_at` は `index` の昇順に 1 秒ずつずらす——**添字が大きいほど新しい**ので、
+ * 新しい順の一覧では配列を逆にした順に並ぶ。
+ *
+ * @param authorId 作者
+ * @param count 入れる件数
+ * @returns 作った作品の id（古い順）
+ */
+async function seedGames(authorId: string, count: number): Promise<string[]> {
+  const ids = Array.from({ length: count }, () => crypto.randomUUID());
+  const statement = env.DB.prepare(
+    `insert into games (id, author_id, status, title, go_version, created_at, generation_state)
+     values (?, ?, ?, 'タイトル', '', ?, 'ready')`,
+  );
+  for (let start = 0; start < count; start += 100) {
+    await env.DB.batch(
+      ids
+        .slice(start, start + 100)
+        .map((id, offset) => statement.bind(id, authorId, DRAFT_STATUS, 1_600_000_000 + start + offset)),
+    );
+  }
+  return ids;
+}
+
+/**
  * 一覧を開く。
  *
  * **経路表を通す。** ハンドラを直接呼ぶと、`src/app.ts` への登録漏れを見逃す。
  *
  * @param cookie `Cookie` ヘッダ（未ログインなら省略）
+ * @param search クエリ（`?page=2` など。省略なら付けない）
  * @returns レスポンス
  */
-async function openList(cookie?: string): Promise<Response> {
+async function openList(cookie?: string, search = ''): Promise<Response> {
   const headers: Record<string, string> = { accept: 'text/html' };
   if (cookie !== undefined) {
     headers['cookie'] = cookie;
   }
   return await handleAppRequest(
-    new Request(`${APP_ORIGIN}${MY_WORKS_PATH}`, { headers }),
+    new Request(`${APP_ORIGIN}${MY_WORKS_PATH}${search}`, { headers }),
     testEnv(),
   );
+}
+
+/**
+ * 頁送りの `<nav>` を取り出す。
+ *
+ * @param page 画面の HTML
+ * @returns 頁送りの HTML（出ていなければ空文字）
+ */
+function pagerOf(page: string): string {
+  return /<nav class="gf-pager" aria-label="頁送り">[\s\S]*?<\/nav>/u.exec(pageBodyOf(page))?.[0] ?? '';
+}
+
+/** 「前の 20 件」のリンク。 */
+function previousLink(page: number): string {
+  return `<a class="gf-button gf-button-secondary gf-button-sm" href="${myWorksPath(page)}">前の ${MY_WORKS_PER_PAGE} 件</a>`;
+}
+
+/** 「次の 20 件」のリンク（右端に寄せる `.gf-pager-next` 付き）。 */
+function nextLink(page: number): string {
+  return `<a class="gf-button gf-button-secondary gf-button-sm gf-pager-next" href="${myWorksPath(page)}">次の ${MY_WORKS_PER_PAGE} 件</a>`;
 }
 
 describe('経路の登録（#152）', () => {
@@ -339,55 +397,170 @@ describe('一覧の中身（#152 acceptance 1・3）', () => {
   });
 });
 
-describe('件数の上限（#152 constraints）', () => {
-  it('上限を超えると切り、切ったことを画面に出す', async () => {
+describe('頁送り（#552）', () => {
+  it('45 件の作者で、1 頁目 20 件・2 頁目 20 件・3 頁目 5 件になり、前／次が正しく出る', async () => {
     const userId = await seedUser();
-    const ids: string[] = [];
-    for (let index = 0; index <= MAX_LISTED_WORKS; index += 1) {
-      ids.push(await seedGame(userId, { createdAt: 1_600_000_000 + index }));
-    }
+    // 新しい順に並べた id（先頭がいちばん新しい）。
+    const newestFirst = (await seedGames(userId, 45)).reverse();
+    const cookie = await sessionCookie(userId);
 
-    const body = await (await openList(await sessionCookie(userId))).text();
-    const shown = ids.filter((id) => body.includes(id));
-    expect(shown).toHaveLength(MAX_LISTED_WORKS);
-    // 落ちるのは**いちばん古い 1 件**である。
-    expect(shown).not.toContain(ids[0]);
-    expect(body).toContain(`新しい ${MAX_LISTED_WORKS} 件`);
+    const pages = await Promise.all(
+      ['', `?${MY_WORKS_PAGE_PARAM}=2`, `?${MY_WORKS_PAGE_PARAM}=3`].map(
+        async (search) => await (await openList(cookie, search)).text(),
+      ),
+    );
+    const expected = [newestFirst.slice(0, 20), newestFirst.slice(20, 40), newestFirst.slice(40)];
+    pages.forEach((page, index) => {
+      const shown = newestFirst.filter((id) => page.includes(id));
+      // 件数だけでなく**どの作品か**を見る（2 頁目が 1 頁目と同じ 20 件を出しても件数は合う）。
+      expect(shown, `${index + 1} 頁目`).toEqual(expected[index]);
+      // 頁の中でも新しい順である。
+      const positions = shown.map((id) => page.indexOf(id));
+      expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+    });
+    expect(pages.map((page) => newestFirst.filter((id) => page.includes(id)).length)).toEqual([20, 20, 5]);
+
+    // 1 頁目: 前は無く、次は 2 頁目（`?page=` を付ける）。
+    expect(pagerOf(pages[0]!)).toBe(`<nav class="gf-pager" aria-label="頁送り">${nextLink(2)}</nav>`);
+    // 2 頁目: 前は 1 頁目（`?page=` を付けない綴り）、次は 3 頁目。DOM の順は前 → 次。
+    expect(pagerOf(pages[1]!)).toBe(`<nav class="gf-pager" aria-label="頁送り">${previousLink(1)}\n${nextLink(3)}</nav>`);
+    expect(myWorksPath(1)).toBe(MY_WORKS_PATH);
+    // 3 頁目: 前は 2 頁目で、次は無い（押しても空の頁へ行く導線を出さない）。
+    expect(pagerOf(pages[2]!)).toBe(`<nav class="gf-pager" aria-label="頁送り">${previousLink(2)}</nav>`);
+    expect(`${MY_WORKS_PATH}?${MY_WORKS_PAGE_PARAM}=2`).toBe(myWorksPath(2));
   });
 
-  it('上限ちょうどでは「切った」と言わない', async () => {
-    // 1 件多く引いているのは、この 2 つを区別するためである。区別せずに注記を出すと
-    // **溢れていないのに溢れたと言う**ことになる。
+  it('頁送りは一覧の直後で、「いいねした作品」などの副のボタンより前にある', async () => {
     const userId = await seedUser();
-    for (let index = 0; index < MAX_LISTED_WORKS; index += 1) {
-      await seedGame(userId, { createdAt: 1_600_000_000 + index });
-    }
-
-    const body = await (await openList(await sessionCookie(userId))).text();
-    expect(body).not.toContain(`新しい ${MAX_LISTED_WORKS} 件`);
+    const newestFirst = (await seedGames(userId, MY_WORKS_PER_PAGE + 1)).reverse();
+    const main = pageBodyOf(await (await openList(await sessionCookie(userId))).text());
+    const pager = main.indexOf('<nav class="gf-pager"');
+    expect(pager).toBeGreaterThan(main.indexOf(workPagePath(newestFirst[MY_WORKS_PER_PAGE - 1]!)));
+    expect(pager).toBeLessThan(main.indexOf(`href="${LIKED_WORKS_PATH}"`));
   });
+
+  it('ちょうど 20 件なら頁送りを出さない（1 件多く引いて「次」の有無を決める）', async () => {
+    const userId = await seedUser();
+    await seedGames(userId, MY_WORKS_PER_PAGE);
+    const page = await (await openList(await sessionCookie(userId))).text();
+    expect(pagerOf(page)).toBe('');
+    expect(page).not.toContain('gf-pager');
+  });
+
+  it('読めない `?page=`（0・負・文字列・上限を超える値）は 1 頁目になる', async () => {
+    const userId = await seedUser();
+    const newestFirst = (await seedGames(userId, 45)).reverse();
+    const cookie = await sessionCookie(userId);
+    const firstPage = newestFirst.slice(0, MY_WORKS_PER_PAGE);
+
+    // `2abc`・`2.5`・`2e3`・前後の空白・`02` は `parseInt` なら 2 頁目になる綴りである（PR #560 の Copilot code review）。
+    for (const value of [
+      '0', '-1', '-20', 'abc', '', String(MAX_MY_WORKS_PAGE + 1), '999999', '1e3',
+      '2abc', '2.5', '2e3', ' 2', '2 ', '02', '+2', '0x2',
+    ]) {
+      const page = await (await openList(cookie, `?${MY_WORKS_PAGE_PARAM}=${encodeURIComponent(value)}`)).text();
+      expect(newestFirst.filter((id) => page.includes(id)), `?page=${value}`).toEqual(firstPage);
+      expect(pagerOf(page), `?page=${value}`).toBe(`<nav class="gf-pager" aria-label="頁送り">${nextLink(2)}</nav>`);
+    }
+  });
+
+  it('`?page=` を頁番号へ落とす（純関数）', () => {
+    expect(toMyWorksPageNumber(null)).toBe(1);
+    expect(toMyWorksPageNumber('')).toBe(1);
+    expect(toMyWorksPageNumber('0')).toBe(1);
+    expect(toMyWorksPageNumber('-3')).toBe(1);
+    expect(toMyWorksPageNumber('abc')).toBe(1);
+    expect(toMyWorksPageNumber('2')).toBe(2);
+    expect(toMyWorksPageNumber(String(MAX_MY_WORKS_PAGE))).toBe(MAX_MY_WORKS_PAGE);
+    // 上限を超える値は上限の頁へ寄せず、1 頁目にする（#552 の acceptance）。
+    expect(toMyWorksPageNumber(String(MAX_MY_WORKS_PAGE + 1))).toBe(1);
+    expect(toMyWorksPageNumber('99999999999999999999')).toBe(1);
+    // 文字列全体が 1 から始まる 10 進の数字のときだけ数に直す（`parseInt` のように先頭の数字だけを読まない）。
+    for (const value of ['2abc', '2.5', '2e3', ' 2', '2 ', '\t2', '2\n', '02', '002', '+2', '0x2', '２']) {
+      expect(toMyWorksPageNumber(value), JSON.stringify(value)).toBe(1);
+    }
+    expect(toMyWorksPageNumber('10')).toBe(10);
+    expect(MY_WORKS_PER_PAGE).toBe(20);
+    expect(MAX_MY_WORKS_PAGE).toBe(50);
+  });
+
+  it('50 件を超えても「新しい 50 件までを表示しています」を出さず、51 件目以降も頁送りでたどれる', async () => {
+    const userId = await seedUser();
+    const newestFirst = (await seedGames(userId, 51)).reverse();
+    const cookie = await sessionCookie(userId);
+
+    const pages = await Promise.all(
+      [1, 2, 3].map(async (page) => await (await openList(cookie, page === 1 ? '' : `?page=${page}`)).text()),
+    );
+    for (const page of pages) {
+      expect(page).not.toContain('新しい 50 件までを表示しています');
+      expect(page).not.toContain('件までを表示しています');
+    }
+    // #152 の形では落ちていた、いちばん古い 1 件が 3 頁目に出る。
+    expect(pages[2]).toContain(newestFirst[50]);
+  });
+
+  it('統計と残りの生成枠は、どの頁にも出る', async () => {
+    const userId = await seedUser();
+    await seedGames(userId, 45);
+    await seedLedgerRow(userId);
+    const cookie = await sessionCookie(userId);
+
+    for (const search of ['', '?page=2', '?page=3']) {
+      const page = await (await openList(cookie, search)).text();
+      // 統計は頁ではなく作者の全作品で数える（2 頁目で「作品数 20」にならない）。
+      expect(statCardsOf(page)['作品数'], search).toBe('45');
+      expect(paragraphById(page, 'works-quota'), search).toBe(remainingQuotaNotice(DAILY_QUOTA_PER_USER - 1));
+    }
+  });
+
+  it('作品のある利用者が範囲の外の頁を開いても「まだ作品がありません」と言わない', async () => {
+    const userId = await seedUser();
+    await seedGames(userId, 3);
+    const page = await (await openList(await sessionCookie(userId), '?page=5')).text();
+
+    expect(page).toContain('<p class="gf-block">この頁に並ぶ作品がありません。</p>');
+    expect(page).not.toContain('まだ作品がありません');
+    // 戻る口は出す（前の頁）。次は出さない。
+    expect(pagerOf(page)).toBe(`<nav class="gf-pager" aria-label="頁送り">${previousLink(4)}</nav>`);
+  });
+
+  it(`上限の ${MAX_MY_WORKS_PAGE} 頁目では、続きがあっても「次」を出さない`, async () => {
+    // 51 頁目は 1 頁目に戻るので、「次」を出すと押しても先頭へ戻るだけの導線になる。
+    const userId = await seedUser();
+    const newestFirst = (await seedGames(userId, MY_WORKS_PER_PAGE * MAX_MY_WORKS_PAGE + 1)).reverse();
+    const page = await (await openList(await sessionCookie(userId), `?page=${MAX_MY_WORKS_PAGE}`)).text();
+
+    const last = (MAX_MY_WORKS_PAGE - 1) * MY_WORKS_PER_PAGE;
+    expect(newestFirst.filter((id) => page.includes(id))).toEqual(newestFirst.slice(last, last + MY_WORKS_PER_PAGE));
+    expect(pagerOf(page)).toBe(`<nav class="gf-pager" aria-label="頁送り">${previousLink(MAX_MY_WORKS_PAGE - 1)}</nav>`);
+  }, 30_000);
 });
 
 describe('索引（migrations/0008）', () => {
-  it('一覧の問い合わせが索引を使い、並べ替えのための一時 B-tree を作らない', async () => {
+  it('一覧の問い合わせが索引を使い、並べ替えのための一時 B-tree を作らない（頁を送っても同じ）', async () => {
     // **索引が「存在すること」を見ない。** 存在の検査は、索引を使えない形へ問い合わせを
     // 書き換えても通る。ここで見たいのは「この問い合わせが実際にそれを使うか」である
     // （shared-ai-rules 12 章）。
-    const plan = await env.DB.prepare(
-      `explain query plan
-       select id, title, generation_state, created_at, generation_started_at
-         from games
-        where author_id = ? and status <> 'removed'
-        order by created_at desc, id desc
-        limit ?`,
-    )
-      .bind('someone', 1)
-      .all<{ detail: string }>();
-    const detail = plan.results.map((row) => row.detail).join(' | ');
+    //
+    // **SQL を書き写さない**（#552）。`listAuthoredGames` が実際に `prepare` した文を拾って計画を見る。
+    // 書き写すと、`offset` を足した・並びを変えたときに、検査だけが古い文を見続ける。
+    const { env: recording, prepared } = recordingEnv();
+    await listAuthoredGames(recording, 'someone', MY_WORKS_PER_PAGE + 1, MY_WORKS_PER_PAGE);
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]).toMatch(/limit \? offset \?/u);
 
-    expect(detail).toContain('games_author_id_created_at_idx');
-    // 一時 B-tree が出るなら、`limit` があっても**その作者の全行を読んでから並べている**。
-    expect(detail).not.toContain('TEMP B-TREE');
+    for (const offset of [0, MY_WORKS_PER_PAGE * (MAX_MY_WORKS_PAGE - 1)]) {
+      const plan = await env.DB.prepare(`explain query plan ${prepared[0]!}`)
+        .bind('someone', MY_WORKS_PER_PAGE + 1, offset)
+        .all<{ detail: string }>();
+      const detail = plan.results.map((row) => row.detail).join(' | ');
+
+      expect(detail).toContain('SEARCH');
+      expect(detail).toContain('games_author_id_created_at_idx');
+      // 一時 B-tree が出るなら、`limit` があっても**その作者の全行を読んでから並べている**。
+      expect(detail).not.toContain('TEMP B-TREE');
+    }
   });
 });
 

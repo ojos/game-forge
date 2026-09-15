@@ -564,6 +564,42 @@ describe('削除の口（POST /api/works/delete）', () => {
     expect(await response.json()).toEqual({ deleted: true, result: 'deleted' });
   });
 
+  it('本文を JSON で送っても作品 id を読み、他人の作品は消さない（PR #532 のレビュー指摘）', async () => {
+    const author = await seedUser();
+    const someone = await seedUser();
+    /** 本文を `application/json` で送る（{@link postDelete} はフォームの形でしか送らない）。 */
+    const postJson = async (body: string, cookie: string): Promise<Response> =>
+      await handleAppRequest(
+        new Request(`${APP_ORIGIN}${WORK_DELETE_PATH}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'application/json', cookie },
+          body,
+        }),
+        testEnv(),
+      );
+
+    const others = await seedWork({ authorId: author, status: 'draft', generationState: 'ready' });
+    const refused = await postJson(
+      JSON.stringify({ [WORK_DELETE_GAME_ID_FIELD]: others.id }),
+      await sessionCookie(someone),
+    );
+    expect(refused.status).toBe(404);
+    expect((await gameRow(others.id))?.title).toBe(others.title);
+
+    // 壊れた JSON は id として読まない（何も消さない）。
+    const broken = await postJson(`{"${WORK_DELETE_GAME_ID_FIELD}": "${others.id}"`, await sessionCookie(author));
+    expect(broken.status).toBe(400);
+    expect((await gameRow(others.id))?.title).toBe(others.title);
+
+    const deleted = await postJson(
+      JSON.stringify({ [WORK_DELETE_GAME_ID_FIELD]: others.id }),
+      await sessionCookie(author),
+    );
+    expect(deleted.status).toBe(200);
+    expect(await deleted.json()).toEqual({ deleted: true, result: 'deleted' });
+    expect(await gameRow(others.id)).toBeNull();
+  });
+
   it('断りの文言の表は、理由ごとに見出しが分かれ、状態の断りは 409・見つからないは 404', () => {
     const reasons: readonly (GameDeletionRejection | 'not-found' | 'purged')[] = [
       'not-found',

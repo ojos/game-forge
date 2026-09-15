@@ -5,6 +5,7 @@ import { LOGIN_PATH, LOGOUT_PATH } from '../src/auth/google.js';
 import {
   BREADCRUMB_PARENTS,
   HEADER_SEARCH_INPUT_IDS,
+  READING_CLASS,
   breadcrumbLabelOf,
   resolveSiteViewer,
   siteHead,
@@ -395,6 +396,23 @@ describe('パンくず（2.3.10 / #372）', () => {
 
   it('`viewer` を省いた画面（POST の結果）には出さない', () => {
     expect(breadcrumbOf(siteHead({ title: '公開しました - Game Forge' }))).toBeNull();
+  });
+
+  it('`reading` を省いた画面の出力は、`reading: false` と 1 文字も違わない（既存の呼び出しを変えない。#564）', () => {
+    const viewer = siteViewerAt(ACCOUNT_PATH, true, null);
+    const omitted = siteHead({ title: '登録情報 - Game Forge', viewer });
+    expect(siteHead({ title: '登録情報 - Game Forge', viewer, reading: false })).toBe(omitted);
+    expect(omitted).not.toContain(READING_CLASS);
+  });
+
+  it('`reading: true` はパンくずの `<nav>` にだけ読み物の器の印を足し、ほかは変えない（仕様 2.5.3 / #564）', () => {
+    const viewer = siteViewerAt('/privacy', false, null);
+    const plain = siteHead({ title: 'プライバシーポリシー - Game Forge', viewer });
+    const reading = siteHead({ title: 'プライバシーポリシー - Game Forge', viewer, reading: true });
+    expect(reading).toBe(
+      plain.replace('<nav class="gf-breadcrumb"', `<nav class="gf-breadcrumb ${READING_CLASS}"`),
+    );
+    expect(reading.split(READING_CLASS).length - 1).toBe(1);
   });
 
   it('ヘッダの直後に出る（本文より前）', () => {

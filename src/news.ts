@@ -29,7 +29,7 @@
 import type { NewsArticle } from './news-articles.js';
 import { NEWS_ARTICLES, NEWS_CATEGORY_LABELS } from './news-articles.js';
 import type { SiteViewer } from './html.js';
-import { escapeHtml, resolveSiteViewer, siteHead } from './html.js';
+import { READING_CLASS, escapeHtml, resolveSiteViewer, siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import { NEWS_PATH, newsArticlePath } from './news-paths.js';
 import type { Route } from './routes.js';
@@ -211,19 +211,24 @@ ${siteFooter()}
  *
  * **本文は 42rem のまま**（長い文を読ませる画面。仕様 2.5.3）。**一覧へ戻る導線は小さい副のボタン**（2.5.5。移動なので `<a>`）。
  *
+ * **記事と一覧へ戻る導線を、1 つの読み物の器（`READING_CLASS`）で包む**（仕様 2.5.3 / #564）。記事（`<article>`）の
+ * 外にあるボタンも、パンくず・見出し・段落と同じ 42rem の器の端に揃える。
+ *
  * @param article 記事
  * @param viewer いま見ている人と画面
  * @returns HTML
  */
 function newsArticlePage(article: NewsArticle, viewer: SiteViewer): string {
   const paragraphs = article.body.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join('\n');
-  return `${siteHead({ title: `${article.title} - Game Forge`, viewer })}
+  return `${siteHead({ title: `${article.title} - Game Forge`, viewer, reading: true })}
+<div class="${READING_CLASS}">
 <article class="gf-news-article">
 ${articleMeta(article)}
 <h1>${escapeHtml(article.title)}</h1>
 ${paragraphs}
 </article>
 <p class="gf-news-more"><a class="gf-button gf-button-secondary gf-button-sm" href="${NEWS_PATH}">お知らせの一覧へ</a></p>
+</div>
 ${siteFooter()}
 `;
 }

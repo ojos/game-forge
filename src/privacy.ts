@@ -54,7 +54,7 @@ import { FAQ_PATH, PRIVACY_PATH, TAKEDOWN_PATH, TERMS_PATH } from './legal-paths
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import type { SiteViewer } from './html.js';
-import { escapeHtml, resolveSiteViewer, siteHead } from './html.js';
+import { READING_CLASS, escapeHtml, resolveSiteViewer, siteHead } from './html.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO, OPERATOR_NAME } from './service-contact.js';
 import { OAUTH_COOKIE_MAX_AGE, SESSION_MAX_AGE } from './auth/google.js';
 import { AVATAR_HISTORY_RETENTION_DAYS, AVATAR_OUTPUT_SIZE } from './avatar.js';
@@ -99,7 +99,8 @@ export function privacyBody(contact: PrivacyContact): string {
   const sessionDays = Math.round(SESSION_MAX_AGE / (60 * 60 * 24));
   const oauthMinutes = Math.round(OAUTH_COOKIE_MAX_AGE / 60);
   // **暫定版の但し書きはブロック（`.gf-block`）で、器の幅いっぱいに面を置く**（仕様 2.5.3 / #471）。本文は 42rem のまま。
-  return `<div class="gf-legal">
+  // **器は読み物の器**（`READING_CLASS`。42rem の幅で中央に置く。仕様 2.5.3 / #564）。
+  return `<div class="gf-legal ${READING_CLASS}">
 <h1>プライバシーポリシー</h1>
 <p class="gf-block gf-draft-notice"><strong>このプライバシーポリシーはクローズドβ向けの暫定版です。</strong>
    法律の専門家による確認を受ける前の文面であり、正式公開までに変更されることがあります。</p>
@@ -261,7 +262,7 @@ export function privacyBody(contact: PrivacyContact): string {
  * @returns HTML
  */
 function privacyPage(viewer: SiteViewer): string {
-  return `${siteHead({ title: PRIVACY_TITLE, viewer })}
+  return `${siteHead({ title: PRIVACY_TITLE, viewer, reading: true })}
 ${privacyBody(SERVICE_PRIVACY_CONTACT)}
 ${siteFooter()}
 `;

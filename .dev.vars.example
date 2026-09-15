@@ -55,7 +55,8 @@
 BEDROCK_AWS_REGION=
 BEDROCK_AWS_ACCESS_KEY_ID=
 BEDROCK_AWS_SECRET_ACCESS_KEY=
-# 一時資格情報（SSO）を使うときだけ入れる。長命キーでは空のままにする。
+# ローカルでは空のまま。オーケストレータは実行ロールの一時資格情報をこの名前へ写して使う
+# （src/orchestrator/handler.ts）。
 BEDROCK_AWS_SESSION_TOKEN=
 
 # ビルド関数（AWS Lambda `game-forge-build`）を呼ぶための AWS 資格情報

@@ -1174,23 +1174,57 @@ describe('登録情報の見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5
     }
   });
 
-  it('プロフィールのタブは、表示名・アイコン・自己紹介と外部リンクを 1 つずつブロックにし、この順に並べる', async () => {
+  it('プロフィールのタブは、表示名・自己紹介と外部リンク・アイコンを 1 つずつブロックにし、表示名と自己紹介を左の列に包んでこの順に並べる', async () => {
+    // #551: 利用者が撮影した 3 案から選んだ並び。**DOM の順＝見た目の順＝Tab の順**なので、HTML の並びそのものを固定する。
     const userId = await seedUser();
     const body = pageBodyOf(await (await openAccount(await cookieFor(userId))).text());
     const blocks = /<div class="gf-account-blocks">([\s\S]*)<\/div>\n<p class="gf-account-author">/u.exec(body)?.[1] ?? '';
     expect(blocks, 'ブロックの並びが無い').not.toBe('');
-    const order = [
-      `action="${ACCOUNT_DISPLAY_NAME_PATH}"`,
-      '<section class="gf-block gf-account-block" aria-labelledby="account-avatar-heading">\n<h2 id="account-avatar-heading">アイコン</h2>',
-      '<section class="gf-block gf-account-block" aria-labelledby="account-profile-heading">\n<h2 id="account-profile-heading">自己紹介と外部リンク</h2>',
-    ].map((part) => blocks.indexOf(part));
+    const nameBlock = `action="${ACCOUNT_DISPLAY_NAME_PATH}"`;
+    const profileBlock =
+      '<section class="gf-block gf-account-block" aria-labelledby="account-profile-heading">\n<h2 id="account-profile-heading">自己紹介と外部リンク</h2>';
+    const avatarBlock =
+      '<section class="gf-block gf-account-block" aria-labelledby="account-avatar-heading">\n<h2 id="account-avatar-heading">アイコン</h2>';
+    const order = [nameBlock, profileBlock, avatarBlock].map((part) => blocks.indexOf(part));
     expect(order.every((position) => position >= 0), order.join(',')).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(blocks.match(/class="gf-block gf-account-block"/gu) ?? []).toHaveLength(3);
+    // 格子の子は 2 つ: 左の列（表示名 → 自己紹介）と、その直後のアイコンのブロック。**アイコンを列の中へ入れない**
+    // （入れると 1 列の縦積みになり、広い段で 2 列にならない）。
+    // 左の列の終わりは「`</div>` の直後にアイコンのブロックが来る」ところで決める（表示名のブロックも `</div>` で閉じるため）。
+    const columns =
+      /^\n<div class="gf-account-column">\n([\s\S]*?)\n<\/div>\n(<section class="gf-block gf-account-block" aria-labelledby="account-avatar-heading">[\s\S]*<\/section>)\n$/u.exec(
+        blocks,
+      );
+    expect(columns, '左の列とアイコンのブロックの形が違う').not.toBeNull();
+    const [, left = '', right = ''] = columns ?? [];
+    expect(left).toContain(nameBlock);
+    expect(left).toContain(profileBlock);
+    expect(left).not.toContain('account-avatar-heading');
+    expect(left.match(/class="gf-block gf-account-block"/gu) ?? []).toHaveLength(2);
+    expect(right.startsWith(avatarBlock), right.slice(0, 120)).toBe(true);
+    expect(right.match(/class="gf-block gf-account-block"/gu) ?? []).toHaveLength(1);
     // 自分の作者ページへの導線は小さい副のボタン（移動なので `<a>`）。
     expect(body).toContain(
       `<p class="gf-account-author"><a class="gf-button gf-button-secondary gf-button-sm" href="${authorPagePath(userId)}">自分の作者ページを見る</a></p>`,
     );
+  });
+
+  it('@section account は幅の断点も並べ替えも持たず、左の列のブロックの間は格子の間と同じ gap にする', () => {
+    // #551: 見た目の順を CSS で入れ替えない（`order` / `grid-template-areas` / `display: contents`）。幅の `@media` は `@section shell` だけが持つ。
+    const css = env.TEST_APP_CSS;
+    const start = css.indexOf('\n   @section account');
+    const end = css.indexOf('\n   @section ', start + 1);
+    expect(start).toBeGreaterThan(0);
+    const section = css.slice(start, end).replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+    expect(section).not.toMatch(/@media|(^|[\s;{])order\s*:|grid-template-areas|display:\s*contents/u);
+    // 表示名と自己紹介の間（列の中）と、狭い段での自己紹介とアイコンの間（格子）を同じ値にする。
+    const gapOf = (selector: string): string | undefined =>
+      new RegExp(`(?:^|\\n)${selector.replaceAll('.', '\\.')}\\s*\\{([^}]*)\\}`, 'u').exec(section)?.[1]?.match(/(?:^|[\s;])gap:\s*([^;]+);/u)?.[1];
+    expect(gapOf('.gf-account-blocks')).toBe('var(--gf-gap-4)');
+    expect(gapOf('.gf-account-column')).toBe('var(--gf-gap-4)');
+    // 列ごとに縦に積む（行で高さを揃える格子にしない）。
+    expect(section).toMatch(/\n\.gf-account-column\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/u);
   });
 
   it('変更の完了の知らせはブロックである', async () => {

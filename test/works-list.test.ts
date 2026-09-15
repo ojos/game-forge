@@ -17,6 +17,7 @@ import { REVIEW_QUEUED } from '../src/reports.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
 import { WORK_PAGE_PREFIX, workPagePath } from '../src/work-page.js';
 import {
+  CLEAR_FILTER_LABEL,
   MAX_PAGE,
   MOVED_NOTICE,
   PUBLIC_WORKS_PATH,
@@ -807,6 +808,114 @@ describe('キーワード検索の画面（#378 / 仕様 2.3.5）', () => {
       expect(worksSearchCacheKey(upper.key, 1, null)).toBe(worksSearchCacheKey(lower.key, 1, null));
     }
     expect(key).not.toBe(listCacheKey('works', { sort: 'recent', page: 1 }));
+  });
+});
+
+describe('絞り込みを外す導線（#547）', () => {
+  const viewer = siteViewerAt(PUBLIC_WORKS_PATH, false, null);
+  const CLEAR_LINK = new RegExp(
+    `<p class="gf-works-clear-filter"><a class="gf-button gf-button-secondary gf-button-sm" href="([^"]*)">${CLEAR_FILTER_LABEL}</a></p>`,
+    'gu',
+  );
+
+  /**
+   * 描いた画面から導線を取り出す。
+   *
+   * @param body 画面の HTML
+   * @returns 導線の href と、画面の中の位置（無ければ空の配列）
+   */
+  function clearLinks(body: string): { readonly href: string; readonly index: number }[] {
+    return [...body.matchAll(CLEAR_LINK)].map((match) => ({ href: match[1]!, index: match.index }));
+  }
+
+  it('タグだけ・検索だけ・両方・断った検索の 4 つで 1 つだけ出て、行き先はタグも q も含まない 1 頁目である', () => {
+    const cases = [
+      // **タグだけのときは、いまの軸を保つ**（フォークされた数で並べていれば、外してもフォークされた数）。
+      { name: 'タグだけ', tag: 'puzzle', search: undefined, sort: 'forked', expected: 'forked' },
+      // **検索しているときは既定（新着）にする。** 描画に別の軸が渡っても新着へ戻す。
+      { name: '検索だけ', tag: null, search: parseWorkSearch('宇宙'), sort: 'forked', expected: 'recent' },
+      { name: '両方', tag: 'puzzle', search: parseWorkSearch('宇宙'), sort: 'forked', expected: 'recent' },
+      { name: '断った検索', tag: null, search: parseWorkSearch('宇'), sort: 'forked', expected: 'recent' },
+      { name: '断った検索とタグ', tag: 'idle', search: parseWorkSearch('宇'), sort: 'recent', expected: 'recent' },
+    ] as const;
+    for (const { name, tag, search, sort, expected } of cases) {
+      const body = renderWorksListPage({ works: [], sort, page: 3, hasNext: false, tag, search }, viewer);
+      const links = clearLinks(body);
+      expect(links, name).toHaveLength(1);
+      const href = links[0]!.href;
+      expect(href, name).toBe(worksListPath(expected, 1));
+      const url = new URL(href, APP_ORIGIN);
+      expect(url.pathname, name).toBe(PUBLIC_WORKS_PATH);
+      expect(url.searchParams.has(WORK_TAG_FIELD), name).toBe(false);
+      expect(url.searchParams.has(WORK_SEARCH_FIELD), name).toBe(false);
+      expect(url.searchParams.get('sort'), name).toBe(expected);
+      expect(url.searchParams.get('page'), name).toBe('1');
+    }
+  });
+
+  it('絞り込んでいない一覧には出ない（どの軸・どの頁でも）', () => {
+    for (const sort of PUBLIC_WORK_SORTS) {
+      for (const search of [undefined, parseWorkSearch(null), parseWorkSearch('')]) {
+        const body = renderWorksListPage({ works: [], sort, page: 2, hasNext: true, tag: null, search }, viewer);
+        expect(body, sort).not.toContain(CLEAR_FILTER_LABEL);
+        expect(body, sort).not.toContain('gf-works-clear-filter');
+      }
+    }
+  });
+
+  it('絞り込みを示す行（断った検索では理由のブロック）のすぐ後ろ、並べ替えより前に出る', () => {
+    const both = renderWorksListPage(
+      { works: [], sort: 'recent', page: 1, hasNext: false, tag: 'puzzle', search: parseWorkSearch('宇宙') },
+      viewer,
+    );
+    const [bothLink] = clearLinks(both);
+    expect(bothLink).toBeDefined();
+    expect(both.indexOf('<p class="gf-tag-filtered">タグ「パズル」の作品</p>')).toBeLessThan(bothLink!.index);
+    expect(both).toContain(
+      `<p class="gf-search-filtered">「宇宙」の検索結果</p>\n<p class="gf-works-clear-filter">`,
+    );
+    expect(bothLink!.index).toBeLessThan(both.indexOf(`<p class="gf-sort">${SEARCH_SORT_NOTICE}</p>`));
+
+    const tagOnly = renderWorksListPage({ works: [], sort: 'forked', page: 1, hasNext: false, tag: 'idle' }, viewer);
+    expect(tagOnly).toContain('<p class="gf-tag-filtered">タグ「放置」の作品</p>\n<p class="gf-works-clear-filter">');
+    expect(clearLinks(tagOnly)[0]!.index).toBeLessThan(tagOnly.indexOf('<nav class="gf-sort"'));
+
+    const rejected = renderWorksListPage(
+      { works: [], sort: 'recent', page: 1, hasNext: false, search: parseWorkSearch('宇') },
+      viewer,
+    );
+    expect(rejected).toContain(
+      `<p class="gf-block gf-search-rejected">${SEARCH_REJECTION_MESSAGES['too-short']}</p>\n<p class="gf-works-clear-filter">`,
+    );
+  });
+
+  it('結果が 0 件のときの「検索をやめて一覧を見る」（タグは保つ）は変わらず、導線と別に出る', () => {
+    const body = renderWorksListPage(
+      { works: [], sort: 'recent', page: 1, hasNext: false, tag: 'puzzle', search: parseWorkSearch('宇宙') },
+      viewer,
+    );
+    expect(body).toContain(
+      `<a class="gf-button gf-button-secondary gf-button-sm" href="${worksListPath('recent', 1, 'puzzle')}">検索をやめて一覧を見る</a>`,
+    );
+    expect(clearLinks(body).map((link) => link.href)).toEqual([worksListPath('recent', 1)]);
+  });
+
+  it('経路を通しても、タグと検索語で絞った画面に導線が出て、押した先には導線も検索語も出ない', async () => {
+    const author = await seedUser('絞り込みを外す作者');
+    const tagged = await seedGame(author, { title: '外す前の風車', tags: ['puzzle'] });
+
+    const filtered = await (await openList(`?tag=puzzle&q=${encodeURIComponent('風車')}`)).text();
+    expect(filtered).toContain(workPagePath(tagged));
+    const [link] = clearLinks(filtered);
+    expect(link?.href).toBe(worksListPath('recent', 1));
+
+    const cleared = await (await openList(link!.href.slice(PUBLIC_WORKS_PATH.length))).text();
+    expect(cleared).not.toContain('gf-works-clear-filter');
+    expect(cleared).not.toContain('gf-tag-filtered');
+    expect(cleared).not.toContain('gf-search-filtered');
+    // **ヘッダの検索窓は空に戻る**（`q` が無いので値を持たない）。
+    expect(cleared).toMatch(/<input id="gf-header-search-q"/u);
+    expect(cleared).not.toMatch(/<input id="gf-header-search-q[^"]*"[^>]* value=/u);
   });
 });
 

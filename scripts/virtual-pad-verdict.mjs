@@ -13,12 +13,13 @@
 // | 5 | 押したままゲームの iframe へフォーカスを移しても `keyup` は届かず、指を離すと届く。押したままゲーム以外へフォーカスを移すと、iframe を残したまま `keyup` が届き（親の release）、その後に指を離しても何も届かない。押したまま覆いを閉じると `keyup` が届き、閉じた後に指を離しても何も届かない |
 // | 6 | キーの集合が空の作品では、パッドの置き場所が空で、ゲームの領域が覆いの残りいっぱいを使う |
 // | 7 | 長いキー名を 4 つ含む作品でも、縦持ち 390px・横持ちで、ボタンが画面と置き場所の幅を超えず、文字がキーに収まり、正式な名前を読み上げに持つ |
+// | 8 | **公開前の作品を作者で開いても（#575）**、覆い・口・「遊ぶ」のボタンが 1 つずつで、タッチ端末では口が見えてタップで覆いが開き、iframe は `--draft-src`（`/p/`）を `sandbox="allow-scripts"` で指し、パッドの左がキーとして届き、閉じられる。デスクトップでは口が隠れ、覆いは開かず、状態のブロックの直後に同じ iframe が入って起動する。試遊 URL のリンクが残る。どちらの形でもプレイ数を計上しない（`POST /api/plays` が 0 回） |
 //
 // **表示規則（どのキーをどこに出すか）はここへ書き写さない。** 規則は `src/virtual-pad.ts` の単体テストが見る。ここは、出したキーが
 // 保存した集合の中にあること（`--codes`）と、観測に使う ArrowLeft / ArrowRight / Space があることだけを見る。
 //
 // 使い方:
-//   node scripts/virtual-pad-verdict.mjs --probe <json> --codes <保存したキーの JSON 配列> --label <prefix>
+//   node scripts/virtual-pad-verdict.mjs --probe <json> --codes <保存したキーの JSON 配列> --draft-src <公開前の作品の試遊 URL> --label <prefix>
 //
 // 終了コード: 0 = 合格 / 1 = 不合格・判定不能
 
@@ -34,7 +35,7 @@ const TOLERANCE = 1;
  * コマンドライン引数を読む。
  *
  * @param {string[]} argv `process.argv.slice(2)`
- * @returns {{probe: string, codes: string[], label: string}} 設定
+ * @returns {{probe: string, codes: string[], draftSrc: string, label: string}} 設定
  */
 function parseArgs(argv) {
   /** @type {Record<string, string>} */
@@ -47,14 +48,14 @@ function parseArgs(argv) {
     }
     values[name.slice(2)] = value;
   }
-  if (values['probe'] === undefined || values['codes'] === undefined) {
-    throw new Error('--probe と --codes は必須です');
+  if (values['probe'] === undefined || values['codes'] === undefined || values['draft-src'] === undefined) {
+    throw new Error('--probe と --codes と --draft-src は必須です');
   }
   const codes = JSON.parse(values['codes']);
   if (!Array.isArray(codes) || !codes.every((code) => typeof code === 'string')) {
     throw new Error(`--codes は文字列の JSON 配列です: ${values['codes']}`);
   }
-  return { probe: values['probe'], codes, label: values['label'] ?? '[virtual-pad]' };
+  return { probe: values['probe'], codes, draftSrc: values['draft-src'], label: values['label'] ?? '[virtual-pad]' };
 }
 
 /**
@@ -83,9 +84,10 @@ function sameSequence(events, expected) {
  *
  * @param {any} result 観測結果
  * @param {string[]} storedCodes 保存したキーの集合
+ * @param {string} draftSrc 公開前の作品の試遊 URL（`/p/<preview_key>/`。#575）
  * @returns {string[]} 不合格の理由（空なら合格）
  */
-function problemsOf(result, storedCodes) {
+function problemsOf(result, storedCodes, draftSrc) {
   /** @type {string[]} */
   const problems = [];
   const touch = result.touch ?? {};
@@ -383,13 +385,121 @@ function problemsOf(result, storedCodes) {
       }
     }
   }
+  // ── 8. 公開前の作品ページ（#575）───────────────────────────────────────────────
+  problems.push(...draftProblemsOf(result.draft ?? {}, storedCodes, draftSrc));
+  return problems;
+}
+
+/**
+ * 公開前の作品ページ（#575）を判定する。
+ *
+ * @param {any} draft 観測結果の `draft`
+ * @param {string[]} storedCodes 保存したキーの集合
+ * @param {string} draftSrc 公開前の作品の試遊 URL
+ * @returns {string[]} 不合格の理由
+ */
+function draftProblemsOf(draft, storedCodes, draftSrc) {
+  /** @type {string[]} */
+  const problems = [];
+  if (!draftSrc.includes('/p/')) {
+    problems.push(`8 の前提: --draft-src が試遊 URL（/p/）ではありません（${draftSrc}）。`);
+    return problems;
+  }
+  const desktop = draft.desktop ?? {};
+  for (const [name, part] of [
+    ['公開前の作品（タッチ端末）', draft],
+    ['公開前の作品（デスクトップ）', desktop],
+  ]) {
+    if (typeof part.error === 'string') {
+      problems.push(`${name}の観測が途中で止まりました: ${part.error}`);
+    }
+    if (part.cookieSet !== true) {
+      problems.push(`8 の前提: ${name}で作者のセッション cookie を入れられませんでした。`);
+    }
+  }
+  const before = draft.pageBeforeTap;
+  if (before?.overlays === 0 && before?.entries === 0) {
+    problems.push(
+      '8: 公開前の作品ページに覆いも「遊ぶ」の口もありません（作者でログインした状態）。readySection が playEmbed を出していないか、' +
+        ' cookie が効かず本人以外の画面を見ています（試遊 URL のリンク ' +
+        `${JSON.stringify(before?.previewLinks ?? null)}）。`,
+    );
+    return problems;
+  }
+  // 1 つずつ（覆いのスクリプトは document.querySelector で最初の 1 つを引く）。
+  if (before?.overlays !== 1 || before?.entries !== 1 || before?.openButtons !== 1 || before?.noscripts !== 1) {
+    problems.push(
+      `8: 公開前の作品ページの覆い・口・「遊ぶ」のボタン・<noscript> が 1 つずつではありません（${JSON.stringify(before ?? null)}）。`,
+    );
+  }
+  if (!Array.isArray(before?.previewLinks) || !before.previewLinks.includes(draftSrc)) {
+    problems.push(`8: 公開前の作品ページに、人に渡す試遊 URL のリンク（${draftSrc}）が残っていません（${JSON.stringify(before?.previewLinks ?? null)}）。`);
+  }
+  // タッチ端末: 口が見え、開くまで iframe を作らず、タップで開く。
+  if (draft.beforeTap?.coarse !== true) {
+    problems.push(`8 の前提: タッチ端末の形で pointer: coarse になっていません（${String(draft.beforeTap?.coarse)}）。`);
+  }
+  if (before?.entryTouch !== true || before?.entryDisplay === 'none' || before?.openHidden !== false || before?.openDisplay === 'none') {
+    problems.push(
+      `8: タッチ端末で公開前の作品の口（固定の文言のパネルと「遊ぶ」のボタン）が見えていません（${JSON.stringify(before ?? null)}）。`,
+    );
+  }
+  if (draft.beforeTap?.frames !== 0) {
+    problems.push(`8: タッチ端末で、タップの前に iframe があります（${String(draft.beforeTap?.frames)} 個）。`);
+  }
+  if (draft.opened?.reached !== true) {
+    problems.push(`8: 公開前の作品の口をタップしても、覆いが開いて起動の合図が届く状態になりませんでした。最後の状態: ${JSON.stringify(draft.opened?.state ?? null)}`);
+    return problems;
+  }
+  const opened = draft.pageOpened;
+  if (opened?.frameSrc !== draftSrc || opened?.frameSandbox !== 'allow-scripts' || opened?.frameInStage !== true) {
+    problems.push(
+      `8: 覆いの中の iframe が試遊 URL を sandbox="allow-scripts" で指していません（src=${String(opened?.frameSrc)} / sandbox=${String(opened?.frameSandbox)} / 覆いの中=${String(opened?.frameInStage)}）。`,
+    );
+  }
+  const keys = draft.portrait?.keys ?? [];
+  if (keys.length === 0 || !keys.every((key) => storedCodes.includes(key.code))) {
+    problems.push(`8: 公開前の作品の覆いに、保存したキーの集合のパッドが出ていません（${JSON.stringify(keys.map((key) => key.code))}）。`);
+  }
+  if (!sameSequence(draft.keysOnOpen, [])) {
+    problems.push(`8: 公開前の作品の覆いを開いただけで作品へキーが届きました（${JSON.stringify(sequenceOf(draft.keysOnOpen))}）。`);
+  }
+  if (!sameSequence(draft.leftDown, ['keydown:ArrowLeft']) || !sameSequence(draft.leftUp, ['keyup:ArrowLeft'])) {
+    problems.push(
+      `8: 公開前の作品で左のキーに触れて離しても、作品へ keydown / keyup ArrowLeft が 1 つずつ届きませんでした` +
+        `（押す ${JSON.stringify(sequenceOf(draft.leftDown))} / 離す ${JSON.stringify(sequenceOf(draft.leftUp))}）。`,
+    );
+  }
+  if (draft.closed?.reached !== true) {
+    problems.push(`8: 公開前の作品の覆いが「閉じる」で閉じませんでした。最後の状態: ${JSON.stringify(draft.closed?.state ?? null)}`);
+  }
+  if (draft.plays !== 0) {
+    problems.push(`8: 公開前の作品（/p/）をタッチ端末で遊ぶと、プレイ数を計上しました（POST /api/plays が ${String(draft.plays)} 回）。試遊は数えません（#377）。`);
+  }
+  // デスクトップ: 口は隠れ、覆いは開かず、状態のブロックの直後に同じ iframe が入って起動する。
+  const page = desktop.page;
+  if (desktop.started?.reached !== true || desktop.loaded?.coarse !== false) {
+    problems.push(`8: デスクトップの形（pointer: coarse でない）で公開前の作品が起動しませんでした（${JSON.stringify(desktop.started?.state ?? null)}）。`);
+  } else {
+    if (page?.entryDisplay !== 'none' || desktop.loaded?.overlayHidden !== true) {
+      problems.push(`8: デスクトップで公開前の作品の口が見えているか、覆いが開いています（口の display=${String(page?.entryDisplay)} / 覆いの hidden=${String(desktop.loaded?.overlayHidden)}）。`);
+    }
+    if (page?.frameSrc !== draftSrc || page?.frameSandbox !== 'allow-scripts' || page?.frameInStage !== false || page?.frameAfterState !== true) {
+      problems.push(
+        `8: デスクトップで、状態のブロックの直後に試遊 URL の iframe が入っていません（${JSON.stringify(page ?? null)}）。`,
+      );
+    }
+    if (desktop.plays !== 0) {
+      problems.push(`8: デスクトップで公開前の作品を開くと、プレイ数を計上しました（POST /api/plays が ${String(desktop.plays)} 回）。`);
+    }
+  }
   return problems;
 }
 
 try {
   const args = parseArgs(process.argv.slice(2));
   const result = JSON.parse(readFileSync(args.probe, 'utf8'));
-  const problems = problemsOf(result, args.codes);
+  const problems = problemsOf(result, args.codes, args.draftSrc);
   if (problems.length > 0) {
     for (const problem of problems) {
       process.stderr.write(`${args.label} ${problem}\n`);
@@ -399,7 +509,8 @@ try {
   }
   process.stdout.write(
     `${args.label} OK: パッドのタッチがキーの押下と離しとして作品へ届き（同時押しも）、許可外のキー名・別の iframe・直接開いた文書からの` +
-      'メッセージは捨てられ、デスクトップでは出ず、閉じると release で離れ、キーの集合が空の作品では出ません。\n',
+      'メッセージは捨てられ、デスクトップでは出ず、閉じると release で離れ、キーの集合が空の作品では出ません。' +
+      '公開前の作品ページ（作者）でも同じ覆いとパッドで遊べ、試遊は数えません（#575）。\n',
   );
 } catch (error) {
   process.stderr.write(`[virtual-pad] 判定できませんでした: ${String(error)}\n`);

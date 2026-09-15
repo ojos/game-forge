@@ -1024,6 +1024,26 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   padding-bottom: calc(var(--gf-control-md) + var(--gf-gap-3) * 2);
 }
 
+/*
+ * 公開前の作品ページ（作者本人の「できました」）の「遊ぶ」の口（#575。HTML は `src/work-page.ts` の `readySection`）。
+ *
+ * - **口（固定の文言のパネル）はタッチ端末でだけ見せる。** スクリプトがタッチ端末で口に `.gf-play-entry-touch` を付けるまでは隠す——
+ *   デスクトップと JavaScript の無い形では、ブロックのすぐ下に埋め込みがあり、黒い面を二重に出さない
+ * - **埋め込みは状態のブロックの外、直後に入る**（デスクトップの iframe）。ブロックとの間は、公開後の 4 要素のブロックと枠の間と同じだけ空ける
+ */
+.gf-work-draft-play > .gf-play-entry {
+  position: relative;
+  margin-bottom: var(--gf-gap-3);
+}
+
+.gf-work-draft-play > .gf-play-entry:not(.gf-play-entry-touch) {
+  display: none;
+}
+
+.gf-work-state + .gf-frame {
+  margin-top: var(--gf-gap-4);
+}
+
 .gf-play-open[hidden],
 .gf-play-overlay[hidden] {
   display: none;

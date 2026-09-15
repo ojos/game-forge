@@ -76,7 +76,9 @@
 #         キーを読む作品（`source_input_keys` にキーの集合を入れた公開済みの作品）の覆いを開き、CDP の `Input.dispatchTouchEvent` で
 #         パッドに触れて、検査用の作品の canvas が keydown / keyup を受けること・同時押し・許可外のキー名と親以外（同じオリジンの
 #         別の iframe・直接開いたローダーの自己送信）からのメッセージを捨てること・デスクトップでは出ないこと・押したまま閉じると
-#         keyup が届くこと・キーの集合が空の作品（層 7 の作品）では出ないことを見る。観測は `scripts/virtual-pad-probe.mjs`、
+#         keyup が届くこと・キーの集合が空の作品（層 7 の作品）では出ないことを見る。**公開前の作品（`status` が draft で `preview_key` の
+#         ある行）を作者でログインして開いても、「遊ぶ」で覆いが開き（iframe は `/p/`）、パッドのキーが作品へ届き、計上しないこと・
+#         デスクトップでは口のパネルが隠れて同じ位置に iframe が入ることも見る（#575）。** 観測は `scripts/virtual-pad-probe.mjs`、
 #         判定は `scripts/virtual-pad-verdict.mjs`。`GF_PAD_SHOT_DIR` を渡すと、パッドの出た覆い（縦持ち・横持ち）を PNG で撮る。
 #   層 9  **方向の操作が作品に合わせた形（スティック / 十字）で出て、スティックの倒し方が矢印キーとして届き、遊ぶ人が切り替えられること**
 #         （#530 / 仕様 3.9.6 の「方向の操作の形」）。押し続けて読むキー（`source_input_keys.held_codes`）を入れた作品（横だけ・8 方向・
@@ -562,6 +564,13 @@ PAD_CODES='["ArrowLeft","ArrowRight","ArrowUp","KeyZ","Space"]'
 LONG_ID="$(node -e 'console.log(crypto.randomUUID())')"
 LONG_PREVIEW_KEY="$(node -e 'console.log([...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join(""))')"
 LONG_CODES='["ArrowLeft","NumpadMultiply","NumpadSubtract","PrintScreen","ScrollLock"]'
+# 層 8（#575）の、**公開前の**作品（`status` が draft で `preview_key` のある行）。作者でログインした状態で開く。ソースのキーは層 8 の
+# 作品と同じにする（同じキーの集合で、公開後と同じパッドが出ることを見る）。
+DRAFT_PAD_ID="$(node -e 'console.log(crypto.randomUUID())')"
+DRAFT_PAD_PREVIEW_KEY="$(node -e 'console.log([...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join(""))')"
+# 作者のセッション（#575）。**秘密はこの検査の中だけで作って dev サーバへ渡す**（`scripts/lib/dev-fixture.sh` と同じ扱い。`.dev.vars` を
+# 読まず、値をどこにも書き残さない）。署名の形は `src/session.ts` と同じ（`<base64url(JSON)>.<base64url(HMAC)>`）。
+SESSION_SECRET="$(node -e 'console.log([...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, "0")).join(""))')"
 # 層 9（#530）の作品。**押し続けて読むキー（held_codes）で最初の形が決まる**ので、読み方ごとにソースのキーを分ける。
 # 横だけ: ←→ を押し続けて読み、↑ は押した瞬間だけ（横スクロールの ↑ ジャンプ）。スティックは横だけで、↑ は右のボタンに回る。
 STICK_H_ID="$(node -e 'console.log(crypto.randomUUID())')"
@@ -617,6 +626,8 @@ npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     values ('builds/browsercheck/source.go', '[]', 1, 1);
   insert into source_input_keys (source_key, codes, rule_version, extracted_at)
     values ('builds/browsercheck-pad/source.go', '$PAD_CODES', 1, 1);
+  insert into games (id, author_id, status, title, go_version, source_key, wasm_key, created_at, preview_key)
+    values ('$DRAFT_PAD_ID', 'browsercheck', 'draft', 't3d', '$GO_VERSION', 'builds/browsercheck-pad/source.go', '$WASM_KEY', 1, '$DRAFT_PAD_PREVIEW_KEY');
   insert into games (id, author_id, status, title, go_version, source_key, wasm_key, created_at, published_at, preview_key)
     values ('$LONG_ID', 'browsercheck', 'published', 't4', '$GO_VERSION', 'builds/browsercheck-long/source.go', '$WASM_KEY', 1, 1, '$LONG_PREVIEW_KEY');
   insert into source_input_keys (source_key, codes, rule_version, extracted_at)
@@ -667,6 +678,16 @@ npx wrangler r2 object put "$BUCKET_NAME/$WASM_KEY" --file "$WORK/game.wasm.br" 
 npx wrangler r2 object put "$BUCKET_NAME/runtime/${GO_VERSION}/wasm_exec.js" --file "$WASM_EXEC_SRC" --local --persist-to "$STATE" >>"$WORK/seed.log" 2>&1 ||
   { sed 's/^/    /' "$WORK/seed.log" >&2; fail "wasm_exec.js を R2 へ置けませんでした。"; }
 
+# 作者（`browsercheck`）のセッション cookie の値（層 8 の公開前の作品。#575）。
+SESSION_COOKIE_VALUE="$(node -e '
+const crypto = require("node:crypto");
+const b64u = (buf) => Buffer.from(buf).toString("base64").replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+const now = Math.floor(Date.now() / 1000);
+const body = b64u(Buffer.from(JSON.stringify({ userId: "browsercheck", issuedAt: now, expiresAt: now + 3600 }), "utf8"));
+const signature = crypto.createHmac("sha256", process.argv[1]).update(body).digest();
+console.log(body + "." + b64u(signature));
+' "$SESSION_SECRET")" || fail "作者のセッション cookie を作れませんでした。"
+
 # ── dev サーバを起動する ──────────────────────────────────────────────────────
 #
 # **HTTPS で起動する。** `*.localtest.me` は安全なコンテキストとして扱われないため、
@@ -684,6 +705,7 @@ env CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
   --https-key-path certs/dev.key \
   --https-cert-path certs/dev.crt \
   --persist-to "$STATE" \
+  --binding "SESSION_SECRET=$SESSION_SECRET" \
   --show-interactive-dev-session false \
   >"$WORK/dev.log" 2>&1 &
 DEV_PID=$!
@@ -926,8 +948,12 @@ node scripts/tap-to-fullscreen-verdict.mjs \
 # タッチがキーの押下と離しとして作品へ届くこと・同時押し・許可外のキー名と親以外からのメッセージを捨てること・デスクトップでは
 # 出ないこと・閉じると release で離れること・キーの集合が空なら出ないことを見る。観測は `scripts/virtual-pad-probe.mjs`、
 # 判定は `scripts/virtual-pad-verdict.mjs`。`GF_PAD_SHOT_DIR` を渡すと、パッドの出た覆い（縦持ち・横持ち）を PNG で撮る。
+#
+# **公開前の作品（#575）も層 8 で見る。** 同じキーの集合の作品を、作者でログインした状態で開き、公開後と同じ覆いとパッドが出て
+# キーが届くことを見る。**層 7 の緑からは導けない**——層 7〜10 の作品はすべて公開済みで、公開前の作品ページ（`readySection`）を通らない。
 PAD_PAGE_URL="https://${APP_HOST}:${PORT}/works/${PAD_ID}"
-note "層 8: opening $PAD_PAGE_URL (touch / direct / desktop / empty keys)"
+DRAFT_PAD_PAGE_URL="https://${APP_HOST}:${PORT}/works/${DRAFT_PAD_ID}"
+note "層 8: opening $PAD_PAGE_URL (touch / direct / desktop / empty keys) and $DRAFT_PAD_PAGE_URL (draft, signed in as the author)"
 PAD_SHOT_ARGS=()
 if [[ -n "${GF_PAD_SHOT_DIR:-}" ]]; then
   mkdir -p "$GF_PAD_SHOT_DIR"
@@ -939,6 +965,8 @@ node scripts/virtual-pad-probe.mjs \
   --empty-url "$WORK_PAGE_URL" \
   --long-url "https://${APP_HOST}:${PORT}/works/${LONG_ID}" \
   --direct-url "${BASE}/g/${PAD_ID}/" \
+  --draft-url "$DRAFT_PAD_PAGE_URL" \
+  --draft-cookie "__Host-gf_session=$SESSION_COOKIE_VALUE" \
   --timeout-ms "$TIMEOUT_MS" \
   ${PAD_SHOT_ARGS[@]+"${PAD_SHOT_ARGS[@]}"} >"$WORK/pad.json" ||
   { fail "層 8: ブラウザでの観測ができませんでした。"; }
@@ -949,8 +977,9 @@ fi
 node scripts/virtual-pad-verdict.mjs \
   --probe "$WORK/pad.json" \
   --codes "$PAD_CODES" \
-  --label "[browser-check] 層 8 (#494)" ||
-  fail "層 8 (#494): キーで操作する作品の仮想パッドが通りませんでした。"
+  --draft-src "${BASE}/p/${DRAFT_PAD_PREVIEW_KEY}/" \
+  --label "[browser-check] 層 8 (#494 / #575)" ||
+  fail "層 8 (#494 / #575): キーで操作する作品の仮想パッド（公開前の作品ページを含む）が通りませんでした。"
 
 # ── 層 9: 方向の操作の形（スティック / 十字）と切り替え（#530 / 仕様 3.9.6 の「方向の操作の形」）─────────────────
 #

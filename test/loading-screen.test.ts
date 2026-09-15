@@ -399,13 +399,24 @@ describe('4 要素をアプリ用ホスト側に描く（7.2 を崩さないた�
     expect(document).not.toContain('content-length');
   });
 
-  it('未公開の作品はページに埋め込まない', async () => {
+  it('未公開の作品にはロード中画面（4 要素）を出さず、試遊の埋め込みは作者本人にだけ出す（#575）', async () => {
     // ロード中画面は公開済みの作品のためのものである。未公開のプレビューは
-    // `preview_key` が唯一の資格情報で、作者本人にだけリンクとして出す（5.4）。
+    // `preview_key` が唯一の資格情報で、作者本人にだけ出す（5.4）。
+    //
+    // **#575 から、作者本人には公開後と同じ遊び方（`playEmbed`。`/p/` の iframe）を出す**（利用者の決定、2026-09-15）。
+    // それまでこの it は「ページに埋め込まない（リンクだけ）」を見ていたが、そのせいでスマホでパッドが出なかった。
+    // **4 要素のブロックと計上のスクリプトは、今も公開済みの作品にしか出さない。**
     const { userId, id } = await seedReadyGame('draft-no-frame');
     const body = await workPage(id, await sessionCookie(userId));
     expect(body).toContain('できました');
-    expect(body).not.toContain('<iframe');
+    expect(body).not.toContain('gf-context');
+    expect(body).not.toContain(playReportScript(id));
+    expect(body).toContain(`<noscript class="gf-play-noscript"><iframe class="gf-frame" src="https://${env.SANDBOX_HOST}/p/`);
+
+    // 本人以外には埋め込みも出さない（鍵を読ませない）。
+    const anonymous = await workPage(id);
+    expect(anonymous).toContain('できました');
+    expect(anonymous).not.toContain('<iframe');
   });
 });
 

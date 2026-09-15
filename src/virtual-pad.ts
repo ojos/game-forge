@@ -25,6 +25,12 @@
  * 画面には両方の形を HTML で置き、スクリプトは推定か覚えた形のどちらかを見せるだけである（`src/work-play.ts`）。
  * {@link readHeldCodes} は D1 の値を許可表で絞り、**NULL・壊れた JSON・配列でない値は「版 1」（null）**として返す。
  *
+ * # 同じ働きの方向をボタンに出さない（#543 / M14-11）
+ *
+ * {@link padPlanOf} は、さらに**同じ条件式で読むキーの組**（`source_input_keys.alias_groups`。規則の版 3）を受け取り、規則 5 で右のボタンに
+ * 回す方向のうち、**方向のボタンより前の順位（Space・KeyZ・KeyX。{@link LEADING_BUTTONS} の方向のボタンより前）でボタンに出るキーと同じ組にある方向を出さない**。
+ * {@link readAliasGroups} は D1 の値を許可表で絞り、**NULL・壊れた JSON・配列でない値は「未記録」（null）**として返す（今の規則 5 のまま方向を回す）。
+ *
  * スティックの方向の決め方は、ブラウザで動かす関数の本文 {@link STICK_KEYS_SOURCE} を 1 つだけ持つ（スクリプトへ埋め込み、
  * 単体テストは同じ本文を評価して確かめる。写しを 2 つ作らない）。
  *
@@ -406,6 +412,11 @@ export interface PadPlan {
  * 5. **スティックで出すときに限り**、押し続けない軸の方向（読むもの）を右のボタンに回す
  * 6. **`heldCodes` が null（版 1 の行）なら十字**（`codes` から表示規則のとおり）。行が無い作品は、呼ぶ側が `codes` を空にするので何も出ない
  *
+ * **同じ働きの方向をボタンに出さない（#543）:** 規則 5 で方向のボタンを並べる前に、その方向の `code` を含む組（`aliasGroups`）に、
+ * 方向のボタンより前の順位のキー（Space・KeyZ・KeyX）のうち**ボタンに出るキー**があれば、その方向を出さない。組の相手がボタンに出ない
+ * （読まない・上限で落ちる）ときは出す。`aliasGroups` が null（版 2 以下の行・壊れた値）なら今の規則 5 のままである。
+ * 十字の中身と、推定が十字の作品をスティックにしたときの中身は変えない（どちらも方向のボタンを持たない）。
+ *
  * **切り替えたときの形**（手動の切り替え）:
  *
  * - **推定がスティックなら**、スティックの中身は推定のまま（受け付ける軸と方向のボタン）で、十字の中身は表示規則の 1 のとおり
@@ -416,9 +427,14 @@ export interface PadPlan {
  *
  * @param codes キーの集合（`source_input_keys.codes`）
  * @param heldCodes 押し続けて読むキーの集合（`source_input_keys.held_codes`。版 1 の行は null）
+ * @param aliasGroups 同じ条件式で読むキーの組（`source_input_keys.alias_groups`。版 2 以下の行は null。既定は null）
  * @returns パッドの計画
  */
-export function padPlanOf(codes: readonly string[], heldCodes: readonly string[] | null): PadPlan {
+export function padPlanOf(
+  codes: readonly string[],
+  heldCodes: readonly string[] | null,
+  aliasGroups: readonly (readonly string[])[] | null = null,
+): PadPlan {
   const set = allowedSetOf(codes);
   const dpadLayout = padLayoutOf([...set]);
   const codesByDirection = directionCodesOf(set);
@@ -453,10 +469,17 @@ export function padPlanOf(codes: readonly string[], heldCodes: readonly string[]
       right: horizontalHeld ? codesByDirection.right : null,
     };
     // 規則 5: 押し続けない軸の方向（読むもの）を右のボタンへ回す。
+    // #543: ただし、方向のボタンより前の順位でボタンに出るキーと同じ組にある方向は回さない。前の順位のボタンは方向のボタンを
+    // 足しても押し出されないので、方向のボタンを足す前のボタン（十字の形のボタンと同じ）から決める。
+    // 順位の表は 1 つだけ持つ（{@link LEADING_BUTTONS} の方向のボタンより前＝Space・KeyZ・KeyX。写しを作らない）。
+    const beforeDirections = LEADING_BUTTONS.slice(0, LEADING_BUTTONS.indexOf(DIRECTIONS.up.arrow));
+    const shownLeading = new Set(dpadLayout.buttons.map((key) => key.code).filter((code) => beforeDirections.includes(code)));
+    const sameAsShownButton = (code: string): boolean =>
+      aliasGroups !== null && aliasGroups.some((group) => group.includes(code) && group.some((other) => shownLeading.has(other)));
     for (const direction of DIRECTION_ORDER) {
       const code = codesByDirection[direction];
       const onHeldAxis = direction === 'left' || direction === 'right' ? horizontalHeld : verticalHeld;
-      if (code !== null && !onHeldAxis) {
+      if (code !== null && !onHeldAxis && !sameAsShownButton(code)) {
         directionButtons.push(directionKeyOf(direction, code));
       }
     }
@@ -510,6 +533,43 @@ export function readHeldCodes(raw: unknown): string[] | null {
   }
   // 許可表で絞る処理は、全集合の読み方と同じもの（写しを作らない）。
   return readInputKeyCodes(JSON.stringify(parsed));
+}
+
+/**
+ * D1 から読んだ `source_input_keys.alias_groups` を、許可表で絞った組の配列にする（仕様 3.9.6 の #543 の「保存」と「ページの規則」）。
+ *
+ * - **NULL（版 2 以下の行・行が無い）・文字列でない・JSON が壊れている・配列でない → null**（「組がまだ記録されていない」。今の規則 5 のまま）
+ * - 配列なら、**配列である要素だけ**を組として読み、組の中は**許可表にある文字列だけ**を残す（重複は除き、`code` の昇順）。
+ *   キーが 2 つ以上残った組だけを返す。`[]` は「同じ条件式で読むキーの組は無い」で、null と区別する
+ *
+ * @param raw 問い合わせの列の値
+ * @returns 組の配列、または null
+ */
+export function readAliasGroups(raw: unknown): string[][] | null {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) {
+    return null;
+  }
+  const groups: string[][] = [];
+  for (const value of parsed) {
+    if (!Array.isArray(value)) {
+      continue;
+    }
+    // 許可表で絞る処理は、全集合の読み方と同じもの（写しを作らない）。
+    const group = readInputKeyCodes(JSON.stringify(value));
+    if (group.length >= 2) {
+      groups.push(group);
+    }
+  }
+  return groups;
 }
 
 /**

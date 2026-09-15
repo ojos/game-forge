@@ -10,11 +10,14 @@
 // | 3 | 十字の作品（4 方向とも J）は**十字**で出る（切り替えは「スティックにする」） |
 // | 4 | 版 1 の行（`held_codes` が NULL）の作品は**十字**で出る。行が無い作品はパッドも切り替えも出ない |
 // | 5 | 切り替えで形が変わり（十字の ← が効く）、覚えた値が `localStorage` に入り、**文書を開き直すと覚えた形で出る**。`localStorage` が使えない状態でも推定した形で出て、切り替えが効き、ページの例外が出ない |
+// | 7 | **Space と同じ条件式で読む ↑ は右のボタンに出ない**（#543。見えているキーは Space だけで、押すと Space が届く） |
+// | 8 | **Space と別の条件式で読む ↑↓ は右のボタンに出る**（#543。ケロケロ舌合戦型。Space・Z・↑・↓ が見え、↑ と ↓ が届く） |
 // | 6 | スティックを倒したまま右のボタン（Space）を押す同時押しが届く。スティックを倒したまま隠れる（`visibilitychange`）・閉じると keyup が届き、その後に倒し直しても離しても何も届かない |
 // | 形 | 見えているキーは 48px 以上。切り替えは控えめのボタンの部品。縦持ちはゲームの下の左にスティック・右にボタン、横持ちはゲームの左にスティック・右にボタン。触れた位置が円の中心で、つまみは倒した向きにある |
 //
 // **どのキーをどの形に出すかの規則はここへ書き写さない。** 規則は `src/virtual-pad.ts` の単体テストが見る。ここは、検査用に仕込んだ
-// 3 つの読み方（横だけ・8 方向・十字）が、それぞれの形とキーとして実ブラウザで届くことを見る。
+// 3 つの読み方（横だけ・8 方向・十字）と、同じ条件式で読むキーの組の 2 つ（Space と同じ組・別の組。#543）が、それぞれの形とキーとして
+// 実ブラウザで届くことを見る。
 //
 // 使い方:
 //   node scripts/stick-pad-verdict.mjs --probe <json> --label <prefix>
@@ -299,6 +302,43 @@ function problemsOf(result) {
     }
   }
 
+  // ── 7 / 8. 同じ働きの方向をボタンに出さない（#543）──────────────────────────
+  const alias = result.alias ?? {};
+  if (opened(problems, 'Space と同じ組の作品', alias)) {
+    expectShape(problems, '7: Space と同じ組の作品', alias.initial, 'stick');
+    if (!same(visibleKeys(alias.initial), ['buttons:Space'])) {
+      problems.push(
+        `7: Space と同じ条件式で読む ↑ の作品で、見えているキーが右のボタンの Space だけではありません（${JSON.stringify(visibleKeys(alias.initial))}）。` +
+          '仕様 3.9.6 の #543: すでにボタンに出るキーと同じ組の方向は出さないはずです。',
+      );
+    }
+    expectSequence(problems, '7: 右のボタンの Space を押す', alias.presses?.Space?.down, ['keydown:Space']);
+    expectSequence(problems, '7: 右のボタンの Space を離す', alias.presses?.Space?.up, ['keyup:Space']);
+    if (alias.presses?.ArrowUp !== null) {
+      problems.push(`7: Space と同じ組の作品で、右のボタンの ↑ が見えていて押せました（${JSON.stringify(alias.presses?.ArrowUp ?? null)}）。`);
+    }
+    if ((alias.exceptions ?? []).length > 0) {
+      problems.push(`7: Space と同じ組の作品のページで例外が出ました（${JSON.stringify(alias.exceptions)}）。`);
+    }
+  }
+  const separate = result.separate ?? {};
+  if (opened(problems, 'Space と別の組の作品', separate)) {
+    expectShape(problems, '8: Space と別の組の作品', separate.initial, 'stick');
+    if (!same(visibleKeys(separate.initial), ['buttons:Space', 'buttons:KeyZ', 'buttons:ArrowUp', 'buttons:ArrowDown'])) {
+      problems.push(
+        `8: Space と別の条件式で読む ↑↓ の作品で、見えているキーが右のボタンの Space・Z・↑・↓ ではありません（${JSON.stringify(visibleKeys(separate.initial))}）。` +
+          '別の働きの方向はボタンに残るはずです（ケロケロ舌合戦の上段・下段）。',
+      );
+    }
+    expectSequence(problems, '8: 右のボタンの ↑ を押す', separate.presses?.ArrowUp?.down, ['keydown:ArrowUp']);
+    expectSequence(problems, '8: 右のボタンの ↑ を離す', separate.presses?.ArrowUp?.up, ['keyup:ArrowUp']);
+    expectSequence(problems, '8: 右のボタンの ↓ を押す', separate.presses?.ArrowDown?.down, ['keydown:ArrowDown']);
+    expectSequence(problems, '8: 右のボタンの ↓ を離す', separate.presses?.ArrowDown?.up, ['keyup:ArrowDown']);
+    if ((separate.exceptions ?? []).length > 0) {
+      problems.push(`8: Space と別の組の作品のページで例外が出ました（${JSON.stringify(separate.exceptions)}）。`);
+    }
+  }
+
   // ── 形: 並べ方と、触れている状態の描画（撮影と同じ手順）─────────────────────
   for (const [name, shots] of [
     ['横だけの作品', result.shots?.horizontal],
@@ -368,7 +408,7 @@ try {
   process.stdout.write(
     `${args.label} OK: 横だけの作品はスティック（上下を送らず ↑ は右のボタン）、8 方向の作品は斜めの同時押しで外れたキーを先に離し、` +
       '十字の作品と版 1 の行は十字、行が無い作品は何も出ません。切り替えは覚えた形で開き直し、localStorage が使えなくても推定で出ます。' +
-      'スティックとボタンの同時押し、隠れる・閉じると離れます。\n',
+      'スティックとボタンの同時押し、隠れる・閉じると離れます。Space と同じ条件式で読む ↑ は右のボタンに出ず、別の条件式の ↑↓ は出て届きます。\n',
   );
 } catch (error) {
   process.stderr.write(`[stick-pad] 判定できませんでした: ${String(error)}\n`);

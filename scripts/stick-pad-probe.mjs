@@ -17,6 +17,9 @@
 //    切り替えが効き、ページの例外が出ないか
 // 3. **8 方向の作品**（4 方向とも H）: 右上へ倒す・左へ・左上へ・右上へと倒し、離す（外れたキーの keyup が先に届くか）。撮影もする
 // 4. **十字の作品**（4 方向とも J）・**版 1 の行の作品**（`held_codes` が NULL）・**行が無い作品**: 最初の形
+// 5. **同じ条件式で読むキーの組を入れた作品**（#543。規則の版 3 の行）
+//    - **Space と同じ組**（←→ H・Space || ↑ || W）: 最初の形と見えているキー。右のボタンの Space を押して離す
+//    - **Space と別の組**（←→ H・↑ || W と ↓ || S。ケロケロ舌合戦型）: 最初の形と見えているキー。右のボタンの ↑ と ↓ を押して離す
 //
 // # 作品が受けたキーの観測
 //
@@ -29,7 +32,8 @@
 //
 // 使い方:
 //   node scripts/stick-pad-probe.mjs --browser <path> --horizontal-url <横だけの作品> --eight-url <8 方向の作品> \
-//     --dpad-url <十字の作品> --v1-url <版 1 の行の作品> --no-row-url <行が無い作品> [--timeout-ms 45000] [--shot-dir <dir>]
+//     --dpad-url <十字の作品> --v1-url <版 1 の行の作品> --no-row-url <行が無い作品> \
+//     --alias-url <Space と同じ組の作品> --separate-url <Space と別の組の作品> [--timeout-ms 45000] [--shot-dir <dir>]
 //
 // 標準出力: 観測結果 1 個の JSON
 // 終了コード: 0 = 観測できた（合否とは無関係） / 1 = 観測そのものができなかった
@@ -62,7 +66,7 @@ const TILT = 56;
  * コマンドライン引数を読む。
  *
  * @param {string[]} argv `process.argv.slice(2)`
- * @returns {{browser: string, horizontalUrl: string, eightUrl: string, dpadUrl: string, v1Url: string, noRowUrl: string, timeoutMs: number, shotDir: string | null}} 設定
+ * @returns {{browser: string, horizontalUrl: string, eightUrl: string, dpadUrl: string, v1Url: string, noRowUrl: string, aliasUrl: string, separateUrl: string, timeoutMs: number, shotDir: string | null}} 設定
  */
 function parseArgs(argv) {
   /** @type {Record<string, string>} */
@@ -75,7 +79,7 @@ function parseArgs(argv) {
     }
     values[name.slice(2)] = value;
   }
-  const required = ['browser', 'horizontal-url', 'eight-url', 'dpad-url', 'v1-url', 'no-row-url'];
+  const required = ['browser', 'horizontal-url', 'eight-url', 'dpad-url', 'v1-url', 'no-row-url', 'alias-url', 'separate-url'];
   for (const name of required) {
     if (values[name] === undefined) {
       throw new Error(`--${required.join(' と --')} は必須です`);
@@ -92,6 +96,8 @@ function parseArgs(argv) {
     dpadUrl: values['dpad-url'],
     v1Url: values['v1-url'],
     noRowUrl: values['no-row-url'],
+    aliasUrl: values['alias-url'],
+    separateUrl: values['separate-url'],
     timeoutMs,
     shotDir: values['shot-dir'] ?? null,
   };
@@ -650,6 +656,45 @@ async function observeInitial(cdp, options, url) {
 }
 
 /**
+ * 同じ条件式で読むキーの組を入れた作品を観測する（#543）。最初の形と見えているキーを読み、右のボタンを 1 つずつ押して離す。
+ *
+ * **押すボタンが見えなくても観測を止めない**（見えないこと自体を判定が見る。押せなかったボタンは null を残す）。
+ *
+ * @param {CdpConnection} cdp 接続
+ * @param {ReturnType<typeof parseArgs>} options 設定
+ * @param {string} url 作品ページ
+ * @param {string[]} codes 押す右のボタンの `code`（この順に 1 つずつ）
+ * @returns {Promise<object>} 観測結果
+ */
+async function observeButtons(cdp, options, url, codes) {
+  const tab = await openTouchTab(cdp, options, []);
+  /** @type {Record<string, any>} */
+  const steps = {};
+  try {
+    steps.opened = await tab.openWork(url);
+    steps.initial = await tab.state();
+    steps.presses = {};
+    for (const [index, code] of codes.entries()) {
+      const point = await tab.centerOf(`.gf-play-pad-buttons .gf-play-pad-key[data-code="${code}"]`);
+      steps.presses[code] =
+        point === null
+          ? null
+          : {
+              down: await step(tab, `button-${code}-down`, 'touchStart', [{ ...point, id: 20 + index }]),
+              up: await step(tab, `button-${code}-up`, 'touchEnd', []),
+            };
+    }
+    steps.exceptions = tab.exceptions.slice();
+    return steps;
+  } catch (error) {
+    steps.error = String(error);
+    return steps;
+  } finally {
+    await tab.close().catch(() => {});
+  }
+}
+
+/**
  * 撮影する（スティックに触れて倒している状態。縦持ち・横持ち）。**判定には使わないが、並べ方の矩形とつまみの位置は残す。**
  *
  * @param {CdpConnection} cdp 接続
@@ -697,6 +742,9 @@ async function probe(options) {
       dpad: await observeInitial(cdp, options, options.dpadUrl),
       v1: await observeInitial(cdp, options, options.v1Url),
       noRow: await observeInitial(cdp, options, options.noRowUrl),
+      // #543: Space と同じ組の作品は Space を、別の組の作品は ↑ と ↓ を押す（見えないはずのボタンは押せずに null が残る）。
+      alias: await observeButtons(cdp, options, options.aliasUrl, ['Space', 'ArrowUp']),
+      separate: await observeButtons(cdp, options, options.separateUrl, ['ArrowUp', 'ArrowDown']),
       // 撮影は localStorage を使わない形で開く（1 で覚えた十字ではなく、推定したスティックを撮る）。
       shots: {
         horizontal: await observeShots(cdp, options, options.horizontalUrl, 'stick-horizontal', { dx: TILT, dy: 0 }),

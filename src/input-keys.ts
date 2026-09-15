@@ -5,7 +5,7 @@
  * 既存作品への埋め戻しは `scripts/input-keys-backfill.mjs` が持ち、どちらもここを呼ぶ。
  * **抽出の規則を 2 か所に書かない**（埋め戻しとエッジで拾い方がずれると、同じソースに違う行ができる）。
  *
- * # 規則（`rule_version = 2`。正本は仕様 3.9.5 と 3.9.6 の「方向の操作の形」の「保存」）
+ * # 規則（`rule_version = 3`。正本は仕様 3.9.5 と 3.9.6 の「方向の操作の形」の「保存」と「同じ働きの方向をボタンに出さない」）
  *
  * **読むキーの全集合（`codes`。版 1 から変わらない）:**
  *
@@ -23,6 +23,13 @@
  *
  * 変数を渡す読み方（`ebiten.IsKeyPressed(k)`）は拾わない。その軸は押し続けない扱い（十字の側）になる。
  * `inpututil.IsKeyJustPressed` は押した瞬間の読み方で、ここでは拾わない（`codes` には入る）。
+ *
+ * **同じ条件式で読むキーの組（`alias_groups`。版 3 で足した。#543）:**
+ *
+ * 1. `inpututil.IsKeyJustPressed(ebiten.Key<名前>)`（引数の書き方は H と同じ）を **`||` だけで並べた 1 つの続き**
+ *    （`||` の前後の空白・改行を含む）を 1 つの組とする。`&&` や別の関数が挟まれば、そこで組が切れる
+ * 2. 組の中の名前は上と同じ表で `code` へ写し（別名は同じ `code` に寄る）、表に無い名前は捨て、重複を除いて昇順にする
+ * 3. **キーが 2 つ以上の組だけを残し**、組の配列も重複を除いて並びを決める（組どうしは要素を先頭から比べた昇順）
  *
  * **表は手で書かない。** `src/ebiten-keys.generated.ts` は Ebitengine のソースから生成し、
  * `scripts/ebiten-keys-table.mjs --check` が照合する（shared-ai-rules 12 章）。
@@ -42,8 +49,10 @@ import { EBITEN_KEY_CODES, EBITEN_KEY_CODE_LIST } from './ebiten-keys.generated.
  *
  * - 1: 読むキーの全集合（`codes`）だけ（#493）。この版の行は `held_codes` が NULL である
  * - 2: 押し続けて読むキー（`held_codes`）を足した（#529。`migrations/0042_source_input_keys_held_codes.sql`）
+ * - 3: 同じ条件式で読むキーの組（`alias_groups`）を足した（#543。`migrations/0043_source_input_keys_alias_groups.sql`）。
+ *   版 2 以下の行は `alias_groups` が NULL である
  */
-export const INPUT_KEYS_RULE_VERSION = 2;
+export const INPUT_KEYS_RULE_VERSION = 3;
 
 /**
  * 許可表: キーの表が写す `code` の集合（仕様 3.9.7）。
@@ -108,6 +117,70 @@ export function extractHeldInputKeyCodes(source: string): string[] {
     }
   }
   return sortedCodes(codes);
+}
+
+/**
+ * ソースが**同じ条件式で読むキーの組**を拾う（仕様 3.9.6 の「同じ働きの方向をボタンに出さない」の「組の拾い方」。規則の版 3）。
+ *
+ * `inpututil.IsKeyJustPressed(ebiten.Key…)` を `||` だけで並べた 1 つの続きを 1 つの組とする。例:
+ * `inpututil.IsKeyJustPressed(ebiten.KeySpace) || inpututil.IsKeyJustPressed(ebiten.KeyUp) || inpututil.IsKeyJustPressed(ebiten.KeyW)`
+ * は `["ArrowUp","KeyW","Space"]` の組になる。**`&&` や別の関数（`ebiten.IsKeyPressed` など）が挟まれば、そこで組が切れる。**
+ * 引数はキーの識別子を直接書いたものだけを拾い（括弧の内側の空白・改行・末尾のカンマは許す。H の拾い方と同じ）、
+ * 変数や式を渡した呼び出しは続きを切る。**続きの外側で `&&` に接する端の呼び出しは組から外す**（`&&` は `||` より強く結びつくので、
+ * `ok && IsKeyJustPressed(KeyZ) || IsKeyJustPressed(KeyUp)` の Z は Up と同じ働きではない）。
+ *
+ * **文の区切りを見ない**（構文解析を持ち込まない。`codes` と同じく、コメントや文字列の中の呼び出しも拾う）。
+ *
+ * @param source Go のソース本文
+ * @returns 組の配列。組の中は `code` の昇順で 2 つ以上、組は重複を除き、要素を先頭から比べた昇順（無ければ空配列）
+ */
+export function extractAliasGroups(source: string): string[][] {
+  // **正規表現を関数の中で組み立てる**（上と同じ理由。束のモジュールの最上位に副作用のある式を置かない）。
+  const call = String.raw`\binpututil\.IsKeyJustPressed\(\s*ebiten\.Key([A-Za-z0-9]+)\s*,?\s*\)`;
+  const run = new RegExp(`${call}(?:\\s*\\|\\|\\s*${call})+`, 'g');
+  const groups = new Map<string, string[]>();
+  for (const match of source.matchAll(run)) {
+    const names = [...match[0].matchAll(new RegExp(call, 'g'))].map((inner) => inner[1] ?? '');
+    // **`&&` は `||` より強く結びつく**（Go の演算子の優先順位）。続きの外側で `&&` に接する呼び出しは、
+    // `a && IsKeyJustPressed(KeyZ) || IsKeyJustPressed(KeyUp)` の Z のように `&&` の片側で、ほかのキーと同じ働きではないので組から外す。
+    const start = match.index ?? 0;
+    if (source.slice(0, start).trimEnd().endsWith('&&')) {
+      names.shift();
+    }
+    if (source.slice(start + match[0].length).trimStart().startsWith('&&')) {
+      names.pop();
+    }
+    const codes = new Set<string>();
+    for (const name of names) {
+      const code = ebitenKeyCode(name);
+      if (code !== null) {
+        codes.add(code);
+      }
+    }
+    if (codes.size >= 2) {
+      const group = sortedCodes(codes);
+      groups.set(JSON.stringify(group), group);
+    }
+  }
+  return [...groups.values()].sort(compareGroups);
+}
+
+/**
+ * 組どうしの並び（要素を先頭から code unit の順で比べ、先頭が同じなら短い方が先）。
+ *
+ * @param a 組
+ * @param b 組
+ * @returns 負なら a が先
+ */
+function compareGroups(a: readonly string[], b: readonly string[]): number {
+  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
+    const left = a[index]!;
+    const right = b[index]!;
+    if (left !== right) {
+      return left < right ? -1 : 1;
+    }
+  }
+  return a.length - b.length;
 }
 
 /**

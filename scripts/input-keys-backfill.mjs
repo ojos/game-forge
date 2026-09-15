@@ -11,7 +11,8 @@
 //    `SOURCE_INPUT_KEYS_TARGETS_SQL` をそのまま使う**（写さない）。
 // 2. 既定（dry-run）は**件数と一覧を出して終わる。1 行も書かない。**
 // 3. `--apply` のときだけ、対象ごとに **R2 からソースを読み**、`src/input-keys.ts` の `extractInputKeyCodes`（読むキー）と
-//    `extractHeldInputKeyCodes`（押し続けて読むキー。規則の版 2 / #529）で拾い、`UPSERT_SOURCE_INPUT_KEYS_SQL` で
+//    `extractHeldInputKeyCodes`（押し続けて読むキー。規則の版 2 / #529）と `extractAliasGroups`（同じ条件式で読むキーの組。
+//    規則の版 3 / #543）で拾い、`UPSERT_SOURCE_INPUT_KEYS_SQL` で
 //    書く（新しい版だけが上書きする＝何度流しても壊れない）。
 // 4. 書いたあと、**対象を数え直す**（報告された件数を信じない。`scripts/moderation-prune.sh` と同じ規律）。
 //
@@ -89,7 +90,7 @@ const work = mkdtempSync(path.join(tmpdir(), 'input-keys-backfill-'));
 process.on('exit', () => rmSync(work, { recursive: true, force: true }));
 const bundled = path.join(work, 'input-keys.mjs');
 const entry = [
-  `export { INPUT_KEYS_RULE_VERSION, extractHeldInputKeyCodes, extractInputKeyCodes } from ${JSON.stringify(path.join(ROOT, 'src', 'input-keys.ts'))};`,
+  `export { INPUT_KEYS_RULE_VERSION, extractAliasGroups, extractHeldInputKeyCodes, extractInputKeyCodes } from ${JSON.stringify(path.join(ROOT, 'src', 'input-keys.ts'))};`,
   `export { SOURCE_INPUT_KEYS_TARGETS_SQL, UPSERT_SOURCE_INPUT_KEYS_SQL, isStoredSourceKey } from ${JSON.stringify(path.join(ROOT, 'src', 'source-input-keys.ts'))};`,
 ].join('\n');
 const build = spawnSync(
@@ -102,6 +103,7 @@ if (build.status !== 0) {
 }
 const {
   INPUT_KEYS_RULE_VERSION,
+  extractAliasGroups,
   extractHeldInputKeyCodes,
   extractInputKeyCodes,
   SOURCE_INPUT_KEYS_TARGETS_SQL,
@@ -214,6 +216,9 @@ function d1(sql) {
     if (/no column named held_codes|no such column: held_codes/.test(text)) {
       lines.push('列 held_codes がありません。マイグレーション（0042）が未適用の可能性があります。');
     }
+    if (/no column named alias_groups|no such column: alias_groups/.test(text)) {
+      lines.push('列 alias_groups がありません。マイグレーション（0043）が未適用の可能性があります。');
+    }
     abort(lines);
   }
   const start = out.stdout.indexOf('[');
@@ -307,12 +312,14 @@ for (const key of targets) {
   }
   const codes = extractInputKeyCodes(source);
   const heldCodes = extractHeldInputKeyCodes(source);
-  console.log(`${TAG} OK ${key} ${JSON.stringify(codes)} held=${JSON.stringify(heldCodes)}`);
+  const aliasGroups = extractAliasGroups(source);
+  console.log(`${TAG} OK ${key} ${JSON.stringify(codes)} held=${JSON.stringify(heldCodes)} groups=${JSON.stringify(aliasGroups)}`);
   statements.push(
     bindLiterals(UPSERT_SOURCE_INPUT_KEYS_SQL, [
       key,
       JSON.stringify(codes),
       JSON.stringify(heldCodes),
+      JSON.stringify(aliasGroups),
       INPUT_KEYS_RULE_VERSION,
       Math.floor(Date.now() / 1000),
     ]),

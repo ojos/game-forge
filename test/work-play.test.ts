@@ -77,7 +77,7 @@ describe('iframe の属性は 1 か所から組み立てる（3.9.4 / 3.9.8 の 
   });
 
   it('全画面を iframe に許さない（allowfullscreen も allow も足さない。3.9.8 の 6）', () => {
-    const embed = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null);
+    const embed = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null, null);
     expect(embed).not.toContain('allowfullscreen');
     expect(embed).not.toMatch(/\sallow=/u);
     expect(embed).not.toContain('allow-same-origin');
@@ -101,13 +101,13 @@ describe('iframe の属性は 1 か所から組み立てる（3.9.4 / 3.9.8 の 
 
 describe('SSR の骨組み（3.9.4）', () => {
   it('iframe は <noscript> の中にだけあり、HTML に直接置かない', () => {
-    const embed = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null);
+    const embed = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null, null);
     expect(embed.startsWith(`<noscript class="${PLAY_NOSCRIPT_CLASS}">${playFrameHtml(PLAY_URL)}</noscript>\n`)).toBe(true);
     expect(embed.split('<iframe').length - 1).toBe(1);
   });
 
   it('覆いは hidden で配り、中にゲームの領域・閉じるのボタン・パッドの置き場所を持つ（キーを読まない作品では空）', () => {
-    const embed = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null);
+    const embed = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null, null);
     expect(embed).toContain(`<div class="${PLAY_OVERLAY_CLASS}" role="dialog" aria-modal="true" aria-label="ゲーム" hidden>`);
     expect(embed).toContain(`<div class="${PLAY_STAGE_CLASS}"></div>`);
     expect(embed).toContain(`<button type="button" class="gf-button gf-button-secondary ${PLAY_CLOSE_CLASS}">閉じる</button>`);
@@ -127,7 +127,7 @@ describe('SSR の骨組み（3.9.4）', () => {
   });
 
   it('足したボタンの文言は固定で、主のボタンを使わない（主は「改造する」のまま。2.5.5）', () => {
-    const html = `${playEntry('', true)}${playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null)}`;
+    const html = `${playEntry('', true)}${playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null, null)}`;
     expect(html).not.toContain('gf-button-primary');
     expect(html.match(/<button\b[^>]*>([^<]*)<\/button>/gu)).toEqual([
       `<button type="button" class="gf-button gf-button-secondary ${PLAY_OPEN_CLASS}" hidden>遊ぶ</button>`,
@@ -219,7 +219,7 @@ describe('仮想パッドの HTML（#494 / 仕様 3.9.6）', () => {
   const codes = ['ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'Enter', 'KeyZ', 'Space'];
 
   it('覆いの 2 つの置き場所に、表示規則の結果を副のボタンの部品で出す（十字は位置のクラスと読み上げの名前を持つ）', () => {
-    const embed = playEmbed(PLAY_URL, WORK_ID, codes, null);
+    const embed = playEmbed(PLAY_URL, WORK_ID, codes, null, null);
     expect(embed).toContain(padKeysHtml(padPlanOf(codes, null)));
     // 版 1 の行（held が null）は十字で出す。スティックの置き場所は隠して置き（切り替え用）、読む軸をすべて受け付ける。
     expect(padKeysHtml(padPlanOf(codes, null))).toBe(
@@ -246,8 +246,8 @@ describe('仮想パッドの HTML（#494 / 仕様 3.9.6）', () => {
   });
 
   it('スクリプトの本文はキーの集合によらず同じ（キーの集合も UGC も埋めない）', () => {
-    const withKeys = playEmbed(PLAY_URL, WORK_ID, codes, null);
-    const withoutKeys = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null);
+    const withKeys = playEmbed(PLAY_URL, WORK_ID, codes, null, null);
+    const withoutKeys = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null, null);
     expect(withKeys.slice(withKeys.indexOf('<script>'))).toBe(withoutKeys.slice(withoutKeys.indexOf('<script>')));
   });
 });
@@ -379,7 +379,7 @@ describe('方向の操作の形: スティックと切り替えの HTML（#530 /
   });
 
   it('方向の操作がある作品では、覆いに推定した形と覚えた形のキー（作品 id ごと）を持たせ、「閉じる」の前に控えめの切り替えを置く', () => {
-    const stickEmbed = playEmbed(PLAY_URL, WORK_ID, jump.codes, jump.held);
+    const stickEmbed = playEmbed(PLAY_URL, WORK_ID, jump.codes, jump.held, null);
     expect(overlayOf(stickEmbed).open).toBe(
       `<div class="${PLAY_OVERLAY_CLASS}" role="dialog" aria-modal="true" aria-label="ゲーム" data-pad-shape="stick" data-pad-memory="${PLAY_PAD_MEMORY_PREFIX}${WORK_ID}" hidden>`,
     );
@@ -388,7 +388,7 @@ describe('方向の操作の形: スティックと切り替えの HTML（#530 /
         '<span data-pad-label="stick">十字にする</span><span data-pad-label="dpad" hidden>スティックにする</span></button>' +
         `<button type="button" class="gf-button gf-button-secondary ${PLAY_CLOSE_CLASS}">閉じる</button></div>`,
     );
-    const dpadEmbed = playEmbed(PLAY_URL, WORK_ID, jump.codes, null);
+    const dpadEmbed = playEmbed(PLAY_URL, WORK_ID, jump.codes, null, null);
     expect(overlayOf(dpadEmbed).open).toContain('data-pad-shape="dpad"');
     expect(overlayOf(dpadEmbed).bar).toContain('<span data-pad-label="stick" hidden>十字にする</span><span data-pad-label="dpad">スティックにする</span></button>');
     expect(PLAY_PAD_TOGGLE_LABELS).toEqual({ stick: '十字にする', dpad: 'スティックにする' });
@@ -396,7 +396,7 @@ describe('方向の操作の形: スティックと切り替えの HTML（#530 /
 
   it('方向の操作が無い作品（キーを読まない・ボタンだけ）では、切り替えもスティックの置き場所も出さない', () => {
     for (const codes of [[], ['Space', 'KeyZ']]) {
-      const full = playEmbed(PLAY_URL, WORK_ID, codes, ['Space']);
+      const full = playEmbed(PLAY_URL, WORK_ID, codes, ['Space'], null);
       // スクリプトは作品によらず同じで、部品の綴りを持つ。見るのは HTML の骨組み。
       const embed = full.slice(0, full.indexOf('<script>'));
       expect(embed).not.toContain(PLAY_PAD_TOGGLE_CLASS);
@@ -408,7 +408,7 @@ describe('方向の操作の形: スティックと切り替えの HTML（#530 /
   });
 
   it('足したボタンは部品のクラスを持ち、主を使わず、文言に旧い呼び名が出ない（2.5.5 / #513）', () => {
-    const embed = playEmbed(PLAY_URL, WORK_ID, jump.codes, jump.held);
+    const embed = playEmbed(PLAY_URL, WORK_ID, jump.codes, jump.held, null);
     expect(embed).not.toContain('gf-button-primary');
     for (const tag of embed.match(/<button\b[^>]*>/gu) ?? []) {
       expect(tag).toMatch(/class="gf-button gf-button-(secondary|tertiary) /u);
@@ -417,7 +417,7 @@ describe('方向の操作の形: スティックと切り替えの HTML（#530 /
   });
 
   it('作品 id は属性として逃がして入れる', () => {
-    expect(playEmbed(PLAY_URL, '"><script>', jump.codes, jump.held)).toContain('data-pad-memory="gf-pad-shape:&quot;&gt;&lt;script&gt;"');
+    expect(playEmbed(PLAY_URL, '"><script>', jump.codes, jump.held, null)).toContain('data-pad-memory="gf-pad-shape:&quot;&gt;&lt;script&gt;"');
   });
 });
 

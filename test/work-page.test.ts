@@ -1206,6 +1206,8 @@ const baseView: WorkPageView = {
   inputHeldCodes: null,
   // 同じ条件式で読むキーの組（#543）。既定は null（版 2 以下の行と同じ扱い＝今の規則 5 のまま）。
   inputAliasGroups: null,
+  // 作品のおすすめの向き（#514）。既定は null（版 3 以下の行・正方形と同じ扱い＝向きの操作をしない）。
+  playOrientation: null,
   workId: '00000000-0000-4000-8000-000000000001',
   publishableId: null,
   forkableId: null,
@@ -2633,6 +2635,46 @@ describe('仮想パッドのキーを読む（#494 / 仕様 3.9.5 / 3.9.6）', (
     expect(padShapeOf(body)).toBeNull();
     expect(padCodesOf(body)).toEqual([]);
     expect(body).not.toContain('<button type="button" class="gf-button gf-button-tertiary gf-play-pad-toggle"');
+  });
+
+  it('論理解像度（layout_width / layout_height）を同じ行から読み、おすすめの向きを覆いに持たせる（#514 / 仕様 3.9.4）', async () => {
+    const { id, sourceKey } = await seedPublished('layout');
+    const orientationOf = (body: string): string | null => /<div class="gf-play-overlay"[^>]* data-orientation="([^"]*)"/u.exec(body)?.[1] ?? null;
+    const store = async (width: unknown, height: unknown, version: number): Promise<void> => {
+      await env.DB.prepare(
+        'insert or replace into source_input_keys (source_key, codes, held_codes, alias_groups, layout_width, layout_height, rule_version, extracted_at) values (?, ?, ?, ?, ?, ?, ?, 1)',
+      )
+        .bind(sourceKey, '[]', '[]', '[]', width, height, version)
+        .run();
+    };
+    await store(320, 240, 4);
+    let body = await (await open(workPagePath(id))).text();
+    expect(orientationOf(body)).toBe('landscape');
+    expect(body).toContain(`data-orientation-memory="gf-orientation:${id}"`);
+    expect(body).toContain('<p class="gf-play-orient-hint" role="status" hidden><span>横にすると</span><span>大きく遊べます</span></p>');
+    expect(body).toContain('<button type="button" class="gf-button gf-button-tertiary gf-play-orient-toggle" hidden>');
+    await store(320, 480, 4);
+    body = await (await open(workPagePath(id))).text();
+    expect(orientationOf(body)).toBe('portrait');
+    expect(body).toContain('<p class="gf-play-orient-hint" role="status" hidden><span>縦にすると</span><span>大きく遊べます</span></p>');
+    // 正方形・拾えなかった（版 4 の NULL）・版 3 以下の行（NULL）・壊れた値: 向きの操作をしない（属性もボタンも案内も無い）。
+    for (const [width, height, version] of [
+      [480, 480, 4],
+      [null, null, 4],
+      [null, null, 3],
+      ['wide', 'tall', 4],
+    ] as const) {
+      await store(width, height, version);
+      body = await (await open(workPagePath(id))).text();
+      const label = `${String(width)}x${String(height)} v${version}`;
+      expect(body, `${label}: 覆いが無い（検査の前提が崩れている）`).toContain('gf-play-overlay');
+      expect(orientationOf(body), label).toBeNull();
+      expect(body.slice(0, body.lastIndexOf('<script>')), label).not.toContain('gf-play-orient-toggle" hidden>');
+      expect(body, label).not.toContain('<p class="gf-play-orient-hint"');
+    }
+    // 行が無い作品も同じ。
+    const { id: noRow } = await seedPublished('layout-no-row');
+    expect(orientationOf(await (await open(workPagePath(noRow))).text())).toBeNull();
   });
 
   it('source_input_keys は主キーで 1 行だけ引く（表の全行を読まない）', async () => {

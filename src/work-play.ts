@@ -55,6 +55,18 @@
  * - **切り替え**: 上の行の控えめのボタン。**覚えた形（作品 id ごとの `localStorage`）は推定より優先**し、読み書きに失敗する環境では推定した形で出す。
  *   押しているキーを離してから形を変える
  *
+ * # 作品のおすすめの向き（#514 / 仕様 3.9.4 の「作品のおすすめの向きで開き、あとで入れ替えられる」）
+ *
+ * **論理解像度から決めた向き（横長は `landscape`、縦長は `portrait`。{@link playOrientationOf}）を覆いの属性に持たせ、スクリプトは読むだけ**
+ * である（スクリプトの本文は作品によらず同じ）。正方形・解像度が分からない作品は属性もボタンも案内も置かず、向きの操作をしない。
+ *
+ * - **固定できる端末**: 覆いが全画面に入った後で `screen.orientation.lock()` を呼び、**固定できたときだけ**上の行の控えめのボタン
+ *   （今と逆の向きの名前）を見せる。押すと固定する向きを入れ替え、入れ替えた向きを作品 id ごとの `localStorage` に覚える（十字 / スティックと同じ扱い）。
+ *   次に開くと覚えた向きで固定する。閉じると `screen.orientation.unlock()` で外す
+ * - **固定できない端末**（API が無い・全画面を断られた・固定を拒まれた）: ボタンは出さず、今の画面の向き
+ *   （`matchMedia('(orientation: portrait)')`。覆いの並べ方の `@media` と同じ見方）がおすすめと違うときだけ、上の行に固定の文言の案内を出す。
+ *   向きが変わるたびに見直す
+ *
  * # このモジュールは画面の文字列だけを持つ
  *
  * 文言は固定で、**UGC を含まない。** 遊ぶ URL は配信側が組み立てた値で、HTML へは `escapeHtml` を通して入れる。
@@ -163,6 +175,63 @@ export const PLAY_PAD_LABEL_ATTRIBUTE = 'data-pad-label';
 
 /** 切り替えのボタンの文言（**今と逆の形の名前**。仕様 3.9.6 の「手動の切り替え」。固定の文言）。形ごとに、その形のときに出す文言。 */
 export const PLAY_PAD_TOGGLE_LABELS: Readonly<Record<PadShape, string>> = { stick: '十字にする', dpad: 'スティックにする' };
+
+/** 作品のおすすめの向き（仕様 3.9.4 の #514）。`screen.orientation.lock()` に渡す値と同じ綴り。 */
+export type PlayOrientation = 'landscape' | 'portrait';
+
+/** 覆いに付ける、作品のおすすめの向き（`landscape` / `portrait`）の属性。向きの操作をしない作品では付けない。 */
+export const PLAY_ORIENTATION_ATTRIBUTE = 'data-orientation';
+
+/** 覆いに付ける、入れ替えた向きの `localStorage` のキーの属性（作品 id ごと）。 */
+export const PLAY_ORIENTATION_MEMORY_ATTRIBUTE = 'data-orientation-memory';
+
+/** 入れ替えた向きの `localStorage` のキーの接頭辞（後ろに作品 id。十字 / スティックの `gf-pad-shape:` と同じ形）。 */
+export const PLAY_ORIENTATION_MEMORY_PREFIX = 'gf-orientation:';
+
+/** 向きを入れ替えるボタンの `class`（部品のクラスの後ろに足す）。 */
+export const PLAY_ORIENTATION_TOGGLE_CLASS = 'gf-play-orient-toggle';
+
+/** 向きが合っていないときの案内の `class`。 */
+export const PLAY_ORIENTATION_HINT_CLASS = 'gf-play-orient-hint';
+
+/**
+ * 向きを入れ替えるボタンの文言の `<span>` に付ける、その文言を出す「今固定している向き」の属性（値は `landscape` / `portrait`）。
+ * 十字 / スティックの切り替えと同じく、2 つの文言を両方とも HTML に置いて見せ方だけを入れ替える（スクリプトは画面の文字を書き換えない）。
+ */
+export const PLAY_ORIENTATION_LABEL_ATTRIBUTE = 'data-orient-label';
+
+/** 向きを入れ替えるボタンの文言（**今固定している向きと逆の向きの名前**。固定の文言）。キーは今固定している向き。 */
+export const PLAY_ORIENTATION_TOGGLE_LABELS: Readonly<Record<PlayOrientation, string>> = {
+  landscape: '縦向きにする',
+  portrait: '横向きにする',
+};
+
+/**
+ * 固定できない端末で、向きが合っていないときの案内（固定の文言）。キーはおすすめの向き。
+ *
+ * **文節の 2 つに分けて持つ**（HTML では文節ごとに `<span>` で包み、狭い上の行で折り返すときに文節の境で折る。
+ * 1 字だけが次の行に落ちる形を撮影で見つけた）。読み上げと `textContent` は 2 つをつないだ 1 文になる。
+ */
+export const PLAY_ORIENTATION_HINTS: Readonly<Record<PlayOrientation, readonly [string, string]>> = {
+  landscape: ['横にすると', '大きく遊べます'],
+  portrait: ['縦にすると', '大きく遊べます'],
+};
+
+/**
+ * 論理解像度から、作品のおすすめの向きを決める（仕様 3.9.4 の「作品の向き（ページ側の規則）」）。
+ *
+ * **D1 の値を信じ切らない。** 2 つとも正の安全な整数のときだけ向きにし、それ以外（NULL＝版 3 以下の行・拾えなかった行、壊れた値）は null。
+ *
+ * @param width `source_input_keys.layout_width`
+ * @param height `source_input_keys.layout_height`
+ * @returns 幅 > 高さなら `landscape`、高さ > 幅なら `portrait`、正方形・分からないなら null（向きの操作をしない）
+ */
+export function playOrientationOf(width: unknown, height: unknown): PlayOrientation | null {
+  if (typeof width !== 'number' || typeof height !== 'number' || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  return width > height ? 'landscape' : height > width ? 'portrait' : null;
+}
 
 /**
  * 閉じたときに始めた `history.back()` の決着（その `popstate`）を待つ上限（ミリ秒）。待っているあいだは開き直しを受け付けない。
@@ -310,6 +379,26 @@ function padToggleHtml(estimated: PadShape): string {
 }
 
 /**
+ * 向きを入れ替えるボタンと、向きが合っていないときの案内（#514 / 仕様 3.9.4）。**どちらも `hidden` で配り、スクリプトが見せる。**
+ *
+ * - ボタンは**控えめのボタン**で、文言は今固定している向きと逆の向きの名前（2 つの文言を置き、最初はおすすめの向きの側を見せる）
+ * - 案内は作品のおすすめの向きで決まる固定の文言 1 つ
+ *
+ * @param orientation 作品のおすすめの向き
+ * @returns HTML
+ */
+function orientationBarHtml(orientation: PlayOrientation): string {
+  const labels = (['landscape', 'portrait'] as const)
+    .map(
+      (locked) =>
+        `<span ${PLAY_ORIENTATION_LABEL_ATTRIBUTE}="${locked}"${locked === orientation ? '' : ' hidden'}>${PLAY_ORIENTATION_TOGGLE_LABELS[locked]}</span>`,
+    )
+    .join('');
+  const hint = PLAY_ORIENTATION_HINTS[orientation].map((phrase) => `<span>${phrase}</span>`).join('');
+  return `<p class="${PLAY_ORIENTATION_HINT_CLASS}" role="status" hidden>${hint}</p><button type="button" class="${TERTIARY_BUTTON} ${PLAY_ORIENTATION_TOGGLE_CLASS}" hidden>${labels}</button>`;
+}
+
+/**
  * 全画面の覆いの骨組み（3.9.4）。**`hidden` で配り、タッチ端末でタップしたときにだけ開く。**
  *
  * 並べ方（縦持ちは上に閉じる・中にゲーム・下にパッド、横持ちは左に十字・中央にゲーム・右にボタンと右上に閉じる）は
@@ -319,18 +408,27 @@ function padToggleHtml(estimated: PadShape): string {
  * **方向の操作がある作品では**、覆いに推定した形（`data-pad-shape`）と覚えた形のキー（`data-pad-memory`。作品 id ごと）を持たせ、
  * 上の行の「閉じる」の隣（前）に切り替えのボタンを置く（#530）。
  *
+ * **向きの操作をする作品では**（#514）、覆いにおすすめの向き（`data-orientation`）と入れ替えた向きのキー（`data-orientation-memory`。
+ * 作品 id ごと）を持たせ、上の行の先頭に案内と向きを入れ替えるボタン（どちらも `hidden`）を置く。
+ *
  * @param plan パッドの計画
- * @param workId 作品 id（覚えた形のキーに使う）
+ * @param workId 作品 id（覚えた形・向きのキーに使う）
+ * @param orientation 作品のおすすめの向き（null なら向きの操作をしない）
  * @returns HTML
  */
-function playOverlay(plan: PadPlan, workId: string): string {
+function playOverlay(plan: PadPlan, workId: string, orientation: PlayOrientation | null): string {
   const shape =
     plan.estimated === null
       ? ''
       : ` ${PLAY_PAD_SHAPE_ATTRIBUTE}="${plan.estimated}" ${PLAY_PAD_MEMORY_ATTRIBUTE}="${escapeHtml(`${PLAY_PAD_MEMORY_PREFIX}${workId}`)}"`;
+  const orientationAttributes =
+    orientation === null
+      ? ''
+      : ` ${PLAY_ORIENTATION_ATTRIBUTE}="${orientation}" ${PLAY_ORIENTATION_MEMORY_ATTRIBUTE}="${escapeHtml(`${PLAY_ORIENTATION_MEMORY_PREFIX}${workId}`)}"`;
   const toggle = plan.estimated === null ? '' : padToggleHtml(plan.estimated);
-  return `<div class="${PLAY_OVERLAY_CLASS}" role="dialog" aria-modal="true" aria-label="ゲーム"${shape} hidden>
-<div class="gf-play-bar">${toggle}<button type="button" class="${SECONDARY_BUTTON} ${PLAY_CLOSE_CLASS}">閉じる</button></div>
+  const orientationBar = orientation === null ? '' : orientationBarHtml(orientation);
+  return `<div class="${PLAY_OVERLAY_CLASS}" role="dialog" aria-modal="true" aria-label="ゲーム"${shape}${orientationAttributes} hidden>
+<div class="gf-play-bar">${orientationBar}${toggle}<button type="button" class="${SECONDARY_BUTTON} ${PLAY_CLOSE_CLASS}">閉じる</button></div>
 <div class="${PLAY_STAGE_CLASS}"></div>
 ${padKeysHtml(plan)}
 </div>`;
@@ -571,6 +669,115 @@ export function playFrameScript(playUrl: string): string {
       try { window.localStorage.setItem(padMemory, next); } catch (error) {}
     });
   }
+  // ── 作品のおすすめの向き（#514 / 仕様 3.9.4）────────────────────────────────────
+  // **向きは覆いの属性から読むだけ**（正方形・解像度が分からない作品は属性が無く、何もしない）。回ごとの番号で、閉じた後や開き直した後に
+  // 決着した全画面の要求・固定の結果を捨てる。
+  var orientWanted = overlay.getAttribute(${literal(PLAY_ORIENTATION_ATTRIBUTE)});
+  if (orientWanted !== 'landscape' && orientWanted !== 'portrait') { orientWanted = null; }
+  var orientMemory = overlay.getAttribute(${literal(PLAY_ORIENTATION_MEMORY_ATTRIBUTE)});
+  var orientToggle = overlay.querySelector(${literal(`.${PLAY_ORIENTATION_TOGGLE_CLASS}`)});
+  var orientHint = overlay.querySelector(${literal(`.${PLAY_ORIENTATION_HINT_CLASS}`)});
+  var orientLabels = orientToggle === null ? [] : orientToggle.querySelectorAll(${literal(`[${PLAY_ORIENTATION_LABEL_ATTRIBUTE}]`)});
+  var orientRound = 0;
+  var orientLocked = null;
+  var orientHinting = false;
+  // 今の画面の向き（覆いの並べ方の @media と同じ見方）。
+  var portraitQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait)') : null;
+  var unlockOrientation = function () {
+    var orientation = window.screen ? window.screen.orientation : null;
+    if (orientation && typeof orientation.unlock === 'function') {
+      try { orientation.unlock(); } catch (error) {}
+    }
+  };
+  var hideOrientationBar = function () {
+    if (orientToggle !== null) { orientToggle.hidden = true; }
+    if (orientHint !== null) { orientHint.hidden = true; }
+  };
+  // **案内は、固定できなかった回で、今の向きがおすすめと違うときだけ出す**（向きが合ったら消す）。
+  var updateOrientHint = function () {
+    if (orientHint === null) { return; }
+    var current = portraitQuery === null ? null : portraitQuery.matches ? 'portrait' : 'landscape';
+    orientHint.hidden = !(orientHinting && frame !== null && current !== null && current !== orientWanted);
+  };
+  var hintOrientation = function (round) {
+    if (round !== orientRound || frame === null) { return; }
+    orientHinting = true;
+    orientLocked = null;
+    if (orientToggle !== null) { orientToggle.hidden = true; }
+    updateOrientHint();
+  };
+  if (portraitQuery !== null) {
+    if (typeof portraitQuery.addEventListener === 'function') {
+      portraitQuery.addEventListener('change', updateOrientHint);
+    } else if (typeof portraitQuery.addListener === 'function') {
+      portraitQuery.addListener(updateOrientHint);
+    }
+  }
+  // **固定できたときだけ**ボタンを見せる。文言は今固定している向きと逆の名前（HTML に置いた 2 つの見せ方を入れ替える）。
+  var showOrientationToggle = function (locked) {
+    orientLocked = locked;
+    orientHinting = false;
+    if (orientHint !== null) { orientHint.hidden = true; }
+    for (var index = 0; index < orientLabels.length; index += 1) {
+      orientLabels[index].hidden = orientLabels[index].getAttribute(${literal(PLAY_ORIENTATION_LABEL_ATTRIBUTE)}) !== locked;
+    }
+    if (orientToggle !== null) { orientToggle.hidden = false; }
+  };
+  // 向きを固定する。固定できたら onLocked(向き)、API が無い・投げた・拒まれたら onRefused(回) を呼ぶ（その回が続いているときだけ）。
+  var lockOrientation = function (target, round, onLocked, onRefused) {
+    var orientation = window.screen ? window.screen.orientation : null;
+    var locking = null;
+    if (orientation && typeof orientation.lock === 'function') {
+      try { locking = orientation.lock(target); } catch (error) { locking = null; }
+    }
+    if (!locking || typeof locking.then !== 'function') {
+      onRefused(round);
+      return;
+    }
+    locking.then(function () {
+      if (round !== orientRound) {
+        // 固定が決着する前に閉じた。**閉じたままなら**固定を残さない（開き直した回の固定は、その回が呼び直している）。
+        if (frame === null) { unlockOrientation(); }
+        return;
+      }
+      onLocked(target);
+    }, function () {
+      onRefused(round);
+    });
+  };
+  // **全画面に入った後で**、覚えた向き（無ければおすすめの向き）で固定する。全画面を要求できなかった・断られたら案内に回る。
+  var startOrientation = function (entering) {
+    orientRound += 1;
+    orientLocked = null;
+    orientHinting = false;
+    hideOrientationBar();
+    if (orientWanted === null) { return; }
+    var round = orientRound;
+    var remembered = null;
+    try { remembered = window.localStorage.getItem(orientMemory); } catch (error) { remembered = null; }
+    var target = remembered === 'landscape' || remembered === 'portrait' ? remembered : orientWanted;
+    if (!entering || typeof entering.then !== 'function') {
+      hintOrientation(round);
+      return;
+    }
+    entering.then(function () {
+      if (round !== orientRound || frame === null) { return; }
+      lockOrientation(target, round, showOrientationToggle, hintOrientation);
+    }, function () {
+      hintOrientation(round);
+    });
+  };
+  if (orientToggle !== null && orientWanted !== null && orientMemory !== null) {
+    orientToggle.addEventListener('click', function () {
+      if (orientLocked === null || frame === null) { return; }
+      var next = orientLocked === 'landscape' ? 'portrait' : 'landscape';
+      // 入れ替えを拒まれたら、今の固定とボタンのまま（案内には回らない）。
+      lockOrientation(next, orientRound, function (locked) {
+        showOrientationToggle(locked);
+        try { window.localStorage.setItem(orientMemory, locked); } catch (error) {}
+      }, function () {});
+    });
+  }
   // **送り始めるのは、その iframe から起動の合図を受けた後**（仕様 3.9.7）。検査は計上のスクリプト（src/plays.ts）と同じ規律で、
   // 自分の iframe の窓から届いた固定の文字列だけを受ける。
   window.addEventListener('message', function (event) {
@@ -603,6 +810,12 @@ export function playFrameScript(playUrl: string): string {
     if (closing.parentNode !== null) { closing.parentNode.removeChild(closing); }
     overlay.hidden = true;
     root.classList.remove(${literal(PLAY_LOCKED_CLASS)});
+    // **向きの固定を外す**（#514。全画面を出るときにも外れるが、全画面に入れなかった回や解除の前にも外す）。この回の決着は捨てる。
+    orientRound += 1;
+    orientLocked = null;
+    orientHinting = false;
+    hideOrientationBar();
+    if (orientWanted !== null) { unlockOrientation(); }
     if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
       var exiting = document.exitFullscreen();
       if (exiting && typeof exiting.catch === 'function') { exiting.catch(function () {}); }
@@ -653,12 +866,17 @@ export function playFrameScript(playUrl: string): string {
       pushed = false;
     }
     // **全画面は重ねるだけで、頼らない。** 呼べない・断られたときは覆いだけで続ける（仕様 3.9.4）。
+    var entering = null;
     if (typeof overlay.requestFullscreen === 'function') {
       try {
-        var entering = overlay.requestFullscreen();
+        entering = overlay.requestFullscreen();
         if (entering && typeof entering.catch === 'function') { entering.catch(function () {}); }
-      } catch (error) {}
+      } catch (error) {
+        entering = null;
+      }
     }
+    // **全画面に入った後で、作品のおすすめの向きで固定する**（#514 / 仕様 3.9.4）。入れなければ案内に回る。
+    startOrientation(entering);
   };
   entry.addEventListener('click', function () { open(); });
   closeButton.addEventListener('click', function () { close(false); });
@@ -699,6 +917,7 @@ export function playFrameScript(playUrl: string): string {
  * @param inputKeyCodes 作品が読むキーの集合（許可表で絞った値。`src/virtual-pad.ts` の `readInputKeyCodes`）。パッドの中身を決める
  * @param inputHeldCodes 押し続けて読むキーの集合（`readHeldCodes`。版 1 の行は null）。最初の形を決める（#530）
  * @param inputAliasGroups 同じ条件式で読むキーの組（`readAliasGroups`。版 2 以下の行は null）。すでにボタンに出るキーと同じ働きの方向を右のボタンに出さない（#543）
+ * @param orientation 作品のおすすめの向き（{@link playOrientationOf}。null なら向きの操作をしない。#514）
  * @returns HTML
  */
 export function playEmbed(
@@ -707,8 +926,9 @@ export function playEmbed(
   inputKeyCodes: readonly string[],
   inputHeldCodes: readonly string[] | null,
   inputAliasGroups: readonly (readonly string[])[] | null,
+  orientation: PlayOrientation | null = null,
 ): string {
   return `<noscript class="${PLAY_NOSCRIPT_CLASS}">${playFrameHtml(playUrl)}</noscript>
-${playOverlay(padPlanOf(inputKeyCodes, inputHeldCodes, inputAliasGroups), workId)}
+${playOverlay(padPlanOf(inputKeyCodes, inputHeldCodes, inputAliasGroups), workId, orientation)}
 ${playFrameScript(playUrl)}`;
 }

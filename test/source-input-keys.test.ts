@@ -27,6 +27,7 @@ import {
   UPSERT_SOURCE_INPUT_KEYS_SQL,
   errorNameOf,
   isStoredSourceKey,
+  layoutColumnsOf,
   recordSourceInputKeys,
 } from '../src/source-input-keys.js';
 import { withSourceInputKeyRecording } from '../src/source-input-keys-routes.js';
@@ -37,13 +38,21 @@ import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 
-/** 矢印と A を押し続けて読み、Space を押した瞬間に読むソース。 */
+/** 矢印と A を押し続けて読み、Space を押した瞬間に読むソース。論理解像度は 320×240（まとめた宣言。#514）。 */
 const ARROWS_SOURCE = `package main
 
 import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 )
+
+const (
+	screenW, screenH = 320, 240
+)
+
+func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
+	return screenW, screenH
+}
 
 func (g *Game) Update() error {
 	if ebiten.IsKeyPressed(ebiten.KeyLeft) || ebiten.IsKeyPressed(ebiten.KeyA) {
@@ -61,6 +70,9 @@ const ARROWS_HELD = ['ArrowLeft', 'KeyA'];
 
 /** {@link ARROWS_SOURCE} が同じ条件式で読むキーの組（#543）。 */
 const ARROWS_GROUPS = [['ArrowUp', 'Space']];
+
+/** {@link ARROWS_SOURCE} の論理解像度の列（#514）。 */
+const ARROWS_LAYOUT = { layout_width: 320, layout_height: 240 };
 
 /** Z を押した瞬間に読み、Escape を押し続けて読むソース（`KeyPressDuration`）。 */
 const BUTTONS_SOURCE = `package main
@@ -81,6 +93,9 @@ const BUTTONS_HELD = ['Escape'];
 
 /** {@link BUTTONS_SOURCE} が同じ条件式で読むキーの組（別の関数 `KeyPressDuration` で切れるので無い）。 */
 const BUTTONS_GROUPS: string[][] = [];
+
+/** {@link BUTTONS_SOURCE} の論理解像度の列（`Layout` が無いので拾えない＝両方 NULL。#514）。 */
+const BUTTONS_LAYOUT = { layout_width: null, layout_height: null };
 
 /** 記録するだけの通知。**本物のメールを送らない**（`test/generate-callback.test.ts` と同じ理由）。 */
 const notifiers: CallbackNotifiers = {
@@ -181,14 +196,24 @@ async function rowOf(sourceKey: string): Promise<{
   codes: string[];
   held_codes: string[] | null;
   alias_groups: string[][] | null;
+  layout_width: number | null;
+  layout_height: number | null;
   rule_version: number;
   extracted_at: number;
 } | null> {
   const row = await env.DB.prepare(
-    'select codes, held_codes, alias_groups, rule_version, extracted_at from source_input_keys where source_key = ?',
+    'select codes, held_codes, alias_groups, layout_width, layout_height, rule_version, extracted_at from source_input_keys where source_key = ?',
   )
     .bind(sourceKey)
-    .first<{ codes: string; held_codes: string | null; alias_groups: string | null; rule_version: number; extracted_at: number }>();
+    .first<{
+      codes: string;
+      held_codes: string | null;
+      alias_groups: string | null;
+      layout_width: number | null;
+      layout_height: number | null;
+      rule_version: number;
+      extracted_at: number;
+    }>();
   return row === null
     ? null
     : {
@@ -241,14 +266,15 @@ beforeEach(() => {
 });
 
 describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', () => {
-  it('ソースを読んで拾い、code の JSON 配列・押し続けて読む code の JSON 配列・同じ条件式で読むキーの組・規則の版を書く', async () => {
+  it('ソースを読んで拾い、code の JSON 配列・押し続けて読む code の JSON 配列・同じ条件式で読むキーの組・論理解像度・規則の版を書く', async () => {
     const keys = await putSource(ARROWS_SOURCE);
     expect(await recordSourceInputKeys(env, keys.sourceKey, 1_800_000_000)).toBe('recorded');
-    expect(INPUT_KEYS_RULE_VERSION).toBe(3);
+    expect(INPUT_KEYS_RULE_VERSION).toBe(4);
     expect(await rowOf(keys.sourceKey)).toEqual({
       codes: ['ArrowLeft', 'ArrowUp', 'KeyA', 'Space'],
       held_codes: ARROWS_HELD,
       alias_groups: ARROWS_GROUPS,
+      ...ARROWS_LAYOUT,
       rule_version: INPUT_KEYS_RULE_VERSION,
       extracted_at: 1_800_000_000,
     });
@@ -262,6 +288,8 @@ describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', (
     expect((await rowOf(keys.sourceKey))?.held_codes).toEqual([]);
     // 同じ条件式で読むキーの組も [] で、版 2 以下の行の NULL と区別する（#543）。
     expect((await rowOf(keys.sourceKey))?.alias_groups).toEqual([]);
+    // Layout が無いので、論理解像度は両方 NULL（版 4 の行の NULL は「拾えなかった」。#514）。
+    expect(await rowOf(keys.sourceKey)).toMatchObject({ layout_width: null, layout_height: null, rule_version: INPUT_KEYS_RULE_VERSION });
   });
 
   it('今の版の行があれば R2 を読まない', async () => {
@@ -285,6 +313,7 @@ describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', (
       codes: ['Escape', 'KeyZ'],
       held_codes: BUTTONS_HELD,
       alias_groups: BUTTONS_GROUPS,
+      ...BUTTONS_LAYOUT,
       rule_version: INPUT_KEYS_RULE_VERSION,
       extracted_at: 1_800_000_000,
     });
@@ -304,7 +333,8 @@ describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', (
       codes: ['ArrowLeft', 'ArrowUp', 'KeyA', 'Space'],
       held_codes: ARROWS_HELD,
       alias_groups: ARROWS_GROUPS,
-      rule_version: 3,
+      ...ARROWS_LAYOUT,
+      rule_version: INPUT_KEYS_RULE_VERSION,
       extracted_at: 1_800_000_000,
     });
   });
@@ -323,7 +353,28 @@ describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', (
       codes: ['ArrowLeft', 'ArrowUp', 'KeyA', 'Space'],
       held_codes: ARROWS_HELD,
       alias_groups: ARROWS_GROUPS,
-      rule_version: 3,
+      ...ARROWS_LAYOUT,
+      rule_version: INPUT_KEYS_RULE_VERSION,
+      extracted_at: 1_800_000_000,
+    });
+  });
+
+  it('版 3 の行（layout_width / layout_height が NULL。#514 より前の Worker が書いた形）は R2 を読み直して論理解像度を埋める', async () => {
+    const keys = await putSource(ARROWS_SOURCE);
+    // #543 の Worker が書いた形そのまま（列 layout_width / layout_height を書かない）。
+    await env.DB.prepare(
+      'insert into source_input_keys (source_key, codes, held_codes, alias_groups, rule_version, extracted_at) values (?, ?, ?, ?, 3, 1)',
+    )
+      .bind(keys.sourceKey, '["ArrowLeft","ArrowUp","KeyA","Space"]', '["ArrowLeft","KeyA"]', '[["ArrowUp","Space"]]')
+      .run();
+    expect(await rowOf(keys.sourceKey)).toMatchObject({ layout_width: null, layout_height: null, rule_version: 3 });
+    expect(await recordSourceInputKeys(env, keys.sourceKey, 1_800_000_000)).toBe('recorded');
+    expect(await rowOf(keys.sourceKey)).toEqual({
+      codes: ['ArrowLeft', 'ArrowUp', 'KeyA', 'Space'],
+      held_codes: ARROWS_HELD,
+      alias_groups: ARROWS_GROUPS,
+      ...ARROWS_LAYOUT,
+      rule_version: INPUT_KEYS_RULE_VERSION,
       extracted_at: 1_800_000_000,
     });
   });
@@ -356,44 +407,58 @@ describe('recordSourceInputKeys（保存の共有の関数。仕様 3.9.5）', (
 describe('保存の 1 文（新しい版だけが上書きする）', () => {
   it('同じ版の 2 回目は何も変えない', async () => {
     const key = hashKey();
-    const write = async (codes: string, held: string, groups: string, version: number, at: number): Promise<void> => {
-      await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL).bind(key, codes, held, groups, version, at).run();
+    const write = async (
+      codes: string,
+      held: string,
+      groups: string,
+      layout: readonly [number | null, number | null],
+      version: number,
+      at: number,
+    ): Promise<void> => {
+      await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL).bind(key, codes, held, groups, layout[0], layout[1], version, at).run();
     };
-    await write('["KeyA"]', '[]', '[]', 3, 100);
-    await write('["KeyB"]', '["KeyB"]', '[["KeyB","Space"]]', 3, 200);
-    expect(await rowOf(key)).toEqual({ codes: ['KeyA'], held_codes: [], alias_groups: [], rule_version: 3, extracted_at: 100 });
-    await write('["KeyC"]', '["KeyC"]', '[["KeyC","Space"]]', 4, 300);
+    await write('["KeyA"]', '[]', '[]', [320, 240], 4, 100);
+    await write('["KeyB"]', '["KeyB"]', '[["KeyB","Space"]]', [480, 640], 4, 200);
     expect(await rowOf(key)).toEqual({
+      codes: ['KeyA'],
+      held_codes: [],
+      alias_groups: [],
+      layout_width: 320,
+      layout_height: 240,
+      rule_version: 4,
+      extracted_at: 100,
+    });
+    await write('["KeyC"]', '["KeyC"]', '[["KeyC","Space"]]', [null, null], 5, 300);
+    const newer = {
       codes: ['KeyC'],
       held_codes: ['KeyC'],
       alias_groups: [['KeyC', 'Space']],
-      rule_version: 4,
+      layout_width: null,
+      layout_height: null,
+      rule_version: 5,
       extracted_at: 300,
-    });
-    // 古い版は新しい版を上書きしない（codes も held_codes も alias_groups も）。
-    await write('["KeyD"]', '["KeyD"]', '[["KeyD","Space"]]', 3, 400);
-    expect(await rowOf(key)).toEqual({
-      codes: ['KeyC'],
-      held_codes: ['KeyC'],
-      alias_groups: [['KeyC', 'Space']],
-      rule_version: 4,
-      extracted_at: 300,
-    });
+    };
+    expect(await rowOf(key)).toEqual(newer);
+    // 古い版は新しい版を上書きしない（codes も held_codes も alias_groups も論理解像度も）。
+    await write('["KeyD"]', '["KeyD"]', '[["KeyD","Space"]]', [480, 480], 4, 400);
+    expect(await rowOf(key)).toEqual(newer);
   });
 
-  it('版 1 の行（held_codes が NULL）と版 2 の行（alias_groups が NULL）を、版 3 の 1 文が 3 つの列で上書きする', async () => {
+  it('版 1〜3 の行（held_codes / alias_groups / 論理解像度が NULL）を、版 4 の 1 文がすべての列で上書きする', async () => {
     const v1 = hashKey();
     await env.DB.prepare(
       'insert into source_input_keys (source_key, codes, rule_version, extracted_at) values (?, ?, 1, 100)',
     )
       .bind(v1, '["KeyA"]')
       .run();
-    await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL).bind(v1, '["KeyA","KeyB"]', '["KeyB"]', '[["KeyA","KeyB"]]', 3, 200).run();
+    await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL).bind(v1, '["KeyA","KeyB"]', '["KeyB"]', '[["KeyA","KeyB"]]', 320, 480, 4, 200).run();
     expect(await rowOf(v1)).toEqual({
       codes: ['KeyA', 'KeyB'],
       held_codes: ['KeyB'],
       alias_groups: [['KeyA', 'KeyB']],
-      rule_version: 3,
+      layout_width: 320,
+      layout_height: 480,
+      rule_version: 4,
       extracted_at: 200,
     });
     const v2 = hashKey();
@@ -402,14 +467,33 @@ describe('保存の 1 文（新しい版だけが上書きする）', () => {
     )
       .bind(v2, '["KeyA"]', '[]')
       .run();
-    await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL).bind(v2, '["KeyA","Space"]', '[]', '[["KeyA","Space"]]', 3, 200).run();
+    await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL).bind(v2, '["KeyA","Space"]', '[]', '[["KeyA","Space"]]', null, null, 4, 200).run();
     expect(await rowOf(v2)).toEqual({
       codes: ['KeyA', 'Space'],
       held_codes: [],
       alias_groups: [['KeyA', 'Space']],
-      rule_version: 3,
+      layout_width: null,
+      layout_height: null,
+      rule_version: 4,
       extracted_at: 200,
     });
+    const v3 = hashKey();
+    await env.DB.prepare(
+      'insert into source_input_keys (source_key, codes, held_codes, alias_groups, rule_version, extracted_at) values (?, ?, ?, ?, 3, 100)',
+    )
+      .bind(v3, '["KeyA"]', '[]', '[]')
+      .run();
+    await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL).bind(v3, '["KeyA"]', '[]', '[]', 480, 270, 4, 200).run();
+    expect(await rowOf(v3)).toMatchObject({ layout_width: 480, layout_height: 270, rule_version: 4, extracted_at: 200 });
+  });
+});
+
+describe('論理解像度の列の組（layoutColumnsOf。仕様 3.9.4 / #514）', () => {
+  it('拾えれば幅と高さ、拾えなければ両方 NULL（片方だけの値を作らない）', () => {
+    expect(layoutColumnsOf(ARROWS_SOURCE)).toEqual([320, 240]);
+    expect(layoutColumnsOf(BUTTONS_SOURCE)).toEqual([null, null]);
+    // 片方だけが名前で拾えない形でも、両方 NULL。
+    expect(layoutColumnsOf('package main\n\nfunc (g *Game) Layout(w, h int) (int, int) { return 320, h }\n')).toEqual([null, null]);
   });
 });
 

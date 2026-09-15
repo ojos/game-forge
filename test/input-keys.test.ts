@@ -12,6 +12,7 @@ import {
   extractAliasGroups,
   extractHeldInputKeyCodes,
   extractInputKeyCodes,
+  extractLayoutSize,
 } from '../src/input-keys.js';
 
 describe('抽出の規則（仕様 3.9.5 / #493）', () => {
@@ -390,6 +391,137 @@ describe('同じ条件式で読むキーの組の抽出（仕様 3.9.6 の「同
   });
 });
 
+describe('作品の論理解像度の抽出（仕様 3.9.4 の「論理解像度の拾い方」/ #514。規則の版 4）', () => {
+  /**
+   * パッケージの宣言と Layout の本体から、ソースを組み立てる。
+   *
+   * @param declarations パッケージの最上位に置く宣言
+   * @param layout `Layout` の本体
+   * @param rest ほかの関数
+   * @returns ソース
+   */
+  function program(declarations: string, layout: string, rest = ''): string {
+    return `package main
+
+import "github.com/hajimehoshi/ebiten/v2"
+
+${declarations}
+
+type Game struct{ w, h int }
+
+func (g *Game) Update() error { return nil }
+
+func (g *Game) Draw(screen *ebiten.Image) {}
+
+func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
+${layout}
+}
+${rest}
+func main() {
+	ebiten.RunGame(&Game{})
+}
+`;
+  }
+
+  it('整数のリテラルを 2 つ返す Layout を拾う（1 行に書いた形も）', () => {
+    expect(extractLayoutSize(program('', '\treturn 320, 240'))).toEqual({ width: 320, height: 240 });
+    const oneLine = 'package main\n\nfunc (g *Game) Layout(ow, oh int) (int, int) { return 480, 640 }\n';
+    expect(extractLayoutSize(oneLine)).toEqual({ width: 480, height: 640 });
+  });
+
+  it('パッケージの const の名前を返す Layout を拾う（別々の宣言・const のまとまり・型つき）', () => {
+    expect(extractLayoutSize(program('const screenW = 320\nconst screenH = 480', '\treturn screenW, screenH'))).toEqual({ width: 320, height: 480 });
+    expect(
+      extractLayoutSize(program('const (\n\tscreenW = 480\n\tscreenH = 360\n\tgravity = 0.4\n)', '\treturn screenW, screenH')),
+    ).toEqual({ width: 480, height: 360 });
+    expect(extractLayoutSize(program('const (\n\tscreenW int = 480\n\tscreenH int = 320\n)', '\treturn screenW, screenH'))).toEqual({
+      width: 480,
+      height: 320,
+    });
+    expect(extractLayoutSize(program('var screenW, screenH int = 320, 240', '\treturn screenW, screenH'))).toEqual({ width: 320, height: 240 });
+  });
+
+  it('まとめた宣言は位置で対応させる（えらべるサカナを 480×480、ネズミのカギを 320×320 と取り違えた実例）', () => {
+    // えらべるサカナ（公開済み）: const のまとまりの中の `SW, SH = 480, 270`。名前の最初の `=` を拾うと SH が 480 になる。
+    const sakana = program('const (\n\tSW, SH     = 480, 270\n\tMaxFish    = 8\n)', '\treturn SW, SH');
+    expect(extractLayoutSize(sakana)).toEqual({ width: 480, height: 270 });
+    // ネズミのカギ（公開済み）: `SW, SH = 320, 240` と、それを使う式の宣言。関数の中に同じ綴りの小文字の局所変数もある。
+    const nezumi = program(
+      'const (\n\tTILE     = 16\n\tSW, SH   = 320, 240\n\tCOLS      = SW / TILE\n\tROWS      = SH / TILE\n)',
+      '\treturn SW, SH',
+      '\nfunc (g *Game) score() {\n\tsw, _ := measure()\n\t_ = sw\n}\n',
+    );
+    expect(extractLayoutSize(nezumi)).toEqual({ width: 320, height: 240 });
+    // 左右の数が合わない（多値を返す呼び出しで束縛する var）は拾わない。
+    expect(extractLayoutSize(program('var SW, SH = size()', '\treturn SW, SH'))).toBeNull();
+  });
+
+  it('式・関数呼び出し・整数でない型・値の省略（iota の繰り返し）で束縛した名前は拾わない', () => {
+    expect(extractLayoutSize(program('const (\n\tscreenW = 160 * 2\n\tscreenH = 240\n)', '\treturn screenW, screenH'))).toBeNull();
+    expect(extractLayoutSize(program('var screenW = width()\nconst screenH = 240', '\treturn screenW, screenH'))).toBeNull();
+    expect(extractLayoutSize(program('const screenW float64 = 320\nconst screenH = 240', '\treturn screenW, screenH'))).toBeNull();
+    expect(extractLayoutSize(program('const (\n\tscreenH = 240\n\tscreenW\n)', '\treturn screenW, screenH'))).toBeNull();
+    expect(extractLayoutSize(program('var screenW int\nconst screenH = 240', '\treturn screenW, screenH'))).toBeNull();
+    // 10 進の正の整数のリテラルだけを拾う（16 進・0・文字列は拾わない）。
+    expect(extractLayoutSize(program('', '\treturn 0x140, 240'))).toBeNull();
+    expect(extractLayoutSize(program('', '\treturn 0, 240'))).toBeNull();
+    expect(extractLayoutSize(program('const screenW = "320"\nconst screenH = 240', '\treturn screenW, screenH'))).toBeNull();
+  });
+
+  it('Layout の中の式・呼び出し・変換・引数を返すものは拾わない', () => {
+    expect(extractLayoutSize(program('const screenW = 320', '\treturn screenW * 2, 240'))).toBeNull();
+    expect(extractLayoutSize(program('', '\treturn int(320), 240'))).toBeNull();
+    expect(extractLayoutSize(program('', '\treturn outsideWidth, outsideHeight'))).toBeNull();
+    expect(extractLayoutSize(program('', '\treturn g.w, g.h'))).toBeNull();
+    expect(extractLayoutSize(program('', '\treturn 320'))).toBeNull();
+  });
+
+  it('同じ名前を 2 回宣言した・関数の中で代入した・Layout の中で同じ名前を使うなら拾わない', () => {
+    expect(extractLayoutSize(program('const screenW = 320\nconst screenH = 240\nvar screenW = 480', '\treturn screenW, screenH'))).toBeNull();
+    expect(
+      extractLayoutSize(program('var screenW = 320\nvar screenH = 240', '\treturn screenW, screenH', '\nfunc init() {\n\tscreenW = 480\n}\n')),
+    ).toBeNull();
+    expect(
+      extractLayoutSize(program('var screenW, screenH = 320, 240', '\treturn screenW, screenH', '\nfunc grow() {\n\tscreenW, screenH = 480, 360\n}\n')),
+    ).toBeNull();
+    expect(extractLayoutSize(program('var screenW = 320\nvar screenH = 240', '\treturn screenW, screenH', '\nfunc grow() {\n\tscreenH += 10\n}\n'))).toBeNull();
+    expect(extractLayoutSize(program('var screenW = 320\nvar screenH = 240', '\treturn screenW, screenH', '\nfunc grow() {\n\tscreenH++\n}\n'))).toBeNull();
+    // Layout の中で局所の宣言に隠される。
+    expect(extractLayoutSize(program('const screenW = 320\nconst screenH = 240', '\tscreenW := outsideWidth\n\treturn screenW, screenH'))).toBeNull();
+    // 比較・宣言（:=）・セレクタは代入に数えない。
+    const reads = '\nfunc (g *Game) check() {\n\tif g.w == screenW || g.h != screenH || g.w <= screenW {\n\t\tw := screenW\n\t\tg.screenW = w\n\t}\n}\n';
+    expect(extractLayoutSize(program('const screenW = 320\nconst screenH = 240', '\treturn screenW, screenH', reads))).toEqual({ width: 320, height: 240 });
+  });
+
+  it('return が 2 つある・Layout が 2 つある・Layout が無いなら拾わない', () => {
+    expect(extractLayoutSize(program('', '\tif outsideWidth < outsideHeight {\n\t\treturn 240, 320\n\t}\n\treturn 320, 240'))).toBeNull();
+    const twice = `${program('', '\treturn 320, 240')}\ntype Other struct{}\n\nfunc (o Other) Layout(w, h int) (int, int) { return 320, 240 }\n`;
+    expect(extractLayoutSize(twice)).toBeNull();
+    expect(extractLayoutSize('package main\n\nfunc main() {}\n')).toBeNull();
+    expect(extractLayoutSize('')).toBeNull();
+    // LayoutF（浮動小数の版）は Layout ではない。
+    expect(extractLayoutSize('package main\n\nfunc (g *Game) LayoutF(w, h float64) (float64, float64) { return 320, 240 }\n')).toBeNull();
+  });
+
+  it('コメントと文字列の中の return・宣言・Layout は見ない', () => {
+    const commented = program(
+      '// const screenW = 999\n/* var screenH = 999 */\nconst screenW = 320\nconst screenH = 240\nconst title = "screenW = 1; return 1, 1"',
+      '\t// return 640, 480\n\t/* if wide { return 1, 1 } */\n\treturn screenW, screenH // return 2, 2',
+      '\n// func (g *Game) Layout(w, h int) (int, int) { return 1, 1 }\nvar help = `\nfunc (g *Game) Layout(w, h int) (int, int) {\n\treturn 2, 2\n}\n`\n',
+    );
+    expect(extractLayoutSize(commented)).toEqual({ width: 320, height: 240 });
+  });
+
+  it('関数の本体と複合リテラルの中の宣言は、パッケージの宣言に数えない', () => {
+    const local = program(
+      'const screenW = 320\nconst screenH = 240\nvar palette = []int{\n\t1, 2,\n}',
+      '\treturn screenW, screenH',
+      '\nfunc (g *Game) reset() {\n\tconst screenW = 640\n\tvar screenH = 480\n\t_ = screenH\n}\n',
+    );
+    expect(extractLayoutSize(local)).toEqual({ width: 320, height: 240 });
+  });
+});
+
 describe('キーの表と許可表（仕様 3.9.5 / 3.9.7）', () => {
   it('許可表は、キーの表が写す code の集合と同じである', () => {
     const values = [...new Set(Object.values(EBITEN_KEY_CODES))].sort();
@@ -412,7 +544,7 @@ describe('キーの表と許可表（仕様 3.9.5 / 3.9.7）', () => {
     expect(match?.[1]).toBe(EBITEN_MODULE_VERSION);
   });
 
-  it('規則の版が仕様の版と一致する（3.9.5 の見出しの版 1 と、#529 / #543 の実装注記が上げた版）', () => {
+  it('規則の版が仕様の版と一致する（3.9.5 の見出しの版 1 と、#529 / #543 / #514 の実装注記が上げた版）', () => {
     const match = /\*\*抽出の規則（`rule_version = (\d+)`）:\*\*/.exec(env.TEST_PRODUCT_SPEC);
     expect(match).not.toBeNull();
     // **見出しは版 1 の規則を書いたまま残す**（#528 注記が「M14-9 で置き換わる」と書き、仕様の版を上げないため）。

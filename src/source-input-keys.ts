@@ -31,7 +31,7 @@
 import type { BuildOutcome } from './build-client.js';
 import { artifactKeysOf } from './build-client.js';
 import type { GenerationPipeline } from './generate.js';
-import { INPUT_KEYS_RULE_VERSION, extractAliasGroups, extractHeldInputKeyCodes, extractInputKeyCodes } from './input-keys.js';
+import { INPUT_KEYS_RULE_VERSION, extractAliasGroups, extractHeldInputKeyCodes, extractInputKeyCodes, extractLayoutSize } from './input-keys.js';
 import { readStoredSource } from './source-store.js';
 
 /**
@@ -84,16 +84,20 @@ export function isStoredSourceKey(sourceKey: string): boolean {
  * 保存の 1 文（仕様 3.9.5 / 3.9.6 の「保存」）。**新しい版だけが上書きする**——同じ版の 2 回目は何も変えない。
  *
  * 束縛する値は `source_key` / `codes`（JSON 配列の文字列）/ `held_codes`（押し続けて読む `code` の JSON 配列の文字列）/
- * `alias_groups`（同じ条件式で読むキーの組の JSON 配列の文字列。#543）/ `rule_version` / `extracted_at` の順。
- * **`codes` と `held_codes` と `alias_groups` を同じ 1 文で書く**——一部だけが新しい行を作らない
+ * `alias_groups`（同じ条件式で読むキーの組の JSON 配列の文字列。#543）/ `layout_width` / `layout_height`（作品の論理解像度の整数。
+ * 拾えなければ両方 NULL。#514）/ `rule_version` / `extracted_at` の順。
+ * **`codes` と `held_codes` と `alias_groups` と論理解像度を同じ 1 文で書く**——一部だけが新しい行を作らない
  * （`held_codes` が NULL なのは版 1 の行だけ、`alias_groups` が NULL なのは版 2 以下の行だけ、を崩さない。
  * `migrations/0042_source_input_keys_held_codes.sql` / `migrations/0043_source_input_keys_alias_groups.sql`）。
+ * **`layout_width` と `layout_height` は両方に値があるか両方 NULL** で、片方だけの値は書かない（{@link layoutColumnsOf}。
+ * `migrations/0044_source_input_keys_layout.sql`）。
  * **埋め戻しのスクリプトも、この綴りを使う**（`scripts/input-keys-backfill.mjs` がソースから取り出す）。
  */
-export const UPSERT_SOURCE_INPUT_KEYS_SQL = `insert into source_input_keys (source_key, codes, held_codes, alias_groups, rule_version, extracted_at)
-values (?, ?, ?, ?, ?, ?)
+export const UPSERT_SOURCE_INPUT_KEYS_SQL = `insert into source_input_keys (source_key, codes, held_codes, alias_groups, layout_width, layout_height, rule_version, extracted_at)
+values (?, ?, ?, ?, ?, ?, ?, ?)
 on conflict(source_key) do update set
   codes = excluded.codes, held_codes = excluded.held_codes, alias_groups = excluded.alias_groups,
+  layout_width = excluded.layout_width, layout_height = excluded.layout_height,
   rule_version = excluded.rule_version, extracted_at = excluded.extracted_at
 where excluded.rule_version > source_input_keys.rule_version`;
 
@@ -105,6 +109,7 @@ where excluded.rule_version > source_input_keys.rule_version`;
  * **tombstone で NULL になった `games.source_key` は拾わない**（取り下げた作品は遊べない）。
  * **版 2 に上げたので、版 1 の行（`held_codes` が NULL）もすべて対象に入る**（仕様 3.9.6 の「保存」）。
  * **版 3 に上げたので、版 2 の行（`alias_groups` が NULL）もすべて対象に入る**（仕様 3.9.6 の #543 の「保存」）。
+ * **版 4 に上げたので、版 3 の行（論理解像度がまだ拾われていない）もすべて対象に入る**（仕様 3.9.4 の #514 の「保存」）。
  *
  * **埋め戻しのスクリプトも、この綴りを使う**（上と同じ）。
  */
@@ -152,7 +157,8 @@ export async function recordSourceInputKeys(
   try {
     // **行が今の版なら R2 を読まない**（キャッシュのヒット＝同じソースでは普通そうなる）。
     // `>=` にしてあるのは、新しい版の Worker を戻したときに、新しい版の行を読み直しに行かないため。
-    // **版 1 の行（`held_codes` が NULL）と版 2 の行（`alias_groups` が NULL）は版が古いので、ここを抜けて拾い直す**（仕様 3.9.6 の「保存」）。
+    // **版 1 の行（`held_codes` が NULL）と版 2 の行（`alias_groups` が NULL）と版 3 の行（論理解像度がまだ無い）は版が古いので、
+    // ここを抜けて拾い直す**（仕様 3.9.6 の「保存」、3.9.4 の #514 の「保存」）。
     const row = await env.DB.prepare('select rule_version from source_input_keys where source_key = ?')
       .bind(sourceKey)
       .first<{ rule_version: number }>();
@@ -169,8 +175,18 @@ export async function recordSourceInputKeys(
     const codes = extractInputKeyCodes(read.source);
     const heldCodes = extractHeldInputKeyCodes(read.source);
     const aliasGroups = extractAliasGroups(read.source);
+    const [layoutWidth, layoutHeight] = layoutColumnsOf(read.source);
     await env.DB.prepare(UPSERT_SOURCE_INPUT_KEYS_SQL)
-      .bind(sourceKey, JSON.stringify(codes), JSON.stringify(heldCodes), JSON.stringify(aliasGroups), INPUT_KEYS_RULE_VERSION, now)
+      .bind(
+        sourceKey,
+        JSON.stringify(codes),
+        JSON.stringify(heldCodes),
+        JSON.stringify(aliasGroups),
+        layoutWidth,
+        layoutHeight,
+        INPUT_KEYS_RULE_VERSION,
+        now,
+      )
       .run();
     return 'recorded';
   } catch (error) {
@@ -178,6 +194,21 @@ export async function recordSourceInputKeys(
     console.error(`${SOURCE_INPUT_KEYS_LOG_TAG} failed ${errorNameOf(error)} ${sourceKey}`);
     return 'failed';
   }
+}
+
+/**
+ * ソースから、列 `layout_width` / `layout_height` に書く値の組を作る（仕様 3.9.4。規則の版 4）。
+ *
+ * **2 つの列は、両方に値があるか両方 NULL のどちらかにする**（`migrations/0044_source_input_keys_layout.sql`）。
+ * 拾えなかった（`extractLayoutSize` が null）なら両方 NULL で、「版 4 の行で NULL＝拾えなかった」になる。
+ * **埋め戻しのスクリプトも、この関数を使う**（`scripts/input-keys-backfill.mjs`。組み立て方を 2 か所に書かない）。
+ *
+ * @param source Go のソース本文
+ * @returns `[layout_width, layout_height]`
+ */
+export function layoutColumnsOf(source: string): readonly [number, number] | readonly [null, null] {
+  const size = extractLayoutSize(source);
+  return size === null ? [null, null] : [size.width, size.height];
 }
 
 /**

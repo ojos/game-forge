@@ -614,8 +614,9 @@ bash scripts/input-keys-backfill.sh --remote            # もう一度数える�
 ### 対象
 
 **`games.source_key`（NULL を除く）と `game_revisions.source_key` の和集合のうち、行が無いか `rule_version` が
-古いもの**です（仕様 3.9.5）。**今の規則の版は 3 です。** 版 2 以下の行（M14-4 / M14-9 の Worker と埋め戻しが書いた、`alias_groups` が NULL の行。
-版 1 の行は `held_codes` も NULL）はすべて対象に入り、`--apply` が R2 のソースを読み直して `codes`・`held_codes`・`alias_groups` の 3 つを書き直します。**綴りは `src/source-input-keys.ts` の `SOURCE_INPUT_KEYS_TARGETS_SQL` をそのまま使い、
+古いもの**です（仕様 3.9.5）。**今の規則の版は 4 です。** 版 3 以下の行（M14-4 / M14-9 / M14-11 の Worker と埋め戻しが書いた、`layout_width` / `layout_height` が NULL の行。
+版 2 以下の行は `alias_groups` も、版 1 の行は `held_codes` も NULL）はすべて対象に入り、`--apply` が R2 のソースを読み直して `codes`・`held_codes`・`alias_groups`・
+`layout_width`・`layout_height` を書き直します（論理解像度は仕様 3.9.4 の #514。拾えなければ 2 つの列とも NULL）。**綴りは `src/source-input-keys.ts` の `SOURCE_INPUT_KEYS_TARGETS_SQL` をそのまま使い、
 抽出も `src/input-keys.ts` の同じ関数で行います**（スクリプトが TypeScript のモジュールを束ねて借ります）。
 **対象の一覧もソースの本文も、実行時に読みます**（事前に取った値を使う口を持ちません。#380 の教訓）。
 
@@ -625,12 +626,13 @@ bash scripts/input-keys-backfill.sh --remote            # もう一度数える�
 |---|---|---|
 | `INPUT_KEYS_BACKFILL_PASS` | 0 | dry-run で数えた / `--apply` で書いて、対象が 0 件になった |
 | `INPUT_KEYS_BACKFILL_INCOMPLETE` | 1 | **R2 から読めないソースが残った**（`NG` の行）か、**形の合わないキーがある**（`INVALID` の行。dry-run でも出ます） |
-| （なし） | 2 | 前提の不成立（引数・道具・D1 の応答の形。**0040 が未適用なら「表がありません」、`--apply` で 0042 が未適用なら「列 held_codes がありません」、0043 が未適用なら「列 alias_groups がありません」と出ます**） |
+| （なし） | 2 | 前提の不成立（引数・道具・D1 の応答の形。**0040 が未適用なら「表がありません」、`--apply` で 0042 が未適用なら「列 held_codes がありません」、0043 が未適用なら「列 alias_groups がありません」、0044 が未適用なら「列 layout_width / layout_height がありません」と出ます**） |
 
 - **dry-run の「埋め戻しの対象」が 0 件でなければ、欠けがあります。** 何度流しても冪等です——書き込みは
   `insert ... on conflict ... where excluded.rule_version > source_input_keys.rule_version` の 1 文で、
   **今の版の行は上書きしません。** 2 回目の `--apply` は「書き込みを送った文: 0 件」になります。
-- `--apply` の `OK` の行は `OK <source_key> <codes の JSON 配列> held=<held_codes の JSON 配列> groups=<alias_groups の JSON 配列>` の形です。
+- `--apply` の `OK` の行は `OK <source_key> <codes の JSON 配列> held=<held_codes の JSON 配列> groups=<alias_groups の JSON 配列> layout=<幅>x<高さ>` の形です
+  （論理解像度が拾えなければ `layout=null`。幅 > 高さなら横向き、高さ > 幅なら縦向きで覆いを開き、正方形と `null` は向きの操作をしません。仕様 3.9.4）。
 - **書いたあとは、対象を数え直して報告します**（`meta.changes` を信じない。`scripts/moderation-prune.sh` と同じ規律）。
 - **`INPUT_KEYS_BACKFILL_INCOMPLETE` で残るのは、R2 に実体の無いソースです。** 版の表だけが指している昔のソースが
   消えている、などです。**これは書き込みの失敗ではないので、何度流しても残ります。** 件数が増えていないかを見てください。
@@ -649,6 +651,8 @@ bash scripts/input-keys-backfill.sh --remote            # もう一度数える�
   （仕様 3.9.6 の「配備の順序」。埋まるまでの作品は十字で出ます）
   **版 3（#543）では、0043 を本番へ当て、#543 を配備した後に 1 回流します。** 埋まるまでの作品（`alias_groups` が NULL）は、
   今までどおり押し続けない軸の方向を右のボタンに出します（仕様 3.9.6 の #543 の「保存」）
+  **版 4（#514）では、0044 を本番へ当て、#514 を配備した後に 1 回流します。** 埋まるまでの作品（`layout_width` / `layout_height` が NULL）は、
+  向きの操作をしません（固定も、ボタンも、案内も出しません。仕様 3.9.4）
 
 **書くのは `source_input_keys` だけです。** `games` と `game_revisions` は読むだけで、R2 にも書きません。
 `--remote` は `CLOUDFLARE_API_TOKEN` を要します（`scripts/load-project-env.sh` で環境へ移すだけで、値はスクリプトへ持ち込みません）。

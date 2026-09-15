@@ -1072,6 +1072,7 @@ html.gf-play-locked body {
 .gf-play-bar {
   grid-area: bar;
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--gf-gap-2);
   padding: var(--gf-gap-2);
@@ -1090,6 +1091,42 @@ html.gf-play-locked body {
 
 .gf-play-pad-toggle:is(:hover, [data-state='hover']) {
   color: var(--gf-ink);
+}
+
+/*
+ * 作品のおすすめの向き（#514 / 仕様 3.9.4）。上の行の先頭に、案内と向きを入れ替えるボタンを置く（どちらも `hidden` で配り、スクリプトが見せる）。
+ *
+ * - **向きを入れ替えるボタンは、方向の操作の形の切り替えと同じ控えめのボタン**で、文字の色も同じ既存のトークンにする（黒の地で読めるように）
+ * - **案内は補助の文字**（`--gf-text-small`）で、色はボタンと同じトークン（黒の地に 4.5:1。新しい色の値は足さない）。
+ *   縦持ちでは行の残りを使って左に寄り、狭い画面では折り返す（上の行は `flex-wrap: wrap` で、ボタンが収まらなければ次の行へ回る）。
+ *   横持ちでは右の列を広げないよう、幅を抑えて折り返す
+ * - **部品の `display` は UA の `[hidden]` に勝つ**ので、`hidden` の `display: none` をここで宣言する
+ */
+.gf-play-orient-toggle,
+.gf-play-orient-hint {
+  color: var(--gf-rule-input);
+}
+
+.gf-play-orient-toggle:is(:hover, [data-state='hover']) {
+  color: var(--gf-ink);
+}
+
+.gf-play-orient-hint {
+  flex: 1 1 8em;
+  align-self: center;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--gf-text-small);
+}
+
+/* 文節ごとの `<span>`。折り返すときは文節の境で折る（1 字だけが次の行に落ちない）。 */
+.gf-play-orient-hint > span {
+  display: inline-block;
+}
+
+.gf-play-orient-toggle[hidden],
+.gf-play-orient-hint[hidden] {
+  display: none;
 }
 
 .gf-play-stage {
@@ -1263,7 +1300,15 @@ html.gf-play-locked body {
 
   .gf-play-bar {
     flex-direction: column;
+    flex-wrap: nowrap;
     align-items: flex-end;
+  }
+
+  .gf-play-orient-hint {
+    flex: none;
+    align-self: auto;
+    max-width: 8em;
+    text-align: end;
   }
 
   .gf-play-pad-stick {

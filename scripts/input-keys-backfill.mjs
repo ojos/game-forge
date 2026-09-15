@@ -12,8 +12,9 @@
 // 2. 既定（dry-run）は**件数と一覧を出して終わる。1 行も書かない。**
 // 3. `--apply` のときだけ、対象ごとに **R2 からソースを読み**、`src/input-keys.ts` の `extractInputKeyCodes`（読むキー）と
 //    `extractHeldInputKeyCodes`（押し続けて読むキー。規則の版 2 / #529）と `extractAliasGroups`（同じ条件式で読むキーの組。
-//    規則の版 3 / #543）で拾い、`UPSERT_SOURCE_INPUT_KEYS_SQL` で
-//    書く（新しい版だけが上書きする＝何度流しても壊れない）。
+//    規則の版 3 / #543）と、`src/source-input-keys.ts` の `layoutColumnsOf`（作品の論理解像度。規則の版 4 / #514）で拾い、
+//    `UPSERT_SOURCE_INPUT_KEYS_SQL` で書く（新しい版だけが上書きする＝何度流しても壊れない）。**書いた行の `OK` には論理解像度
+//    （`layout=320x240`。拾えなければ `layout=null`）も出す**——向き（横長・縦長・正方形）を利用者が一覧で確かめられる。
 // 4. 書いたあと、**対象を数え直す**（報告された件数を信じない。`scripts/moderation-prune.sh` と同じ規律）。
 //
 // ## 値を実行時に読む（#380 の教訓）
@@ -91,7 +92,7 @@ process.on('exit', () => rmSync(work, { recursive: true, force: true }));
 const bundled = path.join(work, 'input-keys.mjs');
 const entry = [
   `export { INPUT_KEYS_RULE_VERSION, extractAliasGroups, extractHeldInputKeyCodes, extractInputKeyCodes } from ${JSON.stringify(path.join(ROOT, 'src', 'input-keys.ts'))};`,
-  `export { SOURCE_INPUT_KEYS_TARGETS_SQL, UPSERT_SOURCE_INPUT_KEYS_SQL, isStoredSourceKey } from ${JSON.stringify(path.join(ROOT, 'src', 'source-input-keys.ts'))};`,
+  `export { SOURCE_INPUT_KEYS_TARGETS_SQL, UPSERT_SOURCE_INPUT_KEYS_SQL, isStoredSourceKey, layoutColumnsOf } from ${JSON.stringify(path.join(ROOT, 'src', 'source-input-keys.ts'))};`,
 ].join('\n');
 const build = spawnSync(
   esbuild,
@@ -109,6 +110,7 @@ const {
   SOURCE_INPUT_KEYS_TARGETS_SQL,
   UPSERT_SOURCE_INPUT_KEYS_SQL,
   isStoredSourceKey,
+  layoutColumnsOf,
 } = await import(pathToFileURL(bundled).href);
 
 // ── wrangler ─────────────────────────────────────────────────────────────────
@@ -167,10 +169,13 @@ function r2ScopeArgs() {
 /**
  * SQL の値を文字列のリテラルへ直す。**`wrangler d1 execute --command` は束縛を持たない**ので、ここで埋める。
  *
- * @param {string | number} value 値
+ * @param {string | number | null} value 値（null は `null`。論理解像度が拾えなかった列。#514）
  * @returns {string} リテラル
  */
 function sqlLiteral(value) {
+  if (value === null) {
+    return 'null';
+  }
   if (typeof value === 'number') {
     if (!Number.isInteger(value)) {
       abort([`整数でない値は埋めません: ${value}`]);
@@ -187,7 +192,7 @@ function sqlLiteral(value) {
  * `?` を順に値で埋める。**`?` の数と値の数が合わなければ落とす**（SQL の綴りが変わったのに気づかない形にしない）。
  *
  * @param {string} sql `?` を持つ SQL
- * @param {(string | number)[]} values 値
+ * @param {(string | number | null)[]} values 値
  * @returns {string} 埋めた SQL
  */
 function bindLiterals(sql, values) {
@@ -218,6 +223,9 @@ function d1(sql) {
     }
     if (/no column named alias_groups|no such column: alias_groups/.test(text)) {
       lines.push('列 alias_groups がありません。マイグレーション（0043）が未適用の可能性があります。');
+    }
+    if (/no column named layout_(?:width|height)|no such column: layout_(?:width|height)/.test(text)) {
+      lines.push('列 layout_width / layout_height がありません。マイグレーション（0044）が未適用の可能性があります。');
     }
     abort(lines);
   }
@@ -313,13 +321,20 @@ for (const key of targets) {
   const codes = extractInputKeyCodes(source);
   const heldCodes = extractHeldInputKeyCodes(source);
   const aliasGroups = extractAliasGroups(source);
-  console.log(`${TAG} OK ${key} ${JSON.stringify(codes)} held=${JSON.stringify(heldCodes)} groups=${JSON.stringify(aliasGroups)}`);
+  // **両方に値があるか両方 NULL**（組み立てはエッジと同じ関数。片方だけの値を書かない）。
+  const [layoutWidth, layoutHeight] = layoutColumnsOf(source);
+  const layout = layoutWidth === null ? 'null' : `${layoutWidth}x${layoutHeight}`;
+  console.log(
+    `${TAG} OK ${key} ${JSON.stringify(codes)} held=${JSON.stringify(heldCodes)} groups=${JSON.stringify(aliasGroups)} layout=${layout}`,
+  );
   statements.push(
     bindLiterals(UPSERT_SOURCE_INPUT_KEYS_SQL, [
       key,
       JSON.stringify(codes),
       JSON.stringify(heldCodes),
       JSON.stringify(aliasGroups),
+      layoutWidth,
+      layoutHeight,
       INPUT_KEYS_RULE_VERSION,
       Math.floor(Date.now() / 1000),
     ]),

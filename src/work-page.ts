@@ -125,7 +125,8 @@ import { isPressableGame, readLikeViewerState } from './likes.js';
 // この画面の経路は DO を呼ばない。
 import { playReportScript } from './plays.js';
 // **ゲームの iframe と、タッチ端末の全画面の覆い**（M14-3 / #502 / 仕様 3.9.4）。iframe の属性の出どころはあちらの 1 か所である。
-import { playEmbed, playEntry } from './work-play.js';
+import type { PlayOrientation } from './work-play.js';
+import { playEmbed, playEntry, playOrientationOf } from './work-play.js';
 import { readAliasGroups, readHeldCodes, readInputKeyCodes } from './virtual-pad.js';
 // **ソースの閲覧は別の経路である**（#383 / 2.3.12）。この画面が借りるのは綴りだけで、R2 は読まない。
 import { workSourcePath } from './work-source.js';
@@ -453,6 +454,15 @@ interface WorkRow {
    * **この値をそのまま使わない**——`src/virtual-pad.ts` の `readAliasGroups` が許可表で絞り、壊れた値は null（未記録）に倒す。
    */
   input_alias_groups: string | null;
+  /**
+   * 作品の論理解像度の幅と高さ（`source_input_keys.layout_width` / `layout_height`。仕様 3.9.4 の #514）。
+   *
+   * **`input_codes` と同じ 1 行から読む**（結合を増やさない）。版 3 以下の行（まだ拾っていない）・版 4 で拾えなかった行・行が無い・
+   * `games.source_key` が NULL なら null。**この値をそのまま使わない**——`src/work-play.ts` の `playOrientationOf` が
+   * 正の整数の組だけを向きにし、それ以外は「向きの操作をしない」に倒す。
+   */
+  input_layout_width: number | null;
+  input_layout_height: number | null;
 }
 
 /**
@@ -487,6 +497,8 @@ export const WORK_ROW_SQL = `select g.author_id, g.status, g.title, g.generation
             k.codes as input_codes,
             k.held_codes as input_held_codes,
             k.alias_groups as input_alias_groups,
+            k.layout_width as input_layout_width,
+            k.layout_height as input_layout_height,
             a.display_name as author_name, a.is_operator as author_is_operator,
             ${authorHandleColumnSql('g.author_id')},
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
@@ -770,6 +782,12 @@ export interface WorkPageView {
    * **null は「組がまだ記録されていない」（版 2 以下の行）で、今の規則 5 のまま方向をボタンに回す。**
    */
   readonly inputAliasGroups: readonly (readonly string[])[] | null;
+  /**
+   * 作品のおすすめの向き（仕様 3.9.4 の #514）。論理解像度が横長なら `landscape`、縦長なら `portrait`。
+   *
+   * **null は向きの操作をしない**（正方形・解像度が分からない・版 3 以下の行）。タッチ端末の覆いで、固定する向きと案内を決める。
+   */
+  readonly playOrientation: PlayOrientation | null;
   /**
    * 作品 id（`games.id`）。タッチ端末の覆いで、遊ぶ人が切り替えた形を作品ごとに覚えるキーに使う（#530。ブラウザの外へは送らない）。
    */
@@ -2428,7 +2446,7 @@ function loadingScreen(view: WorkPageView): string {
   const frame =
     view.playUrl === null
       ? '<p>公開されていますが、遊ぶための URL を組み立てられませんでした。</p>'
-      : playEmbed(view.playUrl, view.workId, view.inputKeyCodes, view.inputHeldCodes, view.inputAliasGroups);
+      : playEmbed(view.playUrl, view.workId, view.inputKeyCodes, view.inputHeldCodes, view.inputAliasGroups, view.playOrientation);
 
   // **4 要素を 1 つのブロックに入れる**（#474 / 仕様 2.5.4。承認したモックアップ Version 6 の形）。**並びは今のまま**
   // （スクリーンショット → 作者 → 元ゲーム → 改造する。2026-09-13 に利用者が確認）で、広い面ではスクリーンショットを左、
@@ -2953,6 +2971,8 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       inputHeldCodes: readHeldCodes(row.input_held_codes),
       // **同じ条件式で読むキーの組（#543）。** すでにボタンに出るキーと同じ働きの方向を、右のボタンに出さない。版 2 以下の行・壊れた値は null で、今のまま。
       inputAliasGroups: readAliasGroups(row.input_alias_groups),
+      // **作品のおすすめの向き（#514）。** 論理解像度から決める。正方形・拾えなかった・版 3 以下の行（列が NULL）は null で、向きの操作をしない。
+      playOrientation: playOrientationOf(row.input_layout_width, row.input_layout_height),
       workId: gameId,
       // 公開の操作を出すのは、**本人・完成済み・未公開**のときだけである。
       // （押せない・押しても何も起きないボタンを出さない。仕様 1.2.38 の #24 と同じ方針）

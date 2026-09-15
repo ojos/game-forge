@@ -4,6 +4,12 @@ import { LOADER_STARTED_MESSAGE, PAD_MESSAGE_TYPE } from '../src/sandbox-loader.
 import { STICK_KEYS_SOURCE, padPlanOf } from '../src/virtual-pad.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
 import {
+  PLAY_ORIENTATION_HINTS,
+  PLAY_ORIENTATION_HINT_CLASS,
+  PLAY_ORIENTATION_MEMORY_PREFIX,
+  PLAY_ORIENTATION_TOGGLE_CLASS,
+  PLAY_ORIENTATION_TOGGLE_LABELS,
+  playOrientationOf,
   PLAY_CLOSE_CLASS,
   PLAY_ENTRY_CLASS,
   PLAY_ENTRY_TOUCH_CLASS,
@@ -140,9 +146,12 @@ describe('スクリプトの形（3.9.4）', () => {
   const script = playFrameScript(PLAY_URL);
 
   it('判定は matchMedia の pointer: coarse を 1 回だけ見て、幅では判定しない', () => {
-    expect(script.split('matchMedia(').length - 1).toBe(1);
+    expect(script.split("matchMedia('(pointer: coarse)')").length - 1).toBe(1);
     expect(script).toContain("window.matchMedia('(pointer: coarse)').matches");
-    expect(script).not.toMatch(/innerWidth|clientWidth|screen\.width|min-width|max-width|orientation/u);
+    expect(script).not.toMatch(/innerWidth|clientWidth|screen\.width|min-width|max-width/u);
+    // ほかの matchMedia は、向きの案内（#514）で今の画面の向きを見る 1 つだけで、タッチ端末の判定には使わない。
+    expect(script.split('matchMedia(').length - 1).toBe(2);
+    expect(script.indexOf("window.matchMedia('(orientation: portrait)')")).toBeGreaterThan(script.indexOf("matchMedia('(pointer: coarse)')"));
   });
 
   it('iframe を作るのは「デスクトップですぐ」と「開くとき」の 2 か所だけで、タッチ端末の判定より前には作らない', () => {
@@ -487,5 +496,160 @@ describe('スティックと切り替えのスクリプトの形（#530 / 仕様
     const desktop = script.indexOf('noscript.parentNode.insertBefore(createFrame(), noscript);');
     expect(script.indexOf("stickArea.addEventListener('pointerdown'")).toBeGreaterThan(desktop);
     expect(script.indexOf('window.localStorage.getItem')).toBeGreaterThan(desktop);
+  });
+});
+
+describe('作品のおすすめの向き: 規則と HTML（#514 / 仕様 3.9.4）', () => {
+  it('論理解像度が横長なら landscape、縦長なら portrait、正方形・分からない・壊れた値なら null', () => {
+    expect(playOrientationOf(320, 240)).toBe('landscape');
+    expect(playOrientationOf(480, 270)).toBe('landscape');
+    expect(playOrientationOf(320, 480)).toBe('portrait');
+    expect(playOrientationOf(480, 640)).toBe('portrait');
+    expect(playOrientationOf(480, 480)).toBeNull();
+    // 版 3 以下の行・拾えなかった行（NULL）と、D1 の壊れた値。
+    for (const [width, height] of [
+      [null, null],
+      [320, null],
+      [null, 240],
+      ['320', '240'],
+      [320.5, 240],
+      [0, 240],
+      [-320, 240],
+      [Number.NaN, 240],
+    ] as const) {
+      expect(playOrientationOf(width, height), `${String(width)}x${String(height)}`).toBeNull();
+    }
+  });
+
+  it('向きの操作をする作品では、覆いにおすすめの向きと入れ替えた向きのキーを持たせ、上の行の先頭に hidden の案内と控えめのボタンを置く', () => {
+    const landscape = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null, null, 'landscape');
+    expect(landscape).toContain(
+      `<div class="${PLAY_OVERLAY_CLASS}" role="dialog" aria-modal="true" aria-label="ゲーム" data-orientation="landscape" data-orientation-memory="${PLAY_ORIENTATION_MEMORY_PREFIX}${WORK_ID}" hidden>`,
+    );
+    expect(landscape).toContain(
+      '<div class="gf-play-bar">' +
+        `<p class="${PLAY_ORIENTATION_HINT_CLASS}" role="status" hidden><span>横にすると</span><span>大きく遊べます</span></p>` +
+        `<button type="button" class="gf-button gf-button-tertiary ${PLAY_ORIENTATION_TOGGLE_CLASS}" hidden>` +
+        '<span data-orient-label="landscape">縦向きにする</span><span data-orient-label="portrait" hidden>横向きにする</span></button>' +
+        `<button type="button" class="gf-button gf-button-secondary ${PLAY_CLOSE_CLASS}">閉じる</button></div>`,
+    );
+    const portrait = playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null, null, 'portrait');
+    expect(portrait).toContain('data-orientation="portrait"');
+    expect(portrait).toContain(`<p class="${PLAY_ORIENTATION_HINT_CLASS}" role="status" hidden><span>縦にすると</span><span>大きく遊べます</span></p>`);
+    expect(portrait).toContain('<span data-orient-label="landscape" hidden>縦向きにする</span><span data-orient-label="portrait">横向きにする</span></button>');
+    expect(PLAY_ORIENTATION_TOGGLE_LABELS).toEqual({ landscape: '縦向きにする', portrait: '横向きにする' });
+    expect(Object.fromEntries(Object.entries(PLAY_ORIENTATION_HINTS).map(([key, phrases]) => [key, phrases.join('')]))).toEqual({
+      landscape: '横にすると大きく遊べます',
+      portrait: '縦にすると大きく遊べます',
+    });
+  });
+
+  it('向きのボタンは十字 / スティックの切り替えと「閉じる」より前に並ぶ（同じ上の行）', () => {
+    const jump = playEmbed(PLAY_URL, WORK_ID, ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Space'], ['ArrowLeft', 'ArrowRight'], null, 'landscape');
+    const bar = jump.slice(jump.indexOf('<div class="gf-play-bar">'), jump.indexOf('<div class="gf-play-stage">'));
+    expect(bar.indexOf(PLAY_ORIENTATION_TOGGLE_CLASS)).toBeGreaterThan(bar.indexOf(PLAY_ORIENTATION_HINT_CLASS));
+    expect(bar.indexOf('gf-play-pad-toggle')).toBeGreaterThan(bar.indexOf(PLAY_ORIENTATION_TOGGLE_CLASS));
+    expect(bar.indexOf(PLAY_CLOSE_CLASS)).toBeGreaterThan(bar.indexOf('gf-play-pad-toggle'));
+  });
+
+  it('向きの操作をしない作品（正方形・解像度が分からない）では、属性もボタンも案内も置かない。スクリプトの本文は向きによらず同じ', () => {
+    for (const embed of [playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null, null), playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null, null, null)]) {
+      const html = embed.slice(0, embed.indexOf('<script>'));
+      expect(html).not.toContain('data-orientation');
+      expect(html).not.toContain(PLAY_ORIENTATION_TOGGLE_CLASS);
+      expect(html).not.toContain(PLAY_ORIENTATION_HINT_CLASS);
+    }
+    const scriptOf = (embed: string): string => embed.slice(embed.indexOf('<script>'));
+    expect(scriptOf(playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null, null, 'landscape'))).toBe(scriptOf(playEmbed(PLAY_URL, WORK_ID, NO_KEYS, null, null)));
+  });
+
+  it('足したボタンは控えめの部品で主を使わず、作品 id は属性として逃がして入れる', () => {
+    const embed = playEmbed(PLAY_URL, '"><script>', NO_KEYS, null, null, 'portrait');
+    expect(embed).toContain('data-orientation-memory="gf-orientation:&quot;&gt;&lt;script&gt;"');
+    expect(embed).not.toContain('gf-button-primary');
+    expect(oldOperationNamesIn(embed)).toEqual([]);
+  });
+});
+
+describe('作品のおすすめの向き: スクリプトの形（#514 / 仕様 3.9.4）', () => {
+  const script = playFrameScript(PLAY_URL);
+
+  /**
+   * スクリプトから、`var name = function (...) {` で始まる関数の本文を取り出す。
+   *
+   * @param name 変数名
+   * @returns 本文
+   */
+  function functionBody(name: string): string {
+    const start = script.indexOf(`var ${name} = function`);
+    expect(start, name).toBeGreaterThan(0);
+    return script.slice(start, script.indexOf('\n  };\n', start));
+  }
+
+  it('全画面の要求の後で向きの処理を始め、全画面に入った（要求が決着した）後でだけ固定する。入れなければ案内に回る', () => {
+    const open = functionBody('open');
+    expect(open.indexOf('entering = overlay.requestFullscreen();')).toBeGreaterThan(0);
+    expect(open.indexOf('startOrientation(entering);')).toBeGreaterThan(open.indexOf('entering = overlay.requestFullscreen();'));
+    const start = functionBody('startOrientation');
+    expect(start).toContain("if (orientWanted === null) { return; }");
+    expect(start).toMatch(/if \(!entering \|\| typeof entering\.then !== 'function'\) \{\n\s+hintOrientation\(round\);/u);
+    expect(start).toMatch(/entering\.then\(function \(\) \{\n\s+if \(round !== orientRound \|\| frame === null\) \{ return; \}\n\s+lockOrientation\(target, round, showOrientationToggle, hintOrientation\);\n\s+\}, function \(\) \{\n\s+hintOrientation\(round\);/u);
+  });
+
+  it('覚えた向きはおすすめの向きより優先し、読み書きの失敗は握りつぶす', () => {
+    const start = functionBody('startOrientation');
+    expect(start).toContain('try { remembered = window.localStorage.getItem(orientMemory); } catch (error) { remembered = null; }');
+    expect(start).toContain("var target = remembered === 'landscape' || remembered === 'portrait' ? remembered : orientWanted;");
+  });
+
+  it('固定は screen.orientation.lock があるときだけ呼び、成功したときだけボタンを見せる。投げた・拒まれた・API が無いときは案内に回る', () => {
+    const lock = functionBody('lockOrientation');
+    expect(lock).toContain("if (orientation && typeof orientation.lock === 'function') {");
+    expect(lock).toContain('try { locking = orientation.lock(target); } catch (error) { locking = null; }');
+    expect(lock).toMatch(/if \(!locking \|\| typeof locking\.then !== 'function'\) \{\n\s+onRefused\(round\);/u);
+    expect(lock).toMatch(/onLocked\(target\);\n\s+\}, function \(\) \{\n\s+onRefused\(round\);/u);
+    // ボタンを見せるのは固定できたときの 1 か所だけ。
+    expect(script.split('orientToggle.hidden = false;').length - 1).toBe(1);
+    expect(functionBody('showOrientationToggle')).toContain('orientToggle.hidden = false;');
+    // 案内の回はボタンを隠す。
+    expect(functionBody('hintOrientation')).toContain('orientToggle.hidden = true;');
+  });
+
+  it('ボタンの文言は HTML に置いた 2 つの見せ方を今固定している向きで入れ替え、押すと逆の向きで固定し直して覚える', () => {
+    expect(functionBody('showOrientationToggle')).toContain(
+      'orientLabels[index].hidden = orientLabels[index].getAttribute("data-orient-label") !== locked;',
+    );
+    const click = script.slice(script.indexOf("orientToggle.addEventListener('click'"));
+    expect(click).toContain("var next = orientLocked === 'landscape' ? 'portrait' : 'landscape';");
+    expect(click.indexOf('lockOrientation(next, orientRound')).toBeGreaterThan(0);
+    expect(click.indexOf('showOrientationToggle(locked);')).toBeLessThan(click.indexOf('window.localStorage.setItem(orientMemory, locked)'));
+    expect(click).toContain('try { window.localStorage.setItem(orientMemory, locked); } catch (error) {}');
+    expect(script).not.toMatch(/innerHTML|outerHTML|textContent|insertAdjacent|document\.write/u);
+  });
+
+  it('案内は固定できなかった回で、今の向き（orientation: portrait）がおすすめと違うときだけ出し、向きが変わるたびに見直す', () => {
+    expect(functionBody('updateOrientHint')).toContain(
+      'orientHint.hidden = !(orientHinting && frame !== null && current !== null && current !== orientWanted);',
+    );
+    expect(functionBody('updateOrientHint')).toContain("var current = portraitQuery === null ? null : portraitQuery.matches ? 'portrait' : 'landscape';");
+    expect(script).toContain("portraitQuery.addEventListener('change', updateOrientHint);");
+  });
+
+  it('閉じると、この回の決着を捨て、ボタンと案内を隠し、向きの操作をする作品では固定を外す（unlock は存在を確かめて例外を握りつぶす）', () => {
+    const close = functionBody('close');
+    expect(close).toMatch(/orientRound \+= 1;\n\s+orientLocked = null;\n\s+orientHinting = false;\n\s+hideOrientationBar\(\);\n\s+if \(orientWanted !== null\) \{ unlockOrientation\(\); \}/u);
+    // 閉じる処理は冪等のまま（開いていなければ何もしない）で、unlock は全画面の解除より前。
+    expect(close.indexOf('unlockOrientation();')).toBeLessThan(close.indexOf('document.exitFullscreen()'));
+    const unlock = functionBody('unlockOrientation');
+    expect(unlock).toContain("if (orientation && typeof orientation.unlock === 'function') {");
+    expect(unlock).toContain('try { orientation.unlock(); } catch (error) {}');
+    // 閉じた後に決着した固定は、閉じたままなら外す。
+    expect(functionBody('lockOrientation')).toMatch(/if \(round !== orientRound\) \{\n[^\n]*\n\s+if \(frame === null\) \{ unlockOrientation\(\); \}/u);
+  });
+
+  it('向きの処理はタッチ端末の判定より後ろで結ぶ（デスクトップでは固定しない）', () => {
+    const desktop = script.indexOf('noscript.parentNode.insertBefore(createFrame(), noscript);');
+    expect(script.indexOf('var orientWanted')).toBeGreaterThan(desktop);
+    expect(script.indexOf('orientation.lock(')).toBeGreaterThan(desktop);
   });
 });

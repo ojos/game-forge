@@ -273,8 +273,9 @@ function accountMenuOf(header: string): string | null {
  * @returns パンくずの中身（無ければ null）
  */
 function breadcrumbOf(body: string): string | null {
-  // 長い文を読ませる画面のパンくずは読み物の器の印も持つ（#564）。クラスの並びを問わず拾う。
-  return /<nav class="gf-breadcrumb[^"]*"[\s\S]*?<\/nav>/u.exec(body)?.[0] ?? null;
+  // 長い文を読ませる画面のパンくずは読み物の器の印も持つ（#564）。`class` の中の `gf-breadcrumb` を空白の境界で探し、
+  // クラスの並びを問わず拾う（`gf-breadcrumbs` のような別名には当たらない）。
+  return /<nav class="(?:[^"]*\s)?gf-breadcrumb(?:\s[^"]*)?"[\s\S]*?<\/nav>/u.exec(body)?.[0] ?? null;
 }
 
 /**
@@ -1035,7 +1036,7 @@ describe('パンくず（2.3.10）', () => {
 
   it('トップには出さず、それ以外のすべての画面に 1 つだけ出る', async () => {
     for (const { path, body, state } of await allRendered()) {
-      const count = (body.match(/<nav class="gf-breadcrumb[ "]/gu) ?? []).length;
+      const count = (body.match(/<nav class="(?:[^"]*\s)?gf-breadcrumb(?:\s[^"]*)?"/gu) ?? []).length;
       expect(count, `${path}（${state}）のパンくずの数`).toBe(path === HOME_PATH ? 0 : 1);
     }
   });
@@ -1046,7 +1047,7 @@ describe('パンくず（2.3.10）', () => {
         continue;
       }
       const after = body.slice(body.indexOf('</header>') + '</header>'.length).trimStart();
-      expect(/^<nav class="gf-breadcrumb[ "]/u.test(after), `${path}（${state}）`).toBe(true);
+      expect(/^<nav class="(?:[^"]*\s)?gf-breadcrumb(?:\s[^"]*)?"/u.test(after), `${path}（${state}）`).toBe(true);
     }
   });
 

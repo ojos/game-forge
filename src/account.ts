@@ -565,7 +565,11 @@ export function renderAccountPage(view: AccountView): string {
   // **表示名・アイコン・自己紹介と外部リンクを、1 つずつ面のブロックにする**（仕様 2.5.4 / #473。承認したモックアップ Version 6）。
   // **保存のボタンはすべて副で、この画面に主を置かない**（#473 の scope.in。フォームが 3 つ並ぶ画面で、どれか 1 つだけを
   // 「いちばんしてほしいこと」にしない）。**変更の完了の知らせもブロック**である。ブロックの並べ方（広い段で 2 列）は
-  // app.css の `@section account` の `.gf-account-blocks` が持ち、**並びは HTML の順**（表示名 → アイコン → 自己紹介）のまま。
+  // app.css の `@section account` の `.gf-account-blocks` が持つ。
+  //
+  // **並びは 表示名 → 自己紹介と外部リンク → アイコン**（#551。利用者が撮影した 3 案から選んだ）。表示名と自己紹介を左の列
+  // （`.gf-account-column`）に包み、アイコンを右の列に置く——列ごとに縦に積むので、アイコンの高さで表示名の下に空きができない。
+  // **DOM の順＝見た目の順＝Tab の順**（`order` で入れ替えない）なので、狭い段ではアイコンが最後になる。
   //
   // **表示名の欄の上に見出し（`<h2>`）を置かない。** 表示名の欄は `<label>` が名前を持っており、
   // 上に同じ語の見出しを置くと「表示名 / 表示名」と 2 度並ぶ（撮影で確かめた）。
@@ -579,6 +583,7 @@ export function renderAccountPage(view: AccountView): string {
     headerAvatar: view.headerAvatar,
     body: `${notice}
 <div class="gf-account-blocks">
+<div class="gf-account-column">
 <div class="gf-block gf-account-block">
 <form method="post" action="${ACCOUNT_DISPLAY_NAME_PATH}">
   <label for="display-name">表示名</label>
@@ -590,11 +595,12 @@ export function renderAccountPage(view: AccountView): string {
 ${following}
 <p>表示名は作品ページや作品の一覧に出て、ログインしていない人にも見えます。</p>
 </div>
-<section class="gf-block gf-account-block" aria-labelledby="account-avatar-heading">
-${renderAvatarForm(view.avatar)}
-</section>
 <section class="gf-block gf-account-block" aria-labelledby="account-profile-heading">
 ${renderProfileForm(view.profile)}
+</section>
+</div>
+<section class="gf-block gf-account-block" aria-labelledby="account-avatar-heading">
+${renderAvatarForm(view.avatar)}
 </section>
 </div>
 <p class="gf-account-author"><a class="gf-button gf-button-secondary gf-button-sm" href="${escapeHtml(authorPagePath(view.userId))}">自分の作者ページを見る</a></p>`,

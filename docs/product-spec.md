@@ -5014,6 +5014,31 @@ CREATE TABLE source_input_keys (
 >   esbuild で束ねて借りる。** 既定は数えるだけで、`--apply` で書き、書いたあとに対象を数え直す。R2 に実体の無いソースは
 >   `INPUT_KEYS_BACKFILL_INCOMPLETE`（終了コード 1）として一覧を出し、何度流しても残る。
 
+> **実装注記（#529。実装日 2026-09-15）。** **M14-9 で規則の版を `rule_version = 2` に上げた。** 押し続けて読むキーの抽出は
+> `src/input-keys.ts` の `extractHeldInputKeyCodes`、列は `migrations/0042_source_input_keys_held_codes.sql`（PR #536 で先にマージした）、
+> 保存と埋め戻しは上の注記と同じ `recordSourceInputKeys` / `UPSERT_SOURCE_INPUT_KEYS_SQL` / `scripts/input-keys-backfill.sh` である。
+> 上の見出しの「`rule_version = 1`」と版 1 の規則・保存の SQL は、決定の記録として書き換えずに残した（`codes` の拾い方は版 2 でも同じ）。
+> 実装で決めたことを 5 つ書き戻す。
+>
+> - **H は正規表現 `\b(?:ebiten\.IsKeyPressed|inpututil\.KeyPressDuration)\(\s*ebiten\.Key([A-Za-z0-9]+)\s*,?\s*\)` に当たるもの**で、
+>   名前は `codes` と同じ表で `code` へ写し、表に無い名前は捨て、重複を除いて昇順にする（`held_codes` は `codes` の部分集合になる）。
+>   **括弧の内側の空白・改行と、引数を複数行に書いたときに gofmt が付ける末尾のカンマは許した**（キーの識別子を直接書いたことに変わりはない）。
+>   変数・式・複数の引数（`ebiten.IsKeyPressed(k)`、`ebiten.KeyA + 1`）は拾わない。`codes` と同じく、`ebiten` 以外の名前で import したソースと、
+>   コメントや文字列の中の呼び出しの扱いも版 1 と同じである（前者は拾わず、後者は拾う）。
+> - **`codes` と `held_codes` は同じ 1 文の UPSERT で書く**（束縛は `source_key` / `codes` / `held_codes` / `rule_version` / `extracted_at` の順）。
+>   片方だけが新しい行は作れない。版の比較（`where excluded.rule_version > source_input_keys.rule_version`）と、今の版の行があれば R2 を読まない
+>   判定（`>=`）は変えていない。**版 1 の行（`held_codes` が NULL）は版が古いので、完成の経路でも埋め戻しでも R2 を読み直して両方を書き直す。**
+>   押し続けて読むキーが無いソースは `[]` で、版 1 の NULL と区別する。
+> - **配備の順序:** 版 2 の Worker は列 `held_codes` を書くので、0042 が当たっていない D1 では書き込みが例外になり、`failed <例外のクラス名>` の行を残して
+>   その作品の行が欠ける（完成は失敗にならない。埋め戻しが回復する）。0042 は #536 でこの PR より前に本番へ当てる。逆に版 1 の Worker へ戻した場合は、
+>   版 2 の行を上書きせず（版の比較）、新しいソースには `held_codes` が NULL の版 1 の行を書く。その行は次の埋め戻しの対象に入る。
+> - **埋め戻しの対象の SQL は変えていない**（`rule_version < ?` に今の版 2 を束縛するので、版 1 の行はすべて対象に入る）。`--apply` の `OK` の行には
+>   `held=<JSON 配列>` を足した。`--apply` で列が無いときは「0042 が未適用の可能性」を出して終わる（終了コード 2。dry-run の対象の SQL は列を読まない）。
+> - **規則の版と仕様の照合**（`test/input-keys.test.ts`）は、見出しの版と、実装注記の「規則の版を `rule_version = N` に上げた」の最大を見る形にした
+>   （見出しを書き換えないため）。**単体テストは 3.9.6 の実測の表の代表例**（←→ H・↑ J／4 方向とも J／4 方向とも H／同じキーを H と J の両方）と、
+>   変数を渡す読み方を拾わないことを見る。完成の経路（生成・フォーク・推敲。同期実行の生成とフォーク）の保存は `test/source-input-keys.test.ts` が
+>   `codes` と `held_codes` の両方で見る。
+
 #### 3.9.6 仮想パッド（B2 / M14-5）
 
 **出す条件:** 全画面の覆い（3.9.4）の中で、下の表示規則の結果が 1 つ以上ある（方向かボタン）とき。覆いを開くのは

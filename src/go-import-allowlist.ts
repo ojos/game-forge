@@ -120,7 +120,7 @@ export const GO_IMPORT_ALLOWLIST: readonly AllowedImport[] = [
   {
     path: 'github.com/hajimehoshi/ebiten/v2/audio',
     reason:
-      '合成した音の再生。自前の Read を持つ型から PCM を作るので、音声ファイルは読まない（6.1 の全面禁止に抵触しない）',
+      '合成した音の再生。コードで計算した PCM のバイト列を鳴らすので、音声ファイルは読まない（6.1 の全面禁止に抵触しない）',
   },
   {
     path: 'image/color',

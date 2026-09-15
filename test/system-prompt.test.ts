@@ -221,7 +221,7 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
     expect(text).toContain('鳴らし直すときは、上のとおり新しい player を作ります');
     // (2) 禁止は、その理由（panic する）と一緒に書く。
     expect(text).toContain('player.Rewind と player.SetPosition');
-    expect(text).toContain('io.Seeker ではないので');
+    expect(text).toContain('io.Seeker ではない player に呼ぶと');
     expect(text).toContain('panic して画面が固まります');
     // (3) **案 B（音源へ `io.Seeker` を実装させる）は採らない**（#301 の scope.out）。
     // `io` の import が要るようになり、#286 で「不要」と実測して外したばかりである。
@@ -249,6 +249,10 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
     expect(text).not.toContain('restart()');
     expect(text).not.toContain('audioContext.NewPlayerF32(');
     expect(text).not.toContain('type tone struct');
+    // 許可一覧の節（`renderAllowlistSection()`）は各エントリの reason をそのまま埋め込む。
+    // **例を直しても、そこに旧形の説明が残ればモデルには旧形が見える**（PR #569 の Copilot の指摘）。
+    expect(text).not.toContain('Read を持つ型');
+    expect(text).toContain('コードで計算した PCM のバイト列を鳴らす');
     // (4) **`SetBufferSize` で先読みを小さくする案は採らない。** 引数の `time.Duration` の
     // `time` が一覧に無く、AudioWorklet の 1 回の要求（約 43 ms）より小さいと途切れる。
     expect(text).not.toContain('SetBufferSize');

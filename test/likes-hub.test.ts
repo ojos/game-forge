@@ -167,6 +167,75 @@ async function measureWrites<T>(
   });
 }
 
+/**
+ * 上限まで実際の操作で送るテストの時間上限（#538。#512 と同じ形）。
+ *
+ * 付与と取り消しを交互に、合計 {@link DAILY_OPERATION_LIMIT} 回送る。負荷の下では既定の 5 秒を
+ * 超えた（並列のレーンの loop-gate と、全体の `npm test` を 2 本同時に流す負荷試験で観測）ので、
+ * 余裕を持たせる。**全体の上限は変えない。**
+ */
+const LIMIT_BY_REAL_OPERATIONS_TIMEOUT_MS = 60_000;
+
+/**
+ * ある利用者の、ある時刻の日（JST）の操作回数を DO から読む。
+ *
+ * @param stub DO
+ * @param userId 利用者
+ * @param at 時刻（UNIX 秒）。本体と同じく {@link jstDayKey} で日付の鍵にする
+ * @returns 回数（行が無ければ 0）
+ */
+async function opsOn(
+  stub: DurableObjectStub<LikeHub>,
+  userId: string,
+  at: number,
+): Promise<number> {
+  const day = jstDayKey(at);
+  return await inHub(
+    stub,
+    (_instance, state) =>
+      state.storage.sql
+        .exec<{ ops: number }>(
+          'select ops from daily_ops where user_id = ? and day = ?',
+          userId,
+          day,
+        )
+        .toArray()[0]?.ops ?? 0,
+  );
+}
+
+/**
+ * ある利用者の、ある時刻の日（JST）の操作回数を DO に置く（下準備。#538）。
+ *
+ * **日付の鍵は本体と同じ {@link jstDayKey} で、テストが渡す時刻から作る**（本体は
+ * `Date.now()` ではなく渡された時刻で数える）。表は {@link opsOn} や「前日以前の操作回数は
+ * 同期で消える」と同じく DO の `daily_ops` を直接読み書きする。上限の値は書き写さず、呼ぶ側が
+ * {@link DAILY_OPERATION_LIMIT} を渡す。置いた値は {@link opsOn} で読み戻して確かめる
+ * （書き込みが空振りしたまま、別の理由の `limited` で緑にならないように）。
+ *
+ * @param stub DO
+ * @param userId 利用者
+ * @param at 時刻（UNIX 秒）
+ * @param ops 置く回数
+ */
+async function seedOpsOn(
+  stub: DurableObjectStub<LikeHub>,
+  userId: string,
+  at: number,
+  ops: number,
+): Promise<void> {
+  const day = jstDayKey(at);
+  await inHub(stub, (_instance, state) => {
+    state.storage.sql.exec(
+      `insert into daily_ops (user_id, day, ops) values (?, ?, ?)
+         on conflict (user_id, day) do update set ops = excluded.ops`,
+      userId,
+      day,
+      ops,
+    );
+  });
+  expect(await opsOn(stub, userId, at), '下準備の回数が DO に入っていない').toBe(ops);
+}
+
 describe('付与・取り消し（5.8）', () => {
   it('二重に押しても数は 1 のまま。2 回目は 1 行も書かない', async () => {
     const hub = freshHub();
@@ -203,34 +272,46 @@ describe('付与・取り消し（5.8）', () => {
 });
 
 describe('1 人 1 日 100 操作（5.8）', () => {
-  it('101 回目の操作は断られ、DO に 1 行も書き込まれない', async () => {
-    const hub = freshHub();
-    const user = 'heavy-user';
-    const game = crypto.randomUUID();
+  /**
+   * **上限まで実際の操作で送るのは、このテストだけにする**（#538。#512 と同じ形）。
+   *
+   * 1 回ずつは速いが合計 100 回の操作を積むので、並列のレーンで負荷が高いと vitest の既定の
+   * 時間上限（5 秒）を超えて落ちていた。**実際に 100 回送ることは保証として残し**、
+   * このテストにだけ個別の上限（{@link LIMIT_BY_REAL_OPERATIONS_TIMEOUT_MS}）を設ける。
+   * ほかのテストで上限の状態が要るときは {@link seedOpsOn} で下準備する。
+   */
+  it(
+    '101 回目の操作は断られ、DO に 1 行も書き込まれない',
+    { timeout: LIMIT_BY_REAL_OPERATIONS_TIMEOUT_MS },
+    async () => {
+      const hub = freshHub();
+      const user = 'heavy-user';
+      const game = crypto.randomUUID();
 
-    // **付与と取り消しの合計で数える。** 交互に 100 回。
-    for (let count = 0; count < DAILY_OPERATION_LIMIT; count += 1) {
-      const result =
-        count % 2 === 0
-          ? await hub.like(user, game, NOON_JST + count)
-          : await hub.unlike(user, game, NOON_JST + count);
-      expect(result.outcome, `${count + 1} 回目`).not.toBe('limited');
-    }
+      // **付与と取り消しの合計で数える。** 交互に、合計 100 回の操作。
+      for (let count = 0; count < DAILY_OPERATION_LIMIT; count += 1) {
+        const result =
+          count % 2 === 0
+            ? await hub.like(user, game, NOON_JST + count)
+            : await hub.unlike(user, game, NOON_JST + count);
+        expect(result.outcome, `${count + 1} 回目`).not.toBe('limited');
+      }
 
-    const refused = await measureWrites(hub, (instance) =>
-      instance.like(user, game, NOON_JST + DAILY_OPERATION_LIMIT),
-    );
+      const refused = await measureWrites(hub, (instance) =>
+        instance.like(user, game, NOON_JST + DAILY_OPERATION_LIMIT),
+      );
 
-    expect(refused.value).toEqual({ outcome: 'limited' });
-    expect(refused.statements, '計測が空振りしている').toBeGreaterThan(0);
-    expect(refused.rowsWritten, '101 回目で DO に書いた').toBe(0);
-    expect(await hub.viewerState(user, game)).toEqual({ liked: false, count: 0 });
+      expect(refused.value).toEqual({ outcome: 'limited' });
+      expect(refused.statements, '計測が空振りしている').toBeGreaterThan(0);
+      expect(refused.rowsWritten, '101 回目で DO に書いた').toBe(0);
+      expect(await hub.viewerState(user, game)).toEqual({ liked: false, count: 0 });
 
-    // 別の作品でも同じ（上限は利用者ごと・作品をまたいで数える）。
-    expect((await hub.like(user, crypto.randomUUID(), NOON_JST + 200)).outcome).toBe('limited');
-    // 他の利用者は影響を受けない。
-    expect((await hub.like('someone-else', game, NOON_JST + 200)).outcome).toBe('liked');
-  });
+      // 別の作品でも同じ（上限は利用者ごと・作品をまたいで数える）。
+      expect((await hub.like(user, crypto.randomUUID(), NOON_JST + 200)).outcome).toBe('limited');
+      // 他の利用者は影響を受けない。
+      expect((await hub.like('someone-else', game, NOON_JST + 200)).outcome).toBe('liked');
+    },
+  );
 
   it('JST の 0 時で数え直す', async () => {
     const hub = freshHub();
@@ -240,11 +321,21 @@ describe('1 人 1 日 100 操作（5.8）', () => {
     expect(jstDayKey(lastSecond)).toBe('2026-09-11');
     expect(jstDayKey(lastSecond + 1)).toBe('2026-09-12');
 
-    for (let count = 0; count < DAILY_OPERATION_LIMIT; count += 1) {
-      await hub.like(user, `game-${count}`, lastSecond);
-    }
-    expect((await hub.like(user, 'one-more', lastSecond)).outcome).toBe('limited');
+    // **上限まで実際に送ることは「101 回目の操作は断られ…」が保証する。** ここは日付の
+    // 境界だけを見るので、23:59:59 の側の日に回数を上限まで置いてから押す（#538。合計 100 回の
+    // 操作を積むと負荷の下で既定の時間上限を超える）。置き方が本体の数え方（日付の鍵・表・上限）と
+    // 食い違えば、23:59:59 の 1 回は `limited` にならずここで落ちる。
+    await seedOpsOn(hub, user, lastSecond, DAILY_OPERATION_LIMIT);
+
+    expect(
+      (await hub.like(user, 'one-more', lastSecond)).outcome,
+      '下準備した回数を本体が上限と数えていない',
+    ).toBe('limited');
+    // 断った 1 回は数えない（下準備の値のまま）。
+    expect(await opsOn(hub, user, lastSecond)).toBe(DAILY_OPERATION_LIMIT);
     expect((await hub.like(user, 'one-more', lastSecond + 1)).outcome).toBe('liked');
+    // 翌日の 1 回は翌日の鍵で数える。
+    expect(await opsOn(hub, user, lastSecond + 1)).toBe(1);
   });
 });
 
@@ -575,18 +666,26 @@ describe('押した作品の一覧（5.8 / M9-8 / #340）', () => {
   it('日次の上限に達していても引ける（読み取りは数えない）', async () => {
     const hub = freshHub();
     const user = await seedUser();
-    const ids: string[] = [];
-    // 上限ぴったりまで、状態が変わる操作を行う（付与だけで DAILY_OPERATION_LIMIT 回）。
-    for (let index = 0; index < DAILY_OPERATION_LIMIT; index += 1) {
-      const id = crypto.randomUUID();
-      ids.push(id);
-      expect((await hub.like(user, id, NOON_JST + index)).outcome).toBe('liked');
+    const page = 20;
+    // **一覧に出す行は、実際の付与で用意する**（このファイルの他の一覧のテストと同じ。
+    // `likes` の表の形を書き写さない）。頁の大きさで切られることが見えるよう、1 件多く押す。
+    for (let index = 0; index < page + 1; index += 1) {
+      expect((await hub.like(user, crypto.randomUUID(), NOON_JST + index)).outcome).toBe('liked');
     }
-    // 次の付与は断られる（上限に達している）。
-    expect((await hub.like(user, crypto.randomUUID(), NOON_JST)).outcome).toBe('limited');
+    // **上限まで実際に送ることは「101 回目の操作は断られ…」が保証する。** ここは読み取りが
+    // 上限に巻き込まれないことだけを見るので、同じ日の回数を上限に置く（#538。合計 100 回の
+    // 操作を積むと負荷の下で既定の時間上限を超える）。付与で数えた回数は上書きされる。
+    await seedOpsOn(hub, user, NOON_JST, DAILY_OPERATION_LIMIT);
+    // 次の付与は断られる（上限に達している）。置き方が本体の数え方と食い違えば、ここで落ちる。
+    expect(
+      (await hub.like(user, crypto.randomUUID(), NOON_JST)).outcome,
+      '下準備した回数を本体が上限と数えていない',
+    ).toBe('limited');
     // **それでも一覧は引ける。** 読むだけの口が上限に巻き込まれると、押しすぎた日に
     // 自分の一覧が見えなくなる。
-    expect(await hub.likedGames(user, 20, 0)).toHaveLength(20);
+    expect(await hub.likedGames(user, page, 0)).toHaveLength(page);
+    // 読み取りも、断った 1 回も数えない（下準備の値のまま）。
+    expect(await opsOn(hub, user, NOON_JST)).toBe(DAILY_OPERATION_LIMIT);
   });
 
   it('BAN された利用者でも、本人の一覧は空にならない（数から外すのは他人向けである）', async () => {

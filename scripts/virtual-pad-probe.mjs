@@ -13,6 +13,11 @@
 // 3. **デスクトップ**（1280×900、タッチなし）で同じ作品ページを開く
 // 4. **キーの集合が空の作品**の作品ページを、タッチ端末の形で開いて覆いを開く
 // 5. **長いキー名を 4 つ含む作品**の作品ページを、縦持ち 390px と横持ちで開いて覆いを開く（ボタンが列の幅を超えないか。`--shot-dir` で撮る）
+// 6. **公開前の作品**（#575。`status` が draft で `preview_key` のある行）の作品ページを、**作者のセッション cookie を載せて**開く。
+//    - タッチ端末の形: 覆い・口・「遊ぶ」のボタンの数と見え方、口のタップで覆いが開いて iframe（`src`）から起動の合図が届くこと、
+//      パッドの左を押して離すとキーとして届くこと、プレイ数の計上（`POST /api/plays`）の回数、「閉じる」で閉じること
+//    - デスクトップの形: 口のパネルが隠れ、覆いは開かず、iframe（`src`）がすぐに入って起動の合図が届くこと、計上の回数
+//    **cookie はブラウザ全体に効く**ので、この観測を最後に回し、終わったら消す（1〜5 は未ログインの作品ページを見る）。
 //
 // # 作品が受けたキーの観測
 //
@@ -26,7 +31,8 @@
 //
 // 使い方:
 //   node scripts/virtual-pad-probe.mjs --browser <path> --url <キーを読む作品のページ> --empty-url <キーの無い作品のページ> \
-//     --long-url <長いキー名の作品のページ> --direct-url <サンドボックス URL> [--timeout-ms 45000] [--shot-dir <dir>]
+//     --long-url <長いキー名の作品のページ> --direct-url <サンドボックス URL> --draft-url <公開前の作品のページ> \
+//     --draft-cookie <作者のセッション cookie（name=value）> [--timeout-ms 45000] [--shot-dir <dir>]
 //
 // 標準出力: 観測結果 1 個の JSON
 // 終了コード: 0 = 観測できた（合否とは無関係） / 1 = 観測そのものができなかった
@@ -56,7 +62,7 @@ const KEY_BINDING = '__gfKeyBinding';
  * コマンドライン引数を読む。
  *
  * @param {string[]} argv `process.argv.slice(2)`
- * @returns {{browser: string, url: string, emptyUrl: string, longUrl: string, directUrl: string, timeoutMs: number, shotDir: string | null}} 設定
+ * @returns {{browser: string, url: string, emptyUrl: string, longUrl: string, directUrl: string, draftUrl: string, draftCookie: string, timeoutMs: number, shotDir: string | null}} 設定
  */
 function parseArgs(argv) {
   /** @type {Record<string, string>} */
@@ -73,14 +79,27 @@ function parseArgs(argv) {
   const emptyUrl = values['empty-url'];
   const longUrl = values['long-url'];
   const directUrl = values['direct-url'];
-  if (browser === undefined || url === undefined || emptyUrl === undefined || longUrl === undefined || directUrl === undefined) {
-    throw new Error('--browser と --url と --empty-url と --long-url と --direct-url は必須です');
+  const draftUrl = values['draft-url'];
+  const draftCookie = values['draft-cookie'];
+  if (
+    browser === undefined ||
+    url === undefined ||
+    emptyUrl === undefined ||
+    longUrl === undefined ||
+    directUrl === undefined ||
+    draftUrl === undefined ||
+    draftCookie === undefined
+  ) {
+    throw new Error('--browser と --url と --empty-url と --long-url と --direct-url と --draft-url と --draft-cookie は必須です');
+  }
+  if (draftCookie.indexOf('=') <= 0) {
+    throw new Error('--draft-cookie の形が違います（name=value）');
   }
   const timeoutMs = values['timeout-ms'] === undefined ? DEFAULT_TIMEOUT_MS : Number(values['timeout-ms']);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error(`--timeout-ms の値が不正です: ${String(values['timeout-ms'])}`);
   }
-  return { browser, url, emptyUrl, longUrl, directUrl, timeoutMs, shotDir: values['shot-dir'] ?? null };
+  return { browser, url, emptyUrl, longUrl, directUrl, draftUrl, draftCookie, timeoutMs, shotDir: values['shot-dir'] ?? null };
 }
 
 /**
@@ -170,12 +189,17 @@ async function openTab(cdp, options) {
   const keyEvents = [];
   let phase = 'initial';
   let loadCount = 0;
+  /** @type {Array<{method: string, url: string}>} 主文書から出た要求（`Network.enable` を呼んだタブだけ。#575 の計上の回数） */
+  const requests = [];
   cdp.on((frame) => {
     if (frame.sessionId !== sessionId) {
       return;
     }
     if (frame.method === 'Page.loadEventFired') {
       loadCount += 1;
+    }
+    if (frame.method === 'Network.requestWillBeSent') {
+      requests.push({ method: String(frame.params.request?.method), url: String(frame.params.request?.url) });
     }
     if (frame.method === 'Runtime.bindingCalled' && frame.params.name === KEY_BINDING) {
       let entry;
@@ -194,6 +218,11 @@ async function openTab(cdp, options) {
   const tab = {
     sessionId,
     keyEvents,
+    requests,
+    /** @param {string} path パス @returns {number} そのパスへの POST の回数 */
+    postsTo(path) {
+      return requests.filter((request) => request.method === 'POST' && new URL(request.url).pathname === path).length;
+    },
     /** @param {string} next 以後のキーの記録に付ける段階の名前 */
     setPhase(next) {
       phase = next;
@@ -710,6 +739,124 @@ async function observeLong(cdp, options) {
   }
 }
 
+/** 公開前の作品ページの口・覆い・iframe を読む式（#575）。 */
+const DRAFT_EXPRESSION = `(() => {
+  const entry = document.querySelector('.gf-play-entry');
+  const open = document.querySelector('.gf-play-open');
+  const frame = document.querySelector('iframe.gf-frame');
+  const state = document.querySelector('.gf-work-state');
+  const displayOf = (element) => (element === null ? null : getComputedStyle(element).display);
+  return {
+    overlays: document.querySelectorAll('.gf-play-overlay').length,
+    entries: document.querySelectorAll('.gf-play-entry').length,
+    openButtons: document.querySelectorAll('.gf-play-open').length,
+    noscripts: document.querySelectorAll('noscript.gf-play-noscript').length,
+    entryDisplay: displayOf(entry),
+    entryTouch: entry !== null && entry.classList.contains('gf-play-entry-touch'),
+    openHidden: open === null ? null : open.hidden,
+    openDisplay: displayOf(open),
+    frameSrc: frame === null ? null : frame.getAttribute('src'),
+    frameSandbox: frame === null ? null : frame.getAttribute('sandbox'),
+    frameInStage: frame !== null && frame.closest('.gf-play-stage') !== null,
+    frameAfterState: frame !== null && state !== null && frame.previousElementSibling === state,
+    previewLinks: [...document.querySelectorAll('.gf-work-state a')].map((link) => link.getAttribute('href')).filter((href) => href !== null && href.includes('/p/')),
+  };
+})()`;
+
+/**
+ * 公開前の作品（#575）を、作者のセッション cookie を載せて、タッチ端末とデスクトップの形で開く。
+ *
+ * @param {CdpConnection} cdp 接続
+ * @param {ReturnType<typeof parseArgs>} options 設定
+ * @returns {Promise<object>} 観測結果
+ */
+async function observeDraft(cdp, options) {
+  /** @type {Record<string, any>} */
+  const steps = {};
+  const separator = options.draftCookie.indexOf('=');
+  const cookie = {
+    name: options.draftCookie.slice(0, separator),
+    value: options.draftCookie.slice(separator + 1),
+    domain: new URL(options.draftUrl).hostname,
+    path: '/',
+    secure: true,
+    httpOnly: true,
+  };
+  // ── タッチ端末の形 ──
+  const tab = await openTab(cdp, options);
+  try {
+    await cdp.send('Network.enable', {}, tab.sessionId);
+    // `__Host-` の cookie は `Set-Cookie` なら `Domain` を拒むが、CDP の `Network.setCookie` は host-only として受ける
+    // （`scripts/page-width-probe.mjs` と同じ扱い。実測済み）。
+    steps.cookieSet = (await cdp.send('Network.setCookie', cookie, tab.sessionId)).success === true;
+    await tab.resize(PORTRAIT, true);
+    await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }, tab.sessionId);
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: SIGNAL_RECORDER }, tab.sessionId);
+    await tab.navigate(options.draftUrl);
+    steps.beforeTap = await tab.state();
+    steps.pageBeforeTap = await tab.evaluate(DRAFT_EXPRESSION);
+
+    tab.setPhase('draft-open');
+    steps.tapEntry = await tab.tap('.gf-play-entry');
+    steps.opened = await tab.waitFor(openedWithSignal);
+    await sleep(DELIVERY_MS);
+    steps.portrait = await tab.state();
+    steps.pageOpened = await tab.evaluate(DRAFT_EXPRESSION);
+    steps.shotPortrait = await tab.shoot(options.shotDir === null ? null : join(options.shotDir, 'pad-draft-portrait-390x844.png'));
+    steps.keysOnOpen = tab.keysIn('draft-open');
+
+    const left = await tab.centerOf('.gf-play-pad-key[data-code="ArrowLeft"]');
+    steps.left = left;
+    if (left === null) {
+      throw new Error('公開前の作品の覆いに ArrowLeft のボタンがありません');
+    }
+    tab.setPhase('draft-left-down');
+    await tab.touch('touchStart', [{ ...left, id: 1 }]);
+    await sleep(DELIVERY_MS);
+    tab.setPhase('draft-left-up');
+    await tab.touch('touchEnd', []);
+    await sleep(DELIVERY_MS);
+    steps.leftDown = tab.keysIn('draft-left-down');
+    steps.leftUp = tab.keysIn('draft-left-up');
+
+    tab.setPhase('draft-close');
+    await tab.evaluate(`document.querySelector('.gf-play-close').click()`);
+    steps.closed = await tab.waitFor((state) => state?.overlayHidden === true && state.frames === 0);
+    steps.plays = tab.postsTo('/api/plays');
+  } catch (error) {
+    steps.error = String(error);
+  } finally {
+    await tab.close().catch(() => {});
+  }
+
+  // ── デスクトップの形 ──
+  /** @type {Record<string, any>} */
+  const desktop = {};
+  steps.desktop = desktop;
+  const desk = await openTab(cdp, options);
+  try {
+    await cdp.send('Network.enable', {}, desk.sessionId);
+    desktop.cookieSet = (await cdp.send('Network.setCookie', cookie, desk.sessionId)).success === true;
+    await desk.resize(DESKTOP, false);
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: SIGNAL_RECORDER }, desk.sessionId);
+    await desk.navigate(options.draftUrl);
+    desktop.started = await desk.waitFor(
+      (state) => Array.isArray(state?.signals) && state.signals.some((signal) => signal.fromCurrentFrame && signal.data === 'gf-loader-started'),
+    );
+    await sleep(DELIVERY_MS);
+    desktop.loaded = await desk.state();
+    desktop.page = await desk.evaluate(DRAFT_EXPRESSION);
+    desktop.plays = desk.postsTo('/api/plays');
+  } catch (error) {
+    desktop.error = String(error);
+  } finally {
+    // **cookie を消す**（この後にタブを開く観測が足されても、未ログインのまま見られるようにする）。
+    await cdp.send('Network.deleteCookies', { name: cookie.name, domain: cookie.domain, path: '/' }, desk.sessionId).catch(() => {});
+    await desk.close().catch(() => {});
+  }
+  return steps;
+}
+
 /**
  * 観測する。
  *
@@ -738,6 +885,9 @@ async function probe(options) {
       desktop: await observeDesktop(cdp, options),
       empty: await observeEmpty(cdp, options),
       long: await observeLong(cdp, options),
+      // **最後に回す**（作者の cookie を入れるため。{@link observeDraft}）。
+      draftUrl: options.draftUrl,
+      draft: await observeDraft(cdp, options),
     };
   } finally {
     child.kill('SIGKILL');

@@ -51,6 +51,7 @@
  * > **#502 注記。公開済みの作品ページの iframe はスクリプトが作る**（`src/work-play.ts`。仕様 3.9.4）。タッチ端末では
  * > 開いた時点でゲームを読み込まず、スクリーンショットのタップで全画面の覆いを開くためである。**「要求しない」は崩していない**
  * > ——JavaScript を切ると `<noscript>` の中の今の埋め込みで遊べる。4 要素はスクリプトより前にあり、スクリプトは 4 要素を書き換えない。
+ * > **#575 から、公開前の作品ページ（作者本人の「できました」）も同じ埋め込みを使う**（`/p/` の URL。計上のスクリプトは置かない）。
  *
  * ## 応答本文の文字列を表示面へ持ち込まない（8.3）
  *
@@ -1693,11 +1694,30 @@ ${boxes.join('\n')}
 }
 
 /**
+ * 公開前の作品ページの「遊ぶ」の口に置く、固定の文言のパネル（#575）。**スクリーンショットの撮影中のパネルと同じ部品**
+ * （`.gf-shot gf-shot-pending`）で、UGC を含まない。見せるのはタッチ端末だけである（{@link readySection}）。
+ */
+const DRAFT_PLAY_PANEL = '<p class="gf-shot gf-shot-pending">公開前の作品です。スクリーンショットは公開したときに撮ります。</p>';
+
+/**
  * 完成したが、まだ公開していない作品の本文。
  *
  * **試遊 URL を出すのは作者本人にだけである。** `preview_key` は unlisted 配信の
  * 唯一の資格情報で（5.4 / `migrations/0006_games_preview_key.sql`）、id を知って
  * いるだけの相手へ渡す理由が無い。**状態は誰でも読めるが、鍵は本人だけが読める。**
+ *
+ * **#575 から、本人には公開後と同じ遊び方を出す**（{@link playEmbed}。デスクトップはページ内に埋め込み、タッチ端末は「遊ぶ」で
+ * 全画面の覆い・仮想パッド・向き。仕様 3.9.4）。それまではリンクだけで、スマホで開くとパッドが出なかった。
+ *
+ * - **埋め込みは状態のブロックの外、直後に置く。** 公開後の画面と同じく、覆いを `.gf-block` の中へ入れない（ブロックの中の
+ *   副のボタンのホバーの規則が、覆いの「閉じる」やパッドのキーに掛からないようにする）
+ * - **「遊ぶ」の口は、スクリーンショットの代わりに固定の文言のパネル**にする（公開前は撮っていない。3.9.4 の「スクリーンショットが
+ *   無い作品」と同じ形）。**パネルはタッチ端末でだけ見せる**（`public/assets/app.css` の `.gf-work-draft-play`）——デスクトップと
+ *   JavaScript の無い形では、すぐ下に埋め込みがあるので、黒い面を二重に出さない
+ * - **試遊 URL のリンクは「人に渡す URL」として残す**（渡した先で直接開いたときはパッドが出ない。パッドは親の文書の機能である）
+ * - **計上のスクリプト（#377）は置かない。** `/p/` の試遊は数えない（`playCountableId` は公開済みだけ）
+ * - **リフォージの実行中は埋め込まず、リンクだけにする。** その間は画面が {@link REFRESH_SECONDS} 秒ごとに再読み込みされ、埋め込んだ
+ *   ゲームも覆いもそのたびに落ちる。できあがって再読み込みが止まれば、埋め込みに戻る
  *
  * @param view 表示に必要な値
  * @returns HTML
@@ -1707,11 +1727,21 @@ function readySection(view: WorkPageView): string {
     return stateBlock(`<h2>できました</h2>
 <p>この作品はまだ公開されていません。</p>`);
   }
+  const embedded = view.playUrl !== null && !view.revisionRunning;
   const play =
     view.playUrl === null
       ? '<p>作品は完成していますが、試遊 URL を組み立てられませんでした。</p>'
-      : `<p><a href="${view.playUrl}">この作品を遊ぶ</a></p>
+      : embedded
+        ? `<div class="gf-work-draft-play">
+${playEntry(DRAFT_PLAY_PANEL, true)}
+</div>
+<p><a href="${view.playUrl}">試遊 URL</a> は<strong>あなただけが知っている URL</strong> です（まだ公開されていません）。この URL を人に渡すと、公開する前に遊んでもらえます。</p>`
+        : `<p><a href="${view.playUrl}">この作品を遊ぶ</a></p>
 <p>この URL は<strong>あなただけが知っている URL</strong> です（まだ公開されていません）。</p>`;
+  const embed =
+    embedded && view.playUrl !== null
+      ? `\n${playEmbed(view.playUrl, view.workId, view.inputKeyCodes, view.inputHeldCodes, view.inputAliasGroups, view.playOrientation)}`
+      : '';
   const publish =
     view.publishableId === null
       ? ''
@@ -1725,8 +1755,10 @@ ${publishForm(view.publishableId)}`;
   // 並びは #474 の前と同じで、外側に面を足しただけである。**このブロックの主は「公開して共有」だけ**である。
   //
   // **削除の導線（#517）は設定のブロックの最後に置く**——戻せない操作を、公開・リフォージ・改名より先に目に入れない。
+  //
+  // **埋め込み（#575）は状態のブロックと設定のブロックの間に置く**（上の説明）。デスクトップの iframe はここに入る。
   return `${stateBlock(`<h2>できました</h2>
-${play}${publish}`)}${settingsBlock([reviseSection(view), revisionList(view), renameSection(view), deleteSection(view)])}`;
+${play}${publish}`)}${embed}${settingsBlock([reviseSection(view), revisionList(view), renameSection(view), deleteSection(view)])}`;
 }
 
 /**

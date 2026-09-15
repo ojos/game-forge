@@ -69,6 +69,7 @@ import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
 import { TIDY_ATTEMPTS } from '../src/source-size.js';
 import { NEWS_ARTICLES } from '../src/news-articles.js';
 import { workSourcePath } from '../src/work-source.js';
+import { playEmbed } from '../src/work-play.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
@@ -2687,6 +2688,134 @@ describe('仮想パッドのキーを読む（#494 / 仕様 3.9.5 / 3.9.6）', (
     for (const detail of keys) {
       expect(detail, details.join(' / ')).toMatch(/^SEARCH k USING INDEX sqlite_autoindex_source_input_keys_1 \(source_key=\?\)/u);
     }
+  });
+});
+
+describe('公開前の作品ページでも、公開後と同じ遊び方にする（#575 / 仕様 3.9.4）', () => {
+  /**
+   * 完成した未公開の作品を 1 つ作り、キーと論理解像度の行を置く（`source_input_keys` の版 4 の行。層 10 の横長の作品と同じ形）。
+   *
+   * @param suffix 利用者と作品を分ける接尾辞
+   * @returns 作者の id・作品 id・試遊 URL
+   */
+  async function seedDraftWithKeys(suffix: string): Promise<{ userId: string; id: string; playUrl: string }> {
+    const { userId, id, jobToken } = await seedPending(`draft-play-${suffix}`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    const sha = [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: sha }));
+    const row = await env.DB.prepare('select status, source_key, preview_key from games where id = ?')
+      .bind(id)
+      .first<{ status: string; source_key: string; preview_key: string }>();
+    // **公開していない行である**（ここが公開済みだと、公開後の `loadingScreen` を見ていることになる）。
+    expect(row?.status).toBe('draft');
+    await env.DB.prepare(
+      'insert or replace into source_input_keys (source_key, codes, held_codes, alias_groups, layout_width, layout_height, rule_version, extracted_at) values (?, ?, ?, ?, ?, ?, 4, 1)',
+    )
+      .bind(row!.source_key, JSON.stringify(DRAFT_CODES), JSON.stringify(DRAFT_HELD), '[]', 320, 240)
+      .run();
+    return { userId, id, playUrl: `https://${env.SANDBOX_HOST}/p/${row!.preview_key}/` };
+  }
+
+  /** 作品が読むキー（←→↑ Enter Space。#575 の報告の作品と同じ集合）。 */
+  const DRAFT_CODES = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Enter', 'Space'];
+  /** 押し続けて読むキー。 */
+  const DRAFT_HELD = ['ArrowLeft', 'ArrowRight'];
+
+  /**
+   * 文字列が本文に何回出るか。
+   *
+   * @param body 本文
+   * @param needle 探す文字列
+   * @returns 回数
+   */
+  function countOf(body: string, needle: string): number {
+    return body.split(needle).length - 1;
+  }
+
+  it('作者本人には、公開後と同じ playEmbed（/p/ の URL・作品のキー・向き）を 1 つだけ出し、試遊 URL のリンクと説明を残す', async () => {
+    const { userId, id, playUrl } = await seedDraftWithKeys('owner');
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(body).toContain('できました');
+
+    // **公開後の画面と 1 文字も違わない埋め込み**（`src/work-play.ts` の 1 か所から組み立てる。写しを持たない）。
+    expect(body).toContain(playEmbed(playUrl, id, DRAFT_CODES, DRAFT_HELD, [], 'landscape'));
+    // iframe は `<noscript>` の中の 1 つだけで、`/p/` を指し、`sandbox` は `allow-scripts` だけのまま（7.2）。
+    expect(body).toContain(`<noscript class="gf-play-noscript"><iframe class="gf-frame" src="${playUrl}" sandbox="allow-scripts" title="ゲーム"></iframe></noscript>`);
+    expect(countOf(body, '<iframe')).toBe(1);
+    expect(body).not.toContain(`/g/${id}/`);
+    // 覆い・口・「遊ぶ」のボタン・スクリプトはどれも 1 つ（覆いのスクリプトは document.querySelector で最初の 1 つを引く）。
+    expect(countOf(body, '<div class="gf-play-overlay"')).toBe(1);
+    expect(countOf(body, '<div class="gf-play-entry">')).toBe(1);
+    expect(countOf(body, 'gf-play-open" hidden>遊ぶ</button>')).toBe(1);
+    expect(countOf(body, '<noscript class="gf-play-noscript">')).toBe(1);
+    // パッドのキー（作品のキー）と向きの属性。
+    expect(body).toContain('data-code="ArrowUp"');
+    expect(body).toContain('data-code="Space"');
+    expect(body).toContain('<div class="gf-play-pad gf-play-pad-stick" data-stick-left="ArrowLeft" data-stick-right="ArrowRight">');
+    expect(body).toContain(`data-orientation="landscape" data-orientation-memory="gf-orientation:${id}"`);
+    // 口は状態のブロックの中、埋め込みはブロックの外（直後）。覆いを `.gf-block` の中へ入れない。
+    const entryAt = body.indexOf('<div class="gf-work-draft-play">');
+    const overlayAt = body.indexOf('<div class="gf-play-overlay"');
+    const stateEnd = body.indexOf('</div>\n<noscript class="gf-play-noscript">');
+    expect(entryAt).toBeGreaterThan(body.indexOf('<div class="gf-block gf-work-state">'));
+    expect(stateEnd).toBeGreaterThan(entryAt);
+    expect(overlayAt).toBeGreaterThan(stateEnd);
+
+    // 試遊 URL のリンクと「あなただけが知っている URL」の説明は残す（人に渡す URL）。
+    expect(body).toContain(`<a href="${playUrl}">試遊 URL</a>`);
+    expect(body).toContain('<strong>あなただけが知っている URL</strong>');
+    expect(body).toContain('この URL を人に渡すと');
+    // 公開の口は今のまま出る。
+    expect(body).toContain('公開して共有');
+  });
+
+  it('試遊（/p/）は数えない: 計上のスクリプトも数も出さない', async () => {
+    const { userId, id } = await seedDraftWithKeys('no-count');
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(body, '覆いが無い（検査の前提が崩れている）').toContain('gf-play-overlay');
+    expect(body).not.toContain(PLAY_PATH);
+    expect(body).not.toContain(playReportScript(id));
+    expect(body).not.toContain('gf-plays');
+  });
+
+  it('本人以外（未ログイン・別の利用者）には、埋め込みも鍵も出さない', async () => {
+    const { id, playUrl } = await seedDraftWithKeys('stranger');
+    const stranger = await seedUser('draft-play-stranger-viewer');
+    for (const cookie of [undefined, await sessionCookie(stranger)]) {
+      const body = await (await open(workPagePath(id), cookie)).text();
+      expect(body, String(cookie)).toContain('この作品はまだ公開されていません。');
+      expect(body, String(cookie)).not.toContain('gf-play-');
+      expect(body, String(cookie)).not.toContain('<iframe');
+      expect(body, String(cookie)).not.toContain(playUrl);
+    }
+  });
+
+  it('試遊 URL を組み立てられないときは今のまま（埋め込まない）', () => {
+    const body = renderWorkPage({ ...baseView, owner: true, playUrl: null, publishableId: baseView.workId });
+    expect(body).toContain('試遊 URL を組み立てられませんでした');
+    expect(body).not.toContain('gf-play-');
+    expect(body).not.toContain('<iframe');
+  });
+
+  it('リフォージの実行中（画面が自動で再読み込みされる間）は埋め込まず、リンクだけを出す', () => {
+    const playUrl = 'https://sandbox.example.invalid/p/0123456789abcdef0123456789abcdef/';
+    const running = renderWorkPage({ ...baseView, owner: true, playUrl, revisionRunning: true });
+    expect(running).toContain('http-equiv="refresh"');
+    expect(running).not.toContain('gf-play-');
+    expect(running).toContain(`<a href="${playUrl}">この作品を遊ぶ</a>`);
+    expect(running).toContain('<strong>あなただけが知っている URL</strong>');
+    // 対照: 実行中でなければ埋め込む。
+    expect(renderWorkPage({ ...baseView, owner: true, playUrl })).toContain('gf-play-overlay');
+  });
+
+  it('口のパネルはタッチ端末でだけ見せ、埋め込みは状態のブロックとの間を空ける（app.css）', () => {
+    const hidden = /^\.gf-work-draft-play > \.gf-play-entry:not\(\.gf-play-entry-touch\)\s*\{([^}]*)\}/mu.exec(env.TEST_APP_CSS);
+    expect(hidden, 'app.css に口を隠す規則が無い').not.toBeNull();
+    expect(hidden![1]!).toMatch(/display:\s*none/u);
+    const entry = /^\.gf-work-draft-play > \.gf-play-entry\s*\{([^}]*)\}/mu.exec(env.TEST_APP_CSS);
+    expect(entry, 'app.css に口の位置の規則が無い（「遊ぶ」のボタンを重ねる基準）').not.toBeNull();
+    expect(entry![1]!).toMatch(/position:\s*relative/u);
+    expect(env.TEST_APP_CSS).toMatch(/^\.gf-work-state \+ \.gf-frame\s*\{/mu);
   });
 });
 

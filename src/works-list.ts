@@ -52,6 +52,12 @@
  * - **検索結果の画面は `noindex` にする。** 利用者が打った語を見出しに含むので、任意の語で
  *   索引される頁を外から作らせない
  *
+ * ## タグと検索語を一度に外せる（#547）
+ *
+ * **絞り込んでいるときだけ、結果の側に「絞り込みを外す」を出す。** タグの「すべて」は検索語を保ち、
+ * 「検索をやめて一覧を見る」はタグを保つので、両方を 1 回で外す口がそれまで無かった。条件と行き先は
+ * {@link renderClearFilter} にまとめてある。
+ *
  * ## 出さないもの
  *
  * 並べ替えは新着・「改造された数」・
@@ -406,6 +412,48 @@ ${items.join('\n')}
 }
 
 /**
+ * 絞り込みを外す導線の文言（#547）。綴りを検査が借りられるように輸出する。
+ */
+export const CLEAR_FILTER_LABEL = '絞り込みを外す';
+
+/**
+ * タグと検索語を一度に外す導線を組み立てる（#547）。
+ *
+ * # 出す条件
+ *
+ * **タグで絞っているか、検索している（受け付けた検索と、断った検索）ときだけ出す。** 絞り込んでいない一覧に出すと、
+ * 押しても同じ場所へ来るリンクになる（{@link renderSortNav} が軸に対して避けているもの）。
+ *
+ * # 行き先
+ *
+ * **タグも `q` も含まない一覧の 1 頁目。** 綴りは {@link worksListPath} に任せ、書き写さない。
+ *
+ * - **タグだけのときは、いまの並べ替えの軸を保つ。** 絞り込み中の軸（新着・フォークされた数）は、絞り込まない一覧にもある
+ *   （`TAGGED_WORK_SORTS` は `PUBLIC_WORK_SORTS` に含まれる）ので、押した先で軸が変わらない
+ * - **検索しているときは既定（新着順）にする。** 検索中は軸を持たない（#378 の決定 4）。{@link renderEmpty} の
+ *   「検索をやめて一覧を見る」と同じ考え方である
+ *
+ * # 置き場所と見た目
+ *
+ * **絞り込みを示す行（「タグ「◯◯」の作品」「「◯◯」の検索結果」、断った検索では理由のブロック）のすぐ後ろに置く。**
+ * 狭い段では左カラムのタグの「すべて」が結果から画面 1 枚ぶん離れる（{@link renderWorksListPage} の `filtered` と
+ * 同じ理由）ので、結果の側に置く。DOM の順＝見た目の順のままで、並べ替えない。
+ * **小さい副のボタン**（仕様 2.5.5。{@link PAGER_BUTTON_CLASS}）。移動なので `<a>` で、JavaScript は使わない（9.3）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（先頭に改行を持つ）。絞り込んでいなければ空文字
+ */
+function renderClearFilter(view: WorksListView): string {
+  const tag = view.tag ?? null;
+  const query = queryOf(view.search);
+  if (tag === null && query === null) {
+    return '';
+  }
+  const href = worksListPath(query === null ? view.sort : 'recent', 1);
+  return `\n<p class="gf-works-clear-filter"><a class="${PAGER_BUTTON_CLASS}" href="${href}">${CLEAR_FILTER_LABEL}</a></p>`;
+}
+
+/**
  * 一覧が空のときの本文（#376）。
  *
  * **「このタグの作品はまだない」と「公開作品が 0 本」を書き分ける。** 絞り込んだ結果が空でも
@@ -491,7 +539,7 @@ export function renderWorksListPage(view: WorksListView, viewer: SiteViewer): st
 <p class="gf-block gf-works-moved">${MOVED_NOTICE}</p>
 <div class="gf-split">
 ${renderTagFilter(view)}
-<div class="gf-works-results">${filtered}${searched}
+<div class="gf-works-results">${filtered}${searched}${renderClearFilter(view)}
 ${renderSortNav(view)}
 ${body}
 ${renderPager(view)}

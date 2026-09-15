@@ -336,6 +336,14 @@ describe('同じ条件式で読むキーの組の抽出（仕様 3.9.6 の「同
     expect(extractAliasGroups(`ok // a &&\n${up} || ${space}`)).toEqual([['ArrowUp', 'Space']]);
     // 文字列の中の // は行コメントではない（その後ろの && を消さない）。
     expect(extractAliasGroups(`_ = "https://example.com" == url && ${z} || ${up}`)).toEqual([]);
+    // 行コメントの中の */ をブロックコメントの終わりと見ない（間のコードを飛ばして && に接すると誤らない。loop-gate の第二意見の指摘）。
+    expect(extractAliasGroups(`ok && /* grounded */\nfoo := 1 // */\n${z} || ${up} || ${space}`)).toEqual([['ArrowUp', 'KeyZ', 'Space']]);
+    expect(extractAliasGroups(`ok && // */\n${z} || ${up} || ${space}`)).toEqual([['ArrowUp', 'Space']]);
+    // ブロックコメントの中の /* で、コメントの先頭を取り違えない。
+    expect(extractAliasGroups(`ok && /* see /*.go */ ${z} || ${up} || ${space}`)).toEqual([['ArrowUp', 'Space']]);
+    // 文字列・生文字列の中の /* や */ はコメントを始めも終えもしない。
+    expect(extractAliasGroups(`x := "/*" && ${z} || ${up}`)).toEqual([]);
+    expect(extractAliasGroups('y := `*/`\n' + `${z} || ${up}`)).toEqual([['ArrowUp', 'KeyZ']]);
     // || の続きの間のコメントは、今どおり組が切れる（方向はボタンに残る側）。
     expect(extractAliasGroups(`${space} || /* jump */ ${up}`)).toEqual([]);
   });

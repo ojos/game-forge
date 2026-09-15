@@ -139,17 +139,31 @@ export function extractAliasGroups(source: string): string[][] {
   const call = String.raw`\binpututil\.IsKeyJustPressed\(\s*ebiten\.Key([A-Za-z0-9]+)\s*,?\s*\)`;
   const run = new RegExp(`${call}(?:\\s*\\|\\|\\s*${call})+`, 'g');
   const groups = new Map<string, string[]>();
+  /** 空白とコメントの位置の印（組が 1 つでも見つかったときだけ作る）。 */
+  let gaps: Uint8Array | undefined;
   for (const match of source.matchAll(run)) {
     const names = [...match[0].matchAll(new RegExp(call, 'g'))].map((inner) => inner[1] ?? '');
     // **`&&` は `||` より強く結びつく**（Go の演算子の優先順位）。続きの外側で `&&` に接する呼び出しは、
     // `a && IsKeyJustPressed(KeyZ) || IsKeyJustPressed(KeyUp)` の Z のように `&&` の片側で、ほかのキーと同じ働きではないので組から外す。
-    // **`&&` との間の空白とコメント（`/* … */`・`// …`）を越えて見る**（`ok && /* 接地 */ IsKeyJustPressed(KeyZ) || …` でも Z を外す。PR #546 の Copilot の指摘）。
-    // ソース全体からコメントを消さない——文字列の中の `//`（URL など）で後ろのコードを消しうるので、判定に使う端だけを見る。
+    // **`&&` との間の空白とコメント（ブロックコメント・行コメント）を越えて見る**（`ok && /* 接地 */ IsKeyJustPressed(KeyZ) || …` でも Z を外す。
+    // PR #546 の Copilot の指摘）。コメントかどうかは、ソースを前から 1 回だけ字句として読んだ印（{@link gapMaskOf}）で決める——
+    // 後ろ向きに `*/` や `//` を探すと、行コメントや文字列の中の `*/`・`//`、コメントの中の `/*` で誤る（loop-gate の第二意見の指摘）。
+    // ソースからコメントを消した写しは作らず、端の前後の位置が空白かコメントかだけを引く。
+    gaps ??= gapMaskOf(source);
     const start = match.index ?? 0;
-    if (withoutTrailingGap(source.slice(0, start)).endsWith('&&')) {
+    const end = start + match[0].length;
+    let before = start - 1;
+    while (before >= 0 && gaps[before] === 1) {
+      before -= 1;
+    }
+    if (before >= 1 && source[before] === '&' && source[before - 1] === '&' && gaps[before - 1] === 0) {
       names.shift();
     }
-    if (withoutLeadingGap(source.slice(start + match[0].length)).startsWith('&&')) {
+    let after = end;
+    while (after < source.length && gaps[after] === 1) {
+      after += 1;
+    }
+    if (source.startsWith('&&', after) && gaps[after] === 0 && gaps[after + 1] === 0) {
       names.pop();
     }
     const codes = new Set<string>();
@@ -168,79 +182,48 @@ export function extractAliasGroups(source: string): string[][] {
 }
 
 /**
- * 末尾の空白と Go のコメント（ブロックコメントと、その行の `//` からの行コメント）を、無くなるまで繰り返し取り除く（組の前側が `&&` に接するかを見るため）。
+ * ソースの各位置が「空白かコメント」なら 1、それ以外（コード・文字列・ルーンの中）なら 0 の印を作る（組の端が `&&` に接するかを見るため）。
  *
- * **その行の `//` は、文字列（`"…"`・`` `…` ``）とルーン（`'…'`）の外にある最初のものだけを行コメントとみなす**（{@link lineCommentStart}）。
- * 行をまたぐ生文字列とブロックコメントの中までは追わない（構文解析を持ち込まない）。
+ * **前から 1 回だけ字句として読む。** Go の字句の規則のうち、行コメント（`//` から行末まで。改行そのものは空白）・ブロックコメント・
+ * 解釈される文字列（`"…"`。バックスラッシュで次の 1 字を飛ばし、行末で終わる）・生文字列（`` `…` ``。行をまたぐ）・ルーン（`'…'`）だけを見る。
+ * 文字列の中の `//`・`/*`・`*\/` はコメントにならず、コメントの中の `/*` や `"` は何も始めない。構文解析は持ち込まない。
  *
- * @param text 組の前にあるソース
- * @returns 取り除いた後の文字列
+ * @param source Go のソース本文
+ * @returns 位置ごとの印（長さは `source.length`）
  */
-function withoutTrailingGap(text: string): string {
-  let rest = text;
-  for (;;) {
-    rest = rest.trimEnd();
-    if (rest.endsWith('*/')) {
-      const open = rest.lastIndexOf('/*', rest.length - 3);
-      if (open === -1) {
-        return rest;
-      }
-      rest = rest.slice(0, open);
-      continue;
-    }
-    const lineStart = rest.lastIndexOf('\n') + 1;
-    const comment = lineCommentStart(rest.slice(lineStart));
-    if (comment === -1) {
-      return rest;
-    }
-    rest = rest.slice(0, lineStart + comment);
-  }
-}
-
-/**
- * 先頭の空白と Go のコメント（ブロックコメントと、行末までの `//` の行コメント）を、無くなるまで繰り返し取り除く（組の後ろ側が `&&` に接するかを見るため）。
- *
- * 組の直後はコードの位置なので、文字列の中から始まることはない。閉じていないブロックコメントはそこで止める。
- *
- * @param text 組の後ろにあるソース
- * @returns 取り除いた後の文字列
- */
-function withoutLeadingGap(text: string): string {
-  // **正規表現を関数の中で組み立てる**（束のモジュールの最上位に副作用のある式を置かない）。
-  return text.replace(new RegExp(String.raw`^(?:\s+|/\*[\s\S]*?\*/|//[^\n]*)*`), '');
-}
-
-/**
- * 1 行の中で、行コメントが始まる位置（文字列・ルーン・同じ行のブロックコメントの外にある最初の `//`）。
- *
- * @param line 1 行（改行を含まない）
- * @returns `//` の位置。無ければ -1
- */
-function lineCommentStart(line: string): number {
-  let quote: string | null = null;
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index];
-    if (quote === '/*') {
-      if (char === '*' && line[index + 1] === '/') {
-        quote = null;
-        index += 1;
-      }
-    } else if (quote !== null) {
-      if (char === '\\' && quote !== '`') {
-        index += 1;
-      } else if (char === quote) {
-        quote = null;
-      }
-    } else if (char === '/' && line[index + 1] === '/') {
-      return index;
-    } else if (char === '/' && line[index + 1] === '*') {
-      quote = '/*';
+function gapMaskOf(source: string): Uint8Array {
+  const gaps = new Uint8Array(source.length);
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (char === '/' && next === '/') {
+      const newline = source.indexOf('\n', index);
+      const stop = newline === -1 ? source.length : newline;
+      gaps.fill(1, index, stop);
+      index = stop;
+    } else if (char === '/' && next === '*') {
+      const close = source.indexOf('*/', index + 2);
+      const stop = close === -1 ? source.length : close + 2;
+      gaps.fill(1, index, stop);
+      index = stop;
+    } else if (char === '"' || char === "'") {
       index += 1;
-    } else if (char === '"' || char === "'" || char === '`') {
-      quote = char;
+      while (index < source.length && source[index] !== char && source[index] !== '\n') {
+        index += source[index] === '\\' ? 2 : 1;
+      }
+      index += 1;
+    } else if (char === '`') {
+      const close = source.indexOf('`', index + 1);
+      index = close === -1 ? source.length : close + 1;
+    } else {
+      if (char === ' ' || char === '\t' || char === '\n' || char === '\r') {
+        gaps[index] = 1;
+      }
+      index += 1;
     }
   }
-  return -1;
+  return gaps;
 }
 
 /**

@@ -8,7 +8,8 @@
 //
 // | 段 | 作品 | 固定の API | 操作 |
 // |---|---|---|---|
-// | `landscapeGranted` | 横長 | 固定できる | 開く → ボタンを押す → 「閉じる」で閉じる → 開き直す（覚えた向き）→ 全画面を解除して閉じる |
+// | `landscapeGranted` | 横長 | 固定できる | 縦持ちで開く → 横持ちに回す → ボタンを押す → 縦持ちに回す → 「閉じる」で閉じる → 開き直す（覚えた向き）→ 全画面を解除して閉じる |
+// | `portraitPending` | 縦長 | 固定が決着しない（#572） | 縦持ちで開く → ボタンを押す → 横持ちに回す → 古い固定の拒否（AbortError）を遅れて届ける → 閉じる → 縦持ちで開き直す（覚えた向き）→ 横持ちに回す → ボタンを押す → 縦持ちに回す → 最新の固定を拒む |
 // | `landscapeRefused` | 横長 | 固定を拒む | 縦持ちで開く → 横持ちに回す → 縦持ちに戻す → 閉じる |
 // | `landscapeAbsent` | 横長 | API が無い | 縦持ちで開く |
 // | `portraitGranted` | 縦長 | 固定できる | 開く |
@@ -19,7 +20,12 @@
 //
 // **ヘッドレスの Chromium の `screen.orientation.lock()` は実機と同じ結果にならない**（端末の向きを持たない）ので、`ScreenOrientation` の
 // `lock` / `unlock` を**呼ばれた記録を残す差し替え**にする（`Page.addScriptToEvaluateOnNewDocument`）。固定できる形は解決する Promise、拒む形は
-// `NotSupportedError` で拒む Promise を返し、API が無い形は `lock` を消す。呼ばれた時点で覆いが全画面か（`document.fullscreenElement`）も残す。
+// `NotSupportedError` で拒む Promise、**決着しない形（#572。Android の Chrome の実機で、覚えた向きで固定を頼むと Promise が決着しないことがあった）は
+// 検査が後から拒める Promise**（`window.__gfOrientation.reject(番号, 名前)`）を返し、API が無い形は `lock` を消す。呼ばれた時点で覆いが全画面か
+// （`document.fullscreenElement`）も残す。
+//
+// **差し替えの lock は画面を回さない。** 実機で固定したときの画面の回転は、固定の呼ばれ方を見てから検査が `Emulation.setDeviceMetricsOverride`
+// （幅・高さと `screenOrientation`）で起こす。ボタンの文言は今見えている向きで決まる（#572）ので、回す前と回した後の両方を読む。
 // **ページのスクリプトには手を入れない**（固定の判定・ボタン・案内・覚える処理は、配信した本物のスクリプトが動く）。
 //
 // # このファイルは判定しない
@@ -89,13 +95,25 @@ function parseArgs(argv) {
 /**
  * `screen.orientation` の差し替え（主文書だけ）。
  *
- * @param {'grant' | 'refuse' | 'absent'} mode 固定できる / 拒む / API が無い
+ * @param {'grant' | 'refuse' | 'pending' | 'absent'} mode 固定できる / 拒む / 決着しない（検査が後から拒める）/ API が無い
  * @returns {string} ページより先に評価するスクリプト
  */
 function orientationStub(mode) {
   return `(() => {
   if (window.top !== window) { return; }
-  const record = { locks: [], unlocks: 0 };
+  const rejecters = [];
+  const record = {
+    locks: [],
+    unlocks: 0,
+    // 決着しない形で、番号の固定を後から拒む（呼べたら true）。
+    reject(index, name) {
+      const rejecter = rejecters[index];
+      if (typeof rejecter !== 'function') { return false; }
+      rejecters[index] = null;
+      rejecter(new DOMException('検査の差し替えが拒んだ', name));
+      return true;
+    },
+  };
   window.__gfOrientation = record;
   const proto = typeof ScreenOrientation === 'function' ? ScreenOrientation.prototype : null;
   if (proto === null) { record.error = 'ScreenOrientation が無い'; return; }
@@ -112,6 +130,10 @@ function orientationStub(mode) {
           orientation: String(orientation),
           fullscreen: document.fullscreenElement === null ? null : document.fullscreenElement === overlay ? 'overlay' : 'other',
         });
+        if (mode === 'pending') {
+          return new Promise((resolve, reject) => { rejecters.push(reject); });
+        }
+        rejecters.push(null);
         return mode === 'grant' ? Promise.resolve() : Promise.reject(new DOMException('検査の差し替えが拒んだ', 'NotSupportedError'));
       },
     });
@@ -175,7 +197,7 @@ const STATE_EXPRESSION = `(() => {
     barScrollWidth: bar === null ? null : bar.scrollWidth,
     barClientWidth: bar === null ? null : bar.clientWidth,
     barChildren,
-    locks: record === null ? null : record.locks.slice(),
+    locks: record === null || !Array.isArray(record.locks) ? null : record.locks.slice(),
     unlocks: record === null ? null : record.unlocks,
     stubError: record === null ? 'record が無い' : (record.error ?? null),
     memory,
@@ -188,7 +210,7 @@ const STATE_EXPRESSION = `(() => {
  *
  * @param {CdpConnection} cdp 接続
  * @param {{timeoutMs: number}} options 設定
- * @param {'grant' | 'refuse' | 'absent'} mode 固定の API の形
+ * @param {'grant' | 'refuse' | 'pending' | 'absent'} mode 固定の API の形
  * @returns {Promise<any>} 道具
  */
 async function openTab(cdp, options, mode) {
@@ -361,7 +383,7 @@ async function openOverlay(tab, url, size) {
  *
  * @param {CdpConnection} cdp 接続
  * @param {ReturnType<typeof parseArgs>} options 設定
- * @param {'grant' | 'refuse' | 'absent'} mode 固定の API の形
+ * @param {'grant' | 'refuse' | 'pending' | 'absent'} mode 固定の API の形
  * @param {(tab: any, steps: Record<string, any>) => Promise<void>} run 操作
  * @returns {Promise<object>} 観測結果
  */
@@ -412,12 +434,17 @@ async function probe(options) {
     const cdp = new CdpConnection(await openSocket(endpoint));
     const result = {};
 
-    // 横長・固定できる: 開く → 入れ替える → 閉じる → 覚えた向きで開き直す → 全画面の解除で閉じる。
+    // 横長・固定できる: 縦持ちで開く → 固定した向き（横）に回す → 入れ替える → 入れ替えた向き（縦）に回す → 閉じる → 覚えた向きで開き直す
+    // → 全画面の解除で閉じる。
     result.landscapeGranted = await observe(cdp, options, 'grant', async (tab, steps) => {
       steps.first = await openOverlay(tab, options.landscapeUrl, PORTRAIT);
       steps.shotFirst = await tab.shoot(shotPath(options, 'orientation-landscape-granted-390x844.png'));
+      await tab.resize(LANDSCAPE);
+      steps.rotatedFirst = await tab.settled();
       steps.tappedToggle = await tab.tap('.gf-play-orient-toggle');
       steps.afterToggle = await tab.settled();
+      await tab.resize(PORTRAIT);
+      steps.afterToggleRotated = await tab.settled();
       steps.tappedClose = await tab.tap('.gf-play-close');
       steps.closedByButton = await tab.waitFor(closed);
       // 閉じるときに始めた戻りの決着を待つ（src/work-play.ts の開き直しの待ち）。
@@ -432,6 +459,63 @@ async function probe(options) {
         steps.afterFullscreenExit = await tab.settled();
       }
       // 覚えた向きを消す（同じブラウザの後の段が、おすすめの向きから始まるように）。
+      await tab.evaluate('localStorage.clear()');
+    });
+
+    // 縦長・固定が決着しない（#572 の実機の形）: 覚えた向きが無い回と、覚えた向きで開き直した回の両方で、決着を待たずにボタンが出ること、
+    // 文言が今見えている向きの逆になること、押すと逆の向きで固定を頼んで覚えること、古い固定の拒否が遅れて届いてもボタンが隠れないこと、
+    // 最新の入れ替えが拒まれたら覚えた値が押す前に戻りボタンは出たままであることを見る。
+    result.portraitPending = await observe(cdp, options, 'pending', async (tab, steps) => {
+      steps.first = await openOverlay(tab, options.portraitUrl, PORTRAIT);
+      steps.tappedToggle = await tab.tap('.gf-play-orient-toggle');
+      steps.afterToggle = await tab.settled();
+      await tab.resize(LANDSCAPE);
+      steps.afterToggleRotated = await tab.settled();
+      // 開いたときの固定（番号 0）の取り消しが、入れ替えの固定（番号 1）の後に遅れて届く（Chrome は新しい固定で前の固定を AbortError で取り消す）。
+      steps.abortedOld = await tab.evaluate("window.__gfOrientation.reject(0, 'AbortError')");
+      steps.afterAbort = await tab.settled();
+      steps.tappedClose = await tab.tap('.gf-play-close');
+      steps.closedByButton = await tab.waitFor(closed);
+      // 閉じると固定が外れ、端末の持ち方（縦持ち）に戻る。
+      await tab.resize(PORTRAIT);
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      steps.afterClose = await tab.state();
+      steps.tappedEntryAgain = await tab.tap('.gf-play-entry');
+      steps.reopened = (await tab.waitFor(opened)).reached;
+      steps.second = await tab.settled();
+      await tab.resize(LANDSCAPE);
+      steps.secondRotated = await tab.settled();
+      steps.tappedToggleAgain = await tab.tap('.gf-play-orient-toggle');
+      steps.afterSecondToggle = await tab.settled();
+      await tab.resize(PORTRAIT);
+      steps.afterSecondToggleRotated = await tab.settled();
+      // 最新の入れ替えの固定を拒む（覚えた値は押す前に戻り、ボタンは出たまま）。
+      steps.refusedLatest = await tab.evaluate(
+        "window.__gfOrientation.reject(window.__gfOrientation.locks.length - 1, 'NotSupportedError')",
+      );
+      steps.afterRefuseLatest = await tab.settled();
+      // 押した直後に閉じ、その後で最新の入れ替えの固定が拒まれる（PR #573 の Copilot の指摘）: 閉じた後でも覚えた値を押す前に戻す。
+      await tab.resize(LANDSCAPE);
+      steps.beforeClosedRefuse = await tab.settled();
+      steps.tappedToggleBeforeClose = await tab.tap('.gf-play-orient-toggle');
+      steps.tappedCloseAfterToggle = await tab.tap('.gf-play-close');
+      steps.closedAfterToggle = await tab.waitFor(closed);
+      steps.refusedAfterClose = await tab.evaluate(
+        "window.__gfOrientation.reject(window.__gfOrientation.locks.length - 1, 'NotSupportedError')",
+      );
+      steps.afterRefuseAfterClose = await tab.settled();
+      // 押した直後に閉じ、閉じるときの unlock で最新の固定が取り消される（AbortError）: 取り消しは拒否ではないので、覚えた値は入れ替え先のまま。
+      await tab.resize(PORTRAIT);
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      steps.tappedEntryThird = await tab.tap('.gf-play-entry');
+      steps.reopenedThird = (await tab.waitFor(opened)).reached;
+      await tab.resize(LANDSCAPE);
+      steps.third = await tab.settled();
+      steps.tappedToggleThird = await tab.tap('.gf-play-orient-toggle');
+      steps.tappedCloseThird = await tab.tap('.gf-play-close');
+      steps.closedThird = await tab.waitFor(closed);
+      steps.abortedAfterClose = await tab.evaluate("window.__gfOrientation.reject(window.__gfOrientation.locks.length - 1, 'AbortError')");
+      steps.afterAbortAfterClose = await tab.settled();
       await tab.evaluate('localStorage.clear()');
     });
 

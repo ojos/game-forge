@@ -18,8 +18,9 @@
 | **費用ガードの層 4（レートクォータの引き下げ）** | **この文書（未実施）** | **Service Quotas に引き下げの API が無い**（5 章） |
 | **ガード発火後の復旧** | **この文書（手作業）** | **意図して自動化しない**（仕様 4.3。5 章） |
 
-**Bedrock を呼ぶのはオーケストレータ Lambda の実行ロールだけである**（#160）。オーケストレータは AWS の中で
-動くので、ロールを引き受けて一時資格情報で呼ぶ。**エッジ（Cloudflare Pages Functions。ローカルの
+**生成の経路で Bedrock を呼ぶのは、オーケストレータ Lambda の実行ロールだけである**（#160）。オーケストレータは AWS の中で
+動くので、ロールを引き受けて一時資格情報で呼ぶ。**モデルアクセスの確認などで、人が管理者の資格情報（SSO）で
+`aws bedrock-runtime converse` を叩くことはある**（2 章）。それは経路の外の手作業で、どこにも資格情報を置かない。**エッジ（Cloudflare Pages Functions。ローカルの
 `wrangler pages dev` を含む）は Bedrock を呼ばず、Bedrock の資格情報（`BEDROCK_AWS_*`）を持たない。**
 したがって **Bedrock 用のアクセスキーは無く、発行もローテーションもしない**（3・4 章は #160 より前の手順として残してある）。
 
@@ -328,11 +329,15 @@ aws iam list-attached-role-policies --role-name game-forge-orchestrator
 
 ### 復旧手順（手動。自動化しない）
 
-**自動で戻す経路をどこにも作っていない。** ガードの Lambda に detach の実装は無く、ガードの実行ロール
-（`game-forge-bedrock-guard`）と Budget Action のロール（`game-forge-budget-action`）に与えているのは
-`iam:AttachRolePolicy` だけで、**付けられる相手はオーケストレータのロール、付けられるポリシーは Deny 1 本**に
-絞ってある（`iam:DetachRolePolicy` は与えていない）。4.3 が「暴走の原因を調べる前に自動で戻すと、
-同じ暴走を繰り返す」としているためである。
+**自動で戻す経路をどこにも作っていない。** ガードの Lambda に detach の実装は無く、**どちらのロールにも detach
+（`iam:DetachRolePolicy`）を与えていない。** IAM に対して与えているのは `iam:AttachRolePolicy` だけで、
+**付けられる相手はオーケストレータのロール、付けられるポリシーは Deny 1 本**に絞ってある
+（`terraform/bedrock-guard.tf`）。4.3 が「暴走の原因を調べる前に自動で戻すと、同じ暴走を繰り返す」としているためである。
+
+| ロール | 与えている権限 |
+|---|---|
+| 層 2 のガードの Lambda（`game-forge-bedrock-guard`） | **Deny を付ける権限**（`iam:AttachRolePolicy`）と、**自分のログを書く権限**（`logs:CreateLogStream` / `logs:PutLogEvents`。書ける先は宣言済みのロググループ 1 本で、`logs:CreateLogGroup` も無い）だけ |
+| 層 3 の Budget Action のロール（`game-forge-budget-action`） | **Deny を付ける権限だけ**（`iam:AttachRolePolicy`） |
 
 **原因を特定して直すまで、以下を実行しないこと。** 直っていない状態で戻すと、同じ
 暴走がもう一度、同じ速さで走る。

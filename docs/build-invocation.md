@@ -41,7 +41,8 @@
 
 ```
 利用者 → Worker（エッジ。本番の Pages Functions / ローカルの wrangler pages dev）
-           │ BUILD_AWS_*（長命キー）で SigV4(lambda)
+           │ BUILD_AWS_* で SigV4(lambda)
+           │   本番: 長命キー（Pages のシークレット）/ ローカル: SSO の一時資格情報（SESSION_TOKEN 付き）
            │ POST https://lambda.<region>.amazonaws.com/2015-03-31/functions/game-forge-orchestrator/invocations
            │ X-Amz-Invocation-Type: Event                ← キューに入った時点で 202。ここで利用者へ応答が返る
            ▼
@@ -101,7 +102,7 @@
 
 | 呼ぶ側 → 呼ばれる側 | プリンシパル | 資格情報 | 許可の宣言 |
 |---|---|---|---|
-| エッジ → オーケストレータ（3.3-2.6） | IAM ユーザー `game-forge-build-invoker` | **長命キー `BUILD_AWS_*`**（本番は Pages のシークレット） | `terraform/build-invoker.tf` の `build_invoke` |
+| エッジ → オーケストレータ（3.3-2.6） | IAM ユーザー `game-forge-build-invoker` | `BUILD_AWS_*`。**本番は長命キー**（Pages のシークレット）、**ローカルは同じユーザーの SSO の一時資格情報**（`BUILD_AWS_SESSION_TOKEN` 付き。転記の手順は `docs/local-dev.md` 2 章） | `terraform/build-invoker.tf` の `build_invoke` |
 | エッジ → OGP 撮影関数 / アイコン変換関数 | 同上 | 同上 | `terraform/ogp-function.tf` の `ogp_invoke` / `terraform/avatar-function.tf` の `avatar_invoke` |
 | オーケストレータ → ビルド関数（3.3-5） | 実行ロール `game-forge-orchestrator` | Lambda が注入する一時資格情報（`AWS_*` を `BUILD_AWS_*` の名前へ写す。`src/orchestrator/handler.ts` の `workerLikeEnv`） | `terraform/orchestrator.tf` の `aws_iam_role_policy.orchestrator` |
 | オーケストレータ → Bedrock（3.3-3） | 同上 | 同上（`BEDROCK_AWS_*` の名前へ写す） | 同上（動作の定義は `terraform/bedrock.tf`） |

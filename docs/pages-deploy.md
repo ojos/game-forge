@@ -218,18 +218,27 @@ Pages のシークレットと IAM の両方から消えていることを確か
 `wrangler.toml` の `[env.production.vars]` が宣言するので、配備すればそのまま効きます
 （`src/generation-models.ts` の登録簿の鍵。確定5 / #83）。
 
-**値の出どころは `docs/bedrock-access.md` です**（#82）。役割はこう分かれます。
+**Bedrock の許可と費用ガードは、どれも宣言側にあります**（#82 / #160）。役割はこう分かれます。
 
 | 何 | 正本 |
 |---|---|
-| **どのシークレットを、どのプロジェクトへ入れるか**（上のコマンド） | この文書 |
-| **鍵の発行**（`aws iam create-access-key`）と**ローテーション手順** | `docs/bedrock-access.md` 3〜4 章 |
-| IAM ユーザーと権限、費用ガード | `terraform/bedrock.tf` / `terraform/bedrock-guard.tf` |
+| **エッジから消す**シークレット（上のコマンド） | この文書 |
+| Bedrock を呼ぶプリンシパル（オーケストレータの実行ロール `game-forge-orchestrator`）と許可 | `terraform/orchestrator.tf`（動作の定義は `terraform/bedrock.tf`） |
+| 費用ガード（層 2 / 層 3）と、発火後の復旧手順 | `terraform/bedrock-guard.tf` / `docs/bedrock-access.md` 5 章 |
 
-**投入の前に `terraform apply` が済んでいる必要があります。** 鍵を発行する相手
-（`game-forge-bedrock-invoker`）も、費用ガードの層 2 / 層 3 も、宣言側が作ります。
-**ガードが無いまま生成を開けないこと**が要点です（仕様書 4.3 は月次上限を必須実装と
-しており、アプリ層だけでは不足するとしています）。
+**生成を開く前に `terraform apply` が済んでいる必要があります。** 費用ガードの層 2 / 層 3 は
+宣言側が作ります。**ガードが無いまま生成を開けないこと**が要点です（仕様書 4.3 は月次上限を必須実装と
+しており、アプリ層だけでは不足するとしています）。**Bedrock 用の鍵の発行もローテーションもありません**
+（`docs/bedrock-access.md` 1 章）。
+
+> **#570 注記（2026-09-15）。上の段落と表は #160 より前の構成のまま残っていた。旧記述はこの注記に残す。**
+> 「**値の出どころは `docs/bedrock-access.md` です**（#82）」、表は「**どのシークレットを、どのプロジェクトへ入れるか**
+> （上のコマンド） | この文書」「**鍵の発行**（`aws iam create-access-key`）と**ローテーション手順** | `docs/bedrock-access.md`
+> 3〜4 章」「IAM ユーザーと権限、費用ガード | `terraform/bedrock.tf` / `terraform/bedrock-guard.tf`」、続けて
+> 「**投入の前に `terraform apply` が済んでいる必要があります。** 鍵を発行する相手（`game-forge-bedrock-invoker`）も、
+> 費用ガードの層 2 / 層 3 も、宣言側が作ります。」だった。**#160 で鍵もユーザーも無くなった**（2026-09-15 に、
+> 本番の IAM に `game-forge-bedrock-invoker` が無いことを確かめた）。`docs/bedrock-access.md` 3〜4 章は
+> 「#160 より前の手順（戻すときだけ）」として残してある。
 
 > **この記述は誤りでした（2026-08-28 に訂正）。旧記述は下に残します。**
 >
@@ -248,8 +257,9 @@ Pages のシークレットと IAM の両方から消えていることを確か
 
 **#160 で用途が変わりました。** 生成の本体がオーケストレータ Lambda の中で走るように
 なったため、エッジはビルド関数を直接呼びません。この鍵にできるのは
-**「オーケストレータへジョブを 1 回投げること」だけ**です
-（`src/orchestrator/start-job.ts` / `terraform/build-invoker.tf`）。
+**「オーケストレータへジョブを 1 回投げること」と、OGP 撮影関数・アイコン変換関数を呼ぶことだけ**です
+（`src/orchestrator/start-job.ts` / `src/ogp-client.ts` / `src/avatar-client.ts`。許可は `terraform/build-invoker.tf` /
+`terraform/ogp-function.tf` / `terraform/avatar-function.tf`）。
 
 **名前は `BUILD_AWS_*` のままにしてあります。** 改名はローテーション手順・雛形・型・
 文書へ同時に波及するのに対し、得られるのは綴りの気分だけだからです。`BUILD_` が
@@ -262,24 +272,35 @@ npx wrangler pages secret put BUILD_AWS_ACCESS_KEY_ID --project-name game-forge
 npx wrangler pages secret put BUILD_AWS_SECRET_ACCESS_KEY --project-name game-forge
 ```
 
-**名前の正本は `src/build-client.ts` の `BUILD_SECRET_NAMES` です。** ここへ書き写した
-綴りが食い違うと、`BuildNotConfigured`（`kind='config'`）で呼び出しの手前で落ちます。
+**名前の正本は `src/build-client.ts` の `BUILD_SECRET_NAMES` です。** エッジが投げ込みに要求する
+`ORCHESTRATOR_SECRET_NAMES`（`src/orchestrator/start-job.ts`）も同じ 3 つで、ここへ書き写した綴りが
+食い違うと、`OrchestratorNotConfigured` で呼び出しの手前で落ちます。
 
 **`BUILD_AWS_SESSION_TOKEN` は本番では登録しません**（長命キーを置くため）。
 **`BUILD_FUNCTION_NAME` と `ORCHESTRATOR_FUNCTION_NAME` はシークレットではありません** —
 `wrangler.toml` が宣言します。**`[vars]` と `[env.production.vars]` / `[env.preview.vars]` の 3 か所すべてに
 書きます**（Pages の名前付き環境は `vars` を継承せず、省くとバインディングごと消えるため。
-この文書の 3 章と `src/build-client.ts` の説明が正本です）。
+この文書の 3 章と `src/build-client.ts` の説明が正本です）。**エッジが呼ぶ相手は `ORCHESTRATOR_FUNCTION_NAME`** で、
+`BUILD_FUNCTION_NAME` はエッジの本番経路では読まれません（`docs/build-invocation.md` 2 章）。
 
 | 何 | 正本 |
 |---|---|
 | **どのシークレットを、どのプロジェクトへ入れるか**（上のコマンド） | この文書 |
 | **鍵の発行とローテーション手順** | `docs/build-invocation.md` 3 章 |
-| IAM ユーザーと権限（`lambda:InvokeFunction` を関数 1 つに限定） | `terraform/build-invoker.tf` |
+| IAM ユーザーと権限（`lambda:InvokeFunction` を関数 1 つずつに限ったインラインポリシー 3 本） | `terraform/build-invoker.tf`（オーケストレータ）/ `terraform/ogp-function.tf` / `terraform/avatar-function.tf` |
 
 **`lambda:*` は与えていません。** それは `UpdateFunctionCode` を含み、**攻撃者が制御しうる
 コードをコンパイルする関数の中身を差し替えられます**（`terraform/build-invoker.tf`）。
-許しているのは `lambda:InvokeFunction` を対象 1 つ（オーケストレータ）に限った形です。
+許しているのは `lambda:InvokeFunction` を、ポリシーごとに対象 1 つ（オーケストレータ・OGP 撮影関数・アイコン変換関数）に
+限った形です。**ビルド関数への許可はありません。** 2026-09-15 に本番の IAM で、鍵が 1 本（Active）であることと、
+インラインポリシーが `build-invoke` / `ogp-invoke` / `avatar-invoke` の 3 本であることを確かめました。
+
+> **#570 注記（2026-09-15）。この節は OGP 撮影（#26）とアイコン変換の許可が同じユーザーへ足される前の書き方のままでした。
+> 旧記述はこの注記に残します。** 「この鍵にできるのは **「オーケストレータへジョブを 1 回投げること」だけ**です
+> （`src/orchestrator/start-job.ts` / `terraform/build-invoker.tf`）」、表は「IAM ユーザーと権限（`lambda:InvokeFunction` を
+> 関数 1 つに限定） | `terraform/build-invoker.tf`」、末尾は「許しているのは `lambda:InvokeFunction` を対象 1 つ
+> （オーケストレータ）に限った形です。」、名前の正本の段落は「ここへ書き写した綴りが食い違うと、`BuildNotConfigured`
+> （`kind='config'`）で呼び出しの手前で落ちます。」でした。
 
 **#160 より前は Bedrock 用と 2 組ありました。** まとめると鍵 1 本の漏洩で生成とビルドが
 同時に開くため分けていたもので、**Bedrock 側は組ごと消えました**（上記）。

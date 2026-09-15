@@ -466,7 +466,8 @@ aws sqs receive-message --queue-url "$QUEUE" --max-number-of-messages 10 \
 1. `src/generate.ts` の `startJob` を `runJobInline` へ
 2. `src/work-page.ts` の `GENERATION_IS_SYNCHRONOUS` を `true` へ
    （**忘れるとテストが落ちる。** `test/work-page.test.ts` が両者を照合している）
-3. Pages のシークレットへ `BEDROCK_AWS_*` を入れ直す
+3. Pages のシークレットへ `BEDROCK_AWS_*` を入れ直す（鍵の発行と投入は `docs/bedrock-access.md` の
+   「3. アクセスキーの発行（#160 より前の手順。戻すときだけ）」と 4 章。IAM ユーザーの宣言を先に戻す）
 4. `terraform/build-invoker.tf` の `build_invoke_resources` をビルド関数へ戻し、
    Bedrock を呼ぶプリンシパルと費用ガードの停止対象も戻す
 

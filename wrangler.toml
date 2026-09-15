@@ -21,8 +21,14 @@ compatibility_date = "2026-08-01"
 # `*.localtest.me` は公開 DNS が 127.0.0.1 を返すワイルドカードで、hosts ファイルの
 # 編集を要しない。`localtest.me` は PSL の public suffix ではないため登録可能ドメイン
 # （eTLD+1）は `localtest.me` であり、下の 2 つは **別オリジン・同一サイト**になる。
-# これは本番（`game-forge.ojos.jp` と `sandbox.game-forge.ojos.jp` が eTLD+1
+# これは本番（`app.game-forge.ojos.jp` と `sandbox.game-forge.ojos.jp` が eTLD+1
 # `ojos.jp` の下で同一サイト）と同じ関係で、7.2 の検証に必要な構造を再現する。
+# **再現しているのは「別オリジン・同一サイト」であって、ホスト名の親子関係ではない。**
+# ローカルの `sandbox.` はアプリ用ホスト `game-forge.localtest.me` の**子**だが、本番では
+# `app.` と `sandbox.` が `game-forge.ojos.jp` の下で**兄弟**である（本番のアプリ用ホストに
+# `app.` が付くのは #89 の DNS の制約。`[env.production.vars]` の注記）。
+# （#570 注記 2026-09-15: この段落の本番のアプリ用ホストは `game-forge.ojos.jp` と書いていた。
+# #89 より前の値である。）
 [vars]
 APP_HOST = "game-forge.localtest.me"
 SANDBOX_HOST = "sandbox.game-forge.localtest.me"
@@ -33,9 +39,13 @@ SANDBOX_HOST = "sandbox.game-forge.localtest.me"
 # **admin 側は独立にログインする**（`docs/admin-host.md`）。
 #
 # **ローカルでも `.localtest.me` の下に置く。** `*.localtest.me` は公開 DNS が 127.0.0.1 を
-# 返すので、hosts ファイルを触らずに 3 ホストが立つ。app と兄弟の関係にしてあるのは、
-# 本番（`admin.` と `app.` が `game-forge.ojos.jp` の下で兄弟）と同じ構造を再現するため
-# である——**同一サイトなので、`__Host-` が要る理由はここでも変わらない。**
+# 返すので、hosts ファイルを触らずに 3 ホストが立つ。**ローカルの admin はアプリ用ホスト
+# `game-forge.localtest.me` の子である**（本番では `admin.` と `app.` が `game-forge.ojos.jp` の
+# 下で兄弟）。親子と兄弟の違いはあるが、**別オリジン・同一サイトという関係は本番と同じ**で、
+# `__Host-` の cookie はホスト名ちょうどにしか付かないので、子のホストへ漏れることもない
+# ——**同一サイトなので、`__Host-` が要る理由はここでも変わらない。**
+# （#570 注記 2026-09-15: この段落は「app と兄弟の関係にしてあるのは、本番（`admin.` と `app.` が
+# `game-forge.ojos.jp` の下で兄弟）と同じ構造を再現するためである」と書いていたが、値は子である。）
 ADMIN_HOST = "admin.game-forge.localtest.me"
 # どの生成モデルで生成するか（確定5 / 4.1 / #83）。
 #
@@ -51,16 +61,23 @@ GENERATION_MODEL = "sonnet-4-6"
 #
 # **シークレットではないので `[vars]` に置く。** 呼ぶ相手が誰かは秘密ではなく構成で、
 # `.dev.vars` へ置くと本番がどの関数を叩いているかが宣言から読めなくなる
-# （`GENERATION_MODEL` と同じ扱い）。**資格情報のほうは `.dev.vars` にある**
-# （`BUILD_AWS_*`）。
+# （`GENERATION_MODEL` と同じ扱い）。
 #
 # 値の正本は `terraform/build-function.tf` の `local.build_function_name` である。
 # ここはその写しなので、宣言を変えたら追随させること（`docs/build-invocation.md`）。
 #
-# **ローカルにも同じ値を置く。** 9.2 のとおり Dev アカウントに Lambda は無く、
-# 別名の開発用関数が存在しない。ローカルでこの経路が動くかどうかは、`.dev.vars` に
-# 本番アカウントの資格情報を入れたかどうかで決まる（入れなければ設定不足として
-# 呼び出しの手前で落ちる。確定20 が受け入れた「本番構成をローカルで検証できない」）。
+# **#160 以降、エッジ（ローカルを含む）はビルド関数を呼ばない。** 呼ぶのはオーケストレータで、
+# 宛先はオーケストレータの環境変数 `BUILD_FUNCTION_NAME`（`terraform/orchestrator.tf` が宣言から
+# 入れる）である。**ここにある値をエッジの本番経路は読まない**——読むのは同期実装
+# （`src/generate.ts` の `runJobInline` から呼ばれる `createLambdaBuild`）だけで、`runJobInline` は
+# どの環境にも結線されていない。エッジの鍵（`BUILD_AWS_*`）にもビルド関数を呼ぶ許可は無い
+# （`docs/build-invocation.md` 2・3 章）。値を残すかどうかは #570 では変えていない。
+#
+# **ローカルにも同じ値を置く**（9.2 のとおり Dev アカウントに Lambda は無く、別名の開発用関数が存在しない）。
+# （#570 注記 2026-09-15: この段落は「ローカルでこの経路が動くかどうかは、`.dev.vars` に本番アカウントの
+# 資格情報を入れたかどうかで決まる（入れなければ設定不足として呼び出しの手前で落ちる。確定20 が受け入れた
+# 『本番構成をローカルで検証できない』）」と書き、資格情報を「`.dev.vars` にある（`BUILD_AWS_*`）」としていた。
+# エッジがビルド関数を直接呼んでいた #160 より前の書き方である。）
 BUILD_FUNCTION_NAME = "game-forge-build"
 # オーケストレータ（AWS Lambda）の関数名（3.3-2.6 / #160）。
 #

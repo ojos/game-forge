@@ -4,6 +4,7 @@ import { ADMIN_OPEN_ROUTES, createAdminRoutes, handleAdminRequest } from '../src
 import { adminNotFound, resolveAdminUser } from '../src/admin/guard.js';
 import { ADMIN_HOME_PATH } from '../src/admin-paths.js';
 import { CALLBACK_PATH, LOGIN_PATH, LOGOUT_PATH } from '../src/auth/google.js';
+import { ROBOTS_PATH } from '../src/robots.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { applySchema } from './helpers/schema.js';
@@ -15,7 +16,7 @@ import { applySchema } from './helpers/schema.js';
  * 境界（この issue が決めたこと）
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **OAuth の 3 つ（メソッドとパスの組）は未ログインで通し、それ以外はすべて 404。**
+ * **OAuth の 3 つと `GET /robots.txt`（メソッドとパスの組）は未ログインで通し、それ以外はすべて 404。**
  * 正本は `src/admin/routes.ts` の `ADMIN_OPEN_ROUTES` で、このファイルはそれを
  * **経路表と突き合わせる**。4 方向から見る。
  *
@@ -180,15 +181,21 @@ function isOpen(method: string, path: string): boolean {
 }
 
 describe('守る経路の境界（2.4.2 / #356）', () => {
-  it('未ログインで通すのは OAuth の 3 つだけである（綴りもメソッドも実装の定数から取る）', () => {
+  it('未ログインで通すのは OAuth の 3 つと robots.txt だけである（綴りもメソッドも実装の定数から取る）', () => {
     // **一覧をここへ書き並べない。** `src/auth/google.ts` の定数と突き合わせるので、
     // ログインのパスを変えれば必ずどちらかが赤くなる。**メソッドまで固定する**
     // ——パスだけで開けると、メソッド違いが経路表へ届いて 405 を漏らす（#359）。
+    //
+    // **`GET /robots.txt` は #594 で 4 つ目として開いた。** クローラはログインしないので、
+    // 閉じたままでは「近寄るな」を言う相手に言えない。**開くことで漏れるのは「全面拒否で
+    // ある」ことだけ**で、画面の綴りも機能も漏れない。**この検査は、開いた口が 4 つから
+    // 黙って増えることを止める**——増やすなら、ここへ 1 行足して理由を書くことになる。
     expect([...ADMIN_OPEN_ROUTES].sort((a, b) => a.path.localeCompare(b.path))).toEqual(
       [
         { method: 'GET', path: CALLBACK_PATH },
         { method: 'GET', path: LOGIN_PATH },
         { method: 'POST', path: LOGOUT_PATH },
+        { method: 'GET', path: ROBOTS_PATH },
       ].sort((a, b) => a.path.localeCompare(b.path)),
     );
   });

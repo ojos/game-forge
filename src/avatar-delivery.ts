@@ -47,6 +47,7 @@ import {
   AVATAR_VERSION_QUERY,
   avatarObjectKey,
 } from './avatar-paths.js';
+import { ROBOTS_TAG_HEADER, ROBOTS_TAG_NOINDEX } from './robots.js';
 import { sandboxCsp } from './sandbox-csp.js';
 
 /** この経路が受け付けるメソッド（`src/sandbox-delivery.ts` と同じ）。 */
@@ -100,6 +101,8 @@ export function avatarUserIdFromPath(pathname: string): string | null {
  */
 function avatarHeaders(extra: Record<string, string>): Headers {
   return new Headers({
+    // **索引に載せない**（#594）。利用者が上げた画像であり、画像検索に並ぶ理由が無い。
+    [ROBOTS_TAG_HEADER]: ROBOTS_TAG_NOINDEX,
     // **画像の応答にも同じ CSP を付ける**（モジュール冒頭）。取得も埋め込みも許さない。
     'content-security-policy': sandboxCsp({ scriptUrl: null, connectUrl: null, frameAncestorOrigin: null }),
     'x-content-type-options': 'nosniff',

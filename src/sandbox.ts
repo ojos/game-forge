@@ -29,6 +29,7 @@
  */
 import { AVATAR_PATH_PREFIX } from './avatar-paths.js';
 import { deliverAvatar, isAvatarPath } from './avatar-delivery.js';
+import { ROBOTS_PATH, sandboxRobotsResponse } from './robots.js';
 import { SANDBOX_DELIVERY_PREFIXES, deliverSandboxRequest } from './sandbox-delivery.js';
 
 /**
@@ -48,7 +49,13 @@ export const SANDBOX_PATH_PREFIXES: readonly string[] = [...SANDBOX_DELIVERY_PRE
  * @returns 配信レスポンス（CSP `sandbox` ヘッダ付き）
  */
 export async function handleSandboxRequest(request: Request, env: Env): Promise<Response> {
-  if (isAvatarPath(new URL(request.url).pathname)) {
+  const pathname = new URL(request.url).pathname;
+  // クローラへの意思表示（#594）。**配信の振り分けより先に見る**——`parseSandboxPath` は
+  // `/p/` `/g/` で始まらない綴りを 404 にするので、後ろに置くと届かない。
+  if (pathname === ROBOTS_PATH) {
+    return sandboxRobotsResponse();
+  }
+  if (isAvatarPath(pathname)) {
     return await deliverAvatar(request, env);
   }
   return await deliverSandboxRequest(request, env);

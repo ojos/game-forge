@@ -150,6 +150,7 @@ import { ACCOUNT_PROFILE_PATH, BIO_FIELD, PROFILE_LINK_FIELD } from './profile-p
 import type { Route } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
+import { NOT_WITHDRAWN_SQL } from './withdrawal-sql.js';
 import { authorPagePath } from './users-page-paths.js';
 
 /**
@@ -328,7 +329,12 @@ export async function changeDisplayName(
 ): Promise<DisplayNameChange> {
   // **条件の綴りを 1 つにする**（`src/games.ts` の `renameGame` と同じ理由）。履歴の文と
   // UPDATE が同じ条件を見るので、**間隔で断った要求では履歴も 0 行になる**（#405）。
-  const conditions = 'id = ? and (display_name_set_at is null or display_name_set_at <= ?)';
+  // **退会した行は書き換えない**（#518 の PR #589 の Copilot の指摘。`src/withdrawal-sql.ts`）。
+  // 入口の `resolveSessionUser` を通った後に別のタブで退会が確定すると、この 2 文が匿名化した
+  // 表示名を戻し、消したはずの履歴を 1 行積む。**履歴の INSERT と UPDATE が同じ綴りを見る**ので、
+  // ここへ 1 語足せば両方に効く。
+  const conditions =
+    `id = ? and ${NOT_WITHDRAWN_SQL} and (display_name_set_at is null or display_name_set_at <= ?)`;
   const bindings = [userId, nowSeconds - DISPLAY_NAME_CHANGE_INTERVAL_SECONDS] as const;
 
   const results = await db.batch([
@@ -1069,14 +1075,17 @@ export async function changeForkNoticePreference(
   const result = receive
     ? await db
         .prepare(
+          // **退会した行は書き換えない**（{@link changeDisplayName} と同じ。`src/withdrawal-sql.ts`）。
           `update users set fork_notice_muted_at = null
-            where id = ? and fork_notice_muted_at is not null and fork_notice_muted_at <= ?`,
+            where id = ? and ${NOT_WITHDRAWN_SQL}
+              and fork_notice_muted_at is not null and fork_notice_muted_at <= ?`,
         )
         .bind(userId, nowSeconds - FORK_NOTICE_UNMUTE_INTERVAL_SECONDS)
         .run()
     : await db
         .prepare(
-          'update users set fork_notice_muted_at = ? where id = ? and fork_notice_muted_at is null',
+          `update users set fork_notice_muted_at = ?
+            where id = ? and ${NOT_WITHDRAWN_SQL} and fork_notice_muted_at is null`,
         )
         .bind(nowSeconds, userId)
         .run();

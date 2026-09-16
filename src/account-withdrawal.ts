@@ -38,6 +38,12 @@
  * アカウントでは新しい招待が要る）。**誰が開いても同じ静的な画面**にし、「あなたは退会しました」
  * とは書かない（誰の状態も名乗らない）。
  *
+ * **ヘッダも固定の未ログインで描く**（`resolveSiteViewer` を呼ばない。PR #589 の Copilot の指摘）。
+ * 呼ぶと、**cookie を持つ要求だけ `users` を 1 行読み、ヘッダの出し分けとアイコンの URL がその人の
+ * ものになる**——「誰が開いても同じ静的な画面」でなくなり、D1 の不調がこの画面へ波及する。
+ * **退会した直後に開く画面でヘッダに古い自分が出るのは、いちばん紛らわしい**（cookie は応答で
+ * 消しているが、`Set-Cookie` を落とすブラウザの拡張や、別のタブから開いた場合に残りうる）。
+ *
  * ══════════════════════════════════════════════════════════════════════════════
  * CSRF と JavaScript
  * ══════════════════════════════════════════════════════════════════════════════
@@ -56,7 +62,7 @@ import { AVATAR_HISTORY_RETENTION_DAYS } from './avatar.js';
 import { FAQ_PATH, PRIVACY_PATH } from './legal-paths.js';
 import { HANDLE_RESERVATION_DAYS } from './handle.js';
 import type { SiteViewer } from './html.js';
-import { escapeHtml, headerAvatarUrl, resolveSiteViewer, siteHead, siteViewerAt } from './html.js';
+import { escapeHtml, headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
 import { siteFooter } from './legal.js';
 import { HOME_PATH } from './paths.js';
 import type { Route } from './routes.js';
@@ -199,6 +205,10 @@ ${siteFooter()}`;
  *
  * **誰の状態も名乗らない**（モジュール冒頭）。ログインへの導線は置かない——退会した人が
  * そこを押しても、同じ Google アカウントでは「招待コードが必要です」としか出ない。
+ *
+ * **渡す `viewer` は固定の未ログインである**（経路が `siteViewerAt(..., false, null)` を作る）。
+ * 引数で受けるのは、画面を組む関数が外枠の状態を持たない規律（`src/work-delete.ts` と同じ）を
+ * 保つためで、**ここへ D1 を読む値を渡さないこと。**
  *
  * @param viewer いま見ている人の状態
  * @returns HTML
@@ -354,9 +364,8 @@ export function createWithdrawalRoutes(
     {
       method: 'GET',
       path: ACCOUNT_WITHDRAWN_PATH,
-      // **ログインを要求しない**（モジュール冒頭）。ヘッダの出し分けだけを見る。
-      handler: async (request, env) =>
-        html(renderWithdrawnPage(await resolveSiteViewer(request, env))),
+      // **ログインを要求せず、D1 も読まない**（モジュール冒頭）。ヘッダは固定の未ログインで描く。
+      handler: () => html(renderWithdrawnPage(siteViewerAt(ACCOUNT_WITHDRAWN_PATH, false, null))),
     },
     {
       method: 'POST',

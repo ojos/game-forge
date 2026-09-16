@@ -16,6 +16,15 @@ import type { Route } from '../src/routes.js';
 import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, buildSessionCookie, signSession } from '../src/session.js';
 import { authorPagePath } from '../src/users-page-paths.js';
+import { AVATAR_LOCK_SECONDS, acquireAvatarLock, saveAvatar } from '../src/avatar.js';
+import { avatarObjectKey } from '../src/avatar-paths.js';
+import { DISPLAY_NAME_CHANGE_INTERVAL_SECONDS, changeDisplayName } from '../src/account.js';
+import { changeProfile } from '../src/profile.js';
+import { changeHandle } from '../src/handle.js';
+import { changeForkNoticePreference } from '../src/account.js';
+import { runWithdrawalPurgeStep } from '../src/withdrawal-purge.js';
+import { MemoryPurgeBackoff } from '../workers/cleanup/src/hub.js';
+import { NOT_WITHDRAWN_SQL } from '../src/withdrawal-sql.js';
 import { WITHDRAWN_DISPLAY_NAME } from '../src/withdrawal.js';
 import { applySchema } from './helpers/schema.js';
 import { pageBodyOf } from './helpers/site-shell.js';
@@ -267,6 +276,35 @@ describe('確認画面（GET /account/withdraw）', () => {
 });
 
 describe('完了画面（GET /account/withdrawn）', () => {
+  it('D1 を読まず、cookie を持つ要求でもヘッダは未ログインである（PR #589 の Copilot の指摘 5）', async () => {
+    // **誰が開いても同じ静的な画面である**（`src/account-withdrawal.ts` の冒頭）。
+    // `resolveSiteViewer` を呼ぶと cookie 付きの要求だけ `users` を読み、ヘッダがその人のものに
+    // なる——**退会した直後に開く画面で、ヘッダに古い自分が出るのはいちばん紛らわしい。**
+    // **D1 を壊して確かめる**（`test/privacy.test.ts` と同じ形。読んでいれば 500 になる）。
+    const user = await seedUser();
+    const broken = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('D1 に触れた');
+        },
+      },
+    );
+    const response = await dispatch(
+      routes,
+      new Request(`${APP_ORIGIN}${ACCOUNT_WITHDRAWN_PATH}`, {
+        headers: { accept: 'text/html', cookie: user.cookie },
+      }),
+      { ...testEnv(), DB: broken } as unknown as Env,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    const header = /<header class="gf-header">[\s\S]*?<\/header>/u.exec(body);
+    expect(header, 'ヘッダが無い（検査が空振りする）').not.toBeNull();
+    expect(header![0], '未ログインのヘッダで描く').toContain('>ログイン</a>');
+    expect(header![0]).not.toContain(`href="${ACCOUNT_DETAILS_PATH}"`);
+  });
+
   it('未ログインで開ける（退会の応答が cookie を消した後に開く画面である）', async () => {
     const response = await call('GET', ACCOUNT_WITHDRAWN_PATH, null);
     expect(response.status).toBe(200);
@@ -502,5 +540,189 @@ describe('退会したら、同じ cookie でもう書き込めない（#518 の
       .run();
     expect((await call('GET', authorPagePath(user.id), null)).status).toBe(404);
     expect((await call('GET', handlePagePath(user.handle), null)).status).toBe(404);
+  });
+});
+
+describe('入口を通った後に退会が確定しても、匿名化した行は戻らない（PR #589 の Copilot の指摘 1）', () => {
+  /**
+   * 「入口を通った要求」を作る。
+   *
+   * **`resolveSessionUser` は要求ごとに 1 回しか呼ばれない。** その後に別のタブで退会が確定する
+   * 窓を、**判定を通した後で退会させる**ことで作る（実際に 2 本の要求を並べなくても、書き込みの
+   * 関数を直に呼べば同じ状態になる）。
+   *
+   * @returns 退会が確定した利用者
+   */
+  async function withdrawnUser(): Promise<SeededUser> {
+    const user = await seedUser();
+    expect((await withdraw(user)).status).toBe(303);
+    return user;
+  }
+
+  /**
+   * `users` の 1 行を JSON で読む。
+   *
+   * @param userId 利用者の id
+   * @returns 行の JSON
+   */
+  async function snapshot(userId: string): Promise<string> {
+    return await rowJsonOf(userId);
+  }
+
+  it('表示名の変更が 1 行も書かず、履歴も積まれない', async () => {
+    const user = await withdrawnUser();
+    const before = await snapshot(user.id);
+    const now = Math.floor(Date.now() / 1000) + DISPLAY_NAME_CHANGE_INTERVAL_SECONDS * 10;
+
+    const changed = await changeDisplayName(env.DB, user.id, 'もとの名前に戻す', now);
+    expect(changed.ok).toBe(false);
+    expect(await snapshot(user.id), '1 列も変わらない').toBe(before);
+    const history = await env.DB.prepare(
+      'select count(*) as n from display_name_changes where user_id = ?',
+    )
+      .bind(user.id)
+      .first<{ n: number }>();
+    // **退会で消してある**（運営の記録が無い利用者なので 0 行のまま）。
+    expect(history?.n).toBe(0);
+  });
+
+  it('自己紹介と外部リンクの変更が 1 行も書かず、履歴も積まれない', async () => {
+    const user = await withdrawnUser();
+    const before = await snapshot(user.id);
+    const now = Math.floor(Date.now() / 1000) + 10_000;
+
+    const changed = await changeProfile(
+      env.DB,
+      user.id,
+      { bio: '戻ってきた自己紹介', links: ['https://example.com/back'] },
+      now,
+    );
+    expect(changed.ok).toBe(false);
+    expect(await snapshot(user.id), '1 列も変わらない').toBe(before);
+    const history = await env.DB.prepare('select count(*) as n from profile_changes where user_id = ?')
+      .bind(user.id)
+      .first<{ n: number }>();
+    expect(history?.n).toBe(0);
+  });
+
+  it('メール配信の設定が 1 行も書かない', async () => {
+    const user = await withdrawnUser();
+    const before = await snapshot(user.id);
+    const now = Math.floor(Date.now() / 1000) + 10_000;
+
+    // **戻り値ではなく、行を見る。** `changeForkNoticePreference` は「止める側の 0 行」を
+    // 「既に止めている」として成功で返す（`src/account.ts`）。**この口は退会した人には開いて
+    // いない**（`/account/mail` は `resolveSessionUser` を通る）ので、文言の分岐は害にならない。
+    // 見たいのは**書かれていないこと**である。
+    await changeForkNoticePreference(env.DB, user.id, false, now);
+    await changeForkNoticePreference(env.DB, user.id, true, now);
+    expect(await snapshot(user.id), '1 列も変わらない').toBe(before);
+  });
+
+  it('ハンドル名を取り直せない（90 日の予約が横取りされない）', async () => {
+    const user = await withdrawnUser();
+    const before = await snapshot(user.id);
+    const now = Math.floor(Date.now() / 1000) + 10_000;
+
+    const changed = await changeHandle(env.DB, user.id, `${user.handle.slice(0, 8)}zz`, now);
+    expect(changed.ok).toBe(false);
+    expect(await snapshot(user.id), '1 列も変わらない').toBe(before);
+
+    // **手放した行はそのまま予約のままである**（`released_at` が入ったきり）。
+    const rows = await env.DB.prepare(
+      `select handle, released_at from ${HANDLES_TABLE} where user_id = ?`,
+    )
+      .bind(user.id)
+      .all<{ handle: string; released_at: number | null }>();
+    expect(rows.results).toHaveLength(1);
+    expect(rows.results[0]!.handle).toBe(user.handle);
+    expect(rows.results[0]!.released_at, '予約へ移ったまま').not.toBeNull();
+    const history = await env.DB.prepare('select count(*) as n from handle_changes where user_id = ?')
+      .bind(user.id)
+      .first<{ n: number }>();
+    expect(history?.n).toBe(0);
+  });
+
+  it('掴んだだけ（確定の前）でも書けない', async () => {
+    // **判定は `withdrawal_started_at`**（`withdrawn_at` ではない）。掴みから確定までの
+    // 数百ミリ秒も書かせない。
+    const user = await seedUser();
+    await env.DB.prepare('update users set withdrawal_started_at = ? where id = ?')
+      .bind(recentlyStarted(), user.id)
+      .run();
+    const before = await rowJsonOf(user.id);
+    const now = Math.floor(Date.now() / 1000) + 10_000;
+
+    expect((await changeDisplayName(env.DB, user.id, '別の名前', now)).ok).toBe(false);
+    expect((await changeProfile(env.DB, user.id, { bio: 'x', links: [] }, now)).ok).toBe(false);
+    await changeForkNoticePreference(env.DB, user.id, false, now);
+    expect(await rowJsonOf(user.id), '1 列も変わらない').toBe(before);
+  });
+
+  it('条件の綴りは、書き込みの 4 か所が同じ 1 つを読んでいる', () => {
+    // **書き写さない**（shared-ai-rules 12 章）。葉の定数が変わったら 4 か所が同時に追随する。
+    expect(NOT_WITHDRAWN_SQL).toBe('withdrawal_started_at is null');
+  });
+});
+
+describe('退会の最中のアイコンの保存（PR #589 の Copilot の指摘 2 の実測）', () => {
+  it('アイコンの排他が生きている間は、退会そのものを 409 で断る', async () => {
+    // **排他の持ち時間（60 秒）が、書き手と退会のあいだの床である。** 退会が排他を奪えるのは
+    // 取ってから AVATAR_LOCK_SECONDS たった後だけで、それより前は断る。
+    const user = await seedUser();
+    const at = Math.floor(Date.now() / 1000);
+    const locked = await acquireAvatarLock(env.DB, user.id, at);
+    expect(locked.ok).toBe(true);
+
+    const response = await withdraw(user);
+    expect(response.status).toBe(409);
+    expect(pageBodyOf(await response.text())).toContain(WITHDRAWAL_REFUSALS['avatar-saving'].heading);
+  });
+
+  it('排他を失った書き手は、R2 に 1 バイトも書かない', async () => {
+    // **`saveAvatar` は R2 へ書く直前に D1 で排他を確かめる**（`src/avatar.ts`）。退会が
+    // 排他を奪った後の書き込みは、そこで止まる——**これが孤児の窓を、
+    // 「確かめてから put するまでのあいだに 60 秒またぐ要求」だけに狭めている。**
+    const user = await seedUser();
+    const at = Math.floor(Date.now() / 1000);
+    const locked = await acquireAvatarLock(env.DB, user.id, at);
+    expect(locked.ok).toBe(true);
+    if (!locked.ok) {
+      return;
+    }
+
+    // 退会は 60 秒たってから排他を奪う。
+    expect((await withdraw(user)).status).toBe(409);
+    const stolen = await env.DB.prepare('update users set avatar_lock_at = ? where id = ?')
+      .bind(at - AVATAR_LOCK_SECONDS - 1, user.id)
+      .run();
+    expect((stolen.meta.changes ?? 0) > 0).toBe(true);
+    expect((await withdraw(user)).status).toBe(303);
+
+    // 遅れてきた書き手。**R2 には触らない。**
+    const saved = await saveAvatar(env as unknown as Env, locked.lock, new Uint8Array([1, 2, 3, 4]));
+    expect(saved.ok).toBe(false);
+    expect(await env.BUCKET.head(avatarObjectKey(user.id)), '現行のキーが作られていない').toBeNull();
+    const history = await env.BUCKET.list({ prefix: `avatars/history/${user.id}/` });
+    expect(history.objects, '写しも作られていない').toHaveLength(0);
+  });
+
+  it('アイコンの排他が残っている行には、完了の印が立たない', async () => {
+    // 完了の文の WHERE は `avatar_sha256 is null and avatar_lock_token is null` である
+    // （`src/withdrawal-purge.ts`）。**排他が残っていれば、後続の処理は完了にしない。**
+    const user = await seedUser();
+    expect((await withdraw(user)).status).toBe(303);
+    await env.DB.prepare('update users set avatar_lock_token = ?, avatar_lock_at = ? where id = ?')
+      .bind('someone-else', Math.floor(Date.now() / 1000), user.id)
+      .run();
+
+    const backoff = new MemoryPurgeBackoff();
+    for (let round = 0; round < 3; round++) {
+      await runWithdrawalPurgeStep(env, backoff, Math.floor(Date.now() / 1000) + round);
+    }
+    const row = await env.DB.prepare('select withdrawal_completed_at from users where id = ?')
+      .bind(user.id)
+      .first<{ withdrawal_completed_at: number | null }>();
+    expect(row?.withdrawal_completed_at, '排他が残る限り完了にしない').toBeNull();
   });
 });

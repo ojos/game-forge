@@ -45,6 +45,7 @@
 import { escapeHtml } from './html.js';
 import { inspectText } from './output-moderation.js';
 import { ACCOUNT_PROFILE_PATH, BIO_FIELD, PROFILE_LINK_FIELD } from './profile-paths.js';
+import { NOT_WITHDRAWN_SQL } from './withdrawal-sql.js';
 
 /**
  * 自己紹介の最大の長さ（**コードポイントで数える**）。
@@ -417,8 +418,10 @@ export async function changeProfile(
 ): Promise<ProfileChange> {
   const links = encodeProfileLinks(profile.links);
   // **条件の綴りを 1 つにする**（履歴の文と UPDATE が同じ行を見る）。
+  // **退会した行は書き換えない**（#518 の PR #589 の Copilot の指摘。`src/withdrawal-sql.ts`）。
+  // 履歴の INSERT と UPDATE が同じ綴りを見るので、ここへ 1 語足せば両方に効く。
   const conditions =
-    'id = ? and (bio <> ? or profile_links <> ?)' +
+    `id = ? and ${NOT_WITHDRAWN_SQL} and (bio <> ? or profile_links <> ?)` +
     ' and (profile_set_at is null or profile_set_at <= ?)';
   const bindings = [userId, profile.bio, links, nowSeconds - PROFILE_CHANGE_INTERVAL_SECONDS] as const;
 

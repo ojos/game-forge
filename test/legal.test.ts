@@ -557,7 +557,11 @@ describe('退会（#518 / M15-3）', () => {
     const { body } = await get(TERMS_PATH);
     const chapter = body.slice(body.indexOf('<h2>8. 退会</h2>'), body.indexOf('<h2>9. 免責</h2>'));
     expect(chapter, '退会の章が無い').not.toBe('');
-    expect(chapter).toContain('いつでも自分の意思で退会できます');
+    expect(chapter).toContain('自分の意思で退会できます');
+    // **「いつでも」と書かない**（PR #589 の Copilot の指摘 3）。実装は生成中・リフォージ中を
+    // 409 で断るので、規約だけが無条件に読めると食い違う。文言は `/privacy` と FAQ に揃える。
+    expect(chapter, '断る条件を書かずに「いつでも」と言わない').not.toContain('いつでも自分の意思で');
+    expect(chapter).toContain('生成中・リフォージ中の\n   作品があるあいだは退会できません');
     expect(chapter).toContain('利用者の作品はすべて取り下げたうえで削除されます');
     expect(chapter).toContain('退会は取り消せません');
     expect(chapter).toContain('新しい招待コードが必要');

@@ -42,7 +42,9 @@
  * ## 復旧は宣言に持たせない
  *
  * **自動で戻す経路をどこにも作らない。** Lambda に detach の実装は無く、実行ロールにも
- * iam:DetachUserPolicy を与えていない。復旧手順は docs/bedrock-access.md が持つ。
+ * iam:DetachRolePolicy を与えていない（#160 より前は iam:DetachUserPolicy と書いていた。
+ * 付ける先がユーザーからロールへ移ったので、与えていない動作の名前も変わる）。
+ * 復旧手順は docs/bedrock-access.md 5 章「復旧手順（手動。自動化しない）」が持つ。
  * 4.3 が「暴走の原因を調べる前に自動で戻すと、同じ暴走を繰り返す」としているため。
  *
  * ## Control Tower 配下であることの留意
@@ -200,23 +202,32 @@ data "aws_iam_policy_document" "bedrock_guard_assume" {
 }
 
 /**
- * Lambda の実行ロール。**iam:AttachUserPolicy だけを、対象を絞って与える。**
+ * Lambda の実行ロール。**iam:AttachRolePolicy だけを、対象を絞って与える**
+ * （#160 より前は iam:AttachUserPolicy だった。下の statement のコメントに経緯がある）。
  *
- * bedrock.tf のプリンシパルと同じ考え方である。IAM の広い権限を渡すと、ガードの
+ * orchestrator.tf のプリンシパルと同じ考え方である。IAM の広い権限を渡すと、ガードの
  * 実行ロールが乗っ取られたときに費用ガードそのものを外せてしまう。
  *
  * 条件で締めているのは 2 つ。
  *
- *   - **付けられる相手**は resources で game-forge-bedrock-invoker の 1 人だけ。
+ *   - **付けられる相手**は resources でオーケストレータの実行ロール
+ *     （`game-forge-orchestrator`）1 つだけ。**Bedrock を呼べるプリンシパルはこれだけで、
+ *     止める相手もこれだけである**（terraform/orchestrator.tf）。
  *   - **付けられるポリシー**は iam:PolicyARN 条件で Deny ポリシー 1 本だけ。
- *     これが無いと AdministratorAccess を付ける権限になる（AttachUserPolicy は
+ *     これが無いと AdministratorAccess を付ける権限になる（AttachRolePolicy は
  *     「どのポリシーを付けるか」を resources では絞れないため、条件キーで絞る）。
  *
  * **detach は与えない。** 復旧を自動化しないという 4.3 の決定を、運用の約束ではなく
  * 権限で担保する（shared-ai-rules.md 12 章「機構が結果そのものを生む」）。
+ *
+ * 関数側が読む対象の名前は環境変数 `TARGET_ROLE_NAME` で渡す
+ * （下記。terraform/lambda/bedrock-guard/index.py）。
  */
 data "aws_iam_policy_document" "bedrock_guard" {
   statement {
+    # sid の "Invoker" は #160 より前の綴り（当時は game-forge-bedrock-invoker という
+    # IAM ユーザーだった）。**改名しない**——sid を変えるとポリシー文書が変わり、
+    # コメントの更新だけのはずの apply に差分が出る。指す相手は下の resources が正本。
     sid    = "AttachHaltPolicyToInvoker"
     effect = "Allow"
     # **ロールに対して付ける**（#160）。Bedrock を呼ぶプリンシパルがエッジの IAM

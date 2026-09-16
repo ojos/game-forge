@@ -141,6 +141,20 @@ describe('3 つのホストが、それぞれ違うことを言う', () => {
     const res = await SELF.fetch(`${ADMIN_ORIGIN}${ROBOTS_PATH}`, { method: 'POST' });
     expect(res.status).toBe(404);
   });
+
+  it('どのホストも HEAD で返り、POST は受け付けない', async () => {
+    // **サンドボックスだけが素通りしていた**（経路表を持たないので、メソッドの判定も
+    // 自前で要る）。app は `dispatch` が 405 と `Allow` を返し、admin は存在を隠して 404。
+    // **3 ホストの振る舞いを 1 か所で固定する**——揃っていないことに次に気づく道が無い。
+    for (const origin of [APP_ORIGIN, SANDBOX_ORIGIN, ADMIN_ORIGIN]) {
+      expect((await SELF.fetch(`${origin}${ROBOTS_PATH}`, { method: 'HEAD' })).status, origin).toBe(200);
+    }
+    for (const origin of [APP_ORIGIN, SANDBOX_ORIGIN]) {
+      const res = await SELF.fetch(`${origin}${ROBOTS_PATH}`, { method: 'POST' });
+      expect(res.status, origin).toBe(405);
+      expect(res.headers.get('allow'), origin).toBe('GET, HEAD');
+    }
+  });
 });
 
 describe('app ホスト: 検索は許し、学習は拒む', () => {

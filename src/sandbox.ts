@@ -53,7 +53,7 @@ export async function handleSandboxRequest(request: Request, env: Env): Promise<
   // クローラへの意思表示（#594）。**配信の振り分けより先に見る**——`parseSandboxPath` は
   // `/p/` `/g/` で始まらない綴りを 404 にするので、後ろに置くと届かない。
   if (pathname === ROBOTS_PATH) {
-    return sandboxRobotsResponse();
+    return sandboxRobotsResponse(request);
   }
   if (isAvatarPath(pathname)) {
     return await deliverAvatar(request, env);

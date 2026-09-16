@@ -260,14 +260,38 @@ export const adminRobotsRoutes: readonly Route[] = [
 ];
 
 /**
+ * `robots.txt` が受け付けるメソッド。
+ *
+ * **読み取りしか無いので、これ以上増えない。** app ホストでは経路表が `method: 'GET'` の
+ * 1 行を持ち、`dispatch` が HEAD を畳んで 405 と `Allow` を返す（`src/routes.ts`）。
+ * **サンドボックス用ホストは経路表を持たない**ので、同じ判定をここで持つ。
+ *
+ * **`src/sandbox-delivery.ts` の `ALLOWED_METHODS` から import しない。** あちらはこの
+ * モジュールを import しているので、逆向きに取ると循環参照になる。**値が同じなのは
+ * 偶然ではなく、どちらも「読み取りしか無い経路」だからで、一方が変わっても他方が
+ * 追随すべき関係ではない。**
+ */
+const ROBOTS_METHODS = ['GET', 'HEAD'] as const;
+
+/**
  * サンドボックス用ホストの `robots.txt` の応答。
  *
  * **経路表ではなく関数である。** あちらは経路表を持たず、パスの接頭辞で振り分ける
- * （`src/sandbox.ts`）。
+ * （`src/sandbox.ts`）。**そのため、メソッドの判定もここが持つ**——持たないと、
+ * このホストだけ `POST /robots.txt` が 200 を返す（app は 405、admin は 404 になる。
+ * 実測で確かめた）。
  *
+ * @param request 受信したリクエスト
  * @returns レスポンス
  */
-export function sandboxRobotsResponse(): Response {
+export function sandboxRobotsResponse(request: Request): Response {
+  if (!(ROBOTS_METHODS as readonly string[]).includes(request.method)) {
+    const allow = ROBOTS_METHODS.join(', ');
+    return new Response(`この経路は ${allow} だけを受け付けます。\n`, {
+      status: 405,
+      headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', allow },
+    });
+  }
   return robotsResponse(
     renderDisallowAllRobotsTxt(
       '作品の実体を配るホストです。共有と検索の着地点は作品ページ（app 側）なので、ここは索引に載せません（仕様 5.4）。',

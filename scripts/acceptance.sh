@@ -337,6 +337,16 @@ if [[ -f package.json ]]; then
     echo "[acceptance] (node) scripts/check-likes-worker.sh"
     bash scripts/check-likes-worker.sh
   fi
+  # 退会の後続の処理の Worker の宣言（#518 / #586 / 仕様 3.7）。
+  #
+  # **`game-forge-cleanup` は R2 のバケット全体と D1 を消せる資格情報を持つ。** 公開の入口が
+  # 1 本でも開くと、外から成果物とアイコンを消せる経路になる。あわせて、**cron が宣言されて
+  # いること**（唯一の起こし方）と、**Pages がこの Worker を指していないこと**（#518 の J3）と、
+  # 保存先が Pages と同じであることを見る。理由はスクリプトの冒頭にある。
+  if [[ -f workers/cleanup/wrangler.toml ]]; then
+    echo "[acceptance] (node) scripts/check-cleanup-worker.sh"
+    bash scripts/check-cleanup-worker.sh
+  fi
   echo "[acceptance] (node) npm test"
   npm test
   # アイコンの再エンコード関数のテスト（#380）。**Node で走らせる**——sharp はネイティブのライブラリで、

@@ -462,6 +462,27 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bash scripts/deploy-likes.sh
 
+      # ── 退会の後続の処理の Worker を配る（#518 / #586 / 仕様 3.7）─────────────
+      #
+      # **Pages はこの Worker を指さない**（退会の口は D1 に状態を書くだけで、後続の処理は
+      # この Worker 自身の cron が起こす。#518 の J3）。**だから likes とは違い、順序そのものに
+      # 依存は無い。** それでも Pages の前に置くのは、**Worker を配る段を 1 か所に集めて、
+      # 段の読み方を 1 つに保つ**ためである（`scripts/check-cleanup-worker.sh` がこの並びを見る）。
+      #
+      # **マイグレーションの関門より後に置く。** 後続の処理は `users` の退会の 3 列（0045）を
+      # 読むので、未適用のまま配ると 5 分ごとに失敗し続ける（likes と同じ事情）。
+      #
+      # **毎回配る**（差分の有無で分けない）。配備は冪等で、cron は宣言から登録し直される。
+      # **配る前に公開の入口が無いことを確かめる**（`scripts/deploy-cleanup.sh` が
+      # `scripts/check-cleanup-worker.sh` を先に通す）——この Worker は R2 のバケット全体を
+      # 消せる資格情報を持つ。
+      - name: Deploy cleanup Worker (game-forge-cleanup)
+        if: steps.head-gate.outputs.deploy == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bash scripts/deploy-cleanup.sh
+
       - name: Deploy to Cloudflare Pages
         if: steps.head-gate.outputs.deploy == 'true'
         env:

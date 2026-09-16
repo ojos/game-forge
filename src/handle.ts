@@ -24,6 +24,7 @@
  */
 import type { Route } from './routes.js';
 import { HANDLE_MAX_LENGTH, HANDLE_MIN_LENGTH } from './handle-paths.js';
+import { NOT_WITHDRAWN_SQL } from './withdrawal-sql.js';
 
 /** 1 日の秒数。 */
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -254,9 +255,15 @@ export async function changeHandle(
   nowSeconds: number,
 ): Promise<HandleChange> {
   // **条件 G の綴りを 1 つにする**（`src/account.ts` の `changeDisplayName` と同じ理由）。
+  //
+  // **退会した行では 1 文も当たらない**（#518 の PR #589 の Copilot の指摘。`src/withdrawal-sql.ts`）。
+  // 入口の `resolveSessionUser` を通った後に別のタブで退会が確定すると、**退会が 90 日の予約へ移した
+  // ハンドル名を、通過済みの要求が取り直せてしまう**（履歴も 1 行積まれる）。**束縛が 1 つ増える**
+  // （末尾に利用者の id）。
   const guard = `not exists (select 1 from ${HANDLES_TABLE}
-                              where user_id = ? and released_at is null and (handle = ? or claimed_at > ?))`;
-  const guardBindings = [userId, handle, nowSeconds - HANDLE_RENAME_INTERVAL_SECONDS] as const;
+                              where user_id = ? and released_at is null and (handle = ? or claimed_at > ?))
+                 and exists (select 1 from users where id = ? and ${NOT_WITHDRAWN_SQL})`;
+  const guardBindings = [userId, handle, nowSeconds - HANDLE_RENAME_INTERVAL_SECONDS, userId] as const;
 
   let results: D1Result[];
   try {
@@ -279,11 +286,15 @@ export async function changeHandle(
         .bind(nowSeconds, userId, ...guardBindings),
       db
         .prepare(
+          // **4 番目にも退会の条件を置く。** ここだけは G を使わない（いま使っているハンドル名が
+          // 無いことだけを見る）ので、置かないと**退会でハンドル名を手放した行が、そのまま新しい
+          // 名前を取れてしまう**（1〜3 が 0 行でも、この文だけが当たる）。
           `insert into ${HANDLES_TABLE} (handle, user_id, claimed_at)
            select ?, ?, ?
-            where not exists (select 1 from ${HANDLES_TABLE} where user_id = ? and released_at is null)`,
+            where not exists (select 1 from ${HANDLES_TABLE} where user_id = ? and released_at is null)
+              and exists (select 1 from users where id = ? and ${NOT_WITHDRAWN_SQL})`,
         )
-        .bind(handle, userId, nowSeconds, userId),
+        .bind(handle, userId, nowSeconds, userId, userId),
     ]);
   } catch (error) {
     if (isHandleTaken(error)) {

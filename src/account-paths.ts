@@ -60,6 +60,41 @@ export const ACCOUNT_MAIL_PATH = '/account/mail';
  */
 export const ACCOUNT_HANDLE_PATH = '/account/handle';
 
+/**
+ * 退会の確認画面（#518 / 8.1。ログイン必須）。**アカウントのタブからだけ来る。**
+ *
+ * **`ACCOUNT_TABS` には入れない。** タブは行き来する場所で、退会は**1 回きりの、戻せない操作**
+ * である（`src/work-delete.ts` の削除の確認画面と同じ扱い——作品ページの下に置き、一覧には出さない）。
+ * 常に見える場所に「退会する」を並べると、押し間違いの面が 1 枚増えるだけになる。
+ *
+ * **`/account` の下にパスで置く。** パンくずは「トップ › 登録情報 › …」になり、外枠の検査
+ * （`test/page-shell.test.ts`）と幅の検査（`scripts/check-page-width.sh`）へ何も書き足さずに乗る。
+ *
+ * **管理者には 404 を返す**（#518 の constraints。導線も出さない）。
+ */
+export const ACCOUNT_WITHDRAW_PATH = '/account/withdraw';
+
+/**
+ * 退会の実行（API。#518）。
+ *
+ * **画面のパスと分ける**（{@link ACCOUNT_DISPLAY_NAME_PATH} と同じ判断）。**GET を持たない**
+ * ——退会は本文の無い POST で、確認画面から素のフォームで送る。
+ */
+export const ACCOUNT_WITHDRAW_API_PATH = '/api/account/withdraw';
+
+/**
+ * 退会の完了画面（#518。**ログインを要求しない**）。
+ *
+ * **要求しないのではなく、要求できない。** 退会の応答はセッションの cookie を消すので、
+ * 303 で送られた先はもう未ログインである。ログインを要求すると、**退会した直後の人が
+ * ログイン画面へ送られ、そこから戻れない**（同じ Google アカウントでは招待が要る）。
+ *
+ * **誰が開いても同じ静的な画面である**（D1 を読まない）。退会していない人が URL を直接
+ * 開いても中身は変わらない——**「あなたは退会しました」ではなく「退会の手続きが終わりました」**
+ * と書き、誰の状態も名乗らない。
+ */
+export const ACCOUNT_WITHDRAWN_PATH = '/account/withdrawn';
+
 /** 登録情報の画面のタブ 1 つ。 */
 export interface AccountTab {
   /** タブの行き先（経路表の GET の画面）。 */

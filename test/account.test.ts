@@ -16,6 +16,7 @@ import {
   ACCOUNT_MAIL_PATH,
   ACCOUNT_PATH,
   ACCOUNT_TABS,
+  ACCOUNT_WITHDRAW_PATH,
   DISPLAY_NAME_FIELD,
   FORK_NOTICE_FIELD,
   FORK_NOTICE_MUTE,
@@ -421,6 +422,18 @@ describe('登録情報の画面（GET /account）', () => {
     expect(detailsBody).toContain(`<time datetime="${toIsoTimestamp(createdAt)}">2026-09-11</time>`);
     expect(detailsBody).toContain('<meta name="robots" content="noindex">');
     expect(details.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('アカウントのタブの末尾に、退会の導線を副のボタンで置く（#518 / 8.1）', async () => {
+    const userId = await seedUser({ email: 'withdraw-link@example.com' });
+    const body = pageBodyOf(await (await openDetails(await cookieFor(userId))).text());
+    expect(body).toContain(`href="${ACCOUNT_WITHDRAW_PATH}"`);
+    // **戻せない操作を主のボタンにしない**（仕様 2.5.5 / #473）。
+    expect(body).toContain(`class="gf-button gf-button-secondary gf-button-sm" href="${ACCOUNT_WITHDRAW_PATH}"`);
+    // **導線はいちばん下に置く**（メールアドレスと登録日を読んだ後に来る）。
+    expect(body.indexOf(ACCOUNT_WITHDRAW_PATH)).toBeGreaterThan(body.indexOf('withdraw-link@example.com'));
+    // **タブには足さない**（一覧に並べると、押し間違いの面が 1 枚増える）。
+    expect(ACCOUNT_TABS.map((tab) => tab.path)).not.toContain(ACCOUNT_WITHDRAW_PATH);
   });
 
   it('メールアドレスは本人のものしか出ない', async () => {

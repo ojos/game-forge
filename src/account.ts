@@ -111,6 +111,7 @@ import {
   ACCOUNT_MAIL_PATH,
   ACCOUNT_PATH,
   ACCOUNT_TABS,
+  ACCOUNT_WITHDRAW_PATH,
   DISPLAY_NAME_FIELD,
   FORK_NOTICE_FIELD,
   FORK_NOTICE_MUTE,
@@ -149,6 +150,7 @@ import { ACCOUNT_PROFILE_PATH, BIO_FIELD, PROFILE_LINK_FIELD } from './profile-p
 import type { Route } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
+import { NOT_WITHDRAWN_SQL } from './withdrawal-sql.js';
 import { authorPagePath } from './users-page-paths.js';
 
 /**
@@ -327,7 +329,12 @@ export async function changeDisplayName(
 ): Promise<DisplayNameChange> {
   // **条件の綴りを 1 つにする**（`src/games.ts` の `renameGame` と同じ理由）。履歴の文と
   // UPDATE が同じ条件を見るので、**間隔で断った要求では履歴も 0 行になる**（#405）。
-  const conditions = 'id = ? and (display_name_set_at is null or display_name_set_at <= ?)';
+  // **退会した行は書き換えない**（#518 の PR #589 の Copilot の指摘。`src/withdrawal-sql.ts`）。
+  // 入口の `resolveSessionUser` を通った後に別のタブで退会が確定すると、この 2 文が匿名化した
+  // 表示名を戻し、消したはずの履歴を 1 行積む。**履歴の INSERT と UPDATE が同じ綴りを見る**ので、
+  // ここへ 1 語足せば両方に効く。
+  const conditions =
+    `id = ? and ${NOT_WITHDRAWN_SQL} and (display_name_set_at is null or display_name_set_at <= ?)`;
   const bindings = [userId, nowSeconds - DISPLAY_NAME_CHANGE_INTERVAL_SECONDS] as const;
 
   const results = await db.batch([
@@ -467,6 +474,18 @@ export interface AccountDetailsView {
   readonly createdAt: number;
   /** ヘッダのアバターの画像の URL（#380）。 */
   readonly headerAvatar: string | null;
+  /**
+   * 退会の導線を出すか（#518 / 8.1）。
+   *
+   * **管理者（`is_admin`）と運営フラグ（`is_operator`）の利用者には出さない。**
+   *
+   * - **管理者**は退会そのものを断る（`src/withdrawal.ts` の掴みの条件）。押しても 404 に
+   *   なる導線を置かない。先に D1 で権限を外す運用にする（#518 の constraints）
+   * - **運営フラグ**の利用者は公式サンプルの作者である。退会そのものは断らない（#518 の J7。
+   *   運営が自分の意思で退会できなくなるため）が、**導線は出さない**——公式サンプルが
+   *   「退会したユーザー」の作品になるのは、押し間違いで起きてよいことではない
+   */
+  readonly canWithdraw: boolean;
 }
 
 /**
@@ -620,6 +639,15 @@ export function renderAccountDetailsPage(view: AccountDetailsView): string {
   // **読めない日時では `<time>` ごと落とす**（`src/my-works.ts` と同じ扱い。`datetime=""` は不正）。
   const iso = toIsoTimestamp(view.createdAt);
   const created = iso === '' ? '不明' : `<time datetime="${iso}">${formatJstDate(view.createdAt)}</time>`;
+  // **退会の導線はいちばん下で、副のボタンにする**（#518 / 仕様 2.5.5。戻せない操作を主に
+  // しない）。**押した先は確認画面**で、そこを読んでからでないと退会できない。
+  const withdraw = view.canWithdraw
+    ? `<section class="gf-block gf-account-block" aria-labelledby="account-withdraw-heading">
+<h2 id="account-withdraw-heading">退会</h2>
+<p>このアカウントを退会できます。退会すると<strong>元に戻せず</strong>、あなたの作品はすべて削除されます。消えるものと残るものは、次の画面で確かめられます。</p>
+<p><a class="gf-button gf-button-secondary gf-button-sm" href="${ACCOUNT_WITHDRAW_PATH}">退会について確かめる</a></p>
+</section>`
+    : '';
   return accountShell({
     path: ACCOUNT_DETAILS_PATH,
     title: 'アカウント - Game Forge',
@@ -631,7 +659,8 @@ export function renderAccountDetailsPage(view: AccountDetailsView): string {
   <dd>${created}</dd>
 </dl>
 <p>メールアドレスはあなたにだけ表示しています。ほかの人には見えません。</p>
-<p>ログインには Google アカウントを使っています。メールアドレスは、ログインのたびに Google アカウントのものに合わせます。</p>`,
+<p>ログインには Google アカウントを使っています。メールアドレスは、ログインのたびに Google アカウントのものに合わせます。</p>
+${withdraw}`,
   });
 }
 
@@ -856,9 +885,13 @@ async function showAccountDetails(request: Request, env: Env): Promise<Response>
   if (!session.ok) {
     return await loginRequiredRedirect(env, ACCOUNT_DETAILS_PATH);
   }
-  const row = await env.DB.prepare('select email, created_at from users where id = ?')
+  // **退会の導線の出し分けも、この 1 行で決める**（#518）。列を 2 つ足すだけで、問い合わせは
+  // 増やさない。
+  const row = await env.DB.prepare(
+    'select email, created_at, is_admin, is_operator from users where id = ?',
+  )
     .bind(session.userId)
-    .first<{ email: string; created_at: number }>();
+    .first<{ email: string; created_at: number; is_admin: number; is_operator: number }>();
   if (row === null) {
     return await loginRequiredRedirect(env, ACCOUNT_DETAILS_PATH);
   }
@@ -867,6 +900,7 @@ async function showAccountDetails(request: Request, env: Env): Promise<Response>
       email: row.email,
       createdAt: row.created_at,
       headerAvatar: headerAvatarUrl(request, env, session.userId),
+      canWithdraw: row.is_admin !== 1 && row.is_operator !== 1,
     }),
   );
 }
@@ -1041,14 +1075,17 @@ export async function changeForkNoticePreference(
   const result = receive
     ? await db
         .prepare(
+          // **退会した行は書き換えない**（{@link changeDisplayName} と同じ。`src/withdrawal-sql.ts`）。
           `update users set fork_notice_muted_at = null
-            where id = ? and fork_notice_muted_at is not null and fork_notice_muted_at <= ?`,
+            where id = ? and ${NOT_WITHDRAWN_SQL}
+              and fork_notice_muted_at is not null and fork_notice_muted_at <= ?`,
         )
         .bind(userId, nowSeconds - FORK_NOTICE_UNMUTE_INTERVAL_SECONDS)
         .run()
     : await db
         .prepare(
-          'update users set fork_notice_muted_at = ? where id = ? and fork_notice_muted_at is null',
+          `update users set fork_notice_muted_at = ?
+            where id = ? and ${NOT_WITHDRAWN_SQL} and fork_notice_muted_at is null`,
         )
         .bind(nowSeconds, userId)
         .run();

@@ -9,6 +9,7 @@ import { createAdminRoutes } from './admin/routes.js';
 import { authRoutes } from './auth/google.js';
 import { accountRoutes } from './account.js';
 import { createAccountHandleRoutes } from './account-handle.js';
+import { withdrawalRoutes } from './account-withdrawal.js';
 import { reservedHandlesOf } from './handle.js';
 import { SANDBOX_PATH_PREFIXES } from './sandbox.js';
 import { describeOriginRelation } from './origins.js';
@@ -324,6 +325,9 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     ...authRoutes,
     ...accountRoutes,
     ...accountHandleRoutes,
+    // 退会（#518 / 8.1）。**`src/account.ts` と分ける**——押した後の判定は `src/withdrawal.ts`
+    // が持ち、この経路だけが `resolveSessionUser` ではなく段0 を通る（`src/account-withdrawal.ts`）。
+    ...withdrawalRoutes,
     ...signupRoutes,
     ...waitlistRoutes,
     ...generateRoutes,

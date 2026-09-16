@@ -49,14 +49,32 @@ beforeEach(async () => {
  * @param options BAN 済みにするか
  * @returns 作った利用者の id
  */
-async function seedUsers(count: number, options: { banned?: boolean } = {}): Promise<string[]> {
+async function seedUsers(
+  count: number,
+  options: { banned?: boolean; withdrawing?: boolean; withdrawn?: boolean } = {},
+): Promise<string[]> {
   const ids = Array.from({ length: count }, () => `cap-${crypto.randomUUID()}`);
+  // **退会は 2 段ある**（#518）。掴んだだけの行（`withdrawal_started_at` のみ）と、確定した行
+  // （`withdrawn_at` も入る）の両方を作れるようにする。CHECK が順序を縛るので、確定した行には
+  // 必ず掴んだ時刻も入れる（`migrations/0045_user_withdrawal.sql`）。
+  const startedAt = options.withdrawing === true || options.withdrawn === true ? 2 : null;
+  const withdrawnAt = options.withdrawn === true ? 3 : null;
   if (ids.length > 0) {
     await env.DB.batch(
       ids.map((id) =>
         env.DB.prepare(
-          'insert into users (id, google_sub, email, display_name, created_at, banned_at) values (?, ?, ?, ?, 1, ?)',
-        ).bind(id, `sub-${id}`, `${id}@example.com`, id, options.banned === true ? 1 : null),
+          `insert into users (id, google_sub, email, display_name, created_at, banned_at,
+                              withdrawal_started_at, withdrawn_at)
+           values (?, ?, ?, ?, 1, ?, ?, ?)`,
+        ).bind(
+          id,
+          `sub-${id}`,
+          `${id}@example.com`,
+          id,
+          options.banned === true ? 1 : null,
+          startedAt,
+          withdrawnAt,
+        ),
       ),
     );
   }
@@ -119,6 +137,21 @@ describe('参加者の数え方', () => {
   it('BAN 済みが何人いても、BAN されていない人数が上限未満なら達していない', async () => {
     await seedUsers(PARTICIPANT_CAP - 1);
     await seedUsers(5, { banned: true });
+    expect(await participantCapReached(env.DB)).toBe(false);
+  });
+
+  it('退会した利用者を数えない（#518 / M15-3。掴んだだけの行も数えない）', async () => {
+    // **BAN と同じ理由である**——行を消さずに列を立てるので、数えると退会した人数だけ
+    // 上限が実質的に下がり、その席は誰も座れないまま埋まり続ける。
+    await seedUsers(3);
+    await seedUsers(2, { withdrawn: true });
+    await seedUsers(1, { withdrawing: true });
+    expect(await countParticipants(env.DB)).toBe(3);
+  });
+
+  it('退会した人が何人いても、残りが上限未満なら達していない', async () => {
+    await seedUsers(PARTICIPANT_CAP - 1);
+    await seedUsers(5, { withdrawn: true });
     expect(await participantCapReached(env.DB)).toBe(false);
   });
 

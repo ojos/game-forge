@@ -3,12 +3,14 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes } from '../src/app.js';
 import {
   ACCOUNT_DETAILS_PATH,
+  ACCOUNT_TABS,
   ACCOUNT_WITHDRAWN_PATH,
   ACCOUNT_WITHDRAW_API_PATH,
   ACCOUNT_WITHDRAW_PATH,
 } from '../src/account-paths.js';
 import { WITHDRAWAL_REFUSALS } from '../src/account-withdrawal.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
+import { READING_CLASS } from '../src/html.js';
 import { HANDLES_TABLE, HANDLE_RESERVATION_DAYS } from '../src/handle.js';
 import { handlePagePath } from '../src/handle-paths.js';
 import { HOME_PATH } from '../src/paths.js';
@@ -307,6 +309,64 @@ describe('完了画面（GET /account/withdrawn）', () => {
     expect(body).toContain('退会の手続きが終わりました');
     // **誰の状態も名乗らない。**
     expect(body).not.toContain('あなたは退会しました');
+  });
+});
+
+/**
+ * 読み物の器（仕様 2.5.3 の「対象の画面」/ #564 / #590）。
+ *
+ * **確認画面と完了画面だけを器に乗せる。** どちらも本文全体が読ませる文で、押す口は末尾に少数しかない
+ * （確認画面は「退会する」と「やめる」、完了画面は「トップへ戻る」）。**断りの画面は 1 段落なので乗せない**
+ * （#590 の scope.out）。**`/account` の各タブはフォームが本体なので乗せない。**
+ *
+ * 「対象の画面にだけ印があり、ほかの全画面には無い」ことは `test/page-shell.test.ts` が経路表を歩いて見る。
+ * ここが見るのは、**経路表を歩いても開けない画面**——ログインの要る確認画面の中身と、管理者・409 のときだけ
+ * 出る断りの画面である。
+ */
+describe('読み物の器（2.5.3 / #590）', () => {
+  /** HTML の中で、`class` 属性に印を持つ要素の数。 */
+  function readingMarks(html: string): number {
+    return (html.match(new RegExp(`class="(?:[^"]*\\s)?${READING_CLASS}(?:\\s[^"]*)?"`, 'gu')) ?? []).length;
+  }
+
+  it('確認画面は、パンくずと本文の器の 2 か所に印を持つ', async () => {
+    const user = await seedUser();
+    const html = await (await call('GET', ACCOUNT_WITHDRAW_PATH, user.cookie)).text();
+    expect(readingMarks(html)).toBe(2);
+    expect(html).toContain(`<nav class="gf-breadcrumb ${READING_CLASS}"`);
+    // **本文は器の `<div>` から始まる**（パンくずの後ろからフッタの前までが 1 つに収まることは
+    // `test/page-shell.test.ts` が全画面で見る）。
+    expect(html).toContain(`<div class="${READING_CLASS}">\n<h1>退会しますか</h1>`);
+  });
+
+  it('完了画面は、パンくずと本文の器の 2 か所に印を持つ（未ログインでも同じ）', async () => {
+    const html = await (await call('GET', ACCOUNT_WITHDRAWN_PATH, null)).text();
+    expect(readingMarks(html)).toBe(2);
+    expect(html).toContain(`<nav class="gf-breadcrumb ${READING_CLASS}"`);
+    expect(html).toContain(`<div class="${READING_CLASS}">\n<h1>退会の手続きが終わりました</h1>`);
+  });
+
+  it('断りの画面には印が 1 つも無い（409 も 404 も。短い 1 段落である）', async () => {
+    const user = await seedUser();
+    await seedGame(user.id, { generationState: 'pending' });
+    const refused = await withdraw(user);
+    expect(refused.status).toBe(409);
+    expect(readingMarks(await refused.text()), '409 の断り').toBe(0);
+
+    const admin = await seedUser({ isAdmin: true });
+    const hidden = await call('GET', ACCOUNT_WITHDRAW_PATH, admin.cookie);
+    expect(hidden.status).toBe(404);
+    expect(readingMarks(await hidden.text()), '404 の断り').toBe(0);
+  });
+
+  it('登録情報の各タブには印が 1 つも無い（フォームが本体の画面である）', async () => {
+    const user = await seedUser();
+    expect(ACCOUNT_TABS.length).toBeGreaterThan(0);
+    for (const tab of ACCOUNT_TABS) {
+      const response = await call('GET', tab.path, user.cookie);
+      expect(response.status, tab.path).toBe(200);
+      expect(readingMarks(await response.text()), tab.path).toBe(0);
+    }
   });
 });
 

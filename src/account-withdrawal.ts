@@ -68,7 +68,14 @@ import { AVATAR_HISTORY_RETENTION_DAYS } from './avatar.js';
 import { FAQ_PATH, PRIVACY_PATH } from './legal-paths.js';
 import { HANDLE_RESERVATION_DAYS } from './handle.js';
 import type { SiteViewer } from './html.js';
-import { escapeHtml, headerAvatarUrl, resolveSiteViewer, siteHead, siteViewerAt } from './html.js';
+import {
+  READING_CLASS,
+  escapeHtml,
+  headerAvatarUrl,
+  resolveSiteViewer,
+  siteHead,
+  siteViewerAt,
+} from './html.js';
 import { siteFooter } from './legal.js';
 import { HOME_PATH } from './paths.js';
 import type { Route } from './routes.js';
@@ -154,11 +161,19 @@ export const WITHDRAWAL_REFUSALS: Readonly<Record<WithdrawalRefusalReason, Withd
  * 公開済みの作品の Wasm は、ブラウザや中間のキャッシュに最大 1 年残りうる（#518 の
  * constraints）。**書かずに済ませない。**
  *
+ * # 読み物の器に乗せる
+ *
+ * **画面の本文全体が読ませる文で、押す口は末尾に「退会する」と「やめる」だけである**——仕様 2.5.3 の
+ * 「対象の画面」の基準に当たるので、`siteHead` の `reading` と、本文全体を包む
+ * {@link READING_CLASS} の `<div>` で 42rem の器に乗せる（#590）。**パンくずの後ろからフッタの前までを
+ * 1 つの器に収める**（`<h1>` も注意書きの段落も `<section>` も同じ端に揃う。`test/page-shell.test.ts`）。
+ *
  * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
  * @returns HTML
  */
 export function renderWithdrawConfirmation(viewer: SiteViewer): string {
-  return `${siteHead({ title: '退会しますか - Game Forge', noindex: true, viewer })}
+  return `${siteHead({ title: '退会しますか - Game Forge', noindex: true, viewer, reading: true })}
+<div class="${READING_CLASS}">
 <h1>退会しますか</h1>
 <p>退会すると、このアカウントでログインできなくなり、あなたの作品はすべて削除されます。</p>
 <section class="gf-block gf-block-rows gf-work-settings" aria-label="退会の確認">
@@ -203,6 +218,7 @@ export function renderWithdrawConfirmation(viewer: SiteViewer): string {
 <p><a href="${ACCOUNT_DETAILS_PATH}">退会せずに登録情報へ戻る</a></p>
 </div>
 </section>
+</div>
 ${siteFooter()}`;
 }
 
@@ -215,11 +231,15 @@ ${siteFooter()}`;
  * **本文はこの引数を 1 つも読まない。** `viewer` は外枠（ヘッダ）だけに渡る——**誰が開いても
  * 同じ本文**であることが、この画面の性質である（モジュール冒頭）。
  *
+ * **読み物の器に乗せる**（#590）。確認画面と同じ基準——本文全体が読ませる文で、押す口は末尾の
+ * 「トップへ戻る」だけである（仕様 2.5.3 の「対象の画面」）。
+ *
  * @param viewer いま見ている人の状態
  * @returns HTML
  */
 export function renderWithdrawnPage(viewer: SiteViewer): string {
-  return `${siteHead({ title: '退会の手続きが終わりました - Game Forge', noindex: true, viewer })}
+  return `${siteHead({ title: '退会の手続きが終わりました - Game Forge', noindex: true, viewer, reading: true })}
+<div class="${READING_CLASS}">
 <h1>退会の手続きが終わりました</h1>
 <section class="gf-block gf-block-rows gf-work-settings" aria-label="退会の完了">
 <div>
@@ -230,6 +250,7 @@ export function renderWithdrawnPage(viewer: SiteViewer): string {
 <p><a href="${HOME_PATH}">トップへ戻る</a></p>
 </div>
 </section>
+</div>
 ${siteFooter()}`;
 }
 

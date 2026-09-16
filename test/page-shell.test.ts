@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
-import { ACCOUNT_PATH } from '../src/account-paths.js';
+import { ACCOUNT_PATH, ACCOUNT_WITHDRAWN_PATH, ACCOUNT_WITHDRAW_PATH } from '../src/account-paths.js';
 import { LOGIN_PATH, LOGOUT_PATH } from '../src/auth/google.js';
 import { DRAFT_STATUS } from '../src/games.js';
 import {
@@ -1114,22 +1114,34 @@ describe('パンくず（2.3.10）', () => {
  *
  * # 対象の画面を、ここに列挙する理由
  *
- * **どの画面が「長い文を読ませる画面」かは、利用者が #550 で決めた一覧である**（`/privacy`・`/faq`・`/terms`・
- * お知らせの記事）。経路表から導ける性質ではないので、決定をそのまま書く。**そのかわり、経路表の全画面を歩いて
- * 「一覧の画面にだけ印があり、ほかの画面には無い」ことを見る**——画面を 1 枚足しても黙って器に乗ることは無く、
- * 一覧から外した画面に印が残れば赤くなる。
+ * **どの画面が「長い文を読ませる画面」かは、利用者が決めた一覧である**（#550 の `/privacy`・`/faq`・`/terms`・
+ * お知らせの記事に、#590 で退会の確認画面と完了画面が加わった）。経路表から導ける性質ではないので、決定をそのまま
+ * 書く。**そのかわり、経路表の全画面を歩いて「一覧の画面にだけ印があり、ほかの画面には無い」ことを見る**——画面を
+ * 1 枚足しても黙って器に乗ることは無く、一覧から外した画面に印が残れば赤くなる。
  *
  * # 見ること
  *
  * - 対象の画面: パンくずの `<nav>` と、本文を包む要素の 2 か所に印がある
  * - **パンくずの後ろからフッタの前までが、印を持つ 1 つの `<div>` にすべて収まる**——お知らせの記事の「一覧へ戻る」の
  *   ボタンのように、器の外へ置き忘れた塊があれば赤くなる
- * - 対象外の画面（トップ・お知らせの一覧・作品をさがす・`/takedown` を含む全画面）: 印が 1 つも無い
+ * - 対象外の画面（トップ・お知らせの一覧・作品をさがす・`/takedown`・`/account` の各タブを含む全画面）: 印が 1 つも無い
+ *
+ * # ログインの要る画面を、未ログインで測らない
+ *
+ * `/account/withdraw` は未ログインならログインへ送る（HTML を返さない）。**器の中身を見る検査はログイン済みの
+ * cookie で開く**——未ログインで開くと、リダイレクトの本文を器だと思って赤くなる（#590）。
  */
 describe('読み物の器（2.5.3 / #564）', () => {
-  /** 長い文を読ませる画面（#550 の決定。仕様 2.5.3 の「対象の画面」）。 */
+  /** 長い文を読ませる画面（#550 / #590 の決定。仕様 2.5.3 の「対象の画面」）。 */
   function readingPaths(): Set<string> {
-    return new Set([PRIVACY_PATH, FAQ_PATH, TERMS_PATH, ...NEWS_ARTICLES.map((article) => newsArticlePath(article.id))]);
+    return new Set([
+      PRIVACY_PATH,
+      FAQ_PATH,
+      TERMS_PATH,
+      ...NEWS_ARTICLES.map((article) => newsArticlePath(article.id)),
+      ACCOUNT_WITHDRAW_PATH,
+      ACCOUNT_WITHDRAWN_PATH,
+    ]);
   }
 
   /** HTML の中で、`class` 属性に印を持つ要素の数。 */
@@ -1143,7 +1155,7 @@ describe('読み物の器（2.5.3 / #564）', () => {
     for (const path of readingPaths()) {
       expect(paths.has(path), `${path} が経路表に無い`).toBe(true);
     }
-    for (const path of [HOME_PATH, NEWS_PATH, PUBLIC_WORKS_PATH, TAKEDOWN_PATH, GENERATE_PAGE_PATH]) {
+    for (const path of [HOME_PATH, NEWS_PATH, PUBLIC_WORKS_PATH, TAKEDOWN_PATH, GENERATE_PAGE_PATH, ACCOUNT_PATH]) {
       expect(paths.has(path), `${path} が経路表に無い`).toBe(true);
     }
   });
@@ -1169,7 +1181,8 @@ describe('読み物の器（2.5.3 / #564）', () => {
 
   it('対象の画面では、パンくずの後ろからフッタの前までが、印を持つ 1 つの `<div>` に収まる', async () => {
     for (const path of readingPaths()) {
-      const { body } = await open(path, NO_COOKIE);
+      // **ログイン済みで開く。** `/account/withdraw` は未ログインならログインへ送る（#590）。
+      const { body } = await open(path, cookie);
       const crumb = breadcrumbOf(body)!;
       const start = body.indexOf(crumb) + crumb.length;
       const end = body.indexOf('<footer class="gf-footer">');

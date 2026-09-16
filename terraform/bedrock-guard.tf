@@ -497,7 +497,8 @@ data "aws_iam_policy_document" "budget_action_assume" {
 /**
  * Budgets が発火時に引き受けるロール。**層 2 の Lambda ロールと同じ権限に揃える。**
  *
- * 同じ Deny ポリシーを同じユーザーへ付けるだけなので、権限も同じでよい。ここを
+ * 同じ Deny ポリシーを**同じオーケストレータの実行ロールへ**付けるだけなので、権限も
+ * 同じでよい（#160 より前は、層 2 も層 3 も IAM ユーザーへ付けていた）。ここを
  * 広く取ると、遅い層のために強い権限を常設することになる。
  */
 data "aws_iam_policy_document" "budget_action" {

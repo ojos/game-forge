@@ -111,6 +111,7 @@ import {
   ACCOUNT_MAIL_PATH,
   ACCOUNT_PATH,
   ACCOUNT_TABS,
+  ACCOUNT_WITHDRAW_PATH,
   DISPLAY_NAME_FIELD,
   FORK_NOTICE_FIELD,
   FORK_NOTICE_MUTE,
@@ -467,6 +468,18 @@ export interface AccountDetailsView {
   readonly createdAt: number;
   /** ヘッダのアバターの画像の URL（#380）。 */
   readonly headerAvatar: string | null;
+  /**
+   * 退会の導線を出すか（#518 / 8.1）。
+   *
+   * **管理者（`is_admin`）と運営フラグ（`is_operator`）の利用者には出さない。**
+   *
+   * - **管理者**は退会そのものを断る（`src/withdrawal.ts` の掴みの条件）。押しても 404 に
+   *   なる導線を置かない。先に D1 で権限を外す運用にする（#518 の constraints）
+   * - **運営フラグ**の利用者は公式サンプルの作者である。退会そのものは断らない（#518 の J7。
+   *   運営が自分の意思で退会できなくなるため）が、**導線は出さない**——公式サンプルが
+   *   「退会したユーザー」の作品になるのは、押し間違いで起きてよいことではない
+   */
+  readonly canWithdraw: boolean;
 }
 
 /**
@@ -620,6 +633,15 @@ export function renderAccountDetailsPage(view: AccountDetailsView): string {
   // **読めない日時では `<time>` ごと落とす**（`src/my-works.ts` と同じ扱い。`datetime=""` は不正）。
   const iso = toIsoTimestamp(view.createdAt);
   const created = iso === '' ? '不明' : `<time datetime="${iso}">${formatJstDate(view.createdAt)}</time>`;
+  // **退会の導線はいちばん下で、副のボタンにする**（#518 / 仕様 2.5.5。戻せない操作を主に
+  // しない）。**押した先は確認画面**で、そこを読んでからでないと退会できない。
+  const withdraw = view.canWithdraw
+    ? `<section class="gf-block gf-account-block" aria-labelledby="account-withdraw-heading">
+<h2 id="account-withdraw-heading">退会</h2>
+<p>このアカウントを退会できます。退会すると<strong>元に戻せず</strong>、あなたの作品はすべて削除されます。消えるものと残るものは、次の画面で確かめられます。</p>
+<p><a class="gf-button gf-button-secondary gf-button-sm" href="${ACCOUNT_WITHDRAW_PATH}">退会について確かめる</a></p>
+</section>`
+    : '';
   return accountShell({
     path: ACCOUNT_DETAILS_PATH,
     title: 'アカウント - Game Forge',
@@ -631,7 +653,8 @@ export function renderAccountDetailsPage(view: AccountDetailsView): string {
   <dd>${created}</dd>
 </dl>
 <p>メールアドレスはあなたにだけ表示しています。ほかの人には見えません。</p>
-<p>ログインには Google アカウントを使っています。メールアドレスは、ログインのたびに Google アカウントのものに合わせます。</p>`,
+<p>ログインには Google アカウントを使っています。メールアドレスは、ログインのたびに Google アカウントのものに合わせます。</p>
+${withdraw}`,
   });
 }
 
@@ -856,9 +879,13 @@ async function showAccountDetails(request: Request, env: Env): Promise<Response>
   if (!session.ok) {
     return await loginRequiredRedirect(env, ACCOUNT_DETAILS_PATH);
   }
-  const row = await env.DB.prepare('select email, created_at from users where id = ?')
+  // **退会の導線の出し分けも、この 1 行で決める**（#518）。列を 2 つ足すだけで、問い合わせは
+  // 増やさない。
+  const row = await env.DB.prepare(
+    'select email, created_at, is_admin, is_operator from users where id = ?',
+  )
     .bind(session.userId)
-    .first<{ email: string; created_at: number }>();
+    .first<{ email: string; created_at: number; is_admin: number; is_operator: number }>();
   if (row === null) {
     return await loginRequiredRedirect(env, ACCOUNT_DETAILS_PATH);
   }
@@ -867,6 +894,7 @@ async function showAccountDetails(request: Request, env: Env): Promise<Response>
       email: row.email,
       createdAt: row.created_at,
       headerAvatar: headerAvatarUrl(request, env, session.userId),
+      canWithdraw: row.is_admin !== 1 && row.is_operator !== 1,
     }),
   );
 }

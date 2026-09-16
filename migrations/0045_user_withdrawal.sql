@@ -145,3 +145,54 @@ WHEN NEW.state = 'pending'
 BEGIN
   SELECT RAISE(IGNORE);
 END;
+
+--
+-- ## 退会を始めた利用者のアイコンを、誰にも書かせない（トリガ 2 本）
+--
+-- **退会はアイコンを R2 から消してから、D1 を確定する**（`src/withdrawal.ts` の段2 → 段3）。
+-- 後続の処理は最後に**もう一度消して、接頭辞が空だと確かめてから** `withdrawal_completed_at` を
+-- 立てる。**しかしその 2 つは別の操作で、あいだに窓がある**——認証を通していた別のタブの
+-- 「アイコンを保存」が、確かめた直後に R2 へ書くと、**空だと確かめた接頭辞に画像が残ったまま
+-- 完了の印が立つ**（PR #588 の Copilot の指摘）。
+--
+-- **窓を狭めるのではなく、D1 の側で書き手を止める。** アイコンの保存は
+-- 「排他を取る → R2 へ書く → D1 を確定する」（`src/avatar.ts`）で、**排他を取るのが D1 の
+-- UPDATE 1 本**である。そこを塞げば、退会を始めた利用者に対しては**変換も R2 の書き込みも
+-- 始まらない。**
+--
+-- **退会そのものの掴み（段1）は通さなければならない。** 段1 は同じ列
+-- （`avatar_lock_token`）を書くので、トリガからは `acquireAvatarLock` と区別が付かない
+-- ——**打ち直しでは `withdrawal_started_at` が既に立っており、`coalesce` で値も変わらない**
+-- ので、「この UPDATE が退会を始めたのか」を SQLite から知る手段が無い。
+--
+-- **そこで、退会が取る排他の token に接頭辞を付けて名乗らせる**（`withdrawal:` +
+-- ランダムな UUID）。綴りの正本は `src/withdrawal.ts` の `WITHDRAWAL_LOCK_TOKEN_PREFIX` で、
+-- **この SQL とその定数が一致していることは `test/schema-withdrawal.test.ts` が機械照合する**
+-- （shared-ai-rules 12 章。写しを目で守らない）。`src/avatar.ts` が作る token は
+-- `crypto.randomUUID()` なので、この接頭辞と衝突しない。
+--
+-- **2 本目は保険である。** 排他を取らずに `avatar_sha256` を書く経路（運営が端末で直す、
+-- 将来の別の口）に対しても、**退会を始めた利用者に画像を持たせない。** 退会そのものが
+-- `avatar_sha256 = NULL` にするのは通す（NULL にする向きは止めない）。
+--
+-- **どちらも `RAISE(IGNORE)` である。** 投げると、退会と同時に押されたアイコンの保存が 500 に
+-- なる。0 行で返れば `src/avatar.ts` は「排他が切れた」経路に落ち、自分が書いた R2 を戻す。
+
+-- 退会を始めた利用者に、アイコンの排他を取らせない（退会自身の掴みだけを通す）。
+CREATE TRIGGER users_skip_avatar_lock_for_withdrawal
+BEFORE UPDATE OF avatar_lock_token ON users
+WHEN NEW.avatar_lock_token IS NOT NULL
+ AND OLD.withdrawal_started_at IS NOT NULL
+ AND NEW.avatar_lock_token NOT LIKE 'withdrawal:%'
+BEGIN
+  SELECT RAISE(IGNORE);
+END;
+
+-- 退会を始めた利用者に、アイコンを持たせない（外す向き＝NULL は止めない）。
+CREATE TRIGGER users_skip_avatar_set_for_withdrawal
+BEFORE UPDATE OF avatar_sha256 ON users
+WHEN NEW.avatar_sha256 IS NOT NULL
+ AND OLD.withdrawal_started_at IS NOT NULL
+BEGIN
+  SELECT RAISE(IGNORE);
+END;

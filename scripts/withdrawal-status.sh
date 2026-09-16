@@ -45,6 +45,7 @@ cd "$ROOT" || exit 2
 
 PATHS_TS="src/avatar-paths.ts"
 WITHDRAWAL_TS="src/withdrawal.ts"
+WRANGLER_TOML="wrangler.toml"
 SCOPE="--local"
 USER_ID=""
 
@@ -66,6 +67,32 @@ done
 command -v jq >/dev/null 2>&1 || { echo "[withdrawal-status] jq がありません。" >&2; exit 2; }
 [[ -f "$PATHS_TS" ]] || { echo "[withdrawal-status] ${PATHS_TS} がありません。" >&2; exit 2; }
 [[ -f "$WITHDRAWAL_TS" ]] || { echo "[withdrawal-status] ${WITHDRAWAL_TS} がありません。" >&2; exit 2; }
+[[ -f "$WRANGLER_TOML" ]] || { echo "[withdrawal-status] ${WRANGLER_TOML} がありません。" >&2; exit 2; }
+
+# ── 利用者の id の文法を確かめる ─────────────────────────────────────────────
+#
+# **`wrangler d1 execute` に束縛値を渡す口が無い**（受けるのは `--command` の SQL の文字列か
+# `--file` だけである。`wrangler d1 execute --help` で確認）。つまり id は**綴りとして SQL へ
+# 埋まる**ので、引用符を含む id を渡されると述語や UNION を足せる（PR #588 の Copilot の指摘）。
+#
+# **だから、埋める前に文法で弾く。** 利用者の id は `crypto.randomUUID()`
+# （`src/auth/google.ts` の `insert into users`）なので、**正本の正規表現は
+# `src/avatar-paths.ts` の `AVATAR_USER_ID_PATTERN`** である（アイコンの配信が同じ id を
+# 受け取るために既に持っている）。**ここへ書き写さず、そこから取り出す。**
+if [[ -n "$USER_ID" ]]; then
+  # `/^…$/u` の中身だけを取り出し、`[[ =~ ]]` が読める ERE として使う。
+  ID_PATTERN="$(sed -n "s|^export const AVATAR_USER_ID_PATTERN[[:space:]]*=[[:space:]]*/\(.*\)/u;.*|\1|p" "$PATHS_TS" | head -1)"
+  if [[ -z "$ID_PATTERN" ]]; then
+    echo "[withdrawal-status] ${PATHS_TS} から AVATAR_USER_ID_PATTERN を取り出せません。" >&2
+    echo "[withdrawal-status] **取り出せないまま埋めない**（綴りが変わったなら、この sed も直してください）。" >&2
+    exit 2
+  fi
+  if [[ ! "$USER_ID" =~ $ID_PATTERN ]]; then
+    echo "[withdrawal-status] 利用者の id の形が違います: ${USER_ID}" >&2
+    echo "[withdrawal-status] 期待する形（${PATHS_TS} の AVATAR_USER_ID_PATTERN）: ${ID_PATTERN}" >&2
+    exit 2
+  fi
+fi
 
 # **接頭辞と匿名化の値は正本から取り出す**（書き写さない）。
 AVATAR_PREFIX="$(sed -n "s/^export const AVATAR_OBJECT_PREFIX[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" "$PATHS_TS" | head -1)"
@@ -253,20 +280,45 @@ echo "  ---- 作品: 全 $(field games_total) 件 / 中身を消していない 
 [[ "$(field games_left)" == "0" ]] && verdict ok "作品を消し終えている" || verdict '' "作品が $(field games_left) 件残っている"
 
 # ── R2（読み取りだけ） ────────────────────────────────────────────────────────
+#
+# **バケットは scope ごとに違う**（ローカルは `game-forge-local`、本番は `game-forge`）。
+# **`wrangler.toml` から取り出す**——書き写すと、バケット名を変えた日に、この検査だけが
+# 存在しないバケットを引いて「無い」と言う（PR #588 の Copilot の指摘）。
 echo "[withdrawal-status] アイコン（R2）"
-r2_args=(r2 object get "${AVATAR_PREFIX}${USER_ID}${AVATAR_SUFFIX}" --pipe)
+if [[ "$SCOPE" == "--remote" ]]; then
+  # `[[env.production.r2_buckets]]` の `bucket_name`（宣言の最後の 1 つ）。
+  BUCKET="$(awk '/^\[\[env\.production\.r2_buckets\]\]/{f=1;next} f&&/^bucket_name[[:space:]]*=/{gsub(/^bucket_name[[:space:]]*=[[:space:]]*"|"[[:space:]]*$/,"");print;exit}' "$WRANGLER_TOML")"
+else
+  # トップレベル（ローカル）の `[[r2_buckets]]`。
+  BUCKET="$(awk '/^\[\[r2_buckets\]\]/{f=1;next} f&&/^bucket_name[[:space:]]*=/{gsub(/^bucket_name[[:space:]]*=[[:space:]]*"|"[[:space:]]*$/,"");print;exit}' "$WRANGLER_TOML")"
+fi
+if [[ -z "$BUCKET" ]]; then
+  echo "[withdrawal-status] ${WRANGLER_TOML} からバケット名を取り出せません（${SCOPE}）。" >&2
+  echo "[withdrawal-status] **取り出せないまま「無い」と言わない。**" >&2
+  exit 2
+fi
+
+AVATAR_KEY="${AVATAR_PREFIX}${USER_ID}${AVATAR_SUFFIX}"
+r2_args=(r2 object get "${BUCKET}/${AVATAR_KEY}" --pipe)
 if [[ "$SCOPE" == "--remote" ]]; then
   r2_args+=(--remote)
 else
   r2_args+=(--local)
 fi
-if CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler "${r2_args[@]}" >/dev/null 2>&1; then
-  verdict '' "現行のアイコンが R2 に残っている（${AVATAR_PREFIX}${USER_ID}${AVATAR_SUFFIX}）"
+if r2_out="$(CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler "${r2_args[@]}" 2>&1 >/dev/null)"; then
+  verdict '' "現行のアイコンが R2 に残っている（${BUCKET}/${AVATAR_KEY}）"
+# **「見つからない」だけを不在として扱う。** 認証・ネットワーク・権限の失敗まで「無い」に
+# 倒すと、**確かめていないものを PASS にする**（読み取りに失敗した日に、退会が終わったと言う）。
+elif printf '%s' "$r2_out" | grep -q 'The specified key does not exist'; then
+  verdict ok "現行のアイコンが R2 に無い（${BUCKET}）"
 else
-  verdict ok "現行のアイコンが R2 に無い"
+  echo "[withdrawal-status] R2 を読めません（${BUCKET}/${AVATAR_KEY}）:" >&2
+  printf '%s\n' "$r2_out" | head -5 >&2
+  echo "[withdrawal-status] **読めなかったことを「無い」と扱いません。**" >&2
+  exit 2
 fi
-echo "  ---- 差し替え前の写しは接頭辞で確かめる: ${HISTORY_PREFIX}${USER_ID}/"
-echo "  ---- （`wrangler r2` に一覧のコマンドが無いので、ダッシュボードか API で見る。docs/cleanup-worker.md）"
+echo "  ---- 差し替え前の写しは接頭辞で確かめる: ${BUCKET}/${HISTORY_PREFIX}${USER_ID}/"
+echo '  ---- （wrangler r2 に一覧のコマンドが無いので、ダッシュボードか API で見る。docs/cleanup-worker.md）'
 
 # ── 判定 ─────────────────────────────────────────────────────────────────────
 if [[ "$BROKEN" == "1" && "$COMPLETED" == "1" ]]; then

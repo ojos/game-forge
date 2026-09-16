@@ -4,6 +4,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { avatarObjectKey } from '../src/avatar-paths.js';
 import { PUBLISHED_STATUS } from '../src/games.js';
 import {
+  BACKOFF_DELAY_MS,
+  CANDIDATE_LIMIT,
   D1_QUERY_LIMIT,
   GAMES_PER_STEP,
   PROGRESS_DELAY_MS,
@@ -452,5 +454,156 @@ describe('Durable Object と cron の結線', () => {
   it('fetch は 404 しか返さない（公開の入口を作らない）', async () => {
     const response = cleanupWorker.fetch();
     expect(response.status).toBe(404);
+  });
+});
+
+describe('Copilot の指摘への回帰（PR #588）', () => {
+  it('代打が進まなかったら、短い間隔で戻ってこない', async () => {
+    const userId = await seedUser();
+    // 掴んだまま 10 分たった行を作り、**掴み直せない理由**（BAN）を足す。
+    await env.DB.prepare('update users set withdrawal_started_at = ? where id = ?')
+      .bind(NOW, userId)
+      .run();
+    await env.DB.prepare('update users set banned_at = ? where id = ?').bind(NOW, userId).run();
+
+    const result = await runWithdrawalPurgeStep(
+      env,
+      new MemoryPurgeBackoff(),
+      NOW + WITHDRAWAL_TAKEOVER_SECONDS,
+    );
+    // **進んでいないので `tookOver` は 0**、間隔は通常の待ちである（1 秒ごとに同じ行を引かない）。
+    expect(result.tookOver).toBe(0);
+    expect(result.nextDelayMs).toBe(BACKOFF_DELAY_MS);
+    expect((await withdrawalRow(userId))?.withdrawn_at).toBeNull();
+
+    // 後片付け（この D1 は他のテストと共有している）。
+    await env.DB.prepare('update users set banned_at = null, withdrawal_started_at = null where id = ?')
+      .bind(userId)
+      .run();
+  });
+
+  it('先頭の候補がすべて待ち中でも、後ろの健全な作品が選ばれる', async () => {
+    const userId = await seedUser();
+    const stuck: string[] = [];
+    for (let index = 0; index < CANDIDATE_LIMIT; index += 1) {
+      stuck.push(await seedGame(userId));
+    }
+    const healthy = await seedGame(userId);
+    expect(await withdrawUser(env, userId, NOW)).toEqual({ ok: true, result: 'withdrawn' });
+
+    // **id の順で先頭に来る CANDIDATE_LIMIT 件を、全部待ちに入れる。**
+    const { results: ordered } = await env.DB.prepare(
+      `select id from games where author_id = ? and purged_at is null order by id`,
+    )
+      .bind(userId)
+      .all<{ id: string }>();
+    const backoff = new MemoryPurgeBackoff();
+    for (const row of ordered.slice(0, CANDIDATE_LIMIT)) {
+      backoff.fail(row.id, NOW);
+    }
+    expect(backoff.size).toBe(CANDIDATE_LIMIT);
+
+    // **1 回のアラームで、待ちに入っていない作品が選ばれる**（続きを引かない実装だと 0 件になる）。
+    const result = await runWithdrawalPurgeStep(env, backoff, NOW + 1);
+    expect(result.deleted).toBeGreaterThan(0);
+    expect(result.statements).toBeLessThan(D1_QUERY_LIMIT);
+
+    // 待ちが明ければ、残りも消える。
+    let rounds = 0;
+    while (rounds < 30 && (await remainingGames(userId)) > 0) {
+      rounds += 1;
+      await runWithdrawalPurgeStep(env, backoff, NOW + 100_000 + rounds);
+    }
+    expect(await remainingGames(userId)).toBe(0);
+    expect(stuck).toHaveLength(CANDIDATE_LIMIT);
+    expect(healthy).toBeTruthy();
+  });
+
+  it('確定していない利用者が、確定した利用者の完了を横取りしない', async () => {
+    // **完了は 1 回のアラームで 1 人だけ**である。候補の条件から `withdrawn_at is not null` が
+    // 落ちると、**まだ確定していない行が「その 1 人」の席を取り**、実際に終わっている利用者が
+    // いつまでも完了しない（部分索引は `users(id)` なので、id の若い行が先に当たる）。
+    const pendingId = 'wdp-0000-not-settled';
+    const settledId = 'wdp-zzzz-settled';
+    for (const id of [pendingId, settledId]) {
+      await env.DB.prepare(
+        'insert into users (id, google_sub, email, display_name, created_at) values (?, ?, ?, ?, 1)',
+      )
+        .bind(id, `sub-${id}`, `${id}@example.com`, '退会する人')
+        .run();
+    }
+    // 段1 だけが済んだ行（作品 0 件）。
+    await env.DB.prepare('update users set withdrawal_started_at = ? where id = ?')
+      .bind(NOW, pendingId)
+      .run();
+    await env.BUCKET.put(avatarObjectKey(pendingId), 'icon');
+    // 確定まで済んで、作品も残っていない行。
+    expect(await withdrawUser(env, settledId, NOW)).toEqual({ ok: true, result: 'withdrawn' });
+
+    // 代打の区切り（10 分）より前に回す。
+    const result = await runWithdrawalPurgeStep(env, new MemoryPurgeBackoff(), NOW + 1);
+    expect(result.completed).toBe(1);
+    expect((await withdrawalRow(settledId))?.withdrawal_completed_at).not.toBeNull();
+    expect((await withdrawalRow(pendingId))?.withdrawal_completed_at).toBeNull();
+    // **確定していない利用者の R2 には手を出していない。**
+    expect(await env.BUCKET.head(avatarObjectKey(pendingId))).not.toBeNull();
+
+    // 後片付け（この D1 は他のテストと共有している）。
+    await env.BUCKET.delete(avatarObjectKey(pendingId));
+    await env.DB.prepare('update users set withdrawal_started_at = null where id = ?')
+      .bind(pendingId)
+      .run();
+  });
+
+  it('後続の処理が users を引く文は、すべて部分索引に当たる', async () => {
+    // **実際に走った SQL を捕まえて実行計画に掛ける。** テストへ綴りを書き写すと、
+    // 「テストの中の文だけが索引に当たる」状態を緑にしてしまう（SQLite は CHECK から
+    // 「掴んでいる」を導かないので、条件が 1 つ欠けると `users` の全走査に落ちる）。
+    const seen: string[] = [];
+    const spy = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === 'prepare') {
+          return (sql: string): D1PreparedStatement => {
+            seen.push(sql);
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+
+    // 退会を 1 件だけ置いて、代打・候補・完了・打ち止めの 4 経路を通す。
+    const userId = await seedUser();
+    expect(await withdrawUser(env, userId, NOW)).toEqual({ ok: true, result: 'withdrawn' });
+    await runWithdrawalPurgeStep({ DB: spy, BUCKET: env.BUCKET }, new MemoryPurgeBackoff(), NOW + 1);
+    await runWithdrawalPurgeStep({ DB: spy, BUCKET: env.BUCKET }, new MemoryPurgeBackoff(), NOW + 2);
+
+    // `select` で `users` を引く文だけを見る（`update` は実行計画の対象にしない）。
+    const reads = seen.filter(
+      (sql) => /^\s*select/iu.test(sql) && /\bfrom users\b/iu.test(sql) && sql.includes('withdrawal_'),
+    );
+    expect(reads.length).toBeGreaterThanOrEqual(3);
+    for (const sql of reads) {
+      const { results } = await env.DB.prepare(`explain query plan ${sql}`)
+        .bind(...new Array<number>(sql.split('?').length - 1).fill(0))
+        .all<{ detail: string }>();
+      const detail = results.map((row) => row.detail).join('\n');
+      // **`users` を全走査しないこと**が守りたい性質である。1 人を id で引く文（完了の段の
+      // 見張り）は主キーから入るほうが速いので、**部分索引か主キーのどちらか**を要求する。
+      expect(detail, sql).toMatch(/users_withdrawal_pending_idx|sqlite_autoindex_users_1/u);
+      expect(detail, sql).not.toMatch(/SCAN users(?! USING)/u);
+    }
+    // **少なくとも 1 本は部分索引から入る**（全部が主キー経由になっていたら、この検査は
+    // 索引について何も言っていない）。
+    const plans = await Promise.all(
+      reads.map(async (sql) => {
+        const { results } = await env.DB.prepare(`explain query plan ${sql}`)
+          .bind(...new Array<number>(sql.split('?').length - 1).fill(0))
+          .all<{ detail: string }>();
+        return results.map((row) => row.detail).join('\n');
+      }),
+    );
+    expect(plans.filter((plan) => plan.includes('users_withdrawal_pending_idx')).length).toBeGreaterThanOrEqual(3);
   });
 });

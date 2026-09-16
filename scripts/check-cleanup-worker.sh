@@ -122,9 +122,14 @@ if (className === undefined) {
 }
 
 // 3. cron（**唯一の起こし方**）
+//
+// **綴りまで見る。** 「空でない」だけだと、`0 0 1 1 *`（年 1 回）へ書き換えても緑のまま通る
+// ——退会した作品が 1 年消えない形が、宣言 1 行の差分で作れてしまう（PR #588 の Copilot の指摘）。
+// **値を変えるときは、この検査も一緒に変える。**
+const EXPECTED_CRONS = ['*/5 * * * *'];
 const crons = cleanup.triggers?.crons ?? [];
-if (crons.length === 0) {
-  problems.push('[triggers] の crons がありません。cron が唯一の起こし方なので、消えると退会した作品が残り続ける');
+if (JSON.stringify(crons) !== JSON.stringify(EXPECTED_CRONS)) {
+  problems.push(`[triggers] の crons が ${JSON.stringify(EXPECTED_CRONS)} と一致しません（値: ${JSON.stringify(crons)}）。cron が唯一の起こし方なので、間隔を変えるならこの検査も一緒に変える`);
 }
 
 // 4. Pages はこの Worker を指さない

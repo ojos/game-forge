@@ -99,6 +99,22 @@ export const WITHDRAWN_DISPLAY_NAME = '退会したユーザー';
  */
 export const WITHDRAWN_GOOGLE_SUB_PREFIX = 'withdrawn:';
 
+/**
+ * 退会が取るアイコンの排他の token の接頭辞（`'withdrawal:' + ランダムな UUID`）。
+ *
+ * **`migrations/0045_user_withdrawal.sql` のトリガがこの綴りを読む。** 退会を始めた利用者に
+ * 対しては、`acquireAvatarLock`（`src/avatar.ts`）の排他の取得を D1 の側で飛ばす——**そうしないと、
+ * 後続の処理が「R2 の接頭辞が空だ」と確かめた直後に、認証を通していた別のタブがアイコンを
+ * 書きうる**（PR #588 の Copilot の指摘）。
+ *
+ * **トリガからは、退会の掴み（段1）と `acquireAvatarLock` を区別できない**（どちらも同じ列を
+ * 書き、打ち直しでは `withdrawal_started_at` の値も動かない）。そこで、**退会が取る排他だけが
+ * 名乗る**形にした。`src/avatar.ts` が作るのは素の `crypto.randomUUID()` なので衝突しない。
+ *
+ * **SQL の側との一致は `test/schema-withdrawal.test.ts` が機械照合する**（shared-ai-rules 12 章）。
+ */
+export const WITHDRAWAL_LOCK_TOKEN_PREFIX = 'withdrawal:';
+
 /** 退会が済んだ状態。**2 回目の呼び出しも同じ値を返す**（冪等）。 */
 export const WITHDRAWN = 'withdrawn';
 
@@ -205,8 +221,12 @@ export async function withdrawUser(
     return claim.outcome;
   }
 
-  // 段2。**自分の token を持つことを確かめてから消す**（`docs/takedown.md` 4.5 の順序）。
-  await deleteAvatarObjects(env, userId, claim.token);
+  // 段2。**消す直前に、毎回自分の token を持つことを確かめる**（`docs/takedown.md` 4.5 の順序）。
+  if (!(await deleteAvatarObjects(env, userId, claim.token))) {
+    // 排他を失った。段3 の G も当たらないので、**13 文を無駄に投げずに**理由を返す。
+    // 打ち直せば段2 からやり直す（段1 は `coalesce` で入り直せる）。
+    return await settledOutcome(env.DB, userId);
+  }
 
   // 段3。**成功の判定は最後の文（`users` の匿名化）の行数だけを読む**——`games` を書く文は
   // トリガ（`0037` / `0045`）で `meta.changes` が膨らむ（`docs/handoff.md` 4 章）。
@@ -259,7 +279,9 @@ type ClaimResult =
  * @returns 掴めたら token、掴めなければ結果
  */
 async function claimWithdrawal(db: D1Database, userId: string, now: number): Promise<ClaimResult> {
-  const token = crypto.randomUUID();
+  // **接頭辞を付けて名乗る**（{@link WITHDRAWAL_LOCK_TOKEN_PREFIX}）。`0045` のトリガは、
+  // これ以外の token でこの列を書く UPDATE を、退会を始めた利用者に対して飛ばす。
+  const token = `${WITHDRAWAL_LOCK_TOKEN_PREFIX}${crypto.randomUUID()}`;
   const result = await db
     .prepare(
       `update users
@@ -352,35 +374,69 @@ async function settledOutcome(db: D1Database, userId: string): Promise<Withdrawa
  * **接頭辞と現行のキーの綴りは `src/avatar-paths.ts` から取る**（`scripts/check-avatar-copies.sh`
  * が写しを見張っている値なので、ここへ書き写さない）。
  *
- * **消す前に、自分がまだ排他を持っているかを 1 回確かめる。** 段1 と段2 のあいだに
- * {@link AVATAR_LOCK_SECONDS} を過ぎて他の要求が排他を取り直していたら、**その要求が
- * いま書いている画像を消しうる。**
+ * **消す直前に、毎回ここで排他を確かめる**（{@link purgeAvatarObjects}）。排他は
+ * {@link AVATAR_LOCK_SECONDS} で切れるので、写しが多い利用者では一覧を回しているあいだに
+ * 持ち主が変わりうる。**そうなったら途中で止める**——打ち直せば続きからやれる。
  *
  * @param env D1 と R2
  * @param userId 利用者の id
  * @param token 段1 で取った排他の token
+ * @returns 最後まで消せたら true
  */
-async function deleteAvatarObjects(env: StorageEnv, userId: string, token: string): Promise<void> {
-  const held = await env.DB.prepare('select 1 as held from users where id = ? and avatar_lock_token = ?')
-    .bind(userId, token)
-    .first<{ held: number }>();
-  if (held === null) {
-    return;
-  }
-  await purgeAvatarObjects(env, userId);
+async function deleteAvatarObjects(env: StorageEnv, userId: string, token: string): Promise<boolean> {
+  return await purgeAvatarObjects(env, userId, () => holdsWithdrawalLock(env.DB, userId, token));
 }
 
 /**
- * ある利用者のアイコンを、現行も写しも R2 から消す（**排他を確かめない**）。
+ * いまも自分が退会の排他を持っているか。
  *
- * **段2 と、後続の処理の完了の段が共有する。** 完了の段では排他をもう使えない——段3 の 13 番目が
- * 外しているので、`avatar_lock_token` は NULL である。**確定済み（`withdrawn_at` が立っている）の
- * 利用者しか呼ばれない**ことを、呼び出し側の問い合わせが担保する。
+ * **読めなければ持っていないとみなす**（`src/avatar.ts` の `holdsAvatarLock` と同じ向き。
+ * 消すのは、持っているとはっきり分かるときだけ）。
+ *
+ * @param db D1
+ * @param userId 利用者の id
+ * @param token 段1 で取った排他の token
+ * @returns 持っていれば true
+ */
+async function holdsWithdrawalLock(db: D1Database, userId: string, token: string): Promise<boolean> {
+  try {
+    const row = await db
+      .prepare('select 1 as held from users where id = ? and avatar_lock_token = ?')
+      .bind(userId, token)
+      .first<{ held: number }>();
+    return row !== null;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * ある利用者のアイコンを、現行も写しも R2 から消す。
+ *
+ * **消す直前に、毎回 `holds` を確かめる**（`docs/takedown.md` 4.5 の「排他 → 読む → 消す」）。
+ * 1 回だけ確かめてから一覧を回すと、**排他は 60 秒で切れる**ので、写しが多い利用者では
+ * 途中で持ち主が変わり、**別の要求がいま書いている画像を消しうる**（PR #588 の Copilot の指摘）。
+ *
+ * **失ったら途中で止めて `false` を返す。** 退会は打ち直せる作り（段1 の `coalesce`、段3 の G）
+ * なので、止めても次の呼び出しか後続の処理が続きをやる。**消し残したまま完了の印が立つことは
+ * 無い**——完了の段は接頭辞が空だと確かめてからしか立てない。
+ *
+ * **段2 と、後続の処理の完了の段が共有する。** 完了の段では排他をもう使えない（段3 の 13 番目が
+ * 外している）ので、あちらは「まだ退会済みで未完了である」ことを `holds` に渡す。
  *
  * @param env D1 と R2
  * @param userId 利用者の id
+ * @param holds 消してよいかを毎回確かめる述語
+ * @returns 最後まで消せたら true（途中で権利を失ったら false）
  */
-export async function purgeAvatarObjects(env: StorageEnv, userId: string): Promise<void> {
+export async function purgeAvatarObjects(
+  env: StorageEnv,
+  userId: string,
+  holds: () => Promise<boolean>,
+): Promise<boolean> {
+  if (!(await holds())) {
+    return false;
+  }
   await env.BUCKET.delete(avatarObjectKey(userId));
 
   // **一覧は続きを辿る**（`list` は既定で 1000 件で切れる）。差し替えの回数に上限は無い。
@@ -388,10 +444,14 @@ export async function purgeAvatarObjects(env: StorageEnv, userId: string): Promi
   do {
     const listed = await env.BUCKET.list({ prefix: avatarHistoryPrefixOf(userId), cursor });
     if (listed.objects.length > 0) {
+      if (!(await holds())) {
+        return false;
+      }
       await env.BUCKET.delete(listed.objects.map((object) => object.key));
     }
     cursor = listed.truncated ? listed.cursor : undefined;
   } while (cursor !== undefined);
+  return true;
 }
 
 /**

@@ -170,9 +170,15 @@ export async function runWithdrawalPurgeStep(
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<PurgeStepResult> {
   // ── 1. 止まった要求の代打 ────────────────────────────────────────────────
+  //
+  // **索引の述語をそのまま書く**（`users_withdrawal_pending_idx` は
+  // `withdrawal_started_at is not null and withdrawal_completed_at is null`）。`withdrawn_at is null`
+  // なら CHECK により完了も NULL だが、**SQLite は CHECK から含意を導かない**ので、書かないと
+  // 部分索引に当たらず `users` を全走査する（PR #588 の Copilot の指摘）。
   const stalled = await env.DB.prepare(
     `select id from users
-      where withdrawal_started_at is not null and withdrawn_at is null
+      where withdrawal_started_at is not null and withdrawal_completed_at is null
+        and withdrawn_at is null
         and withdrawal_started_at <= ?
       limit 1`,
   )
@@ -180,8 +186,15 @@ export async function runWithdrawalPurgeStep(
     .first<{ id: string }>();
   if (stalled !== null) {
     // **この回はこれで終える。** 段1〜3 だけで 15 文を超え、削除まで走ると枠に収まらない。
-    await withdrawUser(env, stalled.id, now);
-    return { tookOver: 1, deleted: 0, completed: 0, statements: 16, nextDelayMs: PROGRESS_DELAY_MS };
+    const outcome = await withdrawUser(env, stalled.id, now);
+    if (outcome.ok) {
+      return { tookOver: 1, deleted: 0, completed: 0, statements: 16, nextDelayMs: PROGRESS_DELAY_MS };
+    }
+    // **進まなかったら、短い間隔で戻ってこない。** 掴めない理由（BAN・管理者に昇格した・
+    // アイコンの排他が生きている）は次の 1 秒では消えないので、**同じ行を 1 秒ごとに引き続ける
+    // 形になる**（PR #588 の Copilot の指摘）。通常の待ちへ落とし、理由を残す。
+    console.warn(`[withdrawal] 止まった退会を代打できませんでした: ${outcome.reason}`);
+    return { tookOver: 0, deleted: 0, completed: 0, statements: 16, nextDelayMs: BACKOFF_DELAY_MS };
   }
   let statements = 1;
 
@@ -189,12 +202,16 @@ export async function runWithdrawalPurgeStep(
   //
   // **確定の直後に公開が通った行**を拾う（段3 の 10 番目が数え終えた後に `publishGame` が
   // 当たる窓が、ログインの停止（#518）が入るまでは残る）。**0 行でも 1 文である。**
+  //
+  // 副問い合わせの条件も、上と同じ理由で**索引の述語をそのまま書く**。
   await env.DB.batch([
     env.DB.prepare(
       `update games set status = ?
         where status = ?
           and author_id in (select id from users
-                             where withdrawn_at is not null and withdrawal_completed_at is null)`,
+                             where withdrawal_started_at is not null
+                               and withdrawal_completed_at is null
+                               and withdrawn_at is not null)`,
     ).bind(REMOVED_STATUS, PUBLISHED_STATUS),
     env.DB.prepare(
       `update games
@@ -202,66 +219,95 @@ export async function runWithdrawalPurgeStep(
                              where c.parent_id = games.id and c.status = ?)
         where id in (select parent_id from games g
                        join users u on u.id = g.author_id
-                      where u.withdrawn_at is not null and u.withdrawal_completed_at is null
+                      where u.withdrawal_started_at is not null
+                        and u.withdrawal_completed_at is null
+                        and u.withdrawn_at is not null
                         and g.parent_id is not null)`,
     ).bind(PUBLISHED_STATUS),
   ]);
   statements += 2;
 
-  // ── 3. 候補 ─────────────────────────────────────────────────────────────
+  // ── 3〜4. 候補を引いて消す ───────────────────────────────────────────────
+  //
+  // **{@link GAMES_PER_STEP} 件が見つかるまで、続きを引く。** 1 回引いて終えると、**先頭の
+  // {@link CANDIDATE_LIMIT} 件がすべて待ち中のとき、その後ろの健全な作品が永久に選ばれない**
+  // （待ちは指数的に延びるので、いつまでも先頭に居座る。PR #588 の Copilot の指摘）。
+  //
+  // **続きは id のキーセットで辿る**（`offset` にしない）。取ったそばから行が消えるので、
+  // `offset` では消えたぶんだけ後ろの行を飛ばす。
   //
   // **条件は `claimDeletion`（`src/game-deletion.ts`）とそろえてある。** そろえないと、
   // 掴めない作品を毎回引いては待ちに積むだけの回ができる。
-  const { results: candidates } = await env.DB.prepare(
-    `select g.id as id from games g
+  const candidateSql = `select g.id as id from games g
        join users u on u.id = g.author_id
-      where u.withdrawn_at is not null and u.withdrawal_completed_at is null
+      where u.withdrawal_started_at is not null and u.withdrawal_completed_at is null
+        and u.withdrawn_at is not null
         and g.purged_at is null
         and g.status <> ?
         and g.generation_state in ('ready', 'failed')
+        and g.id > ?
         and not exists (select 1 from game_revision_jobs j
                          where j.game_id = g.id and j.state in ('pending', 'running'))
-      limit ?`,
-  )
-    .bind(PUBLISHED_STATUS, CANDIDATE_LIMIT)
-    .all<{ id: string }>();
-  statements += 1;
+      order by g.id
+      limit ?`;
 
-  // ── 4. 削除 ─────────────────────────────────────────────────────────────
   let deleted = 0;
   let attempted = 0;
   let waiting = false;
-  for (const candidate of candidates) {
-    if (attempted >= GAMES_PER_STEP) {
-      // 取らなかった候補は次の回に回る。
+  let after = '';
+  let exhausted = false;
+  while (attempted < GAMES_PER_STEP && !exhausted) {
+    // **1 文の予算を、候補の取得ぶんも含めて見る。** 残りが `deleteGame` 1 件ぶんに足りなければ、
+    // 引くだけ引いて消せない回になる。
+    if (D1_QUERY_LIMIT - statements < DELETE_RESERVE + 1) {
       waiting = true;
       break;
     }
-    if (D1_QUERY_LIMIT - statements < DELETE_RESERVE) {
-      waiting = true;
+    const { results: candidates } = await env.DB.prepare(candidateSql)
+      .bind(PUBLISHED_STATUS, after, CANDIDATE_LIMIT)
+      .all<{ id: string }>();
+    statements += 1;
+    if (candidates.length < CANDIDATE_LIMIT) {
+      // **これで全部である**（次の頁は無い）。
+      exhausted = true;
+    }
+    if (candidates.length === 0) {
       break;
     }
-    if (!backoff.ready(candidate.id, now)) {
-      waiting = true;
-      continue;
-    }
-    attempted += 1;
-    statements += DELETE_RESERVE;
-    try {
-      const outcome = await deleteGame(env, candidate.id, now);
-      if (outcome.ok) {
-        backoff.clear(candidate.id);
-        deleted += 1;
-      } else {
-        // `published` / `busy` は次の回に打ち直す（**待ちには積まない**——状態が動いただけで、
-        // 壊れてはいない）。
+    after = candidates[candidates.length - 1]!.id;
+
+    for (const candidate of candidates) {
+      if (attempted >= GAMES_PER_STEP) {
+        // 取らなかった候補は次の回に回る。
+        waiting = true;
+        break;
+      }
+      if (D1_QUERY_LIMIT - statements < DELETE_RESERVE) {
+        waiting = true;
+        break;
+      }
+      if (!backoff.ready(candidate.id, now)) {
+        waiting = true;
+        continue;
+      }
+      attempted += 1;
+      statements += DELETE_RESERVE;
+      try {
+        const outcome = await deleteGame(env, candidate.id, now);
+        if (outcome.ok) {
+          backoff.clear(candidate.id);
+          deleted += 1;
+        } else {
+          // `published` / `busy` は次の回に打ち直す（**待ちには積まない**——状態が動いただけで、
+          // 壊れてはいない）。
+          waiting = true;
+        }
+      } catch (error) {
+        // **理由だけを残す。** 作品 id はログに出さない（`src/session-user.ts` と同じ規律）。
+        console.error(`[withdrawal] 作品を消せませんでした: ${error instanceof Error ? error.name : 'unknown'}`);
+        backoff.fail(candidate.id, now);
         waiting = true;
       }
-    } catch (error) {
-      // **理由だけを残す。** 作品 id はログに出さない（`src/session-user.ts` と同じ規律）。
-      console.error(`[withdrawal] 作品を消せませんでした: ${error instanceof Error ? error.name : 'unknown'}`);
-      backoff.fail(candidate.id, now);
-      waiting = true;
     }
   }
 
@@ -301,6 +347,15 @@ export async function runWithdrawalPurgeStep(
  * 3. 台帳の指示文を打ち直す（`withdrawUser` の 9 番目が当たらなかった行のため）
  * 4. `withdrawal_completed_at` を立てる
  *
+ * **「確かめる」と「立てる」のあいだの窓は、D1 の側で閉じてある**（`0045` の
+ * `users_skip_avatar_lock_for_withdrawal` / `users_skip_avatar_set_for_withdrawal`）。退会を
+ * 始めた利用者に対しては**アイコンの排他そのものが取れない**ので、確かめた後に R2 へ書き始める
+ * 要求が生まれない。**残る窓**（段1 より前に排他を取り、60 秒を過ぎてもまだ R2 を書いている
+ * 要求）は `docs/cleanup-worker.md` の「確かめられていないこと」に書いてある。
+ *
+ * **印を立てる文にも、D1 から見える裏付けを置く**（`avatar_sha256 is null` と排他が空）。R2 の
+ * 確認とは別の層で、同じことを言っている行だけを進める。
+ *
  * @param env D1 と R2
  * @param now 時刻（UNIX 秒）
  * @param countStatement D1 の文を 1 つ使ったことを知らせる
@@ -311,9 +366,12 @@ async function completeOneWithdrawal(
   now: number,
   countStatement: () => void,
 ): Promise<number> {
+  // **索引の述語をそのまま書く**（`withdrawn_at is not null` だけだと `users` を全走査しうる。
+  // SQLite は CHECK から「掴んでいる」を導かない。PR #588 の Copilot の指摘）。
   const row = await env.DB.prepare(
     `select u.id as id from users u
-      where u.withdrawn_at is not null and u.withdrawal_completed_at is null
+      where u.withdrawal_started_at is not null and u.withdrawal_completed_at is null
+        and u.withdrawn_at is not null
         and not exists (select 1 from games g where g.author_id = u.id and g.purged_at is null)
       limit 1`,
   ).first<{ id: string }>();
@@ -322,8 +380,26 @@ async function completeOneWithdrawal(
     return 0;
   }
 
-  await purgeAvatarObjects(env, row.id);
-  if (!(await avatarObjectsGone(env, row.id))) {
+  // **消す直前に毎回「まだ退会済みで未完了か」を確かめる**（`purgeAvatarObjects` の述語）。
+  // 完了の印が立った後の利用者の R2 を、遅れて届いたアラームが消しに行かないようにする。
+  let guardStatements = 0;
+  const stillWithdrawing = async (): Promise<boolean> => {
+    guardStatements += 1;
+    const alive = await env.DB.prepare(
+      `select 1 as alive from users
+        where id = ? and withdrawal_started_at is not null
+          and withdrawal_completed_at is null and withdrawn_at is not null`,
+    )
+      .bind(row.id)
+      .first<{ alive: number }>();
+    return alive !== null;
+  };
+
+  const purged = await purgeAvatarObjects(env, row.id, stillWithdrawing);
+  for (let index = 0; index < guardStatements; index += 1) {
+    countStatement();
+  }
+  if (!purged || !(await avatarObjectsGone(env, row.id))) {
     // **立てない。** 「R2 の接頭辞が空だった」ことがこの列の意味である（`0045`）。
     console.warn('[withdrawal] アイコンが R2 に残っているので、完了の印を立てません');
     return 0;
@@ -339,9 +415,13 @@ async function completeOneWithdrawal(
     // **`max` で確定の時刻より前にならないようにする**（`0045` の CHECK。
     // 押した要求と後続の処理は別の機械で、時計がずれると確定より前の完了を書きうる。
     // 投げると、アラームが同じ行でずっと落ち続ける形になる）。
+    //
+    // **`avatar_sha256 is null` と排他が空であることも見る。** R2 の確認とは別の層で、
+    // 「この利用者はアイコンを持っていない」と D1 も言っていることを確かめる。
     env.DB.prepare(
       `update users set withdrawal_completed_at = max(?, withdrawn_at)
-        where id = ? and withdrawn_at is not null and withdrawal_completed_at is null`,
+        where id = ? and withdrawn_at is not null and withdrawal_completed_at is null
+          and avatar_sha256 is null and avatar_lock_token is null`,
     ).bind(now, row.id),
   ]);
   countStatement();

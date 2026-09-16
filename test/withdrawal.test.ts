@@ -1,12 +1,13 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { AVATAR_LOCK_SECONDS } from '../src/avatar.js';
+import { AVATAR_LOCK_SECONDS, acquireAvatarLock } from '../src/avatar.js';
 import { avatarHistoryKey, avatarObjectKey } from '../src/avatar-paths.js';
 import { HANDLES_TABLE } from '../src/handle.js';
 import {
   WITHDRAWAL_ALREADY,
   WITHDRAWN,
   WITHDRAWN_DISPLAY_NAME,
+  WITHDRAWAL_LOCK_TOKEN_PREFIX,
   WITHDRAWN_GOOGLE_SUB_PREFIX,
   avatarHistoryPrefixOf,
   withdrawUser,
@@ -443,14 +444,20 @@ describe('断る条件（何も書き換えない）', () => {
 describe('打ち直し', () => {
   it('掴んだあとで生成が止まったままでも、打ち直せば確定する', async () => {
     const { id } = await seedUser();
+    // **掴む前に仕込む。** 掴んだ後だと `0045` のトリガが挿入を飛ばし、1 行も入らないまま
+    // 「打ち直しの経路」を通ったつもりになる（PR #588 の Copilot の指摘）。
+    const running = await seedGame(id, { generationState: 'running' });
+    const seeded = await env.DB.prepare("select generation_state from games where id = ?")
+      .bind(running)
+      .first<{ generation_state: string }>();
+    expect(seeded?.generation_state).toBe('running');
+
     // 掴んだ状態を作る（段1 だけが済んだところで落ちた）。
     await env.DB.prepare(
       'update users set withdrawal_started_at = ?, avatar_lock_token = null, avatar_lock_at = null where id = ?',
     )
       .bind(NOW, id)
       .run();
-    // 掴む前から走っていた生成が、まだ `running` のまま残っている。
-    await seedGame(id, { generationState: 'running' });
 
     expect(await withdrawUser(env, id, NOW + 700)).toEqual({ ok: true, result: WITHDRAWN });
     const row = await readUser(id);
@@ -465,5 +472,110 @@ describe('打ち直し', () => {
 
     expect(await withdrawUser(env, id, NOW)).toEqual({ ok: true, result: WITHDRAWN });
     expect(await env.BUCKET.head(avatarObjectKey(id))).toBeNull();
+  });
+});
+
+describe('退会を始めた利用者のアイコンは、誰にも書けない（0045 のトリガ / PR #588）', () => {
+  it('退会の掴みは、接頭辞つきの token で排他を取る', async () => {
+    const { id } = await seedUser();
+    // 掴んだところで止まった状態を作るために、段2 で落ちる R2 を渡す。
+    const brokenBucket = new Proxy(env.BUCKET, {
+      get(target, property, receiver) {
+        if (property === 'delete') {
+          return async (): Promise<void> => {
+            throw new Error('R2 が落ちました');
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    await expect(withdrawUser({ DB: env.DB, BUCKET: brokenBucket }, id, NOW)).rejects.toThrow();
+
+    const row = await env.DB.prepare('select avatar_lock_token from users where id = ?')
+      .bind(id)
+      .first<{ avatar_lock_token: string }>();
+    expect(row?.avatar_lock_token?.startsWith(WITHDRAWAL_LOCK_TOKEN_PREFIX)).toBe(true);
+  });
+
+  it('退会を始めた利用者は、アイコンの排他を取れない（保存が始まらない）', async () => {
+    const { id } = await seedUser();
+    // 退会していないうちは取れる。
+    const before = await acquireAvatarLock(env.DB, id, NOW);
+    expect(before.ok).toBe(true);
+    await env.DB.prepare('update users set avatar_lock_token = null, avatar_lock_at = null where id = ?')
+      .bind(id)
+      .run();
+
+    await env.DB.prepare('update users set withdrawal_started_at = ? where id = ?').bind(NOW, id).run();
+
+    // **取れない**（トリガが UPDATE を飛ばすので 0 行）。`acquireAvatarLock` は理由を読み直し、
+    // 排他が無いので「間隔」として断る——**どちらにせよ R2 を 1 バイトも触らない。**
+    const after = await acquireAvatarLock(env.DB, id, NOW + 10_000);
+    expect(after.ok).toBe(false);
+    const row = await env.DB.prepare('select avatar_lock_token from users where id = ?')
+      .bind(id)
+      .first<{ avatar_lock_token: string | null }>();
+    expect(row?.avatar_lock_token).toBeNull();
+  });
+
+  it('退会を始めた利用者に、アイコンを持たせられない（外す向きは通る）', async () => {
+    const { id } = await seedUser({ avatarSha256: 'f'.repeat(64) });
+    await env.DB.prepare('update users set withdrawal_started_at = ? where id = ?').bind(NOW, id).run();
+
+    await env.DB.prepare('update users set avatar_sha256 = ? where id = ?')
+      .bind('0'.repeat(64), id)
+      .run();
+    const blocked = await env.DB.prepare('select avatar_sha256 from users where id = ?')
+      .bind(id)
+      .first<{ avatar_sha256: string }>();
+    expect(blocked?.avatar_sha256).toBe('f'.repeat(64));
+
+    // **NULL にする向きは止めない**（退会そのものがこれを打つ）。
+    await env.DB.prepare('update users set avatar_sha256 = null where id = ?').bind(id).run();
+    const cleared = await env.DB.prepare('select avatar_sha256 from users where id = ?')
+      .bind(id)
+      .first<{ avatar_sha256: string | null }>();
+    expect(cleared?.avatar_sha256).toBeNull();
+  });
+
+  it('消している途中で排他を失ったら、そこで止めて確定しない', async () => {
+    const { id } = await seedUser({ avatarSha256: '1'.repeat(64) });
+    await env.BUCKET.put(avatarObjectKey(id), 'current');
+    await env.BUCKET.put(avatarHistoryKey(id, 150, '2'.repeat(64), 'op-1'), 'old-1');
+
+    // **現行を消した直後に、並行した打ち直しが排他を取り直した**状態を作る。
+    //
+    // **他人（アイコンの保存）はもう取れない**——`0045` の `users_skip_avatar_lock_for_withdrawal`
+    // が、退会を始めた利用者に対する `withdrawal:` 以外の token の UPDATE を飛ばす。
+    // **残るのは、同じ退会の 2 本目が入り直す場合だけ**（段1 は `coalesce` で入り直せる）で、
+    // そのときに 1 本目が消し続けると、2 本目が確定した後の R2 を消しに行くことになる。
+    let deletes = 0;
+    const racingBucket = new Proxy(env.BUCKET, {
+      get(target, property, receiver) {
+        if (property === 'delete') {
+          return async (keys: string | string[]): Promise<void> => {
+            deletes += 1;
+            await target.delete(keys);
+            if (deletes === 1) {
+              await env.DB.prepare('update users set avatar_lock_token = ? where id = ?')
+                .bind(`${WITHDRAWAL_LOCK_TOKEN_PREFIX}another-attempt`, id)
+                .run();
+            }
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+
+    const outcome = await withdrawUser({ DB: env.DB, BUCKET: racingBucket }, id, NOW);
+    // **確定していない**（段3 の G が当たらない）。
+    expect(outcome.ok).toBe(false);
+    const row = await readUser(id);
+    expect(row?.withdrawn_at).toBeNull();
+    // **写しは消していない**（2 回目の delete へ進む前に止めた）。
+    const listed = await env.BUCKET.list({ prefix: avatarHistoryPrefixOf(id) });
+    expect(listed.objects).toHaveLength(1);
   });
 });

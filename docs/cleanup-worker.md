@@ -158,6 +158,16 @@ npx wrangler tail game-forge-cleanup
 
 ## 確かめられていないこと
 
+- **「R2 の接頭辞が空だった」と確かめてから `withdrawal_completed_at` を立てるまでの窓**は、
+  ゼロにはなっていない。**退会を始めた利用者に対しては、アイコンの排他そのものが取れない**
+  ので（`migrations/0045_user_withdrawal.sql` の `users_skip_avatar_lock_for_withdrawal`）、
+  確かめた後に R2 へ書き始める要求は生まれない。**残るのは 1 つだけ**——退会を掴む前に排他を
+  取り、アイコンの排他の持ち時間（60 秒。`src/avatar.ts` の `AVATAR_LOCK_SECONDS`）を過ぎても
+  まだ R2 を書いている要求である。その要求は D1 の確定で 0 行になり（排他を失っている）、
+  自分が書いた画像を戻そうとするが、**排他を持っていないので戻さない**（`src/avatar.ts` の
+  `restoreIfHeld`）。結果として、**写しが 1 枚だけ R2 に残ったまま完了の印が立ちうる。**
+  見つけ方は `scripts/withdrawal-status.sh <user_id>` の R2 の行で、消し方は
+  `docs/takedown.md` 4.5 である
 - **本番の Worker が実際に公開されていないこと**は、`scripts/check-cleanup-worker.sh` では
   見ていない（宣言だけを見る）。ダッシュボードで手で workers.dev を有効にした場合は捕まらない
 - **cron が本番で実際に登録されていること**も検査には入っていない（上の手順で人が見る）

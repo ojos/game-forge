@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { WITHDRAWAL_LOCK_TOKEN_PREFIX } from '../src/withdrawal.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -253,5 +254,78 @@ describe('0045 のトリガが、退会を始めた作者の書き込みを黙�
       .bind(gameId)
       .first<{ state: string }>();
     expect(allowed?.state).toBe('running');
+  });
+});
+
+describe('0045 のアイコンのトリガ（PR #588）', () => {
+  /**
+   * トリガの定義の SQL を引く。
+   *
+   * @param name トリガの名前
+   * @returns SQL（無ければ null）
+   */
+  async function triggerSql(name: string): Promise<string | null> {
+    const row = await env.DB.prepare(
+      "select sql from sqlite_master where type = 'trigger' and name = ?",
+    )
+      .bind(name)
+      .first<{ sql: string }>();
+    return row?.sql ?? null;
+  }
+
+  it('排他のトリガが読む接頭辞が、src/withdrawal.ts の定数と一致する', async () => {
+    // **写しを目で守らない**（shared-ai-rules 12 章）。SQL の綴りと定数がずれると、退会の掴み
+    // そのものがトリガに飛ばされ、**退会が 1 件も進まなくなる**（どのテストも赤くならない）。
+    const sql = await triggerSql('users_skip_avatar_lock_for_withdrawal');
+    expect(sql).not.toBeNull();
+    expect(sql).toContain(`'${WITHDRAWAL_LOCK_TOKEN_PREFIX}%'`);
+  });
+
+  it('どちらのトリガも本体は SELECT RAISE(IGNORE) だけで、表を書かない', async () => {
+    for (const name of ['users_skip_avatar_lock_for_withdrawal', 'users_skip_avatar_set_for_withdrawal']) {
+      const sql = await triggerSql(name);
+      expect(sql, name).not.toBeNull();
+      // **`BEGIN` より後ろ（本体）だけを見る。** 見出しの `BEFORE UPDATE OF …` には
+      // `update ` の綴りが必ず入っているので、全文で引くと自分の宣言に当たって空振りする。
+      const squashed = sql!.replace(/\s+/gu, ' ').toLowerCase();
+      const body = squashed.slice(squashed.indexOf(' begin '));
+      expect(body, name).toContain('select raise(ignore)');
+      for (const verb of ['insert into', 'update ', 'delete from']) {
+        expect(body, `${name} / ${verb}`).not.toContain(verb);
+      }
+    }
+  });
+
+  it('退会していない利用者の排他とアイコンは、素通りする', async () => {
+    const id = await seedUser();
+    await env.DB.prepare("update users set avatar_lock_token = 'plain-token' where id = ?").bind(id).run();
+    await env.DB.prepare('update users set avatar_sha256 = ? where id = ?').bind('a'.repeat(64), id).run();
+    const row = await env.DB.prepare('select avatar_lock_token, avatar_sha256 from users where id = ?')
+      .bind(id)
+      .first<{ avatar_lock_token: string; avatar_sha256: string }>();
+    expect(row).toEqual({ avatar_lock_token: 'plain-token', avatar_sha256: 'a'.repeat(64) });
+  });
+
+  it('退会を始めた利用者では、接頭辞つきの token だけが通る', async () => {
+    const id = await seedUser({ startedAt: 100 });
+    await env.DB.prepare("update users set avatar_lock_token = 'plain-token' where id = ?").bind(id).run();
+    const blocked = await env.DB.prepare('select avatar_lock_token from users where id = ?')
+      .bind(id)
+      .first<{ avatar_lock_token: string | null }>();
+    expect(blocked?.avatar_lock_token).toBeNull();
+
+    const own = `${WITHDRAWAL_LOCK_TOKEN_PREFIX}abc`;
+    await env.DB.prepare('update users set avatar_lock_token = ? where id = ?').bind(own, id).run();
+    const allowed = await env.DB.prepare('select avatar_lock_token from users where id = ?')
+      .bind(id)
+      .first<{ avatar_lock_token: string }>();
+    expect(allowed?.avatar_lock_token).toBe(own);
+
+    // **外す向き（NULL）は止めない**（段3 の 13 番目が打つ）。
+    await env.DB.prepare('update users set avatar_lock_token = null where id = ?').bind(id).run();
+    const cleared = await env.DB.prepare('select avatar_lock_token from users where id = ?')
+      .bind(id)
+      .first<{ avatar_lock_token: string | null }>();
+    expect(cleared?.avatar_lock_token).toBeNull();
   });
 });

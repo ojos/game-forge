@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { ROBOTS_TAG_HEADER, ROBOTS_TAG_NOINDEX } from '../src/robots.js';
 import { dispatch } from '../src/routes.js';
 import { createPublishRoutes } from '../src/publish.js';
 import { PUBLISH_GAME_ID_FIELD, PUBLISH_PATH } from '../src/paths.js';
@@ -388,6 +389,10 @@ describe('画像の配信', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('image/png');
     expect(response.headers.get('cache-control')).toContain('max-age');
+    // **索引に載せない**（#594）。共有時にカードとして描かれるための画像で、画像検索に
+    // 単独で並ぶ理由が無い。**取得そのものは許す**——OGP クローラが読めないとカードが
+    // 描かれない（仕様 5.4。`src/robots.ts`）。
+    expect(response.headers.get(ROBOTS_TAG_HEADER)).toBe(ROBOTS_TAG_NOINDEX);
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(PNG_BYTES);
   });
 

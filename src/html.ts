@@ -86,15 +86,20 @@ import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './works-paths.js';
 export const APP_CSS_PATH = '/assets/app.css';
 
 /**
- * 読み物の器の印（仕様 2.5.3 の「長い文を読ませる画面の器」/ 確定33 / #564）。
+ * 読み物の器の印（仕様 2.5.3 の「長い文を読ませる画面の器」/ 確定33 / #564 / #590）。
  *
- * **長い文を読ませる画面（`/privacy`・`/faq`・`/terms`・お知らせの記事）だけが持つ。** パンくずには
- * {@link siteHead} の `reading` が付け、本文を包む要素には画面の側が付ける。見た目（42rem の幅で中央に置く）は
- * app.css の `@section legal` が持つ。
+ * **長い文を読ませる画面だけが持つ。** パンくずには {@link siteHead} の `reading` が付け、本文を包む要素には
+ * 画面の側が付ける。見た目（42rem の幅で中央に置く）は app.css の `@section legal` が持つ。
  *
- * **`:has()` で見分けず、クラスにした**（#564 の scope.in）。お知らせの記事は `.gf-legal` を持たず本文の外にボタンも
- * あるので、`body:has(> .gf-legal)` の 1 本では 4 画面を覆えない。クラスなら、対象の画面にあり対象外に無いことを
- * HTML の文字列で確かめられる（`test/page-shell.test.ts`）。
+ * **どの画面が対象かの正本は、仕様 2.5.3 の「対象の画面」である**——ここへ一覧を写さない（写しは腐る。
+ * `.ai-playbook/shared-ai-rules.md` 12 章。#590 で退会の確認画面と完了画面が加わった）。**基準は「画面の本文全体が
+ * 読ませる文で、押す口が末尾に少数だけなら乗せる。フォームが本体の画面は乗せない」**で、例は `/privacy` と
+ * `/account/withdraw` である。**対象の画面にあり対象外に無いことは、`test/page-shell.test.ts` が経路表を歩いて
+ * 照合する**——画面を 1 枚足しても黙って器に乗ることは無い。
+ *
+ * **`:has()` で見分けず、クラスにした**（#564 の scope.in）。お知らせの記事と退会の 2 画面は `.gf-legal` を持たず
+ * 本文の外にボタンもあるので、`body:has(> .gf-legal)` の 1 本では対象の画面を覆えない。クラスなら、印のありなしを
+ * HTML の文字列で確かめられる。
  */
 export const READING_CLASS = 'gf-reading';
 

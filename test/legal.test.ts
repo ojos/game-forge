@@ -551,3 +551,26 @@ describe('作品の削除（#517）', () => {
     expect(chapter4).toContain('削除も、既にフォークされた作品には及びません。');
   });
 });
+
+describe('退会（#518 / M15-3）', () => {
+  it('規約に退会の条項があり、作品の削除・戻せないこと・派生作品の存続を書く', async () => {
+    const { body } = await get(TERMS_PATH);
+    const chapter = body.slice(body.indexOf('<h2>8. 退会</h2>'), body.indexOf('<h2>9. 免責</h2>'));
+    expect(chapter, '退会の章が無い').not.toBe('');
+    expect(chapter).toContain('いつでも自分の意思で退会できます');
+    expect(chapter).toContain('利用者の作品はすべて取り下げたうえで削除されます');
+    expect(chapter).toContain('退会は取り消せません');
+    expect(chapter).toContain('新しい招待コードが必要');
+    expect(chapter).toContain('退会も、既にフォークされた作品には及びません');
+    // **運営の措置は退会で消えない**（BAN の回避に使われない。#518 の constraints）。
+    expect(chapter).toContain('その利用者が退会したかどうかにかかわりません');
+  });
+
+  it('章の番号が飛んでいない（退会を足して後ろを繰り下げた）', async () => {
+    const { body } = await get(TERMS_PATH);
+    const main = body.slice(0, body.indexOf('<footer class="gf-footer">'));
+    const numbered = [...main.matchAll(/<h2>(\d+)\. /gu)].map((match) => Number(match[1]));
+    expect(numbered).toEqual(Array.from({ length: numbered.length }, (_value, index) => index + 1));
+    expect(numbered.length).toBe(11);
+  });
+});

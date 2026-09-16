@@ -28,6 +28,7 @@
  * | プレイ数（作品ごとの起動回数・利用者と結び付けない・カードと作品ページで誰でも見られる）と、ブラウザの sessionStorage に置く作品ごとの最終計上時刻（30 分・サーバへ送らない） | `workers/likes/src/play-hub.ts`（Durable Object の `plays(game_id, count)`。利用者の列が無い）/ `migrations/` の games_play_count（`games.play_count`）/ `src/plays.ts` の `playReportScript`（`sessionStorage` の鍵 `gf-play:<作品 id>`、`credentials: 'omit'`、`PLAY_REPORT_WINDOW_MS`）（#377 が同じ変更で追記した） |
  * | 通報 | `src/reports.ts` / `migrations/0001_init.sql`（`reports`） |
  * | 待機リスト | `src/waitlist.ts` / `migrations/0001_init.sql`（`waitlist`） |
+ * | 退会（本人が押す。識別子・メール・表示名の匿名化・アイコンの削除・履歴の削除・ハンドル名の予約・指示文を空にする・作品の全件削除） | `src/account-withdrawal.ts` の `/account/withdraw` と `POST /api/account/withdraw` / `src/withdrawal.ts`（段1〜3 と匿名化の値）/ `src/withdrawal-purge.ts` と `workers/cleanup/`（後続の処理）/ `migrations/0045_user_withdrawal.sql`（#518 が同じ変更で追記した） |
  * | 削除依頼 | `src/takedown.ts` / `migrations/0018_takedown_requests.sql` |
  * | 運営の措置の記録 | `migrations/0026_admin_actions.sql` |
  * | Cookie 2 種 | `src/session.ts`（`__Host-gf_session`、7 日）/ `src/auth/google.ts`（`__Host-gf_oauth`、10 分） |
@@ -59,6 +60,7 @@ import { CONTACT_EMAIL, CONTACT_MAILTO, OPERATOR_NAME } from './service-contact.
 import { OAUTH_COOKIE_MAX_AGE, SESSION_MAX_AGE } from './auth/google.js';
 import { AVATAR_HISTORY_RETENTION_DAYS, AVATAR_OUTPUT_SIZE } from './avatar.js';
 import { HANDLE_RESERVATION_DAYS } from './handle.js';
+import { WITHDRAWN_DISPLAY_NAME } from './withdrawal.js';
 
 /** 画面の `<title>`（パンくずの末尾にもこの名前が出る）。 */
 export const PRIVACY_TITLE = 'プライバシーポリシー - Game Forge';
@@ -228,16 +230,48 @@ export function privacyBody(contact: PrivacyContact): string {
       <li>その作品をフォークした作品があるとき（フォークした作品に「削除済みの作品から派生」と表示するため）</li>
       <li>通報・削除依頼・運営者の措置・入力の検査の記録がその作品にあるとき（対応を確かめられるようにするため。題名と説明の変更の履歴も残します）</li>
     </ul>
-    作品を削除しても、作品を作るときの指示文と生成の記録は削除しません（1 人あたりの生成枠とサービス全体の費用の上限を管理するため）。</li>
+    <strong>作品を削除しても、作品を作るときの指示文と生成の記録は削除しません</strong>（1 人あたりの生成枠とサービス全体の費用の上限を管理するため）。<strong>退会したときだけは指示文を削除します</strong>（生成の記録の行・費用・日時は残します。下の「退会」）。</li>
   <li>それ以外の情報は、期限を定めた自動の削除を行っておらず、本サービスの提供に必要なあいだ保存します。</li>
 </ul>
-<p>本サービスには、現在、利用者自身で退会する機能がありません。
-   アカウントや情報の削除を希望される場合は、下の窓口までご連絡ください。</p>
+<h3>退会</h3>
+<p><strong>利用者はご自身で退会できます。</strong>ログインしたうえで、登録情報の「アカウント」から
+   「退会について確かめる」を開き、消えるものと残るものを確認してから手続きしてください。
+   <strong>退会は取り消せません。</strong>同じ Google アカウントでもう一度参加するには、
+   新しい招待コードが必要です（退会前のアカウントには戻れません）。</p>
+<p><strong>退会すると、次の情報を削除します。</strong></p>
+<ul>
+  <li>Google アカウントの識別子との結び付きと、メールアドレス。</li>
+  <li>表示名（「${escapeHtml(WITHDRAWN_DISPLAY_NAME)}」に置き換えます）・自己紹介・外部リンク。</li>
+  <li>アイコンの画像（いま使っているものと、差し替える前・外す前の画像の両方を、上の ${AVATAR_HISTORY_RETENTION_DAYS} 日を待たずに削除します）。</li>
+  <li>表示名・自己紹介と外部リンク・アイコン・ハンドル名の変更の履歴。</li>
+  <li>メール配信の設定。</li>
+  <li>作品を作るときに入力した指示文（生成の記録の行・費用・日時は残します）。</li>
+  <li>作品（公開中の作品は取り下げてから削除します。削除の範囲は、上の「作品は、作者が作品ページから削除すると削除します」と同じです）。</li>
+  <li>待機リストに同じメールアドレスの登録が残っていれば、あわせて削除します。</li>
+</ul>
+<p><strong>退会しても、次の情報は残します。</strong></p>
+<ul>
+  <li>いいね・通報（通報した記録）・招待の記録（誰が誰を招待したか）・運営者の措置の記録・入力の検査で止めた記録（上のとおり 90 日を目安に削除します）。<strong>いずれも、匿名化した行に紐づくだけになります。</strong>これらを消すと、他の利用者の招待枠の計算や、対応済みの通報の確かめができなくなるためです。</li>
+  <li>生成の記録（回数・費用・日時）。1 人あたりの生成枠とサービス全体の費用の上限を管理するために残します。</li>
+  <li>あなたの作品をフォークして作られた作品。フォークした作品の側では、元の作品が「削除済みの作品から派生」と表示されます。</li>
+  <li>通報・削除依頼・運営者の措置があった方については、対応を確かめられるように、上の変更の履歴を残します（公開しません）。このとき、匿名化したことも履歴に残します。</li>
+  <li>ハンドル名は、退会してから ${HANDLE_RESERVATION_DAYS} 日のあいだ、ほかの方が使えません（ハンドル名を変えたときと同じ扱いです）。</li>
+</ul>
+<p><strong>次のものは、退会しても消せません。</strong>公開したことのある作品の遊ぶためのファイルは、
+   ブラウザや途中のキャッシュに最大 1 年残ることがあります（本サービスから削除しても、
+   既に配られた写しまでは取り消せません）。上に書いた処理の記録（ログ）も、
+   それぞれの保存期間が過ぎるまで残ります。</p>
 
 <h2>8. 開示・訂正・利用停止・削除などのご請求</h2>
 <p>ご自身の情報について、利用目的の通知、開示、訂正、追加、削除、利用の停止、第三者への提供の停止を
-   求める場合は、${mail} までメールでご連絡ください。
-   ご本人であることを確かめるため、本サービスに登録しているメールアドレスからお送りいただくようお願いします。</p>
+   求める場合は、${mail} までメールでご連絡ください。</p>
+<p>ご本人であることを確かめるため、<strong>本サービスに登録しているメールアドレスからお送りください。</strong></p>
+<p><strong>退会した後にご請求される場合は、この方法で確かめられません</strong>（退会でメールアドレスを
+   削除しているため、お送りいただいた宛先と照らし合わせるものが残っていません）。その場合は、
+   退会前に使っていたメールアドレス・ハンドル名・作品の URL など、ご本人だけが分かる事項を
+   添えてご連絡ください。<strong>いただいた内容だけではご本人だと確かめられないときは、
+   お応えできないことがあります。</strong>退会によって削除済みの情報については、
+   開示や削除の対象となるものがそもそも残っていません。</p>
 
 <h2>9. 改定</h2>
 <p>このプライバシーポリシーは変更されることがあります。変更後の内容は本ページに掲示した時点で効力を生じます。

@@ -42,6 +42,8 @@ import { DAILY_QUOTA_PER_USER } from './quota.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from './service-contact.js';
+import { HANDLE_RESERVATION_DAYS } from './handle.js';
+import { WITHDRAWN_DISPLAY_NAME } from './withdrawal.js';
 
 /** 画面の `<title>`（パンくずの末尾にもこの名前が出る）。 */
 export const FAQ_TITLE = 'よくある質問 - Game Forge';
@@ -72,6 +74,10 @@ export interface FaqEntry {
  *
  * **作品の削除（`delete-work`）は #517 で足した。** 「フォークされたくない」の答えが取り下げを案内しているので、
  * その直後に置く（取り下げの次に来る操作である）。
+ *
+ * **退会（`withdraw`）は #518 で足した。** 作品の削除の直後に置く——「消す」の話が並び、
+ * **作品を消すことと、アカウントごと消すことの違い**をその場で読み比べられる。削除の項目と
+ * 窓口の項目からも `#withdraw` へ送る（#518 の scope.in）。
  */
 export const FAQ_ENTRIES: readonly FaqEntry[] = [
   {
@@ -154,7 +160,21 @@ export const FAQ_ENTRIES: readonly FaqEntry[] = [
    生成中・リフォージ中の作品も、終わるまで削除できません。</p>
 <p>削除しても、<strong>その作品をフォークして作られた作品は消えません</strong>。フォークした作品の側では、元の作品が「削除済みの作品から派生」と表示されます。
    また、その作品を作るために使った<a href="#quota">生成枠</a>は戻りません。</p>
-<p>作品を削除しても、作品を作るときの指示文と生成の記録は残ります。通報や削除依頼への対応の記録がある作品は、対応を確かめられるように、記録と題名・説明の変更の履歴を残します（どちらも公開しません。<a href="${PRIVACY_PATH}">プライバシーポリシー</a>の「保存期間」）。</p>`,
+<p>作品を削除しても、作品を作るときの指示文と生成の記録は残ります。通報や削除依頼への対応の記録がある作品は、対応を確かめられるように、記録と題名・説明の変更の履歴を残します（どちらも公開しません。<a href="${PRIVACY_PATH}">プライバシーポリシー</a>の「保存期間」）。</p>
+<p>アカウントごと消したいときは<a href="#withdraw">退会できますか？</a>をご覧ください（退会すると、指示文も削除します）。</p>`,
+  },
+  {
+    id: 'withdraw',
+    question: '退会できますか？',
+    answer: `<p><strong>できます。</strong>ログインしたうえで、登録情報の「アカウント」から「退会について確かめる」を開いてください。
+   消えるもの・残るもの・戻せないことを確かめる画面が出ます。その画面で「退会する」を押すと退会します。</p>
+<p><strong>退会すると元に戻せません。</strong>ログインできなくなり、<strong>あなたの作品はすべて取り下げられて削除されます</strong>。
+   表示名は「${escapeHtml(WITHDRAWN_DISPLAY_NAME)}」になり、メールアドレス・自己紹介・外部リンク・アイコン・メール配信の設定と、作品を作るときの指示文も削除します。</p>
+<p><strong>同じ Google アカウントでもう一度参加するには、新しい招待コードが必要です。</strong>退会前のアカウント・作品・招待枠には戻れません。</p>
+<p><strong>生成中・リフォージ中の作品があるあいだは退会できません。</strong>終わってからお試しください。</p>
+<p>退会しても、<strong>あなたの作品をフォークして作られた作品は消えません</strong>。生成の記録（回数・費用・日時）や、いいね・通報・招待の記録も残ります
+   （匿名化した行に紐づくだけになります）。ハンドル名は退会から ${HANDLE_RESERVATION_DAYS} 日のあいだ、ほかの方が使えません。
+   詳しくは<a href="${PRIVACY_PATH}">プライバシーポリシー</a>の「保存期間」と<a href="${TERMS_PATH}">利用規約</a>の「退会」をご覧ください。</p>`,
   },
   {
     id: 'failed-generation',
@@ -176,7 +196,7 @@ export const FAQ_ENTRIES: readonly FaqEntry[] = [
     id: 'contact',
     question: '不具合の報告や、ここにない質問はどこへ送ればよいですか？',
     answer: `<p><a href="${CONTACT_MAILTO}">${CONTACT_EMAIL}</a> までメールでお送りください。</p>
-<p>ご自身の情報の開示・削除などのご請求も同じ窓口で受け付けます（<a href="${PRIVACY_PATH}">プライバシーポリシー</a>）。</p>
+<p>ご自身の情報の開示・削除などのご請求も同じ窓口で受け付けます（<a href="${PRIVACY_PATH}">プライバシーポリシー</a>）。アカウントを消したいだけであれば、ご自身で<a href="#withdraw">退会</a>できます。</p>
 <p>本サービス上の作品があなたの権利を侵害している場合は、<a href="${TAKEDOWN_PATH}">削除依頼フォーム</a>をお使いください（ログインは不要です）。
    不適切な作品を見つけたときは、ログインしたうえで、その作品ページの「この作品を通報する」からお知らせください。</p>`,
   },

@@ -12,6 +12,7 @@ import type { Route } from '../src/routes.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO, OPERATOR_NAME } from '../src/service-contact.js';
 import { SESSION_COOKIE } from '../src/session.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
+import { WITHDRAWN_DISPLAY_NAME } from '../src/withdrawal.js';
 import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
@@ -384,5 +385,55 @@ describe('作者による作品の削除（#517）', () => {
     expect(retention).toContain('通報・削除依頼・運営者の措置・入力の検査の記録がその作品にあるとき');
     // 生成の記録は作品と結び付けていない（確定27）ので、作品を消しても残る。
     expect(retention).toContain('作品を作るときの指示文と生成の記録は削除しません');
+  });
+});
+
+describe('退会（#518 / M15-3）', () => {
+  it('保存期間の節に、退会の機能・消える情報・残る情報と理由・消せないものを書く', async () => {
+    const body = pageBodyOf((await openPrivacy()).body);
+    const retention = body.slice(body.indexOf('<h2>7. 保存期間</h2>'), body.indexOf('<h2>8. '));
+
+    // 機能そのもの（#373 の constraints「していない収集を書かない」の裏で、**できることは書く**）。
+    expect(retention).toContain('利用者はご自身で退会できます');
+    expect(retention).toContain('退会は取り消せません');
+    expect(retention).toContain('新しい招待コードが必要です');
+
+    // 消える情報。**表示名の代わりの値は実装の定数と照合する**（shared-ai-rules 12 章）。
+    expect(retention).toContain('退会すると、次の情報を削除します');
+    expect(retention).toContain(WITHDRAWN_DISPLAY_NAME);
+    expect(retention).toContain('変更の履歴');
+    expect(retention).toContain('待機リスト');
+
+    // 残る情報と理由。
+    expect(retention).toContain('退会しても、次の情報は残します');
+    expect(retention).toContain('他の利用者の招待枠の計算や、対応済みの通報の確かめができなくなる');
+    expect(retention).toContain('1 人あたりの生成枠とサービス全体の費用の上限を管理するために残します');
+    expect(retention).toContain(`${HANDLE_RESERVATION_DAYS} 日のあいだ、ほかの方が使えません`);
+
+    // 消せないもの（#518 の constraints）。**隠さない。**
+    expect(retention).toContain('次のものは、退会しても消せません');
+    expect(retention).toContain('最大 1 年');
+  });
+
+  it('「退会する機能がありません」という旧い案内が残っていない', async () => {
+    const { body } = await openPrivacy();
+    expect(body).not.toContain('退会する機能がありません');
+  });
+
+  it('作品の削除では指示文が残り、退会では消えることを、同じ節で書き分ける（利用者の決定）', async () => {
+    // **#517 が書いた「作品を削除しても指示文と生成の記録は削除しません」は正しいまま。**
+    // 退会だけが例外であることを、同じ場所で書き足す（食い違いを残さない）。
+    const body = pageBodyOf((await openPrivacy()).body);
+    const retention = body.slice(body.indexOf('<h2>7. 保存期間</h2>'), body.indexOf('<h2>8. '));
+    expect(retention).toContain('作品を削除しても、作品を作るときの指示文と生成の記録は削除しません');
+    expect(retention).toContain('退会したときだけは指示文を削除します');
+  });
+
+  it('開示などの請求の節が、退会した後の本人確認を書く', async () => {
+    const body = pageBodyOf((await openPrivacy()).body);
+    const requests = body.slice(body.indexOf('<h2>8. '), body.indexOf('<h2>9. '));
+    expect(requests).toContain('本サービスに登録しているメールアドレスからお送りください');
+    expect(requests).toContain('退会した後にご請求される場合は、この方法で確かめられません');
+    expect(requests).toContain('お応えできないことがあります');
   });
 });

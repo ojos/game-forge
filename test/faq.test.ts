@@ -12,6 +12,8 @@ import { DAILY_QUOTA_PER_USER } from '../src/quota.js';
 import { dispatch } from '../src/routes.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from '../src/service-contact.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
+import { HANDLE_RESERVATION_DAYS } from '../src/handle.js';
+import { WITHDRAWN_DISPLAY_NAME } from '../src/withdrawal.js';
 import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
@@ -256,5 +258,31 @@ describe('作品の削除（#517）', () => {
     const ids = FAQ_ENTRIES.map((entry) => entry.id);
     expect(ids.indexOf('delete-work')).toBe(ids.indexOf('no-fork') + 1);
     expect(answerOf('no-fork')).toContain('href="#delete-work"');
+  });
+});
+
+describe('退会（#518 / M15-3）', () => {
+  it('退会できること・押す場所・消えるもの・戻せないこと・招待が要ることを書く', () => {
+    const answer = answerOf('withdraw');
+    expect(answer).toContain('登録情報の「アカウント」から「退会について確かめる」');
+    expect(answer).toContain('退会すると元に戻せません');
+    expect(answer).toContain('あなたの作品はすべて取り下げられて削除されます');
+    // **表示名の代わりの値と予約の日数は実装の定数と照合する**（shared-ai-rules 12 章）。
+    expect(answer).toContain(WITHDRAWN_DISPLAY_NAME);
+    expect(answer).toContain(`${HANDLE_RESERVATION_DAYS} 日`);
+    expect(answer).toContain('新しい招待コードが必要です');
+    expect(answer).toContain('生成中・リフォージ中の作品があるあいだは退会できません');
+    expect(answer).toContain('フォークして作られた作品は消えません');
+    expect(answer).toContain(`href="${PRIVACY_PATH}"`);
+    expect(answer).toContain(`href="${TERMS_PATH}"`);
+    expect(oldOperationNamesIn(answer)).toEqual([]);
+  });
+
+  it('作品の削除の直後に置き、削除の答えと窓口の答えから辿れる', () => {
+    const ids = FAQ_ENTRIES.map((entry) => entry.id);
+    expect(ids.indexOf('withdraw')).toBe(ids.indexOf('delete-work') + 1);
+    for (const id of ['delete-work', 'contact']) {
+      expect(answerOf(id), `質問 ${id} から退会へのリンクが無い`).toContain('href="#withdraw"');
+    }
   });
 });

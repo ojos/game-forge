@@ -1,17 +1,30 @@
 /**
- * Workers（Cloudflare Pages Functions）がビルド関数を呼ぶためのプリンシパル
- * （仕様 3.3-5 / 4.1 / 9.2 / 確定24。#115）。
+ * エッジ（Cloudflare Pages Functions）が AWS Lambda を呼ぶための唯一のプリンシパル
+ * （仕様 3.3-2.6 / 3.3-5 / 4.1 / 9.2 / 確定24。#115。#160 で対象が移った）。
  *
- * **器（関数・ECR・実行ロール）は terraform/build-function.tf が持つ。** ここが持つのは
- * **呼び出し側**の principal である。文書側の分担（docs/build-function.md が器、
- * docs/build-invocation.md が呼び出し側）と同じ線で分けてある。
+ * **エッジに残る長命キー（`BUILD_AWS_*`）は 1 組だけで、この IAM ユーザーのものである。**
+ * このユーザーが呼べるのは次の 3 関数で、どれも `lambda:InvokeFunction` 1 つを関数 1 つに
+ * 限った権限である（docs/build-invocation.md 3 章「プリンシパル」）。
+ *
+ * | インラインポリシー | 許す対象 | 宣言の場所 |
+ * |---|---|---|
+ * | `build-invoke` | `game-forge-orchestrator` | **このファイル**（下記） |
+ * | `ogp-invoke` | `game-forge-ogp` | terraform/ogp-function.tf |
+ * | `avatar-invoke` | `game-forge-avatar` | terraform/avatar-function.tf |
+ *
+ * **ビルド関数への許可は無い。** ビルド関数を呼ぶのはオーケストレータの実行ロールである
+ * （terraform/orchestrator.tf）。器（関数・ECR・実行ロール）は terraform/build-function.tf が
+ * 持ち、ここが持つのは**エッジ側の principal** である。文書側の分担（docs/build-function.md が
+ * 器、docs/build-invocation.md が呼び出し側）と同じ線で分けてある。
  *
  * ## この宣言が持つ範囲
  *
  * | 対象 | 持ち主 |
  * |---|---|
- * | Workers から呼ぶための IAM ユーザーとポリシー | この宣言 |
- * | アクセスキーの実体 | **この宣言は持たない**（下記。docs/build-invocation.md） |
+ * | エッジが Lambda を呼ぶための IAM ユーザー | この宣言 |
+ * | オーケストレータの呼び出しを許すポリシー（`build-invoke`） | この宣言 |
+ * | OGP / アイコン変換の呼び出しを許すポリシー | 各関数の宣言（上表。関数を消すときに 1 ファイルで閉じるため） |
+ * | アクセスキーの実体 | **この宣言は持たない**（下記。docs/build-invocation.md 3 章） |
  * | ビルド関数・ECR・実行ロール・ロググループ | terraform/build-function.tf |
  * | オーケストレータ（#160 で呼び出しの対象になった） | terraform/orchestrator.tf |
  * | Bedrock を呼ぶ権限（#160 で実行ロールへ移った） | terraform/orchestrator.tf |
@@ -29,13 +42,16 @@
  *
  * ## IAM ロールではなくユーザーにする理由
  *
- * **Workers が AWS の外で動くためである**（仕様 4.1 / 9.2）。ロールを引き受ける経路
- * （インスタンスプロファイル、IRSA、OIDC フェデレーション）がどれも使えず、長命の
- * アクセスキーを Pages のシークレットへ置くことになる。`terraform/bedrock.tf` の
- * `bedrock_invoker` と同じ制約で、同じ形にしてある。
+ * **エッジ（Cloudflare Pages Functions）が AWS の外で動くためである**（仕様 4.1 / 9.2）。
+ * ロールを引き受ける経路（インスタンスプロファイル、IRSA、OIDC フェデレーション）が
+ * どれも使えず、長命のアクセスキーを Pages のシークレットへ置くことになる。
+ * **長命キーになるのは構成上の帰結であり、選好ではない**（docs/build-invocation.md 3 章）。
+ *
+ * **#160 より前は、`terraform/bedrock.tf` の `bedrock_invoker` が同じ制約で同じ形だった。**
+ * 今はあちらが消えて、この形はエッジに 1 つだけである。
  *
  * **長命キーの唯一の対処はローテーションである。** 手順は
- * docs/build-invocation.md 3 章が持つ。
+ * docs/build-invocation.md 3 章「ローテーション」が持つ。
  *
  * ## アクセスキーを宣言しない理由
  *
@@ -58,7 +74,8 @@
 
 locals {
   /**
-   * ビルド関数を呼ぶために要る動作。
+   * エッジからオーケストレータを呼ぶために要る動作（#160 より前はビルド関数だった。
+   * 名前を `build_invoke_*` のままにしている理由は下の resources のコメントにある）。
    *
    * **許可（下記のポリシー）と外部層の検査の期待値（outputs.tf 経由）が、この 1 つの
    * 定義から作られる。** 2 か所へ書き写すと、宣言を変えたときに検査だけが古い期待値を
@@ -112,19 +129,23 @@ resource "aws_iam_user" "build_invoker" {
     ManagedBy = "terraform"
     # IAM のタグ値は [\p{L}\p{Z}\p{N}_.:/=+\-@] しか使えない。全角括弧と # は
     # この集合に無く、ValidationError になる（terraform/bedrock.tf の実測）。
-    Purpose = "Invoke the build function from Cloudflare Pages Functions - spec 3.3-5 and 4.1 / issue 115"
+    Purpose = "Invoke the orchestrator / OGP / avatar functions from Cloudflare Pages Functions - spec 3.3-2.6 and 4.1 / issue 115 and 160"
   }
 }
 
 /**
- * 呼び出しに要る最小の権限（docs/build-invocation.md 3 章のポリシーそのもの）。
+ * オーケストレータの呼び出しに要る最小の権限（docs/build-invocation.md 3 章
+ * 「プリンシパル」に貼ってあるポリシーそのもの。3 本のうちの 1 本目）。
  *
  * 動作 1 つ・対象 1 つだけである。ログの読み取り（`logs:FilterLogEvents`）も
- * 関数の情報取得（`lambda:GetFunction`）も与えない。**Workers は呼ぶだけで、
+ * 関数の情報取得（`lambda:GetFunction`）も与えない。**エッジは呼ぶだけで、
  * 失敗の手掛かりは応答の `x-amzn-RequestId` から辿る**（docs/build-invocation.md 5 章）。
  */
 data "aws_iam_policy_document" "build_invoke" {
   statement {
+    # sid とポリシー名（build-invoke）は #160 より前の綴りのままである。**改名しない。**
+    # 実際の対象はオーケストレータで、綴りが指すのは「AWS Lambda を呼ぶ側」である
+    # （BUILD_AWS_* を改名しない理由と同じ。src/orchestrator/start-job.ts）。
     sid    = "InvokeBuildFunction"
     effect = "Allow"
 

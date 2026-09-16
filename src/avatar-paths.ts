@@ -16,9 +16,11 @@
  *
  * ## R2 のキーは利用者ごとに 1 つに固定する
  *
- * `avatars/<user_id>.webp`。**ヘッダのアバターは D1 を読まずに描く**（`src/html.ts` の
- * `resolveSiteViewer` は署名しか見ず、その性質を `test/news.test.ts` / `test/privacy.test.ts` が
- * D1 を壊して確かめている）ので、URL が利用者の id だけで決まる必要がある。
+ * `avatars/<user_id>.webp`。**ヘッダのアバターは画像の版を D1 から引かずに描く**
+ * （`src/html.ts` の `headerAvatarUrl` は要求と id だけを見る）ので、URL が利用者の id だけで
+ * 決まる必要がある。**未ログインの閲覧では D1 を 1 行も読まない**——`resolveSiteViewer` が
+ * D1 を読むのは署名の通った cookie を持つ要求だけで（#518 で退会を見るようになった）、
+ * その性質を `test/news.test.ts` / `test/privacy.test.ts` が D1 を壊して確かめている。
  *
  * **差し替え前の画像は `avatars/history/` へ写す。** この接頭辞にだけ R2 のライフサイクル規則
  * （30 日で削除）を置く（`terraform/r2-lifecycle.tf`）。**`avatars/<user_id>.webp` と

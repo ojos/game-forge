@@ -77,6 +77,7 @@ import type { StorageEnv } from './build-cache.js';
 import { AVATAR_HISTORY_PREFIX, avatarObjectKey } from './avatar-paths.js';
 import { AVATAR_LOCK_SECONDS } from './avatar.js';
 import { PUBLISHED_STATUS, REMOVED_STATUS } from './games.js';
+import { readSessionCookie, verifySession } from './session.js';
 
 /**
  * 退会した利用者の表示名。
@@ -166,6 +167,84 @@ export type WithdrawalOutcome =
  *
  * @returns 条件（括弧で閉じてある）
  */
+/**
+ * 段0 の結果。
+ *
+ * - `ok` … 退会の口を通してよい（{@link withdrawUser} を呼ぶ）
+ * - `unauthorized` … ログインし直してもらう（401 / ログインへの転送）
+ * - `hidden` … 口そのものを無かったことにする（404）
+ */
+export type WithdrawalSession =
+  | { readonly ok: true; readonly userId: string }
+  | { readonly ok: false; readonly reason: 'unauthorized' | 'hidden' };
+
+/**
+ * 段0: 退会の口だけが使う認証（#518。設計の 2 章）。
+ *
+ * ## なぜ `resolveSessionUser` を使えないのか
+ *
+ * **あちらは「退会を始めた行」を拒む**（`src/session-user.ts`。#518 で足した）。拒まないと、
+ * 掴んだあと確定するまでの間に別の口から書き込めてしまう。**ところが退会の口自身も同じ
+ * 判定に当たる**——段2 や段3 の手前で落ちた要求を、同じ cookie で押し直せなくなる
+ * （{@link withdrawUser} は打ち直しで続きから進む設計なのに、その入口が閉じる）。
+ *
+ * そこで**この口にだけ例外を置く。** `resolveSessionUser` の規律は 1 文字も変えない
+ * ——例外を向こうへ足すと、32 か所の呼び出し全部がその例外を持つことになる。
+ *
+ * ## 判定
+ *
+ * | 行の状態 | 結果 |
+ * |---|---|
+ * | cookie が無い・署名が通らない | `unauthorized` |
+ * | 行が無い | `unauthorized` |
+ * | BAN されている | `unauthorized`（BAN の回避に使わせない。#518 の constraints） |
+ * | 管理者（`is_admin`） | `hidden`（404。先に D1 で権限を外す運用にする） |
+ * | 退会を始めている・退会済み | **通す**（打ち直しで続きから進む。{@link WITHDRAWAL_ALREADY}） |
+ * | それ以外 | 通す |
+ *
+ * **運営フラグ（`is_operator`）は見ない**（#518 の J7。導線を出さないのは画面の仕事で、
+ * ここで断ると運営が自分の意思で退会できなくなる）。
+ *
+ * **BAN と不在と署名の失敗を区別して返さない**（`resolveSessionUser` と同じ理由。
+ * 区別できる応答は、任意の id が生きているかを外から確かめる手がかりになる）。**管理者だけを
+ * 分けるのは、返すのが「口が無い」という同じ 404 だから**である——404 は、綴りを知らない
+ * 人が受け取る応答と同じ形で、そこから読み取れるものが無い。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns 通してよい利用者、または断る形
+ * @throws `SESSION_SECRET` が未設定・短すぎる場合（`src/session.ts` の `importKey`）
+ */
+export async function resolveWithdrawalSession(
+  request: Request,
+  env: Env,
+): Promise<WithdrawalSession> {
+  const token = readSessionCookie(request.headers.get('cookie'));
+  if (token === null) {
+    return { ok: false, reason: 'unauthorized' };
+  }
+  const verified = await verifySession(token, env.SESSION_SECRET);
+  if (!verified.ok) {
+    console.error(`[withdrawal] セッションを受け付けませんでした: ${verified.reason}`);
+    return { ok: false, reason: 'unauthorized' };
+  }
+
+  const row = await env.DB.prepare('select banned_at, is_admin from users where id = ?')
+    .bind(verified.payload.userId)
+    .first<{ banned_at: number | null; is_admin: number }>();
+  if (row === null) {
+    console.error('[withdrawal] セッションが指す利用者が存在しません');
+    return { ok: false, reason: 'unauthorized' };
+  }
+  if (row.banned_at !== null) {
+    return { ok: false, reason: 'unauthorized' };
+  }
+  if (row.is_admin === 1) {
+    return { ok: false, reason: 'hidden' };
+  }
+  return { ok: true, userId: verified.payload.userId };
+}
+
 export function withdrawalRecordsSql(): string {
   return `(exists (select 1 from admin_actions where target_kind = 'user' and target_id = ?)
            or exists (select 1 from reports r join games g on g.id = r.game_id where g.author_id = ?)

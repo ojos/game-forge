@@ -751,6 +751,18 @@ async function resolveUser(
  * 条件と同じ綴り**にしてある（`src/display-name-changes.ts`）。同時に走った `/account` の
  * 変更と交差しても、2 文は同じ時点の行を見る。
  *
+ * ## 退会した行は引き当てない（#518 / M15-3）
+ *
+ * **2 文の `where` に `withdrawal_started_at is null` を足す。** 退会した行の `google_sub` は
+ * `'withdrawn:' || id` へ置き換わる（`src/withdrawal.ts`）ので、確定した後は綴りが変わって
+ * 引き当たらない。**塞ぐのは、掴んでから確定するまでの数百ミリ秒**である——その窓で同じ
+ * Google アカウントがログインしてくると、**退会の最中の行に新しいセッションが発行され、
+ * `email` と表示名が書き戻る。**
+ *
+ * 引き当たらなければ、下の `resolveUser` は新規登録の経路へ進む。招待が無ければ
+ * `invite-required`、あれば**新しい `users.id`** になり、退会した行とは結び付かない
+ * （#518 の acceptance 2）。
+ *
  * **マイグレーションの適用漏れでログインが止まる形になる**（履歴の表が無いと batch ごと落ちる）。
  * **本番へ配る前に未適用のマイグレーションを CI が止める**（`scripts/check-migrations-applied.sh`）
  * ので、それを前提にする——止まらずに配られた場合に履歴を書かずにログインを通すと、
@@ -771,7 +783,7 @@ async function refreshExistingUser(
     // 条件は下の UPDATE の `case` が名前を書き換える条件と同じで、**利用者が名前を決めて
     // いれば 0 行、Google の名前が変わっていなければ 0 行**になる。
     displayNameHistoryInsert(db, {
-      where: 'google_sub = ? and display_name_set_at is null',
+      where: 'google_sub = ? and display_name_set_at is null and withdrawal_started_at is null',
       bindings: [identity.sub],
       newName: identity.displayName,
       changedAt: nowSeconds,
@@ -781,7 +793,7 @@ async function refreshExistingUser(
         `update users
             set email = ?,
                 display_name = case when display_name_set_at is null then ? else display_name end
-          where google_sub = ?
+          where google_sub = ? and withdrawal_started_at is null
           returning id, banned_at`,
       )
       .bind(identity.email, identity.displayName, identity.sub),

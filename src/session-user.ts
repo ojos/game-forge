@@ -20,6 +20,21 @@
  * 差分が生まれても動作では気づけない（どちらも「ログインできている」ように見える）。
  * 生成（`src/generate.ts`）と招待の発行（`src/invite-issuance.ts`）が同じ関数を呼ぶ形に
  * しておけば、条件を足すときの追随箇所が 1 つで済む。
+ *
+ * ## 退会した利用者も拒む（#518 / M15-3）
+ *
+ * **署名付き cookie はサーバから失効できない**（BAN と同じ事情）。退会は本人が押した操作なので
+ * 「押した端末のセッションを消す」だけなら応答で足りるが、**同じ人が別の端末でログインしたまま
+ * 残っている**——その端末からの書き込みを止めるには、ここで行を見るしかない。
+ *
+ * **判定は `withdrawal_started_at is not null` である**（`withdrawn_at` ではない）。掴んでから
+ * 確定するまでの数百ミリ秒に、別のタブから作品が生まれたり表示名が変わったりする余地を残さない。
+ * 作品の生成とリフォージは `migrations/0045_user_withdrawal.sql` のトリガが D1 の側でも塞ぐが、
+ * **トリガが見ているのは 2 つの表だけ**で、それ以外の書き込み（プロフィール・ハンドル名・通報・
+ * 招待の発行）を止めるのはこの 1 行である。
+ *
+ * **退会の口だけは、この判定を通さない**（`src/withdrawal.ts` の `resolveWithdrawalSession`）。
+ * 段2・段3 の手前で落ちた退会を、同じ cookie で押し直せるようにするためである。
  */
 import { readSessionCookie, verifySession } from './session.js';
 
@@ -59,9 +74,11 @@ export async function resolveSessionUser(
     return { ok: false };
   }
 
-  const row = await env.DB.prepare('select banned_at from users where id = ?')
+  const row = await env.DB.prepare(
+    'select banned_at, withdrawal_started_at from users where id = ?',
+  )
     .bind(verified.payload.userId)
-    .first<{ banned_at: number | null }>();
+    .first<{ banned_at: number | null; withdrawal_started_at: number | null }>();
   if (row === null) {
     // 署名は通るが利用者が居ない。招待の消費に失敗して取り消された行（#14 T7 の補償）や、
     // 手動で消した行のセッションがこれにあたる。
@@ -70,6 +87,12 @@ export async function resolveSessionUser(
   }
   if (row.banned_at !== null) {
     console.error('[session] BAN された利用者の要求を拒否しました');
+    return { ok: false };
+  }
+  if (row.withdrawal_started_at !== null) {
+    // 退会を始めた利用者（処理中を含む。#518）。**退会済みと処理中を分けない**——
+    // どちらも「この行でもう書き込ませない」で、呼ぶ側にできることは同じである。
+    console.error('[session] 退会した利用者の要求を拒否しました');
     return { ok: false };
   }
 

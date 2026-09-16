@@ -44,10 +44,17 @@ export const PARTICIPANT_CAP = 50;
  * **BAN 済みは数えない**（8.1）。行を消さずに `banned_at` を立てる設計（0001）なので、
  * 数えると BAN した人数だけ上限が実質的に下がる。
  *
+ * **退会した利用者も数えない**（#518 / M15-3）。退会でも行は消さず、匿名化して
+ * `withdrawal_started_at` を立てるだけなので（`src/withdrawal.ts`）、数えると**退会した人数だけ
+ * 上限が実質的に下がり、その席は誰も座れないまま埋まり続ける。** BAN と同じ理由である。
+ *
+ * **判定は `withdrawal_started_at is not null`**（`withdrawn_at` ではない）。立った時点で
+ * ログインも書き込みも止まるので、確定を待つ数百ミリ秒のあいだも参加者ではない。
+ *
  * **1 行の単一引用符つきリテラルに保つ。** `scripts/invite-stock.sh` が `sed` で取り出す
  * （`scripts/report-queue.sh` が `REVIEW_QUEUED` を取り出すのと同じ形）。
  */
-export const PARTICIPANT_WHERE_SQL = 'banned_at is null';
+export const PARTICIPANT_WHERE_SQL = 'banned_at is null and withdrawal_started_at is null';
 
 /**
  * 参加者の人数を数える。

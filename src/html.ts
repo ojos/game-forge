@@ -264,6 +264,19 @@ export function headerAvatarUrl(request: Request, env: Env, userId: string): str
  *   ログアウトの**フォーム**で、リンクの先は `resolveSessionUser` が改めて見る（BAN された
  *   利用者はログインへ送られる）。**出し分けを間に受けて認可を省く経路は 1 本も無い。**
  *
+ * ## それでも退会だけは D1 を 1 行読む（#518 / M15-3）
+ *
+ * **退会した人に「ログインしています」と言い続けるのは、漏れではなく嘘である。** BAN と違って
+ * 退会は本人が押した操作で、押した本人が「まだログインしたままに見える」画面を見る
+ * （#518 の acceptance 2 は、もう一方の端末でヘッダが未ログインになることを求めている）。
+ * リンクの先が 401 になることでは足りない——**押す前に、退会が効いていることが見えないといけない。**
+ *
+ * **読むのは、署名が通ったときだけである。** 未ログインの閲覧（共有 URL を踏んだ大半）は
+ * cookie が無いので 1 行も読まない。**D1 が落ちても投げない**——読めなければ未ログインへ倒し、
+ * 本文は返す（下の「投げない」と同じ理由。`/terms` と `/takedown` はいちばん落としてはいけない）。
+ * **`test/privacy.test.ts` / `test/faq.test.ts` / `test/news.test.ts` が壊れた D1 で開くのは
+ * 未ログインの経路**なので、ここは 1 度も呼ばれない。
+ *
  * ## 投げない
  *
  * `verifySession` は `SESSION_SECRET` が未設定・短いときに投げる（`src/session.ts`）。
@@ -285,7 +298,10 @@ export async function resolveSiteViewer(request: Request, env: Env): Promise<Sit
   }
   try {
     const verified = await verifySession(token, env.SESSION_SECRET);
-    return verified.ok
+    if (!verified.ok) {
+      return siteViewerAt(path, false, null);
+    }
+    return (await viewerStillSignedIn(env, verified.payload.userId))
       ? siteViewerAt(path, true, headerAvatarUrl(request, env, verified.payload.userId))
       : siteViewerAt(path, false, null);
   } catch (error) {
@@ -296,6 +312,42 @@ export async function resolveSiteViewer(request: Request, env: Env): Promise<Sit
       }`,
     );
     return siteViewerAt(path, false, null);
+  }
+}
+
+/**
+ * ヘッダを「ログイン済み」で出してよい行かを見る（#518 / M15-3）。
+ *
+ * **見るのは退会だけである。** BAN は素通りさせる（{@link resolveSiteViewer} の「BAN を素通り
+ * させても漏れない」）——**BAN された利用者に「ログアウト」を出し続けるほうが、押せる出口を
+ * 残す**という既存の判断を、この変更でひっくり返さない。
+ *
+ * **行が無いときも「ログイン済み」のまま返す。** 退会は行を消さない（`src/withdrawal.ts`）ので、
+ * 行が無いのは別の事情（招待の消費に失敗して取り消された行など）である。**そこまで倒すのは
+ * この変更の範囲ではない**——`resolveSessionUser` は拒むが、ヘッダの出し分けは #518 より前から
+ * 素通りさせており、ここで一緒に変えると退会と無関係の挙動が動く。
+ *
+ * **落ちたときも「ログイン済み」のまま返す。** D1 が読めないことは退会の証拠ではなく、ここで
+ * 未ログインへ倒すと、D1 の一時的な不調で全画面のヘッダからログアウトが消える。**漏れないのは
+ * 上のとおり**（リンクの先は `resolveSessionUser` が改めて見る）。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 署名が通った利用者の id
+ * @returns 退会していなければ true
+ */
+async function viewerStillSignedIn(env: Env, userId: string): Promise<boolean> {
+  try {
+    const row = await env.DB.prepare('select withdrawal_started_at from users where id = ?')
+      .bind(userId)
+      .first<{ withdrawal_started_at: number | null }>();
+    return row === null || row.withdrawal_started_at === null;
+  } catch (error) {
+    console.error(
+      `[html] ヘッダの出し分けで利用者を読めませんでした: ${
+        error instanceof Error ? error.name : typeof error
+      }`,
+    );
+    return true;
   }
 }
 

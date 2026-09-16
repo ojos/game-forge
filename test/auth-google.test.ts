@@ -22,6 +22,7 @@ import { ACCOUNT_DISPLAY_NAME_PATH, ACCOUNT_PATH, DISPLAY_NAME_FIELD } from '../
 import { DISPLAY_NAME_CHANGES_TABLE } from '../src/display-name-changes.js';
 import { normalizeInviteCode } from '../src/invite-code.js';
 import { SIGNUP_PATH } from '../src/paths.js';
+import { WITHDRAWN_DISPLAY_NAME, withdrawUser } from '../src/withdrawal.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -1450,5 +1451,113 @@ describe('ログインの後は、開こうとしていた画面へ戻す（2.3.
       started.cookieHeader,
     );
     expect(response.headers.get('location')).toBe(`${SIGNUP_PATH}?reason=invite-required`);
+  });
+});
+
+describe('退会した行ではログインできない（#518 の acceptance 2 / M15-3）', () => {
+  /**
+   * 招待を消費して 1 人登録する。
+   *
+   * @param sub Google のアカウント識別子
+   * @param code 招待コード
+   * @returns 作られた利用者の id
+   */
+  async function register(sub: string, code: string): Promise<string> {
+    await seedInvite(code);
+    const exchanged = recordExchange(buildIdToken({ sub, email: `${sub}@example.com`, name: '退会する人' }));
+    const overrides = {
+      exchange: exchanged.exchange,
+      now: () => NOW,
+      randomToken: fixedRandomToken(),
+    };
+    const routes = createAuthRoutes(overrides);
+    const started = await startLoginWithInvite(overrides, testEnv(), code);
+    const response = await callback(
+      routes,
+      testEnv(),
+      `code=code-${sub}&state=${FIXED_STATE}`,
+      started.cookieHeader,
+    );
+    expect(response.status).toBe(303);
+    const rows = await usersBySub(sub);
+    expect(rows).toHaveLength(1);
+    return rows[0]!.id;
+  }
+
+  /**
+   * 招待の有無を選んでログインし直す。
+   *
+   * @param sub Google のアカウント識別子
+   * @param code 招待コード（招待なしなら null）
+   * @returns レスポンス
+   */
+  async function relogin(sub: string, code: string | null): Promise<Response> {
+    const exchanged = recordExchange(buildIdToken({ sub, email: `${sub}@example.com`, name: '戻ってきた人' }));
+    const overrides = {
+      exchange: exchanged.exchange,
+      now: () => NOW + 1000,
+      randomToken: fixedRandomToken(),
+    };
+    const routes = createAuthRoutes(overrides);
+    const started =
+      code === null
+        ? await startLogin(routes, testEnv())
+        : await startLoginWithInvite(overrides, testEnv(), code);
+    return await callback(
+      routes,
+      testEnv(),
+      `code=again-${sub}&state=${FIXED_STATE}`,
+      started.cookieHeader,
+    );
+  }
+
+  it('退会した後は、招待が無ければ「招待コードが要る」になる', async () => {
+    const sub = 'google-sub-withdrawn-noinvite';
+    const userId = await register(sub, 'WDNXNE012345');
+    const outcome = await withdrawUser(env as unknown as Env, userId, NOW + 10);
+    expect(outcome.ok).toBe(true);
+
+    const response = await relogin(sub, null);
+    expect(response.headers.get('location')).toBe(`${SIGNUP_PATH}?reason=invite-required`);
+    // **退会した行は引き当てない**（`google_sub` が置き換わっている）。
+    expect(await usersBySub(sub)).toHaveLength(0);
+    // セッションも発行されない。
+    expect(findCookie(response, SESSION_COOKIE)).toBeUndefined();
+  });
+
+  it('退会した後に招待があれば、旧い行とは別の新しい id で登録される', async () => {
+    const sub = 'google-sub-withdrawn-invited';
+    const userId = await register(sub, 'WDBACK012345');
+    expect((await withdrawUser(env as unknown as Env, userId, NOW + 10)).ok).toBe(true);
+    await seedInvite('WDNEW0012345');
+
+    const response = await relogin(sub, 'WDNEW0012345');
+    expect(response.status).toBe(303);
+    const rows = await usersBySub(sub);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.id, '旧い行を使い回さない').not.toBe(userId);
+
+    // **旧い行はそのまま残り、匿名化されたままである**（招待の連鎖と通報の行き先を保つ）。
+    const old = await env.DB.prepare('select display_name, email from users where id = ?')
+      .bind(userId)
+      .first<{ display_name: string; email: string }>();
+    expect(old?.display_name).toBe(WITHDRAWN_DISPLAY_NAME);
+    expect(old?.email).toBe('');
+  });
+
+  it('退会を掴んだだけ（確定の前）でも、そのログインは行を書き換えない', async () => {
+    // **段1 と段3 のあいだの数百ミリ秒**。`google_sub` はまだ実の値なので、条件を足して
+    // いないと引き当たり、`email` と表示名が書き戻る（#518 の設計 3 章）。
+    const sub = 'google-sub-withdrawing';
+    const userId = await register(sub, 'WDMXD0012345');
+    await env.DB.prepare('update users set withdrawal_started_at = ? where id = ?')
+      .bind(NOW + 5, userId)
+      .run();
+    const before = await env.DB.prepare('select * from users where id = ?').bind(userId).first();
+
+    const response = await relogin(sub, null);
+    expect(response.headers.get('location')).toBe(`${SIGNUP_PATH}?reason=invite-required`);
+    const after = await env.DB.prepare('select * from users where id = ?').bind(userId).first();
+    expect(JSON.stringify(after), '1 列も変わらない').toBe(JSON.stringify(before));
   });
 });

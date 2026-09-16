@@ -538,8 +538,8 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   // **ヘッダの出し分けだけを先に決める**（2.3.7 / #331）。**本文はログイン状態で
   // 変わらない**——作者ページは誰にでも同じものが出る（`src/home.ts` と同じ扱い）。
-  // **D1 は読まない**（`resolveSiteViewer` は署名だけを見る）ので、404 の経路でも 1 行も
-  // 増えない。
+  // **未ログインの閲覧では D1 を読まない**ので、404 の経路でも 1 行も増えない（ログイン済みの
+  // 要求だけ、退会を見るために 1 行読む。#518）。
   const viewer = await resolveSiteViewer(request, env);
   const userId = userIdFromPath(url.pathname);
   if (userId === null) {
@@ -550,13 +550,18 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
   // アイコン（#380）も同じ 1 行から引く。**版は `avatar_sha256` が無ければ使わない**（外した後も進む）。
   // **いま使っているハンドル名（#381）も同じ 1 回で引く**（部分索引の 1 行。あれば `/@handle` へ 301）。
   const user = await env.DB.prepare(
-    `select display_name, bio, profile_links, avatar_sha256, avatar_set_at,
+    `select display_name, bio, profile_links, avatar_sha256, avatar_set_at, withdrawal_started_at,
             (select h.handle from ${HANDLES_TABLE} h where h.user_id = users.id and h.released_at is null) as handle
        from users where id = ?`,
   )
     .bind(userId)
     .first<AuthorUserRow & { handle: string | null }>();
-  if (user === null) {
+  if (user === null || user.withdrawal_started_at !== null) {
+    // **退会した持ち主の作者ページは 404 である**（#518 / M15-3）。行は残るが、出すものが
+    // 1 つも無い——表示名は「退会したユーザー」、自己紹介とリンクは空、アイコンは消え、作品は
+    // 後続の処理が全件消す。**居ないことと同じ応答にする**（`resolveWithdrawalSession` と同じ
+    // 判断で、退会したかどうかを外から数えられる口を作らない）。**掴んだ時点で 404 になる**
+    // ——確定を待つ数百ミリ秒のあいだ、匿名化の前の名前が出続けない。
     return notFound(viewer);
   }
   if (isStoredHandle(user.handle)) {
@@ -573,6 +578,13 @@ interface AuthorUserRow {
   readonly profile_links: string | null;
   readonly avatar_sha256: string | null;
   readonly avatar_set_at: number | null;
+  /**
+   * 退会を掴んだ時刻（#518 / M15-3。**描画には使わない**——立っていれば 404 にする）。
+   *
+   * **`banned_at` は引き続き選ばない**（モジュール冒頭。BAN された利用者の作者ページは出す）。
+   * 退会を選ぶのは、**出すものが 1 つも残らないから**であって、行を隠したいからではない。
+   */
+  readonly withdrawal_started_at: number | null;
 }
 
 /**
@@ -627,6 +639,7 @@ async function showHandlePage(request: Request, env: Env, now: () => number): Pr
   const row = await env.DB.prepare(
     `select h.user_id, h.released_at,
             u.display_name, u.bio, u.profile_links, u.avatar_sha256, u.avatar_set_at,
+            u.withdrawal_started_at,
             (select c.handle from ${HANDLES_TABLE} c where c.user_id = h.user_id and c.released_at is null)
               as current_handle
        from ${HANDLES_TABLE} h
@@ -635,7 +648,10 @@ async function showHandlePage(request: Request, env: Env, now: () => number): Pr
   )
     .bind(handle)
     .first<AuthorUserRow & { user_id: string; released_at: number | null; current_handle: string | null }>();
-  if (row === null) {
+  if (row === null || row.withdrawal_started_at !== null) {
+    // **退会した持ち主のハンドル名のページは 404 である**（#518 / M15-3）。退会の確定で
+    // `released_at` が入り 90 日の予約へ移るが、**転送の枝へ落とさない**——いまのハンドル名が
+    // 無いので `/users/<id>` へ送ることになり、その先も 404 になる（転送を 1 段無駄にしない）。
     return notFound(viewer);
   }
   if (row.released_at === null) {

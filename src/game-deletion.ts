@@ -107,8 +107,19 @@
  * `test/game-deletion.test.ts` が実測する。D1 の 1 呼び出しあたりの枠は 50）。
  *
  * **`games` の `meta.changes` をちょうどの値と比べない**（`games` にはトリガがある。
- * `migrations/0037_game_search.sql`）。0 か否かだけを見る。
+ * `migrations/0037_game_search.sql` と `migrations/0045_user_withdrawal.sql`）。0 か否かだけを見る。
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 受け取る env は D1 と R2 だけである（#586）
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * **`Env` をそのまま要求しない。** 退会の後続の処理はこの関数を**別の Worker**
+ * （`game-forge-cleanup`。`workers/cleanup/`）から呼ぶ。あちらは Pages の宣言から生成される
+ * `Env` を持たず、自分のバインディングだけを持つ手書きの型を使うので、`Env` を要求すると
+ * 呼べない。**読んでいるのは `DB` と `BUCKET` の 2 つだけ**なので、
+ * {@link StorageEnv}（`src/build-cache.ts`）へ狭める。
  */
+import type { StorageEnv } from './build-cache.js';
 import { deleteUnreferencedArtifacts } from './build-cache.js';
 import { DRAFT_STATUS, PUBLISHED_STATUS, REMOVED_STATUS, UNBUILT_GO_VERSION } from './games.js';
 import { ogpObjectKey } from './ogp.js';
@@ -155,7 +166,7 @@ export type GameDeletionOutcome =
  * @returns 削除の結果
  */
 export async function deleteGame(
-  env: Env,
+  env: StorageEnv,
   gameId: string,
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<GameDeletionOutcome> {
@@ -205,7 +216,7 @@ export async function deleteGame(
  * @param now 時刻（UNIX 秒）
  * @returns 掴めたら true
  */
-async function claimDeletion(env: Env, gameId: string, now: number): Promise<boolean> {
+async function claimDeletion(env: StorageEnv, gameId: string, now: number): Promise<boolean> {
   const result = await env.DB.prepare(
     `update games
         set deletion_started_at = coalesce(deletion_started_at, ?), ogp_token_hash = null
@@ -230,7 +241,7 @@ async function claimDeletion(env: Env, gameId: string, now: number): Promise<boo
  * @param gameId 作品 id
  * @returns 削除の結果
  */
-async function settledOutcome(env: Env, gameId: string): Promise<GameDeletionOutcome> {
+async function settledOutcome(env: StorageEnv, gameId: string): Promise<GameDeletionOutcome> {
   const row = await env.DB.prepare(
     `select g.status as status, g.generation_state as generation_state, g.purged_at as purged_at,
             exists (select 1 from game_revision_jobs j
@@ -315,7 +326,7 @@ function claimedSql(): string {
  * @param now 時刻（UNIX 秒）
  * @returns 準備済みの文（9 本）
  */
-function finalizeStatements(env: Env, gameId: string, now: number): D1PreparedStatement[] {
+function finalizeStatements(env: StorageEnv, gameId: string, now: number): D1PreparedStatement[] {
   const records = [gameId, gameId, gameId, gameId] as const;
   const keep = `(${hasChildrenSql()} or ${hasRecordsSql()})`;
   const keepBindings = [gameId, ...records] as const;

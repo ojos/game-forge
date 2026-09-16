@@ -175,6 +175,31 @@ if require "terraform の avatar_history_prefix" "$tf_prefix" && require "src/av
     fail=1
   fi
 fi
+# ── 4.2 退会がアイコンを消すとき、接頭辞とキーを定数から取る（#518 / #586）────
+#
+# **退会は `avatars/history/<user_id>/` を一覧して全部消す**（`src/withdrawal.ts` の段2）。
+# D1 の `avatar_changes.history_key` に頼らないのは、**記録の無い写し**（履歴の行を書く前に
+# 落ちた操作）まで消すためである。そのぶん、**接頭辞の綴りを書き写すと、接頭辞を変えた日に
+# 退会だけが古い場所を消しに行く**——消えない写しが残り、`/privacy` の約束が嘘になる。
+# だから `src/avatar-paths.ts` から import していることを機械で見る。
+WITHDRAWAL_TS="src/withdrawal.ts"
+if [[ -f "$WITHDRAWAL_TS" ]]; then
+  for symbol in AVATAR_HISTORY_PREFIX avatarObjectKey; do
+    if ! grep -q "^import .*\b${symbol}\b.*from '\./avatar-paths\.js';" "$WITHDRAWAL_TS" &&
+       ! grep -q "^  ${symbol},\$" "$WITHDRAWAL_TS"; then
+      echo "[avatar-copies] ${WITHDRAWAL_TS} が ${symbol} を src/avatar-paths.ts から import していません。" >&2
+      echo "[avatar-copies] **接頭辞やキーの綴りを書き写すと、変えた日に退会だけが古い場所を消します。**" >&2
+      fail=1
+    fi
+  done
+  # **文字列リテラルで接頭辞を書いていない**ことも見る（import したうえで別に書けてしまう）。
+  if grep -q "'avatars/" "$WITHDRAWAL_TS"; then
+    echo "[avatar-copies] ${WITHDRAWAL_TS} に 'avatars/…' のリテラルがあります（定数から組み立てること）。" >&2
+    fail=1
+  fi
+  echo "[avatar-copies] ok ${WITHDRAWAL_TS} は接頭辞とキーを src/avatar-paths.ts から取っている"
+fi
+
 tf_days="$(tf_number "$LIFECYCLE_TF" avatar_history_retention_days)"
 ts_days="$(ts_number "$AVATAR_TS" AVATAR_HISTORY_RETENTION_DAYS)"
 if require "terraform の avatar_history_retention_days" "$tf_days" && require "src/avatar.ts の AVATAR_HISTORY_RETENTION_DAYS" "$ts_days"; then

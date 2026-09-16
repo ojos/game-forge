@@ -60,6 +60,24 @@
  *    （3.7 の注記）。
  */
 
+/**
+ * **D1 と R2 だけを持つ環境**（#586 / M15-3a）。
+ *
+ * このモジュールと `src/game-deletion.ts` が `env` から読むのは `DB` と `BUCKET` の 2 つだけで、
+ * ホスト名も生成モデルも Lambda の関数名も見ない。**`Env` をそのまま要求すると、
+ * Pages 以外からは呼べない**——退会の後続の処理は別の Worker（`game-forge-cleanup`）で走り、
+ * あちらは自分のバインディングだけを持つ手書きの型（`workers/cleanup/src/hub.ts` の `CleanupEnv`）
+ * を使う（`workers/likes/src/hub.ts` の `LikesEnv` と同じ形）。
+ *
+ * **綴りをここ 1 か所に置く。** 7 か所へ `Pick<Env, 'DB' | 'BUCKET'>` を書き写すと、
+ * 読む束縛を増やした日に片方だけが古くなる（shared-ai-rules 12 章）。
+ *
+ * **型注釈だけの変更なので、オーケストレータの束（このモジュールは束に入る）の `CodeSha256` は
+ * 変わらない**——esbuild は型を落とすだけで、出力される JavaScript は 1 バイトも動かない。
+ * 確かめ方は `scripts/orchestrator-bundle-changed.sh`。
+ */
+export type StorageEnv = Pick<Env, 'DB' | 'BUCKET'>;
+
 /** 索引 1 行分。`migrations/0002_build_cache.sql` の列と 1 対 1 に対応する。 */
 export interface BuildCacheEntry {
   /** 生成ソース（UTF-8）の SHA-256（小文字 16 進）。3.8 の「コンテンツハッシュ」。 */
@@ -143,7 +161,7 @@ export type BuildCacheLookup =
  * @param sourceSha256 生成ソースのコンテンツハッシュ
  * @returns ヒットなら索引の行、ミスなら理由
  */
-export async function readBuildCache(env: Env, sourceSha256: string): Promise<BuildCacheLookup> {
+export async function readBuildCache(env: StorageEnv, sourceSha256: string): Promise<BuildCacheLookup> {
   const row = await env.DB.prepare(
     `select source_sha256, go_version, source_key, wasm_key,
             wasm_bytes, wasm_sha256, compressed_bytes, compressed_sha256,
@@ -183,7 +201,7 @@ export async function readBuildCache(env: Env, sourceSha256: string): Promise<Bu
  * @param now 記録時刻（UNIX 秒。既定は現在時刻）
  */
 export async function recordBuildCache(
-  env: Env,
+  env: StorageEnv,
   record: BuildCacheRecord,
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<void> {
@@ -215,7 +233,7 @@ export async function recordBuildCache(
  * @param env バインディングと環境変数
  * @param sourceSha256 生成ソースのコンテンツハッシュ
  */
-export async function forgetBuildCache(env: Env, sourceSha256: string): Promise<void> {
+export async function forgetBuildCache(env: StorageEnv, sourceSha256: string): Promise<void> {
   await env.DB.prepare('delete from build_cache where source_sha256 = ?')
     .bind(sourceSha256)
     .run();
@@ -255,7 +273,7 @@ export async function forgetBuildCache(env: Env, sourceSha256: string): Promise<
  * @returns 実際に落とした索引の行（落とす前の内容。戻すときに使う）
  */
 export async function takeBuildCacheByArtifact(
-  env: Env,
+  env: StorageEnv,
   keys: readonly string[],
 ): Promise<readonly BuildCacheEntry[]> {
   if (keys.length === 0) {
@@ -330,7 +348,7 @@ function referenceCountSql(keyExpression: string): string {
  * @returns 参照している行（他の作品の `games` 行と版）の件数
  */
 export async function countArtifactReferences(
-  env: Env,
+  env: StorageEnv,
   key: string,
   excludeGameId: string,
 ): Promise<number> {
@@ -417,7 +435,7 @@ export function artifactDeletionPlanSql(): string {
  * @returns 消してよいキーと、残すキー
  */
 export async function planArtifactDeletion(
-  env: Env,
+  env: StorageEnv,
   gameId: string,
 ): Promise<ArtifactDeletionPlan> {
   const { results } = await env.DB.prepare(artifactDeletionPlanSql())
@@ -489,7 +507,7 @@ export async function planArtifactDeletion(
  * @returns 実際に消したキーと、残したキー（2 回目の数え直しの結果）
  */
 export async function deleteUnreferencedArtifacts(
-  env: Env,
+  env: StorageEnv,
   gameId: string,
 ): Promise<ArtifactDeletionPlan> {
   const planned = await planArtifactDeletion(env, gameId);

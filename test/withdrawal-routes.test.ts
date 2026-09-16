@@ -276,33 +276,28 @@ describe('確認画面（GET /account/withdraw）', () => {
 });
 
 describe('完了画面（GET /account/withdrawn）', () => {
-  it('D1 を読まず、cookie を持つ要求でもヘッダは未ログインである（PR #589 の Copilot の指摘 5）', async () => {
-    // **誰が開いても同じ静的な画面である**（`src/account-withdrawal.ts` の冒頭）。
-    // `resolveSiteViewer` を呼ぶと cookie 付きの要求だけ `users` を読み、ヘッダがその人のものに
-    // なる——**退会した直後に開く画面で、ヘッダに古い自分が出るのはいちばん紛らわしい。**
-    // **D1 を壊して確かめる**（`test/privacy.test.ts` と同じ形。読んでいれば 500 になる）。
+  it('退会した人の cookie で開いても、ヘッダは未ログインである（PR #589 の Copilot の指摘 5）', async () => {
+    // **指摘は「完了画面が `resolveSiteViewer` を呼ぶと、退会した本人に古い自分のヘッダが出る」**
+    // だった。**出ない**——`resolveSiteViewer` は #518 で退会した行を未ログインへ倒す。
+    // **固定の未ログインの viewer にはしない**: `test/page-shell.test.ts` が全 SSR 画面について
+    // 「ヘッダがログイン状態で変わること」を経路表から導いて見ており（2.3.3 の条件 3）、
+    // この 1 枚だけ固定にするとその不変条件が崩れる。
     const user = await seedUser();
-    const broken = new Proxy(
-      {},
-      {
-        get() {
-          throw new Error('D1 に触れた');
-        },
-      },
-    );
-    const response = await dispatch(
-      routes,
-      new Request(`${APP_ORIGIN}${ACCOUNT_WITHDRAWN_PATH}`, {
-        headers: { accept: 'text/html', cookie: user.cookie },
-      }),
-      { ...testEnv(), DB: broken } as unknown as Env,
-    );
+    expect((await withdraw(user)).status).toBe(303);
+
+    const response = await call('GET', ACCOUNT_WITHDRAWN_PATH, user.cookie);
     expect(response.status).toBe(200);
-    const body = await response.text();
-    const header = /<header class="gf-header">[\s\S]*?<\/header>/u.exec(body);
+    const header = /<header class="gf-header">[\s\S]*?<\/header>/u.exec(await response.text());
     expect(header, 'ヘッダが無い（検査が空振りする）').not.toBeNull();
-    expect(header![0], '未ログインのヘッダで描く').toContain('>ログイン</a>');
+    expect(header![0], '未ログインのヘッダになる').toContain('>ログイン</a>');
     expect(header![0]).not.toContain(`href="${ACCOUNT_DETAILS_PATH}"`);
+  });
+
+  it('本文はログイン状態で変わらない（誰が開いても同じ）', async () => {
+    const user = await seedUser();
+    const signedIn = pageBodyOf(await (await call('GET', ACCOUNT_WITHDRAWN_PATH, user.cookie)).text());
+    const anonymous = pageBodyOf(await (await call('GET', ACCOUNT_WITHDRAWN_PATH, null)).text());
+    expect(signedIn).toBe(anonymous);
   });
 
   it('未ログインで開ける（退会の応答が cookie を消した後に開く画面である）', async () => {

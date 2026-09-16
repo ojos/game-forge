@@ -16,6 +16,7 @@ import { dispatch } from '../src/routes.js';
 import { authorWorksSql } from '../src/users-page.js';
 import { listSearchedGames, parseWorkSearch } from '../src/work-search.js';
 import { workPagePath, workPageRoutes } from '../src/work-page.js';
+import { countingEnv } from './helpers/d1-counting.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -193,57 +194,6 @@ async function readGame(gameId: string): Promise<Record<string, unknown> | null>
     .first<Record<string, unknown>>();
 }
 
-/**
- * D1 の文が走った本数を数える `Env` を作る（**batch は中の文の本数で数える**）。
- *
- * D1 の 1 呼び出しあたりの枠（50）は文の本数で数えられる。**`prepare` の回数ではなく実行した
- * 回数**を数えるため、`run` / `first` / `all` / `raw` と、`batch` に渡した文の数を足す。
- *
- * **batch へは包む前の文を渡す**（D1 の実装は包んだ Proxy を文として受け取らない）。
- *
- * @param base 元の `Env`
- * @returns 数える `Env` と、読み出し口
- */
-function countingEnv(base: Env): { env: Env; count: () => number } {
-  let statements = 0;
-  const originals = new WeakMap<object, D1PreparedStatement>();
-
-  const wrap = (statement: D1PreparedStatement): D1PreparedStatement => {
-    const proxy = new Proxy(statement, {
-      get(target, property, receiver) {
-        const value = Reflect.get(target, property, receiver) as unknown;
-        if (typeof value !== 'function') return value;
-        return (...args: unknown[]): unknown => {
-          if (property === 'bind') {
-            return wrap((value as (...a: unknown[]) => D1PreparedStatement).apply(target, args));
-          }
-          if (property === 'run' || property === 'first' || property === 'all' || property === 'raw') {
-            statements += 1;
-          }
-          return (value as (...a: unknown[]) => unknown).apply(target, args);
-        };
-      },
-    });
-    originals.set(proxy, statement);
-    return proxy;
-  };
-
-  const db = new Proxy(base.DB, {
-    get(target, property, receiver) {
-      if (property === 'prepare') {
-        return (sql: string): D1PreparedStatement => wrap(target.prepare(sql));
-      }
-      if (property === 'batch') {
-        return (list: D1PreparedStatement[]): Promise<D1Result[]> => {
-          statements += list.length;
-          return target.batch(list.map((item) => originals.get(item) ?? item));
-        };
-      }
-      return Reflect.get(target, property, receiver);
-    },
-  });
-  return { env: { ...base, DB: db } as Env, count: () => statements };
-}
 
 /**
  * 最初の `batch` だけを落とす `Env` を作る（**R2 を消したあと、D1 の確定で落ちた**状態を作る）。

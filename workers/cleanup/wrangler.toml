@@ -1,0 +1,91 @@
+# 退会の後続の処理を回す Worker `game-forge-cleanup`（仕様 3.7 / 5.8 / #518 / M15-3。土台は #586）。
+#
+# **このサービスの本体は Cloudflare Pages である**（ルートの `wrangler.toml`。確定22）。
+# **Pages は Durable Objects のクラスを自分で持てない**ため、クラス `WithdrawalHub` をこの
+# Worker に置く。
+#
+# # なぜ `game-forge-likes` に相乗りしないのか（#518 の J2）
+#
+# **この Worker は R2 のバケット全体を消せる。** いいねの Worker（`workers/likes/`）は D1 しか
+# 持たず、`scripts/check-likes-worker.sh` は「R2 を持たない」ことを前提に書いてある。
+# 相乗りすると、いいねの同期の不具合が成果物を消す事故に化けうる範囲まで権限が広がる。
+# **持つ資格情報を、その Worker がやることに合わせる。**
+#
+# # Pages はこの Worker を呼ばない
+#
+# **ルートの `wrangler.toml` に、この Worker を指すバインディングを置かない**（#518 の J3）。
+# 退会の口（#518）は D1 に状態を書くだけで、後続の処理を起こさない。起こすのは下の cron である。
+# **この「置かない」ことを `scripts/check-cleanup-worker.sh` が機械で確かめる**——うっかり
+# 足すと、退会の口が「後続の処理を起こす」責任まで持ち、起こし損ねた退会が止まる形になる。
+#
+# # 公開の入口を持たせない
+#
+# - `workers_dev = false`: `*.workers.dev` に出さない
+# - `preview_urls = false`: 版ごとのプレビュー URL にも出さない（既定は `workers_dev` に従うが、
+#   **既定に頼らず明示する**）
+# - `route` / `routes` を置かない
+# - `env` を置かない（環境ごとに上の 3 つを上書きできるため）
+#
+# この 4 点は `scripts/check-cleanup-worker.sh` が機械で確かめる（`scripts/acceptance.sh` から呼ぶ）。
+#
+# # 配備
+#
+# **Pages より先に配る**（`workers/likes/` と同じ段の並びに揃える。手順は `docs/cleanup-worker.md`）。
+# Pages はこの Worker を指さないので順序に依存は無いが、**Worker を配る段を 1 か所に集めておく**
+# ほうが、段の読み方が 1 つで済む。順序は `.github/workflows/verify.yml` の deploy ジョブが持つ。
+name = "game-forge-cleanup"
+main = "src/index.ts"
+# Pages（ルートの `wrangler.toml`）と同じ日付に揃える。呼び出し側と受け側でランタイムの
+# 挙動がずれる理由を作らない。
+compatibility_date = "2026-08-01"
+workers_dev = false
+preview_urls = false
+
+# **5 分ごとに DO を起こす**（#518 の J3）。
+#
+# **アカウントの cron は 5 本まで**（Workers Free）。2026-09-16 の時点で使っているのは 0 本で
+# （アカウントの Worker スクリプトは `game-forge-likes` の 1 本だけ、`schedules` は空。
+# Pages プロジェクトは cron を持てない）、これが 1 本目である。
+#
+# **1 分にしない。** 平常時（終わっていない退会が 0 件）でも D1 を 5 文読むので、1 分ごとだと
+# 1 日 7,200 文になる。5 分なら 1,440 文で、無料枠（読み取り 500 万行/日）に対して無視できる。
+# **進んでいるあいだの速さは cron ではなく DO のアラームが決める**（進んだ回は 1 秒後）。
+[triggers]
+crons = ["*/5 * * * *"]
+
+# 自分自身の DO を指すバインディング。**`scheduled()` がこれを使って起こす**（likes とは違い、
+# 宣言だけでなく実際に読む）。
+[[durable_objects.bindings]]
+name = "WITHDRAWAL_HUB"
+class_name = "WithdrawalHub"
+
+# **SQLite 版で作る。** Workers Free で使えるのは SQLite 版の DO だけである（5.8）。
+# 一度作ったクラスの保存形式は後から変えられないので、`new_classes`（KV 版）と取り違えないこと。
+# タグは配った後に書き換えない（配備済みの版の記録として残る）。**自分の `v1` から始める**
+# （`game-forge-likes` の `v1` / `v2` とは別のスクリプトなので、番号は共有しない）。
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["WithdrawalHub"]
+
+# 退会の状態（`users` の 3 列。`migrations/0045_user_withdrawal.sql`）と作品を読み書きする先。
+# **Pages と同じ本番の D1 を指す。** `database_id` はルートの `wrangler.toml` の
+# `[[env.production.d1_databases]]` の写しで、`scripts/check-cleanup-worker.sh` が一致を機械で
+# 照合する（片方だけ書き換えると、後続の処理が別のデータベースを消しに行く）。
+#
+# **`preview_database_id` はローカル専用である**（`wrangler dev` が `database_id` より先に使う。
+# 配備は `database_id` だけを読む）。値はルートの `wrangler.toml` のトップレベル（ローカル）の
+# `database_id` の写しで、**Pages のローカル D1 と同じデータベースを指す**（`docs/likes.md` が
+# 2026-09-11 に実測した事情と同じ）。一致は `scripts/check-cleanup-worker.sh` が照合する。
+[[d1_databases]]
+binding = "DB"
+database_name = "game-forge"
+database_id = "d81a6f80-7d08-4908-b311-2418bacda050"
+preview_database_id = "local-only-placeholder"
+
+# 作品の成果物（`source.go` / `.wasm.br` / OGP）とアイコンを消す先。**Pages と同じバケット**で、
+# `bucket_name` はルートの `wrangler.toml` の本番の写しである（`scripts/check-cleanup-worker.sh`
+# が照合する）。**ライフサイクルではなく、被参照判定を通してから消す**（確定26。
+# `src/build-cache.ts` の `deleteUnreferencedArtifacts`）。
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "game-forge"

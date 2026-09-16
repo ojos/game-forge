@@ -11,6 +11,15 @@ import type { D1Migration } from '@cloudflare/vitest-pool-workers';
 declare global {
   namespace Cloudflare {
     interface Env {
+      /**
+       * 退会の後続の処理の DO（`workers/cleanup/src/hub.ts` の `WithdrawalHub`。#586）。
+       *
+       * **本番では Pages がこの DO を指さない**（起こすのは `game-forge-cleanup` 自身の cron で、
+       * ルートの `wrangler.toml` に宣言は無い。`scripts/check-cleanup-worker.sh` が「無いこと」を
+       * 確かめる）。テストでアラームの結線を中から確かめる手段が `runDurableObjectAlarm` しか
+       * 無いため、`vitest.config.ts` が実行体へ差し替えたぶんだけをここで型に足す。
+       */
+      readonly WITHDRAWAL_HUB: DurableObjectNamespace;
       /** `vitest.config.ts` が Node 側で読み込んだマイグレーション。 */
       readonly TEST_MIGRATIONS: D1Migration[];
       /** `vitest.config.ts` が Node 側で読み込んだ `.dev.vars.example` の中身。 */

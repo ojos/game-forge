@@ -103,8 +103,13 @@ describe('同期のトリガ（#378）', () => {
     expect(squash(sql!)).toMatch(/AFTER DELETE ON games/iu);
   });
 
-  it('games のトリガはこの 3 本だけで、ほかの表を書かない', async () => {
+  it('games のトリガはこの 4 本だけで、検索の 3 本以外は表を書かない', async () => {
     // **トリガを足した日に、ここを見直す**（書き込みの費用が増える経路だから）。
+    //
+    // **`games_skip_withdrawn_author`（0045 / #586）は書かない。** 本体は
+    // `SELECT RAISE(IGNORE)` だけで、退会を始めた作者の作品の挿入を黙って飛ばす。
+    // 書き込みの費用は増えず、増えるのは挿入 1 行あたり `users` を 1 行引く読み取りだけである
+    // （下の `rows_written` の検査がそれを見ている）。
     const rows = await env.DB.prepare(
       "select name from sqlite_master where type = 'trigger' and tbl_name = 'games' order by name",
     ).all<{ name: string }>();
@@ -112,7 +117,18 @@ describe('同期のトリガ（#378）', () => {
       'games_search_ad',
       'games_search_ai',
       'games_search_au',
+      'games_skip_withdrawn_author',
     ]);
+
+    // **検索の 3 本以外が表を書いていないこと**を綴りで見る（`insert` / `update` / `delete` を
+    // 持たない）。トリガの数だけを数えると、次に足したトリガが黙って書き込みを増やしうる。
+    const skip = await definitionOf('trigger', 'games_skip_withdrawn_author');
+    expect(skip).not.toBeNull();
+    const body = squash(skip!).toLowerCase();
+    expect(body).toContain('select raise(ignore)');
+    for (const verb of ['insert into', 'update ', 'delete from']) {
+      expect(body, verb).not.toContain(verb);
+    }
   });
 
   it('いいね数・プレイ数の同期は索引に 1 行も書かない（rows_written）', async () => {

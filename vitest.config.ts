@@ -45,9 +45,18 @@ export default defineConfig({
         // `useSQLite` を落とすと `ctx.storage.sql` が使えず、本番（`new_sqlite_classes`）と
         // 違う保存形式で走ることになる。
         // `PLAY_HUB`（プレイ数。#377）も同じ理由で同じ差し替えをする。
+        //
+        // `WITHDRAWAL_HUB`（退会の後続の処理。#586 / `workers/cleanup/`）は事情が違う。
+        // **本番では Pages がこの DO を指さない**——起こすのは同じ Worker の cron だけで、
+        // ルートの `wrangler.toml` に宣言は無い（`scripts/check-cleanup-worker.sh` が
+        // 「無いこと」を機械で確かめる）。それでもここへ置くのは、**アラームの結線
+        // （`runDurableObjectAlarm`）を中から確かめられるのが自分自身の DO だけ**だからである。
+        // 宣言に無いバインディングがテストの env に現れるので、`test/worker.test.ts` の
+        // 「env のキーが宣言と一致する」検査の除外一覧にも名前を足してある。
         durableObjects: {
           LIKE_HUB: { className: 'LikeHub', useSQLite: true },
           PLAY_HUB: { className: 'PlayHub', useSQLite: true },
+          WITHDRAWAL_HUB: { className: 'WithdrawalHub', useSQLite: true },
         },
         bindings: { TEST_MIGRATIONS: migrations },
         // `.dev.vars.example` の中身をテキストとして渡す。

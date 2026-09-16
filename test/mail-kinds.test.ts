@@ -164,13 +164,17 @@ describe('設定の判定は、止められる種別の送信の口の 1 か所�
     expect(readers).toEqual([FORK_NOTICE]);
   });
 
-  it('列を触るアプリのソースは、送信の口と設定の画面の 2 つだけである', () => {
-    // **3 つ目が現れたら、判定が 2 か所になっていないかを疑う**（数え方を 2 か所に持たない。2.3.13）。
+  it('列を触るアプリのソースは、送信の口・設定の画面・退会の 3 つだけである', () => {
+    // **4 つ目が現れたら、判定が 2 か所になっていないかを疑う**（数え方を 2 か所に持たない。2.3.13）。
+    //
+    // **退会（`src/withdrawal.ts`。#518 / #586）はこの列を「判定」しない。** 匿名化の一部として
+    // NULL（＝既定）へ戻すだけで、送るかどうかを決める条件をここへ増やしていない
+    // （下の検査が、読む側は改造通知だけであることを見ている）。
     const touching = Object.entries(SOURCES)
       .filter(([, text]) => withoutComments(text).includes('fork_notice_muted_at'))
       .map(([path]) => path)
       .sort();
-    expect(touching).toEqual(['../src/account.ts', FORK_NOTICE].sort());
+    expect(touching).toEqual(['../src/account.ts', FORK_NOTICE, '../src/withdrawal.ts'].sort());
   });
 });
 

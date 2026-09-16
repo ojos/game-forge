@@ -17,6 +17,17 @@
  * それは Miniflare では本番と同じにならない部分である（`docs/likes.md` の
  * 「確かめられていないこと」）。
  */
+/**
+ * **本番で別スクリプトになる DO は、すべてここへ並べる。**
+ *
+ * `vitest.config.ts` の `main` はこのファイル 1 本で、Miniflare はここから見える DO しか
+ * 立てられない。`WithdrawalHub`（退会の後続の処理。`workers/cleanup/`。#586）は本番では
+ * `game-forge-likes` とは**別の Worker**（`game-forge-cleanup`）に載り、**Pages からは指されない**
+ * が、アラームの結線を中から確かめる手段が `runDurableObjectAlarm` しか無いので、ここに並べる。
+ * **置き場がこのファイルなのは、テストの実行体が 1 つしか無いからであって、
+ * `game-forge-likes` に載るからではない。**
+ */
 export { default } from '../../src/index.js';
 export { LikeHub } from './src/hub.js';
 export { PlayHub } from './src/play-hub.js';
+export { WithdrawalHub } from '../cleanup/src/hub.js';

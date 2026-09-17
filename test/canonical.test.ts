@@ -1,7 +1,8 @@
-import { env } from 'cloudflare:test';
+import { SELF, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { siteHead, siteViewerAt } from '../src/html.js';
-import { handleAppRequest } from '../src/app.js';
+import { createAppRoutes, handleAppRequest } from '../src/app.js';
+import { ssrPagePaths } from '../src/page-paths.js';
 import { AUTHOR_PAGE_PREFIX } from '../src/users-page-paths.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -65,5 +66,57 @@ describe('要求されたパスを 404 の本文へ反射させない（#330 の
     ).text();
     expect(malformed).toBe(missing);
     expect(canonicalOf(missing)).toBeNull();
+  });
+});
+
+describe('経路表の全画面を開いて確かめる（#595 の acceptance 6）', () => {
+  /**
+   * 画面を開いて、canonical と noindex を読む。
+   *
+   * @param path パス
+   * @returns 状態・canonical・noindex
+   */
+  async function open(path: string): Promise<{ status: number; canonical: string | null; noindex: boolean }> {
+    const res = await SELF.fetch(`${APP_ORIGIN}${path}`);
+    const body = await res.text();
+    return {
+      status: res.status,
+      canonical: canonicalOf(body),
+      noindex: body.includes('<meta name="robots" content="noindex">'),
+    };
+  }
+
+  it('索引に載る画面には必ず canonical があり、値は開いたパスと一致する', async () => {
+    // **一覧を書き写さない。** 経路表から導いて、画面を 1 枚足した日にも自動で乗る形にする。
+    const routes = createAppRoutes(env);
+    const openEnded = new Set(
+      routes.filter((route) => route.match === 'prefix' || route.match === 'segment').map((route) => route.path),
+    );
+    const exactPages = ssrPagePaths(routes).filter((path) => !openEnded.has(path));
+    expect(exactPages.length).toBeGreaterThan(5);
+
+    let checked = 0;
+    for (const path of exactPages) {
+      const { status, canonical, noindex } = await open(path);
+      if (status !== 200) {
+        continue;
+      }
+      if (noindex) {
+        expect(canonical, `${path} は noindex なのに canonical が出ている`).toBeNull();
+        continue;
+      }
+      expect(canonical, `${path} に canonical が無い`).toBe(path);
+      checked += 1;
+    }
+    // **1 枚も確かめずに緑にしない。**
+    expect(checked).toBeGreaterThan(3);
+  });
+
+  it('クエリは canonical から落ちる（同じ中身の URL を 1 つへ寄せる）', async () => {
+    // 公開一覧は sort / tag / page でいくつでも URL を作れる。**どれも /works の重複だと伝える。**
+    for (const query of ['?sort=likes', '?sort=forks&page=2', '?tag=action']) {
+      const { canonical } = await open(`/works${query}`);
+      expect(canonical, `/works${query}`).toBe('/works');
+    }
   });
 });

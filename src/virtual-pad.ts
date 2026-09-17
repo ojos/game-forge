@@ -325,6 +325,21 @@ function nonDirectionCodesOf(set: ReadonlySet<string>): Set<string> {
 }
 
 /**
+ * 並べる順に整える（{@link buttonsOf} と {@link keyLegendOf} が共有する）。
+ *
+ * **順は {@link buttonRank} が決め、同じ順位は `code` の昇順で割る。** 比較そのものをここへ閉じるのは、
+ * **上限を掛ける／掛けないの違いだけで 2 つの経路に分かれる**からである（パッドは {@link PAD_BUTTON_LIMIT} 個で
+ * 切り、案内は切らない）。比較を呼ぶ側へ書き写すと、**同じ順位の割り方を片方だけ変えた日に、パッドと案内が
+ * 違う並びを出す**（PR #606 の Copilot の指摘）。
+ *
+ * @param codes 並べ替えるキー
+ * @returns 並べる順のキー
+ */
+function orderedCodesOf(codes: Iterable<string>): string[] {
+  return [...codes].sort((a, b) => buttonRank(a) - buttonRank(b) || (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
  * ボタンに出すキーを決める（仕様 3.9.6 の 2）。
  *
  * 方向キー（矢印と WASD）をすべて除いた残りに、`directionButtons`（スティックで出すときに回した方向）を足し、
@@ -337,8 +352,7 @@ function nonDirectionCodesOf(set: ReadonlySet<string>): Set<string> {
 function buttonsOf(set: ReadonlySet<string>, directionButtons: readonly PadDirectionKey[]): PadKey[] {
   const remaining = nonDirectionCodesOf(set);
   const directionByCode = new Map(directionButtons.map((key) => [key.code, key]));
-  return [...remaining, ...directionByCode.keys()]
-    .sort((a, b) => buttonRank(a) - buttonRank(b) || (a < b ? -1 : a > b ? 1 : 0))
+  return orderedCodesOf([...remaining, ...directionByCode.keys()])
     .slice(0, PAD_BUTTON_LIMIT)
     .map((code) => {
       const direction = directionByCode.get(code);
@@ -423,9 +437,11 @@ export function keyLegendOf(codes: readonly string[]): KeyLegend {
       directions.push(directionKeyOf(direction, code));
     }
   }
-  const buttons = [...nonDirectionCodesOf(set)]
-    .sort((a, b) => buttonRank(a) - buttonRank(b) || (a < b ? -1 : a > b ? 1 : 0))
-    .map((code) => ({ code, label: padKeyLabel(code), ariaLabel: null }));
+  const buttons = orderedCodesOf(nonDirectionCodesOf(set)).map((code) => ({
+    code,
+    label: padKeyLabel(code),
+    ariaLabel: null,
+  }));
   return { directions, buttons };
 }
 

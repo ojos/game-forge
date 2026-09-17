@@ -5750,7 +5750,7 @@ J は `inpututil.IsKeyJustPressed`（押した瞬間に読む）。WASD は同�
   「操作: なし」を全作品に並べない。
 
 > **実装注記（#599。実装日 2026-09-17）。** 中身を決めるのは `src/virtual-pad.ts` の `keyLegendOf`（パッドと
-> `directionCodesOf` / `nonDirectionCodesOf` / `buttonRank` / `padKeyLabel` を共有する純粋関数）、HTML は
+> `directionCodesOf` / `nonDirectionCodesOf` / `orderedCodesOf` / `padKeyLabel` を共有する純粋関数）、HTML は
 > `src/work-page.ts` の `keyLegendSection`、見た目は `public/assets/app.css` の `@section work` の `.gf-key-legend`
 > （タグの行と同じ形。新しい色もトークンも足していない）。**D1 への追加の問い合わせは 0 件**——キーの集合は
 > 作品ページの 1 行の問い合わせが既に読んでいる。**束（`CodeSha256`）は変わらない**（オーケストレータからは

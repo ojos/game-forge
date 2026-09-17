@@ -11,7 +11,7 @@ import {
   ROBOTS_TAG_HEADER,
   ROBOTS_TAG_NOINDEX,
 } from '../src/robots.js';
-import { directiveOf, isAllowed, parseRobotsTxt } from './helpers/robots-txt.js';
+import { directiveOf, isAllowed, parseRobotsTxt, productTokenOf } from './helpers/robots-txt.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -97,6 +97,30 @@ describe('robots.txt を読む側（このファイルの検査そのもの）',
     expect(isAllowed(robots, 'X', '/')).toBe(true);
   });
 
+  it('実運用の綴り（GPTBot/1.0）でも、product token で照合する', () => {
+    // RFC 9309 §2.2.1: クローラは自分の product token でグループを選ぶ。**版を含む識別文字列を
+    // 渡されても同じ判定になること**を固定する。ここが `*` へ落ちると、拒否したはずの
+    // クローラを「許可されている」と読む誤った緑になる（PR #596 の Copilot の指摘）。
+    const robots = parseRobotsTxt(['User-agent: *', 'Allow: /', '', 'User-agent: GPTBot', 'Disallow: /'].join('\n'));
+    expect(isAllowed(robots, 'GPTBot', '/')).toBe(false);
+    expect(isAllowed(robots, 'GPTBot/1.0', '/')).toBe(false);
+    expect(isAllowed(robots, 'gptbot/2.3', '/')).toBe(false);
+    expect(productTokenOf('GPTBot/1.0')).toBe('GPTBot');
+  });
+
+  it('product token にならない綴りは、黙って通さずに投げる', () => {
+    // **`*` のグループへ落とさない。** 落とすと「許可されている」と読めてしまい、
+    // 渡す側の綴りの誤りが緑のまま埋もれる。
+    const robots = parseRobotsTxt(['User-agent: *', 'Disallow: /'].join('\n'));
+    // 完全な識別文字列は、先頭を採ると `Mozilla` になり、**GPTBot なのに `*` のグループで
+    // 判定してしまう。** 推測せずに投げる。
+    expect(() => isAllowed(robots, 'Mozilla/5.0 (compatible; GPTBot/1.1; +https://example.test)', '/')).toThrow(
+      /product token/u,
+    );
+    expect(() => isAllowed(robots, '名前を知らないクローラ', '/')).toThrow(/product token/u);
+    expect(() => productTokenOf('')).toThrow(/product token/u);
+  });
+
   it('コメントは読まない', () => {
     const robots = parseRobotsTxt(['# User-agent: *', '# Disallow: /', 'User-agent: *', 'Disallow: /x'].join('\n'));
     expect(isAllowed(robots, 'X', '/')).toBe(true);
@@ -124,7 +148,7 @@ describe('3 つのホストが、それぞれ違うことを言う', () => {
   it('サンドボックスと管理画面は、どのクローラにも全面拒否である', async () => {
     for (const origin of [SANDBOX_ORIGIN, ADMIN_ORIGIN]) {
       const robots = parseRobotsTxt((await fetchRobots(origin)).body);
-      for (const agent of [...SEARCH_AND_ANSWER_CRAWLERS, ...AI_TRAINING_CRAWLERS, '名前を知らないクローラ']) {
+      for (const agent of [...SEARCH_AND_ANSWER_CRAWLERS, ...AI_TRAINING_CRAWLERS, 'SomeUnknownBot']) {
         expect(isAllowed(robots, agent, '/'), `${origin} / ${agent}`).toBe(false);
       }
     }

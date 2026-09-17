@@ -23,9 +23,26 @@
  *
  * - `#` 以降はコメント。`field: value` の形の行だけを見る
  * - `user-agent` が連続したら、それらは同じグループの別名になる
- * - グループの選択は**完全一致（大文字小文字を無視）を優先し、無ければ `*`**
+ * - グループの選択は**product token の一致（大文字小文字を無視）を優先し、無ければ `*`**
  * - 判定は**いちばん長く一致したルール**。同じ長さなら `Allow` を優先する
  * - `Disallow:`（値が空）は「何も禁じない」
+ *
+ * # 部分一致なのはパスであって、User-agent ではない
+ *
+ * **クローラは自分の product token でグループを選ぶ**（RFC 9309 §2.2.1）。
+ *
+ * > Crawlers MUST use case-insensitive matching to find the group that matches the product token.
+ * > The product token SHOULD be a substring of the identification string that the crawler sends
+ * > to the service.
+ *
+ * つまり `GPTBot/1.0` と名乗るクローラは、**自分で `GPTBot` を取り出してから**照合する。
+ * `robots.txt` の側が `GPTBot/1.0` に部分一致を掛けるのではない。**最長一致はパスの規則**
+ * （§2.2.2）で、User-agent の規則ではない。
+ *
+ * **そのうえで、識別文字列をそのまま渡されても正しく動くようにする**（{@link productTokenOf}）。
+ * 渡す側が `GPTBot/1.0` と書いたときに静かに `*` のグループへ落ちると、**「拒否したはずの
+ * クローラが許可されている」という誤った緑を作る。** 版を落として product token にし、
+ * それでも product token の形でなければ投げる。
  *
  * **実装していないもの:** ワイルドカード（`*` `$`）、`Crawl-delay`、`Sitemap`。
  * 必要になった時点で足す（いまの `robots.txt` はどれも使っていない）。
@@ -95,14 +112,42 @@ export function parseRobotsTxt(text: string): RobotsTxt {
 }
 
 /**
+ * product token の綴り（RFC 9309 §2.2.1。英字・`_`・`-` だけ）。
+ */
+const PRODUCT_TOKEN = /^[A-Za-z_-]+$/u;
+
+/**
+ * クローラの識別文字列から product token を取り出す。
+ *
+ * `GPTBot/1.0` のような実運用の綴りを渡されても、`GPTBot` として照合できるようにする。
+ *
+ * **product token にならない綴りは投げる。** 静かに `*` のグループへ落とすと、
+ * 「そのクローラは許可されている」という**誤った緑**になる（モジュール冒頭）。
+ *
+ * @param userAgent クローラ名、またはクローラが名乗る識別文字列
+ * @returns product token
+ */
+export function productTokenOf(userAgent: string): string {
+  const trimmed = userAgent.trim();
+  // **空白を含む綴りからは取り出さない。** `Mozilla/5.0 (compatible; GPTBot/1.1; ...)` のような
+  // 完全な識別文字列は、どの product token を指すかがここでは一意に決まらない（先頭を採ると
+  // `Mozilla` になり、**GPTBot なのに `*` のグループで判定する**）。**推測せずに投げる。**
+  const token = /\s/u.test(trimmed) ? trimmed : trimmed.split('/')[0]!;
+  if (!PRODUCT_TOKEN.test(token)) {
+    throw new Error(`product token ではありません: ${JSON.stringify(userAgent)}（RFC 9309 §2.2.1）`);
+  }
+  return token;
+}
+
+/**
  * このクローラが従うグループを選ぶ。
  *
  * @param robots 解釈した `robots.txt`
- * @param userAgent クローラ名
+ * @param userAgent クローラ名（識別文字列でもよい）
  * @returns 従うグループ（該当が無ければ null）
  */
 function groupFor(robots: RobotsTxt, userAgent: string): RobotsGroup | null {
-  const name = userAgent.toLowerCase();
+  const name = productTokenOf(userAgent).toLowerCase();
   const exact = robots.groups.find((group) => group.agents.includes(name));
   if (exact !== undefined) {
     return exact;
@@ -114,7 +159,7 @@ function groupFor(robots: RobotsTxt, userAgent: string): RobotsGroup | null {
  * このクローラがこのパスを取りに来てよいか。
  *
  * @param robots 解釈した `robots.txt`
- * @param userAgent クローラ名
+ * @param userAgent クローラ名（`GPTBot` でも `GPTBot/1.0` でもよい）
  * @param path 判定するパス
  * @returns 取りに来てよければ true
  */

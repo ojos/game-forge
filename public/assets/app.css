@@ -1661,6 +1661,26 @@ html.gf-play-locked body {
 }
 
 /*
+ * 説明を入れる折りたたみ（#627 / 仕様 5.4・2.5.4）。**遊ぶ枠の直前**に置き、枠の上に来るのは
+ * `<summary>` の 1 行だけにする（枠の上端は 390 / 768 / 1280px のどれでも +25〜26px。#626 の実測）。
+ * **押せる物なので、指と焦点が当たることを見た目でも示す**（2.5.5 の「押せる物」）。**新しい色もトークンも足さない。**
+ */
+.gf-work-description-peek {
+  margin: var(--gf-gap-3) 0 0;
+}
+
+.gf-work-description-peek > summary {
+  cursor: pointer;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+/* 開いたときの見出しの上の余白を外す（`<summary>` のすぐ下に来るため）。 */
+.gf-work-description-peek .gf-work-description {
+  margin-top: var(--gf-gap-2);
+}
+
+/*
  * 完成画面の題名の直下に置く、改名のフォームへ飛ぶ 1 行（#600 / 仕様 5.4）。**控えめな 1 行**にして、
  * 主の導線（「公開して共有」）の強さを変えない。**新しい色もトークンも足さない。**
  * 上の余白は見出し（`h1`）の下の余白がそのまま効く（相殺）。

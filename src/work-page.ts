@@ -2080,8 +2080,11 @@ function publishedSection(view: WorkPageView): string {
   // 枠が下がり、「主役は作品」（M8）が崩れる。**詳細情報パネル（2.3.12）へも入れない**——狭い段では本文の下へ回り、
   // 遊ぶ前に読まれない。
   //
-  // **説明は作者名・元ゲームの後に置く**（#388）。遊ぶ前に読む来歴（3.4-5 の 4 要素）を
-  // 押し下げない。**説明を書くフォームは改名の隣**に置く——どちらも作品ページの
+  // **説明の本文は、枠の直前の折りたたみへ移した**（#627 / 仕様 5.4。{@link descriptionPeek}）。本文の列には置かない
+  // ——**同じ文章を 2 か所に出すと、どちらが本体か読めない**（#626 の決定の「二重に出さない」）。
+  // ここに残るのは、説明がまだ無いことを作者へ伝える 1 行（#616）だけである。
+  //
+  // **説明を書くフォームは改名の隣**に置く——どちらも作品ページの
   // 「作者だけの設定」で、公開の導線（5.4）の外にある。
   //
   // **タグは説明の前に置き、付け直しのフォームは説明のフォームの後に置く**（#376）。
@@ -2096,7 +2099,7 @@ function publishedSection(view: WorkPageView): string {
   // **#474 で 1 つのブロックの行にした**（{@link settingsBlock}。並びは前と同じ）。
   return `<h2>公開しています</h2>
 ${loadingScreen(view)}${splitWithDetails(
-    `${keyLegendSection(view)}${likeSection(view)}${tagsSection(view)}${descriptionSection(view)}${describeInviteLine(view)}${share}
+    `${keyLegendSection(view)}${likeSection(view)}${tagsSection(view)}${describeInviteLine(view)}${share}
 ${forkList(view.forks)}`,
     view,
   )}${settingsBlock([
@@ -2411,11 +2414,50 @@ function descriptionSection(view: WorkPageView): string {
     .join('\n');
   // **見出しと段落を 1 つの塊に包む**（#474。本文の列は塊どうしの間を `gap` で空けるので、見出しと段落を
   // 別の塊にすると、その間まで塊どうしの間隔になる）。
+  //
+  // **この塊は折りたたみ（{@link descriptionPeek}）の中に入る**（#627 / 仕様 5.4）。見出しを残すのは、
+  // **開いたときに「何の文章か」が分かるようにする**ためで、`<summary>`（「遊び方を読む」）とは役割が違う
+  // ——あちらは押す前の案内、こちらは開いた後の見出しである。
   return `
 <div class="gf-work-description">
 <h3>作品の説明</h3>
 ${paragraphs}
 </div>`;
+}
+
+/**
+ * 説明を、遊ぶ枠の直前の折りたたみに入れる（仕様 5.4 / 2.5.4 / M16-5 / #627）。**誰にでも出す。**
+ *
+ * # なぜ枠の直前なのか
+ *
+ * **説明は枠の下にあり、遊ぶ前には読まれにくかった。** 遊び方やルールを書いても、遊ぶ人は先にゲームを触る。
+ * 一方で**本文をそのまま枠の上へ出すと、枠が説明の長さだけ下がる**（1000 文字まで書けるので作品ごとに変わる）。
+ *
+ * **折りたたみなら、枠の上に来るのは `<summary>` の 1 行だけである。** 枠の上端の実測（#626）は、390px で
+ * +25px・768px で +26px・1280px で +25px で、**説明の長さにも幅にも動かされない。** 本文をそのまま置く案は
+ * +232〜318px で、狭い段ほど不利だった（折り返しが増えるため）。仕様 2.5.4 の「遊ぶ枠を押し下げてよいか」。
+ *
+ * # 二重に出さない
+ *
+ * **本文の列からは外す**（{@link publishedSection}）。同じ文章を 2 か所に出すと、どちらが本体か読めない。
+ *
+ * # JavaScript を要求しない
+ *
+ * `<details>` の既定の挙動である（{@link renameJumpLine} と同じ方針）。**最初は閉じている**——開いた状態で
+ * 配ると、押し下げが本文をそのまま置く案と同じになる。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（説明が無ければ空文字）
+ */
+function descriptionPeek(view: WorkPageView): string {
+  const body = descriptionSection(view);
+  if (body === '') {
+    return '';
+  }
+  return `
+<details class="gf-work-description-peek">
+<summary>遊び方を読む</summary>${body}
+</details>`;
 }
 
 
@@ -2642,6 +2684,7 @@ ${playEntry(screenshot(view), view.playUrl !== null)}
 ${forkCta(view)}
 </div>
 </div>
+${descriptionPeek(view)}
 ${view.playUrl === null ? '' : playScript(view)}${frame}`;
 }
 

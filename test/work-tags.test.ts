@@ -9,7 +9,6 @@ import {
   createPendingGame,
   hashJobToken,
   publishGame,
-  removeGame,
   retagGame,
   validateWorkTags,
   workTagsOf,
@@ -27,6 +26,7 @@ import {
 import { MAX_WORK_TAGS, WORK_TAGS, WORK_TAG_FIELD } from '../src/work-tags.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
+import { markGameRemoved } from './helpers/removed-work.js';
 
 /**
  * 作品のタグ（#376 / 仕様 2.3.5・2.3.6・5.4）。
@@ -395,7 +395,7 @@ describe('付け直せるのは公開済みの作品の作者だけである（#
 
   it('取り下げた作品は付け直せない', async () => {
     const { userId, id } = await seedPublished('removed-retag', ['idle']);
-    await removeGame(env, id, userId);
+    await markGameRemoved(id);
 
     expect(await retagGame(env, id, userId, ['puzzle'], 5_000)).toEqual({
       ok: false,

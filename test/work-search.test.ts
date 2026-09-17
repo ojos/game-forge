@@ -8,7 +8,6 @@ import {
   listPublishedGames,
   publishGame,
   publishedGamesSql,
-  removeGame,
   renameGame,
 } from '../src/games.js';
 import { REVIEW_CLEARED, REVIEW_QUEUED, recordReport } from '../src/reports.js';
@@ -24,6 +23,7 @@ import {
 } from '../src/work-search.js';
 import { WORKS_PER_PAGE } from '../src/works-list.js';
 import { applySchema } from './helpers/schema.js';
+import { markGameRemoved } from './helpers/removed-work.js';
 
 /**
  * キーワード検索（#378 / M12-10 / 仕様 2.3.5）。
@@ -353,13 +353,13 @@ describe('非公開化した作品が検索結果から消える（#378 の acce
   // **引く時点の層を外しても、ここの画面側の結果は索引の層が守る**（逆も同じ）。だから層ごとの
   // 検査を別に置く——「索引の層」の describe と「引く時点の層」の describe。
 
-  it('取り下げ（removeGame）で消え、索引からも文書が消える', async () => {
+  it('tombstone（運営の措置）で消え、索引からも文書が消える', async () => {
     const author = await seedUser('取り下げの作者');
     const id = await seedGame(author, { title: '取り下げる流星群' });
     expect(await searchIds('流星群')).toContain(id);
     expect(await indexed(id)).toBe(true);
 
-    expect(await removeGame(env, id, author)).toEqual({ ok: true, firstTime: true });
+    await markGameRemoved(id);
     expect(await searchIds('流星群')).not.toContain(id);
     expect(await searchIds('流星')).not.toContain(id);
     expect(await indexed(id)).toBe(false);

@@ -10,7 +10,6 @@ import {
   describeGame,
   hashJobToken,
   publishGame,
-  removeGame,
   validateDescription,
 } from '../src/games.js';
 import { REVIEW_CLEARED, REVIEW_QUEUED, REVIEW_STATE_COLUMN } from '../src/reports.js';
@@ -29,6 +28,7 @@ import { buildSessionCookie, signSession } from '../src/session.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 import { pageBodyOf } from './helpers/site-shell.js';
+import { markGameRemoved } from './helpers/removed-work.js';
 
 /**
  * 作者が書く作品の説明（#388）。
@@ -275,7 +275,7 @@ describe('説明のフォームは、公開済みの作品の作者にだけ出�
   it('取り下げた作品にはフォームも説明も出さない', async () => {
     const { userId, id } = await seedPublished('form-removed');
     await describeGame(env, id, userId, '取り下げる前の説明', 1_700_000_000);
-    await removeGame(env, id, userId);
+    await markGameRemoved(id);
 
     const body = await openWork(id, await sessionCookie(userId));
     expect(body).not.toContain(WORK_DESCRIBE_PATH);
@@ -417,7 +417,7 @@ describe('説明を書けるのは、公開済みの作品の作者だけであ�
 
   it('取り下げた作品には書けない', async () => {
     const { userId, id } = await seedPublished('removed-write');
-    await removeGame(env, id, userId);
+    await markGameRemoved(id);
 
     expect(await describeGame(env, id, userId, '取り下げた後の説明')).toEqual({
       ok: false,

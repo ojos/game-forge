@@ -23,7 +23,6 @@ import {
   createPendingGame,
   hashJobToken,
   publishGame,
-  removeGame,
 } from '../src/games.js';
 import { GENERATION_MODELS } from '../src/generation-models.js';
 import { siteViewerAt } from '../src/html.js';
@@ -67,6 +66,7 @@ func (g *Game) Update() error { g.x++; return nil }
 
 var label = "</code></pre><script>alert(1)</script>&amp;"
 `;
+import { markGameRemoved } from './helpers/removed-work.js';
 
 /**
  * テスト用の env。
@@ -378,8 +378,8 @@ describe('draft と審査で止めた作品のソースは読めない（accepta
   it('取り下げた作品は 404（取り下げても source_key は残るが、引く時点で落ちる）', async () => {
     const { id, userId } = await seedPublished('removed');
     expect((await open(workSourcePath(id))).status).toBe(200);
-    expect((await removeGame(env, id, userId)).ok).toBe(true);
-    // **実装は取り下げで `source_key` を消さない**（`removeGame`。仕様 2.3.12 の実装注記）。
+    await markGameRemoved(id);
+    // **tombstone でも `source_key` は消えない**（仕様 2.3.12 の実装注記。中身を消すのは #516 の削除だけである）。
     expect((await artifactKeysOf(id)).sourceKey).not.toBe('');
 
     const removed = await open(workSourcePath(id));
@@ -392,7 +392,7 @@ describe('draft と審査で止めた作品のソースは読めない（accepta
     const queued = await seedPublished('same-queued');
     await setReviewState(queued.id, REVIEW_QUEUED);
     const removed = await seedPublished('same-removed');
-    expect((await removeGame(env, removed.id, removed.userId)).ok).toBe(true);
+    await markGameRemoved(removed.id);
 
     const bodies = await Promise.all(
       ['9ffe7c2a-59a9-4a58-b82c-d4a8cea7c62f', draft.id, queued.id, removed.id].map(

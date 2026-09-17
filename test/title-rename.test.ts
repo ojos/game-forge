@@ -10,7 +10,6 @@ import {
   hashJobToken,
   normalizeTitle,
   publishGame,
-  removeGame,
   renameGame,
 } from '../src/games.js';
 import {
@@ -33,6 +32,7 @@ import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
+import { markGameRemoved } from './helpers/removed-work.js';
 
 /**
  * 作者による改名（5.4 / 8.4 / #366）。
@@ -247,7 +247,7 @@ describe('改名の口は作者にだけ出る（#366）', () => {
   it('取り下げた作品にはフォームを出さない', async () => {
     const { userId, id } = await seedReady('form-removed');
     await publishGame(env, id, userId);
-    await removeGame(env, id, userId);
+    await markGameRemoved(id);
     expect(await openWork(id, await sessionCookie(userId))).not.toContain(WORK_RENAME_PATH);
   });
 });
@@ -273,7 +273,7 @@ describe('改名できるのは作者だけである（#366）', () => {
 
     const response = await postRename(id, 'のっとられた題名', await sessionCookie(stranger));
 
-    // **理由を撃ち分けない**（他人の作品は「無い」と同じ扱い。`removeGame` と同じ）。
+    // **理由を撃ち分けない**（他人の作品は「無い」と同じ扱い。`unpublishGame` と同じ）。
     expect(response.status).toBe(404);
     expect(await titleOf(id)).toBe(before);
     expect(await historyOf(id)).toHaveLength(0);
@@ -306,7 +306,7 @@ describe('改名できるのは作者だけである（#366）', () => {
   it('取り下げた作品は改名できない', async () => {
     const { userId, id } = await seedReady('removed-write', 'もとの題名');
     await publishGame(env, id, userId);
-    await removeGame(env, id, userId);
+    await markGameRemoved(id);
 
     const outcome = await renameGame(env, id, userId, 'あたらしい題名');
 
@@ -507,7 +507,7 @@ describe('改名と履歴は 1 つの batch で書く（#366 / #361 の規律）
 
     const outcome = await renameGame(env, id, userId, ' おなじ題名 ');
 
-    // **失敗にしない**（二度押しと同じ扱い。`removeGame` の 2 回目と同じ）。
+    // **失敗にしない**（二度押しと同じ扱い。`unpublishGame` の 2 回目と同じ）。
     expect(outcome).toEqual({ ok: true, title: 'おなじ題名', changed: false });
     expect(await historyOf(id)).toHaveLength(0);
   });

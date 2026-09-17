@@ -378,7 +378,7 @@ describe('作者による作品の削除（#517）', () => {
     const body = pageBodyOf((await openPrivacy()).body);
     const retention = body.slice(body.indexOf('<h2>7. 保存期間</h2>'), body.indexOf('<h2>8. '));
     expect(retention).toContain('作品は、作者が作品ページから削除すると削除します。');
-    expect(retention).toContain('公開中の作品は、取り下げてから削除できます');
+    expect(retention).toContain('公開中の作品は、公開をやめて下書きに戻してから削除できます');
     expect(retention).toContain('生成されたソースコード・遊ぶためのファイル・紹介用の画像と、リフォージの前の版を削除します');
     // 行を残す 2 つの場合（`src/game-deletion.ts` の「行を残すのは、次のどちらかがあるとき」）。
     expect(retention).toContain('その作品をフォークした作品があるとき');

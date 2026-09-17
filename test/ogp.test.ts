@@ -33,11 +33,11 @@ import {
   missingOgpSecrets,
 } from '../src/ogp-client.js';
 import { deleteGame } from '../src/game-deletion.js';
-import { removeGame } from '../src/games.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { workPageRoutes, workPagePath } from '../src/work-page.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
+import { markGameRemoved } from './helpers/removed-work.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 const SECRET = 'test-secret-value-for-ogp-endpoint-01';
@@ -630,7 +630,7 @@ describe('撮影のコールバックと作品の削除の競合（#516 / PR #52
 
   it('削除が掴んで確定した後に届いた画像は、R2 に残らない（行ごと消えた場合）', async () => {
     const { userId, id, ogpToken } = await seedPublishedGame('race-deleted');
-    expect(await removeGame(env, id, userId)).toEqual({ ok: true, firstTime: true });
+    await markGameRemoved(id);
 
     const raced = afterPendingCheck(async () => {
       expect(await deleteGame(env, id)).toEqual({ ok: true, result: 'deleted' });
@@ -645,7 +645,7 @@ describe('撮影のコールバックと作品の削除の競合（#516 / PR #52
     // 子がいるので行は残る（中身を消した tombstone）。
     const child = await seedReadyGame('race-purged-child');
     await env.DB.prepare('update games set parent_id = ? where id = ?').bind(id, child.id).run();
-    expect(await removeGame(env, id, userId)).toEqual({ ok: true, firstTime: true });
+    await markGameRemoved(id);
 
     const raced = afterPendingCheck(async () => {
       expect(await deleteGame(env, id)).toEqual({ ok: true, result: 'purged' });

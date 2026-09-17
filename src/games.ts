@@ -1021,11 +1021,15 @@ export async function failGame(
 export const PUBLISHED_STATUS = 'published';
 
 /**
- * 取り下げ（tombstone 化）された作品の状態（5.3 / 5.4 / M5-4 / #35）。
+ * 取り下げ（tombstone 化）された作品の状態（5.3 / 5.4 / M5-4 / #35 / 確定35）。
  *
- * **書き込むのは {@link removeGame} だけである**（#35 で入った。それまでは読む側
- * ——系統の表示が「削除済みの作品から派生」を出し分けるため——だけが要っていた）。
- * {@link PUBLISHED_STATUS} と同じ形で、**書ける場所を 1 つに絞る。**
+ * **作者の操作では書かない**（#637 / 確定35。2026-09-17）。作者が公開をやめると
+ * {@link unpublishGame} が {@link DRAFT_STATUS} へ戻す。**この状態を書くのは、運営の措置
+ * （8.4。管理画面に置かず D1 の直接 UPDATE で行う）と、退会（確定34。`src/withdrawal.ts`）と、
+ * 作者の削除が中身を消した tombstone（`src/game-deletion.ts`）だけである。**
+ *
+ * > **#35 から #637 までは「書き込むのは `removeGame` だけである」だった。** 取り下げが作者の
+ * > 口でもあった時期の記述で、その関数はもう無い。
  */
 export const REMOVED_STATUS = 'removed';
 
@@ -1105,6 +1109,16 @@ export type PublishOutcome =
  * 加算ではなく**数え直し**である（{@link refreshParentForkCount}）。理由はそちらに
  * ある。
  *
+ * # 2 度目の公開では `published_at` を動かさない（#637 / 確定35）
+ *
+ * **`coalesce(published_at, ?)` で書く。** 作者は公開をやめて下書きへ戻せる
+ * （{@link unpublishGame}）ので、**同じ作品が 2 度以上ここを通る。** そのたびに時刻を
+ * 書き換えると、公開作品の一覧の既定（`published_at` の降順。2.3.2）で、
+ * **下書きへ戻して公開し直すだけで新着の先頭へ戻せる。**
+ *
+ * **「公開した日」は、初めて公開した日を指す。** 作者が一度取り下げてから出し直したことは、
+ * 閲覧者にとって新しい作品が現れたことを意味しない。
+ *
  * # タグは同じ UPDATE で書く（#376）
  *
  * **公開の遷移と同じ 1 本に置く。** 別の UPDATE にすると、二度押しの 2 回目（`status` は既に
@@ -1118,6 +1132,12 @@ export type PublishOutcome =
  *
  * **`tags_set_at` は書かない。** あれは付け直しの間隔を数える起点で、公開した直後に付け間違いに
  * 気づいた作者を待たせない（`migrations/` の `games_tags`）。
+ *
+ * > **#637 注記。2 度目の公開では、タグはフォームが運んできた値で置き換わる。** 公開をやめても
+ * > タグは消さない（{@link unpublishGame} は `tag1` 〜 `tag3` に触れない）ので、**再公開の
+ * > フォームは、いま付いているタグを選んだ状態で出す**（`src/work-page.ts` の `publishForm`）。
+ * > **そうしないと、選び直さずに押した作者のタグが黙って消える**——二度押しを止めていたのは
+ * > `status = 'draft'` の条件で、それが正当な再公開になったためである。
  *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
@@ -1139,20 +1159,26 @@ export async function publishGame(
   }
   const [tag1, tag2, tag3] = workTagSlots(validated.tags);
 
-  const result = await env.DB.prepare(
+  // **`returning` で公開時刻を持ち帰る**（#637）。`coalesce` を通すので、2 度目の公開で
+  // 入っている値は `now` ではない。**行が返ったこと自体が「この呼び出しが遷移させた」**
+  // でもある（0 行の UPDATE は 1 行も返さない）。
+  const published = await env.DB.prepare(
     `update games
-        set status = ?, published_at = ?, tag1 = ?, tag2 = ?, tag3 = ?
+        set status = ?, published_at = coalesce(published_at, ?), tag1 = ?, tag2 = ?, tag3 = ?
       where id = ? and author_id = ? and status = ? and generation_state = 'ready'
-        and deletion_started_at is null`,
+        and deletion_started_at is null
+      returning published_at`,
   )
     .bind(PUBLISHED_STATUS, now, tag1, tag2, tag3, gameId, authorId, DRAFT_STATUS)
-    .run();
+    .first<{ published_at: number | null }>();
 
-  if ((result.meta.changes ?? 0) > 0) {
+  if (published !== null) {
     // **遷移が起きたときだけ数え直す。** 二度押しの 2 回目はここへ来ない
     // （`status = 'draft'` の条件が先に外れる）ので、押した回数では増えない。
     await refreshParentForkCount(env, gameId);
-    return { ok: true, firstTime: true, publishedAt: now };
+    // **`published_at` が NULL なのは 0001 以前の行だけ**だが、不変条件を呼び出し側が
+    // 前提にしないため、読めなければ今の時刻を返す（下の二度押しの枝と同じ扱い）。
+    return { ok: true, firstTime: true, publishedAt: published.published_at ?? now };
   }
 
   const row = await env.DB.prepare(
@@ -1182,12 +1208,12 @@ export async function publishGame(
 }
 
 /**
- * 取り下げの結果（5.3 / M5-4 / #35）。
+ * 公開をやめた結果（5.4 の「公開をやめて下書きへ戻せる」 / 確定35 / #637）。
  *
  * 形は {@link PublishOutcome} に揃えてある。**「できなかった」を 1 つにまとめない**
  * のも同じ理由で、呼び出し側が返すステータスと文言が理由ごとに違う。
  */
-export type RemoveOutcome =
+export type UnpublishOutcome =
   | {
       readonly ok: true;
       /** **この呼び出しが実際に遷移させたか。** 二度押しの 2 回目は false。 */
@@ -1196,59 +1222,82 @@ export type RemoveOutcome =
   | { readonly ok: false; readonly reason: 'not-found' | 'not-published' };
 
 /**
- * 作品を取り下げる（tombstone 化。5.3 / M5-4 / #35）。
+ * 作者が公開をやめる（`published → draft`。5.4 の「公開をやめて下書きへ戻せる」 / 確定35 / #637）。
  *
- * # 物理削除しない
+ * # `removed` にしない
  *
- * 5.3 は「**親の削除は物理削除せず tombstone 化**し、子は残して「削除済みの作品から
- * 派生」と表示する」と定める。`delete from games` にできない理由は 3 つある。
+ * **`removed` は運営の措置（8.4）と退会（確定34）の専用状態である。** #35 まではここが作者の
+ * 口でもあったが、**取り下げた作品は「あなたの作品」一覧（`status <> 'removed'`）にも検索にも
+ * 出ないため、作品ページの URL を控えていない作者は、押した瞬間から削除も再公開もできなくなっていた。**
+ * `draft` へ戻せば、下書きと同じ扱いになり、一覧から辿って再公開・リフォージ・削除ができる。
  *
- * 1. **子の `parent_id` が親を指している。** 消すと外部キーが宙に浮くか、
- *    連鎖削除で子まで消える。**どちらも 5.3 が明示的に採らないと言っている形**である
- *    （「連鎖削除は荒れるため採らない」）。
- * 2. **子の画面が「削除済みの作品から派生」と言えなくなる。** 行が無いと、
- *    `parentWorkOf` から見て「親が居ない（オリジナル）」と区別できない
- *    （`src/work-page.ts` は結合の空振りも `removed` へ倒すが、**それは保険であって
- *    設計ではない**）。
- * 3. **R2 の成果物は作品をまたいで共有される**（確定26）。行を消すと、確定26 の
- *    削除規約 ① が「参照ゼロ」と判定する対象が変わる。**参照する側の行が失われる**
- *    のは #202 / #203 が踏んだ事故そのものである。
+ * # 4 つのことを同じ 1 本で守る
+ *
+ * | 守るもの | どこで守るか |
+ * |---|---|
+ * | **作者本人だけが公開をやめられる** | `where author_id = ?` |
+ * | **公開中の作品にしか効かない** | 同 `where status = 'published'`（二度押しの 2 通目は 0 行更新） |
+ * | **削除を掴まれた行は動かさない**（#516） | 同 `where deletion_started_at is null` |
+ * | **配っていた試遊 URL を道連れに殺す** | `set preview_key = ?`（引き直す） |
+ *
+ * **`preview_key` を引き直すのは、意思表示を弱めないためである。** 試遊の配信は
+ * `status <> 'removed'` で引く（`src/sandbox-delivery.ts`）ので、鍵をそのままにすると
+ * **取り下げでは死んでいた `/p/` が、下書きでは生き続ける。** 作者は作品ページから新しい
+ * 試遊 URL を取り直せる（リフォージの完了が同じことをしている。`src/revisions.ts`）。
+ *
+ * # 審査済み（`cleared`）は外し、審査待ち（`queued`）は残す
+ *
+ * **改名（{@link renameGame}）・説明の変更（{@link describeGame}）と同じ式を通す**
+ * （{@link reviewStateAfterAuthorEditSql}）。**下書きのあいだに中身を入れ替えられる**ので、
+ * `cleared` のまま再公開できると、一度審査を通した作品が通報の回路の外に出る（`cleared` は
+ * 再び閾値に達しても戻らない）。`queued` を解かないのも同じ理由で、**新規露出を止めた状態を
+ * 作者の操作で解けてはいけない。**
+ *
+ * # 紹介用の画像は撮り直させる
+ *
+ * **`ogp_state` を NULL へ戻す。** 撮影の関門は `ogp_state is null`（`src/ogp.ts` の
+ * `claimOgpCapture`）で、**撮り終えた作品を撮り直す経路は無い**（#235 は中断した撮影の
+ * 掴み直しで、別物である）。戻さないと、下書きのあいだにリフォージして再公開した作品の
+ * 紹介画像が、前の中身のまま残る。**`ogp_key` は消さない**——鍵は作品ごとに 1 枚
+ * （`ogp/<game_id>.png`）なので、次の撮影が上書きする。`ogp_state` が NULL のあいだは
+ * 画像の配信も引けない（あちらは `ogp_state = 'ready'` で引く）。
+ *
+ * **走っている最中の撮影も落とす。** `ogp_token_hash` を消すので、遅れて届いた
+ * コールバックはトークンの照合に落ちる（`ogp_started_at` も一緒に戻す）。
+ *
+ * # 親の被改造数は数え直す
+ *
+ * 5.5 の「このゲームからのフォーク: N 件」は `status='published'` のみを数えるので、
+ * 下書きへ戻した作品が数に残ってはいけない。{@link refreshParentForkCount} は数え直しなので、
+ * **増やす側と同じ 1 本で賄える**（#35 の取り下げが同じことをしていた）。
  *
  * # 連鎖しない
  *
- * **この関数は `games` の 1 行しか書き換えない。** 子の `status` に触れない
- * （子が `published` のまま残ることが #35 の acceptance である）。**子を巻き込む
- * 条件を「書かない」ことで守る**——`where` に子を含める余地のある SQL を置いてから
- * 「含めないように気をつける」形にしない。
- *
- * # `published` からしか遷移しない
- *
- * 取り下げるものがあるのは、公開してしまった作品だけである。`draft` は
- * **そもそも公開 URL を持たない**（5.4）ので、取り下げるべきものが無い
- * （未公開の行は 3.7 の掃除に任せる。確定13）。**条件を狭くしておくほうが、
- * 広げる日に判断を残せる。**
- *
- * # 親の `fork_count` は数え直す
- *
- * 取り下げた作品が誰かの子であれば、**その親の被改造数は 1 件減る。** 5.5 の
- * 「このゲームからの改造: N 件」は `status='published'` のみを数えるので、
- * 取り下げた作品が数に残ってはいけない。{@link refreshParentForkCount} は
- * 数え直しなので、**増やす側と同じ 1 本で賄える。**
+ * **この関数は `games` の 1 行しか書き換えない。** 子の `status` に触れない——公開をやめても、
+ * そこから派生した作品は公開されたままである（5.3 の「連鎖削除は荒れるため採らない」と同じ）。
  *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
  * @param authorId 操作している利用者（**作者本人でなければ通らない**）
- * @returns 取り下げの結果
+ * @returns 公開をやめた結果
  */
-export async function removeGame(
+export async function unpublishGame(
   env: Env,
   gameId: string,
   authorId: string,
-): Promise<RemoveOutcome> {
+): Promise<UnpublishOutcome> {
+  // **別名 `g` は審査状態の式が求める**（{@link reviewStateAfterAuthorEditSql}。{@link renameGame} と同じ形）。
   const result = await env.DB.prepare(
-    'update games set status = ? where id = ? and author_id = ? and status = ?',
+    `update games as g
+        set status = ?,
+            preview_key = ?,
+            ogp_state = null,
+            ogp_token_hash = null,
+            ogp_started_at = null,
+            ${REVIEW_STATE_COLUMN} = ${reviewStateAfterAuthorEditSql()}
+      where id = ? and author_id = ? and status = ? and deletion_started_at is null`,
   )
-    .bind(REMOVED_STATUS, gameId, authorId, PUBLISHED_STATUS)
+    .bind(DRAFT_STATUS, createPreviewKey(), gameId, authorId, PUBLISHED_STATUS)
     .run();
 
   if ((result.meta.changes ?? 0) > 0) {
@@ -1256,9 +1305,8 @@ export async function removeGame(
     return { ok: true, firstTime: true };
   }
 
-  // **理由を引く SELECT にも `author_id = ?` を入れる**（{@link publishGame} と
-  // 同じ理由。他人の作品に対して理由を撃ち分けると、任意の id が実在するかを外から
-  // 確かめられる手がかりになる）。
+  // **理由を引く SELECT にも `author_id = ?` を入れる**（{@link publishGame} と同じ理由。
+  // 他人の作品に対して理由を撃ち分けると、任意の id が実在するかを外から確かめられる手がかりになる）。
   const row = await env.DB.prepare('select status from games where id = ? and author_id = ?')
     .bind(gameId, authorId)
     .first<{ status: string }>();
@@ -1266,10 +1314,11 @@ export async function removeGame(
   if (row === null) {
     return { ok: false, reason: 'not-found' };
   }
-  if (row.status === REMOVED_STATUS) {
-    // **二度押し。** 取り下げそのものは成立している状態なので、失敗にしない。
+  if (row.status === DRAFT_STATUS) {
+    // **二度押し。** 公開をやめること自体は成立している状態なので、失敗にしない。
     return { ok: true, firstTime: false };
   }
+  // `removed`（運営の措置・退会）と、削除を掴まれた行がここへ来る。**どちらも作者は動かせない。**
   return { ok: false, reason: 'not-published' };
 }
 
@@ -1457,7 +1506,7 @@ function reviewStateAfterAuthorEditSql(): string {
  * 取り下げた作品と、まだ完成していない作品は改名できない
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * tombstone は「もう見せない」という作者の意思表示で（{@link removeGame}）、
+ * tombstone は「もう見せない」という意思表示で（運営の措置・退会・作者の削除。{@link REMOVED_STATUS}）、
  * 題名はどの画面にも出ない。**押せば断られる操作を口だけ開けておかない**
  * （`src/work-page.ts` は同じ条件でフォームを出さない）。
  *
@@ -1553,7 +1602,7 @@ export async function renameGame(
     return { ok: false, reason: 'not-ready' };
   }
   // 残る理由は「同じ題名だった」である。**失敗にしない**（二度押しと、正規化の結果が
-  // いまの題名と一致した場合の両方がここへ来る。{@link removeGame} の二度押しと同じ扱い）。
+  // いまの題名と一致した場合の両方がここへ来る。{@link unpublishGame} の二度押しと同じ扱い）。
   return { ok: true, title: row.title, changed: false };
 }
 
@@ -2110,13 +2159,13 @@ export async function retagGame(
  *    1 件公開された時点で正しい値へ収束する。** 同じ形の事故が #202 / #203 で起きている
  *    （版が 1 つも無い作品を推敲すると元の版が消えた）。
  * 2. **冪等である。** 2 回呼んでも値が動かない。呼び出し側（{@link publishGame} /
- *    {@link removeGame}）の関門が壊れても、**数が壊れるところまでは伝播しない。**
- * 3. **増減の両方を 1 つの綴りで賄える。** tombstone 化（5.3 / M5-4 / #35）は子を
- *    1 件減らす操作だが、`- 1` を別に書く必要が無い（{@link removeGame} が同じ
+ *    {@link unpublishGame}）の関門が壊れても、**数が壊れるところまでは伝播しない。**
+ * 3. **増減の両方を 1 つの綴りで賄える。** 公開をやめる操作（5.4 / #637）は子を
+ *    1 件減らす操作だが、`- 1` を別に書く必要が無い（{@link unpublishGame} が同じ
  *    関数を呼ぶ）。
  *
  * 代償は、親の子を毎回数え直すことである。**`games_parent_id_idx`（0001）がある**ので
- * 索引の範囲走査で済み、しかも走るのは公開・取り下げのときだけ（閲覧では走らない）。
+ * 索引の範囲走査で済み、しかも走るのは公開・公開をやめるときだけ（閲覧では走らない）。
  *
  * # 親を引いてから更新しない
  *

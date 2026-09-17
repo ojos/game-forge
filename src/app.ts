@@ -12,6 +12,7 @@ import { createAccountHandleRoutes } from './account-handle.js';
 import { withdrawalRoutes } from './account-withdrawal.js';
 import { reservedHandlesOf } from './handle.js';
 import { appRobotsRoutes } from './robots.js';
+import { sitemapRoutes } from './sitemap.js';
 import { SANDBOX_PATH_PREFIXES } from './sandbox.js';
 import { describeOriginRelation } from './origins.js';
 import { forkRoutes } from './fork.js';
@@ -317,6 +318,9 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     // クローラへの意思表示（#594）。**ログインを要求せず、D1 も読まない**（静的な本文）。
     // 中身とその理由は `src/robots.ts` が持つ。
     ...appRobotsRoutes,
+    // サイトマップ（#595）。**app ホストだけに置く**（sandbox と admin は全面拒否で、
+    // 載せる URL が 1 つも無い）。
+    ...sitemapRoutes,
     // 5.6 の規約と、8.4 の削除依頼（#41）。**どちらも非ログインで到達できる**
     // ——権利者は本サービスの利用者とは限らない。
     ...legalRoutes,

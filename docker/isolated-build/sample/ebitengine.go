@@ -20,10 +20,16 @@
 // 目的で、リンカに落とされずに実際に連結されることを保証する。
 //
 // **basicfont の使用はここから外さない。** `test/system-prompt.test.ts` が
-// 「5 節が教える API の形は、隔離ビルドで実際にコンパイルが通ったサンプルと一致する」
+// 「6 節が教える API の形は、隔離ビルドで実際にコンパイルが通ったサンプルと一致する」
 // を機械照合しており、`text.NewGoXFace(basicfont.Face7x13)` はその照合対象である。
 // 日本語のフォントは**足す**のであって、置き換えるのではない（#285 の scope.out に
 // 「basicfont の削除」がある。既存作品のフォークが壊れる）。
+//
+// **スプライトと画面の状態は #597 で足した。** どちらも新しいパッケージを要さない
+// （`ebiten.NewImage` / `Image.Set` / `Image.DrawImage` は ebiten 本体にある）が、
+// **プロンプトが教える形が実在してコンパイルできることは、配る現物のイメージで
+// ビルドして初めて分かる。** 6 節のスプライトの節と 3 節の状態の形が、ここと機械照合
+// される（`test/system-prompt.test.ts`）。
 
 package main
 
@@ -43,6 +49,45 @@ import (
 )
 
 const sampleRate = 48000
+
+// 画面の状態（#597）。**プロンプト 3 節が教える形をそのまま置く。** 終端の状態を持たない
+// 作品は、終わる条件へ達しても描画が変わらず、遊ぶ人からは何も起きていないように見える。
+const (
+	stateTitle = iota
+	statePlaying
+	stateOver
+)
+
+// ドット絵の素材（#597）。**外部ファイルを読まずに絵を持つ唯一の形である。** 文字列の
+// 1 文字が 1 ドットで、パレットに無い文字はそのまま透ける。
+var playerArt = []string{
+	"..1111..",
+	".111111.",
+	"11122111",
+	"11111111",
+	".1.11.1.",
+}
+
+var artPalette = map[byte]color.RGBA{
+	'1': {0xff, 0xcc, 0x44, 0xff},
+	'2': {0x22, 0x22, 0x33, 0xff},
+}
+
+// newSprite は文字列のドット絵を `*ebiten.Image` へ焼く（#597）。
+//
+// **初期化時に 1 度だけ呼ぶ。** `ebiten.NewImage` を `Draw` の中で呼ぶと、毎フレーム
+// テクスチャを作ることになる。
+func newSprite(art []string) *ebiten.Image {
+	img := ebiten.NewImage(len(art[0]), len(art))
+	for y, row := range art {
+		for x := 0; x < len(row); x++ {
+			if clr, ok := artPalette[row[x]]; ok {
+				img.Set(x, y, clr)
+			}
+		}
+	}
+	return img
+}
 
 // 合成した矩形波（#286）。**`io` も `bytes` も import しない**——PCM は `[]byte` へ
 // 自分で並べ、`NewPlayerF32FromBytes` へ渡すだけなので、どちらの型も要らない。
@@ -88,11 +133,37 @@ func squareWave(freq, vol float64, samples int) []byte {
 
 type Game struct {
 	x, y         float64
+	angle        float64
 	score        int
+	state        int
+	cleared      bool
+	sprite       *ebiten.Image
 	face         *text.GoXFace
 	jpFace       *text.GoXFace
 	audioContext *audio.Context
 	shot         []byte
+}
+
+// reset は遊びの状態を初めからやり直せる形へ戻す（#597）。
+func (g *Game) reset() {
+	g.x = 0
+	g.angle = 0
+	g.score = 0
+	g.cleared = false
+}
+
+// drawSprite は焼いたドット絵を、回して・拡大して・色を変えて描く（#597）。
+//
+// **`GeoM` は書いた順に掛かる。** 絵の中心を原点へ寄せてから回し、拡大し、最後に
+// 置きたい場所へ移す。
+func (g *Game) drawSprite(screen *ebiten.Image) {
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Translate(-4, -2.5)
+	op.GeoM.Rotate(g.angle)
+	op.GeoM.Scale(4, 4)
+	op.GeoM.Translate(g.x, g.y)
+	op.ColorScale.ScaleWithColor(color.RGBA{0x66, 0xff, 0xaa, 0xff})
+	screen.DrawImage(g.sprite, op)
 }
 
 func (g *Game) Update() error {
@@ -109,19 +180,48 @@ func (g *Game) Update() error {
 		player := g.audioContext.NewPlayerF32FromBytes(g.shot)
 		player.Play()
 	}
-	if ebiten.IsKeyPressed(ebiten.KeyRight) {
-		g.x += 2
-		g.score++
-	}
-	g.y = 120 + 40*math.Sin(g.x/30)
-	if g.x > 320 {
-		g.x = 0
+	// 画面の状態で分ける（#597）。**プロンプト 3 節が教える形をそのまま置く。**
+	switch g.state {
+	case stateTitle:
+		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+			g.reset()
+			g.state = statePlaying
+		}
+	case statePlaying:
+		if ebiten.IsKeyPressed(ebiten.KeyRight) {
+			g.x += 2
+			g.score++
+		}
+		g.angle += 0.02
+		g.y = 120 + 40*math.Sin(g.x/30)
+		// 終わる条件へ達したら、勝ち負けを決めて終端の状態へ移す。
+		if g.x > 320 {
+			g.cleared = true
+			g.state = stateOver
+		}
+	case stateOver:
+		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+			g.state = stateTitle
+		}
 	}
 	return nil
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
 	vector.DrawFilledRect(screen, float32(g.x), float32(g.y), 16, 16, color.RGBA{0x33, 0xcc, 0x99, 0xff}, true)
+	g.drawSprite(screen)
+
+	// 終わったら画面が変わること（#597）。結果とやり直しの押し方を出す。
+	if g.state == stateOver {
+		over := &text.DrawOptions{}
+		over.GeoM.Translate(8, 40)
+		result := "まけ... スペースでもういちど"
+		if g.cleared {
+			result = "クリア！ スペースでもういちど"
+		}
+		text.Draw(screen, result, g.jpFace, over)
+	}
+
 	op := &text.DrawOptions{}
 	op.GeoM.Translate(8, 8)
 	text.Draw(screen, "SCORE "+strconv.Itoa(g.score), g.face, op)
@@ -142,6 +242,7 @@ func main() {
 	audioContext := audio.NewContext(sampleRate)
 	shot := squareWave(440, 0.2, sampleRate/10)
 	g := &Game{
+		sprite:       newSprite(playerArt),
 		face:         text.NewGoXFace(basicfont.Face7x13),
 		jpFace:       text.NewGoXFace(jpfont.Face16),
 		audioContext: audioContext,

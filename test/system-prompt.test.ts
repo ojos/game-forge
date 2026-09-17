@@ -27,13 +27,14 @@ function textOf(blocks: readonly SystemBlock[]): string {
 }
 
 describe('本文の構成（6.1）', () => {
-  it('7 つの節をこの順で並べる', () => {
+  it('8 つの節をこの順で並べる', () => {
     // 順序には理由がある。出力形式を最初に、自己点検を最後に置く（`src/system-prompt.ts`）。
     // 節を足したり並べ替えたりするとキャッシュが作り直しになるので、意図しない変更を
     // ここで止める。
     const expected = [
       'あなたは Go と Ebitengine で',
       '満たすべき構造:',
+      'ゲームとして成り立たせる:',
       '禁止:',
       '使用してよいパッケージは次のものだけです',
       '許可された API の使い方',
@@ -296,6 +297,22 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
       'ebiten.RunGame(g); err != nil && !errors.Is(err, ebiten.Termination)',
       'func (g *Game) Update() error',
       'func (g *Game) Draw(screen *ebiten.Image)',
+      // スプライト（#597）。**許可パッケージを増やさずに書ける**ことを、サンプルを
+      // 実際にビルドして確かめている。
+      'func newSprite(art []string) *ebiten.Image',
+      'img := ebiten.NewImage(len(art[0]), len(art))',
+      'img.Set(x, y, clr)',
+      'op := &ebiten.DrawImageOptions{}',
+      'op.GeoM.Rotate(g.angle)',
+      'op.GeoM.Scale(4, 4)',
+      'op.ColorScale.ScaleWithColor(',
+      'screen.DrawImage(g.sprite, op)',
+      // 画面の状態（#597）。API 面ではないが、**この形でコンパイルが通ること**は
+      // サンプルで確かめられる。
+      'stateTitle = iota',
+      'switch g.state {',
+      'g.state = statePlaying',
+      'g.state = stateOver',
     ]) {
       expect(text, `プロンプトに無い: ${fragment}`).toContain(fragment);
       expect(sample, `サンプルで検証されていない: ${fragment}`).toContain(fragment);
@@ -316,6 +333,73 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
 
   it('時間をフレーム数で数えさせる（time は許可されていない）', () => {
     expect(renderSystemPromptText()).toContain('フレーム数で数えます');
+  });
+});
+
+describe('ゲームとして成り立たせる（#597）', () => {
+  it('終わり方は利用者の指示を優先し、書いていないときだけ既定を入れると書いている', () => {
+    // **利用者の決定（2026-09-17）。** どの作品にもクリアを要求すると、もぐら叩きの
+    // ような骨組みへ不自然なゴールが付く。**判定はモデルへ委ねる**ので、両方が本文に
+    // 書かれていること自体を見る（片方だけだと、指示を無視するか既定が入らないかの
+    // どちらかになる）。
+    const text = renderSystemPromptText();
+    expect(text).toContain('利用者の指示に終わり方が書いてあるなら、そのとおりにします');
+    expect(text).toContain('書いていないときだけ、下の既定を入れます');
+    expect(text).toContain('負けるまで延々と続くだけにはしません');
+  });
+
+  it('終端の状態と、結果・やり直しの画面を書かせている', () => {
+    // 基準線の 10 本中 5 本は、勝ちの表示そのものが無かった
+    //（`docs/cold-start-samples.md` 7 章）。**終わる条件だけでは足りない**——終端の
+    // 状態を持たない作品は、条件へ達しても描画が変わらない。
+    const text = renderSystemPromptText();
+    expect(text).toContain('stateTitle = iota');
+    expect(text).toContain('switch g.state {');
+    expect(text).toContain('Draw も同じ 3 つで分けます');
+    expect(text).toContain('やり直しの押し方を出します');
+  });
+
+  it('最初のフレームに絵があることを求めている（OGP の撮影。#597 の自己レビュー）', () => {
+    // **状態を分けさせると、全作品がタイトル画面から始まる。** OGP の撮影は
+    // ローダーが消えた 1.5 秒後の 1 枚を撮る（`docker/ogp-shot/index.mjs`）ので、
+    // **何もしないと見本の画像が全部「文字だけの画面」になる。**
+    const text = renderSystemPromptText();
+    expect(text).toContain('遊ぶ場面（背景・自機・敵・地形）をそのまま描いたうえに文字を重ねます');
+    expect(text).toContain('何も無い画面に文字だけを置きません');
+  });
+
+  it('画面へ出した口を必ず働かせると書いている', () => {
+    // **見た目だけ変わる形を塞ぐ。** 「選べるのに何も起きない」は、選んだ結果が
+    // 表示にしか反映されない形でも起きる。
+    const text = renderSystemPromptText();
+    expect(text).toContain('画面へ出した口は、必ず働かせる:');
+    expect(text).toContain('変わるのは見た目だけでは足りません');
+    expect(text).toContain('初期化するだけで一度も読まない変数を残しません');
+  });
+
+  it('スプライトを、外部ファイルを読まない形で教えている', () => {
+    // **許可パッケージを増やしていない**ことも一緒に見る。増やす変更が入った日に、
+    // この節の根拠（「前から許可の内側にあった」）が黙って変わらないようにする。
+    const text = renderSystemPromptText();
+    expect(text).toContain('ドット絵（スプライト。外部ファイルは読まず、絵をコードで持ちます）:');
+    expect(text).toContain('毎フレーム作りません');
+    expect(text).toContain('Draw の中では呼びません');
+    const paths = GO_IMPORT_ALLOWLIST.map((entry) => entry.path);
+    expect(paths).toContain('github.com/hajimehoshi/ebiten/v2');
+    expect(paths).not.toContain('image');
+    expect(paths).not.toContain('embed');
+  });
+
+  it('自己点検が、終わり方・口の結線・スプライトの 3 点を確かめさせる', () => {
+    // **この節を作るまで、自己点検 6 項目はすべて整形・import・漢字・バイト数だった**
+    // （遊びの中身は 0 項目）。モデルは最後に読んだ点検表を守るので、ここに無い制約は
+    // 上の節にあっても薄まる。
+    const check = SYSTEM_PROMPT_SECTIONS.at(-1)!;
+    expect(check.startsWith('出力する前に自分で確かめること:')).toBe(true);
+    expect(check).toContain('遊びが終わる条件があり');
+    expect(check).toContain('すべて遊びの何かを実際に変えている');
+    expect(check).toContain('初期化するだけで一度も読まない変数が残っていない');
+    expect(check).toContain('ebiten.NewImage と img.Set を Draw の中で呼んでいない');
   });
 });
 

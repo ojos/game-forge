@@ -202,3 +202,46 @@ resource "aws_route53_record" "resend_dmarc" {
   ttl     = 300
   records = ["v=DMARC1; p=none;"]
 }
+
+/**
+ * Search Console の所有証明（`game-forge.ojos.jp` のドメインプロパティ。#610）。
+ *
+ * # なぜ apex に置くのか
+ *
+ * **`app.game-forge.ojos.jp` には置けない。** あちらは Pages へ向く CNAME を持っており、
+ * **CNAME があるノードには他のレコードを置けない**（RFC 1034。実測で確認した）。
+ * ドメインプロパティは DNS の確認が必須なので、`app.` を含む名前では検証できない。
+ *
+ * **apex なら衝突しない。** ここは Route53 のゾーンの頂点で CNAME を張れず（`dns.tf` 冒頭）、
+ * TXT も置かれていなかった。
+ *
+ * # `ojos.jp` 側の所有証明とは別物である
+ *
+ * **消さないこと**で有名なもう 1 つの `google-site-verification`（`docs/gcp-oauth-setup.md` 4.3）は
+ * **`ojos.jp` の DNS（さくら側）にあり、OAuth の承認済みドメインが依存している。**
+ * こちらは `game-forge.ojos.jp` の所有を Search Console へ示すだけで、**OAuth とは無関係である。**
+ *
+ * **こちらは terraform で宣言できる。** あちらができないのは、承認済みドメインが eTLD+1
+ * （`ojos.jp`）でなければならず、そのゾーンがさくら側で API を持たないためである（同 4.3）。
+ * **同じ種類の値なのに置き場所が違う理由は、そこにしかない。**
+ *
+ * # 値について
+ *
+ * **秘密ではない。** DNS に公開される値で、知られても所有権は移らない（所有権は「この値を
+ * DNS へ置けること」で示される）。`resend_dkim` と同じ扱いで直に書く。
+ *
+ * **正本は Search Console の「所有権の確認」の画面である。** ここはその写しで、プロパティを
+ * 作り直したら差し替える。**消すと所有証明が外れ、サイトマップの送信とインデックスのレポートが
+ * 見られなくなる**（OAuth と本番の同意画面には影響しない。上記のとおり別物である）。
+ *
+ * **サイト管理者アカウント `game-forge@ojos.jp` で作った**（2026-09-17）。個人アカウントで
+ * 作ったプロパティから移すためで、**個人アカウントが使えなくなってもサービスの管理が続く**
+ * ようにする。
+ */
+resource "aws_route53_record" "search_console_verification" {
+  zone_id = aws_route53_zone.game_forge.zone_id
+  name    = aws_route53_zone.game_forge.name
+  type    = "TXT"
+  ttl     = 300
+  records = ["google-site-verification=1mjJUM5QMby2hdiz3fuLVKA_ijum_yAIWuKxz7YMW1I"]
+}

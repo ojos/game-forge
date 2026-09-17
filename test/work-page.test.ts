@@ -17,6 +17,7 @@ import {
   formatWasmSize,
   storedLikeCount,
   storedWasmBytes,
+  WORK_DESCRIBE_ANCHOR,
   WORK_PAGE_PREFIX,
   WORK_RENAME_ANCHOR,
   WORK_REMOVE_GAME_ID_FIELD,
@@ -29,6 +30,7 @@ import {
   completeGame,
   createForkedGame,
   createPendingGame,
+  describeGame,
   failGame,
   hashJobToken,
   publishGame,
@@ -3015,5 +3017,66 @@ describe('完成画面の題名の直下から改名へ飛ぶ（#600 / M16-2 / �
     expect(removedBody).toContain('この作品は取り下げられました');
     expect(removedBody).not.toContain('gf-work-rename-jump');
     expect(removedBody).not.toContain(`href="#${WORK_RENAME_ANCHOR}"`);
+  });
+});
+
+describe('説明が空のあいだ、作者に説明を書く口への案内を出す（#616 / M16-3 / 仕様 5.4）', () => {
+  /** 案内の 1 行（本文の列に出る `<p>`）。 */
+  const INVITE = '<p class="gf-work-describe-invite">';
+
+  /**
+   * 公開済みの作品を 1 つ作る。
+   *
+   * @param suffix 利用者と作品を分ける接尾辞
+   * @returns 作者の id と作品 id
+   */
+  async function seedPublished(suffix: string): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(`describe-invite-${suffix}`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({}));
+    expect((await publishGame(env, id, userId)).ok).toBe(true);
+    return { userId, id };
+  }
+
+  it('説明が空の公開済みの作品を作者本人で開くと案内が出て、飛び先の id が実在する', async () => {
+    const { userId, id } = await seedPublished('empty');
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+
+    expect(body).toContain(INVITE);
+    expect(body).toContain(`<a href="#${WORK_DESCRIBE_ANCHOR}">作品の説明を書く</a>`);
+    // 飛び先が実在する（押しても何も起きないリンクを出さない。4.4）。
+    expect(body).toContain(`<h3 id="${WORK_DESCRIBE_ANCHOR}" tabindex="-1">作品の説明を書く</h3>`);
+    // 案内は本文の列（設定のブロックより前）にある。
+    expect(body.indexOf(INVITE)).toBeLessThan(body.indexOf('gf-work-settings'));
+  });
+
+  it('説明を書いた後は出ない（書けば消える）', async () => {
+    const { userId, id } = await seedPublished('written');
+    expect((await describeGame(env, id, userId, '左右キーで動かします。', 2_000)).ok).toBe(true);
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+
+    expect(body).not.toContain(INVITE);
+    // 説明そのものは出ており、飛び先（フォームの見出し）は作者なので残る。
+    expect(body).toContain('左右キーで動かします。');
+    expect(body).toContain(`<h3 id="${WORK_DESCRIBE_ANCHOR}" tabindex="-1">作品の説明を書く</h3>`);
+  });
+
+  it('閲覧者には 1 バイトも出さない（未ログイン・別の利用者）', async () => {
+    const { id } = await seedPublished('viewer');
+    expect(await (await open(workPagePath(id))).text()).not.toContain('gf-work-describe-invite');
+
+    const other = await seedUser('describe-invite-other');
+    const body = await (await open(workPagePath(id), await sessionCookie(other))).text();
+    expect(body).not.toContain('gf-work-describe-invite');
+  });
+
+  it('未公開の完成画面には出さない（説明は公開後にしか書けない。5.4 を変えない）', async () => {
+    const { userId, id, jobToken } = await seedPending('describe-invite-draft');
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({}));
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+
+    expect(body).toContain('できました');
+    expect(body).not.toContain('gf-work-describe-invite');
   });
 });

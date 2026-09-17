@@ -367,6 +367,27 @@ describe('ゲームとして成り立たせる（#597）', () => {
     expect(text).toContain('案内した押し方 1 回で、実際に遊びが始まるようにします');
   });
 
+  it('状態を明示的に初期化させる（#624。本番で「何も動かない作品」が出た）', () => {
+    // **`iota` は同じ `const` のまとまりで先に並んだ定数の数だけずれる。** 本番の
+    // `470dfd5d`（ケロケロ舌合戦）は `screenW` / `screenH` / `sampleRate` の後ろに
+    // 状態を並べたため `stateTitle = 3` になり、**初期化していない `g.state`（ゼロ値 0）が
+    // どの `case` にも入らず、`Update` が毎フレーム何もしなかった。** 画面は止まり、
+    // キーもタップも仮想パッドも一切効かない。**コンパイルも OGP の撮影も通る**ので、
+    // どの関門も止められない。
+    const text = renderSystemPromptText();
+    // **本命の防御は明示的な初期化である**（`iota` がずれても動く）。
+    expect(text).toContain('g := &Game{state: stateTitle}');
+    expect(text).toContain('構造体の初期値は 0 なので');
+    // **まとまりを分けるのは確率を下げるほう。**
+    expect(text).toContain('それだけの const のまとまりに書きます');
+    // 2 節の `&Game{}` から 3 節の初期化へ、読み手を必ずつなぐ。
+    expect(text).toContain('下の 3 節で持たせる画面の状態も入れます');
+    // **サンプルでも実際に初期化している**（綴りは gofmt の整列で揃わないので、
+    // 機械照合の断片の一覧ではなくここで見る）。`check-isolated-build.sh` が
+    // このサンプルを実際に wasm へ通すので、**形が実在することの担保になる。**
+    expect(env.TEST_BUILD_SAMPLE).toMatch(/state:\s+stateTitle,/u);
+  });
+
   it('最初のフレームに絵があることを求めている（OGP の撮影。#597 の自己レビュー）', () => {
     // **状態を分けさせると、全作品がタイトル画面から始まる。** OGP の撮影は
     // ローダーが消えた 1.5 秒後の 1 枚を撮る（`docker/ogp-shot/index.mjs`）ので、
@@ -414,6 +435,8 @@ describe('ゲームとして成り立たせる（#597）', () => {
     // **`Update` からも塞ぐ**（同）。`Draw` だけを禁じると、毎フレーム絵を作り直す
     // 経路が `Update` に残る。
     expect(check).toContain('Update からも Draw からも呼んでいない');
+    // #624: 初期化の忘れを、最後に読む点検表でも捕まえる。
+    expect(check).toContain('g を作るときに状態を入れている');
   });
 });
 

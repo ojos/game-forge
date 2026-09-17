@@ -52,6 +52,11 @@ const sampleRate = 48000
 
 // 画面の状態（#597）。**プロンプト 3 節が教える形をそのまま置く。** 終端の状態を持たない
 // 作品は、終わる条件へ達しても描画が変わらず、遊ぶ人からは何も起きていないように見える。
+//
+// **ほかの定数と混ぜない**（#624）。`sampleRate` などと同じまとまりに書くと、`iota` が
+// 先に並んだ定数の数だけずれ、`stateTitle` が 0 でなくなる。**それ自体は壊れないが、
+// 状態を初期化し忘れた瞬間に「何も動かない作品」になる。** まとまりを分けるのは、
+// その組み合わせが起きる確率を下げるためである（本命の防御は下の明示的な初期化）。
 const (
 	stateTitle = iota
 	statePlaying
@@ -247,7 +252,12 @@ func (g *Game) Layout(int, int) (int, int) { return 320, 240 }
 func main() {
 	audioContext := audio.NewContext(sampleRate)
 	shot := squareWave(440, 0.2, sampleRate/10)
+	// **状態を明示的に入れる**（#624）。構造体の初期値は 0 で、`stateTitle` が 0 とは限らない
+	// ——`iota` は同じ `const` のまとまりで先に並んだ定数の数だけずれる。**入れ忘れると
+	// どの `case` にも入らず、`Update` が毎フレーム何もしない**（画面は止まり、キーもタップも
+	// 効かない）。本番で実際にこれが起きた（`470dfd5d` のケロケロ舌合戦）。
 	g := &Game{
+		state:        stateTitle,
 		sprite:       newSprite(playerArt),
 		face:         text.NewGoXFace(basicfont.Face7x13),
 		jpFace:       text.NewGoXFace(jpfont.Face16),

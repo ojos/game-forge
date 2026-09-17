@@ -26,8 +26,13 @@
  * 1 … #597 で 3 節「ゲームとして成り立たせる」を新設し、6 節にスプライト、8 節の自己点検に
  *     4 行を足した本文（仕様 v1.92）。**記録を始めた最初の版である**——これより前の生成は
  *     `generations.prompt_version` が NULL になる。
+ * 2 … #624 で、**状態を明示的に初期化させる**指示を足した本文。版 1 は状態の定数を単独の
+ *     まとまりとして示すだけだったため、**モデルがほかの定数と同じ `const` へ混ぜると
+ *     `iota` がずれ、初期化していない `g.state`（ゼロ値 0）がどの `case` にも入らず、
+ *     入力を一切受け付けない作品ができた**（本番の `470dfd5d`）。**版 1 で作られた
+ *     作品は、この壊れ方をしている可能性がある。**
  */
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 2;
 
 /**
  * 版ごとの本文の SHA-256（小文字 16 進）。**追記だけする。**
@@ -43,6 +48,7 @@ export const PROMPT_VERSION = 1;
 export const PROMPT_VERSION_HISTORY: readonly { readonly version: number; readonly sha256: string }[] =
   [
     { version: 1, sha256: '9974bd1d83f7ef93445d6f5a795de572f160b4c1cdbb996696edd8a31b592ea6' },
+    { version: 2, sha256: '7f4490a30dda09bbebabc90dd48a3995415d021187196f5ac3ccb554c0c0d36c' },
   ];
 
 /**

@@ -16,6 +16,7 @@ import type {
   EffortExperimentGroup,
   EffortExperimentReport,
 } from '../src/cost-ledger.js';
+import { PROMPT_VERSION } from '../src/prompt-version.js';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
   EFFORT_AB_ARMS,
@@ -99,6 +100,7 @@ interface LedgerRow {
   cost_jpy: number;
   succeeded: number;
   created_at: number;
+  prompt_version: number | null;
 }
 
 /**
@@ -368,6 +370,23 @@ describe('台帳への記録（#22 acceptance 1 / 5）', () => {
     expect(row.succeeded).toBe(1);
     // 作品行はまだ無い（3.3-8 で作られる）。
     expect(row.game_id).toBeNull();
+    // **どの版のプロンプトが作ったかが残る**（#605 / PR #607 の Copilot の指摘）。
+    // **この検査が無いと、束縛が抜けても全行が NULL のまま緑で通る。**
+    expect(row.prompt_version).toBe(PROMPT_VERSION);
+  });
+
+  it('プロンプトの版は定数から入る（書き写していない）', async () => {
+    // **数を書き写さない。** `src/system-prompt.ts` を直した日に、台帳だけが古い版を
+    // 言い続ける形を作らない（shared-ai-rules 12 章）。
+    const userId = await seedUser('prompt-version');
+    await recordGeneration(env, {
+      userId,
+      prompt: 'ゲーム',
+      generated: generationOf('sonnet-4-6', { inputTokens: 10, outputTokens: 20 }),
+    });
+    const rows = await rowsOf(userId);
+    expect(rows[0]!.prompt_version).toBe(PROMPT_VERSION);
+    expect(Number.isInteger(PROMPT_VERSION)).toBe(true);
   });
 
   it('モデルごとに違う額が記録される（#22 acceptance 4）', async () => {

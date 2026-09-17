@@ -162,6 +162,30 @@ const (
     expect(measured(source).stateCount).toBe(0);
   });
 
+  it('行をまたぐ定数式の続きを、別の状態として数えない（PR #607 の Copilot の指摘）', () => {
+    // **行の先頭の識別子をそのまま数えると、`offset` を 3 つ目の状態として数えてしまう。**
+    const source = `package main
+const (
+	stateA = iota +
+		offset
+	stateB
+)
+`;
+    expect(measured(source).stateCount).toBe(2);
+  });
+
+  it('括弧やカンマで終わる行の続きも数えない', () => {
+    const source = `package main
+const (
+	stateA = iota + len([]int{
+		1, 2,
+	})
+	stateB
+)
+`;
+    expect(measured(source).stateCount).toBe(2);
+  });
+
   it('組が 2 つあれば大きいほうを採る', () => {
     const source = `package main
 const (
@@ -203,8 +227,11 @@ describe('隔離ビルドのサンプル', () => {
     expect(m.stateCount).toBe(3);
     expect(m.hasWinText).toBe(true);
     expect(m.hasLoseText).toBe(true);
-    // パレットは `map[byte]color.RGBA{…}` で 2 色。ほかの色と合わせて 2 色より多い。
-    expect(m.colorCount).toBeGreaterThan(2);
+    // **正確な数で見る**（PR #607 の Copilot の指摘）。`>` で見ると、パレットの 2 色を
+    // 取りこぼしても、ほかの色だけで条件を満たしてしまう。サンプルの色は
+    // パレットの 2 色（`0xffcc44ff` / `0x222233ff`）と、背景の面と、スプライトの
+    // 色替えで、合わせて 4 色である。
+    expect(m.colorCount).toBe(4);
   });
 });
 

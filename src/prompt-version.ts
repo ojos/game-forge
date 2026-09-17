@@ -30,11 +30,26 @@
 export const PROMPT_VERSION = 1;
 
 /**
- * {@link PROMPT_VERSION} が指す本文の SHA-256（小文字 16 進）。
+ * 版ごとの本文の SHA-256（小文字 16 進）。**追記だけする。**
+ *
+ * **なぜ履歴にするのか**（PR #607 の Copilot の指摘）。値を 1 つだけ持つと、本文を変えた
+ * 人が**版を上げずに値だけ合わせても検査が通る。** 履歴にしておけば、その操作は
+ * **「過去の行を書き換える」差分として現れる**ので、レビューで見える。
+ *
+ * **機械で完全には塞げない。** 追記か改変かを判定するには、この表の過去を別の場所から
+ * 知る必要がある。**ここは「機構で結果を生む」ものではなく、見えるようにするだけ**であり、
+ * 最後の担保はレビューである（shared-ai-rules 12 章の区別）。
+ */
+export const PROMPT_VERSION_HISTORY: readonly { readonly version: number; readonly sha256: string }[] =
+  [
+    { version: 1, sha256: '9974bd1d83f7ef93445d6f5a795de572f160b4c1cdbb996696edd8a31b592ea6' },
+  ];
+
+/**
+ * いまの {@link PROMPT_VERSION} が指す本文の SHA-256。
  *
  * **手で書き換えない。** `test/prompt-version.test.ts` が `renderSystemPromptText()` から
  * 計算した値と照合する。落ちたときにやることは、**この値を合わせることではなく、
- * {@link PROMPT_VERSION} を上げたうえでこの値を合わせること**である。値だけを合わせると、
- * 版が同じまま本文だけが変わった生成が台帳に混ざる。
+ * {@link PROMPT_VERSION} を上げて {@link PROMPT_VERSION_HISTORY} へ 1 行足すこと**である。
  */
-export const PROMPT_TEXT_SHA256 = '9974bd1d83f7ef93445d6f5a795de572f160b4c1cdbb996696edd8a31b592ea6';
+export const PROMPT_TEXT_SHA256 = PROMPT_VERSION_HISTORY[PROMPT_VERSION_HISTORY.length - 1]!.sha256;

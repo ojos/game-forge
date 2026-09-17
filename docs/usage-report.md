@@ -14,6 +14,7 @@
 | 未対応の削除依頼（#41） | `scripts/takedown-queue.sh` | D1 の `takedown_requests`（手順は [takedown.md](takedown.md)） |
 | 遮断の記録の掃除（#37） | `scripts/moderation-prune.sh` | D1 の `moderation_blocks` |
 | 作品が読むキーの欠けの点検と埋め戻し（#493） | `scripts/input-keys-backfill.sh` | D1 の `games` / `game_revisions` / `source_input_keys` と R2 のソース |
+| 生成物の質の指標の点検と埋め戻し（#605） | `scripts/source-quality-backfill.sh` | D1 の `games` / `game_revisions` / `source_quality_metrics` と R2 のソース |
 | 数え方の定義（両方が共有する） | `scripts/report-window.sh` | — |
 | 自己検査 | `scripts/report-selftest.sh` | 使い捨ての手元 D1 と宣言 |
 
@@ -589,6 +590,43 @@ bash scripts/report-queue.sh --remote --format json
 **招待した相手が BAN されているかどうかから導けます**（`inviteQuotaHalted`）。別の列で
 持つと、**BAN を取り消したときに戻し忘れる余地**ができます。
 
+
+## 生成物の質の指標を点検し、埋め戻す（#605）
+
+**仕様 6.1「生成物の質を測る」の運用の手順です。** 指標（`source_quality_metrics`）は、完成を確定させた直後にエッジが R2 のソースを読んで書きます（完成のコールバックと同期実行。`src/source-quality-metrics.ts`）。**完成を確定させた後、測る前に処理が落ちると行が欠けます。** 定期処理が無いので、このスクリプトで点検し、欠けていれば埋めます。行が欠けても作品は普通に遊べます——**欠けるのは数字だけです。**
+
+**最初に 1 回、必ず流してください。** #597 の基準線（[cold-start-samples.md](cold-start-samples.md) 7 章）は使い捨ての Go の道具で測った値なので、**埋め戻して同じ実装で測り直さないと、以後の前後比較が違う物差しで行われます。**
+
+**前提**: マイグレーション `0046` が適用済みであること（未適用なら「表がありません」と出て止まります）。
+
+```bash
+bash scripts/source-quality-backfill.sh --remote            # 本番の欠けを数える（読み取りのみ。既定）
+bash scripts/source-quality-backfill.sh --remote --apply    # 本番へ埋める
+bash scripts/source-quality-backfill.sh --remote            # もう一度数える（0 件になっていること）
+```
+
+引数は「作品が読むキー」の埋め戻しと同じです（`--local` / `--remote` / `--apply` / `--persist-to`）。
+
+### 対象
+
+**`games.source_key`（NULL を除く）と `game_revisions.source_key` の和集合のうち、行が無いか `rule_version` が古いもの**です。**綴りは `src/source-quality-metrics.ts` の `SOURCE_QUALITY_TARGETS_SQL` をそのまま使い、測るのも `src/source-quality.ts` の `measureSourceQuality` です**（スクリプトが TypeScript のモジュールを束ねて借ります）。**対象の一覧もソースの本文も、実行時に読みます**（#380 の教訓）。
+
+### 読み方
+
+`--apply` のとき、1 本ごとに次の形の行が出ます。
+
+```
+[source-quality-backfill] OK builds/<64 桁>/source.go win=1 lose=1 colors=18 sprites=0 states=3
+```
+
+| 最終行 | 終了コード | 意味 |
+|---|---|---|
+| `SOURCE_QUALITY_BACKFILL_PASS` | 0 | 対象が残っていない |
+| `SOURCE_QUALITY_BACKFILL_INCOMPLETE` | 1 | R2 から読めない・字句解析が通らない・形の合わないキーが残った（上の `NG` / `INVALID` の行） |
+
+**`NG ... 字句解析が通りません` は、0 の行を書かずに残します。** 測れなかったことと、「勝ちの語が無い作品」を同じに見せないためです。
+
+---
 
 ## 作品が読むキーの欠けを点検し、埋め戻す（#493 / M14-4、#529 / M14-9、#543 / M14-11）
 

@@ -125,6 +125,13 @@ export interface SourceQualityMetrics {
    *
    * **画面の状態を分けているかの代理である。** 0 は「そういう組が無い」。
    * 終端の状態を持たない作品は、終わる条件へ達しても描画が変わらない。
+   *
+   * **#605 の scope.in は「終端へ遷移する代入の有無」も挙げていたが、実装しない**
+   * （PR #607 の Copilot が、票と実装の食い違いとして指摘した。**指摘のとおりなので
+   * ここに理由を残す**）。**どの状態が「終端」かを、コードの形からは決められない。**
+   * 名前で決めれば `stateOver` と綴った作品しか当たらず、位置で決めれば（組の最後、など）
+   * 並べ方の癖を測ることになる。**勝ち・負けの語のほうが、同じことを直接に見ている**
+   * ——終わったことを遊ぶ人へ伝えているかどうかである。
    */
   readonly stateCount: number;
 }
@@ -444,13 +451,56 @@ function largestIotaBlockSize(text: string, tokens: readonly GoToken[]): number 
 }
 
 /**
- * 字句の範囲について、「その行で最初に現れた識別子」の数を返す。
+ * 行をまたいで続く式の途中であることを示す字句。
+ *
+ * **この一覧に載る字句で行が終わっていたら、次の行は新しい宣言ではない。** Go は行末で
+ * 文を区切るが、式が明らかに続いている位置では改行を区切りとして扱わない。
+ */
+const CONTINUATION_TOKENS: ReadonlySet<string> = new Set([
+  '=',
+  '+',
+  '-',
+  '*',
+  '/',
+  '%',
+  '&',
+  '|',
+  '^',
+  '<',
+  '>',
+  '!',
+  ',',
+  '(',
+  '[',
+  '{',
+  ':',
+]);
+
+/**
+ * 字句の範囲について、**宣言の数**を返す。
+ *
+ * **「その行で最初に現れた識別子」をそのまま数えない**（PR #607 の Copilot の指摘）。
+ * 定数の式は行をまたげるので、
+ *
+ * ```go
+ * const (
+ * 	stateA = iota +
+ * 		offset
+ * 	stateB
+ * )
+ * ```
+ *
+ * のように書かれると、**続きの行の `offset` を 3 つ目の状態として数えてしまう。**
+ * 行が {@link CONTINUATION_TOKENS} の字句で終わっていたら、次の行は続きとみなす。
+ *
+ * **`iota` 自身は数えない。** 行の先頭には来ないが、`const ( iota )` のような書き方を
+ * されたときに 1 つ余分に数えるのを避ける。
  *
  * @param text BOM を落としたソース
  * @param tokens 字句の列
  * @param from 範囲の先頭（含む）
  * @param to 範囲の末尾（含まない）
- * @returns 行の先頭の識別子の数
+ * @returns 宣言の数
  */
 function countLineLeadingIdents(
   text: string,
@@ -458,6 +508,7 @@ function countLineLeadingIdents(
   from: number,
   to: number,
 ): number {
+  const lines = lineIndexOf(text);
   let count = 0;
   let countedLine = -1;
   for (let j = from; j < to; j += 1) {
@@ -465,8 +516,13 @@ function countLineLeadingIdents(
     if (token.kind !== 'ident' || token.value === 'iota') {
       continue;
     }
-    const line = lineOf(text, token.start);
+    const line = lines[token.start] ?? 0;
     if (line === countedLine) {
+      continue;
+    }
+    // **前の字句が続きを示していたら、新しい宣言ではない。**
+    const previous = j > from ? tokens[j - 1]! : null;
+    if (previous !== null && CONTINUATION_TOKENS.has(previous.value)) {
       continue;
     }
     countedLine = line;
@@ -476,18 +532,23 @@ function countLineLeadingIdents(
 }
 
 /**
- * 位置が何行目かを返す（0 始まり）。
+ * 位置から行番号（0 始まり）を引くための表を作る。
+ *
+ * **前から 1 回だけ数える。** 位置ごとに先頭から数え直すと、64KB のソースに対して
+ * 二乗の走査になる。
  *
  * @param text BOM を落としたソース
- * @param index 位置
- * @returns 行番号
+ * @returns 位置 → 行番号
  */
-function lineOf(text: string, index: number): number {
+function lineIndexOf(text: string): Uint32Array {
+  const lines = new Uint32Array(text.length + 1);
   let line = 0;
-  for (let i = 0; i < index; i += 1) {
+  for (let i = 0; i < text.length; i += 1) {
+    lines[i] = line;
     if (text[i] === '\n') {
       line += 1;
     }
   }
-  return line;
+  lines[text.length] = line;
+  return lines;
 }

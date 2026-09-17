@@ -709,3 +709,83 @@ describe('履歴は作品と同じ寿命である（確定26 / 3.7 の削除規�
     expect(await historyOf(id)).toHaveLength(0);
   });
 });
+
+describe('説明は遊ぶ枠の直前の折りたたみから読める（#627 / M16-5 / 仕様 5.4・2.5.4）', () => {
+  it('説明があると、枠の直前に折りたたみが出る（最初は閉じている）', async () => {
+    const { userId, id } = await seedPublished('peek-shown');
+    await describeGame(env, id, userId, '遊び方: 左右キーで動かします。', 1_700_000_000);
+    const body = await openWork(id);
+
+    expect(body).toContain('<details class="gf-work-description-peek">\n<summary>遊び方を読む</summary>');
+    // **最初は閉じている**（`open` を付けない。開いて配ると押し下げが本文をそのまま置く案と同じになる）。
+    expect(body).not.toContain('<details class="gf-work-description-peek" open');
+    // 中身は従来と同じ見出しと段落である。
+    expect(body).toContain('<h3>作品の説明</h3>');
+    expect(body).toContain('<p>遊び方: 左右キーで動かします。</p>');
+  });
+
+  it('折りたたみは枠より前にあり、本文の列には二重に出さない', async () => {
+    const { userId, id } = await seedPublished('peek-order');
+    await describeGame(env, id, userId, '二重に出ないことを見る説明です。', 1_700_000_000);
+    const body = await openWork(id);
+
+    const peekAt = body.indexOf('<details class="gf-work-description-peek">');
+    const frameAt = body.indexOf('<noscript class="gf-play-noscript">');
+    expect(peekAt).toBeGreaterThan(-1);
+    expect(frameAt).toBeGreaterThan(-1);
+    // **枠より前**（#626 の決定）。
+    expect(peekAt).toBeLessThan(frameAt);
+    // **本文（`.gf-work-description`）は 1 つだけ**——二重に出さない。
+    expect(body.split('<div class="gf-work-description">').length - 1).toBe(1);
+    // 本文の列（共有する URL より前）には無い。
+    expect(body.indexOf('<div class="gf-work-description">')).toBeLessThan(frameAt);
+  });
+
+  it('説明が無ければ折りたたみごと出さない', async () => {
+    const { id } = await seedPublished('peek-empty');
+    const body = await openWork(id);
+    expect(body).not.toContain('gf-work-description-peek');
+    expect(body).not.toContain('<h3>作品の説明</h3>');
+  });
+
+  it('JavaScript を要求しない（details と summary だけで組む）', async () => {
+    const { userId, id } = await seedPublished('peek-nojs');
+    await describeGame(env, id, userId, 'スクリプト無しで開くことを見る説明です。', 1_700_000_000);
+    const body = await openWork(id);
+
+    const peek = /<details class="gf-work-description-peek">[\s\S]*?<\/details>/u.exec(body);
+    expect(peek).not.toBeNull();
+    // 折りたたみの中に `<script>` も `onclick` も無い。
+    expect(peek![0]).not.toContain('<script');
+    expect(peek![0]).not.toContain('onclick');
+  });
+});
+
+describe('折りたたみは説明の形で壊れない（#627 の acceptance）', () => {
+  it('上限に近い長い説明でも、枠の上に出るのは summary の 1 行だけ', async () => {
+    const { userId, id } = await seedPublished('peek-long');
+    // **上限（1000 文字）に近い長さにする。** 超えると `describeGame` が断るので、900〜1000 の間に収める。
+    const long = Array.from({ length: 5 }, (_, i) => `${i + 1} 段落目です。`.repeat(24)).join('\n\n');
+    expect([...long].length).toBeGreaterThan(900);
+    expect([...long].length).toBeLessThanOrEqual(1000);
+    expect((await describeGame(env, id, userId, long, 1_700_000_000)).ok).toBe(true);
+    const body = await openWork(id);
+
+    const peekAt = body.indexOf('<details class="gf-work-description-peek">');
+    const summaryEnd = body.indexOf('</summary>', peekAt);
+    const frameAt = body.indexOf('<noscript class="gf-play-noscript">');
+    // **本文は `<summary>` より後ろ**にある＝折りたたみの中である。枠の上には 1 行しか無い。
+    expect(body.indexOf('<div class="gf-work-description">')).toBeGreaterThan(summaryEnd);
+    expect(peekAt).toBeLessThan(frameAt);
+    // 段落は 5 つのまま（長さで畳まれたり切れたりしない）。
+    const peek = body.slice(peekAt, body.indexOf('</details>', peekAt));
+    expect(peek.split('<p>').length - 1).toBe(5);
+  });
+
+  it('改行だけの説明は空として扱い、折りたたみを出さない', async () => {
+    const { userId, id } = await seedPublished('peek-blank');
+    const outcome = await describeGame(env, id, userId, '  \n\n \n ', 1_700_000_000);
+    expect(outcome).toEqual({ ok: true, description: '', changed: false });
+    expect(await openWork(id)).not.toContain('gf-work-description-peek');
+  });
+});

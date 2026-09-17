@@ -19,6 +19,15 @@
 #   GAME_ID             仕込んだ draft の作品の id（`/works/` の続きに使う）
 #   PUBLISHED_GAME_ID   仕込んだ公開済みの作品の id（カードが並ぶ画面と、`/source/` の続きのため）
 #
+# **公開済みの作品には、説明も入れる**（#627 / 仕様 5.4）。入れないと、遊ぶ枠の直前の折りたたみ
+# （`.gf-work-description-peek`）と説明の本文が **1 度も描かれないまま幅の検査が緑になる**。
+# 3 段落・約 180 字にしてあり、狭い段での折り返しも測れる。
+#
+# **引き換えに、説明がまだ無いことを作者へ伝える 1 行（#616）は幅の検査に出なくなる**——あれは
+# 「説明が空のとき」にだけ出るためである。**本文と折りたたみのほうが面積が大きく、壊れ方も多い**ので
+# こちらを取った（1 行のほうは単体テストが担保する）。公開済みの作品をもう 1 件仕込めば両方を測れるが、
+# それは経路と仕込みを増やす話なので別に扱う。
+#
 # **作品には、読むキーの行（`source_input_keys`）も入れる**（#599 / 仕様 3.9.11）。
 # 入れないと、作品ページのデスクトップの操作の案内（`.gf-key-legend`）が 1 度も描かれず、
 # **幅の検査がその 1 行を見ないまま緑になる。** 集合は 9 つ（方向 4・Space・Z・X・Esc と、
@@ -194,6 +203,12 @@ dev_fixture_up() {
       values ('$SOURCE_KEY',
               '[\"ArrowLeft\",\"ArrowRight\",\"ArrowUp\",\"ArrowDown\",\"Space\",\"KeyZ\",\"KeyX\",\"Escape\",\"PrintScreen\"]',
               1, 1);
+    update games set description = '遊び方: 左右キーで自機を動かし、スペースキーで弾を撃ちます。上から落ちてくるブロックに当たるとゲームオーバーです。' ||
+      char(10) || char(10) ||
+      'ルール: ブロックを撃つと得点が入ります。赤いブロックは 3 点、青いブロックは 1 点です。60 秒たつと終わりで、そのときの得点が出ます。' ||
+      char(10) || char(10) ||
+      'クレジット: 効果音は フリー素材サイト さんのものを使っています（CC BY 4.0）。元のアイデアは友人の作品から借りました。'
+      where id = '$PUBLISHED_GAME_ID';
     insert into build_cache (source_sha256, go_version, source_key, wasm_key, wasm_bytes, wasm_sha256,
                              compressed_bytes, compressed_sha256, content_encoding, created_at)
       values ('$SOURCE_SHA', 'go1.26.5', '$SOURCE_KEY', '$WASM_KEY', 11404411, '$SOURCE_SHA',

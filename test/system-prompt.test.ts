@@ -357,6 +357,14 @@ describe('ゲームとして成り立たせる（#597）', () => {
     expect(text).toContain('switch g.state {');
     expect(text).toContain('Draw も同じ 3 つで分けます');
     expect(text).toContain('やり直しの押し方を出します');
+    // **状態の形は、既定を選んだときの形として示す**（PR #598 の Copilot の指摘）。
+    // 無条件に要求すると、利用者が指示した終わり方まで置き換えてしまい、**この節が
+    // 直前で定めた「指示を優先する」を自分で壊す。**
+    expect(text).toContain('下は既定の終わり方を入れるときの形です');
+    expect(text).toContain('その終わり方を表す状態を、同じように分けて持ちます');
+    // **案内した押し方 1 回でやり直せること**（同）。`stateOver` から `stateTitle` へ
+    // 戻す形だと、「もういちど」と出しておきながら 2 回押させることになる。
+    expect(text).toContain('案内した押し方 1 回で、実際に遊びが始まるようにします');
   });
 
   it('最初のフレームに絵があることを求めている（OGP の撮影。#597 の自己レビュー）', () => {
@@ -383,7 +391,7 @@ describe('ゲームとして成り立たせる（#597）', () => {
     const text = renderSystemPromptText();
     expect(text).toContain('ドット絵（スプライト。外部ファイルは読まず、絵をコードで持ちます）:');
     expect(text).toContain('毎フレーム作りません');
-    expect(text).toContain('Draw の中では呼びません');
+    expect(text).toContain('Update からも Draw からも呼びません');
     const paths = GO_IMPORT_ALLOWLIST.map((entry) => entry.path);
     expect(paths).toContain('github.com/hajimehoshi/ebiten/v2');
     expect(paths).not.toContain('image');
@@ -396,10 +404,16 @@ describe('ゲームとして成り立たせる（#597）', () => {
     // 上の節にあっても薄まる。
     const check = SYSTEM_PROMPT_SECTIONS.at(-1)!;
     expect(check.startsWith('出力する前に自分で確かめること:')).toBe(true);
-    expect(check).toContain('遊びが終わる条件があり');
+    // **指示の有無で分ける**（PR #598 の Copilot の指摘）。「終わったときに結果と
+    // やり直しが出る」を無条件に求めると、**自己点検が「指示を優先する」を上書きする。**
+    // モデルは最後に読んだ点検表を守るので、ここが強いほうに倒れる。
+    expect(check).toContain('終わり方が、利用者の指示どおりになっている');
+    expect(check).toContain('指示に終わり方が書かれていなかったときだけ');
     expect(check).toContain('すべて遊びの何かを実際に変えている');
     expect(check).toContain('初期化するだけで一度も読まない変数が残っていない');
-    expect(check).toContain('ebiten.NewImage と img.Set を Draw の中で呼んでいない');
+    // **`Update` からも塞ぐ**（同）。`Draw` だけを禁じると、毎フレーム絵を作り直す
+    // 経路が `Update` に残る。
+    expect(check).toContain('Update からも Draw からも呼んでいない');
   });
 });
 

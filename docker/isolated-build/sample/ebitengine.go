@@ -58,8 +58,10 @@ const (
 	stateOver
 )
 
-// ドット絵の素材（#597）。**外部ファイルを読まずに絵を持つ唯一の形である。** 文字列の
-// 1 文字が 1 ドットで、パレットに無い文字はそのまま透ける。
+// ドット絵の素材（#597）。**外部ファイルを読まずに、絵をドットとして持つ形である**
+// （仕様 6.1 の描画手段 2「コード内の算術ピクセル描画」にあたる。1 の `vector` と
+// 3 の文字描画は別の手段として残る）。文字列の 1 文字が 1 ドットで、パレットに無い
+// 文字はそのまま透ける。
 var playerArt = []string{
 	"..1111..",
 	".111111.",
@@ -200,8 +202,12 @@ func (g *Game) Update() error {
 			g.state = stateOver
 		}
 	case stateOver:
+		// **案内した押し方 1 回で、実際に遊びが始まること**（#597 / PR #598 の Copilot の
+		// 指摘）。ここで `stateTitle` へ戻すと、画面に出している「スペースでもういちど」が
+		// 嘘になる（もう 1 回押さないと始まらない）。
 		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
-			g.state = stateTitle
+			g.reset()
+			g.state = statePlaying
 		}
 	}
 	return nil

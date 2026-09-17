@@ -276,7 +276,9 @@ ${siteFooter()}`;
  * @returns HTML
  */
 function waitlistThanksPage(viewer: SiteViewer): string {
-  return `${siteHead({ title: '待機リストに登録しました', viewer })}
+  // **検索避けする**（#610。`src/legal.ts` の `takedownThanksPage` と同じ理由）。
+  // **操作を終えた人だけが見る画面**で、検索から来てもその人は待機リストに載っていない。
+  return `${siteHead({ title: '待機リストに登録しました', noindex: true, viewer })}
 <h1>待機リストに登録しました</h1>
 <p>招待枠が空いたらご連絡します。</p>
 <p><a href="${SIGNUP_PATH}">${SIGNUP_HEADING}の画面へ戻る</a></p>

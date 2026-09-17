@@ -405,6 +405,27 @@ describe('画像の配信', () => {
     expect((await fetchImage(id)).status).toBe(404);
   });
 
+  it('404 にも X-Robots-Tag が付く（この経路の応答で付いたり付かなかったりしない。#610）', async () => {
+    // **実害の解消ではなく、誤読の防止である。** 404 が索引に載ることは無いが、
+    // 同じ経路で付いたり付かなかったりすると、文書が誤って書かれる
+    // （PR #604 で「全応答に乗る」と書いてしまい、本番の実測で直した）。
+    //
+    // **3 つの経路をすべて見る。** 綴りの誤り・存在しない id・撮れていない作品で、
+    // `notFound()` へ入る道が違う。
+    const { id } = await seedPublishedGame('robots-tag-404');
+    const malformed = await dispatch(ogpRoutes, new Request(`${APP_ORIGIN}/ogp/not-a-uuid.png`), testEnv());
+    const missing = await fetchImage('00000000-0000-4000-8000-000000000000');
+    const notCaptured = await fetchImage(id);
+    for (const [label, response] of [
+      ['綴りの誤り', malformed],
+      ['存在しない id', missing],
+      ['撮れていない作品', notCaptured],
+    ] as const) {
+      expect(response.status, label).toBe(404);
+      expect(response.headers.get(ROBOTS_TAG_HEADER), label).toBe(ROBOTS_TAG_NOINDEX);
+    }
+  });
+
   it('まだ撮れていない作品は 404', async () => {
     const { id } = await seedPublishedGame('serve-capturing');
     expect((await fetchImage(id)).status).toBe(404);

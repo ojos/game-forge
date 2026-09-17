@@ -7,6 +7,7 @@ import {
   hashJobToken,
   publishGame,
   STALE_AFTER_SECONDS,
+  unpublishGame,
 } from '../src/games.js';
 import type { GenerateRequest } from '../src/generate.js';
 import {
@@ -127,6 +128,35 @@ describe('推敲の枠（5.7 / 確定28）', () => {
 
     expect(await claimRevisionSlot(env, gameId, userId, '直したい', 'hash-3')).toBe(false);
     expect((await revisionStatus(env, gameId)).used).toBe(0);
+  });
+
+  it('公開をやめて下書きへ戻せば、一度公開した作品も推敲できる（#637 / 確定35）', async () => {
+    // **5.7 の条件（自作の `draft`）は 1 文字も変えていない。** 変わったのは、公開した作品も
+    // `draft` へ戻せるようになったことである（`src/games.ts` の `unpublishGame`）。
+    const userId = await createUser('rev-unpublished');
+    const gameId = await createReadyGame(userId);
+    expect((await publishGame(env, gameId, userId)).ok).toBe(true);
+    expect(await claimRevisionSlot(env, gameId, userId, 'まだ公開中', 'hash-3b')).toBe(false);
+
+    expect(await unpublishGame(env, gameId, userId)).toEqual({ ok: true, firstTime: true });
+
+    expect(await claimRevisionSlot(env, gameId, userId, '直したい', 'hash-3c')).toBe(true);
+    expect((await revisionStatus(env, gameId)).used).toBe(1);
+  });
+
+  it('公開をやめて下書きへ戻せば、版の復元もできる（#637 / 確定35）', async () => {
+    const userId = await createUser('rev-restore-unpublished');
+    const gameId = await createReadyGame(userId);
+    // 版を 2 つ積む（seq 1 は初回生成、seq 2 が推敲の結果）。
+    await appendRevision(env, gameId, { sourceKey: 's1', wasmKey: 'w1', goVersion: '1.27.0' }, null, 1);
+    await appendRevision(env, gameId, { sourceKey: 's2', wasmKey: 'w2', goVersion: '1.27.0' }, '玉を速く', 2);
+    expect((await publishGame(env, gameId, userId)).ok).toBe(true);
+    // **公開中は復元できない**（`restoreRevision` も `status = 'draft'` で引く）。
+    expect(await restoreRevision(env, gameId, userId, 1)).toBe('not-found');
+
+    expect(await unpublishGame(env, gameId, userId)).toEqual({ ok: true, firstTime: true });
+
+    expect(await restoreRevision(env, gameId, userId, 1)).toBe('restored');
   });
 
   it('走っている推敲があれば 2 本目は断られ、枠も減らない', async () => {

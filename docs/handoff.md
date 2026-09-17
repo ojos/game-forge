@@ -2538,7 +2538,7 @@ degrade の信号は永久に立たず、黙って #24 の近似に戻る）と�
 
 ## 3. 触るときの注意
 
-- **スプライトを触る差分では、ローカルの第二意見が「`*ebiten.Image` に `Set` は無い」と誤ります**（#597 で 2 回続けて出た）。**事実誤認なので却下してよい**——反証は (1) `go doc github.com/hajimehoshi/ebiten/v2.Image` にメソッドが実在（型の説明が `draw.Image` を実装すると書いており、`draw.Image` は `Set` を要求する） (2) `bash scripts/check-isolated-build.sh` が `ISOLATED_BUILD_PASS` (3) **対照**として `img.Set` を実在しない `img.SetPixel` へ置き換えると指摘どおりの文言で落ちる、の 3 つ。**却下には記録が要る**ので、この 3 つを PR のコメントへ残すこと（`.ai-playbook/review-workflow.md`「指摘の却下」）。指摘が代案に挙げる `ebiten.NewImageFromImage` は、許可一覧に無い `image` パッケージを要求するので採らない
+- **スプライトを触る差分では、ローカルの第二意見が「`*ebiten.Image` に `Set` は無い」と誤ります**（#597 で 2 回続けて出た）。**事実誤認なので却下してよい**——反証は (1) `go doc github.com/hajimehoshi/ebiten/v2.Image` にメソッドが実在（型の説明が `draw.Image` を実装すると書いており、`draw.Image` は `Set` を要求する） (2) `bash scripts/check-isolated-build.sh` が `ISOLATED_BUILD_PASS` (3) **対照**として `img.Set` を実在しない `img.SetPixel` へ置き換えると指摘どおりの文言で落ちる、の 3 つ。**却下には記録が要る**ので、この 3 つを PR のコメントへ残すこと（`.ai-playbook/review-workflow.md`「指摘の却下」）。指摘が代案に挙げる `ebiten.NewImageFromImage` の経路も採らない——**呼び出しそのものは `image` の import を要さない**（`*ebiten.Image` も `image.Image` を満たす）が、**ドット絵から元画像を作るには `image.NewRGBA` などが要り、`image` は許可一覧に無い**（PR #603 の Copilot の指摘で、ここを「API 自体の要件」と書いていたのを直した）
 - **生成経路は課金されます。** 1 回 **約 16〜19 円**（実測 15.80 / 16.75 / 18.49 円）。サブエージェントには「`/api/generate` を
   実際に呼ばない」と明示すること。テストは経路層のハンドラを直接叩きます
 - **マイグレーションは `0019` まで本番に適用済みです**（2026-09-11。`0019_games_public_list_idx.sql`

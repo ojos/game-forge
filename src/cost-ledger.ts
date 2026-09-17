@@ -37,6 +37,7 @@ import { GENERATION_MODELS, findGenerationModel, ledgerEffortOf } from './genera
 // （shared-ai-rules 12 章）。**#284 で実際に 3 → 2 へ動いた。** 借りているので
 // 集計側は 1 文字も変わっていない——**数をここに書いていたら、この行が古くなっていた。**
 import { MAX_GENERATION_ATTEMPTS } from './build-retry.js';
+import { PROMPT_VERSION } from './prompt-version.js';
 
 /**
  * 円換算に使う為替レート（円/ドル）。**4.2 の 150 円/ドルを正とする（#22 で決定）。**
@@ -381,12 +382,22 @@ export async function recordGeneration(
   const model = findGenerationModel(entry.generated.modelKey);
   const effort = model === null ? null : ledgerEffortOf(model);
 
+  // **どの版のシステムプロンプトが作ったかを焼き付ける**（#605 / `migrations/0046`）。
+  //
+  // **この行を書くのはオーケストレータ側である。** Lambda は自分の束に焼き込まれた本文を
+  // 使うので、**配り直していなければエッジと本文が違う。** 実際に使った版を知っているのは
+  // Lambda だけで、エッジが自分の版を書くと嘘になる。**この列が食い違いの検出も兼ねる**
+  // （古い版の行が新しい main のもとで増え続けていたら、配り直しを忘れている）。
+  //
+  // **定数から入れる。** ここへ数を書き写すと、`src/system-prompt.ts` を直した日に
+  // 台帳だけが古い版を言い続ける（shared-ai-rules 12 章）。版が本文と合っているかは
+  // `test/prompt-version.test.ts` が本文のハッシュで照合する。
   const result = await env.DB.prepare(
     `insert into generations
        (id, game_id, user_id, prompt, model, effort,
         input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
-        cost_jpy, succeeded, created_at)
-     values (?, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)${conflictClause}`,
+        cost_jpy, succeeded, created_at, prompt_version)
+     values (?, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)${conflictClause}`,
   )
     .bind(
       id,
@@ -408,6 +419,7 @@ export async function recordGeneration(
       cost.totalJpy,
       succeeded ? 1 : 0,
       now,
+      PROMPT_VERSION,
     )
     .run();
 

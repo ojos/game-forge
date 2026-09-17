@@ -136,8 +136,49 @@ async function withdrawalRow(userId: string): Promise<Record<string, number | nu
     .first<Record<string, number | null>>();
 }
 
+/**
+ * 「作品 60 件」のテストに渡す上限（ミリ秒。#611）。
+ *
+ * # なぜ明示で渡すのか
+ *
+ * **vitest の既定（5000ms）では足りなかった。** 2026-09-17、main の `dfb6bf3` で `Test timed out in 5000ms`
+ * が出て `verify` が落ち、`deploy` が skipped になった。**そのコミットの変更は `docs/mvp-roadmap.md` の
+ * 1 ファイルだけ**で、テストには 1 行も触れていない。同じツリーで PR #609 の `verify` は通っており、
+ * 落ちたジョブを回し直したら通った（run `35202212556`）。**このテストと無関係な PR のマージが
+ * ランダムに赤くなり、そのたびに本番への配備が止まる。**
+ *
+ * # 30 秒にする根拠
+ *
+ * **ローカルの実測は 503ms** で、既定の 5000ms との余裕は約 10 倍しかなかった。CI は 125 ファイル・
+ * 3245 件を並列で回し、テスト時間の合計が 342 秒になる——並列の混み具合で 10 倍は容易に届く。
+ * 30 秒なら実測の約 60 倍で、**落ちたときは本当に遅くなったときである。**
+ *
+ * # 測る区間は上限と揃える
+ *
+ * **上限が掛かるのはテスト全体（仕込み・確定・ループ・後段の検証）である。** ログの割合も同じ区間で出す——
+ * ループ区間だけを上限と比べると、**仕込みが遅くなった回に「上限の 2%」と出したまま時間切れになる**
+ * （PR #613 の Copilot の指摘）。ループの所要は「1 回あたり」を読むために別に残す。
+ *
+ * # 全体の `testTimeout` にしない
+ *
+ * `vitest.config.ts` へ置くと、**本当に遅くなった別のテストも黙って通る。** 上限を伸ばすのは、
+ * 伸ばす理由をこのテストの側に書ける場所に限る（#611 の scope.out）。
+ *
+ * # 件数（60）は減らさない
+ *
+ * #518 の acceptance 6 が定めた値で、**cron の回をまたぐ経路を見るための件数**である。
+ * 速くするために減らすと、見たかったものが見られなくなる（#611 の scope.out）。
+ */
+const SIXTY_WORKS_TIMEOUT_MS = 30_000;
+
 describe('作品 60 件を、途中で止めて再開しても全件消し終える', () => {
   it('アラームを繰り返すだけで完了の印まで立ち、1 回あたりの D1 の文が枠に収まる', async () => {
+    // **上限が掛かるのはテスト全体なので、測るのもテスト全体にする**（PR #613 の Copilot の指摘）。
+    // 下の `startedAt` はループ区間だけで、**60 件の仕込みと `withdrawUser` と後段の検証はその外**である。
+    // 実測でもテスト全体 837ms に対してループは 495ms——**4 割が測定の外**だった。ループだけを上限と
+    // 比べると、仕込みが遅くなった回に「上限の 2%」と出したまま時間切れになり、**近づいたことを
+    // 知らせるという目的を果たさない。**
+    const testStartedAt = Date.now();
     const userId = await seedUser();
     // **60 件**（#518 の acceptance 6）。1 件は公開中にして、取り下げの打ち直しも通す。
     const ids: string[] = [];
@@ -185,12 +226,22 @@ describe('作品 60 件を、途中で止めて再開しても全件消し終え
     expect(listed.objects).toHaveLength(0);
 
     // **実測を PR に書くための数字**（テスト環境の値であって、本番の CPU 時間ではない）。
+    //
+    // **上限に対する割合も出す**（#611）。所要そのものは前から出していたが、**それだけでは
+    // 上限へ近づいたことに気づけない**——気づく契機が「ある日 CI が赤くなる」しか無かった。
+    // 毎回ログに出しておけば、割合が育っていることを赤くなる前に読める。
+    // **所要に対する `expect` は足さない**——実時間を合否の条件にすると、別の形の不安定さを作る。
+    // **割合はテスト全体で出す**（仕込み・確定・ループ・後段の検証を含む）。ループの所要は
+    // 「1 回あたり」を読むために残す——**上限と比べる数字と、1 回の重さを見る数字は別物である。**
+    const testElapsedMs = Date.now() - testStartedAt;
+    const usedPercent = Math.round((testElapsedMs / SIXTY_WORKS_TIMEOUT_MS) * 100);
     console.info(
       `[withdrawal-purge] 60 件を ${rounds} 回で消し終えた。` +
         `1 回あたりの D1 の文は最大 ${maxMeasured}（見積もり ${maxStatements}）、` +
-        `全 ${rounds} 回の所要は ${elapsedMs} ms（1 回あたり約 ${Math.round(elapsedMs / rounds)} ms）。`,
+        `ループ ${rounds} 回の所要は ${elapsedMs} ms（1 回あたり約 ${Math.round(elapsedMs / rounds)} ms）。` +
+        `テスト全体では ${testElapsedMs} ms で、上限 ${SIXTY_WORKS_TIMEOUT_MS} ms に対して ${usedPercent}%。`,
     );
-  });
+  }, SIXTY_WORKS_TIMEOUT_MS);
 });
 
 describe('アラーム 1 回の中身', () => {

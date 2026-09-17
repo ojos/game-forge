@@ -66,6 +66,17 @@ beforeAll(async () => {
     .bind('sitemap_old', 'sitemap-author')
     .run();
 
+  // **退会の処理が進行中の作者**（PR #602 の Copilot code review）。`withdrawal_started_at` は
+  // 立っているが、`handles.released_at` はまだ NULL という**実際に起きる中間状態**を作る。
+  await env.DB.prepare(
+    'insert into users (id, google_sub, email, display_name, created_at, withdrawal_started_at) values (?, ?, ?, ?, 1, 1)',
+  )
+    .bind('sitemap-leaving', 'sub-sitemap-leaving', 'leaving@example.invalid', '退会中')
+    .run();
+  await env.DB.prepare('insert into handles (handle, user_id, claimed_at) values (?, ?, 1)')
+    .bind('sitemap_leaving', 'sitemap-leaving')
+    .run();
+
   publishedGameId = '11111111-1111-4111-8111-111111111111';
   removedGameId = '22222222-2222-4222-8222-222222222222';
   draftGameId = '33333333-3333-4333-8333-333333333333';
@@ -158,6 +169,16 @@ describe('載せる作品と、載せない作品', () => {
     expect(locs).not.toContain(`${APP_ORIGIN}${handlePagePath('sitemap_old')}`);
   });
 
+  it('退会の処理が進行中の作者は載らない（サイトマップが 404 を案内しない）', async () => {
+    // **退会は `withdrawal_started_at` を先に立て、`handles.released_at` の更新は後段である。**
+    // その間、作者ページは既に 404 を返す。**載せると、サイトマップが 404 の URL を案内する**
+    // ——しかも応答は 1 時間キャッシュされるので、食い違いはその間ずっと残る。
+    const { locs } = await fetchSitemap();
+    expect(locs).not.toContain(`${APP_ORIGIN}${handlePagePath('sitemap_leaving')}`);
+    // **本当に 404 であることまで確かめる**（前提が変わったらこの検査も落ちる）。
+    expect((await SELF.fetch(`${APP_ORIGIN}${handlePagePath('sitemap_leaving')}`)).status).toBe(404);
+  });
+
   it('お知らせの記事は、定義されているものがすべて載る', async () => {
     const { locs } = await fetchSitemap();
     expect(NEWS_ARTICLES.length).toBeGreaterThan(0);
@@ -170,7 +191,15 @@ describe('載せる作品と、載せない作品', () => {
 describe('noindex との照合（両方向。これがこのファイルの主題）', () => {
   it('載せると決めた画面は、本当に noindex でない', async () => {
     // 向き 1。**載せてはいけないものを載せると落ちる。**
-    for (const path of SITEMAP_STATIC_PATHS) {
+    //
+    // **静的な一覧だけでなく、実際に出力された URL をすべて開く**（PR #602 の Copilot code review）。
+    // 公開作品と `/@handle` は実行時に載るので、静的な一覧だけを見ると
+    // **どちらかに `noindex` が付いた日に、載せたまま緑になる。**
+    const { locs } = await fetchSitemap();
+    const paths = locs.map((loc) => new URL(loc).pathname);
+    expect(paths).toContain(workPagePath(publishedGameId));
+    expect(paths).toContain(handlePagePath(authorHandle));
+    for (const path of paths) {
       const { status, noindex } = await openPage(path);
       expect(status, `${path} が開けない`).toBe(200);
       expect(noindex, `${path} は noindex なのにサイトマップに載せている`).toBe(false);

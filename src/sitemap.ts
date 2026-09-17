@@ -160,8 +160,22 @@ export async function sitemapPaths(env: Env): Promise<string[]> {
   // **ハンドル名を決めた作者。** `released_at is null` がいま使っている行である
   // （`migrations/0039_user_handles.sql`）。**手放した名前は載せない**——90 日の転送は
   // 生きているが、正しい綴りではない。
+  //
+  // **退会の処理が進行中の作者を外す**（PR #602 の Copilot code review）。退会は
+  // `withdrawal_started_at` を先に立て、`handles.released_at` の更新は後段の処理で行う
+  // （`src/withdrawal.ts`）。**その間、作者ページは既に 404 を返す**
+  // （`src/users-page.ts` の `withdrawal_started_at !== null`）ので、ここで外さないと
+  // **サイトマップが 404 の URL を案内する。** しかも応答は 1 時間キャッシュされるので、
+  // 食い違いはその間ずっと残る。
+  //
+  // **作品の側は同じ手当てが要らない。** あちらは退会の処理が `games.status` を変えることで
+  // 取り下げ、作品ページは `withdrawal_started_at` を見ない——つまり `status = 'published'`
+  // で絞っている限り、載っている URL は 404 にならない。
   const handles = await env.DB.prepare(
-    `select handle from ${HANDLES_TABLE} where released_at is null order by handle`,
+    `select h.handle from ${HANDLES_TABLE} h
+       join users u on u.id = h.user_id
+      where h.released_at is null and u.withdrawal_started_at is null
+      order by h.handle`,
   ).all<HandleRow>();
   for (const row of handles.results) {
     paths.push(handlePagePath(row.handle));

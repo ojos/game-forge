@@ -4,6 +4,8 @@ import { siteHead, siteViewerAt } from '../src/html.js';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { ssrPagePaths } from '../src/page-paths.js';
 import { AUTHOR_PAGE_PREFIX } from '../src/users-page-paths.js';
+import { handlePagePath } from '../src/handle-paths.js';
+import { workPagePath } from '../src/paths.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -15,10 +17,33 @@ import { applySchema } from './helpers/schema.js';
 
 const APP_ORIGIN = `https://${env.APP_HOST}`;
 
+/** 公開した作品の id（動的な画面の canonical を確かめる）。 */
+const publishedGameId = '55555555-5555-4555-8555-555555555555';
+/** ハンドル名を決めた作者（同上）。 */
+const authorHandle = 'canonical_author';
+
 // 作者ページは D1 を引く（居ない相手でも引きに行く）。表が無いと 500 になり、
 // 見たい本文の手前で落ちる。
 beforeAll(async () => {
   await applySchema();
+  // **動的な画面も確かめるので、実物を仕込む**（PR #602 の Copilot code review）。
+  // 続きを補う経路は裸の接頭辞では 404 しか見られず、**本体の canonical を 1 度も見ないまま
+  // 緑になる**（`src/page-paths.ts` と同じ落とし穴）。
+  await env.DB.prepare(
+    'insert into users (id, google_sub, email, display_name, created_at) values (?, ?, ?, ?, 1)',
+  )
+    .bind('canonical-author', 'sub-canonical-author', 'canonical@example.invalid', '作者')
+    .run();
+  await env.DB.prepare('insert into handles (handle, user_id, claimed_at) values (?, ?, 1)')
+    .bind(authorHandle, 'canonical-author')
+    .run();
+  await env.DB.prepare(
+    `insert into games
+       (id, author_id, status, title, go_version, created_at, generation_state, published_at, review_state)
+     values (?, ?, 'published', ?, '', 1, 'ready', 1, null)`,
+  )
+    .bind(publishedGameId, 'canonical-author', '作品')
+    .run();
 });
 
 /**
@@ -118,5 +143,51 @@ describe('経路表の全画面を開いて確かめる（#595 の acceptance 6�
       const { canonical } = await open(`/works${query}`);
       expect(canonical, `/works${query}`).toBe('/works');
     }
+  });
+});
+
+describe('続きを補う経路（動的な画面）にも canonical が出る', () => {
+  /**
+   * 画面を開いて canonical と noindex を読む。
+   *
+   * @param path パス
+   * @returns 状態・canonical・noindex
+   */
+  async function open(path: string): Promise<{ status: number; canonical: string | null; noindex: boolean }> {
+    const res = await SELF.fetch(`${APP_ORIGIN}${path}`);
+    const body = await res.text();
+    return {
+      status: res.status,
+      canonical: canonicalOf(body),
+      noindex: body.includes('<meta name="robots" content="noindex">'),
+    };
+  }
+
+  it('公開作品の作品ページと、ハンドル名の作者ページに、開いたパスが出る', async () => {
+    // **裸の接頭辞では確かめられない画面である**（`/works/` も `/@` も 404 にしかならない）。
+    // 実物を仕込んで、**本体の画面**が正しい canonical を返すことを見る。
+    for (const path of [workPagePath(publishedGameId), handlePagePath(authorHandle)]) {
+      const { status, canonical, noindex } = await open(path);
+      expect(status, path).toBe(200);
+      expect(noindex, `${path} が noindex になっている`).toBe(false);
+      expect(canonical, `${path} の canonical`).toBe(path);
+    }
+  });
+
+  it('公開していない作品のページは noindex で、canonical を出さない', async () => {
+    // 作品ページは `noindex: !view.published` で、**同じ綴りが状態によって変わる。**
+    // 索引に載らない側では canonical も出ないことを固定する。
+    const draftId = '66666666-6666-4666-8666-666666666666';
+    await env.DB.prepare(
+      `insert into games
+         (id, author_id, status, title, go_version, created_at, generation_state, review_state)
+       values (?, ?, 'draft', ?, '', 1, 'ready', null)`,
+    )
+      .bind(draftId, 'canonical-author', '下書き')
+      .run();
+    const { status, canonical, noindex } = await open(workPagePath(draftId));
+    expect(status).toBe(200);
+    expect(noindex).toBe(true);
+    expect(canonical).toBeNull();
   });
 });

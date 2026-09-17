@@ -9,6 +9,7 @@ import { INVITE_QUOTA } from '../src/invite-issuance.js';
 import { FAQ_PATH, PRIVACY_PATH, TAKEDOWN_PATH, TERMS_PATH } from '../src/legal-paths.js';
 import { SIGNUP_PATH } from '../src/paths.js';
 import { DAILY_QUOTA_PER_USER } from '../src/quota.js';
+import { CONTENT_SIGNAL } from '../src/robots.js';
 import { dispatch } from '../src/routes.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from '../src/service-contact.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
@@ -284,5 +285,37 @@ describe('退会（#518 / M15-3）', () => {
     for (const id of ['delete-work', 'contact']) {
       expect(answerOf(id), `質問 ${id} から退会へのリンクが無い`).toContain('href="#withdraw"');
     }
+  });
+});
+
+describe('AI の学習（#594）', () => {
+  it('拒否を表明していることと、その表明に強制力が無いことの両方を書く', () => {
+    const answer = answerOf('ai-training');
+    expect(answer).toContain('AI の学習に使わないよう、外部のクローラへ表明しています');
+    expect(answer).toContain('<code>robots.txt</code>');
+    expect(answer).toContain('AI の学習には使わないでほしい');
+    // **できることだけを書いた案内にしない。** 従わないクローラを止める手段は無い
+    // （`src/robots.ts` の「強制力は無い」）。
+    expect(answer).toContain('この表明に強制力はありません');
+    expect(answer).toContain('従わないクローラを技術的に止めるものではありません');
+    // 公開しないという選択があることまで案内する（既存の項目へ送る）。
+    expect(answer).toContain('href="#no-fork"');
+    expect(answer).toContain(`href="${PRIVACY_PATH}"`);
+    expect(oldOperationNamesIn(answer)).toEqual([]);
+  });
+
+  it('robots.txt の意思表示と食い違わない（検索は許し、学習は拒む）', () => {
+    // **画面の文言と実装が食い違わないことを機械で照合する**（shared-ai-rules 12 章）。
+    // FAQ は「検索の索引には載せてよい／回答に引用してよい／学習には使わないでほしい」と
+    // 書いているので、正本の Content-Signal がそのとおりであることを確かめる。
+    expect(CONTENT_SIGNAL).toContain('search=yes');
+    expect(CONTENT_SIGNAL).toContain('ai-input=yes');
+    expect(CONTENT_SIGNAL).toContain('ai-train=no');
+    expect(answerOf('ai-training')).toContain('検索の索引には載せてよい／AI の回答に引用してよい');
+  });
+
+  it('権利の答えの直後に置く', () => {
+    const ids = FAQ_ENTRIES.map((entry) => entry.id);
+    expect(ids.indexOf('ai-training')).toBe(ids.indexOf('rights') + 1);
   });
 });

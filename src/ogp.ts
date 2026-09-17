@@ -83,6 +83,7 @@
 import { PUBLISHED_STATUS, createJobToken, hashJobToken } from './games.js';
 import type { StartOgpCapture } from './ogp-client.js';
 import { missingOgpSecrets, startOgpCaptureOnLambda } from './ogp-client.js';
+import { ROBOTS_TAG_HEADER, ROBOTS_TAG_NOINDEX } from './robots.js';
 import type { Route } from './routes.js';
 import { json } from './routes.js';
 
@@ -893,6 +894,10 @@ async function serveOgpImage(request: Request, env: Env): Promise<Response> {
   return new Response(object.body, {
     headers: {
       'content-type': PNG_MEDIA_TYPE,
+      // **索引に載せない**（#594）。共有したときにカードとして描かれるための画像で、
+      // 画像検索に単独で並ぶ理由が無い。**弾いているのは索引だけで、取得は許す**
+      // ——OGP クローラが読めなくなると、カードそのものが描かれない（仕様 5.4）。
+      [ROBOTS_TAG_HEADER]: ROBOTS_TAG_NOINDEX,
       // **クローラは何度も取りに来る。** 内容は撮り直すまで変わらないので、
       // 1 時間は聞き直させない。`immutable` は付けない（撮り直しの余地を残す）。
       'cache-control': 'public, max-age=3600',

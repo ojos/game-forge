@@ -34,6 +34,7 @@
  * URL だけ**へ絞るためである（`src/sandbox-csp.ts`）。共通のパス（例: `/assets/game.wasm`）に
  * すると、絞れる単位がホスト全体まで戻る。
  */
+import { ROBOTS_TAG_HEADER, ROBOTS_TAG_NOINDEX } from './robots.js';
 import { sandboxCsp } from './sandbox-csp.js';
 import { loaderHtml } from './sandbox-loader.js';
 
@@ -416,6 +417,10 @@ const ALLOW_ORIGIN = '*';
 function sandboxHeaders(csp: string, extra: Record<string, string>): Headers {
   return new Headers({
     'content-security-policy': csp,
+    // **索引に載せない**（#594）。作品の HTML は AI が書いたものをそのまま配るので、
+    // こちらから `<meta name="robots">` を差し込む余地が無い。**ヘッダが唯一の手段である。**
+    // 拡散と検索の着地点は作品ページ（app 側）で、ここが検索結果に並ぶ理由が無い（仕様 5.4）。
+    [ROBOTS_TAG_HEADER]: ROBOTS_TAG_NOINDEX,
     // 不透明オリジン（7.2 必須要件 1 の帰結）の文書が、自分自身の資材を読めるようにする。
     // **宛先を増やす指定ではない**（`ALLOW_ORIGIN` の冒頭）。`Vary: Origin` は要らない
     // ——応答が要求の `Origin` に依らないためである。

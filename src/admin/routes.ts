@@ -5,7 +5,7 @@
  * 守る経路の境界（この issue が決めたこと）
  * ══════════════════════════════════════════════════════════════════════════════
  *
- * **admin ホストで未ログインのまま通すのは OAuth の 3 つだけ。** ほかのすべての要求は
+ * **admin ホストで未ログインのまま通すのは OAuth の 3 つと `GET /robots.txt` だけ。** ほかのすべての要求は
  * **メソッドの照合より前に** {@link resolveAdminUser} を通し、権限が無ければ **404**
  * （2.4.2。403 は画面の存在を教える）。
  *
@@ -14,6 +14,7 @@
  * | `GET /auth/google/start` | **通す**（Google へ 303） | 通す | 通す |
  * | `GET /auth/google/callback` | **通す**（セッションを発行） | 通す | 通す |
  * | `POST /auth/logout` | **通す**（cookie を消す） | 通す | 通す |
+ * | `GET /robots.txt` | **通す**（全面拒否を返す。#594） | 通す | 通す |
  * | `GET /`（審査キュー） | 404 | 404 | 200 |
  * | **上記以外のすべて**（`POST /` や `GET /auth/logout` を含む） | 404 | 404 | 経路表が決める |
  *
@@ -32,6 +33,10 @@
  * `src/session.ts`）、**app ホストのセッションは admin ホストへ届かない。** admin 側で
  * 独立にログインする以外の道が無く、そのログインの入口を閉じると**誰も入れない画面**に
  * なる。
+ *
+ * **なぜ `robots.txt` を通すのか（#594）。** **クローラはログインしない。** 閉じたままだと
+ * 「このホストへ近寄るな」を、言うべき相手に言えない。**漏れるのは「全面拒否である」ことだけ**で、
+ * 画面の綴りも、機能も、管理者が誰かも漏れない（下記「引き受けた代償」と同じ性質の取引である）。
  *
  * **なぜログアウトも通すのか。** admin のセッションは独立しているので、**ここでしか
  * 終わらせられない。** `handleLogout` は D1 も秘密も読まず（`src/auth/google.ts`）、
@@ -98,6 +103,7 @@
  */
 import type { AuthDependencies } from '../auth/google.js';
 import { CALLBACK_PATH, LOGIN_PATH, LOGOUT_PATH, createAuthRoutes } from '../auth/google.js';
+import { ROBOTS_PATH, adminRobotsRoutes } from '../robots.js';
 import type { Route, RouteMethod } from '../routes.js';
 import { dispatch } from '../routes.js';
 import { adminNotFound, resolveAdminUser } from './guard.js';
@@ -136,6 +142,10 @@ export const ADMIN_OPEN_ROUTES: readonly AdminOpenRoute[] = [
   { method: 'GET', path: LOGIN_PATH },
   { method: 'GET', path: CALLBACK_PATH },
   { method: 'POST', path: LOGOUT_PATH },
+  // **クローラはログインしない**（#594）。ここへ足さないと `robots.txt` も 404 になり、
+  // 「近寄るな」を言う相手に言えない。**漏れるのは「全面拒否である」ことだけ**で、
+  // 画面の綴りも機能も漏れない（このファイルの「引き受けた代償」と同じ性質である）。
+  { method: 'GET', path: ROBOTS_PATH },
 ];
 
 /**
@@ -189,6 +199,9 @@ export function createAdminRoutes(
     // `env.APP_HOST` ではなく**要求のホスト**から組み立てるので（`src/auth/google.ts`）、
     // admin ホストへ来た要求は admin のコールバックへ戻る。**写しを作らない。**
     ...createAuthRoutes(authOverrides),
+    // クローラへの意思表示（#594）。**権限を持たない経路である**——未ログインで通すので
+    // `ADMIN_OPEN_ROUTES` にも 1 行入っている。
+    ...adminRobotsRoutes,
     ...adminReviewRoutes(adminUserId),
     ...adminUsersRoutes(adminUserId),
     ...adminTakedownRoutes(adminUserId),

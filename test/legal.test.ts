@@ -2,6 +2,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createAppRoutes } from '../src/app.js';
 import { dispatch } from '../src/routes.js';
+import { NON_PAGE_PATHS } from '../src/page-paths.js';
 import type { Route } from '../src/routes.js';
 import {
   LOGO_FONT_NOTICE,
@@ -192,7 +193,11 @@ describe('削除依頼フォームが全ページのフッターから到達で�
         route.match !== 'segment' &&
         !route.path.startsWith('/api/') &&
         !route.path.startsWith('/auth/') &&
-        !route.path.startsWith('/__dev'),
+        !route.path.startsWith('/__dev') &&
+        // **画面でない経路の一覧は `src/page-paths.ts` が持つ**（#594 で `/robots.txt` が
+        // 増えた）。ここが自前で並べると、画面でないものを足した日にこの検査だけが
+        // 「フッタが無い」と言い出す。**例外の一覧は 1 つにする**（shared-ai-rules 12 章）。
+        !NON_PAGE_PATHS.includes(route.path),
     );
     expect(pages.length).toBeGreaterThan(5);
 

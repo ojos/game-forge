@@ -1660,6 +1660,20 @@ html.gf-play-locked body {
   font-size: var(--gf-text-small);
 }
 
+/*
+ * デスクトップの操作の案内（#599 / 仕様 3.9.11）。**タグの行（`.gf-work-tags`）と同じ形**にする
+ * ——どちらも「項目名 ＋ 押せない札」を並べて折り返す、本文の列の補助の 1 行である。**新しい色も新しい
+ * トークンも足さない。** 幅の `@media` も持たない（2.3.9。断点は `@section shell` だけが持つ）。
+ */
+.gf-key-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-2);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
 /* 作品の説明（#388）。見出しと段落を 1 つの塊にし、見出しの上の余白を外す。 */
 .gf-work-description h3 {
   margin: 0 0 var(--gf-gap-1);

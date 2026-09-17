@@ -7,6 +7,7 @@ import {
   PAD_STICK_DEAD_ZONE_RATIO,
   PAD_STICK_RADIUS_PX,
   STICK_KEYS_SOURCE,
+  keyLegendOf,
   padKeyAriaLabel,
   padKeyLabel,
   padLayoutOf,
@@ -740,5 +741,74 @@ describe('スティックの方向の決め方（仕様 3.9.6 の「方向の決
     const noDown = stick('KeyW', null, 'KeyA', 'KeyD');
     expect(at(noDown, 135, radius)).toEqual(['KeyA']);
     expect(at(noDown, -135, radius)).toEqual(['KeyW', 'KeyA']);
+  });
+});
+
+describe('デスクトップの操作の案内（仕様 3.9.11 / M16-1 / #599）', () => {
+  /**
+   * 案内に出るキーを、比べやすい形（方向は `位置:code`、残りは `code`）にする。
+   *
+   * @param codes キーの集合
+   * @returns 方向と、方向以外のキー
+   */
+  function legendOf(codes: readonly string[]): { directions: string[]; buttons: string[] } {
+    const legend = keyLegendOf(codes);
+    return {
+      directions: legend.directions.map((key) => `${key.direction}:${key.code}`),
+      buttons: legend.buttons.map((key) => key.code),
+    };
+  }
+
+  it('方向とボタンの決め方は、パッド（3.9.6）と同じである', () => {
+    // 矢印を含めば矢印だけ。WASD はボタンにも出さない。Space を含めば Enter を除く。
+    expect(legendOf(['ArrowLeft', 'ArrowRight', 'KeyA', 'KeyD', 'Space', 'Enter'])).toEqual({
+      directions: ['left:ArrowLeft', 'right:ArrowRight'],
+      buttons: ['Space'],
+    });
+    // 矢印を含まなければ WASD を方向に出し、WASD の code を持つ。左右の組は左だけ。
+    expect(legendOf(['KeyW', 'KeyS', 'ShiftLeft', 'ShiftRight'])).toEqual({
+      directions: ['up:KeyW', 'down:KeyS'],
+      buttons: ['ShiftLeft'],
+    });
+  });
+
+  it('並べる順はパッドと同じ（Space → KeyZ → KeyX → Enter → その他の昇順 → Escape）', () => {
+    // **`KeyA` を使わない**——矢印を含まない集合では WASD が方向に回るので、これは「その他」ではない。
+    expect(legendOf(['Escape', 'KeyB', 'KeyX', 'KeyZ', 'Space', 'KeyQ']).buttons).toEqual([
+      'Space',
+      'KeyZ',
+      'KeyX',
+      'KeyB',
+      'KeyQ',
+      'Escape',
+    ]);
+  });
+
+  it(`ボタンの上限（${PAD_BUTTON_LIMIT}）を掛けない——効くキーが案内から落ちない`, () => {
+    const codes = ['Space', 'KeyZ', 'KeyX', 'Enter', 'KeyQ', 'KeyB', 'Escape'];
+    // パッドは先頭から 4 つで切る。
+    expect(padLayoutOf(codes).buttons).toHaveLength(PAD_BUTTON_LIMIT);
+    // 案内は切らない（Space が Enter を除くので 6 つ）。
+    expect(legendOf(codes).buttons).toEqual(['Space', 'KeyZ', 'KeyX', 'KeyB', 'KeyQ', 'Escape']);
+  });
+
+  it('キーが無い・許可表の外だけ・マウスだけの作品では、方向もキーも空になる', () => {
+    expect(legendOf([])).toEqual({ directions: [], buttons: [] });
+    expect(legendOf(['NotAKey', 'KeyÀ'])).toEqual({ directions: [], buttons: [] });
+  });
+
+  it('文字はパッドと同じ固定の文字列で、読み上げの名前は持たない（押せない札だから）', () => {
+    const legend = keyLegendOf(['ArrowUp', 'Space', 'PrintScreen']);
+    expect(legend.directions.map((key) => key.label)).toEqual(['↑']);
+    expect(legend.buttons.map((key) => key.label)).toEqual(['Space', 'PrtSc']);
+    // 方向は十字と同じ読み上げの名前を持つ（directionKeyOf を共有している）。**ボタンは持たない。**
+    expect(legend.buttons.every((key) => key.ariaLabel === null)).toBe(true);
+  });
+
+  it('許可表のすべての code が、案内でも文字を持つ（写しを作っていない）', () => {
+    const legend = keyLegendOf(INPUT_KEY_CODES);
+    for (const key of [...legend.directions, ...legend.buttons]) {
+      expect(key.label).toBe(padKeyLabel(key.code));
+    }
   });
 });

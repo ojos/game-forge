@@ -13,7 +13,7 @@ import {
   deletionBlockOf,
   workDeletePath,
 } from '../src/work-delete.js';
-import { WORK_REMOVE_PATH, workPagePath } from '../src/work-page.js';
+import { WORK_UNPUBLISH_PATH, workPagePath } from '../src/work-page.js';
 import { MY_WORKS_PATH } from '../src/works-paths.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
 import { applySchema } from './helpers/schema.js';
@@ -265,14 +265,15 @@ describe('削除の導線（#517 の acceptance 1）', () => {
     }
   });
 
-  it('公開中の作品には出さず、先に取り下げることを書く', async () => {
+  it('公開中の作品には出さず、先に公開をやめることを書く', async () => {
     const author = await seedUser();
     const work = await seedWork({ authorId: author, status: 'published', generationState: 'ready' });
     const body = await (await open(workPagePath(work.id), await sessionCookie(author))).text();
     expect(hasDeleteLink(body, work.id)).toBe(false);
-    // 取り下げの口はある（作者本人・公開中）。その説明の中で、削除には取り下げが先に要ることを言う。
-    expect(body).toContain(`action="${WORK_REMOVE_PATH}"`);
-    expect(body).toContain('公開中の作品は削除できません。削除したいときは、先に公開を取り下げてください。');
+    // 公開をやめる口はある（作者本人・公開中）。削除には下書きへ戻すのが先に要ることは、
+    // 断りの文言（`DELETE_REFUSALS.published`）と確認画面が言う。
+    expect(body).toContain(`action="${WORK_UNPUBLISH_PATH}"`);
+    expect(body).toContain('公開をやめて下書きに戻す');
   });
 
   it('生成中の作品には出さない（区切りを過ぎて止まった行も）', async () => {
@@ -493,10 +494,10 @@ describe('削除の口（POST /api/works/delete）', () => {
 
     // 作品ページは取り下げ済みの表示のまま。誰にでも同じ見出しを出し、本人にだけ中身が消えたことを言う。
     const anon = await (await open(workPagePath(parent.id))).text();
-    expect(anon).toContain('この作品は取り下げられました');
+    expect(anon).toContain('この作品は公開されていません');
     expect(anon).not.toContain(parent.title);
     const mine = await (await open(workPagePath(parent.id), cookie)).text();
-    expect(mine).toContain('この作品は取り下げられました');
+    expect(mine).toContain('この作品は公開されていません');
     expect(mine).toContain('この作品はあなたが削除しました。');
     // もう消す物は無いので、導線を出さない。
     expect(hasDeleteLink(mine, parent.id)).toBe(false);

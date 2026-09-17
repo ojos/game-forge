@@ -6,7 +6,6 @@ import {
   listAuthoredGames,
   listPublishedGames,
   publishGame,
-  removeGame,
   renameGame,
 } from '../src/games.js';
 import { ogpObjectKey } from '../src/ogp.js';
@@ -18,6 +17,7 @@ import { listSearchedGames, parseWorkSearch } from '../src/work-search.js';
 import { workPagePath, workPageRoutes } from '../src/work-page.js';
 import { countingEnv } from './helpers/d1-counting.js';
 import { applySchema } from './helpers/schema.js';
+import { markGameRemoved } from './helpers/removed-work.js';
 
 /**
  * 作品を消す土台（#516 / M15-1 / 仕様 3.7 / 5.3）。
@@ -297,7 +297,7 @@ describe('子のいる作品は行を残す（#516 の acceptance 2）', () => {
     const parent = await seedGame({ authorId: author, status: 'published', title: '消える親の題名' });
     const child = await seedGame({ authorId: forker, status: 'published', parentId: parent.id });
     await renameGame(env, parent.id, author, '消える親の新しい題名', 300);
-    expect(await removeGame(env, parent.id, author)).toEqual({ ok: true, firstTime: true });
+    await markGameRemoved(parent.id);
 
     expect(await deleteGame(env, parent.id, 400)).toEqual({ ok: true, result: 'purged' });
 
@@ -345,7 +345,7 @@ describe('運営の記録がある作品は行と記録を残す（#516 の acce
     expect((await listSearchedGames(env, search, null, 1_000, 0)).map((w) => w.id)).toContain(game.id);
 
     expect((await recordReport(env, game.id, reporter, '不適切', 350)).ok).toBe(true);
-    expect((await removeGame(env, game.id, author)).ok).toBe(true);
+    await markGameRemoved(game.id);
 
     expect(await deleteGame(env, game.id, 400)).toEqual({ ok: true, result: 'purged' });
 
@@ -362,7 +362,7 @@ describe('運営の記録がある作品は行と記録を残す（#516 の acce
 
     // 公開面: 作品ページ（取り下げ済みの表示）・一覧・検索・作者ページ・あなたの作品。
     const page = await openWorkPage(game.id);
-    expect(page).toContain('この作品は取り下げられました');
+    expect(page).toContain('この作品は公開されていません');
     expect(page).not.toContain('宇宙ねこ');
     const listed = await listPublishedGames(env, 'recent', 1_000, 0);
     expect(listed.map((work) => work.id)).not.toContain(game.id);

@@ -27,11 +27,12 @@ import {
   PUBLISHED_STATUS,
   publishGame,
   publishedGamesSql,
-  removeGame,
+  unpublishGame,
 } from '../src/games.js';
 import type { GenerateRequest } from '../src/generate.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
+import { markGameRemoved } from './helpers/removed-work.js';
 
 beforeAll(async () => {
   await applySchema();
@@ -79,6 +80,15 @@ interface GameRow {
   created_at: number;
   published_at: number | null;
   preview_key: string | null;
+  // **#637 が読む列。** 公開をやめる操作が、審査状態と撮影の状態をどう動かすかを見る。
+  review_state: string | null;
+  ogp_state: string | null;
+  ogp_key: string | null;
+  ogp_token_hash: string | null;
+  ogp_started_at: number | null;
+  tag1: string | null;
+  tag2: string | null;
+  tag3: string | null;
 }
 
 /**
@@ -1282,7 +1292,7 @@ describe('系統の近傍と fork_count（5.5 / M5-3 / #34）', () => {
   });
 });
 
-describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
+describe('公開をやめて下書きへ戻す（5.4 の「公開をやめて下書きへ戻せる」 / 確定35 / #637）', () => {
   /**
    * 完成させて公開した作品を 1 件用意する。
    *
@@ -1313,22 +1323,32 @@ describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
     return pending.id;
   }
 
-  it('親を取り下げても、子は published のまま残る（連鎖削除しない）', async () => {
-    // **#35 の acceptance そのものである。** 5.3 は「連鎖削除は荒れるため採らない」。
-    const author = await seedUser('rm-cascade-author');
-    const forker = await seedUser('rm-cascade-forker');
+  it('`draft` に戻る（`removed` にしない）', async () => {
+    // **#637 の芯である。** 取り下げ（`removed`）は一覧にも検索にも出ず、URL を控えていない
+    // 作者は削除も再公開もできなかった。下書きなら、下書きと同じ扱いで辿れる。
+    const author = await seedUser('unpub-draft-author');
+    const game = await publishNew(author, '戻すゲーム', null, 10_000);
+
+    expect(await unpublishGame(env, game, author)).toEqual({ ok: true, firstTime: true });
+
+    expect((await readGame(game)).status).toBe(DRAFT_STATUS);
+  });
+
+  it('下書きへ戻しても、子は published のまま残る（連鎖しない）', async () => {
+    // **#35 の acceptance を引き継ぐ。** 5.3 は「連鎖削除は荒れるため採らない」。
+    const author = await seedUser('unpub-cascade-author');
+    const forker = await seedUser('unpub-cascade-forker');
     const parent = await publishNew(author, '親のゲーム', null, 10_000);
     const child = await publishNew(forker, '子のゲーム', parent, 10_100);
     const grandchild = await publishNew(forker, '孫のゲーム', child, 10_200);
-    // **作者自身が改造した子も巻き込まない。** 5.7 は「公開後に手を入れたい作者は
-    // フォークする」と定めており、**親子が同じ作者になる系統は正常な形**である。
+    // **作者自身が改造した子も巻き込まない。** 親子が同じ作者になる系統は正常な形である。
     // ここを他人の子だけで確かめると、`author_id = ?` が偶然止めているだけの
     // 実装（`where id = ? or parent_id = ?`）を緑のまま通してしまう。
     const ownChild = await publishNew(author, '作者自身の改造', parent, 10_300);
 
-    expect(await removeGame(env, parent, author)).toEqual({ ok: true, firstTime: true });
+    expect(await unpublishGame(env, parent, author)).toEqual({ ok: true, firstTime: true });
 
-    expect((await readGame(parent)).status).toBe('removed');
+    expect((await readGame(parent)).status).toBe(DRAFT_STATUS);
     // **子も孫も 1 文字も動いていない。**
     expect((await readGame(child)).status).toBe('published');
     expect((await readGame(child)).parent_id).toBe(parent);
@@ -1336,46 +1356,96 @@ describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
     expect((await readGame(ownChild)).status).toBe('published');
   });
 
-  it('物理削除しない（行も、子から親への参照も残る）', async () => {
-    const author = await seedUser('rm-tombstone-author');
-    const forker = await seedUser('rm-tombstone-forker');
+  it('中身は残る（行も、子から親への参照も、成果物への参照も）', async () => {
+    const author = await seedUser('unpub-keep-author');
+    const forker = await seedUser('unpub-keep-forker');
     const parent = await publishNew(author, '親のゲーム', null, 11_000);
     const child = await publishNew(forker, '子のゲーム', parent, 11_100);
 
-    await removeGame(env, parent, author);
+    await unpublishGame(env, parent, author);
 
-    // 行が残っているから、子の画面は「削除済みの作品から派生」と言える
-    // （`parentWorkOf` は結合の空振りも removed へ倒すが、それは保険である）。
     const row = await readGame(parent);
-    expect(row.status).toBe('removed');
     expect(row.title).not.toBe('');
     // R2 の成果物への参照も残る（確定26 の削除規約が引く先を壊さない）。
     expect(row.source_key).not.toBeNull();
     expect((await readGame(child)).parent_id).toBe(parent);
   });
 
-  it('取り下げると、親の fork_count と実件数から外れる', async () => {
-    const author = await seedUser('rm-count-author');
-    const forker = await seedUser('rm-count-forker');
+  it('試遊の鍵を引き直す（配っていた `/p/` の URL を道連れにする）', async () => {
+    const author = await seedUser('unpub-preview-author');
+    const game = await publishNew(author, '鍵を変えるゲーム', null, 11_500);
+    const before = (await readGame(game)).preview_key;
+
+    await unpublishGame(env, game, author);
+
+    const after = (await readGame(game)).preview_key;
+    expect(after).not.toBeNull();
+    expect(after).not.toBe(before);
+  });
+
+  it('紹介用の画像を撮り直させる（`ogp_state` を戻し、走っていた撮影も落とす）', async () => {
+    const author = await seedUser('unpub-ogp-author');
+    const game = await publishNew(author, '撮り直すゲーム', null, 11_700);
+    await env.DB.prepare(
+      `update games
+          set ogp_state = 'ready', ogp_key = 'ogp/x.png', ogp_token_hash = 'deadbeef', ogp_started_at = 1
+        where id = ?`,
+    )
+      .bind(game)
+      .run();
+
+    await unpublishGame(env, game, author);
+
+    const row = await readGame(game);
+    expect(row.ogp_state).toBeNull();
+    expect(row.ogp_token_hash).toBeNull();
+    expect(row.ogp_started_at).toBeNull();
+    // **鍵は消さない**（次の撮影が同じ鍵を上書きする。`ogp/<game_id>.png`）。
+    expect(row.ogp_key).toBe('ogp/x.png');
+  });
+
+  it('審査済み（`cleared`）は外し、審査待ち（`queued`）は残す', async () => {
+    // **中身を入れ替えて出し直せる**ので、`cleared` のままにすると通報の回路の外に出る。
+    // 逆に `queued` を解けるようにすると、新規露出を止めた状態を作者が解けてしまう。
+    const author = await seedUser('unpub-review-author');
+    const cleared = await publishNew(author, '審査済みのゲーム', null, 11_800);
+    const queued = await publishNew(author, '審査待ちのゲーム', null, 11_900);
+    await env.DB.prepare("update games set review_state = 'cleared' where id = ?")
+      .bind(cleared)
+      .run();
+    await env.DB.prepare("update games set review_state = 'queued' where id = ?")
+      .bind(queued)
+      .run();
+
+    await unpublishGame(env, cleared, author);
+    await unpublishGame(env, queued, author);
+
+    expect((await readGame(cleared)).review_state).toBeNull();
+    expect((await readGame(queued)).review_state).toBe('queued');
+  });
+
+  it('親の fork_count と実件数から外れる', async () => {
+    const author = await seedUser('unpub-count-author');
+    const forker = await seedUser('unpub-count-forker');
     const parent = await publishNew(author, '親のゲーム', null, 12_000);
     const kept = await publishNew(forker, '残す改造', parent, 12_100);
-    const dropped = await publishNew(forker, '取り下げる改造', parent, 12_200);
+    const dropped = await publishNew(forker, '下書きへ戻す改造', parent, 12_200);
     expect((await readGame(parent)).fork_count).toBe(2);
 
-    await removeGame(env, dropped, forker);
+    await unpublishGame(env, dropped, forker);
 
     expect((await readGame(parent)).fork_count).toBe(1);
     expect(await countPublishedForks(env, parent)).toBe(1);
     expect((await listPublishedForks(env, parent, 20)).map((c) => c.id)).toEqual([kept]);
   });
 
-  it('他人は取り下げられない（存在しない id と区別しない）', async () => {
-    const author = await seedUser('rm-other-author');
-    const stranger = await seedUser('rm-other-stranger');
+  it('他人は公開をやめられない（存在しない id と区別しない）', async () => {
+    const author = await seedUser('unpub-other-author');
+    const stranger = await seedUser('unpub-other-stranger');
     const game = await publishNew(author, '他人のゲーム', null, 13_000);
 
-    expect(await removeGame(env, game, stranger)).toEqual({ ok: false, reason: 'not-found' });
-    expect(await removeGame(env, crypto.randomUUID(), author)).toEqual({
+    expect(await unpublishGame(env, game, stranger)).toEqual({ ok: false, reason: 'not-found' });
+    expect(await unpublishGame(env, crypto.randomUUID(), author)).toEqual({
       ok: false,
       reason: 'not-found',
     });
@@ -1383,46 +1453,84 @@ describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
     expect((await readGame(game)).status).toBe('published');
   });
 
-  it('未公開の作品は取り下げられない', async () => {
-    const author = await seedUser('rm-draft-author');
+  it('未公開の作品にはやめるものが無い', async () => {
+    const author = await seedUser('unpub-draft-only-author');
     const pending = await createPendingGame(env, author, { prompt: '未公開' }, 14_000);
-    expect(await removeGame(env, pending.id, author)).toEqual({
-      ok: false,
-      reason: 'not-published',
+    expect(await unpublishGame(env, pending.id, author)).toEqual({
+      ok: true,
+      firstTime: false,
     });
     expect((await readGame(pending.id)).status).toBe(DRAFT_STATUS);
   });
 
-  it('二度押しても壊れない（2 回目は firstTime が false）', async () => {
-    const author = await seedUser('rm-twice-author');
-    const game = await publishNew(author, '取り下げるゲーム', null, 15_000);
+  it('tombstone（運営の措置・退会）は作者が動かせない', async () => {
+    const author = await seedUser('unpub-removed-author');
+    const game = await publishNew(author, '止められたゲーム', null, 14_500);
+    await markGameRemoved(game);
 
-    expect(await removeGame(env, game, author)).toEqual({ ok: true, firstTime: true });
-    expect(await removeGame(env, game, author)).toEqual({ ok: true, firstTime: false });
+    expect(await unpublishGame(env, game, author)).toEqual({
+      ok: false,
+      reason: 'not-published',
+    });
     expect((await readGame(game)).status).toBe('removed');
   });
 
-  it('取り下げた作品は公開し直せない（publishGame が removed で断る）', async () => {
-    const author = await seedUser('rm-republish-author');
-    const game = await publishNew(author, '取り下げるゲーム', null, 16_000);
-    await removeGame(env, game, author);
+  it('二度押しても壊れない（2 回目は firstTime が false）', async () => {
+    const author = await seedUser('unpub-twice-author');
+    const game = await publishNew(author, 'やめるゲーム', null, 15_000);
 
-    expect(await publishGame(env, game, author, 16_100)).toEqual({
-      ok: false,
-      reason: 'removed',
-    });
+    expect(await unpublishGame(env, game, author)).toEqual({ ok: true, firstTime: true });
+    expect(await unpublishGame(env, game, author)).toEqual({ ok: true, firstTime: false });
+    expect((await readGame(game)).status).toBe(DRAFT_STATUS);
   });
 
-  it('取り下げた作品は「あなたの作品」一覧に出ない', async () => {
-    const author = await seedUser('rm-list-author');
+  it('公開し直せる。そのとき `published_at` は動かない（新着の先頭へ戻せない）', async () => {
+    // **上げ直しを塞ぐ**（公開一覧の既定は `published_at` の降順である）。
+    const author = await seedUser('unpub-republish-author');
+    const game = await publishNew(author, '出し直すゲーム', null, 16_000);
+    const first = (await readGame(game)).published_at;
+
+    await unpublishGame(env, game, author);
+    expect(await publishGame(env, game, author, 16_900)).toEqual({
+      ok: true,
+      firstTime: true,
+      publishedAt: first,
+    });
+
+    const row = await readGame(game);
+    expect(row.status).toBe('published');
+    expect(row.published_at).toBe(first);
+  });
+
+  it('公開し直しても、タグはフォームが運んだ値で置き換わる（消さない）', async () => {
+    // **公開をやめてもタグは消えない**ので、再公開のフォームはいまのタグを選んだ状態で出す
+    // （`src/work-page.ts` の `publishForm`）。ここは経路の側の振る舞いを固定する。
+    const author = await seedUser('unpub-tags-author');
+    const game = await publishNew(author, 'タグのゲーム', null, 16_100);
+    await unpublishGame(env, game, author);
+    expect((await publishGame(env, game, author, 16_150, ['puzzle'])).ok).toBe(true);
+    expect((await readGame(game)).tag1).toBe('puzzle');
+
+    await unpublishGame(env, game, author);
+    // 公開をやめた時点では、タグは 1 文字も動いていない。
+    expect((await readGame(game)).tag1).toBe('puzzle');
+
+    expect((await publishGame(env, game, author, 16_200, ['puzzle', 'idle'])).ok).toBe(true);
+    const row = await readGame(game);
+    expect(row.tag1).toBe('puzzle');
+    expect(row.tag2).toBe('idle');
+  });
+
+  it('下書きへ戻した作品は「あなたの作品」一覧に出る', async () => {
+    // **#636 が塞いだ穴そのものである。** 取り下げ（`removed`）では、ここから消えていた。
+    const author = await seedUser('unpub-list-author');
     const kept = await publishNew(author, '残すゲーム', null, 17_000);
-    const dropped = await publishNew(author, '取り下げるゲーム', null, 17_100);
-    await removeGame(env, dropped, author);
+    const back = await publishNew(author, '下書きへ戻すゲーム', null, 17_100);
+    await unpublishGame(env, back, author);
 
     const ids = (await listAuthoredGames(env, author, 50)).map((work) => work.id);
     expect(ids).toContain(kept);
-    // 行き先の無いリンクを一覧に並べない（`listAuthoredGames` の規則）。
-    expect(ids).not.toContain(dropped);
+    expect(ids).toContain(back);
   });
 });
 

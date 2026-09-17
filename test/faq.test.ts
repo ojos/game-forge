@@ -185,10 +185,12 @@ describe('仕様と食い違わない（#373 の constraints。4.3 / 4.4 / 5.6 /
     expect(answerOf('contact')).toContain(`href="${TAKEDOWN_PATH}"`);
   });
 
-  it('取り下げは既に改造された作品に及ばないと書く（5.3 / 規約 4）', () => {
+  it('公開をやめても既に改造された作品に及ばないと書く（5.3 / 5.4 / 規約 4）', () => {
     const answer = answerOf('no-fork');
     expect(answer).toContain('公開しなければ、フォークされることはありません');
-    expect(answer).toContain('取り下げる前に作られたフォーク作品は消えません');
+    expect(answer).toContain('公開をやめる前に作られたフォーク作品は消えません');
+    // **戻る先が下書きであることを言う**（#637 / 確定35）。「もう辿れなくなる」と読ませない。
+    expect(answer).toContain('下書きに戻り');
     // **未公開の作品ページそのものは誰でも開ける**（状態だけを出す。`src/work-page.ts` の
     // `readySection`）。本人に限るのは遊べる URL である（PR #400 の Copilot の指摘）。
     expect(answer).not.toContain('作品ページは作った本人にしか開けません');
@@ -244,18 +246,18 @@ describe('フォークとリフォージの用語集（#513）', () => {
 });
 
 describe('作品の削除（#517）', () => {
-  it('削除できる作品・戻せないこと・公開中は取り下げが先・フォークした作品は残ること・枠は戻らないことを書く', () => {
+  it('削除できる作品・戻せないこと・公開中は先に公開をやめること・フォークした作品は残ること・枠は戻らないことを書く', () => {
     const answer = answerOf('delete-work');
-    expect(answer).toContain('公開していない作品（下書き）と、公開を取り下げた作品は、作品ページから削除できます');
+    expect(answer).toContain('公開していない作品（下書き）は、作品ページから削除できます');
     expect(answer).toContain('削除すると元に戻せません');
-    expect(answer).toContain('先に作品ページの「公開を取り下げる」で取り下げてから削除してください');
+    expect(answer).toContain('先に作品ページの「公開をやめる」で下書きに戻してから削除してください');
     expect(answer).toContain('その作品をフォークして作られた作品は消えません');
     expect(answer).toContain('生成枠</a>は戻りません');
     expect(answer).toContain(`href="${PRIVACY_PATH}"`);
     expect(oldOperationNamesIn(answer)).toEqual([]);
   });
 
-  it('取り下げの答えの直後に置き、取り下げの答えから辿れる', () => {
+  it('公開をやめる答えの直後に置き、そこから辿れる', () => {
     const ids = FAQ_ENTRIES.map((entry) => entry.id);
     expect(ids.indexOf('delete-work')).toBe(ids.indexOf('no-fork') + 1);
     expect(answerOf('no-fork')).toContain('href="#delete-work"');

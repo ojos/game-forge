@@ -374,7 +374,7 @@ describe('審査キューの画面（2.4.3 / 8.4）', () => {
   });
 
   it('取り下げ済み（removed）の作品は、審査待ちのままでも並べない', async () => {
-    // **`removeGame` は `status` だけを動かし、`review_state` を残す**（`src/games.ts`）。
+    // **tombstone 化は `status` だけを動かし、`review_state` を残す**（`test/helpers/removed-work.ts`）。
     // 並べると、**戻らない露出について「新規露出を戻す」ボタンを出す**ことになる
     // （PR #364 のレビューの指摘。2.4.3 は取り下げを画面へ置かないと決めている）。
     const removed = crypto.randomUUID();

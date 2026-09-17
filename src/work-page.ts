@@ -78,7 +78,7 @@ import {
   listPublishedForks,
   PUBLISHED_STATUS,
   REMOVED_STATUS,
-  removeGame,
+  unpublishGame,
   renameGame,
   retagGame,
   STALE_AFTER_SECONDS,
@@ -190,7 +190,7 @@ import {
 export { WORK_PAGE_PREFIX, workPagePath };
 
 /**
- * 公開を取り下げる操作（tombstone 化。5.3 / M5-4 / #35）。
+ * 公開をやめる操作（`published → draft`。5.4 の「公開をやめて下書きへ戻せる」 / 確定35 / #637）。
  *
  * # なぜ `src/paths.ts` に置かないのか
  *
@@ -200,19 +200,19 @@ export { WORK_PAGE_PREFIX, workPagePath };
  *
  * # なぜ作品ページに置くのか
  *
- * 取り下げは**その作品の状態を進める操作**であり、押す場所も戻る場所も作品ページ
+ * 公開をやめるのは**その作品の状態を動かす操作**であり、押す場所も戻る場所も作品ページ
  * である。`src/publish.ts` が公開のために別モジュールを持っているのは、あちらが
  * **OGP の撮影という別の副作用**を起動するためで、こちらには無い。
  */
-export const WORK_REMOVE_PATH = '/api/works/remove';
+export const WORK_UNPUBLISH_PATH = '/api/works/unpublish';
 
-/** 取り下げの対象を指す項目名（フォームの `name` と JSON の鍵の両方）。 */
-export const WORK_REMOVE_GAME_ID_FIELD = 'game_id';
+/** 公開をやめる対象を指す項目名（フォームの `name` と JSON の鍵の両方）。 */
+export const WORK_UNPUBLISH_GAME_ID_FIELD = 'game_id';
 
 /**
  * 通報の受け口（8.4 / #40）。
  *
- * **取り下げ（{@link WORK_REMOVE_PATH}）と別の経路にする。** 取り下げは作者が自分の
+ * **公開をやめる口（{@link WORK_UNPUBLISH_PATH}）と別の経路にする。** あちらは作者が自分の
  * 作品に対して行い、通報は他者が行う。**同じ口にすると、誰の意思なのかが本文の中身
  * でしか分からなくなる。**
  */
@@ -227,7 +227,7 @@ export const WORK_REPORT_REASON_FIELD = 'reason';
 /**
  * 題名を変える口（5.4 / #366）。
  *
- * **{@link WORK_REMOVE_PATH} と同じ理由で `src/paths.ts` に置かない**——フォームも
+ * **{@link WORK_UNPUBLISH_PATH} と同じ理由で `src/paths.ts` に置かない**——フォームも
  * 受け口もこのモジュールが持つので、循環参照が起きる余地が無い。
  *
  * **`/api/publish` に畳まない。** 5.4 は公開の主ボタンを 1 タップに畳むと定めており、
@@ -935,7 +935,7 @@ export interface WorkPageView {
   /**
    * この作品 id（改名のフォームに入れる。5.4 / #366）。改名できないなら null。
    *
-   * **`publishableId` / `forkableId` / `removableId` と兼ねない**（同時に非 null に
+   * **`publishableId` / `forkableId` / `unpublishableId` と兼ねない**（同時に非 null に
    * なりうるかどうかに関わらず、条件が違う値を 1 つに畳まない。`forkableId` を分けた
    * のと同じ理由）。条件は「**本人・完成済み・取り下げていない**」で、**公開の前後を
    * 問わない**——題名は未公開のあいだも作者に見えており（`title`）、公開後は
@@ -976,17 +976,17 @@ export interface WorkPageView {
    */
   readonly retaggableId: string | null;
   /**
-   * この作品 id（取り下げのフォームに入れる。5.3 / M5-4 / #35）。取り下げられないなら null。
+   * この作品 id（公開をやめるフォームに入れる。5.4 / 確定35 / #637）。やめられないなら null。
    *
    * **`publishableId` / `forkableId` / `recapturableId` と兼ねない**（同時に非 null に
    * なりえない値を 1 つに畳むと、片方の条件を変えた日にもう片方が黙って壊れる。
    * `forkableId` を分けたのと同じ理由）。条件は「**公開済み・本人**」である。
    */
-  readonly removableId: string | null;
+  readonly unpublishableId: string | null;
   /**
    * この作品 id（削除の確認画面への導線に入れる。#517 / M15-2）。導線を出さないなら null。
    *
-   * **`removableId` と兼ねない**（同時に非 null になりえない——取り下げは公開中、削除は公開中でない作品）。
+   * **`unpublishableId` と兼ねない**（同時に非 null になりえない——公開をやめるのは公開中、削除は公開中でない作品）。
    * 条件は「**本人**・中身をまだ消していない・公開中でない・生成中でない・リフォージのジョブが走っていない」で、
    * **画面でこの条件を組み立てない**——`src/work-delete.ts` の `deletionBlockOf`（表示の条件）が null を返した
    * ときだけ入る。消せるかどうかの正本は `deleteGame` である。
@@ -1427,7 +1427,12 @@ const SECONDARY_BUTTON = 'gf-button gf-button-secondary';
 const PRIMARY_BUTTON = 'gf-button gf-button-primary';
 
 /**
- * 取り下げられた作品の本文（5.3 / M5-4 / #35）。
+ * 公開を停止された作品の本文（tombstone。5.3 / M5-4 / #35 / 確定35）。
+ *
+ * **#637 以降、この状態を作るのは作者ではない**（運営の措置・退会・作者の削除。`src/games.ts` の
+ * {@link REMOVED_STATUS}）。作者が公開をやめると `draft` へ戻り、この分岐は通らない。**そのため
+ * 本文で「あなたが取り下げました」と言わない**——#35 から #636 までに作者が取り下げた行もここへ来るが、
+ * 運営が止めた行と同じ文で足りる（誰が止めたかは、どちらの読み手にも文面から分からないほうがよい）。
  *
  * # 誰にでも同じことを言う
  *
@@ -1461,26 +1466,34 @@ function removedSection(view: WorkPageView): string {
 <p><strong>この作品をフォークした作品は、そのまま残っています。</strong>
    削除は、そこから派生した作品を巻き込みません。</p>`
       : `
-<p>この作品はあなたが取り下げました。共有した URL からは遊べなくなっています。</p>
+<p>共有した URL からは遊べなくなっています。</p>
 <p><strong>この作品をフォークした作品は、そのまま公開されたままです。</strong>
-   取り下げは、そこから派生した作品を巻き込みません。</p>`;
+   公開の停止は、そこから派生した作品を巻き込みません。</p>`;
   // **段落を明示的に閉じる。** ブラウザの自動補正（`<p>` が次の `<p>` で閉じる）に
   // 寄りかからない——このモジュールの他の枝はどれも閉じており、ここだけ崩すと
   // 「閉じなくてよい」と読まれる。
   //
   // **削除の導線（#517）は知らせの後ろ、設定のブロックに置く**（取り下げた作品で中身をまだ消していないときだけ出る）。
-  return `${stateBlock(`<h2>この作品は取り下げられました</h2>
-<p>作者がこの作品の公開を取り下げました。</p>${owned}`)}${settingsBlock([deleteSection(view)])}`;
+  return `${stateBlock(`<h2>この作品は公開されていません</h2>
+<p>この作品は公開を停止しています。</p>${owned}`)}${settingsBlock([deleteSection(view)])}`;
 }
 
 /**
- * 公開を取り下げる口（5.3 / M5-4 / #35）。
+ * 公開をやめる口（5.4 の「公開をやめて下書きへ戻せる」 / 確定35 / #637）。
  *
- * # 連鎖しないことを、押す前に書く
+ * # 戻せることと、戻らないことを、押す前に書く
  *
- * 5.3 は「連鎖削除は荒れるため採らない」と定めるが、**それを作者が知る経路が
- * 無ければ、作者は「子まで消える」と思って押せない（あるいは、消えると思って押す）。**
- * どちらも黙って裏切る形になる（仕様 1.2.31「黙って失敗を作らない」）。
+ * **戻る先は下書きである。** #35 から #636 までは `removed`（tombstone）へ落としており、
+ * **一覧にも検索にも出ない作品になって、URL を控えていない作者は二度と辿れなかった。**
+ * いまは下書きに戻るので、「あなたの作品」から辿って、直して、出し直せる。
+ *
+ * **それでも戻らないものが 2 つある**（{@link unpublishGame}）。**試遊 URL は作り直され**、
+ * **紹介用の画像は次の公開で撮り直される。** どちらも押す前に書く——後で気づく形にすると、
+ * 配った試遊 URL が切れたことも、画像が変わることも、黙って起きる（仕様 1.2.31
+ * 「黙って失敗を作らない」）。
+ *
+ * **連鎖しないことも書く。** 5.3 は「連鎖削除は荒れるため採らない」と定めるが、**それを作者が
+ * 知る経路が無ければ、作者は「子まで消える」と思って押せない（あるいは、消えると思って押す）。**
  *
  * # 主ボタンを増やさない
  *
@@ -1490,18 +1503,21 @@ function removedSection(view: WorkPageView): string {
  * @param view 表示に必要な値
  * @returns HTML
  */
-function removeSection(view: WorkPageView): string {
-  if (view.removableId === null) {
+function unpublishSection(view: WorkPageView): string {
+  if (view.unpublishableId === null) {
     return '';
   }
   return `
-<h3>公開の取り下げ</h3>
-<p>この作品の公開をやめられます。共有した URL からは遊べなくなります。
-   <strong>この作品をフォークした作品は、そのまま公開されたままです</strong>（連鎖して消えることはありません）。</p>
-<p>公開中の作品は削除できません。削除したいときは、先に公開を取り下げてください。取り下げた作品は、この作品ページから削除できます。</p>
-<form method="post" action="${WORK_REMOVE_PATH}">
-  <input type="hidden" name="${WORK_REMOVE_GAME_ID_FIELD}" value="${view.removableId}">
-  <button type="submit" class="${SECONDARY_BUTTON}">公開を取り下げる</button>
+<h3>公開をやめる</h3>
+<p>この作品の公開をやめて、下書きに戻せます。共有した URL からは遊べなくなり、
+   「あなたの作品」の一覧には下書きとして並びます。<strong>下書きに戻した作品は、作り直したり、
+   公開し直したり、削除したりできます。</strong></p>
+<p><strong>この作品をフォークした作品は、そのまま公開されたままです</strong>（連鎖して消えることはありません）。</p>
+<p>下書きに戻すと、<strong>試遊用の URL は新しいものに変わり</strong>（前の URL を知っている人は遊べなくなります）、
+   <strong>紹介用の画像は、次に公開したときに撮り直します。</strong></p>
+<form method="post" action="${WORK_UNPUBLISH_PATH}">
+  <input type="hidden" name="${WORK_UNPUBLISH_GAME_ID_FIELD}" value="${view.unpublishableId}">
+  <button type="submit" class="${SECONDARY_BUTTON}">公開をやめて下書きに戻す</button>
 </form>`;
 }
 
@@ -1551,7 +1567,7 @@ function deleteSection(view: WorkPageView): string {
  *
  * # 主ボタンを増やさない
  *
- * 5.4 の「公開して共有」の 1 タップは 1 文字も変わらない（{@link removeSection} /
+ * 5.4 の「公開して共有」の 1 タップは 1 文字も変わらない（{@link unpublishSection} /
  * {@link recaptureSection} と同じ判断）。改名は**公開のあとでも押せる**ので、公開前の
  * 導線へ割り込ませない位置に置く。
  *
@@ -1663,16 +1679,23 @@ function describeSection(view: WorkPageView): string {
  * **JavaScript を要求しない。** 素の `<form method="post">` で、押した結果は
  * POST-redirect-GET でこのページへ戻る（`src/publish.ts`）。
  *
+ * **#637 で、いま付いているタグを選んだ状態で出すようにした。** 作者は公開をやめて下書きへ戻せる
+ * （{@link unpublishSection}）ので、**このフォームは 2 度目以降も通る。** 公開をやめてもタグは消えない
+ * （`src/games.ts` の `unpublishGame`）が、公開の UPDATE はフォームが運んだ値でタグを置き換えるため、
+ * **空のまま出すと、選び直さずに押した作者のタグが黙って消える。** 一度も公開していない作品では
+ * 空配列が渡るので、見た目は #376 のときと変わらない。
+ *
  * @param gameId 作品 id
+ * @param tags いま付いているタグの識別子（最初から選んだ状態で出す）
  * @returns HTML
  */
-function publishForm(gameId: string): string {
+function publishForm(gameId: string, tags: readonly string[]): string {
   // **ソースも公開されることを、押す前に言う**（#383 の決定 1 / 2.3.12）。公開した作品の Go の
   // ソースは `/source/<id>` で誰でも読める。**生成されたコードのコメントや文字列には、入力した
   // 文章の言い換えが写ることがある**——入力そのものは出さないが、写ったものは生成物として出る。
   return `<form method="post" action="${PUBLISH_PATH}">
   <input type="hidden" name="${PUBLISH_GAME_ID_FIELD}" value="${gameId}">
-${tagChoices('publish-tag', [])}
+${tagChoices('publish-tag', tags)}
   <p class="gf-fork-note">${PUBLISH_SOURCE_NOTICE}</p>
   <button type="submit" class="${PRIMARY_BUTTON}">公開して共有</button>
 </form>`;
@@ -1803,7 +1826,7 @@ ${playEntry(DRAFT_PLAY_PANEL, true)}
       ? ''
       : `
 <p>遊んでみて、よければ公開できます。</p>
-${publishForm(view.publishableId)}`;
+${publishForm(view.publishableId, knownWorkTags(view.tags).map((tag) => tag.id))}`;
   // **改名は推敲より後に置く。** 5.4 の 1 タップ（公開して共有）と、5.7 の手直しが
   // 先で、題名の変更はそのどちらの導線も押し下げない位置に入れる（#366）。
   //
@@ -2107,7 +2130,7 @@ ${forkList(view.forks)}`,
     renameSection(view),
     describeSection(view),
     retagSection(view),
-    removeSection(view),
+    unpublishSection(view),
   ])}`;
 }
 
@@ -3292,15 +3315,17 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // 関門は `describeGame` の `status = 'published'` で、そちらを外すと
       // `test/work-description.test.ts` の「下書きの作品には書けない」が赤くなる。
       describableId: owner && published && state === 'ready' ? gameId : null,
-      // **タグは公開済みのときだけ渡す**（#376。未公開の作品にはタグが付いておらず、取り下げた
-      // 作品の画面は本文ごと差し替わる）。
-      tags: published ? workTagsOf(row) : [],
+      // **tombstone 以外では渡す**（#376 / #637）。**公開をやめて下書きへ戻した作品はタグを持っており**、
+      // 再公開のフォームがそれを選んだ状態で出す（{@link publishForm}）——渡さないと、選び直さずに
+      // 押した作者のタグが黙って消える（`src/games.ts` の `publishGame` の #637 注記）。一度も公開して
+      // いない作品は 3 列とも NULL なので空配列になる。**tombstone の画面は本文ごと差し替わる**ので渡さない。
+      tags: removed ? [] : workTagsOf(row),
       // **付け直せるのは、本人・公開済み・完成済みの作品である**（#376。説明と同じ条件）。押した
       // 結果を決めるのは `retagGame` の SQL で、ここは口を出すかだけを決める。
       retaggableId: owner && published && state === 'ready' ? gameId : null,
-      // **取り下げられるのは、公開してしまった作品だけである**（5.3 / #35）。
-      // 押した結果を決めるのは `removeGame` の SQL で、ここは口を出すかだけを決める。
-      removableId: owner && published ? gameId : null,
+      // **公開をやめられるのは、公開している作品だけである**（5.4 / 確定35 / #637）。
+      // 押した結果を決めるのは `unpublishGame` の SQL で、ここは口を出すかだけを決める。
+      unpublishableId: owner && published ? gameId : null,
       // **削除の確認画面への導線（#517）は、表示の条件が null を返した本人にだけ出す**（上の `deletable`）。
       //
       // **公開中の作品に出さないことは 2 層で守る。** 第 1 層は描画側で、`publishedSection` が `deleteSection` を
@@ -3363,11 +3388,11 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
 }
 
 /**
- * 公開を取り下げる（`POST /api/works/remove`。5.3 / M5-4 / #35）。
+ * 公開をやめて下書きへ戻す（`POST /api/works/unpublish`。5.4 の「公開をやめて下書きへ戻せる」 / 確定35 / #637）。
  *
  * # 形は `src/publish.ts` / `src/ogp-recapture.ts` に揃える
  *
- * 素の `<form method="post">` と `fetch` の両方を受け、**判定はすべて `removeGame` の
+ * 素の `<form method="post">` と `fetch` の両方を受け、**判定はすべて `unpublishGame` の
  * SQL 1 本が持つ**（作者の一致も、いまの状態も、ここに `if` を置かない）。
  *
  * # CSRF について
@@ -3379,7 +3404,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
  * @param env バインディングと環境変数
  * @returns レスポンス
  */
-async function handleRemove(request: Request, env: Env): Promise<Response> {
+async function handleUnpublish(request: Request, env: Env): Promise<Response> {
   const asHtml = (request.headers.get('accept') ?? '').includes('text/html');
 
   const session = await resolveSessionUser(request, env);
@@ -3387,24 +3412,25 @@ async function handleRemove(request: Request, env: Env): Promise<Response> {
     return asHtml ? seeOther(LOGIN_PATH) : json({ error: 'unauthorized' }, 401);
   }
 
-  const target = await readRemoveTarget(request);
+  const target = await readUnpublishTarget(request);
   if (!target.ok) {
     const refused = REMOVE_BODY_REFUSALS[target.reason];
     return asHtml
-      ? removeRefusal('取り下げられません', refused.body, refused.status)
+      ? removeRefusal('公開をやめられません', refused.body, refused.status)
       : json({ error: target.reason }, refused.status);
   }
 
-  const outcome = await removeGame(env, target.gameId, session.userId);
+  const outcome = await unpublishGame(env, target.gameId, session.userId);
 
   if (outcome.ok) {
-    // POST-redirect-GET。戻り先は作品ページで、そこに tombstone の表示が出る。
+    // POST-redirect-GET。**戻り先は作品ページで、そこに下書きの表示が出る**（公開の口・
+    // リフォージ・版の一覧・削除の導線が、下書きと同じ条件でそのまま並ぶ）。
     return asHtml
       ? seeOther(workPagePath(target.gameId))
-      : json({ removed: true, firstTime: outcome.firstTime }, 200);
+      : json({ unpublished: true, firstTime: outcome.firstTime }, 200);
   }
 
-  const refused = REMOVE_OUTCOME_REFUSALS[outcome.reason];
+  const refused = UNPUBLISH_OUTCOME_REFUSALS[outcome.reason];
   return asHtml
     ? removeRefusal(refused.heading, refused.body, refused.status)
     : json({ error: outcome.reason }, refused.status);
@@ -3481,7 +3507,7 @@ async function showDeleteConfirmation(
 /**
  * 作品を削除する（`POST /api/works/delete`。#517 / M15-2 / 仕様 5.3 の #516 節）。
  *
- * # 形は {@link handleRemove} に揃える
+ * # 形は {@link handleUnpublish} に揃える
  *
  * 素の `<form method="post">` と `fetch` の両方を受け、`accept` で HTML と JSON を分ける。CSRF はセッション cookie の
  * `SameSite=Lax`（8.1）が受ける（`src/publish.ts` と同じ理由でトークンを足していない）。
@@ -3559,7 +3585,7 @@ function deleteRefused(
 /**
  * 通報を受け付ける（8.4 / #40）。
  *
- * **{@link handleRemove} と同じ形にしてある**（`accept` で HTML と JSON を分け、
+ * **{@link handleUnpublish} と同じ形にしてある**（`accept` で HTML と JSON を分け、
  * 素の `<form>` でも動く）。違うのは、**理由の自由記述を 1 つ運ぶ**ことだけである。
  *
  * **押した結果を必ず返す。** 断った理由（自分の作品・通報済み）を黙って握り潰すと、
@@ -3608,7 +3634,7 @@ async function handleReport(request: Request, env: Env): Promise<Response> {
 /**
  * 題名を変える（`POST /api/works/rename`。5.4 / #366）。
  *
- * **形は {@link handleRemove} / {@link handleReport} に揃えてある**（`accept` で HTML と
+ * **形は {@link handleUnpublish} / {@link handleReport} に揃えてある**（`accept` で HTML と
  * JSON を分け、素の `<form>` でも動く。CSRF はセッション cookie の `SameSite=Lax` が
  * 受ける）。**判定はすべて `renameGame` が持つ**——作者の一致も、いまの状態も、
  * 8.3 の検査も、ここに `if` を置かない。
@@ -3651,7 +3677,7 @@ async function handleRename(request: Request, env: Env): Promise<Response> {
   //
   // **`changed` を利用者へ出し分けない**（画面に出るのは結果の題名である）。JSON では
   // 返す——`fetch` から叩く側が「同じ題名だった」を区別できると、二度押しの扱いを
-  // 呼び出し側で決められる（{@link handleRemove} の `firstTime` と同じ扱い）。
+  // 呼び出し側で決められる（{@link handleUnpublish} の `firstTime` と同じ扱い）。
   return asHtml
     ? seeOther(workPagePath(target.gameId))
     : json({ renamed: true, title: outcome.title, changed: outcome.changed }, 200);
@@ -3674,7 +3700,7 @@ const RENAME_OUTCOME_REFUSALS: Readonly<
   removed: {
     status: 409,
     heading: '作品名を変えられません',
-    body: 'この作品は公開を取り下げています。取り下げた作品の名前は変えられません。',
+    body: 'この作品は公開を停止しています。公開を停止した作品の名前は変えられません。',
   },
   'not-ready': {
     status: 409,
@@ -3870,7 +3896,7 @@ const RETAG_OUTCOME_REFUSALS: Readonly<
   removed: {
     status: 409,
     heading: 'タグを付け直せません',
-    body: 'この作品は公開を取り下げています。取り下げた作品のタグは変えられません。',
+    body: 'この作品は公開を停止しています。公開を停止した作品のタグは変えられません。',
   },
   'not-published': {
     status: 409,
@@ -3967,7 +3993,7 @@ const DESCRIBE_OUTCOME_REFUSALS: Readonly<
   removed: {
     status: 409,
     heading: '作品の説明を変えられません',
-    body: 'この作品は公開を取り下げています。取り下げた作品の説明は変えられません。',
+    body: 'この作品は公開を停止しています。公開を停止した作品の説明は変えられません。',
   },
   'not-published': {
     status: 409,
@@ -4015,7 +4041,7 @@ const REPORT_REFUSALS: Readonly<Record<ReportRejection, { body: string; status: 
   'game-not-found': { body: 'その作品は見つかりませんでした。', status: 404 },
   // **理由を分けて返す。** 「できません」だけだと、押した人は何度も押す。
   'own-work': {
-    body: '自分の作品は通報できません。公開を取り下げたい場合は、作品ページの「公開を取り下げる」をお使いください。',
+    body: '自分の作品は通報できません。公開をやめたい場合は、作品ページの「公開をやめる」をお使いください。',
     status: 400,
   },
   'already-reported': { body: 'この作品はすでに通報済みです。', status: 409 },
@@ -4034,7 +4060,7 @@ type ReportTarget =
 /**
  * 通報の本文を読む。
  *
- * **`readRemoveTarget` と同じ規律である**（媒体型を絞り、大きさを縛り、id の綴りを見る）。
+ * **`readUnpublishTarget` と同じ規律である**（媒体型を絞り、大きさを縛り、id の綴りを見る）。
  * **理由は空でもよい**——ワンタップ通報（8.4）なので、理由を必須にすると 1 タップで
  * 終わらない。長さだけは `recordReport` が見る。
  *
@@ -4122,14 +4148,14 @@ const REMOVE_BODY_REFUSALS: Readonly<Record<RemoveRejection, { status: number; b
 };
 
 /**
- * 取り下げの結果ごとの、ステータスと文言。
+ * 公開をやめる操作の結果ごとの、ステータスと文言。
  *
  * **成功はここに無い**（POST-redirect-GET で応答の作り方そのものが違う。
  * `src/ogp-recapture.ts` の `OUTCOME_REFUSALS` と同じ形）。
  *
- * `not-found` に他人の作品も含める（`removeGame` が区別しない）。
+ * `not-found` に他人の作品も含める（`unpublishGame` が区別しない）。
  */
-const REMOVE_OUTCOME_REFUSALS: Readonly<
+const UNPUBLISH_OUTCOME_REFUSALS: Readonly<
   Record<'not-found' | 'not-published', { status: number; heading: string; body: string }>
 > = {
   'not-found': {
@@ -4139,8 +4165,8 @@ const REMOVE_OUTCOME_REFUSALS: Readonly<
   },
   'not-published': {
     status: 409,
-    heading: '取り下げられません',
-    body: 'この作品はまだ公開されていません。公開していない作品には、取り下げるものがありません。',
+    heading: '公開をやめられません',
+    body: 'この作品は公開されていません。公開していない作品には、やめるものがありません。',
   },
 };
 
@@ -4188,8 +4214,8 @@ type RemoveTarget =
  * @param request 受信したリクエスト
  * @returns 作品 id、または理由
  */
-async function readRemoveTarget(request: Request): Promise<RemoveTarget> {
-  return await readGameIdTarget(request, WORK_REMOVE_GAME_ID_FIELD);
+async function readUnpublishTarget(request: Request): Promise<RemoveTarget> {
+  return await readGameIdTarget(request, WORK_UNPUBLISH_GAME_ID_FIELD);
 }
 
 /**
@@ -4363,7 +4389,7 @@ export const workPageRoutes: readonly Route[] = [
   { method: 'GET', path: WORK_PAGE_PREFIX, match: 'prefix', handler: handleWorksPrefix },
   // **取り下げ（#35）は完全一致である。** `/api/works/remove` は `/works/` の
   // 前方一致に当たらない綴りにしてある（当たると作品ページの id として解釈される）。
-  { method: 'POST', path: WORK_REMOVE_PATH, handler: handleRemove },
+  { method: 'POST', path: WORK_UNPUBLISH_PATH, handler: handleUnpublish },
   // **削除（#517）も完全一致である**（取り下げと同じ規約。`/api/works/delete` は `/works/` の前方一致に当たらない）。
   { method: 'POST', path: WORK_DELETE_PATH, handler: handleDelete },
   { method: 'POST', path: WORK_REPORT_PATH, handler: handleReport },

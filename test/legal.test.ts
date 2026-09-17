@@ -559,10 +559,10 @@ describe('削除依頼のフォームの見た目（#473 / 仕様 2.5.4 / 2.5.5�
 });
 
 describe('作品の削除（#517）', () => {
-  it('規約の 4 章に、下書きと取り下げた作品は削除できることと、派生した作品には及ばないことを書く', async () => {
+  it('規約の 4 章に、下書きは削除できることと、派生した作品には及ばないことを書く', async () => {
     const { body } = await get(TERMS_PATH);
     const chapter4 = body.slice(body.indexOf('<h2>4. 改変と再配布の許諾</h2>'), body.indexOf('<h2>5. 生成物の正確性</h2>'));
-    expect(chapter4).toContain('公開していない作品と、公開を取り下げた作品を、');
+    expect(chapter4).toContain('公開していない作品（下書き）を、');
     expect(chapter4).toContain('作品ページから削除できます。');
     expect(chapter4).toContain('削除も、既にフォークされた作品には及びません。');
   });

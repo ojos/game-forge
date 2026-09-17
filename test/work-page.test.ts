@@ -20,8 +20,8 @@ import {
   WORK_DESCRIBE_ANCHOR,
   WORK_PAGE_PREFIX,
   WORK_RENAME_ANCHOR,
-  WORK_REMOVE_GAME_ID_FIELD,
-  WORK_REMOVE_PATH,
+  WORK_UNPUBLISH_GAME_ID_FIELD,
+  WORK_UNPUBLISH_PATH,
   workPagePath,
   workPageRoutes,
 } from '../src/work-page.js';
@@ -34,7 +34,6 @@ import {
   failGame,
   hashJobToken,
   publishGame,
-  removeGame,
   STALE_AFTER_SECONDS,
 } from '../src/games.js';
 import {
@@ -76,6 +75,7 @@ import { playEmbed } from '../src/work-play.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
+import { markGameRemoved } from './helpers/removed-work.js';
 
 /**
  * 1 作品あたりの回数の上限を言う文の形（#515 でなくした）。
@@ -1021,7 +1021,7 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
   });
 });
 
-describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
+describe('公開をやめて下書きへ戻す（5.4 / 確定35 / #637。もとは #35 の tombstone 化）', () => {
   /**
    * 公開済みの作品を 1 件用意する。
    *
@@ -1061,10 +1061,10 @@ describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
     }
     return await dispatch(
       workPageRoutes,
-      new Request(`${APP_ORIGIN}${WORK_REMOVE_PATH}`, {
+      new Request(`${APP_ORIGIN}${WORK_UNPUBLISH_PATH}`, {
         method: 'POST',
         headers,
-        body: new URLSearchParams({ [WORK_REMOVE_GAME_ID_FIELD]: gameId }).toString(),
+        body: new URLSearchParams({ [WORK_UNPUBLISH_GAME_ID_FIELD]: gameId }).toString(),
       }),
       testEnv(),
     );
@@ -1075,19 +1075,19 @@ describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
     const stranger = await seedUser('rm-cta-stranger');
 
     const mine = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(mine).toContain(`action="${WORK_REMOVE_PATH}"`);
-    expect(mine).toContain(`<input type="hidden" name="${WORK_REMOVE_GAME_ID_FIELD}" value="${id}">`);
+    expect(mine).toContain(`action="${WORK_UNPUBLISH_PATH}"`);
+    expect(mine).toContain(`<input type="hidden" name="${WORK_UNPUBLISH_GAME_ID_FIELD}" value="${id}">`);
     // **連鎖しないことを押す前に書く**（5.3「連鎖削除は荒れるため採らない」）。
     expect(mine).toContain('そのまま公開されたままです');
 
     // 押しても 404 になる口を、他人へ出さない。
     const theirs = await (await open(workPagePath(id), await sessionCookie(stranger))).text();
-    expect(theirs).not.toContain(WORK_REMOVE_PATH);
+    expect(theirs).not.toContain(WORK_UNPUBLISH_PATH);
     const anon = await (await open(workPagePath(id))).text();
-    expect(anon).not.toContain(WORK_REMOVE_PATH);
+    expect(anon).not.toContain(WORK_UNPUBLISH_PATH);
   });
 
-  it('取り下げると作品ページへ戻り、子は published のまま残る（#35 の acceptance）', async () => {
+  it('公開をやめると作品ページへ戻り、下書きになる。子は published のまま残る（#35 / #637 の acceptance）', async () => {
     const parent = await seedPublishedWork('cascade');
     const child = await seedPublishedWork('cascade-child', parent.id);
 
@@ -1099,48 +1099,75 @@ describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
       .bind(parent.id, child.id)
       .all<{ id: string; status: string }>();
     const byId = new Map(rows.results.map((row) => [row.id, row.status]));
-    expect(byId.get(parent.id)).toBe('removed');
-    // **連鎖削除しない。**
+    // **`removed` にしない**（#637 / 確定35）。下書きなら「あなたの作品」から辿れる。
+    expect(byId.get(parent.id)).toBe('draft');
+    // **連鎖しない。**
     expect(byId.get(child.id)).toBe('published');
   });
 
-  it('子の作品ページに「削除済みの作品から派生」が出る（#35 の acceptance）', async () => {
+  it('下書きへ戻した作品のページに、公開の口とリフォージの口が戻る（#637 の acceptance）', async () => {
+    const { userId, id } = await seedPublishedWork('back-to-draft');
+    await postRemove(id, await sessionCookie(userId));
+
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    // **公開し直せる。**
+    expect(body).toContain('公開して共有');
+    // **リフォージも版の復元も、下書きと同じ条件で通る**（`src/revisions.ts` は `status = 'draft'` で引く）。
+    expect(body).toContain(REVISE_PATH);
+    // **公開をやめる口は、もう出ない**（公開中ではない）。
+    expect(body).not.toContain(`action="${WORK_UNPUBLISH_PATH}"`);
+  });
+
+  it('親が下書きへ戻ると、子は「まだ公開されていない作品から派生」になる（#35 / #637）', async () => {
     const parent = await seedPublishedWork('parent-line');
     const child = await seedPublishedWork('parent-line-child', parent.id);
 
-    // 取り下げる前は、親の題名がリンクとして出ている。
+    // 公開をやめる前は、親の題名がリンクとして出ている。
     const before = await (await open(workPagePath(child.id))).text();
     expect(before).toContain(`元ゲーム: <a href="${workPagePath(parent.id)}">`);
 
     await postRemove(parent.id, await sessionCookie(parent.userId));
 
     const after = await (await open(workPagePath(child.id))).text();
-    expect(after).toContain('元ゲーム: 削除済みの作品から派生');
-    // **題名は出さない**（プロンプト由来。取り下げは「もう見せない」という意思表示）。
+    // **「削除済み」ではない**（親は消えていない。`removed` は運営の措置と退会の状態である）。
+    expect(after).toContain('元ゲーム: まだ公開されていない作品から派生');
+    // **題名は出さない**（プロンプト由来。公開していない作品の題名は本人にしか出さない）。
     expect(after).not.toContain(`<a href="${workPagePath(parent.id)}">`);
   });
 
-  it('取り下げた作品のページは、誰にでも取り下げられたと言う', async () => {
+  it('親が tombstone（運営の措置）なら、子は「削除済みの作品から派生」のまま（#35 の acceptance）', async () => {
+    const parent = await seedPublishedWork('parent-line-removed');
+    const child = await seedPublishedWork('parent-line-removed-child', parent.id);
+
+    await markGameRemoved(parent.id);
+
+    const after = await (await open(workPagePath(child.id))).text();
+    expect(after).toContain('元ゲーム: 削除済みの作品から派生');
+  });
+
+  it('tombstone のページは、誰にでも公開されていないと言う', async () => {
     const { userId, id } = await seedPublishedWork('tombstone-page');
-    await postRemove(id, await sessionCookie(userId));
+    await markGameRemoved(id);
 
     const anon = await (await open(workPagePath(id))).text();
     // **404 にしない。** 子のページが「削除済みの作品から派生」と言っている以上、
-    // 取り下げられたことは既に公開の事実である。
-    expect(anon).toContain('この作品は取り下げられました');
+    // 公開が止まっていることは既に公開の事実である。
+    expect(anon).toContain('この作品は公開されていません');
     // **段落を閉じる。** ブラウザの自動補正に寄りかからない（他の枝はどれも閉じている）。
-    expect(anon).toContain('<p>作者がこの作品の公開を取り下げました。</p>');
+    expect(anon).toContain('<p>この作品は公開を停止しています。</p>');
     // 題名（プロンプト由来）は出さない。
     expect(anon).not.toContain('作品 tombstone-page');
 
     const owner = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(owner).toContain('この作品は取り下げられました');
+    expect(owner).toContain('この作品は公開されていません');
     expect(owner).toContain('そのまま公開されたままです');
+    // **「あなたが取り下げました」と言わない**（#637。この状態を作るのは作者ではない）。
+    expect(owner).not.toContain('あなたが取り下げました');
   });
 
-  it('取り下げた作品に、公開・改造・撮り直しの口を出さない', async () => {
+  it('tombstone に、公開・改造・撮り直しの口を出さない', async () => {
     const { userId, id } = await seedPublishedWork('no-cta');
-    await postRemove(id, await sessionCookie(userId));
+    await markGameRemoved(id);
 
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     // **押せば `publishGame` が `removed` で断る操作を、押せる形で出さない。**
@@ -1149,11 +1176,11 @@ describe('親の tombstone 化（5.3 / M5-4 / #35）', () => {
     expect(body).not.toContain(REVISE_PATH);
     // `/p/` は removed を返さないので、試遊 URL も出さない。
     expect(body).not.toContain('/p/');
-    // 取り下げの口も、もう出ない。
-    expect(body).not.toContain(WORK_REMOVE_PATH);
+    // 公開をやめる口も、もう出ない。
+    expect(body).not.toContain(WORK_UNPUBLISH_PATH);
   });
 
-  it('他人は取り下げられない（作品は無傷のまま）', async () => {
+  it('他人は公開をやめられない（作品は無傷のまま）', async () => {
     const { id } = await seedPublishedWork('other');
     const stranger = await seedUser('rm-other-stranger');
 
@@ -1241,7 +1268,7 @@ const baseView: WorkPageView = {
   // タグ（#376）。**既定はタグ無し・口を出さない**（出し分けそのものは `test/work-tags.test.ts` が見る）。
   tags: [],
   retaggableId: null,
-  removableId: null,
+  unpublishableId: null,
   deletableId: null,
   likeCount: 0,
   // プレイ数（#377）。**既定は数を出さず、数えるスクリプトも置かない。**
@@ -1885,8 +1912,7 @@ describe('いいねの数とボタン（5.8 / M9-8 / #340）', () => {
     const fan = await seedUser('like-removed-fan');
     expect(await changeLike(env, 'like', fan, id, Math.floor(Date.now() / 1000))).toBe('liked');
     await setStoredLikeCount(id, 7);
-    const outcome = await removeGame(env, id, userId);
-    expect(outcome.ok).toBe(true);
+    await markGameRemoved(id);
 
     const { body, touched } = await openRecording(workPagePath(id), await sessionCookie(fan));
 
@@ -2096,7 +2122,7 @@ describe('プレイ数（#377 / 仕様 2.3.6）', () => {
 
     const { id, userId } = await seedPublished('removed');
     await env.DB.prepare('update games set play_count = 9 where id = ?').bind(id).run();
-    expect((await removeGame(env, id, userId)).ok).toBe(true);
+    await markGameRemoved(id);
     const removedBody = await (await open(workPagePath(id))).text();
     expect(removedBody).not.toContain(PLAY_PATH);
     expect(removedBody).not.toContain('gf-plays');
@@ -2218,7 +2244,7 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
     expect(draftBody).not.toContain(workSourcePath(draft.id));
 
     const { id, userId } = await seedPublished('removed');
-    expect((await removeGame(env, id, userId)).ok).toBe(true);
+    await markGameRemoved(id);
     const removedBody = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     expect(panelOf(removedBody)).toBeNull();
     expect(removedBody).not.toContain(workSourcePath(id));
@@ -2358,7 +2384,7 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     }
     // 作者本人には設定の口（副のボタン）が並ぶが、主は増えない。
     expect(owner).toContain('<section class="gf-block gf-block-rows gf-work-settings" aria-label="作品の設定">');
-    expect(owner).toContain('<button type="submit" class="gf-button gf-button-secondary">公開を取り下げる</button>');
+    expect(owner).toContain('<button type="submit" class="gf-button gf-button-secondary">公開をやめて下書きに戻す</button>');
     expect(bareButtons(anonymous)).toEqual([]);
   });
 
@@ -2383,7 +2409,7 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
       renamableId: id,
       describableId: id,
       retaggableId: id,
-      removableId: id,
+      unpublishableId: id,
       forks: {
         total: 21,
         items: [{ id, title: '子', publishedAt: 1 }],
@@ -2398,13 +2424,13 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     // いいね・もっと見る・前へ・ソース・通報は小さい副のボタン。設定の 5 つは副のボタン。
     expect(body).toContain(`<button type="submit" class="gf-button gf-button-secondary gf-button-sm">いいね</button>`);
     expect(body).toContain('<button type="submit" class="gf-button gf-button-secondary gf-button-sm">通報する</button>');
-    for (const label of ['スクリーンショットを撮り直す', 'この名前にする', 'この説明にする', 'このタグにする', '公開を取り下げる']) {
+    for (const label of ['スクリーンショットを撮り直す', 'この名前にする', 'この説明にする', 'このタグにする', '公開をやめて下書きに戻す']) {
       expect(body, label).toContain(`<button type="submit" class="gf-button gf-button-secondary">${label}</button>`);
     }
-    // 設定は 1 つのブロックの行で、並びは #474 の前と同じ（撮り直し → 作品名 → 説明 → タグ → 取り下げ）。
+    // 設定は 1 つのブロックの行で、並びは #474 の前と同じ（撮り直し → 作品名 → 説明 → タグ → 公開をやめる）。
     const settings = body.slice(body.indexOf('gf-work-settings'));
     // **見出しの属性を綴りに含めない**——改名の見出しは飛び先の `id` と `tabindex` を持つ（#600）。
-    const order = ['スクリーンショット', '作品名を変える', '作品の説明を書く', 'タグを付け直す', '公開の取り下げ'].map((heading) =>
+    const order = ['スクリーンショット', '作品名を変える', '作品の説明を書く', 'タグを付け直す', '公開をやめる'].map((heading) =>
       settings.indexOf(`>${heading}</h3>`),
     );
     expect(order.every((at) => at > 0)).toBe(true);
@@ -2451,7 +2477,7 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     const failed = renderWorkPage({ ...baseView, state: 'failed' });
     expect(failed).toContain('<div class="gf-block gf-work-state">\n<h2>生成できませんでした</h2>');
     const removed = renderWorkPage({ ...baseView, removed: true });
-    expect(removed).toContain('<div class="gf-block gf-work-state">\n<h2>この作品は取り下げられました</h2>');
+    expect(removed).toContain('<div class="gf-block gf-work-state">\n<h2>この作品は公開されていません</h2>');
 
     const missing = await (await open(workPagePath('00000000-0000-4000-8000-00000000dead'))).text();
     expect(missing).toContain('<h1>作品が見つかりません</h1>\n<p class="gf-block">URL が正しいかご確認ください。</p>');
@@ -2851,7 +2877,7 @@ describe('作品ページの出力に旧い呼び名（改造・推敲・手直�
   const cases: readonly (readonly [string, WorkPageView])[] = [
     ['公開済み（未ログイン。フォークの導線は待機リストへ）', published],
     ['公開済み（ログイン済み。フォークの入力）', { ...published, signedIn: true, dailyRemaining: DAILY_QUOTA_PER_USER }],
-    ['公開済み（作者本人。取り下げの口）', { ...published, owner: true, signedIn: true, dailyRemaining: 1, removableId: id }],
+    ['公開済み（作者本人。取り下げの口）', { ...published, owner: true, signedIn: true, dailyRemaining: 1, unpublishableId: id }],
     ['取り下げた作品（作者本人）', { ...baseView, owner: true, removed: true, title: 'よけて跳ねる箱' }],
     ['未公開（作者の画面。リフォージの入力）', draftOwner],
     ['未公開（リフォージの実行中）', { ...draftOwner, revisable: false, revisionRunning: true }],
@@ -3012,9 +3038,9 @@ describe('完成画面の題名の直下から改名へ飛ぶ（#600 / M16-2 / �
     // null になり、画面も `readySection` ではなくなる。**どちらか片方を変えた日に気づけるようにする。**
     const { userId: removedUser, id: removed } = await seedReadyDraft('removed');
     expect((await publishGame(env, removed, removedUser)).ok).toBe(true);
-    expect((await removeGame(env, removed, removedUser)).ok).toBe(true);
+    await markGameRemoved(removed);
     const removedBody = await (await open(workPagePath(removed), await sessionCookie(removedUser))).text();
-    expect(removedBody).toContain('この作品は取り下げられました');
+    expect(removedBody).toContain('この作品は公開されていません');
     expect(removedBody).not.toContain('gf-work-rename-jump');
     expect(removedBody).not.toContain(`href="#${WORK_RENAME_ANCHOR}"`);
   });

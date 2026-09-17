@@ -48,7 +48,7 @@ export const PROMPT_VERSION = 2;
 export const PROMPT_VERSION_HISTORY: readonly { readonly version: number; readonly sha256: string }[] =
   [
     { version: 1, sha256: '9974bd1d83f7ef93445d6f5a795de572f160b4c1cdbb996696edd8a31b592ea6' },
-    { version: 2, sha256: '7f4490a30dda09bbebabc90dd48a3995415d021187196f5ac3ccb554c0c0d36c' },
+    { version: 2, sha256: '601526211a92e6d7dcee1b4d1b85946288ca20dcdcd3263c22cfc77bc70c71e7' },
   ];
 
 /**

@@ -245,6 +245,15 @@ export const WORK_RENAME_PATH = '/api/works/rename';
  */
 export const WORK_RENAME_ANCHOR = 'work-rename';
 
+/**
+ * 説明を書くフォームへ着地するための `id`（#616 / 仕様 5.4）。
+ *
+ * **綴りを 1 か所に持つ**（{@link WORK_RENAME_ANCHOR} と同じ理由）。飛ばす側（{@link describeInviteLine}）と
+ * 着地する側（{@link describeSection}）へ書き写すと、片方だけを直した日に**押しても何も起きないリンク**になる。
+ * その一致は `test/work-page.test.ts` が見る。
+ */
+export const WORK_DESCRIBE_ANCHOR = 'work-describe';
+
 /** 改名の対象を指す項目名（フォームの `name` と JSON の鍵の両方）。 */
 export const WORK_RENAME_GAME_ID_FIELD = 'game_id';
 
@@ -1618,7 +1627,7 @@ function describeSection(view: WorkPageView): string {
   // **説明は UGC である。** `<textarea>` の中身へ入れるので `escapeHtml` を通す
   // （`</textarea>` を書かれても要素から抜け出せない）。
   return `
-<h3>作品の説明を書く</h3>
+<h3 id="${WORK_DESCRIBE_ANCHOR}" tabindex="-1">作品の説明を書く</h3>
 <p>遊び方や、使った素材・原作のクレジットなどを書けます。<strong>作品ページを開いた人なら誰でも読めます。</strong>
    ${MAX_DESCRIPTION_LENGTH} 文字まで。改行はそのまま出ます（リンクや太字などの書式は使えません）。
    変更は ${DESCRIPTION_CHANGE_INTERVAL_SECONDS} 秒に 1 回までです。</p>
@@ -2087,7 +2096,7 @@ function publishedSection(view: WorkPageView): string {
   // **#474 で 1 つのブロックの行にした**（{@link settingsBlock}。並びは前と同じ）。
   return `<h2>公開しています</h2>
 ${loadingScreen(view)}${splitWithDetails(
-    `${keyLegendSection(view)}${likeSection(view)}${tagsSection(view)}${descriptionSection(view)}${share}
+    `${keyLegendSection(view)}${likeSection(view)}${tagsSection(view)}${descriptionSection(view)}${describeInviteLine(view)}${share}
 ${forkList(view.forks)}`,
     view,
   )}${settingsBlock([
@@ -2287,6 +2296,43 @@ function retagSection(view: WorkPageView): string {
 ${tagChoices('retag-tag', knownWorkTags(view.tags).map((tag) => tag.id))}
   <button type="submit" class="${SECONDARY_BUTTON}">このタグにする</button>
 </form>`;
+}
+
+/**
+ * 説明がまだ無いことを作者へ伝え、書く口へ飛ばす 1 行（仕様 5.4 / M16-3 / #616）。**作者にだけ出す。**
+ *
+ * # なぜ要るのか
+ *
+ * **書ける場所はあるのに、書けることに気づく契機が無かった。** 説明は公開後にしか書けず
+ * （`src/games.ts` の `describeGame`。5.4 の 1 タップの導線を変えないため）、フォーム（{@link describeSection}）は
+ * 設定のブロックの中にある。しかも {@link descriptionSection} は**空なら誰にも何も出さない**（#388 の判断）。
+ * その結果、**公開した瞬間は必ず説明が空**のまま一覧と OGP に出るのに、**作者にもそれが見えない。**
+ *
+ * # 公開の戻り先に印を付けない
+ *
+ * 「公開直後の 1 回だけ」にすると、公開の 303（`src/publish.ts`）の戻り先へクエリが要る。**その URL を
+ * そのままコピーした人が、クエリ付きを共有する**（2026-09-17 の利用者の決定）。**説明が空のあいだ出し続ける**
+ * ほうが、印も新しい状態も持たずに済み、公開直後に見逃しても次に開いたときに気づける。
+ *
+ * # 出す条件は 2 つだけ
+ *
+ * 門番は {@link WorkPageView.describableId}（本人・公開済み・完成済み）と、**説明が空であること**である。
+ * **画面側で `owner && …` を組み立てない**（{@link renameSection} と同じ方針）。書けば消える。
+ *
+ * # JavaScript を要求しない
+ *
+ * 素のページ内アンカーである（{@link renameJumpLine} と同じ形）。着地する `<h3>` は `tabindex="-1"` を
+ * 持つので、キーボードの焦点もそこへ移る。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（作者でない・公開していない・説明があるなら空文字）
+ */
+function describeInviteLine(view: WorkPageView): string {
+  if (view.describableId === null || (view.description !== null && view.description !== '')) {
+    return '';
+  }
+  return `
+<p class="gf-work-describe-invite">この作品にはまだ説明がありません。遊び方や、使った素材・原作のクレジットを書けます。<a href="#${WORK_DESCRIBE_ANCHOR}">作品の説明を書く</a></p>`;
 }
 
 /**

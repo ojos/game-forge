@@ -18,6 +18,19 @@
 #   COOKIE_VALUE        `__Host-gf_session` の値
 #   GAME_ID             仕込んだ draft の作品の id（`/works/` の続きに使う）
 #   PUBLISHED_GAME_ID   仕込んだ公開済みの作品の id（カードが並ぶ画面と、`/source/` の続きのため）
+#
+# **作品には、読むキーの行（`source_input_keys`）も入れる**（#599 / 仕様 3.9.11）。
+# 入れないと、作品ページのデスクトップの操作の案内（`.gf-key-legend`）が 1 度も描かれず、
+# **幅の検査がその 1 行を見ないまま緑になる。** 集合は 9 つ（方向 4・Space・Z・X・Esc と、
+# 文字を縮める `PrintScreen`）にしてあり、390px で札が折り返す形を測れる。
+#
+# **下書きの作品にも同じソースキーを持たせる。** `dev_fixture_paths` が作品ページに使うのは
+# `GAME_ID`（下書き）のほうで、キーの行は `games.source_key` で結ぶ——公開済みの側だけに
+# 入れても、**開かれる画面には案内が出ない。** 成果物が作品をまたいで共有されることは
+# 確定26 が定めており、同じソースを 2 つの作品が指すのは平常の形である。
+#
+# **`scripts/check-sandbox-browser.sh` には影響しない**——あちらは自前のソースキーで
+# 作品とキーの行を仕込む（同ファイルの「同じソースだと層 7 の作品にもパッドが出て」）。
 #   USER_ID             仕込んだ利用者の id。**`is_admin = 1` を立ててある**
 #                       （admin の画面を 404 でなく本体で開くため。#398）。**ハンドル名 `$HANDLE` を決めてある**（#381）
 #   HANDLE              仕込んだ利用者のハンドル名（`/@` の続きに使う。#381。作品を持つ作者ページの本体はこの綴りで測る）
@@ -163,20 +176,24 @@ dev_fixture_up() {
   BUCKET_NAME="$(sed -nE 's/^[[:space:]]*bucket_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' wrangler.toml | head -1)"
   [[ -n "$BUCKET_NAME" ]] || fail "wrangler.toml から R2 の bucket_name を読めませんでした。"
 
-  note "seeding an admin user, three games (draft + published + queued), a report, a history row and a takedown request"
+  note "seeding an admin user, three games (draft + published + queued), the keys those games read, a report, a history row and a takedown request"
   npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     insert into users (id, google_sub, email, display_name, created_at, bio, profile_links)
       values ('$USER_ID', 'sub-$USER_ID', '$USER_ID@example.invalid', '幅の検査', 1,
               '幅の検査の自己紹介です。外部リンクは空白を持たない長い URL にしてあり、390px の版面で折り返すことを測ります。',
               '[\"https://example.com/width-check/a-very-long-path-without-any-spaces-that-must-wrap-at-390px-0123456789\"]');
-    insert into games (id, author_id, status, title, go_version, created_at, generation_state)
-      values ('$GAME_ID', '$USER_ID', 'draft', '幅の検査の作品', '', 1, 'ready');
+    insert into games (id, author_id, status, title, go_version, created_at, generation_state, source_key)
+      values ('$GAME_ID', '$USER_ID', 'draft', '幅の検査の作品', '', 1, 'ready', '$SOURCE_KEY');
     insert into games (id, author_id, status, title, go_version, created_at, published_at,
                        generation_state, preview_key, like_count, play_count, tag1, tag2, tag3,
                        source_key, wasm_key)
       values ('$PUBLISHED_GAME_ID', '$USER_ID', 'published', '幅の検査の公開作品', '', 1, 1,
               'ready', 'width-check-preview', 3, 123456, 'puzzle', 'race-sports', 'rhythm-sound',
               '$SOURCE_KEY', '$WASM_KEY');
+    insert into source_input_keys (source_key, codes, rule_version, extracted_at)
+      values ('$SOURCE_KEY',
+              '[\"ArrowLeft\",\"ArrowRight\",\"ArrowUp\",\"ArrowDown\",\"Space\",\"KeyZ\",\"KeyX\",\"Escape\",\"PrintScreen\"]',
+              1, 1);
     insert into build_cache (source_sha256, go_version, source_key, wasm_key, wasm_bytes, wasm_sha256,
                              compressed_bytes, compressed_sha256, content_encoding, created_at)
       values ('$SOURCE_SHA', 'go1.26.5', '$SOURCE_KEY', '$WASM_KEY', 11404411, '$SOURCE_SHA',

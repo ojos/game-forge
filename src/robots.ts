@@ -53,6 +53,7 @@ import { ACCOUNT_PATH } from './account-paths.js';
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';
 import { GENERATE_PAGE_PATH, INVITES_PATH } from './paths.js';
 import type { Route } from './routes.js';
+import { SITEMAP_PATH } from './sitemap.js';
 import { MY_WORKS_PATH } from './works-paths.js';
 
 /** `robots.txt` の綴り。**3 ホストで同じ**（RFC 9309 が位置を定めている）。 */
@@ -192,9 +193,13 @@ export function robotsResponse(body: string): Response {
  * グループを並べる。**クローラは自分に最も一致するグループ 1 つにだけ従う**ので、
  * `GPTBot` は `*` のグループを読まない（だからこそ、そちらは `Disallow: /` で足りる）。
  *
+ * **`Sitemap:` は絶対 URL でなければならない**（サイトマップの仕様）。ここはホストを知らないので、
+ * 要求の URL から組んで渡してもらう（#595）。**グループに属さない行**なので、どのクローラも読む。
+ *
+ * @param sitemapUrl サイトマップの絶対 URL
  * @returns `robots.txt` の中身
  */
-export function renderAppRobotsTxt(): string {
+export function renderAppRobotsTxt(sitemapUrl: string): string {
   const disallow = APP_DISALLOW_PATHS.map((path) => `Disallow: ${path}`).join('\n');
   const training = AI_TRAINING_CRAWLERS.map((agent) => `User-agent: ${agent}\nDisallow: /`).join('\n\n');
   return `# Game Forge
@@ -204,6 +209,8 @@ export function renderAppRobotsTxt(): string {
 #
 # Content-Signal は Cloudflare が 2025-09-24 に公開した記法で、IETF の AIPREF で
 # 標準化が進行中です。記法が変わったら追随します（src/robots.ts）。
+
+Sitemap: ${sitemapUrl}
 
 User-agent: *
 Content-Signal: ${CONTENT_SIGNAL}
@@ -240,7 +247,7 @@ export const appRobotsRoutes: readonly Route[] = [
   {
     method: 'GET',
     path: ROBOTS_PATH,
-    handler: () => robotsResponse(renderAppRobotsTxt()),
+    handler: (request) => robotsResponse(renderAppRobotsTxt(new URL(SITEMAP_PATH, request.url).toString())),
   },
 ];
 

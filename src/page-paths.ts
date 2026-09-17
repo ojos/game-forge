@@ -40,6 +40,7 @@
  * 127.0.0.1 を返す）。
  */
 import { ROBOTS_PATH } from './robots.js';
+import { SITEMAP_PATH } from './sitemap.js';
 import type { Route } from './routes.js';
 
 /**
@@ -53,6 +54,7 @@ export const NON_PAGE_PATHS: readonly string[] = [
   '/auth/google/callback', // 同上（戻り先）
   '/ogp/', // OGP 画像そのものを配る（`src/ogp.ts` の OGP_IMAGE_PREFIX）
   ROBOTS_PATH, // クローラへの意思表示（#594）。text/plain であって画面ではない
+  SITEMAP_PATH, // 載せてよい URL の在処（#595）。XML であって画面ではない
 ];
 
 /**

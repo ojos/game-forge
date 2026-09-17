@@ -832,6 +832,55 @@ export interface SiteHeadOptions {
 }
 
 /**
+ * 正規の URL（`<link rel="canonical">`）を組み立てる（#595）。
+ *
+ * # 何のために出すか
+ *
+ * **同じ中身が複数の URL で出ている**ことを、こちらから伝える。公開一覧は
+ * `sort` / `tag` / `page` / `q` の組み合わせでいくつでも URL を作れる（`src/works-list.ts`）ので、
+ * 何も言わないとクローラはそれぞれを別の頁として扱う。
+ *
+ * # なぜ相対 URL か
+ *
+ * **絶対 URL にはホストが要り、ここはホストを知らない。** `siteHead` は `env` を受け取らず、
+ * 受け取る形へ変えると全画面の呼び出しが変わる。`<link rel="canonical">` は相対 URL でも
+ * 有効で、読む側が文書の URL を基準に解決する。
+ *
+ * **クエリを落とすのが目的なので、相対で足りる。** ホストを跨いだ正規化（例: sandbox の URL を
+ * app の作品ページへ寄せる）はここでは行わない——そちらは `X-Robots-Tag` と `og:url` が持つ
+ * （`src/robots.ts` / `src/work-page.ts`）。
+ *
+ * # `noindex` の画面には出さない（**この順序が要る**）
+ *
+ * **索引に載せない画面に、正規の URL を告げる相手はいない。** それだけなら省略してよい程度の
+ * 話だが、**出すと実害がある。**
+ *
+ * `viewer.path` は**要求されたパスである**。`noindex` の画面には**存在しないものを指した要求**が
+ * 着く——`/users/<知らない id>` も `/users/a/b` も、同じ「作者が見つかりません」を返す。
+ * ここで要求されたパスを本文へ書くと、**その 2 つの 404 が本文の違いで区別できるようになる。**
+ * `test/users-page.test.ts` の「404 の本文で理由を区別しない」（#330 の acceptance）が
+ * 守っているのは、まさにこの性質である。**要求を本文へ反射させない。**
+ *
+ * 索引に載る画面（`noindex` でない画面）のパスは、経路表に実在する綴りか、D1 に実在する
+ * 作品・作者の id だけである。
+ *
+ * # `viewer` を渡さない画面には出さない
+ *
+ * `viewer` が無いのは画面ではない応答（エラーなど）である。**知らないパスを推測して
+ * 書かない**——誤った正規の URL は、何も書かないより悪い（別の頁の重複だと伝えることになる）。
+ *
+ * @param viewer いま見ている人と、いま開いている画面
+ * @param noindex 索引に載せない画面か
+ * @returns `<link rel="canonical">` の行（出さない場合は空文字）
+ */
+function canonicalLink(viewer: SiteViewer | undefined, noindex: boolean): string {
+  if (viewer === undefined || noindex) {
+    return '';
+  }
+  return `\n<link rel="canonical" href="${escapeHtml(viewer.path)}">`;
+}
+
+/**
  * 全画面に共通する文書の頭を組み立てる（#266）。
  *
  * ## なぜ 1 か所に置くか
@@ -866,7 +915,10 @@ export function siteHead(options: SiteHeadOptions): string {
   return `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="${APP_CSS_PATH}">${beforeTitle}${robots}
+<link rel="stylesheet" href="${APP_CSS_PATH}">${canonicalLink(
+    options.viewer,
+    options.noindex === true,
+  )}${beforeTitle}${robots}
 <title>${escapeHtml(options.title)}</title>${extraHead}${siteHeader(options.viewer, options.searchQuery)}${siteBreadcrumb(
     options.viewer,
     options.title,

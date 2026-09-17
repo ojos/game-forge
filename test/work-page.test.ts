@@ -2996,7 +2996,7 @@ describe('完成画面の題名の直下から改名へ飛ぶ（#600 / M16-2 / �
     expect(body.indexOf('gf-work-rename-jump')).toBeLessThan(body.indexOf('<div class="gf-block gf-work-state">'));
   });
 
-  it('改名できない相手には出さない（本人でない・生成中）', async () => {
+  it('改名できない相手には出さない（本人でない・生成中・取り下げ済み）', async () => {
     // 本人でない（未ログイン）。
     const { id } = await seedReadyDraft('not-owner');
     expect(await (await open(workPagePath(id))).text()).not.toContain('gf-work-rename-jump');
@@ -3005,5 +3005,15 @@ describe('完成画面の題名の直下から改名へ飛ぶ（#600 / M16-2 / �
     const { userId: runningUser, id: running } = await seedPending('rename-jump-running');
     const body = await (await open(workPagePath(running), await sessionCookie(runningUser))).text();
     expect(body).not.toContain('gf-work-rename-jump');
+
+    // **取り下げ済み**（PR #608 の Copilot の指摘）。いまは 2 つの理由で出ない——`renamableId` が
+    // null になり、画面も `readySection` ではなくなる。**どちらか片方を変えた日に気づけるようにする。**
+    const { userId: removedUser, id: removed } = await seedReadyDraft('removed');
+    expect((await publishGame(env, removed, removedUser)).ok).toBe(true);
+    expect((await removeGame(env, removed, removedUser)).ok).toBe(true);
+    const removedBody = await (await open(workPagePath(removed), await sessionCookie(removedUser))).text();
+    expect(removedBody).toContain('この作品は取り下げられました');
+    expect(removedBody).not.toContain('gf-work-rename-jump');
+    expect(removedBody).not.toContain(`href="#${WORK_RENAME_ANCHOR}"`);
   });
 });

@@ -18,6 +18,7 @@ import {
   storedLikeCount,
   storedWasmBytes,
   WORK_PAGE_PREFIX,
+  WORK_RENAME_ANCHOR,
   WORK_REMOVE_GAME_ID_FIELD,
   WORK_REMOVE_PATH,
   workPagePath,
@@ -2400,8 +2401,9 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     }
     // 設定は 1 つのブロックの行で、並びは #474 の前と同じ（撮り直し → 作品名 → 説明 → タグ → 取り下げ）。
     const settings = body.slice(body.indexOf('gf-work-settings'));
+    // **見出しの属性を綴りに含めない**——改名の見出しは飛び先の `id` と `tabindex` を持つ（#600）。
     const order = ['スクリーンショット', '作品名を変える', '作品の説明を書く', 'タグを付け直す', '公開の取り下げ'].map((heading) =>
-      settings.indexOf(`<h3>${heading}</h3>`),
+      settings.indexOf(`>${heading}</h3>`),
     );
     expect(order.every((at) => at > 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
@@ -2954,5 +2956,64 @@ describe('デスクトップの操作の案内（#599 / M16-1 / 仕様 3.9.11）
     const legendAt = body.indexOf('<p class="gf-key-legend">');
     expect(legendAt).toBeGreaterThan(body.indexOf('<noscript class="gf-play-noscript">'));
     expect(legendAt).toBeLessThan(body.indexOf('gf-work-settings'));
+  });
+});
+
+describe('完成画面の題名の直下から改名へ飛ぶ（#600 / M16-2 / 仕様 5.4）', () => {
+  /**
+   * 完成した未公開の作品を 1 つ作る。
+   *
+   * @param suffix 利用者と作品を分ける接尾辞
+   * @returns 作者の id と作品 id
+   */
+  async function seedReadyDraft(suffix: string): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(`rename-jump-${suffix}`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    await completeGame(env, id, fakeBuildOutcome({}));
+    return { userId, id };
+  }
+
+  it('作者の完成画面では、題名（h1）の直後にリンクが 1 つあり、飛び先の id が実在する', async () => {
+    const { userId, id } = await seedReadyDraft('owner');
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+
+    const jump = `<p class="gf-work-rename-jump"><a href="#${WORK_RENAME_ANCHOR}">作品名を変える</a></p>`;
+    expect(body).toContain(jump);
+    // **h1 の直後である**（間に何も挟まない）。h1 は共通の描画が出しているので、ここが題名の直下になる。
+    expect(body).toMatch(new RegExp(`</h1>\\n${jump.replace(/[.*+?^$()|[\]\\]/gu, '\\$&')}`, 'u'));
+    // 飛び先が実在する（押しても何も起きないリンクを出さない。4.4）。
+    expect(body).toContain(`<h3 id="${WORK_RENAME_ANCHOR}" tabindex="-1">作品名を変える</h3>`);
+    // リンクは 1 つだけ（設定のブロックの見出しと二重に出さない）。
+    expect(body.split(`href="#${WORK_RENAME_ANCHOR}"`).length - 1).toBe(1);
+  });
+
+  it('「公開して共有」のフォームと文言は 1 文字も変わっていない（5.4 の 1 タップを増やさない）', async () => {
+    const { userId, id } = await seedReadyDraft('publish-untouched');
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(body).toContain('>公開して共有</button>');
+    expect(body).toContain('遊んでみて、よければ公開できます。');
+    // **飛ぶ 1 行は状態のブロックの外（手前）にある。** 主のボタンの面へ別の導線を並べない（#474）。
+    expect(body.indexOf('gf-work-rename-jump')).toBeLessThan(body.indexOf('<div class="gf-block gf-work-state">'));
+  });
+
+  it('改名できない相手には出さない（本人でない・生成中・取り下げ済み）', async () => {
+    // 本人でない（未ログイン）。
+    const { id } = await seedReadyDraft('not-owner');
+    expect(await (await open(workPagePath(id))).text()).not.toContain('gf-work-rename-jump');
+
+    // 生成中（完成していない）。作者本人でも出さない。
+    const { userId: runningUser, id: running } = await seedPending('rename-jump-running');
+    const body = await (await open(workPagePath(running), await sessionCookie(runningUser))).text();
+    expect(body).not.toContain('gf-work-rename-jump');
+
+    // **取り下げ済み**（PR #608 の Copilot の指摘）。いまは 2 つの理由で出ない——`renamableId` が
+    // null になり、画面も `readySection` ではなくなる。**どちらか片方を変えた日に気づけるようにする。**
+    const { userId: removedUser, id: removed } = await seedReadyDraft('removed');
+    expect((await publishGame(env, removed, removedUser)).ok).toBe(true);
+    expect((await removeGame(env, removed, removedUser)).ok).toBe(true);
+    const removedBody = await (await open(workPagePath(removed), await sessionCookie(removedUser))).text();
+    expect(removedBody).toContain('この作品は取り下げられました');
+    expect(removedBody).not.toContain('gf-work-rename-jump');
+    expect(removedBody).not.toContain(`href="#${WORK_RENAME_ANCHOR}"`);
   });
 });

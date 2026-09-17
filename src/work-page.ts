@@ -236,6 +236,15 @@ export const WORK_REPORT_REASON_FIELD = 'reason';
  */
 export const WORK_RENAME_PATH = '/api/works/rename';
 
+/**
+ * 改名のフォームへ着地するための `id`（#600 / 仕様 5.4）。
+ *
+ * **綴りを 1 か所に持つ。** 飛ばす側（{@link renameJumpLine}）と着地する側（{@link renameSection}）へ
+ * 書き写すと、片方だけを直した日に**押しても何も起きないリンク**になる（4.4 が無くそうとしているもの）。
+ * その一致は `test/work-page.test.ts` が見る。
+ */
+export const WORK_RENAME_ANCHOR = 'work-rename';
+
 /** 改名の対象を指す項目名（フォームの `name` と JSON の鍵の両方）。 */
 export const WORK_RENAME_GAME_ID_FIELD = 'game_id';
 
@@ -1566,7 +1575,7 @@ function renameSection(view: WorkPageView): string {
   // **題名は UGC である。** `value` 属性へ入れるので `escapeHtml` を通す
   // （`src/html.ts` の `escapeHtml` は `"` と `'` まで置き換える）。
   return `
-<h3>作品名を変える</h3>
+<h3 id="${WORK_RENAME_ANCHOR}" tabindex="-1">作品名を変える</h3>
 <p>この作品の名前を変えられます。<strong>変わるのは名前だけで、作品の中身は変わりません。</strong>
    ${MAX_TITLE_LENGTH} 文字を超えた分は切り詰めます。</p>
 <form method="post" action="${WORK_RENAME_PATH}">
@@ -1700,6 +1709,44 @@ ${boxes.join('\n')}
 const DRAFT_PLAY_PANEL = '<p class="gf-shot gf-shot-pending">公開前の作品です。スクリーンショットは公開したときに撮ります。</p>';
 
 /**
+ * 完成画面の題名（h1）の直下に置く、改名のフォームへ飛ぶ 1 行（5.4 / M16-2 / #600）。
+ *
+ * # 直すのではなく、口を上げるだけである
+ *
+ * **フォームは動かさない**（{@link renameSection} は設定のブロックの中のまま）。5.4 は「公開の 1 タップを
+ * 増やさない」、#366 は「改名は推敲より後ろに置き、主導線を押し下げない」と決めており、**その決定は変えない。**
+ * ここが足すのは 1 行のリンクだけで、主のボタン（「公開して共有」）は 1 文字も変わらない。
+ *
+ * # なぜ題名の直下なのか
+ *
+ * **題名は h1 に出ているので「気づけない」のではなく、「その場で直せない」。** 完成画面の並びは
+ * `h1 → できました → 公開して共有 → 枠 → 推敲 → 版の一覧 → 作品名を変える` で、改名は 1 スクロール以上下にある。
+ * しかも既定の題名は、宣言が無ければ**プロンプトの 1 行目を 40 字で切ったもの**（`src/games.ts` の
+ * `draftTitleFromPrompt`）で、**公開は 1 タップで取り消せない**（5.4）。公開後も改名はできるが履歴が残り
+ * 審査状態が戻るので、**公開前に直させるほうが安い。**
+ *
+ * # 門番は改名の口と同じものを見る
+ *
+ * {@link WorkPageView.renamableId} と `title` の 2 つで、**{@link renameSection} と同じ条件である**
+ * ——飛び先が出ない画面へ飛ばすリンクを出さない（4.4 の「押しても動かないボタンを出さない」）。
+ *
+ * # JavaScript を要求しない
+ *
+ * 素のページ内アンカーである。着地する `<h3>` は `tabindex="-1"` を持つので、**キーボードの焦点も
+ * そこへ移る**（持たない要素は飛んでも焦点が動かず、次の Tab が画面の先頭へ戻る）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（改名できなければ空文字）
+ */
+function renameJumpLine(view: WorkPageView): string {
+  if (view.renamableId === null || view.title === null) {
+    return '';
+  }
+  return `<p class="gf-work-rename-jump"><a href="#${WORK_RENAME_ANCHOR}">作品名を変える</a></p>
+`;
+}
+
+/**
  * 完成したが、まだ公開していない作品の本文。
  *
  * **試遊 URL を出すのは作者本人にだけである。** `preview_key` は unlisted 配信の
@@ -1758,10 +1805,13 @@ ${publishForm(view.publishableId)}`;
   //
   // **埋め込み（#575）は状態のブロックと設定のブロックの間に置く**（上の説明）。デスクトップの iframe はここに入る。
   //
+  // **改名へ飛ぶ 1 行（#600）は、この節の返り値の先頭に置く**（{@link renameJumpLine}）。h1 は共通の描画が出すので、
+  // ここが題名の直下になる——**共通の描画には触らない。**
+  //
   // **操作の案内（#599 / 仕様 3.9.11）は、その埋め込みの直後・設定のブロックの手前に置く**（公開後と同じ「枠の直後」）。
   // **埋め込まないとき（試遊 URL を組み立てられない・リフォージの実行中）も出す**——案内が要るのは枠があるからではなく、
   // 作者がこれから試遊 URL を人に渡すからである。
-  return `${stateBlock(`<h2>できました</h2>
+  return `${renameJumpLine(view)}${stateBlock(`<h2>できました</h2>
 ${play}${publish}`)}${embed}${keyLegendSection(view)}${settingsBlock([reviseSection(view), revisionList(view), renameSection(view), deleteSection(view)])}`;
 }
 

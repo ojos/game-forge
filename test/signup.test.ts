@@ -732,6 +732,10 @@ describe('待機リストの no-JS 送信（#14 acceptance 2）', () => {
     // **戻り先の文言は、戻る画面の名前に合わせる**（#472）。
     expect(body).toContain(`<a href="${SIGNUP_PATH}">ログイン・登録の画面へ戻る</a>`);
     expect(body).not.toContain('登録画面へ戻る');
+    // **検索避けする**（#610）。操作を終えた人だけが見る画面で、検索から来てもその人は
+    // 待機リストに載っていない。**サイトマップから外すこととは別である**——載せなくても、
+    // クローラは辿り着けば索引に載せる。
+    expect(body).toContain('<meta name="robots" content="noindex">');
   });
 
   it('不正な入力でも JSON を返さず画面へ戻す', async () => {

@@ -336,7 +336,11 @@ ${siteFooter()}
  * @returns HTML
  */
 function takedownThanksPage(viewer: SiteViewer): string {
-  return `${siteHead({ title: '削除依頼を受け付けました - Game Forge', viewer })}
+  // **検索避けする**（#610）。**操作を終えた人だけが見る画面**で、検索から来ても
+  // その人には何も起きていない（依頼は送られていない）。サイトマップからも外してある
+  // （`src/sitemap.ts` の `SITEMAP_EXCLUDED_PATHS`）が、**載せないことと索引に載せないことは別**
+  // ——サイトマップに無くても、クローラは辿り着けば載せる。
+  return `${siteHead({ title: '削除依頼を受け付けました - Game Forge', noindex: true, viewer })}
 <h1>削除依頼を受け付けました</h1>
 <p>ご連絡ありがとうございます。内容を確認し、記録したうえで対応します。</p>
 <p><strong>確認には数日いただくことがあります。</strong>

@@ -911,10 +911,16 @@ async function serveOgpImage(request: Request, env: Env): Promise<Response> {
  *
  * **理由を分けない**（`src/work-page.ts` の `notFound` と同じ考え方）。
  *
+ * **索引拒否の見出しは、ここにも付ける**（#610）。404 が索引に載ることは無いので**実害は
+ * 無い**が、**同じ経路の応答で付いたり付かなかったりするほうが害になる**——`/g/` `/p/` と
+ * `/avatars/` は共通の見出しを通るので全応答に乗っており、**ここだけ乗っていなかった。**
+ * その食い違いが、実際に文書の誤りを生んでいる（PR #604 で「全応答に乗る」と書いてしまい、
+ * Copilot の指摘で本番の実測に当たって直した）。**揃えて、説明を要らなくする。**
+ *
  * @returns レスポンス
  */
 function notFound(): Response {
-  return json({ error: 'not found' }, 404);
+  return json({ error: 'not found' }, 404, { [ROBOTS_TAG_HEADER]: ROBOTS_TAG_NOINDEX });
 }
 
 /**

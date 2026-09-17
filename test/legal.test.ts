@@ -465,6 +465,17 @@ describe('受付の入口（非ログイン）', () => {
       .bind('td-form')
       .first<{ game_id: string }>();
     expect(row?.game_id).toBe('td-form');
+
+    // **完了画面は検索避けする**（#610）。操作を終えた人だけが見る画面で、検索から来ても
+    // その人の依頼は送られていない。**サイトマップから外すこととは別である**
+    // ——載せなくても、クローラは辿り着けば索引に載せる。
+    const thanks = await dispatch(
+      ROUTES,
+      new Request(`https://app.example.invalid${TAKEDOWN_THANKS_PATH}`),
+      env,
+    );
+    expect(thanks.status).toBe(200);
+    expect(await thanks.text()).toContain('<meta name="robots" content="noindex">');
   });
 
   it('前後の空白をならしてから記録する', async () => {

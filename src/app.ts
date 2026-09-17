@@ -19,6 +19,7 @@ import { forkRoutes } from './fork.js';
 import { generateRoutes } from './generate.js';
 import { generateCallbackRoutes } from './generate-callback.js';
 import { withSourceInputKeyRecording } from './source-input-keys-routes.js';
+import { withSourceQualityRecording } from './source-quality-routes.js';
 import { generatePageRoutes } from './generate-page.js';
 import { homeRoutes } from './home.js';
 import { legalRoutes } from './legal.js';
@@ -346,7 +347,9 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     ...likedWorksRoutes,
     // 完成のコールバックの後で、作品が読むキーを拾う（仕様 3.9.5 / #493）。**包むのはここだけ**
     // ——`src/generate-callback.ts` の中に書くとオーケストレータの束が変わる（`src/source-input-keys.ts`）。
-    ...withSourceInputKeyRecording(generateCallbackRoutes),
+    // 質の指標も同じ契機で測る（#605）。**包みを重ねる**——版も表も別々に動くので、
+    // 片方の例外がもう片方の記録を巻き込まないようにする（`src/source-quality-routes.ts`）。
+    ...withSourceQualityRecording(withSourceInputKeyRecording(generateCallbackRoutes)),
     ...generatePageRoutes,
     ...workPageRoutes,
     ...workSourceRoutes,

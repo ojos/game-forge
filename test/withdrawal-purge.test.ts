@@ -153,6 +153,12 @@ async function withdrawalRow(userId: string): Promise<Record<string, number | nu
  * 3245 件を並列で回し、テスト時間の合計が 342 秒になる——並列の混み具合で 10 倍は容易に届く。
  * 30 秒なら実測の約 60 倍で、**落ちたときは本当に遅くなったときである。**
  *
+ * # 測る区間は上限と揃える
+ *
+ * **上限が掛かるのはテスト全体（仕込み・確定・ループ・後段の検証）である。** ログの割合も同じ区間で出す——
+ * ループ区間だけを上限と比べると、**仕込みが遅くなった回に「上限の 2%」と出したまま時間切れになる**
+ * （PR #613 の Copilot の指摘）。ループの所要は「1 回あたり」を読むために別に残す。
+ *
  * # 全体の `testTimeout` にしない
  *
  * `vitest.config.ts` へ置くと、**本当に遅くなった別のテストも黙って通る。** 上限を伸ばすのは、
@@ -167,6 +173,12 @@ const SIXTY_WORKS_TIMEOUT_MS = 30_000;
 
 describe('作品 60 件を、途中で止めて再開しても全件消し終える', () => {
   it('アラームを繰り返すだけで完了の印まで立ち、1 回あたりの D1 の文が枠に収まる', async () => {
+    // **上限が掛かるのはテスト全体なので、測るのもテスト全体にする**（PR #613 の Copilot の指摘）。
+    // 下の `startedAt` はループ区間だけで、**60 件の仕込みと `withdrawUser` と後段の検証はその外**である。
+    // 実測でもテスト全体 837ms に対してループは 495ms——**4 割が測定の外**だった。ループだけを上限と
+    // 比べると、仕込みが遅くなった回に「上限の 2%」と出したまま時間切れになり、**近づいたことを
+    // 知らせるという目的を果たさない。**
+    const testStartedAt = Date.now();
     const userId = await seedUser();
     // **60 件**（#518 の acceptance 6）。1 件は公開中にして、取り下げの打ち直しも通す。
     const ids: string[] = [];
@@ -219,12 +231,15 @@ describe('作品 60 件を、途中で止めて再開しても全件消し終え
     // 上限へ近づいたことに気づけない**——気づく契機が「ある日 CI が赤くなる」しか無かった。
     // 毎回ログに出しておけば、割合が育っていることを赤くなる前に読める。
     // **所要に対する `expect` は足さない**——実時間を合否の条件にすると、別の形の不安定さを作る。
-    const usedPercent = Math.round((elapsedMs / SIXTY_WORKS_TIMEOUT_MS) * 100);
+    // **割合はテスト全体で出す**（仕込み・確定・ループ・後段の検証を含む）。ループの所要は
+    // 「1 回あたり」を読むために残す——**上限と比べる数字と、1 回の重さを見る数字は別物である。**
+    const testElapsedMs = Date.now() - testStartedAt;
+    const usedPercent = Math.round((testElapsedMs / SIXTY_WORKS_TIMEOUT_MS) * 100);
     console.info(
       `[withdrawal-purge] 60 件を ${rounds} 回で消し終えた。` +
         `1 回あたりの D1 の文は最大 ${maxMeasured}（見積もり ${maxStatements}）、` +
-        `全 ${rounds} 回の所要は ${elapsedMs} ms（1 回あたり約 ${Math.round(elapsedMs / rounds)} ms）。` +
-        `上限 ${SIXTY_WORKS_TIMEOUT_MS} ms に対して ${usedPercent}%。`,
+        `ループ ${rounds} 回の所要は ${elapsedMs} ms（1 回あたり約 ${Math.round(elapsedMs / rounds)} ms）。` +
+        `テスト全体では ${testElapsedMs} ms で、上限 ${SIXTY_WORKS_TIMEOUT_MS} ms に対して ${usedPercent}%。`,
     );
   }, SIXTY_WORKS_TIMEOUT_MS);
 });

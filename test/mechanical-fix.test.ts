@@ -27,6 +27,7 @@ import { applySchema } from './helpers/schema.js';
 import { captureLogs } from './helpers/capture-logs.js';
 import { isAllowedBuildDiagnosticsLine } from './helpers/build-diagnostics-log.js';
 import { isAllowedSourceInputKeysLine } from './helpers/source-input-keys-log.js';
+import { isAllowedSourceQualityLine } from './helpers/source-quality-log.js';
 
 /**
  * 未使用 import を 1 つだけ持つソース。
@@ -838,7 +839,7 @@ function isAllowedLogLine(line: string): boolean {
 
 /**
  * 生成経路に出てよい行か。**機械修正の行か、ビルド診断の行（#443）か、作品が読むキーを拾えなかった
- * 行（#493）のどれかの形に限る。**
+ * 行（#493）か、質の指標を測れなかった行（#605）のどれかの形に限る。**
  *
  * 生成経路を回して捕まえたログには、ビルドが落ちた試行ごとに `[build-diagnostics]` の行も
  * 並ぶ（`src/build-diagnostics.ts`）。**あちらの形も「許した形だけを通す」で見る**ので、
@@ -851,7 +852,12 @@ function isAllowedLogLine(line: string): boolean {
  * @returns 許された形なら true
  */
 function isAllowedGenerationLogLine(line: string): boolean {
-  return isAllowedLogLine(line) || isAllowedBuildDiagnosticsLine(line) || isAllowedSourceInputKeysLine(line);
+  return (
+    isAllowedLogLine(line) ||
+    isAllowedBuildDiagnosticsLine(line) ||
+    isAllowedSourceInputKeysLine(line) ||
+    isAllowedSourceQualityLine(line)
+  );
 }
 
 /**

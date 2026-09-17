@@ -422,6 +422,56 @@ export function scanImportSpecs(source: string): GoImportScan {
  * @param source Go のソースコード
  * @returns 文字列リテラルの一覧、または読み取れなかった理由
  */
+/**
+ * 字句を 1 つ読んだ結果（{@link scanTokens} が返す列の要素）。
+ *
+ * **`Token` をそのまま公開する。** 位置は BOM を落とした後のソース
+ * （{@link GoTokenScan.text}）に対する添字である。
+ */
+export type GoToken = Token;
+
+/** {@link scanTokens} の結果。 */
+export type GoTokenScan =
+  | {
+      readonly ok: true;
+      /** BOM を落としたソース。**位置はすべてこの文字列に対する添字である。** */
+      readonly text: string;
+      readonly tokens: readonly GoToken[];
+    }
+  | { readonly ok: false; readonly reason: ImportRejection };
+
+/**
+ * ソース全体を字句の列として読む（#605）。
+ *
+ * **空白とコメントは {@link skipTrivia} が落とすので、結果に現れない。** これが
+ * この関数を置く理由である——生成ソースから数を拾う処理（`src/source-quality.ts`）は
+ * 「コメントの中の `color.RGBA{...}` を数えない」ことを要求するが、**そのために
+ * 字句解析をもう 1 つ書くと、このモジュールと二重になる**（shared-ai-rules 12 章）。
+ *
+ * **閉じない文字列は {@link scanStringLiterals} と同じく落とす。** 読み取れていない
+ * ものを「見つからなかった」と返さない。
+ *
+ * @param source Go のソースコード
+ * @returns 字句の列、または読み取れなかった理由
+ */
+export function scanTokens(source: string): GoTokenScan {
+  const text = source.replace(/^\uFEFF/u, '');
+  const cursor = { index: 0 };
+  const tokens: Token[] = [];
+
+  for (;;) {
+    const token = nextToken(text, cursor);
+    if (token === null) {
+      return { ok: true, text, tokens };
+    }
+    if (token.kind === 'other' && isQuote(text[token.start])) {
+      // 閉じないリテラル（{@link scanStringLiterals} と同じ判定）。
+      return { ok: false, reason: 'unparsable' };
+    }
+    tokens.push(token);
+  }
+}
+
 export function scanStringLiterals(source: string): GoStringScan {
   const text = source.replace(/^\uFEFF/u, '');
   const cursor = { index: 0 };

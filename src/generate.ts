@@ -85,6 +85,7 @@ import { logBuildDiagnostics, summarizeBuildDiagnostics } from './build-diagnost
 import { MAX_MECHANICAL_FIX_PASSES, removeUnusedImports } from './mechanical-fix.js';
 import { startJobOnLambda } from './orchestrator/start-job.js';
 import { withInputKeyRecordingPipeline } from './source-input-keys.js';
+import { withQualityRecordingPipeline } from './source-quality-metrics.js';
 import {
   TIDY_ATTEMPTS,
   composeTidyPrompt,
@@ -634,7 +635,8 @@ export async function runJobInline(
   // **完成の直後に、作品が読むキーを拾う**（仕様 3.9.5 の「拾う箇所」の 2。#493）。
   // `runGenerationJob` の中に書かない——あちらはオーケストレータ Lambda の束に入り、書き足すと束が変わる
   // （`src/source-input-keys.ts` の冒頭）。**この関数は束が参照しないので、ここで段を包めばエッジだけで閉じる。**
-  await runGenerationJob(env, job, withInputKeyRecordingPipeline(pipeline));
+  // **質の指標も同じ位置で測る**（#605）。同じ理由で束の外に置く。
+  await runGenerationJob(env, job, withQualityRecordingPipeline(withInputKeyRecordingPipeline(pipeline)));
 }
 
 /**

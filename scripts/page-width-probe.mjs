@@ -221,6 +221,17 @@ try {
   // 返し、要求した URL との一致は判定側が見る（`scripts/check-page-width.sh`）。
   let status = null;
   let responseUrl = null;
+  // **主フレームの応答だけを拾う**（#622）。`Network.responseReceived` の `type === 'Document'` は
+  // **iframe の文書でも発火する。** 作品ページは公開後にゲームを iframe で埋め込むので（仕様 3.9.4）、
+  // 絞らないと**最後に届いたサンドボックスの `/g/<id>/` が最終 URL として残り**、判定側の
+  // 「要求したパスと最終パスが一致するか」が必ず外れる——**画面は正しく出ているのに
+  // 「別の画面へ移動しました」で落ちる。**
+  //
+  // **主フレームの id は `Page.getFrameTree` から、遷移の前に 1 度だけ取る。** `Page.navigate` の
+  // 戻りを使わないのは、あれが「遷移を始めた」時点で返るためで、**主文書の `Network.responseReceived`
+  // はそれより先に届きうる**——その窓では id がまだ無く、絞り込みが効かない。id は対象（タブ）の
+  // 中で遷移をまたいで変わらないので、先に取れば窓が生まれない。
+  const mainFrameId = (await cdp.send('Page.getFrameTree', {}, sessionId))?.frameTree?.frame?.id ?? null;
   // **`Page.navigate` は「遷移を始めた」時点で返る。** 直後に `readyState` を読むと、
   // まだ**前の文書**が載っていて `'complete'` を返す。1 周目で抜けて前のページを
   // 観測する（初回は about:blank）——第二意見の指摘で気づいた実在の競合である。
@@ -235,6 +246,10 @@ try {
       return;
     }
     if (frame.method === 'Network.responseReceived' && frame.params.type === 'Document') {
+      // **主フレーム以外（埋め込んだゲームの iframe）は見ない**（上の説明）。
+      if (mainFrameId !== null && frame.params.frameId !== mainFrameId) {
+        return;
+      }
       status = frame.params.response.status;
       responseUrl = frame.params.response.url;
     }

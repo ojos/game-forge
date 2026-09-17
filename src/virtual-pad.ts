@@ -298,14 +298,16 @@ function directionKeyOf(direction: PadDirection, code: string): PadDirectionKey 
 /**
  * ボタンを決める（表示規則の 2 と、#528 の規則 5）。
  *
- * 方向キー（矢印と WASD）をすべて除いた残りに、`directionButtons`（スティックで出すときに回した方向）を足し、
- * Space を含めば Enter を除き、左右の組は左だけを残し、並べる順の先頭から {@link PAD_BUTTON_LIMIT} 個を出す。
+ * **方向以外のキーを残す**（{@link buttonsOf} と {@link keyLegendOf} が共有する）。方向キー（矢印と WASD）を
+ * すべて除き、Space を含めば Enter を除き（3.9.1: Enter を読む 19 本すべてで同じ働き）、左右の組は左だけを残す。
+ *
+ * **2 か所へ書き写さない。** 片方だけに規則を足すと、パッドには出ないキーが案内には出る、といった食い違いが
+ * 黙って生まれる（`normalizeTitle` を生成側と改名側で共有しているのと同じ判断）。
  *
  * @param set 許可表で絞ったキーの集合
- * @param directionButtons ボタンに回す方向のキー
- * @returns ボタン
+ * @returns 方向以外のキー（並べ替えはしない）
  */
-function buttonsOf(set: ReadonlySet<string>, directionButtons: readonly PadDirectionKey[]): PadKey[] {
+function nonDirectionCodesOf(set: ReadonlySet<string>): Set<string> {
   const remaining = new Set(set);
   for (const direction of DIRECTION_ORDER) {
     remaining.delete(DIRECTIONS[direction].arrow);
@@ -319,9 +321,38 @@ function buttonsOf(set: ReadonlySet<string>, directionButtons: readonly PadDirec
       remaining.delete(`${modifier}Right`);
     }
   }
+  return remaining;
+}
+
+/**
+ * 並べる順に整える（{@link buttonsOf} と {@link keyLegendOf} が共有する）。
+ *
+ * **順は {@link buttonRank} が決め、同じ順位は `code` の昇順で割る。** 比較そのものをここへ閉じるのは、
+ * **上限を掛ける／掛けないの違いだけで 2 つの経路に分かれる**からである（パッドは {@link PAD_BUTTON_LIMIT} 個で
+ * 切り、案内は切らない）。比較を呼ぶ側へ書き写すと、**同じ順位の割り方を片方だけ変えた日に、パッドと案内が
+ * 違う並びを出す**（PR #606 の Copilot の指摘）。
+ *
+ * @param codes 並べ替えるキー
+ * @returns 並べる順のキー
+ */
+function orderedCodesOf(codes: Iterable<string>): string[] {
+  return [...codes].sort((a, b) => buttonRank(a) - buttonRank(b) || (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
+ * ボタンに出すキーを決める（仕様 3.9.6 の 2）。
+ *
+ * 方向キー（矢印と WASD）をすべて除いた残りに、`directionButtons`（スティックで出すときに回した方向）を足し、
+ * Space を含めば Enter を除き、左右の組は左だけを残し、並べる順の先頭から {@link PAD_BUTTON_LIMIT} 個を出す。
+ *
+ * @param set 許可表で絞ったキーの集合
+ * @param directionButtons ボタンに回す方向のキー
+ * @returns ボタン
+ */
+function buttonsOf(set: ReadonlySet<string>, directionButtons: readonly PadDirectionKey[]): PadKey[] {
+  const remaining = nonDirectionCodesOf(set);
   const directionByCode = new Map(directionButtons.map((key) => [key.code, key]));
-  return [...remaining, ...directionByCode.keys()]
-    .sort((a, b) => buttonRank(a) - buttonRank(b) || (a < b ? -1 : a > b ? 1 : 0))
+  return orderedCodesOf([...remaining, ...directionByCode.keys()])
     .slice(0, PAD_BUTTON_LIMIT)
     .map((code) => {
       const direction = directionByCode.get(code);
@@ -357,6 +388,61 @@ export function padLayoutOf(codes: readonly string[]): PadLayout {
     }
   }
   return { dpad, buttons: buttonsOf(set, []) };
+}
+
+/**
+ * デスクトップの操作の案内の中身（仕様 3.9.11 / M16-1 / #599）。
+ *
+ * **どちらも空なら、案内を出さない**（{@link PadLayout} の「出す条件」と同じ判断。「操作: なし」を全作品に並べない）。
+ */
+export interface KeyLegend {
+  /** 方向（十字と同じ順＝上・左・右・下）。 */
+  readonly directions: readonly PadDirectionKey[];
+  /** 方向以外のキー（並べる順。**上限は無い**）。 */
+  readonly buttons: readonly PadKey[];
+}
+
+/**
+ * キーの集合から、デスクトップの操作の案内の中身を決める（仕様 3.9.11 / M16-1 / #599）。
+ *
+ * # パッドの規則を流用し、2 か所だけ変える
+ *
+ * 方向の決め方（{@link directionCodesOf}）も、方向以外の絞り方（{@link nonDirectionCodesOf}）も、並べる順
+ * （{@link buttonRank}）も、文字（{@link padKeyLabel}）も**パッドと同じものを呼ぶ。** 違うのは次の 2 つだけである。
+ *
+ * - **{@link PAD_BUTTON_LIMIT} の 4 を掛けない。** あれは覆いの中の置き場所に収まる数で、**案内は 1 行の文字**である。
+ *   4 で切ると、5 つ目以降を読む作品で「押しても効かないキーがある」ではなく「**効くキーが案内に無い**」が起きる
+ * - **読み上げの名前を持たせない。** {@link padKeyAriaLabel} が要るのは押せる `<button>` の名前としてで、案内の札は
+ *   押せない（`<span class="gf-chip">`。仕様 2.5.5 の「チップ: 押せない札」）
+ *
+ * # 方向の順は十字と同じである
+ *
+ * {@link DIRECTION_ORDER}（上・左・右・下）をそのまま使う。**案内のための順を別に持たない**——十字を見ている
+ * タッチ端末の利用者と、案内を読むデスクトップの利用者が、違う並びの同じキーを見ることになる。
+ *
+ * # 許可表で絞ってから決める
+ *
+ * 呼ぶ側が絞っていなくても、許可表に無い値はどこにも出ない（{@link padLayoutOf} と同じ）。
+ *
+ * @param codes キーの集合
+ * @returns 案内の中身（**どちらも空なら案内を出さない**）
+ */
+export function keyLegendOf(codes: readonly string[]): KeyLegend {
+  const set = allowedSetOf(codes);
+  const codesByDirection = directionCodesOf(set);
+  const directions: PadDirectionKey[] = [];
+  for (const direction of DIRECTION_ORDER) {
+    const code = codesByDirection[direction];
+    if (code !== null) {
+      directions.push(directionKeyOf(direction, code));
+    }
+  }
+  const buttons = orderedCodesOf(nonDirectionCodesOf(set)).map((code) => ({
+    code,
+    label: padKeyLabel(code),
+    ariaLabel: null,
+  }));
+  return { directions, buttons };
 }
 
 /** 方向の操作の形（仕様 3.9.6 の #528）。 */

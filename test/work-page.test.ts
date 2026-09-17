@@ -2870,3 +2870,89 @@ describe('作品ページの出力に旧い呼び名（改造・推敲・手直�
     expect(renderWorkPage(published)).toContain('このゲームからのフォーク: 1 件');
   });
 });
+
+describe('デスクトップの操作の案内（#599 / M16-1 / 仕様 3.9.11）', () => {
+  /**
+   * 公開済みの作品を 1 つ作り、キーの集合を置く。
+   *
+   * @param suffix 利用者と作品を分ける接尾辞
+   * @param codes 置くキー（null なら `source_input_keys` の行を作らない）
+   * @returns 作者の id と作品 id
+   */
+  async function seedWithCodes(suffix: string, codes: readonly string[] | null): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(`legend-${suffix}`);
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    const sha = [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: sha }));
+    expect((await publishGame(env, id, userId)).ok).toBe(true);
+    if (codes !== null) {
+      await env.DB.prepare(
+        'insert or replace into source_input_keys (source_key, codes, rule_version, extracted_at) values (?, ?, 1, 1)',
+      )
+        .bind(`builds/${sha}/source.go`, JSON.stringify(codes))
+        .run();
+    }
+    return { userId, id };
+  }
+
+  /**
+   * 案内の札（`<span class="gf-chip">`）の文字を、出てくる順に取り出す。
+   *
+   * @param body 作品ページの HTML
+   * @returns 札の文字の並び（案内が無ければ空）
+   */
+  function legendLabelsOf(body: string): string[] {
+    const line = /<p class="gf-key-legend">.*?<\/p>/su.exec(body);
+    if (line === null) {
+      return [];
+    }
+    return [...line[0].matchAll(/<span class="gf-chip">([^<]*)<\/span>/gu)].map((found) => found[1]!);
+  }
+
+  it('キーを記録した公開済みの作品では、枠の直後・本文の列の先頭に案内が出る', async () => {
+    const { id } = await seedWithCodes('shown', ['ArrowLeft', 'ArrowRight', 'Space', 'KeyZ']);
+    const body = await (await open(workPagePath(id))).text();
+    // 方向（十字と同じ順）→ 残りのキー（Space → KeyZ）。文字は許可表から決まる固定の文字列である。
+    expect(legendLabelsOf(body)).toEqual(['←', '→', 'Space', 'Z']);
+    expect(body).toContain('<span class="gf-key-legend-label">操作</span>');
+    // **枠より後ろ**（4 要素と枠の間に割り込まない）で、**共有する URL より前**（本文の列の先頭）。
+    const legendAt = body.indexOf('<p class="gf-key-legend">');
+    expect(legendAt).toBeGreaterThan(body.indexOf('<noscript class="gf-play-noscript">'));
+    expect(legendAt).toBeLessThan(body.indexOf('<div class="gf-work-share">'));
+  });
+
+  it('キーの記録が無い作品では 1 バイトも出さない（「操作: なし」を並べない）', async () => {
+    const { id } = await seedWithCodes('no-row', null);
+    const body = await (await open(workPagePath(id))).text();
+    expect(body).not.toContain('gf-key-legend');
+  });
+
+  it('許可表の外の値・壊れた JSON だけの作品でも出さない（D1 の値を信じ切らない）', async () => {
+    const { id } = await seedWithCodes('unknown', ['NotAKey']);
+    expect(await (await open(workPagePath(id))).text()).not.toContain('gf-key-legend');
+
+    const { id: broken, userId } = await seedWithCodes('broken', []);
+    await env.DB.prepare('update source_input_keys set codes = ? where source_key = (select source_key from games where id = ?)')
+      .bind('{not json', broken)
+      .run();
+    expect(await (await open(workPagePath(broken), await sessionCookie(userId))).text()).not.toContain('gf-key-legend');
+  });
+
+  it('作者の公開前の完成画面では、埋め込みの直後・設定のブロックの手前に出る', async () => {
+    const { userId, id, jobToken } = await seedPending('legend-draft');
+    await claimGenerationJob(env, id, await hashJobToken(jobToken));
+    const sha = [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    await completeGame(env, id, fakeBuildOutcome({ sourceSha256: sha }));
+    await env.DB.prepare(
+      'insert or replace into source_input_keys (source_key, codes, rule_version, extracted_at) values (?, ?, 1, 1)',
+    )
+      .bind(`builds/${sha}/source.go`, JSON.stringify(['ArrowUp', 'Space']))
+      .run();
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(body).toContain('できました');
+    expect(legendLabelsOf(body)).toEqual(['↑', 'Space']);
+    const legendAt = body.indexOf('<p class="gf-key-legend">');
+    expect(legendAt).toBeGreaterThan(body.indexOf('<noscript class="gf-play-noscript">'));
+    expect(legendAt).toBeLessThan(body.indexOf('gf-work-settings'));
+  });
+});

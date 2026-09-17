@@ -128,7 +128,7 @@ import { playReportScript } from './plays.js';
 // **ゲームの iframe と、タッチ端末の全画面の覆い**（M14-3 / #502 / 仕様 3.9.4）。iframe の属性の出どころはあちらの 1 か所である。
 import type { PlayOrientation } from './work-play.js';
 import { playEmbed, playEntry, playOrientationOf } from './work-play.js';
-import { readAliasGroups, readHeldCodes, readInputKeyCodes } from './virtual-pad.js';
+import { keyLegendOf, readAliasGroups, readHeldCodes, readInputKeyCodes } from './virtual-pad.js';
 // **ソースの閲覧は別の経路である**（#383 / 2.3.12）。この画面が借りるのは綴りだけで、R2 は読まない。
 import { workSourcePath } from './work-source.js';
 // **作者の削除（#517 / M15-2）。** 綴り・表示の条件・確認画面・断りの文言はあちら、経路はこのモジュールが持つ
@@ -1757,8 +1757,12 @@ ${publishForm(view.publishableId)}`;
   // **削除の導線（#517）は設定のブロックの最後に置く**——戻せない操作を、公開・リフォージ・改名より先に目に入れない。
   //
   // **埋め込み（#575）は状態のブロックと設定のブロックの間に置く**（上の説明）。デスクトップの iframe はここに入る。
+  //
+  // **操作の案内（#599 / 仕様 3.9.11）は、その埋め込みの直後・設定のブロックの手前に置く**（公開後と同じ「枠の直後」）。
+  // **埋め込まないとき（試遊 URL を組み立てられない・リフォージの実行中）も出す**——案内が要るのは枠があるからではなく、
+  // 作者がこれから試遊 URL を人に渡すからである。
   return `${stateBlock(`<h2>できました</h2>
-${play}${publish}`)}${embed}${settingsBlock([reviseSection(view), revisionList(view), renameSection(view), deleteSection(view)])}`;
+${play}${publish}`)}${embed}${keyLegendSection(view)}${settingsBlock([reviseSection(view), revisionList(view), renameSection(view), deleteSection(view)])}`;
 }
 
 /**
@@ -2012,6 +2016,11 @@ function publishedSection(view: WorkPageView): string {
 <p class="gf-work-share-label">共有する URL</p>
 <p class="gf-block gf-work-share-url"><code>${view.shareUrl}</code></p>
 </div>`;
+  // **操作の案内は本文の列の先頭に置く**（#599 / 仕様 3.9.11）。枠（`loadingScreen` が出す iframe）の直後で、
+  // 遊んで手が止まったときに目が落ちる位置である。**枠の手前へは入れない**——4 要素（3.4-5）と枠の間に割り込むと
+  // 枠が下がり、「主役は作品」（M8）が崩れる。**詳細情報パネル（2.3.12）へも入れない**——狭い段では本文の下へ回り、
+  // 遊ぶ前に読まれない。
+  //
   // **説明は作者名・元ゲームの後に置く**（#388）。遊ぶ前に読む来歴（3.4-5 の 4 要素）を
   // 押し下げない。**説明を書くフォームは改名の隣**に置く——どちらも作品ページの
   // 「作者だけの設定」で、公開の導線（5.4）の外にある。
@@ -2028,7 +2037,7 @@ function publishedSection(view: WorkPageView): string {
   // **#474 で 1 つのブロックの行にした**（{@link settingsBlock}。並びは前と同じ）。
   return `<h2>公開しています</h2>
 ${loadingScreen(view)}${splitWithDetails(
-    `${likeSection(view)}${tagsSection(view)}${descriptionSection(view)}${share}
+    `${keyLegendSection(view)}${likeSection(view)}${tagsSection(view)}${descriptionSection(view)}${share}
 ${forkList(view.forks)}`,
     view,
   )}${settingsBlock([
@@ -2228,6 +2237,49 @@ function retagSection(view: WorkPageView): string {
 ${tagChoices('retag-tag', knownWorkTags(view.tags).map((tag) => tag.id))}
   <button type="submit" class="${SECONDARY_BUTTON}">このタグにする</button>
 </form>`;
+}
+
+/**
+ * デスクトップで遊ぶ人に、その作品が読むキーを伝える 1 行（仕様 3.9.11 / M16-1 / #599）。**誰にでも出す。**
+ *
+ * # なぜ要るのか
+ *
+ * キーの集合は `source_input_keys` に記録済みだが（3.9.5）、それを使うのは仮想パッド（3.9.6）だけで、
+ * **パッドはタッチ端末にしか出ない。** そのためデスクトップで遊ぶ人は、**作者が説明（#388）に書かない限り
+ * 操作方法を知る手段が無かった。** 説明は任意の自由文なので、書かれていない作品では「遊べるが、どのキーが
+ * 効くか分からない」状態になる。
+ *
+ * # 端末で出し分けない
+ *
+ * HTML に常に置く。タッチ端末では覆いが全画面を覆うので、**遊んでいるあいだは見えない**（3.9.4）。
+ * **パッドの中には足さない**——押せる物（`<button>`）と押せない札を、同じ場所に並べない。
+ *
+ * # 札は押せない（チップ）
+ *
+ * `<span class="gf-chip">` を使う（仕様 2.5.5 の「チップ: 押せない札」）。パッドのキーが副のボタンの部品なのは
+ * **押せるから**で、ここは読むだけである。**読み上げの名前（{@link padKeyAriaLabel}）も持たせない**——あれは
+ * 押せる `<button>` の名前として要るものである。
+ *
+ * # 空なら何も出さない
+ *
+ * キーの記録が無い作品（行が無い・tombstone・壊れた JSON・マウスだけの作品）では 1 バイトも出さない
+ * （{@link descriptionSection} と同じ判断。「操作: なし」を全作品に並べない）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（出すキーが 1 つも無ければ空文字）
+ */
+function keyLegendSection(view: WorkPageView): string {
+  const legend = keyLegendOf(view.inputKeyCodes);
+  const keys = [...legend.directions, ...legend.buttons];
+  if (keys.length === 0) {
+    return '';
+  }
+  // **札の文字は許可表から決まる固定の文字列である**（`src/virtual-pad.ts` の `padKeyLabel`。UGC は 1 文字も
+  // 混ざらない）。それでも `escapeHtml` を通すのは、`Backslash` → `\\`・`Quote` → `'` のように記号が入るためで、
+  // **埋め込みの安全は埋め込む側で閉じる**（`src/work-play.ts` のパッドと同じ判断）。
+  const chips = keys.map((key) => `<span class="gf-chip">${escapeHtml(key.label)}</span>`).join('');
+  return `
+<p class="gf-key-legend"><span class="gf-key-legend-label">操作</span>${chips}</p>`;
 }
 
 /**

@@ -8,7 +8,7 @@ import {
   mailConfigOf,
   sendMail,
 } from '../src/mail/resend.js';
-import { forkNoticeMessage, notifyForkPublished } from '../src/mail/fork-notice.js';
+import { forkNoticeMessage, notifyForkPublished, workPageUrl } from '../src/mail/fork-notice.js';
 import { notifyGenerationFinished } from '../src/mail/generation-notice.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
 import { applySchema } from './helpers/schema.js';
@@ -378,7 +378,13 @@ describe('改造通知の宛先と送らない条件（#36 acceptance 2）', () 
     // 宛先は親の作者（**設定にもコードにも書かない。D1 が知っている**）。
     expect(body.to).toEqual([`${parentAuthor}@example.com`]);
     expect(body.text).toContain('カニ');
-    expect(body.text).toContain('/works/fn-child');
+    // **リンク先は作品ページのまま**（#672 で生成の通知だけがエディットページへ移った。
+    // 宛先は親の作者で、他人の作品を開くので `/edit` へは送らない）。
+    expect(body.text).toContain(`フォーク作品: https://${forkNoticeEnv().APP_HOST}/works/fn-child\n`);
+    expect(body.text).not.toContain('/works/fn-child/edit');
+    expect(workPageUrl(forkNoticeEnv(), 'fn-child')).toBe(
+      `https://${forkNoticeEnv().APP_HOST}/works/fn-child`,
+    );
 
     // **機密を載せない**（#36 acceptance 3）。改造した人のアドレス、鍵、
     // 子作品の内側の値はどれも出さない。

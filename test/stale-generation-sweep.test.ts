@@ -313,6 +313,69 @@ describe('cron の 1 回で、区切りを超えた行を failed に畳む', () 
   });
 });
 
+describe('DO の起こしと畳みは、互いを止めない（Promise.allSettled の契約。PR #685 の Copilot の指摘）', () => {
+  it('wake() だけが落ちても、畳みは D1 に反映され、そのうえで wake のエラーが投げ直される', async () => {
+    await drain();
+    const userId = await seedUser();
+    const id = await seedGame(userId, { state: 'pending', createdAt: STALE_AT });
+    const wakeError = new Error('DO を起こせない');
+    const fakeEnv = {
+      DB: env.DB,
+      WITHDRAWAL_HUB: {
+        idFromName: (name: string): unknown => ({ name }),
+        get: (): { wake: () => Promise<void> } => ({
+          wake: async (): Promise<void> => {
+            throw wakeError;
+          },
+        }),
+      },
+    } as unknown as CleanupEnv;
+
+    await expect(
+      cleanupWorker.scheduled({ cron: '*/5 * * * *', scheduledTime: NOW * 1000, noRetry: () => {} }, fakeEnv),
+    ).rejects.toBe(wakeError);
+    expect(await gameRow(id)).toMatchObject({ generation_state: 'failed', generation_error: STALE_SWEEP_ERROR_CODE });
+  });
+
+  it('畳み（D1 の batch）だけが落ちても、wake は呼ばれ、そのうえで D1 のエラーが投げ直される', async () => {
+    await drain();
+    const userId = await seedUser();
+    const id = await seedGame(userId, { state: 'pending', createdAt: STALE_AT });
+    const batchError = new Error('D1 の batch が落ちた');
+    const failingDb = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === 'batch') {
+          return async (): Promise<never> => {
+            throw batchError;
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const woken: string[] = [];
+    const fakeEnv = {
+      DB: failingDb,
+      WITHDRAWAL_HUB: {
+        idFromName: (name: string): unknown => ({ name }),
+        get: (hubId: { name: string }): { wake: () => Promise<void> } => ({
+          wake: async (): Promise<void> => {
+            woken.push(hubId.name);
+          },
+        }),
+      },
+    } as unknown as CleanupEnv;
+
+    await expect(
+      cleanupWorker.scheduled({ cron: '*/5 * * * *', scheduledTime: NOW * 1000, noRetry: () => {} }, fakeEnv),
+    ).rejects.toBe(batchError);
+    expect(woken).toEqual(['withdrawal']);
+    // 畳みは落ちたので、行はそのまま残る（次の cron が拾い直す）。
+    expect((await gameRow(id)).generation_state).toBe('pending');
+    await drain();
+  });
+});
+
 describe('畳んだ作品は、作者が削除できる', () => {
   it('生成が止まった作品と、推敲が止まった作品のどちらも deletionBlockOf が null になり、deleteGame が通る', async () => {
     await drain();

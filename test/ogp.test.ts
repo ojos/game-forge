@@ -10,6 +10,8 @@ import {
   createJobToken,
   createPendingGame,
   hashJobToken,
+  publishGame,
+  unpublishGame,
 } from '../src/games.js';
 import {
   MAX_OGP_IMAGE_BYTES,
@@ -20,7 +22,6 @@ import {
   OGP_TOKEN_HEADER,
   claimOgpCapture,
   ogpImagePath,
-  ogpObjectKey,
   ogpRoutes,
   startOgpCapture,
 } from '../src/ogp.js';
@@ -214,6 +215,20 @@ async function readOgp(id: string): Promise<{ ogp_state: string | null; ogp_key:
   return row;
 }
 
+/**
+ * その作品の紹介用の画像として R2 に在るオブジェクトの鍵を並べる（#640）。
+ *
+ * **鍵は撮影ごとに変わる**（`newOgpObjectKey`）ので、テストは鍵を組み立てずに接頭辞で数える。
+ * **「1 枚だけ在る」ことを見られる**のが要点で、古い画像が残っていれば 2 枚になる。
+ *
+ * @param id 作品 id
+ * @returns 鍵の並び
+ */
+async function listOgpObjects(id: string): Promise<string[]> {
+  const listed = await env.BUCKET.list({ prefix: `ogp/${id}` });
+  return listed.objects.map((object) => object.key);
+}
+
 beforeAll(async () => {
   await applySchema();
 });
@@ -283,12 +298,36 @@ describe('撮影の結果を受け取る', () => {
 
     const row = await readOgp(id);
     expect(row.ogp_state).toBe('ready');
-    expect(row.ogp_key).toBe(ogpObjectKey(id));
+    // **鍵は撮影ごとに違う**（#640）。組み立てて比べず、形と、R2 に 1 枚だけ在ることを見る。
+    expect(row.ogp_key).toMatch(new RegExp(`^ogp/${id}/[0-9a-f-]{36}\\.png$`, 'u'));
+    expect(await listOgpObjects(id)).toEqual([row.ogp_key]);
 
-    const object = await env.BUCKET.get(ogpObjectKey(id));
+    const object = await env.BUCKET.get(row.ogp_key!);
     expect(object).not.toBeNull();
     expect(new Uint8Array(await object!.arrayBuffer())).toEqual(PNG_BYTES);
     expect(object!.httpMetadata?.contentType).toBe('image/png');
+  });
+
+  it('撮り直すと前の画像は消える（在るのは行が指す 1 枚だけ。#640）', async () => {
+    // **鍵が撮影ごとに変わるので、消さないと撮り直すたびに 1 枚ずつ増える。**
+    const { userId, id, ogpToken } = await seedPublishedGame('recapture-cleanup');
+    expect((await sendCallback(id, ogpToken, PNG_BYTES)).status).toBe(200);
+    const first = (await readOgp(id)).ogp_key!;
+
+    // 公開をやめて公開し直すと `ogp_state` が NULL へ戻り、次の撮影を掴める（#637 / 確定35）。
+    expect(await unpublishGame(env, id, userId)).toEqual({ ok: true, firstTime: true });
+    expect((await publishGame(env, id, userId)).ok).toBe(true);
+    const nextToken = createJobToken();
+    expect(await claimOgpCapture(env, id, await hashJobToken(nextToken))).toBe(true);
+    const fresh = new Uint8Array(PNG_BYTES);
+    fresh[fresh.length - 1] = 0x21;
+    expect((await sendCallback(id, nextToken, fresh)).status).toBe(200);
+
+    const second = (await readOgp(id)).ogp_key!;
+    expect(second).not.toBe(first);
+    // **前の画像は消えている。**
+    expect(await env.BUCKET.head(first)).toBeNull();
+    expect(await listOgpObjects(id)).toEqual([second]);
   });
 
   it('同じトークンの 2 通目は 404（使い捨て）', async () => {
@@ -304,23 +343,25 @@ describe('撮影の結果を受け取る', () => {
     const response = await sendCallback(id, createJobToken(), PNG_BYTES);
     expect(response.status).toBe(404);
     expect((await readOgp(id)).ogp_state).toBe('capturing');
-    expect(await env.BUCKET.get(ogpObjectKey(id))).toBeNull();
+    expect(await listOgpObjects(id)).toEqual([]);
   });
 
   it('トークンが違う要求は、既にある画像を上書きできない', async () => {
-    // **キーは作品 id から決まる。** 照合を R2 への書き込みより後ろに置くと、
-    // id を知っているだけの相手が公開済みの作品の画像を差し替えられる
-    // （D1 は変わらないので、行を見ても気づけない）。
+    // **照合を R2 への書き込みより後ろに置かない。** 断れる要求に R2 を 1 回書かせない
+    // （#640 で鍵が撮影ごとに分かれたので上書きは起こらないが、書かせないこと自体を保つ）。
     const { id, ogpToken } = await seedPublishedGame('callback-no-overwrite');
     await sendCallback(id, ogpToken, PNG_BYTES);
+    const key = (await readOgp(id)).ogp_key!;
 
     const forged = new Uint8Array(PNG_BYTES);
     forged[forged.length - 1] = 0x00;
     const response = await sendCallback(id, createJobToken(), forged);
 
     expect(response.status).toBe(404);
-    const object = await env.BUCKET.get(ogpObjectKey(id));
+    const object = await env.BUCKET.get(key);
     expect(new Uint8Array(await object!.arrayBuffer())).toEqual(PNG_BYTES);
+    // **偽の要求は 1 バイトも書いていない**（在るのは正当な 1 枚だけ）。
+    expect(await listOgpObjects(id)).toEqual([key]);
   });
 
   it('PNG でない本文は 400 で、R2 にも入らない', async () => {
@@ -339,7 +380,7 @@ describe('撮影の結果を受け取る', () => {
       testEnv(),
     );
     expect(response.status).toBe(400);
-    expect(await env.BUCKET.get(ogpObjectKey(id))).toBeNull();
+    expect(await listOgpObjects(id)).toEqual([]);
     expect((await readOgp(id)).ogp_state).toBe('capturing');
   });
 
@@ -361,7 +402,7 @@ describe('撮影の結果を受け取る', () => {
       testEnv(),
     );
     expect(response.status).toBe(413);
-    expect(await env.BUCKET.get(ogpObjectKey(id))).toBeNull();
+    expect(await listOgpObjects(id)).toEqual([]);
   });
 
   it('失敗の通知は failed として記録される', async () => {
@@ -441,7 +482,7 @@ describe('画像の配信', () => {
   it('行は ready でも実体が無ければ 404（黙って空を返さない）', async () => {
     const { id, ogpToken } = await seedPublishedGame('serve-missing-object');
     await sendCallback(id, ogpToken, PNG_BYTES);
-    await env.BUCKET.delete(ogpObjectKey(id));
+    await env.BUCKET.delete((await readOgp(id)).ogp_key!);
     expect((await fetchImage(id)).status).toBe(404);
   });
 });
@@ -552,7 +593,7 @@ describe('撮影関数の呼び出し（src/ogp-client.ts）', () => {
 
 describe('撮影のコールバックと作品の削除の競合（#516 / PR #523 のレビュー）', () => {
   /**
-   * 撮影の照合（`ogpCaptureIsPending` の読み取り）が終わった直後に、1 度だけ出来事を差し込む `Env`。
+   * 撮影の照合（`readPendingCapture` の読み取り）が終わった直後に、1 度だけ出来事を差し込む `Env`。
    *
    * **照合と R2 の書き込みのあいだに削除が走る**順序を、決定的に作るために使う。
    *
@@ -637,7 +678,7 @@ describe('撮影のコールバックと作品の削除の競合（#516 / PR #52
     });
     expect((await sendPng(raced, id, ogpToken)).status).toBe(404);
 
-    expect(await env.BUCKET.head(ogpObjectKey(id))).toBeNull();
+    expect(await listOgpObjects(id)).toEqual([]);
   });
 
   it('削除が掴んだ後に届いた画像は、R2 に残らない（行を残して中身を消した場合）', async () => {
@@ -652,10 +693,10 @@ describe('撮影のコールバックと作品の削除の競合（#516 / PR #52
     });
     expect((await sendPng(raced, id, ogpToken)).status).toBe(404);
 
-    expect(await env.BUCKET.head(ogpObjectKey(id))).toBeNull();
+    expect(await listOgpObjects(id)).toEqual([]);
   });
 
-  it('重複配信（削除されていない行）では、書いた画像を消さない', async () => {
+  it('重複配信では、負けた側が自分の分だけ消す（行が指す画像は残る）', async () => {
     const { id, ogpToken } = await seedPublishedGame('race-duplicate');
     // 照合の直後に、同じトークンのもう 1 通が先に完成させる。
     const raced = afterPendingCheck(async () => {
@@ -663,7 +704,38 @@ describe('撮影のコールバックと作品の削除の競合（#516 / PR #52
     });
     expect((await sendPng(raced, id, ogpToken)).status).toBe(404);
 
-    expect(await env.BUCKET.head(ogpObjectKey(id))).not.toBeNull();
+    // **鍵は 1 通ごとに違う**（#640）ので、負けた側は自分の分を消せる。**在るのは行が指す 1 枚だけ。**
+    const key = (await readOgp(id)).ogp_key!;
+    expect(await env.BUCKET.head(key)).not.toBeNull();
+    expect(await listOgpObjects(id)).toEqual([key]);
     expect((await readOgp(id)).ogp_state).toBe('ready');
+  });
+
+  it('照合の後に公開をやめて撮り直しても、遅れて届いた古い画像が新しい画像を塗り替えない（#640）', async () => {
+    // **#637 で作者が公開をやめて公開し直せるようになり、この往復が数秒で起きるようになった。**
+    // 鍵が作品ごとに 1 つだった頃は、遅れて着いた `put` が新しい画像を古い中身で上書きしえた。
+    const { userId, id, ogpToken } = await seedPublishedGame('race-unpublish');
+    const fresh = new Uint8Array(PNG_BYTES);
+    fresh[fresh.length - 1] = 0x7f;
+
+    const raced = afterPendingCheck(async () => {
+      // 公開をやめる → `ogp_state` が NULL に戻る（#637 / 確定35）
+      expect(await unpublishGame(env, id, userId)).toEqual({ ok: true, firstTime: true });
+      expect((await publishGame(env, id, userId)).ok).toBe(true);
+      // 公開し直して、新しい撮影が完成するところまで進める。
+      const nextToken = createJobToken();
+      expect(await claimOgpCapture(env, id, await hashJobToken(nextToken))).toBe(true);
+      expect((await sendCallback(id, nextToken, fresh)).status).toBe(200);
+    });
+
+    // ここで古い（照合を通っていた）コールバックの書き込みが着く。
+    expect((await sendPng(raced, id, ogpToken)).status).toBe(404);
+
+    const key = (await readOgp(id)).ogp_key!;
+    const object = await env.BUCKET.get(key);
+    // **新しい撮影の中身のままである。**
+    expect(new Uint8Array(await object!.arrayBuffer())).toEqual(fresh);
+    // **古い側は自分の分を消したので、残るのは 1 枚だけ。**
+    expect(await listOgpObjects(id)).toEqual([key]);
   });
 });

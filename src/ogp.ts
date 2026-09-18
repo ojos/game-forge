@@ -61,7 +61,7 @@
  * と書いたものと同じである。1 枚 100 KB 前後の画像 1 つのために、**新しい場所へ
  * 恒久的な R2 の書き込み権限を置かない。**
  *
- * # キーは作品 id から決める（確定26 の「共有」はここに及ばない）
+ * # キーは撮影ごとに作り、読む側は `games.ogp_key` を読む（#640）
  *
  * `src/games.ts` は「**キーを組み立てない**」と定めている。あれは 3.8 のビルド結果
  * キャッシュが**内容ハッシュを鍵にしており、成果物が作品をまたいで共有される**
@@ -69,9 +69,18 @@
  *
  * **OGP 画像は共有されない。** 撮影対象はその作品の `/g/<game_id>/` そのもので、
  * 同じソースから作られた 2 件でも別々に撮る（撮る時刻も、将来のタイトル表示も違う）。
- * したがって `ogp/<game_id>.png` は**衝突しようがなく、他の作品から参照されることも
- * ない。** 3.7 の掃除（`deleteUnreferencedArtifacts`）が数えるのは `source_key` /
- * `wasm_key` だけなので、この接頭辞は掃除の対象にもならない（`runtime/` と同じ扱い）。
+ * したがって `ogp/` の下は**他の作品から参照されない。** 3.7 の掃除
+ * （`deleteUnreferencedArtifacts`）が数えるのは `source_key` / `wasm_key` だけなので、
+ * この接頭辞は掃除の対象にもならない（`runtime/` と同じ扱い）。
+ *
+ * **鍵は `ogp/<game_id>/<乱数>.png` で、1 回の撮影につき 1 つである**（{@link newOgpObjectKey}）。
+ * #640 までは `ogp/<game_id>.png` の 1 つだったが、**コールバックは「照合 → R2 → D1」の順に
+ * 進むので、照合を通った直後に状態が変わった回も R2 だけは書かれる**——鍵が作品ごとだと、その
+ * 書き込みが行の指している画像を上書きする。**分けたので、弾かれた回は自分の鍵だけを消せる。**
+ *
+ * **したがって、読む側は鍵を組み立てない**（配信も、`src/game-deletion.ts` の削除も
+ * `games.ogp_key` を読む）。**古い形の鍵が入っている行もそのまま引けて、そのまま消える。**
+ * **公開面の URL（`/ogp/<game_id>.png`）は鍵と別物で、変わっていない。**
  *
  * # 画像はアプリ用ホストから配る
  *
@@ -165,13 +174,37 @@ const TOKEN_PATTERN = /^[0-9a-f]{64}$/u;
 export type OgpState = 'capturing' | 'ready' | 'failed';
 
 /**
- * 画像の R2 キーを組み立てる。
+ * 画像の R2 キーを、**1 回の撮影につき 1 つ**作る（#640）。
+ *
+ * # なぜ作品ごとに 1 つではいけないのか
+ *
+ * コールバックは「照合 → R2 → D1」の順に進む（{@link handleOgpCallback}）。**照合を通った直後に
+ * 状態が変わると、その回の R2 への書き込みだけは落ちる**——D1 の確定で弾かれても、R2 はもう
+ * 書き終えている。作品ごとに 1 つの鍵（`ogp/<game_id>.png`）だと、**その書き込みが行の指している
+ * 画像そのものを上書きする。** 公開をやめて公開し直すと新しい撮影が走るので（#637 / 確定35）、
+ * 遅れて着いた古いコールバックが**新しい画像を古い中身で塗り替えうる。**
+ *
+ * **鍵を撮影ごとに分ければ、衝突する余地が無くなる。** 弾かれた回は自分の鍵だけを消せばよく、
+ * 行が指している画像には決して当たらない。
+ *
+ * # 乱数にする（トークンのハッシュを使わない）
+ *
+ * **同じトークンで 2 通配信されても、互いの鍵を消さないためである。** Lambda の非同期呼び出しは
+ * 同じイベントを複数回配信しうる（AWS 明文。{@link completeOgpCapture}）。決定的な鍵にすると
+ * 2 通目が 1 通目と同じ鍵を書き、**負けた側の後始末が勝った側の画像を消す。**
+ *
+ * # 読む側は鍵を組み立てない
+ *
+ * **配信も削除も `games.ogp_key` を読む**（このモジュールの画像を配る経路と、`src/game-deletion.ts` の
+ * `deleteOgpImage`）。
+ * したがって**古い形の鍵（`ogp/<game_id>.png`）が入っている行も、そのまま引けて、そのまま消せる。**
+ * 移行は要らない。
  *
  * @param gameId 作品 id（検証済み）
  * @returns R2 のキー
  */
-export function ogpObjectKey(gameId: string): string {
-  return `${OGP_OBJECT_PREFIX}${gameId}${OGP_IMAGE_SUFFIX}`;
+export function newOgpObjectKey(gameId: string): string {
+  return `${OGP_OBJECT_PREFIX}${gameId}/${crypto.randomUUID()}${OGP_IMAGE_SUFFIX}`;
 }
 
 /**
@@ -316,9 +349,13 @@ export async function claimOgpCapture(
  *
  * この UPDATE も原子的で、通るのは 1 人だけである。**古いトークンのハッシュは
  * 上書きで消える**ので、遅れて届いた 1 通目のコールバックは
- * {@link ogpCaptureIsPending} と {@link completeOgpCapture} / {@link failOgpCapture} の
- * トークン一致に落ちて 404 になる。**R2 も書かれない**（照合は `BUCKET.put` より前に
- * ある）。
+ * {@link readPendingCapture} と {@link completeOgpCapture} / {@link failOgpCapture} の
+ * トークン一致に落ちて 404 になる。
+ *
+ * > **#640 注記。「R2 も書かれない」と書いていたが、言い過ぎだった。** 照合は `BUCKET.put` より
+ * > 前にあるが、**照合を通った直後に状態が変わった回は書かれる**（そのために照合があるのではない）。
+ * > **いまは鍵が撮影ごとに違う**（{@link newOgpObjectKey}）ので、**書かれても行が指している画像には
+ * > 当たらず、弾かれた側が自分の分を消す。** 残らないことは変わらないが、理由が違う。
  *
  * # 掴み直した瞬間から、また 900 秒は掴めない
  *
@@ -445,7 +482,7 @@ export function ogpCaptureIsStale(
  *
  * **R2 へ書くのが先だからである。** 本文（PNG）を受け取ってから
  * {@link completeOgpCapture} で弾く形にすると、**弾かれる要求も R2 を 1 回書いてから
- * 弾かれる。** キーは作品 id から決まる（{@link ogpObjectKey}）ので、それは
+ * 弾かれる。** #640 より前はキーが作品 id から決まっていたので、それは
  * **既に公開されている作品の画像を、id を知っているだけの相手が上書きできる**という
  * ことである（D1 は変わらないので、行を見ても気づけない）。
  *
@@ -453,22 +490,36 @@ export function ogpCaptureIsStale(
  * ——あちらは「2 通目を弾く」ための原子的な関門として残る（select と update の隙間で
  * 状態は動きうる）。ここが止めるのは**書き込みそのもの**である。
  *
+ * > **#640 注記。鍵が撮影ごとに分かれた（{@link newOgpObjectKey}）ので、上の「既に公開されている
+ * > 作品の画像を上書きできる」はもう起こらない。** それでもこの照合は残す——**書く前に断れる要求に
+ * > R2 を 1 回書かせない**ことに、引き続き意味がある（撮影の資格がない相手の PNG を、後で消す前提で
+ * > 受け取らない）。
+ *
+ * # 前の画像の鍵も返す（#640）
+ *
+ * **成功したときに古い画像を消すために要る。** 鍵が撮影ごとに変わるので、消さないと 1 回の撮り直し
+ * ごとにオブジェクトが 1 つ増える。**読むのはこの 1 行だけ**で、往復は増えていない。
+ *
  * @param env バインディングと環境変数
  * @param gameId 対象の作品 id
  * @param tokenHash 使い捨てトークンのハッシュ
- * @returns 撮影中で、トークンが一致すれば true
+ * @returns 撮影中でトークンが一致すれば、その行が指している画像の鍵（無ければ null）を包んで返す。
+ *   一致しなければ null
  */
-export async function ogpCaptureIsPending(
+export async function readPendingCapture(
   env: Env,
   gameId: string,
   tokenHash: string,
-): Promise<boolean> {
+): Promise<{ readonly previousKey: string | null } | null> {
   const row = await env.DB.prepare(
-    'select ogp_token_hash from games where id = ? and ogp_state = ?',
+    'select ogp_token_hash, ogp_key from games where id = ? and ogp_state = ?',
   )
     .bind(gameId, 'capturing' satisfies OgpState)
-    .first<{ ogp_token_hash: string | null }>();
-  return row !== null && row.ogp_token_hash !== null && row.ogp_token_hash === tokenHash;
+    .first<{ ogp_token_hash: string | null; ogp_key: string | null }>();
+  if (row === null || row.ogp_token_hash === null || row.ogp_token_hash !== tokenHash) {
+    return null;
+  }
+  return { previousKey: row.ogp_key };
 }
 
 /**
@@ -738,22 +789,6 @@ function mediaTypeOf(header: string | null): string {
   return (header ?? '').split(';')[0]!.trim().toLowerCase();
 }
 
-/**
- * 作品が削除の途中か、既に消えているか（#516。{@link handleOgpCallback} が断ったあとにだけ読む）。
- *
- * **行が無い**（行ごと消えた）か、**`deletion_started_at` が立っている**（削除が掴んだ・中身を消した）
- * なら true。どちらの行にも、正当な OGP 画像は無い（`src/game-deletion.ts`）。
- *
- * @param env バインディングと環境変数
- * @param gameId 作品 id
- * @returns 削除の途中か消えていれば true
- */
-async function ogpOwnerIsBeingDeleted(env: Env, gameId: string): Promise<boolean> {
-  const row = await env.DB.prepare('select deletion_started_at from games where id = ?')
-    .bind(gameId)
-    .first<{ deletion_started_at: number | null }>();
-  return row === null || row.deletion_started_at !== null;
-}
 
 /**
  * 撮影の結果を受け取る。
@@ -773,7 +808,7 @@ async function ogpOwnerIsBeingDeleted(env: Env, gameId: string): Promise<boolean
  * `completeGameWithArtifacts` が「`games` を先に、索引をあとに」と決めているのと
  * 同じ種類の判断で、**向きが逆になるのは読む側の依存が逆だから**である）。
  *
- * **そして照合は R2 より前に置く**（{@link ogpCaptureIsPending}）。あとで弾く形は、
+ * **そして照合は R2 より前に置く**（{@link readPendingCapture}）。あとで弾く形は、
  * 弾かれる要求にも R2 を 1 回書かせる。
  *
  * @param request 受信したリクエスト
@@ -806,9 +841,10 @@ async function handleOgpCallback(request: Request, env: Env): Promise<Response> 
     return json({ error: 'unsupported-content-type' satisfies OgpCallbackRejection }, 415);
   }
 
-  // **本文を読む前に照合する。** R2 のキーは作品 id から決まるので、照合を後回しに
-  // すると「弾かれるが上書きはされる」経路になる（{@link ogpCaptureIsPending}）。
-  if (!(await ogpCaptureIsPending(env, gameId, tokenHash))) {
+  // **本文を読む前に照合する**（{@link readPendingCapture}）。断れる要求に R2 を 1 回書かせない。
+  // **前の画像の鍵もここで受け取る**（成功したら消す。#640）。
+  const pending = await readPendingCapture(env, gameId, tokenHash);
+  if (pending === null) {
     return json({ error: 'not found' }, 404);
   }
 
@@ -820,7 +856,9 @@ async function handleOgpCallback(request: Request, env: Env): Promise<Response> 
     return json({ error: 'not-png' satisfies OgpCallbackRejection }, 400);
   }
 
-  const key = ogpObjectKey(gameId);
+  // **鍵は撮影ごとに違う**（#640。{@link newOgpObjectKey}）。書いたオブジェクトは、この呼び出しだけの
+  // ものである。
+  const key = newOgpObjectKey(gameId);
   await env.BUCKET.put(key, read.bytes, {
     // **配信側でヘッダを組み立て直さずに済む形で入れる。**
     httpMetadata: { contentType: PNG_MEDIA_TYPE },
@@ -828,21 +866,29 @@ async function handleOgpCallback(request: Request, env: Env): Promise<Response> 
 
   const recorded = await completeOgpCapture(env, gameId, tokenHash, key);
   if (!recorded) {
-    // トークンが合わない・既に終わっている。**重複配信なら R2 のオブジェクトは消さない**——
-    // キーは作品 id から決まるので、上書きしたのは同じ作品の画像である。
+    // トークンが合わない・既に終わっている・作品の状態が動いた（公開をやめた。#637 / 削除が掴んだ。#516）。
     //
-    // **ただし、作品の削除が照合と R2 の書き込みのあいだに走っていたら消す**（#516）。削除は
-    // 掴む文で撮影のトークンを捨て、R2 の `ogp/<id>.png` を消してから D1 を確定する
-    // （`src/game-deletion.ts`）。その後にこちらが書いた画像は、どの行からも指されない孤児に
-    // なる（退会した作者の画像が残る）。**掴まれた行と消えた行に正当な画像は無い**ので、
-    // 行を読んで見分ける。読むのは断られた要求だけで、成功の経路の往復は増えない。
-    //
-    // **競合は残らない。** 削除の掴みは `completeOgpCapture` が 0 行になるより前に起きている
-    // （掴む文がトークンを捨てたから 0 行になった）ので、ここで読む行には必ず掴んだ印が見える。
-    if (await ogpOwnerIsBeingDeleted(env, gameId)) {
-      await env.BUCKET.delete(key);
-    }
+    // **自分が書いた分だけを消す。** 鍵がこの呼び出し専用なので、**行が指している画像に当たる余地が
+    // 無い。** #640 より前は鍵が作品ごとに 1 つで、「消してよいか」を削除中かどうかで見分けていた
+    // （`ogpOwnerIsBeingDeleted`）。**その特例はもう要らない**——見分けなくても、消すのは常に孤児である。
+    await env.BUCKET.delete(key);
     return json({ error: 'not found' }, 404);
+  }
+
+  // **古い画像を消す**（#640）。行は既に新しい鍵を指しているので、これはもう誰も引かない。
+  // **鍵が同じことはない**（撮影ごとの乱数）が、null の場合（初回の撮影）だけは消すものが無い。
+  //
+  // **ここで投げない。** 撮影はもう成立している（D1 は確定した）ので、**後始末の失敗で 500 を返すと、
+  // Lambda が同じイベントを配り直し、2 通目はトークンが消えているので 404 になる**——直らないうえに、
+  // 成功した撮影が失敗したように見える。**取りこぼした 1 枚は、どの行からも指されない孤児として残る**
+  // （害は R2 の保管だけで、配信も削除も `games.ogp_key` を読む）。**回収する経路は持たない**
+  // ——3.7 の掃除は `ogp/` を見ておらず、そこへ足すのは #640 の範囲を超える（PR #643 の Copilot の指摘）。
+  if (pending.previousKey !== null) {
+    try {
+      await env.BUCKET.delete(pending.previousKey);
+    } catch (error) {
+      console.error('[ogp] 前の画像を消せませんでした（撮影は成立している）', error);
+    }
   }
   return json({ accepted: true, state: 'ready' satisfies OgpState }, 200);
 }

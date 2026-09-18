@@ -8,7 +8,6 @@ import {
   publishGame,
   renameGame,
 } from '../src/games.js';
-import { ogpObjectKey } from '../src/ogp.js';
 import { recordReport } from '../src/reports.js';
 import { appendRevision, claimRevisionSlot, restoreRevision } from '../src/revisions.js';
 import { dispatch } from '../src/routes.js';
@@ -18,6 +17,19 @@ import { workPagePath, workPageRoutes } from '../src/work-page.js';
 import { countingEnv } from './helpers/d1-counting.js';
 import { applySchema } from './helpers/schema.js';
 import { markGameRemoved } from './helpers/removed-work.js';
+
+/**
+ * #640 より前の形の鍵（`ogp/<id>.png`）。
+ *
+ * **削除は鍵を組み立てず、行の `ogp_key` を読んで消す**（`src/game-deletion.ts` の `deleteOgpImage`）ので、
+ * **この形が入っている既存の行もそのまま消える。** ここで古い形を仕込むのは、その移行不要を検査するためである。
+ *
+ * @param id 作品 id
+ * @returns 鍵
+ */
+function legacyOgpKey(id: string): string {
+  return `ogp/${id}.png`;
+}
 
 /**
  * 作品を消す土台（#516 / M15-1 / 仕様 3.7 / 5.3）。
@@ -77,13 +89,17 @@ interface SeedGame {
  */
 async function seedGame(
   seed: SeedGame,
-): Promise<{ id: string; sourceKey: string | null; wasmKey: string | null }> {
+): Promise<{ id: string; sourceKey: string | null; wasmKey: string | null; ogpKey: string | null }> {
   const id = crypto.randomUUID();
   const prefix = seed.keys === undefined ? `builds/${id}` : seed.keys;
   const sourceKey = prefix === null ? null : `${prefix}.go`;
   const wasmKey = prefix === null ? null : `${prefix}.wasm.br`;
   const status = seed.status ?? 'draft';
   const state = seed.generationState ?? 'ready';
+  // **いまの形の鍵で仕込む**（#640。`ogp/<id>/<乱数>.png`）。古い形は `legacyOgpKey` を使う
+  // テストが 1 本だけ持つ——**既定を古い形にすると、鍵を組み立てる実装へ戻しても緑のままになる**
+  // （PR #643 の Copilot の指摘）。
+  const ogpKey = status === 'draft' ? null : `ogp/${id}/${crypto.randomUUID()}.png`;
   await env.DB.prepare(
     `insert into games
        (id, author_id, parent_id, status, title, go_version, source_key, wasm_key, created_at,
@@ -101,7 +117,7 @@ async function seedGame(
       status === 'draft' ? null : 200,
       state === 'ready' ? crypto.randomUUID() : null,
       state,
-      status === 'draft' ? null : ogpObjectKey(id),
+      ogpKey,
       status === 'draft' ? null : 'ready',
     )
     .run();
@@ -109,7 +125,12 @@ async function seedGame(
     await addRevision(id, 1, sourceKey, wasmKey);
     await putObjects(sourceKey, wasmKey);
   }
-  return { id, sourceKey, wasmKey };
+  // **画像も実際に置く。** 置かないと「消えている」の検査が空振りし、**鍵を組み立てる実装へ戻しても
+  // 緑のままになる**（PR #643 の Copilot の指摘を受けて、変異を当てて確かめた）。
+  if (ogpKey !== null) {
+    await putObjects(ogpKey);
+  }
+  return { id, sourceKey, wasmKey, ogpKey };
 }
 
 /**
@@ -318,7 +339,7 @@ describe('子のいる作品は行を残す（#516 の acceptance 2）', () => {
     });
     // R2 の親の成果物と OGP 画像は消えている（子は別のキー）。
     expect(await exists(parent.sourceKey!)).toBe(false);
-    expect(await exists(ogpObjectKey(parent.id))).toBe(false);
+    expect(await exists(parent.ogpKey!)).toBe(false);
 
     // **子は 1 文字も動いていない。**
     const childRow = await readGame(child.id);
@@ -441,7 +462,12 @@ describe('子も記録も無い下書きは行ごと消す（#516 の acceptance
     )
       .bind(game.id)
       .run();
-    await putObjects(ogpObjectKey(game.id));
+    // **紹介用の画像は、行の `ogp_key` を読んで消す**（#640）。ここは古い形の鍵が入っている行で、
+    // **移行しなくてもそのまま消えること**を見る（公開してから下書きへ戻した作品も、列は残っている）。
+    await env.DB.prepare('update games set ogp_key = ? where id = ?')
+      .bind(legacyOgpKey(game.id), game.id)
+      .run();
+    await putObjects(legacyOgpKey(game.id));
 
     expect(await deleteGame(env, game.id)).toEqual({ ok: true, result: 'deleted' });
 
@@ -458,7 +484,7 @@ describe('子も記録も無い下書きは行ごと消す（#516 の acceptance
     expect(await exists(game.wasmKey!)).toBe(false);
     expect(await exists(ownSource)).toBe(false);
     expect(await exists(ownWasm)).toBe(false);
-    expect(await exists(ogpObjectKey(game.id))).toBe(false);
+    expect(await exists(legacyOgpKey(game.id))).toBe(false);
     // **共有しているキーは残る**（公開中の別の作品が指している）。
     expect(await exists(shared.sourceKey!)).toBe(true);
     expect(await exists(shared.wasmKey!)).toBe(true);
@@ -494,8 +520,8 @@ describe('進行中・公開中は断り、何も書き換えない（#516 の a
   it('published は断る', async () => {
     const author = await seedUser('公開中');
     const game = await seedGame({ authorId: author, status: 'published' });
-    await putObjects(ogpObjectKey(game.id));
-    await expectRejected(game.id, [game.sourceKey!, game.wasmKey!, ogpObjectKey(game.id)], 'published');
+    await putObjects(game.ogpKey!);
+    await expectRejected(game.id, [game.sourceKey!, game.wasmKey!, game.ogpKey!], 'published');
   });
 
   it.each(['pending', 'running'] as const)('生成中（%s）は断る', async (state) => {
@@ -537,9 +563,10 @@ describe('版が多い作品も 1 回で終える（#516 の acceptance 6）', (
 
     expect(await deleteGame(counted.env, game.id)).toEqual({ ok: true, result: 'deleted' });
 
-    // 実測は 14 本（掴む 1・R2 の判定 4・確定の batch 9）。**版の数に比例しない。**
+    // 実測は 15 本（掴む 1・R2 の判定 4・**紹介用の画像の鍵を引く 1**（#640）・確定の batch 9）。
+    // **版の数に比例しない。**
     expect(counted.count()).toBeLessThan(50);
-    expect(counted.count()).toBe(14);
+    expect(counted.count()).toBe(15);
     expect(await exists(`builds/many-${game.id}-30.wasm.br`)).toBe(false);
     const index = await env.DB.prepare('select count(*) as n from build_cache where source_sha256 like ?')
       .bind(`many-${game.id}-%`)

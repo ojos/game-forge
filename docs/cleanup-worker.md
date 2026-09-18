@@ -1,10 +1,12 @@
 # 退会の後続の処理（`game-forge-cleanup`）の運用手順
 
 退会した利用者の作品を最後まで消す経路（仕様 3.7 / 5.8 / #518 / M15-3。土台は #586 / M15-3a）の、
-配備と確認の手順。
+配備と確認の手順。**同じ cron で、止まったまま残った生成・推敲の行を `failed` に畳む**（#681。
+下の「止まった生成・推敲の行を畳む」）。
 
 **コードの正本は `workers/cleanup/`（Worker `game-forge-cleanup` と DO `WithdrawalHub`）と
-`src/withdrawal.ts` / `src/withdrawal-purge.ts`（退会そのものの処理）** で、**宣言の正本は
+`src/withdrawal.ts` / `src/withdrawal-purge.ts`（退会そのものの処理）と
+`src/stale-generation-sweep.ts`（止まった行の畳み。#681）** で、**宣言の正本は
 `workers/cleanup/wrangler.toml`** である。この文書が持つのは、宣言で表せない手順——初回の配備、
 権限、確認のしかた、確かめられていないこと——だけである。
 
@@ -44,7 +46,8 @@ cron `*/5 * * * *` が **5 本中 1 本目**として登録されている。`wr
 |---|---|---|
 | Worker | `game-forge-cleanup`（**公開の入口なし**: `workers_dev = false` / `preview_urls = false` / ルートなし） | `workers/cleanup/wrangler.toml` |
 | DO | `WithdrawalHub`（**SQLite 版**。インスタンスは `withdrawal` の 1 個。DO のマイグレーションはタグ `v1`） | `workers/cleanup/src/hub.ts` |
-| 起こし方 | **cron `*/5 * * * *`** → `scheduled()` が DO のアラームを立てる | `workers/cleanup/wrangler.toml` の `[triggers]` |
+| 起こし方 | **cron `*/5 * * * *`** → `scheduled()` が DO のアラームを立て、**同じ回で止まった生成・推敲の行を畳む**（#681） | `workers/cleanup/wrangler.toml` の `[triggers]` |
+| 止まった行の畳み | 開始から 1 時間を過ぎた `pending` / `running` の `games` 行と `game_revision_jobs` 行を `failed` に（条件付き UPDATE 2 本・表ごとに 25 行まで） | `src/stale-generation-sweep.ts` |
 | 進め方 | アラーム 1 回で作品 2 件（進んだら 1 秒後・待ちだけなら 30 分後・何も無ければ立てない） | `src/withdrawal-purge.ts` |
 | 押した要求の中の処理 | 掴む → R2（アイコン）→ 1 batch・13 文で確定 | `src/withdrawal.ts` |
 | D1 の列と索引 | `users` の 3 列 / `users_withdrawal_pending_idx` / トリガ 3 本 | `migrations/0045_user_withdrawal.sql` |
@@ -72,10 +75,58 @@ cron（5 分ごと）→ scheduled() → WithdrawalHub のアラーム
 ```
 
 **平常時（終わっていない退会が 0 件）は、D1 を 5 文読んで終わる。** 5 分ごとに走っても
-1 日 1,440 文で、無料枠に対して無視できる。
+1 日 1,440 文で、無料枠に対して無視できる。**#681 で cron の側に止まった行の畳みの 2 文が足された**
+（`scheduled()` の中。DO のアラームとは別の呼び出しなので、50 文の枠も別に数える）。合わせて
+1 日 2,016 文で、無料枠に対して無視できることは変わらない。
+
+> **旧記述（#681 より前）。** 上の段落の前半だけ（「5 文読んで終わる」「1 日 1,440 文」）。
 
 **60 件の利用者は 31 回のアラームで終わる**（テスト環境の実測。`test/withdrawal-purge.test.ts`）。
 進んだ回は 1 秒後に次を立てるので、**約 30 秒〜1 分**である。
+
+## 止まった生成・推敲の行を畳む（#681）
+
+**作品の削除（`deleteGame`）は `pending` / `running` の行を断る**（#516 / #517。経過時間で区切らない）。
+オーケストレータが拒否した・落ちた生成の行はそのまま残り、作者はその作品を消せなかった
+（2026-09-18 の実例。#242 の行が 17 日残った）。**退会の後続の処理も、進行中の作品を候補から外す**ので、
+同じ行が退会の完了を止めうる。
+
+```
+cron（5 分ごと）→ scheduled()
+          DO を起こす（上の経路）
+          並べて sweepStaleGenerations（D1 の batch 1 つ・2 文）
+            games               pending / running・公開中でない・開始から 1 時間超 → failed（internal）、job_token_hash を消す
+            game_revision_jobs  pending / running・開始から 1 時間超               → failed（internal）
+          畳んだときだけ `stale-generation-sweep: games=N revision_jobs=M` をログへ出す
+```
+
+- **区切りは 1 時間**（`STALE_GENERATION_SWEEP_SECONDS`）。コールバックが届きうるのは
+  `maximum_event_age`（300 秒）＋ `timeout`（870 秒）の約 20 分までで（`terraform/orchestrator.tf`。
+  `maximum_retry_attempts = 0`）、その外側に置く。**terraform の値を変えて食い違えば
+  `test/stale-generation-sweep.test.ts` が落ちる。**
+- **条件付き UPDATE である。** 遅れて claim や完了が来ても、どちらか一方が 0 行になるだけで二重に書かない。
+- **台帳（`generations`）には書かない**（台帳を書くのはエッジ。止まった行に費用は無い）。枠も戻さない。
+- **権限は足していない**（D1 の UPDATE だけ。R2 には触らない）。
+- **片方が失敗しても、もう片方は走り切る**（`Promise.allSettled`。失敗は最後に投げ直すので cron の失敗として記録される）。
+- **畳んだ行は消さない。** `failed` の下書きとして残り、作者が既存の削除で消す。
+
+### 止まった行が残っていないか（読み取りだけ）
+
+```bash
+set -a; . scripts/load-project-env.sh; set +a
+npx wrangler d1 execute DB --remote --env production --command \
+  "select 'games' as t, count(*) as n from games
+    where generation_state in ('pending','running')
+      and coalesce(generation_started_at, created_at) <= unixepoch() - 3600
+   union all
+   select 'game_revision_jobs', count(*) from game_revision_jobs
+    where state in ('pending','running')
+      and coalesce(started_at, created_at) <= unixepoch() - 3600"
+```
+
+配備から 5 分を過ぎれば、どちらも 0 になっているはずである（公開中の `pending` / `running` の作品が
+あれば `games` の側に残るが、その経路は無い。残っていたら人が見る）。**1 回に畳むのは表ごとに 25 行**なので、
+溜まっていた分が多いときは数回の cron に分かれる。
 
 ## 初回の配備（利用者の端末で行う）
 

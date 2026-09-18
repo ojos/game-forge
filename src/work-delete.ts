@@ -19,6 +19,11 @@
  * `deleteGame` の条件（経過時間で区切らない）を変えない——生成・リフォージのコールバックは行とジョブのトークンを
  * 照合してから費用台帳を書くので、遅れて届いたコールバックが消えた行に当たると台帳の行を落とす（#516）。
  * 止まった行を消せるようにするかは、#517 の範囲の外に置いた（#517 の PR の本文）。
+ *
+ * **#681 注記（2026-09-18）。** 止まった行は、`game-forge-cleanup` の cron（5 分ごと）が区切り（1 時間。
+ * `src/stale-generation-sweep.ts` の `STALE_GENERATION_SWEEP_SECONDS`）を過ぎてから `failed` に畳む。
+ * **この条件と `deleteGame` の条件は変えていない**——畳まれた後は `failed` として導線が出て、消せる。
+ * 900 秒から 1 時間までのあいだは、これまでどおり「生成中」「リフォージ中」として断る。
  */
 import type { GameDeletionRejection, GameDeletionResult } from './game-deletion.js';
 import { deleteGame } from './game-deletion.js';

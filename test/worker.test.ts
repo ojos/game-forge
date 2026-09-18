@@ -77,6 +77,7 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       'TEST_WRANGLER_TOML',
       'TEST_APP_CSS',
       'TEST_ROUTES_JSON',
+      'TEST_ORCHESTRATOR_TF',
     ];
 
     // `.dev.vars.example` に**書かれている**秘密名は許容する。

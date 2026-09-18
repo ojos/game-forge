@@ -1,11 +1,13 @@
 /**
  * `game-forge-cleanup` の入口（#518 / M15-3。土台は #586 / M15-3a）。
  *
- * **この Worker の仕事は 2 つだけである。**
+ * **この Worker の仕事は 3 つだけである。**
  *
  * 1. Durable Object {@link WithdrawalHub} を載せる（**Pages は DO のクラスを自分で持てない**。
  *    `docs/likes.md` と同じ事情）
  * 2. **cron（5 分ごと）で DO を起こす**（`workers/cleanup/wrangler.toml` の `[triggers]`）
+ * 3. **同じ cron で、止まったまま残った生成・推敲の行を `failed` に畳む**（#681。
+ *    `src/stale-generation-sweep.ts`。D1 の条件付き UPDATE 2 本だけで、R2 には触らない）
  *
  * # `fetch` は何も受け取らない
  *
@@ -24,6 +26,7 @@
  * 次に起きた回が同じ候補を拾い直す。**運営が進み具合を見る手段は
  * `scripts/withdrawal-status.sh`**（読み取りだけ）。
  */
+import { sweepStaleGenerations } from '../../../src/stale-generation-sweep.js';
 import { WITHDRAWAL_HUB_INSTANCE } from './hub.js';
 import type { CleanupEnv } from './hub.js';
 
@@ -40,16 +43,36 @@ export default {
   },
 
   /**
-   * cron（5 分ごと）で DO を起こす。
+   * cron（5 分ごと）で DO を起こし、止まった生成・推敲の行を畳む（#681）。
    *
    * **待たない形にしない。** `scheduled` の戻り値を待たせておくと、起こし損ねたことが
    * ログに出る（起こせなければ cron の実行が失敗として記録される）。
    *
-   * @param _controller cron の実行情報（使わない）
+   * **2 つは互いを止めない。** 片方が投げても、もう片方は最後まで走らせてから投げ直す
+   * （退会の後続の処理と、止まった行の掃除は無関係である）。
+   *
+   * **時刻は cron の予定時刻から取る**（`scheduledTime`）。テストが区切りの内外を時刻で作れる。
+   *
+   * @param controller cron の実行情報（`scheduledTime` だけを読む）
    * @param env バインディング
    */
-  async scheduled(_controller: ScheduledController, env: CleanupEnv): Promise<void> {
+  async scheduled(controller: ScheduledController, env: CleanupEnv): Promise<void> {
     const id = env.WITHDRAWAL_HUB.idFromName(WITHDRAWAL_HUB_INSTANCE);
-    await env.WITHDRAWAL_HUB.get(id).wake();
+    const [woken, swept] = await Promise.allSettled([
+      env.WITHDRAWAL_HUB.get(id).wake(),
+      sweepStaleGenerations(env, Math.floor(controller.scheduledTime / 1000)),
+    ]);
+    if (swept.status === 'fulfilled' && (swept.value.games > 0 || swept.value.revisionJobs > 0)) {
+      // **畳んだときだけ出す**（平常時は 0 件で何も出さない。`wrangler tail` で見る）。
+      console.log(
+        `stale-generation-sweep: games=${swept.value.games} revision_jobs=${swept.value.revisionJobs}`,
+      );
+    }
+    if (woken.status === 'rejected') {
+      throw woken.reason;
+    }
+    if (swept.status === 'rejected') {
+      throw swept.reason;
+    }
   },
 } satisfies ExportedHandler<CleanupEnv>;

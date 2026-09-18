@@ -2310,6 +2310,14 @@ export interface AuthoredGame {
   readonly title: string;
   /** 生成の進行状態。**D1 の綴りのまま返す**（画面の状態へ落とすのは読む側の仕事）。 */
   readonly generationState: string;
+  /**
+   * 公開状態（`games.status`。#641）。**D1 の綴りのまま返す**（`generationState` と同じ扱いで、
+   * 画面の文言へ落とすのは読む側の仕事である。`src/my-works.ts` の `publicationLabelOf`）。
+   *
+   * **入るのは `draft` か `published` だけである**——この関数は `removed` を引かない。
+   * それでも画面は知らない値を受け取れる形にしてある（不変条件を画面が前提にしない）。
+   */
+  readonly status: string;
   /** 行を作った時刻（UNIX 秒）。 */
   readonly createdAt: number;
   /** ジョブが走り始めた時刻（UNIX 秒）。まだ握られていなければ null。 */
@@ -2330,6 +2338,17 @@ export interface AuthoredGame {
  * **絞り込みを呼び出し側へ出さない。** 画面側で `filter` する形にすると、条件を
  * 書き忘れた呼び出しが生まれても**動作では気づけない**（自分の作品は正しく出る）。
  * 引く時点で SQL の `where` に入れておけば、書き忘れようがない。
+ *
+ * # 公開状態も返す（#641）
+ *
+ * **`status` を 1 列足した**（索引は変えていない。`where` と `order by` はそのまま）。
+ * #637 で作者が公開をやめて下書きへ戻せるようになり、**この一覧に公開中と下書きが混ざる**
+ * ようになった。**混ざるのに行が見分けられないと、戻した作品を作者が探せない**——2026-09-17 の
+ * 本番の確認で、15 行がすべて「できました」（`generation_state` の札）としか出ず、
+ * どれを下書きへ戻したのかが読めなかった（#641）。
+ *
+ * **統計（`src/my-works-stats.ts`）は最初から `status` を数えている。** 足りていなかったのは
+ * 行の側だけである。
  *
  * # `removed` を除く
  *
@@ -2379,7 +2398,7 @@ export async function listAuthoredGames(
   // 2 件の順序が決まらない**ためである（`migrations/0008_games_author_id_idx.sql`）。
   // 索引の列順もこの並びに合わせてある。
   const result = await env.DB.prepare(
-    `select id, title, generation_state, created_at, generation_started_at
+    `select id, title, status, generation_state, created_at, generation_started_at
        from games
       where author_id = ? and status <> 'removed'
       order by created_at desc, id desc
@@ -2389,6 +2408,7 @@ export async function listAuthoredGames(
     .all<{
       id: string;
       title: string;
+      status: string;
       generation_state: string;
       created_at: number;
       generation_started_at: number | null;
@@ -2397,6 +2417,7 @@ export async function listAuthoredGames(
   return result.results.map((row) => ({
     id: row.id,
     title: row.title,
+    status: row.status,
     generationState: row.generation_state,
     createdAt: row.created_at,
     startedAt: row.generation_started_at,

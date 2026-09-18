@@ -2282,7 +2282,7 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
     const order = [
       '<noscript class="gf-play-noscript"><iframe class="gf-frame"',
       '<h1 class="gf-watch-title">',
-      '<div class="gf-watch-author">',
+      '<div class="gf-watch-byline">',
       '<div class="gf-watch-actions">',
       '<section class="gf-watch-overview gf-block"',
       'このゲームからのフォーク',
@@ -2469,7 +2469,7 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     expect(owner).toContain(
       `<a class="gf-work-edit-link gf-button gf-button-secondary gf-button-sm" href="${workEditPath(id)}">編集する</a>`,
     );
-    const authorRowOf = (html: string): string => html.slice(html.indexOf('<div class="gf-watch-author">'), html.indexOf('<div class="gf-watch-actions">'));
+    const authorRowOf = (html: string): string => html.slice(html.indexOf('<div class="gf-watch-byline">'), html.indexOf('<div class="gf-watch-actions">'));
     expect(authorRowOf(owner)).toContain('gf-work-edit-link');
     expect(owner).not.toContain('gf-work-settings');
     expect(member).not.toContain('gf-work-edit-link');
@@ -2537,7 +2537,7 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     expect(body).toContain('<summary class="gf-button gf-button-secondary gf-button-sm" aria-label="その他の操作">…</summary>');
     expect(body).toContain('<summary>もっと見る</summary>');
     // 作者の行の並び（アイコン・名前 → 編集する → フォークする）。
-    const row = body.slice(body.indexOf('<div class="gf-watch-author">'), body.indexOf('<div class="gf-watch-actions">'));
+    const row = body.slice(body.indexOf('<div class="gf-watch-byline">'), body.indexOf('<div class="gf-watch-actions">'));
     const elements = ['<p class="gf-author">', '<details class="gf-fork-open">'].map((needle) => row.indexOf(needle));
     expect(elements.every((at) => at >= 0)).toBe(true);
     expect([...elements].sort((a, b) => a - b)).toEqual(elements);
@@ -2598,7 +2598,12 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
         expect(rule[1], selector).not.toMatch(/(^|\s)border(-(top|right|bottom|left))?\s*:|box-shadow\s*:|order\s*:|display:\s*contents/u);
       }
     }
-    // **補助カラムの幅は変えない**（`--gf-aside` を画面の区画で定義しない）。
+    // **`:has()` を使わない**（互換性のため避ける決め。PR #674 の Copilot の指摘）。ゲームの位置の器は既定で隠し、
+    // play のスクリプトが付ける印（`.gf-play-host-touch`）でだけ見せる。
+    expect(section).not.toContain(':has(');
+    expect(/(?:^|\n)\.gf-watch-player\s*\{([^}]*)\}/u.exec(section)?.[1] ?? '').toMatch(/display:\s*none/u);
+    expect(/(?:^|\n)\.gf-watch-player\.gf-play-host-touch\s*\{([^}]*)\}/u.exec(section)?.[1] ?? '').toMatch(/display:\s*block/u);
+        // **補助カラムの幅は変えない**（`--gf-aside` を画面の区画で定義しない）。
     expect(section).not.toMatch(/--gf-aside\s*:/u);
   });
 });

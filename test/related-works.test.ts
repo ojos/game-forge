@@ -11,10 +11,10 @@ import {
 } from '../src/games.js';
 import { PLAY_PATH } from '../src/plays.js';
 import { REVIEW_QUEUED } from '../src/reports.js';
-import { RELATED_FORKS_LIMIT, listRelatedWorks, sameTagSql } from '../src/related-works.js';
+import { RELATED_FORKS_LIMIT, RELATED_TAG_LIMIT, listRelatedWorks, sameTagSql } from '../src/related-works.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { FORK_PARENT_ID_FIELD, FORK_PATH } from '../src/paths.js';
-import { WORK_REPORT_PATH, workPagePath } from '../src/work-page.js';
+import { WORK_REPORT_ANCHOR, WORK_REPORT_PATH, workPagePath } from '../src/work-page.js';
 import { workSourcePath } from '../src/work-source.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { markGameRemoved } from './helpers/removed-work.js';
@@ -166,6 +166,22 @@ describe('関連作品は、フォーク元・フォーク先・同じタグの�
     expect(related.filter((work) => work.relation === 'fork')).toHaveLength(RELATED_FORKS_LIMIT);
   });
 
+  it('同じタグは上限（8 件）で切り、タグの枠をまたいで当たった作品も 1 度だけ出す', async () => {
+    // **2 つのタグを両方持つ作品を 10 件**（上限より多い）。どれも `tag1 = action` と `tag2 = puzzle` の 2 つの文に当たる。
+    const self = await seedWork('tag-limit-self', { tags: ['action', 'puzzle'], publishedAt: 1 });
+    const mine: string[] = [];
+    for (let i = 0; i < RELATED_TAG_LIMIT + 2; i += 1) {
+      // 別のテストの作品より新しくして、上位を自分の作品で埋める。
+      mine.push((await seedWork(`tag-limit-${i}`, { tags: ['action', 'puzzle'], publishedAt: 9_000_000_000 + i })).id);
+    }
+    const related = await listRelatedWorks(env, self.id, null, ['action', 'puzzle']);
+    const tagged = related.filter((work) => work.relation === 'tag').map((work) => work.id);
+    expect(tagged).toHaveLength(RELATED_TAG_LIMIT);
+    expect(new Set(tagged).size).toBe(tagged.length);
+    // 新しい順に 8 件（古い 2 件は落ちる）。
+    expect(tagged).toEqual([...mine].reverse().slice(0, RELATED_TAG_LIMIT));
+  });
+
   it('同じタグの問い合わせは、タグの枠ごとの部分索引を使う（索引を足していない）', async () => {
     for (const slot of ['tag1', 'tag2', 'tag3'] as const) {
       const plan = await env.DB.prepare(`explain query plan ${sameTagSql(slot)}`)
@@ -216,23 +232,48 @@ describe('「フォークする」を押すまで入力欄は閉じている（#
 });
 
 describe('通報とソースコードの表示は、「…」メニューからいまと同じ経路で動く（#665 の acceptance）', () => {
-  it('ログイン済みの他人には、「…」の中に通報のフォームとソースへのリンクがある', async () => {
+  it('ログイン済みの他人には、「…」の中に「ソースコードを見る」「この作品を通報する」の 2 行だけがあり、通報のフォームはメニューの外で開く', async () => {
     const { id } = await seedWork('menu');
     const visitor = await seedUser('menu-visitor');
     const body = await openWork(id, await sessionCookie(visitor));
 
     const start = body.indexOf('<details class="gf-watch-more">');
     expect(start).toBeGreaterThan(0);
-    const menu = body.slice(start, body.indexOf('</div>\n</details>', start));
+    const menu = body.slice(start, body.indexOf('</details>', start));
     expect(menu).toContain('<summary class="gf-button gf-button-secondary gf-button-sm" aria-label="その他の操作">…</summary>');
-    expect(menu).toContain(`<form method="post" action="${WORK_REPORT_PATH}">`);
-    expect(menu).toContain(`<a class="gf-link-quiet" href="${workSourcePath(id)}">ソースコードを見る</a>`);
-    // **「…」の外に通報とソースの口を残さない**（同じ口を 2 つ出さない）。
+    const items = [...menu.matchAll(/<li>([\s\S]*?)<\/li>/gu)].map((found) => found[1]);
+    expect(items).toEqual([
+      `<a class="gf-link-quiet" href="${workSourcePath(id)}">ソースコードを見る</a>`,
+      `<a class="gf-link-quiet" href="#${WORK_REPORT_ANCHOR}">この作品を通報する</a>`,
+    ]);
+    // **通報のフォームはメニューの外**（概要欄の下の `<details id="report">`）。経路は同じ `POST /api/works/report`。
+    expect(menu).not.toContain('<form');
+    const report = body.indexOf(`<details class="gf-report" id="${WORK_REPORT_ANCHOR}">`);
+    expect(report).toBeGreaterThan(body.indexOf('<section class="gf-watch-overview'));
+    expect(body.slice(report)).toMatch(new RegExp(`^<details class="gf-report" id="${WORK_REPORT_ANCHOR}">[\\s\\S]*?<form method="post" action="${WORK_REPORT_PATH}">`, 'u'));
+    // **同じ口を 2 つ出さない。**
     expect(body.split(`action="${WORK_REPORT_PATH}"`).length - 1).toBe(1);
     expect(body.split(`href="${workSourcePath(id)}"`).length - 1).toBe(1);
     // 押した先は実際に開く。
     const source = await handleAppRequest(new Request(`${APP_ORIGIN}${workSourcePath(id)}`), testEnv());
     expect(source.status).toBe(200);
+  });
+
+  it('通報できない人（未ログイン・作者）には「この作品を通報する」を出さない', async () => {
+    const { userId, id } = await seedWork('menu-no-report');
+    for (const cookie of [undefined, await sessionCookie(userId)]) {
+      const body = await openWork(id, cookie);
+      expect(body).not.toContain('この作品を通報する</a>');
+      expect(body).toContain('ソースコードを見る');
+    }
+  });
+
+  it('「…」の中身は本文の上に浮かぶ（押し下げない）。影は使わず、右端に揃える（app.css）', () => {
+    const rule = /^\.gf-watch-more-menu\s*\{([^}]*)\}/mu.exec(env.TEST_APP_CSS)?.[1] ?? '';
+    expect(rule).toMatch(/position:\s*absolute/u);
+    expect(rule).toMatch(/right:\s*0/u);
+    expect(rule).not.toMatch(/box-shadow/u);
+    expect(/^\.gf-watch-more\s*\{([^}]*)\}/mu.exec(env.TEST_APP_CSS)?.[1] ?? '').toMatch(/position:\s*relative/u);
   });
 
   it('中身が無ければ「…」を出さない（下書きのプレビュー: 通報もソースも無い）', async () => {

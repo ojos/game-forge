@@ -13,6 +13,7 @@ import {
   PLAY_CLOSE_CLASS,
   PLAY_ENTRY_CLASS,
   PLAY_ENTRY_TOUCH_CLASS,
+  PLAY_HOST_TOUCH_CLASS,
   PLAY_FRAME_CLASS,
   PLAY_LOCKED_CLASS,
   PLAY_NOSCRIPT_CLASS,
@@ -190,6 +191,9 @@ describe('スクリプトの形（3.9.4）', () => {
     const desktop = script.indexOf('noscript.parentNode.insertBefore(createFrame(), noscript);');
     expect(shown).toBeGreaterThan(desktop);
     expect(marked).toBeGreaterThan(desktop);
+    // **口を包む器にも印を付ける**（#665 / PR #674。作品ページは器を既定で隠し、`:has()` を使わずにこの印で見せる）。
+    const host = script.indexOf(`entry.parentElement.classList.add(${JSON.stringify(PLAY_HOST_TOUCH_CLASS)});`);
+    expect(host).toBeGreaterThan(desktop);
   });
 
   it('開くと焦点を「閉じる」へ移し、全画面の要求は同じ処理の中で後に呼ぶ。閉じると「遊ぶ」へ戻す（PR #508）', () => {

@@ -223,6 +223,13 @@ export const WORK_UNPUBLISH_GAME_ID_FIELD = 'game_id';
  */
 export const WORK_REPORT_PATH = '/api/works/report';
 
+/**
+ * 通報の口（`<details>`）の `id`（#665）。**「…」メニューの「この作品を通報する」がここへ飛ぶ。**
+ *
+ * **綴りを 1 か所に持つ**（飛ばす側と着地する側へ書き写すと、片方だけを直した日に押しても何も起きないリンクになる。4.4）。
+ */
+export const WORK_REPORT_ANCHOR = 'report';
+
 /** 通報の対象を指す項目名。 */
 export const WORK_REPORT_GAME_ID_FIELD = 'game_id';
 
@@ -1245,7 +1252,7 @@ function reportSection(view: WorkPageView): string {
     return '';
   }
   return `
-<details class="gf-report">
+<details class="gf-report" id="${WORK_REPORT_ANCHOR}">
   <summary>この作品を通報する</summary>
   <form method="post" action="${WORK_REPORT_PATH}">
     <input type="hidden" name="${WORK_REPORT_GAME_ID_FIELD}" value="${view.reportableId}">
@@ -1864,7 +1871,7 @@ ${playScript(view)}${playEmbed(view.playUrl, view.workId, view.inputKeyCodes, vi
 <h1 class="gf-watch-title">${escapeHtml(workNameOf(view))}</h1>
 ${authorRow(view)}
 ${actionsRow(view)}
-${overviewSection(view)}
+${overviewSection(view)}${reportSection(view)}
 ${forkList(view.forks)}`;
   const related = relatedSection(view);
   if (related === '') {
@@ -1900,13 +1907,20 @@ function authorRow(view: WorkPageView): string {
     view.draftPreview === true || view.editPath === null || view.editPath === undefined
       ? ''
       : `<a class="gf-work-edit-link ${SECONDARY_BUTTON} gf-button-sm" href="${view.editPath}">編集する</a>`;
+  const fork = forkCta(view);
+  // **開く「フォークする」（`<details>`）は行の外、行のすぐ後ろに置く**（利用者の決定。PR #674）。行の中に置くと、開いた欄が
+  // 作者名の右の列に広がり、作者名が縦の真ん中へずれた。**開く側（`<summary>`）だけを行の右端へ重ねる**（`.gf-watch-byline`）
+  // ので、閉じているあいだの見た目は行の中にあるのと同じで、開いた欄は行の下に横幅いっぱいで出る。
+  const opens = fork.startsWith('<details');
   const note =
     view.draftPreview !== true && !view.signedIn
       ? '\n<p class="gf-fork-note">フォークには招待が必要です。招待コードをお持ちでない方は待機リストにご登録いただけます。</p>'
       : '';
-  return `<div class="gf-watch-author">
+  return `<div class="gf-watch-byline">
+<div class="gf-watch-author${opens ? ' gf-watch-author-forkable' : ''}">
 <p class="gf-author">${avatar}<strong>${authorLabel(view)}</strong>${operatorMark(view)}</p>
-${edit}${forkCta(view)}
+${edit}${opens ? '' : fork}
+</div>${opens ? `\n${fork}` : ''}
 </div>${note}`;
 }
 
@@ -1939,26 +1953,34 @@ function actionsRow(view: WorkPageView): string {
  * 「…」メニュー（#665）。**通報とソースコードの表示を、いまと同じ経路で開く**（通報は `POST /api/works/report`、
  * ソースは `/source/<id>`）。`<details>` で開くので JavaScript を要求しない。
  *
+ * **本文の上に浮かぶ小さなメニューにする**（利用者の決定。PR #674。`public/assets/app.css` の `.gf-watch-more-menu`）。
+ * 項目は「ソースコードを見る」「この作品を通報する」の 2 行だけで、通報のフォームはメニューの外（概要欄の下の
+ * {@link reportSection}）で開く——メニューの中でフォームを開くと、本文を押し下げる。
+ *
  * **中身が無ければ出さない**（押しても空のメニューを出さない。4.4）——未ログインで、ソースを見せない作品のとき。
  *
  * @param view 表示に必要な値
  * @returns HTML（空なら空文字）
  */
 function moreMenu(view: WorkPageView): string {
-  const source =
-    view.details === null || view.details.sourcePath === null
-      ? ''
-      : `
-<p class="gf-details-source"><a class="gf-link-quiet" href="${view.details.sourcePath}">ソースコードを見る</a></p>`;
-  const items = `${source}${reportSection(view)}`;
-  if (items === '') {
+  const items: string[] = [];
+  if (view.details !== null && view.details.sourcePath !== null) {
+    items.push(`<li><a class="gf-link-quiet" href="${view.details.sourcePath}">ソースコードを見る</a></li>`);
+  }
+  // **通報のフォームはメニューの中に開かない**（利用者の決定。PR #674）。項目は口（概要欄の下の `<details>`）へ飛ぶだけで、
+  // フォームはそこで開く。**押しても通報できない人（未ログイン・作者・通報済み）には項目を出さない**（4.4）。
+  if (view.reportableId !== null) {
+    items.push(`<li><a class="gf-link-quiet" href="#${WORK_REPORT_ANCHOR}">この作品を通報する</a></li>`);
+  }
+  if (items.length === 0) {
     return '';
   }
   return `
 <details class="gf-watch-more">
 <summary class="${SECONDARY_BUTTON} gf-button-sm" aria-label="その他の操作">…</summary>
-<div class="gf-watch-more-menu gf-block">${items}
-</div>
+<ul class="gf-watch-more-menu">
+${items.join('\n')}
+</ul>
 </details>`;
 }
 
@@ -2065,18 +2087,18 @@ function timeElement(epochSeconds: number | null): string | null {
  *
  * # 並べるもの
  *
- * 作品 ID / 生成日時 / 公開日時 / 元ゲーム / Wasm のサイズ / 改造された数 / いいね数 / プレイ数、
- * と、ソースコードの閲覧へのリンク。
+ * 作品 ID / 生成日時 / 公開日時 / 元ゲーム / Wasm のサイズ / 改造された数 / いいね数。
+ *
+ * **#665 から、置き場は概要欄の「もっと見る」の中である**（{@link overviewSection}。右カラムは関連作品になった）。
+ * **プレイ数は概要欄の見えている行へ、「ソースコードを見る」は操作の行の「…」メニューへ移した**（{@link moreMenu}）。
  *
  * - **モデル名は出さない。** 確定27 が「`generations.game_id` は結び付けない」と決めており、
  *   作品からモデルへ辿る経路が無い（#383 の訂正）。**確定27 は覆していない。**
- * - **説明（#388）はパネルに入れない。** 補助カラム（16rem）の幅では 1000 字を読めないので、
- *   本文に残す。
- * - **プレイ数は、ここにだけ出す**（#377 まではいいねのボタンの隣にあった）。**いいねの数は
- *   ボタンの隣にも残る**——数とボタンは 5.8 の対であり、`test/liked-works.test.ts` が DO の障害時に
- *   ボタンの側の数（D1 の写し）へ倒れることを見ている。パネルは来歴の一覧として**同じ値**
- *   （`likeCount`）を並べる。**0 のときは行ごと出さない**——2.3.6 / #340 の「0 を並べない」を
- *   パネルでも崩さない。
+ * - **説明（#388）はパネルに入れない。** 同じ「もっと見る」の中で、パネルの前に本文として出す。
+ * - **プレイ数はパネルに並べない**（#665。概要欄の見えている行に出す——同じ数を 2 か所に出さない。#383 から #664
+ *   まではここにだけ出していた）。**いいねの数はボタンの隣にも残る**——数とボタンは 5.8 の対であり、
+ *   `test/liked-works.test.ts` が DO の障害時にボタンの側の数（D1 の写し）へ倒れることを見ている。パネルは来歴の一覧として
+ *   **同じ値**（`likeCount`）を並べる。**0 のときは行ごと出さない**——2.3.6 / #340 の「0 を並べない」をパネルでも崩さない。
  * - **改造された数は 0 でも出す。** 本文の「このゲームからの改造: N 件」（5.5）と同じ値
  *   （`forks.total`。その場で数えた実件数で、`fork_count` 列は読まない）であり、あちらが 0 件を
  *   消さないのと揃える。
@@ -2087,13 +2109,13 @@ function timeElement(epochSeconds: number | null): string | null {
  *
  * **1 行に項目名を左、値を右に置き、値が 1 行に収まらないときは値だけを項目名の下の行へ回す。** 値を途中で
  * 折り返さない（「2.3 MB（配信時の圧縮後）」が 2 行に割れると、どこまでが 1 つの値か読みにくい）。行ごとに
- * 「長い値」の印を付けない——折り返しは `.gf-kv` の flex の `wrap` だけで決まる。**補助カラムの幅（`--gf-aside`。
- * 16rem）は変えない。** 補助カラムより長い値（作品 ID の 36 文字）だけは、値の中で折る（`.gf-kv dd` の `overflow-wrap`）。
+ * 「長い値」の印を付けない——折り返しは `.gf-kv` の flex の `wrap` だけで決まる。列より長い値（作品 ID の 36 文字）だけは、
+ * 値の中で折る（`.gf-kv dd` の `overflow-wrap`）。
  *
  * > **#474 の前は項目名と値を縦に積んでいた**（16rem では横に並べると作品 ID が 1 文字ずつ折れる、という判断）。
  * > 2.5.4 の「値だけを下の行へ回す」で、その懸念は値を縮めない形で解けた。
  *
- * パネルは面のブロック（`.gf-block`）で、「ソースコードを見る」は小さい副のボタンである（2.5.5）。
+ * 面は概要欄（`.gf-watch-overview`。面のブロック）が持つので、パネル自身は面を持たない（面を二重に重ねない。2.5.4）。
  *
  * @param view 表示に必要な値
  * @param details パネルの値

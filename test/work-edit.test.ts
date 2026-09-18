@@ -208,7 +208,9 @@ describe('作品ページは作者にも作者以外と同じ画面を出す（#
       .replace(/<a class="gf-work-edit-link[^"]*" href="[^"]*">編集する<\/a>/u, '')
       .replace(/\n<form class="gf-like"[\s\S]*?<\/form>/u, '')
       .replace(/\n<div class="gf-work-like">\n<\/div>/u, '')
-      .replace(/\n<details class="gf-report">[\s\S]*?<\/details>/u, '');
+      .replace(/\n<details class="gf-report" id="report">[\s\S]*?<\/details>/u, '')
+      // 「…」メニューの「この作品を通報する」の項目（#665 / PR #674。自分の作品には押せないので作者には出さない）。
+      .replace(/\n<li><a class="gf-link-quiet" href="#report">この作品を通報する<\/a><\/li>/u, '');
   }
 
   it('公開作品の作品ページは、作者に出す HTML と作者以外に出す HTML が「編集する」以外で一致する', async () => {
@@ -241,8 +243,10 @@ describe('作品ページは作者にも作者以外と同じ画面を出す（#
     const anonHtml = await (await open(workPagePath(id))).text();
     const stripFork = (html: string): string =>
       normalized(html)
-        .replace(/<details class="gf-fork-open">[\s\S]*?<\/details>/u, '<FORK>')
-        .replace(/<a class="gf-fork-link[^>]*>[^<]*<\/a>/u, '<FORK>')
+        // 開く「フォークする」は行の外（PR #674）、未ログインの導線は行の中に置く。どちらも外して比べる。
+        .replace(/\n<details class="gf-fork-open">[\s\S]*?<\/details>/u, '')
+        .replace(/<a class="gf-fork-link[^>]*>[^<]*<\/a>/u, '')
+        .replace(' gf-watch-author-forkable', '')
         .replace(/\n<p class="gf-fork-note">フォークには招待が必要です。[^<]*<\/p>/u, '');
     expect(stripFork(ownerHtml)).toBe(stripFork(anonHtml));
   });
@@ -260,7 +264,7 @@ describe('下書きを作者が作品ページで開くと帯が出る。作者�
     // 帯は題名（h1）より上にある。
     expect(body.indexOf('gf-draft-banner')).toBeLessThan(body.indexOf('<h1 class="gf-watch-title">'));
     // 公開後と同じ本文（#665 の視聴ページの配置・系統）。「公開しています」とは言わない。
-    expect(body).toContain('<div class="gf-watch-author">');
+    expect(body).toContain('<div class="gf-watch-byline">');
     expect(body).toContain('このゲームからのフォーク: 0 件');
     expect(body).not.toContain('<h2>公開しています</h2>');
     // 公開していないので、検索避けのまま・OGP のメタタグも出さない（5.4）。
@@ -287,7 +291,7 @@ describe('下書きを作者が作品ページで開くと帯が出る。作者�
     const { userId, id } = await seedWork('acc5-published', 'published');
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     expect(body).not.toContain('gf-draft-banner');
-    expect(body).toContain('<div class="gf-watch-author">');
+    expect(body).toContain('<div class="gf-watch-byline">');
   });
 });
 

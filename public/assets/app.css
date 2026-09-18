@@ -1971,23 +1971,40 @@ html.gf-play-locked body {
 
 /*
  * ゲームの位置の「遊ぶ」の口（タッチ端末でだけ見せる。デスクトップと JavaScript の無い形では、すぐ下に埋め込みが入る）。
- * 下書きの試遊の口（`.gf-work-draft-play`）と同じ規則である。
+ *
+ * **既定は器ごと隠し、タッチ端末でだけ見せる。** 見せる印（`.gf-play-host-touch`）は、口に `.gf-play-entry-touch` を付けるのと
+ * 同じところで play のスクリプトが器に付ける（`src/work-play.ts`）。**`:has()` は使わない**（互換性のため避ける決め。
+ * 仕様 2.5 / `src/html.ts`。対応しないブラウザで空の器が列の `gap` を 1 つ余分に取る）。
  */
+.gf-watch-player {
+  display: none;
+}
+
+.gf-watch-player.gf-play-host-touch {
+  display: block;
+}
+
 .gf-watch-player > .gf-play-entry {
   position: relative;
 }
 
-.gf-watch-player > .gf-play-entry:not(.gf-play-entry-touch) {
-  display: none;
-}
-
-/* 口を隠しているあいだは、空の器が列の `gap` を 1 つ余分に取らないよう器ごと隠す（`:has` の無い古い端末では 16px 空くだけ）。 */
-.gf-watch-player:not(:has(.gf-play-entry-touch)) {
-  display: none;
-}
-
 /* 作品名。ゲームのすぐ下なので、見出しの上の余白（`@section base`）を外す。 */
 .gf-watch-title {
+  margin: 0;
+}
+
+/*
+ * 作者の行と、その下に開く「フォークする」の欄を包む器。**開く側（`<summary>`）だけを行の右端へ重ねる基準**である
+ * （利用者の決定。PR #674）。`<details>` を行の外に置くので、開いた欄は行の下に横幅いっぱいで出て、作者の行は動かない。
+ */
+.gf-watch-byline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-3);
+}
+
+.gf-watch-byline > * {
   margin: 0;
 }
 
@@ -1997,6 +2014,12 @@ html.gf-play-locked body {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--gf-gap-2) var(--gf-gap-3);
+}
+
+/* 右端に重ねる「フォークする」の場所を空けておく（ボタンの高さぶん行を保つ）。 */
+.gf-watch-author-forkable {
+  min-height: var(--gf-control-md);
+  padding-right: 9rem;
 }
 
 .gf-watch-author .gf-author {
@@ -2020,16 +2043,18 @@ html.gf-play-locked body {
   display: none;
 }
 
-.gf-fork-open[open] {
-  display: flex;
-  flex: 1 1 100%;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: var(--gf-gap-3);
+.gf-fork-open > summary {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+/* 閉じているあいだの `<details>` は高さを持たない（開く側は行へ重ねてある）。 */
+.gf-fork-open:not([open]) {
+  height: 0;
 }
 
 .gf-fork-panel {
-  align-self: stretch;
   display: flex;
   flex-direction: column;
   gap: var(--gf-gap-2);
@@ -2058,8 +2083,7 @@ html.gf-play-locked body {
   display: none;
 }
 
-.gf-watch-share[open],
-.gf-watch-more[open] {
+.gf-watch-share[open] {
   display: flex;
   flex: 1 1 100%;
   flex-direction: column;
@@ -2067,17 +2091,52 @@ html.gf-play-locked body {
   gap: var(--gf-gap-2);
 }
 
-.gf-watch-share[open] > .gf-work-share,
-.gf-watch-more-menu {
+.gf-watch-share[open] > .gf-work-share {
   align-self: stretch;
 }
 
-.gf-watch-more-menu > * {
+/*
+ * 「…」メニュー（利用者の決定。PR #674）。**本文の上に浮かぶ小さなメニュー**で、開いても下を押し下げない。
+ * 行の右端に置き（`margin-left: auto`）、中身は右端に揃えて重ねる——左へ伸びるので、390px でも画面の外へ出ない。
+ * 見た目はアカウントのメニュー（`@section header` の `.gf-account-menu-list`）と同じ作法: 浮かぶ物は角丸 12px、**影は使わず**
+ * 枠線と地の色で面を分ける（仕様 2.5.8）。
+ */
+.gf-watch-more {
+  position: relative;
+  margin-left: auto;
+}
+
+.gf-watch-more-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 1;
+  width: max-content;
+  max-width: 16rem;
+  margin: var(--gf-gap-1) 0 0;
+  padding: var(--gf-gap-1);
+  list-style: none;
+  border: 1px solid var(--gf-rule);
+  border-radius: var(--gf-radius-float);
+  background: var(--gf-ground);
+  font-size: var(--gf-text);
+  line-height: 1.5;
+}
+
+.gf-watch-more-menu li {
   margin: 0;
 }
 
-.gf-watch-more-menu > * + * {
-  margin-top: var(--gf-gap-2);
+.gf-watch-more-menu a {
+  display: block;
+  padding: var(--gf-gap-2) 0.75rem;
+  border-radius: var(--gf-radius);
+  color: var(--gf-ink);
+  text-decoration: none;
+}
+
+.gf-watch-more-menu a:hover {
+  background: var(--gf-surface);
 }
 
 /* 概要欄（面のブロック）。見えている行はプレイ数・公開日時・タグで、「もっと見る」の中に説明・元ゲーム・作品の情報。 */

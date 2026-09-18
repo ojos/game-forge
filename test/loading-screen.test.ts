@@ -408,7 +408,7 @@ describe('4 要素をアプリ用ホスト側に描く（7.2 を崩さないた�
     const body = await workPage(id, await sessionCookie(userId));
     expect(body).toContain('<div class="gf-block gf-draft-banner" role="note">');
     // #665 から視聴ページの配置（作者の行・概要欄）で描く。
-    expect(body).toContain('<div class="gf-watch-author">');
+    expect(body).toContain('<div class="gf-watch-byline">');
     expect(body).not.toContain(playReportScript(id));
     expect(body).toContain(`<noscript class="gf-play-noscript"><iframe class="gf-frame" src="https://${env.SANDBOX_HOST}/p/`);
     expect(body).toContain('<meta name="robots" content="noindex">');

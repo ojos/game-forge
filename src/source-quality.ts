@@ -42,7 +42,12 @@ import { scanTokens } from './go-imports.js';
  * 古い行を拾い直す。**語の一覧（{@link WIN_WORDS} / {@link LOSE_WORDS}）を変えるのも
  * 規則の変更である**——同じソースに対する答えが変わるため。
  */
-export const SOURCE_QUALITY_RULE_VERSION = 1;
+/*
+ * - 1: 最初の規則（#605）
+ * - 2: 状態の数を、`iota` の行とそれより後の名前だけで数える（#676）。`screenW` などの
+ *   定数を状態と同じ組に混ぜた作品で、`iota` より前の定数まで状態として数えていた
+ */
+export const SOURCE_QUALITY_RULE_VERSION = 2;
 
 /**
  * 勝ち・クリアを表す語。
@@ -121,7 +126,8 @@ export interface SourceQualityMetrics {
    */
   readonly spriteCount: number;
   /**
-   * `iota` を含む `const (...)` の組で宣言された名前の数（最大の組）。
+   * `iota` を含む `const (...)` の組で、**`iota` の行とそれより後に**宣言された名前の数
+   * （最大の組）。**`iota` より前の定数は数えない**（#676）。
    *
    * **画面の状態を分けているかの代理である。** 0 は「そういう組が無い」。
    * 終端の状態を持たない作品は、終わる条件へ達しても描画が変わらない。
@@ -412,19 +418,40 @@ function spanKey(text: string, from: number, to: number): string {
  * **`iota` 自身は数えない。** 行の先頭には来ないが、`const ( iota )` のような
  * 書き方をされたときに 1 つ余分に数えるのを避ける。
  *
+ * **`iota` の行より前の名前は数えない（#676）。** 生成物は
+ *
+ * ```go
+ * const (
+ * 	screenW = 320
+ * 	screenH = 240
+ * 	stateTitle = iota
+ * 	statePlaying
+ * )
+ * ```
+ *
+ * のように、画面の大きさなどの定数と状態を同じ組へ混ぜることがある（#624 の壊れ方。
+ * `stateTitle` が 0 ではなく 2 になる）。組の名前をすべて数えると `screenW` まで
+ * 状態として数え、**状態を分けた作品と、混ぜて壊した作品を数字で区別できない。**
+ * `iota` の行から数え始める——`iota` が行をまたぐ式の続きにあるときは、その式の
+ * 始まりの行（名前のある行）まで戻る。
+ *
+ * **`iota` より後の、値を明示した定数は除かない**（`maxLives = 3` など）。後ろに
+ * 置かれた定数を状態と見分けるには値の中身を読む必要があり、この指標の粗さを超える。
+ *
  * @param text BOM を落としたソース
  * @param tokens 字句の列
  * @returns 最大の組の名前の数（そういう組が無ければ 0）
  */
 function largestIotaBlockSize(text: string, tokens: readonly GoToken[]): number {
   let largest = 0;
+  let lines: Uint32Array | null = null;
   for (let i = 0; i + 1 < tokens.length; i += 1) {
     if (tokens[i]!.kind !== 'ident' || tokens[i]!.value !== 'const' || tokens[i + 1]!.value !== '(') {
       continue;
     }
     let depth = 0;
     let end = -1;
-    let hasIota = false;
+    let firstIota = -1;
     for (let j = i + 1; j < tokens.length; j += 1) {
       if (tokens[j]!.value === '(') {
         depth += 1;
@@ -438,16 +465,49 @@ function largestIotaBlockSize(text: string, tokens: readonly GoToken[]): number 
         }
         continue;
       }
-      if (tokens[j]!.kind === 'ident' && tokens[j]!.value === 'iota') {
-        hasIota = true;
+      if (firstIota === -1 && tokens[j]!.kind === 'ident' && tokens[j]!.value === 'iota') {
+        firstIota = j;
       }
     }
-    if (end === -1 || !hasIota) {
+    if (end === -1 || firstIota === -1) {
       continue;
     }
-    largest = Math.max(largest, countLineLeadingIdents(text, tokens, i + 2, end));
+    lines ??= lineIndexOf(text);
+    const from = declarationStart(lines, tokens, i + 2, firstIota);
+    largest = Math.max(largest, countLineLeadingIdents(lines, tokens, from, end));
   }
   return largest;
+}
+
+/**
+ * `iota` の字句から、それを含む宣言の始まり（名前の字句）まで戻った位置を返す（#676）。
+ *
+ * **同じ行の字句と、行をまたぐ式の続き**（前の行が {@link CONTINUATION_TOKENS} の字句で
+ * 終わっている）**をさかのぼる。** `stateA =` で改行して次の行に `iota` を書いた形でも、
+ * `stateA` から数え始める。
+ *
+ * @param lines 位置 → 行番号
+ * @param tokens 字句の列
+ * @param from 組の中身の先頭（`(` の次）。これより前へは戻らない
+ * @param iota `iota` の字句の位置
+ * @returns 宣言の始まりの位置
+ */
+function declarationStart(
+  lines: Uint32Array,
+  tokens: readonly GoToken[],
+  from: number,
+  iota: number,
+): number {
+  let start = iota;
+  while (start > from) {
+    const previous = tokens[start - 1]!;
+    const sameLine = (lines[previous.start] ?? 0) === (lines[tokens[start]!.start] ?? 0);
+    if (!sameLine && !CONTINUATION_TOKENS.has(previous.value)) {
+      break;
+    }
+    start -= 1;
+  }
+  return start;
 }
 
 /**
@@ -496,19 +556,18 @@ const CONTINUATION_TOKENS: ReadonlySet<string> = new Set([
  * **`iota` 自身は数えない。** 行の先頭には来ないが、`const ( iota )` のような書き方を
  * されたときに 1 つ余分に数えるのを避ける。
  *
- * @param text BOM を落としたソース
+ * @param lines 位置 → 行番号（{@link lineIndexOf}）
  * @param tokens 字句の列
  * @param from 範囲の先頭（含む）
  * @param to 範囲の末尾（含まない）
  * @returns 宣言の数
  */
 function countLineLeadingIdents(
-  text: string,
+  lines: Uint32Array,
   tokens: readonly GoToken[],
   from: number,
   to: number,
 ): number {
-  const lines = lineIndexOf(text);
   let count = 0;
   let countedLine = -1;
   for (let j = from; j < to; j += 1) {

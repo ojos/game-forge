@@ -492,9 +492,9 @@ describe('作品ページからの導線（#383）', () => {
       testEnv(),
     );
     const body = await page.text();
-    // 見た目は小さい副のボタン（#474 / 仕様 2.5.5）。
+    // **#665 から「…」メニューの中の文章の外のリンク**（経路は同じ）。
     expect(body).toContain(
-      `<a class="gf-button gf-button-secondary gf-button-sm" href="${workSourcePath(id)}">ソースコードを見る</a>`,
+      `<a class="gf-link-quiet" href="${workSourcePath(id)}">ソースコードを見る</a>`,
     );
     expect((await open(workSourcePath(id))).status).toBe(200);
   });

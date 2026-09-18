@@ -1007,41 +1007,10 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
  * 狭いのは逆である。読みやすさの上限（`--gf-measure`）は文字のための値であって、
  * 絵と枠のための値ではない。
  */
-.gf-context,
 .gf-frame {
   display: block;
   width: 100%;
   max-width: none;
-}
-
-/*
- * 4 要素のブロック（#474 / 仕様 2.5.4 / 承認したモックアップ Version 6）。**面は `.gf-block`（`@section parts`）が持つ。**
- *
- * **広い面ではスクリーンショットを左（20rem）、作者・元ゲーム・改造するを右に置き、狭い面では縦に積む。** 断点を
- * 書かない——**折り返しは flex の `wrap` だけで決まる**（右の塊が面の 55% を取れなくなったら次の行へ回る。1080px 以上の
- * 段では横に並び、768px の段と 390px では縦に積む）。**幅の `@media` を画面の区画に置かない**規約（冒頭の規約 3）の中で、
- * 段ごとの並べ替えも使わない——`order` も `display: contents` も無く、**DOM の順＝見た目の順＝Tab の順**のまま
- * （仕様 2.5.6 の #469 実装注記）。
- *
- * - スクリーンショットは右の塊と並ぶときも縦に積むときも `flex-grow` で残りを取るが、横に並ぶ間は右の塊が 999 倍で
- *   取るので、ほぼ 20rem のまま残る。縦に積むと面の幅いっぱいになる（390px のモックアップの形）
- * - `.gf-shot` の `<p>`（撮影中の枠）は `@section shell` の `p { max-width: var(--gf-measure) }` を受けるので、ここで外す
- */
-.gf-context {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: var(--gf-gap-3);
-}
-
-/*
- * **スクリーンショットは「遊ぶ」の口（`.gf-play-entry`）に包まれている**（M14-3 / #502。`src/work-play.ts`）。flex の子は口で、
- * スクリーンショットは口の幅いっぱいに置く（#474 のときの `.gf-context > .gf-shot` の値を口へ移した。デスクトップの見え方は変えない）。
- */
-.gf-context > .gf-play-entry {
-  flex: 1 1 20rem;
-  position: relative;
-  margin: 0;
 }
 
 .gf-play-entry > .gf-shot {
@@ -1052,31 +1021,6 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
 /* 画像は行の中に置かれると下に行の余白が付くので、ブロックにする（flex の子だったときと同じ高さにする）。 */
 .gf-play-entry > img.gf-shot {
   display: block;
-}
-
-.gf-context-body {
-  display: flex;
-  flex: 999 1 0;
-  flex-direction: column;
-  gap: var(--gf-gap-2);
-  min-width: 55%;
-}
-
-/*
- * 4 要素のブロック・ゲーム枠・「本文 | パネル」の間は、塊どうしの間隔（24px。仕様 2.5.8）で空ける（#474。モックアップ Version 6）。
- * ブロックの面が枠の黒に接すると、どこまでが面かが読めない。**枠と iframe の属性には触れず**、外側の余白だけを足す。
- */
-.gf-context {
-  margin-bottom: var(--gf-gap-4);
-}
-
-.gf-context ~ .gf-split-end {
-  margin-top: var(--gf-gap-4);
-}
-
-/* 塊の中の間は `gap` だけで取る（段落とフォームの既定の下の余白を外す）。 */
-.gf-context-body > * {
-  margin: 0;
 }
 
 .gf-shot {
@@ -1504,8 +1448,8 @@ html.gf-play-locked body {
 }
 
 /*
- * プレイ数（仕様 2.3.6 / #377）。**詳細情報パネル（`.gf-details`）の 1 行である**（#383 で
- * いいねの数の隣から移した）。余白は `.gf-details dl > div` が持つ。
+ * プレイ数（仕様 2.3.6 / #377）。**#665 から概要欄の見えている行（`.gf-watch-meta`）に出す**（#383 から #664 までは
+ * 詳細情報パネルの 1 行だった）。
  */
 .gf-plays {
   color: var(--gf-ink-soft);
@@ -1637,26 +1581,6 @@ html.gf-play-locked body {
 }
 
 /*
- * 「このゲームを改造する」（#267）。
- *
- * **主 KPI（フォーク率）の入口である。** ページの中で本文より強く、しかし作品の絵と
- * 枠より弱く置く——目立たせたいのは作品で、CTA はその次である。
- *
- * **ログイン済みでは見出しの 1 行、未ログインでは主のボタン（`<a class="gf-button gf-button-primary">`）を包む段落である。**
- * 上下の余白は 4 要素のブロックの `gap` が持ち（`.gf-context-body`）、見出しの上だけを 1 段足して元ゲームの行と分ける
- * （モックアップ Version 6）。#474 の前の塗りつぶしのリンク（`.gf-fork-link`）の見た目は、主のボタンの部品へ移した。
- */
-.gf-context-body > .gf-fork {
-  margin-top: var(--gf-gap-2);
-}
-
-.gf-fork {
-  font-size: var(--gf-text-h2);
-  font-weight: 700;
-  line-height: 1.5;
-}
-
-/*
  * その画面でいちばんしてほしい 1 つ（#267）。
  *
  * **1 画面に 1 つだけ付ける。** 2 つ付いた時点で、どちらも「いちばん」ではなくなる。
@@ -1774,26 +1698,6 @@ html.gf-play-locked body {
   gap: var(--gf-gap-2);
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
-}
-
-/*
- * 説明を入れる折りたたみ（#627 / 仕様 5.4・2.5.4）。**遊ぶ枠の直前**に置き、枠の上に来るのは
- * `<summary>` の 1 行だけにする（枠の上端は 390 / 768 / 1280px のどれでも +25〜26px。#626 の実測）。
- * **押せる物なので、指と焦点が当たることを見た目でも示す**（2.5.5 の「押せる物」）。**新しい色もトークンも足さない。**
- */
-.gf-work-description-peek {
-  margin: var(--gf-gap-3) 0 0;
-}
-
-.gf-work-description-peek > summary {
-  cursor: pointer;
-  color: var(--gf-ink-soft);
-  font-size: var(--gf-text-small);
-}
-
-/* 開いたときの見出しの上の余白を外す（`<summary>` のすぐ下に来るため）。 */
-.gf-work-description-peek .gf-work-description {
-  margin-top: var(--gf-gap-2);
 }
 
 /*
@@ -1919,9 +1823,9 @@ html.gf-play-locked body {
   margin: 0;
 }
 
-/* 作品ページの「編集する」（作者だけ）。題名（h1）の直下の 1 行。上の余白は h1 の下の余白がそのまま効く。 */
+/* 作品ページの「編集する」（作者だけ）。**#665 から作者の行の中の小さい副のボタン**（行の `gap` が間を取る）。 */
 .gf-work-edit-link {
-  margin: 0 0 var(--gf-gap-4);
+  margin: 0;
 }
 
 /* エディットページの上の行: 左に見出し、右に「変更を元に戻す」「保存」（Studio の右上）。狭い段では折り返す。 */
@@ -2044,6 +1948,222 @@ html.gf-play-locked body {
   margin-bottom: 0;
 }
 /* #664: ここまで */
+
+/* #665: 作品ページの視聴ページの配置（`src/work-page.ts` の `watchSection`。仕様 5.5 / 2.3.12 の #665 実装注記）——ここから。
+ *
+ * **YouTube から借りるのは配置だけで、見た目は仕様 2.5 のまま**（無彩色・面の色で区切り、枠線も影も使わない）。新しい色も
+ * トークンも足さない。**幅の `@media` を持たない**——本文と関連作品の 2 列は器の `.gf-split-end`（`@section shell`。段 3 で
+ * 右に 16rem の補助カラム、狭い段では本文の下）で、ここの並びは flex の `wrap` だけで折り返す（2.3.9）。
+ * 開く物（フォークする・共有・…・もっと見る）はどれも `<details>` / `<summary>` で、JavaScript を要求しない。
+ */
+
+/* 本文の列。塊どうしの間は 16px（`.gf-work-main` と同じ段）。 */
+.gf-watch-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-3);
+  min-width: 0;
+}
+
+.gf-watch-main > * {
+  margin: 0;
+}
+
+/*
+ * ゲームの位置の「遊ぶ」の口（タッチ端末でだけ見せる。デスクトップと JavaScript の無い形では、すぐ下に埋め込みが入る）。
+ * 下書きの試遊の口（`.gf-work-draft-play`）と同じ規則である。
+ */
+.gf-watch-player > .gf-play-entry {
+  position: relative;
+}
+
+.gf-watch-player > .gf-play-entry:not(.gf-play-entry-touch) {
+  display: none;
+}
+
+/* 口を隠しているあいだは、空の器が列の `gap` を 1 つ余分に取らないよう器ごと隠す（`:has` の無い古い端末では 16px 空くだけ）。 */
+.gf-watch-player:not(:has(.gf-play-entry-touch)) {
+  display: none;
+}
+
+/* 作品名。ゲームのすぐ下なので、見出しの上の余白（`@section base`）を外す。 */
+.gf-watch-title {
+  margin: 0;
+}
+
+/* 作者の行: アイコン・名前・印を左、「編集する」「フォークする」を右。収まらなければ折り返す。 */
+.gf-watch-author {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+}
+
+.gf-watch-author .gf-author {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-2);
+  margin: 0 auto 0 0;
+}
+
+/*
+ * 「フォークする」（主のボタン）。**開くと行の下に入力欄が出る**——開いているあいだは行の幅いっぱいを取り、
+ * ボタンは右に残す（YouTube の「チャンネル登録」の位置）。`<summary>` の既定の三角は外す（ボタンの部品が押せることを示す）。
+ */
+.gf-fork-open > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.gf-fork-open > summary::-webkit-details-marker {
+  display: none;
+}
+
+.gf-fork-open[open] {
+  display: flex;
+  flex: 1 1 100%;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--gf-gap-3);
+}
+
+.gf-fork-panel {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-2);
+}
+
+.gf-fork-panel > * {
+  margin: 0;
+}
+
+/* 操作の行: いいね・共有・「…」。開くと、その下に中身が出る（行の幅いっぱい）。 */
+.gf-watch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+}
+
+.gf-watch-share > summary,
+.gf-watch-more > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.gf-watch-share > summary::-webkit-details-marker,
+.gf-watch-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.gf-watch-share[open],
+.gf-watch-more[open] {
+  display: flex;
+  flex: 1 1 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--gf-gap-2);
+}
+
+.gf-watch-share[open] > .gf-work-share,
+.gf-watch-more-menu {
+  align-self: stretch;
+}
+
+.gf-watch-more-menu > * {
+  margin: 0;
+}
+
+.gf-watch-more-menu > * + * {
+  margin-top: var(--gf-gap-2);
+}
+
+/* 概要欄（面のブロック）。見えている行はプレイ数・公開日時・タグで、「もっと見る」の中に説明・元ゲーム・作品の情報。 */
+.gf-watch-overview > * {
+  margin: 0;
+}
+
+.gf-watch-overview > * + * {
+  margin-top: var(--gf-gap-2);
+}
+
+.gf-watch-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--gf-gap-3);
+  font-size: var(--gf-text-small);
+}
+
+.gf-watch-overview-more > summary {
+  cursor: pointer;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-watch-overview-more > :not(summary) {
+  margin: var(--gf-gap-3) 0 0;
+}
+
+/* 関連作品（右カラム。狭い段では本文の下）。1 件ずつ、画像・題名・作者・関係の札を縦に並べる。 */
+.gf-related {
+  min-width: 0;
+}
+
+.gf-related h2 {
+  margin: 0 0 var(--gf-gap-2);
+  font-size: var(--gf-text);
+}
+
+.gf-related-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-3);
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gf-related-list li {
+  margin: 0;
+}
+
+.gf-related-link {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-1);
+}
+
+/* 画像の面と比は `.gf-shot`（撮れていないときは `.gf-shot-pending`）の部品を借りる。ここでは行の中の余白を外すだけ。 */
+img.gf-related-shot {
+  display: block;
+}
+
+.gf-related-shot {
+  max-width: none;
+  margin: 0;
+  font-size: var(--gf-text-small);
+}
+
+.gf-related-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-1) var(--gf-gap-2);
+}
+
+.gf-related-title {
+  flex: 1 1 100%;
+  font-weight: 700;
+}
+
+.gf-related-author {
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+/* #665: ここまで */
 
 /* ==========================================================================
    @section signed-in — ログイン後の画面（#268）

@@ -871,7 +871,7 @@ describe('運営フラグ（#334）との組み合わせ', () => {
     // `<strong>` の外＝リンクの外である（`src/work-page.ts` の `authorLabel`）。
     // `/users/` の綴りは `authorPagePath` から取る（検査へ書き写さない）。
     expect(body).toContain(
-      `作者: <strong><a class="gf-author-link gf-link-quiet" href="${authorPagePath(userId)}">新しい運営の名前</a></strong>` +
+      `<strong><a class="gf-author-link gf-link-quiet" href="${authorPagePath(userId)}">新しい運営の名前</a></strong>` +
         ` <span class="gf-chip gf-operator">${OPERATOR_MARK}</span>`,
     );
     // **この 2 行が #341 の主眼である。** 「決めた名前とは別に印がちょうど 1 つ出る」

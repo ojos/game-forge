@@ -872,8 +872,8 @@ describe('フォークの口（5.3 / M5-1 / #32）', () => {
 
     // **押せば 429 で断られる操作を、押せる形で出さない**（4.4 の裏返し）。
     expect(body).not.toContain(FORK_PATH);
-    // **3.4-5 の 4 要素は 1 つも条件付きにしない。** 見出しと残数は残る。
-    expect(body).toContain('このゲームをフォークする');
+    // **「フォークする」と残数は残る**（#665 から作者の行の `<details>`。押せない主にしないので副の見た目）。
+    expect(body).toContain('<summary class="gf-fork gf-button gf-button-secondary">フォークする</summary>');
     expect(body).toContain(remainingQuotaNotice(0));
   });
 });
@@ -986,8 +986,8 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     // 画面の綴りが変わっても緑のままになる）。
     const second = await (await open(morePath)).text();
     expect(second).toContain(`<a class="gf-link-quiet" href="${workPagePath(newestFirst[20]!)}">改造 0</a>`);
-    // 2 頁目には次が無いので「もっと見る」は出ない。
-    expect(second).not.toContain('もっと見る');
+    // 2 頁目には次が無いので「もっと見る」は出ない（#665 の概要欄の「もっと見る」とは別の、系統の頁送り）。
+    expect(second).not.toContain('gf-forks-more');
     // 戻る道はある。
     expect(second).toContain(`<a class="gf-button gf-button-secondary gf-button-sm" href="${workPagePath(id)}">前へ</a>`);
   });
@@ -999,7 +999,7 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     expect(body).toContain('このゲームからのフォーク: 0 件');
     // **クラスの綴りの前方だけで見る**（#474 で `gf-block gf-block-rows` が足された。完全一致だと空振りする）。
     expect(body).not.toContain('<ul class="gf-fork-list');
-    expect(body).not.toContain('もっと見る');
+    expect(body).not.toContain('gf-forks-more');
   });
 
   it('壊れた forks の値で 500 にしない（1 頁目に倒す）', async () => {
@@ -1031,7 +1031,7 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     expect(body).toContain('唯一の改造');
     // 1 頁目なので「前へ」も「もっと見る」も出ない。
     expect(body).not.toContain('前へ');
-    expect(body).not.toContain('もっと見る');
+    expect(body).not.toContain('gf-forks-more');
   });
 
   it('子の題名を escape する（UGC 由来）', async () => {
@@ -1363,13 +1363,13 @@ function panelLikeRow(count: number): string {
 }
 
 /**
- * 詳細情報パネルのプレイ数の行（#383）。
+ * 概要欄のプレイ数（#665。#383 から #664 までは詳細情報パネルの行だった）。
  *
  * @param count プレイ数
  * @returns HTML の断片
  */
 function playRow(count: number): string {
-  return `<div class="gf-plays"><dt>プレイ</dt><dd>${count}</dd></div>`;
+  return `<span class="gf-plays">プレイ ${count} 回</span>`;
 }
 
 describe('著名 IP 名の置換を作者へ開示する（6.2 / #39）', () => {
@@ -1554,7 +1554,7 @@ describe('運営の印（#334）', () => {
    */
   function expectedAuthorLine(userId: string, name: string, mark = ''): string {
     const link = `<a class="gf-author-link gf-link-quiet" href="${authorPagePath(userId)}">${escapeHtml(name)}</a>`;
-    return `<p class="gf-author">作者: <strong>${link}</strong>${mark}</p>`;
+    return `<p class="gf-author"><strong>${link}</strong>${mark}</p>`;
   }
 
   it('フラグが立った作者の作品ページには、名前の隣に印が出る', async () => {
@@ -2119,17 +2119,20 @@ describe('プレイ数（#377 / 仕様 2.3.6）', () => {
     };
   }
 
-  it('0 なら出さず、1 以上なら詳細情報パネルにいいねの数と並べて出す（#383 で移した）', () => {
+  it('0 なら出さず、1 以上なら概要欄の見えている行に出す（#665。YouTube の視聴回数の位置）', () => {
     const published = { ...baseView, published: true, details: sampleDetails() };
     expect(renderWorkPage({ ...published, playCount: 0 })).not.toContain('gf-plays');
     const body = renderWorkPage({ ...published, playCount: 8, likeCount: 2 });
-    // **パネルのいいねの行の直後に置く**（#377 ではボタンの隣でいいねの直前だった。#383 でパネルの行になった）。
-    expect(body).toContain(`${panelLikeRow(2)}\n${playRow(8)}`);
-    // いいねの数はボタンの隣にも残る（5.8 の対。同じ値）。
+    // **概要欄の最初の行（「もっと見る」の外）に置く**。
+    const overview = body.slice(body.indexOf('<section class="gf-watch-overview'));
+    expect(overview.indexOf(playRow(8))).toBeGreaterThan(0);
+    expect(overview.indexOf(playRow(8))).toBeLessThan(overview.indexOf('<summary>もっと見る</summary>'));
+    // いいねの数はボタンの隣にも残り、作品の情報の行にも同じ値が並ぶ（5.8 の対）。
     expect(body).toContain(likeRow(2));
-    // **同じ数を 2 か所に出さない**（パネルの外にプレイ数の表示が残っていない）。
+    expect(body).toContain(panelLikeRow(2));
+    // **同じ数を 2 か所に出さない**（作品の情報の中にプレイ数の行を置かない）。
     expect(body.split('gf-plays').length - 1).toBe(1);
-    expect(body).not.toContain('プレイ 8');
+    expect(body.split('プレイ').length - 1).toBe(1);
   });
 
   it('公開済みの作品ページは D1 の写しを出し、計上のスクリプトを iframe の直前に置き、DO を呼ばない', async () => {
@@ -2232,10 +2235,10 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
    * @returns パネルの HTML（無ければ null）
    */
   function panelOf(body: string): string | null {
-    return /<aside class="gf-details[ "][\s\S]*?<\/aside>/u.exec(body)?.[0] ?? null;
+    return /<div class="gf-details"[\s\S]*?<\/dl>\n<\/div>/u.exec(body)?.[0] ?? null;
   }
 
-  it('来歴を並べる（作品 ID・日時・元ゲーム・配信サイズ・改造された数・いいね・プレイ）とソースへのリンク', async () => {
+  it('来歴を並べる（作品 ID・日時・元ゲーム・配信サイズ・改造された数・いいね）。ソースへのリンクは「…」メニュー（#665）', async () => {
     const parent = await seedPublished('parent');
     const { id } = await seedPublished('shown');
     await env.DB.prepare('update games set parent_id = ?, like_count = 3, play_count = 12 where id = ?')
@@ -2244,7 +2247,8 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
     // 親の側から見て、改造された数が実件数で出る（`fork_count` 列は読まない。5.5）。
     await env.DB.prepare('update games set fork_count = 99 where id = ?').bind(parent.id).run();
 
-    const panel = panelOf(await (await open(workPagePath(id))).text());
+    const page = await (await open(workPagePath(id))).text();
+    const panel = panelOf(page);
     expect(panel, 'パネルが無い').not.toBeNull();
     expect(panel).toContain(`<dt>作品 ID</dt><dd><code>${id}</code></dd>`);
     expect(panel).toMatch(/<dt>生成日時<\/dt><dd><time datetime="[^"]+">\d{4}-\d{2}-\d{2} \d{2}:\d{2}<\/time>/u);
@@ -2254,13 +2258,17 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
     expect(panel).toContain('<dt>Wasm のサイズ</dt><dd>2.3 MB（配信時の圧縮後）</dd>');
     expect(panel).toContain('<dt>フォークされた数</dt><dd>0 件</dd>');
     expect(panel).toContain(panelLikeRow(3));
-    expect(panel).toContain(playRow(12));
-    expect(panel).toContain(
-      `<a class="gf-button gf-button-secondary gf-button-sm" href="${workSourcePath(id)}">ソースコードを見る</a>`,
-    );
-    // **項目名と値の並び（`.gf-kv`）で、パネルは面のブロックである**（#474 / 仕様 2.5.4）。
-    expect(panel).toContain('<aside class="gf-details gf-block"');
+    // **プレイ数は概要欄の見えている行に出し、パネルには並べない**（#665。同じ数を 2 か所に出さない）。
+    expect(panel).not.toContain('プレイ');
+    expect(page).toContain(playRow(12));
+    // **ソースへのリンクは「…」メニューの中**（#665）。経路は `/source/<id>` のまま。
+    const menu = /<details class="gf-watch-more">[\s\S]*?<\/details>\n<\/div>\n<\/details>|<details class="gf-watch-more">[\s\S]*?<\/div>\n<\/details>/u.exec(page)?.[0] ?? '';
+    expect(menu).toContain(`<a class="gf-link-quiet" href="${workSourcePath(id)}">ソースコードを見る</a>`);
+    expect(panel).not.toContain(workSourcePath(id));
+    // **項目名と値の並び（`.gf-kv`）**（#474 / 仕様 2.5.4）。**#665 から概要欄（面のブロック）の「もっと見る」の中にある。**
     expect(panel).toContain('<dl class="gf-kv">');
+    const overview = page.slice(page.indexOf('<section class="gf-watch-overview gf-block"'));
+    expect(overview.indexOf('<div class="gf-details"')).toBeGreaterThan(overview.indexOf('<summary>もっと見る</summary>'));
     // **モデル名の行は無い**（確定27。作品からモデルへ辿れない）。
     expect(panel).not.toContain('モデル');
 
@@ -2268,33 +2276,36 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
     expect(parentPanel).toContain('<dt>フォークされた数</dt><dd>1 件</dd>');
   });
 
-  it('ロード中画面と枠は全幅のまま、その下を「本文 | パネル」にする（本文が先）', async () => {
+  it('ゲームが最上段で、作品名・作者の行・操作の行・概要欄・フォークの一覧の順に並ぶ（#665）', async () => {
     const { id } = await seedPublished('layout');
     const body = await (await open(workPagePath(id))).text();
-    const split = body.indexOf('<div class="gf-split-end">');
-    expect(split, '2 カラムの器が無い').toBeGreaterThan(0);
-    // 枠・ロード中画面は器より前（全幅）。
-    expect(body.indexOf('<iframe class="gf-frame"')).toBeLessThan(split);
-    expect(body.indexOf('<div class="gf-context gf-block">')).toBeLessThan(split);
-    // 本文（改造の一覧）が先、パネルが後（狭い段では本文の下に積まれる）。
-    const main = body.indexOf('<div class="gf-work-main">');
-    expect(main).toBeGreaterThan(split);
-    expect(body.indexOf('このゲームからのフォーク')).toBeGreaterThan(main);
-    expect(body.indexOf('<aside class="gf-details gf-block"')).toBeGreaterThan(body.indexOf('このゲームからのフォーク'));
+    const order = [
+      '<noscript class="gf-play-noscript"><iframe class="gf-frame"',
+      '<h1 class="gf-watch-title">',
+      '<div class="gf-watch-author">',
+      '<div class="gf-watch-actions">',
+      '<section class="gf-watch-overview gf-block"',
+      'このゲームからのフォーク',
+    ].map((needle) => body.indexOf(needle));
+    expect(order.every((at) => at > 0), JSON.stringify(order)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // **サムネイルのブロック（#30 のロード中画面）は無い**（同じ絵を 2 回見せない）。
+    expect(body).not.toContain('gf-context');
     // 説明（#388）はパネルに入れない。
     expect(panelOf(body)).not.toContain('作品の説明');
   });
 
   it('審査で新規露出を止めた作品では、パネルは出すがソースへのリンクを出さない', async () => {
     const { id } = await seedPublished('queued');
-    expect(panelOf(await (await open(workPagePath(id))).text())).toContain(workSourcePath(id));
+    expect(await (await open(workPagePath(id))).text()).toContain(workSourcePath(id));
 
     await env.DB.prepare('update games set review_state = ? where id = ?').bind(REVIEW_QUEUED, id).run();
-    const panel = panelOf(await (await open(workPagePath(id))).text());
+    const body = await (await open(workPagePath(id))).text();
+    const panel = panelOf(body);
     expect(panel, 'パネルごと消えている').not.toBeNull();
-    // **押せば 404 になるリンクを出さない**（4.4）。変異: `row.review_visible === 1 &&` を外すと赤。
-    expect(panel).not.toContain(workSourcePath(id));
-    expect(panel).not.toContain('ソースコードを見る');
+    // **押せば 404 になるリンクを出さない**（4.4。「…」メニューにも）。変異: `row.review_visible === 1 &&` を外すと赤。
+    expect(body).not.toContain(workSourcePath(id));
+    expect(body).not.toContain('ソースコードを見る');
   });
 
   it('未公開の作品は作者以外にパネルを出さず、作者のプレビューにはソースへのリンクを出さない。取り下げた作品には出さない', async () => {
@@ -2400,7 +2411,7 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
    * @returns 要素の開始タグから閉じタグまで
    */
   function primaries(html: string): string[] {
-    return html.match(/<(a|button)\b[^>]*\bgf-button-primary\b[^>]*>[\s\S]*?<\/\1>/gu) ?? [];
+    return html.match(/<(a|button|summary)\b[^>]*\bgf-button-primary\b[^>]*>[\s\S]*?<\/\1>/gu) ?? [];
   }
 
   /**
@@ -2430,7 +2441,7 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     return { userId, id };
   }
 
-  it('公開済みの作品ページの主のボタンは「改造する」の 1 つだけ（未ログイン・ログイン済み・作者本人）', async () => {
+  it('公開済みの作品ページの主のボタンは「フォークする」の 1 つだけ（未ログイン・ログイン済み・作者本人。#665 で作者の行へ）', async () => {
     const { userId, id } = await seedPublished('primary');
     const visitor = await seedUser('parts-primary-visitor');
 
@@ -2438,24 +2449,28 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     const member = await (await open(workPagePath(id), await sessionCookie(visitor))).text();
     const owner = await (await open(workPagePath(id), await sessionCookie(userId))).text();
 
-    // 未ログインは登録へ送る `<a>`（移動）、ログイン済みと作者は差分プロンプトの送信 `<button>`（動作）。
+    // 未ログインは登録へ送る `<a>`（移動）、ログイン済みと作者は入力欄を開く `<summary>`（#665。押すまで閉じている）。
     expect(anonymous.match(PRIMARY) ?? []).toHaveLength(1);
-    expect(primaries(anonymous)[0]).toMatch(/^<a class="gf-fork-link gf-button gf-button-primary" href="[^"]*from=fork-cta[^"]*">このゲームをフォークする<\/a>$/u);
+    expect(primaries(anonymous)[0]).toMatch(/^<a class="gf-fork-link gf-button gf-button-primary" href="[^"]*from=fork-cta[^"]*">フォークする<\/a>$/u);
     for (const [name, body] of [
       ['ログイン済み', member],
       ['作者本人', owner],
     ] as const) {
       expect(body.match(PRIMARY) ?? [], name).toHaveLength(1);
-      expect(primaries(body)[0], name).toBe('<button type="submit" class="gf-button gf-button-primary">この内容でフォークする</button>');
-      // **主はフォークのフォームの中にある**（見た目だけ主の別の送信ではない）。
-      const fork = body.slice(body.indexOf(`action="${FORK_PATH}"`));
-      expect(fork.slice(0, fork.indexOf('</form>')), name).toContain('gf-button-primary');
+      expect(primaries(body)[0], name).toBe('<summary class="gf-fork gf-button gf-button-primary">フォークする</summary>');
+      // **開くと、いまと同じフォークのフォームがある**（送信は副。主は 1 画面に 1 つまで）。
+      const fork = body.slice(body.indexOf('<details class="gf-fork-open">'));
+      const opened = fork.slice(0, fork.indexOf('</details>'));
+      expect(opened, name).toContain(`action="${FORK_PATH}"`);
+      expect(opened, name).toContain('<button type="submit" class="gf-button gf-button-secondary">この内容でフォークする</button>');
       expect(bareButtons(body), name).toEqual([]);
     }
-    // **作者本人に足すのは「編集する」の 1 行（小さい副のボタン）だけで、主は増えない**（#664。設定の口はエディットページへ移した）。
+    // **作者本人に足すのは「編集する」（小さい副のボタン）だけで、主は増えない**（#664。#665 で作者の行へ移した）。
     expect(owner).toContain(
-      `<p class="gf-work-edit-link"><a class="gf-button gf-button-secondary gf-button-sm" href="${workEditPath(id)}">編集する</a></p>`,
+      `<a class="gf-work-edit-link gf-button gf-button-secondary gf-button-sm" href="${workEditPath(id)}">編集する</a>`,
     );
+    const authorRowOf = (html: string): string => html.slice(html.indexOf('<div class="gf-watch-author">'), html.indexOf('<div class="gf-watch-actions">'));
+    expect(authorRowOf(owner)).toContain('gf-work-edit-link');
     expect(owner).not.toContain('gf-work-settings');
     expect(member).not.toContain('gf-work-edit-link');
     expect(bareButtons(anonymous)).toEqual([]);
@@ -2515,14 +2530,16 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     expect(body).toContain('<p class="gf-work-tags"><span class="gf-work-tags-label">タグ</span><a class="gf-chip"');
     expect(body).toContain(`<p class="gf-block gf-work-share-url"><code>https://app.example${workPagePath(id)}</code></p>`);
     expect(body).toContain('<ul class="gf-fork-list gf-block gf-block-rows">');
-    expect(body).toContain('<aside class="gf-details gf-block" aria-labelledby="gf-details-heading">');
+    expect(body).toContain('<div class="gf-details" aria-labelledby="gf-details-heading">');
     expect(body).toContain('<div><dt>Wasm のサイズ</dt><dd>2.3 MB（配信時の圧縮後）</dd></div>');
-    // 4 要素のブロックの並びは今のまま（スクリーンショット → 作者 → 元ゲーム → 改造する。3.4-5）。
-    const context = body.slice(body.indexOf('<div class="gf-context gf-block">'), body.indexOf('<iframe'));
-    const elements = ['gf-shot', '<p class="gf-author">', '<p class="gf-parent">', '<p class="gf-fork">'].map((needle) =>
-      context.indexOf(needle),
-    );
-    expect(elements.every((at) => at > 0)).toBe(true);
+    // 「共有」「…」「もっと見る」は `<details>` で、共有と「…」の開く側は小さい副のボタン（#665）。
+    expect(body).toContain('<summary class="gf-button gf-button-secondary gf-button-sm">共有</summary>');
+    expect(body).toContain('<summary class="gf-button gf-button-secondary gf-button-sm" aria-label="その他の操作">…</summary>');
+    expect(body).toContain('<summary>もっと見る</summary>');
+    // 作者の行の並び（アイコン・名前 → 編集する → フォークする）。
+    const row = body.slice(body.indexOf('<div class="gf-watch-author">'), body.indexOf('<div class="gf-watch-actions">'));
+    const elements = ['<p class="gf-author">', '<details class="gf-fork-open">'].map((needle) => row.indexOf(needle));
+    expect(elements.every((at) => at >= 0)).toBe(true);
     expect([...elements].sort((a, b) => a - b)).toEqual(elements);
     // **iframe の属性は変えない**（7.2）。
     expect(body).toContain('<iframe class="gf-frame" src="https://sandbox.example/g/x/" sandbox="allow-scripts" title="ゲーム"></iframe>');
@@ -2532,7 +2549,7 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     const id = '00000000-0000-4000-8000-000000000475';
     const body = renderWorkPage({ ...baseView, published: true, signedIn: true, dailyRemaining: 0, forkableId: id });
     expect(body.match(PRIMARY) ?? []).toHaveLength(0);
-    expect(body).toContain('<p class="gf-fork">このゲームをフォークする</p>');
+    expect(body).toContain('<summary class="gf-fork gf-button gf-button-secondary">フォークする</summary>');
   });
 
   it('未公開の作品（作者）のエディットページの主は「保存」だけで、リフォージ・変更を元に戻すは副（#664）', async () => {
@@ -2566,13 +2583,14 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     expect(missing).toContain('<h1>作品が見つかりません</h1>\n<p class="gf-block">URL が正しいかご確認ください。</p>');
   });
 
-  it('作品の情報パネルと 4 要素のブロックの規則は、枠線・影・並べ替え・幅の断点を持たない（app.css の `@section work`）', () => {
+  it('作品の情報パネルと視聴ページの配置の規則は、枠線・影・並べ替え・幅の断点を持たない（app.css の `@section work`。#665）', () => {
     const css = env.TEST_APP_CSS;
     const start = css.indexOf('\n   @section work ');
     const end = css.indexOf('\n   @section ', start + 1);
     expect(start, '`@section work` が見つかりません').toBeGreaterThan(0);
     const section = css.slice(start, end).replaceAll(/\/\*[\s\S]*?\*\//gu, '');
-    for (const selector of ['.gf-details', '.gf-context', '.gf-context-body', '.gf-work-settings']) {
+    // **#665 で 4 要素のブロック（`.gf-context`）は無くなった**（ゲームを最上段へ上げた）。代わりに視聴ページの塊を見る。
+    for (const selector of ['.gf-details', '.gf-watch-main', '.gf-watch-author', '.gf-watch-actions', '.gf-related-list', '.gf-work-settings']) {
       const rules = [...section.matchAll(new RegExp(`(?:^|\\n)${selector.replace('.', '\\.')}\\s*\\{([^}]*)\\}`, 'gu'))];
       expect(rules.length, `${selector} の規則が無い`).toBeGreaterThan(0);
       for (const rule of rules) {

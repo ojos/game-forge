@@ -15,6 +15,7 @@
 | 遮断の記録の掃除（#37） | `scripts/moderation-prune.sh` | D1 の `moderation_blocks` |
 | 作品が読むキーの欠けの点検と埋め戻し（#493） | `scripts/input-keys-backfill.sh` | D1 の `games` / `game_revisions` / `source_input_keys` と R2 のソース |
 | 生成物の質の指標の点検と埋め戻し（#605） | `scripts/source-quality-backfill.sh` | D1 の `games` / `game_revisions` / `source_quality_metrics` と R2 のソース |
+| タイル地図の作品で、スタート → カギ → ゴールに届くか（#675） | `scripts/tile-reachability.sh` | 手元のソース、または D1 の `games` / `game_revisions` と R2 のソース |
 | 数え方の定義（両方が共有する） | `scripts/report-window.sh` | — |
 | 自己検査 | `scripts/report-selftest.sh` | 使い捨ての手元 D1 と宣言 |
 
@@ -694,6 +695,59 @@ bash scripts/input-keys-backfill.sh --remote            # もう一度数える�
 
 **書くのは `source_input_keys` だけです。** `games` と `game_revisions` は読むだけで、R2 にも書きません。
 `--remote` は `CLOUDFLARE_API_TOKEN` を要します（`scripts/load-project-env.sh` で環境へ移すだけで、値はスクリプトへ持ち込みません）。
+
+## タイル地図の到達を確かめる（#675）
+
+**タイル地図で面を組む作品（迷路・カギと扉など）で、スタートからカギ、カギからゴールへ届くかを、地図を組み立てて
+探索して確かめます。** 遊べない作品の 4 回のうち 2 回がこの形でした（`ネズミのカギ` の版 1 と版 3）。**判定は見る人の
+道具で、生成の失敗にはしません**（利用者の決定。仕様 6.1 の #675 注記）。結果はどこにも保存しません。
+
+```bash
+bash scripts/tile-reachability.sh <作品 id>                   # 本番の作品のいまの版（読み取りのみ）
+bash scripts/tile-reachability.sh --all-revisions <作品 id>   # 本番の作品の全部の版（読み取りのみ）
+bash scripts/tile-reachability.sh path/to/source.go           # 手元のファイル（オフライン）
+bash scripts/tile-reachability.sh --json <作品 id>            # JSON で出す
+```
+
+作品 id は `/works/<id>` の `<id>` で、先頭 8 文字以上の前方一致でも引けます（1 件に決まらなければ止まります）。
+作品 id を渡すと、D1 へ `SELECT` を送って `source_key` を読み、R2 から `object get` でソースを取ります。**本番へは
+1 行も書きません。** 資格情報は `scripts/load-project-env.sh` で環境へ移すだけです。**Go のツールチェインが要ります**
+（判定の道具 `scripts/tile-reachability/` を手元でビルドし、作品の地図のコードも手元でビルドして動かします）。
+
+### 読み方
+
+```
+[tile-reachability] 911782d6-rev-3-7e063858.go: 届かない面がある（面 [1]）
+[tile-reachability]   面 1: スタート(2,2)（届くマス 24）→ カギ(5,5): 届かない（カギが壁のマスの上） / カギ → ゴール(17,7): —（カギに届かない。仮にカギを持っていても届かない） / 扉(10,5): 開けてもゴールに届かないので、塞いでいるかは読めない
+[tile-reachability]   面 2: スタート(2,2)（届くマス 149）→ カギ(4,7): 届く / カギ → ゴール(18,7): 届く / 扉(14,7) を閉じたまま → ゴール: 届かない（扉が道を塞いでいる）
+```
+
+座標は **(列, 行)** で、0 から数えます。「届くマス」は扉を閉じたままスタートから行けるマスの数で、小さければ
+自機が閉じ込められています。**「扉は飾り」は遊べないことを意味しません**（扉を開けなくてもゴールへ行けるだけです）。
+
+| 最初の行 | 終了コード | 意味 |
+|---|---|---|
+| `全部の面で届く` | 0 | どの面でもカギにもゴールにも届く |
+| `届かない面がある（面 [...]）` | 1 | 挙げた面で、カギかゴールに届かない |
+| `判定しない — <理由>` | 3 | 地図を取り出せない、または曖昧（推測で判定しない） |
+| （エラー） | 2 | 使い方の誤り・Go や wrangler が無い・D1 / R2 を読めない |
+
+**「判定しない」は壊れているという意味ではありません。** 地図を乱数で作る作品、地図の無いゲーム、名前の付け方が
+外れた作品などが落ちます。条件の一覧は仕様 6.1 の #675 注記と `scripts/tile-reachability/extract.go` の冒頭にあります。
+
+### 手元で生成物のコードを動かします
+
+作品のソースから、**地図を組み立てる関数とそれが参照する宣言だけ**を抜き出してビルドし、10 秒の上限を掛けて
+動かします。ゲームループ・描画・`main` は動かしません。抜き出した先の import が標準ライブラリの計算系の外
+（ebiten・`os`・`net`・`math/rand`・`time` など）に届く作品は、動かさずに「判定しない」とします。**無限ループは
+時間で止めますが、メモリの上限は掛けていません。**
+
+### 検査
+
+仕込み（ネズミのカギの 3 版と、判定しない作品）での判定は `scripts/tile-reachability/` の `go test` が見ます。
+`scripts/acceptance.sh` が回し、CI（`.github/workflows/verify.yml`）でも走ります。
+
+---
 
 ## 気づく経路は作っていません
 

@@ -1,0 +1,45 @@
+package main
+
+// 地図を実行時に乱数で作る作品（issue の scope.out）。判定しない。
+
+import "math/rand"
+
+const (
+	rows     = 10
+	cols     = 10
+	tileSize = 16
+	tileWall = 1
+)
+
+var levels [2][rows][cols]int
+var keyPos = [2][2]int{{3, 3}, {4, 4}}
+var exitPos = [2][2]int{{8, 8}, {7, 7}}
+
+func buildLevels() {
+	for i := range levels {
+		for y := 0; y < rows; y++ {
+			for x := 0; x < cols; x++ {
+				if rand.Intn(4) == 0 {
+					levels[i][y][x] = tileWall
+				}
+			}
+		}
+		levels[i][keyPos[i][1]][keyPos[i][0]] = 0
+		levels[i][exitPos[i][1]][exitPos[i][0]] = 0
+	}
+}
+
+type Player struct{ x, y float64 }
+
+type Game struct{ player Player }
+
+func (g *Game) reset() {
+	buildLevels()
+	g.player.x = float64(1*tileSize + tileSize/2)
+	g.player.y = float64(1*tileSize + tileSize/2)
+}
+
+func main() {
+	g := &Game{}
+	g.reset()
+}

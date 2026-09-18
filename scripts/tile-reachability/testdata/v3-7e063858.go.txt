@@ -1,0 +1,691 @@
+package main
+
+import (
+	"errors"
+	"image/color"
+	"math"
+	"math/rand"
+	"strconv"
+
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/audio"
+	"github.com/hajimehoshi/ebiten/v2/inpututil"
+	"github.com/hajimehoshi/ebiten/v2/text/v2"
+	"github.com/hajimehoshi/ebiten/v2/vector"
+	"gameforge.local/sandbox/jpfont"
+)
+
+const (
+	screenW  = 320
+	screenH  = 240
+	tileSize = 16
+)
+
+const (
+	stateTitle = iota
+	statePlaying
+	stateOver
+	stateClear
+)
+
+const (
+	cols = screenW / tileSize // 20
+	rows = screenH / tileSize // 15
+)
+
+const (
+	tileFloor = 0
+	tileWall  = 1
+	tileDoor  = 2
+)
+
+var roomMaps [3][rows][cols]int
+
+var roomSpiderCount = [3]int{2, 3, 4}
+
+// key positions per room (col, row)
+var keyPos = [3][2]int{{5, 5}, {4, 7}, {9, 11}}
+
+// door positions
+// Room0: col10 row5 — horizontal wall gap, only path from key area to exit side
+// Room1: col14 row7 — vertical wall gap, only path to right side where exit is
+// Room2: col9 row13 (unchanged)
+var doorPos = [3][2]int{{10, 5}, {14, 7}, {9, 13}}
+
+// exit positions
+// Room0: col17 row7 (right area, reachable only after passing door)
+// Room1: col18 row7 (right edge area, reachable only after passing door)
+// Room2: col10 row14 (bottom edge, unchanged)
+var exitPos = [3][2]int{{17, 7}, {18, 7}, {10, 14}}
+
+var artPalette = map[byte]color.RGBA{
+	'1': {0x88, 0x55, 0x22, 0xff},
+	'2': {0xcc, 0x99, 0x44, 0xff},
+	'3': {0xff, 0xee, 0xcc, 0xff},
+	'4': {0x44, 0x22, 0x00, 0xff},
+	'5': {0xaa, 0x77, 0x33, 0xff},
+	'6': {0x88, 0x88, 0x88, 0xff},
+	'7': {0xcc, 0xcc, 0xcc, 0xff},
+	'8': {0x44, 0x44, 0x44, 0xff},
+	'9': {0xff, 0xff, 0x00, 0xff},
+	'a': {0xff, 0xaa, 0x00, 0xff},
+	'b': {0x33, 0x33, 0x33, 0xff},
+}
+
+var mouseArt = []string{
+	"..111...",
+	".11511.",
+	"1133311",
+	"1155511",
+	".11111.",
+	"..121..",
+}
+
+var spiderArt = []string{
+	"8.6668.8",
+	"88.66.88",
+	".866668.",
+	".8b66b8.",
+	"8.6668.8",
+	"8..66..8",
+}
+
+var keyArt = []string{
+	".999.",
+	"9aaa9",
+	".999.",
+	"..9..",
+	".999.",
+	"..9..",
+}
+
+func newSprite(art []string) *ebiten.Image {
+	if len(art) == 0 {
+		return ebiten.NewImage(1, 1)
+	}
+	w := len(art[0])
+	h := len(art)
+	img := ebiten.NewImage(w, h)
+	for y, row := range art {
+		for x := 0; x < len(row); x++ {
+			if clr, ok := artPalette[row[x]]; ok {
+				img.Set(x, y, clr)
+			}
+		}
+	}
+	return img
+}
+
+type Spider struct {
+	x, y   float64
+	vx, vy float64
+	alive  bool
+}
+
+type Game struct {
+	state     int
+	face      text.Face
+	mouseImg  *ebiten.Image
+	spiderImg *ebiten.Image
+	keyImg    *ebiten.Image
+
+	room        int
+	px, py      float64
+	hasKey      bool
+	keyPickedUp bool
+	spiders     []Spider
+	score       int
+	tick        int
+
+	audioCtx  *audio.Context
+	sfxKey    []byte
+	sfxDmg    []byte
+	sfxClear  []byte
+	hp        int
+	invFrames int
+}
+
+func squareWave(freq, vol float64, samples int) []byte {
+	pcm := make([]byte, samples*8)
+	step := freq / float64(48000)
+	phase := 0.0
+	for i := 0; i < len(pcm); i += 8 {
+		level := float32(vol)
+		if math.Mod(phase, 1) >= 0.5 {
+			level = -level
+		}
+		bits := math.Float32bits(level)
+		pcm[i] = byte(bits)
+		pcm[i+1] = byte(bits >> 8)
+		pcm[i+2] = byte(bits >> 16)
+		pcm[i+3] = byte(bits >> 24)
+		pcm[i+4] = pcm[i]
+		pcm[i+5] = pcm[i+1]
+		pcm[i+6] = pcm[i+2]
+		pcm[i+7] = pcm[i+3]
+		phase += step
+	}
+	return pcm
+}
+
+func sineWave(freq, vol float64, samples int) []byte {
+	pcm := make([]byte, samples*8)
+	step := freq / float64(48000)
+	phase := 0.0
+	for i := 0; i < len(pcm); i += 8 {
+		level := float32(math.Sin(phase*2*math.Pi) * vol)
+		bits := math.Float32bits(level)
+		pcm[i] = byte(bits)
+		pcm[i+1] = byte(bits >> 8)
+		pcm[i+2] = byte(bits >> 16)
+		pcm[i+3] = byte(bits >> 24)
+		pcm[i+4] = pcm[i]
+		pcm[i+5] = pcm[i+1]
+		pcm[i+6] = pcm[i+2]
+		pcm[i+7] = pcm[i+3]
+		phase += step
+	}
+	return pcm
+}
+
+func setW(m *[rows][cols]int, x, y int) {
+	if y >= 0 && y < rows && x >= 0 && x < cols {
+		m[y][x] = tileWall
+	}
+}
+
+func buildMaps() {
+	// ---- Room 0 ----
+	// Layout:
+	//   Player starts at col2,row2.
+	//   Key at col5,row5 (left area).
+	//   A horizontal wall runs along row5 from col0 to col19 (border to border),
+	//   with door at col10,row5 as the ONLY gap.
+	//   Left area (cols 1-9, rows 1-4 and rows 6-13): player roams, finds key.
+	//   Right area (cols 11-18, rows 6-13): exit at col17,row7.
+	//   Without key, door is solid -> player cannot reach exit.
+	var r0 [rows][cols]int
+	// border walls
+	for y := 0; y < rows; y++ {
+		for x := 0; x < cols; x++ {
+			if y == 0 || y == rows-1 || x == 0 || x == cols-1 {
+				r0[y][x] = tileWall
+			}
+		}
+	}
+	// horizontal dividing wall at row5, col1..col19 except col10 (door)
+	for x := 1; x < cols-1; x++ {
+		if x != doorPos[0][0] {
+			r0[5][x] = tileWall
+		}
+	}
+	// door at col10,row5
+	r0[doorPos[0][1]][doorPos[0][0]] = tileDoor
+	// exit at col17,row7 (floor, already floor by default)
+	r0[exitPos[0][1]][exitPos[0][0]] = tileFloor
+	// some internal walls in left area to add interest
+	for y := 1; y <= 4; y++ {
+		setW(&r0, 7, y)
+	}
+	for y := 7; y <= 13; y++ {
+		setW(&r0, 4, y)
+	}
+	// some internal walls in right area
+	for y := 6; y <= 10; y++ {
+		setW(&r0, 14, y)
+	}
+	for x := 11; x <= 15; x++ {
+		setW(&r0, x, 11)
+	}
+	roomMaps[0] = r0
+
+	// ---- Room 1 ----
+	// Layout:
+	//   Player starts at col2,row2.
+	//   Key at col4,row7 (left area).
+	//   A vertical wall runs along col14 from row1 to row13,
+	//   with door at col14,row7 as the ONLY gap.
+	//   Left area (cols 1-13): player roams, finds key.
+	//   Right area (cols 15-18): exit at col18,row7.
+	//   Without key, door is solid -> player cannot reach exit.
+	var r1 [rows][cols]int
+	for y := 0; y < rows; y++ {
+		for x := 0; x < cols; x++ {
+			if y == 0 || y == rows-1 || x == 0 || x == cols-1 {
+				r1[y][x] = tileWall
+			}
+		}
+	}
+	// vertical dividing wall at col14, row1..row13 except row7 (door)
+	for y := 1; y < rows-1; y++ {
+		if y != doorPos[1][1] {
+			r1[y][14] = tileWall
+		}
+	}
+	// door at col14,row7
+	r1[doorPos[1][1]][doorPos[1][0]] = tileDoor
+	// exit at col18,row7 (floor)
+	r1[exitPos[1][1]][exitPos[1][0]] = tileFloor
+	// internal walls in left area
+	for y := 1; y <= 5; y++ {
+		setW(&r1, 7, y)
+	}
+	for y := 9; y <= 13; y++ {
+		setW(&r1, 7, y)
+	}
+	for x := 2; x <= 6; x++ {
+		setW(&r1, x, 11)
+	}
+	for x := 8; x <= 12; x++ {
+		setW(&r1, x, 4)
+	}
+	// internal walls in right area (small maze)
+	setW(&r1, 16, 5)
+	setW(&r1, 16, 6)
+	setW(&r1, 16, 8)
+	setW(&r1, 16, 9)
+	roomMaps[1] = r1
+
+	// ---- Room 2 (unchanged) ----
+	var r2 [rows][cols]int
+	for y := 0; y < rows; y++ {
+		for x := 0; x < cols; x++ {
+			if y == 0 || y == rows-1 || x == 0 || x == cols-1 {
+				r2[y][x] = tileWall
+			}
+		}
+	}
+	walls2 := [][2]int{
+		{4, 1}, {4, 2}, {4, 3}, {4, 4},
+		{4, 6}, {4, 7}, {4, 8}, {4, 9}, {4, 10},
+		{9, 4}, {9, 5}, {9, 6}, {9, 7}, {9, 8},
+		{14, 2}, {14, 3}, {14, 4}, {14, 5},
+		{14, 9}, {14, 10}, {14, 11}, {14, 12},
+		{7, 11}, {8, 11}, {10, 11}, {11, 11},
+		{7, 12}, {7, 13},
+		{12, 12}, {12, 13},
+		{8, 12}, {10, 12}, {11, 12},
+		{8, 13}, {11, 13},
+	}
+	for _, w := range walls2 {
+		setW(&r2, w[0], w[1])
+	}
+	r2[doorPos[2][1]][doorPos[2][0]] = tileDoor
+	r2[exitPos[2][1]][exitPos[2][0]] = tileFloor
+	roomMaps[2] = r2
+}
+
+func (g *Game) initRoom(room int) {
+	g.room = room
+	g.hasKey = false
+	g.keyPickedUp = false
+	roomMaps[room][doorPos[room][1]][doorPos[room][0]] = tileDoor
+
+	count := roomSpiderCount[room]
+	g.spiders = make([]Spider, count)
+	for i := range g.spiders {
+		for {
+			tx := rand.Intn(cols-2) + 1
+			ty := rand.Intn(rows-2) + 1
+			if roomMaps[room][ty][tx] == tileFloor {
+				g.spiders[i] = Spider{
+					x:     float64(tx*tileSize + tileSize/2),
+					y:     float64(ty*tileSize + tileSize/2),
+					vx:    (rand.Float64()*1.5 + 0.5) * float64([]int{-1, 1}[rand.Intn(2)]),
+					vy:    (rand.Float64()*1.5 + 0.5) * float64([]int{-1, 1}[rand.Intn(2)]),
+					alive: true,
+				}
+				break
+			}
+		}
+	}
+}
+
+func (g *Game) reset() {
+	g.px = float64(2*tileSize + tileSize/2)
+	g.py = float64(2*tileSize + tileSize/2)
+	g.hp = 5
+	g.score = 0
+	g.tick = 0
+	g.invFrames = 0
+	buildMaps()
+	g.initRoom(0)
+}
+
+func tileAt(room, tx, ty int) int {
+	if tx < 0 || tx >= cols || ty < 0 || ty >= rows {
+		return tileWall
+	}
+	return roomMaps[room][ty][tx]
+}
+
+func isSolidR(room int, x, y, r float64) bool {
+	for _, dx := range []float64{-r, r} {
+		for _, dy := range []float64{-r, r} {
+			tx := int(math.Floor((x + dx) / tileSize))
+			ty := int(math.Floor((y + dy) / tileSize))
+			t := tileAt(room, tx, ty)
+			if t == tileWall || t == tileDoor {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isSolid(room int, x, y float64) bool {
+	return isSolidR(room, x, y, 6.0)
+}
+
+func (g *Game) Update() error {
+	g.tick++
+	switch g.state {
+	case stateTitle:
+		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+			g.reset()
+			g.state = statePlaying
+		}
+	case statePlaying:
+		speed := 2.0
+		nx, ny := g.px, g.py
+		if ebiten.IsKeyPressed(ebiten.KeyLeft) || ebiten.IsKeyPressed(ebiten.KeyA) {
+			nx -= speed
+		}
+		if ebiten.IsKeyPressed(ebiten.KeyRight) || ebiten.IsKeyPressed(ebiten.KeyD) {
+			nx += speed
+		}
+		if ebiten.IsKeyPressed(ebiten.KeyUp) || ebiten.IsKeyPressed(ebiten.KeyW) {
+			ny -= speed
+		}
+		if ebiten.IsKeyPressed(ebiten.KeyDown) || ebiten.IsKeyPressed(ebiten.KeyS) {
+			ny += speed
+		}
+		if !isSolid(g.room, nx, g.py) {
+			g.px = nx
+		}
+		if !isSolid(g.room, g.px, ny) {
+			g.py = ny
+		}
+
+		// key pickup
+		if !g.keyPickedUp {
+			kx := float64(keyPos[g.room][0]*tileSize + tileSize/2)
+			ky := float64(keyPos[g.room][1]*tileSize + tileSize/2)
+			dx := g.px - kx
+			dy := g.py - ky
+			if dx*dx+dy*dy < 12*12 {
+				g.keyPickedUp = true
+				g.hasKey = true
+				g.score += 100
+				roomMaps[g.room][doorPos[g.room][1]][doorPos[g.room][0]] = tileFloor
+				if g.audioCtx.IsReady() {
+					p := g.audioCtx.NewPlayerF32FromBytes(g.sfxKey)
+					p.Play()
+				}
+			}
+		}
+
+		// exit check
+		ex := float64(exitPos[g.room][0]*tileSize + tileSize/2)
+		ey := float64(exitPos[g.room][1]*tileSize + tileSize/2)
+		dx := g.px - ex
+		dy := g.py - ey
+		if dx*dx+dy*dy < 10*10 && g.hasKey {
+			if g.room < 2 {
+				g.score += 200
+				next := g.room + 1
+				g.px = float64(2*tileSize + tileSize/2)
+				g.py = float64(2*tileSize + tileSize/2)
+				g.initRoom(next)
+			} else {
+				g.score += 500
+				if g.audioCtx.IsReady() {
+					p := g.audioCtx.NewPlayerF32FromBytes(g.sfxClear)
+					p.Play()
+				}
+				g.state = stateClear
+			}
+		}
+
+		// spiders
+		for i := range g.spiders {
+			s := &g.spiders[i]
+			if !s.alive {
+				continue
+			}
+			cdx := g.px - s.x
+			cdy := g.py - s.y
+			dist := math.Sqrt(cdx*cdx + cdy*cdy)
+			if dist > 0 {
+				chase := 0.4
+				s.vx = s.vx*0.95 + (cdx/dist)*chase
+				s.vy = s.vy*0.95 + (cdy/dist)*chase
+			}
+			spd := math.Sqrt(s.vx*s.vx + s.vy*s.vy)
+			maxSpd := 1.5
+			if spd > maxSpd {
+				s.vx = s.vx / spd * maxSpd
+				s.vy = s.vy / spd * maxSpd
+			}
+			snx := s.x + s.vx
+			sny := s.y + s.vy
+			sr := 6.0
+			if !isSolidR(g.room, snx, s.y, sr) {
+				s.x = snx
+			} else {
+				s.vx = -s.vx
+			}
+			if !isSolidR(g.room, s.x, sny, sr) {
+				s.y = sny
+			} else {
+				s.vy = -s.vy
+			}
+
+			if g.invFrames == 0 {
+				sdx := g.px - s.x
+				sdy := g.py - s.y
+				if sdx*sdx+sdy*sdy < 13*13 {
+					g.hp--
+					g.invFrames = 60
+					if g.audioCtx.IsReady() {
+						p := g.audioCtx.NewPlayerF32FromBytes(g.sfxDmg)
+						p.Play()
+					}
+					if g.hp <= 0 {
+						g.state = stateOver
+					}
+				}
+			}
+		}
+		if g.invFrames > 0 {
+			g.invFrames--
+		}
+	case stateOver:
+		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+			g.reset()
+			g.state = statePlaying
+		}
+	case stateClear:
+		if inpututil.IsKeyJustPressed(ebiten.KeySpace) {
+			g.reset()
+			g.state = statePlaying
+		}
+	}
+	return nil
+}
+
+var floorColor = color.RGBA{0x33, 0x22, 0x11, 0xff}
+var wallColor = color.RGBA{0x77, 0x77, 0x77, 0xff}
+var doorClosedColor = color.RGBA{0x66, 0x44, 0x00, 0xff}
+
+func drawRoom(screen *ebiten.Image, room int) {
+	for y := 0; y < rows; y++ {
+		for x := 0; x < cols; x++ {
+			t := roomMaps[room][y][x]
+			var clr color.RGBA
+			switch t {
+			case tileFloor:
+				clr = floorColor
+			case tileWall:
+				clr = wallColor
+			case tileDoor:
+				clr = doorClosedColor
+			}
+			fx := float32(x * tileSize)
+			fy := float32(y * tileSize)
+			vector.DrawFilledRect(screen, fx, fy, float32(tileSize), float32(tileSize), clr, false)
+		}
+	}
+}
+
+func (g *Game) drawSprites(screen *ebiten.Image) {
+	room := g.room
+	ex := float32(exitPos[room][0]*tileSize) + 1
+	ey := float32(exitPos[room][1]*tileSize) + 1
+	exitClr := color.RGBA{0x00, 0xff, 0x88, 0xff}
+	if !g.hasKey {
+		exitClr = color.RGBA{0x00, 0x88, 0x44, 0xff}
+	}
+	vector.DrawFilledRect(screen, ex, ey, float32(tileSize-2), float32(tileSize-2), exitClr, false)
+
+	if !g.keyPickedUp {
+		kop := &ebiten.DrawImageOptions{}
+		kx := float64(keyPos[room][0]*tileSize + tileSize/2)
+		ky := float64(keyPos[room][1]*tileSize + tileSize/2)
+		kop.GeoM.Translate(-2.5, -3)
+		kop.GeoM.Scale(2, 2)
+		kop.GeoM.Translate(kx, ky)
+		screen.DrawImage(g.keyImg, kop)
+	}
+
+	for _, s := range g.spiders {
+		if !s.alive {
+			continue
+		}
+		sop := &ebiten.DrawImageOptions{}
+		sop.GeoM.Translate(-4, -3)
+		sop.GeoM.Scale(2, 2)
+		sop.GeoM.Translate(s.x, s.y)
+		screen.DrawImage(g.spiderImg, sop)
+	}
+
+	if g.state == statePlaying || g.state == stateOver || g.state == stateClear {
+		if g.invFrames == 0 || (g.tick/4)%2 == 0 {
+			pop := &ebiten.DrawImageOptions{}
+			pop.GeoM.Translate(-4, -3)
+			pop.GeoM.Scale(2, 2)
+			pop.GeoM.Translate(g.px, g.py)
+			screen.DrawImage(g.mouseImg, pop)
+		}
+	}
+}
+
+func (g *Game) Draw(screen *ebiten.Image) {
+	switch g.state {
+	case stateTitle:
+		drawRoom(screen, 0)
+		g.drawSprites(screen)
+		vector.DrawFilledRect(screen, 0, 0, screenW, screenH, color.RGBA{0, 0, 0, 160}, false)
+		op := &text.DrawOptions{}
+		op.GeoM.Translate(60, 60)
+		op.ColorScale.ScaleWithColor(color.RGBA{0xff, 0xff, 0x44, 0xff})
+		text.Draw(screen, "ネズミのカギ", g.face, op)
+		op2 := &text.DrawOptions{}
+		op2.GeoM.Translate(20, 100)
+		op2.ColorScale.ScaleWithColor(color.White)
+		text.Draw(screen, "カギをとって とびらをひらけ！", g.face, op2)
+		op3 := &text.DrawOptions{}
+		op3.GeoM.Translate(20, 120)
+		op3.ColorScale.ScaleWithColor(color.White)
+		text.Draw(screen, "WASDか やじるし：いどう", g.face, op3)
+		op4 := &text.DrawOptions{}
+		op4.GeoM.Translate(20, 140)
+		op4.ColorScale.ScaleWithColor(color.White)
+		text.Draw(screen, "3へやをクリアしたら おわり", g.face, op4)
+		op5 := &text.DrawOptions{}
+		op5.GeoM.Translate(60, 180)
+		op5.ColorScale.ScaleWithColor(color.White)
+		text.Draw(screen, "スペースキーで スタート", g.face, op5)
+
+	case statePlaying:
+		drawRoom(screen, g.room)
+		g.drawSprites(screen)
+		op := &text.DrawOptions{}
+		op.GeoM.Translate(4, 2)
+		op.ColorScale.ScaleWithColor(color.White)
+		text.Draw(screen, "HP:"+strconv.Itoa(g.hp)+"  スコア:"+strconv.Itoa(g.score)+"  へや:"+strconv.Itoa(g.room+1)+"/3", g.face, op)
+		if g.hasKey {
+			op2 := &text.DrawOptions{}
+			op2.GeoM.Translate(260, 2)
+			op2.ColorScale.ScaleWithColor(color.RGBA{0xff, 0xff, 0x00, 0xff})
+			text.Draw(screen, "カギ：あり", g.face, op2)
+		}
+
+	case stateOver:
+		drawRoom(screen, g.room)
+		g.drawSprites(screen)
+		vector.DrawFilledRect(screen, 0, 0, screenW, screenH, color.RGBA{0, 0, 0, 160}, false)
+		op := &text.DrawOptions{}
+		op.GeoM.Translate(100, 80)
+		op.ColorScale.ScaleWithColor(color.RGBA{0xff, 0x44, 0x44, 0xff})
+		text.Draw(screen, "ゲームオーバー", g.face, op)
+		op2 := &text.DrawOptions{}
+		op2.GeoM.Translate(60, 120)
+		op2.ColorScale.ScaleWithColor(color.White)
+		text.Draw(screen, "スコア："+strconv.Itoa(g.score), g.face, op2)
+		op3 := &text.DrawOptions{}
+		op3.GeoM.Translate(50, 160)
+		op3.ColorScale.ScaleWithColor(color.White)
+		text.Draw(screen, "スペースキーで もういちど", g.face, op3)
+
+	case stateClear:
+		drawRoom(screen, g.room)
+		g.drawSprites(screen)
+		vector.DrawFilledRect(screen, 0, 0, screenW, screenH, color.RGBA{0, 0, 0, 160}, false)
+		op := &text.DrawOptions{}
+		op.GeoM.Translate(80, 80)
+		op.ColorScale.ScaleWithColor(color.RGBA{0xff, 0xff, 0x44, 0xff})
+		text.Draw(screen, "クリア！ おめでとう！", g.face, op)
+		op2 := &text.DrawOptions{}
+		op2.GeoM.Translate(60, 120)
+		op2.ColorScale.ScaleWithColor(color.White)
+		text.Draw(screen, "スコア："+strconv.Itoa(g.score), g.face, op2)
+		op3 := &text.DrawOptions{}
+		op3.GeoM.Translate(50, 160)
+		op3.ColorScale.ScaleWithColor(color.White)
+		text.Draw(screen, "スペースキーで もういちど", g.face, op3)
+	}
+}
+
+func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
+	return screenW, screenH
+}
+
+func main() {
+	buildMaps()
+	g := &Game{state: stateTitle}
+	g.face = text.NewGoXFace(jpfont.Face16)
+	g.mouseImg = newSprite(mouseArt)
+	g.spiderImg = newSprite(spiderArt)
+	g.keyImg = newSprite(keyArt)
+
+	g.audioCtx = audio.NewContext(48000)
+	g.sfxKey = sineWave(880, 0.3, 48000/5)
+	g.sfxDmg = squareWave(220, 0.3, 48000/8)
+	c1 := sineWave(660, 0.25, 48000/3)
+	c2 := sineWave(880, 0.25, 48000/3)
+	g.sfxClear = make([]byte, len(c1))
+	for i := 0; i < len(c1); i++ {
+		g.sfxClear[i] = c1[i] + c2[i]
+	}
+
+	g.px = float64(2*tileSize + tileSize/2)
+	g.py = float64(2*tileSize + tileSize/2)
+	g.hp = 5
+
+	ebiten.SetWindowSize(640, 480)
+	ebiten.SetWindowTitle("ネズミのカギ")
+	if err := ebiten.RunGame(g); err != nil && !errors.Is(err, ebiten.Termination) {
+		panic(err)
+	}
+}

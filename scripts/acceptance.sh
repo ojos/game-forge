@@ -434,6 +434,23 @@ else
   echo "[acceptance] (go) skip: go.mod not found"
 fi
 
+# タイル地図の到達判定（#675 / 仕様 6.1 の #675 注記）。運営の手元の道具だが、判定の表
+# （「版 1: 2・3 面に届かない」「版 2: 届く」「版 3: 1 面に届かない」と「取り出せなければ判定しない」）を
+# ここで押さえる。**ルート直下に go.mod を置かない**——置くと上の `go test ./...` が node_modules の
+# 中の .go まで拾いうるので、モジュールをこのディレクトリに閉じ、ここで名指しで回す。
+#
+# **テストは go build を呼ぶ**（作品のソースから抜き出した地図のコードを動かす。仕込みは標準ライブラリしか
+# 使わないので、ネットワークは要らない）。ツールが無ければ、スキップではなく落とす（上と同じ規約）。
+# CI は .github/workflows/verify.yml の「Set up Go」で用意する。
+if [[ -f scripts/tile-reachability/go.mod ]]; then
+  command -v go >/dev/null 2>&1 || { echo "[acceptance] (tile-reachability) go not found. install the Go toolchain to run this acceptance check." >&2; exit 1; }
+  echo "[acceptance] (tile-reachability) go test ./... (scripts/tile-reachability)"
+  (cd scripts/tile-reachability && GOFLAGS='' GOTOOLCHAIN=local go test ./...)
+  ran_any=1
+else
+  echo "[acceptance] (tile-reachability) skip: scripts/tile-reachability/go.mod not found"
+fi
+
 # IaC の書式検査。ネットワークも外部認証も要さないためローカル層に置く。
 #
 # terraform validate はプロバイダの取得（init）を前提とし、初回はネットワークを要する

@@ -375,9 +375,9 @@ blockquote {
   /* #666: 「あなたの作品」の表（`@section signed-in`）——ここから。
    *
    * **段 2 からは表にする**（狭い段の既定はカード）。表の要素の `display` を表の既定へ戻し、カードの格子の規則
-   * （`grid-area`・数の上の見出し）を外す。**768px がいちばん厳しい**: 内容の幅 720px から、選択・画像・状態（6rem）・
-   * 日付（語と日時を 2 行に積む）・数 3 列（6 桁のプレイ数まで折り返さない）を引いた残りが作品名の列になる（長い題名と
-   * タグは列の中で折り返す）。**状態の列を 7rem にしたときは 768px で 3px はみ出した**（`scripts/check-page-width.sh` の実測）。
+   * （`grid-area`・数の上の見出し）を外す。**768px がいちばん厳しい**: 内容の幅 720px から、選択・画像・状態（短い札と
+   * その下の補足）・日付（語と日時を 2 行に積む）・数 3 列（見出しは短い語で 1 行、6 桁のプレイ数まで折り返さない）を
+   * 引いた残りが作品名の列になる（長い題名とタグは列の中で折り返す）。`scripts/check-page-width.sh` の 768px が実測する。
    *
    * - 行の間の罫線は `td` に引く（`border-collapse: separate` では `tr` の枠線が描かれない）
    * - **`body` を前に付けて 1 段強くする**（`@section signed-in` はこの区画より後ろにある。#469 と同じ理由）
@@ -387,7 +387,16 @@ blockquote {
   }
 
   body .gf-works-table thead {
+    position: static;
     display: table-header-group;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+  }
+
+  body .gf-works-actions-label {
+    flex-basis: auto;
   }
 
   body .gf-works-table tbody {
@@ -447,12 +456,9 @@ blockquote {
     white-space: nowrap;
   }
 
-  body .gf-works-table th:is(.gf-works-select, .gf-works-thumb) {
+  /* 見出しは 1 行に収める（数の列は短い語。PR #669 のレイアウトの指摘）。 */
+  body .gf-works-table th {
     white-space: nowrap;
-  }
-
-  body .gf-works-table .gf-works-state {
-    min-width: 6rem;
   }
 
   body .gf-works-table td.gf-works-count::before {
@@ -488,6 +494,12 @@ blockquote {
    */
   .gf-split-edit {
     grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+
+  /* #666: 「あなたの作品」の表——段 3 では、状態の補足（「時間がかかっています」）を 1 行に収める。段 2（768px）では
+   * 列の幅が足りず、収めると表がはみ出すので折り返す（`@section signed-in`）。 */
+  body .gf-works-state-note {
+    white-space: nowrap;
   }
 
   /* #472: ログイン・登録の 3 つのブロック（`@section signup`）——ここから。
@@ -2113,6 +2125,22 @@ html.gf-play-locked body {
   margin-bottom: var(--gf-gap-3);
 }
 
+/*
+ * **絞り込みのタブは折り返さず、収まらなければ横に送る**（PR #669 のレイアウトの指摘。390px で 2 行に割れていた）。
+ * 送るのはタブの並びの中だけで、ページは横に広がらない（`scripts/check-page-width.sh` が見る `scrollWidth` は変わらない）。
+ * 縦は送らない——現在地の下線（`.gf-tabs` の `margin-bottom: -1px`）が 1px はみ出すためで、切れるのはその 1px だけである。
+ */
+.gf-works-filter .gf-tabs {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.gf-works-filter .gf-tabs li {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .gf-works-bulk {
   max-width: none;
   margin: 0 0 var(--gf-gap-3);
@@ -2149,6 +2177,15 @@ html.gf-play-locked body {
 }
 
 /*
+ * **狭い段では「選んだ作品を」を 1 行に置き、ボタン 3 つをその下の 1 行に並べる**（PR #669 のレイアウトの指摘。390px で
+ * ボタンが 2 段に割れていた）。3 つの幅の和は約 260px で、390px の版面（358px）に収まる。段 2 からは横 1 行に戻す
+ * （`@section shell` の「#666:」の塊）。
+ */
+.gf-works-actions-label {
+  flex-basis: 100%;
+}
+
+/*
  * 表そのもの（狭い段の既定＝カード）。**角丸を効かせるために `border-collapse: separate` にする**（`collapse` では
  * 表の角丸が効かないブラウザがある）。面の内側の余白は行が持つ（`.gf-block-rows` と同じ形）。
  */
@@ -2160,8 +2197,17 @@ html.gf-play-locked body {
   border-spacing: 0;
 }
 
+/*
+ * **狭い段では見出しの行を見た目だけ隠す**（PR #669 の Copilot code review。`display: none` にすると、支援技術にも
+ * 見出しが渡らず、数のセルが見出しの無い数字になる）。表の要素には `role` を明示してある（`src/my-works.ts` の `renderTable`）。
+ */
 .gf-works-table thead {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .gf-works-table tbody {
@@ -2273,13 +2319,16 @@ html.gf-play-locked body {
   margin-top: var(--gf-gap-1);
 }
 
-/* 長い札（「生成中（時間がかかっています）」）は、狭い列の中で折り返す。チップの既定の 1 行の形は変えない。 */
-.gf-works-state .gf-chip {
-  height: auto;
-  min-height: var(--gf-chip-height);
-  padding-block: var(--gf-gap-1);
-  line-height: 1.3;
-  white-space: normal;
+/*
+ * 札は短い語だけ（「生成中」）にし、補足（「時間がかかっています」）は札の外の小さい字にする（PR #669 のレイアウトの指摘。
+ * 以前は長い札を折り返しており、丸い塊になっていた）。
+ */
+.gf-works-state-note {
+  display: block;
+  margin-top: var(--gf-gap-1);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+  line-height: 1.4;
 }
 
 .gf-works-date {

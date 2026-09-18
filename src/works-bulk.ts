@@ -27,17 +27,16 @@
  *
  * - **307 は本文と POST をそのまま保つ**（303 と違い GET に変えない）。ブラウザは確かめずに送り直すので、利用者は
  *   1 回押すだけである。JavaScript も要らない（9.3）
- * - **URL の問い合わせに、どこまで進んだか（`step`）と、成功した件数（`done`）と、断られた作品（`ng=<番号>.<理由>`）を
- *   載せる。** 本文は選んだ作品の並びのまま変わらないので、番号で作品を指せる。**URL の値は検算してから使う**
- *   （{@link readProgress}）——書き換えても、成功の件数と失敗の理由の表示が変わるだけで、どの作品が書き換わるかは
- *   変わらない（書き換えるかどうかを決めるのは、毎回の往復で掛け直す判定と 1 件ずつの関数である）
+ * - **どこまで進んだかは、毎往復 D1 の今の状態から導く**（{@link handleBulk}）。URL が運ぶのは、試して断られた作品の
+ *   番号と理由（`ng=<番号>.<理由>`）だけで、**成功の件数は運ばない**——結果の画面の成功は D1 の状態から数える
+ *   （PR #669 の Copilot code review。以前は `step` と `done` を運び、書き換えると先頭を飛ばしたまま全件成功と出せた）
  * - **最後の往復だけが結果の画面を返す**
  *
  * **往復の数は、ブラウザがたどれるリダイレクトの数に収める**（30 件の削除で 15 往復・リダイレクト 14 回。Safari の上限 16 回）。
  */
 import { LOGIN_PATH, loginRequiredRedirect } from './auth/google.js';
 import type { PublishOutcome, UnpublishOutcome } from './games.js';
-import { unpublishGame, workTagsOf } from './games.js';
+import { DRAFT_STATUS, PUBLISHED_STATUS, unpublishGame, workTagsOf } from './games.js';
 import { headerAvatarUrl, siteViewerAt } from './html.js';
 import type { NotifyForkPublished } from './publish.js';
 import { runPublish } from './publish.js';
@@ -49,7 +48,6 @@ import { html, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 import type { AuthoredDeletionOutcome } from './work-delete.js';
 import { deleteAuthoredGame } from './work-delete.js';
-import { knownWorkTags } from './work-card.js';
 import type { BulkExcludedWork, BulkListedWork } from './works-bulk-page.js';
 import {
   renderBulkConfirmation,
@@ -85,13 +83,6 @@ const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
  * （`&game_id=` ＋ 36 文字 ＝ 45 バイト × 30 ＝ 1,350 バイト）である。
  */
 const MAX_BODY_BYTES = 4096;
-
-/** 往復の段を運ぶ問い合わせの名前。 */
-export const BULK_STEP_PARAM = 'step';
-/** 成功した件数を運ぶ問い合わせの名前。 */
-export const BULK_DONE_PARAM = 'done';
-/** 断られた作品（`<番号>.<理由>`）を運ぶ問い合わせの名前。 */
-export const BULK_FAILED_PARAM = 'ng';
 
 /** 選んだ作品の読み取りの結果。 */
 type SelectionResult =
@@ -190,77 +181,96 @@ async function showBulkConfirmation(request: Request, env: Env): Promise<Respons
   return html(renderBulkConfirmation({ action, targets, excluded, notFound }, viewer));
 }
 
-/** 往復の進み具合（URL の問い合わせから読んだもの）。 */
-export interface BulkProgress {
-  /** 何往復目か（0 始まり）。 */
-  readonly step: number;
-  /** これまでに成功した件数。 */
-  readonly done: number;
-  /** これまでに断られた作品（選んだ並びの番号と理由）。 */
-  readonly failed: ReadonlyMap<number, BulkReason>;
-}
+/**
+ * 続きの往復であることを示す問い合わせの名前（値は `1`）。**最初の往復（確認画面のフォーム）は持たない。**
+ *
+ * 最初の往復だけが「もう目的の状態になっている作品」を `already-*` として控える（確認画面を経ずに送られた id を、
+ * この呼び出しが書き換えた作品として数えないため）。
+ */
+export const BULK_CONTINUE_PARAM = 'cont';
+
+/** 試して断られた作品（`<番号>.<理由>`）を運ぶ問い合わせの名前。 */
+export const BULK_FAILED_PARAM = 'ng';
 
 /**
- * URL の問い合わせから進み具合を読み、**検算する**（読めない・辻褄が合わないなら null）。
+ * 試して断られた作品を URL から読む（読めない・重なる・範囲の外なら null）。
  *
- * - `step` は 0 以上で、その往復の先頭が選んだ件数より手前にある
- * - `done` と断られた数の和が、これまでに処理した件数（`step × 1 往復の件数`）に一致する
- * - 断られた作品の番号は、これまでに処理した範囲の中にあり、重ならない
- *
- * **最初の往復は問い合わせを持たない**（確認画面のフォームは素の `action` で送る）。
+ * **ここが運ぶのは「断られた作品と理由」だけである。** 何件成功したかは運ばない——成功は毎回 D1 の今の状態から
+ * 数える（{@link reachedTarget}。PR #669 の Copilot code review。以前は `step` と `done` を運び、書き換えると先頭を
+ * 飛ばしたまま「全件成功」を出せた）。この値を書き換えてできるのは、まだ試していない作品を「断られた」扱いにして
+ * 飛ばすこと（書き換えは起きず、結果の画面に失敗として出る）と、断られた理由の表示を変えることだけである。
  *
  * @param url 要求の URL
- * @param action 操作
  * @param count 選んだ件数
- * @returns 進み具合。読めなければ null
+ * @returns 番号から理由への対応。読めなければ null
  */
-export function readProgress(url: URL, action: BulkAction, count: number): BulkProgress | null {
-  const params = url.searchParams;
-  const rawStep = params.get(BULK_STEP_PARAM);
-  if (rawStep === null) {
-    return params.has(BULK_DONE_PARAM) || params.has(BULK_FAILED_PARAM)
-      ? null
-      : { step: 0, done: 0, failed: new Map() };
-  }
-  const size = BULK_STEP_SIZES[action];
-  const step = /^(0|[1-9][0-9]{0,2})$/u.test(rawStep) ? Number(rawStep) : -1;
-  const processed = step * size;
-  if (step < 1 || processed >= count) {
-    return null;
-  }
-  const rawDone = params.get(BULK_DONE_PARAM) ?? '';
-  const done = /^(0|[1-9][0-9]{0,2})$/u.test(rawDone) ? Number(rawDone) : -1;
-  if (done < 0) {
-    return null;
-  }
+export function readFailures(url: URL, count: number): ReadonlyMap<number, BulkReason> | null {
   const failed = new Map<number, BulkReason>();
-  for (const entry of params.getAll(BULK_FAILED_PARAM)) {
+  for (const entry of url.searchParams.getAll(BULK_FAILED_PARAM)) {
     const match = /^(0|[1-9][0-9]{0,2})\.([a-z-]+)$/u.exec(entry);
     const index = match === null ? -1 : Number(match[1]);
     const reason = match === null ? null : toBulkReason(match[2]!);
-    if (index < 0 || index >= processed || reason === null || failed.has(index)) {
+    if (index < 0 || index >= count || reason === null || failed.has(index)) {
       return null;
     }
     failed.set(index, reason);
   }
-  return done + failed.size === processed ? { step, done, failed } : null;
+  return failed;
 }
 
 /**
  * 次の往復の URL を組み立てる。
  *
- * @param progress 次の往復の進み具合
+ * @param failed 試して断られた作品
  * @returns 実行の口のパス（問い合わせ付き）
  */
-export function nextStepPath(progress: BulkProgress): string {
+export function nextStepPath(failed: ReadonlyMap<number, BulkReason>): string {
   const params = new URLSearchParams();
-  params.set(BULK_STEP_PARAM, String(progress.step));
-  params.set(BULK_DONE_PARAM, String(progress.done));
-  for (const [index, reason] of [...progress.failed].sort(([a], [b]) => a - b)) {
+  params.set(BULK_CONTINUE_PARAM, '1');
+  for (const [index, reason] of [...failed].sort(([a], [b]) => a - b)) {
     params.append(BULK_FAILED_PARAM, `${index}.${reason}`);
   }
   return `${WORKS_BULK_API_PATH}?${params.toString()}`;
 }
+
+/**
+ * 作品が操作の目的の状態にあるかを、**D1 の今の行から**決める（成功を数える唯一の根拠）。
+ *
+ * - 公開: 作者本人の行が `published`
+ * - 下書きへ戻す: 作者本人の行が `draft`
+ * - 削除: 行が無い、または作者本人の行の中身を消してある（`purged`）
+ *
+ * **削除の「行が無い」は、行の無い id を混ぜた場合と区別できない。** 最初の往復で行の無い id を `not-found` として
+ * 控えるので、確認画面から送った要求では起きない（URL の控えを消した場合にだけ、行の無い id が成功に数えられる）。
+ *
+ * @param action 操作
+ * @param row いまの行（無ければ null）
+ * @param userId 操作している利用者
+ * @returns 目的の状態にあれば true
+ */
+export function reachedTarget(action: BulkAction, row: BulkTargetRow | null, userId: string): boolean {
+  if (row === null) {
+    return action === 'delete';
+  }
+  if (row.author_id !== userId) {
+    return false;
+  }
+  switch (action) {
+    case 'publish':
+      return row.status === PUBLISHED_STATUS;
+    case 'unpublish':
+      return row.status === DRAFT_STATUS;
+    case 'delete':
+      return row.purged === 1;
+  }
+}
+
+/** もう目的の状態にある作品を、最初の往復で控えるときの理由。 */
+const ALREADY: Readonly<Record<BulkAction, BulkReason>> = {
+  publish: 'already-published',
+  unpublish: 'already-draft',
+  delete: 'purged',
+};
 
 /**
  * 公開の結果を理由へ落とす（成功なら null）。
@@ -309,7 +319,7 @@ function deleteReasonOf(outcome: AuthoredDeletionOutcome): BulkReason | null {
 }
 
 /** 実行の段（テストが撮影と通知を差し替える）。 */
-interface BulkDependencies {
+export interface BulkDependencies {
   readonly start: StartOgpCapture;
   readonly notify: NotifyForkPublished;
 }
@@ -317,50 +327,33 @@ interface BulkDependencies {
 /**
  * 1 件を処理する。**1 件ずつの口と同じ関数を呼ぶ**（冒頭の表）。
  *
- * **例外はこの 1 件の失敗にして、残りを続ける**（R2 の一時的な失敗などで、選んだ全部を巻き添えにしない）。
- * ログには例外の種類と作品 id だけを出す（題名は出さない）。
+ * **タグは語彙に照らさずにそのまま渡す**（PR #669 の Copilot code review）。語彙に無いタグを黙って落とすと、1 件ずつの
+ * 公開の口（`unknown-tag` で断る）より緩くなり、作者の付けたタグが消える。断りは `tags` として名前付きで示す。
  *
  * @param env バインディングと環境変数
  * @param action 操作
- * @param row いまの行（無ければ null）
- * @param gameId 作品 id
+ * @param row いまの行
  * @param userId 操作している利用者
  * @param deps 撮影と通知の段
  * @returns 断られた理由。成功なら null
+ * @throws 1 件ずつの関数が投げた例外（呼ぶ側が行を読み直して分ける）
  */
 async function applyOne(
   env: Env,
   action: BulkAction,
-  row: BulkTargetRow | null,
-  gameId: string,
+  row: BulkTargetRow,
   userId: string,
   deps: BulkDependencies,
 ): Promise<BulkReason | null> {
-  // **表示の条件で先に外す**（確認画面のあとで状態が動いた作品・手で足された id）。緩める向きには働かない
-  // ——外さなかった作品も、下の関数が同じ条件でもう一度断る。
-  const blocked = bulkBlockOf(action, row, userId);
-  if (blocked !== null || row === null) {
-    return blocked ?? 'not-found';
-  }
-  try {
-    switch (action) {
-      case 'publish': {
-        // **いま付いているタグのまま公開する**（タグの一括設定は #666 の scope.out）。語彙に無い値は落とす
-        // ——`publishGame` は語彙に無い値を断るので、渡すと公開そのものが止まる。
-        const tags = knownWorkTags(workTagsOf(row)).map((tag) => tag.id);
-        const { outcome } = await runPublish(env, gameId, userId, tags, deps.start, deps.notify);
-        return publishReasonOf(outcome);
-      }
-      case 'unpublish':
-        return unpublishReasonOf(await unpublishGame(env, gameId, userId));
-      case 'delete':
-        return deleteReasonOf(await deleteAuthoredGame(env, gameId, userId));
+  switch (action) {
+    case 'publish': {
+      const { outcome } = await runPublish(env, row.id, userId, workTagsOf(row), deps.start, deps.notify);
+      return publishReasonOf(outcome);
     }
-  } catch (error) {
-    console.error(
-      `[works-bulk] ${action} に失敗しました（${gameId}）: ${error instanceof Error ? error.name : typeof error}`,
-    );
-    return 'error';
+    case 'unpublish':
+      return unpublishReasonOf(await unpublishGame(env, row.id, userId));
+    case 'delete':
+      return deleteReasonOf(await deleteAuthoredGame(env, row.id, userId));
   }
 }
 
@@ -376,6 +369,22 @@ function temporaryRedirect(location: string): Response {
 
 /**
  * 実行の口（`POST /api/works/bulk`）。
+ *
+ * # 1 往復の流れ
+ *
+ * 1. 選んだ作品の行を**すべて** 1 文で読み直す（30 件まで）
+ * 2. 各作品を 3 つに分ける——**済み**（D1 が目的の状態。{@link reachedTarget}）・**断られた**（URL の控え、または
+ *    いまの状態で {@link bulkBlockOf} が外す）・**残り**。最初の往復だけは、もう目的の状態にある作品を `already-*` として控える
+ * 3. 残りの先頭から {@link BULK_STEP_SIZES} 件だけを 1 件ずつの関数で処理する。断られたら控えに足す
+ * 4. 残りがあれば 307 で次の往復へ。無ければ結果の画面を返す——**成功の件数は D1 の状態から数える**
+ *
+ * **往復の数は、処理する作品が毎回必ず減るので `ceil(30 / 1 往復の件数)` で止まる。**
+ *
+ * # 例外が出た作品（PR #669 の Copilot code review）
+ *
+ * 公開・下書きへ戻すは、行を書き換えてから後の処理（撮影の起動・通知・親の数え直し）をする。後の処理が投げたとき、
+ * 行はもう目的の状態にある。**行を読み直して分ける**——目的の状態なら `post-error`（済み。結果の画面で「後の処理に
+ * 失敗した」と別に示す）、そうでなければ `error`。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -408,46 +417,93 @@ async function handleBulk(request: Request, env: Env, deps: BulkDependencies): P
     return html(renderBulkRefusal('まとめて操作できません', '操作の種類か、選んだ作品が正しくありません。「あなたの作品」を開き直して、もう一度お試しください。'), 400);
   }
   const ids = selection.ids;
-  const progress = readProgress(new URL(request.url), action, ids.length);
-  if (progress === null) {
+  const url = new URL(request.url);
+  const first = !url.searchParams.has(BULK_CONTINUE_PARAM);
+  const recorded = readFailures(url, ids.length);
+  if (recorded === null) {
     return html(renderBulkRefusal('まとめて操作できません', '途中までの進み具合を読み取れませんでした。「あなたの作品」を開き直して、結果を確かめてください。'), 400);
   }
 
-  // **この往復の分だけを処理する**（冒頭「往復に分ける」）。行は 1 文でまとめて引く。
+  const userId = session.userId;
+  const rows = new Map(await loadTargets(env, ids));
+  const failed = new Map(recorded);
+  const pending: number[] = [];
+  for (const [index, id] of ids.entries()) {
+    if (failed.has(index)) {
+      continue;
+    }
+    const row = rows.get(id) ?? null;
+    if (reachedTarget(action, row, userId)) {
+      // **最初の往復で行が無いのは、消したのではなく最初から無い**（削除の「済み」と区別する。{@link reachedTarget}）。
+      if (first) {
+        failed.set(index, row === null ? 'not-found' : ALREADY[action]);
+      }
+      continue;
+    }
+    const blocked = bulkBlockOf(action, row, userId);
+    if (blocked !== null) {
+      failed.set(index, blocked);
+      continue;
+    }
+    pending.push(index);
+  }
+
   const size = BULK_STEP_SIZES[action];
-  const from = progress.step * size;
-  const slice = ids.slice(from, from + size);
-  const rows = await loadTargets(env, slice);
-  let done = progress.done;
-  const failed = new Map(progress.failed);
-  for (const [offset, id] of slice.entries()) {
-    const reason = await applyOne(env, action, rows.get(id) ?? null, id, session.userId, deps);
-    if (reason === null) {
-      done += 1;
-    } else {
-      failed.set(from + offset, reason);
+  for (const index of pending.slice(0, size)) {
+    const row = rows.get(ids[index]!)!;
+    try {
+      const reason = await applyOne(env, action, row, userId, deps);
+      if (reason !== null) {
+        failed.set(index, reason);
+      } else {
+        // 済み。結果の画面は D1 の状態から数えるので、ここでは行の写しを目的の状態へ進めるだけである。
+        rows.set(row.id, action === 'delete' ? { ...row, purged: 1 } : { ...row, status: action === 'publish' ? PUBLISHED_STATUS : DRAFT_STATUS });
+      }
+    } catch (error) {
+      console.error(
+        `[works-bulk] ${action} に失敗しました（${row.id}）: ${error instanceof Error ? error.name : typeof error}`,
+      );
+      const reread = (await loadTargets(env, [row.id])).get(row.id) ?? null;
+      if (action === 'delete' && reread === null) {
+        rows.delete(row.id);
+      } else if (reread !== null) {
+        rows.set(row.id, reread);
+      }
+      failed.set(index, reachedTarget(action, reread, userId) ? 'post-error' : 'error');
     }
   }
 
-  if (from + size < ids.length) {
-    return temporaryRedirect(nextStepPath({ step: progress.step + 1, done, failed }));
+  if (pending.length > size) {
+    return temporaryRedirect(nextStepPath(failed));
   }
 
-  // **最後の往復だけが結果を描く。** 断られた作品の名前は、作者本人の行だけから引く（`not-found` は名前を出さない）。
-  const failedIds = [...failed.keys()].sort((a, b) => a - b).map((index) => ids[index]!);
-  const names = await loadTargets(env, failedIds);
+  // **最後の往復だけが結果を描く。成功は D1 の状態から数える**（URL は成功の数を運ばない）。
+  let done = 0;
   const failedWorks: BulkExcludedWork[] = [];
+  const afterErrors: BulkListedWork[] = [];
   let notFound = 0;
-  for (const index of [...failed.keys()].sort((a, b) => a - b)) {
-    const reason = failed.get(index)!;
-    const row = names.get(ids[index]!) ?? null;
-    if (reason === 'not-found' || row === null || row.author_id !== session.userId) {
+  for (const [index, id] of ids.entries()) {
+    const reason = failed.get(index);
+    const row = rows.get(id) ?? null;
+    if (reason === 'post-error' && reachedTarget(action, row, userId)) {
+      done += 1;
+      if (row !== null) {
+        afterErrors.push({ id, title: row.title });
+      }
+      continue;
+    }
+    if (reason === undefined && reachedTarget(action, row, userId)) {
+      done += 1;
+      continue;
+    }
+    const shown = reason ?? bulkBlockOf(action, row, userId) ?? 'error';
+    if (shown === 'not-found' || row === null || row.author_id !== userId) {
       notFound += 1;
     } else {
-      failedWorks.push({ id: row.id, title: row.title, reason });
+      failedWorks.push({ id, title: row.title, reason: shown === 'post-error' ? 'error' : shown });
     }
   }
-  return html(renderBulkResult({ action, done, failed: failedWorks, notFound }));
+  return html(renderBulkResult({ action, done, failed: failedWorks, notFound, afterErrors }));
 }
 
 /**

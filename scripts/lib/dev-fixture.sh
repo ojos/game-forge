@@ -36,6 +36,9 @@
 # （`ogp_state = 'ready'` と R2 の実体）。置かないと、表の画像の枠もカードのスクリーンショットも「準備中」の形しか
 # 描かれず、`<img>` の寸法を 1 度も測らないまま緑になる。
 #
+# **審査キューの公開作品は「撮影に失敗した」形にする**（`ogp_state = 'failed'`。PR #669）。表の画像の枠が「撮影中」と
+# 「画像なし」を出し分けることを、画面でも見られるようにするためである。
+#
 # **公開済みの作品には、説明も入れる**（#627 / 仕様 5.4）。入れないと、遊ぶ枠の直前の折りたたみ
 # （`.gf-work-description-peek`）と説明の本文が **1 度も描かれないまま幅の検査が緑になる**。
 # 3 段落・約 180 字にしてあり、狭い段での折り返しも測れる。
@@ -259,6 +262,7 @@ dev_fixture_up() {
       values ('width-check-action', '$USER_ID', 3, 'review-queued', 'game', '$QUEUED_GAME_ID',
               '幅の検査の履歴の理由');
     update games set ogp_state = 'ready', ogp_key = '$OGP_KEY', fork_count = 12 where id = '$PUBLISHED_GAME_ID';
+    update games set ogp_state = 'failed' where id = '$QUEUED_GAME_ID';
     insert into games (id, author_id, status, title, go_version, created_at, generation_state, generation_started_at)
       values ('$GENERATING_GAME_ID', '$USER_ID', 'draft',
               '幅の検査の生成中の作品で、題名が表の狭い列に 1 行では収まらない長さになっているもの', '', 2, 'running', 2);

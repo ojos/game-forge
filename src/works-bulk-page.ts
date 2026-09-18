@@ -229,12 +229,15 @@ export interface BulkResultView {
   readonly failed: readonly BulkExcludedWork[];
   /** 見つからなかった作品の数（名前は出さない）。 */
   readonly notFound: number;
+  /** 操作はできたが、後の処理（撮影・通知など）で例外が出た作品（成功の件数に含まれる）。 */
+  readonly afterErrors: readonly BulkListedWork[];
 }
 
 /**
  * 結果の画面（`POST /api/works/bulk` の最後の往復）の HTML。
  *
- * **一部だけ失敗したら、どの作品が失敗したかを名前付きで示す**（#666 の constraints）。POST の結果なので
+ * **一部だけ失敗したら、どの作品が失敗したかを名前付きで示す**（#666 の constraints）。**成功の件数は実行の口が D1 の
+ * 状態から数えたもの**である（`src/works-bulk.ts` の `handleBulk`）。POST の結果なので
  * ヘッダのナビとパンくずは出さない（`viewer` を渡さない。`src/html.ts` の `siteHeader`）。
  *
  * @param view 表示に要る値
@@ -254,9 +257,15 @@ export function renderBulkResult(view: BulkResultView): string {
       ? ''
       : `<h2>${words.verb}ことができなかった作品（${failedCount} 件）</h2>
 ${excludedList(view.failed, view.notFound)}`;
+  const afterSection =
+    view.afterErrors.length === 0
+      ? ''
+      : `<h2>後の処理に失敗した作品（${view.afterErrors.length} 件）</h2>
+<p>${BULK_REASON_TEXTS['post-error']}作品ページを開いて確かめてください。</p>
+${nameList(view.afterErrors)}`;
   return `${siteHead({ title: `${heading} - Game Forge`, noindex: true })}
 <h1>${heading}</h1>
-${failedSection}
+${failedSection}${afterSection}
 <p><a class="gf-button gf-button-secondary" href="${MY_WORKS_PATH}">「あなたの作品」へ戻る</a></p>
 ${siteFooter()}`;
 }

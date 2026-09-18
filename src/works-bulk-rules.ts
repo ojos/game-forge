@@ -16,7 +16,7 @@
  * 確認画面が嘘をついたように見える。逆向き（ここが外し、あちらは通す）も作らない。**条件は各関数の WHERE を
  * そのまま写してある**（下の各行の注記）。一致は `test/works-bulk.test.ts` が、行の状態ごとに両方を呼んで確かめる。
  */
-import { DRAFT_STATUS, PUBLISHED_STATUS } from './games.js';
+import { DRAFT_STATUS, PUBLISHED_STATUS, validateWorkTags, workTagsOf } from './games.js';
 import type { DeletionTargetRow } from './work-delete.js';
 import { deletionBlockOf, deletionStateOf } from './work-delete.js';
 
@@ -59,12 +59,12 @@ export const MAX_BULK_WORKS = 30;
  *
  * | 操作 | 1 件あたり | 件数 | 前後（セッション・行の読み取り・結果の名前） |
  * |---|---|---|---|
- * | 削除 | 作者の検査 1 ＋ `deleteGame` 14〜15。**20 文を予約する**（`src/withdrawal-purge.ts` の `DELETE_RESERVE` と同じ余裕） | 2 | 3 文 |
+ * | 削除 | 作者の検査 1 ＋ `deleteGame` 14〜15。**20 文を予約する**（`src/withdrawal-purge.ts` の `DELETE_RESERVE` と同じ余裕） | 2 | 2 文 |
  * | 公開 | 公開 1・親の数え直し 1・撮影の掴み 1〜2・改造の通知 最大 3 で **最大 7 文** | 5 | 同上 |
  * | 下書きへ戻す | 戻す 1・親の数え直し 1 で **2 文** | 10 | 同上 |
  *
  * **実測（2026-09-18。`test/works-bulk.test.ts`、30 件）は 1 往復あたり 削除 34 文・公開 32 文・下書きへ戻す 22 文**
- * （セッション 1・行の読み取り 1 を含む。最後の往復は断られた作品があれば名前を引く 1 文が増える）。削除は版と成果物を持つ
+ * （セッション 1・選んだ作品の行の読み直し 1 を含む。例外が出た作品は、行を読み直す 1 文が増える）。削除は版と成果物を持つ
  * 作品、公開はフォーク（親の数え直しが実際に書く）で、通知の 3 文も打たせて数えた。
  *
  * **往復の数はブラウザがたどれるリダイレクトの数に収める**（Safari は 16 回）。30 件の削除が 15 往復（リダイレクト 14 回）
@@ -89,8 +89,10 @@ export const BULK_STEP_SIZES: Readonly<Record<BulkAction, number>> = {
  * - `purged` … 中身をもう消してある
  * - `deleting` … 削除を始めている
  * - `busy` … 読み直すあいだに状態が動いた（`deleteGame` の `busy`）
- * - `tags` … 付いているタグを読めなかった（公開の検査が断った）
- * - `error` … 処理の途中で例外が出た（その作品だけを失敗にして、残りは続ける）
+ * - `tags` … いまの語彙に無いタグが付いている（公開の検査 `validateWorkTags` が断る）
+ * - `error` … 処理の途中で例外が出て、行も目的の状態になっていない（その作品だけを失敗にして、残りは続ける）
+ * - `post-error` … 例外は出たが、行は目的の状態になっている（公開・下書きへ戻すは行を書き換えてから撮影や通知をする。
+ *   **成功に数え**、結果の画面で「後の処理に失敗した」と別に示す。PR #669 の Copilot code review）
  */
 export const BULK_REASONS = [
   'not-found',
@@ -106,6 +108,7 @@ export const BULK_REASONS = [
   'busy',
   'tags',
   'error',
+  'post-error',
 ] as const;
 
 /** 対象から外す理由。 */
@@ -137,8 +140,9 @@ export const BULK_REASON_TEXTS: Readonly<Record<BulkReason, string>> = {
   purged: 'すでに削除されています。',
   deleting: '削除を進めている作品です。',
   busy: 'ちょうど作品の状態が変わったため、操作できませんでした。一覧を開き直してからもう一度お試しください。',
-  tags: '付いているタグを読み取れなかったため、公開できませんでした。作品ページから公開してください。',
+  tags: 'いまは選べないタグが付いています。作品ページでタグを付け直してから公開してください。',
   error: '処理の途中で失敗しました。時間をおいて、もう一度お試しください。',
+  'post-error': '操作はできましたが、そのあとの処理（紹介用の画像の撮影など）に失敗しました。',
 };
 
 /**
@@ -205,7 +209,12 @@ export function bulkBlockOf(action: BulkAction, row: BulkTargetRow | null, userI
       if (generation === 'failed') {
         return 'failed';
       }
-      return generation === 'ready' ? null : 'generating';
+      if (generation !== 'ready') {
+        return 'generating';
+      }
+      // **いま付いているタグで公開する**ので、`publishGame` と同じ検査（`validateWorkTags`）を掛ける。語彙に無いタグを
+      // 黙って落とすと、1 件ずつの口（`unknown-tag` で断る）より緩くなる（PR #669 の Copilot code review）。
+      return validateWorkTags(workTagsOf(row)).ok ? null : 'tags';
     case 'unpublish':
       // `unpublishGame` の WHERE: `status = 'published' and deletion_started_at is null`。
       if (row.status === DRAFT_STATUS) {

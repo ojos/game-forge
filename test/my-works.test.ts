@@ -365,8 +365,8 @@ describe('一覧の中身（#152 acceptance 1・3）', () => {
 
     const body = await (await openList(await sessionCookie(userId))).text();
     // #666 で表の「状態」の列にした。生成が済んだ行は公開中か下書き、失敗した行は「失敗」である。
-    expect(body).toContain('<td class="gf-works-state"><span class="gf-chip">下書き</span></td>');
-    expect(body).toContain('<td class="gf-works-state"><span class="gf-chip">失敗</span></td>');
+    expect(body).toContain('<td class="gf-works-state" role="cell"><span class="gf-chip">下書き</span></td>');
+    expect(body).toContain('<td class="gf-works-state" role="cell"><span class="gf-chip">失敗</span></td>');
   });
 
   it('長く動いていない生成は「時間がかかっています」と出す', async () => {
@@ -437,8 +437,8 @@ describe('一覧の中身（#152 acceptance 1・3）', () => {
     await seedGame(userId, { status: DRAFT_STATUS, generationState: 'running', title: '生成中の作品' });
 
     const body = await (await openList(await sessionCookie(userId))).text();
-    const row = /<tr><td class="gf-works-select">(?:(?!<\/tr>)[\s\S])*生成中の作品[\s\S]*?<\/tr>/u.exec(body)?.[0] ?? '';
-    expect(row).toContain('<td class="gf-works-state"><span class="gf-chip gf-chip-emphasis">生成中</span></td>');
+    const row = /<tr role="row"><td class="gf-works-select" role="cell">(?:(?!<\/tr>)[\s\S])*生成中の作品[\s\S]*?<\/tr>/u.exec(body)?.[0] ?? '';
+    expect(row).toContain('<td class="gf-works-state" role="cell"><span class="gf-chip gf-chip-emphasis">生成中</span></td>');
     expect(row).not.toContain('<span class="gf-chip">下書き</span>');
   });
 
@@ -1023,13 +1023,15 @@ describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
     const stalled = await seedGame(userId, { generationState: 'running', createdAt: now - STALE_AFTER_SECONDS - 60 });
 
     const main = pageBodyOf(await (await openList(await sessionCookie(userId))).text());
-    expect(main).toContain('<table class="gf-block gf-works-table">');
+    expect(main).toContain('<table class="gf-block gf-works-table" role="table">');
     const stateOf = (id: string): string =>
-      new RegExp(`value="${id}"[\\s\\S]*?<td class="gf-works-state">(<span class="[^"]*">[^<]*</span>)</td>`, 'u').exec(main)?.[1] ?? '';
+      new RegExp(`value="${id}"[\\s\\S]*?<td class="gf-works-state" role="cell">(<span class="[^"]*">[^<]*</span>)`, 'u').exec(main)?.[1] ?? '';
     expect(stateOf(ready)).toBe('<span class="gf-chip">下書き</span>');
     expect(stateOf(failed)).toBe('<span class="gf-chip">失敗</span>');
     expect(stateOf(working)).toBe('<span class="gf-chip gf-chip-emphasis">生成中</span>');
-    expect(stateOf(stalled)).toMatch(/^<span class="gf-chip gf-chip-emphasis">[^<]*時間がかかっています[^<]*<\/span>$/u);
+    // 札は短い語だけにし、補足は札の外に小さく添える（PR #669 のレイアウトの指摘）。
+    expect(stateOf(stalled)).toBe('<span class="gf-chip gf-chip-emphasis">生成中</span>');
+    expect(main).toContain('<span class="gf-chip gf-chip-emphasis">生成中</span><span class="gf-works-state-note">時間がかかっています</span></td>');
     // 題名は文章の外のリンク（`.gf-link-quiet`）で、行き先はエディットページ（#664 / #666 の scope.in）。
     expect(main).toContain(`<a class="gf-link-quiet gf-works-title" href="${workEditPath(ready)}">`);
     // #473 の前の札（`.gf-state`）と、#666 の前の行（`ul.gf-works`）は残さない。
@@ -1111,7 +1113,7 @@ async function seedTableGame(
  * @returns 行（無ければ空文字）
  */
 function tableRowOf(page: string, id: string): string {
-  return new RegExp(`<tr><td class="gf-works-select"><input [^>]*value="${id}"[\\s\\S]*?</tr>`, 'u').exec(page)?.[0] ?? '';
+  return new RegExp(`<tr role="row"><td class="gf-works-select" role="cell"><input [^>]*value="${id}"[\\s\\S]*?</tr>`, 'u').exec(page)?.[0] ?? '';
 }
 
 describe('Studio 型の表（#666）', () => {
@@ -1132,31 +1134,39 @@ describe('Studio 型の表（#666）', () => {
     const page = await (await openList(await sessionCookie(userId))).text();
 
     expect(page).toContain(
-      '<thead><tr><th scope="col" class="gf-works-select">選択</th><th scope="col" class="gf-works-thumb">画像</th><th scope="col">作品</th><th scope="col">状態</th><th scope="col">日付</th><th scope="col" class="gf-works-count">プレイ</th><th scope="col" class="gf-works-count">いいね</th><th scope="col" class="gf-works-count">フォークされた数</th></tr></thead>',
+      '<thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader" class="gf-works-select">選択</th><th scope="col" role="columnheader" class="gf-works-thumb">画像</th><th scope="col" role="columnheader">作品</th><th scope="col" role="columnheader">状態</th><th scope="col" role="columnheader">日付</th><th scope="col" role="columnheader" class="gf-works-count">プレイ</th><th scope="col" role="columnheader" class="gf-works-count">いいね</th><th scope="col" role="columnheader" class="gf-works-count" title="フォークされた数" aria-label="フォークされた数">フォーク</th></tr></thead>',
     );
     const row = tableRowOf(page, published);
     expect(row).toContain(`<input type="checkbox" name="${WORKS_BULK_GAME_ID_FIELD}" value="${published}" aria-label="公開中の作品 を選ぶ">`);
     // 紹介用の画像は、配信できるとき（公開中で撮影済み）だけ `<img>` にする。
     expect(row).toContain(`<img class="gf-works-shot" src="${ogpImagePath(published)}"`);
     expect(row).toContain('<span class="gf-works-tags"><span class="gf-chip">パズル</span> <span class="gf-chip">放置</span></span>');
-    expect(row).toContain('<td class="gf-works-state"><span class="gf-chip">公開中</span></td>');
-    expect(row).toContain('<span class="gf-works-date-label">公開</span> <time datetime="2023-11-14T22:13:20.000Z">');
-    expect(row).toContain('<td class="gf-works-count" data-label="プレイ">1234</td><td class="gf-works-count" data-label="いいね">56</td><td class="gf-works-count" data-label="フォーク">7</td>');
+    expect(row).toContain('<td class="gf-works-state" role="cell"><span class="gf-chip">公開中</span></td>');
+    expect(row).toContain('<span class="gf-works-date-label">公開日</span> <time datetime="2023-11-14T22:13:20.000Z">');
+    expect(row).toContain('<td class="gf-works-count" role="cell" data-label="プレイ">1234</td><td class="gf-works-count" role="cell" data-label="いいね">56</td><td class="gf-works-count" role="cell" data-label="フォーク">7</td>');
 
     // 公開したことが無い作品は生成日、下書きへ戻した作品は「初公開」の日を出す。
     const draftRow = tableRowOf(page, draft);
-    expect(draftRow).toContain('<span class="gf-works-date-label">生成</span>');
+    expect(draftRow).toContain('<span class="gf-works-date-label">生成日</span>');
     expect(draftRow).toContain('<span class="gf-works-shot gf-works-shot-pending">公開前</span>');
     expect(draftRow).not.toContain('<img');
-    expect(tableRowOf(page, unpublished)).toContain('<span class="gf-works-date-label">初公開</span>');
+    expect(tableRowOf(page, unpublished)).toContain('<span class="gf-works-date-label">初公開日</span>');
   });
 
-  it('公開中でも撮影が済んでいなければ画像を指さない（配信の条件と同じ）', async () => {
+  it('公開中でも撮影が済んでいなければ画像を指さず、撮影中と失敗で語を分ける（配信の条件と同じ。PR #669）', async () => {
     const userId = await seedUser();
     const capturing = await seedTableGame(userId, { status: PUBLISHED_STATUS, publishedAt: 1, ogpState: 'capturing' });
-    const row = tableRowOf(await (await openList(await sessionCookie(userId))).text(), capturing);
-    expect(row).toContain('<span class="gf-works-shot gf-works-shot-pending">撮影中</span>');
-    expect(row).not.toContain(ogpImagePath(capturing));
+    const failed = await seedTableGame(userId, { status: PUBLISHED_STATUS, publishedAt: 1, ogpState: 'failed' });
+    const noKey = await seedTableGame(userId, { status: PUBLISHED_STATUS, publishedAt: 1, ogpState: 'ready' });
+    await env.DB.prepare('update games set ogp_key = null where id = ?').bind(noKey).run();
+    const page = await (await openList(await sessionCookie(userId))).text();
+    expect(tableRowOf(page, capturing)).toContain('<span class="gf-works-shot gf-works-shot-pending">撮影中</span>');
+    expect(tableRowOf(page, failed)).toContain('<span class="gf-works-shot gf-works-shot-pending">画像なし</span>');
+    // `ogp_state = 'ready'` でも鍵が無ければ、配信の口は 404 を返すので画像を指さない。
+    expect(tableRowOf(page, noKey)).toContain('<span class="gf-works-shot gf-works-shot-pending">画像なし</span>');
+    for (const id of [capturing, failed, noKey]) {
+      expect(page).not.toContain(ogpImagePath(id));
+    }
   });
 
   it('表は素の GET のフォームで、押すと確認画面へ移る（一括操作のボタンは 3 つとも小さい副のボタン）', async () => {

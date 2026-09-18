@@ -257,7 +257,8 @@ export function myWorksPath(page: number, filter: MyWorksFilter = 'all'): string
  */
 const STATE_LABELS = {
   working: '生成中',
-  stalled: '生成中（時間がかかっています）',
+  // **札は短い語だけにする**（PR #669 のレイアウトの指摘）。「時間がかかっています」は札の外に小さく添える（{@link STALLED_NOTE}）。
+  stalled: '生成中',
   ready: 'できました',
   failed: '失敗',
   unknown: '状態を読み取れません',
@@ -265,6 +266,9 @@ const STATE_LABELS = {
 
 /** 一覧の行に出す生成の状態。 */
 type RowState = keyof typeof STATE_LABELS;
+
+/** 長く動いていない生成の札の外に添える補足（#666。札は「生成中」のまま）。 */
+export const STALLED_NOTE = '時間がかかっています';
 
 /**
  * 公開状態の札の文言（#641）。**`removed` は無い**（この一覧は引かない）。
@@ -318,6 +322,8 @@ export interface StateChip {
   readonly label: string;
   /** 地を塗るか（まだ動いている行だけ。仕様 2.5.5 / #473）。 */
   readonly emphasis: boolean;
+  /** 札の外に小さく添える補足（長く動いていない生成だけ。無ければ null）。 */
+  readonly note: string | null;
 }
 
 /**
@@ -342,9 +348,13 @@ export function stateChipOf(
   const stalled = looksStalled({ createdAt: work.createdAt, startedAt: work.startedAt }, now);
   const state = rowStateOf(work.generationState, stalled);
   if (state === 'ready') {
-    return { label: publicationLabelOf(work.status) ?? STATE_LABELS.ready, emphasis: false };
+    return { label: publicationLabelOf(work.status) ?? STATE_LABELS.ready, emphasis: false, note: null };
   }
-  return { label: STATE_LABELS[state], emphasis: state === 'working' || state === 'stalled' };
+  return {
+    label: STATE_LABELS[state],
+    emphasis: state === 'working' || state === 'stalled',
+    note: state === 'stalled' ? STALLED_NOTE : null,
+  };
 }
 
 /**
@@ -367,7 +377,8 @@ export function displayTitleOf(title: string): string {
  * 無彩色である（仕様 2.5.2）。面の色の枠に、なぜ画像が無いかを 1 語で書く。
  *
  * - 下書きは撮っていない（撮影は公開したときに起こす。5.4 の「OGP 画像の生成は公開時まで遅延する」）→「公開前」
- * - 公開中でも、撮影が終わるまでは無い
+ * - 公開中で撮影の最中（`ogp_state = 'capturing'`）→「撮影中」。撮影に失敗した・始まっていない作品は「画像なし」
+ *   （PR #669 の Copilot code review。以前は失敗も「撮影中」と出していた）
  *
  * @param work 行
  * @param chip 状態の札
@@ -375,7 +386,7 @@ export function displayTitleOf(title: string): string {
  */
 function shotPlaceholderOf(work: MyWorkRow, chip: StateChip): string {
   if (work.status === 'published') {
-    return '撮影中';
+    return work.ogpState === 'capturing' ? '撮影中' : '画像なし';
   }
   if (chip.label === PUBLICATION_LABELS.draft) {
     return '公開前';
@@ -405,7 +416,10 @@ function renderShot(work: MyWorkRow, chip: StateChip): string {
  * （Studio の「公開日」「アップロード日」の出し分け）。
  *
  * **下書きへ戻した作品も公開日を出す**——`published_at` は最初に公開した時刻で、下書きへ戻しても消えない
- * （`src/games.ts` の `publishGame` の #637 注記）。**語は「公開」ではなく「初公開」にする**（いま公開中だと読ませない）。
+ * （`src/games.ts` の `publishGame` の #637 注記）。**語は「公開日」ではなく「初公開日」にする**（いま公開中だと読ませない）。
+ *
+ * **語は「〜日」で終える**（PR #669 のレイアウトの指摘）。「公開」の 2 文字だと、同じ行の状態の札「公開中」と
+ * 2 通りの綴りに見えた。
  *
  * **読めない日時では `<time>` ごと落とす。** `datetime=""` は仕様上不正である（#152 のときと同じ扱い）。
  *
@@ -415,8 +429,8 @@ function renderShot(work: MyWorkRow, chip: StateChip): string {
 function renderDate(work: MyWorkRow): string {
   const [label, at] =
     work.publishedAt !== null
-      ? [work.status === 'published' ? '公開' : '初公開', work.publishedAt]
-      : ['生成', work.createdAt];
+      ? [work.status === 'published' ? '公開日' : '初公開日', work.publishedAt]
+      : ['生成日', work.createdAt];
   const iso = toIsoTimestamp(at);
   if (iso === '') {
     return '';
@@ -427,7 +441,10 @@ function renderDate(work: MyWorkRow): string {
 /** 数の列（見出しの文言と、行の値の取り出し方）。**狭い段のカードでは見出しを値の前に添える**（`data-label`）。 */
 const COUNT_COLUMNS: readonly {
   readonly label: string;
-  /** カードで数の上に添える短い語（390px のカードで 1 行に収める。表の見出しは `label`）。 */
+  /**
+   * 表の見出しとカードの数の上に出す短い語（1 行に収める。PR #669 のレイアウトの指摘で「フォークされた数」が
+   * 見出しで 4 行に折り返していた）。**正式名（`label`）は見出しの `title` と `aria-label` で補う。**
+   */
   readonly short: string;
   readonly value: (work: MyWorkRow) => number;
 }[] = [
@@ -458,15 +475,16 @@ function renderRow(work: MyWorkRow, now: number): string {
       ? ''
       : `<span class="gf-works-tags">${tags.map((tag) => `<span class="gf-chip">${tag.label}</span>`).join(' ')}</span>`;
   const counts = COUNT_COLUMNS.map(
-    ({ short, value }) => `<td class="gf-works-count" data-label="${short}">${value(work)}</td>`,
+    ({ short, value }) => `<td class="gf-works-count" role="cell" data-label="${short}">${value(work)}</td>`,
   ).join('');
+  const note = chip.note === null ? '' : `<span class="gf-works-state-note">${chip.note}</span>`;
   return (
-    `<tr>` +
-    `<td class="gf-works-select"><input type="checkbox" name="${WORKS_BULK_GAME_ID_FIELD}" value="${work.id}" aria-label="${title} を選ぶ"></td>` +
-    `<td class="gf-works-thumb">${renderShot(work, chip)}</td>` +
-    `<td class="gf-works-name"><a class="gf-link-quiet gf-works-title" href="${workEditPath(work.id)}">${title}</a>${tagLine}</td>` +
-    `<td class="gf-works-state"><span class="${chip.emphasis ? 'gf-chip gf-chip-emphasis' : 'gf-chip'}">${chip.label}</span></td>` +
-    `<td class="gf-works-date">${renderDate(work)}</td>` +
+    `<tr role="row">` +
+    `<td class="gf-works-select" role="cell"><input type="checkbox" name="${WORKS_BULK_GAME_ID_FIELD}" value="${work.id}" aria-label="${title} を選ぶ"></td>` +
+    `<td class="gf-works-thumb" role="cell">${renderShot(work, chip)}</td>` +
+    `<td class="gf-works-name" role="cell"><a class="gf-link-quiet gf-works-title" href="${workEditPath(work.id)}">${title}</a>${tagLine}</td>` +
+    `<td class="gf-works-state" role="cell"><span class="${chip.emphasis ? 'gf-chip gf-chip-emphasis' : 'gf-chip'}">${chip.label}</span>${note}</td>` +
+    `<td class="gf-works-date" role="cell">${renderDate(work)}</td>` +
     counts +
     `</tr>`
   );
@@ -626,7 +644,10 @@ export const BULK_BUTTONS: readonly { readonly action: string; readonly label: s
  *
  * # 表の見出し
  *
- * 見出しは `<th scope="col">`。狭い段では見出しの行を隠してカードにする（数の列は `data-label` の語を値の前に添える）。
+ * 見出しは `<th scope="col">`。狭い段では見出しの行を**見た目だけ**隠してカードにする（数の列は `data-label` の語を値の上に
+ * 添える）。**表の要素に `role` を明示する**——CSS で `display` を表から格子へ替えると、ブラウザによっては表の意味が
+ * 支援技術に渡らなくなるためで、`role` があれば狭い段でも各セルが見出しと結び付いたまま読まれる（PR #669 の Copilot
+ * code review。以前は狭い段で `thead` を `display: none` にしており、数のセルが見出しの無い数字になっていた）。
  *
  * @param view 表示に必要な値
  * @returns HTML
@@ -644,9 +665,9 @@ function renderTable(view: MyWorksView): string {
 ${buttons}
 </div>
 </div>
-<table class="gf-block gf-works-table">
-<thead><tr><th scope="col" class="gf-works-select">選択</th><th scope="col" class="gf-works-thumb">画像</th><th scope="col">作品</th><th scope="col">状態</th><th scope="col">日付</th>${COUNT_COLUMNS.map(({ label }) => `<th scope="col" class="gf-works-count">${label}</th>`).join('')}</tr></thead>
-<tbody>
+<table class="gf-block gf-works-table" role="table">
+<thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader" class="gf-works-select">選択</th><th scope="col" role="columnheader" class="gf-works-thumb">画像</th><th scope="col" role="columnheader">作品</th><th scope="col" role="columnheader">状態</th><th scope="col" role="columnheader">日付</th>${COUNT_COLUMNS.map(({ label, short }) => (label === short ? `<th scope="col" role="columnheader" class="gf-works-count">${short}</th>` : `<th scope="col" role="columnheader" class="gf-works-count" title="${label}" aria-label="${label}">${short}</th>`)).join('')}</tr></thead>
+<tbody role="rowgroup">
 ${view.works.map((work) => renderRow(work, view.now)).join('\n')}
 </tbody>
 </table>

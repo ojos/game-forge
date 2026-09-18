@@ -12,12 +12,11 @@ import { buildSessionCookie, signSession } from '../src/session.js';
 import { deleteAuthoredGame, deletionConsequences } from '../src/work-delete.js';
 import { PUBLISH_SOURCE_NOTICE } from '../src/work-page.js';
 import {
-  BULK_DONE_PARAM,
+  BULK_CONTINUE_PARAM,
   BULK_FAILED_PARAM,
-  BULK_STEP_PARAM,
   createWorksBulkRoutes,
   nextStepPath,
-  readProgress,
+  readFailures,
   readSelection,
 } from '../src/works-bulk.js';
 import type { BulkAction, BulkTargetRow } from '../src/works-bulk-rules.js';
@@ -568,54 +567,144 @@ describe('往復に分ける（Workers Free の D1 の枠。1 呼び出し 50 �
     }, 30_000);
   }
 
-  it('途中の往復で断られた作品も、最後の画面に名前付きで出る', async () => {
+  it('最初の往復で外した作品も、最後の画面に名前付きで出る（外した作品は往復の数に入らない）', async () => {
     const userId = await seedUser();
     const ids: string[] = [];
     for (let i = 0; i < 5; i += 1) {
       ids.push(await seedGame(userId, i === 0 ? { status: PUBLISHED_STATUS, title: '最初の公開中の作品' } : {}));
     }
     const run = await runBulk(await sessionCookie(userId), 'delete', ids);
-    expect(run.steps).toBe(3);
+    // 公開中の 1 件は最初の往復で外し、残り 4 件を 2 件ずつ 2 往復で処理する。
+    expect(run.steps).toBe(2);
     const body = await run.response.text();
     expect(body).toContain('<h1>4 件を削除しました（1 件はできませんでした）</h1>');
     expect(body).toContain(`<li><strong>最初の公開中の作品</strong> — ${BULK_REASON_TEXTS.published}</li>`);
   });
 
-  it('進み具合の URL は検算し、辻褄が合わなければ何もしない', async () => {
+  it('URL を書き換えても成功は偽れない——成功の件数は D1 の状態から数える（PR #669 の Copilot code review）', async () => {
     const userId = await seedUser();
     const ids: string[] = [];
     for (let i = 0; i < 4; i += 1) {
-      ids.push(await seedGame(userId));
+      ids.push(await seedGame(userId, { title: `作品${i}` }));
     }
     const cookie = await sessionCookie(userId);
-    // 2 件ずつの削除で、1 往復目を飛ばしたと偽る（done が処理した件数と合わない）。
-    const forged = `${APP_ORIGIN}${WORKS_BULK_API_PATH}?${BULK_STEP_PARAM}=1&${BULK_DONE_PARAM}=0`;
-    const run = await runBulk(cookie, 'delete', ids, spies(), forged);
-    expect(run.response.status).toBe(400);
+    // 以前の形（`step` と `done`）で先頭 2 件を済んだことにしても、読まない。4 件とも実際に処理して数える。
+    const old = await runBulk(cookie, 'delete', ids, spies(), `${APP_ORIGIN}${WORKS_BULK_API_PATH}?step=1&done=2`);
+    expect(await old.response.text()).toContain('<h1>4 件を削除しました</h1>');
     for (const id of ids) {
-      expect((await readGame(id))?.status).toBe(DRAFT_STATUS);
+      expect(await readGame(id)).toBeNull();
     }
+
+    // 控え（`ng`）を書き足して先頭を飛ばしても、飛ばした作品は書き換わらず、失敗として名前付きで出る。
+    const more: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      more.push(await seedGame(userId, { title: `別の作品${i}` }));
+    }
+    const forged = `${APP_ORIGIN}${WORKS_BULK_API_PATH}?${BULK_CONTINUE_PARAM}=1&${BULK_FAILED_PARAM}=0.busy&${BULK_FAILED_PARAM}=1.busy`;
+    const skipped = await runBulk(cookie, 'delete', more, spies(), forged);
+    const body = await skipped.response.text();
+    expect(body).toContain('<h1>2 件を削除しました（2 件はできませんでした）</h1>');
+    expect(body).toContain(`<li><strong>別の作品0</strong> — ${BULK_REASON_TEXTS.busy}</li>`);
+    expect((await readGame(more[0]!))?.status).toBe(DRAFT_STATUS);
+    expect((await readGame(more[1]!))?.status).toBe(DRAFT_STATUS);
+    expect(await readGame(more[2]!)).toBeNull();
+
+    // 読めない控えは断り、何もしない。
+    const bad = await runBulk(cookie, 'delete', [ids[0]!], spies(), `${APP_ORIGIN}${WORKS_BULK_API_PATH}?${BULK_FAILED_PARAM}=9.busy`);
+    expect(bad.response.status).toBe(400);
   });
 
-  it('進み具合の読み書き（純関数）', () => {
+  it('確認画面を経ずに、もう目的の状態にある作品を送っても、成功に数えない', async () => {
+    const userId = await seedUser();
+    const published = await seedGame(userId, { status: PUBLISHED_STATUS, title: 'もう公開中の作品' });
+    const missing = crypto.randomUUID();
+    const { response } = await runBulk(await sessionCookie(userId), 'publish', [published]);
+    expect(await response.text()).toContain(`<li><strong>もう公開中の作品</strong> — ${BULK_REASON_TEXTS['already-published']}</li>`);
+    // 行の無い id の削除は「消した」ではなく「見つからない」。
+    const gone = await runBulk(await sessionCookie(userId), 'delete', [missing]);
+    const body = await gone.response.text();
+    expect(body).toContain('<h1>削除することができませんでした</h1>');
+    expect(body).toContain(`<li>見つからない作品 1 件 — ${BULK_REASON_TEXTS['not-found']}</li>`);
+  });
+
+  it('控えの読み書き（純関数）', () => {
     const url = (search: string): URL => new URL(`${APP_ORIGIN}${WORKS_BULK_API_PATH}${search}`);
-    expect(readProgress(url(''), 'delete', 5)).toEqual({ step: 0, done: 0, failed: new Map() });
-    const progress = { step: 2, done: 3, failed: new Map([[1, 'published' as const]]) };
-    const path = nextStepPath(progress);
-    expect(path).toBe(`${WORKS_BULK_API_PATH}?${BULK_STEP_PARAM}=2&${BULK_DONE_PARAM}=3&${BULK_FAILED_PARAM}=1.published`);
-    expect(readProgress(url(path.slice(WORKS_BULK_API_PATH.length)), 'delete', 5)).toEqual(progress);
-    // 範囲の外・知らない理由・重なり・件数の食い違い・最初の往復に進み具合だけがある形は読まない。
+    expect(readFailures(url(''), 5)).toEqual(new Map());
+    const failed = new Map([[1, 'published' as const], [0, 'busy' as const]]);
+    const path = nextStepPath(failed);
+    expect(path).toBe(`${WORKS_BULK_API_PATH}?${BULK_CONTINUE_PARAM}=1&${BULK_FAILED_PARAM}=0.busy&${BULK_FAILED_PARAM}=1.published`);
+    expect(readFailures(url(path.slice(WORKS_BULK_API_PATH.length)), 5)).toEqual(failed);
     for (const bad of [
-      `?${BULK_STEP_PARAM}=3&${BULK_DONE_PARAM}=6`,
-      `?${BULK_STEP_PARAM}=1&${BULK_DONE_PARAM}=1&${BULK_FAILED_PARAM}=0.unknown`,
-      `?${BULK_STEP_PARAM}=1&${BULK_DONE_PARAM}=0&${BULK_FAILED_PARAM}=0.busy&${BULK_FAILED_PARAM}=0.busy`,
-      `?${BULK_STEP_PARAM}=1&${BULK_DONE_PARAM}=0&${BULK_FAILED_PARAM}=2.busy&${BULK_FAILED_PARAM}=1.busy`,
-      `?${BULK_STEP_PARAM}=0&${BULK_DONE_PARAM}=0`,
-      `?${BULK_DONE_PARAM}=0`,
-      `?${BULK_STEP_PARAM}=01&${BULK_DONE_PARAM}=2`,
+      `?${BULK_FAILED_PARAM}=5.busy`,
+      `?${BULK_FAILED_PARAM}=0.unknown`,
+      `?${BULK_FAILED_PARAM}=0.busy&${BULK_FAILED_PARAM}=0.busy`,
+      `?${BULK_FAILED_PARAM}=01.busy`,
+      `?${BULK_FAILED_PARAM}=busy`,
     ]) {
-      expect(readProgress(url(bad), 'delete', 5), bad).toBeNull();
+      expect(readFailures(url(bad), 5), bad).toBeNull();
     }
+  });
+});
+
+describe('例外とタグ（PR #669 の Copilot code review）', () => {
+  it('公開の後の処理（通知）が投げても、公開できた作品は成功に数え、後の処理の失敗を名前付きで示す', async () => {
+    const userId = await seedUser();
+    const id = await seedGame(userId, { title: '通知で落ちる作品' });
+    const deps = spies();
+    const throwing: Spies = { ...deps, notify: async () => { throw new Error('通知の不調を模した失敗'); } };
+    const { response } = await runBulk(await sessionCookie(userId), 'publish', [id], throwing);
+    const body = await response.text();
+    expect(body).toContain('<h1>1 件を公開しました</h1>');
+    expect(body).toContain('<h2>後の処理に失敗した作品（1 件）</h2>');
+    expect(body).toContain('<li><strong>通知で落ちる作品</strong></li>');
+    expect((await readGame(id))?.status).toBe(PUBLISHED_STATUS);
+  });
+
+  it('行を書き換える前に投げたら、失敗として名前付きで示す', async () => {
+    const userId = await seedUser();
+    const id = await seedGame(userId, { status: PUBLISHED_STATUS, title: '戻せない作品' });
+    const failing = { ...testEnv() };
+    const db = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'prepare') {
+          return (sql: string) => {
+            if (sql.includes('update games as g')) {
+              throw new Error('D1 の不調を模した失敗');
+            }
+            return target.prepare(sql);
+          };
+        }
+        const value: unknown = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const body = new URLSearchParams({ [WORKS_BULK_ACTION_FIELD]: 'unpublish', [WORKS_BULK_GAME_ID_FIELD]: id });
+    const response = await dispatch(
+      createWorksBulkRoutes(spies().start, spies().notify),
+      new Request(`${APP_ORIGIN}${WORKS_BULK_API_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: await sessionCookie(userId) },
+        body: body.toString(),
+      }),
+      { ...failing, DB: db } as Env,
+    );
+    const text = await response.text();
+    expect(text).toContain('<h1>下書きに戻すことができませんでした</h1>');
+    expect(text).toContain(`<li><strong>戻せない作品</strong> — ${BULK_REASON_TEXTS.error}</li>`);
+    expect((await readGame(id))?.status).toBe(PUBLISHED_STATUS);
+  });
+
+  it('語彙に無いタグが付いた作品は、黙ってタグを落とさず、確認画面でも実行でも名前付きで外す', async () => {
+    const userId = await seedUser();
+    const id = await seedGame(userId, { title: '古いタグの作品', tags: ['puzzle', 'retired-tag'] });
+    const cookie = await sessionCookie(userId);
+    const confirm = await (await openConfirmation(cookie, 'publish', [id])).text();
+    expect(confirm).toContain(`<li><strong>古いタグの作品</strong> — ${BULK_REASON_TEXTS.tags}</li>`);
+    const { response } = await runBulk(cookie, 'publish', [id]);
+    expect(await response.text()).toContain(`<li><strong>古いタグの作品</strong> — ${BULK_REASON_TEXTS.tags}</li>`);
+    const row = await readGame(id);
+    expect(row?.status).toBe(DRAFT_STATUS);
+    expect([row?.tag1, row?.tag2]).toEqual(['puzzle', 'retired-tag']);
   });
 });
 

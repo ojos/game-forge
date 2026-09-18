@@ -78,7 +78,7 @@ const FILTER_CONDITIONS: Readonly<Record<MyWorksFilter, string>> = {
  */
 export function myWorksSql(filter: MyWorksFilter): string {
   return `select id, title, status, generation_state, created_at, generation_started_at, published_at,
-            play_count, like_count, fork_count, tag1, tag2, tag3, ogp_state
+            play_count, like_count, fork_count, tag1, tag2, tag3, ogp_state, ogp_key
        from games
       where author_id = ? and ${FILTER_CONDITIONS[filter]}
       order by created_at desc, id desc
@@ -111,9 +111,15 @@ export interface MyWorkRow {
   readonly tags: readonly string[];
   /**
    * 紹介用の画像を出せるか。**配信の条件と同じにする**（`src/ogp.ts` の `serveOgpImage` は
-   * `status = 'published' and ogp_state = 'ready'` で引く）——条件がずれると、表が 404 の画像を指す。
+   * `status = 'published' and ogp_state = 'ready'` で引き、`ogp_key` が null なら 404 を返す）——条件がずれると、表が
+   * 404 の画像を指す（PR #669 の Copilot code review で `ogp_key` を足した）。
+   *
+   * **R2 に実体があるかまでは見ない。** 配信の口は実体が無ければ 404 を返すが、一覧のために行ごとに R2 を引くと
+   * 読み取りが行数に比例して増える。実体の欠けは撮影のコールバックの不具合で、ここで隠すものではない。
    */
   readonly hasShot: boolean;
+  /** 撮影の状態（`games.ogp_state`。D1 の綴りのまま。画像が無い理由の 1 語を決めるのに使う）。 */
+  readonly ogpState: string | null;
 }
 
 /**
@@ -166,6 +172,7 @@ export async function listMyWorks(
       tag2: string | null;
       tag3: string | null;
       ogp_state: string | null;
+      ogp_key: string | null;
     }>();
   return result.results.map((row) => ({
     id: row.id,
@@ -179,6 +186,7 @@ export async function listMyWorks(
     likeCount: countOf(row.like_count),
     forkCount: countOf(row.fork_count),
     tags: workTagsOf(row),
-    hasShot: row.status === PUBLISHED_STATUS && row.ogp_state === 'ready',
+    hasShot: row.status === PUBLISHED_STATUS && row.ogp_state === 'ready' && row.ogp_key !== null,
+    ogpState: row.ogp_state,
   }));
 }

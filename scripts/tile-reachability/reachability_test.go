@@ -7,6 +7,7 @@ package main
 //     しているのは、Go の道具や検査に「このモジュールのソース」として拾わせないため（ebiten を import している）。
 //   - skip-*.go.txt — 取り出せない作品。「判定しない」になることを見る。
 //   - rowcol-startpos.go.txt — 取り出し方の幅を見る合成の仕込み（座標が (行, 列)、スタートが配列、init() で組む）。
+//   - pkgsel-method.go.txt — math.Sin と同名のメソッドを持つ型がある合成の仕込み（#688）。
 //
 // 期待値は issue #675 の実測の表（使い捨ての Python の判定）と同じ。座標での照合は各テストの注記。
 
@@ -168,5 +169,14 @@ func TestRowColOrderAndStartArray(t *testing.T) {
 	r2 := room(t, rep, 2)
 	if r2.KeyReachable || r2.KeyOnWall || !r2.ExitReachableIfKey {
 		t.Fatalf("2 面: %+v", r2)
+	}
+}
+
+// 「パッケージ.識別子」（math.Sin）と同名のメソッド（Wave.Sin。ebiten に触る）がある作品で、メソッドを抜き出しに
+// 入れない（#688 の Copilot の指摘）。直す前はメソッド経由で ebiten に届き「判定しない」になっていた。
+func TestPackageSelectorDoesNotPullSameNamedMethod(t *testing.T) {
+	rep := check(t, "pkgsel-method.go.txt")
+	if rep.Verdict != "reachable" {
+		t.Fatalf("判定 = %s（%s）, 届くはず", rep.Verdict, rep.SkipReason)
 	}
 }

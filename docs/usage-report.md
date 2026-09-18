@@ -713,6 +713,8 @@ bash scripts/tile-reachability.sh --json <作品 id>            # JSON で出す
 作品 id を渡すと、D1 へ `SELECT` を送って `source_key` を読み、R2 から `object get` でソースを取ります。**本番へは
 1 行も書きません。** 資格情報は `scripts/load-project-env.sh` で環境へ移すだけです。**Go のツールチェインが要ります**
 （判定の道具 `scripts/tile-reachability/` を手元でビルドし、作品の地図のコードも手元でビルドして動かします）。
+**手元の Go が隔離ビルドの版（`docker/isolated-build/template/go.mod` の `go`）より古いと、標準エラーに警告が 1 行出ます**
+（止めません）。新しい API を使った作品は、地図のコードのビルドに失敗して「判定しない」に落ちることがあります。
 
 ### 読み方
 

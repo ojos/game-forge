@@ -59,6 +59,27 @@ if ! command -v go >/dev/null 2>&1; then
   exit 2
 fi
 
+# 手元の Go が隔離ビルドの版より古いと、新しい API を使った作品は抜き出したコードのビルドに失敗し、
+# 「判定しない」に落ちる（壊れているとは言わないが、判定できる作品が減る）。止めずに 1 行だけ知らせる。
+# 版は実行時に読む（隔離ビルドの版は docker/isolated-build/template/go.mod の go ディレクティブ）。
+# 道具自身の go.mod（go 1.24）は下限の宣言で、この比較とは関係しない（#688 の Copilot の指摘への返答）。
+TEMPLATE_GO_MOD="$ROOT/docker/isolated-build/template/go.mod"
+if [[ -f "$TEMPLATE_GO_MOD" ]]; then
+  build_go="$(awk '$1 == "go" { print $2; exit }' "$TEMPLATE_GO_MOD")"
+  local_go="$(go env GOVERSION 2>/dev/null | sed 's/^go//')"
+  if [[ -n "$build_go" && -n "$local_go" ]] && awk -v a="$local_go" -v b="$build_go" 'BEGIN {
+      na = split(a, x, "."); nb = split(b, y, ".")
+      for (i = 1; i <= 3; i++) {
+        p = (i <= na) ? x[i] + 0 : 0; q = (i <= nb) ? y[i] + 0 : 0
+        if (p < q) exit 0
+        if (p > q) exit 1
+      }
+      exit 1
+    }'; then
+    echo "$TAG 警告: 手元の Go（$local_go）が隔離ビルドの版（$build_go）より古いので、新しい API を使った作品は「判定しない」に落ちることがあります。" >&2
+  fi
+fi
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/tile-reachability.XXXXXX")" || exit 2
 trap 'rm -rf "$WORK"' EXIT
 BIN="$WORK/tile-reachability"

@@ -811,15 +811,20 @@ func (a *analysis) closure(seeds []string) ([]*unit, []string, error) {
 	visit = func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.SelectorExpr:
-			selNames[x.Sel.Name] = true
 			if id, ok := x.X.(*ast.Ident); ok {
 				if u, top := a.names[id.Name]; top {
 					add(u)
 				} else if _, imp := a.imports[id.Name]; imp {
+					// math.Sin のような「パッケージ.識別子」はメソッド呼び出しではない。selNames に入れると、
+					// 同名のメソッド（Wave.Sin など）が抜き出しに入り、要らない import に届いて
+					// 不要な「判定しない」になる（#688 の Copilot の指摘）。
 					usedImports[id.Name] = true
+					return false
 				}
+				selNames[x.Sel.Name] = true
 				return false
 			}
+			selNames[x.Sel.Name] = true
 			ast.Inspect(x.X, visit)
 			return false
 		case *ast.Ident:

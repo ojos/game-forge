@@ -1,0 +1,54 @@
+package main
+
+// 「パッケージ.識別子」の名前（math.Sin）と同じ名前のメソッドを持つ型がある作品（#688 の Copilot の指摘）。
+// 地図を組む関数は math.Sin しか使わないので、Wave.Sin（ebiten に触る）は抜き出しに入れてはいけない。
+// 面 1 は届く。
+
+import (
+	"math"
+
+	"github.com/hajimehoshi/ebiten/v2"
+)
+
+const (
+	rows     = 5
+	cols     = 5
+	tileSize = 16
+	tileWall = 1
+)
+
+type Wave struct{ amp float64 }
+
+func (w Wave) Sin() float64 { return w.amp * float64(ebiten.TPS()) }
+
+var roomMaps [1][rows][cols]int
+var keyPos = [1][2]int{{3, 1}}
+var exitPos = [1][2]int{{3, 3}}
+var bump Wave
+
+func buildMaps() {
+	for x := 0; x < cols; x++ {
+		roomMaps[0][0][x] = tileWall
+		roomMaps[0][rows-1][x] = tileWall
+	}
+	for y := 0; y < rows; y++ {
+		roomMaps[0][y][0] = tileWall
+		roomMaps[0][y][cols-1] = tileWall
+	}
+	if math.Sin(0) == 0 {
+		roomMaps[0][2][2] = tileWall
+	}
+	roomMaps[0][keyPos[0][1]][keyPos[0][0]] = 0
+	roomMaps[0][exitPos[0][1]][exitPos[0][0]] = 0
+	_ = bump
+}
+
+type Game struct{ px, py float64 }
+
+func (g *Game) reset() {
+	buildMaps()
+	g.px = float64(1*tileSize + tileSize/2)
+	g.py = float64(1*tileSize + tileSize/2)
+}
+
+func main() {}

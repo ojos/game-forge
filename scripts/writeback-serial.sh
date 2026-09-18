@@ -53,6 +53,12 @@
 # 黙って緑のままにしうる**ので、全部か無しかにする。
 set -euo pipefail
 
+# **照合順をバイト順に固定する**（PR #663 の Copilot の指摘）。下の `sort` と、行の形を見る
+# 正規表現の `[0-9]` は、どちらもロケールの照合順に従う。桁の揃った ISO 8601 では
+# C / C.UTF-8 / en_US.UTF-8 のどれでも結果は同じだった（実測）が、**「どの環境から呼んでも
+# 同じ答え」を偶然に頼らない。** scripts/check-control-chars.sh と同じ扱い。
+export LC_ALL=C
+
 rows=()
 while IFS= read -r line; do
   line="${line%$'\r'}"

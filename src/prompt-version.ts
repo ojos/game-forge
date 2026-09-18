@@ -35,8 +35,11 @@
  *     `ネズミのカギ`（`cb7749dc`）は、扉を開けたあと次の場面へ進む条件を**当たり判定の
  *     外側**（画面の端の向こう）に書いており、**クリアの文字列も終端の状態も持っているのに
  *     到達できなかった。** 指標はすべて「良い」と言っていた。
+ * 4 … #668 で、既定の終わる条件の例示から「残りが 0 になる」を除き、**負けの条件は既定の
+ *     終わる条件にならない**と明記した本文。版 2 で作られた `えらべるサカナ`（`245d6cb2`）は、
+ *     体力 0 のゲームオーバーだけで既定を満たしたと読み、**クリアの無いまま延々と続いた。**
  */
-export const PROMPT_VERSION = 3;
+export const PROMPT_VERSION = 4;
 
 /**
  * 版ごとの本文の SHA-256（小文字 16 進）。**追記だけする。**
@@ -54,6 +57,7 @@ export const PROMPT_VERSION_HISTORY: readonly { readonly version: number; readon
     { version: 1, sha256: '9974bd1d83f7ef93445d6f5a795de572f160b4c1cdbb996696edd8a31b592ea6' },
     { version: 2, sha256: '601526211a92e6d7dcee1b4d1b85946288ca20dcdcd3263c22cfc77bc70c71e7' },
     { version: 3, sha256: 'ca8497a58189a9561df1f57418c78bc16ec2bb0541dbf243ef219db6353ac3f0' },
+    { version: 4, sha256: '0aef68ff5f5589fc435b2c042fabbb7edab959f5e8ae8e9dc90d4dfc9dcbe003' },
   ];
 
 /**

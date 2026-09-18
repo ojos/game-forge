@@ -31,8 +31,12 @@
  *     `iota` がずれ、初期化していない `g.state`（ゼロ値 0）がどの `case` にも入らず、
  *     入力を一切受け付けない作品ができた**（本番の `470dfd5d`）。**版 1 で作られた
  *     作品は、この壊れ方をしている可能性がある。**
+ * 3 … #644 で、**終わる条件が実際に満たせることを確かめさせる**指示を足した本文。版 2 の
+ *     `ネズミのカギ`（`cb7749dc`）は、扉を開けたあと次の場面へ進む条件を**当たり判定の
+ *     外側**（画面の端の向こう）に書いており、**クリアの文字列も終端の状態も持っているのに
+ *     到達できなかった。** 指標はすべて「良い」と言っていた。
  */
-export const PROMPT_VERSION = 2;
+export const PROMPT_VERSION = 3;
 
 /**
  * 版ごとの本文の SHA-256（小文字 16 進）。**追記だけする。**
@@ -49,6 +53,7 @@ export const PROMPT_VERSION_HISTORY: readonly { readonly version: number; readon
   [
     { version: 1, sha256: '9974bd1d83f7ef93445d6f5a795de572f160b4c1cdbb996696edd8a31b592ea6' },
     { version: 2, sha256: '601526211a92e6d7dcee1b4d1b85946288ca20dcdcd3263c22cfc77bc70c71e7' },
+    { version: 3, sha256: 'ca8497a58189a9561df1f57418c78bc16ec2bb0541dbf243ef219db6353ac3f0' },
   ];
 
 /**

@@ -17,6 +17,7 @@ import {
   findGenerationModel,
 } from '../src/generation-models.js';
 import { recordBuildCache } from '../src/build-cache.js';
+import { PROMPT_VERSION } from '../src/prompt-version.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -168,6 +169,9 @@ function ledgerBody(overrides: Record<string, unknown> = {}): Record<string, unk
       cacheReadInputTokens: null,
       cacheWriteInputTokens: null,
     },
+    // **エッジの版と違う値にしておく**（#649）。同じ値だと、エッジが自分の版で
+    // 埋める実装でも行の値が一致して緑で通る。
+    promptVersion: PROMPT_VERSION + 7,
     ...overrides,
   };
 }
@@ -409,6 +413,39 @@ describe('ledger（3.3-4 / 確定25。届くまで再送される前提）', () 
     expect(row?.user_id).toBe(userId);
   });
 
+  it('送られてきたプロンプトの版を書き、エッジの版で埋めない（#649）', async () => {
+    // **本番で生成するのはオーケストレータで、行を書くのはこちらである。** 配り直した
+    // 直後はエッジと Lambda の本文が違い、エッジの版を書くと必ず嘘になる（#649 の実測）。
+    const { id, jobToken } = await seedPending('ledger-prompt-version');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    const ledger = ledgerBody();
+
+    const response = await post({ gameId: id, jobToken, kind: 'ledger', ledger });
+    expect(response.status).toBe(200);
+    const row = await env.DB.prepare('select prompt_version from generations where id = ?')
+      .bind(ledger['generationId'])
+      .first<{ prompt_version: number | null }>();
+    expect(row?.prompt_version).toBe(PROMPT_VERSION + 7);
+  });
+
+  it('版を送らない古い束の ledger は受け付け、版は NULL にする（#649）', async () => {
+    // **配り直しの前後で、送る回と送らない回が混ざる。** 送らない回を断ると、課金は
+    // 出ているのに行が無くなる（4.3）。**エッジの版では埋めない**——埋めると #649 と
+    // 同じ嘘を別の形で作る。
+    const { id, jobToken } = await seedPending('ledger-prompt-version-missing');
+    await post({ gameId: id, jobToken, kind: 'claim' });
+    const { promptVersion: _omitted, ...ledger } = ledgerBody();
+
+    const response = await post({ gameId: id, jobToken, kind: 'ledger', ledger });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ accepted: true, recorded: true });
+    const row = await env.DB.prepare('select prompt_version from generations where id = ?')
+      .bind(ledger['generationId'])
+      .first<{ prompt_version: number | null }>();
+    expect(row).not.toBeNull();
+    expect(row!.prompt_version).toBeNull();
+  });
+
   it('壊れた ledger を断る', async () => {
     const { id, jobToken } = await seedPending('ledger-invalid');
     await post({ gameId: id, jobToken, kind: 'claim' });
@@ -420,6 +457,12 @@ describe('ledger（3.3-4 / 確定25。届くまで再送される前提）', () 
       ledgerBody({ usage: { inputTokens: -1, outputTokens: 1, cacheReadInputTokens: null, cacheWriteInputTokens: null } }),
       ledgerBody({ usage: { inputTokens: 1.5, outputTokens: 1, cacheReadInputTokens: null, cacheWriteInputTokens: null } }),
       ledgerBody({ generationId: '' }),
+      // 版は 1 から始まる整数（#649）。**壊れた値を NULL へ丸めない**——丸めると
+      // 「送らなかった古い束」と見分けがつかなくなる。
+      ledgerBody({ promptVersion: 0 }),
+      ledgerBody({ promptVersion: 2.5 }),
+      ledgerBody({ promptVersion: '3' }),
+      ledgerBody({ promptVersion: null }),
     ];
     for (const ledger of broken) {
       const response = await post({ gameId: id, jobToken, kind: 'ledger', ledger });

@@ -353,6 +353,14 @@ export async function recordGeneration(
     readonly userId: string;
     readonly prompt: string;
     readonly generated: GenerationResult;
+    /**
+     * **実際に生成した側の**システムプロンプトの版。分からなければ null（#649）。
+     *
+     * **既定値を持たせない。** このモジュールの `PROMPT_VERSION` はエッジの版であり、
+     * 本番の生成はオーケストレータが行う。既定で埋めると、呼び出し側が渡し忘れたときに
+     * エッジの版が黙って入る——#649 が直したのはまさにその形である。
+     */
+    readonly promptVersion: number | null;
   },
   now: number = Math.floor(Date.now() / 1000),
   options: RecordGenerationOptions = {},
@@ -382,16 +390,13 @@ export async function recordGeneration(
   const model = findGenerationModel(entry.generated.modelKey);
   const effort = model === null ? null : ledgerEffortOf(model);
 
-  // **どの版のシステムプロンプトが作ったかを焼き付ける**（#605 / `migrations/0046`）。
+  // **どの版のシステムプロンプトが作ったかを焼き付ける**（#605 / #649 / `migrations/0046`）。
   //
-  // **この行を書くのはオーケストレータ側である。** Lambda は自分の束に焼き込まれた本文を
-  // 使うので、**配り直していなければエッジと本文が違う。** 実際に使った版を知っているのは
-  // Lambda だけで、エッジが自分の版を書くと嘘になる。**この列が食い違いの検出も兼ねる**
-  // （古い版の行が新しい main のもとで増え続けていたら、配り直しを忘れている）。
-  //
-  // **定数から入れる。** ここへ数を書き写すと、`src/system-prompt.ts` を直した日に
-  // 台帳だけが古い版を言い続ける（shared-ai-rules 12 章）。版が本文と合っているかは
-  // `test/prompt-version.test.ts` が本文のハッシュで照合する。
+  // **この行を書くのはエッジだが、版は生成した側から受け取る。** 本番ではオーケストレータが
+  // 生成し、`ledger` コールバックで版を運ぶ（`src/generate-callback.ts`）。Lambda は自分の
+  // 束に焼き込まれた本文を使うので、**配り直した直後はエッジと本文が違う。** ここで
+  // このモジュールの `PROMPT_VERSION` を読むと、その窓で必ず古い版が入る（#649 の実測）。
+  // エッジが自分で生成する経路（`recordGenerationCost`）だけが、エッジの版を渡す。
   const result = await env.DB.prepare(
     `insert into generations
        (id, game_id, user_id, prompt, model, effort,
@@ -419,7 +424,7 @@ export async function recordGeneration(
       cost.totalJpy,
       succeeded ? 1 : 0,
       now,
-      PROMPT_VERSION,
+      entry.promptVersion,
     )
     .run();
 
@@ -444,7 +449,8 @@ export async function recordGenerationCost(
   request: { readonly prompt: string },
   generated: GenerationResult,
 ): Promise<void> {
-  await recordGeneration(env, { userId, prompt: request.prompt, generated });
+  // **この経路はエッジが自分で生成したので、エッジの版が実際の版である**（#649）。
+  await recordGeneration(env, { userId, prompt: request.prompt, generated, promptVersion: PROMPT_VERSION });
 }
 
 /** JST の UTC からの差（秒）。日本は夏時間を持たないため固定でよい。 */

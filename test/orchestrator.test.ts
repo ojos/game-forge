@@ -33,6 +33,7 @@ import { MAX_BUILD_INVOCATIONS_ON_TIMEOUT } from '../src/build-client.js';
 import { recordBuildCache, sourceCacheKey } from '../src/build-cache.js';
 import { MAX_SOURCE_BYTES, TIDY_MAX_SOURCE_BYTES } from '../src/source-size.js';
 import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
+import { PROMPT_VERSION } from '../src/prompt-version.js';
 import { applySchema } from './helpers/schema.js';
 
 /** 生成の段が返す Go ソース（許可パッケージ検査を通る最小の形）。 */
@@ -693,6 +694,31 @@ describe('失敗の記録と、運用へ出すもの（#160）', () => {
     expect(ledgerAttempts).toBe(3);
     // **再送は LLM を呼ばないので費用ゼロ**、そして行は 1 行である（採番した id が鍵）。
     expect(await ledgerCount(userId)).toBe(1);
+    expect(await rowOf(gameId)).toMatchObject({ state: 'ready' });
+  });
+
+  it('台帳へ、この束のプロンプトの版を送る（#649）', async () => {
+    // **行を書くのはエッジだが、版を知っているのはこちらだけである。** 送らないと、
+    // エッジが自分の版を書き、配り直した直後に必ず古い版が残る（#649 の実測）。
+    const { gameId, payload } = await seedJob('ledger-prompt-version');
+    const real = callbackFetch();
+    const sent: unknown[] = [];
+    const outcome = await handleOrchestratorEvent(payload, lambdaEnv(), {
+      fetch: async (request) => {
+        const body = (await request.clone().json()) as { kind: string; ledger?: unknown };
+        if (body.kind === 'ledger') {
+          sent.push(body.ledger);
+        }
+        return await real(request);
+      },
+      bedrockFetch: guardrailPass(async () => converseResponse()),
+      buildFetch: async () => await buildResponse('ledger-prompt-version'),
+      sleep: async () => {},
+    });
+
+    expect(outcome).toEqual({ status: 'completed' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ promptVersion: PROMPT_VERSION });
     expect(await rowOf(gameId)).toMatchObject({ state: 'ready' });
   });
 

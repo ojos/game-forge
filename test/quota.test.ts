@@ -370,7 +370,7 @@ describe('日次クォータ（確定25 / acceptance 3）', () => {
       stopReason: 'end_turn',
     };
     for (let index = 0; index < DAILY_QUOTA_PER_USER; index += 1) {
-      await recordGeneration(env, { userId, prompt: 'ゲーム', generated }, AT);
+      await recordGeneration(env, { userId, prompt: 'ゲーム', generated, promptVersion: null }, AT);
     }
     expect((await dailyCallCount(env, userId, AT)).calls).toBe(DAILY_QUOTA_PER_USER);
     expect(await checkGenerationQuota(env, userId, AT)).toEqual({
@@ -397,7 +397,7 @@ describe('日次クォータ（確定25 / acceptance 3）', () => {
       stopReason: 'max_tokens',
     };
     for (let index = 0; index < DAILY_QUOTA_PER_USER; index += 1) {
-      await recordGeneration(env, { userId, prompt: 'ゲーム', generated: failed }, AT);
+      await recordGeneration(env, { userId, prompt: 'ゲーム', generated: failed, promptVersion: null }, AT);
     }
     expect(await checkGenerationQuota(env, userId, AT)).toEqual({
       allowed: false,

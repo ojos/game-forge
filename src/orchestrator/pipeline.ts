@@ -38,6 +38,7 @@ import {
 import { sourceCacheKey } from '../build-cache.js';
 import { createBedrockGenerateSource } from '../bedrock.js';
 import { buildSystemPrompt } from '../system-prompt.js';
+import { PROMPT_VERSION } from '../prompt-version.js';
 import { withInputModeration } from '../input-moderation.js';
 import { withBuildDiagnostics } from '../build-retry.js';
 import { inspectGeneratedSource } from '../source-inspection.js';
@@ -120,11 +121,16 @@ export function createOrchestratorPipeline(
     //
     // **`userId` を送らない。** 作者は `games` 行が知っており、そちらが正である
     // （`src/generate-callback.ts`）。
+    //
+    // **プロンプトの版を送る**（#649）。行を書くのはエッジだが、エッジが自分の
+    // `PROMPT_VERSION` を書くと、配り直した直後（プロンプトを直した PR が未マージのあいだ）は
+    // 確実に古い版が入る。**実際に使った本文はこの束に在る**ので、ここの定数を運ぶ。
     recordCost: async (_env, _userId, request, generated) => {
       await client.ledger({
         generationId: newGenerationId(),
         prompt: request.prompt,
         generated,
+        promptVersion: PROMPT_VERSION,
       });
     },
 

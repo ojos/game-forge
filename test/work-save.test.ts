@@ -2,6 +2,7 @@ import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { LOGIN_PATH } from '../src/auth/google.js';
 import { DENIED_TERMS } from '../src/denied-terms.js';
+import { handleAppRequest } from '../src/app.js';
 import {
   DESCRIPTION_CHANGES_TABLE,
   MAX_DESCRIPTION_LENGTH,
@@ -12,7 +13,15 @@ import {
   hashJobToken,
   publishGame,
   retagGame,
+  toTaggedWorkSort,
 } from '../src/games.js';
+import { listCacheKey, purgeListCache } from '../src/list-cache.js';
+import { workPagePath } from '../src/paths.js';
+import { SITEMAP_PATH } from '../src/sitemap.js';
+import { workTagListPath } from '../src/work-card.js';
+import { WORK_SEARCH_FIELD, parseWorkSearch } from '../src/work-search.js';
+import { PUBLIC_WORKS_PATH } from '../src/works-paths.js';
+import { worksSearchCacheKey } from '../src/works-list.js';
 import type { OgpCaptureJob } from '../src/ogp-client.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
@@ -424,21 +433,33 @@ describe('1 項目ずつの口の検査を弱めない（#664 の constraints）
     expect(response.headers.get('location')).toBe(LOGIN_PATH);
   });
 
-  it('下書きのまま説明を変えると、説明の口と同じ理由で断り、作品名も書かない（呼ぶ順）', async () => {
-    const { userId, id } = await seedWork('draft-description', false);
-    const before = await rowOf(id);
+  it('下書きから公開するとき、説明が断られたら公開しない（公開は最後に呼ぶ。#673）', async () => {
+    const { userId, id } = await seedWork('draft-denied-publish', false);
+    const denied = DENIED_TERMS[0]!;
+    const spies: Spies = { captures: [], notices: [] };
 
     const response = await postSave(
-      formFields(id, { title: '変えた題名', description: '下書きの説明', tags: [], visibility: 'draft' }),
+      formFields(id, {
+        title: '先に保存される題名',
+        description: `これは${denied.term}です`,
+        tags: ['puzzle'],
+        visibility: 'published',
+        confirm: true,
+      }),
       await sessionCookie(userId),
+      spies,
     );
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(400);
     const body = await response.text();
-    expect(body).toContain('説明は公開してから書けます');
-    expect(body).toContain('何も保存していません。');
-    expect(body).toContain(`<a href="${workEditPath(id)}">編集へ戻る</a>`);
-    expect(await rowOf(id)).toEqual(before);
+    expect(body).toContain('<strong>作品名は保存しました。</strong>');
+    expect(body).not.toContain(denied.term);
+    const row = await rowOf(id);
+    expect(row.status).toBe('draft');
+    expect(row.title).toBe('先に保存される題名');
+    expect(row.description).toBe('');
+    expect([row.tag1, row.tag2, row.tag3]).toEqual([null, null, null]);
+    expect(spies.captures).toEqual([]);
   });
 
   it('長すぎる説明は断る。先に保存できた作品名は、保存したと言う', async () => {
@@ -555,5 +576,236 @@ describe('1 項目ずつの口の検査を弱めない（#664 の constraints）
       testEnv(),
     );
     expect(media.status).toBe(415);
+  });
+});
+
+/**
+ * アプリ全体の経路で GET する（作品ページ・一覧・検索・sitemap を、本番と同じ入口から開く）。
+ *
+ * **一覧と検索は、経路と同じ鍵のキャッシュを先に捨てる**（`caches.default` はテスト間で共有される。
+ * `test/works-list.test.ts` の `openList` と同じ扱い）。
+ *
+ * @param path 開くパス（問い合わせを含む）
+ * @param cookie `Cookie` ヘッダ（省略すると未ログイン）
+ * @returns 状態と本文
+ */
+async function openApp(path: string, cookie?: string): Promise<{ status: number; body: string }> {
+  const url = new URL(`${APP_ORIGIN}${path}`);
+  if (url.pathname === PUBLIC_WORKS_PATH) {
+    const tag = url.searchParams.get(WORK_TAG_FIELD);
+    const search = parseWorkSearch(url.searchParams.get(WORK_SEARCH_FIELD));
+    if (search.kind === 'accepted') {
+      await purgeListCache(worksSearchCacheKey(search.key, 1, null));
+    } else if (tag !== null) {
+      await purgeListCache(listCacheKey('works', { sort: toTaggedWorkSort(null), page: 1, [WORK_TAG_FIELD]: tag }));
+    }
+  }
+  const headers: Record<string, string> = { accept: 'text/html' };
+  if (cookie !== undefined) {
+    headers['cookie'] = cookie;
+  }
+  const response = await handleAppRequest(new Request(url, { headers }), testEnv());
+  return { status: response.status, body: await response.text() };
+}
+
+describe('下書きのままでも説明とタグを保存できる（#673）', () => {
+  it('下書きのまま説明とタグを保存でき、下書きのままエディットページへ戻る（履歴と時刻は公開済みと同じ）', async () => {
+    const { userId, id } = await seedWork('draft-details', false);
+
+    const response = await postSave(
+      formFields(id, {
+        title: (await rowOf(id)).title,
+        description: '遊び方: 左右キーで動かします。\r\n素材は自作です。',
+        tags: ['puzzle', 'action'],
+        visibility: 'draft',
+      }),
+      await sessionCookie(userId),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get('location')).toBe(workEditPath(id));
+    const row = await rowOf(id);
+    expect(row.status).toBe('draft');
+    expect(row.published_at).toBeNull();
+    expect(row.description).toBe('遊び方: 左右キーで動かします。\n素材は自作です。');
+    expect([row.tag1, row.tag2, row.tag3]).toEqual(['action', 'puzzle', null]);
+    // **履歴と変更の時刻は、公開済みと同じ SQL で積む**（`describeGame` / `retagGame`）。
+    const history = await env.DB.prepare(
+      `select old_description, new_description from ${DESCRIPTION_CHANGES_TABLE} where game_id = ?`,
+    )
+      .bind(id)
+      .all<{ old_description: string; new_description: string }>();
+    expect(history.results).toEqual([
+      { old_description: '', new_description: '遊び方: 左右キーで動かします。\n素材は自作です。' },
+    ]);
+    const times = await env.DB.prepare('select description_set_at, tags_set_at from games where id = ?')
+      .bind(id)
+      .first<{ description_set_at: number | null; tags_set_at: number | null }>();
+    expect(times?.description_set_at).not.toBeNull();
+    expect(times?.tags_set_at).not.toBeNull();
+  });
+
+  it('下書きでも変更の間隔（60 秒に 1 回）が効く', async () => {
+    const { userId, id } = await seedWork('draft-interval', false);
+    const cookie = await sessionCookie(userId);
+    const title = (await rowOf(id)).title;
+    expect(
+      (await postSave(formFields(id, { title, description: '1 回目', tags: ['idle'], visibility: 'draft' }), cookie))
+        .status,
+    ).toBe(303);
+
+    const description = await postSave(
+      formFields(id, { title, description: '2 回目', tags: ['idle'], visibility: 'draft' }),
+      cookie,
+    );
+    expect(description.status).toBe(429);
+    const tags = await postSave(
+      formFields(id, { title, description: '1 回目', tags: ['puzzle'], visibility: 'draft' }),
+      cookie,
+    );
+    expect(tags.status).toBe(429);
+    const row = await rowOf(id);
+    expect(row.description).toBe('1 回目');
+    expect([row.tag1, row.tag2, row.tag3]).toEqual(['idle', null, null]);
+  });
+
+  it('1 件ずつの口の関数は、既定では下書きに書かない（`allowDraft` を渡したときだけ書く）', async () => {
+    const { userId, id } = await seedWork('draft-default', false);
+    expect(await describeGame(env, id, userId, '下書きの説明', 1_700_000_000)).toEqual({
+      ok: false,
+      reason: 'not-published',
+    });
+    expect(await retagGame(env, id, userId, ['puzzle'], 1_700_000_000)).toEqual({
+      ok: false,
+      reason: 'not-published',
+    });
+    expect(await describeGame(env, id, userId, '下書きの説明', 1_700_000_000, { allowDraft: true })).toEqual({
+      ok: true,
+      description: '下書きの説明',
+      changed: true,
+    });
+    expect(await retagGame(env, id, userId, ['puzzle'], 1_700_000_000, { allowDraft: true })).toEqual({
+      ok: true,
+      tags: ['puzzle'],
+      changed: true,
+    });
+  });
+
+  it('削除を掴まれた下書き（#516）には書かず、履歴も積まない', async () => {
+    const { userId, id } = await seedWork('draft-claimed', false);
+    await env.DB.prepare('update games set deletion_started_at = 1 where id = ?').bind(id).run();
+
+    expect(await describeGame(env, id, userId, '消える途中の説明', 1_700_000_000, { allowDraft: true })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    expect(await retagGame(env, id, userId, ['puzzle'], 1_700_000_000, { allowDraft: true })).toEqual({
+      ok: false,
+      reason: 'not-found',
+    });
+    const row = await rowOf(id);
+    expect(row.description).toBe('');
+    expect(row.tag1).toBeNull();
+    const history = await env.DB.prepare(`select count(*) as n from ${DESCRIPTION_CHANGES_TABLE} where game_id = ?`)
+      .bind(id)
+      .first<{ n: number }>();
+    expect(history?.n).toBe(0);
+  });
+
+  it('下書きの説明とタグは作者以外に出ず、公開するとそのまま引き継がれて出る', async () => {
+    const { userId, id } = await seedWork('draft-private', false);
+    const owner = await sessionCookie(userId);
+    const stranger = await sessionCookie(await seedUser('draft-private-onlooker'));
+    // **検索で当てる語は、ほかのテストファイルと重ならない綴りにする**（D1 は共有される）。
+    const description = '下書きで書いたミズクラゲ観察日記の説明です。';
+    const tag = 'rhythm-sound';
+    const title = (await rowOf(id)).title;
+
+    expect(
+      (await postSave(formFields(id, { title, description, tags: [tag], visibility: 'draft' }), owner)).status,
+    ).toBe(303);
+
+    // 作者のエディットページには、保存した説明とタグが出る。
+    const edit = await openApp(workEditPath(id), owner);
+    expect(edit.body).toContain(description);
+    expect(edit.body).toMatch(new RegExp(`name="${WORK_TAG_FIELD}" value="${tag}"[^>]* checked`));
+
+    // 作者が作品ページで開く下書きのプレビュー（#664）には出る——公開すると誰にでも見えるものを、公開前に確かめる画面である。
+    expect((await openApp(workPagePath(id), owner)).body).toContain(description);
+
+    // **作者以外（未ログイン・他人）には、作品ページにもエディットページにも説明とタグが出ない**（下書きの作品ページは
+    // 状態だけを出す。エディットページは作品ページと同じ応答を返す。#664）。
+    for (const cookie of [undefined, stranger]) {
+      for (const path of [workPagePath(id), workEditPath(id)]) {
+        const page = await openApp(path, cookie);
+        expect(page.body, path).not.toContain('ミズクラゲ');
+        expect(page.body, path).not.toContain(workTagListPath(tag));
+      }
+      // 検索・タグの一覧・sitemap にも出ない。
+      const searched = await openApp(`${PUBLIC_WORKS_PATH}?${WORK_SEARCH_FIELD}=ミズクラゲ`, cookie);
+      expect(searched.body).not.toContain(workPagePath(id));
+      const tagged = await openApp(workTagListPath(tag), cookie);
+      expect(tagged.status).toBe(200);
+      expect(tagged.body).not.toContain(workPagePath(id));
+    }
+    const sitemap = await openApp(SITEMAP_PATH);
+    expect(sitemap.body).not.toContain(workPagePath(id));
+
+    // **公開する**（エディットページのフォームをそのまま押し、確認の画面から送り直した形）。
+    const spies: Spies = { captures: [], notices: [] };
+    const published = await postSave(
+      formFields(id, { title, description, tags: [tag], visibility: 'published', confirm: true }),
+      owner,
+      spies,
+    );
+    expect(published.status).toBe(303);
+    const row = await rowOf(id);
+    expect(row.status).toBe('published');
+    // **下書きで保存した説明とタグが、そのまま引き継がれる**（書き直していない。変更の間隔にも掛からない）。
+    expect(row.description).toBe(description);
+    expect([row.tag1, row.tag2, row.tag3]).toEqual([tag, null, null]);
+    expect(spies.captures.map((job) => job.gameId)).toEqual([id]);
+
+    // 公開した後は、誰にでも出る（作品ページ・検索・タグの一覧・sitemap）。
+    const page = await openApp(workPagePath(id));
+    expect(page.status).toBe(200);
+    expect(page.body).toContain(description);
+    expect(page.body).toContain(`href="${workTagListPath(tag)}"`);
+    // **`og:description` は固定の文言で、作者の説明を載せない**（OGP に下書きの頃の文章が漏れる経路を作らない）。
+    expect(page.body).not.toMatch(/<meta property="og:description" content="[^"]*ミズクラゲ/);
+    expect((await openApp(`${PUBLIC_WORKS_PATH}?${WORK_SEARCH_FIELD}=ミズクラゲ`)).body).toContain(workPagePath(id));
+    expect((await openApp(workTagListPath(tag))).body).toContain(workPagePath(id));
+    expect((await openApp(SITEMAP_PATH)).body).toContain(workPagePath(id));
+  });
+
+  it('JSON で公開するとき、タグの鍵を省けば下書きで付けたタグをそのまま載せる', async () => {
+    const { userId, id } = await seedWork('draft-json-publish', false);
+    const cookie = await sessionCookie(userId);
+    expect(
+      (
+        await postSave(
+          formFields(id, { title: (await rowOf(id)).title, description: '', tags: ['idle'], visibility: 'draft' }),
+          cookie,
+        )
+      ).status,
+    ).toBe(303);
+
+    const response = await dispatch(
+      createWorkSaveRoutes(async () => undefined, async () => 'not-a-fork'),
+      new Request(`${APP_ORIGIN}${WORK_SAVE_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({
+          [WORK_SAVE_GAME_ID_FIELD]: id,
+          [WORK_SAVE_VISIBILITY_FIELD]: 'published',
+          [WORK_SAVE_CONFIRM_FIELD]: true,
+        }),
+      }),
+      testEnv(),
+    );
+    expect(response.status).toBe(200);
+    const row = await rowOf(id);
+    expect(row.status).toBe('published');
+    expect(row.tag1).toBe('idle');
   });
 });

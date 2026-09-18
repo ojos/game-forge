@@ -202,18 +202,23 @@ ${visibilityField(work)}
  *
  * - **`maxlength` を付けない**（HTML はUTF-16 の長さで数え、こちらの規則はコードポイントで数える。#366 / #388 と同じ）。
  *   作品名は超えた分を切り詰め、説明は超えたら断る——押す前に文言で知らせる
- * - **説明とタグは公開している作品にだけ保存できる**（`describeGame` / `retagGame`。5.4 の 1 タップの導線を変えない
- *   ために #388 / #376 が決めた条件を、まとめて保存する口でも変えない）。下書きではそれを先に言う
+ * - **説明とタグは下書きのままでも保存できる**（#673。まとめて保存する口が `allowDraft` を渡す）。下書きでは、
+ *   **保存しても作者にしか見えず、公開したときにそのまま出る**ことを先に言う（説明の欄の「誰でも読めます」は
+ *   公開後の話なので、下書きでは言い換える）
  * - **`cols` を付けない**（狭い端末で layout viewport を広げる。#282）
  *
  * @param view 表示に必要な値
  * @returns HTML
  */
 function detailsForm(view: WorkEditView): string {
-  const draftNote = view.work.published
+  const published = view.work.published;
+  const draftNote = published
     ? ''
     : `
-  <p class="gf-edit-hint"><strong>説明とタグは、公開している作品にだけ保存できます。</strong>下書きのまま変えて保存すると、何も保存せずにお知らせします。公開設定を「公開」にして保存すると、公開と同時に保存します。</p>`;
+  <p class="gf-edit-hint"><strong>下書きのあいだは、説明とタグはあなたにだけ見えます。</strong>公開すると、保存しておいた説明とタグがそのまま作品ページと作品をさがす画面に出ます。</p>`;
+  const readers = published
+    ? '<strong>作品ページを開いた人なら誰でも読めます。</strong>'
+    : '<strong>公開すると、作品ページを開いた人なら誰でも読めます。</strong>';
   return `<form id="${WORK_EDIT_FORM_ID}" class="gf-edit-main gf-block" method="post" action="${WORK_SAVE_PATH}">
   <input type="hidden" name="${WORK_SAVE_GAME_ID_FIELD}" value="${view.gameId}">
   <div class="gf-edit-field">
@@ -224,7 +229,7 @@ function detailsForm(view: WorkEditView): string {
   <div class="gf-edit-field">
     <label for="work-description">説明</label>
     <textarea id="work-description" name="${WORK_SAVE_DESCRIPTION_FIELD}" rows="8">${escapeHtml(view.description)}</textarea>
-    <p class="gf-edit-hint">遊び方や、使った素材・原作のクレジットなどを書けます。<strong>作品ページを開いた人なら誰でも読めます。</strong>${MAX_DESCRIPTION_LENGTH} 文字まで。改行はそのまま出ます（リンクや太字などの書式は使えません）。変更は ${DESCRIPTION_CHANGE_INTERVAL_SECONDS} 秒に 1 回までです。</p>
+    <p class="gf-edit-hint">遊び方や、使った素材・原作のクレジットなどを書けます。${readers}${MAX_DESCRIPTION_LENGTH} 文字まで。改行はそのまま出ます（リンクや太字などの書式は使えません）。変更は ${DESCRIPTION_CHANGE_INTERVAL_SECONDS} 秒に 1 回までです。</p>
   </div>
   <div class="gf-edit-field">
 ${tagChoices('edit-tag', view.tags)}

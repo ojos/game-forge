@@ -17,17 +17,21 @@
  *
  * ## 呼ぶ順
  *
- * 説明とタグは公開している作品にしか書けない（`describeGame` / `retagGame` の `not-published`。5.4 の
- * 1 タップの導線を変えないために #388 / #376 が決めた条件で、**ここでは変えない**）。そこで、公開設定の変わり方で
- * 順を変える。
+ * **説明とタグは下書きにも書く**（#673。`describeGame` / `retagGame` へ `allowDraft: true` を渡す）。Studio の
+ * 「動画の詳細」と同じく、下書きのまま説明とタグを整えてから公開できるようにするためである。**1 件ずつの口
+ * （`/api/works/describe`・`/api/works/retag`）は既定のまま公開済みにしか書かない**（#673 の scope.out）。
+ * 変更の間隔と履歴（`description_set_at` / `tags_set_at` / `description_changes`）は同じ SQL を通るので、公開済みと
+ * 同じ規則になる。下書きの説明とタグが作者以外に見えない理由は `src/games.ts` の `WorkDetailsEditOptions` にある。
  *
  * | いま → 保存後 | 順 |
  * |---|---|
- * | 下書き → 公開 | 公開（タグを載せる）→ 作品名 → 説明 |
+ * | 下書き → 公開 | 作品名 → 説明 → 公開（タグを載せる） |
  * | 公開 → 下書き | 作品名 → 説明 → タグ → 公開をやめる |
- * | 公開 → 公開 | 作品名 → 説明 → タグ |
- * | 下書き → 下書き | タグ → 説明 → 作品名（**断られうる 2 つを先に呼ぶ**。下書きのあいだに説明やタグを変えて保存すると、
- *   作品名を書く前に `not-published` で止まり、何も書かない） |
+ * | 公開 → 公開・下書き → 下書き | 作品名 → 説明 → タグ |
+ *
+ * **公開は最後に呼ぶ。** 説明が断られたら（8.3 の語・長すぎる・変更の間隔）、公開せずに止まる——読む人が現れる前に
+ * 作者が書いたつもりの説明が欠けた作品を出さない。**タグは公開と同じ 1 本で書く**（`publishGame`。#376）ので、
+ * 下書き → 公開では付け直しを呼ばない（公開の UPDATE がタグを置き換え、`tags_set_at` を消費しない）。
  *
  * **変えていない項目は呼ばない**（同じ値の入れ直しで変更の間隔を消費しない）。変えたかどうかは、それぞれの関数と
  * 同じ正規化（`normalizeTitle` / `validateDescription` / `validateWorkTags`）を通した値と、いまの行を比べて決める。
@@ -417,7 +421,7 @@ export async function saveWork(
     if (!descriptionChanged || input.description === null) {
       return null;
     }
-    const outcome = await describeGame(env, input.gameId, userId, input.description);
+    const outcome = await describeGame(env, input.gameId, userId, input.description, undefined, { allowDraft: true });
     if (!outcome.ok) {
       return { ...DESCRIBE_OUTCOME_REFUSALS[outcome.reason], reason: outcome.reason };
     }
@@ -428,7 +432,7 @@ export async function saveWork(
     if (!tagsChanged || input.tags === null) {
       return null;
     }
-    const outcome = await retagGame(env, input.gameId, userId, input.tags);
+    const outcome = await retagGame(env, input.gameId, userId, input.tags, undefined, { allowDraft: true });
     if (!outcome.ok) {
       return { ...RETAG_OUTCOME_REFUSALS[outcome.reason], reason: outcome.reason };
     }
@@ -467,12 +471,10 @@ export async function saveWork(
   // **順は冒頭の表のとおり。** 1 つでも断られたら、そこで止める。
   const steps: readonly (() => Promise<SaveRefusal | null>)[] =
     current === DRAFT_STATUS && target === PUBLISHED_STATUS
-      ? [publish, rename, describe]
+      ? [rename, describe, publish]
       : current === PUBLISHED_STATUS && target === DRAFT_STATUS
         ? [rename, describe, retag, unpublish]
-        : current === PUBLISHED_STATUS
-          ? [rename, describe, retag]
-          : [retag, describe, rename];
+        : [rename, describe, retag];
   for (const step of steps) {
     const refusal = await step();
     if (refusal !== null) {

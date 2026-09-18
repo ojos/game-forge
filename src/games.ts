@@ -1645,6 +1645,38 @@ export const MAX_DESCRIPTION_LENGTH = 1000;
 export const DESCRIPTION_CHANGE_INTERVAL_SECONDS = 60;
 
 /**
+ * 説明とタグを書ける作品の範囲（#673）。{@link describeGame} と {@link retagGame} の最後の引数。
+ *
+ * **既定は公開済みの作品だけである**（1 件ずつの口 `/api/works/describe`・`/api/works/retag` の挙動を変えない。
+ * #673 の scope.out）。**`allowDraft: true` を渡すのはエディットページのまとめて保存する口だけ**
+ * （`src/work-save.ts`）——Studio の「動画の詳細」と同じく、下書きのまま説明とタグを整えてから公開できるようにする。
+ *
+ * **下書きに書いても、作者以外には見えない。** 作品ページ・検索・タグの一覧・作者ページ・sitemap は
+ * `status = 'published'` の行しか引かず、下書きの作品ページは作者以外に 404 を返す（`src/work-page.ts`）。
+ * `og:description` は固定の文言で、説明を載せない。
+ *
+ * **変更の間隔と履歴は公開済みと同じ規則である**（`description_set_at` / `tags_set_at` と `description_changes`。
+ * 同じ SQL を通る）。したがって、下書きで説明を書いた直後に公開して書き直すと、間隔の内側では断られる。
+ */
+export interface WorkDetailsEditOptions {
+  /** 下書き（`status = 'draft'`）の作品にも書くか。既定は false（公開済みだけ）。 */
+  readonly allowDraft?: boolean;
+}
+
+/**
+ * 書ける作品の状態を、SQL の `status in (?, ?)` へ渡す 2 つの値にする（#673）。
+ *
+ * **SQL の綴りを 1 つに保つために、常に 2 つ渡す**（公開済みだけのときは同じ値を 2 度渡す）。綴りを分岐させると、
+ * 片方だけを直した日に「1 件ずつの口とまとめて保存する口で条件が食い違う」形ができる。
+ *
+ * @param options 書ける範囲
+ * @returns `status in (?, ?)` の 2 つの値
+ */
+function editableStatuses(options: WorkDetailsEditOptions): readonly [string, string] {
+  return [PUBLISHED_STATUS, options.allowDraft === true ? DRAFT_STATUS : PUBLISHED_STATUS];
+}
+
+/**
  * 説明の変更の履歴を持つ表の名前（`migrations/0028_game_descriptions.sql`）。
  *
  * **`TITLE_CHANGES_TABLE` と違い、このモジュールが持つ。** あちらが `src/reports.ts` に
@@ -1776,7 +1808,8 @@ export type DescribeOutcome =
  *
  * - `not-found` … 作品が無い、または**他人の作品**（撃ち分けない。{@link renameGame} と同じ）
  * - `removed` … 取り下げた作品
- * - `not-published` … まだ公開していない作品（**説明は公開後に書くもの**。5.4 を変えない）
+ * - `not-published` … まだ公開していない作品（**1 件ずつの口では、説明は公開後に書くもの**。#388。
+ *   エディットページのまとめて保存する口は下書きにも書ける——{@link WorkDetailsEditOptions}。#673）
  * - `too-soon` … 前回の変更から {@link DESCRIPTION_CHANGE_INTERVAL_SECONDS} 秒経っていない
  * - `denied-term` … 8.3 の表に当たった。**語も分類も添えない**（{@link RenameRejection} と
  *   同じ理由——当てては消しを繰り返せば表が 1 語ずつ復元できる）
@@ -1791,7 +1824,8 @@ export type DescribeRejection =
   | DescriptionFormRejection;
 
 /**
- * 作者が公開済みの作品に説明を書く（#388）。
+ * 作者が公開済みの作品に説明を書く（#388）。**`allowDraft` を渡せば下書きにも書く**（#673。
+ * {@link WorkDetailsEditOptions}）。
  *
  * **形は {@link renameGame} を写してある。** 違うのは次の 4 点だけで、それ以外の判断
  * （行を引く前に 8.3 を掛ける・履歴を先に積む・2 文の WHERE を同じ綴りにする・0 行の
@@ -1806,8 +1840,15 @@ export type DescribeRejection =
  * 値そのもの**（改行を畳み、前後の空白を除いた後）である。
  *
  * ══════════════════════════════════════════════════════════════════════════════
- * 2. 書けるのは公開済みの作品だけである（`status = 'published'`）
+ * 2. 書けるのは公開済みの作品だけである（`status = 'published'`。**#673 からは既定の範囲**）
  * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * > **#673 注記。** エディットページ（#664）で作品名・説明・タグ・公開設定をまとめて保存するようになり、
+ * > 「下書きのまま説明とタグを整えてから公開する」流れ（Studio の「動画の詳細」）が要るようになった。
+ * > **まとめて保存する口だけが `allowDraft: true` を渡し、`status in (?, ?)` を `published` と `draft` にする。**
+ * > 1 件ずつの口は既定のまま（同じ値を 2 度渡す）で、下の #388 の判断はそちらに残る。下書きでは
+ * > **削除を掴まれた行（#516）に履歴を積まない**よう、`deletion_started_at is null` も条件に置く
+ * > （公開済みの行は掴まれない——`src/game-deletion.ts` の `claimDeletion`——ので、1 件ずつの口には効かない）。
  *
  * **5.4 の 1 タップの導線を変えない**（#388）。公開の前に説明の欄を置くと、公開までの
  * 画面に入力欄が 1 つ増える。改名が公開の前後を問わないのと違うのは、**未公開の作品には
@@ -1846,6 +1887,7 @@ export async function describeGame(
   authorId: string,
   candidate: string,
   now: number = Math.floor(Date.now() / 1000),
+  options: WorkDetailsEditOptions = {},
 ): Promise<DescribeOutcome> {
   const validated = validateDescription(candidate);
   if (!validated.ok) {
@@ -1861,12 +1903,13 @@ export async function describeGame(
 
   // **条件の綴りを 1 つにする**（{@link renameGame} と同じ理由）。
   const conditions =
-    "id = ? and author_id = ? and status = ? and generation_state = 'ready' and description <> ?" +
-    ' and (description_set_at is null or description_set_at <= ?)';
+    "id = ? and author_id = ? and status in (?, ?) and generation_state = 'ready' and description <> ?" +
+    ' and deletion_started_at is null and (description_set_at is null or description_set_at <= ?)';
+  const statuses = editableStatuses(options);
   const bindings = [
     gameId,
     authorId,
-    PUBLISHED_STATUS,
+    ...statuses,
     description,
     now - DESCRIPTION_CHANGE_INTERVAL_SECONDS,
   ] as const;
@@ -1902,10 +1945,10 @@ export async function describeGame(
 
   // **0 行だったときだけ、理由を引きに行く。** `author_id = ?` を入れる理由は {@link renameGame}。
   const row = await env.DB.prepare(
-    'select status, generation_state, description from games where id = ? and author_id = ?',
+    'select status, generation_state, description, deletion_started_at from games where id = ? and author_id = ?',
   )
     .bind(gameId, authorId)
-    .first<{ status: string; generation_state: string; description: string }>();
+    .first<{ status: string; generation_state: string; description: string; deletion_started_at: number | null }>();
 
   if (row === null) {
     return { ok: false, reason: 'not-found' };
@@ -1913,8 +1956,13 @@ export async function describeGame(
   if (row.status === REMOVED_STATUS) {
     return { ok: false, reason: 'removed' };
   }
-  if (row.status !== PUBLISHED_STATUS || row.generation_state !== 'ready') {
+  if (!statuses.includes(row.status) || row.generation_state !== 'ready') {
     return { ok: false, reason: 'not-published' };
+  }
+  if (row.deletion_started_at !== null) {
+    // 削除を掴まれた下書き（#516。`allowDraft` のときだけここへ来る——公開済みの行は掴まれない）は、行が無いのと
+    // 同じ扱いにする（{@link renameGame} と同じ）。**理由の順を 1 件ずつの口から変えないため、状態の判定の後に置く。**
+    return { ok: false, reason: 'not-found' };
   }
   if (row.description === description) {
     // **同じ説明の入れ直しは失敗にしない**（二度押し。改名と同じ扱い）。**間隔の内側でも
@@ -2039,7 +2087,8 @@ export type RetagOutcome =
  *
  * - `not-found` … 作品が無い、または**他人の作品**（撃ち分けない。{@link renameGame} と同じ）
  * - `removed` … 取り下げた作品
- * - `not-published` … まだ公開していない作品（**タグは公開フォームで選ぶ**。5.4 の導線を変えない）
+ * - `not-published` … まだ公開していない作品（**1 件ずつの口では、タグは公開フォームで選ぶ**。5.4 の導線を
+ *   変えない。エディットページのまとめて保存する口は下書きにも付けられる——{@link WorkDetailsEditOptions}。#673）
  * - `too-soon` … 前回の付け直しから {@link WORK_TAGS_CHANGE_INTERVAL_SECONDS} 秒経っていない
  * - {@link WorkTagsRejection} … 語彙に無い値・4 個以上
  */
@@ -2051,7 +2100,8 @@ export type RetagRejection =
   | WorkTagsRejection;
 
 /**
- * 作者が公開済みの作品のタグを付け直す（#376）。
+ * 作者が公開済みの作品のタグを付け直す（#376）。**`allowDraft` を渡せば下書きにも付ける**（#673。
+ * {@link WorkDetailsEditOptions}。下書きの判断と、削除を掴まれた行を除く理由は {@link describeGame} の #673 注記）。
  *
  * **形は {@link describeGame} を写してある**（検査を行の前に置く・0 行のときだけ理由を引く・
  * 理由を引く SELECT にも `author_id` を入れる・同じ値の入れ直しを成功にする・間隔を WHERE に
@@ -2095,17 +2145,20 @@ export async function retagGame(
   authorId: string,
   rawTags: readonly string[],
   now: number = Math.floor(Date.now() / 1000),
+  options: WorkDetailsEditOptions = {},
 ): Promise<RetagOutcome> {
   const validated = validateWorkTags(rawTags);
   if (!validated.ok) {
     return { ok: false, reason: validated.reason };
   }
   const slots = workTagSlots(validated.tags);
+  const statuses = editableStatuses(options);
 
   const result = await env.DB.prepare(
     `update games
         set tag1 = ?, tag2 = ?, tag3 = ?, tags_set_at = ?
-      where id = ? and author_id = ? and status = ? and generation_state = 'ready'
+      where id = ? and author_id = ? and status in (?, ?) and generation_state = 'ready'
+        and deletion_started_at is null
         and (tags_set_at is null or tags_set_at <= ?)
         and not (tag1 is ? and tag2 is ? and tag3 is ?)`,
   )
@@ -2114,7 +2167,7 @@ export async function retagGame(
       now,
       gameId,
       authorId,
-      PUBLISHED_STATUS,
+      ...statuses,
       now - WORK_TAGS_CHANGE_INTERVAL_SECONDS,
       ...slots,
     )
@@ -2126,7 +2179,7 @@ export async function retagGame(
 
   // **0 行だったときだけ、理由を引きに行く。** `author_id = ?` を入れる理由は {@link renameGame}。
   const row = await env.DB.prepare(
-    'select status, generation_state, tag1, tag2, tag3 from games where id = ? and author_id = ?',
+    'select status, generation_state, tag1, tag2, tag3, deletion_started_at from games where id = ? and author_id = ?',
   )
     .bind(gameId, authorId)
     .first<{
@@ -2135,6 +2188,7 @@ export async function retagGame(
       tag1: string | null;
       tag2: string | null;
       tag3: string | null;
+      deletion_started_at: number | null;
     }>();
 
   if (row === null) {
@@ -2143,8 +2197,13 @@ export async function retagGame(
   if (row.status === REMOVED_STATUS) {
     return { ok: false, reason: 'removed' };
   }
-  if (row.status !== PUBLISHED_STATUS || row.generation_state !== 'ready') {
+  if (!statuses.includes(row.status) || row.generation_state !== 'ready') {
     return { ok: false, reason: 'not-published' };
+  }
+  if (row.deletion_started_at !== null) {
+    // 削除を掴まれた下書き（#516。`allowDraft` のときだけここへ来る——公開済みの行は掴まれない）は、行が無いのと
+    // 同じ扱いにする（{@link renameGame} と同じ）。**理由の順を 1 件ずつの口から変えないため、状態の判定の後に置く。**
+    return { ok: false, reason: 'not-found' };
   }
   if (row.tag1 === slots[0] && row.tag2 === slots[1] && row.tag3 === slots[2]) {
     // **同じ組の入れ直しは失敗にしない**（二度押し。説明と同じ扱いで、間隔の内側でも先に見る）。

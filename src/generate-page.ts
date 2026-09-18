@@ -115,6 +115,8 @@ import { GENERATE_PATH, MAX_PROMPT_LENGTH } from './generate.js';
 import { MAX_TITLE_LENGTH } from './games.js';
 // 遷移先の綴りの正本は作品ページ側が持つ（`src/work-page.ts`）。ここで書き写さない。
 import { WORK_PAGE_PREFIX } from './work-page.js';
+// **受け付けたらエディットページへ送る**（#664）。接尾辞の綴りは Lambda が import しない葉から取る。
+import { WORK_EDIT_SUFFIX } from './work-edit-paths.js';
 import {
   DAILY_QUOTA_REASON,
   IN_FLIGHT_BODY,
@@ -621,10 +623,10 @@ const GENERATE_SCRIPT = `
       var status = outcome.status;
       var code = outcome.code;
 
-      // **受け付けられたら作品ページへ送る**（#150）。ここから先の待ち時間と結果は
-      // あの画面が持つので、**この画面は結果を表示しない。**
+      // **受け付けられたらエディットページへ送る**（#150 / #664。#664 までは作品ページだった）。ここから先の
+      // 待ち時間と結果はあの画面が持つので、**この画面は結果を表示しない。**
       if (status === 202 && ${GAME_ID_EXPRESSION}.test(outcome.id)) {
-        window.location.href = ${JSON.stringify(WORK_PAGE_PREFIX)} + outcome.id;
+        window.location.href = ${JSON.stringify(WORK_PAGE_PREFIX)} + outcome.id + ${JSON.stringify(WORK_EDIT_SUFFIX)};
         return;
       }
       // 3.8 の degrade。**発火条件は「ビルド依頼の失敗」**（確定24）で、この画面から

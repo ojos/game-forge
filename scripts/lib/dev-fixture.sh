@@ -18,6 +18,15 @@
 #   COOKIE_VALUE        `__Host-gf_session` の値
 #   GAME_ID             仕込んだ draft の作品の id（`/works/` の続きに使う）
 #   PUBLISHED_GAME_ID   仕込んだ公開済みの作品の id（カードが並ぶ画面と、`/source/` の続きのため）
+#   WORKING_GAME_ID     仕込んだ生成中の作品の id（エディットページの「生成中」を測るため。#664）
+#   FAILED_GAME_ID      仕込んだ生成に失敗した作品の id（エディットページの「生成できませんでした」を測るため。#664）
+#
+# **エディットページ（`/works/<id>/edit`。#664）の 4 つの状態と、下書きのプレビュー（帯つきの作品ページ）を
+# 測れるように仕込む。** エディットページは作品ページの前方一致の経路の続きなので `/__dev/pages` には出ない——
+# 呼ぶ側（`scripts/check-page-width.sh`）が 4 つの id から足す。**仕込んだ利用者は 4 つの作品の作者である**ので、
+# 同じ cookie で本体が開く（作者以外が開くと作品ページと同じ応答になり、エディットページを 1 度も描かないまま緑になる）。
+# `GAME_ID`（下書き）は作者が開くので、`/works/$GAME_ID` は**下書きのプレビュー（帯つき）**になる。そのために
+# 試遊の鍵も持たせる（無いとプレビューの埋め込みが描かれない）。
 #
 # **公開済みの作品には、説明も入れる**（#627 / 仕様 5.4）。入れないと、遊ぶ枠の直前の折りたたみ
 # （`.gf-work-description-peek`）と説明の本文が **1 度も描かれないまま幅の検査が緑になる**。
@@ -173,6 +182,13 @@ dev_fixture_up() {
   # 題名は 1 行に収まらない長さにする（行が折り返したときの高さと幅を測るため）。
   QUEUED_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
 
+  # **エディットページの生成中・失敗の状態を測る作品**（#664）。生成中は作成の時刻を「いま」にする——古い時刻だと
+  # 「中断した可能性」の表示になり、生成中の本来の画面を 1 度も測らない。下書き（`GAME_ID`）の試遊の鍵は 16 進 32 桁
+  # （`src/games.ts` の `createPreviewKey` と同じ形）。
+  WORKING_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
+  FAILED_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
+  DRAFT_PREVIEW_KEY="$(node -e 'console.log(require("node:crypto").randomBytes(16).toString("hex"))')"
+
   # **公開済みの作品に、ソースと配信サイズの索引を持たせる**（#383）。無いと、作品ページの
   # 詳細情報パネルは「Wasm のサイズ」とソースへのリンクを出さず、`/source/<id>` は
   # 「読み出せませんでした」の 1 文だけになり、**長い行を持つ `<pre>` を 3 幅で 1 度も
@@ -185,14 +201,19 @@ dev_fixture_up() {
   BUCKET_NAME="$(sed -nE 's/^[[:space:]]*bucket_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' wrangler.toml | head -1)"
   [[ -n "$BUCKET_NAME" ]] || fail "wrangler.toml から R2 の bucket_name を読めませんでした。"
 
-  note "seeding an admin user, three games (draft + published + queued), the keys those games read, a report, a history row and a takedown request"
+  note "seeding an admin user, five games (draft + published + queued + working + failed), the keys those games read, a report, a history row and a takedown request"
   npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     insert into users (id, google_sub, email, display_name, created_at, bio, profile_links)
       values ('$USER_ID', 'sub-$USER_ID', '$USER_ID@example.invalid', '幅の検査', 1,
               '幅の検査の自己紹介です。外部リンクは空白を持たない長い URL にしてあり、390px の版面で折り返すことを測ります。',
               '[\"https://example.com/width-check/a-very-long-path-without-any-spaces-that-must-wrap-at-390px-0123456789\"]');
-    insert into games (id, author_id, status, title, go_version, created_at, generation_state, source_key)
-      values ('$GAME_ID', '$USER_ID', 'draft', '幅の検査の作品', '', 1, 'ready', '$SOURCE_KEY');
+    insert into games (id, author_id, status, title, go_version, created_at, generation_state, source_key, preview_key)
+      values ('$GAME_ID', '$USER_ID', 'draft', '幅の検査の作品', '', 1, 'ready', '$SOURCE_KEY', '$DRAFT_PREVIEW_KEY');
+    insert into games (id, author_id, status, title, go_version, created_at, generation_state, generation_started_at)
+      values ('$WORKING_GAME_ID', '$USER_ID', 'draft', '幅の検査の生成中の作品', '', strftime('%s', 'now'), 'running',
+              strftime('%s', 'now'));
+    insert into games (id, author_id, status, title, go_version, created_at, generation_state, generation_error)
+      values ('$FAILED_GAME_ID', '$USER_ID', 'draft', '幅の検査の生成に失敗した作品', '', 1, 'failed', 'source-rejected');
     insert into games (id, author_id, status, title, go_version, created_at, published_at,
                        generation_state, preview_key, like_count, play_count, tag1, tag2, tag3,
                        source_key, wasm_key)

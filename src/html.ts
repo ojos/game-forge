@@ -772,15 +772,23 @@ export function breadcrumbLabelOf(title: string): string {
  * @param viewer いま見ている人と画面
  * @param title `siteHead` に渡された `title`
  * @param reading 長い文を読ませる画面なら true（`siteHead` の `reading`）
+ * @param parentsOverride URL から導かずに使う親（`siteHead` の `breadcrumbParents`。#664）
  * @returns HTML（出さないときは空文字）
  */
-function siteBreadcrumb(viewer: SiteViewer | undefined, title: string, reading: boolean): string {
+function siteBreadcrumb(
+  viewer: SiteViewer | undefined,
+  title: string,
+  reading: boolean,
+  parentsOverride?: readonly NavItem[],
+): string {
   if (viewer === undefined || viewer.path === HOME_PATH) {
     return '';
   }
-  const parents = ancestorPathsOf(viewer.path)
-    .map((path) => BREADCRUMB_PARENTS.find((item) => item.path === path))
-    .filter((item): item is NavItem => item !== undefined);
+  const parents =
+    parentsOverride ??
+    ancestorPathsOf(viewer.path)
+      .map((path) => BREADCRUMB_PARENTS.find((item) => item.path === path))
+      .filter((item): item is NavItem => item !== undefined);
   const links = [BREADCRUMB_HOME, ...parents]
     .map((item) => `<li><a href="${item.path}">${escapeHtml(item.label)}</a></li>`)
     .join('\n    ');
@@ -829,6 +837,14 @@ export interface SiteHeadOptions {
    * 要素と同じ読み物の器の端に揃えるため。**省くと、これまでと 1 文字も違わない HTML を出す。**
    */
   readonly reading?: boolean;
+  /**
+   * パンくずの親（トップの後ろ、いまの画面の前）を、URL から導かずに渡す（#664）。**省くと、これまでどおり URL から導く。**
+   *
+   * **URL の階層と、利用者がたどってきた道が違う画面のためだけに使う。** エディットページ（`/works/<id>/edit`）は
+   * URL では公開作品の一覧（`/works`）の下にあるが、作者は「あなたの作品」から来る（2026-09-18 の利用者の決定）。
+   * 親は実在する画面にだけ向ける（2.3.7 の「行き先の無いリンクを出さない」）。
+   */
+  readonly breadcrumbParents?: readonly NavItem[];
 }
 
 /**
@@ -923,5 +939,6 @@ export function siteHead(options: SiteHeadOptions): string {
     options.viewer,
     options.title,
     options.reading === true,
+    options.breadcrumbParents,
   )}`;
 }

@@ -28,6 +28,9 @@ import { buildSessionCookie, signSession } from '../src/session.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 import { pageBodyOf } from './helpers/site-shell.js';
+import { workRoutes } from '../src/work-edit.js';
+import { workEditPath } from '../src/work-edit-paths.js';
+import { WORK_SAVE_DESCRIPTION_FIELD, WORK_SAVE_PATH } from '../src/work-save.js';
 import { markGameRemoved } from './helpers/removed-work.js';
 
 /**
@@ -230,6 +233,28 @@ async function openWork(gameId: string, cookie?: string): Promise<string> {
   return pageBodyOf(await response.text());
 }
 
+/**
+ * エディットページを開き、外枠を除いた本文を返す（#664。説明の欄は作品ページからここへ移った）。
+ *
+ * **作者以外・未ログインには作品ページと同じ応答が返る**（`src/work-edit.ts`）。
+ *
+ * @param gameId 作品 id
+ * @param cookie `Cookie` ヘッダ（省略すると未ログイン）
+ * @returns 外枠を除いた本文
+ */
+async function openEdit(gameId: string, cookie?: string): Promise<string> {
+  const headers: Record<string, string> = {};
+  if (cookie !== undefined) {
+    headers['cookie'] = cookie;
+  }
+  const response = await dispatch(
+    workRoutes,
+    new Request(`${APP_ORIGIN}${workEditPath(gameId)}`, { headers }),
+    testEnv(),
+  );
+  return pageBodyOf(await response.text());
+}
+
 beforeAll(async () => {
   await applySchema();
 });
@@ -248,28 +273,37 @@ afterAll(async () => {
   ]);
 });
 
-describe('説明のフォームは、公開済みの作品の作者にだけ出る（#388）', () => {
-  it('公開済みの作品の作者には説明のフォームが出る', async () => {
+describe('説明の欄は、作者のエディットページにだけ出る（#388 / #664）', () => {
+  it('公開済みの作品の作者には、エディットページに説明の欄が出て、まとめて保存する口へ送る', async () => {
     const { userId, id } = await seedPublished('form-owner');
-    const body = await openWork(id, await sessionCookie(userId));
-    expect(body).toContain(`action="${WORK_DESCRIBE_PATH}"`);
-    expect(body).toContain(`name="${WORK_DESCRIBE_TEXT_FIELD}"`);
+    const body = await openEdit(id, await sessionCookie(userId));
+    expect(body).toContain(`action="${WORK_SAVE_PATH}"`);
+    expect(body).toContain(`name="${WORK_SAVE_DESCRIPTION_FIELD}"`);
+    // **作品ページには出さない**（作者にも作者以外と同じ画面を出す。#664）。
+    const page = await openWork(id, await sessionCookie(userId));
+    expect(page).not.toContain(WORK_SAVE_PATH);
+    expect(page).not.toContain(WORK_DESCRIBE_PATH);
   });
 
   it('未ログイン・他人の画面にはフォームが出ない', async () => {
     const { id } = await seedPublished('form-stranger');
     const stranger = await seedUser('form-onlooker');
-    expect(await openWork(id)).not.toContain(WORK_DESCRIBE_PATH);
-    expect(await openWork(id, await sessionCookie(stranger))).not.toContain(WORK_DESCRIBE_PATH);
+    for (const body of [
+      await openEdit(id),
+      await openEdit(id, await sessionCookie(stranger)),
+      await openWork(id),
+      await openWork(id, await sessionCookie(stranger)),
+    ]) {
+      expect(body).not.toContain(WORK_DESCRIBE_PATH);
+      expect(body).not.toContain(WORK_SAVE_PATH);
+    }
   });
 
-  it('下書きの作品にはフォームを出さない（5.4 の公開までの画面を増やさない）', async () => {
+  it('下書きでは、説明は公開するときに保存することを押す前に言う（5.4 の条件を変えない。#664）', async () => {
     const { userId, id } = await seedReady('form-draft');
-    const body = await openWork(id, await sessionCookie(userId));
-    // **改名のフォームは出ている**（未公開でも出す口）ので、画面が作者のものであることは
-    // 確かめられている。
-    expect(body).toContain('作品名を変える');
-    expect(body).not.toContain(WORK_DESCRIBE_PATH);
+    const body = await openEdit(id, await sessionCookie(userId));
+    expect(body).toContain(`name="${WORK_SAVE_DESCRIPTION_FIELD}"`);
+    expect(body).toContain('説明とタグは、公開している作品にだけ保存できます。');
   });
 
   it('取り下げた作品にはフォームも説明も出さない', async () => {
@@ -277,14 +311,15 @@ describe('説明のフォームは、公開済みの作品の作者にだけ出�
     await describeGame(env, id, userId, '取り下げる前の説明', 1_700_000_000);
     await markGameRemoved(id);
 
-    const body = await openWork(id, await sessionCookie(userId));
+    const body = await openEdit(id, await sessionCookie(userId));
     expect(body).not.toContain(WORK_DESCRIBE_PATH);
+    expect(body).not.toContain(WORK_SAVE_PATH);
     expect(body).not.toContain('取り下げる前の説明');
   });
 });
 
 describe('作者は公開済みの作品に説明を書け、作品ページに出る（#388）', () => {
-  it('作者が書くと作品ページへ戻り、誰が開いても説明が出る', async () => {
+  it('作者が書くとエディットページへ戻り（#664）、誰が開いても説明が出る', async () => {
     const { userId, id } = await seedPublished('owner-write');
 
     const response = await postDescribe(
@@ -294,7 +329,7 @@ describe('作者は公開済みの作品に説明を書け、作品ページに�
     );
 
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(workPagePath(id));
+    expect(response.headers.get('location')).toBe(workEditPath(id));
     // **`\r\n` は `\n` へ畳んで保存する**（ブラウザは `<textarea>` の改行を `\r\n` で送る）。
     expect(await descriptionOf(id)).toBe('矢印キーで動かします。\n\n素材: ねこの絵は自作です。');
 

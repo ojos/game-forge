@@ -19,7 +19,7 @@ import { sendMail } from '../src/mail/resend.js';
 import type { OgpCaptureJob } from '../src/ogp-client.js';
 import { handleSandboxRequest } from '../src/sandbox.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
-import { workPagePath } from '../src/work-page.js';
+import { workEditPath } from '../src/work-edit-paths.js';
 import { MAX_WORK_TAGS, WORK_TAG_FIELD } from '../src/work-tags.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
@@ -265,9 +265,9 @@ describe('公開の遷移（5.4 / #26）', () => {
 
     const response = await publish(id, await sessionCookie(userId), spy.start);
 
-    // 素のフォームからの POST は POST-redirect-GET で作品ページへ戻る。
+    // 素のフォームからの POST は POST-redirect-GET でエディットページへ戻る（#664）。
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(workPagePath(id));
+    expect(response.headers.get('location')).toBe(workEditPath(id));
 
     const row = await readGame(id);
     expect(row.status).toBe('published');

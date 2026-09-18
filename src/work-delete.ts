@@ -27,6 +27,8 @@ import { escapeHtml, siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import { workPagePath } from './paths.js';
 import { MY_WORKS_PATH } from './works-paths.js';
+// **戻る先はエディットページである**（#664。削除の導線はそこにある。綴りは Lambda が import しない葉から取る）。
+import { workEditPath } from './work-edit-paths.js';
 
 /**
  * 確認画面のパスの末尾（`/works/<id>/delete`）。
@@ -266,7 +268,7 @@ export function renderDeleteConfirmation(view: DeleteConfirmationView, viewer: S
   <input type="hidden" name="${WORK_DELETE_GAME_ID_FIELD}" value="${view.gameId}">
   <button type="submit" class="gf-button gf-button-secondary">この作品を削除する</button>
 </form>
-<p><a href="${workPagePath(view.gameId)}">削除せずに作品ページへ戻る</a></p>
+<p><a href="${workEditPath(view.gameId)}">削除せずに編集へ戻る</a></p>
 </div>
 </section>
 ${siteFooter()}`;
@@ -276,7 +278,7 @@ ${siteFooter()}`;
  * 削除を断る画面の HTML を組み立てる（確認画面を開いたときと、削除の口が断ったときの両方）。
  *
  * **作品ページへ 303 で戻さない。** 戻すと、断られたことが URL にもステータスにも残らない（取り下げの
- * `removeRefusal` と同じ判断）。**作品の状態で断ったときだけ、作品ページへ戻るリンクを添える**——見つからない
+ * `removeRefusal` と同じ判断）。**作品の状態で断ったときだけ、エディットページへ戻るリンクを添える**（#664）——見つからない
  * ときに添えると、押した先がまた 404 になる。
  *
  * @param refusal 断りの中身（{@link DELETE_REFUSALS} の 1 行）
@@ -290,7 +292,7 @@ export function renderDeleteRefusal(
   viewer?: SiteViewer,
 ): string {
   const back =
-    backGameId === null ? '' : `\n<p><a href="${workPagePath(backGameId)}">作品ページへ戻る</a></p>`;
+    backGameId === null ? '' : `\n<p><a href="${workEditPath(backGameId)}">編集へ戻る</a></p>`;
   return `${siteHead({ title: `${refusal.heading} - Game Forge`, noindex: true, viewer })}
 <h1>${refusal.heading}</h1>
 <p class="gf-block">${refusal.body}</p>${back}

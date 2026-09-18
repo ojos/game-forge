@@ -295,7 +295,8 @@ blockquote {
  * `scripts/check-page-width.sh` が見ている回帰そのものである）。
  */
 .gf-split,
-.gf-split-end {
+.gf-split-end,
+.gf-split-edit {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--gf-gap-4) var(--gf-gap-5);
@@ -384,6 +385,17 @@ blockquote {
 
   .gf-split-end {
     grid-template-columns: minmax(0, 1fr) var(--gf-aside);
+  }
+
+  /*
+   * #664: エディットページの「作品名・説明・タグ | プレビュー・URL・公開設定」（`src/work-edit.ts`）。
+   *
+   * **右の列を補助カラムの幅（`--gf-aside`。16rem）にしない。** 右にはゲームのプレビュー（枠は 1200 / 630）を置くので、
+   * 16rem では 134px の高さの枠になり、遊んで確かめられない。**左 3 : 右 2** にする（1080px の器 1000px で
+   * 右 384px・1280px の器 1200px で右 464px）。狭い段では HTML の順（フォーム → プレビュー）に縦へ積む。
+   */
+  .gf-split-edit {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
   }
 
   /* #472: ログイン・登録の 3 つのブロック（`@section signup`）——ここから。
@@ -1780,6 +1792,154 @@ html.gf-play-locked body {
 .gf-revisions form {
   margin: var(--gf-gap-1) 0 var(--gf-gap-2);
 }
+
+/* #664: 作品ページの作者の見え方と、エディットページ（`src/work-page.ts` / `src/work-edit.ts` / `src/work-save.ts`）——ここから。
+ *
+ * **新しい色もトークンも足さない。** 面はブロック（`.gf-block`）、ボタンは部品（`@section buttons`）、補助の文字は
+ * `--gf-ink-soft` と `--gf-text-small`（タグの行・操作の案内と同じ弱さ）。**枠線も影も使わない**（仕様 2.5.4。`<fieldset>` の
+ * 既定の枠は外す）。**幅の `@media` を持たない**——2 列に分けるのは器の `.gf-split-edit`（`@section shell`）で、
+ * ここの並びは flex の `wrap` だけで折り返す（2.3.9）。
+ */
+
+/* 下書きのプレビューの帯（作者だけ）。文と「編集へ戻る」を 1 行に並べ、収まらなければ折り返す。 */
+.gf-draft-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+  margin-bottom: var(--gf-gap-4);
+}
+
+.gf-draft-banner p {
+  margin: 0;
+}
+
+/* 作品ページの「編集する」（作者だけ）。題名（h1）の直下の 1 行。上の余白は h1 の下の余白がそのまま効く。 */
+.gf-work-edit-link {
+  margin: 0 0 var(--gf-gap-4);
+}
+
+/* エディットページの上の行: 左に見出し、右に「変更を元に戻す」「保存」（Studio の右上）。狭い段では折り返す。 */
+.gf-edit-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gf-gap-2) var(--gf-gap-3);
+}
+
+.gf-edit-bar h1 {
+  margin: 0;
+}
+
+.gf-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-2);
+}
+
+/* 「作品ページで見る」「あなたの作品へ戻る」（Studio の左端のアイコン列の代わり）。 */
+.gf-edit-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--gf-gap-3);
+  margin: var(--gf-gap-2) 0 var(--gf-gap-4);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+/* 左の列（まとめて保存するフォーム）。版面の上限（`--gf-measure`）を外し、列の幅いっぱいに置く。 */
+.gf-edit-main {
+  max-width: none;
+  margin: 0;
+}
+
+.gf-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-1);
+}
+
+.gf-edit-field label {
+  margin-bottom: 0;
+}
+
+.gf-edit-hint {
+  margin: 0;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+/* 右の列（プレビュー・URL・公開設定）。塊どうしの間は 24px（仕様 2.5.8）。 */
+.gf-edit-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-4);
+  min-width: 0;
+}
+
+.gf-edit-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-2);
+}
+
+.gf-edit-preview > * {
+  margin: 0;
+}
+
+/*
+ * 公開設定。**`<fieldset>` の既定の枠と余白を外し、面（`.gf-block`）で囲む。** 見出し（`<legend>`）は既定だと枠の線の上に
+ * 載って面の余白の外へはみ出すので、`float` で本文の流れへ入れる。
+ */
+.gf-edit-visibility {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+}
+
+.gf-edit-visibility legend {
+  float: left;
+  width: 100%;
+  margin-bottom: var(--gf-gap-2);
+  padding: 0;
+  font-weight: 700;
+}
+
+.gf-edit-visibility label {
+  display: flex;
+  align-items: center;
+  gap: var(--gf-gap-1);
+  margin: 0;
+  /* `float` の見出しの横へ回り込ませない（flex の箱は回り込む先を探して右へはみ出す。390px で実測）。 */
+  clear: both;
+}
+
+.gf-edit-visibility .gf-edit-hint {
+  margin: 0 0 var(--gf-gap-2);
+}
+
+.gf-edit-visibility .gf-edit-hint:last-child {
+  margin-bottom: 0;
+}
+
+/* 公開設定を変えたときの確認の画面（`src/work-save.ts`）。行の見出しの上の余白を外す。 */
+.gf-save-confirm h2 {
+  margin: 0 0 var(--gf-gap-2);
+  font-size: var(--gf-text);
+}
+
+.gf-save-confirm ul,
+.gf-save-confirm form,
+.gf-save-confirm p {
+  margin-bottom: var(--gf-gap-2);
+}
+
+.gf-save-confirm > * > :last-child {
+  margin-bottom: 0;
+}
+/* #664: ここまで */
 
 /* ==========================================================================
    @section signed-in — ログイン後の画面（#268）

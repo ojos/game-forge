@@ -28,7 +28,9 @@ import {
 import { createOgpRecaptureRoutes } from '../src/ogp-recapture.js';
 import type { OgpCaptureJob } from '../src/ogp-client.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
-import { workPageRoutes, workPagePath } from '../src/work-page.js';
+import { workPagePath } from '../src/work-page.js';
+import { workRoutes } from '../src/work-edit.js';
+import { workEditPath } from '../src/work-edit-paths.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -274,8 +276,28 @@ async function workPage(gameId: string, cookie: string | null): Promise<string> 
     headers['cookie'] = cookie;
   }
   const response = await dispatch(
-    workPageRoutes,
+    workRoutes,
     new Request(`${APP_ORIGIN}${workPagePath(gameId)}`, { headers }),
+    testEnv(),
+  );
+  return await response.text();
+}
+
+/**
+ * エディットページの本文を読む（#664。撮り直しの口は作品ページからここへ移った）。
+ *
+ * @param gameId 作品 id
+ * @param cookie セッション cookie（未ログインなら null）
+ * @returns HTML
+ */
+async function editPage(gameId: string, cookie: string | null): Promise<string> {
+  const headers: Record<string, string> = {};
+  if (cookie !== null) {
+    headers['cookie'] = cookie;
+  }
+  const response = await dispatch(
+    workRoutes,
+    new Request(`${APP_ORIGIN}${workEditPath(gameId)}`, { headers }),
     testEnv(),
   );
   return await response.text();
@@ -414,7 +436,7 @@ describe('撮り直しの経路（#235 の acceptance 2）', () => {
     const jobs: OgpCaptureJob[] = [];
     const response = await postRecapture(id, await sessionCookie(userId), jobs);
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(workPagePath(id));
+    expect(response.headers.get('location')).toBe(workEditPath(id));
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.gameId).toBe(id);
 
@@ -519,22 +541,26 @@ describe('撮り直しの経路（#235 の acceptance 2）', () => {
 });
 
 describe('作品ページに出る口（#235 の「気づく経路」）', () => {
-  it('作者には、中断したときだけフォームが出る', async () => {
+  it('作者には、中断したときだけエディットページにフォームが出る（#664）', async () => {
     const { userId, id } = await seedCapturingGame('page-owner');
     const cookie = await sessionCookie(userId);
 
     // まだ走っているうちは出さない（押しても何も起きないボタンを出さない）。
     // **描画の中で判定が走るので時計を渡せない**（#260。上の 409 の検査と同じ）。
     await ageCapture(id, WELL_INSIDE_WINDOW_SECONDS);
-    expect(await workPage(id, cookie)).not.toContain(OGP_RECAPTURE_PATH);
+    expect(await editPage(id, cookie)).not.toContain(OGP_RECAPTURE_PATH);
 
     await ageCapture(id, OGP_STALE_AFTER_SECONDS);
-    const stalled = await workPage(id, cookie);
+    const stalled = await editPage(id, cookie);
     expect(stalled).toContain(OGP_RECAPTURE_PATH);
     expect(stalled).toContain(id);
-    // **同じページが「準備中」と「止まったまま」を同時に言わない。**
-    expect(stalled).not.toContain('スクリーンショットを準備しています');
-    expect(stalled).toContain('スクリーンショットの撮影が止まっています');
+    expect(stalled).toContain('スクリーンショットの撮影が、途中で止まったままです。');
+    // **作品ページは作者にも作者以外と同じものを出す**（#664）。口は出さず、「準備中」と「止まったまま」を
+    // 同じページで同時に言うこともない。
+    const page = await workPage(id, cookie);
+    expect(page).not.toContain(OGP_RECAPTURE_PATH);
+    expect(page).not.toContain('スクリーンショットの撮影が止まっています');
+    expect(page).toContain('スクリーンショットを準備しています');
   });
 
   it('作者以外には出さない（未ログインにも）', async () => {
@@ -545,6 +571,9 @@ describe('作品ページに出る口（#235 の「気づく経路」）', () =>
     const anonymous = await workPage(id, null);
     expect(anonymous).not.toContain(OGP_RECAPTURE_PATH);
     expect(await workPage(id, await sessionCookie(stranger))).not.toContain(OGP_RECAPTURE_PATH);
+    // **エディットページの URL でも、作者以外には作品ページと同じ応答になる**（#664）。
+    expect(await editPage(id, null)).toBe(anonymous);
+    expect(await editPage(id, await sessionCookie(stranger))).not.toContain(OGP_RECAPTURE_PATH);
     // **中断を見せても、その人にできることが 1 つも無い。** 文言は従来のままにする。
     expect(anonymous).toContain('スクリーンショットを準備しています');
   });
@@ -554,6 +583,6 @@ describe('作品ページに出る口（#235 の「気づく経路」）', () =>
     await ageCapture(id, OGP_STALE_AFTER_SECONDS * 2);
     expect((await sendCallback(id, ogpToken)).status).toBe(200);
 
-    expect(await workPage(id, await sessionCookie(userId))).not.toContain(OGP_RECAPTURE_PATH);
+    expect(await editPage(id, await sessionCookie(userId))).not.toContain(OGP_RECAPTURE_PATH);
   });
 });

@@ -54,7 +54,8 @@ import { OGP_RECAPTURE_GAME_ID_FIELD, OGP_RECAPTURE_PATH } from './paths.js';
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { workPagePath } from './work-page.js';
+// **戻り先はエディットページである**（#664。撮り直しの口はそこにある。綴りは Lambda が import しない葉から取る）。
+import { workEditPath } from './work-edit-paths.js';
 
 /**
  * 受け付ける本文の最大バイト数。
@@ -251,9 +252,9 @@ async function handleRecapture(
   const outcome = await startOgpRecapture(env, target.gameId, session.userId, start);
 
   if (outcome === 'started') {
-    // POST-redirect-GET。戻り先は作品ページで、そこに撮影中の表示が出る。
+    // POST-redirect-GET。戻り先はエディットページで（#664）、そこに撮影中の表示が出る。
     return asHtml
-      ? seeOther(workPagePath(target.gameId))
+      ? seeOther(workEditPath(target.gameId))
       : json({ recapture: outcome satisfies CaptureStartOutcome }, 202);
   }
 

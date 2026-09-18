@@ -107,7 +107,9 @@ import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/work-page.ts` もそこから取っている）。
 import { escapeHtml, headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
-import { looksStalled, workPagePath } from './work-page.js';
+import { looksStalled } from './work-page.js';
+// **各行はエディットページへ移る**（#664。綴りは Lambda が import しない葉から取る）。
+import { workEditPath } from './work-edit-paths.js';
 
 /**
  * 「あなたの作品」のパス（`/works/mine`）。
@@ -330,7 +332,7 @@ function renderRow(work: AuthoredGame, now: number): string {
   const publication = publicationLabelOf(work.status);
   const publicationChip = publication === null ? '' : ` <span class="gf-chip">${publication}</span>`;
   return (
-    `  <li><a class="gf-link-quiet gf-works-title" href="${workPagePath(work.id)}">${escapeHtml(displayTitleOf(work.title))}</a>` +
+    `  <li><a class="gf-link-quiet gf-works-title" href="${workEditPath(work.id)}">${escapeHtml(displayTitleOf(work.title))}</a>` +
     ` <span class="${chip}">${STATE_LABELS[state]}</span>${publicationChip}${created}</li>`
   );
 }

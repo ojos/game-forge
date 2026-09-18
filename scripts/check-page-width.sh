@@ -164,6 +164,15 @@ PATHS="$(dev_fixture_paths)"
 # 読み手にとって単純である。cookie は作者本人のものなので、**作者にしか出ない行**も測れる。
 PATHS="${PATHS},/works/${PUBLISHED_GAME_ID}"
 
+# **エディットページの 4 つの状態も開く**（#664。下書き・公開・生成中・失敗）。エディットページは作品ページの
+# 前方一致の経路の続き（`/works/<id>/edit`）なので `/__dev/pages` に出ない。**足さないと、2 列のフォームと
+# プレビュー・公開設定を 1 度も描かないまま緑になる。** cookie は 4 つの作品の作者のものである（作者以外には作品ページと
+# 同じ応答になる）。**下書きのプレビュー（帯つきの作品ページ）は、上の `/works/${GAME_ID}` が既に開いている**
+# ——作者が下書きを作品ページで開くとプレビューになる（`scripts/lib/dev-fixture.sh` の冒頭）。
+for edit_id in "$GAME_ID" "$PUBLISHED_GAME_ID" "$WORKING_GAME_ID" "$FAILED_GAME_ID"; do
+  PATHS="${PATHS},/works/${edit_id}/edit"
+done
+
 COUNT="$(printf '%s\n' "$PATHS" | tr ',' '\n' | wc -l | tr -d ' ')"
 note "対象 ${COUNT} 経路 / 幅 ${WIDTHS}"
 

@@ -24,11 +24,13 @@ import {
   WORK_RENAME_GAME_ID_FIELD,
   WORK_RENAME_PATH,
   WORK_RENAME_TITLE_FIELD,
-  workPagePath,
   workPageRoutes,
 } from '../src/work-page.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
 import { dispatch } from '../src/routes.js';
+import { workRoutes } from '../src/work-edit.js';
+import { workEditPath } from '../src/work-edit-paths.js';
+import { WORK_SAVE_PATH, WORK_SAVE_TITLE_FIELD } from '../src/work-save.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
@@ -192,7 +194,9 @@ async function postRename(gameId: string, title: string, cookie?: string): Promi
 }
 
 /**
- * 作品ページを開く。
+ * エディットページを開く（#664。改名の欄は作品ページからここへ移った）。
+ *
+ * **作者以外・未ログインには作品ページと同じ応答が返る**（`src/work-edit.ts`）ので、同じ関数で「出ない」ことも確かめられる。
  *
  * @param gameId 作品 id
  * @param cookie `Cookie` ヘッダ（省略すると未ログイン）
@@ -204,8 +208,8 @@ async function openWork(gameId: string, cookie?: string): Promise<string> {
     headers['cookie'] = cookie;
   }
   const response = await dispatch(
-    workPageRoutes,
-    new Request(`${APP_ORIGIN}${workPagePath(gameId)}`, { headers }),
+    workRoutes,
+    new Request(`${APP_ORIGIN}${workEditPath(gameId)}`, { headers }),
     testEnv(),
   );
   return await response.text();
@@ -215,13 +219,13 @@ beforeAll(async () => {
   await applySchema();
 });
 
-describe('改名の口は作者にだけ出る（#366）', () => {
-  it('作者の画面には改名のフォームが出る', async () => {
+describe('改名の口は作者にだけ出る（#366 / #664）', () => {
+  it('作者のエディットページには作品名の欄が出て、まとめて保存する口へ送る（#664）', async () => {
     const { userId, id } = await seedReady('form-owner');
     const body = await openWork(id, await sessionCookie(userId));
-    expect(body).toContain(WORK_RENAME_PATH);
-    expect(body).toContain(WORK_RENAME_TITLE_FIELD);
-    expect(body).toContain('作品名を変える');
+    expect(body).toContain(`action="${WORK_SAVE_PATH}"`);
+    expect(body).toContain(`name="${WORK_SAVE_TITLE_FIELD}"`);
+    expect(body).toContain('<label for="work-title">作品名</label>');
   });
 
   it('未ログイン・他人の画面にはフォームが 1 バイトも出ない', async () => {
@@ -231,8 +235,10 @@ describe('改名の口は作者にだけ出る（#366）', () => {
     await publishGame(env, id, userId);
 
     const stranger = await seedUser('form-onlooker');
-    expect(await openWork(id)).not.toContain(WORK_RENAME_PATH);
-    expect(await openWork(id, await sessionCookie(stranger))).not.toContain(WORK_RENAME_PATH);
+    for (const body of [await openWork(id), await openWork(id, await sessionCookie(stranger))]) {
+      expect(body).not.toContain(WORK_RENAME_PATH);
+      expect(body).not.toContain(WORK_SAVE_PATH);
+    }
   });
 
   it('いまの題名を初期値に入れる（UGC なのでエスケープする）', async () => {
@@ -248,7 +254,7 @@ describe('改名の口は作者にだけ出る（#366）', () => {
     const { userId, id } = await seedReady('form-removed');
     await publishGame(env, id, userId);
     await markGameRemoved(id);
-    expect(await openWork(id, await sessionCookie(userId))).not.toContain(WORK_RENAME_PATH);
+    expect(await openWork(id, await sessionCookie(userId))).not.toContain(WORK_SAVE_PATH);
   });
 });
 
@@ -279,13 +285,13 @@ describe('改名できるのは作者だけである（#366）', () => {
     expect(await historyOf(id)).toHaveLength(0);
   });
 
-  it('作者の改名は通り、作品ページへ戻す', async () => {
+  it('作者の改名は通り、エディットページへ戻す（#664）', async () => {
     const { userId, id } = await seedReady('owner-write', 'もとの題名');
 
     const response = await postRename(id, 'あたらしい題名', await sessionCookie(userId));
 
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(workPagePath(id));
+    expect(response.headers.get('location')).toBe(workEditPath(id));
     expect(await titleOf(id)).toBe('あたらしい題名');
   });
 

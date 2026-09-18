@@ -58,6 +58,7 @@ import {
   TIDY_MAX_SOURCE_BYTES,
 } from '../src/source-size.js';
 import { workPagePath } from '../src/work-page.js';
+import { workEditPath } from '../src/work-edit-paths.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -297,7 +298,7 @@ describe('子が生まれ、親を指す（acceptance 1 / 5.3）', () => {
     expect(response.status).toBe(303);
     expect(spy.calls).toHaveLength(1);
     const childId = spy.calls[0]!.gameId;
-    expect(response.headers.get('location')).toBe(workPagePath(childId));
+    expect(response.headers.get('location')).toBe(workEditPath(childId));
 
     const children = await gamesOf(forker);
     expect(children).toHaveLength(1);
@@ -394,7 +395,7 @@ describe('子が生まれ、親を指す（acceptance 1 / 5.3）', () => {
     expect(response.status).toBe(202);
     const body = (await response.json()) as Record<string, unknown>;
     expect(body['parentId']).toBe(parentId);
-    expect(body['url']).toBe(workPagePath(spy.calls[0]!.gameId));
+    expect(body['url']).toBe(workEditPath(spy.calls[0]!.gameId));
   });
 });
 

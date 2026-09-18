@@ -89,13 +89,17 @@ interface SeedGame {
  */
 async function seedGame(
   seed: SeedGame,
-): Promise<{ id: string; sourceKey: string | null; wasmKey: string | null }> {
+): Promise<{ id: string; sourceKey: string | null; wasmKey: string | null; ogpKey: string | null }> {
   const id = crypto.randomUUID();
   const prefix = seed.keys === undefined ? `builds/${id}` : seed.keys;
   const sourceKey = prefix === null ? null : `${prefix}.go`;
   const wasmKey = prefix === null ? null : `${prefix}.wasm.br`;
   const status = seed.status ?? 'draft';
   const state = seed.generationState ?? 'ready';
+  // **いまの形の鍵で仕込む**（#640。`ogp/<id>/<乱数>.png`）。古い形は `legacyOgpKey` を使う
+  // テストが 1 本だけ持つ——**既定を古い形にすると、鍵を組み立てる実装へ戻しても緑のままになる**
+  // （PR #643 の Copilot の指摘）。
+  const ogpKey = status === 'draft' ? null : `ogp/${id}/${crypto.randomUUID()}.png`;
   await env.DB.prepare(
     `insert into games
        (id, author_id, parent_id, status, title, go_version, source_key, wasm_key, created_at,
@@ -113,7 +117,7 @@ async function seedGame(
       status === 'draft' ? null : 200,
       state === 'ready' ? crypto.randomUUID() : null,
       state,
-      status === 'draft' ? null : legacyOgpKey(id),
+      ogpKey,
       status === 'draft' ? null : 'ready',
     )
     .run();
@@ -121,7 +125,12 @@ async function seedGame(
     await addRevision(id, 1, sourceKey, wasmKey);
     await putObjects(sourceKey, wasmKey);
   }
-  return { id, sourceKey, wasmKey };
+  // **画像も実際に置く。** 置かないと「消えている」の検査が空振りし、**鍵を組み立てる実装へ戻しても
+  // 緑のままになる**（PR #643 の Copilot の指摘を受けて、変異を当てて確かめた）。
+  if (ogpKey !== null) {
+    await putObjects(ogpKey);
+  }
+  return { id, sourceKey, wasmKey, ogpKey };
 }
 
 /**
@@ -330,7 +339,7 @@ describe('子のいる作品は行を残す（#516 の acceptance 2）', () => {
     });
     // R2 の親の成果物と OGP 画像は消えている（子は別のキー）。
     expect(await exists(parent.sourceKey!)).toBe(false);
-    expect(await exists(legacyOgpKey(parent.id))).toBe(false);
+    expect(await exists(parent.ogpKey!)).toBe(false);
 
     // **子は 1 文字も動いていない。**
     const childRow = await readGame(child.id);
@@ -511,8 +520,8 @@ describe('進行中・公開中は断り、何も書き換えない（#516 の a
   it('published は断る', async () => {
     const author = await seedUser('公開中');
     const game = await seedGame({ authorId: author, status: 'published' });
-    await putObjects(legacyOgpKey(game.id));
-    await expectRejected(game.id, [game.sourceKey!, game.wasmKey!, legacyOgpKey(game.id)], 'published');
+    await putObjects(game.ogpKey!);
+    await expectRejected(game.id, [game.sourceKey!, game.wasmKey!, game.ogpKey!], 'published');
   });
 
   it.each(['pending', 'running'] as const)('生成中（%s）は断る', async (state) => {

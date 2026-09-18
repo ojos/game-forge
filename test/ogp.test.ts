@@ -308,6 +308,28 @@ describe('撮影の結果を受け取る', () => {
     expect(object!.httpMetadata?.contentType).toBe('image/png');
   });
 
+  it('撮り直すと前の画像は消える（在るのは行が指す 1 枚だけ。#640）', async () => {
+    // **鍵が撮影ごとに変わるので、消さないと撮り直すたびに 1 枚ずつ増える。**
+    const { userId, id, ogpToken } = await seedPublishedGame('recapture-cleanup');
+    expect((await sendCallback(id, ogpToken, PNG_BYTES)).status).toBe(200);
+    const first = (await readOgp(id)).ogp_key!;
+
+    // 公開をやめて公開し直すと `ogp_state` が NULL へ戻り、次の撮影を掴める（#637 / 確定35）。
+    expect(await unpublishGame(env, id, userId)).toEqual({ ok: true, firstTime: true });
+    expect((await publishGame(env, id, userId)).ok).toBe(true);
+    const nextToken = createJobToken();
+    expect(await claimOgpCapture(env, id, await hashJobToken(nextToken))).toBe(true);
+    const fresh = new Uint8Array(PNG_BYTES);
+    fresh[fresh.length - 1] = 0x21;
+    expect((await sendCallback(id, nextToken, fresh)).status).toBe(200);
+
+    const second = (await readOgp(id)).ogp_key!;
+    expect(second).not.toBe(first);
+    // **前の画像は消えている。**
+    expect(await env.BUCKET.head(first)).toBeNull();
+    expect(await listOgpObjects(id)).toEqual([second]);
+  });
+
   it('同じトークンの 2 通目は 404（使い捨て）', async () => {
     // Lambda の非同期呼び出しは同じイベントを複数回配信しうる（AWS 明文）。
     const { id, ogpToken } = await seedPublishedGame('callback-twice');
@@ -571,7 +593,7 @@ describe('撮影関数の呼び出し（src/ogp-client.ts）', () => {
 
 describe('撮影のコールバックと作品の削除の競合（#516 / PR #523 のレビュー）', () => {
   /**
-   * 撮影の照合（`ogpCaptureIsPending` の読み取り）が終わった直後に、1 度だけ出来事を差し込む `Env`。
+   * 撮影の照合（`readPendingCapture` の読み取り）が終わった直後に、1 度だけ出来事を差し込む `Env`。
    *
    * **照合と R2 の書き込みのあいだに削除が走る**順序を、決定的に作るために使う。
    *

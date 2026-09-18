@@ -111,3 +111,13 @@ push / PR 作成後の最終ゲートを、このプロジェクトで具体化�
 - ローカル装備の `--with-copilot`（CLI・拡張・設定の永続化）ではワークフローは配置されません。効く場所が違うため別のフラグです。
 - 要求は 1 回に限定します。機構で自動要求する場合は、再要求されないイベント（例: `pull_request` の `opened` のみ）に限定します（`.ai-playbook/review-workflow.md`）。
 - 前提条件・失敗時の扱い: （記載。例: リポジトリ所有者の Copilot code review が有効でないと 422 で失敗する）
+
+### 書き戻しの直列化
+
+**`docs/handoff.md` を触る open PR は、同時に 1 本までにします**（#650）。2 本目が出ると、`.github/workflows/writeback-serial.yml` が後から出たほうへ `writeback-serial` の status を failure で付けます。**同じ日の追記は、先に open している PR へ足してください。** 先の PR が閉じると、次の 1 本は自動で緑に変わります。
+
+- **理由は 2 つです。** Copilot code review の費用は PR 1 本あたりの固定費が支配的で（2026-09 の実績で 63%）、書き戻しを束ねると本数がそのまま減ります。加えて、複数のセッションが同時に `handoff.md` を書き換えると、片方の追記がもう片方へ相乗りします（`docs/handoff.md` 4 章の #229）。
+- **呼びかけでは担保しません。** 並行するセッションは互いの open PR を見ないまま書き戻すので、機構で見ます。見るのは「同じファイルを触る open PR があるか」という実質です（`.ai-playbook/shared-ai-rules.md` 12 章）。
+- **required check にはしません。** 急ぎの書き戻しまで止めたいわけではありません。赤のまま通すときは、先行する PR と衝突しないことを確かめてから通します。
+- 判定の正本は `scripts/writeback-serial.sh`、表は `scripts/check-writeback-serial.sh`（`scripts/acceptance.sh` から回ります）。**判定を YAML へ書き写しません。**
+- **束ねられるのは #656 の後だからです。** それまでは書き戻し 1 本で GitHub が `patch` を落とし、Copilot が読めませんでした。解体後の書き戻しは `patch` 4 KB 台（#660）です。束ねた PR も、第二意見が 1 チャンクで通る大きさ（`[second-opinion] run 1/1`）に収めてください。

@@ -1,0 +1,122 @@
+name: writeback-serial
+
+# docs/handoff.md を触る open PR を 1 本ずつに並べる（#650）。
+#
+# **判定はしない。集めて渡し、結果を書くだけである。** 判定の正本は
+# scripts/writeback-serial.sh にあり、scripts/check-writeback-serial.sh が表で押さえている。
+# 規則は「いちばん古い 1 本だけを通す」。理由（費用と、同時書き換えの事故）は
+# スクリプトの冒頭に書いてある。
+#
+# **どの PR の出来事で起動しても、全件を判定し直す。** 先行する PR が閉じたとき
+# （closed）に、待たされていた次の 1 本が緑に変わるのはこのためである。判定が入力に
+# 対して決定的なので、どの契機から見ても同じ答えになる。
+#
+# **判定は各 PR の head SHA へ commit status として書く。** 起動した PR とは別の PR に
+# 結果を出す必要があるので、ジョブの成否では表せない（review-gate.yml と同じ理由）。
+#
+# **ジョブは判定が赤でも落とさない。** 落とすと、起動した無関係な PR のチェック欄に
+# 赤いジョブが出る。ジョブを落とすのは、一覧を読めなかったときと、status を書けなかった
+# ときだけにする。
+#
+# **required check にはしない。** 急ぎの書き戻しを止めたいわけではなく、「別の open PR が
+# 同じファイルを触っている」ことに気づかないまま 2 本目を出すことを塞ぎたいだけである。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  # commit status を書く。これが判定の出力先である。
+  statuses: write
+
+# 全件を判定し直すので、実行が重なっても最後の 1 回が正しければよい。取り消さずに
+# 直列にする（途中で消すと、status を書きかけのまま終わる回ができる）。
+concurrency:
+  group: writeback-serial
+  cancel-in-progress: false
+
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    # フォークからの PR は GITHUB_TOKEN が読み取り専用で status を書けない。
+    # 同じリポジトリの PR だけを対象にするので、起動も同じリポジトリに限る。
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Judge open PRs that touch docs/handoff.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # status の名前。**変えると過去の PR に付いた status と別物になる。**
+          CONTEXT="writeback-serial"
+          TARGET="docs/handoff.md"
+
+          # 同じリポジトリの open PR。フォークと、フォーク元が消えた PR（head.repo が null）は除く。
+          if ! prs="$(gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" \
+               --jq '.[] | select(.head.repo != null and .head.repo.full_name == env.REPO)
+                         | "\(.number) \(.created_at) \(.head.sha)"')"; then
+            echo "::error::open な PR の一覧を読めませんでした。status は付けていません。"
+            exit 1
+          fi
+
+          # handoff.md を触る PR だけを残す。**改名の元のパスも見る**——新しいパスだけを見ると、
+          # handoff.md を別名へ動かす PR が「触っていない」になる。
+          #
+          # **1 本でも読めなければ、何も書かずに落とす。** 一部だけで判定すると、読めなかった
+          # PR が実は先頭だった場合に、後ろの PR へ誤った緑を出す。
+          input=""
+          declare -A head_sha=()
+          while read -r num created sha; do
+            [ -n "${num:-}" ] || continue
+            if ! files="$(gh api --paginate "repos/${REPO}/pulls/${num}/files?per_page=100" \
+                 --jq '.[] | .filename, (.previous_filename // empty)')"; then
+              echo "::error::PR #${num} の変更ファイルを読めませんでした。status は付けていません。"
+              exit 1
+            fi
+            if grep -qxF "$TARGET" <<< "$files"; then
+              input+="${num} ${created}"$'\n'
+              head_sha[$num]="$sha"
+            fi
+          done <<< "$prs"
+
+          if ! verdicts="$(printf '%s' "$input" | bash scripts/writeback-serial.sh)"; then
+            echo "::error::判定に失敗しました（scripts/writeback-serial.sh）。status は付けていません。"
+            exit 1
+          fi
+
+          if [ -z "$verdicts" ]; then
+            echo "${TARGET} を触る open PR はありません"
+            exit 0
+          fi
+
+          # status の説明は 140 文字まで。英語で短く書く（review-gate.yml と揃える）。
+          failed=0
+          while read -r num state blocker; do
+            if [ "$state" = "success" ]; then
+              desc="Oldest open PR touching ${TARGET}"
+            else
+              desc="#${blocker} also touches ${TARGET} and is older; add to it or wait for it to merge"
+            fi
+            # **書けなかったら失敗を数える。** 書けないまま緑で終わると、判定が PR 上に
+            # 出ていないことに誰も気づけない。
+            if gh api --method POST "repos/${REPO}/statuses/${head_sha[$num]}" \
+                 -f "state=${state}" -f "context=${CONTEXT}" \
+                 -f "description=${desc}" -f "target_url=${RUN_URL}" >/dev/null; then
+              echo "  #${num}: ${state}${blocker:+ (#${blocker} が先)}"
+            else
+              echo "::error::PR #${num} へ status を書けませんでした（判定は ${state}）。"
+              failed=1
+            fi
+          done <<< "$verdicts"
+
+          exit "$failed"

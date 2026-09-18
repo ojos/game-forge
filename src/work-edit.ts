@@ -38,6 +38,7 @@ import { escapeHtml, siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import { workPagePath } from './paths.js';
 import { html } from './routes.js';
+import { resolveSessionUser } from './session-user.js';
 import type { Route } from './routes.js';
 import { knownWorkTags } from './work-card.js';
 import { MAX_WORK_TAGS } from './work-tags.js';
@@ -85,6 +86,9 @@ const PRIMARY_BUTTON = 'gf-button gf-button-primary';
  */
 export const WORK_EDIT_FORM_ID = 'work-edit-form';
 
+/** パンくずの「あなたの作品」の名前（`src/my-works.ts` の見出しと同じ語）。 */
+export const MY_WORKS_BREADCRUMB_LABEL = 'あなたの作品';
+
 /** エディットページの入力（#664）。 */
 export interface WorkEditView {
   /** 作品の状態と作者だけの口（`src/work-page.ts` の `loadWorkView` を `edit` で組み立てたもの）。 */
@@ -128,6 +132,9 @@ export function renderWorkEditPage(view: WorkEditView, viewer: SiteViewer): stri
     noindex: true,
     beforeTitle: refresh,
     viewer,
+    // **パンくずは「トップ › あなたの作品 › ○○ の編集」にする**（2026-09-18 の利用者の決定。PR #671）。URL から導くと
+    // 公開作品の一覧（`/works`）の下に出るが、作者がたどってきたのは「あなたの作品」である。
+    breadcrumbParents: [{ path: MY_WORKS_PATH, label: MY_WORKS_BREADCRUMB_LABEL }],
   })}
 <div class="gf-edit-bar">
 <h1>作品の編集</h1>${editable ? editActions() : ''}
@@ -316,6 +323,28 @@ function visibilityField(work: WorkPageView): string {
 }
 
 /**
+ * ログインしている作者本人が見ているかを、作品の `author_id` 1 列とセッションだけで確かめる（#664 / PR #671）。
+ *
+ * **未ログインなら D1 を 1 行も読まない**（セッションの cookie が無ければ `resolveSessionUser` は D1 に行かない）。
+ * 作品が無いときも false を返す（作品ページの処理が同じ 404 を返す）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param gameId 作品 id（綴りは入口が確かめてある）
+ * @returns 作者本人なら true
+ */
+async function isAuthor(request: Request, env: Env, gameId: string): Promise<boolean> {
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return false;
+  }
+  const row = await env.DB.prepare('select author_id from games where id = ?')
+    .bind(gameId)
+    .first<{ author_id: string }>();
+  return row !== null && row.author_id === session.userId;
+}
+
+/**
  * エディットページを開く（`GET /works/<id>/edit`。#664）。
  *
  * **作者本人でなければ、作品ページを開いたときと同じ応答を返す**（このモジュールの冒頭）。要求の URL を作品ページの
@@ -327,8 +356,17 @@ function visibilityField(work: WorkPageView): string {
  * @returns レスポンス
  */
 export async function showWorkEditPage(request: Request, env: Env, gameId: string): Promise<Response> {
+  // **作者かどうかを軽い 1 文で先に確かめる**（PR #671 の Copilot の指摘）。`edit` の読み込みは通報の状態・いいね（DO）・
+  // フォークの近傍・生成枠まで引くので、作者以外に先に走らせると、作品ページの処理がもう一度同じものを読み、他人や
+  // クローラーが開くたびに D1 と DO の読みが倍になる。**作者でなければ重い読み込みをせずに作品ページの処理へ渡す。**
+  if (!(await isAuthor(request, env, gameId))) {
+    const pageUrl = new URL(request.url);
+    pageUrl.pathname = workPagePath(gameId);
+    return await showWorkPage(new Request(pageUrl.toString(), request), env, gameId);
+  }
   const loaded = await loadWorkView(request, env, gameId, 'edit');
   if (loaded.kind === 'not-found' || !loaded.owner) {
+    // 2 つの読み取りの間に作者が変わることは無い（`author_id` は作成後に変わらない）が、含意に寄りかからない。
     const pageUrl = new URL(request.url);
     pageUrl.pathname = workPagePath(gameId);
     return await showWorkPage(new Request(pageUrl.toString(), request), env, gameId);

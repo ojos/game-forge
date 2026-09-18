@@ -11,7 +11,7 @@ import {
 } from '../src/games.js';
 import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
-import { WORK_EDIT_FORM_ID } from '../src/work-edit.js';
+import { MY_WORKS_BREADCRUMB_LABEL, WORK_EDIT_FORM_ID } from '../src/work-edit.js';
 import { WORK_EDIT_SUFFIX, workEditPath } from '../src/work-edit-paths.js';
 import { workPagePath } from '../src/work-page.js';
 import { WORK_SAVE_PATH } from '../src/work-save.js';
@@ -20,6 +20,7 @@ import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { markGameRemoved } from './helpers/removed-work.js';
 import { applySchema } from './helpers/schema.js';
 import { pageBodyOf } from './helpers/site-shell.js';
+import { countingEnv } from './helpers/d1-counting.js';
 
 /**
  * エディットページ（`/works/<id>/edit`）と、作品ページの作者の見え方（#664）。
@@ -334,5 +335,78 @@ describe('エディットページの形（#664）', () => {
     expect(failedBody).toContain('許可していない機能');
     expect(failedBody).toContain('この作品を削除する');
     expect(failedBody).not.toContain('http-equiv="refresh"');
+  });
+});
+
+describe('作者以外が /edit を開いても、重い読み込みを 2 度しない（PR #671 の Copilot の指摘）', () => {
+  /**
+   * D1 の文の数を数えながら開く。
+   *
+   * @param path パス
+   * @param cookie `Cookie` ヘッダ（省略すると未ログイン）
+   * @returns 発行した文の数
+   */
+  async function statementsFor(path: string, cookie?: string): Promise<number> {
+    const counted = countingEnv(testEnv());
+    const response = await handleAppRequest(
+      new Request(`${APP_ORIGIN}${path}`, { headers: cookie === undefined ? {} : { cookie } }),
+      counted.env,
+    );
+    await response.text();
+    return counted.count();
+  }
+
+  it('作者以外の /edit は、作品ページの読み取りに、作者を確かめる軽い読み取りを足しただけである', async () => {
+    const { id } = await seedWork('light-check', 'published');
+    const stranger = await seedUser('light-check-stranger');
+    const cookie = await sessionCookie(stranger);
+
+    // ログイン済みの他人: セッションの 1 文と `author_id` の 1 文だけが増える（通報の状態・いいね・フォークの近傍・
+    // 生成枠を 2 度読まない）。
+    expect(await statementsFor(workEditPath(id), cookie)).toBe((await statementsFor(workPagePath(id), cookie)) + 2);
+    // 未ログイン: セッションの cookie が無いので、増える文は 0 である。
+    expect(await statementsFor(workEditPath(id))).toBe(await statementsFor(workPagePath(id)));
+  });
+});
+
+describe('エディットページのパンくず（PR #671。2026-09-18 の利用者の決定）', () => {
+  it('「トップ › あなたの作品 › ○○ の編集」にする（「作品をさがす」の下に置かない）', async () => {
+    const { userId, id } = await seedWork('breadcrumb', 'draft');
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
+    const crumb = /<nav class="gf-breadcrumb"[\s\S]*?<\/nav>/u.exec(body)?.[0] ?? '';
+    const items = [...crumb.matchAll(/<li>([\s\S]*?)<\/li>/gu)].map((found) => found[1]!);
+    expect(items).toEqual([
+      '<a href="/">トップ</a>',
+      `<a href="${MY_WORKS_PATH}">${MY_WORKS_BREADCRUMB_LABEL}</a>`,
+      '<span aria-current="page">ひみつの題名 breadcrumb の編集</span>',
+    ]);
+    expect(crumb).not.toContain('作品をさがす');
+    // 親の名前は「あなたの作品」の画面の見出しと同じ語である。
+    expect(await (await open(MY_WORKS_PATH, await sessionCookie(userId))).text()).toContain(
+      `<h1>${MY_WORKS_BREADCRUMB_LABEL}</h1>`,
+    );
+  });
+
+  it('作品ページのパンくずは変えない（URL から導く）', async () => {
+    const { userId, id } = await seedWork('breadcrumb-page', 'published');
+    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const crumb = /<nav class="gf-breadcrumb"[\s\S]*?<\/nav>/u.exec(body)?.[0] ?? '';
+    expect(crumb).toContain('作品をさがす');
+    expect(crumb).not.toContain(MY_WORKS_BREADCRUMB_LABEL);
+  });
+});
+
+describe('下書きのプレビューには、フォークの見出しと説明を出さない（PR #671。2026-09-18 の利用者の決定）', () => {
+  it('作者が下書きを作品ページで開いても「このゲームをフォークする」の塊が無い。公開後は出る', async () => {
+    const { userId, id } = await seedWork('no-fork-cta', 'draft');
+    const preview = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(preview).toContain('gf-draft-banner');
+    expect(preview).not.toContain('このゲームをフォークする');
+    expect(preview).not.toContain('class="gf-fork"');
+    expect(preview).not.toContain('gf-fork-note');
+
+    const published = await seedWork('no-fork-cta-published', 'published');
+    const page = await (await open(workPagePath(published.id), await sessionCookie(published.userId))).text();
+    expect(page).toContain('<p class="gf-fork">このゲームをフォークする</p>');
   });
 });

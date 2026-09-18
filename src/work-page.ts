@@ -2592,6 +2592,12 @@ function parentValue(parent: ParentWork): string {
  * @returns HTML
  */
 function forkCta(view: WorkPageView): string {
+  // **下書きのプレビュー（#664）では見出しと説明ごと出さない**（2026-09-18 の利用者の決定。PR #671）。下書きはフォークの
+  // 親になれず（5.3）、入力欄の無い見出しと説明だけが並ぶと押せない導線に見える。#665 で作品ページを並べ替えるまで
+  // この形が本番に出る。
+  if (view.draftPreview === true) {
+    return '';
+  }
   // **どちらの側でも、この画面の主のボタンはここの 1 つだけである**（#474 / 仕様 2.5.5「1 画面に 1 つまで」）。未ログインは
   // 移動なので `<a>`、ログイン済みは送信なので `<button>`（要素は役割で選び、見た目は同じ部品）。
   if (!view.signedIn) {
@@ -2850,9 +2856,8 @@ export async function loadWorkView(
   // `author_id` を使わない**のは、フォークでは両者が違いうるためで、**同じ変数で
   // 両方を賄えることが「枠は 1 人あたり」（確定25）の裏返し**である。
   //
-  // **下書きのプレビュー（#664）でも読む**——公開後と同じ画面に、フォークの口の残枠の 1 行が出るためである
-  // （フォームは出さない。`forkableId` は公開済みだけ）。
-  const forkableNow = (published || previewing) && session.ok;
+  // **下書きのプレビュー（#664）では読まない**——フォークの口を出さない（{@link forkCta}）。
+  const forkableNow = published && session.ok;
   const dailyRemaining =
     session.ok && (revisableNow || forkableNow)
       ? await readDailyRemaining(env, session.userId)

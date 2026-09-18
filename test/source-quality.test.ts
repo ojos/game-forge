@@ -186,6 +186,63 @@ const (
     expect(measured(source).stateCount).toBe(2);
   });
 
+  it('iota より前の定数を、状態として数えない（#676。#624 の壊れ方）', () => {
+    // **画面の大きさの定数と状態を同じ組へ混ぜると、`stateTitle` が 0 ではなく 3 になる。**
+    // 組の名前をすべて数えると `screenW` / `screenH` / `tileSize` まで状態として数え、
+    // 状態を分けた作品と区別できない。
+    const source = `package main
+const (
+	screenW = 320
+	screenH = 240
+	tileSize = 16
+	stateTitle = iota
+	statePlaying
+	stateOver
+)
+`;
+    expect(measured(source).stateCount).toBe(3);
+  });
+
+  it('単独の組は、混ぜた組と同じ数になる（#676）', () => {
+    const source = `package main
+const (
+	screenW = 320
+	screenH = 240
+)
+const (
+	stateTitle = iota
+	statePlaying
+	stateOver
+)
+`;
+    expect(measured(source).stateCount).toBe(3);
+  });
+
+  it('iota が式の続きの行にあっても、その宣言の名前から数える（#676）', () => {
+    const source = `package main
+const (
+	screenW = 320
+	stateTitle =
+		iota
+	statePlaying
+)
+`;
+    expect(measured(source).stateCount).toBe(2);
+  });
+
+  it('型を付けた iota の行も、その行の名前から数える（#676）', () => {
+    const source = `package main
+type State int
+const (
+	screenW = 320
+	stateTitle State = iota
+	statePlaying
+	stateOver
+)
+`;
+    expect(measured(source).stateCount).toBe(3);
+  });
+
   it('組が 2 つあれば大きいほうを採る', () => {
     const source = `package main
 const (

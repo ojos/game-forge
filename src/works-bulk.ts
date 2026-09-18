@@ -36,7 +36,7 @@
  */
 import { LOGIN_PATH, loginRequiredRedirect } from './auth/google.js';
 import type { PublishOutcome, UnpublishOutcome } from './games.js';
-import { DRAFT_STATUS, PUBLISHED_STATUS, unpublishGame, workTagsOf } from './games.js';
+import { DRAFT_STATUS, PUBLISHED_STATUS, unpublishGame } from './games.js';
 import { headerAvatarUrl, siteViewerAt } from './html.js';
 import type { NotifyForkPublished } from './publish.js';
 import { runPublish } from './publish.js';
@@ -347,7 +347,9 @@ async function applyOne(
 ): Promise<BulkReason | null> {
   switch (action) {
     case 'publish': {
-      const { outcome } = await runPublish(env, row.id, userId, workTagsOf(row), deps.start, deps.notify);
+      // **タグは渡さず（null）、公開の UPDATE にいまの値を残させる**（#673。先に読んだ行のタグを渡すと、読んでから
+      // 公開するまでに別の保存が下書きに付けたタグを古い値で上書きしうる。`src/games.ts` の `publishGame` の #673 注記）。
+      const { outcome } = await runPublish(env, row.id, userId, null, deps.start, deps.notify);
       return publishReasonOf(outcome);
     }
     case 'unpublish':

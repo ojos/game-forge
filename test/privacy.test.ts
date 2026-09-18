@@ -209,12 +209,15 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
   });
 
   it('作品の説明を、取得する情報と公開される情報の両方に書く（#388）', async () => {
-    // **収集を始めた変更で書く**（#373 の constraints）。説明は作者が公開済みの作品に書き、
-    // 作品ページで誰でも見られ、履歴（`description_changes`）を追記だけで D1 に残す。
+    // **収集を始めた変更で書く**（#373 の constraints）。説明は作者が書き（#673 からは下書きのうちから）、
+    // 公開すると作品ページで誰でも見られ、履歴（`description_changes`）を追記だけで D1 に残す。
     const body = pageBodyOf((await openPrivacy()).body);
     const collected = body.slice(body.indexOf('1. 取得する情報'), body.indexOf('2. 利用目的'));
     expect(collected).toContain('<strong>作品の説明</strong>');
     expect(collected).toContain('作品ページで誰でも見られます');
+    // **下書きのあいだは作者にだけ見える**（#673。下書きのうちから D1 に保存する実装と食い違わせない）。
+    expect(collected).toContain('下書きのあいだは作者にだけ見え');
+    expect(collected).not.toContain('公開済みの作品に書く説明');
     expect(collected).toContain('追記だけで残します');
     expect(collected).toContain('D1');
     const published = body.slice(

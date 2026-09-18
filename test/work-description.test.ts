@@ -45,7 +45,8 @@ import { markGameRemoved } from './helpers/removed-work.js';
  *   1. 作者が公開済みの作品に書け、作品ページに出ること
  *   2. 他人の作品には書けないこと（**変異で確認した**。`describeGame` の WHERE から
  *      `author_id = ?` を外すと、この節の「他人」の it が赤くなる）
- *   3. 下書きの作品には書けないこと（公開後に書くもの）
+ *   3. 下書きの作品には**1 件ずつの口からは**書けないこと（#673 からは、エディットページのまとめて保存する口
+ *      だけが下書きにも書く。そちらは `test/work-save.test.ts` が見る）
  *   4. HTML を入れてもそのまま描画されないこと
  *   5. 8.3 の表の語で断り、**語も分類も応答に出さない**こと
  *   6. **通報の無い** `cleared` の作品の説明を変えると `NULL` へ戻ること（**`cleared` のあとに
@@ -299,11 +300,13 @@ describe('説明の欄は、作者のエディットページにだけ出る（#
     }
   });
 
-  it('下書きでは、説明は公開するときに保存することを押す前に言う（5.4 の条件を変えない。#664）', async () => {
+  it('下書きでも説明の欄を出し、保存しても作者にしか見えないことを押す前に言う（#664 / #673）', async () => {
     const { userId, id } = await seedReady('form-draft');
     const body = await openEdit(id, await sessionCookie(userId));
     expect(body).toContain(`name="${WORK_SAVE_DESCRIPTION_FIELD}"`);
-    expect(body).toContain('説明とタグは、公開している作品にだけ保存できます。');
+    expect(body).toContain('下書きのあいだは、説明とタグはあなたにだけ見えます。');
+    expect(body).toContain('公開すると、作品ページを開いた人なら誰でも読めます。');
+    expect(body).not.toContain('公開している作品にだけ保存できます');
   });
 
   it('取り下げた作品にはフォームも説明も出さない', async () => {

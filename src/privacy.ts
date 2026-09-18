@@ -23,7 +23,7 @@
  * | 遮断された指示文（90 日） | `migrations/0016_moderation_blocks.sql` / `scripts/moderation-prune.sh` |
  * | 作品・題名の変更履歴 | `migrations/0001_init.sql`（`games`）/ `migrations/0027_title_changes.sql` / R2 |
  * | 作者による作品の削除（下書きと取り下げた作品だけ・子や運営の記録があれば行と履歴を残す・指示文と生成の記録は残る） | `src/game-deletion.ts` の `deleteGame`（行を残す条件・消す表）/ `migrations/0041_game_deletion.sql`（`purged_at`）/ `src/work-page.ts` の `POST /api/works/delete`（作者の確認）/ `generations` は作品と結び付けていない（確定27）（#517 が同じ変更で追記した） |
- * | 作品の説明とその変更履歴（公開済みの作品だけ・作品ページで誰でも見られる） | `migrations/0028_game_descriptions.sql`（`games.description` / 追記のみの `description_changes`）/ `src/games.ts` の `describeGame` / `src/work-page.ts`（#388 が同じ変更で追記した） |
+ * | 作品の説明とその変更履歴（下書きのうちから書け、下書きのあいだは作者にだけ見える・公開すると作品ページで誰でも見られる） | `migrations/0028_game_descriptions.sql`（`games.description` / 追記のみの `description_changes`）/ `src/games.ts` の `describeGame`（下書きに書くのは `src/work-save.ts` の `allowDraft` だけ）/ `src/work-page.ts`（#388 が同じ変更で追記した。下書きの分は #673 が同じ変更で直した） |
  * | いいね・1 日の操作回数 | `workers/likes/src/hub.ts`（Durable Object の `likes` / `daily_ops`） |
  * | プレイ数（作品ごとの起動回数・利用者と結び付けない・カードと作品ページで誰でも見られる）と、ブラウザの sessionStorage に置く作品ごとの最終計上時刻（30 分・サーバへ送らない） | `workers/likes/src/play-hub.ts`（Durable Object の `plays(game_id, count)`。利用者の列が無い）/ `migrations/` の games_play_count（`games.play_count`）/ `src/plays.ts` の `playReportScript`（`sessionStorage` の鍵 `gf-play:<作品 id>`、`credentials: 'omit'`、`PLAY_REPORT_WINDOW_MS`）（#377 が同じ変更で追記した） |
  * | 通報 | `src/reports.ts` / `migrations/0001_init.sql`（`reports`） |
@@ -135,7 +135,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li><strong>招待の情報</strong>: 招待コード、誰が誰を招待したか、コードを使った日時</li>
   <li><strong>作品を作るときの指示文</strong>（生成・フォーク・リフォージの指示）</li>
   <li><strong>作品</strong>: 題名とその変更履歴、生成されたソースコード、遊ぶためのファイル、紹介用の画像、公開・下書き・公開停止の状態、フォーク元の作品</li>
-  <li><strong>作品の説明</strong>: 作者が公開済みの作品に書く説明（遊び方やクレジットなど）と、その変更の履歴（変える前と後の説明、変えた日時）。説明は作品ページで誰でも見られます。変更の履歴は書き換えず、追記だけで残します。どちらも Cloudflare のデータベース（D1）に保存します</li>
+  <li><strong>作品の説明</strong>: 作者が作品に書く説明（遊び方やクレジットなど）と、その変更の履歴（変える前と後の説明、変えた日時）。説明は下書きのうちから書けます。下書きのあいだは作者にだけ見え、公開すると作品ページで誰でも見られます。変更の履歴は書き換えず、追記だけで残します。どちらも Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>いいね</strong>: どの作品にいいねしたかと、その日時</li>
   <li><strong>通報</strong>: 通報した作品と、書いていただいた理由</li>
 </ul>

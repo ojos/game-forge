@@ -13,7 +13,10 @@ import {
   deletionBlockOf,
   workDeletePath,
 } from '../src/work-delete.js';
-import { WORK_UNPUBLISH_PATH, workPagePath } from '../src/work-page.js';
+import { workPagePath } from '../src/work-page.js';
+// **削除の導線はエディットページにある**（#664）。
+import { workEditPath } from '../src/work-edit-paths.js';
+import { WORK_SAVE_PATH, WORK_SAVE_VISIBILITY_FIELD } from '../src/work-save.js';
 import { MY_WORKS_PATH } from '../src/works-paths.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
 import { applySchema } from './helpers/schema.js';
@@ -240,9 +243,9 @@ describe('削除の導線（#517 の acceptance 1）', () => {
       { status: 'removed', generationState: 'ready' },
     ] as const) {
       const work = await seedWork({ authorId: author, ...seed });
-      const body = await (await open(workPagePath(work.id), cookie)).text();
+      const body = await (await open(workEditPath(work.id), cookie)).text();
       expect(hasDeleteLink(body, work.id), `${seed.status}/${seed.generationState}`).toBe(true);
-      // **押しても消えない**——作品ページの導線は確認画面への移動（`<a>`）で、削除の口へ送るフォームを置かない。
+      // **押しても消えない**——エディットページの導線は確認画面への移動（`<a>`）で、削除の口へ送るフォームを置かない。
       expect(body, `${seed.status}/${seed.generationState}`).not.toContain(`action="${WORK_DELETE_PATH}"`);
       // **主にしない**（仕様 2.5.5。破壊的な操作）。
       expect(body).toContain(`<a class="gf-button gf-button-secondary" href="${workDeletePath(work.id)}">`);
@@ -258,22 +261,25 @@ describe('削除の導線（#517 の acceptance 1）', () => {
       { status: 'removed', generationState: 'ready' },
     ] as const) {
       const work = await seedWork({ authorId: author, ...seed });
-      const theirs = await (await open(workPagePath(work.id), await sessionCookie(stranger))).text();
-      expect(hasDeleteLink(theirs, work.id), `他人 ${seed.status}/${seed.generationState}`).toBe(false);
-      const anon = await (await open(workPagePath(work.id))).text();
-      expect(hasDeleteLink(anon, work.id), `未ログイン ${seed.status}/${seed.generationState}`).toBe(false);
+      // **作品ページでも、エディットページの URL でも出ない**（#664。後者は作者以外には作品ページと同じ応答になる）。
+      for (const path of [workPagePath(work.id), workEditPath(work.id)]) {
+        const theirs = await (await open(path, await sessionCookie(stranger))).text();
+        expect(hasDeleteLink(theirs, work.id), `他人 ${path} ${seed.status}/${seed.generationState}`).toBe(false);
+        const anon = await (await open(path)).text();
+        expect(hasDeleteLink(anon, work.id), `未ログイン ${path} ${seed.status}/${seed.generationState}`).toBe(false);
+      }
     }
   });
 
   it('公開中の作品には出さず、先に公開をやめることを書く', async () => {
     const author = await seedUser();
     const work = await seedWork({ authorId: author, status: 'published', generationState: 'ready' });
-    const body = await (await open(workPagePath(work.id), await sessionCookie(author))).text();
+    const body = await (await open(workEditPath(work.id), await sessionCookie(author))).text();
     expect(hasDeleteLink(body, work.id)).toBe(false);
-    // 公開をやめる口はある（作者本人・公開中）。削除には下書きへ戻すのが先に要ることは、
-    // 断りの文言（`DELETE_REFUSALS.published`）と確認画面が言う。
-    expect(body).toContain(`action="${WORK_UNPUBLISH_PATH}"`);
-    expect(body).toContain('公開をやめて下書きに戻す');
+    // 公開をやめる口はある（作者本人・公開中。#664 からはエディットページの公開設定で「下書き」を選んで保存する）。
+    // 削除には下書きへ戻すのが先に要ることは、断りの文言（`DELETE_REFUSALS.published`）と確認画面が言う。
+    expect(body).toContain(`action="${WORK_SAVE_PATH}"`);
+    expect(body).toContain(`name="${WORK_SAVE_VISIBILITY_FIELD}" value="draft"`);
   });
 
   it('生成中の作品には出さない（区切りを過ぎて止まった行も）', async () => {
@@ -286,7 +292,7 @@ describe('削除の導線（#517 の acceptance 1）', () => {
       { generationState: 'running', startedAt: old },
     ] as const) {
       const work = await seedWork({ authorId: author, status: 'draft', ...seed });
-      const body = await (await open(workPagePath(work.id), cookie)).text();
+      const body = await (await open(workEditPath(work.id), cookie)).text();
       expect(body).toContain('生成中です');
       expect(hasDeleteLink(body, work.id), JSON.stringify(seed)).toBe(false);
     }
@@ -299,13 +305,13 @@ describe('削除の導線（#517 の acceptance 1）', () => {
 
     const running = await seedWork({ authorId: author, status: 'draft', generationState: 'ready' });
     await seedRevisionJob(running.id, now);
-    const runningBody = await (await open(workPagePath(running.id), cookie)).text();
+    const runningBody = await (await open(workEditPath(running.id), cookie)).text();
     expect(hasDeleteLink(runningBody, running.id)).toBe(false);
     expect(runningBody).not.toContain('直前のリフォージが止まったまま残っているため');
 
     const stalled = await seedWork({ authorId: author, status: 'draft', generationState: 'ready' });
     await seedRevisionJob(stalled.id, now - STALE_AFTER_SECONDS - 60);
-    const stalledBody = await (await open(workPagePath(stalled.id), cookie)).text();
+    const stalledBody = await (await open(workEditPath(stalled.id), cookie)).text();
     expect(hasDeleteLink(stalledBody, stalled.id)).toBe(false);
     expect(stalledBody).toContain('直前のリフォージが止まったまま残っているため、いまはこの作品を削除できません。');
   });
@@ -342,8 +348,8 @@ describe('確認画面（GET /works/<id>/delete）', () => {
     // **削除のボタンは副で、この画面に主のボタンは無い**（仕様 2.5.5）。
     expect(body).toContain('<button type="submit" class="gf-button gf-button-secondary">この作品を削除する</button>');
     expect(body).not.toContain('gf-button-primary');
-    // やめる道は作品ページへの移動。
-    expect(body).toContain(`<a href="${workPagePath(work.id)}">削除せずに作品ページへ戻る</a>`);
+    // やめる道はエディットページへの移動（#664。削除の導線はそこにある）。
+    expect(body).toContain(`<a href="${workEditPath(work.id)}">削除せずに編集へ戻る</a>`);
     // 外枠に乗っている（`test/page-shell.test.ts` は経路表から導くので、前方一致の続きのこの画面は開かない）。
     expect(body).toContain('<header class="gf-header">');
     expect(body).toContain('<footer class="gf-footer">');
@@ -390,7 +396,7 @@ describe('確認画面（GET /works/<id>/delete）', () => {
       const body = await response.text();
       expect(body).toContain(DELETE_REFUSALS[reason].heading);
       expect(body).not.toContain(`action="${WORK_DELETE_PATH}"`);
-      expect(body).toContain(`<a href="${workPagePath(work.id)}">作品ページへ戻る</a>`);
+      expect(body).toContain(`<a href="${workEditPath(work.id)}">編集へ戻る</a>`);
     }
   });
 
@@ -496,7 +502,9 @@ describe('削除の口（POST /api/works/delete）', () => {
     const anon = await (await open(workPagePath(parent.id))).text();
     expect(anon).toContain('この作品は公開されていません');
     expect(anon).not.toContain(parent.title);
-    const mine = await (await open(workPagePath(parent.id), cookie)).text();
+    // **作者はエディットページで読む**（#664。作者が取り下げ済みの作品を作品ページで開くと、エディットページへ送る）。
+    expect((await open(workPagePath(parent.id), cookie)).headers.get('location')).toBe(workEditPath(parent.id));
+    const mine = await (await open(workEditPath(parent.id), cookie)).text();
     expect(mine).toContain('この作品は公開されていません');
     expect(mine).toContain('この作品はあなたが削除しました。');
     // もう消す物は無いので、導線を出さない。

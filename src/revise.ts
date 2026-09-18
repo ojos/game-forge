@@ -78,7 +78,8 @@ import {
 import { resolveSessionUser } from './session-user.js';
 import type { StoredSourceFailure } from './source-store.js';
 import { readStoredSource } from './source-store.js';
-import { workPagePath } from './work-page.js';
+// **戻り先はエディットページである**（#664。綴りは Lambda が import しない葉から取る）。
+import { workEditPath } from './work-edit-paths.js';
 
 /**
  * 受け付ける本文の最大バイト数。
@@ -343,11 +344,11 @@ async function handleRevise(
       : json({ error: 'start failed' }, refused.status);
   }
 
-  // **作品ページへ戻す。** 5.7 の「押したら作り直しが始まり、完成したら差し替わる」
-  // の着地点はそこで、待つのは利用者ではない（3.3 の非同期経路。#150）。
+  // **エディットページへ戻す**（#664。それまでは作品ページだった）。5.7 の「押したら作り直しが始まり、完成したら
+  // 差し替わる」の着地点はそこで、待つのは利用者ではない（3.3 の非同期経路。#150）。
   return wantsHtml(request)
-    ? seeOther(workPagePath(input.gameId))
-    : json({ gameId: input.gameId, url: workPagePath(input.gameId) }, 202);
+    ? seeOther(workEditPath(input.gameId))
+    : json({ gameId: input.gameId, url: workEditPath(input.gameId) }, 202);
 }
 
 /**
@@ -386,8 +387,8 @@ async function handleRestore(request: Request, env: Env): Promise<Response> {
   const outcome = await restoreRevision(env, gameId, session.userId, seq);
   if (outcome === 'restored') {
     return wantsHtml(request)
-      ? seeOther(workPagePath(gameId))
-      : json({ restored: true, url: workPagePath(gameId) }, 200);
+      ? seeOther(workEditPath(gameId))
+      : json({ restored: true, url: workEditPath(gameId) }, 200);
   }
   // **走っている推敲があるあいだは断る**（`src/revisions.ts`）。戻しても 90 秒後に
   // 黙って上書きされるので、「戻せない」ほうがまだよい。

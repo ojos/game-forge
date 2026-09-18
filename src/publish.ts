@@ -89,7 +89,8 @@ import { MAX_WORK_TAGS, WORK_TAG_FIELD } from './work-tags.js';
 import type { Route } from './routes.js';
 import { html, json, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { workPagePath } from './work-page.js';
+// **戻り先はエディットページである**（#664。綴りは Lambda が import しない葉から取る）。
+import { workEditPath } from './work-edit-paths.js';
 
 /**
  * 綴りの正本は `src/paths.ts` にある。
@@ -176,8 +177,13 @@ ${siteFooter()}`,
   );
 }
 
-/** 断りの理由ごとの、ステータスと文言。 */
-const REFUSALS: Readonly<
+/**
+ * 断りの理由ごとの、ステータスと文言。
+ *
+ * **エディットページのまとめて保存する口（#664。`src/work-save.ts`）も同じ表を引く**（公開できない理由の言い方を
+ * 2 か所に持たない）。
+ */
+export const PUBLISH_REFUSALS: Readonly<
   Record<PublishOutcomeRejection, { status: number; heading: string; body: string }>
 > = {
   // **他人の作品と、存在しない作品を区別しない**（`src/games.ts` の `publishGame`）。
@@ -349,7 +355,7 @@ function respond(
   capture: CaptureStartOutcome | null,
 ): Response {
   if (!outcome.ok) {
-    const refused = REFUSALS[outcome.reason];
+    const refused = PUBLISH_REFUSALS[outcome.reason];
     return wantsHtml(request)
       ? refusal(refused.heading, refused.body, refused.status)
       : json({ error: outcome.reason }, refused.status);
@@ -357,9 +363,9 @@ function respond(
 
   if (wantsHtml(request)) {
     // POST-redirect-GET。公開の結果を同じ URL に描くと、再読み込みで再送信の確認が
-    // 出る（`src/invite-issuance.ts` と同じ扱い）。**戻り先は作品ページ**で、
-    // そこが公開後の共有 URL そのものになる（`src/work-page.ts`）。
-    return seeOther(workPagePath(gameId));
+    // 出る（`src/invite-issuance.ts` と同じ扱い）。**戻り先はエディットページ**である（#664。
+    // 公開は作者の操作で、作者の画面はエディットページになった。共有 URL はそこに出る）。
+    return seeOther(workEditPath(gameId));
   }
 
   return json(
@@ -407,20 +413,49 @@ async function handlePublish(
       : json({ error: target.reason }, refused.status);
   }
 
-  // **タグの検査も `publishGame` の中にある**（語彙に無い値・4 個以上は 1 行も書かずに断る。#376）。
-  const outcome = await publishGame(
+  const { outcome, capture } = await runPublish(
     env,
     target.gameId,
     session.userId,
-    Math.floor(Date.now() / 1000),
     target.tags,
+    start,
+    notify,
   );
+
+  return respond(request, target.gameId, outcome, capture);
+}
+
+/**
+ * 公開し、実際に公開したときだけ撮影と改造の通知を起こす（5.4 / #26 / #36）。
+ *
+ * **公開の口（`POST /api/publish`）と、エディットページのまとめて保存する口（#664。`src/work-save.ts`）が
+ * 同じ 1 本を通る。** 撮影と通知の起こし方を 2 か所に書くと、片方だけが「実際に公開したとき」の条件を外す。
+ * **判定はここにも無い**——公開してよいかは `publishGame` の SQL が、撮影してよいかは `claimOgpCapture` が、
+ * 送ってよいかは `notifyForkPublished` が決める（このモジュールの冒頭）。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 作品 id
+ * @param userId 公開しようとしている利用者（作者でなければ `publishGame` が `not-found` で断る）
+ * @param tags 選ばれたタグ（**検査前**。検査は `publishGame` が持つ）
+ * @param start 撮影を投げる段
+ * @param notify 改造の通知を送る段
+ * @returns 公開の結果と、撮影の起動の結果（公開が成立しなかったときは null）
+ */
+export async function runPublish(
+  env: Env,
+  gameId: string,
+  userId: string,
+  tags: readonly string[],
+  start: StartOgpCapture,
+  notify: NotifyForkPublished,
+): Promise<{ readonly outcome: PublishOutcome; readonly capture: CaptureStartOutcome | null }> {
+  // **タグの検査も `publishGame` の中にある**（語彙に無い値・4 個以上は 1 行も書かずに断る。#376）。
+  const outcome = await publishGame(env, gameId, userId, Math.floor(Date.now() / 1000), tags);
 
   // **撮影は「この呼び出しが実際に公開したとき」だけ起こす**（5.4 の「公開時まで
   // 遅延する」）。二度押しの 2 回目で呼んでも `claimOgpCapture` が止めるが、
   // **止まることに依存して呼びに行かない。**
-  const capture =
-    outcome.ok && outcome.firstTime ? await startOgpCapture(env, target.gameId, start) : null;
+  const capture = outcome.ok && outcome.firstTime ? await startOgpCapture(env, gameId, start) : null;
 
   // **改造の通知も同じ条件で起こす**（5.5 / #36。上の撮影と同じ「実際に公開したとき
   // だけ」である）。**判定をここに増やさない**——「親を持つか」「自分のフォークか」
@@ -431,10 +466,10 @@ async function handlePublish(
   // 届いたかどうかは要求した側（改造した人）の関知するところではない。載せると、
   // 他人の宛先が有効かどうかを外から確かめる手掛かりになる。
   if (outcome.ok && outcome.firstTime) {
-    await notify(env, target.gameId);
+    await notify(env, gameId);
   }
 
-  return respond(request, target.gameId, outcome, capture);
+  return { outcome, capture };
 }
 
 /**

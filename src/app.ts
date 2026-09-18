@@ -43,7 +43,9 @@ import type { Route } from './routes.js';
 import { dispatch, html, json } from './routes.js';
 import { signupRoutes } from './signup.js';
 import { waitlistRoutes } from './waitlist.js';
-import { workPageRoutes } from './work-page.js';
+// **作品ページはエディットページ（#664）を渡した形で連結する**（`src/work-page.ts` の `workPageRoutes` は単体テスト用）。
+import { workRoutes } from './work-edit.js';
+import { workSaveRoutes } from './work-save.js';
 import { workSourceRoutes } from './work-source.js';
 
 /**
@@ -351,7 +353,8 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     // 片方の例外がもう片方の記録を巻き込まないようにする（`src/source-quality-routes.ts`）。
     ...withSourceQualityRecording(withSourceInputKeyRecording(generateCallbackRoutes)),
     ...generatePageRoutes,
-    ...workPageRoutes,
+    ...workRoutes,
+    ...workSaveRoutes,
     ...workSourceRoutes,
     ...worksListRoutes,
     ...usersPageRoutes,

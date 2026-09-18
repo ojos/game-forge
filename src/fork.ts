@@ -126,6 +126,8 @@ import {
 import type { StoredSourceFailure } from './source-store.js';
 import { readStoredSource } from './source-store.js';
 import { workPagePath } from './work-page.js';
+// **生まれた子はエディットページへ送る**（#664。綴りは Lambda が import しない葉から取る）。
+import { workEditPath } from './work-edit-paths.js';
 
 /**
  * 受け付ける本文の最大バイト数。
@@ -679,11 +681,12 @@ async function handleFork(
       : json({ error: 'start failed' }, refused.status);
   }
 
-  // **親ではなく子の作品ページへ送る。** 待つのは利用者ではない（3.3 の非同期経路。
-  // #150）ので、着地点は「これから出来上がる作品」の恒久的な URL である。
+  // **親ではなく子のエディットページへ送る**（#664。それまでは子の作品ページだった）。待つのは利用者ではない
+  // （3.3 の非同期経路。#150）ので、着地点は「これから出来上がる作品」の作者の画面である——生成中・失敗・完成の
+  // 表示はエディットページが持つ。作品ページ（恒久的な URL）は、できあがった後にそこから開ける。
   return wantsHtml(request)
-    ? seeOther(workPagePath(child.id))
-    : json({ gameId: child.id, parentId: input.parentId, url: workPagePath(child.id) }, 202);
+    ? seeOther(workEditPath(child.id))
+    : json({ gameId: child.id, parentId: input.parentId, url: workEditPath(child.id) }, 202);
 }
 
 /**

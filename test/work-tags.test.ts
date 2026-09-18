@@ -14,6 +14,9 @@ import {
   workTagsOf,
 } from '../src/games.js';
 import { REVIEW_CLEARED, REVIEW_QUEUED, REVIEW_STATE_COLUMN } from '../src/reports.js';
+import { WORK_EDIT_FORM_ID, workRoutes } from '../src/work-edit.js';
+import { workEditPath } from '../src/work-edit-paths.js';
+import { WORK_SAVE_PATH } from '../src/work-save.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { knownWorkTags, workTagListPath } from '../src/work-card.js';
@@ -187,6 +190,37 @@ async function openWork(gameId: string, cookie?: string): Promise<string> {
   return await response.text();
 }
 
+/**
+ * エディットページを開く（#664。タグの欄は作品ページからここへ移った）。
+ *
+ * @param gameId 作品 id
+ * @param cookie `Cookie` ヘッダ（省略すると未ログイン）
+ * @returns 本文
+ */
+async function openEdit(gameId: string, cookie?: string): Promise<string> {
+  const headers: Record<string, string> = {};
+  if (cookie !== undefined) {
+    headers['cookie'] = cookie;
+  }
+  const response = await dispatch(
+    workRoutes,
+    new Request(`${APP_ORIGIN}${workEditPath(gameId)}`, { headers }),
+    testEnv(),
+  );
+  return await response.text();
+}
+
+/**
+ * エディットページの、まとめて保存するフォームだけを切り出す。
+ *
+ * @param body エディットページの本文
+ * @returns `<form id="work-edit-form" …>` から `</form>` まで
+ */
+function saveFormOf(body: string): string {
+  const form = body.slice(body.indexOf(`<form id="${WORK_EDIT_FORM_ID}"`));
+  return form.slice(0, form.indexOf('</form>'));
+}
+
 beforeAll(async () => {
   await applySchema();
 });
@@ -277,24 +311,23 @@ describe('画面は語彙に照らして描く（knownWorkTags）', () => {
   });
 });
 
-describe('公開フォームのチェックボックス（5.4 / #376）', () => {
-  it('任意のチェックボックスが 8 個並び、ボタンは「公開して共有」の 1 つのまま', async () => {
+describe('エディットページのタグのチェックボックス（5.4 / #376 / #664）', () => {
+  it('下書きでも任意のチェックボックスが 8 個並び、まとめて保存する口へ送る（必須にしない）', async () => {
     const { userId, id } = await seedReady('publish-form');
-    const body = await openWork(id, await sessionCookie(userId));
-    const form = body.slice(body.indexOf('action="/api/publish"'));
-    const publishForm = form.slice(0, form.indexOf('</form>'));
+    const body = await openEdit(id, await sessionCookie(userId));
+    const saveForm = saveFormOf(body);
 
+    expect(saveForm).toContain(`action="${WORK_SAVE_PATH}"`);
     for (const tag of WORK_TAGS) {
-      expect(publishForm).toContain(`name="${WORK_TAG_FIELD}" value="${tag.id}"`);
-      expect(publishForm).toContain(tag.label);
+      expect(saveForm).toContain(`name="${WORK_TAG_FIELD}" value="${tag.id}"`);
+      expect(saveForm).toContain(tag.label);
     }
-    expect(publishForm.split('type="checkbox"').length - 1).toBe(WORK_TAGS.length);
-    expect(publishForm.split('<button').length - 1).toBe(1);
-    expect(publishForm).toContain('公開して共有');
-    // **必須にしない**（何も選ばずに押せばタグ無しで公開される）。
-    expect(publishForm).not.toContain('required');
-    // 公開前は付け直しの口を出さない（タグは公開フォームで選ぶ）。
+    expect(saveForm.split('type="checkbox"').length - 1).toBe(WORK_TAGS.length);
+    // **必須にしない**（何も選ばずに公開すればタグ無しで公開される）。作品名の欄だけが `required` を持つ。
+    expect(saveForm.split('required').length - 1).toBe(1);
+    // **1 項目ずつの付け直しの口・公開の口は出さない**（まとめて保存する口に畳んだ。#664）。
     expect(body).not.toContain(WORK_RETAG_PATH);
+    expect(body).not.toContain('action="/api/publish"');
   });
 });
 
@@ -323,31 +356,36 @@ describe('作品ページのタグと付け直しの口（#376）', () => {
     expect(body).not.toContain('class="gf-work-tags"');
   });
 
-  it('作者には、いまのタグを選んだ付け直しのフォームが出る', async () => {
+  it('作者のエディットページには、いまのタグを選んだ状態のチェックボックスが出る（#664）', async () => {
     const { userId, id } = await seedPublished('page-owner', ['idle']);
-    const body = await openWork(id, await sessionCookie(userId));
-    const form = body.slice(body.indexOf(`action="${WORK_RETAG_PATH}"`));
-    const retagForm = form.slice(0, form.indexOf('</form>'));
-    expect(retagForm).toContain(`value="idle" checked`);
-    expect(retagForm).not.toContain(`value="puzzle" checked`);
+    const saveForm = saveFormOf(await openEdit(id, await sessionCookie(userId)));
+    expect(saveForm).toContain(`value="idle" checked`);
+    expect(saveForm).not.toContain(`value="puzzle" checked`);
   });
 
-  it('未ログイン・他人の画面には付け直しのフォームが 1 バイトも出ない', async () => {
+  it('未ログイン・他人の画面にはタグを変えるフォームが 1 バイトも出ない', async () => {
     const { id } = await seedPublished('page-stranger', ['idle']);
     const stranger = await seedUser('page-onlooker');
-    expect(await openWork(id)).not.toContain(WORK_RETAG_PATH);
-    expect(await openWork(id, await sessionCookie(stranger))).not.toContain(WORK_RETAG_PATH);
+    for (const body of [
+      await openWork(id),
+      await openWork(id, await sessionCookie(stranger)),
+      await openEdit(id),
+      await openEdit(id, await sessionCookie(stranger)),
+    ]) {
+      expect(body).not.toContain(WORK_RETAG_PATH);
+      expect(body).not.toContain(WORK_SAVE_PATH);
+    }
   });
 });
 
 describe('付け直せるのは公開済みの作品の作者だけである（#376）', () => {
-  it('作者の付け直しは通り、語彙の順に tag1 から詰めて作品ページへ戻す', async () => {
+  it('作者の付け直しは通り、語彙の順に tag1 から詰めてエディットページへ戻す（#664）', async () => {
     const { userId, id } = await seedPublished('owner-retag', ['idle']);
 
     const response = await postRetag(id, ['other', 'puzzle'], await sessionCookie(userId));
 
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(workPagePath(id));
+    expect(response.headers.get('location')).toBe(workEditPath(id));
     const slots = await slotsOf(id);
     expect([slots.tag1, slots.tag2, slots.tag3]).toEqual(['puzzle', 'other', null]);
     expect(slots.tags_set_at).not.toBeNull();

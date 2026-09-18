@@ -63,7 +63,6 @@ import { siteFooter } from './legal.js';
 import type {
   DescribeRejection,
   ForkChild,
-  GenerationErrorCode,
   GenerationState,
   RenameRejection,
   RetagRejection,
@@ -97,8 +96,6 @@ import {
   FORK_PROMPT_FIELD,
   OGP_RECAPTURE_GAME_ID_FIELD,
   OGP_RECAPTURE_PATH,
-  PUBLISH_GAME_ID_FIELD,
-  PUBLISH_PATH,
   RESTORE_PATH,
   REVISE_GAME_ID_FIELD,
   REVISE_PATH,
@@ -149,6 +146,8 @@ import {
   workDeletePath,
 } from './work-delete.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
+// **エディットページ（#664）の綴りは Lambda が import しない葉から取る**（`src/paths.ts` に置かない理由はあちらの冒頭）。
+import { WORK_EDIT_SUFFIX, workEditPath } from './work-edit-paths.js';
 import { UNKNOWN_FAILURE_MESSAGE, failureMessageOf } from './generation-failure.js';
 import { LOGIN_PATH, loginRequiredRedirect } from './auth/google.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
@@ -236,24 +235,6 @@ export const WORK_REPORT_REASON_FIELD = 'reason';
  */
 export const WORK_RENAME_PATH = '/api/works/rename';
 
-/**
- * 改名のフォームへ着地するための `id`（#600 / 仕様 5.4）。
- *
- * **綴りを 1 か所に持つ。** 飛ばす側（{@link renameJumpLine}）と着地する側（{@link renameSection}）へ
- * 書き写すと、片方だけを直した日に**押しても何も起きないリンク**になる（4.4 が無くそうとしているもの）。
- * その一致は `test/work-page.test.ts` が見る。
- */
-export const WORK_RENAME_ANCHOR = 'work-rename';
-
-/**
- * 説明を書くフォームへ着地するための `id`（#616 / 仕様 5.4）。
- *
- * **綴りを 1 か所に持つ**（{@link WORK_RENAME_ANCHOR} と同じ理由）。飛ばす側（{@link describeInviteLine}）と
- * 着地する側（{@link describeSection}）へ書き写すと、片方だけを直した日に**押しても何も起きないリンク**になる。
- * その一致は `test/work-page.test.ts` が見る。
- */
-export const WORK_DESCRIBE_ANCHOR = 'work-describe';
-
 /** 改名の対象を指す項目名（フォームの `name` と JSON の鍵の両方）。 */
 export const WORK_RENAME_GAME_ID_FIELD = 'game_id';
 
@@ -305,7 +286,7 @@ export const WORK_RETAG_GAME_ID_FIELD = 'game_id';
  * D1 への問い合わせとして通ることになる。**引く前に落とすほうが安い**
  * （`src/sandbox-delivery.ts` の `GAME_ID_PATTERN` と同じ方針）。
  */
-const GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+export const GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 /**
  * 生成中の行を「止まっているかもしれない」と見なすまでの秒数（{@link looksStalled}）。
@@ -349,7 +330,7 @@ export { STALE_AFTER_SECONDS } from './games.js';
 export const GENERATION_IS_SYNCHRONOUS: boolean = false;
 
 /** 表示に使う `games` の 1 行（作者名と親作品を結合して引く）。 */
-interface WorkRow {
+export interface WorkRow {
   author_id: string;
   /** 5.4 の公開状態（`draft` / `published` / `removed`）。 */
   status: string;
@@ -630,7 +611,7 @@ const NO_FORKS: ForkNeighbors = { total: 0, items: [], morePath: null, backPath:
  * 約 600 読み取りにとどまり、**D1 の無料枠（1 日 500 万読み取り）に対して桁が
  * 4 つ違う。** 結論は変わらないが、**次に生成の秒数を伸ばすときはこの間隔も見直すこと。**
  */
-const REFRESH_SECONDS = 5;
+export const REFRESH_SECONDS = 5;
 
 /**
  * 生成中の行が「止まっているかもしれない」かを判定する。
@@ -948,7 +929,7 @@ export interface WorkPageView {
    * 作者が書いた説明（#388）。**公開済みのときだけ入る。** 説明が無ければ空文字。
    *
    * **UGC である**ので、画面へ出すときは `escapeHtml` を通す（{@link descriptionSection} /
-   * {@link describeSection}）。**公開済みでなければ null**——説明は公開後にしか書けず
+   * エディットページ（`src/work-edit.ts`）の説明の欄）。**公開済みでなければ null**——説明は公開後にしか書けず
    * （`src/games.ts` の `describeGame`）、取り下げた作品の画面は本文ごと差し替わる。
    */
   readonly description: string | null;
@@ -1050,6 +1031,23 @@ export interface WorkPageView {
    * 場所ではない）。
    */
   readonly details: WorkDetails | null;
+  /**
+   * 作者が下書きを作品ページで開いたときの、公開後と同じ画面のプレビューか（#664）。
+   *
+   * **立っていれば、公開後の本文（{@link publishedSection}）を描き、上に「下書きです」の帯と「編集へ戻る」を出す。**
+   * `published` は偽のままにする——`noindex` を外さず、OGP のメタタグも出さない（公開して初めて外へ出す。5.4）。
+   * 遊ぶ URL は試遊 URL（`/p/`）で、計上のスクリプトは置かない（`playCountableId` は公開済みだけ）。
+   *
+   * **省略可にする**（`purged` と同じ理由。描画を直接呼ぶテストが、プレビューに関係しない検査で値を用意しなくて済む）。
+   */
+  readonly draftPreview?: boolean;
+  /**
+   * 作者に出す「編集する」の行き先（`/works/<id>/edit`。#664）。作者でなければ null。
+   *
+   * **作品ページが作者と作者以外で違うのは、この 1 つだけである**（下書きのプレビューを除く）。作者だけの操作は
+   * エディットページ（`src/work-edit.ts`）へ移した。**省略可にする**（`draftPreview` と同じ理由）。
+   */
+  readonly editPath?: string | null;
 }
 
 /**
@@ -1089,6 +1087,9 @@ export function renderWorkPage(view: WorkPageView, viewer: SiteViewer): string {
   // 公開済みで外すのは体裁の問題ではない。**`noindex` を付けたページのカードを
   // 描かないクローラがある**ため、付けたままだと 5.4 の「公開して共有」が、
   // 共有先で画像も題名も出ないという形で黙って壊れる。
+  //
+  // **下書きのプレビュー（#664）でも `noindex` を外さず、OGP のメタタグも出さない**（`published` が偽のまま。
+  // {@link ogpMeta} は公開済みでなければ空を返す）。
   return `${siteHead({
     // **公開前の作品を検索避けする。** 公開して初めて外へ出す（5.4）。
     title: documentTitleOf(view),
@@ -1097,10 +1098,46 @@ export function renderWorkPage(view: WorkPageView, viewer: SiteViewer): string {
     extraHead: ogpMeta(view),
     viewer,
   })}
-<h1>${escapeHtml(workNameOf(view))}</h1>
-${sectionFor(view)}
+${draftBanner(view)}<h1>${escapeHtml(workNameOf(view))}</h1>
+${editLine(view)}${sectionFor(view)}
 ${ipNotice}${reportSection(view)}
 ${siteFooter()}`;
+}
+
+/**
+ * 下書きのプレビューの上に置く帯（#664）。**作者が下書きを作品ページで開いたときだけ出す。**
+ *
+ * **何が見えているかと、戻る道を 1 つの面に置く。** 公開後と同じ画面なので、帯が無いと「もう公開した」と読める。
+ * 帯は面のブロック（`.gf-block`）で、枠線も影も使わない（仕様 2.5.4）。「編集へ戻る」は移動なので `<a>`（2.5.5）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（プレビューでなければ空文字）
+ */
+function draftBanner(view: WorkPageView): string {
+  if (view.draftPreview !== true || view.editPath === null || view.editPath === undefined) {
+    return '';
+  }
+  return `<div class="gf-block gf-draft-banner" role="note">
+<p><strong>下書きです。</strong>公開すると、この画面がこのまま誰にでも見えるようになります（いまはあなたにだけ見えています）。</p>
+<p><a class="${SECONDARY_BUTTON} gf-button-sm" href="${view.editPath}">編集へ戻る</a></p>
+</div>
+`;
+}
+
+/**
+ * 作者に出す「編集する」の 1 行（#664）。**作品ページが作者と作者以外で違うのは、この 1 行だけである。**
+ *
+ * **下書きのプレビューでは出さない**（帯の「編集へ戻る」が同じ行き先を持つ。同じ行き先を 2 つ並べない）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（作者でなければ空文字）
+ */
+function editLine(view: WorkPageView): string {
+  if (view.draftPreview === true || view.editPath === null || view.editPath === undefined) {
+    return '';
+  }
+  return `<p class="gf-work-edit-link"><a class="${SECONDARY_BUTTON} gf-button-sm" href="${view.editPath}">編集する</a></p>
+`;
 }
 
 /**
@@ -1211,7 +1248,7 @@ function reportSection(view: WorkPageView): string {
  * @param view 表示に必要な値
  * @returns HTML（遮断されていなければ空文字）
  */
-function blockedCategoriesSection(view: WorkPageView): string {
+export function blockedCategoriesSection(view: WorkPageView): string {
   if (!view.owner || view.blockedCategories.length === 0) {
     return '';
   }
@@ -1239,7 +1276,7 @@ function blockedCategoriesSection(view: WorkPageView): string {
  * @param view 表示に必要な値
  * @returns HTML（開示が無ければ空文字）
  */
-function ipNoticeSection(view: WorkPageView): string {
+export function ipNoticeSection(view: WorkPageView): string {
   if (!view.owner || view.ipNotice.length === 0) {
     return '';
   }
@@ -1275,7 +1312,7 @@ function documentTitleOf(view: WorkPageView): string {
  * @param view 表示に必要な値
  * @returns 題名（空・未設定なら既定の文言）
  */
-function workNameOf(view: WorkPageView): string {
+export function workNameOf(view: WorkPageView): string {
   return view.title === null || view.title.trim() === '' ? FALLBACK_WORK_TITLE : view.title;
 }
 
@@ -1330,7 +1367,7 @@ function ogpMeta(view: WorkPageView): string {
  * @param view 表示に必要な値
  * @returns HTML
  */
-function sectionFor(view: WorkPageView): string {
+export function sectionFor(view: WorkPageView): string {
   // **`state` より先に見る。** tombstone は生成の進行状態と直交しており（取り下げても
   // `generation_state` は `ready` のまま）、`state` の分岐に混ぜると「できました」の
   // 枝の中に「取り下げています」を書き足して回ることになる。
@@ -1358,7 +1395,8 @@ function sectionFor(view: WorkPageView): string {
    しばらく待っても変わらない場合は、お手数ですがもう一度生成してください。</p>
 <p>この画面は自動で更新されます。</p>`);
     case 'ready':
-      return view.published ? publishedSection(view) : readySection(view);
+      // **下書きのプレビュー（#664）は公開後の本文を描く**（{@link WorkPageView.draftPreview}）。
+      return view.published || view.draftPreview === true ? publishedSection(view) : readySection();
     case 'failed':
       // **遮断された分類の知らせはブロックの外、直後に置く**（`@section notices` の知らせの見た目を持ち、面の上に
       // 重ねると面が二重になる）。並びは #474 の前と同じである。
@@ -1381,7 +1419,7 @@ function sectionFor(view: WorkPageView): string {
  * @param inner 知らせの HTML（`<h2>` と段落）
  * @returns HTML
  */
-function stateBlock(inner: string): string {
+export function stateBlock(inner: string): string {
   return `<div class="gf-block gf-work-state">
 ${inner}
 </div>`;
@@ -1400,7 +1438,7 @@ ${inner}
  * @param parts 口ごとの HTML（出さない口は空文字）
  * @returns HTML（出す口が無ければ空文字）
  */
-function settingsBlock(parts: readonly string[]): string {
+export function settingsBlock(parts: readonly string[]): string {
   const rows = parts.filter((part) => part.trim() !== '').map((part) => `<div>${part}\n</div>`);
   if (rows.length === 0) {
     return '';
@@ -1479,49 +1517,6 @@ function removedSection(view: WorkPageView): string {
 }
 
 /**
- * 公開をやめる口（5.4 の「公開をやめて下書きへ戻せる」 / 確定35 / #637）。
- *
- * # 戻せることと、戻らないことを、押す前に書く
- *
- * **戻る先は下書きである。** #35 から #636 までは `removed`（tombstone）へ落としており、
- * **一覧にも検索にも出ない作品になって、URL を控えていない作者は二度と辿れなかった。**
- * いまは下書きに戻るので、「あなたの作品」から辿って、直して、出し直せる。
- *
- * **それでも戻らないものが 2 つある**（{@link unpublishGame}）。**試遊 URL は作り直され**、
- * **紹介用の画像は次の公開で撮り直される。** どちらも押す前に書く——後で気づく形にすると、
- * 配った試遊 URL が切れたことも、画像が変わることも、黙って起きる（仕様 1.2.31
- * 「黙って失敗を作らない」）。
- *
- * **連鎖しないことも書く。** 5.3 は「連鎖削除は荒れるため採らない」と定めるが、**それを作者が
- * 知る経路が無ければ、作者は「子まで消える」と思って押せない（あるいは、消えると思って押す）。**
- *
- * # 主ボタンを増やさない
- *
- * ここは**公開したあと**の画面で、5.4 の「公開して共有」の 1 タップは 1 文字も
- * 変わらない（{@link recaptureSection} と同じ判断）。
- *
- * @param view 表示に必要な値
- * @returns HTML
- */
-function unpublishSection(view: WorkPageView): string {
-  if (view.unpublishableId === null) {
-    return '';
-  }
-  return `
-<h3>公開をやめる</h3>
-<p>この作品の公開をやめて、下書きに戻せます。共有した URL からは遊べなくなり、
-   「あなたの作品」の一覧には下書きとして並びます。<strong>下書きに戻した作品は、作り直したり、
-   公開し直したり、削除したりできます。</strong></p>
-<p><strong>この作品をフォークした作品は、そのまま公開されたままです</strong>（連鎖して消えることはありません）。</p>
-<p>下書きに戻すと、<strong>試遊用の URL は新しいものに変わり</strong>（前の URL を知っている人は遊べなくなります）、
-   <strong>紹介用の画像は、次に公開したときに撮り直します。</strong></p>
-<form method="post" action="${WORK_UNPUBLISH_PATH}">
-  <input type="hidden" name="${WORK_UNPUBLISH_GAME_ID_FIELD}" value="${view.unpublishableId}">
-  <button type="submit" class="${SECONDARY_BUTTON}">公開をやめて下書きに戻す</button>
-</form>`;
-}
-
-/**
  * 削除の確認画面への導線（#517 / M15-2 / 仕様 5.3 の #516 節）。
  *
  * # 押しても消えない。確認画面へ移動する
@@ -1541,7 +1536,7 @@ function unpublishSection(view: WorkPageView): string {
  * @param view 表示に必要な値
  * @returns HTML（出さないなら空文字）
  */
-function deleteSection(view: WorkPageView): string {
+export function deleteSection(view: WorkPageView): string {
   if (view.deletableId === null) {
     // **止まったリフォージだけは黙らない**（#517）。リフォージの口は区切りを過ぎたジョブを終わったものとして扱い、
     // 画面は完成した作品として導線を並べるので、削除の導線だけが黙って消えると理由が読めない。
@@ -1558,150 +1553,6 @@ function deleteSection(view: WorkPageView): string {
 }
 
 /**
- * 題名を変える口（5.4 / #366）。
- *
- * # 作者にだけ出す
- *
- * 門番は {@link WorkPageView.renamableId} で、**画面側で `owner && …` を組み立てない**
- * （`revisable` と同じ方針）。ここは null かどうかだけを見る。
- *
- * # 主ボタンを増やさない
- *
- * 5.4 の「公開して共有」の 1 タップは 1 文字も変わらない（{@link unpublishSection} /
- * {@link recaptureSection} と同じ判断）。改名は**公開のあとでも押せる**ので、公開前の
- * 導線へ割り込ませない位置に置く。
- *
- * # `maxlength` を付けない
- *
- * HTML の `maxlength` は UTF-16 の長さで数えるので、こちらの規則（コードポイントで
- * {@link MAX_TITLE_LENGTH}）と食い違い、**絵文字を含む題名が 40 文字に届く前に
- * 打てなくなる。** 長さは送信後に 1 つの規則（`normalizeTitle`）で畳む
- * （`src/account.ts` の表示名が同じ判断をしている）。**断らずに切る**のは、生成側の
- * 初期値と同じ扱いにするためである。
- *
- * # `required` は助言であって規則ではない
- *
- * ブラウザが空のまま送るのを止めるだけである。**空で届いた要求は断らない**——
- * `normalizeTitle` が `無題の作品` へ倒す（生成側と同じ扱い）。**規則はサーバ側の
- * 1 か所にあり、`required` はそこへ辿り着く前の案内にすぎない。**
- *
- * # JavaScript を要求しない
- *
- * 素の `<form method="post">` で、押した結果は POST-redirect-GET でこのページへ戻る
- * （このモジュール冒頭の方針）。
- *
- * @param view 表示に必要な値
- * @returns HTML（改名できなければ空文字）
- */
-function renameSection(view: WorkPageView): string {
-  if (view.renamableId === null || view.title === null) {
-    return '';
-  }
-  // **題名は UGC である。** `value` 属性へ入れるので `escapeHtml` を通す
-  // （`src/html.ts` の `escapeHtml` は `"` と `'` まで置き換える）。
-  return `
-<h3 id="${WORK_RENAME_ANCHOR}" tabindex="-1">作品名を変える</h3>
-<p>この作品の名前を変えられます。<strong>変わるのは名前だけで、作品の中身は変わりません。</strong>
-   ${MAX_TITLE_LENGTH} 文字を超えた分は切り詰めます。</p>
-<form method="post" action="${WORK_RENAME_PATH}">
-  <input type="hidden" name="${WORK_RENAME_GAME_ID_FIELD}" value="${view.renamableId}">
-  <label for="work-title">作品名</label>
-  <input id="work-title" name="${WORK_RENAME_TITLE_FIELD}" type="text"
-         value="${escapeHtml(view.title)}" required>
-  <button type="submit" class="${SECONDARY_BUTTON}">この名前にする</button>
-</form>`;
-}
-
-/**
- * 説明を書く口（#388）。
- *
- * # 作者にだけ、公開後にだけ出す
- *
- * 門番は {@link WorkPageView.describableId} で、ここは null かどうかだけを見る
- * （{@link renameSection} と同じ形）。**5.4 の「公開して共有」の 1 タップは 1 文字も
- * 変わらない**——このフォームは公開した後の画面にしか現れない。
- *
- * # `maxlength` を付けない
- *
- * {@link renameSection} と同じ理由である（HTML の `maxlength` は UTF-16 の長さで数え、
- * こちらの規則はコードポイント）。**違うのは、超えた分を切らずに断ること**で、上限は
- * 押す前に文言で知らせる。
- *
- * # 素の `<textarea>` で組む
- *
- * クラスを付けない（`public/assets/app.css` の要素セレクタが幅と行の高さを持つ）。
- * **`cols` を付けない**——幅を文字数で固定すると、狭い端末で layout viewport を広げる
- * （#282 の `size="50"` と同じ壊れ方）。
- *
- * @param view 表示に必要な値
- * @returns HTML（書けなければ空文字）
- */
-function describeSection(view: WorkPageView): string {
-  if (view.describableId === null) {
-    return '';
-  }
-  // **説明は UGC である。** `<textarea>` の中身へ入れるので `escapeHtml` を通す
-  // （`</textarea>` を書かれても要素から抜け出せない）。
-  return `
-<h3 id="${WORK_DESCRIBE_ANCHOR}" tabindex="-1">作品の説明を書く</h3>
-<p>遊び方や、使った素材・原作のクレジットなどを書けます。<strong>作品ページを開いた人なら誰でも読めます。</strong>
-   ${MAX_DESCRIPTION_LENGTH} 文字まで。改行はそのまま出ます（リンクや太字などの書式は使えません）。
-   変更は ${DESCRIPTION_CHANGE_INTERVAL_SECONDS} 秒に 1 回までです。</p>
-<form method="post" action="${WORK_DESCRIBE_PATH}">
-  <input type="hidden" name="${WORK_DESCRIBE_GAME_ID_FIELD}" value="${view.describableId}">
-  <label for="work-description">作品の説明</label>
-  <textarea id="work-description" name="${WORK_DESCRIBE_TEXT_FIELD}" rows="6">${escapeHtml(view.description ?? '')}</textarea>
-  <button type="submit" class="${SECONDARY_BUTTON}">この説明にする</button>
-</form>`;
-}
-
-/**
- * 試遊画面の主ボタン（5.4）。
- *
- * **文言は 5.4 が定めている**（「試遊画面の主ボタンは「**公開して共有**」とし、
- * 1タップに畳んでフォーク連鎖の遅延を最小化する」）。ここで言い換えない。
- *
- * **1 タップに畳む。** 題名を入力させる欄も、確認の画面も置かない。5.4 が
- * 「フォーク連鎖の遅延を最小化する」と定めているのは、**公開の手数がそのまま
- * コア体験ループ（2.2）の長さになる**ためである。題名は生成のプロンプトから
- * 借りたものがそのまま公開される（`src/games.ts` の `draftTitleFromPrompt`）。
- *
- * **#366 で変わったのは、公開の前でも後でも作者が題名を変えられるようになったこと
- * だけである**（{@link renameSection}）。**この導線には 1 文字も足していない**
- * ——改名の口は別のフォームで、公開の手数は変わらない。
- *
- * **#376 で、同じフォームに任意のタグのチェックボックスを並べた。ボタンは 1 つのまま**で、
- * 何も選ばずに押せばタグ無しで公開される（**公開の入力を必須にしない**。#376 の constraints）。
- * 押す回数は 1 回のままなので、5.4 の 1 タップは崩していない。**上限（{@link MAX_WORK_TAGS} 個）は
- * 文言で知らせ、超えた要求はサーバが断る**——チェックの数を JavaScript で数えない（このモジュール
- * 冒頭の方針）。公開した後に変えたいときは {@link retagSection}。
- *
- * **JavaScript を要求しない。** 素の `<form method="post">` で、押した結果は
- * POST-redirect-GET でこのページへ戻る（`src/publish.ts`）。
- *
- * **#637 で、いま付いているタグを選んだ状態で出すようにした。** 作者は公開をやめて下書きへ戻せる
- * （{@link unpublishSection}）ので、**このフォームは 2 度目以降も通る。** 公開をやめてもタグは消えない
- * （`src/games.ts` の `unpublishGame`）が、公開の UPDATE はフォームが運んだ値でタグを置き換えるため、
- * **空のまま出すと、選び直さずに押した作者のタグが黙って消える。** 一度も公開していない作品では
- * 空配列が渡るので、見た目は #376 のときと変わらない。
- *
- * @param gameId 作品 id
- * @param tags いま付いているタグの識別子（最初から選んだ状態で出す）
- * @returns HTML
- */
-function publishForm(gameId: string, tags: readonly string[]): string {
-  // **ソースも公開されることを、押す前に言う**（#383 の決定 1 / 2.3.12）。公開した作品の Go の
-  // ソースは `/source/<id>` で誰でも読める。**生成されたコードのコメントや文字列には、入力した
-  // 文章の言い換えが写ることがある**——入力そのものは出さないが、写ったものは生成物として出る。
-  return `<form method="post" action="${PUBLISH_PATH}">
-  <input type="hidden" name="${PUBLISH_GAME_ID_FIELD}" value="${gameId}">
-${tagChoices('publish-tag', tags)}
-  <p class="gf-fork-note">${PUBLISH_SOURCE_NOTICE}</p>
-  <button type="submit" class="${PRIMARY_BUTTON}">公開して共有</button>
-</form>`;
-}
-
-/**
  * 公開フォームに添える「ソースも公開される」の 1 文（#383 の決定 1）。テストが同じ綴りを見るために
  * export している（書き写さない）。
  */
@@ -1710,7 +1561,8 @@ export const PUBLISH_SOURCE_NOTICE =
   '入力した文章そのものは公開されませんが、生成されたコードのコメントや文字列に、その内容が反映されていることがあります。';
 
 /**
- * タグのチェックボックスの組（#376）。**公開フォームと付け直しのフォームが同じ 1 つを使う。**
+ * タグのチェックボックスの組（#376）。**エディットページのまとめて保存するフォーム（#664。`src/work-edit.ts`）が使う**
+ * （#664 までは公開フォームと付け直しのフォームが同じ 1 つを使っていた）。
  *
  * - **語彙の順に並べる**（`src/work-tags.ts`。保存の順と同じ）
  * - **値は識別子、見える文字はラベル**（どちらも語彙の固定の文字列で、UGC ではない）
@@ -1722,7 +1574,7 @@ export const PUBLISH_SOURCE_NOTICE =
  * @param checked 最初から選ばれているタグの識別子
  * @returns HTML（`<fieldset>`）
  */
-function tagChoices(idPrefix: string, checked: readonly string[]): string {
+export function tagChoices(idPrefix: string, checked: readonly string[]): string {
   const boxes = WORK_TAGS.map((tag) => {
     const id = `${idPrefix}-${tag.id}`;
     const on = checked.includes(tag.id) ? ' checked' : '';
@@ -1735,116 +1587,28 @@ ${boxes.join('\n')}
 }
 
 /**
- * 公開前の作品ページの「遊ぶ」の口に置く、固定の文言のパネル（#575）。**スクリーンショットの撮影中のパネルと同じ部品**
- * （`.gf-shot gf-shot-pending`）で、UGC を含まない。見せるのはタッチ端末だけである（{@link readySection}）。
+ * 公開前の作品の「遊ぶ」の口に置く、固定の文言のパネル（#575）。**スクリーンショットの撮影中のパネルと同じ部品**
+ * （`.gf-shot gf-shot-pending`）で、UGC を含まない。
+ *
+ * **#664 から使うのは 2 か所である**——エディットページのプレビュー（`src/work-edit.ts`。タッチ端末でだけ見せる）と、
+ * 下書きのプレビューのスクリーンショットの代わり（{@link screenshot}。公開前は撮っていない）。
  */
-const DRAFT_PLAY_PANEL = '<p class="gf-shot gf-shot-pending">公開前の作品です。スクリーンショットは公開したときに撮ります。</p>';
+export const DRAFT_PLAY_PANEL = '<p class="gf-shot gf-shot-pending">公開前の作品です。スクリーンショットは公開したときに撮ります。</p>';
 
 /**
- * 完成画面の題名（h1）の直下に置く、改名のフォームへ飛ぶ 1 行（5.4 / M16-2 / #600）。
+ * 完成したが、まだ公開していない作品の本文（**作者以外に出すもの**）。
  *
- * # 直すのではなく、口を上げるだけである
+ * **作者以外には状態だけを言う**（#150 の決定。仮タイトルと試遊 URL は作者の情報である）。
  *
- * **フォームは動かさない**（{@link renameSection} は設定のブロックの中のまま）。5.4 は「公開の 1 タップを
- * 増やさない」、#366 は「改名は推敲より後ろに置き、主導線を押し下げない」と決めており、**その決定は変えない。**
- * ここが足すのは 1 行のリンクだけで、主のボタン（「公開して共有」）は 1 文字も変わらない。
+ * **#664 から、作者はこの枝を通らない。** 作者が下書きを作品ページで開くと、公開後と同じ画面のプレビュー
+ * （{@link WorkPageView.draftPreview}）になり、試遊・公開・リフォージ・版・作品名・削除はエディットページ
+ * （`src/work-edit.ts`）へ移した。#575 の埋め込み・#600 の改名へ飛ぶ 1 行も、あちらのプレビューと作品名の欄が受け持つ。
  *
- * # なぜ題名の直下なのか
- *
- * **題名は h1 に出ているので「気づけない」のではなく、「その場で直せない」。** 完成画面の並びは
- * `h1 → できました → 公開して共有 → 枠 → 推敲 → 版の一覧 → 作品名を変える` で、改名は 1 スクロール以上下にある。
- * しかも既定の題名は、宣言が無ければ**プロンプトの 1 行目を 40 字で切ったもの**（`src/games.ts` の
- * `draftTitleFromPrompt`）で、**公開は 1 タップで取り消せない**（5.4）。公開後も改名はできるが履歴が残り
- * 審査状態が戻るので、**公開前に直させるほうが安い。**
- *
- * # 門番は改名の口と同じものを見る
- *
- * {@link WorkPageView.renamableId} と `title` の 2 つで、**{@link renameSection} と同じ条件である**
- * ——飛び先が出ない画面へ飛ばすリンクを出さない（4.4 の「押しても動かないボタンを出さない」）。
- *
- * # JavaScript を要求しない
- *
- * 素のページ内アンカーである。着地する `<h3>` は `tabindex="-1"` を持つので、**キーボードの焦点も
- * そこへ移る**（持たない要素は飛んでも焦点が動かず、次の Tab が画面の先頭へ戻る）。
- *
- * @param view 表示に必要な値
- * @returns HTML（改名できなければ空文字）
- */
-function renameJumpLine(view: WorkPageView): string {
-  if (view.renamableId === null || view.title === null) {
-    return '';
-  }
-  return `<p class="gf-work-rename-jump"><a href="#${WORK_RENAME_ANCHOR}">作品名を変える</a></p>
-`;
-}
-
-/**
- * 完成したが、まだ公開していない作品の本文。
- *
- * **試遊 URL を出すのは作者本人にだけである。** `preview_key` は unlisted 配信の
- * 唯一の資格情報で（5.4 / `migrations/0006_games_preview_key.sql`）、id を知って
- * いるだけの相手へ渡す理由が無い。**状態は誰でも読めるが、鍵は本人だけが読める。**
- *
- * **#575 から、本人には公開後と同じ遊び方を出す**（{@link playEmbed}。デスクトップはページ内に埋め込み、タッチ端末は「遊ぶ」で
- * 全画面の覆い・仮想パッド・向き。仕様 3.9.4）。それまではリンクだけで、スマホで開くとパッドが出なかった。
- *
- * - **埋め込みは状態のブロックの外、直後に置く。** 公開後の画面と同じく、覆いを `.gf-block` の中へ入れない（ブロックの中の
- *   副のボタンのホバーの規則が、覆いの「閉じる」やパッドのキーに掛からないようにする）
- * - **「遊ぶ」の口は、スクリーンショットの代わりに固定の文言のパネル**にする（公開前は撮っていない。3.9.4 の「スクリーンショットが
- *   無い作品」と同じ形）。**パネルはタッチ端末でだけ見せる**（`public/assets/app.css` の `.gf-work-draft-play`）——デスクトップと
- *   JavaScript の無い形では、すぐ下に埋め込みがあるので、黒い面を二重に出さない
- * - **試遊 URL のリンクは「人に渡す URL」として残す**（渡した先で直接開いたときはパッドが出ない。パッドは親の文書の機能である）
- * - **計上のスクリプト（#377）は置かない。** `/p/` の試遊は数えない（`playCountableId` は公開済みだけ）
- * - **リフォージの実行中は埋め込まず、リンクだけにする。** その間は画面が {@link REFRESH_SECONDS} 秒ごとに再読み込みされ、埋め込んだ
- *   ゲームも覆いもそのたびに落ちる。できあがって再読み込みが止まれば、埋め込みに戻る
- *
- * @param view 表示に必要な値
  * @returns HTML
  */
-function readySection(view: WorkPageView): string {
-  if (!view.owner) {
-    return stateBlock(`<h2>できました</h2>
+function readySection(): string {
+  return stateBlock(`<h2>できました</h2>
 <p>この作品はまだ公開されていません。</p>`);
-  }
-  const embedded = view.playUrl !== null && !view.revisionRunning;
-  const play =
-    view.playUrl === null
-      ? '<p>作品は完成していますが、試遊 URL を組み立てられませんでした。</p>'
-      : embedded
-        ? `<div class="gf-work-draft-play">
-${playEntry(DRAFT_PLAY_PANEL, true)}
-</div>
-<p><a href="${view.playUrl}">試遊 URL</a> は<strong>あなただけが知っている URL</strong> です（まだ公開されていません）。この URL を人に渡すと、公開する前に遊んでもらえます。</p>`
-        : `<p><a href="${view.playUrl}">この作品を遊ぶ</a></p>
-<p>この URL は<strong>あなただけが知っている URL</strong> です（まだ公開されていません）。</p>`;
-  const embed =
-    embedded && view.playUrl !== null
-      ? `\n${playEmbed(view.playUrl, view.workId, view.inputKeyCodes, view.inputHeldCodes, view.inputAliasGroups, view.playOrientation)}`
-      : '';
-  const publish =
-    view.publishableId === null
-      ? ''
-      : `
-<p>遊んでみて、よければ公開できます。</p>
-${publishForm(view.publishableId, knownWorkTags(view.tags).map((tag) => tag.id))}`;
-  // **改名は推敲より後に置く。** 5.4 の 1 タップ（公開して共有）と、5.7 の手直しが
-  // 先で、題名の変更はそのどちらの導線も押し下げない位置に入れる（#366）。
-  //
-  // **「できました」と遊ぶ URL と公開の口は状態のブロック、手直し・版・改名は設定のブロックの行にする**（#474）。
-  // 並びは #474 の前と同じで、外側に面を足しただけである。**このブロックの主は「公開して共有」だけ**である。
-  //
-  // **削除の導線（#517）は設定のブロックの最後に置く**——戻せない操作を、公開・リフォージ・改名より先に目に入れない。
-  //
-  // **埋め込み（#575）は状態のブロックと設定のブロックの間に置く**（上の説明）。デスクトップの iframe はここに入る。
-  //
-  // **改名へ飛ぶ 1 行（#600）は、この節の返り値の先頭に置く**（{@link renameJumpLine}）。h1 は共通の描画が出すので、
-  // ここが題名の直下になる——**共通の描画には触らない。**
-  //
-  // **操作の案内（#599 / 仕様 3.9.11）は、その埋め込みの直後・設定のブロックの手前に置く**（公開後と同じ「枠の直後」）。
-  // **埋め込まないとき（試遊 URL を組み立てられない・リフォージの実行中）も出す**——案内が要るのは枠があるからではなく、
-  // 作者がこれから試遊 URL を人に渡すからである。
-  return `${renameJumpLine(view)}${stateBlock(`<h2>できました</h2>
-${play}${publish}`)}${embed}${keyLegendSection(view)}${settingsBlock([reviseSection(view), revisionList(view), renameSection(view), deleteSection(view)])}`;
 }
 
 /**
@@ -1906,7 +1670,7 @@ export const FORK_TIDY_QUOTA_NOTICE =
  * @param view 表示に必要な値
  * @returns HTML
  */
-function reviseSection(view: WorkPageView): string {
+export function reviseSection(view: WorkPageView): string {
   if (!view.owner) {
     return '';
   }
@@ -2005,7 +1769,7 @@ ${daily}${form}`;
  * @param view 表示に必要な値
  * @returns HTML
  */
-function revisionList(view: WorkPageView): string {
+export function revisionList(view: WorkPageView): string {
   // **1 つしかない版を「履歴」として見せない。** 初回生成だけの作品では戻す先が
   // 現在地しかなく、選択肢のない一覧は画面を重くするだけである。
   if (!view.owner || view.revisions.length < 2) {
@@ -2105,33 +1869,25 @@ function publishedSection(view: WorkPageView): string {
   //
   // **説明の本文は、枠の直前の折りたたみへ移した**（#627 / 仕様 5.4。{@link descriptionPeek}）。本文の列には置かない
   // ——**同じ文章を 2 か所に出すと、どちらが本体か読めない**（#626 の決定の「二重に出さない」）。
-  // ここに残るのは、説明がまだ無いことを作者へ伝える 1 行（#616）だけである。
   //
-  // **説明を書くフォームは改名の隣**に置く——どちらも作品ページの
-  // 「作者だけの設定」で、公開の導線（5.4）の外にある。
-  //
-  // **タグは説明の前に置き、付け直しのフォームは説明のフォームの後に置く**（#376）。
+  // **タグは本文の列に置く**（#376）。
   //
   // **詳細情報パネル（#383 / 2.3.12）は、ロード中画面と枠の下を「本文 | パネル」に分けて置く。**
   // 枠とロード中画面は全幅のまま残す——主役は作品であり（M8）、1080〜1280px で枠を縮めない。
   // 分けるのは器の `.gf-split-end`（`public/assets/app.css` の `@section shell`）で、段 3 でだけ
   // 横に並び、狭い段では本文の下へ積む（HTML の順が縦の順である）。
   //
-  // **作者だけの設定（撮り直し・改名・説明・タグ・取り下げ）は 2 カラムの外、下に置く。**
-  // 本文の列へ入れると、狭い段でパネルがそのフォームの山の下へ押し出され、閲覧者から遠くなる。
-  // **#474 で 1 つのブロックの行にした**（{@link settingsBlock}。並びは前と同じ）。
-  return `<h2>公開しています</h2>
-${loadingScreen(view)}${splitWithDetails(
-    `${keyLegendSection(view)}${likeSection(view)}${tagsSection(view)}${describeInviteLine(view)}${share}
+  // **作者だけの設定（撮り直し・作品名・説明・タグ・公開をやめる）と、説明がまだ無いことの案内（#616）は、
+  // エディットページへ移した**（#664。`src/work-edit.ts`）。この画面は作者にも作者以外と同じものを出し、
+  // 作者に足すのは「編集する」の 1 行だけである（{@link editLine}）。
+  //
+  // **下書きのプレビュー（#664）では「公開しています」と言わない**——まだ公開していない。代わりに上の帯が言う。
+  const heading = view.draftPreview === true ? '' : '<h2>公開しています</h2>\n';
+  return `${heading}${loadingScreen(view)}${splitWithDetails(
+    `${keyLegendSection(view)}${likeSection(view)}${tagsSection(view)}${share}
 ${forkList(view.forks)}`,
     view,
-  )}${settingsBlock([
-    recaptureSection(view),
-    renameSection(view),
-    describeSection(view),
-    retagSection(view),
-    unpublishSection(view),
-  ])}`;
+  )}`;
 }
 
 /**
@@ -2293,75 +2049,6 @@ function tagsSection(view: WorkPageView): string {
 }
 
 /**
- * タグを付け直す口（#376）。
- *
- * # 作者にだけ、公開後にだけ出す
- *
- * 門番は {@link WorkPageView.retaggableId} で、ここは null かどうかだけを見る
- * （{@link describeSection} と同じ形）。**未公開の作品では公開フォームのチェックボックスで選ぶ**
- * ので、この口は公開した後の画面にしか現れない。
- *
- * # いまのタグを最初から選んでおく
- *
- * 全部外して押せばタグ無しになる（外すのも正当な操作である）。上限と間隔は文言で知らせ、
- * 超えればサーバが断る。
- *
- * @param view 表示に必要な値
- * @returns HTML（付け直せなければ空文字）
- */
-function retagSection(view: WorkPageView): string {
-  if (view.retaggableId === null) {
-    return '';
-  }
-  return `
-<h3>タグを付け直す</h3>
-<p>作品をさがす画面で、選んだタグから絞り込まれるようになります。何も選ばなければタグ無しになります。
-   変更は ${WORK_TAGS_CHANGE_INTERVAL_SECONDS} 秒に 1 回までです。</p>
-<form method="post" action="${WORK_RETAG_PATH}">
-  <input type="hidden" name="${WORK_RETAG_GAME_ID_FIELD}" value="${view.retaggableId}">
-${tagChoices('retag-tag', knownWorkTags(view.tags).map((tag) => tag.id))}
-  <button type="submit" class="${SECONDARY_BUTTON}">このタグにする</button>
-</form>`;
-}
-
-/**
- * 説明がまだ無いことを作者へ伝え、書く口へ飛ばす 1 行（仕様 5.4 / M16-3 / #616）。**作者にだけ出す。**
- *
- * # なぜ要るのか
- *
- * **書ける場所はあるのに、書けることに気づく契機が無かった。** 説明は公開後にしか書けず
- * （`src/games.ts` の `describeGame`。5.4 の 1 タップの導線を変えないため）、フォーム（{@link describeSection}）は
- * 設定のブロックの中にある。しかも {@link descriptionSection} は**空なら誰にも何も出さない**（#388 の判断）。
- * その結果、**公開した瞬間は必ず説明が空**のまま一覧と OGP に出るのに、**作者にもそれが見えない。**
- *
- * # 公開の戻り先に印を付けない
- *
- * 「公開直後の 1 回だけ」にすると、公開の 303（`src/publish.ts`）の戻り先へクエリが要る。**その URL を
- * そのままコピーした人が、クエリ付きを共有する**（2026-09-17 の利用者の決定）。**説明が空のあいだ出し続ける**
- * ほうが、印も新しい状態も持たずに済み、公開直後に見逃しても次に開いたときに気づける。
- *
- * # 出す条件は 2 つだけ
- *
- * 門番は {@link WorkPageView.describableId}（本人・公開済み・完成済み）と、**説明が空であること**である。
- * **画面側で `owner && …` を組み立てない**（{@link renameSection} と同じ方針）。書けば消える。
- *
- * # JavaScript を要求しない
- *
- * 素のページ内アンカーである（{@link renameJumpLine} と同じ形）。着地する `<h3>` は `tabindex="-1"` を
- * 持つので、キーボードの焦点もそこへ移る。
- *
- * @param view 表示に必要な値
- * @returns HTML（作者でない・公開していない・説明があるなら空文字）
- */
-function describeInviteLine(view: WorkPageView): string {
-  if (view.describableId === null || (view.description !== null && view.description !== '')) {
-    return '';
-  }
-  return `
-<p class="gf-work-describe-invite">この作品にはまだ説明がありません。遊び方や、使った素材・原作のクレジットを書けます。<a href="#${WORK_DESCRIBE_ANCHOR}">作品の説明を書く</a></p>`;
-}
-
-/**
  * デスクトップで遊ぶ人に、その作品が読むキーを伝える 1 行（仕様 3.9.11 / M16-1 / #599）。**誰にでも出す。**
  *
  * # なぜ要るのか
@@ -2390,7 +2077,7 @@ function describeInviteLine(view: WorkPageView): string {
  * @param view 表示に必要な値
  * @returns HTML（出すキーが 1 つも無ければ空文字）
  */
-function keyLegendSection(view: WorkPageView): string {
+export function keyLegendSection(view: WorkPageView): string {
   const legend = keyLegendOf(view.inputKeyCodes);
   const keys = [...legend.directions, ...legend.buttons];
   if (keys.length === 0) {
@@ -2466,7 +2153,7 @@ ${paragraphs}
  *
  * # JavaScript を要求しない
  *
- * `<details>` の既定の挙動である（{@link renameJumpLine} と同じ方針）。**最初は閉じている**——開いた状態で
+ * `<details>` の既定の挙動である（このモジュール冒頭の方針）。**最初は閉じている**——開いた状態で
  * 配ると、押し下げが本文をそのまま置く案と同じになる。
  *
  * @param view 表示に必要な値
@@ -2589,7 +2276,7 @@ function forkList(forks: ForkNeighbors): string {
 
   // **「もっと見る」も「前へ」も素のリンクである**（このモジュール冒頭の「JavaScript を
   // 要求しない」）。次が無ければ出さない——押しても何も起きない導線を出さない
-  // （`publishForm` と同じ方針）。
+  // （4.4。押しても何も起きない導線を出さない）。
   const more =
     forks.morePath === null
       ? ''
@@ -2643,13 +2330,13 @@ ${items}
  *
  * # 押せるときにしか出さない
  *
- * 押しても何も起きないボタンを出さない（`publishForm` と同じ方針）。**押した結果を
+ * 押しても何も起きないボタンを出さない（4.4。押しても何も起きない導線を出さない）。**押した結果を
  * 決めるのは `reclaimStaleOgpCapture` の SQL** で、ここは口を出すかだけを決める。
  *
  * @param view 表示に必要な値
  * @returns HTML
  */
-function recaptureSection(view: WorkPageView): string {
+export function recaptureSection(view: WorkPageView): string {
   if (view.recapturableId === null) {
     return '';
   }
@@ -2822,6 +2509,10 @@ function screenshot(view: WorkPageView): string {
     // 同じページが「準備中」と「止まったまま」を同時に言うことになる。
     // **口が出るのは作者だけ**なので、他人には従来の文言のままにする——中断を
     // 見せても、その人にできることが 1 つも無い。
+    // **下書きのプレビュー（#664）では撮っていない**（撮るのは公開したとき。5.4）。準備中と言わない。
+    if (view.draftPreview === true) {
+      return DRAFT_PLAY_PANEL;
+    }
     return view.recapturableId === null
       ? `<p class="gf-shot gf-shot-pending">スクリーンショットを準備しています。</p>`
       : `<p class="gf-shot gf-shot-pending">スクリーンショットの撮影が止まっています。</p>`;
@@ -3026,20 +2717,55 @@ export function storedWasmBytes(value: unknown): number | null {
 }
 
 /**
- * 作品ページを表示する。
+ * 作品の 1 行を、作品ページとエディットページのどちらのために組み立てるか（#664）。
+ *
+ * - `page` … 作品ページ（`/works/<id>`）。**作者にも作者以外と同じ画面を出す**——作者だけの値
+ *   （版・リフォージ・改名・削除の口・失敗の分類・開示など）は引かず、渡さない。作者が下書きを開いたときだけ、
+ *   公開後と同じ画面のプレビュー（{@link WorkPageView.draftPreview}）にする
+ * - `edit` … エディットページ（`/works/<id>/edit`。`src/work-edit.ts`）。作者だけの値もすべて引く
+ */
+export type WorkViewMode = 'page' | 'edit';
+
+/** {@link loadWorkView} の結果。 */
+export type LoadedWork =
+  /** 作品が無い（**id の綴りが違う・行が無い**。理由を分けない。{@link notFound}）。 */
+  | { readonly kind: 'not-found'; readonly viewer: SiteViewer }
+  | {
+      readonly kind: 'found';
+      /** 画面の入力。`page` なら作者にも作者以外と同じ値である（作者に足すのは `editPath` だけ）。 */
+      readonly view: WorkPageView;
+      /** 引いた行（エディットページが下書きの説明・タグ・試遊の鍵を読む）。 */
+      readonly row: WorkRow;
+      /** ログインした作者本人が見ているか。 */
+      readonly owner: boolean;
+      /** ヘッダの出し分け（2.3.7）。 */
+      readonly viewer: SiteViewer;
+    };
+
+/**
+ * 作品の 1 行を引き、画面の入力を組み立てる（#150 / #664）。
+ *
+ * **作品ページとエディットページが同じ 1 本を通る**（#664）。同じ行から同じ判定で組み立てるので、
+ * 片方の画面だけが古い条件で口を出す、ということが起きない。違うのは {@link WorkViewMode} だけである。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
- * @returns レスポンス
+ * @param gameId 作品 id（綴りはここで確かめる）
+ * @param mode どちらの画面のために組み立てるか
+ * @returns 組み立てた入力、または見つからない
  */
-async function showWorkPage(request: Request, env: Env): Promise<Response> {
+export async function loadWorkView(
+  request: Request,
+  env: Env,
+  gameId: string,
+  mode: WorkViewMode,
+): Promise<LoadedWork> {
   const url = new URL(request.url);
   const pathname = url.pathname;
-  const gameId = pathname.slice(WORK_PAGE_PREFIX.length);
   if (!GAME_ID_PATTERN.test(gameId)) {
     // **404 でもヘッダは出す**（{@link notFound}）。`resolveSiteViewer` は署名だけを見る
     // ので、**この経路で D1 は 1 行も読まない**（`resolveSessionUser` を前へ出すと読む）。
-    return notFound(await resolveSiteViewer(request, env));
+    return { kind: 'not-found', viewer: await resolveSiteViewer(request, env) };
   }
 
   // **1 回の問い合わせで引く。** 作者名も親作品も、ロード中画面（3.4-5）が
@@ -3058,13 +2784,16 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
     .bind(gameId)
     .first<WorkRow>();
   if (row === null) {
-    return notFound(await resolveSiteViewer(request, env));
+    return { kind: 'not-found', viewer: await resolveSiteViewer(request, env) };
   }
 
   // **セッションは「本人か」を見るためだけに引く。** 未ログインでも 401 にしない
   // （状態は誰でも読める。モジュール冒頭の表）。
   const session = await resolveSessionUser(request, env);
   const owner = session.ok && session.userId === row.author_id;
+  // **作者だけの値を引くのはエディットページのときだけである**（#664）。作品ページでは作者にも作者以外と
+  // 同じものを出すので、版・リフォージの状態・遮断の分類を引く読み取りを増やさない（3.6 の読み取りがそのまま費用になる）。
+  const ownerTools = owner && mode === 'edit';
 
   const now = Math.floor(Date.now() / 1000);
   const stalled = looksStalled(
@@ -3077,17 +2806,24 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   // **`!published` で代用しない**（5.3 / #35）。`draft` と `removed` は作者にできる
   // ことが正反対で、混ぜると取り下げた作品に「公開して共有」の口が出る。
   const removed = row.status === REMOVED_STATUS;
+  // **作者が下書きを作品ページで開いたら、公開後と同じ画面のプレビューにする**（#664）。作者以外は
+  // これまでどおり状態だけを読む（`readySection`）。
+  const previewing = mode === 'page' && owner && !published && !removed && state === 'ready';
+  // **公開後の画面に出す値（作者名・元ゲーム・説明・数・詳細情報パネル）を渡すか。** プレビューでも渡す——
+  // 公開すると誰にでも見えるものを、公開前に作者が確かめる画面だからである。**押せる口（フォーク・いいね・通報・
+  // 計上）は `published` のまま**にする（下書きには押しても断られる）。
+  const shown = published || previewing;
 
   // 5.7 の対象条件（自作・`draft`・完成済み）。**経路側と同じ条件をここで作り直して
   // いるように見えるが、判定の正本は `claimRevisionSlot` の SQL である**
   // （`src/revisions.ts`）。ここは「口を出すか」だけを決め、押した結果はあちらが決める。
-  const revisableNow = owner && !published && !removed && state === 'ready';
+  const revisableNow = ownerTools && !published && !removed && state === 'ready';
 
   // **引くのは遮断されたときの作者だけである**（8.2 / #37）。1 行の追加読み取りだが、
   // 遮断は例外的な出来事なので平常時は 1 度も起きない。**`generation_error` を見てから
   // 引く**——`moderation_blocks` を毎回 left join すると、遮断が無い日にも結合が走る。
   const blockedCategories =
-    owner && row.generation_error === 'prompt-blocked'
+    ownerTools && row.generation_error === 'prompt-blocked'
       ? await listBlockedCategories(env, gameId)
       : [];
 
@@ -3100,9 +2836,9 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
 
   // **作者のときだけ引く。** 公開作品のページは拡散の着地点であり、閲覧者ごとに
   // 版と枠を引く理由が無い（3.6 の読み取りがそのまま費用になる）。
-  const revisions = owner ? await listRevisions(env, gameId) : [];
+  const revisions = ownerTools ? await listRevisions(env, gameId) : [];
   // **区切りは `looksStalled` と同じ `now` で測る**（#480）。
-  const revisionQuota = owner ? await revisionStatus(env, gameId, now) : null;
+  const revisionQuota = ownerTools ? await revisionStatus(env, gameId, now) : null;
 
   // **枠を読むのは、その数を出す口が画面にあるときだけである**（3.6 の読み取りが
   // そのまま費用になる）。口は 2 つある——未公開の作者に出す推敲（5.7）と、公開済みの
@@ -3113,7 +2849,10 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   // 作者）を含むので、推敲の場合もこの id は作者の id と同じ値になる。**行の
   // `author_id` を使わない**のは、フォークでは両者が違いうるためで、**同じ変数で
   // 両方を賄えることが「枠は 1 人あたり」（確定25）の裏返し**である。
-  const forkableNow = published && session.ok;
+  //
+  // **下書きのプレビュー（#664）でも読む**——公開後と同じ画面に、フォークの口の残枠の 1 行が出るためである
+  // （フォームは出さない。`forkableId` は公開済みだけ）。
+  const forkableNow = (published || previewing) && session.ok;
   const dailyRemaining =
     session.ok && (revisableNow || forkableNow)
       ? await readDailyRemaining(env, session.userId)
@@ -3160,7 +2899,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
   // **リフォージは区切りの内側（`running`）と外側（`stalled`）の両方を「走っている」に数える。** `deleteGame` は
   // 経過時間で区切らないので、止まったジョブが残る作品に導線を出すと、押した先で必ず断られる。
   // **追加の問い合わせは 0 件**——`purged` は上の 1 行に、リフォージの状態は作者のときだけ引いた `revisionQuota` にある。
-  const deletionBlock = owner
+  const deletionBlock = ownerTools
     ? deletionBlockOf({
         status: row.status,
         generationState: row.generation_state,
@@ -3168,16 +2907,15 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
         revisionInFlight: revisionQuota !== null && (revisionQuota.running || revisionQuota.stalled),
       })
     : null;
-  const deletable = owner && deletionBlock === null;
+  const deletable = ownerTools && deletionBlock === null;
 
-  return html(
-    renderWorkPage(
-      {
+  const view: WorkPageView = {
       state,
-      owner,
+      // **作品ページでは作者にも偽を渡す**（#664）。作者だけの本文（失敗の分類・版・開示…）はエディットページが出す。
+      owner: ownerTools,
       // **作者にだけ渡す。** 未ログインや他人には空配列を渡し、画面側で
       // `owner` を見直さなくても漏れない形にする（`errorCode` と同じ扱い）。
-      ipNotice: owner ? parseIpNotice(row.ip_notice) : [],
+      ipNotice: ownerTools ? parseIpNotice(row.ip_notice) : [],
       blockedCategories,
       // 8.4 の通報（#40）。**押しても必ず断られるボタンを出さない**ので、条件を
       // ここで畳む（画面側で `owner && published && …` を組み立てない。5.7 の
@@ -3194,7 +2932,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // 作者の意思表示**である（5.4 は作者を唯一のフィルタとして使う）。
       // 未公開のあいだは、id を知っているだけの相手には見えないままにする。
       title: owner || published ? row.title : null,
-      errorCode: owner ? row.generation_error : null,
+      errorCode: ownerTools ? row.generation_error : null,
       // `ready` なら `preview_key` は必ず入っている（`src/games.ts` の不変条件）。
       // それでも null を扱えるようにしてあるのは、**不変条件を画面が前提にしない**ため。
       //
@@ -3229,7 +2967,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // そちらが先に本文ごと差し替える。**したがってこの条件だけを外しても画面は
       // 変わらない**（変異を当てて確かめた）。**両方を外すと `test/work-page.test.ts`
       // が赤くなる**ので、層が 1 枚になった状態は残らない。
-      publishableId: owner && !published && !removed && state === 'ready' ? gameId : null,
+      publishableId: ownerTools && !published && !removed && state === 'ready' ? gameId : null,
       // フォークの親になれるのは**公開済みの作品だけ**である（5.3）。**作者かどうかは
       // 見ない**（5.7 の「公開後に手を入れたい作者はフォークする」）。押した結果を
       // 決めるのは `src/fork.ts` の `readParentSource` で、ここは口を出すかだけを決める。
@@ -3237,7 +2975,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **要求された URL をそのまま写さない。** 問い合わせ文字列（`?utm_source=` など）が
       // 付いた URL を `og:url` に出すと、同じ作品が別の URL として拡散する。
       // 正規の綴りを組み立て直す。
-      shareUrl: published ? new URL(workPagePath(gameId), request.url).toString() : null,
+      shareUrl: shown ? new URL(workPagePath(gameId), request.url).toString() : null,
       // **`ready` のときだけ URL を出す。** 撮影中・失敗のときに URL を出すと、
       // クローラが 404 を引く（`src/ogp.ts` の配信は行と実体の両方を見る）。
       imageUrl: published && row.ogp_state === 'ready' ? ogpImageUrl(request, gameId) : null,
@@ -3246,7 +2984,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       imagePath: published && row.ogp_state === 'ready' ? ogpImagePath(gameId) : null,
       // **公開済みのときだけ出す。** 未公開の作品ページは作者のための状態画面で、
       // そこに作者名を出しても意味が無い（見ているのは本人か、id を知る誰かである）。
-      authorName: published ? row.author_name : null,
+      authorName: shown ? row.author_name : null,
       // **作者ページへの導線（#330 / 2.3.1）。`authorName` と同じ条件で出す**
       // ——未公開の作品ページは作者のための状態画面で、名前を出さない画面に名前の
       // リンクだけを置く意味が無い（運営の印が同じ条件を採っているのと同じ理由）。
@@ -3255,9 +2993,9 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // 行は常にあるはずだが、**無かったときにリンクだけが残ると 404 へ送る。**
       // 判定を `author_name` で行うのは、それが「`users` の行が引けたか」そのもの
       // だからである。
-      authorPageId: published && row.author_name !== null ? row.author_id : null,
+      authorPageId: shown && row.author_name !== null ? row.author_id : null,
       // いまのハンドル名（#381）。**`authorPageId` と同じ条件で渡す**（リンクを出さない画面に綴りだけを渡さない）。
-      authorHandle: published && row.author_name !== null ? row.author_handle : null,
+      authorHandle: shown && row.author_name !== null ? row.author_handle : null,
       // **運営かどうかは列だけで決める**（#334）。`author_name` を見ない——表示名は
       // ログインのたびに Google の名前で上書きされ、5.9 以後は誰でも「運営」と名乗れる。
       // なぜ導出せず列で持つのかは `migrations/0021_users_operator.sql` にある。
@@ -3265,12 +3003,12 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **`=== 1` で読む。** 結合が空振りした null を「運営」へ倒さない。0 と 1 以外は
       // CHECK が入れさせない。印は名前に付くものなので、名前を出さない未公開のときは
       // 出さない（`authorName` と同じ条件）。
-      authorIsOperator: published && row.author_is_operator === 1,
+      authorIsOperator: shown && row.author_is_operator === 1,
       parent: parentWorkOf(row),
       // **公開済みのときだけ引く**（3.6 の読み取りがそのまま費用になる）。フォークの
       // 親になれるのは公開済みの作品だけなので（5.3）、未公開の行に公開済みの子は
       // 現れない。**2 回の問い合わせは、子が 1 件も無ければ 1 回で終わる。**
-      forks: published ? await forkNeighborsOf(env, gameId, readForksOffset(url)) : NO_FORKS,
+      forks: shown ? await forkNeighborsOf(env, gameId, readForksOffset(url)) : NO_FORKS,
       signedIn: session.ok,
       // **走っているあいだは口を出さない。** 二重送信をボタンの無効化ではなく
       // 「フォームが無い」ことで防ぐ（JavaScript を要求しない）。
@@ -3285,7 +3023,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // 期限切れかどうかの判定は `src/ogp.ts` が持つ——ここで `now - x >= 900` と
       // 書くと、掴み直せるかを決める SQL と食い違いうる。
       recapturableId:
-        owner &&
+        ownerTools &&
         published &&
         ogpCaptureIsStale(
           { state: row.ogp_state, startedAt: row.ogp_started_at, publishedAt: row.published_at },
@@ -3301,31 +3039,31 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **`state === 'ready'` を条件に入れる。** 生成中の行にも仮の題は入っているが、
       // その画面は「生成中です」だけを出す場所で、**まだ何ができたかも分からない作品に
       // 名前を付け直させない**（推敲の口が同じ理由で `ready` を見ている）。
-      renamableId: owner && !removed && state === 'ready' ? gameId : null,
+      renamableId: ownerTools && !removed && state === 'ready' ? gameId : null,
       // **説明は公開済みのときだけ渡す**（#388）。未公開の作品には書けず、取り下げた作品の
       // 画面は本文ごと差し替わる（`published` は `removed` を含まない）。
-      description: published ? (row.description ?? '') : null,
+      description: shown ? (row.description ?? '') : null,
       // **書けるのは、本人・公開済み・完成済みの作品である**（#388）。押した結果を決めるのは
       // `describeGame` の SQL で、ここは口を出すかだけを決める。**未公開の作品に出さない**
       // ——5.4 の 1 タップの導線（公開までの画面）に入力欄を増やさない。
       //
       // **`published` は第 2 層である。** 描画側の第 1 層は、フォームを `publishedSection`
-      // にしか置いていないこと（未公開の `readySection` は `describeSection` を呼ばない）。
+      // にしか置いていないこと（#664 からは、説明の欄はエディットページにしか無い）。
       // **したがってここだけを外しても画面は変わらない**（変異を当てて確かめた）。経路の
       // 関門は `describeGame` の `status = 'published'` で、そちらを外すと
       // `test/work-description.test.ts` の「下書きの作品には書けない」が赤くなる。
-      describableId: owner && published && state === 'ready' ? gameId : null,
+      describableId: ownerTools && published && state === 'ready' ? gameId : null,
       // **tombstone 以外では渡す**（#376 / #637）。**公開をやめて下書きへ戻した作品はタグを持っており**、
-      // 再公開のフォームがそれを選んだ状態で出す（{@link publishForm}）——渡さないと、選び直さずに
+      // 再公開のフォームがそれを選んだ状態で出す（#664 からはエディットページのタグの欄と、まとめて保存する口の公開。`src/work-save.ts`）——渡さないと、選び直さずに
       // 押した作者のタグが黙って消える（`src/games.ts` の `publishGame` の #637 注記）。一度も公開して
       // いない作品は 3 列とも NULL なので空配列になる。**tombstone の画面は本文ごと差し替わる**ので渡さない。
       tags: removed ? [] : workTagsOf(row),
       // **付け直せるのは、本人・公開済み・完成済みの作品である**（#376。説明と同じ条件）。押した
       // 結果を決めるのは `retagGame` の SQL で、ここは口を出すかだけを決める。
-      retaggableId: owner && published && state === 'ready' ? gameId : null,
+      retaggableId: ownerTools && published && state === 'ready' ? gameId : null,
       // **公開をやめられるのは、公開している作品だけである**（5.4 / 確定35 / #637）。
       // 押した結果を決めるのは `unpublishGame` の SQL で、ここは口を出すかだけを決める。
-      unpublishableId: owner && published ? gameId : null,
+      unpublishableId: ownerTools && published ? gameId : null,
       // **削除の確認画面への導線（#517）は、表示の条件が null を返した本人にだけ出す**（上の `deletable`）。
       //
       // **公開中の作品に出さないことは 2 層で守る。** 第 1 層は描画側で、`publishedSection` が `deleteSection` を
@@ -3335,7 +3073,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **止まったリフォージのせいで出せないときだけ、理由を 1 文出す**（{@link deleteSection}）。走っている最中は
       // 画面が「リフォージしています」を出して自動で更新するので、重ねて言わない。
       deletionStalledByRevision:
-        owner && deletionBlock === 'revising' && revisionQuota !== null && revisionQuota.stalled,
+        ownerTools && deletionBlock === 'revising' && revisionQuota !== null && revisionQuota.stalled,
       // **ログイン中は DO が数えた実数、未ログインは D1 の写し**（5.8）。前者は
       // BAN された利用者の分を除いてあり、後者は最大 5 分遅れる。**未公開・取り下げ済みの
       // ページでは 0**（数を出さない）——`like_count` に値が残っていても、公開していない
@@ -3349,14 +3087,16 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       likeCount:
         published && !removed
           ? (likeViewer?.count ?? storedLikeCount(row.like_count))
-          : 0,
+          : previewing
+            ? storedLikeCount(row.like_count)
+            : 0,
       // **押している人には取り消しだけ、押していない人には付与だけを出す**（5.8）。
       // `pressable` は窓口の SQL が返した判定で、**未ログイン（`likeViewer === null`）と
       // 作者では必ず false** になる。押していないことを `likeViewer` の側から見るので、
       // 「押せるが状態が読めない」という組み合わせは現れない。
       // **プレイ数は D1 の写しだけを読む**（#377。ログイン中も DO を引かない）。条件は
       // `likeCount` と同じ（未公開・取り下げ済みでは 0。第 1 層は `sectionFor` の tombstone 分岐）。
-      playCount: published && !removed ? storedLikeCount(row.play_count) : 0,
+      playCount: shown && !removed ? storedLikeCount(row.play_count) : 0,
       // **数えるのは公開済みの `/g/` の iframe だけである**（#377）。公開済みなら `playUrl` は
       // 必ず `/g/` を指す（上）。未公開のプレビュー（`/p/`）を開く作者の試遊は数えない。
       playCountableId: published && !removed ? gameId : null,
@@ -3365,7 +3105,7 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
       // **詳細情報パネル（2.3.12 / #383）は公開済み・取り下げていない作品にだけ出す**（第 1 層は
       // `sectionFor` の tombstone 分岐）。追加の問い合わせは 0 件——値はすべて上の 1 行にある。
       details:
-        published && !removed
+        shown && !removed
           ? {
               gameId,
               createdAt: row.created_at,
@@ -3375,16 +3115,50 @@ async function showWorkPage(request: Request, env: Env): Promise<Response> {
               // `src/work-source.ts` が 404 を返すので出さない（4.4 の「押せないものを出さない」）。
               // `=== 1` で読む——結合も式も null を返しうる値を「見せてよい」へ倒さない。
               sourcePath:
-                row.review_visible === 1 && row.has_source === 1 ? workSourcePath(gameId) : null,
+                published && row.review_visible === 1 && row.has_source === 1 ? workSourcePath(gameId) : null,
             }
           : null,
-    },
+      // **下書きのプレビュー（#664）。** 帯と「編集へ戻る」を出し、公開後の本文を描く。
+      draftPreview: previewing,
+      // **作者にだけ「編集する」の行き先を渡す**（#664）。作品ページが作者と作者以外で違うのはこの 1 つだけである。
+      editPath: owner ? workEditPath(gameId) : null,
+  };
+
+  return {
+    kind: 'found',
+    view,
+    row,
+    owner,
     // **ヘッダの出し分けには、既に引いてあるセッションを使う**（2.3.7 / #331）。
     // **`owner` ではない**——他人の作品を見ているログイン済みの利用者にも、自分の作品と
     // 登録情報への導線が要る。**署名を 2 度検証しない**（`resolveSessionUser` が正本）。
-    siteViewerAt(pathname, session.ok, session.ok ? headerAvatarUrl(request, env, session.userId) : null),
-    ),
-  );
+    viewer: siteViewerAt(pathname, session.ok, session.ok ? headerAvatarUrl(request, env, session.userId) : null),
+  };
+}
+
+/**
+ * 作品ページを表示する（`GET /works/<id>`。#150 / #664）。
+ *
+ * **作者にも作者以外と同じ画面を出す**（#664）。違うのは「編集する」の 1 行だけで、下書きは公開後と同じ画面の
+ * プレビュー（帯つき）になる。**作者が生成中・失敗・取り下げ済みの作品を開いたら、エディットページへ送る**
+ * ——作者以外と同じ「状態だけ」の画面を出しても、作者にできることが何も無い（失敗の分類・削除の口は
+ * エディットページにある）。完了メールのリンク（`src/mail/generation-notice.ts`。オーケストレータの束に
+ * 入るので、この PR では綴りを変えていない）からの着地も、これで作者の画面になる。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param gameId 作品 id（綴りは {@link loadWorkView} が確かめる）
+ * @returns レスポンス
+ */
+export async function showWorkPage(request: Request, env: Env, gameId: string): Promise<Response> {
+  const loaded = await loadWorkView(request, env, gameId, 'page');
+  if (loaded.kind === 'not-found') {
+    return notFound(loaded.viewer);
+  }
+  if (loaded.owner && !loaded.view.published && loaded.view.draftPreview !== true) {
+    return seeOther(workEditPath(gameId));
+  }
+  return html(renderWorkPage(loaded.view, loaded.viewer));
 }
 
 /**
@@ -3423,10 +3197,10 @@ async function handleUnpublish(request: Request, env: Env): Promise<Response> {
   const outcome = await unpublishGame(env, target.gameId, session.userId);
 
   if (outcome.ok) {
-    // POST-redirect-GET。**戻り先は作品ページで、そこに下書きの表示が出る**（公開の口・
+    // POST-redirect-GET。**戻り先はエディットページで、そこに下書きの表示が出る**（#664。公開設定・
     // リフォージ・版の一覧・削除の導線が、下書きと同じ条件でそのまま並ぶ）。
     return asHtml
-      ? seeOther(workPagePath(target.gameId))
+      ? seeOther(workEditPath(target.gameId))
       : json({ unpublished: true, firstTime: outcome.firstTime }, 200);
   }
 
@@ -3437,25 +3211,43 @@ async function handleUnpublish(request: Request, env: Env): Promise<Response> {
 }
 
 /**
- * `/works/` の前方一致の経路の入口（#150 / #517）。
+ * エディットページ（`GET /works/<id>/edit`。#664）を開く関数の形。
  *
- * **`/works/<id>/delete` だけを削除の確認画面へ回し、それ以外は作品ページへ渡す。** 経路表に前方一致の経路を
- * 足さない理由は `src/work-delete.ts` の `WORK_DELETE_SUFFIX` にある。**id の綴りが違えば作品ページへ渡す**
- * ——作品ページが同じ規則（{@link GAME_ID_PATTERN}）で 404 にする（`/works/x/delete` を別の断り方にしない）。
- *
- * @param request 受信したリクエスト
- * @param env バインディングと環境変数
- * @returns レスポンス
+ * **実体は `src/work-edit.ts` にあり、このモジュールは import しない。** あちらはこのモジュールの描画の部品と
+ * {@link loadWorkView} を借りるので、こちらから import すると循環参照になる。経路表を組み立てる側
+ * （あちらの `workRoutes`）が {@link createWorkPageRoutes} へ渡す。
  */
-async function handleWorksPrefix(request: Request, env: Env): Promise<Response> {
-  const pathname = new URL(request.url).pathname;
-  if (pathname.endsWith(WORK_DELETE_SUFFIX)) {
-    const gameId = pathname.slice(WORK_PAGE_PREFIX.length, -WORK_DELETE_SUFFIX.length);
-    if (GAME_ID_PATTERN.test(gameId)) {
-      return await showDeleteConfirmation(request, env, gameId, pathname);
+export type WorkEditHandler = (request: Request, env: Env, gameId: string) => Promise<Response>;
+
+/**
+ * `/works/` の前方一致の経路の入口（#150 / #517 / #664）。
+ *
+ * **`/works/<id>/delete` を削除の確認画面へ、`/works/<id>/edit` をエディットページへ回し、それ以外は作品ページへ渡す。**
+ * 経路表に前方一致の経路を足さない理由は `src/work-delete.ts` の `WORK_DELETE_SUFFIX` にある。**id の綴りが違えば
+ * 作品ページへ渡す**——作品ページが同じ規則（{@link GAME_ID_PATTERN}）で 404 にする（`/works/x/delete` を別の断り方にしない）。
+ *
+ * **完全一致の経路（`/works/mine`・`/works/liked`）はここへ来ない**（`src/routes.ts` の `dispatch` が完全一致を先に見る）。
+ *
+ * @param edit エディットページを開く関数（無ければ `/edit` も作品ページへ渡し、綴りの誤りとして 404 になる）
+ * @returns 経路のハンドラ
+ */
+function worksPrefixHandler(edit: WorkEditHandler | null): (request: Request, env: Env) => Promise<Response> {
+  return async (request, env) => {
+    const pathname = new URL(request.url).pathname;
+    if (pathname.endsWith(WORK_DELETE_SUFFIX)) {
+      const gameId = pathname.slice(WORK_PAGE_PREFIX.length, -WORK_DELETE_SUFFIX.length);
+      if (GAME_ID_PATTERN.test(gameId)) {
+        return await showDeleteConfirmation(request, env, gameId, pathname);
+      }
     }
-  }
-  return await showWorkPage(request, env);
+    if (edit !== null && pathname.endsWith(WORK_EDIT_SUFFIX)) {
+      const gameId = pathname.slice(WORK_PAGE_PREFIX.length, -WORK_EDIT_SUFFIX.length);
+      if (GAME_ID_PATTERN.test(gameId)) {
+        return await edit(request, env, gameId);
+      }
+    }
+    return await showWorkPage(request, env, pathname.slice(WORK_PAGE_PREFIX.length));
+  };
 }
 
 /**
@@ -3673,13 +3465,13 @@ async function handleRename(request: Request, env: Env): Promise<Response> {
       : json({ error: outcome.reason }, refused.status);
   }
 
-  // POST-redirect-GET。戻り先は作品ページで、そこに新しい題名が出る。
+  // POST-redirect-GET。戻り先はエディットページで、そこに新しい題名が出る（#664。作者の操作の戻り先は作品ページではなくなった）。
   //
   // **`changed` を利用者へ出し分けない**（画面に出るのは結果の題名である）。JSON では
   // 返す——`fetch` から叩く側が「同じ題名だった」を区別できると、二度押しの扱いを
   // 呼び出し側で決められる（{@link handleUnpublish} の `firstTime` と同じ扱い）。
   return asHtml
-    ? seeOther(workPagePath(target.gameId))
+    ? seeOther(workEditPath(target.gameId))
     : json({ renamed: true, title: outcome.title, changed: outcome.changed }, 200);
 }
 
@@ -3689,7 +3481,7 @@ async function handleRename(request: Request, env: Env): Promise<Response> {
  * **鍵を `RenameRejection` で縛る**（{@link REPORT_REFUSALS} と同じ理由。`renameGame` が
  * 理由を 1 つ増やした日に、表へ足し忘れても型検査が通る形にしない）。
  */
-const RENAME_OUTCOME_REFUSALS: Readonly<
+export const RENAME_OUTCOME_REFUSALS: Readonly<
   Record<RenameRejection, { status: number; heading: string; body: string }>
 > = {
   'not-found': {
@@ -3791,7 +3583,7 @@ async function readGameTextTarget(
  * ので、40 文字の題名は最大 480 バイトである。4096 なら、貼り付けた長い文字列も
  * そのまま受けて切り詰められる。
  */
-const RENAME_MAX_BODY_BYTES = 4096;
+export const RENAME_MAX_BODY_BYTES = 4096;
 
 /**
  * 説明を書く（`POST /api/works/describe`。#388）。
@@ -3833,9 +3625,9 @@ async function handleDescribe(request: Request, env: Env): Promise<Response> {
       : json({ error: outcome.reason }, refused.status);
   }
 
-  // POST-redirect-GET。戻り先は作品ページで、そこに新しい説明が出る。
+  // POST-redirect-GET。戻り先はエディットページで、そこに新しい説明が出る（#664）。
   return asHtml
-    ? seeOther(workPagePath(target.gameId))
+    ? seeOther(workEditPath(target.gameId))
     : json({ described: true, description: outcome.description, changed: outcome.changed }, 200);
 }
 
@@ -3874,9 +3666,9 @@ async function handleRetag(request: Request, env: Env): Promise<Response> {
       : json({ error: outcome.reason }, refused.status);
   }
 
-  // POST-redirect-GET。戻り先は作品ページで、そこに新しいタグが出る。
+  // POST-redirect-GET。戻り先はエディットページで、そこに新しいタグが出る（#664）。
   return asHtml
-    ? seeOther(workPagePath(target.gameId))
+    ? seeOther(workEditPath(target.gameId))
     : json({ retagged: true, tags: outcome.tags, changed: outcome.changed }, 200);
 }
 
@@ -3885,7 +3677,7 @@ async function handleRetag(request: Request, env: Env): Promise<Response> {
  *
  * **鍵を `RetagRejection` で縛る**（{@link RENAME_OUTCOME_REFUSALS} と同じ理由）。
  */
-const RETAG_OUTCOME_REFUSALS: Readonly<
+export const RETAG_OUTCOME_REFUSALS: Readonly<
   Record<RetagRejection, { status: number; heading: string; body: string }>
 > = {
   'not-found': {
@@ -3982,7 +3774,7 @@ async function readGameTagsTarget(request: Request): Promise<GameTagsTarget> {
  *
  * **鍵を `DescribeRejection` で縛る**（{@link RENAME_OUTCOME_REFUSALS} と同じ理由）。
  */
-const DESCRIBE_OUTCOME_REFUSALS: Readonly<
+export const DESCRIBE_OUTCOME_REFUSALS: Readonly<
   Record<DescribeRejection, { status: number; heading: string; body: string }>
 > = {
   'not-found': {
@@ -4032,7 +3824,7 @@ const DESCRIBE_OUTCOME_REFUSALS: Readonly<
  * 余裕を取る（`src/account.ts` の表示名が同じ判断をしている）。上限そのものは、本文を
  * 際限なく読まないために置く。
  */
-const DESCRIBE_MAX_BODY_BYTES = 16 * 1024;
+export const DESCRIBE_MAX_BODY_BYTES = 16 * 1024;
 
 /** 通報を断ったときに出すもの。 */
 // **鍵を `ReportRejection` で縛る。** `Record<string, …>` にすると、`recordReport` が
@@ -4137,7 +3929,7 @@ export type RemoveRejection =
  * **ステータスを分岐の式で書かない**（`src/publish.ts` の `BODY_REFUSALS` と同じ理由。
  * 理由を 1 つ足したときに既定の側へ黙って落ちる形にしない）。
  */
-const REMOVE_BODY_REFUSALS: Readonly<Record<RemoveRejection, { status: number; body: string }>> = {
+export const REMOVE_BODY_REFUSALS: Readonly<Record<RemoveRejection, { status: number; body: string }>> = {
   'unsupported-content-type': { status: 415, body: '要求の形式に対応していません。' },
   'body-too-large': { status: 413, body: '要求が大きすぎます。' },
   'unreadable-body': {
@@ -4155,7 +3947,7 @@ const REMOVE_BODY_REFUSALS: Readonly<Record<RemoveRejection, { status: number; b
  *
  * `not-found` に他人の作品も含める（`unpublishGame` が区別しない）。
  */
-const UNPUBLISH_OUTCOME_REFUSALS: Readonly<
+export const UNPUBLISH_OUTCOME_REFUSALS: Readonly<
   Record<'not-found' | 'not-published', { status: number; heading: string; body: string }>
 > = {
   'not-found': {
@@ -4176,7 +3968,7 @@ const UNPUBLISH_OUTCOME_REFUSALS: Readonly<
  * @param location 遷移先
  * @returns レスポンス
  */
-function seeOther(location: string): Response {
+export function seeOther(location: string): Response {
   return new Response(null, { status: 303, headers: { location, 'cache-control': 'no-store' } });
 }
 
@@ -4191,7 +3983,7 @@ function seeOther(location: string): Response {
  * @param status ステータスコード
  * @returns レスポンス
  */
-function removeRefusal(heading: string, body: string, status: number): Response {
+export function removeRefusal(heading: string, body: string, status: number): Response {
   return html(
     `${siteHead({ title: `${heading} - Game Forge`, noindex: true })}
 <h1>${heading}</h1>
@@ -4378,26 +4170,40 @@ async function readDailyRemaining(env: Env, userId: string): Promise<number | nu
 }
 
 /**
- * 作品ページの経路（#150）。
+ * 作品ページの経路を組み立てる（#150 / #664）。
  *
  * **前方一致で登録する。** `/works/<game_id>` の id は 1 件ごとに違うので、完全一致の
  * 表では表現できない。`src/routes.ts` に `match: 'prefix'` を足したのはこのためで、
  * **既定は完全一致のままなので既存の経路は 1 つも影響を受けない。**
+ *
+ * @param edit エディットページを開く関数（#664。アプリの経路表は `src/work-edit.ts` の `workRoutes` が渡す）
+ * @returns 経路表
  */
-export const workPageRoutes: readonly Route[] = [
-  // **削除の確認画面（`/works/<id>/delete`。#517）も同じ入口から開く**（{@link handleWorksPrefix}）。
-  { method: 'GET', path: WORK_PAGE_PREFIX, match: 'prefix', handler: handleWorksPrefix },
-  // **取り下げ（#35）は完全一致である。** `/api/works/remove` は `/works/` の
-  // 前方一致に当たらない綴りにしてある（当たると作品ページの id として解釈される）。
-  { method: 'POST', path: WORK_UNPUBLISH_PATH, handler: handleUnpublish },
-  // **削除（#517）も完全一致である**（取り下げと同じ規約。`/api/works/delete` は `/works/` の前方一致に当たらない）。
-  { method: 'POST', path: WORK_DELETE_PATH, handler: handleDelete },
-  { method: 'POST', path: WORK_REPORT_PATH, handler: handleReport },
-  // **改名（#366）も完全一致である。** `/api/works/rename` は `/works/` の前方一致に
-  // 当たらない綴りにしてある（取り下げ・通報と同じ規約）。
-  { method: 'POST', path: WORK_RENAME_PATH, handler: handleRename },
-  // **説明（#388）も完全一致である**（同じ規約）。
-  { method: 'POST', path: WORK_DESCRIBE_PATH, handler: handleDescribe },
-  // **タグの付け直し（#376）も完全一致である**（同じ規約）。
-  { method: 'POST', path: WORK_RETAG_PATH, handler: handleRetag },
-];
+export function createWorkPageRoutes(edit: WorkEditHandler | null): readonly Route[] {
+  return [
+    // **削除の確認画面（`/works/<id>/delete`。#517）とエディットページ（`/works/<id>/edit`。#664）も同じ入口から開く**
+    // （{@link worksPrefixHandler}）。
+    { method: 'GET', path: WORK_PAGE_PREFIX, match: 'prefix', handler: worksPrefixHandler(edit) },
+    // **取り下げ（#35）は完全一致である。** `/api/works/remove` は `/works/` の
+    // 前方一致に当たらない綴りにしてある（当たると作品ページの id として解釈される）。
+    { method: 'POST', path: WORK_UNPUBLISH_PATH, handler: handleUnpublish },
+    // **削除（#517）も完全一致である**（取り下げと同じ規約。`/api/works/delete` は `/works/` の前方一致に当たらない）。
+    { method: 'POST', path: WORK_DELETE_PATH, handler: handleDelete },
+    { method: 'POST', path: WORK_REPORT_PATH, handler: handleReport },
+    // **改名（#366）も完全一致である。** `/api/works/rename` は `/works/` の前方一致に
+    // 当たらない綴りにしてある（取り下げ・通報と同じ規約）。
+    { method: 'POST', path: WORK_RENAME_PATH, handler: handleRename },
+    // **説明（#388）も完全一致である**（同じ規約）。
+    { method: 'POST', path: WORK_DESCRIBE_PATH, handler: handleDescribe },
+    // **タグの付け直し（#376）も完全一致である**（同じ規約）。
+    { method: 'POST', path: WORK_RETAG_PATH, handler: handleRetag },
+  ];
+}
+
+/**
+ * エディットページを持たない作品ページの経路（#664 の前の形。**単体テストが作品ページと POST の口だけを見るため**に残す）。
+ *
+ * **アプリの経路表はこれを使わない**——`src/work-edit.ts` の `workRoutes`（エディットページを渡したもの）を使う。
+ * 両方を連結すると同じ前方一致が 2 本になり、`findDuplicateRoutes` の検査が落ちる。
+ */
+export const workPageRoutes: readonly Route[] = createWorkPageRoutes(null);

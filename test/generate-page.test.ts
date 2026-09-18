@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:test';
+import { WORK_EDIT_SUFFIX } from '../src/work-edit-paths.js';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import {
@@ -706,7 +707,7 @@ describe('8.3 の検査を通っていない文字列を表示面へ持ち込ま
     }
   });
 
-  it('作品ページへの遷移は、綴りを確かめた id と固定の接頭辞だけで組み立てる（#150 / 8.3）', async () => {
+  it('エディットページへの遷移は、綴りを確かめた id と固定の接頭辞・接尾辞だけで組み立てる（#150 / 8.3 / #664）', async () => {
     const user = await seedUser('navigate');
     const script = embeddedScript(await (await openPage(await sessionCookie(user))).text());
 
@@ -714,7 +715,10 @@ describe('8.3 の検査を通っていない文字列を表示面へ持ち込ま
     const navigations = [...script.matchAll(/location\.href\s*=\s*([^;]+);/gu)].map(
       (matched) => matched[1]!.trim(),
     );
-    expect(navigations).toEqual([`${JSON.stringify(WORK_PAGE_PREFIX)} + outcome.id`]);
+    // **行き先はエディットページである**（#664。接尾辞も固定の文字列で、応答の値を混ぜない）。
+    expect(navigations).toEqual([
+      `${JSON.stringify(WORK_PAGE_PREFIX)} + outcome.id + ${JSON.stringify(WORK_EDIT_SUFFIX)}`,
+    ]);
 
     // **綴りの検査を通ってからでなければ遷移しない。** 定数を写さずに、画面が
     // 実際に埋め込んだ式そのものを見る（shared-ai-rules 12 章）。

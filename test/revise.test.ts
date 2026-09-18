@@ -31,7 +31,7 @@ import {
 } from '../src/revisions.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
-import { workPagePath } from '../src/work-page.js';
+import { workEditPath } from '../src/work-edit-paths.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -160,7 +160,7 @@ describe('推敲の受け口（5.7 / #192）', () => {
     const response = await postRevise(userId, gameId, '玉を速く', spy.pipeline);
 
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(workPagePath(gameId));
+    expect(response.headers.get('location')).toBe(workEditPath(gameId));
     expect(spy.calls).toHaveLength(1);
     // **これが推敲の要である。** 載っていなければ、差分プロンプトだけで
     // まったく別のゲームが生成される（`src/orchestrator/payload.ts`）。
@@ -205,7 +205,7 @@ describe('推敲の受け口（5.7 / #192）', () => {
       const response = await postRevise(userId, gameId, 'もう 1 回', spy.pipeline);
 
       expect(response.status).toBe(303);
-      expect(response.headers.get('location')).toBe(workPagePath(gameId));
+      expect(response.headers.get('location')).toBe(workEditPath(gameId));
       expect(spy.calls).toHaveLength(1);
       // **数えることはやめていない**（10.2 の観測に使う。#515 の scope.out）。
       expect((await revisionStatus(env, gameId)).used).toBe(reviseCount + 1);
@@ -321,7 +321,7 @@ describe('版へ戻す受け口（5.7）', () => {
     );
   }
 
-  it('戻すと作品ページへ返り、枠は減らない', async () => {
+  it('戻すとエディットページへ返り（#664）、枠は減らない', async () => {
     const userId = await createUser('restore-ok');
     const gameId = await createReadyGame(userId);
     await appendRevision(
@@ -337,7 +337,7 @@ describe('版へ戻す受け口（5.7）', () => {
     const response = await postRestore(userId, gameId, 1);
 
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(workPagePath(gameId));
+    expect(response.headers.get('location')).toBe(workEditPath(gameId));
     // **LLM を呼ばないので枠は動かない**（4.2 の 1 段目と同じ層）。
     expect((await revisionStatus(env, gameId)).used).toBe(0);
     expect(await listRevisions(env, gameId)).toHaveLength(2);
@@ -391,7 +391,7 @@ describe('版へ戻す受け口（5.7）', () => {
       const response = await postRestore(userId, gameId, 1);
 
       expect(response.status).toBe(303);
-      expect(response.headers.get('location')).toBe(workPagePath(gameId));
+      expect(response.headers.get('location')).toBe(workEditPath(gameId));
       const row = await env.DB.prepare('select source_key from games where id = ?')
         .bind(gameId)
         .first<{ source_key: string }>();

@@ -45,7 +45,9 @@ import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { PUBLIC_WORKS_PATH } from '../src/works-list.js';
-import { STALE_AFTER_SECONDS, WORK_PAGE_PREFIX, workPagePath } from '../src/work-page.js';
+import { STALE_AFTER_SECONDS, WORK_PAGE_PREFIX } from '../src/work-page.js';
+// **各行はエディットページへ移る**（#664）。
+import { workEditPath } from '../src/work-edit-paths.js';
 import { applySchema } from './helpers/schema.js';
 import { pageBodyOf } from './helpers/site-shell.js';
 
@@ -334,12 +336,12 @@ describe('一覧の中身（#152 acceptance 1・3）', () => {
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
   });
 
-  it('生成中の作品が出て、そこから作品の URL へ辿れる', async () => {
+  it('生成中の作品が出て、そこから作品のエディットページへ辿れる（#664）', async () => {
     const userId = await seedUser();
     const pending = await seedGame(userId, { generationState: 'pending' });
 
     const body = await (await openList(await sessionCookie(userId))).text();
-    expect(body).toContain(`href="${workPagePath(pending)}"`);
+    expect(body).toContain(`href="${workEditPath(pending)}"`);
     expect(body).toContain('生成中');
   });
 
@@ -471,7 +473,7 @@ describe('頁送り（#552）', () => {
     const newestFirst = (await seedGames(userId, MY_WORKS_PER_PAGE + 1)).reverse();
     const main = pageBodyOf(await (await openList(await sessionCookie(userId))).text());
     const pager = main.indexOf('<nav class="gf-pager"');
-    expect(pager).toBeGreaterThan(main.indexOf(workPagePath(newestFirst[MY_WORKS_PER_PAGE - 1]!)));
+    expect(pager).toBeGreaterThan(main.indexOf(workEditPath(newestFirst[MY_WORKS_PER_PAGE - 1]!)));
     expect(pager).toBeLessThan(main.indexOf(`href="${LIKED_WORKS_PATH}"`));
   });
 
@@ -989,7 +991,7 @@ describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
     const browse = main.indexOf(
       `<a class="gf-button gf-button-secondary gf-button-sm" href="${PUBLIC_WORKS_PATH}">公開されている作品をさがす</a>`,
     );
-    expect(liked).toBeGreaterThan(main.indexOf(workPagePath(listed)));
+    expect(liked).toBeGreaterThan(main.indexOf(workEditPath(listed)));
     expect(browse).toBeGreaterThan(liked);
   });
 
@@ -1003,7 +1005,7 @@ describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
 
     const main = pageBodyOf(await (await openList(await sessionCookie(userId))).text());
     expect(main).toContain('<ul class="gf-block gf-block-rows gf-works">');
-    const rowOf = (id: string): string => new RegExp(`<li><a class="gf-link-quiet gf-works-title" href="${workPagePath(id)}">[^<]*</a> <span class="[^"]*">[^<]*</span>`, 'u').exec(main)?.[0] ?? '';
+    const rowOf = (id: string): string => new RegExp(`<li><a class="gf-link-quiet gf-works-title" href="${workEditPath(id)}">[^<]*</a> <span class="[^"]*">[^<]*</span>`, 'u').exec(main)?.[0] ?? '';
     expect(rowOf(ready)).toContain('<span class="gf-chip">できました</span>');
     expect(rowOf(failed)).toContain('<span class="gf-chip">生成できませんでした</span>');
     expect(rowOf(working)).toContain('<span class="gf-chip gf-chip-emphasis">生成中</span>');

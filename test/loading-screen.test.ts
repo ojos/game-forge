@@ -399,24 +399,25 @@ describe('4 要素をアプリ用ホスト側に描く（7.2 を崩さないた�
     expect(document).not.toContain('content-length');
   });
 
-  it('未公開の作品にはロード中画面（4 要素）を出さず、試遊の埋め込みは作者本人にだけ出す（#575）', async () => {
-    // ロード中画面は公開済みの作品のためのものである。未公開のプレビューは
-    // `preview_key` が唯一の資格情報で、作者本人にだけ出す（5.4）。
-    //
-    // **#575 から、作者本人には公開後と同じ遊び方（`playEmbed`。`/p/` の iframe）を出す**（利用者の決定、2026-09-15）。
-    // それまでこの it は「ページに埋め込まない（リンクだけ）」を見ていたが、そのせいでスマホでパッドが出なかった。
-    // **4 要素のブロックと計上のスクリプトは、今も公開済みの作品にしか出さない。**
+  it('未公開の作品は、作者本人にだけ公開後と同じ画面をプレビューで出す（#575 / #664）', async () => {
+    // **#664 から、作者が下書きを作品ページで開くと公開後と同じ画面のプレビューになる**（2026-09-18 の利用者の決定）。
+    // 4 要素のブロックも `/p/` の埋め込みも出るが、**計上のスクリプトは置かず、`noindex` も OGP の無い形も変えない**
+    // （公開して初めて外へ出す。5.4）。上に「下書きです」の帯と「編集へ戻る」が付く。
     const { userId, id } = await seedReadyGame('draft-no-frame');
     const body = await workPage(id, await sessionCookie(userId));
-    expect(body).toContain('できました');
-    expect(body).not.toContain('gf-context');
+    expect(body).toContain('<div class="gf-block gf-draft-banner" role="note">');
+    expect(body).toContain('gf-context');
     expect(body).not.toContain(playReportScript(id));
     expect(body).toContain(`<noscript class="gf-play-noscript"><iframe class="gf-frame" src="https://${env.SANDBOX_HOST}/p/`);
+    expect(body).toContain('<meta name="robots" content="noindex">');
+    expect(body).not.toContain('og:title');
 
-    // 本人以外には埋め込みも出さない（鍵を読ませない）。
+    // 本人以外には状態だけを出す（鍵を読ませない。4 要素も出さない）。
     const anonymous = await workPage(id);
     expect(anonymous).toContain('できました');
     expect(anonymous).not.toContain('<iframe');
+    expect(anonymous).not.toContain('gf-context');
+    expect(anonymous).not.toContain('gf-draft-banner');
   });
 });
 

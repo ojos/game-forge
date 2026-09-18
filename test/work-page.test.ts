@@ -17,9 +17,7 @@ import {
   formatWasmSize,
   storedLikeCount,
   storedWasmBytes,
-  WORK_DESCRIBE_ANCHOR,
   WORK_PAGE_PREFIX,
-  WORK_RENAME_ANCHOR,
   WORK_UNPUBLISH_GAME_ID_FIELD,
   WORK_UNPUBLISH_PATH,
   workPagePath,
@@ -72,6 +70,11 @@ import { TIDY_ATTEMPTS } from '../src/source-size.js';
 import { NEWS_ARTICLES } from '../src/news-articles.js';
 import { workSourcePath } from '../src/work-source.js';
 import { playEmbed } from '../src/work-play.js';
+// **作者だけの画面はエディットページへ移った**（#664）。経路はエディットページを渡した形で開く。
+import { WORK_EDIT_FORM_ID, renderWorkEditPage, workRoutes } from '../src/work-edit.js';
+import type { WorkEditView } from '../src/work-edit.js';
+import { workEditPath } from '../src/work-edit-paths.js';
+import { WORK_SAVE_PATH } from '../src/work-save.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
@@ -172,9 +175,33 @@ async function open(path: string, cookie?: string): Promise<Response> {
     headers['cookie'] = cookie;
   }
   return await dispatch(
-    workPageRoutes,
+    workRoutes,
     new Request(`${APP_ORIGIN}${path}`, { headers }),
     testEnv(),
+  );
+}
+
+/**
+ * エディットページを、**ヘッダの状態を固定して**組み立てる（#664。{@link renderWorkPage} と同じ理由）。
+ *
+ * 作者だけの口（リフォージ・版・削除・開示・公開設定）は #664 でエディットページへ移った。描画の検査は、
+ * 作品ページの入力（`WorkPageView`）をそのまま渡し、エディットページが描くものを見る。
+ *
+ * @param view 作品ページの入力（作者の値）
+ * @param extra 作品名・説明・タグ（省略すると入力の値から作る）
+ * @returns HTML
+ */
+function renderEditPage(view: WorkPageView, extra: Partial<Omit<WorkEditView, 'work'>> = {}): string {
+  return renderWorkEditPage(
+    {
+      work: view,
+      gameId: view.workId,
+      title: view.title ?? '',
+      description: view.description ?? '',
+      tags: view.tags,
+      ...extra,
+    },
+    siteViewerAt(WORK_PAGE_PREFIX, true, null),
   );
 }
 
@@ -246,7 +273,11 @@ describe('状態は誰でも読め、詳細は本人だけが読める（#150 �
     const asStranger = await (await open(workPagePath(id))).text();
     expect(asStranger).not.toContain('ひみつのアイデア');
 
-    const asOwner = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    // **作者は生成中の作品をエディットページで読む**（#664。作品ページを開くとそちらへ送る）。
+    const redirected = await open(workPagePath(id), await sessionCookie(userId));
+    expect(redirected.status).toBe(303);
+    expect(redirected.headers.get('location')).toBe(workEditPath(id));
+    const asOwner = await (await open(workEditPath(id), await sessionCookie(userId))).text();
     expect(asOwner).toContain('ひみつのアイデア');
   });
 
@@ -262,7 +293,7 @@ describe('状態は誰でも読め、詳細は本人だけが読める（#150 �
     await claimGenerationJob(env, id, await hashJobToken(jobToken));
     await failGame(env, id, 'source-rejected');
 
-    const asOwner = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const asOwner = await (await open(workEditPath(id), await sessionCookie(userId))).text();
     expect(asOwner).toContain('生成できませんでした');
     expect(asOwner).toContain('許可していない機能');
 
@@ -295,8 +326,9 @@ describe('状態ごとの表示（#150）', () => {
         .first<{ preview_key: string }>()
     )?.preview_key;
 
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(body).toContain('できました');
+    // **作者の画面はエディットページである**（#664）。
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
+    expect(body).toContain('作品の編集');
     // **7.2 の別オリジンから配る。** アプリ用ホストで作品を描かない。
     expect(body).toContain(`https://${env.SANDBOX_HOST}/p/${previewKey}/`);
   });
@@ -383,11 +415,12 @@ describe('#150 の acceptance: 接続を切っても、あとで URL を開け�
     await claimGenerationJob(env, started.id, row!.job_token_hash);
     await completeGame(env, started.id, fakeBuildOutcome());
 
-    // **同じ URL を開き直すと結果がある。** 再送も「復帰」も要らない。
+    // **同じ URL を開き直すと結果がある。** 再送も「復帰」も要らない。**#664 から、作者には公開後と同じ画面の
+    // プレビュー（「下書きです」の帯つき）が出る。**
     const afterwards = await open(workPagePath(started.id), await sessionCookie(userId));
     expect(afterwards.status).toBe(200);
     const body = await afterwards.text();
-    expect(body).toContain('できました');
+    expect(body).toContain('<strong>下書きです。</strong>');
     expect(body).toContain('接続を切っても残る作品');
   });
 
@@ -489,7 +522,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
 
   it('作者には推敲の口が出る', async () => {
     const { userId, id } = await seedReady('owner');
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
 
     expect(body).toContain(REVISE_PATH);
     expect(body).toContain('気になるところを直す');
@@ -508,15 +541,18 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     const stranger = await seedUser('rev-stranger');
 
     for (const cookie of [undefined, await sessionCookie(stranger)]) {
-      const body = await (await open(workPagePath(id), cookie)).text();
-      expect(body).not.toContain(REVISE_PATH);
-      expect(body).not.toContain(RESTORE_PATH);
+      // **エディットページの URL でも出ない**（#664。作者以外には作品ページと同じ応答になる）。
+      for (const path of [workPagePath(id), workEditPath(id)]) {
+        const body = await (await open(path, cookie)).text();
+        expect(body).not.toContain(REVISE_PATH);
+        expect(body).not.toContain(RESTORE_PATH);
+      }
     }
   });
 
   it('日次の残枠は出し、1 作品あたりの残り回数は出さない（#515）', async () => {
     const { userId, id } = await seedReady('remaining');
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
 
     // **4.4 の文言を書き写さない。** 正本の組み立て関数と突き合わせる
     // （`src/quota.ts`。あちらが 4.4 の本文と機械照合されている）。
@@ -541,7 +577,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
         .run();
     }
 
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
     // **押せば 429 で断られる操作を、押せる形で出さない**（4.4 の裏返し）。
     expect(body).not.toContain(REVISE_PATH);
     // **残数は出したまま。** 消すと「昨日はあった口が消えた」としか読めない。
@@ -555,7 +591,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
       .bind(3, id)
       .run();
 
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
     expect(body).toContain(REVISE_PATH);
     expect(pageBodyOf(body)).not.toMatch(PER_WORK_LIMIT_WORDING);
   });
@@ -564,7 +600,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     const { userId, id } = await seedReady('running');
     await claimRevisionSlot(env, id, userId, '玉を速く', 'work-page-hash-1');
 
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
     // **二重送信をボタンの無効化ではなく「フォームが無い」ことで防ぐ**（JS を要求しない）。
     expect(body).not.toContain(REVISE_PATH);
     expect(body).toContain('リフォージしています');
@@ -623,7 +659,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
         state,
       );
 
-      const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+      const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
       expect(body).toContain('リフォージが中断した可能性があります');
       expect(body).toContain('作品はそのまま残っています');
       expect(body).not.toContain('リフォージしています');
@@ -647,7 +683,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
         state,
       );
 
-      const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+      const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
       expect(body).toContain('リフォージしています');
       expect(body).toContain('http-equiv="refresh"');
       expect(body).not.toContain('中断した可能性');
@@ -675,13 +711,13 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     }
   });
 
-  it('描画: 止まった推敲（revisionStalled）は自動更新を付けず、走っている推敲は付ける（#480）', () => {
+  it('描画: 止まった推敲（revisionStalled）は自動更新を付けず、走っている推敲は付ける（#480。#664 からエディットページ）', () => {
     const owned = { ...baseView, owner: true, revisable: false };
-    const stalled = renderWorkPage({ ...owned, revisionStalled: true });
+    const stalled = renderEditPage({ ...owned, revisionStalled: true });
     expect(stalled).not.toContain('http-equiv="refresh"');
     expect(stalled).toContain('リフォージが中断した可能性があります');
 
-    const running = renderWorkPage({ ...owned, revisionRunning: true });
+    const running = renderEditPage({ ...owned, revisionRunning: true });
     expect(running).toContain('http-equiv="refresh"');
     expect(running).toContain('リフォージしています');
     expect(running).not.toContain('中断した可能性');
@@ -692,7 +728,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     await claimRevisionSlot(env, id, userId, '玉を速く', 'work-page-hash-2');
     await failRevision(env, id, 'build-failed');
 
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
     expect(body).toContain('前回のリフォージはうまくいきませんでした');
     expect(body).toContain('作品はそのまま残っています');
     // 作品は壊れていないので、次の手直しの口はそのまま出ている。
@@ -704,7 +740,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     const cookie = await sessionCookie(userId);
 
     // 版が 1 つのうちは、戻す先が現在地しかないので出さない。
-    expect(await (await open(workPagePath(id), cookie)).text()).not.toContain(RESTORE_PATH);
+    expect(await (await open(workEditPath(id), cookie)).text()).not.toContain(RESTORE_PATH);
 
     await appendRevision(
       env,
@@ -718,7 +754,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
       .bind('builds/n/source.go', 'builds/n/game.wasm.br', 'go1.27.0', id)
       .run();
 
-    const body = await (await open(workPagePath(id), cookie)).text();
+    const body = await (await open(workEditPath(id), cookie)).text();
     expect(body).toContain('これまでの版');
     expect(body).toContain(RESTORE_PATH);
     expect(body).toContain('戻すのに生成枠は使いません');
@@ -738,7 +774,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
       '<script>alert(1)</script>',
     );
 
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
     expect(body).not.toContain('<script>alert(1)</script>');
     expect(body).toContain('&lt;script&gt;');
   });
@@ -1008,16 +1044,21 @@ describe('系統の近傍表示（5.5 / M5-3 / #34）', () => {
     expect(body).toContain('&lt;script&gt;');
   });
 
-  it('未公開の作品ページには系統の一覧を出さない', async () => {
-    // 公開済みの作品しかフォークの親になれない（5.3）ので、未公開の行に公開済みの
-    // 子は現れない。**引きに行かないことを画面の側でも固定する**（3.6 の読み取りが
-    // そのまま費用になる）。
+  it('未公開の作品ページには、作者以外に系統の一覧を出さない（作者のプレビューには公開後と同じく出す。#664）', async () => {
+    // 公開済みの作品しかフォークの親になれない（5.3）ので、作者以外が見る未公開の行には系統を出さない
+    // （**引きに行かない**。3.6 の読み取りがそのまま費用になる）。
     const { userId, id, jobToken } = await seedPending('lin-unpublished');
     await claimGenerationJob(env, id, await hashJobToken(jobToken));
     await completeGame(env, id, fakeBuildOutcome({ sourceSha256: 'sha-lin-unpublished' }));
 
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(body).not.toContain('このゲームからのフォーク');
+    const stranger = await seedUser('lin-unpublished-viewer');
+    for (const cookie of [undefined, await sessionCookie(stranger)]) {
+      expect(await (await open(workPagePath(id), cookie)).text()).not.toContain('このゲームからのフォーク');
+    }
+    // **作者のプレビューは公開後と同じ画面である**（#664）。公開をやめて下書きへ戻した作品には公開済みの子が
+    // 残りうる（5.4 の #636）ので、公開後に出る一覧をそのまま見せる。
+    const preview = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(preview).toContain('このゲームからのフォーク: 0 件');
   });
 });
 
@@ -1070,30 +1111,38 @@ describe('公開をやめて下書きへ戻す（5.4 / 確定35 / #637。もと�
     );
   }
 
-  it('作者にだけ取り下げの口が出る', async () => {
+  it('作者のエディットページにだけ、公開設定（下書きに戻す）が出る（#664）', async () => {
     const { userId, id } = await seedPublishedWork('cta');
     const stranger = await seedUser('rm-cta-stranger');
 
-    const mine = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(mine).toContain(`action="${WORK_UNPUBLISH_PATH}"`);
-    expect(mine).toContain(`<input type="hidden" name="${WORK_UNPUBLISH_GAME_ID_FIELD}" value="${id}">`);
-    // **連鎖しないことを押す前に書く**（5.3「連鎖削除は荒れるため採らない」）。
-    expect(mine).toContain('そのまま公開されたままです');
+    // **#664 から、公開をやめるのはエディットページの公開設定で「下書き」を選んで保存する操作である**
+    // （確認の画面で連鎖しないこと・試遊 URL が変わることを言う。`test/work-save.test.ts`）。
+    const mine = await (await open(workEditPath(id), await sessionCookie(userId))).text();
+    expect(mine).toContain(`action="${WORK_SAVE_PATH}"`);
+    expect(mine).toContain(`name="visibility" value="draft" form="${WORK_EDIT_FORM_ID}">`);
+    expect(mine).toContain(`name="visibility" value="published" form="${WORK_EDIT_FORM_ID}" checked>`);
+    expect(mine).toContain('公開設定を変えて保存すると、確認の画面が出ます。');
+    // 作品ページには出さない（作者にも作者以外と同じ画面を出す）。
+    expect(await (await open(workPagePath(id), await sessionCookie(userId))).text()).not.toContain(WORK_SAVE_PATH);
 
-    // 押しても 404 になる口を、他人へ出さない。
-    const theirs = await (await open(workPagePath(id), await sessionCookie(stranger))).text();
-    expect(theirs).not.toContain(WORK_UNPUBLISH_PATH);
-    const anon = await (await open(workPagePath(id))).text();
-    expect(anon).not.toContain(WORK_UNPUBLISH_PATH);
+    // 押しても 404 になる口を、他人へ出さない（エディットページの URL でも）。
+    for (const path of [workPagePath(id), workEditPath(id)]) {
+      const theirs = await (await open(path, await sessionCookie(stranger))).text();
+      expect(theirs).not.toContain(WORK_UNPUBLISH_PATH);
+      expect(theirs).not.toContain(WORK_SAVE_PATH);
+      const anon = await (await open(path)).text();
+      expect(anon).not.toContain(WORK_UNPUBLISH_PATH);
+      expect(anon).not.toContain(WORK_SAVE_PATH);
+    }
   });
 
-  it('公開をやめると作品ページへ戻り、下書きになる。子は published のまま残る（#35 / #637 の acceptance）', async () => {
+  it('公開をやめるとエディットページへ戻り（#664）、下書きになる。子は published のまま残る（#35 / #637 の acceptance）', async () => {
     const parent = await seedPublishedWork('cascade');
     const child = await seedPublishedWork('cascade-child', parent.id);
 
     const response = await postRemove(parent.id, await sessionCookie(parent.userId));
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(workPagePath(parent.id));
+    expect(response.headers.get('location')).toBe(workEditPath(parent.id));
 
     const rows = await env.DB.prepare('select id, status from games where id in (?, ?)')
       .bind(parent.id, child.id)
@@ -1109,9 +1158,10 @@ describe('公開をやめて下書きへ戻す（5.4 / 確定35 / #637。もと�
     const { userId, id } = await seedPublishedWork('back-to-draft');
     await postRemove(id, await sessionCookie(userId));
 
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    // **公開し直せる。**
-    expect(body).toContain('公開して共有');
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
+    // **公開し直せる**（#664 からは公開設定で「公開」を選んで保存する）。
+    expect(body).toContain(`name="visibility" value="draft" form="${WORK_EDIT_FORM_ID}" checked>`);
+    expect(body).toContain(`name="visibility" value="published" form="${WORK_EDIT_FORM_ID}">`);
     // **リフォージも版の復元も、下書きと同じ条件で通る**（`src/revisions.ts` は `status = 'draft'` で引く）。
     expect(body).toContain(REVISE_PATH);
     // **公開をやめる口は、もう出ない**（公開中ではない）。
@@ -1158,7 +1208,8 @@ describe('公開をやめて下書きへ戻す（5.4 / 確定35 / #637。もと�
     // 題名（プロンプト由来）は出さない。
     expect(anon).not.toContain('作品 tombstone-page');
 
-    const owner = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    // **作者はエディットページで読む**（#664。作品ページを開くとそちらへ送る）。
+    const owner = await (await open(workEditPath(id), await sessionCookie(userId))).text();
     expect(owner).toContain('この作品は公開されていません');
     expect(owner).toContain('そのまま公開されたままです');
     // **「あなたが取り下げました」と言わない**（#637。この状態を作るのは作者ではない）。
@@ -1169,8 +1220,9 @@ describe('公開をやめて下書きへ戻す（5.4 / 確定35 / #637。もと�
     const { userId, id } = await seedPublishedWork('no-cta');
     await markGameRemoved(id);
 
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    // **押せば `publishGame` が `removed` で断る操作を、押せる形で出さない。**
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
+    // **押せば `publishGame` が `removed` で断る操作を、押せる形で出さない**（#664 の公開設定も出さない）。
+    expect(body).not.toContain(WORK_SAVE_PATH);
     expect(body).not.toContain('公開して共有');
     expect(body).not.toContain(FORK_PATH);
     expect(body).not.toContain(REVISE_PATH);
@@ -1323,7 +1375,8 @@ function playRow(count: number): string {
 describe('著名 IP 名の置換を作者へ開示する（6.2 / #39）', () => {
   it('作者には開示が出る', async () => {
     const { userId, id } = await seedPending('ip-owner', 'マリオみたいな横スクロール');
-    const res = await open(`${WORK_PAGE_PREFIX}${id}`, await sessionCookie(userId));
+    // **作者だけの注意書きはエディットページに出す**（#664。作品ページは作者にも作者以外と同じものを出す）。
+    const res = await open(workEditPath(id), await sessionCookie(userId));
     const body = await res.text();
     expect(res.status).toBe(200);
     expect(body).toContain('「マリオ」');
@@ -2114,11 +2167,20 @@ describe('プレイ数（#377 / 仕様 2.3.6）', () => {
     await claimGenerationJob(env, draft.id, await hashJobToken(draft.jobToken));
     await completeGame(env, draft.id, fakeBuildOutcome({ sourceSha256: 'sha-play-draft' }));
     await env.DB.prepare('update games set play_count = 9 where id = ?').bind(draft.id).run();
-    // **作者が試遊する `/p/` は数えない**（iframe はあるがスクリプトを置かない）。
+    // **作者が試遊する `/p/` は数えない**（iframe はあるがスクリプトを置かない）。**#664 から、作者のプレビューは
+    // 公開後と同じ画面なので、引き継いだ数は出す**（公開をやめても数は引き継ぐ。5.4 の #636）。
     const draftBody = await (await open(workPagePath(draft.id), await sessionCookie(draft.userId))).text();
     expect(draftBody).toContain('/p/');
     expect(draftBody).not.toContain(PLAY_PATH);
-    expect(draftBody).not.toContain('gf-plays');
+    expect(draftBody).toContain('gf-plays');
+    // エディットページのプレビューでも数えない。
+    const editBody = await (await open(workEditPath(draft.id), await sessionCookie(draft.userId))).text();
+    expect(editBody).toContain('/p/');
+    expect(editBody).not.toContain(PLAY_PATH);
+    // 作者以外には、未公開の作品の数を出さない（状態だけを読む）。
+    const strangerBody = await (await open(workPagePath(draft.id))).text();
+    expect(strangerBody).not.toContain(PLAY_PATH);
+    expect(strangerBody).not.toContain('gf-plays');
 
     const { id, userId } = await seedPublished('removed');
     await env.DB.prepare('update games set play_count = 9 where id = ?').bind(id).run();
@@ -2235,19 +2297,26 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
     expect(panel).not.toContain('ソースコードを見る');
   });
 
-  it('未公開と取り下げた作品にはパネルを出さない', async () => {
+  it('未公開の作品は作者以外にパネルを出さず、作者のプレビューにはソースへのリンクを出さない。取り下げた作品には出さない', async () => {
     const draft = await seedPending('details-draft');
     await claimGenerationJob(env, draft.id, await hashJobToken(draft.jobToken));
     await completeGame(env, draft.id, fakeBuildOutcome({ sourceSha256: randomSha() }));
-    const draftBody = await (await open(workPagePath(draft.id), await sessionCookie(draft.userId))).text();
-    expect(panelOf(draftBody)).toBeNull();
-    expect(draftBody).not.toContain(workSourcePath(draft.id));
+    const strangerBody = await (await open(workPagePath(draft.id))).text();
+    expect(panelOf(strangerBody)).toBeNull();
+    expect(strangerBody).not.toContain(workSourcePath(draft.id));
+    // **作者のプレビューは公開後と同じ画面**（#664）だが、ソースの画面は下書きに 404 を返すので、押しても
+    // 開けないリンクは出さない（4.4）。
+    const previewBody = await (await open(workPagePath(draft.id), await sessionCookie(draft.userId))).text();
+    expect(panelOf(previewBody)).not.toBeNull();
+    expect(previewBody).not.toContain(workSourcePath(draft.id));
 
     const { id, userId } = await seedPublished('removed');
     await markGameRemoved(id);
-    const removedBody = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(panelOf(removedBody)).toBeNull();
-    expect(removedBody).not.toContain(workSourcePath(id));
+    for (const path of [workPagePath(id), workEditPath(id)]) {
+      const removedBody = await (await open(path, await sessionCookie(userId))).text();
+      expect(panelOf(removedBody), path).toBeNull();
+      expect(removedBody, path).not.toContain(workSourcePath(id));
+    }
   });
 
   it('索引の行が引けない・別の成果物を指すときは、サイズの行ごと出さない（0 と書かない）', async () => {
@@ -2305,16 +2374,17 @@ describe('詳細情報パネル（#383 / 仕様 2.3.12）', () => {
   });
 });
 
-describe('公開フォームは「ソースも公開される」ことを押す前に言う（#383 の決定 1）', () => {
-  it('公開のボタンと同じフォームの中に、ボタンより前にある', async () => {
+describe('公開する前に「ソースも公開される」ことを言う（#383 の決定 1 / #664）', () => {
+  it('エディットページの公開設定が、公開するとソースコードが読めるようになることを言う', async () => {
+    // **確認の画面（公開のボタンより前に `PUBLISH_SOURCE_NOTICE` を出す）は `test/work-save.test.ts` が見る。**
+    // ここは、公開設定を選ぶ時点で既に言っていることを見る。
     const { userId, id, jobToken } = await seedPending('publish-source-notice');
     await claimGenerationJob(env, id, await hashJobToken(jobToken));
     await completeGame(env, id, fakeBuildOutcome({ sourceSha256: 'sha-publish-source-notice' }));
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    const form = /<form method="post" action="[^"]*publish[^"]*">[\s\S]*?<\/form>/u.exec(body)?.[0] ?? '';
-    expect(form, '公開フォームが無い').toContain('公開して共有');
-    expect(form).toContain(PUBLISH_SOURCE_NOTICE);
-    expect(form.indexOf(PUBLISH_SOURCE_NOTICE)).toBeLessThan(form.indexOf('<button'));
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
+    const field = /<fieldset class="gf-edit-visibility[^"]*">[\s\S]*?<\/fieldset>/u.exec(body)?.[0] ?? '';
+    expect(field, '公開設定が無い').toContain('公開');
+    expect(field).toContain('ソースコードも読めるようになり');
     expect(PUBLISH_SOURCE_NOTICE).toContain('ソースコード');
   });
 });
@@ -2382,10 +2452,20 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
       expect(fork.slice(0, fork.indexOf('</form>')), name).toContain('gf-button-primary');
       expect(bareButtons(body), name).toEqual([]);
     }
-    // 作者本人には設定の口（副のボタン）が並ぶが、主は増えない。
-    expect(owner).toContain('<section class="gf-block gf-block-rows gf-work-settings" aria-label="作品の設定">');
-    expect(owner).toContain('<button type="submit" class="gf-button gf-button-secondary">公開をやめて下書きに戻す</button>');
+    // **作者本人に足すのは「編集する」の 1 行（小さい副のボタン）だけで、主は増えない**（#664。設定の口はエディットページへ移した）。
+    expect(owner).toContain(
+      `<p class="gf-work-edit-link"><a class="gf-button gf-button-secondary gf-button-sm" href="${workEditPath(id)}">編集する</a></p>`,
+    );
+    expect(owner).not.toContain('gf-work-settings');
+    expect(member).not.toContain('gf-work-edit-link');
     expect(bareButtons(anonymous)).toEqual([]);
+
+    // エディットページの主は「保存」の 1 つだけ（#664）。
+    const edit = await (await open(workEditPath(id), await sessionCookie(userId))).text();
+    expect(primaries(edit)).toEqual([
+      `<button type="submit" form="${WORK_EDIT_FORM_ID}" class="gf-button gf-button-primary">保存</button>`,
+    ]);
+    expect(bareButtons(edit)).toEqual([]);
   });
 
   it('描画: 口がすべて出ている状態でも主は 1 つで、ほかの動作と導線は副（いいね・設定・通報・もっと見る・ソース）', () => {
@@ -2421,20 +2501,16 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
 
     expect(body.match(PRIMARY) ?? []).toHaveLength(1);
     expect(bareButtons(body)).toEqual([]);
-    // いいね・もっと見る・前へ・ソース・通報は小さい副のボタン。設定の 5 つは副のボタン。
+    // いいね・もっと見る・前へ・ソース・通報は小さい副のボタン。
     expect(body).toContain(`<button type="submit" class="gf-button gf-button-secondary gf-button-sm">いいね</button>`);
     expect(body).toContain('<button type="submit" class="gf-button gf-button-secondary gf-button-sm">通報する</button>');
-    for (const label of ['スクリーンショットを撮り直す', 'この名前にする', 'この説明にする', 'このタグにする', '公開をやめて下書きに戻す']) {
-      expect(body, label).toContain(`<button type="submit" class="gf-button gf-button-secondary">${label}</button>`);
-    }
-    // 設定は 1 つのブロックの行で、並びは #474 の前と同じ（撮り直し → 作品名 → 説明 → タグ → 公開をやめる）。
-    const settings = body.slice(body.indexOf('gf-work-settings'));
-    // **見出しの属性を綴りに含めない**——改名の見出しは飛び先の `id` と `tabindex` を持つ（#600）。
-    const order = ['スクリーンショット', '作品名を変える', '作品の説明を書く', 'タグを付け直す', '公開をやめる'].map((heading) =>
-      settings.indexOf(`>${heading}</h3>`),
-    );
-    expect(order.every((at) => at > 0)).toBe(true);
-    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // **作者だけの設定は作品ページに描かない**（#664。値が入っていてもエディットページが描く）。
+    expect(body).not.toContain('gf-work-settings');
+    const edit = renderEditPage({ ...baseView, published: true, owner: true, recapturableId: id, playUrl: 'https://sandbox.example/g/x/', shareUrl: `https://app.example${workPagePath(id)}` });
+    expect(edit.match(PRIMARY) ?? []).toHaveLength(1);
+    expect(bareButtons(edit)).toEqual([]);
+    expect(edit).toContain('<button type="submit" class="gf-button gf-button-secondary">スクリーンショットを撮り直す</button>');
+    expect(edit).toContain(`<button type="reset" form="${WORK_EDIT_FORM_ID}" class="gf-button gf-button-secondary">変更を元に戻す</button>`);
     // タグはチップ、共有する URL はブロックの面、改造の一覧はブロックの行、パネルは `.gf-kv`。
     expect(body).toContain('<p class="gf-work-tags"><span class="gf-work-tags-label">タグ</span><a class="gf-chip"');
     expect(body).toContain(`<p class="gf-block gf-work-share-url"><code>https://app.example${workPagePath(id)}</code></p>`);
@@ -2459,16 +2535,23 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     expect(body).toContain('<p class="gf-fork">このゲームをフォークする</p>');
   });
 
-  it('未公開の作品（作者）の主は「公開して共有」だけで、手直し・版に戻す・改名は副', async () => {
+  it('未公開の作品（作者）のエディットページの主は「保存」だけで、リフォージ・変更を元に戻すは副（#664）', async () => {
     const { userId, id, jobToken } = await seedPending('parts-draft');
     await claimGenerationJob(env, id, await hashJobToken(jobToken));
     await completeGame(env, id, fakeBuildOutcome({ sourceSha256: 'sha-parts-draft' }));
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
 
-    expect(primaries(body)).toEqual(['<button type="submit" class="gf-button gf-button-primary">公開して共有</button>']);
+    expect(primaries(body)).toEqual([
+      `<button type="submit" form="${WORK_EDIT_FORM_ID}" class="gf-button gf-button-primary">保存</button>`,
+    ]);
     expect(bareButtons(body)).toEqual([]);
-    expect(body).toContain('<div class="gf-block gf-work-state">\n<h2>できました</h2>');
-    expect(body).toContain('<button type="submit" class="gf-button gf-button-secondary">この名前にする</button>');
+    expect(body).toContain('<button type="submit" class="gf-button gf-button-secondary">この内容でリフォージする</button>');
+
+    // **作者の作品ページ（下書きのプレビュー）の主は「フォークする」の見た目だけで、押せるフォームは出さない**
+    // （下書きはフォークの親になれない。5.3）。主のボタンは 0 個である。
+    const preview = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(primaries(preview)).toEqual([]);
+    expect(bareButtons(preview)).toEqual([]);
   });
 
   it('状態の知らせ（生成中・生成できませんでした・取り下げ・見つかりません）は面のブロック', async () => {
@@ -2762,10 +2845,10 @@ describe('公開前の作品ページでも、公開後と同じ遊び方にす�
     return body.split(needle).length - 1;
   }
 
-  it('作者本人には、公開後と同じ playEmbed（/p/ の URL・作品のキー・向き）を 1 つだけ出し、試遊 URL のリンクと説明を残す', async () => {
+  it('作者本人のエディットページには、公開後と同じ playEmbed（/p/ の URL・作品のキー・向き）を 1 つだけ出し、試遊 URL と説明を残す（#664）', async () => {
     const { userId, id, playUrl } = await seedDraftWithKeys('owner');
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(body).toContain('できました');
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
+    expect(body).toContain('<section class="gf-edit-preview" aria-label="プレビュー">');
 
     // **公開後の画面と 1 文字も違わない埋め込み**（`src/work-play.ts` の 1 か所から組み立てる。写しを持たない）。
     expect(body).toContain(playEmbed(playUrl, id, DRAFT_CODES, DRAFT_HELD, [], 'landscape'));
@@ -2783,25 +2866,29 @@ describe('公開前の作品ページでも、公開後と同じ遊び方にす�
     expect(body).toContain('data-code="Space"');
     expect(body).toContain('<div class="gf-play-pad gf-play-pad-stick" data-stick-left="ArrowLeft" data-stick-right="ArrowRight">');
     expect(body).toContain(`data-orientation="landscape" data-orientation-memory="gf-orientation:${id}"`);
-    // 口は状態のブロックの中、埋め込みはブロックの外（直後）。覆いを `.gf-block` の中へ入れない。
+    // 口が先、覆いが後。**覆いを `.gf-block` の中へ入れない**（プレビューの区画は面を持たない）。
     const entryAt = body.indexOf('<div class="gf-work-draft-play">');
     const overlayAt = body.indexOf('<div class="gf-play-overlay"');
-    const stateEnd = body.indexOf('</div>\n<noscript class="gf-play-noscript">');
-    expect(entryAt).toBeGreaterThan(body.indexOf('<div class="gf-block gf-work-state">'));
-    expect(stateEnd).toBeGreaterThan(entryAt);
-    expect(overlayAt).toBeGreaterThan(stateEnd);
+    expect(overlayAt).toBeGreaterThan(entryAt);
+    expect(body).not.toContain('<section class="gf-edit-preview gf-block"');
+    // **まとめて保存するフォームの外に置く**（パッドのキーは `<button>` なので、フォームの中に入れない）。
+    const formEnd = body.indexOf('</form>', body.indexOf(`<form id="${WORK_EDIT_FORM_ID}"`));
+    expect(entryAt).toBeGreaterThan(formEnd);
 
-    // 試遊 URL のリンクと「あなただけが知っている URL」の説明は残す（人に渡す URL）。
-    expect(body).toContain(`<a href="${playUrl}">試遊 URL</a>`);
-    expect(body).toContain('<strong>あなただけが知っている URL</strong>');
+    // 試遊 URL と「あなただけが知っている URL」の説明は残す（人に渡す URL）。
+    expect(body).toContain(`<p class="gf-block gf-work-share-url"><code>${playUrl}</code></p>`);
+    expect(body).toContain('試遊 URL（あなただけが知っている URL です）');
     expect(body).toContain('この URL を人に渡すと');
-    // 公開の口は今のまま出る。
-    expect(body).toContain('公開して共有');
+
+    // **作品ページの下書きのプレビュー（#664）も同じ埋め込みを持つ。**
+    const preview = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    expect(preview).toContain(playEmbed(playUrl, id, DRAFT_CODES, DRAFT_HELD, [], 'landscape'));
+    expect(countOf(preview, '<iframe')).toBe(1);
   });
 
   it('試遊（/p/）は数えない: 計上のスクリプトも数も出さない', async () => {
     const { userId, id } = await seedDraftWithKeys('no-count');
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
     expect(body, '覆いが無い（検査の前提が崩れている）').toContain('gf-play-overlay');
     expect(body).not.toContain(PLAY_PATH);
     expect(body).not.toContain(playReportScript(id));
@@ -2820,22 +2907,22 @@ describe('公開前の作品ページでも、公開後と同じ遊び方にす�
     }
   });
 
-  it('試遊 URL を組み立てられないときは今のまま（埋め込まない）', () => {
-    const body = renderWorkPage({ ...baseView, owner: true, playUrl: null, publishableId: baseView.workId });
-    expect(body).toContain('試遊 URL を組み立てられませんでした');
+  it('試遊 URL を組み立てられないときは埋め込まない（エディットページ。#664）', () => {
+    const body = renderEditPage({ ...baseView, owner: true, playUrl: null, publishableId: baseView.workId });
+    expect(body).toContain('遊ぶための URL を組み立てられませんでした');
     expect(body).not.toContain('gf-play-');
     expect(body).not.toContain('<iframe');
   });
 
   it('リフォージの実行中（画面が自動で再読み込みされる間）は埋め込まず、リンクだけを出す', () => {
     const playUrl = 'https://sandbox.example.invalid/p/0123456789abcdef0123456789abcdef/';
-    const running = renderWorkPage({ ...baseView, owner: true, playUrl, revisionRunning: true });
+    const running = renderEditPage({ ...baseView, owner: true, playUrl, revisionRunning: true });
     expect(running).toContain('http-equiv="refresh"');
     expect(running).not.toContain('gf-play-');
-    expect(running).toContain(`<a href="${playUrl}">この作品を遊ぶ</a>`);
-    expect(running).toContain('<strong>あなただけが知っている URL</strong>');
+    expect(running).toContain(`<a href="${playUrl}">いまの版を遊ぶ</a>`);
+    expect(running).toContain('試遊 URL（あなただけが知っている URL です）');
     // 対照: 実行中でなければ埋め込む。
-    expect(renderWorkPage({ ...baseView, owner: true, playUrl })).toContain('gf-play-overlay');
+    expect(renderEditPage({ ...baseView, owner: true, playUrl })).toContain('gf-play-overlay');
   });
 
   it('口のパネルはタッチ端末でだけ見せ、埋め込みは状態のブロックとの間を空ける（app.css）', () => {
@@ -2885,18 +2972,22 @@ describe('作品ページの出力に旧い呼び名（改造・推敲・手直�
     ['未公開（リフォージの中断）', { ...draftOwner, revisionStalled: true }],
   ];
 
+  // **作者の画面はエディットページでも見る**（#664。作者だけの口はそちらへ移った）。
   for (const [name, view] of cases) {
     it(name, () => {
       expect(oldOperationNamesIn(renderWorkPage(view)), name).toEqual([]);
+      if (view.owner) {
+        expect(oldOperationNamesIn(renderEditPage(view)), `${name}（エディットページ）`).toEqual([]);
+      }
     });
   }
 
   it('検査が空振りしていない: 同じ画面にフォーク・リフォージの語が出ている', () => {
     expect(renderWorkPage({ ...published, signedIn: true, dailyRemaining: 1 })).toContain('この内容でフォークする');
-    expect(renderWorkPage(draftOwner)).toContain('この内容でリフォージする');
-    expect(renderWorkPage({ ...draftOwner, revisionRunning: true })).toContain('リフォージしています');
-    expect(renderWorkPage({ ...draftOwner, revisionError: 'build-failed' })).toContain('前回のリフォージはうまくいきませんでした');
-    expect(renderWorkPage({ ...draftOwner, revisionStalled: true })).toContain('リフォージが中断した可能性があります');
+    expect(renderEditPage(draftOwner)).toContain('この内容でリフォージする');
+    expect(renderEditPage({ ...draftOwner, revisionRunning: true })).toContain('リフォージしています');
+    expect(renderEditPage({ ...draftOwner, revisionError: 'build-failed' })).toContain('前回のリフォージはうまくいきませんでした');
+    expect(renderEditPage({ ...draftOwner, revisionStalled: true })).toContain('リフォージが中断した可能性があります');
     expect(renderWorkPage(published)).toContain('このゲームからのフォーク: 1 件');
   });
 });
@@ -2968,7 +3059,7 @@ describe('デスクトップの操作の案内（#599 / M16-1 / 仕様 3.9.11）
     expect(await (await open(workPagePath(broken), await sessionCookie(userId))).text()).not.toContain('gf-key-legend');
   });
 
-  it('作者の公開前の完成画面では、埋め込みの直後・設定のブロックの手前に出る', async () => {
+  it('作者のエディットページでは、プレビューの埋め込みの直後・設定のブロックの手前に出る（#664）', async () => {
     const { userId, id, jobToken } = await seedPending('legend-draft');
     await claimGenerationJob(env, id, await hashJobToken(jobToken));
     const sha = [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -2978,8 +3069,8 @@ describe('デスクトップの操作の案内（#599 / M16-1 / 仕様 3.9.11）
     )
       .bind(`builds/${sha}/source.go`, JSON.stringify(['ArrowUp', 'Space']))
       .run();
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(body).toContain('できました');
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
+    expect(body).toContain('<section class="gf-edit-preview" aria-label="プレビュー">');
     expect(legendLabelsOf(body)).toEqual(['↑', 'Space']);
     const legendAt = body.indexOf('<p class="gf-key-legend">');
     expect(legendAt).toBeGreaterThan(body.indexOf('<noscript class="gf-play-noscript">'));
@@ -2987,122 +3078,69 @@ describe('デスクトップの操作の案内（#599 / M16-1 / 仕様 3.9.11）
   });
 });
 
-describe('完成画面の題名の直下から改名へ飛ぶ（#600 / M16-2 / 仕様 5.4）', () => {
+describe('作品名と説明は、エディットページの最初の欄で直せる（#600 / #616 を #664 が置き換えた）', () => {
   /**
-   * 完成した未公開の作品を 1 つ作る。
+   * 完成した作品を 1 つ作る。
    *
    * @param suffix 利用者と作品を分ける接尾辞
+   * @param publish 公開するか
    * @returns 作者の id と作品 id
    */
-  async function seedReadyDraft(suffix: string): Promise<{ userId: string; id: string }> {
-    const { userId, id, jobToken } = await seedPending(`rename-jump-${suffix}`);
+  async function seedReadyWork(suffix: string, publish: boolean): Promise<{ userId: string; id: string }> {
+    const { userId, id, jobToken } = await seedPending(`edit-fields-${suffix}`);
     await claimGenerationJob(env, id, await hashJobToken(jobToken));
     await completeGame(env, id, fakeBuildOutcome({}));
+    if (publish) {
+      expect((await publishGame(env, id, userId)).ok).toBe(true);
+    }
     return { userId, id };
   }
 
-  it('作者の完成画面では、題名（h1）の直後にリンクが 1 つあり、飛び先の id が実在する', async () => {
-    const { userId, id } = await seedReadyDraft('owner');
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+  it('作者のエディットページでは、作品名の欄がフォームの最初にあり、説明の欄がその次にある', async () => {
+    // **#600（題名の直下から改名へ飛ぶ 1 行）と #616（説明が空のあいだの案内）が埋めていた穴は、欄そのものが
+    // 画面の上に来たことで無くなった。** 飛ぶ 1 行も案内も、作品ページにもエディットページにも出さない。
+    for (const publish of [false, true]) {
+      const { userId, id } = await seedReadyWork(publish ? 'published' : 'draft', publish);
+      const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
+      const form = body.slice(body.indexOf(`<form id="${WORK_EDIT_FORM_ID}"`));
+      const titleAt = form.indexOf('<label for="work-title">作品名</label>');
+      const descriptionAt = form.indexOf('<label for="work-description">説明</label>');
+      expect(titleAt, String(publish)).toBeGreaterThan(0);
+      expect(descriptionAt, String(publish)).toBeGreaterThan(titleAt);
+      // フォームの中で、作品名より前にあるのは作品 id の hidden だけである。
+      expect(form.slice(0, titleAt).match(/<(input|textarea|select)\b/gu) ?? [], String(publish)).toHaveLength(1);
+      expect(body).not.toContain('gf-work-rename-jump');
+      expect(body).not.toContain('gf-work-describe-invite');
 
-    const jump = `<p class="gf-work-rename-jump"><a href="#${WORK_RENAME_ANCHOR}">作品名を変える</a></p>`;
-    expect(body).toContain(jump);
-    // **h1 の直後である**（間に何も挟まない）。h1 は共通の描画が出しているので、ここが題名の直下になる。
-    expect(body).toMatch(new RegExp(`</h1>\\n${jump.replace(/[.*+?^$()|[\]\\]/gu, '\\$&')}`, 'u'));
-    // 飛び先が実在する（押しても何も起きないリンクを出さない。4.4）。
-    expect(body).toContain(`<h3 id="${WORK_RENAME_ANCHOR}" tabindex="-1">作品名を変える</h3>`);
-    // リンクは 1 つだけ（設定のブロックの見出しと二重に出さない）。
-    expect(body.split(`href="#${WORK_RENAME_ANCHOR}"`).length - 1).toBe(1);
+      const page = await (await open(workPagePath(id), await sessionCookie(userId))).text();
+      expect(page).not.toContain('gf-work-rename-jump');
+      expect(page).not.toContain('gf-work-describe-invite');
+    }
   });
 
-  it('「公開して共有」のフォームと文言は 1 文字も変わっていない（5.4 の 1 タップを増やさない）', async () => {
-    const { userId, id } = await seedReadyDraft('publish-untouched');
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-    expect(body).toContain('>公開して共有</button>');
-    expect(body).toContain('遊んでみて、よければ公開できます。');
-    // **飛ぶ 1 行は状態のブロックの外（手前）にある。** 主のボタンの面へ別の導線を並べない（#474）。
-    expect(body.indexOf('gf-work-rename-jump')).toBeLessThan(body.indexOf('<div class="gf-block gf-work-state">'));
+  it('作者以外（未ログイン・別の利用者）には、作品名と説明の欄を出さない', async () => {
+    const { id } = await seedReadyWork('viewer', true);
+    const other = await seedUser('edit-fields-other');
+    for (const cookie of [undefined, await sessionCookie(other)]) {
+      for (const path of [workPagePath(id), workEditPath(id)]) {
+        const body = await (await open(path, cookie)).text();
+        expect(body, path).not.toContain('id="work-title"');
+        expect(body, path).not.toContain('id="work-description"');
+      }
+    }
   });
 
-  it('改名できない相手には出さない（本人でない・生成中・取り下げ済み）', async () => {
-    // 本人でない（未ログイン）。
-    const { id } = await seedReadyDraft('not-owner');
-    expect(await (await open(workPagePath(id))).text()).not.toContain('gf-work-rename-jump');
+  it('生成中・取り下げ済みの作品では、作者のエディットページにも欄を出さない（改名できない相手には出さない）', async () => {
+    const { userId: runningUser, id: running } = await seedPending('edit-fields-running');
+    const runningBody = await (await open(workEditPath(running), await sessionCookie(runningUser))).text();
+    expect(runningBody).toContain('生成中です');
+    expect(runningBody).not.toContain('id="work-title"');
 
-    // 生成中（完成していない）。作者本人でも出さない。
-    const { userId: runningUser, id: running } = await seedPending('rename-jump-running');
-    const body = await (await open(workPagePath(running), await sessionCookie(runningUser))).text();
-    expect(body).not.toContain('gf-work-rename-jump');
-
-    // **取り下げ済み**（PR #608 の Copilot の指摘）。いまは 2 つの理由で出ない——`renamableId` が
-    // null になり、画面も `readySection` ではなくなる。**どちらか片方を変えた日に気づけるようにする。**
-    const { userId: removedUser, id: removed } = await seedReadyDraft('removed');
-    expect((await publishGame(env, removed, removedUser)).ok).toBe(true);
+    const { userId: removedUser, id: removed } = await seedReadyWork('removed', true);
     await markGameRemoved(removed);
-    const removedBody = await (await open(workPagePath(removed), await sessionCookie(removedUser))).text();
+    const removedBody = await (await open(workEditPath(removed), await sessionCookie(removedUser))).text();
     expect(removedBody).toContain('この作品は公開されていません');
-    expect(removedBody).not.toContain('gf-work-rename-jump');
-    expect(removedBody).not.toContain(`href="#${WORK_RENAME_ANCHOR}"`);
-  });
-});
-
-describe('説明が空のあいだ、作者に説明を書く口への案内を出す（#616 / M16-3 / 仕様 5.4）', () => {
-  /** 案内の 1 行（本文の列に出る `<p>`）。 */
-  const INVITE = '<p class="gf-work-describe-invite">';
-
-  /**
-   * 公開済みの作品を 1 つ作る。
-   *
-   * @param suffix 利用者と作品を分ける接尾辞
-   * @returns 作者の id と作品 id
-   */
-  async function seedPublished(suffix: string): Promise<{ userId: string; id: string }> {
-    const { userId, id, jobToken } = await seedPending(`describe-invite-${suffix}`);
-    await claimGenerationJob(env, id, await hashJobToken(jobToken));
-    await completeGame(env, id, fakeBuildOutcome({}));
-    expect((await publishGame(env, id, userId)).ok).toBe(true);
-    return { userId, id };
-  }
-
-  it('説明が空の公開済みの作品を作者本人で開くと案内が出て、飛び先の id が実在する', async () => {
-    const { userId, id } = await seedPublished('empty');
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-
-    expect(body).toContain(INVITE);
-    expect(body).toContain(`<a href="#${WORK_DESCRIBE_ANCHOR}">作品の説明を書く</a>`);
-    // 飛び先が実在する（押しても何も起きないリンクを出さない。4.4）。
-    expect(body).toContain(`<h3 id="${WORK_DESCRIBE_ANCHOR}" tabindex="-1">作品の説明を書く</h3>`);
-    // 案内は本文の列（設定のブロックより前）にある。
-    expect(body.indexOf(INVITE)).toBeLessThan(body.indexOf('gf-work-settings'));
-  });
-
-  it('説明を書いた後は出ない（書けば消える）', async () => {
-    const { userId, id } = await seedPublished('written');
-    expect((await describeGame(env, id, userId, '左右キーで動かします。', 2_000)).ok).toBe(true);
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-
-    expect(body).not.toContain(INVITE);
-    // 説明そのものは出ており、飛び先（フォームの見出し）は作者なので残る。
-    expect(body).toContain('左右キーで動かします。');
-    expect(body).toContain(`<h3 id="${WORK_DESCRIBE_ANCHOR}" tabindex="-1">作品の説明を書く</h3>`);
-  });
-
-  it('閲覧者には 1 バイトも出さない（未ログイン・別の利用者）', async () => {
-    const { id } = await seedPublished('viewer');
-    expect(await (await open(workPagePath(id))).text()).not.toContain('gf-work-describe-invite');
-
-    const other = await seedUser('describe-invite-other');
-    const body = await (await open(workPagePath(id), await sessionCookie(other))).text();
-    expect(body).not.toContain('gf-work-describe-invite');
-  });
-
-  it('未公開の完成画面には出さない（説明は公開後にしか書けない。5.4 を変えない）', async () => {
-    const { userId, id, jobToken } = await seedPending('describe-invite-draft');
-    await claimGenerationJob(env, id, await hashJobToken(jobToken));
-    await completeGame(env, id, fakeBuildOutcome({}));
-    const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
-
-    expect(body).toContain('できました');
-    expect(body).not.toContain('gf-work-describe-invite');
+    expect(removedBody).not.toContain('id="work-title"');
+    expect(removedBody).not.toContain(WORK_SAVE_PATH);
   });
 });

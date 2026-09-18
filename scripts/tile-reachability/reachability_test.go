@@ -12,6 +12,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -44,6 +46,26 @@ func room(t *testing.T, rep Report, n int) Room {
 }
 
 func ints(xs ...int) []int { return xs }
+
+// 3 版の仕込みが本番の生成物そのものであることを、R2 のキー（builds/<sha256>/source.go）の sha256 で固定する。
+// 仕込みは意図して壊れた生成物なので差分としてはレビューしない（testdata/.gitattributes）。代わりにここで中身を縛る。
+func TestFixturesAreProductionSources(t *testing.T) {
+	want := map[string]string{
+		"v1-fdcb7cf3.go.txt": "fdcb7cf369ac9302ffd41f0f13e77305d5a095c08ace09016109131e3eef28d6",
+		"v2-6d9fc343.go.txt": "6d9fc34390bc2dfe9ea5c8d2a3a5348529606a25a37f34729dedeb6d4330839a",
+		"v3-7e063858.go.txt": "7e0638584443c497565ffac4e907b19b42956de0c33eb56790fecf14382962bf",
+	}
+	for name, sum := range want {
+		src, err := os.ReadFile(filepath.Join("testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := sha256.Sum256(src)
+		if hex.EncodeToString(got[:]) != sum {
+			t.Errorf("%s の sha256 が R2 のキー builds/%s/source.go と合わない", name, sum)
+		}
+	}
+}
 
 // 版 1: 2・3 面に届かない。
 func TestVersion1_Rooms2And3Unreachable(t *testing.T) {

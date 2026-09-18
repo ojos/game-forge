@@ -205,10 +205,12 @@ describe('作品ページは作者にも作者以外と同じ画面を出す（#
    */
   function normalized(html: string): string {
     return pageBodyOf(html)
-      .replace(/<p class="gf-work-edit-link">[\s\S]*?<\/p>\n/u, '')
+      .replace(/<a class="gf-work-edit-link[^"]*" href="[^"]*">編集する<\/a>/u, '')
       .replace(/\n<form class="gf-like"[\s\S]*?<\/form>/u, '')
       .replace(/\n<div class="gf-work-like">\n<\/div>/u, '')
-      .replace(/\n<details class="gf-report">[\s\S]*?<\/details>/u, '');
+      .replace(/\n<details class="gf-report" id="report">[\s\S]*?<\/details>/u, '')
+      // 「…」メニューの「この作品を通報する」の項目（#665 / PR #674。自分の作品には押せないので作者には出さない）。
+      .replace(/\n<li><a class="gf-link-quiet" href="#report">この作品を通報する<\/a><\/li>/u, '');
   }
 
   it('公開作品の作品ページは、作者に出す HTML と作者以外に出す HTML が「編集する」以外で一致する', async () => {
@@ -219,7 +221,8 @@ describe('作品ページは作者にも作者以外と同じ画面を出す（#
     const otherHtml = await (await open(workPagePath(id), await sessionCookie(other))).text();
 
     // 作者には「編集する」が出て、作者以外には出ない。
-    const editLine = `<p class="gf-work-edit-link"><a class="gf-button gf-button-secondary gf-button-sm" href="${workEditPath(id)}">編集する</a></p>`;
+    // **#665 から作者の行の中**（#664 では題名の直下の 1 行に仮置きしていた）。
+    const editLine = `<a class="gf-work-edit-link gf-button gf-button-secondary gf-button-sm" href="${workEditPath(id)}">編集する</a>`;
     expect(ownerHtml).toContain(editLine);
     expect(otherHtml).not.toContain('gf-work-edit-link');
     // 作者以外には押せる口（いいね・通報）があり、作者には無い（自分の作品には押せない）。
@@ -239,7 +242,12 @@ describe('作品ページは作者にも作者以外と同じ画面を出す（#
     const ownerHtml = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     const anonHtml = await (await open(workPagePath(id))).text();
     const stripFork = (html: string): string =>
-      normalized(html).replace(/<p class="gf-fork">[\s\S]*?<\/div>\n<\/div>/u, '<FORK>');
+      normalized(html)
+        // 開く「フォークする」は行の外（PR #674）、未ログインの導線は行の中に置く。どちらも外して比べる。
+        .replace(/\n<details class="gf-fork-open">[\s\S]*?<\/details>/u, '')
+        .replace(/<a class="gf-fork-link[^>]*>[^<]*<\/a>/u, '')
+        .replace(' gf-watch-author-forkable', '')
+        .replace(/\n<p class="gf-fork-note">フォークには招待が必要です。[^<]*<\/p>/u, '');
     expect(stripFork(ownerHtml)).toBe(stripFork(anonHtml));
   });
 });
@@ -254,9 +262,9 @@ describe('下書きを作者が作品ページで開くと帯が出る。作者�
     expect(body).toContain('<strong>下書きです。</strong>');
     expect(body).toContain(`<a class="gf-button gf-button-secondary gf-button-sm" href="${workEditPath(id)}">編集へ戻る</a>`);
     // 帯は題名（h1）より上にある。
-    expect(body.indexOf('gf-draft-banner')).toBeLessThan(body.indexOf('<h1>'));
-    // 公開後と同じ本文（4 要素のブロック・操作・系統）。「公開しています」とは言わない。
-    expect(body).toContain('<div class="gf-context gf-block">');
+    expect(body.indexOf('gf-draft-banner')).toBeLessThan(body.indexOf('<h1 class="gf-watch-title">'));
+    // 公開後と同じ本文（#665 の視聴ページの配置・系統）。「公開しています」とは言わない。
+    expect(body).toContain('<div class="gf-watch-byline">');
     expect(body).toContain('このゲームからのフォーク: 0 件');
     expect(body).not.toContain('<h2>公開しています</h2>');
     // 公開していないので、検索避けのまま・OGP のメタタグも出さない（5.4）。
@@ -275,7 +283,7 @@ describe('下書きを作者が作品ページで開くと帯が出る。作者�
       expect(body).not.toContain('gf-draft-banner');
       expect(body).not.toContain('ひみつの題名 acc5-stranger');
       expect(body).not.toContain('/p/');
-      expect(body).not.toContain('gf-context');
+      expect(body).not.toContain('gf-watch-author');
     }
   });
 
@@ -283,7 +291,7 @@ describe('下書きを作者が作品ページで開くと帯が出る。作者�
     const { userId, id } = await seedWork('acc5-published', 'published');
     const body = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     expect(body).not.toContain('gf-draft-banner');
-    expect(body).toContain('<h2>公開しています</h2>');
+    expect(body).toContain('<div class="gf-watch-byline">');
   });
 });
 
@@ -397,16 +405,17 @@ describe('エディットページのパンくず（PR #671。2026-09-18 の利�
 });
 
 describe('下書きのプレビューには、フォークの見出しと説明を出さない（PR #671。2026-09-18 の利用者の決定）', () => {
-  it('作者が下書きを作品ページで開いても「このゲームをフォークする」の塊が無い。公開後は出る', async () => {
+  it('作者が下書きを作品ページで開いても「フォークする」の塊が無い。公開後は出る（#665 の作者の行でも保つ）', async () => {
     const { userId, id } = await seedWork('no-fork-cta', 'draft');
     const preview = await (await open(workPagePath(id), await sessionCookie(userId))).text();
     expect(preview).toContain('gf-draft-banner');
-    expect(preview).not.toContain('このゲームをフォークする');
+    expect(preview).not.toContain('フォークする');
+    expect(preview).not.toContain('gf-fork-open');
     expect(preview).not.toContain('class="gf-fork"');
     expect(preview).not.toContain('gf-fork-note');
 
     const published = await seedWork('no-fork-cta-published', 'published');
     const page = await (await open(workPagePath(published.id), await sessionCookie(published.userId))).text();
-    expect(page).toContain('<p class="gf-fork">このゲームをフォークする</p>');
+    expect(page).toContain('<summary class="gf-fork gf-button gf-button-primary">フォークする</summary>');
   });
 });

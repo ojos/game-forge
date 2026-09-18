@@ -149,6 +149,10 @@ import {
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 // **エディットページ（#664）の綴りは Lambda が import しない葉から取る**（`src/paths.ts` に置かない理由はあちらの冒頭）。
 import { WORK_EDIT_SUFFIX, workEditPath } from './work-edit-paths.js';
+// **関連作品（#665）。** 引く SQL と並びの正本はあちらにある。
+import type { RelatedWork } from './related-works.js';
+import { listRelatedWorks } from './related-works.js';
+import { avatarUrl, sandboxOriginOf } from './avatar-paths.js';
 import { UNKNOWN_FAILURE_MESSAGE, failureMessageOf } from './generation-failure.js';
 import { LOGIN_PATH, loginRequiredRedirect } from './auth/google.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
@@ -174,6 +178,7 @@ import { resolveSessionUser } from './session-user.js';
 import {  signupPathFrom } from './signup.js';
 import type { SiteViewer } from './html.js';
 import {
+  avatarImage,
   escapeHtml,
   headerAvatarUrl,
   resolveSiteViewer,
@@ -217,6 +222,13 @@ export const WORK_UNPUBLISH_GAME_ID_FIELD = 'game_id';
  * でしか分からなくなる。**
  */
 export const WORK_REPORT_PATH = '/api/works/report';
+
+/**
+ * 通報の口（`<details>`）の `id`（#665）。**「…」メニューの「この作品を通報する」がここへ飛ぶ。**
+ *
+ * **綴りを 1 か所に持つ**（飛ばす側と着地する側へ書き写すと、片方だけを直した日に押しても何も起きないリンクになる。4.4）。
+ */
+export const WORK_REPORT_ANCHOR = 'report';
 
 /** 通報の対象を指す項目名。 */
 export const WORK_REPORT_GAME_ID_FIELD = 'game_id';
@@ -392,6 +404,11 @@ export interface WorkRow {
   /** 作者がいま使っているハンドル名（`handles`。決めていなければ null。#381）。 */
   author_handle: string | null;
   /**
+   * 作者のアイコンの版（`users.avatar_set_at`。アイコンが無ければ null。#380 / #665）。**`avatar_sha256` が無ければ使わない**
+   * （外した後も時刻は進む。`src/users-page.ts` と同じ読み方）。
+   */
+  author_avatar_set_at: number | null;
+  /**
    * この作品が指す親の id（`games.parent_id` そのもの）。オリジナルなら null。
    *
    * **結合結果の `p.id` ではない。** 結合が空振りした場合に「親が無い」と
@@ -501,6 +518,7 @@ export const WORK_ROW_SQL = `select g.author_id, g.status, g.title, g.generation
             k.layout_width as input_layout_width,
             k.layout_height as input_layout_height,
             a.display_name as author_name, a.is_operator as author_is_operator,
+            case when a.avatar_sha256 is null then null else a.avatar_set_at end as author_avatar_set_at,
             ${authorHandleColumnSql('g.author_id')},
             g.parent_id as parent_ref, p.status as parent_status, p.title as parent_title
        from games g
@@ -821,7 +839,7 @@ export interface WorkPageView {
    *
    * 3.4-5 と 2.2-2 が名指しする 4 要素の 1 つである。**UGC 由来の文字列**なので
    * `escapeHtml` を通す（この値がサンドボックス文書へ渡らないことが 7.2 の要点。
-   * 下の {@link loadingScreen} を参照）。
+   * 下の {@link watchSection} を参照）。
    */
   readonly authorName: string | null;
   /**
@@ -1035,7 +1053,7 @@ export interface WorkPageView {
   /**
    * 作者が下書きを作品ページで開いたときの、公開後と同じ画面のプレビューか（#664）。
    *
-   * **立っていれば、公開後の本文（{@link publishedSection}）を描き、上に「下書きです」の帯と「編集へ戻る」を出す。**
+   * **立っていれば、公開後の本文（{@link watchSection}）を描き、上に「下書きです」の帯と「編集へ戻る」を出す。**
    * `published` は偽のままにする——`noindex` を外さず、OGP のメタタグも出さない（公開して初めて外へ出す。5.4）。
    * 遊ぶ URL は試遊 URL（`/p/`）で、計上のスクリプトは置かない（`playCountableId` は公開済みだけ）。
    *
@@ -1049,6 +1067,18 @@ export interface WorkPageView {
    * エディットページ（`src/work-edit.ts`）へ移した。**省略可にする**（`draftPreview` と同じ理由）。
    */
   readonly editPath?: string | null;
+  /**
+   * 右カラムの関連作品（#665。`src/related-works.ts`）。**公開済みの作品だけ**が入る（引く SQL が絞る）。
+   *
+   * **省略可にする**（`draftPreview` と同じ理由）。省けば関連作品のカラムを出さない。
+   */
+  readonly related?: readonly RelatedWork[];
+  /**
+   * 作者の行に出すアイコンの URL（#665。版つき。`src/avatar-paths.ts` の `avatarUrl`）。アイコンが無ければ null。
+   *
+   * **省略可にする**（`draftPreview` と同じ理由）。
+   */
+  readonly authorAvatarUrl?: string | null;
 }
 
 /**
@@ -1099,10 +1129,22 @@ export function renderWorkPage(view: WorkPageView, viewer: SiteViewer): string {
     extraHead: ogpMeta(view),
     viewer,
   })}
-${draftBanner(view)}<h1>${escapeHtml(workNameOf(view))}</h1>
-${editLine(view)}${sectionFor(view)}
-${ipNotice}${reportSection(view)}
+${watchable(view) ? `${draftBanner(view)}${watchSection(view)}` : `<h1>${escapeHtml(workNameOf(view))}</h1>
+${sectionFor(view)}
+${ipNotice}${reportSection(view)}`}
 ${siteFooter()}`;
+}
+
+/**
+ * 視聴ページの配置で描くか（#665）。**公開済みの作品と、作者の下書きのプレビュー（#664）だけ**である。
+ *
+ * それ以外（生成中・失敗・取り下げ済み・作者以外が見る下書き）は、状態の知らせだけの画面のまま（{@link sectionFor}）。
+ *
+ * @param view 表示に必要な値
+ * @returns 視聴ページの配置なら true
+ */
+function watchable(view: WorkPageView): boolean {
+  return !view.removed && view.state === 'ready' && (view.published || view.draftPreview === true);
 }
 
 /**
@@ -1126,23 +1168,7 @@ function draftBanner(view: WorkPageView): string {
 }
 
 /**
- * 作者に出す「編集する」の 1 行（#664）。**作品ページが作者と作者以外で違うのは、この 1 行だけである。**
- *
- * **下書きのプレビューでは出さない**（帯の「編集へ戻る」が同じ行き先を持つ。同じ行き先を 2 つ並べない）。
- *
- * @param view 表示に必要な値
- * @returns HTML（作者でなければ空文字）
- */
-function editLine(view: WorkPageView): string {
-  if (view.draftPreview === true || view.editPath === null || view.editPath === undefined) {
-    return '';
-  }
-  return `<p class="gf-work-edit-link"><a class="${SECONDARY_BUTTON} gf-button-sm" href="${view.editPath}">編集する</a></p>
-`;
-}
-
-/**
- * プレイ数を数えるスクリプト（#377）。**iframe の直前に置く**（{@link loadingScreen}。#502 からは、iframe を作るスクリプトが
+ * プレイ数を数えるスクリプト（#377）。**iframe の直前に置く**（{@link watchSection}。#502 からは、iframe を作るスクリプトが
  * デスクトップで iframe を差し込む `<noscript>` の直前）。
  *
  * **iframe より後ろに置かない。** 合図（`postMessage`）がリスナーの登録より先に届くと、そのページの
@@ -1226,7 +1252,7 @@ function reportSection(view: WorkPageView): string {
     return '';
   }
   return `
-<details class="gf-report">
+<details class="gf-report" id="${WORK_REPORT_ANCHOR}">
   <summary>この作品を通報する</summary>
   <form method="post" action="${WORK_REPORT_PATH}">
     <input type="hidden" name="${WORK_REPORT_GAME_ID_FIELD}" value="${view.reportableId}">
@@ -1396,8 +1422,8 @@ export function sectionFor(view: WorkPageView): string {
    しばらく待っても変わらない場合は、お手数ですがもう一度生成してください。</p>
 <p>この画面は自動で更新されます。</p>`);
     case 'ready':
-      // **下書きのプレビュー（#664）は公開後の本文を描く**（{@link WorkPageView.draftPreview}）。
-      return view.published || view.draftPreview === true ? publishedSection(view) : readySection();
+      // **公開済みと下書きのプレビュー（#664）は視聴ページの配置で描く**（{@link watchSection}。#665）。
+      return view.published || view.draftPreview === true ? watchSection(view) : readySection();
     case 'failed':
       // **遮断された分類の知らせはブロックの外、直後に置く**（`@section notices` の知らせの見た目を持ち、面の上に
       // 重ねると面が二重になる）。並びは #474 の前と同じである。
@@ -1808,109 +1834,221 @@ ${items}
 }
 
 /**
- * 公開済みの作品の本文。**この画面が 3.4-5 の「ロード中画面」である**（#30）。
+ * 作品ページの本文を、YouTube の視聴ページの配置で描く（#665 / レイアウト改修 2/3）。**公開済みと下書きのプレビューだけ。**
  *
- * # なぜ作品ページが遊ぶ場所になるのか
+ * # 並び（上から）
  *
- * 2.2 のループは「発見（SNS の URL）→ ロード（タップから数秒）」である。**共有される
- * URL はこのページである**（カードが出るのはこちらで、`/g/` は不透明オリジンの
- * iframe 用文書）。ここで遊べないと、利用者は 1 回よけいにタップし、その先の数秒は
- * 文脈を持たない黒い画面になる。**待ち時間が起きる場所と、文脈を出せる場所を同じに
- * する**のが 3.4-5 の求めていることである。
+ * ゲーム → 作品名 → 作者の行 → 操作の行 → 概要欄 → このゲームからのフォーク。右カラムに関連作品（{@link relatedSection}）。
+ * 分けるのは器の `.gf-split-end`（`public/assets/app.css` の `@section shell`）で、段 3 でだけ右に並び、狭い段では
+ * 本文の下へ積む（HTML の順が縦の順）。**借りるのは配置だけで、見た目は仕様 2.5 のまま**（無彩色・面で区切る）。
  *
- * **`/g/<game_id>/` へのリンクを別に出さない。** 出せる URL は 2 本あるが、5.4 の
- * 「配る URL は 1 本でよい」に従い、遊ぶための URL は iframe の `src` としてだけ現れる。
+ * # 3.4-5 の「ロード中画面」を置き換えた
  *
- * # 4 要素をアプリ用ホスト側に置く（7.2 を崩さないための判断）
+ * #30 以来、ゲームの枠の手前に 4 要素のブロック（スクリーンショット・作者・元ゲーム・改造する）を置いていた。
+ * **#665 でゲームを最上段へ上げ、サムネイルをなくした**（スクリーンショットとゲーム画面で同じ絵を 2 回見せていた）。
+ * 作者と「フォークする」は作品名の下の作者の行へ、元ゲームは概要欄へ移した。
  *
- * 3.4-5 は OGP スクリーンショット・作者名・親ゲーム名・「改造する」の 4 つを先に出せと
- * 言う。**このうち作者名と親ゲーム名は UGC 由来である。** 一方 7.2 の必須要件を満たす
- * サンドボックス文書は `script-src 'unsafe-inline'` を持つため、**そこへ UGC 由来の
- * 文字列を入れると、エスケープ漏れが即座にスクリプト実行になる**（`src/sandbox-loader.ts`）。
+ * **タッチ端末では、ゲームの位置にスクリーンショットと「遊ぶ」を出す**（M14-3 / #502 の覆いの口。`src/work-play.ts`）。
+ * デスクトップと JavaScript の無い形では口を隠し、同じ位置に埋め込みが入る（`.gf-watch-player`。下書きの試遊の口と同じ規則）。
  *
- * **したがって 4 要素はこちら側に描く。** 結果として、
+ * # JavaScript を要求しない
  *
- * - サンドボックス文書は UGC 由来の文字列を 1 つも持たないまま変わらない（7.2）
- * - OGP 画像は**このページと同一オリジン**になり、サンドボックスの `img-src` を
- *   緩める必要が消える（`src/sandbox-csp.ts` は 1 文字も変わらない）
- * - iframe は `sandbox="allow-scripts"` だけを付ける。**`allow-same-origin` も
- *   `allow-popups` も付けない**（7.2）。配信側の `frame-ancestors` は既にこのオリジン
- *   だけを許している（`src/sandbox-delivery.ts`）
- *
- * # ロード中画面を「覆い」にしない
- *
- * 4 要素を iframe の上へ重ねて、読み込み完了で消す形は採らない。**消す契機を作れない**
- * ためである。JavaScript で消すなら、親は wasm が起動したことを知る必要があり、経路は
- * 不透明オリジン（`origin` が `null`）からの `postMessage` しかない。**`null` は名乗り
- * であって身元ではなく**、しかも送り手の文書では UGC が動く。CSS だけで重ねる形も
- * 成立しない——iframe の中の文書は自前の背景を持つので、**wasm ではなく文書が
- * 読み込まれた瞬間**（数秒ではなく数十ミリ秒）に覆いを塗りつぶす。**出したい数秒の
- * 手前で消える。**
- *
- * **だから並べる。** 4 要素は枠の手前（文書順で先）に置き、読み込み中も、読み込み後も
- * そのまま残る。作者名・元ゲーム・改造導線は、遊び終わったあとにも要る情報である。
+ * 「フォークする」「共有」「…」「もっと見る」はどれも `<details>` / `<summary>` で開く（このモジュール冒頭の方針）。
  *
  * @param view 表示に必要な値
  * @returns HTML
  */
-function publishedSection(view: WorkPageView): string {
-  // **共有する URL はブロックの面に置く**（#474 / 仕様 2.5.4）。項目名は面の外、上の行に小さく出す。
+function watchSection(view: WorkPageView): string {
+  const player =
+    view.playUrl === null
+      ? '<p class="gf-block">遊ぶための URL を組み立てられませんでした。</p>\n'
+      : `<div class="gf-watch-player">
+${playEntry(screenshot(view), true)}
+</div>
+${playScript(view)}${playEmbed(view.playUrl, view.workId, view.inputKeyCodes, view.inputHeldCodes, view.inputAliasGroups, view.playOrientation)}`;
+  // **操作の案内は枠の直後に置く**（#599 / 仕様 3.9.11。遊んで手が止まったときに目が落ちる位置）。
+  const main = `${player}${keyLegendSection(view)}
+<h1 class="gf-watch-title">${escapeHtml(workNameOf(view))}</h1>
+${authorRow(view)}
+${actionsRow(view)}
+${overviewSection(view)}${reportSection(view)}
+${forkList(view.forks)}`;
+  const related = relatedSection(view);
+  if (related === '') {
+    return `<div class="gf-watch-main">
+${main}
+</div>`;
+  }
+  return `<div class="gf-split-end gf-watch">
+<div class="gf-watch-main">
+${main}
+</div>
+${related}
+</div>`;
+}
+
+/**
+ * 作者の行（#665。YouTube のチャンネルの行）。**アイコン・名前・運営の印と、主のボタン「フォークする」。** 作者には「編集する」も出す。
+ *
+ * - **名前は作者ページへのリンク**（#330 の {@link authorLabel}。印はリンクの外。#334）
+ * - **「フォークする」は `<details>` で、押すまで入力欄は閉じている**（#665 の acceptance）。開くと行のすぐ下に入力欄が出る
+ * - **「編集する」は作者にだけ出す**（#664 で題名の直下に仮置きしていたものを、ここへ移した）。**下書きのプレビューでは出さない**
+ *   （帯の「編集へ戻る」が同じ行き先を持つ）
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function authorRow(view: WorkPageView): string {
+  const avatar =
+    view.authorAvatarUrl === null || view.authorAvatarUrl === undefined
+      ? ''
+      : `<span class="gf-avatar" aria-hidden="true">${avatarImage(view.authorAvatarUrl)}</span>`;
+  const edit =
+    view.draftPreview === true || view.editPath === null || view.editPath === undefined
+      ? ''
+      : `<a class="gf-work-edit-link ${SECONDARY_BUTTON} gf-button-sm" href="${view.editPath}">編集する</a>`;
+  const fork = forkCta(view);
+  // **開く「フォークする」（`<details>`）は行の外、行のすぐ後ろに置く**（利用者の決定。PR #674）。行の中に置くと、開いた欄が
+  // 作者名の右の列に広がり、作者名が縦の真ん中へずれた。**開く側（`<summary>`）だけを行の右端へ重ねる**（`.gf-watch-byline`）
+  // ので、閉じているあいだの見た目は行の中にあるのと同じで、開いた欄は行の下に横幅いっぱいで出る。
+  const opens = fork.startsWith('<details');
+  const note =
+    view.draftPreview !== true && !view.signedIn
+      ? '\n<p class="gf-fork-note">フォークには招待が必要です。招待コードをお持ちでない方は待機リストにご登録いただけます。</p>'
+      : '';
+  return `<div class="gf-watch-byline">
+<div class="gf-watch-author${opens ? ' gf-watch-author-forkable' : ''}">
+<p class="gf-author">${avatar}<strong>${authorLabel(view)}</strong>${operatorMark(view)}</p>
+${edit}${opens ? '' : fork}
+</div>${opens ? `\n${fork}` : ''}
+</div>${note}`;
+}
+
+/**
+ * 操作の行（#665。YouTube の高評価・共有・「…」）。いいね・共有・「…」メニュー（通報・ソースコードを見る）。
+ *
+ * **どれも出すものが無ければ行ごと出さない。**
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（空なら空文字）
+ */
+function actionsRow(view: WorkPageView): string {
   const share =
     view.shareUrl === null
       ? ''
       : `
+<details class="gf-watch-share">
+<summary class="${SECONDARY_BUTTON} gf-button-sm">共有</summary>
 <div class="gf-work-share">
 <p class="gf-work-share-label">共有する URL</p>
 <p class="gf-block gf-work-share-url"><code>${view.shareUrl}</code></p>
+</div>
+</details>`;
+  const inner = `${likeSection(view)}${share}${moreMenu(view)}`;
+  return inner === '' ? '' : `<div class="gf-watch-actions">${inner}
 </div>`;
-  // **操作の案内は本文の列の先頭に置く**（#599 / 仕様 3.9.11）。枠（`loadingScreen` が出す iframe）の直後で、
-  // 遊んで手が止まったときに目が落ちる位置である。**枠の手前へは入れない**——4 要素（3.4-5）と枠の間に割り込むと
-  // 枠が下がり、「主役は作品」（M8）が崩れる。**詳細情報パネル（2.3.12）へも入れない**——狭い段では本文の下へ回り、
-  // 遊ぶ前に読まれない。
-  //
-  // **説明の本文は、枠の直前の折りたたみへ移した**（#627 / 仕様 5.4。{@link descriptionPeek}）。本文の列には置かない
-  // ——**同じ文章を 2 か所に出すと、どちらが本体か読めない**（#626 の決定の「二重に出さない」）。
-  //
-  // **タグは本文の列に置く**（#376）。
-  //
-  // **詳細情報パネル（#383 / 2.3.12）は、ロード中画面と枠の下を「本文 | パネル」に分けて置く。**
-  // 枠とロード中画面は全幅のまま残す——主役は作品であり（M8）、1080〜1280px で枠を縮めない。
-  // 分けるのは器の `.gf-split-end`（`public/assets/app.css` の `@section shell`）で、段 3 でだけ
-  // 横に並び、狭い段では本文の下へ積む（HTML の順が縦の順である）。
-  //
-  // **作者だけの設定（撮り直し・作品名・説明・タグ・公開をやめる）と、説明がまだ無いことの案内（#616）は、
-  // エディットページへ移した**（#664。`src/work-edit.ts`）。この画面は作者にも作者以外と同じものを出し、
-  // 作者に足すのは「編集する」の 1 行だけである（{@link editLine}）。
-  //
-  // **下書きのプレビュー（#664）では「公開しています」と言わない**——まだ公開していない。代わりに上の帯が言う。
-  const heading = view.draftPreview === true ? '' : '<h2>公開しています</h2>\n';
-  return `${heading}${loadingScreen(view)}${splitWithDetails(
-    `${keyLegendSection(view)}${likeSection(view)}${tagsSection(view)}${share}
-${forkList(view.forks)}`,
-    view,
-  )}`;
 }
 
 /**
- * 本文とパネルを器の 2 カラム（`.gf-split-end`）に入れる（#383）。パネルが無ければ本文だけを返す。
+ * 「…」メニュー（#665）。**通報とソースコードの表示を、いまと同じ経路で開く**（通報は `POST /api/works/report`、
+ * ソースは `/source/<id>`）。`<details>` で開くので JavaScript を要求しない。
  *
- * **本文を先に書く。** 狭い段では HTML の順に縦へ積まれ、パネルは本文の下になる
- * （2.3.12「狭い端末では本文の下」）。
+ * **本文の上に浮かぶ小さなメニューにする**（利用者の決定。PR #674。`public/assets/app.css` の `.gf-watch-more-menu`）。
+ * 項目は「ソースコードを見る」「この作品を通報する」の 2 行だけで、通報のフォームはメニューの外（概要欄の下の
+ * {@link reportSection}）で開く——メニューの中でフォームを開くと、本文を押し下げる。
  *
- * @param main 本文の HTML
+ * **中身が無ければ出さない**（押しても空のメニューを出さない。4.4）——未ログインで、ソースを見せない作品のとき。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（空なら空文字）
+ */
+function moreMenu(view: WorkPageView): string {
+  const items: string[] = [];
+  if (view.details !== null && view.details.sourcePath !== null) {
+    items.push(`<li><a class="gf-link-quiet" href="${view.details.sourcePath}">ソースコードを見る</a></li>`);
+  }
+  // **通報のフォームはメニューの中に開かない**（利用者の決定。PR #674）。項目は口（概要欄の下の `<details>`）へ飛ぶだけで、
+  // フォームはそこで開く。**押しても通報できない人（未ログイン・作者・通報済み）には項目を出さない**（4.4）。
+  if (view.reportableId !== null) {
+    items.push(`<li><a class="gf-link-quiet" href="#${WORK_REPORT_ANCHOR}">この作品を通報する</a></li>`);
+  }
+  if (items.length === 0) {
+    return '';
+  }
+  return `
+<details class="gf-watch-more">
+<summary class="${SECONDARY_BUTTON} gf-button-sm" aria-label="その他の操作">…</summary>
+<ul class="gf-watch-more-menu">
+${items.join('\n')}
+</ul>
+</details>`;
+}
+
+/**
+ * 概要欄（#665。YouTube の視聴回数・日時・ハッシュタグ・説明・「もっと見る」）。
+ *
+ * **見えている行: プレイ数・公開日時・タグ。「もっと見る」で開く中身: 遊び方（作者の説明）・元ゲーム・作品の情報。**
+ * プレイ数は 0 なら出さない（2.3.6）。**説明を 2 か所に出さない**（#626 の「二重に出さない」。#627 の枠の直前の折りたたみは
+ * この欄へ畳んだ）。
+ *
  * @param view 表示に必要な値
  * @returns HTML
  */
-function splitWithDetails(main: string, view: WorkPageView): string {
-  if (view.details === null) {
-    return main;
+function overviewSection(view: WorkPageView): string {
+  const meta: string[] = [];
+  if (view.playCount > 0) {
+    meta.push(`<span class="gf-plays">プレイ ${view.playCount} 回</span>`);
   }
-  return `
-<div class="gf-split-end">
-<div class="gf-work-main">${main}
-</div>
-${detailsPanel(view, view.details)}
-</div>`;
+  const published = view.details === null ? null : timeElement(view.details.publishedAt);
+  if (published !== null) {
+    meta.push(`<span>${published}</span>`);
+  }
+  const metaLine = meta.length === 0 ? '' : `\n<p class="gf-watch-meta">${meta.join('')}</p>`;
+  const details = view.details === null ? '' : `\n${detailsPanel(view, view.details)}`;
+  return `<section class="gf-watch-overview gf-block" aria-label="概要">${metaLine}${tagsSection(view)}
+<details class="gf-watch-overview-more">
+<summary>もっと見る</summary>${descriptionSection(view)}
+<p class="gf-parent">${parentLine(view.parent)}</p>${details}
+</details>
+</section>`;
+}
+
+/** 関連の種類ごとの札（押せない札。仕様 2.5.5 のチップ）。 */
+const RELATION_LABELS: Readonly<Record<RelatedWork['relation'], string>> = {
+  parent: 'フォーク元',
+  fork: 'この作品のフォーク',
+  tag: '同じタグ',
+};
+
+/**
+ * 関連作品（#665。YouTube の右カラムの関連動画）。**フォーク元 → フォーク先 → 同じタグ**の順（`src/related-works.ts`）。
+ *
+ * **1 件も無ければ出さない**（空のカラムを置かない。本文だけの 1 段になる）。題名と作者名は UGC なので `escapeHtml` を通す。
+ * 画像は撮れた作品だけ `<img>`（同一オリジンの `/ogp/<id>.png`）、撮れていなければ固定の文言のパネル（壊れた画像を出さない）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML（出さないなら空文字）
+ */
+function relatedSection(view: WorkPageView): string {
+  const related = view.related ?? [];
+  if (related.length === 0) {
+    return '';
+  }
+  const items = related
+    .map((work) => {
+      const shot = work.hasImage
+        ? `<img class="gf-shot gf-related-shot" src="${ogpImagePath(work.id)}" width="${OGP_IMAGE_WIDTH}" height="${OGP_IMAGE_HEIGHT}" alt="" loading="lazy">`
+        : '<span class="gf-shot gf-shot-pending gf-related-shot">画像はまだありません</span>';
+      const author = work.authorName === null ? '' : `<span class="gf-related-author">${escapeHtml(work.authorName)}</span>`;
+      return `<li class="gf-related-${work.relation}"><a class="gf-related-link gf-link-quiet" href="${workPagePath(work.id)}">${shot}<span class="gf-related-body"><span class="gf-related-title">${escapeHtml(work.title)}</span>${author}<span class="gf-chip">${RELATION_LABELS[work.relation]}</span></span></a></li>`;
+    })
+    .join('\n');
+  return `<aside class="gf-related" aria-labelledby="gf-related-heading">
+<h2 id="gf-related-heading">関連作品</h2>
+<ol class="gf-related-list">
+${items}
+</ol>
+</aside>`;
 }
 
 /**
@@ -1949,18 +2087,18 @@ function timeElement(epochSeconds: number | null): string | null {
  *
  * # 並べるもの
  *
- * 作品 ID / 生成日時 / 公開日時 / 元ゲーム / Wasm のサイズ / 改造された数 / いいね数 / プレイ数、
- * と、ソースコードの閲覧へのリンク。
+ * 作品 ID / 生成日時 / 公開日時 / 元ゲーム / Wasm のサイズ / 改造された数 / いいね数。
+ *
+ * **#665 から、置き場は概要欄の「もっと見る」の中である**（{@link overviewSection}。右カラムは関連作品になった）。
+ * **プレイ数は概要欄の見えている行へ、「ソースコードを見る」は操作の行の「…」メニューへ移した**（{@link moreMenu}）。
  *
  * - **モデル名は出さない。** 確定27 が「`generations.game_id` は結び付けない」と決めており、
  *   作品からモデルへ辿る経路が無い（#383 の訂正）。**確定27 は覆していない。**
- * - **説明（#388）はパネルに入れない。** 補助カラム（16rem）の幅では 1000 字を読めないので、
- *   本文に残す。
- * - **プレイ数は、ここにだけ出す**（#377 まではいいねのボタンの隣にあった）。**いいねの数は
- *   ボタンの隣にも残る**——数とボタンは 5.8 の対であり、`test/liked-works.test.ts` が DO の障害時に
- *   ボタンの側の数（D1 の写し）へ倒れることを見ている。パネルは来歴の一覧として**同じ値**
- *   （`likeCount`）を並べる。**0 のときは行ごと出さない**——2.3.6 / #340 の「0 を並べない」を
- *   パネルでも崩さない。
+ * - **説明（#388）はパネルに入れない。** 同じ「もっと見る」の中で、パネルの前に本文として出す。
+ * - **プレイ数はパネルに並べない**（#665。概要欄の見えている行に出す——同じ数を 2 か所に出さない。#383 から #664
+ *   まではここにだけ出していた）。**いいねの数はボタンの隣にも残る**——数とボタンは 5.8 の対であり、
+ *   `test/liked-works.test.ts` が DO の障害時にボタンの側の数（D1 の写し）へ倒れることを見ている。パネルは来歴の一覧として
+ *   **同じ値**（`likeCount`）を並べる。**0 のときは行ごと出さない**——2.3.6 / #340 の「0 を並べない」をパネルでも崩さない。
  * - **改造された数は 0 でも出す。** 本文の「このゲームからの改造: N 件」（5.5）と同じ値
  *   （`forks.total`。その場で数えた実件数で、`fork_count` 列は読まない）であり、あちらが 0 件を
  *   消さないのと揃える。
@@ -1971,13 +2109,13 @@ function timeElement(epochSeconds: number | null): string | null {
  *
  * **1 行に項目名を左、値を右に置き、値が 1 行に収まらないときは値だけを項目名の下の行へ回す。** 値を途中で
  * 折り返さない（「2.3 MB（配信時の圧縮後）」が 2 行に割れると、どこまでが 1 つの値か読みにくい）。行ごとに
- * 「長い値」の印を付けない——折り返しは `.gf-kv` の flex の `wrap` だけで決まる。**補助カラムの幅（`--gf-aside`。
- * 16rem）は変えない。** 補助カラムより長い値（作品 ID の 36 文字）だけは、値の中で折る（`.gf-kv dd` の `overflow-wrap`）。
+ * 「長い値」の印を付けない——折り返しは `.gf-kv` の flex の `wrap` だけで決まる。列より長い値（作品 ID の 36 文字）だけは、
+ * 値の中で折る（`.gf-kv dd` の `overflow-wrap`）。
  *
  * > **#474 の前は項目名と値を縦に積んでいた**（16rem では横に並べると作品 ID が 1 文字ずつ折れる、という判断）。
  * > 2.5.4 の「値だけを下の行へ回す」で、その懸念は値を縮めない形で解けた。
  *
- * パネルは面のブロック（`.gf-block`）で、「ソースコードを見る」は小さい副のボタンである（2.5.5）。
+ * 面は概要欄（`.gf-watch-overview`。面のブロック）が持つので、パネル自身は面を持たない（面を二重に重ねない。2.5.4）。
  *
  * @param view 表示に必要な値
  * @param details パネルの値
@@ -2007,22 +2145,16 @@ function detailsPanel(view: WorkPageView, details: WorkDetails): string {
   if (view.likeCount > 0) {
     row('いいね', `${view.likeCount}`);
   }
-  if (view.playCount > 0) {
-    row('プレイ', `${view.playCount}`, 'gf-plays');
-  }
+  // **プレイ数はここに並べない**（#665。概要欄の見えている行に出す——同じ数を 2 か所に出さない）。
 
-  const source =
-    details.sourcePath === null
-      ? ''
-      : `
-<p class="gf-details-source"><a class="${SECONDARY_BUTTON} gf-button-sm" href="${details.sourcePath}">ソースコードを見る</a></p>`;
-
-  return `<aside class="gf-details gf-block" aria-labelledby="gf-details-heading">
+  // **#665 から、概要欄の「もっと見る」の中に置く**（右カラムは関連作品になった）。「ソースコードを見る」は「…」メニューへ
+  // 移した（{@link moreMenu}）。
+  return `<div class="gf-details" aria-labelledby="gf-details-heading">
 <h3 id="gf-details-heading">作品の情報</h3>
 <dl class="gf-kv">
 ${rows.join('\n')}
-</dl>${source}
-</aside>`;
+</dl>
+</div>`;
 }
 
 /**
@@ -2126,7 +2258,7 @@ function descriptionSection(view: WorkPageView): string {
   // **見出しと段落を 1 つの塊に包む**（#474。本文の列は塊どうしの間を `gap` で空けるので、見出しと段落を
   // 別の塊にすると、その間まで塊どうしの間隔になる）。
   //
-  // **この塊は折りたたみ（{@link descriptionPeek}）の中に入る**（#627 / 仕様 5.4）。見出しを残すのは、
+  // **この塊は折りたたみ（{@link overviewSection}）の中に入る**（#627 / 仕様 5.4）。見出しを残すのは、
   // **開いたときに「何の文章か」が分かるようにする**ためで、`<summary>`（「遊び方を読む」）とは役割が違う
   // ——あちらは押す前の案内、こちらは開いた後の見出しである。
   return `
@@ -2134,41 +2266,6 @@ function descriptionSection(view: WorkPageView): string {
 <h3>作品の説明</h3>
 ${paragraphs}
 </div>`;
-}
-
-/**
- * 説明を、遊ぶ枠の直前の折りたたみに入れる（仕様 5.4 / 2.5.4 / M16-5 / #627）。**誰にでも出す。**
- *
- * # なぜ枠の直前なのか
- *
- * **説明は枠の下にあり、遊ぶ前には読まれにくかった。** 遊び方やルールを書いても、遊ぶ人は先にゲームを触る。
- * 一方で**本文をそのまま枠の上へ出すと、枠が説明の長さだけ下がる**（1000 文字まで書けるので作品ごとに変わる）。
- *
- * **折りたたみなら、枠の上に来るのは `<summary>` の 1 行だけである。** 枠の上端の実測（#626）は、390px で
- * +25px・768px で +26px・1280px で +25px で、**説明の長さにも幅にも動かされない。** 本文をそのまま置く案は
- * +232〜318px で、狭い段ほど不利だった（折り返しが増えるため）。仕様 2.5.4 の「遊ぶ枠を押し下げてよいか」。
- *
- * # 二重に出さない
- *
- * **本文の列からは外す**（{@link publishedSection}）。同じ文章を 2 か所に出すと、どちらが本体か読めない。
- *
- * # JavaScript を要求しない
- *
- * `<details>` の既定の挙動である（このモジュール冒頭の方針）。**最初は閉じている**——開いた状態で
- * 配ると、押し下げが本文をそのまま置く案と同じになる。
- *
- * @param view 表示に必要な値
- * @returns HTML（説明が無ければ空文字）
- */
-function descriptionPeek(view: WorkPageView): string {
-  const body = descriptionSection(view);
-  if (body === '') {
-    return '';
-  }
-  return `
-<details class="gf-work-description-peek">
-<summary>遊び方を読む</summary>${body}
-</details>`;
 }
 
 
@@ -2255,11 +2352,11 @@ function likeForm(action: string, field: string, gameId: string, label: string):
  * **0 件でも見出しを消さない。** 5.5 は親の 1 リンクと子の一覧を対で定めており、
  * 「元ゲーム: ありません（この作品がオリジナルです）」を出しているのに、下側だけ
  * 何も無いと**「まだ誰も改造していない」と「機能が無い」を読み手が区別できない**
- * （{@link loadingScreen} の「無いときは、無いことを言う固定文言へ倒す」と同じ規則）。
+ * （{@link watchSection} の「無いときは、無いことを言う固定文言へ倒す」と同じ規則）。
  *
  * # 枠の**下**に置く
  *
- * 3.4-5 の 4 要素は iframe より前に置くと決まっている（{@link loadingScreen}）。
+ * 3.4-5 の 4 要素は iframe より前に置くと決まっている（{@link watchSection}）。
  * **子の一覧はその 4 要素ではない。** 前に置くと、拡散の着地点で最初に目に入るものが
  * 「このゲーム」ではなく「派生の一覧」になり、待ち時間を埋めるための版面が押し下げられる。
  *
@@ -2355,49 +2452,7 @@ export function recaptureSection(view: WorkPageView): string {
 /**
  * 「改造する」の文言（2.2-4）。**仕様の言い回しをここで言い換えない。**
  */
-const FORK_LABEL = 'このゲームをフォークする';
-
-/**
- * ロード中画面（3.4-5 / 2.2-2 / #30）。
- *
- * **4 要素は 1 つも条件付きにしない。** どれか 1 つでも「値が無ければ出さない」に
- * すると、acceptance が求める「4 要素すべてが描画される」が**データの状態しだいで
- * 崩れる。** 値が無いときは、無いことを言う固定文言へ倒す（撮影中のスクリーンショット、
- * 親を持たない作品）。
- *
- * **文書順が描画順である。** 4 要素は iframe より前に置く。HTML は上から解釈されるので、
- * ここに書いたものは**枠の中身が 1 バイトも届く前に**描かれる。
- *
- * @param view 表示に必要な値
- * @returns HTML
- */
-function loadingScreen(view: WorkPageView): string {
-  // **iframe を HTML に直接置かない**（M14-3 / #502 / 仕様 3.9.4）。タッチ端末では開いた時点でゲームを読み込まないためで、
-  // iframe はスクリプトが作る（デスクトップはすぐに今と同じ位置へ、タッチ端末はタップで開く覆いの中へ）。JavaScript が
-  // 無いときは `<noscript>` の中の今の埋め込みで遊べる。**iframe の属性の出どころは `src/work-play.ts` の 1 か所**で、
-  // `sandbox` は `allow-scripts` だけのまま（7.2）。
-  const frame =
-    view.playUrl === null
-      ? '<p>公開されていますが、遊ぶための URL を組み立てられませんでした。</p>'
-      : playEmbed(view.playUrl, view.workId, view.inputKeyCodes, view.inputHeldCodes, view.inputAliasGroups, view.playOrientation);
-
-  // **4 要素を 1 つのブロックに入れる**（#474 / 仕様 2.5.4。承認したモックアップ Version 6 の形）。**並びは今のまま**
-  // （スクリーンショット → 作者 → 元ゲーム → 改造する。2026-09-13 に利用者が確認）で、広い面ではスクリーンショットを左、
-  // 残りの 3 つを右に置き、狭い面では縦に積む。**段で並べ替えない**——折り返しは `@section work` の flex の `wrap` だけで
-  // 決まり、DOM の順＝見た目の順＝Tab の順のまま（仕様 2.5.6 の #469 実装注記）。
-  //
-  // **スクリーンショットは「遊ぶ」の口で包む**（#502）。タッチ端末ではスクリプトが「遊ぶ」のボタンを見せ、口のタップで覆いを開く。
-  return `<div class="gf-context gf-block">
-${playEntry(screenshot(view), view.playUrl !== null)}
-<div class="gf-context-body">
-<p class="gf-author">作者: <strong>${authorLabel(view)}</strong>${operatorMark(view)}</p>
-<p class="gf-parent">${parentLine(view.parent)}</p>
-${forkCta(view)}
-</div>
-</div>
-${descriptionPeek(view)}
-${view.playUrl === null ? '' : playScript(view)}${frame}`;
-}
+const FORK_LABEL = 'フォークする';
 
 /**
  * 作者名を組み立てる（#330 / 仕様 2.3.1）。
@@ -2586,24 +2641,21 @@ function parentValue(parent: ParentWork): string {
  * 429 で断る操作を、押せる形で出さない（{@link reviseSection} と同じ判断）。
  *
  * **それでも「改造する」の見出しと残枠は出したままにする。** 3.4-5 の 4 要素は
- * 「1 つも条件付きにしない」のが {@link loadingScreen} の規則であり、**枠の状態で
+ * 「1 つも条件付きにしない」のが {@link watchSection} の規則であり、**枠の状態で
  * 要素そのものが消える形にしない。**
  *
  * @param view 表示に必要な値
  * @returns HTML
  */
 function forkCta(view: WorkPageView): string {
-  // **下書きのプレビュー（#664）では見出しと説明ごと出さない**（2026-09-18 の利用者の決定。PR #671）。下書きはフォークの
-  // 親になれず（5.3）、入力欄の無い見出しと説明だけが並ぶと押せない導線に見える。#665 で作品ページを並べ替えるまで
-  // この形が本番に出る。
+  // **下書きのプレビュー（#664）では出さない**（2026-09-18 の利用者の決定。PR #671）。下書きはフォークの親になれない（5.3）。
   if (view.draftPreview === true) {
     return '';
   }
-  // **どちらの側でも、この画面の主のボタンはここの 1 つだけである**（#474 / 仕様 2.5.5「1 画面に 1 つまで」）。未ログインは
-  // 移動なので `<a>`、ログイン済みは送信なので `<button>`（要素は役割で選び、見た目は同じ部品）。
+  // **この画面の主のボタンはここの 1 つだけである**（#474 / 仕様 2.5.5「1 画面に 1 つまで」）。未ログインは移動なので `<a>`、
+  // ログイン済みは開くだけの `<summary>`（#665。押すまで入力欄は閉じている）。
   if (!view.signedIn) {
-    return `<p class="gf-fork"><a class="gf-fork-link ${PRIMARY_BUTTON}" href="${signupPathFrom('fork-cta')}">${FORK_LABEL}</a></p>
-<p class="gf-fork-note">フォークには招待が必要です。招待コードをお持ちでない方は待機リストにご登録いただけます。</p>`;
+    return `<a class="gf-fork-link ${PRIMARY_BUTTON}" href="${signupPathFrom('fork-cta')}">${FORK_LABEL}</a>`;
   }
 
   // **枠の文言はこのモジュールで組み立てない**（正本は `src/quota.ts`）。読めなかった
@@ -2616,6 +2668,8 @@ function forkCta(view: WorkPageView): string {
   // **id が無ければフォームを描かない。** 公開済みの画面からしか呼ばれないので
   // 通常は非 null だが、**空の `value` を持つフォームを描くくらいなら出さない**
   // （{@link reviseSection} と同じ理由で、含意に寄りかからない）。
+  //
+  // **送信のボタンは副にする**（#665）。主は開く側の「フォークする」で、1 画面に 1 つまで（2.5.5）。
   const form =
     view.forkableId === null || view.dailyRemaining === 0
       ? ''
@@ -2626,14 +2680,20 @@ function forkCta(view: WorkPageView): string {
   <textarea id="fork-prompt" name="${FORK_PROMPT_FIELD}" rows="3"
             maxlength="${MAX_PROMPT_LENGTH}" required
             placeholder="例: 玉の色を赤にして、敵を 2 体に増やす"></textarea>
-  <button type="submit" class="${PRIMARY_BUTTON}">この内容でフォークする</button>
+  <button type="submit" class="${SECONDARY_BUTTON}">この内容でフォークする</button>
 </form>`;
 
-  return `<p class="gf-fork">${FORK_LABEL}</p>
+  // **押しても先へ進めないとき（本日の枠が尽きた）は、開く側も主にしない**（押せない主を置かない。4.4）。開けば理由と残数が読める。
+  const strength = form === '' ? SECONDARY_BUTTON : PRIMARY_BUTTON;
+  return `<details class="gf-fork-open">
+<summary class="gf-fork ${strength}">${FORK_LABEL}</summary>
+<div class="gf-fork-panel">
 <p class="gf-fork-note">どう変えたいかを書くと、このゲームのソースをもとに新しい作品を作ります。
    <strong>1 回につき 1〜2 分かかり、生成枠を使います。${GENERATION_RETRY_QUOTA_NOTICE}</strong>元の作品はそのまま残ります。
    ${FORK_TIDY_QUOTA_NOTICE}</p>
-${daily}${form}`;
+${daily}${form}
+</div>
+</details>`;
 }
 
 /**
@@ -3053,7 +3113,7 @@ export async function loadWorkView(
       // `describeGame` の SQL で、ここは口を出すかだけを決める。**未公開の作品に出さない**
       // ——5.4 の 1 タップの導線（公開までの画面）に入力欄を増やさない。
       //
-      // **`published` は第 2 層である。** 描画側の第 1 層は、フォームを `publishedSection`
+      // **`published` は第 2 層である。** 描画側の第 1 層は、フォームを `watchSection`
       // にしか置いていないこと（#664 からは、説明の欄はエディットページにしか無い）。
       // **したがってここだけを外しても画面は変わらない**（変異を当てて確かめた）。経路の
       // 関門は `describeGame` の `status = 'published'` で、そちらを外すと
@@ -3072,7 +3132,7 @@ export async function loadWorkView(
       unpublishableId: ownerTools && published ? gameId : null,
       // **削除の確認画面への導線（#517）は、表示の条件が null を返した本人にだけ出す**（上の `deletable`）。
       //
-      // **公開中の作品に出さないことは 2 層で守る。** 第 1 層は描画側で、`publishedSection` が `deleteSection` を
+      // **公開中の作品に出さないことは 2 層で守る。** 第 1 層は描画側で、`watchSection` が `deleteSection` を
       // 呼ばない。第 2 層がここ（`deletionBlockOf` の `published`）。**片方だけを外しても作品ページは変わらない**
       // （変異を当てて確かめた。両方を外すと `test/work-delete.test.ts` の「公開中の作品には出さず」が赤になる）。
       deletableId: deletable ? gameId : null,
@@ -3128,6 +3188,16 @@ export async function loadWorkView(
       draftPreview: previewing,
       // **作者にだけ「編集する」の行き先を渡す**（#664）。作品ページが作者と作者以外で違うのはこの 1 つだけである。
       editPath: owner ? workEditPath(gameId) : null,
+      // **関連作品（#665）は作品ページの公開後の画面にだけ引く**（エディットページでは使わない。1 往復の batch）。
+      related:
+        mode === 'page' && shown && !removed
+          ? await listRelatedWorks(env, gameId, row.parent_ref, knownWorkTags(workTagsOf(row)).map((tag) => tag.id))
+          : [],
+      // **作者のアイコン（#665）は、作者名を出す画面にだけ渡す**（`authorName` と同じ条件）。
+      authorAvatarUrl:
+        shown && row.author_name !== null && typeof row.author_avatar_set_at === 'number'
+          ? authorAvatarUrlOf(request, env, row.author_id, row.author_avatar_set_at)
+          : null,
   };
 
   return {
@@ -3140,6 +3210,23 @@ export async function loadWorkView(
     // 登録情報への導線が要る。**署名を 2 度検証しない**（`resolveSessionUser` が正本）。
     viewer: siteViewerAt(pathname, session.ok, session.ok ? headerAvatarUrl(request, env, session.userId) : null),
   };
+}
+
+/**
+ * 作者のアイコンの URL を組み立てる（#665）。**サンドボックス用ホストの宣言が無ければ null**（`headerAvatarUrl` と同じ扱い）。
+ *
+ * @param request 受信したリクエスト（スキームとポートを借りる）
+ * @param env バインディングと環境変数
+ * @param authorId 作者の id
+ * @param version アイコンの版（`users.avatar_set_at`）
+ * @returns URL（組み立てられなければ null）
+ */
+function authorAvatarUrlOf(request: Request, env: Env, authorId: string, version: number): string | null {
+  const host: unknown = env.SANDBOX_HOST;
+  if (typeof host !== 'string' || host.trim() === '') {
+    return null;
+  }
+  return avatarUrl(sandboxOriginOf(request, host.trim()), authorId, version);
 }
 
 /**

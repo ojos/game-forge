@@ -96,6 +96,14 @@ export const PLAY_ENTRY_CLASS = 'gf-play-entry';
  */
 export const PLAY_ENTRY_TOUCH_CLASS = 'gf-play-entry-touch';
 
+/**
+ * タッチ端末で、口を包む器（口の親要素）に付ける `class`（スクリプトが付ける。#665 / PR #674）。
+ *
+ * **器を既定で隠し、この印が付いたときだけ見せるためにある**（作品ページの `.gf-watch-player`。`public/assets/app.css`）。
+ * `:has(.gf-play-entry-touch)` で器を見せる形は、互換性のため避ける決めである（仕様 2.5）。印を付けない器では何も変わらない。
+ */
+export const PLAY_HOST_TOUCH_CLASS = 'gf-play-host-touch';
+
 /** 「遊ぶ」のボタンの `class`（部品のクラスの後ろに足す）。 */
 export const PLAY_OPEN_CLASS = 'gf-play-open';
 
@@ -936,6 +944,7 @@ export function playFrameScript(playUrl: string): string {
     }
   });
   entry.classList.add(${literal(PLAY_ENTRY_TOUCH_CLASS)});
+  if (entry.parentElement !== null) { entry.parentElement.classList.add(${literal(PLAY_HOST_TOUCH_CLASS)}); }
   openButton.hidden = false;
 })();
 </script>`;

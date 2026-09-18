@@ -13,7 +13,8 @@
  * `/g/<id>/game.wasm` は成功しえず、ロードは永久に完了しない。** その状態で作品ページを
  * 引き、4 要素がすべて揃っていることを見る。あわせて、
  *
- * - 4 要素が**文書順で iframe より前**にあること（HTML は上から解釈される）
+ * - 4 要素が HTML にそのまま書かれていること（**#665 からはスクリーンショットだけが iframe より前**——ゲームの位置の「遊ぶ」の口で、
+ *   作者・元ゲーム・フォークは作品名の下に並ぶ。YouTube の視聴ページの配置）
  * - 作品ページの `<script>` が、プレイ数の計上のスクリプト（#377。画面を書き換えない）と、iframe を作る
  *   スクリプト（#502）の 2 つだけで、どちらも 4 要素より後ろにあること（**どの要素も load イベントに依存しえない**）。
  *   計上のスクリプトは iframe より前（合図より先にリスナーを登録するため）
@@ -293,15 +294,17 @@ describe('#30 の acceptance: Wasm のロード完了前に 4 要素すべてが
     expect(body).toContain(parentName);
     expect(body).toContain(fork);
 
-    // **どれも iframe より前にある。** HTML は上から解釈されるので、枠の中身が
-    // 1 バイトも届かないうちに 4 要素は描かれる。
+    // **#665 でゲームを最上段へ上げた**（YouTube の視聴ページの配置。スクリーンショットとゲーム画面で同じ絵を 2 回見せない）。
+    // スクリーンショットはゲームの位置の「遊ぶ」の口（タッチ端末で見せる）として iframe より前に残り、作者・元ゲーム・
+    // フォークは作品名の下（iframe より後ろ）に並ぶ。**どれも HTML にそのまま書かれ、スクリプトを待たずに描かれる。**
     const frameAt = indexOf(body, '<iframe');
-    for (const element of [shot, author, parentName, fork]) {
-      expect(indexOf(body, element), element).toBeLessThan(frameAt);
+    expect(indexOf(body, shot), shot).toBeLessThan(frameAt);
+    for (const element of [author, parentName, fork]) {
+      expect(indexOf(body, element), element).toBeGreaterThan(frameAt);
     }
 
     // **この画面が持つスクリプトは、プレイ数の計上のスクリプト（#377）と、iframe を作るスクリプト（#502）の 2 つだけである。**
-    // どちらも 4 要素より後ろにある。したがって、どの要素も「読み込みが終わってから描く」ことが原理的にできない。
+    // どちらも 4 要素を書き換えない。したがって、どの要素も「読み込みが終わってから描く」ことが原理的にできない。
     // 計上のスクリプトは DOM を 1 文字も書き換えず、**iframe より前にある**——iframe の合図より先にリスナーを登録する
     // ためである（後ろに置くと、速い起動を数え落とす。PR #425）。iframe は HTML に直接置かず（タッチ端末では開いた時点で
     // 読み込まない。仕様 3.9.4）、`<noscript>` の中に今の埋め込みがある。
@@ -313,9 +316,7 @@ describe('#30 の acceptance: Wasm のロード完了前に 4 要素すべてが
     const frameScriptAt = indexOf(body, frameScript);
     expect(scriptAt, '計上のスクリプトが iframe より後ろにある').toBeLessThan(frameAt);
     expect(scriptAt, '計上のスクリプトが iframe を作るスクリプトより後ろにある').toBeLessThan(frameScriptAt);
-    for (const element of [shot, author, parentName, fork]) {
-      expect(indexOf(body, element), element).toBeLessThan(scriptAt);
-    }
+    expect(indexOf(body, shot), shot).toBeLessThan(scriptAt);
     // **計上のスクリプトは画面を書き換えない**（DOM へ書く口を 1 つも持たない）。
     expect(script).not.toMatch(/innerHTML|outerHTML|textContent|insertAdjacent|appendChild|document\.write|\.hidden\s*=/u);
     expect(body.replace(script, '').replace(frameScript, '')).not.toContain('<script');
@@ -346,7 +347,7 @@ describe('#30 の acceptance: Wasm のロード完了前に 4 要素すべてが
     const body = await workPage(id);
     expect(body).toContain('スクリーンショットを準備しています');
     expect(body).not.toContain('<img class="gf-shot"');
-    expect(body).toContain('作者:');
+    expect(body).toContain('<p class="gf-author">');
     expect(body).toContain('元ゲーム:');
     expect(body).toContain('フォークする');
   });
@@ -406,7 +407,8 @@ describe('4 要素をアプリ用ホスト側に描く（7.2 を崩さないた�
     const { userId, id } = await seedReadyGame('draft-no-frame');
     const body = await workPage(id, await sessionCookie(userId));
     expect(body).toContain('<div class="gf-block gf-draft-banner" role="note">');
-    expect(body).toContain('gf-context');
+    // #665 から視聴ページの配置（作者の行・概要欄）で描く。
+    expect(body).toContain('<div class="gf-watch-byline">');
     expect(body).not.toContain(playReportScript(id));
     expect(body).toContain(`<noscript class="gf-play-noscript"><iframe class="gf-frame" src="https://${env.SANDBOX_HOST}/p/`);
     expect(body).toContain('<meta name="robots" content="noindex">');
@@ -416,7 +418,7 @@ describe('4 要素をアプリ用ホスト側に描く（7.2 を崩さないた�
     const anonymous = await workPage(id);
     expect(anonymous).toContain('できました');
     expect(anonymous).not.toContain('<iframe');
-    expect(anonymous).not.toContain('gf-context');
+    expect(anonymous).not.toContain('gf-watch-author');
     expect(anonymous).not.toContain('gf-draft-banner');
   });
 });

@@ -23,6 +23,11 @@
 #   GENERATING_GAME_ID  仕込んだ生成中で止まっている作品の id（#666。「あなたの作品」の表と一括の確認画面のため。
 #                       `WORKING_GAME_ID` は作成の時刻が「いま」なので「時間がかかっています」を描かない）
 #
+# **公開済みの作品（`PUBLISHED_GAME_ID`）に、関連作品の 3 種類（フォーク元・フォーク先・同じタグ）を持たせる**（#665）。
+# 無いと、作品ページの右カラム（`.gf-related`）が 1 度も描かれないまま幅の検査が緑になる。フォーク元と同じタグの作品は
+# ハンドル名の無い利用者の作品にし、公開済みの作品に「…」メニュー（ソースへのリンク）が出ることも測る。下書き（`GAME_ID`）にも
+# タグを 1 つ付け、作者の下書きのプレビューに関連作品の列が並ぶ形を測る。
+#
 # **エディットページ（`/works/<id>/edit`。#664）の 4 つの状態と、下書きのプレビュー（帯つきの作品ページ）を
 # 測れるように仕込む。** エディットページは作品ページの前方一致の経路の続きなので `/__dev/pages` には出ない——
 # 呼ぶ側（`scripts/check-page-width.sh`）が 4 つの id から足す。**仕込んだ利用者は 4 つの作品の作者である**ので、
@@ -202,6 +207,11 @@ dev_fixture_up() {
   FAILED_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
   DRAFT_PREVIEW_KEY="$(node -e 'console.log(require("node:crypto").randomBytes(16).toString("hex"))')"
 
+  # **関連作品の 3 種類**（#665。冒頭の説明）。
+  RELATED_PARENT_ID="$(node -e 'console.log(crypto.randomUUID())')"
+  RELATED_FORK_ID="$(node -e 'console.log(crypto.randomUUID())')"
+  RELATED_TAG_ID="$(node -e 'console.log(crypto.randomUUID())')"
+
   # **公開済みの作品に、ソースと配信サイズの索引を持たせる**（#383）。無いと、作品ページの
   # 詳細情報パネルは「Wasm のサイズ」とソースへのリンクを出さず、`/source/<id>` は
   # 「読み出せませんでした」の 1 文だけになり、**長い行を持つ `<pre>` を 3 幅で 1 度も
@@ -272,6 +282,18 @@ dev_fixture_up() {
               'width-check-claimant-with-a-long-address@example.invalid',
               '幅の検査の削除依頼の本文です。改行を含み、1 行に収まらない長さにしてあります。', 4,
               null, null, null);
+    insert into games (id, author_id, status, title, go_version, created_at, published_at, generation_state, preview_key, tag1)
+      values ('$RELATED_PARENT_ID', '$PLAIN_USER_ID', 'published', '幅の検査のフォーク元の作品', '', 1, 1, 'ready',
+              'width-check-related-parent', 'puzzle');
+    update games set parent_id = '$RELATED_PARENT_ID' where id = '$PUBLISHED_GAME_ID';
+    insert into games (id, author_id, status, title, go_version, created_at, published_at, generation_state, preview_key, parent_id)
+      values ('$RELATED_FORK_ID', '$PLAIN_USER_ID', 'published',
+              '幅の検査のフォーク先の作品で、題名が関連作品の列では 2 行に折り返す長さになっているもの', '', 1, 2, 'ready',
+              'width-check-related-fork', '$PUBLISHED_GAME_ID');
+    insert into games (id, author_id, status, title, go_version, created_at, published_at, generation_state, preview_key, tag1)
+      values ('$RELATED_TAG_ID', '$PLAIN_USER_ID', 'published', '幅の検査の同じタグの作品', '', 1, 3, 'ready',
+              'width-check-related-tag', 'rhythm-sound');
+    update games set tag1 = 'puzzle' where id = '$GAME_ID';
   " >"$WORK/seed.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/seed.log" >&2; fail "検査用の行を作れませんでした。"; }
 

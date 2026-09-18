@@ -37,6 +37,7 @@ import {
   MY_WORKS_PER_PAGE,
   displayTitleOf,
   myWorksPath,
+  publicationLabelOf,
   rowStateOf,
   toMyWorksPageNumber,
 } from '../src/my-works.js';
@@ -394,6 +395,41 @@ describe('一覧の中身（#152 acceptance 1・3）', () => {
     const body = await (await openList(await sessionCookie(userId))).text();
     expect(body).not.toContain(removed);
     expect(body).not.toContain('取り下げた作品');
+  });
+
+  it('行に公開中と下書きを出す（#641）', async () => {
+    // **#637 で公開をやめた作品が下書きとして戻るようになり、この一覧に 2 つの状態が混ざる。**
+    // 混ざるのに見分けられないと、戻した作品を作者が探せない（2026-09-17 の本番の確認）。
+    const userId = await seedUser();
+    await seedGame(userId, { status: PUBLISHED_STATUS, title: '出している作品', createdAt: 1_700_000_200 });
+    await seedGame(userId, { status: DRAFT_STATUS, title: '下書きの作品', createdAt: 1_700_000_100 });
+
+    const body = await (await openList(await sessionCookie(userId))).text();
+    const published = body.slice(body.indexOf('出している作品'), body.indexOf('下書きの作品'));
+    const draft = body.slice(body.indexOf('下書きの作品'));
+
+    expect(published).toContain('<span class="gf-chip">公開中</span>');
+    expect(published).not.toContain('下書き');
+    expect(draft).toContain('<span class="gf-chip">下書き</span>');
+    expect(draft).not.toContain('公開中');
+  });
+
+  it('生成中の行にも下書きを出す（公開していないことは同じである）', async () => {
+    const userId = await seedUser();
+    await seedGame(userId, { status: DRAFT_STATUS, generationState: 'running', title: '生成中の作品' });
+
+    const body = await (await openList(await sessionCookie(userId))).text();
+    const row = body.slice(body.indexOf('生成中の作品'));
+    // **2 つの札は直交する**（生成が終わったか / 公開しているか）。畳まない。
+    expect(row).toContain('<span class="gf-chip gf-chip-emphasis">生成中</span> <span class="gf-chip">下書き</span>');
+  });
+
+  it('知らない status では札を出さない（公開中と言い切らない）', () => {
+    expect(publicationLabelOf('published')).toBe('公開中');
+    expect(publicationLabelOf('draft')).toBe('下書き');
+    // **`removed` はこの一覧に来ない**が、来ても「公開中」とは言わない。
+    expect(publicationLabelOf('removed')).toBeNull();
+    expect(publicationLabelOf('unexpected')).toBeNull();
   });
 });
 

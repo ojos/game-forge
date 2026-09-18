@@ -234,6 +234,35 @@ const STATE_LABELS = {
 type RowState = keyof typeof STATE_LABELS;
 
 /**
+ * 公開状態の札の文言（#641）。
+ *
+ * **{@link STATE_LABELS} と混ぜない。** あちらは生成が終わったかで、こちらは公開しているかである。
+ * **2 つは直交する**（生成中の作品は必ず下書きだが、下書きの作品が生成中とは限らない）ので、
+ * 1 つの札に畳むと「できました」と「公開中」のどちらを言っているのかが読めなくなる。
+ *
+ * **`removed` は無い。** この一覧は引かない（`src/games.ts` の `listAuthoredGames`）。
+ */
+const PUBLICATION_LABELS = {
+  published: '公開中',
+  draft: '下書き',
+} as const;
+
+/**
+ * `games.status` を行の札の文言へ落とす（#641）。
+ *
+ * **D1 の綴りをそのまま画面へ出さない**（{@link rowStateOf} と同じ方針）。CHECK があるので
+ * `draft` / `published` 以外は通常入らないが、**知らない値を「公開中」と言い切らない**
+ * ——公開していないものを公開中と出すほうが、何も出さないより害が大きい（5.4 は公開を
+ * 作者の意思表示として扱う）。**知らない値では札を出さない。**
+ *
+ * @param status D1 の `games.status`
+ * @returns 札の文言。出さないなら null
+ */
+export function publicationLabelOf(status: string): string | null {
+  return status === 'published' || status === 'draft' ? PUBLICATION_LABELS[status] : null;
+}
+
+/**
  * `generation_state` を一覧の行の状態へ落とす。
  *
  * **D1 の綴りをそのまま表示の分岐に使わない**（`src/work-page.ts` と同じ方針）。
@@ -295,9 +324,14 @@ function renderRow(work: AuthoredGame, now: number): string {
   // **状態の札はチップの部品で、まだ動いている行（生成中・時間がかかっている）だけ地を塗る**（`.gf-chip-emphasis`。仕様 2.5.5 / #473）。
   // 区別は色ではなく文言が言う（無彩色）。題名は文章の外のリンク（`.gf-link-quiet`。一覧の行の題名。2.5.5）。
   const chip = state === 'working' || state === 'stalled' ? 'gf-chip gf-chip-emphasis' : 'gf-chip';
+  // **公開状態の札は生成状態の札の後ろに置く**（#641）。**地は塗らない**——「公開中」も「下書き」も
+  // 平常の状態で、急かす対象ではない（塗るのは動いている行だけ、という #473 の使い分けを崩さない）。
+  // **知らない値では出さない**（{@link publicationLabelOf}）。
+  const publication = publicationLabelOf(work.status);
+  const publicationChip = publication === null ? '' : ` <span class="gf-chip">${publication}</span>`;
   return (
     `  <li><a class="gf-link-quiet gf-works-title" href="${workPagePath(work.id)}">${escapeHtml(displayTitleOf(work.title))}</a>` +
-    ` <span class="${chip}">${STATE_LABELS[state]}</span>${created}</li>`
+    ` <span class="${chip}">${STATE_LABELS[state]}</span>${publicationChip}${created}</li>`
   );
 }
 
@@ -403,7 +437,7 @@ ${renderMyWorksStats(view.stats, view.quotaNotice)}
 <h2>作品の一覧</h2>
 <a class="gf-button gf-button-primary gf-button-sm" href="${GENERATE_PAGE_PATH}">新しく生成する</a>
 </div>
-<p>生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>
+<p>公開中のものも下書きも、生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>
 ${body}
 ${renderPager(view)}
 <p class="gf-works-links"><a class="gf-button gf-button-secondary gf-button-sm" href="${LIKED_WORKS_PATH}">いいねした作品</a>

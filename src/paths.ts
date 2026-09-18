@@ -48,6 +48,12 @@ export const HOME_PATH = '/';
  * 本番配備を止めた（#266 と #283 で 2 回）。パスの綴りは値だけの葉に置き、
  * 画面の実装から切り離す。**この規約の適用例としても素直である**——提供する側
  * （作品ページ）と、そこへ送り返す側（生成・メール）が別モジュールになっている。
+ *
+ * ※ #672 で、生成の完了メール（`src/mail/generation-notice.ts`）はエディットページの綴り
+ * （`src/work-edit-paths.ts` の `workEditPath`。その中でこの `workPagePath` を使う）へ移った。
+ * `workPagePath` を直接使うメールはフォークの通知（`src/mail/fork-notice.ts`）で、こちらは束に入らない。
+ * **束に入る経路から見ると、このモジュールは `src/generate.ts` と、`src/work-edit-paths.ts` 経由の
+ * 完了メールの 2 本から読まれる。**
  */
 export const WORK_PAGE_PREFIX = '/works/';
 

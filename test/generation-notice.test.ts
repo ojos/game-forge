@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { notifyGenerationFinished, workPageUrl } from '../src/mail/generation-notice.js';
+import { notifyGenerationFinished, workEditUrl } from '../src/mail/generation-notice.js';
 import type { GenerationNoticeDeps } from '../src/mail/generation-notice.js';
 import type { MailMessage, MailOutcome } from '../src/mail/resend.js';
 import { createPendingGame } from '../src/games.js';
@@ -8,6 +8,7 @@ import { DAILY_QUOTA_PER_USER, MONTHLY_COST_LIMIT_JPY } from '../src/quota.js';
 import { DEFAULT_GENERATION_MODEL_KEY } from '../src/generation-models.js';
 import { failureMessageOf } from '../src/generation-failure.js';
 import { workPagePath } from '../src/paths.js';
+import { workEditPath } from '../src/work-edit-paths.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -121,7 +122,7 @@ afterEach(async () => {
 });
 
 describe('完成したとき', () => {
-  it('作者本人へ 1 通送り、作品ページの URL を載せる', async () => {
+  it('作者本人へ 1 通送り、エディットページの URL を載せる（#672）', async () => {
     const { gameId, email } = await seedGame('ready');
     const { sent, deps } = fakeSender();
 
@@ -132,14 +133,18 @@ describe('完成したとき', () => {
     const message = sent[0]!;
     // **宛先は D1 の users.email である**（設定でもコードでもない）。
     expect(message.to).toBe(email);
-    expect(message.text).toContain(`https://${env.APP_HOST}${workPagePath(gameId)}`);
+    // **作者はエディットページへ直接着く**（#672）。綴りを式から組まず、値そのもので固定する。
+    expect(message.text).toContain(`作品ページ: https://${env.APP_HOST}/works/${gameId}/edit`);
+    // 作品ページ（帯つきのプレビュー）へは送らない。
+    expect(message.text).not.toMatch(new RegExp(`/works/${gameId}(?!/edit)`));
     // お題（仮タイトル）で、どの生成の結果かが分かる。
     expect(message.text).toContain('よけるゲーム');
   });
 
-  it('リンクの綴りは work-page の正本から組み立てる', async () => {
+  it('リンクの綴りはエディットページの正本から組み立てる（#672）', async () => {
     const { gameId } = await seedGame('url');
-    expect(workPageUrl(env, gameId)).toBe(`https://${env.APP_HOST}${workPagePath(gameId)}`);
+    expect(workEditUrl(env, gameId)).toBe(`https://${env.APP_HOST}${workEditPath(gameId)}`);
+    expect(workEditUrl(env, gameId)).toBe(`https://${env.APP_HOST}${workPagePath(gameId)}/edit`);
   });
 });
 
@@ -167,7 +172,8 @@ describe('失敗したとき', () => {
     // **「失敗しました」だけで終わらせない**（確定25。枠は台帳の行数で数える）。
     expect(message.text).toContain('生成枠は消費されます');
     expect(message.text).toContain(`本日の残りの生成枠は ${DAILY_QUOTA_PER_USER - 3} 回です。`);
-    expect(message.text).toContain(`https://${env.APP_HOST}${workPagePath(gameId)}`);
+    // 失敗も作者の作業場（エディットページ）へ送る（#672。失敗の表示と再試行の導線はそこにある）。
+    expect(message.text).toContain(`作品ページ: https://${env.APP_HOST}/works/${gameId}/edit`);
   });
 
   it('本日の枠を使い切っていれば、その旨を書く', async () => {

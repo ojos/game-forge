@@ -43,8 +43,8 @@
  * である（`src/generate-callback.ts`）。
  */
 import { failureMessageOf } from '../generation-failure.js';
-import { workPagePath } from '../paths.js';
 import { DAILY_QUOTA_REASON, MONTHLY_LIMIT_REASON, generationQuotaStatus } from '../quota.js';
+import { workEditPath } from '../work-edit-paths.js';
 import type { MailDeps, MailMessage, MailOutcome } from './resend.js';
 import { defaultMailDeps, mailConfigOf, sendMail } from './resend.js';
 
@@ -91,17 +91,26 @@ interface NoticeTarget {
 }
 
 /**
- * 作品ページの絶対 URL を組み立てる。
+ * エディットページの絶対 URL を組み立てる（#672）。
  *
- * **綴りの正本は `src/paths.ts` の `workPagePath` である**（3 か所に `/works/` と
- * 書かない）。ホスト名は環境の宣言（`APP_HOST`）から取る。
+ * **メールの宛先は作者本人だけなので、着く先は作者の作業場であるエディットページにする。**
+ * 以前は作品ページ（`/works/<id>`）へ送っており、完成した下書きでは帯つきのプレビューに
+ * 着いて「編集へ戻る」の 1 手が要った（#664 はこの変更を束の配り直しを伴うため切り出した）。
+ * 完成（`ready`）も失敗（`failed`）も同じ URL へ送る——失敗の表示と再試行の導線も
+ * エディットページにある（作者が作品ページで失敗した作品を開くと `/edit` へ 303 で送られる。
+ * `src/work-page.ts` の `showWorkPage`。古いメールのリンク向けにそちらは残す）。
+ * リフォージの完了も同じ `finish` を通るので、この URL へ送る。
+ *
+ * **綴りの正本は `src/work-edit-paths.ts` の `workEditPath` である。** ホスト名は環境の宣言
+ * （`APP_HOST`）から取る。フォークの通知（`src/mail/fork-notice.ts`）は宛先が親の作者で、
+ * 他人の作品を開くので作品ページへ送る（あちらは自分の `workPageUrl` を持つ）。
  *
  * @param env バインディングと環境変数
  * @param gameId 作品 id
  * @returns 絶対 URL
  */
-export function workPageUrl(env: Env, gameId: string): string {
-  return `https://${env.APP_HOST}${workPagePath(gameId)}`;
+export function workEditUrl(env: Env, gameId: string): string {
+  return `https://${env.APP_HOST}${workEditPath(gameId)}`;
 }
 
 /**
@@ -149,7 +158,7 @@ async function remainingQuotaSentence(env: Env, userId: string): Promise<string 
  * 完了の本文を組み立てる。
  *
  * @param title 仮タイトル（プロンプト由来）
- * @param url 作品ページの URL
+ * @param url エディットページの URL（{@link workEditUrl}）
  * @returns 件名と本文
  */
 function readyMessage(title: string, url: string): { subject: string; text: string } {
@@ -173,7 +182,7 @@ function readyMessage(title: string, url: string): { subject: string; text: stri
  * メールで説明が食い違うと、同じ 1 件の失敗に 2 つの説明ができる（shared-ai-rules 12 章）。
  *
  * @param title 仮タイトル（プロンプト由来）
- * @param url 作品ページの URL
+ * @param url エディットページの URL（{@link workEditUrl}）
  * @param errorCode 失敗の分類名（8.3）
  * @param quota 枠の状態を表す 1 文（読み取れなければ null）
  * @returns 件名と本文
@@ -260,7 +269,7 @@ export async function notifyGenerationFinished(
       return 'no-recipient';
     }
 
-    const url = workPageUrl(env, gameId);
+    const url = workEditUrl(env, gameId);
     const message =
       outcome.kind === 'ready'
         ? readyMessage(target.title, url)

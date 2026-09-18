@@ -77,7 +77,7 @@
 import { isMailAddress, mailConfigOf, sendMail } from './resend.js';
 import type { MailDeps, MailMessage, MailOutcome } from './resend.js';
 import { defaultMailDeps } from './resend.js';
-import { workPageUrl } from './generation-notice.js';
+import { workPagePath } from '../paths.js';
 
 /**
  * ログに出す、この通知の固定の名前（宛先や本文の代わりに使う）。
@@ -91,6 +91,23 @@ const LABEL = 'fork-published';
  * 長さの上限を持たない。本文の 1 行がいくらでも伸びる形をメールへ持ち込まない。
  */
 const MAX_NAME_LENGTH = 60;
+
+/**
+ * フォーク作品の作品ページの絶対 URL を組み立てる。
+ *
+ * **宛先は親の作者で、開くのは他人（改造した人）の作品なので、作品ページ（`/works/<id>`）へ送る。**
+ * 生成の通知（`src/mail/generation-notice.ts`）は作者本人へ送るのでエディットページへ送る（#672）。
+ * 以前はあちらの `workPageUrl` を借りていたが、リンク先が分かれたのでここへ持つ。
+ *
+ * **綴りの正本は `src/paths.ts` の `workPagePath` である。** ホスト名は環境の宣言（`APP_HOST`）から取る。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 作品 id
+ * @returns 絶対 URL
+ */
+export function workPageUrl(env: Env, gameId: string): string {
+  return `https://${env.APP_HOST}${workPagePath(gameId)}`;
+}
 
 /**
  * この通知の結末。**呼び出し元はログと検査のためにだけ使う。**

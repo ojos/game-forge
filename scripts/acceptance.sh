@@ -60,6 +60,16 @@ bash scripts/check-control-chars.sh
 echo "[acceptance] (hygiene) scripts/check-table-breaks.sh"
 bash scripts/check-table-breaks.sh
 
+# 書き戻しの PR を 1 本ずつに並べる判定の表（#650）。
+#
+# **判定はワークフロー（.github/workflows/writeback-serial.yml）ではなくスクリプトが持つ**ので、
+# ここで表を回して押さえる。ワークフローは GitHub 上でしか動かないため、判定が崩れても
+# 手元では気づけない——それを接地信号の側で拾う。bash だけで 1 秒かからない。
+#
+# ran_any は立てない（上の 2 つと同じ理由）。
+echo "[acceptance] (hygiene) scripts/check-writeback-serial.sh"
+bash scripts/check-writeback-serial.sh
+
 # app.css の区画の規約と、画面幅の段の検査（#371 / 仕様 2.3.9）。
 #
 # **上の 2 つと同じ層に置く。** bash と awk しか要らず、40 ms で終わる。

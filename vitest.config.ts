@@ -97,6 +97,10 @@ export default defineConfig({
           // どの要求が Functions へ行くかを決める宣言。app.css が exclude から
           // 外れると、実体があっても 404 になる（#266 で実測）。機械照合する。
           TEST_ROUTES_JSON: 'public/_routes.json',
+          // オーケストレータの非同期呼び出しの宣言（`maximum_event_age` と `timeout`）。止まった生成を
+          // 畳む区切り（`src/stale-generation-sweep.ts`）が、コールバックの届きうる時間の外側にあることを
+          // 照合する（#681）。値をテストへ書き写すと、terraform を変えた日にテストだけが古い値を見続ける。
+          TEST_ORCHESTRATOR_TF: 'terraform/orchestrator.tf',
         },
       },
     }),

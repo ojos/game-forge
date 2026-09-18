@@ -55,6 +55,13 @@ declare global {
        */
       readonly TEST_ROUTES_JSON: string;
       /**
+       * オーケストレータの宣言（`terraform/orchestrator.tf`）の中身。
+       *
+       * 止まった生成を畳む区切り（`src/stale-generation-sweep.ts`）が、`maximum_event_age` ＋ `timeout` の
+       * 外側にあることを照合するために渡している（#681）。
+       */
+      readonly TEST_ORCHESTRATOR_TF: string;
+      /**
        * `.dev.vars.example` の中身（`vitest.config.ts` の `textBlobBindings`）。
        *
        * 文書化された秘密の名前を、書き写さずにテストから引くために渡している

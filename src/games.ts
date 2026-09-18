@@ -132,9 +132,18 @@ export const DRAFT_STATUS = 'draft';
  * `src/work-page.ts` は再 export で互換を保つ。
  *
  * **D1 は書き換えない。** GET が状態を書き換える形にすると、ページを開いた人が
- * 行を壊せることになる。表示の上でだけ「中断した可能性」と言い、行は 3.7 の掃除
- * （未公開のまま 14 日で自動削除。確定13）に任せる（止まった行を `failed` にする掃除は
- * #455 の scope.out）。
+ * 行を壊せることになる。表示の上でだけ「中断した可能性」と言う。
+ *
+ * **行を `failed` に畳むのは cron だけである**（#681。`src/stale-generation-sweep.ts`、
+ * 起こすのは `game-forge-cleanup` の 5 分ごとの `scheduled`）。畳む区切りはこの値ではなく
+ * `STALE_GENERATION_SWEEP_SECONDS`（1 時間）で、オーケストレータの `maximum_event_age` ＋
+ * `timeout`（約 20 分）の外側に置く——表示は 900 秒で「中断した可能性」と言い始め、
+ * 1 時間を過ぎた次の cron で行が `failed` になり、失敗の案内と削除の導線に変わる。
+ *
+ * > **旧記述（#681 より前）。** 「行は 3.7 の掃除（未公開のまま 14 日で自動削除。確定13）に
+ * > 任せる（止まった行を `failed` にする掃除は #455 の scope.out）。」——その掃除は無く、
+ * > 止まった行は削除（`deleteGame` は `pending` / `running` を断る）もできないまま残っていた。
+ * > **14 日の自動削除そのものは、いまも無い。**
  */
 export const STALE_AFTER_SECONDS = 900;
 

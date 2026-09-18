@@ -482,7 +482,10 @@ describe('Durable Object と cron の結線', () => {
     // **結線だけを見る。** 本物の DO を起こすと、`wake()` が立てたアラームが読む前に
     // 発火して、何を確かめているのか分からなくなる。
     const woken: string[] = [];
+    // **D1 は本物を渡す。** 同じ cron が止まった生成の行も畳む（#681。`test/stale-generation-sweep.test.ts`）。
+    // このファイルの作品はどれも `ready` なので、畳まれる行は無い。
     const fakeEnv = {
+      DB: env.DB,
       WITHDRAWAL_HUB: {
         idFromName: (name: string): unknown => ({ name }),
         get: (id: { name: string }): { wake: () => Promise<void> } => ({

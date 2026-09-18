@@ -13,7 +13,7 @@ import {
   publishGame,
   retagGame,
 } from '../src/games.js';
-import type { OgpCaptureJob } from '../src/ogp.js';
+import type { OgpCaptureJob } from '../src/ogp-client.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { workEditPath } from '../src/work-edit-paths.js';

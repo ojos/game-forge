@@ -144,6 +144,14 @@ export interface LedgerCallback {
   readonly prompt: string;
   /** 費用の算出に要る、生成 1 回分の結果。 */
   readonly generated: GenerationResult;
+  /**
+   * オーケストレータの束に焼き込まれたプロンプトの版（`generations.prompt_version`。#649）。
+   *
+   * **送られてこなければ null である。** #649 より前の束は送らないので、配り直しの前後で
+   * 送る回と送らない回が混ざる。**エッジの版で埋めない**——埋めると、この値を運ぶ理由
+   * （エッジの版は実際の版ではない）をそのまま裏返した嘘になる。
+   */
+  readonly promptVersion: number | null;
 }
 
 /** `finish` の成功側が運ぶもの。 */
@@ -290,7 +298,7 @@ function parseLedger(value: unknown): LedgerCallback | null {
   if (!isRecord(value)) {
     return null;
   }
-  const { generationId, prompt, modelKey, modelId, stopReason, usage } = value;
+  const { generationId, prompt, modelKey, modelId, stopReason, usage, promptVersion } = value;
   if (typeof generationId !== 'string' || generationId === '') {
     return null;
   }
@@ -320,10 +328,17 @@ function parseLedger(value: unknown): LedgerCallback | null {
   if (cacheWriteInputTokens !== null && !isCount(cacheWriteInputTokens)) {
     return null;
   }
+  // **欠けているのは受け付け、壊れているのは断る**（#649）。欠けるのは古い束の正常な
+  // 振る舞いで、行は NULL で書く。壊れた値は送る側の不具合なので、黙って NULL へ
+  // 丸めると「記録を始める前の行」と見分けがつかなくなる。版は 1 から始まる（`src/prompt-version.ts`）。
+  if (promptVersion !== undefined && !(Number.isSafeInteger(promptVersion) && (promptVersion as number) >= 1)) {
+    return null;
+  }
 
   return {
     generationId,
     prompt,
+    promptVersion: promptVersion === undefined ? null : (promptVersion as number),
     generated: {
       modelKey: modelKey as GenerationModelKey,
       modelId,
@@ -734,6 +749,9 @@ async function handleCallback(
         userId: job.authorId,
         prompt: callback.ledger.prompt,
         generated: callback.ledger.generated,
+        // **エッジの `PROMPT_VERSION` を使わない**（#649）。生成したのはオーケストレータで、
+        // エッジの版は、配り直しの前後で実際の版と食い違う。
+        promptVersion: callback.ledger.promptVersion,
       },
       now,
       { id: callback.ledger.generationId },

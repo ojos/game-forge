@@ -11,6 +11,7 @@ import {
   jstMonthRange,
   monthlyCostTotals,
   recordGeneration,
+  recordGenerationCost,
 } from '../src/cost-ledger.js';
 import type {
   EffortExperimentGroup,
@@ -355,7 +356,7 @@ describe('台帳への記録（#22 acceptance 1 / 5）', () => {
   it('成功した生成が 1 行記録され、モデルが残る', async () => {
     const userId = await seedUser('recorded');
     const generated = generationOf('sonnet-4-6', { inputTokens: 1_092, outputTokens: 4_171 });
-    const record = await recordGeneration(env, { userId, prompt: 'シューティング', generated });
+    const record = await recordGeneration(env, { userId, prompt: 'シューティング', generated, promptVersion: PROMPT_VERSION });
 
     const rows = await rowsOf(userId);
     expect(rows).toHaveLength(1);
@@ -375,18 +376,35 @@ describe('台帳への記録（#22 acceptance 1 / 5）', () => {
     expect(row.prompt_version).toBe(PROMPT_VERSION);
   });
 
-  it('プロンプトの版は定数から入る（書き写していない）', async () => {
-    // **数を書き写さない。** `src/system-prompt.ts` を直した日に、台帳だけが古い版を
-    // 言い続ける形を作らない（shared-ai-rules 12 章）。
+  it('プロンプトの版は渡された値を書き、このモジュールの版で埋めない（#649）', async () => {
+    // **本番で生成するのはオーケストレータで、行を書くのはエッジである。** エッジの
+    // `PROMPT_VERSION` で埋めると、配り直した直後に必ず古い版が入る（#649 の実測:
+    // 版 3 で生成した 2 本が `prompt_version = 2`）。**エッジの版と違う値を渡して、
+    // その値が残ることを見る。** 同じ値を渡すと、定数で埋める実装でも緑で通る。
     const userId = await seedUser('prompt-version');
-    await recordGeneration(env, {
+    const generated = generationOf('sonnet-4-6', { inputTokens: 10, outputTokens: 20 });
+    const lambdaVersion = PROMPT_VERSION + 7;
+    await recordGeneration(env, { userId, prompt: 'ゲーム', generated, promptVersion: lambdaVersion });
+    // **版が届かなかった回は NULL である。** 「記録を始める前の行」と同じ読み方になり、
+    // 嘘の版が群分けへ混ざらない。
+    await recordGeneration(env, { userId, prompt: 'ゲーム', generated, promptVersion: null });
+
+    const rows = await rowsOf(userId);
+    expect(rows.map((row) => row.prompt_version)).toEqual([lambdaVersion, null]);
+  });
+
+  it('エッジが自分で生成した経路は、エッジの版を書く（#649）', async () => {
+    // `recordGenerationCost` は `defaultPipeline`（エッジで生成する）の段である。
+    // **この経路ではエッジの本文が実際の本文**なので、エッジの版が正しい。
+    const userId = await seedUser('prompt-version-edge');
+    await recordGenerationCost(
+      env,
       userId,
-      prompt: 'ゲーム',
-      generated: generationOf('sonnet-4-6', { inputTokens: 10, outputTokens: 20 }),
-    });
+      { prompt: 'ゲーム' },
+      generationOf('sonnet-4-6', { inputTokens: 10, outputTokens: 20 }),
+    );
     const rows = await rowsOf(userId);
     expect(rows[0]!.prompt_version).toBe(PROMPT_VERSION);
-    expect(Number.isInteger(PROMPT_VERSION)).toBe(true);
   });
 
   it('モデルごとに違う額が記録される（#22 acceptance 4）', async () => {
@@ -396,6 +414,7 @@ describe('台帳への記録（#22 acceptance 1 / 5）', () => {
         userId,
         prompt: 'ゲーム',
         generated: generationOf(key, { inputTokens: 1_000, outputTokens: 2_000 }),
+        promptVersion: PROMPT_VERSION,
       });
     }
     const rows = await rowsOf(userId);
@@ -414,7 +433,7 @@ describe('台帳への記録（#22 acceptance 1 / 5）', () => {
       { stopReason: 'max_tokens' },
     );
     expect(isUsableGeneration(generated)).toBe(false);
-    await recordGeneration(env, { userId, prompt: 'ゲーム', generated });
+    await recordGeneration(env, { userId, prompt: 'ゲーム', generated, promptVersion: PROMPT_VERSION });
 
     const rows = await rowsOf(userId);
     expect(rows).toHaveLength(1);
@@ -428,6 +447,7 @@ describe('台帳への記録（#22 acceptance 1 / 5）', () => {
       userId,
       prompt: 'ゲーム',
       generated: generationOf('deepseek-v3-2', { inputTokens: 10, outputTokens: 20 }),
+      promptVersion: PROMPT_VERSION,
     });
     const row = (await rowsOf(userId))[0]!;
     expect(row.cache_creation_input_tokens).toBe(0);
@@ -447,6 +467,7 @@ describe('台帳への記録（#22 acceptance 1 / 5）', () => {
         cacheReadInputTokens: 111,
         cacheWriteInputTokens: 222,
       }),
+      promptVersion: PROMPT_VERSION,
     });
     const row = (await rowsOf(userId))[0]!;
     expect(row.cache_read_input_tokens).toBe(111);
@@ -468,7 +489,7 @@ describe('リトライは試行の数だけ記録される（#22 acceptance 2）
       generationOf('sonnet-4-6', { inputTokens: 1_200, outputTokens: 1_400 }),
     ];
     for (const attempt of attempts) {
-      await recordGeneration(env, { userId, prompt: 'ゲーム', generated: attempt });
+      await recordGeneration(env, { userId, prompt: 'ゲーム', generated: attempt, promptVersion: PROMPT_VERSION });
     }
 
     const rows = await rowsOf(userId);
@@ -547,15 +568,15 @@ describe('月次累計の集計（4.3 層 1）', () => {
     const outOfMonth = generationOf('deepseek-v3-2', { inputTokens: 5_000, outputTokens: 5_000 });
 
     // 月初ちょうど（含む）と月末の 1 秒前（含む）。
-    await recordGeneration(env, { userId, prompt: 'a', generated: inMonth }, range.fromSeconds);
-    await recordGeneration(env, { userId, prompt: 'b', generated: inMonth }, range.toSeconds - 1);
+    await recordGeneration(env, { userId, prompt: 'a', generated: inMonth, promptVersion: PROMPT_VERSION }, range.fromSeconds);
+    await recordGeneration(env, { userId, prompt: 'b', generated: inMonth, promptVersion: PROMPT_VERSION }, range.toSeconds - 1);
     // 前月の最終秒と、翌月の先頭（どちらも含まない）。
     await recordGeneration(
       env,
-      { userId, prompt: 'c', generated: outOfMonth },
+      { userId, prompt: 'c', generated: outOfMonth, promptVersion: PROMPT_VERSION },
       range.fromSeconds - 1,
     );
-    await recordGeneration(env, { userId, prompt: 'd', generated: outOfMonth }, range.toSeconds);
+    await recordGeneration(env, { userId, prompt: 'd', generated: outOfMonth, promptVersion: PROMPT_VERSION }, range.toSeconds);
 
     const totals = await monthlyCostTotals(env, Date.UTC(2020, 2, 15) / 1000);
     expect(totals.year).toBe(2020);
@@ -577,7 +598,7 @@ describe('月次累計の集計（4.3 層 1）', () => {
     const generated = generationOf('sonnet-4-6', { inputTokens: 1_000, outputTokens: 1_000 });
     for (const suffix of ['shared-a', 'shared-b']) {
       const userId = await seedUser(suffix);
-      await recordGeneration(env, { userId, prompt: 'ゲーム', generated }, at);
+      await recordGeneration(env, { userId, prompt: 'ゲーム', generated, promptVersion: PROMPT_VERSION }, at);
     }
     const totals = await monthlyCostTotals(env, at);
     expect(totals.generations).toBe(2);
@@ -596,6 +617,7 @@ describe('effort の割り当てと結果が台帳から追える（#25 acceptan
         userId,
         prompt: `お題-${arm}`,
         generated: generationOf(`sonnet-4-6-${arm}`, { inputTokens: 1_200, outputTokens: 6_000 }),
+        promptVersion: PROMPT_VERSION,
       });
     }
     const rows = await rowsOf(userId);
@@ -611,6 +633,7 @@ describe('effort の割り当てと結果が台帳から追える（#25 acceptan
       userId,
       prompt: 'お題',
       generated: generationOf('sonnet-4-6', { inputTokens: 1_200, outputTokens: 6_000 }),
+      promptVersion: PROMPT_VERSION,
     });
     expect((await rowsOf(userId))[0]!.effort).toBe(EFFORT_NOT_SENT);
   });
@@ -627,6 +650,7 @@ describe('effort の割り当てと結果が台帳から追える（#25 acceptan
         userId,
         prompt: 'お題',
         generated: generationOf('sonnet-4-6-high', { inputTokens: 1_200, outputTokens: 100 }),
+        promptVersion: PROMPT_VERSION,
       });
       expect((await rowsOf(userId))[0]!.effort).toBe('low');
     } finally {
@@ -646,6 +670,7 @@ describe('effort の割り当てと結果が台帳から追える（#25 acceptan
         ...generationOf(DEFAULT_GENERATION_MODEL_KEY, { inputTokens: 10, outputTokens: 10 }),
         modelKey: 'sonnet-9' as GenerationModelKey,
       },
+      promptVersion: PROMPT_VERSION,
     });
     expect((await rowsOf(userId))[0]!.effort).toBeNull();
   });
@@ -702,6 +727,7 @@ describe('A/B の集計（#25 acceptance 1）', () => {
           { inputTokens: 1_200, outputTokens, cacheReadInputTokens: 0, cacheWriteInputTokens: 0 },
           { stopReason },
         ),
+        promptVersion: PROMPT_VERSION,
       },
       at,
     );
@@ -899,6 +925,7 @@ describe('A/B の集計（#25 acceptance 1）', () => {
           cacheReadInputTokens: 9_478,
           cacheWriteInputTokens: 0,
         }),
+        promptVersion: PROMPT_VERSION,
       },
       WINDOW_FROM + 10_000,
     );
@@ -937,6 +964,7 @@ describe('A/B の集計（#25 acceptance 1）', () => {
             cacheReadInputTokens: index === 0 ? 0 : 2_422,
             cacheWriteInputTokens: index === 0 ? 2_422 : 0,
           }),
+          promptVersion: PROMPT_VERSION,
         },
         WINDOW_FROM + 20_000 + index * 600,
       );

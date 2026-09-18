@@ -115,6 +115,13 @@ export interface LedgerEntry {
   readonly prompt: string;
   /** 生成 1 回分の結果。 */
   readonly generated: GenerationResult;
+  /**
+   * **この Lambda の束に焼き込まれた**システムプロンプトの版（`generations.prompt_version`。#649）。
+   *
+   * **書くのはエッジだが、版を知っているのはこちらだけである。** エッジは main から配られ、
+   * こちらは `deploy-orchestrator.sh` で配られるので、配り直しの前後で両者の本文が違う。
+   */
+  readonly promptVersion: number;
 }
 
 /** `finish` の成功側へ渡すもの。 */
@@ -215,6 +222,7 @@ export class CallbackClient {
             cacheReadInputTokens: usage.cacheReadInputTokens,
             cacheWriteInputTokens: usage.cacheWriteInputTokens,
           },
+          promptVersion: entry.promptVersion,
         },
       });
       if (body['accepted'] !== true) {

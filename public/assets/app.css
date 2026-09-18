@@ -371,6 +371,104 @@ blockquote {
     column-gap: var(--gf-gap-5);
   }
   /* #469: ここまで */
+
+  /* #666: 「あなたの作品」の表（`@section signed-in`）——ここから。
+   *
+   * **段 2 からは表にする**（狭い段の既定はカード）。表の要素の `display` を表の既定へ戻し、カードの格子の規則
+   * （`grid-area`・数の上の見出し）を外す。**768px がいちばん厳しい**: 内容の幅 720px から、選択・画像・状態（短い札と
+   * その下の補足）・日付（語と日時を 2 行に積む）・数 3 列（見出しは短い語で 1 行、6 桁のプレイ数まで折り返さない）を
+   * 引いた残りが作品名の列になる（長い題名とタグは列の中で折り返す）。`scripts/check-page-width.sh` の 768px が実測する。
+   *
+   * - 行の間の罫線は `td` に引く（`border-collapse: separate` では `tr` の枠線が描かれない）
+   * - **`body` を前に付けて 1 段強くする**（`@section signed-in` はこの区画より後ろにある。#469 と同じ理由）
+   */
+  body .gf-works-table {
+    display: table;
+  }
+
+  body .gf-works-table thead {
+    position: static;
+    display: table-header-group;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+  }
+
+  body .gf-works-actions-label {
+    flex-basis: auto;
+  }
+
+  body .gf-works-table tbody {
+    display: table-row-group;
+  }
+
+  body .gf-works-table tr {
+    display: table-row;
+    padding: 0;
+  }
+
+  body .gf-works-table tbody tr + tr {
+    border-top: 0;
+  }
+
+  body .gf-works-table :is(th, td) {
+    display: table-cell;
+    padding: var(--gf-gap-2);
+    text-align: left;
+    vertical-align: middle;
+  }
+
+  body .gf-works-table th {
+    border-bottom: 1px solid var(--gf-rule-soft);
+    color: var(--gf-ink-soft);
+    font-size: var(--gf-text-small);
+    font-weight: 700;
+    line-height: 1.4;
+  }
+
+  body .gf-works-table tbody tr + tr > td {
+    border-top: 1px solid var(--gf-rule-soft);
+  }
+
+  body .gf-works-table :is(th, td):first-child {
+    padding-left: var(--gf-gap-3);
+  }
+
+  body .gf-works-table :is(th, td):last-child {
+    padding-right: var(--gf-gap-3);
+  }
+
+  body .gf-works-table .gf-works-name {
+    width: 100%;
+  }
+
+  body .gf-works-table .gf-works-count {
+    min-width: 3.5em;
+    text-align: right;
+  }
+
+  /*
+   * **作品名の列が残りの幅を取る（`width: 100%`）ので、ほかの列は中身の最小の幅まで縮もうとする。** 縮みすぎないよう、
+   * 数と日時は折り返さず、状態の列には札の幅を、選択と画像の列には中身の幅を持たせる（見出しは 2 行までに折り返してよい）。
+   */
+  body .gf-works-table td:is(.gf-works-count, .gf-works-select, .gf-works-thumb) {
+    white-space: nowrap;
+  }
+
+  /* 見出しは 1 行に収める（数の列は短い語。PR #669 のレイアウトの指摘）。 */
+  body .gf-works-table th {
+    white-space: nowrap;
+  }
+
+  body .gf-works-table td.gf-works-count::before {
+    content: none;
+  }
+
+  body .gf-works-date time {
+    display: block;
+  }
+  /* #666: ここまで */
 }
 
 /* ── 段 3: デスクトップ（1080px〜）──────────────────────────────────────────── */
@@ -396,6 +494,12 @@ blockquote {
    */
   .gf-split-edit {
     grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+
+  /* #666: 「あなたの作品」の表——段 3 では、状態の補足（「時間がかかっています」）を 1 行に収める。段 2（768px）では
+   * 列の幅が足りず、収めると表がはみ出すので折り返す（`@section signed-in`）。 */
+  body .gf-works-state-note {
+    white-space: nowrap;
   }
 
   /* #472: ログイン・登録の 3 つのブロック（`@section signup`）——ここから。
@@ -2008,37 +2112,245 @@ html.gf-play-locked body {
 }
 
 /*
- * 「あなたの作品」の一覧（`src/my-works.ts`）。**1 件ずつをブロックの行（`.gf-block-rows`）にする**（仕様 2.5.4 / #473）。
+ * 「あなたの作品」の表（`src/my-works.ts`。#666）。**YouTube Studio の「チャンネルのコンテンツ」から借りたのは配置だけ**で、
+ * 見た目は仕様 2.5 のまま——表はブロックの面（`.gf-block`）1 枚、行の間は `--gf-rule-soft` の罫線、枠線と影は使わない。
  *
- * **作者がいちばん長く見る画面である。** 見たいのは「どれが」「いまどうなっているか」の 2 つなので、題名を強く、状態を
- * チップに、日時を淡くして右に寄せる。**並びも項目も変えていない。** 狭い段では日時が次の行へ回る（`wrap`）。
+ * **狭い段の既定は「1 行 = 1 枚のカード」である。** 表の要素のまま `display` を格子へ替え、紹介用の画像を左に、
+ * 作品名・状態・日付・数を右に積む。**段 2（768px〜）で表に戻すのは `@section shell` の「#666:」の塊である**
+ * （冒頭の区画の規約 3。幅の `@media` はそこにしか置かない）。
+ *
+ * #152 から #641 までの一覧（`ul.gf-works` の行）の規則はここにあった。#666 で表に置き換えたので外した。
  */
-.gf-works {
-  margin: 0 0 var(--gf-gap-3);
-  list-style: none;
+.gf-works-filter .gf-tabs {
+  margin-bottom: var(--gf-gap-3);
 }
 
-.gf-works li {
+/*
+ * **絞り込みのタブは折り返さず、収まらなければ横に送る**（PR #669 のレイアウトの指摘。390px で 2 行に割れていた）。
+ * 送るのはタブの並びの中だけで、ページは横に広がらない（`scripts/check-page-width.sh` が見る `scrollWidth` は変わらない）。
+ * 縦は送らない——現在地の下線（`.gf-tabs` の `margin-bottom: -1px`）が 1px はみ出すためで、切れるのはその 1px だけである。
+ */
+.gf-works-filter .gf-tabs {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.gf-works-filter .gf-tabs li {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.gf-works-bulk {
+  max-width: none;
+  margin: 0 0 var(--gf-gap-3);
+}
+
+/* 範囲の 1 行（左）と、一括操作のボタン（右）。収まらなければボタンが下の行へ回る。 */
+.gf-works-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: var(--gf-gap-2) var(--gf-gap-3);
+  margin: 0 0 var(--gf-gap-2);
+}
+
+.gf-works-toolbar > * {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.gf-works-range,
+.gf-works-actions-label {
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+  font-variant-numeric: tabular-nums;
+}
+
+.gf-works-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gf-gap-2);
+}
+
+/*
+ * **狭い段では「選んだ作品を」を 1 行に置き、ボタン 3 つをその下の 1 行に並べる**（PR #669 のレイアウトの指摘。390px で
+ * ボタンが 2 段に割れていた）。3 つの幅の和は約 260px で、390px の版面（358px）に収まる。段 2 からは横 1 行に戻す
+ * （`@section shell` の「#666:」の塊）。
+ */
+.gf-works-actions-label {
+  flex-basis: 100%;
+}
+
+/*
+ * 表そのもの（狭い段の既定＝カード）。**角丸を効かせるために `border-collapse: separate` にする**（`collapse` では
+ * 表の角丸が効かないブラウザがある）。面の内側の余白は行が持つ（`.gf-block-rows` と同じ形）。
+ */
+.gf-works-table {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+/*
+ * **狭い段では見出しの行を見た目だけ隠す**（PR #669 の Copilot code review。`display: none` にすると、支援技術にも
+ * 見出しが渡らず、数のセルが見出しの無い数字になる）。表の要素には `role` を明示してある（`src/my-works.ts` の `renderTable`）。
+ */
+.gf-works-table thead {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.gf-works-table tbody {
+  display: block;
+}
+
+/*
+ * カード 1 枚。**左に選択と画像、右に 作品名 → 状態 → 日付 → 数 を積む**（`grid-template-areas`）。並びは HTML の順のまま
+ * （`order` を使わない。Tab の順＝選択 → 題名のリンク）。数の 3 つは 1 行に並べ、見出しの語を上に小さく添える（`data-label`）。
+ */
+.gf-works-table tr {
+  display: grid;
+  grid-template-columns: auto 6rem repeat(3, minmax(0, 1fr));
+  grid-template-areas:
+    'select thumb name name name'
+    'select thumb state state state'
+    'select thumb date date date'
+    'select thumb play like fork';
+  gap: var(--gf-gap-1) var(--gf-gap-2);
+  align-items: start;
+  padding: var(--gf-gap-3);
+}
+
+.gf-works-table tbody tr + tr {
+  border-top: 1px solid var(--gf-rule-soft);
+}
+
+.gf-works-table td {
+  display: block;
+  min-width: 0;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+
+.gf-works-table td.gf-works-select {
+  grid-area: select;
+}
+
+.gf-works-table td.gf-works-thumb {
+  grid-area: thumb;
+}
+
+.gf-works-table td.gf-works-name {
+  grid-area: name;
+}
+
+.gf-works-table td.gf-works-state {
+  grid-area: state;
+}
+
+.gf-works-table td.gf-works-date {
+  grid-area: date;
+}
+
+.gf-works-table td.gf-works-count:nth-child(6) {
+  grid-area: play;
+}
+
+.gf-works-table td.gf-works-count:nth-child(7) {
+  grid-area: like;
+}
+
+.gf-works-table td.gf-works-count:nth-child(8) {
+  grid-area: fork;
+}
+
+
+/* 選択のチェックボックス。押しやすさのために 20px 四方にする（フォームの既定の入力欄の規則は `type="text"` にしか効かない）。 */
+.gf-works-select input {
+  width: 1.25rem;
+  height: 1.25rem;
   margin: 0;
 }
 
-/* 題名は文章の外のリンク（`.gf-link-quiet`）。区切りの無い長い題名でも行からはみ出さない。 */
+/* 紹介用の画像（1200 × 630 を 6rem の幅に縮める）と、画像が無いときの枠（面より一段濃い地に 1 語）。 */
+.gf-works-shot {
+  display: block;
+  box-sizing: border-box;
+  width: 6rem;
+  height: auto;
+  aspect-ratio: 1200 / 630;
+  border-radius: var(--gf-radius);
+}
+
+.gf-works-shot-pending {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--gf-gap-1);
+  background: var(--gf-rule-soft);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+  line-height: 1.3;
+  text-align: center;
+}
+
+/* 題名は文章の外のリンク（`.gf-link-quiet`）。タグはその下の行に、押せない札（チップ）で並べる。 */
 .gf-works-title {
+  display: block;
   min-width: 0;
   font-weight: 700;
   overflow-wrap: anywhere;
 }
 
-/* 日時は付加情報である（`src/my-works.ts` の `renderRow`）。行の右端に寄せる。 */
-.gf-works time {
-  margin-left: auto;
+.gf-works-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-1);
+  margin-top: var(--gf-gap-1);
+}
+
+/*
+ * 札は短い語だけ（「生成中」）にし、補足（「時間がかかっています」）は札の外の小さい字にする（PR #669 のレイアウトの指摘。
+ * 以前は長い札を折り返しており、丸い塊になっていた）。
+ */
+.gf-works-state-note {
+  display: block;
+  margin-top: var(--gf-gap-1);
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+  line-height: 1.4;
+}
+
+.gf-works-date {
   color: var(--gf-ink-faint);
   font-size: var(--gf-text-small);
   font-variant-numeric: tabular-nums;
+}
+
+.gf-works-date time {
+  white-space: nowrap;
+}
+
+.gf-works-count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* カードでは、数の上に列の見出しを小さく添える（表の段では `@section shell` が消す）。 */
+.gf-works-table td.gf-works-count::before {
+  content: attr(data-label);
+  display: block;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
 }
 
 /* 作品が 0 本のときの知らせ（ブロック）。段落の既定の下の余白を外す。 */
@@ -3540,58 +3852,52 @@ h2.gf-news-title {
    ========================================================================== */
 
 /*
- * `/works/mine` の統計カード（2.3.13 / #382。組み立ては `src/my-works-stats.ts`）。
+ * `/works/mine` の統計（2.3.13 / #382。組み立ては `src/my-works-stats.ts`）。
  *
- * **断点を書かない**（冒頭「区画の規約」3）。`auto-fit` の格子で、列の数は器が渡す幅だけで
- * 決まる。1 枚の下限は 9rem（144px）、列間は 1rem である。
+ * **#666 で、6 枚のカードを表の上の横 1 行の帯に詰めた**（1 つのブロックの中に「見出し 数」を 6 つ並べる）。
+ * **断点を書かない**（冒頭「区画の規約」3）。flex の `wrap` だけで、収まらない段では 2 行・3 行へ折り返す——
+ * 1280px では 1 行に収まり、390px では 3 行になる。
  *
- * | 段 | 内容の幅 | 並び |
- * |---|---|---|
- * | スマホ（390px） | 358px | 2 列（144 × 2 + 16 = 304） |
- * | タブレット（768px） | 720px | 4 列（144 × 4 + 16 × 3 = 624） |
- * | デスクトップ（1080px〜） | 1000px 以上 | **6 枚まで 1 行**（144 × 6 + 16 × 5 = 944） |
- *
- * **いまは 5 枚である。** 6 枚目の「合計プレイ数」は列が #377 で入ってから足す
- * （`src/my-works-stats.ts` の冒頭）。**`auto-fit` は空の列を畳む**ので、5 枚でも 1 行を
- * 埋めて並び、6 枚になっても CSS は触らなくてよい（`auto-fill` だと空の列が右に残る）。
- *
- * **`dl` の `max-width: var(--gf-measure)` を外す。** 文字を持つ塊の上限（`@section shell`）
- * が `dl` にも掛かっており、42rem のままでは段 3 でも 4 列で折り返す。カードは 1 枚ずつが
- * 短い文字の塊なので、読みやすさの上限は要らない（`.gf-cards` と同じ扱い）。
+ * > #382 から #473 までは `auto-fit` の格子のカード（1 枚の下限 9rem）だった。帯にしたので規則を置き換えた。
  */
-.gf-stats-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  gap: var(--gf-gap-3);
-  width: 100%;
+.gf-stats-band {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-2) var(--gf-gap-4);
   max-width: none;
   margin: var(--gf-gap-2) 0;
-  padding: 0;
 }
 
-/*
- * カード 1 枚。**面・角丸・内側の余白（16px）は `.gf-block`（`@section parts`）が持つ**（仕様 2.5.4 / #473）。#382 の枠線は外した
- * ——「面で囲まれた 1 件」の見た目をサイト内で 1 つにする。
- */
-.gf-stats-card {
+.gf-stats-item {
   display: flex;
-  flex-direction: column;
-  gap: var(--gf-gap-1);
+  align-items: baseline;
+  gap: var(--gf-gap-2);
   min-width: 0;
 }
 
-.gf-stats-card dt {
+.gf-stats-item dt {
   color: var(--gf-ink-soft);
   font-size: var(--gf-text-small);
 }
 
-/* 数は大きく、桁を揃える。**色は付けない**（プラットフォーム側は無彩色。冒頭）。 */
-.gf-stats-card dd {
+/* 数は太く、桁を揃える。**色は付けない**（プラットフォーム側は無彩色。冒頭）。 */
+.gf-stats-item dd {
   margin: 0;
-  font-size: var(--gf-text-h2);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
+}
+
+/* 注記（いいね数の遅れ・プレイ数の数え始め）は折りたたむ（#666）。開けば #377 / #382 の文がそのまま読める。 */
+.gf-stats-notes {
+  max-width: none;
+  margin: 0 0 var(--gf-gap-1);
+  color: var(--gf-ink-faint);
+  font-size: var(--gf-text-small);
+}
+
+.gf-stats-notes summary {
+  cursor: pointer;
 }
 
 /*

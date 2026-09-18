@@ -129,8 +129,8 @@ import { keyLegendOf, readAliasGroups, readHeldCodes, readInputKeyCodes } from '
 // **ソースの閲覧は別の経路である**（#383 / 2.3.12）。この画面が借りるのは綴りだけで、R2 は読まない。
 import { workSourcePath } from './work-source.js';
 // **作者の削除（#517 / M15-2）。** 綴り・表示の条件・確認画面・断りの文言はあちら、経路はこのモジュールが持つ
-// （あちらはこのモジュールを import しない）。削除の本体は `src/game-deletion.ts` の `deleteGame` である。
-import { deleteGame } from './game-deletion.js';
+// （あちらはこのモジュールを import しない）。削除の本体は `src/game-deletion.ts` の `deleteGame` で、作者の検査と合わせて
+// `src/work-delete.ts` の `deleteAuthoredGame` から呼ぶ（一括の口と共有する。#666）。
 import type { DeleteRefusal, DeletionTargetRow } from './work-delete.js';
 import {
   DELETE_REFUSALS,
@@ -139,6 +139,7 @@ import {
   WORK_DELETE_GAME_ID_FIELD,
   WORK_DELETE_PATH,
   WORK_DELETE_SUFFIX,
+  deleteAuthoredGame,
   deletionBlockOf,
   deletionStateOf,
   renderDeleteConfirmation,
@@ -3342,16 +3343,12 @@ async function handleDelete(request: Request, env: Env): Promise<Response> {
       : json({ error: target.reason }, refused.status);
   }
 
-  // **作者本人か**（上の「作者本人かだけを先に確かめ」）。`author_id` は作品の作成後に変わらないので、読んでから
-  // `deleteGame` を呼ぶまでの隙間で結論が変わることは無い。
-  const row = await env.DB.prepare(DELETION_TARGET_SQL)
-    .bind(target.gameId)
-    .first<DeletionTargetRow>();
-  if (row === null || row.author_id !== session.userId) {
+  // **作者本人か**（上の「作者本人かだけを先に確かめ」）を確かめてから `deleteGame` を呼ぶ。本体は一括の口
+  // （`src/works-bulk.ts`。#666）と共有する `deleteAuthoredGame`（`src/work-delete.ts`）である。
+  const outcome = await deleteAuthoredGame(env, target.gameId, session.userId);
+  if (!outcome.ok && outcome.reason === 'not-found') {
     return deleteRefused('not-found', null, asHtml);
   }
-
-  const outcome = await deleteGame(env, target.gameId);
   if (outcome.ok) {
     return asHtml
       ? seeOther(WORK_DELETED_REDIRECT)

@@ -173,6 +173,16 @@ for edit_id in "$GAME_ID" "$PUBLISHED_GAME_ID" "$WORKING_GAME_ID" "$FAILED_GAME_
   PATHS="${PATHS},/works/${edit_id}/edit"
 done
 
+# **「あなたの作品」の一括操作の確認画面も開く**（#666）。経路表から導く `/works/mine/bulk` は問い合わせを持たないので、
+# 「作品が選ばれていません」の画面しか描かない。**3 つの操作それぞれで、対象と「対象から外す作品」の両方が並ぶ形**を
+# 足す（公開: 下書きが対象で、公開中と生成中を外す／下書きへ戻す: 公開中が対象で、下書きを外す／削除: 下書きと失敗が
+# 対象で、公開中を外す）。**問い合わせの綴りは `src/works-bulk-paths.ts` の写しである**（シェルからは import できない。
+# 変われば、確認画面が「選ばれていません」になり、下の最終 URL の照合ではなく目視と単体テストが気づく）。
+BULK="/works/mine/bulk?action"
+PATHS="${PATHS},${BULK}=publish&game_id=${GAME_ID}&game_id=${PUBLISHED_GAME_ID}&game_id=${GENERATING_GAME_ID}"
+PATHS="${PATHS},${BULK}=unpublish&game_id=${PUBLISHED_GAME_ID}&game_id=${GAME_ID}"
+PATHS="${PATHS},${BULK}=delete&game_id=${GAME_ID}&game_id=${FAILED_GAME_ID}&game_id=${PUBLISHED_GAME_ID}"
+
 COUNT="$(printf '%s\n' "$PATHS" | tr ',' '\n' | wc -l | tr -d ' ')"
 note "対象 ${COUNT} 経路 / 幅 ${WIDTHS}"
 
@@ -317,7 +327,9 @@ function judge(file, host, { expectMenu, allow404 }) {
       // ブラウザが追跡した先の 200 で上書きされる。**要求したパスと最終パスを突き合わせる**
       // ——そうしないと、ログインへ飛ばされた画面を「幅は正しい」で通してしまう
       // （第二意見の指摘。#282）。
-      const finalPath = o.responseUrl === null ? null : new URL(o.responseUrl).pathname;
+      // **問い合わせまで含めて照合する**（#666 で問い合わせ付きの確認画面を足した。問い合わせの無い経路は
+      // `search` が空なので、これまでと同じ照合になる）。
+      const finalPath = o.responseUrl === null ? null : new URL(o.responseUrl).pathname + new URL(o.responseUrl).search;
       if (finalPath !== o.path) {
         problems.push(`${o.path}: 別の画面へ移動しました（最終 URL: ${o.responseUrl}）`);
         continue;

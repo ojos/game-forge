@@ -62,6 +62,16 @@ export interface MyWorksStats {
   readonly likes: number;
   /** 合計プレイ数（`play_count` の合計。最大 5 分遅れる。数え始める前の起動は含まない。#377）。 */
   readonly plays: number;
+  /**
+   * 表の絞り込み（#666）の「下書き」の件数（`status = 'draft'` で生成が済んだもの）。**カードには出さない。**
+   * 絞り込みの 4 つは互いに重ならない（`src/my-works-query.ts` の `MY_WORKS_FILTERS`）ので、カードの「下書き」
+   * （生成中と失敗を含む）とは別に数える。
+   */
+  readonly readyDrafts: number;
+  /** 同じく「生成中」の件数（`generation_state` が `pending` / `running`）。カードには出さない。 */
+  readonly generating: number;
+  /** 同じく「失敗」の件数（`generation_state = 'failed'`）。カードには出さない。 */
+  readonly failed: number;
 }
 
 /** 作品が 1 本も無い利用者の統計。 */
@@ -72,6 +82,9 @@ export const EMPTY_MY_WORKS_STATS: MyWorksStats = {
   forks: 0,
   likes: 0,
   plays: 0,
+  readyDrafts: 0,
+  generating: 0,
+  failed: 0,
 };
 
 /**
@@ -100,6 +113,11 @@ export const STAT_CARDS: readonly { readonly key: keyof MyWorksStats; readonly l
  * **`where` は一覧と同じ形にしてある**（`author_id = ? and status <> ?`）。一覧の
  * 問い合わせと同じ索引に乗る。
  *
+ * **表の絞り込みの件数（#666）も同じ 1 本で数える**（`ready_drafts` / `generating` / `failed`）。
+ * 絞り込みのタブに件数を添え、「31 件目以降は次の頁」の範囲（「全 45 件中 31〜45 件目」）を出すためで、
+ * **問い合わせを増やさない**（2.3.3 の条件 1）。条件は `src/my-works-query.ts` の絞り込みと同じ形である
+ * （`test/my-works.test.ts` が、絞り込んだ表の行数と突き合わせる）。
+ *
  * @returns 束縛パラメータが 4 つ（公開 / 下書き / 作者 / 除く状態）の SELECT 文
  */
 export function myWorksStatsSql(): string {
@@ -108,7 +126,10 @@ export function myWorksStatsSql(): string {
             coalesce(sum(status = ?), 0) as drafts,
             coalesce(sum(fork_count), 0) as forks,
             coalesce(sum(like_count), 0) as likes,
-            coalesce(sum(play_count), 0) as plays
+            coalesce(sum(play_count), 0) as plays,
+            coalesce(sum(status = '${DRAFT_STATUS}' and generation_state = 'ready'), 0) as ready_drafts,
+            coalesce(sum(status = '${DRAFT_STATUS}' and generation_state in ('pending', 'running')), 0) as generating,
+            coalesce(sum(status = '${DRAFT_STATUS}' and generation_state = 'failed'), 0) as failed
        from games
       where author_id = ? and status <> ?`;
 }
@@ -148,7 +169,7 @@ function countOf(value: unknown): number {
 export async function loadMyWorksStats(env: Env, authorId: string): Promise<MyWorksStats> {
   const row = await env.DB.prepare(myWorksStatsSql())
     .bind(...myWorksStatsBinds(authorId))
-    .first<Record<keyof MyWorksStats, unknown>>();
+    .first<Record<Exclude<keyof MyWorksStats, 'readyDrafts'> | 'ready_drafts', unknown>>();
   if (row === null) {
     // 集計は必ず 1 行返すので通常は来ない。来ても 0 本として描く。
     return EMPTY_MY_WORKS_STATS;
@@ -160,6 +181,9 @@ export async function loadMyWorksStats(env: Env, authorId: string): Promise<MyWo
     forks: countOf(row.forks),
     likes: countOf(row.likes),
     plays: countOf(row.plays),
+    readyDrafts: countOf(row.ready_drafts),
+    generating: countOf(row.generating),
+    failed: countOf(row.failed),
   };
 }
 
@@ -180,6 +204,9 @@ export const LIKES_DELAY_NOTE = 'いいね数は、反映されるまで数分�
 export const PLAYS_SINCE_NOTE =
   'プレイ数は 2026 年 9 月から数えています（それより前に遊ばれた回数は含みません）。反映されるまで数分かかることがあります。';
 
+/** 注記を畳んだ `<summary>` の文言（#666）。 */
+export const STATS_NOTES_SUMMARY = '数え方について';
+
 /**
  * 統計の区画を組み立てる。
  *
@@ -190,6 +217,16 @@ export const PLAYS_SINCE_NOTE =
  * **数と見出しはこのモジュールが持つ整数と固定の文字列である**が、残枠の文言は他の
  * モジュールから来るので `escapeHtml` を通す（生成画面も同じく通している）。
  *
+ * ## 表の上の横 1 行の帯にする（#666）
+ *
+ * **6 枚のカードを、1 つのブロックの中の 6 項目に詰めた**（2026-09-18 の決定。YouTube Studio の
+ * 「チャンネルのコンテンツ」の表の上に置く）。主役は下の表であり、統計はその上で 1 行だけを使う。
+ * **項目の並びと見出しは {@link STAT_CARDS} のまま**（2.3.13 の列挙順）で、`<dt>` と `<dd>` の組も変えていない。
+ * 狭い段で 1 行に収まらなければ折り返す（flex の `wrap`。幅の `@media` は置かない）。
+ *
+ * **注記（いいね数の遅れ・プレイ数の数え始め）は `<details>` に畳む。** 消しはしない——「合計プレイ数 0」が
+ * 「一度も遊ばれていない」と読まれないための 1 文（#377）で、開けば今までと同じ文が読める。
+ *
  * @param stats 統計。読めなかったときは null
  * @param quotaNotice 残枠の文言（生成画面が出すものと同じ文字列）
  * @returns `<section>` 1 つ
@@ -198,16 +235,18 @@ export function renderMyWorksStats(stats: MyWorksStats | null, quotaNotice: stri
   const cards =
     stats === null
       ? `<p class="gf-block">${STATS_UNAVAILABLE_NOTICE}</p>`
-      : `<dl class="gf-stats-cards">
+      : `<dl class="gf-block gf-stats-band">
 ${STAT_CARDS.map(
-  ({ key, label }) =>
-    `  <div class="gf-block gf-stats-card"><dt>${label}</dt><dd>${countOf(stats[key])}</dd></div>`,
+  ({ key, label }) => `  <div class="gf-stats-item"><dt>${label}</dt><dd>${countOf(stats[key])}</dd></div>`,
 ).join('\n')}
 </dl>
+<details class="gf-stats-notes">
+<summary>${STATS_NOTES_SUMMARY}</summary>
 <p class="gf-stats-note">${LIKES_DELAY_NOTE}</p>
-<p class="gf-stats-note">${PLAYS_SINCE_NOTE}</p>`;
+<p class="gf-stats-note">${PLAYS_SINCE_NOTE}</p>
+</details>`;
   // **残枠は見出しの行の右に置く**（#473。承認したモックアップ Version 6）。並びは HTML の順（見出し → 残枠）のままで、
-  // 狭い段で収まらなければ見出しの下へ回る。**カードはブロックの面**（`.gf-block`。仕様 2.5.4「統計カードにも同じ面の作法」）。
+  // 狭い段で収まらなければ見出しの下へ回る。**帯はブロックの面**（`.gf-block`。仕様 2.5.4「統計カードにも同じ面の作法」）。
   return `<section class="gf-stats" aria-labelledby="works-stats-heading">
 <div class="gf-heading-row">
 <h2 id="works-stats-heading">統計</h2>

@@ -375,9 +375,9 @@ blockquote {
   /* #666: 「あなたの作品」の表（`@section signed-in`）——ここから。
    *
    * **段 2 からは表にする**（狭い段の既定はカード）。表の要素の `display` を表の既定へ戻し、カードの格子の規則
-   * （`grid-area`・数の上の見出し）を外す。**768px で収まることは計算した**: 内容の幅 720px から、選択 36・画像 112・
-   * 状態 約 116・日付 約 131（語と日時を 2 行に積む）・数 3 列 約 216 を引いて、作品名に 約 109px が残る
-   * （長い題名とタグは列の中で折り返す）。`scripts/check-page-width.sh` の 768 / 1280px が実測する。
+   * （`grid-area`・数の上の見出し）を外す。**768px がいちばん厳しい**: 内容の幅 720px から、選択・画像・状態（6rem）・
+   * 日付（語と日時を 2 行に積む）・数 3 列（6 桁のプレイ数まで折り返さない）を引いた残りが作品名の列になる（長い題名と
+   * タグは列の中で折り返す）。**状態の列を 7rem にしたときは 768px で 3px はみ出した**（`scripts/check-page-width.sh` の実測）。
    *
    * - 行の間の罫線は `td` に引く（`border-collapse: separate` では `tr` の枠線が描かれない）
    * - **`body` を前に付けて 1 段強くする**（`@section signed-in` はこの区画より後ろにある。#469 と同じ理由）
@@ -452,7 +452,7 @@ blockquote {
   }
 
   body .gf-works-table .gf-works-state {
-    min-width: 7rem;
+    min-width: 6rem;
   }
 
   body .gf-works-table td.gf-works-count::before {

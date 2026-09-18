@@ -39,6 +39,7 @@ import {
   WORK_SAVE_TITLE_FIELD,
   WORK_SAVE_VISIBILITY_FIELD,
   createWorkSaveRoutes,
+  saveWork,
 } from '../src/work-save.js';
 import { WORK_TAG_FIELD } from '../src/work-tags.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
@@ -807,5 +808,75 @@ describe('下書きのままでも説明とタグを保存できる（#673）', 
     const row = await rowOf(id);
     expect(row.status).toBe('published');
     expect(row.tag1).toBe('idle');
+  });
+});
+
+describe('JSON でタグを省いた公開は、読んだ後に付いたタグを上書きしない（#673 / PR #684 のレビュー）', () => {
+  it('保存の口が行を読んだ後・公開する前に別の保存がタグを変えても、公開はその値を残す', async () => {
+    const { userId, id } = await seedWork('publish-race', false);
+    expect((await retagGame(env, id, userId, ['idle'], 1_000, { allowDraft: true })).ok).toBe(true);
+
+    // **保存の口が最初に読む SELECT の直後に、別のタブの付け直しを割り込ませる**（D1 の `prepare` を包む）。
+    let raced = false;
+    const racingDb = new Proxy(env.DB, {
+      get(target, key, receiver) {
+        if (key !== 'prepare') {
+          const value: unknown = Reflect.get(target, key, receiver);
+          return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+        }
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (!sql.trimStart().startsWith('select author_id, status, generation_state, title')) {
+            return statement;
+          }
+          return {
+            bind: (...values: unknown[]) => {
+              const bound = statement.bind(...values);
+              return {
+                first: async <T>() => {
+                  const row = await bound.first<T>();
+                  if (!raced) {
+                    raced = true;
+                    expect((await retagGame(env, id, userId, ['puzzle'], 2_000, { allowDraft: true })).ok).toBe(true);
+                  }
+                  return row;
+                },
+              };
+            },
+          };
+        };
+      },
+    });
+    const racingEnv = { ...testEnv(), DB: racingDb } as Env;
+
+    const outcome = await saveWork(
+      racingEnv,
+      userId,
+      { gameId: id, title: null, description: null, tags: null, visibility: 'published', confirmed: true },
+      { start: async () => undefined, notify: async () => 'not-a-fork' },
+    );
+
+    expect(raced).toBe(true);
+    expect(outcome).toEqual({ kind: 'saved', saved: ['公開設定'] });
+    const row = await rowOf(id);
+    expect(row.status).toBe('published');
+    // **先に読んだ `idle` ではなく、割り込んだ付け直しの `puzzle` が残る。**
+    expect([row.tag1, row.tag2, row.tag3]).toEqual(['puzzle', null, null]);
+  });
+
+  it('`publishGame` に null を渡すとタグの列に触れず、配列を渡せば従来どおり検査して置き換える', async () => {
+    const { userId, id } = await seedWork('publish-keep', false);
+    expect((await retagGame(env, id, userId, ['action', 'idle'], 1_000, { allowDraft: true })).ok).toBe(true);
+    expect((await publishGame(env, id, userId, 3_000, null)).ok).toBe(true);
+    expect((await rowOf(id)).tag1).toBe('action');
+    expect((await rowOf(id)).tag2).toBe('idle');
+
+    const other = await seedWork('publish-replace', false);
+    expect(await publishGame(env, other.id, other.userId, 3_000, ['action', 'puzzle', 'shooting', 'idle'])).toEqual({
+      ok: false,
+      reason: 'too-many-tags',
+    });
+    expect((await publishGame(env, other.id, other.userId, 3_000, ['puzzle'])).ok).toBe(true);
+    expect((await rowOf(other.id)).tag1).toBe('puzzle');
   });
 });

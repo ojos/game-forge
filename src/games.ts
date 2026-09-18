@@ -1152,7 +1152,19 @@ export type PublishOutcome =
  * @param gameId 対象の作品 id
  * @param authorId 操作している利用者（**作者本人でなければ通らない**）
  * @param now 公開時刻（UNIX 秒。既定は現在時刻）
- * @param tags 公開フォームで選ばれたタグの識別子（**検査前**。既定はタグ無し）
+ * > **#673 注記。`tags` に null を渡すと、タグの列に触れずに公開する。** まとめて保存する口
+ * > （`src/work-save.ts`）の JSON で鍵を省いた公開がこれを使う（「省いた項目は変えない」）。#673 で
+ * > 下書きにもタグを付けられるようになり、**呼び出し側が先に読んだタグを渡すと、読んでから公開する
+ * > までのあいだに別の保存が付けたタグを古い値で上書きしうる。** 同じ UPDATE の中で `tag1` 〜 `tag3`
+ * > を自分自身へ書く（`case when ? then tag1 else ? end`）ので、その時点の行の値がそのまま残る。
+ * > **語彙と個数の検査は掛けない**——残るのは既に `validateWorkTags` を通って書かれた値である
+ * > （公開・付け直しのどちらの口も、検査を通した値しか書かない）。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 対象の作品 id
+ * @param authorId 操作している利用者（**作者本人でなければ通らない**）
+ * @param now 公開時刻（UNIX 秒。既定は現在時刻）
+ * @param tags 公開フォームで選ばれたタグの識別子（**検査前**。既定はタグ無し。**null ならタグを変えない**。#673）
  * @returns 公開の結果
  */
 export async function publishGame(
@@ -1160,25 +1172,46 @@ export async function publishGame(
   gameId: string,
   authorId: string,
   now: number = Math.floor(Date.now() / 1000),
-  tags: readonly string[] = [],
+  tags: readonly string[] | null = [],
 ): Promise<PublishOutcome> {
-  const validated = validateWorkTags(tags);
-  if (!validated.ok) {
-    return { ok: false, reason: validated.reason };
+  let slots: readonly [string | null, string | null, string | null] = [null, null, null];
+  if (tags !== null) {
+    const validated = validateWorkTags(tags);
+    if (!validated.ok) {
+      return { ok: false, reason: validated.reason };
+    }
+    slots = workTagSlots(validated.tags);
   }
-  const [tag1, tag2, tag3] = workTagSlots(validated.tags);
+  const [tag1, tag2, tag3] = slots;
+  // **1 ならタグの列をいまの値のまま残す**（#673 注記。SQL の綴りを 1 つに保つため、分岐は束縛値で持つ）。
+  const keepTags = tags === null ? 1 : 0;
 
   // **`returning` で公開時刻を持ち帰る**（#637）。`coalesce` を通すので、2 度目の公開で
   // 入っている値は `now` ではない。**行が返ったこと自体が「この呼び出しが遷移させた」**
   // でもある（0 行の UPDATE は 1 行も返さない）。
   const published = await env.DB.prepare(
     `update games
-        set status = ?, published_at = coalesce(published_at, ?), tag1 = ?, tag2 = ?, tag3 = ?
+        set status = ?, published_at = coalesce(published_at, ?),
+            tag1 = case when ? then tag1 else ? end,
+            tag2 = case when ? then tag2 else ? end,
+            tag3 = case when ? then tag3 else ? end
       where id = ? and author_id = ? and status = ? and generation_state = 'ready'
         and deletion_started_at is null
       returning published_at`,
   )
-    .bind(PUBLISHED_STATUS, now, tag1, tag2, tag3, gameId, authorId, DRAFT_STATUS)
+    .bind(
+      PUBLISHED_STATUS,
+      now,
+      keepTags,
+      tag1,
+      keepTags,
+      tag2,
+      keepTags,
+      tag3,
+      gameId,
+      authorId,
+      DRAFT_STATUS,
+    )
     .first<{ published_at: number | null }>();
 
   if (published !== null) {

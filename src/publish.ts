@@ -436,7 +436,7 @@ async function handlePublish(
  * @param env バインディングと環境変数
  * @param gameId 作品 id
  * @param userId 公開しようとしている利用者（作者でなければ `publishGame` が `not-found` で断る）
- * @param tags 選ばれたタグ（**検査前**。検査は `publishGame` が持つ）
+ * @param tags 選ばれたタグ（**検査前**。検査は `publishGame` が持つ。**null ならタグを変えない**。#673）
  * @param start 撮影を投げる段
  * @param notify 改造の通知を送る段
  * @returns 公開の結果と、撮影の起動の結果（公開が成立しなかったときは null）
@@ -445,7 +445,7 @@ export async function runPublish(
   env: Env,
   gameId: string,
   userId: string,
-  tags: readonly string[],
+  tags: readonly string[] | null,
   start: StartOgpCapture,
   notify: NotifyForkPublished,
 ): Promise<{ readonly outcome: PublishOutcome; readonly capture: CaptureStartOutcome | null }> {

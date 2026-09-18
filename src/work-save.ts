@@ -440,13 +440,15 @@ export async function saveWork(
     return null;
   };
   const publish = async (): Promise<SaveRefusal | null> => {
-    // **タグは公開と同じ 1 本で書く**（#376。`publishGame` が語彙と個数を見る）。JSON で鍵を省いたときは、
-    // いま付いているタグをそのまま載せる（公開の UPDATE はタグを置き換えるので、渡さないと黙って消える。#637）。
+    // **タグは公開と同じ 1 本で書く**（#376。`publishGame` が語彙と個数を見る）。**JSON で鍵を省いたときは null を
+    // 渡し、公開の UPDATE にタグの列を触らせない**（#673 の Copilot レビュー）。先に読んだ `currentTags` を渡すと、
+    // 読んでから公開するまでのあいだに別の保存（別のタブ）が下書きに付けたタグを、古い値で上書きする——下書きにも
+    // タグを付けられるようになって開いた窓である。同じ文の中でいまの値を残すので、省いた項目は原子的に変わらない。
     const { outcome }: { outcome: PublishOutcome } = await runPublish(
       env,
       input.gameId,
       userId,
-      input.tags ?? currentTags,
+      input.tags,
       deps.start,
       deps.notify,
     );

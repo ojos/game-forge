@@ -1,0 +1,43 @@
+package main
+
+// 地図の無いゲーム（よける系）。判定しない。
+
+import (
+	"image/color"
+
+	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/hajimehoshi/ebiten/v2/vector"
+)
+
+const (
+	screenW = 320
+	screenH = 240
+)
+
+type Game struct {
+	px, py float64
+	rocks  [][2]float64
+}
+
+func (g *Game) Update() error {
+	if ebiten.IsKeyPressed(ebiten.KeyLeft) {
+		g.px -= 2
+	}
+	if ebiten.IsKeyPressed(ebiten.KeyRight) {
+		g.px += 2
+	}
+	return nil
+}
+
+func (g *Game) Draw(screen *ebiten.Image) {
+	vector.DrawFilledRect(screen, float32(g.px), float32(g.py), 8, 8, color.White, false)
+}
+
+func (g *Game) Layout(int, int) (int, int) { return screenW, screenH }
+
+func main() {
+	g := &Game{px: 160, py: 220}
+	if err := ebiten.RunGame(g); err != nil {
+		panic(err)
+	}
+}

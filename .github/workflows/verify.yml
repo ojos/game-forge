@@ -127,6 +127,17 @@ jobs:
           terraform_version: '1.15.8'
           terraform_wrapper: false
 
+      # scripts/acceptance.sh がタイル地図の到達判定（#675 / scripts/tile-reachability/）の
+      # go test を回す。**このテストは Go のツールチェインそのものを呼ぶ**（作品のソースから
+      # 抜き出した地図のコードを go build して動かす）ので、ランナーの既定の Go に頼らず
+      # ここで用意する。版は go.mod の `go` ディレクティブ（下限）から取る。
+      # 依存を持たないモジュールなので、モジュールのキャッシュは使わない。
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: scripts/tile-reachability/go.mod
+          cache: false
+
       - name: Verify acceptance
         env:
           # CI には .env が無いため、リポジトリ変数がここでの唯一の供給元になる。

@@ -1,0 +1,4 @@
+# ネズミのカギ（911782d6）の 3 版。本番の R2 の builds/<sha256>/source.go をそのまま写したもの（#675）。
+# **意図して壊れた生成物である**（届かない面があることを判定の仕込みにしている）ので、差分としてはレビューしない。
+# 中身は reachability_test.go の TestFixturesAreProductionSources が sha256（＝ R2 のキー）で固定する。
+v[0-9]-*.go.txt -diff linguist-generated

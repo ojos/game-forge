@@ -1,0 +1,55 @@
+package main
+
+// 取り出し方の幅を見る合成の仕込み: 座標が (行, 列) の順、スタートが配列、地図は初期化子と init() で組む。
+// 面 1 は届く（扉が道を塞いでいる）。面 2 はカギが扉の向こうにあり、扉を閉じたままではカギに届かない。
+
+const (
+	H = 6
+	W = 7
+)
+
+const (
+	Floor = iota
+	Wall
+	Door
+)
+
+var stages [2][H][W]int
+
+var startPos = [2][2]int{{1, 1}, {1, 1}} // (行, 列)
+var keyPos = [2][2]int{{1, 5}, {4, 1}}
+var doorPos = [2][2]int{{3, 3}, {3, 3}}
+var goalPos = [2][2]int{{4, 5}, {4, 5}}
+
+func init() {
+	for s := range stages {
+		for r := 0; r < H; r++ {
+			for c := 0; c < W; c++ {
+				if r == 0 || r == H-1 || c == 0 || c == W-1 {
+					stages[s][r][c] = Wall
+				}
+			}
+		}
+		// 3 行目に横の壁。扉の 1 マスだけが隙間。
+		for c := 1; c < W-1; c++ {
+			stages[s][3][c] = Wall
+		}
+		stages[s][doorPos[s][0]][doorPos[s][1]] = Door
+		stages[s][startPos[s][0]][startPos[s][1]] = Floor
+		stages[s][keyPos[s][0]][keyPos[s][1]] = Floor
+		stages[s][goalPos[s][0]][goalPos[s][1]] = Floor
+	}
+}
+
+type Game struct{ stage, row, col int }
+
+func (g *Game) at(r, c int) int { return stages[g.stage][r][c] }
+
+func (g *Game) reset() {
+	g.row = startPos[g.stage][0]
+	g.col = startPos[g.stage][1]
+	_ = g.at(keyPos[g.stage][0], keyPos[g.stage][1])
+	_ = g.at(goalPos[g.stage][0], goalPos[g.stage][1])
+}
+
+func main() {}

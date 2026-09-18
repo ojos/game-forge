@@ -719,6 +719,8 @@ export function newsBreadcrumbParents(articles: readonly NewsArticle[]): readonl
  */
 export const BREADCRUMB_PARENTS: readonly NavItem[] = [
   { path: PUBLIC_WORKS_PATH, label: '作品をさがす' },
+  // 一括操作の確認画面（`/works/mine/bulk`。#666）の親。
+  { path: MY_WORKS_PATH, label: 'あなたの作品' },
   { path: SIGNUP_PATH, label: 'ログイン・登録' },
   { path: TAKEDOWN_PATH, label: '削除依頼' },
   { path: ACCOUNT_PATH, label: '登録情報' },

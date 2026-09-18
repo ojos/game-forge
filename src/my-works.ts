@@ -31,8 +31,8 @@
  * ## 他人の作品を 1 行も出さない
  *
  * 5.4 は「「公開」操作で初めて URL が有効になる」と定める。**一覧がその抜け道に
- * なってはいけない。** 絞り込みは SQL の `where author_id = ?` に置き（`src/games.ts` の
- * {@link listAuthoredGames}）、この画面は**絞り込み済みのものを描くだけ**にしてある。
+ * なってはいけない。** 絞り込みは SQL の `where author_id = ?` に置き（#152 のときは `src/games.ts` の
+ * `listAuthoredGames`、#666 からは `src/my-works-query.ts` の `listMyWorks`）、この画面は**絞り込み済みのものを描くだけ**にしてある。
  * 画面側で `filter` する形にすると、書き忘れても自分の作品は正しく出るので**動作では
  * 気づけない。**
  *
@@ -67,6 +67,8 @@
  * >
  * > また、**作者は下書きと取り下げた作品を、作品ページから削除できるようになった**（#517。確認画面は
  * > `src/work-delete.ts`、経路は `src/work-page.ts`）。**この一覧には削除の口を置かない**（#517 の scope.out）。
+ * > **#666 注記。** 一括操作（公開・下書きへ戻す・削除）の口を置いた。押しても消えず、確認画面を経て 1 件ずつの口と
+ * > 同じ関数を通る（`src/works-bulk.ts`）。
  * > **一覧の問い合わせは変えていない**——`listAuthoredGames` は `status <> 'removed'` で引くので、取り下げた作品も、
  * > 行を残して中身を消した作品も出ず、行ごと消した作品はそもそも引けない。
  *
@@ -77,6 +79,22 @@
  * （`src/generate-page.ts` の `resolveAvailability`）。**利用者ごとの枠は 1 人 1 日 10 回の
  * 日次枠で、JST の 0 時に戻る**（4.4 / 確定25）。#382 の起票時は「今月の残量」と書いていたが、
  * **1 人あたりの月次の回数という値は仕様に無い**（同 issue の訂正）。
+ *
+ * ## YouTube Studio 型の表にした（#666。2026-09-18）
+ *
+ * **1 作品 1 行の表にし、作品ごとの状態と数（プレイ・いいね・フォークされた数）と公開日を一覧で見比べられるようにした。**
+ * 列は 選択・紹介用の画像・作品名とタグ・状態・日付・プレイ・いいね・フォークされた数 の 8 つで、YouTube Studio の
+ * 「チャンネルのコンテンツ」から借りたのは**配置だけ**である（色・枠線・影は仕様 2.5 のまま。無彩色で、面の色で区切る）。
+ *
+ * - **状態で絞り込み（`?state=`）、30 件ずつ頁を送る**（`?page=`）。行の問い合わせは `src/my-works-query.ts` が持つ
+ *   （`src/games.ts` はオーケストレータの束に入るので触らない）
+ * - **統計は表の上の横 1 行の帯に詰め、注記は折りたたむ**（`src/my-works-stats.ts`）
+ * - **選んだ作品をまとめて公開・下書きへ戻す・削除できる。** 表は素の GET のフォームで、押すと確認画面
+ *   （`src/works-bulk.ts`）へ移る。**ここでは何も書き換えない**
+ * - **狭い段ではカード表示にする。** 表の要素のまま、狭い段の既定を「1 行 = 1 枚のカード」にし、段 2（768px〜）で
+ *   表に戻す（`public/assets/app.css` の `@section shell` の「#666:」の塊。幅の `@media` はそこにしか置かない）
+ *
+ * **各行の行き先はエディットページ（`/works/<id>/edit`）である**（#664 が変えた行き先を、表でも保つ。#666 の scope.in「各行はエディットページへ移る」）。
  *
  * ## JavaScript を要求しない
  *
@@ -89,19 +107,28 @@
  */
 import { siteFooter } from './legal.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
-import type { AuthoredGame, GenerationState } from './games.js';
-import { UNTITLED_TITLE, listAuthoredGames } from './games.js';
+import type { GenerationState } from './games.js';
+import { UNTITLED_TITLE } from './games.js';
 // 残枠は生成画面と同じ経路で引き、同じ文言で出す（2.3.13「数え方を 2 か所に持たない」/ #382）。
 import { availabilityNotice, resolveAvailability } from './generate-page.js';
 import type { MyWorksStats } from './my-works-stats.js';
 import { loadMyWorksStats, renderMyWorksStats } from './my-works-stats.js';
+import type { MyWorkRow, MyWorksFilter } from './my-works-query.js';
+import { MY_WORKS_FILTERS, MY_WORKS_FILTER_PARAM, listMyWorks, toMyWorksFilter } from './my-works-query.js';
 import { loginRequiredRedirect } from './auth/google.js';
 import { GENERATE_PAGE_PATH } from './paths.js';
+import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH, ogpImagePath } from './ogp.js';
 // **「いいねした作品」への導線はここに置く**（2.3.7 / 5.8 / #340）。v1.57 でヘッダの
 // アカウントのメニューにも入った（#372）が、メニューは閉じているので本文の導線は残す。
 // 綴りは値だけの葉から取る（`src/liked-works-paths.ts`。あちらの冒頭が置き場の理由）。
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';
+import { knownWorkTags } from './work-card.js';
 import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './works-paths.js';
+import {
+  MY_WORKS_BULK_PATH,
+  WORKS_BULK_ACTION_FIELD,
+  WORKS_BULK_GAME_ID_FIELD,
+} from './works-bulk-paths.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
@@ -128,19 +155,17 @@ export { MY_WORKS_PATH };
 /**
  * 1 頁に並べる件数。
  *
- * **20 件**（#552）。作品をさがす（`src/works-list.ts` の `WORKS_PER_PAGE`）・いいねした作品と
- * 同じ件数で、利用者が画面ごとに「1 頁に何件か」を覚えなくて済む。
+ * **30 件**（#666）。YouTube Studio の「チャンネルのコンテンツ」の既定の件数に揃えた。**一括操作で一度に選べる件数の
+ * 上限も同じ値である**（`src/works-bulk.ts` の `MAX_BULK_WORKS`）——選べるのは 1 頁に並んだ作品だけなので、
+ * 上限を 1 頁の件数より大きくしても意味が無く、小さくすると「全部選んで押したら断られる」になる。
  *
- * > **#552 注記（2026-09-15）。50 件で切る扱いをやめた。** #152 の時点では `MAX_LISTED_WORKS`
- * > （50 件）まで並べて超えた分を落とし、「新しい 50 件までを表示しています」とだけ出していた。
- * > 頁送りは「実際に超える利用者が出てから決める」としていた。**#459 の実機確認で、31 件の
- * > 作品を持つ利用者が「作品の一覧にページングが必要」とメモした**——超える前に、1 頁に並ぶ
- * > 件数そのものが読みにくかった。そこで、作品をさがすと同じ形の頁送りに置き換えた。
+ * > **#666 注記（2026-09-18）。20 件から 30 件へ変えた。** #552 は作品をさがす・いいねした作品と同じ 20 件にし、
+ * > 「利用者が画面ごとに 1 頁の件数を覚えなくて済む」を理由にしていた。表にして 1 行が低くなり、1 画面に並ぶ件数が
+ * > カードの画面と揃わなくなったので、Studio の値を採った（2026-09-18 の会話で決めた）。
  *
  * **値をあちらから借りない**（`src/liked-works.ts` の `LIKED_WORKS_PER_PAGE` と同じ判断）。
- * 借りると「作品をさがすの件数を変えたら、この一覧も変わる」という結び付きが生まれる。
  */
-export const MY_WORKS_PER_PAGE = 20;
+export const MY_WORKS_PER_PAGE = 30;
 
 /**
  * 頁数の上限。
@@ -148,9 +173,8 @@ export const MY_WORKS_PER_PAGE = 20;
  * **`OFFSET` は読み飛ばした行も数える**（`src/works-list.ts` の `MAX_PAGE` と同じ理由）。
  * 上限が無いと `?page=999999` の 1 本で、作者の索引の上を長く走らせられる。
  *
- * **50 頁（＝1,000 件）。** 作品をさがすと同じ値である。**1 人の生成は 1 日 10 回まで**
- * （確定25）なので、1,000 件は毎日使い切って 100 日分にあたる。**ここに当たる利用者が
- * 出たら、頁送りではなく続きの鍵で辿る形（keyset）へ変える時期である**
+ * **50 頁（＝1,500 件）。** **1 人の生成は 1 日 10 回まで**（確定25）なので、1,500 件は毎日使い切って
+ * 150 日分にあたる。**ここに当たる利用者が出たら、頁送りではなく続きの鍵で辿る形（keyset）へ変える時期である**
  * （`src/works-list.ts` が同じことを書いている）。
  */
 export const MAX_MY_WORKS_PAGE = 50;
@@ -202,24 +226,31 @@ export function toMyWorksPageNumber(value: string | null): number {
 /**
  * この一覧の URL を組み立てる。
  *
- * **1 頁目には `?page=` を付けない**（`src/liked-works.ts` の `likedWorksPath` と同じ扱い）。
- * 1 頁目の URL が 2 通りにならず、見出しやヘッダの導線（`MY_WORKS_PATH`）と同じ綴りになる。
+ * **1 頁目には `?page=` を付けず、「すべて」には `?state=` を付けない**（`src/liked-works.ts` の `likedWorksPath` と
+ * 同じ扱い）。1 頁目の「すべて」の URL が 2 通りにならず、見出しやヘッダの導線（`MY_WORKS_PATH`）と同じ綴りになる。
+ * **頁を送っても絞り込みを保つ**（#666 の acceptance「絞り込みとページ送りを組み合わせても件数が合う」）。
  *
  * @param page 頁番号
+ * @param filter 絞り込み（既定は「すべて」）
  * @returns アプリ用ホスト上の絶対パス
  */
-export function myWorksPath(page: number): string {
-  return page <= 1 ? MY_WORKS_PATH : `${MY_WORKS_PATH}?${MY_WORKS_PAGE_PARAM}=${page}`;
+export function myWorksPath(page: number, filter: MyWorksFilter = 'all'): string {
+  const params: string[] = [];
+  if (filter !== 'all') {
+    params.push(`${MY_WORKS_FILTER_PARAM}=${filter}`);
+  }
+  if (page > 1) {
+    params.push(`${MY_WORKS_PAGE_PARAM}=${page}`);
+  }
+  return params.length === 0 ? MY_WORKS_PATH : `${MY_WORKS_PATH}?${params.join('&')}`;
 }
 
 /**
- * 一覧に出す状態の短い名前。
+ * 生成の状態の短い名前（#152 / #473）。
  *
  * **`src/work-page.ts` の文言を再利用しない。** あちらは 1 件だけを見ている人に向けた
  * 説明文（「生成が終わるまで、このタブを開いたままにしてください」）で、こちらは
- * **複数行を見比べるための札**である。長さも役割も違うものを共有すると、どちらかに
- * 合わない文言を両方が我慢することになる（work-page が generate-page の文言を
- * 再利用しなかったのと同じ判断）。
+ * **複数行を見比べるための札**である。
  *
  * 一方、**「止まっているかもしれない」の判定そのものは共有する**（`looksStalled`）。
  * あれは表示の文言ではなく閾値の判断であり、2 か所に置くとずれる。
@@ -228,21 +259,15 @@ const STATE_LABELS = {
   working: '生成中',
   stalled: '生成中（時間がかかっています）',
   ready: 'できました',
-  failed: '生成できませんでした',
+  failed: '失敗',
   unknown: '状態を読み取れません',
 } as const;
 
-/** 一覧の行に出す状態。 */
+/** 一覧の行に出す生成の状態。 */
 type RowState = keyof typeof STATE_LABELS;
 
 /**
- * 公開状態の札の文言（#641）。
- *
- * **{@link STATE_LABELS} と混ぜない。** あちらは生成が終わったかで、こちらは公開しているかである。
- * **2 つは直交する**（生成中の作品は必ず下書きだが、下書きの作品が生成中とは限らない）ので、
- * 1 つの札に畳むと「できました」と「公開中」のどちらを言っているのかが読めなくなる。
- *
- * **`removed` は無い。** この一覧は引かない（`src/games.ts` の `listAuthoredGames`）。
+ * 公開状態の札の文言（#641）。**`removed` は無い**（この一覧は引かない）。
  */
 const PUBLICATION_LABELS = {
   published: '公開中',
@@ -250,12 +275,11 @@ const PUBLICATION_LABELS = {
 } as const;
 
 /**
- * `games.status` を行の札の文言へ落とす（#641）。
+ * `games.status` を札の文言へ落とす（#641）。
  *
- * **D1 の綴りをそのまま画面へ出さない**（{@link rowStateOf} と同じ方針）。CHECK があるので
- * `draft` / `published` 以外は通常入らないが、**知らない値を「公開中」と言い切らない**
- * ——公開していないものを公開中と出すほうが、何も出さないより害が大きい（5.4 は公開を
- * 作者の意思表示として扱う）。**知らない値では札を出さない。**
+ * **D1 の綴りをそのまま画面へ出さない。** CHECK があるので `draft` / `published` 以外は通常入らないが、
+ * **知らない値を「公開中」と言い切らない**——公開していないものを公開中と出すほうが、何も出さないより害が大きい
+ * （5.4 は公開を作者の意思表示として扱う）。**知らない値では札を出さない。**
  *
  * @param status D1 の `games.status`
  * @returns 札の文言。出さないなら null
@@ -265,11 +289,10 @@ export function publicationLabelOf(status: string): string | null {
 }
 
 /**
- * `generation_state` を一覧の行の状態へ落とす。
+ * `generation_state` を行の生成の状態へ落とす。
  *
  * **D1 の綴りをそのまま表示の分岐に使わない**（`src/work-page.ts` と同じ方針）。
- * CHECK があるので知らない値は通常入らないが、コードを戻した・進めた状況では
- * ありうる。**「生成中」と言い続けるより、分からないと言うほうがよい。**
+ * **「生成中」と言い続けるより、分からないと言うほうがよい。**
  *
  * @param state D1 の `generation_state`
  * @param stalled 生成中で、かつ止まっている可能性が高いか
@@ -289,12 +312,47 @@ export function rowStateOf(state: string, stalled: boolean): RowState {
   return stalled ? 'stalled' : 'working';
 }
 
+/** 表の「状態」の列の札（#666）。 */
+export interface StateChip {
+  /** 札の文言。 */
+  readonly label: string;
+  /** 地を塗るか（まだ動いている行だけ。仕様 2.5.5 / #473）。 */
+  readonly emphasis: boolean;
+}
+
+/**
+ * 表の「状態」の列の札を決める（#666）。**公開中／下書き／生成中／失敗 の 4 つのどれか 1 つ**にする。
+ *
+ * #641 までは「生成の状態」と「公開状態」の 2 枚の札を並べていた（2 つは直交するので 1 枚に畳まない、と書いていた）。
+ * **表では 1 枚にする。** 公開できるのは生成が済んだ作品だけ（`publishGame` の `generation_state = 'ready'`）なので、
+ * 生成中・失敗の行は必ず下書きで、**生成が済んだ行だけが公開中か下書きかに分かれる**——4 つは重ならない。
+ * 絞り込み（`src/my-works-query.ts` の `MY_WORKS_FILTERS`）も同じ 4 つで分ける。
+ *
+ * - 生成が済んで、公開状態が読めない（CHECK が入れさせない値）→ 「できました」。**公開中とも下書きとも言わない**（#641）
+ * - 生成の状態が読めない → 「状態を読み取れません」
+ *
+ * @param work 行
+ * @param now 現在時刻（UNIX 秒）
+ * @returns 札
+ */
+export function stateChipOf(
+  work: Pick<MyWorkRow, 'status' | 'generationState' | 'createdAt' | 'startedAt'>,
+  now: number,
+): StateChip {
+  const stalled = looksStalled({ createdAt: work.createdAt, startedAt: work.startedAt }, now);
+  const state = rowStateOf(work.generationState, stalled);
+  if (state === 'ready') {
+    return { label: publicationLabelOf(work.status) ?? STATE_LABELS.ready, emphasis: false };
+  }
+  return { label: STATE_LABELS[state], emphasis: state === 'working' || state === 'stalled' };
+}
+
 /**
  * 行に出すタイトルを決める。
  *
  * `games.title` は `NOT NULL` で、生成の経路は必ず非空の仮タイトルを入れる
  * （`src/games.ts` の `draftTitleFromPrompt`）。**それでも空を扱えるようにしておく**のは、
- * 別の経路で作られた行や、この不変条件より前に作られた行が無地の `<li>` になるのを
+ * 別の経路で作られた行や、この不変条件より前に作られた行が無地の行になるのを
  * 防ぐためである（**不変条件を画面が前提にしない**。`src/work-page.ts` と同じ方針）。
  *
  * @param title D1 の `title`
@@ -305,44 +363,157 @@ export function displayTitleOf(title: string): string {
 }
 
 /**
- * 一覧の 1 行を組み立てる。
+ * 紹介用の画像が無いときに、画像の枠に出す短い文言（#666）。**色の付いた絵を作らない**——プラットフォーム側は
+ * 無彩色である（仕様 2.5.2）。面の色の枠に、なぜ画像が無いかを 1 語で書く。
  *
- * **`escapeHtml` を通すのはタイトルだけである。** 他はこのモジュールが持つ固定の文字列か、
- * `games.id`（`crypto.randomUUID()` の出力）である。仮タイトルはプロンプト由来の
- * 利用者入力で、**この画面が D1 の値を HTML へ入れる唯一の場所**である。
+ * - 下書きは撮っていない（撮影は公開したときに起こす。5.4 の「OGP 画像の生成は公開時まで遅延する」）→「公開前」
+ * - 公開中でも、撮影が終わるまでは無い
  *
- * @param work 作品 1 件
- * @param now 現在時刻（UNIX 秒）
- * @returns `<li>` 1 つ
+ * @param work 行
+ * @param chip 状態の札
+ * @returns 文言
  */
-function renderRow(work: AuthoredGame, now: number): string {
-  const stalled = looksStalled({ createdAt: work.createdAt, startedAt: work.startedAt }, now);
-  const state = rowStateOf(work.generationState, stalled);
-  const iso = toIsoTimestamp(work.createdAt);
-  // **読めない日時では `<time>` ごと落とす。** `datetime=""` は仕様上不正であり、
-  // 空の属性を出すくらいなら出さないほうがよい。行そのものは残る（作品へ辿れることが
-  // この一覧の仕事で、日時はその付加情報である）。
-  const created = iso === '' ? '' : ` <time datetime="${iso}">${formatJstMinutes(work.createdAt)}</time>`;
-  // **状態の札はチップの部品で、まだ動いている行（生成中・時間がかかっている）だけ地を塗る**（`.gf-chip-emphasis`。仕様 2.5.5 / #473）。
-  // 区別は色ではなく文言が言う（無彩色）。題名は文章の外のリンク（`.gf-link-quiet`。一覧の行の題名。2.5.5）。
-  const chip = state === 'working' || state === 'stalled' ? 'gf-chip gf-chip-emphasis' : 'gf-chip';
-  // **公開状態の札は生成状態の札の後ろに置く**（#641）。**地は塗らない**——「公開中」も「下書き」も
-  // 平常の状態で、急かす対象ではない（塗るのは動いている行だけ、という #473 の使い分けを崩さない）。
-  // **知らない値では出さない**（{@link publicationLabelOf}）。
-  const publication = publicationLabelOf(work.status);
-  const publicationChip = publication === null ? '' : ` <span class="gf-chip">${publication}</span>`;
+function shotPlaceholderOf(work: MyWorkRow, chip: StateChip): string {
+  if (work.status === 'published') {
+    return '撮影中';
+  }
+  if (chip.label === PUBLICATION_LABELS.draft) {
+    return '公開前';
+  }
+  return chip.emphasis ? '生成中' : '画像なし';
+}
+
+/**
+ * 紹介用の画像の枠。**配信できるときだけ `<img>` にする**（`hasShot` の条件は配信と同じ。`src/my-works-query.ts`）。
+ *
+ * @param work 行
+ * @param chip 状態の札
+ * @returns HTML
+ */
+function renderShot(work: MyWorkRow, chip: StateChip): string {
+  if (!work.hasShot) {
+    return `<span class="gf-works-shot gf-works-shot-pending">${shotPlaceholderOf(work, chip)}</span>`;
+  }
   return (
-    `  <li><a class="gf-link-quiet gf-works-title" href="${workEditPath(work.id)}">${escapeHtml(displayTitleOf(work.title))}</a>` +
-    ` <span class="${chip}">${STATE_LABELS[state]}</span>${publicationChip}${created}</li>`
+    `<img class="gf-works-shot" src="${ogpImagePath(work.id)}"` +
+    ` width="${OGP_IMAGE_WIDTH}" height="${OGP_IMAGE_HEIGHT}" alt="" loading="lazy">`
   );
+}
+
+/**
+ * 日付の列（#666）。**公開したことがある作品は公開日、無い作品は生成日**を、どちらかが分かる語を添えて出す
+ * （Studio の「公開日」「アップロード日」の出し分け）。
+ *
+ * **下書きへ戻した作品も公開日を出す**——`published_at` は最初に公開した時刻で、下書きへ戻しても消えない
+ * （`src/games.ts` の `publishGame` の #637 注記）。**語は「公開」ではなく「初公開」にする**（いま公開中だと読ませない）。
+ *
+ * **読めない日時では `<time>` ごと落とす。** `datetime=""` は仕様上不正である（#152 のときと同じ扱い）。
+ *
+ * @param work 行
+ * @returns HTML（読めなければ空文字）
+ */
+function renderDate(work: MyWorkRow): string {
+  const [label, at] =
+    work.publishedAt !== null
+      ? [work.status === 'published' ? '公開' : '初公開', work.publishedAt]
+      : ['生成', work.createdAt];
+  const iso = toIsoTimestamp(at);
+  if (iso === '') {
+    return '';
+  }
+  return `<span class="gf-works-date-label">${label}</span> <time datetime="${iso}">${formatJstMinutes(at)}</time>`;
+}
+
+/** 数の列（見出しの文言と、行の値の取り出し方）。**狭い段のカードでは見出しを値の前に添える**（`data-label`）。 */
+const COUNT_COLUMNS: readonly {
+  readonly label: string;
+  /** カードで数の上に添える短い語（390px のカードで 1 行に収める。表の見出しは `label`）。 */
+  readonly short: string;
+  readonly value: (work: MyWorkRow) => number;
+}[] = [
+  { label: 'プレイ', short: 'プレイ', value: (work) => work.playCount },
+  { label: 'いいね', short: 'いいね', value: (work) => work.likeCount },
+  { label: 'フォークされた数', short: 'フォーク', value: (work) => work.forkCount },
+];
+
+/**
+ * 表の 1 行を組み立てる（#666）。
+ *
+ * **`escapeHtml` を通すのはタイトルだけである。** 他はこのモジュールが持つ固定の文字列・語彙のラベル・整数か、
+ * `games.id`（`crypto.randomUUID()` の出力）である。**選択のチェックボックスの名前にも題名が入る**
+ * （`aria-label`。属性の中なので同じく通す）。
+ *
+ * **行き先はエディットページである**（#664。冒頭）。
+ *
+ * @param work 行
+ * @param now 現在時刻（UNIX 秒）
+ * @returns `<tr>` 1 つ
+ */
+function renderRow(work: MyWorkRow, now: number): string {
+  const chip = stateChipOf(work, now);
+  const title = escapeHtml(displayTitleOf(work.title));
+  const tags = knownWorkTags(work.tags);
+  const tagLine =
+    tags.length === 0
+      ? ''
+      : `<span class="gf-works-tags">${tags.map((tag) => `<span class="gf-chip">${tag.label}</span>`).join(' ')}</span>`;
+  const counts = COUNT_COLUMNS.map(
+    ({ short, value }) => `<td class="gf-works-count" data-label="${short}">${value(work)}</td>`,
+  ).join('');
+  return (
+    `<tr>` +
+    `<td class="gf-works-select"><input type="checkbox" name="${WORKS_BULK_GAME_ID_FIELD}" value="${work.id}" aria-label="${title} を選ぶ"></td>` +
+    `<td class="gf-works-thumb">${renderShot(work, chip)}</td>` +
+    `<td class="gf-works-name"><a class="gf-link-quiet gf-works-title" href="${workEditPath(work.id)}">${title}</a>${tagLine}</td>` +
+    `<td class="gf-works-state"><span class="${chip.emphasis ? 'gf-chip gf-chip-emphasis' : 'gf-chip'}">${chip.label}</span></td>` +
+    `<td class="gf-works-date">${renderDate(work)}</td>` +
+    counts +
+    `</tr>`
+  );
+}
+
+/** 絞り込みのタブの文言（#666）。 */
+const FILTER_LABELS: Readonly<Record<MyWorksFilter, string>> = {
+  all: 'すべて',
+  published: '公開中',
+  draft: '下書き',
+  generating: '生成中',
+  failed: '失敗',
+};
+
+/**
+ * 絞り込みごとの件数を、統計の集計から引く（#666。**問い合わせを増やさない**。`src/my-works-stats.ts`）。
+ *
+ * @param stats 統計（読めなかったときは null）
+ * @param filter 絞り込み
+ * @returns 件数。読めなかったときは null
+ */
+export function filterCountOf(stats: MyWorksStats | null, filter: MyWorksFilter): number | null {
+  if (stats === null) {
+    return null;
+  }
+  switch (filter) {
+    case 'all':
+      return stats.works;
+    case 'published':
+      return stats.published;
+    case 'draft':
+      return stats.readyDrafts;
+    case 'generating':
+      return stats.generating;
+    case 'failed':
+      return stats.failed;
+  }
 }
 
 /** 画面を組み立てるのに必要なものだけを集めた入力。 */
 export interface MyWorksView {
   /** 並べる作品（新しい順。既に {@link MY_WORKS_PER_PAGE} 件へ切ってある）。 */
-  readonly works: readonly AuthoredGame[];
+  readonly works: readonly MyWorkRow[];
   /** 頁番号（1 始まり。{@link toMyWorksPageNumber} を通した値）。 */
   readonly page: number;
+  /** 絞り込み（#666）。 */
+  readonly filter: MyWorksFilter;
   /** 次の頁があるか。 */
   readonly hasNext: boolean;
   /** 現在時刻（UNIX 秒）。 */
@@ -359,18 +530,43 @@ export interface MyWorksView {
 }
 
 /**
- * 頁送りと、作品が 0 本のときの導線に当てる小さい副のボタン（仕様 2.5.5。#474）。
+ * 頁送りと、作品が 0 本のときの導線と、一括操作のボタンに当てる小さい副のボタン（仕様 2.5.5。#474）。
  * 見た目の正本は `public/assets/app.css` の `@section buttons` で、ここは当てる部品の名前だけを持つ。
  */
 const SMALL_SECONDARY_BUTTON = 'gf-button gf-button-secondary gf-button-sm';
 
 /**
- * 頁送りを組み立てる（#552）。
+ * 絞り込みを組み立てる（#666）。
+ *
+ * **見た目はタブ（`.gf-tabs`）である**（仕様 2.5.5「タブ: 並べ替え」と同じ——選択肢の中の現在地であって動作ではない）。
+ * いまの絞り込みは `aria-current="page"` で示し、リンクにしない（押しても同じ場所へ来るリンクを出さない。
+ * `src/works-list.ts` の `renderSortNav` と同じ形）。**件数を添える**（統計の集計 1 本から引く）。
+ * **絞り込みを変えたら 1 頁目へ戻す**（前の絞り込みの頁番号は、別の絞り込みでは意味が無い）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function renderFilterNav(view: MyWorksView): string {
+  const items = MY_WORKS_FILTERS.map((filter) => {
+    const count = filterCountOf(view.stats, filter);
+    const label = `${FILTER_LABELS[filter]}${count === null ? '' : `（${count}）`}`;
+    return filter === view.filter
+      ? `<li><span aria-current="page">${label}</span></li>`
+      : `<li><a href="${myWorksPath(1, filter)}">${label}</a></li>`;
+  });
+  return `<nav class="gf-works-filter" aria-label="状態で絞り込む">
+<ul class="gf-tabs">
+${items.join('\n')}
+</ul>
+</nav>`;
+}
+
+/**
+ * 頁送りを組み立てる（#552 / #666）。
  *
  * **作品をさがす（`src/works-list.ts`）・いいねした作品（`src/liked-works.ts`）の頁送りと同じ形である。**
- * 小さい副のボタンにし、「次」は右端に寄せる（`.gf-pager-next`。仕様 2.5.5 / #474）——前が無い 1 頁目でも、
- * 次へ進む口の位置が頁によって動かない。**DOM の順は前 → 次のまま**（見た目の順＝Tab の順）。
- * 無限スクロールも JavaScript も足さない（9.3）。押しても何も起きない導線を出さない（次が無ければ「次」を出さない）。
+ * 小さい副のボタンにし、「次」は右端に寄せる（`.gf-pager-next`。仕様 2.5.5 / #474）。**DOM の順は前 → 次のまま**。
+ * **絞り込みを保つ**（#666）。押しても何も起きない導線を出さない（次が無ければ「次」を出さない）。
  *
  * @param view 表示に必要な値
  * @returns HTML。前も次も無ければ空文字
@@ -379,18 +575,82 @@ function renderPager(view: MyWorksView): string {
   const links: string[] = [];
   if (view.page > 1) {
     links.push(
-      `<a class="${SMALL_SECONDARY_BUTTON}" href="${myWorksPath(view.page - 1)}">前の ${MY_WORKS_PER_PAGE} 件</a>`,
+      `<a class="${SMALL_SECONDARY_BUTTON}" href="${myWorksPath(view.page - 1, view.filter)}">前の ${MY_WORKS_PER_PAGE} 件</a>`,
     );
   }
   if (view.hasNext) {
     links.push(
-      `<a class="${SMALL_SECONDARY_BUTTON} gf-pager-next" href="${myWorksPath(view.page + 1)}">次の ${MY_WORKS_PER_PAGE} 件</a>`,
+      `<a class="${SMALL_SECONDARY_BUTTON} gf-pager-next" href="${myWorksPath(view.page + 1, view.filter)}">次の ${MY_WORKS_PER_PAGE} 件</a>`,
     );
   }
   if (links.length === 0) {
     return '';
   }
   return `<nav class="gf-pager" aria-label="頁送り">${links.join('\n')}</nav>`;
+}
+
+/**
+ * いま並んでいる範囲の 1 行（#666。「全 45 件中 31〜45 件目」）。**件数は統計の集計から引く**——読めなかったときは
+ * 範囲だけを出す（全体の件数を推測で書かない）。
+ *
+ * @param view 表示に必要な値
+ * @returns 文言
+ */
+export function rangeLineOf(view: Pick<MyWorksView, 'works' | 'page' | 'filter' | 'stats'>): string {
+  const first = (view.page - 1) * MY_WORKS_PER_PAGE + 1;
+  const last = first + view.works.length - 1;
+  const total = filterCountOf(view.stats, view.filter);
+  return total === null ? `${first}〜${last} 件目` : `全 ${total} 件中 ${first}〜${last} 件目`;
+}
+
+/** 一括操作のボタン（#666）。**値は `src/works-bulk.ts` の `BULK_ACTIONS` と同じ綴りである**（あちらの検査が照合する）。 */
+export const BULK_BUTTONS: readonly { readonly action: string; readonly label: string }[] = [
+  { action: 'publish', label: '公開する' },
+  { action: 'unpublish', label: '下書きに戻す' },
+  { action: 'delete', label: '削除する' },
+];
+
+/**
+ * 表と一括操作を組み立てる（#666）。
+ *
+ * # 素の GET のフォームで、確認画面へ移る
+ *
+ * **表全体を `<form method="get">` で包み、ボタンは `name="action"` の値で操作を運ぶ。** 押しても何も書き換わらない
+ * ——移る先は確認画面（`src/works-bulk.ts`）で、書き換えるのはそこから送る POST だけである。**JavaScript を要求しない**
+ * （9.3。「全部選ぶ」のチェックボックスは置かない。1 頁は 30 件で、1 つずつ選んでも手間が限られる）。
+ *
+ * # ボタンは副にする
+ *
+ * **この画面の主は「新しく生成する」の 1 つだけ**（仕様 2.5.5 / #473）。一括操作は小さい副のボタンにする
+ * （削除は破壊的な操作なので主にしない。#517 の constraints と同じ）。
+ *
+ * # 表の見出し
+ *
+ * 見出しは `<th scope="col">`。狭い段では見出しの行を隠してカードにする（数の列は `data-label` の語を値の前に添える）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+function renderTable(view: MyWorksView): string {
+  const buttons = BULK_BUTTONS.map(
+    ({ action, label }) =>
+      `<button type="submit" class="${SMALL_SECONDARY_BUTTON}" name="${WORKS_BULK_ACTION_FIELD}" value="${action}">${label}</button>`,
+  ).join('\n');
+  return `<form class="gf-works-bulk" method="get" action="${MY_WORKS_BULK_PATH}">
+<div class="gf-works-toolbar">
+<p class="gf-works-range">${rangeLineOf(view)}</p>
+<div class="gf-works-actions" role="group" aria-label="選んだ作品をまとめて操作する">
+<span class="gf-works-actions-label">選んだ作品を</span>
+${buttons}
+</div>
+</div>
+<table class="gf-block gf-works-table">
+<thead><tr><th scope="col" class="gf-works-select">選択</th><th scope="col" class="gf-works-thumb">画像</th><th scope="col">作品</th><th scope="col">状態</th><th scope="col">日付</th>${COUNT_COLUMNS.map(({ label }) => `<th scope="col" class="gf-works-count">${label}</th>`).join('')}</tr></thead>
+<tbody>
+${view.works.map((work) => renderRow(work, view.now)).join('\n')}
+</tbody>
+</table>
+</form>`;
 }
 
 /**
@@ -403,31 +663,27 @@ function renderPager(view: MyWorksView): string {
  * @returns HTML
  */
 export function renderMyWorksPage(view: MyWorksView): string {
-  // **作品が 0 本のときの「最初のゲームを生成する」は小さい副のボタン**（PR #505 の Copilot code review）。見出しの行の主
-  // 「新しく生成する」と同じ行き先で、素のリンクのままだと主と並んで強さの違う導線が 2 つになる。作品をさがすの空の知らせの
-  // 「最初の 1 本を作る」（`src/works-list.ts`）と同じ形である。
+  // **作品が 0 本のときの「最初のゲームを生成する」は小さい副のボタン**（PR #505 の Copilot code review）。
   //
   // **2 頁目以降で空なのは「まだ作品が無い」ではない**（#552。作品を消して頁が減った後の古い URL など）。
-  // 「まだ作品がありません」と言うと、作品を持つ本人に画面が嘘をつく（`src/liked-works.ts` の範囲の外の頁と同じ扱い）。
+  // **絞り込んで空なのも「まだ作品が無い」ではない**（#666）。どちらも作品を持つ本人に画面が嘘をつかない文言にする。
   const body =
     view.works.length > 0
-      ? `<ul class="gf-block gf-block-rows gf-works">
-${view.works.map((work) => renderRow(work, view.now)).join('\n')}
-</ul>`
-      : view.page === 1
-        ? `<div class="gf-block gf-my-works-empty">
+      ? renderTable(view)
+      : view.page > 1
+        ? `<p class="gf-block">この頁に並ぶ作品がありません。</p>`
+        : view.filter !== 'all'
+          ? `<p class="gf-block">「${FILTER_LABELS[view.filter]}」の作品はありません。</p>`
+          : `<div class="gf-block gf-my-works-empty">
 <p>まだ作品がありません。</p>
 <p class="gf-my-works-empty-action"><a class="${SMALL_SECONDARY_BUTTON}" href="${GENERATE_PAGE_PATH}">最初のゲームを生成する</a></p>
-</div>`
-        : `<p class="gf-block">この頁に並ぶ作品がありません。</p>`;
+</div>`;
 
   // **ログイン済みとして組む。** この画面は未ログインでは開けない（{@link showMyWorks} が
   // ログインへ送る）ので、**外枠のためにセッションを 2 度検証しない**（2.3.7 / #331）。
   //
-  // **「新しく生成する」は見出しの行の右の主のボタン（小）で、この画面の主はこの 1 つだけ**（仕様 2.5.5 / #473。承認した
-  // モックアップ Version 6）。「いいねした作品」「公開されている作品をさがす」は一覧の下の副のボタン（小）である。
-  // **並びは HTML の順**（見出し → 新しく生成する → 説明 → 一覧 → 頁送り → 副のボタン）で、見た目の順と Tab の順が割れない。
-  // 頁送りを一覧の直後に置くのは、作品をさがす・いいねした作品と同じ位置である（#552）。
+  // **並びは HTML の順**（見出し → 統計の帯 → 見出しの行（新しく生成する）→ 説明 → 絞り込み → 表 → 頁送り → 副のボタン）で、
+  // 見た目の順と Tab の順が割れない。
   return `${siteHead({
     title: 'あなたの作品 - Game Forge',
     noindex: true,
@@ -439,7 +695,8 @@ ${renderMyWorksStats(view.stats, view.quotaNotice)}
 <h2>作品の一覧</h2>
 <a class="gf-button gf-button-primary gf-button-sm" href="${GENERATE_PAGE_PATH}">新しく生成する</a>
 </div>
-<p>公開中のものも下書きも、生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品のページへ移ります。</p>
+<p>公開中のものも下書きも、生成中のものも含めて、新しい順に並んでいます。作品名を選ぶとその作品の編集の画面へ移ります。作品を選んで、まとめて公開・下書きへ戻す・削除することもできます（押すと確認の画面へ移ります）。</p>
+${renderFilterNav(view)}
 ${body}
 ${renderPager(view)}
 <p class="gf-works-links"><a class="gf-button gf-button-secondary gf-button-sm" href="${LIKED_WORKS_PATH}">いいねした作品</a>
@@ -480,10 +737,9 @@ async function loadStatsOrNull(env: Env, userId: string): Promise<MyWorksStats |
  * できることは結局ログインなので、そこまでを 1 往復で済ませる
  * （`src/invite-issuance.ts` の `showInvitePage` と同じ扱い）。
  *
- * **1 頁の件数より 1 件多く引く**（#552。いまの作法のまま）。「ちょうど 20 件で終わる」と
- * 「21 件目がある」は引いた件数だけでは区別できず、区別せずに「次の 20 件」を出すと
- * **押しても空の頁へ行く導線**になる。1 行余分に読むだけで区別が付く（3.6 の読み取り
- * 単価に対して無視できる）。**統計と残枠は頁によらず同じものを引き、どの頁にも出す。**
+ * **1 頁の件数より 1 件多く引く**（#552。いまの作法のまま）。「ちょうど 30 件で終わる」と
+ * 「31 件目がある」は引いた件数だけでは区別できず、区別せずに「次の 30 件」を出すと
+ * **押しても空の頁へ行く導線**になる。**統計と残枠は頁・絞り込みによらず同じものを引き、どの頁にも出す。**
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -499,9 +755,11 @@ async function showMyWorks(request: Request, env: Env): Promise<Response> {
 
   // **3 つは互いに依存しないので並べて引く。** 一覧・統計（集計 1 回）・残枠
   // （生成画面と同じ経路。`resolveAvailability` は読めなくても投げない）。
-  const page = toMyWorksPageNumber(new URL(request.url).searchParams.get(MY_WORKS_PAGE_PARAM));
+  const params = new URL(request.url).searchParams;
+  const page = toMyWorksPageNumber(params.get(MY_WORKS_PAGE_PARAM));
+  const filter = toMyWorksFilter(params.get(MY_WORKS_FILTER_PARAM));
   const [fetched, stats, availability] = await Promise.all([
-    listAuthoredGames(env, session.userId, MY_WORKS_PER_PAGE + 1, (page - 1) * MY_WORKS_PER_PAGE),
+    listMyWorks(env, session.userId, filter, MY_WORKS_PER_PAGE + 1, (page - 1) * MY_WORKS_PER_PAGE),
     loadStatsOrNull(env, session.userId),
     resolveAvailability(env, session.userId),
   ]);
@@ -509,6 +767,7 @@ async function showMyWorks(request: Request, env: Env): Promise<Response> {
     renderMyWorksPage({
       works: fetched.slice(0, MY_WORKS_PER_PAGE),
       page,
+      filter,
       // 上限の頁では「次」を出さない（{@link MAX_MY_WORKS_PAGE}。出しても 1 頁目へ戻るだけの導線になる）。
       hasNext: fetched.length > MY_WORKS_PER_PAGE && page < MAX_MY_WORKS_PAGE,
       now: Math.floor(Date.now() / 1000),

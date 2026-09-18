@@ -28,6 +28,7 @@ import { privacyRoutes } from './privacy.js';
 import { takedownRoutes } from './takedown-routes.js';
 import { inviteRoutes } from './invite-issuance.js';
 import { myWorksRoutes } from './my-works.js';
+import { worksBulkRoutes } from './works-bulk.js';
 import { newsRoutes } from './news.js';
 import { worksListRoutes } from './works-list.js';
 import { usersPageRoutes } from './users-page.js';
@@ -359,6 +360,8 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     ...worksListRoutes,
     ...usersPageRoutes,
     ...myWorksRoutes,
+    // 「あなたの作品」の一括操作（#666）。確認画面は `/works/mine/bulk` の完全一致で、作品ページの前方一致より先に当たる。
+    ...worksBulkRoutes,
     ...publishRoutes,
     ...ogpRoutes,
     ...ogpRecaptureRoutes,

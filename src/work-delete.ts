@@ -20,7 +20,8 @@
  * 照合してから費用台帳を書くので、遅れて届いたコールバックが消えた行に当たると台帳の行を落とす（#516）。
  * 止まった行を消せるようにするかは、#517 の範囲の外に置いた（#517 の PR の本文）。
  */
-import type { GameDeletionRejection } from './game-deletion.js';
+import type { GameDeletionRejection, GameDeletionResult } from './game-deletion.js';
+import { deleteGame } from './game-deletion.js';
 import { PUBLISHED_STATUS } from './games.js';
 import type { SiteViewer } from './html.js';
 import { escapeHtml, siteHead } from './html.js';
@@ -154,6 +155,43 @@ export function deletionStateOf(row: DeletionTargetRow): DeletionState {
   };
 }
 
+/** {@link deleteAuthoredGame} の結果。 */
+export type AuthoredDeletionOutcome =
+  | { readonly ok: true; readonly result: GameDeletionResult }
+  | { readonly ok: false; readonly reason: GameDeletionRejection | 'not-found' };
+
+/**
+ * 作者本人の作品を消す（#517 の口の本体。#666 で切り出した）。
+ *
+ * **1 件ずつの口（`POST /api/works/delete`。`src/work-page.ts`）と一括の口（`src/works-bulk.ts`）が同じこの関数を通る。**
+ * 一括の口が `deleteGame` を直接呼ぶと、作者の検査を書き忘れても動作では気づけない（自分の作品は正しく消える）。
+ *
+ * # 作者本人かだけを先に確かめ、状態の判定は `deleteGame` に任せる
+ *
+ * **`deleteGame` は id を受け取るだけで、権限を持たない。** 存在しない id にも `deleted` を返すので、作者を
+ * 確かめずに呼ぶと、他人の id を送った人に成功が返る（行が在れば、他人の作品が消える）。**作者でない・
+ * 行が無いは、どちらも `not-found` に畳む**（区別すると、任意の id が実在するかを外から確かめられる）。
+ * `author_id` は作品の作成後に変わらないので、読んでから `deleteGame` を呼ぶまでの隙間で結論は変わらない。
+ *
+ * **状態（公開中・生成中・リフォージ中）の `if` はここに置かない。** 断る理由は `deleteGame` が返す。
+ *
+ * @param env バインディングと環境変数
+ * @param gameId 作品 id
+ * @param userId 操作している利用者
+ * @returns 削除の結果
+ */
+export async function deleteAuthoredGame(
+  env: Env,
+  gameId: string,
+  userId: string,
+): Promise<AuthoredDeletionOutcome> {
+  const row = await env.DB.prepare(DELETION_TARGET_SQL).bind(gameId).first<DeletionTargetRow>();
+  if (row === null || row.author_id !== userId) {
+    return { ok: false, reason: 'not-found' };
+  }
+  return await deleteGame(env, gameId);
+}
+
 /** 断りの画面の中身。 */
 export interface DeleteRefusal {
   readonly status: number;
@@ -207,6 +245,34 @@ export const DELETE_REFUSALS: Readonly<
   },
 };
 
+/**
+ * 削除で起きること・起きないことの 2 つの塊（`<div>` 2 つ。#517 の scope.out の文言）。
+ *
+ * **1 件ずつの確認画面と一括の確認画面（`src/works-bulk-page.ts`。#666）が同じ文を出す。** 一括のときに省くと、
+ * 「まとめて消したらフォークまで消えるのか」を読む場所が無くなる（#666 の constraints「確認の中身は 1 件ずつのときから
+ * 省かない」）。主語だけを呼ぶ側が渡す。
+ *
+ * @param subject 主語（「この作品」「選んだ作品」）。固定の文字列だけを渡す（エスケープしない）
+ * @returns HTML
+ */
+export function deletionConsequences(subject: string): string {
+  return `<div>
+<h3>削除すると</h3>
+<ul>
+  <li><strong>元に戻せません。</strong></li>
+  <li>${subject}のソースコード・遊ぶためのファイル・紹介用の画像が消えます。リフォージの前の版も消えます。</li>
+  <li>「あなたの作品」の一覧に出なくなります。</li>
+</ul>
+</div>
+<div>
+<h3>削除しても変わらないこと</h3>
+<ul>
+  <li><strong>${subject}をフォークした作品は消えません。</strong>フォークした作品の側では、元の作品が「削除済みの作品から派生」と表示されます。</li>
+  <li>${subject}を作るために使った 1 日の生成枠は戻りません。</li>
+</ul>
+</div>`;
+}
+
 /** 確認画面を組み立てるのに要るもの。 */
 export interface DeleteConfirmationView {
   /** 作品 id（フォームと、戻る先の作品ページに使う）。 */
@@ -248,21 +314,7 @@ export function renderDeleteConfirmation(view: DeleteConfirmationView, viewer: S
 <h1>この作品を削除しますか</h1>
 <p>削除する作品: <strong>${escapeHtml(view.title)}</strong></p>
 <section class="gf-block gf-block-rows gf-work-settings" aria-label="削除の確認">
-<div>
-<h3>削除すると</h3>
-<ul>
-  <li><strong>元に戻せません。</strong></li>
-  <li>この作品のソースコード・遊ぶためのファイル・紹介用の画像が消えます。リフォージの前の版も消えます。</li>
-  <li>「あなたの作品」の一覧に出なくなります。</li>
-</ul>
-</div>
-<div>
-<h3>削除しても変わらないこと</h3>
-<ul>
-  <li><strong>この作品をフォークした作品は消えません。</strong>フォークした作品の側では、元の作品が「削除済みの作品から派生」と表示されます。</li>
-  <li>この作品を作るために使った 1 日の生成枠は戻りません。</li>
-</ul>
-</div>
+${deletionConsequences('この作品')}
 <div>
 <form method="post" action="${WORK_DELETE_PATH}">
   <input type="hidden" name="${WORK_DELETE_GAME_ID_FIELD}" value="${view.gameId}">

@@ -20,6 +20,8 @@
 #   PUBLISHED_GAME_ID   仕込んだ公開済みの作品の id（カードが並ぶ画面と、`/source/` の続きのため）
 #   WORKING_GAME_ID     仕込んだ生成中の作品の id（エディットページの「生成中」を測るため。#664）
 #   FAILED_GAME_ID      仕込んだ生成に失敗した作品の id（エディットページの「生成できませんでした」を測るため。#664）
+#   GENERATING_GAME_ID  仕込んだ生成中で止まっている作品の id（#666。「あなたの作品」の表と一括の確認画面のため。
+#                       `WORKING_GAME_ID` は作成の時刻が「いま」なので「時間がかかっています」を描かない）
 #
 # **エディットページ（`/works/<id>/edit`。#664）の 4 つの状態と、下書きのプレビュー（帯つきの作品ページ）を
 # 測れるように仕込む。** エディットページは作品ページの前方一致の経路の続きなので `/__dev/pages` には出ない——
@@ -27,6 +29,12 @@
 # 同じ cookie で本体が開く（作者以外が開くと作品ページと同じ応答になり、エディットページを 1 度も描かないまま緑になる）。
 # `GAME_ID`（下書き）は作者が開くので、`/works/$GAME_ID` は**下書きのプレビュー（帯つき）**になる。そのために
 # 試遊の鍵も持たせる（無いとプレビューの埋め込みが描かれない）。
+#
+# **「あなたの作品」の表（#666）が 4 つの状態（公開中・下書き・生成中・失敗）をすべて描くように仕込む。** 生成中と失敗は
+# #664 の `WORKING_GAME_ID` / `FAILED_GAME_ID` を使い、それに加えて止まっている生成中（札の外の「時間がかかっています」）を 1 件足す。こちらは、題名も 1 行に収まらない長さにしてある——
+# 表の狭い列とカード表示で、いちばん折り返す形を 3 幅で測るためである。**公開済みの作品には紹介用の画像も置く**
+# （`ogp_state = 'ready'` と R2 の実体）。置かないと、表の画像の枠もカードのスクリーンショットも「準備中」の形しか
+# 描かれず、`<img>` の寸法を 1 度も測らないまま緑になる。
 #
 # **公開済みの作品には、説明も入れる**（#627 / 仕様 5.4）。入れないと、遊ぶ枠の直前の折りたたみ
 # （`.gf-work-description-peek`）と説明の本文が **1 度も描かれないまま幅の検査が緑になる**。
@@ -181,6 +189,8 @@ dev_fixture_up() {
   # 新規露出の面（トップ・公開一覧）から消え、**`.gf-cards` の格子を測れなくなる。**
   # 題名は 1 行に収まらない長さにする（行が折り返したときの高さと幅を測るため）。
   QUEUED_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
+  GENERATING_GAME_ID="$(node -e 'console.log(crypto.randomUUID())')"
+  OGP_KEY="ogp/${PUBLISHED_GAME_ID}/width-check.png"
 
   # **エディットページの生成中・失敗の状態を測る作品**（#664）。生成中は作成の時刻を「いま」にする——古い時刻だと
   # 「中断した可能性」の表示になり、生成中の本来の画面を 1 度も測らない。下書き（`GAME_ID`）の試遊の鍵は 16 進 32 桁
@@ -201,7 +211,7 @@ dev_fixture_up() {
   BUCKET_NAME="$(sed -nE 's/^[[:space:]]*bucket_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' wrangler.toml | head -1)"
   [[ -n "$BUCKET_NAME" ]] || fail "wrangler.toml から R2 の bucket_name を読めませんでした。"
 
-  note "seeding an admin user, five games (draft + published + queued + working + failed), the keys those games read, a report, a history row and a takedown request"
+  note "seeding an admin user, six games (draft + published + queued + working + stalled + failed), the keys those games read, a report, a history row and a takedown request"
   npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
     insert into users (id, google_sub, email, display_name, created_at, bio, profile_links)
       values ('$USER_ID', 'sub-$USER_ID', '$USER_ID@example.invalid', '幅の検査', 1,
@@ -248,6 +258,10 @@ dev_fixture_up() {
     insert into admin_actions (id, actor_id, created_at, action, target_kind, target_id, reason)
       values ('width-check-action', '$USER_ID', 3, 'review-queued', 'game', '$QUEUED_GAME_ID',
               '幅の検査の履歴の理由');
+    update games set ogp_state = 'ready', ogp_key = '$OGP_KEY', fork_count = 12 where id = '$PUBLISHED_GAME_ID';
+    insert into games (id, author_id, status, title, go_version, created_at, generation_state, generation_started_at)
+      values ('$GENERATING_GAME_ID', '$USER_ID', 'draft',
+              '幅の検査の生成中の作品で、題名が表の狭い列に 1 行では収まらない長さになっているもの', '', 2, 'running', 2);
     insert into takedown_requests
       (id, game_id, claimant_name, claimant_contact, body, received_at, handled_at, action, note)
       values ('width-check-takedown', '$PUBLISHED_GAME_ID', '幅の検査の依頼者',
@@ -279,6 +293,23 @@ require("node:fs").writeFileSync(process.argv[1], text);
   npx wrangler r2 object put "$BUCKET_NAME/$SOURCE_KEY" --local --persist-to "$STATE" \
     --file "$WORK/source.go" --content-type 'text/plain; charset=utf-8' >"$WORK/r2.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/r2.log" >&2; fail "検査用のソースを R2 へ置けませんでした。"; }
+
+  # **紹介用の画像を R2 へ置く**（#666。上の冒頭の注記）。1200 × 630 の PNG を `sharp`（devDependencies）で描く
+  # ——**色を持つのは作品だけ**（仕様 2.5.2）なので、ゲームの画面らしい色の塊にしてある。
+  node -e '
+const sharp = require("sharp");
+const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630">
+<rect width="1200" height="630" fill="#1d2b53"/>
+<rect x="80" y="420" width="1040" height="60" fill="#008751"/>
+<rect x="520" y="340" width="80" height="80" fill="#ffec27"/>
+<circle cx="300" cy="200" r="60" fill="#ff004d"/>
+<circle cx="900" cy="160" r="40" fill="#29adff"/>
+</svg>`;
+sharp(Buffer.from(svg)).png().toFile(process.argv[1]).catch((error) => { console.error(error); process.exit(1); });
+' "$WORK/ogp.png" || fail "検査用の紹介用の画像を作れませんでした。"
+  npx wrangler r2 object put "$BUCKET_NAME/$OGP_KEY" --local --persist-to "$STATE" \
+    --file "$WORK/ogp.png" --content-type 'image/png' >"$WORK/r2-ogp.log" 2>&1 ||
+    { sed 's/^/    /' "$WORK/r2-ogp.log" >&2; fail "検査用の紹介用の画像を R2 へ置けませんでした。"; }
 
   # セッションの署名は `src/session.ts` と同じ形（`<base64url(JSON)>.<base64url(HMAC)>`）。
   # **秘密はこの検査の中だけで作って渡す。** `.dev.vars` を読まないのは、開発者の環境に

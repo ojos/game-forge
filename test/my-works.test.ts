@@ -42,11 +42,24 @@ import {
   toMyWorksPageNumber,
 } from '../src/my-works.js';
 import { LIKED_WORKS_PATH } from '../src/liked-works-paths.js';
+import {
+  MY_WORKS_FILTERS,
+  MY_WORKS_FILTER_PARAM,
+  myWorksSql,
+  toMyWorksFilter,
+} from '../src/my-works-query.js';
+import type { MyWorksFilter } from '../src/my-works-query.js';
+import { ogpImagePath } from '../src/ogp.js';
+import {
+  MY_WORKS_BULK_PATH,
+  WORKS_BULK_ACTION_FIELD,
+  WORKS_BULK_GAME_ID_FIELD,
+} from '../src/works-bulk-paths.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { PUBLIC_WORKS_PATH } from '../src/works-list.js';
 import { STALE_AFTER_SECONDS, WORK_PAGE_PREFIX } from '../src/work-page.js';
-// **各行はエディットページへ移る**（#664）。
+// **各行はエディットページへ移る**（#664 / #666）。
 import { workEditPath } from '../src/work-edit-paths.js';
 import { applySchema } from './helpers/schema.js';
 import { pageBodyOf } from './helpers/site-shell.js';
@@ -213,12 +226,12 @@ function pagerOf(page: string): string {
   return /<nav class="gf-pager" aria-label="頁送り">[\s\S]*?<\/nav>/u.exec(pageBodyOf(page))?.[0] ?? '';
 }
 
-/** 「前の 20 件」のリンク。 */
+/** 「前の 30 件」のリンク。 */
 function previousLink(page: number): string {
   return `<a class="gf-button gf-button-secondary gf-button-sm" href="${myWorksPath(page)}">前の ${MY_WORKS_PER_PAGE} 件</a>`;
 }
 
-/** 「次の 20 件」のリンク（右端に寄せる `.gf-pager-next` 付き）。 */
+/** 「次の 30 件」のリンク（右端に寄せる `.gf-pager-next` 付き）。 */
 function nextLink(page: number): string {
   return `<a class="gf-button gf-button-secondary gf-button-sm gf-pager-next" href="${myWorksPath(page)}">次の ${MY_WORKS_PER_PAGE} 件</a>`;
 }
@@ -351,8 +364,9 @@ describe('一覧の中身（#152 acceptance 1・3）', () => {
     await seedGame(userId, { generationState: 'failed' });
 
     const body = await (await openList(await sessionCookie(userId))).text();
-    expect(body).toContain('できました');
-    expect(body).toContain('生成できませんでした');
+    // #666 で表の「状態」の列にした。生成が済んだ行は公開中か下書き、失敗した行は「失敗」である。
+    expect(body).toContain('<td class="gf-works-state"><span class="gf-chip">下書き</span></td>');
+    expect(body).toContain('<td class="gf-works-state"><span class="gf-chip">失敗</span></td>');
   });
 
   it('長く動いていない生成は「時間がかかっています」と出す', async () => {
@@ -416,14 +430,16 @@ describe('一覧の中身（#152 acceptance 1・3）', () => {
     expect(draft).not.toContain('公開中');
   });
 
-  it('生成中の行にも下書きを出す（公開していないことは同じである）', async () => {
+  it('生成中の行の札は「生成中」の 1 枚である（#666 で表の 1 列に畳んだ）', async () => {
+    // #641 では 2 枚（生成中 ＋ 下書き）を並べていた。**公開できるのは生成が済んだ作品だけ**なので、生成中の行は必ず
+    // 下書きであり、4 つ（公開中／下書き／生成中／失敗）は重ならない（`src/my-works.ts` の `stateChipOf`）。
     const userId = await seedUser();
     await seedGame(userId, { status: DRAFT_STATUS, generationState: 'running', title: '生成中の作品' });
 
     const body = await (await openList(await sessionCookie(userId))).text();
-    const row = body.slice(body.indexOf('生成中の作品'));
-    // **2 つの札は直交する**（生成が終わったか / 公開しているか）。畳まない。
-    expect(row).toContain('<span class="gf-chip gf-chip-emphasis">生成中</span> <span class="gf-chip">下書き</span>');
+    const row = /<tr><td class="gf-works-select">(?:(?!<\/tr>)[\s\S])*生成中の作品[\s\S]*?<\/tr>/u.exec(body)?.[0] ?? '';
+    expect(row).toContain('<td class="gf-works-state"><span class="gf-chip gf-chip-emphasis">生成中</span></td>');
+    expect(row).not.toContain('<span class="gf-chip">下書き</span>');
   });
 
   it('知らない status では札を出さない（公開中と言い切らない）', () => {
@@ -436,10 +452,10 @@ describe('一覧の中身（#152 acceptance 1・3）', () => {
 });
 
 describe('頁送り（#552）', () => {
-  it('45 件の作者で、1 頁目 20 件・2 頁目 20 件・3 頁目 5 件になり、前／次が正しく出る', async () => {
+  it('75 件の作者で、1 頁目 30 件・2 頁目 30 件・3 頁目 15 件になり、前／次が正しく出る（#666 で 30 件ずつ）', async () => {
     const userId = await seedUser();
     // 新しい順に並べた id（先頭がいちばん新しい）。
-    const newestFirst = (await seedGames(userId, 45)).reverse();
+    const newestFirst = (await seedGames(userId, 75)).reverse();
     const cookie = await sessionCookie(userId);
 
     const pages = await Promise.all(
@@ -447,16 +463,19 @@ describe('頁送り（#552）', () => {
         async (search) => await (await openList(cookie, search)).text(),
       ),
     );
-    const expected = [newestFirst.slice(0, 20), newestFirst.slice(20, 40), newestFirst.slice(40)];
+    const expected = [newestFirst.slice(0, 30), newestFirst.slice(30, 60), newestFirst.slice(60)];
     pages.forEach((page, index) => {
       const shown = newestFirst.filter((id) => page.includes(id));
-      // 件数だけでなく**どの作品か**を見る（2 頁目が 1 頁目と同じ 20 件を出しても件数は合う）。
+      // 件数だけでなく**どの作品か**を見る（2 頁目が 1 頁目と同じ 30 件を出しても件数は合う）。
       expect(shown, `${index + 1} 頁目`).toEqual(expected[index]);
       // 頁の中でも新しい順である。
       const positions = shown.map((id) => page.indexOf(id));
       expect([...positions].sort((a, b) => a - b)).toEqual(positions);
     });
-    expect(pages.map((page) => newestFirst.filter((id) => page.includes(id)).length)).toEqual([20, 20, 5]);
+    expect(pages.map((page) => newestFirst.filter((id) => page.includes(id)).length)).toEqual([30, 30, 15]);
+    // 31 件目（新しい順）は 1 頁目に出ず、2 頁目の先頭に出る（#666 の acceptance）。
+    expect(pages[0]).not.toContain(newestFirst[30]);
+    expect(newestFirst.filter((id) => pages[1]!.includes(id))[0]).toBe(newestFirst[30]);
 
     // 1 頁目: 前は無く、次は 2 頁目（`?page=` を付ける）。
     expect(pagerOf(pages[0]!)).toBe(`<nav class="gf-pager" aria-label="頁送り">${nextLink(2)}</nav>`);
@@ -477,7 +496,7 @@ describe('頁送り（#552）', () => {
     expect(pager).toBeLessThan(main.indexOf(`href="${LIKED_WORKS_PATH}"`));
   });
 
-  it('ちょうど 20 件なら頁送りを出さない（1 件多く引いて「次」の有無を決める）', async () => {
+  it('ちょうど 30 件なら頁送りを出さない（1 件多く引いて「次」の有無を決める）', async () => {
     const userId = await seedUser();
     await seedGames(userId, MY_WORKS_PER_PAGE);
     const page = await (await openList(await sessionCookie(userId))).text();
@@ -487,7 +506,7 @@ describe('頁送り（#552）', () => {
 
   it('読めない `?page=`（0・負・文字列・上限を超える値）は 1 頁目になる', async () => {
     const userId = await seedUser();
-    const newestFirst = (await seedGames(userId, 45)).reverse();
+    const newestFirst = (await seedGames(userId, 75)).reverse();
     const cookie = await sessionCookie(userId);
     const firstPage = newestFirst.slice(0, MY_WORKS_PER_PAGE);
 
@@ -518,7 +537,7 @@ describe('頁送り（#552）', () => {
       expect(toMyWorksPageNumber(value), JSON.stringify(value)).toBe(1);
     }
     expect(toMyWorksPageNumber('10')).toBe(10);
-    expect(MY_WORKS_PER_PAGE).toBe(20);
+    expect(MY_WORKS_PER_PAGE).toBe(30);
     expect(MAX_MY_WORKS_PAGE).toBe(50);
   });
 
@@ -534,20 +553,20 @@ describe('頁送り（#552）', () => {
       expect(page).not.toContain('新しい 50 件までを表示しています');
       expect(page).not.toContain('件までを表示しています');
     }
-    // #152 の形では落ちていた、いちばん古い 1 件が 3 頁目に出る。
-    expect(pages[2]).toContain(newestFirst[50]);
+    // #152 の形では落ちていた、いちばん古い 1 件（51 件目）が、30 件ずつの 2 頁目に出る。
+    expect(pages[Math.floor(50 / MY_WORKS_PER_PAGE)]).toContain(newestFirst[50]);
   });
 
   it('統計と残りの生成枠は、どの頁にも出る', async () => {
     const userId = await seedUser();
-    await seedGames(userId, 45);
+    await seedGames(userId, 75);
     await seedLedgerRow(userId);
     const cookie = await sessionCookie(userId);
 
     for (const search of ['', '?page=2', '?page=3']) {
       const page = await (await openList(cookie, search)).text();
       // 統計は頁ではなく作者の全作品で数える（2 頁目で「作品数 20」にならない）。
-      expect(statCardsOf(page)['作品数'], search).toBe('45');
+      expect(statCardsOf(page)['作品数'], search).toBe('75');
       expect(paragraphById(page, 'works-quota'), search).toBe(remainingQuotaNotice(DAILY_QUOTA_PER_USER - 1));
     }
   });
@@ -995,7 +1014,7 @@ describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
     expect(browse).toBeGreaterThan(liked);
   });
 
-  it('一覧はブロックの行で、状態の札はチップ（生成中と時間がかかっているだけ地を塗る）', async () => {
+  it('一覧はブロックの面の表で、状態の札はチップ（生成中と時間がかかっているだけ地を塗る。#666）', async () => {
     const userId = await seedUser();
     const now = Math.floor(Date.now() / 1000);
     const ready = await seedGame(userId, { generationState: 'ready', createdAt: now - 40 });
@@ -1004,14 +1023,18 @@ describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
     const stalled = await seedGame(userId, { generationState: 'running', createdAt: now - STALE_AFTER_SECONDS - 60 });
 
     const main = pageBodyOf(await (await openList(await sessionCookie(userId))).text());
-    expect(main).toContain('<ul class="gf-block gf-block-rows gf-works">');
-    const rowOf = (id: string): string => new RegExp(`<li><a class="gf-link-quiet gf-works-title" href="${workEditPath(id)}">[^<]*</a> <span class="[^"]*">[^<]*</span>`, 'u').exec(main)?.[0] ?? '';
-    expect(rowOf(ready)).toContain('<span class="gf-chip">できました</span>');
-    expect(rowOf(failed)).toContain('<span class="gf-chip">生成できませんでした</span>');
-    expect(rowOf(working)).toContain('<span class="gf-chip gf-chip-emphasis">生成中</span>');
-    expect(rowOf(stalled)).toMatch(/<span class="gf-chip gf-chip-emphasis">[^<]*時間がかかっています[^<]*<\/span>$/u);
-    // #473 の前の札（`.gf-state`）は残さない。
+    expect(main).toContain('<table class="gf-block gf-works-table">');
+    const stateOf = (id: string): string =>
+      new RegExp(`value="${id}"[\\s\\S]*?<td class="gf-works-state">(<span class="[^"]*">[^<]*</span>)</td>`, 'u').exec(main)?.[1] ?? '';
+    expect(stateOf(ready)).toBe('<span class="gf-chip">下書き</span>');
+    expect(stateOf(failed)).toBe('<span class="gf-chip">失敗</span>');
+    expect(stateOf(working)).toBe('<span class="gf-chip gf-chip-emphasis">生成中</span>');
+    expect(stateOf(stalled)).toMatch(/^<span class="gf-chip gf-chip-emphasis">[^<]*時間がかかっています[^<]*<\/span>$/u);
+    // 題名は文章の外のリンク（`.gf-link-quiet`）で、行き先はエディットページ（#664 / #666 の scope.in）。
+    expect(main).toContain(`<a class="gf-link-quiet gf-works-title" href="${workEditPath(ready)}">`);
+    // #473 の前の札（`.gf-state`）と、#666 の前の行（`ul.gf-works`）は残さない。
     expect(main).not.toContain('gf-state');
+    expect(main).not.toContain('gf-block-rows gf-works');
   });
 
   it('統計のカードはブロックで、残枠は「統計」の見出しの行の右にある', () => {
@@ -1019,8 +1042,252 @@ describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
     expect(section).toMatch(
       /<div class="gf-heading-row">\s*<h2 id="works-stats-heading">統計<\/h2>\s*<p class="gf-stats-quota" id="works-quota">/u,
     );
-    expect(section.match(/<div class="gf-block gf-stats-card">/gu) ?? []).toHaveLength(STAT_CARDS.length);
+    // #666 で 6 枚のカードを 1 つのブロックの帯に詰めた（項目の並びと見出しは変えていない）。
+    expect(section.match(/<dl class="gf-block gf-stats-band">/gu) ?? []).toHaveLength(1);
+    expect(section.match(/<div class="gf-stats-item"><dt>/gu) ?? []).toHaveLength(STAT_CARDS.length);
+    // 注記は折りたたむ（開けば #377 / #382 の文がそのまま読める）。
+    expect(section).toMatch(/<details class="gf-stats-notes">\s*<summary>数え方について<\/summary>/u);
     // 読めなかったときの知らせもブロックである。
     expect(renderMyWorksStats(null, remainingQuotaNotice(4))).toContain(`<p class="gf-block">${STATS_UNAVAILABLE_NOTICE}</p>`);
+  });
+});
+
+/**
+ * 表の検査用に、状態と数を指定して作品を入れる（#666）。
+ *
+ * @param authorId 作者
+ * @param seed 列の指定
+ * @returns 作品 id
+ */
+async function seedTableGame(
+  authorId: string,
+  seed: {
+    readonly status?: string;
+    readonly generationState?: string;
+    readonly title?: string;
+    readonly createdAt?: number;
+    readonly publishedAt?: number | null;
+    readonly playCount?: number;
+    readonly likeCount?: number;
+    readonly forkCount?: number;
+    readonly tags?: readonly string[];
+    readonly ogpState?: string | null;
+  } = {},
+): Promise<string> {
+  const id = crypto.randomUUID();
+  const [tag1, tag2, tag3] = [...(seed.tags ?? []), null, null, null];
+  await env.DB.prepare(
+    `insert into games
+       (id, author_id, status, title, go_version, created_at, published_at, generation_state,
+        play_count, like_count, fork_count, tag1, tag2, tag3, ogp_state, ogp_key)
+     values (?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      id,
+      authorId,
+      seed.status ?? DRAFT_STATUS,
+      seed.title ?? 'タイトル',
+      seed.createdAt ?? Math.floor(Date.now() / 1000),
+      seed.publishedAt ?? null,
+      seed.generationState ?? 'ready',
+      seed.playCount ?? 0,
+      seed.likeCount ?? 0,
+      seed.forkCount ?? 0,
+      tag1 ?? null,
+      tag2 ?? null,
+      tag3 ?? null,
+      seed.ogpState ?? null,
+      seed.ogpState === 'ready' ? `ogp/${id}/x.png` : null,
+    )
+    .run();
+  return id;
+}
+
+/**
+ * 画面から、ある作品の `<tr>` を取り出す。
+ *
+ * @param page 画面の HTML
+ * @param id 作品 id
+ * @returns 行（無ければ空文字）
+ */
+function tableRowOf(page: string, id: string): string {
+  return new RegExp(`<tr><td class="gf-works-select"><input [^>]*value="${id}"[\\s\\S]*?</tr>`, 'u').exec(page)?.[0] ?? '';
+}
+
+describe('Studio 型の表（#666）', () => {
+  it('列は 選択・画像・作品名とタグ・状態・日付・プレイ・いいね・フォークされた数 で、数と日付を行ごとに出す', async () => {
+    const userId = await seedUser();
+    const published = await seedTableGame(userId, {
+      status: PUBLISHED_STATUS,
+      title: '公開中の作品',
+      publishedAt: 1_700_000_000,
+      playCount: 1234,
+      likeCount: 56,
+      forkCount: 7,
+      tags: ['puzzle', 'idle'],
+      ogpState: 'ready',
+    });
+    const draft = await seedTableGame(userId, { title: '下書きの作品', createdAt: 1_700_000_500 });
+    const unpublished = await seedTableGame(userId, { title: '戻した作品', publishedAt: 1_700_000_100 });
+    const page = await (await openList(await sessionCookie(userId))).text();
+
+    expect(page).toContain(
+      '<thead><tr><th scope="col" class="gf-works-select">選択</th><th scope="col" class="gf-works-thumb">画像</th><th scope="col">作品</th><th scope="col">状態</th><th scope="col">日付</th><th scope="col" class="gf-works-count">プレイ</th><th scope="col" class="gf-works-count">いいね</th><th scope="col" class="gf-works-count">フォークされた数</th></tr></thead>',
+    );
+    const row = tableRowOf(page, published);
+    expect(row).toContain(`<input type="checkbox" name="${WORKS_BULK_GAME_ID_FIELD}" value="${published}" aria-label="公開中の作品 を選ぶ">`);
+    // 紹介用の画像は、配信できるとき（公開中で撮影済み）だけ `<img>` にする。
+    expect(row).toContain(`<img class="gf-works-shot" src="${ogpImagePath(published)}"`);
+    expect(row).toContain('<span class="gf-works-tags"><span class="gf-chip">パズル</span> <span class="gf-chip">放置</span></span>');
+    expect(row).toContain('<td class="gf-works-state"><span class="gf-chip">公開中</span></td>');
+    expect(row).toContain('<span class="gf-works-date-label">公開</span> <time datetime="2023-11-14T22:13:20.000Z">');
+    expect(row).toContain('<td class="gf-works-count" data-label="プレイ">1234</td><td class="gf-works-count" data-label="いいね">56</td><td class="gf-works-count" data-label="フォーク">7</td>');
+
+    // 公開したことが無い作品は生成日、下書きへ戻した作品は「初公開」の日を出す。
+    const draftRow = tableRowOf(page, draft);
+    expect(draftRow).toContain('<span class="gf-works-date-label">生成</span>');
+    expect(draftRow).toContain('<span class="gf-works-shot gf-works-shot-pending">公開前</span>');
+    expect(draftRow).not.toContain('<img');
+    expect(tableRowOf(page, unpublished)).toContain('<span class="gf-works-date-label">初公開</span>');
+  });
+
+  it('公開中でも撮影が済んでいなければ画像を指さない（配信の条件と同じ）', async () => {
+    const userId = await seedUser();
+    const capturing = await seedTableGame(userId, { status: PUBLISHED_STATUS, publishedAt: 1, ogpState: 'capturing' });
+    const row = tableRowOf(await (await openList(await sessionCookie(userId))).text(), capturing);
+    expect(row).toContain('<span class="gf-works-shot gf-works-shot-pending">撮影中</span>');
+    expect(row).not.toContain(ogpImagePath(capturing));
+  });
+
+  it('表は素の GET のフォームで、押すと確認画面へ移る（一括操作のボタンは 3 つとも小さい副のボタン）', async () => {
+    const userId = await seedUser();
+    await seedTableGame(userId);
+    const page = pageBodyOf(await (await openList(await sessionCookie(userId))).text());
+    expect(page).toContain(`<form class="gf-works-bulk" method="get" action="${MY_WORKS_BULK_PATH}">`);
+    for (const [action, label] of [['publish', '公開する'], ['unpublish', '下書きに戻す'], ['delete', '削除する']]) {
+      expect(page).toContain(
+        `<button type="submit" class="gf-button gf-button-secondary gf-button-sm" name="${WORKS_BULK_ACTION_FIELD}" value="${action}">${label}</button>`,
+      );
+    }
+    // 主は「新しく生成する」の 1 つだけのまま。
+    expect(page.match(/\bgf-button-primary\b/gu) ?? []).toHaveLength(1);
+  });
+
+  it('統計は表より前の帯で、注記は折りたたむ', async () => {
+    const userId = await seedUser();
+    await seedTableGame(userId);
+    const page = pageBodyOf(await (await openList(await sessionCookie(userId))).text());
+    expect(page.indexOf('<dl class="gf-block gf-stats-band">')).toBeGreaterThan(0);
+    expect(page.indexOf('<dl class="gf-block gf-stats-band">')).toBeLessThan(page.indexOf('<table'));
+    expect(page).toContain(`<details class="gf-stats-notes">\n<summary>数え方について</summary>\n<p class="gf-stats-note">${LIKES_DELAY_NOTE}</p>\n<p class="gf-stats-note">${PLAYS_SINCE_NOTE}</p>\n</details>`);
+  });
+});
+
+describe('状態での絞り込み（#666）', () => {
+  /**
+   * 状態の混ざった作者を用意する（公開 3・下書き 35・生成中 2・失敗 4）。
+   *
+   * @returns 作者と、状態ごとの作品 id（新しい順）
+   */
+  async function seedMixed(): Promise<{ userId: string; ids: Record<Exclude<MyWorksFilter, 'all'>, string[]> }> {
+    const userId = await seedUser();
+    const ids: Record<Exclude<MyWorksFilter, 'all'>, string[]> = { published: [], draft: [], generating: [], failed: [] };
+    const plan: [Exclude<MyWorksFilter, 'all'>, number][] = [['published', 3], ['draft', 35], ['generating', 2], ['failed', 4]];
+    let at = 1_700_000_000;
+    for (const [filter, count] of plan) {
+      for (let i = 0; i < count; i += 1) {
+        at += 1;
+        const id = await seedTableGame(userId, {
+          createdAt: at,
+          status: filter === 'published' ? PUBLISHED_STATUS : DRAFT_STATUS,
+          publishedAt: filter === 'published' ? at : null,
+          generationState: filter === 'generating' ? 'running' : filter === 'failed' ? 'failed' : 'ready',
+        });
+        ids[filter].unshift(id);
+      }
+    }
+    return { userId, ids };
+  }
+
+  it('絞り込むと、その状態の作品だけが出て、タブの件数が表の行数と合う', async () => {
+    const { userId, ids } = await seedMixed();
+    const cookie = await sessionCookie(userId);
+    const all = Object.values(ids).flat();
+    for (const filter of ['published', 'generating', 'failed'] as const) {
+      const page = await (await openList(cookie, `?${MY_WORKS_FILTER_PARAM}=${filter}`)).text();
+      const shown = all.filter((id) => page.includes(`value="${id}"`));
+      expect(shown.sort(), filter).toEqual([...ids[filter]].sort());
+      expect(page, filter).toContain(`<li><span aria-current="page">${{ published: '公開中', generating: '生成中', failed: '失敗' }[filter]}（${ids[filter].length}）</span></li>`);
+      expect(page, filter).toContain(`<p class="gf-works-range">全 ${ids[filter].length} 件中 1〜${ids[filter].length} 件目</p>`);
+    }
+    // 「すべて」のタブは件数の合計（44）を持ち、ほかのタブはリンクである。
+    const first = await (await openList(cookie)).text();
+    expect(first).toContain('<li><span aria-current="page">すべて（44）</span></li>');
+    expect(first).toContain(`<li><a href="${MY_WORKS_PATH}?${MY_WORKS_FILTER_PARAM}=draft">下書き（35）</a></li>`);
+  });
+
+  it('絞り込みとページ送りを組み合わせても件数が合う（下書き 35 件 = 30 件 + 5 件。31 件目は 2 頁目）', async () => {
+    const { userId, ids } = await seedMixed();
+    const cookie = await sessionCookie(userId);
+    const drafts = ids.draft;
+    const first = await (await openList(cookie, `?${MY_WORKS_FILTER_PARAM}=draft`)).text();
+    const second = await (await openList(cookie, `?${MY_WORKS_FILTER_PARAM}=draft&${MY_WORKS_PAGE_PARAM}=2`)).text();
+    expect(drafts.filter((id) => first.includes(`value="${id}"`))).toEqual(drafts.slice(0, 30));
+    expect(drafts.filter((id) => second.includes(`value="${id}"`))).toEqual(drafts.slice(30));
+    // ほかの状態の作品は、どちらの頁にも混ざらない。
+    for (const id of [...ids.published, ...ids.generating, ...ids.failed]) {
+      expect(first).not.toContain(id);
+      expect(second).not.toContain(id);
+    }
+    expect(first).toContain('<p class="gf-works-range">全 35 件中 1〜30 件目</p>');
+    expect(second).toContain('<p class="gf-works-range">全 35 件中 31〜35 件目</p>');
+    // 頁送りは絞り込みを保つ。
+    expect(pagerOf(first)).toContain(`href="${myWorksPath(2, 'draft')}"`);
+    expect(myWorksPath(2, 'draft')).toBe(`${MY_WORKS_PATH}?${MY_WORKS_FILTER_PARAM}=draft&${MY_WORKS_PAGE_PARAM}=2`);
+    expect(pagerOf(second)).toContain(`href="${myWorksPath(1, 'draft')}"`);
+    expect(pagerOf(second)).not.toContain('gf-pager-next');
+  });
+
+  it('絞り込んで空なら「まだ作品がありません」と言わない', async () => {
+    const userId = await seedUser();
+    await seedTableGame(userId);
+    const page = await (await openList(await sessionCookie(userId), `?${MY_WORKS_FILTER_PARAM}=failed`)).text();
+    expect(page).toContain('<p class="gf-block">「失敗」の作品はありません。</p>');
+    expect(page).not.toContain('まだ作品がありません');
+  });
+
+  it('`?state=` を読む（読めない値は「すべて」。純関数）', () => {
+    for (const filter of MY_WORKS_FILTERS) {
+      expect(toMyWorksFilter(filter)).toBe(filter);
+    }
+    for (const value of [null, '', 'removed', 'Published', ' draft']) {
+      expect(toMyWorksFilter(value), JSON.stringify(value)).toBe('all');
+    }
+    expect(myWorksPath(1, 'all')).toBe(MY_WORKS_PATH);
+    expect(myWorksPath(1, 'failed')).toBe(`${MY_WORKS_PATH}?${MY_WORKS_FILTER_PARAM}=failed`);
+  });
+
+  it('どの絞り込みも作者の索引で SEARCH し、一時 B-tree を作らない（頁を送っても同じ）', async () => {
+    for (const filter of MY_WORKS_FILTERS) {
+      for (const offset of [0, MY_WORKS_PER_PAGE * (MAX_MY_WORKS_PAGE - 1)]) {
+        const plan = await env.DB.prepare(`explain query plan ${myWorksSql(filter)}`)
+          .bind('someone', MY_WORKS_PER_PAGE + 1, offset)
+          .all<{ detail: string }>();
+        const detail = plan.results.map((row) => row.detail).join(' | ');
+        expect(detail, filter).toContain('SEARCH');
+        expect(detail, filter).toContain('games_author_id_created_at_idx');
+        expect(detail, filter).not.toContain('TEMP B-TREE');
+      }
+    }
+  });
+
+  it('他人の作品はどの絞り込みにも出ない', async () => {
+    const userId = await seedUser();
+    const stranger = await seedUser();
+    const others = await seedTableGame(stranger, { status: PUBLISHED_STATUS, publishedAt: 1 });
+    const cookie = await sessionCookie(userId);
+    for (const filter of MY_WORKS_FILTERS) {
+      expect(await (await openList(cookie, `?${MY_WORKS_FILTER_PARAM}=${filter}`)).text(), filter).not.toContain(others);
+    }
   });
 });

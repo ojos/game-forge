@@ -1,7 +1,22 @@
 name: review-gate
 
-# リモート最終ゲート（Copilot code review）が**要求されないまま PR が通ること**を塞ぐ。
+# リモート最終ゲート（Copilot code review）が**効かないまま PR が通ること**を塞ぐ。
 # 規範: .ai-playbook/review-workflow.md「リモート最終ゲート」。
+#
+# **効かない形は 2 つある。**
+#
+#   1. **要求されていない**（もとからの目的。下記の「なぜ別のワークフローが要るか」）
+#   2. **要求も投稿もされたが、1 行も読まれていない**（#648。2026-09-18 に足した）
+#
+# **2 を足したのは、実際に 8 本の PR がそれで素通りしたからである**
+# （#563 / #601 / #609 / #618 / #623 / #635 / #646 / #652 / #655）。Copilot は
+# `Copilot wasn't able to review any files in this pull request.` とだけ返し、
+# **要求も投稿も記録されている**ので、1 の判定は正しく緑を出していた。**最初の 1 本から
+# 気づくまで 3 日、直近は 6 本連続だった。** #646（引き継ぎとロードマップの書き戻し）は、
+# リモート最終ゲートの評価が 1 文字も無いままマージされている。
+#
+# **原因は GitHub の API が `patch` を落とすことである**（実測。下の `reviewable_patches`）。
+# **したがって「レビューが付いた」を「読まれた」と読み替えない。**
 #
 # **要求はしない。確かめるだけである。** 要求するのは copilot-review.yml で、
 # あちらは `opened` に限って 1 回だけ動く（規範の「1 回だけ要求する」）。ここが
@@ -202,6 +217,99 @@ jobs:
             esac
           }
 
+          # 変更したファイルのうち、`patch` が返っているものがあるか（#648）。
+          #
+          #   0 — 少なくとも 1 つに `patch` がある（Copilot は読める）
+          #   1 — **どれにも `patch` が無い**（読めない。「wasn't able to review any files」の原因）
+          #   2 — 確かめられなかった
+          #   3 — レビューできるファイルがそもそも無い（二値ファイルだけの PR）
+          #
+          # **GitHub は 1 ファイルの差分が大きすぎると `patch` を落とす。** 実測（2026-09-18）:
+          # `patch` が 48,036 B / 50,302 B のファイルは返り、105,251 B 相当は落ちた。**行数ではない**
+          # ——落ちた PR の `changes` は 36 行と 93 行だった（巨大な 1 行を書き換えると、旧＋新で
+          # そのファイルの差分だけが 10 万バイトを超える）。**境目の値は判定に要らない。**
+          #
+          # **二値ファイルを数えない。** 画像は `additions=0 / changes=0` で `patch` も無い（実測）。
+          # 数えると、ロゴだけを差し替える PR が「1 つも読めない」で赤くなる。
+          reviewable_patches() {
+            local pr="$1" rows row total=0 with=0
+            if ! rows="$(gh api --paginate "repos/${REPO}/pulls/${pr}/files?per_page=100" \
+                 --jq '.[] | select(.changes > 0) | if .patch == null then "none" else "patch" end' 2>/dev/null)"; then
+              return 2
+            fi
+            while read -r row; do
+              [ -n "${row:-}" ] || continue
+              total=$((total + 1))
+              if [ "$row" = "patch" ]; then
+                with=$((with + 1))
+              fi
+            done <<< "$rows"
+            if [ "$total" -eq 0 ]; then
+              return 3
+            fi
+            if [ "$with" -gt 0 ]; then
+              return 0
+            fi
+            return 1
+          }
+
+          # 投稿された Copilot のレビューが「1 つも読めなかった」だったか（#648）。
+          #
+          #   0 — 中身のあるレビューが投稿されている、またはまだ投稿されていない
+          #   1 — **投稿されたが「読めなかった」**
+          #   2 — 確かめられなかった
+          #
+          # **まだ投稿されていないものを落とさない。** 要求から投稿まで数分かかり、その間は
+          # どちらの表にも現れない窓がある（このファイルの上の注記）。**落とすのは、届いた返事が
+          # 空だったときだけである。**
+          #
+          # **印は Copilot の英語の定型文である**（`Copilot wasn't able to review any files in this
+          # pull request.`）。**綴りを変えられたら検出できなくなる**——偽陰性は静かなので、
+          # 上の `reviewable_patches`（原因そのものを見る）を先に置いてある。
+          # アポストロフィは引用の扱いが 1 つ増えるだけなので、綴りに含めない。
+          posted_review_is_empty() {
+            local pr="$1" rows login state last=""
+            if ! rows="$(gh api --paginate "repos/${REPO}/pulls/${pr}/reviews?per_page=100" \
+                 --jq '.[] | "\(.user.login) " + (if ((.body // "") | test("t able to review any files")) then "empty" else "reviewed" end)' 2>/dev/null)"; then
+              return 2
+            fi
+            while read -r login state; do
+              [ -n "${login:-}" ] || continue
+              is_copilot "$login" || continue
+              last="$state"
+            done <<< "$rows"
+            if [ "$last" = "empty" ]; then
+              return 1
+            fi
+            return 0
+          }
+
+          # 要求も投稿もされている PR で、**それが実際に読まれたか**を見る（#648）。
+          #
+          #   0 — 読まれている（か、まだ返事が来ていないだけ）
+          #   1 — どのファイルにも `patch` が無い（**要求する前から読めないと分かる**）
+          #   2 — 確かめられなかった
+          #   3 — 返事は来たが「1 つも読めなかった」
+          #
+          # **2 段に分けるのは、片方だけでは取りこぼすためである。** `patch` の側は GitHub が
+          # 落とす条件そのものを見るので早くて具体的だが、**GitHub の挙動が変われば意味を失う。**
+          # 返事の側は最後の砦だが、**Copilot が文面を変えれば静かに効かなくなる。**
+          review_usable() {
+            local pr="$1" p=0 r=0
+            reviewable_patches "$pr" || p=$?
+            case "$p" in
+              1) return 1 ;;
+              2) return 2 ;;
+              3) return 0 ;;
+            esac
+            posted_review_is_empty "$pr" || r=$?
+            case "$r" in
+              1) return 3 ;;
+              2) return 2 ;;
+            esac
+            return 0
+          }
+
           # 判定を head SHA へ書く。**ジョブの成否ではなくこれが出力である。**
           #
           # **書けなかったら失敗を返す。`set -e` に任せない。** この関数は最終的に
@@ -230,10 +338,36 @@ jobs:
 
             case "$verdict" in
               0)
-                # report の失敗をそのまま返す。**書けたことまで含めて「通った」で
-                # ある。**
-                report "$sha" success "Copilot code review is requested or posted" || return 1
-                return 0
+                # **要求も投稿もされている。ここからが 2 段目である**（#648）。
+                # **「要求されたか」だけを見ていた頃、8 本の PR が「1 つも読めなかった」まま
+                # 緑で通った**（#563 / #601 / #609 / #618 / #623 / #635 / #646 / #652 / #655）。
+                # **「レビューが付いた」を「読まれた」と読み替えない。**
+                local usable=0
+                review_usable "$pr" || usable=$?
+
+                case "$usable" in
+                  0)
+                    # report の失敗をそのまま返す。**書けたことまで含めて「通った」で
+                    # ある。**
+                    report "$sha" success "Copilot code review is requested or posted" || return 1
+                    return 0
+                    ;;
+                  1)
+                    report "$sha" failure "No file patch available; Copilot cannot read this PR" || return 1
+                    echo "::error::PR #${pr}: 変更したどのファイルにも差分（patch）が付いていないため、Copilot は 1 行も読めません。GitHub は 1 ファイルの差分が大きすぎると patch を落とします（実測では 5 万バイト台は返り、10 万バイト台は落ちました）。確かめる: gh api repos/${REPO}/pulls/${pr}/files --jq '[.[] | select(.changes > 0 and .patch == null) | .filename]'。直す: 巨大な 1 行を分ける（その行を書き換えると旧＋新が差分に乗ります）、あるいは変更を複数の PR へ分ける。"
+                    return 1
+                    ;;
+                  3)
+                    report "$sha" failure "Copilot reviewed nothing (it could not read any file)" || return 1
+                    echo "::error::PR #${pr}: Copilot が「wasn't able to review any files」を返しました。要求も投稿もされていますが、中身がありません。上の patch の検査は通っているので、GitHub 側の挙動が変わったか、Copilot 側の事情です。マージする前に、第二意見（bash scripts/second-opinion-review.sh --range origin/main..HEAD）で代替するか、利用者に判断を仰いでください。"
+                    return 1
+                    ;;
+                  *)
+                    # **status を付けない**（下の `*` と同じ理由）。
+                    echo "::error::PR #${pr}: レビューが読まれたかを確かめられませんでした（GitHub API から読めない）。status は付けていません。次の定期実行で再判定します。"
+                    return 1
+                    ;;
+                esac
                 ;;
               1)
                 # **書けなかったなら、そこで止める。** 続けて「レビューが要求されて

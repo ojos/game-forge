@@ -122,7 +122,6 @@
 import type { StorageEnv } from './build-cache.js';
 import { deleteUnreferencedArtifacts } from './build-cache.js';
 import { DRAFT_STATUS, PUBLISHED_STATUS, REMOVED_STATUS, UNBUILT_GO_VERSION } from './games.js';
-import { ogpObjectKey } from './ogp.js';
 
 /**
  * 中身を消した tombstone の題名。
@@ -177,7 +176,7 @@ export async function deleteGame(
   // **R2 を先に消す**（モジュール冒頭）。どちらも投げたら、そのまま投げる——D1 はまだ
   // 確定していないので、もう一度呼べば同じ候補から続きをやれる。
   await deleteUnreferencedArtifacts(env, gameId);
-  await env.BUCKET.delete(ogpObjectKey(gameId));
+  await deleteOgpImage(env, gameId);
 
   const results = await env.DB.batch(finalizeStatements(env, gameId, now));
   // **添字で読む**（`noUncheckedIndexedAccess`）。並びは {@link finalizeStatements} の末尾 2 本。
@@ -191,6 +190,32 @@ export async function deleteGame(
   }
   // どちらも当たらなかったのは、並行した同じ呼び出しが先に確定したときである。読み直して返す。
   return await settledOutcome(env, gameId);
+}
+
+/**
+ * 紹介用の画像を R2 から消す（#640）。
+ *
+ * **鍵を組み立てない。行の `ogp_key` を読んで、その 1 本だけを消す。**
+ *
+ * #640 で鍵が撮影ごとに変わるようになった（`src/ogp.ts` の `newOgpObjectKey`）。**組み立てた鍵を
+ * 消す形のままだと、実際の画像が残る**——しかも残るのは「削除したはずの作品の画像」で、5.3 の #516 節と
+ * `/privacy` が消すと約束しているものである。**列を読めば、古い形の鍵（`ogp/<game_id>.png`）が入っている
+ * 行もそのまま消える**ので、移行は要らない。
+ *
+ * **撮影中に消しても取りこぼさない。** 掴みの文（{@link claimDeletion}）が `ogp_token_hash` を捨てるので、
+ * あとから届いたコールバックは D1 の確定で弾かれ、**自分が書いたオブジェクトを自分で消す**
+ * （`src/ogp.ts` の `handleOgpCallback`）。
+ *
+ * @param env `DB` と `BUCKET`（{@link deleteGame} と同じく {@link StorageEnv} へ狭める）
+ * @param gameId 対象の作品 id
+ */
+async function deleteOgpImage(env: StorageEnv, gameId: string): Promise<void> {
+  const row = await env.DB.prepare('select ogp_key from games where id = ?')
+    .bind(gameId)
+    .first<{ ogp_key: string | null }>();
+  if (row?.ogp_key != null) {
+    await env.BUCKET.delete(row.ogp_key);
+  }
 }
 
 /**

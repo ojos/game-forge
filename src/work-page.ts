@@ -1103,8 +1103,11 @@ export function renderWorkPage(view: WorkPageView, viewer: SiteViewer): string {
   // **止まった推敲では更新しない**（#480）。区切りを過ぎた行は `revisionRunning` に
   // 入らない（`revisionStalled` に分かれる）。待っても画面は変わらないので、生成の
   // 「中断した可能性」と違って読み取りを続ける理由が無い。
+  //
+  // **作者以外に未公開の作品を出すときも更新しない**（#690）。状態を言い分けない（{@link unpublishedSection}）ので、
+  // 待っても画面は変わらない。更新の有無で状態が読める差も残さない。
   const refresh =
-    view.state === 'working' || view.state === 'stalled' || view.revisionRunning
+    !showsOnlyUnpublished(view) && (view.state === 'working' || view.state === 'stalled' || view.revisionRunning)
       ? `\n<meta http-equiv="refresh" content="${REFRESH_SECONDS}">`
       : '';
 
@@ -1389,6 +1392,23 @@ function ogpMeta(view: WorkPageView): string {
 }
 
 /**
+ * 作者以外に、未公開の作品を「まだ公開されていません」の 1 つだけで出すか（#690）。
+ *
+ * **公開していない・取り下げていない・作者の画面でも作者の下書きのプレビューでもない**ときに真になる。
+ *
+ * - **`owner` はエディットページ（`edit`）でだけ真になる**（{@link loadWorkView} の `ownerTools`）。作品ページ（`page`）では
+ *   作者にも偽だが、作者が未公開の作品を作品ページで開くと、完成した下書きはプレビュー（`draftPreview`）になり、
+ *   それ以外はエディットページへ 303 で送られる（{@link showWorkPage}）ので、この判定に作者は来ない
+ * - **取り下げ済み（tombstone）は含めない**（#690 の scope.out。{@link sectionFor} が先に返す）
+ *
+ * @param view 表示に必要な値
+ * @returns 作者以外に未公開の知らせだけを出すなら true
+ */
+function showsOnlyUnpublished(view: WorkPageView): boolean {
+  return !view.removed && !view.published && !view.owner && view.draftPreview !== true;
+}
+
+/**
  * 状態ごとの本文を組み立てる。
  *
  * @param view 表示に必要な値
@@ -1400,6 +1420,12 @@ export function sectionFor(view: WorkPageView): string {
   // 枝の中に「取り下げています」を書き足して回ることになる。
   if (view.removed) {
     return removedSection(view);
+  }
+  // **作者以外には、未公開の作品の状態を言い分けない**（#690）。生成中・止まった・失敗・完成した下書き・リフォージ中の
+  // どれでも {@link unpublishedSection} の 1 つを返す。`state` の分岐より先に見る（tombstone と同じ理由——枝ごとに
+  // 「作者以外なら」を書き足して回ると、書き漏らした枝から作者向けの文言が漏れる）。
+  if (showsOnlyUnpublished(view)) {
+    return unpublishedSection();
   }
   switch (view.state) {
     case 'working':
@@ -1423,7 +1449,8 @@ export function sectionFor(view: WorkPageView): string {
 <p>この画面は自動で更新されます。</p>`);
     case 'ready':
       // **公開済みと下書きのプレビュー（#664）は視聴ページの配置で描く**（{@link watchSection}。#665）。
-      return view.published || view.draftPreview === true ? watchSection(view) : readySection();
+      // それ以外（作者以外が見る下書き）は上の {@link showsOnlyUnpublished} が先に返すので、ここへは来ない。
+      return view.published || view.draftPreview === true ? watchSection(view) : unpublishedSection();
     case 'failed':
       // **遮断された分類の知らせはブロックの外、直後に置く**（`@section notices` の知らせの見た目を持ち、面の上に
       // 重ねると面が二重になる）。並びは #474 の前と同じである。
@@ -1623,9 +1650,18 @@ ${boxes.join('\n')}
 export const DRAFT_PLAY_PANEL = '<p class="gf-shot gf-shot-pending">公開前の作品です。スクリーンショットは公開したときに撮ります。</p>';
 
 /**
- * 完成したが、まだ公開していない作品の本文（**作者以外に出すもの**）。
+ * まだ公開していない作品の本文（**作者以外に出すもの**。#690 から、未公開のどの状態でもこれ 1 つ）。
  *
- * **作者以外には状態だけを言う**（#150 の決定。仮タイトルと試遊 URL は作者の情報である）。
+ * **作者以外には、未公開であることだけを言う**（#690。2026-09-19 の利用者の決定）。生成中・止まった・失敗・
+ * 完成した下書き・リフォージ中を言い分けない（{@link showsOnlyUnpublished}）。
+ *
+ * - **#690 の前は、完成した下書きに「できました」の見出しを付けていた**（関数名も `readySection`）。推敲中も `games` は
+ *   `ready` のまま（`migrations/0009_game_revisions.sql`）なので、リフォージ中の作品にも作者以外には「できました」と
+ *   出ていた。最初の生成中には、作者向けの「生成中です…タブを閉じても生成は進みます」が作者以外にも出ていた（#690 の背景）
+ * - **見出しの「できました」は付けない**——作者以外にとって、何ができたかは意味を持たない
+ *
+ * 旧記述（#150 の決定。#690 で「状態」を「未公開であること」へ狭めた）: **作者以外には状態だけを言う**（仮タイトルと
+ * 試遊 URL は作者の情報である）。
  *
  * **#664 から、作者はこの枝を通らない。** 作者が下書きを作品ページで開くと、公開後と同じ画面のプレビュー
  * （{@link WorkPageView.draftPreview}）になり、試遊・公開・リフォージ・版・作品名・削除はエディットページ
@@ -1633,9 +1669,8 @@ export const DRAFT_PLAY_PANEL = '<p class="gf-shot gf-shot-pending">公開前の
  *
  * @returns HTML
  */
-function readySection(): string {
-  return stateBlock(`<h2>できました</h2>
-<p>この作品はまだ公開されていません。</p>`);
+function unpublishedSection(): string {
+  return stateBlock(`<p>この作品はまだ公開されていません。</p>`);
 }
 
 /**
@@ -2874,7 +2909,7 @@ export async function loadWorkView(
   // ことが正反対で、混ぜると取り下げた作品に「公開して共有」の口が出る。
   const removed = row.status === REMOVED_STATUS;
   // **作者が下書きを作品ページで開いたら、公開後と同じ画面のプレビューにする**（#664）。作者以外は
-  // これまでどおり状態だけを読む（`readySection`）。
+  // 未公開であることだけを読む（`unpublishedSection`。#690 から状態を言い分けない）。
   const previewing = mode === 'page' && owner && !published && !removed && state === 'ready';
   // **公開後の画面に出す値（作者名・元ゲーム・説明・数・詳細情報パネル）を渡すか。** プレビューでも渡す——
   // 公開すると誰にでも見えるものを、公開前に作者が確かめる画面だからである。**押せる口（フォーク・いいね・通報・

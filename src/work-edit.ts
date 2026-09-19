@@ -19,12 +19,25 @@
  *   撮影の中断）——作品ページから移した。描画の部品は `src/work-page.ts` のものをそのまま借りる（同じ判定の値で描く）
  * - **Studio の左端のアイコン列は置かない。** 「作品ページで見る」「あなたの作品へ戻る」のリンクで代わりにする
  *
- * ## 作者以外には、作品ページと同じ応答を返す
+ * ## 作者以外は、作品ページへ 303 で送り返す（#690）
  *
- * **作者以外・未ログインがこの URL を開いたら、作品ページ（`/works/<id>`）を開いたときと同じ応答を返す**（#664 の
- * constraints）。とくに下書きは、**エディットページがあることも漏らさない**——404 にすると「作品ページは 200、
- * エディットページは 404」の差から何かが読めるので、そもそも差を作らない。ログインへ送ることもしない
- * （送ると、未ログインの人にだけ別の応答になる）。
+ * **作者以外・未ログインがこの URL を開いたら、作品ページ（`/works/<id>`）へ 303 で送り返す**（#690。2026-09-19 の
+ * 利用者の決定）。作品が有る・無い・未公開のどれでも同じ 303 で、送り返した先が 200 か 404 かを決める。
+ *
+ * - **URL を変えずに作品ページと同じ応答を返すのをやめた**（#664 / PR #671 の決め。下の旧記述）。#673 の本番確認で、
+ *   完成した下書きの `/edit` を作者以外が開くと、作品ページの状態表示（「できました／まだ公開されていません」）が
+ *   `/edit` の URL のまま出た。**編集の URL に作品ページの画面が出るのは、それだけで誤った情報である。**
+ * - **エディットページがあることは漏らさない**（#664 の意図は保つ）。作者以外への応答は、作品の有無と状態に
+ *   関わらず 303 の 1 通りで、送り先の `/works/<id>` を開いたときと同じものを見る。**作品が無い id でも送る**
+ *   （ここで 404 を返すと、「有る id は 303、無い id は 404」の差から存在が読める）。
+ * - **一時的な送り返し（303）にする。** 301 にすると、後でログインした作者のブラウザにも送り返しが残る。
+ * - **ログインへ送ることはしない**（作者かどうかはログインしないと分からない。送り返した先の見出しからログインできる）。
+ * - 送り返した先で未公開の状態を言い分けないのは作品ページの側である（`src/work-page.ts` の `sectionFor`。#690）。
+ *
+ * 旧記述（#664。#690 で改めた）: **作者以外・未ログインがこの URL を開いたら、作品ページ（`/works/<id>`）を開いたときと
+ * 同じ応答を返す**（#664 の constraints）。とくに下書きは、**エディットページがあることも漏らさない**——404 にすると
+ * 「作品ページは 200、エディットページは 404」の差から何かが読めるので、そもそも差を作らない。ログインへ送ることも
+ * しない（送ると、未ログインの人にだけ別の応答になる）。
  *
  * ## JavaScript を要求しない
  *
@@ -55,8 +68,8 @@ import {
   reviseSection,
   revisionList,
   sectionFor,
+  seeOther,
   settingsBlock,
-  showWorkPage,
   tagChoices,
   workNameOf,
 } from './work-page.js';
@@ -331,7 +344,7 @@ function visibilityField(work: WorkPageView): string {
  * ログインしている作者本人が見ているかを、作品の `author_id` 1 列とセッションだけで確かめる（#664 / PR #671）。
  *
  * **未ログインなら D1 を 1 行も読まない**（セッションの cookie が無ければ `resolveSessionUser` は D1 に行かない）。
- * 作品が無いときも false を返す（作品ページの処理が同じ 404 を返す）。
+ * 作品が無いときも false を返す（作者以外と同じく作品ページへ送り返し、送り先が 404 を返す。#690）。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -352,8 +365,8 @@ async function isAuthor(request: Request, env: Env, gameId: string): Promise<boo
 /**
  * エディットページを開く（`GET /works/<id>/edit`。#664）。
  *
- * **作者本人でなければ、作品ページを開いたときと同じ応答を返す**（このモジュールの冒頭）。要求の URL を作品ページの
- * 綴りへ置き換えて作品ページの経路をそのまま通すので、ヘッダ・パンくず・ステータスまで同じになる。
+ * **作者本人でなければ、作品ページ（`/works/<id>`）へ 303 で送り返す**（#690。このモジュールの冒頭）。作品が無い id
+ * でも同じく送る（送り先が 404 を返す）。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -363,18 +376,15 @@ async function isAuthor(request: Request, env: Env, gameId: string): Promise<boo
 export async function showWorkEditPage(request: Request, env: Env, gameId: string): Promise<Response> {
   // **作者かどうかを軽い 1 文で先に確かめる**（PR #671 の Copilot の指摘）。`edit` の読み込みは通報の状態・いいね（DO）・
   // フォークの近傍・生成枠まで引くので、作者以外に先に走らせると、作品ページの処理がもう一度同じものを読み、他人や
-  // クローラーが開くたびに D1 と DO の読みが倍になる。**作者でなければ重い読み込みをせずに作品ページの処理へ渡す。**
+  // クローラーが開くたびに D1 と DO の読みが倍になる。**作者でなければ重い読み込みをせずに作品ページへ送り返す**（#690）。
   if (!(await isAuthor(request, env, gameId))) {
-    const pageUrl = new URL(request.url);
-    pageUrl.pathname = workPagePath(gameId);
-    return await showWorkPage(new Request(pageUrl.toString(), request), env, gameId);
+    return seeOther(workPagePath(gameId));
   }
   const loaded = await loadWorkView(request, env, gameId, 'edit');
   if (loaded.kind === 'not-found' || !loaded.owner) {
     // 2 つの読み取りの間に作者が変わることは無い（`author_id` は作成後に変わらない）が、含意に寄りかからない。
-    const pageUrl = new URL(request.url);
-    pageUrl.pathname = workPagePath(gameId);
-    return await showWorkPage(new Request(pageUrl.toString(), request), env, gameId);
+    // **作者以外と同じ 303 にする**（#690。ここだけ別の応答にすると、作者以外への応答が 1 通りでなくなる）。
+    return seeOther(workPagePath(gameId));
   }
   return html(
     renderWorkEditPage(

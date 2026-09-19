@@ -735,7 +735,7 @@ describe('下書きのままでも説明とタグを保存できる（#673）', 
     expect((await openApp(workPagePath(id), owner)).body).toContain(description);
 
     // **作者以外（未ログイン・他人）には、作品ページにもエディットページにも説明とタグが出ない**（下書きの作品ページは
-    // 状態だけを出す。エディットページは作品ページと同じ応答を返す。#664）。
+    // 未公開であることだけを出す〔#690〕。エディットページは作者以外を作品ページへ 303 で送り返す〔#690〕）。
     for (const cookie of [undefined, stranger]) {
       for (const path of [workPagePath(id), workEditPath(id)]) {
         const page = await openApp(path, cookie);

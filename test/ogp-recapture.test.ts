@@ -571,8 +571,8 @@ describe('作品ページに出る口（#235 の「気づく経路」）', () =>
     const anonymous = await workPage(id, null);
     expect(anonymous).not.toContain(OGP_RECAPTURE_PATH);
     expect(await workPage(id, await sessionCookie(stranger))).not.toContain(OGP_RECAPTURE_PATH);
-    // **エディットページの URL でも、作者以外には作品ページと同じ応答になる**（#664）。
-    expect(await editPage(id, null)).toBe(anonymous);
+    // **エディットページの URL は、作者以外には作品ページへの 303 で、本文を持たない**（#690。#664 では作品ページと同じ応答だった）。
+    expect(await editPage(id, null)).toBe('');
     expect(await editPage(id, await sessionCookie(stranger))).not.toContain(OGP_RECAPTURE_PATH);
     // **中断を見せても、その人にできることが 1 つも無い。** 文言は従来のままにする。
     expect(anonymous).toContain('スクリーンショットを準備しています');

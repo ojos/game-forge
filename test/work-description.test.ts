@@ -237,7 +237,7 @@ async function openWork(gameId: string, cookie?: string): Promise<string> {
 /**
  * エディットページを開き、外枠を除いた本文を返す（#664。説明の欄は作品ページからここへ移った）。
  *
- * **作者以外・未ログインには作品ページと同じ応答が返る**（`src/work-edit.ts`）。
+ * **作者以外・未ログインは作品ページへ 303 で送り返され、本文は空である**（#690。`src/work-edit.ts`）。
  *
  * @param gameId 作品 id
  * @param cookie `Cookie` ヘッダ（省略すると未ログイン）

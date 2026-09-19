@@ -98,4 +98,12 @@ describe('Pages Functions の入口（#71）', () => {
     const app = await onRequest(pagesContext(new Request(`${APP_ORIGIN}/.well-known/oauth-authorization-server`)));
     expect(app.status).toBe(200);
   });
+
+  it('Pages の context に waitUntil / passThroughOnException が欠けていても、入口は全要求を落とさない（#696）', async () => {
+    const bare = { request: new Request(`${APP_ORIGIN}/`), env, params: {}, data: {} } as unknown as Parameters<
+      typeof onRequest
+    >[0];
+    const response = await onRequest(bare);
+    expect(response.status).toBe(200);
+  });
 });

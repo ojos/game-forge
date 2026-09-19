@@ -35,9 +35,17 @@ import worker from '../src/index.js';
  * @returns 実行文脈
  */
 function executionContextOf(context: EventContext<Env, string, unknown>): ExecutionContext {
+  // 型（`EventContext`）は両方を持つと言い、`wrangler pages dev` でも両方が在ることを確かめた。**それでも欠けた場合に
+  // 入口の全要求を落とさない**——`waitUntil` が無ければ渡された promise を待たずに失敗だけを握りつぶし、`passThroughOnException` は何もしない。
+  const waitUntil: unknown = (context as { waitUntil?: unknown }).waitUntil;
+  const passThrough: unknown = (context as { passThroughOnException?: unknown }).passThroughOnException;
   return {
-    waitUntil: context.waitUntil.bind(context),
-    passThroughOnException: context.passThroughOnException.bind(context),
+    waitUntil:
+      typeof waitUntil === 'function'
+        ? (waitUntil as (promise: Promise<unknown>) => void).bind(context)
+        : (promise: Promise<unknown>) => void promise.catch(() => {}),
+    passThroughOnException:
+      typeof passThrough === 'function' ? (passThrough as () => void).bind(context) : () => {},
     props: {},
   } as unknown as ExecutionContext;
 }

@@ -243,13 +243,20 @@ describe('作品ページの入口（#150）', () => {
   });
 });
 
-describe('状態は誰でも読め、詳細は本人だけが読める（#150 の決定）', () => {
-  it('生成中であることは、ログインしていなくても読める', async () => {
-    const { id } = await seedPending('anon-working');
+describe('作者以外には未公開であることだけを言い、状態と詳細は本人だけが読める（#150 の決定 / #690）', () => {
+  it('生成中であることは作者がエディットページで読み、作者以外（未ログイン）には未公開であることだけを言う', async () => {
+    const { userId, id } = await seedPending('anon-working');
     const response = await open(workPagePath(id));
 
+    // **#690 から、作者以外には状態を言い分けない**（#150 では「生成中であることは誰でも読める」だった）。
+    // ステータスは変えない（200 のまま）。
     expect(response.status).toBe(200);
-    const body = await response.text();
+    const asStranger = await response.text();
+    expect(asStranger).toContain('この作品はまだ公開されていません。');
+    expect(asStranger).not.toContain('生成中です');
+    expect(asStranger).not.toContain('閉じても');
+
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
     expect(body).toContain('生成中です');
     // **#160 で非同期実行になったので「閉じてよい」が正しい。**
     // できていないことを、できているように書かない——そして、できるように
@@ -298,7 +305,9 @@ describe('状態は誰でも読め、詳細は本人だけが読める（#150 �
     expect(asOwner).toContain('許可していない機能');
 
     const asStranger = await (await open(workPagePath(id))).text();
-    expect(asStranger).toContain('生成できませんでした');
+    // **#690 から、失敗したことも作者以外には言わない**（未公開であることだけ）。
+    expect(asStranger).toContain('この作品はまだ公開されていません。');
+    expect(asStranger).not.toContain('生成できませんでした');
     // 何がどう失敗したかは作者の情報である。
     expect(asStranger).not.toContain('許可していない機能');
   });
@@ -306,12 +315,17 @@ describe('状態は誰でも読め、詳細は本人だけが読める（#150 �
 
 describe('状態ごとの表示（#150）', () => {
   it('生成中は自動更新し、完成後は自動更新しない', async () => {
-    const { id, jobToken } = await seedPending('refresh');
-    expect(await (await open(workPagePath(id))).text()).toContain('http-equiv="refresh"');
+    const { userId, id, jobToken } = await seedPending('refresh');
+    const cookie = await sessionCookie(userId);
+    // **作者の画面（エディットページ）だけが更新する。** 作者以外には未公開であることしか言わないので、待っても
+    // 画面は変わらない（#690）。
+    expect(await (await open(workEditPath(id), cookie)).text()).toContain('http-equiv="refresh"');
+    expect(await (await open(workPagePath(id))).text()).not.toContain('http-equiv="refresh"');
 
     await claimGenerationJob(env, id, await hashJobToken(jobToken));
     await completeGame(env, id, fakeBuildOutcome());
     // 完成後に再読み込みを続けても表示は変わらない。D1 の読み取りを増やさない。
+    expect(await (await open(workEditPath(id), cookie)).text()).not.toContain('http-equiv="refresh"');
     expect(await (await open(workPagePath(id))).text()).not.toContain('http-equiv="refresh"');
   });
 
@@ -349,19 +363,23 @@ describe('状態ごとの表示（#150）', () => {
     expect(previewKey).toBeTypeOf('string');
 
     const body = await (await open(workPagePath(id))).text();
-    // 状態は読める。
-    expect(body).toContain('できました');
+    // **#690 から、完成したことも言わない**（未公開であることだけ）。
+    expect(body).not.toContain('できました');
     // 鍵は読めない。
     expect(body).not.toContain(previewKey!);
     expect(body).toContain('まだ公開されていません');
   });
 
-  it('長く止まっている生成は「中断した可能性」を出す', async () => {
-    const { id, jobToken } = await seedPending('stalled');
+  it('長く止まっている生成は、作者に「中断した可能性」を出す', async () => {
+    const { userId, id, jobToken } = await seedPending('stalled');
     await claimGenerationJob(env, id, await hashJobToken(jobToken), 1);
 
-    const body = await (await open(workPagePath(id))).text();
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
     expect(body).toContain('中断した可能性があります');
+    // 作者以外には言わない（#690）。
+    const asStranger = await (await open(workPagePath(id))).text();
+    expect(asStranger).not.toContain('中断した可能性があります');
+    expect(asStranger).toContain('この作品はまだ公開されていません。');
 
     // **D1 は書き換えない。** GET が状態を壊せる形にしない。
     const row = await env.DB.prepare('select generation_state from games where id = ?')
@@ -403,10 +421,18 @@ describe('#150 の acceptance: 接続を切っても、あとで URL を開け�
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
     );
 
-    // **別のタブ（cookie 無し）で開いても状態が読める。**
-    const whileWorking = await open(workPagePath(started.id));
+    // **同じ作者が別のタブで開いても状態が読める**（#664 から、作品ページはエディットページへ送る）。
+    const cookie = await sessionCookie(userId);
+    const redirected = await open(workPagePath(started.id), cookie);
+    expect(redirected.status).toBe(303);
+    expect(redirected.headers.get('location')).toBe(workEditPath(started.id));
+    const whileWorking = await open(workEditPath(started.id), cookie);
     expect(whileWorking.status).toBe(200);
     expect(await whileWorking.text()).toContain('生成中です');
+    // **作者以外（cookie 無し）には、未公開であることだけを言う**（#690。ステータスは 200 のまま）。
+    const asStranger = await open(workPagePath(started.id));
+    expect(asStranger.status).toBe(200);
+    expect(await asStranger.text()).not.toContain('生成中です');
 
     // そのあいだにジョブが Worker の外で完走した。
     const row = await env.DB.prepare('select job_token_hash from games where id = ?')
@@ -469,8 +495,9 @@ describe('画面の文言が、いまの実行形態と食い違わない（#150
   });
 
   it('同期実行のあいだは「閉じてよい」と書かない', async () => {
-    const { id } = await seedPending('wording');
-    const body = await (await open(workPagePath(id))).text();
+    const { userId, id } = await seedPending('wording');
+    // 生成中の文言を読むのは作者である（エディットページ。#664 / #690）。
+    const body = await (await open(workEditPath(id), await sessionCookie(userId))).text();
 
     if (GENERATION_IS_SYNCHRONOUS) {
       expect(body).toContain('いま閉じると生成は中断します');
@@ -541,7 +568,7 @@ describe('推敲の口と版の一覧（5.7 / #193）', () => {
     const stranger = await seedUser('rev-stranger');
 
     for (const cookie of [undefined, await sessionCookie(stranger)]) {
-      // **エディットページの URL でも出ない**（#664。作者以外には作品ページと同じ応答になる）。
+      // **エディットページの URL でも出ない**（#664。作者以外は作品ページへ 303 で送り返される。#690）。
       for (const path of [workPagePath(id), workEditPath(id)]) {
         const body = await (await open(path, cookie)).text();
         expect(body).not.toContain(REVISE_PATH);
@@ -2572,9 +2599,10 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
   });
 
   it('状態の知らせ（生成中・生成できませんでした・取り下げ・見つかりません）は面のブロック', async () => {
-    const working = renderWorkPage({ ...baseView, state: 'working' });
+    // 生成中・失敗の知らせは作者の画面（`owner` が立つのはエディットページの入力）に出る（#690）。
+    const working = renderWorkPage({ ...baseView, owner: true, state: 'working' });
     expect(working).toContain('<div class="gf-block gf-work-state">\n<h2>生成中です</h2>');
-    const failed = renderWorkPage({ ...baseView, state: 'failed' });
+    const failed = renderWorkPage({ ...baseView, owner: true, state: 'failed' });
     expect(failed).toContain('<div class="gf-block gf-work-state">\n<h2>生成できませんでした</h2>');
     const removed = renderWorkPage({ ...baseView, removed: true });
     expect(removed).toContain('<div class="gf-block gf-work-state">\n<h2>この作品は公開されていません</h2>');

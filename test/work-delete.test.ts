@@ -261,7 +261,7 @@ describe('削除の導線（#517 の acceptance 1）', () => {
       { status: 'removed', generationState: 'ready' },
     ] as const) {
       const work = await seedWork({ authorId: author, ...seed });
-      // **作品ページでも、エディットページの URL でも出ない**（#664。後者は作者以外には作品ページと同じ応答になる）。
+      // **作品ページでも、エディットページの URL でも出ない**（#664。後者は作者以外を作品ページへ 303 で送り返す。#690）。
       for (const path of [workPagePath(work.id), workEditPath(work.id)]) {
         const theirs = await (await open(path, await sessionCookie(stranger))).text();
         expect(hasDeleteLink(theirs, work.id), `他人 ${path} ${seed.status}/${seed.generationState}`).toBe(false);

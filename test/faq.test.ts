@@ -191,11 +191,14 @@ describe('仕様と食い違わない（#373 の constraints。4.3 / 4.4 / 5.6 /
     expect(answer).toContain('公開をやめる前に作られたフォーク作品は消えません');
     // **戻る先が下書きであることを言う**（#637 / 確定35）。「もう辿れなくなる」と読ませない。
     expect(answer).toContain('下書きに戻り');
-    // **未公開の作品ページそのものは誰でも開ける**（状態だけを出す。`src/work-page.ts` の
-    // `readySection`）。本人に限るのは遊べる URL である（PR #400 の Copilot の指摘）。
+    // **未公開の作品ページそのものは誰でも開ける**（未公開であることだけを出す。`src/work-page.ts` の
+    // `unpublishedSection`）。本人に限るのは遊べる URL である（PR #400 の Copilot の指摘）。
     expect(answer).not.toContain('作品ページは作った本人にしか開けません');
     expect(answer).toContain('作品を遊べる URL は作った本人にしか表示されません');
-    expect(answer).toContain('題名と「まだ公開されていません」という表示が出るだけ');
+    // **題名は出ない**（#690 で表示と照らした。作者以外の未公開の作品ページは、見出しが既定の「Game Forge の作品」で、
+    // 本文は「この作品はまだ公開されていません。」だけである。`loadWorkView` が作者以外には `title` を渡さない）。
+    expect(answer).toContain('作品ページの URL を知っている人がそのページを開いても、「まだ公開されていません」という表示が出るだけ');
+    expect(answer).not.toContain('題名と「まだ公開されていません」');
   });
 
   it('問い合わせの窓口は 1 か所の定数から来る', () => {

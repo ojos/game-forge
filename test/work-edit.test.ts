@@ -129,9 +129,9 @@ beforeAll(async () => {
   await applySchema();
 });
 
-describe('作者が /works/<id>/edit を開くと 200、作者以外と未ログインは作品ページと同じ応答（#664 の acceptance 1）', () => {
+describe('作者が /works/<id>/edit を開くと 200、作者以外と未ログインは作品ページへ 303（#664 の acceptance 1 / #690）', () => {
   for (const state of ['working', 'failed', 'draft', 'published', 'removed'] as const) {
-    it(`${state}: 作者には 200 のエディットページ、作者以外と未ログインには作品ページと同じ応答`, async () => {
+    it(`${state}: 作者には 200 のエディットページ、作者以外と未ログインには /works/<id> への 303`, async () => {
       const { userId, id } = await seedWork(`acc1-${state}`, state);
       const owner = await open(workEditPath(id), await sessionCookie(userId));
       expect(owner.status).toBe(200);
@@ -141,30 +141,43 @@ describe('作者が /works/<id>/edit を開くと 200、作者以外と未ログ
 
       const stranger = await seedUser(`acc1-${state}-stranger`);
       for (const cookie of [undefined, await sessionCookie(stranger)]) {
+        const who = `${state} / ${cookie === undefined ? '未ログイン' : '他人'}`;
         const asEdit = await comparable(await open(workEditPath(id), cookie));
-        const asPage = await comparable(await open(workPagePath(id), cookie));
-        // **1 バイトも違わない**——ステータス・遷移先・本文（ヘッダ・パンくずを含む）まで同じである。
-        expect(asEdit, `${state} / ${cookie === undefined ? '未ログイン' : '他人'}`).toEqual(asPage);
-        expect(asEdit.body).not.toContain('作品の編集');
-        expect(asEdit.body).not.toContain(WORK_SAVE_PATH);
+        // **作品の状態に関わらず、同じ 303 の 1 通りである**（#690。本文は空で、エディットページがあることを漏らさない）。
+        expect(asEdit, who).toEqual({ status: 303, location: workPagePath(id), body: '' });
+        // 送り先は、作品ページを直接開いたときと同じ応答である（ステータスは #690 の前と変わらない）。
+        const followed = await comparable(await open(asEdit.location!, cookie));
+        const direct = await comparable(await open(workPagePath(id), cookie));
+        expect(followed, who).toEqual(direct);
+        expect(followed.status, who).toBe(200);
+        expect(followed.body).not.toContain('作品の編集');
+        expect(followed.body).not.toContain(WORK_SAVE_PATH);
         // **下書きの存在を漏らさない**——公開していない作品の仮の題名（プロンプト由来）も試遊 URL も出さない。
         if (state !== 'published') {
-          expect(asEdit.body).not.toContain(`ひみつの題名 acc1-${state}`);
-          expect(asEdit.body).not.toContain('/p/');
+          expect(followed.body).not.toContain(`ひみつの題名 acc1-${state}`);
+          expect(followed.body).not.toContain('/p/');
         }
       }
     });
   }
 
-  it('存在しない作品と、綴りの違う id も、作品ページと同じ 404', async () => {
+  it('送り返しは 303 で、キャッシュさせない（301 だと、後でログインした作者のブラウザにも残る。#690）', async () => {
+    const { id } = await seedWork('acc1-cache', 'draft');
+    const response = await open(workEditPath(id));
+    expect(response.status).toBe(303);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('存在しない作品も、作者以外と未ログインには同じ 303 で、送り先が 404 を返す。綴りの違う id は 404（#690）', async () => {
     const userId = await seedUser('acc1-missing');
     const missing = '9ffe7c2a-59a9-4a58-b82c-d4a8cea7c62f';
-    const cookie = await sessionCookie(userId);
-    const asEdit = await comparable(await open(workEditPath(missing), cookie));
-    const asPage = await comparable(await open(workPagePath(missing), cookie));
-    expect(asEdit.status).toBe(404);
-    expect(asEdit).toEqual(asPage);
-    expect((await open(`/works/not-a-uuid${WORK_EDIT_SUFFIX}`, cookie)).status).toBe(404);
+    for (const cookie of [undefined, await sessionCookie(userId)]) {
+      const asEdit = await comparable(await open(workEditPath(missing), cookie));
+      // **有る id と同じ応答にする**（ここで 404 を返すと、303 か 404 かの差から存在が読める）。
+      expect(asEdit).toEqual({ status: 303, location: workPagePath(missing), body: '' });
+      expect((await open(asEdit.location!, cookie)).status).toBe(404);
+    }
+    expect((await open(`/works/not-a-uuid${WORK_EDIT_SUFFIX}`, await sessionCookie(userId))).status).toBe(404);
   });
 });
 
@@ -295,6 +308,90 @@ describe('下書きを作者が作品ページで開くと帯が出る。作者�
   });
 });
 
+describe('作者以外には、未公開の作品の状態を言い分けない（#690 の acceptance 3）', () => {
+  /** 未公開の状態（#690 の goal (2) の 5 つ）。 */
+  const UNPUBLISHED = ['working', 'stalled', 'failed', 'draft', 'revising'] as const;
+
+  /**
+   * 未公開の作品を 1 件、指定の状態で用意する。
+   *
+   * - `stalled` … 生成を受け付けたまま区切りを過ぎた（`started_at` を大昔にする）
+   * - `revising` … 完成した下書きのリフォージ中（`game_revision_jobs` が `running`。推敲中も `games` は `ready` のまま。
+   *   `migrations/0009_game_revisions.sql`）
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @param state 状態
+   * @returns 作品 id
+   */
+  async function seedUnpublished(suffix: string, state: (typeof UNPUBLISHED)[number]): Promise<string> {
+    if (state === 'working' || state === 'failed' || state === 'draft') {
+      return (await seedWork(suffix, state)).id;
+    }
+    const userId = await seedUser(suffix);
+    const pending = await createPendingGame(env, userId, { prompt: `ひみつの題名 ${suffix}` });
+    if (state === 'stalled') {
+      await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken), 1);
+      return pending.id;
+    }
+    await claimGenerationJob(env, pending.id, await hashJobToken(pending.jobToken));
+    await completeGame(env, pending.id, fakeBuildOutcome({ sourceSha256: `sha-edit-${suffix}` }));
+    await env.DB.prepare(
+      `insert into game_revision_jobs (game_id, job_token_hash, prompt, state, error, started_at, created_at)
+       values (?, 'h', 'ひみつの手直し', 'running', null, ?, ?)`,
+    )
+      .bind(pending.id, Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000))
+      .run();
+    return pending.id;
+  }
+
+  it('生成中・止まった・失敗・完成した下書き・リフォージ中のどれも、同じ本文「この作品はまだ公開されていません」になる', async () => {
+    const stranger = await seedUser('acc3-stranger');
+    for (const cookie of [undefined, await sessionCookie(stranger)]) {
+      const who = cookie === undefined ? '未ログイン' : '他人';
+      const pages: string[] = [];
+      for (const state of UNPUBLISHED) {
+        const id = await seedUnpublished(`acc3-${state}-${cookie === undefined ? 'anon' : 'other'}`, state);
+        const response = await open(workPagePath(id), cookie);
+        // **ステータスは変えない**（#690 の constraints。未公開の作品ページは 200 のまま）。
+        expect(response.status, `${who} / ${state}`).toBe(200);
+        const html = await response.text();
+        expect(html, `${who} / ${state}`).toContain('<div class="gf-block gf-work-state">\n<p>この作品はまだ公開されていません。</p>\n</div>');
+        for (const word of ['できました', '生成中です', '閉じても', '生成できませんでした', '中断した可能性', 'リフォージ']) {
+          expect(html, `${who} / ${state} / ${word}`).not.toContain(word);
+        }
+        // **自動更新もしない**（更新の有無で状態が読める差を残さない）。
+        expect(html, `${who} / ${state}`).not.toContain('http-equiv="refresh"');
+        // 仮の題名（プロンプト由来）は出さない（#150）。
+        expect(html, `${who} / ${state}`).not.toContain('ひみつの題名');
+        // **作品 id を伏せれば、5 つの状態で 1 バイトも違わない**（見出し・`<title>`・パンくずまで同じ）。
+        pages.push(html.replaceAll(id, '<id>'));
+      }
+      for (const [at, page] of pages.entries()) {
+        expect(page, `${who} / ${UNPUBLISHED[at]}`).toBe(pages[0]);
+      }
+    }
+  });
+
+  it('作者本人には、エディットページで状態を言い分ける（作者の表示は変えない）', async () => {
+    const expected: Record<(typeof UNPUBLISHED)[number], string> = {
+      working: '生成中です',
+      stalled: '中断した可能性があります',
+      failed: '生成できませんでした',
+      draft: '<h1>作品の編集</h1>',
+      revising: 'http-equiv="refresh"',
+    };
+    for (const state of UNPUBLISHED) {
+      const id = await seedUnpublished(`acc3-owner-${state}`, state);
+      const row = await env.DB.prepare('select author_id from games where id = ?').bind(id).first<{ author_id: string }>();
+      const response = await open(workEditPath(id), await sessionCookie(row!.author_id));
+      expect(response.status, state).toBe(200);
+      const body = await response.text();
+      expect(body, state).toContain(expected[state]);
+      expect(body, state).not.toContain('<p>この作品はまだ公開されていません。</p>');
+    }
+  });
+});
+
 describe('作者が生成中・失敗・取り下げ済みの作品を作品ページで開くと、エディットページへ送る（#664）', () => {
   for (const state of ['working', 'failed', 'removed'] as const) {
     it(`${state}: 303 でエディットページへ（完了メールのリンクから着いても作者の画面になる）`, async () => {
@@ -364,16 +461,15 @@ describe('作者以外が /edit を開いても、重い読み込みを 2 度し
     return counted.count();
   }
 
-  it('作者以外の /edit は、作品ページの読み取りに、作者を確かめる軽い読み取りを足しただけである', async () => {
+  it('作者以外の /edit は、作者を確かめる軽い読み取りだけで送り返す（#690 から作品ページの読み取りもしない）', async () => {
     const { id } = await seedWork('light-check', 'published');
     const stranger = await seedUser('light-check-stranger');
     const cookie = await sessionCookie(stranger);
 
-    // ログイン済みの他人: セッションの 1 文と `author_id` の 1 文だけが増える（通報の状態・いいね・フォークの近傍・
-    // 生成枠を 2 度読まない）。
-    expect(await statementsFor(workEditPath(id), cookie)).toBe((await statementsFor(workPagePath(id), cookie)) + 2);
-    // 未ログイン: セッションの cookie が無いので、増える文は 0 である。
-    expect(await statementsFor(workEditPath(id))).toBe(await statementsFor(workPagePath(id)));
+    // ログイン済みの他人: セッションの 1 文と `author_id` の 1 文だけ（通報の状態・いいね・フォークの近傍・生成枠を読まない）。
+    expect(await statementsFor(workEditPath(id), cookie)).toBe(2);
+    // 未ログイン: セッションの cookie が無いので、D1 を 1 文も読まない。
+    expect(await statementsFor(workEditPath(id))).toBe(0);
   });
 });
 

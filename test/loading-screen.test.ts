@@ -414,9 +414,10 @@ describe('4 要素をアプリ用ホスト側に描く（7.2 を崩さないた�
     expect(body).toContain('<meta name="robots" content="noindex">');
     expect(body).not.toContain('og:title');
 
-    // 本人以外には状態だけを出す（鍵を読ませない。4 要素も出さない）。
+    // 本人以外には未公開であることだけを出す（鍵を読ませない。4 要素も出さない。#690 から「できました」とも言わない）。
     const anonymous = await workPage(id);
-    expect(anonymous).toContain('できました');
+    expect(anonymous).toContain('この作品はまだ公開されていません。');
+    expect(anonymous).not.toContain('できました');
     expect(anonymous).not.toContain('<iframe');
     expect(anonymous).not.toContain('gf-watch-author');
     expect(anonymous).not.toContain('gf-draft-banner');

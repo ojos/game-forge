@@ -549,13 +549,7 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
   // 自己紹介と外部リンク（#379）も同じ 1 行から引く（キャッシュに載せない理由は表示名と同じ）。
   // アイコン（#380）も同じ 1 行から引く。**版は `avatar_sha256` が無ければ使わない**（外した後も進む）。
   // **いま使っているハンドル名（#381）も同じ 1 回で引く**（部分索引の 1 行。あれば `/@handle` へ 301）。
-  const user = await env.DB.prepare(
-    `select display_name, bio, profile_links, avatar_sha256, avatar_set_at, withdrawal_started_at,
-            (select h.handle from ${HANDLES_TABLE} h where h.user_id = users.id and h.released_at is null) as handle
-       from users where id = ?`,
-  )
-    .bind(userId)
-    .first<AuthorUserRow & { handle: string | null }>();
+  const user = await env.DB.prepare(AUTHOR_USER_SQL).bind(userId).first<AuthorUserWithHandleRow>();
   if (user === null || user.withdrawal_started_at !== null) {
     // **退会した持ち主の作者ページは 404 である**（#518 / M15-3）。行は残るが、出すものが
     // 1 つも無い——表示名は「退会したユーザー」、自己紹介とリンクは空、アイコンは消え、作品は
@@ -571,8 +565,25 @@ async function showAuthorPage(request: Request, env: Env): Promise<Response> {
   return await renderAuthorResponse(request, env, viewer, userId, user, null);
 }
 
+/**
+ * 作者ページの見出しに要る `users` の 1 行を、利用者 id で引く SQL（`/users/<user_id>`）。
+ *
+ * **輸出しているのは、ユーザー情報の口（`src/users-api.ts`。#700 / 仕様 5.14）が同じ列を同じ SQL で
+ * 引くためである。** 口の側が列を書き写すと、作者ページに列を足した日に片方だけが古くなる
+ * （`.ai-playbook/shared-ai-rules.md` 12 章）。**選ぶ列を増やすときは、両方に出てよい値かを先に確かめる**
+ * （`email` / `google_sub` / `invited_by` はどちらにも出さない。モジュール冒頭）。
+ *
+ * 束縛パラメータは 1 つ（user_id）。行の形は {@link AuthorUserWithHandleRow}。
+ */
+export const AUTHOR_USER_SQL = `select display_name, bio, profile_links, avatar_sha256, avatar_set_at, withdrawal_started_at,
+            (select h.handle from ${HANDLES_TABLE} h where h.user_id = users.id and h.released_at is null) as handle
+       from users where id = ?`;
+
+/** {@link AUTHOR_USER_SQL} の 1 行（いま使っているハンドル名を伴う）。 */
+export type AuthorUserWithHandleRow = AuthorUserRow & { readonly handle: string | null };
+
 /** 作者ページの描画に要る `users` の列（**公開してよい列だけ**。モジュール冒頭）。 */
-interface AuthorUserRow {
+export interface AuthorUserRow {
   readonly display_name: string | null;
   readonly bio: string | null;
   readonly profile_links: string | null;
@@ -795,7 +806,7 @@ async function renderAuthorResponse(
  * @param value `users.display_name`
  * @returns 出してよい名前。引けなければ null
  */
-function displayNameOf(value: string | null): string | null {
+export function displayNameOf(value: string | null): string | null {
   return value === null || value.trim() === '' ? null : value;
 }
 

@@ -2,8 +2,9 @@
  * `game-forge-likes` の入口（5.8 / #339）。
  *
  * **この Worker の仕事は Durable Objects `LikeHub` と `PlayHub`（プレイ数。#377）を載せる
- * ことだけである。** Pages は DO のクラスを自分で持てないので、クラスをここに置き、Pages が
- * バインディング（`script_name`）で直接呼ぶ。
+ * ことと、機械が読める口の上限を数える RPC の入口 `ApiRateLimiter`（#699）を載せることだけである。**
+ * Pages は DO のクラスを自分で持てないので、クラスをここに置き、Pages がバインディング（`script_name`）で
+ * 直接呼ぶ。上限の入口は Service binding（ルートの `wrangler.toml` の `API_RATE_LIMITER`）で呼ぶ。
  *
  * # `fetch` は何も受け取らない
  *
@@ -16,6 +17,9 @@
  */
 export { LikeHub } from './hub.js';
 export { PlayHub } from './play-hub.js';
+// 機械が読める口の上限を数える RPC の入口（#699 / 仕様 5.13）。Pages が Service binding で呼ぶ。
+// **名前付きの入口で、`fetch` とは別物である**——下の `fetch` が何も受け付けないことは変わらない。
+export { ApiRateLimiter } from './api-rate-limiter.js';
 
 export default {
   /**

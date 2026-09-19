@@ -244,7 +244,7 @@ export function ftsMatchExpression(terms: readonly string[]): string {
  * 写した。**写しなので、ずれたら `test/work-search.test.ts` が赤くなる**（`publishedGamesSql` の
  * 選ぶ列と照合する。`.ai-playbook/shared-ai-rules.md` 12 章）。
  */
-const SEARCH_COLUMNS = `g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
+const SEARCH_COLUMNS = `g.id, g.title, g.description, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
             g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name,
             case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at,
             ${authorHandleColumnSql('g.author_id')}`;
@@ -338,6 +338,7 @@ export function searchWorksStatement(
 interface SearchRow {
   readonly id: string;
   readonly title: string;
+  readonly description: string;
   readonly published_at: number | null;
   readonly fork_count: number;
   readonly like_count: number;
@@ -366,6 +367,7 @@ function toPublicWork(row: SearchRow): PublicWork {
   return {
     id: row.id,
     title: row.title,
+    description: row.description,
     authorName: row.author_name,
     authorId: row.author_id,
     authorAvatarSetAt: row.author_avatar_set_at,

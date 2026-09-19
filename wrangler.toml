@@ -168,6 +168,20 @@ name = "PLAY_HUB"
 class_name = "PlayHub"
 script_name = "game-forge-likes"
 
+# 機械が読める口の呼び出しの上限（#699 / 仕様 5.13）。**いいねと同じ Worker `game-forge-likes` の
+# 名前付きの RPC の入口 `ApiRateLimiter` を指す。**
+#
+# **Pages は Rate Limiting のバインディングを持てない**（`src/likes.ts`）ので、数えるのは向こうの
+# Worker である。**この binding を読むのは `src/api-rate-limit.ts` だけ**（`scripts/check-likes-worker.sh`
+# が見る）。**呼べなかったときは通す**（fail-open。理由は同ファイルと仕様 5.13）。
+#
+# **services も環境へ引き継がれない種類の設定である**ので、トップレベル・production・preview の
+# 3 か所に置く（`LIKE_HUB` と同じ）。テストでは `vitest.config.ts` が自分自身の入口へ差し替える。
+[[services]]
+binding = "API_RATE_LIMITER"
+service = "game-forge-likes"
+entrypoint = "ApiRateLimiter"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 配備される環境（#89）。
 #
@@ -279,3 +293,15 @@ script_name = "game-forge-likes"
 name = "PLAY_HUB"
 class_name = "PlayHub"
 script_name = "game-forge-likes"
+
+# 機械が読める口の上限の入口（#699）。**トップレベルの注記を参照。** 環境へ引き継がれないので両方に置く。
+# 配る順序は `LIKE_HUB` と同じ（`game-forge-likes` を先に配る。`.github/workflows/verify.yml`）。
+[[env.production.services]]
+binding = "API_RATE_LIMITER"
+service = "game-forge-likes"
+entrypoint = "ApiRateLimiter"
+
+[[env.preview.services]]
+binding = "API_RATE_LIMITER"
+service = "game-forge-likes"
+entrypoint = "ApiRateLimiter"

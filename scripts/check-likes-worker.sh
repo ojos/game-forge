@@ -36,6 +36,14 @@
 #    Pages を配る段より前にある（5.8。Pages が存在しない DO を指さないように）
 # 6. **likes Worker が束ねられる**（`wrangler deploy --dry-run`。資格情報もネットワークも
 #    要らない）。配備の段で初めて落ちる形にしない
+# 7. **機械が読める口の上限の結線が揃っている**（#699 / 仕様 5.13）
+#    - likes Worker に `[[ratelimits]]` の `API_RATE_LIMIT` があり、値が 60 秒あたり 60 回
+#      （`src/api-rate-limit.ts` の `API_RATE_LIMIT` と一致する）
+#    - ルートの wrangler.toml のトップレベル・`env.production`・`env.preview` のすべてに Service binding
+#      `API_RATE_LIMITER` があり、`service` が likes Worker の name、`entrypoint` が `ApiRateLimiter`
+#      （services も環境へ引き継がれない）
+#    - 束ねた likes Worker が `ApiRateLimiter` を輸出している（入口の無い版を配らない）
+#    - `env.API_RATE_LIMITER` を読むのは src/api-rate-limit.ts だけ
 #
 # ## 読み方
 #
@@ -48,8 +56,8 @@
 # - **本番の Worker が実際に公開されていないこと**は見ない（宣言だけを見る）。
 #   ダッシュボードで手で workers.dev を有効にした場合は捕まらない。本番の確かめ方は
 #   docs/likes.md にある
-# - Service binding など、**他の Worker から `game-forge-likes` を呼ぶ結線**は見ない
-#   （同じアカウントの中からしか届かないため、公開の入口ではない）
+# - Service binding など、**他の Worker から `game-forge-likes` を呼ぶ結線**は、公開の入口としては
+#   見ない（同じアカウントの中からしか届かないため）。7 で見るのは Pages からの上限の結線が揃っていることである
 #
 # 使い方:
 #   bash scripts/check-likes-worker.sh
@@ -96,8 +104,23 @@ done
 command -v node >/dev/null 2>&1 || fail "node が見つかりません。Node.js を導入してください。"
 [[ -d node_modules/wrangler ]] || fail "node_modules/wrangler がありません。npm ci を実行してください。"
 
+# 機械が読める口の上限（#699）。束縛の名前・入口の名前と、値の正本の写し（src/api-rate-limit.ts）。
+RATE_LIMIT_BINDING="API_RATE_LIMIT"
+RATE_LIMITER_SERVICE="API_RATE_LIMITER"
+RATE_LIMITER_ENTRYPOINT="ApiRateLimiter"
+RATE_LIMITER_WINDOW="src/api-rate-limit.ts"
+[[ -f "$RATE_LIMITER_WINDOW" ]] || fail "$RATE_LIMITER_WINDOW がありません。"
+# `export const API_RATE_LIMIT = { limit: 60, periodSeconds: 60 } as const;` の 1 行から値を読む。
+rate_limit_line="$(grep -E '^export const API_RATE_LIMIT = \{ limit: [0-9]+, periodSeconds: [0-9]+ \}' "$RATE_LIMITER_WINDOW" || true)"
+[[ -n "$rate_limit_line" ]] || fail "$RATE_LIMITER_WINDOW に API_RATE_LIMIT の値の行が見つかりません（検査が成立しません）。"
+rate_limit_limit="$(printf '%s\n' "$rate_limit_line" | sed -E 's/.*limit: ([0-9]+),.*/\1/')"
+rate_limit_period="$(printf '%s\n' "$rate_limit_line" | sed -E 's/.*periodSeconds: ([0-9]+) .*/\1/')"
+
 # ── 1〜3. 宣言 ───────────────────────────────────────────────────────────────
 if ! report="$(LIKES_CONFIG="$LIKES_CONFIG" PAGES_CONFIG="$PAGES_CONFIG" BINDINGS="$BINDINGS" \
+  RATE_LIMIT_BINDING="$RATE_LIMIT_BINDING" RATE_LIMITER_SERVICE="$RATE_LIMITER_SERVICE" \
+  RATE_LIMITER_ENTRYPOINT="$RATE_LIMITER_ENTRYPOINT" RATE_LIMIT_LIMIT="$rate_limit_limit" \
+  RATE_LIMIT_PERIOD="$rate_limit_period" \
   node --input-type=module - 2>&1 <<'JS'
 const { experimental_readRawConfig } = await import('wrangler');
 const likes = experimental_readRawConfig({ config: process.env.LIKES_CONFIG }).rawConfig;
@@ -176,6 +199,36 @@ if (likesDb !== undefined && pagesLocalDb !== undefined && likesDb.preview_datab
   problems.push(`likes Worker の preview_database_id（${likesDb.preview_database_id}）が Pages のローカル D1（${pagesLocalDb.database_id}）と一致しません（ローカルの同期が Pages の読む D1 に届かない）`);
 }
 
+// 7. 機械が読める口の上限（#699 / 仕様 5.13）
+const limitName = process.env.RATE_LIMIT_BINDING;
+const limiterBinding = process.env.RATE_LIMITER_SERVICE;
+const limiterEntrypoint = process.env.RATE_LIMITER_ENTRYPOINT;
+const expectedLimit = Number(process.env.RATE_LIMIT_LIMIT);
+const expectedPeriod = Number(process.env.RATE_LIMIT_PERIOD);
+const ratelimit = (likes.ratelimits ?? []).find((r) => r.name === limitName);
+if (ratelimit === undefined) {
+  problems.push(`${process.env.LIKES_CONFIG} に [[ratelimits]] の ${limitName} がありません`);
+} else if (ratelimit.simple?.limit !== expectedLimit || ratelimit.simple?.period !== expectedPeriod) {
+  problems.push(`${limitName} の値（${JSON.stringify(ratelimit.simple)}）が src/api-rate-limit.ts の ${expectedLimit} 回 / ${expectedPeriod} 秒と一致しません`);
+}
+for (const [label, scope] of [
+  ['トップレベル', pages],
+  ['env.production', pages.env?.production ?? {}],
+  ['env.preview', pages.env?.preview ?? {}],
+]) {
+  const found = (scope.services ?? []).find((s) => s.binding === limiterBinding);
+  if (found === undefined) {
+    problems.push(`${process.env.PAGES_CONFIG} の ${label} に Service binding ${limiterBinding} がありません（services は環境へ引き継がれない）`);
+    continue;
+  }
+  if (found.service !== likes.name) {
+    problems.push(`${label} の ${limiterBinding}.service（${found.service}）が likes Worker の name（${likes.name}）と一致しません`);
+  }
+  if (found.entrypoint !== limiterEntrypoint) {
+    problems.push(`${label} の ${limiterBinding}.entrypoint（${found.entrypoint}）が ${limiterEntrypoint} ではありません`);
+  }
+}
+
 for (const problem of problems) console.log(problem);
 process.exit(problems.length === 0 ? 0 : 1);
 JS
@@ -196,6 +249,13 @@ for binding in $BINDINGS; do
     fail "src/ で ${binding} に触れてよいのは ${window} だけです（窓口を 1 つにする。仕様 5.8）。"
   fi
 done
+
+readers="$(grep -rlF "$RATE_LIMITER_SERVICE" src || true)"
+if [[ "$readers" != "$RATE_LIMITER_WINDOW" ]]; then
+  printf '[likes-worker]   %s を含むファイル:\n' "$RATE_LIMITER_SERVICE" >&2
+  printf '%s\n' "${readers:-（なし）}" | while IFS= read -r line; do printf '[likes-worker]     %s\n' "$line" >&2; done
+  fail "src/ で ${RATE_LIMITER_SERVICE} に触れてよいのは ${RATE_LIMITER_WINDOW} だけです（窓口を 1 つにする。仕様 5.13）。"
+fi
 
 # ── 5. 配る順序 ───────────────────────────────────────────────────────────────
 # **likes Worker を Pages より先に配る**（5.8）。順序は verify.yml の deploy ジョブの段の
@@ -219,5 +279,10 @@ if ! dry_run="$(CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false WRANGLER_SEND_METRIC
   fail "likes Worker を束ねられません（wrangler deploy --dry-run が失敗）。"
 fi
 [[ -s "$out_dir/index.js" ]] || fail "likes Worker を束ねた結果（index.js）がありません。"
+# 7. 上限の入口を輸出している（#699）。**Pages の Service binding が指す名前付きの入口が、配る束に無い**
+# 形を配らない。esbuild の束の末尾の `export {` から `};` までに、1 行 1 つで名前が並ぶ。
+if ! sed -n '/^export {/,/^};/p' "$out_dir/index.js" | grep -qE "^[[:space:]]*${RATE_LIMITER_ENTRYPOINT},?$"; then
+  fail "束ねた likes Worker が ${RATE_LIMITER_ENTRYPOINT} を輸出していません（Pages の ${RATE_LIMITER_SERVICE} が指す入口）。"
+fi
 
 echo "LIKES_WORKER_PASS"

@@ -66,8 +66,14 @@ describe('Worker の env に宣言外の値が混入しない', () => {
     // ので `wrangler.toml` に宣言が無い。テストでアラームの結線（`runDurableObjectAlarm`）を
     // 確かめるには、テストの実行体に並べて `vitest.config.ts` が差し替えるしかない。
     // **この 1 行が、本番に無いバインディングをテストが持っていることの記録である。**
+    //
+    // `API_RATE_LIMIT`（#699）も同じ扱いである。本番では `game-forge-likes` が持つ Rate Limiting で、
+    // Pages は持てない（`src/api-rate-limit.ts`）。テストでは上限の入口がこの実行体に並ぶので、
+    // `vitest.config.ts` が入口の読む binding を注入する。
     const injectedByRunner = [
       'WITHDRAWAL_HUB',
+      'API_RATE_LIMIT',
+      'TEST_LIKES_WRANGLER_TOML',
       'TEST_MIGRATIONS',
       'TEST_DEV_VARS_EXAMPLE',
       'TEST_PRODUCT_SPEC',
@@ -102,6 +108,8 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       // 運営の管理画面のホスト（#356）。**秘密ではなく構成**なので wrangler.toml が
       // 宣言する（`APP_HOST` / `SANDBOX_HOST` と同じ扱い。2.4.1）。
       'ADMIN_HOST',
+      // 機械が読める口の上限の入口（#699）。**秘密ではなく結線**なので wrangler.toml が宣言する。
+      'API_RATE_LIMITER',
       'APP_HOST',
       // アイコンの再エンコード関数の宛先（#380）。**秘密ではなく構成**なので wrangler.toml が
       // 宣言する（OGP_FUNCTION_NAME と同じ扱い）。

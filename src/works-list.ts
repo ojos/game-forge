@@ -569,8 +569,29 @@ export function worksSearchCacheKey(query: string, page: number, tag: WorkTagId 
   });
 }
 
+/** 一覧の 1 頁を引いた結果（画面と機械が読める口で同じもの）。 */
+export interface WorksListPage {
+  /** 並べ替え軸（検索中は新着、絞り込み中は 2 軸へ落とした後の値）。 */
+  readonly sort: PublicWorkSort;
+  /** 頁番号（1〜{@link MAX_PAGE}）。 */
+  readonly page: number;
+  /** 絞り込むタグ（語彙に無い値・未指定は null）。 */
+  readonly tag: WorkTagId | null;
+  /** 検索の状態。 */
+  readonly search: WorkSearch;
+  /** 並べる作品（{@link WORKS_PER_PAGE} 件へ切ってある）。 */
+  readonly works: readonly PublicWork[];
+  /** 次の頁があるか（{@link MAX_PAGE} の先へは送らない）。 */
+  readonly hasNext: boolean;
+}
+
 /**
- * 一覧を表示する。
+ * 一覧の 1 頁を引く。**`/works` の画面と、公開作品の一覧の口（`GET /api/works`。#699 / 仕様 5.13）が
+ * 同じこの関数を通る。**
+ *
+ * **口の側で可視の判定（公開済み・審査）や並べ方を書き直さないために、引き方をここへ切り出した**
+ * （#699 の scope.in）。両者で同じ鍵のキャッシュ（`src/list-cache.ts`）に載るので、口を叩いても
+ * 画面と別の読み取りは増えない。
  *
  * **上限より 1 件多く引く。** 「ちょうど 20 件あった」と「次の頁がある」は引いた件数
  * だけでは区別できず、区別せずに「次へ」を出すと**空の頁へ送る**ことになる
@@ -588,12 +609,11 @@ export function worksSearchCacheKey(query: string, page: number, tag: WorkTagId 
  * 語の重複、英字の大文字小文字が違うだけの URL は同じ鍵に載る）。**検索しない一覧の鍵は #378 の前と同じ**である。
  * **断った検索は鍵も D1 も使わない。**
  *
- * @param request 受信したリクエスト
  * @param env バインディングと環境変数
- * @returns レスポンス
+ * @param url 受信したリクエストの URL（`sort` / `page` / `tag` / `q` を読む）
+ * @returns 引いた 1 頁
  */
-async function showWorksList(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url);
+export async function loadWorksListPage(env: Env, url: URL): Promise<WorksListPage> {
   const tag = toWorkTagFilter(url.searchParams.get(WORK_TAG_FIELD));
   const search = parseWorkSearch(url.searchParams.get(WORK_SEARCH_FIELD));
   // **検索中は新着に固定する**（#378 の決定 4）。**絞り込み中は、索引で保証している 2 軸へ落とす**
@@ -625,15 +645,35 @@ async function showWorksList(request: Request, env: Env): Promise<Response> {
     );
   }
 
+  return {
+    sort,
+    page,
+    tag,
+    search,
+    works: fetched.slice(0, WORKS_PER_PAGE),
+    hasNext: fetched.length > WORKS_PER_PAGE && page < MAX_PAGE,
+  };
+}
+
+/**
+ * 一覧を表示する。引き方は {@link loadWorksListPage} にある。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function showWorksList(request: Request, env: Env): Promise<Response> {
+  const list = await loadWorksListPage(env, new URL(request.url));
+
   return html(
     renderWorksListPage(
       {
-        works: fetched.slice(0, WORKS_PER_PAGE),
-        sort,
-        page,
-        hasNext: fetched.length > WORKS_PER_PAGE && page < MAX_PAGE,
-        tag,
-        search,
+        works: list.works,
+        sort: list.sort,
+        page: list.page,
+        hasNext: list.hasNext,
+        tag: list.tag,
+        search: list.search,
         avatarOrigin: sandboxOriginOf(request, env.SANDBOX_HOST),
       },
       // **ヘッダだけが出し分かる**（2.3.7 / #331）。**鍵に混ぜない**——上のキャッシュに

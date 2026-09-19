@@ -50,6 +50,7 @@ import { workRoutes } from './work-edit.js';
 import { workSaveRoutes } from './work-save.js';
 import { workSourceRoutes } from './work-source.js';
 import { worksApiRoutes } from './works-api.js';
+import { publicWorksApiRoutes } from './public-works-api.js';
 
 /**
  * 開発用セッション cookie の名前。
@@ -360,6 +361,8 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     ...workSaveRoutes,
     ...workSourceRoutes,
     ...worksApiRoutes,
+    // 公開作品の一覧を機械が読める口（#699 / 仕様 5.13）。読み取りは `/works` と同じ関数とキャッシュを通る。
+    ...publicWorksApiRoutes,
     // ユーザー情報を機械が読める口（#700 / 仕様 5.14）。`/api/me` は完全一致で、`/api/me/works` とは別の口。
     ...usersApiRoutes,
     ...worksListRoutes,

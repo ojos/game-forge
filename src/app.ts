@@ -32,6 +32,7 @@ import { worksBulkRoutes } from './works-bulk.js';
 import { newsRoutes } from './news.js';
 import { worksListRoutes } from './works-list.js';
 import { usersPageRoutes } from './users-page.js';
+import { usersApiRoutes } from './users-api.js';
 import { likeRoutes } from './likes.js';
 import { playRoutes } from './plays.js';
 import { likedWorksRoutes } from './liked-works.js';
@@ -359,6 +360,8 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     ...workSaveRoutes,
     ...workSourceRoutes,
     ...worksApiRoutes,
+    // ユーザー情報を機械が読める口（#700 / 仕様 5.14）。`/api/me` は完全一致で、`/api/me/works` とは別の口。
+    ...usersApiRoutes,
     ...worksListRoutes,
     ...usersPageRoutes,
     ...myWorksRoutes,

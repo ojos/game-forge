@@ -393,6 +393,8 @@ describe('作者による作品の削除（#517）', () => {
     expect(retention).toContain('通報・削除依頼・運営者の措置・入力の検査の記録がその作品にあるとき');
     // 生成の記録は作品と結び付けていない（確定27）ので、作品を消しても残る。
     expect(retention).toContain('作品を作るときの指示文と生成の記録は削除しません');
+    // #694: 作品と結び付けて保存した指示文（`games.prompt`）は、作品と一緒に消える。
+    expect(retention).toContain('作品と結び付けて保存した指示文も、作品と一緒に削除します');
   });
 });
 
@@ -433,7 +435,8 @@ describe('退会（#518 / M15-3）', () => {
     // 退会だけが例外であることを、同じ場所で書き足す（食い違いを残さない）。
     const body = pageBodyOf((await openPrivacy()).body);
     const retention = body.slice(body.indexOf('<h2>7. 保存期間</h2>'), body.indexOf('<h2>8. '));
-    expect(retention).toContain('作品を削除しても、作品を作るときの指示文と生成の記録は削除しません');
+    // #694 で「生成の記録に残る、」を足した（作品と結び付けた写しは作品と一緒に消えるため）。
+    expect(retention).toContain('作品を削除しても、生成の記録に残る、作品を作るときの指示文と生成の記録は削除しません');
     expect(retention).toContain('退会したときだけは指示文を削除します');
   });
 

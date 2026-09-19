@@ -58,6 +58,20 @@ export default defineConfig({
           PLAY_HUB: { className: 'PlayHub', useSQLite: true },
           WITHDRAWAL_HUB: { className: 'WithdrawalHub', useSQLite: true },
         },
+        // 機械が読める口の上限（#699）。`wrangler.toml` の `API_RATE_LIMITER` は別スクリプト
+        // （`game-forge-likes`）の名前付きの入口を指す。テストでは**自分自身の同じ入口**へ差し替える
+        // （`name` に Pages の名前を書くと、プールが自分自身へ読み替える）。入口のクラスは
+        // `workers/likes/test-entry.ts` が並べて輸出している。**Service binding の RPC で呼ぶ経路そのもの**
+        // はここで通る——失うのは「別スクリプトを指す結線」の検証だけである（`LIKE_HUB` と同じ）。
+        serviceBindings: {
+          API_RATE_LIMITER: { name: 'game-forge', entrypoint: 'ApiRateLimiter' },
+        },
+        // 入口が読む Rate Limiting（本番では `workers/likes/wrangler.toml` の `[[ratelimits]]`）。**Pages の宣言には
+        // 無い**ので、テストの env に現れる宣言外の名前として `test/worker.test.ts` の除外一覧に足してある。
+        // 値は宣言と同じにする（`test/public-works-api.test.ts` が宣言から読んで照合する）。
+        ratelimits: {
+          API_RATE_LIMIT: { namespace_id: '699', simple: { limit: 60, period: 60 } },
+        },
         bindings: { TEST_MIGRATIONS: migrations },
         // `.dev.vars.example` の中身をテキストとして渡す。
         //
@@ -101,6 +115,8 @@ export default defineConfig({
           // 畳む区切り（`src/stale-generation-sweep.ts`）が、コールバックの届きうる時間の外側にあることを
           // 照合する（#681）。値をテストへ書き写すと、terraform を変えた日にテストだけが古い値を見続ける。
           TEST_ORCHESTRATOR_TF: 'terraform/orchestrator.tf',
+          // いいねの Worker の宣言（#699）。上の `ratelimits` の値が本番の `[[ratelimits]]` と同じであることを照合する。
+          TEST_LIKES_WRANGLER_TOML: 'workers/likes/wrangler.toml',
         },
       },
     }),

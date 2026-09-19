@@ -30,4 +30,7 @@
 export { default } from '../../src/index.js';
 export { LikeHub } from './src/hub.js';
 export { PlayHub } from './src/play-hub.js';
+// 上限の RPC の入口（#699）。**本番では `game-forge-likes` の名前付きの入口**で、Pages が Service binding
+// （`API_RATE_LIMITER`）で呼ぶ。テストでは `vitest.config.ts` がその binding を自分自身のこの入口へ差し替える。
+export { ApiRateLimiter } from './src/api-rate-limiter.js';
 export { WithdrawalHub } from '../cleanup/src/hub.js';

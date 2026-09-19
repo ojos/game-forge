@@ -62,6 +62,15 @@ declare global {
        */
       readonly TEST_ORCHESTRATOR_TF: string;
       /**
+       * いいねの Worker の宣言（`workers/likes/wrangler.toml`）の中身。
+       *
+       * 機械が読める口の上限（`[[ratelimits]]`）が、テストで注入する値・仕様・`src/api-rate-limit.ts` の値と
+       * 同じであることを照合するために渡している（#699）。
+       */
+      readonly TEST_LIKES_WRANGLER_TOML: string;
+      /** 上限の入口が読む Rate Limiting（`vitest.config.ts` が注入する。本番では `game-forge-likes` が持つ。#699）。 */
+      readonly API_RATE_LIMIT: RateLimit;
+      /**
        * `.dev.vars.example` の中身（`vitest.config.ts` の `textBlobBindings`）。
        *
        * 文書化された秘密の名前を、書き写さずにテストから引くために渡している

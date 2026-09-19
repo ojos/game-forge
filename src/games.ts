@@ -2683,6 +2683,16 @@ export interface PublicWork {
    * 301 で送る。古い値なら旧ハンドル名の `/@` が 90 日のあいだ新しいハンドル名へ 302 で送る。
    */
   readonly authorHandle?: string | null;
+  /**
+   * 作者が書いた説明（`games.description`。**空文字が「説明が無い」**。`migrations/0028_game_descriptions.sql`）。
+   *
+   * **カードは出さない。** 選ぶのは公開作品の一覧の口（`GET /api/works`。#699 / 仕様 5.13）が返すためで、
+   * 画面と口が同じ問い合わせとキャッシュを通る（`src/works-list.ts` の `loadWorksListPage`）。
+   *
+   * **{@link authorId} と同じ理由で省略可である**（一覧の行は Cache API に載っており、配備の直後の
+   * 最大 60 秒はこの列を選んでいなかった頃の行が返りうる）。
+   */
+  readonly description?: string;
   /** 公開した時刻（UNIX 秒）。0001 以前の行では null になりうる。 */
   readonly publishedAt: number | null;
   /** この作品から生まれた公開済みのフォークの数（非正規化列。5.1）。 */
@@ -2767,7 +2777,9 @@ export function publishedGamesSql(sort: PublicWorkSort): string {
   // 絞らない**——タグ無しの作品もここに並ぶ（#376 の constraints）。
   //
   // **`g.play_count` を選ぶのはカードに出すためである**（#377 / 2.3.6）。
-  return `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
+  //
+  // **`g.description` を選ぶのは公開作品の一覧の口が返すためである**（#699 / 5.13。カードは出さない）。
+  return `select g.id, g.title, g.description, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
             g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3, u.display_name as author_name,
             case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at,
             ${authorHandleColumnSql('g.author_id')}
@@ -2782,6 +2794,7 @@ export function publishedGamesSql(sort: PublicWorkSort): string {
 interface PublicWorkRow {
   readonly id: string;
   readonly title: string;
+  readonly description: string;
   readonly published_at: number | null;
   readonly fork_count: number;
   readonly like_count: number;
@@ -2807,6 +2820,7 @@ function toPublicWork(row: PublicWorkRow): PublicWork {
   return {
     id: row.id,
     title: row.title,
+    description: row.description,
     authorName: row.author_name,
     authorId: row.author_id,
     authorAvatarSetAt: row.author_avatar_set_at,
@@ -2870,12 +2884,12 @@ const TAGGED_WORK_ORDER_COLUMNS: Readonly<Record<TaggedWorkSort, readonly string
 export function taggedGamesSql(sort: TaggedWorkSort): string {
   const columns = TAGGED_WORK_ORDER_COLUMNS[sort];
   const branches = [1, 2, 3].map(
-    (slot) => `select g.id, g.title, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
+    (slot) => `select g.id, g.title, g.description, g.published_at, g.fork_count, g.like_count, g.play_count, g.parent_id,
                 g.ogp_state, g.author_id, g.tag1, g.tag2, g.tag3
            from games g
           where g.tag${slot} = ? and g.status = ? and ${reviewVisibleSql('g')}`,
   );
-  return `select t.id, t.title, t.published_at, t.fork_count, t.like_count, t.play_count, t.parent_id,
+  return `select t.id, t.title, t.description, t.published_at, t.fork_count, t.like_count, t.play_count, t.parent_id,
             t.ogp_state, t.author_id, t.tag1, t.tag2, t.tag3, u.display_name as author_name,
             case when u.avatar_sha256 is null then null else u.avatar_set_at end as author_avatar_set_at,
             ${authorHandleColumnSql('t.author_id')}

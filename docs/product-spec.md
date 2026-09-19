@@ -9366,6 +9366,64 @@ NULL のまま始まるので、**変えない限り今までと同じ振る舞�
   （`looksStalled`）で `stalled` を返すだけである。
 - **書き込みの口・戻せない操作の口は作らない**（公開・削除・退会。12 章 #10 の論点）。
 
+### 5.13 公開作品の一覧を機械が読める口（#699 / M19-2）
+
+**「作品をさがす」（`/works`。2.3）が HTML で出している公開作品の一覧を、JSON で読めるようにする。** 各作品に作者のユーザー ID
+（`authorId`）を付け、ユーザー情報の口（5.14 / #700）へたどれるようにする。実装は `src/public-works-api.ts`（綴りは値だけの葉
+`src/public-works-api-paths.ts`）。**チャットと MCP にはまだ見せない**（他の作者の作品を情報源にしない #695 / #696 の決定を動かさない）。
+
+| 口 | 返すもの |
+|---|---|
+| `GET /api/works` | 公開作品の 1 頁（20 件）。引数は `/works` と同じ——`sort`（`recent` / `forked` / `liked` / `played`）・`tag`（2.3.5 の語彙の識別子）・`q`（キーワード検索。2.3.5）・`page`（1〜50）。**並び・絞り込み・頁送りの規則も `/works` と同じ**（タグで絞ると並べ替えは 2 軸、検索中は新着に固定）。知らない `sort` / `tag` は落とし、`page` は丸める——**実際に使った値を `sort`・`tag`・`q`・`page` として書き戻す。** 次の頁があれば `nextPage` |
+
+各作品の項目は `id`・`title`・`description`（作者の説明。無ければ空文字）・`tags`（識別子の配列）・**`authorId`**・`author`（`displayName` と
+`handle`。ハンドル名が無ければ `null`）・`likeCount`・`playCount`・`forkCount`（どれも D1 に写した数で、いいねとプレイ数は最大 5 分遅れる。5.8）・
+`publishedAt`・`links`（`page` は作品ページ、`play` はサンドボックス用ホストの `/g/<id>/`。どちらも絶対 URL）。
+配備の直後の最大 60 秒は、キャッシュに残った古い形の行（一覧のキャッシュの鍵に行の形の版が無い。2.3.6 の `PublicWork` と同じ窓）が返りうる。
+**欠けた項目は画面のカードと同じ関数で倒す**——`likeCount` / `playCount` は数でなければ `0`（`src/work-card.ts` の `cardLikeCount` / `cardPlayCount`）、
+`description` は文字列でなければ空文字、`authorId` と `author.handle` は `null`。
+
+**返さないもの**：指示文（1.2.54）・ソース・R2 のキー・ビルドのジョブ ID などの内部の識別子。**公開する範囲は `/works` の HTML から増えない**
+——作者のユーザー ID も、作者ページの URL（`/users/<user_id>`）とサイトマップ（2.3.1）で既に公開されている値である。
+項目は 1 つずつ選んで組み立て、一覧の行（`PublicWork`）に列が増えても口の応答へは黙って載らない。
+
+#### 失敗の応答
+
+| 状況 | ステータス | 本文 |
+|---|---|---|
+| 未ログイン・BAN・退会を始めた | 401 | `{"error":"unauthorized"}` |
+| 呼び出しの上限を超えた | 429 | `{"error":"rate-limited"}`（`Retry-After: 60`） |
+| 断った検索（1 文字だけ・語が多すぎる・長すぎる。2.3.5） | 400 | `{"error":"invalid-query","reason":"too-short" \| "too-many-terms" \| "too-long"}` |
+
+**断った検索だけは 400 にする。** 画面は理由を書いて空の一覧を出すが、機械には「当たらなかった」と区別できないためである。どちらも D1 を引かない。
+口の処理が返す応答（200・400・401・429）に `Content-Signal: search=yes, ai-input=yes, ai-train=no`（`src/robots.ts`）を付ける。
+**経路表が返す 405（GET 以外）には付かない**（本文を持たない応答で、`src/routes.ts` の共通の処理が返すため）。
+
+#### 呼び出しの上限
+
+利用者の id ごとに **60 秒あたり 60 回**。超えたら 429。判定は認証の後で、鍵は「口の名前:利用者の id」である（口を足しても枠を食い合わない）。
+
+- **目的は D1 の読み取りの急増を抑えることである**（3.6）。とくに 2 文字以下の検索は公開作品を全部なめる（2.3.8）。一覧は Cache API の
+  前段（2.3.3 の条件 3）にあるが、検索語の組み合わせは鍵を散らせる。Workers のリクエスト数（無料プランで 1 日 10 万件、サイト全体で共有）は
+  `/works` の HTML で前から同じ弱さがあり、この上限では守れない
+- **数えるのは別の Worker である。** アプリ本体（Pages Functions）は Rate Limiting のバインディングを持てない（5.8 の #339 注記）。
+  そこでいいねの Worker `game-forge-likes` が Workers Rate Limiting（`[[ratelimits]]` の `API_RATE_LIMIT`。`simple = { limit = 60, period = 60 }`）と、
+  それを使う RPC の入口 `ApiRateLimiter`（`WorkerEntrypoint` の `allow(key)`）を持ち、Pages は Service binding（`API_RATE_LIMITER`）で
+  そこを呼ぶ（利用者の決定。2026-09-19）。入口は Service binding からしか呼べず、`game-forge-likes` の公開の入口の無さ（5.8）は変わらない
+- **Rate Limiting の数え方は緩く・結果整合である**（公式の文書。拠点ごとに数え、正確な会計ではない）。数回の超過や早めの 429 はありうる
+- **入口を呼べなかったとき（例外）は通す（fail-open）。** 読むだけの口で、返すのは誰でも見られる情報であり、いいねの Worker の障害で一覧の口まで
+  止めると守りたいものより失うものが大きい。通したことはログに残す（利用者の id は出さない）
+- **Workers の無料プランで Rate Limiting の binding が使えるかは、公式の文書に書かれていない。** 本番で受け付けられることは、マージの前に
+  いいねの Worker を配って確かめる（#699）
+- 値は、いいねの Worker の宣言・`src/api-rate-limit.ts`・この節の 3 か所にあり、一致は `test/public-works-api.test.ts` と
+  `scripts/check-likes-worker.sh` が見る
+
+#### 決めたこと
+
+- **読み取りは `/works` と同じ関数とキャッシュを通す**（`src/works-list.ts` の `loadWorksListPage`）。可視の判定（公開済み・審査。5.4 / 8.4）と
+  並べ方を口の側で書き直さない。口を叩いても画面と同じ鍵のキャッシュに載るので、画面と別の読み取りは増えない
+- **ログイン必須にする**（まず招待した利用者の範囲に絞る。#699 の scope.out）。呼び出し元は 5.12 と同じく `resolveApiCaller` で決める
+
 ### 5.14 ユーザー情報を機械が読める口（#700 / M19-3）
 
 **作者の公開プロフィールと、自分の情報を JSON で読めるようにする。** 作品の一覧の口（#699）が返す作品の作者 id から、

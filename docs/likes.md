@@ -32,6 +32,7 @@
 | 窓口（#377） | `POST /api/plays`（作品ページのスクリプトだけが叩く）→ 同期で `games.play_count` | `src/plays.ts` / `migrations/` の `games_play_count` |
 | 配備 | `scripts/deploy-likes.sh`（マージ後は deploy ジョブが **Pages より先に**叩く） | `.github/workflows/verify.yml` |
 | 宣言の検査 | `scripts/check-likes-worker.sh`（`scripts/acceptance.sh` から呼ぶ） | — |
+| 上限の入口（#699） | RPC の入口 `ApiRateLimiter`（`WorkerEntrypoint` の `allow(key)`）と Workers Rate Limiting `API_RATE_LIMIT`（**60 秒あたり 60 回**）。Pages は Service binding `API_RATE_LIMITER` で呼ぶ | `workers/likes/src/api-rate-limiter.ts` / Pages 側の窓口は `src/api-rate-limit.ts`（仕様 5.13） |
 
 ## 1 回のいいねに何が起きるか
 
@@ -221,6 +222,12 @@ Service binding で呼んで、そこで Rate Limiting を数えてから DO を
 公開の入口ではないが、呼び出しの段が 1 つ増え、**Workers Free で Rate Limiting が使えるかを
 先に確かめる必要がある**（配備が落ちるかどうかで分かる）。
 
+> **#699 注記（2026-09-19）。この形を、いいねではなく機械が読める口の上限のために先に置いた。**
+> `game-forge-likes` が Workers Rate Limiting（`[[ratelimits]]` の `API_RATE_LIMIT`。60 秒あたり 60 回）と
+> RPC の入口 `ApiRateLimiter` を持ち、Pages は Service binding `API_RATE_LIMITER` で `allow(key)` を呼ぶ
+> （公開作品の一覧の口 `GET /api/works`。仕様 5.13）。**いいねの窓口はまだ使っていない**——上の「受け入れている状態」は
+> 変わらない。いいねに広げるなら、同じ入口に鍵の前半（口の名前）を分けて呼べばよい。
+
 ## 一覧のキャッシュに、古い形の行が残る（#340 への申し送り）
 
 **`games.like_count` を足したので、一覧の行の形が変わった。** 一覧は Cache API に D1 から
@@ -406,8 +413,36 @@ likes Worker を 8828（9258）で立てた（上の「本物の結線で 1 往�
 | 06:03 | likes Worker だけ立て直し、`POST /api/plays` を 3 回 | `204` が 3 回。起動と同時に期限切れのアラームが走り `[plays] 同期しました: 1 件（残り 0 件）`、`play_count` が **0 → 2**（最初の 2 回ぶん）。**写している間に届いた 3 回ぶんは印が付け直された** |
 | 06:08 | 次のアラーム（5 分後） | `[plays] 同期しました: 1 件（残り 0 件）`。`play_count` が **2 → 5** |
 
+## 機械が読める口の上限の入口（#699）
+
+**この Worker は、DO のほかに RPC の入口 `ApiRateLimiter` を持つ**（`workers/likes/src/api-rate-limiter.ts`）。
+Pages（アプリ本体）は Rate Limiting のバインディングを持てないので、数えるのはこの Worker である（仕様 5.13）。
+
+| 対象 | 実体 | 持ち主 |
+|---|---|---|
+| Rate Limiting | `API_RATE_LIMIT`（`namespace_id = "699"`・`simple = { limit = 60, period = 60 }`）。**一度配ったら `namespace_id` を変えない**（数えていた回数が捨てられる） | `workers/likes/wrangler.toml` |
+| RPC の入口 | `ApiRateLimiter.allow(key)` → 上限の内側なら true | `workers/likes/src/api-rate-limiter.ts`（`src/index.ts` が輸出する） |
+| Pages の結線 | Service binding `API_RATE_LIMITER`（`service = "game-forge-likes"`・`entrypoint = "ApiRateLimiter"`。トップレベル・production・preview の 3 か所） | ルートの `wrangler.toml` |
+| Pages 側の窓口 | `allowApiCall`（**呼べなければ通す**＝fail-open。通したことを `[api-rate-limit]` のログに残す） | `src/api-rate-limit.ts` |
+
+- **公開の入口は増えていない。** 名前付きの入口は Service binding からしか呼べず、`workers_dev` / `preview_urls` /
+  ルートの閉じ方は変えていない。受け取るのは数える鍵だけで、DO に書く操作は無い
+- **配る順序は DO と同じ**（likes Worker → Pages。`.github/workflows/verify.yml`）。宣言の一致と、束ねた Worker が
+  入口を輸出していることは `scripts/check-likes-worker.sh` の 7 が見る
+- **Rate Limiting が Workers の無料プランで使えるかは、公式の文書に書かれていない。** 使えなければ `scripts/deploy-likes.sh`
+  が落ち、**main の deploy ジョブはいいねの Worker を Pages の直前に配るので、以後の配備がすべて止まる。**
+  だから #699 はマージの前に、利用者の端末で PR のツリーから `bash scripts/deploy-likes.sh` を叩いて確かめる
+- **本番で上限が効いていることの確かめ方**: ログインした状態で `GET /api/works?q=a`（D1 を引かずに 400 で返る）を
+  1 分の間に 61 回以上叩き、429 `{"error":"rate-limited"}` が返ること。**数え方は緩く・結果整合**（公式の文書）なので、
+  境目の回数はずれうる。429 が 1 度も返らず、ログに `[api-rate-limit] 上限の入口を呼べなかったので通しました` が出ていれば、
+  結線（Pages の Service binding の `entrypoint`）が本番で効いていない
+
 ## 確かめられていないこと
 
+- **Pages → 別 Worker の上限の入口（Service binding の RPC）は、本番でまだ通していない**（#699）。自動テストは
+  同じ実行体の中の入口を Service binding の RPC で呼んでいる（`vitest.config.ts` が自分自身へ差し替える）。
+  **Pages の Service binding が名前付きの入口（`entrypoint`）を本番で解決するかは、公式の Pages の文書に明記が無い**
+  （「Workers と同じように宣言する」とだけある）。解決しなければ口は fail-open で通すので、上の確かめ方で見る
 - **Pages → 別 Worker の DO の結線は、ローカル（dev registry）でだけ通した**（上の記録）。
   本番の結線（アカウントの中の `script_name` の解決・本番の D1・DO の配置）で通るのは
   初回配備の 5 が最初である。自動テストは同じ実行体の中の DO を呼んでいる

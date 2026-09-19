@@ -78,3 +78,21 @@ binding = "DB"
 database_name = "game-forge"
 database_id = "d81a6f80-7d08-4908-b311-2418bacda050"
 preview_database_id = "local-only-placeholder"
+
+# 機械が読める口の呼び出しの上限（#699 / M19-2。仕様 5.13）。**利用者の id ごとに 60 秒あたり 60 回。**
+#
+# **Pages は Rate Limiting のバインディングを持てない**（`src/likes.ts` の「連打の防波堤を置いていない」）
+# ので、この Worker が持ち、RPC の入口 `ApiRateLimiter`（`src/api-rate-limiter.ts`）で数える。Pages は
+# Service binding（ルートの `wrangler.toml` の `API_RATE_LIMITER`）でそこを呼ぶ。
+#
+# - `namespace_id` はアカウントの中で上限の数え場所を分ける識別子で、**秘密ではない**（正の整数の文字列）。
+#   **一度配ったら変えない**——変えると数えていた回数が捨てられる
+# - `period` に置けるのは 10 か 60 だけである（公式の文書）
+# - **数え方は緩く・結果整合である**（拠点ごとに数え、正確な会計ではない。公式の文書）。
+#   目的は D1 の読み取りの急増を抑えることで、1 回の誤差を問題にしない（仕様 5.13）
+#
+# 値と仕様の一致は `scripts/check-likes-worker.sh` が見る。
+[[ratelimits]]
+name = "API_RATE_LIMIT"
+namespace_id = "699"
+simple = { limit = 60, period = 60 }

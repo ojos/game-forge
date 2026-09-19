@@ -15,6 +15,19 @@ name = "game-forge"
 # ので、このディレクトリは空のまま（.gitkeep だけ）にしておく。
 pages_build_output_dir = "public"
 compatibility_date = "2026-08-01"
+# MCP の認可（#696 / 仕様 5.15）で足した互換フラグ。
+#
+# **`global_fetch_strictly_public`** は、CIMD（クライアントの id が URL で、その文書をこちらが取りに行く）の
+# SSRF 対策である。`@cloudflare/workers-oauth-provider` は、このフラグが無いと CIMD を宣言せず
+# （メタデータの `client_id_metadata_document_supported` が false）、URL の id を受けると例外を投げる
+# ——**部品の側で取得先を絞る設定は無い**（0.10.3 の実装で確かめた）。
+#
+# **アプリ全体の `fetch()` に効く。** 変わるのは「自分のゾーンへの `fetch()` を、オリジンへ直行させずに
+# Cloudflare の表玄関から入れ直す」ことだけである（公式の互換フラグの説明）。このサイトはゾーンを
+# Cloudflare に持たず（確定17 / 確定22。DNS は Route53）、外へ出る `fetch()` は AWS（Lambda・Bedrock）・
+# Resend・Google の公開の口だけで、自分のホストを `fetch()` で呼ぶ経路は無い（#696 PR① で `src/` を洗った）。
+# **`nodejs_compat` は足さない**（部品は Node の API を使わない）。
+compatibility_flags = ["global_fetch_strictly_public"]
 
 # 開発用ホスト名。src/index.ts は Host ヘッダでアプリ側とサンドボックス側を出し分ける。
 #
@@ -143,6 +156,13 @@ migrations_dir = "migrations"
 binding = "BUCKET"
 bucket_name = "game-forge-local"
 
+# MCP の認可の保存先（#696 / 仕様 5.15）。**`@cloudflare/workers-oauth-provider` が `OAUTH_KV` の名前で必須とする。**
+# 載るのはクライアントの登録（DCR）・許可（grant）・トークンの記録で、**トークンはハッシュでだけ**保存される
+# （許可の props は暗号化され、鍵はトークンでしか解けない）。ローカルとテストは Miniflare の KV で、id は使われない。
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "local-only-placeholder"
+
 # いいねの正本（5.8 / #339）。**別 Worker `game-forge-likes` の Durable Object を指す。**
 #
 # **Pages は DO のクラスを自分で持てない**ので、クラスは `workers/likes/` に置き、
@@ -252,6 +272,12 @@ migrations_dir = "migrations"
 binding = "BUCKET"
 bucket_name = "game-forge"
 
+# MCP の認可の保存先（#696）。namespace は `game-forge-oauth`（利用者が 2026-09-19 に作った）。
+# 本番とプレビューは同じ namespace を指す（D1 / R2 と同じ扱い）。
+[[env.production.kv_namespaces]]
+binding = "OAUTH_KV"
+id = "acafa61986f74b19ad041bbfac9f788b"
+
 # プレビューにも同じバインディングを宣言する。**省くとバインディング自体が消える**
 # （トップレベルは名前付き環境へ引き継がれない。`wrangler types` が `DB?: D1Database` と
 # 省略可能に変わることで確認できる）。プレビュー専用のデータベースは作らない。
@@ -266,6 +292,12 @@ migrations_dir = "migrations"
 [[env.preview.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "game-forge"
+
+# MCP の認可の保存先（#696）。namespace は `game-forge-oauth`（利用者が 2026-09-19 に作った）。
+# 本番とプレビューは同じ namespace を指す（D1 / R2 と同じ扱い）。
+[[env.preview.kv_namespaces]]
+binding = "OAUTH_KV"
+id = "acafa61986f74b19ad041bbfac9f788b"
 
 # いいねの DO（5.8 / #339）。**durable_objects も環境へ引き継がれない種類の設定である**
 # （Pages の non-inheritable keys）。省くと本番からバインディングが消え、いいねの口が

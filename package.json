@@ -32,6 +32,7 @@
     "workerd@1.20260804.1": true
   },
   "dependencies": {
+    "@cloudflare/workers-oauth-provider": "0.10.3",
     "aws4fetch": "^1.0.20"
   }
 }

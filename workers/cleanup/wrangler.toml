@@ -91,3 +91,13 @@ preview_database_id = "local-only-placeholder"
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "game-forge"
+
+# MCP の許可の保存先（#696 / 仕様 5.15）。**Pages と同じ namespace**（`game-forge-oauth`）で、`id` はルートの
+# `wrangler.toml` の本番の写し、`preview_id` はローカルの写しである（`scripts/check-cleanup-worker.sh` が照合する）。
+# **退会の完了の段で、その利用者の許可とトークンを消してから完了の印を立てる**（`src/withdrawal-purge.ts`）。
+# 押した要求（Pages）も確定の後に消すが、それはベストエフォートで、止まった要求をこの Worker が代わりに確定させた
+# 退会では走らない。許可の寿命は同意から 1 年なので、ここで消さないと使われないまま最大 1 年残る。
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "acafa61986f74b19ad041bbfac9f788b"
+preview_id = "local-only-placeholder"

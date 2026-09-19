@@ -11,6 +11,13 @@ import { dispatch } from '../src/routes.js';
 import type { Route } from '../src/routes.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO, OPERATOR_NAME } from '../src/service-contact.js';
 import { SESSION_COOKIE } from '../src/session.js';
+import {
+  ACCESS_TOKEN_TTL_SECONDS,
+  PENDING_AUTHORIZATION_COOKIE,
+  PENDING_AUTHORIZATION_MAX_AGE_SECONDS,
+  GRANT_IDLE_LIMIT_SECONDS,
+  GRANT_MAX_AGE_SECONDS,
+} from '../src/oauth-paths.js';
 import { oldOperationNamesIn } from './helpers/old-names.js';
 import { WITHDRAWN_DISPLAY_NAME } from '../src/withdrawal.js';
 import { pageBodyOf } from './helpers/site-shell.js';
@@ -202,8 +209,8 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     expect(cookie).toContain('サーバへは送らず');
     // **窓の長さは実装の値の写しなので、実装と照合する**（shared-ai-rules 12 章）。
     expect(cookie).toContain(`${PLAY_REPORT_WINDOW_MS / 60_000} 分以内は数え直しません`);
-    // **Cookie は 2 つのまま**（sessionStorage は Cookie ではない）。
-    expect(cookie).toContain('Cookie は次の 2 つだけです');
+    // **sessionStorage は Cookie に数えない**（Cookie の数は #696 で 3 つになった。下の it）。
+    expect(cookie).toContain('Cookie は次の 3 つだけです');
     const retention = body.slice(body.indexOf('7. 保存期間'), body.indexOf('8. 開示'));
     expect(retention).toContain('sessionStorage に置く時刻は、タブを閉じると消えます');
   });
@@ -313,10 +320,56 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     const body = pageBodyOf((await openPrivacy()).body);
     expect(body).toContain(`有効期間は ${SESSION_MAX_AGE / (60 * 60 * 24)} 日です。`);
     expect(body).toContain(`有効期間は ${OAUTH_COOKIE_MAX_AGE / 60} 分です。`);
-    // 本文が「2 つだけ」と言っている cookie は、この 2 つである。**名前を足した日に、
-    // 本文の数も見直すこと。**
-    expect([SESSION_COOKIE, OAUTH_COOKIE]).toEqual(['__Host-gf_session', '__Host-gf_oauth']);
-    expect(body).toContain('Cookie は次の 2 つだけです');
+    expect(body).toContain(`有効期間は ${PENDING_AUTHORIZATION_MAX_AGE_SECONDS / 60} 分です。`);
+    // 本文が「3 つだけ」と言っている cookie は、この 3 つである。**名前を足した日に、
+    // 本文の数も見直すこと。**（3 つ目は #696 の AI アプリとの接続の手続き中の cookie）
+    expect([SESSION_COOKIE, OAUTH_COOKIE, PENDING_AUTHORIZATION_COOKIE]).toEqual([
+      '__Host-gf_session',
+      '__Host-gf_oauth',
+      '__Host-gf_mcp_authz',
+    ]);
+    expect(body).toContain('Cookie は次の 3 つだけです');
+    // 3 つ目（#696）の用途・中身・署名・消す時期を書く。
+    const cookie = body.slice(body.indexOf('6. Cookie'), body.indexOf('7. 保存期間'));
+    const line = cookie.slice(cookie.indexOf('AI アプリとの接続の手続き中の情報'));
+    expect(line).toContain('ログインしていない状態で AI アプリとの接続を始めたとき');
+    expect(line).toContain('アプリの識別子・許可した後の戻り先・求めている範囲');
+    expect(line).toContain('改ざんを検知できる形');
+    expect(line).toContain('ログインから戻ると消します');
+    expect(line.slice(0, line.indexOf('</li>'))).toContain(`有効期間は ${PENDING_AUTHORIZATION_MAX_AGE_SECONDS / 60} 分です`);
+  });
+
+  it('AI アプリとの接続を、取得する情報・利用目的・公開しない情報・保存期間・退会に書く（#696）', async () => {
+    const body = pageBodyOf((await openPrivacy()).body);
+    const collected = body.slice(body.indexOf('1. 取得する情報'), body.indexOf('2. 利用目的'));
+    const line = collected.slice(collected.indexOf('AI アプリとの接続'));
+    expect(line).toContain('接続したアプリの名前');
+    expect(line).toContain('許可した後の戻り先');
+    expect(line).toContain('許可した範囲');
+    expect(line).toContain('接続した日時');
+    // **トークンはハッシュでだけ保存する**（部品の保存の形。`src/oauth-provider.ts`）。
+    expect(line).toContain('鍵そのものは保存せず、照合に使う値（ハッシュ値）だけを保存します');
+    expect(line).toContain('接続中のアプリ');
+    expect(line).toContain('KV');
+    // 1 日の上限を判定するための回数（#696 のセキュリティレビュー。`migrations/0048_oauth_daily_usage.sql`）。
+    const usage = body.slice(body.indexOf('AI アプリとの接続の操作回数'));
+    expect(usage.slice(0, usage.indexOf('</li>'))).toContain('2 日で削除します');
+    const purposes = body.slice(body.indexOf('2. 利用目的'), body.indexOf('3. 公開される情報'));
+    expect(purposes).toContain('AI アプリ');
+    const notPublished = body.slice(
+      body.indexOf('<strong>次の情報は公開しません。</strong>'),
+      body.indexOf('4. 第三者への提供'),
+    );
+    expect(notPublished).toContain('接続した AI アプリ');
+    const retention = body.slice(body.indexOf('<h2>7. 保存期間</h2>'), body.indexOf('<h2>8. '));
+    // 寿命は発行する側の定数と照合する（本文へ数字を書き写さない）。
+    expect(retention).toContain(`最後に使ってから ${GRANT_IDLE_LIMIT_SECONDS / 86400} 日で使えなくなります`);
+    expect(retention).toContain(`許可した日から ${GRANT_MAX_AGE_SECONDS / (86400 * 365)} 年で失効します`);
+    expect(retention).not.toContain('使っていても延びません');
+    expect(retention).toContain(`${ACCESS_TOKEN_TTL_SECONDS / 60} 分で失効します`);
+    expect(retention).toContain('解除すると、その時点で削除します');
+    const withdrawn = retention.slice(retention.indexOf('退会すると、次の情報を削除します'));
+    expect(withdrawn.slice(0, withdrawn.indexOf('退会しても、次の情報は残します'))).toContain('AI アプリとの接続');
   });
 
   it('外部の委託先を書き漏らさない', async () => {

@@ -1,4 +1,4 @@
-import { SELF, env } from 'cloudflare:test';
+import { SELF, createExecutionContext, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createAdminRoutes } from '../src/admin/routes.js';
 import { createAppRoutes } from '../src/app.js';
@@ -174,10 +174,10 @@ describe('3 つ目のホストとしての振り分け（#356 / 2.4.1）', () =>
     const asEnv = withoutAdmin as unknown as Env;
 
     // app は動く。
-    const app = await worker.fetch(new Request(`${APP_ORIGIN}/`), asEnv);
+    const app = await worker.fetch(new Request(`${APP_ORIGIN}/`), asEnv, createExecutionContext());
     expect(app.status).toBe(200);
     // admin は未知のホストとして 404（500 ではない）。
-    const admin = await worker.fetch(new Request(`${ADMIN_ORIGIN}/`), asEnv);
+    const admin = await worker.fetch(new Request(`${ADMIN_ORIGIN}/`), asEnv, createExecutionContext());
     expect(admin.status).toBe(404);
     expect(await admin.text()).toContain('unknown host');
   });

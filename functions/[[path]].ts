@@ -20,5 +20,35 @@
  */
 import worker from '../src/index.js';
 
+/**
+ * Pages の context から、ワーカーの `ExecutionContext` を組み立てる（#696）。
+ *
+ * **Pages は `ExecutionContext` を渡さない**（`onRequest` の引数は context 1 つ）。MCP の認可の部品
+ * （`src/oauth-provider.ts`）はトークンを検証した後に `ctx.props` へ利用者の情報を代入するので、
+ * ctx が無いと 500 になる（仕様 5.15 の試作の実測）。
+ *
+ * - `waitUntil` と `passThroughOnException` は Pages の context のものを結び付けて渡す
+ * - **`props` は書き換えられる空のオブジェクト**にする（部品が代入する。凍ったオブジェクトや
+ *   getter だけの値にすると、代入が黙って消えるか例外になる）
+ *
+ * @param context Pages の context
+ * @returns 実行文脈
+ */
+function executionContextOf(context: EventContext<Env, string, unknown>): ExecutionContext {
+  // 型（`EventContext`）は両方を持つと言い、`wrangler pages dev` でも両方が在ることを確かめた。**それでも欠けた場合に
+  // 入口の全要求を落とさない**——`waitUntil` が無ければ渡された promise を待たずに失敗だけを握りつぶし、`passThroughOnException` は何もしない。
+  const waitUntil: unknown = (context as { waitUntil?: unknown }).waitUntil;
+  const passThrough: unknown = (context as { passThroughOnException?: unknown }).passThroughOnException;
+  return {
+    waitUntil:
+      typeof waitUntil === 'function'
+        ? (waitUntil as (promise: Promise<unknown>) => void).bind(context)
+        : (promise: Promise<unknown>) => void promise.catch(() => {}),
+    passThroughOnException:
+      typeof passThrough === 'function' ? (passThrough as () => void).bind(context) : () => {},
+    props: {},
+  } as unknown as ExecutionContext;
+}
+
 export const onRequest: PagesFunction<Env> = (context) =>
-  worker.fetch(context.request, context.env);
+  worker.fetch(context.request, context.env, executionContextOf(context));

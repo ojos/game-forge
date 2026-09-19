@@ -103,13 +103,19 @@ npx wrangler whoami
 gcloud の `--no-launch-browser` にあたる逃げ道が wrangler にはありません）。
 トークンを `.env` へ書き写すのは、この事情による例外です（`.env.example` の該当項参照）。
 
-必要な権限は次の 3 つで足ります。ダッシュボードの My Profile → API Tokens で発行します。
+必要な権限は次の 4 つで足ります。ダッシュボードの My Profile → API Tokens で発行します。
 
 | スコープ | 権限 |
 |---|---|
 | Account / Cloudflare Pages | Edit |
 | Account / D1 | Edit |
 | Account / Workers R2 Storage | Edit |
+| Account / Workers KV Storage | Edit |
+
+**Workers KV Storage は #696（MCP の認可。仕様 5.15）で足した**（2026-09-19。利用者が既存のトークンを編集した。値は変わらない）。
+ルートの `wrangler.toml` が KV `OAUTH_KV`（namespace `game-forge-oauth`）を束ねたため、Pages の配備が
+namespace を読めることを要する。**再発行した場合は、`.env` と GitHub Secrets の 2 か所とも差し替える**（`docs/likes.md` の
+「1. API トークンに権限を足す」と同じ）。
 
 **トークンの期限は API から読めません。** `GET /user/tokens/verify` は `active` かどうかしか
 返さず（`expires_on` は null で返る）、`GET /user/tokens` は「API Tokens Read」権限が無い

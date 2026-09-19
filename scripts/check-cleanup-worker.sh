@@ -169,6 +169,20 @@ if (cleanupBucket === undefined || pagesBucket === undefined) {
   problems.push(`cleanup Worker の R2（${cleanupBucket.bucket_name}）が Pages の本番 R2（${pagesBucket.bucket_name}）と一致しません`);
 }
 
+// 6. MCP の許可の KV が Pages と同じ（#696）。**退会の完了の段で許可を消す**ので、別の namespace を指すと
+// 退会した人の許可が消えないまま完了の印が立つ（空の namespace を見て「残っていない」と読む）。
+const cleanupKv = (cleanup.kv_namespaces ?? []).find((k) => k.binding === 'OAUTH_KV');
+const pagesKv = (pages.env?.production?.kv_namespaces ?? []).find((k) => k.binding === 'OAUTH_KV');
+const pagesLocalKv = (pages.kv_namespaces ?? []).find((k) => k.binding === 'OAUTH_KV');
+if (cleanupKv === undefined || pagesKv === undefined) {
+  problems.push('cleanup Worker と Pages の本番のどちらかに KV（OAUTH_KV）がありません');
+} else if (cleanupKv.id !== pagesKv.id) {
+  problems.push(`cleanup Worker の KV（${cleanupKv.id}）が Pages の本番 KV（${pagesKv.id}）と一致しません`);
+}
+if (cleanupKv !== undefined && pagesLocalKv !== undefined && cleanupKv.preview_id !== pagesLocalKv.id) {
+  problems.push(`cleanup Worker の KV の preview_id（${cleanupKv.preview_id}）が Pages のローカル KV（${pagesLocalKv.id}）と一致しません`);
+}
+
 for (const problem of problems) console.log(problem);
 process.exit(problems.length === 0 ? 0 : 1);
 JS

@@ -50,6 +50,7 @@ cron `*/5 * * * *` が **5 本中 1 本目**として登録されている。`wr
 | 止まった行の畳み | 開始から 1 時間を過ぎた `pending` / `running` の `games` 行と `game_revision_jobs` 行を `failed` に（条件付き UPDATE 2 本・表ごとに 25 行まで） | `src/stale-generation-sweep.ts` |
 | 進め方 | アラーム 1 回で作品 2 件（進んだら 1 秒後・待ちだけなら 30 分後・何も無ければ立てない） | `src/withdrawal-purge.ts` |
 | 押した要求の中の処理 | 掴む → R2（アイコン）→ 1 batch・14 文で確定 | `src/withdrawal.ts` |
+| MCP の許可（#696） | KV `OAUTH_KV`（**Pages と同じ namespace** `game-forge-oauth`）。完了の段で、その利用者の許可とトークンを消してから印を立てる | `src/oauth-grants.ts` / `src/withdrawal-purge.ts` |
 | D1 の列と索引 | `users` の 3 列 / `users_withdrawal_pending_idx` / トリガ 3 本 | `migrations/0045_user_withdrawal.sql` |
 | 配備 | `scripts/deploy-cleanup.sh`（マージ後は deploy ジョブが **Pages より前に**叩く） | `.github/workflows/verify.yml` |
 | 宣言の検査 | `scripts/check-cleanup-worker.sh`（`scripts/acceptance.sh` から呼ぶ） | — |
@@ -70,7 +71,8 @@ cron（5 分ごと）→ scheduled() → WithdrawalHub のアラーム
           3 候補（中身を消していない・公開中でない・進行中でない）を 10 件引く
           4 deleteGame を 2 件だけ呼ぶ（失敗した作品は指数的に待つ。上限 1 時間）
           5 残りの作品が 0 件の利用者を 1 人だけ完了させる
-              アイコンを消し直し、**R2 の接頭辞が空だと確かめてから** withdrawal_completed_at を立てる
+              アイコンを消し直し、**R2 の接頭辞が空だと確かめ**、
+              **MCP の許可（KV）を消して残っていないと確かめてから**（#696）withdrawal_completed_at を立てる
           6 次のアラーム（進んだら +1 秒 / 待ちだけなら +30 分 / 何も無ければ立てない）
 ```
 
@@ -80,6 +82,12 @@ cron（5 分ごと）→ scheduled() → WithdrawalHub のアラーム
 1 日 2,016 文で、無料枠に対して無視できることは変わらない。
 
 > **旧記述（#681 より前）。** 上の段落の前半だけ（「5 文読んで終わる」「1 日 1,440 文」）。
+
+**MCP の許可を消すのは完了の段だけである**（#696 / 仕様 5.15「退会」）。押した要求（Pages の `src/account-withdrawal.ts`）も
+確定の後に消すが、ベストエフォートで、1 の代打で確定した退会では走らない。許可の寿命は同意から 1 年なので、ここで消さないと
+退会した人の許可が使われないまま最大 1 年残る。**D1 の文は使わない**（KV の list と delete だけ。許可 1 件あたり list 1 と
+delete が「許可 1 ＋ 生きているアクセストークンの本数」）。KV の失敗は投げてアラームの再試行に任せる（R2 と同じ扱い）。
+部品（`@cloudflare/workers-oauth-provider`）の一覧と解除の道具をそのまま使い、KV の鍵の形をこちらで書き写さない。
 
 **60 件の利用者は 31 回のアラームで終わる**（テスト環境の実測。`test/withdrawal-purge.test.ts`）。
 進んだ回は 1 秒後に次を立てるので、**約 30 秒〜1 分**である。
@@ -136,6 +144,8 @@ npx wrangler d1 execute DB --remote --env production --command \
 
 **足すものは無い。** `game-forge-likes` を配るために **Account / Workers Scripts: Edit** を
 2026-09-11 に足してある（`docs/likes.md`）。cron の登録も同じスコープで足りる。
+**#696 で KV（`OAUTH_KV`）を束ねた**ので、**Account / Workers KV Storage: Edit** も要る——Pages の KV のために
+2026-09-19 に足してあり（`docs/pages-deploy.md`）、同じトークンで足りる。
 
 ### 2. マイグレーション 0045 を本番に当てる
 

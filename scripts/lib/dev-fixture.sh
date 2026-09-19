@@ -337,6 +337,18 @@ sharp(Buffer.from(svg)).png().toFile(process.argv[1]).catch((error) => { console
     --file "$WORK/ogp.png" --content-type 'image/png' >"$WORK/r2-ogp.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/r2-ogp.log" >&2; fail "検査用の紹介用の画像を R2 へ置けませんでした。"; }
 
+  # **接続中のアプリを 1 件仕込む**（#696 / 仕様 5.15。`/account/apps`）。仕込まないと、接続の行（アプリ名・許可した範囲・
+  # 日時・「接続を解除」のボタン）が 1 度も描かれないまま幅の検査が緑になり、「接続中のアプリはありません」の 1 行だけを測る。
+  # 部品（`@cloudflare/workers-oauth-provider`）の許可の記録を KV へ直に置く——**一覧が読むのは許可の JSON だけ**
+  # （`listUserGrants` は `grant:<利用者の id>:` の鍵を list して値を get する。暗号化した props は読まない）ので、
+  # 同意の往復を通さずに作れる。アプリ名は 390px で折り返す長さにしてある。
+  GRANT_CREATED_AT="$(date +%s)"
+  npx wrangler kv key put --local --binding OAUTH_KV --persist-to "$STATE" \
+    "grant:$USER_ID:devFixtureGrant01" \
+    "{\"id\":\"devFixtureGrant01\",\"clientId\":\"devFixtureClient\",\"userId\":\"$USER_ID\",\"scope\":[\"works:read\",\"works:generate\"],\"metadata\":{\"clientName\":\"幅の検査のための、とても長い名前を名乗る AI アプリ（Claude Desktop のコネクタ）\",\"redirectHost\":\"claude.ai\"},\"encryptedProps\":\"\",\"createdAt\":$GRANT_CREATED_AT}" \
+    >"$WORK/kv.log" 2>&1 ||
+    { sed 's/^/    /' "$WORK/kv.log" >&2; fail "検査用の接続中のアプリを KV へ置けませんでした。"; }
+
   # セッションの署名は `src/session.ts` と同じ形（`<base64url(JSON)>.<base64url(HMAC)>`）。
   # **秘密はこの検査の中だけで作って渡す。** `.dev.vars` を読まないのは、開発者の環境に
   # 依存しない検査にするためであり、値をどこにも書き残さないためでもある。

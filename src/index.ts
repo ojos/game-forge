@@ -14,6 +14,7 @@ import { normalizeHost } from './origins.js';
 import { handleAdminRequest } from './admin/routes.js';
 import { handleAppRequest } from './app.js';
 import { handleSandboxRequest } from './sandbox.js';
+import { handleOAuthProviderRequest, isOAuthProviderPath } from './oauth-provider.js';
 
 /**
  * 振り分けに使うホスト名を、宣言から読んで正規化する。
@@ -38,11 +39,16 @@ export default {
   /**
    * 受信したリクエストを Host ヘッダで振り分ける。
    *
+   * **`ctx` を受ける**（#696）。MCP の認可の部品（`src/oauth-provider.ts`）がトークンを検証した後に
+   * `ctx.props` へ利用者の情報を置くためで、無いと部品が 500 を返す（仕様 5.15 の試作の実測）。
+   * Pages には `ExecutionContext` が無いので、入口（`functions/[[path]].ts`）が組み立てて渡す。
+   *
    * @param request 受信したリクエスト
    * @param env バインディングと環境変数
+   * @param ctx 実行文脈
    * @returns レスポンス
    */
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
       const host = normalizeHost(new URL(request.url).hostname);
       const appHost = configuredHost(env.APP_HOST);
@@ -62,6 +68,12 @@ export default {
         return await handleAdminRequest(request, env);
       }
       if (host === appHost) {
+        // MCP の認可（#696 / 仕様 5.15）。**部品が持つ口だけを部品へ渡し、残りは今までどおり経路表へ**
+        // （同意画面 `/authorize` と「接続中のアプリ」のタブは経路表の側にある）。**アプリのホストだけ**に載せ、
+        // sandbox と admin の枝は部品を呼ばない。
+        if (isOAuthProviderPath(new URL(request.url).pathname)) {
+          return await handleOAuthProviderRequest(request, env, ctx);
+        }
         return await handleAppRequest(request, env);
       }
 

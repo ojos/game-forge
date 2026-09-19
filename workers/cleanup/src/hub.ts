@@ -53,6 +53,8 @@ export interface CleanupEnv {
   readonly DB: D1Database;
   /** 本番の R2（Pages と同じバケット）。 */
   readonly BUCKET: R2Bucket;
+  /** MCP の許可の KV（Pages と同じ namespace。#696）。退会の完了の段で、その利用者の許可を消す。 */
+  readonly OAUTH_KV: KVNamespace;
   /** 自分自身の DO。`scheduled()` がインスタンス {@link WITHDRAWAL_HUB_INSTANCE} を起こす。 */
   readonly WITHDRAWAL_HUB: DurableObjectNamespace<WithdrawalHub>;
 }

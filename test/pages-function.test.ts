@@ -24,7 +24,15 @@ const ADMIN_ORIGIN = `https://${env.ADMIN_HOST}`;
  * @returns context
  */
 function pagesContext(request: Request): Parameters<typeof onRequest>[0] {
-  return { request, env, params: {}, data: {} } as unknown as Parameters<typeof onRequest>[0];
+  // `waitUntil` と `passThroughOnException` は、入口がワーカーの `ExecutionContext` を組み立てるのに読む（#696）。
+  return {
+    request,
+    env,
+    params: {},
+    data: {},
+    waitUntil: () => {},
+    passThroughOnException: () => {},
+  } as unknown as Parameters<typeof onRequest>[0];
 }
 
 describe('Pages Functions の入口（#71）', () => {
@@ -71,5 +79,31 @@ describe('Pages Functions の入口（#71）', () => {
     const body = (await response.json()) as { d1: { ok: boolean }; r2: { ok: boolean } };
     expect(body.d1.ok).toBe(true);
     expect(body.r2.ok).toBe(true);
+  });
+
+  it('MCP の認可の部品へ ctx を渡す（#696。渡さないと部品が ctx.props へ代入できず 500 になる）', async () => {
+    // **トークンの無い `/mcp` は 401 と `WWW-Authenticate`**（部品が返す）。ここが 500 なら、入口が ctx を渡していない。
+    const response = await onRequest(pagesContext(new Request(`${APP_ORIGIN}/mcp`, { method: 'POST' })));
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toContain('resource_metadata=');
+  });
+
+  it('MCP の認可の口はアプリ用ホストだけに載る（sandbox と admin には無い。#696）', async () => {
+    for (const origin of [SANDBOX_ORIGIN, ADMIN_ORIGIN]) {
+      const response = await onRequest(
+        pagesContext(new Request(`${origin}/.well-known/oauth-authorization-server`)),
+      );
+      expect(response.status, origin).toBe(404);
+    }
+    const app = await onRequest(pagesContext(new Request(`${APP_ORIGIN}/.well-known/oauth-authorization-server`)));
+    expect(app.status).toBe(200);
+  });
+
+  it('Pages の context に waitUntil / passThroughOnException が欠けていても、入口は全要求を落とさない（#696）', async () => {
+    const bare = { request: new Request(`${APP_ORIGIN}/`), env, params: {}, data: {} } as unknown as Parameters<
+      typeof onRequest
+    >[0];
+    const response = await onRequest(bare);
+    expect(response.status).toBe(200);
   });
 });

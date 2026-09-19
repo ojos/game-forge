@@ -87,6 +87,11 @@ export interface ReservedHandleSources {
   readonly sandboxPrefixes: readonly string[];
   /** 3 つのホスト名（未設定の値は読み飛ばす）。 */
   readonly hosts: readonly (string | undefined)[];
+  /**
+   * アプリ用ホストで、**経路表の外**が持つ口（MCP の認可の部品の `/token`・`/register`・`/mcp`・`/.well-known/...`。#696）。
+   * `src/index.ts` が経路表より先に振り分けるので経路表には載らないが、名前は同じく名乗らせない。
+   */
+  readonly appOutsidePaths?: readonly string[];
 }
 
 /**
@@ -118,7 +123,8 @@ function hostLabelsOf(host: string): string[] {
  *
  * 1. **アプリ用ホストの経路の第 1 セグメント**（`/works/` → `works`、`/api/...` → `api`、`/__dev/` → `__dev`）
  * 2. **管理画面ホストの経路の第 1 セグメント**（`/users` `/actions` `/takedowns`）
- * 3. **サンドボックス用ホストの接頭辞**（`/avatars/` → `avatars`）
+ * 3. **サンドボックス用ホストの接頭辞**（`/avatars/` → `avatars`）と、**アプリ用ホストで経路表の外が持つ口**
+ *    （MCP の認可の部品。`/token` → `token`、`/mcp` → `mcp`。#696）
  * 4. **ホストのラベル**（`admin` / `sandbox` / `app`）
  * 5. {@link HAND_WRITTEN_RESERVED_HANDLES}
  *
@@ -139,6 +145,9 @@ export function reservedHandlesOf(sources: ReservedHandleSources): ReadonlySet<s
   }
   for (const prefix of sources.sandboxPrefixes) {
     reserved.add(firstSegmentOf(prefix));
+  }
+  for (const path of sources.appOutsidePaths ?? []) {
+    reserved.add(firstSegmentOf(path));
   }
   for (const host of sources.hosts) {
     if (host !== undefined) {

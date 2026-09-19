@@ -8,6 +8,9 @@ import { DEV_COMPONENTS_PATH, renderDevComponentsPage } from './dev-components.j
 import { createAdminRoutes } from './admin/routes.js';
 import { authRoutes } from './auth/google.js';
 import { accountRoutes } from './account.js';
+import { accountAppsRoutes } from './account-apps.js';
+import { authorizeRoutes } from './oauth-authorize.js';
+import { OAUTH_PROVIDER_PATHS } from './oauth-paths.js';
 import { createAccountHandleRoutes } from './account-handle.js';
 import { withdrawalRoutes } from './account-withdrawal.js';
 import { reservedHandlesOf } from './handle.js';
@@ -343,6 +346,11 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     // 退会（#518 / 8.1）。**`src/account.ts` と分ける**——押した後の判定は `src/withdrawal.ts`
     // が持ち、この経路だけが `resolveSessionUser` ではなく段0 を通る（`src/account-withdrawal.ts`）。
     ...withdrawalRoutes,
+    // 接続中のアプリのタブ（#696 / 仕様 5.15）。登録情報の 5 つ目のタブで、接続の解除は `/api/account/apps/revoke`。
+    ...accountAppsRoutes,
+    // MCP の認可の同意画面（#696 / 仕様 5.15）。**部品が持つ口（`/token` など）はここに載らない**——`src/index.ts` が
+    // 経路表より先に部品へ渡す（`src/oauth-provider.ts`）。同意画面だけはアプリが書くので、ここに置く。
+    ...authorizeRoutes,
     ...signupRoutes,
     ...waitlistRoutes,
     ...generateRoutes,
@@ -418,6 +426,8 @@ export function appReservedHandles(env: Env): ReadonlySet<string> {
     adminRoutes: createAdminRoutes(),
     sandboxPrefixes: SANDBOX_PATH_PREFIXES,
     hosts: [env.APP_HOST, env.SANDBOX_HOST, env.ADMIN_HOST],
+    // 経路表の外で、アプリ用ホストの部品が持つ口（#696）。
+    appOutsidePaths: OAUTH_PROVIDER_PATHS,
   });
 }
 

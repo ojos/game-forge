@@ -95,6 +95,24 @@ export const ACCOUNT_WITHDRAW_API_PATH = '/api/account/withdraw';
  */
 export const ACCOUNT_WITHDRAWN_PATH = '/account/withdrawn';
 
+/**
+ * 登録情報の画面の、接続中のアプリのタブ（#696 / 仕様 5.15。ログイン必須）。
+ *
+ * MCP のクライアント（Claude など）に許可した接続を並べ、「接続を解除」で許可を消す。
+ * **`/account` の下にパスで置く**（{@link ACCOUNT_DETAILS_PATH} と同じ理由。外枠の検査と幅の検査に
+ * 何も書き足さずに乗る）。
+ */
+export const ACCOUNT_APPS_PATH = '/account/apps';
+
+/**
+ * 接続の解除（API。#696）。**画面のパスと分ける**（{@link ACCOUNT_DISPLAY_NAME_PATH} と同じ判断）。
+ * 本文は素のフォームで、許可の id を {@link GRANT_ID_FIELD} に 1 つだけ載せる。
+ */
+export const ACCOUNT_APPS_REVOKE_API_PATH = '/api/account/apps/revoke';
+
+/** フォームの項目名（解除する許可の id）。画面と API が同じ綴りを使う。 */
+export const GRANT_ID_FIELD = 'grant_id';
+
 /** 登録情報の画面のタブ 1 つ。 */
 export interface AccountTab {
   /** タブの行き先（経路表の GET の画面）。 */
@@ -115,6 +133,8 @@ export const ACCOUNT_TABS: readonly AccountTab[] = [
   { path: ACCOUNT_HANDLE_PATH, label: 'ハンドル名' },
   { path: ACCOUNT_DETAILS_PATH, label: 'アカウント' },
   { path: ACCOUNT_MAIL_PATH, label: 'メール配信' },
+  // MCP で接続したアプリ（#696 / 仕様 5.15）。画面は `src/account-apps.ts`。
+  { path: ACCOUNT_APPS_PATH, label: '接続中のアプリ' },
 ];
 
 /**

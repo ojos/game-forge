@@ -31,7 +31,8 @@
  * | 退会（本人が押す。識別子・メール・表示名の匿名化・アイコンの削除・履歴の削除・ハンドル名の予約・指示文を空にする・作品の全件削除） | `src/account-withdrawal.ts` の `/account/withdraw` と `POST /api/account/withdraw` / `src/withdrawal.ts`（段1〜3 と匿名化の値）/ `src/withdrawal-purge.ts` と `workers/cleanup/`（後続の処理）/ `migrations/0045_user_withdrawal.sql`（#518 が同じ変更で追記した） |
  * | 削除依頼 | `src/takedown.ts` / `migrations/0018_takedown_requests.sql` |
  * | 運営の措置の記録 | `migrations/0026_admin_actions.sql` |
- * | Cookie 2 種 | `src/session.ts`（`__Host-gf_session`、7 日）/ `src/auth/google.ts`（`__Host-gf_oauth`、10 分） |
+ * | AI アプリとの接続（MCP。接続したアプリの名前・戻り先・許可した範囲・日時と、発行した鍵のハッシュ・30 日で失効・解除と退会で消える） | `src/oauth-provider.ts`（`@cloudflare/workers-oauth-provider` 0.10.3。KV `OAUTH_KV` の `client:` / `grant:` / `token:`。トークンは `generateTokenId` の SHA-256 だけを鍵にし、props は暗号化）/ `src/oauth-authorize.ts`（同意のときに許可へ写すアプリ名と戻り先のホスト名）/ `src/account-apps.ts`（解除）/ `src/account-withdrawal.ts`（退会で消す）/ 寿命は `src/oauth-paths.ts`（#696 が同じ変更で追記した） |
+ * | Cookie 3 種 | `src/session.ts`（`__Host-gf_session`、7 日）/ `src/auth/google.ts`（`__Host-gf_oauth`、10 分）/ `src/oauth-paths.ts`（`__Host-gf_mcp_authz`、10 分。#696 が足した） |
  * | AWS 上の処理の記録（生成・ビルド・撮影は 14 日 / 費用ガードは 30 日） | `terraform/orchestrator.tf`・`terraform/build-function.tf`・`terraform/ogp-function.tf` の `retention_in_days = 14` と、`terraform/bedrock-guard.tf` の `retention_in_days = 30`（**ひとまとめに 14 日と書いていた誤りを PR #400 の Copilot の指摘で分けた。値を変えたら本文も直すこと**） |
  * | 外部サービス | Cloudflare（`wrangler.toml`）/ AWS・Bedrock・Guardrails（`terraform/bedrock.tf` / `terraform/moderation.tf` / `src/generation-models.ts`）/ Google（`src/auth/google.ts`）/ Resend（`src/mail/resend.ts`） |
  *
@@ -61,6 +62,11 @@ import { OAUTH_COOKIE_MAX_AGE, SESSION_MAX_AGE } from './auth/google.js';
 import { AVATAR_HISTORY_RETENTION_DAYS, AVATAR_OUTPUT_SIZE } from './avatar.js';
 import { HANDLE_RESERVATION_DAYS } from './handle.js';
 import { WITHDRAWN_DISPLAY_NAME } from './withdrawal.js';
+import {
+  ACCESS_TOKEN_TTL_SECONDS,
+  PENDING_AUTHORIZATION_MAX_AGE_SECONDS,
+  REFRESH_TOKEN_TTL_SECONDS,
+} from './oauth-paths.js';
 
 /** 画面の `<title>`（パンくずの末尾にもこの名前が出る）。 */
 export const PRIVACY_TITLE = 'プライバシーポリシー - Game Forge';
@@ -100,6 +106,10 @@ export function privacyBody(contact: PrivacyContact): string {
   // 寿命の正本は発行する側（`src/auth/google.ts`）である。本文へ数字を書き写さない。
   const sessionDays = Math.round(SESSION_MAX_AGE / (60 * 60 * 24));
   const oauthMinutes = Math.round(OAUTH_COOKIE_MAX_AGE / 60);
+  // AI アプリとの接続の寿命の正本は `src/oauth-paths.ts`（#696）。
+  const connectionDays = Math.round(REFRESH_TOKEN_TTL_SECONDS / (60 * 60 * 24));
+  const accessTokenMinutes = Math.round(ACCESS_TOKEN_TTL_SECONDS / 60);
+  const pendingMinutes = Math.round(PENDING_AUTHORIZATION_MAX_AGE_SECONDS / 60);
   // **暫定版の但し書きはブロック（`.gf-block`）で、器の幅いっぱいに面を置く**（仕様 2.5.3 / #471）。本文は 42rem のまま。
   // **器は読み物の器**（`READING_CLASS`。42rem の幅で中央に置く。仕様 2.5.3 / #564）。
   return `<div class="gf-legal ${READING_CLASS}">
@@ -132,6 +142,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li><strong>ハンドル名</strong>（登録情報の画面で設定できます）: 作者ページの URL（<code>/@ハンドル名</code>）に使う名前。作者ページの URL として、作品の一覧や作品ページのリンクにも表れ、誰でも見られます。ハンドル名を変えたときは、前のハンドル名を ${HANDLE_RESERVATION_DAYS} 日間ほかの方が使えないように残し、前の URL を開いた方を新しいハンドル名の作者ページへ転送します。${HANDLE_RESERVATION_DAYS} 日を過ぎた前のハンドル名も、ほかの方がそのハンドル名を使うまではデータベースに残ります。Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>ハンドル名の変更の履歴</strong>: ハンドル名を決めたり変えたりしたときの、変える前と後のハンドル名と、変えた日時。通報への対応のために運営者が確かめるもので、公開しません。変更の履歴は書き換えず、追記だけで残します。Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>メール配信の設定</strong>（登録情報の画面で変更できます）: 作品がフォークされたときのお知らせを受け取るかどうかと、受け取らない設定にした日時。公開しません。Cloudflare のデータベース（D1）に保存します</li>
+  <li><strong>AI アプリとの接続</strong>（Claude などの AI アプリに、あなたの作品の読み取りや生成を許可した場合）: 接続したアプリの名前（アプリ自身が名乗った名前）・許可した後の戻り先・許可した範囲・接続した日時と、アプリへ発行した鍵（トークン）の記録。<strong>鍵そのものは保存せず、照合に使う値（ハッシュ値）だけを保存します。</strong>登録情報の「接続中のアプリ」で確かめ、解除できます。Cloudflare のキーと値の保存場所（KV）に保存します</li>
   <li><strong>招待の情報</strong>: 招待コード、誰が誰を招待したか、コードを使った日時</li>
   <li><strong>作品を作るときの指示文</strong>（生成・フォーク・リフォージの指示）。作品ごとに、最初の指示とリフォージの指示を、作者本人が見返せるように作品と結び付けて保存します（公開しません。入力の検査で止めた指示は、作品と結び付けて保存しません）</li>
   <li><strong>作品</strong>: 題名とその変更履歴、生成されたソースコード、遊ぶためのファイル、紹介用の画像、公開・下書き・公開停止の状態、フォーク元の作品</li>
@@ -164,6 +175,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li>作品の生成・フォーク・リフォージ・公開・表示を行うため</li>
   <li>1 人あたりの生成枠と、サービス全体の費用の上限を管理するため</li>
   <li>生成の完了・失敗や、作品がフォークされたことを、メールでお知らせするため（作品がフォークされたことのお知らせは、登録情報の画面で受け取らない設定にできます。生成の完了・失敗のお知らせは、その設定にかかわらず送ります）</li>
+  <li>あなたが許可した AI アプリから、あなたの作品の読み取りや生成を行えるようにするため</li>
   <li>招待の仕組みを運用し、待機リストに登録された方へ招待についてご連絡するため</li>
   <li>不正な利用や規約に反する内容を防ぎ、通報・削除依頼に対応するため</li>
   <li>お問い合わせに回答するため</li>
@@ -184,7 +196,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <p>公開する前の作品は、作品ページの URL を知っている人がそのページを開いても、まだ公開されていないことだけが表示されます（題名は表示されず、遊ぶこともできません）。</p>
 <p>公開した作品のソースコードは、他の利用者がその作品をフォークするときに、生成の材料として使われます。</p>
 <p><strong>次の情報は公開しません。</strong>メールアドレス、指示文、いいねした作品の一覧、
-   誰が誰を招待したか、通報の内容、表示名の変更の履歴、自己紹介と外部リンクの変更の履歴、差し替える前・外す前のアイコンの画像とアイコンの変更の履歴、ハンドル名の変更の履歴、メール配信の設定。</p>
+   誰が誰を招待したか、通報の内容、表示名の変更の履歴、自己紹介と外部リンクの変更の履歴、差し替える前・外す前のアイコンの画像とアイコンの変更の履歴、ハンドル名の変更の履歴、メール配信の設定、接続した AI アプリ。</p>
 
 <h2>4. 第三者への提供と、外部の事業者への送信</h2>
 <p>上の 3 に書いた情報は、利用者が表示名や自己紹介・外部リンク・アイコン・ハンドル名を設定したり作品を公開したりすることで、誰でも見られるようになります。</p>
@@ -196,7 +208,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <p>本サービスは、次の事業者のサービスを使って運営しています。
    <strong>それぞれに、下に書いた情報が送られ、または保存されます。</strong></p>
 <ul>
-  <li><strong>Cloudflare</strong>: 本サービスの配信（ホスティング）と、データベース・ファイル・いいねとプレイ数の記録の保存。上の 1 に挙げた情報の主な保存先です。</li>
+  <li><strong>Cloudflare</strong>: 本サービスの配信（ホスティング）と、データベース・ファイル・いいねとプレイ数の記録・AI アプリとの接続の記録の保存。上の 1 に挙げた情報の主な保存先です。</li>
   <li><strong>Amazon Web Services（AWS）</strong>: 作品の生成・ビルド・紹介用の画像の撮影と、アイコンの画像の作り直しを行う処理の実行（アイコンの画像は、作り直すあいだだけ送り、AWS 上には保存しません）。
     <ul>
       <li>生成には <strong>Amazon Bedrock</strong>（Anthropic 社の Claude モデル）を使います。指示文と、フォーク・リフォージのときは元の作品のソースコードを送ります。</li>
@@ -208,11 +220,12 @@ export function privacyBody(contact: PrivacyContact): string {
 </ul>
 
 <h2>6. Cookie</h2>
-<p>本サービスが発行する Cookie は次の 2 つだけです。どちらもログインのためのもので、
+<p>本サービスが発行する Cookie は次の 3 つだけです。どれもログインのためのもので、
    本サービスのドメインだけに送られ、ページのスクリプトからは読めません。</p>
 <ul>
   <li><strong>ログインの状態</strong>: 利用者の識別子と有効期限を、改ざんを検知できる形で持ちます。有効期間は ${sessionDays} 日です。</li>
   <li><strong>ログイン手続き中の一時的な情報</strong>: Google のログイン画面との往復のあいだだけ使います（入力された招待コードと、ログイン後に戻る画面を含みます）。有効期間は ${oauthMinutes} 分です。</li>
+  <li><strong>AI アプリとの接続の手続き中の情報</strong>: ログインしていない状態で AI アプリとの接続を始めたときに、ログインから戻るまでのあいだだけ、アプリからの接続の要求を持ちます。有効期間は ${pendingMinutes} 分です。</li>
 </ul>
 <p><strong>ブラウザの保存領域（sessionStorage）</strong>: 同じ作品を短い時間に何度も開いたときにプレイ数を重ねて数えないよう、
    作品ページを開いたブラウザの sessionStorage に、作品ごとに最後に数えた時刻を置きます（30 分以内は数え直しません）。
@@ -224,6 +237,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li>入力の検査で止めた指示文は、90 日を目安に削除します。</li>
   <li>AWS 上の処理の記録（ログ）のうち、作品の生成・ビルド・紹介用の画像の撮影・アイコンの画像の作り直しの記録は 14 日で、費用の上限を監視する処理の記録は 30 日で、自動的に削除されます（アイコンの作り直しの記録に画像そのものは含みません）。</li>
   <li><strong>差し替える前・外す前のアイコンの画像は、差し替えた・外した日から ${AVATAR_HISTORY_RETENTION_DAYS} 日で自動的に削除されます</strong>（削除の処理の都合で、実際に消えるまでさらに 1 日ほどかかることがあります）。アイコンの変更の履歴（ハッシュ値と日時）は削除しません。不適切な画像を運営者が削除する場合と、アカウントの削除を希望された場合は、この期間を待たずに、いまのアイコンと前の画像の両方を削除します。</li>
+  <li><strong>AI アプリとの接続は、許可した日から ${connectionDays} 日で失効し、記録も自動的に削除されます</strong>（使っていても延びません。続けて使うには、もう一度許可してください）。アプリへ発行する鍵は ${accessTokenMinutes} 分で失効します。登録情報の「接続中のアプリ」で解除すると、その時点で削除します。</li>
   <li>Cookie は、上の 6 に書いた有効期間で失効します。ブラウザの sessionStorage に置く時刻は、タブを閉じると消えます。</li>
   <li><strong>作品は、作者が作品ページから削除すると削除します。</strong>削除できるのは、公開していない作品（下書き）です（公開中の作品は、公開をやめて下書きに戻してから削除できます）。削除すると、題名・説明・タグ・生成されたソースコード・遊ぶためのファイル・紹介用の画像と、リフォージの前の版を削除します。ただし、次の場合は作品の行（作品の識別子・作者・フォーク元・作った日時など。題名や中身は含みません）を残します。
     <ul>
@@ -246,6 +260,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li>アイコンの画像（いま使っているものと、差し替える前・外す前の画像の両方を、上の ${AVATAR_HISTORY_RETENTION_DAYS} 日を待たずに削除します）。</li>
   <li>表示名・自己紹介と外部リンク・アイコン・ハンドル名の変更の履歴。</li>
   <li>メール配信の設定。</li>
+  <li>AI アプリとの接続（許可と、アプリへ発行した鍵の記録）。</li>
   <li>作品を作るときに入力した指示文（生成の記録の行・費用・日時は残します）。</li>
   <li>作品（公開中の作品は公開を停止してから削除します。削除の範囲は、上の「作品は、作者が作品ページから削除すると削除します」と同じです）。</li>
   <li>待機リストに同じメールアドレスの登録が残っていれば、あわせて削除します。</li>

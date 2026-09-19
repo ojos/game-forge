@@ -58,6 +58,7 @@
  * CSRF はセッション cookie の `SameSite=Lax` が受ける——他サイトからの POST に cookie が乗らない。
  */
 import {
+  ACCOUNT_APPS_PATH,
   ACCOUNT_DETAILS_PATH,
   ACCOUNT_WITHDRAWN_PATH,
   ACCOUNT_WITHDRAW_API_PATH,
@@ -77,6 +78,7 @@ import {
   siteViewerAt,
 } from './html.js';
 import { siteFooter } from './legal.js';
+import { revokeAllOAuthGrants } from './oauth-provider.js';
 import { HOME_PATH } from './paths.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
@@ -185,6 +187,7 @@ export function renderWithdrawConfirmation(viewer: SiteViewer): string {
   <li>アイコンの画像（いま使っているものと、差し替える前の画像の両方を削除します）。</li>
   <li>表示名・自己紹介と外部リンク・アイコン・ハンドル名の<strong>変更の履歴</strong>（公開していない記録です）。ただし、通報・削除依頼・運営者の措置があった方の履歴は残します（下の「退会しても残るもの」）。</li>
   <li>メール配信の設定。</li>
+  <li>AI アプリとの接続（<a href="${ACCOUNT_APPS_PATH}">接続中のアプリ</a>）。接続したアプリは、あなたのアカウントを使えなくなります。</li>
   <li><strong>あなたの作品</strong>（公開中の作品は取り下げてから削除します）。題名・説明・タグ・ソースコード・遊ぶためのファイル・紹介用の画像と、リフォージの前の版が消えます。</li>
   <li>作品を作るときに入力した<strong>指示文</strong>。</li>
 </ul>
@@ -351,6 +354,11 @@ async function handleWithdraw(request: Request, env: Env, now: () => number): Pr
   }
 
   if (outcome.ok) {
+    // **MCP の接続（KV の許可）をすべて消す**（#696 / 仕様 5.15「退会」）。**確定の後に、口の側で行う**——
+    // D1 と R2 の処理（`src/withdrawal.ts`）とは別の保存先で、あちらに混ぜると退会の段の説明が変わる。
+    // **ベストエフォートである。** 消せなくても、トークンは使うたびの確認（`src/oauth-user.ts`）で止まり、
+    // 許可は 30 日で切れる。失敗はログだけにし、退会の応答は変えない（押し直せば、既に退会済みの成功としてここへ戻る）。
+    await revokeOAuthGrantsAfterWithdrawal(request, env, session.userId);
     return new Response(null, {
       status: 303,
       headers: [
@@ -370,6 +378,23 @@ async function handleWithdraw(request: Request, env: Env, now: () => number): Pr
     renderWithdrawalRefusal(refusal, siteViewerAt(ACCOUNT_WITHDRAW_PATH, true, null)),
     refusal.status,
   );
+}
+
+/**
+ * 退会が確定した利用者の MCP の接続をすべて消す（#696）。**投げない**（失敗はログだけ）。
+ *
+ * @param request 受信したリクエスト（アプリのホストの origin を取る）
+ * @param env バインディングと環境変数
+ * @param userId 退会した利用者の id
+ */
+async function revokeOAuthGrantsAfterWithdrawal(request: Request, env: Env, userId: string): Promise<void> {
+  try {
+    await revokeAllOAuthGrants(env, new URL(request.url).origin, userId);
+  } catch (error) {
+    console.error(
+      `[account-withdrawal] MCP の接続を消せませんでした: ${error instanceof Error ? error.name : 'unknown'}`,
+    );
+  }
 }
 
 /**

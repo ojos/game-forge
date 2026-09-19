@@ -30,7 +30,7 @@
  * 3. **候補を引く**（中身を消していない・公開中でない・進行中でない）。{@link CANDIDATE_LIMIT} 件
  * 4. **{@link GAMES_PER_STEP} 件だけ `deleteGame` を呼ぶ**（待ち中の作品は飛ばす）
  * 5. **残りの作品が 0 件の利用者を 1 人だけ完了させる**（アイコンを消し直し、R2 の接頭辞が空だと
- *    確かめ、台帳の指示文を打ち直し、`withdrawal_completed_at` を立てる）
+ *    確かめ、**MCP の許可を消して残っていないと確かめ**〔#696〕、台帳の指示文を打ち直し、`withdrawal_completed_at` を立てる）
  * 6. **次のアラームを決める**（進んだら {@link PROGRESS_DELAY_MS}、待ちだけなら
  *    {@link BACKOFF_DELAY_MS}、何も無ければ立てない）
  *
@@ -50,6 +50,17 @@ import type { StorageEnv } from './build-cache.js';
 import { deleteGame } from './game-deletion.js';
 import { PUBLISHED_STATUS, REMOVED_STATUS } from './games.js';
 import { avatarObjectsGone, purgeAvatarObjects, withdrawUser } from './withdrawal.js';
+import { revokeAllUserGrants, userGrantsGone } from './oauth-grants.js';
+
+/**
+ * 後続の処理が触る保存先。D1 と R2 に、**MCP の許可の KV（`OAUTH_KV`）** を足したもの（#696 / 仕様 5.15）。
+ *
+ * **完了の段で、その利用者の許可をすべて消してから印を立てる。** 押した要求（`src/account-withdrawal.ts`）も確定の後に
+ * 消すが、それはベストエフォートで、止まった要求をここが代わりに確定させた退会（段 1 の代打）では走らない。
+ * 許可の寿命は同意から 1 年なので、ここで消さないと**退会した人の許可が使われないまま最大 1 年残る**（`/privacy` の
+ * 「退会で削除します」に反する。PR #706 の Copilot の指摘）。
+ */
+export type PurgeEnv = StorageEnv & { readonly OAUTH_KV: KVNamespace };
 
 /**
  * 掴んだままこの秒数（**10 分**）たった処理中の退会を、後続の処理が代わりに打つ。
@@ -158,14 +169,14 @@ export interface PurgeStepResult {
  * （Durable Object のアラームは失敗すると自動で再試行される）。**個々の作品の削除の失敗だけ**は
  * 待ちに積んで先へ進む——1 本の壊れた作品が、残り 59 本の削除を永久に止めないようにする。
  *
- * @param env D1 と R2
+ * @param env D1 と R2 と MCP の許可の KV
  * @param backoff 失敗した作品の待ちの帳面
  * @param now 時刻（UNIX 秒。既定は現在時刻）
  * @returns この回の結果と、次のアラームまでの時間
  * @throws D1 と R2 の失敗（アラームの再試行に任せる）
  */
 export async function runWithdrawalPurgeStep(
-  env: StorageEnv,
+  env: PurgeEnv,
   backoff: PurgeBackoff,
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<PurgeStepResult> {
@@ -362,7 +373,7 @@ export async function runWithdrawalPurgeStep(
  * @returns 完了させた人数（0 か 1）
  */
 async function completeOneWithdrawal(
-  env: StorageEnv,
+  env: PurgeEnv,
   now: number,
   countStatement: () => void,
 ): Promise<number> {
@@ -402,6 +413,14 @@ async function completeOneWithdrawal(
   if (!purged || !(await avatarObjectsGone(env, row.id))) {
     // **立てない。** 「R2 の接頭辞が空だった」ことがこの列の意味である（`0045`）。
     console.warn('[withdrawal] アイコンが R2 に残っているので、完了の印を立てません');
+    return 0;
+  }
+
+  // **MCP の許可を消し、残っていないと確かめてから立てる**（#696 / 仕様 5.15「退会」。{@link PurgeEnv}）。KV の失敗は
+  // 投げる（アラームの再試行に任せる。R2 と同じ扱い）。**D1 の文は使わない**（枠の 50 に数えない）。
+  await revokeAllUserGrants(env.OAUTH_KV, row.id);
+  if (!(await userGrantsGone(env.OAUTH_KV, row.id))) {
+    console.warn('[withdrawal] MCP の許可が KV に残っているので、完了の印を立てません');
     return 0;
   }
 

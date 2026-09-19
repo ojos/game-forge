@@ -216,7 +216,7 @@ export function renderConsentPage(view: ConsentView): string {
 ${scopeRows}
 </ul>
 </fieldset>
-<p>許可は、登録情報の<a href="${ACCOUNT_APPS_PATH}">接続中のアプリ</a>からいつでも解除できます。許可は 30 日で切れ、その後はもう一度この画面で許可が必要です。</p>
+<p>許可は、登録情報の<a href="${ACCOUNT_APPS_PATH}">接続中のアプリ</a>からいつでも解除できます。許可は、最後に使ってから 30 日で切れます。使い続けていても、許可した日から 1 年で切れます。切れた後は、もう一度この画面で許可が必要です。</p>
 <button type="submit" name="${CONSENT_DECISION_FIELD}" value="${DECISION_APPROVE}" class="gf-button gf-button-primary">許可する</button>
 <button type="submit" name="${CONSENT_DECISION_FIELD}" value="${DECISION_DENY}" class="gf-button gf-button-secondary">許可しない</button>
 </form>

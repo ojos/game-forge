@@ -244,6 +244,83 @@ describe('作品 60 件を、途中で止めて再開しても全件消し終え
   }, SIXTY_WORKS_TIMEOUT_MS);
 });
 
+describe('MCP の許可（#696 / 仕様 5.15「退会」）', () => {
+  /**
+   * 利用者の許可とトークンを KV に置く（部品の保存の形。一覧と解除が読むのは許可の JSON と鍵の名前だけ）。
+   *
+   * @param userId 利用者の id
+   * @param grantId 許可の id
+   */
+  async function seedGrant(userId: string, grantId: string): Promise<void> {
+    await env.OAUTH_KV.put(
+      `grant:${userId}:${grantId}`,
+      JSON.stringify({ id: grantId, clientId: 'client', userId, scope: ['works:read'], metadata: {}, createdAt: 1 }),
+    );
+    await env.OAUTH_KV.put(`token:${userId}:${grantId}:token-1`, '{}');
+  }
+
+  /**
+   * 利用者の KV の鍵の数。
+   *
+   * @param userId 利用者の id
+   * @returns 許可とトークンの鍵の数
+   */
+  async function kvKeys(userId: string): Promise<number> {
+    const grants = await env.OAUTH_KV.list({ prefix: `grant:${userId}:` });
+    const tokens = await env.OAUTH_KV.list({ prefix: `token:${userId}:` });
+    return grants.keys.length + tokens.keys.length;
+  }
+
+  it('押した要求が許可を消さなかった退会（代打・確定だけの退会）でも、完了の段が消してから印を立てる', async () => {
+    const userId = await seedUser();
+    const bystander = await seedUser();
+    await seedGrant(userId, 'grantA');
+    await seedGrant(userId, 'grantB');
+    await seedGrant(bystander, 'grantC');
+    // **KV に触れない確定**（`withdrawUser` は D1 と R2 だけ。cron の代打と同じ形）。
+    expect(await withdrawUser(env, userId, NOW)).toEqual({ ok: true, result: 'withdrawn' });
+    expect(await kvKeys(userId)).toBe(4);
+
+    const backoff = new MemoryPurgeBackoff();
+    for (let rounds = 1; rounds < 20; rounds += 1) {
+      const result = await runWithdrawalPurgeStep(env, backoff, NOW + rounds);
+      if (result.nextDelayMs === null) {
+        break;
+      }
+    }
+    expect((await withdrawalRow(userId))?.withdrawal_completed_at).not.toBeNull();
+    expect(await kvKeys(userId)).toBe(0);
+    // 他人の許可は残る。
+    expect(await kvKeys(bystander)).toBe(2);
+  });
+
+  it('許可が消えずに残るあいだは、完了の印を立てない', async () => {
+    const userId = await seedUser();
+    await seedGrant(userId, 'grantStuck');
+    expect(await withdrawUser(env, userId, NOW)).toEqual({ ok: true, result: 'withdrawn' });
+    // **消しても消えない KV**（delete を黙って捨てる）。
+    const stubborn = new Proxy(env.OAUTH_KV, {
+      get(target, property) {
+        if (property === 'delete') {
+          return async () => {};
+        }
+        return bound(target, property, target);
+      },
+    });
+    const result = await runWithdrawalPurgeStep(
+      { DB: env.DB, BUCKET: env.BUCKET, OAUTH_KV: stubborn },
+      new MemoryPurgeBackoff(),
+      NOW + 1,
+    );
+    expect(result.completed).toBe(0);
+    expect((await withdrawalRow(userId))?.withdrawal_completed_at).toBeNull();
+    // 本物の KV に戻せば完了する。
+    await runWithdrawalPurgeStep(env, new MemoryPurgeBackoff(), NOW + 2);
+    expect((await withdrawalRow(userId))?.withdrawal_completed_at).not.toBeNull();
+    expect(await kvKeys(userId)).toBe(0);
+  });
+});
+
 describe('アラーム 1 回の中身', () => {
   it('公開中のまま残った作品を取り下げ直し、親の被改造数も数え直す', async () => {
     const userId = await seedUser();
@@ -337,7 +414,7 @@ describe('アラーム 1 回の中身', () => {
     });
 
     const backoff = new MemoryPurgeBackoff();
-    await runWithdrawalPurgeStep({ DB: env.DB, BUCKET: brittle }, backoff, NOW + 1);
+    await runWithdrawalPurgeStep({ DB: env.DB, BUCKET: brittle, OAUTH_KV: env.OAUTH_KV }, backoff, NOW + 1);
     expect(failed).toBe(true);
     // 待ちに入ったので、次の回は取らない。
     expect(backoff.ready(doomed, NOW + 2)).toBe(false);
@@ -373,7 +450,7 @@ describe('アラーム 1 回の中身', () => {
       },
     });
 
-    const result = await runWithdrawalPurgeStep({ DB: env.DB, BUCKET: stubborn }, new MemoryPurgeBackoff(), NOW + 1);
+    const result = await runWithdrawalPurgeStep({ DB: env.DB, BUCKET: stubborn, OAUTH_KV: env.OAUTH_KV }, new MemoryPurgeBackoff(), NOW + 1);
     expect(result.completed).toBe(0);
     expect((await withdrawalRow(userId))?.withdrawal_completed_at).toBeNull();
 
@@ -630,8 +707,8 @@ describe('Copilot の指摘への回帰（PR #588）', () => {
     // 退会を 1 件だけ置いて、代打・候補・完了・打ち止めの 4 経路を通す。
     const userId = await seedUser();
     expect(await withdrawUser(env, userId, NOW)).toEqual({ ok: true, result: 'withdrawn' });
-    await runWithdrawalPurgeStep({ DB: spy, BUCKET: env.BUCKET }, new MemoryPurgeBackoff(), NOW + 1);
-    await runWithdrawalPurgeStep({ DB: spy, BUCKET: env.BUCKET }, new MemoryPurgeBackoff(), NOW + 2);
+    await runWithdrawalPurgeStep({ DB: spy, BUCKET: env.BUCKET, OAUTH_KV: env.OAUTH_KV }, new MemoryPurgeBackoff(), NOW + 1);
+    await runWithdrawalPurgeStep({ DB: spy, BUCKET: env.BUCKET, OAUTH_KV: env.OAUTH_KV }, new MemoryPurgeBackoff(), NOW + 2);
 
     // `select` で `users` を引く文だけを見る（`update` は実行計画の対象にしない）。
     const reads = seen.filter(

@@ -1,5 +1,5 @@
 import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index.js';
 import { appReservedHandles } from '../src/app.js';
 import { ACCOUNT_APPS_PATH, ACCOUNT_APPS_REVOKE_API_PATH, ACCOUNT_WITHDRAW_API_PATH } from '../src/account-paths.js';
@@ -19,6 +19,8 @@ import {
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   AUTHORIZE_PATH,
+  GRANT_IDLE_LIMIT_SECONDS,
+  GRANT_MAX_AGE_SECONDS,
   AUTHORIZE_RESUME_PATH,
   OAUTH_SCOPES,
   PENDING_AUTHORIZATION_COOKIE,
@@ -777,6 +779,29 @@ describe('接続中のアプリ（/account/apps）', () => {
     expect((await callMcp(connected.accessToken)).status).toBe(404);
   });
 
+  it('許可が 100 件を超えても、全部を並べ、101 件目以降も解除できる（cursor を最後まで追う）', async () => {
+    const user = await seedUser();
+    const total = 105;
+    for (let index = 0; index < total; index += 1) {
+      const id = `bulk${String(index).padStart(4, '0')}`;
+      await env.OAUTH_KV.put(
+        `grant:${user.id}:${id}`,
+        JSON.stringify({ id, clientId: 'c', userId: user.id, scope: [SCOPE_WORKS_READ], metadata: { clientName: `App ${id}` }, createdAt: 1000 + index }),
+      );
+    }
+    const body = await (await call('GET', ACCOUNT_APPS_PATH, { headers: { cookie: user.cookie } })).text();
+    expect(body.split('name="grant_id"').length - 1).toBe(total);
+    expect(body).not.toContain('一部だけを表示しています');
+    // KV の list は鍵の辞書順で 100 件ずつ返す。**最後の 1 件は 2 ページ目にしか無い。**
+    const last = `bulk${String(total - 1).padStart(4, '0')}`;
+    const response = await call('POST', ACCOUNT_APPS_REVOKE_API_PATH, {
+      headers: { cookie: user.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      body: `grant_id=${last}`,
+    });
+    expect(response.headers.get('location')).toBe(`${ACCOUNT_APPS_PATH}?revoked=1`);
+    expect((await kvKeysOf(user.id)).grants).toBe(total - 1);
+  });
+
   it('形の違う id・重なった id は invalid-request。未ログインはログインへ', async () => {
     const user = await seedUser();
     for (const body of ['grant_id=a:b', 'grant_id=a&grant_id=b', '']) {
@@ -793,6 +818,20 @@ describe('接続中のアプリ（/account/apps）', () => {
 });
 
 describe('退会で許可が消える', () => {
+  it('退会の口は、100 件を超える許可もすべて消す', async () => {
+    const user = await seedUser();
+    for (let index = 0; index < 103; index += 1) {
+      const id = `wd${String(index).padStart(4, '0')}`;
+      await env.OAUTH_KV.put(
+        `grant:${user.id}:${id}`,
+        JSON.stringify({ id, clientId: 'c', userId: user.id, scope: [], metadata: {}, createdAt: 1 }),
+      );
+    }
+    const response = await call('POST', ACCOUNT_WITHDRAW_API_PATH, { headers: { cookie: user.cookie } });
+    expect(response.status).toBe(303);
+    expect((await kvKeysOf(user.id)).grants).toBe(0);
+  });
+
   it('退会が確定すると、その利用者の KV の許可とトークンがすべて消える（他人の許可は残る）', async () => {
     const user = await seedUser();
     const bystander = await seedUser();
@@ -832,6 +871,93 @@ describe('トークンの利用者の確認（src/oauth-user.ts）', () => {
     }
     expect(await isOAuthUserActive(env.DB, undefined)).toBe(false);
     expect(await isOAuthUserActive(env.DB, '')).toBe(false);
+  });
+});
+
+describe('接続の寿命（最後に使ってから 30 日・同意から 1 年。利用者の決定）', () => {
+  const DAY = 24 * 60 * 60;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * 時計を「いま」から進める（部品とこちらの判定はどちらも `Date.now()` を読む）。
+   *
+   * @param base 起点（ミリ秒）
+   * @param seconds 進める秒数
+   */
+  function advanceTo(base: number, seconds: number): void {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(base + seconds * 1000);
+  }
+
+  /**
+   * refresh する。
+   *
+   * @param clientId client_id
+   * @param refreshToken リフレッシュトークン
+   * @returns 応答
+   */
+  async function refresh(clientId: string, refreshToken: string): Promise<Response> {
+    return await call('POST', '/token', {
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: clientId }).toString(),
+    });
+  }
+
+  it('値は 30 日と 365 日', () => {
+    expect(GRANT_IDLE_LIMIT_SECONDS).toBe(30 * DAY);
+    expect(GRANT_MAX_AGE_SECONDS).toBe(365 * DAY);
+  });
+
+  it('30 日を超えて使わなかった許可の refresh は invalid_grant で断り、許可を消す', async () => {
+    const user = await seedUser();
+    const base = Date.now();
+    const connected = await connect(user.cookie);
+    advanceTo(base, 30 * DAY + 120);
+    const response = await refresh(connected.clientId, connected.refreshToken);
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: string }).error).toBe('invalid_grant');
+    vi.useRealTimers();
+    expect(await kvKeysOf(user.id)).toEqual({ grants: 0, tokens: 0 });
+  });
+
+  it('29 日目に refresh すれば通り、そこからまた 30 日延びる', async () => {
+    const user = await seedUser();
+    const base = Date.now();
+    const connected = await connect(user.cookie);
+    advanceTo(base, 29 * DAY);
+    const first = await refresh(connected.clientId, connected.refreshToken);
+    expect(first.status).toBe(200);
+    const next = (await first.json()) as { refresh_token: string };
+    // 同意から 58 日目。**同意から数えれば 30 日を超えている**が、最後に使ってから 29 日なので通る。
+    advanceTo(base, 58 * DAY);
+    const second = await refresh(connected.clientId, next.refresh_token);
+    expect(second.status).toBe(200);
+    const last = (await second.json()) as { refresh_token: string };
+    // 最後に使ってから 30 日を超えると断る。
+    advanceTo(base, 88 * DAY + 120);
+    expect((await refresh(connected.clientId, last.refresh_token)).status).toBe(400);
+  });
+
+  it('使い続けても、同意から 1 年を超えたら切れる', async () => {
+    const user = await seedUser();
+    const base = Date.now();
+    const connected = await connect(user.cookie);
+    let refreshToken = connected.refreshToken;
+    // 29 日ごとに使い続ける。348 日目までは通る。
+    for (let day = 29; day <= 348; day += 29) {
+      advanceTo(base, day * DAY);
+      const response = await refresh(connected.clientId, refreshToken);
+      expect(response.status, `${day} 日目`).toBe(200);
+      refreshToken = ((await response.json()) as { refresh_token: string }).refresh_token;
+    }
+    // 377 日目（最後に使ってから 29 日）。無活動では切れないが、1 年の上限で切れる。
+    advanceTo(base, 377 * DAY);
+    const expired = await refresh(connected.clientId, refreshToken);
+    expect(expired.status).toBe(400);
+    expect(((await expired.json()) as { error: string }).error).toBe('invalid_grant');
   });
 });
 

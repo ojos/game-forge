@@ -357,8 +357,9 @@ async function handleWithdraw(request: Request, env: Env, now: () => number): Pr
     // **MCP の接続（KV の許可）をすべて消す**（#696 / 仕様 5.15「退会」）。**確定の後に、口の側で行う**——
     // D1 と R2 の処理（`src/withdrawal.ts`）とは別の保存先で、あちらに混ぜると退会の段の説明が変わる。
     // **ベストエフォートである。** 消せなくても、トークンは使うたびの確認（`src/oauth-user.ts`）で止まり、
-    // 許可は 30 日で切れる。失敗はログだけにし、退会の応答は変えない（押し直せば、既に退会済みの成功としてここへ戻る）。
-    await revokeOAuthGrantsAfterWithdrawal(request, env, session.userId);
+    // **退会の完了の段（cleanup の Worker。`src/withdrawal-purge.ts`）が、完了の印を立てる前に必ず消す。**
+    // 失敗はログだけにし、退会の応答は変えない。
+    await revokeOAuthGrantsAfterWithdrawal(env, session.userId);
     return new Response(null, {
       status: 303,
       headers: [
@@ -383,13 +384,12 @@ async function handleWithdraw(request: Request, env: Env, now: () => number): Pr
 /**
  * 退会が確定した利用者の MCP の接続をすべて消す（#696）。**投げない**（失敗はログだけ）。
  *
- * @param request 受信したリクエスト（アプリのホストの origin を取る）
  * @param env バインディングと環境変数
  * @param userId 退会した利用者の id
  */
-async function revokeOAuthGrantsAfterWithdrawal(request: Request, env: Env, userId: string): Promise<void> {
+async function revokeOAuthGrantsAfterWithdrawal(env: Env, userId: string): Promise<void> {
   try {
-    await revokeAllOAuthGrants(env, new URL(request.url).origin, userId);
+    await revokeAllOAuthGrants(env, userId);
   } catch (error) {
     console.error(
       `[account-withdrawal] MCP の接続を消せませんでした: ${error instanceof Error ? error.name : 'unknown'}`,

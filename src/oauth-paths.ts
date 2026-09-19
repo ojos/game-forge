@@ -88,13 +88,22 @@ export const OAUTH_SCOPE_LABELS: Readonly<Record<string, { readonly name: string
 export const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 
 /**
- * リフレッシュトークンの寿命（秒）。**30 日**（利用者の決定）。
+ * 接続を使わずに置いておける長さ（秒）。**最後に使って（トークンを発行・refresh して）から 30 日**（利用者の決定。
+ * 使うたびに延びる）。
  *
- * **同意（最初の code の交換）から数えた 30 日で、使っていても延びない**——部品（0.10.3）は許可の期限を code の交換の
- * ときに決め、refresh では動かさない（refresh で寿命を変える指定は部品が断る）。期限が近づくと、発行するアクセストークンの
- * 寿命も残りに合わせて縮む。期限が来たら同意からやり直す。許可の記録（KV）も同じ期限で消える。
+ * **判定はこちらが持つ**（`src/oauth-provider.ts` の `tokenExchangeCallback`）。部品（0.10.3）は許可の期限を code の交換の
+ * ときに決め、refresh では動かさないので、部品の期限（{@link GRANT_MAX_AGE_SECONDS}）には載せられない。許可の props に
+ * 最後に使った時刻（`lastUsedAt`）を持たせ、refresh のたびに見て更新する。
  */
-export const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+export const GRANT_IDLE_LIMIT_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * 許可そのものの寿命（秒）。**同意（最初の code の交換）から 365 日**。部品の `refreshTokenTTL` に渡す。
+ *
+ * **使い続けても 1 年で必ずつなぎ直す**（利用者の決定）。漏れたトークンを止める手段を「解除」だけにしないための上限である。
+ * 期限が近づくと、発行するアクセストークンの寿命も残りに合わせて縮む（部品）。許可の記録（KV）もこの期限で消える。
+ */
+export const GRANT_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
 
 /**
  * 未ログインで接続を始めたときに、認可の要求をログインの往復のあいだ積む一時 cookie の名前（`src/oauth-authorize.ts`）。

@@ -17,8 +17,9 @@
  * ## 決めた値（仕様 5.15 の決定）
  *
  * - scope は `works:read` と `works:generate`（`src/oauth-paths.ts`）
- * - アクセストークン 1 時間・リフレッシュトークン 30 日（refresh のたびに入れ替わる。部品の既定の挙動）。**30 日は同意から数え、
- *   使っていても延びない**（`src/oauth-paths.ts` の `REFRESH_TOKEN_TTL_SECONDS`）
+ * - アクセストークン 1 時間。リフレッシュトークンは refresh のたびに入れ替わる（部品の既定の挙動）。**最後に使ってから 30 日で
+ *   切れ、使い続けても同意から 1 年で切れる**（`src/oauth-paths.ts` の `GRANT_IDLE_LIMIT_SECONDS` と `GRANT_MAX_AGE_SECONDS`）。
+ *   1 年は部品の期限（`refreshTokenTTL`）、30 日の無活動は {@link tokenExchangeCallback} がこちらで判定する
  * - PKCE は S256 だけ（`allowPlainPKCE: false`）。implicit と token exchange は許さない
  * - CIMD と DCR の両方を受ける（CIMD は `global_fetch_strictly_public` の互換フラグが要る。`wrangler.toml`）
  * - **口（resource）を `https://<アプリのホスト>/mcp` に固定する**（`resourceMetadata.resource`）。発行する
@@ -31,7 +32,8 @@
  * ローカルの `https://game-forge.localtest.me:8787` のようにポートが付く形も、そのまま一貫する）。
  */
 import type { OAuthHelpers, OAuthProviderOptions } from '@cloudflare/workers-oauth-provider';
-import { OAuthProvider, getOAuthApi } from '@cloudflare/workers-oauth-provider';
+import { GrantType, OAuthError, OAuthProvider, getOAuthApi } from '@cloudflare/workers-oauth-provider';
+import { grantHelpers, revokeAllUserGrants } from './oauth-grants.js';
 import { isOAuthUserActive } from './oauth-user.js';
 import {
   ACCESS_TOKEN_TTL_SECONDS,
@@ -40,7 +42,8 @@ import {
   OAUTH_PROVIDER_PATHS,
   OAUTH_SCOPES,
   PROTECTED_RESOURCE_METADATA_PATH,
-  REFRESH_TOKEN_TTL_SECONDS,
+  GRANT_IDLE_LIMIT_SECONDS,
+  GRANT_MAX_AGE_SECONDS,
   REGISTER_PATH,
   TOKEN_PATH,
 } from './oauth-paths.js';
@@ -60,6 +63,18 @@ export interface OAuthTokenProps {
 }
 
 /**
+ * 許可（grant）の props。**暗号化して保存される**（部品。鍵はリフレッシュトークンでしか解けない）。
+ *
+ * - `userId` … 同意画面の `completeAuthorization` が入れる
+ * - `lastUsedAt` … 最後にトークンを発行・refresh した時刻（UNIX 秒）。code の交換で入れ、refresh のたびに更新する
+ *   （{@link tokenExchangeCallback}）。**30 日の無活動の判定に使う**
+ */
+export interface OAuthGrantProps {
+  readonly userId: string;
+  readonly lastUsedAt?: number;
+}
+
+/**
  * 同意のときに許可（grant）へ残す情報（部品の `metadata`。**暗号化されない**）。
  *
  * 「接続中のアプリ」のタブ（`src/account-apps.ts`）が読む。**DCR のクライアントは 90 日で消える**（部品の既定）ので、
@@ -72,16 +87,14 @@ export interface OAuthGrantMetadata {
   readonly redirectHost: string;
 }
 
-/** 1 回の要求で解除する許可の上限（退会のとき。KV の list 1 回の既定の上限と同じ）。 */
-const GRANT_PAGE_SIZE = 100;
-
 /**
  * 部品へ渡す設定を組み立てる。
  *
  * @param origin アプリのホストの origin（`https://app.game-forge.ojos.jp`）
+ * @param env バインディングと環境変数（無活動で切った許可を消すのに使う）
  * @returns 設定
  */
-function providerOptions(origin: string): OAuthProviderOptions<Env> {
+function providerOptions(origin: string, env: Env): OAuthProviderOptions<Env> {
   return {
     apiRoute: MCP_PATH,
     apiHandler: { fetch: mcpPlaceholderHandler },
@@ -93,7 +106,7 @@ function providerOptions(origin: string): OAuthProviderOptions<Env> {
     tokenEndpoint: TOKEN_PATH,
     clientRegistrationEndpoint: REGISTER_PATH,
     accessTokenTTL: ACCESS_TOKEN_TTL_SECONDS,
-    refreshTokenTTL: REFRESH_TOKEN_TTL_SECONDS,
+    refreshTokenTTL: GRANT_MAX_AGE_SECONDS,
     scopesSupported: [...OAUTH_SCOPES],
     allowImplicitFlow: false,
     allowPlainPKCE: false,
@@ -104,49 +117,80 @@ function providerOptions(origin: string): OAuthProviderOptions<Env> {
       scopes_supported: [...OAUTH_SCOPES],
       resource_name: 'Game Forge',
     },
-    tokenExchangeCallback,
+    tokenExchangeCallback: (options) => tokenExchangeCallback(options, env, origin),
   };
 }
 
 /**
- * トークンを発行するたびに、アクセストークンの props へそのトークンの scope を足す。
+ * トークンを発行するたびに呼ばれる（部品の `tokenExchangeCallback`）。**3 つのことをする。**
  *
- * **許可（grant）の props は変えない**（`newProps` を返さない）。refresh でクライアントが scope を狭めたときにも、
- * そのトークンの scope（`requestedScope`）が載る。
+ * 1. **refresh のとき、最後に使ってから {@link GRANT_IDLE_LIMIT_SECONDS} 秒を超えていたら断る**（利用者の決定。使うたびに延びる
+ *    30 日）。部品の `OAuthError('invalid_grant')` を投げると、部品がそのまま token のエンドポイントの 400 `invalid_grant` にする
+ *    （0.10.3 の `handleTokenRequest` → `createOAuthErrorResponse`。何も書かない）。**断った許可はその場で消す**（ベストエフォート）——
+ *    二度と使えない記録を 1 年の期限まで KV に残さない。`lastUsedAt` を持たない許可（この変更より前の形）は同意の時刻で見る
+ * 2. 断らなければ、**許可の props の `lastUsedAt` を今に更新した新しい props を返す**（`newProps`）。code の交換のときも同じく今を入れる。
+ *    部品は refresh のたびに許可の記録を書き直しているので（リフレッシュトークンの入れ替え）、**KV の書き込みは増えない**
+ * 3. **アクセストークンの props には、そのトークンの scope を足す**（`accessTokenProps`。PR② が `insufficient_scope` の判定に使う）。
+ *    refresh でクライアントが scope を狭めたときにも、そのトークンの scope（`requestedScope`）が載る
  *
  * @param options 部品が渡す値
- * @param options.requestedScope このトークンに付く scope
- * @param options.props 許可の props
- * @returns アクセストークンの props
+ * @param env バインディングと環境変数
+ * @param origin アプリのホストの origin
+ * @returns 許可とアクセストークンの props
+ * @throws OAuthError 無活動で切れた許可を refresh しようとしたとき（`invalid_grant`）
  */
-function tokenExchangeCallback(options: { requestedScope: string[]; props: unknown }): {
-  accessTokenProps: OAuthTokenProps;
-} {
-  const props = options.props as { userId?: unknown } | null;
+export async function tokenExchangeCallback(
+  options: {
+    grantType: GrantType | string;
+    userId: string;
+    grantId: string;
+    requestedScope: string[];
+    props: unknown;
+  },
+  env: Env,
+  origin: string,
+): Promise<{ newProps: OAuthGrantProps; accessTokenProps: OAuthTokenProps } | undefined> {
+  if (options.grantType !== GrantType.AUTHORIZATION_CODE && options.grantType !== GrantType.REFRESH_TOKEN) {
+    // token exchange と EMA は許していない（設定で閉じている）。来ても props を変えない。
+    return undefined;
+  }
+  const props = options.props as { userId?: unknown; lastUsedAt?: unknown } | null;
+  const userId = typeof props?.userId === 'string' ? props.userId : '';
+  const now = Math.floor(Date.now() / 1000);
+  if (options.grantType === GrantType.REFRESH_TOKEN) {
+    const lastUsedAt = typeof props?.lastUsedAt === 'number' ? props.lastUsedAt : await grantCreatedAt(env, options);
+    if (lastUsedAt === null || now - lastUsedAt > GRANT_IDLE_LIMIT_SECONDS) {
+      try {
+        await grantHelpers(env.OAUTH_KV).revokeGrant(options.grantId, options.userId);
+      } catch (error) {
+        console.error(
+          `[oauth-provider] 無活動で切れた許可を消せませんでした: ${error instanceof Error ? error.name : 'unknown'}`,
+        );
+      }
+      throw new OAuthError('invalid_grant', { description: 'Grant expired due to inactivity' });
+    }
+  }
   return {
-    accessTokenProps: {
-      userId: typeof props?.userId === 'string' ? props.userId : '',
-      scope: [...options.requestedScope],
-    },
+    newProps: { userId, lastUsedAt: now },
+    accessTokenProps: { userId, scope: [...options.requestedScope] },
   };
 }
 
-/** origin ごとに組んだ部品（組むのは要求ごとでも安いが、設定の検査を毎回走らせない）。 */
-const providers = new Map<string, OAuthProvider<Env>>();
-
 /**
- * origin に対応する部品を返す。
+ * `lastUsedAt` を持たない許可の、同意の時刻を読む（KV の読み取り 1。書き込みはしない）。
  *
- * @param origin アプリのホストの origin
- * @returns 部品
+ * @param env バインディングと環境変数
+ * @param options 利用者と許可の id
+ * @param options.userId 利用者の id
+ * @param options.grantId 許可の id
+ * @returns 同意の時刻（UNIX 秒）。読めなければ null（断る側に倒す）
  */
-function providerFor(origin: string): OAuthProvider<Env> {
-  let provider = providers.get(origin);
-  if (provider === undefined) {
-    provider = new OAuthProvider<Env>(providerOptions(origin));
-    providers.set(origin, provider);
-  }
-  return provider;
+async function grantCreatedAt(
+  env: Env,
+  options: { readonly userId: string; readonly grantId: string },
+): Promise<number | null> {
+  const grant = await env.OAUTH_KV.get<{ createdAt?: unknown }>(`grant:${options.userId}:${options.grantId}`, 'json');
+  return typeof grant?.createdAt === 'number' ? grant.createdAt : null;
 }
 
 /**
@@ -160,7 +204,7 @@ function providerFor(origin: string): OAuthProvider<Env> {
  * @returns 部品の操作
  */
 export function oauthHelpers(env: Env, origin: string): OAuthHelpers {
-  return getOAuthApi(providerOptions(origin), env);
+  return getOAuthApi(providerOptions(origin, env), env);
 }
 
 /**
@@ -187,7 +231,8 @@ export function isOAuthProviderPath(pathname: string): boolean {
  * 部品の口への要求を処理する（`src/index.ts` のアプリのホストの枝から呼ぶ）。
  *
  * **env は写してから渡す**——部品は `env.OAUTH_PROVIDER` を代入するので、Pages が渡した env の
- * オブジェクトを書き換えさせない。
+ * オブジェクトを書き換えさせない。**部品は要求ごとに組む**——`tokenExchangeCallback` がその要求の env（無活動の許可を消す KV）を
+ * 閉じ込めるので、組んだ部品を要求をまたいで使い回さない。組むのは設定の検査だけで、KV も fetch も触らない。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -200,7 +245,8 @@ export async function handleOAuthProviderRequest(
   ctx: ExecutionContext,
 ): Promise<Response> {
   const origin = new URL(request.url).origin;
-  return await providerFor(origin).fetch(request, { ...env }, ctx);
+  const copied = { ...env };
+  return await new OAuthProvider<Env>(providerOptions(origin, copied)).fetch(request, copied, ctx);
 }
 
 /**
@@ -259,33 +305,14 @@ export function isAllowedMcpOrigin(origin: string | null, env: Env): boolean {
 }
 
 /**
- * 利用者の許可（MCP の接続）をすべて消す（退会のとき。仕様 5.15「退会」）。
- *
- * 許可を消すと、その許可から出たアクセストークンとリフレッシュトークンもすべて無効になる（部品の `revokeGrant`）。
+ * 利用者の許可（MCP の接続）をすべて消す（退会のとき。仕様 5.15「退会」）。中身は `src/oauth-grants.ts`（cleanup の Worker と共有）。
  *
  * @param env バインディングと環境変数
- * @param origin アプリのホストの origin
  * @param userId 利用者の id
  * @returns 消した許可の数
  */
-export async function revokeAllOAuthGrants(env: Env, origin: string, userId: string): Promise<number> {
-  const helpers = oauthHelpers(env, origin);
-  let revoked = 0;
-  // **一覧を 1 周してから消す**——消しながら cursor で送ると、KV の list の結果がずれうる。
-  const grantIds: string[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await helpers.listUserGrants(userId, { limit: GRANT_PAGE_SIZE, ...(cursor === undefined ? {} : { cursor }) });
-    for (const grant of page.items) {
-      grantIds.push(grant.id);
-    }
-    cursor = page.cursor;
-  } while (cursor !== undefined);
-  for (const grantId of grantIds) {
-    await helpers.revokeGrant(grantId, userId);
-    revoked += 1;
-  }
-  return revoked;
+export async function revokeAllOAuthGrants(env: Pick<Env, 'OAUTH_KV'>, userId: string): Promise<number> {
+  return await revokeAllUserGrants(env.OAUTH_KV, userId);
 }
 
 /**

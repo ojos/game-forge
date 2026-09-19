@@ -31,7 +31,7 @@
  * | 退会（本人が押す。識別子・メール・表示名の匿名化・アイコンの削除・履歴の削除・ハンドル名の予約・指示文を空にする・作品の全件削除） | `src/account-withdrawal.ts` の `/account/withdraw` と `POST /api/account/withdraw` / `src/withdrawal.ts`（段1〜3 と匿名化の値）/ `src/withdrawal-purge.ts` と `workers/cleanup/`（後続の処理）/ `migrations/0045_user_withdrawal.sql`（#518 が同じ変更で追記した） |
  * | 削除依頼 | `src/takedown.ts` / `migrations/0018_takedown_requests.sql` |
  * | 運営の措置の記録 | `migrations/0026_admin_actions.sql` |
- * | AI アプリとの接続（MCP。接続したアプリの名前・戻り先・許可した範囲・日時と、発行した鍵のハッシュ・30 日で失効・解除と退会で消える） | `src/oauth-provider.ts`（`@cloudflare/workers-oauth-provider` 0.10.3。KV `OAUTH_KV` の `client:` / `grant:` / `token:`。トークンは `generateTokenId` の SHA-256 だけを鍵にし、props は暗号化）/ `src/oauth-authorize.ts`（同意のときに許可へ写すアプリ名と戻り先のホスト名）/ `src/account-apps.ts`（解除）/ `src/account-withdrawal.ts`（退会で消す）/ 寿命は `src/oauth-paths.ts`（#696 が同じ変更で追記した） |
+ * | AI アプリとの接続（MCP。接続したアプリの名前・戻り先・許可した範囲・日時と、発行した鍵のハッシュ・最後に使ってから 30 日で使えなくなり、同意から 1 年で失効して記録も消える・解除と退会で消える） | `src/oauth-provider.ts`（`@cloudflare/workers-oauth-provider` 0.10.3。KV `OAUTH_KV` の `client:` / `grant:` / `token:`。トークンは `generateTokenId` の SHA-256 だけを鍵にし、props は暗号化）/ `src/oauth-authorize.ts`（同意のときに許可へ写すアプリ名と戻り先のホスト名）/ `src/account-apps.ts`（解除）/ `src/account-withdrawal.ts`（退会で消す）/ 寿命は `src/oauth-paths.ts`（#696 が同じ変更で追記した） |
  * | Cookie 3 種 | `src/session.ts`（`__Host-gf_session`、7 日）/ `src/auth/google.ts`（`__Host-gf_oauth`、10 分）/ `src/oauth-paths.ts`（`__Host-gf_mcp_authz`、10 分。#696 が足した） |
  * | AWS 上の処理の記録（生成・ビルド・撮影は 14 日 / 費用ガードは 30 日） | `terraform/orchestrator.tf`・`terraform/build-function.tf`・`terraform/ogp-function.tf` の `retention_in_days = 14` と、`terraform/bedrock-guard.tf` の `retention_in_days = 30`（**ひとまとめに 14 日と書いていた誤りを PR #400 の Copilot の指摘で分けた。値を変えたら本文も直すこと**） |
  * | 外部サービス | Cloudflare（`wrangler.toml`）/ AWS・Bedrock・Guardrails（`terraform/bedrock.tf` / `terraform/moderation.tf` / `src/generation-models.ts`）/ Google（`src/auth/google.ts`）/ Resend（`src/mail/resend.ts`） |
@@ -65,7 +65,8 @@ import { WITHDRAWN_DISPLAY_NAME } from './withdrawal.js';
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   PENDING_AUTHORIZATION_MAX_AGE_SECONDS,
-  REFRESH_TOKEN_TTL_SECONDS,
+  GRANT_IDLE_LIMIT_SECONDS,
+  GRANT_MAX_AGE_SECONDS,
 } from './oauth-paths.js';
 
 /** 画面の `<title>`（パンくずの末尾にもこの名前が出る）。 */
@@ -107,7 +108,8 @@ export function privacyBody(contact: PrivacyContact): string {
   const sessionDays = Math.round(SESSION_MAX_AGE / (60 * 60 * 24));
   const oauthMinutes = Math.round(OAUTH_COOKIE_MAX_AGE / 60);
   // AI アプリとの接続の寿命の正本は `src/oauth-paths.ts`（#696）。
-  const connectionDays = Math.round(REFRESH_TOKEN_TTL_SECONDS / (60 * 60 * 24));
+  const idleDays = Math.round(GRANT_IDLE_LIMIT_SECONDS / (60 * 60 * 24));
+  const maxAgeYears = Math.round(GRANT_MAX_AGE_SECONDS / (60 * 60 * 24 * 365));
   const accessTokenMinutes = Math.round(ACCESS_TOKEN_TTL_SECONDS / 60);
   const pendingMinutes = Math.round(PENDING_AUTHORIZATION_MAX_AGE_SECONDS / 60);
   // **暫定版の但し書きはブロック（`.gf-block`）で、器の幅いっぱいに面を置く**（仕様 2.5.3 / #471）。本文は 42rem のまま。
@@ -225,7 +227,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <ul>
   <li><strong>ログインの状態</strong>: 利用者の識別子と有効期限を、改ざんを検知できる形で持ちます。有効期間は ${sessionDays} 日です。</li>
   <li><strong>ログイン手続き中の一時的な情報</strong>: Google のログイン画面との往復のあいだだけ使います（入力された招待コードと、ログイン後に戻る画面を含みます）。有効期間は ${oauthMinutes} 分です。</li>
-  <li><strong>AI アプリとの接続の手続き中の情報</strong>: ログインしていない状態で AI アプリとの接続を始めたときに、ログインから戻るまでのあいだだけ、アプリからの接続の要求を持ちます。有効期間は ${pendingMinutes} 分です。</li>
+  <li><strong>AI アプリとの接続の手続き中の情報</strong>: ログインしていない状態で AI アプリとの接続を始めたときに、Google のログイン画面との往復のあいだだけ、アプリからの接続の要求（アプリの識別子・許可した後の戻り先・求めている範囲など）を、改ざんを検知できる形で持ちます。ログインから戻ると消します。有効期間は ${pendingMinutes} 分です。</li>
 </ul>
 <p><strong>ブラウザの保存領域（sessionStorage）</strong>: 同じ作品を短い時間に何度も開いたときにプレイ数を重ねて数えないよう、
    作品ページを開いたブラウザの sessionStorage に、作品ごとに最後に数えた時刻を置きます（30 分以内は数え直しません）。
@@ -237,7 +239,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li>入力の検査で止めた指示文は、90 日を目安に削除します。</li>
   <li>AWS 上の処理の記録（ログ）のうち、作品の生成・ビルド・紹介用の画像の撮影・アイコンの画像の作り直しの記録は 14 日で、費用の上限を監視する処理の記録は 30 日で、自動的に削除されます（アイコンの作り直しの記録に画像そのものは含みません）。</li>
   <li><strong>差し替える前・外す前のアイコンの画像は、差し替えた・外した日から ${AVATAR_HISTORY_RETENTION_DAYS} 日で自動的に削除されます</strong>（削除の処理の都合で、実際に消えるまでさらに 1 日ほどかかることがあります）。アイコンの変更の履歴（ハッシュ値と日時）は削除しません。不適切な画像を運営者が削除する場合と、アカウントの削除を希望された場合は、この期間を待たずに、いまのアイコンと前の画像の両方を削除します。</li>
-  <li><strong>AI アプリとの接続は、許可した日から ${connectionDays} 日で失効し、記録も自動的に削除されます</strong>（使っていても延びません。続けて使うには、もう一度許可してください）。アプリへ発行する鍵は ${accessTokenMinutes} 分で失効します。登録情報の「接続中のアプリ」で解除すると、その時点で削除します。</li>
+  <li><strong>AI アプリとの接続は、最後に使ってから ${idleDays} 日で使えなくなります。使い続けていても、許可した日から ${maxAgeYears} 年で失効します。</strong>使えなくなった接続の記録は、アプリがもう一度使おうとしたときか、許可した日から ${maxAgeYears} 年たったときに自動的に削除されます。続けて使うには、もう一度許可してください。アプリへ発行する鍵は ${accessTokenMinutes} 分で失効します。登録情報の「接続中のアプリ」で解除すると、その時点で削除します。</li>
   <li>Cookie は、上の 6 に書いた有効期間で失効します。ブラウザの sessionStorage に置く時刻は、タブを閉じると消えます。</li>
   <li><strong>作品は、作者が作品ページから削除すると削除します。</strong>削除できるのは、公開していない作品（下書き）です（公開中の作品は、公開をやめて下書きに戻してから削除できます）。削除すると、題名・説明・タグ・生成されたソースコード・遊ぶためのファイル・紹介用の画像と、リフォージの前の版を削除します。ただし、次の場合は作品の行（作品の識別子・作者・フォーク元・作った日時など。題名や中身は含みません）を残します。
     <ul>

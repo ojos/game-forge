@@ -18,14 +18,11 @@ import { ACCOUNT_APPS_PATH, ACCOUNT_APPS_REVOKE_API_PATH, GRANT_ID_FIELD } from 
 import { loginRequiredRedirect } from './auth/google.js';
 import { escapeHtml, headerAvatarUrl } from './html.js';
 import { formatJstMinutes } from './jst.js';
-import { oauthHelpers } from './oauth-provider.js';
+import { grantHelpers, listAllUserGrants } from './oauth-grants.js';
 import { OAUTH_SCOPE_LABELS } from './oauth-paths.js';
 import type { Route } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-
-/** 1 人あたりに並べる許可の上限（部品の list の 1 回分。1 人がこれを超えて接続する形は想定しない）。 */
-const MAX_LISTED_GRANTS = 100;
 
 /** 解除の本文の上限（バイト）。 */
 const MAX_BODY_BYTES = 1024;
@@ -54,6 +51,8 @@ export interface ConnectedApp {
 /** 画面に要る値。 */
 export interface AccountAppsView {
   readonly apps: readonly ConnectedApp[];
+  /** 一覧を上限（`src/oauth-grants.ts` の `MAX_GRANT_PAGES`）で打ち切ったか。 */
+  readonly truncated: boolean;
   readonly notice: { readonly kind: 'error'; readonly message: string } | { readonly kind: 'revoked' } | null;
   readonly headerAvatar: string | null;
 }
@@ -103,12 +102,16 @@ ${view.apps
   )
   .join('\n')}
 </ul>`;
+  const truncated = view.truncated
+    ? '<p class="error" role="alert">接続が多すぎるため、一部だけを表示しています。解除すると、残りが表示されます。</p>'
+    : '';
   return accountShell({
     path: ACCOUNT_APPS_PATH,
     title: '接続中のアプリ - Game Forge',
     headerAvatar: view.headerAvatar,
     body: `${notice}
-<p>Claude などの AI アプリから、あなたの作品を読んだり生成を始めたりできるように許可した接続の一覧です。解除すると、そのアプリはあなたのアカウントを使えなくなります。許可は 30 日で切れます。</p>
+<p>Claude などの AI アプリから、あなたの作品を読んだり生成を始めたりできるように許可した接続の一覧です。解除すると、そのアプリはあなたのアカウントを使えなくなります。許可は、最後に使ってから 30 日で切れます。使い続けていても、許可した日から 1 年で切れます。</p>
+${truncated}
 ${rows}`,
   });
 }
@@ -116,14 +119,21 @@ ${rows}`,
 /**
  * 利用者の許可を読む。
  *
- * @param request 受信したリクエスト
  * @param env バインディングと環境変数
  * @param userId 利用者の id
- * @returns 許可（新しい順）
+ * @returns 許可（新しい順）と、打ち切ったか
  */
-async function loadConnectedApps(request: Request, env: Env, userId: string): Promise<ConnectedApp[]> {
-  const page = await oauthHelpers(env, new URL(request.url).origin).listUserGrants(userId, { limit: MAX_LISTED_GRANTS });
-  return page.items.map(connectedAppOf).sort((a, b) => b.connectedAt - a.connectedAt);
+async function loadConnectedApps(
+  env: Env,
+  userId: string,
+): Promise<{ readonly apps: ConnectedApp[]; readonly truncated: boolean }> {
+  // **cursor を最後まで追う**（上限で打ち切ったら画面に出す）。先頭の 100 件だけを読むと、101 件目以降が画面に出ず
+  // 解除もできない（PR #706 の Copilot の指摘）。
+  const listing = await listAllUserGrants(grantHelpers(env.OAUTH_KV), userId);
+  return {
+    apps: listing.items.map(connectedAppOf).sort((a, b) => b.connectedAt - a.connectedAt),
+    truncated: listing.truncated,
+  };
 }
 
 /**
@@ -152,15 +162,16 @@ async function showAccountApps(request: Request, env: Env): Promise<Response> {
         ? { kind: 'revoked' }
         : null;
   let apps: ConnectedApp[] = [];
+  let truncated = false;
   try {
-    apps = await loadConnectedApps(request, env, session.userId);
+    ({ apps, truncated } = await loadConnectedApps(env, session.userId));
   } catch (error) {
     // **KV が読めなくても画面は出す**（一覧が空だと読める形にはしない。知らせを出す）。
     console.error(`[account-apps] 接続の一覧を読めませんでした: ${error instanceof Error ? error.name : 'unknown'}`);
     notice = { kind: 'error', message: '接続の一覧を読めませんでした。しばらくしてからお試しください。' };
   }
   return html(
-    renderAccountAppsPage({ apps, notice, headerAvatar: headerAvatarUrl(request, env, session.userId) }),
+    renderAccountAppsPage({ apps, truncated, notice, headerAvatar: headerAvatarUrl(request, env, session.userId) }),
     reason === null ? 200 : 400,
   );
 }
@@ -201,11 +212,11 @@ async function handleRevoke(request: Request, env: Env): Promise<Response> {
     return seeOther(`${ACCOUNT_APPS_PATH}?reason=invalid-request`);
   }
   try {
-    const helpers = oauthHelpers(env, new URL(request.url).origin);
+    const helpers = grantHelpers(env.OAUTH_KV);
     // **本人の一覧に在る id だけを消す**（鍵は利用者の id で絞られるので他人の許可には届かないが、
-    // 無い id を「解除しました」と言わない）。
-    const page = await helpers.listUserGrants(session.userId, { limit: MAX_LISTED_GRANTS });
-    if (!page.items.some((grant) => grant.id === grantId)) {
+    // 無い id を「解除しました」と言わない）。**一覧は cursor を追って探し、見つけたら止める。**
+    const listing = await listAllUserGrants(helpers, session.userId, (grant) => grant.id === grantId);
+    if (!listing.items.some((grant) => grant.id === grantId)) {
       return seeOther(`${ACCOUNT_APPS_PATH}?reason=not-found`);
     }
     await helpers.revokeGrant(grantId, session.userId);

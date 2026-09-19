@@ -19,7 +19,7 @@
  * | ハンドル名（作者ページの URL。誰でも見られる）と、改名で手放したハンドル名の予約（90 日は本人以外が取れず、旧い URL を転送する）と、その変更の履歴（公開しない） | `migrations/` の user_handles（`handles` の主キーがハンドル名で、手放した行は `released_at` を持つ。**予約が切れた行は、ほかの人がその名前を取るときに消す**——それまでは残る / 追記のみの `handle_changes`）/ `src/handle.ts` の `changeHandle` / `src/account-handle.ts` の `/account/handle` / `src/users-page.ts`（`/@handle` と転送）。**履歴を読む画面はまだ無い**（運営が D1 で確かめる。#381 が同じ変更で追記した） |
  * | メール配信の設定（改造のお知らせを受け取るかと、止めた日時・公開しない）と、止められないお知らせ | `migrations/` の fork_notice_mute（`users.fork_notice_muted_at`）/ `src/account.ts` の `/account/mail` / 送信の口で読むのは `src/mail/fork-notice.ts` だけ / 種別の一覧は `src/mail/kinds.ts`（#384 が同じ変更で追記した） |
  * | 招待関係 | `migrations/0001_init.sql`（`invites` / `users.invited_by`）/ `src/invites.ts` |
- * | 指示文・生成の記録 | `src/cost-ledger.ts`（`generations.prompt`）/ `migrations/0009_game_revisions.sql` |
+ * | 指示文・生成の記録 | `src/cost-ledger.ts`（`generations.prompt`）/ `migrations/0009_game_revisions.sql` / `migrations/0047_games_prompt.sql`（最初の指示を作品と結び付けた写し。作者本人にだけ `src/works-api.ts` が返す。削除・退会・入力の検査での止めで消える。#694 が同じ変更で追記した） |
  * | 遮断された指示文（90 日） | `migrations/0016_moderation_blocks.sql` / `scripts/moderation-prune.sh` |
  * | 作品・題名の変更履歴 | `migrations/0001_init.sql`（`games`）/ `migrations/0027_title_changes.sql` / R2 |
  * | 作者による作品の削除（下書きと取り下げた作品だけ・子や運営の記録があれば行と履歴を残す・指示文と生成の記録は残る） | `src/game-deletion.ts` の `deleteGame`（行を残す条件・消す表）/ `migrations/0041_game_deletion.sql`（`purged_at`）/ `src/work-page.ts` の `POST /api/works/delete`（作者の確認）/ `generations` は作品と結び付けていない（確定27）（#517 が同じ変更で追記した） |
@@ -133,7 +133,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li><strong>ハンドル名の変更の履歴</strong>: ハンドル名を決めたり変えたりしたときの、変える前と後のハンドル名と、変えた日時。通報への対応のために運営者が確かめるもので、公開しません。変更の履歴は書き換えず、追記だけで残します。Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>メール配信の設定</strong>（登録情報の画面で変更できます）: 作品がフォークされたときのお知らせを受け取るかどうかと、受け取らない設定にした日時。公開しません。Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>招待の情報</strong>: 招待コード、誰が誰を招待したか、コードを使った日時</li>
-  <li><strong>作品を作るときの指示文</strong>（生成・フォーク・リフォージの指示）</li>
+  <li><strong>作品を作るときの指示文</strong>（生成・フォーク・リフォージの指示）。作品ごとに、最初の指示とリフォージの指示を、作者本人が見返せるように作品と結び付けて保存します（公開しません。入力の検査で止めた指示は、作品と結び付けて保存しません）</li>
   <li><strong>作品</strong>: 題名とその変更履歴、生成されたソースコード、遊ぶためのファイル、紹介用の画像、公開・下書き・公開停止の状態、フォーク元の作品</li>
   <li><strong>作品の説明</strong>: 作者が作品に書く説明（遊び方やクレジットなど）と、その変更の履歴（変える前と後の説明、変えた日時）。説明は下書きのうちから書けます。下書きのあいだは作者にだけ見え、公開すると作品ページで誰でも見られます。変更の履歴は書き換えず、追記だけで残します。どちらも Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>いいね</strong>: どの作品にいいねしたかと、その日時</li>
@@ -230,7 +230,8 @@ export function privacyBody(contact: PrivacyContact): string {
       <li>その作品をフォークした作品があるとき（フォークした作品に「削除済みの作品から派生」と表示するため）</li>
       <li>通報・削除依頼・運営者の措置・入力の検査の記録がその作品にあるとき（対応を確かめられるようにするため。題名と説明の変更の履歴も残します）</li>
     </ul>
-    <strong>作品を削除しても、作品を作るときの指示文と生成の記録は削除しません</strong>（1 人あたりの生成枠とサービス全体の費用の上限を管理するため）。<strong>退会したときだけは指示文を削除します</strong>（生成の記録の行・費用・日時は残します。下の「退会」）。</li>
+    作品と結び付けて保存した指示文も、作品と一緒に削除します。
+    <strong>作品を削除しても、生成の記録に残る、作品を作るときの指示文と生成の記録は削除しません</strong>（1 人あたりの生成枠とサービス全体の費用の上限を管理するため）。<strong>退会したときだけは指示文を削除します</strong>（生成の記録の行・費用・日時は残します。下の「退会」）。</li>
   <li>それ以外の情報は、期限を定めた自動の削除を行っておらず、本サービスの提供に必要なあいだ保存します。</li>
 </ul>
 <h3>退会</h3>

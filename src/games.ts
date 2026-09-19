@@ -791,9 +791,9 @@ async function insertPendingGame(
        (id, author_id, parent_id, status, title, go_version, source_key, wasm_key,
         fork_count, created_at, published_at, preview_key,
         generation_state, generation_error, job_token_hash, generation_started_at,
-        ip_notice)
+        ip_notice, prompt)
      select ?, ?, ?, ?, ?, ?, null, null, 0, ?, null, null, 'pending', null, ?, null,
-            ?
+            ?, ?
       where ${exclusive ? inFlightGuardSql() : '1 = 1'}`,
   )
     .bind(
@@ -812,6 +812,9 @@ async function insertPendingGame(
       // **入るのはこちらの一覧が持つ正式名だけで、利用者が書いた文字列は入らない**
       // （`migrations/0015_games_ip_notice.sql`）。当たらなければ null。
       ipNoticeOf(request.prompt),
+      // 最初の指示文（#694 / `migrations/0047_games_prompt.sql`）。**作者本人にしか返さない**
+      // （`src/works-api.ts`）。入力の検査で止まったら {@link failGame} が NULL へ戻す。
+      request.prompt,
       ...(exclusive ? inFlightGuardBindings(userId, now) : []),
     )
     .run();
@@ -1008,11 +1011,14 @@ export async function failGame(
   code: GenerationErrorCode,
 ): Promise<boolean> {
   const result = await env.DB.prepare(
+    // **入力の検査で止めた指示文は作品の行に残さない**（#694 / `0047`）。止めた指示文を
+    // 残すのは `moderation_blocks` の 90 日だけ、という `/privacy` の約束を守るため。
     `update games
-        set generation_state = 'failed', generation_error = ?, job_token_hash = null
+        set generation_state = 'failed', generation_error = ?, job_token_hash = null,
+            prompt = case when ? = 'prompt-blocked' then null else prompt end
       where id = ? and generation_state in ('pending', 'running')`,
   )
-    .bind(code, gameId)
+    .bind(code, code, gameId)
     .run();
 
   return (result.meta.changes ?? 0) > 0;

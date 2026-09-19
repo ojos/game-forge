@@ -404,7 +404,7 @@ function finalizeStatements(env: StorageEnv, gameId: string, now: number): D1Pre
               title = ?, description = '', description_set_at = null,
               tag1 = null, tag2 = null, tag3 = null, tags_set_at = null,
               preview_key = null, ogp_key = null, ogp_state = null, ogp_token_hash = null,
-              ogp_started_at = null, ip_notice = null, job_token_hash = null,
+              ogp_started_at = null, ip_notice = null, job_token_hash = null, prompt = null,
               source_key = null, wasm_key = null, go_version = ?
         where id = ? and deletion_started_at is not null and purged_at is null and ${keep}`,
     ).bind(REMOVED_STATUS, now, PURGED_TITLE, UNBUILT_GO_VERSION, gameId, ...keepBindings),

@@ -49,7 +49,7 @@ cron `*/5 * * * *` が **5 本中 1 本目**として登録されている。`wr
 | 起こし方 | **cron `*/5 * * * *`** → `scheduled()` が DO のアラームを立て、**同じ回で止まった生成・推敲の行を畳む**（#681） | `workers/cleanup/wrangler.toml` の `[triggers]` |
 | 止まった行の畳み | 開始から 1 時間を過ぎた `pending` / `running` の `games` 行と `game_revision_jobs` 行を `failed` に（条件付き UPDATE 2 本・表ごとに 25 行まで） | `src/stale-generation-sweep.ts` |
 | 進め方 | アラーム 1 回で作品 2 件（進んだら 1 秒後・待ちだけなら 30 分後・何も無ければ立てない） | `src/withdrawal-purge.ts` |
-| 押した要求の中の処理 | 掴む → R2（アイコン）→ 1 batch・13 文で確定 | `src/withdrawal.ts` |
+| 押した要求の中の処理 | 掴む → R2（アイコン）→ 1 batch・14 文で確定 | `src/withdrawal.ts` |
 | D1 の列と索引 | `users` の 3 列 / `users_withdrawal_pending_idx` / トリガ 3 本 | `migrations/0045_user_withdrawal.sql` |
 | 配備 | `scripts/deploy-cleanup.sh`（マージ後は deploy ジョブが **Pages より前に**叩く） | `.github/workflows/verify.yml` |
 | 宣言の検査 | `scripts/check-cleanup-worker.sh`（`scripts/acceptance.sh` から呼ぶ） | — |
@@ -61,7 +61,7 @@ cron `*/5 * * * *` が **5 本中 1 本目**として登録されている。`wr
 利用者 → 退会（#518 が足す口。この土台には無い）
           段1 掴む   条件付き UPDATE 1 文（退会の開始・アイコンの排他・断る条件）
           段2 R2     アイコンの現行と avatars/history/<id>/ の一覧を消す
-          段3 確定   1 batch・13 文（匿名化・履歴・ハンドル・台帳・一括の取り下げ・withdrawn_at）
+          段3 確定   1 batch・14 文（匿名化・履歴・ハンドル・台帳・作品の指示文・一括の取り下げ・withdrawn_at）
           → この時点で users からは個人を識別できる値が消えている
 
 cron（5 分ごと）→ scheduled() → WithdrawalHub のアラーム

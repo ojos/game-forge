@@ -17,6 +17,7 @@ import { accountShell } from './account.js';
 import { ACCOUNT_APPS_PATH, ACCOUNT_APPS_REVOKE_API_PATH, GRANT_ID_FIELD } from './account-paths.js';
 import { loginRequiredRedirect } from './auth/google.js';
 import { escapeHtml, headerAvatarUrl } from './html.js';
+import { FAQ_PATH } from './legal-paths.js';
 import { formatJstMinutes } from './jst.js';
 import { grantHelpers, listAllUserGrants } from './oauth-grants.js';
 import type { GuardResult } from './oauth-guard.js';
@@ -88,7 +89,9 @@ export function renderAccountAppsPage(view: AccountAppsView): string {
         : `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
   const rows =
     view.apps.length === 0
-      ? '<p>接続中のアプリはありません。</p>'
+      ? `<p>接続中のアプリはありません。</p>
+<p>MCP に対応した AI のアプリ（Claude など）をつなぐと、AI との会話から作品の生成やリフォージを始められます。
+   つなぎ方は<a href="${FAQ_PATH}#ai-connect">よくある質問</a>をご覧ください。</p>`
       : `<ul class="gf-block gf-block-rows gf-connected-apps">
 ${view.apps
   .map(

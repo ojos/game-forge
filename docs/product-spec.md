@@ -9549,6 +9549,83 @@ port を無視する**（Claude Code の要件。部品の既定の挙動）。
 **`src/api-caller.ts` は束に入っている**（5.12 の実装で分かった）。Bearer を受けるように直す実装 PR① は束を変えるので、
 **マイグレーションの適用（あれば）とオーケストレータの配り直しをマージの前に済ませる**（5.12 の #694 と同じ段取り）。
 
+> **実装注記（#696 PR①。実装日 2026-09-19）。認可の土台を入れた**（MCP の道具はまだ無い。PR② で足す）。
+> 部品の設定は `src/oauth-provider.ts`、同意画面は `src/oauth-authorize.ts`、接続中のアプリのタブは `src/account-apps.ts`、
+> 綴りと寿命は `src/oauth-paths.ts`、トークンの利用者の確認は `src/oauth-user.ts`。**上の決定のうち、次の 3 つは実装で読み替えた。**
+>
+> 1. **Bearer を受けるのは `resolveApiCaller` ではなく、部品の `/mcp` だけにした**（上の「トークン」の 3 つ目と、5.12 の
+>    「M19（#696）で MCP のトークンを差し込むのはここ」を置き換える。旧記述は残す）。**理由は audience である**——部品の
+>    `resourceMetadata.resource` を `https://<アプリのホスト>/mcp` に固定したので、発行するトークンはすべてこの 1 つの口あてに縛られ
+>    （RFC 8707）、`/api/*` で受ける根拠が無い。道具は既存の関数を利用者の id で直接呼ぶ（上の「道具と scope」の決定）ので、
+>    `resolveApiCaller` を通らない。**`src/api-caller.ts` は変えていない**（MCP のトークンで `/api/me/works` を叩くと 401。`test/oauth.test.ts`）
+> 2. **オーケストレータの束は変わらなかった**（上の「オーケストレータの束」の見込みを置き換える）。1 のとおり `src/api-caller.ts` を
+>    変えず、束に入る `src/session-user.ts`・`src/session.ts`・`src/routes.ts` も変えていない。トークンの利用者の確認（BAN・退会）は
+>    束に入らない `src/oauth-user.ts` に置き、`resolveSessionUser` と同じ行に同じ答えを返すことをテストが照合する。
+>    `scripts/orchestrator-bundle-changed.sh` は `ORCHESTRATOR_BUNDLE_UNCHANGED`。マイグレーションも無い
+> 3. **リフレッシュトークンの 30 日は、同意（最初の code の交換）から数え、使っていても延びない**（上の「30 日使われなければ、
+>    同意からやり直す」を置き換える）。部品（0.10.3）は許可の期限を code の交換のときに決め、refresh では動かさない（refresh で寿命を
+>    変える指定を部品が断る）。期限が近づくと、発行するアクセストークンの寿命も残りに合わせて縮む。**延ばす形にするには部品の外で
+>    許可を作り直すことになり、この PR ではしない。** 同意画面・接続中のアプリ・`/privacy` は「30 日で切れる」と書いた
+>
+> **決めた細部。**
+>
+> - **振り分け**：`src/index.ts` のアプリのホストの枝で、部品が持つ口（`/token`・`/register`・`/.well-known/oauth-authorization-server`・
+>   `/.well-known/oauth-protected-resource` と `/mcp` 付きの形・`/mcp` と `/mcp/…`）だけを部品へ渡し、残りは今までどおり経路表へ。
+>   **`/mcpx` は部品へ渡さない**（部品の API の判定は前方一致なので）。sandbox と admin のホストには載せない。
+>   部品の口の名前はハンドル名の予約語に入れた（経路表の外なので、`src/handle.ts` の `appOutsidePaths`）
+> - **入口の ctx**：`functions/[[path]].ts` が `waitUntil`・`passThroughOnException`（Pages の context に結び付けたもの）と、書き換えられる
+>   空の `props` を持つ ctx を組み、`src/index.ts` の `fetch(request, env, ctx)` へ渡す。部品へは env を写して渡す（部品が
+>   `env.OAUTH_PROVIDER` を代入するため）。**`wrangler pages dev` で、DCR → 同意 → code → token → Bearer の `/mcp` まで通した**
+> - **同意画面の CSRF**：画面に埋める値は `<期限>.<HMAC>` で、HMAC は `SESSION_SECRET` を鍵に、用途の識別子 `gf-mcp-consent.v1` と
+>   **利用者の id・期限・認可の要求（部品が解いた 9 つの値を JSON の配列にしたもの）の SHA-256** を署名する。寿命 10 分。
+>   無い・改竄・期限切れ・別の利用者・別の要求は、すべて同じ 403 の画面。**D1 にも KV にも書かないので厳密な一度きりではない**
+>   （同じ利用者が同じ要求で 10 分以内に押し直すと code がもう 1 つ出る。同じクライアントの前の許可は部品が消す）。
+>   POST はセッションを先に見る（BAN・退会・未ログインはログインへ）。**接続の解除の POST は、ほかの登録情報と同じ `SameSite=Lax`**
+>   （押させられても自分の接続が切れるだけ）
+> - **ログインの往復**：未ログインなら、要求の query を `__Host-gf_mcp_authz`（Secure・HttpOnly・SameSite=Lax・10 分。用途の識別子
+>   `gf-mcp-authz-pending.v1` の HMAC つき。2,048 文字まで）に積み、ログインの戻り先は定数の `/authorize/resume` だけにした。
+>   戻り先は cookie を読んで `/authorize?<積んだ query>` へ 303 で送り直し、読めなければ `/authorize?expired=1`（400 の画面）へ送る。
+>   **要求を持たない `/authorize` は、何の画面かを 200 で説明する**（URL を直接開いた人向け。外枠の検査に乗る）
+> - **要求の誤り**：部品の `parseAuthRequest` の例外のうち、戻り先を確かめた後の誤り（PKCE の方式・resource）は戻り先へ `error=` と
+>   `state`・`iss` を付けて返し、それ以外（client_id が無い・知らない・戻り先の不一致・CIMD の文書が読めない）は 400 の画面。
+>   それ以外の例外は 500 の画面（どれも 500 の素の応答にはしない）
+> - **scope**：要求に scope が無ければ 2 つとも出し、あれば許せるものだけを出す（知らない scope は黙って落とす）。1 つも許せなければ
+>   `invalid_scope` で戻す。**同意で 1 つも選ばなければ `access_denied`**。アクセストークンの props には、許可の `{ userId }` に
+>   **そのトークンの scope** を足す（部品の `tokenExchangeCallback`。PR② が `insufficient_scope` の判定に使う）
+> - **同意画面に出すもの**：アプリ名（**アプリ自身が名乗った名前であることを書く**）・CIMD なら情報の置き場所のホスト名・戻り先の
+>   ホスト名（http(s) 以外は scheme ごと）・loopback（`localhost`・`127.x`・`[::1]`）ならその旨。許可にはアプリ名と戻り先のホスト名を
+>   `metadata` として写す（DCR のクライアントは部品の既定で 90 日で消えるため、一覧はこちらを読む）
+> - **仮の `/mcp`**：部品がトークンを検証した後に、①`Origin` が付いていればホスト名が `APP_HOST` と一致するときだけ通す（DNS rebinding。
+>   `null` を含む読めない Origin は 403）、②トークンの利用者が今も操作してよいか（行が在る・BAN でない・退会を始めていない。だめなら
+>   401 と `WWW-Authenticate: Bearer error="invalid_token"`）を確かめ、`{"error":"not-found"}` の 404 を返す
+> - **退会**：`src/withdrawal.ts` は束に入っていないが、D1 と R2 の段の説明を変えないために触らず、`src/account-withdrawal.ts` が
+>   確定（成功）の後に利用者の許可をすべて消す（ベストエフォート。失敗はログだけ）。**退会の後続の処理（cron。`workers/cleanup/`）が
+>   確定させた退会では消えない**——cleanup の Worker は KV を束ねていない。その場合も使うたびの確認で止まり、許可は 30 日で消える
+> - **互換フラグ**：`global_fetch_strictly_public` を足した（CIMD の SSRF 対策。**部品はこのフラグが無いと CIMD を宣言せず、URL の id を
+>   受けると例外を投げる**——部品の側で取得先を絞る設定は無い）。効くのは自分のゾーンへの `fetch()` の経路だけで、このサイトは
+>   ゾーンを Cloudflare に持たず（確定17）、外へ出る `fetch()` は AWS・Resend・Google だけなので、既存の外向きの呼び出しは変わらない
+>   （テストは全件通る。本番での確かめは配備の後）。`nodejs_compat` は足していない
+> - **KV**：namespace は `game-forge-oauth`（本番とプレビューで共有。利用者が作った）。API トークンに Workers KV Storage の Edit を足した
+>   （`docs/pages-deploy.md`）
+>
+> **KV の操作の実測**（`test/oauth.test.ts`。KV を数える包みを被せて 1 回ずつ通した）。
+>
+> | 操作 | 書き込み（put + delete） | list | 読み取り |
+> |---|---|---|---|
+> | DCR の登録 | 1 | 0 | 0 |
+> | 同意（承諾） | 1 | 1 | 3 |
+> | code → トークンの発行 | 2 | 0 | 2 |
+> | refresh | 2 | 0 | 2 |
+> | `/mcp` の 1 要求 | 0 | 0 | 1（ほかに D1 の読み取り 1。BAN・退会の確認） |
+> | 接続の解除（アクセストークンが 2 本生きている許可） | 3（許可 1 ＋ トークン 2） | 2 | 許可の数だけ |
+>
+> 上の「KV の書き込みの見込み」（接続で書き込み 1 と list 1・発行で 2・refresh で 2・DCR で 1・`/mcp` は読み取り 1）と一致した。
+> 解除の list の 1 回は、**本人の一覧に在る id だけを消す**ための確認である（部品の鍵は利用者の id で絞られるので他人の許可には届かないが、
+> 無い id を「解除しました」と言わない）。
+>
+> **確かめていないこと**：本番の Pages での動作（配備の後に、メタデータ・401・Claude からの接続で確かめる）/ 実在の CIMD の文書
+> （テストは大域の `fetch` を差し替えて通した）/ Claude の各製品からの接続。
+
 ---
 
 ## 6. プロンプトエンジニアリング & ガードレール

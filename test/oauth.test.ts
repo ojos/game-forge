@@ -782,7 +782,9 @@ describe('接続中のアプリ（/account/apps）', () => {
 
   it('接続が 1 件も無いときは、つなぎ方の案内（FAQ へのリンク）を出す', async () => {
     const user = await seedUser();
-    const page = await (await call('GET', ACCOUNT_APPS_PATH, { headers: { cookie: user.cookie } })).text();
+    const response = await call('GET', ACCOUNT_APPS_PATH, { headers: { cookie: user.cookie } });
+    expect(response.status).toBe(200);
+    const page = await response.text();
     expect(page).toContain('接続中のアプリはありません');
     expect(page).toContain('href="/faq#ai-connect"');
     expect(page).toContain('MCP に対応した AI のアプリ');

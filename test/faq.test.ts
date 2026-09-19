@@ -387,3 +387,28 @@ describe('AI からの接続（#696 / MCP）', () => {
     expect(ids.at(-1)).toBe('contact');
   });
 });
+
+describe('ソースの再利用の項目（#696 の後日談）', () => {
+  /** @returns ソースの再利用の項目 */
+  function sourceReuse(): { id: string; question: string; answer: string } {
+    const found = FAQ_ENTRIES.find((item) => item.id === 'source-reuse');
+    expect(found, 'source-reuse の項目').toBeDefined();
+    return found!;
+  }
+
+  it('読めること・サービス内の許諾・外での条件が無いこと・削除依頼の 4 つを書いている', () => {
+    const answer = sourceReuse().answer;
+    for (const phrase of [
+      '公開した作品のソースコードは、誰でも読めます',
+      'フォークして、できた作品を公開できます',
+      '本サービスの外での再利用について、本サービスは条件を定めていません',
+      TAKEDOWN_PATH,
+    ]) {
+      expect(answer, phrase).toContain(phrase);
+    }
+  });
+
+  it('権利の項目（rights）へ案内している', () => {
+    expect(sourceReuse().answer).toContain('#rights');
+  });
+});

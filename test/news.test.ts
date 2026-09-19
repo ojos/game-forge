@@ -174,7 +174,9 @@ describe('AI からの接続の記事が、案内先と一致する（#696）', 
   });
 
   it('許可の範囲の言い回しが、同意画面の表示名と一致する', () => {
-    expect(aiConnectArticleText()).toContain(`「${OAUTH_SCOPE_LABELS['works:generate']!.name}」を外すと`);
+    const label = OAUTH_SCOPE_LABELS['works:generate'];
+    expect(label, '同意画面の scope の表示名').toBeDefined();
+    expect(aiConnectArticleText()).toContain(`「${label!.name}」を外すと`);
   });
 
   it('できないこと（公開・削除・退会・他人の作品）を書いている', () => {

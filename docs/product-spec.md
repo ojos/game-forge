@@ -9687,7 +9687,7 @@ port を無視する**（Claude Code の要件。部品の既定の挙動）。
 >   GET と DELETE は 405（`Allow: POST`）で、`Mcp-Session-Id` は出さない
 > - **呼ぶたびの確認の順序**：Origin（403。PR① の判定を `src/oauth-provider.ts` から移した）→ POST だけ（405）→ 利用者が今も操作して
 >   よいか（BAN・退会。401 `invalid_token`）→ **呼び出しの上限**（`allowApiCall` を鍵 `mcp:<利用者の id>` で。60 秒 60 回。入口が
->   呼べなければ通す。超えたら 429 と `Retry-After: 60`）→ 本文を 64 KiB で切る（413）→ **scope**（下）→ SDK
+>   呼べなければ通す。超えたら 429 と `Retry-After: 60`）→ 本文を 64 KiB で切る（413。判定は実際に読んだバイト数で、`Content-Length` の申告は見ない。ちょうど 64 KiB は通す）→ **scope**（下）→ SDK
 > - **scope の判定は SDK の手前（HTTP の層）に置いた**。足りなければ **HTTP の 403 と `WWW-Authenticate: Bearer error="insufficient_scope",
 >   scope="<足りない scope>", resource_metadata="…"`**（MCP の仕様の段階的な認可の形。道具の中で断ると HTTP 200 の中の誤りになり、
 >   クライアントが認可をやり直す合図にならない）。材料は**本文の JSON-RPC（`method: "tools/call"` と `params.name`。配列でも 1 つずつ）と、
@@ -9710,6 +9710,13 @@ port を無視する**（Claude Code の要件。部品の既定の挙動）。
 >   `statusUrl` だけ**で、MCP のトークンでは `/api/*` を読めないので、代わりに `status: { tool: "get_my_work", arguments: { id } }` を返す。
 >   結果の中のパスは相対のままにし、サーバーの `instructions` に「`https://<アプリのホスト>` からの相対」と「完成まで 80 秒以上かかるので
 >   `get_my_work` で間を空けて確かめる」を書いた
+> - **引数の形の誤りは、既存の口の分類名にならない**（PR #707 の Copilot の指摘を受けて約束を明記した）。道具の入力の定義は厳しいまま
+>   にした（定義に無いキーも許さない。AI が道具を正しく呼ぶための手がかりなので、既存の口に合わせて緩めない）。**必須の引数が無い・
+>   型が違う・定義に無い引数がある要求は、道具の中身に届く前に MCP の SDK が断る**——実測（SDK 2.0.0。旧版と 2026-07-28 版の両方）では、
+>   JSON-RPC の invalid params ではなく、**HTTP 200 の中の道具の失敗（`isError: true`。本文は `Input validation error: Invalid arguments for
+>   tool …` の素のテキストで、JSON ではない）**になり、余分なキーも落とさずに断る（`Unrecognized key`）。作品の行も起動も作らない。
+>   **既存の口と同じ分類名（`missing-prompt`・`prompt-too-long`・`invalid request`・`not-found`・`daily-quota` など）で返すのは、形の正しい
+>   引数の中身の検証だけ**である（空白だけの指示文は形が正しいので `missing-prompt`）。サーバーの `instructions` にも同じことを書いた
 > - **画面の語**：道具の題と説明、同意画面と「接続中のアプリ」の scope の名前は「リフォージ」にした（#513。PR① の同意画面は
 >   「作品を生成・推敲する」と出していた）。道具の名前 `start_revision` は上の表のまま
 > - **利用者向けの案内は FAQ に置いた**（`/faq#ai-connect`。`src/faq.ts`）。新しい文書にしなかったのは、利用者が「できるか・どうつなぐか・

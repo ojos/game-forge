@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createGenerateRoutes } from '../src/generate.js';
 import { claimGenerationJob, completeGame, createPendingGame, hashJobToken } from '../src/games.js';
-import { MCP_TOOL_NAMES, MCP_TOOL_SCOPES, requiredScopeOf } from '../src/mcp-server.js';
+import { MCP_MAX_BODY_BYTES, MCP_TOOL_NAMES, MCP_TOOL_SCOPES, requiredScopeOf } from '../src/mcp-server.js';
 import { OAUTH_SCOPE_LABELS, SCOPE_WORKS_GENERATE, SCOPE_WORKS_READ } from '../src/oauth-paths.js';
 import { workPagePath } from '../src/paths.js';
 import { DAILY_QUOTA_PER_USER } from '../src/quota.js';
@@ -458,6 +458,108 @@ describe('自作だけを読む', () => {
     expect(drafts.body).toMatchObject({ filter: 'draft', nextOffset: null });
     const unknown = toolOutcome(await legacyCall(accessToken, 'list_my_works', { state: 'nonsense' }));
     expect(unknown.body['filter']).toBe('all');
+  });
+});
+
+describe('引数の形の誤り（道具に届く前に SDK が断る）', () => {
+  it('start_generation / start_revision: 欠けた・型の違う・余分なキーの引数は、分類名ではなく SDK の「Input validation error」の失敗。行も起動も作らない', async () => {
+    const user = await seedOAuthUser();
+    const gameId = await createReadyGame(user.id);
+    const { accessToken } = await connectMcp(user.cookie);
+    const lambda = stubLambda();
+    const cases: readonly (readonly [string, Record<string, unknown>])[] = [
+      ['start_generation', {}],
+      ['start_generation', { prompt: 5 }],
+      ['start_generation', { prompt: '青い玉', extra: true }],
+      ['start_revision', {}],
+      ['start_revision', { id: 1, prompt: '速く' }],
+      ['start_revision', { id: gameId, prompt: '速く', extra: true }],
+    ];
+    for (const [name, args] of cases) {
+      const label = `${name} ${JSON.stringify(args)}`;
+      const raw = await legacyCall(accessToken, name, args, LAMBDA_ENV);
+      // **JSON-RPC の invalid params ではなく、HTTP 200 の中の道具の失敗**（SDK 2.0.0 の実測。仕様 5.15 の PR② の注記）。
+      expect(raw.status, label).toBe(200);
+      expect(raw.message?.error, label).toBeUndefined();
+      const result = raw.message?.result as { isError?: boolean; content: { type: string; text: string }[] };
+      expect(result.isError, label).toBe(true);
+      expect(result.content[0]!.text, label).toMatch(new RegExp(`^Input validation error: Invalid arguments for tool ${name}`, 'u'));
+      if ('extra' in args) {
+        // 余分なキーは落とさずに断る（`z.strictObject`）。
+        expect(result.content[0]!.text, label).toContain('Unrecognized key');
+      }
+    }
+    // 2026-07-28 版のクライアントでも同じ形（道具の失敗として返り、例外にならない）。
+    const { client } = await sdkClient(accessToken, 'modern', LAMBDA_ENV);
+    const modern = (await client.callTool({ name: 'start_generation', arguments: { prompt: '青い玉', extra: true } })) as {
+      isError?: boolean;
+      content: { text: string }[];
+    };
+    await client.close();
+    expect(modern.isError).toBe(true);
+    expect(modern.content[0]!.text).toContain('Unrecognized key');
+
+    expect(lambda.payloads).toEqual([]);
+    const rows = await env.DB.prepare('select count(*) as n from games where author_id = ?').bind(user.id).first<{ n: number }>();
+    expect(rows?.n).toBe(1);
+    const jobs = await env.DB.prepare('select count(*) as n from game_revision_jobs where game_id = ?').bind(gameId).first<{ n: number }>();
+    expect(jobs?.n).toBe(0);
+  });
+});
+
+describe('本文の上限（64 KiB）', () => {
+  /**
+   * 空白で詰めて、ちょうど `bytes` バイトの `tools/list` の本文を作る。
+   *
+   * @param bytes バイト数
+   * @returns 本文
+   */
+  function paddedToolsList(bytes: number): string {
+    const core = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    return `${' '.repeat(bytes - core.length)}${core}`;
+  }
+
+  /**
+   * 生の本文を `/mcp` へ送る。
+   *
+   * @param accessToken アクセストークン
+   * @param body 本文
+   * @param headers 追加のヘッダ
+   * @returns 応答
+   */
+  async function postRaw(accessToken: string, body: string, headers: Record<string, string> = {}): Promise<Response> {
+    return await callWorker(
+      new Request(`${APP_ORIGIN}/mcp`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          ...headers,
+        },
+        body,
+      }),
+    );
+  }
+
+  it('ちょうど上限は通り、1 バイト超えると 413。判定は読んだバイト数で、Content-Length の申告だけが大きくても断らない', async () => {
+    const user = await seedOAuthUser();
+    const { accessToken } = await connectMcp(user.cookie);
+    const exact = paddedToolsList(MCP_MAX_BODY_BYTES);
+    expect(new TextEncoder().encode(exact).byteLength).toBe(MCP_MAX_BODY_BYTES);
+    const ok = await postRaw(accessToken, exact);
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toContain('"start_generation"');
+
+    const over = await postRaw(accessToken, paddedToolsList(MCP_MAX_BODY_BYTES + 1));
+    expect(over.status).toBe(413);
+    expect(await over.json()).toEqual({ error: 'body-too-large' });
+
+    // `Content-Length` は見ない（実際に読んだ量で切る。`readLimitedText`）。申告だけ大きい小さな本文は通る。
+    const declared = await postRaw(accessToken, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), {
+      'content-length': String(MCP_MAX_BODY_BYTES * 10),
+    });
+    expect(declared.status).toBe(200);
   });
 });
 

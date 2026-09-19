@@ -204,8 +204,10 @@ describe('退会すると、個人を識別できる値が残らない', () => {
     // 作品（公開中の子を 1 本、別の作者の親に付ける）と台帳。
     const other = await seedUser();
     const parent = await seedGame(other.id, { status: 'published' });
-    await seedGame(id, { status: 'published', parentId: parent });
+    const own = await seedGame(id, { status: 'published', parentId: parent });
     await env.DB.prepare('update games set fork_count = 1 where id = ?').bind(parent).run();
+    // 最初の指示文（#694 / `0047`）。他人の作品の指示文は消さないこと。
+    await env.DB.prepare('update games set prompt = ? where id in (?, ?)').bind('最初の指示', own, parent).run();
     const ledgerA = await seedGeneration(id, null, 22.5);
     const ledgerB = await seedGeneration(id, null, 7.25);
 
@@ -257,6 +259,14 @@ describe('退会すると、個人を識別できる値が残らない', () => {
       ].sort(),
     );
     expect(ledger.every((entry) => entry.prompt === '')).toBe(true);
+    // 作品の行に残した最初の指示文も、この時点で消える（#694）。他人の作品は触らない。
+    const prompts = await env.DB.prepare('select id, prompt from games where id in (?, ?)')
+      .bind(own, parent)
+      .all<{ id: string; prompt: string | null }>();
+    expect(Object.fromEntries(prompts.results.map((row) => [row.id, row.prompt]))).toEqual({
+      [own]: null,
+      [parent]: '最初の指示',
+    });
 
     // ── ハンドル名は 90 日の予約へ ────────────────────────────────────
     const handle = await env.DB.prepare(

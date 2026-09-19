@@ -319,6 +319,8 @@ describe('子のいる作品は行を残す（#516 の acceptance 2）', () => {
     const child = await seedGame({ authorId: forker, status: 'published', parentId: parent.id });
     await renameGame(env, parent.id, author, '消える親の新しい題名', 300);
     await markGameRemoved(parent.id);
+    // 最初の指示文（#694 / `0047`）。行を残す枝でも消えること。
+    await env.DB.prepare('update games set prompt = ? where id = ?').bind('親の最初の指示', parent.id).run();
 
     expect(await deleteGame(env, parent.id, 400)).toEqual({ ok: true, result: 'purged' });
 
@@ -326,6 +328,7 @@ describe('子のいる作品は行を残す（#516 の acceptance 2）', () => {
     expect(row).not.toBeNull();
     expect(row!['status']).toBe('removed');
     expect(row!['purged_at']).toBe(400);
+    expect(row!['prompt']).toBeNull();
     expect(row!['title']).toBe(PURGED_TITLE);
     expect(row!['source_key']).toBeNull();
     expect(row!['wasm_key']).toBeNull();

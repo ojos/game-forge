@@ -17,6 +17,7 @@ import { startJobOnLambda } from '../src/orchestrator/start-job.js';
 import { completeGame, failGame } from '../src/games.js';
 import type { GenerationPipeline } from '../src/generate.js';
 import { workPagePath } from '../src/work-page.js';
+import { myWorkApiPath } from '../src/works-api-paths.js';
 import type { GenerationResult } from '../src/generation-models.js';
 import {
   DEFAULT_GENERATION_MODEL_KEY,
@@ -487,13 +488,15 @@ describe('オーケストレーションの骨組み（3.3 の順序）', () => 
 
     // **#150 で `url` が増えた。** id は段の戻り値ではなく、クォータ判定の直後に
     // Worker が採番したものになったので、値ではなく形で見る。
-    const body = (await response.json()) as { gameId: string; url: string };
+    const body = (await response.json()) as { gameId: string; url: string; statusUrl: string };
     expect(body.gameId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
     );
     // **URL は id から組み立てられている。** 2 つが食い違うと、返した URL が
     // 別の作品を指す（あるいはどこも指さない）。
     expect(body.url).toBe(workPagePath(body.gameId));
+    // **#694 で `statusUrl` が増えた。** 状況を JSON で読む口（`src/works-api.ts`）を指す。
+    expect(body.statusUrl).toBe(myWorkApiPath(body.gameId));
   });
 
   it('段が投げた例外を 500 にし、プロンプトを応答にもログにも漏らさない', async () => {

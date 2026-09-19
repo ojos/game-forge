@@ -75,11 +75,13 @@ import {
   releaseRevisionSlot,
   restoreRevision,
 } from './revisions.js';
+import { resolveApiCaller } from './api-caller.js';
 import { resolveSessionUser } from './session-user.js';
 import type { StoredSourceFailure } from './source-store.js';
 import { readStoredSource } from './source-store.js';
 // **戻り先はエディットページである**（#664。綴りは Lambda が import しない葉から取る）。
 import { workEditPath } from './work-edit-paths.js';
+import { myWorkApiPath } from './works-api-paths.js';
 
 /**
  * 受け付ける本文の最大バイト数。
@@ -257,7 +259,9 @@ async function handleRevise(
   env: Env,
   pipeline: GenerationPipeline,
 ): Promise<Response> {
-  const session = await resolveSessionUser(request, env);
+  // 呼び出し元は機械が読める口の 1 か所で決める（#694）。画面のフォームもこの口へ POST するが、
+  // cookie で決まる結果は今までと同じである。
+  const session = await resolveApiCaller(request, env);
   if (!session.ok) {
     return wantsHtml(request) ? seeOther(LOGIN_PATH) : json({ error: 'unauthorized' }, 401);
   }
@@ -348,7 +352,7 @@ async function handleRevise(
   // 差し替わる」の着地点はそこで、待つのは利用者ではない（3.3 の非同期経路。#150）。
   return wantsHtml(request)
     ? seeOther(workEditPath(input.gameId))
-    : json({ gameId: input.gameId, url: workEditPath(input.gameId) }, 202);
+    : json({ gameId: input.gameId, url: workEditPath(input.gameId), statusUrl: myWorkApiPath(input.gameId) }, 202);
 }
 
 /**

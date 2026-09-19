@@ -10414,7 +10414,7 @@ docker run --rm \
 段0 認証   resolveWithdrawalSession … 通常の利用者か、途中で止まった自分の退会だけを通す
 段1 掴む   条件付き UPDATE 1 文      … 退会の開始・アイコンの排他・断る条件
 段2 R2    アイコンの現行と avatars/history/<id>/ の一覧をすべて消す
-段3 確定   1 batch・13 文            … 匿名化・履歴・ハンドル・台帳・一括の取り下げ・withdrawn_at
+段3 確定   1 batch・14 文            … 匿名化・履歴・ハンドル・台帳・作品の指示文・一括の取り下げ・withdrawn_at
 応答       303 → 完了画面、セッションの cookie を消す
 ```
 

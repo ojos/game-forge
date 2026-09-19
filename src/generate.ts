@@ -38,7 +38,7 @@
  */
 import type { Route, RouteHandler } from './routes.js';
 import { json, readLimitedText } from './routes.js';
-import { resolveSessionUser } from './session-user.js';
+import { resolveApiCaller } from './api-caller.js';
 import type { GenerationResult, SystemPromptResolver } from './generation-models.js';
 import { createBedrockGenerateSource } from './bedrock.js';
 import { PromptBlocked } from './input-moderation.js';
@@ -61,6 +61,7 @@ import {
   hashJobToken,
 } from './games.js';
 import { workPagePath } from './paths.js';
+import { myWorkApiPath } from './works-api-paths.js';
 import { recordGenerationCost } from './cost-ledger.js';
 import {
   IN_FLIGHT_REASON,
@@ -986,7 +987,8 @@ async function handleGenerate(
 ): Promise<Response> {
   // **認証を先に見る。** 本文の検証より前に置くのは、未認証の相手に本文を読ませて
   // 解析まで行う理由が無いためで、7.3 の費用 DoS に対する入口の絞りでもある。
-  const session = await resolveSessionUser(request, env);
+  // 呼び出し元は機械が読める口の 1 か所で決める（#694。M19 で MCP のトークンを差し込む場所）。
+  const session = await resolveApiCaller(request, env);
   if (!session.ok) {
     return json({ error: 'unauthorized' }, 401);
   }
@@ -1003,7 +1005,8 @@ async function handleGenerate(
     // ここが `url` を返すのは、API を直接叩く側（将来の CLI など）が作品ページの
     // 綴りを知らずに済むようにするためである。**画面が応答の文字列を遷移先に
     // 使わない**という 8.3 の方針は変えていない。
-    return json({ gameId: game.id, url: workPagePath(game.id) }, 202);
+    // **`statusUrl` を足した**（#694）。状況は `GET` で読める（`src/works-api.ts`）。
+    return json({ gameId: game.id, url: workPagePath(game.id), statusUrl: myWorkApiPath(game.id) }, 202);
   } catch (error) {
     if (error instanceof QuotaExceeded) {
       // 4.4 は停止時も「プレイと拡散は継続する」とする。止まるのは生成だけなので、

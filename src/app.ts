@@ -48,6 +48,7 @@ import { waitlistRoutes } from './waitlist.js';
 import { workRoutes } from './work-edit.js';
 import { workSaveRoutes } from './work-save.js';
 import { workSourceRoutes } from './work-source.js';
+import { worksApiRoutes } from './works-api.js';
 
 /**
  * 開発用セッション cookie の名前。
@@ -357,6 +358,7 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     ...workRoutes,
     ...workSaveRoutes,
     ...workSourceRoutes,
+    ...worksApiRoutes,
     ...worksListRoutes,
     ...usersPageRoutes,
     ...myWorksRoutes,

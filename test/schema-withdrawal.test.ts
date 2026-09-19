@@ -321,7 +321,7 @@ describe('0045 のアイコンのトリガ（PR #588）', () => {
       .first<{ avatar_lock_token: string }>();
     expect(allowed?.avatar_lock_token).toBe(own);
 
-    // **外す向き（NULL）は止めない**（段3 の 13 番目が打つ）。
+    // **外す向き（NULL）は止めない**（段3 の 14 番目が打つ。#694 までは 13 番目）。
     await env.DB.prepare('update users set avatar_lock_token = null where id = ?').bind(id).run();
     const cleared = await env.DB.prepare('select avatar_lock_token from users where id = ?')
       .bind(id)

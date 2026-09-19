@@ -157,6 +157,21 @@ function parseOffset(value: string | null): number | null {
 }
 
 /**
+ * 次のページの読み飛ばし件数を決める。
+ *
+ * **上限を超える位置は返さない**（返しても {@link parseOffset} が 400 で断り、たどり切れない。
+ * PR #698 の Copilot の指摘）。上限の先に行があっても、この口では送らない。
+ *
+ * @param fetched 引いた行数（1 ページ＋1 行まで）
+ * @param offset このページの読み飛ばし件数
+ * @returns 次の読み飛ばし件数、または null（次が無い・上限を超える）
+ */
+export function nextOffsetOf(fetched: number, offset: number): number | null {
+  const next = offset + MY_WORKS_API_PAGE_SIZE;
+  return fetched > MY_WORKS_API_PAGE_SIZE && next <= MY_WORKS_API_MAX_OFFSET ? next : null;
+}
+
+/**
  * `GET /api/me/works` — 自作の一覧。
  *
  * 絞り込み（`state`）は「あなたの作品」の画面と同じ語彙で、知らない値は `all` に倒す
@@ -191,7 +206,7 @@ export async function handleListMyWorks(request: Request, env: Env): Promise<Res
       publishedAt: row.publishedAt,
       url: myWorkApiPath(row.id),
     })),
-    nextOffset: rows.length > MY_WORKS_API_PAGE_SIZE ? offset + MY_WORKS_API_PAGE_SIZE : null,
+    nextOffset: nextOffsetOf(rows.length, offset),
   });
 }
 
@@ -264,7 +279,17 @@ async function workSource(env: Env, row: OwnWorkRow): Promise<Response> {
     // 生成中・失敗した作品。**無いことは 404 にしない**（作品はある）。
     return json({ error: 'source-not-ready' }, 409);
   }
-  const stored = await readStoredSource(env, row.source_key);
+  let stored: Awaited<ReturnType<typeof readStoredSource>>;
+  try {
+    stored = await readStoredSource(env, row.source_key);
+  } catch (error) {
+    // R2 の障害。**ワーカー全体の 500 に落とさず、口の分類で返す**（`src/work-source.ts` の
+    // `readPublishedSource` と同じ扱い。PR #698 の Copilot の指摘）。キーはログへ出さない。
+    console.error(
+      `[works-api] R2 からソースを読む途中で失敗しました: ${error instanceof Error ? error.name : 'unknown'}`,
+    );
+    return json({ error: 'source-missing' }, 500);
+  }
   if (!stored.ok) {
     return stored.reason === 'source-too-large'
       ? json({ error: 'source-too-large' }, 409)

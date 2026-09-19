@@ -18,7 +18,7 @@ import { appendRevision } from '../src/revisions.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { workEditPath } from '../src/work-edit-paths.js';
-import { MY_WORKS_API_PAGE_SIZE, worksApiRoutes } from '../src/works-api.js';
+import { MY_WORKS_API_MAX_OFFSET, MY_WORKS_API_PAGE_SIZE, nextOffsetOf, worksApiRoutes } from '../src/works-api.js';
 import { MY_WORKS_API_PATH, myWorkApiPath, myWorkSourceApiPath } from '../src/works-api-paths.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
@@ -208,6 +208,22 @@ describe('自作のソース（GET /api/me/works/<id>/source）', () => {
     expect(await response.json()).toEqual({ id: gameId, source: SOURCE });
   });
 
+  it('R2 が例外を投げても、口の分類（500 source-missing）で返す', async () => {
+    const userId = await createUser('R2 の障害');
+    const gameId = await createReadyGame(userId);
+    const broken = {
+      ...testEnv(),
+      BUCKET: { ...env.BUCKET, get: async () => { throw new Error('R2 down'); } },
+    } as unknown as Env;
+    const response = await dispatch(
+      worksApiRoutes,
+      new Request(`${APP_ORIGIN}${myWorkSourceApiPath(gameId)}`, { headers: await sessionHeaders(userId) }),
+      broken,
+    );
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'source-missing' });
+  });
+
   it('まだソースの無い作品は 409', async () => {
     const userId = await createUser('生成待ち');
     const pending = await createPendingGame(env, userId, { prompt: 'まだ' });
@@ -254,6 +270,16 @@ describe('自作の一覧（GET /api/me/works）', () => {
     };
     expect(second.works).toHaveLength(1);
     expect(second.nextOffset).toBeNull();
+  });
+
+  it('次の位置は、上限を超えるなら返さない（返すと 400 でたどれない）', () => {
+    const full = MY_WORKS_API_PAGE_SIZE + 1;
+    expect(nextOffsetOf(full, 0)).toBe(MY_WORKS_API_PAGE_SIZE);
+    expect(nextOffsetOf(MY_WORKS_API_PAGE_SIZE, 0)).toBeNull();
+    // 上限ちょうどまでは送り、超える位置は送らない。
+    expect(nextOffsetOf(full, MY_WORKS_API_MAX_OFFSET - MY_WORKS_API_PAGE_SIZE)).toBe(MY_WORKS_API_MAX_OFFSET);
+    expect(nextOffsetOf(full, MY_WORKS_API_MAX_OFFSET)).toBeNull();
+    expect(nextOffsetOf(full, MY_WORKS_API_MAX_OFFSET - 1)).toBeNull();
   });
 
   it('形の違う offset は 400', async () => {

@@ -500,7 +500,7 @@ async function holdsWithdrawalLock(db: D1Database, userId: string, token: string
  * なので、止めても次の呼び出しか後続の処理が続きをやる。**消し残したまま完了の印が立つことは
  * 無い**——完了の段は接頭辞が空だと確かめてからしか立てない。
  *
- * **段2 と、後続の処理の完了の段が共有する。** 完了の段では排他をもう使えない（段3 の 13 番目が
+ * **段2 と、後続の処理の完了の段が共有する。** 完了の段では排他をもう使えない（段3 の 14 番目が
  * 外している）ので、あちらは「まだ退会済みで未完了である」ことを `holds` に渡す。
  *
  * @param env D1 と R2
@@ -569,12 +569,14 @@ export async function avatarObjectsGone(env: StorageEnv, userId: string): Promis
  * 4〜7. 記録が無いなら、4 つの履歴の表を消す
  * 8.    ハンドル名を手放す（90 日の予約へ移る。行は `handles` に残る）
  * 9.    台帳の指示文を空にする（**行数・費用・時刻は変えない**）
- * 10.   公開中の作品をすべて取り下げる
- * 11.   親の被改造数を数え直す（10 で減った分）
- * 12.   同じメールアドレスの待機リストを消す（**11 までに `users.email` を読み終えている**）
- * 13.   `users` を匿名化し、`withdrawn_at` を立て、排他を外す
+ * 10.   作品の行に残した最初の指示文を消す（#694 / `0047`）
+ * 11.   公開中の作品をすべて取り下げる
+ * 12.   親の被改造数を数え直す（11 で減った分）
+ * 13.   同じメールアドレスの待機リストを消す（**12 までに `users.email` を読み終えている**）
+ * 14.   `users` を匿名化し、`withdrawn_at` を立て、排他を外す
  *
- * **13 を最後にする。** これが当たると G が偽になり、以降の打ち直しは 1〜12 を素通りする。
+ * **14 を最後にする。** これが当たると G が偽になり、以降の打ち直しは 1〜13 を素通りする。
+ * （#694 で 10 を足すまでは 13 文で、取り下げが 10 番目・匿名化が 13 番目だった。）
  *
  * @param db D1
  * @param userId 利用者の id
@@ -644,16 +646,16 @@ function finalizeStatements(
     db
       .prepare(`update generations set prompt = '' where user_id = ? and prompt <> '' and ${guard}`)
       .bind(userId, ...guardBindings),
-    // 9b. 作品の行に残した最初の指示文も消す（#694 / `0047`）。作品そのものは後続の処理が消すが、
+    // 10. 作品の行に残した最初の指示文も消す（#694 / `0047`）。作品そのものは後続の処理が消すが、
     // **指示文は台帳と同じくこの時点で消す**（`/privacy` の「退会したときは指示文を削除します」）。
     db
       .prepare(`update games set prompt = null where author_id = ? and prompt is not null and ${guard}`)
       .bind(userId, ...guardBindings),
-    // 10. 公開中の作品をすべて取り下げる（**中身を消すのは後続の処理**）。
+    // 11. 公開中の作品をすべて取り下げる（**中身を消すのは後続の処理**）。
     db
       .prepare(`update games set status = ? where author_id = ? and status = ? and ${guard}`)
       .bind(REMOVED_STATUS, userId, PUBLISHED_STATUS, ...guardBindings),
-    // 11. 親の被改造数を数え直す（`src/games.ts` の `refreshParentForkCount` と同じ数え方）。
+    // 12. 親の被改造数を数え直す（`src/games.ts` の `refreshParentForkCount` と同じ数え方）。
     db
       .prepare(
         `update games
@@ -664,7 +666,7 @@ function finalizeStatements(
             and ${guard}`,
       )
       .bind(PUBLISHED_STATUS, userId, ...guardBindings),
-    // 12. 待機リストのメールアドレス（#518 の利用者の決定）。**空の宛先は消さない。**
+    // 13. 待機リストのメールアドレス（#518 の利用者の決定）。**空の宛先は消さない。**
     db
       .prepare(
         `delete from waitlist
@@ -672,7 +674,7 @@ function finalizeStatements(
             and email = (select email from users where id = ? and ${columns})`,
       )
       .bind(userId, token),
-    // 13. 匿名化し、`withdrawn_at` を立て、排他を外す（**最後**）。
+    // 14. 匿名化し、`withdrawn_at` を立て、排他を外す（**最後**）。
     db
       .prepare(
         `update users

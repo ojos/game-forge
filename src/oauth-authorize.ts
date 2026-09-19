@@ -52,6 +52,7 @@ import type { SiteViewer } from './html.js';
 import { siteFooter } from './legal.js';
 import type { OAuthGrantMetadata } from './oauth-provider.js';
 import { oauthHelpers } from './oauth-provider.js';
+import { guardConsent } from './oauth-guard.js';
 import {
   AUTHORIZE_PATH,
   AUTHORIZE_RESUME_PATH,
@@ -145,6 +146,13 @@ const CONSENT_MISMATCH: ConsentRefusal = {
   body: '確認の画面の期限が切れたか、別の画面から送られました。お使いの AI アプリから、接続をやり直してください。',
 };
 
+/** 同意の回数の上限（`src/oauth-guard.ts`。KV の無料枠を 1 人で使い切らせない）。 */
+const CONSENT_RATE_LIMITED: ConsentRefusal = {
+  status: 429,
+  heading: '接続の回数が多すぎます',
+  body: '今日はこれ以上アプリを接続できません。明日以降にお試しください。',
+};
+
 /** 部品の保存先が読めないなど、こちらの不調。 */
 const SERVER_FAILURE: ConsentRefusal = {
   status: 500,
@@ -195,6 +203,11 @@ export function renderConsentPage(view: ConsentView): string {
     view.clientHost === null
       ? ''
       : `\n  <li>アプリの情報の置き場所: <strong>${escapeHtml(view.clientHost)}</strong></li>`;
+  // **CIMD でないクライアント（DCR）は、名前も戻り先も誰でも好きに登録できる**（情報の置き場所というよりどころが無い）。
+  // 第三者のページから `/authorize?<別のクライアント>` へ送られると、ログインの後に心当たりの無い同意画面が出うる
+  // （#696 のセキュリティレビューの要確認 1。押さなければ害は無い）。
+  const unverified =
+    view.clientHost === null ? '<br>このアプリは、Game Forge が確認していないアプリです。' : '';
   const loopbackNote = view.loopback
     ? '\n  <li>この戻り先は<strong>このコンピュータの中</strong>です（Claude Code のように、手元で動くアプリが受け取ります）。</li>'
     : '';
@@ -203,6 +216,7 @@ export function renderConsentPage(view: ConsentView): string {
 <section class="gf-block gf-block-rows" aria-label="接続するアプリ">
 <div>
 <p><strong>${escapeHtml(view.clientName)}</strong> が、あなたの Game Forge のアカウントへの接続を求めています。</p>
+<p class="error" role="alert"><strong>このアプリの接続を自分で始めていなければ、許可しないでください。</strong>${unverified}</p>
 <ul>
   <li>アプリ名は、アプリ自身が名乗った名前です。心当たりのないアプリなら、許可しないでください。</li>${origin}
   <li>許可した後の戻り先: <strong>${escapeHtml(view.redirectLabel)}</strong></li>${loopbackNote}
@@ -812,6 +826,11 @@ async function handleConsent(request: Request, env: Env, now: () => number): Pro
   if (decision === DECISION_DENY || chosen.length === 0) {
     // **scope を 1 つも選ばなかったら拒否として扱う**（空の許可を作らない）。
     return redirectWithError(authRequest.redirectUri, 'access_denied', authRequest.state, authRequest.issuer);
+  }
+
+  const verdict = await guardConsent(env, session.userId, now());
+  if (verdict !== 'allowed') {
+    return await refuse(request, env, verdict === 'rate-limited' ? CONSENT_RATE_LIMITED : SERVER_FAILURE);
   }
 
   try {

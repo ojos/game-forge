@@ -19,6 +19,8 @@ import { loginRequiredRedirect } from './auth/google.js';
 import { escapeHtml, headerAvatarUrl } from './html.js';
 import { formatJstMinutes } from './jst.js';
 import { grantHelpers, listAllUserGrants } from './oauth-grants.js';
+import type { GuardResult } from './oauth-guard.js';
+import { guardAccountApps } from './oauth-guard.js';
 import { OAUTH_SCOPE_LABELS } from './oauth-paths.js';
 import type { Route } from './routes.js';
 import { html, readLimitedText } from './routes.js';
@@ -148,6 +150,10 @@ async function showAccountApps(request: Request, env: Env): Promise<Response> {
   if (!session.ok) {
     return await loginRequiredRedirect(env, ACCOUNT_APPS_PATH);
   }
+  const verdict = await guardAccountApps(env, session.userId, Math.floor(Date.now() / 1000));
+  if (verdict !== 'allowed') {
+    return refuseByGuard(request, env, session.userId, verdict);
+  }
   const params = new URL(request.url).searchParams;
   const reason = params.get('reason');
   let notice: AccountAppsView['notice'] =
@@ -174,6 +180,35 @@ async function showAccountApps(request: Request, env: Env): Promise<Response> {
     renderAccountAppsPage({ apps, truncated, notice, headerAvatar: headerAvatarUrl(request, env, session.userId) }),
     reason === null ? 200 : 400,
   );
+}
+
+/**
+ * 回数の上限で断る画面（#696 のセキュリティレビューの中-2）。
+ *
+ * 一覧も解除も KV の list を使い、list の無料枠は 1 日 1,000 回で全員が共有する（部品の同意も退会の完了の段も list する）。
+ * ログインした 1 人が叩き続けて枠を使い切れないように、`src/oauth-guard.ts` の上限を見る。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @param userId 利用者の id
+ * @param verdict 判定（`allowed` 以外）
+ * @returns 429 か 503 の画面
+ */
+function refuseByGuard(request: Request, env: Env, userId: string, verdict: Exclude<GuardResult, 'allowed'>): Response {
+  const response = html(
+    accountShell({
+      path: ACCOUNT_APPS_PATH,
+      title: '接続中のアプリ - Game Forge',
+      headerAvatar: headerAvatarUrl(request, env, userId),
+      body:
+        verdict === 'rate-limited'
+          ? '<p class="error" role="alert">短い時間に何度も開かれたため、しばらく表示できません。時間をおいてからお試しください。</p>'
+          : '<p class="error" role="alert">いまは表示できません。しばらくしてからお試しください。</p>',
+    }),
+    verdict === 'rate-limited' ? 429 : 503,
+  );
+  response.headers.set('retry-after', '60');
+  return response;
 }
 
 /**
@@ -210,6 +245,10 @@ async function handleRevoke(request: Request, env: Env): Promise<Response> {
   const grantId = values.length === 1 ? values[0]! : '';
   if (!GRANT_ID_PATTERN.test(grantId)) {
     return seeOther(`${ACCOUNT_APPS_PATH}?reason=invalid-request`);
+  }
+  const verdict = await guardAccountApps(env, session.userId, Math.floor(Date.now() / 1000));
+  if (verdict !== 'allowed') {
+    return refuseByGuard(request, env, session.userId, verdict);
   }
   try {
     const helpers = grantHelpers(env.OAUTH_KV);

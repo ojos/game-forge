@@ -351,6 +351,9 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     expect(line).toContain('鍵そのものは保存せず、照合に使う値（ハッシュ値）だけを保存します');
     expect(line).toContain('接続中のアプリ');
     expect(line).toContain('KV');
+    // 1 日の上限を判定するための回数（#696 のセキュリティレビュー。`migrations/0048_oauth_daily_usage.sql`）。
+    const usage = body.slice(body.indexOf('AI アプリとの接続の操作回数'));
+    expect(usage.slice(0, usage.indexOf('</li>'))).toContain('2 日で削除します');
     const purposes = body.slice(body.indexOf('2. 利用目的'), body.indexOf('3. 公開される情報'));
     expect(purposes).toContain('AI アプリ');
     const notPublished = body.slice(

@@ -48,6 +48,8 @@ import {
   TOKEN_PATH,
 } from './oauth-paths.js';
 import { normalizeHost } from './origins.js';
+import { REGISTER_MAX_BODY_BYTES, guardRegistration } from './oauth-guard.js';
+import { readLimitedText } from './routes.js';
 
 /**
  * トークンに載る利用者の情報（部品の `props`）。**利用者の id だけ**を載せ、Google のトークンや
@@ -77,7 +79,7 @@ export interface OAuthGrantProps {
 /**
  * 同意のときに許可（grant）へ残す情報（部品の `metadata`。**暗号化されない**）。
  *
- * 「接続中のアプリ」のタブ（`src/account-apps.ts`）が読む。**DCR のクライアントは 90 日で消える**（部品の既定）ので、
+ * 「接続中のアプリ」のタブ（`src/account-apps.ts`）が読む。**DCR のクライアントは 1 年で消え、同意の時点の名前と変わりうる**ので、
  * アプリ名はクライアントの登録からではなく、同意のときの値をここへ写しておく。
  */
 export interface OAuthGrantMetadata {
@@ -107,6 +109,10 @@ function providerOptions(origin: string, env: Env): OAuthProviderOptions<Env> {
     clientRegistrationEndpoint: REGISTER_PATH,
     accessTokenTTL: ACCESS_TOKEN_TTL_SECONDS,
     refreshTokenTTL: GRANT_MAX_AGE_SECONDS,
+    // **DCR のクライアントの寿命を許可の上限と揃える**（部品の既定は 90 日）。refresh のたびに部品はクライアントを引き直し
+    // （`parseTokenEndpointRequest` → `getClient`）、消えていれば `invalid_client` で断る。90 日のままだと、DCR で登録した
+    // 接続は使い続けても 90 日目に切れる。**短くはできない**（同じ理由で、許可より先にクライアントが消える）。
+    clientRegistrationTTL: GRANT_MAX_AGE_SECONDS,
     scopesSupported: [...OAUTH_SCOPES],
     allowImplicitFlow: false,
     allowPlainPKCE: false,
@@ -244,9 +250,55 @@ export async function handleOAuthProviderRequest(
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
-  const origin = new URL(request.url).origin;
+  const url = new URL(request.url);
+  let forwarded = request;
+  if (url.pathname === REGISTER_PATH && request.method === 'POST') {
+    const checked = await checkRegistration(request, env);
+    if (checked instanceof Response) {
+      return checked;
+    }
+    forwarded = checked;
+  }
   const copied = { ...env };
-  return await new OAuthProvider<Env>(providerOptions(origin, copied)).fetch(request, copied, ctx);
+  return await new OAuthProvider<Env>(providerOptions(url.origin, copied)).fetch(forwarded, copied, ctx);
+}
+
+/**
+ * DCR（`POST /register`）を部品へ渡す前に受ける（#696 のセキュリティレビューの中-1）。
+ *
+ * 部品の DCR は認証も件数の制限も持たず、1 回ごとに KV へ 1 件書く（本文 1 MiB まで）。KV の書き込みの無料枠は
+ * 1 日 1,000 回で全員が共有するので、**ログインしていない人が約 1,000 回叩くと、全員の同意・code の交換・refresh が止まる。**
+ *
+ * 1. **本文を 8 KB で切る**（`src/oauth-guard.ts` の `REGISTER_MAX_BODY_BYTES`）。超えたら **413** と
+ *    `{"error":"invalid_client_metadata"}`。RFC 7591 の誤りの形（`error` の値）に揃えつつ、ステータスは大きさの誤りだと分かる
+ *    413 にした（400 にすると、クライアントが中身の誤りと読んで直しに行く）。`Content-Length` が上限を超えていれば本文を読まずに断る
+ * 2. **IP ごとの短い窓と、全体の 1 日の総量**（`guardRegistration`）。超えたら 429 と `Retry-After`。数えられなければ 503
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns 部品へ渡すリクエスト（本文を読み直した形）、または断りの応答
+ */
+async function checkRegistration(request: Request, env: Env): Promise<Request | Response> {
+  const tooLarge = (): Response =>
+    jsonResponse({ error: 'invalid_client_metadata', error_description: 'Registration request is too large' }, 413);
+  const declared = Number(request.headers.get('content-length') ?? '0');
+  if (Number.isFinite(declared) && declared > REGISTER_MAX_BODY_BYTES) {
+    return tooLarge();
+  }
+  const read = await readLimitedText(request, REGISTER_MAX_BODY_BYTES);
+  if (!read.ok) {
+    return read.reason === 'body-too-large'
+      ? tooLarge()
+      : jsonResponse({ error: 'invalid_client_metadata', error_description: 'Unreadable request body' }, 400);
+  }
+  const verdict = await guardRegistration(env, request.headers.get('cf-connecting-ip'), Math.floor(Date.now() / 1000));
+  if (verdict === 'rate-limited') {
+    return jsonResponse({ error: 'rate-limited' }, 429, { 'retry-after': '60' });
+  }
+  if (verdict === 'unavailable') {
+    return jsonResponse({ error: 'temporarily_unavailable' }, 503, { 'retry-after': '60' });
+  }
+  return new Request(request, { body: read.text });
 }
 
 /**

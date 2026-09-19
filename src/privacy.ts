@@ -32,6 +32,7 @@
  * | 削除依頼 | `src/takedown.ts` / `migrations/0018_takedown_requests.sql` |
  * | 運営の措置の記録 | `migrations/0026_admin_actions.sql` |
  * | AI アプリとの接続（MCP。接続したアプリの名前・戻り先・許可した範囲・日時と、発行した鍵のハッシュ・最後に使ってから 30 日で使えなくなり、同意から 1 年で失効して記録も消える・解除と退会で消える） | `src/oauth-provider.ts`（`@cloudflare/workers-oauth-provider` 0.10.3。KV `OAUTH_KV` の `client:` / `grant:` / `token:`。トークンは `generateTokenId` の SHA-256 だけを鍵にし、props は暗号化）/ `src/oauth-authorize.ts`（同意のときに許可へ写すアプリ名と戻り先のホスト名）/ `src/account-apps.ts`（解除）/ `src/account-withdrawal.ts`（退会で消す）/ 寿命は `src/oauth-paths.ts`（#696 が同じ変更で追記した） |
+ * | AI アプリとの接続の操作回数（許可と「接続中のアプリ」の、利用者ごとと全体の日ごとの回数・2 日で消す。IP アドレスは入れない） | `migrations/0048_oauth_daily_usage.sql` / `src/oauth-guard.ts`（#696 のセキュリティレビューで足した） |
  * | Cookie 3 種 | `src/session.ts`（`__Host-gf_session`、7 日）/ `src/auth/google.ts`（`__Host-gf_oauth`、10 分）/ `src/oauth-paths.ts`（`__Host-gf_mcp_authz`、10 分。#696 が足した） |
  * | AWS 上の処理の記録（生成・ビルド・撮影は 14 日 / 費用ガードは 30 日） | `terraform/orchestrator.tf`・`terraform/build-function.tf`・`terraform/ogp-function.tf` の `retention_in_days = 14` と、`terraform/bedrock-guard.tf` の `retention_in_days = 30`（**ひとまとめに 14 日と書いていた誤りを PR #400 の Copilot の指摘で分けた。値を変えたら本文も直すこと**） |
  * | 外部サービス | Cloudflare（`wrangler.toml`）/ AWS・Bedrock・Guardrails（`terraform/bedrock.tf` / `terraform/moderation.tf` / `src/generation-models.ts`）/ Google（`src/auth/google.ts`）/ Resend（`src/mail/resend.ts`） |
@@ -158,6 +159,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li><strong>生成の記録</strong>: 日時、使ったモデル、処理した文字量（トークン数）、費用、成否</li>
   <li><strong>入力の検査で止めた指示文</strong>と、止めた理由の分類</li>
   <li><strong>いいねの操作回数</strong>（1 日の上限を判定するため）</li>
+  <li><strong>AI アプリとの接続の操作回数</strong>: 接続の許可と「接続中のアプリ」を開いた・解除した回数を、日ごとに数えます（1 日の上限を判定するため）。2 日で削除します。Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>プレイ数</strong>: 作品ごとの、ゲームが起動した回数。誰が遊んだかとは結び付けずに数え、ログインしていない方の起動も同じく数えます。数は作品カードと作品ページで誰でも見られます。Cloudflare（Durable Objects とデータベース（D1））に保存します</li>
   <li><strong>登録日時</strong>、および運営者が行った措置（利用停止など）とその理由</li>
   <li><strong>処理の記録（ログ）</strong>: 障害を調べるための、作品の識別子や処理の結果</li>

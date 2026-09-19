@@ -28,6 +28,12 @@ import {
   SCOPE_WORKS_READ,
 } from '../src/oauth-paths.js';
 import { isOAuthProviderPath, oauthHelpers } from '../src/oauth-provider.js';
+import {
+  DAILY_ACCOUNT_APPS_PER_USER,
+  DAILY_CONSENT_PER_USER,
+  DAILY_REGISTER_LIMIT,
+  consumeDailyQuota,
+} from '../src/oauth-guard.js';
 import { isOAuthUserActive } from '../src/oauth-user.js';
 import { resolveSessionUser } from '../src/session-user.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
@@ -98,13 +104,17 @@ function testEnv(): Env {
 async function call(
   method: string,
   pathOrUrl: string,
-  init: { readonly headers?: Record<string, string>; readonly body?: string } = {},
+  init: {
+    readonly headers?: Record<string, string>;
+    readonly body?: string;
+    readonly env?: Partial<Record<string, unknown>>;
+  } = {},
 ): Promise<Response> {
   const url = pathOrUrl.startsWith('http') ? pathOrUrl : `${APP_ORIGIN}${pathOrUrl}`;
   const ctx = createExecutionContext();
   const response = await worker.fetch(
     new Request(url, { method, headers: init.headers ?? {}, body: init.body, redirect: 'manual' }),
-    testEnv(),
+    { ...testEnv(), ...(init.env ?? {}) } as Env,
     ctx,
   );
   await waitOnExecutionContext(ctx);
@@ -141,7 +151,8 @@ async function seedUser(
  */
 async function register(redirectUri: string = LOOPBACK_REDIRECT, name = 'Test MCP Client'): Promise<string> {
   const response = await call('POST', '/register', {
-    headers: { 'content-type': 'application/json' },
+    // **IP を呼ぶたびに変える**（DCR の短い窓は IP ごとに数える。テストの登録を同じ鍵に積まない）。
+    headers: { 'content-type': 'application/json', 'cf-connecting-ip': `192.0.2.${Math.floor(Math.random() * 250) + 1}` },
     body: JSON.stringify({
       client_name: name,
       redirect_uris: [redirectUri],
@@ -1049,5 +1060,262 @@ describe('KV の書き込みの実測（仕様 5.15「KV の書き込みの見�
     // 解除: 一覧（本人の許可に在るか）1 + トークンの一覧 1、消すのは許可 1 とトークン（アクセストークン 2 本）。
     expect(revoke['list'] ?? 0).toBe(2);
     expect(writes(revoke)).toBe(3);
+  });
+});
+
+describe('セキュリティレビューの穴埋め（#696）', () => {
+  /** 上限の入口の差し替え（常に断る）。 */
+  const denyingLimiter = { API_RATE_LIMITER: { allow: async () => false } };
+  /** 上限の入口の差し替え（呼べない）。 */
+  const brokenLimiter = {
+    API_RATE_LIMITER: {
+      allow: async () => {
+        throw new Error('limiter down');
+      },
+    },
+  };
+
+  /**
+   * 1 日の回数の表を、今日の分だけ上限まで埋める。
+   *
+   * @param bucket 数える先
+   * @param count 数
+   */
+  async function fillDaily(bucket: string, count: number): Promise<void> {
+    const day = Math.floor(Date.now() / 1000 / 86400);
+    await env.DB.prepare(
+      `insert into oauth_daily_usage (bucket, day, count) values (?, ?, ?)
+         on conflict (bucket, day) do update set count = excluded.count`,
+    )
+      .bind(bucket, day, count)
+      .run();
+  }
+
+  /**
+   * 1 日の回数の表から、数える先を消す。
+   *
+   * @param bucket 数える先
+   */
+  async function clearDaily(bucket: string): Promise<void> {
+    await env.DB.prepare('delete from oauth_daily_usage where bucket = ?').bind(bucket).run();
+  }
+
+  /** DCR の本文。 */
+  const registration = JSON.stringify({
+    client_name: 'guard',
+    redirect_uris: [LOOPBACK_REDIRECT],
+    token_endpoint_auth_method: 'none',
+    grant_types: ['authorization_code', 'refresh_token'],
+    response_types: ['code'],
+  });
+
+  /**
+   * KV の client: の鍵の数。
+   *
+   * @returns 数
+   */
+  async function clientKeys(): Promise<number> {
+    return (await env.OAUTH_KV.list({ prefix: 'client:' })).keys.length;
+  }
+
+  it('scope を改竄しても、要求に無い scope は発行されない（要求は works:read だけ、POST に works:generate を足す）', async () => {
+    const user = await seedUser();
+    const clientId = await register();
+    const { verifier, challenge } = await pkce();
+    const page = await call('GET', authorizePath(clientId, challenge, { scope: SCOPE_WORKS_READ }), {
+      headers: { cookie: user.cookie },
+    });
+    const body = await page.text();
+    expect(body).not.toContain(`value="${SCOPE_WORKS_GENERATE}"`);
+    const { action, token } = consentFormOf(body);
+    const approved = await postConsent(action, user.cookie, [
+      [CONSENT_TOKEN_FIELD, token],
+      [CONSENT_SCOPE_FIELD, SCOPE_WORKS_READ],
+      [CONSENT_SCOPE_FIELD, SCOPE_WORKS_GENERATE],
+      [CONSENT_DECISION_FIELD, DECISION_APPROVE],
+    ]);
+    const code = new URL(approved.headers.get('location')!).searchParams.get('code')!;
+    const tokens = await call('POST', '/token', {
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: LOOPBACK_REDIRECT,
+        client_id: clientId,
+        code_verifier: verifier,
+      }).toString(),
+    });
+    expect(((await tokens.json()) as { scope: string }).scope).toBe(SCOPE_WORKS_READ);
+  });
+
+  it('接続中のアプリの名前に <script> があっても、エスケープして出す', async () => {
+    const user = await seedUser();
+    await env.OAUTH_KV.put(
+      `grant:${user.id}:xss0001`,
+      JSON.stringify({
+        id: 'xss0001',
+        clientId: '<img src=x onerror=alert(1)>',
+        userId: user.id,
+        scope: [SCOPE_WORKS_READ],
+        metadata: { clientName: '<script>alert(1)</script>' },
+        createdAt: 1,
+      }),
+    );
+    const body = await (await call('GET', ACCOUNT_APPS_PATH, { headers: { cookie: user.cookie } })).text();
+    expect(body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(body).not.toContain('<script>alert(1)</script>');
+    expect(body).not.toContain('<img src=x');
+  });
+
+  it('振り分けの端: /mcp/ は部品へ、/MCP・/token/・エンコードした形は経路表（404）へ', async () => {
+    expect(isOAuthProviderPath('/mcp/')).toBe(true);
+    const slash = await call('POST', '/mcp/', { body: '{}' });
+    expect(slash.status).toBe(401);
+    for (const path of ['/MCP', '/Mcp', '/token/', '/%6dcp', '/%2Fmcp', '/register/', '/.well-known/OAUTH-authorization-server']) {
+      expect(isOAuthProviderPath(new URL(`${APP_ORIGIN}${path}`).pathname), path).toBe(false);
+      const response = await call('POST', path, { body: '{}' });
+      expect(response.status, path).toBe(404);
+      expect(response.headers.get('www-authenticate'), path).toBeNull();
+    }
+  });
+
+  it('/authorize/resume に付けた query は使わず、cookie の値だけを使う', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const pending = await signPendingAuthorization(SECRET, 'client_id=from-cookie', now);
+    const withCookie = await call('GET', `${AUTHORIZE_RESUME_PATH}?client_id=evil&redirect_uri=https%3A%2F%2Fevil.example`, {
+      headers: { cookie: `${PENDING_AUTHORIZATION_COOKIE}=${pending}` },
+    });
+    expect(withCookie.headers.get('location')).toBe(`${AUTHORIZE_PATH}?client_id=from-cookie`);
+    const withoutCookie = await call('GET', `${AUTHORIZE_RESUME_PATH}?client_id=evil`);
+    expect(withoutCookie.headers.get('location')).toBe(`${AUTHORIZE_PATH}?expired=1`);
+  });
+
+  it('同意画面は「自分で始めていなければ許可しない」を出し、DCR のアプリには「確認していないアプリ」を添える', async () => {
+    const user = await seedUser();
+    const clientId = await register();
+    const { challenge } = await pkce();
+    const body = await (await call('GET', authorizePath(clientId, challenge), { headers: { cookie: user.cookie } })).text();
+    expect(body).toContain('このアプリの接続を自分で始めていなければ、許可しないでください。');
+    expect(body).toContain('Game Forge が確認していないアプリです');
+  });
+
+  it('DCR: 8 KB を超える本文は 413 で、KV に書かない', async () => {
+    const before = await clientKeys();
+    const big = JSON.stringify({ ...JSON.parse(registration), client_name: 'x'.repeat(9000) });
+    const response = await call('POST', '/register', {
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.7' },
+      body: big,
+    });
+    expect(response.status).toBe(413);
+    expect(((await response.json()) as { error: string }).error).toBe('invalid_client_metadata');
+    // `Content-Length` だけで大きいと分かる要求も、本文を読まずに断る。
+    const declared = await call('POST', '/register', {
+      headers: { 'content-type': 'application/json', 'content-length': '100000', 'cf-connecting-ip': '198.51.100.7' },
+      body: registration,
+    });
+    expect(declared.status).toBe(413);
+    expect(await clientKeys()).toBe(before);
+  });
+
+  it('DCR: IP ごとの短い窓で断ると 429。入口が呼べなければ通す（1 日の総量が別に縛る）', async () => {
+    const before = await clientKeys();
+    const denied = await call('POST', '/register', {
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.8' },
+      body: registration,
+      env: denyingLimiter,
+    });
+    expect(denied.status).toBe(429);
+    expect(denied.headers.get('retry-after')).toBe('60');
+    expect(await clientKeys()).toBe(before);
+    const open = await call('POST', '/register', {
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.8' },
+      body: registration,
+      env: brokenLimiter,
+    });
+    expect(open.status).toBe(201);
+  });
+
+  it('DCR: 全体の 1 日の総量に達したら 429。数えられなければ 503（どちらも KV に書かない）', async () => {
+    const before = await clientKeys();
+    try {
+      await fillDaily('register', DAILY_REGISTER_LIMIT);
+      const limited = await call('POST', '/register', {
+        headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.9' },
+        body: registration,
+      });
+      expect(limited.status).toBe(429);
+    } finally {
+      await clearDaily('register');
+    }
+    const brokenDb = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'batch') {
+          return async () => {
+            throw new Error('d1 down');
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const unavailable = await call('POST', '/register', {
+      headers: { 'content-type': 'application/json', 'cf-connecting-ip': '198.51.100.9' },
+      body: registration,
+      env: { DB: brokenDb },
+    });
+    expect(unavailable.status).toBe(503);
+    expect(await clientKeys()).toBe(before);
+    // 数え方: 上限の内なら 1 つ上がり、上限では上がらない。
+    expect(await consumeDailyQuota(env.DB, [{ bucket: 'probe', limit: 2 }], 0)).toBe(true);
+    expect(await consumeDailyQuota(env.DB, [{ bucket: 'probe', limit: 2 }], 0)).toBe(true);
+    expect(await consumeDailyQuota(env.DB, [{ bucket: 'probe', limit: 2 }], 0)).toBe(false);
+    // 2 日より前の行は、次に数える要求が消す。
+    await consumeDailyQuota(env.DB, [{ bucket: 'probe-later', limit: 2 }], 3 * 86400);
+    const old = await env.DB.prepare('select count(*) as n from oauth_daily_usage where day < 2').first<{ n: number }>();
+    expect(old?.n).toBe(0);
+  });
+
+  it('接続中のアプリ: 短い窓・利用者ごとの 1 日の回数を超えたら 429 の画面（一覧も解除も KV に触らない）', async () => {
+    const user = await seedUser();
+    const connected = await connect(user.cookie);
+    const grantId = connected.accessToken.split(':')[1]!;
+    const limited = await call('GET', ACCOUNT_APPS_PATH, { headers: { cookie: user.cookie }, env: denyingLimiter });
+    expect(limited.status).toBe(429);
+    expect(await limited.text()).toContain('しばらく表示できません');
+    try {
+      await fillDaily(`account-apps:${user.id}`, DAILY_ACCOUNT_APPS_PER_USER);
+      expect((await call('GET', ACCOUNT_APPS_PATH, { headers: { cookie: user.cookie } })).status).toBe(429);
+      const revoke = await call('POST', ACCOUNT_APPS_REVOKE_API_PATH, {
+        headers: { cookie: user.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+        body: `grant_id=${grantId}`,
+      });
+      expect(revoke.status).toBe(429);
+      expect((await kvKeysOf(user.id)).grants).toBe(1);
+    } finally {
+      await clearDaily(`account-apps:${user.id}`);
+    }
+    // 他の利用者は止まらない。
+    const other = await seedUser();
+    expect((await call('GET', ACCOUNT_APPS_PATH, { headers: { cookie: other.cookie } })).status).toBe(200);
+  });
+
+  it('同意: 利用者ごとの 1 日の回数を超えたら 429 の画面で、許可を作らない', async () => {
+    const user = await seedUser();
+    const clientId = await register();
+    const { challenge } = await pkce();
+    const page = await call('GET', authorizePath(clientId, challenge), { headers: { cookie: user.cookie } });
+    const { action, token } = consentFormOf(await page.text());
+    try {
+      await fillDaily(`consent:${user.id}`, DAILY_CONSENT_PER_USER);
+      const response = await postConsent(action, user.cookie, [
+        [CONSENT_TOKEN_FIELD, token],
+        [CONSENT_SCOPE_FIELD, SCOPE_WORKS_READ],
+        [CONSENT_DECISION_FIELD, DECISION_APPROVE],
+      ]);
+      expect(response.status).toBe(429);
+      expect((await kvKeysOf(user.id)).grants).toBe(0);
+    } finally {
+      await clearDaily(`consent:${user.id}`);
+    }
   });
 });

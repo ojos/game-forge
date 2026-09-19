@@ -26,6 +26,10 @@
  * ## 認証
  *
  * {@link resolveApiCaller} を通す（M19 で MCP のトークンを差し込む場所）。未認証は 401。
+
+**MCP の道具（#696 PR②。`src/mcp-server.ts`）は、この口を HTTP で呼び直さず、下の
+{@link myWorksListResult} と {@link myWorkResult} を利用者の id で直接呼ぶ**（仕様 5.15）。
+口と道具が同じ関数を通るので、自作の判定（`author_id`）・読み飛ばし件数の規則・応答の形が分かれない。
  *
  * ## 書き込まない
  *
@@ -66,6 +70,16 @@ export const MY_WORKS_API_MAX_OFFSET = 3000;
 
 /** 作品 id の綴り（UUID）。形の違う id では D1 を 1 行も読まない（`src/work-source.ts` と同じ）。 */
 const GAME_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/**
+ * 口の本文とステータス（`Response` にする前の形）。**MCP の道具が同じ値を結果にする**（`src/mcp-server.ts`）。
+ *
+ * ステータスが 400 以上なら失敗で、本文は `{ error: <分類名> }` の形である。
+ */
+export interface WorksApiResult {
+  readonly status: number;
+  readonly body: unknown;
+}
 
 /** 自作でない・無い・読めない作品に返す本文。**理由を分けない。** */
 const NOT_FOUND = { error: 'not-found' } as const;
@@ -172,10 +186,51 @@ export function nextOffsetOf(fetched: number, offset: number): number | null {
 }
 
 /**
- * `GET /api/me/works` — 自作の一覧。
+ * 自作の一覧を組み立てる（`GET /api/me/works` と MCP の `list_my_works` の中身）。
  *
  * 絞り込み（`state`）は「あなたの作品」の画面と同じ語彙で、知らない値は `all` に倒す
  * （`toMyWorksFilter`）。**1 行多く引いて、次のページがあるかを決める**（件数を別に数えない）。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 呼び出し元（確かめ済みの利用者の id）
+ * @param query 絞り込みと読み飛ばし件数（**口の query の値のまま**。検証はここでする）
+ * @param query.state 絞り込み（無ければ null）
+ * @param query.offset 読み飛ばし件数（無ければ null）
+ * @returns 本文とステータス
+ */
+export async function myWorksListResult(
+  env: Env,
+  userId: string,
+  query: { readonly state: string | null; readonly offset: string | null },
+): Promise<WorksApiResult> {
+  const offset = parseOffset(query.offset);
+  if (offset === null) {
+    return { status: 400, body: { error: 'invalid-offset' } };
+  }
+  const filter = toMyWorksFilter(query.state);
+  const rows = await listMyWorks(env, userId, filter, MY_WORKS_API_PAGE_SIZE + 1, offset);
+  const now = Math.floor(Date.now() / 1000);
+  const page = rows.slice(0, MY_WORKS_API_PAGE_SIZE);
+  return {
+    status: 200,
+    body: {
+      filter,
+      works: page.map((row) => ({
+        id: row.id,
+        title: row.title,
+        status: row.status,
+        generation: generationViewOf(row.generationState, row.createdAt, row.startedAt, now),
+        createdAt: row.createdAt,
+        publishedAt: row.publishedAt,
+        url: myWorkApiPath(row.id),
+      })),
+      nextOffset: nextOffsetOf(rows.length, offset),
+    },
+  };
+}
+
+/**
+ * `GET /api/me/works` — 自作の一覧（中身は {@link myWorksListResult}）。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -187,27 +242,11 @@ export async function handleListMyWorks(request: Request, env: Env): Promise<Res
     return caller;
   }
   const url = new URL(request.url);
-  const offset = parseOffset(url.searchParams.get(MY_WORKS_API_OFFSET_PARAM));
-  if (offset === null) {
-    return json({ error: 'invalid-offset' }, 400);
-  }
-  const filter = toMyWorksFilter(url.searchParams.get(MY_WORKS_FILTER_PARAM));
-  const rows = await listMyWorks(env, caller, filter, MY_WORKS_API_PAGE_SIZE + 1, offset);
-  const now = Math.floor(Date.now() / 1000);
-  const page = rows.slice(0, MY_WORKS_API_PAGE_SIZE);
-  return json({
-    filter,
-    works: page.map((row) => ({
-      id: row.id,
-      title: row.title,
-      status: row.status,
-      generation: generationViewOf(row.generationState, row.createdAt, row.startedAt, now),
-      createdAt: row.createdAt,
-      publishedAt: row.publishedAt,
-      url: myWorkApiPath(row.id),
-    })),
-    nextOffset: nextOffsetOf(rows.length, offset),
+  const result = await myWorksListResult(env, caller, {
+    state: url.searchParams.get(MY_WORKS_FILTER_PARAM),
+    offset: url.searchParams.get(MY_WORKS_API_OFFSET_PARAM),
   });
+  return json(result.body, result.status);
 }
 
 /**
@@ -229,11 +268,11 @@ async function loadOwnWork(env: Env, gameId: string, userId: string): Promise<Ow
  * @param row 自作の行
  * @returns 詳細
  */
-async function workDetail(env: Env, row: OwnWorkRow): Promise<Response> {
+async function workDetail(env: Env, row: OwnWorkRow): Promise<WorksApiResult> {
   const now = Math.floor(Date.now() / 1000);
   const [revision, versions] = await Promise.all([revisionStatus(env, row.id, now), listRevisions(env, row.id)]);
   const failed = row.generation_state === 'failed';
-  return json({
+  const body = {
     id: row.id,
     title: row.title,
     status: row.status,
@@ -261,7 +300,8 @@ async function workDetail(env: Env, row: OwnWorkRow): Promise<Response> {
       edit: workEditPath(row.id),
       source: myWorkSourceApiPath(row.id),
     },
-  });
+  };
+  return { status: 200, body };
 }
 
 /**
@@ -274,10 +314,10 @@ async function workDetail(env: Env, row: OwnWorkRow): Promise<Response> {
  * @param row 自作の行
  * @returns ソース
  */
-async function workSource(env: Env, row: OwnWorkRow): Promise<Response> {
+async function workSource(env: Env, row: OwnWorkRow): Promise<WorksApiResult> {
   if (row.source_key === null) {
     // 生成中・失敗した作品。**無いことは 404 にしない**（作品はある）。
-    return json({ error: 'source-not-ready' }, 409);
+    return { status: 409, body: { error: 'source-not-ready' } };
   }
   let stored: Awaited<ReturnType<typeof readStoredSource>>;
   try {
@@ -288,18 +328,46 @@ async function workSource(env: Env, row: OwnWorkRow): Promise<Response> {
     console.error(
       `[works-api] R2 からソースを読む途中で失敗しました: ${error instanceof Error ? error.name : 'unknown'}`,
     );
-    return json({ error: 'source-missing' }, 500);
+    return { status: 500, body: { error: 'source-missing' } };
   }
   if (!stored.ok) {
     return stored.reason === 'source-too-large'
-      ? json({ error: 'source-too-large' }, 409)
-      : json({ error: 'source-missing' }, 500);
+      ? { status: 409, body: { error: 'source-too-large' } }
+      : { status: 500, body: { error: 'source-missing' } };
   }
-  return json({ id: row.id, source: stored.source });
+  return { status: 200, body: { id: row.id, source: stored.source } };
 }
 
 /**
- * `GET /api/me/works/<id>` と `GET /api/me/works/<id>/source` の振り分け。
+ * 自作の 1 件の詳細かソースを組み立てる（`GET /api/me/works/<id>`・`…/source` と、MCP の `get_my_work`・
+ * `get_my_work_source` の中身）。
+ *
+ * **形の違う id・他人の作品・無い id は、同じ 404 の本文にする**（モジュール冒頭）。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 呼び出し元（確かめ済みの利用者の id）
+ * @param gameId 作品 id（**検証前の値**。形はここで確かめる）
+ * @param part 詳細かソースか
+ * @returns 本文とステータス
+ */
+export async function myWorkResult(
+  env: Env,
+  userId: string,
+  gameId: string,
+  part: 'detail' | 'source',
+): Promise<WorksApiResult> {
+  if (!GAME_ID_PATTERN.test(gameId)) {
+    return { status: 404, body: NOT_FOUND };
+  }
+  const row = await loadOwnWork(env, gameId, userId);
+  if (row === null) {
+    return { status: 404, body: NOT_FOUND };
+  }
+  return part === 'source' ? await workSource(env, row) : await workDetail(env, row);
+}
+
+/**
+ * `GET /api/me/works/<id>` と `GET /api/me/works/<id>/source` の振り分け（中身は {@link myWorkResult}）。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -313,14 +381,8 @@ export async function handleMyWork(request: Request, env: Env): Promise<Response
   const rest = new URL(request.url).pathname.slice(MY_WORK_API_PREFIX.length);
   const wantsSource = rest.endsWith(MY_WORK_SOURCE_SUFFIX);
   const gameId = wantsSource ? rest.slice(0, -MY_WORK_SOURCE_SUFFIX.length) : rest;
-  if (!GAME_ID_PATTERN.test(gameId)) {
-    return json(NOT_FOUND, 404);
-  }
-  const row = await loadOwnWork(env, gameId, caller);
-  if (row === null) {
-    return json(NOT_FOUND, 404);
-  }
-  return wantsSource ? await workSource(env, row) : await workDetail(env, row);
+  const result = await myWorkResult(env, caller, gameId, wantsSource ? 'source' : 'detail');
+  return json(result.body, result.status);
 }
 
 /** 自作の作品を機械が読める口の経路。 */

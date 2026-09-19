@@ -29,6 +29,7 @@
  *
  * 静的な画面である（#373 の constraints）。
  */
+import { ACCOUNT_APPS_PATH } from './account-paths.js';
 import { MAX_GENERATION_ATTEMPTS } from './build-retry.js';
 import type { SiteViewer } from './html.js';
 import { READING_CLASS, escapeHtml, resolveSiteViewer, siteHead } from './html.js';
@@ -43,10 +44,19 @@ import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from './service-contact.js';
 import { HANDLE_RESERVATION_DAYS } from './handle.js';
+import { MCP_PATH } from './oauth-paths.js';
 import { WITHDRAWN_DISPLAY_NAME } from './withdrawal.js';
 
 /** 画面の `<title>`（パンくずの末尾にもこの名前が出る）。 */
 export const FAQ_TITLE = 'よくある質問 - Game Forge';
+
+/**
+ * MCP サーバーの接続先（#696。利用者が AI のアプリへ入れる URL）。
+ *
+ * **本番のアプリのホストの写しである**（`wrangler.toml` の `[env.production.vars]` の `APP_HOST`）。この画面は
+ * env を読まない静的な画面なので値を差し込めず、写しと宣言の一致は `test/faq.test.ts` が照合する。
+ */
+export const MCP_SERVER_URL = `https://app.game-forge.ojos.jp${MCP_PATH}`;
 
 /** 質問 1 件。 */
 export interface FaqEntry {
@@ -84,6 +94,11 @@ export interface FaqEntry {
  * **退会（`withdraw`）は #518 で足した。** 作品の削除の直後に置く——「消す」の話が並び、
  * **作品を消すことと、アカウントごと消すことの違い**をその場で読み比べられる。削除の項目と
  * 窓口の項目からも `#withdraw` へ送る（#518 の scope.in）。
+ *
+ * **AI からの接続（`ai-connect`）は #696（MCP サーバー）で足した。** 窓口（`contact`）の直前に置く——窓口は
+ * 「ここにない質問」の受け皿なので最後に残す。**接続の解除と、漏れたと思ったときの手順まで書く**（#696 の constraints
+ * 「トークンの漏洩と失効の手順を文書にする」）。つなぎ方は Claude の 2 つの形（Claude Code のコマンドと、claude.ai の
+ * カスタムコネクタ）だけを書く——ほかの AI のアプリの画面は確かめていない。
  */
 export const FAQ_ENTRIES: readonly FaqEntry[] = [
   {
@@ -206,6 +221,24 @@ export const FAQ_ENTRIES: readonly FaqEntry[] = [
     answer: `<p><strong>動作を確かめているのは、Chromium 系のブラウザ（Google Chrome など）です。</strong>
    それ以外のブラウザでも動くことがありますが、動作は確かめていません。</p>
 <p>作品を遊ぶには、JavaScript と WebAssembly が有効になっている必要があります。</p>`,
+  },
+  {
+    id: 'ai-connect',
+    question: 'Claude などの AI から、作品を作ったり状況を確かめたりできますか？（MCP）',
+    answer: `<p><strong>できます。</strong>MCP（Model Context Protocol）に対応した AI のアプリを Game Forge につなぐと、AI との会話の中で、
+   あなたの作品の一覧・状況・ソースと残りの<a href="#quota">生成枠</a>を読んだり、新しい作品の生成とリフォージを始めたりできます。
+   <strong>公開・削除・退会はできません</strong>（作品ページと登録情報から行ってください）。ほかの方の作品も読めません。</p>
+<p>接続先の URL は <code>${MCP_SERVER_URL}</code> です。</p>
+<ul>
+  <li><strong>Claude Code</strong>: <code>claude mcp add --transport http game-forge ${MCP_SERVER_URL}</code> を実行し、Claude Code の中で <code>/mcp</code> を開いて認証してください。</li>
+  <li><strong>claude.ai・Claude Desktop</strong>: 設定のコネクタから、カスタムコネクタとして上の URL を追加してください。</li>
+</ul>
+<p>つなぐと、ブラウザで Game Forge のログインと<strong>許可の画面</strong>が開きます。アプリの名前と許可の範囲を確かめてから許可してください。
+   「作品を生成・リフォージする」を外すと、読むことだけを許可できます。<strong>自分でつなごうとしていないのに許可の画面が出たときは、許可しないでください。</strong></p>
+<p>AI から始めた生成とリフォージも、画面から始めたときと同じ 1 日の<a href="#quota">生成枠</a>を使います。生成には${TYPICAL_WAIT_TEXT}。</p>
+<p><strong>接続をやめるときや、心当たりのない接続を見つけたときは</strong>、登録情報の「<a href="${ACCOUNT_APPS_PATH}">接続中のアプリ</a>」で「接続を解除」を押してください。
+   そのアプリに渡した許可がすべて無効になり、すぐに使えなくなります。パソコンをなくしたときなど、許可が他人に渡ったかもしれないときも同じです。
+   使わないまま 30 日たった接続と、つないでから 1 年たった接続は自動で切れます（もう一度つなぎ直してください）。</p>`,
   },
   {
     id: 'contact',

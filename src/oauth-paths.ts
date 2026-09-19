@@ -33,8 +33,7 @@ export const REGISTER_PATH = '/register';
 /**
  * MCP サーバーの口（部品がトークンを検証してから、アプリの処理へ渡す）。
  *
- * **#696 PR① の時点では道具が無い**——トークンの検証を通った要求に 404 を返すだけである
- * （`src/oauth-provider.ts` の仮の処理。PR② で MCP サーバーに差し替える）。
+ * 中身は `src/mcp-server.ts`（#696 PR②。道具 6 本。ステートレス）。
  */
 export const MCP_PATH = '/mcp';
 
@@ -72,15 +71,20 @@ export const SCOPE_WORKS_GENERATE = 'works:generate';
  */
 export const OAUTH_SCOPES: readonly string[] = [SCOPE_WORKS_READ, SCOPE_WORKS_GENERATE];
 
-/** scope を利用者に見せるときの名前と説明（同意画面と「接続中のアプリ」のタブが使う）。 */
+/**
+ * scope を利用者に見せるときの名前と説明（同意画面と「接続中のアプリ」のタブが使う）。
+ *
+ * **画面の語は「リフォージ」**（#513 の用語。旧い呼び名「推敲」を画面に出さない。#696 PR② で直した——PR① の版は
+ * 「作品を生成・推敲する」と出していた）。
+ */
 export const OAUTH_SCOPE_LABELS: Readonly<Record<string, { readonly name: string; readonly note: string }>> = {
   [SCOPE_WORKS_READ]: {
     name: '自分の作品を読む',
     note: 'あなたの作品の一覧・状況・版・最初の指示文・ソースと、あなたの情報と残りの生成枠を読みます。',
   },
   [SCOPE_WORKS_GENERATE]: {
-    name: '作品を生成・推敲する',
-    note: 'あなたの代わりに作品の生成と推敲を始めます。1 日の生成枠を使います。',
+    name: '作品を生成・リフォージする',
+    note: 'あなたの代わりに作品の生成とリフォージを始めます。1 日の生成枠を使います。',
   },
 };
 

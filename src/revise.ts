@@ -184,7 +184,7 @@ const REFUSALS: Readonly<
 };
 
 /** 本文から読み取った推敲の要求。 */
-interface ReviseInput {
+export interface ReviseInput {
   readonly gameId: string;
   readonly prompt: string;
 }
@@ -225,6 +225,17 @@ async function parseReviseInput(request: Request): Promise<ReviseInput | null> {
     return null;
   }
 
+  return validateReviseInput(gameId, prompt);
+}
+
+/**
+ * 推敲の要求の値を確かめる（画面・`/api/revise`・MCP の `start_revision` が同じ規則を通る。#696 PR②）。
+ *
+ * @param gameId 作品 id（無ければ null）
+ * @param prompt どう直すか（無ければ null）
+ * @returns 確かめた要求、または null（id の形が違う・指示が空・長すぎる）
+ */
+export function validateReviseInput(gameId: string | null, prompt: string | null): ReviseInput | null {
   if (gameId === null || !GAME_ID_PATTERN.test(gameId)) {
     return null;
   }
@@ -246,8 +257,113 @@ async function parseReviseInput(request: Request): Promise<ReviseInput | null> {
  */
 type BaseSourceFailure = StoredSourceFailure;
 
+/** 推敲を始めた結果（{@link startRevision}）。 */
+export type RevisionStartOutcome =
+  | { readonly ok: true; readonly gameId: string }
+  | {
+      readonly ok: false;
+      readonly kind: 'quota';
+      /** 日次・月次の枠切れの本文（`describeQuotaRejection` の値。応答にそのまま載せる）。 */
+      readonly body: ReturnType<typeof describeQuotaRejection>;
+    }
+  | { readonly ok: false; readonly kind: keyof typeof REFUSALS };
+
 /**
- * 推敲の要求を処理する。
+ * 推敲を始める（**順序と判定の本体。**`/api/revise` と MCP の `start_revision` が同じ関数を通る。#696 PR②）。
+ *
+ * 順序はモジュール冒頭のとおり——日次 → 推敲の枠（作者本人・`draft`・進行中なし）→ ソースの取得 → 起動。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 呼び出し元（確かめ済みの利用者の id）
+ * @param input 確かめた要求（{@link validateReviseInput}）
+ * @param pipeline 差し替え可能な各段（起動だけを使う）
+ * @returns 始めたか、断った理由
+ */
+export async function startRevision(
+  env: Env,
+  userId: string,
+  input: ReviseInput,
+  pipeline: GenerationPipeline,
+): Promise<RevisionStartOutcome> {
+  // 3.3-2 と同じ順序。**断られる要求のために R2 を引かない。**
+  const quota = await checkGenerationQuota(env, userId);
+  if (!quota.allowed) {
+    return {
+      ok: false,
+      kind: 'quota',
+      body: describeQuotaRejection(quota.reason, 'resetsAt' in quota ? quota.resetsAt : undefined),
+    };
+  }
+
+  // **ここが 5.7 の対象条件を確かめる唯一の関門である**（`src/revisions.ts`）。
+  const jobToken = createJobToken();
+  const jobTokenHash = await hashJobToken(jobToken);
+  const claimed = await claimRevisionSlot(env, input.gameId, userId, input.prompt, jobTokenHash);
+  if (!claimed) {
+    // **断ったあとにだけ理由を読む**（#455）。枠の取得は「進行中の要求がある」ことも
+    // 条件に持つが、0 行になった理由を文から区別できない。**判定はもう済んでいる**
+    // （この読み取りは文言を選ぶためで、ここで false でも枠は取らない）。
+    // 通った要求の読み取りは増えない。
+    return { ok: false, kind: (await hasInFlightRequest(env, userId)) ? 'in-flight' : 'not-revisable' };
+  }
+
+  // 枠を取れた＝作者本人の `draft` である。**ここで初めて `source_key` を読む。**
+  const row = await env.DB.prepare('select source_key from games where id = ?')
+    .bind(input.gameId)
+    .first<{ source_key: string | null }>();
+  const base =
+    row?.source_key == null
+      ? ({ ok: false, reason: 'source-missing' } as const)
+      : await readStoredSource(env, row.source_key);
+  if (!base.ok) {
+    // **LLM を 1 度も呼んでいないので枠を返す**（モジュール冒頭の表）。ジョブ行も
+    // 消す——起きなかった仕事の失敗を、作品ページに残す意味が無い。
+    await releaseRevisionSlot(env, input.gameId, jobTokenHash);
+    return { ok: false, kind: base.reason };
+  }
+
+  const job: GenerationJob = {
+    gameId: input.gameId,
+    jobToken,
+    userId,
+    request: { prompt: input.prompt, baseSource: base.source },
+  };
+
+  try {
+    await pipeline.startJob(env, job, pipeline);
+  } catch (error) {
+    console.error(`[revise] ジョブを起動できませんでした: ${error instanceof Error ? error.name : typeof error}`);
+    await failRevision(env, input.gameId, 'internal');
+    return { ok: false, kind: 'start-failed' };
+  }
+  return { ok: true, gameId: input.gameId };
+}
+
+/**
+ * 断った推敲の JSON の本文とステータス（`/api/revise` と MCP の `start_revision` が同じ分類名を返す）。
+ *
+ * @param outcome 断った結果
+ * @returns 本文とステータス
+ */
+export function revisionRefusalBody(
+  outcome: Exclude<RevisionStartOutcome, { readonly ok: true }>,
+): { readonly status: number; readonly body: unknown } {
+  switch (outcome.kind) {
+    case 'quota':
+      return { status: QUOTA_EXCEEDED_STATUS, body: outcome.body };
+    case 'in-flight':
+      return { status: REFUSALS['in-flight'].status, body: { error: IN_FLIGHT_REASON } };
+    case 'not-revisable':
+      return { status: REFUSALS['not-revisable'].status, body: { error: 'not revisable' } };
+    case 'start-failed':
+      return { status: REFUSALS['start-failed'].status, body: { error: 'start failed' } };
+    default:
+      return { status: REFUSALS[outcome.kind].status, body: { error: outcome.kind } };
+  }
+}
+
+/**
+ * 推敲の要求を処理する（中身は {@link startRevision}）。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -273,79 +389,17 @@ async function handleRevise(
       : json({ error: 'invalid request' }, 400);
   }
 
-  // 3.3-2 と同じ順序。**断られる要求のために R2 を引かない。**
-  const quota = await checkGenerationQuota(env, session.userId);
-  if (!quota.allowed) {
-    const body = describeQuotaRejection(
-      quota.reason,
-      'resetsAt' in quota ? quota.resetsAt : undefined,
-    );
-    return wantsHtml(request)
-      ? refusal('生成枠を使い切りました', '枠が戻ってから、もう一度お試しください。', QUOTA_EXCEEDED_STATUS)
-      : json(body, QUOTA_EXCEEDED_STATUS);
-  }
-
-  // **ここが 5.7 の対象条件を確かめる唯一の関門である**（`src/revisions.ts`）。
-  const jobToken = createJobToken();
-  const jobTokenHash = await hashJobToken(jobToken);
-  const claimed = await claimRevisionSlot(
-    env,
-    input.gameId,
-    session.userId,
-    input.prompt,
-    jobTokenHash,
-  );
-  if (!claimed) {
-    // **断ったあとにだけ理由を読む**（#455）。枠の取得は「進行中の要求がある」ことも
-    // 条件に持つが、0 行になった理由を文から区別できない。**判定はもう済んでいる**
-    // （この読み取りは文言を選ぶためで、ここで false でも枠は取らない）。
-    // 通った要求の読み取りは増えない。
-    if (await hasInFlightRequest(env, session.userId)) {
-      const busy = REFUSALS['in-flight'];
-      return wantsHtml(request)
-        ? refusal(busy.heading, busy.body, busy.status)
-        : json({ error: IN_FLIGHT_REASON }, busy.status);
+  const outcome = await startRevision(env, session.userId, input, pipeline);
+  if (!outcome.ok) {
+    if (wantsHtml(request)) {
+      if (outcome.kind === 'quota') {
+        return refusal('生成枠を使い切りました', '枠が戻ってから、もう一度お試しください。', QUOTA_EXCEEDED_STATUS);
+      }
+      const refused = REFUSALS[outcome.kind];
+      return refusal(refused.heading, refused.body, refused.status);
     }
-    const refused = REFUSALS['not-revisable'];
-    return wantsHtml(request)
-      ? refusal(refused.heading, refused.body, refused.status)
-      : json({ error: 'not revisable' }, refused.status);
-  }
-
-  // 枠を取れた＝作者本人の `draft` である。**ここで初めて `source_key` を読む。**
-  const row = await env.DB.prepare('select source_key from games where id = ?')
-    .bind(input.gameId)
-    .first<{ source_key: string | null }>();
-  const base =
-    row?.source_key == null
-      ? ({ ok: false, reason: 'source-missing' } as const)
-      : await readStoredSource(env, row.source_key);
-  if (!base.ok) {
-    // **LLM を 1 度も呼んでいないので枠を返す**（モジュール冒頭の表）。ジョブ行も
-    // 消す——起きなかった仕事の失敗を、作品ページに残す意味が無い。
-    await releaseRevisionSlot(env, input.gameId, jobTokenHash);
-    const refused = REFUSALS[base.reason];
-    return wantsHtml(request)
-      ? refusal(refused.heading, refused.body, refused.status)
-      : json({ error: base.reason }, refused.status);
-  }
-
-  const job: GenerationJob = {
-    gameId: input.gameId,
-    jobToken,
-    userId: session.userId,
-    request: { prompt: input.prompt, baseSource: base.source },
-  };
-
-  try {
-    await pipeline.startJob(env, job, pipeline);
-  } catch (error) {
-    console.error(`[revise] ジョブを起動できませんでした: ${error instanceof Error ? error.name : typeof error}`);
-    await failRevision(env, input.gameId, 'internal');
-    const refused = REFUSALS['start-failed'];
-    return wantsHtml(request)
-      ? refusal(refused.heading, refused.body, refused.status)
-      : json({ error: 'start failed' }, refused.status);
+    const { status, body } = revisionRefusalBody(outcome);
+    return json(body, status);
   }
 
   // **エディットページへ戻す**（#664。それまでは作品ページだった）。5.7 の「押したら作り直しが始まり、完成したら

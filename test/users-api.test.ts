@@ -1,16 +1,27 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { avatarUrl, sandboxOriginOf } from '../src/avatar-paths.js';
 import { DRAFT_STATUS, PUBLISHED_STATUS, REMOVED_STATUS } from '../src/games.js';
-import { DAILY_QUOTA_MESSAGE_KEY, GENERATE_MESSAGES } from '../src/generate-page.js';
+import {
+  DAILY_QUOTA_MESSAGE_KEY,
+  GENERATE_MESSAGES,
+  MONTHLY_LIMIT_MESSAGE_KEY,
+  QUOTA_UNKNOWN_NOTICE,
+} from '../src/generate-page.js';
 import { DEFAULT_GENERATION_MODEL_KEY } from '../src/generation-models.js';
 import { changeHandle } from '../src/handle.js';
 import { handlePagePath } from '../src/handle-paths.js';
 import { purgeListCache } from '../src/list-cache.js';
 import { GENERATE_PAGE_PATH } from '../src/paths.js';
 import { normalizeProfileLink } from '../src/profile.js';
-import { DAILY_QUOTA_PER_USER, DAILY_QUOTA_REASON, remainingQuotaNotice } from '../src/quota.js';
+import {
+  DAILY_QUOTA_PER_USER,
+  DAILY_QUOTA_REASON,
+  MONTHLY_COST_LIMIT_JPY,
+  MONTHLY_LIMIT_REASON,
+  remainingQuotaNotice,
+} from '../src/quota.js';
 import { REVIEW_CLEARED, REVIEW_QUEUED } from '../src/reports.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
@@ -161,14 +172,20 @@ async function sessionCookie(userId: string): Promise<string> {
  * @param viewer 送る利用者（null なら未ログイン）
  * @param path パス
  * @param accept `accept` ヘッダ
+ * @param target 渡す env（既定は秘密を差し替えた env）
  * @returns レスポンス
  */
-async function get(viewer: string | null, path: string, accept = 'application/json'): Promise<Response> {
+async function get(
+  viewer: string | null,
+  path: string,
+  accept = 'application/json',
+  target: Env = testEnv(),
+): Promise<Response> {
   const headers: Record<string, string> = { accept };
   if (viewer !== null) {
     headers.cookie = await sessionCookie(viewer);
   }
-  return await handleAppRequest(new Request(`${APP_ORIGIN}${path}`, { headers }), testEnv());
+  return await handleAppRequest(new Request(`${APP_ORIGIN}${path}`, { headers }), target);
 }
 
 /**
@@ -242,19 +259,23 @@ function paragraphById(page: string, id: string): string {
 }
 
 /**
- * 台帳へ 1 行積む（日次の枠を 1 回減らす。費用は 0 円——月次はサービス全体なので他の検査を動かさない）。
+ * 台帳へ 1 行積む（日次の枠を 1 回減らす）。
+ *
+ * **費用は既定で 0 円**——月次はサービス全体なので、積むと同じ月を見る他の検査を動かす。月次の上限を
+ * 仕込む検査だけが、時刻を離れた月へ固定してから費用を積む（下の「月次の上限」）。
  *
  * @param userId 利用者 id
+ * @param costJpy 費用（円）
  */
-async function seedLedgerRow(userId: string): Promise<void> {
+async function seedLedgerRow(userId: string, costJpy = 0): Promise<void> {
   await env.DB.prepare(
     `insert into generations
        (id, game_id, user_id, prompt, model,
         input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
         cost_jpy, succeeded, created_at)
-     values (?, null, ?, 'ゲーム', ?, 0, 0, 0, 0, 0, 1, ?)`,
+     values (?, null, ?, 'ゲーム', ?, 0, 0, 0, 0, ?, 1, ?)`,
   )
-    .bind(crypto.randomUUID(), userId, DEFAULT_GENERATION_MODEL_KEY, Math.floor(Date.now() / 1000))
+    .bind(crypto.randomUUID(), userId, DEFAULT_GENERATION_MODEL_KEY, costJpy, Math.floor(Date.now() / 1000))
     .run();
 }
 
@@ -450,6 +471,40 @@ describe('`/api/me` の残り枠は生成画面の表示と一致する（#700�
     expect(shown.api.resetsAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
   });
 
+  it('残枠を読めなくても口ごと 500 にせず、200 で `unknown` を返す（画面も「読めない」の文言）', async () => {
+    const userId = await seedUser('読めない人');
+    // 枠の集計（月次の費用）だけを失敗させる。セッションの解決とプロフィールの読み取りは通す
+    // （`test/generate-page.test.ts` の「残枠を読めなくても画面は出る」と同じ仕込み）。
+    const broken = {
+      ...testEnv(),
+      DB: {
+        prepare(query: string) {
+          if (query.includes('sum(cost_jpy)')) {
+            throw new Error('D1 is down');
+          }
+          return env.DB.prepare(query);
+        },
+        batch: env.DB.batch.bind(env.DB),
+      } as unknown as D1Database,
+    };
+
+    const response = await get(userId, ME_API_PATH, 'application/json', broken);
+    const text = await response.text();
+    expect(response.status, text).toBe(200);
+    const body = JSON.parse(text) as Record<string, unknown>;
+    expect(body.quota).toEqual({
+      state: 'unknown',
+      remaining: null,
+      dailyLimit: DAILY_QUOTA_PER_USER,
+      resetsAt: null,
+    });
+    // プロフィールは読めている（枠の失敗に巻き込まない）。
+    expect(body.displayName).toBe('読めない人');
+
+    const page = await (await get(userId, GENERATE_PAGE_PATH, 'text/html', broken)).text();
+    expect(paragraphById(page, 'generate-quota')).toBe(QUOTA_UNKNOWN_NOTICE);
+  });
+
   it('他人の公開プロフィールには残り枠を載せない', async () => {
     const viewer = await seedUser('見る人');
     const other = await seedUser('他人');
@@ -493,5 +548,42 @@ describe('退会した利用者と無い id は同じ 404（#700）', () => {
       await purgeListCache(authorCacheKey(id, 1));
       expect((await get(null, authorPagePath(id), 'text/html')).status).toBe(404);
     }
+  });
+});
+
+describe('`/api/me` の月次の上限（#700）', () => {
+  /**
+   * **月次はサービス全体の累計である**（4.3）。上限ぶんの費用を積むと、同じ月を見る他の検査がすべて
+   * 月次で止まる。**時刻を離れた月へ固定してから積む**（`test/generate-page.test.ts` の残枠の検査と同じ
+   * 手順。あちらの 2020 年 5 月とも重ならない月にする）。`Date` だけを差し替えるのは、`setTimeout` まで
+   * 差し替えると D1 の I/O が進まなくなるためである。
+   */
+  const AT_MS = Date.UTC(2031, 2, 15, 3);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(AT_MS);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('月次の上限に達したら `monthly-limit`・残り null・戻る時刻 null で、生成画面は月次の文言', async () => {
+    // 止めた利用者と、口を叩く利用者は別で構わない（月次は 1 人の枠ではない）。
+    const spender = await seedUser('月次を使い切った人');
+    await seedLedgerRow(spender, MONTHLY_COST_LIMIT_JPY);
+    const userId = await seedUser('月次で止まった人');
+
+    const me = await getJson(userId, ME_API_PATH);
+    expect(me.quota).toEqual({
+      state: MONTHLY_LIMIT_REASON,
+      remaining: null,
+      dailyLimit: DAILY_QUOTA_PER_USER,
+      resetsAt: null,
+    });
+
+    const page = await (await get(userId, GENERATE_PAGE_PATH, 'text/html')).text();
+    expect(paragraphById(page, 'generate-quota')).toBe(GENERATE_MESSAGES[MONTHLY_LIMIT_MESSAGE_KEY]);
   });
 });

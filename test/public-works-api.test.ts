@@ -9,7 +9,7 @@ import {
   toPublicWorkSort,
   toTaggedWorkSort,
 } from '../src/games.js';
-import { listCacheKey, purgeListCache } from '../src/list-cache.js';
+import { cachedRows, listCacheKey, purgeListCache } from '../src/list-cache.js';
 import { workPagePath } from '../src/paths.js';
 import { handleListPublicWorks, PUBLIC_WORKS_API_SCOPE } from '../src/public-works-api.js';
 import { PUBLIC_WORKS_API_PATH } from '../src/public-works-api-paths.js';
@@ -217,7 +217,7 @@ interface Item {
   readonly authorId: string | null;
   readonly author: { readonly displayName: string | null; readonly handle: string | null };
   readonly likeCount: number;
-  readonly playCount: number | null;
+  readonly playCount: number;
   readonly forkCount: number;
   readonly publishedAt: number | null;
   readonly links: { readonly page: string; readonly play: string };
@@ -395,6 +395,49 @@ describe('出してよいものだけを返す（#699）', () => {
     );
     for (const key of ['prompt', 'source', 'sourceKey', 'source_key', 'wasmKey', 'wasm_key', 'previewKey']) {
       expect(text).not.toContain(`"${key}"`);
+    }
+  });
+});
+
+describe('キャッシュに残った古い形の行（#699 / #340）', () => {
+  it('いいね数・プレイ数・説明が無い（数でない）行は、画面と同じく 0 と空文字で返す', async () => {
+    const caller = await createUser('読む人');
+    // **一覧のキャッシュの鍵に行の形の版は無い**（`src/list-cache.ts`）。配備の直後 60 秒は、列を選んでいなかった
+    // 頃の行がそのまま返る。その行を、口が引くのと同じ鍵へ直接置く（`?page=50` は他のテストの仕込みと競らない）。
+    const query = '?sort=recent&page=50';
+    const key = listCacheKey('works', { sort: 'recent', page: 50 });
+    await purgeListCache(key);
+    const id = crypto.randomUUID();
+    const oldRows = [
+      {
+        id,
+        title: '古い形',
+        authorName: '作者',
+        publishedAt: 1,
+        forkCount: 0,
+        hasParent: false,
+        hasShot: false,
+        // likeCount / playCount / description / authorId / authorHandle / tags を持たない（または数でない）行
+        likeCount: 'x',
+      },
+    ];
+    await cachedRows(key, async () => oldRows);
+    try {
+      const response = await callApi(caller, query);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Body;
+      expect(body.works).toHaveLength(1);
+      expect(body.works[0]).toMatchObject({
+        id,
+        likeCount: 0,
+        playCount: 0,
+        description: '',
+        authorId: null,
+        author: { displayName: '作者', handle: null },
+        tags: [],
+      });
+    } finally {
+      await purgeListCache(key);
     }
   });
 });

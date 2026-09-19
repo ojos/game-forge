@@ -9379,7 +9379,9 @@ NULL のまま始まるので、**変えない限り今までと同じ振る舞�
 各作品の項目は `id`・`title`・`description`（作者の説明。無ければ空文字）・`tags`（識別子の配列）・**`authorId`**・`author`（`displayName` と
 `handle`。ハンドル名が無ければ `null`）・`likeCount`・`playCount`・`forkCount`（どれも D1 に写した数で、いいねとプレイ数は最大 5 分遅れる。5.8）・
 `publishedAt`・`links`（`page` は作品ページ、`play` はサンドボックス用ホストの `/g/<id>/`。どちらも絶対 URL）。
-配備の直後の最大 60 秒は、キャッシュに残った古い形の行から `playCount` / `authorId` が `null`、`description` が空文字で返りうる（2.3.6 の `PublicWork` と同じ窓）。
+配備の直後の最大 60 秒は、キャッシュに残った古い形の行（一覧のキャッシュの鍵に行の形の版が無い。2.3.6 の `PublicWork` と同じ窓）が返りうる。
+**欠けた項目は画面のカードと同じ関数で倒す**——`likeCount` / `playCount` は数でなければ `0`（`src/work-card.ts` の `cardLikeCount` / `cardPlayCount`）、
+`description` は文字列でなければ空文字、`authorId` と `author.handle` は `null`。
 
 **返さないもの**：指示文（1.2.54）・ソース・R2 のキー・ビルドのジョブ ID などの内部の識別子。**公開する範囲は `/works` の HTML から増えない**
 ——作者のユーザー ID も、作者ページの URL（`/users/<user_id>`）とサイトマップ（2.3.1）で既に公開されている値である。
@@ -9394,7 +9396,8 @@ NULL のまま始まるので、**変えない限り今までと同じ振る舞�
 | 断った検索（1 文字だけ・語が多すぎる・長すぎる。2.3.5） | 400 | `{"error":"invalid-query","reason":"too-short" \| "too-many-terms" \| "too-long"}` |
 
 **断った検索だけは 400 にする。** 画面は理由を書いて空の一覧を出すが、機械には「当たらなかった」と区別できないためである。どちらも D1 を引かない。
-すべての応答（401・429 を含む）に `Content-Signal: search=yes, ai-input=yes, ai-train=no`（`src/robots.ts`）を付ける。
+口の処理が返す応答（200・400・401・429）に `Content-Signal: search=yes, ai-input=yes, ai-train=no`（`src/robots.ts`）を付ける。
+**経路表が返す 405（GET 以外）には付かない**（本文を持たない応答で、`src/routes.ts` の共通の処理が返すため）。
 
 #### 呼び出しの上限
 

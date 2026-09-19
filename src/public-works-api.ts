@@ -28,7 +28,9 @@
  *
  * ## 学習に使わないでほしいことを伝える
  *
- * 応答に `Content-Signal`（`src/robots.ts` の {@link CONTENT_SIGNAL}。`ai-train=no`）を付ける。
+ * 口の処理が返す応答（200・400・401・429）に `Content-Signal`（`src/robots.ts` の {@link CONTENT_SIGNAL}。
+ * `ai-train=no`）を付ける。**経路表が返す 405（GET 以外）には付かない**（本文を持たない応答で、
+ * `src/routes.ts` の共通の処理が返すため）。
  * **効くのは行儀のよい相手だけである**——まとめて抜き出しにくくするのは、ログイン必須と上限のほうである。
  */
 import { allowApiCall, API_RATE_LIMIT, RATE_LIMITED_BODY } from './api-rate-limit.js';
@@ -39,13 +41,18 @@ import { workPagePath } from './paths.js';
 import { PUBLIC_WORKS_API_PATH } from './public-works-api-paths.js';
 import { CONTENT_SIGNAL } from './robots.js';
 import { json, type Route } from './routes.js';
-import { knownWorkTags } from './work-card.js';
+import { cardLikeCount, cardPlayCount, knownWorkTags } from './work-card.js';
 import { loadWorksListPage } from './works-list.js';
 
 /** 上限を数えるときの口の名前（鍵の前半。`src/api-rate-limit.ts`）。 */
 export const PUBLIC_WORKS_API_SCOPE = 'works';
 
-/** すべての応答に付ける見出し（401 と 429 を含む）。 */
+/**
+ * 口の処理が返す応答（200・400・401・429）に付ける見出し。
+ *
+ * **経路表が返す 405（GET 以外）には付かない。** 本文を持たない応答で、`src/routes.ts` の共通の処理が
+ * 口の処理を通さずに返すためである（仕様 5.13）。
+ */
 const SIGNAL_HEADERS = { 'content-signal': CONTENT_SIGNAL } as const;
 
 /** 口が返す 1 件（仕様 5.13）。**作品カードの情報と説明・リンクだけ**で、内部の識別子を足さない。 */
@@ -61,8 +68,8 @@ export interface PublicWorkApiItem {
   readonly author: { readonly displayName: string | null; readonly handle: string | null };
   /** いいねの数（`games.like_count`。**最大 5 分遅れる**。5.8）。 */
   readonly likeCount: number;
-  /** プレイ数（`games.play_count`。**最大 5 分遅れる**。配備の直後の最大 60 秒は null がありうる）。 */
-  readonly playCount: number | null;
+  /** プレイ数（`games.play_count`。**最大 5 分遅れる**。読めない行では 0）。 */
+  readonly playCount: number;
   /** 公開済みのフォークの数。 */
   readonly forkCount: number;
   /** 最初に公開した時刻（UNIX 秒）。 */
@@ -77,8 +84,10 @@ export interface PublicWorkApiItem {
  * **項目を 1 つずつ選ぶ**（`...work` で広げない）。`PublicWork` に列が増えた日に、口の応答へ黙って
  * 載らないようにする。
  *
- * **欠けている項目は null か空に倒す。** 一覧の行は Cache API に載っており、配備の直後の最大 60 秒は
- * 列を選んでいなかった頃の行が返りうる（`src/games.ts` の `PublicWork` の注記）。
+ * **欠けている項目は画面と同じ関数で倒す。** 一覧の行は Cache API に載っており、鍵に行の形の版が無いので、
+ * 配備の直後の最大 60 秒は列を選んでいなかった頃の行が返りうる（`src/games.ts` の `PublicWork` の注記 / #340）。
+ * いいね数とプレイ数はカードと同じ `cardLikeCount` / `cardPlayCount`（数でなければ 0）、説明は文字列で
+ * なければ空文字、`authorId` とハンドル名は null にする。
  *
  * @param work 一覧の 1 件
  * @param appOrigin アプリ用ホストのオリジン
@@ -89,12 +98,12 @@ export function toPublicWorkApiItem(work: PublicWork, appOrigin: string, sandbox
   return {
     id: work.id,
     title: work.title,
-    description: work.description ?? '',
+    description: typeof work.description === 'string' ? work.description : '',
     tags: knownWorkTags(work.tags).map((tag) => tag.id),
     authorId: work.authorId ?? null,
     author: { displayName: work.authorName, handle: work.authorHandle ?? null },
-    likeCount: work.likeCount,
-    playCount: work.playCount ?? null,
+    likeCount: cardLikeCount(work),
+    playCount: cardPlayCount(work),
     forkCount: work.forkCount,
     publishedAt: work.publishedAt,
     links: {

@@ -7,7 +7,7 @@
  * |---|---|
  * | `/.well-known/oauth-authorization-server`（RFC 8414）・`/.well-known/oauth-protected-resource`（RFC 9728。`/mcp` 付きの形も） | 部品 |
  * | `/token`（発行・refresh の入れ替え・失効）・`/register`（DCR） | 部品 |
- * | `/mcp`（トークンを検証してから {@link mcpPlaceholderHandler} へ渡す） | 部品 → アプリ |
+ * | `/mcp`（トークンを検証してから `src/mcp-server.ts` の `handleMcpRequest` へ渡す） | 部品 → アプリ |
  * | `/authorize`（同意画面）・`/account/apps`（接続の解除） | **アプリの経路表**（`src/oauth-authorize.ts` / `src/account-apps.ts`） |
  *
  * **振り分けは `src/index.ts` のアプリのホストの枝で行う**（{@link isOAuthProviderPath}）。部品の `fetch` に
@@ -34,7 +34,7 @@
 import type { OAuthHelpers, OAuthProviderOptions } from '@cloudflare/workers-oauth-provider';
 import { GrantType, OAuthError, OAuthProvider, getOAuthApi } from '@cloudflare/workers-oauth-provider';
 import { grantHelpers, revokeAllUserGrants } from './oauth-grants.js';
-import { isOAuthUserActive } from './oauth-user.js';
+import { handleMcpRequest } from './mcp-server.js';
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   AUTHORIZE_PATH,
@@ -47,7 +47,6 @@ import {
   REGISTER_PATH,
   TOKEN_PATH,
 } from './oauth-paths.js';
-import { normalizeHost } from './origins.js';
 import { REGISTER_MAX_BODY_BYTES, guardRegistration } from './oauth-guard.js';
 import { readLimitedText } from './routes.js';
 
@@ -99,7 +98,8 @@ export interface OAuthGrantMetadata {
 function providerOptions(origin: string, env: Env): OAuthProviderOptions<Env> {
   return {
     apiRoute: MCP_PATH,
-    apiHandler: { fetch: mcpPlaceholderHandler },
+    // **MCP サーバー本体**（#696 PR②）。部品がトークンを検証し、props を `ctx.props` に置いてから呼ぶ。
+    apiHandler: { fetch: (request, handlerEnv, ctx) => handleMcpRequest(request, handlerEnv, ctx) },
     // **ここへは届かない**（`src/index.ts` は部品の口だけをここへ渡す）。届いたら 404 にする。
     defaultHandler: {
       fetch: () => jsonResponse({ error: 'not-found' }, 404),
@@ -299,61 +299,6 @@ async function checkRegistration(request: Request, env: Env): Promise<Request | 
     return jsonResponse({ error: 'temporarily_unavailable' }, 503, { 'retry-after': '60' });
   }
   return new Request(request, { body: read.text });
-}
-
-/**
- * MCP の口の仮の処理（#696 PR①）。**部品がトークンを検証した後にだけ呼ばれる。**
- *
- * PR② で MCP サーバー（道具 6 本）に差し替える。それまでは次だけを行い、404 を返す。
- *
- * 1. **Origin を確かめる**（MCP の仕様の DNS rebinding の対策）。`Origin` が付いていれば、ホスト名が
- *    アプリのホスト（`APP_HOST`。本番・プレビューとも `app.game-forge.ojos.jp`）と一致するときだけ通す。
- *    付いていない要求（ブラウザでないクライアント）は通す
- * 2. **トークンの利用者が今も操作してよいか**（BAN・退会。{@link isOAuthUserActive}）。だめなら 401
- *
- * @param request 受信したリクエスト
- * @param env バインディングと環境変数
- * @param ctx 実行文脈（`ctx.props` にトークンの props が載っている）
- * @returns レスポンス
- */
-async function mcpPlaceholderHandler(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  if (!isAllowedMcpOrigin(request.headers.get('origin'), env)) {
-    return jsonResponse({ error: 'forbidden-origin' }, 403);
-  }
-  const props = (ctx as unknown as { props?: Partial<OAuthTokenProps> }).props;
-  if (!(await isOAuthUserActive(env.DB, props?.userId))) {
-    const url = new URL(request.url);
-    return jsonResponse({ error: 'invalid_token' }, 401, {
-      'www-authenticate': `Bearer error="invalid_token", resource_metadata="${url.origin}${PROTECTED_RESOURCE_METADATA_PATH}${MCP_PATH}"`,
-    });
-  }
-  return jsonResponse({ error: 'not-found' }, 404);
-}
-
-/**
- * MCP の口へ来た要求の `Origin` を許すか（DNS rebinding の対策）。
- *
- * **許すのはアプリのホストだけ**（`APP_HOST`。ポートは問わない——ローカルは `:8787` で動く）。`Origin` が無い要求は
- * 許す（MCP のクライアントの多くはブラウザではなく、`Origin` を付けない）。読めない `Origin`（`null` を含む）は拒む。
- *
- * @param origin `Origin` ヘッダの値
- * @param env バインディングと環境変数
- * @returns 許すなら true
- */
-export function isAllowedMcpOrigin(origin: string | null, env: Env): boolean {
-  if (origin === null) {
-    return true;
-  }
-  const appHost: unknown = env.APP_HOST;
-  if (typeof appHost !== 'string' || appHost.trim() === '') {
-    return false;
-  }
-  try {
-    const parsed = new URL(origin);
-    return parsed.protocol === 'https:' && normalizeHost(parsed.hostname) === normalizeHost(appHost);
-  } catch {
-    return false;
-  }
 }
 
 /**

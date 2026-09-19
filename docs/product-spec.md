@@ -9674,6 +9674,65 @@ port を無視する**（Claude Code の要件。部品の既定の挙動）。
 > （テストは大域の `fetch` を差し替えて通した）/ Claude の各製品からの接続 / 本番の cleanup の Worker が KV を束ねて配れること
 > （マージ後の deploy ジョブで確かめる）。
 
+> **実装注記（#696 PR②。実装日 2026-09-19）。MCP サーバー本体を入れた**（`src/mcp-server.ts`。PR① の仮の `/mcp` を差し替えた）。
+>
+> - **SDK**：`@modelcontextprotocol/server` 2.0.0 の `createMcpHandler` を直に使う（Agents SDK は経由しない。上の「構成」のとおり）。
+>   **要求ごとにサーバーを作り、状態を持たない**。`legacy: 'stateless'`（旧版の要求は、要求ごとの新しいサーバーが答える）・
+>   `responseMode: 'json'`・`maxSubscriptions: 0`（`subscriptions/listen` の SSE の流れを開かない）。依存は `@modelcontextprotocol/server`
+>   と `zod` を版を固定して足した（テストだけ `@modelcontextprotocol/client`）。Pages Functions の束（`wrangler pages functions build`。
+>   圧縮なし）は gzip で約 310 KB → 約 434 KB になった
+> - **旧版と 2026-07-28 版の両方に応答する**ことを、テスト（`test/mcp-server.test.ts`）で確かめた——クライアントの SDK の既定
+>   （`initialize`。2025-11-25）と、2026-07-28 に固定した交渉（`server/discover`）の両方で、`tools/list` と道具を呼ぶ。生の 2025-06-18 の
+>   `initialize` にも同じ版で答える。**旧版の応答は SSE の 1 通**（SDK の旧版の既定。JSON にする設定が無い）、**新版の応答は JSON**。
+>   GET と DELETE は 405（`Allow: POST`）で、`Mcp-Session-Id` は出さない
+> - **呼ぶたびの確認の順序**：Origin（403。PR① の判定を `src/oauth-provider.ts` から移した）→ POST だけ（405）→ 利用者が今も操作して
+>   よいか（BAN・退会。401 `invalid_token`）→ **呼び出しの上限**（`allowApiCall` を鍵 `mcp:<利用者の id>` で。60 秒 60 回。入口が
+>   呼べなければ通す。超えたら 429 と `Retry-After: 60`）→ 本文を 64 KiB で切る（413。判定は実際に読んだバイト数で、`Content-Length` の申告は見ない。ちょうど 64 KiB は通す）→ **scope**（下）→ SDK
+> - **scope の判定は SDK の手前（HTTP の層）に置いた**。足りなければ **HTTP の 403 と `WWW-Authenticate: Bearer error="insufficient_scope",
+>   scope="<足りない scope>", resource_metadata="…"`**（MCP の仕様の段階的な認可の形。道具の中で断ると HTTP 200 の中の誤りになり、
+>   クライアントが認可をやり直す合図にならない）。材料は**本文の JSON-RPC（`method: "tools/call"` と `params.name`。配列でも 1 つずつ）と、
+>   2026-07-28 版のヘッダ `Mcp-Method` / `Mcp-Name`**（試作とテストで、新版のクライアントが道具の呼び出しにこの 2 つを付けることを
+>   確かめた）。どちらかが要る scope の道具を指していれば断る。道具の中でも同じ表（`MCP_TOOL_SCOPES`）でもう 1 度確かめる。
+>   **読む 4 本も `works:read` を要る**（同意で「読む」だけを外した接続は、読む道具で 403 `scope="works:read"`）。2026-07-28 版の
+>   クライアントの SDK は、この 403 を「Insufficient scope: required "works:generate"」として受け取った（テスト）
+> - **`tools/list` は scope に関わらず 6 本とも出す**。持っている scope の道具だけを出すと、読むだけの接続の AI は生成の道具が
+>   あることを知らずに呼ばず、403（＝利用者に「生成も許す」でつなぎ直させる合図）が起きない。道具の説明に要る scope を書いた
+> - **道具は既存の関数を利用者の id で直接呼ぶ**。そのために、束に入らない 3 つのファイルから中身を切り出した——`src/works-api.ts` の
+>   `myWorksListResult` / `myWorkResult`（口と同じ `author_id` の判定・同じ読み飛ばし件数の規則）、`src/users-api.ts` の `loadMe`、
+>   `src/revise.ts` の `validateReviseInput` / `startRevision` / `revisionRefusalBody`（順序と分類はそのまま。口も同じ関数を通る）。
+>   **`src/generate.ts` は変えていない**——`start_generation` は、口と同じ形の本文を組んで `parseGenerateRequest` に渡し（前後の空白・空・
+>   2,000 文字の規則を書き写さない）、`startGeneration`（枠 → 進行中の判定つきの行の作成 → オーケストレータ Lambda の非同期呼び出し）を
+>   呼ぶ。失敗の分類は `handleGenerate` と同じ（`daily-quota` / `monthly-limit` は `describeQuotaRejection`、`generation-in-flight`、
+>   それ以外は `internal error`）。**オーケストレータの束は変わらない**（`scripts/orchestrator-bundle-changed.sh` が
+>   `ORCHESTRATOR_BUNDLE_UNCHANGED`）
+> - **結果の形**：既存の口の JSON をそのまま 1 つのテキストに入れ、失敗は `isError: true` と既存の口の分類名。他人の作品・無い id・
+>   形の違う id は、読む道具ではどれも `not-found`、推敲では `not revisable`（口と同じく区別しない）。**違うのは開始の 2 本の
+>   `statusUrl` だけ**で、MCP のトークンでは `/api/*` を読めないので、代わりに `status: { tool: "get_my_work", arguments: { id } }` を返す。
+>   結果の中のパスは相対のままにし、サーバーの `instructions` に「`https://<アプリのホスト>` からの相対」と「完成まで 80 秒以上かかるので
+>   `get_my_work` で間を空けて確かめる」を書いた
+> - **引数の形の誤りは、既存の口の分類名にならない**（PR #707 の Copilot の指摘を受けて約束を明記した）。道具の入力の定義は厳しいまま
+>   にした（定義に無いキーも許さない。AI が道具を正しく呼ぶための手がかりなので、既存の口に合わせて緩めない）。**必須の引数が無い・
+>   型が違う・定義に無い引数がある要求は、道具の中身に届く前に MCP の SDK が断る**——実測（SDK 2.0.0。旧版と 2026-07-28 版の両方）では、
+>   JSON-RPC の invalid params ではなく、**HTTP 200 の中の道具の失敗（`isError: true`。本文は `Input validation error: Invalid arguments for
+>   tool …` の素のテキストで、JSON ではない）**になり、余分なキーも落とさずに断る（`Unrecognized key`）。作品の行も起動も作らない。
+>   **既存の口と同じ分類名（`missing-prompt`・`prompt-too-long`・`invalid request`・`not-found`・`daily-quota` など）で返すのは、形の正しい
+>   引数の中身の検証だけ**である（空白だけの指示文は形が正しいので `missing-prompt`）。サーバーの `instructions` にも同じことを書いた
+> - **画面の語**：道具の題と説明、同意画面と「接続中のアプリ」の scope の名前は「リフォージ」にした（#513。PR① の同意画面は
+>   「作品を生成・推敲する」と出していた）。道具の名前 `start_revision` は上の表のまま
+> - **利用者向けの案内は FAQ に置いた**（`/faq#ai-connect`。`src/faq.ts`）。新しい文書にしなかったのは、利用者が「できるか・どうつなぐか・
+>   どうやめるか」を探す場所が FAQ で、登録情報・退会と同じ並びに置けるため。**書いたこと**：できること・できないこと（公開・削除・退会・
+>   他人の作品）・接続先 `https://app.game-forge.ojos.jp/mcp`（本番の `APP_HOST` の写し。一致はテストが照合する）・Claude Code の
+>   `claude mcp add --transport http game-forge <URL>` と、claude.ai / Claude Desktop のカスタムコネクタ・許可の画面で生成を外せること・
+>   心当たりの無い許可の画面を許可しないこと・枠は画面と共有・**やめるときと漏れたかもしれないときは「接続中のアプリ」で解除**・
+>   30 日の無活動と 1 年で切れること
+> - **漏れたときの手順（#696 の constraints）**：利用者は「接続中のアプリ」で解除する（その許可のトークンがすべて無効になる。PR①）。
+>   運営は、利用者を BAN すれば次の呼び出しから 401 になる（トークンは消えない。BAN の解除で戻る）。退会は KV の許可も消す（PR①）
+>
+> **確かめていないこと**：本番の Pages での動作（配備の後に、利用者の端末の MCP クライアントからつないで、生成して状況を確かめる。#696 の
+> 受け入れ条件）/ Claude の各製品（claude.ai・Claude Desktop・Claude Code）からの接続と、各製品が 403 `insufficient_scope` を受けて
+> 認可をやり直すか / 実際の旧版のクライアントのうち 2025-03-26 版（JSON-RPC の配列を送る形）——テストは 2025-06-18 と 2025-11-25 と
+> 2026-07-28 だけ / 呼び出しの上限の本物の入口（テストは自分自身の同じ入口に差し替えている。5.13 と同じ）。
+
 ---
 
 ## 6. プロンプトエンジニアリング & ガードレール

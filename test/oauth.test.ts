@@ -311,7 +311,12 @@ async function connect(cookie: string, scopes: readonly string[] = OAUTH_SCOPES)
  */
 async function callMcp(accessToken: string, headers: Record<string, string> = {}): Promise<Response> {
   return await call('POST', '/mcp', {
-    headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json', ...headers },
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+      ...headers,
+    },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
   });
 }
@@ -397,7 +402,7 @@ describe('メタデータとトークンなしの /mcp（部品の口）', () =>
 });
 
 describe('フロー全体（DCR → 同意 → code → token → /mcp → refresh）', () => {
-  it('承諾で code が出て、トークンで /mcp が仮の 404 を返し、refresh で入れ替わる', async () => {
+  it('承諾で code が出て、トークンで /mcp の tools/list が通り（道具の中身は test/mcp-server.test.ts）、refresh で入れ替わる', async () => {
     const user = await seedUser();
     const connected = await connect(user.cookie);
     expect(connected.scope.split(' ').sort()).toEqual([SCOPE_WORKS_GENERATE, SCOPE_WORKS_READ]);
@@ -405,8 +410,8 @@ describe('フロー全体（DCR → 同意 → code → token → /mcp → refre
     expect(connected.accessToken.startsWith(`${user.id}:`)).toBe(true);
 
     const mcp = await callMcp(connected.accessToken);
-    expect(mcp.status).toBe(404);
-    expect(await mcp.json()).toEqual({ error: 'not-found' });
+    expect(mcp.status).toBe(200);
+    expect(await mcp.text()).toContain('"start_generation"');
 
     const refreshed = await call('POST', '/token', {
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -422,7 +427,7 @@ describe('フロー全体（DCR → 同意 → code → token → /mcp → refre
     expect(next.refresh_token).not.toBe(connected.refreshToken);
     expect(next.access_token).not.toBe(connected.accessToken);
     expect(next.expires_in).toBeLessThanOrEqual(ACCESS_TOKEN_TTL_SECONDS);
-    expect((await callMcp(next.access_token)).status).toBe(404);
+    expect((await callMcp(next.access_token)).status).toBe(200);
 
     // 新しい refresh を使った後は、最初の refresh はもう通らない。
     const again = await call('POST', '/token', {
@@ -469,8 +474,8 @@ describe('フロー全体（DCR → 同意 → code → token → /mcp → refre
     const connected = await connect(user.cookie);
     expect((await callMcp(connected.accessToken, { origin: 'https://evil.example' })).status).toBe(403);
     expect((await callMcp(connected.accessToken, { origin: 'null' })).status).toBe(403);
-    expect((await callMcp(connected.accessToken, { origin: APP_ORIGIN })).status).toBe(404);
-    expect((await callMcp(connected.accessToken)).status).toBe(404);
+    expect((await callMcp(connected.accessToken, { origin: APP_ORIGIN })).status).toBe(200);
+    expect((await callMcp(connected.accessToken)).status).toBe(200);
   });
 
   it('BAN・退会を始めた利用者のトークンは、トークンが生きていても /mcp で 401', async () => {
@@ -757,7 +762,7 @@ describe('接続中のアプリ（/account/apps）', () => {
     const body = await page.text();
     expect(body).toContain('Test MCP Client');
     expect(body).toContain('自分の作品を読む');
-    expect(body).not.toContain('作品を生成・推敲する');
+    expect(body).not.toContain('作品を生成・リフォージする');
     expect(body).toContain('接続した日時');
     expect(body).toContain('aria-current="page">接続中のアプリ');
     const grantId = /name="grant_id" value="([^"]+)"/u.exec(body)?.[1];
@@ -787,7 +792,7 @@ describe('接続中のアプリ（/account/apps）', () => {
     expect(response.status).toBe(303);
     expect(response.headers.get('location')).toBe(`${ACCOUNT_APPS_PATH}?reason=not-found`);
     expect((await kvKeysOf(owner.id)).grants).toBe(1);
-    expect((await callMcp(connected.accessToken)).status).toBe(404);
+    expect((await callMcp(connected.accessToken)).status).toBe(200);
   });
 
   it('許可が 100 件を超えても、全部を並べ、101 件目以降も解除できる（cursor を最後まで追う）', async () => {
@@ -855,7 +860,7 @@ describe('退会で許可が消える', () => {
     expect(response.status).toBe(303);
     expect(await kvKeysOf(user.id)).toEqual({ grants: 0, tokens: 0 });
     expect((await kvKeysOf(bystander.id)).grants).toBe(1);
-    expect((await callMcp(kept.accessToken)).status).toBe(404);
+    expect((await callMcp(kept.accessToken)).status).toBe(200);
   });
 });
 

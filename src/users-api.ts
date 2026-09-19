@@ -153,7 +153,7 @@ export async function loadPublicUserProfile(
  *
  * **80% 警告（`warning`）は返さない。** 中身はサービス全体の当月の費用で、生成画面も出していない。
  */
-interface QuotaView {
+export interface QuotaView {
   readonly state: 'available' | typeof DAILY_QUOTA_REASON | typeof MONTHLY_LIMIT_REASON | 'unknown';
   /** 本日の残り回数（日次で止まっていれば 0。月次で止まった・読めなければ null）。 */
   readonly remaining: number | null;
@@ -217,7 +217,29 @@ export async function handleUserProfile(request: Request, env: Env): Promise<Res
 }
 
 /**
- * `GET /api/me` — 自分の公開プロフィールと残りの生成枠。
+ * 自分の公開プロフィールと残りの生成枠を組み立てる（`GET /api/me` と MCP の `get_me` の中身。#696 PR②）。
+ *
+ * **MCP の道具は `/api/me` を HTTP で呼び直さず、これを利用者の id で直接呼ぶ**（仕様 5.15）。
+ *
+ * @param request 受信したリクエスト（アイコンの URL のスキームとポートを借りる）
+ * @param env バインディングと環境変数
+ * @param userId 呼び出し元（確かめ済みの利用者の id）
+ * @returns 本文、または null（呼び出し元の解決の後に退会を掴んだ）
+ */
+export async function loadMe(
+  request: Request,
+  env: Env,
+  userId: string,
+): Promise<(PublicUserProfile & { readonly quota: QuotaView }) | null> {
+  const profile = await loadPublicUserProfile(request, env, userId);
+  if (profile === null) {
+    return null;
+  }
+  return { ...profile, quota: await quotaViewOf(env, userId) };
+}
+
+/**
+ * `GET /api/me` — 自分の公開プロフィールと残りの生成枠（中身は {@link loadMe}）。
  *
  * **自分の情報でも、足すのは残りの枠だけである**（メールアドレスや配信の設定は返さない。モジュール冒頭）。
  *
@@ -230,12 +252,12 @@ export async function handleMe(request: Request, env: Env): Promise<Response> {
   if (!caller.ok) {
     return json({ error: 'unauthorized' }, 401);
   }
-  const profile = await loadPublicUserProfile(request, env, caller.userId);
-  if (profile === null) {
+  const me = await loadMe(request, env, caller.userId);
+  if (me === null) {
     // 呼び出し元の解決の後に退会を掴んだ（競合）。**未認証と同じ扱いにする**（もう利用者ではない）。
     return json({ error: 'unauthorized' }, 401);
   }
-  return json({ ...profile, quota: await quotaViewOf(env, caller.userId) });
+  return json(me);
 }
 
 /** ユーザー情報を機械が読める口の経路。 */

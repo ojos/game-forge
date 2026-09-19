@@ -2,7 +2,10 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { createAppRoutes } from '../src/app.js';
 import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
-import { FAQ_ENTRIES, FAQ_TITLE, faqBody } from '../src/faq.js';
+import { FAQ_ENTRIES, FAQ_TITLE, MCP_SERVER_URL, faqBody } from '../src/faq.js';
+import { ACCOUNT_APPS_PATH } from '../src/account-paths.js';
+import { MCP_TOOL_NAMES } from '../src/mcp-server.js';
+import { OAUTH_SCOPE_LABELS, SCOPE_WORKS_GENERATE } from '../src/oauth-paths.js';
 import { TYPICAL_WAIT_TEXT } from '../src/generate-page.js';
 import { INVITE_RECOVERY_DAYS } from '../src/invite-balance.js';
 import { INVITE_QUOTA } from '../src/invite-issuance.js';
@@ -322,5 +325,65 @@ describe('AI の学習（#594）', () => {
   it('権利の答えの直後に置く', () => {
     const ids = FAQ_ENTRIES.map((entry) => entry.id);
     expect(ids.indexOf('ai-training')).toBe(ids.indexOf('rights') + 1);
+  });
+});
+
+describe('AI からの接続（#696 / MCP）', () => {
+  /**
+   * `wrangler.toml` の表（`[env.production.vars]` など）の中の値を読む。
+   *
+   * @param table 表の名前
+   * @param key 鍵
+   * @returns 値（無ければ null）
+   */
+  function productionVar(table: string, key: string): string | null {
+    const lines = env.TEST_WRANGLER_TOML.split('\n');
+    const start = lines.findIndex((line) => line.trim() === `[${table}]`);
+    if (start < 0) {
+      return null;
+    }
+    for (const line of lines.slice(start + 1)) {
+      if (line.trim().startsWith('[')) {
+        return null;
+      }
+      const match = new RegExp(`^${key}\\s*=\\s*"([^"]*)"`, 'u').exec(line.trim());
+      if (match !== null) {
+        return match[1]!;
+      }
+    }
+    return null;
+  }
+
+  it('接続先の URL は、本番のアプリのホストの /mcp である（宣言と照合する）', () => {
+    expect(MCP_SERVER_URL).toBe(`https://${productionVar('env.production.vars', 'APP_HOST')}/mcp`);
+    expect(answerOf('ai-connect')).toContain(`<code>${MCP_SERVER_URL}</code>`);
+  });
+
+  it('つなぎ方（Claude Code のコマンドと claude.ai のカスタムコネクタ）・できないこと・許可の範囲・枠を書く', () => {
+    const answer = answerOf('ai-connect');
+    expect(answer).toContain(`<code>claude mcp add --transport http game-forge ${MCP_SERVER_URL}</code>`);
+    expect(answer).toContain('カスタムコネクタ');
+    expect(answer).toContain('公開・削除・退会はできません');
+    // 同意画面の scope の名前と同じ綴りで、外せることを案内する。
+    expect(answer).toContain(`「${OAUTH_SCOPE_LABELS[SCOPE_WORKS_GENERATE]!.name}」を外す`);
+    expect(answer).toContain('href="#quota"');
+    expect(oldOperationNamesIn(answer)).toEqual([]);
+    // 道具は 6 本のまま（増やしたら、ここの「できること」を見直す）。
+    expect(MCP_TOOL_NAMES).toHaveLength(6);
+  });
+
+  it('接続の解除と、許可が漏れたかもしれないときの手順を書く（#696 の constraints）', () => {
+    const answer = answerOf('ai-connect');
+    expect(answer).toContain(`href="${ACCOUNT_APPS_PATH}"`);
+    expect(answer).toContain('「接続を解除」');
+    expect(answer).toContain('許可が他人に渡ったかもしれないとき');
+    expect(answer).toContain('30 日');
+    expect(answer).toContain('1 年');
+  });
+
+  it('窓口の答えの直前に置く（窓口は最後の受け皿）', () => {
+    const ids = FAQ_ENTRIES.map((entry) => entry.id);
+    expect(ids.indexOf('ai-connect')).toBe(ids.indexOf('contact') - 1);
+    expect(ids.at(-1)).toBe('contact');
   });
 });

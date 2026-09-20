@@ -384,6 +384,19 @@ describe('相談の口（仕様 5.16）', () => {
       expect(worst).toBeGreaterThan(CHAT_DAILY_TOKEN_LIMIT);
     });
 
+    it('64 KiB のソースを渡す往復は、1 日の蓋を単独で超える（#718 で半分にした結果）', () => {
+      // **蓋を半分にしたことで、いちばん大きいソースは相談の文脈へ入らなくなった。**
+      // 言葉だけで書くと、次に蓋を動かした人が気づけない。**境目を検査で固定する。**
+      const shortest = estimateChatTokens({ messageCharacters: 1, sourceBytes: 64 * 1024 });
+      expect(shortest).toBeGreaterThan(CHAT_DAILY_TOKEN_LIMIT);
+
+      // **渡せるソースの上限は約 35 KiB である**（この値が動いたら、仕様とコメントの文言も直す）。
+      const fits = (bytes: number): boolean =>
+        estimateChatTokens({ messageCharacters: 50, sourceBytes: bytes }) <= CHAT_DAILY_TOKEN_LIMIT;
+      expect(fits(35 * 1024)).toBe(true);
+      expect(fits(36 * 1024)).toBe(false);
+    });
+
     it('見積もりはソースを載せたときだけ増える', () => {
       const without = estimateChatTokens({ messageCharacters: 100, sourceBytes: 0 });
       const with_ = estimateChatTokens({ messageCharacters: 100, sourceBytes: 3_000 });

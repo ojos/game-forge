@@ -34,6 +34,14 @@
  *
  * ## 再生成に回さない（5.2-5 / 8.3）
  *
+ * ## 繰り返しの検査を足した（#730）
+ *
+ * **軸が 3 つになった**（5.2-5 の import / 指示、6.1 の終了条件を持たない繰り返し、
+ * 8.3 の文字列リテラル）。**段は増やしていない**——上記「2 つの検査を 1 つの段に束ねる」の
+ * 理由（段を増やすとエッジとオーケストレータの 2 か所で結線が要り、片方だけ結線されて
+ * いない状態を作れる）は、3 つ目にもそのまま当てはまる。**拒否の扱いも同じ**である
+ * （再生成に回さない）。検査の実体は `src/go-loops.ts` が持つ。
+ *
  * 5.2-5 は「違反は再生成に回さず拒否」と定める。したがってここは例外を投げるだけで、
  * リトライも、緩和した再検査も行わない。**8.3 の NG ワードも同じ扱いにする**（#38）。
  * 理由は 5.2-5 と同じで、**再生成に回すと、差別語を出したがるプロンプトが 1 回の枠で
@@ -63,6 +71,8 @@ import { classifySourceBytes, measureSourceBytes } from './source-size.js';
 import type { GenerationResult } from './generation-models.js';
 import type { ImportRejection } from './go-imports.js';
 import { inspectGoImports } from './go-imports.js';
+import type { UnboundedLoopRejection } from './go-loops.js';
+import { UNBOUNDED_LOOP_REJECTION, findUnboundedLoops } from './go-loops.js';
 import type { DeniedTermRejection } from './output-moderation.js';
 import { inspectStringLiterals } from './output-moderation.js';
 
@@ -74,7 +84,11 @@ import { inspectStringLiterals } from './output-moderation.js';
  * という同じ扱いになる（下記「再生成に回さない」）。理由の側は混ぜず、どちらの検査が
  * 落としたかが読み取れる形で運ぶ。
  */
-export type SourceRejection = ImportRejection | DeniedTermRejection | SourceSizeRejection;
+export type SourceRejection =
+  | ImportRejection
+  | DeniedTermRejection
+  | SourceSizeRejection
+  | UnboundedLoopRejection;
 
 /**
  * 生成物がソースの上限（`MAX_SOURCE_BYTES`）を超えていた（5.3 / 6.1 / 確定18 / M5-2 / #33）。
@@ -120,7 +134,8 @@ export const SOURCE_REJECTED_ERROR = 'source-rejected';
  * 検査器が理由を足したときに写し替えの側が古くなるためである（モジュール冒頭）。
  *
  * **`offending` に載るものは理由で変わる。** `not-allowed` なら import パス、
- * `directive-not-allowed` なら指示の名前、`denied-term`（8.3）なら**語の分類**である。
+ * `directive-not-allowed` なら指示の名前、`unbounded-loop`（6.1 / #730）なら**繰り返しの
+ * 形の名前**、`denied-term`（8.3）なら**語の分類**である。
  * どれも上限を掛けたうえで応答へ出る。**`denied-term` で当たった語そのものは載せない**
  * （`src/denied-terms.ts` の `category` の注記。応答が表を引き出す口になる）。
  */
@@ -190,6 +205,19 @@ export function createSourceInspector(
     if (!imports.ok) {
       // 理由も違反 import も、検査器が返したものをそのまま渡す。
       throw new GeneratedSourceRejected(imports.reason, imports.offending ?? []);
+    }
+
+    // **6.1 の「終了条件を持たない繰り返し」（#730）。** import と指示のあとに置く。
+    // 3 つは軸が違うが、**先に見るべきは 7.1 のビルドホストを守る側**である
+    // （`inspectGoImports` が指示を import より先に見ているのと同じ並べ方で、
+    // 破れたときの損害が大きいほうから返す）。こちらが守るのは**遊ぶ人の端末の
+    // CPU** で、外へは何も送れない（7.2）。
+    //
+    // **`offending` に載るのは形の名前だけである**（`for {}` / `for true {}`）。
+    // 生成物由来の文字列は 1 文字も載せない（このモジュールが上限を掛けている理由）。
+    const loops = findUnboundedLoops(generated.source);
+    if (loops.length > 0) {
+      throw new GeneratedSourceRejected(UNBOUNDED_LOOP_REJECTION, loops);
     }
 
     // 8.3: 出力側モデレーション。**文字列リテラルの抽出は M2-3 と同じ字句解析を使う。**

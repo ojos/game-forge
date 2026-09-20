@@ -31,6 +31,7 @@ import { CHAT_KIND, GENERATION_KIND } from '../src/cost-ledger.js';
 import { currentDeclarationsIn, dailyCallCount, MONTHLY_LIMIT_REASON } from '../src/quota.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
+import { NEW_CHAT_TARGET } from '../src/chat-target.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -400,7 +401,7 @@ describe('相談の口（仕様 5.16）', () => {
       const stub = stubAsk({ inputTokens: 100, outputTokens: 10 });
       const response = await post(
         userId,
-        { ...ONE_TURN, workId: strangerGame, includeSource: true },
+        { ...ONE_TURN, targetKind: 'revise', targetId: strangerGame, includeSource: true },
         stub.ask,
       );
       expect(response.status).toBe(200);
@@ -416,9 +417,20 @@ describe('相談の口（仕様 5.16）', () => {
       const own = await seedGame(userId, '自分の指示文');
 
       const stub = stubAsk({ inputTokens: 100, outputTokens: 10 });
-      const response = await post(userId, { ...ONE_TURN, workId: own }, stub.ask);
+      const response = await post(
+        userId,
+        { ...ONE_TURN, targetKind: 'revise', targetId: own },
+        stub.ask,
+      );
       expect(response.status).toBe(200);
-      expect(stub.calls[0]!.work).toEqual({ title: '題名', prompt: '自分の指示文', source: null });
+      // **リフォージの相談では、説明とタグは載らない**（最初の指示文が読めるため。#727）。
+      expect(stub.calls[0]!.work).toEqual({
+        title: '題名',
+        prompt: '自分の指示文',
+        description: null,
+        tags: [],
+        source: null,
+      });
     });
 
     it('作品を選ばなければ、文脈は付かない', async () => {
@@ -481,7 +493,7 @@ describe('相談の口（仕様 5.16）', () => {
       const body = (await response.json()) as { conversationId: string | null };
       expect(typeof body.conversationId).toBe('string');
 
-      const stored = await latestChatConversation(testEnv(), userId);
+      const stored = await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET);
       expect(stored?.id).toBe(body.conversationId);
       // **返答まで含めて保存する**（次の往復でそのまま送れる形）。
       expect(stored?.messages).toEqual([
@@ -513,7 +525,7 @@ describe('相談の口（仕様 5.16）', () => {
         .bind(userId)
         .first<{ n: number }>();
       expect(rows?.n).toBe(1);
-      const stored = await latestChatConversation(testEnv(), userId);
+      const stored = await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET);
       expect(stored?.messages).toHaveLength(4);
     });
 
@@ -521,21 +533,21 @@ describe('相談の口（仕様 5.16）', () => {
       const userId = await createUser();
       await seedLedger(userId, CHAT_KIND, { tokens: CHAT_DAILY_TOKEN_LIMIT });
       await post(userId, ONE_TURN);
-      expect(await latestChatConversation(testEnv(), userId)).toBeNull();
+      expect(await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET)).toBeNull();
     });
 
     it('本人が消せる（未ログインは 401）', async () => {
       const userId = await createUser();
       const stub = stubAsk({ inputTokens: 10, outputTokens: 5 });
       await post(userId, ONE_TURN, stub.ask);
-      expect(await latestChatConversation(testEnv(), userId)).not.toBeNull();
+      expect(await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET)).not.toBeNull();
 
       const anonymous = await handleDeleteChatConversation(
         new Request(`${APP_ORIGIN}${CHAT_CONVERSATION_DELETE_PATH}`, { method: 'POST' }),
         testEnv(),
       );
       expect(anonymous.status).toBe(401);
-      expect(await latestChatConversation(testEnv(), userId)).not.toBeNull();
+      expect(await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET)).not.toBeNull();
 
       const deleted = await handleDeleteChatConversation(
         new Request(`${APP_ORIGIN}${CHAT_CONVERSATION_DELETE_PATH}`, {
@@ -545,7 +557,7 @@ describe('相談の口（仕様 5.16）', () => {
         testEnv(),
       );
       expect(deleted.status).toBe(200);
-      expect(await latestChatConversation(testEnv(), userId)).toBeNull();
+      expect(await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET)).toBeNull();
     });
   });
 

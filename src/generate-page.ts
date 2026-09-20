@@ -111,8 +111,18 @@
  */
 import { latestChatConversation } from './chat-conversation.js';
 import { CHAT_SCRIPT, renderChatSection, type ChatSectionView } from './chat-section.js';
+import type { ChatTarget } from './chat-target.js';
+import { NEW_CHAT_TARGET, chatTargetFromUrl } from './chat-target.js';
 import { siteFooter } from './legal.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from './generate.js';
+import {
+  FORK_PARENT_ID_FIELD,
+  FORK_PATH,
+  FORK_PROMPT_FIELD,
+  REVISE_GAME_ID_FIELD,
+  REVISE_PATH,
+  REVISE_PROMPT_FIELD,
+} from './paths.js';
 // 題名の上限の正本は `src/games.ts` が持つ（#365）。案内文へ書き写さない。
 import { MAX_TITLE_LENGTH } from './games.js';
 // 遷移先の綴りの正本は作品ページ側が持つ（`src/work-page.ts`）。ここで書き写さない。
@@ -447,6 +457,11 @@ export interface GeneratePageView {
    * しているものである）。
    */
   readonly chat: ChatSectionView | null;
+  /**
+   * 相談の対象（#727 / 確定38）。**相談を出さない画面でも決まる**——見出しと
+   * 「相談せずに直接書く」のフォームの行き先が、対象で変わるためである。
+   */
+  readonly target: ChatTarget;
 }
 
 /**
@@ -717,6 +732,31 @@ function stillAvailableSection(): string {
  * @param view 画面へ渡す値
  * @returns HTML
  */
+/**
+ * 対象ごとの見出しと導入（#727 / 確定38）。
+ *
+ * **画面は 1 つだが、何をする画面かは対象で変わる。** パンくずと `<title>` もここから出る。
+ */
+const PAGE_HEADINGS: Readonly<
+  Record<string, { readonly title: string; readonly lead: string; readonly wait: string }>
+> = {
+  new: {
+    title: 'ゲームを生成する',
+    lead: '作りたいゲームを 1 行で書くと、ブラウザで遊べる 2D ゲームの下書きができます。',
+    wait: '生成には',
+  },
+  revise: {
+    title: 'リフォージする',
+    lead: 'どう直したいかを書くと、<strong>いまのソースをもとに</strong>作り直します。<strong>生成枠を 1 回使います。</strong>',
+    wait: 'リフォージには',
+  },
+  fork: {
+    title: 'フォークする',
+    lead: 'どう変えたいかを書くと、<strong>この作品のソースをもとに</strong>あなたの新しい作品を作ります。元の作品はそのまま残ります。<strong>生成枠を 1 回使います。</strong>',
+    wait: 'フォークには',
+  },
+};
+
 function signedInSection(view: GeneratePageView): string {
   // 4.4 の常時表示。**状態にかかわらず必ず 1 つ出る。** 文言は固定文字列だが、
   // `escapeHtml` は通す（`src/signup.ts` / `src/invite-issuance.ts` と同じ理由で、
@@ -768,6 +808,39 @@ ${stillAvailableSection()}`;
             placeholder="${TITLE_DECLARATION_EXAMPLE}" required></textarea>
   ${submit}
 </form>`;
+
+  // **対象がある相談では、生成のフォームではなくリフォージ／フォークのフォームを描く**
+  // （#727 / 確定38）。**開始の経路は既存のまま**——送り先も項目名も `src/paths.ts` の値で、
+  // 作品ページのフォーム（`src/work-page.ts`）と同じものを使う。
+  //
+  // **素のフォーム送信である**（生成だけが JSON の口で、JavaScript が要る）。したがって
+  // **リフォージとフォークは、相談の下書きをそのまま送れる。**
+  if (view.target.kind !== 'new') {
+    const isRevise = view.target.kind === 'revise';
+    const action = isRevise ? REVISE_PATH : FORK_PATH;
+    const idField = isRevise ? REVISE_GAME_ID_FIELD : FORK_PARENT_ID_FIELD;
+    const promptField = isRevise ? REVISE_PROMPT_FIELD : FORK_PROMPT_FIELD;
+    const formId = isRevise ? 'revise-form' : 'fork-form';
+    const promptId = isRevise ? 'revise-prompt' : 'fork-prompt';
+    const label = isRevise ? 'どう直しますか' : 'どう変えてフォークしますか';
+    const submit = isRevise ? 'この内容でリフォージする' : 'この内容でフォークする';
+    const targeted = `<form id="${formId}" class="gf-block gf-generate-form" method="post" action="${action}">
+  <input type="hidden" name="${idField}" value="${escapeHtml(view.target.id)}">
+  <div class="gf-heading-row gf-generate-head">
+    <label for="${promptId}">${label}（${MAX_PROMPT_LENGTH} 文字まで）</label>
+    <p class="gf-generate-quota" id="generate-quota">${notice}</p>
+  </div>
+  <textarea id="${promptId}" name="${promptField}" rows="5" maxlength="${MAX_PROMPT_LENGTH}"
+            placeholder="例: 玉の動きをもっと速くして、当たったら音を鳴らす" required></textarea>
+  <button id="generate-submit" class="gf-button gf-button-secondary" type="submit">${submit}</button>
+</form>`;
+    return `${chat}<details class="gf-generate-direct" id="generate-direct">
+  <summary>相談せずに指示文を直接書く</summary>
+  <div class="gf-generate-direct-panel">
+${targeted}
+  </div>
+</details>`;
+  }
 
   // **相談を使わず一発で生成したい人の導線**（確定38「相談を使わずに一発で生成したい人の導線は残す」）。
   // **閉じた `<details>` の中でも欄は DOM にある**ので、相談の「この指示で作る」は開かずにこのフォームを送れる。
@@ -825,13 +898,17 @@ export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): s
   // **ヘッダの出し分けに、この関数が既に持っている 1 ビットをそのまま渡す**
   // （2.3.7 / #331）。**セッションを 2 度検証しない**——`signedIn` の正本は
   // {@link showGeneratePage} の `resolveSessionUser` である。
+  // **見出しも対象で変わる**（#727 / 確定38）。**同じ画面だが、何をする画面かは違う**
+  // ——「ゲームを生成する」のままだと、リフォージの相談を開いた人が別の画面へ来たと思う。
+  const heading = PAGE_HEADINGS[view.target.kind] ?? PAGE_HEADINGS['new']!;
+
   return `${siteHead({
-    title: 'ゲームを生成する',
+    title: heading.title,
     viewer: siteViewerAt(GENERATE_PAGE_PATH, signedIn, view.headerAvatar),
   })}
-<h1>ゲームを生成する</h1>
-<p>作りたいゲームを 1 行で書くと、ブラウザで遊べる 2D ゲームの下書きができます。
-   <strong>生成には ${TYPICAL_WAIT_TEXT}。</strong></p>
+<h1>${escapeHtml(heading.title)}</h1>
+<p>${heading.lead}
+   <strong>${heading.wait} ${TYPICAL_WAIT_TEXT}。</strong></p>
 
 ${body}
 
@@ -924,21 +1001,33 @@ const showGeneratePage: RouteHandler = async (request, env) => {
     // 1 つ選ぶ必要があるので「読めていない」を渡す（「残り N 回」を作らない値）。
     // 未ログインの画面は相談の区画も出さない（`GeneratePageView.chat` の注記）。
     return html(
-      renderGeneratePage(false, { availability: { kind: 'unknown' }, headerAvatar: null, chat: null }),
+      renderGeneratePage(false, {
+        availability: { kind: 'unknown' },
+        headerAvatar: null,
+        chat: null,
+        target: NEW_CHAT_TARGET,
+      }),
     );
   }
   const availability = await resolveAvailability(env, session.userId);
+  // **対象は URL の引数が決める**（#727 / 確定38）。**形が違えば「新しく作る」に倒す**
+  // （`chatTargetFromUrl`）——存在するかどうかは、文脈を読むときに分かる。
+  const target = chatTargetFromUrl(new URL(request.url));
   // **枠が尽きている画面では相談も出さない**（押せない導線を増やさない。`GeneratePageView.chat`）。
   // **会話を読むのは、区画を出すときだけ**である（D1 は読み取りも従量。3.6）。
-  const conversation = canSubmit(availability) ? await latestChatConversation(env, session.userId) : null;
+  const conversation = canSubmit(availability)
+    ? await latestChatConversation(env, session.userId, target)
+    : null;
   return html(
     renderGeneratePage(true, {
       availability,
       headerAvatar: headerAvatarUrl(request, env, session.userId),
+      target,
       chat: canSubmit(availability)
         ? {
             messages: conversation?.messages ?? [],
             conversationId: conversation?.id ?? null,
+            target,
           }
         : null,
     }),

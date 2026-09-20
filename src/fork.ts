@@ -487,7 +487,7 @@ type ParentFailure = 'not-forkable' | StoredSourceFailure;
  * @param parentId 親の作品 id
  * @returns 親のソース、または失敗の理由
  */
-async function readParentSource(
+export async function readParentSource(
   env: Env,
   parentId: string,
 ): Promise<{ ok: true; source: string } | { ok: false; reason: ParentFailure }> {

@@ -10,6 +10,7 @@ import {
   sweepExpiredChatConversations,
 } from '../src/chat-conversation.js';
 import { CHAT_MAX_MESSAGES } from '../src/chat-payload.js';
+import { NEW_CHAT_TARGET } from '../src/chat-target.js';
 import { CHAT_DRAFT_HEADING, CHAT_MESSAGES, CHAT_SCRIPT, renderChatSection } from '../src/chat-section.js';
 import { CHAT_PROMPT_SECTIONS } from '../src/chat-prompt.js';
 import { CHAT_QUOTA_REJECTION_REASONS } from '../src/chat-quota.js';
@@ -83,23 +84,19 @@ async function createUser(): Promise<string> {
 describe('会話の保存（5.16）', () => {
   it('保存して、いちばん新しい 1 本を復元できる', async () => {
     const userId = await createUser();
-    const first = await saveChatConversation(env, userId, null, [{ role: 'user', text: '古い' }], 100);
-    const second = await saveChatConversation(env, userId, null, [{ role: 'user', text: '新しい' }], 200);
+    const first = await saveChatConversation(env, userId, null, NEW_CHAT_TARGET, [{ role: 'user', text: '古い' }], 100);
+    const second = await saveChatConversation(env, userId, null, NEW_CHAT_TARGET, [{ role: 'user', text: '新しい' }], 200);
     expect(first).not.toBe(second);
 
-    const latest = await latestChatConversation(env, userId);
+    const latest = await latestChatConversation(env, userId, NEW_CHAT_TARGET);
     expect(latest).toMatchObject({ id: second, updatedAt: 200 });
     expect(latest?.messages).toEqual([{ role: 'user', text: '新しい' }]);
   });
 
   it('同じ id を渡すと上書きし、行を増やさない', async () => {
     const userId = await createUser();
-    const id = await saveChatConversation(env, userId, null, [{ role: 'user', text: 'あ' }], 100);
-    const again = await saveChatConversation(
-      env,
-      userId,
-      id,
-      [
+    const id = await saveChatConversation(env, userId, null, NEW_CHAT_TARGET, [{ role: 'user', text: 'あ' }], 100);
+    const again = await saveChatConversation(env, userId, id, NEW_CHAT_TARGET, [
         { role: 'user', text: 'あ' },
         { role: 'assistant', text: 'い' },
         { role: 'user', text: 'う' },
@@ -116,40 +113,36 @@ describe('会話の保存（5.16）', () => {
   it('他人の会話の id を渡しても、その会話は書き換わらない（自分の新しい会話になる）', async () => {
     const owner = await createUser();
     const stranger = await createUser();
-    const ownerConversation = await saveChatConversation(env, owner, null, [{ role: 'user', text: '本人のもの' }], 100);
+    const ownerConversation = await saveChatConversation(env, owner, null, NEW_CHAT_TARGET, [{ role: 'user', text: '本人のもの' }], 100);
 
-    const created = await saveChatConversation(
-      env,
-      stranger,
-      ownerConversation,
-      [{ role: 'user', text: '乗っ取り' }],
+    const created = await saveChatConversation(env, stranger, ownerConversation, NEW_CHAT_TARGET, [{ role: 'user', text: '乗っ取り' }],
       200,
     );
     expect(created).not.toBe(ownerConversation);
 
     // **本人の会話は無傷である。**
-    const owned = await latestChatConversation(env, owner);
+    const owned = await latestChatConversation(env, owner, NEW_CHAT_TARGET);
     expect(owned?.messages).toEqual([{ role: 'user', text: '本人のもの' }]);
   });
 
   it('本人の会話をすべて消せる（1 本だけ残さない）', async () => {
     const userId = await createUser();
-    await saveChatConversation(env, userId, null, [{ role: 'user', text: 'あ' }], 100);
-    await saveChatConversation(env, userId, null, [{ role: 'user', text: 'い' }], 200);
+    await saveChatConversation(env, userId, null, NEW_CHAT_TARGET, [{ role: 'user', text: 'あ' }], 100);
+    await saveChatConversation(env, userId, null, NEW_CHAT_TARGET, [{ role: 'user', text: 'い' }], 200);
 
     expect(await deleteChatConversations(env, userId)).toBe(2);
-    expect(await latestChatConversation(env, userId)).toBeNull();
+    expect(await latestChatConversation(env, userId, NEW_CHAT_TARGET)).toBeNull();
   });
 
   it('最後に使ってから 30 日を過ぎた会話だけを掃除する', async () => {
     const userId = await createUser();
     const now = 1_800_000_000;
     const day = 24 * 60 * 60;
-    await saveChatConversation(env, userId, null, [{ role: 'user', text: '古い' }], now - CHAT_RETENTION_DAYS * day - 1);
-    const kept = await saveChatConversation(env, userId, null, [{ role: 'user', text: '新しい' }], now - day);
+    await saveChatConversation(env, userId, null, NEW_CHAT_TARGET, [{ role: 'user', text: '古い' }], now - CHAT_RETENTION_DAYS * day - 1);
+    const kept = await saveChatConversation(env, userId, null, NEW_CHAT_TARGET, [{ role: 'user', text: '新しい' }], now - day);
 
     expect(await sweepExpiredChatConversations(env.DB, now)).toBe(1);
-    const latest = await latestChatConversation(env, userId);
+    const latest = await latestChatConversation(env, userId, NEW_CHAT_TARGET);
     expect(latest?.id).toBe(kept);
   });
 
@@ -160,7 +153,7 @@ describe('会話の保存（5.16）', () => {
     )
       .bind(crypto.randomUUID(), userId, '{壊れている')
       .run();
-    expect(await latestChatConversation(env, userId)).toBeNull();
+    expect(await latestChatConversation(env, userId, NEW_CHAT_TARGET)).toBeNull();
   });
 
   it.each([
@@ -191,6 +184,7 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
         { role: 'assistant', text: '"&<>' },
       ],
       conversationId: 'conv-1',
+      target: NEW_CHAT_TARGET,
     });
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('&lt;script&gt;');
@@ -199,7 +193,7 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
   });
 
   it('会話が無ければ、続きの id を持たない', () => {
-    const html = renderChatSection({ messages: [], conversationId: null });
+    const html = renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET });
     expect(html).not.toContain('data-conversation');
     expect(html).toContain('id="chat-log"');
   });
@@ -210,12 +204,13 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
     // **属性の増減で外れない形で見る**（#726 で `tabindex` と `aria-label` を足したときに
     // 外れた）。見たいのは「`<ol>` の開きタグの直後が閉じタグであること」だけである。
     const empty = /<ol id="chat-log"[^>]*><\/ol>/u;
-    const html = renderChatSection({ messages: [], conversationId: null });
+    const html = renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET });
     expect(html).toMatch(empty);
     // 会話があるときは、当然ながら中身がある（この検査が「常に空」で通らないこと）。
     const filled = renderChatSection({
       messages: [{ role: 'user', text: 'あ' }],
       conversationId: null,
+      target: NEW_CHAT_TARGET,
     });
     expect(filled).not.toMatch(empty);
   });
@@ -248,7 +243,7 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
   });
 
   it('「この指示で作る」は会話の中の下書きから生成を始め、開始の経路は変えない（確定38）', () => {
-    const html = renderChatSection({ messages: [], conversationId: null });
+    const html = renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET });
     // **ボタン自身が生成のフォームを送る**（`type="submit"` と `form` 属性）。#695 では
     // 欄へ入れるだけで、送信は作者が「生成する」を押していた。**確定38 でここが変わった。**
     expect(html).toContain('id="chat-apply"');
@@ -339,6 +334,7 @@ describe('相談を主役にする（#726 / 確定38）', () => {
         { role: 'assistant', text: 'い' },
       ],
       conversationId: null,
+      target: NEW_CHAT_TARGET,
     });
     expect(html).toContain('gf-chat-user');
     expect(html).toContain('gf-chat-assistant');
@@ -365,13 +361,23 @@ describe('相談を主役にする（#726 / 確定38）', () => {
     expect(dock).not.toContain('position: fixed');
     expect(dock).toContain('flex: 0 0 auto');
     // **入力が区画の最後の子であること**（「いちばん下」をこの並びが作っている）。
-    const html = renderChatSection({ messages: [], conversationId: null });
+    const html = renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET });
     const at = html.indexOf('gf-chat-dock');
     expect(at).toBeGreaterThan(0);
     expect(html.slice(at)).toContain('id="chat-input"');
     expect(html.slice(at)).toContain('id="chat-send"');
     expect(html.indexOf('id="chat-log"')).toBeLessThan(at);
     expect(html.indexOf('id="chat-apply"')).toBeLessThan(at);
+  });
+
+  it('`hidden` で配るボタンが、本当に消える（部品の display は UA の [hidden] に勝つ）', () => {
+    // **#726 から本番で出ていた不具合**——下書きがまだ無いのに主のボタンが見え、押しても
+    // 何も起きない導線になっていた（#727 で実物を撮って気づいた）。**リポジトリの中で 3 回目の罠**
+    // （`.gf-play-open[hidden]` / `.gf-play-orient-toggle[hidden]`）。
+    expect(cssRules('.gf-button[hidden]').join('')).toContain('display: none');
+    // 画面の側は `hidden` で配っている（規則だけ在って誰も使っていない、を通さない）。
+    const html = renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET });
+    expect(html).toMatch(/id="chat-apply"[\s\S]*?hidden/u);
   });
 
   it('`:has()` を使わない（互換性のため避ける決め。Copilot が見つけた）', () => {
@@ -400,7 +406,8 @@ describe('生成画面での出し分け', () => {
     const html = renderGeneratePage(true, {
       availability: { kind: 'available', remaining: 5 },
       headerAvatar: null,
-      chat: { messages: [], conversationId: null },
+      chat: { messages: [], conversationId: null, target: NEW_CHAT_TARGET },
+      target: NEW_CHAT_TARGET,
     });
     expect(html).toContain('id="chat"');
     expect(html).toContain('id="chat-send"');
@@ -415,6 +422,7 @@ describe('生成画面での出し分け', () => {
       availability: signedIn ? { kind: 'daily-quota' } : { kind: 'unknown' },
       headerAvatar: null,
       chat: null,
+      target: NEW_CHAT_TARGET,
     });
     expect(html).not.toContain('id="chat"');
     expect(html).not.toContain('id="chat-send"');
@@ -424,7 +432,8 @@ describe('生成画面での出し分け', () => {
     const html = renderGeneratePage(true, {
       availability: { kind: 'available', remaining: 5 },
       headerAvatar: null,
-      chat: { messages: [], conversationId: null },
+      chat: { messages: [], conversationId: null, target: NEW_CHAT_TARGET },
+      target: NEW_CHAT_TARGET,
     });
     // **相談がフォームより先に来る**（#695 では後ろだった）。
     expect(html.indexOf('id="chat"')).toBeLessThan(html.indexOf('id="generate-form"'));
@@ -441,7 +450,8 @@ describe('生成画面での出し分け', () => {
     const html = renderGeneratePage(true, {
       availability: { kind: 'available', remaining: 5 },
       headerAvatar: null,
-      chat: { messages: [], conversationId: null },
+      chat: { messages: [], conversationId: null, target: NEW_CHAT_TARGET },
+      target: NEW_CHAT_TARGET,
     });
     // **主は 1 画面に 1 つまで。** 相談側へ移した分、「生成する」は副へ下がる。
     expect(html.match(/gf-button-primary/gu)?.length).toBe(1);
@@ -455,6 +465,7 @@ describe('生成画面での出し分け', () => {
       availability: { kind: 'available', remaining: 5 },
       headerAvatar: null,
       chat: null,
+      target: NEW_CHAT_TARGET,
     });
     expect(html).not.toContain('id="generate-direct"');
     expect(html).toMatch(/id="generate-submit" class="gf-button gf-button-primary"/u);
@@ -487,7 +498,7 @@ describe('約束の文言（/privacy と仕様書）', () => {
 
   it('`/privacy` が案内する削除の操作の名前が、画面のボタンと一致する', () => {
     // **画面に無い操作を約束しない。** 文言がずれると、利用者は押す場所を探して見つけられない。
-    const section = renderChatSection({ messages: [], conversationId: null });
+    const section = renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET });
     expect(section).toContain('相談の記録を消す');
     expect(privacy).toContain('相談の記録を消す');
   });

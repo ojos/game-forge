@@ -55,6 +55,13 @@ import {
   type ChatWorkContext,
 } from './chat-payload.js';
 import { readChatRule } from './chat-rule.js';
+import type { ChatTarget } from './chat-target.js';
+import {
+  chatTargetFromBody,
+  loadForkChatContext,
+  loadReviseChatContext,
+} from './chat-target.js';
+import { readParentSource } from './fork.js';
 import {
   CHAT_DAILY_TOKENS_REASON,
   CHAT_MONTHLY_LIMIT_REASON,
@@ -84,7 +91,14 @@ const BUSY = { error: 'busy' } as const;
 /** 受け取った本文（検証済み）。 */
 interface ChatRequestBody {
   readonly messages: readonly ChatMessage[];
-  readonly workId: string | null;
+  /**
+   * 相談の対象（#727 / 確定38）。**新しく作る相談では `kind` が `'new'`** である。
+   *
+   * **`workId` を置き換えたものである**——以前は「自分の作品を 1 つ選ぶ」だけだったが、
+   * **リフォージ（自分の未公開の作品）とフォーク（他人の公開作品）で見せる範囲が違う**ので、
+   * **何のための相談かを種別で持つ。**
+   */
+  readonly target: ChatTarget;
   readonly includeSource: boolean;
   /** 続きを書き込む会話の id（新しく始めるなら null）。 */
   readonly conversationId: string | null;
@@ -136,8 +150,10 @@ export function parseChatRequest(value: unknown): ChatRequestBody | null {
     return null;
   }
 
-  const workId = record['workId'];
-  if (workId !== undefined && workId !== null && typeof workId !== 'string') {
+  // **対象は種別と id の組で受ける**（#727）。**形が違えば断る**——黙って「新しく作る」へ
+  // 倒すと、作者は「フォークのつもりで話していたのに、何も知らない相手が返してくる」ことになる。
+  const target = chatTargetFromBody(record['targetKind'], record['targetId']);
+  if (target === null) {
     return null;
   }
   const includeSource = record['includeSource'];
@@ -150,53 +166,48 @@ export function parseChatRequest(value: unknown): ChatRequestBody | null {
   }
   return {
     messages: parsed,
-    workId: typeof workId === 'string' ? workId : null,
+    target,
     includeSource: includeSource === true,
     conversationId: typeof conversationId === 'string' ? conversationId : null,
   };
 }
 
 /**
- * 作者自身の作品を引いて、文脈にする。
+ * 対象に応じて、相談の文脈を読む（#727 / 確定38）。
  *
- * **自作かどうかの判定を書き写さない**——`myWorkResult` がそのまま `author_id` で絞る
- * （5.12）。他人の id・無い id・取り下げ・削除中は、あちらが 404 を返す。
+ * **見せてよい範囲は対象で変わる。**
  *
- * **引けなかったら文脈を付けずに続ける。** 相談そのものは作品が無くても成り立つので、
- * **ソースが読めない（生成中・大きすぎる）ことを理由に相談ごと断らない。**
+ * - **リフォージ**: 自分の作品（`author_id` で絞る）。題名と最初の指示文、ソースは求められたときだけ
+ * - **フォーク**: 他人の公開作品。題名・説明・タグ、ソースは求められたときだけ。**最初の指示文は出さない**
+ * - **新しく作る**: 文脈は無い
+ *
+ * **判定はここで書かない。** リフォージは `myWorkResult`、フォークは `status = 'published'` を見る
+ * 既存の問い合わせを `src/chat-target.ts` が通す。
  *
  * @param env バインディングと環境変数
- * @param userId 呼び出し元
- * @param workId 作品 id（**検証前の値**）
+ * @param userId 利用者の id
+ * @param target 相談の対象
  * @param includeSource ソースも載せるか
- * @returns 文脈、または null
+ * @returns 文脈（対象が無い・読めないなら null）
  */
-export async function loadChatWorkContext(
+async function loadChatContext(
   env: Env,
   userId: string,
-  workId: string,
+  target: ChatTarget,
   includeSource: boolean,
 ): Promise<ChatWorkContext | null> {
-  const detail = await myWorkResult(env, userId, workId, 'detail');
-  if (detail.status !== 200) {
+  if (target.kind === 'new') {
     return null;
   }
-  const body = detail.body as { title?: unknown; prompt?: unknown };
-  const title = typeof body.title === 'string' ? body.title : '';
-  const prompt = typeof body.prompt === 'string' ? body.prompt : null;
-  if (!includeSource) {
-    return { title, prompt, source: null };
+  if (target.kind === 'revise') {
+    return await loadReviseChatContext(env, userId, target.id, includeSource);
   }
-  const source = await myWorkResult(env, userId, workId, 'source');
-  if (source.status !== 200) {
-    return { title, prompt, source: null };
-  }
-  const sourceBody = source.body as { source?: unknown };
-  return {
-    title,
-    prompt,
-    source: typeof sourceBody.source === 'string' ? sourceBody.source : null,
-  };
+  // **フォーク元のソースは、フォークが読むのと同じ段を通す**（`src/fork.ts` の `readParentSource`）
+  // ——**大きさの上限も、鍵の引き方も 1 か所に置く。**
+  return await loadForkChatContext(env.DB, target.id, includeSource, async () => {
+    const read = await readParentSource(env, target.id);
+    return read.ok ? read.source : null;
+  });
 }
 
 /** 差し替えられる依存（テストの継ぎ目）。 */
@@ -257,10 +268,7 @@ export async function handleChat(
     return json({ error: quota.kind }, 429);
   }
 
-  const work =
-    parsed.workId === null
-      ? null
-      : await loadChatWorkContext(env, userId, parsed.workId, parsed.includeSource);
+  const work = await loadChatContext(env, userId, parsed.target, parsed.includeSource);
 
   // **作者ごとのルール**（#728 / 確定38）。**展開するのは Lambda である**（`withChatRule`）
   // ——8.2 の Guardrail はあちらにあり、**ここで会話へ混ぜて送ると、ルールが検査を 1 度も
@@ -389,6 +397,7 @@ export async function handleChat(
       env,
       userId,
       parsed.conversationId,
+      parsed.target,
       [...parsed.messages, { role: 'assistant', text: answer.text }],
       now,
     );

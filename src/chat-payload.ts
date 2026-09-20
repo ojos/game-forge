@@ -135,8 +135,22 @@ export function withChatRule(
 export interface ChatWorkContext {
   /** 題名。 */
   readonly title: string;
-  /** 最初の指示文（`games.prompt`。無ければ null）。 */
+  /**
+   * 最初の指示文（`games.prompt`。無ければ null）。
+   *
+   * **フォーク元では必ず null である**（#727 / 確定38。1.2.54——指示文は作者本人にしか出さない）。
+   * 載るのは**自分の作品を対象にした相談**のときだけである。
+   */
   readonly prompt: string | null;
+  /**
+   * 説明（`games.description`。#727 / 確定38）。
+   *
+   * **フォーク元にだけ載る。** 自分の作品を対象にした相談では null である——あちらは
+   * 最初の指示文が読めるので、説明を重ねて送る理由が無い。
+   */
+  readonly description: string | null;
+  /** タグ（#727 / 確定38）。**フォーク元にだけ載る**（自分の作品では空）。 */
+  readonly tags: readonly string[];
   /**
    * Go のソース。**作者がその会話で明示的に求めたときだけ載る**（5.16 / 利用者の決定）。
    *

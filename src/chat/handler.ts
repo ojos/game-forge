@@ -192,11 +192,20 @@ export function parseChatPayload(event: unknown): ChatRequestPayload {
   if (source !== null && typeof source !== 'string') {
     throw new ChatPayloadRejected('work.source が文字列でも null でもありません');
   }
+  // **説明とタグ（#727）。古いエッジは載せてこない**ので、欠けていることは異常ではない。
+  const description = workValue['description'] ?? null;
+  if (description !== null && typeof description !== 'string') {
+    throw new ChatPayloadRejected('work.description が文字列でも null でもありません');
+  }
+  const rawTags = workValue['tags'] ?? [];
+  if (!Array.isArray(rawTags) || rawTags.some((tag) => typeof tag !== 'string')) {
+    throw new ChatPayloadRejected('work.tags が文字列の配列ではありません');
+  }
   return {
     version: CHAT_PAYLOAD_VERSION,
     messages: parsed,
     ...(rule === '' ? {} : { rule }),
-    work: { title: workValue['title'], prompt, source },
+    work: { title: workValue['title'], prompt, description, tags: rawTags as readonly string[], source },
   };
 }
 
@@ -210,6 +219,14 @@ export function renderWorkContext(work: ChatWorkContext): string {
   const parts = [WORK_CONTEXT_PREFACE, '', `題名: ${work.title}`];
   if (work.prompt !== null) {
     parts.push('', '最初の指示文:', work.prompt);
+  }
+  // **説明とタグはフォーク元にだけ載る**（#727 / 確定38）。**他人の作品で読めるのはここまで**で、
+  // 最初の指示文は載らない（1.2.54）。
+  if (work.description !== null && work.description !== '') {
+    parts.push('', '作者が書いた説明:', work.description);
+  }
+  if (work.tags.length > 0) {
+    parts.push('', `タグ: ${work.tags.join(' / ')}`);
   }
   if (work.source !== null) {
     parts.push('', 'いまのソース（本人が見せることを選んだものです）:', '```go', work.source, '```');

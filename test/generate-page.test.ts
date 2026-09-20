@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:test';
+import { NEW_CHAT_TARGET } from '../src/chat-target.js';
 import { WORK_EDIT_SUFFIX } from '../src/work-edit-paths.js';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
@@ -884,7 +885,7 @@ describe('残枠と停止状態の常時表示（acceptance 1 / 4.4 / #24）', (
     const rendered = STATES.map(
       (state) =>
         `## ${state.label}\n${summarize(
-          renderGeneratePage(state.signedIn, { availability: state.availability, headerAvatar: null, chat: null }),
+          renderGeneratePage(state.signedIn, { availability: state.availability, headerAvatar: null, chat: null, target: NEW_CHAT_TARGET }),
         )}`,
     ).join('\n\n');
     expect(rendered).toMatchInlineSnapshot(`
@@ -1357,7 +1358,7 @@ describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
 
   it('どの状態でも主のボタンは 1 つ以下で、送れる状態と未ログインではちょうど 1 つ', () => {
     for (const state of ALL_STATES) {
-      const page = renderGeneratePage(state.signedIn, { availability: state.availability, headerAvatar: null, chat: null });
+      const page = renderGeneratePage(state.signedIn, { availability: state.availability, headerAvatar: null, chat: null, target: NEW_CHAT_TARGET });
       const expected = !state.signedIn || canSubmit(state.availability) ? 1 : 0;
       expect(primaryButtonsOf(page), state.label).toBe(expected);
     }
@@ -1365,7 +1366,7 @@ describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
 
   it('入力欄の名前・残枠・ヒント・入力欄・「生成する」が 1 つのブロックに、この順で並ぶ', () => {
     const page = pageBodyOf(
-      renderGeneratePage(true, { availability: { kind: 'available', remaining: 3 }, headerAvatar: null, chat: null }),
+      renderGeneratePage(true, { availability: { kind: 'available', remaining: 3 }, headerAvatar: null, chat: null, target: NEW_CHAT_TARGET }),
     );
     const form = /<form id="generate-form" class="gf-block[^"]*"[\s\S]*?<\/form>/u.exec(page)?.[0] ?? '';
     expect(form, 'フォームがブロックでない').not.toBe('');
@@ -1390,14 +1391,14 @@ describe('見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
       { kind: MONTHLY_LIMIT_REASON },
       { kind: 'build-stopped' },
     ] as const satisfies readonly GenerateAvailability[]) {
-      const page = pageBodyOf(renderGeneratePage(true, { availability, headerAvatar: null, chat: null }));
+      const page = pageBodyOf(renderGeneratePage(true, { availability, headerAvatar: null, chat: null, target: NEW_CHAT_TARGET }));
       expect(page, availability.kind).toContain(`<p class="gf-block" id="generate-quota">${availabilityNotice(availability)}</p>`);
       expect(page, availability.kind).not.toContain('id="generate-form"');
     }
   });
 
   it('送信の後に出す「生成停止中」の知らせもブロックである（スクリプトは hidden を外すだけ）', () => {
-    const page = renderGeneratePage(true, { availability: { kind: 'available', remaining: 1 }, headerAvatar: null, chat: null });
+    const page = renderGeneratePage(true, { availability: { kind: 'available', remaining: 1 }, headerAvatar: null, chat: null, target: NEW_CHAT_TARGET });
     expect(page).toContain('<p id="generate-degraded" class="gf-block" role="status" aria-live="polite" hidden>');
   });
 });

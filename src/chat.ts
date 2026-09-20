@@ -51,6 +51,7 @@ import {
   type ChatMessage,
   type ChatWorkContext,
 } from './chat-payload.js';
+import { readChatRule, withChatRule } from './chat-rule.js';
 import {
   CHAT_DAILY_TOKENS_REASON,
   CHAT_MONTHLY_LIMIT_REASON,
@@ -258,6 +259,13 @@ export async function handleChat(
       ? null
       : await loadChatWorkContext(env, userId, parsed.workId, parsed.includeSource);
 
+  // **作者ごとのルール**（#728 / 確定38）。**会話の先頭の作者の発話として入れる**
+  // ——システムプロンプトへ混ぜると、作者自身の文で 5.16 の話題の制限を解除できる
+  // （`src/chat-rule.ts`）。**保存する会話には入れない**（下の `saveChatConversation` は
+  // `parsed.messages` を使う）——入れると、画面の履歴に作者が消せない往復が 2 つ増える。
+  const rule = await readChatRule(env.DB, userId);
+  const messages = withChatRule(rule, parsed.messages);
+
   // **この 1 往復が蓋を超えないことを、呼ぶ前に確かめる**（`src/chat-quota.ts` の
   // `estimateChatTokens`）。**文脈を引いた後に置く**——ソースを載せるかどうかで見積もりが
   // 5 倍以上変わるので、載せると決まってから数える。
@@ -265,8 +273,11 @@ export async function handleChat(
   // **これが無いと、残りが 1 トークンでも満額の往復が通る**（ソースを渡す往復は最大
   // 36,588 トークンで、1 日の蓋 30,000 を単独で超える）。**断り方は枠切れと同じ**である
   // ——利用者にできること（ソースを外す／翌日に回す）が同じで、`resetsAt` も同じ値である。
+  //
+  // **ルールも数える。** 1 往復ごとに文脈へ乗るので、数えないと**蓋を超える往復が通る**
+  // （`messages` は `parsed.messages` にルールの 2 通を足したものである）。
   const estimated = estimateChatTokens({
-    messageCharacters: parsed.messages.reduce((total, message) => total + [...message.text].length, 0),
+    messageCharacters: messages.reduce((total, message) => total + [...message.text].length, 0),
     sourceBytes: work?.source === null || work?.source === undefined ? 0 : new TextEncoder().encode(work.source).length,
   });
   if (estimated > quota.remainingTokens) {
@@ -281,7 +292,7 @@ export async function handleChat(
   try {
     answer = await ask(env, {
       version: CHAT_PAYLOAD_VERSION,
-      messages: parsed.messages,
+      messages,
       ...(work === null ? {} : { work }),
     });
   } catch (error) {

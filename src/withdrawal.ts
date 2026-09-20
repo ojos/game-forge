@@ -681,6 +681,8 @@ function finalizeStatements(
       .prepare(`delete from chat_conversations where user_id = ? and ${guard}`)
       .bind(userId, ...guardBindings),
     // 15. 匿名化し、`withdrawn_at` を立て、排他を外す（**最後**）。
+    //     **相談のルール（#728 / `0050`）もここで空にする。** 履歴を積まない値なので
+    //     `profile_changes` のような文は要らず、**文の数は 15 のまま**である。
     db
       .prepare(
         `update users
@@ -689,6 +691,7 @@ function finalizeStatements(
                 avatar_sha256 = null, avatar_set_at = null,
                 avatar_lock_token = null, avatar_lock_at = null,
                 fork_notice_muted_at = null,
+                chat_rule = '',
                 withdrawn_at = ?
           where id = ? and ${columns}`,
       )

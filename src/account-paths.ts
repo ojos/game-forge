@@ -105,6 +105,28 @@ export const ACCOUNT_WITHDRAWN_PATH = '/account/withdrawn';
 export const ACCOUNT_APPS_PATH = '/account/apps';
 
 /**
+ * 登録情報の画面の、相談のタブ（#728 / 仕様 5.16 の確定38。ログイン必須）。
+ *
+ * **相談（5.16）にいつも効かせたいことを書く欄**を出す。**`/account` の下にパスで置く**
+ * （{@link ACCOUNT_DETAILS_PATH} と同じ理由。外枠の検査と幅の検査に何も書き足さずに乗る）。
+ *
+ * **既存のタブへ同居させない。** プロフィールは作者ページに出る値、アカウントは本人にしか
+ * 出ない値、メール配信は送る・送らない、接続中のアプリは許可の一覧である。**「相談に毎回効く文」は
+ * どれとも別の話で、どこへ入れても「ついでに置いた欄」になる。**
+ */
+export const ACCOUNT_CHAT_PATH = '/account/chat';
+
+/**
+ * 相談のルールの保存（API。#728）。
+ *
+ * **画面のパスと分ける**（{@link ACCOUNT_DISPLAY_NAME_PATH} と同じ判断）。
+ */
+export const ACCOUNT_CHAT_API_PATH = '/api/account/chat';
+
+/** フォームの項目名（相談のルール）。画面と API が同じ綴りを使う（{@link DISPLAY_NAME_FIELD} と同じ理由）。 */
+export const CHAT_RULE_FIELD = 'chat_rule';
+
+/**
  * 接続の解除（API。#696）。**画面のパスと分ける**（{@link ACCOUNT_DISPLAY_NAME_PATH} と同じ判断）。
  * 本文は素のフォームで、許可の id を {@link GRANT_ID_FIELD} に 1 つだけ載せる。
  */
@@ -135,6 +157,8 @@ export const ACCOUNT_TABS: readonly AccountTab[] = [
   { path: ACCOUNT_MAIL_PATH, label: 'メール配信' },
   // MCP で接続したアプリ（#696 / 仕様 5.15）。画面は `src/account-apps.ts`。
   { path: ACCOUNT_APPS_PATH, label: '接続中のアプリ' },
+  // 相談にいつも効かせること（#728 / 仕様 5.16 の確定38）。画面は `src/account.ts`。
+  { path: ACCOUNT_CHAT_PATH, label: '相談' },
 ];
 
 /**

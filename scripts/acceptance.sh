@@ -515,9 +515,62 @@ if [[ -f "$SPEC" ]]; then
     echo "[acceptance] (docs) $SPEC の版表記が一致しません: タイトル=${spec_title_ver} 本文=${spec_body_ver}" >&2
     exit 1
   fi
+  # **版を上げたのに、版の履歴の先頭がその版でない**状態を止める（#695 の書き戻しで踏んだ。
+  # あのときはロードマップ側で `- 版: draft-64` のまま draft-65 の行を足していた）。
+  # **「足したか」ではなく「先頭が一致しているか」を見る**ので、空更新では通らない。
+  spec_hist_ver="$(sed -n 's/^- \(v[0-9][0-9.]*\)（.*/\1/p' "$SPEC" | head -1)"
+  if [[ -z "$spec_hist_ver" ]]; then
+    echo "[acceptance] (docs) $SPEC の版の履歴から先頭の版を取得できません（'- vX.Y（' の行が要ります）。" >&2
+    exit 1
+  fi
+  if [[ "$spec_body_ver" != "$spec_hist_ver" ]]; then
+    echo "[acceptance] (docs) $SPEC の版と、版の履歴の先頭が一致しません: 版=${spec_body_ver} 履歴=${spec_hist_ver}" >&2
+    echo "[acceptance] (docs) 版を上げたら、版の履歴の先頭へ同じ版の行を足してください。" >&2
+    exit 1
+  fi
   ran_any=1
 else
   echo "[acceptance] (docs) skip: $SPEC not found"
+fi
+
+# ロードマップと引き継ぎも、同じ形で「宣言と履歴の先頭」を見る（#695 の書き戻しで踏んだ）。
+#
+# **3 文書とも、版（または最終更新）を上げる操作と、履歴へ 1 行足す操作が別々である。**
+# 片方だけを直しても、それまでは何も落ちなかった。
+ROADMAP="docs/mvp-roadmap.md"
+if [[ -f "$ROADMAP" ]]; then
+  echo "[acceptance] (docs) roadmap version consistency"
+  road_ver="$(sed -n 's/^- 版: \(draft-[0-9]*\).*/\1/p' "$ROADMAP" | head -1)"
+  road_hist="$(sed -n 's/^- \(draft-[0-9]*\)（.*/\1/p' "$ROADMAP" | head -1)"
+  if [[ -z "$road_ver" || -z "$road_hist" ]]; then
+    echo "[acceptance] (docs) $ROADMAP から版表記を取得できません（'- 版: draft-N' と '- draft-N（' の両方が必要）。" >&2
+    exit 1
+  fi
+  if [[ "$road_ver" != "$road_hist" ]]; then
+    echo "[acceptance] (docs) $ROADMAP の版と、履歴の先頭が一致しません: 版=${road_ver} 履歴=${road_hist}" >&2
+    exit 1
+  fi
+  ran_any=1
+else
+  echo "[acceptance] (docs) skip: $ROADMAP not found"
+fi
+
+HANDOFF="docs/handoff.md"
+if [[ -f "$HANDOFF" ]]; then
+  echo "[acceptance] (docs) handoff date consistency"
+  hand_date="$(sed -n 's/^- 最終更新: \*\*\([0-9-]*\)\*\*.*/\1/p' "$HANDOFF" | head -1)"
+  hand_hist="$(sed -n 's/^- \*\*\([0-9][0-9-]*\)\*\*（.*/\1/p' "$HANDOFF" | head -1)"
+  if [[ -z "$hand_date" || -z "$hand_hist" ]]; then
+    echo "[acceptance] (docs) $HANDOFF から日付を取得できません（'- 最終更新: **YYYY-MM-DD**' と '- **YYYY-MM-DD**（' の両方が必要）。" >&2
+    exit 1
+  fi
+  if [[ "$hand_date" != "$hand_hist" ]]; then
+    echo "[acceptance] (docs) $HANDOFF の最終更新と、更新の履歴の先頭が一致しません: 最終更新=${hand_date} 履歴=${hand_hist}" >&2
+    exit 1
+  fi
+  ran_any=1
+else
+  echo "[acceptance] (docs) skip: $HANDOFF not found"
 fi
 
 if [[ "$ran_any" -eq 0 ]]; then

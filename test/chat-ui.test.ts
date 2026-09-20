@@ -374,6 +374,16 @@ describe('相談を主役にする（#726 / 確定38）', () => {
     expect(html.indexOf('id="chat-apply"')).toBeLessThan(at);
   });
 
+  it('`:has()` を使わない（互換性のため避ける決め。Copilot が見つけた）', () => {
+    // **対応しないブラウザでは畳まれず、余白だけが残る**（`.gf-watch-player` と同じ理由）。
+    // **相談の塊だけでなく、app.css 全体で使わない。**
+    const withoutComments = env.TEST_APP_CSS.replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+    expect(withoutComments).not.toContain(':has(');
+    // 畳む役は、隠れた要素には効かない「ボタン自身の余白」が持つ。
+    expect(cssRules('.gf-chat-apply-row').join('')).toContain('margin: 0');
+    expect(cssRules('.gf-chat-apply-row > .gf-button').join('')).toContain('margin-top');
+  });
+
   it('履歴は自分でスクロールする箱で、往復のたびに下まで送る（画面は動かさない）', () => {
     // 箱であること。
     expect(cssRules('.gf-chat-log').join('')).toContain('overflow-y: auto');

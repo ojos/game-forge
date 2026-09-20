@@ -139,8 +139,9 @@ ${messages}
        押すと生成のフォームをそのまま送る（\`form\` 属性。**開始の経路は変えない**）。 -->
   <p class="gf-chat-apply-row"><button id="chat-apply" class="gf-button gf-button-primary" type="submit"
           form="generate-form" hidden>この指示で作る</button></p>
-  <!-- **入力は画面の下に貼り付く**（確定38。\`.gf-chat-dock\` が \`position: sticky\`）。
-       区画のボタンは、送るが secondary、記録を消すが tertiary である。 -->
+  <!-- **入力は区画の最後の子なので、常にいちばん下にある**（確定38。浮かせない理由は
+       \`public/assets/app.css\` の \`.gf-chat\` の冒頭）。区画のボタンは、送るが secondary、
+       記録を消すが tertiary である。 -->
   <div class="gf-chat-dock">
     <label class="gf-chat-dock-label" for="chat-input">相談する（${CHAT_MAX_MESSAGE_LENGTH} 文字まで）</label>
     <div class="gf-chat-dock-row">

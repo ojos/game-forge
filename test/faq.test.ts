@@ -5,6 +5,7 @@ import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
 import { FAQ_ENTRIES, FAQ_TITLE, MCP_SERVER_URL, faqBody } from '../src/faq.js';
 import { ACCOUNT_APPS_PATH } from '../src/account-paths.js';
 import { MCP_TOOL_NAMES } from '../src/mcp-server.js';
+import { PUBLIC_WORKS_PATH } from '../src/works-paths.js';
 import { OAUTH_SCOPE_LABELS, SCOPE_WORKS_GENERATE } from '../src/oauth-paths.js';
 import { TYPICAL_WAIT_TEXT } from '../src/generate-page.js';
 import { INVITE_RECOVERY_DAYS } from '../src/invite-balance.js';
@@ -368,8 +369,26 @@ describe('AI からの接続（#696 / MCP）', () => {
     expect(answer).toContain(`「${OAUTH_SCOPE_LABELS[SCOPE_WORKS_GENERATE]!.name}」を外す`);
     expect(answer).toContain('href="#quota"');
     expect(oldOperationNamesIn(answer)).toEqual([]);
-    // 道具は 6 本のまま（増やしたら、ここの「できること」を見直す）。
-    expect(MCP_TOOL_NAMES).toHaveLength(6);
+    // 道具は 8 本のまま（増やしたら、ここの「できること」を見直す）。
+    expect(MCP_TOOL_NAMES).toHaveLength(8);
+  });
+
+  it('AI から読めるもの（自分の作品・公開作品の一覧と検索・作者の公開プロフィール）と、読めないもの（ほかの方のソース）を書く（#711）', () => {
+    const answer = answerOf('ai-connect');
+    for (const phrase of [
+      'AI から読めるもの',
+      '公開されている作品の一覧と検索',
+      `href="${PUBLIC_WORKS_PATH}"`,
+      '作者の公開プロフィール',
+      'ほかの方の作品のソースは読めません',
+    ]) {
+      expect(answer, phrase).toContain(phrase);
+    }
+    // 公開作品を読む道具が実際にある（#711 で足した 2 本）。FAQ と道具の食い違いを見る。
+    expect(MCP_TOOL_NAMES).toContain('list_public_works');
+    expect(MCP_TOOL_NAMES).toContain('get_public_user');
+    // 他人のソースを読む道具は無いまま（FAQ の「読めません」の裏づけ）。
+    expect(MCP_TOOL_NAMES.filter((name) => name.includes('source'))).toEqual(['get_my_work_source']);
   });
 
   it('接続の解除と、許可が漏れたかもしれないときの手順を書く（#696 の constraints）', () => {

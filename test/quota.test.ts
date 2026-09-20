@@ -114,6 +114,22 @@ afterEach(async () => {
 
 describe('しきい値の機械照合（4.3 / 確定25）', () => {
   /**
+   * 「版の履歴」の節の**直前**へ 1 行仕込む。
+   *
+   * **末尾へ足すと、その節ごと外れる**（#718 で `currentDeclarationsIn` が外すようになった）。
+   * 仕込みが外れた状態でも `not.toContain` は通ってしまうので、**仕込む位置を本文の中に保つ。**
+   *
+   * @param line 仕込む 1 行
+   * @returns 仕込んだ仕様書
+   */
+  function insertBeforeVersionHistory(line: string): string {
+    const spec = env.TEST_PRODUCT_SPEC;
+    const at = spec.indexOf('\n## 版の履歴');
+    expect(at, '「版の履歴」の節が見つからない（仕込みの位置を決められない）').toBeGreaterThan(-1);
+    return `${spec.slice(0, at)}\n\n${line}\n${spec.slice(at)}`;
+  }
+
+  /**
    * 仕様書から数値を拾う。
    *
    * **拾うのは「現行値の宣言」だけである**（`currentDeclarationsIn`）。この仕様書は
@@ -187,13 +203,26 @@ describe('しきい値の機械照合（4.3 / 確定25）', () => {
     //
     // **「書き換えれば通る」ではなく「印を付ければ外れる」形にしてある。** 次に同じ
     // 状況へ来た人がやるのは記録を消すことではなく、取り消し線を引くことである。
-    const doctored = `${env.TEST_PRODUCT_SPEC}\n\n~~上限額: 9万円/月。1 人あたり 1 日 99 回。~~`;
+    // **仕込むのは本文の中である**（末尾へ足さない）。**「版の履歴」の節から後ろは
+    // まるごと外す**ようになったので（#718。`currentDeclarationsIn`）、末尾へ足すと
+    // 取り消し線の有無に関わらず外れ、**この検査が何も見なくなる。**
+    const doctored = insertBeforeVersionHistory('~~上限額: 9万円/月。1 人あたり 1 日 99 回。~~');
     expect(valuesIn(MONTHLY_LIMIT_PATTERN, doctored)).not.toContain(9);
     expect(valuesIn(DAILY_QUOTA_PATTERN, doctored)).not.toContain(99);
     // **取り消し線が無ければ拾う**（外れるのは印を付けたときだけである）。
-    const live = `${env.TEST_PRODUCT_SPEC}\n\n上限額: 9万円/月。1 人あたり 1 日 99 回。`;
+    const live = insertBeforeVersionHistory('上限額: 9万円/月。1 人あたり 1 日 99 回。');
     expect(valuesIn(MONTHLY_LIMIT_PATTERN, live)).toContain(9);
     expect(valuesIn(DAILY_QUOTA_PATTERN, live)).toContain(99);
+  });
+
+  it('「版の履歴」の節は照合の対象にしない（#718）', () => {
+    // **1 章と同じ性質のもので、置き場所だけが違う**（#621 で 3 行目から移した先）。
+    // 版ごとに「そのときどうしたか」を書くので、**過去の値が必ず残る。**
+    const inHistory = `${env.TEST_PRODUCT_SPEC}\n- v9.9（上限額: 9万円/月。1 人あたり 1 日 99 回）。`;
+    expect(valuesIn(MONTHLY_LIMIT_PATTERN, inHistory)).not.toContain(9);
+    expect(valuesIn(DAILY_QUOTA_PATTERN, inHistory)).not.toContain(99);
+    // **その手前は拾う**（外したのは節 1 つぶんだけで、確定事項一覧より後ろである）。
+    expect(valuesIn(MONTHLY_LIMIT_PATTERN, insertBeforeVersionHistory('上限額: 9万円/月。'))).toContain(9);
   });
 
   it('警告と停止のしきい値の宣言と定数が一致する', () => {

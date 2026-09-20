@@ -79,7 +79,7 @@ import { MONTHLY_COST_LIMIT_JPY, MONTHLY_LIMIT_REASON, jstDayRange } from './quo
  * **同じ式で引き直すと 約 ¥11/人・日・月 約 ¥1,000** で、**蓋は引いたときより余裕がある。**
  * **値は変えていない**——枠の値は利用者の決定であり、実測が安い側へ出たことは緩める理由にならない。
  *
- * 仕様書側の記載との一致は `test/chat-quota.test.ts` が {@link CHAT_DAILY_TOKEN_PATTERN} で
+ * 仕様書側の記載との一致は `test/chat.test.ts` が {@link CHAT_DAILY_TOKEN_PATTERN} で
  * 機械照合する（`src/quota.ts` の `MONTHLY_LIMIT_PATTERN` と同じ理由——同じ数値が 2 か所に
  * ある以上、呼びかけでは守れない）。
  */

@@ -2291,46 +2291,117 @@ img.gf-related-shot {
 }
 
 /*
- * 生成の前の相談の区画（`src/chat-section.ts`。#695 / 仕様 5.16）。**フォームの後ろに置く「任意」の区画**で、
- * 主のボタン（「生成する」）は上のフォームにある（2.5.5）。
+ * 生成の前の相談（`src/chat-section.ts`。#695 / #726。仕様 5.16 / 確定38）。
  *
- * **幅に反応する `@media` を置かない**（区画の規約 3。断点は `@section shell` が持つ）。会話は縦に積むだけで、
- * 段によって形を変えない——**狭い段でそのまま読める形を、広い段でも使う。**
+ * **#695 では「フォームの後ろに置く任意の区画」だった。** #726 で**この画面の主役**になり、
+ * 形が 3 つ変わった——**履歴が自分でスクロールする箱になる**（画面そのものは動かない）/
+ * **誰の発話かを左右の置き場所でも示す**（利用者は右、AI は左）/ **入力が画面の下に貼り付く。**
+ *
+ * **色は足していない**（`@section work` の「ここだけが色を持つ」）。吹き出しは罫線と面
+ * （`--gf-surface`）だけで作り、**誰の発話かは名前（`.gf-chat-who`）が言い続ける**——
+ * 左右の置き場所は補助であって、それだけに寄りかからない（折り返す幅では差が小さくなる）。
+ *
+ * **幅に反応する `@media` を置かない**（区画の規約 3。断点は `@section shell` が持つ）。
  */
 .gf-chat {
   margin-bottom: var(--gf-gap-3);
+  /*
+   * **区画ごと画面に収め、伸びるのは会話だけにする。**
+   *
+   * **入力を `position: sticky` で貼り付ける形は採らなかった**（実測して取り下げた。#726）。
+   * 貼り付いた入力は**会話の末尾を覆う**のに、会話の箱は中身が上限より低いあいだスクロール
+   * できないので、**覆われた発話に手が届かなくなる**（390×800 で `getBoundingClientRect` を
+   * 読んで確かめた）。覆う形を保ったまま直すには「入力の高さだけ会話の下に余白を積む」
+   * ことになり、**入力の高さという定数を CSS へ書き写す**ことになる。
+   *
+   * **縦に並べて、会話だけを伸び縮みさせれば、覆う瞬間そのものが無くなる。** 入力は
+   * この箱の最後の子なので、**常にいちばん下にある**（確定38 の「画面の下に固定した入力」）。
+   */
+  display: flex;
+  flex-direction: column;
+  max-height: min(80vh, 46rem);
 }
 
 .gf-chat .gf-heading-row {
   margin-top: 0;
 }
 
-/* 会話。**空のときは何も出さない**（`:empty` で余白ごと消す）。 */
+/*
+ * 会話。**空のときは何も出さない**（`:empty` で余白ごと消す）。
+ *
+ * **自分でスクロールする箱にする**（確定38「往復のたびに最新へスクロールする」）。
+ * スクリプトが動かすのは `scrollTop` だけで、**画面は動かない**（`src/chat-section.ts` の `toBottom`）。
+ *
+ * **高さは区画の余りを取る**（`flex: 1 1 auto` と `min-height: 0`）。`min-height` を既定
+ * （`auto`）のままにすると、**flex の項目は中身より縮まないので箱が区画からはみ出す。**
+ * **下限を置く**のは、狭い画面で会話が 0 の高さへ潰れないようにするためである。
+ */
 .gf-chat-log {
   list-style: none;
   margin: var(--gf-gap-2) 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--gf-gap-2);
+  gap: var(--gf-gap-3);
+  flex: 1 1 auto;
+  min-height: 8rem;
+  overflow-y: auto;
+  /*
+   * **横は隠す。** `overflow-y` を `auto` にすると `overflow-x` の `visible` は `auto` に
+   * なる（CSS の規定）ので、**折り返しそこねた 1 行がそのまま横スクロールを作る。**
+   * 折り返しは下の `.gf-chat-turn` と `.gf-chat-text` が受け持つ。
+   */
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
 .gf-chat-log:empty {
   margin: 0;
+  max-height: none;
 }
 
 /*
- * 1 往復。**誰の発話かは、色ではなく名前（`.gf-chat-who`）で示す**——作品ページ以外は色を持たない
- * （`@section work` の「ここだけが色を持つ」）。
+ * 1 往復。**形と左右で、誰の発話かを示す**（利用者が示した Claude / Gemini の画面に合わせた。#726）。
+ *
+ * - **利用者の発話**: 角を丸めた面のカプセルで、右に寄る
+ * - **AI の発話**: **囲いを持たず**、本文がそのまま左へ流れる（返答は長く、囲うと読みにくい）
+ *
+ * **色は使っていない**（`@section work` の「ここだけが色を持つ」）。使うのは面（`--gf-surface`）と
+ * 形と位置だけである。**名前（`.gf-chat-who`）は消していない**——目には出さず、読み上げには残す
+ * （下記）。**形だけに寄りかかると、読み上げでは誰の発話か分からなくなる。**
  */
 .gf-chat-turn {
   margin: 0;
+  /*
+   * **縮めることを許す。** flex の項目の `min-width` の既定（`auto`）は「中身より小さく
+   * しない」なので、**長い 1 行がそのまま箱を押し広げ、`max-width` を超えて右端で切れる**
+   * （実物を 390px で撮って気づいた。#726）。
+   */
+  min-width: 0;
 }
 
+/* 利用者は右（カプセルの幅は中身ぶん。版面いっぱいには広げない）。 */
+.gf-chat-user {
+  align-self: flex-end;
+  max-width: min(85%, 34rem);
+}
+
+/* AI は左。**囲いが無いので、版面の幅をそのまま使う。** */
+.gf-chat-assistant {
+  align-self: stretch;
+}
+
+/*
+ * 誰の発話かの名前。**目には出さず、読み上げには残す**（`.gf-works-table thead` と同じ形）。
+ * **`display: none` にしない**——それだと読み上げからも消える。
+ */
 .gf-chat-who {
-  display: block;
-  color: var(--gf-ink-soft);
-  font-size: var(--gf-text-small);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* 返答は改行をそのまま見せる（指示文の下書きが 1 段落で届かない）。 */
@@ -2340,11 +2411,92 @@ img.gf-related-shot {
   overflow-wrap: anywhere;
 }
 
+/*
+ * 利用者の発話だけがカプセルになる。
+ *
+ * **地は `--gf-ground` である。** 区画そのものが `.gf-block`（`--gf-surface`）なので、
+ * **同じ面を敷くとカプセルが消える**（1280px で撮って気づいた。#726）。段が 1 つずれていれば、
+ * どちらが上に乗っているかは読める。
+ */
+.gf-chat-user .gf-chat-text {
+  padding: var(--gf-gap-2) var(--gf-gap-3);
+  border-radius: var(--gf-radius-float);
+  background: var(--gf-ground);
+}
+
+/*
+ * 「この指示で作る」の行。**この画面の主のボタンである**（2.5.5 / 確定38）。
+ *
+ * 下書きが出るまでボタンは `hidden` なので、**空の行が余白を残さないようにする。**
+ * **`:has()` は使わない**（互換性のため避ける決め。上の `.gf-watch-player` と同じ理由で、
+ * 対応しないブラウザでは畳まれず余白だけが残る）。**余白をボタン自身に持たせれば、
+ * 親を見なくても同じ結果になる**——`hidden` は `display: none` なので、隠れた要素の
+ * 余白は最初から効かず、囲みの `<p>` は高さ 0 の箱として残るだけである。
+ */
+.gf-chat-apply-row {
+  margin: 0;
+}
+
+.gf-chat-apply-row > .gf-button {
+  margin-top: var(--gf-gap-3);
+}
+
+/*
+ * 入力。**区画の最後の子なので、常にいちばん下にある**（確定38「画面の下に固定した入力」）。
+ *
+ * **浮かせない**（`sticky` も `fixed` も使わない。理由は `.gf-chat` の冒頭）。**縮まない**
+ * ——伸び縮みするのは会話だけで、入力は中身ぶんの高さを必ず取る。
+ */
+.gf-chat-dock {
+  flex: 0 0 auto;
+  margin-top: var(--gf-gap-3);
+}
+
+.gf-chat-dock-label {
+  display: block;
+}
+
+/*
+ * 欄とボタンを 1 行に並べ、**狭い段では折り返す**（`gap` は縦横の両方へ効く）。
+ * **入力そのものも角を丸めたカプセルにする**（利用者が示した画面に合わせた。#726）。
+ */
+.gf-chat-dock-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--gf-gap-2);
+}
+
+.gf-chat-dock-row textarea {
+  flex: 1 1 14rem;
+  margin: 0;
+  border-radius: var(--gf-radius-float);
+  /* **2 行ぶんで足りる。** 既定（6.5em）だと、会話より入力のほうが高くなる。 */
+  min-height: 0;
+}
+
 /* ボタンの並び。**狭い段で折り返す**（`gap` は縦横の両方へ効く）。 */
 .gf-chat-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--gf-gap-2);
+  margin-top: var(--gf-gap-2);
+}
+
+/*
+ * 相談せずに指示文を直接書く（`src/generate-page.ts`。#726 / 確定38）。
+ *
+ * **相談を使わない人の導線である。** 閉じていても欄は DOM にあるので、相談の
+ * 「この指示で作る」は開かずにこのフォームを送れる。
+ */
+.gf-generate-direct > summary {
+  cursor: pointer;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+.gf-generate-direct-panel {
+  margin-top: var(--gf-gap-2);
 }
 
 /*

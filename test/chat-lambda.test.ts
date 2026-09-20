@@ -5,6 +5,7 @@ import {
   CHAT_MAX_OUTPUT_TOKENS,
   CHAT_MAX_TOTAL_MESSAGE_LENGTH,
   CHAT_PAYLOAD_VERSION,
+  CHAT_RULE_TURNS,
 } from '../src/chat-payload.js';
 import { CHAT_PROMPT_SECTIONS, CHAT_PROMPT_VERSION, renderChatPromptText } from '../src/chat-prompt.js';
 import {
@@ -257,6 +258,47 @@ describe('1 往復の実行', () => {
     expect(moderate).toHaveBeenCalledTimes(1);
     // 8.2 の「当てるのは利用者のプロンプト本文だけである」——ソースには当てない。
     expect(moderate.mock.calls[0]![1]).toBe('避けるゲームを作りたい');
+  });
+
+  it('作者のルールも検査に掛ける（#728。検査を通らないまま Bedrock へ届かせない）', async () => {
+    const moderate = vi.fn(async (_env: Env, _prompt: string) => {});
+    const send = vi.fn(async () => converseResponse());
+    await handleChatEvent({ ...ONE_TURN, rule: '短く答えて' }, ROLE_ENV, { send, moderate });
+    // **1 回の呼び出しにまとめる**（2 回に分けても判定は同じで、費用と待ち時間だけが増える）。
+    expect(moderate).toHaveBeenCalledTimes(1);
+    expect(moderate.mock.calls[0]![1]).toContain('短く答えて');
+    expect(moderate.mock.calls[0]![1]).toContain('避けるゲームを作りたい');
+  });
+
+  it('ルールは検査を通った後で、会話の先頭へ展開される', async () => {
+    const sentRequests: Request[] = [];
+    const send = vi.fn(async (request: Request) => {
+      sentRequests.push(request);
+      return converseResponse();
+    });
+    await handleChatEvent({ ...ONE_TURN, rule: '短く答えて' }, ROLE_ENV, {
+      send,
+      moderate: async () => {},
+    });
+    // **送るのは署名済みの `Request` である**ので、本文はストリームから読む。
+    const sent = sentRequests[0]!;
+    const body = (await sent.clone().json()) as { messages?: readonly { readonly role: string }[] };
+    // 1 通だった会話が、前置き・受け答え・本来の発話の 3 通になる。
+    expect(body.messages).toHaveLength(1 + CHAT_RULE_TURNS);
+    expect(body.messages?.[0]?.role).toBe('user');
+    expect(body.messages?.[1]?.role).toBe('assistant');
+  });
+
+  it('ルールが検査で止まったら、モデルを呼ばない', async () => {
+    const send = vi.fn(async () => converseResponse());
+    const result = await handleChatEvent({ ...ONE_TURN, rule: '止まる文' }, ROLE_ENV, {
+      send,
+      moderate: async () => {
+        throw new PromptBlocked(['VIOLENCE']);
+      },
+    });
+    expect(result).toEqual({ ok: false, error: 'prompt-blocked', categories: ['VIOLENCE'] });
+    expect(send).not.toHaveBeenCalled();
   });
 
   it('いちばん新しい発話だけを検査する', async () => {

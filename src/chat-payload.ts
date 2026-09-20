@@ -68,6 +68,69 @@ export const CHAT_MAX_TOTAL_MESSAGE_LENGTH = 12_000;
  */
 export const CHAT_MAX_OUTPUT_TOKENS = 1_500;
 
+/**
+ * 作者ごとのルールの上限（文字数。#728 / 確定38）。
+ *
+ * **自己紹介（`BIO_MAX_LENGTH`）と同じ 500 である。** 同じ値であることは
+ * `test/chat-rule.test.ts` が機械照合する——**ここから `src/profile.ts` を import しない**
+ * （この葉は相談の Lambda の束に入るので、画面側のモジュールを引き込ませない）。
+ *
+ * **枠の側からも見ておく。** ルールは**1 往復ごとに文脈へ乗る**ので、見積もり
+ * （1 文字 1 トークンで数える）では 1 往復あたり最大 500 トークンになる。**実際はもっと安い**
+ * ——ルールは会話の先頭に固定されるので、**4.5 のキャッシュの共有プレフィックスに乗る。**
+ */
+export const CHAT_RULE_MAX_LENGTH = 500;
+
+/**
+ * 作者のルールを置くときの前置き。
+ *
+ * **これが何であるかを名乗る。** 名乗らずにルールだけを置くと、**AI はそれを「いまの相談の
+ * 依頼」として読む**——「短いゲームが好きです」とだけ書いた人が、毎回その話から始められる。
+ */
+export const CHAT_RULE_PREAMBLE =
+  'これは、わたしがいつも守ってほしいことです。このあとの相談すべてに当てはめてください。';
+
+/**
+ * 前置きに対する、AI 側の受け答え。
+ *
+ * **役割が交互であることは、エッジもこの Lambda も確かめている。** 作者の発話を 1 つ足すだけでは
+ * `user` が 2 つ続くので、**受け答えを 1 つ足して並びを保つ。**
+ *
+ * **ルールの本文を復唱させない**——復唱させると、そのぶんの文脈が毎回積まれる。
+ */
+export const CHAT_RULE_ACKNOWLEDGEMENT = '承知しました。以降の相談でそのとおりにします。';
+
+/** ルールが使う発話の数（前置きと受け答えで 2 つ）。**エッジはこのぶんを空けてから受ける。** */
+export const CHAT_RULE_TURNS = 2;
+
+/**
+ * 作者のルールを、会話の先頭へ 2 通の発話として足す。
+ *
+ * **展開するのは Lambda である**（エッジではない）。**8.2 の Guardrail はこの Lambda の中に
+ * あり、検査するのは「この往復で新しく届いたもの」だけ**なので、**エッジで展開して送ると、
+ * ルールが検査を 1 度も通らないまま Bedrock へ届く**（#728 の Copilot の指摘）。
+ * **置く場所と検査する場所を同じ側に寄せる。**
+ *
+ * **空なら何も足さない**（確定38「空のときは今までどおり動く」）。
+ *
+ * @param rule 作者のルール（空なら何もしない）
+ * @param messages 会話
+ * @returns モデルへ渡す会話
+ */
+export function withChatRule(
+  rule: string,
+  messages: readonly ChatMessage[],
+): readonly ChatMessage[] {
+  if (rule === '') {
+    return messages;
+  }
+  return [
+    { role: 'user', text: `${CHAT_RULE_PREAMBLE}\n\n${rule}` },
+    { role: 'assistant', text: CHAT_RULE_ACKNOWLEDGEMENT },
+    ...messages,
+  ];
+}
+
 /** 相談の文脈に載せる、作者自身の作品（5.16「見せる情報」）。 */
 export interface ChatWorkContext {
   /** 題名。 */
@@ -90,6 +153,18 @@ export interface ChatRequestPayload {
   readonly messages: readonly ChatMessage[];
   /** 作者自身の作品の文脈。選んでいなければ載らない。 */
   readonly work?: ChatWorkContext;
+  /**
+   * 作者ごとのルール（#728 / 確定38）。**空か、設定していなければ載らない。**
+   *
+   * **展開するのは受け取った側である**（{@link withChatRule}）。**8.2 の検査と同じ側に置く**
+   * ——エッジで会話へ混ぜて送ると、ルールが検査を通らないまま Bedrock へ届く。
+   *
+   * **この項目を足しても版は上げない。** 版を上げると「新しいエッジ ＋ 古い Lambda」と
+   * 「古いエッジ ＋ 新しい Lambda」の**どちらか一方が必ず断られる**——2 つは別々に配られるので、
+   * 入れ替えのあいだ相談が止まる。**古い Lambda はこの項目を読み飛ばすだけ**（ルールが効かない
+   * 窓が開くが、断られはしない）で、**古いエッジは載せないだけ**である。
+   */
+  readonly rule?: string;
 }
 
 /** Lambda が返す本文。 */

@@ -107,8 +107,11 @@
 import {
   ACCOUNT_DETAILS_PATH,
   ACCOUNT_DISPLAY_NAME_PATH,
+  ACCOUNT_CHAT_API_PATH,
+  ACCOUNT_CHAT_PATH,
   ACCOUNT_MAIL_API_PATH,
   ACCOUNT_MAIL_PATH,
+  CHAT_RULE_FIELD,
   ACCOUNT_PATH,
   ACCOUNT_TABS,
   ACCOUNT_WITHDRAW_PATH,
@@ -133,10 +136,12 @@ import {
 import type { EncodeAvatar } from './avatar-client.js';
 import { encodeAvatarOnLambda } from './avatar-client.js';
 import { ACCOUNT_AVATAR_PATH, ACCOUNT_AVATAR_REMOVE_PATH, avatarUrl, sandboxOriginOf } from './avatar-paths.js';
+import { CHAT_RULE_MAX_LENGTH, checkChatRule, readChatRule, saveChatRule } from './chat-rule.js';
 import { displayNameHistoryInsert } from './display-name-changes.js';
 import { escapeHtml, headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { siteFooter } from './legal.js';
+import { FAQ_PATH, PRIVACY_PATH } from './legal-paths.js';
 import { FORK_NOTICE_KIND_LABEL, MAIL_KINDS, unmutableUserMailKinds } from './mail/kinds.js';
 import type { ProfileFormView, ProfileRejection } from './profile.js';
 import {
@@ -147,6 +152,7 @@ import {
   validateProfile,
 } from './profile.js';
 import { ACCOUNT_PROFILE_PATH, BIO_FIELD, PROFILE_LINK_FIELD } from './profile-paths.js';
+import { GENERATE_PAGE_PATH } from './paths.js';
 import type { Route } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
@@ -1183,6 +1189,145 @@ ${unmutable}
   });
 }
 
+/** 相談のタブ（`/account/chat`）を組み立てるのに必要なものだけを集めた入力。 */
+export interface AccountChatView {
+  /** いま保存されているルール（無ければ空文字）。 */
+  readonly rule: string;
+  /** 上部に出す知らせ（無ければ null）。 */
+  readonly notice: { readonly kind: 'error'; readonly message: string } | { readonly kind: 'saved' } | null;
+  /** ヘッダのアバターの画像の URL（#380）。 */
+  readonly headerAvatar: string | null;
+}
+
+/** 相談のタブで断ったときの文言（分類名から 1 つだけ選ぶ）。 */
+export const CHAT_RULE_MESSAGES: Readonly<Record<string, string>> = {
+  'too-long': `相談のルールは ${CHAT_RULE_MAX_LENGTH} 文字までです。`,
+  'invalid-characters': '相談のルールに、改行以外の制御文字や、文字の向きを変える目に見えない記号は使えません。',
+  'invalid-request': '相談のルールを受け取れませんでした。もう一度お試しください。',
+  failed: '相談のルールを保存できませんでした。時間をおいてもう一度お試しください。',
+};
+
+/**
+ * 登録情報の画面（相談のタブ。`/account/chat`）を組み立てる（#728 / 確定38）。
+ *
+ * **フォームは面のブロックで、「保存する」は副のボタン**（仕様 2.5.4 / 2.5.5 / #473。登録情報のタブは主を置かない）。
+ *
+ * **効く範囲を画面で言う。** 「相談だけに効く・生成には効かない」は確定38 の決定そのもので、
+ * **書いていないと作者は「生成にも効く」と読む**（欄の名前が「ルール」であるほどそう読める）。
+ *
+ * @param view 表示に必要な値
+ * @returns HTML
+ */
+export function renderAccountChatPage(view: AccountChatView): string {
+  const notice =
+    view.notice === null
+      ? ''
+      : view.notice.kind === 'saved'
+        ? '<p class="gf-block" role="status">相談のルールを保存しました。</p>'
+        : `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
+
+  return accountShell({
+    path: ACCOUNT_CHAT_PATH,
+    title: '相談 - Game Forge',
+    headerAvatar: view.headerAvatar,
+    body: `${notice}
+<form class="gf-block" method="post" action="${ACCOUNT_CHAT_API_PATH}">
+  <label for="account-chat-rule">相談のときに、いつも守ってほしいこと（${CHAT_RULE_MAX_LENGTH} 文字まで）</label>
+  <p id="account-chat-rule-hint" class="gf-generate-hint">生成画面の<a href="${GENERATE_PAGE_PATH}">AI との相談</a>で、毎回いちばん最初に伝えます。
+     <strong>相談にだけ効きます</strong>——ここに書いたことが、生成そのものに直接渡ることはありません
+     （相談が作った<strong>指示文の下書き</strong>を通して届きます）。空にすれば、何も伝えません。</p>
+  <textarea id="account-chat-rule" name="${CHAT_RULE_FIELD}" rows="6" maxlength="${CHAT_RULE_MAX_LENGTH}"
+            aria-describedby="account-chat-rule-hint"
+            placeholder="例: 説明は短く。難しい言葉を使わない。1 画面で完結する遊びが好き。">${escapeHtml(view.rule)}</textarea>
+  <button type="submit" class="gf-button gf-button-secondary">保存する</button>
+</form>
+<p>相談そのもののしくみ（枠・保存期間・消し方）は、<a href="${FAQ_PATH}">よくある質問</a>と<a href="${PRIVACY_PATH}">プライバシーポリシー</a>にあります。</p>`,
+  });
+}
+
+/**
+ * 登録情報の画面（相談のタブ）を返す（#728）。
+ *
+ * **引くのは本人の行だけである**（{@link showAccount} と同じ）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function showAccountChat(request: Request, env: Env): Promise<Response> {
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return await loginRequiredRedirect(env, ACCOUNT_CHAT_PATH);
+  }
+  const url = new URL(request.url);
+  const reason = url.searchParams.get('reason');
+  const notice =
+    url.searchParams.get(SAVED_QUERY) === '1'
+      ? ({ kind: 'saved' } as const)
+      : reason === null
+        ? null
+        : ({
+            kind: 'error',
+            message: CHAT_RULE_MESSAGES[reason] ?? CHAT_RULE_MESSAGES['invalid-request']!,
+          } as const);
+  return html(
+    renderAccountChatPage({
+      rule: await readChatRule(env.DB, session.userId),
+      notice,
+      headerAvatar: headerAvatarUrl(request, env, session.userId),
+    }),
+  );
+}
+
+/**
+ * 相談のルールを保存する（`POST /api/account/chat`。#728）。
+ *
+ * **断ったら `/account/chat?reason=` へ送り直す**（POST-redirect-GET。メール配信のタブと同じ形）。
+ * **書いた文を URL に載せない**（表示名の口が query を避けたのと同じ理由——履歴・ログ・反射）。
+ * **上限だけで断るので、打ち直しは「減らす」であり、全部を打ち直させることにはならない。**
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function handleChatRuleChange(request: Request, env: Env): Promise<Response> {
+  const session = await resolveSessionUser(request, env);
+  if (!session.ok) {
+    return await loginRequiredRedirect(env, ACCOUNT_CHAT_PATH);
+  }
+  const mediaType = (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+  if (mediaType !== FORM_MEDIA_TYPE) {
+    return seeOther(`${ACCOUNT_CHAT_PATH}?reason=invalid-request`);
+  }
+  // **本文の上限は、同じ 500 文字を受けるプロフィールの口と揃える**（`MAX_PROFILE_BODY_BYTES`）。
+  // **`MAX_BODY_BYTES`（4 KiB）では足りない**——500 文字の日本語は
+  // `application/x-www-form-urlencoded` で 1 文字 9 バイトになり、約 4,500 バイトへ膨らむ。
+  // **画面が 500 文字と書いているのに、500 文字が「壊れた要求」で断られていた**（#728 の Copilot の指摘）。
+  const read = await readLimitedText(request, MAX_PROFILE_BODY_BYTES);
+  if (!read.ok) {
+    return seeOther(`${ACCOUNT_CHAT_PATH}?reason=too-long`);
+  }
+  // **値がちょうど 1 つのときだけ受け付ける**（メール配信の口と同じ判断）。
+  const values = new URLSearchParams(read.text).getAll(CHAT_RULE_FIELD);
+  if (values.length !== 1) {
+    return seeOther(`${ACCOUNT_CHAT_PATH}?reason=invalid-request`);
+  }
+  const checked = checkChatRule(values[0]!);
+  if (!checked.ok) {
+    return seeOther(`${ACCOUNT_CHAT_PATH}?reason=${checked.reason}`);
+  }
+  try {
+    const saved = await saveChatRule(env.DB, session.userId, checked.rule);
+    return seeOther(saved ? `${ACCOUNT_CHAT_PATH}?${SAVED_QUERY}=1` : `${ACCOUNT_CHAT_PATH}?reason=failed`);
+  } catch (error) {
+    // **本文は出さない**（1.2.54 と同じ扱い）。出すのは例外の種類だけである。
+    console.error(
+      `[account] 相談のルールの保存に失敗しました: ${error instanceof Error ? error.name : 'unknown'}`,
+    );
+    return seeOther(`${ACCOUNT_CHAT_PATH}?reason=failed`);
+  }
+}
+
 /**
  * 登録情報の画面（メール配信のタブ）を返す（#384）。
  *
@@ -1412,6 +1557,7 @@ export function createAccountRoutes(options: AccountRouteOptions = {}): readonly
     { method: 'GET', path: ACCOUNT_PATH, handler: showAccount },
     { method: 'GET', path: ACCOUNT_DETAILS_PATH, handler: showAccountDetails },
     { method: 'GET', path: ACCOUNT_MAIL_PATH, handler: showAccountMail },
+    { method: 'GET', path: ACCOUNT_CHAT_PATH, handler: showAccountChat },
     {
       method: 'POST',
       path: ACCOUNT_DISPLAY_NAME_PATH,
@@ -1426,6 +1572,11 @@ export function createAccountRoutes(options: AccountRouteOptions = {}): readonly
       method: 'POST',
       path: ACCOUNT_MAIL_API_PATH,
       handler: (request, env) => handleForkNoticePreference(request, env, now),
+    },
+    {
+      method: 'POST',
+      path: ACCOUNT_CHAT_API_PATH,
+      handler: handleChatRuleChange,
     },
     {
       method: 'POST',

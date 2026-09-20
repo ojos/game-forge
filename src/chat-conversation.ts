@@ -42,8 +42,15 @@ import { CHAT_MAX_MESSAGES } from './chat-payload.js';
  */
 export const CHAT_RETENTION_DAYS = 30;
 
-/** 仕様書と `/privacy` が保存期間を宣言している文の形（テストが照合に使う）。 */
-export const CHAT_RETENTION_PATTERN = /最後に使ってから ?\*{0,2}([0-9]+) ?日/gu;
+/**
+ * 仕様書と `/privacy` が保存期間を宣言している文の形（テストが照合に使う）。
+ *
+ * **語の間の空白と改行を許す。** 仕様書は本文を折り返して書くので、**「最後に」と「使ってから」が
+ * 行をまたぐ**ことがある——実際に 5.16 がそうなっており、**折り返しを許さない形では宣言を拾えず、
+ * 版の履歴にあった別の文（MCP の接続の 30 日）を拾って通っていた**（#718 で気づいた）。
+ * **同じ値だったので誰も気づかなかった。**
+ */
+export const CHAT_RETENTION_PATTERN = /最後に\s*使ってから\s*\*{0,2}([0-9]+)\s*日/gu;
 
 /** 保存されている会話。 */
 export interface StoredChatConversation {

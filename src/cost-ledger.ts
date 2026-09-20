@@ -85,6 +85,32 @@ export const USD_JPY_RATE = 150;
  */
 export const EXCHANGE_RATE_PATTERN = /為替(?:レート)?は\s*([0-9]+(?:\.[0-9]+)?)\s*円\/ドル/gu;
 
+/**
+ * 台帳の行の種別（`generations.kind`。`migrations/0049_chat.sql` / 仕様 5.16）。
+ *
+ * **同じ表に積んだうえで、数え分けるための列である。** 2 つの決定を同時に満たす形が
+ * これしか無い——**4.3 の月次 2 万円は全部を合算する**（総額には相談も効く）が、
+ * **確定25 の日次 10 回は生成の行だけを数える**（相談は日次枠を 1 回も減らさない。5.16）。
+ * 別の表へ分ければ前者が崩れ、列を足さなければ後者が崩れる。
+ *
+ * **数える側が絞る。** この定数を読むのは、日次枠（`src/quota.ts` の `dailyCallCount`）と
+ * 相談の枠（`src/chat-quota.ts`）である。**月次累計（{@link monthlyCostTotals}）は絞らない**
+ * ——絞らないことが 4.3 の決定そのものなので、条件を書かないほうが意図が読める。
+ */
+export const GENERATION_KIND = 'generation' as const;
+
+/** 台帳の行の種別のうち、相談（5.16）。 */
+export const CHAT_KIND = 'chat' as const;
+
+/**
+ * 台帳の行の種別の全体。
+ *
+ * **`migrations/0049_chat.sql` の `CHECK` と同じ並びである。** 片方だけが増えると、
+ * 増やした側の書き込みが D1 に断られる（静かに通るよりよい）。一致は
+ * `test/cost-ledger.test.ts` が見る。
+ */
+export type LedgerKind = typeof GENERATION_KIND | typeof CHAT_KIND;
+
 /** `usage` のうち、モデルによって課金次元を持たない 2 つ（4.1）。 */
 export type CacheDimension = 'cacheRead' | 'cacheWrite';
 
@@ -361,6 +387,15 @@ export async function recordGeneration(
      * エッジの版が黙って入る——#649 が直したのはまさにその形である。
      */
     readonly promptVersion: number | null;
+    /**
+     * 行の種別（`generations.kind`）。**省くと生成（{@link GENERATION_KIND}）になる。**
+     *
+     * **相談（5.16）だけがここへ {@link CHAT_KIND} を渡す。** 既定を生成にしてあるのは、
+     * **この列より前から在る呼び出し元が 1 つ残らず生成だから**である（相談は存在しなかった）。
+     * 新しい種別を足す人は、渡し忘れると生成として数えられることになる——**日次枠
+     * （確定25）へ黙って入るのはそちら側なので、足す側が気づく。**
+     */
+    readonly kind?: LedgerKind;
   },
   now: number = Math.floor(Date.now() / 1000),
   options: RecordGenerationOptions = {},
@@ -401,8 +436,8 @@ export async function recordGeneration(
     `insert into generations
        (id, game_id, user_id, prompt, model, effort,
         input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens,
-        cost_jpy, succeeded, created_at, prompt_version)
-     values (?, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)${conflictClause}`,
+        cost_jpy, succeeded, created_at, prompt_version, kind)
+     values (?, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)${conflictClause}`,
   )
     .bind(
       id,
@@ -425,6 +460,10 @@ export async function recordGeneration(
       succeeded ? 1 : 0,
       now,
       entry.promptVersion,
+      // **既定は生成である**（`migrations/0049_chat.sql` の列の既定と同じ値）。
+      // 明示して書くのは、列の既定に頼ると「この関数が種別を決めている」ことが
+      // 呼び出し側から読めなくなるためである。
+      entry.kind ?? GENERATION_KIND,
     )
     .run();
 

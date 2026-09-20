@@ -620,6 +620,33 @@ output "avatar_invoke_resources" {
   value       = local.avatar_invoke_resources
 }
 
+output "chat_function_name" {
+  description = <<-EOT
+    相談の関数の名前（#695 / 仕様 5.16）。**この値の正本は terraform/chat-function.tf の
+    local.chat_function_name であり、wrangler.toml の CHAT_FUNCTION_NAME はその写しである**
+    （突き合わせは scripts/check-chat-copies.sh）。
+  EOT
+  value       = local.chat_function_name
+}
+
+output "chat_function_log_group" {
+  description = "相談の関数のロググループ。Guardrail の遮断と Bedrock の失敗はここに出る。"
+  value       = aws_cloudwatch_log_group.chat.name
+}
+
+output "chat_invoke_actions" {
+  description = "エッジからこの関数を呼ぶために足した動作。**1 つだけである。**"
+  value       = local.chat_invoke_actions
+}
+
+output "chat_invoke_resources" {
+  description = <<-EOT
+    エッジからの呼び出しを許す対象。**この関数 1 つだけである。**
+    許可は terraform/build-invoker.tf ではなく terraform/chat-function.tf が持つ。
+  EOT
+  value       = local.chat_invoke_resources
+}
+
 output "ogp_function_name" {
   description = <<-EOT
     OGP 撮影関数の名前。**この値の正本は terraform/ogp-function.tf の

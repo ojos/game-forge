@@ -52,7 +52,7 @@ export AWS_PAGER=""
 # エスケープ文字そのもの（GNU sed の `\x1B` に頼らないため。下記 synopsis_of）。
 ESC="$(printf '\033')"
 
-TARGETS=(scripts/deploy-orchestrator.sh scripts/deploy-avatar.sh)
+TARGETS=(scripts/deploy-orchestrator.sh scripts/deploy-avatar.sh scripts/deploy-chat.sh)
 if [[ "${CHECK_AWS_ALL:-}" == "1" ]]; then
   mapfile -t TARGETS < <(find scripts -maxdepth 1 -name '*.sh' | sort)
 fi

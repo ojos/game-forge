@@ -90,6 +90,15 @@ export const UNBOUNDED_LOOP_FORMS: readonly UnboundedLoopForm[] = [
   },
 ];
 
+/**
+ * 繰り返しの条件として読む字句の上限。
+ *
+ * **実際の条件はこれよりはるかに短い**（`for i := 0; i < len(g.enemies); i++` で 15 字句
+ * 程度）。上限を置くのは、`for` だけが並んだソースで探索が毎回終端まで走るのを防ぐため
+ * である。超えたものは「分からない」＝**通す**（この検査の既定の向き）。
+ */
+const MAX_LOOP_HEADER_TOKENS = 256;
+
 /** 仕様書 6.1 のこの表を切り出すときの見出し。仕様書側を変えたらこちらも変える。 */
 export const UNBOUNDED_LOOP_SECTION_HEADING = '#### 終了条件を持たない繰り返し';
 
@@ -102,10 +111,25 @@ export const UNBOUNDED_LOOP_SECTION_HEADING = '#### 終了条件を持たない�
  *
  * - `break` / `return` / `goto`: 繰り返しを出る経路そのもの
  * - `panic`: 遊びは壊れるが、フレームは返る（回り続けない）
- * - `select` と `<-`: チャネルの待ちで**止まる**形。これは CPU を回す形ではない
- *   （この票が止めるのは「主スレッドを明け渡さないまま回り続ける」形である）
+ * - `select`: チャネルの待ちで**止まる**形。これは CPU を回す形ではない
+ *   （この票が止めるのは「主スレッドを明け渡さないまま回り続ける」形である）。
+ *   受信の `<-` も同じ理由で数えるが、**綴りだけでは比較と見分けられない**ので
+ *   {@link isChannelReceive} が位置まで見る
  */
 const CONTROL_RETURNING_KEYWORDS: readonly string[] = ['break', 'return', 'goto', 'panic', 'select'];
+
+/**
+ * Go の予約語。**識別子と区別するためだけに持つ。**
+ *
+ * 使うのは {@link endsOperand} で、「直前の字句が値の終わりか」を判定する。
+ * `case <-ch:` の `case` は識別子の綴りをしているが**値ではない**ので、
+ * これを値の終わりと読むと受信を比較と読み違える。
+ */
+const GO_KEYWORDS: ReadonlySet<string> = new Set([
+  'break', 'case', 'chan', 'const', 'continue', 'default', 'defer', 'else',
+  'fallthrough', 'for', 'func', 'go', 'goto', 'if', 'import', 'interface',
+  'map', 'package', 'range', 'return', 'select', 'struct', 'switch', 'type', 'var',
+]);
 
 /**
  * ソース全体から、終了条件を持たない繰り返しを探す（#730）。
@@ -124,6 +148,12 @@ export function findUnboundedLoops(source: string): readonly string[] {
   }
 
   const { tokens } = scanned;
+  // **本体は数え直さない**（PR #734 の Copilot の指摘）。繰り返しごとに本体を端まで
+  // 走ると、入れ子が深いソースで走査が二乗になる。**この検査はエッジ（Workers）でも
+  // 走る**ので、生成物の書き方 1 つで CPU 時間が跳ねる形を持たない。前処理を
+  // 1 パスずつ置き、判定は添字の引き算にする。
+  const closingBrace = mapClosingBraces(tokens);
+  const exitCounts = countControlReturningTokens(tokens);
   const found: string[] = [];
 
   for (let index = 0; index < tokens.length; index += 1) {
@@ -136,7 +166,8 @@ export function findUnboundedLoops(source: string): readonly string[] {
 
     const header = readLoopHeader(tokens, index + 1);
     if (header === null) {
-      // 本体の `{` が来ないまま終端。**読み取れていないので、何も言わない。**
+      // 本体の `{` が来ないまま終端した、あるいは条件が長すぎる。
+      // **読み取れていないので、何も言わない。**
       continue;
     }
 
@@ -146,8 +177,10 @@ export function findUnboundedLoops(source: string): readonly string[] {
     }
 
     // **ここまでで「条件が無いか、定数 true」である。** 本体に制御を返す経路が
-    // あれば通す（終了条件を持っている）。
-    if (hasControlReturningToken(tokens, header.braceIndex)) {
+    // あれば通す（終了条件を持っている）。**閉じ括弧が無いときは終端までを本体と
+    // みなす**（読み取れていないソースで拒否を増やさない）。
+    const bodyEnd = closingBrace.get(header.braceIndex) ?? tokens.length;
+    if (exitCounts[bodyEnd]! - exitCounts[header.braceIndex]! > 0) {
       continue;
     }
 
@@ -160,6 +193,57 @@ export function findUnboundedLoops(source: string): readonly string[] {
 }
 
 /**
+ * `{` の位置から、対応する `}` の位置への対応表を 1 パスで作る。
+ *
+ * **字句として数えるので、コメントと文字列の中の括弧は数えない**（`scanTokens` が
+ * 落としている）。**対応が取れない `{` は表に入らない**——呼び出し側が終端までを
+ * 本体とみなす。
+ *
+ * @param tokens 字句の列
+ * @returns `{` の位置 → 対応する `}` の位置
+ */
+function mapClosingBraces(tokens: readonly GoToken[]): ReadonlyMap<number, number> {
+  const closing = new Map<number, number>();
+  const open: number[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const value = tokens[index]!.value;
+    if (value === '{') {
+      open.push(index);
+      continue;
+    }
+    if (value === '}') {
+      const start = open.pop();
+      if (start !== undefined) {
+        closing.set(start, index);
+      }
+    }
+  }
+  return closing;
+}
+
+/**
+ * 「制御を返しうる字句」の累積個数を 1 パスで数える。
+ *
+ * 返すのは長さ `tokens.length + 1` の配列で、`counts[i]` は `tokens[0..i)` に現れた
+ * 個数である。**範囲の判定は引き算 1 回で済む。**
+ *
+ * @param tokens 字句の列
+ * @returns 累積個数
+ */
+function countControlReturningTokens(tokens: readonly GoToken[]): readonly number[] {
+  const counts: number[] = new Array<number>(tokens.length + 1);
+  counts[0] = 0;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const isExit =
+      (token.kind === 'ident' && CONTROL_RETURNING_KEYWORDS.includes(token.value)) ||
+      isChannelReceive(tokens, index);
+    counts[index + 1] = counts[index]! + (isExit ? 1 : 0);
+  }
+  return counts;
+}
+
+/**
  * 繰り返しの先頭から、本体を開く `{` の位置を探す。
  *
  * **括弧と角括弧の入れ子を数える。** `for _, v := range map[string]int{…}` のように
@@ -167,16 +251,21 @@ export function findUnboundedLoops(source: string): readonly string[] {
  * ただし**その形はどちらにせよ {@link classifyCondition} が「分からない」を返す**ので、
  * ここで取り違えても拒否には至らない（通す側へ倒れる）。
  *
+ * **読む長さに上限を置く**（{@link MAX_LOOP_HEADER_TOKENS}）。`for` を並べただけの
+ * ソースでは、どの `for` からも `{` が遠く、**探索が毎回終端まで走る。** 実際の条件は
+ * 短いので、超えたものは「分からない」として**通す側へ倒す。**
+ *
  * @param tokens 字句の列
  * @param start `for` の次の位置
- * @returns 本体を開く `{` の位置。見つからなければ null
+ * @returns 本体を開く `{` の位置。見つからなければ（上限を超えたときも）null
  */
 function readLoopHeader(
   tokens: readonly GoToken[],
   start: number,
 ): { readonly braceIndex: number } | null {
   let depth = 0;
-  for (let index = start; index < tokens.length; index += 1) {
+  const limit = Math.min(tokens.length, start + MAX_LOOP_HEADER_TOKENS);
+  for (let index = start; index < limit; index += 1) {
     const token = tokens[index]!;
     if (token.value === '(' || token.value === '[') {
       depth += 1;
@@ -217,77 +306,99 @@ function classifyCondition(condition: readonly GoToken[]): string | null {
  * `&&` や `==` まで畳み始めると、定数の畳み込みを自前で持つことになり、**間違えた
  * ぶんが正当な作品の拒否**になって現れる（モジュール冒頭）。
  *
+ * **再帰にしない**（PR #734 の Copilot の指摘）。`!` と括弧は生成物が好きなだけ
+ * 重ねられるので、再帰で剥がすと**深さが生成物の綴り次第**になる。外側から順に
+ * 剥がす反復にして、深さを持たない形にする。
+ *
  * @param tokens 条件の字句
  * @returns 定数として読めた真偽値、読めなければ null
  */
 function evaluateConstantBool(tokens: readonly GoToken[]): boolean | null {
-  if (tokens.length === 0) {
-    return null;
-  }
+  let start = 0;
+  let end = tokens.length;
+  let negations = 0;
 
-  const [head, ...rest] = tokens;
-  if (head!.value === '!') {
-    const inner = evaluateConstantBool(rest);
-    return inner === null ? null : !inner;
-  }
-
-  if (head!.value === '(') {
-    // 対応する `)` が末尾にある形だけを畳む（`(true) && x` のような形は畳まない）。
-    if (tokens[tokens.length - 1]!.value !== ')') {
+  for (;;) {
+    if (start >= end) {
       return null;
     }
-    return evaluateConstantBool(tokens.slice(1, -1));
+    if (tokens[start]!.value === '!') {
+      negations += 1;
+      start += 1;
+      continue;
+    }
+    // 括弧は、**末尾が閉じ括弧である形だけ**を剥がす（`(true) && x` は剥がさない。
+    // 剥がすと `true && x` になり、定数として読めてしまう）。
+    if (tokens[start]!.value === '(' && tokens[end - 1]!.value === ')') {
+      start += 1;
+      end -= 1;
+      continue;
+    }
+    break;
   }
 
-  if (rest.length > 0) {
+  if (end - start !== 1) {
     return null;
   }
-  if (head!.kind !== 'ident') {
+  const token = tokens[start]!;
+  if (token.kind !== 'ident') {
     return null;
   }
-  if (head!.value === 'true') {
-    return true;
+  const literal = token.value === 'true' ? true : token.value === 'false' ? false : null;
+  if (literal === null) {
+    return null;
   }
-  return head!.value === 'false' ? false : null;
+  return negations % 2 === 0 ? literal : !literal;
 }
 
 /**
- * 繰り返しの本体に、制御を返しうる字句があるか。
+ * その位置がチャネルの**受信**（`<-ch`）かどうか。
  *
- * **本体は `{` から対応する `}` まで**で、字句として数えるので**コメントと文字列の中の
- * 括弧は数えない**（`scanTokens` が落としている）。閉じ括弧が来ないまま終端したときは、
- * **そこまでを本体とみなす**——読み取れていないソースで拒否を増やさない。
+ * **`<` と `-` が並んでいても受信とは限らない**（PR #734 の Copilot の指摘）。
+ * `if x < -y` は**比較と単項マイナス**で、`scanTokens` はこれも `<` と `-` の 2 字句
+ * として返す。並びだけで数えると、**出る経路も待ちも持たない `for {}` が
+ * 「チャネルを待っている」として通り抜ける。**
+ *
+ * **受信は前置である。** したがって、直前の字句が「値の終わり」でないときだけ
+ * 受信とみなす（`<-ch` / `= <-ch` / `case <-ch`）。
+ *
+ * **送信（`ch <- v`）は数えない。** 綴りの上では `x < -y` と区別が付かず、
+ * **区別できない側は通さない**（数えれば、比較を書いただけの `for {}` が通り抜ける）。
+ * 送信だけで待つ繰り返しは拒否されるが、その形は**仕様 7.2 に書いた受け入れの逆側**
+ * ——**主スレッドを返さないことに変わりはない。**
  *
  * @param tokens 字句の列
- * @param braceIndex 本体を開く `{` の位置
- * @returns 制御を返しうる字句があれば true
+ * @param index `<` があるとされる位置
+ * @returns 受信なら true
  */
-function hasControlReturningToken(
-  tokens: readonly GoToken[],
-  braceIndex: number,
-): boolean {
-  let depth = 0;
-  for (let index = braceIndex; index < tokens.length; index += 1) {
-    const token = tokens[index]!;
-    if (token.value === '{') {
-      depth += 1;
-      continue;
-    }
-    if (token.value === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return false;
-      }
-      continue;
-    }
-    if (token.kind === 'ident' && CONTROL_RETURNING_KEYWORDS.includes(token.value)) {
-      return true;
-    }
-    // チャネルの受信（`<-`）。`scanTokens` は `<` と `-` を別々の字句として返すので、
-    // 2 つ並びで見る。**送信（`ch <- v`）も同じ綴りで、どちらも待ちが入る。**
-    if (token.value === '<' && tokens[index + 1]?.value === '-') {
-      return true;
-    }
+function isChannelReceive(tokens: readonly GoToken[], index: number): boolean {
+  if (tokens[index]!.value !== '<' || tokens[index + 1]?.value !== '-') {
+    return false;
   }
-  return false;
+  const previous = tokens[index - 1];
+  return previous === undefined || !endsOperand(previous);
+}
+
+/**
+ * その字句が「値の終わり」かどうか（`<` が比較として置かれうる位置か）。
+ *
+ * 値の終わりになるのは、**識別子（予約語を除く）・文字列・ルーン・数字・閉じ括弧**
+ * である。`case` や `return` は識別子の綴りをしているが値ではない（{@link GO_KEYWORDS}）。
+ *
+ * **数字は 1 文字で見て足りる。** `scanTokens` は数値リテラルをまとめず 1 文字ずつ返す
+ * （`10` は `other:1` と `other:0`）ので、`<` の直前は必ず 1 文字の数字になる。
+ * PR #734 の第二意見は「2 桁以上の数値リテラルで受信と誤判定する」と報告したが、
+ * **字句を実測すると成り立たなかった**（`test/go-loops.test.ts` に回帰として置いた）。
+ *
+ * @param token 直前の字句
+ * @returns 値の終わりなら true
+ */
+function endsOperand(token: GoToken): boolean {
+  if (token.kind === 'ident') {
+    return !GO_KEYWORDS.has(token.value);
+  }
+  if (token.kind === 'string' || token.kind === 'rune') {
+    return true;
+  }
+  return token.value === ')' || token.value === ']' || token.value === '}' || /^[0-9]$/u.test(token.value);
 }

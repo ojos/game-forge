@@ -77,6 +77,31 @@ describe('落とす形（acceptance 1）', () => {
     expect(findUnboundedLoops(update(body))).toEqual([FORM_NO_CONDITION]);
   });
 
+  it('比較と単項マイナスを、チャネルの受信と読み違えない（PR #734 の指摘）', () => {
+    // **`x < -y` は `<` と `-` の 2 字句である。** 並びだけで受信とみなすと、
+    // **出る経路も待ちも持たない `for {}` が通り抜ける。**
+    const body = '\tfor {\n\t\tif g.frame < -g.limit {\n\t\t\tg.frame++\n\t\t}\n\t}';
+    expect(findUnboundedLoops(update(body))).toEqual([FORM_NO_CONDITION]);
+  });
+
+  it('数値リテラルの左辺でも読み違えない（第二意見の指摘。実測で否定）', () => {
+    // **`scanTokens` は数字を 1 文字ずつ返す**（`10` は `other:1` と `other:0`）。
+    // したがって `<` の直前は必ず 1 文字の数字で、`endsOperand` が値の終わりと読む。
+    // 第二意見は「2 桁以上の数値リテラルで受信と誤判定する」と報告したが、
+    // **字句を実測すると成り立たない。** 浮動小数点と 16 進も同じ形で確かめる。
+    for (const left of ['10', '100', '3.14', '0x1F']) {
+      const body = `\tfor {\n\t\tif ${left} < -g.limit {\n\t\t\tg.frame++\n\t\t}\n\t}`;
+      expect(findUnboundedLoops(update(body)), left).toEqual([FORM_NO_CONDITION]);
+    }
+  });
+
+  it('送信だけで待つ形は数えない（比較と区別が付かない側は通さない）', () => {
+    // 綴りの上で `ch <- v` と `x < -y` は見分けられない。**見分けられない側を
+    // 「待っている」と読むと、比較を書いただけの `for {}` が通り抜ける。**
+    const body = '\tfor {\n\t\tg.ch <- 1\n\t}';
+    expect(findUnboundedLoops(update(body))).toEqual([FORM_NO_CONDITION]);
+  });
+
   it('同じ形が何度出ても 1 回だけ返す（出現順）', () => {
     const body = '\tfor true {\n\t}\n\tfor {\n\t}\n\tfor true {\n\t}';
     expect(findUnboundedLoops(update(body))).toEqual([FORM_CONSTANT_TRUE, FORM_NO_CONDITION]);
@@ -117,8 +142,9 @@ describe('落とさない形（acceptance 2。誤検知は生成枠を 1 つ奪�
   it('チャネルの受信で止まる形は落とさない', () => {
     // **止まる形であって、回り続ける形ではない**（この票が止めるのは主スレッドを
     // 明け渡さないまま回る形である）。
-    const body = '\tfor {\n\t\t<-g.ch\n\t}';
-    expect(findUnboundedLoops(update(body))).toEqual([]);
+    for (const body of ['\tfor {\n\t\t<-g.ch\n\t}', '\tfor {\n\t\tv := <-g.ch\n\t\tg.frame = v\n\t}']) {
+      expect(findUnboundedLoops(update(body)), body).toEqual([]);
+    }
   });
 
   it('コメントと文字列リテラルの中の `for {}` を拾わない', () => {
@@ -134,6 +160,41 @@ describe('落とさない形（acceptance 2。誤検知は生成枠を 1 つ奪�
   });
 });
 
+describe('生成物の綴りで壊れない（PR #734 の指摘）', () => {
+  it('`!` を重ねた条件を、深さに関係なく同じ規則で畳む', () => {
+    // **生成物は `!` をいくらでも重ねられる。** 再帰で剥がすと深さが綴り次第になるので、
+    // 外側から順に剥がす反復にしてある（PR #734 の指摘）。
+    // **偶数個なら元の値のまま、奇数個で裏返る。**
+    const even = '!'.repeat(200);
+    expect(findUnboundedLoops(update(`\tfor ${even}true {\n\t}`))).toEqual([FORM_CONSTANT_TRUE]);
+    expect(findUnboundedLoops(update(`\tfor ${even}false {\n\t}`))).toEqual([]);
+    const odd = '!'.repeat(201);
+    expect(findUnboundedLoops(update(`\tfor ${odd}false {\n\t}`))).toEqual([FORM_CONSTANT_TRUE]);
+    expect(findUnboundedLoops(update(`\tfor ${odd}true {\n\t}`))).toEqual([]);
+  });
+
+  it('条件が上限より長ければ、落ちずに通す', () => {
+    // **落ちない**こと（例外にしない）と、**通す**ことの両方を見る。上限を超えたものは
+    // 「分からない」であり、この検査の既定の向きは通す側である。
+    const tooMany = '!'.repeat(5000);
+    expect(findUnboundedLoops(update(`\tfor ${tooMany}true {\n\t}`))).toEqual([]);
+  });
+
+  it('入れ子が深くても本体を数え直さない（走査が二乗にならない）', () => {
+    // **時間そのものは測らない**（機械の速さで揺れる）。数え直す実装では現実的な
+    // 時間で終わらない大きさを通し、**結果が正しいこと**を見る。
+    const depth = 2000;
+    const body = `${'\tfor {\n'.repeat(depth)}\tg.frame++\n${'\t}\n'.repeat(depth)}`;
+    expect(findUnboundedLoops(update(body))).toEqual([FORM_NO_CONDITION]);
+  });
+
+  it('条件が長すぎる繰り返しは通す（読む長さに上限がある）', () => {
+    // 上限を超えたものは「分からない」＝通す（この検査の既定の向き）。
+    const long = Array.from({ length: 300 }, (_, index) => `f${index}() &&`).join(' ');
+    expect(findUnboundedLoops(update(`\tfor ${long} true {\n\t}`))).toEqual([]);
+  });
+});
+
 describe('隔離ビルドのサンプル（acceptance 3）', () => {
   it('`docker/isolated-build/sample/ebitengine.go` を落とさない', () => {
     // **実際にコンパイルが通っているサンプル**であり、プロンプトが教えている書き方の
@@ -145,14 +206,14 @@ describe('隔離ビルドのサンプル（acceptance 3）', () => {
 
 describe('仕様書 6.1 との機械照合（acceptance 4）', () => {
   /**
-   * 仕様書 6.1 の表から、拒否する形の名前を取り出す。
+   * 仕様書 6.1 の表から、拒否する形の**行**を取り出す。
    *
    * 節の終わりは**見出しなら深さを問わず**とする（`#####` の小見出しを足しても、
    * 別の表を巻き込まない）。
    *
-   * @returns 仕様書に書かれている形の名前
+   * @returns 仕様書に書かれている形（名前と理由）
    */
-  function formsFromSpec(): string[] {
+  function formsFromSpec(): { readonly name: string; readonly reason: string }[] {
     const spec = env.TEST_PRODUCT_SPEC;
     const start = spec.indexOf(UNBOUNDED_LOOP_SECTION_HEADING);
     expect(start, `仕様書に「${UNBOUNDED_LOOP_SECTION_HEADING}」の節がありません`).toBeGreaterThan(
@@ -161,12 +222,19 @@ describe('仕様書 6.1 との機械照合（acceptance 4）', () => {
     const rest = spec.slice(start + UNBOUNDED_LOOP_SECTION_HEADING.length);
     const end = rest.search(/\n#{1,6} /u);
     const section = end === -1 ? rest : rest.slice(0, end);
-    return [...section.matchAll(/^\| `([^`]+)` \|/gmu)].map((matched) => matched[1]!);
+    // **2 列とも取る。** 1 列目だけを比べると、**理由（2 列目）が片側だけ変わっても
+    // 通る**（PR #734 の Copilot の指摘）。表はコード側が正なので、行まるごと見る。
+    return [...section.matchAll(/^\| `([^`]+)` \| ([^|]+?) \|$/gmu)].map((matched) => ({
+      name: matched[1]!,
+      reason: matched[2]!,
+    }));
   }
 
-  it('仕様書の表がコード側と一致する', () => {
+  it('仕様書の表がコード側と一致する（名前も理由も）', () => {
     // 一覧の複製は必ず古くなる。**片方だけ変えると赤になる**ことが、この節の狙いである。
-    expect(formsFromSpec()).toEqual(UNBOUNDED_LOOP_FORMS.map((form) => form.name));
+    expect(formsFromSpec()).toEqual(
+      UNBOUNDED_LOOP_FORMS.map((form) => ({ name: form.name, reason: form.reason })),
+    );
   });
 
   it('仕様書の節が空でない', () => {

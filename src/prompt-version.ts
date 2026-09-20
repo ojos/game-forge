@@ -64,7 +64,7 @@ export const PROMPT_VERSION_HISTORY: readonly { readonly version: number; readon
     { version: 2, sha256: '601526211a92e6d7dcee1b4d1b85946288ca20dcdcd3263c22cfc77bc70c71e7' },
     { version: 3, sha256: 'ca8497a58189a9561df1f57418c78bc16ec2bb0541dbf243ef219db6353ac3f0' },
     { version: 4, sha256: '0aef68ff5f5589fc435b2c042fabbb7edab959f5e8ae8e9dc90d4dfc9dcbe003' },
-    { version: 5, sha256: 'e3d12dfb57abbb3335ad513d0ac6b90be681555752411f51c091a57110b7e368' },
+    { version: 5, sha256: 'd309cc06a917830c64cea35b79a9e65a18a934b51fb471c77982c1438e8c97cd' },
   ];
 
 /**

@@ -31,6 +31,23 @@ output "repository_visibility" {
   value       = github_repository.this.visibility
 }
 
+output "repository_description" {
+  description = <<-EOT
+    リポジトリの説明文。外部層の検査が実状態と突き合わせる（#714）。
+    **出す理由は、画面から書き換えられても誰も気づかなかったこと**である——可視性と既定ブランチは
+    突き合わせていたが、説明文は見ていなかった。
+  EOT
+  value       = github_repository.this.description
+}
+
+output "repository_homepage_url" {
+  description = <<-EOT
+    公開面の入口。外部層の検査が実状態と突き合わせる（#714）。
+    値は local.app_host から作るので、ホスト名を動かせばここも追随する（terraform/main.tf）。
+  EOT
+  value       = github_repository.this.homepage_url
+}
+
 output "allowed_author_emails" {
   description = "Actions 変数 ALLOWED_AUTHOR_EMAILS の宣言値。外部層の検査が実状態と突き合わせる。"
   value       = github_actions_variable.allowed_author_emails.value

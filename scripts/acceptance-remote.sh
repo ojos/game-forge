@@ -529,7 +529,31 @@ check_repository() {
     echo "可視性が宣言と一致しません: expected=${expected_visibility} actual=${actual_visibility}"
     return 1
   fi
-  echo "repository ${full_name} exists (visibility=${actual_visibility})"
+
+  # **説明文と公開面の入口も突き合わせる**（#714）。
+  #
+  # **2026-09-20 に、どちらも画面から書き換えられたまま宣言が追いついていない状態を見つけた。**
+  # 可視性と既定ブランチは見ていたのに、この 2 つは見ていなかったので、**全体 apply を回すまで
+  # 誰も気づかなかった**（そして apply は実態を消す向きに出た）。`terraform/main.tf` は
+  # 「手動変更は宣言へ後追いで反映する」と定めており、**その追随を人の記憶に任せない。**
+  local expected_description actual_description expected_homepage actual_homepage
+  expected_description="$(tf_output repository_description)" || return 1
+  actual_description="$(gh api "repos/${full_name}" --jq '.description // ""')" || return 1
+  if [[ "$actual_description" != "$expected_description" ]]; then
+    echo "説明文が宣言と一致しません:"
+    echo "  宣言: ${expected_description}"
+    echo "  実態: ${actual_description}"
+    return 1
+  fi
+
+  expected_homepage="$(tf_output repository_homepage_url)" || return 1
+  actual_homepage="$(gh api "repos/${full_name}" --jq '.homepage // ""')" || return 1
+  if [[ "$actual_homepage" != "$expected_homepage" ]]; then
+    echo "公開面の入口が宣言と一致しません: expected=${expected_homepage} actual=${actual_homepage}"
+    return 1
+  fi
+
+  echo "repository ${full_name} exists (visibility=${actual_visibility}, homepage=${actual_homepage})"
 }
 
 ##

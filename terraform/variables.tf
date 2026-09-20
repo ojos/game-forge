@@ -30,7 +30,18 @@ variable "repository_name" {
 variable "repository_description" {
   description = "リポジトリの説明文。"
   type        = string
-  default     = "AI エージェント運用ルールとレビュー機構を備えた開発リポジトリ"
+  /**
+   * **既定値を実態に合わせた**（#714。2026-09-20）。
+   *
+   * 既定は DCB の雛形の文面（「AI エージェント運用ルールとレビュー機構を備えた開発リポジトリ」）のままで、
+   * **GitHub 側は画面から書き換えられていた。** そのため全体 apply が**実態を雛形の文面へ戻そうとしていた**
+   * （`terraform plan` が `0 to add, 1 to change, 0 to destroy`）。
+   *
+   * **`terraform/main.tf` が「手動変更は宣言へ後追いで反映する」と定めている**ので、実態を消すのではなく
+   * 宣言を合わせる。**`terraform.tfvars` ではなくここへ置く**——あちらは追跡外で、値がリポジトリから読めなくなる
+   * （説明文は環境ごとに変える値でもない）。
+   */
+  default = "プロンプト 1 行からブラウザで遊べる 2D ゲームを生成し、作品を改造（フォーク）して公開し合う UGC コミュニティ。Go（Ebitengine）→ WebAssembly、Cloudflare Pages + AWS Lambda / Bedrock 構成。"
 }
 
 variable "default_branch" {

@@ -33,8 +33,12 @@ export const CHAT_PROMPT_VERSION = 1;
 /**
  * 本文の節（順に連結する）。
  *
- * **節に分けてあるのは、`test/chat-lambda.test.ts` が 1 節ずつ見るためである**
- * （`SYSTEM_PROMPT_SECTIONS` と同じ形）。
+ * **節に分けてあるのは、差分を読みやすくするためである**（`SYSTEM_PROMPT_SECTIONS` と同じ形）。
+ * 1 節が 1 つの話題に対応するので、**どこを変えたのかが PR の差分で分かる。**
+ *
+ * **検査は節ごとではない。** `test/chat-lambda.test.ts` が見るのは、**節の数が 0 でないこと**と、
+ * **連結した本文（{@link renderChatPromptText}）に守らせたい 1 文ずつが含まれること**である
+ * ——**どの節に書くかは問わない**（話題の置き場所を動かしても、書いてありさえすれば通る）。
  */
 export const CHAT_PROMPT_SECTIONS: readonly string[] = [
   [

@@ -114,19 +114,6 @@ afterEach(async () => {
 
 describe('しきい値の機械照合（4.3 / 確定25）', () => {
   /**
-   * 仕様書から数値を拾う。
-   *
-   * **拾うのは「現行値の宣言」だけである**（`currentDeclarationsIn`）。この仕様書は
-   * 覆った前提を消さずに残す方針なので、本文には過去の値が残り続ける。**それを
-   * そのまま照合すると、値を変えた日に過去の記録が照合を落とし、いちばん安い
-   * 直しかたが「記録の文面を書き換えて逃がすこと」になる**（#284 で実際に
-   * やりかけた）。除外の理由と範囲は `src/quota.ts` にある。
-   *
-   * @param pattern 拾う形
-   * @param spec 仕様書の本文
-   * @returns 見つかった数値の配列（1 件の一致につき最初の捕獲群）
-   */
-  /**
    * 「版の履歴」の節の**直前**へ 1 行仕込む。
    *
    * **末尾へ足すと、その節ごと外れる**（#718 で `currentDeclarationsIn` が外すようになった）。
@@ -142,6 +129,19 @@ describe('しきい値の機械照合（4.3 / 確定25）', () => {
     return `${spec.slice(0, at)}\n\n${line}\n${spec.slice(at)}`;
   }
 
+  /**
+   * 仕様書から数値を拾う。
+   *
+   * **拾うのは「現行値の宣言」だけである**（`currentDeclarationsIn`）。この仕様書は
+   * 覆った前提を消さずに残す方針なので、本文には過去の値が残り続ける。**それを
+   * そのまま照合すると、値を変えた日に過去の記録が照合を落とし、いちばん安い
+   * 直しかたが「記録の文面を書き換えて逃がすこと」になる**（#284 で実際に
+   * やりかけた）。除外の理由と範囲は `src/quota.ts` にある。
+   *
+   * @param pattern 拾う形
+   * @param spec 仕様書の本文
+   * @returns 見つかった数値の配列（1 件の一致につき最初の捕獲群）
+   */
   function valuesIn(pattern: RegExp, spec: string): number[] {
     return [...currentDeclarationsIn(spec).matchAll(pattern)].map((matched) =>
       Number(matched[1]),

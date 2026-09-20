@@ -26,7 +26,7 @@
  * **既に `/works` の HTML で誰でも読める**——この決定で新しく公開される情報は 1 つも無い。
  */
 import type { ChatWorkContext } from './chat-payload.js';
-import { PUBLISHED_STATUS } from './games.js';
+import { loadForkableParent } from './fork.js';
 import { GAME_ID_PATTERN } from './work-page.js';
 import { myWorkResult } from './works-api.js';
 
@@ -135,29 +135,19 @@ export async function loadForkChatContext(
   if (!GAME_ID_PATTERN.test(gameId)) {
     return null;
   }
-  const row = await db
-    .prepare(
-      'select status, title, description, tag1, tag2, tag3 from games where id = ?',
-    )
-    .bind(gameId)
-    .first<{
-      status: string;
-      title: string | null;
-      description: string | null;
-      tag1: string | null;
-      tag2: string | null;
-      tag3: string | null;
-    }>();
-  if (row === null || row.status !== PUBLISHED_STATUS) {
+  // **可否の判定は `src/fork.ts` の `loadForkableParent` が持つ**（#727 の Copilot の指摘で
+  // 寄せた）。**ここで `status` を見直さない**——書き写すと、フォークの条件を変えた日に
+  // **相談だけが古い条件で通る。**
+  const parent = await loadForkableParent(db, gameId);
+  if (parent === null) {
     return null;
   }
-  const tags = [row.tag1, row.tag2, row.tag3].filter((tag): tag is string => typeof tag === 'string' && tag !== '');
   const base: ChatWorkContext = {
-    title: row.title ?? '',
-    // **他人の最初の指示文は出さない**（1.2.54）。選んでもいない。
+    title: parent.title,
+    // **他人の最初の指示文は出さない**（1.2.54）。正本の問い合わせも選んでいない。
     prompt: null,
-    description: row.description ?? '',
-    tags,
+    description: parent.description,
+    tags: parent.tags,
     source: null,
   };
   if (!includeSource) {
@@ -186,6 +176,20 @@ export async function loadReviseChatContext(
 ): Promise<ChatWorkContext | null> {
   const detail = await myWorkResult(env, userId, gameId, 'detail');
   if (detail.status !== 200) {
+    return null;
+  }
+  // **「自分のもの」だけでは足りない**（#727 の Copilot の指摘）。`myWorkResult` は公開済みも
+  // 失敗した行も返すが、**リフォージできるのは自作の `draft` で `generation_state = 'ready'`
+  // のものだけ**である（5.7。判定の正本は `src/revisions.ts` の `claimRevisionSlot`）。
+  // **揃えないと、開いても押した先が必ず 409 になる画面を出すことになる**（4.4 が無くそうと
+  // しているものである）。
+  const revisable = await env.DB.prepare(
+    `select 1 from games where id = ? and author_id = ? and status = 'draft'
+        and generation_state = 'ready'`,
+  )
+    .bind(gameId, userId)
+    .first<{ 1: number }>();
+  if (revisable === null) {
     return null;
   }
   const body = detail.body as { title?: unknown; prompt?: unknown };

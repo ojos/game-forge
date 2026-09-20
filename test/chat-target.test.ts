@@ -4,7 +4,8 @@ import {
   latestChatConversation,
   saveChatConversation,
 } from '../src/chat-conversation.js';
-import { renderChatSection, CHAT_TARGET_LABELS } from '../src/chat-section.js';
+import { CHAT_SCRIPT, renderChatSection, CHAT_TARGET_LABELS } from '../src/chat-section.js';
+import { loadForkableParent } from '../src/fork.js';
 import {
   CHAT_FORK_PARAM,
   CHAT_REVISE_PARAM,
@@ -13,6 +14,7 @@ import {
   chatTargetFromBody,
   chatTargetFromUrl,
   loadForkChatContext,
+  loadReviseChatContext,
 } from '../src/chat-target.js';
 import { renderGeneratePage } from '../src/generate-page.js';
 import { FORK_PATH, GENERATE_PAGE_PATH, REVISE_PATH } from '../src/paths.js';
@@ -144,6 +146,54 @@ describe('フォーク元の文脈（確定38。他人の公開作品）', () =>
 
   it('無い作品も対象にできない（区別できる応答を返さない）', async () => {
     expect(await loadForkChatContext(env.DB, GAME_B, false, async () => null)).toBeNull();
+  });
+});
+
+describe('Copilot が見つけた穴（#727）', () => {
+  it('ソースを求める操作が画面にある（#695 から無かった）', () => {
+    // **口は `includeSource` を受けていたのに、送る側がどこにも無かった**
+    // ——「作者が明示的に求めたときだけ渡す」という決定が 1 度も届いていなかった。
+    for (const kind of ['revise', 'fork'] as const) {
+      const html = renderChatSection({
+        messages: [],
+        conversationId: null,
+        target: { kind, id: GAME_A },
+      });
+      expect(html).toContain('id="chat-source"');
+    }
+    // **新規の相談には出さない**（見せる作品が無い）。
+    expect(renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET })).not.toContain(
+      'id="chat-source"',
+    );
+    // スクリプトが、チェックされたときだけ載せる。
+    expect(CHAT_SCRIPT).toContain("document.getElementById('chat-source')");
+    expect(CHAT_SCRIPT).toContain('body.includeSource = true');
+  });
+
+  it('フォーク可否の判定を書き写していない（正本は src/fork.ts）', async () => {
+    const stranger = await createUser();
+    await seedGame(GAME_A, stranger, 'published');
+    // **正本（`loadForkableParent`）と相談の読み取りが、同じ作品で同じ答えを返す。**
+    expect(await loadForkableParent(env.DB, GAME_A)).not.toBeNull();
+    expect(await loadForkChatContext(env.DB, GAME_A, false, async () => null)).not.toBeNull();
+    await env.DB.prepare("update games set status = 'draft' where id = ?").bind(GAME_A).run();
+    expect(await loadForkableParent(env.DB, GAME_A)).toBeNull();
+    expect(await loadForkChatContext(env.DB, GAME_A, false, async () => null)).toBeNull();
+  });
+
+  it('リフォージの対象は「本当に直せる作品」だけである', async () => {
+    const owner = await createUser();
+    // 公開済みの自作は、開けても `/api/revise` が 409 を返す——**画面も断る。**
+    await seedGame(GAME_A, owner, 'published');
+    expect(await loadReviseChatContext(env as Env, owner, GAME_A, false)).toBeNull();
+    // 下書きで完成しているものだけが対象。
+    await env.DB.prepare("update games set status = 'draft', generation_state = 'ready' where id = ?")
+      .bind(GAME_A)
+      .run();
+    expect(await loadReviseChatContext(env as Env, owner, GAME_A, false)).not.toBeNull();
+    // 完成していない下書きは対象にしない。
+    await env.DB.prepare("update games set generation_state = 'running' where id = ?").bind(GAME_A).run();
+    expect(await loadReviseChatContext(env as Env, owner, GAME_A, false)).toBeNull();
   });
 });
 

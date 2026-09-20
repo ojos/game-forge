@@ -158,6 +158,14 @@ export function renderChatSection(view: ChatSectionView): string {
     view.target.id === null ? '' : ` data-target-id="${escapeHtml(view.target.id)}"`
   }`;
   const labels = CHAT_TARGET_LABELS[view.target.kind] ?? CHAT_TARGET_LABELS['new']!;
+  // **ソースを見せる操作**（5.16 / 確定38「作者がその会話で明示的に求めたときだけ」）。
+  // **#695 から、この操作が画面に無かった**——口は `includeSource` を受けていたのに、
+  // **送る側がどこにも無く、決定が 1 度も届いていなかった**（#727 の Copilot の指摘）。
+  // **対象がある相談にだけ出す**（新規の相談には見せる作品が無い）。
+  const sourceToggle =
+    view.target.kind === 'new'
+      ? ''
+      : `      <label class="gf-chat-source"><input type="checkbox" id="chat-source"> いまのソースも見せて相談する（1 往復が重くなります）</label>\n`;
   // **空のときは `<ol>` の中を本当に空にする。** 改行やインデントを残すと空白のテキストノードが
   // でき、**`:empty`（`public/assets/app.css`）が成立せず余白が残る**（PR #715 の Copilot の指摘）。
   const log = view.messages.length === 0 ? '' : `\n${renderChatLog(view.messages)}\n  `;
@@ -190,7 +198,7 @@ ${messages}
       <button id="chat-send" class="gf-button gf-button-secondary" type="button">送る</button>
     </div>
     <div class="gf-chat-actions">
-      <button id="chat-clear" class="gf-button gf-button-tertiary" type="button">相談の記録を消す</button>
+${sourceToggle}      <button id="chat-clear" class="gf-button gf-button-tertiary" type="button">相談の記録を消す</button>
     </div>
   </div>
   <noscript>
@@ -332,6 +340,10 @@ export const CHAT_SCRIPT = `
     input.value = '';
     var body = { messages: history() };
     body.targetKind = section.getAttribute('data-target-kind') || 'new';
+    // **ソースは、作者がその往復で求めたときだけ載る**（5.16 / 確定38）。**毎往復ごとに読む**
+    // ——外せば次の往復からは載らない（重さが戻る）。
+    var source = document.getElementById('chat-source');
+    if (source !== null && source.checked) { body.includeSource = true; }
     var targetId = section.getAttribute('data-target-id');
     if (targetId !== null && targetId !== '') { body.targetId = targetId; }
     var id = section.getAttribute('data-conversation');

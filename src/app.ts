@@ -36,6 +36,7 @@ import { newsRoutes } from './news.js';
 import { worksListRoutes } from './works-list.js';
 import { usersPageRoutes } from './users-page.js';
 import { usersApiRoutes } from './users-api.js';
+import { chatRoutes } from './chat.js';
 import { likeRoutes } from './likes.js';
 import { playRoutes } from './plays.js';
 import { likedWorksRoutes } from './liked-works.js';
@@ -373,6 +374,8 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     ...publicWorksApiRoutes,
     // ユーザー情報を機械が読める口（#700 / 仕様 5.14）。`/api/me` は完全一致で、`/api/me/works` とは別の口。
     ...usersApiRoutes,
+    // 生成の前の相談（#695 / 仕様 5.16）。**枠も台帳も生成とは別に数える**（`kind = 'chat'`）。
+    ...chatRoutes,
     ...worksListRoutes,
     ...usersPageRoutes,
     ...myWorksRoutes,

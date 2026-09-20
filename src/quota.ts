@@ -33,7 +33,7 @@
  * 同じ性質の情報になる。**送信の実装は `src/mail/cost-alert.ts`** で、この層からは
  * {@link monthlyCostWarning} を読むだけである（**費用を数え直さない**）。
  */
-import { monthlyCostTotals } from './cost-ledger.js';
+import { GENERATION_KIND, monthlyCostTotals } from './cost-ledger.js';
 
 /**
  * 月次上限（円）。**4.3 の「上限額: 2万円/月」**（確定6 / #284 で改訂）。
@@ -480,6 +480,17 @@ export function jstDayRange(at: number): {
  * いるのは、**失敗した呼び出しにも課金が発生している**からで、枠を数えるときだけ
  * 成功に限ると、失敗を繰り返すだけで枠が減らない経路ができる。
  *
+ * **数えるのは生成の行だけである**（`kind = 'generation'`。5.16 / `migrations/0049_chat.sql`）。
+ * 相談（5.16）も同じ表に 1 行を積むが、**確定25 の日次 10 回は 1 回も減らさない**と決めた
+ * ——相談 1 往復は 約 2.2 円で、生成 1 回（実測 ¥22.41）と同じ 1 回として数えると
+ * **相談するほど作れなくなり**、「相談してから生成する」という #695 の目的に逆行する。
+ * **相談には別の蓋がある**（1 人 1 日 30,000 トークン。`src/chat-quota.ts`）。
+ *
+ * **`kind <> 'chat'` ではなく `kind = 'generation'` で絞る。** 種別が増えた日に、
+ * 書き忘れた側が黙って生成枠へ入るより、**入らないほうが安全である**（枠は費用ガードの
+ * 最後の蓋であって、多めに数えるほうが害が小さい——のではなく、**新しい種別が黙って
+ * 生成枠を食うほうが、利用者から見て説明できない**）。
+ *
  * @param env バインディングと環境変数
  * @param userId 数える利用者
  * @param at 基準時刻（UNIX 秒）
@@ -491,13 +502,14 @@ export async function dailyCallCount(
   at: number,
 ): Promise<{ readonly calls: number; readonly resetsAt: number }> {
   const day = jstDayRange(at);
-  // 索引は `generations(user_id, created_at)`（`migrations/0005_*`）。
+  // 索引は `generations(user_id, created_at)`（`migrations/0005_*`）。`kind` は
+  // 絞った残りを弾くだけなので、索引を足していない（`migrations/0049_chat.sql`）。
   const row = await env.DB.prepare(
     `select count(*) as calls
        from generations
-      where user_id = ? and created_at >= ? and created_at < ?`,
+      where user_id = ? and created_at >= ? and created_at < ? and kind = ?`,
   )
-    .bind(userId, day.fromSeconds, day.toSeconds)
+    .bind(userId, day.fromSeconds, day.toSeconds, GENERATION_KIND)
     .first<{ calls: number }>();
   return { calls: row?.calls ?? 0, resetsAt: day.toSeconds };
 }

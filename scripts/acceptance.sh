@@ -257,6 +257,18 @@ else
   echo "[acceptance] (avatar) skip: terraform/avatar-function.tf not found"
 fi
 
+# 相談の「写し」の機械照合（#695 / shared-ai-rules 12 章）。
+#
+# **前寄りに置く**（sed だけで数 ms）。外すと、関数名のずれが黙って本番へ出て、相談が
+# すべて 500 になる（判定と理由は scripts/check-chat-copies.sh の冒頭）。
+if [[ -f terraform/chat-function.tf ]]; then
+  echo "[acceptance] (chat) scripts/check-chat-copies.sh"
+  bash scripts/check-chat-copies.sh
+  ran_any=1
+else
+  echo "[acceptance] (chat) skip: terraform/chat-function.tf not found"
+fi
+
 # 検査が読む terraform output が、宣言側に実在すること（#160 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く。** grep 数本で終わる。外すと、宣言側で output を改名・削除したときに

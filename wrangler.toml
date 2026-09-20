@@ -132,6 +132,7 @@ OGP_FUNCTION_NAME = "game-forge-ogp"
 # **資格情報を入れなければ、アイコンの設定だけが「保存できませんでした」で止まる**
 # （src/avatar.ts の convertAvatar が設定不足をログへ残す）。
 AVATAR_FUNCTION_NAME = "game-forge-avatar"
+CHAT_FUNCTION_NAME = "game-forge-chat"
 # 開発用の診断経路（`/__dev/*`）を登録するかどうか（#89）。
 #
 # **`enabled` はここ（トップレベル＝ローカル）にしか無い。** 配備される 2 つの環境は
@@ -238,6 +239,7 @@ BUILD_FUNCTION_NAME = "game-forge-build"
 ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
 OGP_FUNCTION_NAME = "game-forge-ogp"
 AVATAR_FUNCTION_NAME = "game-forge-avatar"
+CHAT_FUNCTION_NAME = "game-forge-chat"
 DEV_ROUTES = "disabled"
 
 [env.preview.vars]
@@ -256,6 +258,7 @@ BUILD_FUNCTION_NAME = "game-forge-build"
 ORCHESTRATOR_FUNCTION_NAME = "game-forge-orchestrator"
 OGP_FUNCTION_NAME = "game-forge-ogp"
 AVATAR_FUNCTION_NAME = "game-forge-avatar"
+CHAT_FUNCTION_NAME = "game-forge-chat"
 DEV_ROUTES = "disabled"
 
 # 本番の D1。**ローカル用とは別のデータベース**である（9.1 / 確定20: クラウド環境は

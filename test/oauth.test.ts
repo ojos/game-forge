@@ -780,6 +780,16 @@ describe('接続中のアプリ（/account/apps）', () => {
     expect(after).toContain('接続中のアプリはありません');
   });
 
+  it('接続が 1 件も無いときは、つなぎ方の案内（FAQ へのリンク）を出す', async () => {
+    const user = await seedUser();
+    const response = await call('GET', ACCOUNT_APPS_PATH, { headers: { cookie: user.cookie } });
+    expect(response.status).toBe(200);
+    const page = await response.text();
+    expect(page).toContain('接続中のアプリはありません');
+    expect(page).toContain('href="/faq#ai-connect"');
+    expect(page).toContain('MCP に対応した AI のアプリ');
+  });
+
   it('他人の許可は解除できない（not-found で戻し、許可もトークンも残る）', async () => {
     const owner = await seedUser();
     const attacker = await seedUser();

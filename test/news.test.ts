@@ -1,5 +1,7 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { FAQ_ENTRIES } from '../src/faq.js';
+import { OAUTH_SCOPE_LABELS } from '../src/oauth-paths.js';
 import { createAppRoutes, handleAppRequest } from '../src/app.js';
 import { MAX_GENERATION_ATTEMPTS } from '../src/build-retry.js';
 import { HOME_PATH } from '../src/home.js';
@@ -153,6 +155,34 @@ describe('記事の定義（src/news-articles.ts）', () => {
   it('分類にはすべて見出しがある', () => {
     for (const item of NEWS_ARTICLES) {
       expect(NEWS_CATEGORY_LABELS[item.category as NewsCategory], item.id).toBeTruthy();
+    }
+  });
+});
+
+describe('AI からの接続の記事が、案内先と一致する（#696）', () => {
+  /** @returns 記事の全段落をつないだ文字列 */
+  function aiConnectArticleText(): string {
+    const found = NEWS_ARTICLES.find((item) => item.id === 'ai-connect');
+    expect(found, 'AI からの接続の記事').toBeDefined();
+    return found!.body.join('\n');
+  }
+
+  it('引いている FAQ の見出しが、実在する項目の見出しと一字一句同じ', () => {
+    const entry = FAQ_ENTRIES.find((item) => item.id === 'ai-connect');
+    expect(entry, 'FAQ の ai-connect').toBeDefined();
+    expect(aiConnectArticleText()).toContain(`「${entry!.question}」`);
+  });
+
+  it('許可の範囲の言い回しが、同意画面の表示名と一致する', () => {
+    const label = OAUTH_SCOPE_LABELS['works:generate'];
+    expect(label, '同意画面の scope の表示名').toBeDefined();
+    expect(aiConnectArticleText()).toContain(`「${label!.name}」を外すと`);
+  });
+
+  it('できないこと（公開・削除・退会・他人の作品）を書いている', () => {
+    const text = aiConnectArticleText();
+    for (const phrase of ['公開・削除', '退会はできません', 'ほかの方の作品も読めません']) {
+      expect(text, phrase).toContain(phrase);
     }
   });
 });

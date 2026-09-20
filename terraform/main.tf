@@ -21,6 +21,18 @@ resource "github_repository" "this" {
   description = var.repository_description
   visibility  = "public"
 
+  /**
+   * 公開面の入口（#714。2026-09-20）。
+   *
+   * **宣言が持っていなかった**ので、全体 apply が GitHub 側で設定済みの値を消そうとしていた
+   * （`homepage_url = "https://app.game-forge.ojos.jp" -> null`）。
+   *
+   * **値を決め打ちしない。** `local.app_host`（terraform/dns.tf）から作るので、**ホスト名を動かした日に
+   * ここだけ古くなることがない**——`terraform/orchestrator.tf` の `CALLBACK_BASE_URL` と同じ出どころで、
+   * `wrangler.toml` の `APP_HOST` とのずれは外部層の検査が見ている。
+   */
+  homepage_url = "https://${local.app_host}"
+
   auto_init = true
 
   has_issues   = true

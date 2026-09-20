@@ -23,7 +23,7 @@
  * ```text
  * 段1 掴む   条件付き UPDATE 1 文   … 退会の開始・アイコンの排他・断る条件
  * 段2 R2     アイコンの現行と avatars/history/<id>/ の一覧をすべて消す
- * 段3 確定   1 batch・14 文         … 匿名化・履歴・ハンドル・台帳・作品の指示文・一括の取り下げ・withdrawn_at
+ * 段3 確定   1 batch・15 文         … 匿名化・履歴・ハンドル・台帳・作品の指示文・相談の会話・一括の取り下げ・withdrawn_at
  * ```
  *
  * **R2 を D1 の確定より先に消す**（`src/game-deletion.ts` と同じ向き。仕様 3.7 の規約 2）。
@@ -302,7 +302,7 @@ export async function withdrawUser(
 
   // 段2。**消す直前に、毎回自分の token を持つことを確かめる**（`docs/takedown.md` 4.5 の順序）。
   if (!(await deleteAvatarObjects(env, userId, claim.token))) {
-    // 排他を失った。段3 の G も当たらないので、**14 文を無駄に投げずに**理由を返す。
+    // 排他を失った。段3 の G も当たらないので、**15 文を無駄に投げずに**理由を返す。
     // 打ち直せば段2 からやり直す（段1 は `coalesce` で入り直せる）。
     return await settledOutcome(env.DB, userId);
   }
@@ -560,7 +560,7 @@ export async function avatarObjectsGone(env: StorageEnv, userId: string): Promis
 }
 
 /**
- * 段3: D1 を確定する batch の 14 文（**最後の 1 本が `users` の匿名化**）。
+ * 段3: D1 を確定する batch の 15 文（**最後の 1 本が `users` の匿名化**）。
  *
  * **順序に意味がある。**
  *
@@ -674,7 +674,13 @@ function finalizeStatements(
             and email = (select email from users where id = ? and ${columns})`,
       )
       .bind(userId, token),
-    // 14. 匿名化し、`withdrawn_at` を立て、排他を外す（**最後**）。
+    // 14. 相談の会話（#695 / `0049`）。**作品の指示文と同じ理由でこの時点で消す**
+    //     ——`/privacy` が「退会したときは削除します」と約束している対象で、**30 日の掃除を
+    //     待たせない。** 後続の処理（作品と R2）とは無関係なので、ここで閉じる。
+    db
+      .prepare(`delete from chat_conversations where user_id = ? and ${guard}`)
+      .bind(userId, ...guardBindings),
+    // 15. 匿名化し、`withdrawn_at` を立て、排他を外す（**最後**）。
     db
       .prepare(
         `update users

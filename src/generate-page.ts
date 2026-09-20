@@ -109,6 +109,8 @@
  * （画面は 1 回読むだけで、再読み込みまで更新されない）。ただし後者は 5xx なら何でも
  * 反応する近似のままなので、**サービス全体の状態を決めるのは前者だけ**にしてある。
  */
+import { latestChatConversation } from './chat-conversation.js';
+import { CHAT_SCRIPT, renderChatSection, type ChatSectionView } from './chat-section.js';
 import { siteFooter } from './legal.js';
 import { GENERATE_PATH, MAX_PROMPT_LENGTH } from './generate.js';
 // 題名の上限の正本は `src/games.ts` が持つ（#365）。案内文へ書き写さない。
@@ -437,6 +439,14 @@ export interface GeneratePageView {
   readonly availability: GenerateAvailability;
   /** ヘッダのアバターの画像の URL（#380。未ログインなら null）。 */
   readonly headerAvatar: string | null;
+  /**
+   * 相談の区画へ渡す値（#695 / 仕様 5.16）。**null なら区画を出さない。**
+   *
+   * **未ログインと、枠が尽きている画面では null である**——相談は「これから生成する人」の
+   * ための区画で、生成できない画面に置くと**押せない導線が 1 つ増える**（4.4 が無くそうと
+   * しているものである）。
+   */
+  readonly chat: ChatSectionView | null;
 }
 
 /**
@@ -727,6 +737,10 @@ ${stillAvailableSection()}`;
     )
     .join('\n');
 
+  // **相談の区画は、生成のフォームの後ろに置く**（#695 / 仕様 5.16）。**この画面の主は
+  // 「生成する」1 つ**（2.5.5）なので、先に入力欄とボタンが来て、相談は「任意」として続く。
+  const chat = view.chat === null ? '' : `\n\n${renderChatSection(view.chat)}`;
+
   // **入力欄とヒントと「生成する」を 1 つのブロックにし、残枠は入力欄の名前の行の右に置く**（#473。承認したモックアップ
   // Version 6）。並びは HTML の順のまま（名前 → 残枠 → ヒント → 入力欄 → ボタン）で、狭い段では残枠が名前の下へ折り返す
   // ——`order` を使わないので、見た目の順と読み上げ・Tab の順が割れない（仕様 2.5.6 の #469 実装注記）。
@@ -757,7 +771,7 @@ ${messages}
   <p><strong>生成の送信には JavaScript が必要です。</strong>
      生成は JSON で受け付ける API（<code>${GENERATE_PATH}</code>）への送信で、
      応答が返るまで ${TYPICAL_WAIT_TEXT}。その間の経過表示も JavaScript で行っています。</p>
-</noscript>`;
+</noscript>${chat}`;
 }
 
 /**
@@ -776,6 +790,9 @@ export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): s
   // 画面にはフォームが無く、動かす対象が無い（`getElementById` が `null` を返す）。
   const script =
     signedIn && canSubmit(view.availability) ? `\n<script>${GENERATE_SCRIPT}</script>\n` : '';
+  // **相談のスクリプトは別に置く**（`src/chat-section.ts` の冒頭。あちらは `textContent` で
+  // 返答を描くので、生成画面の「文字列を DOM へ書き込まない」不変条件と線が違う）。
+  const chatScript = view.chat === null ? '' : `<script>${CHAT_SCRIPT}</script>\n`;
 
   // **ヘッダの出し分けに、この関数が既に持っている 1 ビットをそのまま渡す**
   // （2.3.7 / #331）。**セッションを 2 度検証しない**——`signedIn` の正本は
@@ -790,7 +807,7 @@ export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): s
 
 ${body}
 
-${siteFooter()}${script}`;
+${siteFooter()}${script}${chatScript}`;
 }
 
 /**
@@ -877,12 +894,25 @@ const showGeneratePage: RouteHandler = async (request, env) => {
   if (!session.ok) {
     // 未ログインの画面は残枠を出さない。`availability` は使われないが、型として
     // 1 つ選ぶ必要があるので「読めていない」を渡す（「残り N 回」を作らない値）。
-    return html(renderGeneratePage(false, { availability: { kind: 'unknown' }, headerAvatar: null }));
+    // 未ログインの画面は相談の区画も出さない（`GeneratePageView.chat` の注記）。
+    return html(
+      renderGeneratePage(false, { availability: { kind: 'unknown' }, headerAvatar: null, chat: null }),
+    );
   }
+  const availability = await resolveAvailability(env, session.userId);
+  // **枠が尽きている画面では相談も出さない**（押せない導線を増やさない。`GeneratePageView.chat`）。
+  // **会話を読むのは、区画を出すときだけ**である（D1 は読み取りも従量。3.6）。
+  const conversation = canSubmit(availability) ? await latestChatConversation(env, session.userId) : null;
   return html(
     renderGeneratePage(true, {
-      availability: await resolveAvailability(env, session.userId),
+      availability,
       headerAvatar: headerAvatarUrl(request, env, session.userId),
+      chat: canSubmit(availability)
+        ? {
+            messages: conversation?.messages ?? [],
+            conversationId: conversation?.id ?? null,
+          }
+        : null,
     }),
   );
 };

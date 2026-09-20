@@ -20,6 +20,7 @@
  * | メール配信の設定（改造のお知らせを受け取るかと、止めた日時・公開しない）と、止められないお知らせ | `migrations/` の fork_notice_mute（`users.fork_notice_muted_at`）/ `src/account.ts` の `/account/mail` / 送信の口で読むのは `src/mail/fork-notice.ts` だけ / 種別の一覧は `src/mail/kinds.ts`（#384 が同じ変更で追記した） |
  * | 招待関係 | `migrations/0001_init.sql`（`invites` / `users.invited_by`）/ `src/invites.ts` |
  * | 指示文・生成の記録 | `src/cost-ledger.ts`（`generations.prompt`）/ `migrations/0009_game_revisions.sql` / `migrations/0047_games_prompt.sql`（最初の指示を作品と結び付けた写し。作者本人にだけ `src/works-api.ts` が返す。削除・退会・入力の検査での止めで消える。#694 が同じ変更で追記した） |
+ * | 相談の会話（30 日） | `src/chat-conversation.ts`（`chat_conversations`。本人だけが読める・本人が消せる・cron が 30 日で消す・退会の段3 で消える。#695 が同じ変更で追記した） |
  * | 遮断された指示文（90 日） | `migrations/0016_moderation_blocks.sql` / `scripts/moderation-prune.sh` |
  * | 作品・題名の変更履歴 | `migrations/0001_init.sql`（`games`）/ `migrations/0027_title_changes.sql` / R2 |
  * | 作者による作品の削除（下書きと取り下げた作品だけ・子や運営の記録があれば行と履歴を残す・指示文と生成の記録は残る） | `src/game-deletion.ts` の `deleteGame`（行を残す条件・消す表）/ `migrations/0041_game_deletion.sql`（`purged_at`）/ `src/work-page.ts` の `POST /api/works/delete`（作者の確認）/ `generations` は作品と結び付けていない（確定27）（#517 が同じ変更で追記した） |
@@ -52,6 +53,7 @@
  *
  * 静的な画面である（#373 の constraints）。読むのはヘッダの出し分けのための cookie だけ。
  */
+import { CHAT_RETENTION_DAYS } from './chat-conversation.js';
 import { siteFooter } from './legal.js';
 import { FAQ_PATH, PRIVACY_PATH, TAKEDOWN_PATH, TERMS_PATH } from './legal-paths.js';
 import type { Route } from './routes.js';
@@ -148,6 +150,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li><strong>AI アプリとの接続</strong>（Claude などの AI アプリに、あなたの作品の読み取りや生成を許可した場合）: 接続したアプリの名前（アプリ自身が名乗った名前）・許可した後の戻り先・許可した範囲・接続した日時と、アプリへ発行した鍵（トークン）の記録。<strong>鍵そのものは保存せず、照合に使う値（ハッシュ値）だけを保存します。</strong>登録情報の「接続中のアプリ」で確かめ、解除できます。Cloudflare のキーと値の保存場所（KV）に保存します</li>
   <li><strong>招待の情報</strong>: 招待コード、誰が誰を招待したか、コードを使った日時</li>
   <li><strong>作品を作るときの指示文</strong>（生成・フォーク・リフォージの指示）。作品ごとに、最初の指示とリフォージの指示を、作者本人が見返せるように作品と結び付けて保存します（公開しません。入力の検査で止めた指示は、作品と結び付けて保存しません）</li>
+  <li><strong>生成の前の相談の会話</strong>（生成画面で AI と相談して指示文を練った場合）: あなたが書いた文と、AI が返した指示文の下書き。<strong>あなただけが見られます（公開しません）。</strong>続きから相談できるように保存し、<strong>最後に使ってから ${CHAT_RETENTION_DAYS} 日で自動的に削除します。</strong>生成画面の「相談の記録を消す」でいつでも削除できます。Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>作品</strong>: 題名とその変更履歴、生成されたソースコード、遊ぶためのファイル、紹介用の画像、公開・下書き・公開停止の状態、フォーク元の作品</li>
   <li><strong>作品の説明</strong>: 作者が作品に書く説明（遊び方やクレジットなど）と、その変更の履歴（変える前と後の説明、変えた日時）。説明は下書きのうちから書けます。下書きのあいだは作者にだけ見え、公開すると作品ページで誰でも見られます。変更の履歴は書き換えず、追記だけで残します。どちらも Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>いいね</strong>: どの作品にいいねしたかと、その日時</li>
@@ -217,6 +220,7 @@ export function privacyBody(contact: PrivacyContact): string {
     <ul>
       <li>生成には <strong>Amazon Bedrock</strong>（Anthropic 社の Claude モデル）を使います。指示文と、フォーク・リフォージのときは元の作品のソースコードを送ります。</li>
       <li>指示文は、生成の前に <strong>Amazon Bedrock Guardrails</strong> で有害な内容かどうかを検査します。この検査は、アジア太平洋地域の複数のリージョンで処理されることがあります。</li>
+      <li>生成の前の相談でも、同じ <strong>Amazon Bedrock</strong> と <strong>Amazon Bedrock Guardrails</strong> を使います。送るのは、あなたが相談で書いた文と、<strong>あなた自身の作品の題名と指示文</strong>です（あなたが求めたときだけ、あなた自身の作品のソースコードも送ります）。<strong>ほかの方の作品は送りません。</strong></li>
     </ul>
   </li>
   <li><strong>Google</strong>: Google アカウントによるログイン。</li>
@@ -250,6 +254,7 @@ export function privacyBody(contact: PrivacyContact): string {
     </ul>
     作品と結び付けて保存した指示文も、作品と一緒に削除します。
     <strong>作品を削除しても、生成の記録に残る、作品を作るときの指示文と生成の記録は削除しません</strong>（1 人あたりの生成枠とサービス全体の費用の上限を管理するため）。<strong>退会したときだけは指示文を削除します</strong>（生成の記録の行・費用・日時は残します。下の「退会」）。</li>
+  <li><strong>生成の前の相談の会話は、最後に使ってから ${CHAT_RETENTION_DAYS} 日で自動的に削除します</strong>（削除の処理は 5 分ごとに動きます）。生成画面の「相談の記録を消す」を押すと、その時点で削除します。退会したときも削除します（下の「退会」）。<strong>相談にかかった費用の記録（日時・処理した文字量・費用）は残します</strong>（相談の 1 日の上限とサービス全体の費用の上限を管理するため。会話の本文は含みません）。</li>
   <li>それ以外の情報は、期限を定めた自動の削除を行っておらず、本サービスの提供に必要なあいだ保存します。</li>
 </ul>
 <h3>退会</h3>
@@ -266,6 +271,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li>メール配信の設定。</li>
   <li>AI アプリとの接続（許可と、アプリへ発行した鍵の記録）。</li>
   <li>作品を作るときに入力した指示文（生成の記録の行・費用・日時は残します）。</li>
+  <li>生成の前の相談の会話（上の ${CHAT_RETENTION_DAYS} 日を待たずに削除します。相談の費用の記録は残します）。</li>
   <li>作品（公開中の作品は公開を停止してから削除します。削除の範囲は、上の「作品は、作者が作品ページから削除すると削除します」と同じです）。</li>
   <li>待機リストに同じメールアドレスの登録が残っていれば、あわせて削除します。</li>
 </ul>

@@ -36,7 +36,12 @@
  */
 import { allowApiCall } from './api-rate-limit.js';
 import { resolveApiCaller } from './api-caller.js';
-import { CHAT_API_PATH, CHAT_RATE_LIMIT_SCOPE } from './chat-paths.js';
+import {
+  CHAT_API_PATH,
+  CHAT_CONVERSATION_DELETE_PATH,
+  CHAT_RATE_LIMIT_SCOPE,
+} from './chat-paths.js';
+import { deleteChatConversations, saveChatConversation } from './chat-conversation.js';
 import { createAskChat, ChatBusy, ChatNotConfigured, type AskChat } from './chat-client.js';
 import {
   CHAT_MAX_MESSAGES,
@@ -77,6 +82,8 @@ interface ChatRequestBody {
   readonly messages: readonly ChatMessage[];
   readonly workId: string | null;
   readonly includeSource: boolean;
+  /** 続きを書き込む会話の id（新しく始めるなら null）。 */
+  readonly conversationId: string | null;
 }
 
 /**
@@ -133,10 +140,15 @@ export function parseChatRequest(value: unknown): ChatRequestBody | null {
   if (includeSource !== undefined && typeof includeSource !== 'boolean') {
     return null;
   }
+  const conversationId = record['conversationId'];
+  if (conversationId !== undefined && conversationId !== null && typeof conversationId !== 'string') {
+    return null;
+  }
   return {
     messages: parsed,
     workId: typeof workId === 'string' ? workId : null,
     includeSource: includeSource === true,
+    conversationId: typeof conversationId === 'string' ? conversationId : null,
   };
 }
 
@@ -335,6 +347,28 @@ export async function handleChat(
     now,
   );
 
+  // **会話を保存する**（5.16。30 日で消える短命の保存）。**台帳の行を積んだ後に置く**
+  // ——保存に失敗しても課金は既に出ており、**枠が減らないほうが害が大きい。**
+  //
+  // **保存の失敗で往復ごと失敗にしない。** 返答は既に手元にあり、利用者にとっては
+  // 「返ってきたのに消えた」ほうが悪い。**復元できないことはログに残す。**
+  let conversationId: string | null = null;
+  try {
+    conversationId = await saveChatConversation(
+      env,
+      userId,
+      parsed.conversationId,
+      [...parsed.messages, { role: 'assistant', text: answer.text }],
+      now,
+    );
+  } catch (error) {
+    console.warn(
+      `[chat] 会話を保存できませんでした（返答は返します）: ${
+        error instanceof Error ? error.name : 'unknown'
+      }`,
+    );
+  }
+
   const spent =
     answer.usage.inputTokens +
     answer.usage.outputTokens +
@@ -342,6 +376,7 @@ export async function handleChat(
     (answer.usage.cacheWriteInputTokens ?? 0);
   return json({
     text: answer.text,
+    conversationId,
     // **残りは判定のときの値から引く**（数え直さない）。**負にはしない**——1 回の往復が
     // 残りを超えることはありうる（4.3 の「判定を通った要求が、判定後に使う」上振れと同じ形）。
     remainingTokens: Math.max(0, quota.remainingTokens - spent),
@@ -350,7 +385,30 @@ export async function handleChat(
   });
 }
 
+/**
+ * `POST /api/chat/conversation/delete` — 保存した会話を消す（5.16「作者が自分で消せる」）。
+ *
+ * **その人の会話をすべて消す**（`deleteChatConversations`）。**0 件でも 200 を返す**
+ * ——「消すものが無かった」と「消した」を区別できる応答にしない（5.12 と同じ線）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns 応答
+ */
+export async function handleDeleteChatConversation(request: Request, env: Env): Promise<Response> {
+  const caller = await resolveApiCaller(request, env);
+  if (!caller.ok) {
+    return json(UNAUTHORIZED, 401);
+  }
+  if (!(await allowApiCall(env, CHAT_RATE_LIMIT_SCOPE, caller.userId))) {
+    return json(RATE_LIMITED_BODY, 429, { 'retry-after': String(API_RATE_LIMIT.periodSeconds) });
+  }
+  await deleteChatConversations(env, caller.userId);
+  return json({ ok: true });
+}
+
 /** 相談の口の経路。 */
 export const chatRoutes: readonly Route[] = [
   { method: 'POST', path: CHAT_API_PATH, handler: (request, env) => handleChat(request, env) },
+  { method: 'POST', path: CHAT_CONVERSATION_DELETE_PATH, handler: handleDeleteChatConversation },
 ];

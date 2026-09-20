@@ -8,6 +8,9 @@
  * 2. **cron（5 分ごと）で DO を起こす**（`workers/cleanup/wrangler.toml` の `[triggers]`）
  * 3. **同じ cron で、止まったまま残った生成・推敲の行を `failed` に畳む**（#681。
  *    `src/stale-generation-sweep.ts`。D1 の条件付き UPDATE 2 本だけで、R2 には触らない）
+ * 4. **同じ cron で、最後に使ってから 30 日を過ぎた相談の会話を消す**（#695 / 仕様 5.16。
+ *    `src/chat-conversation.ts`。D1 の DELETE 1 本だけ。`/privacy` に書いた保存期間を守るのは
+ *    この 1 本である）
  *
  * # `fetch` は何も受け取らない
  *
@@ -26,6 +29,7 @@
  * 次に起きた回が同じ候補を拾い直す。**運営が進み具合を見る手段は
  * `scripts/withdrawal-status.sh`**（読み取りだけ）。
  */
+import { sweepExpiredChatConversations } from '../../../src/chat-conversation.js';
 import { sweepStaleGenerations } from '../../../src/stale-generation-sweep.js';
 import { WITHDRAWAL_HUB_INSTANCE } from './hub.js';
 import type { CleanupEnv } from './hub.js';
@@ -58,9 +62,13 @@ export default {
    */
   async scheduled(controller: ScheduledController, env: CleanupEnv): Promise<void> {
     const id = env.WITHDRAWAL_HUB.idFromName(WITHDRAWAL_HUB_INSTANCE);
-    const [woken, swept] = await Promise.allSettled([
+    const at = Math.floor(controller.scheduledTime / 1000);
+    // **3 つは互いを止めない**（下の投げ直しの順序が担保する）。相談の会話の掃除は
+    // 退会の後続の処理とも、止まった行の畳みとも無関係である。
+    const [woken, swept, chats] = await Promise.allSettled([
       env.WITHDRAWAL_HUB.get(id).wake(),
-      sweepStaleGenerations(env, Math.floor(controller.scheduledTime / 1000)),
+      sweepStaleGenerations(env, at),
+      sweepExpiredChatConversations(env.DB, at),
     ]);
     if (swept.status === 'fulfilled' && (swept.value.games > 0 || swept.value.revisionJobs > 0)) {
       // **畳んだときだけ出す**（平常時は 0 件で何も出さない。`wrangler tail` で見る）。
@@ -68,11 +76,18 @@ export default {
         `stale-generation-sweep: games=${swept.value.games} revision_jobs=${swept.value.revisionJobs}`,
       );
     }
+    if (chats.status === 'fulfilled' && chats.value > 0) {
+      // **消したときだけ出す**（平常時は 0 件）。**利用者の id も本文も出さない**（1.2.54）。
+      console.log(`chat-conversation-sweep: deleted=${chats.value}`);
+    }
     if (woken.status === 'rejected') {
       throw woken.reason;
     }
     if (swept.status === 'rejected') {
       throw swept.reason;
+    }
+    if (chats.status === 'rejected') {
+      throw chats.reason;
     }
   },
 } satisfies ExportedHandler<CleanupEnv>;

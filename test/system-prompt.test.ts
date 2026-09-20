@@ -261,6 +261,17 @@ describe('許可 API の使い方（6.1「制約を並べるだけでは足り�
     expect(GO_IMPORT_ALLOWLIST.map((entry) => entry.path)).not.toContain('bytes');
   });
 
+  it('1 フレームで必ず制御を返すことを求めている（#730）', () => {
+    // **プロンプトの側は検査より広く書く**（仕様 6.1）。狭いと、指示どおりに書いた
+    // 生成物が `src/go-loops.ts` に拒否される。**止めるのは検査で、ここが減らすのは
+    // 善意の生成物が生成枠を 1 つ捨てることである。**
+    const text = renderSystemPromptText();
+    expect(text).toContain('1 回の呼び出しで必ず戻ります');
+    expect(text).toContain('for {} や for true {} は拒否されます');
+    // 自己点検（8 節）にも 1 項目ある。**モデルは最後に読んだ点検表を守る**（#597）。
+    expect(SYSTEM_PROMPT_SECTIONS.at(-1)).toContain('終わり方を持たない繰り返し');
+  });
+
   it('教える API は隔離ビルドで実際にコンパイルが通った形と一致する', () => {
     // **存在しない API を教えないことの機械照合。** 4.2 が記録した Claude の失敗は
     // 存在しない API の捏造（`vector.DrawFilledRoundRect`）であり、プロンプトが同じ

@@ -15,6 +15,7 @@ import {
 } from '../src/generation-models.js';
 import type { GenerationResult } from '../src/generation-models.js';
 import { inspectGoImports } from '../src/go-imports.js';
+import { UNBOUNDED_LOOP_FORMS, UNBOUNDED_LOOP_REJECTION } from '../src/go-loops.js';
 import {
   GeneratedSourceRejected,
   MAX_REPORTED_OFFENDING,
@@ -545,7 +546,122 @@ const label = "ダミー禁止語"
     }
     expect(rejected!.reason).toBe('not-allowed');
   });
+});
 
+describe('終了条件を持たない繰り返しを拒否する（6.1 / #730）', () => {
+  /**
+   * `Update` の中に本体を 1 つ持つ、import が許可の内側だけのソース。
+   *
+   * @param body `Update` の本体
+   * @returns Go のソース
+   */
+  function updateSource(body: string): string {
+    return `package main
+
+import "github.com/hajimehoshi/ebiten/v2"
+
+type Game struct{ frame int }
+
+func (g *Game) Update() error {
+${body}
+\treturn nil
+}
+
+func (g *Game) Draw(screen *ebiten.Image) {}
+`;
+  }
+
+  it('`for {}` を持つソースが拒否される（acceptance 1）', () => {
+    const rejected = rejectionOf(updateSource('\tfor {\n\t}'));
+    expect(rejected.reason).toBe(UNBOUNDED_LOOP_REJECTION);
+  });
+
+  it('既存の拒否と区別できる形で返る（acceptance 1）', () => {
+    // **`not-allowed` とも `directive-not-allowed` とも別の綴りにする。** 利用者が
+    // 次に直すものが違う（一覧から外す / 指示を消す / 繰り返しに終わり方を足す）。
+    const body = describeSourceRejection(rejectionOf(updateSource('\tfor true {\n\t}')));
+    expect(body).toEqual({
+      error: SOURCE_REJECTED_ERROR,
+      reason: 'unbounded-loop',
+      offending: [UNBOUNDED_LOOP_FORMS[1]!.name],
+    });
+    expect(body.reason).not.toBe('not-allowed');
+    expect(body.reason).not.toBe('directive-not-allowed');
+  });
+
+  it('載せるのは形の名前だけで、生成物由来の文字列を出さない', () => {
+    const rejected = rejectionOf(updateSource('\tfor {\n\t\tg.secret = "利用者の指示の断片"\n\t}'));
+    expect(rejected.offending).toEqual([UNBOUNDED_LOOP_FORMS[0]!.name]);
+    expect(rejected.message).not.toContain('利用者の指示の断片');
+  });
+
+  it('毎フレーム有限回まわす形は 1 つも拒否しない（acceptance 2）', () => {
+    const bodies = [
+      '\tfor i := 0; i < len(g.enemies); i++ {\n\t\tg.enemies[i].x++\n\t}',
+      '\tfor _, b := range g.bullets {\n\t\tb.y--\n\t}',
+      '\tfor y := 0; y < 16; y++ {\n\t\tfor x := 0; x < 16; x++ {\n\t\t\tg.img.Set(x, y, g.color)\n\t\t}\n\t}',
+    ];
+    for (const body of bodies) {
+      expect(() => inspectGeneratedSource(generated(updateSource(body))), body).not.toThrow();
+    }
+  });
+
+  it('隔離ビルドのサンプルを拒否しない（acceptance 3）', () => {
+    // **実際にコンパイルが通っているサンプル**を段ごと通す。`src/go-loops.ts` の
+    // 単体テストは検査器だけを見るので、結線を通した形でも確かめる。
+    expect(() => inspectGeneratedSource(generated(env.TEST_BUILD_SAMPLE))).not.toThrow();
+  });
+
+  it('5.2-5 の違反のほうを理由にする', () => {
+    // 両方に違反しているソースでは、**先に安全側の理由**を返す（import と指示は
+    // 7.1 のビルドホストを守る層で、こちらが守るのは遊ぶ人の端末である）。
+    const both = `package main
+
+import "os/exec"
+
+type Game struct{}
+
+func (g *Game) Update() error {
+\tfor {
+\t}
+}
+`;
+    expect(rejectionOf(both).reason).toBe('not-allowed');
+  });
+
+  it('8.3 より先に落とす', () => {
+    // 8.3 は表示物の話である。**主スレッドを返さない形のほうが先に返る。**
+    const inspect = createSourceInspector(DUMMY_TERMS);
+    let rejected: GeneratedSourceRejected | null = null;
+    try {
+      inspect(
+        generated(`package main
+
+type Game struct{}
+
+const label = "ダミー禁止語"
+
+func (g *Game) Update() error {
+\tfor {
+\t}
+}
+`),
+      );
+    } catch (error) {
+      rejected = error as GeneratedSourceRejected;
+    }
+    expect(rejected!.reason).toBe(UNBOUNDED_LOOP_REJECTION);
+  });
+
+  it('上限を超えたソースでは、サイズのほうを理由にする', () => {
+    // 上限超は字句解析を回す前に分かる（この段のいちばん先の検査）。
+    const head = updateSource('\tfor {\n\t}');
+    const padded = head + 'x'.repeat(MAX_SOURCE_BYTES + 1 - new TextEncoder().encode(head).length);
+    expect(rejectionOf(padded).reason).toBe('source-too-large');
+  });
+});
+
+describe('検査段の同一性', () => {
   it('エッジとオーケストレータが同じ検査段を借りている', () => {
     // **実行環境によって表が違う状態を作らない。** 表をコード側へ置いた理由
     // （`src/denied-terms.ts` 冒頭）は、この同一性が成り立っていて初めて意味を持つ。

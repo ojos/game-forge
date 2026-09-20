@@ -1299,9 +1299,13 @@ async function handleChatRuleChange(request: Request, env: Env): Promise<Respons
   if (mediaType !== FORM_MEDIA_TYPE) {
     return seeOther(`${ACCOUNT_CHAT_PATH}?reason=invalid-request`);
   }
-  const read = await readLimitedText(request, MAX_BODY_BYTES);
+  // **本文の上限は、同じ 500 文字を受けるプロフィールの口と揃える**（`MAX_PROFILE_BODY_BYTES`）。
+  // **`MAX_BODY_BYTES`（4 KiB）では足りない**——500 文字の日本語は
+  // `application/x-www-form-urlencoded` で 1 文字 9 バイトになり、約 4,500 バイトへ膨らむ。
+  // **画面が 500 文字と書いているのに、500 文字が「壊れた要求」で断られていた**（#728 の Copilot の指摘）。
+  const read = await readLimitedText(request, MAX_PROFILE_BODY_BYTES);
   if (!read.ok) {
-    return seeOther(`${ACCOUNT_CHAT_PATH}?reason=invalid-request`);
+    return seeOther(`${ACCOUNT_CHAT_PATH}?reason=too-long`);
   }
   // **値がちょうど 1 つのときだけ受け付ける**（メール配信の口と同じ判断）。
   const values = new URLSearchParams(read.text).getAll(CHAT_RULE_FIELD);

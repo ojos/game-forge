@@ -11,11 +11,11 @@ import {
   CHAT_RULE_ACKNOWLEDGEMENT,
   CHAT_RULE_MAX_LENGTH,
   CHAT_RULE_PREAMBLE,
-  checkChatRule,
-  readChatRule,
-  saveChatRule,
+  CHAT_RULE_TURNS,
   withChatRule,
-} from '../src/chat-rule.js';
+} from '../src/chat-payload.js';
+import { checkChatRule, readChatRule, saveChatRule } from '../src/chat-rule.js';
+import { BIO_MAX_LENGTH } from '../src/profile.js';
 import { CHAT_PROMPT_SECTIONS } from '../src/chat-prompt.js';
 import { privacyBody } from '../src/privacy.js';
 import { applySchema } from './helpers/schema.js';
@@ -72,16 +72,24 @@ describe('保存と復元（5.16 の確定38）', () => {
     expect(await readChatRule(env.DB, userId)).toBe('');
   });
 
-  it('退会した人には書かない（段3 が消した後に書き戻る窓を作らない）', async () => {
+  it('退会を始めた人には書かない（確定を待たずに止める）', async () => {
     const userId = await createUser();
-    // **`withdrawn_at >= withdrawal_started_at` の CHECK がある**ので、両方を立てる。
-    await env.DB.prepare(
-      'update users set withdrawal_started_at = 1, withdrawn_at = 2 where id = ?',
-    )
+    // **掴んだだけ（`withdrawal_started_at` が立ち、`withdrawn_at` はまだ NULL）の状態。**
+    // `withdrawn_at` で見ていると、ここで書けてしまう（Copilot の指摘）。
+    await env.DB.prepare('update users set withdrawal_started_at = 1 where id = ?')
       .bind(userId)
       .run();
     expect(await saveChatRule(env.DB, userId, 'あ')).toBe(false);
     expect(await readChatRule(env.DB, userId)).toBe('');
+  });
+
+  it('退会が確定した人にも書かない', async () => {
+    const userId = await createUser();
+    // **`withdrawn_at >= withdrawal_started_at` の CHECK がある**ので、両方を立てる。
+    await env.DB.prepare('update users set withdrawal_started_at = 1, withdrawn_at = 2 where id = ?')
+      .bind(userId)
+      .run();
+    expect(await saveChatRule(env.DB, userId, 'あ')).toBe(false);
   });
 
   it('退会の段3 の匿名化の文に、この列が入っている', () => {
@@ -107,11 +115,27 @@ describe('検査', () => {
     expect(checkChatRule(`${'あ'.repeat(CHAT_RULE_MAX_LENGTH - 1)}\r\nい`).ok).toBe(false);
   });
 
+  it('上限は自己紹介と同じ値である（書き写していないことを機械で見る）', () => {
+    expect(CHAT_RULE_MAX_LENGTH).toBe(BIO_MAX_LENGTH);
+  });
+
+  it('前後に置かれた禁止文字を、削る前に見つける', () => {
+    // **先に `trim()` すると、JavaScript が黙って落とし、直された値が通る**（Copilot の指摘）。
+    expect(checkChatRule('\t短く').ok).toBe(false);
+    expect(checkChatRule('\u2028短く').ok).toBe(false);
+    expect(checkChatRule('短く\u2029').ok).toBe(false);
+  });
+
   it('改行は許し、それ以外の制御文字と向きを変える記号は断る', () => {
     expect(checkChatRule('1 行目\n2 行目').ok).toBe(true);
     expect(checkChatRule('あ\tい')).toEqual({ ok: false, reason: 'invalid-characters' });
     expect(checkChatRule('あ\u0000い')).toEqual({ ok: false, reason: 'invalid-characters' });
     expect(checkChatRule('あ\u202eい')).toEqual({ ok: false, reason: 'invalid-characters' });
+  });
+
+  it('範囲で書き並べていない双方向制御文字も断る（U+061C）', () => {
+    // **手で範囲を並べると抜ける 1 文字**（Copilot の指摘）。`\p{Bidi_Control}` なら入る。
+    expect(checkChatRule('あ\u061cい')).toEqual({ ok: false, reason: 'invalid-characters' });
   });
 
   it('前後の空白を落とす', () => {
@@ -123,6 +147,10 @@ describe('相談の文脈への入り方（確定38）', () => {
   it('空なら何も足さない（今までどおり動く）', () => {
     const messages = [{ role: 'user', text: 'あ' }] as const;
     expect(withChatRule('', messages)).toBe(messages);
+  });
+
+  it('ルールが使う発話の数は 2 である（エッジがこのぶんを空ける）', () => {
+    expect(withChatRule('あ', [{ role: 'user', text: 'い' }])).toHaveLength(1 + CHAT_RULE_TURNS);
   });
 
   it('会話の先頭へ、作者の発話として入る（役割は交互のまま）', () => {

@@ -54,6 +54,8 @@ import {
   CHAT_MAX_OUTPUT_TOKENS,
   CHAT_MAX_TOTAL_MESSAGE_LENGTH,
   CHAT_PAYLOAD_VERSION,
+  CHAT_RULE_MAX_LENGTH,
+  withChatRule,
   type ChatMessage,
   type ChatRequestPayload,
   type ChatResponsePayload,
@@ -160,9 +162,20 @@ export function parseChatPayload(event: unknown): ChatRequestPayload {
     throw new ChatPayloadRejected(`messages の合計が長すぎます: ${total}`);
   }
 
+  // **ルール（#728 / 確定38）。** 無い・空・文字列でないときは「無い」として扱う——
+  // **古いエッジは載せてこない**ので、欠けていることは異常ではない。
+  const rawRule = value['rule'];
+  if (rawRule !== undefined && typeof rawRule !== 'string') {
+    throw new ChatPayloadRejected('rule が文字列ではありません');
+  }
+  const rule = (rawRule ?? '').trim();
+  if ([...rule].length > CHAT_RULE_MAX_LENGTH) {
+    throw new ChatPayloadRejected(`rule が長すぎます: ${[...rule].length}`);
+  }
+
   const work = value['work'];
   if (work === undefined) {
-    return { version: CHAT_PAYLOAD_VERSION, messages: parsed };
+    return { version: CHAT_PAYLOAD_VERSION, messages: parsed, ...(rule === '' ? {} : { rule }) };
   }
   if (typeof work !== 'object' || work === null) {
     throw new ChatPayloadRejected('work がオブジェクトではありません');
@@ -182,6 +195,7 @@ export function parseChatPayload(event: unknown): ChatRequestPayload {
   return {
     version: CHAT_PAYLOAD_VERSION,
     messages: parsed,
+    ...(rule === '' ? {} : { rule }),
     work: { title: workValue['title'], prompt, source },
   };
 }
@@ -298,12 +312,19 @@ export async function handleChatEvent(
     return { ok: false, error: 'internal' };
   }
 
-  // **いちばん新しい利用者の発話だけを検査する**（8.2 / 5.16）。過去の発話は、送られた
+  // **いちばん新しい利用者の発話を検査する**（8.2 / 5.16）。過去の発話は、送られた
   // ときに同じ検査を通っている。
+  //
+  // **作者のルール（#728）も一緒に検査する。** ルールは**会話として届いたものではない**ので、
+  // 「過去の発話は検査済み」の理屈が当てはまらない——**検査しないと、止まるべき文が
+  // 毎往復 Bedrock へ届く**（Copilot の指摘）。**1 回の呼び出しにまとめる**——2 回に分けても
+  // 判定は同じで、費用と待ち時間だけが増える。
   const latest = payload.messages[payload.messages.length - 1]!;
+  const rule = payload.rule ?? '';
+  const inspected = rule === '' ? latest.text : `${rule}\n\n${latest.text}`;
   try {
     const moderate = deps.moderate ?? ((target, prompt) => applyInputModeration(target, prompt));
-    await moderate(env, latest.text);
+    await moderate(env, inspected);
   } catch (error) {
     if (error instanceof PromptBlocked) {
       // **LLM を呼んでいないので、台帳の行は作られない**（5.16）。遮断の記録は 8.2 の
@@ -326,7 +347,10 @@ export async function handleChatEvent(
     const signed = await aws.sign(converseEndpoint(credentials.region, model.modelId), {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify(buildChatConverseRequest(model, payload)),
+      // **ここでルールを会話の先頭へ展開する**（`withChatRule`）。**検査を通した後である。**
+      body: JSON.stringify(
+        buildChatConverseRequest(model, { ...payload, messages: withChatRule(rule, payload.messages) }),
+      ),
     });
     const send = deps.send ?? ((request: Request) => fetch(request));
     const response = await send(signed);

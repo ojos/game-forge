@@ -22,22 +22,15 @@
  * **`CHAT_PROMPT_VERSION` に作者の文を混ぜない**（確定38）。混ぜると**版が人ごとに割れ、
  * 1 往復の費用の実測が比べられなくなる**（5.16 の「実測」が版ごとの比較を前提にしている）。
  */
-import { BIO_MAX_LENGTH } from './profile.js';
+import { CHAT_RULE_MAX_LENGTH } from './chat-payload.js';
+import { NOT_WITHDRAWN_SQL } from './withdrawal-sql.js';
 
 /**
- * ルールの上限（文字数）。
- *
- * **自己紹介（`BIO_MAX_LENGTH`）と同じ 500 文字にする。** 書き写さずに借りるのは、
- * **どちらも「自分のことを数行で書く欄」で、上限を別々に動かす理由が無い**ためである。
- *
- * **枠の側からも見ておく。** ルールは**1 往復ごとに文脈へ乗る**ので、見積もり
- * （`estimateChatTokens`。1 文字 1 トークンで数える）では 1 往復あたり最大 500 トークンに
- * なる。**1 日 30,000 トークンの蓋に対して、17 往復で約 8,500 トークン（28%）である。**
- * **実際にはもっと安い**——ルールは会話の先頭に固定されるので、**4.5 のキャッシュの
- * 共有プレフィックスに乗る**（2 往復目以降は読み取りになる。5.16 の「実測」でシステム
- * プロンプトがそうなった）。**見積もりが高い側へ倒れているのは 4.3 のとおりである。**
+ * ルールの上限（文字数）。**正本は `src/chat-payload.ts`** である——エッジと Lambda の契約で、
+ * **どちらも同じ値で断る必要がある。** **自己紹介（`BIO_MAX_LENGTH`）と同じ 500 であること**は
+ * `test/chat-rule.test.ts` が機械照合する。
  */
-export const CHAT_RULE_MAX_LENGTH = BIO_MAX_LENGTH;
+export { CHAT_RULE_MAX_LENGTH };
 
 /**
  * ルールに使えない文字。
@@ -47,8 +40,14 @@ export const CHAT_RULE_MAX_LENGTH = BIO_MAX_LENGTH;
  */
 const CHAT_RULE_FORBIDDEN_CHARACTER = /(?!\n)[\p{Cc}\p{Zl}\p{Zp}]/u;
 
-/** 文字の向きを変える、目に見えない記号（`src/profile.ts` と同じ）。 */
-const DIRECTION_CHARACTER = /[‎‏‪-‮⁦-⁩]/u;
+/**
+ * 文字の向きを変える、目に見えない記号（`src/profile.ts` と同じ）。
+ *
+ * **範囲を手で並べない。** Unicode の属性（`Bidi_Control`）で書く——手で並べると
+ * **U+061C（Arabic Letter Mark）のように、範囲の外にある 1 文字が抜ける**（#728 の
+ * Copilot の指摘。実際に抜けていた）。**ソースにその文字そのものを書かずに済む**のも利点である。
+ */
+const DIRECTION_CHARACTER = /\p{Bidi_Control}/u;
 
 /** ルールを断る理由。 */
 export type ChatRuleRejection = 'too-long' | 'invalid-characters';
@@ -68,61 +67,18 @@ export type ChatRuleCheck =
  * @returns 整えたルール、または断る理由
  */
 export function checkChatRule(raw: string): ChatRuleCheck {
-  const normalized = raw.replaceAll('\r\n', '\n').replaceAll('\r', '\n').trim();
-  if ([...normalized].length > CHAT_RULE_MAX_LENGTH) {
-    return { ok: false, reason: 'too-long' };
-  }
+  // **畳んだ値を、削る前に検査する**（`validateBio` と同じ順序）。**先に削ると、前後に置かれた
+  // 禁止文字を `trim()` が黙って落とし、直された値が通る**（#728 の Copilot の指摘）。
+  const normalized = raw.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
   if (CHAT_RULE_FORBIDDEN_CHARACTER.test(normalized) || DIRECTION_CHARACTER.test(normalized)) {
     return { ok: false, reason: 'invalid-characters' };
   }
-  return { ok: true, rule: normalized };
-}
-
-/**
- * 相談の文脈の先頭へ置く、作者の発話の前置き。
- *
- * **これが何であるかを名乗る。** 名乗らずにルールだけを置くと、**AI はそれを「いまの相談の
- * 依頼」として読む**——「短いゲームが好きです」とだけ書いた人が、毎回その話から始められる。
- */
-export const CHAT_RULE_PREAMBLE = 'これは、わたしがいつも守ってほしいことです。このあとの相談すべてに当てはめてください。';
-
-/**
- * 前置きに対する、AI 側の受け答え。
- *
- * **役割が交互であることは、エッジもサーバも確かめている**（`src/chat.ts`）。作者の発話を
- * 1 つ足すだけでは `user` が 2 つ続くので、**受け答えを 1 つ足して並びを保つ。**
- *
- * **中身を約束にしない。** 「承知しました」とだけ返させ、**ルールの本文を復唱させない**
- * ——復唱させると、そのぶん出力トークンを使ったのと同じ文脈が毎回積まれる。
- */
-export const CHAT_RULE_ACKNOWLEDGEMENT = '承知しました。以降の相談でそのとおりにします。';
-
-/** 会話の 1 往復ぶんの発話（`src/chat-payload.ts` の `ChatMessage` と同じ形）。 */
-interface Turn {
-  readonly role: 'user' | 'assistant';
-  readonly text: string;
-}
-
-/**
- * 作者のルールを、会話の先頭へ 2 通の発話として足す。
- *
- * **空なら何も足さない**（確定38「空のときは今までどおり動く」）。**保存する会話には
- * 入れない**——呼ぶ側（`src/chat.ts`）は、Lambda へ送る配列にだけこれを使う。入れると
- * **画面の履歴にルールの往復が出て、作者が消せない発話が 2 つ増える。**
- *
- * @param rule 作者のルール（空なら何もしない）
- * @param messages 会話
- * @returns Lambda へ送る会話
- */
-export function withChatRule(rule: string, messages: readonly Turn[]): readonly Turn[] {
-  if (rule === '') {
-    return messages;
+  // **数えるのは削った後である**（前後の空白は保存しないので、上限にも数えない）。
+  const rule = normalized.trim();
+  if ([...rule].length > CHAT_RULE_MAX_LENGTH) {
+    return { ok: false, reason: 'too-long' };
   }
-  return [
-    { role: 'user', text: `${CHAT_RULE_PREAMBLE}\n\n${rule}` },
-    { role: 'assistant', text: CHAT_RULE_ACKNOWLEDGEMENT },
-    ...messages,
-  ];
+  return { ok: true, rule };
 }
 
 /**
@@ -153,7 +109,9 @@ export async function readChatRule(db: D1Database, userId: string): Promise<stri
 /**
  * 本人のルールを保存する。
  *
- * **退会した人には書かない**（`withdrawn_at is null`）。段3 が消した後に書き戻る窓を作らない。
+ * **退会を始めた人には書かない**（`NOT_WITHDRAWN_SQL` ＝ `withdrawal_started_at is null`）。
+ * **`withdrawn_at` で見ない**——あれは段3 の最後まで NULL なので、**掴んでから確定までのあいだ
+ * 書けてしまう**（#728 の Copilot の指摘）。ほかのアカウントの書き込みと同じ条件を使う。
  *
  * @param db D1
  * @param userId 利用者の id
@@ -162,7 +120,7 @@ export async function readChatRule(db: D1Database, userId: string): Promise<stri
  */
 export async function saveChatRule(db: D1Database, userId: string, rule: string): Promise<boolean> {
   const result = await db
-    .prepare('update users set chat_rule = ? where id = ? and withdrawn_at is null')
+    .prepare(`update users set chat_rule = ? where id = ? and ${NOT_WITHDRAWN_SQL}`)
     .bind(rule, userId)
     .run();
   return (result.meta.changes ?? 0) > 0;

@@ -10,6 +10,15 @@
 export const CHAT_API_PATH = '/api/chat';
 
 /**
+ * 保存した会話を消す口（`POST`。仕様 5.16「作者が自分で消せる」）。
+ *
+ * **`DELETE` ではなく `POST` にする。** 画面からの操作で、**このサイトの状態を変える要求は
+ * すべて POST である**（`src/account-withdrawal.ts` / ログアウトと同じ。`SameSite=Lax` の
+ * cookie が乗る形を 1 つに保つ）。
+ */
+export const CHAT_CONVERSATION_DELETE_PATH = '/api/chat/conversation/delete';
+
+/**
  * 呼び出しの上限を数えるときの鍵の前半（`src/api-rate-limit.ts` の `scope`）。
  *
  * **口ごとに数え分ける**ので、5.13 の一覧の口（`works`）と枠を食い合わない。

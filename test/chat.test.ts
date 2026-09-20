@@ -2,7 +2,11 @@ import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { API_RATE_LIMIT, RATE_LIMITED_BODY } from '../src/api-rate-limit.js';
 import { createAppRoutes } from '../src/app.js';
-import { CHAT_API_PATH, CHAT_RATE_LIMIT_SCOPE } from '../src/chat-paths.js';
+import {
+  CHAT_API_PATH,
+  CHAT_CONVERSATION_DELETE_PATH,
+  CHAT_RATE_LIMIT_SCOPE,
+} from '../src/chat-paths.js';
 import {
   CHAT_MAX_MESSAGES,
   CHAT_MAX_MESSAGE_LENGTH,
@@ -21,7 +25,8 @@ import {
   chatQuotaStatus,
   estimateChatTokens,
 } from '../src/chat-quota.js';
-import { handleChat } from '../src/chat.js';
+import { handleChat, handleDeleteChatConversation } from '../src/chat.js';
+import { latestChatConversation } from '../src/chat-conversation.js';
 import { CHAT_KIND, GENERATION_KIND } from '../src/cost-ledger.js';
 import { currentDeclarationsIn, dailyCallCount, MONTHLY_LIMIT_REASON } from '../src/quota.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
@@ -464,6 +469,83 @@ describe('相談の口（仕様 5.16）', () => {
         .bind(userId)
         .first<{ n: number }>();
       expect(rows?.n).toBe(0);
+    });
+  });
+
+  describe('会話の保存（5.16）', () => {
+    it('1 往復のあと、会話が保存されて id が返る', async () => {
+      const userId = await createUser();
+      const stub = stubAsk({ inputTokens: 10, outputTokens: 5 });
+      const response = await post(userId, ONE_TURN, stub.ask);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { conversationId: string | null };
+      expect(typeof body.conversationId).toBe('string');
+
+      const stored = await latestChatConversation(testEnv(), userId);
+      expect(stored?.id).toBe(body.conversationId);
+      // **返答まで含めて保存する**（次の往復でそのまま送れる形）。
+      expect(stored?.messages).toEqual([
+        { role: 'user', text: '避けるゲームを作りたい' },
+        { role: 'assistant', text: '【指示文】赤い玉を避けるゲーム' },
+      ]);
+    });
+
+    it('続きの id を渡すと、同じ会話に積む', async () => {
+      const userId = await createUser();
+      const stub = stubAsk({ inputTokens: 10, outputTokens: 5 });
+      const first = (await (await post(userId, ONE_TURN, stub.ask)).json()) as {
+        conversationId: string;
+      };
+      await post(
+        userId,
+        {
+          messages: [
+            { role: 'user', text: '避けるゲームを作りたい' },
+            { role: 'assistant', text: '【指示文】赤い玉を避けるゲーム' },
+            { role: 'user', text: 'もっと短く' },
+          ],
+          conversationId: first.conversationId,
+        },
+        stub.ask,
+      );
+
+      const rows = await env.DB.prepare('select count(*) as n from chat_conversations where user_id = ?')
+        .bind(userId)
+        .first<{ n: number }>();
+      expect(rows?.n).toBe(1);
+      const stored = await latestChatConversation(testEnv(), userId);
+      expect(stored?.messages).toHaveLength(4);
+    });
+
+    it('断られた往復は保存しない（枠切れ）', async () => {
+      const userId = await createUser();
+      await seedLedger(userId, CHAT_KIND, { tokens: CHAT_DAILY_TOKEN_LIMIT });
+      await post(userId, ONE_TURN);
+      expect(await latestChatConversation(testEnv(), userId)).toBeNull();
+    });
+
+    it('本人が消せる（未ログインは 401）', async () => {
+      const userId = await createUser();
+      const stub = stubAsk({ inputTokens: 10, outputTokens: 5 });
+      await post(userId, ONE_TURN, stub.ask);
+      expect(await latestChatConversation(testEnv(), userId)).not.toBeNull();
+
+      const anonymous = await handleDeleteChatConversation(
+        new Request(`${APP_ORIGIN}${CHAT_CONVERSATION_DELETE_PATH}`, { method: 'POST' }),
+        testEnv(),
+      );
+      expect(anonymous.status).toBe(401);
+      expect(await latestChatConversation(testEnv(), userId)).not.toBeNull();
+
+      const deleted = await handleDeleteChatConversation(
+        new Request(`${APP_ORIGIN}${CHAT_CONVERSATION_DELETE_PATH}`, {
+          method: 'POST',
+          headers: { cookie: await sessionCookie(userId) },
+        }),
+        testEnv(),
+      );
+      expect(deleted.status).toBe(200);
+      expect(await latestChatConversation(testEnv(), userId)).toBeNull();
     });
   });
 

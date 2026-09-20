@@ -2291,6 +2291,63 @@ img.gf-related-shot {
 }
 
 /*
+ * 生成の前の相談の区画（`src/chat-section.ts`。#695 / 仕様 5.16）。**フォームの後ろに置く「任意」の区画**で、
+ * 主のボタン（「生成する」）は上のフォームにある（2.5.5）。
+ *
+ * **幅に反応する `@media` を置かない**（区画の規約 3。断点は `@section shell` が持つ）。会話は縦に積むだけで、
+ * 段によって形を変えない——**狭い段でそのまま読める形を、広い段でも使う。**
+ */
+.gf-chat {
+  margin-bottom: var(--gf-gap-3);
+}
+
+.gf-chat .gf-heading-row {
+  margin-top: 0;
+}
+
+/* 会話。**空のときは何も出さない**（`:empty` で余白ごと消す）。 */
+.gf-chat-log {
+  list-style: none;
+  margin: var(--gf-gap-2) 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gf-gap-2);
+}
+
+.gf-chat-log:empty {
+  margin: 0;
+}
+
+/*
+ * 1 往復。**誰の発話かは、色ではなく名前（`.gf-chat-who`）で示す**——作品ページ以外は色を持たない
+ * （`@section work` の「ここだけが色を持つ」）。
+ */
+.gf-chat-turn {
+  margin: 0;
+}
+
+.gf-chat-who {
+  display: block;
+  color: var(--gf-ink-soft);
+  font-size: var(--gf-text-small);
+}
+
+/* 返答は改行をそのまま見せる（指示文の下書きが 1 段落で届かない）。 */
+.gf-chat-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ボタンの並び。**狭い段で折り返す**（`gap` は縦横の両方へ効く）。 */
+.gf-chat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gf-gap-2);
+}
+
+/*
  * 「あなたの作品」の表（`src/my-works.ts`。#666）。**YouTube Studio の「チャンネルのコンテンツ」から借りたのは配置だけ**で、
  * 見た目は仕様 2.5 のまま——表はブロックの面（`.gf-block`）1 枚、行の間は `--gf-rule-soft` の罫線、枠線と影は使わない。
  *

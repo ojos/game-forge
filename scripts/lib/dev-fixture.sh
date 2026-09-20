@@ -258,6 +258,13 @@ dev_fixture_up() {
       values ('$SOURCE_SHA', 'go1.26.5', '$SOURCE_KEY', '$WASM_KEY', 11404411, '$SOURCE_SHA',
               2282839, '$SOURCE_SHA', 'br', 1);
     update users set is_admin = 1 where id = '$USER_ID';
+    -- **相談の会話**（#695 / 仕様 5.16）。生成画面の相談の区画は**会話が 0 件でも描かれる**が、
+    -- それでは 1 往復の形（誰の発話かの名前・改行を残す本文）が 1 度も描かれないまま緑になる
+    -- （docs/handoff.md 3 章「仕込みに無いものは測れない」）。**長い発話と改行を含む返答**を 1 往復入れる。
+    insert into chat_conversations (id, user_id, messages, created_at, updated_at)
+      values ('width-check-chat', '$USER_ID',
+              '[{"role":"user","text":"幅の検査の相談です。1 行に収まらない長さの発話にしてあります。短い時間で遊べる、避けるゲームを作りたいです。"},{"role":"assistant","text":"どのくらいの時間で遊び終わる形にしますか。\n\n【指示文】\n赤い玉を避けて 30 秒生き延びるゲーム。矢印キーで自機を動かし、当たると終了。残り時間を画面の上に出す。"}]',
+              1, 1);
     insert into users (id, google_sub, email, display_name, created_at)
       values ('$PLAIN_USER_ID', 'sub-$PLAIN_USER_ID', '$PLAIN_USER_ID@example.invalid', '幅の検査（ハンドル名なし）', 1);
     insert into handles (handle, user_id, claimed_at) values ('$HANDLE', '$USER_ID', 1);

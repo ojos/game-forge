@@ -33,7 +33,7 @@ export const CHAT_PROMPT_VERSION = 1;
 /**
  * 本文の節（順に連結する）。
  *
- * **節に分けてあるのは、`test/chat-prompt.test.ts` が 1 節ずつ見るためである**
+ * **節に分けてあるのは、`test/chat-lambda.test.ts` が 1 節ずつ見るためである**
  * （`SYSTEM_PROMPT_SECTIONS` と同じ形）。
  */
 export const CHAT_PROMPT_SECTIONS: readonly string[] = [

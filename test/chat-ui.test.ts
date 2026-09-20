@@ -36,12 +36,18 @@ const TEST_FILES = new Set([
   ).map((path) => path.slice('./'.length)),
   'chat-ui.test.ts',
 ]);
-const chatConversationSource = (
-  import.meta.glob('../src/chat-conversation.ts', { eager: true, query: '?raw', import: 'default' }) as Record<string, string>
-)['../src/chat-conversation.ts']!;
-const chatSectionSource = (
-  import.meta.glob('../src/chat-section.ts', { eager: true, query: '?raw', import: 'default' }) as Record<string, string>
-)['../src/chat-section.ts']!;
+/**
+ * 相談のモジュールの本文（注記が指すテストの実在を見るため）。
+ *
+ * **1 つずつ名指しにしない。** #718 で `src/chat-quota.ts` が存在しない
+ * `test/chat-quota.test.ts` を指しているのを見つけた——**前の検査は 2 ファイルだけを名指ししており、
+ * 足したモジュールが黙って対象の外にいた。** 相談のモジュールをまとめて拾う。
+ */
+const CHAT_SOURCES = import.meta.glob('../src/chat*.ts', {
+  eager: true,
+  query: '?raw',
+  import: 'default',
+}) as Record<string, string>;
 
 /**
  * 相談の画面と会話の保存（#695 / M18-2 / 仕様 5.16）。
@@ -212,7 +218,8 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
 
   it('コメントが指す検査のファイルが実在する（腐った参照を残さない）', () => {
     // **#715 の Copilot が見つけた形**——存在しないテストファイルを注記が指していた。
-    for (const source of [chatConversationSource, chatSectionSource]) {
+    expect(Object.keys(CHAT_SOURCES).length).toBeGreaterThan(3);
+    for (const source of Object.values(CHAT_SOURCES)) {
       for (const matched of source.matchAll(/`(test\/[A-Za-z0-9._-]+\.test\.ts)`/gu)) {
         const path = matched[1]!;
         expect([...TEST_FILES], `注記が指す ${path} が無い`).toContain(path.slice('test/'.length));

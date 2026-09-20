@@ -50,6 +50,7 @@ import {
   CHAT_DAILY_TOKENS_REASON,
   CHAT_MONTHLY_LIMIT_REASON,
   chatQuotaStatus,
+  estimateChatTokens,
 } from './chat-quota.js';
 import { CHAT_KIND, recordGeneration } from './cost-ledger.js';
 import type { GenerationModelKey } from './generation-models.js';
@@ -244,6 +245,24 @@ export async function handleChat(
     parsed.workId === null
       ? null
       : await loadChatWorkContext(env, userId, parsed.workId, parsed.includeSource);
+
+  // **この 1 往復が蓋を超えないことを、呼ぶ前に確かめる**（`src/chat-quota.ts` の
+  // `estimateChatTokens`）。**文脈を引いた後に置く**——ソースを載せるかどうかで見積もりが
+  // 5 倍以上変わるので、載せると決まってから数える。
+  //
+  // **これが無いと、残りが 1 トークンでも満額の往復が通る**（ソースを渡す往復は最大
+  // 36,588 トークンで、1 日の蓋 30,000 を単独で超える）。**断り方は枠切れと同じ**である
+  // ——利用者にできること（ソースを外す／翌日に回す）が同じで、`resetsAt` も同じ値である。
+  const estimated = estimateChatTokens({
+    messageCharacters: parsed.messages.reduce((total, message) => total + [...message.text].length, 0),
+    sourceBytes: work?.source === null || work?.source === undefined ? 0 : new TextEncoder().encode(work.source).length,
+  });
+  if (estimated > quota.remainingTokens) {
+    return json(
+      { error: CHAT_DAILY_TOKENS_REASON, resetsAt: quota.resetsAt, estimatedTokens: estimated },
+      429,
+    );
+  }
 
   const ask = deps.ask ?? createAskChat();
   let answer: Awaited<ReturnType<AskChat>>;

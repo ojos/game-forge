@@ -19,6 +19,7 @@ import {
   CHAT_MONTHLY_LIMIT_PATTERN,
   CHAT_MONTHLY_LIMIT_REASON,
   chatQuotaStatus,
+  estimateChatTokens,
 } from '../src/chat-quota.js';
 import { handleChat } from '../src/chat.js';
 import { CHAT_KIND, GENERATION_KIND } from '../src/cost-ledger.js';
@@ -336,6 +337,52 @@ describe('相談の口（仕様 5.16）', () => {
 
       const daily = await dailyCallCount(testEnv(), userId, NOW);
       expect(daily.calls).toBe(1);
+    });
+  });
+
+  describe('1 往復が蓋を超えないこと（PR #712 の Copilot の指摘）', () => {
+    it('見積もりが残りを超える要求は、呼ぶ前に断る', async () => {
+      const userId = await createUser();
+      // 残りを、短い 1 往復の見積もりより少しだけ小さくする。
+      const estimate = estimateChatTokens({ messageCharacters: 12, sourceBytes: 0 });
+      await seedLedger(userId, CHAT_KIND, { tokens: CHAT_DAILY_TOKEN_LIMIT - estimate + 1 });
+
+      const stub = stubAsk({ inputTokens: 1, outputTokens: 1 });
+      const response = await post(userId, { messages: [{ role: 'user', text: 'あ'.repeat(12) }] }, stub.ask);
+      expect(response.status).toBe(429);
+      expect(await response.json()).toMatchObject({
+        error: CHAT_DAILY_TOKENS_REASON,
+        estimatedTokens: estimate,
+      });
+      // **呼んでいない**ので、課金も台帳の行も出ない。
+      expect(stub.calls).toHaveLength(0);
+    });
+
+    it('見積もりが残りに収まれば通る（境目）', async () => {
+      const userId = await createUser();
+      const estimate = estimateChatTokens({ messageCharacters: 12, sourceBytes: 0 });
+      await seedLedger(userId, CHAT_KIND, { tokens: CHAT_DAILY_TOKEN_LIMIT - estimate });
+
+      const stub = stubAsk({ inputTokens: 1, outputTokens: 1 });
+      const response = await post(userId, { messages: [{ role: 'user', text: 'あ'.repeat(12) }] }, stub.ask);
+      expect(response.status).toBe(200);
+      expect(stub.calls).toHaveLength(1);
+    });
+
+    it('ソースを渡す往復は、単独で 1 日の蓋を超えうる（だから呼ぶ前に数える）', () => {
+      // **この値がこの直しの理由である。** 64 KiB のソースを載せた最大の往復は、
+      // 残りが満額でも 1 日の蓋を超える。
+      const worst = estimateChatTokens({
+        messageCharacters: CHAT_MAX_TOTAL_MESSAGE_LENGTH,
+        sourceBytes: 64 * 1024,
+      });
+      expect(worst).toBeGreaterThan(CHAT_DAILY_TOKEN_LIMIT);
+    });
+
+    it('見積もりはソースを載せたときだけ増える', () => {
+      const without = estimateChatTokens({ messageCharacters: 100, sourceBytes: 0 });
+      const with_ = estimateChatTokens({ messageCharacters: 100, sourceBytes: 3_000 });
+      expect(with_ - without).toBe(1_000);
     });
   });
 

@@ -257,6 +257,22 @@ else
   echo "[acceptance] (avatar) skip: terraform/avatar-function.tf not found"
 fi
 
+# エッジから Lambda を呼ぶ許可が、宣言から導けること（#695 の PR① の Copilot の指摘）。
+#
+# **外部層（scripts/acceptance-remote.sh）が期待値を宣言から導くとき、`local.*_invoke_actions` に
+# 対応する output が無いと ERROR で止まる。** 関数を 1 つ足して output を書き忘れると、
+# **apply の後になって初めて分かる**——その時点では本番の IAM は既に変わっている。
+#
+# **導出だけを見る入口は認証もネットワークも要らない**（読むのは .tf だけ）ので、ローカル層に置ける。
+# 外部層そのものはここへ含めない（.github/project-ai-rules.md「外部層を単一入口へ含めない理由」）。
+if [[ -f scripts/acceptance-remote.sh ]]; then
+  echo "[acceptance] (tf-invoker-policies) scripts/acceptance-remote.sh --print-declared-invoker-policies"
+  bash scripts/acceptance-remote.sh --print-declared-invoker-policies >/dev/null
+  ran_any=1
+else
+  echo "[acceptance] (tf-invoker-policies) skip: scripts/acceptance-remote.sh not found"
+fi
+
 # 相談の「写し」の機械照合（#695 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く**（sed だけで数 ms）。外すと、関数名のずれが黙って本番へ出て、相談が

@@ -203,6 +203,20 @@ export const CHAT_SCRIPT = `
     for (var m = 0; m < notices.length; m += 1) { notices[m].hidden = true; }
   }
 
+  /**
+   * 送った発話を取り消して、書いた文を欄へ戻す。
+   *
+   * **通らなかった往復のあとに、user の発話を DOM へ残さない。** 残すと次の送信で
+   * user が 2 連続になり、**サーバの検査（役割は交互）が 400 を返し続ける**
+   * ——再読み込みするまで相談が回復しない。**断られたときも、通信が落ちたときも、同じ
+   * 後始末を通す**（片方だけに書くと、もう片方が上の行き止まりを作る）。
+   */
+  function rollback(text) {
+    var last = log.lastElementChild;
+    if (last !== null) { log.removeChild(last); }
+    input.value = text;
+  }
+
   /** いちばん新しい AI の返答から、指示文の下書きを取り出す。 */
   function draft() {
     var turns = log.querySelectorAll('.gf-chat-assistant .gf-chat-text');
@@ -244,10 +258,7 @@ export const CHAT_SCRIPT = `
       return response.json().then(function (payload) { return { status: response.status, payload: payload }; });
     }).then(function (result) {
       if (result.status !== 200) {
-        // **送った発話を戻す**（枠切れや検査で止まったとき、書いた文を失わせない）。
-        var last = log.querySelector('.gf-chat-turn:last-child');
-        if (last !== null) { log.removeChild(last); }
-        input.value = text;
+        rollback(text);
         notify(result.status, typeof result.payload.error === 'string' ? result.payload.error : '');
         return;
       }
@@ -260,6 +271,9 @@ export const CHAT_SCRIPT = `
       }
       refreshApply();
     }).catch(function () {
+      // **通信が落ちたときと、応答が JSON でないときもここへ来る。** 上の枝と同じ後始末を
+      // 通す（rollback の注記）。
+      rollback(text);
       notify(0, '');
     }).then(function () {
       busy = false;

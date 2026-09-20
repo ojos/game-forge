@@ -172,6 +172,13 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
     expect(html).toContain('id="chat-log"');
   });
 
+  it('スクリプトが JavaScript として構文が通る', () => {
+    // **テンプレートリテラルの中身は、TypeScript が中身まで見ない。** バッククォートを 1 つ
+    // 書き足しただけで文字列がそこで終わる（実際に踏んだ）。**解析だけして実行はしない**
+    // （`document` も `fetch` も無い環境で走らせる必要は無い）。
+    expect(() => new Function(CHAT_SCRIPT)).not.toThrow();
+  });
+
   it('スクリプトは innerHTML を使わない（このモジュールの線）', () => {
     expect(CHAT_SCRIPT).not.toContain('innerHTML');
     expect(CHAT_SCRIPT).not.toContain('outerHTML');
@@ -189,6 +196,17 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
     expect(CHAT_SCRIPT).not.toContain('form.submit');
     expect(CHAT_SCRIPT).not.toContain('requestSubmit');
     expect(CHAT_SCRIPT).not.toMatch(/fetch\([^)]*\/api\/generate/u);
+  });
+
+  it('通らなかった往復は、断られたときも通信が落ちたときも取り消す（第二意見の指摘）', () => {
+    // **`user` の発話を DOM へ残すと、次の送信で `user` が 2 連続になり、サーバの検査が
+    // 400 を返し続ける**——再読み込みするまで相談が回復しない。**後始末は 1 か所に置き、
+    // 2 つの枝の両方から呼ぶ。**
+    expect(CHAT_SCRIPT).toContain('function rollback(text)');
+    const calls = [...CHAT_SCRIPT.matchAll(/\brollback\(text\)/gu)];
+    // 定義の 1 つと、呼び出しの 2 つ（断られた枝・通信が落ちた枝）。
+    expect(calls).toHaveLength(3);
+    expect(CHAT_SCRIPT).toMatch(/\.catch\(function \(\) \{[\s\S]*?rollback\(text\)/u);
   });
 
   it('下書きの見出しが、システムプロンプトの綴りと一致する', () => {

@@ -487,23 +487,71 @@ type ParentFailure = 'not-forkable' | StoredSourceFailure;
  * @param parentId 親の作品 id
  * @returns 親のソース、または失敗の理由
  */
-async function readParentSource(
+/** フォーク元として受け入れた作品の行（{@link loadForkableParent} が返す）。 */
+export interface ForkableParent {
+  readonly sourceKey: string | null;
+  readonly title: string;
+  readonly description: string;
+  readonly tags: readonly string[];
+}
+
+/**
+ * フォーク元として受け入れられる作品を引く（**可否の正本**）。
+ *
+ * **公開済みの作品だけを返す**（5.3）。**この判定を書き写さない**——#727 の相談が
+ * 同じ条件を自前で書いたところ、**「フォークの条件を変えた日に、相談だけが古い条件で通る」**
+ * という形になった（Copilot の指摘）。**引く側が増えるたびにここを通す。**
+ *
+ * **題名・説明・タグも一緒に返す**のは、相談の文脈（確定38）がそれを読むためである。
+ * **最初の指示文（`games.prompt`）は選ばない**（1.2.54。選ばなければ、後から
+ * 「うっかり載せる」経路が作れない）。
+ *
+ * @param db D1
+ * @param parentId 親の作品 id
+ * @returns 行、またはフォークできないなら null
+ */
+export async function loadForkableParent(
+  db: D1Database,
+  parentId: string,
+): Promise<ForkableParent | null> {
+  const row = await db
+    .prepare('select status, source_key, title, description, tag1, tag2, tag3 from games where id = ?')
+    .bind(parentId)
+    .first<{
+      status: string;
+      source_key: string | null;
+      title: string | null;
+      description: string | null;
+      tag1: string | null;
+      tag2: string | null;
+      tag3: string | null;
+    }>();
+  if (row === null || row.status !== PUBLISHED_STATUS) {
+    return null;
+  }
+  return {
+    sourceKey: row.source_key,
+    title: row.title ?? '',
+    description: row.description ?? '',
+    tags: [row.tag1, row.tag2, row.tag3].filter(
+      (tag): tag is string => typeof tag === 'string' && tag !== '',
+    ),
+  };
+}
+
+export async function readParentSource(
   env: Env,
   parentId: string,
 ): Promise<{ ok: true; source: string } | { ok: false; reason: ParentFailure }> {
-  const row = await env.DB.prepare('select status, source_key from games where id = ?')
-    .bind(parentId)
-    .first<{ status: string; source_key: string | null }>();
-
-  // **5.3 の対象条件はこの 1 行である。** `draft`（未公開）も `removed`（8.4 の
-  // tombstone）も、行が無いのも、すべてここで落ちる。
-  if (row === null || row.status !== PUBLISHED_STATUS) {
+  // **可否の判定は {@link loadForkableParent} が持つ**（#727。書き写さない）。
+  const parent = await loadForkableParent(env.DB, parentId);
+  if (parent === null) {
     return { ok: false, reason: 'not-forkable' };
   }
   // 公開できるのは `generation_state='ready'` の作品だけなので（5.4 /
   // `src/games.ts` の `publishGame`）、公開済みの行にキーが無いことは通常起こらない。
   // **それでも不変条件に寄りかからない**——無ければ「読めなかった」である。
-  if (row.source_key === null) {
+  if (parent.sourceKey === null) {
     return { ok: false, reason: 'source-missing' };
   }
 
@@ -513,7 +561,7 @@ async function readParentSource(
   //
   // **上限が消えたわけではない。** 帯の判定は `decideForkSizeAction` が行い、
   // 上限超はそのままでは通らない（整理を選んで初めて通る）。
-  return await readStoredSource(env, row.source_key, TIDY_MAX_SOURCE_BYTES);
+  return await readStoredSource(env, parent.sourceKey, TIDY_MAX_SOURCE_BYTES);
 }
 
 /**

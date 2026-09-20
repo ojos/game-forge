@@ -91,6 +91,7 @@ import {
   ogpImageUrl,
 } from './ogp.js';
 import {
+  GENERATE_PAGE_PATH,
   FORK_PARENT_ID_FIELD,
   FORK_PATH,
   FORK_PROMPT_FIELD,
@@ -176,6 +177,7 @@ import { resolveSessionUser } from './session-user.js';
 // `escapeHtml` の正本は `src/signup.ts` である（`src/invite-issuance.ts` も
 // そこから取っている）。同じ関数をこのモジュールで作り直さない。
 import {  signupPathFrom } from './signup.js';
+import { chatPathFor } from './chat-target.js';
 import type { SiteViewer } from './html.js';
 import {
   avatarImage,
@@ -1806,11 +1808,21 @@ export function reviseSection(view: WorkPageView): string {
   <button type="submit" class="${SECONDARY_BUTTON}">この内容でリフォージする</button>
 </form>`;
 
+  // **相談への導線**（#727 / 確定38）。**作品ページの中へ相談を埋め込まない**——下固定の入力を
+  // 持つ主役が 1 画面に 2 つ並ぶ。**リンクだけを置き、相談は 1 つの画面で受ける。**
+  // **枠が尽きているときは出さない**（上のフォームと同じ判断。押せない導線を増やさない）。
+  const chatLink =
+    view.dailyRemaining === 0
+      ? ''
+      : `\n<p class="gf-chat-entry"><a href="${escapeHtml(
+          chatPathFor(GENERATE_PAGE_PATH, { kind: 'revise', id: view.publishableId }),
+        )}">AI と相談してから直す</a></p>`;
+
   return `${failed}
 <h3>リフォージ（気になるところを直す）</h3>
 <p>どう直したいかを書くと、いまのソースをもとに作り直します。
    <strong>1 回につき 1〜2 分かかり、生成枠を使います。${GENERATION_RETRY_QUOTA_NOTICE}</strong></p>
-${daily}${form}`;
+${daily}${form}${chatLink}`;
 }
 
 /**
@@ -2726,7 +2738,13 @@ function forkCta(view: WorkPageView): string {
 <p class="gf-fork-note">どう変えたいかを書くと、このゲームのソースをもとに新しい作品を作ります。
    <strong>1 回につき 1〜2 分かかり、生成枠を使います。${GENERATION_RETRY_QUOTA_NOTICE}</strong>元の作品はそのまま残ります。
    ${FORK_TIDY_QUOTA_NOTICE}</p>
-${daily}${form}
+${daily}${form}${
+    view.forkableId === null || view.dailyRemaining === 0
+      ? ''
+      : `\n<p class="gf-chat-entry"><a href="${escapeHtml(
+          chatPathFor(GENERATE_PAGE_PATH, { kind: 'fork', id: view.forkableId }),
+        )}">AI と相談してからフォークする</a></p>`
+  }
 </div>
 </details>`;
 }

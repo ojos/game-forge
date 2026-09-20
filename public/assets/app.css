@@ -2442,6 +2442,18 @@ img.gf-related-shot {
 }
 
 /*
+ * **部品の `display` は UA の `[hidden]` に勝つ**ので、`display: none` をここで宣言する
+ * （`.gf-play-open[hidden]` / `.gf-play-orient-toggle[hidden]` と同じ罠。#727 で実物を撮って
+ * 気づいた——**#726 から、下書きがまだ無いのに主のボタンが出ていた**）。
+ *
+ * **ボタン全体に効かせる。** `.gf-chat-apply-row` だけに書くと、**次に `hidden` で配る
+ * ボタンが同じ形で壊れる**——この罠はリポジトリの中で 3 回目である。
+ */
+.gf-button[hidden] {
+  display: none;
+}
+
+/*
  * 入力。**区画の最後の子なので、常にいちばん下にある**（確定38「画面の下に固定した入力」）。
  *
  * **浮かせない**（`sticky` も `fixed` も使わない。理由は `.gf-chat` の冒頭）。**縮まない**

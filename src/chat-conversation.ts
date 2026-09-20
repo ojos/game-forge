@@ -29,6 +29,7 @@
  * 行が 1 本増える**が、復元されるのは最後の 1 本だけである。
  */
 import type { ChatMessage } from './chat-payload.js';
+import type { ChatTarget } from './chat-target.js';
 import { CHAT_MAX_MESSAGES } from './chat-payload.js';
 
 /**
@@ -98,26 +99,34 @@ export function parseStoredMessages(raw: unknown): readonly ChatMessage[] | null
 }
 
 /**
- * その利用者の、いちばん新しい会話を読む。
+ * その利用者の、**この対象の**いちばん新しい会話を読む（#727 / 確定38）。
  *
- * 索引は `chat_conversations(user_id, updated_at desc)`（`migrations/0049_chat.sql`）。
+ * **対象ごとに分ける。** 分けないと、**フォークの相談の続きに、前に新規で話した内容が
+ * ぶら下がる**——AI はそれを同じ話の続きとして読む。
+ *
+ * 索引は `chat_conversations(user_id, target_kind, target_id, updated_at desc)`
+ * （`migrations/0051_chat_target.sql`）。**`target_id` は NULL と値を分けて比べる**
+ * ——SQL の `=` は NULL に当たらないので、新しく作る相談は `is null` で引く。
  *
  * @param env バインディングと環境変数
  * @param userId 呼び出し元
+ * @param target 相談の対象
  * @returns 会話、または null（1 本も無い・壊れている）
  */
 export async function latestChatConversation(
   env: Env,
   userId: string,
+  target: ChatTarget,
 ): Promise<StoredChatConversation | null> {
   const row = await env.DB.prepare(
     `select id, messages, updated_at
        from chat_conversations
-      where user_id = ?
+      where user_id = ? and target_kind = ?
+        and target_id is ?
       order by updated_at desc
       limit 1`,
   )
-    .bind(userId)
+    .bind(userId, target.kind, target.id)
     .first<{ id: string; messages: string; updated_at: number }>();
   if (row === null) {
     return null;
@@ -142,6 +151,7 @@ export async function latestChatConversation(
  * @param env バインディングと環境変数
  * @param userId 呼び出し元
  * @param conversationId 上書きする会話の id（新しく始めるなら null）
+ * @param target 相談の対象（#727。**上書きの条件にも入れる**）
  * @param messages 保存する発話の列
  * @param now 時刻（UNIX 秒）
  * @returns 保存した会話の id
@@ -150,15 +160,20 @@ export async function saveChatConversation(
   env: Env,
   userId: string,
   conversationId: string | null,
+  target: ChatTarget,
   messages: readonly ChatMessage[],
   now: number,
 ): Promise<string> {
   const body = JSON.stringify(messages);
   if (conversationId !== null) {
+    // **対象も条件に入れる**（#727）。入れないと、**別の対象の会話の id を送ることで、
+    // その中身を差し替えられる**——自分の会話どうしではあるが、`user_id` を条件に入れたのと
+    // 同じ理由で、**行を選ぶ条件と、行が属する対象を一致させておく。**
     const updated = await env.DB.prepare(
-      `update chat_conversations set messages = ?, updated_at = ? where id = ? and user_id = ?`,
+      `update chat_conversations set messages = ?, updated_at = ?
+        where id = ? and user_id = ? and target_kind = ? and target_id is ?`,
     )
-      .bind(body, now, conversationId, userId)
+      .bind(body, now, conversationId, userId, target.kind, target.id)
       .run();
     if ((updated.meta.changes ?? 0) > 0) {
       return conversationId;
@@ -166,10 +181,10 @@ export async function saveChatConversation(
   }
   const id = crypto.randomUUID();
   await env.DB.prepare(
-    `insert into chat_conversations (id, user_id, messages, created_at, updated_at)
-     values (?, ?, ?, ?, ?)`,
+    `insert into chat_conversations (id, user_id, messages, target_kind, target_id, created_at, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, body, now, now)
+    .bind(id, userId, body, target.kind, target.id, now, now)
     .run();
   return id;
 }

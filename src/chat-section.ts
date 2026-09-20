@@ -51,6 +51,7 @@ import { CHAT_MAX_MESSAGES, CHAT_MAX_MESSAGE_LENGTH } from './chat-payload.js';
 import { CHAT_DAILY_TOKEN_LIMIT } from './chat-quota.js';
 import { CHAT_RETENTION_DAYS } from './chat-conversation.js';
 import type { ChatMessage } from './chat-payload.js';
+import type { ChatTarget } from './chat-target.js';
 import { escapeHtml } from './html.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
 
@@ -62,6 +63,35 @@ import { MAX_PROMPT_LENGTH } from './generate.js';
  * 返答の全文を欄へ入れることになる（壊れはしないが、意図した形ではない）。
  */
 export const CHAT_DRAFT_HEADING = '【指示文】';
+
+/**
+ * 対象ごとの文言（#727 / 確定38）。
+ *
+ * **3 つの対象で変わるのは、見出し・説明・主のボタンの文言と、そのボタンが送るフォームだけ**
+ * である。**会話のしくみも、枠も、保存も同じ**——だから画面は 1 つで足りる（5.16）。
+ */
+export const CHAT_TARGET_LABELS: Readonly<
+  Record<string, { readonly heading: string; readonly hint: string; readonly apply: string; readonly form: string }>
+> = {
+  new: {
+    heading: 'AI と相談して作る',
+    hint: 'どんなゲームにするか話しながら、<strong>指示文の下書き</strong>を作れます。',
+    apply: 'この指示で作る',
+    form: 'generate-form',
+  },
+  revise: {
+    heading: 'AI と相談して直す',
+    hint: 'この作品をどう直すか話しながら、<strong>リフォージの指示文の下書き</strong>を作れます。<strong>いまのソースをもとに作り直します。</strong>',
+    apply: 'この指示で直す',
+    form: 'revise-form',
+  },
+  fork: {
+    heading: 'AI と相談してフォークする',
+    hint: 'この作品をどう変えるか話しながら、<strong>フォークの指示文の下書き</strong>を作れます。<strong>元の作品のソースをもとに、あなたの新しい作品を作ります。</strong>',
+    apply: 'この指示でフォークする',
+    form: 'fork-form',
+  },
+};
 
 /** 相談の区画で使う固定の文言（分類名から 1 つだけ選んで見せる。生成画面と同じ形）。 */
 export const CHAT_MESSAGES: Readonly<Record<string, string>> = {
@@ -85,6 +115,10 @@ export interface ChatSectionView {
   readonly messages: readonly ChatMessage[];
   /** 続きを書き込む会話の id（無ければ null）。 */
   readonly conversationId: string | null;
+  /**
+   * 相談の対象（#727 / 確定38）。**見出し・説明・主のボタンの文言と行き先が、これで変わる。**
+   */
+  readonly target: ChatTarget;
 }
 
 /**
@@ -118,16 +152,30 @@ export function renderChatSection(view: ChatSectionView): string {
     )
     .join('\n');
   const conversation = view.conversationId === null ? '' : ` data-conversation="${escapeHtml(view.conversationId)}"`;
+  // **対象はスクリプトが毎回の要求に載せる**（`data-target-*`）。**画面が組み立てた値を
+  // サーバが信じない**——口の側で同じ規則の検証を通す（`chatTargetFromBody`）。
+  const target = ` data-target-kind="${escapeHtml(view.target.kind)}"${
+    view.target.id === null ? '' : ` data-target-id="${escapeHtml(view.target.id)}"`
+  }`;
+  const labels = CHAT_TARGET_LABELS[view.target.kind] ?? CHAT_TARGET_LABELS['new']!;
+  // **ソースを見せる操作**（5.16 / 確定38「作者がその会話で明示的に求めたときだけ」）。
+  // **#695 から、この操作が画面に無かった**——口は `includeSource` を受けていたのに、
+  // **送る側がどこにも無く、決定が 1 度も届いていなかった**（#727 の Copilot の指摘）。
+  // **対象がある相談にだけ出す**（新規の相談には見せる作品が無い）。
+  const sourceToggle =
+    view.target.kind === 'new'
+      ? ''
+      : `      <label class="gf-chat-source"><input type="checkbox" id="chat-source"> いまのソースも見せて相談する（1 往復が重くなります）</label>\n`;
   // **空のときは `<ol>` の中を本当に空にする。** 改行やインデントを残すと空白のテキストノードが
   // でき、**`:empty`（`public/assets/app.css`）が成立せず余白が残る**（PR #715 の Copilot の指摘）。
   const log = view.messages.length === 0 ? '' : `\n${renderChatLog(view.messages)}\n  `;
 
-  return `<section id="chat" class="gf-block gf-chat"${conversation}>
+  return `<section id="chat" class="gf-block gf-chat"${conversation}${target}>
   <div class="gf-heading-row">
-    <h2>AI と相談して作る</h2>
+    <h2>${escapeHtml(labels.heading)}</h2>
     <p class="gf-generate-quota" id="chat-quota">1 日 ${CHAT_DAILY_TOKEN_LIMIT.toLocaleString('en-US')} トークンまで</p>
   </div>
-  <p class="gf-generate-hint">どんなゲームにするか話しながら、<strong>指示文の下書き</strong>を作れます。
+  <p class="gf-generate-hint">${labels.hint}
      <strong>コードは出ません。</strong>相談は生成枠とは別の枠で、<strong>相談しても生成できる回数は減りません。</strong>
      会話は<strong>あなただけが見られ</strong>、最後に使ってから ${CHAT_RETENTION_DAYS} 日で消えます。</p>
   <ol id="chat-log" class="gf-chat-log" tabindex="0" aria-label="相談の履歴">${log}</ol>
@@ -138,7 +186,7 @@ ${messages}
   <!-- **この画面の主のボタンはこれ 1 つである**（2.5.5 / 確定38）。下書きが出るまでは隠れており、
        押すと生成のフォームをそのまま送る（\`form\` 属性。**開始の経路は変えない**）。 -->
   <p class="gf-chat-apply-row"><button id="chat-apply" class="gf-button gf-button-primary" type="submit"
-          form="generate-form" hidden>この指示で作る</button></p>
+          form="${escapeHtml(labels.form)}" hidden>${escapeHtml(labels.apply)}</button></p>
   <!-- **入力は区画の最後の子なので、常にいちばん下にある**（確定38。浮かせない理由は
        \`public/assets/app.css\` の \`.gf-chat\` の冒頭）。区画のボタンは、送るが secondary、
        記録を消すが tertiary である。 -->
@@ -150,7 +198,7 @@ ${messages}
       <button id="chat-send" class="gf-button gf-button-secondary" type="button">送る</button>
     </div>
     <div class="gf-chat-actions">
-      <button id="chat-clear" class="gf-button gf-button-tertiary" type="button">相談の記録を消す</button>
+${sourceToggle}      <button id="chat-clear" class="gf-button gf-button-tertiary" type="button">相談の記録を消す</button>
     </div>
   </div>
   <noscript>
@@ -178,7 +226,11 @@ export const CHAT_SCRIPT = `
   var clear = document.getElementById('chat-clear');
   var status = document.getElementById('chat-status');
   var quota = document.getElementById('chat-quota');
-  var prompt = document.getElementById('generate-prompt');
+  // **下書きを入れる欄は対象で変わる**（生成 / リフォージ / フォーク）。**主のボタンが属する
+  // フォームの欄を引く**ので、ここで 3 つのうち在るものを 1 つ選ぶ。
+  var prompt = document.getElementById('generate-prompt')
+    || document.getElementById('revise-prompt')
+    || document.getElementById('fork-prompt');
   if (section === null || log === null || input === null || send === null) { return; }
   var notices = document.querySelectorAll('[data-chat-message-key]');
   var busy = false;
@@ -287,6 +339,13 @@ export const CHAT_SCRIPT = `
     append('user', text);
     input.value = '';
     var body = { messages: history() };
+    body.targetKind = section.getAttribute('data-target-kind') || 'new';
+    // **ソースは、作者がその往復で求めたときだけ載る**（5.16 / 確定38）。**毎往復ごとに読む**
+    // ——外せば次の往復からは載らない（重さが戻る）。
+    var source = document.getElementById('chat-source');
+    if (source !== null && source.checked) { body.includeSource = true; }
+    var targetId = section.getAttribute('data-target-id');
+    if (targetId !== null && targetId !== '') { body.targetId = targetId; }
     var id = section.getAttribute('data-conversation');
     if (id !== null && id !== '') { body.conversationId = id; }
     fetch(${JSON.stringify(CHAT_API_PATH)}, {

@@ -39,6 +39,7 @@ import { TYPICAL_WAIT_TEXT } from './generate-page.js';
 import { siteFooter } from './legal.js';
 import { FAQ_PATH, PRIVACY_PATH, TAKEDOWN_PATH, TERMS_PATH } from './legal-paths.js';
 import { SIGNUP_PATH } from './paths.js';
+import { PUBLIC_WORKS_PATH } from './works-paths.js';
 import { DAILY_QUOTA_PER_USER } from './quota.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
@@ -98,7 +99,8 @@ export interface FaqEntry {
  * **AI からの接続（`ai-connect`）は #696（MCP サーバー）で足した。** 窓口（`contact`）の直前に置く——窓口は
  * 「ここにない質問」の受け皿なので最後に残す。**接続の解除と、漏れたと思ったときの手順まで書く**（#696 の constraints
  * 「トークンの漏洩と失効の手順を文書にする」）。つなぎ方は Claude の 2 つの形（Claude Code のコマンドと、claude.ai の
- * カスタムコネクタ）だけを書く——ほかの AI のアプリの画面は確かめていない。
+ * カスタムコネクタ）だけを書く——ほかの AI のアプリの画面は確かめていない。**#711 で「AI から読めるもの・読めないもの」を
+ * 足した**（公開作品の一覧・検索と作者の公開プロフィールを道具にしたため。ほかの方のソースは道具にしていない）。
  */
 export const FAQ_ENTRIES: readonly FaqEntry[] = [
   {
@@ -239,7 +241,10 @@ export const FAQ_ENTRIES: readonly FaqEntry[] = [
     question: 'Claude などの AI から、作品を作ったり状況を確かめたりできますか？（MCP）',
     answer: `<p><strong>できます。</strong>MCP（Model Context Protocol）に対応した AI のアプリを Game Forge につなぐと、AI との会話の中で、
    あなたの作品の一覧・状況・ソースと残りの<a href="#quota">生成枠</a>を読んだり、新しい作品の生成とリフォージを始めたりできます。
-   <strong>公開・削除・退会はできません</strong>（作品ページと登録情報から行ってください）。ほかの方の作品も読めません。</p>
+   <strong>公開・削除・退会はできません</strong>（作品ページと登録情報から行ってください）。</p>
+<p><strong>AI から読めるもの</strong>は、あなた自身の作品（一覧・状況・ソース）と残りの生成枠、<strong>公開されている作品の一覧と検索</strong>（「<a href="${PUBLIC_WORKS_PATH}">作品をさがす</a>」と同じ並び・絞り込み・検索で、題名・説明・タグ・作者・いいね数・リンクが読めます）、そして<strong>作者の公開プロフィール</strong>（作者ページと同じ公開情報）です。</p>
+<p><strong>ほかの方の作品のソースは読めません。</strong>公開された作品のソースは作品ページからどなたでも読めますが、AI からの接続では渡していません。
+   ほかの方の下書きと、公開していない情報は、どこからも読めません。</p>
 <p>接続先の URL は <code>${MCP_SERVER_URL}</code> です。</p>
 <ul>
   <li><strong>Claude Code</strong>: <code>claude mcp add --transport http game-forge ${MCP_SERVER_URL}</code> を実行し、Claude Code の中で <code>/mcp</code> を開いて認証してください。</li>

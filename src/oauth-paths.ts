@@ -33,7 +33,7 @@ export const REGISTER_PATH = '/register';
 /**
  * MCP サーバーの口（部品がトークンを検証してから、アプリの処理へ渡す）。
  *
- * 中身は `src/mcp-server.ts`（#696 PR②。道具 6 本。ステートレス）。
+ * 中身は `src/mcp-server.ts`（#696 PR② / #711。道具 8 本。ステートレス）。
  */
 export const MCP_PATH = '/mcp';
 

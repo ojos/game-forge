@@ -115,12 +115,49 @@ export function toPublicWorkApiItem(work: PublicWork, appOrigin: string, sandbox
 }
 
 /**
+ * 一覧の本文を組み立てる（`GET /api/works` と MCP の `list_public_works` の中身。#711 / 仕様 5.15）。
+ *
+ * **MCP の道具は `/api/works` を HTTP で呼び直さず、これを同じ引数の URL で直接呼ぶ**（token passthrough を
+ * 作らない。仕様 5.15）。**引数の読み方と可視の判定はここにも書かない**——URL をそのまま
+ * {@link loadWorksListPage} へ渡すので、知らない `sort` / `tag` を落とす規則も、公開済み・審査（5.4 / 8.4）の
+ * 判定も、画面（`/works`）の 1 か所のままである。
+ *
+ * **断った検索（1 文字だけ・語が多すぎる・長すぎる）だけは 400 にする**——画面は理由を書いて空の一覧を
+ * 出すが、機械には空の一覧と「当たらなかった」が区別できない。どちらも D1 を引かない。
+ *
+ * @param env バインディングと環境変数
+ * @param url 引数を載せた URL（`sort` / `tag` / `q` / `page` を読み、`origin` を作品ページのリンクに使う）
+ * @param sandboxOrigin サンドボックス用ホストのオリジン（遊ぶ URL に使う）
+ * @returns 既存の口が返すステータスと本文
+ */
+export async function publicWorksListResult(
+  env: Env,
+  url: URL,
+  sandboxOrigin: string,
+): Promise<{ readonly status: number; readonly body: unknown }> {
+  const list = await loadWorksListPage(env, url);
+  if (list.search.kind === 'rejected') {
+    return { status: 400, body: { error: 'invalid-query', reason: list.search.reason } };
+  }
+  return {
+    status: 200,
+    body: {
+      sort: list.sort,
+      tag: list.tag,
+      q: list.search.kind === 'accepted' ? list.search.text : null,
+      page: list.page,
+      works: list.works.map((work) => toPublicWorkApiItem(work, url.origin, sandboxOrigin)),
+      nextPage: list.hasNext ? list.page + 1 : null,
+    },
+  };
+}
+
+/**
  * `GET /api/works` — 公開作品の一覧。
  *
  * **引数の読み方は `/works` と同じである**（知らない `sort` / `tag` は落とし、`page` は 1〜50 に丸める）。
- * 実際に使った値を応答に書き戻すので、呼び出し側は落とされたかを確かめられる。**断った検索（1 文字だけ・
- * 語が多すぎる・長すぎる）だけは 400 にする**——画面は理由を書いて空の一覧を出すが、機械には空の一覧と
- * 「当たらなかった」が区別できない。どちらも D1 を引かない。
+ * 実際に使った値を応答に書き戻すので、呼び出し側は落とされたかを確かめられる。本文は
+ * {@link publicWorksListResult}（MCP の道具と同じ）。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -136,23 +173,8 @@ export async function handleListPublicWorks(request: Request, env: Env): Promise
   }
 
   const url = new URL(request.url);
-  const list = await loadWorksListPage(env, url);
-  if (list.search.kind === 'rejected') {
-    return json({ error: 'invalid-query', reason: list.search.reason }, 400, SIGNAL_HEADERS);
-  }
-  const sandboxOrigin = sandboxOriginOf(request, env.SANDBOX_HOST);
-  return json(
-    {
-      sort: list.sort,
-      tag: list.tag,
-      q: list.search.kind === 'accepted' ? list.search.text : null,
-      page: list.page,
-      works: list.works.map((work) => toPublicWorkApiItem(work, url.origin, sandboxOrigin)),
-      nextPage: list.hasNext ? list.page + 1 : null,
-    },
-    200,
-    SIGNAL_HEADERS,
-  );
+  const result = await publicWorksListResult(env, url, sandboxOriginOf(request, env.SANDBOX_HOST));
+  return json(result.body, result.status, SIGNAL_HEADERS);
 }
 
 /** 公開作品の一覧を機械が読める口の経路。 */

@@ -195,6 +195,40 @@ async function quotaViewOf(env: Env, userId: string): Promise<QuotaView> {
 }
 
 /**
+ * 作者の公開プロフィールの結果（`GET /api/users/<id>` と MCP の `get_public_user` の中身。#711 / 仕様 5.15）。
+ *
+ * **MCP の道具は `/api/users/<id>` を HTTP で呼び直さず、これを引数の id で直接呼ぶ**（仕様 5.15）。
+ * **無い id・退会した利用者・形の違う id の扱いは口と同じ 404（`{"error":"not-found"}`）である**——
+ * 理由を分けない（#518）。id の形の規則も口と同じ関数（作者ページの {@link userIdFromPath}）を通す。
+ * 道具は URL ではなく文字列で id を受けるので、**口が受け取るのと同じ綴り（URL の 1 区切り）へ戻してから
+ * 渡す**（規則を書き写さない）。
+ *
+ * @param request 受信したリクエスト（アイコンの URL のスキームとポートを借りる）
+ * @param env バインディングと環境変数
+ * @param userId 読む利用者の id（検査前）
+ * @returns 既存の口が返すステータスと本文
+ */
+export async function publicUserResult(
+  request: Request,
+  env: Env,
+  userId: string,
+): Promise<{ readonly status: number; readonly body: unknown }> {
+  let encoded: string;
+  try {
+    encoded = encodeURIComponent(userId);
+  } catch {
+    // 単独のサロゲート（口では読めない綴り）。口の `decodeURIComponent` の失敗と同じ 404。
+    return { status: 404, body: NOT_FOUND };
+  }
+  const checked = userIdFromPath(`${AUTHOR_PAGE_PREFIX}${encoded}`);
+  if (checked === null) {
+    return { status: 404, body: NOT_FOUND };
+  }
+  const profile = await loadPublicUserProfile(request, env, checked);
+  return profile === null ? { status: 404, body: NOT_FOUND } : { status: 200, body: profile };
+}
+
+/**
  * `GET /api/users/<id>` — 作者の公開プロフィール。
  *
  * @param request 受信したリクエスト

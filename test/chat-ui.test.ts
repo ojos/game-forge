@@ -13,6 +13,7 @@ import { CHAT_MAX_MESSAGES } from '../src/chat-payload.js';
 import { CHAT_DRAFT_HEADING, CHAT_MESSAGES, CHAT_SCRIPT, renderChatSection } from '../src/chat-section.js';
 import { CHAT_PROMPT_SECTIONS } from '../src/chat-prompt.js';
 import { CHAT_QUOTA_REJECTION_REASONS } from '../src/chat-quota.js';
+import { GENERATE_PATH } from '../src/generate.js';
 import { renderGeneratePage } from '../src/generate-page.js';
 import { privacyBody } from '../src/privacy.js';
 import { currentDeclarationsIn } from '../src/quota.js';
@@ -206,14 +207,17 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
   it('会話が無いときの `<ol>` は本当に空である（`:empty` が成立する）', () => {
     // **空白のテキストノードが 1 つでもあると `:empty` は成立しない**（CSS の定義）。
     // `public/assets/app.css` の `.gf-chat-log:empty` が余白を消せるのは、ここが空のときだけである。
+    // **属性の増減で外れない形で見る**（#726 で `tabindex` と `aria-label` を足したときに
+    // 外れた）。見たいのは「`<ol>` の開きタグの直後が閉じタグであること」だけである。
+    const empty = /<ol id="chat-log"[^>]*><\/ol>/u;
     const html = renderChatSection({ messages: [], conversationId: null });
-    expect(html).toContain('class="gf-chat-log"></ol>');
+    expect(html).toMatch(empty);
     // 会話があるときは、当然ながら中身がある（この検査が「常に空」で通らないこと）。
     const filled = renderChatSection({
       messages: [{ role: 'user', text: 'あ' }],
       conversationId: null,
     });
-    expect(filled).not.toContain('class="gf-chat-log"></ol>');
+    expect(filled).not.toMatch(empty);
   });
 
   it('コメントが指す検査のファイルが実在する（腐った参照を残さない）', () => {
@@ -243,14 +247,20 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
     expect(CHAT_SCRIPT).toContain('textContent');
   });
 
-  it('「この指示で作る」は、生成の欄へ入れるだけで送信しない（既存の開始の経路を通る）', () => {
-    // **`prompt.value` へ入れる**（`generate-prompt` は生成のフォームの欄）。
+  it('「この指示で作る」は会話の中の下書きから生成を始め、開始の経路は変えない（確定38）', () => {
+    const html = renderChatSection({ messages: [], conversationId: null });
+    // **ボタン自身が生成のフォームを送る**（`type="submit"` と `form` 属性）。#695 では
+    // 欄へ入れるだけで、送信は作者が「生成する」を押していた。**確定38 でここが変わった。**
+    expect(html).toContain('id="chat-apply"');
+    expect(html).toContain('type="submit"');
+    expect(html).toContain('form="generate-form"');
+    // **欄へ入れる手順は残っている**——送るのは `generate-form` なので、値はその欄が運ぶ。
     expect(CHAT_SCRIPT).toContain("document.getElementById('generate-prompt')");
     expect(CHAT_SCRIPT).toContain('prompt.value = text');
-    // **相談のスクリプトはフォームを送らない**——送信は作者が「生成する」を押す。
-    expect(CHAT_SCRIPT).not.toContain('form.submit');
-    expect(CHAT_SCRIPT).not.toContain('requestSubmit');
+    // **相談のスクリプトは、自分で生成の API を叩かない**（開始の経路は `GENERATE_SCRIPT`）。
     expect(CHAT_SCRIPT).not.toMatch(/fetch\([^)]*\/api\/generate/u);
+    // **下書きが無いときは送らない**（空のまま通すと、直接書く欄の値が飛ぶ）。
+    expect(CHAT_SCRIPT).toContain('event.preventDefault(); return;');
   });
 
   it('通らなかった往復は、断られたときも通信が落ちたときも取り消す（第二意見の指摘）', () => {
@@ -279,6 +289,102 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
   });
 });
 
+/**
+ * CSS の宣言の塊を、セレクタで引く。
+ *
+ * **見たいのは「その規則があるか」であって、値の全文一致ではない**ので、コメントを落として
+ * `セレクタ { 中身 }` に切り分けるだけにする（`test/button-parts.test.ts` と同じ形）。
+ *
+ * @param selector 引きたいセレクタ（前後の空白は詰めて比べる）
+ * @returns 宣言の中身（同じセレクタが複数あればすべて）
+ */
+function cssRules(selector: string): string[] {
+  const withoutComments = env.TEST_APP_CSS.replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+  return [...withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/gu)]
+    .filter((matched) =>
+      matched[1]!.split(',').some((one) => one.trim().replaceAll(/\s+/gu, ' ') === selector),
+    )
+    .map((matched) => matched[2]!);
+}
+
+/**
+ * 相談を主役にする（#726 / M20-2。仕様 5.16 の確定38）。
+ *
+ * **#726 の acceptance を機械判定できる形へ落とす。** 見た目そのものは測れないので、
+ * **見た目を作っている規則が在ること**と、**スクリプトが約束どおりに動かす対象**を見る。
+ * 実際の見え方は `scripts/check-page-width.sh`（実ブラウザ）と本番の目視が持つ。
+ */
+describe('相談を主役にする（#726 / 確定38）', () => {
+  it('利用者はカプセルで右、AI は囲いを持たず左に流れる（利用者が示した画面に合わせた）', () => {
+    // **確定38 の「利用者は右・AI は左」。** 置き場所は `align-self` が決める
+    // （`.gf-chat-log` が縦の flex なので、交差軸は横である）。
+    const user = cssRules('.gf-chat-user').join('');
+    expect(user).toContain('align-self: flex-end');
+    expect(user).toContain('max-width');
+    // **AI は囲いを持たず、版面の幅をそのまま使う**（返答は長く、囲うと読みにくい）。
+    expect(cssRules('.gf-chat-assistant').join('')).toContain('align-self: stretch');
+    // **カプセルになるのは利用者の発話だけ**で、地は区画の面と別の段にする
+    // （同じ面を敷くとカプセルが消える。1280px で撮って気づいた）。
+    const bubble = cssRules('.gf-chat-user .gf-chat-text').join('');
+    expect(bubble).toContain('border-radius');
+    expect(bubble).toContain('background: var(--gf-ground)');
+    expect(cssRules('.gf-chat-text').join('')).not.toContain('background');
+    // **色では示さない**（`@section work` の「ここだけが色を持つ」）。
+    for (const rule of [user, bubble, cssRules('.gf-chat-assistant').join('')]) {
+      expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b/iu);
+    }
+    const html = renderChatSection({
+      messages: [
+        { role: 'user', text: 'あ' },
+        { role: 'assistant', text: 'い' },
+      ],
+      conversationId: null,
+    });
+    expect(html).toContain('gf-chat-user');
+    expect(html).toContain('gf-chat-assistant');
+    // **名前は消していない**——目には出さず、読み上げには残す（形だけに寄りかからない）。
+    expect(html.match(/gf-chat-who/gu)?.length).toBe(2);
+    const who = cssRules('.gf-chat-who').join('');
+    expect(who).toContain('clip-path: inset(50%)');
+    expect(who).not.toContain('display: none');
+  });
+
+  it('入力は区画のいちばん下にあり、浮かせない（実測で sticky を取り下げた）', () => {
+    // **区画ごと画面に収め、伸びるのは会話だけ**という形で「下に固定」を作る。
+    const section = cssRules('.gf-chat').join('');
+    expect(section).toContain('flex-direction: column');
+    expect(section).toContain('max-height');
+    // 伸び縮みするのは会話だけ。**`min-height: 0` が無いと、flex の項目は中身より縮まない。**
+    const log = cssRules('.gf-chat-log').join('');
+    expect(log).toContain('flex: 1 1 auto');
+    expect(log).toContain('overflow-y: auto');
+    // **入力は浮かせない。** 浮かせると会話の末尾を覆い、覆われた発話に手が届かなくなる
+    // （390×800 の実測で踏んだ。理由は `.gf-chat` の冒頭）。
+    const dock = cssRules('.gf-chat-dock').join('');
+    expect(dock).not.toContain('position: sticky');
+    expect(dock).not.toContain('position: fixed');
+    expect(dock).toContain('flex: 0 0 auto');
+    // **入力が区画の最後の子であること**（「いちばん下」をこの並びが作っている）。
+    const html = renderChatSection({ messages: [], conversationId: null });
+    const at = html.indexOf('gf-chat-dock');
+    expect(at).toBeGreaterThan(0);
+    expect(html.slice(at)).toContain('id="chat-input"');
+    expect(html.slice(at)).toContain('id="chat-send"');
+    expect(html.indexOf('id="chat-log"')).toBeLessThan(at);
+    expect(html.indexOf('id="chat-apply"')).toBeLessThan(at);
+  });
+
+  it('履歴は自分でスクロールする箱で、往復のたびに下まで送る（画面は動かさない）', () => {
+    // 箱であること。
+    expect(cssRules('.gf-chat-log').join('')).toContain('overflow-y: auto');
+    // **動かすのは箱の `scrollTop` だけ。** 1 往復足すたびと、開いた時点の 2 か所から呼ぶ。
+    expect(CHAT_SCRIPT).toContain('log.scrollTop = log.scrollHeight');
+    expect(CHAT_SCRIPT.match(/toBottom\(\);/gu)?.length).toBeGreaterThanOrEqual(2);
+    // **画面ごと動かさない**——下に貼り付いた入力欄が往復のたびに跳ねる。
+    expect(CHAT_SCRIPT).not.toContain('scrollIntoView');
+  });
+});
+
 describe('生成画面での出し分け', () => {
   it('生成できるときは相談の区画とスクリプトが出る', () => {
     const html = renderGeneratePage(true, {
@@ -302,6 +408,46 @@ describe('生成画面での出し分け', () => {
     });
     expect(html).not.toContain('id="chat"');
     expect(html).not.toContain('id="chat-send"');
+  });
+
+  it('相談を出すときは、相談が先に来て、指示文の欄は「直接書く」の中へ入る（確定38）', () => {
+    const html = renderGeneratePage(true, {
+      availability: { kind: 'available', remaining: 5 },
+      headerAvatar: null,
+      chat: { messages: [], conversationId: null },
+    });
+    // **相談がフォームより先に来る**（#695 では後ろだった）。
+    expect(html.indexOf('id="chat"')).toBeLessThan(html.indexOf('id="generate-form"'));
+    // **指示文の欄は消していない**——相談を使わない人の導線として、畳んだ中に残す（確定38）。
+    expect(html).toContain('id="generate-direct"');
+    expect(html).toContain('相談せずに指示文を直接書く');
+    expect(html.indexOf('id="generate-direct"')).toBeLessThan(html.indexOf('id="generate-prompt"'));
+    // **開始の経路は変えない**——送り先も、受けるスクリプトも今までどおりである。
+    expect(html).toContain(`action="${GENERATE_PATH}"`);
+    expect(html).toContain("document.getElementById('generate-form')");
+  });
+
+  it('相談を出すときの主のボタンは「この指示で作る」の 1 つだけである（2.5.5）', () => {
+    const html = renderGeneratePage(true, {
+      availability: { kind: 'available', remaining: 5 },
+      headerAvatar: null,
+      chat: { messages: [], conversationId: null },
+    });
+    // **主は 1 画面に 1 つまで。** 相談側へ移した分、「生成する」は副へ下がる。
+    expect(html.match(/gf-button-primary/gu)?.length).toBe(1);
+    expect(html).toContain('id="chat-apply" class="gf-button gf-button-primary"');
+    expect(html).toMatch(/id="generate-submit" class="gf-button gf-button-secondary"/u);
+  });
+
+  it('相談を出さないときは、フォームが開いたまま・主のボタンのままである', () => {
+    // **`chat` が null なのに畳むと、その画面に生成の入口が 1 つも見えなくなる。**
+    const html = renderGeneratePage(true, {
+      availability: { kind: 'available', remaining: 5 },
+      headerAvatar: null,
+      chat: null,
+    });
+    expect(html).not.toContain('id="generate-direct"');
+    expect(html).toMatch(/id="generate-submit" class="gf-button gf-button-primary"/u);
   });
 });
 

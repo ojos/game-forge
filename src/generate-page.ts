@@ -737,15 +737,27 @@ ${stillAvailableSection()}`;
     )
     .join('\n');
 
-  // **相談の区画は、生成のフォームの後ろに置く**（#695 / 仕様 5.16）。**この画面の主は
-  // 「生成する」1 つ**（2.5.5）なので、先に入力欄とボタンが来て、相談は「任意」として続く。
-  const chat = view.chat === null ? '' : `\n\n${renderChatSection(view.chat)}`;
+  // **相談がこの画面の主役である**（#726 / 仕様 5.16 の確定38）。#695 では相談が
+  // 「フォームの後ろの任意の区画」だったが、**いまは相談が先に来て、指示文の欄は
+  // 「相談せずに指示文を直接書く」の中へ入る。**
+  const chat = view.chat === null ? '' : `${renderChatSection(view.chat)}\n\n`;
+
+  // **主のボタンは 1 画面に 1 つ**（2.5.5）。相談を出すときの主は相談側の「この指示で作る」なので、
+  // **こちらの「生成する」は副へ下げる。** 相談を出さないとき（`chat === null`）は、この画面に
+  // 主が 1 つも無くなるので主のままにする。
+  //
+  // **段のクラスを式で埋めない。** `test/button-parts.test.ts` は本文を読んで「部品のクラスと段の
+  // クラスが書いてあるか」を見るので、`${...}` で埋めると**どちらを選んだのか本文から読めなくなり**、
+  // 「既定に寄りかかっている」と同じ扱いで落ちる（#473 の検査。実際に踏んだ）。**2 本書き分ける。**
+  const submit =
+    view.chat === null
+      ? `<button id="generate-submit" class="gf-button gf-button-primary" type="submit" disabled>生成する</button>`
+      : `<button id="generate-submit" class="gf-button gf-button-secondary" type="submit" disabled>生成する</button>`;
 
   // **入力欄とヒントと「生成する」を 1 つのブロックにし、残枠は入力欄の名前の行の右に置く**（#473。承認したモックアップ
   // Version 6）。並びは HTML の順のまま（名前 → 残枠 → ヒント → 入力欄 → ボタン）で、狭い段では残枠が名前の下へ折り返す
   // ——`order` を使わないので、見た目の順と読み上げ・Tab の順が割れない（仕様 2.5.6 の #469 実装注記）。
-  // **「生成する」は主のボタンで、この画面の主はこの 1 つだけ**（2.5.5）。`disabled` で描き、スクリプトが外す扱いは変えない。
-  return `<form id="generate-form" class="gf-block gf-generate-form" method="post" action="${GENERATE_PATH}">
+  const form = `<form id="generate-form" class="gf-block gf-generate-form" method="post" action="${GENERATE_PATH}">
   <div class="gf-heading-row gf-generate-head">
     <label for="generate-prompt">どんなゲームを作りますか（日本語で、${MAX_PROMPT_LENGTH} 文字まで）</label>
     <p class="gf-generate-quota" id="generate-quota">${notice}</p>
@@ -754,8 +766,24 @@ ${stillAvailableSection()}`;
   <textarea id="generate-prompt" name="prompt" rows="5" maxlength="${MAX_PROMPT_LENGTH}"
             aria-describedby="generate-title-hint"
             placeholder="${TITLE_DECLARATION_EXAMPLE}" required></textarea>
-  <button id="generate-submit" class="gf-button gf-button-primary" type="submit" disabled>生成する</button>
-</form>
+  ${submit}
+</form>`;
+
+  // **相談を使わず一発で生成したい人の導線**（確定38「相談を使わずに一発で生成したい人の導線は残す」）。
+  // **閉じた `<details>` の中でも欄は DOM にある**ので、相談の「この指示で作る」は開かずにこのフォームを送れる。
+  // **相談を出さないときは、今までどおり開いたまま出す**——ほかに生成の入口が無い画面で、
+  // 主の導線を 1 回開かせるのは、押せない導線を置くのと同じくらい悪い。
+  const formSection =
+    view.chat === null
+      ? form
+      : `<details class="gf-generate-direct" id="generate-direct">
+  <summary>相談せずに指示文を直接書く</summary>
+  <div class="gf-generate-direct-panel">
+${form}
+  </div>
+</details>`;
+
+  return `${chat}${formSection}
 
 <p id="generate-progress" role="status" aria-live="polite" hidden>生成しています…（経過 <span id="generate-elapsed">0</span> 秒）。
    <strong>${TYPICAL_WAIT_TEXT}。</strong>この画面を閉じたり再読み込みしたりしないでください。</p>
@@ -771,7 +799,7 @@ ${messages}
   <p><strong>生成の送信には JavaScript が必要です。</strong>
      生成は JSON で受け付ける API（<code>${GENERATE_PATH}</code>）への送信で、
      応答が返るまで ${TYPICAL_WAIT_TEXT}。その間の経過表示も JavaScript で行っています。</p>
-</noscript>${chat}`;
+</noscript>`;
 }
 
 /**

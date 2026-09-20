@@ -1,5 +1,24 @@
 /**
- * 生成画面の中の「相談の区画」（#695 / M18-2。仕様 5.16「画面は `/generate` の中の区画」）。
+ * 生成画面の主役である「相談」（#695 / M18-2、#726 / M20-2。仕様 5.16 / 確定38）。
+ *
+ * ## 区画ではなく主役である（確定38）
+ *
+ * **#695 では「`/generate` の中の区画」だった**（フォームの後ろに置く「任意」の区画）。
+ * **#725 でこの決定が変わり、相談がこの画面の主役になった**——指示文の欄は
+ * `<details>` の中（「相談せずに指示文を直接書く」）へ移り、**この区画が持つ入力 1 つが
+ * 画面の下に貼り付く。** **主のボタンもここへ移った**（「この指示で作る」。2.5.5 は
+ * 1 画面に 1 つまでで、`src/generate-page.ts` の「生成する」は副へ下げてある）。
+ *
+ * **「この指示で作る」は生成のフォームをそのまま送る**（`form="generate-form"` の
+ * `type="submit"`）。**開始の経路は変えていない**——送信を受けるのはあちらの
+ * `GENERATE_SCRIPT` で、`POST /api/generate` も枠の表示も入力の検査も今までどおりである。
+ *
+ * ## 履歴は箱の中だけを動かす
+ *
+ * **往復のたびに最新へ送るのは `.gf-chat-log` の `scrollTop` だけで、画面そのものは動かさない。**
+ * 要素を `scrollIntoView` で見せると画面ごと動き、**下に貼り付いた入力欄の位置が往復のたびに
+ * 跳ねる。** `test/chat-ui.test.ts` が、スクリプトが `scrollIntoView` を持たないことを見る
+ * ——**この理由をスクリプトの中へ書くと、その検査が自分のコメントで落ちる**（実際に踏んだ）。
  *
  * ## なぜ別のモジュールなのか
  *
@@ -105,29 +124,36 @@ export function renderChatSection(view: ChatSectionView): string {
 
   return `<section id="chat" class="gf-block gf-chat"${conversation}>
   <div class="gf-heading-row">
-    <h2>先に AI と相談する（任意）</h2>
+    <h2>AI と相談して作る</h2>
     <p class="gf-generate-quota" id="chat-quota">1 日 ${CHAT_DAILY_TOKEN_LIMIT.toLocaleString('en-US')} トークンまで</p>
   </div>
-  <p class="gf-generate-hint">どんなゲームにするか話しながら、上の欄へ入れる<strong>指示文の下書き</strong>を作れます。
+  <p class="gf-generate-hint">どんなゲームにするか話しながら、<strong>指示文の下書き</strong>を作れます。
      <strong>コードは出ません。</strong>相談は生成枠とは別の枠で、<strong>相談しても生成できる回数は減りません。</strong>
      会話は<strong>あなただけが見られ</strong>、最後に使ってから ${CHAT_RETENTION_DAYS} 日で消えます。</p>
-  <ol id="chat-log" class="gf-chat-log">${log}</ol>
-  <label for="chat-input">相談する（${CHAT_MAX_MESSAGE_LENGTH} 文字まで）</label>
-  <textarea id="chat-input" rows="3" maxlength="${CHAT_MAX_MESSAGE_LENGTH}"
-            placeholder="例: 短い時間で遊べる、避けるゲームを作りたい"></textarea>
-  <!-- **主のボタンは「生成する」1 つだけである**（2.5.5）。相談の区画のボタンは、
-       区画の主（相談する・この指示で作る）が secondary、記録を消すが tertiary である。 -->
-  <div class="gf-chat-actions">
-    <button id="chat-send" class="gf-button gf-button-secondary" type="button">相談する</button>
-    <button id="chat-apply" class="gf-button gf-button-secondary" type="button" hidden>この指示で作る</button>
-    <button id="chat-clear" class="gf-button gf-button-tertiary" type="button">相談の記録を消す</button>
-  </div>
+  <ol id="chat-log" class="gf-chat-log" tabindex="0" aria-label="相談の履歴">${log}</ol>
   <p id="chat-status" role="status" aria-live="polite" hidden>相談しています…</p>
   <div id="chat-messages" role="status" aria-live="polite">
 ${messages}
   </div>
+  <!-- **この画面の主のボタンはこれ 1 つである**（2.5.5 / 確定38）。下書きが出るまでは隠れており、
+       押すと生成のフォームをそのまま送る（\`form\` 属性。**開始の経路は変えない**）。 -->
+  <p class="gf-chat-apply-row"><button id="chat-apply" class="gf-button gf-button-primary" type="submit"
+          form="generate-form" hidden>この指示で作る</button></p>
+  <!-- **入力は画面の下に貼り付く**（確定38。\`.gf-chat-dock\` が \`position: sticky\`）。
+       区画のボタンは、送るが secondary、記録を消すが tertiary である。 -->
+  <div class="gf-chat-dock">
+    <label class="gf-chat-dock-label" for="chat-input">相談する（${CHAT_MAX_MESSAGE_LENGTH} 文字まで）</label>
+    <div class="gf-chat-dock-row">
+      <textarea id="chat-input" rows="2" maxlength="${CHAT_MAX_MESSAGE_LENGTH}"
+                placeholder="例: 短い時間で遊べる、避けるゲームを作りたい"></textarea>
+      <button id="chat-send" class="gf-button gf-button-secondary" type="button">送る</button>
+    </div>
+    <div class="gf-chat-actions">
+      <button id="chat-clear" class="gf-button gf-button-tertiary" type="button">相談の記録を消す</button>
+    </div>
+  </div>
   <noscript>
-    <p><strong>相談には JavaScript が必要です。</strong>上の欄に直接指示文を書けば、相談なしで生成できます。</p>
+    <p><strong>相談には JavaScript が必要です。</strong>下の「相談せずに指示文を直接書く」を開けば、相談なしで生成できます。</p>
   </noscript>
 </section>`;
 }
@@ -183,6 +209,17 @@ export const CHAT_SCRIPT = `
     item.appendChild(who);
     item.appendChild(body);
     log.appendChild(item);
+    toBottom();
+  }
+
+  /**
+   * 履歴をいちばん下まで送る（確定38「往復のたびに最新へスクロールする」）。
+   *
+   * **動かすのは履歴の箱だけで、画面そのものは動かさない**（\`.gf-chat-log\` が
+   * \`overflow-y: auto\` の箱である）。理由はモジュールの冒頭にある。
+   */
+  function toBottom() {
+    log.scrollTop = log.scrollHeight;
   }
 
   /** 固定の文言を 1 つだけ見せる（生成画面と同じ形。応答の文字列は出さない）。 */
@@ -284,13 +321,14 @@ export const CHAT_SCRIPT = `
   });
 
   if (apply !== null && prompt !== null) {
-    apply.addEventListener('click', function () {
+    apply.addEventListener('click', function (event) {
       var text = draft();
-      if (text === '') { return; }
-      // **開始の経路は変えない**（5.16）。欄へ入れるだけで、送信は作者が「生成する」を押す。
+      // **下書きが無いのに送らない。** 空のまま通すと、直接書く欄に残っていた前の値が飛ぶ。
+      if (text === '') { event.preventDefault(); return; }
+      // **開始の経路は変えない**（5.16 / 確定38）。欄へ入れてから、このボタン自身が
+      // \`generate-form\` を送る（\`type="submit"\` と \`form\` 属性）。送信を受けるのは
+      // \`src/generate-page.ts\` の \`GENERATE_SCRIPT\` で、POST /api/generate は今までどおりである。
       prompt.value = text;
-      prompt.focus();
-      if (typeof prompt.scrollIntoView === 'function') { prompt.scrollIntoView(); }
     });
   }
 
@@ -313,5 +351,6 @@ export const CHAT_SCRIPT = `
   }
 
   refreshApply();
+  toBottom();
 })();
 `;

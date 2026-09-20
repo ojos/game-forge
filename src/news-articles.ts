@@ -72,7 +72,7 @@ export interface NewsArticle {
 export const NEWS_ARTICLES: readonly NewsArticle[] = [
   {
     id: 'ai-connect',
-    publishedOn: '2026-09-19',
+    publishedOn: '2026-09-20',
     category: 'service',
     title: 'Claude などの AI から、作品を作れるようになりました',
     body: [

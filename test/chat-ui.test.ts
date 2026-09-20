@@ -19,6 +19,31 @@ import { currentDeclarationsIn } from '../src/quota.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
+ * 注記が指すテストのファイルが実在することを見るための一覧。
+ *
+ * **`import.meta.glob` は呼び出し元のファイル自身を含めない**（vite の仕様。実測した）ので、
+ * このファイルだけは足す。**足し忘れると「自分を指す注記」が常に落ちる。**
+
+ */
+const TEST_FILES = new Set([
+  ...Object.keys(
+    // **型は `?raw` の形しか宣言していない**（このリポジトリの shim）が、実行時には
+    // 引数なしの遅延 glob が使える。**中身は読まない**（名前だけが欲しい）ので、
+    // 全部の test を raw で抱え込まずに済むこちらを使う。
+    (import.meta as unknown as { readonly glob: (pattern: string) => Record<string, unknown> }).glob(
+      './*.test.ts',
+    ),
+  ).map((path) => path.slice('./'.length)),
+  'chat-ui.test.ts',
+]);
+const chatConversationSource = (
+  import.meta.glob('../src/chat-conversation.ts', { eager: true, query: '?raw', import: 'default' }) as Record<string, string>
+)['../src/chat-conversation.ts']!;
+const chatSectionSource = (
+  import.meta.glob('../src/chat-section.ts', { eager: true, query: '?raw', import: 'default' }) as Record<string, string>
+)['../src/chat-section.ts']!;
+
+/**
  * 相談の画面と会話の保存（#695 / M18-2 / 仕様 5.16）。
  *
  * **#695 の acceptance の 3 つ目**——「この指示で作る」が既存の開始の経路を通ること——を、
@@ -170,6 +195,29 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
     const html = renderChatSection({ messages: [], conversationId: null });
     expect(html).not.toContain('data-conversation');
     expect(html).toContain('id="chat-log"');
+  });
+
+  it('会話が無いときの `<ol>` は本当に空である（`:empty` が成立する）', () => {
+    // **空白のテキストノードが 1 つでもあると `:empty` は成立しない**（CSS の定義）。
+    // `public/assets/app.css` の `.gf-chat-log:empty` が余白を消せるのは、ここが空のときだけである。
+    const html = renderChatSection({ messages: [], conversationId: null });
+    expect(html).toContain('class="gf-chat-log"></ol>');
+    // 会話があるときは、当然ながら中身がある（この検査が「常に空」で通らないこと）。
+    const filled = renderChatSection({
+      messages: [{ role: 'user', text: 'あ' }],
+      conversationId: null,
+    });
+    expect(filled).not.toContain('class="gf-chat-log"></ol>');
+  });
+
+  it('コメントが指す検査のファイルが実在する（腐った参照を残さない）', () => {
+    // **#715 の Copilot が見つけた形**——存在しないテストファイルを注記が指していた。
+    for (const source of [chatConversationSource, chatSectionSource]) {
+      for (const matched of source.matchAll(/`(test\/[A-Za-z0-9._-]+\.test\.ts)`/gu)) {
+        const path = matched[1]!;
+        expect([...TEST_FILES], `注記が指す ${path} が無い`).toContain(path.slice('test/'.length));
+      }
+    }
   });
 
   it('スクリプトが JavaScript として構文が通る', () => {

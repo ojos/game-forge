@@ -10,7 +10,7 @@
  * |---|---|
  * | **作者本人にしか返さない** | この モジュールの SQL がすべて `user_id` で絞る |
  * | **最後に使ってから 30 日で消える** | `game-forge-cleanup` の cron（`sweepExpiredChatConversations`） |
- * | **作者が自分で消せる** | `DELETE /api/chat/conversation`（`src/chat.ts`） |
+ * | **作者が自分で消せる** | `POST /api/chat/conversation/delete`（`src/chat-paths.ts` の `CHAT_CONVERSATION_DELETE_PATH`。`src/chat.ts` の `handleDeleteChatConversation`） |
  * | **退会の段3 で消える** | `src/withdrawal.ts` の確定の batch |
  *
  * ## 1 会話 1 行である
@@ -19,7 +19,7 @@
  * **会話は 1 度に全部を読み、全部を書き直す**（LLM へ毎回まとめて送るため）ので、行を分けても
  * 読み書きの単位は変わらない。**書き込みは 1 往復につき表の 1 行と索引の 1 行**で頭打ちになる。
  *
- * ## 1 人 1 本だけ持つ
+ * ## 復元するのは最新の 1 本だけである
  *
  * **「いちばん新しい会話」を復元する**（`/generate` を開き直したとき）。会話の一覧も、会話を
  * 選び直す画面も作らない——**#695 の goal は「指示文を練って生成へ渡す」**ことで、
@@ -36,7 +36,7 @@ import { CHAT_MAX_MESSAGES } from './chat-payload.js';
  *
  * **「最後に使ってから」である**（`updated_at`）。相談を続けている会話は消えない。
  *
- * 仕様書側の記載との一致は `test/chat-conversation.test.ts` が {@link CHAT_RETENTION_PATTERN} で
+ * 仕様書側の記載との一致は `test/chat-ui.test.ts` が {@link CHAT_RETENTION_PATTERN} で
  * 機械照合する（`/privacy` の文言もこの定数から作る——**書いた日数と実際に消える日数が
  * 食い違わない**ようにするため。`src/avatar.ts` が保存日数を 1 か所に置いているのと同じ形）。
  */

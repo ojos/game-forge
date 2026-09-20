@@ -10,7 +10,7 @@
  *
  * **こちらの線はこうである。**
  *
- * - **`innerHTML` を使わない**（`test/chat-section.test.ts` が変異で確かめる）
+ * - **`innerHTML` を使わない**（`test/chat-ui.test.ts` が変異で確かめる）
  * - 要素は `document.createElement` で作り、本文は **`textContent` だけ**で入れる
  * - **応答から読むのは `text` と `conversationId` と `remainingTokens` の 3 つだけ**で、
  *   分類名（`error`）は固定の文言を選ぶ鍵にしか使わない（8.3。生成画面と同じ）
@@ -39,7 +39,7 @@ import { MAX_PROMPT_LENGTH } from './generate.js';
  * 相談の返答の中で、指示文の下書きを囲む見出し。
  *
  * **システムプロンプトと同じ綴りである**（`src/chat-prompt.ts` の「`【指示文】` という見出しの
- * 下に置きます」）。**一致は `test/chat-section.test.ts` が見る**——ずれると「この指示で作る」が
+ * 下に置きます」）。**一致は `test/chat-ui.test.ts` が見る**——ずれると「この指示で作る」が
  * 返答の全文を欄へ入れることになる（壊れはしないが、意図した形ではない）。
  */
 export const CHAT_DRAFT_HEADING = '【指示文】';
@@ -99,6 +99,9 @@ export function renderChatSection(view: ChatSectionView): string {
     )
     .join('\n');
   const conversation = view.conversationId === null ? '' : ` data-conversation="${escapeHtml(view.conversationId)}"`;
+  // **空のときは `<ol>` の中を本当に空にする。** 改行やインデントを残すと空白のテキストノードが
+  // でき、**`:empty`（`public/assets/app.css`）が成立せず余白が残る**（PR #715 の Copilot の指摘）。
+  const log = view.messages.length === 0 ? '' : `\n${renderChatLog(view.messages)}\n  `;
 
   return `<section id="chat" class="gf-block gf-chat"${conversation}>
   <div class="gf-heading-row">
@@ -108,9 +111,7 @@ export function renderChatSection(view: ChatSectionView): string {
   <p class="gf-generate-hint">どんなゲームにするか話しながら、上の欄へ入れる<strong>指示文の下書き</strong>を作れます。
      <strong>コードは出ません。</strong>相談は生成枠とは別の枠で、<strong>相談しても生成できる回数は減りません。</strong>
      会話は<strong>あなただけが見られ</strong>、最後に使ってから ${CHAT_RETENTION_DAYS} 日で消えます。</p>
-  <ol id="chat-log" class="gf-chat-log">
-${renderChatLog(view.messages)}
-  </ol>
+  <ol id="chat-log" class="gf-chat-log">${log}</ol>
   <label for="chat-input">相談する（${CHAT_MAX_MESSAGE_LENGTH} 文字まで）</label>
   <textarea id="chat-input" rows="3" maxlength="${CHAT_MAX_MESSAGE_LENGTH}"
             placeholder="例: 短い時間で遊べる、避けるゲームを作りたい"></textarea>

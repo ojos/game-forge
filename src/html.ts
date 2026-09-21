@@ -413,13 +413,13 @@ const HEADER_COMMON_ITEMS: readonly HeaderNavItem[] = [
  *
  * **`/invites` の入口はトップの本文だけだった**（「参加している方へ」）。#435 がトップからその節を外すと決めたので、
  * 入口を全画面のメニューへ移す（2.3.7 の #435 注記）。並びは注記のとおり、自分の作品 / いいねした作品 /
- * 招待コードを発行する / 登録情報 / ログアウト である。
+ * 招待コードを発行する / 設定 / ログアウト である。
  */
 const ACCOUNT_MENU_ITEMS: readonly NavItem[] = [
   { path: MY_WORKS_PATH, label: '自分の作品' },
   { path: LIKED_WORKS_PATH, label: 'いいねした作品' },
   { path: INVITES_PATH, label: '招待コードを発行する' },
-  { path: ACCOUNT_PATH, label: '登録情報' },
+  { path: ACCOUNT_PATH, label: '設定' },
 ];
 
 /**
@@ -513,7 +513,7 @@ function accountMenu(avatar: string | null): string {
 }
 
 /**
- * アバターの円に差し込む画像（#380。ヘッダ・カード・作者ページ・登録情報が同じ 1 つを使う）。
+ * アバターの円に差し込む画像（#380。ヘッダ・カード・作者ページ・設定が同じ 1 つを使う）。
  *
  * **`alt=""` にする**——名前は隣の文字（「アカウントのメニュー」・作者名）が持つ。**ただし `alt=""` は
  * 壊れた画像の印を消さない**（Chromium は大きさを持つ `<img>` が読み込めないと印を描く）。だから配信は、
@@ -723,7 +723,7 @@ export const BREADCRUMB_PARENTS: readonly NavItem[] = [
   { path: MY_WORKS_PATH, label: 'あなたの作品' },
   { path: SIGNUP_PATH, label: 'ログイン・登録' },
   { path: TAKEDOWN_PATH, label: '削除依頼' },
-  { path: ACCOUNT_PATH, label: '登録情報' },
+  { path: ACCOUNT_PATH, label: '設定' },
   ...newsBreadcrumbParents(NEWS_ARTICLES),
 ];
 

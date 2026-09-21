@@ -1,5 +1,5 @@
 /**
- * 登録情報の画面の、接続中のアプリのタブ（`/account/apps`）と、接続の解除（`POST /api/account/apps/revoke`）。
+ * 設定の画面の、接続中のアプリのタブ（`/account/apps`）と、接続の解除（`POST /api/account/apps/revoke`）。
  * #696 / M19-1 / 仕様 5.15「接続の解除」。
  *
  * - **並べるのは本人の許可だけ**（部品の `listUserGrants` は KV の鍵 `grant:<利用者の id>:` で絞る）。アプリ名・許可した範囲・
@@ -8,7 +8,7 @@
  *   他人の許可の id を送られても他人の鍵には届かない。そのうえで、**本人の一覧に無い id は断る**（黙って成功にしない）
  * - 解除すると、その許可から出たアクセストークンとリフレッシュトークンもすべて無効になる（部品）
  *
- * **CSRF はほかの登録情報の POST と同じくセッション cookie の `SameSite=Lax` が受ける**（`src/account.ts` の冒頭）。
+ * **CSRF はほかの設定の POST と同じくセッション cookie の `SameSite=Lax` が受ける**（`src/account.ts` の冒頭）。
  * 押させられても起きるのは「自分の接続が切れる」ことだけで、同意画面（`src/oauth-authorize.ts`）とは害の向きが違う。
  * 素のフォームと POST-redirect-GET で組む（JavaScript を要求しない）。
  */

@@ -1,10 +1,10 @@
 /**
- * 登録情報（`/account`）に関わる綴り（#341 / 仕様 5.9）。
+ * 設定（`/account`）に関わる綴り（#341 / 仕様 5.9）。
  *
  * # なぜ値だけの葉に置くのか
  *
  * **後から全画面共通のヘッダ（`src/html.ts` の `siteHead`）がここへ送り返す**（#331。
- * 仕様 2.3.7「ログインしていれば 自分の作品 と 登録情報」）。`src/account.ts` は画面を
+ * 仕様 2.3.7「ログインしていれば 自分の作品 と 設定」）。`src/account.ts` は画面を
  * 組むために `siteHead` を import するので、ヘッダが `src/account.ts` から綴りを借りると
  * **循環参照になる**（`src/paths.ts` の `HOME_PATH` と同じ理由）。
  *
@@ -18,21 +18,21 @@
  */
 
 /**
- * 登録情報の画面（2.3.1。ログイン必須）。**プロフィールのタブである**（#379 / 5.10）。
+ * 設定の画面（2.3.1。ログイン必須）。**プロフィールのタブである**（#379 / 5.10）。
  *
  * 表示名の変更フォーム（5.9）と、自己紹介と外部リンクのフォーム（5.10）を出す。
  * **ヘッダのアカウントのメニューが指す先であり、タブの既定である**——#379 より前から
- * 共有されている `/account` の URL を、そのまま「登録情報を開く」の意味で使い続ける。
+ * 共有されている `/account` の URL を、そのまま「設定を開く」の意味で使い続ける。
  */
 export const ACCOUNT_PATH = '/account';
 
 /**
- * 登録情報の画面の、アカウントのタブ（#379 / 5.10。ログイン必須）。
+ * 設定の画面の、アカウントのタブ（#379 / 5.10。ログイン必須）。
  *
- * メールアドレスと登録日を出す（5.9 で `/account` にあったもの。**本人にだけ出す**）。
+ * ハンドル名（#747 で旧いハンドル名のタブから移した）と、メールアドレスと登録日を出す（5.9 で `/account` にあったもの。**本人にだけ出す**）。
  *
  * **`/account` の下に置く。** パンくずの階層は URL から導くので（`src/page-paths.ts` の
- * `ancestorPathsOf`）、ここを開くと「トップ › 登録情報 › アカウント」になる。**タブを
+ * `ancestorPathsOf`）、ここを開くと「トップ › 設定 › アカウント」になる。**タブを
  * query（`/account?tab=`）で分けない**——パスで分ければ、タブごとに経路表の画面になり、
  * 外枠の検査（`test/page-shell.test.ts`）と幅の検査（`scripts/check-page-width.sh`）へ
  * 何も書き足さずに乗る。query で分けると、2 枚目以降のタブはどちらの検査からも見えない。
@@ -40,7 +40,7 @@ export const ACCOUNT_PATH = '/account';
 export const ACCOUNT_DETAILS_PATH = '/account/details';
 
 /**
- * 登録情報の画面の、メール配信のタブ（#384 / 5.11。ログイン必須）。
+ * 設定の画面の、メール配信のタブ（#384 / 5.11。ログイン必須）。
  *
  * 改造通知の受け取りの設定と、**設定にかかわらず送る種別の一覧**を出す。
  * **`/account` の下にパスで置く**（{@link ACCOUNT_DETAILS_PATH} と同じ理由。外枠の検査と幅の検査に
@@ -49,14 +49,14 @@ export const ACCOUNT_DETAILS_PATH = '/account/details';
 export const ACCOUNT_MAIL_PATH = '/account/mail';
 
 /**
- * 登録情報の画面の、ハンドル名のタブ（#381 / 5.10。ログイン必須）。
+ * 旧いハンドル名のタブ（#381 / 5.10）。**いまは画面ではなく、アカウントのタブ（{@link ACCOUNT_DETAILS_PATH}）への
+ * 301 である**（#747。query は引き継ぐ）。
  *
- * ハンドル名（`/@handle`）を決める・変えるフォームを出す。**`/account` の下にパスで置く**
- * （{@link ACCOUNT_DETAILS_PATH} と同じ理由。外枠の検査と幅の検査に何も書き足さずに乗る）。
+ * #381 は「30 日に 1 回・URL が変わる」という説明を、何度でも変えられる表示名や自己紹介と同じ画面の途中に
+ * 置かないために、ハンドル名に 1 枚を割いた。**#747 はそれをアカウントのタブの 1 区画へまとめた**（利用者の
+ * 決定。まとめた先はプロフィールではなく、めったに触らない値の画面である。理由は `src/account-handle.ts` の冒頭）。
  *
- * **プロフィールのタブに同居させない。** ハンドル名は 30 日に 1 回しか変えられず、変えると URL が変わる
- * （旧い URL の転送は 90 日で終わる）。**その説明を、60 秒ごとに変えられる表示名や自己紹介と同じ画面の
- * 途中に置くと読まれない**——1 枚を割いて、変える前に読む場所にする。
+ * **`ACCOUNT_TABS` には入れない。** 共有された URL とブックマークを 404 にしないためだけに残す。
  */
 export const ACCOUNT_HANDLE_PATH = '/account/handle';
 
@@ -67,7 +67,7 @@ export const ACCOUNT_HANDLE_PATH = '/account/handle';
  * である（`src/work-delete.ts` の削除の確認画面と同じ扱い——作品ページの下に置き、一覧には出さない）。
  * 常に見える場所に「退会する」を並べると、押し間違いの面が 1 枚増えるだけになる。
  *
- * **`/account` の下にパスで置く。** パンくずは「トップ › 登録情報 › …」になり、外枠の検査
+ * **`/account` の下にパスで置く。** パンくずは「トップ › 設定 › …」になり、外枠の検査
  * （`test/page-shell.test.ts`）と幅の検査（`scripts/check-page-width.sh`）へ何も書き足さずに乗る。
  *
  * **管理者には 404 を返す**（#518 の constraints。導線も出さない）。
@@ -96,7 +96,7 @@ export const ACCOUNT_WITHDRAW_API_PATH = '/api/account/withdraw';
 export const ACCOUNT_WITHDRAWN_PATH = '/account/withdrawn';
 
 /**
- * 登録情報の画面の、接続中のアプリのタブ（#696 / 仕様 5.15。ログイン必須）。
+ * 設定の画面の、接続中のアプリのタブ（#696 / 仕様 5.15。ログイン必須）。
  *
  * MCP のクライアント（Claude など）に許可した接続を並べ、「接続を解除」で許可を消す。
  * **`/account` の下にパスで置く**（{@link ACCOUNT_DETAILS_PATH} と同じ理由。外枠の検査と幅の検査に
@@ -105,7 +105,7 @@ export const ACCOUNT_WITHDRAWN_PATH = '/account/withdrawn';
 export const ACCOUNT_APPS_PATH = '/account/apps';
 
 /**
- * 登録情報の画面の、チャットのタブ（#728 / 仕様 5.16 の確定38。ログイン必須）。
+ * 設定の画面の、チャットのタブ（#728 / 仕様 5.16 の確定38。ログイン必須）。
  *
  * **チャット（5.16）にいつも効かせたいことを書く欄**を出す。**`/account` の下にパスで置く**
  * （{@link ACCOUNT_DETAILS_PATH} と同じ理由。外枠の検査と幅の検査に何も書き足さずに乗る）。
@@ -135,7 +135,7 @@ export const ACCOUNT_APPS_REVOKE_API_PATH = '/api/account/apps/revoke';
 /** フォームの項目名（解除する許可の id）。画面と API が同じ綴りを使う。 */
 export const GRANT_ID_FIELD = 'grant_id';
 
-/** 登録情報の画面のタブ 1 つ。 */
+/** 設定の画面のタブ 1 つ。 */
 export interface AccountTab {
   /** タブの行き先（経路表の GET の画面）。 */
   readonly path: string;
@@ -144,7 +144,7 @@ export interface AccountTab {
 }
 
 /**
- * 登録情報の画面のタブ（#379 / 5.10。並び順どおりに出す）。
+ * 設定の画面のタブ（#379 / 5.10。並び順どおりに出す）。
  *
  * **タブを足すときは、ここへ 1 行と、`src/account.ts` の経路表へ GET の画面を 1 本足す**
  * （メール配信のタブは #384 / 5.11 が足した）。行き先がすべて経路表の画面であることは
@@ -152,13 +152,14 @@ export interface AccountTab {
  */
 export const ACCOUNT_TABS: readonly AccountTab[] = [
   { path: ACCOUNT_PATH, label: 'プロフィール' },
-  { path: ACCOUNT_HANDLE_PATH, label: 'ハンドル名' },
+  // ハンドル名もここにある（#747。旧い `/account/handle` はここへ 301 で送る）。
   { path: ACCOUNT_DETAILS_PATH, label: 'アカウント' },
+  // チャットにいつも効かせること（#728 / 仕様 5.16 の確定38）。画面は `src/account.ts`。
+  // **メール配信より左に置く**（#747。作品を作るたびに見直しうるタブを、一度決めたら触らないタブより先にする）。
+  { path: ACCOUNT_CHAT_PATH, label: 'チャット' },
   { path: ACCOUNT_MAIL_PATH, label: 'メール配信' },
   // MCP で接続したアプリ（#696 / 仕様 5.15）。画面は `src/account-apps.ts`。
   { path: ACCOUNT_APPS_PATH, label: '接続中のアプリ' },
-  // チャットにいつも効かせること（#728 / 仕様 5.16 の確定38）。画面は `src/account.ts`。
-  { path: ACCOUNT_CHAT_PATH, label: 'チャット' },
 ];
 
 /**

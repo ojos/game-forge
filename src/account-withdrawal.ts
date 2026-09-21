@@ -155,7 +155,7 @@ export const WITHDRAWAL_REFUSALS: Readonly<Record<WithdrawalRefusalReason, Withd
  * # 退会のボタンを主にしない
  *
  * **破壊的な操作なので副のボタンにする**（仕様 2.5.5 / #473 / #517 と同じ）。「やめる」は
- * 登録情報へ戻る移動なので `<a>` にする。**この画面に主のボタンを置かない**——いちばん
+ * 設定へ戻る移動なので `<a>` にする。**この画面に主のボタンを置かない**——いちばん
  * してほしいことが「退会する」でも「やめる」でもなく、読んで決めることだからである。
  *
  * # 消せないものを隠さない
@@ -218,7 +218,7 @@ export function renderWithdrawConfirmation(viewer: SiteViewer): string {
 <form method="post" action="${ACCOUNT_WITHDRAW_API_PATH}">
   <button type="submit" class="gf-button gf-button-secondary">退会する</button>
 </form>
-<p><a href="${ACCOUNT_DETAILS_PATH}">退会せずに登録情報へ戻る</a></p>
+<p><a href="${ACCOUNT_DETAILS_PATH}">退会せずに設定へ戻る</a></p>
 </div>
 </section>
 </div>
@@ -260,7 +260,7 @@ ${siteFooter()}`;
 /**
  * 断りの画面を組み立てる。
  *
- * **登録情報へ 303 で戻さない**（`src/work-delete.ts` の `renderDeleteRefusal` と同じ判断。
+ * **設定へ 303 で戻さない**（`src/work-delete.ts` の `renderDeleteRefusal` と同じ判断。
  * 戻すと、断られたことが URL にもステータスにも残らない）。
  *
  * @param refusal 断りの中身（{@link WITHDRAWAL_REFUSALS} の 1 行）
@@ -271,7 +271,7 @@ export function renderWithdrawalRefusal(refusal: WithdrawalRefusal, viewer: Site
   return `${siteHead({ title: `${refusal.heading} - Game Forge`, noindex: true, viewer })}
 <h1>${refusal.heading}</h1>
 <p class="gf-block">${refusal.body}</p>
-<p><a href="${ACCOUNT_DETAILS_PATH}">登録情報へ戻る</a></p>
+<p><a href="${ACCOUNT_DETAILS_PATH}">設定へ戻る</a></p>
 ${siteFooter()}`;
 }
 

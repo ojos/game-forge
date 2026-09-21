@@ -230,7 +230,7 @@ export function renderConsentPage(view: ConsentView): string {
 ${scopeRows}
 </ul>
 </fieldset>
-<p>許可は、登録情報の<a href="${ACCOUNT_APPS_PATH}">接続中のアプリ</a>からいつでも解除できます。許可は、最後に使ってから 30 日で切れます。使い続けていても、許可した日から 1 年で切れます。切れた後は、もう一度この画面で許可が必要です。</p>
+<p>許可は、設定の<a href="${ACCOUNT_APPS_PATH}">接続中のアプリ</a>からいつでも解除できます。許可は、最後に使ってから 30 日で切れます。使い続けていても、許可した日から 1 年で切れます。切れた後は、もう一度この画面で許可が必要です。</p>
 <button type="submit" name="${CONSENT_DECISION_FIELD}" value="${DECISION_APPROVE}" class="gf-button gf-button-primary">許可する</button>
 <button type="submit" name="${CONSENT_DECISION_FIELD}" value="${DECISION_DENY}" class="gf-button gf-button-secondary">許可しない</button>
 </form>
@@ -261,7 +261,7 @@ ${siteFooter()}`;
 export function renderAuthorizeLanding(viewer: SiteViewer): string {
   return `${siteHead({ title: 'AI アプリとの接続 - Game Forge', noindex: true, viewer })}
 <h1>AI アプリとの接続</h1>
-<p class="gf-block">この画面は、Claude などの AI アプリから Game Forge へ接続するときに、アプリが開きます。接続は、お使いの AI アプリの設定から始めてください。接続したアプリは、登録情報の<a href="${ACCOUNT_APPS_PATH}">接続中のアプリ</a>で確かめ、解除できます。</p>
+<p class="gf-block">この画面は、Claude などの AI アプリから Game Forge へ接続するときに、アプリが開きます。接続は、お使いの AI アプリの設定から始めてください。接続したアプリは、設定の<a href="${ACCOUNT_APPS_PATH}">接続中のアプリ</a>で確かめ、解除できます。</p>
 ${siteFooter()}`;
 }
 

@@ -3261,7 +3261,7 @@ export async function loadWorkView(
     owner,
     // **ヘッダの出し分けには、既に引いてあるセッションを使う**（2.3.7 / #331）。
     // **`owner` ではない**——他人の作品を見ているログイン済みの利用者にも、自分の作品と
-    // 登録情報への導線が要る。**署名を 2 度検証しない**（`resolveSessionUser` が正本）。
+    // 設定への導線が要る。**署名を 2 度検証しない**（`resolveSessionUser` が正本）。
     viewer: siteViewerAt(pathname, session.ok, session.ok ? headerAvatarUrl(request, env, session.userId) : null),
   };
 }

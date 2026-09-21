@@ -2,7 +2,7 @@
  * MCP の認可（#696 / M19-1 / 仕様 5.15）の綴りと寿命。**値だけの葉である。**
  *
  * 経路表（`src/app.ts`）・入口の振り分け（`src/index.ts`）・同意画面（`src/oauth-authorize.ts`）・
- * 登録情報のタブ（`src/account-apps.ts`）・ハンドル名の予約語の導出が同じ綴りを読む。
+ * 設定のタブ（`src/account-apps.ts`）・ハンドル名の予約語の導出が同じ綴りを読む。
  * **オーケストレータの束に入れない**——どれも画面と口だけが読む値で、Lambda は読まない
  * （`src/account-paths.ts` の冒頭と同じ理由で、`src/paths.ts` には置かない）。
  */

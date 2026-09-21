@@ -39,6 +39,7 @@
  * から受け取り、dev サーバは 1 つのまま `Host` で振り分ける（`*.localtest.me` は
  * 127.0.0.1 を返す）。
  */
+import { ACCOUNT_HANDLE_PATH } from './account-paths.js';
 import { AUTHORIZE_RESUME_PATH } from './oauth-paths.js';
 import { ROBOTS_PATH } from './robots.js';
 import { SITEMAP_PATH } from './sitemap.js';
@@ -57,6 +58,7 @@ export const NON_PAGE_PATHS: readonly string[] = [
   ROBOTS_PATH, // クローラへの意思表示（#594）。text/plain であって画面ではない
   SITEMAP_PATH, // 載せてよい URL の在処（#595）。XML であって画面ではない
   AUTHORIZE_RESUME_PATH, // ログインから戻った認可の要求を `/authorize?…` へ送り直す 303（#696）
+  ACCOUNT_HANDLE_PATH, // 旧いハンドル名のタブ。アカウントのタブ（`/account/details`）へ送る 301（#747）
 ];
 
 /**

@@ -16,8 +16,19 @@
  * ## 1 会話 1 行である
  *
  * 往復ごとに行を作ると、1 回のチャットで D1 の書き込みが往復の数だけ増える（索引込み。3.6）。
- * **会話は 1 度に全部を読み、全部を書き直す**（LLM へ毎回まとめて送るため）ので、行を分けても
- * 読み書きの単位は変わらない。**書き込みは 1 往復につき表の 1 行と索引の 1 行**で頭打ちになる。
+ * **会話は 1 度に全部を読み、全部を書き直す**ので、行を分けても読み書きの単位は変わらない。
+ * **書き込みは 1 往復につき表の 1 行と索引の 1 行**で頭打ちになる。
+ *
+ * ## 保存済みの行へ追記する（#742）
+ *
+ * **画面が送ってくるのは直近の窓だけである**（`src/chat-payload.ts` の `CHAT_MAX_SEND_MESSAGES`）。
+ * 以前のように「受け取った会話 ＋ 返答」で上書きすると、**窓から落ちた往復が保存から消え、次に開いたとき
+ * 復元されない。** そこで口（`src/chat.ts`）は**保存済みの行を読み（{@link readChatConversation}）、
+ * 新しい 1 往復を足して書き戻す**（{@link appendChatTurn}）。**読み取りが 1 往復に 1 回増える**が、
+ * 縛っているのは 1 日のトークンの蓋（1 人およそ 9〜17 往復）で、閲覧ごとの流入ではない（3.6）。
+ *
+ * **保存の上限（{@link CHAT_MAX_STORED_MESSAGES}）は送る上限とは別の値である。** 超えたら最古の往復から
+ * 落とす——**断らない**（断ると、送れるようになった後で保存が行き止まりになる）。
  *
  * ## 復元するのは最新の 1 本だけである
  *
@@ -30,7 +41,7 @@
  */
 import type { ChatMessage } from './chat-payload.js';
 import type { ChatTarget } from './chat-target.js';
-import { CHAT_MAX_MESSAGES } from './chat-payload.js';
+import { CHAT_MAX_STORED_MESSAGES } from './chat-payload.js';
 
 /**
  * 会話を残す日数（仕様 5.16。利用者の決定）。
@@ -84,6 +95,10 @@ export interface StoredChatConversation {
  * **例外にしない。** 読めない行は「無かった」として扱い、画面は空のチャットから始まる——
  * 会話が壊れていることを理由に、チャットそのものを使えなくしない。
  *
+ * **数の天井は保存の上限（{@link CHAT_MAX_STORED_MESSAGES}）である**（#742）。**送る上限を当てては
+ * いけない**——ここは「壊れていたら無かったことにする」枝なので、送る上限（以前の 20 通）を当てると、
+ * **それを超えた会話は復元が null になり、会話が丸ごと消えたように見える。**
+ *
  * @param raw `chat_conversations.messages` の値
  * @returns 発話の列、または null
  */
@@ -97,7 +112,7 @@ export function parseStoredMessages(raw: unknown): readonly ChatMessage[] | null
   } catch {
     return null;
   }
-  if (!Array.isArray(value) || value.length === 0 || value.length > CHAT_MAX_MESSAGES) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > CHAT_MAX_STORED_MESSAGES) {
     return null;
   }
   const messages: ChatMessage[] = [];
@@ -156,6 +171,68 @@ export async function latestChatConversation(
     return null;
   }
   return { id: row.id, messages, updatedAt: row.updated_at };
+}
+
+/**
+ * 続きを書き込む会話を、id で読む（#742。**保存済みの行へ追記する**ため）。
+ *
+ * **`(id, user_id)` で当てる**——上書き（{@link saveChatConversation}）と同じ条件である。**対象は条件に
+ * 入れない**（付け替えの後も、同じ id の行は同じ会話である。#740）。他人の id・消えた id・無い id は
+ * null になり、口は「受け取った会話」から保存し直す（上書きが 0 行なら新しく作る、と同じ向き）。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 呼び出し元
+ * @param conversationId 会話の id
+ * @returns 会話、または null（無い・自分のものでない・壊れている）
+ */
+export async function readChatConversation(
+  env: Env,
+  userId: string,
+  conversationId: string,
+): Promise<StoredChatConversation | null> {
+  const row = await env.DB.prepare(
+    'select id, messages, updated_at from chat_conversations where id = ? and user_id = ?',
+  )
+    .bind(conversationId, userId)
+    .first<{ id: string; messages: string; updated_at: number }>();
+  if (row === null) {
+    return null;
+  }
+  const messages = parseStoredMessages(row.messages);
+  if (messages === null) {
+    return null;
+  }
+  return { id: row.id, messages, updatedAt: row.updated_at };
+}
+
+/**
+ * 保存済みの会話へ、新しい 1 往復を足す（#742）。**保存の上限を超えたら、最古の往復から落とす。**
+ *
+ * **往復（2 通）単位で落とす**ので、先頭が `user` で役割が交互、という不変条件
+ * （{@link parseStoredMessages} が読むときに確かめる）は崩れない。
+ *
+ * **前提は「保存済みの会話が `assistant` で終わっている（偶数の長さ）」こと**である。保存する形は
+ * いつも「受け取った会話（末尾が `user`）＋返答」なので偶数になる。**奇数なら追記できない**ので、
+ * 呼ぶ側が受け取った会話から保存し直す。
+ *
+ * @param stored 保存済みの会話（偶数の長さ。無ければ空）
+ * @param user 新しい利用者の発話
+ * @param assistant その返答
+ * @param limit 保存する発話の上限（既定 {@link CHAT_MAX_STORED_MESSAGES}）
+ * @returns 保存する発話の列
+ */
+export function appendChatTurn(
+  stored: readonly ChatMessage[],
+  user: ChatMessage,
+  assistant: ChatMessage,
+  limit: number = CHAT_MAX_STORED_MESSAGES,
+): readonly ChatMessage[] {
+  const next = [...stored, user, assistant];
+  let start = 0;
+  while (next.length - start > limit && next.length - start > 2) {
+    start += 2;
+  }
+  return start === 0 ? next : next.slice(start);
 }
 
 /**

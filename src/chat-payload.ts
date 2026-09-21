@@ -37,26 +37,146 @@ export interface ChatMessage {
 export const CHAT_MAX_MESSAGE_LENGTH = 2_000;
 
 /**
- * 1 回の要求に載せてよい発話の数。
+ * 1 回の要求に載せる往復の数（#742 / M21-5。仕様 5.16）。**直近 3 往復だけを送る。**
  *
- * **会話が伸びるほど 1 往復が重くなる**（毎回まるごと送るため）。1 日 30,000 トークンの
- * 蓋（`src/chat-quota.ts`）は**使い切るまで止めない**ので、**1 回の要求の重さは別に縛る。**
- * **実測では、9 往復で入力が 31 → 1,264 トークンまで伸びた**（2026-09-20。仕様 5.16 の「実測」）
- * ——**その 9 往復では作品を選んでいないので、キャッシュに載ったのはシステムプロンプトだけ**だった
- * （**作品を選ぶと、文脈の直後にも区切りが入る**。`src/chat/handler.ts` の `buildChatConverseRequest`）。
- * **会話そのものは、どちらの場合も毎回そのまま送る。**
- * 20 通は、その伸びを 1 回の要求の側から縛る値である。
+ * ## 「1 回に載せてよい量」を「その会話で送れる回数」にしない
+ *
+ * **会話は毎回まるごと送り直す**（Bedrock の `Converse` にセッションは無い）。以前は画面が履歴の
+ * 全部を載せ、上限（20 通）をそのまま当てていたので、**「1 回の要求に載せてよい量」が「その会話で
+ * 送れる回数」に化けていた**——10 往復（ルールがあれば 9 往復）で、そのチャットでは二度と送れなくなった
+ * （#742。本番で利用者が踏んだ）。**いまは窓で切る。** 古い往復は送らないだけで、表示と保存には残る
+ * （保存の上限は {@link CHAT_MAX_STORED_MESSAGES} で、送る上限とは別の値である）。
+ *
+ * ## 窓から落ちた往復の内容は、最新の返答が持つ
+ *
+ * **システムプロンプトの版 3 で、下書きを 1 度出したら毎回【指示文】の全文を出させている**
+ * （`src/chat-prompt.ts`）。**窓の中の最新の返答が、それまでの話の要約そのものになる**——
+ * 要約による圧縮（別の LLM 呼び出し）を入れずに済むのは、この前提があるからである。
+ *
+ * ## 3 往復である理由（#742 の intake。2026-09-20 の実測から引いた）
+ *
+ * - **ルールの 2 通を足しても 9 通**で、#728 で踏んだ「ルールで 2 通あふれる」経路が原理的に起きない
+ * - 1 往復の重さが頭打ちになる（キャッシュ読み 1,080 ＋ 窓 ＋ 出力で約 3,200 トークン）。**1 日の蓋でも
+ *   最悪 9 往復は必ず回る**
+ * - 4 往復目までは 1 通も落ちない（下書きへ着地するチャットの多くは 3〜4 往復で終わっている）
+ * - **4 往復は採らなかった。** 下書き全文を毎回出させると AI の発話が 1 通 400〜500 トークンに増えるので、
+ *   窓を 1 往復広げると 1 日に回せる往復が 1 割強減る
  */
-export const CHAT_MAX_MESSAGES = 20;
+export const CHAT_SEND_WINDOW_TURNS = 3;
+
+/**
+ * 1 回の要求に載せる発話の数（直近 {@link CHAT_SEND_WINDOW_TURNS} 往復 ＋ 新しい 1 通 ＝ **7 通**）。
+ *
+ * **奇数である。** 先頭と末尾が `user` で役割が交互、という不変条件（`Converse` の要件でもある）を、
+ * 往復（2 通）単位で落とすだけで保てる。
+ *
+ * **式ではなく数字で書く**（`CHAT_SEND_WINDOW_TURNS * 2 + 1` にしない）。この葉は
+ * `src/chat-conversation.ts` → `src/generate.ts` の経路で**オーケストレータの束にも入る**。esbuild は
+ * 識別子どうしの式を「副作用があるかもしれない」とみなして束から落とさないので、**式で書くと、使っても
+ * いないオーケストレータの束が変わり、配り直すまで main の配備が止まる**（#742 で実測した）。
+ * 数字どうしが合っていることは `test/chat-lambda.test.ts` が見る。
+ */
+export const CHAT_MAX_SEND_MESSAGES = 7;
+
+/**
+ * 保存する往復の数（#742）。**超えたら最古の往復から落とす。**
+ *
+ * **送る上限とは別の値である。** 窓から落ちた往復も、画面の表示と次に開いたときの復元には残す
+ * ——**残さないと、送れるようになっても「話したことが消えた」ように見える。**
+ */
+export const CHAT_MAX_STORED_TURNS = 30;
+
+/**
+ * 保存する発話の数（{@link CHAT_MAX_STORED_TURNS} 往復 ＝ **60 通**）。
+ *
+ * **受け取ってよい発話の数の天井も兼ねる**（エッジと Lambda の検証）。受け取った後で窓へ切るので、
+ * **窓より長い会話を送ってくる古い画面や古いエッジも断らない**——断ると、配り替えのあいだ、
+ * 長いチャットがまた行き止まりになる。
+ *
+ * **数字で書く理由は {@link CHAT_MAX_SEND_MESSAGES} と同じ**（オーケストレータの束を動かさない）。
+ */
+export const CHAT_MAX_STORED_MESSAGES = 60;
+
+/**
+ * 大きさで断られたときに、最古の往復を落として投げ直す回数の上限（#742）。
+ *
+ * **投げ直してよいのは「課金される前に断られた」と分かるものだけである**——Bedrock の
+ * `ValidationException`（モデルが走る前の 400）。**混雑（429 / 503）は投げ直さない**
+ * （`src/chat-client.ts` の `ChatBusy`。既存の決定）。**2 度課金する経路を作らない。**
+ */
+export const CHAT_SIZE_RETRY_LIMIT = 2;
 
 /**
  * 1 回の要求に載せてよい発話の合計（文字数）。
  *
- * **{@link CHAT_MAX_MESSAGE_LENGTH} × {@link CHAT_MAX_MESSAGES} より小さい。** 上限どうしを
- * 掛けた値（40,000 文字）を許すと、1 回で 1 日の蓋の大半を使える。**掛け算にしない**のは
+ * **上限どうしを掛けた値より小さい。** #695 では {@link CHAT_MAX_MESSAGE_LENGTH} × 20 通 ＝
+ * 40,000 文字を許すと 1 回で 1 日の蓋の大半を使えるので、この値を置いた。**掛け算にしない**のは
  * `src/orchestrator/handler.ts` が基盤のリトライを 0 にしているのと同じ判断である。
+ *
+ * **窓（{@link CHAT_MAX_SEND_MESSAGES}）の最悪は 7 × 2,000 ＝ 14,000 文字で、この値を 1 段はみ出す。**
+ * **わざとである**（#742 の intake）——**超えた分は最古の往復を落として収める**（{@link chatSendWindow}）
+ * ので、その仕組みが必ず踏まれ、**1 度も通らない経路にならない。** 1 往復落とせば 5 × 2,000 ＝ 10,000 で、
+ * ルール（{@link CHAT_RULE_MAX_LENGTH}）を足しても収まる。
  */
 export const CHAT_MAX_TOTAL_MESSAGE_LENGTH = 12_000;
+
+/**
+ * 発話の文字数の合計（**コードポイントで数える**。エッジと Lambda の検証と同じ数え方）。
+ *
+ * @param messages 発話の列
+ * @returns 文字数の合計
+ */
+export function chatCharacters(messages: readonly ChatMessage[]): number {
+  return messages.reduce((total, message) => total + [...message.text].length, 0);
+}
+
+/** {@link chatSendWindow} の上限（省けば既定値）。 */
+export interface ChatSendWindowLimits {
+  /** 載せてよい発話の数（既定 {@link CHAT_MAX_SEND_MESSAGES}）。 */
+  readonly maxMessages?: number;
+  /** 載せてよい文字数の合計（既定 {@link CHAT_MAX_TOTAL_MESSAGE_LENGTH}）。 */
+  readonly maxCharacters?: number;
+  /**
+   * 会話の外で先に使う文字数（**作者のルール**。{@link withChatRule} が足す 2 通ぶん）。
+   * **ルールも同じ要求に載る**ので、その分だけ会話に使える文字数が減る。
+   */
+  readonly reservedCharacters?: number;
+}
+
+/**
+ * 1 回の要求に載せる範囲を切り出す（#742。**送る窓の正本**）。
+ *
+ * **最古の往復（2 通）から落とす。** 先頭と末尾が `user` で役割が交互、という不変条件は
+ * 2 通ずつ落とすだけで保たれる。**最新の 1 通は必ず残す**——それでも上限を超えるなら、
+ * 呼ぶ側が「送れない」と判断する（{@link chatCharacters} で数え直す）。
+ *
+ * **落とす条件は 2 つ**——発話の数が {@link ChatSendWindowLimits.maxMessages} を超えている、
+ * または文字数の合計（ルールの分を含む）が {@link ChatSendWindowLimits.maxCharacters} を超えている。
+ *
+ * **エッジと Lambda と画面が同じ規則で切る**（二重の検査。送り側と受け側は別々に配られる）。
+ * 画面のスクリプトは import できないので、発話の数だけを {@link CHAT_MAX_SEND_MESSAGES} から
+ * 埋め込んで切る（`src/chat-section.ts`）。**大きさで断られたときのやり直し**
+ * （{@link CHAT_SIZE_RETRY_LIMIT}）も、`maxMessages` を 2 つずつ減らしてこの関数を呼び直す。
+ *
+ * @param messages 会話（末尾は新しい `user` の発話）
+ * @param limits 上限（省けば既定値）
+ * @returns 載せる発話の列（切る必要が無ければ同じ配列）
+ */
+export function chatSendWindow(
+  messages: readonly ChatMessage[],
+  limits: ChatSendWindowLimits = {},
+): readonly ChatMessage[] {
+  const maxMessages = limits.maxMessages ?? CHAT_MAX_SEND_MESSAGES;
+  const budget = (limits.maxCharacters ?? CHAT_MAX_TOTAL_MESSAGE_LENGTH) - (limits.reservedCharacters ?? 0);
+  let start = 0;
+  let total = chatCharacters(messages);
+  // **3 通以上残っているときだけ落とす**（2 通落としても最新の 1 通が残る）。
+  while (messages.length - start >= 3 && (messages.length - start > maxMessages || total > budget)) {
+    total -= [...messages[start]!.text].length + [...messages[start + 1]!.text].length;
+    start += 2;
+  }
+  return start === 0 ? messages : messages.slice(start);
+}
 
 /**
  * 1 回の応答で受け取る出力トークンの上限。
@@ -76,8 +196,14 @@ export const CHAT_MAX_OUTPUT_TOKENS = 1_500;
  * （この葉はチャットの Lambda の束に入るので、画面側のモジュールを引き込ませない）。
  *
  * **枠の側からも見ておく。** ルールは**1 往復ごとに文脈へ乗る**ので、見積もり
- * （1 文字 1 トークンで数える）では 1 往復あたり最大 500 トークンになる。**実際はもっと安い**
- * ——ルールは会話の先頭に固定されるので、**4.5 のキャッシュの共有プレフィックスに乗る。**
+ * （1 文字 1 トークンで数える）では 1 往復あたり最大 500 トークンになる。**キャッシュでは安くならない**
+ * （#742 で直した。以前は「共有プレフィックスに乗る」と書いていたが、誤りだった）——
+ * `src/chat/handler.ts` の `buildChatConverseRequest` が置く区切り（`cachePoint`）は、
+ * **システムプロンプトの末尾と、作品の文脈の直後の 2 つだけ**である。ルールは会話の先頭の発話として
+ * 入るので、**作品を選んだチャットでは文脈の区切りの後ろ**（同じ発話の中で、区切りの次のブロック）に、
+ * **作品を選んでいないチャットでは `messages` に区切りが 1 つも無い**ので、**どちらでも毎往復、
+ * 満額の入力として読まれる。** 見積もりが 1 文字 1 トークンで数えているのは、その意味で正しい。
+ * 並びは `test/chat-lambda.test.ts` が組み立てた要求で確かめる。
  */
 export const CHAT_RULE_MAX_LENGTH = 500;
 
@@ -100,7 +226,13 @@ export const CHAT_RULE_PREAMBLE =
  */
 export const CHAT_RULE_ACKNOWLEDGEMENT = '承知しました。以降のチャットでそのとおりにします。';
 
-/** ルールが使う発話の数（前置きと受け答えで 2 つ）。**エッジはこのぶんを空けてから受ける。** */
+/**
+ * ルールが使う発話の数（前置きと受け答えで 2 つ）。
+ *
+ * **以前はエッジがこのぶんを空けてから受けていた**（上限ちょうどの会話がルールで 2 通あふれるため。#728）。
+ * **#742 で送る窓（{@link CHAT_MAX_SEND_MESSAGES}）へ切るようになり、ルールを足しても 9 通なので、
+ * あふれる経路そのものが無くなった。** 文字数だけは {@link ChatSendWindowLimits.reservedCharacters} で空ける。
+ */
 export const CHAT_RULE_TURNS = 2;
 
 /**
@@ -163,7 +295,12 @@ export interface ChatWorkContext {
 /** Lambda へ送るペイロード。 */
 export interface ChatRequestPayload {
   readonly version: typeof CHAT_PAYLOAD_VERSION;
-  /** 会話。**末尾は必ず `user`** である（エッジが確かめる）。 */
+  /**
+   * 会話。**末尾は必ず `user`** である（エッジが確かめる）。
+   *
+   * **送る窓で切ったものである**（{@link chatSendWindow}。#742）。受け取った側も同じ規則で切り直す
+   * ——**古いエッジは窓で切らずに送ってくる**ので、受け取る数の天井は {@link CHAT_MAX_STORED_MESSAGES} に置く。
+   */
   readonly messages: readonly ChatMessage[];
   /** 作者自身の作品の文脈。選んでいなければ載らない。 */
   readonly work?: ChatWorkContext;

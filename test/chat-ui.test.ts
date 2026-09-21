@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   CHAT_RETENTION_DAYS,
   CHAT_RETENTION_PATTERN,
+  appendChatConversation,
   appendChatTurn,
   deleteChatConversations,
   latestChatConversation,
@@ -195,6 +196,69 @@ describe('会話の保存（5.16）', () => {
       expect(parseStoredMessages(raw)).toHaveLength(count);
     },
   );
+});
+
+describe('保存済みの行へ 1 文で追記する（#742 / PR #746 の Copilot の指摘）', () => {
+  const U = { role: 'user', text: '新' } as const;
+  const A = { role: 'assistant', text: '返' } as const;
+
+  /**
+   * @param count 発話の数
+   * @returns 役割が交互の会話
+   */
+  function turns(count: number): ChatMessage[] {
+    return Array.from({ length: count }, (_, index) => ({
+      role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      text: `発話${index}`,
+    }));
+  }
+
+  it('末尾へ足し、読み戻せる形のままである', async () => {
+    const userId = await createUser();
+    const id = await saveChatConversation(env, userId, null, NEW_CHAT_TARGET, turns(4), 1);
+    expect(await appendChatConversation(env, userId, id, U, A, 2)).toBe(true);
+    const latest = await latestChatConversation(env, userId, NEW_CHAT_TARGET);
+    expect(latest?.messages).toEqual([...turns(4), U, A]);
+    expect(latest?.updatedAt).toBe(2);
+  });
+
+  it('上限を超えたら SQL の中で最古の往復を落とす（先頭は user のまま）', async () => {
+    const userId = await createUser();
+    const id = await saveChatConversation(env, userId, null, NEW_CHAT_TARGET, turns(CHAT_MAX_STORED_MESSAGES), 1);
+    expect(await appendChatConversation(env, userId, id, U, A, 2)).toBe(true);
+    const latest = await latestChatConversation(env, userId, NEW_CHAT_TARGET);
+    expect(latest?.messages).toHaveLength(CHAT_MAX_STORED_MESSAGES);
+    expect(latest?.messages[0]).toEqual({ role: 'user', text: '発話2' });
+    expect(latest?.messages.slice(-2)).toEqual([U, A]);
+  });
+
+  it.each([
+    ['奇数の長さ（user で終わる）', JSON.stringify(turns(3))],
+    ['JSON として読めない', '{壊れている'],
+    ['配列でない', '{"role":"user","text":"あ"}'],
+    ['上限を超えている', JSON.stringify(turns(CHAT_MAX_STORED_MESSAGES + 2))],
+  ])('%s 行には足さない（交互を崩さない。呼ぶ側が受け取った会話から保存し直す）', async (_label, raw) => {
+    const userId = await createUser();
+    const id = crypto.randomUUID();
+    await env.DB.prepare(
+      'insert into chat_conversations (id, user_id, messages, created_at, updated_at) values (?, ?, ?, 1, 1)',
+    )
+      .bind(id, userId, raw)
+      .run();
+    expect(await appendChatConversation(env, userId, id, U, A, 2)).toBe(false);
+    const row = await env.DB.prepare('select messages from chat_conversations where id = ?')
+      .bind(id)
+      .first<{ messages: string }>();
+    expect(row?.messages).toBe(raw);
+  });
+
+  it('他人の会話の id には足さない', async () => {
+    const owner = await createUser();
+    const stranger = await createUser();
+    const id = await saveChatConversation(env, owner, null, NEW_CHAT_TARGET, turns(2), 1);
+    expect(await appendChatConversation(env, stranger, id, U, A, 2)).toBe(false);
+    expect((await latestChatConversation(env, owner, NEW_CHAT_TARGET))?.messages).toEqual(turns(2));
+  });
 });
 
 describe('保存済みの会話へ 1 往復を足す（#742）', () => {

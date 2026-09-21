@@ -13,7 +13,7 @@
  * 6. **送る窓へ切る**（#742。`chatSendWindow`。直近 3 往復 ＋ 新しい 1 通。ルールの文字数を先に空ける）
  * 7. **Lambda を同期で呼ぶ**（`src/chat-client.ts`。8.2 の Guardrail は関数の中で掛かる）
  * 8. **台帳へ 1 行積む**（`kind = 'chat'`。**書くのはエッジ**）
- * 9. **保存済みの行へ 1 往復を足す**（#742。`appendChatTurn`。窓から落ちた往復も保存と復元に残す）
+ * 9. **保存済みの行へ 1 往復を足す**（#742。`appendChatConversation`。1 文の UPDATE で、窓から落ちた往復も保存と復元に残す）
  *
  * ## 送る量と、送れる回数を分ける（#742）
  *
@@ -51,9 +51,9 @@ import {
   CHAT_RATE_LIMIT_SCOPE,
 } from './chat-paths.js';
 import {
+  appendChatConversation,
   appendChatTurn,
   deleteChatConversations,
-  readChatConversation,
   saveChatConversation,
 } from './chat-conversation.js';
 import { createAskChat, ChatBusy, ChatNotConfigured, type AskChat } from './chat-client.js';
@@ -406,30 +406,28 @@ export async function handleChat(
   // **保存の失敗で往復ごと失敗にしない。** 返答は既に手元にあり、利用者にとっては
   // 「返ってきたのに消えた」ほうが悪い。**復元できないことはログに残す。**
   //
-  // **保存済みの行へ追記する**（#742。`appendChatTurn`）。**送ったのは窓だけ**なので、受け取った
-  // 会話で上書きすると、窓から落ちた往復が保存から消える。**読めなかったら書かない**（下の catch）
-  // ——読み取りの失敗で窓だけを書き戻すと、それまでの会話を自分で切り詰めることになる。
-  // 続きの行が無い（新しい会話・他人の id・消えた id）か、追記できない形（奇数の長さ）なら、
-  // 受け取った会話から保存する（以前と同じ形）。
+  // **保存済みの行へ追記する**（#742）。**送ったのは窓だけ**なので、受け取った会話で上書きすると、
+  // 窓から落ちた往復が保存から消える。**読んでから書き戻さない**——1 文の UPDATE で末尾へ足す
+  // （`appendChatConversation`。重なった保存が互いの往復を消さない。PR #746 の Copilot の指摘）。
+  // 当たる行が無い（新しい会話・他人の id・消えた id・壊れた行）なら、受け取った会話から保存する
+  // （以前と同じ形。他人の id なら新しい会話になり、自分の壊れた行は上書きで直る）。
   let conversationId: string | null = null;
   try {
-    const stored =
-      parsed.conversationId === null
-        ? null
-        : await readChatConversation(env, userId, parsed.conversationId);
     const latestUser = parsed.messages[parsed.messages.length - 1]!;
-    const base =
-      stored !== null && stored.messages.length % 2 === 0
-        ? stored.messages
-        : parsed.messages.slice(0, -1);
-    conversationId = await saveChatConversation(
-      env,
-      userId,
-      parsed.conversationId,
-      parsed.target,
-      appendChatTurn(base, latestUser, { role: 'assistant', text: answer.text }),
-      now,
-    );
+    const reply: ChatMessage = { role: 'assistant', text: answer.text };
+    const appended =
+      parsed.conversationId !== null &&
+      (await appendChatConversation(env, userId, parsed.conversationId, latestUser, reply, now));
+    conversationId = appended
+      ? parsed.conversationId
+      : await saveChatConversation(
+          env,
+          userId,
+          parsed.conversationId,
+          parsed.target,
+          appendChatTurn(parsed.messages.slice(0, -1), latestUser, reply),
+          now,
+        );
   } catch (error) {
     console.warn(
       `[chat] 会話を保存できませんでした（返答は返します）: ${

@@ -23,9 +23,13 @@
  *
  * **画面が送ってくるのは直近の窓だけである**（`src/chat-payload.ts` の `CHAT_MAX_SEND_MESSAGES`）。
  * 以前のように「受け取った会話 ＋ 返答」で上書きすると、**窓から落ちた往復が保存から消え、次に開いたとき
- * 復元されない。** そこで口（`src/chat.ts`）は**保存済みの行を読み（{@link readChatConversation}）、
- * 新しい 1 往復を足して書き戻す**（{@link appendChatTurn}）。**読み取りが 1 往復に 1 回増える**が、
- * 縛っているのは 1 日のトークンの蓋（1 人およそ 9〜17 往復）で、閲覧ごとの流入ではない（3.6）。
+ * 復元されない。** そこで口（`src/chat.ts`）は**保存済みの行の末尾へ、新しい 1 往復を 1 文の UPDATE で足す**
+ * （{@link appendChatConversation}）。
+ *
+ * **読んでから書き戻さない**（PR #746 の Copilot の指摘）。「読む → メモリで足す → 丸ごと書く」にすると、
+ * 同じ会話への保存が重なったとき（別タブ・別端末）、**両方が同じ N 通を読み、後から書いた側が先の
+ * 1 往復を消す。** 追記と切り詰めを 1 つの UPDATE の中で済ませれば、重なっても D1 の側で直列になり、
+ * **どちらの往復も残る。** 読み取りも 1 回減る（3.6「読み取りも従量である」）。
  *
  * **保存の上限（{@link CHAT_MAX_STORED_MESSAGES}）は送る上限とは別の値である。** 超えたら最古の往復から
  * 落とす——**断らない**（断ると、送れるようになった後で保存が行き止まりになる）。
@@ -174,35 +178,62 @@ export async function latestChatConversation(
 }
 
 /**
- * 続きを書き込む会話を、id で読む（#742。**保存済みの行へ追記する**ため）。
+ * 保存済みの会話の末尾へ、新しい 1 往復を 1 文で足す（#742。**読まずに追記する**）。
  *
- * **`(id, user_id)` で当てる**——上書き（{@link saveChatConversation}）と同じ条件である。**対象は条件に
- * 入れない**（付け替えの後も、同じ id の行は同じ会話である。#740）。他人の id・消えた id・無い id は
- * null になり、口は「受け取った会話」から保存し直す（上書きが 0 行なら新しく作る、と同じ向き）。
+ * **1 つの UPDATE の中で、追記と切り詰めが完結する**——`json_insert(messages, '$[#]', …)` で末尾へ 2 通を
+ * 足し、足した結果が保存の上限（{@link CHAT_MAX_STORED_MESSAGES}）を超えるなら `json_remove(…, '$[0]', '$[0]')`
+ * で最古の 1 往復を落とす。**重なった 2 つの保存は D1 の側で直列になる**ので、並びは
+ * `[…, u1, a1, u2, a2]` になり、役割の交互も崩れない（`'$[#]'` を D1 が受けることは
+ * `test/chat.test.ts` の重ねた保存で実測している）。
+ *
+ * **切り詰めは `case` で式ごと選ぶ**（パスを文字列で組まない）。D1 は数値の引数を実数で渡すので、
+ * `'$[' || ?3 || ']'` は `$[60.0]` になり「bad JSON path」で落ちる（ローカルの D1 で実測した）。
+ *
+ * **当てる行は `(id, user_id)`**（上書き（{@link saveChatConversation}）と同じ。対象は条件に入れない。#740）。
+ * **さらに、足しても形が崩れない行にだけ当てる**——JSON として読めて、長さが偶数（`assistant` で終わる）で、
+ * 上限以下であること。**当たらなかったら false を返す**ので、呼ぶ側は受け取った会話から保存し直す
+ * （他人の id・消えた id・無い id は新しい会話になり、壊れた行は上書きで直る。以前と同じ向き）。
  *
  * @param env バインディングと環境変数
  * @param userId 呼び出し元
- * @param conversationId 会話の id
- * @returns 会話、または null（無い・自分のものでない・壊れている）
+ * @param conversationId 追記する会話の id
+ * @param user 新しい利用者の発話
+ * @param assistant その返答
+ * @param now 時刻（UNIX 秒）
+ * @returns 追記したら true（当たる行が無ければ false）
  */
-export async function readChatConversation(
+export async function appendChatConversation(
   env: Env,
   userId: string,
   conversationId: string,
-): Promise<StoredChatConversation | null> {
-  const row = await env.DB.prepare(
-    'select id, messages, updated_at from chat_conversations where id = ? and user_id = ?',
+  user: ChatMessage,
+  assistant: ChatMessage,
+  now: number,
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `update chat_conversations
+        set messages = case
+              when json_array_length(messages) + 2 > ?3
+                then json_remove(json_insert(messages, '$[#]', json(?1), '$[#]', json(?2)), '$[0]', '$[0]')
+              else json_insert(messages, '$[#]', json(?1), '$[#]', json(?2))
+            end,
+            updated_at = ?4
+      where id = ?5 and user_id = ?6
+        and json_valid(messages)
+        and json_type(messages) = 'array'
+        and json_array_length(messages) % 2 = 0
+        and json_array_length(messages) <= ?3`,
   )
-    .bind(conversationId, userId)
-    .first<{ id: string; messages: string; updated_at: number }>();
-  if (row === null) {
-    return null;
-  }
-  const messages = parseStoredMessages(row.messages);
-  if (messages === null) {
-    return null;
-  }
-  return { id: row.id, messages, updatedAt: row.updated_at };
+    .bind(
+      JSON.stringify({ role: user.role, text: user.text }),
+      JSON.stringify({ role: assistant.role, text: assistant.text }),
+      CHAT_MAX_STORED_MESSAGES,
+      now,
+      conversationId,
+      userId,
+    )
+    .run();
+  return (result.meta.changes ?? 0) > 0;
 }
 
 /**
@@ -214,6 +245,9 @@ export async function readChatConversation(
  * **前提は「保存済みの会話が `assistant` で終わっている（偶数の長さ）」こと**である。保存する形は
  * いつも「受け取った会話（末尾が `user`）＋返答」なので偶数になる。**奇数なら追記できない**ので、
  * 呼ぶ側が受け取った会話から保存し直す。
+ *
+ * **保存済みの行への追記は {@link appendChatConversation} が SQL の中で同じ規則で行う**（この関数は
+ * 受け取った会話から保存し直すときに使う）。
  *
  * @param stored 保存済みの会話（偶数の長さ。無ければ空）
  * @param user 新しい利用者の発話

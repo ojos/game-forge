@@ -782,6 +782,94 @@ describe('チャットの口（仕様 5.16）', () => {
       expect(restored?.messages).toHaveLength(20);
     });
 
+    it('同じ会話へ 2 つの保存が重なっても、両方の往復が残る（PR #746 の Copilot の指摘）', async () => {
+      // **別タブ・別端末から同じ会話へ同時に送る。** 「読んでから丸ごと書き戻す」形だと、両方が
+      // 同じ N 通を読み、**後から書いた側が先の 1 往復を消す。**
+      const userId = await createUser();
+      const first = numberedAsk();
+      const opened = await converse(userId, 2, first.ask);
+      expect(opened.conversationId).not.toBeNull();
+
+      // **2 つの返答を同時に返す**（読み取りと書き込みを重ねるため）。
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let waiting = 0;
+      const ask = async (_env: Env, payload: ChatRequestPayload): Promise<ChatResponsePayload> => {
+        waiting += 1;
+        if (waiting === 2) {
+          release();
+        }
+        await gate;
+        const latest = payload.messages[payload.messages.length - 1]!.text;
+        return {
+          ok: true,
+          text: `【指示文】${latest}への返答`,
+          modelKey: 'sonnet-4-6',
+          promptVersion: 3,
+          stopReason: 'end_turn',
+          usage: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 0, cacheWriteInputTokens: 0 },
+        };
+      };
+      const [tabA, tabB] = await Promise.all(
+        ['タブA', 'タブB'].map((text) =>
+          post(
+            userId,
+            { messages: [...opened.shown, { role: 'user', text }], conversationId: opened.conversationId },
+            ask,
+          ),
+        ),
+      );
+      expect([tabA!.status, tabB!.status]).toEqual([200, 200]);
+
+      const restored = await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET);
+      // **壊れていない**（交互が崩れると `parseStoredMessages` が null にし、会話が消えたように見える）。
+      expect(restored).not.toBeNull();
+      expect(restored!.messages).toHaveLength(8);
+      restored!.messages.forEach((message, index) => {
+        expect(message.role).toBe(index % 2 === 0 ? 'user' : 'assistant');
+      });
+      const texts = restored!.messages.map((message) => message.text);
+      expect(texts.slice(0, 4)).toEqual(opened.shown.map((message) => message.text));
+      expect(texts).toContain('タブA');
+      expect(texts).toContain('タブB');
+      expect(texts).toContain('【指示文】タブAへの返答');
+      expect(texts).toContain('【指示文】タブBへの返答');
+    });
+
+    it('続きの行が壊れていたら、受け取った会話から保存し直す（交互は崩れない）', async () => {
+      const userId = await createUser();
+      const id = crypto.randomUUID();
+      await env.DB.prepare(
+        'insert into chat_conversations (id, user_id, messages, created_at, updated_at) values (?, ?, ?, 1, 1)',
+      )
+        .bind(id, userId, '[{"role":"user","text":"奇数"}]')
+        .run();
+      const stub = numberedAsk();
+      const response = await post(
+        userId,
+        {
+          messages: [
+            { role: 'user', text: '質問1' },
+            { role: 'assistant', text: '返答1' },
+            { role: 'user', text: '質問2' },
+          ],
+          conversationId: id,
+        },
+        stub.ask,
+      );
+      expect(response.status).toBe(200);
+      expect(((await response.json()) as { conversationId: string }).conversationId).toBe(id);
+      const restored = await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET);
+      expect(restored?.messages.map((message) => message.text)).toEqual([
+        '質問1',
+        '返答1',
+        '質問2',
+        '【指示文】質問2への返答',
+      ]);
+    });
+
     it('混雑（ChatBusy）では投げ直さない——1 回だけ呼んで 503 を返し、保存もしない', async () => {
       const userId = await createUser();
       let calls = 0;

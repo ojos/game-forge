@@ -376,10 +376,14 @@ function numberOrNull(value: unknown): number | null {
  * **本文（`message`）は読み捨てる。** 入力を引用しうるため（`BedrockCallFailed` の
  * 説明）。種別は `x-amzn-errortype` ヘッダか、本文の `__type` に入る。
  *
+ * **チャットの Lambda も使う**（`src/chat/handler.ts` の大きさのやり直し。#742）——種別の読み方を
+ * 写すと片方だけが古くなる（PR #746 で、写しが名前空間つきと本文の `__type` を読めなかった）。
+ * **ヘッダが無いときは本文を読み切る**ので、呼んだ後の応答の本文は使えない。
+ *
  * @param response 失敗した応答
  * @returns エラー種別（読めなければ null）
  */
-async function readAwsErrorType(response: Response): Promise<string | null> {
+export async function readAwsErrorType(response: Response): Promise<string | null> {
   const header = response.headers.get('x-amzn-errortype');
   if (header !== null && header !== '') {
     // `Type:https://...` の形で返ることがあるので、種別名だけにする。

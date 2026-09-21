@@ -54,6 +54,7 @@ import {
   BedrockResponseUnreadable,
   converseEndpoint,
   readBedrockCredentials,
+  readAwsErrorType,
   readConverseText,
   readConverseUsage,
   toConverseSystem,
@@ -308,25 +309,11 @@ export function buildChatConverseRequest(
  * 落としても通らないうえ、投げ直すと混雑を自分で悪くする。
  *
  * @param status HTTP の状態
- * @param errorType `x-amzn-errortype` の種別（`:` より前。無ければ null）
+ * @param errorType AWS のエラー種別（`src/bedrock.ts` の `readAwsErrorType` が名前空間まで落とした名前。無ければ null）
  * @returns 最古の往復を落として投げ直してよいなら true
  */
 export function isChatSizeRejection(status: number, errorType: string | null): boolean {
   return status === 400 && errorType === 'ValidationException';
-}
-
-/**
- * 応答の `x-amzn-errortype` から種別だけを取り出す（`ValidationException:http://…` の前半）。
- *
- * @param response Bedrock の応答
- * @returns 種別（無ければ null）
- */
-function awsErrorTypeOf(response: Response): string | null {
-  const raw = response.headers.get('x-amzn-errortype');
-  if (raw === null || raw === '') {
-    return null;
-  }
-  return raw.split(':')[0] ?? null;
 }
 
 /** 差し替えられる依存（テスト用）。 */
@@ -434,7 +421,9 @@ export async function handleChatEvent(
       if (response.ok) {
         break;
       }
-      const errorType = awsErrorTypeOf(response);
+      // **種別は `readAwsErrorType` で読む**（`src/bedrock.ts`。ヘッダの `種別:URL` と
+      // `名前空間#種別`、ヘッダが無ければ本文の `__type` まで読む。PR #746 の Copilot の指摘）。
+      const errorType = await readAwsErrorType(response);
       // **課金前の断りだけを、最古の往復を落として投げ直す**（モジュール冒頭）。
       // **落とせない（最新の 1 通しか残っていない）なら、投げ直さない。**
       const next =
@@ -444,7 +433,11 @@ export async function handleChatEvent(
       if (next.length === window.length) {
         throw new BedrockCallFailed(response.status, errorType);
       }
-      await response.body?.cancel();
+      // **この応答は捨てる。** 種別を本文から読んだときは読み切っており、ヘッダから読んだときは
+      // 手つかずなので、残っていれば閉じる。
+      if (!response.bodyUsed) {
+        await response.body?.cancel();
+      }
       // **件数だけを出す**（本文は出さない。1.2.54）。
       console.warn(`[chat] 大きさで断られたので、最古の往復を落として投げ直します: ${window.length} → ${next.length} 通`);
       window = next;

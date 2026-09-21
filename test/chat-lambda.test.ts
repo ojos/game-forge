@@ -572,6 +572,44 @@ describe('送る窓と、大きさで断られたときのやり直し（#742）
     expect(moderate).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    [
+      'ヘッダ（種別:URL の形）',
+      () => bedrockError(400, 'ValidationException'),
+    ],
+    [
+      'ヘッダ（名前空間つき）',
+      () =>
+        new Response('{}', {
+          status: 400,
+          headers: { 'content-type': 'application/json', 'x-amzn-errortype': 'com.amazon.bedrock#ValidationException' },
+        }),
+    ],
+    [
+      'ヘッダ無し・本文の __type だけ',
+      () =>
+        new Response(JSON.stringify({ __type: 'com.amazon.bedrock#ValidationException', message: '入力を引用しうる本文' }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        }),
+    ],
+  ])('大きさの断りを %s でも見分け、やり直しが発火する（PR #746 の Copilot の指摘）', async (_label, rejection) => {
+    // **種別の読み方は `src/bedrock.ts` の `readAwsErrorType` 1 か所に置く**（写しを持たない）。
+    // 写しは `split(':')[0]` だけで、名前空間つきと本文の `__type` を読めず、**やり直しが本番で
+    // 1 度も発火しない経路**になっていた。
+    let calls = 0;
+    const send = vi.fn(async () => {
+      calls += 1;
+      return calls === 1 ? rejection() : converseResponse();
+    });
+    const result = await handleChatEvent({ version: CHAT_PAYLOAD_VERSION, messages: conversation(7) }, ROLE_ENV, {
+      send,
+      moderate: async () => {},
+    });
+    expect(result.ok).toBe(true);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
   it(`落としても通らなければ、${CHAT_SIZE_RETRY_LIMIT} 回で諦めて internal を返す`, async () => {
     const sentRequests: Request[] = [];
     const send = vi.fn(async (request: Request) => {

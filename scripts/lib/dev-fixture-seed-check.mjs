@@ -88,11 +88,16 @@ export function seedExpectations(sql) {
   /** @type {{ table: string, column: string, value: string, label: string }[]} */
   const expectations = [];
   for (const match of body.matchAll(INSERT_RE)) {
-    const [, table, column, value] = match;
+    const [, table, column, quoted] = match;
+    // **拾ったリテラルは、ここで 1 度だけほどく**（`''` → `'`）。ほどかずに持つと、
+    // 数える問い合わせを組むときに `literal()` が**もう一度**畳み、`owner''s` を探して
+    // **行が在るのに赤になる**（Copilot の指摘。2026-09-21）。畳むのは組み立てる側の責務で、
+    // ここが持つのは**入っているはずの値そのもの**である。
+    const value = String(quoted).replaceAll("''", "'");
     expectations.push({
       table: String(table),
       column: String(column),
-      value: String(value),
+      value,
       label: `${table}.${column}=${value}`,
     });
   }
@@ -236,6 +241,25 @@ export function selftest() {
   assert(
     verificationSql(expectations).includes("count(*) from games where id = 'g1'"),
     '在るはずの行を数える問い合わせになること',
+  );
+
+  // **SQL のエスケープを 2 回畳まないこと。** 仕込みの本文の `''` は値としては `'` 1 つで、
+  // 数える問い合わせでは再び `''` に戻る。ここを間違えると、**行が在るのに赤になる**
+  // （Copilot の指摘。2026-09-21）。**いまの仕込みに `'` を含む値は無いので、
+  // ここで仕込まないと一生通らない検査になる**——この票が塞ごうとしている形そのものである。
+  const quotedSql = "insert into users (id, name) values ('owner''s', 'x');";
+  const quotedExpectations = seedExpectations(quotedSql);
+  assert(
+    quotedExpectations[0].value === "owner's",
+    `拾った値はほどかれていること（${quotedExpectations[0].value}）`,
+  );
+  assert(
+    quotedExpectations[0].label === "users.id=owner's",
+    `名前もほどかれていること（${quotedExpectations[0].label}）`,
+  );
+  assert(
+    verificationSql(quotedExpectations).includes("where id = 'owner''s'"),
+    `問い合わせでは畳み直すこと（${verificationSql(quotedExpectations).trim()}）`,
   );
 
   const payload = [{ results: [{ 'users.id=u1': 1, 'games.id=g1': 0 }] }];

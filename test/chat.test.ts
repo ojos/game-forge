@@ -13,6 +13,8 @@ import {
   CHAT_MAX_STORED_MESSAGES,
   CHAT_MAX_TOTAL_MESSAGE_LENGTH,
   CHAT_PAYLOAD_VERSION,
+  CHAT_RULE_TURNS,
+  chatSendWindow,
   type ChatMessage,
   type ChatRequestPayload,
   type ChatResponsePayload,
@@ -277,18 +279,20 @@ describe('チャットの口（仕様 5.16）', () => {
 
     it('合計が長くても 400 にしない——最古の往復を落として、上限に収めてから送る（#742）', async () => {
       const userId = await createUser();
-      // **窓の 7 通がどれも 2,000 文字**（14,000 文字。上限 12,000 を 1 段はみ出す。わざとである）。
+      // **7 通がどれも 2,000 文字**（14,000 文字。通数は上限以内だが、文字数の上限 12,000 を 1 段はみ出す）。
       const per = CHAT_MAX_MESSAGE_LENGTH;
-      const messages = Array.from({ length: CHAT_MAX_SEND_MESSAGES }, (_, index) => ({
+      const count = 7;
+      const messages = Array.from({ length: count }, (_, index) => ({
         role: index % 2 === 0 ? 'user' : 'assistant',
         text: `${index}`.padEnd(per, 'あ'),
       }));
-      expect(CHAT_MAX_SEND_MESSAGES * per).toBeGreaterThan(CHAT_MAX_TOTAL_MESSAGE_LENGTH);
+      expect(count).toBeLessThan(CHAT_MAX_SEND_MESSAGES);
+      expect(count * per).toBeGreaterThan(CHAT_MAX_TOTAL_MESSAGE_LENGTH);
       const stub = stubAsk({ inputTokens: 1, outputTokens: 1 });
       const response = await post(userId, { messages }, stub.ask);
       expect(response.status).toBe(200);
       // **最古の 1 往復だけが落ちる**（5 × 2,000 ＝ 10,000 で収まる）。
-      expect(stub.calls[0]!.messages).toHaveLength(CHAT_MAX_SEND_MESSAGES - 2);
+      expect(stub.calls[0]!.messages).toHaveLength(count - 2);
       expect(stub.calls[0]!.messages[0]!.text.startsWith('2')).toBe(true);
     });
   });
@@ -631,9 +635,10 @@ describe('チャットの口（仕様 5.16）', () => {
     /**
      * 画面と同じ手順で、1 往復ずつ送る。
      *
-     * **画面のスクリプトと同じ規則で切る**（表示している履歴の全部から、直近の窓だけを送る。
-     * `src/chat-section.ts` の windowOf）。**履歴は画面の側で全部持ち続ける**——窓から落ちた往復も
-     * 画面には残っている、という状態をそのまま作る。
+     * **画面のスクリプトと同じ規則で切る**（表示している履歴の全部から、上限を超えたときだけ最古の往復を
+     * 落として送る。`src/chat-section.ts` の windowOf は `chatSendWindow` と同じ結果を返す——`test/chat-ui.test.ts`
+     * が突き合わせる）。**履歴は画面の側で全部持ち続ける**——送らなかった往復も画面には残っている、という
+     * 状態をそのまま作る。
      *
      * @param userId 利用者
      * @param turns 往復の数
@@ -650,16 +655,9 @@ describe('チャットの口（仕様 5.16）', () => {
       let conversationId: string | null = null;
       for (let turn = 1; turn <= turns; turn += 1) {
         shown.push({ role: 'user', text: `質問${turn}` });
-        let start = shown.length - CHAT_MAX_SEND_MESSAGES;
-        if (start < 0) {
-          start = 0;
-        }
-        if (start % 2 === 1) {
-          start += 1;
-        }
         const response = await post(
           userId,
-          { messages: shown.slice(start), ...(conversationId === null ? {} : { conversationId }) },
+          { messages: chatSendWindow(shown), ...(conversationId === null ? {} : { conversationId }) },
           ask,
         );
         statuses.push(response.status);
@@ -697,7 +695,7 @@ describe('チャットの口（仕様 5.16）', () => {
       };
     }
 
-    it('30 往復しても、送る本文は常に 7 通以下・末尾が user・役割が交互で、11 往復目以降も送れる', async () => {
+    it('30 往復しても、送る本文は常に上限（実効 19 通）以下・末尾が user・役割が交互で、11 往復目以降も送れる', async () => {
       const userId = await createUser();
       const stub = numberedAsk();
       const { statuses } = await converse(userId, 30, stub.ask);
@@ -706,22 +704,34 @@ describe('チャットの口（仕様 5.16）', () => {
       expect(statuses).toEqual(Array.from({ length: 30 }, () => 200));
       expect(stub.calls).toHaveLength(30);
       for (const call of stub.calls) {
-        expect(call.messages.length).toBeLessThanOrEqual(CHAT_MAX_SEND_MESSAGES);
+        // **#742 ではここが「7 通以下」だった。** #749 で上限を超えたときだけ落とすへ戻したので、上限以下を見る。
+        expect(call.messages.length).toBeLessThanOrEqual(CHAT_MAX_SEND_MESSAGES - 1);
         expect(call.messages[call.messages.length - 1]!.role).toBe('user');
         call.messages.forEach((message, index) => {
           expect(message.role).toBe(index % 2 === 0 ? 'user' : 'assistant');
         });
       }
-      // **窓は直近 3 往復 ＋ 新しい 1 通である。**
-      expect(stub.calls[29]!.messages.map((message) => message.text)).toEqual([
-        '質問27',
-        '【指示文】質問27への返答',
-        '質問28',
-        '【指示文】質問28への返答',
-        '質問29',
-        '【指示文】質問29への返答',
-        '質問30',
-      ]);
+      // **上限を超えた後は、最古の往復から落として 19 通を送る**（30 往復目は 質問21 から）。
+      const last = stub.calls[29]!.messages.map((message) => message.text);
+      expect(last).toHaveLength(CHAT_MAX_SEND_MESSAGES - 1);
+      expect(last[0]).toBe('質問21');
+      expect(last[last.length - 1]).toBe('質問30');
+    });
+
+    it('上限以内の会話は、1 通も落とさずに送る（#749。#742 の窓では 4 往復目から落ち、決まったことを聞き直した）', async () => {
+      const userId = await createUser();
+      const stub = numberedAsk();
+      await converse(userId, 11, stub.ask);
+      // **10 往復目（19 通）までは会話の全部が届く。** 最初に決めたこと（質問1）も毎回見えている。
+      for (let turn = 1; turn <= 10; turn += 1) {
+        const texts = stub.calls[turn - 1]!.messages.map((message) => message.text);
+        expect(texts).toHaveLength(turn * 2 - 1);
+        expect(texts[0]).toBe('質問1');
+      }
+      // **11 往復目（21 通）で初めて、最古の 1 往復だけが落ちる。**
+      const eleventh = stub.calls[10]!.messages.map((message) => message.text);
+      expect(eleventh).toHaveLength(CHAT_MAX_SEND_MESSAGES - 1);
+      expect(eleventh[0]).toBe('質問2');
     });
 
     it('窓から落ちた往復も、保存と復元に残る（保存の上限 60 通まで。超えたら最古の往復から落とす）', async () => {
@@ -762,24 +772,25 @@ describe('チャットの口（仕様 5.16）', () => {
       expect(statuses).toEqual(Array.from({ length: 12 }, () => 200));
       for (const call of stub.calls) {
         expect(call.rule).toBe('短く答えてください');
-        expect(call.messages.length).toBeLessThanOrEqual(CHAT_MAX_SEND_MESSAGES);
+        // **ルールの 2 通を空けて切る**（ルールを足しても上限 20 通に収まる。#728）。
+        expect(call.messages.length).toBeLessThanOrEqual(CHAT_MAX_SEND_MESSAGES - 1 - CHAT_RULE_TURNS);
       }
     });
 
-    it('開いたままの古い画面が履歴の全部を送ってきても、窓へ切って送る（断らない）', async () => {
+    it('上限より長い会話が届いても、最古の往復を落として送る（断らない）', async () => {
       const userId = await createUser();
       const stub = numberedAsk();
-      const messages = Array.from({ length: 19 }, (_, index) => ({
+      const messages = Array.from({ length: 25 }, (_, index) => ({
         role: index % 2 === 0 ? 'user' : 'assistant',
         text: `発話${index}`,
       }));
       const response = await post(userId, { messages }, stub.ask);
       expect(response.status).toBe(200);
-      expect(stub.calls[0]!.messages).toHaveLength(CHAT_MAX_SEND_MESSAGES);
-      expect(stub.calls[0]!.messages[0]!.text).toBe('発話12');
+      expect(stub.calls[0]!.messages).toHaveLength(CHAT_MAX_SEND_MESSAGES - 1);
+      expect(stub.calls[0]!.messages[0]!.text).toBe('発話6');
       // **保存は受け取った全部 ＋ 返答**（続きの行が無いので、受け取った会話から作る）。
       const restored = await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET);
-      expect(restored?.messages).toHaveLength(20);
+      expect(restored?.messages).toHaveLength(26);
     });
 
     it('同じ会話へ 2 つの保存が重なっても、両方の往復が残る（PR #746 の Copilot の指摘）', async () => {

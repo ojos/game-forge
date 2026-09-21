@@ -40,13 +40,14 @@
  * スクリプトが描くのは、その後に足された往復だけである。**最初の 1 画面に、script が
  * 組み立てた DOM を出さない。**
  *
- * ## 送るのは直近の窓だけで、履歴は切らない（#742）
+ * ## 送る上限を超えたときだけ古い往復を落とし、履歴は切らない（#742 / #749）
  *
- * **画面は履歴の全部を描き、送るのは直近 7 通だけである**（`CHAT_MAX_SEND_MESSAGES`）。以前は
- * 全部を送り、20 通に達すると**送信そのものを止めていた**——10 往復でそのチャットは行き止まりになり、
- * しかも出す文言が「文字数を減らして」だった（通数で止まっているので、減らしても 1 文字も効かない）。
- * **いまは止めずに窓へ切る。** エッジも同じ規則で切り直す（二重の検査）。窓から落ちた往復の中身は、
- * 最新の返答が持つ下書きが引き継ぐ（`src/chat-prompt.ts` の版 3）。
+ * **画面は履歴の全部を描き、送る上限（`CHAT_MAX_SEND_MESSAGES` 通・`CHAT_MAX_TOTAL_MESSAGE_LENGTH` 文字）以内なら
+ * 全部を送る。超えたときだけ最古の往復から落とす**（`windowOf`）。以前は全部を送り、20 通に達すると
+ * **送信そのものを止めていた**——10 往復でそのチャットは行き止まりになり、しかも出す文言が「文字数を減らして」だった
+ * （通数で止まっているので、減らしても 1 文字も効かない）。#742 は止めずに直近 7 通へ固定で切ったが、
+ * 下書きがまだ出ていない会話で決まったことが落ち、AI が同じ質問へ戻り続けた（#749）。**いまは上限を
+ * 超えたときだけ落とす。** エッジも同じ規則で切り直す（二重の検査。ルールの分はエッジが空ける）。
  *
  * ## 残りのトークンは、最初は上限を出すだけにする
  *
@@ -55,7 +56,7 @@
  * 実測値へ置き換える。** 枠が尽きている状態は、送ったときに固定の文言で返る。
  */
 import { CHAT_API_PATH, CHAT_CONVERSATION_DELETE_PATH } from './chat-paths.js';
-import { CHAT_MAX_MESSAGE_LENGTH, CHAT_MAX_SEND_MESSAGES } from './chat-payload.js';
+import { CHAT_MAX_MESSAGE_LENGTH, CHAT_MAX_SEND_MESSAGES, CHAT_MAX_TOTAL_MESSAGE_LENGTH } from './chat-payload.js';
 import { CHAT_DAILY_TOKEN_LIMIT } from './chat-quota.js';
 import { CHAT_RETENTION_DAYS } from './chat-conversation.js';
 import type { ChatMessage } from './chat-payload.js';
@@ -256,25 +257,33 @@ export const CHAT_SCRIPT = `
     var out = [];
     for (var i = 0; i < turns.length; i += 1) {
       var text = turns[i].querySelector('.gf-chat-text');
+      // **前後の空白を落としてから数える**（#749 の Copilot の指摘）。エッジは各発話を
+      // \`trim()\` してから窓を切る（\`src/chat.ts\` の \`parseChatRequest\`）が、返答は trim せずに
+      // 描いている。**ここで揃えないと、12,000 字の境目で画面だけが古い往復を落とす。**
       out.push({
         role: turns[i].className.indexOf('gf-chat-user') >= 0 ? 'user' : 'assistant',
-        text: text === null ? '' : text.textContent
+        text: text === null ? '' : (text.textContent || '').trim()
       });
     }
     return out;
   }
 
   /**
-   * 送る範囲を、直近の窓へ切る（#742。\`src/chat-payload.ts\` の chatSendWindow と同じ規則）。
+   * 送る範囲を切る（#742 / #749。\`src/chat-payload.ts\` の chatSendWindow と同じ規則）。
    *
-   * **往復（2 通）単位で落とす**ので、先頭と末尾が user で役割が交互のまま残る。**表示は切らない**
+   * **上限以内なら 1 通も落とさない。** 超えたときだけ、**往復（2 通）単位で最古から落とす**ので、
+   * 先頭と末尾が user で役割が交互のまま残る。文字数はコードポイントで数える。**表示は切らない**
    * ——切るのは送る本文だけである。
    */
   function windowOf(list) {
-    var start = list.length - ${CHAT_MAX_SEND_MESSAGES};
-    if (start <= 0) { return list; }
-    if (start % 2 === 1) { start += 1; }
-    return list.slice(start);
+    var total = 0;
+    for (var i = 0; i < list.length; i += 1) { total += Array.from(list[i].text).length; }
+    var start = 0;
+    while (list.length - start >= 3 && (list.length - start > ${CHAT_MAX_SEND_MESSAGES} || total > ${CHAT_MAX_TOTAL_MESSAGE_LENGTH})) {
+      total -= Array.from(list[start].text).length + Array.from(list[start + 1].text).length;
+      start += 2;
+    }
+    return start === 0 ? list : list.slice(start);
   }
 
   /** 1 往復ぶんを足す。**textContent だけで入れる。** */
@@ -355,7 +364,7 @@ export const CHAT_SCRIPT = `
     if (busy) { return; }
     var text = (input.value || '').trim();
     if (text === '') { return; }
-    // **通数では止めない**（#742）。送る本文を窓へ切るだけで、何往復目でも送れる。
+    // **通数では止めない**（#742）。上限を超えたら送る本文の古い往復を落とすだけで、何往復目でも送れる。
     busy = true;
     quiet();
     send.disabled = true;

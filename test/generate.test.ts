@@ -48,6 +48,8 @@ import { dispatch } from '../src/routes.js';
 import { SESSION_COOKIE, buildSessionCookie, signSession } from '../src/session.js';
 import { GeneratedSourceRejected } from '../src/source-inspection.js';
 import { MAX_SOURCE_BYTES, TIDY_ATTEMPTS } from '../src/source-size.js';
+import { latestChatConversation } from '../src/chat-conversation.js';
+import { NEW_CHAT_TARGET } from '../src/chat-target.js';
 import { fakeBuildOutcome } from './helpers/build-outcome.js';
 import { applySchema } from './helpers/schema.js';
 
@@ -1416,5 +1418,187 @@ describe('ジョブの起動点が既定へ結線されている（#150 / #160 /
   it('未実装の起動点は 501 として扱える（空実装を成功にしない）', async () => {
     expect(() => notImplementedPipeline.startJob({} as Env, {} as never, notImplementedPipeline))
       .toThrow(PipelineStepNotImplemented);
+  });
+});
+
+describe('チャットを 1 作品 1 本にする（#740 / 仕様 5.16「会話の粒度」）', () => {
+  /**
+   * チャットの会話を 1 本仕込む。
+   *
+   * @param id 会話の id
+   * @param userId 作者
+   * @param kind 対象の種別
+   * @param targetId 対象の作品 id（新しく作るなら null）
+   * @param updatedAt 最後に使った時刻
+   */
+  async function seedConversation(
+    id: string,
+    userId: string,
+    kind: string,
+    targetId: string | null,
+    updatedAt: number,
+  ): Promise<void> {
+    await env.DB.prepare(
+      `insert into chat_conversations (id, user_id, messages, target_kind, target_id, created_at, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        id,
+        userId,
+        JSON.stringify([
+          { role: 'user', text: '避けるゲームを作りたいです。' },
+          { role: 'assistant', text: '【指示文】\n赤い玉を避けるゲーム。' },
+        ]),
+        kind,
+        targetId,
+        updatedAt,
+        updatedAt,
+      )
+      .run();
+  }
+
+  /**
+   * 会話の対象を読む。
+   *
+   * @param id 会話の id
+   * @returns 対象の種別と作品 id
+   */
+  async function targetOf(
+    id: string,
+  ): Promise<{ target_kind: string; target_id: string | null } | null> {
+    return await env.DB.prepare(
+      'select target_kind, target_id from chat_conversations where id = ?',
+    )
+      .bind(id)
+      .first<{ target_kind: string; target_id: string | null }>();
+  }
+
+  it('生成が受け付けられると、新しく作るチャットがその作品へ紐づく', async () => {
+    const userId = await seedUser('chat-attach');
+    await seedConversation('conv-attach', userId, 'new', null, 100);
+    const { pipeline } = recordingPipeline();
+
+    const game = await startGeneration(env, userId, { prompt: 'ゲーム' }, pipeline);
+
+    expect(await targetOf('conv-attach')).toEqual({
+      target_kind: 'revise',
+      target_id: game.id,
+    });
+    // **紐づいた会話は、その作品のリフォージのチャットとして復元される。**
+    const restored = await latestChatConversation(env, userId, { kind: 'revise', id: game.id });
+    expect(restored?.id).toBe('conv-attach');
+    // **次に `/generate` を開くと空である**（`target_kind = 'new'` の行が残らない）。
+    expect(await latestChatConversation(env, userId, NEW_CHAT_TARGET)).toBeNull();
+  });
+
+  it('断られた生成では紐づけない（枠切れ）', async () => {
+    const userId = await seedUser('chat-quota');
+    await seedConversation('conv-quota', userId, 'new', null, 100);
+    const { pipeline } = recordingPipeline();
+    const denied: GenerationPipeline = {
+      ...pipeline,
+      checkQuota: async () => ({ allowed: false, reason: DAILY_QUOTA_REASON }),
+    };
+
+    await expect(
+      startGeneration(env, userId, { prompt: 'ゲーム' }, denied),
+    ).rejects.toBeInstanceOf(QuotaExceeded);
+
+    expect(await targetOf('conv-quota')).toEqual({ target_kind: 'new', target_id: null });
+    expect((await latestChatConversation(env, userId, NEW_CHAT_TARGET))?.id).toBe('conv-quota');
+  });
+
+  it('入力の検査で断られた要求は紐づけない（400）', async () => {
+    const userId = await seedUser('chat-invalid');
+    await seedConversation('conv-invalid', userId, 'new', null, 100);
+    const { pipeline } = recordingPipeline();
+
+    const response = await post(
+      createGenerateRoutes(pipeline),
+      { prompt: '  ' },
+      await sessionCookie(userId),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await targetOf('conv-invalid')).toEqual({ target_kind: 'new', target_id: null });
+  });
+
+  it('ほかの対象のチャットと、ほかの人のチャットは動かさない', async () => {
+    const userId = await seedUser('chat-others');
+    const otherId = await seedUser('chat-others-2');
+    await seedConversation('conv-own-new', userId, 'new', null, 100);
+    await seedConversation('conv-own-revise', userId, 'revise', 'other-game', 100);
+    await seedConversation('conv-own-fork', userId, 'fork', 'parent-game', 100);
+    await seedConversation('conv-other-new', otherId, 'new', null, 100);
+    const { pipeline } = recordingPipeline();
+
+    const game = await startGeneration(env, userId, { prompt: 'ゲーム' }, pipeline);
+
+    expect((await targetOf('conv-own-new'))?.target_id).toBe(game.id);
+    expect(await targetOf('conv-own-revise')).toEqual({
+      target_kind: 'revise',
+      target_id: 'other-game',
+    });
+    expect(await targetOf('conv-own-fork')).toEqual({
+      target_kind: 'fork',
+      target_id: 'parent-game',
+    });
+    expect(await targetOf('conv-other-new')).toEqual({ target_kind: 'new', target_id: null });
+  });
+
+  it('取り残しを作らない——同じ人の新しく作るチャットは全部動く', async () => {
+    // **`migrations/0052` が古い行を 1 本へ畳むが、その後も 2 枚のタブから増えうる。**
+    // **1 本だけを選ぶ形にすると、残った行が次の `/generate` で復元される。**
+    const userId = await seedUser('chat-leftover');
+    await seedConversation('conv-leftover-old', userId, 'new', null, 100);
+    await seedConversation('conv-leftover-new', userId, 'new', null, 200);
+    const { pipeline } = recordingPipeline();
+
+    const game = await startGeneration(env, userId, { prompt: 'ゲーム' }, pipeline);
+
+    expect((await targetOf('conv-leftover-old'))?.target_id).toBe(game.id);
+    expect((await targetOf('conv-leftover-new'))?.target_id).toBe(game.id);
+    expect(await latestChatConversation(env, userId, NEW_CHAT_TARGET)).toBeNull();
+  });
+
+  it('付け替えに失敗しても生成は成功として返す', async () => {
+    // **会話の整理を理由に生成を落とさない**（#740 の constraints）。**作品は既にでき、
+    // ジョブも走っている。**
+    const userId = await seedUser('chat-attach-fails');
+    const { pipeline } = recordingPipeline();
+    const broken = {
+      ...testEnv(),
+      DB: {
+        prepare(sql: string) {
+          if (sql.includes('update chat_conversations')) {
+            throw new Error('D1_ERROR');
+          }
+          return env.DB.prepare(sql);
+        },
+      } as unknown as D1Database,
+    } as Env;
+
+    const game = await startGeneration(broken, userId, { prompt: 'ゲーム' }, pipeline);
+
+    expect(game.id).toBeTruthy();
+    const row = await env.DB.prepare('select author_id from games where id = ?')
+      .bind(game.id)
+      .first<{ author_id: string }>();
+    expect(row?.author_id).toBe(userId);
+  });
+
+  it('付け替えても保存の期限は延びない（最後に使ってから 30 日）', async () => {
+    const userId = await seedUser('chat-updated-at');
+    await seedConversation('conv-updated-at', userId, 'new', null, 4242);
+    const { pipeline } = recordingPipeline();
+
+    await startGeneration(env, userId, { prompt: 'ゲーム' }, pipeline);
+
+    const row = await env.DB.prepare(
+      'select updated_at from chat_conversations where id = ?',
+    )
+      .bind('conv-updated-at')
+      .first<{ updated_at: number }>();
+    expect(row?.updated_at).toBe(4242);
   });
 });

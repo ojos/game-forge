@@ -1,7 +1,7 @@
 /**
- * 相談の対象（#727 / M20-3。仕様 5.16 の確定38「対象——画面は 1 つ、対象は引数」）。
+ * チャットの対象（#727 / M20-3。仕様 5.16 の確定38「対象——画面は 1 つ、対象は引数」）。
  *
- * **相談の画面は 1 つで、何についての相談かは URL の引数が決める。**
+ * **チャットの画面は 1 つで、何についてのチャットかは URL の引数が決める。**
  *
  * | 対象 | 引数 | 何を練るか | 押すと通る経路 |
  * |---|---|---|---|
@@ -30,16 +30,16 @@ import { loadForkableParent } from './fork.js';
 import { GAME_ID_PATTERN } from './work-page.js';
 import { myWorkResult } from './works-api.js';
 
-/** 相談の対象の種別（`chat_conversations.target_kind` に入る綴り）。 */
+/** チャットの対象の種別（`chat_conversations.target_kind` に入る綴り）。 */
 export type ChatTargetKind = 'new' | 'revise' | 'fork';
 
-/** 相談の対象。 */
+/** チャットの対象。 */
 export type ChatTarget =
   | { readonly kind: 'new'; readonly id: null }
   | { readonly kind: 'revise'; readonly id: string }
   | { readonly kind: 'fork'; readonly id: string };
 
-/** 新しく作る相談（対象なし）。 */
+/** 新しく作るチャット（対象なし）。 */
 export const NEW_CHAT_TARGET: ChatTarget = { kind: 'new', id: null };
 
 /** リフォージの対象を指す URL の引数の名前。 */
@@ -74,9 +74,9 @@ export function chatTargetFromUrl(url: URL): ChatTarget {
 }
 
 /**
- * 相談の画面のパス（対象つき）を組み立てる。
+ * チャットの画面のパス（対象つき）を組み立てる。
  *
- * @param basePath 相談の画面のパス
+ * @param basePath チャットの画面のパス
  * @param target 対象
  * @returns パス
  */
@@ -137,7 +137,7 @@ export async function loadForkChatContext(
   }
   // **可否の判定は `src/fork.ts` の `loadForkableParent` が持つ**（#727 の Copilot の指摘で
   // 寄せた）。**ここで `status` を見直さない**——書き写すと、フォークの条件を変えた日に
-  // **相談だけが古い条件で通る。**
+  // **チャットだけが古い条件で通る。**
   const parent = await loadForkableParent(db, gameId);
   if (parent === null) {
     return null;

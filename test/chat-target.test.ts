@@ -21,7 +21,7 @@ import { FORK_PATH, GENERATE_PAGE_PATH, REVISE_PATH } from '../src/paths.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
- * 相談の対象（#727 / M20-3。仕様 5.16 の確定38）。
+ * チャットの対象（#727 / M20-3。仕様 5.16 の確定38）。
  *
  * **#727 の acceptance を機械判定できる形へ落とす**——他人の最初の指示文が入らない /
  * 求めていないのにソースが入らない / 他人の未公開の作品を対象にできない /
@@ -161,7 +161,7 @@ describe('Copilot が見つけた穴（#727）', () => {
       });
       expect(html).toContain('id="chat-source"');
     }
-    // **新規の相談には出さない**（見せる作品が無い）。
+    // **新規のチャットには出さない**（見せる作品が無い）。
     expect(renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET })).not.toContain(
       'id="chat-source"',
     );
@@ -173,7 +173,7 @@ describe('Copilot が見つけた穴（#727）', () => {
   it('フォーク可否の判定を書き写していない（正本は src/fork.ts）', async () => {
     const stranger = await createUser();
     await seedGame(GAME_A, stranger, 'published');
-    // **正本（`loadForkableParent`）と相談の読み取りが、同じ作品で同じ答えを返す。**
+    // **正本（`loadForkableParent`）とチャットの読み取りが、同じ作品で同じ答えを返す。**
     expect(await loadForkableParent(env.DB, GAME_A)).not.toBeNull();
     expect(await loadForkChatContext(env.DB, GAME_A, false, async () => null)).not.toBeNull();
     await env.DB.prepare("update games set status = 'draft' where id = ?").bind(GAME_A).run();
@@ -257,10 +257,10 @@ describe('画面（対象ごとの文言と行き先）', () => {
     expect(html).toContain(`id="${formId}"`);
     expect(html).toContain(`id="${promptId}"`);
     expect(html).toContain(GAME_A);
-    // **主のボタンは相談側の 1 つだけ**（2.5.5）。
+    // **主のボタンはチャット側の 1 つだけ**（2.5.5）。
     expect(html.match(/gf-button-primary/gu)?.length).toBe(1);
     expect(html).toContain(`form="${formId}"`);
-    // **生成のフォームは出さない**（対象がある相談で押せる先は 1 つである）。
+    // **生成のフォームは出さない**（対象があるチャットで押せる先は 1 つである）。
     expect(html).not.toContain('id="generate-form"');
   });
 

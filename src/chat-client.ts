@@ -1,5 +1,5 @@
 /**
- * 相談の Lambda を**同期で**呼ぶ段（#695 / M18-2。仕様 5.16）。
+ * チャットの Lambda を**同期で**呼ぶ段（#695 / M18-2。仕様 5.16）。
  *
  * これは**エッジ側**の実装である。受け取って走る側は `src/chat/handler.ts`、器は
  * `terraform/chat-function.tf`、配備は `scripts/deploy-chat.sh` にある。
@@ -11,7 +11,7 @@
  *
  * ## OGP と違い、応答を待つ（アイコンと同じ）
  *
- * **`X-Amz-Invocation-Type: RequestResponse`。** 相談の返答はその場で画面へ出す必要があり、
+ * **`X-Amz-Invocation-Type: RequestResponse`。** チャットの返答はその場で画面へ出す必要があり、
  * 1 往復は数秒である。**Worker が応答を待つあいだは CPU 時間を使わない**
  * （`src/avatar-client.ts`）。
  *
@@ -25,7 +25,7 @@
  * ## 投げ直さない
  *
  * **同時実行の枠で断られても、投げ直さない。** アイコン（#380）は「画像を選び直させない」
- * ために 2 回だけ投げ直したが、**相談は送信ボタンを押し直すだけである。**
+ * ために 2 回だけ投げ直したが、**チャットは送信ボタンを押し直すだけである。**
  * 混んでいることは分類名で返し、画面が「混み合っています」と出す。
  *
  * ## 台帳を書くのはここではない
@@ -74,7 +74,7 @@ export const CHAT_SECRET_NAMES = [
 export class ChatNotConfigured extends Error {
   constructor(readonly missing: readonly string[]) {
     // **値は出さない。名前だけ**（`src/avatar-client.ts` と同じ）。
-    super(`相談の呼び出しに必要な設定がありません: ${missing.join(', ')}`);
+    super(`チャットの呼び出しに必要な設定がありません: ${missing.join(', ')}`);
     this.name = 'ChatNotConfigured';
   }
 }
@@ -82,7 +82,7 @@ export class ChatNotConfigured extends Error {
 /** 同時実行の枠で断られた。**関数は 1 度も走っていない。** */
 export class ChatBusy extends Error {
   constructor() {
-    super('相談が混み合っています');
+    super('チャットが混み合っています');
     this.name = 'ChatBusy';
   }
 }
@@ -93,7 +93,7 @@ export class ChatCallFailed extends Error {
     readonly status: number,
     readonly detail: string | null,
   ) {
-    super(`相談の呼び出しに失敗しました（status=${status}）`);
+    super(`チャットの呼び出しに失敗しました（status=${status}）`);
     this.name = 'ChatCallFailed';
   }
 }
@@ -104,7 +104,7 @@ export interface ChatClientDependencies {
   readonly fetch?: (request: Request) => Promise<Response>;
 }
 
-/** 相談を呼ぶ段。`src/chat.ts` がこの形で受け取る。 */
+/** チャットを呼ぶ段。`src/chat.ts` がこの形で受け取る。 */
 export type AskChat = (env: Env, payload: ChatRequestPayload) => Promise<ChatResponsePayload>;
 
 /**
@@ -157,7 +157,7 @@ export function isChatThrottled(response: Response): boolean {
  * 同期呼び出しの段を作る。
  *
  * @param deps 外部依存
- * @returns 相談を呼ぶ関数
+ * @returns チャットを呼ぶ関数
  */
 export function createAskChat(deps: ChatClientDependencies = {}): AskChat {
   return async (env: Env, payload: ChatRequestPayload): Promise<ChatResponsePayload> => {
@@ -228,7 +228,7 @@ export function createAskChat(deps: ChatClientDependencies = {}): AskChat {
  *
  * @param payload JSON を解析した値
  * @param status HTTP の状態（例外に載せる）
- * @returns 相談の結果
+ * @returns チャットの結果
  * @throws {ChatCallFailed} 形が合わないとき
  */
 export function readChatPayload(payload: unknown, status: number): ChatResponsePayload {

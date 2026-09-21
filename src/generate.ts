@@ -61,6 +61,7 @@ import {
   hashJobToken,
 } from './games.js';
 import { workPagePath } from './paths.js';
+import { attachChatConversationsToWork } from './chat-conversation.js';
 import { myWorkApiPath } from './works-api-paths.js';
 import { recordGenerationCost } from './cost-ledger.js';
 import {
@@ -600,6 +601,26 @@ export async function startGeneration(
     // 非同期実装では「投げ込めなかった」ときにここだけが行を閉じる。
     await failGame(env, pending.id, 'internal');
     throw error;
+  }
+
+  // **受け付けた時点で、その人の「新しく作る」チャットをこの作品へ付け替える**
+  // （#740 / 仕様 5.16「会話の粒度——1 作品 1 本」）。**断られた要求はここまで来ない**
+  // ——枠切れも進行中も入力の検査も、上で例外になって抜けている。
+  //
+  // **同じ往復の中で行う。** 別の経路（画面からもう 1 回叩く・cron で後から直す）にすると、
+  // **片方だけが成功する窓**ができ、**次に `/generate` を開いた人に前の作品の会話が残る。**
+  //
+  // **失敗しても生成は成功として返す。** 作品は既にでき、ジョブも走っている——
+  // **会話の整理を理由に生成を落とさない**（`src/chat.ts` が保存の失敗で往復を落とさないのと
+  // 同じ判断である）。**復元がずれることはログに残す。**
+  try {
+    await attachChatConversationsToWork(env, userId, pending.id);
+  } catch (error) {
+    console.warn(
+      `[generate] チャットを作品へ付け替えられませんでした（生成は続きます）: ${
+        error instanceof Error ? error.name : 'unknown'
+      }`,
+    );
   }
 
   return { id: pending.id };

@@ -1,5 +1,5 @@
 /**
- * 相談の関数の**器を作るためだけの仮のコード**（#695 / 仕様 5.16）。
+ * チャットの関数の**器を作るためだけの仮のコード**（#695 / 仕様 5.16）。
  *
  * `terraform/lambda/orchestrator-placeholder/index.mjs` と同じ理由で置く——`aws_lambda_function` は
  * 作成時にコードの実体を要求するが、本物（`scripts/bundle-chat.sh` が束ねた zip）は再生成できる

@@ -39,11 +39,11 @@ const TEST_FILES = new Set([
   'chat-ui.test.ts',
 ]);
 /**
- * 相談のモジュールの本文（注記が指すテストの実在を見るため）。
+ * チャットのモジュールの本文（注記が指すテストの実在を見るため）。
  *
  * **1 つずつ名指しにしない。** #718 で `src/chat-quota.ts` が存在しない
  * `test/chat-quota.test.ts` を指しているのを見つけた——**前の検査は 2 ファイルだけを名指ししており、
- * 足したモジュールが黙って対象の外にいた。** 相談のモジュールをまとめて拾う。
+ * 足したモジュールが黙って対象の外にいた。** チャットのモジュールをまとめて拾う。
  */
 const CHAT_SOURCES = import.meta.glob('../src/chat*.ts', {
   eager: true,
@@ -52,7 +52,7 @@ const CHAT_SOURCES = import.meta.glob('../src/chat*.ts', {
 }) as Record<string, string>;
 
 /**
- * 相談の画面と会話の保存（#695 / M18-2 / 仕様 5.16）。
+ * チャットの画面と会話の保存（#695 / M18-2 / 仕様 5.16）。
  *
  * **#695 の acceptance の 3 つ目**——「この指示で作る」が既存の開始の経路を通ること——を、
  * 機械判定できる形へ落とす。あわせて 5.16 の「会話の保存——30 日で消える」の 4 つの約束を見る。
@@ -146,7 +146,7 @@ describe('会話の保存（5.16）', () => {
     expect(latest?.id).toBe(kept);
   });
 
-  it('壊れた JSON は「無かった」として扱う（相談ごと使えなくしない）', async () => {
+  it('壊れた JSON は「無かった」として扱う（チャットごと使えなくしない）', async () => {
     const userId = await createUser();
     await env.DB.prepare(
       'insert into chat_conversations (id, user_id, messages, created_at, updated_at) values (?, ?, ?, 1, 1)',
@@ -176,7 +176,7 @@ describe('会話の保存（5.16）', () => {
   });
 });
 
-describe('相談の区画（5.16「画面は /generate の中の区画」）', () => {
+describe('チャットの区画（5.16「画面は /generate の中の区画」）', () => {
   it('復元した会話をサーバが描き、本文を必ずエスケープする', () => {
     const html = renderChatSection({
       messages: [
@@ -252,7 +252,7 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
     // **欄へ入れる手順は残っている**——送るのは `generate-form` なので、値はその欄が運ぶ。
     expect(CHAT_SCRIPT).toContain("document.getElementById('generate-prompt')");
     expect(CHAT_SCRIPT).toContain('prompt.value = text');
-    // **相談のスクリプトは、自分で生成の API を叩かない**（開始の経路は `GENERATE_SCRIPT`）。
+    // **チャットのスクリプトは、自分で生成の API を叩かない**（開始の経路は `GENERATE_SCRIPT`）。
     expect(CHAT_SCRIPT).not.toMatch(/fetch\([^)]*\/api\/generate/u);
     // **下書きが無いときは送らない**（空のまま通すと、直接書く欄の値が飛ぶ）。
     expect(CHAT_SCRIPT).toContain('event.preventDefault(); return;');
@@ -260,7 +260,7 @@ describe('相談の区画（5.16「画面は /generate の中の区画」）', (
 
   it('通らなかった往復は、断られたときも通信が落ちたときも取り消す（第二意見の指摘）', () => {
     // **`user` の発話を DOM へ残すと、次の送信で `user` が 2 連続になり、サーバの検査が
-    // 400 を返し続ける**——再読み込みするまで相談が回復しない。**後始末は 1 か所に置き、
+    // 400 を返し続ける**——再読み込みするまでチャットが回復しない。**後始末は 1 か所に置き、
     // 2 つの枝の両方から呼ぶ。**
     expect(CHAT_SCRIPT).toContain('function rollback(text)');
     const calls = [...CHAT_SCRIPT.matchAll(/\brollback\(text\)/gu)];
@@ -303,13 +303,13 @@ function cssRules(selector: string): string[] {
 }
 
 /**
- * 相談を主役にする（#726 / M20-2。仕様 5.16 の確定38）。
+ * チャットを主役にする（#726 / M20-2。仕様 5.16 の確定38）。
  *
  * **#726 の acceptance を機械判定できる形へ落とす。** 見た目そのものは測れないので、
  * **見た目を作っている規則が在ること**と、**スクリプトが約束どおりに動かす対象**を見る。
  * 実際の見え方は `scripts/check-page-width.sh`（実ブラウザ）と本番の目視が持つ。
  */
-describe('相談を主役にする（#726 / 確定38）', () => {
+describe('チャットを主役にする（#726 / 確定38）', () => {
   it('利用者はカプセルで右、AI は囲いを持たず左に流れる（利用者が示した画面に合わせた）', () => {
     // **確定38 の「利用者は右・AI は左」。** 置き場所は `align-self` が決める
     // （`.gf-chat-log` が縦の flex なので、交差軸は横である）。
@@ -382,7 +382,7 @@ describe('相談を主役にする（#726 / 確定38）', () => {
 
   it('`:has()` を使わない（互換性のため避ける決め。Copilot が見つけた）', () => {
     // **対応しないブラウザでは畳まれず、余白だけが残る**（`.gf-watch-player` と同じ理由）。
-    // **相談の塊だけでなく、app.css 全体で使わない。**
+    // **チャットの塊だけでなく、app.css 全体で使わない。**
     const withoutComments = env.TEST_APP_CSS.replaceAll(/\/\*[\s\S]*?\*\//gu, '');
     expect(withoutComments).not.toContain(':has(');
     // 畳む役は、隠れた要素には効かない「ボタン自身の余白」が持つ。
@@ -402,7 +402,7 @@ describe('相談を主役にする（#726 / 確定38）', () => {
 });
 
 describe('生成画面での出し分け', () => {
-  it('生成できるときは相談の区画とスクリプトが出る', () => {
+  it('生成できるときはチャットの区画とスクリプトが出る', () => {
     const html = renderGeneratePage(true, {
       availability: { kind: 'available', remaining: 5 },
       headerAvatar: null,
@@ -417,7 +417,7 @@ describe('生成画面での出し分け', () => {
   it.each([
     ['未ログイン', false],
     ['枠が尽きている', true],
-  ])('%s のときは相談の区画を出さない（押せない導線を増やさない）', (_label, signedIn) => {
+  ])('%s のときはチャットの区画を出さない（押せない導線を増やさない）', (_label, signedIn) => {
     const html = renderGeneratePage(signedIn, {
       availability: signedIn ? { kind: 'daily-quota' } : { kind: 'unknown' },
       headerAvatar: null,
@@ -428,38 +428,38 @@ describe('生成画面での出し分け', () => {
     expect(html).not.toContain('id="chat-send"');
   });
 
-  it('相談を出すときは、相談が先に来て、指示文の欄は「直接書く」の中へ入る（確定38）', () => {
+  it('チャットを出すときは、チャットが先に来て、指示文の欄は「直接書く」の中へ入る（確定38）', () => {
     const html = renderGeneratePage(true, {
       availability: { kind: 'available', remaining: 5 },
       headerAvatar: null,
       chat: { messages: [], conversationId: null, target: NEW_CHAT_TARGET },
       target: NEW_CHAT_TARGET,
     });
-    // **相談がフォームより先に来る**（#695 では後ろだった）。
+    // **チャットがフォームより先に来る**（#695 では後ろだった）。
     expect(html.indexOf('id="chat"')).toBeLessThan(html.indexOf('id="generate-form"'));
-    // **指示文の欄は消していない**——相談を使わない人の導線として、畳んだ中に残す（確定38）。
+    // **指示文の欄は消していない**——チャットを使わない人の導線として、畳んだ中に残す（確定38）。
     expect(html).toContain('id="generate-direct"');
-    expect(html).toContain('相談せずに指示文を直接書く');
+    expect(html).toContain('チャットせずに指示文を直接書く');
     expect(html.indexOf('id="generate-direct"')).toBeLessThan(html.indexOf('id="generate-prompt"'));
     // **開始の経路は変えない**——送り先も、受けるスクリプトも今までどおりである。
     expect(html).toContain(`action="${GENERATE_PATH}"`);
     expect(html).toContain("document.getElementById('generate-form')");
   });
 
-  it('相談を出すときの主のボタンは「この指示で作る」の 1 つだけである（2.5.5）', () => {
+  it('チャットを出すときの主のボタンは「この指示で作る」の 1 つだけである（2.5.5）', () => {
     const html = renderGeneratePage(true, {
       availability: { kind: 'available', remaining: 5 },
       headerAvatar: null,
       chat: { messages: [], conversationId: null, target: NEW_CHAT_TARGET },
       target: NEW_CHAT_TARGET,
     });
-    // **主は 1 画面に 1 つまで。** 相談側へ移した分、「生成する」は副へ下がる。
+    // **主は 1 画面に 1 つまで。** チャット側へ移した分、「生成する」は副へ下がる。
     expect(html.match(/gf-button-primary/gu)?.length).toBe(1);
     expect(html).toContain('id="chat-apply" class="gf-button gf-button-primary"');
     expect(html).toMatch(/id="generate-submit" class="gf-button gf-button-secondary"/u);
   });
 
-  it('相談を出さないときは、フォームが開いたまま・主のボタンのままである', () => {
+  it('チャットを出さないときは、フォームが開いたまま・主のボタンのままである', () => {
     // **`chat` が null なのに畳むと、その画面に生成の入口が 1 つも見えなくなる。**
     const html = renderGeneratePage(true, {
       availability: { kind: 'available', remaining: 5 },
@@ -499,7 +499,7 @@ describe('約束の文言（/privacy と仕様書）', () => {
   it('`/privacy` が案内する削除の操作の名前が、画面のボタンと一致する', () => {
     // **画面に無い操作を約束しない。** 文言がずれると、利用者は押す場所を探して見つけられない。
     const section = renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET });
-    expect(section).toContain('相談の記録を消す');
-    expect(privacy).toContain('相談の記録を消す');
+    expect(section).toContain('チャットの記録を消す');
+    expect(privacy).toContain('チャットの記録を消す');
   });
 });

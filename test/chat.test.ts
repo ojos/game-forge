@@ -35,16 +35,16 @@ import { NEW_CHAT_TARGET } from '../src/chat-target.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
- * 生成の前の相談（#695 / M18-2 / 仕様 5.16）の土台。
+ * 生成の前のチャット（#695 / M18-2 / 仕様 5.16）の土台。
  *
  * **#695 の acceptance のうち、この PR が担う 2 つを機械判定できる形へ落とす。**
  *
- * 1. **往復の枠を超えると止まる**（1 人 1 日のトークン・相談の当月の取り分・4.3 の月次）
+ * 1. **往復の枠を超えると止まる**（1 人 1 日のトークン・チャットの当月の取り分・4.3 の月次）
  * 2. **他人の作品の指示が文脈に入らない**
  *
  * あわせて、この PR が新しく作った線を見る。
  *
- * - **確定25 の日次 10 回を、相談が 1 回も減らさない**（`kind` で数え分ける）
+ * - **確定25 の日次 10 回を、チャットが 1 回も減らさない**（`kind` で数え分ける）
  * - 台帳へ `kind = 'chat'` の行が 1 行だけ積まれる
  * - **Guardrail で止めた回は台帳の行を作らない**
  * - 仕様書の値とコードの定数が一致する
@@ -59,7 +59,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   // **台帳は月次でサービス全体を合算する**（4.3）。前の it が積んだ行が残っていると、
-  // 次の it が「相談の当月の取り分に達している」状態から始まる。**仕込みを持ち越さない。**
+  // 次の it が「チャットの当月の取り分に達している」状態から始まる。**仕込みを持ち越さない。**
   await env.DB.prepare('delete from generations').run();
 });
 
@@ -154,11 +154,11 @@ async function sessionCookie(userId: string): Promise<string> {
 }
 
 /**
- * 相談の口を叩く。
+ * チャットの口を叩く。
  *
  * @param userId 呼び出し元（null なら未ログイン）
  * @param body 本文
- * @param ask 相談を呼ぶ段の差し替え
+ * @param ask チャットを呼ぶ段の差し替え
  * @returns 応答
  */
 async function post(
@@ -208,7 +208,7 @@ function stubAsk(usage: { readonly inputTokens: number; readonly outputTokens: n
 /** 1 往復ぶんの本文。 */
 const ONE_TURN = { messages: [{ role: 'user', text: '避けるゲームを作りたい' }] };
 
-describe('相談の口（仕様 5.16）', () => {
+describe('チャットの口（仕様 5.16）', () => {
   it('経路が重複せず、前方一致の綴りも壊れていない', () => {
     const routes = createAppRoutes(testEnv());
     expect(findDuplicateRoutes(routes)).toEqual([]);
@@ -296,10 +296,10 @@ describe('相談の口（仕様 5.16）', () => {
       expect(daily.calls).toBe(0);
     });
 
-    it('相談の当月の取り分に達すると断る（生成の枠は減らさない）', async () => {
+    it('チャットの当月の取り分に達すると断る（生成の枠は減らさない）', async () => {
       const userId = await createUser();
       const other = await createUser();
-      // **全員ぶんの累計**である（別の利用者の相談でも当たる）。
+      // **全員ぶんの累計**である（別の利用者のチャットでも当たる）。
       await seedLedger(other, CHAT_KIND, { costJpy: CHAT_MONTHLY_COST_LIMIT_JPY });
 
       const response = await post(userId, ONE_TURN);
@@ -310,7 +310,7 @@ describe('相談の口（仕様 5.16）', () => {
       expect(daily.calls).toBe(0);
     });
 
-    it('4.3 の月次 2 万円で止まっているときは、相談も断る', async () => {
+    it('4.3 の月次 2 万円で止まっているときは、チャットも断る', async () => {
       const userId = await createUser();
       await seedLedger(userId, GENERATION_KIND, { costJpy: 20_000 });
 
@@ -322,7 +322,7 @@ describe('相談の口（仕様 5.16）', () => {
       expect(await response.json()).toEqual({ error: MONTHLY_LIMIT_REASON });
     });
 
-    it('生成の行は、相談の 1 日のトークンを減らさない', async () => {
+    it('生成の行は、チャットの 1 日のトークンを減らさない', async () => {
       const userId = await createUser();
       await seedLedger(userId, GENERATION_KIND, { tokens: CHAT_DAILY_TOKEN_LIMIT * 2 });
 
@@ -334,7 +334,7 @@ describe('相談の口（仕様 5.16）', () => {
       });
     });
 
-    it('相談の行は、確定25 の日次 10 回を 1 回も減らさない', async () => {
+    it('チャットの行は、確定25 の日次 10 回を 1 回も減らさない', async () => {
       const userId = await createUser();
       for (let index = 0; index < 5; index += 1) {
         await seedLedger(userId, CHAT_KIND, { tokens: 100 });
@@ -423,7 +423,7 @@ describe('相談の口（仕様 5.16）', () => {
         stub.ask,
       );
       expect(response.status).toBe(200);
-      // **リフォージの相談では、説明とタグは載らない**（最初の指示文が読めるため。#727）。
+      // **リフォージのチャットでは、説明とタグは載らない**（最初の指示文が読めるため。#727）。
       expect(stub.calls[0]!.work).toEqual({
         title: '題名',
         prompt: '自分の指示文',
@@ -574,7 +574,7 @@ describe('相談の口（仕様 5.16）', () => {
       }
     });
 
-    it('相談の当月の取り分が仕様書と一致する', () => {
+    it('チャットの当月の取り分が仕様書と一致する', () => {
       const found = [...spec.matchAll(CHAT_MONTHLY_LIMIT_PATTERN)].map((match) =>
         Number(match[1]!.replace(/,/gu, '')),
       );

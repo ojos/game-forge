@@ -1,5 +1,5 @@
 /**
- * 相談の口（#695 / M18-2。仕様 5.16）。**`POST /api/chat` の 1 往復。**
+ * チャットの口（#695 / M18-2。仕様 5.16）。**`POST /api/chat` の 1 往復。**
  *
  * ## この口が持つ順序
  *
@@ -8,7 +8,7 @@
  * 1. **呼び出し元を決める**（`resolveApiCaller`。5.12 と同じ 1 か所。未ログイン・BAN・退会は 401）
  * 2. **呼び出しの上限**（5.13 のいいねの Worker の入口を、`chat` の鍵で使い回す。1 人 60 秒 60 回）
  * 3. **本文の検証**（形・長さ・発話の交互）
- * 4. **相談の枠**（`src/chat-quota.ts`。4.3 の月次 → 相談の当月の取り分 → 1 人 1 日のトークン）
+ * 4. **チャットの枠**（`src/chat-quota.ts`。4.3 の月次 → チャットの当月の取り分 → 1 人 1 日のトークン）
  * 5. **作者自身の作品を引く**（`myWorkResult`。**自作かどうかの判定はあちらの `author_id`**）
  * 6. **Lambda を同期で呼ぶ**（`src/chat-client.ts`。8.2 の Guardrail は関数の中で掛かる）
  * 7. **台帳へ 1 行積む**（`kind = 'chat'`。**書くのはエッジ**）
@@ -29,9 +29,9 @@
  * ## 遮断の記録は残さない
  *
  * 8.2 の `moderation_blocks` は **`game_id` が NOT NULL で `games` を参照する**
- * （`migrations/0016_moderation_blocks.sql`）。**相談には作品が無い。** 列を緩めるには表の
+ * （`migrations/0016_moderation_blocks.sql`）。**チャットには作品が無い。** 列を緩めるには表の
  * 作り直しが要り、しかも**あの表は 8.4 の削除の判定が作品ごとに引くもの**である。
- * **相談の遮断は記録せず、カテゴリを作者へ返して言い直してもらう**——遮断された本文を
+ * **チャットの遮断は記録せず、カテゴリを作者へ返して言い直してもらう**——遮断された本文を
  * 保存しないので、`/privacy` の約束が増えることもない。
  */
 import { allowApiCall } from './api-rate-limit.js';
@@ -92,11 +92,11 @@ const BUSY = { error: 'busy' } as const;
 interface ChatRequestBody {
   readonly messages: readonly ChatMessage[];
   /**
-   * 相談の対象（#727 / 確定38）。**新しく作る相談では `kind` が `'new'`** である。
+   * チャットの対象（#727 / 確定38）。**新しく作るチャットでは `kind` が `'new'`** である。
    *
    * **`workId` を置き換えたものである**——以前は「自分の作品を 1 つ選ぶ」だけだったが、
    * **リフォージ（自分の未公開の作品）とフォーク（他人の公開作品）で見せる範囲が違う**ので、
-   * **何のための相談かを種別で持つ。**
+   * **何のためのチャットかを種別で持つ。**
    */
   readonly target: ChatTarget;
   readonly includeSource: boolean;
@@ -173,7 +173,7 @@ export function parseChatRequest(value: unknown): ChatRequestBody | null {
 }
 
 /**
- * 対象に応じて、相談の文脈を読む（#727 / 確定38）。
+ * 対象に応じて、チャットの文脈を読む（#727 / 確定38）。
  *
  * **見せてよい範囲は対象で変わる。**
  *
@@ -186,7 +186,7 @@ export function parseChatRequest(value: unknown): ChatRequestBody | null {
  *
  * @param env バインディングと環境変数
  * @param userId 利用者の id
- * @param target 相談の対象
+ * @param target チャットの対象
  * @param includeSource ソースも載せるか
  * @returns 文脈（対象が無い・読めないなら null）
  */
@@ -212,14 +212,14 @@ async function loadChatContext(
 
 /** 差し替えられる依存（テストの継ぎ目）。 */
 export interface ChatHandlerDependencies {
-  /** 相談を呼ぶ段。 */
+  /** チャットを呼ぶ段。 */
   readonly ask?: AskChat;
   /** 判定と記録に使う時刻（UNIX 秒）。 */
   readonly now?: number;
 }
 
 /**
- * `POST /api/chat` — 相談の 1 往復。
+ * `POST /api/chat` — チャットの 1 往復。
  *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
@@ -329,7 +329,7 @@ export async function handleChat(
     }
     // **会話の本文は出さない**（1.2.54）。出すのは例外の種類だけである。
     console.error(
-      `[chat] 相談を呼べませんでした: ${
+      `[chat] チャットを呼べませんでした: ${
         error instanceof ChatNotConfigured ? error.message : error instanceof Error ? error.name : 'unknown'
       }`,
     );
@@ -348,7 +348,7 @@ export async function handleChat(
   // **台帳へ 1 行積む**（4.3 の記録規約。1 回の LLM 呼び出しにつき 1 行）。
   //
   // **`prompt` には会話の本文を入れない。** 台帳の `prompt` は生成の指示文を残す列で、
-  // `/privacy` と 5.1 の約束はその単位で書かれている。相談の本文の置き場所は
+  // `/privacy` と 5.1 の約束はその単位で書かれている。チャットの本文の置き場所は
   // `chat_conversations`（30 日で消える。5.16）であって、消えない台帳ではない。
   //
   // **登録簿に無い鍵でも記録する**（4.3「登録簿に無いモデルで生成された場合も、同じ理由で
@@ -369,7 +369,7 @@ export async function handleChat(
         // 登録簿から引けないときは鍵をそのまま置く——値が使われないことより、
         // 「引けなかった」が読める形のほうがよい。
         modelId: findGenerationModel(answer.modelKey)?.modelId ?? answer.modelKey,
-        // **相談の返答は台帳に残さない**（残す場所は `chat_conversations`。5.16）。
+        // **チャットの返答は台帳に残さない**（残す場所は `chat_conversations`。5.16）。
         source: '',
         // **切れた返答は成功にしない**（4.3。行は作る——課金は出ている）。
         stopReason: answer.stopReason,
@@ -447,7 +447,7 @@ export async function handleDeleteChatConversation(request: Request, env: Env): 
   return json({ ok: true });
 }
 
-/** 相談の口の経路。 */
+/** チャットの口の経路。 */
 export const chatRoutes: readonly Route[] = [
   { method: 'POST', path: CHAT_API_PATH, handler: (request, env) => handleChat(request, env) },
   { method: 'POST', path: CHAT_CONVERSATION_DELETE_PATH, handler: handleDeleteChatConversation },

@@ -117,7 +117,7 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       'BUCKET',
       // ビルド関数の宛先（#19）。**秘密ではなく構成**なので wrangler.toml が宣言する。
       'BUILD_FUNCTION_NAME',
-      // 相談の関数の宛先（#695）。**秘密ではなく構成**なので wrangler.toml が
+      // チャットの関数の宛先（#695）。**秘密ではなく構成**なので wrangler.toml が
       // 宣言する（AVATAR_FUNCTION_NAME と同じ扱い）。
       'CHAT_FUNCTION_NAME',
       'DB',

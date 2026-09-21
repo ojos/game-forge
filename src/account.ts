@@ -1189,7 +1189,7 @@ ${unmutable}
   });
 }
 
-/** 相談のタブ（`/account/chat`）を組み立てるのに必要なものだけを集めた入力。 */
+/** チャットのタブ（`/account/chat`）を組み立てるのに必要なものだけを集めた入力。 */
 export interface AccountChatView {
   /** いま保存されているルール（無ければ空文字）。 */
   readonly rule: string;
@@ -1199,20 +1199,20 @@ export interface AccountChatView {
   readonly headerAvatar: string | null;
 }
 
-/** 相談のタブで断ったときの文言（分類名から 1 つだけ選ぶ）。 */
+/** チャットのタブで断ったときの文言（分類名から 1 つだけ選ぶ）。 */
 export const CHAT_RULE_MESSAGES: Readonly<Record<string, string>> = {
-  'too-long': `相談のルールは ${CHAT_RULE_MAX_LENGTH} 文字までです。`,
-  'invalid-characters': '相談のルールに、改行以外の制御文字や、文字の向きを変える目に見えない記号は使えません。',
-  'invalid-request': '相談のルールを受け取れませんでした。もう一度お試しください。',
-  failed: '相談のルールを保存できませんでした。時間をおいてもう一度お試しください。',
+  'too-long': `チャットのルールは ${CHAT_RULE_MAX_LENGTH} 文字までです。`,
+  'invalid-characters': 'チャットのルールに、改行以外の制御文字や、文字の向きを変える目に見えない記号は使えません。',
+  'invalid-request': 'チャットのルールを受け取れませんでした。もう一度お試しください。',
+  failed: 'チャットのルールを保存できませんでした。時間をおいてもう一度お試しください。',
 };
 
 /**
- * 登録情報の画面（相談のタブ。`/account/chat`）を組み立てる（#728 / 確定38）。
+ * 登録情報の画面（チャットのタブ。`/account/chat`）を組み立てる（#728 / 確定38）。
  *
  * **フォームは面のブロックで、「保存する」は副のボタン**（仕様 2.5.4 / 2.5.5 / #473。登録情報のタブは主を置かない）。
  *
- * **効く範囲を画面で言う。** 「相談だけに効く・生成には効かない」は確定38 の決定そのもので、
+ * **効く範囲を画面で言う。** 「チャットだけに効く・生成には効かない」は確定38 の決定そのもので、
  * **書いていないと作者は「生成にも効く」と読む**（欄の名前が「ルール」であるほどそう読める）。
  *
  * @param view 表示に必要な値
@@ -1223,30 +1223,30 @@ export function renderAccountChatPage(view: AccountChatView): string {
     view.notice === null
       ? ''
       : view.notice.kind === 'saved'
-        ? '<p class="gf-block" role="status">相談のルールを保存しました。</p>'
+        ? '<p class="gf-block" role="status">チャットのルールを保存しました。</p>'
         : `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
 
   return accountShell({
     path: ACCOUNT_CHAT_PATH,
-    title: '相談 - Game Forge',
+    title: 'チャット - Game Forge',
     headerAvatar: view.headerAvatar,
     body: `${notice}
 <form class="gf-block" method="post" action="${ACCOUNT_CHAT_API_PATH}">
-  <label for="account-chat-rule">相談のときに、いつも守ってほしいこと（${CHAT_RULE_MAX_LENGTH} 文字まで）</label>
-  <p id="account-chat-rule-hint" class="gf-generate-hint">生成画面の<a href="${GENERATE_PAGE_PATH}">AI との相談</a>で、毎回いちばん最初に伝えます。
-     <strong>相談にだけ効きます</strong>——ここに書いたことが、生成そのものに直接渡ることはありません
-     （相談が作った<strong>指示文の下書き</strong>を通して届きます）。空にすれば、何も伝えません。</p>
+  <label for="account-chat-rule">チャットのときに、いつも守ってほしいこと（${CHAT_RULE_MAX_LENGTH} 文字まで）</label>
+  <p id="account-chat-rule-hint" class="gf-generate-hint">生成画面の<a href="${GENERATE_PAGE_PATH}">AI とのチャット</a>で、毎回いちばん最初に伝えます。
+     <strong>チャットにだけ効きます</strong>——ここに書いたことが、生成そのものに直接渡ることはありません
+     （チャットが作った<strong>指示文の下書き</strong>を通して届きます）。空にすれば、何も伝えません。</p>
   <textarea id="account-chat-rule" name="${CHAT_RULE_FIELD}" rows="6" maxlength="${CHAT_RULE_MAX_LENGTH}"
             aria-describedby="account-chat-rule-hint"
             placeholder="例: 説明は短く。難しい言葉を使わない。1 画面で完結する遊びが好き。">${escapeHtml(view.rule)}</textarea>
   <button type="submit" class="gf-button gf-button-secondary">保存する</button>
 </form>
-<p>相談そのもののしくみ（枠・保存期間・消し方）は、<a href="${FAQ_PATH}">よくある質問</a>と<a href="${PRIVACY_PATH}">プライバシーポリシー</a>にあります。</p>`,
+<p>チャットそのもののしくみ（枠・保存期間・消し方）は、<a href="${FAQ_PATH}">よくある質問</a>と<a href="${PRIVACY_PATH}">プライバシーポリシー</a>にあります。</p>`,
   });
 }
 
 /**
- * 登録情報の画面（相談のタブ）を返す（#728）。
+ * 登録情報の画面（チャットのタブ）を返す（#728）。
  *
  * **引くのは本人の行だけである**（{@link showAccount} と同じ）。
  *
@@ -1280,7 +1280,7 @@ async function showAccountChat(request: Request, env: Env): Promise<Response> {
 }
 
 /**
- * 相談のルールを保存する（`POST /api/account/chat`。#728）。
+ * チャットのルールを保存する（`POST /api/account/chat`。#728）。
  *
  * **断ったら `/account/chat?reason=` へ送り直す**（POST-redirect-GET。メール配信のタブと同じ形）。
  * **書いた文を URL に載せない**（表示名の口が query を避けたのと同じ理由——履歴・ログ・反射）。
@@ -1322,7 +1322,7 @@ async function handleChatRuleChange(request: Request, env: Env): Promise<Respons
   } catch (error) {
     // **本文は出さない**（1.2.54 と同じ扱い）。出すのは例外の種類だけである。
     console.error(
-      `[account] 相談のルールの保存に失敗しました: ${error instanceof Error ? error.name : 'unknown'}`,
+      `[account] チャットのルールの保存に失敗しました: ${error instanceof Error ? error.name : 'unknown'}`,
     );
     return seeOther(`${ACCOUNT_CHAT_PATH}?reason=failed`);
   }

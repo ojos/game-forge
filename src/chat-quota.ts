@@ -1,5 +1,5 @@
 /**
- * 相談の枠（#695 / M18-2。仕様 5.16「枠——相談の費用が生成の予算を食わないようにする」）。
+ * チャットの枠（#695 / M18-2。仕様 5.16「枠——チャットの費用が生成の予算を食わないようにする」）。
  *
  * ## 2 段で、当たっても生成は止まらない
  *
@@ -7,8 +7,8 @@
  *
  * | 段 | 値 | 当たったときに止まるもの |
  * |---|---|---|
- * | 1 人 1 日 | {@link CHAT_DAILY_TOKEN_LIMIT} トークン | **その人の相談だけ。** 生成は動く |
- * | 相談の当月累計 | {@link CHAT_MONTHLY_COST_LIMIT_JPY} 円 | **全員の相談だけ。** 生成は動く |
+ * | 1 人 1 日 | {@link CHAT_DAILY_TOKEN_LIMIT} トークン | **その人のチャットだけ。** 生成は動く |
+ * | チャットの当月累計 | {@link CHAT_MONTHLY_COST_LIMIT_JPY} 円 | **全員のチャットだけ。** 生成は動く |
  *
  * **確定25 の日次 10 回は 1 回も減らさない**（`src/quota.ts` の `dailyCallCount` が
  * `kind = 'generation'` で絞る）。5.7 がリフォージで日次枠を共有したのとは逆の判断で、
@@ -27,7 +27,7 @@
  *
  * ## 4.3 の月次 2 万円も、そのまま効く
  *
- * **相談も 4.3 の内側にいる**（5.16）。サービス全体が止まっているときに相談だけ動くと、
+ * **チャットも 4.3 の内側にいる**（5.16）。サービス全体が止まっているときにチャットだけ動くと、
  * **止めた理由（総額）が守られない。** したがって判定は 3 つを順に見る。
  *
  * ## 判定は要求の手前で 1 回だけ行い、予約はしない
@@ -44,13 +44,13 @@
  * 2. **同時に判定を通った要求の上振れは、関数の予約同時実行数が縛る**（`terraform/chat-function.tf` の
  *    `chat_function_reserved_concurrency` ＝ 2）。枠を超えて走れるのは**同時に走れる本数まで**で、
  *    **あふれた要求は Lambda が 429 で断り、課金も台帳の行も出ない**（`src/chat-client.ts` の `ChatBusy`）。
- *    最大の往復 2 本ぶんで **約 38 円**、相談の当月の取り分（2,000 円）の **1.9%** である。
+ *    最大の往復 2 本ぶんで **約 38 円**、チャットの当月の取り分（2,000 円）の **1.9%** である。
  *    **締めたくなったら、増やすつまみではなく、この予約同時実行数を下げる。**
  *
  * ## 数えるのは台帳の行である（別の表を持たない）
  *
  * **上限を見る文そのもので数える**（`0048` が採った形。3.6 の「リクエストごとに書かない」）。
- * 相談は 1 往復につき `generations` へ 1 行を積むので、**数える対象は既にそこにある。**
+ * チャットは 1 往復につき `generations` へ 1 行を積むので、**数える対象は既にそこにある。**
  * 別のカウンタを置くと、台帳と数えている値が食い違う経路ができる。
  */
 import { CHAT_MAX_OUTPUT_TOKENS } from './chat-payload.js';
@@ -64,7 +64,7 @@ import {
 import { MONTHLY_COST_LIMIT_JPY, MONTHLY_LIMIT_REASON, jstDayRange } from './quota.js';
 
 /**
- * 1 人 1 日に相談で使えるトークン数（仕様 5.16。利用者の決定）。
+ * 1 人 1 日にチャットで使えるトークン数（仕様 5.16。利用者の決定）。
  *
  * **4.3 と同じ形で逆算した値である。** 引いたときはキャッシュが効かない安全側の単価
  * 0.675 円/1,000 トークン（入力 2,800・出力 400 の比に `sonnet-4-6` の単価と 150 円/ドルを
@@ -86,12 +86,12 @@ import { MONTHLY_COST_LIMIT_JPY, MONTHLY_LIMIT_REASON, jstDayRange } from './quo
 export const CHAT_DAILY_TOKEN_LIMIT = 30_000;
 
 /**
- * 相談に割り当てた当月の取り分（円。仕様 5.16。利用者の決定）。
+ * チャットに割り当てた当月の取り分（円。仕様 5.16。利用者の決定）。
  *
  * **4.3 の月次上限 2 万円の 10% である。** 4.3 の判定は今までどおり台帳の全部を合算する
- * （総額には相談も効く）ので、**これはその内側にもう 1 枚だけ置く蓋**である。
+ * （総額にはチャットも効く）ので、**これはその内側にもう 1 枚だけ置く蓋**である。
  *
- * **当たっても生成は止まらない。** それが #695 の constraints（「相談の費用が生成の予算を
+ * **当たっても生成は止まらない。** それが #695 の constraints（「チャットの費用が生成の予算を
  * 食わないよう、別枠で止まる」）に真っ向から答える唯一の形である。
  */
 export const CHAT_MONTHLY_COST_LIMIT_JPY = 2_000;
@@ -140,7 +140,7 @@ export function estimateChatTokens(input: {
 export const CHAT_DAILY_TOKEN_PATTERN =
   /1 ?人 ?1 ?日 ?\*{0,2}([0-9]{1,3}(?:,[0-9]{3})*) ?トークン/gu;
 
-/** 仕様書が相談の当月の取り分を宣言している文の形（テストが照合に使う）。 */
+/** 仕様書がチャットの当月の取り分を宣言している文の形（テストが照合に使う）。 */
 export const CHAT_MONTHLY_LIMIT_PATTERN =
   /(?:当月)?(?:累計|取り分) ?\*{0,2}([0-9]{1,3}(?:,[0-9]{3})*) ?円/gu;
 
@@ -153,14 +153,14 @@ export const CHAT_MONTHLY_LIMIT_PATTERN =
 export const CHAT_DAILY_TOKENS_REASON = 'chat-daily-tokens' as const;
 
 /**
- * 相談の当月の取り分で止まったことを表す分類名。**利用者への文言ではない。**
+ * チャットの当月の取り分で止まったことを表す分類名。**利用者への文言ではない。**
  *
  * **`monthly-limit`（4.3）と分ける。** あちらはサービス全体の停止で、生成も止まっている。
- * こちらは**相談だけが止まっていて、生成はできる。**
+ * こちらは**チャットだけが止まっていて、生成はできる。**
  */
 export const CHAT_MONTHLY_LIMIT_REASON = 'chat-monthly-limit' as const;
 
-/** 相談を断る分類名。 */
+/** チャットを断る分類名。 */
 export type ChatQuotaRejectionReason =
   | typeof CHAT_DAILY_TOKENS_REASON
   | typeof CHAT_MONTHLY_LIMIT_REASON
@@ -178,7 +178,7 @@ export const CHAT_QUOTA_REJECTION_REASONS: readonly ChatQuotaRejectionReason[] =
   CHAT_DAILY_TOKENS_REASON,
 ];
 
-/** いまの相談の枠の状態。 */
+/** いまのチャットの枠の状態。 */
 export type ChatQuotaStatus =
   | {
       readonly kind: 'available';
@@ -196,7 +196,7 @@ export type ChatQuotaStatus =
   | { readonly kind: typeof MONTHLY_LIMIT_REASON };
 
 /**
- * ある利用者が、その暦日（JST）に相談で使ったトークン数を数える。
+ * ある利用者が、その暦日（JST）にチャットで使ったトークン数を数える。
  *
  * **成否を問わない**（4.3 の「成否で絞らない」と同じ）。断られた返答にも `usage` は出ており、
  * 課金は発生している。**Guardrail で止めた回だけは LLM を呼んでいないので行が無い**（5.16）。
@@ -231,14 +231,14 @@ export async function chatDailyTokens(
 }
 
 /**
- * 相談が当月（JST）に使った費用の累計。
+ * チャットが当月（JST）に使った費用の累計。
  *
  * **範囲の定義は {@link jstMonthRange} から取る**（`monthlyCostTotals` と同じ「当月」である
  * ことを、写しではなく共有で担保する。`src/quota.ts` の「累計はここで数え直さない」と同じ規律）。
  *
  * @param env バインディングと環境変数
  * @param at 基準時刻（UNIX 秒）
- * @returns 当月の相談の費用（円）
+ * @returns 当月のチャットの費用（円）
  */
 export async function chatMonthlyCostJpy(env: Env, at: number): Promise<number> {
   const range = jstMonthRange(at);
@@ -253,24 +253,24 @@ export async function chatMonthlyCostJpy(env: Env, at: number): Promise<number> 
 }
 
 /**
- * いまの相談の枠の状態を求める。**判定と表示の両方がここから読む。**
+ * いまのチャットの枠の状態を求める。**判定と表示の両方がここから読む。**
  *
  * **止まったら先を読まない**（`src/quota.ts` の `generationQuotaStatus` と同じ規律。
  * **D1 は読み取りも従量である**——止まっている間ほど無駄な読み取りが積み上がる）。
  * 順序は「広い停止から先に」である。
  *
  * 1. **4.3 の月次 2 万円**（サービス全体。生成も止まっている）
- * 2. **相談の当月の取り分**（相談だけが止まる）
- * 3. **1 人 1 日のトークン**（その人の相談だけが止まる）
+ * 2. **チャットの当月の取り分**（チャットだけが止まる）
+ * 3. **1 人 1 日のトークン**（その人のチャットだけが止まる）
  *
- * **全体の月次は写さず、`monthlyCostTotals` をそのまま呼ぶ。** 相談用にもう 1 本 SQL を
+ * **全体の月次は写さず、`monthlyCostTotals` をそのまま呼ぶ。** チャット用にもう 1 本 SQL を
  * 書けば読み取りは 1 回減るが、**「4.3 の総額とは何か」の定義が 2 か所になる**——
- * 数える対象を変えた日に、相談の経路だけが古い定義で動く。
+ * 数える対象を変えた日に、チャットの経路だけが古い定義で動く。
  *
  * @param env バインディングと環境変数
  * @param userId 対象の利用者
  * @param at 判定時刻（UNIX 秒。既定は現在時刻）
- * @returns 枠の状態。相談できるときは残りトークンを伴う
+ * @returns 枠の状態。チャットできるときは残りトークンを伴う
  * @throws 集計を読めなかったとき（握りつぶさない。`src/quota.ts` の `readForDecision` と同じ判断）
  */
 export async function chatQuotaStatus(

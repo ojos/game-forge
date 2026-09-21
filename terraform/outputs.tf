@@ -639,7 +639,7 @@ output "avatar_invoke_resources" {
 
 output "chat_function_name" {
   description = <<-EOT
-    相談の関数の名前（#695 / 仕様 5.16）。**この値の正本は terraform/chat-function.tf の
+    チャットの関数の名前（#695 / 仕様 5.16）。**この値の正本は terraform/chat-function.tf の
     local.chat_function_name であり、wrangler.toml の CHAT_FUNCTION_NAME はその写しである**
     （突き合わせは scripts/check-chat-copies.sh）。
   EOT
@@ -647,7 +647,7 @@ output "chat_function_name" {
 }
 
 output "chat_function_log_group" {
-  description = "相談の関数のロググループ。Guardrail の遮断と Bedrock の失敗はここに出る。"
+  description = "チャットの関数のロググループ。Guardrail の遮断と Bedrock の失敗はここに出る。"
   value       = aws_cloudwatch_log_group.chat.name
 }
 

@@ -379,7 +379,7 @@ sharp(Buffer.from(svg)).png().toFile(process.argv[1]).catch((error) => { console
   GRANT_CREATED_AT="$(date +%s)"
   npx wrangler kv key put --local --binding OAUTH_KV --persist-to "$STATE" \
     "grant:$USER_ID:devFixtureGrant01" \
-    "{\"id\":\"devFixtureGrant01\",\"clientId\":\"devFixtureClient\",\"userId\":\"$USER_ID\",\"scope\":[\"works:read\",\"works:generate\"],\"metadata\":{\"clientName\":\"幅の検査のための、とても長い名前を名乗る AI アプリ（Claude Desktop のコネクタ）\",\"redirectHost\":\"claude.ai\"},\"encryptedProps\":\"\",\"createdAt\":$GRANT_CREATED_AT}" \
+    "{\"id\":\"devFixtureGrant01\",\"clientId\":\"devFixtureClient\",\"userId\":\"$USER_ID\",\"scope\":[\"works:read\",\"works:write\",\"works:generate\"],\"metadata\":{\"clientName\":\"幅の検査のための、とても長い名前を名乗る AI アプリ（Claude Desktop のコネクタ）\",\"redirectHost\":\"claude.ai\"},\"encryptedProps\":\"\",\"createdAt\":$GRANT_CREATED_AT}" \
     >"$WORK/kv.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/kv.log" >&2; fail "検査用の接続中のアプリを KV へ置けませんでした。"; }
 

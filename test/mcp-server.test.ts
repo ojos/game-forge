@@ -1,13 +1,16 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { DENIED_TERMS } from '../src/denied-terms.js';
 import { createGenerateRoutes } from '../src/generate.js';
 import {
   claimGenerationJob,
   completeGame,
   createPendingGame,
   DRAFT_STATUS,
+  DESCRIPTION_CHANGES_TABLE,
   hashJobToken,
+  MAX_DESCRIPTION_LENGTH,
   PUBLISHED_STATUS,
   REMOVED_STATUS,
 } from '../src/games.js';
@@ -19,11 +22,11 @@ import {
   requiredScopeOf,
   UNTRUSTED_TEXT_NOTICE,
 } from '../src/mcp-server.js';
-import { OAUTH_SCOPE_LABELS, SCOPE_WORKS_GENERATE, SCOPE_WORKS_READ } from '../src/oauth-paths.js';
+import { OAUTH_SCOPE_LABELS, SCOPE_WORKS_GENERATE, SCOPE_WORKS_READ, SCOPE_WORKS_WRITE } from '../src/oauth-paths.js';
 import { workPagePath } from '../src/paths.js';
 import { PUBLIC_WORKS_API_PATH } from '../src/public-works-api-paths.js';
 import { DAILY_QUOTA_PER_USER } from '../src/quota.js';
-import { REVIEW_QUEUED } from '../src/reports.js';
+import { REVIEW_QUEUED, TITLE_CHANGES_TABLE } from '../src/reports.js';
 import { appendRevision } from '../src/revisions.js';
 import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
@@ -253,7 +256,7 @@ async function exhaustDailyQuota(userId: string): Promise<void> {
 }
 
 describe('旧版と 2026-07-28 版の両方のクライアント（接続 → tools/list → 道具）', () => {
-  it('クライアントの SDK: 旧版（initialize）と 2026-07-28 版（server/discover）の両方で 8 本が見え、道具を呼べる', async () => {
+  it('クライアントの SDK: 旧版（initialize）と 2026-07-28 版（server/discover）の両方で 9 本が見え、道具を呼べる', async () => {
     const user = await seedOAuthUser();
     const gameId = await createReadyGame(user.id, '赤い玉を避けるゲーム');
     const { accessToken } = await connectMcp(user.cookie);
@@ -346,13 +349,13 @@ describe('旧版と 2026-07-28 版の両方のクライアント（接続 → to
 });
 
 describe('scope（403 insufficient_scope）', () => {
-  it('works:read だけのトークン: tools/list は 8 本とも出し、読む道具は通り、生成と推敲は HTTP の 403', async () => {
+  it('works:read だけのトークン: tools/list は 9 本とも出し、読む道具は通り、書き換え・生成・推敲は HTTP の 403', async () => {
     const user = await seedOAuthUser();
     const { accessToken, scope } = await connectMcp(user.cookie, [SCOPE_WORKS_READ]);
     expect(scope).toBe(SCOPE_WORKS_READ);
     const list = await rawMcp(accessToken, { jsonrpc: '2.0', id: 1, method: 'tools/list' });
     expect(((list.message?.result as { tools: unknown[] }).tools)).toHaveLength(MCP_TOOL_NAMES.length);
-    expect(MCP_TOOL_NAMES).toHaveLength(8);
+    expect(MCP_TOOL_NAMES).toHaveLength(9);
     expect(toolOutcome(await legacyCall(accessToken, 'get_me', {})).isError).toBe(false);
 
     const lambda = stubLambda();
@@ -915,5 +918,194 @@ describe('公開作品の一覧・検索と作者の公開プロフィール（#
     expect(instructions).toContain(UNTRUSTED_TEXT_NOTICE);
     // 他人のソースは読めないことも `instructions` に書く（#711 の scope.out）。
     expect(instructions).toContain('ほかの方の作品のソースは読めません');
+  });
+});
+
+/**
+ * 作品名・説明・タグの書き換え（#755。仕様 5.15）。
+ *
+ * **エディットページの「保存」と同じ関数（`saveWork`）を通ることを、結果と行と履歴で見る。** 規則（長さ・8.3 の語・
+ * 変更の間隔・状態）は 1 項目ずつの関数が持つので、道具の側で書き写していないことは「同じ分類名で断られ、
+ * 同じ履歴が積まれる」ことで確かめる。
+ */
+describe('update_my_work（#755）', () => {
+  /**
+   * 作品の行の書き換えに関わる列を読む。
+   *
+   * @param id 作品 id
+   * @returns 列の値
+   */
+  async function workRow(id: string): Promise<Record<string, unknown>> {
+    return (await env.DB.prepare(
+      'select status, title, description, tag1, tag2, tag3, description_set_at, tags_set_at from games where id = ?',
+    )
+      .bind(id)
+      .first<Record<string, unknown>>())!;
+  }
+
+  /**
+   * 履歴の行を数える。
+   *
+   * @param table 表
+   * @param id 作品 id
+   * @returns 行の数
+   */
+  async function historyCount(table: string, id: string): Promise<number> {
+    const row = await env.DB.prepare(`select count(*) as n from ${table} where game_id = ?`).bind(id).first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  it('works:write のあるトークンで、下書きと公開済みの作品名・説明・タグが書き換わり、変更の履歴が積まれる', async () => {
+    const user = await seedOAuthUser();
+    const draft = await createReadyGame(user.id);
+    const published = await createReadyGame(user.id);
+    await env.DB.prepare('update games set status = ?, published_at = ? where id = ?')
+      .bind(PUBLISHED_STATUS, Math.floor(Date.now() / 1000), published)
+      .run();
+    const { accessToken, scope } = await connectMcp(user.cookie);
+    expect(scope.split(' ')).toContain(SCOPE_WORKS_WRITE);
+
+    for (const [id, status] of [
+      [draft, DRAFT_STATUS],
+      [published, PUBLISHED_STATUS],
+    ] as const) {
+      const outcome = toolOutcome(
+        await legacyCall(accessToken, 'update_my_work', {
+          id,
+          title: 'ハンマー・ラン',
+          description: '鍛冶場を駆けるジャンプアクション',
+          tags: ['action'],
+        }),
+      );
+      expect(outcome, status).toEqual({ isError: false, body: { saved: true, parts: ['作品名', '説明', 'タグ'] } });
+      const row = await workRow(id);
+      expect(row, status).toMatchObject({
+        status,
+        title: 'ハンマー・ラン',
+        description: '鍛冶場を駆けるジャンプアクション',
+        tag1: 'action',
+        tag2: null,
+        tag3: null,
+      });
+      expect(row['description_set_at'], status).not.toBeNull();
+      expect(row['tags_set_at'], status).not.toBeNull();
+      expect(await historyCount(TITLE_CHANGES_TABLE, id), status).toBe(1);
+      expect(await historyCount(DESCRIPTION_CHANGES_TABLE, id), status).toBe(1);
+    }
+  });
+
+  it('works:write の無いトークンは HTTP の 403（scope="works:write"）で、行は変わらない', async () => {
+    const user = await seedOAuthUser();
+    const gameId = await createReadyGame(user.id);
+    const before = await workRow(gameId);
+    const { accessToken } = await connectMcp(user.cookie, [SCOPE_WORKS_READ, SCOPE_WORKS_GENERATE]);
+    const refused = await legacyCall(accessToken, 'update_my_work', { id: gameId, title: '変えたい題名' });
+    expect(refused.status).toBe(403);
+    expect(refused.headers.get('www-authenticate')).toContain(`scope="${SCOPE_WORKS_WRITE}"`);
+    expect(JSON.parse(refused.body)).toEqual({ error: 'insufficient_scope', scope: SCOPE_WORKS_WRITE });
+    expect(await workRow(gameId)).toEqual(before);
+    expect(await historyCount(TITLE_CHANGES_TABLE, gameId)).toBe(0);
+  });
+
+  it('他人の作品・生成中・失敗・公開停止の作品は、/api/works/save と同じ分類名で断られ、行は変わらない', async () => {
+    const owner = await seedOAuthUser();
+    const other = await seedOAuthUser();
+    const othersGame = await createReadyGame(other.id);
+    const pending = (await createPendingGame(env, owner.id, { prompt: '生成中の作品' })).id;
+    const failed = (await createPendingGame(env, owner.id, { prompt: '失敗した作品' })).id;
+    await env.DB.prepare("update games set generation_state = 'failed' where id = ?").bind(failed).run();
+    const removed = await createReadyGame(owner.id);
+    await env.DB.prepare('update games set status = ? where id = ?').bind(REMOVED_STATUS, removed).run();
+    const { accessToken } = await connectMcp(owner.cookie);
+
+    for (const [id, error] of [
+      [othersGame, 'not-found'],
+      [crypto.randomUUID(), 'not-found'],
+      [pending, 'not-ready'],
+      [failed, 'not-ready'],
+      [removed, 'removed'],
+    ] as const) {
+      const before = await workRow(id).catch(() => null);
+      const outcome = toolOutcome(await legacyCall(accessToken, 'update_my_work', { id, title: '書き換えたい' }));
+      expect(outcome, `${id} ${error}`).toEqual({ isError: true, body: { error, saved: [] } });
+      if (before !== null) {
+        expect(await workRow(id), error).toEqual(before);
+      }
+    }
+    // id の綴りが違えば、行を引く前に `/api/works/save` と同じ分類名で断る。
+    expect(toolOutcome(await legacyCall(accessToken, 'update_my_work', { id: 'not-a-uuid', title: 'x' }))).toEqual({
+      isError: true,
+      body: { error: 'invalid-game-id' },
+    });
+  });
+
+  it('8.3 の語・長すぎる説明・変更の間隔は画面と同じ分類名で断られ、途中で断られたら保存できた項目を返す', async () => {
+    const user = await seedOAuthUser();
+    const gameId = await createReadyGame(user.id);
+    const { accessToken } = await connectMcp(user.cookie);
+    const denied = DENIED_TERMS[0]!;
+
+    const deniedTitle = toolOutcome(await legacyCall(accessToken, 'update_my_work', { id: gameId, title: `ねこの${denied.term}` }));
+    expect(deniedTitle).toEqual({ isError: true, body: { error: 'denied-term', saved: [] } });
+
+    const tooLong = toolOutcome(
+      await legacyCall(accessToken, 'update_my_work', {
+        id: gameId,
+        title: '先に保存される題名',
+        description: 'あ'.repeat(MAX_DESCRIPTION_LENGTH + 1),
+      }),
+    );
+    expect(tooLong).toEqual({ isError: true, body: { error: 'too-long', saved: ['作品名'] } });
+    expect(await workRow(gameId)).toMatchObject({ title: '先に保存される題名', description: '' });
+    expect(await historyCount(DESCRIPTION_CHANGES_TABLE, gameId)).toBe(0);
+
+    expect(toolOutcome(await legacyCall(accessToken, 'update_my_work', { id: gameId, description: '1 回目' })).isError).toBe(false);
+    const tooSoon = toolOutcome(await legacyCall(accessToken, 'update_my_work', { id: gameId, description: '2 回目' }));
+    expect(tooSoon).toEqual({ isError: true, body: { error: 'too-soon', saved: [] } });
+    expect((await workRow(gameId))['description']).toBe('1 回目');
+  });
+
+  it('省いた項目と値の変わらない項目は書かない（変更の間隔を消費しない）', async () => {
+    const user = await seedOAuthUser();
+    const gameId = await createReadyGame(user.id);
+    const { accessToken } = await connectMcp(user.cookie);
+    expect(
+      toolOutcome(await legacyCall(accessToken, 'update_my_work', { id: gameId, description: '説明', tags: ['puzzle'] })).body,
+    ).toEqual({ saved: true, parts: ['説明', 'タグ'] });
+    const times = await workRow(gameId);
+
+    // 直後でも、説明とタグが同じ値なら間隔に掛からず、変えた作品名だけを保存する。
+    const same = toolOutcome(
+      await legacyCall(accessToken, 'update_my_work', { id: gameId, title: '新しい題名', description: '説明', tags: ['puzzle'] }),
+    );
+    expect(same).toEqual({ isError: false, body: { saved: true, parts: ['作品名'] } });
+    // 省いた項目は変えない。何も渡さなければ何も書かない。
+    expect(toolOutcome(await legacyCall(accessToken, 'update_my_work', { id: gameId })).body).toEqual({ saved: true, parts: [] });
+    const after = await workRow(gameId);
+    expect(after).toMatchObject({ title: '新しい題名', description: '説明', tag1: 'puzzle' });
+    expect(after['description_set_at']).toBe(times['description_set_at']);
+    expect(after['tags_set_at']).toBe(times['tags_set_at']);
+    expect(await historyCount(DESCRIPTION_CHANGES_TABLE, gameId)).toBe(1);
+  });
+
+  it('引数の形の誤りは「Input validation error」で、行を変えない', async () => {
+    const user = await seedOAuthUser();
+    const gameId = await createReadyGame(user.id);
+    const before = await workRow(gameId);
+    const { accessToken } = await connectMcp(user.cookie);
+    for (const args of [{}, { id: 1 }, { id: gameId, tags: 'action' }, { id: gameId, title: 'x', extra: true }] as const) {
+      const raw = await legacyCall(accessToken, 'update_my_work', args);
+      expect(raw.status, JSON.stringify(args)).toBe(200);
+      const result = raw.message?.result as { isError?: boolean; content: { text: string }[] };
+      expect(result.isError, JSON.stringify(args)).toBe(true);
+      expect(result.content[0]!.text, JSON.stringify(args)).toMatch(/^Input validation error: Invalid arguments for tool update_my_work/u);
+    }
+    expect(await workRow(gameId)).toEqual(before);
+  });
+
+  it('判定の材料: update_my_work は works:write を要る', () => {
+    const call = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'update_my_work' } };
+    expect(requiredScopeOf(JSON.stringify(call), new Headers())).toEqual([SCOPE_WORKS_WRITE]);
+    expect(MCP_TOOL_SCOPES.update_my_work).toBe(SCOPE_WORKS_WRITE);
   });
 });

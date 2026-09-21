@@ -26,8 +26,9 @@
  *
  * **配る束は wrangler（esbuild）の `keep_names` で組まれ、入れ子の関数ごとに `__name(...)` の
  * 呼び出しが本文へ差し込まれる**（2026-09-21 に `wrangler pages functions build` の出力で実測）。
- * 本文だけを取り出すと `__name` が未定義になるので、**スクリプトの先頭で何もしない `__name` を
- * 定義しておく**（`CHAT_MARKDOWN_SCRIPT` の 1 行目）。
+ * 本文だけを取り出すと補助が未定義になるので、**スクリプトの先頭で何もしない補助を定義しておく**
+ * （`chatMarkdownHelperLines`）。**補助の名前は束ごとに変わる**（`wrangler pages dev` では `__name2`）ので、
+ * 決め打ちせず本文から拾う。
  *
  * ## 名指しの例外 2 つ（仕様 5.16 / 8.3 の #737 注記）
  *
@@ -919,16 +920,46 @@ export function renderChatMarkdownHtml(nodes: readonly ChatMarkdownNode[], spec:
 }
 
 /**
+ * 取り出した関数の本文が呼ぶ `keep_names` の補助（`__name` / `__name2` / …）を、何もしない関数として定義する行。
+ *
+ * **補助の名前は束ごとに変わる。** 素の esbuild では `__name` だが、`wrangler pages dev` の束では
+ * wrangler 自身の包みが先に `__name` を定義しているため、このモジュールの側は **`__name2` に改名される**
+ * （2026-09-21 に実ブラウザで実測。固定の `__name` だけを定義していたら、`append()` の中で
+ * `ReferenceError: __name2 is not defined` になり、`.catch` に呑まれて「チャットできませんでした」だけが出た）。
+ * **だから名前を決め打ちせず、本文に現れた `__name<数字>` をすべて拾って定義する。** `__name` は束に
+ * 現れなくても必ず定義する（何もしないので害は無い）。
+ *
+ * **補助は渡された関数をそのまま返す**（`__name(fn, "fn")` は式の中でも使われる）。関数の `name` を
+ * 付け直さないのは、埋め込んだ本文が名前に頼らないためである。
+ *
+ * @param bodies 取り出した関数の本文
+ * @returns 補助を定義する行（`var` の宣言）
+ */
+export function chatMarkdownHelperLines(bodies: readonly string[]): string[] {
+  const names = new Set<string>(['__name']);
+  for (const body of bodies) {
+    for (const matched of body.matchAll(/\b(__name\d*)\(/gu)) {
+      if (matched[1] !== undefined) {
+        names.add(matched[1]);
+      }
+    }
+  }
+  return [...names].map((name) => `var ${name} = function (target) { return target; };`);
+}
+
+/** ブラウザへ埋め込む関数の本文（束が組んだものそのまま）。 */
+const CHAT_MARKDOWN_BODIES: readonly string[] = [parseChatMarkdown.toString(), buildChatMarkdown.toString()];
+
+/**
  * ブラウザへ埋め込む部品（`parseChatMarkdown` / `buildChatMarkdown` / `CHAT_MARKDOWN_SPEC`）。
  *
- * **1 行目の `__name` は、配る束の `keep_names` が本文へ差し込む呼び出しを受けるためのもの**
- * （モジュール冒頭）。何もせず、渡された関数をそのまま返す。
+ * **先頭の行は、配る束の `keep_names` が本文へ差し込む呼び出しを受けるためのもの**
+ * （`chatMarkdownHelperLines`。モジュール冒頭）。何もせず、渡された関数をそのまま返す。
  *
  * チャットのスクリプトの関数の中へそのまま置く（`var` と関数宣言だけなので、外へ名前を漏らさない）。
  */
 export const CHAT_MARKDOWN_SCRIPT = [
-  'var __name = function (target) { return target; };',
+  ...chatMarkdownHelperLines(CHAT_MARKDOWN_BODIES),
   `var CHAT_MARKDOWN_SPEC = ${JSON.stringify(CHAT_MARKDOWN_SPEC)};`,
-  parseChatMarkdown.toString(),
-  buildChatMarkdown.toString(),
+  ...CHAT_MARKDOWN_BODIES,
 ].join('\n');

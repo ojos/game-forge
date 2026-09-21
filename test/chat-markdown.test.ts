@@ -3,6 +3,7 @@ import {
   CHAT_MARKDOWN_SCRIPT,
   CHAT_MARKDOWN_SPEC,
   buildChatMarkdown,
+  chatMarkdownHelperLines,
   parseChatMarkdown,
   renderChatMarkdownHtml,
   type ChatMarkdownDocument,
@@ -445,6 +446,30 @@ describe('描き方は 2 つ、解析器は 1 つ', () => {
     )() as boolean;
     expect(passthrough).toBe(true);
     expect(CHAT_MARKDOWN_SCRIPT.split('\n')[0]).toContain('var __name = function (target) { return target; };');
+  });
+
+  it('束が補助を改名しても（`__name2` など）、本文に現れた名前をすべて定義する', () => {
+    // **`wrangler pages dev` の束では、wrangler 自身の包みが先に `__name` を定義するので、このモジュールの
+    // 側は `__name2` に改名される**（2026-09-21 に実ブラウザで実測。固定の `__name` だけでは `append()` の中で
+    // ReferenceError になり、`.catch` に呑まれて「チャットできませんでした」だけが出た）。
+    const body = [
+      'function parse(source) {',
+      '  function inner(a) { return a + 1; }',
+      '  __name2(inner, "inner");',
+      '  const arrow = /* @__PURE__ */ __name3((x) => x * 2, "arrow");',
+      '  return arrow(inner(source));',
+      '}',
+    ].join('\n');
+    const lines = chatMarkdownHelperLines([body]);
+    expect(lines).toEqual([
+      'var __name = function (target) { return target; };',
+      'var __name2 = function (target) { return target; };',
+      'var __name3 = function (target) { return target; };',
+    ]);
+    const parse = new Function(`${lines.join('\n')}\n${body}\nreturn parse;`)() as (value: number) => number;
+    expect(parse(1)).toBe(4);
+    // 本文に補助が無くても `__name` は定義する（何もしないので害は無い）。
+    expect(chatMarkdownHelperLines(['function f() {}'])).toEqual(['var __name = function (target) { return target; };']);
   });
 
   it('埋め込む本文は、HTML の文字列を解釈させる API と、枠の額の語を持たない', () => {

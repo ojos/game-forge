@@ -10753,8 +10753,12 @@ NG ワード検査**である。曲げるのは、**8.3 の #133 注記が広げ
 >    「描く要素の木」（タグ・属性・子）である。**サーバ**（`renderChatMarkdownHtml`。復元した会話。本文も属性値も `escapeHtml`）と
 >    **ブラウザ**（`buildChatMarkdown`。往復のたびに足す返答）は、その木を写すだけである。**ブラウザへは 2 つの関数の本文を
 >    `toString` で取り出して `CHAT_SCRIPT` の先頭へ埋め込む**（外部のライブラリは入れていない）。配る束は wrangler の
->    `keep_names` で入れ子の関数ごとに `__name(...)` が本文へ差し込まれる（`wrangler pages functions build` の出力で実測）ので、
->    **埋め込みの 1 行目で何もしない `__name` を定義した。** 埋め込んだ本文を何も無い場所で走らせて TypeScript 側と同じ木を返すこと、
+>    `keep_names` で入れ子の関数ごとに `__name(...)` が本文へ差し込まれるので、**埋め込みの先頭で何もしない補助を定義した。**
+>    **補助の名前は束ごとに変わる**——`wrangler pages functions build`（配備と同じ組み方）では `__name` だけだが、`wrangler pages dev`
+>    では wrangler 自身の包みが先に `__name` を持つため **`__name2` にも改名される**（実ブラウザで実測。固定の `__name` だけでは
+>    `append()` の中で `ReferenceError` になり、`.catch` に呑まれて「チャットできませんでした」だけが出て、例外もコンソールの
+>    エラーも 0 件のままだった）。**だから名前を決め打ちせず、本文に現れた `__name<数字>` をすべて拾って定義する**
+>    （`chatMarkdownHelperLines`）。 埋め込んだ本文を何も無い場所で走らせて TypeScript 側と同じ木を返すこと、
 >    2 つの描き方が同じ木から同じ構造を作ることは `test/chat-markdown.test.ts` と `test/chat-ui.test.ts` が見る。
 > 2. **描く API の線を 1 つ広げた。** #695 PR② の線は「`createElement` で作り、本文は `textContent` だけで入れる」だったが、
 >    **描く API は `createElement` / `createTextNode` / 許可表の属性に限った `setAttribute` / `appendChild` だけ**にした——

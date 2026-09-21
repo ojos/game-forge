@@ -4,7 +4,7 @@ import {
   latestChatConversation,
   saveChatConversation,
 } from '../src/chat-conversation.js';
-import { CHAT_SCRIPT, renderChatSection, CHAT_TARGET_LABELS } from '../src/chat-section.js';
+import { CHAT_SCRIPT, CHAT_TARGET_LABELS } from '../src/chat-section.js';
 import { loadForkableParent } from '../src/fork.js';
 import {
   CHAT_FORK_PARAM,
@@ -15,6 +15,7 @@ import {
   chatTargetFromUrl,
   loadForkChatContext,
   loadReviseChatContext,
+  type ChatTarget,
 } from '../src/chat-target.js';
 import { renderGeneratePage } from '../src/generate-page.js';
 import { FORK_PATH, GENERATE_PAGE_PATH, REVISE_PATH } from '../src/paths.js';
@@ -149,22 +150,33 @@ describe('フォーク元の文脈（確定38。他人の公開作品）', () =>
   });
 });
 
+/**
+ * チャットを出した生成画面を描く（#738 から、区画の入力の塊は生成画面が組み立てて渡す）。
+ *
+ * @param target チャットの対象
+ * @returns HTML
+ */
+function chatPage(target: ChatTarget): string {
+  return renderGeneratePage(true, {
+    availability: { kind: 'available', remaining: 5 },
+    headerAvatar: null,
+    target,
+    chat: { messages: [], conversationId: null, target },
+  });
+}
+
 describe('Copilot が見つけた穴（#727）', () => {
   it('ソースを求める操作が画面にある（#695 から無かった）', () => {
     // **口は `includeSource` を受けていたのに、送る側がどこにも無かった**
     // ——「作者が明示的に求めたときだけ渡す」という決定が 1 度も届いていなかった。
+    // **区画は生成画面が描く形で見る**（#738 から、入力の塊は生成のフォームそのもので、画面が渡す）。
     for (const kind of ['revise', 'fork'] as const) {
-      const html = renderChatSection({
-        messages: [],
-        conversationId: null,
-        target: { kind, id: GAME_A },
-      });
-      expect(html).toContain('id="chat-source"');
+      expect(chatPage({ kind, id: GAME_A })).toContain('id="chat-source"');
     }
     // **新規のチャットには出さない**（見せる作品が無い）。
-    expect(renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET })).not.toContain(
-      'id="chat-source"',
-    );
+    expect(chatPage(NEW_CHAT_TARGET)).not.toContain('id="chat-source"');
+    // **名前を持たない**——リフォージとフォークは素のフォーム送信なので、名前があると送信に載ってしまう。
+    expect(chatPage({ kind: 'revise', id: GAME_A })).toContain('<input type="checkbox" id="chat-source">');
     // スクリプトが、チェックされたときだけ載せる。
     expect(CHAT_SCRIPT).toContain("document.getElementById('chat-source')");
     expect(CHAT_SCRIPT).toContain('body.includeSource = true');
@@ -276,24 +288,26 @@ describe('画面（対象ごとの文言と行き先）', () => {
     expect(html).toContain(`id="${formId}"`);
     expect(html).toContain(`id="${promptId}"`);
     expect(html).toContain(GAME_A);
-    // **主のボタンはチャット側の 1 つだけ**（2.5.5）。
+    // **形は新規と同じ**（#738）——欄は 1 つ、ボタンは「チャットする」（副）と送る側（主）の 2 つ。
+    expect(html.match(/<textarea\b/gu)?.length).toBe(1);
     expect(html.match(/gf-button-primary/gu)?.length).toBe(1);
-    expect(html).toContain(`form="${formId}"`);
+    expect(html).toContain('<button id="chat-send" class="gf-button gf-button-secondary" type="button">チャットする</button>');
+    expect(html).toContain(
+      `<button id="generate-submit" class="gf-button gf-button-primary" type="submit">${kind === 'revise' ? 'リフォージする' : 'フォークする'}</button>`,
+    );
+    expect(html).not.toContain('直接書く');
+    // 欄はチャットの区画の中のフォームにある。
+    const section = html.slice(html.indexOf('<section id="chat"'), html.indexOf('</section>'));
+    expect(section).toContain(`<form id="${formId}"`);
     // **生成のフォームは出さない**（対象があるチャットで押せる先は 1 つである）。
     expect(html).not.toContain('id="generate-form"');
   });
 
-  it('対象ごとに見出しと主のボタンの文言が変わる', () => {
+  it('対象ごとに見出しが変わる', () => {
     for (const kind of ['new', 'revise', 'fork'] as const) {
       const labels = CHAT_TARGET_LABELS[kind]!;
-      const html = renderChatSection({
-        messages: [],
-        conversationId: null,
-        target: kind === 'new' ? NEW_CHAT_TARGET : { kind, id: GAME_A },
-      });
+      const html = chatPage(kind === 'new' ? NEW_CHAT_TARGET : { kind, id: GAME_A });
       expect(html).toContain(labels.heading);
-      expect(html).toContain(labels.apply);
-      expect(html).toContain(`form="${labels.form}"`);
       // **対象はスクリプトが要求へ載せる**（サーバは受けた値を同じ規則で検証する）。
       expect(html).toContain(`data-target-kind="${kind}"`);
     }

@@ -110,7 +110,14 @@
  * 反応する近似のままなので、**サービス全体の状態を決めるのは前者だけ**にしてある。
  */
 import { latestChatConversation } from './chat-conversation.js';
-import { CHAT_SCRIPT, renderChatSection, type ChatSectionView } from './chat-section.js';
+import {
+  CHAT_KEY_HINT_ID,
+  CHAT_SCRIPT,
+  renderChatSection,
+  type ChatComposer,
+  type ChatSectionView,
+} from './chat-section.js';
+import { CHAT_MAX_MESSAGE_LENGTH } from './chat-payload.js';
 import type { ChatTarget } from './chat-target.js';
 import { NEW_CHAT_TARGET, chatTargetFromUrl } from './chat-target.js';
 import { siteFooter } from './legal.js';
@@ -150,7 +157,7 @@ import { buildPathStopped } from './build-health.js';
 import type { Route, RouteHandler } from './routes.js';
 import { html } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
-import { escapeHtml, headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
+import { COLUMN_CLASS, escapeHtml, headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
 
 /**
  * 文言を選ぶ鍵が 1 つも当たらなかったときに使う鍵。
@@ -459,7 +466,7 @@ export interface GeneratePageView {
   readonly chat: ChatSectionView | null;
   /**
    * チャットの対象（#727 / 確定38）。**チャットを出さない画面でも決まる**——見出しと
-   * 「チャットせずに直接書く」のフォームの行き先が、対象で変わるためである。
+   * フォームの行き先（生成 / リフォージ / フォーク）が、対象で変わるためである。
    */
   readonly target: ChatTarget;
 }
@@ -777,45 +784,50 @@ ${stillAvailableSection()}`;
     )
     .join('\n');
 
-  // **チャットがこの画面の主役である**（#726 / 仕様 5.16 の確定38）。#695 ではチャットが
-  // 「フォームの後ろの任意の区画」だったが、**いまはチャットが先に来て、指示文の欄は
-  // 「チャットせずに指示文を直接書く」の中へ入る。**
-  const chat = view.chat === null ? '' : `${renderChatSection(view.chat)}\n\n`;
-
-  // **主のボタンは 1 画面に 1 つ**（2.5.5）。チャットを出すときの主はチャット側の「この指示で作る」なので、
-  // **こちらの「生成する」は副へ下げる。** チャットを出さないとき（`chat === null`）は、この画面に
-  // 主が 1 つも無くなるので主のままにする。
+  // **欄は 1 つ、ボタンは 2 つ**（#738 / 仕様 5.16「仕上げの 6 つの決定」）。**#726 では欄が 2 つあった**
+  // ——チャットの入力と、「チャットせずに指示文を直接書く」の `<details>` の中の指示文の欄である。
+  // **いまは生成のフォームの欄が唯一の欄で、チャットの区画の最後の子として置く**（`renderChatSection` の
+  // `composer`）。「チャットする」は同じ欄の中身をチャットへ送り、「生成する」はこのフォームを送る
+  // ——**開始の経路は変えない**（送り先・項目名・`GENERATE_SCRIPT`・枠の表示・入力の検査は今までどおり）。
   //
-  // **段のクラスを式で埋めない。** `test/button-parts.test.ts` は本文を読んで「部品のクラスと段の
-  // クラスが書いてあるか」を見るので、`${...}` で埋めると**どちらを選んだのか本文から読めなくなり**、
-  // 「既定に寄りかかっている」と同じ扱いで落ちる（#473 の検査。実際に踏んだ）。**2 本書き分ける。**
-  const submit =
-    view.chat === null
-      ? `<button id="generate-submit" class="gf-button gf-button-primary" type="submit" disabled>生成する</button>`
-      : `<button id="generate-submit" class="gf-button gf-button-secondary" type="submit" disabled>生成する</button>`;
+  // **主のボタンは「生成する」である**（2.5.5 の 1 画面に 1 つ。確定38 で「この指示で作る」へ移っていたのが
+  // #738 で戻った）。**チャットを出さないとき**（`chat === null`）も同じで、そのときはフォームだけを面に置く。
+  const chatShown = view.chat !== null;
+  // **キーの案内もこの欄の説明である**（読み上げで欄に入ったときに、Shift+Enter で送れることが伝わる）。
+  const describedBy = (first: string): string => (chatShown ? `${first} ${CHAT_KEY_HINT_ID}` : first);
+  // **欄の上限は、生成とチャットの狭いほう**（どちらへ送っても断られない長さ。いまはどちらも同じ値）。
+  const maxLength = Math.min(MAX_PROMPT_LENGTH, CHAT_MAX_MESSAGE_LENGTH);
+  // **チャットの中に置くときは面を重ねない**（区画が既に `.gf-block` の面である）。
+  const formClass = chatShown ? 'gf-generate-form gf-chat-composer' : 'gf-block gf-generate-form';
 
   // **入力欄とヒントと「生成する」を 1 つのブロックにし、残枠は入力欄の名前の行の右に置く**（#473。承認したモックアップ
   // Version 6）。並びは HTML の順のまま（名前 → 残枠 → ヒント → 入力欄 → ボタン）で、狭い段では残枠が名前の下へ折り返す
   // ——`order` を使わないので、見た目の順と読み上げ・Tab の順が割れない（仕様 2.5.6 の #469 実装注記）。
-  const form = `<form id="generate-form" class="gf-block gf-generate-form" method="post" action="${GENERATE_PATH}">
-  <div class="gf-heading-row gf-generate-head">
-    <label for="generate-prompt">どんなゲームを作りますか（日本語で、${MAX_PROMPT_LENGTH} 文字まで）</label>
+  //
+  // **段のクラスを式で埋めない。** `test/button-parts.test.ts` は本文を読んで「部品のクラスと段の
+  // クラスが書いてあるか」を見るので、`${...}` で埋めると**どちらを選んだのか本文から読めなくなる**（#473 の検査）。
+  let composer: ChatComposer;
+  if (view.target.kind === 'new') {
+    composer = {
+      open: `<form id="generate-form" class="${formClass}" method="post" action="${GENERATE_PATH}">`,
+      head: `<div class="gf-heading-row gf-generate-head">
+    <label for="generate-prompt">どんなゲームを作りますか（日本語で、${maxLength} 文字まで）</label>
     <p class="gf-generate-quota" id="generate-quota">${notice}</p>
   </div>
-  <p id="generate-title-hint" class="gf-generate-hint">${escapeHtml(TITLE_DECLARATION_NOTICE)}</p>
-  <textarea id="generate-prompt" name="prompt" rows="5" maxlength="${MAX_PROMPT_LENGTH}"
-            aria-describedby="generate-title-hint"
-            placeholder="${TITLE_DECLARATION_EXAMPLE}" required></textarea>
-  ${submit}
-</form>`;
-
-  // **対象があるチャットでは、生成のフォームではなくリフォージ／フォークのフォームを描く**
-  // （#727 / 確定38）。**開始の経路は既存のまま**——送り先も項目名も `src/paths.ts` の値で、
-  // 作品ページのフォーム（`src/work-page.ts`）と同じものを使う。
-  //
-  // **素のフォーム送信である**（生成だけが JSON の口で、JavaScript が要る）。したがって
-  // **リフォージとフォークは、チャットの下書きをそのまま送れる。**
-  if (view.target.kind !== 'new') {
+  <p id="generate-title-hint" class="gf-generate-hint">${escapeHtml(TITLE_DECLARATION_NOTICE)}</p>`,
+      field: `<textarea id="generate-prompt" name="prompt" rows="${chatShown ? 3 : 5}" maxlength="${maxLength}"
+            aria-describedby="${describedBy('generate-title-hint')}"
+            placeholder="${TITLE_DECLARATION_EXAMPLE}" required></textarea>`,
+      submit: `<button id="generate-submit" class="gf-button gf-button-primary" type="submit" disabled>生成する</button>`,
+    };
+  } else {
+    // **対象があるチャットでは、生成のフォームではなくリフォージ／フォークのフォームを描く**
+    // （#727 / 確定38）。**開始の経路は既存のまま**——送り先も項目名も `src/paths.ts` の値で、
+    // 作品ページのフォーム（`src/work-page.ts`）と同じものを使う。**素のフォーム送信である**
+    // （生成だけが JSON の口で、JavaScript が要る）。
+    //
+    // **ボタンの文言は動作の名前にする**（「リフォージする」「フォークする」）。形は新規と同じ
+    // （欄 1 つ・ボタン 2 つ・主は送る側。#738）で、作品ページの同じ操作と同じ語を使う。
     const isRevise = view.target.kind === 'revise';
     const action = isRevise ? REVISE_PATH : FORK_PATH;
     const idField = isRevise ? REVISE_GAME_ID_FIELD : FORK_PARENT_ID_FIELD;
@@ -823,40 +835,33 @@ ${stillAvailableSection()}`;
     const formId = isRevise ? 'revise-form' : 'fork-form';
     const promptId = isRevise ? 'revise-prompt' : 'fork-prompt';
     const label = isRevise ? 'どう直しますか' : 'どう変えてフォークしますか';
-    const submit = isRevise ? 'この内容でリフォージする' : 'この内容でフォークする';
-    const targeted = `<form id="${formId}" class="gf-block gf-generate-form" method="post" action="${action}">
-  <input type="hidden" name="${idField}" value="${escapeHtml(view.target.id)}">
-  <div class="gf-heading-row gf-generate-head">
-    <label for="${promptId}">${label}（${MAX_PROMPT_LENGTH} 文字まで）</label>
+    composer = {
+      open: `<form id="${formId}" class="${formClass}" method="post" action="${action}">
+  <input type="hidden" name="${idField}" value="${escapeHtml(view.target.id)}">`,
+      head: `<div class="gf-heading-row gf-generate-head">
+    <label for="${promptId}">${label}（${maxLength} 文字まで）</label>
     <p class="gf-generate-quota" id="generate-quota">${notice}</p>
-  </div>
-  <textarea id="${promptId}" name="${promptField}" rows="5" maxlength="${MAX_PROMPT_LENGTH}"
-            placeholder="例: 玉の動きをもっと速くして、当たったら音を鳴らす" required></textarea>
-  <button id="generate-submit" class="gf-button gf-button-secondary" type="submit">${submit}</button>
-</form>`;
-    return `${chat}<details class="gf-generate-direct" id="generate-direct">
-  <summary>チャットせずに指示文を直接書く</summary>
-  <div class="gf-generate-direct-panel">
-${targeted}
-  </div>
-</details>`;
+  </div>`,
+      field: `<textarea id="${promptId}" name="${promptField}" rows="${chatShown ? 3 : 5}" maxlength="${maxLength}"${
+        chatShown ? ` aria-describedby="${CHAT_KEY_HINT_ID}"` : ''
+      }
+            placeholder="例: 玉の動きをもっと速くして、当たったら音を鳴らす" required></textarea>`,
+      submit: isRevise
+        ? `<button id="generate-submit" class="gf-button gf-button-primary" type="submit">リフォージする</button>`
+        : `<button id="generate-submit" class="gf-button gf-button-primary" type="submit">フォークする</button>`,
+    };
   }
 
-  // **チャットを使わず一発で生成したい人の導線**（確定38「チャットを使わずに一発で生成したい人の導線は残す」）。
-  // **閉じた `<details>` の中でも欄は DOM にある**ので、チャットの「この指示で作る」は開かずにこのフォームを送れる。
-  // **チャットを出さないときは、今までどおり開いたまま出す**——ほかに生成の入口が無い画面で、
-  // 主の導線を 1 回開かせるのは、押せない導線を置くのと同じくらい悪い。
   const formSection =
     view.chat === null
-      ? form
-      : `<details class="gf-generate-direct" id="generate-direct">
-  <summary>チャットせずに指示文を直接書く</summary>
-  <div class="gf-generate-direct-panel">
-${form}
-  </div>
-</details>`;
+      ? `${composer.open}
+  ${composer.head}
+  ${composer.field}
+  ${composer.submit}
+</form>`
+      : renderChatSection(view.chat, composer);
 
-  return `${chat}${formSection}
+  return `${formSection}
 
 <p id="generate-progress" role="status" aria-live="polite" hidden>生成しています…（経過 <span id="generate-elapsed">0</span> 秒）。
    <strong>${TYPICAL_WAIT_TEXT}。</strong>この画面を閉じたり再読み込みしたりしないでください。</p>
@@ -902,15 +907,21 @@ export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): s
   // ——「ゲームを生成する」のままだと、リフォージのチャットを開いた人が別の画面へ来たと思う。
   const heading = PAGE_HEADINGS[view.target.kind] ?? PAGE_HEADINGS['new']!;
 
+  // **中央揃えの 1 カラム**（#738 / 仕様 5.16「レイアウト」）。ほかのテキスト主体のページと同じ `--gf-measure` の幅で
+  // 中央に置く。**読み物の器（2.5.3）ではない**——フォームが本体の画面なので、印を分けてある（`COLUMN_CLASS`）。
+  // パンくずも同じ端に揃える（`siteHead` の `column`）。
   return `${siteHead({
     title: heading.title,
     viewer: siteViewerAt(GENERATE_PAGE_PATH, signedIn, view.headerAvatar),
+    column: true,
   })}
+<div class="${COLUMN_CLASS}">
 <h1>${escapeHtml(heading.title)}</h1>
 <p>${heading.lead}
    <strong>${heading.wait} ${TYPICAL_WAIT_TEXT}。</strong></p>
 
 ${body}
+</div>
 
 ${siteFooter()}${script}${chatScript}`;
 }

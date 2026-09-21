@@ -315,7 +315,8 @@ describe('ログイン済みの入力フォーム（acceptance 2 / 5.2-1）', ()
     expect(TITLE_DECLARATION_EXAMPLE).toContain('タイトル: ');
     // **例は「例:」で始めない**（PR #385 のレビュー指摘）。詳細は次の検査。
     // 入力欄からたどれる（読み上げでも案内が結び付く）。
-    expect(body).toContain('aria-describedby="generate-title-hint"');
+    // **チャットを出す画面では、キーの案内も同じ欄の説明に並ぶ**（#738）。
+    expect(body).toMatch(/aria-describedby="generate-title-hint(?: chat-key-hint)?"/u);
     expect(body).toContain('id="generate-title-hint"');
   });
 

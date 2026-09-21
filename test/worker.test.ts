@@ -77,6 +77,7 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       'TEST_MIGRATIONS',
       'TEST_DEV_VARS_EXAMPLE',
       'TEST_PRODUCT_SPEC',
+      'TEST_CHAT_ONE_PER_WORK_MIGRATION',
       'TEST_VENDOR_DEPS',
       'TEST_BUILD_SAMPLE',
       'TEST_TEMPLATE_GO_MOD',

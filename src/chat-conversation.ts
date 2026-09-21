@@ -53,6 +53,24 @@ export const CHAT_RETENTION_DAYS = 30;
  */
 export const CHAT_RETENTION_PATTERN = /最後に\s*使ってから\s*\*{0,2}([0-9]+)\s*日/gu;
 
+/**
+ * 「いちばん新しい会話」の並び（**順序の正本**。#740）。
+ *
+ * **同点を id で解く。** `updated_at` は秒なので**同じ値は起こる**——そこで並びを
+ * `updated_at` だけにすると、**どちらが復元されるかは SQLite の気分で決まる**（同値の順序は
+ * 未定義である）。復元する行が揺れると、**作者が書いた会話が消えたように見える。**
+ *
+ * **`migrations/0052_chat_one_per_work.sql` は、この規則で「残す 1 本」を選んだ。**
+ * あの移行は**1 度しか走らない実行体**で、適用した時点の規則をそのまま固めたものである
+ * ——だから規則の正本はこちら（実行時）に置き、**移行の側は正本を名指しする。**
+ * **向きが揃っていることは `test/chat.test.ts` が移行の本文と機械照合する**
+ * （`.ai-playbook/shared-ai-rules.md` 12 章。ずれると、**移行が「作者の見ている行」を
+ * 消して「見ていない行」を残す**）。
+ *
+ * **`id desc`**＝**id の大きいほうを新しいとみなす**（移行の `newer.id > ...` と同じ向き）。
+ */
+export const LATEST_CHAT_ORDER = 'updated_at desc, id desc';
+
 /** 保存されている会話。 */
 export interface StoredChatConversation {
   readonly id: string;
@@ -108,6 +126,8 @@ export function parseStoredMessages(raw: unknown): readonly ChatMessage[] | null
  * （`migrations/0051_chat_target.sql`）。**`target_id` は NULL と値を分けて比べる**
  * ——SQL の `=` は NULL に当たらないので、新しく作るチャットは `is null` で引く。
  *
+ * **並びは {@link LATEST_CHAT_ORDER} に固定する**（#740 PR の Copilot の指摘）。
+ *
  * @param env バインディングと環境変数
  * @param userId 呼び出し元
  * @param target チャットの対象
@@ -123,7 +143,7 @@ export async function latestChatConversation(
        from chat_conversations
       where user_id = ? and target_kind = ?
         and target_id is ?
-      order by updated_at desc
+      order by ${LATEST_CHAT_ORDER}
       limit 1`,
   )
     .bind(userId, target.kind, target.id)
@@ -148,10 +168,22 @@ export async function latestChatConversation(
  * **自分の新しい会話になる**——区別できる応答を返さない（5.12 の「区別できる応答は手がかりに
  * なる」と同じ判断）。
  *
+ * ## 上書きの条件から対象を外した（#740 PR の Copilot の指摘）
+ *
+ * **#727 は `target_kind` / `target_id` も条件に入れていたが、外した。** 付け替え（#740。
+ * {@link attachChatConversationsToWork}）で行の対象が `('revise', 作品 id)` へ動いた後、
+ * **古い画面が `('new', null)` のまま同じ id を送ると、条件に当たらず `insert` へ落ちて
+ * `'new'` の行が作り直される**——それが次の `/generate` で復元され、**「必ず空」が崩れる。**
+ *
+ * **`id` は主キーなので、同一性の判定に対象は要らない。** #727 が守りたかったのは
+ * **「他人の会話を書き換えられないこと」**で、それは `user_id` が担保している（この関数が
+ * 触れるのは**自分の会話だけ**である）。**対象は上書きしない**ので、**行は自分が属する対象に
+ * 留まったまま、続きの発話だけが載る**——付け替えの後は、そのまま作品のチャットの続きになる。
+ *
  * @param env バインディングと環境変数
  * @param userId 呼び出し元
  * @param conversationId 上書きする会話の id（新しく始めるなら null）
- * @param target チャットの対象（#727。**上書きの条件にも入れる**）
+ * @param target チャットの対象（**新しく作るときにだけ使う。上書きの条件には入れない**）
  * @param messages 保存する発話の列
  * @param now 時刻（UNIX 秒）
  * @returns 保存した会話の id
@@ -166,14 +198,14 @@ export async function saveChatConversation(
 ): Promise<string> {
   const body = JSON.stringify(messages);
   if (conversationId !== null) {
-    // **対象も条件に入れる**（#727）。入れないと、**別の対象の会話の id を送ることで、
-    // その中身を差し替えられる**——自分の会話どうしではあるが、`user_id` を条件に入れたのと
-    // 同じ理由で、**行を選ぶ条件と、行が属する対象を一致させておく。**
+    // **当てるのは `(id, user_id)` だけである**（#740 PR の Copilot の指摘。上の注記）。
+    // **対象は条件にも代入にも入れない**——入れると、付け替えの後に古い対象を送ってきた
+    // 画面が `'new'` の行を作り直す。
     const updated = await env.DB.prepare(
       `update chat_conversations set messages = ?, updated_at = ?
-        where id = ? and user_id = ? and target_kind = ? and target_id is ?`,
+        where id = ? and user_id = ?`,
     )
-      .bind(body, now, conversationId, userId, target.kind, target.id)
+      .bind(body, now, conversationId, userId)
       .run();
     if ((updated.meta.changes ?? 0) > 0) {
       return conversationId;

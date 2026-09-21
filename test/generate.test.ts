@@ -1561,6 +1561,31 @@ describe('チャットを 1 作品 1 本にする（#740 / 仕様 5.16「会話�
     expect(await latestChatConversation(env, userId, NEW_CHAT_TARGET)).toBeNull();
   });
 
+  it('受け付けた後に生成が失敗しても、会話はその作品に紐づいたままである', async () => {
+    // **「受け付けられた時点」で閉じる**ので、**生成が失敗した作品にも会話は残る**
+    // （その作品を作り直すチャットの続きになる）。**付け替えを `startJob` の後ろへ置くと、
+    // ここが `'new'` のままになり**、次に `/generate` を開いたときに復元される
+    // ——既定の起動は同期実装で、入力の検査もビルドの失敗も例外として投げ直される。
+    const userId = await seedUser('chat-job-fails');
+    await seedConversation('conv-job-fails', userId, 'new', null, 100);
+    const { pipeline } = recordingPipeline();
+    const failing: GenerationPipeline = {
+      ...pipeline,
+      startJob: async () => {
+        throw new GeneratedSourceRejected('not-allowed', ['os/exec']);
+      },
+    };
+
+    await expect(
+      startGeneration(env, userId, { prompt: 'ゲーム' }, failing),
+    ).rejects.toBeInstanceOf(GeneratedSourceRejected);
+
+    const row = await targetOf('conv-job-fails');
+    expect(row?.target_kind).toBe('revise');
+    expect(row?.target_id).toBeTruthy();
+    expect(await latestChatConversation(env, userId, NEW_CHAT_TARGET)).toBeNull();
+  });
+
   it('付け替えに失敗しても生成は成功として返す', async () => {
     // **会話の整理を理由に生成を落とさない**（#740 の constraints）。**作品は既にでき、
     // ジョブも走っている。**

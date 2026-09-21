@@ -217,7 +217,15 @@ describe('会話は対象ごとに分かれる（確定38）', () => {
     expect(await latestChatConversation(env, userId, { kind: 'fork', id: GAME_B })).toBeNull();
   });
 
-  it('別の対象の会話の id を送っても、その中身は書き換わらない', async () => {
+  it('別の対象で自分の会話の id を送ると、その会話の続きとして書く（#740 で変えた）', async () => {
+    // **#727 は上書きの条件に対象も入れており、当たらなければ新しい会話になっていた。**
+    // **#740 で条件から対象を外した**——付け替え（`attachChatConversationsToWork`）で行の対象が
+    // 動いた後、**古い画面が `('new', null)` のまま同じ id を送ると `'new'` の行が作り直され**、
+    // 次に `/generate` を開いたときに復元されてしまうためである（「必ず空」が崩れる）。
+    //
+    // **残っている線は「他人の会話は書き換わらない」ことで、それは `user_id` が担保する**
+    // （`test/chat-ui.test.ts` が見ている）。**対象は上書きしない**ので、行は属する対象に
+    // 留まったまま、続きの発話だけが載る。
     const userId = await createUser();
     const id = await saveChatConversation(
       env,
@@ -227,7 +235,6 @@ describe('会話は対象ごとに分かれる（確定38）', () => {
       [{ role: 'user', text: '新規' }],
       1,
     );
-    // フォークの対象で同じ id を指しても、上書きされず**新しい会話になる**。
     const next = await saveChatConversation(
       env,
       userId,
@@ -236,8 +243,20 @@ describe('会話は対象ごとに分かれる（確定38）', () => {
       [{ role: 'user', text: 'フォーク' }],
       2,
     );
-    expect(next).not.toBe(id);
-    expect((await latestChatConversation(env, userId, NEW_CHAT_TARGET))?.messages[0]?.text).toBe('新規');
+
+    // **同じ行が続く**（行は増えない）。
+    expect(next).toBe(id);
+    const rows = await env.DB.prepare(
+      'select count(*) as n from chat_conversations where user_id = ?',
+    )
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(1);
+    // **対象は動かない**——行は「新しく作る」のままである。
+    expect((await latestChatConversation(env, userId, NEW_CHAT_TARGET))?.messages[0]?.text).toBe(
+      'フォーク',
+    );
+    expect(await latestChatConversation(env, userId, { kind: 'fork', id: GAME_A })).toBeNull();
   });
 });
 

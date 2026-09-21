@@ -26,6 +26,13 @@ declare global {
       readonly TEST_DEV_VARS_EXAMPLE: string;
       /** `vitest.config.ts` が Node 側で読み込んだ仕様書の中身。 */
       readonly TEST_PRODUCT_SPEC: string;
+      /**
+       * チャットの会話を 1 人 1 本へ畳む移行（`migrations/0052_chat_one_per_work.sql`）。
+       *
+       * 「いちばん新しい 1 本」の決め方を、実行時の `LATEST_CHAT_ORDER` と機械照合するために
+       * 本文そのものを渡している（#740）。
+       */
+      readonly TEST_CHAT_ONE_PER_WORK_MIGRATION: string;
       /** 隔離ビルドの vendor 焼き込み対象（`docker/isolated-build/template/vendor-deps.go`）。 */
       readonly TEST_VENDOR_DEPS: string;
       /** 隔離ビルドの検査用サンプル（`docker/isolated-build/sample/ebitengine.go`）。 */

@@ -26,7 +26,11 @@ import {
   estimateChatTokens,
 } from '../src/chat-quota.js';
 import { handleChat, handleDeleteChatConversation } from '../src/chat.js';
-import { latestChatConversation } from '../src/chat-conversation.js';
+import {
+  LATEST_CHAT_ORDER,
+  attachChatConversationsToWork,
+  latestChatConversation,
+} from '../src/chat-conversation.js';
 import { CHAT_KIND, GENERATION_KIND } from '../src/cost-ledger.js';
 import { currentDeclarationsIn, dailyCallCount, MONTHLY_LIMIT_REASON } from '../src/quota.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
@@ -527,6 +531,61 @@ describe('チャットの口（仕様 5.16）', () => {
       expect(rows?.n).toBe(1);
       const stored = await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET);
       expect(stored?.messages).toHaveLength(4);
+    });
+
+    it('付け替えの後に古い対象で保存しても、「新しく作る」行は増えない（#740）', async () => {
+      // **付け替えで行の対象が動いた後、古い画面が `('new', null)` のまま同じ id を送る。**
+      // 上書きの条件に対象が入っていると、**当たらずに `insert` へ落ちて `'new'` の行が
+      // 作り直され**、次に `/generate` を開いたときにそれが復元される。
+      const userId = await createUser();
+      const stub = stubAsk({ inputTokens: 10, outputTokens: 5 });
+      const first = (await (await post(userId, ONE_TURN, stub.ask)).json()) as {
+        conversationId: string;
+      };
+      await attachChatConversationsToWork(testEnv(), userId, 'attached-game-1');
+
+      await post(
+        userId,
+        {
+          messages: [
+            { role: 'user', text: '避けるゲームを作りたい' },
+            { role: 'assistant', text: '【指示文】赤い玉を避けるゲーム' },
+            { role: 'user', text: 'もっと短く' },
+          ],
+          conversationId: first.conversationId,
+        },
+        stub.ask,
+      );
+
+      const rows = await env.DB.prepare(
+        'select count(*) as n from chat_conversations where user_id = ?',
+      )
+        .bind(userId)
+        .first<{ n: number }>();
+      expect(rows?.n).toBe(1);
+      // **次に `/generate` を開くと空のままである。**
+      expect(await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET)).toBeNull();
+      // **続きは、その作品のチャットとして積まれる。**
+      const stored = await latestChatConversation(testEnv(), userId, {
+        kind: 'revise',
+        id: 'attached-game-1',
+      });
+      expect(stored?.id).toBe(first.conversationId);
+      expect(stored?.messages).toHaveLength(4);
+    });
+
+    it('移行の「いちばん新しい 1 本」の決め方が、実行時の並びと同じ向きである（#740）', () => {
+      // **規則が 2 か所にある**（実行時の並びと、1 度だけ走る移行の SQL）。**向きがずれると、
+      // 移行が「作者の見ている行」を消して「見ていない行」を残す**（`.ai-playbook/
+      // shared-ai-rules.md` 12 章。正本は `LATEST_CHAT_ORDER` で、移行はその適用結果である）。
+      const migration = env.TEST_CHAT_ONE_PER_WORK_MIGRATION;
+      expect(LATEST_CHAT_ORDER).toMatch(/\bupdated_at\s+desc\b/u);
+      expect(LATEST_CHAT_ORDER).toMatch(/\bid\s+desc\b/u);
+      // 移行が残すのは `(updated_at, id)` が大きい行である（`desc` の先頭と同じ）。
+      expect(migration).toMatch(/newer\.updated_at\s*>\s*chat_conversations\.updated_at/u);
+      expect(migration).toMatch(/newer\.id\s*>\s*chat_conversations\.id/u);
+      expect(migration).not.toMatch(/newer\.updated_at\s*</u);
+      expect(migration).not.toMatch(/newer\.id\s*</u);
     });
 
     it('断られた往復は保存しない（枠切れ）', async () => {

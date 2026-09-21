@@ -232,6 +232,15 @@ describe('記法ごとに描く（#739 の acceptance）', () => {
     expect(html('| a | b |\n|---|')).toBe('<p>| a | b |<br>|---|</p>');
   });
 
+  it('表は空行か別のブロックで終わる——GFM 4.10 の例 202（PR #756 の Copilot の指摘を却下した根拠）', () => {
+    // **`|` の無い行も、空行の前なら表の行になる**（GFM 4.10「The table is broken at the first empty line,
+    // or beginning of another block-level structure」）。欠けたセルは空の `<td>` になる。空行の後は段落へ戻る。
+    expect(html('| abc | def |\n| --- | --- |\n| bar | baz |\nbar\n\nbar')).toBe(
+      '<table><thead><tr><th>abc</th><th>def</th></tr></thead>' +
+        '<tbody><tr><td>bar</td><td>baz</td></tr><tr><td>bar</td><td></td></tr></tbody></table><p>bar</p>',
+    );
+  });
+
   it('水平線——`---` / `***` / `___`', () => {
     expect(html('---')).toBe('<hr>');
     expect(html('* * *')).toBe('<hr>');

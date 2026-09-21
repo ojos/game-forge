@@ -3,13 +3,20 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   CHAT_RETENTION_DAYS,
   CHAT_RETENTION_PATTERN,
+  appendChatConversation,
+  appendChatTurn,
   deleteChatConversations,
   latestChatConversation,
   parseStoredMessages,
   saveChatConversation,
   sweepExpiredChatConversations,
 } from '../src/chat-conversation.js';
-import { CHAT_MAX_MESSAGES } from '../src/chat-payload.js';
+import {
+  CHAT_MAX_MESSAGE_LENGTH,
+  CHAT_MAX_SEND_MESSAGES,
+  CHAT_MAX_STORED_MESSAGES,
+  type ChatMessage,
+} from '../src/chat-payload.js';
 import { NEW_CHAT_TARGET } from '../src/chat-target.js';
 import { CHAT_DRAFT_HEADING, CHAT_MESSAGES, CHAT_SCRIPT, renderChatSection } from '../src/chat-section.js';
 import { CHAT_PROMPT_SECTIONS } from '../src/chat-prompt.js';
@@ -163,9 +170,9 @@ describe('会話の保存（5.16）', () => {
     ['先頭が assistant', '[{"role":"assistant","text":"あ"}]'],
     ['本文が空', '[{"role":"user","text":""}]'],
     [
-      '多すぎる',
+      '保存の上限より多い',
       JSON.stringify(
-        Array.from({ length: CHAT_MAX_MESSAGES + 1 }, (_, index) => ({
+        Array.from({ length: CHAT_MAX_STORED_MESSAGES + 1 }, (_, index) => ({
           role: index % 2 === 0 ? 'user' : 'assistant',
           text: 'あ',
         })),
@@ -173,6 +180,120 @@ describe('会話の保存（5.16）', () => {
     ],
   ])('%s 保存は読まない', (_label, raw) => {
     expect(parseStoredMessages(raw)).toBeNull();
+  });
+
+  it.each([22, CHAT_MAX_STORED_MESSAGES])(
+    '送る窓より長い会話（%i 通）も読む——読めないと会話が丸ごと消えたように見える（#742）',
+    (count) => {
+      // **ここは「壊れていたら無かったことにする」枝である。** 以前は送る上限（20 通）を当てていたので、
+      // 21 通目から復元が null になった。
+      const raw = JSON.stringify(
+        Array.from({ length: count }, (_, index) => ({
+          role: index % 2 === 0 ? 'user' : 'assistant',
+          text: `発話${index}`,
+        })),
+      );
+      expect(parseStoredMessages(raw)).toHaveLength(count);
+    },
+  );
+});
+
+describe('保存済みの行へ 1 文で追記する（#742 / PR #746 の Copilot の指摘）', () => {
+  const U = { role: 'user', text: '新' } as const;
+  const A = { role: 'assistant', text: '返' } as const;
+
+  /**
+   * @param count 発話の数
+   * @returns 役割が交互の会話
+   */
+  function turns(count: number): ChatMessage[] {
+    return Array.from({ length: count }, (_, index) => ({
+      role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      text: `発話${index}`,
+    }));
+  }
+
+  it('末尾へ足し、読み戻せる形のままである', async () => {
+    const userId = await createUser();
+    const id = await saveChatConversation(env, userId, null, NEW_CHAT_TARGET, turns(4), 1);
+    expect(await appendChatConversation(env, userId, id, U, A, 2)).toBe(true);
+    const latest = await latestChatConversation(env, userId, NEW_CHAT_TARGET);
+    expect(latest?.messages).toEqual([...turns(4), U, A]);
+    expect(latest?.updatedAt).toBe(2);
+  });
+
+  it('上限を超えたら SQL の中で最古の往復を落とす（先頭は user のまま）', async () => {
+    const userId = await createUser();
+    const id = await saveChatConversation(env, userId, null, NEW_CHAT_TARGET, turns(CHAT_MAX_STORED_MESSAGES), 1);
+    expect(await appendChatConversation(env, userId, id, U, A, 2)).toBe(true);
+    const latest = await latestChatConversation(env, userId, NEW_CHAT_TARGET);
+    expect(latest?.messages).toHaveLength(CHAT_MAX_STORED_MESSAGES);
+    expect(latest?.messages[0]).toEqual({ role: 'user', text: '発話2' });
+    expect(latest?.messages.slice(-2)).toEqual([U, A]);
+  });
+
+  it.each([
+    ['奇数の長さ（user で終わる）', JSON.stringify(turns(3))],
+    ['JSON として読めない', '{壊れている'],
+    ['配列でない', '{"role":"user","text":"あ"}'],
+    ['上限を超えている', JSON.stringify(turns(CHAT_MAX_STORED_MESSAGES + 2))],
+  ])('%s 行には足さない（交互を崩さない。呼ぶ側が受け取った会話から保存し直す）', async (_label, raw) => {
+    const userId = await createUser();
+    const id = crypto.randomUUID();
+    await env.DB.prepare(
+      'insert into chat_conversations (id, user_id, messages, created_at, updated_at) values (?, ?, ?, 1, 1)',
+    )
+      .bind(id, userId, raw)
+      .run();
+    expect(await appendChatConversation(env, userId, id, U, A, 2)).toBe(false);
+    const row = await env.DB.prepare('select messages from chat_conversations where id = ?')
+      .bind(id)
+      .first<{ messages: string }>();
+    expect(row?.messages).toBe(raw);
+  });
+
+  it('他人の会話の id には足さない', async () => {
+    const owner = await createUser();
+    const stranger = await createUser();
+    const id = await saveChatConversation(env, owner, null, NEW_CHAT_TARGET, turns(2), 1);
+    expect(await appendChatConversation(env, stranger, id, U, A, 2)).toBe(false);
+    expect((await latestChatConversation(env, owner, NEW_CHAT_TARGET))?.messages).toEqual(turns(2));
+  });
+});
+
+describe('保存済みの会話へ 1 往復を足す（#742）', () => {
+  /**
+   * @param turns 往復の数
+   * @returns 役割が交互で、assistant で終わる会話
+   */
+  function storedTurns(turns: number): ChatMessage[] {
+    return Array.from({ length: turns * 2 }, (_, index) => ({
+      role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      text: `発話${index}`,
+    }));
+  }
+
+  it('末尾へ足す（上限の内側では何も落とさない）', () => {
+    const next = appendChatTurn(storedTurns(3), { role: 'user', text: '新' }, { role: 'assistant', text: '返' });
+    expect(next).toHaveLength(8);
+    expect(next[0]).toEqual({ role: 'user', text: '発話0' });
+    expect(next.slice(-2)).toEqual([
+      { role: 'user', text: '新' },
+      { role: 'assistant', text: '返' },
+    ]);
+  });
+
+  it('上限を超えたら最古の往復から落とす（先頭は user のまま・断らない）', () => {
+    const next = appendChatTurn(
+      storedTurns(CHAT_MAX_STORED_MESSAGES / 2),
+      { role: 'user', text: '新' },
+      { role: 'assistant', text: '返' },
+    );
+    expect(next).toHaveLength(CHAT_MAX_STORED_MESSAGES);
+    expect(next[0]).toEqual({ role: 'user', text: '発話2' });
+    expect(next[next.length - 1]).toEqual({ role: 'assistant', text: '返' });
+    // **保存したものは、そのまま読み戻せる形である。**
+    expect(parseStoredMessages(JSON.stringify(next))).toHaveLength(CHAT_MAX_STORED_MESSAGES);
   });
 });
 
@@ -273,6 +394,41 @@ describe('チャットの区画（5.16「画面は /generate の中の区画」�
     const prompt = CHAT_PROMPT_SECTIONS.join('\n');
     expect(prompt).toContain(CHAT_DRAFT_HEADING);
     expect(CHAT_SCRIPT).toContain(JSON.stringify(CHAT_DRAFT_HEADING));
+  });
+
+  it('通数では送信を止めない（#742。以前は 20 通で止め、10 往復で行き止まりになった）', () => {
+    // **見張りそのものが無いこと**を見る。以前は `turns.length + 1 > 20` で `notify(400, …)` を出して
+    // 送らなかった。
+    expect(CHAT_SCRIPT).not.toMatch(/notify\(400/u);
+    expect(CHAT_SCRIPT).toContain('messages: windowOf(history())');
+  });
+
+  it('送る本文は直近の窓だけで、先頭と末尾は user・役割は交互のまま（#742）', () => {
+    // **スクリプトの中の関数を取り出して、そのまま走らせる**（DOM は要らない関数である）。
+    const source = /function windowOf\(list\) \{[\s\S]*?\n {2}\}/u.exec(CHAT_SCRIPT)?.[0];
+    expect(source).toBeDefined();
+    const windowOf = new Function(`${source!}\nreturn windowOf;`)() as (
+      list: readonly ChatMessage[],
+    ) => readonly ChatMessage[];
+    for (let length = 1; length <= CHAT_MAX_STORED_MESSAGES + 1; length += 2) {
+      const list = Array.from({ length }, (_, index) => ({
+        role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+        text: `${index}`,
+      }));
+      const sent = windowOf(list);
+      expect(sent.length).toBe(Math.min(length, CHAT_MAX_SEND_MESSAGES));
+      expect(sent[0]!.role).toBe('user');
+      expect(sent[sent.length - 1]!.role).toBe('user');
+      // **切るのは古い側だけ**（最新の発話は必ず載る）。
+      expect(sent[sent.length - 1]).toEqual(list[list.length - 1]);
+    }
+  });
+
+  it('「受け取れませんでした」の文言は、通数ではなく 1 通の長さを言う（#742）', () => {
+    // **通数で止まっているのに「文字数を減らして」と言うのは誤誘導だった。** 通数ではもう断らない。
+    const message = CHAT_MESSAGES['400:invalid-request']!;
+    expect(message).not.toContain('文字数を減らして');
+    expect(message).toContain(CHAT_MAX_MESSAGE_LENGTH.toLocaleString('en-US'));
   });
 
   it('断りの分類名に、文言が 1 つずつある（増やして書き忘れると落ちる）', () => {

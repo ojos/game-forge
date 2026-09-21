@@ -40,6 +40,14 @@
  * スクリプトが描くのは、その後に足された往復だけである。**最初の 1 画面に、script が
  * 組み立てた DOM を出さない。**
  *
+ * ## 送るのは直近の窓だけで、履歴は切らない（#742）
+ *
+ * **画面は履歴の全部を描き、送るのは直近 7 通だけである**（`CHAT_MAX_SEND_MESSAGES`）。以前は
+ * 全部を送り、20 通に達すると**送信そのものを止めていた**——10 往復でそのチャットは行き止まりになり、
+ * しかも出す文言が「文字数を減らして」だった（通数で止まっているので、減らしても 1 文字も効かない）。
+ * **いまは止めずに窓へ切る。** エッジも同じ規則で切り直す（二重の検査）。窓から落ちた往復の中身は、
+ * 最新の返答が持つ下書きが引き継ぐ（`src/chat-prompt.ts` の版 3）。
+ *
  * ## 残りのトークンは、最初は上限を出すだけにする
  *
  * **画面を開くたびに D1 を 3 回読まない**（3.6。読み取りも従量である）。生成枠（4.4）と違い、
@@ -47,7 +55,7 @@
  * 実測値へ置き換える。** 枠が尽きている状態は、送ったときに固定の文言で返る。
  */
 import { CHAT_API_PATH, CHAT_CONVERSATION_DELETE_PATH } from './chat-paths.js';
-import { CHAT_MAX_MESSAGES, CHAT_MAX_MESSAGE_LENGTH } from './chat-payload.js';
+import { CHAT_MAX_MESSAGE_LENGTH, CHAT_MAX_SEND_MESSAGES } from './chat-payload.js';
 import { CHAT_DAILY_TOKEN_LIMIT } from './chat-quota.js';
 import { CHAT_RETENTION_DAYS } from './chat-conversation.js';
 import type { ChatMessage } from './chat-payload.js';
@@ -93,11 +101,18 @@ export const CHAT_TARGET_LABELS: Readonly<
   },
 };
 
-/** チャットの区画で使う固定の文言（分類名から 1 つだけ選んで見せる。生成画面と同じ形）。 */
+/**
+ * チャットの区画で使う固定の文言（分類名から 1 つだけ選んで見せる。生成画面と同じ形）。
+ *
+ * **`400:invalid-request` は「1 通の長さ」だけを言う**（#742）。以前は「文字数を減らして」だったが、
+ * 実際に断っていたのは**通数**で、減らしても 1 文字も効かなかった。**通数ではもう断らない**
+ * （窓へ切る）ので、**利用者が直せる 400 は「1 通が長すぎる」だけ**になった——文言はそれに合わせる。
+ * **会話の合計の長さを減らせとは言わない**（古い往復は送らずに落とすので、利用者の側でできることが無い）。
+ */
 export const CHAT_MESSAGES: Readonly<Record<string, string>> = {
   '': 'チャットできませんでした。時間をおいてもう一度お試しください。',
   '401:': 'ログインの有効期限が切れました。もう一度ログインしてください。',
-  '400:invalid-request': 'チャットの内容を受け取れませんでした。文字数を減らしてお試しください。',
+  '400:invalid-request': `送った内容を受け取れませんでした。1 回に送れるのは ${CHAT_MAX_MESSAGE_LENGTH.toLocaleString('en-US')} 文字までです。短く分けて、もう一度お試しください。`,
   '422:prompt-blocked':
     '入力の検査で止まりました。表現を変えて、もう一度お試しください（同じ内容では何度でも止まります）。',
   '429:rate-limited': '短い時間に何度も送信されました。少し待ってからお試しください。',
@@ -235,7 +250,7 @@ export const CHAT_SCRIPT = `
   var notices = document.querySelectorAll('[data-chat-message-key]');
   var busy = false;
 
-  /** 会話の全文を DOM から読む。**送るのはサーバが受けた形そのものである。** */
+  /** 会話の全文を DOM から読む（**表示している履歴のすべて**。送るのは windowOf で切ったもの）。 */
   function history() {
     var turns = log.querySelectorAll('.gf-chat-turn');
     var out = [];
@@ -247,6 +262,19 @@ export const CHAT_SCRIPT = `
       });
     }
     return out;
+  }
+
+  /**
+   * 送る範囲を、直近の窓へ切る（#742。\`src/chat-payload.ts\` の chatSendWindow と同じ規則）。
+   *
+   * **往復（2 通）単位で落とす**ので、先頭と末尾が user で役割が交互のまま残る。**表示は切らない**
+   * ——切るのは送る本文だけである。
+   */
+  function windowOf(list) {
+    var start = list.length - ${CHAT_MAX_SEND_MESSAGES};
+    if (start <= 0) { return list; }
+    if (start % 2 === 1) { start += 1; }
+    return list.slice(start);
   }
 
   /** 1 往復ぶんを足す。**textContent だけで入れる。** */
@@ -327,18 +355,14 @@ export const CHAT_SCRIPT = `
     if (busy) { return; }
     var text = (input.value || '').trim();
     if (text === '') { return; }
-    var turns = log.querySelectorAll('.gf-chat-turn');
-    if (turns.length + 1 > ${CHAT_MAX_MESSAGES}) {
-      notify(400, 'invalid-request');
-      return;
-    }
+    // **通数では止めない**（#742）。送る本文を窓へ切るだけで、何往復目でも送れる。
     busy = true;
     quiet();
     send.disabled = true;
     if (status !== null) { status.hidden = false; }
     append('user', text);
     input.value = '';
-    var body = { messages: history() };
+    var body = { messages: windowOf(history()) };
     body.targetKind = section.getAttribute('data-target-kind') || 'new';
     // **ソースは、作者がその往復で求めたときだけ載る**（5.16 / 確定38）。**毎往復ごとに読む**
     // ——外せば次の往復からは載らない（重さが戻る）。

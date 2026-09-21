@@ -10,8 +10,17 @@
  * 3. **本文の検証**（形・長さ・発話の交互）
  * 4. **チャットの枠**（`src/chat-quota.ts`。4.3 の月次 → チャットの当月の取り分 → 1 人 1 日のトークン）
  * 5. **作者自身の作品を引く**（`myWorkResult`。**自作かどうかの判定はあちらの `author_id`**）
- * 6. **Lambda を同期で呼ぶ**（`src/chat-client.ts`。8.2 の Guardrail は関数の中で掛かる）
- * 7. **台帳へ 1 行積む**（`kind = 'chat'`。**書くのはエッジ**）
+ * 6. **送る窓へ切る**（#742。`chatSendWindow`。直近 3 往復 ＋ 新しい 1 通。ルールの文字数を先に空ける）
+ * 7. **Lambda を同期で呼ぶ**（`src/chat-client.ts`。8.2 の Guardrail は関数の中で掛かる）
+ * 8. **台帳へ 1 行積む**（`kind = 'chat'`。**書くのはエッジ**）
+ * 9. **保存済みの行へ 1 往復を足す**（#742。`appendChatConversation`。1 文の UPDATE で、窓から落ちた往復も保存と復元に残す）
+ *
+ * ## 送る量と、送れる回数を分ける（#742）
+ *
+ * **以前は受け取った会話をそのまま送り、20 通を超えたら断っていた。** 画面は履歴の全部を載せるので、
+ * **「1 回の要求に載せてよい量」が「その会話で送れる回数」に化け**、10 往復（ルールがあれば 9 往復）で
+ * そのチャットは二度と送れなくなった。**いまは断らずに窓へ切る**——受け取る数の天井は保存の上限
+ * （60 通）で、送るのは直近の 7 通だけである。
  *
  * ## 文脈はこちらで組み立てる
  *
@@ -41,16 +50,21 @@ import {
   CHAT_CONVERSATION_DELETE_PATH,
   CHAT_RATE_LIMIT_SCOPE,
 } from './chat-paths.js';
-import { deleteChatConversations, saveChatConversation } from './chat-conversation.js';
+import {
+  appendChatConversation,
+  appendChatTurn,
+  deleteChatConversations,
+  saveChatConversation,
+} from './chat-conversation.js';
 import { createAskChat, ChatBusy, ChatNotConfigured, type AskChat } from './chat-client.js';
 import {
-  CHAT_MAX_MESSAGES,
-  CHAT_RULE_ACKNOWLEDGEMENT,
-  CHAT_RULE_PREAMBLE,
-  CHAT_RULE_TURNS,
   CHAT_MAX_MESSAGE_LENGTH,
+  CHAT_MAX_STORED_MESSAGES,
   CHAT_MAX_TOTAL_MESSAGE_LENGTH,
   CHAT_PAYLOAD_VERSION,
+  chatCharacters,
+  chatSendWindow,
+  withChatRule,
   type ChatMessage,
   type ChatWorkContext,
 } from './chat-payload.js';
@@ -120,7 +134,9 @@ export function parseChatRequest(value: unknown): ChatRequestBody | null {
   }
   const record = value as Record<string, unknown>;
   const messages = record['messages'];
-  if (!Array.isArray(messages) || messages.length === 0 || messages.length > CHAT_MAX_MESSAGES) {
+  // **天井は保存の上限である**（送る窓ではない。#742）。**窓より長い会話は断らずに切る**
+  // （{@link handleChat}）——**開いたままの古い画面は、履歴の全部を送ってくる。**
+  if (!Array.isArray(messages) || messages.length === 0 || messages.length > CHAT_MAX_STORED_MESSAGES) {
     return null;
   }
   // **末尾は利用者の発話である**（交互なので、長さが奇数であることと同じ意味になる）。
@@ -128,7 +144,6 @@ export function parseChatRequest(value: unknown): ChatRequestBody | null {
     return null;
   }
   const parsed: ChatMessage[] = [];
-  let total = 0;
   for (const [index, raw] of messages.entries()) {
     if (typeof raw !== 'object' || raw === null) {
       return null;
@@ -143,12 +158,10 @@ export function parseChatRequest(value: unknown): ChatRequestBody | null {
     if (trimmed === '' || [...trimmed].length > CHAT_MAX_MESSAGE_LENGTH) {
       return null;
     }
-    total += [...trimmed].length;
     parsed.push({ role: expected, text: trimmed });
   }
-  if (total > CHAT_MAX_TOTAL_MESSAGE_LENGTH) {
-    return null;
-  }
+  // **合計の文字数はここでは断らない**（#742）。窓へ切るときに最古の往復を落として収める
+  // ——**ここで断ると、それがそのまま行き止まりになる**（以前の 400 がそうだった）。
 
   // **対象は種別と id の組で受ける**（#727）。**形が違えば断る**——黙って「新しく作る」へ
   // 倒すと、作者は「フォークのつもりで話していたのに、何も知らない相手が返してくる」ことになる。
@@ -275,22 +288,23 @@ export async function handleChat(
   // 通らないまま Bedrock へ届く。** ここで渡すのは値だけで、置く場所は契約
   // （`src/chat-payload.ts`）が決める。
   //
-  // **保存する会話にも入らない**（下の `saveChatConversation` は `parsed.messages` を使う）
+  // **保存する会話にも入らない**（下の `appendChatTurn` は利用者の発話と返答だけを足す）
   // ——入ると、画面の履歴に作者が消せない往復が 2 つ増える。
   const rule = await readChatRule(env.DB, userId);
 
-  // **ルールが使う 2 通ぶんを、ここで空けておく**（`CHAT_RULE_TURNS`）。空けないと、
-  // **上限ちょうどの会話がルールで 2 通あふれ、Lambda が `internal` で落ちる**（#728 の
-  // Copilot の指摘）。**断るのはエッジの側**——利用者に出せる文言を持っているのはこちらである。
-  const ruleCharacters = rule === '' ? 0 : [...CHAT_RULE_PREAMBLE].length + 2 + [...rule].length + [...CHAT_RULE_ACKNOWLEDGEMENT].length;
-  const messageCharacters = parsed.messages.reduce(
-    (total: number, message: { readonly text: string }) => total + [...message.text].length,
-    0,
-  );
-  if (
-    (rule !== '' && parsed.messages.length + CHAT_RULE_TURNS > CHAT_MAX_MESSAGES) ||
-    messageCharacters + ruleCharacters > CHAT_MAX_TOTAL_MESSAGE_LENGTH
-  ) {
+  // **送る窓へ切る**（#742。`chatSendWindow`）。**ルールの文字数を先に空ける**——ルールは
+  // Lambda が同じ要求の先頭へ足す（`withChatRule`）。**数える形も同じ関数から作る**
+  // （前置きと受け答えを書き写さない）。
+  //
+  // **発話の数では、もうあふれない。** 窓は 7 通で、ルールの 2 通を足しても 9 通である
+  // （以前は上限ちょうどの会話がルールで 2 通あふれ、ここで 400 を返していた。#728）。
+  //
+  // **最新の 1 通だけにしても収まらないときだけ断る**——いまの上限（1 通 2,000・合計 12,000・
+  // ルール 500）では起こらないが、値が動いた日に「黙って上限を超えて送る」側へ倒れないようにする。
+  const ruleCharacters = chatCharacters(withChatRule(rule, []));
+  const window = chatSendWindow(parsed.messages, { reservedCharacters: ruleCharacters });
+  const messageCharacters = chatCharacters(window);
+  if (messageCharacters + ruleCharacters > CHAT_MAX_TOTAL_MESSAGE_LENGTH) {
     return json({ error: 'invalid-request' }, 400);
   }
 
@@ -319,7 +333,7 @@ export async function handleChat(
   try {
     answer = await ask(env, {
       version: CHAT_PAYLOAD_VERSION,
-      messages: parsed.messages,
+      messages: window,
       ...(rule === '' ? {} : { rule }),
       ...(work === null ? {} : { work }),
     });
@@ -391,16 +405,29 @@ export async function handleChat(
   //
   // **保存の失敗で往復ごと失敗にしない。** 返答は既に手元にあり、利用者にとっては
   // 「返ってきたのに消えた」ほうが悪い。**復元できないことはログに残す。**
+  //
+  // **保存済みの行へ追記する**（#742）。**送ったのは窓だけ**なので、受け取った会話で上書きすると、
+  // 窓から落ちた往復が保存から消える。**読んでから書き戻さない**——1 文の UPDATE で末尾へ足す
+  // （`appendChatConversation`。重なった保存が互いの往復を消さない。PR #746 の Copilot の指摘）。
+  // 当たる行が無い（新しい会話・他人の id・消えた id・壊れた行）なら、受け取った会話から保存する
+  // （以前と同じ形。他人の id なら新しい会話になり、自分の壊れた行は上書きで直る）。
   let conversationId: string | null = null;
   try {
-    conversationId = await saveChatConversation(
-      env,
-      userId,
-      parsed.conversationId,
-      parsed.target,
-      [...parsed.messages, { role: 'assistant', text: answer.text }],
-      now,
-    );
+    const latestUser = parsed.messages[parsed.messages.length - 1]!;
+    const reply: ChatMessage = { role: 'assistant', text: answer.text };
+    const appended =
+      parsed.conversationId !== null &&
+      (await appendChatConversation(env, userId, parsed.conversationId, latestUser, reply, now));
+    conversationId = appended
+      ? parsed.conversationId
+      : await saveChatConversation(
+          env,
+          userId,
+          parsed.conversationId,
+          parsed.target,
+          appendChatTurn(parsed.messages.slice(0, -1), latestUser, reply),
+          now,
+        );
   } catch (error) {
     console.warn(
       `[chat] 会話を保存できませんでした（返答は返します）: ${

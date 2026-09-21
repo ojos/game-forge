@@ -54,7 +54,7 @@
  * チャットは 1 往復につき `generations` へ 1 行を積むので、**数える対象は既にそこにある。**
  * 別のカウンタを置くと、台帳と数えている値が食い違う経路ができる。
  */
-import { CHAT_MAX_OUTPUT_TOKENS } from './chat-payload.js';
+import { CHAT_MAX_OUTPUT_TOKENS, renderWorkContext, type ChatWorkContext } from './chat-payload.js';
 import { renderChatPromptText } from './chat-prompt.js';
 import {
   CHAT_KIND,
@@ -128,7 +128,13 @@ export const CHAT_SOURCE_BYTES_PER_TOKEN = 3;
 export function estimateChatCostJpy(input: {
   /** 会話の全文（文字数で数える。ルールを含む）。 */
   readonly messageCharacters: number;
-  /** 文脈に載せるソースのバイト数（載せないなら 0）。 */
+  /**
+   * 作品の文脈のうち、ソースの本体を除いた文字数（{@link chatWorkContextCharacters}。作品が無いなら 0）。
+   * **前置き・題名・最初の指示文・説明・タグ・ソースの囲みの見出しがここに入る**（PR #753 の Copilot の指摘。
+   * 以前は数えておらず、リフォージ／フォークで数千文字ぶん見積もりが低かった）。
+   */
+  readonly workCharacters: number;
+  /** 文脈に載せるソースのバイト数（載せないなら 0）。**本体はこちらで数え、上と二重に数えない。** */
   readonly sourceBytes: number;
 }): number {
   const model = findGenerationModel(DEFAULT_GENERATION_MODEL_KEY);
@@ -141,6 +147,7 @@ export function estimateChatCostJpy(input: {
     // プロンプトを書き足した日に見積もりも動く。
     [...renderChatPromptText()].length +
     input.messageCharacters +
+    input.workCharacters +
     Math.ceil(input.sourceBytes / CHAT_SOURCE_BYTES_PER_TOKEN);
   const pricing = model.pricing;
   return convertUsageToJpy(
@@ -155,6 +162,23 @@ export function estimateChatCostJpy(input: {
       cacheWriteInputTokens: 0,
     },
   ).totalJpy;
+}
+
+/**
+ * 作品の文脈の文字数から、ソースの本体を除いたもの（見積もり用。PR #753 の Copilot の指摘）。
+ *
+ * **Lambda が最初の発話へ置く文章そのもの（`renderWorkContext`）から数える**——組み立てを書き写さない。
+ * ソースの本体だけは空にして数える（囲みの見出しと ``` の行は残る）。本体は
+ * {@link estimateChatCostJpy} の `sourceBytes` がバイトで数えるので、二重に数えない。
+ *
+ * @param work 作品の文脈（無ければ null）
+ * @returns 文字数（作品が無ければ 0）
+ */
+export function chatWorkContextCharacters(work: ChatWorkContext | null): number {
+  if (work === null) {
+    return 0;
+  }
+  return [...renderWorkContext({ ...work, source: work.source === null ? null : '' })].length;
 }
 
 /**

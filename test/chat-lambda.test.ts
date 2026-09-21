@@ -12,6 +12,7 @@ import {
   CHAT_RULE_MAX_LENGTH,
   chatCharacters,
   chatSendWindow,
+  renderWorkContext,
   withChatRule,
 } from '../src/chat-payload.js';
 import {
@@ -27,7 +28,6 @@ import {
   handleChatEvent,
   isChatSizeRejection,
   parseChatPayload,
-  renderWorkContext,
 } from '../src/chat/handler.js';
 import { readChatPayload, ChatCallFailed } from '../src/chat-client.js';
 import { findGenerationModel } from '../src/generation-models.js';

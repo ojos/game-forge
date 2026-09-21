@@ -83,6 +83,7 @@ import {
   CHAT_MONTHLY_LIMIT_REASON,
   chatQuotaStatus,
   chatRemainingPercent,
+  chatWorkContextCharacters,
   estimateChatCostJpy,
 } from './chat-quota.js';
 import { CHAT_KIND, recordGeneration } from './cost-ledger.js';
@@ -226,6 +227,52 @@ async function loadChatContext(
   });
 }
 
+/**
+ * 次の 1 往復で送りうる文字数の最大（ルールを含む。#751）。**「今日の残り」の表示に使う。**
+ *
+ * **表示を「次の 1 回を送れる分」にするため**（5.16。利用者の決定）。残りを使った額だけから出すと、
+ * 「残り 40%」と出ているのに見積もりで断られる——このセッションの発端の「残っているのに受け付けない」を、
+ * 別の数え方で作り直すことになる。**次の発話は 1 通の上限（{@link CHAT_MAX_MESSAGE_LENGTH}）までの
+ * どの長さもありうるので、その中で送る文字数が最大になる長さで数える。**
+ *
+ * **2,000 字がいつも最大とは限らない。** 送る範囲は上限を超えると最古の往復から落とすので、長い発話が
+ * 往復を 1 つ落とさせ、それより短い発話のほうが多く送ることがある。**そこで候補を「上限いっぱい」と
+ * 「往復を k 個落としたときにちょうど収まる長さ」に絞り**、それぞれを {@link chatSendWindow} で切って
+ * 数える（送る範囲の規則をここへ書き写さない）。
+ *
+ * **今回送った範囲から数えてよい。** 送る範囲は上限に収まる最長の末尾なので、次の範囲は必ず
+ * 「今回の範囲 ＋ 返答 ＋ 次の発話」の末尾になる（画面が履歴の全部を持っていても同じ）。
+ *
+ * @param sent 今回送った範囲（ルールを除く。先頭は user）
+ * @param reply 今回の返答
+ * @param rule 作者のルール（無ければ空）
+ * @returns 次の 1 往復で送りうる文字数の最大（ルールを含む）
+ */
+export function worstNextChatCharacters(
+  sent: readonly ChatMessage[],
+  reply: string,
+  rule: string,
+): number {
+  const ruleMessages = withChatRule(rule, []);
+  const ruleCharacters = chatCharacters(ruleMessages);
+  const limits = { reservedCharacters: ruleCharacters, reservedMessages: ruleMessages.length };
+  const base: readonly ChatMessage[] = [...sent, { role: 'assistant', text: reply.trim() }];
+  const budget = CHAT_MAX_TOTAL_MESSAGE_LENGTH - ruleCharacters;
+  const lengths = new Set<number>([CHAT_MAX_MESSAGE_LENGTH]);
+  for (let start = 0; start < base.length; start += 2) {
+    const fits = budget - chatCharacters(base.slice(start));
+    if (fits >= 1 && fits <= CHAT_MAX_MESSAGE_LENGTH) {
+      lengths.add(fits);
+    }
+  }
+  let worst = 0;
+  for (const length of lengths) {
+    const next: ChatMessage = { role: 'user', text: 'あ'.repeat(length) };
+    worst = Math.max(worst, chatCharacters(chatSendWindow([...base, next], limits)));
+  }
+  return worst + ruleCharacters;
+}
+
 /** 差し替えられる依存（テストの継ぎ目）。 */
 export interface ChatHandlerDependencies {
   /** チャットを呼ぶ段。 */
@@ -322,9 +369,14 @@ export async function handleChat(
   // （円もトークンも利用者に見せない。#751）。
   //
   // **ルールも数える。** 1 往復ごとに文脈へ乗るので、数えないと**残りを超える往復が通る。**
+  const sourceBytes =
+    work?.source === null || work?.source === undefined ? 0 : new TextEncoder().encode(work.source).length;
+  // **作品の文脈も数える**（前置き・題名・最初の指示文・説明・タグ。PR #753 の Copilot の指摘）。
+  const workCharacters = chatWorkContextCharacters(work);
   const estimatedJpy = estimateChatCostJpy({
     messageCharacters: messageCharacters + ruleCharacters,
-    sourceBytes: work?.source === null || work?.source === undefined ? 0 : new TextEncoder().encode(work.source).length,
+    workCharacters,
+    sourceBytes,
   });
   if (estimatedJpy > quota.remainingJpy) {
     return json({ error: CHAT_DAILY_TOKENS_REASON, resetsAt: quota.resetsAt }, 429);
@@ -438,16 +490,25 @@ export async function handleChat(
     );
   }
 
+  // **「今日の残り」は、次の 1 回を送れる分である**（5.16。#751 の利用者の決定）。残りは判定のときの値から
+  // 台帳へ積んだ額を引き（数え直さない）、**さらに次の 1 往復の見積もりを引く。** 次の発話は 1 通の上限までの
+  // どの長さもありうるので最大で数え（`worstNextChatCharacters`）、ソースは今回と同じ選び方で数える。
+  // **表示が 0% より大きい間は、次に送る発話がどの長さでも見積もりで断られない。** ソースを次の往復で
+  // 新しく載せたときだけは、この約束の外である（断り方は枠切れと同じで、ソースを外せば送れる）。
+  const nextEstimateJpy = estimateChatCostJpy({
+    messageCharacters: worstNextChatCharacters(window, answer.text, rule),
+    workCharacters,
+    sourceBytes,
+  });
   return json({
     text: answer.text,
     conversationId,
-    // **残りは判定のときの値から、台帳へ積んだ額を引く**（数え直さない）。**割合で返す**——円も
-    // トークンも利用者に見せない（#751）。**負にはしない**（`chatRemainingPercent`）——1 回の往復が
-    // 残りを超えることはありうる（4.3 の「判定を通った要求が、判定後に使う」上振れと同じ形）。
+    // **割合で返す**——円もトークンも利用者に見せない（#751）。**負にはしない**（`chatRemainingPercent`）
+    // ——1 回の往復が残りを超えることはありうる（4.3 の「判定を通った要求が、判定後に使う」上振れと同じ形）。
     //
     // **`remainingTokens` はもう返さない。** 開いたままの古い画面はこの値が無ければ表示を
     // 書き換えないだけで、円をトークンと誤って見せることはない。
-    remainingPercent: chatRemainingPercent(quota.remainingJpy - ledgerRecord.cost.totalJpy),
+    remainingPercent: chatRemainingPercent(quota.remainingJpy - ledgerRecord.cost.totalJpy - nextEstimateJpy),
     resetsAt: quota.resetsAt,
     costJpy: ledgerRecord.cost.totalJpy,
   });

@@ -1,11 +1,11 @@
 /**
- * 生成画面の主役である「相談」（#695 / M18-2、#726 / M20-2。仕様 5.16 / 確定38）。
+ * 生成画面の主役である「チャット」（#695 / M18-2、#726 / M20-2。仕様 5.16 / 確定38）。
  *
  * ## 区画ではなく主役である（確定38）
  *
  * **#695 では「`/generate` の中の区画」だった**（フォームの後ろに置く「任意」の区画）。
- * **#725 でこの決定が変わり、相談がこの画面の主役になった**——指示文の欄は
- * `<details>` の中（「相談せずに指示文を直接書く」）へ移り、**この区画が持つ入力 1 つが
+ * **#725 でこの決定が変わり、チャットがこの画面の主役になった**——指示文の欄は
+ * `<details>` の中（「チャットせずに指示文を直接書く」）へ移り、**この区画が持つ入力 1 つが
  * 画面の下に貼り付く。** **主のボタンもここへ移った**（「この指示で作る」。2.5.5 は
  * 1 画面に 1 つまでで、`src/generate-page.ts` の「生成する」は副へ下げてある）。
  *
@@ -24,7 +24,7 @@
  *
  * **`src/generate-page.ts` のスクリプトは「文字列を DOM へ書き込まない」という不変条件を持つ**
  * （あちらの `GENERATE_SCRIPT` の注記。`textContent` すら経過秒数以外では使わず、
- * `test/generate-page.test.ts` が変異で確かめている）。**相談は返答を描くので、その線を越える。**
+ * `test/generate-page.test.ts` が変異で確かめている）。**チャットは返答を描くので、その線を越える。**
  * 同じスクリプトに混ぜると、あちらの不変条件が「一部を除いて成り立つ」に薄まる。
  *
  * **こちらの線はこうである。**
@@ -43,7 +43,7 @@
  * ## 残りのトークンは、最初は上限を出すだけにする
  *
  * **画面を開くたびに D1 を 3 回読まない**（3.6。読み取りも従量である）。生成枠（4.4）と違い、
- * 5.16 は相談の残量の常時表示を求めていない。**上限を書いておき、1 往復するたびに口が返す
+ * 5.16 はチャットの残量の常時表示を求めていない。**上限を書いておき、1 往復するたびに口が返す
  * 実測値へ置き換える。** 枠が尽きている状態は、送ったときに固定の文言で返る。
  */
 import { CHAT_API_PATH, CHAT_CONVERSATION_DELETE_PATH } from './chat-paths.js';
@@ -56,7 +56,7 @@ import { escapeHtml } from './html.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
 
 /**
- * 相談の返答の中で、指示文の下書きを囲む見出し。
+ * チャットの返答の中で、指示文の下書きを囲む見出し。
  *
  * **システムプロンプトと同じ綴りである**（`src/chat-prompt.ts` の「`【指示文】` という見出しの
  * 下に置きます」）。**一致は `test/chat-ui.test.ts` が見る**——ずれると「この指示で作る」が
@@ -74,49 +74,49 @@ export const CHAT_TARGET_LABELS: Readonly<
   Record<string, { readonly heading: string; readonly hint: string; readonly apply: string; readonly form: string }>
 > = {
   new: {
-    heading: 'AI と相談して作る',
+    heading: 'AI とチャットして作る',
     hint: 'どんなゲームにするか話しながら、<strong>指示文の下書き</strong>を作れます。',
     apply: 'この指示で作る',
     form: 'generate-form',
   },
   revise: {
-    heading: 'AI と相談して直す',
+    heading: 'AI とチャットして直す',
     hint: 'この作品をどう直すか話しながら、<strong>リフォージの指示文の下書き</strong>を作れます。<strong>いまのソースをもとに作り直します。</strong>',
     apply: 'この指示で直す',
     form: 'revise-form',
   },
   fork: {
-    heading: 'AI と相談してフォークする',
+    heading: 'AI とチャットしてフォークする',
     hint: 'この作品をどう変えるか話しながら、<strong>フォークの指示文の下書き</strong>を作れます。<strong>元の作品のソースをもとに、あなたの新しい作品を作ります。</strong>',
     apply: 'この指示でフォークする',
     form: 'fork-form',
   },
 };
 
-/** 相談の区画で使う固定の文言（分類名から 1 つだけ選んで見せる。生成画面と同じ形）。 */
+/** チャットの区画で使う固定の文言（分類名から 1 つだけ選んで見せる。生成画面と同じ形）。 */
 export const CHAT_MESSAGES: Readonly<Record<string, string>> = {
-  '': '相談できませんでした。時間をおいてもう一度お試しください。',
+  '': 'チャットできませんでした。時間をおいてもう一度お試しください。',
   '401:': 'ログインの有効期限が切れました。もう一度ログインしてください。',
-  '400:invalid-request': '相談の内容を受け取れませんでした。文字数を減らしてお試しください。',
+  '400:invalid-request': 'チャットの内容を受け取れませんでした。文字数を減らしてお試しください。',
   '422:prompt-blocked':
     '入力の検査で止まりました。表現を変えて、もう一度お試しください（同じ内容では何度でも止まります）。',
   '429:rate-limited': '短い時間に何度も送信されました。少し待ってからお試しください。',
   '429:chat-daily-tokens':
-    '本日の相談の枠は終了しました。日付が変わると戻ります（生成はこれまでどおり行えます）。',
+    '本日のチャットの枠は終了しました。日付が変わると戻ります（生成はこれまでどおり行えます）。',
   '429:chat-monthly-limit':
-    '今月の相談の枠は終了しました（生成はこれまでどおり行えます）。',
+    '今月のチャットの枠は終了しました（生成はこれまでどおり行えます）。',
   '429:monthly-limit': '今月の生成は終了しました。プレイと共有は引き続きご利用いただけます。',
-  '503:busy': '相談が混み合っています。少し待ってからお試しください。',
+  '503:busy': 'チャットが混み合っています。少し待ってからお試しください。',
 };
 
-/** 相談の区画へ渡す値。 */
+/** チャットの区画へ渡す値。 */
 export interface ChatSectionView {
   /** 復元した会話（無ければ空）。 */
   readonly messages: readonly ChatMessage[];
   /** 続きを書き込む会話の id（無ければ null）。 */
   readonly conversationId: string | null;
   /**
-   * 相談の対象（#727 / 確定38）。**見出し・説明・主のボタンの文言と行き先が、これで変わる。**
+   * チャットの対象（#727 / 確定38）。**見出し・説明・主のボタンの文言と行き先が、これで変わる。**
    */
   readonly target: ChatTarget;
 }
@@ -139,7 +139,7 @@ export function renderChatLog(messages: readonly ChatMessage[]): string {
 }
 
 /**
- * 相談の区画の HTML を組み立てる。
+ * チャットの区画の HTML を組み立てる。
  *
  * @param view 画面へ渡す値
  * @returns HTML
@@ -161,11 +161,11 @@ export function renderChatSection(view: ChatSectionView): string {
   // **ソースを見せる操作**（5.16 / 確定38「作者がその会話で明示的に求めたときだけ」）。
   // **#695 から、この操作が画面に無かった**——口は `includeSource` を受けていたのに、
   // **送る側がどこにも無く、決定が 1 度も届いていなかった**（#727 の Copilot の指摘）。
-  // **対象がある相談にだけ出す**（新規の相談には見せる作品が無い）。
+  // **対象があるチャットにだけ出す**（新規のチャットには見せる作品が無い）。
   const sourceToggle =
     view.target.kind === 'new'
       ? ''
-      : `      <label class="gf-chat-source"><input type="checkbox" id="chat-source"> いまのソースも見せて相談する（1 往復が重くなります）</label>\n`;
+      : `      <label class="gf-chat-source"><input type="checkbox" id="chat-source"> いまのソースも見せてチャットする（1 往復が重くなります）</label>\n`;
   // **空のときは `<ol>` の中を本当に空にする。** 改行やインデントを残すと空白のテキストノードが
   // でき、**`:empty`（`public/assets/app.css`）が成立せず余白が残る**（PR #715 の Copilot の指摘）。
   const log = view.messages.length === 0 ? '' : `\n${renderChatLog(view.messages)}\n  `;
@@ -176,10 +176,10 @@ export function renderChatSection(view: ChatSectionView): string {
     <p class="gf-generate-quota" id="chat-quota">1 日 ${CHAT_DAILY_TOKEN_LIMIT.toLocaleString('en-US')} トークンまで</p>
   </div>
   <p class="gf-generate-hint">${labels.hint}
-     <strong>コードは出ません。</strong>相談は生成枠とは別の枠で、<strong>相談しても生成できる回数は減りません。</strong>
+     <strong>コードは出ません。</strong>チャットは生成枠とは別の枠で、<strong>チャットしても生成できる回数は減りません。</strong>
      会話は<strong>あなただけが見られ</strong>、最後に使ってから ${CHAT_RETENTION_DAYS} 日で消えます。</p>
-  <ol id="chat-log" class="gf-chat-log" tabindex="0" aria-label="相談の履歴">${log}</ol>
-  <p id="chat-status" role="status" aria-live="polite" hidden>相談しています…</p>
+  <ol id="chat-log" class="gf-chat-log" tabindex="0" aria-label="チャットの履歴">${log}</ol>
+  <p id="chat-status" role="status" aria-live="polite" hidden>チャットしています…</p>
   <div id="chat-messages" role="status" aria-live="polite">
 ${messages}
   </div>
@@ -191,24 +191,24 @@ ${messages}
        \`public/assets/app.css\` の \`.gf-chat\` の冒頭）。区画のボタンは、送るが secondary、
        記録を消すが tertiary である。 -->
   <div class="gf-chat-dock">
-    <label class="gf-chat-dock-label" for="chat-input">相談する（${CHAT_MAX_MESSAGE_LENGTH} 文字まで）</label>
+    <label class="gf-chat-dock-label" for="chat-input">チャットする（${CHAT_MAX_MESSAGE_LENGTH} 文字まで）</label>
     <div class="gf-chat-dock-row">
       <textarea id="chat-input" rows="2" maxlength="${CHAT_MAX_MESSAGE_LENGTH}"
                 placeholder="例: 短い時間で遊べる、避けるゲームを作りたい"></textarea>
       <button id="chat-send" class="gf-button gf-button-secondary" type="button">送る</button>
     </div>
     <div class="gf-chat-actions">
-${sourceToggle}      <button id="chat-clear" class="gf-button gf-button-tertiary" type="button">相談の記録を消す</button>
+${sourceToggle}      <button id="chat-clear" class="gf-button gf-button-tertiary" type="button">チャットの記録を消す</button>
     </div>
   </div>
   <noscript>
-    <p><strong>相談には JavaScript が必要です。</strong>下の「相談せずに指示文を直接書く」を開けば、相談なしで生成できます。</p>
+    <p><strong>チャットには JavaScript が必要です。</strong>下の「チャットせずに指示文を直接書く」を開けば、チャットなしで生成できます。</p>
   </noscript>
 </section>`;
 }
 
 /**
- * 相談の区画のスクリプト。
+ * チャットの区画のスクリプト。
  *
  * **`innerHTML` を使わない**（モジュール冒頭）。要素は `createElement` で作り、本文は
  * `textContent` だけで入れる。
@@ -299,7 +299,7 @@ export const CHAT_SCRIPT = `
    *
    * **通らなかった往復のあとに、user の発話を DOM へ残さない。** 残すと次の送信で
    * user が 2 連続になり、**サーバの検査（役割は交互）が 400 を返し続ける**
-   * ——再読み込みするまで相談が回復しない。**断られたときも、通信が落ちたときも、同じ
+   * ——再読み込みするまでチャットが回復しない。**断られたときも、通信が落ちたときも、同じ
    * 後始末を通す**（片方だけに書くと、もう片方が上の行き止まりを作る）。
    */
   function rollback(text) {
@@ -365,7 +365,7 @@ export const CHAT_SCRIPT = `
         section.setAttribute('data-conversation', result.payload.conversationId);
       }
       if (quota !== null && typeof result.payload.remainingTokens === 'number') {
-        quota.textContent = '本日の相談の残り ' + result.payload.remainingTokens + ' トークン';
+        quota.textContent = '本日のチャットの残り ' + result.payload.remainingTokens + ' トークン';
       }
       refreshApply();
     }).catch(function () {

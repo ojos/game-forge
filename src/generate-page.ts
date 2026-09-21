@@ -450,16 +450,16 @@ export interface GeneratePageView {
   /** ヘッダのアバターの画像の URL（#380。未ログインなら null）。 */
   readonly headerAvatar: string | null;
   /**
-   * 相談の区画へ渡す値（#695 / 仕様 5.16）。**null なら区画を出さない。**
+   * チャットの区画へ渡す値（#695 / 仕様 5.16）。**null なら区画を出さない。**
    *
-   * **未ログインと、枠が尽きている画面では null である**——相談は「これから生成する人」の
+   * **未ログインと、枠が尽きている画面では null である**——チャットは「これから生成する人」の
    * ための区画で、生成できない画面に置くと**押せない導線が 1 つ増える**（4.4 が無くそうと
    * しているものである）。
    */
   readonly chat: ChatSectionView | null;
   /**
-   * 相談の対象（#727 / 確定38）。**相談を出さない画面でも決まる**——見出しと
-   * 「相談せずに直接書く」のフォームの行き先が、対象で変わるためである。
+   * チャットの対象（#727 / 確定38）。**チャットを出さない画面でも決まる**——見出しと
+   * 「チャットせずに直接書く」のフォームの行き先が、対象で変わるためである。
    */
   readonly target: ChatTarget;
 }
@@ -777,13 +777,13 @@ ${stillAvailableSection()}`;
     )
     .join('\n');
 
-  // **相談がこの画面の主役である**（#726 / 仕様 5.16 の確定38）。#695 では相談が
-  // 「フォームの後ろの任意の区画」だったが、**いまは相談が先に来て、指示文の欄は
-  // 「相談せずに指示文を直接書く」の中へ入る。**
+  // **チャットがこの画面の主役である**（#726 / 仕様 5.16 の確定38）。#695 ではチャットが
+  // 「フォームの後ろの任意の区画」だったが、**いまはチャットが先に来て、指示文の欄は
+  // 「チャットせずに指示文を直接書く」の中へ入る。**
   const chat = view.chat === null ? '' : `${renderChatSection(view.chat)}\n\n`;
 
-  // **主のボタンは 1 画面に 1 つ**（2.5.5）。相談を出すときの主は相談側の「この指示で作る」なので、
-  // **こちらの「生成する」は副へ下げる。** 相談を出さないとき（`chat === null`）は、この画面に
+  // **主のボタンは 1 画面に 1 つ**（2.5.5）。チャットを出すときの主はチャット側の「この指示で作る」なので、
+  // **こちらの「生成する」は副へ下げる。** チャットを出さないとき（`chat === null`）は、この画面に
   // 主が 1 つも無くなるので主のままにする。
   //
   // **段のクラスを式で埋めない。** `test/button-parts.test.ts` は本文を読んで「部品のクラスと段の
@@ -809,12 +809,12 @@ ${stillAvailableSection()}`;
   ${submit}
 </form>`;
 
-  // **対象がある相談では、生成のフォームではなくリフォージ／フォークのフォームを描く**
+  // **対象があるチャットでは、生成のフォームではなくリフォージ／フォークのフォームを描く**
   // （#727 / 確定38）。**開始の経路は既存のまま**——送り先も項目名も `src/paths.ts` の値で、
   // 作品ページのフォーム（`src/work-page.ts`）と同じものを使う。
   //
   // **素のフォーム送信である**（生成だけが JSON の口で、JavaScript が要る）。したがって
-  // **リフォージとフォークは、相談の下書きをそのまま送れる。**
+  // **リフォージとフォークは、チャットの下書きをそのまま送れる。**
   if (view.target.kind !== 'new') {
     const isRevise = view.target.kind === 'revise';
     const action = isRevise ? REVISE_PATH : FORK_PATH;
@@ -835,22 +835,22 @@ ${stillAvailableSection()}`;
   <button id="generate-submit" class="gf-button gf-button-secondary" type="submit">${submit}</button>
 </form>`;
     return `${chat}<details class="gf-generate-direct" id="generate-direct">
-  <summary>相談せずに指示文を直接書く</summary>
+  <summary>チャットせずに指示文を直接書く</summary>
   <div class="gf-generate-direct-panel">
 ${targeted}
   </div>
 </details>`;
   }
 
-  // **相談を使わず一発で生成したい人の導線**（確定38「相談を使わずに一発で生成したい人の導線は残す」）。
-  // **閉じた `<details>` の中でも欄は DOM にある**ので、相談の「この指示で作る」は開かずにこのフォームを送れる。
-  // **相談を出さないときは、今までどおり開いたまま出す**——ほかに生成の入口が無い画面で、
+  // **チャットを使わず一発で生成したい人の導線**（確定38「チャットを使わずに一発で生成したい人の導線は残す」）。
+  // **閉じた `<details>` の中でも欄は DOM にある**ので、チャットの「この指示で作る」は開かずにこのフォームを送れる。
+  // **チャットを出さないときは、今までどおり開いたまま出す**——ほかに生成の入口が無い画面で、
   // 主の導線を 1 回開かせるのは、押せない導線を置くのと同じくらい悪い。
   const formSection =
     view.chat === null
       ? form
       : `<details class="gf-generate-direct" id="generate-direct">
-  <summary>相談せずに指示文を直接書く</summary>
+  <summary>チャットせずに指示文を直接書く</summary>
   <div class="gf-generate-direct-panel">
 ${form}
   </div>
@@ -891,7 +891,7 @@ export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): s
   // 画面にはフォームが無く、動かす対象が無い（`getElementById` が `null` を返す）。
   const script =
     signedIn && canSubmit(view.availability) ? `\n<script>${GENERATE_SCRIPT}</script>\n` : '';
-  // **相談のスクリプトは別に置く**（`src/chat-section.ts` の冒頭。あちらは `textContent` で
+  // **チャットのスクリプトは別に置く**（`src/chat-section.ts` の冒頭。あちらは `textContent` で
   // 返答を描くので、生成画面の「文字列を DOM へ書き込まない」不変条件と線が違う）。
   const chatScript = view.chat === null ? '' : `<script>${CHAT_SCRIPT}</script>\n`;
 
@@ -899,7 +899,7 @@ export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): s
   // （2.3.7 / #331）。**セッションを 2 度検証しない**——`signedIn` の正本は
   // {@link showGeneratePage} の `resolveSessionUser` である。
   // **見出しも対象で変わる**（#727 / 確定38）。**同じ画面だが、何をする画面かは違う**
-  // ——「ゲームを生成する」のままだと、リフォージの相談を開いた人が別の画面へ来たと思う。
+  // ——「ゲームを生成する」のままだと、リフォージのチャットを開いた人が別の画面へ来たと思う。
   const heading = PAGE_HEADINGS[view.target.kind] ?? PAGE_HEADINGS['new']!;
 
   return `${siteHead({
@@ -999,7 +999,7 @@ const showGeneratePage: RouteHandler = async (request, env) => {
   if (!session.ok) {
     // 未ログインの画面は残枠を出さない。`availability` は使われないが、型として
     // 1 つ選ぶ必要があるので「読めていない」を渡す（「残り N 回」を作らない値）。
-    // 未ログインの画面は相談の区画も出さない（`GeneratePageView.chat` の注記）。
+    // 未ログインの画面はチャットの区画も出さない（`GeneratePageView.chat` の注記）。
     return html(
       renderGeneratePage(false, {
         availability: { kind: 'unknown' },
@@ -1013,7 +1013,7 @@ const showGeneratePage: RouteHandler = async (request, env) => {
   // **対象は URL の引数が決める**（#727 / 確定38）。**形が違えば「新しく作る」に倒す**
   // （`chatTargetFromUrl`）——存在するかどうかは、文脈を読むときに分かる。
   const target = chatTargetFromUrl(new URL(request.url));
-  // **枠が尽きている画面では相談も出さない**（押せない導線を増やさない。`GeneratePageView.chat`）。
+  // **枠が尽きている画面ではチャットも出さない**（押せない導線を増やさない。`GeneratePageView.chat`）。
   // **会話を読むのは、区画を出すときだけ**である（D1 は読み取りも従量。3.6）。
   const conversation = canSubmit(availability)
     ? await latestChatConversation(env, session.userId, target)

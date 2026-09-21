@@ -8,7 +8,7 @@
  * 2. **cron（5 分ごと）で DO を起こす**（`workers/cleanup/wrangler.toml` の `[triggers]`）
  * 3. **同じ cron で、止まったまま残った生成・推敲の行を `failed` に畳む**（#681。
  *    `src/stale-generation-sweep.ts`。D1 の条件付き UPDATE 2 本だけで、R2 には触らない）
- * 4. **同じ cron で、最後に使ってから 30 日を過ぎた相談の会話を消す**（#695 / 仕様 5.16。
+ * 4. **同じ cron で、最後に使ってから 30 日を過ぎたチャットの会話を消す**（#695 / 仕様 5.16。
  *    `src/chat-conversation.ts`。D1 の DELETE 1 本だけ。`/privacy` に書いた保存期間を守るのは
  *    この 1 本である）
  *
@@ -63,7 +63,7 @@ export default {
   async scheduled(controller: ScheduledController, env: CleanupEnv): Promise<void> {
     const id = env.WITHDRAWAL_HUB.idFromName(WITHDRAWAL_HUB_INSTANCE);
     const at = Math.floor(controller.scheduledTime / 1000);
-    // **3 つは互いを止めない**（下の投げ直しの順序が担保する）。相談の会話の掃除は
+    // **3 つは互いを止めない**（下の投げ直しの順序が担保する）。チャットの会話の掃除は
     // 退会の後続の処理とも、止まった行の畳みとも無関係である。
     const [woken, swept, chats] = await Promise.allSettled([
       env.WITHDRAWAL_HUB.get(id).wake(),

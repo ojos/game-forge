@@ -21,7 +21,7 @@ import { privacyBody } from '../src/privacy.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
- * 作者ごとの相談のルール（#728 / M20-4。仕様 5.16 の確定38）。
+ * 作者ごとのチャットのルール（#728 / M20-4。仕様 5.16 の確定38）。
  *
  * **#728 の acceptance を機械判定できる形へ落とす**——保存・復元・上限・空のときの振る舞い・
  * 退会で消えること・本人が消せること。
@@ -143,7 +143,7 @@ describe('検査', () => {
   });
 });
 
-describe('相談の文脈への入り方（確定38）', () => {
+describe('チャットの文脈への入り方（確定38）', () => {
   it('空なら何も足さない（今までどおり動く）', () => {
     const messages = [{ role: 'user', text: 'あ' }] as const;
     expect(withChatRule('', messages)).toBe(messages);
@@ -174,7 +174,7 @@ describe('相談の文脈への入り方（確定38）', () => {
   });
 });
 
-describe('画面（相談のタブ）', () => {
+describe('画面（チャットのタブ）', () => {
   it('タブの一覧に入っている', () => {
     expect(ACCOUNT_TABS.map((tab) => tab.path)).toContain(ACCOUNT_CHAT_PATH);
   });
@@ -194,7 +194,7 @@ describe('画面（相談のタブ）', () => {
 
   it('効く範囲を画面で言う（生成には直接渡らないこと）', () => {
     const html = renderAccountChatPage({ rule: '', notice: null, headerAvatar: null });
-    expect(html).toContain('相談にだけ効きます');
+    expect(html).toContain('チャットにだけ効きます');
   });
 });
 

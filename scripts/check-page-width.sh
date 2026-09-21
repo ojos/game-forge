@@ -183,9 +183,9 @@ PATHS="${PATHS},${BULK}=publish&game_id=${GAME_ID}&game_id=${PUBLISHED_GAME_ID}&
 PATHS="${PATHS},${BULK}=unpublish&game_id=${PUBLISHED_GAME_ID}&game_id=${GAME_ID}"
 PATHS="${PATHS},${BULK}=delete&game_id=${GAME_ID}&game_id=${FAILED_GAME_ID}&game_id=${PUBLISHED_GAME_ID}"
 
-# **相談の画面は、対象つきの 2 枚も開く**（#727 / 確定38）。`/generate` は `/__dev/pages` に出るが、
+# **チャットの画面は、対象つきの 2 枚も開く**（#727 / 確定38）。`/generate` は `/__dev/pages` に出るが、
 # **対象は問い合わせで渡す**ので、出るのは「新しく作る」の 1 枚だけである。**足さないと、
-# リフォージとフォークの相談（見出し・説明・主のボタン・対象ごとのフォーム）を 1 度も描かないまま
+# リフォージとフォークのチャット（見出し・説明・主のボタン・対象ごとのフォーム）を 1 度も描かないまま
 # 緑になる**（docs/handoff.md 3 章「仕込みに無いものは測れない」）。
 #
 # **リフォージは自分の下書き、フォークは公開済みの作品を指す**——どちらも仕込んだ作品で、

@@ -285,9 +285,9 @@ else
   echo "[acceptance] (tf-invoker-policies) skip: scripts/acceptance-remote.sh not found"
 fi
 
-# 相談の「写し」の機械照合（#695 / shared-ai-rules 12 章）。
+# チャットの「写し」の機械照合（#695 / shared-ai-rules 12 章）。
 #
-# **前寄りに置く**（sed だけで数 ms）。外すと、関数名のずれが黙って本番へ出て、相談が
+# **前寄りに置く**（sed だけで数 ms）。外すと、関数名のずれが黙って本番へ出て、チャットが
 # すべて 500 になる（判定と理由は scripts/check-chat-copies.sh の冒頭）。
 if [[ -f terraform/chat-function.tf ]]; then
   echo "[acceptance] (chat) scripts/check-chat-copies.sh"
@@ -296,6 +296,15 @@ if [[ -f terraform/chat-function.tf ]]; then
 else
   echo "[acceptance] (chat) skip: terraform/chat-function.tf not found"
 fi
+
+# 画面と文書の用語が揃っていること（#740 / 仕様 5.16「用語」）。
+#
+# **hygiene と同じく grep だけで済むので前寄りに置く。** 揃え直しは 1 回で終わるが、
+# 揃った状態は終わらない——**古い語で書かれた過去の記述を読みながら次の 1 文が書かれる**
+# （判定と、何を見て何を見ないかは scripts/check-chat-term.sh の冒頭）。
+echo "[acceptance] (chat-term) scripts/check-chat-term.sh"
+bash scripts/check-chat-term.sh
+ran_any=1
 
 # 検査が読む terraform output が、宣言側に実在すること（#160 / shared-ai-rules 12 章）。
 #

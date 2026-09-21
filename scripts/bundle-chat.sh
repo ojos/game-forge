@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bundle-chat.sh — 相談の Lambda を 1 ファイルへ束ねる（#695 / 仕様 5.16）
+# bundle-chat.sh — チャットの Lambda を 1 ファイルへ束ねる（#695 / 仕様 5.16）
 #
 # `scripts/bundle-orchestrator.sh` と同じ形である。違うのは入口と出力先だけで、
 # **束ね方（esbuild のフラグ・zip の時刻の固定）は同じにしてある**——ずらすと、
@@ -9,7 +9,7 @@
 #
 # **別の zip・別の関数である。** これが #695 で関数を分けた理由そのもので
 # （仕様 5.16）、`scripts/orchestrator-bundle-changed.sh` の判定にこの入口は入らない。
-# **相談を直してもオーケストレータの配り直しは要らない。**
+# **チャットを直してもオーケストレータの配り直しは要らない。**
 #
 # 使い方:
 #   bash scripts/bundle-chat.sh

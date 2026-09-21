@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# check-chat-copies.sh — 相談の「写し」を機械で突き合わせる（#695 / shared-ai-rules 12 章）
+# check-chat-copies.sh — チャットの「写し」を機械で突き合わせる（#695 / shared-ai-rules 12 章）
 #
 # ## なぜ要るのか
 #
-# 相談の関数名は 2 か所にある。**同じ値を 2 か所に書く形**であり、片方だけが動いた日に
+# チャットの関数名は 2 か所にある。**同じ値を 2 か所に書く形**であり、片方だけが動いた日に
 # 黙って壊れる（`scripts/check-avatar-copies.sh` と同じ事情）。
 #
 #   宣言   terraform/chat-function.tf   関数名（`local.chat_function_name`。**正本**）
@@ -11,7 +11,7 @@
 #
 # ## ずれると何が起きるか
 #
-# - **関数名がずれる: 相談がすべて 500 になる**（`ResourceNotFoundException`）。利用者から見ると
+# - **関数名がずれる: チャットがすべて 500 になる**（`ResourceNotFoundException`）。利用者から見ると
 #   「送信しても返ってこない」で、原因は本番のログを読むまで分からない
 # - **環境ごとにずれる: 本番だけ・preview だけが壊れる。** 3 環境ぶんを同じ値として照合する
 #

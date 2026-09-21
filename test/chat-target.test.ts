@@ -21,7 +21,7 @@ import { FORK_PATH, GENERATE_PAGE_PATH, REVISE_PATH } from '../src/paths.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
- * 相談の対象（#727 / M20-3。仕様 5.16 の確定38）。
+ * チャットの対象（#727 / M20-3。仕様 5.16 の確定38）。
  *
  * **#727 の acceptance を機械判定できる形へ落とす**——他人の最初の指示文が入らない /
  * 求めていないのにソースが入らない / 他人の未公開の作品を対象にできない /
@@ -161,7 +161,7 @@ describe('Copilot が見つけた穴（#727）', () => {
       });
       expect(html).toContain('id="chat-source"');
     }
-    // **新規の相談には出さない**（見せる作品が無い）。
+    // **新規のチャットには出さない**（見せる作品が無い）。
     expect(renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET })).not.toContain(
       'id="chat-source"',
     );
@@ -173,7 +173,7 @@ describe('Copilot が見つけた穴（#727）', () => {
   it('フォーク可否の判定を書き写していない（正本は src/fork.ts）', async () => {
     const stranger = await createUser();
     await seedGame(GAME_A, stranger, 'published');
-    // **正本（`loadForkableParent`）と相談の読み取りが、同じ作品で同じ答えを返す。**
+    // **正本（`loadForkableParent`）とチャットの読み取りが、同じ作品で同じ答えを返す。**
     expect(await loadForkableParent(env.DB, GAME_A)).not.toBeNull();
     expect(await loadForkChatContext(env.DB, GAME_A, false, async () => null)).not.toBeNull();
     await env.DB.prepare("update games set status = 'draft' where id = ?").bind(GAME_A).run();
@@ -217,7 +217,15 @@ describe('会話は対象ごとに分かれる（確定38）', () => {
     expect(await latestChatConversation(env, userId, { kind: 'fork', id: GAME_B })).toBeNull();
   });
 
-  it('別の対象の会話の id を送っても、その中身は書き換わらない', async () => {
+  it('別の対象で自分の会話の id を送ると、その会話の続きとして書く（#740 で変えた）', async () => {
+    // **#727 は上書きの条件に対象も入れており、当たらなければ新しい会話になっていた。**
+    // **#740 で条件から対象を外した**——付け替え（`attachChatConversationsToWork`）で行の対象が
+    // 動いた後、**古い画面が `('new', null)` のまま同じ id を送ると `'new'` の行が作り直され**、
+    // 次に `/generate` を開いたときに復元されてしまうためである（「必ず空」が崩れる）。
+    //
+    // **残っている線は「他人の会話は書き換わらない」ことで、それは `user_id` が担保する**
+    // （`test/chat-ui.test.ts` が見ている）。**対象は上書きしない**ので、行は属する対象に
+    // 留まったまま、続きの発話だけが載る。
     const userId = await createUser();
     const id = await saveChatConversation(
       env,
@@ -227,7 +235,6 @@ describe('会話は対象ごとに分かれる（確定38）', () => {
       [{ role: 'user', text: '新規' }],
       1,
     );
-    // フォークの対象で同じ id を指しても、上書きされず**新しい会話になる**。
     const next = await saveChatConversation(
       env,
       userId,
@@ -236,8 +243,20 @@ describe('会話は対象ごとに分かれる（確定38）', () => {
       [{ role: 'user', text: 'フォーク' }],
       2,
     );
-    expect(next).not.toBe(id);
-    expect((await latestChatConversation(env, userId, NEW_CHAT_TARGET))?.messages[0]?.text).toBe('新規');
+
+    // **同じ行が続く**（行は増えない）。
+    expect(next).toBe(id);
+    const rows = await env.DB.prepare(
+      'select count(*) as n from chat_conversations where user_id = ?',
+    )
+      .bind(userId)
+      .first<{ n: number }>();
+    expect(rows?.n).toBe(1);
+    // **対象は動かない**——行は「新しく作る」のままである。
+    expect((await latestChatConversation(env, userId, NEW_CHAT_TARGET))?.messages[0]?.text).toBe(
+      'フォーク',
+    );
+    expect(await latestChatConversation(env, userId, { kind: 'fork', id: GAME_A })).toBeNull();
   });
 });
 
@@ -257,10 +276,10 @@ describe('画面（対象ごとの文言と行き先）', () => {
     expect(html).toContain(`id="${formId}"`);
     expect(html).toContain(`id="${promptId}"`);
     expect(html).toContain(GAME_A);
-    // **主のボタンは相談側の 1 つだけ**（2.5.5）。
+    // **主のボタンはチャット側の 1 つだけ**（2.5.5）。
     expect(html.match(/gf-button-primary/gu)?.length).toBe(1);
     expect(html).toContain(`form="${formId}"`);
-    // **生成のフォームは出さない**（対象がある相談で押せる先は 1 つである）。
+    // **生成のフォームは出さない**（対象があるチャットで押せる先は 1 つである）。
     expect(html).not.toContain('id="generate-form"');
   });
 

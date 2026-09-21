@@ -77,6 +77,7 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       'TEST_MIGRATIONS',
       'TEST_DEV_VARS_EXAMPLE',
       'TEST_PRODUCT_SPEC',
+      'TEST_CHAT_ONE_PER_WORK_MIGRATION',
       'TEST_VENDOR_DEPS',
       'TEST_BUILD_SAMPLE',
       'TEST_TEMPLATE_GO_MOD',
@@ -117,7 +118,7 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       'BUCKET',
       // ビルド関数の宛先（#19）。**秘密ではなく構成**なので wrangler.toml が宣言する。
       'BUILD_FUNCTION_NAME',
-      // 相談の関数の宛先（#695）。**秘密ではなく構成**なので wrangler.toml が
+      // チャットの関数の宛先（#695）。**秘密ではなく構成**なので wrangler.toml が
       // 宣言する（AVATAR_FUNCTION_NAME と同じ扱い）。
       'CHAT_FUNCTION_NAME',
       'DB',

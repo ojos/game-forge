@@ -1,5 +1,5 @@
 /**
- * 相談の会話の保存（#695 / M18-2。仕様 5.16「会話の保存——30 日で消える」）。
+ * チャットの会話の保存（#695 / M18-2。仕様 5.16「会話の保存——30 日で消える」）。
  *
  * ## 30 日で消える短命の保存である
  *
@@ -15,7 +15,7 @@
  *
  * ## 1 会話 1 行である
  *
- * 往復ごとに行を作ると、1 回の相談で D1 の書き込みが往復の数だけ増える（索引込み。3.6）。
+ * 往復ごとに行を作ると、1 回のチャットで D1 の書き込みが往復の数だけ増える（索引込み。3.6）。
  * **会話は 1 度に全部を読み、全部を書き直す**（LLM へ毎回まとめて送るため）ので、行を分けても
  * 読み書きの単位は変わらない。**書き込みは 1 往復につき表の 1 行と索引の 1 行**で頭打ちになる。
  *
@@ -35,7 +35,7 @@ import { CHAT_MAX_MESSAGES } from './chat-payload.js';
 /**
  * 会話を残す日数（仕様 5.16。利用者の決定）。
  *
- * **「最後に使ってから」である**（`updated_at`）。相談を続けている会話は消えない。
+ * **「最後に使ってから」である**（`updated_at`）。チャットを続けている会話は消えない。
  *
  * 仕様書側の記載との一致は `test/chat-ui.test.ts` が {@link CHAT_RETENTION_PATTERN} で
  * 機械照合する（`/privacy` の文言もこの定数から作る——**書いた日数と実際に消える日数が
@@ -53,6 +53,24 @@ export const CHAT_RETENTION_DAYS = 30;
  */
 export const CHAT_RETENTION_PATTERN = /最後に\s*使ってから\s*\*{0,2}([0-9]+)\s*日/gu;
 
+/**
+ * 「いちばん新しい会話」の並び（**順序の正本**。#740）。
+ *
+ * **同点を id で解く。** `updated_at` は秒なので**同じ値は起こる**——そこで並びを
+ * `updated_at` だけにすると、**どちらが復元されるかは SQLite の気分で決まる**（同値の順序は
+ * 未定義である）。復元する行が揺れると、**作者が書いた会話が消えたように見える。**
+ *
+ * **`migrations/0052_chat_one_per_work.sql` は、この規則で「残す 1 本」を選んだ。**
+ * あの移行は**1 度しか走らない実行体**で、適用した時点の規則をそのまま固めたものである
+ * ——だから規則の正本はこちら（実行時）に置き、**移行の側は正本を名指しする。**
+ * **向きが揃っていることは `test/chat.test.ts` が移行の本文と機械照合する**
+ * （`.ai-playbook/shared-ai-rules.md` 12 章。ずれると、**移行が「作者の見ている行」を
+ * 消して「見ていない行」を残す**）。
+ *
+ * **`id desc`**＝**id の大きいほうを新しいとみなす**（移行の `newer.id > ...` と同じ向き）。
+ */
+export const LATEST_CHAT_ORDER = 'updated_at desc, id desc';
+
 /** 保存されている会話。 */
 export interface StoredChatConversation {
   readonly id: string;
@@ -63,8 +81,8 @@ export interface StoredChatConversation {
 /**
  * 保存された JSON を読む。**壊れていたら null にする。**
  *
- * **例外にしない。** 読めない行は「無かった」として扱い、画面は空の相談から始まる——
- * 会話が壊れていることを理由に、相談そのものを使えなくしない。
+ * **例外にしない。** 読めない行は「無かった」として扱い、画面は空のチャットから始まる——
+ * 会話が壊れていることを理由に、チャットそのものを使えなくしない。
  *
  * @param raw `chat_conversations.messages` の値
  * @returns 発話の列、または null
@@ -101,16 +119,18 @@ export function parseStoredMessages(raw: unknown): readonly ChatMessage[] | null
 /**
  * その利用者の、**この対象の**いちばん新しい会話を読む（#727 / 確定38）。
  *
- * **対象ごとに分ける。** 分けないと、**フォークの相談の続きに、前に新規で話した内容が
+ * **対象ごとに分ける。** 分けないと、**フォークのチャットの続きに、前に新規で話した内容が
  * ぶら下がる**——AI はそれを同じ話の続きとして読む。
  *
  * 索引は `chat_conversations(user_id, target_kind, target_id, updated_at desc)`
  * （`migrations/0051_chat_target.sql`）。**`target_id` は NULL と値を分けて比べる**
- * ——SQL の `=` は NULL に当たらないので、新しく作る相談は `is null` で引く。
+ * ——SQL の `=` は NULL に当たらないので、新しく作るチャットは `is null` で引く。
+ *
+ * **並びは {@link LATEST_CHAT_ORDER} に固定する**（#740 PR の Copilot の指摘）。
  *
  * @param env バインディングと環境変数
  * @param userId 呼び出し元
- * @param target 相談の対象
+ * @param target チャットの対象
  * @returns 会話、または null（1 本も無い・壊れている）
  */
 export async function latestChatConversation(
@@ -123,7 +143,7 @@ export async function latestChatConversation(
        from chat_conversations
       where user_id = ? and target_kind = ?
         and target_id is ?
-      order by updated_at desc
+      order by ${LATEST_CHAT_ORDER}
       limit 1`,
   )
     .bind(userId, target.kind, target.id)
@@ -148,10 +168,22 @@ export async function latestChatConversation(
  * **自分の新しい会話になる**——区別できる応答を返さない（5.12 の「区別できる応答は手がかりに
  * なる」と同じ判断）。
  *
+ * ## 上書きの条件から対象を外した（#740 PR の Copilot の指摘）
+ *
+ * **#727 は `target_kind` / `target_id` も条件に入れていたが、外した。** 付け替え（#740。
+ * {@link attachChatConversationsToWork}）で行の対象が `('revise', 作品 id)` へ動いた後、
+ * **古い画面が `('new', null)` のまま同じ id を送ると、条件に当たらず `insert` へ落ちて
+ * `'new'` の行が作り直される**——それが次の `/generate` で復元され、**「必ず空」が崩れる。**
+ *
+ * **`id` は主キーなので、同一性の判定に対象は要らない。** #727 が守りたかったのは
+ * **「他人の会話を書き換えられないこと」**で、それは `user_id` が担保している（この関数が
+ * 触れるのは**自分の会話だけ**である）。**対象は上書きしない**ので、**行は自分が属する対象に
+ * 留まったまま、続きの発話だけが載る**——付け替えの後は、そのまま作品のチャットの続きになる。
+ *
  * @param env バインディングと環境変数
  * @param userId 呼び出し元
  * @param conversationId 上書きする会話の id（新しく始めるなら null）
- * @param target 相談の対象（#727。**上書きの条件にも入れる**）
+ * @param target チャットの対象（**新しく作るときにだけ使う。上書きの条件には入れない**）
  * @param messages 保存する発話の列
  * @param now 時刻（UNIX 秒）
  * @returns 保存した会話の id
@@ -166,14 +198,14 @@ export async function saveChatConversation(
 ): Promise<string> {
   const body = JSON.stringify(messages);
   if (conversationId !== null) {
-    // **対象も条件に入れる**（#727）。入れないと、**別の対象の会話の id を送ることで、
-    // その中身を差し替えられる**——自分の会話どうしではあるが、`user_id` を条件に入れたのと
-    // 同じ理由で、**行を選ぶ条件と、行が属する対象を一致させておく。**
+    // **当てるのは `(id, user_id)` だけである**（#740 PR の Copilot の指摘。上の注記）。
+    // **対象は条件にも代入にも入れない**——入れると、付け替えの後に古い対象を送ってきた
+    // 画面が `'new'` の行を作り直す。
     const updated = await env.DB.prepare(
       `update chat_conversations set messages = ?, updated_at = ?
-        where id = ? and user_id = ? and target_kind = ? and target_id is ?`,
+        where id = ? and user_id = ?`,
     )
-      .bind(body, now, conversationId, userId, target.kind, target.id)
+      .bind(body, now, conversationId, userId)
       .run();
     if ((updated.meta.changes ?? 0) > 0) {
       return conversationId;
@@ -193,7 +225,7 @@ export async function saveChatConversation(
  * その利用者の会話をすべて消す（本人の操作）。
  *
  * **1 本ではなく全部を消す。** 画面が復元するのは最後の 1 本だが、**「消す」と押した人が
- * 期待するのは「相談の記録が残らないこと」**である。1 本だけ消して古い行が残ると、
+ * 期待するのは「チャットの記録が残らないこと」**である。1 本だけ消して古い行が残ると、
  * `/privacy` の約束（本人が消せる）を満たしたことにならない。
  *
  * @param env バインディングと環境変数
@@ -226,6 +258,51 @@ export async function sweepExpiredChatConversations(db: D1Database, now: number)
   const result = await db
     .prepare('delete from chat_conversations where updated_at < ?')
     .bind(cutoff)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+/**
+ * 受け付けた生成へ、その人の「新しく作る」チャットを付け替える（#740 / 仕様 5.16「会話の粒度——1 作品 1 本」）。
+ *
+ * **チャットは 1 作品 1 本である。** 新しく作るチャットには、まだ紐づく作品が無い——
+ * **作品は生成してはじめてできる**ので、**閉じる契機は「生成が受け付けられた時点」以外に
+ * 置き場所が無い**（利用者の決定）。以後その作品のチャットは、リフォージのチャットとして続く。
+ *
+ * ## その人の `'new'` の会話を全部動かす
+ *
+ * **1 本だけを選ばない。** 復元されるのはいちばん新しい 1 本だが、**古い行が残っていると、
+ * 次に `/generate` を開いたときにそれが復元される**——「必ず空になる」が崩れる。
+ * **`migrations/0052` が、この変更より前からある古い行を 1 本へ畳んである**ので、
+ * 実際に動くのは作者が見ていた 1 本である。**畳んだ後に増える経路（同じ人が 2 枚のタブで
+ * 別々に始める）でも、この文なら取り残しが出ない。**
+ *
+ * ## 断られた生成では呼ばない
+ *
+ * 枠切れ・進行中・入力の検査で断られた要求は**作品を作らない**ので、紐づけ先が無い
+ * （`src/generate.ts` の `startGeneration` は、受け付けた後にだけこれを呼ぶ）。
+ *
+ * ## `updated_at` は動かさない
+ *
+ * 30 日の期限は**「最後に使ってから」**である（`/privacy` の約束）。付け替えは作者の発話では
+ * ないので、ここで触ると**書いていないのに保存が延びる。**
+ *
+ * @param env バインディングと環境変数
+ * @param userId 生成した利用者
+ * @param gameId できた作品の id
+ * @returns 付け替えた行数
+ */
+export async function attachChatConversationsToWork(
+  env: Env,
+  userId: string,
+  gameId: string,
+): Promise<number> {
+  const result = await env.DB.prepare(
+    `update chat_conversations
+        set target_kind = 'revise', target_id = ?
+      where user_id = ? and target_kind = 'new'`,
+  )
+    .bind(gameId, userId)
     .run();
   return result.meta.changes ?? 0;
 }

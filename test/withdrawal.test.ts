@@ -210,10 +210,10 @@ describe('退会すると、個人を識別できる値が残らない', () => {
     await env.DB.prepare('update games set prompt = ? where id in (?, ?)').bind('最初の指示', own, parent).run();
     const ledgerA = await seedGeneration(id, null, 22.5);
     const ledgerB = await seedGeneration(id, null, 7.25);
-    // 相談の会話（#695 / `0049`）。**他人の会話は消さないこと。**
+    // チャットの会話（#695 / `0049`）。**他人の会話は消さないこと。**
     for (const [owner, label] of [
-      [id, '本人の相談'],
-      [other.id, '他人の相談'],
+      [id, '本人のチャット'],
+      [other.id, '他人のチャット'],
     ] as const) {
       await env.DB.prepare(
         'insert into chat_conversations (id, user_id, messages, created_at, updated_at) values (?, ?, ?, 1, 1)',
@@ -279,7 +279,7 @@ describe('退会すると、個人を識別できる値が残らない', () => {
       [parent]: '最初の指示',
     });
 
-    // 相談の会話は、30 日の掃除を待たずにこの時点で消える（#695 / `/privacy`）。
+    // チャットの会話は、30 日の掃除を待たずにこの時点で消える（#695 / `/privacy`）。
     const chats = await env.DB.prepare('select user_id from chat_conversations')
       .all<{ user_id: string }>();
     expect(chats.results.map((row) => row.user_id)).toEqual([other.id]);

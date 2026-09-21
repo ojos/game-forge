@@ -61,6 +61,7 @@ import {
   hashJobToken,
 } from './games.js';
 import { workPagePath } from './paths.js';
+import { attachChatConversationsToWork } from './chat-conversation.js';
 import { myWorkApiPath } from './works-api-paths.js';
 import { recordGenerationCost } from './cost-ledger.js';
 import {
@@ -536,7 +537,9 @@ export async function parseGenerateRequest(request: Request): Promise<GeneratePa
  *   1. **3.3-2 クォータ判定**（4.3 の「上限の判定は 3.3-2 の 1 か所で行う」）
  *   2. **3.3-2.5 作品行の作成**（`pending`。id とジョブトークンがここで決まる）
  *      ——**進行中の要求があれば作らずに断る**（#455。下記）
- *   3. **3.3-2.6 ジョブの起動**（差し替え可能な段）
+ *   3. **「新しく作る」チャットをこの作品へ付け替える**（#740。**ここが「受け付けられた
+ *      時点」である**。ジョブの起動より前に置く理由は下記）
+ *   4. **3.3-2.6 ジョブの起動**（差し替え可能な段）
  *
  * # 進行中の要求があれば断る（#455）
  *
@@ -589,6 +592,38 @@ export async function startGeneration(
     userId,
     request,
   };
+
+  // **受け付けた時点で、その人の「新しく作る」チャットをこの作品へ付け替える**
+  // （#740 / 仕様 5.16「会話の粒度——1 作品 1 本」）。
+  //
+  // **「受け付けられた時点」は、ここ（`createPendingGameIfIdle` が成功した直後）である**
+  // ——**作品の行はもうでき、恒久的な URL も決まっている**（#150）。**断った要求は
+  // ここまで来ない**（枠切れも進行中も入力の検査も、上で例外になって抜けている）。
+  //
+  // **`startJob` の後ろへ置いてはならない**（#740 PR の Copilot の指摘）。既定の起動は
+  // **同期実装**（{@link runJobInline}）で、**8.2 の入力検査・5.2-5 の拒否・ビルドの失敗は
+  // どれも例外として投げ直される。** 後ろに置くと**そこへ到達しないまま作品だけが残り**、
+  // 会話は `'new'` のまま次の `/generate` で復元される。
+  //
+  // **したがって、生成が失敗した作品にも会話は紐づいたままになる。** これは不具合ではなく
+  // 「受け付けた時点で閉じる」の帰結である——**作者から見ると、その作品を作り直すチャットの
+  // 続きになる**（作品は残り、作品ページからそのチャットへ入れる）。
+  //
+  // **同じ往復の中で行う。** 別の経路（画面からもう 1 回叩く・cron で後から直す）にすると、
+  // **片方だけが成功する窓**ができ、**次に `/generate` を開いた人に前の作品の会話が残る。**
+  //
+  // **失敗しても生成は成功として返す。** 作品は既にでき、ジョブはこれから走る——
+  // **会話の整理を理由に生成を落とさない**（`src/chat.ts` が保存の失敗で往復を落とさないのと
+  // 同じ判断である）。**復元がずれることはログに残す。**
+  try {
+    await attachChatConversationsToWork(env, userId, pending.id);
+  } catch (error) {
+    console.warn(
+      `[generate] チャットを作品へ付け替えられませんでした（生成は続きます）: ${
+        error instanceof Error ? error.name : 'unknown'
+      }`,
+    );
+  }
 
   // 3.3-2.6: ジョブの起動。既定は同期実行なので、ここで生成の全段が走る。
   try {

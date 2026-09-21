@@ -1808,15 +1808,15 @@ export function reviseSection(view: WorkPageView): string {
   <button type="submit" class="${SECONDARY_BUTTON}">この内容でリフォージする</button>
 </form>`;
 
-  // **相談への導線**（#727 / 確定38）。**作品ページの中へ相談を埋め込まない**——下固定の入力を
-  // 持つ主役が 1 画面に 2 つ並ぶ。**リンクだけを置き、相談は 1 つの画面で受ける。**
+  // **チャットへの導線**（#727 / 確定38）。**作品ページの中へチャットを埋め込まない**——下固定の入力を
+  // 持つ主役が 1 画面に 2 つ並ぶ。**リンクだけを置き、チャットは 1 つの画面で受ける。**
   // **枠が尽きているときは出さない**（上のフォームと同じ判断。押せない導線を増やさない）。
   const chatLink =
     view.dailyRemaining === 0
       ? ''
       : `\n<p class="gf-chat-entry"><a href="${escapeHtml(
           chatPathFor(GENERATE_PAGE_PATH, { kind: 'revise', id: view.publishableId }),
-        )}">AI と相談してから直す</a></p>`;
+        )}">AI とチャットしてから直す</a></p>`;
 
   return `${failed}
 <h3>リフォージ（気になるところを直す）</h3>
@@ -2743,7 +2743,7 @@ ${daily}${form}${
       ? ''
       : `\n<p class="gf-chat-entry"><a href="${escapeHtml(
           chatPathFor(GENERATE_PAGE_PATH, { kind: 'fork', id: view.forkableId }),
-        )}">AI と相談してからフォークする</a></p>`
+        )}">AI とチャットしてからフォークする</a></p>`
   }
 </div>
 </details>`;

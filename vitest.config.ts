@@ -92,6 +92,11 @@ export default defineConfig({
           // （#17 / shared-ai-rules 12 章）。一覧をテストへ書き写すと、照合したい
           // 二重管理そのものをテスト側で作り直すことになる。
           TEST_PRODUCT_SPEC: 'docs/product-spec.md',
+          // チャットの会話を 1 人 1 本へ畳む移行（#740）。**「いちばん新しい 1 本」の決め方**
+          // を実行時（`src/chat-conversation.ts` の `LATEST_CHAT_ORDER`）と機械照合するため、
+          // 本文そのものを渡す。期待値をテストへ書き写すと、照合したい二重管理を
+          // テスト側で作り直すことになる。
+          TEST_CHAT_ONE_PER_WORK_MIGRATION: 'migrations/0052_chat_one_per_work.sql',
           // 隔離ビルドの vendor 焼き込み対象と、それを実際にビルドする検査用サンプル。
           // どちらも許可パッケージ一覧の複製にあたるため機械照合する（#18）。
           TEST_VENDOR_DEPS: 'docker/isolated-build/template/vendor-deps.go',

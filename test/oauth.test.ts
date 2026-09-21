@@ -578,7 +578,7 @@ describe('同意画面（/authorize）', () => {
     }
   });
 
-  it('同意画面は枠への埋め込みを禁じ、アプリ名・戻り先のホスト名・2 つの scope のチェックボックスを出す', async () => {
+  it('同意画面は枠への埋め込みを禁じ、アプリ名・戻り先のホスト名・3 つの scope のチェックボックスを出す', async () => {
     const user = await seedUser();
     const clientId = await register(WEB_REDIRECT, '<b>悪い名前</b>');
     const { challenge } = await pkce();

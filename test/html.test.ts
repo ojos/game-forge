@@ -185,7 +185,7 @@ describe('siteHead のヘッダ', () => {
       expect(h1.replaceAll(/<[^>]+>/gu, '').trim()).toBe('');
       expect(h1).toContain('alt="Game Forge"');
 
-      const other = headerOf(siteHead({ title: '登録情報 - Game Forge', viewer: siteViewerAt(ACCOUNT_PATH, signedIn, null) }));
+      const other = headerOf(siteHead({ title: '設定 - Game Forge', viewer: siteViewerAt(ACCOUNT_PATH, signedIn, null) }));
       expect(other, 'トップ以外のヘッダに <h1> がある').not.toMatch(/<h1\b/u);
       expect(other).toMatch(logoLink);
     }
@@ -315,9 +315,9 @@ describe('アカウントのメニュー（2.3.7 v1.57 / #372）', () => {
     expect(menu, 'アカウントのメニューが無い').not.toBeNull();
     // **ヘッダの中にある**（外枠の外へ漏れていない）。
     expect(headerOf(signedIn)).toContain(menu!);
-    // **並びと文言まで見る**（自分の作品 / いいねした作品 / 招待コードを発行する / 登録情報 / ログアウト）。
+    // **並びと文言まで見る**（自分の作品 / いいねした作品 / 招待コードを発行する / 設定 / ログアウト）。
     const items = [...menu!.matchAll(/<li>([\s\S]*?)<\/li>/gu)].map((match) => match[1]!.replaceAll(/<[^>]+>/gu, '').trim());
-    expect(items).toEqual(['自分の作品', 'いいねした作品', '招待コードを発行する', '登録情報', 'ログアウト']);
+    expect(items).toEqual(['自分の作品', 'いいねした作品', '招待コードを発行する', '設定', 'ログアウト']);
     for (const path of [MY_WORKS_PATH, LIKED_WORKS_PATH, INVITES_PATH, ACCOUNT_PATH]) {
       expect(menu!, `メニューに ${path} が無い`).toContain(`href="${path}"`);
     }
@@ -400,8 +400,8 @@ describe('パンくず（2.3.10 / #372）', () => {
 
   it('`reading` を省いた画面の出力は、`reading: false` と 1 文字も違わない（既存の呼び出しを変えない。#564）', () => {
     const viewer = siteViewerAt(ACCOUNT_PATH, true, null);
-    const omitted = siteHead({ title: '登録情報 - Game Forge', viewer });
-    expect(siteHead({ title: '登録情報 - Game Forge', viewer, reading: false })).toBe(omitted);
+    const omitted = siteHead({ title: '設定 - Game Forge', viewer });
+    expect(siteHead({ title: '設定 - Game Forge', viewer, reading: false })).toBe(omitted);
     expect(omitted).not.toContain(READING_CLASS);
   });
 
@@ -416,20 +416,20 @@ describe('パンくず（2.3.10 / #372）', () => {
   });
 
   it('ヘッダの直後に出る（本文より前）', () => {
-    const head = siteHead({ title: '登録情報 - Game Forge', viewer: siteViewerAt(ACCOUNT_PATH, true, null) });
+    const head = siteHead({ title: '設定 - Game Forge', viewer: siteViewerAt(ACCOUNT_PATH, true, null) });
     expect(head.indexOf('<nav class="gf-breadcrumb"')).toBeGreaterThan(head.indexOf('</header>'));
     expect(head.trimEnd().endsWith('</nav>')).toBe(true);
   });
 
   it('階層の無い画面は「トップ › いまの画面」になり、末尾はリンクにしない', () => {
     const crumb = breadcrumbOf(
-      siteHead({ title: '登録情報 - Game Forge', viewer: siteViewerAt(ACCOUNT_PATH, true, null) }),
+      siteHead({ title: '設定 - Game Forge', viewer: siteViewerAt(ACCOUNT_PATH, true, null) }),
     )!;
     expect(crumb).toContain('aria-label="パンくずリスト"');
     const items = crumb.match(/<li>[\s\S]*?<\/li>/gu) ?? [];
     expect(items).toEqual([
       `<li><a href="${HOME_PATH}">トップ</a></li>`,
-      '<li><span aria-current="page">登録情報</span></li>',
+      '<li><span aria-current="page">設定</span></li>',
     ]);
   });
 

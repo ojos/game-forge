@@ -1,8 +1,24 @@
 /**
- * 登録情報の画面の、ハンドル名のタブ（`/account/handle`）と、ハンドル名の保存
+ * 設定の画面の、アカウントのタブ（`/account/details`）に置くハンドル名の区画と、ハンドル名の保存
  * （`POST /api/account/handle`）。**仕様 5.10 のハンドル名の口である**（#381 / M12-13）。
  *
  * 検査と書き込みは `src/handle.ts`、作者ページ（`/@handle`）は `src/users-page.ts` が持つ。
+ *
+ * ## ハンドル名はアカウントのタブの 1 区画である（#747）
+ *
+ * #381 はハンドル名に 1 枚のタブ（`/account/handle`）を割いた。**60 秒ごとに変えられる表示名や自己紹介と
+ * 同じ画面の途中に置くと、30 日に 1 回・URL が変わるという説明が読まれない**からである。#747 はそれを
+ * アカウントのタブへまとめた（利用者の決定。GitHub・X・Discord・note と同じく、ユーザー名はアカウントの
+ * 側に置き、表示名や自己紹介はプロフィールの側に置く）。**#381 の理由とは矛盾しない**——まとめた先は
+ * プロフィールではなく、めったに触らない値（メールアドレス・登録日・退会）の画面である。説明が読まれる
+ * ことは、**独立した区画・独立した保存のボタン・フォームの真上の注意書き**で守る。
+ *
+ * **このモジュールは画面の外枠を組まない。** 区画の HTML（{@link renderAccountHandleSection}）と、
+ * query から知らせを読む関数（{@link accountHandleNoticeOf}）を `src/account.ts` へ渡すだけである。
+ * 外枠（`accountShell`）を import しないので、`src/account.ts` がこちらを import しても循環しない。
+ *
+ * **旧い `/account/handle` は `/account/details` へ 301 で送る**（query は引き継ぐ）。共有された URL や
+ * ブックマークを 404 にしない。
  *
  * ## 予約語は経路表から導き、`src/app.ts` から受け取る
  *
@@ -19,7 +35,7 @@
  *
  * ## 素のフォームと POST-redirect-GET（JavaScript を要求しない。9.3）
  *
- * 結果は `/account/handle` の query に**固定の分類名だけ**で運び、**入力したハンドル名は URL に載せない**
+ * 結果は `/account/details` の query に**固定の分類名だけ**で運び、**入力したハンドル名は URL に載せない**
  * （`src/account.ts` の表示名と同じ理由——断られた値が履歴やログに残り、画面へ反射する口になる）。
  * ハンドル名は 20 文字までなので、断られたときに打ち直す手間は小さい。
  *
@@ -27,8 +43,7 @@
  *
  * `src/account.ts` と同じ（セッション cookie は `SameSite=Lax` で、他サイトからの POST に cookie が乗らない）。
  */
-import { ACCOUNT_HANDLE_API_PATH, ACCOUNT_HANDLE_PATH, HANDLE_FIELD } from './account-paths.js';
-import { accountShell } from './account.js';
+import { ACCOUNT_DETAILS_PATH, ACCOUNT_HANDLE_API_PATH, ACCOUNT_HANDLE_PATH, HANDLE_FIELD } from './account-paths.js';
 import { loginRequiredRedirect } from './auth/google.js';
 import type { CurrentHandle, HandleRejection } from './handle.js';
 import {
@@ -36,14 +51,13 @@ import {
   HANDLE_RENAME_INTERVAL_SECONDS,
   HANDLE_RESERVATION_DAYS,
   changeHandle,
-  currentHandleOf,
   validateHandle,
 } from './handle.js';
 import { HANDLE_MAX_LENGTH, HANDLE_MIN_LENGTH, handlePagePath } from './handle-paths.js';
-import { escapeHtml, headerAvatarUrl } from './html.js';
+import { escapeHtml } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import type { Route } from './routes.js';
-import { html, readLimitedText } from './routes.js';
+import { readLimitedText } from './routes.js';
 import { resolveSessionUser } from './session-user.js';
 import { authorPagePath } from './users-page-paths.js';
 
@@ -61,7 +75,7 @@ const MAX_BODY_BYTES = 1024;
 /** 素の HTML フォームが送ってくる `Content-Type`。 */
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
 
-/** 保存の結果として `/account/handle` へ運ぶ分類。**query に載るのはこの綴りだけである。** */
+/** 保存の結果として `/account/details` へ運ぶ分類。**query に載るのはこの綴りだけである。** */
 export type AccountHandleReason =
   | HandleRejection
   | 'handle-taken'
@@ -87,10 +101,15 @@ const REASON_MESSAGES: Readonly<Record<AccountHandleReason, string>> = {
 /** 未知の分類を受けたときの文言。 */
 const DEFAULT_REASON_MESSAGE = 'ハンドル名を保存できませんでした。';
 
-/** 保存できたことを示す query の名前（`/account/handle?saved=1`）。 */
+/** 保存できたことを示す query の名前（`/account/details?saved=1`）。 */
 const SAVED_QUERY = 'saved';
 
-/** ハンドル名のタブを組み立てるのに必要なものだけを集めた入力。 */
+/** ハンドル名の保存の結果として、画面の上部に出す知らせ。 */
+export type AccountHandleNotice =
+  | { readonly kind: 'error'; readonly message: string }
+  | { readonly kind: 'saved' };
+
+/** ハンドル名の区画を組み立てるのに必要なものだけを集めた入力。 */
 export interface AccountHandleView {
   /** 利用者の id（ハンドル名が無いときの作者ページのリンクに使う）。 */
   readonly userId: string;
@@ -98,33 +117,54 @@ export interface AccountHandleView {
   readonly current: CurrentHandle | null;
   /** 現在時刻（UNIX 秒。次に変えられる日時を出すかの判定に使う）。 */
   readonly now: number;
-  /** 上部に出す知らせ（無ければ null）。 */
-  readonly notice: { readonly kind: 'error'; readonly message: string } | { readonly kind: 'saved' } | null;
-  /** ヘッダのアバターの画像の URL（#380）。 */
-  readonly headerAvatar: string | null;
 }
 
 /**
- * ハンドル名のタブ（`/account/handle`）を組み立てる（#381 / 5.10）。
+ * query（`reason` / `saved`）から、ハンドル名の保存の知らせを読む。
+ *
+ * **文言は表から選んだ固定の文字列だけ**で、query の値そのものは画面へ出さない。
+ *
+ * @param params 画面の URL の query
+ * @returns 知らせ（無ければ null）
+ */
+export function accountHandleNoticeOf(params: URLSearchParams): AccountHandleNotice | null {
+  const reason = params.get('reason');
+  if (reason !== null) {
+    return { kind: 'error', message: reasonMessage(reason) };
+  }
+  return params.get(SAVED_QUERY) !== null ? { kind: 'saved' } : null;
+}
+
+/**
+ * 知らせを HTML にする（画面の上部に置く。ほかのタブの知らせと同じ形）。
+ *
+ * @param notice 知らせ
+ * @returns HTML
+ */
+export function renderAccountHandleNotice(notice: AccountHandleNotice): string {
+  return notice.kind === 'saved'
+    ? '<p class="gf-block" role="status">ハンドル名を保存しました。</p>'
+    : // 文言は表から選んだ固定文字列だが、`escapeHtml` を通しておく（出どころが変わっても安全側が既定になる）。
+      `<p class="error" role="alert">${escapeHtml(notice.message)}</p>`;
+}
+
+/**
+ * ハンドル名の区画を組み立てる（#381 / 5.10 → #747）。
+ *
+ * **並びは いまのハンドル名 → 注意書き → フォーム**（#747）。注意書きをフォームの真上に置き、
+ * 保存のボタンを押す前に必ず目に入る位置にする（#381 はフォームの下に置いていた）。
  *
  * **ハンドル名は形の検査を通った値しか保存されない**（小文字の ASCII 英字・数字・`_`）が、画面へ出す値は
  * すべて `escapeHtml` を通す（出どころが変わっても安全側が既定になる）。
  *
  * **`maxlength` を付けない。** 長さは送信後に 1 つの規則で断る（`src/account.ts` の表示名と同じ扱い）。
  *
- * **フォームは面のブロックで、保存のボタンは副**（仕様 2.5.4 / 2.5.5 / #473。登録情報のタブは主を置かない）。保存の知らせもブロックである。
+ * **区画は面のブロックで、保存のボタンは副**（仕様 2.5.4 / 2.5.5 / #473。設定のタブは主を置かない）。
  *
  * @param view 表示に必要な値
  * @returns HTML
  */
-export function renderAccountHandlePage(view: AccountHandleView): string {
-  const notice =
-    view.notice === null
-      ? ''
-      : view.notice.kind === 'saved'
-        ? '<p class="gf-block" role="status">ハンドル名を保存しました。</p>'
-        : `<p class="error" role="alert">${escapeHtml(view.notice.message)}</p>`;
-
+export function renderAccountHandleSection(view: AccountHandleView): string {
   const current = view.current;
   const summary =
     current === null
@@ -137,28 +177,25 @@ export function renderAccountHandlePage(view: AccountHandleView): string {
       ? `<p class="gf-account-handle-wait">次にハンドル名を変更できるのは <time datetime="${toIsoTimestamp(nextChangeAt)}">${formatJstMinutes(nextChangeAt)}</time> 以降です。</p>`
       : '';
 
-  return accountShell({
-    path: ACCOUNT_HANDLE_PATH,
-    title: 'ハンドル名 - Game Forge',
-    headerAvatar: view.headerAvatar,
-    body: `${notice}
+  return `<section class="gf-block gf-account-block" aria-labelledby="account-handle-heading">
+<h2 id="account-handle-heading">ハンドル名</h2>
 ${summary}
 ${waiting}
-<form class="gf-block" method="post" action="${ACCOUNT_HANDLE_API_PATH}">
+<h3>変更する前にお読みください</h3>
+<ul class="gf-account-handle-rules">
+  <li>ハンドル名の変更は ${HANDLE_RENAME_INTERVAL_DAYS} 日に 1 回までです。</li>
+  <li><strong>${HANDLE_REDIRECT_NOTICE}。</strong>そのため、旧いハンドル名と新しいハンドル名が同じ人のものだと、ほかの人にも分かります。</li>
+  <li>変更してから ${HANDLE_RESERVATION_DAYS} 日のあいだ、旧いハンドル名はほかの人が使えません。この間なら、あなたは旧いハンドル名に戻せます（戻すのも 1 回の変更として数えます）。${HANDLE_RESERVATION_DAYS} 日を過ぎると、ほかの人が使えるようになり、旧い URL は転送されなくなります。</li>
+  <li><code>/users/</code> で始まる作者ページの URL は、ハンドル名を決めても変えても使えます（いまのハンドル名の作者ページへ転送します）。</li>
+</ul>
+<form method="post" action="${ACCOUNT_HANDLE_API_PATH}">
   <label for="handle">ハンドル名</label>
   <input id="handle" name="${HANDLE_FIELD}" type="text" autocomplete="username" autocapitalize="none"
          spellcheck="false" value="${escapeHtml(current?.handle ?? '')}" required>
   <p>半角の英字・数字・アンダースコア（_）で ${HANDLE_MIN_LENGTH}〜${HANDLE_MAX_LENGTH} 文字。大文字は小文字として保存します（Foo と foo は同じハンドル名です）。</p>
   <button type="submit" class="gf-button gf-button-secondary">${current === null ? 'ハンドル名を決める' : 'ハンドル名を変更する'}</button>
 </form>
-<h2>変更する前にお読みください</h2>
-<ul class="gf-account-handle-rules">
-  <li>ハンドル名の変更は ${HANDLE_RENAME_INTERVAL_DAYS} 日に 1 回までです。</li>
-  <li><strong>${HANDLE_REDIRECT_NOTICE}。</strong>そのため、旧いハンドル名と新しいハンドル名が同じ人のものだと、ほかの人にも分かります。</li>
-  <li>変更してから ${HANDLE_RESERVATION_DAYS} 日のあいだ、旧いハンドル名はほかの人が使えません。この間なら、あなたは旧いハンドル名に戻せます（戻すのも 1 回の変更として数えます）。${HANDLE_RESERVATION_DAYS} 日を過ぎると、ほかの人が使えるようになり、旧い URL は転送されなくなります。</li>
-  <li><code>/users/</code> で始まる作者ページの URL は、ハンドル名を決めても変えても使えます（いまのハンドル名の作者ページへ転送します）。</li>
-</ul>`,
-  });
+</section>`;
 }
 
 /**
@@ -184,43 +221,22 @@ function reasonMessage(reason: string): string {
 }
 
 /**
- * ハンドル名のタブを返す。**未ログインならログインへ送る。引くのは本人の行だけである。**
+ * 旧いハンドル名のタブ（`/account/handle`）を、アカウントのタブへ送る（#747）。
+ *
+ * **301 にする。** 移った先は恒久的で、戻す予定が無い（`src/users-page.ts` が `/users/<id>` を
+ * `/@handle` へ送るのと同じ判断）。**セッションを見ない**——ログインの要否は送った先が決める。
+ * query は引き継ぐ（#747 より前に出た `?saved=1` / `?reason=` の URL を開いても、知らせが失われない）。
  *
  * @param request 受信したリクエスト
- * @param env バインディングと環境変数
- * @param now 現在時刻（UNIX 秒）を返す関数
  * @returns レスポンス
  */
-async function showAccountHandle(request: Request, env: Env, now: () => number): Promise<Response> {
-  const session = await resolveSessionUser(request, env);
-  if (!session.ok) {
-    return await loginRequiredRedirect(env, ACCOUNT_HANDLE_PATH);
-  }
-  const current = await currentHandleOf(env.DB, session.userId);
-
-  const params = new URL(request.url).searchParams;
-  const reason = params.get('reason');
-  const notice: AccountHandleView['notice'] =
-    reason !== null
-      ? { kind: 'error', message: reasonMessage(reason) }
-      : params.get(SAVED_QUERY) !== null
-        ? { kind: 'saved' }
-        : null;
-
-  return html(
-    renderAccountHandlePage({
-      userId: session.userId,
-      current,
-      now: now(),
-      notice,
-      headerAvatar: headerAvatarUrl(request, env, session.userId),
-    }),
-    reason === null ? 200 : 400,
-  );
+function redirectLegacyHandleTab(request: Request): Response {
+  const search = new URL(request.url).search;
+  return new Response(null, { status: 301, headers: { location: `${ACCOUNT_DETAILS_PATH}${search}` } });
 }
 
 /**
- * ハンドル名を保存する（`POST /api/account/handle`）。**終わったら必ず `/account/handle` へ戻す。**
+ * ハンドル名を保存する（`POST /api/account/handle`）。**終わったら必ず `/account/details` へ戻す。**
  *
  * **断った要求は書き込まない**——形と予約語で断ったものは D1 に触れず、間隔と主キーで断ったものは
  * 1 行も残らない（`src/handle.ts` の `changeHandle`）。
@@ -237,41 +253,41 @@ async function handleAccountHandleChange(
 ): Promise<Response> {
   const session = await resolveSessionUser(request, env);
   if (!session.ok) {
-    return await loginRequiredRedirect(env, ACCOUNT_HANDLE_PATH);
+    return await loginRequiredRedirect(env, ACCOUNT_DETAILS_PATH);
   }
 
   const mediaType = (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
   if (mediaType !== FORM_MEDIA_TYPE) {
-    return seeOther(`${ACCOUNT_HANDLE_PATH}?reason=handle-invalid-request`);
+    return seeOther(`${ACCOUNT_DETAILS_PATH}?reason=handle-invalid-request`);
   }
   const read = await readLimitedText(request, MAX_BODY_BYTES);
   if (!read.ok) {
     return seeOther(
-      `${ACCOUNT_HANDLE_PATH}?reason=${read.reason === 'body-too-large' ? 'handle-length' : 'handle-invalid-request'}`,
+      `${ACCOUNT_DETAILS_PATH}?reason=${read.reason === 'body-too-large' ? 'handle-length' : 'handle-invalid-request'}`,
     );
   }
   // **値がちょうど 1 つのときだけ受け付ける**（`src/account.ts` のメール配信と同じ判断）。
   const values = new URLSearchParams(read.text).getAll(HANDLE_FIELD);
   if (values.length > 1) {
-    return seeOther(`${ACCOUNT_HANDLE_PATH}?reason=handle-invalid-request`);
+    return seeOther(`${ACCOUNT_DETAILS_PATH}?reason=handle-invalid-request`);
   }
 
   const validated = validateHandle(values[0] ?? '', options.reservedHandles());
   if (!validated.ok) {
-    return seeOther(`${ACCOUNT_HANDLE_PATH}?reason=${validated.reason}`);
+    return seeOther(`${ACCOUNT_DETAILS_PATH}?reason=${validated.reason}`);
   }
 
   try {
     const changed = await changeHandle(env.DB, session.userId, validated.value, options.now());
     return seeOther(
-      changed.ok ? `${ACCOUNT_HANDLE_PATH}?${SAVED_QUERY}=1` : `${ACCOUNT_HANDLE_PATH}?reason=${changed.reason}`,
+      changed.ok ? `${ACCOUNT_DETAILS_PATH}?${SAVED_QUERY}=1` : `${ACCOUNT_DETAILS_PATH}?reason=${changed.reason}`,
     );
   } catch (error) {
     // D1 の失敗。**ハンドル名はログに出さない**（利用者の入力であり、ここで残す理由が無い）。
     console.error(
       `[account-handle] ハンドル名の保存に失敗しました: ${error instanceof Error ? error.name : 'unknown'}`,
     );
-    return seeOther(`${ACCOUNT_HANDLE_PATH}?reason=handle-failed`);
+    return seeOther(`${ACCOUNT_DETAILS_PATH}?reason=handle-failed`);
   }
 }
 
@@ -288,9 +304,9 @@ export interface AccountHandleRouteOptions {
 }
 
 /**
- * ハンドル名のタブの経路を組み立てる（#381）。
+ * ハンドル名の経路を組み立てる（#381 / #747）。
  *
- * **GET の画面は `src/account-paths.ts` の `ACCOUNT_TABS` の行き先である**（`test/account.test.ts` が照合する）。
+ * **画面は持たない**（区画はアカウントのタブが組む）。持つのは保存の口と、旧いタブの URL の転送だけである。
  *
  * @param options 予約語と時刻
  * @returns 経路表
@@ -301,7 +317,7 @@ export function createAccountHandleRoutes(options: AccountHandleRouteOptions): r
     now: options.now ?? (() => Math.floor(Date.now() / 1000)),
   };
   return [
-    { method: 'GET', path: ACCOUNT_HANDLE_PATH, handler: (request, env) => showAccountHandle(request, env, resolved.now) },
+    { method: 'GET', path: ACCOUNT_HANDLE_PATH, handler: redirectLegacyHandleTab },
     {
       method: 'POST',
       path: ACCOUNT_HANDLE_API_PATH,

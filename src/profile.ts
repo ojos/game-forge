@@ -500,7 +500,7 @@ export interface ProfileFormView {
  * 自己紹介と外部リンクのフォームを組み立てる（`/account` のプロフィールのタブ）。
  *
  * **面のブロックは呼ぶ側（`src/account.ts` の `renderAccountPage`）が包む**（#473）。見出しの id はブロックの `aria-labelledby` が指す。
- * **保存のボタンは副**（登録情報のタブは主を置かない。仕様 2.5.5 / #473）。
+ * **保存のボタンは副**（設定のタブは主を置かない。仕様 2.5.5 / #473）。
  *
  * **`maxlength` を付けない**（表示名と同じ理由。HTML の `maxlength` は UTF-16 の長さで数え、
  * こちらの規則と食い違う）。**`type="url"` にしない**——ブラウザの検査は `javascript:` も

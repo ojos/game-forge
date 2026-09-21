@@ -285,7 +285,7 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     expect(line).toContain('D1');
 
     const purposes = body.slice(body.indexOf('2. 利用目的'), body.indexOf('3. 公開される情報'));
-    expect(purposes).toContain('作品がフォークされたことのお知らせは、登録情報の画面で受け取らない設定にできます');
+    expect(purposes).toContain('作品がフォークされたことのお知らせは、設定の画面で受け取らない設定にできます');
     expect(purposes).toContain('生成の完了・失敗のお知らせは、その設定にかかわらず送ります');
 
     const notPublished = body.slice(

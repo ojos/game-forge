@@ -41,7 +41,7 @@ import { oldOperationNamesIn } from './helpers/old-names.js';
 import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
- * 登録情報の画面と表示名の変更（#341 / 仕様 5.9）。
+ * 設定の画面と表示名の変更（#341 / 仕様 5.9）。
  *
  * **#341 の acceptance のうち、この経路が持つものを機械判定できる形へ落とす。**
  *
@@ -208,7 +208,7 @@ async function postName(
 }
 
 /**
- * 登録情報の画面を開く。
+ * 設定の画面を開く。
  *
  * @param cookie `Cookie` ヘッダ（未ログインなら null）
  * @param query query 文字列（`?` を含む。省略可）
@@ -224,7 +224,7 @@ async function openAccount(cookie: string | null, query = ''): Promise<Response>
 }
 
 /**
- * 登録情報の画面のアカウントのタブ（`/account/details`。#379）を開く。
+ * 設定の画面のアカウントのタブ（`/account/details`。#379）を開く。
  *
  * @param cookie `Cookie` ヘッダ（未ログインなら null）
  * @param query query 文字列（`?` を含む。省略可）
@@ -240,7 +240,7 @@ async function openDetails(cookie: string | null, query = ''): Promise<Response>
 }
 
 /**
- * 登録情報の画面のメール配信のタブ（`/account/mail`。#384）を開く。
+ * 設定の画面のメール配信のタブ（`/account/mail`。#384）を開く。
  *
  * @param cookie `Cookie` ヘッダ（未ログインなら null）
  * @param query query 文字列（`?` を含む。省略可）
@@ -332,7 +332,7 @@ describe('経路の登録（#341）', () => {
   });
 });
 
-describe('登録情報のタブ（#379）', () => {
+describe('設定のタブ（#379）', () => {
   it('どのタブにも同じタブの列が出て、いまのタブだけがリンクでない', async () => {
     const userId = await seedUser();
     const cookie = await cookieFor(userId);
@@ -359,6 +359,23 @@ describe('登録情報のタブ（#379）', () => {
     }
   });
 
+  it('タブは使う頻度の順に並び、見出しは「設定」である（#747）', async () => {
+    // **チャットをメール配信より左に置く**（#747。利用者の決定）。ハンドル名はアカウントのタブへまとめた。
+    expect(ACCOUNT_TABS.map((tab) => tab.label)).toEqual([
+      'プロフィール',
+      'アカウント',
+      'チャット',
+      'メール配信',
+      '接続中のアプリ',
+    ]);
+    const userId = await seedUser();
+    const body = await (await openAccount(await cookieFor(userId))).text();
+    expect(body).toContain('<h1>設定</h1>');
+    expect(body).toContain('<nav class="gf-account-tabs" aria-label="設定の項目">');
+    expect(body).toContain('<title>設定 - Game Forge</title>');
+    expect(body).not.toContain('登録情報');
+  });
+
   it('アカウントのタブも未ログインならログインへ送る', async () => {
     const response = await openDetails(null);
     expect(response.status).toBe(303);
@@ -373,7 +390,7 @@ describe('登録情報のタブ（#379）', () => {
   });
 });
 
-describe('登録情報の画面（GET /account）', () => {
+describe('設定の画面（GET /account）', () => {
   it('未ログインならログインへ送る', async () => {
     const response = await openAccount(null);
     expect(response.status).toBe(303);
@@ -403,14 +420,14 @@ describe('登録情報の画面（GET /account）', () => {
     // ——UTC のまま日付を出す実装なら 09-10 になって赤くなる。
     const createdAt = Date.UTC(2026, 8, 10, 15, 30, 0) / 1000;
     const userId = await seedUser({
-      displayName: '登録情報の人',
+      displayName: '設定画面の人',
       email: 'account-owner@example.com',
       createdAt,
     });
     const response = await openAccount(await cookieFor(userId));
     expect(response.status).toBe(200);
     const body = await response.text();
-    expect(body).toContain('value="登録情報の人"');
+    expect(body).toContain('value="設定画面の人"');
     // 本人にしか出ない画面である。
     expect(body).toContain('<meta name="robots" content="noindex">');
     expect(response.headers.get('cache-control')).toBe('no-store');
@@ -1159,7 +1176,7 @@ describe('メール配信の設定の保存（POST /api/account/mail。#384 / 5.
   });
 });
 
-describe('登録情報の見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
+describe('設定の見た目の規約の部品（#473 / 仕様 2.5.4 / 2.5.5）', () => {
   /**
    * 画面全体の主のボタンの数（外枠のヘッダは主を持たない。`test/html.test.ts`）。
    *

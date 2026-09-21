@@ -1,5 +1,5 @@
 /**
- * 登録情報の画面（`/account` と `/account/details` と `/account/mail`）と、表示名の変更
+ * 設定の画面（`/account` と `/account/details` と `/account/mail`）と、表示名の変更
  * （`POST /api/account/display-name`）・自己紹介と外部リンクの保存（`POST /api/account/profile`）・
  * メール配信の設定の保存（`POST /api/account/mail`）・アイコンの設定と外すこと
  * （`POST /api/account/avatar` / `POST /api/account/avatar/remove`。#380。部品は `src/avatar.ts`）。
@@ -66,7 +66,7 @@
  * ## タブはパスで分ける（#379 / 5.10）
  *
  * **`/account` はプロフィールのタブ**（表示名・自己紹介・外部リンク）、**`/account/details` は
- * アカウントのタブ**（メールアドレス・登録日）である。並びと名前は `src/account-paths.ts` の
+ * アカウントのタブ**（ハンドル名・メールアドレス・登録日。ハンドル名は #747 で移した）である。並びと名前は `src/account-paths.ts` の
  * `ACCOUNT_TABS` が持つ。**表示名をプロフィールの側に置く**——作者ページに出る値をまとめ、
  * 本人にしか出ない値（メールアドレス）を別のタブへ分けた。
  *
@@ -120,6 +120,8 @@ import {
   FORK_NOTICE_MUTE,
   FORK_NOTICE_RECEIVE,
 } from './account-paths.js';
+import type { AccountHandleNotice, AccountHandleView } from './account-handle.js';
+import { accountHandleNoticeOf, renderAccountHandleNotice, renderAccountHandleSection } from './account-handle.js';
 import { loginRequiredRedirect } from './auth/google.js';
 import type { AvatarFormView, AvatarRejection } from './avatar.js';
 import {
@@ -138,6 +140,7 @@ import { encodeAvatarOnLambda } from './avatar-client.js';
 import { ACCOUNT_AVATAR_PATH, ACCOUNT_AVATAR_REMOVE_PATH, avatarUrl, sandboxOriginOf } from './avatar-paths.js';
 import { CHAT_RULE_MAX_LENGTH, checkChatRule, readChatRule, saveChatRule } from './chat-rule.js';
 import { displayNameHistoryInsert } from './display-name-changes.js';
+import { currentHandleOf } from './handle.js';
 import { escapeHtml, headerAvatarUrl, siteHead, siteViewerAt } from './html.js';
 import { formatJstMinutes, toIsoTimestamp } from './jst.js';
 import { siteFooter } from './legal.js';
@@ -474,6 +477,10 @@ export interface AccountView {
 
 /** アカウントのタブ（`/account/details`）を組み立てるのに必要なものだけを集めた入力。 */
 export interface AccountDetailsView {
+  /** ハンドル名の区画に入れる値（#381 → #747。区画は `src/account-handle.ts` が組む）。 */
+  readonly handle: AccountHandleView;
+  /** ハンドル名の保存の知らせ（無ければ null。#747）。 */
+  readonly notice: AccountHandleNotice | null;
   /** メールアドレス（`users.email`）。**本人にだけ出す。** */
   readonly email: string;
   /** 登録した時刻（`users.created_at`。UNIX 秒）。 */
@@ -509,7 +516,7 @@ function formatJstDate(epochSeconds: number): string {
 }
 
 /**
- * 登録情報の画面の外枠（見出しとタブ）を組み立てる（#379）。
+ * 設定の画面の外枠（見出しとタブ）を組み立てる（#379）。
  *
  * **タブの画面はすべてこれを通す**（冒頭の「タブはパスで分ける」）。**`noindex` を付ける。**
  * 本人にしか出ない画面である（`src/my-works.ts` と同じ扱い）。**ログイン済みとして組む**
@@ -543,8 +550,8 @@ export function accountShell(options: {
     noindex: true,
     viewer: siteViewerAt(options.path, true, options.headerAvatar),
   })}
-<h1>登録情報</h1>
-<nav class="gf-account-tabs" aria-label="登録情報の項目">
+<h1>設定</h1>
+<nav class="gf-account-tabs" aria-label="設定の項目">
 <ul class="gf-tabs">
   ${tabs}
 </ul>
@@ -554,7 +561,7 @@ ${siteFooter()}`;
 }
 
 /**
- * 登録情報の画面（プロフィールのタブ。`/account`）を組み立てる。
+ * 設定の画面（プロフィールのタブ。`/account`）を組み立てる。
  *
  * **D1 から来る値（表示名・自己紹介・リンク）は、すべて `escapeHtml` を通す。** 表示名は
  * 属性値（`value="..."`）へ入るので、`"` を含む名前が属性を閉じて要素を差し込む形になりうる。
@@ -604,7 +611,7 @@ export function renderAccountPage(view: AccountView): string {
   // 届く前に打てなくなる。長さは送信後に 1 つの規則で断る（{@link validateDisplayName}）。
   return accountShell({
     path: ACCOUNT_PATH,
-    title: '登録情報 - Game Forge',
+    title: '設定 - Game Forge',
     headerAvatar: view.headerAvatar,
     body: `${notice}
 <div class="gf-account-blocks">
@@ -633,10 +640,14 @@ ${renderAvatarForm(view.avatar)}
 }
 
 /**
- * 登録情報の画面（アカウントのタブ。`/account/details`）を組み立てる（#379）。
+ * 設定の画面（アカウントのタブ。`/account/details`）を組み立てる（#379 / #747）。
  *
- * **D1 から来る値はメールアドレスで、`escapeHtml` を通す。** 中身は #379 より前に `/account` の
- * 末尾にあったものを移しただけである。
+ * **並びは ハンドル名 → メールアドレスと登録日 → 退会**（#747。利用者の決定）。ハンドル名は #381 で
+ * 1 枚のタブだったものを、独立した区画のまま移した（`src/account-handle.ts` の冒頭）。**取り消せない
+ * 操作（退会）をいちばん下に置く。**
+ *
+ * **D1 から来る値はメールアドレスとハンドル名で、`escapeHtml` を通す。** メールアドレスと登録日は
+ * #379 より前に `/account` の末尾にあったものを移したものである。
  *
  * @param view 表示に必要な値
  * @returns HTML
@@ -658,7 +669,11 @@ export function renderAccountDetailsPage(view: AccountDetailsView): string {
     path: ACCOUNT_DETAILS_PATH,
     title: 'アカウント - Game Forge',
     headerAvatar: view.headerAvatar,
-    body: `<dl class="gf-account">
+    body: `${view.notice === null ? '' : renderAccountHandleNotice(view.notice)}
+${renderAccountHandleSection(view.handle)}
+<section class="gf-block gf-account-block" aria-labelledby="account-details-heading">
+<h2 id="account-details-heading">メールアドレスと登録日</h2>
+<dl class="gf-account">
   <dt>メールアドレス</dt>
   <dd>${escapeHtml(view.email)}</dd>
   <dt>登録日</dt>
@@ -666,6 +681,7 @@ export function renderAccountDetailsPage(view: AccountDetailsView): string {
 </dl>
 <p>メールアドレスはあなたにだけ表示しています。ほかの人には見えません。</p>
 <p>ログインには Google アカウントを使っています。メールアドレスは、ログインのたびに Google アカウントのものに合わせます。</p>
+</section>
 ${withdraw}`,
   });
 }
@@ -684,7 +700,7 @@ function seeOther(location: string): Response {
   return new Response(null, { status: 303, headers: { location, 'cache-control': 'no-store' } });
 }
 
-/** 登録情報の画面（プロフィールのタブ）が読む `users` の列。 */
+/** 設定の画面（プロフィールのタブ）が読む `users` の列。 */
 interface AccountRow {
   readonly display_name: string;
   readonly display_name_set_at: number | null;
@@ -713,7 +729,7 @@ async function loadAccountRow(env: Env, userId: string): Promise<AccountRow | nu
 }
 
 /**
- * 登録情報の画面に出すアイコンの値（版つきの URL）を組み立てる（#380）。
+ * 設定の画面に出すアイコンの値（版つきの URL）を組み立てる（#380）。
  *
  * **版を付ける**——設定した直後の画面は新しい `avatar_set_at` を持つので、ブラウザの古いキャッシュに
  * 当たらない（`src/avatar-delivery.ts`）。
@@ -732,7 +748,7 @@ function avatarFormViewOf(request: Request, env: Env, userId: string, row: Accou
 }
 
 /**
- * 登録情報の画面（プロフィールのタブ）を返す。
+ * 設定の画面（プロフィールのタブ）を返す。
  *
  * **未ログインならログインへ送る**（`src/my-works.ts` の `showMyWorks` と同じ扱い）。
  * 401 を返しても、画面を開いた利用者にできることは結局ログインである。
@@ -877,16 +893,20 @@ async function handleDisplayNameChange(
 }
 
 /**
- * 登録情報の画面（アカウントのタブ）を返す（#379）。
+ * 設定の画面（アカウントのタブ）を返す（#379 / #747）。
  *
  * **引くのは本人の行だけである**（{@link showAccount} と同じ。メールアドレスを本人以外に
  * 出さないことは、この 1 行が担っている）。
  *
+ * **ハンドル名の保存に断られて戻ったときは 400 で返す**（#381 のハンドル名のタブと同じ。
+ * query の `reason` がそれを示す）。
+ *
  * @param request 受信したリクエスト
  * @param env バインディングと環境変数
+ * @param now 現在時刻（UNIX 秒）を返す関数（次にハンドル名を変えられる日時の判定に使う）
  * @returns レスポンス
  */
-async function showAccountDetails(request: Request, env: Env): Promise<Response> {
+async function showAccountDetails(request: Request, env: Env, now: () => number): Promise<Response> {
   const session = await resolveSessionUser(request, env);
   if (!session.ok) {
     return await loginRequiredRedirect(env, ACCOUNT_DETAILS_PATH);
@@ -901,13 +921,18 @@ async function showAccountDetails(request: Request, env: Env): Promise<Response>
   if (row === null) {
     return await loginRequiredRedirect(env, ACCOUNT_DETAILS_PATH);
   }
+  const current = await currentHandleOf(env.DB, session.userId);
+  const notice = accountHandleNoticeOf(new URL(request.url).searchParams);
   return html(
     renderAccountDetailsPage({
+      handle: { userId: session.userId, current, now: now() },
+      notice,
       email: row.email,
       createdAt: row.created_at,
       headerAvatar: headerAvatarUrl(request, env, session.userId),
       canWithdraw: row.is_admin !== 1 && row.is_operator !== 1,
     }),
+    notice?.kind === 'error' ? 400 : 200,
   );
 }
 
@@ -1137,9 +1162,9 @@ export interface AccountMailView {
 }
 
 /**
- * 登録情報の画面（メール配信のタブ。`/account/mail`）を組み立てる（#384 / 5.11）。
+ * 設定の画面（メール配信のタブ。`/account/mail`）を組み立てる（#384 / 5.11）。
  *
- * **フォームは面のブロックで、「保存する」は副のボタン**（仕様 2.5.4 / 2.5.5 / #473。登録情報のタブは主を置かない）。
+ * **フォームは面のブロックで、「保存する」は副のボタン**（仕様 2.5.4 / 2.5.5 / #473。設定のタブは主を置かない）。
  *
  * **種別の名前と補足は `src/mail/kinds.ts` から出す**（冒頭の「メール配信のタブ」）。どれも
  * コードに置いた固定の文字列だが、`escapeHtml` を通しておく（出どころが変わっても安全側が既定になる）。
@@ -1208,9 +1233,9 @@ export const CHAT_RULE_MESSAGES: Readonly<Record<string, string>> = {
 };
 
 /**
- * 登録情報の画面（チャットのタブ。`/account/chat`）を組み立てる（#728 / 確定38）。
+ * 設定の画面（チャットのタブ。`/account/chat`）を組み立てる（#728 / 確定38）。
  *
- * **フォームは面のブロックで、「保存する」は副のボタン**（仕様 2.5.4 / 2.5.5 / #473。登録情報のタブは主を置かない）。
+ * **フォームは面のブロックで、「保存する」は副のボタン**（仕様 2.5.4 / 2.5.5 / #473。設定のタブは主を置かない）。
  *
  * **効く範囲を画面で言う。** 「チャットだけに効く・生成には効かない」は確定38 の決定そのもので、
  * **書いていないと作者は「生成にも効く」と読む**（欄の名前が「ルール」であるほどそう読める）。
@@ -1246,7 +1271,7 @@ export function renderAccountChatPage(view: AccountChatView): string {
 }
 
 /**
- * 登録情報の画面（チャットのタブ）を返す（#728）。
+ * 設定の画面（チャットのタブ）を返す（#728）。
  *
  * **引くのは本人の行だけである**（{@link showAccount} と同じ）。
  *
@@ -1329,7 +1354,7 @@ async function handleChatRuleChange(request: Request, env: Env): Promise<Respons
 }
 
 /**
- * 登録情報の画面（メール配信のタブ）を返す（#384）。
+ * 設定の画面（メール配信のタブ）を返す（#384）。
  *
  * **引くのは本人の行だけである**（{@link showAccount} と同じ）。
  *
@@ -1541,7 +1566,7 @@ export interface AccountRouteOptions {
 }
 
 /**
- * 登録情報の経路を組み立てる。
+ * 設定の経路を組み立てる。
  *
  * **時刻を差し替えられるのはここだけである**（`src/publish.ts` の `createPublishRoutes` と
  * 同じ形）。アプリの経路表（`src/app.ts`）は既定の {@link accountRoutes} を連結するので、
@@ -1555,7 +1580,7 @@ export function createAccountRoutes(options: AccountRouteOptions = {}): readonly
   const encode = options.encodeAvatar ?? encodeAvatarOnLambda;
   return [
     { method: 'GET', path: ACCOUNT_PATH, handler: showAccount },
-    { method: 'GET', path: ACCOUNT_DETAILS_PATH, handler: showAccountDetails },
+    { method: 'GET', path: ACCOUNT_DETAILS_PATH, handler: (request, env) => showAccountDetails(request, env, now) },
     { method: 'GET', path: ACCOUNT_MAIL_PATH, handler: showAccountMail },
     { method: 'GET', path: ACCOUNT_CHAT_PATH, handler: showAccountChat },
     {
@@ -1591,5 +1616,5 @@ export function createAccountRoutes(options: AccountRouteOptions = {}): readonly
   ];
 }
 
-/** アプリの経路表へ連結する登録情報の経路（#341 / #379 / #384 / #380）。 */
+/** アプリの経路表へ連結する設定の経路（#341 / #379 / #384 / #380）。 */
 export const accountRoutes: readonly Route[] = createAccountRoutes();

@@ -658,7 +658,7 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
       expect(header!, `${path} のヘッダに本人だけの画面が出ている`).not.toContain(
         `href="${MY_WORKS_PATH}"`,
       );
-      expect(header!, `${path} のヘッダに登録情報が出ている`).not.toContain(
+      expect(header!, `${path} のヘッダに設定が出ている`).not.toContain(
         `href="${ACCOUNT_PATH}"`,
       );
       // **招待コードの発行もログイン済みのメニューの中だけ**（2.3.7 の #435 注記 / #469）。
@@ -672,7 +672,7 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
   });
 
   it('ログイン済みのヘッダは、アカウントのメニューに 5 つを収める（ログインは出さない。#372 / #469）', async () => {
-    // **v1.57 で 2.3.7 を覆した形である。** 自分の作品・いいねした作品・登録情報・ログアウトを
+    // **v1.57 で 2.3.7 を覆した形である。** 自分の作品・いいねした作品・設定・ログアウトを
     // アバターのドロップダウンへ収め、**閉じたヘッダの項目列には本人だけの画面を出さない。**
     // **#435 の注記で招待コードの発行（`/invites`）を足した**（トップの本文が唯一の入口だった）。
     for (const path of getPaths()) {
@@ -684,7 +684,7 @@ describe('ヘッダとフッタのナビ（2.3.7）', () => {
         [MY_WORKS_PATH, '自分の作品'],
         [LIKED_WORKS_PATH, 'いいねした作品'],
         [INVITES_PATH, '招待コードを発行する'],
-        [ACCOUNT_PATH, '登録情報'],
+        [ACCOUNT_PATH, '設定'],
       ] as const) {
         expect(menu!, `${path} のメニューに「${label}」が無い`).toContain(`href="${link}">${label}</a>`);
       }

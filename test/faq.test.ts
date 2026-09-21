@@ -274,7 +274,7 @@ describe('作品の削除（#517）', () => {
 describe('退会（#518 / M15-3）', () => {
   it('退会できること・押す場所・消えるもの・戻せないこと・招待が要ることを書く', () => {
     const answer = answerOf('withdraw');
-    expect(answer).toContain('登録情報の「アカウント」から「退会について確かめる」');
+    expect(answer).toContain('設定の「アカウント」から「退会について確かめる」');
     expect(answer).toContain('退会すると元に戻せません');
     expect(answer).toContain('あなたの作品はすべて取り下げられて削除されます');
     // **表示名の代わりの値と予約の日数は実装の定数と照合する**（shared-ai-rules 12 章）。

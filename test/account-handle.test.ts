@@ -1,7 +1,15 @@
 import { env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { createAccountRoutes } from '../src/account.js';
 import { HANDLE_REDIRECT_NOTICE, createAccountHandleRoutes } from '../src/account-handle.js';
-import { ACCOUNT_HANDLE_API_PATH, ACCOUNT_HANDLE_PATH, ACCOUNT_TABS, HANDLE_FIELD } from '../src/account-paths.js';
+import {
+  ACCOUNT_DETAILS_PATH,
+  ACCOUNT_HANDLE_API_PATH,
+  ACCOUNT_HANDLE_PATH,
+  ACCOUNT_TABS,
+  ACCOUNT_WITHDRAW_PATH,
+  HANDLE_FIELD,
+} from '../src/account-paths.js';
 import { appReservedHandles, handleAppRequest } from '../src/app.js';
 import { LOGIN_PATH } from '../src/auth/google.js';
 import {
@@ -20,8 +28,10 @@ import { applySchema } from './helpers/schema.js';
 import { pageBodyOf } from './helpers/site-shell.js';
 
 /**
- * 登録情報の画面の、ハンドル名のタブ（`/account/handle`）と保存の口（#381 / 仕様 5.10）。
+ * 設定の画面の、アカウントのタブ（`/account/details`）に置くハンドル名の区画と保存の口（#381 / 仕様 5.10 → #747）。
  *
+ * - **ハンドル名はアカウントのタブの 1 区画である**（#747。旧い `/account/handle` は 301 で送る）
+ * - **並びは ハンドル名 → メールアドレスと登録日 → 退会**（#747。注意書きはフォームの真上）
  * - **改名の画面で「旧い URL は 90 日間、新しいハンドルへ転送されます」と告げる**（利用者の決定）
  * - **予約語は経路表から導いたものが口に届いている**（`src/app.ts` が注入する。結線を `handleAppRequest` で見る）
  * - **断った要求は書き込まない**（PRG の分類だけを query に載せ、入力は載せない）
@@ -84,13 +94,16 @@ function uniqueHandle(prefix: string): string {
 }
 
 /**
- * 時刻を固定したハンドル名のタブの経路（予約語は本物の導出を使う）。
+ * 時刻を固定した、アカウントのタブとハンドル名の経路（予約語は本物の導出を使う）。
  *
  * @param now 現在時刻（UNIX 秒）
  * @returns 経路表
  */
 function routesAt(now: number): readonly Route[] {
-  return createAccountHandleRoutes({ reservedHandles: () => appReservedHandles(env), now: () => now });
+  return [
+    ...createAccountRoutes({ now: () => now }),
+    ...createAccountHandleRoutes({ reservedHandles: () => appReservedHandles(env), now: () => now }),
+  ];
 }
 
 /**
@@ -120,17 +133,23 @@ async function post(
 }
 
 /**
- * ハンドル名のタブを開く。
+ * アカウントのタブを開く（`path` を渡すと、そのパスを開く）。
  *
  * @param routes 経路表
  * @param cookie `Cookie` ヘッダ（未ログインなら null）
  * @param query query（`?` を含む）
+ * @param path 開くパス
  * @returns レスポンス
  */
-async function openTab(routes: readonly Route[], cookie: string | null, query = ''): Promise<Response> {
+async function openTab(
+  routes: readonly Route[],
+  cookie: string | null,
+  query = '',
+  path = ACCOUNT_DETAILS_PATH,
+): Promise<Response> {
   return await dispatch(
     routes,
-    new Request(`${APP_ORIGIN}${ACCOUNT_HANDLE_PATH}${query}`, { headers: cookie === null ? {} : { cookie } }),
+    new Request(`${APP_ORIGIN}${path}${query}`, { headers: cookie === null ? {} : { cookie } }),
     testEnv(),
   );
 }
@@ -148,15 +167,49 @@ async function historyCount(userId: string): Promise<number> {
   return row?.n ?? 0;
 }
 
-describe('ハンドル名のタブ', () => {
-  it('タブの列に入っていて、未ログインならログインへ送る', async () => {
-    expect(ACCOUNT_TABS.map((tab) => tab.path)).toContain(ACCOUNT_HANDLE_PATH);
+describe('アカウントのタブのハンドル名の区画（#747）', () => {
+  it('旧いハンドル名のタブはタブの列に無く、アカウントのタブへ query ごと 301 で送る', async () => {
+    const tabs = ACCOUNT_TABS.map((tab) => tab.path);
+    expect(tabs).not.toContain(ACCOUNT_HANDLE_PATH);
+    expect(tabs).toContain(ACCOUNT_DETAILS_PATH);
+    const routes = routesAt(NOW);
+    // **セッションを見ずに送る**（ログインの要否は送った先が決める）。
+    const legacy = await openTab(routes, null, '?reason=handle-taken', ACCOUNT_HANDLE_PATH);
+    expect(legacy.status).toBe(301);
+    expect(legacy.headers.get('location')).toBe(`${ACCOUNT_DETAILS_PATH}?reason=handle-taken`);
+    const bare = await openTab(routes, null, '', ACCOUNT_HANDLE_PATH);
+    expect(bare.headers.get('location')).toBe(ACCOUNT_DETAILS_PATH);
+    // アプリの経路表でも同じ（`src/app.ts` の結線）。
+    const viaApp = await handleAppRequest(new Request(`${APP_ORIGIN}${ACCOUNT_HANDLE_PATH}?saved=1`), testEnv());
+    expect(viaApp.status).toBe(301);
+    expect(viaApp.headers.get('location')).toBe(`${ACCOUNT_DETAILS_PATH}?saved=1`);
+  });
+
+  it('未ログインならログインへ送る', async () => {
     const routes = routesAt(NOW);
     const opened = await openTab(routes, null);
     expect(opened.status).toBe(303);
     expect(opened.headers.get('location')).toBe(LOGIN_PATH);
     const posted = await post(routes, null, `${HANDLE_FIELD}=someone`);
     expect(posted.headers.get('location')).toBe(LOGIN_PATH);
+  });
+
+  it('並びは ハンドル名 → 注意書き → フォーム → メールアドレスと登録日 → 退会', async () => {
+    const userId = await seedUser();
+    const body = pageBodyOf(await (await openTab(routesAt(NOW), await cookieFor(userId))).text());
+    const order = [
+      '<h2 id="account-handle-heading">ハンドル名</h2>',
+      '変更する前にお読みください',
+      `action="${ACCOUNT_HANDLE_API_PATH}"`,
+      '<h2 id="account-details-heading">メールアドレスと登録日</h2>',
+      '<dt>メールアドレス</dt>',
+      `href="${ACCOUNT_WITHDRAW_PATH}"`,
+    ].map((needle) => {
+      const at = body.indexOf(needle);
+      expect(at, needle).toBeGreaterThanOrEqual(0);
+      return at;
+    });
+    expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
   it('改名すると旧い URL が 90 日間転送されること・30 日に 1 回・予約を、変える前に告げる', async () => {
@@ -170,7 +223,7 @@ describe('ハンドル名のタブ', () => {
     expect(body).toContain('30 日に 1 回まで');
     expect(body).toContain(`${HANDLE_RESERVATION_DAYS} 日のあいだ、旧いハンドル名はほかの人が使えません`);
     expect(body).toContain('ハンドル名はまだ決めていません');
-    expect(body).toContain('<span aria-current="page">ハンドル名</span>');
+    expect(body).toContain('<span aria-current="page">アカウント</span>');
   });
 
   it('決めたハンドル名と、次に変えられる日時を出す', async () => {
@@ -196,7 +249,7 @@ describe('ハンドル名の保存の口', () => {
     const handle = uniqueHandle('save');
     const response = await post(routesAt(NOW), await cookieFor(userId), `${HANDLE_FIELD}=${handle.toUpperCase()}`);
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(`${ACCOUNT_HANDLE_PATH}?saved=1`);
+    expect(response.headers.get('location')).toBe(`${ACCOUNT_DETAILS_PATH}?saved=1`);
     expect(await currentHandleOf(env.DB, userId)).toEqual({ handle, claimedAt: NOW });
   });
 
@@ -211,7 +264,7 @@ describe('ハンドル名の保存の口', () => {
         }),
         testEnv(),
       );
-      expect(response.headers.get('location'), word).toBe(`${ACCOUNT_HANDLE_PATH}?reason=handle-reserved`);
+      expect(response.headers.get('location'), word).toBe(`${ACCOUNT_DETAILS_PATH}?reason=handle-reserved`);
     }
     expect(await currentHandleOf(env.DB, userId)).toBeNull();
     expect(await historyCount(userId)).toBe(0);
@@ -230,10 +283,10 @@ describe('ハンドル名の保存の口', () => {
     ];
     for (const [body, reason] of cases) {
       const response = await post(routes, cookie, body);
-      expect(response.headers.get('location'), body.slice(0, 40)).toBe(`${ACCOUNT_HANDLE_PATH}?reason=${reason}`);
+      expect(response.headers.get('location'), body.slice(0, 40)).toBe(`${ACCOUNT_DETAILS_PATH}?reason=${reason}`);
     }
     const json = await post(routes, cookie, JSON.stringify({ handle: 'abcdef' }), 'application/json');
-    expect(json.headers.get('location')).toBe(`${ACCOUNT_HANDLE_PATH}?reason=handle-invalid-request`);
+    expect(json.headers.get('location')).toBe(`${ACCOUNT_DETAILS_PATH}?reason=handle-invalid-request`);
     expect(await currentHandleOf(env.DB, userId)).toBeNull();
     expect(await historyCount(userId)).toBe(0);
   });
@@ -245,10 +298,10 @@ describe('ハンドル名の保存の口', () => {
     expect((await changeHandle(env.DB, owner, handle, NOW)).ok).toBe(true);
 
     const taken = await post(routesAt(NOW), await cookieFor(other), `${HANDLE_FIELD}=${handle}`);
-    expect(taken.headers.get('location')).toBe(`${ACCOUNT_HANDLE_PATH}?reason=handle-taken`);
+    expect(taken.headers.get('location')).toBe(`${ACCOUNT_DETAILS_PATH}?reason=handle-taken`);
 
     const soon = await post(routesAt(NOW + 1), await cookieFor(owner), `${HANDLE_FIELD}=${uniqueHandle('next')}`);
-    expect(soon.headers.get('location')).toBe(`${ACCOUNT_HANDLE_PATH}?reason=handle-too-soon`);
+    expect(soon.headers.get('location')).toBe(`${ACCOUNT_DETAILS_PATH}?reason=handle-too-soon`);
     const page = await openTab(routesAt(NOW + 1), await cookieFor(owner), '?reason=handle-too-soon');
     expect(page.status).toBe(400);
     expect(pageBodyOf(await page.text())).toContain('ハンドル名の変更は 30 日に 1 回までです。');
@@ -260,13 +313,14 @@ describe('ハンドル名の保存の口', () => {
   });
 });
 
-describe('ハンドル名のタブの見た目（#473 / 仕様 2.5.4 / 2.5.5）', () => {
-  it('フォームはブロックで、保存のボタンは副。主のボタンを置かず、保存の知らせもブロック', async () => {
+describe('ハンドル名の区画の見た目（#473 / 仕様 2.5.4 / 2.5.5 / #747）', () => {
+  it('区画はブロックで、保存のボタンは副。主のボタンを置かず、保存の知らせもブロック', async () => {
     const userId = await seedUser();
     const body = await (await openTab(routesAt(NOW), await cookieFor(userId), '?saved=1')).text();
     expect(body.match(/\bgf-button-primary\b/gu) ?? []).toHaveLength(0);
     const main = pageBodyOf(body);
-    expect(main).toContain(`<form class="gf-block" method="post" action="${ACCOUNT_HANDLE_API_PATH}">`);
+    expect(main).toContain('<section class="gf-block gf-account-block" aria-labelledby="account-handle-heading">');
+    expect(main).toContain(`<form method="post" action="${ACCOUNT_HANDLE_API_PATH}">`);
     expect(main).toContain('<button type="submit" class="gf-button gf-button-secondary">ハンドル名を決める</button>');
     expect(main).toContain('<p class="gf-block" role="status">ハンドル名を保存しました。</p>');
     expect(main).toContain('<ul class="gf-tabs">');

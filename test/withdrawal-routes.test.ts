@@ -359,7 +359,7 @@ describe('読み物の器（2.5.3 / #590）', () => {
     expect(readingMarks(await hidden.text()), '404 の断り').toBe(0);
   });
 
-  it('登録情報の各タブには印が 1 つも無い（フォームが本体の画面である）', async () => {
+  it('設定の各タブには印が 1 つも無い（フォームが本体の画面である）', async () => {
     const user = await seedUser();
     expect(ACCOUNT_TABS.length).toBeGreaterThan(0);
     for (const tab of ACCOUNT_TABS) {
@@ -386,7 +386,7 @@ describe('管理者と運営フラグ（#518 の constraints / J7）', () => {
     expect(await rowJsonOf(admin.id)).toBe(before);
   });
 
-  it('管理者の登録情報には退会の導線が出ない', async () => {
+  it('管理者の設定には退会の導線が出ない', async () => {
     const admin = await seedUser({ isAdmin: true });
     const body = pageBodyOf(await (await call('GET', ACCOUNT_DETAILS_PATH, admin.cookie)).text());
     expect(body).not.toContain(ACCOUNT_WITHDRAW_PATH);
@@ -402,7 +402,7 @@ describe('管理者と運営フラグ（#518 の constraints / J7）', () => {
     expect((await withdraw(operator)).status).toBe(303);
   });
 
-  it('ふつうの利用者の登録情報には退会の導線が出る', async () => {
+  it('ふつうの利用者の設定には退会の導線が出る', async () => {
     const user = await seedUser();
     const body = pageBodyOf(await (await call('GET', ACCOUNT_DETAILS_PATH, user.cookie)).text());
     expect(body).toContain(ACCOUNT_WITHDRAW_PATH);

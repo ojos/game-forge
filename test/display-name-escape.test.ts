@@ -34,7 +34,7 @@ import { applySchema } from './helpers/schema.js';
  * |---|---|
  * | 作品ページ（`/works/<id>`） | `src/work-page.ts` の「作者:」 |
  * | 作品カード（`/works` ほか） | `src/work-card.ts` の `.gf-card-author` |
- * | 登録情報（`/account`） | `src/account.ts` の入力欄の `value` 属性 |
+ * | 設定（`/account`） | `src/account.ts` の入力欄の `value` 属性 |
  * | **作者ページ（`/users/<user_id>`）** | `src/users-page.ts` の `<h1>` と `<title>` |
  *
  * **作者ページは #330 で足した。** あの画面は表示名を**見出しと `<title>` の両方**へ
@@ -161,7 +161,7 @@ describe('表示名のエスケープ（#341 / 5.9）', () => {
     expect(row?.display_name).toBe(HOSTILE_NAME);
   });
 
-  it('登録情報（/account）の入力欄でエスケープされる', async () => {
+  it('設定（/account）の入力欄でエスケープされる', async () => {
     const userId = await seedUser(HOSTILE_NAME);
     const response = await handleAppRequest(
       new Request(`${APP_ORIGIN}${ACCOUNT_PATH}`, { headers: { cookie: await cookieFor(userId) } }),

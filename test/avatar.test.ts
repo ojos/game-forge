@@ -765,7 +765,7 @@ describe('配信（サンドボックス用ホストの /avatars/）', () => {
   });
 });
 
-describe('表示（ヘッダ・カード・作者ページ・登録情報）', () => {
+describe('表示（ヘッダ・カード・作者ページ・設定）', () => {
   it('ヘッダのアバターは、ログイン済みの本人の URL（版なし）を既定の図形の中へ差し込む', async () => {
     const userId = await seedUser();
     const request = new Request(`${APP_ORIGIN}/terms`, { headers: { cookie: await cookieFor(userId) } });
@@ -839,7 +839,7 @@ describe('表示（ヘッダ・カード・作者ページ・登録情報）', (
     expect(await open()).not.toContain('gf-author-avatar');
   });
 
-  it('登録情報の画面は、切り抜きの断りと、設定したアイコン・外すボタンを出す', async () => {
+  it('設定の画面は、切り抜きの断りと、設定したアイコン・外すボタンを出す', async () => {
     const userId = await seedUser();
     const cookie = await cookieFor(userId);
     const open = async (): Promise<string> =>

@@ -37,51 +37,37 @@ export interface ChatMessage {
 export const CHAT_MAX_MESSAGE_LENGTH = 2_000;
 
 /**
- * 1 回の要求に載せる往復の数（#742 / M21-5。仕様 5.16）。**直近 3 往復だけを送る。**
+ * 1 回の要求に載せてよい発話の数（**作者のルールの 2 通を含む**。#695 からの上限。#749 で「超えたときだけ落とす」へ戻した）。
  *
- * ## 「1 回に載せてよい量」を「その会話で送れる回数」にしない
+ * ## 上限以内の会話は全部送る。超えたときだけ最古の往復から落とす（#749）
  *
- * **会話は毎回まるごと送り直す**（Bedrock の `Converse` にセッションは無い）。以前は画面が履歴の
- * 全部を載せ、上限（20 通）をそのまま当てていたので、**「1 回の要求に載せてよい量」が「その会話で
- * 送れる回数」に化けていた**——10 往復（ルールがあれば 9 往復）で、そのチャットでは二度と送れなくなった
- * （#742。本番で利用者が踏んだ）。**いまは窓で切る。** 古い往復は送らないだけで、表示と保存には残る
- * （保存の上限は {@link CHAT_MAX_STORED_MESSAGES} で、送る上限とは別の値である）。
+ * **会話は毎回まるごと送り直す**（Bedrock の `Converse` にセッションは無い）。#742 より前は、この上限を
+ * 「その会話で送れる回数」として断っていたので、10 往復で行き止まりになった。#742 は代わりに**直近 3 往復 ＋
+ * 新しい 1 通（7 通）へ固定で切り**、落ちた往復の中身は最新の返答が持つ下書きが引き継ぐ前提を置いた。
+ * **その前提は本番で外れた**（#749。運営者本人が踏んだ）——**下書きがまだ 1 度も出ていない会話で窓だけが動き、
+ * AI は決まったことを聞き直し続けた。** しかも会話は 24 通で約 1,500 字しかなく、この上限の中で全部送っても
+ * 何の問題も無い大きさだった。
  *
- * ## 窓から落ちた往復の内容は、最新の返答が持つ
+ * **いまは、この上限（と {@link CHAT_MAX_TOTAL_MESSAGE_LENGTH}）を超えたときだけ最古の往復を落とす**
+ * （{@link chatSendWindow}）。**断らない**ので、何往復目でも送れる（#742 の成果はそのまま）。
  *
- * **システムプロンプトの版 3 で、下書きを 1 度出したら毎回【指示文】の全文を出させている**
- * （`src/chat-prompt.ts`）。**窓の中の最新の返答が、それまでの話の要約そのものになる**——
- * 要約による圧縮（別の LLM 呼び出し）を入れずに済むのは、この前提があるからである。
+ * ## 実効の上限は 19 通（ルールがあれば 17 通）である
  *
- * ## 3 往復である理由（#742 の intake。2026-09-20 の実測から引いた）
+ * **この値は偶数で、送る本文は奇数である**（先頭と末尾が `user` で役割が交互。`Converse` の要件でもある）。
+ * 往復（2 通）単位で落とすので、20 通ちょうどにはならず、**19 通**で止まる。ルールがあれば
+ * {@link CHAT_RULE_TURNS} の 2 通を先に空けるので **17 通**である。
  *
- * - **ルールの 2 通を足しても 9 通**で、#728 で踏んだ「ルールで 2 通あふれる」経路が原理的に起きない
- * - 1 往復の重さが頭打ちになる（キャッシュ読み 1,080 ＋ 窓 ＋ 出力で約 3,200 トークン）。**1 日の蓋でも
- *   最悪 9 往復は必ず回る**
- * - 4 往復目までは 1 通も落ちない（下書きへ着地するチャットの多くは 3〜4 往復で終わっている）
- * - **4 往復は採らなかった。** 下書き全文を毎回出させると AI の発話が 1 通 400〜500 トークンに増えるので、
- *   窓を 1 往復広げると 1 日に回せる往復が 1 割強減る
+ * **式ではなく数字で書く。** この葉は `src/chat-conversation.ts` → `src/generate.ts` の経路で
+ * **オーケストレータの束にも入る**。esbuild は識別子どうしの式を「副作用があるかもしれない」とみなして束から
+ * 落とさないので、**式で書くと、使ってもいないオーケストレータの束が変わり、配り直すまで main の配備が止まる**
+ * （#742 で実測した）。値どうしの関係は `test/chat-lambda.test.ts` が見る。
  */
-export const CHAT_SEND_WINDOW_TURNS = 3;
-
-/**
- * 1 回の要求に載せる発話の数（直近 {@link CHAT_SEND_WINDOW_TURNS} 往復 ＋ 新しい 1 通 ＝ **7 通**）。
- *
- * **奇数である。** 先頭と末尾が `user` で役割が交互、という不変条件（`Converse` の要件でもある）を、
- * 往復（2 通）単位で落とすだけで保てる。
- *
- * **式ではなく数字で書く**（`CHAT_SEND_WINDOW_TURNS * 2 + 1` にしない）。この葉は
- * `src/chat-conversation.ts` → `src/generate.ts` の経路で**オーケストレータの束にも入る**。esbuild は
- * 識別子どうしの式を「副作用があるかもしれない」とみなして束から落とさないので、**式で書くと、使っても
- * いないオーケストレータの束が変わり、配り直すまで main の配備が止まる**（#742 で実測した）。
- * 数字どうしが合っていることは `test/chat-lambda.test.ts` が見る。
- */
-export const CHAT_MAX_SEND_MESSAGES = 7;
+export const CHAT_MAX_SEND_MESSAGES = 20;
 
 /**
  * 保存する往復の数（#742）。**超えたら最古の往復から落とす。**
  *
- * **送る上限とは別の値である。** 窓から落ちた往復も、画面の表示と次に開いたときの復元には残す
+ * **送る上限とは別の値である。** 送る上限を超えて落とした往復も、画面の表示と次に開いたときの復元には残す
  * ——**残さないと、送れるようになっても「話したことが消えた」ように見える。**
  */
 export const CHAT_MAX_STORED_TURNS = 30;
@@ -89,8 +75,8 @@ export const CHAT_MAX_STORED_TURNS = 30;
 /**
  * 保存する発話の数（{@link CHAT_MAX_STORED_TURNS} 往復 ＝ **60 通**）。
  *
- * **受け取ってよい発話の数の天井も兼ねる**（エッジと Lambda の検証）。受け取った後で窓へ切るので、
- * **窓より長い会話を送ってくる古い画面や古いエッジも断らない**——断ると、配り替えのあいだ、
+ * **受け取ってよい発話の数の天井も兼ねる**（エッジと Lambda の検証）。受け取った後で送る上限へ切るので、
+ * **上限より長い会話を送ってくる古い画面や古いエッジも断らない**——断ると、配り替えのあいだ、
  * 長いチャットがまた行き止まりになる。
  *
  * **数字で書く理由は {@link CHAT_MAX_SEND_MESSAGES} と同じ**（オーケストレータの束を動かさない）。
@@ -113,10 +99,10 @@ export const CHAT_SIZE_RETRY_LIMIT = 2;
  * 40,000 文字を許すと 1 回で 1 日の蓋の大半を使えるので、この値を置いた。**掛け算にしない**のは
  * `src/orchestrator/handler.ts` が基盤のリトライを 0 にしているのと同じ判断である。
  *
- * **窓（{@link CHAT_MAX_SEND_MESSAGES}）の最悪は 7 × 2,000 ＝ 14,000 文字で、この値を 1 段はみ出す。**
- * **わざとである**（#742 の intake）——**超えた分は最古の往復を落として収める**（{@link chatSendWindow}）
- * ので、その仕組みが必ず踏まれ、**1 度も通らない経路にならない。** 1 往復落とせば 5 × 2,000 ＝ 10,000 で、
- * ルール（{@link CHAT_RULE_MAX_LENGTH}）を足しても収まる。
+ * **超えた分は最古の往復を落として収める**（{@link chatSendWindow}。#742 で「断る値」から変えた）。
+ * 1 通の上限が 2,000 文字なので、19 通の最悪（38,000 文字）はこの値を大きくはみ出す——**長い発話が続けば
+ * 必ず踏まれる経路で、1 度も通らない経路にはならない。** 最新の 1 通とルール
+ * （{@link CHAT_RULE_MAX_LENGTH}）を足しても収まる。
  */
 export const CHAT_MAX_TOTAL_MESSAGE_LENGTH = 12_000;
 
@@ -132,7 +118,7 @@ export function chatCharacters(messages: readonly ChatMessage[]): number {
 
 /** {@link chatSendWindow} の上限（省けば既定値）。 */
 export interface ChatSendWindowLimits {
-  /** 載せてよい発話の数（既定 {@link CHAT_MAX_SEND_MESSAGES}）。 */
+  /** 載せてよい発話の数（ルールの分を含む。既定 {@link CHAT_MAX_SEND_MESSAGES}）。 */
   readonly maxMessages?: number;
   /** 載せてよい文字数の合計（既定 {@link CHAT_MAX_TOTAL_MESSAGE_LENGTH}）。 */
   readonly maxCharacters?: number;
@@ -141,22 +127,29 @@ export interface ChatSendWindowLimits {
    * **ルールも同じ要求に載る**ので、その分だけ会話に使える文字数が減る。
    */
   readonly reservedCharacters?: number;
+  /**
+   * 会話の外で先に使う発話の数（**作者のルール**の {@link CHAT_RULE_TURNS} 通。#749）。
+   * 文字数と同じく、その分だけ会話に使える通数が減る。
+   */
+  readonly reservedMessages?: number;
 }
 
 /**
- * 1 回の要求に載せる範囲を切り出す（#742。**送る窓の正本**）。
+ * 1 回の要求に載せる範囲を切り出す（#742 / #749。**送る範囲の正本**）。
  *
+ * **上限以内なら 1 通も落とさない**（#749。#742 の固定の 7 通はやめた）。超えたときだけ、
  * **最古の往復（2 通）から落とす。** 先頭と末尾が `user` で役割が交互、という不変条件は
  * 2 通ずつ落とすだけで保たれる。**最新の 1 通は必ず残す**——それでも上限を超えるなら、
  * 呼ぶ側が「送れない」と判断する（{@link chatCharacters} で数え直す）。
  *
- * **落とす条件は 2 つ**——発話の数が {@link ChatSendWindowLimits.maxMessages} を超えている、
+ * **落とす条件は 2 つ**——発話の数がルールの分を空けた {@link ChatSendWindowLimits.maxMessages} を超えている、
  * または文字数の合計（ルールの分を含む）が {@link ChatSendWindowLimits.maxCharacters} を超えている。
  *
  * **エッジと Lambda と画面が同じ規則で切る**（二重の検査。送り側と受け側は別々に配られる）。
- * 画面のスクリプトは import できないので、発話の数だけを {@link CHAT_MAX_SEND_MESSAGES} から
- * 埋め込んで切る（`src/chat-section.ts`）。**大きさで断られたときのやり直し**
- * （{@link CHAT_SIZE_RETRY_LIMIT}）も、`maxMessages` を 2 つずつ減らしてこの関数を呼び直す。
+ * 画面のスクリプトは import できないので、同じ規則を {@link CHAT_MAX_SEND_MESSAGES} と
+ * {@link CHAT_MAX_TOTAL_MESSAGE_LENGTH} を埋め込んで書き写している（`src/chat-section.ts` の `windowOf`。
+ * 画面はルールを知らないので空けない——エッジがルールの分を空けて切り直す）。**大きさで断られたときの
+ * やり直し**（{@link CHAT_SIZE_RETRY_LIMIT}）は、`maxMessages` を 2 つずつ減らしてこの関数を呼び直す。
  *
  * @param messages 会話（末尾は新しい `user` の発話）
  * @param limits 上限（省けば既定値）
@@ -166,7 +159,7 @@ export function chatSendWindow(
   messages: readonly ChatMessage[],
   limits: ChatSendWindowLimits = {},
 ): readonly ChatMessage[] {
-  const maxMessages = limits.maxMessages ?? CHAT_MAX_SEND_MESSAGES;
+  const maxMessages = (limits.maxMessages ?? CHAT_MAX_SEND_MESSAGES) - (limits.reservedMessages ?? 0);
   const budget = (limits.maxCharacters ?? CHAT_MAX_TOTAL_MESSAGE_LENGTH) - (limits.reservedCharacters ?? 0);
   let start = 0;
   let total = chatCharacters(messages);
@@ -229,9 +222,9 @@ export const CHAT_RULE_ACKNOWLEDGEMENT = '承知しました。以降のチャ�
 /**
  * ルールが使う発話の数（前置きと受け答えで 2 つ）。
  *
- * **以前はエッジがこのぶんを空けてから受けていた**（上限ちょうどの会話がルールで 2 通あふれるため。#728）。
- * **#742 で送る窓（{@link CHAT_MAX_SEND_MESSAGES}）へ切るようになり、ルールを足しても 9 通なので、
- * あふれる経路そのものが無くなった。** 文字数だけは {@link ChatSendWindowLimits.reservedCharacters} で空ける。
+ * **送る範囲を切るとき、このぶんを先に空ける**（{@link ChatSendWindowLimits.reservedMessages}。#749）。
+ * 空けないと、上限ちょうどの会話がルールで 2 通あふれる（#728 で踏んだ）。文字数も
+ * {@link ChatSendWindowLimits.reservedCharacters} で空ける。
  */
 export const CHAT_RULE_TURNS = 2;
 
@@ -298,8 +291,8 @@ export interface ChatRequestPayload {
   /**
    * 会話。**末尾は必ず `user`** である（エッジが確かめる）。
    *
-   * **送る窓で切ったものである**（{@link chatSendWindow}。#742）。受け取った側も同じ規則で切り直す
-   * ——**古いエッジは窓で切らずに送ってくる**ので、受け取る数の天井は {@link CHAT_MAX_STORED_MESSAGES} に置く。
+   * **送る上限で切ったものである**（{@link chatSendWindow}。#742 / #749）。受け取った側も同じ規則で切り直す
+   * ——**古いエッジは切らずに送ってくる**ので、受け取る数の天井は {@link CHAT_MAX_STORED_MESSAGES} に置く。
    */
   readonly messages: readonly ChatMessage[];
   /** 作者自身の作品の文脈。選んでいなければ載らない。 */

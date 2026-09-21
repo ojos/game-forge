@@ -30,8 +30,8 @@
  * ## 順序は「止める側を先に」
  *
  * 1. ペイロードを検証する（形が違えば `internal`。LLM は呼ばない）
- * 2. **送る窓へ切る**（#742。`chatSendWindow`。**エッジも同じ規則で切ってから送る**——二重に見えるが、
- *    **古いエッジは窓で切らずに送ってくる**ので、受け取る側でも切る）
+ * 2. **送る上限へ切る**（#742 / #749。`chatSendWindow`。**上限以内なら 1 通も落とさない。** エッジも同じ規則で
+ *    切ってから送る——二重に見えるが、**古いエッジは切らずに送ってくる**ので、受け取る側でも切る）
  * 3. **8.2 の Guardrail を、いちばん新しい利用者の発話へ掛ける**（5.16。遮断なら
  *    `prompt-blocked` で、**LLM は呼んでいないので台帳の行も作られない**）
  * 4. Bedrock の `Converse` を呼ぶ。**大きさで断られたら、最古の往復を落として投げ直す**
@@ -363,13 +363,17 @@ export async function handleChatEvent(
     return { ok: false, error: 'internal' };
   }
 
-  // **送る窓へ切る**（#742）。**ルールの文字数を先に空ける**——ルールは同じ要求に載る。
-  // **検査より前に置く**（止める側を先に）。最新の 1 通だけにしても収まらないなら断る
-  // ——いまの上限（1 通 2,000・合計 12,000・ルール 500）では起こらないが、値が動いた日に
-  // 「黙って上限を超えて送る」側へ倒れないようにする。
+  // **送る上限へ切る**（#742 / #749。上限以内なら全部送る）。**ルールの通数と文字数を先に空ける**
+  // ——ルールは同じ要求に載る。**検査より前に置く**（止める側を先に）。最新の 1 通だけにしても
+  // 収まらないなら断る——いまの上限（1 通 2,000・合計 12,000・ルール 500）では起こらないが、
+  // 値が動いた日に「黙って上限を超えて送る」側へ倒れないようにする。
   const rule = payload.rule ?? '';
-  const reservedCharacters = chatCharacters(withChatRule(rule, []));
-  let window = chatSendWindow(payload.messages, { reservedCharacters });
+  const ruleMessages = withChatRule(rule, []);
+  const reservedCharacters = chatCharacters(ruleMessages);
+  let window = chatSendWindow(payload.messages, {
+    reservedCharacters,
+    reservedMessages: ruleMessages.length,
+  });
   if (chatCharacters(window) + reservedCharacters > CHAT_MAX_TOTAL_MESSAGE_LENGTH) {
     console.error('[chat] 最新の発話だけにしても、1 回の要求の上限に収まりません');
     return { ok: false, error: 'internal' };
@@ -425,7 +429,8 @@ export async function handleChatEvent(
       // `名前空間#種別`、ヘッダが無ければ本文の `__type` まで読む。PR #746 の Copilot の指摘）。
       const errorType = await readAwsErrorType(response);
       // **課金前の断りだけを、最古の往復を落として投げ直す**（モジュール冒頭）。
-      // **落とせない（最新の 1 通しか残っていない）なら、投げ直さない。**
+      // **落とせない（最新の 1 通しか残っていない）なら、投げ直さない。** 通数は `window` の長さから
+      // 2 つ減らすだけでよい（ルールの分はすでに空けて切ってある）。
       const next =
         retry < CHAT_SIZE_RETRY_LIMIT && isChatSizeRejection(response.status, errorType)
           ? chatSendWindow(window, { maxMessages: window.length - 2, reservedCharacters })

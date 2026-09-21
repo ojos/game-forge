@@ -15,6 +15,8 @@ import {
   CHAT_MAX_MESSAGE_LENGTH,
   CHAT_MAX_SEND_MESSAGES,
   CHAT_MAX_STORED_MESSAGES,
+  CHAT_MAX_TOTAL_MESSAGE_LENGTH,
+  chatSendWindow,
   type ChatMessage,
 } from '../src/chat-payload.js';
 import { NEW_CHAT_TARGET } from '../src/chat-target.js';
@@ -403,25 +405,46 @@ describe('チャットの区画（5.16「画面は /generate の中の区画」�
     expect(CHAT_SCRIPT).toContain('messages: windowOf(history())');
   });
 
-  it('送る本文は直近の窓だけで、先頭と末尾は user・役割は交互のまま（#742）', () => {
+  it('送る本文は chatSendWindow と同じ規則で切る——上限以内なら全部、超えたら最古の往復から（#742 / #749）', () => {
     // **スクリプトの中の関数を取り出して、そのまま走らせる**（DOM は要らない関数である）。
+    // **#742 ではここが「常に 7 通以下」だった。** #749 で上限を超えたときだけ落とすへ戻したので、
+    // エッジの正本（`chatSendWindow`）と同じ結果を返すことを、通数と文字数の両方で突き合わせる。
     const source = /function windowOf\(list\) \{[\s\S]*?\n {2}\}/u.exec(CHAT_SCRIPT)?.[0];
     expect(source).toBeDefined();
     const windowOf = new Function(`${source!}\nreturn windowOf;`)() as (
       list: readonly ChatMessage[],
     ) => readonly ChatMessage[];
+    const lengths = [1, 3, 5, 25, 60, 500, CHAT_MAX_MESSAGE_LENGTH];
     for (let length = 1; length <= CHAT_MAX_STORED_MESSAGES + 1; length += 2) {
-      const list = Array.from({ length }, (_, index) => ({
-        role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
-        text: `${index}`,
-      }));
-      const sent = windowOf(list);
-      expect(sent.length).toBe(Math.min(length, CHAT_MAX_SEND_MESSAGES));
-      expect(sent[0]!.role).toBe('user');
-      expect(sent[sent.length - 1]!.role).toBe('user');
-      // **切るのは古い側だけ**（最新の発話は必ず載る）。
-      expect(sent[sent.length - 1]).toEqual(list[list.length - 1]);
+      for (const size of lengths) {
+        const list = Array.from({ length }, (_, index) => ({
+          role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+          // **コードポイントで数える**（サロゲートペアを混ぜる）。
+          text: `${index}`.padEnd(size, index % 3 === 0 ? '𠮷' : 'あ'),
+        }));
+        const sent = windowOf(list);
+        expect(sent).toEqual(chatSendWindow(list));
+        expect(sent[0]!.role).toBe('user');
+        expect(sent[sent.length - 1]).toEqual(list[list.length - 1]);
+      }
     }
+  });
+
+  it('上限以内の会話は、1 通も落とさずに送る（#749。#742 の窓では 7 通へ切り、決まったことを聞き直した）', () => {
+    const source = /function windowOf\(list\) \{[\s\S]*?\n {2}\}/u.exec(CHAT_SCRIPT)?.[0];
+    const windowOf = new Function(`${source!}\nreturn windowOf;`)() as (
+      list: readonly ChatMessage[],
+    ) => readonly ChatMessage[];
+    // **実際に踏んだ大きさ（約 1,500 字）を、実効の上限（19 通）の中で送る。**
+    const list = Array.from({ length: CHAT_MAX_SEND_MESSAGES - 1 }, (_, index) => ({
+      role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      text: `${index}`.padEnd(80, 'あ'),
+    }));
+    expect(list.reduce((total, message) => total + message.text.length, 0)).toBeLessThan(CHAT_MAX_TOTAL_MESSAGE_LENGTH);
+    expect(windowOf(list)).toEqual(list);
+    // **上限を 1 往復超えたら、最古の 1 往復だけが落ちる。**
+    const over = [...list, { role: 'assistant' as const, text: '返答' }, { role: 'user' as const, text: '次' }];
+    expect(windowOf(over)).toEqual(over.slice(2));
   });
 
   it('「受け取れませんでした」の文言は、通数ではなく 1 通の長さを言う（#742）', () => {

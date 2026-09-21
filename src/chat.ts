@@ -10,17 +10,19 @@
  * 3. **本文の検証**（形・長さ・発話の交互）
  * 4. **チャットの枠**（`src/chat-quota.ts`。4.3 の月次 → チャットの当月の取り分 → 1 人 1 日のトークン）
  * 5. **作者自身の作品を引く**（`myWorkResult`。**自作かどうかの判定はあちらの `author_id`**）
- * 6. **送る窓へ切る**（#742。`chatSendWindow`。直近 3 往復 ＋ 新しい 1 通。ルールの文字数を先に空ける）
+ * 6. **送る上限へ切る**（#742 / #749。`chatSendWindow`。上限以内なら全部送り、超えたときだけ最古の往復から落とす。ルールの通数と文字数を先に空ける）
  * 7. **Lambda を同期で呼ぶ**（`src/chat-client.ts`。8.2 の Guardrail は関数の中で掛かる）
  * 8. **台帳へ 1 行積む**（`kind = 'chat'`。**書くのはエッジ**）
- * 9. **保存済みの行へ 1 往復を足す**（#742。`appendChatConversation`。1 文の UPDATE で、窓から落ちた往復も保存と復元に残す）
+ * 9. **保存済みの行へ 1 往復を足す**（#742。`appendChatConversation`。1 文の UPDATE で、送る上限を超えて落とした往復も保存と復元に残す）
  *
  * ## 送る量と、送れる回数を分ける（#742）
  *
  * **以前は受け取った会話をそのまま送り、20 通を超えたら断っていた。** 画面は履歴の全部を載せるので、
  * **「1 回の要求に載せてよい量」が「その会話で送れる回数」に化け**、10 往復（ルールがあれば 9 往復）で
- * そのチャットは二度と送れなくなった。**いまは断らずに窓へ切る**——受け取る数の天井は保存の上限
- * （60 通）で、送るのは直近の 7 通だけである。
+ * そのチャットは二度と送れなくなった。**いまは断らずに切る**——受け取る数の天井は保存の上限
+ * （60 通）で、**送る上限（20 通・12,000 文字）以内なら全部送り、超えたときだけ最古の往復から落とす**（#749）。
+ * #742 は直近の 7 通へ固定で切ったが、下書きがまだ出ていない会話で決まったことが落ち、AI が同じ質問へ
+ * 戻り続けた（#749。本番で踏んだ）。
  *
  * ## 文脈はこちらで組み立てる
  *
@@ -292,17 +294,18 @@ export async function handleChat(
   // ——入ると、画面の履歴に作者が消せない往復が 2 つ増える。
   const rule = await readChatRule(env.DB, userId);
 
-  // **送る窓へ切る**（#742。`chatSendWindow`）。**ルールの文字数を先に空ける**——ルールは
-  // Lambda が同じ要求の先頭へ足す（`withChatRule`）。**数える形も同じ関数から作る**
-  // （前置きと受け答えを書き写さない）。
-  //
-  // **発話の数では、もうあふれない。** 窓は 7 通で、ルールの 2 通を足しても 9 通である
-  // （以前は上限ちょうどの会話がルールで 2 通あふれ、ここで 400 を返していた。#728）。
+  // **送る上限へ切る**（#742 / #749。`chatSendWindow`。上限以内なら 1 通も落とさない）。**ルールの通数と
+  // 文字数を先に空ける**——ルールは Lambda が同じ要求の先頭へ足す（`withChatRule`）。**数える形も同じ関数から
+  // 作る**（前置きと受け答えを書き写さない）。空けないと、上限ちょうどの会話がルールで 2 通あふれる（#728）。
   //
   // **最新の 1 通だけにしても収まらないときだけ断る**——いまの上限（1 通 2,000・合計 12,000・
   // ルール 500）では起こらないが、値が動いた日に「黙って上限を超えて送る」側へ倒れないようにする。
-  const ruleCharacters = chatCharacters(withChatRule(rule, []));
-  const window = chatSendWindow(parsed.messages, { reservedCharacters: ruleCharacters });
+  const ruleMessages = withChatRule(rule, []);
+  const ruleCharacters = chatCharacters(ruleMessages);
+  const window = chatSendWindow(parsed.messages, {
+    reservedCharacters: ruleCharacters,
+    reservedMessages: ruleMessages.length,
+  });
   const messageCharacters = chatCharacters(window);
   if (messageCharacters + ruleCharacters > CHAT_MAX_TOTAL_MESSAGE_LENGTH) {
     return json({ error: 'invalid-request' }, 400);

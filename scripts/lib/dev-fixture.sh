@@ -6,7 +6,8 @@
 # ══════════════════════════════════════════════════════════════════════════════
 #
 #   1. ブラウザの実行ファイルを見つける（無ければ赤で落とす）
-#   2. 使い捨ての `.wrangler` state を作り、D1 を仕込む（利用者の手元を汚さない）
+#   2. 使い捨ての `.wrangler` state を作り、D1 を仕込む（利用者の手元を汚さない）。
+#      **仕込んだ行が実在することを、仕込みの本文から導いて数える**（#732。`dev_fixture_verify_seed`）
 #   3. 署名付きセッションを作る（ログインが要る画面まで開けるようにする）
 #   4. dev サーバを HTTPS で起動し、応答するまで待つ
 #
@@ -225,11 +226,20 @@ dev_fixture_up() {
   [[ -n "$BUCKET_NAME" ]] || fail "wrangler.toml から R2 の bucket_name を読めませんでした。"
 
   note "seeding an admin user, six games (draft + published + queued + working + stalled + failed), the keys those games read, a report, a history row and a takedown request"
-  npx wrangler d1 execute DB --local --persist-to "$STATE" --command "
+  # **SQL はファイルで渡す**（#732）。`--command` の引数で渡していたころは、SQL 全体が
+  # **shell の二重引用符 1 つの中**にあり、**逃がし忘れた引用符がその場で文字列を閉じた。**
+  # 語が割れると `--command` は別のコマンドとして実行され、`||` が受け取る終了コードは
+  # **別の何かのもの**になる——**#715 の仕込みは入った日からずっと落ちていたのに、
+  # 幅の検査は `PAGE_WIDTH_PASS` を出し続けた。** ヒアドキュメントには閉じる引用符が無いので、
+  # **この壊れ方そのものが起こらない**（値は今までどおり変数で埋める）。
+  #
+  # **それでも、入ったことは別に確かめる**（下の `dev_fixture_verify_seed`）。渡し方を直すのは
+  # 既知の壊れ方を 1 つ塞ぐだけで、「仕込みが入らないまま緑」を塞ぐのは**行を数えるほう**である。
+  cat >"$WORK/seed.sql" <<SQL
     insert into users (id, google_sub, email, display_name, created_at, bio, profile_links)
       values ('$USER_ID', 'sub-$USER_ID', '$USER_ID@example.invalid', '幅の検査', 1,
               '幅の検査の自己紹介です。外部リンクは空白を持たない長い URL にしてあり、390px の版面で折り返すことを測ります。',
-              '[\"https://example.com/width-check/a-very-long-path-without-any-spaces-that-must-wrap-at-390px-0123456789\"]');
+              '["https://example.com/width-check/a-very-long-path-without-any-spaces-that-must-wrap-at-390px-0123456789"]');
     insert into games (id, author_id, status, title, go_version, created_at, generation_state, source_key, preview_key)
       values ('$GAME_ID', '$USER_ID', 'draft', '幅の検査の作品', '', 1, 'ready', '$SOURCE_KEY', '$DRAFT_PREVIEW_KEY');
     insert into games (id, author_id, status, title, go_version, created_at, generation_state, generation_started_at)
@@ -245,7 +255,7 @@ dev_fixture_up() {
               '$SOURCE_KEY', '$WASM_KEY');
     insert into source_input_keys (source_key, codes, rule_version, extracted_at)
       values ('$SOURCE_KEY',
-              '[\"ArrowLeft\",\"ArrowRight\",\"ArrowUp\",\"ArrowDown\",\"Space\",\"KeyZ\",\"KeyX\",\"Escape\",\"PrintScreen\"]',
+              '["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Space","KeyZ","KeyX","Escape","PrintScreen"]',
               1, 1);
     update games set description = '遊び方: 左右キーで自機を動かし、スペースキーで弾を撃ちます。上から落ちてくるブロックに当たるとゲームオーバーです。' ||
       char(10) || char(10) ||
@@ -261,14 +271,17 @@ dev_fixture_up() {
     -- **相談の会話**（#695 / 仕様 5.16）。生成画面の相談の区画は**会話が 0 件でも描かれる**が、
     -- それでは 1 往復の形（誰の発話かの名前・改行を残す本文）が 1 度も描かれないまま緑になる
     -- （docs/handoff.md 3 章「仕込みに無いものは測れない」）。**長い発話と改行を含む返答**を 1 往復入れる。
-    -- **JSON の二重引用符は、必ずバックスラッシュで逃がす。** この SQL は --command の
-    -- 引数の中（shell の二重引用符の内側）にあるので、逃がしていない二重引用符は**その場で
-    -- 文字列を閉じる。** #715 が逃がさずに入れたため、**この仕込みは 1 度も通っていなかった**
-    -- （#726 で気づいた）。**この注記そのものにも二重引用符を書かない**——コメントであっても
-    -- shell から見れば同じ 1 つの文字列の中である（これも踏んだ）。
+    -- **JSON の二重引用符は、そのまま書く**（#732）。この SQL はヒアドキュメントの中にあり、
+    -- **閉じる引用符が無い**ので、二重引用符は何も閉じない。逃がすと、逃がすための
+    -- バックスラッシュがそのまま値へ入る。
+    -- **以前は --command の引数の中（shell の二重引用符の内側）にあった。** #715 が逃がさずに
+    -- 入れたため**この仕込みは 1 度も通っておらず**（#726 で気づいた）、逃がす作業の途中では
+    -- 注記に書いた二重引用符が同じ形で文字列を閉じた。**渡し方を変えて、その壊れ方を無くした。**
+    -- **ヒアドキュメントの中で特別なのは、変数の展開の記号と逆引用符とバックスラッシュだけである。**
+    -- 注記にも本文にも逆引用符を書かないこと——**書くとその場でコマンドとして実行される**（これも踏んだ）。
     insert into chat_conversations (id, user_id, messages, created_at, updated_at)
       values ('width-check-chat', '$USER_ID',
-              '[{\"role\":\"user\",\"text\":\"幅の検査の相談です。1 行に収まらない長さの発話にしてあります。短い時間で遊べる、避けるゲームを作りたいです。\"},{\"role\":\"assistant\",\"text\":\"どのくらいの時間で遊び終わる形にしますか。\n\n【指示文】\n赤い玉を避けて 30 秒生き延びるゲーム。矢印キーで自機を動かし、当たると終了。残り時間を画面の上に出す。\"}]',
+              '[{"role":"user","text":"幅の検査の相談です。1 行に収まらない長さの発話にしてあります。短い時間で遊べる、避けるゲームを作りたいです。"},{"role":"assistant","text":"どのくらいの時間で遊び終わる形にしますか。\n\n【指示文】\n赤い玉を避けて 30 秒生き延びるゲーム。矢印キーで自機を動かし、当たると終了。残り時間を画面の上に出す。"}]',
               1, 1);
     insert into users (id, google_sub, email, display_name, created_at)
       values ('$PLAIN_USER_ID', 'sub-$PLAIN_USER_ID', '$PLAIN_USER_ID@example.invalid', '幅の検査（ハンドル名なし）', 1);
@@ -306,8 +319,11 @@ dev_fixture_up() {
       values ('$RELATED_TAG_ID', '$PLAIN_USER_ID', 'published', '幅の検査の同じタグの作品', '', 1, 3, 'ready',
               'width-check-related-tag', 'rhythm-sound');
     update games set tag1 = 'puzzle' where id = '$GAME_ID';
-  " >"$WORK/seed.log" 2>&1 ||
+SQL
+  npx wrangler d1 execute DB --local --persist-to "$STATE" --file "$WORK/seed.sql" >"$WORK/seed.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/seed.log" >&2; fail "検査用の行を作れませんでした。"; }
+
+  dev_fixture_verify_seed
 
   # **ソースの本体を R2 へ置く**（#383）。**空白を持たない長い行**（配列リテラル・文字列）と、
   # 日本語の長いコメントを含める——`<pre>` は折り返さないので、`<pre>` の中だけが横に送られ、
@@ -416,6 +432,40 @@ sharp(Buffer.from(svg)).png().toFile(process.argv[1]).catch((error) => { console
     sed 's/^/    /' "$WORK/dev.log" >&2
     fail "dev サーバが応答しませんでした（${BASE}）。"
   fi
+}
+
+##
+# 仕込んだ行が D1 に実在することを確かめる（#732）。**`dev_fixture_up` から呼ぶ。**
+#
+# ## なぜ終了コードでは足りないのか
+#
+# **`npx wrangler … || fail` が見ているのは「走ったものの終了コード」である。** 引用符が
+# 壊れると**走るものそのものが変わる**ので、`||` が受け取るのは別の何かの終了コードになる。
+# **#715 の仕込みは入った日からずっと落ちていたのに、幅の検査は `PAGE_WIDTH_PASS` を
+# 出し続けた**（#726 で気づいた）。手続きではなく**実質**を見る
+# （`.ai-playbook/shared-ai-rules.md` 12 章「機構が結果そのものを生むか」）。
+#
+# ## 数える対象は書き写さない
+#
+# **「N 件あること」と書くと、仕込みを 1 行足すたびに数だけが古くなる。** 数える対象は
+# **仕込みの本文（`$WORK/seed.sql`）から導く**——判定と導出は
+# `scripts/lib/dev-fixture-seed-check.mjs` が持ち、足りない行は
+# `chat_conversations.id=width-check-chat` のように**名前で出る。**
+#
+# **呼ぶ側の `fail` で落ちる。**
+#
+dev_fixture_verify_seed() {
+  node scripts/lib/dev-fixture-seed-check.mjs plan "$WORK/seed.sql" >"$WORK/seed-verify.sql" ||
+    fail "仕込んだ行の一覧を、仕込みの本文から導けませんでした。"
+
+  npx wrangler d1 execute DB --local --persist-to "$STATE" --file "$WORK/seed-verify.sql" --json \
+    >"$WORK/seed-verify.json" 2>"$WORK/seed-verify.log" ||
+    { sed 's/^/    /' "$WORK/seed-verify.log" >&2; fail "仕込んだ行を数えられませんでした。"; }
+
+  local seeded
+  seeded="$(node scripts/lib/dev-fixture-seed-check.mjs judge "$WORK/seed.sql" "$WORK/seed-verify.json")" ||
+    fail "仕込みが D1 に入っていません（上の行が、入らなかったものです）。"
+  note "seeded rows verified: $seeded"
 }
 
 ##

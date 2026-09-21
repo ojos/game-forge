@@ -102,6 +102,18 @@ bash scripts/check-app-css.sh
 echo "[acceptance] (hygiene) node scripts/check-token-contrast.mjs"
 node scripts/check-token-contrast.mjs
 
+# 仕込みが入ったことを確かめる判定の、自己検査（#732）。
+#
+# **実ブラウザの検査（scripts/check-page-width.sh）はここへ入れない線を動かさない。** 入れるのは
+# その中で使う**判定だけ**で、ブラウザも wrangler も D1 も要らない（Node だけで数十 ms）。
+#
+# 見るのは「仕込みの本文から数える行を導けること」と「足りない行が名前で出ること」である。
+# **判定そのものが壊れると、仕込みが入らないまま緑に戻る**——あの検査は手で回す層なので、
+# 壊れていることに気づくのが遅れる。判定の側だけを、接地信号で押さえる。
+# ran_any は立てない（上の 2 つと同じ理由）。
+echo "[acceptance] (hygiene) node scripts/lib/dev-fixture-seed-check.mjs --selftest"
+node scripts/lib/dev-fixture-seed-check.mjs --selftest
+
 # Go の版の写しと正本（ARG GO_VERSION）の機械照合（#141 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く。** 35 ms で終わり（実測。同スクリプト末尾）、npm test より 2 桁安い。

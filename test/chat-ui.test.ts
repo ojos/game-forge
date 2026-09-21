@@ -467,6 +467,49 @@ describe('チャットの区画（5.16「画面は /generate の中の区画」�
     ]);
   });
 
+  describe('枠の表示は「今日の残り NN%」で、円もトークンも出さない（#751）', () => {
+    it('区画の HTML に「トークン」の語も円の額も出ない（開いた時点では残りを隠しておく）', () => {
+      const html = renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET });
+      expect(html).not.toContain('トークン');
+      expect(html).not.toMatch(/[¥￥]|[0-9] ?円/u);
+      expect(html).toMatch(/<p class="gf-generate-quota" id="chat-quota" hidden><\/p>/u);
+    });
+
+    it('スクリプトは残りの割合だけを書き、「トークン」も円も書かない', () => {
+      expect(CHAT_SCRIPT).toContain("'今日の残り ' + value + '%'");
+      expect(CHAT_SCRIPT).toContain('result.payload.remainingPercent');
+      expect(CHAT_SCRIPT).not.toContain('remainingTokens');
+      expect(CHAT_SCRIPT).not.toContain('costJpy');
+      // **スクリプトは本文ごと画面へ届く**ので、コメントにも書かない（`test/cost-alert.test.ts` が
+      // 生成画面に「円」が無いことを見ている。実際に踏んだ）。
+      expect(CHAT_SCRIPT).not.toMatch(/トークン|[¥￥円]/u);
+    });
+
+    it('残りの割合を 0〜100 の整数で出し、壊れた値では書き換えない', () => {
+      const source = /function showRemaining\(percent\) \{[\s\S]*?\n {2}\}/u.exec(CHAT_SCRIPT)?.[0];
+      expect(source).toBeDefined();
+      const quota = { textContent: '', hidden: true };
+      const showRemaining = new Function('quota', `${source!}\nreturn showRemaining;`)(quota) as (
+        percent: number,
+      ) => void;
+      showRemaining(42);
+      expect(quota).toEqual({ textContent: '今日の残り 42%', hidden: false });
+      showRemaining(150);
+      expect(quota.textContent).toBe('今日の残り 100%');
+      showRemaining(-3);
+      expect(quota.textContent).toBe('今日の残り 0%');
+      showRemaining(Number.NaN);
+      expect(quota.textContent).toBe('今日の残り 0%');
+    });
+
+    it('1 日の枠に当たったら 0% を出す（案内の文は今のまま）', () => {
+      expect(CHAT_SCRIPT).toContain("result.payload.error === \"chat-daily-tokens\") { showRemaining(0); }");
+      expect(CHAT_MESSAGES['429:chat-daily-tokens']).toBe(
+        '本日のチャットの枠は終了しました。日付が変わると戻ります（生成はこれまでどおり行えます）。',
+      );
+    });
+  });
+
   it('「受け取れませんでした」の文言は、通数ではなく 1 通の長さを言う（#742）', () => {
     // **通数で止まっているのに「文字数を減らして」と言うのは誤誘導だった。** 通数ではもう断らない。
     const message = CHAT_MESSAGES['400:invalid-request']!;

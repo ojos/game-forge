@@ -9,12 +9,16 @@ import {
 } from '../src/chat-paths.js';
 import {
   CHAT_MAX_MESSAGE_LENGTH,
+  CHAT_MAX_OUTPUT_TOKENS,
   CHAT_MAX_SEND_MESSAGES,
   CHAT_MAX_STORED_MESSAGES,
   CHAT_MAX_TOTAL_MESSAGE_LENGTH,
   CHAT_PAYLOAD_VERSION,
   CHAT_RULE_TURNS,
+  chatCharacters,
   chatSendWindow,
+  renderWorkContext,
+  withChatRule,
   type ChatMessage,
   type ChatRequestPayload,
   type ChatResponsePayload,
@@ -22,22 +26,26 @@ import {
 import { ChatBusy } from '../src/chat-client.js';
 import { saveChatRule } from '../src/chat-rule.js';
 import {
+  CHAT_DAILY_COST_LIMIT_JPY,
+  CHAT_DAILY_COST_PATTERN,
   CHAT_DAILY_TOKENS_REASON,
-  CHAT_DAILY_TOKEN_LIMIT,
-  CHAT_DAILY_TOKEN_PATTERN,
   CHAT_MONTHLY_COST_LIMIT_JPY,
   CHAT_MONTHLY_LIMIT_PATTERN,
   CHAT_MONTHLY_LIMIT_REASON,
   chatQuotaStatus,
-  estimateChatTokens,
+  chatRemainingPercent,
+  chatWorkContextCharacters,
+  estimateChatCostJpy,
 } from '../src/chat-quota.js';
-import { handleChat, handleDeleteChatConversation } from '../src/chat.js';
+import { renderChatPromptText } from '../src/chat-prompt.js';
+import { DEFAULT_GENERATION_MODEL_KEY, findGenerationModel } from '../src/generation-models.js';
+import { handleChat, handleDeleteChatConversation, worstNextChatCharacters } from '../src/chat.js';
 import {
   LATEST_CHAT_ORDER,
   attachChatConversationsToWork,
   latestChatConversation,
 } from '../src/chat-conversation.js';
-import { CHAT_KIND, GENERATION_KIND } from '../src/cost-ledger.js';
+import { CHAT_KIND, GENERATION_KIND, USD_JPY_RATE } from '../src/cost-ledger.js';
 import { currentDeclarationsIn, dailyCallCount, MONTHLY_LIMIT_REASON } from '../src/quota.js';
 import { findDuplicateRoutes, findMalformedPrefixRoutes } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
@@ -49,7 +57,7 @@ import { applySchema } from './helpers/schema.js';
  *
  * **#695 の acceptance のうち、この PR が担う 2 つを機械判定できる形へ落とす。**
  *
- * 1. **往復の枠を超えると止まる**（1 人 1 日のトークン・チャットの当月の取り分・4.3 の月次）
+ * 1. **往復の枠を超えると止まる**（1 人 1 日の額・チャットの当月の取り分・4.3 の月次）
  * 2. **他人の作品の指示が文脈に入らない**
  *
  * あわせて、この PR が新しく作った線を見る。
@@ -298,9 +306,11 @@ describe('チャットの口（仕様 5.16）', () => {
   });
 
   describe('枠（5.16）', () => {
-    it('1 人 1 日のトークンを使い切ると断る（生成の枠は減らさない）', async () => {
+    it('1 人 1 日の額（cost_jpy の合計）が ¥20 に達すると chat-daily-tokens で断る（生成の枠は減らさない）', async () => {
       const userId = await createUser();
-      await seedLedger(userId, CHAT_KIND, { tokens: CHAT_DAILY_TOKEN_LIMIT });
+      // **2 行に分けて積む**（1 日の合計で見ていることを確かめる）。
+      await seedLedger(userId, CHAT_KIND, { costJpy: CHAT_DAILY_COST_LIMIT_JPY / 2 });
+      await seedLedger(userId, CHAT_KIND, { costJpy: CHAT_DAILY_COST_LIMIT_JPY / 2 });
 
       const response = await post(userId, ONE_TURN);
       expect(response.status).toBe(429);
@@ -337,52 +347,88 @@ describe('チャットの口（仕様 5.16）', () => {
       expect(await response.json()).toEqual({ error: MONTHLY_LIMIT_REASON });
     });
 
-    it('生成の行は、チャットの 1 日のトークンを減らさない', async () => {
+    it('生成の行は、チャットの 1 日の額を減らさない', async () => {
       const userId = await createUser();
-      await seedLedger(userId, GENERATION_KIND, { tokens: CHAT_DAILY_TOKEN_LIMIT * 2 });
+      await seedLedger(userId, GENERATION_KIND, { costJpy: CHAT_DAILY_COST_LIMIT_JPY * 2 });
 
       const status = await chatQuotaStatus(testEnv(), userId, NOW);
       expect(status).toEqual({
         kind: 'available',
-        remainingTokens: CHAT_DAILY_TOKEN_LIMIT,
+        remainingJpy: CHAT_DAILY_COST_LIMIT_JPY,
         resetsAt: expect.any(Number),
       });
+    });
+
+    it('トークンの数ではなく額で数える（キャッシュ読みが多い行は、トークンが多くても枠をほとんど減らさない）', async () => {
+      const userId = await createUser();
+      // #751 までの数え方（4 項目の重みなし合計・1 日 30,000）なら、これだけで尽きていた。
+      await seedLedger(userId, CHAT_KIND, { tokens: 30_000, costJpy: 1 });
+
+      const status = await chatQuotaStatus(testEnv(), userId, NOW);
+      expect(status).toEqual({
+        kind: 'available',
+        remainingJpy: CHAT_DAILY_COST_LIMIT_JPY - 1,
+        resetsAt: expect.any(Number),
+      });
+    });
+
+    it('前の日（JST）の額は数えない', async () => {
+      const userId = await createUser();
+      await seedLedger(userId, CHAT_KIND, { costJpy: CHAT_DAILY_COST_LIMIT_JPY, at: NOW - 86_400 });
+
+      const status = await chatQuotaStatus(testEnv(), userId, NOW);
+      expect(status.kind).toBe('available');
+    });
+
+    it('1 日の額 × 3 人 × 30 日が、チャットの当月の取り分の内側にある（5.16 の逆算）', () => {
+      // **定数は素の数値で書き、関係はここで照合する**（#742。式で書くと束が変わった）。
+      expect(CHAT_DAILY_COST_LIMIT_JPY).toBe(20);
+      expect(CHAT_DAILY_COST_LIMIT_JPY * 3 * 30).toBe(1_800);
+      expect(CHAT_DAILY_COST_LIMIT_JPY * 3 * 30).toBeLessThanOrEqual(CHAT_MONTHLY_COST_LIMIT_JPY);
+    });
+
+    it('残りの割合は切り捨てて 0〜100 に収める', () => {
+      expect(chatRemainingPercent(CHAT_DAILY_COST_LIMIT_JPY)).toBe(100);
+      expect(chatRemainingPercent(CHAT_DAILY_COST_LIMIT_JPY * 2)).toBe(100);
+      expect(chatRemainingPercent(CHAT_DAILY_COST_LIMIT_JPY / 2)).toBe(50);
+      // 多く見せない（19.99 / 20 は 99.95% → 99%）。
+      expect(chatRemainingPercent(CHAT_DAILY_COST_LIMIT_JPY - 0.01)).toBe(99);
+      expect(chatRemainingPercent(0)).toBe(0);
+      expect(chatRemainingPercent(-3)).toBe(0);
     });
 
     it('チャットの行は、確定25 の日次 10 回を 1 回も減らさない', async () => {
       const userId = await createUser();
       for (let index = 0; index < 5; index += 1) {
-        await seedLedger(userId, CHAT_KIND, { tokens: 100 });
+        await seedLedger(userId, CHAT_KIND, { tokens: 100, costJpy: 0.1 });
       }
-      await seedLedger(userId, GENERATION_KIND, { tokens: 100 });
+      await seedLedger(userId, GENERATION_KIND, { tokens: 100, costJpy: 0.1 });
 
       const daily = await dailyCallCount(testEnv(), userId, NOW);
       expect(daily.calls).toBe(1);
     });
   });
 
-  describe('1 往復が蓋を超えないこと（PR #712 の Copilot の指摘）', () => {
-    it('見積もりが残りを超える要求は、呼ぶ前に断る', async () => {
+  describe('1 往復が蓋を超えないこと（PR #712 の Copilot の指摘。#751 で円へ移した）', () => {
+    it('見積もりが残りを超える要求は、呼ぶ前に断る（見積もりの額は返さない）', async () => {
       const userId = await createUser();
       // 残りを、短い 1 往復の見積もりより少しだけ小さくする。
-      const estimate = estimateChatTokens({ messageCharacters: 12, sourceBytes: 0 });
-      await seedLedger(userId, CHAT_KIND, { tokens: CHAT_DAILY_TOKEN_LIMIT - estimate + 1 });
+      const estimate = estimateChatCostJpy({ messageCharacters: 12, workCharacters: 0, sourceBytes: 0 });
+      await seedLedger(userId, CHAT_KIND, { costJpy: CHAT_DAILY_COST_LIMIT_JPY - estimate + 0.01 });
 
       const stub = stubAsk({ inputTokens: 1, outputTokens: 1 });
       const response = await post(userId, { messages: [{ role: 'user', text: 'あ'.repeat(12) }] }, stub.ask);
       expect(response.status).toBe(429);
-      expect(await response.json()).toMatchObject({
-        error: CHAT_DAILY_TOKENS_REASON,
-        estimatedTokens: estimate,
-      });
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body).toEqual({ error: CHAT_DAILY_TOKENS_REASON, resetsAt: expect.any(Number) });
       // **呼んでいない**ので、課金も台帳の行も出ない。
       expect(stub.calls).toHaveLength(0);
     });
 
     it('見積もりが残りに収まれば通る（境目）', async () => {
       const userId = await createUser();
-      const estimate = estimateChatTokens({ messageCharacters: 12, sourceBytes: 0 });
-      await seedLedger(userId, CHAT_KIND, { tokens: CHAT_DAILY_TOKEN_LIMIT - estimate });
+      const estimate = estimateChatCostJpy({ messageCharacters: 12, workCharacters: 0, sourceBytes: 0 });
+      await seedLedger(userId, CHAT_KIND, { costJpy: CHAT_DAILY_COST_LIMIT_JPY - estimate - 0.001 });
 
       const stub = stubAsk({ inputTokens: 1, outputTokens: 1 });
       const response = await post(userId, { messages: [{ role: 'user', text: 'あ'.repeat(12) }] }, stub.ask);
@@ -390,21 +436,207 @@ describe('チャットの口（仕様 5.16）', () => {
       expect(stub.calls).toHaveLength(1);
     });
 
-    it('ソースを渡す往復は、単独で 1 日の蓋を超えうる（だから呼ぶ前に数える）', () => {
+    it('見積もりは高い側へ倒す（キャッシュが効かない入力単価の高いほう＋出力の上限）', () => {
+      const model = findGenerationModel(DEFAULT_GENERATION_MODEL_KEY)!;
+      const prompt = [...renderChatPromptText()].length;
+      const inputUsd = Math.max(model.pricing.inputUsdPerMillion, model.pricing.cacheWriteUsdPerMillion ?? 0);
+      const expected =
+        (((prompt + 100) * inputUsd + CHAT_MAX_OUTPUT_TOKENS * model.pricing.outputUsdPerMillion) / 1_000_000) *
+        USD_JPY_RATE;
+      expect(estimateChatCostJpy({ messageCharacters: 100, workCharacters: 0, sourceBytes: 0 })).toBeCloseTo(expected, 9);
+      // **キャッシュ読みの単価では数えない**（それより必ず高い）。
+      const cached =
+        (((prompt + 100) * (model.pricing.cacheReadUsdPerMillion ?? 0) +
+          CHAT_MAX_OUTPUT_TOKENS * model.pricing.outputUsdPerMillion) /
+          1_000_000) *
+        USD_JPY_RATE;
+      expect(estimateChatCostJpy({ messageCharacters: 100, workCharacters: 0, sourceBytes: 0 })).toBeGreaterThan(cached);
+      // **入力単価そのものより低くならない**（キャッシュ書き込みは入力の 1.25 倍）。
+      expect(inputUsd).toBeGreaterThanOrEqual(model.pricing.inputUsdPerMillion);
+    });
+
+    it('作品の文脈（前置き・題名・最初の指示文）も見積もりに入る（PR #753 の Copilot の指摘）', async () => {
+      // **以前は会話とソースだけを数え、`renderWorkContext` が最初の発話へ足す文脈を数えていなかった**
+      // （#751 の前の `estimateChatTokens` からの穴）。残りを「文脈抜きの見積もり」ちょうどにすると、
+      // 直す前は通り、直した後は断る。
+      const userId = await createUser();
+      const own = await seedGame(userId, '指'.repeat(CHAT_MAX_MESSAGE_LENGTH));
+      const withoutContext = estimateChatCostJpy({ messageCharacters: 12, workCharacters: 0, sourceBytes: 0 });
+      await seedLedger(userId, CHAT_KIND, { costJpy: CHAT_DAILY_COST_LIMIT_JPY - withoutContext - 0.001 });
+
+      const stub = stubAsk({ inputTokens: 1, outputTokens: 1 });
+      const response = await post(
+        userId,
+        { messages: [{ role: 'user', text: 'あ'.repeat(12) }], targetKind: 'revise', targetId: own },
+        stub.ask,
+      );
+      expect(response.status).toBe(429);
+      expect(stub.calls).toHaveLength(0);
+
+      // 同じ残りでも、作品を選ばなければ通る（差は文脈の分だけである）。
+      const other = await createUser();
+      await seedLedger(other, CHAT_KIND, { costJpy: CHAT_DAILY_COST_LIMIT_JPY - withoutContext - 0.001 });
+      const plain = await post(other, { messages: [{ role: 'user', text: 'あ'.repeat(12) }] }, stub.ask);
+      expect(plain.status).toBe(200);
+    });
+
+    it('文脈の文字数は Lambda が置く文章から数え、ソースの本体だけを二重に数えない', () => {
+      const work = {
+        title: '題名',
+        prompt: null,
+        description: '説'.repeat(300),
+        tags: ['action', 'puzzle'],
+        source: 'package main\n'.repeat(100),
+      };
+      const rendered = [...renderWorkContext(work)].length;
+      const counted = chatWorkContextCharacters(work);
+      // ソースの本体だけが抜けている（囲みの見出しと ``` の行は残る）。
+      expect(rendered - counted).toBe([...work.source].length);
+      expect(counted).toBeGreaterThan(300);
+      expect(chatWorkContextCharacters(null)).toBe(0);
+      // 見積もりは文脈の分だけ増える。
+      const base = { messageCharacters: 100, sourceBytes: 0 };
+      const model = findGenerationModel(DEFAULT_GENERATION_MODEL_KEY)!;
+      const inputUsd = Math.max(model.pricing.inputUsdPerMillion, model.pricing.cacheWriteUsdPerMillion ?? 0);
+      expect(
+        estimateChatCostJpy({ ...base, workCharacters: counted }) - estimateChatCostJpy({ ...base, workCharacters: 0 }),
+      ).toBeCloseTo(((counted * inputUsd) / 1_000_000) * USD_JPY_RATE, 9);
+    });
+
+    it('ソースを渡す最大の往復は、単独で 1 日の蓋を超えうる（だから呼ぶ前に数える）', () => {
       // **この値がこの直しの理由である。** 64 KiB のソースを載せた最大の往復は、
       // 残りが満額でも 1 日の蓋を超える。
-      const worst = estimateChatTokens({
+      const worst = estimateChatCostJpy({
         messageCharacters: CHAT_MAX_TOTAL_MESSAGE_LENGTH,
+        workCharacters: 0,
         sourceBytes: 64 * 1024,
       });
-      expect(worst).toBeGreaterThan(CHAT_DAILY_TOKEN_LIMIT);
+      expect(worst).toBeGreaterThan(CHAT_DAILY_COST_LIMIT_JPY);
     });
 
     it('見積もりはソースを載せたときだけ増える', () => {
-      const without = estimateChatTokens({ messageCharacters: 100, sourceBytes: 0 });
-      const with_ = estimateChatTokens({ messageCharacters: 100, sourceBytes: 3_000 });
-      expect(with_ - without).toBe(1_000);
+      const without = estimateChatCostJpy({ messageCharacters: 100, workCharacters: 0, sourceBytes: 0 });
+      const with_ = estimateChatCostJpy({ messageCharacters: 100, workCharacters: 0, sourceBytes: 3_000 });
+      const model = findGenerationModel(DEFAULT_GENERATION_MODEL_KEY)!;
+      const inputUsd = Math.max(model.pricing.inputUsdPerMillion, model.pricing.cacheWriteUsdPerMillion ?? 0);
+      expect(with_ - without).toBeCloseTo(((1_000 * inputUsd) / 1_000_000) * USD_JPY_RATE, 9);
     });
+  });
+
+  describe('「今日の残り」は次の 1 回を送れる分である（#751。利用者の決定）', () => {
+    /**
+     * 次の発話を 1〜2,000 字のすべての長さで作り、エッジと同じ規則で切って見積もった額の最大。
+     *
+     * @param sent 前の往復で送った会話（末尾は user）
+     * @param reply 返答
+     * @param rule ルール
+     * @returns 見積もりの最大（円）
+     */
+    function worstEstimateByBruteForce(sent: readonly ChatMessage[], reply: string, rule: string): number {
+      const ruleMessages = rule === '' ? 0 : CHAT_RULE_TURNS;
+      const ruleCharacters = chatCharacters(withChatRule(rule, []));
+      let worst = 0;
+      for (let length = 1; length <= CHAT_MAX_MESSAGE_LENGTH; length += 1) {
+        const next = chatSendWindow(
+          [...sent, { role: 'assistant', text: reply }, { role: 'user', text: 'い'.repeat(length) }],
+          { reservedCharacters: ruleCharacters, reservedMessages: ruleMessages },
+        );
+        const characters = next.reduce((total, message) => total + [...message.text].length, 0) + ruleCharacters;
+        worst = Math.max(worst, estimateChatCostJpy({ messageCharacters: characters, workCharacters: 0, sourceBytes: 0 }));
+      }
+      return worst;
+    }
+
+    it('次の発話の最大の長さが、いつも最大の送信になるとは限らない（だから候補を全部数える）', () => {
+      // 11,000 字の会話 ＋ 返答 400 字。2,000 字の発話は最古の往復を落とさせるが、600 字なら全部載る。
+      const sent: ChatMessage[] = [
+        { role: 'user', text: 'あ'.repeat(1_500) },
+        { role: 'assistant', text: 'あ'.repeat(2_000) },
+        { role: 'user', text: 'あ'.repeat(2_000) },
+        { role: 'assistant', text: 'あ'.repeat(2_000) },
+        { role: 'user', text: 'あ'.repeat(2_000) },
+        { role: 'assistant', text: 'あ'.repeat(1_000) },
+        { role: 'user', text: 'あ'.repeat(500) },
+      ];
+      const reply = 'い'.repeat(400);
+      const naive = chatSendWindow([...sent, { role: 'assistant', text: reply }, { role: 'user', text: 'う'.repeat(2_000) }]);
+      const naiveCharacters = naive.reduce((total, message) => total + [...message.text].length, 0);
+      expect(worstNextChatCharacters(sent, reply, '')).toBeGreaterThan(naiveCharacters);
+      expect(worstNextChatCharacters(sent, reply, '')).toBeLessThanOrEqual(CHAT_MAX_TOTAL_MESSAGE_LENGTH);
+    });
+
+    it('表示が 0% より大きい間は、次に送る発話が 2,000 字以内のどの長さでも、見積もりで断られない', async () => {
+      // **会話の長さ・ルールの有無・使った額を変えて、表示と断る条件を突き合わせる。**
+      const conversations: { readonly messages: ChatMessage[]; readonly rule: string }[] = [
+        { messages: [{ role: 'user', text: '短い' }], rule: '' },
+        {
+          messages: [
+            { role: 'user', text: 'あ'.repeat(1_500) },
+            { role: 'assistant', text: 'あ'.repeat(2_000) },
+            { role: 'user', text: 'あ'.repeat(2_000) },
+            { role: 'assistant', text: 'あ'.repeat(2_000) },
+            { role: 'user', text: 'あ'.repeat(2_000) },
+            { role: 'assistant', text: 'あ'.repeat(1_000) },
+            { role: 'user', text: 'あ'.repeat(500) },
+          ],
+          rule: '',
+        },
+        {
+          messages: [
+            { role: 'user', text: 'あ'.repeat(2_000) },
+            { role: 'assistant', text: 'あ'.repeat(2_000) },
+            { role: 'user', text: 'あ'.repeat(1_200) },
+          ],
+          rule: 'る'.repeat(500),
+        },
+      ];
+      const reply = '【指示文】赤い玉を避けるゲーム';
+      let positives = 0;
+      let zeros = 0;
+      for (const conversation of conversations) {
+        for (const spent of [0, 4, 8, 10, 12, 14, 15, 16]) {
+          const userId = await createUser();
+          if (conversation.rule !== '') {
+            expect(await saveChatRule(env.DB, userId, conversation.rule)).toBe(true);
+          }
+          if (spent > 0) {
+            await seedLedger(userId, CHAT_KIND, { costJpy: spent });
+          }
+          // **使う額が 0 の返答**なので、次の要求の残りは今回の判定のときと同じである。
+          const stub = stubAsk({ inputTokens: 0, outputTokens: 0 });
+          const response = await post(userId, { messages: conversation.messages }, stub.ask);
+          if (response.status !== 200) {
+            continue;
+          }
+          const body = (await response.json()) as { remainingPercent: number };
+          const worst = worstEstimateByBruteForce(stub.calls[0]!.messages, reply, conversation.rule);
+          const remaining = CHAT_DAILY_COST_LIMIT_JPY - spent;
+          if (body.remainingPercent > 0) {
+            positives += 1;
+            // **どの長さでも、見積もりが残りに収まる**（＝断られない）。
+            expect(worst).toBeLessThanOrEqual(remaining);
+            // 実際に最大の長さで送っても通る。
+            const next = await post(
+              userId,
+              {
+                messages: [
+                  ...stub.calls[0]!.messages,
+                  { role: 'assistant', text: reply },
+                  { role: 'user', text: 'い'.repeat(CHAT_MAX_MESSAGE_LENGTH) },
+                ],
+              },
+              stubAsk({ inputTokens: 0, outputTokens: 0 }).ask,
+            );
+            expect(next.status).toBe(200);
+          } else {
+            zeros += 1;
+          }
+        }
+      }
+      // どちらの側も実際に通っている（片側だけを見て緑にならない）。
+      expect(positives).toBeGreaterThan(0);
+      expect(zeros).toBeGreaterThan(0);
+    }, 60_000);
   });
 
   describe('文脈（5.16「見せる情報」）', () => {
@@ -478,8 +710,18 @@ describe('チャットの口（仕様 5.16）', () => {
       // 4.1 の単価（入力 $3 / 出力 $15）と 150 円/ドルから、2,800 × 3 + 400 × 15 = 14,400 → 2.16 円。
       expect(rows.results[0]!.cost_jpy).toBeCloseTo(2.16, 6);
 
-      const body = (await response.json()) as { remainingTokens: number };
-      expect(body.remainingTokens).toBe(CHAT_DAILY_TOKEN_LIMIT - 3_200);
+      // **返すのは残りの割合だけ**（円もトークンも画面に出さない。#751）。**次の 1 回を送れる分**
+      // ——2.16 円を使った後の残り 17.84 円から、さらに次の 1 往復の見積もりを引く。
+      const body = (await response.json()) as Record<string, unknown>;
+      const next = estimateChatCostJpy({
+        messageCharacters: worstNextChatCharacters(ONE_TURN.messages as ChatMessage[], '【指示文】赤い玉を避けるゲーム', ''),
+        workCharacters: 0,
+        sourceBytes: 0,
+      });
+      expect(body['remainingPercent']).toBe(chatRemainingPercent(CHAT_DAILY_COST_LIMIT_JPY - 2.16 - next));
+      // 朝いちばんでも 100% にはならない（次の 1 往復の分を先に引いている）。
+      expect(body['remainingPercent']).toBeLessThan(89);
+      expect(body).not.toHaveProperty('remainingTokens');
     });
 
     it('Guardrail で止めた回は、台帳の行を作らない', async () => {
@@ -601,7 +843,7 @@ describe('チャットの口（仕様 5.16）', () => {
 
     it('断られた往復は保存しない（枠切れ）', async () => {
       const userId = await createUser();
-      await seedLedger(userId, CHAT_KIND, { tokens: CHAT_DAILY_TOKEN_LIMIT });
+      await seedLedger(userId, CHAT_KIND, { costJpy: CHAT_DAILY_COST_LIMIT_JPY });
       await post(userId, ONE_TURN);
       expect(await latestChatConversation(testEnv(), userId, NEW_CHAT_TARGET)).toBeNull();
     });
@@ -898,14 +1140,28 @@ describe('チャットの口（仕様 5.16）', () => {
   describe('仕様書との照合（shared-ai-rules 12 章）', () => {
     const spec = currentDeclarationsIn(env.TEST_PRODUCT_SPEC);
 
-    it('1 人 1 日のトークンが仕様書と一致する', () => {
-      const found = [...spec.matchAll(CHAT_DAILY_TOKEN_PATTERN)].map((match) =>
+    it('1 人 1 日の額が仕様書（5.16）と一致する', () => {
+      // **5.16 の節の中だけを見る**（`CHAT_DAILY_COST_PATTERN` の注記。4.3 に別の話の「1 人 1 日 ¥…」がある）。
+      const from = spec.indexOf('\n### 5.16 ');
+      const to = spec.indexOf('\n## 6. ');
+      expect(from).toBeGreaterThan(0);
+      expect(to).toBeGreaterThan(from);
+      const section = spec.slice(from, to);
+      const found = [...section.matchAll(CHAT_DAILY_COST_PATTERN)].map((match) =>
         Number(match[1]!.replace(/,/gu, '')),
       );
       expect(found.length).toBeGreaterThan(0);
       for (const value of found) {
-        expect(value).toBe(CHAT_DAILY_TOKEN_LIMIT);
+        expect(value).toBe(CHAT_DAILY_COST_LIMIT_JPY);
       }
+    });
+
+    it('1 日 30,000 トークンの枠が、現行の決定として残っていない（#751。取り消し線の経緯は除く）', () => {
+      // **取り消し線（`~~…~~`）の中・1 章・版の履歴は経緯である**（`currentDeclarationsIn` が落とす）。
+      // 残りの本文に、1 日の枠をトークンで宣言する文が 1 つも無いこと。
+      const live = spec;
+      expect(live).not.toMatch(/1 ?(?:人 ?)?1 ?日 ?\*{0,2}30,?000 ?\*{0,2}トークン/u);
+      expect(live).not.toMatch(/30,000 トークン/u);
     });
 
     it('チャットの当月の取り分が仕様書と一致する', () => {

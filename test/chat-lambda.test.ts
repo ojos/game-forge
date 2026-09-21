@@ -12,6 +12,7 @@ import {
   CHAT_RULE_MAX_LENGTH,
   chatCharacters,
   chatSendWindow,
+  renderWorkContext,
   withChatRule,
 } from '../src/chat-payload.js';
 import {
@@ -27,7 +28,6 @@ import {
   handleChatEvent,
   isChatSizeRejection,
   parseChatPayload,
-  renderWorkContext,
 } from '../src/chat/handler.js';
 import { readChatPayload, ChatCallFailed } from '../src/chat-client.js';
 import { findGenerationModel } from '../src/generation-models.js';
@@ -107,13 +107,16 @@ function bedrockError(status: number, type: string): Response {
  * 送った要求の `messages` を読む。
  *
  * @param request 署名済みの要求
- * @returns 送った発話の本文（区切りと文脈を除いた、各発話の最後のブロック）
+ * @returns 送った発話の本文（区切りと文脈を除いた、各発話の最後の本文のブロック。#751 から会話の末尾の
+ *   発話は区切りで終わるので、区切りを飛ばして読む）
  */
 async function sentTexts(request: Request): Promise<string[]> {
   const body = (await request.clone().json()) as {
     messages: readonly { content: readonly { text?: string }[] }[];
   };
-  return body.messages.map((message) => message.content[message.content.length - 1]!.text ?? '');
+  return body.messages.map(
+    (message) => message.content.filter((block) => block.text !== undefined).at(-1)?.text ?? '',
+  );
 }
 
 describe('ペイロードの検証', () => {
@@ -246,48 +249,144 @@ describe('Converse のリクエスト（4.5 / 5.16）', () => {
     expect(messages[0]!.content).toHaveLength(1);
   });
 
-  describe('ルールは区切りの後ろに来る（#742 で `CHAT_RULE_MAX_LENGTH` の注記を直した実測）', () => {
-    // **以前の注記は「ルールは会話の先頭に固定されるので、キャッシュの共有プレフィックスに乗る」だった。**
-    // 組み立てた要求を読むと、そうなっていない。**この 2 つが、直した注記の根拠である。**
-    it('作品を選んだチャットでは、ルールは文脈の区切りの次のブロックにある', async () => {
-      const sentRequests: Request[] = [];
-      await handleChatEvent(
-        {
-          ...ONE_TURN,
-          rule: 'RULE-NEEDLE',
-          work: { title: '題名', prompt: null, description: null, tags: [], source: null },
-        },
-        ROLE_ENV,
-        {
-          send: async (request) => {
-            sentRequests.push(request);
-            return converseResponse();
-          },
-          moderate: async () => {},
-        },
-      );
-      const body = (await sentRequests[0]!.clone().json()) as {
-        messages: readonly { content: readonly Record<string, unknown>[] }[];
-      };
-      const first = body.messages[0]!.content;
-      // 文脈 → 区切り → ルール、の順。**区切りより後ろはキャッシュに乗らない。**
-      expect(String(first[0]!['text'])).toContain('題名');
-      expect(first[1]!['cachePoint']).toEqual({ type: 'default' });
-      expect(String(first[2]!['text'])).toContain('RULE-NEEDLE');
-    });
+  describe('会話の末尾にも区切りを置く（#751。履歴をキャッシュに乗せる）', () => {
+    /** 3 往復目の会話（利用者 → AI → 利用者 → AI → 利用者）。 */
+    const THREE_TURNS = {
+      version: CHAT_PAYLOAD_VERSION,
+      messages: [
+        { role: 'user', text: 'U1' },
+        { role: 'assistant', text: 'A1' },
+        { role: 'user', text: 'U2' },
+        { role: 'assistant', text: 'A2' },
+        { role: 'user', text: 'U3-LATEST' },
+      ],
+    };
+    const WORK = { title: '題名', prompt: null, description: null, tags: [], source: null };
 
-    it('作品を選んでいないチャットでは、messages に区切りが 1 つも無い', async () => {
+    /**
+     * Lambda が実際に送った要求の本文を読む（ルールを展開するのは `handleChatEvent` なので、そこを通す）。
+     *
+     * @param payload ペイロード
+     * @returns 送った `Converse` の本文
+     */
+    async function sent(payload: unknown): Promise<{
+      system: readonly Record<string, unknown>[];
+      messages: readonly { role: string; content: readonly Record<string, unknown>[] }[];
+    }> {
       const sentRequests: Request[] = [];
-      await handleChatEvent({ ...ONE_TURN, rule: 'RULE-NEEDLE' }, ROLE_ENV, {
+      await handleChatEvent(payload, ROLE_ENV, {
         send: async (request) => {
           sentRequests.push(request);
           return converseResponse();
         },
         moderate: async () => {},
       });
-      const body = (await sentRequests[0]!.clone().json()) as { messages: unknown };
-      expect(JSON.stringify(body.messages)).toContain('RULE-NEEDLE');
+      return (await sentRequests[0]!.clone().json()) as {
+        system: readonly Record<string, unknown>[];
+        messages: readonly { role: string; content: readonly Record<string, unknown>[] }[];
+      };
+    }
+
+    /**
+     * 区切りの数（`system` と `messages` の合計）。
+     *
+     * @param body 送った本文
+     * @returns 数
+     */
+    function cachePoints(body: Awaited<ReturnType<typeof sent>>): number {
+      const blocks = [...body.system, ...body.messages.flatMap((message) => message.content)];
+      return blocks.filter((block) => 'cachePoint' in block).length;
+    }
+
+    /**
+     * 最新の利用者の発話の直前（＝その 1 つ前の発話の最後のブロック）が区切りであること。
+     *
+     * @param body 送った本文
+     */
+    function expectCachePointBeforeLatest(body: Awaited<ReturnType<typeof sent>>): void {
+      const latest = body.messages.at(-1)!;
+      expect(latest.role).toBe('user');
+      expect(latest.content).toEqual([{ text: 'U3-LATEST' }]);
+      const previous = body.messages.at(-2)!;
+      expect(previous.content.at(-1)).toEqual({ cachePoint: { type: 'default' } });
+      // **区切りは会話の末尾に 1 つだけ**（途中の発話へ残さない＝毎往復、末尾へ動く）。
+      for (const message of body.messages.slice(1, -2)) {
+        expect(message.content.some((block) => 'cachePoint' in block)).toBe(false);
+      }
+    }
+
+    it('作品なし: システムプロンプトの末尾と会話の末尾の 2 つ', async () => {
+      const body = await sent(THREE_TURNS);
+      expectCachePointBeforeLatest(body);
+      expect(body.messages[0]!.content.some((block) => 'cachePoint' in block)).toBe(false);
+      expect(cachePoints(body)).toBe(2);
+      expect(cachePoints(body)).toBeLessThanOrEqual(4);
+    });
+
+    it('作品あり: システムプロンプトの末尾・文脈の直後・会話の末尾の 3 つ', async () => {
+      const body = await sent({ ...THREE_TURNS, work: WORK });
+      expectCachePointBeforeLatest(body);
+      const first = body.messages[0]!.content;
+      expect(String(first[0]!['text'])).toContain('題名');
+      expect(first[1]).toEqual({ cachePoint: { type: 'default' } });
+      expect(cachePoints(body)).toBe(3);
+      expect(cachePoints(body)).toBeLessThanOrEqual(4);
+    });
+
+    it('作品あり・ルールあり: 区切りは 3 つで、ルールは会話の末尾の区切りより手前にある', async () => {
+      const body = await sent({ ...THREE_TURNS, work: WORK, rule: 'RULE-NEEDLE' });
+      expectCachePointBeforeLatest(body);
+      expect(cachePoints(body)).toBe(3);
+      expect(cachePoints(body)).toBeLessThanOrEqual(4);
+      // 文脈 → 区切り → ルール、の順（#742 の実測のまま）。**ルールは会話の末尾の区切りより前**
+      // なので、#751 からはキャッシュに乗る。
+      const first = body.messages[0]!.content;
+      expect(first[1]).toEqual({ cachePoint: { type: 'default' } });
+      expect(String(first[2]!['text'])).toContain('RULE-NEEDLE');
+      const flat = JSON.stringify(body.messages);
+      expect(flat.indexOf('RULE-NEEDLE')).toBeLessThan(flat.lastIndexOf('cachePoint'));
+    });
+
+    it('作品なし・ルールあり: ルールは会話の末尾の区切りより手前にある', async () => {
+      const body = await sent({ ...THREE_TURNS, rule: 'RULE-NEEDLE' });
+      expectCachePointBeforeLatest(body);
+      expect(cachePoints(body)).toBe(2);
+      expect(String(body.messages[0]!.content[0]!['text'])).toContain('RULE-NEEDLE');
+      expect(body.messages[0]!.content.some((block) => 'cachePoint' in block)).toBe(false);
+    });
+
+    it('初めての発話でも、ルールがあればその受け答えの後ろに区切りが来る（1 往復目からルールを書き込む）', async () => {
+      const body = await sent({ ...ONE_TURN, rule: 'RULE-NEEDLE' });
+      // ルール → 受け答え（＋区切り） → 利用者の発話。
+      expect(body.messages).toHaveLength(3);
+      expect(body.messages[1]!.content.at(-1)).toEqual({ cachePoint: { type: 'default' } });
+      expect(body.messages[2]!.content).toEqual([{ text: '避けるゲームを作りたい' }]);
+      expect(cachePoints(body)).toBe(2);
+    });
+
+    it('初めての発話で、ルールも作品も無ければ messages に区切りは無い（手前に何も無い）', async () => {
+      const body = await sent(ONE_TURN);
       expect(JSON.stringify(body.messages)).not.toContain('cachePoint');
+      expect(cachePoints(body)).toBe(1);
+    });
+
+    it('上限いっぱいの会話（ルール・作品あり）でも、区切りは 4 以下である', async () => {
+      const messages = Array.from({ length: CHAT_MAX_SEND_MESSAGES - CHAT_RULE_TURNS - 2 }, (_, index) => ({
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        text: `M${index}`,
+      }));
+      messages.push({ role: 'user', text: 'U3-LATEST' });
+      const body = await sent({ version: CHAT_PAYLOAD_VERSION, messages, work: WORK, rule: 'RULE-NEEDLE' });
+      // ルールの 2 通を足して、送る上限（実効 19 通）ちょうどである——1 通も落ちていない。
+      expect(body.messages).toHaveLength(CHAT_MAX_SEND_MESSAGES - 1);
+      expectCachePointBeforeLatest(body);
+      expect(cachePoints(body)).toBeLessThanOrEqual(4);
+    });
+
+    it('キャッシュ次元を持たないモデルでは、どの区切りも置かない', () => {
+      const deepseek = findGenerationModel('deepseek-v3-2')!;
+      const body = buildChatConverseRequest(deepseek, parseChatPayload({ ...THREE_TURNS, work: WORK }));
+      expect(JSON.stringify(body)).not.toContain('cachePoint');
     });
   });
 });

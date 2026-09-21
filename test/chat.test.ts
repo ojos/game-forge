@@ -964,8 +964,14 @@ describe('チャットの口（仕様 5.16）', () => {
   describe('仕様書との照合（shared-ai-rules 12 章）', () => {
     const spec = currentDeclarationsIn(env.TEST_PRODUCT_SPEC);
 
-    it('1 人 1 日の額が仕様書と一致する', () => {
-      const found = [...spec.matchAll(CHAT_DAILY_COST_PATTERN)].map((match) =>
+    it('1 人 1 日の額が仕様書（5.16）と一致する', () => {
+      // **5.16 の節の中だけを見る**（`CHAT_DAILY_COST_PATTERN` の注記。4.3 に別の話の「1 人 1 日 ¥…」がある）。
+      const from = spec.indexOf('\n### 5.16 ');
+      const to = spec.indexOf('\n## 6. ');
+      expect(from).toBeGreaterThan(0);
+      expect(to).toBeGreaterThan(from);
+      const section = spec.slice(from, to);
+      const found = [...section.matchAll(CHAT_DAILY_COST_PATTERN)].map((match) =>
         Number(match[1]!.replace(/,/gu, '')),
       );
       expect(found.length).toBeGreaterThan(0);

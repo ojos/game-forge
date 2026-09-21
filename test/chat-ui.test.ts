@@ -480,12 +480,9 @@ describe('チャットの区画（5.16「画面は /generate の中の区画」�
       expect(CHAT_SCRIPT).toContain('result.payload.remainingPercent');
       expect(CHAT_SCRIPT).not.toContain('remainingTokens');
       expect(CHAT_SCRIPT).not.toContain('costJpy');
-      // **スクリプトが画面へ書く文字列**（'…' の定数）に「トークン」と円が無いこと。
-      const literals = CHAT_SCRIPT.match(/'[^'\n]*'/gu) ?? [];
-      for (const literal of literals) {
-        expect(literal).not.toContain('トークン');
-        expect(literal).not.toMatch(/[¥￥円]/u);
-      }
+      // **スクリプトは本文ごと画面へ届く**ので、コメントにも書かない（`test/cost-alert.test.ts` が
+      // 生成画面に「円」が無いことを見ている。実際に踏んだ）。
+      expect(CHAT_SCRIPT).not.toMatch(/トークン|[¥￥円]/u);
     });
 
     it('残りの割合を 0〜100 の整数で出し、壊れた値では書き換えない', () => {

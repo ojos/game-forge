@@ -174,9 +174,12 @@ export function chatRemainingPercent(remainingJpy: number): number {
 /**
  * 仕様書が 1 人 1 日の額を宣言している文の形（テストが照合に使う）。
  *
- * **トークンで宣言する文が残っていないことは、別の形で照合する**（`test/chat.test.ts`）。
+ * **表の形（`| **1 人 1 日** | **¥20** |`）も拾う。** 4.3 には生成の枠の試算で「1 人 1 日 ¥6,230」という
+ * 別の話の文があるので、**テストは 5.16 の節の中だけへ当てる。** トークンで宣言する文が残っていない
+ * ことは、別の形で照合する（`test/chat.test.ts`）。
  */
-export const CHAT_DAILY_COST_PATTERN = /1 ?人 ?1 ?日 ?\*{0,2}[¥￥]([0-9]{1,3}(?:,[0-9]{3})*)/gu;
+export const CHAT_DAILY_COST_PATTERN =
+  /1 ?人 ?1 ?日 ?\*{0,2}(?: ?\| ?\*{0,2})? ?[¥￥]([0-9]{1,3}(?:,[0-9]{3})*)/gu;
 
 /** 仕様書がチャットの当月の取り分を宣言している文の形（テストが照合に使う）。 */
 export const CHAT_MONTHLY_LIMIT_PATTERN =

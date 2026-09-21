@@ -128,8 +128,14 @@ export const CHAT_KEY_HINT_ID = 'chat-key-hint';
 /**
  * キーの案内（#738。5.16「キー」）。**生成にキーが無いことも言う**——「Enter で送れない」を
  * 不具合だと思わせないためである。
+ *
+ * **主のボタンの文言から組み立てる**（PR #754 の Copilot の指摘）。リフォージ／フォークの画面の主は
+ * 「リフォージする」「フォークする」で、「生成する」は存在しない。**案内が実在しない操作を指さないよう、
+ * 文言は `ChatComposer.submitLabel` の 1 か所から、ボタンと案内の両方へ流す。**
  */
-export const CHAT_KEY_HINT = 'Shift+Enter でチャットを送れます（Enter は改行です）。生成は「生成する」のボタンでだけ始まります。';
+export function chatKeyHint(submitLabel: string): string {
+  return `Shift+Enter でチャットを送れます（Enter は改行です）。「${submitLabel}」はボタンを押したときだけ始まります。`;
+}
 
 /**
  * 1 つの欄を持つ入力の塊（#738）。**中身は `src/generate-page.ts` が組み立てた HTML である。**
@@ -147,6 +153,11 @@ export interface ChatComposer {
   readonly field: string;
   /** 生成のボタン（**この画面の主**。`type="submit"`）。 */
   readonly submit: string;
+  /**
+   * 主のボタンの文言（「生成する」「リフォージする」「フォークする」）。**ボタンとキーの案内の両方が
+   * ここから作られる**——別々に書くと、案内だけが古い文言を指す（PR #754 の Copilot の指摘）。
+   */
+  readonly submitLabel: string;
 }
 
 /**
@@ -254,15 +265,15 @@ ${messages}
   <noscript>
     <p><strong>チャットには JavaScript が必要です。</strong></p>
   </noscript>
-  <!-- **欄は 1 つ、ボタンは 2 つ**（#738 / 5.16）。欄と「生成する」は生成のフォームのもので、
-       「チャットする」は同じ欄の中身をチャットへ送る。**主は「生成する」の 1 つだけ**（2.5.5）で、
+  <!-- **欄は 1 つ、ボタンは 2 つ**（#738 / 5.16）。欄と主のボタン（新規は生成・対象があればリフォージ／フォーク）は
+       そのフォームのもので、「チャットする」は同じ欄の中身をチャットへ送る。**主はその 1 つだけ**（2.5.5）で、
        区画のほかのボタンは、チャットするが secondary、下書きを入れる・記録を消すが tertiary である。
        **入力は区画の最後の子なので、常にいちばん下にある**（浮かせない理由は
        \`public/assets/app.css\` の \`.gf-chat\` の冒頭）。 -->
   ${composer.open}
     ${composer.head}
     ${composer.field}
-    <p class="gf-generate-hint" id="${CHAT_KEY_HINT_ID}">${escapeHtml(CHAT_KEY_HINT)}</p>
+    <p class="gf-generate-hint" id="${CHAT_KEY_HINT_ID}">${escapeHtml(chatKeyHint(composer.submitLabel))}</p>
     <div class="gf-chat-composer-row">
       <button id="chat-send" class="gf-button gf-button-secondary" type="button">チャットする</button>
       ${composer.submit}

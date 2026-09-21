@@ -764,6 +764,9 @@ const PAGE_HEADINGS: Readonly<
   },
 };
 
+/** 新規の画面の主のボタンの文言（#738。ボタンとキーの案内の両方がこれを使う）。 */
+const NEW_SUBMIT_LABEL = '生成する';
+
 function signedInSection(view: GeneratePageView): string {
   // 4.4 の常時表示。**状態にかかわらず必ず 1 つ出る。** 文言は固定文字列だが、
   // `escapeHtml` は通す（`src/signup.ts` / `src/invite-issuance.ts` と同じ理由で、
@@ -818,7 +821,8 @@ ${stillAvailableSection()}`;
       field: `<textarea id="generate-prompt" name="prompt" rows="${chatShown ? 3 : 5}" maxlength="${maxLength}"
             aria-describedby="${describedBy('generate-title-hint')}"
             placeholder="${TITLE_DECLARATION_EXAMPLE}" required></textarea>`,
-      submit: `<button id="generate-submit" class="gf-button gf-button-primary" type="submit" disabled>生成する</button>`,
+      submit: `<button id="generate-submit" class="gf-button gf-button-primary" type="submit" disabled>${escapeHtml(NEW_SUBMIT_LABEL)}</button>`,
+      submitLabel: NEW_SUBMIT_LABEL,
     };
   } else {
     // **対象があるチャットでは、生成のフォームではなくリフォージ／フォークのフォームを描く**
@@ -835,6 +839,7 @@ ${stillAvailableSection()}`;
     const formId = isRevise ? 'revise-form' : 'fork-form';
     const promptId = isRevise ? 'revise-prompt' : 'fork-prompt';
     const label = isRevise ? 'どう直しますか' : 'どう変えてフォークしますか';
+    const submitLabel = isRevise ? 'リフォージする' : 'フォークする';
     composer = {
       open: `<form id="${formId}" class="${formClass}" method="post" action="${action}">
   <input type="hidden" name="${idField}" value="${escapeHtml(view.target.id)}">`,
@@ -846,9 +851,8 @@ ${stillAvailableSection()}`;
         chatShown ? ` aria-describedby="${CHAT_KEY_HINT_ID}"` : ''
       }
             placeholder="例: 玉の動きをもっと速くして、当たったら音を鳴らす" required></textarea>`,
-      submit: isRevise
-        ? `<button id="generate-submit" class="gf-button gf-button-primary" type="submit">リフォージする</button>`
-        : `<button id="generate-submit" class="gf-button gf-button-primary" type="submit">フォークする</button>`,
+      submit: `<button id="generate-submit" class="gf-button gf-button-primary" type="submit">${escapeHtml(submitLabel)}</button>`,
+      submitLabel,
     };
   }
 

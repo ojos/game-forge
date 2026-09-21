@@ -1,3 +1,4 @@
+import { escapeHtml } from '../src/html.js';
 import { env } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -22,7 +23,7 @@ import {
 import { NEW_CHAT_TARGET } from '../src/chat-target.js';
 import {
   CHAT_DRAFT_HEADING,
-  CHAT_KEY_HINT,
+  chatKeyHint,
   CHAT_KEY_HINT_ID,
   CHAT_MESSAGES,
   CHAT_SCRIPT,
@@ -79,6 +80,7 @@ const COMPOSER: ChatComposer = {
   head: '<label for="generate-prompt">どんなゲームを作りますか</label>',
   field: '<textarea id="generate-prompt" name="prompt" rows="3" required></textarea>',
   submit: '<button id="generate-submit" class="gf-button gf-button-primary" type="submit" disabled>生成する</button>',
+  submitLabel: '生成する',
 };
 
 /** 区画を描く（入力の塊は {@link COMPOSER}）。 */
@@ -507,9 +509,27 @@ describe('チャットの区画（5.16「画面は /generate の中の区画」�
     it('キーの案内を欄のそばに出し、生成にキーが無いことも言う', () => {
       const html = chatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET });
       expect(html).toContain(`id="${CHAT_KEY_HINT_ID}"`);
-      expect(CHAT_KEY_HINT).toContain('Shift+Enter');
-      expect(CHAT_KEY_HINT).toContain('Enter は改行');
-      expect(CHAT_KEY_HINT).toContain('生成は「生成する」のボタンでだけ');
+      expect(chatKeyHint('生成する')).toContain('Shift+Enter');
+      expect(chatKeyHint('生成する')).toContain('Enter は改行');
+      expect(html).toContain(escapeHtml(chatKeyHint('生成する')));
+    });
+
+    it('キーの案内は、その画面に実在する主のボタンだけを指す（PR #754 の Copilot の指摘）', () => {
+      // **リフォージ／フォークの画面の主は「リフォージする」「フォークする」**で、「生成する」は無い。
+      // 案内と主のボタンが同じ文言（`submitLabel`）から作られていることを、描いた HTML で突き合わせる。
+      for (const label of ['生成する', 'リフォージする', 'フォークする']) {
+        const composer = {
+          ...COMPOSER,
+          submit: `<button id="generate-submit" class="gf-button gf-button-primary" type="submit">${label}</button>`,
+          submitLabel: label,
+        };
+        const html = renderChatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET }, composer);
+        expect(html).toContain(escapeHtml(chatKeyHint(label)));
+        expect(html).toContain(`>${label}</button>`);
+        for (const other of ['生成する', 'リフォージする', 'フォークする'].filter((l) => l !== label)) {
+          expect(html).not.toContain(`「${other}」`);
+        }
+      }
     });
   });
 

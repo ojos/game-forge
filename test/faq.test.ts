@@ -6,7 +6,7 @@ import { FAQ_ENTRIES, FAQ_TITLE, MCP_SERVER_URL, faqBody } from '../src/faq.js';
 import { ACCOUNT_APPS_PATH } from '../src/account-paths.js';
 import { MCP_TOOL_NAMES } from '../src/mcp-server.js';
 import { PUBLIC_WORKS_PATH } from '../src/works-paths.js';
-import { OAUTH_SCOPE_LABELS, SCOPE_WORKS_GENERATE } from '../src/oauth-paths.js';
+import { OAUTH_SCOPE_LABELS, SCOPE_WORKS_GENERATE, SCOPE_WORKS_WRITE } from '../src/oauth-paths.js';
 import { TYPICAL_WAIT_TEXT } from '../src/generate-page.js';
 import { INVITE_RECOVERY_DAYS } from '../src/invite-balance.js';
 import { INVITE_QUOTA } from '../src/invite-issuance.js';
@@ -367,10 +367,12 @@ describe('AI からの接続（#696 / MCP）', () => {
     expect(answer).toContain('公開・削除・退会はできません');
     // 同意画面の scope の名前と同じ綴りで、外せることを案内する。
     expect(answer).toContain(`「${OAUTH_SCOPE_LABELS[SCOPE_WORKS_GENERATE]!.name}」を外す`);
+    expect(answer).toContain(`「${OAUTH_SCOPE_LABELS[SCOPE_WORKS_WRITE]!.name}」を外す`);
+    expect(answer).toContain('作品名・説明・タグを書き換え');
     expect(answer).toContain('href="#quota"');
     expect(oldOperationNamesIn(answer)).toEqual([]);
-    // 道具は 8 本のまま（増やしたら、ここの「できること」を見直す）。
-    expect(MCP_TOOL_NAMES).toHaveLength(8);
+    // 道具は 9 本のまま（増やしたら、ここの「できること」を見直す。#755 で update_my_work を足した）。
+    expect(MCP_TOOL_NAMES).toHaveLength(9);
   });
 
   it('AI から読めるもの（自分の作品・公開作品の一覧と検索・作者の公開プロフィール）と、読めないもの（ほかの方のソース）を書く（#711）', () => {

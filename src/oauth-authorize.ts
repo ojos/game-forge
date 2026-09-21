@@ -14,7 +14,7 @@
  * 2. 未ログインなら、**要求を署名した一時 cookie（{@link PENDING_COOKIE}）に積み**、ログインへ送る。ログインの戻り先は
  *    固定の {@link AUTHORIZE_RESUME_PATH} だけで（`src/auth/google.ts` の `safeReturnPath` の「定数だけ・512 文字まで」を
  *    崩さない）、そこが cookie を読んで `/authorize?…` へ送り直す
- * 3. ログイン済みなら同意画面を出す——**アプリ名・戻り先のホスト名（loopback なら注記）・2 つの scope を個別に外せる
+ * 3. ログイン済みなら同意画面を出す——**アプリ名・戻り先のホスト名（loopback なら注記）・3 つの scope を個別に外せる
  *    チェックボックス**。枠への埋め込みを禁じる（`frame-ancestors 'none'` と `X-Frame-Options: DENY`）
  * 4. `POST /authorize?…`（同じ query）— **同意の値（{@link CONSENT_TOKEN_FIELD}）を照合してから**、承諾なら
  *    `completeAuthorization`（props は `{ userId }`、scope は選ばれたものだけ）、拒否なら `error=access_denied` で戻す。

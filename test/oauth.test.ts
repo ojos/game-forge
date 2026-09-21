@@ -26,6 +26,7 @@ import {
   PENDING_AUTHORIZATION_COOKIE,
   SCOPE_WORKS_GENERATE,
   SCOPE_WORKS_READ,
+  SCOPE_WORKS_WRITE,
 } from '../src/oauth-paths.js';
 import { isOAuthProviderPath, oauthHelpers } from '../src/oauth-provider.js';
 import {
@@ -346,7 +347,7 @@ describe('メタデータとトークンなしの /mcp（部品の口）', () =>
     expect(metadata['authorization_endpoint']).toBe(`${APP_ORIGIN}/authorize`);
     expect(metadata['token_endpoint']).toBe(`${APP_ORIGIN}/token`);
     expect(metadata['registration_endpoint']).toBe(`${APP_ORIGIN}/register`);
-    expect(metadata['scopes_supported']).toEqual([SCOPE_WORKS_READ, SCOPE_WORKS_GENERATE]);
+    expect(metadata['scopes_supported']).toEqual([SCOPE_WORKS_READ, SCOPE_WORKS_WRITE, SCOPE_WORKS_GENERATE]);
     // **PKCE は S256 だけ**（plain を許さない）。implicit は出さない。
     expect(metadata['code_challenge_methods_supported']).toEqual(['S256']);
     expect(metadata['response_types_supported']).toEqual(['code']);
@@ -363,7 +364,7 @@ describe('メタデータとトークンなしの /mcp（部品の口）', () =>
       const metadata = (await response.json()) as Record<string, unknown>;
       expect(metadata['resource'], path).toBe(`${APP_ORIGIN}/mcp`);
       expect(metadata['authorization_servers'], path).toEqual([APP_ORIGIN]);
-      expect(metadata['scopes_supported'], path).toEqual([SCOPE_WORKS_READ, SCOPE_WORKS_GENERATE]);
+      expect(metadata['scopes_supported'], path).toEqual([SCOPE_WORKS_READ, SCOPE_WORKS_WRITE, SCOPE_WORKS_GENERATE]);
     }
   });
 
@@ -405,7 +406,7 @@ describe('フロー全体（DCR → 同意 → code → token → /mcp → refre
   it('承諾で code が出て、トークンで /mcp の tools/list が通り（道具の中身は test/mcp-server.test.ts）、refresh で入れ替わる', async () => {
     const user = await seedUser();
     const connected = await connect(user.cookie);
-    expect(connected.scope.split(' ').sort()).toEqual([SCOPE_WORKS_GENERATE, SCOPE_WORKS_READ]);
+    expect(connected.scope.split(' ').sort()).toEqual([SCOPE_WORKS_GENERATE, SCOPE_WORKS_READ, SCOPE_WORKS_WRITE]);
     // トークンの形は `<利用者の id>:<許可の id>:<秘密>`（部品）。
     expect(connected.accessToken.startsWith(`${user.id}:`)).toBe(true);
 
@@ -577,7 +578,7 @@ describe('同意画面（/authorize）', () => {
     }
   });
 
-  it('同意画面は枠への埋め込みを禁じ、アプリ名・戻り先のホスト名・2 つの scope のチェックボックスを出す', async () => {
+  it('同意画面は枠への埋め込みを禁じ、アプリ名・戻り先のホスト名・3 つの scope のチェックボックスを出す', async () => {
     const user = await seedUser();
     const clientId = await register(WEB_REDIRECT, '<b>悪い名前</b>');
     const { challenge } = await pkce();

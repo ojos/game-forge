@@ -29,6 +29,7 @@
  * | `get_me` | `loadMe`（`src/users-api.ts`） | `works:read` |
  * | `list_public_works` | `publicWorksListResult`（`src/public-works-api.ts`。5.13 の口と同じ関数とキャッシュ） | `works:read` |
  * | `get_public_user` | `publicUserResult`（`src/users-api.ts`。5.14 の口と同じ判定） | `works:read` |
+ * | `update_my_work` | `saveWork`（`src/work-save.ts`。エディットページの「保存」と同じ関数。公開設定は渡さない） | `works:write` |
  * | `start_generation` | `parseGenerateRequest` の規則 → `startGeneration`（`src/generate.ts`） | `works:generate` |
  * | `start_revision` | `validateReviseInput` → `startRevision`（`src/revise.ts`） | `works:generate` |
  *
@@ -64,7 +65,7 @@
  * 指示の混入（そこに埋め込まれた文が、読んだ AI への指示として効くこと）への対処は 1 点——**道具の説明と
  * サーバーの `instructions` の両方に、指示として扱わないことを書く**（{@link UNTRUSTED_TEXT_NOTICE}）。
  *
- * **`tools/list` は scope に関わらず 8 本とも出す。** 持っている scope の道具だけを出すと、読むだけの接続の AI は
+ * **`tools/list` は scope に関わらず 9 本とも出す。** 持っている scope の道具だけを出すと、読むだけの接続の AI は
  * 生成の道具があることを知らず、呼ばないので 403 も起きず、利用者が「生成を許す」へつなぎ直す合図（段階的な認可）が
  * 生まれない。道具の説明に要る scope を書き、呼ばれたら 403 で知らせる。
  *
@@ -83,7 +84,13 @@ import type { GenerationPipeline } from './generate.js';
 import { defaultPipeline, GenerationInFlight, parseGenerateRequest, QuotaExceeded, startGeneration } from './generate.js';
 import { MY_WORKS_FILTERS } from './my-works-query.js';
 import { normalizeHost } from './origins.js';
-import { MCP_PATH, PROTECTED_RESOURCE_METADATA_PATH, SCOPE_WORKS_GENERATE, SCOPE_WORKS_READ } from './oauth-paths.js';
+import {
+  MCP_PATH,
+  PROTECTED_RESOURCE_METADATA_PATH,
+  SCOPE_WORKS_GENERATE,
+  SCOPE_WORKS_READ,
+  SCOPE_WORKS_WRITE,
+} from './oauth-paths.js';
 import { isOAuthUserActive } from './oauth-user.js';
 import { workPagePath } from './paths.js';
 import { publicWorksListResult } from './public-works-api.js';
@@ -93,9 +100,13 @@ import { revisionRefusalBody, startRevision, validateReviseInput } from './revis
 import { readLimitedText } from './routes.js';
 import { loadMe, publicUserResult } from './users-api.js';
 import { workEditPath } from './work-edit-paths.js';
+import { GAME_ID_PATTERN, REMOVE_BODY_REFUSALS } from './work-page.js';
+import type { WorkSaveDeps } from './work-save.js';
+import { saveWork } from './work-save.js';
 import { WORK_SEARCH_FIELD } from './work-search.js';
-import { WORK_TAG_FIELD } from './work-tags.js';
+import { MAX_WORK_TAGS, WORK_TAG_FIELD, WORK_TAGS } from './work-tags.js';
 import { MY_WORKS_API_MAX_OFFSET, MY_WORKS_API_PAGE_SIZE, myWorkResult, myWorksListResult } from './works-api.js';
+import { MAX_DESCRIPTION_LENGTH, MAX_TITLE_LENGTH } from './games.js';
 import { MAX_PAGE, WORKS_PER_PAGE } from './works-list.js';
 
 /** 道具の名前。 */
@@ -106,6 +117,7 @@ export const MCP_TOOL_NAMES = [
   'get_me',
   'list_public_works',
   'get_public_user',
+  'update_my_work',
   'start_generation',
   'start_revision',
 ] as const;
@@ -123,6 +135,7 @@ export const MCP_TOOL_SCOPES: Readonly<Record<McpToolName, string>> = {
   get_me: SCOPE_WORKS_READ,
   list_public_works: SCOPE_WORKS_READ,
   get_public_user: SCOPE_WORKS_READ,
+  update_my_work: SCOPE_WORKS_WRITE,
   start_generation: SCOPE_WORKS_GENERATE,
   start_revision: SCOPE_WORKS_GENERATE,
 };
@@ -367,7 +380,7 @@ function statusTool(gameId: string): { readonly tool: 'get_my_work'; readonly ar
 }
 
 /**
- * サーバー（道具 8 本）を組む。**要求ごとに作る**（SDK の `createMcpHandler` が要求ごとに呼ぶ。状態を持たない）。
+ * サーバー（道具 9 本）を組む。**要求ごとに作る**（SDK の `createMcpHandler` が要求ごとに呼ぶ。状態を持たない）。
  *
  * @param call 要求ごとの値
  * @param origin アプリのホストの origin（結果の中のパスの起点として案内する）
@@ -377,7 +390,7 @@ function buildServer(call: McpCallContext, origin: string): McpServer {
   const server = new McpServer(SERVER_INFO, {
     capabilities: { tools: {} },
     instructions: [
-      'Game Forge は、自然文の指示から遊べるブラウザゲームを作るサービスです。この接続では、あなた（利用者）の作品の読み取りと、生成・リフォージの開始と、公開されている作品の一覧・検索（list_public_works）と作者の公開プロフィール（get_public_user）の読み取りができます。ほかの方の作品のソースは読めません（get_my_work_source が返すのは自分の作品のソースだけです）。',
+      'Game Forge は、自然文の指示から遊べるブラウザゲームを作るサービスです。この接続では、あなた（利用者）の作品の読み取りと、作品名・説明・タグの書き換え（update_my_work）と、生成・リフォージの開始と、公開されている作品の一覧・検索（list_public_works）と作者の公開プロフィール（get_public_user）の読み取りができます。ほかの方の作品のソースは読めません（get_my_work_source が返すのは自分の作品のソースだけです）。',
       UNTRUSTED_TEXT_NOTICE,
       '生成とリフォージ（公開前の自分の作品の作り直し）は始めるだけで、完成まで 80 秒以上かかります。start_generation / start_revision の結果の status にある get_my_work で、generation.state（新規）や revision.running（リフォージ）を、間を空けて確かめてください。',
       `結果に含まれるパス（/works/… など）は ${origin} からの相対です。/api/ で始まるパスはこの接続のトークンでは読めないので、対応する道具を使ってください。`,
@@ -513,6 +526,27 @@ function buildServer(call: McpCallContext, origin: string): McpServer {
   );
 
   server.registerTool(
+    'update_my_work',
+    {
+      title: '自分の作品の作品名・説明・タグを書き換える',
+      description: `自分の作品（下書き・公開済み）の作品名・説明・タグを書き換えます。省いた項目は変えません。作品名は ${MAX_TITLE_LENGTH} 文字を超えると切り詰め、説明は ${MAX_DESCRIPTION_LENGTH} 文字まで、タグは ${MAX_WORK_TAGS} 個まで（${WORK_TAGS.map((tag) => tag.id).join(' / ')}。空の配列でタグを外します）。作品名 → 説明 → タグの順に保存し、途中で断られたらそこで止めて、保存できた項目を saved に返します（変更の間隔が短すぎる too-soon・使えない語 denied-term・長すぎる too-long など）。公開・公開の取りやめ・削除はできません。生成中・失敗した作品は not-ready、公開を停止した作品は removed、自分の作品でない id は not-found です。scope: ${SCOPE_WORKS_WRITE}`,
+      inputSchema: z.strictObject({
+        id: z.string().describe('作品 id（UUID）'),
+        title: z.string().optional().describe(`作品名（${MAX_TITLE_LENGTH} 文字まで）`),
+        description: z.string().optional().describe(`説明（${MAX_DESCRIPTION_LENGTH} 文字まで。空文字で消します）`),
+        tags: z.array(z.string()).optional().describe(`タグの識別子の配列（${MAX_WORK_TAGS} 個まで）`),
+      }),
+      annotations: starts,
+    },
+    guarded(
+      call,
+      'update_my_work',
+      async (args: { id: string; title?: string; description?: string; tags?: string[] }) =>
+        await updateMyWorkTool(call, args),
+    ),
+  );
+
+  server.registerTool(
     'start_generation',
     {
       title: '新しい作品の生成を始める',
@@ -550,6 +584,60 @@ function buildServer(call: McpCallContext, origin: string): McpServer {
   );
 
   return server;
+}
+
+/**
+ * `update_my_work` の公開設定の段。**呼ばれることはない**——公開設定を渡さない（`visibility: null`）ので、`saveWork` が
+ * 呼ぶのは作品名 → 説明 → タグの 3 段だけで、撮影と改造の通知の段には届かない。届いたら取りこぼしなので例外にする
+ * （{@link guarded} が `internal error` に落とす）。
+ */
+const NO_VISIBILITY_CHANGE: WorkSaveDeps = {
+  start: () => Promise.reject(new Error('update_my_work は公開設定を変えない')),
+  notify: () => Promise.reject(new Error('update_my_work は公開設定を変えない')),
+};
+
+/**
+ * `update_my_work` の中身（#755）。**エディットページの「保存」と同じ関数（`saveWork`）を、公開設定を渡さずに呼ぶ。**
+ *
+ * - 作者の一致・状態（公開停止・未完成）・長さ・8.3 の語・変更の間隔・変更の履歴は、`saveWork` が呼ぶ 1 項目ずつの関数
+ *   （`renameGame` / `describeGame` / `retagGame`）が持つ。ここには書き写さない
+ * - 変えていない項目は `saveWork` が呼ばない（同じ値の入れ直しで変更の間隔を消費しない）
+ * - id の綴りは `/api/works/save` の本文の検査と同じ正規表現で見て、同じ分類名（`invalid-game-id`）で断る
+ * - 結果は `/api/works/save` の JSON と同じ形（`{ saved: true, parts }` / `{ error, saved }`）
+ *
+ * @param call 要求ごとの値
+ * @param args 道具の引数
+ * @returns 道具の結果
+ */
+async function updateMyWorkTool(
+  call: McpCallContext,
+  args: { id: string; title?: string; description?: string; tags?: string[] },
+): Promise<CallToolResult> {
+  if (!GAME_ID_PATTERN.test(args.id)) {
+    return toolResult(REMOVE_BODY_REFUSALS['invalid-game-id'].status, { error: 'invalid-game-id' });
+  }
+  const outcome = await saveWork(
+    call.env,
+    call.userId,
+    {
+      gameId: args.id,
+      title: args.title ?? null,
+      description: args.description ?? null,
+      tags: args.tags ?? null,
+      visibility: null,
+      confirmed: false,
+    },
+    NO_VISIBILITY_CHANGE,
+  );
+  switch (outcome.kind) {
+    case 'saved':
+      return toolResult(200, { saved: true, parts: outcome.saved });
+    case 'refused':
+      return toolResult(outcome.refusal.status, { error: outcome.refusal.reason, saved: outcome.saved });
+    case 'confirm':
+      // 公開設定を渡していないので来ない。来たら取りこぼし。
+      throw new Error('update_my_work で公開設定の確認が求められた');
+  }
 }
 
 /**

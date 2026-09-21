@@ -33,7 +33,7 @@ export const REGISTER_PATH = '/register';
 /**
  * MCP サーバーの口（部品がトークンを検証してから、アプリの処理へ渡す）。
  *
- * 中身は `src/mcp-server.ts`（#696 PR② / #711。道具 8 本。ステートレス）。
+ * 中身は `src/mcp-server.ts`（#696 PR② / #711 / #755。道具 9 本。ステートレス）。
  */
 export const MCP_PATH = '/mcp';
 
@@ -67,9 +67,17 @@ export const SCOPE_WORKS_READ = 'works:read';
 export const SCOPE_WORKS_GENERATE = 'works:generate';
 
 /**
- * 許可できる scope（並び順どおりに同意画面へ出す）。**利用者の決定で 2 つに分けた**（仕様 5.15）。
+ * 作品の情報を書き換える道具の scope（自作の作品名・説明・タグ。#755）。
+ *
+ * **`works:generate` に混ぜない**（利用者の決定。2026-09-21）。あちらは「費用のかかる操作を同意画面で外せるようにする」
+ * ために分けた scope で、費用のかからない書き換えを入れると意味が混ざる。公開・削除は含まない（戻せない操作は出さない）。
  */
-export const OAUTH_SCOPES: readonly string[] = [SCOPE_WORKS_READ, SCOPE_WORKS_GENERATE];
+export const SCOPE_WORKS_WRITE = 'works:write';
+
+/**
+ * 許可できる scope（並び順どおりに同意画面へ出す）。**利用者の決定で分けた**（仕様 5.15。#755 で `works:write` を足して 3 つ）。
+ */
+export const OAUTH_SCOPES: readonly string[] = [SCOPE_WORKS_READ, SCOPE_WORKS_WRITE, SCOPE_WORKS_GENERATE];
 
 /**
  * scope を利用者に見せるときの名前と説明（同意画面と「接続中のアプリ」のタブが使う）。
@@ -81,6 +89,10 @@ export const OAUTH_SCOPE_LABELS: Readonly<Record<string, { readonly name: string
   [SCOPE_WORKS_READ]: {
     name: '自分の作品を読む',
     note: 'あなたの作品の一覧・状況・版・最初の指示文・ソースと、あなたの情報と残りの生成枠を読みます。',
+  },
+  [SCOPE_WORKS_WRITE]: {
+    name: '自分の作品の情報を書き換える',
+    note: 'あなたの作品の作品名・説明・タグを書き換えます。公開・公開の取りやめ・削除はしません。',
   },
   [SCOPE_WORKS_GENERATE]: {
     name: '作品を生成・リフォージする',

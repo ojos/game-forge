@@ -31,7 +31,7 @@
  *
  * - **`innerHTML` を使わない**（`test/chat-ui.test.ts` が変異で確かめる）
  * - 要素は `document.createElement` で作り、本文は **`textContent` だけ**で入れる
- * - **応答から読むのは `text` と `conversationId` と `remainingTokens` の 3 つだけ**で、
+ * - **応答から読むのは `text` と `conversationId` と `remainingPercent` の 3 つだけ**で、
  *   分類名（`error`）は固定の文言を選ぶ鍵にしか使わない（8.3。生成画面と同じ）
  *
  * ## 復元した会話はサーバが描く
@@ -49,15 +49,20 @@
  * 下書きがまだ出ていない会話で決まったことが落ち、AI が同じ質問へ戻り続けた（#749）。**いまは上限を
  * 超えたときだけ落とす。** エッジも同じ規則で切り直す（二重の検査。ルールの分はエッジが空ける）。
  *
- * ## 残りのトークンは、最初は上限を出すだけにする
+ * ## 残りは「今日の残り NN%」で、1 往復してから出す（#751）
+ *
+ * **円もトークンも利用者に見せない**（利用者の決定）。枠は円で数えているが（`src/chat-quota.ts`）、
+ * 画面に出すのは口が返す残りの割合（`remainingPercent`）だけである。
  *
  * **画面を開くたびに D1 を 3 回読まない**（3.6。読み取りも従量である）。生成枠（4.4）と違い、
- * 5.16 はチャットの残量の常時表示を求めていない。**上限を書いておき、1 往復するたびに口が返す
- * 実測値へ置き換える。** 枠が尽きている状態は、送ったときに固定の文言で返る。
+ * 5.16 はチャットの残量の常時表示を求めていない。**開いた時点では表示を隠しておき、1 往復するたびに
+ * 口が返す値で出す。** 以前は開いた時点で上限（「1 日 30,000 トークンまで」）を書いていたが、
+ * 額の上限を書くと円を見せることになるので出さない。枠が尽きている状態は、送ったときに固定の文言で返る
+ * （そのときは 0% を出す）。
  */
 import { CHAT_API_PATH, CHAT_CONVERSATION_DELETE_PATH } from './chat-paths.js';
 import { CHAT_MAX_MESSAGE_LENGTH, CHAT_MAX_SEND_MESSAGES, CHAT_MAX_TOTAL_MESSAGE_LENGTH } from './chat-payload.js';
-import { CHAT_DAILY_TOKEN_LIMIT } from './chat-quota.js';
+import { CHAT_DAILY_TOKENS_REASON } from './chat-quota.js';
 import { CHAT_RETENTION_DAYS } from './chat-conversation.js';
 import type { ChatMessage } from './chat-payload.js';
 import type { ChatTarget } from './chat-target.js';
@@ -189,7 +194,7 @@ export function renderChatSection(view: ChatSectionView): string {
   return `<section id="chat" class="gf-block gf-chat"${conversation}${target}>
   <div class="gf-heading-row">
     <h2>${escapeHtml(labels.heading)}</h2>
-    <p class="gf-generate-quota" id="chat-quota">1 日 ${CHAT_DAILY_TOKEN_LIMIT.toLocaleString('en-US')} トークンまで</p>
+    <p class="gf-generate-quota" id="chat-quota" hidden></p>
   </div>
   <p class="gf-generate-hint">${labels.hint}
      <strong>コードは出ません。</strong>チャットは生成枠とは別の枠で、<strong>チャットしても生成できる回数は減りません。</strong>
@@ -326,6 +331,18 @@ export const CHAT_SCRIPT = `
     }
   }
 
+  /**
+   * 今日の残りを割合で出す（#751）。**円もトークンも出さない。** 値は口が切り捨てた整数で、
+   * ここでも 0〜100 の整数に収める（古い口や壊れた応答で表示が崩れないように）。
+   */
+  function showRemaining(percent) {
+    if (quota === null) { return; }
+    var value = Math.max(0, Math.min(100, Math.floor(percent)));
+    if (value !== value) { return; }
+    quota.textContent = '今日の残り ' + value + '%';
+    quota.hidden = false;
+  }
+
   /** すべての文言を隠す。 */
   function quiet() {
     for (var m = 0; m < notices.length; m += 1) { notices[m].hidden = true; }
@@ -391,14 +408,15 @@ export const CHAT_SCRIPT = `
       if (result.status !== 200) {
         rollback(text);
         notify(result.status, typeof result.payload.error === 'string' ? result.payload.error : '');
+        if (result.payload.error === ${JSON.stringify(CHAT_DAILY_TOKENS_REASON)}) { showRemaining(0); }
         return;
       }
       append('assistant', result.payload.text);
       if (typeof result.payload.conversationId === 'string') {
         section.setAttribute('data-conversation', result.payload.conversationId);
       }
-      if (quota !== null && typeof result.payload.remainingTokens === 'number') {
-        quota.textContent = '本日のチャットの残り ' + result.payload.remainingTokens + ' トークン';
+      if (typeof result.payload.remainingPercent === 'number') {
+        showRemaining(result.payload.remainingPercent);
       }
       refreshApply();
     }).catch(function () {

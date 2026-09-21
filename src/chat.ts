@@ -8,7 +8,7 @@
  * 1. **呼び出し元を決める**（`resolveApiCaller`。5.12 と同じ 1 か所。未ログイン・BAN・退会は 401）
  * 2. **呼び出しの上限**（5.13 のいいねの Worker の入口を、`chat` の鍵で使い回す。1 人 60 秒 60 回）
  * 3. **本文の検証**（形・長さ・発話の交互）
- * 4. **チャットの枠**（`src/chat-quota.ts`。4.3 の月次 → チャットの当月の取り分 → 1 人 1 日のトークン）
+ * 4. **チャットの枠**（`src/chat-quota.ts`。4.3 の月次 → チャットの当月の取り分 → 1 人 1 日の額）
  * 5. **作者自身の作品を引く**（`myWorkResult`。**自作かどうかの判定はあちらの `author_id`**）
  * 6. **送る上限へ切る**（#742 / #749。`chatSendWindow`。上限以内なら全部送り、超えたときだけ最古の往復から落とす。ルールの通数と文字数を先に空ける）
  * 7. **Lambda を同期で呼ぶ**（`src/chat-client.ts`。8.2 の Guardrail は関数の中で掛かる）
@@ -35,7 +35,7 @@
  *
  * **`includeSource` を送っただけでは載らない**——載せるのは、作者がその会話で明示的に
  * 求めたときである（5.16 / 利用者の決定）。口から見れば「画面がその意思を伝えてきたとき」で、
- * **既定は載せない。** 64 KiB のソースは 1 往復を約 19,200 トークン（1 日分の 3 分の 2）にする。
+ * **既定は載せない。** 64 KiB のソースは 1 往復の入力を約 19,200 トークン増やす（短い発話でも見積もりは約 ¥17 で、1 日の枠の 8 割を超える）。
  *
  * ## 遮断の記録は残さない
  *
@@ -82,7 +82,8 @@ import {
   CHAT_DAILY_TOKENS_REASON,
   CHAT_MONTHLY_LIMIT_REASON,
   chatQuotaStatus,
-  estimateChatTokens,
+  chatRemainingPercent,
+  estimateChatCostJpy,
 } from './chat-quota.js';
 import { CHAT_KIND, recordGeneration } from './cost-ledger.js';
 import type { GenerationModelKey } from './generation-models.js';
@@ -311,24 +312,22 @@ export async function handleChat(
     return json({ error: 'invalid-request' }, 400);
   }
 
-  // **この 1 往復が蓋を超えないことを、呼ぶ前に確かめる**（`src/chat-quota.ts` の
-  // `estimateChatTokens`）。**文脈を引いた後に置く**——ソースを載せるかどうかで見積もりが
-  // 5 倍以上変わるので、載せると決まってから数える。
+  // **この 1 往復が残りを超えないことを、呼ぶ前に確かめる**（`src/chat-quota.ts` の
+  // `estimateChatCostJpy`。#751 で円へ移した）。**文脈を引いた後に置く**——ソースを載せるかどうかで
+  // 見積もりが 5 倍以上変わるので、載せると決まってから数える。
   //
-  // **これが無いと、残りが 1 トークンでも満額の往復が通る**（ソースを渡す往復は最大
-  // 36,588 トークンで、1 日の蓋 30,000 を単独で超える）。**断り方は枠切れと同じ**である
-  // ——利用者にできること（ソースを外す／翌日に回す）が同じで、`resetsAt` も同じ値である。
+  // **これが無いと、残りが 1 銭でも満額の往復が通る**（64 KiB のソースを渡す往復は短い発話でも見積もりが
+  // 約 ¥17 で、1 日の枠 ¥20 の 8 割を超える。会話が上限いっぱいなら ¥20 を単独で超える）。**断り方は枠切れと同じ**である——利用者にできること
+  // （ソースを外す／翌日に回す）が同じで、`resetsAt` も同じ値である。**見積もりの額は返さない**
+  // （円もトークンも利用者に見せない。#751）。
   //
-  // **ルールも数える。** 1 往復ごとに文脈へ乗るので、数えないと**蓋を超える往復が通る。**
-  const estimated = estimateChatTokens({
+  // **ルールも数える。** 1 往復ごとに文脈へ乗るので、数えないと**残りを超える往復が通る。**
+  const estimatedJpy = estimateChatCostJpy({
     messageCharacters: messageCharacters + ruleCharacters,
     sourceBytes: work?.source === null || work?.source === undefined ? 0 : new TextEncoder().encode(work.source).length,
   });
-  if (estimated > quota.remainingTokens) {
-    return json(
-      { error: CHAT_DAILY_TOKENS_REASON, resetsAt: quota.resetsAt, estimatedTokens: estimated },
-      429,
-    );
+  if (estimatedJpy > quota.remainingJpy) {
+    return json({ error: CHAT_DAILY_TOKENS_REASON, resetsAt: quota.resetsAt }, 429);
   }
 
   const ask = deps.ask ?? createAskChat();
@@ -370,7 +369,7 @@ export async function handleChat(
   //
   // **登録簿に無い鍵でも記録する**（4.3「登録簿に無いモデルで生成された場合も、同じ理由で
   // 登録簿の最大単価を当てて記録する」）。**断って行を作らないほうが害が大きい**——課金は
-  // 既に出ており、行が無ければ 1 日のトークンにも当月の取り分にも入らない。**鍵が登録簿から
+  // 既に出ており、行が無ければ 1 日の枠にも当月の取り分にも入らない。**鍵が登録簿から
   // 外れた状態は異常なので、ログには残す**（`recordGeneration` も `unknown-model` を出す）。
   if (findGenerationModel(answer.modelKey) === null) {
     console.error(`[chat] 登録簿に無い鍵で返ってきました: ${answer.modelKey}`);
@@ -439,17 +438,16 @@ export async function handleChat(
     );
   }
 
-  const spent =
-    answer.usage.inputTokens +
-    answer.usage.outputTokens +
-    (answer.usage.cacheReadInputTokens ?? 0) +
-    (answer.usage.cacheWriteInputTokens ?? 0);
   return json({
     text: answer.text,
     conversationId,
-    // **残りは判定のときの値から引く**（数え直さない）。**負にはしない**——1 回の往復が
+    // **残りは判定のときの値から、台帳へ積んだ額を引く**（数え直さない）。**割合で返す**——円も
+    // トークンも利用者に見せない（#751）。**負にはしない**（`chatRemainingPercent`）——1 回の往復が
     // 残りを超えることはありうる（4.3 の「判定を通った要求が、判定後に使う」上振れと同じ形）。
-    remainingTokens: Math.max(0, quota.remainingTokens - spent),
+    //
+    // **`remainingTokens` はもう返さない。** 開いたままの古い画面はこの値が無ければ表示を
+    // 書き換えないだけで、円をトークンと誤って見せることはない。
+    remainingPercent: chatRemainingPercent(quota.remainingJpy - ledgerRecord.cost.totalJpy),
     resetsAt: quota.resetsAt,
     costJpy: ledgerRecord.cost.totalJpy,
   });

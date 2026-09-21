@@ -248,6 +248,13 @@ export function renderWorkContext(work: ChatWorkContext): string {
 }
 
 /**
+ * `messages` の中へ置く区切り（#751）。**作品の文脈の直後と、送る会話の末尾の 2 か所で使う。**
+ *
+ * 同じオブジェクトを 2 か所へ置いても、JSON にすると別々のブロックになる。
+ */
+const CHAT_MESSAGES_CACHE_POINT: Readonly<Record<string, unknown>> = { cachePoint: { type: 'default' } };
+
+/**
  * `Converse` のリクエスト本文を組み立てる。
  *
  * **作品の文脈は、`system` ではなく最初の `user` の発話の中に置く。** `system` は
@@ -256,15 +263,23 @@ export function renderWorkContext(work: ChatWorkContext): string {
  * `src/bedrock.ts` の `baseSourceContent` が親ソースを `messages` の先頭に置いているのと
  * 同じ形である。
  *
- * **区切り（`cachePoint`）は 2 つ置く。** システムプロンプトの末尾（会話が伸びても
- * 変わらない）と、作品の文脈の直後（同じ作品を見ているあいだ変わらない）である。
- * **どちらも 2 往復目から入力の単価が 10 分の 1 になる**（4.1 / 4.5）。
+ * **区切り（`cachePoint`）は 3 つまで置く**（#751。Bedrock の上限は 4）。
  *
- * **作者のルール（#728）は区切りの後ろに来る**（#742 で注記を直した）。ルールは会話の先頭の発話として
- * 入るので、作品を選んだチャットでは**文脈と区切りを抱えた最初の発話の、区切りの次のブロック**になり、
- * 作品を選んでいないチャットでは `messages` に区切りが 1 つも無い。**どちらでもキャッシュには乗らない。**
- * **送る窓（#742）が滑っても、区切りの手前は変わらない**——文脈は窓の先頭の発話へ付け直され、
- * システムプロンプトと文脈だけが共有のプレフィックスになる。
+ * 1. **システムプロンプトの末尾**（会話が伸びても変わらない。`buildChatPrompt`）
+ * 2. **作品の文脈の直後**（同じ作品を見ているあいだ変わらない。作品を選んだチャットだけ）
+ * 3. **送る会話の末尾——最新の利用者の発話の直前**（{@link CHAT_MESSAGES_CACHE_POINT}）。
+ *    **毎往復その位置へ動かす。** 前の往復で書いたプレフィックス（前回の末尾の区切りまで）は、
+ *    今回の要求の先頭と同じなので、**履歴がキャッシュ読み（入力の 10 分の 1）で読まれる**（4.1 / 4.5）。
+ *    初めての発話（送る発話が 1 通だけ）には置かない——手前に何も無い。
+ *
+ * **作者のルール（#728）も、3 つ目の区切りでキャッシュに乗る**（#751 で注記を直した）。ルールは会話の
+ * 先頭の 2 通として入るので、作品を選んだチャットでは文脈の区切りの次のブロック、作品を選んでいない
+ * チャットでは `messages` の先頭になる——**どちらでも会話の末尾の区切りより手前にある。**
+ * #742 の時点では区切りが 2 つだけで、ルールはどちらでもキャッシュに乗っていなかった。
+ *
+ * **送る範囲が上限（#749）を超えて最古の往復を落とすと、区切りの手前が変わる**ので、その往復は
+ * 履歴のキャッシュが外れる（システムプロンプトと文脈の区切りは効いたまま）。**既知として受け入れる**
+ * （#751 の scope.out）。
  *
  * @param model 使うモデル
  * @param payload 検証済みのペイロード
@@ -275,15 +290,20 @@ export function buildChatConverseRequest(
   payload: ChatRequestPayload,
 ): Record<string, unknown> {
   const cacheable = supportsPromptCaching(model);
+  // **最新の利用者の発話の直前**（＝その 1 つ前の発話の末尾）。送る発話が 1 通だけなら置かない。
+  const historyEnd = payload.messages.length - 2;
   const messages = payload.messages.map((message, index) => {
-    if (index > 0 || payload.work === undefined) {
-      return { role: message.role, content: [{ text: message.text }] };
-    }
-    const content: Record<string, unknown>[] = [{ text: renderWorkContext(payload.work) }];
-    if (cacheable) {
-      content.push({ cachePoint: { type: 'default' } });
+    const content: Record<string, unknown>[] = [];
+    if (index === 0 && payload.work !== undefined) {
+      content.push({ text: renderWorkContext(payload.work) });
+      if (cacheable) {
+        content.push(CHAT_MESSAGES_CACHE_POINT);
+      }
     }
     content.push({ text: message.text });
+    if (cacheable && index === historyEnd) {
+      content.push(CHAT_MESSAGES_CACHE_POINT);
+    }
     return { role: message.role, content };
   });
 

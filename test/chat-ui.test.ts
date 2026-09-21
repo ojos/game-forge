@@ -447,6 +447,26 @@ describe('チャットの区画（5.16「画面は /generate の中の区画」�
     expect(windowOf(over)).toEqual(over.slice(2));
   });
 
+  it('送る前に、各発話の前後の空白を落とす——エッジと同じ数え方にする（#749 の Copilot の指摘）', () => {
+    // **エッジは trim してから窓を切る**（`parseChatRequest`）。返答は trim せずに描くので、画面が
+    // `textContent` をそのまま数えると、12,000 字の境目で**画面だけが古い往復を落とす。**
+    const source = /function history\(\) \{[\s\S]*?\n {2}\}/u.exec(CHAT_SCRIPT)?.[0];
+    expect(source).toBeDefined();
+    const turn = (role: 'user' | 'assistant', text: string) => ({
+      className: `gf-chat-turn gf-chat-${role}`,
+      querySelector: () => ({ textContent: text }),
+    });
+    const log = {
+      querySelectorAll: () => [turn('user', '  最初  '), turn('assistant', '\n返答\n\n'), turn('user', '次')],
+    };
+    const history = new Function('log', `${source!}\nreturn history;`)(log) as () => readonly ChatMessage[];
+    expect(history()).toEqual([
+      { role: 'user', text: '最初' },
+      { role: 'assistant', text: '返答' },
+      { role: 'user', text: '次' },
+    ]);
+  });
+
   it('「受け取れませんでした」の文言は、通数ではなく 1 通の長さを言う（#742）', () => {
     // **通数で止まっているのに「文字数を減らして」と言うのは誤誘導だった。** 通数ではもう断らない。
     const message = CHAT_MESSAGES['400:invalid-request']!;

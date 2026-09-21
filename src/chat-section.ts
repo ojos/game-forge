@@ -257,9 +257,12 @@ export const CHAT_SCRIPT = `
     var out = [];
     for (var i = 0; i < turns.length; i += 1) {
       var text = turns[i].querySelector('.gf-chat-text');
+      // **前後の空白を落としてから数える**（#749 の Copilot の指摘）。エッジは各発話を
+      // \`trim()\` してから窓を切る（\`src/chat.ts\` の \`parseChatRequest\`）が、返答は trim せずに
+      // 描いている。**ここで揃えないと、12,000 字の境目で画面だけが古い往復を落とす。**
       out.push({
         role: turns[i].className.indexOf('gf-chat-user') >= 0 ? 'user' : 'assistant',
-        text: text === null ? '' : text.textContent
+        text: text === null ? '' : (text.textContent || '').trim()
       });
     }
     return out;

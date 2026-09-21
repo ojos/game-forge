@@ -249,6 +249,7 @@ export const FAQ_ENTRIES: readonly FaqEntry[] = [
 <ul>
   <li><strong>Claude Code</strong>: <code>claude mcp add --transport http game-forge ${MCP_SERVER_URL}</code> を実行し、Claude Code の中で <code>/mcp</code> を開いて認証してください。</li>
   <li><strong>claude.ai・Claude Desktop</strong>: 設定のコネクタから、カスタムコネクタとして上の URL を追加してください。</li>
+  <li><strong>Antigravity CLI（Google）</strong>: <code>agy mcp add game-forge ${MCP_SERVER_URL}</code> を実行し、<code>agy</code> の中で <code>/mcp</code> を開いて認証してください。</li>
 </ul>
 <p>つなぐと、ブラウザで Game Forge のログインと<strong>許可の画面</strong>が開きます。アプリの名前と許可の範囲を確かめてから許可してください。
    「作品を生成・リフォージする」を外すと生成とリフォージを、「自分の作品の情報を書き換える」を外すと作品名・説明・タグの書き換えを、許可せずにつなげます。両方を外すと、読むことだけを許可できます。<strong>自分でつなごうとしていないのに許可の画面が出たときは、許可しないでください。</strong></p>

@@ -364,6 +364,8 @@ describe('AI からの接続（#696 / MCP）', () => {
     const answer = answerOf('ai-connect');
     expect(answer).toContain(`<code>claude mcp add --transport http game-forge ${MCP_SERVER_URL}</code>`);
     expect(answer).toContain('カスタムコネクタ');
+    // 実測で通ったクライアントだけを載せる（#724。Antigravity CLI 1.2.7 で 2026-09-21 に確認）。
+    expect(answer).toContain(`<code>agy mcp add game-forge ${MCP_SERVER_URL}</code>`);
     expect(answer).toContain('公開・削除・退会はできません');
     // 同意画面の scope の名前と同じ綴りで、外せることを案内する。
     expect(answer).toContain(`「${OAUTH_SCOPE_LABELS[SCOPE_WORKS_GENERATE]!.name}」を外す`);

@@ -98,8 +98,9 @@ export interface FaqEntry {
  *
  * **AI からの接続（`ai-connect`）は #696（MCP サーバー）で足した。** 窓口（`contact`）の直前に置く——窓口は
  * 「ここにない質問」の受け皿なので最後に残す。**接続の解除と、漏れたと思ったときの手順まで書く**（#696 の constraints
- * 「トークンの漏洩と失効の手順を文書にする」）。つなぎ方は Claude の 2 つの形（Claude Code のコマンドと、claude.ai の
- * カスタムコネクタ）だけを書く——ほかの AI のアプリの画面は確かめていない。**#711 で「AI から読めるもの・読めないもの」を
+ * 「トークンの漏洩と失効の手順を文書にする」）。**つなぎ方は、実測で通ったクライアントだけを書く**——Claude の 2 つの形
+ * （Claude Code のコマンドと、claude.ai のカスタムコネクタ）と、#724 で確かめた Antigravity CLI（1.2.7。2026-09-21）。
+ * Gemini CLI と ChatGPT は確かめていないので書かない。**#711 で「AI から読めるもの・読めないもの」を
  * 足した**（公開作品の一覧・検索と作者の公開プロフィールを道具にしたため。ほかの方のソースは道具にしていない）。
  */
 export const FAQ_ENTRIES: readonly FaqEntry[] = [
@@ -249,6 +250,7 @@ export const FAQ_ENTRIES: readonly FaqEntry[] = [
 <ul>
   <li><strong>Claude Code</strong>: <code>claude mcp add --transport http game-forge ${MCP_SERVER_URL}</code> を実行し、Claude Code の中で <code>/mcp</code> を開いて認証してください。</li>
   <li><strong>claude.ai・Claude Desktop</strong>: 設定のコネクタから、カスタムコネクタとして上の URL を追加してください。</li>
+  <li><strong>Antigravity CLI（Google）</strong>: <code>agy mcp add game-forge ${MCP_SERVER_URL}</code> を実行し、<code>agy</code> の中で <code>/mcp</code> を開いて認証してください。</li>
 </ul>
 <p>つなぐと、ブラウザで Game Forge のログインと<strong>許可の画面</strong>が開きます。アプリの名前と許可の範囲を確かめてから許可してください。
    「作品を生成・リフォージする」を外すと生成とリフォージを、「自分の作品の情報を書き換える」を外すと作品名・説明・タグの書き換えを、許可せずにつなげます。両方を外すと、読むことだけを許可できます。<strong>自分でつなごうとしていないのに許可の画面が出たときは、許可しないでください。</strong></p>

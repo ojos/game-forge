@@ -9847,7 +9847,9 @@ port を無視する**（Claude Code の要件。部品の既定の挙動）。
 >   の「許可した範囲」に 3 つの表示名が並んだ状態で、幅の検査（390 / 768 / 1280px）を通した
 >
 > **確かめていないこと**：本番での動作（配備の後に、claude.ai のコネクタをつなぎ直して同意画面に `works:write` が出ること、
-> `update_my_work` で作品名を変えられること。#755 の受け入れ条件）。
+> `update_my_work` で作品名を変えられること。#755 の受け入れ条件）。**（2026-09-21 追記）後者は確かめた**——Antigravity CLI
+> 1.2.7 の接続から作品 `5c425524-…` の作品名・説明・タグを書き換え、`{"saved":true,"parts":["作品名","説明","タグ"]}` が返り、
+> `get_my_work` で作品名が変わったことを読み返した（下の #724 の実測注記）。**残るのは前者（同意画面の目視）だけ。**
 
 > **実測注記（#724 のうち Gemini の分 / M19-5。確認日 2026-09-21）。Google のクライアントから本番の `/mcp` を使えることを確かめた。
 > 落ちた箇所は無く、コードは変えていない。**
@@ -9858,7 +9860,8 @@ port を無視する**（Claude Code の要件。部品の既定の挙動）。
 > | つなぎ方 | `agy mcp add game-forge https://app.game-forge.ojos.jp/mcp` → `agy` の中の `/mcp` で認証（設定は `~/.gemini/config/mcp_config.json` の `serverUrl`） |
 > | 認可 | 通った。DCR で登録し、戻り先は Antigravity の固定の `https://antigravity.google/oauth-callback`（こちらの DCR は戻り先を独自に絞っていないので、部品の既定の検査で通る） |
 > | `tools/list` | **9 本**（#755 の `update_my_work` を含む） |
-> | 読み取りのツール | `get_me`・`list_my_works` が通った |
+> | 読み取りのツール | `get_me`・`list_my_works`・`get_my_work` が通った |
+> | 書くツール | `update_my_work` が通った（作品 `5c425524-…` の作品名・説明・タグ） |
 >
 > - **#724 が挙げていた差分 1（Origin の検査で 403）は起きなかった。** 変えずに残す
 > - **Antigravity CLI の既知の不具合**（[antigravity-cli#25](https://github.com/google-antigravity/antigravity-cli/issues/25)。v1.0.0 で、OAuth は通るのに最初の要求にトークンを載せず 401 になる）には、1.2.7 では当たらなかった

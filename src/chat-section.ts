@@ -40,12 +40,18 @@
  *
  * - **`innerHTML` を使わない**（`test/chat-ui.test.ts` が変異で確かめる）
  * - 要素は `document.createElement` で作り、本文は **`textContent` だけ**で入れる
+ * - **AI の返答だけは Markdown として描く**（#739 / 仕様 5.16）。描く API は `createElement` /
+ *   `createTextNode` / 許可表の属性に限った `setAttribute` / `appendChild` だけで、組むのは
+ *   `src/chat-markdown.ts` の `buildChatMarkdown` である（`textContent` だけでは、段落の中で文字と
+ *   要素が混ざる形を組めない）。**元の文字列は隠した `.gf-chat-text` に残す**——`history()` が送る本文と
+ *   `draft()` が取り出す下書きは、描いた後の文字ではなく元の Markdown から読む
  * - **応答から読むのは `text` と `conversationId` と `remainingPercent` の 3 つだけ**で、
  *   分類名（`error`）は固定の文言を選ぶ鍵にしか使わない（8.3。生成画面と同じ）
  *
  * ## 復元した会話はサーバが描く
  *
  * 開いた時点の会話は **HTML としてサーバが `escapeHtml` を通して描く**（`renderChatLog`）。
+ * AI の返答の Markdown も、サーバの側で同じ解析器から描く（`renderChatMarkdownHtml`。#739）。
  * スクリプトが描くのは、その後に足された往復だけである。**最初の 1 画面に、script が
  * 組み立てた DOM を出さない。**
  *
@@ -78,6 +84,7 @@ import { CHAT_RETENTION_DAYS } from './chat-conversation.js';
 import type { ChatMessage } from './chat-payload.js';
 import type { ChatTarget } from './chat-target.js';
 import { escapeHtml } from './html.js';
+import { CHAT_MARKDOWN_SCRIPT, parseChatMarkdown, renderChatMarkdownHtml } from './chat-markdown.js';
 import { MAX_PROMPT_LENGTH } from './generate.js';
 
 /**
@@ -196,7 +203,28 @@ export interface ChatSectionView {
 }
 
 /**
- * 復元した会話を描く。**サーバ側で `escapeHtml` を通す。**
+ * 1 通の本文を描く。
+ *
+ * **AI の返答は Markdown として描き、元の文字列は隠した `.gf-chat-text` に残す**（#739）。
+ * `history()` と `draft()` はこの隠した方の `textContent` を読むので、**送る会話と欄へ入れる下書きは
+ * 元の Markdown のまま**である。利用者の発話は今までどおり文字のまま出す。
+ *
+ * **形は `CHAT_SCRIPT` の `append()` と同じ**である（`test/chat-ui.test.ts` が突き合わせる）。
+ *
+ * @param message 発話
+ * @returns 本文の HTML
+ */
+function renderChatBody(message: ChatMessage): string {
+  if (message.role !== 'assistant') {
+    return `<p class="gf-chat-text">${escapeHtml(message.text)}</p>`;
+  }
+  return `<p class="gf-chat-text" hidden>${escapeHtml(message.text)}</p><div class="gf-chat-md">${renderChatMarkdownHtml(
+    parseChatMarkdown(message.text),
+  )}</div>`;
+}
+
+/**
+ * 復元した会話を描く。**サーバ側で `escapeHtml` を通す**（Markdown の木も `renderChatMarkdownHtml` が通す）。
  *
  * @param messages 発話の列
  * @returns `<li>` の並び
@@ -207,7 +235,7 @@ export function renderChatLog(messages: readonly ChatMessage[]): string {
       (message) =>
         `    <li class="gf-chat-turn gf-chat-${message.role}"><span class="gf-chat-who">${
           message.role === 'user' ? 'あなた' : 'AI'
-        }</span><p class="gf-chat-text">${escapeHtml(message.text)}</p></li>`,
+        }</span>${renderChatBody(message)}</li>`,
     )
     .join('\n');
 }
@@ -290,13 +318,15 @@ ${sourceToggle}      <button id="chat-draft" class="gf-button gf-button-tertiary
  * チャットの区画のスクリプト。
  *
  * **`innerHTML` を使わない**（モジュール冒頭）。要素は `createElement` で作り、本文は
- * `textContent` だけで入れる。
+ * `textContent` だけで入れる。**AI の返答の Markdown だけは、先頭に埋め込んだ `buildChatMarkdown`
+ * が組む**（`CHAT_MARKDOWN_SCRIPT`。#739）。
  *
  * **素朴な書き方（`var` と関数式）に寄せている**のは、この 1 枚がビルド工程を通らずそのまま
  * ブラウザへ届くためである（`src/generate-page.ts` と同じ）。
  */
 export const CHAT_SCRIPT = `
 (function () {
+${CHAT_MARKDOWN_SCRIPT}
   var section = document.getElementById('chat');
   var log = document.getElementById('chat-log');
   var send = document.getElementById('chat-send');
@@ -349,7 +379,12 @@ export const CHAT_SCRIPT = `
     return start === 0 ? list : list.slice(start);
   }
 
-  /** 1 往復ぶんを足す。**textContent だけで入れる。** */
+  /**
+   * 1 往復ぶんを足す。**元の文字列は textContent だけで入れる。**
+   *
+   * **AI の返答は、元の文字列を隠したまま残し、横に Markdown として描いたものを置く**（#739。
+   * renderChatLog と同じ形）。history() と draft() は隠した方を読むので、送る本文は元の文字列のままである。
+   */
   function append(role, text) {
     var item = document.createElement('li');
     item.className = 'gf-chat-turn gf-chat-' + role;
@@ -361,6 +396,13 @@ export const CHAT_SCRIPT = `
     body.textContent = text;
     item.appendChild(who);
     item.appendChild(body);
+    if (role === 'assistant') {
+      body.hidden = true;
+      var shown = document.createElement('div');
+      shown.className = 'gf-chat-md';
+      buildChatMarkdown(shown, parseChatMarkdown(body.textContent || ''), document, CHAT_MARKDOWN_SPEC);
+      item.appendChild(shown);
+    }
     log.appendChild(item);
     toBottom();
   }

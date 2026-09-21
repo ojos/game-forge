@@ -38,6 +38,7 @@ import { GENERATE_PATH } from '../src/generate.js';
 import { renderGeneratePage } from '../src/generate-page.js';
 import { privacyBody } from '../src/privacy.js';
 import { currentDeclarationsIn } from '../src/quota.js';
+import { CHAT_MARKDOWN_SCRIPT } from '../src/chat-markdown.js';
 import { applySchema } from './helpers/schema.js';
 
 /**
@@ -890,6 +891,193 @@ describe('生成画面での出し分け', () => {
     const column = cssRules('.gf-column').join('');
     expect(column).toContain('max-width: var(--gf-measure)');
     expect(column).toContain('margin-inline: auto');
+  });
+});
+
+
+/** コードの記号（テンプレート文字列の中へ直に書かない）。 */
+const BACKTICK = String.fromCharCode(96);
+
+/** Markdown を含む返答（見出し・箇条書き・コード・表・リンク・押せないリンク・画像・下書き）。 */
+const MARKDOWN_REPLY = [
+  '## 決めること',
+  '',
+  '- **時間**: 30 秒',
+  '- 操作は ' + BACKTICK + '矢印キー' + BACKTICK,
+  '',
+  BACKTICK.repeat(3) + 'go',
+  'func update() {}',
+  BACKTICK.repeat(3),
+  '',
+  '| 項目 | 案 |',
+  '|:--|--:|',
+  '| 玉 | 赤 |',
+  '',
+  '[参考](https://ebitengine.org/) と [押せない](javascript:alert(1)) と ![絵](https://example.com/x.png)',
+  '',
+  '【指示文】',
+  '- 赤い玉を**避ける**ゲーム',
+  '- 残り時間を画面の上に出す',
+  '',
+].join('\n');
+
+/** ブラウザの要素の代わり（`append()` / `history()` / `draft()` が触る分だけ）。 */
+class FakeElement {
+  className = '';
+  hidden = false;
+  scrollTop = 0;
+  scrollHeight = 0;
+  readonly attrs: [string, string][] = [];
+  children: (FakeElement | string)[] = [];
+
+  constructor(readonly tag: string) {}
+
+  get textContent(): string {
+    return this.children.map((child) => (typeof child === 'string' ? child : child.textContent)).join('');
+  }
+
+  set textContent(value: string) {
+    this.children = value === '' ? [] : [String(value)];
+  }
+
+  appendChild<T extends FakeElement | string>(child: T): T {
+    this.children.push(child);
+    return child;
+  }
+
+  setAttribute(name: string, value: string): void {
+    this.attrs.push([name, value]);
+  }
+
+  /** 子孫をすべて（文書順で）。 */
+  descendants(): FakeElement[] {
+    return this.children.flatMap((child) => (typeof child === 'string' ? [] : [child, ...child.descendants()]));
+  }
+
+  /** `.a` と `.a .b` の 2 つの形だけを解く。 */
+  querySelectorAll(selector: string): FakeElement[] {
+    const classes = selector.split(' ').map((part) => part.replace(/^\./u, ''));
+    const has = (element: FakeElement, name: string): boolean => element.className.split(' ').includes(name);
+    const first = this.descendants().filter((element) => has(element, classes[0]!));
+    if (classes.length === 1) {
+      return first;
+    }
+    return first.flatMap((element) => element.descendants().filter((inner) => has(inner, classes[1]!)));
+  }
+
+  querySelector(selector: string): FakeElement | null {
+    return this.querySelectorAll(selector)[0] ?? null;
+  }
+}
+
+/** 組んだ要素を、サーバが書く HTML と同じ形の文字列へ戻す。 */
+function serializeFake(node: FakeElement | string): string {
+  if (typeof node === 'string') {
+    return escapeHtml(node);
+  }
+  const attrs =
+    (node.className === '' ? '' : ` class="${escapeHtml(node.className)}"`) +
+    node.attrs.map(([name, value]) => ` ${name}="${escapeHtml(value)}"`).join('') +
+    (node.hidden ? ' hidden' : '');
+  return ['hr', 'br'].includes(node.tag)
+    ? `<${node.tag}${attrs}>`
+    : `<${node.tag}${attrs}>${node.children.map(serializeFake).join('')}</${node.tag}>`;
+}
+
+/** スクリプトの中の関数を、名前で 1 つ取り出す。 */
+function scriptFunction(name: string): string {
+  const source = new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n {2}\\}`, 'u').exec(CHAT_SCRIPT)?.[0];
+  expect(source, name).toBeDefined();
+  return source!;
+}
+
+/** `append()` / `history()` / `draft()` を、本物のスクリプトから取り出して偽の DOM の上で走らせる。 */
+function runChatScript(): {
+  log: FakeElement;
+  append: (role: 'user' | 'assistant', text: string) => void;
+  history: () => readonly ChatMessage[];
+  draft: () => string;
+} {
+  const log = new FakeElement('ol');
+  const doc = {
+    createElement: (tag: string) => new FakeElement(tag),
+    createTextNode: (text: string) => text,
+  };
+  const api = new Function(
+    'document',
+    'log',
+    `${CHAT_MARKDOWN_SCRIPT}\n${scriptFunction('append')}\n${scriptFunction('history')}\n${scriptFunction('draft')}\n` +
+      'function toBottom() {}\nreturn { append: append, history: history, draft: draft };',
+  )(doc, log) as Omit<ReturnType<typeof runChatScript>, 'log'>;
+  return { log, ...api };
+}
+
+describe('返答を Markdown として描く（#739 / 仕様 5.16）', () => {
+  it('復元した返答はサーバが Markdown として描き、元の文字列は隠した本文に残す', () => {
+    const html = chatSection({
+      messages: [
+        { role: 'user', text: '# 見出しのつもりの発話' },
+        { role: 'assistant', text: MARKDOWN_REPLY },
+      ],
+      conversationId: 'conv-md',
+      target: NEW_CHAT_TARGET,
+    });
+    expect(html).toContain('<div class="gf-chat-md"><h4>決めること</h4><ul><li><strong>時間</strong>: 30 秒</li>');
+    expect(html).toContain('<table>');
+    expect(html).toContain('<pre><code>func update() {}</code></pre>');
+    expect(html).toContain('<a href="https://ebitengine.org/" rel="noopener noreferrer">参考</a>');
+    // **押せないリンクと画像は、押せる形にも読み込む形にもならない**（名指しの例外 2 つ）。
+    expect(html).not.toContain('href="javascript:');
+    expect(html).not.toMatch(/<img/iu);
+    // **元の文字列は隠した本文に、記号ごと残る。**
+    expect(html).toContain(`<p class="gf-chat-text" hidden>${escapeHtml(MARKDOWN_REPLY)}</p>`);
+    // **利用者の発話は Markdown として描かない**（今までどおり文字のまま）。
+    expect(html).toContain('<p class="gf-chat-text"># 見出しのつもりの発話</p>');
+  });
+
+  it('描いた後でも、送る本文と欄へ入れる下書きは元の Markdown の文字列である', () => {
+    // **ここがずれると、エッジへ送る会話が描いた後の文字（記号と改行の落ちたもの）に化ける。**
+    const { log, append, history, draft } = runChatScript();
+    append('user', '  決めたいです  ');
+    append('assistant', MARKDOWN_REPLY);
+    expect(history()).toEqual([
+      { role: 'user', text: '決めたいです' },
+      { role: 'assistant', text: MARKDOWN_REPLY.trim() },
+    ]);
+    expect(draft()).toBe('- 赤い玉を**避ける**ゲーム\n- 残り時間を画面の上に出す\n');
+    // **見えている方は描いた後の文字で、元の文字列とは違う**——こちらを読めば上が落ちる。
+    const shown = log.querySelector('.gf-chat-md');
+    expect(shown).not.toBeNull();
+    expect(shown!.textContent).not.toBe(MARKDOWN_REPLY);
+    expect(shown!.textContent).not.toContain('**');
+    // 元の文字列は隠れている（見えるのは描いた方だけ）。
+    expect(log.querySelector('.gf-chat-assistant .gf-chat-text')!.hidden).toBe(true);
+    expect(log.querySelector('.gf-chat-user .gf-chat-text')!.hidden).toBe(false);
+  });
+
+  it('往復のたびに足す返答と、サーバが描く返答が同じ構造になる', () => {
+    const { log, append } = runChatScript();
+    append('assistant', MARKDOWN_REPLY);
+    const server = /<li class="gf-chat-turn gf-chat-assistant">[\s\S]*<\/li>/u.exec(
+      chatSection({ messages: [{ role: 'assistant', text: MARKDOWN_REPLY }], conversationId: null, target: NEW_CHAT_TARGET }),
+    )?.[0];
+    expect(server).toBeDefined();
+    expect(serializeFake(log.children[0]!)).toBe(server);
+  });
+
+  it('スクリプトは解析器と組み立てを埋め込み、HTML を解釈させる API を持たないまま描く', () => {
+    expect(CHAT_SCRIPT).toContain(CHAT_MARKDOWN_SCRIPT);
+    expect(CHAT_SCRIPT).toContain('buildChatMarkdown(shown, parseChatMarkdown(body.textContent');
+    for (const forbidden of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write']) {
+      expect(CHAT_SCRIPT, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it('返答の Markdown の見た目が 390px ではみ出さない（表とコードは箱の中で横に送る）', () => {
+    const md = cssRules('.gf-chat-md').join('');
+    expect(md).toContain('overflow-wrap: anywhere');
+    expect(cssRules('.gf-chat-md pre').join('')).toContain('overflow-x: auto');
+    expect(cssRules('.gf-chat-md table').join('')).toContain('overflow-x: auto');
   });
 });
 

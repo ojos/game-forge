@@ -2432,6 +2432,118 @@ img.gf-related-shot {
 }
 
 /*
+ * AI の返答を Markdown として描いたもの（#739 / 仕様 5.16）。**元の文字列は隠した `.gf-chat-text` に
+ * 残っていて、見えているのはこちらだけである**（`src/chat-section.ts` の `renderChatLog`）。
+ *
+ * **はみ出させない。** 長い 1 語は折り、**折れない表とコードは、それぞれの箱の中で横に送る**
+ * （履歴の箱は横を隠しているので、はみ出した分は送れずに切れる。`.gf-chat-log` の注記）。
+ * **色は使わない**（区画の冒頭）。コードと表の罫は面と線だけで分ける。
+ */
+.gf-chat-md {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.gf-chat-md > :first-child {
+  margin-top: 0;
+}
+
+.gf-chat-md > :last-child {
+  margin-bottom: 0;
+}
+
+.gf-chat-md h3,
+.gf-chat-md h4,
+.gf-chat-md h5,
+.gf-chat-md h6 {
+  margin: var(--gf-gap-3) 0 var(--gf-gap-2);
+  font-size: var(--gf-text);
+  line-height: 1.5;
+}
+
+.gf-chat-md h3 {
+  font-size: var(--gf-text-h2);
+}
+
+.gf-chat-md p,
+.gf-chat-md ul,
+.gf-chat-md ol,
+.gf-chat-md blockquote {
+  margin: 0 0 var(--gf-gap-2);
+}
+
+.gf-chat-md li > ul,
+.gf-chat-md li > ol {
+  margin-bottom: 0;
+}
+
+.gf-chat-md code {
+  background: var(--gf-ground);
+  overflow-wrap: anywhere;
+}
+
+.gf-chat-md pre {
+  margin: 0 0 var(--gf-gap-2);
+  padding: var(--gf-gap-2) var(--gf-gap-3);
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: var(--gf-radius);
+  background: var(--gf-ground);
+}
+
+.gf-chat-md pre code {
+  padding: 0;
+  background: none;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+.gf-chat-md blockquote {
+  padding-left: var(--gf-gap-3);
+  border-left: 3px solid var(--gf-rule);
+  color: var(--gf-ink-soft);
+}
+
+/* **表は `block` にして、表の箱の中で横に送る**（セルが多い表でも区画を押し広げない）。 */
+.gf-chat-md table {
+  display: block;
+  max-width: 100%;
+  margin: 0 0 var(--gf-gap-2);
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.gf-chat-md th,
+.gf-chat-md td {
+  padding: var(--gf-gap-1) var(--gf-gap-2);
+  border: 1px solid var(--gf-rule);
+  vertical-align: top;
+  overflow-wrap: normal;
+}
+
+.gf-chat-md .gf-md-left {
+  text-align: left;
+}
+
+.gf-chat-md .gf-md-center {
+  text-align: center;
+}
+
+.gf-chat-md .gf-md-right {
+  text-align: right;
+}
+
+.gf-chat-md hr {
+  margin: var(--gf-gap-3) 0;
+}
+
+/* 画像は `<img>` にせず文字で出す（URL が長いので、どこでも折る）。 */
+.gf-chat-md .gf-md-image {
+  color: var(--gf-ink-soft);
+  overflow-wrap: anywhere;
+}
+
+/*
  * **部品の `display` は UA の `[hidden]` に勝つ**ので、`display: none` をここで宣言する
  * （`.gf-play-open[hidden]` / `.gf-play-orient-toggle[hidden]` と同じ罠。#727 で実物を撮って
  * 気づいた——**#726 から、下書きがまだ無いのに主のボタンが出ていた**）。#738 からは「下書きを欄へ入れる」が

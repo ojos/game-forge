@@ -1,17 +1,26 @@
 /**
- * 生成画面の主役である「チャット」（#695 / M18-2、#726 / M20-2。仕様 5.16 / 確定38）。
+ * 生成画面の主役である「チャット」（#695 / M18-2、#726 / M20-2、#738 / M21-2。仕様 5.16 / 確定38）。
  *
- * ## 区画ではなく主役である（確定38）
+ * ## 欄は 1 つ、ボタンは 2 つ（#738。5.16「仕上げの 6 つの決定」）
  *
- * **#695 では「`/generate` の中の区画」だった**（フォームの後ろに置く「任意」の区画）。
- * **#725 でこの決定が変わり、チャットがこの画面の主役になった**——指示文の欄は
- * `<details>` の中（「チャットせずに指示文を直接書く」）へ移り、**この区画が持つ入力 1 つが
- * 画面の下に貼り付く。** **主のボタンもここへ移った**（「この指示で作る」。2.5.5 は
- * 1 画面に 1 つまでで、`src/generate-page.ts` の「生成する」は副へ下げてある）。
+ * **#726 では欄が 2 つあった**——チャットの入力（見えている）と、指示文の欄（`<details>` の中。
+ * 「チャットせずに指示文を直接書く」）。**#738 で 1 つにした。** 欄は生成のフォームの欄そのもの
+ * （`generate-prompt` / `revise-prompt` / `fork-prompt`）で、**この区画の最後の子として置く**
+ * （{@link renderChatSection} の `composer`）。**その欄の中身をどちらへ送るかは、押したボタンが決める**
+ * ——「チャットする」（副）はこのスクリプトが `POST /api/chat` へ送り、「生成する」（主。2.5.5 の
+ * 1 画面に 1 つ）はフォームの送信で、受けるのは今までどおり `src/generate-page.ts` の
+ * `GENERATE_SCRIPT`（リフォージとフォークは素のフォーム送信）である。**開始の経路は 1 本も増えない。**
+ * 自動判定もコマンドも作らない（誤ったときの損失が非対称である。理由は 5.16）。
  *
- * **「この指示で作る」は生成のフォームをそのまま送る**（`form="generate-form"` の
- * `type="submit"`）。**開始の経路は変えていない**——送信を受けるのはあちらの
- * `GENERATE_SCRIPT` で、`POST /api/generate` も枠の表示も入力の検査も今までどおりである。
+ * **キーは安い側にだけ割り当てる**——**Enter ＝ 改行 / Shift+Enter ＝ チャットを送る / 生成には
+ * キーを割り当てない**（`sendsChat`）。**IME の変換確定の Enter は修飾キーを伴わないので、
+ * そもそも拾わない**が、それでも 3 段で守る（`isComposing` / `keyCode === 229` /
+ * `compositionend` の直後に来た Enter）。
+ *
+ * **会話の中の下書きを欄へ入れる手段は残す**（「下書きを欄へ入れる」。控えめのボタン）。
+ * **欄へ入れるだけで、送らない**——生成は必ず作者が「生成する」を押して始まる。**置く場所は
+ * 欄の下の操作の並びで、返答の 1 つ 1 つには付けない**（返答の本文を描く形は #739 が Markdown の
+ * 描画で作り替えるので、そこへ押す物を混ぜない）。入れるのは**いちばん新しい返答の下書き**である。
  *
  * ## 履歴は箱の中だけを動かす
  *
@@ -75,39 +84,81 @@ import { MAX_PROMPT_LENGTH } from './generate.js';
  * チャットの返答の中で、指示文の下書きを囲む見出し。
  *
  * **システムプロンプトと同じ綴りである**（`src/chat-prompt.ts` の「`【指示文】` という見出しの
- * 下に置きます」）。**一致は `test/chat-ui.test.ts` が見る**——ずれると「この指示で作る」が
+ * 下に置きます」）。**一致は `test/chat-ui.test.ts` が見る**——ずれると「下書きを欄へ入れる」が
  * 返答の全文を欄へ入れることになる（壊れはしないが、意図した形ではない）。
  */
 export const CHAT_DRAFT_HEADING = '【指示文】';
 
 /**
+ * 変換の確定（`compositionend`）の直後に来た Enter を送らない時間（ミリ秒。#738 の IME の防御の 3 段目）。
+ *
+ * **確定と同じ押下から来る keydown を捨てるための幅**で、人が確定してから Shift+Enter を押し直すまでの
+ * 間よりずっと短い。捨てた側に倒れても、押し直せば送れる。
+ */
+export const COMPOSITION_GUARD_MS = 100;
+
+/**
  * 対象ごとの文言（#727 / 確定38）。
  *
- * **3 つの対象で変わるのは、見出し・説明・主のボタンの文言と、そのボタンが送るフォームだけ**
- * である。**会話のしくみも、枠も、保存も同じ**——だから画面は 1 つで足りる（5.16）。
+ * **3 つの対象で変わるのは、見出しと説明だけ**である。**会話のしくみも、枠も、保存も同じ**
+ * ——だから画面は 1 つで足りる（5.16）。**#738 で「この指示で作る」を無くした**ので、主のボタンの
+ * 文言と行き先はここから消え、生成のフォームを描く `src/generate-page.ts` が持つ。
  */
-export const CHAT_TARGET_LABELS: Readonly<
-  Record<string, { readonly heading: string; readonly hint: string; readonly apply: string; readonly form: string }>
-> = {
+export const CHAT_TARGET_LABELS: Readonly<Record<string, { readonly heading: string; readonly hint: string }>> = {
   new: {
     heading: 'AI とチャットして作る',
     hint: 'どんなゲームにするか話しながら、<strong>指示文の下書き</strong>を作れます。',
-    apply: 'この指示で作る',
-    form: 'generate-form',
   },
   revise: {
     heading: 'AI とチャットして直す',
     hint: 'この作品をどう直すか話しながら、<strong>リフォージの指示文の下書き</strong>を作れます。<strong>いまのソースをもとに作り直します。</strong>',
-    apply: 'この指示で直す',
-    form: 'revise-form',
   },
   fork: {
     heading: 'AI とチャットしてフォークする',
     hint: 'この作品をどう変えるか話しながら、<strong>フォークの指示文の下書き</strong>を作れます。<strong>元の作品のソースをもとに、あなたの新しい作品を作ります。</strong>',
-    apply: 'この指示でフォークする',
-    form: 'fork-form',
   },
 };
+
+/**
+ * キーの案内の要素の id（#738）。**欄の `aria-describedby` がこれを指す**——欄を描くのは
+ * `src/generate-page.ts` なので、綴りを書き写さずにここから引く。
+ */
+export const CHAT_KEY_HINT_ID = 'chat-key-hint';
+
+/**
+ * キーの案内（#738。5.16「キー」）。**生成にキーが無いことも言う**——「Enter で送れない」を
+ * 不具合だと思わせないためである。
+ *
+ * **主のボタンの文言から組み立てる**（PR #754 の Copilot の指摘）。リフォージ／フォークの画面の主は
+ * 「リフォージする」「フォークする」で、「生成する」は存在しない。**案内が実在しない操作を指さないよう、
+ * 文言は `ChatComposer.submitLabel` の 1 か所から、ボタンと案内の両方へ流す。**
+ */
+export function chatKeyHint(submitLabel: string): string {
+  return `Shift+Enter でチャットを送れます（Enter は改行です）。「${submitLabel}」はボタンを押したときだけ始まります。`;
+}
+
+/**
+ * 1 つの欄を持つ入力の塊（#738）。**中身は `src/generate-page.ts` が組み立てた HTML である。**
+ *
+ * **欄と「生成する」は生成のフォームのもの**なので、あちらが描く（開始の経路・項目名・`maxlength`
+ * を 2 か所に書かない）。**この区画が足すのは、チャットの操作だけ**——「チャットする」と、
+ * キーの案内と、ソースを見せるチェック・下書きを欄へ入れる・記録を消す、である。
+ */
+export interface ChatComposer {
+  /** フォームの開きタグ（隠しの項目を含む）。閉じタグはこの区画が書く。 */
+  readonly open: string;
+  /** 欄より上に置く行（欄の名前・生成枠・題名の案内）。 */
+  readonly head: string;
+  /** 欄（`<textarea>`。区画の中でただ 1 つ）。 */
+  readonly field: string;
+  /** 生成のボタン（**この画面の主**。`type="submit"`）。 */
+  readonly submit: string;
+  /**
+   * 主のボタンの文言（「生成する」「リフォージする」「フォークする」）。**ボタンとキーの案内の両方が
+   * ここから作られる**——別々に書くと、案内だけが古い文言を指す（PR #754 の Copilot の指摘）。
+   */
+  readonly submitLabel: string;
+}
 
 /**
  * チャットの区画で使う固定の文言（分類名から 1 つだけ選んで見せる。生成画面と同じ形）。
@@ -164,10 +215,14 @@ export function renderChatLog(messages: readonly ChatMessage[]): string {
 /**
  * チャットの区画の HTML を組み立てる。
  *
+ * **入力の塊（`composer`）は区画の最後の子である**——伸び縮みするのは会話の箱だけで、欄は常に
+ * いちばん下にある（`public/assets/app.css` の `.gf-chat`）。
+ *
  * @param view 画面へ渡す値
+ * @param composer 生成のフォームの部品（欄と「生成する」。#738）
  * @returns HTML
  */
-export function renderChatSection(view: ChatSectionView): string {
+export function renderChatSection(view: ChatSectionView, composer: ChatComposer): string {
   const messages = Object.entries(CHAT_MESSAGES)
     .map(
       ([key, message]) =>
@@ -184,7 +239,8 @@ export function renderChatSection(view: ChatSectionView): string {
   // **ソースを見せる操作**（5.16 / 確定38「作者がその会話で明示的に求めたときだけ」）。
   // **#695 から、この操作が画面に無かった**——口は `includeSource` を受けていたのに、
   // **送る側がどこにも無く、決定が 1 度も届いていなかった**（#727 の Copilot の指摘）。
-  // **対象があるチャットにだけ出す**（新規のチャットには見せる作品が無い）。
+  // **対象があるチャットにだけ出す**（新規のチャットには見せる作品が無い）。**`name` を持たない**
+  // ——生成のフォームの中にあるので、名前を付けるとリフォージとフォークの素の送信に載ってしまう。
   const sourceToggle =
     view.target.kind === 'new'
       ? ''
@@ -206,27 +262,27 @@ export function renderChatSection(view: ChatSectionView): string {
   <div id="chat-messages" role="status" aria-live="polite">
 ${messages}
   </div>
-  <!-- **この画面の主のボタンはこれ 1 つである**（2.5.5 / 確定38）。下書きが出るまでは隠れており、
-       押すと生成のフォームをそのまま送る（\`form\` 属性。**開始の経路は変えない**）。 -->
-  <p class="gf-chat-apply-row"><button id="chat-apply" class="gf-button gf-button-primary" type="submit"
-          form="${escapeHtml(labels.form)}" hidden>${escapeHtml(labels.apply)}</button></p>
-  <!-- **入力は区画の最後の子なので、常にいちばん下にある**（確定38。浮かせない理由は
-       \`public/assets/app.css\` の \`.gf-chat\` の冒頭）。区画のボタンは、送るが secondary、
-       記録を消すが tertiary である。 -->
-  <div class="gf-chat-dock">
-    <label class="gf-chat-dock-label" for="chat-input">チャットする（${CHAT_MAX_MESSAGE_LENGTH} 文字まで）</label>
-    <div class="gf-chat-dock-row">
-      <textarea id="chat-input" rows="2" maxlength="${CHAT_MAX_MESSAGE_LENGTH}"
-                placeholder="例: 短い時間で遊べる、避けるゲームを作りたい"></textarea>
-      <button id="chat-send" class="gf-button gf-button-secondary" type="button">送る</button>
+  <noscript>
+    <p><strong>チャットには JavaScript が必要です。</strong></p>
+  </noscript>
+  <!-- **欄は 1 つ、ボタンは 2 つ**（#738 / 5.16）。欄と主のボタン（新規は生成・対象があればリフォージ／フォーク）は
+       そのフォームのもので、「チャットする」は同じ欄の中身をチャットへ送る。**主はその 1 つだけ**（2.5.5）で、
+       区画のほかのボタンは、チャットするが secondary、下書きを入れる・記録を消すが tertiary である。
+       **入力は区画の最後の子なので、常にいちばん下にある**（浮かせない理由は
+       \`public/assets/app.css\` の \`.gf-chat\` の冒頭）。 -->
+  ${composer.open}
+    ${composer.head}
+    ${composer.field}
+    <p class="gf-generate-hint" id="${CHAT_KEY_HINT_ID}">${escapeHtml(chatKeyHint(composer.submitLabel))}</p>
+    <div class="gf-chat-composer-row">
+      <button id="chat-send" class="gf-button gf-button-secondary" type="button">チャットする</button>
+      ${composer.submit}
     </div>
     <div class="gf-chat-actions">
-${sourceToggle}      <button id="chat-clear" class="gf-button gf-button-tertiary" type="button">チャットの記録を消す</button>
+${sourceToggle}      <button id="chat-draft" class="gf-button gf-button-tertiary" type="button" hidden>下書きを欄へ入れる</button>
+      <button id="chat-clear" class="gf-button gf-button-tertiary" type="button">チャットの記録を消す</button>
     </div>
-  </div>
-  <noscript>
-    <p><strong>チャットには JavaScript が必要です。</strong>下の「チャットせずに指示文を直接書く」を開けば、チャットなしで生成できます。</p>
-  </noscript>
+  </form>
 </section>`;
 }
 
@@ -243,20 +299,20 @@ export const CHAT_SCRIPT = `
 (function () {
   var section = document.getElementById('chat');
   var log = document.getElementById('chat-log');
-  var input = document.getElementById('chat-input');
   var send = document.getElementById('chat-send');
-  var apply = document.getElementById('chat-apply');
+  var insert = document.getElementById('chat-draft');
   var clear = document.getElementById('chat-clear');
   var status = document.getElementById('chat-status');
   var quota = document.getElementById('chat-quota');
-  // **下書きを入れる欄は対象で変わる**（生成 / リフォージ / フォーク）。**主のボタンが属する
-  // フォームの欄を引く**ので、ここで 3 つのうち在るものを 1 つ選ぶ。
-  var prompt = document.getElementById('generate-prompt')
-    || document.getElementById('revise-prompt')
-    || document.getElementById('fork-prompt');
-  if (section === null || log === null || input === null || send === null) { return; }
+  if (section === null || log === null || send === null) { return; }
+  // **欄は 1 つである**（#738）。生成のフォームの欄（生成 / リフォージ / フォークで id が違う）が
+  // この区画の中にただ 1 つあるので、id を書き写さずに区画の中から引く。
+  var input = section.querySelector('textarea');
+  if (input === null) { return; }
   var notices = document.querySelectorAll('[data-chat-message-key]');
   var busy = false;
+  // 変換の確定（compositionend）を最後に見た時刻。IME の防御の 3 段目に使う。
+  var composedAt = -Infinity;
 
   /** 会話の全文を DOM から読む（**表示している履歴のすべて**。送るのは windowOf で切ったもの）。 */
   function history() {
@@ -374,12 +430,32 @@ export const CHAT_SCRIPT = `
     return text.replace(/^[\\s\\r\\n]+/, '').slice(0, ${MAX_PROMPT_LENGTH});
   }
 
-  /** 「この指示で作る」を出すかどうかを決める。 */
-  function refreshApply() {
-    if (apply !== null) { apply.hidden = draft() === ''; }
+  /** 「下書きを欄へ入れる」を出すかどうかを決める（下書きが無ければ隠す）。 */
+  function refreshDraft() {
+    if (insert !== null) { insert.hidden = draft() === ''; }
   }
 
-  send.addEventListener('click', function () {
+  /**
+   * そのキーの押下でチャットを送るか（#738。仕様 5.16「キー」）。
+   *
+   * **送るのは Shift+Enter だけ**で、Enter は改行のまま（既定の動きを止めない）。**生成にはキーを
+   * 割り当てない**——生成は押し間違えたときに戻せない側なので、ボタンだけにする。
+   *
+   * **IME の防御は 3 段である。** 変換を確定する Enter は修飾キーを伴わないので、そもそも
+   * 1 行目で落ちる。それでも、変換中の押下（isComposing）・変換中を示す keyCode 229・変換を
+   * 確定した直後に来た Enter（ブラウザによっては確定の後に isComposing の外れた押下が届く）の
+   * 3 つを送らない側へ倒す。**押し直せば送れる**ので、迷ったら送らない。
+   */
+  function sendsChat(event, composedAt) {
+    if (event.key !== 'Enter' || !event.shiftKey) { return false; }
+    if (event.ctrlKey || event.altKey || event.metaKey) { return false; }
+    if (event.isComposing || event.keyCode === 229) { return false; }
+    if (event.timeStamp - composedAt < ${COMPOSITION_GUARD_MS}) { return false; }
+    return true;
+  }
+
+  /** 欄の中身をチャットへ送る（「チャットする」と Shift+Enter の両方がここを通る）。 */
+  function sendChat() {
     if (busy) { return; }
     var text = (input.value || '').trim();
     if (text === '') { return; }
@@ -420,7 +496,7 @@ export const CHAT_SCRIPT = `
       if (typeof result.payload.remainingPercent === 'number') {
         showRemaining(result.payload.remainingPercent);
       }
-      refreshApply();
+      refreshDraft();
     }).catch(function () {
       // **通信が落ちたときと、応答が JSON でないときもここへ来る。** 上の枝と同じ後始末を
       // 通す（rollback の注記）。
@@ -431,17 +507,26 @@ export const CHAT_SCRIPT = `
       send.disabled = false;
       if (status !== null) { status.hidden = true; }
     });
+  }
+
+  send.addEventListener('click', sendChat);
+
+  input.addEventListener('compositionend', function (event) { composedAt = event.timeStamp; });
+  input.addEventListener('keydown', function (event) {
+    if (!sendsChat(event, composedAt)) { return; }
+    // Shift+Enter の既定（改行）を止めて、チャットへ送る。
+    event.preventDefault();
+    sendChat();
   });
 
-  if (apply !== null && prompt !== null) {
-    apply.addEventListener('click', function (event) {
+  if (insert !== null) {
+    insert.addEventListener('click', function () {
       var text = draft();
-      // **下書きが無いのに送らない。** 空のまま通すと、直接書く欄に残っていた前の値が飛ぶ。
-      if (text === '') { event.preventDefault(); return; }
-      // **開始の経路は変えない**（5.16 / 確定38）。欄へ入れてから、このボタン自身が
-      // \`generate-form\` を送る（\`type="submit"\` と \`form\` 属性）。送信を受けるのは
-      // \`src/generate-page.ts\` の \`GENERATE_SCRIPT\` で、POST /api/generate は今までどおりである。
-      prompt.value = text;
+      if (text === '') { return; }
+      // **欄へ入れるだけで、送らない**（5.16 / #738）。生成は作者が「生成する」を押して始まる。
+      // 欄に書きかけがあっても置き換える（下書きは毎回全文なので、足すと重なる）。
+      input.value = text;
+      input.focus();
     });
   }
 
@@ -456,14 +541,14 @@ export const CHAT_SCRIPT = `
           while (log.firstChild !== null) { log.removeChild(log.firstChild); }
           section.removeAttribute('data-conversation');
           quiet();
-          refreshApply();
+          refreshDraft();
         })
         .catch(function () { notify(0, ''); })
         .then(function () { busy = false; clear.disabled = false; });
     });
   }
 
-  refreshApply();
+  refreshDraft();
   toBottom();
 })();
 `;

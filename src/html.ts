@@ -104,6 +104,15 @@ export const APP_CSS_PATH = '/assets/app.css';
 export const READING_CLASS = 'gf-reading';
 
 /**
+ * 中央揃えの 1 カラムの印（#738 / 仕様 5.16「レイアウト」）。**読み物の器（{@link READING_CLASS}）と同じ幅と置き方**
+ * （`--gf-measure` の幅で中央）だが、**読み物の器ではない**——フォームが本体の画面は 2.5.3 の「対象の画面」に入れない
+ * 決めなので、印を分けた（`test/page-shell.test.ts` の読み物の器の照合に数えられない）。いま使うのは生成画面
+ * （`/generate`。チャットと 1 つの欄）だけである。パンくずには {@link siteHead} の `column` が付け、本文を包む要素には
+ * 画面の側が付ける。見た目は app.css の `@section signed-in` が持つ。
+ */
+export const COLUMN_CLASS = 'gf-column';
+
+/**
  * ロゴの画像を置くディレクトリ（#440）。
  *
  * **正本は `brand/logo/lockup-horizontal/` で、ここにあるのはその写しである**（`docs/logo.md`）。
@@ -773,14 +782,14 @@ export function breadcrumbLabelOf(title: string): string {
  *
  * @param viewer いま見ている人と画面
  * @param title `siteHead` に渡された `title`
- * @param reading 長い文を読ませる画面なら true（`siteHead` の `reading`）
+ * @param mark パンくずに付ける器の印（{@link READING_CLASS} か {@link COLUMN_CLASS}。無ければ null）
  * @param parentsOverride URL から導かずに使う親（`siteHead` の `breadcrumbParents`。#664）
  * @returns HTML（出さないときは空文字）
  */
 function siteBreadcrumb(
   viewer: SiteViewer | undefined,
   title: string,
-  reading: boolean,
+  mark: string | null,
   parentsOverride?: readonly NavItem[],
 ): string {
   if (viewer === undefined || viewer.path === HOME_PATH) {
@@ -795,7 +804,7 @@ function siteBreadcrumb(
     .map((item) => `<li><a href="${item.path}">${escapeHtml(item.label)}</a></li>`)
     .join('\n    ');
   return `
-<nav class="gf-breadcrumb${reading ? ` ${READING_CLASS}` : ''}" aria-label="パンくずリスト">
+<nav class="gf-breadcrumb${mark === null ? '' : ` ${mark}`}" aria-label="パンくずリスト">
   <ol>
     ${links}
     <li><span aria-current="page">${escapeHtml(breadcrumbLabelOf(title))}</span></li>
@@ -839,6 +848,12 @@ export interface SiteHeadOptions {
    * 要素と同じ読み物の器の端に揃えるため。**省くと、これまでと 1 文字も違わない HTML を出す。**
    */
   readonly reading?: boolean;
+  /**
+   * 中央揃えの 1 カラムの画面なら true（#738）。**パンくずに {@link COLUMN_CLASS} を付ける**——本文を包む要素と同じ
+   * 端に揃えるため。`reading` と同時には渡さない（渡したら `reading` が勝つ）。**省くと、これまでと 1 文字も違わない
+   * HTML を出す。**
+   */
+  readonly column?: boolean;
   /**
    * パンくずの親（トップの後ろ、いまの画面の前）を、URL から導かずに渡す（#664）。**省くと、これまでどおり URL から導く。**
    *
@@ -940,7 +955,7 @@ export function siteHead(options: SiteHeadOptions): string {
 <title>${escapeHtml(options.title)}</title>${extraHead}${siteHeader(options.viewer, options.searchQuery)}${siteBreadcrumb(
     options.viewer,
     options.title,
-    options.reading === true,
+    options.reading === true ? READING_CLASS : options.column === true ? COLUMN_CLASS : null,
     options.breadcrumbParents,
   )}`;
 }

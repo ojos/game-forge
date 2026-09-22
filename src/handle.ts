@@ -58,6 +58,8 @@ export const HANDLE_CHANGES_TABLE = 'handle_changes';
  * ここに並べるのは、**運営やサービスそのものを名乗れてしまう語**である（`/@official` の作者ページが
  * 運営の告知に見える）。語の検査はしない（5.9。表示名は運営の印で見分ける）が、**URL はドメインの一部として
  * 読まれ、印が付かない場所（SNS に貼られた URL）でも運営に見える**ので、ここだけは語で弾く。
+ *
+ * **綴りの頭でだけ弾きたいものは {@link HAND_WRITTEN_RESERVED_PREFIXES} が持つ**（#778）。ここは完全一致である。
  */
 export const HAND_WRITTEN_RESERVED_HANDLES: readonly string[] = [
   'official',
@@ -75,7 +77,34 @@ export const HAND_WRITTEN_RESERVED_HANDLES: readonly string[] = [
   'root',
   'gameforge',
   'game_forge',
+  // ロゴの語（#778）。**金床（`anvil`）と鍛冶場（`forge`）はロゴのシンボルそのもの**で（`docs/logo.md`）、
+  // 単体でも運営の作者ページに見える。**ブランドの語なので、経路が増えても導けない。**
+  'forge',
+  'anvil',
 ];
+
+/**
+ * **手書きの予約の接頭辞**——この綴りで始まるハンドル名を、まるごと断る（#778）。
+ *
+ * **完全一致の {@link HAND_WRITTEN_RESERVED_HANDLES} では、運営のハンドル名（`@gameforge_jp`）に寄せた綴りを
+ * 数え上げきれない。** `gameforgejp` を足せば `gameforge_jp2` が残り、それを足せば `gameforge2026`
+ * （運営がプロフィールで公開している X のアカウント名）が残る。**名乗れる綴りが尽きないので、列挙ではなく
+ * 接頭辞で弾く**（利用者の決定。2026-09-22）。
+ *
+ * **判定は小文字にした後の値に掛ける**（`GameForge_JP` も断る）。**先頭でない一致は断らない**
+ * （`mygameforge` は通る）——URL を読む人が運営と結びつけるのは先頭の綴りだからである。
+ *
+ * ## 運営自身も、いまのハンドル名を手放すと画面からは取り直せない
+ *
+ * **保存済みの値は再検査されない**ので、運営が持っている `gameforge_jp` は影響を受けない。ただし改名すると、
+ * **予約中の旧ハンドルへ戻る経路も {@link validateHandle} を通る**ので、運営も画面からは戻れなくなる。
+ *
+ * **例外を作らないのは、例外が「運営だけが通る抜け道」としてコードに残るからである。** `users.is_operator` を
+ * 見て通す形にすると、**表示だけの列だった印がハンドル名の可否まで決めることになる**
+ * （`docs/operator-account.md` 1 章の「運営だからできることは 1 つも増えません」が崩れる）。**運営が取り直すときは、
+ * 印の付け外しと同じく D1 を直接書く**——運用の手順であって、画面の穴ではない。
+ */
+export const HAND_WRITTEN_RESERVED_PREFIXES: readonly string[] = ['gameforge', 'game_forge'];
 
 /** {@link reservedHandlesOf} へ渡す、予約語の出どころ。 */
 export interface ReservedHandleSources {
@@ -178,7 +207,7 @@ const HANDLE_INPUT_CHARACTERS = /^[A-Za-z0-9_]+$/u;
  * ハンドル名を検査し、保存する形（小文字）へ落とす（5.10）。
  *
  * **判定の順:** 前後の空白を除く → 先頭の `@` を 1 つだけ除く（`@foo` と打つ人がいる）→ 空 → 文字 →
- * 長さ → 予約語。
+ * 長さ → 予約語（完全一致と、{@link HAND_WRITTEN_RESERVED_PREFIXES} の接頭辞）。
  *
  * ## 小文字にするのは、文字を確かめた後である
  *
@@ -207,7 +236,7 @@ export function validateHandle(raw: string, reserved: ReadonlySet<string>): Hand
     return { ok: false, reason: 'handle-length' };
   }
   const value = unprefixed.toLowerCase();
-  if (reserved.has(value)) {
+  if (reserved.has(value) || HAND_WRITTEN_RESERVED_PREFIXES.some((prefix) => value.startsWith(prefix))) {
     return { ok: false, reason: 'handle-reserved' };
   }
   return { ok: true, value };

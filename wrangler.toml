@@ -4,6 +4,8 @@
 # 委譲済みで Cloudflare 上に無く、Workers のカスタムドメインはゾーンが Cloudflare に
 # あることを要求するため `game-forge.ojos.jp` に張れない。Pages のカスタムドメインは
 # サブドメインなら外部 DNS のまま CNAME 1 本で足りる（docs/pages-deploy.md）。
+# **#775 でゾーンは Cloudflare へ移った**（確定17 の改訂。terraform/dns-ojos-jp.tf）。Workers の
+# カスタムドメインも張れるようになったが、**配置先は Pages のまま変えていない**（確定22 の #775 注記）。
 #
 # 本番向けの設定（custom domain / 本物の D1 database_id）は、対応する issue が来た
 # 時点で足す。実在しない ID を先に書くと、宣言が外部状態を指しているように読める。
@@ -26,6 +28,7 @@ compatibility_date = "2026-08-01"
 # Cloudflare の表玄関から入れ直す」ことだけである（公式の互換フラグの説明）。このサイトはゾーンを
 # Cloudflare に持たず（確定17 / 確定22。DNS は Route53）、外へ出る `fetch()` は AWS（Lambda・Bedrock）・
 # Resend・Google の公開の口だけで、自分のホストを `fetch()` で呼ぶ経路は無い（#696 PR① で `src/` を洗った）。
+# **#775 でゾーンを Cloudflare へ移した後も、自分のホストへの `fetch()` は無い**（`src/` を洗い直した）。
 # **`nodejs_compat` は足さない**（部品は Node の API を使わない）。
 compatibility_flags = ["global_fetch_strictly_public"]
 
@@ -223,6 +226,8 @@ entrypoint = "ApiRateLimiter"
 # `*.pages.dev` を指せない）。Cloudflare Pages 側も、外部 DNS のままの apex は
 # 対象外としている（ドメインごと Cloudflare のゾーンにすることを要求する）。
 # `app.` を 1 ラベル足すと、どちらの制約にも触れずに CNAME 1 本で張れる。
+# **#775 で Cloudflare のゾーンへ移り、この制約は無くなった。ホスト名は変えていない**（OAuth の
+# リダイレクト URI・cookie・検索エンジンの登録がこの綴りに乗っている。apex を使うのは別 issue）。
 APP_HOST = "app.game-forge.ojos.jp"
 SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
 # 運営の管理画面（2.4.1 / #356）。**`app.` と兄弟に置く。**
@@ -230,6 +235,7 @@ SANDBOX_HOST = "sandbox.game-forge.ojos.jp"
 # `game-forge.ojos.jp` はゾーンの apex で CNAME を張れないため（上の `APP_HOST` の注記）、
 # ここも 1 ラベル足した形になる。**カスタムドメインの登録（Cloudflare API）と Route53 の
 # CNAME の両方が要る**——片方だけでは `active` にならない（`docs/admin-host.md`）。
+# （#775 で CNAME の置き場所は Cloudflare のゾーンへ移った。terraform/dns-ojos-jp.tf）
 ADMIN_HOST = "admin.game-forge.ojos.jp"
 # **#25 の A/B は終わった**（2026-09-02。n=6 では high と medium の差を識別できなかった。
 # 仕様書 4.2 の「A/B の結果」）。**採用値は変えないので、素の sonnet-4-6 へ戻す。**

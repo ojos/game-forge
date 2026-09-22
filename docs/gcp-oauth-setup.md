@@ -17,7 +17,7 @@
 | 請求先アカウントの紐付け（本番は #487、開発は #479） | `terraform/gcp.tf`（`billing_account`。ID は `terraform.tfvars`） | 宣言できる |
 | OAuth 同意画面（Google Auth Platform） | この文書（手作業） | 宣言できない |
 | OAuth クライアント（ウェブアプリ） | この文書（手作業） | 宣言できない |
-| `ojos.jp` の所有証明（Search Console の TXT レコード） | この文書（手作業。4.3） | `ojos.jp` のゾーンはさくら側（dns.ne.jp）にあり、DNS の API が無い（`terraform/dns.tf` の冒頭） |
+| `ojos.jp` の所有証明（Search Console の TXT レコード） | `terraform/dns-ojos-jp.tf`（`ojos_jp_google_site_verification`。4.3） | **宣言できる**（#775 で `ojos.jp` のゾーンを Cloudflare へ移した。それまではさくら側で API が無かった） |
 
 **OAuth クライアントを宣言できない理由。** google プロバイダの `google_iap_client` は IAP
 ブランド配下のクライアント専用で、一般公開のコンシューマ向けアプリには使えない。その IAP
@@ -266,9 +266,12 @@ Google アカウントは同意画面で弾かれる（`docs/local-dev.md` の�
 **本番の承認済みドメイン `ojos.jp` は、Search Console で所有を証明してある**（2026-09-14）。証明は
 `ojos.jp` の DNS に置いた `google-site-verification=...` の TXT レコードで行っている。
 
-- **このレコードは terraform の外にある。** `ojos.jp` のゾーンはさくら側（ネームサーバは dns.ne.jp）で、
+- ~~**このレコードは terraform の外にある。** `ojos.jp` のゾーンはさくら側（ネームサーバは dns.ne.jp）で、
   terraform が持つのは委譲した `game-forge.ojos.jp` の Route53 ゾーンだけである（`terraform/dns.tf`）。
-  さくら側は DNS の API を持たない
+  さくら側は DNS の API を持たない~~
+  → **#775 注記（2026-09-22）: terraform の宣言になった。** `ojos.jp` のゾーンを Cloudflare へ移し、
+  このレコードは `terraform/dns-ojos-jp.tf` の `ojos_jp_google_site_verification` が持つ。**値は切り替えの前後で
+  1 文字も変えていない**（さくらと Cloudflare の両方へ直接問い合わせ、大文字小文字まで一致を確かめた）
 - **消すと所有証明が外れる。** 承認済みドメインの要件を満たさなくなり、ブランド確認と本番の同意画面に
   影響しうる。`ojos.jp` のゾーンを整理するときに消さないこと
 - 値そのものはこの文書に書かない。Search Console の「所有権の確認」の画面で確かめる
@@ -298,6 +301,10 @@ Google アカウントは同意画面で弾かれる（`docs/local-dev.md` の�
 
 **したがって、この節の TXT はさくら側に残り続ける。** 上の「消さないこと」は、**Google の制約により
 引き受けている代償**であって、いつか直せる宿題ではない。
+
+> **#775 注記。** 置き場所は `ojos.jp` のまま変わらない（上の Google の制約はそのまま）が、**`ojos.jp` のゾーンが
+> Cloudflare へ移ったので、TXT は terraform の宣言になった。** 「terraform の外にある」は解消した。
+> **「消すと外れる」は残る**——宣言から消して apply すれば、同じように外れる。
 
 > **試す前に読んでほしい。** この判断は 2026-09-17 に利用者が Console で実際に試して確定した。
 > **同じ疑問を持った人が、また Console を触ることになる**ので、エラーの文言ごとここへ残す。

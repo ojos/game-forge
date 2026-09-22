@@ -280,13 +280,17 @@ describe('運営と紛らわしい名前を弾く（#778）', () => {
 
   it('保存済みのハンドル名は再検査されない（運営の gameforge_jp は取り上げられない）', async () => {
     const operator = await seedUser();
+    await env.DB.prepare('update users set is_operator = 1 where id = ?').bind(operator).run();
     expect(await changeHandle(env.DB, operator, 'gameforge_jp', NOW)).toEqual({ ok: true, changed: true });
     expect(await currentHandleOf(env.DB, operator)).toEqual({ handle: 'gameforge_jp', claimedAt: NOW });
-    // 画面から入れ直す経路（`src/account-handle.ts`）は検査を通るので、運営も新しくは取れない。
+    // **印が立っていても、画面から入れ直す経路（`src/account-handle.ts`）は検査を通る。**
+    // `is_operator` を見て通す例外は作っていない（`HAND_WRITTEN_RESERVED_PREFIXES` の注記）。
     expect(validateHandle('gameforge_jp', appReservedHandles(env))).toEqual({
       ok: false,
       reason: 'handle-reserved',
     });
+    const row = await env.DB.prepare('select is_operator from users where id = ?').bind(operator).first();
+    expect(row).toEqual({ is_operator: 1 });
   });
 });
 

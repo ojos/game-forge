@@ -19,7 +19,6 @@ import { WORK_PAGE_PREFIX, workPagePath } from '../src/work-page.js';
 import {
   CLEAR_FILTER_LABEL,
   MAX_PAGE,
-  MOVED_NOTICE,
   PUBLIC_WORKS_PATH,
   SEARCH_REJECTION_MESSAGES,
   SEARCH_SORT_NOTICE,
@@ -572,10 +571,10 @@ describe('カードの見え方（仕様 2.3.6）', () => {
     expect(body).toContain('画面の準備中');
   });
 
-  it('移設先の案内が出る', async () => {
-    // `/works` の意味が変わることを黙って変えない（仕様 2.3.2）。
-    expect(await (await openList()).text()).toContain(MOVED_NOTICE);
-    expect(MOVED_NOTICE).toContain(MY_WORKS_PATH);
+  it('移設の案内を出さない（#773）', async () => {
+    const body = await (await openList()).text();
+    expect(body).not.toContain('へ移りました');
+    expect(body).not.toContain('gf-works-moved');
   });
 });
 
@@ -966,9 +965,8 @@ describe('見た目の規約の部品（#474 / M13-10 / 仕様 2.5）', () => {
     expect(next).toBeGreaterThan(back);
   });
 
-  it('移設の案内・断った検索・0 件の知らせは面のブロックで、主のボタンを置かない', () => {
+  it('断った検索・0 件の知らせは面のブロックで、主のボタンを置かない', () => {
     const empty = renderWorksListPage({ works: [], sort: 'recent', page: 1, hasNext: false }, viewer);
-    expect(empty).toContain(`<p class="gf-block gf-works-moved">${MOVED_NOTICE}</p>`);
     expect(empty).toContain('<div class="gf-block gf-works-empty">\n<p>まだ公開された作品がありません。</p>');
     expect(empty).not.toContain('gf-button-primary');
 

@@ -11,9 +11,9 @@
  * 意味のある行き先**になる。いま `/works` が返している「自分の作品」は `/works/mine` へ
  * 移した（`src/my-works.ts`）。
  *
- * **代償は払っている。** 既存の参加者が `/works` を控えていれば行き先が変わる。だから
- * 一覧の先頭に移設先を出す（{@link MOVED_NOTICE}）。数十人規模のクローズドβ（2.1）の
- * 間にしか払えない代償であり、先送りするほど高くなる。
+ * **代償は払っている。** 既存の参加者が `/works` を控えていれば行き先が変わる。数十人規模の
+ * クローズドβ（2.1）の間にしか払えない代償であり、先送りするほど高くなる。移設直後は一覧の
+ * 先頭に移設先を出していたが、#773 で外した（ヘッダのメニューから「自分の作品」へ行ける）。
  *
  * ## 読み取りは 3 つの条件で押さえる（仕様 2.3.3）
  *
@@ -81,7 +81,7 @@ import { escapeHtml, resolveSiteViewer, siteHead } from './html.js';
 import { siteFooter } from './legal.js';
 import { cachedRows, listCacheKey } from './list-cache.js';
 import { GENERATE_PAGE_PATH } from './paths.js';
-import { MY_WORKS_PATH, PUBLIC_WORKS_PATH } from './works-paths.js';
+import { PUBLIC_WORKS_PATH } from './works-paths.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
 import { sandboxOriginOf } from './avatar-paths.js';
@@ -101,8 +101,8 @@ import {
  * 公開一覧のパス（`/works`）。
  *
  * **正本は `src/works-paths.ts` である**（`src/paths.ts` の冒頭が定める「提供する側と、
- * そこへ送り返す側が別モジュールになるもの」に当たる。移設の案内でここが `/works/mine`
- * を出し、「あなたの作品」の側がここを出すので、値を持ち合うと循環参照になる。
+ * そこへ送り返す側が別モジュールになるもの」に当たる。「あなたの作品」の側がここを出すので、
+ * 値をどちらかの画面のモジュールに持たせると、画面どうしの参照が向きを限れなくなる。
  * `src/paths.ts` そのものに置かないのは、Lambda の束に入るからである——#336）。
  * ここから再輸出するのは、既にこのモジュールから読んでいる箇所を動かさないためで、
  * 値を二重に持っているわけではない（`src/home.ts` の `HOME_PATH` と同じ扱い）。
@@ -130,15 +130,6 @@ export const WORKS_PER_PAGE = 20;
  * 変える時期である。
  */
 export const MAX_PAGE = 50;
-
-/**
- * 移設の案内。
- *
- * **綴りを書き写さない。** `/works/mine` とリテラルで書くと、作品ページの綴りを変えた
- * 日に**案内文だけが古い場所を指す**（Copilot code review の指摘。2026-09-05）。
- * 正本（`src/works-paths.ts`）から組み立てる。
- */
-export const MOVED_NOTICE = `自分の作品は ${MY_WORKS_PATH} へ移りました。`;
 
 /**
  * 並べ替えの札。**綴りの正本は `src/games.ts` の `PUBLIC_WORK_SORTS` である。**
@@ -536,7 +527,6 @@ export function renderWorksListPage(view: WorksListView, viewer: SiteViewer): st
   })}
 <h1>作品をさがす</h1>
 <p>公開された作品が並んでいます。遊ぶのに登録は要りません。</p>
-<p class="gf-block gf-works-moved">${MOVED_NOTICE}</p>
 <div class="gf-split">
 ${renderTagFilter(view)}
 <div class="gf-works-results">${filtered}${searched}${renderClearFilter(view)}

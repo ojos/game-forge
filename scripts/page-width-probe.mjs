@@ -136,12 +136,47 @@ const PAGE_STATE_EXPRESSION = `(() => {
         + (element.getAttribute('size') ? '[size=' + element.getAttribute('size') + ']' : '');
     }
   }
+  // **面の中の文字の塊**（#763）。面（\`.gf-block\`）の直下——行に分けた面（\`.gf-block-rows\`）なら行の直下——に
+  // ある文字の塊ごとに、親の内側の右端から塊の右端までの空きを返す。**直下だけを見る**のは、面の中の格子や
+  // フォームの中の塊は、面ではなくその列の幅で組まれるためである。**親が横並びの flex や格子のときは見ない**——
+  // 文とボタンを 1 行に並べる帯（作品ページの下書きの帯 \`.gf-draft-banner\` など）は、右の空きが並べ方の結果である。
+  // **縦並びの flex は見る**。面そのものがフォーム（\`<form class="gf-block">\`。\`@section forms\` の縦並び）の画面が多い。
+  const blockText = [];
+  const TEXT = new Set(['H2', 'H3', 'P', 'UL', 'OL', 'DL', 'DETAILS', 'BLOCKQUOTE']);
+  const describe = (element) => element.tagName.toLowerCase()
+    + (element.className && typeof element.className === 'string' ? '.' + element.className.trim().split(/\\s+/).join('.') : '');
+  for (const block of document.querySelectorAll('.gf-block')) {
+    const parents = block.classList.contains('gf-block-rows') ? [...block.children] : [block];
+    for (const parent of parents) {
+      const style = getComputedStyle(parent);
+      const box = parent.getBoundingClientRect();
+      const flows = ['block', 'flow-root', 'list-item'].includes(style.display)
+        || (['flex', 'inline-flex'].includes(style.display) && style.flexDirection.startsWith('column') && style.alignItems !== 'flex-start' && style.alignItems !== 'start');
+      if (box.width === 0 || !flows) {
+        continue;
+      }
+      const innerRight = box.right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth);
+      for (const child of parent.children) {
+        const childBox = child.getBoundingClientRect();
+        if (!TEXT.has(child.tagName) || childBox.width === 0) {
+          continue;
+        }
+        blockText.push({ element: describe(child), inside: describe(parent), gap: Math.round(innerRight - childBox.right) });
+      }
+    }
+  }
+  // **入力欄の幅**（#763）。上限は入力欄が持つ（\`@section forms\`）。見えている欄だけを数える。
+  const inputs = [...document.querySelectorAll("input[type='text'], input[type='email']")]
+    .map((element) => ({ element: describe(element) + (element.name ? '[name=' + element.name + ']' : ''), width: Math.round(element.getBoundingClientRect().width) }))
+    .filter((input) => input.width > 0);
   return {
     innerWidth: window.innerWidth,
     scrollWidth: doc.scrollWidth,
     widest,
     widestRight: Math.round(right),
     title: document.title,
+    blockText,
+    inputs,
   };
 })()`;
 

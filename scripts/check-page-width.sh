@@ -244,6 +244,19 @@ const fs = require("node:fs");
 const wanted = process.argv[2];
 let failed = 0;
 /**
+ * 面の中の文字の塊を必ず観測する経路（#763）。**面の中にフォームと説明文を持つ画面**で、段 3 で面の右に
+ * 空きが残っていた。**ここに挙げた経路で 1 つも観測できなければ落とす**——仕込みや経路が変わって面が
+ * 描かれなくなると、面の幅の判定は空のまま緑になる。`/authorize` は dev fixture ではクライアントの
+ * 引数を持たず、面の無い断りの画面になるので挙げない。
+ */
+const BLOCK_TEXT_PATHS = ["/account", "/account/details", "/account/chat", "/account/mail", "/account/apps", "/invites", "/takedown"];
+/** 入力欄の幅の上限（`public/assets/app.css` の `--gf-measure`。42rem = 672px。1rem = 16px の前提）。 */
+const INPUT_MAX_PX = 672;
+/** 段 3 を代表する観測の幅（面が器いっぱいに広がり、上限が効く幅）。 */
+const WIDEST = Math.max(...wanted.split(",").map(Number));
+const seenBlockText = new Set();
+let seenInputs = 0;
+/**
  * アカウントのメニューの観測値を判定する（#372。観測は scripts/page-width-probe.mjs）。
  *
  * **観測が 1 つでも欠けたら落とす。** メニューが無い・読み込めなかった状態を
@@ -359,6 +372,27 @@ function judge(file, host, { expectMenu, allow404 }) {
             `いちばん右まで出ている要素: ${o.widest} → right=${o.widestRight}`,
         );
       }
+      // **面の中の文字の塊は、面の内側の右端まで届く**（#763）。1px までは丸めの差として許す。
+      for (const text of o.blockText || []) {
+        if (text.gap > 1) {
+          problems.push(`${o.path}: 面（${text.inside}）の中の ${text.element} の右に ${text.gap}px の空きがあります（面の幅で組まれていない）`);
+        }
+      }
+      // **入力欄は版面（--gf-measure）を超えない**（#763）。
+      for (const input of o.inputs || []) {
+        if (input.width > INPUT_MAX_PX) {
+          problems.push(`${o.path}: 入力欄 ${input.element} の幅が ${input.width}px です（上限 ${INPUT_MAX_PX}px）`);
+        }
+      }
+      if (width === WIDEST && BLOCK_TEXT_PATHS.includes(o.path)) {
+        seenBlockText.add(o.path);
+        if ((o.blockText || []).length === 0) {
+          problems.push(`${o.path}: 面の中の文字の塊を 1 つも観測できませんでした（面の幅の判定が空のまま緑になる）`);
+        }
+      }
+      if (width === WIDEST) {
+        seenInputs += (o.inputs || []).length;
+      }
     }
     for (const problem of problems) {
       console.error(`[page-width] ${host} / 幅 ${width}px / ${problem}`);
@@ -375,6 +409,17 @@ function judge(file, host, { expectMenu, allow404 }) {
   }
 }
 judge(process.argv[1], "app", { expectMenu: true, allow404: true });
+// **観測すべき経路を観測したかを、app の判定の後で見る**（#763）。経路表から消えた経路を黙って通さない。
+for (const path of BLOCK_TEXT_PATHS) {
+  if (!seenBlockText.has(path)) {
+    console.error(`[page-width] app / 幅 ${WIDEST}px / ${path}: 経路を観測していません（面の中の文字の判定の対象）`);
+    failed += 1;
+  }
+}
+if (seenInputs === 0) {
+  console.error(`[page-width] app / 幅 ${WIDEST}px: 入力欄を 1 つも観測できませんでした（入力欄の幅の判定が空のまま緑になる）`);
+  failed += 1;
+}
 judge(process.argv[3], "admin", { expectMenu: false, allow404: false });
 if (failed > 0) {
   process.exit(1);

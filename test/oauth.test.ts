@@ -781,6 +781,21 @@ describe('接続中のアプリ（/account/apps）', () => {
     expect(after).toContain('接続中のアプリはありません');
   });
 
+  it('一覧は行に分けた面の部品で、箇条の黒丸を出さず、行の上下の余白を詰める（#769）', async () => {
+    const user = await seedUser();
+    await connect(user.cookie, [SCOPE_WORKS_READ]);
+    const body = await (await call('GET', ACCOUNT_APPS_PATH, { headers: { cookie: user.cookie } })).text();
+    expect(body).toContain('<ul class="gf-block gf-block-rows gf-connected-apps">');
+    // **黒丸を止めるのは部品（`.gf-block-rows`）**——一覧ごとに書かせると、#706 のように書き忘れる。
+    const css = env.TEST_APP_CSS.replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+    const rule = (selector: string): string =>
+      new RegExp(`(?:^|\\n)${selector.replaceAll('.', '\\.')}\\s*\\{([^}]*)\\}`, 'u').exec(css)?.[1] ?? '';
+    expect(rule('.gf-block-rows')).toMatch(/list-style:\s*none;/u);
+    // 行の中の最初の子の上と、最後の子（解除のフォーム）の下の余白を 0 にする。
+    expect(rule('.gf-connected-apps > li > :first-child')).toMatch(/margin-top:\s*0;/u);
+    expect(rule('.gf-connected-apps > li > :last-child')).toMatch(/margin-bottom:\s*0;/u);
+  });
+
   it('接続が 1 件も無いときは、つなぎ方の案内（FAQ へのリンク）を出す', async () => {
     const user = await seedUser();
     const response = await call('GET', ACCOUNT_APPS_PATH, { headers: { cookie: user.cookie } });

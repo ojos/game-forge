@@ -936,9 +936,16 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   background: var(--gf-rule-soft);
 }
 
-/* ブロックの中で行を分ける（お知らせの行・管理画面の行）。行の間に淡い罫線を引く。 */
+/*
+ * ブロックの中で行を分ける（お知らせの行・管理画面の行）。行の間に淡い罫線を引く。
+ *
+ * **箇条の黒丸を出さない**（#769）。行に分けた面はたいてい `<ul>` で、`padding: 0` にしているので、既定の黒丸が
+ * 面の左の外に出る。#706 で足した接続中のアプリの一覧（`.gf-connected-apps`）は自分のクラスに `list-style: none` を
+ * 持っておらず、黒丸が出ていた。**一覧ごとに書かせると書き忘れるので、部品が持つ。**
+ */
 .gf-block-rows {
   padding: 0;
+  list-style: none;
 }
 
 .gf-block-rows > * {
@@ -2949,6 +2956,25 @@ img.gf-related-shot {
 .gf-invites code {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/*
+ * 接続中のアプリの一覧（`src/account-apps.ts`。#706 / #769）。**行の中の最初の見出しの上と、最後のフォームの下の余白を
+ * 詰める**——既定のままだと、行の内側の余白（16px。`.gf-block-rows`）に見出しの上の余白とフォームの下の余白
+ * （`@section forms` の 24px）が足され、面の上下だけが広く空いていた（#769）。行の間の区切りは部品の罫線が持つ。
+ * **行そのものの余白も 0 にする**——全体の `li { margin-bottom }`（8px）が行ごとに足される（招待・改造の一覧と同じ。
+ * PR #770 の Copilot の指摘）。
+ */
+.gf-connected-apps > li {
+  margin: 0;
+}
+
+.gf-connected-apps > li > :first-child {
+  margin-top: 0;
+}
+
+.gf-connected-apps > li > :last-child {
+  margin-bottom: 0;
 }
 
 /*

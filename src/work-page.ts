@@ -1226,6 +1226,7 @@ async function listBlockedCategories(env: Env, gameId: string): Promise<readonly
  *
  * **畳んだ口は文章の外のリンクの見せ方にする**（#474 / 仕様 2.5.5）。`<summary>` に下線を常には出さず、ホバーと
  * キーボードの焦点で出す（`@section work` の `.gf-report summary`）。送信のボタンは小さい副のボタンである。
+ * **`gf-form-fields` は、入力欄を `<p>` で包んだフォームの印**で、送信ボタンを行の右端に置く（app.css の `@section forms`。#767）。
  *
  * **押した結果がどうなるかを書かない。** 「N 件で非表示になります」と出すと、
  * **閾値を外から測れる**——8.4 が警戒している通報爆撃の設計図になる。
@@ -1259,7 +1260,7 @@ function reportSection(view: WorkPageView): string {
   return `
 <details class="gf-report" id="${WORK_REPORT_ANCHOR}">
   <summary>この作品を通報する</summary>
-  <form method="post" action="${WORK_REPORT_PATH}">
+  <form class="gf-form-fields" method="post" action="${WORK_REPORT_PATH}">
     <input type="hidden" name="${WORK_REPORT_GAME_ID_FIELD}" value="${view.reportableId}">
     <p class="gf-report-scope">画面に出るものだけでなく、<strong>この作品が鳴らす音</strong>も通報の対象です。気づいたことがあれば理由欄へ書いてください（空のままでも送れます）。</p>
     <p><label>理由（任意・${MAX_REASON_LENGTH} 文字まで）<br>

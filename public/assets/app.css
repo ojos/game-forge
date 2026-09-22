@@ -694,7 +694,7 @@ form p {
  * - **ログイン・登録の 3 つのブロックは左端のまま**（`@section signup`。3 つのボタンの位置を揃える）
  * - **`:has()` を使わない**（互換性のため避ける決め。`test/chat-ui.test.ts`）。入力欄がフォームの直下にある形は兄弟の
  *   結合子で見分ける。**入力欄を `<p>` などで包んだフォームは、印のクラス `gf-form-fields` を付ける**（削除依頼の
- *   フォーム。`src/legal.ts`）。付け忘れは `scripts/check-page-width.sh` の送信ボタンの判定が実ブラウザで赤にする
+ *   フォーム〈`src/legal.ts`〉と作品ページの通報のフォーム〈`src/work-page.ts`〉）。付け忘れは `scripts/check-page-width.sh` の送信ボタンの判定が実ブラウザで赤にする
  */
 form > :is(input[type='text'], input[type='email'], textarea) ~ .gf-button,
 .gf-form-fields > .gf-button {

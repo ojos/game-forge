@@ -176,11 +176,21 @@ const PAGE_STATE_EXPRESSION = `(() => {
       gap: Math.round(innerRightOf(element.closest('form')) - element.getBoundingClientRect().right),
     }));
   // **送信ボタンの右の空き**（#767）。入力欄のあるフォームの直下のボタンは、行の右端に置く（\`@section forms\`）。
+  // **閉じた \`<details>\` の中のフォームも測る**——作品ページの通報のフォームは畳んだ口の中にあり、閉じたままだと
+  // 幅が 0 で数えられず、印（\`gf-form-fields\`）の付け忘れを見落とした（PR #768 の Copilot の指摘）。ヘッダの
+  // アカウントのメニューは開閉を別に観測するので触らない。**測り終えたら閉じ直す**（ほかの観測を変えない）。
+  const opened = [...document.querySelectorAll('details:not([open])')].filter((details) => details.closest('header') === null);
+  for (const details of opened) {
+    details.open = true;
+  }
   const submits = [...document.querySelectorAll('form')]
     // **ログイン・登録の 3 つのブロックは見ない**（ボタンを 3 つとも左端に揃えると決めた部品。\`@section signup\`）。
     .filter((form) => form.closest('header, .gf-signup-option') === null && form.querySelector("input[type='text'], input[type='email'], textarea") !== null)
     .flatMap((form) => [...form.children].filter((child) => child.classList.contains('gf-button') && child.getBoundingClientRect().width > 0)
       .map((button) => ({ element: describe(button), form: describe(form), gap: Math.round(innerRightOf(form) - button.getBoundingClientRect().right) })));
+  for (const details of opened) {
+    details.open = false;
+  }
   // **1 カラムの画面の置き方**（#764。生成画面）。器（\`body\` の内側）・パンくず・1 カラム・チャットの区画・会話のログ・
   // 指示文の欄の端を返す。**1 カラムが無い画面では null**（判定は呼ぶ側が経路で決める）。
   const edges = (element) => {

@@ -165,6 +165,13 @@ PATHS="$(dev_fixture_paths)"
 # 読み手にとって単純である。cookie は作者本人のものなので、**作者にしか出ない行**も測れる。
 PATHS="${PATHS},/works/${PUBLISHED_GAME_ID}"
 
+# **他人の公開済みの作品ページも開く**（#767）。通報のフォームは「ログインしていて作者でない人」にしか出ない
+# ので、作者本人の cookie で開く上の 1 枚には描かれない。**描かれないまま、送信ボタンの置き場所の判定が緑に
+# なっていた**（PR #768 の Copilot の指摘。docs/handoff.md 3 章「仕込みに無いものは測れない」）。仕込みの
+# フォーク元の作品（作者は `pagewidth-plain`）を開く。
+PATHS="${PATHS},/works/${RELATED_PARENT_ID}"
+export GF_REPORT_PATH="/works/${RELATED_PARENT_ID}"
+
 # **エディットページの 4 つの状態も開く**（#664。下書き・公開・生成中・失敗）。エディットページは作品ページの
 # 前方一致の経路の続き（`/works/<id>/edit`）なので `/__dev/pages` に出ない。**足さないと、2 列のフォームと
 # プレビュー・公開設定を 1 度も描かないまま緑になる。** cookie は 4 つの作品の作者のものである（作者以外は作品ページへ
@@ -265,6 +272,9 @@ const seenBlockText = new Set();
 const seenColumn = new Set();
 let seenInputs = 0;
 let seenSubmits = 0;
+/** 通報のフォームを持つ画面（#767）。畳んだ口の中の送信ボタンを必ず観測する。 */
+const REPORT_PATH = process.env.GF_REPORT_PATH || "";
+let seenReport = 0;
 /**
  * アカウントのメニューの観測値を判定する（#372。観測は scripts/page-width-probe.mjs）。
  *
@@ -408,6 +418,9 @@ function judge(file, host, { expectMenu, allow404 }) {
       if (width === WIDEST) {
         seenInputs += (o.inputs || []).length;
         seenSubmits += (o.submits || []).length;
+        if (o.path === REPORT_PATH) {
+          seenReport += (o.submits || []).length;
+        }
       }
       // **1 カラムの画面は、他のページと同じ左端・同じ幅に組む**（#764。生成画面）。
       if (o.column) {
@@ -455,6 +468,10 @@ for (const path of BLOCK_TEXT_PATHS) {
 }
 if (seenColumn.size < 3) {
   console.error(`[page-width] app / 幅 ${WIDEST}px: 生成画面を ${seenColumn.size} 枚しか観測していません（新しく作る・リフォージ・フォークの 3 枚）`);
+  failed += 1;
+}
+if (REPORT_PATH === "" || seenReport === 0) {
+  console.error(`[page-width] app / 幅 ${WIDEST}px: 通報のフォームの送信ボタンを観測できませんでした（${REPORT_PATH || "経路が渡っていない"}。畳んだ口の中のボタンの判定が空のまま緑になる）`);
   failed += 1;
 }
 if (seenSubmits === 0) {

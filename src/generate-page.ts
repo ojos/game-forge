@@ -911,8 +911,8 @@ export function renderGeneratePage(signedIn: boolean, view: GeneratePageView): s
   // ——「ゲームを生成する」のままだと、リフォージのチャットを開いた人が別の画面へ来たと思う。
   const heading = PAGE_HEADINGS[view.target.kind] ?? PAGE_HEADINGS['new']!;
 
-  // **中央揃えの 1 カラム**（#738 / 仕様 5.16「レイアウト」）。ほかのテキスト主体のページと同じ `--gf-measure` の幅で
-  // 中央に置く。**読み物の器（2.5.3）ではない**——フォームが本体の画面なので、印を分けてある（`COLUMN_CLASS`）。
+  // **1 カラム**（#738 / #764 / 仕様 5.16「レイアウト」）。ほかのページと同じく器いっぱいの幅で、左端から組む
+  // （#764 で #738 の中央寄せを覆した）。**読み物の器（2.5.3）ではない**——フォームが本体の画面なので、印を分けてある（`COLUMN_CLASS`）。
   // パンくずも同じ端に揃える（`siteHead` の `column`）。
   return `${siteHead({
     title: heading.title,

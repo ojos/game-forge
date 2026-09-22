@@ -170,6 +170,33 @@ const PAGE_STATE_EXPRESSION = `(() => {
   const inputs = [...document.querySelectorAll("input[type='text'], input[type='email'], textarea")]
     .map((element) => ({ element: describe(element) + (element.name ? '[name=' + element.name + ']' : ''), width: Math.round(element.getBoundingClientRect().width) }))
     .filter((input) => input.width > 0);
+  // **1 カラムの画面の置き方**（#764。生成画面）。器（\`body\` の内側）・パンくず・1 カラム・チャットの区画・会話のログ・
+  // 指示文の欄の端を返す。**1 カラムが無い画面では null**（判定は呼ぶ側が経路で決める）。
+  const edges = (element) => {
+    if (element === null) {
+      return null;
+    }
+    const box = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    return {
+      left: Math.round(box.left),
+      right: Math.round(box.right),
+      width: Math.round(box.width),
+      innerRight: Math.round(box.right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth)),
+    };
+  };
+  const bodyStyle = getComputedStyle(document.body);
+  const bodyBox = document.body.getBoundingClientRect();
+  const column = document.querySelector('div.gf-column') === null ? null : {
+    shellLeft: Math.round(bodyBox.left + parseFloat(bodyStyle.paddingLeft)),
+    shellRight: Math.round(bodyBox.right - parseFloat(bodyStyle.paddingRight)),
+    breadcrumb: edges(document.querySelector('nav.gf-breadcrumb.gf-column')),
+    column: edges(document.querySelector('div.gf-column')),
+    chat: edges(document.querySelector('.gf-chat')),
+    log: edges(document.querySelector('.gf-chat-log')),
+    field: edges(document.querySelector('.gf-generate-form textarea')),
+    form: edges(document.querySelector('form.gf-generate-form')),
+  };
   return {
     innerWidth: window.innerWidth,
     scrollWidth: doc.scrollWidth,
@@ -178,6 +205,7 @@ const PAGE_STATE_EXPRESSION = `(() => {
     title: document.title,
     blockText,
     inputs,
+    column,
   };
 })()`;
 

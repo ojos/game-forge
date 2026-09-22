@@ -874,7 +874,7 @@ describe('生成画面での出し分け', () => {
     expect(html).toContain('aria-describedby="generate-title-hint"');
   });
 
-  it('画面は中央揃えの 1 カラムで、パンくずも同じ端に揃う（#738 / 5.16「レイアウト」）', () => {
+  it('画面は左端から器いっぱいに組む 1 カラムで、パンくずも同じ端に揃う（#738 / #764 / 5.16「レイアウト」）', () => {
     const html = renderGeneratePage(true, {
       availability: { kind: 'available', remaining: 5 },
       headerAvatar: null,
@@ -887,10 +887,17 @@ describe('生成画面での出し分け', () => {
     expect(start).toBeGreaterThan(0);
     expect(start).toBeLessThan(html.indexOf('<h1>'));
     expect(start).toBeLessThan(html.indexOf('id="chat"'));
-    // 器は `--gf-measure` の幅で中央（#738。読み物の器は #761 で左端からの組みに変わったが、この 1 カラムは残した）。
+    // 器は器いっぱいの幅で左端から組む（#764。#738 の中央寄せを覆した）。**パンくずも同じ値**——片方だけを
+    // 変えると、パンくずと見出しの左端がずれる（#738 が 1280px で見つけた回帰）。
     const column = cssRules('.gf-column').join('');
-    expect(column).toContain('max-width: var(--gf-measure)');
-    expect(column).toContain('margin-inline: auto');
+    expect(column).toContain('max-width: none');
+    expect(column).toContain('margin-inline: 0');
+    expect(cssRules('.gf-breadcrumb.gf-column').join('')).toContain('margin-inline: 0');
+    // 会話のログだけは版面で止める。**2 クラスで書く**（1 カラムと面の逃がし規則に負けないため）。
+    expect(cssRules('.gf-chat .gf-chat-log').join('')).toContain('max-width: var(--gf-measure)');
+    // 指示文の欄は面の内側いっぱい（#763 が入力欄に付けた上限から逃がす）。
+    expect(cssRules('.gf-chat-composer textarea').join('')).toContain('max-width: none');
+    expect(cssRules('.gf-generate-form textarea').join('')).toContain('max-width: none');
   });
 });
 

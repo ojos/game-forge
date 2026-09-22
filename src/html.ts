@@ -104,8 +104,8 @@ export const APP_CSS_PATH = '/assets/app.css';
 export const READING_CLASS = 'gf-reading';
 
 /**
- * 中央揃えの 1 カラムの印（#738 / 仕様 5.16「レイアウト」）。**`--gf-measure` の幅で中央に置く**（#738 のときは
- * 読み物の器〈{@link READING_CLASS}〉と同じ置き方だった。読み物の器は #761 で左端からの組みに変わった）。**読み物の器ではない**——フォームが本体の画面は 2.5.3 の「対象の画面」に入れない
+ * 1 カラムの印（#738 / #764 / 仕様 5.16「レイアウト」）。**器いっぱいの幅で、左端から組む**（#764。#738 では
+ * `--gf-measure` の幅で中央に置いていた。会話のログだけは今も版面で止める）。**読み物の器ではない**——フォームが本体の画面は 2.5.3 の「対象の画面」に入れない
  * 決めなので、印を分けた（`test/page-shell.test.ts` の読み物の器の照合に数えられない）。いま使うのは生成画面
  * （`/generate`。チャットと 1 つの欄）だけである。パンくずには {@link siteHead} の `column` が付け、本文を包む要素には
  * 画面の側が付ける。見た目は app.css の `@section signed-in` が持つ。
@@ -849,8 +849,8 @@ export interface SiteHeadOptions {
    */
   readonly reading?: boolean;
   /**
-   * 中央揃えの 1 カラムの画面なら true（#738）。**パンくずに {@link COLUMN_CLASS} を付ける**——本文を包む要素と同じ
-   * 端に揃えるため。`reading` と同時には渡さない（渡したら `reading` が勝つ）。**省くと、これまでと 1 文字も違わない
+   * 1 カラムの画面なら true（#738 / #764。器いっぱいの幅で左端から組む）。**パンくずに {@link COLUMN_CLASS} を付ける**——
+   * 本文を包む要素と同じ端に揃えるため。`reading` と同時には渡さない（渡したら `reading` が勝つ）。**省くと、これまでと 1 文字も違わない
    * HTML を出す。**
    */
   readonly column?: boolean;

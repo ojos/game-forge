@@ -874,7 +874,7 @@ describe('生成画面での出し分け', () => {
     expect(html).toContain('aria-describedby="generate-title-hint"');
   });
 
-  it('画面は中央揃えの 1 カラムで、パンくずも同じ端に揃う（#738 / 5.16「レイアウト」）', () => {
+  it('画面は左端から器いっぱいに組む 1 カラムで、パンくずも同じ端に揃う（#738 / #764 / 5.16「レイアウト」）', () => {
     const html = renderGeneratePage(true, {
       availability: { kind: 'available', remaining: 5 },
       headerAvatar: null,

@@ -849,8 +849,8 @@ export interface SiteHeadOptions {
    */
   readonly reading?: boolean;
   /**
-   * 中央揃えの 1 カラムの画面なら true（#738）。**パンくずに {@link COLUMN_CLASS} を付ける**——本文を包む要素と同じ
-   * 端に揃えるため。`reading` と同時には渡さない（渡したら `reading` が勝つ）。**省くと、これまでと 1 文字も違わない
+   * 1 カラムの画面なら true（#738 / #764。器いっぱいの幅で左端から組む）。**パンくずに {@link COLUMN_CLASS} を付ける**——
+   * 本文を包む要素と同じ端に揃えるため。`reading` と同時には渡さない（渡したら `reading` が勝つ）。**省くと、これまでと 1 文字も違わない
    * HTML を出す。**
    */
   readonly column?: boolean;

@@ -887,7 +887,7 @@ describe('生成画面での出し分け', () => {
     expect(start).toBeGreaterThan(0);
     expect(start).toBeLessThan(html.indexOf('<h1>'));
     expect(start).toBeLessThan(html.indexOf('id="chat"'));
-    // 器は読み物の器と同じ幅と置き方（`--gf-measure` で中央）。
+    // 器は `--gf-measure` の幅で中央（#738。読み物の器は #761 で左端からの組みに変わったが、この 1 カラムは残した）。
     const column = cssRules('.gf-column').join('');
     expect(column).toContain('max-width: var(--gf-measure)');
     expect(column).toContain('margin-inline: auto');

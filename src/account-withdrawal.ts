@@ -167,7 +167,7 @@ export const WITHDRAWAL_REFUSALS: Readonly<Record<WithdrawalRefusalReason, Withd
  *
  * **画面の本文全体が読ませる文で、押す口は末尾に「退会する」と「やめる」だけである**——仕様 2.5.3 の
  * 「対象の画面」の基準に当たるので、`siteHead` の `reading` と、本文全体を包む
- * {@link READING_CLASS} の `<div>` で 42rem の器に乗せる（#590）。**パンくずの後ろからフッタの前までを
+ * {@link READING_CLASS} の `<div>` で読み物の器に乗せる（#590）。**パンくずの後ろからフッタの前までを
  * 1 つの器に収める**（`<h1>` も注意書きの段落も `<section>` も同じ端に揃う。`test/page-shell.test.ts`）。
  *
  * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）

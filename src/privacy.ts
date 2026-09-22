@@ -115,8 +115,8 @@ export function privacyBody(contact: PrivacyContact): string {
   const maxAgeYears = Math.round(GRANT_MAX_AGE_SECONDS / (60 * 60 * 24 * 365));
   const accessTokenMinutes = Math.round(ACCESS_TOKEN_TTL_SECONDS / 60);
   const pendingMinutes = Math.round(PENDING_AUTHORIZATION_MAX_AGE_SECONDS / 60);
-  // **暫定版の但し書きはブロック（`.gf-block`）で、器の幅いっぱいに面を置く**（仕様 2.5.3 / #471）。本文は 42rem のまま。
-  // **器は読み物の器**（`READING_CLASS`。42rem の幅で中央に置く。仕様 2.5.3 / #564）。
+  // **暫定版の但し書きはブロック（`.gf-block`）で、器の幅いっぱいに面を置く**（仕様 2.5.3 / #471）。本文も器いっぱいに組む（#761）。
+  // **器は読み物の器**（`READING_CLASS`。画面の器と同じ幅で左端から組む。仕様 2.5.3 / #564 / #761）。
   return `<div class="gf-legal ${READING_CLASS}">
 <h1>プライバシーポリシー</h1>
 <p class="gf-block gf-draft-notice"><strong>このプライバシーポリシーはクローズドβ向けの暫定版です。</strong>

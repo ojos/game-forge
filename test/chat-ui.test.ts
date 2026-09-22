@@ -352,7 +352,7 @@ describe('チャットの区画（5.16「画面は /generate の中の区画」�
 
   it('会話が無いときの `<ol>` は本当に空である（`:empty` が成立する）', () => {
     // **空白のテキストノードが 1 つでもあると `:empty` は成立しない**（CSS の定義）。
-    // `public/assets/app.css` の `.gf-chat-log:empty` が余白を消せるのは、ここが空のときだけである。
+    // `public/assets/app.css` の `.gf-chat-log:empty` が案内を出せるのは、ここが空のときだけである（#771）。
     // **属性の増減で外れない形で見る**（#726 で `tabindex` と `aria-label` を足したときに
     // 外れた）。見たいのは「`<ol>` の開きタグの直後が閉じタグであること」だけである。
     const empty = /<ol id="chat-log"[^>]*><\/ol>/u;
@@ -713,11 +713,12 @@ describe('チャットを主役にする（#726 / 確定38）', () => {
     expect(user).toContain('max-width');
     // **AI は囲いを持たず、版面の幅をそのまま使う**（返答は長く、囲うと読みにくい）。
     expect(cssRules('.gf-chat-assistant').join('')).toContain('align-self: stretch');
-    // **カプセルになるのは利用者の発話だけ**で、地は区画の面と別の段にする
-    // （同じ面を敷くとカプセルが消える。1280px で撮って気づいた）。
+    // **カプセルになるのは利用者の発話だけ**で、地は会話の窓と別の段にする
+    // （同じ地を敷くとカプセルが消える。1280px で撮って気づいた）。#771 で窓が `--gf-ground` になったので、カプセルは面の色。
     const bubble = cssRules('.gf-chat-user .gf-chat-text').join('');
     expect(bubble).toContain('border-radius');
-    expect(bubble).toContain('background: var(--gf-ground)');
+    expect(bubble).toContain('background: var(--gf-surface)');
+    expect(cssRules('.gf-chat .gf-chat-log').join('')).toContain('background: var(--gf-ground)');
     expect(cssRules('.gf-chat-text').join('')).not.toContain('background');
     // **色では示さない**（`@section work` の「ここだけが色を持つ」）。
     for (const rule of [user, bubble, cssRules('.gf-chat-assistant').join('')]) {
@@ -893,8 +894,11 @@ describe('生成画面での出し分け', () => {
     expect(column).toContain('max-width: none');
     expect(column).toContain('margin-inline: 0');
     expect(cssRules('.gf-breadcrumb.gf-column').join('')).toContain('margin-inline: 0');
-    // 会話のログだけは版面で止める。**2 クラスで書く**（同じ形の逃がし規則が戻ってきても負けないため）。
-    expect(cssRules('.gf-chat .gf-chat-log').join('')).toContain('max-width: var(--gf-measure)');
+    // 会話のログは面の内側いっぱいの窓（#771。#764 の「ログだけは版面で止める」を覆した）。
+    expect(cssRules('.gf-chat .gf-chat-log').join('')).not.toContain('max-width');
+    expect(cssRules('.gf-chat-log').join('')).not.toContain('max-width: var(--gf-measure)');
+    // **履歴が無いときは窓の中に案内を出す**（#771）。生成内容なので、最初の発話が入れば `:empty` でなくなって消える。
+    expect(cssRules('.gf-chat-log:empty::before').join('')).toMatch(/content: '[^']*チャット[^']*'/u);
     // 指示文の欄は面の内側いっぱい。**入力欄はどれも上限を持たない**（#767。#763 の 42rem の上限を外した）ので、
     // 欄ごとの逃がし規則も要らない。
     expect(cssRules('textarea').join('')).not.toContain('max-width');

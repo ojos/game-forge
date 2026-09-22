@@ -258,13 +258,10 @@ let failed = 0;
  */
 const BLOCK_TEXT_PATHS = ["/account", "/account/details", "/account/chat", "/account/mail", "/account/apps", "/invites", "/takedown"];
 /**
- * 版面（42rem）で止めると決めた塊（#764 / #767）。**会話のログは読む面**なので、区画が器いっぱいに広がっても
- * 672px で止める。**#767 で文字の塊の上限を全体で外した後も、例外はこの 1 つだけ**である。上限を超えていないことは、
- * 下の 1 カラムの判定が見る。
+ * 版面（42rem）で止めると決めた塊（#764 / #767 / #771）。**#771 で会話のログの例外を外したので、いまは無い。**
+ * 足すときは、なぜ止めるのかを理由として書くこと。
  */
-const KEPT_AT_MEASURE = ["ol.gf-chat-log"];
-/** 版面の幅（`public/assets/app.css` の `--gf-measure`。42rem = 672px。1rem = 16px の前提）。会話のログの上限に使う。 */
-const MEASURE_PX = 672;
+const KEPT_AT_MEASURE = [];
 /** 段 3 を代表する観測の幅（面が器いっぱいに広がり、上限が効く幅）。 */
 const WIDEST = Math.max(...wanted.split(",").map(Number));
 const seenBlockText = new Set();
@@ -433,7 +430,7 @@ function judge(file, host, { expectMenu, allow404 }) {
           need("パンくずの左端が器の左端と揃っていません", c.breadcrumb.left === c.shellLeft, `パンくず ${c.breadcrumb.left} / 器 ${c.shellLeft}`);
           need("1 カラムが器の幅いっぱいではありません", c.column.left === c.shellLeft && c.column.right === c.shellRight, `1 カラム ${c.column.left}〜${c.column.right} / 器 ${c.shellLeft}〜${c.shellRight}`);
           need("チャットの面の右端が器の右端と一致しません", c.chat.right === c.shellRight, `面 ${c.chat.right} / 器 ${c.shellRight}`);
-          need("会話のログが版面より広がっています", c.log.width <= MEASURE_PX, `ログ ${c.log.width}px / 上限 ${MEASURE_PX}px`);
+          need("会話のログ（窓）が面の内側いっぱいではありません", Math.abs(c.log.right - c.chat.innerRight) <= 1, `窓の右端 ${c.log.right} / 面の内側の右端 ${c.chat.innerRight}`);
           need("指示文の欄が面の内側いっぱいではありません", Math.abs(c.field.right - c.form.innerRight) <= 1, `欄の右端 ${c.field.right} / フォームの内側の右端 ${c.form.innerRight}`);
         }
       }

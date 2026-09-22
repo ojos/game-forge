@@ -2962,7 +2962,13 @@ img.gf-related-shot {
  * 接続中のアプリの一覧（`src/account-apps.ts`。#706 / #769）。**行の中の最初の見出しの上と、最後のフォームの下の余白を
  * 詰める**——既定のままだと、行の内側の余白（16px。`.gf-block-rows`）に見出しの上の余白とフォームの下の余白
  * （`@section forms` の 24px）が足され、面の上下だけが広く空いていた（#769）。行の間の区切りは部品の罫線が持つ。
+ * **行そのものの余白も 0 にする**——全体の `li { margin-bottom }`（8px）が行ごとに足される（招待・改造の一覧と同じ。
+ * PR #770 の Copilot の指摘）。
  */
+.gf-connected-apps > li {
+  margin: 0;
+}
+
 .gf-connected-apps > li > :first-child {
   margin-top: 0;
 }

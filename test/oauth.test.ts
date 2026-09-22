@@ -792,6 +792,7 @@ describe('接続中のアプリ（/account/apps）', () => {
       new RegExp(`(?:^|\\n)${selector.replaceAll('.', '\\.')}\\s*\\{([^}]*)\\}`, 'u').exec(css)?.[1] ?? '';
     expect(rule('.gf-block-rows')).toMatch(/list-style:\s*none;/u);
     // 行の中の最初の子の上と、最後の子（解除のフォーム）の下の余白を 0 にする。
+    expect(rule('.gf-connected-apps > li')).toMatch(/margin:\s*0;/u);
     expect(rule('.gf-connected-apps > li > :first-child')).toMatch(/margin-top:\s*0;/u);
     expect(rule('.gf-connected-apps > li > :last-child')).toMatch(/margin-bottom:\s*0;/u);
   });

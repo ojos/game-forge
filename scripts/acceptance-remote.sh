@@ -636,60 +636,82 @@ check_actions_variable() {
 }
 
 ##
-# 宣言した Route53 ホストゾーンが実在し、ネームサーバが宣言と一致することを確認する。
+# 宣言した Cloudflare の ojos.jp ゾーンが実在し、active で、ネームサーバが宣言と一致することを
+# 確認する（#775。それまでは Route 53 のホストゾーンを見ていた）。
 #
 # ゾーン ID と期待する NS は terraform output から取る。ここへ書き写すと、宣言を
 # 変えたときに検査だけが古い値を見続ける（shared-ai-rules.md 12 章）。
 #
+# **status が active であることまで見る。** pending のままでは、登録事業者側（さくらの画面）の
+# ネームサーバが Cloudflare を向いていない。宣言と API の値は一致していても、世の中は
+# まだ旧いネームサーバに聞きに行っている。
+#
 # 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
 ##
 check_dns_zone() {
-  local zone_id zone_name expected_ns actual_ns
-  zone_id="$(tf_output dns_zone_id)" || return 1
-  zone_name="$(tf_output dns_zone_name)" || return 1
+  local zone_id zone_name expected_ns actual_ns body status actual_name
+  zone_id="$(tf_output ojos_jp_zone_id)" || return 1
+  zone_name="$(tf_output ojos_jp_zone_name)" || return 1
   if [[ -z "$zone_id" || -z "$zone_name" ]]; then
     echo "terraform output から DNS ゾーンの識別子を取得できません。apply 済みか確認すること。"
     return 1
   fi
 
-  expected_ns="$(terraform -chdir="$TF_DIR" output -json dns_zone_name_servers | jq -S 'map(ascii_downcase) | sort')" || return 1
-  actual_ns="$(aws route53 get-hosted-zone --id "$zone_id" --query 'DelegationSet.NameServers' --output json | jq -S 'map(ascii_downcase) | sort')" || return 1
-  if [[ "$expected_ns" != "$actual_ns" ]]; then
-    echo "ホストゾーンのネームサーバが宣言と一致しません: expected=${expected_ns} actual=${actual_ns}"
+  body="$(cf_api "zones/${zone_id}")" || return 1
+  actual_name="$(jq -r '.result.name' <<<"$body")"
+  status="$(jq -r '.result.status' <<<"$body")"
+  if [[ "$actual_name" != "$zone_name" ]]; then
+    echo "ゾーン ${zone_id} の名前が宣言と一致しません: expected=${zone_name} actual=${actual_name}"
     return 1
   fi
-  echo "hosted zone ${zone_name} exists (${zone_id})"
+
+  expected_ns="$(terraform -chdir="$TF_DIR" output -json ojos_jp_name_servers | jq -S 'map(ascii_downcase) | sort')" || return 1
+  actual_ns="$(jq -S '.result.name_servers | map(ascii_downcase) | sort' <<<"$body")"
+  if [[ "$expected_ns" != "$actual_ns" ]]; then
+    echo "ゾーンのネームサーバが宣言と一致しません: expected=${expected_ns} actual=${actual_ns}"
+    return 1
+  fi
+  if [[ "$status" != "active" ]]; then
+    echo "ゾーン ${zone_name} が active ではありません（status=${status}）。"
+    echo "さくらの管理画面で、ネームサーバが次の値になっているか確認すること:"
+    echo "  terraform -chdir=terraform output ojos_jp_name_servers"
+    return 1
+  fi
+  echo "zone ${zone_name} is active on Cloudflare (${zone_id})"
 }
 
 ##
-# 委譲元（さくらの ojos.jp ゾーン）から Route53 へ NS 委譲が効いていることを確認する。
+# 親ゾーン（jp）から ojos.jp のゾーンへの委譲が、Cloudflare のネームサーバを向いていることを
+# 確認する（#775。それまでは「さくらの ojos.jp から Route 53 への委譲」を見ていた）。
 #
-# これは terraform の宣言対象ではない。さくらのドメインは DNS の API を持たず、NS の
-# 登録が手動になるためである（terraform/dns.tf 参照）。宣言できないものを検査だけは
-# 置くのは、手動の 1 回が抜けたまま「宣言は正しいのに名前が引けない」状態を、
-# 実装のバグと切り分けられるようにするため。
+# これは terraform の宣言対象ではない。登録事業者は JPRS で、取次のさくらに API が無く、
+# ネームサーバの登録が手動になるためである（terraform/dns-ojos-jp.tf 参照）。宣言できないものを
+# 検査だけは置くのは、手動の 1 回が抜けた・誤ったまま「宣言は正しいのに名前が引けない」状態を、
+# 実装のバグと切り分けられるようにするため。**#775 では実際に、1 本の綴りを誤って登録しかけた。**
 #
 # 期待する NS は宣言から取り、親ゾーンの権威サーバへ直接問い合わせて委譲そのものを見る。
 # ローカルリゾルバのキャッシュ越しに見ると、委譲前の応答を掴んで誤判定しうる。
 #
-# 委譲済みサブドメインの NS を親の権威サーバへ問い合わせると、応答はリファラルになり
-# NS は ANSWER ではなく AUTHORITY セクションに入る（実測: ANSWER: 0, AUTHORITY: 4）。
-# `dig +short` は ANSWER しか出さないため、正常な委譲を「未委譲」と誤判定する。
-# +noall +authority +answer で両方を拾い、レコード型で絞る。
+# 委譲の NS を親の権威サーバへ問い合わせると、応答はリファラルになり NS は ANSWER ではなく
+# AUTHORITY セクションに入る。`dig +short` は ANSWER しか出さないため、正常な委譲を
+# 「未委譲」と誤判定する。+noall +authority +answer で両方を拾い、レコード型で絞る。
 #
-# 親ゾーン名はゾーン名の先頭ラベルを落として導く。ここへ ojos.jp と書き写すと、
+# **余分な NS が混ざっていても不合格にする。** 切り替え前の委譲には応答しない ns.ojos.jp が
+# 混ざっていた（#775）。期待する組と完全に一致することを見る。
+#
+# 親ゾーン名はゾーン名の先頭ラベルを落として導く。ここへ jp と書き写すと、
 # ゾーン名を変えたときに検査だけが古い親を見続ける（shared-ai-rules.md 12 章）。
 #
 # 戻り値: 0 = 委譲済み / 1 = 未委譲または取得失敗
 ##
 check_dns_delegation() {
   local zone_name parent_zone parent_ns expected_ns actual_ns
-  zone_name="$(tf_output dns_zone_name)" || return 1
-  expected_ns="$(terraform -chdir="$TF_DIR" output -json dns_zone_name_servers | jq -r '.[]' | sed 's/\.$//' | tr 'A-Z' 'a-z' | sort)" || return 1
+  zone_name="$(tf_output ojos_jp_zone_name)" || return 1
+  expected_ns="$(terraform -chdir="$TF_DIR" output -json ojos_jp_name_servers | jq -r '.[]' | sed 's/\.$//' | tr 'A-Z' 'a-z' | sort)" || return 1
 
   parent_zone="${zone_name#*.}"
-  if [[ -z "$parent_zone" || "$parent_zone" == "$zone_name" ]]; then
-    echo "親ゾーン名を導けません: zone=${zone_name}"
+  if [[ -z "$zone_name" || -z "$parent_zone" || "$parent_zone" == "$zone_name" ]]; then
+    echo "親ゾーン名を導けません: zone=${zone_name:-(なし)}"
     return 1
   fi
 
@@ -707,7 +729,7 @@ check_dns_delegation() {
   # サーバから返事が無いときだけ 9 を返すので、終了コードで見分ける。
   local answered="" raw
   for parent_ns in "${parent_ns_list[@]}"; do
-    if raw="$(dig +noall +authority +answer NS "$zone_name" @"$parent_ns" 2>/dev/null)"; then
+    if raw="$(dig +norec +noall +authority +answer NS "$zone_name" @"$parent_ns" 2>/dev/null)"; then
       answered="$parent_ns"
       break
     fi
@@ -719,19 +741,15 @@ check_dns_delegation() {
   fi
 
   actual_ns="$(awk '$4 == "NS" { print $5 }' <<<"$raw" | sed 's/\.$//' | tr 'A-Z' 'a-z' | sort)"
-  if [[ -z "$actual_ns" ]]; then
-    echo "委譲がまだ効いていません（${answered} に ${zone_name} の NS がありません）。"
-    echo "さくらの ${parent_zone} ゾーンへ NS レコードを登録してください。"
-    echo "登録する値: terraform -chdir=terraform output dns_zone_name_servers"
-    return 1
-  fi
   if [[ "$expected_ns" != "$actual_ns" ]]; then
-    echo "委譲先の NS が宣言と一致しません:"
+    echo "${zone_name} の委譲が宣言と一致しません（${answered} の答え）:"
     echo "  expected: $(tr '\n' ' ' <<<"$expected_ns")"
-    echo "  actual:   $(tr '\n' ' ' <<<"$actual_ns")"
+    echo "  actual:   $(tr '\n' ' ' <<<"${actual_ns:-(なし)}")"
+    echo "さくらの管理画面（Whois → ネームサーバを編集）で、次の値だけを登録すること:"
+    echo "  terraform -chdir=terraform output ojos_jp_name_servers"
     return 1
   fi
-  echo "delegation for ${zone_name} is in place"
+  echo "delegation for ${zone_name} points to Cloudflare"
 }
 
 ##
@@ -740,19 +758,32 @@ check_dns_delegation() {
 # 名前も向き先も terraform output から取る。ここへ app.game-forge.ojos.jp と書き写すと、
 # 宣言を変えたときに検査だけが古い名前を見続ける（shared-ai-rules.md 12 章）。
 #
-# ゾーン内のレコードは Route53 の API で直接読む。名前解決（dig）ではなく API を見るのは、
-# ここで確かめたいのが「宣言と実状態の一致」であって「世界中から引けること」ではないため。
-# キャッシュや委譲の遅れを、宣言の乖離として報告しない。
+# ゾーン内のレコードは Cloudflare の API で直接読む（#775 までは Route 53 の API）。名前解決
+# （dig）ではなく API を見るのは、ここで確かめたいのが「宣言と実状態の一致」であって
+# 「世界中から引けること」ではないため。キャッシュや委譲の遅れを、宣言の乖離として報告しない。
+#
+# **game-forge.ojos.jp に委譲の NS が残っていないことも見る**（#775 の段 C2）。残っていると、
+# ここに置いた CNAME は API では実在するのに、外からは引けない（Cloudflare は委譲の下の
+# 問い合わせにリファラルを返す）。**API だけを見る検査が緑のまま外れる、唯一の形である。**
 #
 # 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
 ##
 check_pages_dns_records() {
-  local zone_id target rc=0
-  zone_id="$(tf_output dns_zone_id)" || return 1
+  local zone_id target domain body delegated rc=0
+  zone_id="$(tf_output ojos_jp_zone_id)" || return 1
   target="$(tf_output pages_hostname)" || return 1
-  if [[ -z "$zone_id" || -z "$target" ]]; then
+  domain="$(tf_output game_forge_domain)" || return 1
+  if [[ -z "$zone_id" || -z "$target" || -z "$domain" ]]; then
     echo "terraform output から DNS の宣言値を取得できません。apply 済みか確認すること。"
     return 1
+  fi
+
+  body="$(cf_api "zones/${zone_id}/dns_records?type=NS&name.exact=${domain}")" || return 1
+  delegated="$(jq -r '[.result[].content] | join(" ")' <<<"$body")"
+  if [[ -n "$delegated" ]]; then
+    echo "${domain} に委譲の NS が残っています: ${delegated}"
+    echo "  この下のレコードは外から引けません（段 C2 が済んでいない）。"
+    rc=1
   fi
 
   # 3 ホストを回る（#356 で admin が増えた）。**一覧をここへ書き並べているのではなく、
@@ -766,10 +797,8 @@ check_pages_dns_records() {
       rc=1
       continue
     fi
-    # Route53 はレコード名を末尾ドット付きで返す。比較の前に両側から落とす。
-    actual="$(aws route53 list-resource-record-sets --hosted-zone-id "$zone_id" \
-      --query "ResourceRecordSets[?Name=='${host%.}.' && Type=='CNAME'].ResourceRecords[0].Value" \
-      --output text 2>/dev/null)" || actual=""
+    body="$(cf_api "zones/${zone_id}/dns_records?type=CNAME&name.exact=${host%.}")" || return 1
+    actual="$(jq -r '.result[0].content // ""' <<<"$body")"
     actual="${actual%.}"
     if [[ "$actual" != "${target%.}" ]]; then
       echo "${host%.} の CNAME が宣言と一致しません: expected=${target%.} actual=${actual:-(なし)}"
@@ -2068,8 +2097,8 @@ run "default branch matches" check_default_branch
 run "branch protection matches" check_branch_protection
 run "actions variable matches" check_actions_variable
 run "github oidc subject spelling matches" check_oidc_subject
-run "dns hosted zone matches" check_dns_zone
-run "dns delegation from sakura is in place" check_dns_delegation
+run "dns zone matches" check_dns_zone
+run "dns delegation from jp registry is in place" check_dns_delegation
 run "pages custom domain records match" check_pages_dns_records
 run "wrangler production hosts match dns" check_wrangler_production_hosts
 run "production deployment matches default branch HEAD" check_pages_production_deployment

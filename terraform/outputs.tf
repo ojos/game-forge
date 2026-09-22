@@ -73,6 +73,22 @@ output "ojos_jp_zone_id" {
   value       = cloudflare_zone.ojos_jp.id
 }
 
+output "ojos_jp_zone_name" {
+  description = "Cloudflare の ojos.jp ゾーンの名前（#775）。外部層の検査が親（jp）への委譲を見るのに使う。"
+  value       = cloudflare_zone.ojos_jp.name
+}
+
+output "game_forge_domain" {
+  description = <<-EOT
+    game-forge のホストが並ぶ名前（game-forge.ojos.jp。#775）。
+
+    段 C の後はゾーンではなく、ojos.jp のゾーンの中の名前である。外部層の検査が
+    「ここに委譲の NS が残っていないこと」を見るのに使う（残っていると、Cloudflare に
+    置いたレコードが外から見えない）。
+  EOT
+  value       = local.game_forge_domain
+}
+
 output "ojos_jp_name_servers" {
   description = <<-EOT
     ojos.jp のネームサーバとして、さくら（登録事業者の取次）の管理画面へ登録する値（#775）。

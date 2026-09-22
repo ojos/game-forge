@@ -151,3 +151,102 @@ resource "cloudflare_dns_record" "game_forge_delegation" {
     }
   }
 }
+
+/**
+ * ここから下は game-forge.ojos.jp の下のレコード（段 C。Route 53 から吸収する。#775）。
+ *
+ * # 置く順序（段 C1 → C2）
+ *
+ * **C1: 委譲（上の game_forge_delegation）を残したまま、ここのレコードを置く。**
+ * 委譲がある間、Cloudflare は game-forge.ojos.jp より下の問い合わせにリファラルを返すので、
+ * ここに置いたものは外から見えない（委譲の NS と同名・その下にレコードを置けることは、
+ * pending のゾーンで実測した。2026-09-22）。
+ *
+ * **C2: 委譲の NS を外す。** 切り替わるのはこの小さな apply だけで、戻すときは委譲を戻す。
+ * キャッシュに残った委譲（TTL 3600）を辿ってくるリゾルバには、Route 53 が同じ答えを返し続ける
+ * （Route 53 のゾーンは削除の別 issue まで残す。dns.tf）。
+ *
+ * # 値について
+ *
+ * **Route 53 の宣言（dns.tf）と同じ値を置く。** 意味と注記の正本は dns.tf の各レコードにある。
+ * TTL も同じ 300 にそろえる。
+ *
+ * **値は Route 53 の宣言から導き、書き写さない。** 並んでいる間に片方だけが古くなるのを防ぐ。
+ * **Route 53 のゾーンを消す issue では、先に値と注記をここへ移すこと。** 移さずに dns.tf の
+ * レコードを消すと、ここは参照先を失って plan が通らなくなる。
+ */
+locals {
+  game_forge_domain = "game-forge.${cloudflare_zone.ojos_jp.name}"
+  game_forge_ttl    = 300
+
+  /**
+   * Pages のカスタムドメインへ向く CNAME をプロキシにするか（段 B で実測して決める）。
+   *
+   * **false（DNS only）から試す。** 外部 DNS から CNAME を張っていた今と同じ形で、
+   * 挙動を何も変えないためである。これで Pages のカスタムドメインが active にならなければ
+   * true にする。
+   */
+  game_forge_pages_proxied = false
+
+  game_forge_pages_hosts = {
+    app     = local.app_host
+    sandbox = local.sandbox_host
+    admin   = local.admin_host
+  }
+}
+
+resource "cloudflare_dns_record" "game_forge_pages" {
+  for_each = local.game_forge_pages_hosts
+
+  zone_id = cloudflare_zone.ojos_jp.id
+  name    = each.value
+  type    = "CNAME"
+  content = local.pages_hostname
+  ttl     = local.game_forge_pages_proxied ? 1 : local.game_forge_ttl
+  proxied = local.game_forge_pages_proxied
+}
+
+resource "cloudflare_dns_record" "game_forge_resend_dkim" {
+  zone_id = cloudflare_zone.ojos_jp.id
+  name    = aws_route53_record.resend_dkim.name
+  type    = "TXT"
+  content = "\"${one(aws_route53_record.resend_dkim.records)}\""
+  ttl     = local.game_forge_ttl
+  proxied = false
+}
+
+resource "cloudflare_dns_record" "game_forge_resend_spf_rsend" {
+  zone_id = cloudflare_zone.ojos_jp.id
+  name    = aws_route53_record.resend_spf_rsend.name
+  type    = "CNAME"
+  content = one(aws_route53_record.resend_spf_rsend.records)
+  ttl     = local.game_forge_ttl
+  proxied = false
+}
+
+resource "cloudflare_dns_record" "game_forge_resend_spf_send" {
+  zone_id = cloudflare_zone.ojos_jp.id
+  name    = aws_route53_record.resend_spf_send.name
+  type    = "CNAME"
+  content = one(aws_route53_record.resend_spf_send.records)
+  ttl     = local.game_forge_ttl
+  proxied = false
+}
+
+resource "cloudflare_dns_record" "game_forge_resend_dmarc" {
+  zone_id = cloudflare_zone.ojos_jp.id
+  name    = aws_route53_record.resend_dmarc.name
+  type    = "TXT"
+  content = "\"${one(aws_route53_record.resend_dmarc.records)}\""
+  ttl     = local.game_forge_ttl
+  proxied = false
+}
+
+resource "cloudflare_dns_record" "game_forge_search_console_verification" {
+  zone_id = cloudflare_zone.ojos_jp.id
+  name    = local.game_forge_domain
+  type    = "TXT"
+  content = "\"${one(aws_route53_record.search_console_verification.records)}\""
+  ttl     = local.game_forge_ttl
+  proxied = false
+}

@@ -166,7 +166,8 @@ const PAGE_STATE_EXPRESSION = `(() => {
     }
   }
   // **入力欄の幅**（#763）。上限は入力欄が持つ（\`@section forms\`）。見えている欄だけを数える。
-  const inputs = [...document.querySelectorAll("input[type='text'], input[type='email']")]
+  // **CSS の対象と同じ集合を数える**（\`text\` / \`email\` / \`textarea\`。PR #765 の Copilot の指摘）。
+  const inputs = [...document.querySelectorAll("input[type='text'], input[type='email'], textarea")]
     .map((element) => ({ element: describe(element) + (element.name ? '[name=' + element.name + ']' : ''), width: Math.round(element.getBoundingClientRect().width) }))
     .filter((input) => input.width > 0);
   return {

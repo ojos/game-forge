@@ -3109,6 +3109,7 @@ AivisHub のフッタは 5 区画（サービス / 法務 / 会社情報 / SNS /
 >   （`h1`〜`h3` / `p` / `ul` / `ol` / `dl` / `form` / `details` / `blockquote`）が自分で
 >   `--gf-measure` に収まる**形にした。狭い器（カードの中・補助カラムの中・狭い端末）では
 >   上限が効かないので、**同じ 1 本の規則が 3 段すべてで成り立つ。**
+>   - **#763（v1.128）で、面（`.gf-block`）の中の `h2` / `h3` / `p` / `ul` / `ol` / `dl` / `details` / `blockquote` はこの上限から外れた**（面の幅で組む。`form` は外していない）。**入力欄（`text` / `email` / `textarea`）は自分で `--gf-measure` の上限を持つ**ようになった。読み物の器（`.gf-reading`）と 1 カラム（`.gf-column`）の中も、それぞれの器いっぱいで組む。決定と実測は 2.5.3 の #763 実装注記
 > - **breakpoint は `app.css` の `@section shell` にしか無い。** 呼びかけではなく
 >   **`scripts/check-app-css.sh` が機械で見る**（幅の `@media` が他の区画にあれば落ちる）。
 >   同じ検査が、CSS から導いた段を `scripts/check-page-width.sh` の幅がすべて覆っているかと、

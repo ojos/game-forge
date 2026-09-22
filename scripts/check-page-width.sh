@@ -165,6 +165,13 @@ PATHS="$(dev_fixture_paths)"
 # 読み手にとって単純である。cookie は作者本人のものなので、**作者にしか出ない行**も測れる。
 PATHS="${PATHS},/works/${PUBLISHED_GAME_ID}"
 
+# **他人の公開済みの作品ページも開く**（#767）。通報のフォームは「ログインしていて作者でない人」にしか出ない
+# ので、作者本人の cookie で開く上の 1 枚には描かれない。**描かれないまま、送信ボタンの置き場所の判定が緑に
+# なっていた**（PR #768 の Copilot の指摘。docs/handoff.md 3 章「仕込みに無いものは測れない」）。仕込みの
+# フォーク元の作品（作者は `pagewidth-plain`）を開く。
+PATHS="${PATHS},/works/${RELATED_PARENT_ID}"
+export GF_REPORT_PATH="/works/${RELATED_PARENT_ID}"
+
 # **エディットページの 4 つの状態も開く**（#664。下書き・公開・生成中・失敗）。エディットページは作品ページの
 # 前方一致の経路の続き（`/works/<id>/edit`）なので `/__dev/pages` に出ない。**足さないと、2 列のフォームと
 # プレビュー・公開設定を 1 度も描かないまま緑になる。** cookie は 4 つの作品の作者のものである（作者以外は作品ページへ
@@ -244,25 +251,30 @@ const fs = require("node:fs");
 const wanted = process.argv[2];
 let failed = 0;
 /**
- * 面の中の文字の塊を必ず観測する経路（#763）。**面の中にフォームと説明文を持つ画面**で、段 3 で面の右に
- * 空きが残っていた。**ここに挙げた経路で 1 つも観測できなければ落とす**——仕込みや経路が変わって面が
- * 描かれなくなると、面の幅の判定は空のまま緑になる。`/authorize` は dev fixture ではクライアントの
+ * 文字の塊を必ず観測する経路（#763 / #767）。**フォームと説明文を持つ画面**で、段 3 で文字や面の右に
+ * 空きが残っていた。**ここに挙げた経路で 1 つも観測できなければ落とす**——仕込みや経路が変わって塊が
+ * 描かれなくなると、文字の幅の判定は空のまま緑になる。`/authorize` は dev fixture ではクライアントの
  * 引数を持たず、面の無い断りの画面になるので挙げない。
  */
 const BLOCK_TEXT_PATHS = ["/account", "/account/details", "/account/chat", "/account/mail", "/account/apps", "/invites", "/takedown"];
 /**
- * 面の中でも版面（42rem）で止めると決めた塊（#764）。**会話のログは読む面**なので、区画が器いっぱいに広がっても
- * 672px で止める。上限を超えていないことは、下の 1 カラムの判定が見る。
+ * 版面（42rem）で止めると決めた塊（#764 / #767）。**会話のログは読む面**なので、区画が器いっぱいに広がっても
+ * 672px で止める。**#767 で文字の塊の上限を全体で外した後も、例外はこの 1 つだけ**である。上限を超えていないことは、
+ * 下の 1 カラムの判定が見る。
  */
 const KEPT_AT_MEASURE = ["ol.gf-chat-log"];
-/** 入力欄の幅の上限（`public/assets/app.css` の `--gf-measure`。42rem = 672px。1rem = 16px の前提）。 */
-const INPUT_MAX_PX = 672;
+/** 版面の幅（`public/assets/app.css` の `--gf-measure`。42rem = 672px。1rem = 16px の前提）。会話のログの上限に使う。 */
+const MEASURE_PX = 672;
 /** 段 3 を代表する観測の幅（面が器いっぱいに広がり、上限が効く幅）。 */
 const WIDEST = Math.max(...wanted.split(",").map(Number));
 const seenBlockText = new Set();
 /** 1 カラムの画面（#764）。生成画面の 3 つの対象（新しく作る・リフォージ・フォーク）を必ず観測する。 */
 const seenColumn = new Set();
 let seenInputs = 0;
+let seenSubmits = 0;
+/** 通報のフォームを持つ画面（#767）。畳んだ口の中の送信ボタンを必ず観測する。 */
+const REPORT_PATH = process.env.GF_REPORT_PATH || "";
+let seenReport = 0;
 /**
  * アカウントのメニューの観測値を判定する（#372。観測は scripts/page-width-probe.mjs）。
  *
@@ -379,30 +391,36 @@ function judge(file, host, { expectMenu, allow404 }) {
             `いちばん右まで出ている要素: ${o.widest} → right=${o.widestRight}`,
         );
       }
-      // **面の中の文字の塊は、面の内側の右端まで届く**（#763）。1px までは丸めの差として許す。
+      // **文字の塊は、親の内側の右端まで届く**（#763 / #767）。1px までは丸めの差として許す。
       for (const text of o.blockText || []) {
         if (text.gap > 1 && !KEPT_AT_MEASURE.includes(text.element)) {
-          problems.push(`${o.path}: 面（${text.inside}）の中の ${text.element} の右に ${text.gap}px の空きがあります（面の幅で組まれていない）`);
+          problems.push(`${o.path}: ${text.inside} の中の ${text.element} の右に ${text.gap}px の空きがあります（親の幅で組まれていない）`);
         }
       }
-      // **入力欄は版面（--gf-measure）を超えない**（#763）。
+      // **入力欄は、フォームの内側いっぱいに広がる**（#767。#763 の「672px を超えない」を置き換えた）。
       for (const input of o.inputs || []) {
-        // **生成画面の指示文の欄は、面の内側いっぱいに広げると決めた**（#764）。広がっていることは下の 1 カラムの判定が見る。
-        if (o.column && input.element === "textarea[name=prompt]") {
-          continue;
+        if (input.gap > 1) {
+          problems.push(`${o.path}: 入力欄 ${input.element} の右に ${input.gap}px の空きがあります（幅 ${input.width}px。フォームの内側いっぱいではない）`);
         }
-        if (input.width > INPUT_MAX_PX) {
-          problems.push(`${o.path}: 入力欄 ${input.element} の幅が ${input.width}px です（上限 ${INPUT_MAX_PX}px）`);
+      }
+      // **入力欄のあるフォームの送信ボタンは、行の右端に置く**（#767）。
+      for (const submit of o.submits || []) {
+        if (submit.gap > 1) {
+          problems.push(`${o.path}: ${submit.form} の ${submit.element} の右に ${submit.gap}px の空きがあります（行の右端に置かれていない）`);
         }
       }
       if (width === WIDEST && BLOCK_TEXT_PATHS.includes(o.path)) {
         seenBlockText.add(o.path);
         if ((o.blockText || []).length === 0) {
-          problems.push(`${o.path}: 面の中の文字の塊を 1 つも観測できませんでした（面の幅の判定が空のまま緑になる）`);
+          problems.push(`${o.path}: 文字の塊を 1 つも観測できませんでした（文字の幅の判定が空のまま緑になる）`);
         }
       }
       if (width === WIDEST) {
         seenInputs += (o.inputs || []).length;
+        seenSubmits += (o.submits || []).length;
+        if (o.path === REPORT_PATH) {
+          seenReport += (o.submits || []).length;
+        }
       }
       // **1 カラムの画面は、他のページと同じ左端・同じ幅に組む**（#764。生成画面）。
       if (o.column) {
@@ -415,7 +433,7 @@ function judge(file, host, { expectMenu, allow404 }) {
           need("パンくずの左端が器の左端と揃っていません", c.breadcrumb.left === c.shellLeft, `パンくず ${c.breadcrumb.left} / 器 ${c.shellLeft}`);
           need("1 カラムが器の幅いっぱいではありません", c.column.left === c.shellLeft && c.column.right === c.shellRight, `1 カラム ${c.column.left}〜${c.column.right} / 器 ${c.shellLeft}〜${c.shellRight}`);
           need("チャットの面の右端が器の右端と一致しません", c.chat.right === c.shellRight, `面 ${c.chat.right} / 器 ${c.shellRight}`);
-          need("会話のログが版面より広がっています", c.log.width <= INPUT_MAX_PX, `ログ ${c.log.width}px / 上限 ${INPUT_MAX_PX}px`);
+          need("会話のログが版面より広がっています", c.log.width <= MEASURE_PX, `ログ ${c.log.width}px / 上限 ${MEASURE_PX}px`);
           need("指示文の欄が面の内側いっぱいではありません", Math.abs(c.field.right - c.form.innerRight) <= 1, `欄の右端 ${c.field.right} / フォームの内側の右端 ${c.form.innerRight}`);
         }
       }
@@ -450,6 +468,14 @@ for (const path of BLOCK_TEXT_PATHS) {
 }
 if (seenColumn.size < 3) {
   console.error(`[page-width] app / 幅 ${WIDEST}px: 生成画面を ${seenColumn.size} 枚しか観測していません（新しく作る・リフォージ・フォークの 3 枚）`);
+  failed += 1;
+}
+if (REPORT_PATH === "" || seenReport === 0) {
+  console.error(`[page-width] app / 幅 ${WIDEST}px: 通報のフォームの送信ボタンを観測できませんでした（${REPORT_PATH || "経路が渡っていない"}。畳んだ口の中のボタンの判定が空のまま緑になる）`);
+  failed += 1;
+}
+if (seenSubmits === 0) {
+  console.error(`[page-width] app / 幅 ${WIDEST}px: 入力欄のあるフォームの送信ボタンを 1 つも観測できませんでした（ボタンの置き場所の判定が空のまま緑になる）`);
   failed += 1;
 }
 if (seenInputs === 0) {

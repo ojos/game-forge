@@ -136,40 +136,61 @@ const PAGE_STATE_EXPRESSION = `(() => {
         + (element.getAttribute('size') ? '[size=' + element.getAttribute('size') + ']' : '');
     }
   }
-  // **面の中の文字の塊**（#763）。面（\`.gf-block\`）の直下——行に分けた面（\`.gf-block-rows\`）なら行の直下——に
-  // ある文字の塊ごとに、親の内側の右端から塊の右端までの空きを返す。**直下だけを見る**のは、面の中の格子や
-  // フォームの中の塊は、面ではなくその列の幅で組まれるためである。**親が横並びの flex や格子のときは見ない**——
-  // 文とボタンを 1 行に並べる帯（作品ページの下書きの帯 \`.gf-draft-banner\` など）は、右の空きが並べ方の結果である。
-  // **縦並びの flex は見る**。面そのものがフォーム（\`<form class="gf-block">\`。\`@section forms\` の縦並び）の画面が多い。
+  // **文字の塊の右の空き**（#763 / #767）。本文（ヘッダとフッタの外）の文字の塊ごとに、親の内側の右端から塊の右端までの
+  // 空きを返す。#767 で文字の塊の上限を外したので、**通常の流れで組まれる塊は親の幅いっぱいになる**はずである。
+  // **親が横並びの flex や格子のときは見ない**——文とボタンを 1 行に並べる帯（作品ページの下書きの帯 \`.gf-draft-banner\`
+  // など）は、右の空きが並べ方の結果である。**縦並びの flex は見る**（\`@section forms\` のフォームは縦並び）。
   const blockText = [];
-  const TEXT = new Set(['H2', 'H3', 'P', 'UL', 'OL', 'DL', 'DETAILS', 'BLOCKQUOTE']);
+  const TEXT = new Set(['H1', 'H2', 'H3', 'P', 'UL', 'OL', 'DL', 'DETAILS', 'BLOCKQUOTE', 'FORM']);
   const describe = (element) => element.tagName.toLowerCase()
     + (element.className && typeof element.className === 'string' ? '.' + element.className.trim().split(/\\s+/).join('.') : '');
-  for (const block of document.querySelectorAll('.gf-block')) {
-    const parents = block.classList.contains('gf-block-rows') ? [...block.children] : [block];
-    for (const parent of parents) {
-      const style = getComputedStyle(parent);
-      const box = parent.getBoundingClientRect();
-      const flows = ['block', 'flow-root', 'list-item'].includes(style.display)
-        || (['flex', 'inline-flex'].includes(style.display) && style.flexDirection.startsWith('column') && style.alignItems !== 'flex-start' && style.alignItems !== 'start');
-      if (box.width === 0 || !flows) {
-        continue;
-      }
-      const innerRight = box.right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth);
-      for (const child of parent.children) {
-        const childBox = child.getBoundingClientRect();
-        if (!TEXT.has(child.tagName) || childBox.width === 0) {
-          continue;
-        }
-        blockText.push({ element: describe(child), inside: describe(parent), gap: Math.round(innerRight - childBox.right) });
-      }
+  const innerRightOf = (element) => {
+    const style = getComputedStyle(element);
+    return element.getBoundingClientRect().right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth);
+  };
+  const flows = (parent) => {
+    const style = getComputedStyle(parent);
+    return ['block', 'flow-root', 'list-item'].includes(style.display)
+      || (['flex', 'inline-flex'].includes(style.display) && style.flexDirection.startsWith('column') && style.alignItems !== 'flex-start' && style.alignItems !== 'start');
+  };
+  for (const child of document.querySelectorAll('body *')) {
+    const parent = child.parentElement;
+    if (!TEXT.has(child.tagName) || parent === null || child.closest('header, footer') !== null) {
+      continue;
     }
+    const childBox = child.getBoundingClientRect();
+    if (!flows(parent) || parent.getBoundingClientRect().width === 0 || childBox.width === 0) {
+      continue;
+    }
+    blockText.push({ element: describe(child), inside: describe(parent), gap: Math.round(innerRightOf(parent) - childBox.right) });
   }
-  // **入力欄の幅**（#763）。上限は入力欄が持つ（\`@section forms\`）。見えている欄だけを数える。
-  // **CSS の対象と同じ集合を数える**（\`text\` / \`email\` / \`textarea\`。PR #765 の Copilot の指摘）。
+  // **入力欄の右の空き**（#763 / #767）。入力欄はフォームの内側いっぱいに広げる（\`@section forms\`）。
+  // **CSS の対象と同じ集合を数える**（\`text\` / \`email\` / \`textarea\`。PR #765 の Copilot の指摘）。見えている欄だけを数える。
+  // **欄とボタンを 1 行に並べる行の中の欄は見ない**（admin の「理由」の欄と操作のボタン \`.gf-admin-submit\` など）——
+  // 右の空きは並べ方の結果である。親が通常の流れか縦並びの flex の欄だけを数える。
   const inputs = [...document.querySelectorAll("input[type='text'], input[type='email'], textarea")]
-    .map((element) => ({ element: describe(element) + (element.name ? '[name=' + element.name + ']' : ''), width: Math.round(element.getBoundingClientRect().width) }))
-    .filter((input) => input.width > 0);
+    .filter((element) => element.getBoundingClientRect().width > 0 && element.closest('form') !== null && element.closest('header') === null && flows(element.parentElement))
+    .map((element) => ({
+      element: describe(element) + (element.name ? '[name=' + element.name + ']' : ''),
+      width: Math.round(element.getBoundingClientRect().width),
+      gap: Math.round(innerRightOf(element.closest('form')) - element.getBoundingClientRect().right),
+    }));
+  // **送信ボタンの右の空き**（#767）。入力欄のあるフォームの直下のボタンは、行の右端に置く（\`@section forms\`）。
+  // **閉じた \`<details>\` の中のフォームも測る**——作品ページの通報のフォームは畳んだ口の中にあり、閉じたままだと
+  // 幅が 0 で数えられず、印（\`gf-form-fields\`）の付け忘れを見落とした（PR #768 の Copilot の指摘）。ヘッダの
+  // アカウントのメニューは開閉を別に観測するので触らない。**測り終えたら閉じ直す**（ほかの観測を変えない）。
+  const opened = [...document.querySelectorAll('details:not([open])')].filter((details) => details.closest('header') === null);
+  for (const details of opened) {
+    details.open = true;
+  }
+  const submits = [...document.querySelectorAll('form')]
+    // **ログイン・登録の 3 つのブロックは見ない**（ボタンを 3 つとも左端に揃えると決めた部品。\`@section signup\`）。
+    .filter((form) => form.closest('header, .gf-signup-option') === null && form.querySelector("input[type='text'], input[type='email'], textarea") !== null)
+    .flatMap((form) => [...form.children].filter((child) => child.classList.contains('gf-button') && child.getBoundingClientRect().width > 0)
+      .map((button) => ({ element: describe(button), form: describe(form), gap: Math.round(innerRightOf(form) - button.getBoundingClientRect().right) })));
+  for (const details of opened) {
+    details.open = false;
+  }
   // **1 カラムの画面の置き方**（#764。生成画面）。器（\`body\` の内側）・パンくず・1 カラム・チャットの区画・会話のログ・
   // 指示文の欄の端を返す。**1 カラムが無い画面では null**（判定は呼ぶ側が経路で決める）。
   const edges = (element) => {
@@ -205,6 +226,7 @@ const PAGE_STATE_EXPRESSION = `(() => {
     title: document.title,
     blockText,
     inputs,
+    submits,
     column,
   };
 })()`;

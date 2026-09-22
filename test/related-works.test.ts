@@ -250,7 +250,7 @@ describe('通報とソースコードの表示は、「…」メニューから�
     expect(menu).not.toContain('<form');
     const report = body.indexOf(`<details class="gf-report" id="${WORK_REPORT_ANCHOR}">`);
     expect(report).toBeGreaterThan(body.indexOf('<section class="gf-watch-overview'));
-    expect(body.slice(report)).toMatch(new RegExp(`^<details class="gf-report" id="${WORK_REPORT_ANCHOR}">[\\s\\S]*?<form method="post" action="${WORK_REPORT_PATH}">`, 'u'));
+    expect(body.slice(report)).toMatch(new RegExp(`^<details class="gf-report" id="${WORK_REPORT_ANCHOR}">[\\s\\S]*?<form class="gf-form-fields" method="post" action="${WORK_REPORT_PATH}">`, 'u'));
     // **同じ口を 2 つ出さない。**
     expect(body.split(`action="${WORK_REPORT_PATH}"`).length - 1).toBe(1);
     expect(body.split(`href="${workSourcePath(id)}"`).length - 1).toBe(1);

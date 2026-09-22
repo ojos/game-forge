@@ -893,11 +893,12 @@ describe('生成画面での出し分け', () => {
     expect(column).toContain('max-width: none');
     expect(column).toContain('margin-inline: 0');
     expect(cssRules('.gf-breadcrumb.gf-column').join('')).toContain('margin-inline: 0');
-    // 会話のログだけは版面で止める。**2 クラスで書く**（1 カラムと面の逃がし規則に負けないため）。
+    // 会話のログだけは版面で止める。**2 クラスで書く**（同じ形の逃がし規則が戻ってきても負けないため）。
     expect(cssRules('.gf-chat .gf-chat-log').join('')).toContain('max-width: var(--gf-measure)');
-    // 指示文の欄は面の内側いっぱい（#763 が入力欄に付けた上限から逃がす）。
-    expect(cssRules('.gf-chat-composer textarea').join('')).toContain('max-width: none');
-    expect(cssRules('.gf-generate-form textarea').join('')).toContain('max-width: none');
+    // 指示文の欄は面の内側いっぱい。**入力欄はどれも上限を持たない**（#767。#763 の 42rem の上限を外した）ので、
+    // 欄ごとの逃がし規則も要らない。
+    expect(cssRules('textarea').join('')).not.toContain('max-width');
+    expect(cssRules('.gf-chat-composer textarea').join('')).not.toContain('max-width');
   });
 });
 

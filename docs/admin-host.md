@@ -20,7 +20,7 @@
 | 要素 | 値 / 置き場 |
 |---|---|
 | ホスト名 | `admin.game-forge.ojos.jp`（`wrangler.toml` の `ADMIN_HOST`。3 環境すべて） |
-| DNS | `terraform/dns.tf` の `aws_route53_record.admin`（CNAME → `game-forge.pages.dev`） |
+| DNS | `terraform/dns-ojos-jp.tf` の `cloudflare_dns_record.game_forge_pages["admin"]`（CNAME → `game-forge.pages.dev`。**#775 で Route 53 の `aws_route53_record.admin` から移った**） |
 | 外部層の検査 | `terraform/outputs.tf` の `admin_host` → `scripts/acceptance-remote.sh`（CNAME の実在と `wrangler.toml` との一致） |
 | ローカル HTTPS | `scripts/dev-certs.sh` の SAN に入っている（**3 ホストぶん**） |
 | カスタムドメイン | Cloudflare API（`wrangler` にコマンドが無い。下記） |
@@ -143,6 +143,9 @@ https://admin.game-forge.ojos.jp/auth/google/callback
   > 登録済みの運営のアカウントで入るため）。同意画面は Testing のまま運用する（仕様 8.1）。」
 
 ### ② Route53 の CNAME（terraform。**宣言はこのリポジトリが持つ**）
+
+> **#775 注記。** CNAME の置き場所は Cloudflare の `ojos.jp` ゾーンへ移った（`terraform/dns-ojos-jp.tf`）。
+> 手で作らないこと・terraform で apply することは変わらない。以下は Route 53 の時点の記述として残す。
 
 **ダッシュボードや `aws` コマンドで手で作らないこと**（確定17 が Route53 へ委譲した
 目的がそもそもこれである）。

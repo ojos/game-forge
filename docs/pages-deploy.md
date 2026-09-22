@@ -25,6 +25,11 @@ Cloudflare 上にありません。
 巻き戻すことになり、DNS を Terraform で宣言的に管理する目的（さくらに DNS の API が
 無いことへの対処）を捨てることになるためです。
 
+> **#775 注記（2026-09-22）。** その後、別の理由（Cloudflare Tunnel。M22）で **`ojos.jp` ごと Cloudflare DNS へ
+> 移しました**（確定17 の改訂。`terraform/dns-ojos-jp.tf`）。上の 2 点の前提（ゾーンが Cloudflare 上に無い）は
+> 外れ、Workers のカスタムドメインも張れるようになりましたが、**配置先は Pages のまま変えていません**
+> （仕様 確定22 の #775 注記）。宣言的管理の目的は、Cloudflare 側の API で保たれています。
+
 ## なぜアプリ用ホストが `app.` 付きなのか（#89）
 
 **「サブドメインであれば」が効きます。** 委譲したホストゾーンの名前が
@@ -43,6 +48,9 @@ Cloudflare 上にありません。
 ラベルを 1 つ足すと、ゾーンも委譲もそのままで CNAME 1 本で張れます。採らなかった案と
 その理由は仕様書 1.2.11 にあります。**`game-forge.ojos.jp` そのものは空いたまま**で、
 後日 `ojos.jp` ごと移送する判断をしたときに当初の綴りへ戻せます。
+
+> **#775 注記。** `ojos.jp` は Cloudflare へ移ったので、apex の制約は無くなりました。**ホスト名は変えていません**
+> （OAuth のリダイレクト URI・cookie・検索エンジンの登録がこの綴りに乗っています。当初の綴りへ戻すのは別 issue）。
 
 **7.2 の要件は変わりません。** `app.` と `sandbox.` は兄弟になりますが、登録可能ドメインは
 どちらも `ojos.jp` のままです。兄弟でも `Domain=game-forge.ojos.jp` の cookie は相手へ
@@ -488,6 +496,12 @@ gh secret list --repo ojos/game-forge    # 名前と更新日時だけが読め�
 （アクセスキー）と同じです。
 
 ## カスタムドメイン
+
+> **#775 注記（2026-09-22）。** DNS の置き場所は **Route 53 から Cloudflare の `ojos.jp` ゾーンへ移りました**。
+> 下の「Route53 側（Terraform）」は、いまは **`terraform/dns-ojos-jp.tf` の `cloudflare_dns_record.game_forge_pages`**
+> が持ちます（ホスト名・向き先の導き方は同じ）。**既存の 3 ホストのカスタムドメインは、ゾーンが `active` になった
+> 時点で Pages が自動で新しいゾーンへ結び付けました**（`zone_tag` が `ojos.jp` のゾーンを指し、状態は `active` の
+> まま。証明書も Google 発行・HTTP 検証のまま）。旧記述は以下に残します。
 
 **Cloudflare 側と Route53 側の両方に作業があります。** 片方だけでは張れません。
 

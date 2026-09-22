@@ -159,7 +159,9 @@ const PAGE_STATE_EXPRESSION = `(() => {
       continue;
     }
     const childBox = child.getBoundingClientRect();
-    if (!flows(parent) || parent.getBoundingClientRect().width === 0 || childBox.width === 0) {
+    // **流れの外の塊は見ない**（\`position: absolute\`）。目に見えず読み上げにだけ残す段落（会話の窓の案内
+    // \`.gf-chat-log-hint\`。#771）は 1px の箱で、親の幅で組まれないのが正しい。
+    if (!flows(parent) || parent.getBoundingClientRect().width === 0 || childBox.width === 0 || getComputedStyle(child).position === 'absolute') {
       continue;
     }
     blockText.push({ element: describe(child), inside: describe(parent), gap: Math.round(innerRightOf(parent) - childBox.right) });
@@ -203,6 +205,7 @@ const PAGE_STATE_EXPRESSION = `(() => {
       left: Math.round(box.left),
       right: Math.round(box.right),
       width: Math.round(box.width),
+      innerLeft: Math.round(box.left + parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth)),
       innerRight: Math.round(box.right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth)),
     };
   };

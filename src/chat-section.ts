@@ -133,6 +133,20 @@ export const CHAT_TARGET_LABELS: Readonly<Record<string, { readonly heading: str
 export const CHAT_KEY_HINT_ID = 'chat-key-hint';
 
 /**
+ * 会話の窓（`#chat-log`）の案内の 2 文（#771）。**履歴が無いとき、窓の中央に出す**のは app.css の
+ * `.gf-chat-log:empty::before` の生成内容で、**同じ文を目に見えない段落として置き、窓の `aria-describedby` で結ぶ**
+ * ——生成内容だけだと読み上げに届かないことがある（PR #772 の Copilot の指摘）。**2 か所の文は `test/chat-ui.test.ts` が
+ * 突き合わせる**（CSS の側は 2 文を `\A` の改行でつなぐ）。対象（新しく作る・リフォージ・フォーク）によらない文である。
+ */
+export const CHAT_LOG_HINT: readonly [string, string] = [
+  'ここに AI とのチャットが表示されます。',
+  '下の欄に書いて「チャットする」を押すと始まります。',
+];
+
+/** 会話の窓の案内の段落の id（`aria-describedby` が指す）。 */
+export const CHAT_LOG_HINT_ID = 'chat-log-hint';
+
+/**
  * キーの案内（#738。5.16「キー」）。**生成にキーが無いことも言う**——「Enter で送れない」を
  * 不具合だと思わせないためである。
  *
@@ -285,7 +299,8 @@ export function renderChatSection(view: ChatSectionView, composer: ChatComposer)
   <p class="gf-generate-hint">${labels.hint}
      <strong>コードは出ません。</strong>チャットは生成枠とは別の枠で、<strong>チャットしても生成できる回数は減りません。</strong>
      会話は<strong>あなただけが見られ</strong>、最後に使ってから ${CHAT_RETENTION_DAYS} 日で消えます。</p>
-  <ol id="chat-log" class="gf-chat-log" tabindex="0" aria-label="チャットの履歴">${log}</ol>
+  <p id="${CHAT_LOG_HINT_ID}" class="gf-chat-log-hint">${escapeHtml(CHAT_LOG_HINT.join(''))}</p>
+  <ol id="chat-log" class="gf-chat-log" tabindex="0" aria-label="チャットの履歴" aria-describedby="${CHAT_LOG_HINT_ID}">${log}</ol>
   <p id="chat-status" role="status" aria-live="polite" hidden>チャットしています…</p>
   <div id="chat-messages" role="status" aria-live="polite">
 ${messages}

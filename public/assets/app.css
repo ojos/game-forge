@@ -2331,8 +2331,8 @@ img.gf-related-shot {
  * 形が 3 つ変わった——**履歴が自分でスクロールする箱になる**（画面そのものは動かない）/
  * **誰の発話かを左右の置き場所でも示す**（利用者は右、AI は左）/ **入力が画面の下に貼り付く。**
  *
- * **色は足していない**（`@section work` の「ここだけが色を持つ」）。吹き出しは罫線と面
- * （`--gf-surface`）だけで作り、**誰の発話かは名前（`.gf-chat-who`）が言い続ける**——
+ * **色は足していない**（`@section work` の「ここだけが色を持つ」）。窓と吹き出しは地の段（窓は `--gf-ground`、
+ * 利用者の吹き出しは `--gf-surface`。#771）と形だけで作り、**誰の発話かは名前（`.gf-chat-who`）が言い続ける**——
  * 左右の置き場所は補助であって、それだけに寄りかからない（折り返す幅では差が小さくなる）。
  *
  * **幅に反応する `@media` を置かない**（区画の規約 3。断点は `@section shell` が持つ）。
@@ -2363,7 +2363,7 @@ img.gf-related-shot {
 }
 
 /*
- * 会話。**空のときは何も出さない**（`:empty` で余白ごと消す）。
+ * 会話。**空のときは窓の中に案内を出す**（`:empty`。#771。#726 から #771 までは余白ごと消していた）。
  *
  * **自分でスクロールする箱にする**（確定38「往復のたびに最新へスクロールする」）。
  * スクリプトが動かすのは `scrollTop` だけで、**画面は動かない**（`src/chat-section.ts` の `toBottom`）。
@@ -2425,6 +2425,7 @@ img.gf-related-shot {
 
 .gf-chat-log:empty::before {
   /* 2 文を改行で分ける（\A と pre-line）。1 文のままだと、広い段でも「チャットす／る」と語の途中で折り返した。 */
+  /* 文は `src/chat-section.ts` の `CHAT_LOG_HINT` と同じにする（`test/chat-ui.test.ts` が突き合わせる）。 */
   content: 'ここに AI とのチャットが表示されます。\A下の欄に書いて「チャットする」を押すと始まります。';
   white-space: pre-line;
   max-width: 28rem;
@@ -2465,9 +2466,12 @@ img.gf-related-shot {
 
 /*
  * 誰の発話かの名前。**目には出さず、読み上げには残す**（`.gf-works-table thead` と同じ形）。
- * **`display: none` にしない**——それだと読み上げからも消える。
+ * **`display: none` にしない**——それだと読み上げからも消える。会話の窓の案内の段落（`.gf-chat-log-hint`。#771）も
+ * 同じ形で隠す——目に見える案内は窓の中の生成内容（`.gf-chat-log:empty::before`）が出し、読み上げにはこちらが
+ * `aria-describedby` で届く。
  */
-.gf-chat-who {
+.gf-chat-who,
+.gf-chat-log-hint {
   position: absolute;
   width: 1px;
   height: 1px;

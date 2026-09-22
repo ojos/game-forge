@@ -430,7 +430,8 @@ function judge(file, host, { expectMenu, allow404 }) {
           need("パンくずの左端が器の左端と揃っていません", c.breadcrumb.left === c.shellLeft, `パンくず ${c.breadcrumb.left} / 器 ${c.shellLeft}`);
           need("1 カラムが器の幅いっぱいではありません", c.column.left === c.shellLeft && c.column.right === c.shellRight, `1 カラム ${c.column.left}〜${c.column.right} / 器 ${c.shellLeft}〜${c.shellRight}`);
           need("チャットの面の右端が器の右端と一致しません", c.chat.right === c.shellRight, `面 ${c.chat.right} / 器 ${c.shellRight}`);
-          need("会話のログ（窓）が面の内側いっぱいではありません", Math.abs(c.log.right - c.chat.innerRight) <= 1, `窓の右端 ${c.log.right} / 面の内側の右端 ${c.chat.innerRight}`);
+          // **左右の両端を見る**（右端だけだと、狭くなって右へ寄った窓を通す。PR #772 の Copilot の指摘）。
+          need("会話のログ（窓）が面の内側いっぱいではありません", Math.abs(c.log.left - c.chat.innerLeft) <= 1 && Math.abs(c.log.right - c.chat.innerRight) <= 1, `窓 ${c.log.left}〜${c.log.right} / 面の内側 ${c.chat.innerLeft}〜${c.chat.innerRight}`);
           need("指示文の欄が面の内側いっぱいではありません", Math.abs(c.field.right - c.form.innerRight) <= 1, `欄の右端 ${c.field.right} / フォームの内側の右端 ${c.form.innerRight}`);
         }
       }

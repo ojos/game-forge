@@ -25,6 +25,8 @@ import {
   CHAT_DRAFT_HEADING,
   chatKeyHint,
   CHAT_KEY_HINT_ID,
+  CHAT_LOG_HINT,
+  CHAT_LOG_HINT_ID,
   CHAT_MESSAGES,
   CHAT_SCRIPT,
   COMPOSITION_GUARD_MS,
@@ -898,7 +900,15 @@ describe('生成画面での出し分け', () => {
     expect(cssRules('.gf-chat .gf-chat-log').join('')).not.toContain('max-width');
     expect(cssRules('.gf-chat-log').join('')).not.toContain('max-width: var(--gf-measure)');
     // **履歴が無いときは窓の中に案内を出す**（#771）。生成内容なので、最初の発話が入れば `:empty` でなくなって消える。
-    expect(cssRules('.gf-chat-log:empty::before').join('')).toMatch(/content: '[^']*チャット[^']*'/u);
+    // **2 文と改行を固定する**（語を 1 つ含むかだけだと、2 文目を消しても改行を外しても通る。PR #772 の Copilot の指摘）。
+    const hintRule = cssRules('.gf-chat-log:empty::before').join('');
+    expect(hintRule).toContain(`content: '${CHAT_LOG_HINT[0]}\\A${CHAT_LOG_HINT[1]}'`);
+    expect(hintRule).toContain('white-space: pre-line');
+    // **読み上げには、同じ文の段落が `aria-describedby` で届く**（生成内容だけに寄りかからない）。
+    const section = chatSection({ messages: [], conversationId: null, target: NEW_CHAT_TARGET });
+    expect(section).toContain(`aria-describedby="${CHAT_LOG_HINT_ID}"`);
+    expect(section).toContain(`<p id="${CHAT_LOG_HINT_ID}" class="gf-chat-log-hint">${CHAT_LOG_HINT.join('')}</p>`);
+    expect(cssRules('.gf-chat-log-hint').join('')).toContain('clip-path: inset(50%)');
     // 指示文の欄は面の内側いっぱい。**入力欄はどれも上限を持たない**（#767。#763 の 42rem の上限を外した）ので、
     // 欄ごとの逃がし規則も要らない。
     expect(cssRules('textarea').join('')).not.toContain('max-width');

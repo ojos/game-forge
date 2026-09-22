@@ -501,7 +501,13 @@ gh secret list --repo ojos/game-forge    # 名前と更新日時だけが読め�
 > 下の「Route53 側（Terraform）」は、いまは **`terraform/dns-ojos-jp.tf` の `cloudflare_dns_record.game_forge_pages`**
 > が持ちます（ホスト名・向き先の導き方は同じ）。**既存の 3 ホストのカスタムドメインは、ゾーンが `active` になった
 > 時点で Pages が自動で新しいゾーンへ結び付けました**（`zone_tag` が `ojos.jp` のゾーンを指し、状態は `active` の
-> まま。証明書も Google 発行・HTTP 検証のまま）。旧記述は以下に残します。
+> まま。証明書も Google 発行・HTTP 検証のまま）。**CNAME は DNS only（プロキシにしない）**——使い捨てのホストで
+> 実測し、DNS only のまま約 1 分 20 秒で `active` になり、HTTPS でアプリまで届くことを確かめました
+> （`terraform/dns-ojos-jp.tf` の `game_forge_pages_proxied`）。
+>
+> **確かめるときの落とし穴。** devcontainer のリゾルバ（127.0.0.11）は「無い」という答えをキャッシュします。
+> 作った直後・消した直後の名前は `dig @1.1.1.1` で引いた IP を `curl --resolve` に渡して確かめること
+> （#775 で、これを知らずに「つながらない」と読み違えかけました）。旧記述は以下に残します。
 
 **Cloudflare 側と Route53 側の両方に作業があります。** 片方だけでは張れません。
 

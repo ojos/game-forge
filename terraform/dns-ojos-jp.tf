@@ -182,9 +182,16 @@ locals {
   /**
    * Pages のカスタムドメインへ向く CNAME をプロキシにするか（段 B で実測して決める）。
    *
-   * **false（DNS only）から試す。** 外部 DNS から CNAME を張っていた今と同じ形で、
-   * 挙動を何も変えないためである。これで Pages のカスタムドメインが active にならなければ
-   * true にする。
+   * **false（DNS only）にする。段 B で実測して決めた**（2026-09-22）。外部 DNS から CNAME を
+   * 張っていたときと同じ形で、挙動を何も変えないためである。
+   *
+   * 実測: 使い捨てのホスト（gf-canary.ojos.jp）に DNS only の CNAME を置き、Pages のカスタム
+   * ドメインに登録した。**約 1 分 20 秒で active になり、HTTPS でアプリの応答（404。知らない
+   * ホスト）が 3 回続いた。** 証明書は本番の app と同じ Google Trust Services（WE1）だった。
+   * 確かめた後にホストとカスタムドメインは消した。
+   *
+   * **プロキシにすると、ゾーンの WAF などが効くようになる代わりに挙動が変わる。** 変えるのは
+   * 別 issue（WAF / AI Crawler Control を有効にするとき）。
    */
   game_forge_pages_proxied = false
 

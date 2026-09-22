@@ -68,6 +68,27 @@ output "dns_zone_id" {
   value       = aws_route53_zone.game_forge.zone_id
 }
 
+output "ojos_jp_zone_id" {
+  description = "Cloudflare の ojos.jp ゾーンの ID（#775）。外部層の検査が実状態の取得に使う。"
+  value       = cloudflare_zone.ojos_jp.id
+}
+
+output "ojos_jp_name_servers" {
+  description = <<-EOT
+    ojos.jp のネームサーバとして、さくら（登録事業者の取次）の管理画面へ登録する値（#775）。
+
+    Cloudflare がゾーンごとに割り当てる。登録は手動（さくらに API が無い）だが、値は
+    ここから取り、書き写さない。**3 本目の NS.OJOS.JP（応答しない）を含む今の 3 本を、
+    この 2 本に置き換える。**
+  EOT
+  value       = cloudflare_zone.ojos_jp.name_servers
+}
+
+output "ojos_jp_zone_status" {
+  description = "ojos.jp ゾーンの状態。pending はネームサーバの切り替え待ち、active は切り替え済み。"
+  value       = cloudflare_zone.ojos_jp.status
+}
+
 output "dns_zone_name_servers" {
   description = <<-EOT
     委譲元（さくらの ojos.jp ゾーン）へ登録する NS レコードの値。

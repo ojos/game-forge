@@ -647,11 +647,19 @@ label {
   font-weight: 700;
 }
 
+/*
+ * **幅の上限は入力欄が持つ**（#763）。面や器が広がっても、入力欄は版面（`--gf-measure`。42rem）を超えない。
+ * それまでは `form` の上限（`@section shell` の文字の塊の規則）から幅が来ていたので、面の中の文字を広げる規則
+ * （`@section parts` の `.gf-block`）が `form` を逃がすと、20 字のハンドル名の欄が 968px に伸びる。
+ * **上限を入力欄の側に置けば、どの器に入っても伸びすぎない。** ヘッダの検索窓は `type='search'` なので、この規則に
+ * 当たらない（幅は `@section header` が持つ）。
+ */
 input[type='text'],
 input[type='email'],
 textarea {
   display: block;
   width: 100%;
+  max-width: var(--gf-measure);
   padding: 0.55em 0.7em;
   /* **入力欄の枠は 3:1 を満たす段を使う**（`--gf-rule-input`。仕様 2.5.2 / #457）。 */
   border: 1px solid var(--gf-rule-input);
@@ -916,6 +924,20 @@ a.gf-chip:not(.gf-chip-current):is(:hover, [data-state='hover']) {
   padding: var(--gf-gap-3);
   border-radius: var(--gf-radius);
   background: var(--gf-surface);
+}
+
+/*
+ * **面の中の文字は、面の幅で組む**（#763。仕様 2.5.3）。面は器いっぱいに広がる（`max-width: none`）のに、中の段落・箇条・
+ * 見出しが `@section shell` の `--gf-measure`（672px）で止まると、段 3 では面の内側（936px）の右に約 264px の空きが残り、
+ * 面の中に 2 本目の右端ができる。**読み物の器（`.gf-reading`。`@section legal`）と 1 カラム（`.gf-column`。
+ * `@section signed-in`）が持つ逃がし規則と同じ形の 3 本目である。**
+ *
+ * - **`form` は逃がさない。** フォームは 672px のまま組み、説明文と箇条書きだけを面の幅で組む。入力欄の上限は
+ *   入力欄の側も持つ（`@section forms`。#763）
+ * - **狭い面では何も変わらない。** カード・補助カラム・狭い段の面は 672px より狭いので、上限はもともと効いていない
+ */
+.gf-block :is(h2, h3, p, ul, ol, dl, details, blockquote) {
+  max-width: none;
 }
 
 .gf-block :is(.gf-button-secondary, .gf-button-tertiary, a.gf-chip:not(.gf-chip-current)):is(:hover, [data-state='hover']) {

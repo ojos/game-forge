@@ -36,8 +36,8 @@ import { WORK_PAGE_PREFIX } from './paths.js';
  *
  * **画面を提供する側（`src/works-list.ts`）と、そこへ送り返す側が別モジュールだから**
  * である。送り返すのは公開トップ（`src/home.ts`）と「あなたの作品」（`src/my-works.ts`）で、
- * **後者は逆向きにも参照される**（一覧は移設の案内で `/works/mine` を出す）。
- * 値だけの葉へ置かないと循環参照になる。
+ * **後者の綴りも、ヘッダや一括操作など多くの画面が読む**（一覧の移設の案内は #773 で外した）。
+ * 値だけの葉へ置かないと、画面どうしの参照が循環しやすくなる。
  */
 export const PUBLIC_WORKS_PATH = WORK_PAGE_PREFIX.slice(0, -1);
 

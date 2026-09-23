@@ -31,20 +31,23 @@ export const COLORS = Object.freeze({
  * @property {'transparent' | 'white' | 'black'} ground 地
  * @property {number} [width] 画像の幅。省くと格子の幅 × scale
  * @property {number} [height] 画像の高さ。省くと格子の高さ × scale
+ * @property {number} [left] 格子の左端の位置（画素）。省くと横は中央
  */
 
 /**
  * 地を塗り、格子を中央に置く画像の定義を作る。中央からずれる端数は左上へ寄せる。
+ * `left` を渡すと、横だけその位置へ置く（縦は中央のまま）。
  * @param {string} path
  * @param {readonly string[]} grid
  * @param {number} scale
  * @param {'white' | 'black'} ground
  * @param {number} width
  * @param {number} height
+ * @param {number} [left] 格子の左端の位置（画素）
  * @returns {Variant}
  */
-function framed(path, grid, scale, ground, width, height) {
-  return { path, grid, scale, ink: ground === 'white' ? 'light' : 'dark', ground, width, height };
+function framed(path, grid, scale, ground, width, height, left) {
+  return { path, grid, scale, ink: ground === 'white' ? 'light' : 'dark', ground, width, height, ...(left === undefined ? {} : { left }) };
 }
 
 /**
@@ -102,7 +105,11 @@ export function listVariants(glyphs) {
     // 高さの 3/4 で決める（アプリアイコンと同じ決め方）。
     out.push(framed(`social/header-note-1920x1006-${ground}.png`, H, Math.floor((1920 * 0.45) / H[0].length), ground, 1920, 1006));
     out.push(framed(`social/header-x-1500x500-${ground}.png`, H, Math.floor((1500 * 0.55) / H[0].length), ground, 1500, 500));
-    out.push(framed(`social/header-ofuse-1000x150-${ground}.png`, H, Math.floor((150 * 3) / 4 / H.length), ground, 1000, 150));
+    // **OFUSE だけ横を左へ寄せる**（#783）。この版面は、カバーアートの中央下に
+    // プロフィールのアイコンの円と白いカードを重ねる。中央に置くと、実機で
+    // 「Game Forge」の「ame」がアイコンに隠れた（2026-09-23 に本番の画面で確認）。
+    // 左の余白は版面の高さと同じ 1/8（125px）。
+    out.push(framed(`social/header-ofuse-1000x150-${ground}.png`, H, Math.floor((150 * 3) / 4 / H.length), ground, 1000, 150, 125));
   }
   return out;
 }

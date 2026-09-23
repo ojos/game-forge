@@ -94,6 +94,23 @@ test('ヘッダー: 版面ごとの倍率と、note が切られた後に収ま�
     assert.equal(byPath.get(`social/header-x-1500x500-${ground}.png`).scale, 6);
     assert.equal(byPath.get(`social/header-ofuse-1000x150-${ground}.png`).scale, 3);
 
+    // OFUSE は横を左へ寄せる（#783）。**中央に戻すとアイコンの円に隠れる。**
+    // 留めるのは格子の左端の値（125px）と、**ロゴが版面の中央より左で終わること**——
+    // 後者がこの変更の目的である。中央に置くと 317..683 になり、中央をまたぐ。
+    const ofuse = byPath.get(`social/header-ofuse-1000x150-${ground}.png`);
+    assert.equal(ofuse.left, 125);
+    const oimg = renderVariant(ofuse);
+    let leftmost = oimg.width;
+    let rightmost = -1;
+    for (let i = 0; i < oimg.pixels.length; i++) {
+      if (oimg.pixels[i] === 0) continue;
+      const x = i % oimg.width;
+      if (x < leftmost) leftmost = x;
+      if (x > rightmost) rightmost = x;
+    }
+    assert.ok(leftmost >= 125, `${ofuse.path}: ロゴが左の余白 125px へ食い込んでいる（${leftmost}）`);
+    assert.ok(rightmost < oimg.width / 2, `${ofuse.path}: ロゴが版面の中央をまたいでいる（右端 ${rightmost}）`);
+
     // note は表示のときに中央の帯だけが出る。**その帯の外へロゴがはみ出さないこと。**
     const v = byPath.get(`social/header-note-1920x1006-${ground}.png`);
     const img = renderVariant(v);

@@ -9,7 +9,7 @@
  *
  * | 公開ホスト名 | 向き先 | 誰が通るか |
  * |---|---|---|
- * | llm.ojos.jp | http://localhost:11434（Ollama） | エッジ（サービストークン。人ではない） |
+ * | llm01.ojos.jp | http://localhost:11434（Ollama） | エッジ（サービストークン。人ではない） |
  * | dev01-ssh.ojos.jp | ssh://localhost:22 | 運営（Google Workspace の本人） |
  *
  * **1 本にまとめた理由**（2026-09-23 の決定。#792 の経緯 2）。分離の主目的である認証は
@@ -22,15 +22,20 @@
  *
  * # 名前の規則
  *
- * - **製品の口には機械名を入れない**（`llm.ojos.jp`）。機械を替えたときに、呼ぶ側を
- *   書き換えずに済ませるため。
+ * - **製品の口には機械名を入れず、連番を振る**（`llm01.ojos.jp`）。機械を替えたときに
+ *   呼ぶ側を書き換えずに済ませるためで、**`llm01` が dev02 へ引っ越しても名前は変わらない**。
+ *   同じ用途の口が増えたら `llm02` になる（別のモデル、あるいは容量のための 2 台目）。
  * - **機械の口は機械名を先に綴る**（`dev01-ssh.ojos.jp`）。同じ機械に口を足すときは
  *   `dev01-<口>.ojos.jp` と並べる。2 台目は `dev02-ssh.ojos.jp` になる。
  *   **部分木（`ssh.dev01.ojos.jp`）にしないのは証明書の制約による**（下の locals の注記）。
- * - **`llm` は段 C2（#775）の後に `llm.game-forge.ojos.jp` へ寄せる予定**（別 issue）。
- *   いま `game-forge.ojos.jp` の下に置けないのは、その部分木が Route 53 へ委譲中で
- *   外から引けないためである。**チャットをつなぐのは M22-3（計測の後）なので、
- *   寄せる時点で利用者はいない。**
+ * - **`llm01` を `game-forge.ojos.jp` の下へ寄せる案は取り下げた**（2026-09-23）。
+ *   `llm.game-forge.ojos.jp` は 2 段深く、`ssh.dev01.ojos.jp` と同じ理由で証明書が無い。
+ *   **`app.game-forge.ojos.jp` が 2 段でも動いているのは、Pages がホスト名ごとに自前で
+ *   証明書を取っているからで**（実測: `CN=app.game-forge.ojos.jp` / Google Trust Services。
+ *   `llm01` は `CN=ojos.jp` / Let's Encrypt）、**トンネルを向く proxied なレコードには
+ *   その仕組みが無い。** 月 $10 の Advanced Certificate Manager を、この 1 点のために
+ *   契約しない。**そもそもこの口は game-forge 専用とは限らない**（`ojos.jp` の他の
+ *   プロジェクトから呼ぶ余地がある）。
  */
 
 locals {
@@ -49,7 +54,7 @@ locals {
   # したがって機械の口は `<機械名>-<口>` で綴る。**機械名を先に置く**ので、一覧を並べた
   # ときに dev01-ssh / dev01-runner のように機械ごとに隣り合う（部分木でやりたかったこと
   # が、区切り文字で残る）。2 台目は dev02-ssh になる。
-  llm_host       = "llm.${cloudflare_zone.ojos_jp.name}"
+  llm_host       = "llm01.${cloudflare_zone.ojos_jp.name}"
   dev01_ssh_host = "${local.dev01_machine_name}-ssh.${cloudflare_zone.ojos_jp.name}"
 
   # dev01 の中での向き先。cloudflared は同じ機械の中から繋ぐので localhost でよい
@@ -119,7 +124,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "dev01" {
           access = {
             required  = true
             team_name = var.cloudflare_zero_trust_team_name
-            aud_tag   = [cloudflare_zero_trust_access_application.llm.aud]
+            aud_tag   = [cloudflare_zero_trust_access_application.llm01.aud]
           }
 
           /**
@@ -157,9 +162,9 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "dev01" {
  * duration は既定（8760h ＝ 1 年）に任せない。**期限を宣言に書いておかないと、
  * 切れたときに「なぜ止まったか」が宣言のどこにも無い。**
  */
-resource "cloudflare_zero_trust_access_service_token" "edge_to_llm" {
+resource "cloudflare_zero_trust_access_service_token" "edge_to_llm01" {
   account_id = var.cloudflare_account_id
-  name       = "game-forge edge -> llm"
+  name       = "game-forge edge -> llm01"
   duration   = "8760h"
 }
 
@@ -167,15 +172,15 @@ resource "cloudflare_zero_trust_access_service_token" "edge_to_llm" {
  * LLM の口のポリシー。**decision = "non_identity"** ——人のログインを求めず、
  * サービストークンだけを通す。
  */
-resource "cloudflare_zero_trust_access_policy" "llm_service_token" {
+resource "cloudflare_zero_trust_access_policy" "llm01_service_token" {
   account_id = var.cloudflare_account_id
-  name       = "llm: game-forge のエッジのサービストークンだけ"
+  name       = "llm01: game-forge のエッジのサービストークンだけ"
   decision   = "non_identity"
 
   include = [
     {
       service_token = {
-        token_id = cloudflare_zero_trust_access_service_token.edge_to_llm.id
+        token_id = cloudflare_zero_trust_access_service_token.edge_to_llm01.id
       }
     },
   ]
@@ -191,9 +196,9 @@ resource "cloudflare_zero_trust_access_policy" "llm_service_token" {
  *
  * session_duration は置かない（非 identity のアプリはセッションを持たない）。
  */
-resource "cloudflare_zero_trust_access_application" "llm" {
+resource "cloudflare_zero_trust_access_application" "llm01" {
   account_id                = var.cloudflare_account_id
-  name                      = "llm (Ollama on ${local.dev01_machine_name})"
+  name                      = "llm01 (Ollama on ${local.dev01_machine_name})"
   type                      = "self_hosted"
   domain                    = local.llm_host
   service_auth_401_redirect = true
@@ -201,7 +206,7 @@ resource "cloudflare_zero_trust_access_application" "llm" {
 
   policies = [
     {
-      id         = cloudflare_zero_trust_access_policy.llm_service_token.id
+      id         = cloudflare_zero_trust_access_policy.llm01_service_token.id
       precedence = 1
     },
   ]
@@ -286,7 +291,7 @@ resource "cloudflare_zero_trust_access_application" "dev01_ssh" {
  * Cloudflare の anycast IP で、向き先を変えても答えが変わらないためである。
  * ここが `local.ojos_jp_ttl`（3600）と揃っていないのは、揃えられないからである。
  */
-resource "cloudflare_dns_record" "llm" {
+resource "cloudflare_dns_record" "llm01" {
   zone_id = cloudflare_zone.ojos_jp.id
   name    = local.llm_host
   type    = "CNAME"
@@ -304,4 +309,36 @@ resource "cloudflare_dns_record" "dev01_ssh" {
   ttl     = 1
   proxied = true
   comment = "Cloudflare Tunnel -> dev01 (sshd). Managed by Terraform (#792)."
+}
+
+/**
+ * ラベルの改名（#792。2026-09-23）。
+ *
+ * `llm` → `llm01` にしたのは、**同じ用途の口が増えうる**ためである（上の命名の注記）。
+ * **moved ブロックにするのは、作り直しを避けるため**である——ラベルだけを変えると
+ * Terraform は「別のリソース」と読み、削除と作成の差分を出す。Access のアプリを
+ * 作り直すと `aud` が変わり、ingress の検査（`origin_request.access.aud_tag`）も
+ * 連鎖して入れ替わる。**実体は同じなので、移動として宣言する。**
+ *
+ * **取り込み（import）と同じく、済んだ後も消さずに残す。** state に反映済みの moved は
+ * 何もしないので害が無く、経緯が宣言に残る（terraform/gcp.tf の import ブロックと同じ判断）。
+ */
+moved {
+  from = cloudflare_zero_trust_access_service_token.edge_to_llm
+  to   = cloudflare_zero_trust_access_service_token.edge_to_llm01
+}
+
+moved {
+  from = cloudflare_zero_trust_access_policy.llm_service_token
+  to   = cloudflare_zero_trust_access_policy.llm01_service_token
+}
+
+moved {
+  from = cloudflare_zero_trust_access_application.llm
+  to   = cloudflare_zero_trust_access_application.llm01
+}
+
+moved {
+  from = cloudflare_dns_record.llm
+  to   = cloudflare_dns_record.llm01
 }

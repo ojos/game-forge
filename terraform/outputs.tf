@@ -862,28 +862,28 @@ output "dev01_tunnel_token" {
   sensitive   = true
 }
 
-output "llm_endpoint" {
+output "llm01_endpoint" {
   description = <<-EOT
     チャットが呼ぶ推論の口。M22-3 でエッジの向き先になる。
-    **段 C2（#775）の後に llm.game-forge.ojos.jp へ寄せる予定**（別 issue）。
+    **game-forge.ojos.jp の下へ寄せる案は取り下げた**（証明書。tunnel-dev01.tf の注記）。
   EOT
   value       = "https://${local.llm_host}"
 }
 
-output "llm_service_token_client_id" {
+output "llm01_service_token_client_id" {
   description = <<-EOT
-    エッジが llm の口へ付けるサービストークンの ID（CF-Access-Client-Id）。
+    エッジが llm01 の口へ付けるサービストークンの ID（CF-Access-Client-Id）。
     M22-3 で Pages のシークレットへ写す。機密ではないが、対になる secret は機密である。
   EOT
-  value       = cloudflare_zero_trust_access_service_token.edge_to_llm.client_id
+  value       = cloudflare_zero_trust_access_service_token.edge_to_llm01.client_id
 }
 
-output "llm_service_token_client_secret" {
+output "llm01_service_token_client_secret" {
   description = <<-EOT
     上の対になる秘密（CF-Access-Client-Secret）。**機密である。**
     **作成時にしか発行されない**ので、失くしたらトークンを作り直すことになる。
   EOT
-  value       = cloudflare_zero_trust_access_service_token.edge_to_llm.client_secret
+  value       = cloudflare_zero_trust_access_service_token.edge_to_llm01.client_secret
   sensitive   = true
 }
 

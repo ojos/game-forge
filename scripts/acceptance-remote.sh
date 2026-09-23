@@ -2118,7 +2118,7 @@ check_dev01_tunnel() {
   cf_load_credentials
   local tunnel_id llm_host ssh_host body status remote_config rc=0
   tunnel_id="$(tf_output dev01_tunnel_id)" || return 1
-  llm_host="$(tf_output llm_endpoint)" || return 1
+  llm_host="$(tf_output llm01_endpoint)" || return 1
   llm_host="${llm_host#https://}"
   ssh_host="$(tf_output dev01_ssh_host)" || return 1
   if [[ -z "$tunnel_id" || -z "$llm_host" || -z "$ssh_host" ]]; then
@@ -2164,7 +2164,7 @@ check_dev01_tunnel() {
     rc=1
   fi
 
-  # llm の口は、コネクタ自身にも Access を検べさせている（二重化）。
+  # llm01 の口は、コネクタ自身にも Access を検べさせている（二重化）。
   # **aud はアプリを作り直すと変わる。** ずれたまま required = true だと、
   # エッジを通った要求まで dev01 の手前で落ちる。
   #
@@ -2177,14 +2177,14 @@ check_dev01_tunnel() {
   aud_tag="$(jq -r --arg h "$llm_host" \
     '.result.config.ingress[] | select(.hostname == $h) | .originRequest.access.audTag // [] | join(" ")' <<<"$body")"
   if [[ "$access_required" != "true" ]]; then
-    echo "llm の口のコネクタ側の Access 検査が無効です（origin_request.access.required）。"
+    echo "llm01 の口のコネクタ側の Access 検査が無効です（origin_request.access.required）。"
     echo "  トンネルへ直接到達する経路が、エッジの Access を迂回できます。"
     rc=1
   fi
 
   app_aud="$(cf_access_app_field "$llm_host" '.aud')" || return 1
   if [[ -n "$app_aud" && "$aud_tag" != "$app_aud" ]]; then
-    echo "llm の口の aud_tag が Access アプリと一致しません。"
+    echo "llm01 の口の aud_tag が Access アプリと一致しません。"
     echo "  アプリ : ${app_aud}"
     echo "  ingress: ${aud_tag:-(空)}"
     rc=1
@@ -2226,7 +2226,7 @@ check_tunnel_dns_records() {
   expected="${tunnel_id}.cfargotunnel.com"
 
   local output_name
-  for output_name in llm_endpoint dev01_ssh_host; do
+  for output_name in llm01_endpoint dev01_ssh_host; do
     host="$(tf_output "$output_name")" || return 1
     host="${host#https://}"
     if [[ -z "$host" ]]; then
@@ -2270,14 +2270,14 @@ check_tunnel_dns_records() {
 check_tunnel_access_applications() {
   cf_load_credentials
   local llm_host ssh_host body rc=0
-  llm_host="$(tf_output llm_endpoint)" || return 1
+  llm_host="$(tf_output llm01_endpoint)" || return 1
   llm_host="${llm_host#https://}"
   ssh_host="$(tf_output dev01_ssh_host)" || return 1
 
   body="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps")" || return 1
 
   local host expected_decision expected_include expected_require app_id count decisions includes requires
-  # llm の口 = 人ではない呼び出し元（サービストークン）、ssh の口 = 人（Google Workspace）。
+  # llm01 の口 = 人ではない呼び出し元（サービストークン）、ssh の口 = 人（Google Workspace）。
   for host in "$llm_host" "$ssh_host"; do
     if [[ "$host" == "$llm_host" ]]; then
       expected_decision="non_identity"
@@ -2320,11 +2320,11 @@ check_tunnel_access_applications() {
     fi
   done
 
-  # llm の口は 401 を返させる（リダイレクトでは、呼ぶ側の fetch が失敗と分からない）。
+  # llm01 の口は 401 を返させる（リダイレクトでは、呼ぶ側の fetch が失敗と分からない）。
   local redirect_401
   redirect_401="$(jq -r --arg h "$llm_host" '[.result[] | select(.domain == $h)] | .[0].service_auth_401_redirect // false' <<<"$body")"
   if [[ "$redirect_401" != "true" ]]; then
-    echo "llm の口が未認証の要求をログイン画面へ送ります（service_auth_401_redirect が無効）。"
+    echo "llm01 の口が未認証の要求をログイン画面へ送ります（service_auth_401_redirect が無効）。"
     echo "  エッジの fetch は HTML を受け取り、失敗が遅れて現れます。"
     rc=1
   fi

@@ -17,7 +17,7 @@
 
 | 公開ホスト名 | 向き先（dev01 の中） | 通れるのは | 認可の宣言 |
 |---|---|---|---|
-| `llm.ojos.jp` | `http://localhost:11434`（Ollama） | **game-forge のエッジ**（サービストークン） | `cloudflare_zero_trust_access_policy.llm_service_token` |
+| `llm01.ojos.jp` | `http://localhost:11434`（Ollama） | **game-forge のエッジ**（サービストークン） | `cloudflare_zero_trust_access_policy.llm01_service_token` |
 | `dev01-ssh.ojos.jp` | `ssh://localhost:22`（sshd） | **名指しした運営**（Google Workspace） | `cloudflare_zero_trust_access_policy.dev01_ssh_operator` |
 
 | 要素 | 値 / 置き場 |
@@ -28,8 +28,10 @@
 | 外部層の検査 | `scripts/acceptance-remote.sh` の `check_dev01_tunnel` / `check_tunnel_dns_records` / `check_tunnel_access_applications` |
 | 接続トークン | `terraform output -raw dev01_tunnel_token`（**機密**。リポジトリのどこにも書き写さない） |
 
-**名前の規則**（#792 の決定）。**製品の口には機械名を入れない**（`llm.ojos.jp`）——機械を
-替えても呼ぶ側を書き換えずに済ませるため。**機械の口は機械ごとの部分木に置く**
+**名前の規則**（#792 の決定）。**製品の口には機械名を入れず、連番を振る**
+（`llm01.ojos.jp`）——機械を替えても呼ぶ側を書き換えずに済ませるためで、**`llm01` が
+dev02 へ引っ越しても名前は変わらない**。同じ用途の口が増えたら `llm02` になる。
+**機械の口は機械名を先に綴る**
 （`dev01-ssh.ojos.jp`）——2 台目は `dev02-ssh.ojos.jp`、同じ機械に口を足すときは
 `dev01-<口>.ojos.jp` と並べる。**部分木（`ssh.dev01.ojos.jp`）にしないのは証明書の制約**で、
 Cloudflare の Universal SSL（Free）が持つのは `ojos.jp` と `*.ojos.jp` だけである
@@ -303,12 +305,12 @@ VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh
 
 ```bash
 # サービストークン無し → 通らないこと
-curl -s -o /dev/null -w '%{http_code}\n' https://llm.ojos.jp/api/tags
+curl -s -o /dev/null -w '%{http_code}\n' https://llm01.ojos.jp/api/tags
 
 # サービストークン有り → Ollama の答えが返ること
-curl -s https://llm.ojos.jp/api/tags \
-  -H "CF-Access-Client-Id: $(terraform -chdir=terraform output -raw llm_service_token_client_id)" \
-  -H "CF-Access-Client-Secret: $(terraform -chdir=terraform output -raw llm_service_token_client_secret)"
+curl -s https://llm01.ojos.jp/api/tags \
+  -H "CF-Access-Client-Id: $(terraform -chdir=terraform output -raw llm01_service_token_client_id)" \
+  -H "CF-Access-Client-Secret: $(terraform -chdir=terraform output -raw llm01_service_token_client_secret)"
 ```
 
 **値をコマンドへ埋め込まず、実行時に読む**（#380 の前例。埋めた値は古くなる）。
@@ -351,8 +353,10 @@ sudo systemctl start cloudflared
 
 - **チャットを Ollama へつなぐこと**（M22-3）。**#752 の計測（〜2026-09-28 16:25 JST）の後**。
   この文書の範囲は「口が開いて認可が効く」ところまでで、エッジの向き先は変えていない。
-- **`llm.ojos.jp` を `llm.game-forge.ojos.jp` へ寄せること**。#775 の段 C2 の後（別 issue）。
-  **寄せる時点で利用者はいない**（M22-3 より前に行う）。
+- **`llm.game-forge.ojos.jp` へ寄せる案は取り下げた**（2026-09-23）。2 段深い名前には
+  Universal SSL（Free）の証明書が無く、`ssh.dev01.ojos.jp` と同じ TLS の失敗になる。
+  **`app.game-forge.ojos.jp` が 2 段でも動くのは Pages がホスト名ごとに証明書を取るから**で、
+  トンネルを向く proxied なレコードにはその仕組みが無い。
 - **GitHub Actions のセルフホステッドランナー**。同じ機械に載る予定だが別件。
   載せるときの口は、必要なら `<口>.dev01.ojos.jp` として同じ木へ下げる。
 
@@ -374,7 +378,7 @@ sudo systemctl start cloudflared
 | 2026-09-23 | **Access の実測** | サービストークン**無し → 401**（Access が止めた）、**有り → 530**（Access は通り、**コネクタがいない**。dev01 が未設定なので正しい）。**この 2 つの違いが、認可が効いていることの証拠である** |
 
 | 2026-09-23 | dev01 に Ollama と cloudflared を入れ、トークンでサービス登録 | **`status: inactive` → `healthy`（コネクタ 4 本）。** NVIDIA GPU が認識された（XPS 15 7590） |
-| 2026-09-23 | **`llm.ojos.jp` の通し確認** | **トークン有りで 200・`{"models":[]}`**（530 から変わった）／無しで 401。**インターネットを回り、Access を通り、dev01 の localhost:11434 が答えた** |
+| 2026-09-23 | **`llm01.ojos.jp` の通し確認** | **トークン有りで 200・`{"models":[]}`**（530 から変わった）／無しで 401。**インターネットを回り、Access を通り、dev01 の localhost:11434 が答えた** |
 | 2026-09-23 | Mac から `cloudflared access ssh` | **`remote error: tls: handshake failure`。** 原因は**証明書**——Universal SSL（Free）は `ojos.jp` と `*.ojos.jp` しか持たず、`ssh.dev01.ojos.jp` は `*.dev01.ojos.jp` を要求する。`openssl s_client` で、`llm.ojos.jp` は `CN=ojos.jp` で通り、2 段の名前だけが落ちることを確かめた |
 | 2026-09-23 | **`ssh.dev01.ojos.jp` → `dev01-ssh.ojos.jp` へ改名** | apply は **0 追加・3 変更・0 削除**（DNS・Access のアプリ・ingress）。新しい名前で証明書が付き、未認証の要求は **3 回とも 302**（飛び先は Access のログイン。`auth_status: NONE`） |
 | 2026-09-23 | Mac から `ssh dev01-ssh.ojos.jp` | **接続成功。** ブラウザで Google（`ido@ojos.jp`）の認証を 1 回通った |
@@ -388,11 +392,12 @@ sudo systemctl start cloudflared
 
 | 2026-09-23 | 外部層の検査を回し直した（回転後・検査の修正後） | **トンネル関連の 3 つとも緑。** 残る失敗は `pages custom domain records match` の 1 件で、**#775 の段 C2 が未了**であることによる（この issue の範囲外） |
 
+| 2026-09-23 | **`llm.ojos.jp` → `llm01.ojos.jp` へ改名**（同じ用途の口が増えうるため） | 宣言側のラベルと output も `llm01` へ揃え、**`moved` ブロックで作り直しを避けた**（plan は 0 追加・5 変更・0 削除）。**直後の 1 回だけ、トークン有りで 403 が返った**——Access のアプリとポリシーの更新の反映待ちで、数秒後から 3 回とも 200。無しは 3 回とも 401 |
+
 **残っている宿題。**
 
 1. **PR の作成**（#775 のマージ後。段 C2 は 09-28 16:25 JST 以降）。
 2. **プライマリのツリーを `main` へ戻す**（PR がマージされてから。いま戻すと、宣言が
    state より足りず `terraform plan` に削除の差分が出る）。
-3. **`llm.ojos.jp` を `llm.game-forge.ojos.jp` へ寄せる**（段 C2 の後。別 issue）。
 
 **済んだもの。** 接続トークンの回転（上の記録）、外部層の検査（同）。

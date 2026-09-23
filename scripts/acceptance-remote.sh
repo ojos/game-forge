@@ -2167,11 +2167,15 @@ check_dev01_tunnel() {
   # llm の口は、コネクタ自身にも Access を検べさせている（二重化）。
   # **aud はアプリを作り直すと変わる。** ずれたまま required = true だと、
   # エッジを通った要求まで dev01 の手前で落ちる。
+  #
+  # **API は camelCase で返す（originRequest / audTag）。** 宣言側（terraform の
+  # スキーマ）は snake_case なので、綴りを写すと**必ず空になり、設定が入っているのに
+  # 「無い」と報告する**（2026-09-23 に踏んだ。偽陽性で 1 回止まった）。
   local access_required aud_tag app_aud
   access_required="$(jq -r --arg h "$llm_host" \
-    '.result.config.ingress[] | select(.hostname == $h) | .origin_request.access.required // false' <<<"$body")"
+    '.result.config.ingress[] | select(.hostname == $h) | .originRequest.access.required // false' <<<"$body")"
   aud_tag="$(jq -r --arg h "$llm_host" \
-    '.result.config.ingress[] | select(.hostname == $h) | .origin_request.access.aud_tag // [] | join(" ")' <<<"$body")"
+    '.result.config.ingress[] | select(.hostname == $h) | .originRequest.access.audTag // [] | join(" ")' <<<"$body")"
   if [[ "$access_required" != "true" ]]; then
     echo "llm の口のコネクタ側の Access 検査が無効です（origin_request.access.required）。"
     echo "  トンネルへ直接到達する経路が、エッジの Access を迂回できます。"

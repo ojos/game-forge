@@ -380,6 +380,9 @@ sudo systemctl start cloudflared
 | 2026-09-23 | Mac から `ssh dev01-ssh.ojos.jp` | **接続成功。** ブラウザで Google（`ido@ojos.jp`）の認証を 1 回通った |
 | 2026-09-23 | devcontainer から `ssh dev01` | **接続成功**（`XPS-15-7590` / `ido`）。Access のトークンの中身が `email: ido@ojos.jp` / `policy_id: 50ad7bcc-…`（`dev01_ssh_operator`）で、**どのポリシーが通したかまで確かめられた**。認証は**転送された SSH agent** の鍵で、コンテナに秘密鍵は置いていない |
 
+| 2026-09-23 | 外部層の検査を通した（`scripts/acceptance-remote.sh`） | **失敗 2 件。**（a）`pages custom domain records match` — **#775 の段 C2 が未了**で、`game-forge.ojos.jp` に委譲の NS が残っているため。**この issue の範囲外で、09-28 以降に解消する。**（b）`dev01 tunnel is healthy and ingress matches` — **検査側のバグ**（下記）。**`tunnel dns records` と `tunnel access applications` は緑** |
+| 2026-09-23 | 検査のバグを直した | **Cloudflare の API は ingress を camelCase で返す**（`originRequest` / `audTag`）。宣言側（terraform のスキーマ）は snake_case なので、綴りを写した jq が**必ず空を読み、設定が入っているのに「無い」と報告していた**。実物は `required: true` で `audTag` もアプリの `aud` と一致していた |
+
 **残っている宿題。**
 
 1. **接続トークンの回転。** 2026-09-23 に**チャットへ全文が貼られた**ため、秘密として扱えない。

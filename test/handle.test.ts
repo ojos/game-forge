@@ -253,7 +253,8 @@ describe('運営と紛らわしい名前を弾く（#778）', () => {
   it('運営のハンドル名に寄せた綴りは、経路由来の予約語が空でも断る', () => {
     for (const raw of [
       'gameforgejp', // 区切りを外した綴り
-      'gameforge_jp', // 運営が持っているもの
+      'gameforgejp', // 運営が持っているもの
+      'gameforge_jp', // 運営が改名で手放し、90 日は予約している綴り
       'gameforge2026', // 運営がプロフィールで公開している X のアカウント名
       'gameforge_news',
       'game_forgejp',
@@ -278,14 +279,14 @@ describe('運営と紛らわしい名前を弾く（#778）', () => {
     expect(validateHandle('anvil_works', reserved)).toEqual({ ok: true, value: 'anvil_works' });
   });
 
-  it('保存済みのハンドル名は再検査されない（運営の gameforge_jp は取り上げられない）', async () => {
+  it('保存済みのハンドル名は再検査されない（運営の gameforgejp は取り上げられない）', async () => {
     const operator = await seedUser();
     await env.DB.prepare('update users set is_operator = 1 where id = ?').bind(operator).run();
-    expect(await changeHandle(env.DB, operator, 'gameforge_jp', NOW)).toEqual({ ok: true, changed: true });
-    expect(await currentHandleOf(env.DB, operator)).toEqual({ handle: 'gameforge_jp', claimedAt: NOW });
+    expect(await changeHandle(env.DB, operator, 'gameforgejp', NOW)).toEqual({ ok: true, changed: true });
+    expect(await currentHandleOf(env.DB, operator)).toEqual({ handle: 'gameforgejp', claimedAt: NOW });
     // **印が立っていても、画面から入れ直す経路（`src/account-handle.ts`）は検査を通る。**
     // `is_operator` を見て通す例外は作っていない（`HAND_WRITTEN_RESERVED_PREFIXES` の注記）。
-    expect(validateHandle('gameforge_jp', appReservedHandles(env))).toEqual({
+    expect(validateHandle('gameforgejp', appReservedHandles(env))).toEqual({
       ok: false,
       reason: 'handle-reserved',
     });

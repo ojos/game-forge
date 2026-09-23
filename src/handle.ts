@@ -86,9 +86,9 @@ export const HAND_WRITTEN_RESERVED_HANDLES: readonly string[] = [
 /**
  * **手書きの予約の接頭辞**——この綴りで始まるハンドル名を、まるごと断る（#778）。
  *
- * **完全一致の {@link HAND_WRITTEN_RESERVED_HANDLES} では、運営のハンドル名（`@gameforge_jp`）に寄せた綴りを
- * 数え上げきれない。** `gameforgejp` を足せば `gameforge_jp2` が残り、それを足せば `gameforge2026`
- * （運営がプロフィールで公開している X のアカウント名）が残る。**名乗れる綴りが尽きないので、列挙ではなく
+ * **完全一致の {@link HAND_WRITTEN_RESERVED_HANDLES} では、運営のハンドル名（`@gameforgejp`）に寄せた綴りを
+ * 数え上げきれない。** `gameforgejp2` を足せば `gameforge_news` が残り、それを足せば `gameforge2026`
+ * （運営が取った X のアカウント名）が残る。**名乗れる綴りが尽きないので、列挙ではなく
  * 接頭辞で弾く**（利用者の決定。2026-09-22）。
  *
  * **判定は小文字にした後の値に掛ける**（`GameForge_JP` も断る）。**先頭でない一致は断らない**
@@ -96,13 +96,14 @@ export const HAND_WRITTEN_RESERVED_HANDLES: readonly string[] = [
  *
  * ## 運営自身も、いまのハンドル名を手放すと画面からは取り直せない
  *
- * **保存済みの値は再検査されない**ので、運営が持っている `gameforge_jp` は影響を受けない。ただし改名すると、
+ * **保存済みの値は再検査されない**ので、運営が持っている `gameforgejp` は影響を受けない。ただし改名すると、
  * **予約中の旧ハンドルへ戻る経路も {@link validateHandle} を通る**ので、運営も画面からは戻れなくなる。
  *
  * **例外を作らないのは、例外が「運営だけが通る抜け道」としてコードに残るからである。** `users.is_operator` を
  * 見て通す形にすると、**表示だけの列だった印がハンドル名の可否まで決めることになる**
  * （`docs/operator-account.md` 1 章の「運営だからできることは 1 つも増えません」が崩れる）。**運営が取り直すときは、
- * 印の付け外しと同じく D1 を直接書く**——運用の手順であって、画面の穴ではない。
+ * 印の付け外しと同じく D1 を直接書く**——運用の手順であって、画面の穴ではない（手順は
+ * `docs/operator-account.md` 3.6。**2026-09-23 に `gameforge_jp` → `gameforgejp` で実際に通した**）。
  */
 export const HAND_WRITTEN_RESERVED_PREFIXES: readonly string[] = ['gameforge', 'game_forge'];
 

@@ -411,6 +411,16 @@ sudo systemctl start cloudflared
    すると #775 の差分ごと取り込む形になり、段 C2 を待つ #775 を先に通すことになる）。
    **#775 が `main` へマージされた時点で、GitHub がこの PR の base を `main` へ
    付け替える。** そこで CI を見直してマージする。**新しい PR を作り直さないこと。**
+
+   **マージの前に `closingIssuesReferences` を見ること。** 本文に `Closes #792` は
+   入れてあるが、**2026-09-23 の時点では 0 件**である——**GitHub は base が既定ブランチの
+   PR でしか closing reference を作らない**ためで、いまの base は #775 の枝である。
+   base が `main` へ付け替わった時点で登録されるはずだが、**確かめないと分からない。**
+   0 件のままなら、本文を保存し直すか、マージ後に手で issue を閉じる（#366 / #367 の前例）。
+
+   ```bash
+   gh pr view 793 --json closingIssuesReferences -q '.closingIssuesReferences | length'
+   ```
 2. **プライマリのツリーを `main` へ戻す**（#775 と #793 がマージされてから。いま戻すと、
    宣言が state より足りず `terraform plan` に削除の差分が出る）。
 

@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { SYMBOL, emboldenGlyph, scaleGrid, setText, trimGrid, wordmark } from './logo.mjs';
 import { readGlyphs } from './glyphs.mjs';
-import { listVariants } from './variants.mjs';
+import { listVariants, OFUSE_COVER } from './variants.mjs';
 import { renderVariant } from './render.mjs';
 import { encodePng, decodePng, toRgba } from './png.mjs';
 import { writeAll, checkAll } from './main.mjs';
@@ -92,24 +92,30 @@ test('ヘッダー: 版面ごとの倍率と、note が切られた後に収ま�
   for (const ground of ['white', 'black']) {
     assert.equal(byPath.get(`social/header-note-1920x1006-${ground}.png`).scale, 7);
     assert.equal(byPath.get(`social/header-x-1500x500-${ground}.png`).scale, 6);
-    assert.equal(byPath.get(`social/header-ofuse-1000x150-${ground}.png`).scale, 3);
+    assert.equal(byPath.get(`social/header-ofuse-1000x150-${ground}.png`).scale, 4);
 
-    // OFUSE は横を左へ寄せる（#783）。**中央に戻すとアイコンの円に隠れる。**
-    // 留めるのは格子の左端の値（125px）と、**ロゴが版面の中央より左で終わること**——
-    // 後者がこの変更の目的である。中央に置くと 317..683 になり、中央をまたぐ。
+    // OFUSE はワードマークだけを左へ置く（#788）。**留めるのは「アイコンの円に入らないこと」**
+    // であって、版面の中央ではない。#783 は中央（rightmost < 500）を代わりの線に使い、
+    // 重なる相手の実寸を測らなかったため、右端 491 で 40px 食い込んだまま緑で通った。
+    // 占有域は中央 ± OFUSE_COVER.iconClearance で、実測の根拠は variants.mjs に書いた。
+    // 上下と左の余白が等しいこと（47px）も見る。倍率が変われば、この 3 つのどれかが落ちる。
     const ofuse = byPath.get(`social/header-ofuse-1000x150-${ground}.png`);
-    assert.equal(ofuse.left, 125);
     const oimg = renderVariant(ofuse);
+    const forbidden = oimg.width / 2 - OFUSE_COVER.iconClearance;
     let leftmost = oimg.width;
     let rightmost = -1;
+    let topmost = oimg.height;
     for (let i = 0; i < oimg.pixels.length; i++) {
       if (oimg.pixels[i] === 0) continue;
       const x = i % oimg.width;
       if (x < leftmost) leftmost = x;
       if (x > rightmost) rightmost = x;
+      const y = Math.floor(i / oimg.width);
+      if (y < topmost) topmost = y;
     }
-    assert.ok(leftmost >= 125, `${ofuse.path}: ロゴが左の余白 125px へ食い込んでいる（${leftmost}）`);
-    assert.ok(rightmost < oimg.width / 2, `${ofuse.path}: ロゴが版面の中央をまたいでいる（右端 ${rightmost}）`);
+    assert.ok(rightmost < forbidden, `${ofuse.path}: ロゴがアイコンの占有域（中央 ± ${OFUSE_COVER.iconClearance}px）へ入っている（右端 ${rightmost}）`);
+    assert.equal(leftmost, topmost, `${ofuse.path}: 上と左の余白が等しくない（左 ${leftmost} / 上 ${topmost}）`);
+    assert.deepEqual(ofuse.grid, wordmark(), `${ofuse.path}: ワードマーク以外の格子が置かれている`);
 
     // note は表示のときに中央の帯だけが出る。**その帯の外へロゴがはみ出さないこと。**
     const v = byPath.get(`social/header-note-1920x1006-${ground}.png`);

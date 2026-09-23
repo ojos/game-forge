@@ -82,6 +82,31 @@ test('一覧: 標準セットの種類と枚数', () => {
   });
 });
 
+// 帯状のヘッダー（#780）。**倍率そのものと、切られた後に収まることを、ここで留める。**
+// 上の 2 つのテストは「整数倍で画像に収まる」しか見ておらず、main.mjs --check は
+// コミット済みの PNG を同じ実装と比べるだけなので、**割合を変えて焼き直せば両方とも通る。**
+// 割合を選んだ理由（note は上下が切られる）は variants.mjs のコメントにあるが、
+// 理由を書いただけでは、次に触る人が値を動かしたときに止まらない。
+test('ヘッダー: 版面ごとの倍率と、note が切られた後に収まること', () => {
+  const byPath = new Map(listVariants().map((v) => [v.path, v]));
+  for (const ground of ['white', 'black']) {
+    assert.equal(byPath.get(`social/header-note-1920x1006-${ground}.png`).scale, 7);
+    assert.equal(byPath.get(`social/header-x-1500x500-${ground}.png`).scale, 6);
+    assert.equal(byPath.get(`social/header-ofuse-1000x150-${ground}.png`).scale, 3);
+
+    // note は表示のときに中央の帯だけが出る。**その帯の外へロゴがはみ出さないこと。**
+    const v = byPath.get(`social/header-note-1920x1006-${ground}.png`);
+    const img = renderVariant(v);
+    const band = 340;
+    const top = Math.floor((img.height - band) / 2);
+    for (let y = 0; y < img.height; y++) {
+      if (y >= top && y < top + band) continue;
+      const row = img.pixels.subarray(y * img.width, (y + 1) * img.width);
+      assert.ok(row.every((p) => p === 0), `${v.path}: 帯の外の y=${y} に地ではない画素がある`);
+    }
+  }
+});
+
 test('PNG: 書いたものを復号すると同じ画素に戻る', () => {
   for (const v of listVariants().filter((x) => x.path.includes('x1-') || x.path.includes('-16-') || x.path.includes('ogp'))) {
     const img = renderVariant(v);

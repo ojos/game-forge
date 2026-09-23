@@ -51,6 +51,21 @@
 **フラグは作品より後に立ててかまいません。** 既に公開した作品にもそのまま効きます
 （作品の行は触りません。印は表示のたびに `users` を結合して引きます）。
 
+### 2.1 運営アカウントの公開の見え方（2026-09-23 時点）
+
+**利用者が決めた綴りです。** 変えたら、ここを直してください。
+
+| 項目 | 値 |
+|---|---|
+| ハンドル名 | **`gameforgejp`**（作者ページは `/@gameforgejp`）。**旧 `gameforge_jp` は 2026-12-22 ごろまで 302 で転送**し、その後は 404 |
+| 表示名 | `Game Forge 運営` |
+| 自己紹介 | 運営アカウントであること・並んでいるのが運営の作ったサンプルであること・遊ぶのは誰でも、改造は招待コードを持つ人ができること・連絡はフッタの窓口から |
+| 外部リンク | note と OFUSE（投げ銭）。**X（`gameforge2026`）はアカウントが凍結中のため外しました**（2026-09-23） |
+
+**`gameforge` / `game_forge` で始まる名前は、ほかの利用者が取れません**（#778。`src/handle.ts` の
+`HAND_WRITTEN_RESERVED_PREFIXES`）。**ロゴの語 `forge` / `anvil` も完全一致で予約しています。**
+**運営自身もこの規則の外に居ません**——画面から名乗り直すことはできず、変えるときは 3.6 の手順を使います。
+
 ---
 
 ## 3. 手順
@@ -122,6 +137,72 @@ npx wrangler d1 execute DB --remote --env production \
 ```
 
 外すと、その作者のすべての作品ページから印が消えます（作品の行は触りません）。
+
+### 3.6 ハンドル名を変える（画面からは通りません）
+
+**運営のハンドル名は、設定の画面からは変えられません。** 理由が 2 つあり、**どちらも意図した形です。**
+
+1. **改名は 30 日に 1 回まで**（5.10。`HANDLE_RENAME_INTERVAL_DAYS`）
+2. **`gameforge` で始まる名前は予約されている**（#778）。**`is_operator` を見て通す例外は作っていません**
+   ——表示だけの列がハンドル名の可否まで決めることになるためです（1 章）。印の付け外しと同じく、D1 を直接書きます
+
+**書く内容は `src/handle.ts` の `changeHandle` と同じです**（履歴を積む → 手放す → 取る）。**値は実行時に
+DB から読みます**——控えた値を貼り込むと、打つまでの間に利用者の操作で古くなります（`docs/handoff.md` 3 章の #380）。
+下の `<新しいハンドル名>` と `<いまのハンドル名>` だけを置き換えてください。
+
+**先に、現状と空き具合を読み取ります**（後からは「何が在ったか」を確かめられません）。
+
+```bash
+npx wrangler d1 execute DB --remote --env production --json \
+  --command "select h.handle, h.user_id, h.claimed_at, h.released_at from handles h join users u on u.id = h.user_id where u.is_operator = 1 order by h.claimed_at"
+npx wrangler d1 execute DB --remote --env production --json \
+  --command "select * from handles where handle = '<新しいハンドル名>'"
+```
+
+**いまのハンドル名が 1 行（`released_at` が null）で、新しい名前が 0 行**であること。**新しい名前に行が
+あれば、そこで止めます**（ほかの人が持っています）。
+
+**次の 3 つを、この順で打ちます。** 順を変えると、3 番目が部分索引（`handles_user_current_idx`）で落ちます。
+
+```bash
+# 1. 履歴を先に積む（旧い名前は、手放す前の行からしか読めない）
+npx wrangler d1 execute DB --remote --env production \
+  --command "insert into handle_changes (id, user_id, old_handle, new_handle, changed_at) select lower(hex(randomblob(16))), h.user_id, h.handle, '<新しいハンドル名>', cast(strftime('%s','now') as integer) from handles h where h.handle = '<いまのハンドル名>' and h.released_at is null and h.user_id in (select id from users where is_operator = 1 and withdrawal_started_at is null)"
+
+# 2. いまの名前を手放す（90 日の予約へ移り、旧 URL は転送になる）
+npx wrangler d1 execute DB --remote --env production \
+  --command "update handles set released_at = cast(strftime('%s','now') as integer) where handle = '<いまのハンドル名>' and released_at is null and user_id in (select id from users where is_operator = 1 and withdrawal_started_at is null)"
+
+# 3. 新しい名前を取る
+npx wrangler d1 execute DB --remote --env production \
+  --command "insert into handles (handle, user_id, claimed_at) select '<新しいハンドル名>', h.user_id, cast(strftime('%s','now') as integer) from handles h where h.handle = '<いまのハンドル名>' and h.released_at is not null and h.user_id in (select id from users where is_operator = 1 and withdrawal_started_at is null)"
+```
+
+**3 番目が `UNIQUE constraint failed: handles.user_id` で落ちたら、既に成功しています**（二重に打った合図。
+その利用者は現役の行を 1 つしか持てません）。**3 番目が別の理由で落ちたときだけ**、2 番目を取り消せます。
+
+```bash
+npx wrangler d1 execute DB --remote --env production \
+  --command "update handles set released_at = null where handle = '<いまのハンドル名>' and user_id in (select id from users where is_operator = 1)"
+```
+
+**確かめます。**
+
+```bash
+npx wrangler d1 execute DB --remote --env production --json \
+  --command "select h.handle, h.claimed_at, h.released_at from handles h join users u on u.id = h.user_id where u.is_operator = 1 order by h.claimed_at"
+curl -sI "https://app.game-forge.ojos.jp/@<新しいハンドル名>" | head -1
+curl -sI "https://app.game-forge.ojos.jp/@<いまのハンドル名>" | grep -iE "^HTTP/|^location"
+```
+
+**新しい名前が現役（`released_at` が null）、旧い名前に時刻が入り、`/@新` が 200、`/@旧` が 302 で `/@新` を
+指すこと。** 旧い名前の転送は 90 日で切れ、その後は 404 になります。
+
+**この手順は 2026-09-23 に実際に通しました**（`gameforge_jp` → `gameforgejp`）。**打つ前に、使い捨ての
+ローカル D1（`--local --persist-to`）で同じ 3 文を流し、`changeHandle` と同じ行（履歴 1 行・旧い行の予約・
+新しい行の現役）になることを確かめています。**
+
+**改名の 30 日の間隔は、この書き込みの時刻から数え直しになります**（`claimed_at` が今になるため）。
 
 ---
 

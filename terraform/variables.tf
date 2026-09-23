@@ -391,7 +391,7 @@ variable "zero_trust_google_client_secret" {
 
 variable "zero_trust_operator_emails" {
   description = <<-EOT
-    SSH の口（ssh.dev01.ojos.jp）へ入れる人のメールアドレス（#792）。
+    SSH の口（dev01-ssh.ojos.jp）へ入れる人のメールアドレス（#792）。
     ojos.jp の Google Workspace のアカウントであること。
 
     **ドメインで括らず名指しにしている理由**は terraform/tunnel-dev01.tf の

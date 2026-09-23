@@ -75,6 +75,6 @@ zero_trust_google_client_id     = "000000000000-xxxxxxxxxxxxxxxxxxxxxxxxxxxx.app
 # **これは機密である。** tfvars は追跡外。値は GCP コンソールが 1 回だけ見せる。
 zero_trust_google_client_secret = "GOCSPX-xxxxxxxxxxxxxxxxxxxxxxxx"
 
-# SSH の口（ssh.dev01.ojos.jp）へ入れる人（#792）。ojos.jp の Workspace のアカウント。
+# SSH の口（dev01-ssh.ojos.jp）へ入れる人（#792）。ojos.jp の Workspace のアカウント。
 # ドメインで括らず名指しにする理由は terraform/tunnel-dev01.tf にある。
 zero_trust_operator_emails = ["you@ojos.jp"]

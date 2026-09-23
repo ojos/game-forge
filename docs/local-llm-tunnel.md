@@ -18,7 +18,7 @@
 | 公開ホスト名 | 向き先（dev01 の中） | 通れるのは | 認可の宣言 |
 |---|---|---|---|
 | `llm.ojos.jp` | `http://localhost:11434`（Ollama） | **game-forge のエッジ**（サービストークン） | `cloudflare_zero_trust_access_policy.llm_service_token` |
-| `ssh.dev01.ojos.jp` | `ssh://localhost:22`（sshd） | **名指しした運営**（Google Workspace） | `cloudflare_zero_trust_access_policy.dev01_ssh_operator` |
+| `dev01-ssh.ojos.jp` | `ssh://localhost:22`（sshd） | **名指しした運営**（Google Workspace） | `cloudflare_zero_trust_access_policy.dev01_ssh_operator` |
 
 | 要素 | 値 / 置き場 |
 |---|---|
@@ -30,8 +30,10 @@
 
 **名前の規則**（#792 の決定）。**製品の口には機械名を入れない**（`llm.ojos.jp`）——機械を
 替えても呼ぶ側を書き換えずに済ませるため。**機械の口は機械ごとの部分木に置く**
-（`ssh.dev01.ojos.jp`）——2 台目は `ssh.dev02.ojos.jp`、同じ機械に口を足すときは
-`<口>.dev01.ojos.jp` として同じ木へ下げる。
+（`dev01-ssh.ojos.jp`）——2 台目は `dev02-ssh.ojos.jp`、同じ機械に口を足すときは
+`dev01-<口>.ojos.jp` と並べる。**部分木（`ssh.dev01.ojos.jp`）にしないのは証明書の制約**で、
+Cloudflare の Universal SSL（Free）が持つのは `ojos.jp` と `*.ojos.jp` だけである
+（2 段深い名前は TLS の handshake で落ちる。2026-09-23 に実測）。
 
 ---
 
@@ -241,7 +243,7 @@ brew install cloudflared
 `~/.ssh/config` へ足す。
 
 ```
-Host ssh.dev01.ojos.jp
+Host dev01-ssh.ojos.jp
   ProxyCommand /opt/homebrew/bin/cloudflared access ssh --hostname %h
   User <dev01 のユーザー名>
   IdentityFile ~/.ssh/id_ed25519
@@ -251,8 +253,33 @@ Host ssh.dev01.ojos.jp
 `~/.cloudflared/` のトークンが効く（セッションは 24 時間。`session_duration`）。
 
 ```bash
-ssh ssh.dev01.ojos.jp
+ssh dev01-ssh.ojos.jp
 ```
+
+## devcontainer 側の手順
+
+**このコンテナは LAN へ出られない**（2026-09-23 の実測。laptop もルータも Mac も、
+拒否ではなく**タイムアウト**になる。コンテナは Docker のブリッジ網にいて、出られるのは
+外向きだけ）。したがって `192.168.x.x` では dev01 に入れず、**トンネルを回る経路だけが通る**。
+
+導入は宣言側が持つ（`scripts/install-cloudflared.sh`。`postCreateCommand` から回る）ので、
+コンテナを作り直しても `cloudflared` と `~/.ssh/config` は戻ってくる。
+
+**Access の認証だけは、初回に一度だけ対話で行う。**
+
+```bash
+cloudflared access login https://dev01-ssh.ojos.jp
+```
+
+表示される URL を**ブラウザのある端末（Mac）で開く**。Google（`ojos.jp`）で認証すると、
+**トークンは Mac ではなくコンテナの `~/.cloudflared/` へ届く**（要求を出したのがコンテナだから）。
+
+```bash
+ssh dev01
+```
+
+**秘密鍵はコンテナに置かない。** VS Code が SSH agent を転送しているので、
+`ssh-add -l` に鍵が見えていれば足りる。
 
 ---
 
@@ -304,7 +331,7 @@ sudo systemctl start cloudflared
 
 1. 2 本目のトンネル（B）を宣言して apply。**この時点では誰も B を向いていない。**
 2. dev01 で 2 つ目の `cloudflared` を B のトークンで常駐させる（A は動いたまま）。
-3. `ssh.dev01.ojos.jp` の CNAME の向き先を B の id へ変える（宣言の 1 行）。
+3. `dev01-ssh.ojos.jp` の CNAME の向き先を B の id へ変える（宣言の 1 行）。
 4. A の ingress から SSH の規則を外す。
 
 **チャットの口は一度も触らない。** SSH の口も、公開側の答え（Cloudflare の anycast IP）が
@@ -346,5 +373,16 @@ sudo systemctl start cloudflared
 | 2026-09-23 | DNS の実解決（1.1.1.1） | 2 本とも Cloudflare の anycast（`104.21.82.204` / `172.67.162.223`）。**プロキシ有りが効いている** |
 | 2026-09-23 | **Access の実測** | サービストークン**無し → 401**（Access が止めた）、**有り → 530**（Access は通り、**コネクタがいない**。dev01 が未設定なので正しい）。**この 2 つの違いが、認可が効いていることの証拠である** |
 
-**次は dev01 側**（上の「dev01 側の手順」）。cloudflared を常駐させると 530 が消え、
-外部層の検査 3 つが緑になるはずである。
+| 2026-09-23 | dev01 に Ollama と cloudflared を入れ、トークンでサービス登録 | **`status: inactive` → `healthy`（コネクタ 4 本）。** NVIDIA GPU が認識された（XPS 15 7590） |
+| 2026-09-23 | **`llm.ojos.jp` の通し確認** | **トークン有りで 200・`{"models":[]}`**（530 から変わった）／無しで 401。**インターネットを回り、Access を通り、dev01 の localhost:11434 が答えた** |
+| 2026-09-23 | Mac から `cloudflared access ssh` | **`remote error: tls: handshake failure`。** 原因は**証明書**——Universal SSL（Free）は `ojos.jp` と `*.ojos.jp` しか持たず、`ssh.dev01.ojos.jp` は `*.dev01.ojos.jp` を要求する。`openssl s_client` で、`llm.ojos.jp` は `CN=ojos.jp` で通り、2 段の名前だけが落ちることを確かめた |
+| 2026-09-23 | **`ssh.dev01.ojos.jp` → `dev01-ssh.ojos.jp` へ改名** | apply は **0 追加・3 変更・0 削除**（DNS・Access のアプリ・ingress）。新しい名前で証明書が付き、未認証の要求は **3 回とも 302**（飛び先は Access のログイン。`auth_status: NONE`） |
+| 2026-09-23 | Mac から `ssh dev01-ssh.ojos.jp` | **接続成功。** ブラウザで Google（`ido@ojos.jp`）の認証を 1 回通った |
+| 2026-09-23 | devcontainer から `ssh dev01` | **接続成功**（`XPS-15-7590` / `ido`）。Access のトークンの中身が `email: ido@ojos.jp` / `policy_id: 50ad7bcc-…`（`dev01_ssh_operator`）で、**どのポリシーが通したかまで確かめられた**。認証は**転送された SSH agent** の鍵で、コンテナに秘密鍵は置いていない |
+
+**残っている宿題。**
+
+1. **接続トークンの回転。** 2026-09-23 に**チャットへ全文が貼られた**ため、秘密として扱えない。
+   `terraform apply -replace=cloudflare_zero_trust_tunnel_cloudflared.dev01` と、dev01 での入れ直し 1 回。
+2. **外部層の検査を通す**（`VERIFY_ACCEPTANCE=... bash scripts/verify.sh`）。
+3. **PR の作成**（#775 のマージ後）。

@@ -10,7 +10,7 @@
  * | 公開ホスト名 | 向き先 | 誰が通るか |
  * |---|---|---|
  * | llm.ojos.jp | http://localhost:11434（Ollama） | エッジ（サービストークン。人ではない） |
- * | ssh.dev01.ojos.jp | ssh://localhost:22 | 運営（Google Workspace の本人） |
+ * | dev01-ssh.ojos.jp | ssh://localhost:22 | 運営（Google Workspace の本人） |
  *
  * **1 本にまとめた理由**（2026-09-23 の決定。#792 の経緯 2）。分離の主目的である認証は
  * Access のアプリ（ホスト名単位）で達成でき、トンネルの本数では変わらない。残る差の
@@ -24,8 +24,9 @@
  *
  * - **製品の口には機械名を入れない**（`llm.ojos.jp`）。機械を替えたときに、呼ぶ側を
  *   書き換えずに済ませるため。
- * - **機械の口は機械ごとの部分木に置く**（`ssh.dev01.ojos.jp`）。同じ機械に口を足すときは
- *   `<口>.dev01.ojos.jp` として同じ木へ下げる。2 台目は `ssh.dev02.ojos.jp` になる。
+ * - **機械の口は機械名を先に綴る**（`dev01-ssh.ojos.jp`）。同じ機械に口を足すときは
+ *   `dev01-<口>.ojos.jp` と並べる。2 台目は `dev02-ssh.ojos.jp` になる。
+ *   **部分木（`ssh.dev01.ojos.jp`）にしないのは証明書の制約による**（下の locals の注記）。
  * - **`llm` は段 C2（#775）の後に `llm.game-forge.ojos.jp` へ寄せる予定**（別 issue）。
  *   いま `game-forge.ojos.jp` の下に置けないのは、その部分木が Route 53 へ委譲中で
  *   外から引けないためである。**チャットをつなぐのは M22-3（計測の後）なので、
@@ -37,8 +38,19 @@ locals {
   dev01_machine_name = "dev01"
 
   # ゾーン名から導く（dns.tf の app_host と同じ理由。書き写すと片方だけ古くなる）。
+  #
+  # **機械の口をラベル 1 段に収めるのは、証明書の制約による**（2026-09-23 に実測）。
+  # Cloudflare の Universal SSL（Free）が持つのは `ojos.jp` と `*.ojos.jp` だけで、
+  # `ssh.dev01.ojos.jp` は `*.dev01.ojos.jp` を要求する。**証明書が無いので TLS の
+  # handshake が失敗し、cloudflared access ssh が `remote error: tls: handshake failure`
+  # で止まる**（`llm.ojos.jp` は 1 段なので通った）。2 段の部分木を使うには Advanced
+  # Certificate Manager（月 $10）が要る。**この 1 点のために固定費を背負わない。**
+  #
+  # したがって機械の口は `<機械名>-<口>` で綴る。**機械名を先に置く**ので、一覧を並べた
+  # ときに dev01-ssh / dev01-runner のように機械ごとに隣り合う（部分木でやりたかったこと
+  # が、区切り文字で残る）。2 台目は dev02-ssh になる。
   llm_host       = "llm.${cloudflare_zone.ojos_jp.name}"
-  dev01_ssh_host = "ssh.${local.dev01_machine_name}.${cloudflare_zone.ojos_jp.name}"
+  dev01_ssh_host = "${local.dev01_machine_name}-ssh.${cloudflare_zone.ojos_jp.name}"
 
   # dev01 の中での向き先。cloudflared は同じ機械の中から繋ぐので localhost でよい
   # （**ここが外から見えないことが、この構成の眼目である**。dev01 はポートを 1 つも開けない）。

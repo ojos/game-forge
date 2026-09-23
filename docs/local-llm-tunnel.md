@@ -376,22 +376,17 @@ sudo systemctl start cloudflared
 | 2026-09-23 | リダイレクト URI の照合 | `output` と Console に登録した値が一致（`https://ojos-jp.cloudflareaccess.com/cdn-cgi/access/callback`） |
 | 2026-09-23 | DNS の実解決（1.1.1.1） | 2 本とも Cloudflare の anycast（`104.21.82.204` / `172.67.162.223`）。**プロキシ有りが効いている** |
 | 2026-09-23 | **Access の実測** | サービストークン**無し → 401**（Access が止めた）、**有り → 530**（Access は通り、**コネクタがいない**。dev01 が未設定なので正しい）。**この 2 つの違いが、認可が効いていることの証拠である** |
-
 | 2026-09-23 | dev01 に Ollama と cloudflared を入れ、トークンでサービス登録 | **`status: inactive` → `healthy`（コネクタ 4 本）。** NVIDIA GPU が認識された（XPS 15 7590） |
 | 2026-09-23 | **`llm01.ojos.jp` の通し確認** | **トークン有りで 200・`{"models":[]}`**（530 から変わった）／無しで 401。**インターネットを回り、Access を通り、dev01 の localhost:11434 が答えた** |
 | 2026-09-23 | Mac から `cloudflared access ssh` | **`remote error: tls: handshake failure`。** 原因は**証明書**——Universal SSL（Free）は `ojos.jp` と `*.ojos.jp` しか持たず、`ssh.dev01.ojos.jp` は `*.dev01.ojos.jp` を要求する。`openssl s_client` で、`llm.ojos.jp` は `CN=ojos.jp` で通り、2 段の名前だけが落ちることを確かめた |
 | 2026-09-23 | **`ssh.dev01.ojos.jp` → `dev01-ssh.ojos.jp` へ改名** | apply は **0 追加・3 変更・0 削除**（DNS・Access のアプリ・ingress）。新しい名前で証明書が付き、未認証の要求は **3 回とも 302**（飛び先は Access のログイン。`auth_status: NONE`） |
 | 2026-09-23 | Mac から `ssh dev01-ssh.ojos.jp` | **接続成功。** ブラウザで Google（`ido@ojos.jp`）の認証を 1 回通った |
 | 2026-09-23 | devcontainer から `ssh dev01` | **接続成功**（`XPS-15-7590` / `ido`）。Access のトークンの中身が `email: ido@ojos.jp` / `policy_id: 50ad7bcc-…`（`dev01_ssh_operator`）で、**どのポリシーが通したかまで確かめられた**。認証は**転送された SSH agent** の鍵で、コンテナに秘密鍵は置いていない |
-
 | 2026-09-23 | 外部層の検査を通した（`scripts/acceptance-remote.sh`） | **失敗 2 件。**（a）`pages custom domain records match` — **#775 の段 C2 が未了**で、`game-forge.ojos.jp` に委譲の NS が残っているため。**この issue の範囲外で、09-28 以降に解消する。**（b）`dev01 tunnel is healthy and ingress matches` — **検査側のバグ**（下記）。**`tunnel dns records` と `tunnel access applications` は緑** |
 | 2026-09-23 | 検査のバグを直した | **Cloudflare の API は ingress を camelCase で返す**（`originRequest` / `audTag`）。宣言側（terraform のスキーマ）は snake_case なので、綴りを写した jq が**必ず空を読み、設定が入っているのに「無い」と報告していた**。実物は `required: true` で `audTag` もアプリの `aud` と一致していた |
-
 | 2026-09-23 | **接続トークンを回した**（チャットへ全文が貼られたため） | `-replace` で作り直し。**2 追加・2 変更・2 削除**（DNS 2 本は宣言が追随）。旧 `9012deb9-…` は `deleted_at: 14:12:47Z`、新 `e57dd396-…`。**コネクタが繋がったままでは削除できない**——1 回目は ingress だけ消えて止まり、`llm` が一時的に落ちた（戻して 200 を確認）。**「外す → 作り直す → 新しいトークンで入れる」の順が要る** |
 | 2026-09-23 | 回転後の通し確認 | トンネル `healthy`（4 本）／`llm.ojos.jp` は無しで 401・有りで 200／devcontainer から `ssh dev01` 成功。**Access のトークンはアプリ側に紐づくので、トンネルを作り直しても再認証は要らなかった** |
-
 | 2026-09-23 | 外部層の検査を回し直した（回転後・検査の修正後） | **トンネル関連の 3 つとも緑。** 残る失敗は `pages custom domain records match` の 1 件で、**#775 の段 C2 が未了**であることによる（この issue の範囲外） |
-
 | 2026-09-23 | **`llm.ojos.jp` → `llm01.ojos.jp` へ改名**（同じ用途の口が増えうるため） | 宣言側のラベルと output も `llm01` へ揃え、**`moved` ブロックで作り直しを避けた**（plan は 0 追加・5 変更・0 削除）。**直後の 1 回だけ、トークン有りで 403 が返った**——Access のアプリとポリシーの更新の反映待ちで、数秒後から 3 回とも 200。無しは 3 回とも 401 |
 
 **残っている宿題。**

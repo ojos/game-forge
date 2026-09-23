@@ -922,3 +922,53 @@ output "gcp_ops_project_number" {
   EOT
   value       = google_project.ojos_ops.number
 }
+
+/**
+ * 認可の実体を、外部層の検査が突き合わせるための値（#792。Copilot の指摘）。
+ *
+ * **識別子の「有無」ではなく「同一性」を見せるためにある。** これらが無いと、検査は
+ * 「サービストークンで通している」「Google で通している」という**形**までしか見られず、
+ * **別のトークン・別の IdP へ差し替えられても緑のまま通る**（実際そうなっていた）。
+ */
+
+output "dev01_ingress" {
+  description = <<-EOT
+    dev01 の ingress の宣言を、`<ホスト名>=<向き先>` の並びで表したもの
+    （受け皿はホスト名が無いので `-`）。**並びは辞書順に揃えてある**——API の返す順に
+    依存しない形で、検査が丸ごと突き合わせられるようにするためである。
+
+    **ホスト名だけを見る検査では足りない。** 向き先だけをダッシュボードで書き換えられると、
+    ホスト名の一覧は変わらないまま、要求が別のところへ流れる。
+  EOT
+  value = join(" ", sort([
+    for rule in cloudflare_zero_trust_tunnel_cloudflared_config.dev01.config.ingress :
+    "${try(rule.hostname, null) == null ? "-" : rule.hostname}=${rule.service}"
+  ]))
+}
+
+output "llm01_service_token_id" {
+  description = <<-EOT
+    llm01 の口を通すサービストークンの識別子。**ポリシーが名指ししている先**であり、
+    検査はこの値と実際のポリシーの `service_token.token_id` を突き合わせる。
+    client_secret とは別物で、機密ではない。
+  EOT
+  value       = cloudflare_zero_trust_access_service_token.edge_to_llm01.id
+}
+
+output "zero_trust_google_idp_id" {
+  description = <<-EOT
+    Google Workspace の ID プロバイダの識別子。SSH の口のアプリ（`allowed_idps`）と
+    ポリシー（`require` の `login_method`）の両方がこれを指す。
+  EOT
+  value       = cloudflare_zero_trust_access_identity_provider.google_workspace.id
+}
+
+output "zero_trust_operator_emails" {
+  description = <<-EOT
+    SSH の口へ入れる人のメールアドレス（辞書順・空白区切り）。**個人のアドレスだが、
+    これは宣言が既に持っている値である**（var.zero_trust_operator_emails）。output に
+    出すのは、検査が「誰を通しているか」まで突き合わせられるようにするためで、
+    **リポジトリには現れない**（tfvars は追跡外）。
+  EOT
+  value       = join(" ", sort(var.zero_trust_operator_emails))
+}

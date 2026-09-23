@@ -2144,14 +2144,21 @@ check_dev01_tunnel() {
 
   body="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/${tunnel_id}/configurations")" || return 1
 
-  local actual_hosts expected_hosts
-  actual_hosts="$(jq -r '[.result.config.ingress[] | select(.hostname != null) | .hostname] | sort | join(" ")' <<<"$body")"
-  expected_hosts="$(printf '%s\n%s\n' "$llm_host" "$ssh_host" | sort | tr '\n' ' ')"
-  expected_hosts="${expected_hosts% }"
-  if [[ "$actual_hosts" != "$expected_hosts" ]]; then
-    echo "ingress の公開ホスト名が宣言と一致しません。"
-    echo "  宣言 : ${expected_hosts}"
-    echo "  実際 : ${actual_hosts}"
+  # **ホスト名だけを見ない（#793 の Copilot の指摘）。** 向き先（service）を
+  # ダッシュボードで書き換えられると、ホスト名の一覧は変わらないまま要求が別のところへ
+  # 流れる。規則を丸ごと（`<ホスト名>=<向き先>` の辞書順の並び）突き合わせるので、
+  # **余計な規則を足された場合もここで落ちる。**
+  local actual_ingress expected_ingress
+  actual_ingress="$(jq -r '[.result.config.ingress[] | "\(.hostname // "-")=\(.service)"] | sort | join(" ")' <<<"$body")"
+  expected_ingress="$(tf_output dev01_ingress)" || return 1
+  if [[ -z "$expected_ingress" ]]; then
+    echo "terraform output dev01_ingress が空です。apply 済みか確認すること。"
+    return 1
+  fi
+  if [[ "$actual_ingress" != "$expected_ingress" ]]; then
+    echo "ingress が宣言と一致しません（ホスト名・向き先・規則の数のいずれか）。"
+    echo "  宣言 : ${expected_ingress}"
+    echo "  実際 : ${actual_ingress}"
     rc=1
   fi
 
@@ -2182,15 +2189,21 @@ check_dev01_tunnel() {
     rc=1
   fi
 
+  # **欠落も不一致として扱う（#793 の Copilot の指摘）。** 以前は `-n "$app_aud"` を
+  # 付けており、**アプリが引けないと検査そのものが黙って省略された**——「aud を
+  # 確かめた」と「aud を確かめられなかった」が同じ緑になる。
   app_aud="$(cf_access_app_field "$llm_host" '.aud')" || return 1
-  if [[ -n "$app_aud" && "$aud_tag" != "$app_aud" ]]; then
+  if [[ -z "$app_aud" ]]; then
+    echo "${llm_host} の Access アプリから aud を取得できません（アプリが無い可能性）。"
+    rc=1
+  elif [[ "$aud_tag" != "$app_aud" ]]; then
     echo "llm01 の口の aud_tag が Access アプリと一致しません。"
     echo "  アプリ : ${app_aud}"
     echo "  ingress: ${aud_tag:-(空)}"
     rc=1
   fi
 
-  [[ $rc -eq 0 ]] && echo "tunnel ${tunnel_id} is healthy; ingress: ${actual_hosts}"
+  [[ $rc -eq 0 ]] && echo "tunnel ${tunnel_id} is healthy; ingress: ${actual_ingress}"
   return $rc
 }
 
@@ -2274,6 +2287,19 @@ check_tunnel_access_applications() {
   llm_host="${llm_host#https://}"
   ssh_host="$(tf_output dev01_ssh_host)" || return 1
 
+  # **「形」ではなく「同一性」を見る（#793 の Copilot の指摘）。** 以前は
+  # include / require に**どの種類の条件が在るか**しか見ておらず、**別のサービストークンや
+  # 別の IdP へ差し替えられても `non_identity service_token` のまま緑だった。**
+  # 宣言が持つ識別子と突き合わせる。
+  local declared_token_id declared_idp_id declared_emails
+  declared_token_id="$(tf_output llm01_service_token_id)" || return 1
+  declared_idp_id="$(tf_output zero_trust_google_idp_id)" || return 1
+  declared_emails="$(tf_output zero_trust_operator_emails)" || return 1
+  if [[ -z "$declared_token_id" || -z "$declared_idp_id" || -z "$declared_emails" ]]; then
+    echo "terraform output から認可の宣言値を取得できません。apply 済みか確認すること。"
+    return 1
+  fi
+
   body="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps")" || return 1
 
   local host expected_decision expected_include expected_require app_id count decisions includes requires
@@ -2317,6 +2343,42 @@ check_tunnel_access_applications() {
     if [[ "$requires" != "$expected_require" ]]; then
       echo "${host} のポリシーの必須条件が宣言と一致しません: expected=${expected_require:-(無し)} actual=${requires:-(無し)}"
       rc=1
+    fi
+
+    # 条件の「中身」を突き合わせる。**ここが無いと、差し替えが素通りする。**
+    local actual_tokens actual_emails actual_logins actual_idps
+    if [[ "$host" == "$llm_host" ]]; then
+      actual_tokens="$(jq -r '[.result[].include[] | .service_token.token_id // empty] | unique | join(" ")' <<<"$policies")"
+      if [[ "$actual_tokens" != "$declared_token_id" ]]; then
+        echo "${host} を通すサービストークンが宣言と一致しません。"
+        echo "  宣言 : ${declared_token_id}"
+        echo "  実際 : ${actual_tokens:-(無し)}"
+        rc=1
+      fi
+    else
+      actual_emails="$(jq -r '[.result[].include[] | .email.email // empty] | sort | join(" ")' <<<"$policies")"
+      if [[ "$actual_emails" != "$declared_emails" ]]; then
+        echo "${host} へ入れる人が宣言と一致しません。"
+        echo "  宣言 : ${declared_emails}"
+        echo "  実際 : ${actual_emails:-(無し)}"
+        rc=1
+      fi
+      actual_logins="$(jq -r '[.result[].require // [] | .[] | .login_method.id // empty] | unique | join(" ")' <<<"$policies")"
+      if [[ "$actual_logins" != "$declared_idp_id" ]]; then
+        echo "${host} が必須にしている認証の経路が宣言と一致しません。"
+        echo "  宣言 : ${declared_idp_id}"
+        echo "  実際 : ${actual_logins:-(無し)}"
+        rc=1
+      fi
+      # アプリ側の入口（allowed_idps）も見る。ポリシーだけを縛っても、
+      # **入口が開いていれば別の IdP でログインの画面までは進める。**
+      actual_idps="$(jq -r --arg h "$host" '[.result[] | select(.domain == $h)] | .[0].allowed_idps // [] | sort | join(" ")' <<<"$body")"
+      if [[ "$actual_idps" != "$declared_idp_id" ]]; then
+        echo "${host} のアプリが許す ID プロバイダが宣言と一致しません。"
+        echo "  宣言 : ${declared_idp_id}"
+        echo "  実際 : ${actual_idps:-(無し)}"
+        rc=1
+      fi
     fi
   done
 

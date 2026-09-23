@@ -54,6 +54,17 @@ resource "cloudflare_zero_trust_organization" "ojos" {
   name             = "ojos"
   auth_domain      = "${var.cloudflare_zero_trust_team_name}.cloudflareaccess.com"
   session_duration = "24h"
+
+  # **消えると Access のアプリが全部道連れになる。**
+  #
+  # これはアカウント全体の設定で、取り込み（import）で持ってきたものである。
+  # 宣言から外す・destroy を回す、のどちらでも消えうるのに、**消えたことは
+  # 「ログインできない」という形でしか現れない**（Access は「IdP が壊れた」としか言わない）。
+  # `ojos.jp` のゾーン（dns-ojos-jp.tf）と GCP のプロジェクト（gcp.tf の deletion_policy）に
+  # 同じ守りを置いてあるのと同じ理由で、**意図した破壊には明示の操作を伴わせる**。
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 /**

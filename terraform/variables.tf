@@ -426,6 +426,14 @@ variable "gcp_ops_project_id" {
   EOT
   type        = string
   default     = "ojos-ops"
+
+  # GCP の規則（英小文字で始まり、英小文字・数字・ハイフンで 6〜30 文字、末尾はハイフン不可）。
+  # **plan の前に落とすためにある。** 形式違反は apply の途中で GCP が拒むので、
+  # そこまで行くと「何件か作った後で止まる」状態になる。
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.gcp_ops_project_id))
+    error_message = "gcp_ops_project_id は英小文字で始まり、英小文字・数字・ハイフンのみの 6〜30 文字で、末尾をハイフンにできません。"
+  }
 }
 
 variable "gcp_ops_project_name" {

@@ -23,7 +23,7 @@
 | 要素 | 値 / 置き場 |
 |---|---|
 | トンネル | `terraform/tunnel-dev01.tf` の `cloudflare_zero_trust_tunnel_cloudflared.dev01`（**遠隔管理**。ingress の正本は宣言） |
-| DNS | 同ファイルの `cloudflare_dns_record.llm` / `.dev01_ssh`（**どちらもプロキシ有り**） |
+| DNS | 同ファイルの `cloudflare_dns_record.llm01` / `.dev01_ssh`（**どちらもプロキシ有り**） |
 | チームドメイン・ID プロバイダ | `terraform/zero-trust.tf`（アカウント全体。機械には属さない） |
 | 外部層の検査 | `scripts/acceptance-remote.sh` の `check_dev01_tunnel` / `check_tunnel_dns_records` / `check_tunnel_access_applications` |
 | 接続トークン | `terraform output -raw dev01_tunnel_token`（**機密**。リポジトリのどこにも書き写さない） |
@@ -280,8 +280,23 @@ cloudflared access login https://dev01-ssh.ojos.jp
 ssh dev01
 ```
 
-**秘密鍵はコンテナに置かない。** VS Code が SSH agent を転送しているので、
-`ssh-add -l` に鍵が見えていれば足りる。
+**秘密鍵はコンテナに置かない。** VS Code の Dev Containers が**ホストの SSH agent を
+自動で転送する**ので（`SSH_AUTH_SOCK` が `/tmp/vscode-ssh-auth-*.sock` を指す）、
+`devcontainer.json` にマウントの宣言は要らない。
+
+**ただし前提がある——ホスト側の agent に鍵が載っていること。**
+
+```bash
+ssh-add -l        # コンテナの中で。鍵が見えなければ、ホストで ssh-add する
+```
+
+空なら、**Mac 側で** `ssh-add --apple-use-keychain ~/.ssh/id_ed25519_ojos` を実行してから
+コンテナへ入り直す。**ここが空のまま `ssh dev01` を叩くと `Permission denied (publickey)`
+になる**——トンネルや Access の問題に見えるが、原因は手元の agent である。
+
+**コンテナを作り直すと、Access のトークン（`~/.cloudflared/`）は消える。**
+`cloudflared` と `~/.ssh/config` は `postCreateCommand` が戻すが、**認証だけは
+もう一度 `cloudflared access login` を対話で通す**必要がある。
 
 ---
 
@@ -391,8 +406,12 @@ sudo systemctl start cloudflared
 
 **残っている宿題。**
 
-1. **PR の作成**（#775 のマージ後。段 C2 は 09-28 16:25 JST 以降）。
-2. **プライマリのツリーを `main` へ戻す**（PR がマージされてから。いま戻すと、宣言が
-   state より足りず `terraform plan` に削除の差分が出る）。
+1. **PR #793 の base の付け替えを見届けてマージする。** **PR は既に出してある**——
+   base は `main` ではなく `infra/775-ojos-jp-cloudflare-dns` である（`main` を base に
+   すると #775 の差分ごと取り込む形になり、段 C2 を待つ #775 を先に通すことになる）。
+   **#775 が `main` へマージされた時点で、GitHub がこの PR の base を `main` へ
+   付け替える。** そこで CI を見直してマージする。**新しい PR を作り直さないこと。**
+2. **プライマリのツリーを `main` へ戻す**（#775 と #793 がマージされてから。いま戻すと、
+   宣言が state より足りず `terraform plan` に削除の差分が出る）。
 
 **済んだもの。** 接続トークンの回転（上の記録）、外部層の検査（同）。

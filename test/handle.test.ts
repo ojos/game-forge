@@ -246,6 +246,54 @@ describe('予約語は経路表から導く（#381 の acceptance 1）', () => {
   });
 });
 
+describe('運営と紛らわしい名前を弾く（#778）', () => {
+  /** 経路から導く語を空にした集合。**接頭辞の判定が検査そのものに入っていること**を、導出と切り離して見る。 */
+  const none: ReadonlySet<string> = new Set();
+
+  it('運営のハンドル名に寄せた綴りは、経路由来の予約語が空でも断る', () => {
+    for (const raw of [
+      'gameforgejp', // 区切りを外した綴り
+      'gameforge_jp', // 運営が持っているもの
+      'gameforge2026', // 運営がプロフィールで公開している X のアカウント名
+      'gameforge_news',
+      'game_forgejp',
+      'GameForge_JP', // 小文字にした後に判定する
+      '@gameforge_official', // 先頭の @ を外した後に判定する
+    ]) {
+      expect(validateHandle(raw, none), raw).toEqual({ ok: false, reason: 'handle-reserved' });
+    }
+  });
+
+  it('接頭辞は先頭でだけ効く（途中に含むだけの名前は通る）', () => {
+    expect(validateHandle('mygameforge', none)).toEqual({ ok: true, value: 'mygameforge' });
+    expect(validateHandle('i_love_gameforge', none)).toEqual({ ok: true, value: 'i_love_gameforge' });
+  });
+
+  it('ロゴの語（forge / anvil）は完全一致で断り、それを含む名前は通す', () => {
+    const reserved = appReservedHandles(env);
+    for (const word of ['forge', 'anvil', 'FORGE', 'Anvil']) {
+      expect(validateHandle(word, reserved), word).toEqual({ ok: false, reason: 'handle-reserved' });
+    }
+    expect(validateHandle('forge_fan', reserved)).toEqual({ ok: true, value: 'forge_fan' });
+    expect(validateHandle('anvil_works', reserved)).toEqual({ ok: true, value: 'anvil_works' });
+  });
+
+  it('保存済みのハンドル名は再検査されない（運営の gameforge_jp は取り上げられない）', async () => {
+    const operator = await seedUser();
+    await env.DB.prepare('update users set is_operator = 1 where id = ?').bind(operator).run();
+    expect(await changeHandle(env.DB, operator, 'gameforge_jp', NOW)).toEqual({ ok: true, changed: true });
+    expect(await currentHandleOf(env.DB, operator)).toEqual({ handle: 'gameforge_jp', claimedAt: NOW });
+    // **印が立っていても、画面から入れ直す経路（`src/account-handle.ts`）は検査を通る。**
+    // `is_operator` を見て通す例外は作っていない（`HAND_WRITTEN_RESERVED_PREFIXES` の注記）。
+    expect(validateHandle('gameforge_jp', appReservedHandles(env))).toEqual({
+      ok: false,
+      reason: 'handle-reserved',
+    });
+    const row = await env.DB.prepare('select is_operator from users where id = ?').bind(operator).first();
+    expect(row).toEqual({ is_operator: 1 });
+  });
+});
+
 describe('ハンドル名の保存（5.10）', () => {
   it('初めて決めると、いま使っている行と履歴が 1 行ずつ入る', async () => {
     const userId = await seedUser();

@@ -13,7 +13,8 @@ export function renderVariant(v) {
   const width = v.width ?? gw;
   const height = v.height ?? gh;
   if (gw > width || gh > height) throw new Error(`${v.path}: 格子（${gw}×${gh}）が画像（${width}×${height}）に収まらない`);
-  const ox = Math.floor((width - gw) / 2);
+  const ox = v.left ?? Math.floor((width - gw) / 2);
+  if (ox < 0 || ox + gw > width) throw new Error(`${v.path}: 格子の左端 ${ox} では画像（幅 ${width}）からはみ出す`);
   const oy = Math.floor((height - gh) / 2);
   const ground = v.ground === 'transparent' ? 'transparent' : COLORS[v.ground];
   const palette = [ground, v.ink === 'light' ? COLORS.inkOnLight : COLORS.inkOnDark, COLORS.amber];

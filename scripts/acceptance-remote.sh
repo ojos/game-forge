@@ -2272,15 +2272,19 @@ check_tunnel_access_applications() {
 
   body="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps")" || return 1
 
-  local host expected_decision expected_include app_id count decisions includes
+  local host expected_decision expected_include expected_require app_id count decisions includes requires
   # llm の口 = 人ではない呼び出し元（サービストークン）、ssh の口 = 人（Google Workspace）。
   for host in "$llm_host" "$ssh_host"; do
     if [[ "$host" == "$llm_host" ]]; then
       expected_decision="non_identity"
       expected_include="service_token"
+      expected_require=""
     else
       expected_decision="allow"
-      expected_include="gsuite"
+      expected_include="email"
+      # **認証の経路も縛れていることを見る。** email だけだと、同じアドレスが
+      # 組み込みのワンタイム PIN で名乗っても通る（terraform/tunnel-dev01.tf の注記）。
+      expected_require="login_method"
     fi
 
     count="$(jq -r --arg h "$host" '[.result[] | select(.domain == $h)] | length' <<<"$body")"
@@ -2296,6 +2300,7 @@ check_tunnel_access_applications() {
     policies="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps/${app_id}/policies")" || return 1
     decisions="$(jq -r '[.result[].decision] | sort | join(" ")' <<<"$policies")"
     includes="$(jq -r '[.result[].include[] | keys[]] | unique | join(" ")' <<<"$policies")"
+    requires="$(jq -r '[.result[].require // [] | .[] | keys[]] | unique | join(" ")' <<<"$policies")"
 
     if [[ "$decisions" != "$expected_decision" ]]; then
       echo "${host} のポリシーの決定が宣言と一致しません: expected=${expected_decision} actual=${decisions:-(無し)}"
@@ -2303,6 +2308,10 @@ check_tunnel_access_applications() {
     fi
     if [[ "$includes" != "$expected_include" ]]; then
       echo "${host} のポリシーの条件が宣言と一致しません: expected=${expected_include} actual=${includes:-(無し)}"
+      rc=1
+    fi
+    if [[ "$requires" != "$expected_require" ]]; then
+      echo "${host} のポリシーの必須条件が宣言と一致しません: expected=${expected_require:-(無し)} actual=${requires:-(無し)}"
       rc=1
     fi
   done

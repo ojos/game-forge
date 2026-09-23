@@ -196,11 +196,21 @@ resource "cloudflare_zero_trust_access_application" "llm" {
 }
 
 /**
- * SSH の口のポリシー。**Google Workspace の、名指しした本人だけ**を通す。
+ * SSH の口のポリシー。**名指しした本人が、Google Workspace で認証したときだけ**通す。
  *
  * `email_domain = ojos.jp` で足りるように見えるが採らない。**Workspace の
  * ドメインに属する誰か**ではなく、**この機械へ入ってよい人**を宣言したいためである
  * （いまは 1 人でも、増えるときに宣言が増えることに意味がある）。
+ *
+ * **`gsuite` の include は使えない（2026-09-23 に実測）。** あれは Google Workspace の
+ * **グループ**を指す選択子で、`email` にグループのアドレスを取る。個人のアドレスを渡すと
+ * Cloudflare が 500（`access.api.error.internal_server_error`）を返し、**エラーの本文は
+ * 理由を一言も言わない**（2 回再現した）。個人を名指しするのは `email` の側である。
+ *
+ * **`email` だけでは「誰で入ったか」を縛れない**ので、`require` で認証の経路も縛る。
+ * 同じアドレスがワンタイム PIN（組み込みの IdP）でも名乗れてしまうためである。
+ * アプリ側の `allowed_idps` と二重になるが、**ポリシーは account 単位で再利用できる**以上、
+ * ポリシー自身が条件を言い切れているべきである。
  */
 resource "cloudflare_zero_trust_access_policy" "dev01_ssh_operator" {
   account_id       = var.cloudflare_account_id
@@ -210,11 +220,18 @@ resource "cloudflare_zero_trust_access_policy" "dev01_ssh_operator" {
 
   include = [
     for email in var.zero_trust_operator_emails : {
-      gsuite = {
-        email                = email
-        identity_provider_id = cloudflare_zero_trust_access_identity_provider.google_workspace.id
+      email = {
+        email = email
       }
     }
+  ]
+
+  require = [
+    {
+      login_method = {
+        id = cloudflare_zero_trust_access_identity_provider.google_workspace.id
+      }
+    },
   ]
 }
 

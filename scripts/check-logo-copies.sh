@@ -18,6 +18,10 @@
 #   2. `public/assets/logo/` に、上の一覧に無い画像が残っていない（使わない画像を配らない）
 #   3. 1 倍の画像の実寸が、`src/html.ts` の `LOGO_WIDTH` × `LOGO_HEIGHT` と一致する
 #      （HTML の `width` / `height` がずれると、ドットが整数倍でなく引き伸ばされる。`docs/logo.md` 3 章）
+#   4. トップの `og:image`（`src/html.ts` の `SOCIAL_OGP_PATH`）の写しが `brand/logo/social/` の
+#      同名の画像とバイト単位で一致し、その実寸が `src/ogp.ts` の `OGP_IMAGE_WIDTH` ×
+#      `OGP_IMAGE_HEIGHT` と一致する（#786）。**HTML は `og:image:width` / `og:image:height` に
+#      その定数を出す**ので、ずれると「宣言した寸法と違う画像」を外へ配ることになる
 #
 # 使い方:
 #   bash scripts/check-logo-copies.sh
@@ -92,4 +96,33 @@ if [[ "$actual_width" != "$width" || "$actual_height" != "$height" ]]; then
 fi
 
 echo "[logo-copies] 倍率 [${scales}] × 明暗の $(printf '%s\n' $expected | wc -l | tr -d ' ') 枚が正本と一致し、1 倍の実寸は ${width}×${height} です"
+
+# --- トップの og:image（#786）------------------------------------------------
+#
+# **綴りは `src/html.ts` の `SOCIAL_OGP_PATH` から導く**（上の `LOGO_DIR` と同じ理由。
+# 固定の綴りにすると、パスを変えた日に配っていないファイルを照合し続けて合格にする）。
+# 正本の側は `/assets/` を `brand/logo/` へ読み替えるだけで出る——写しの綴りを正本と
+# 同じにしてあるのは、この読み替えで照合できるようにするためである。
+social_path="$(grep -E "^export const SOCIAL_OGP_PATH = '/assets/[^']+';" "$HTML_TS" | sed -E "s/^[^']*'([^']+)'.*/\1/" || true)"
+[[ -n "$social_path" ]] || fail "$HTML_TS に SOCIAL_OGP_PATH（/assets/ 配下）が見つかりません"
+social_copy="public${social_path}"
+social_source="brand/logo/${social_path#/assets/}"
+[[ -f "$social_source" ]] || fail "正本がありません: $social_source（tools/logobake/variants.mjs の一覧を確かめてください）"
+[[ -f "$social_copy" ]] || fail "写しがありません: $social_copy（mkdir -p $(dirname "$social_copy") && cp $social_source $social_copy）"
+cmp -s "$social_source" "$social_copy" \
+  || fail "写しが正本と一致しません: $social_copy（書き出し直した正本を写し直してください: cp $social_source $social_copy）"
+
+# HTML が `og:image:width` / `og:image:height` に出す定数（`src/ogp.ts`）と実寸を突き合わせる。
+OGP_TS="src/ogp.ts"
+[[ -f "$OGP_TS" ]] || fail "照合の対象がありません: $OGP_TS（見ていないことを合格にしない）"
+ogp_width="$(grep -E '^export const OGP_IMAGE_WIDTH = [0-9]+;' "$OGP_TS" | sed -E 's/[^0-9]*([0-9]+);/\1/' || true)"
+ogp_height="$(grep -E '^export const OGP_IMAGE_HEIGHT = [0-9]+;' "$OGP_TS" | sed -E 's/[^0-9]*([0-9]+);/\1/' || true)"
+[[ -n "$ogp_width" && -n "$ogp_height" ]] || fail "$OGP_TS に OGP_IMAGE_WIDTH / OGP_IMAGE_HEIGHT が見つかりません"
+social_actual_width="$(png_uint32 "$social_copy" 16)"
+social_actual_height="$(png_uint32 "$social_copy" 20)"
+if [[ "$social_actual_width" != "$ogp_width" || "$social_actual_height" != "$ogp_height" ]]; then
+  fail "$social_copy の実寸（${social_actual_width}×${social_actual_height}）が OGP_IMAGE_WIDTH × OGP_IMAGE_HEIGHT（${ogp_width}×${ogp_height}）と一致しません"
+fi
+
+echo "[logo-copies] トップの og:image（${social_path}）が正本と一致し、実寸は ${social_actual_width}×${social_actual_height} です"
 echo "LOGO_COPIES_PASS"

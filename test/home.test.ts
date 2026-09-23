@@ -9,7 +9,9 @@ import {
   HOME_SORT_TITLES,
   OFFICIAL_SECTION_TITLE,
 } from '../src/home-feed.js';
+import { SOCIAL_OGP_PATH } from '../src/html.js';
 import { purgeListCache } from '../src/list-cache.js';
+import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH } from '../src/ogp.js';
 import { GENERATE_PAGE_PATH, INVITES_PATH, SIGNUP_PATH } from '../src/paths.js';
 import { MY_WORKS_PATH } from '../src/works-paths.js';
 import { findDuplicateRoutes } from '../src/routes.js';
@@ -432,5 +434,107 @@ describe('`/__dev/*` の本番遮断（#89）', () => {
       expect(devRoutesEnabled(envWithDevRoutes(value)), value).toBe(false);
     }
     expect(devRoutesEnabled(envWithDevRoutes('enabled'))).toBe(true);
+  });
+});
+
+/**
+ * トップの OGP（#786 / 仕様 11.2）。
+ *
+ * # なぜトップにも要るのか
+ *
+ * **作品ページには揃っているが、トップには 1 つも無かった**（2026-09-23 に本番で確認）。
+ * 運営の口座（note / OFUSE / X）からサイトを案内する起点はトップなので、貼っても
+ * 画像も題名も出ない素のリンクになっていた。
+ *
+ * # ここで見るもの
+ *
+ * **`SELF.fetch` は本番と同じ経路（`src/index.ts` の Host 振り分け）を通る**ので、
+ * acceptance の「curl でトップを取ると出る」をローカルで機械判定できる。
+ *
+ * **画像そのものが 200 で返ることは Pages の静的配信の側で決まる。** Worker の
+ * テストからは配れないので、代わりに 2 つを押さえる——**`_routes.json` の `exclude` に
+ * 入っていること**（外れると catch-all の Functions が 404 を返す。#266 の実測）と、
+ * **写しが正本と一致し実寸が宣言どおりであること**（`scripts/check-logo-copies.sh`）。
+ */
+describe('トップの OGP（#786 / 仕様 11.2）', () => {
+  /**
+   * `<meta>` の `content` を 1 つ取り出す。
+   *
+   * @param html 画面の HTML
+   * @param attribute 札の種類（`property` は OGP、`name` は twitter / description）
+   * @param key 札の名前
+   * @returns `content` の値。無ければ null
+   */
+  function metaOf(html: string, attribute: 'property' | 'name', key: string): string | null {
+    const found = new RegExp(`<meta ${attribute}="${key}" content="([^"]*)">`, 'u').exec(html);
+    return found === null ? null : found[1]!;
+  }
+
+  it('トップを取ると 7 種の札が出る（acceptance 1）', async () => {
+    const response = await SELF.fetch(`${APP_ORIGIN}${HOME_PATH}`);
+    expect(response.status).toBe(200);
+    const body = await response.text();
+
+    expect(metaOf(body, 'property', 'og:type')).toBe('website');
+    expect(metaOf(body, 'property', 'og:site_name')).toBe('Game Forge');
+    expect(metaOf(body, 'property', 'og:title')).toBe('Game Forge');
+    expect(metaOf(body, 'property', 'og:description')).not.toBeNull();
+    expect(metaOf(body, 'property', 'og:url')).toBe(`${APP_ORIGIN}/`);
+    expect(metaOf(body, 'property', 'og:image')).toBe(`${APP_ORIGIN}${SOCIAL_OGP_PATH}`);
+    expect(metaOf(body, 'name', 'twitter:card')).toBe('summary_large_image');
+  });
+
+  it('`og:image` の寸法が宣言と一致する（acceptance 2 のうち、寸法の側）', async () => {
+    const body = await openHome();
+    // **1200×630 をここへ書き写さない**（shared-ai-rules 12 章）。実装が出す値を、
+    // 作品ページが使うのと同じ定数と突き合わせる。画像の実寸との一致は
+    // `scripts/check-logo-copies.sh` が見る。
+    expect(metaOf(body, 'property', 'og:image:width')).toBe(String(OGP_IMAGE_WIDTH));
+    expect(metaOf(body, 'property', 'og:image:height')).toBe(String(OGP_IMAGE_HEIGHT));
+    // 綴りにも寸法が入っている（正本 `brand/logo/social/` の書き出し名をそのまま使っている）。
+    expect(SOCIAL_OGP_PATH).toContain(`${OGP_IMAGE_WIDTH}x${OGP_IMAGE_HEIGHT}`);
+  });
+
+  it('`og:image` が静的に配られる宣言になっている（acceptance 2 のうち、200 の側）', () => {
+    // **`functions/[[path]].ts` は catch-all である。** `exclude` から外れると、
+    // `public/` に実体があっても Pages は Functions へ流し、404 になる（#266 で実測）。
+    // `test/page-shell.test.ts` が app.css について見ているのと同じ検査である。
+    const routes = JSON.parse(env.TEST_ROUTES_JSON) as { exclude?: string[] };
+    const excluded = (routes.exclude ?? []).some((pattern) =>
+      pattern.endsWith('*')
+        ? SOCIAL_OGP_PATH.startsWith(pattern.slice(0, -1))
+        : pattern === SOCIAL_OGP_PATH,
+    );
+    expect(excluded, `${SOCIAL_OGP_PATH} が _routes.json の exclude に入っていません`).toBe(true);
+  });
+
+  it('`og:description` と `<meta name="description">` が同じ文である', async () => {
+    const body = await openHome();
+    const description = metaOf(body, 'name', 'description');
+    expect(description).not.toBeNull();
+    expect(metaOf(body, 'property', 'og:description')).toBe(description);
+  });
+
+  it('`og:url` と `og:image` が、要求したホストの絶対 URL になる', async () => {
+    // **スキームとホストは要求から借りる**（`src/ogp.ts` の `ogpImageUrl` と同じ）。
+    const response = await SELF.fetch(`${APP_ORIGIN}${HOME_PATH}`);
+    const body = await response.text();
+    for (const key of ['og:url', 'og:image']) {
+      const value = metaOf(body, 'property', key);
+      expect(value, key).not.toBeNull();
+      expect(new URL(value!).origin, key).toBe(APP_ORIGIN);
+    }
+  });
+
+  it('sandbox / admin のホストには出さない（#786 の constraints）', async () => {
+    // **公開トップは app ホストの経路表にしか無い**（`src/index.ts` が Host で振り分ける）。
+    // admin ホストの `/` は運営の画面（`src/admin-paths.ts` の `ADMIN_HOME_PATH`）である。
+    // **robots で全面拒否している面へ、拡散用の札を出さない。**
+    for (const origin of [`https://${env.SANDBOX_HOST}`, `https://${env.ADMIN_HOST}`]) {
+      const body = await (await SELF.fetch(`${origin}/`)).text();
+      expect(body, origin).not.toContain('og:');
+      expect(body, origin).not.toContain('twitter:card');
+      expect(body, origin).not.toContain(SOCIAL_OGP_PATH);
+    }
   });
 });

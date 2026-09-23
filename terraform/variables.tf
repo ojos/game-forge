@@ -333,3 +333,113 @@ variable "cloudflare_account_id" {
     error_message = "cloudflare_account_id は 16 進 32 桁である必要があります。"
   }
 }
+
+variable "cloudflare_zero_trust_team_name" {
+  description = <<-EOT
+    Cloudflare Zero Trust のチーム名（#792 / M22-2）。
+
+    Access のログインが載る `<team>.cloudflareaccess.com` の左端である。
+    terraform/zero-trust.tf の auth_domain と、terraform/tunnel-dev01.tf の
+    ingress の origin_request.access.team_name の両方がこの 1 か所から導かれる。
+
+    **後から変えられないものとして扱う。** 変えると Access のログイン URL が全部変わり、
+    手元の ~/.ssh/config へ書き写した `cloudflared access ssh --hostname` の設定と、
+    コネクタ側の検査（team_name）が一斉にずれる。
+
+    cloudflare_account_id と同じ理由で宣言へ直接書かず terraform.tfvars から受ける
+    （機密ではないが、このリポジトリは公開であり、公開する必要が無い）。
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9-]*$", var.cloudflare_zero_trust_team_name))
+    error_message = "cloudflare_zero_trust_team_name には英小文字・数字・ハイフンのみを使用できます。"
+  }
+}
+
+variable "zero_trust_google_client_id" {
+  description = <<-EOT
+    Zero Trust の ID プロバイダ（Google Workspace）が使う OAuth クライアント ID（#792）。
+
+    **GCP コンソールで作る。** API では作れないため、docs/gcp-oauth-setup.md の既存の
+    2 つ（本番・開発）と同じく手作業になる。**この 3 つ目は用途が違う**——前 2 つは
+    アプリのログイン、これは運営が機械へ入るための認証である。
+
+    機密ではない（クライアント ID は公開される値）が、宣言へ書かず tfvars から受ける。
+  EOT
+  type        = string
+
+  validation {
+    condition     = can(regex("\\.apps\\.googleusercontent\\.com$", var.zero_trust_google_client_id))
+    error_message = "zero_trust_google_client_id は .apps.googleusercontent.com で終わる必要があります。"
+  }
+}
+
+variable "zero_trust_google_client_secret" {
+  description = <<-EOT
+    上のクライアントのシークレット（#792）。**機密である。**
+
+    値は terraform.tfvars（追跡外）に置く。**リソースの属性なので、どう渡しても
+    tfstate には平文で入る**（terraform/providers.tf が CLOUDFLARE_API_TOKEN を
+    変数で受けないのとは事情が違う。あれはプロバイダ自身が環境変数を読むので
+    宣言に現れないが、これは宣言が持つ値である）。tfstate は .gitignore で
+    追跡から外れており、既に他の機密を持っている。
+  EOT
+  type        = string
+  sensitive   = true
+}
+
+variable "zero_trust_operator_emails" {
+  description = <<-EOT
+    SSH の口（dev01-ssh.ojos.jp）へ入れる人のメールアドレス（#792）。
+    ojos.jp の Google Workspace のアカウントであること。
+
+    **ドメインで括らず名指しにしている理由**は terraform/tunnel-dev01.tf の
+    dev01_ssh_operator の注記にある。いまは 1 人でも、増えるときに宣言が増えることに
+    意味がある。
+
+    budget_notification_email と同じ理由で宣言へ直接書かない（個人のメールアドレスを
+    公開する必要が無い）。
+  EOT
+  type        = list(string)
+
+  validation {
+    condition     = length(var.zero_trust_operator_emails) > 0
+    error_message = "zero_trust_operator_emails には少なくとも 1 件が必要です（空だと誰も入れません）。"
+  }
+
+  validation {
+    condition     = alltrue([for e in var.zero_trust_operator_emails : can(regex("^[^@[:space:]]+@ojos\\.jp$", e))])
+    error_message = "zero_trust_operator_emails は ojos.jp のメールアドレスである必要があります。"
+  }
+}
+
+variable "gcp_ops_project_id" {
+  description = <<-EOT
+    運用向けの GCP プロジェクトの ID（#792 / M22-2）。
+
+    Cloudflare Zero Trust の ID プロバイダが使う OAuth クライアントを置く入れ物で、
+    **game-forge のアプリとは関わらない**（理由は terraform/gcp.tf の注記）。
+
+    **プロジェクト ID は GCP 全体で一意である。** 既に誰かが使っていると apply が
+    「already in use」で落ちる。そのときは別の ID を tfvars で与えること。
+  EOT
+  type        = string
+  default     = "ojos-ops"
+
+  # GCP の規則（英小文字で始まり、英小文字・数字・ハイフンで 6〜30 文字、末尾はハイフン不可）。
+  # **plan の前に落とすためにある。** 形式違反は apply の途中で GCP が拒むので、
+  # そこまで行くと「何件か作った後で止まる」状態になる。
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.gcp_ops_project_id))
+    error_message = "gcp_ops_project_id は英小文字で始まり、英小文字・数字・ハイフンのみの 6〜30 文字で、末尾をハイフンにできません。"
+  }
+}
+
+variable "gcp_ops_project_name" {
+  description = <<-EOT
+    運用向けの GCP プロジェクトの表示名（#792）。
+  EOT
+  type        = string
+  default     = "ojos-ops"
+}

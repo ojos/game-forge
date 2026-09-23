@@ -61,3 +61,20 @@ budget_notification_email = "you@example.com"
 # （プロバイダが環境変数 CLOUDFLARE_API_TOKEN から読む。providers.tf の注記）。
 # 機密ではないが、このリポジトリは公開のため宣言側には書かない。
 cloudflare_account_id = "00000000000000000000000000000000"
+
+# Cloudflare Zero Trust のチーム名（#792 / M22-2）。Access のログインが載る
+# <team>.cloudflareaccess.com の左端。**後から変えられないものとして扱う**
+# （変えると Access のログイン URL と、コネクタ側の検査 team_name が一斉にずれる）。
+# 機密ではないが、このリポジトリは公開のため宣言側には書かない。
+cloudflare_zero_trust_team_name = "your-team"
+
+# Zero Trust の ID プロバイダ（Google Workspace）が使う OAuth クライアント（#792）。
+# **GCP コンソールで作る**（API では作れない。docs/gcp-oauth-setup.md の既存の 2 つと同じ手順）。
+# リダイレクト URI は https://<team>.cloudflareaccess.com/cdn-cgi/access/callback。
+zero_trust_google_client_id     = "000000000000-xxxxxxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com"
+# **これは機密である。** tfvars は追跡外。値は GCP コンソールが 1 回だけ見せる。
+zero_trust_google_client_secret = "GOCSPX-xxxxxxxxxxxxxxxxxxxxxxxx"
+
+# SSH の口（dev01-ssh.ojos.jp）へ入れる人（#792）。ojos.jp の Workspace のアカウント。
+# ドメインで括らず名指しにする理由は terraform/tunnel-dev01.tf にある。
+zero_trust_operator_emails = ["you@ojos.jp"]

@@ -379,6 +379,35 @@ Google アカウントは同意画面で弾かれる（`docs/local-dev.md` の�
 **開発用のクライアントに本番の URI を足さない。** 足しても本番の Pages が読むのは本番のクライアントの
 値なので効かず、どちらのクライアントがどこで使われているかが読めなくなる。
 
+### 5.3 運用向け（`zero-trust-access`。#792 / 2026-09-23）
+
+<https://console.cloud.google.com/auth/clients?project=ojos-ops>
+
+**3 つ目は用途が違う。** 5.1 と 5.2 が「アプリを使う人のログイン」なのに対し、これは
+**運営が手元の機械へ入るための認証**である（Cloudflare Zero Trust の ID プロバイダが使う）。
+game-forge のアプリは、このクライアントを一切読まない。
+
+| 項目 | 値 |
+|---|---|
+| プロジェクト | `ojos-ops`（`terraform/gcp.tf` の `google_project.ojos_ops`） |
+| 同意画面の対象 | **内部**（Internal）。ブランド確認も公開ステータスも無い（4.2 と同じ理由） |
+| アプリケーションの種類 | ウェブ アプリケーション |
+| 名前 | `zero-trust-access` |
+| 承認済みのリダイレクト URI | `https://ojos-jp.cloudflareaccess.com/cdn-cgi/access/callback` |
+| 承認済みの JavaScript 生成元 | 空 |
+
+**リダイレクト URI は Cloudflare のチーム名から決まる**（`ojos-jp`）。アプリのホスト名とは
+無関係なので、5.1 / 5.2 のような「ホストごとに 1 本」にはならない。**1 本だけである。**
+
+**専用のプロジェクトを新設した理由**（利用者の決定。#792）。本番（`ojos-game-forge`）は
+対象が外部で、SSH へ入るときの同意画面に Game Forge のブランドが出る。開発
+（`ojos-game-forge-dev`）は内部で入口を絞れるが、**「ローカル開発のための入れ物」に
+運用の資格情報が入る**——5.2 の「開発用のクライアントに本番の URI を足さない」と同じ筋である。
+
+**値は `terraform.tfvars`（追跡外）に置く。** 6 章の `.dev.vars` / Pages のシークレットとは
+置き場が違う。読むのが Workers ではなく Terraform（Cloudflare の ID プロバイダの宣言）だからである。
+手順の全体は [local-llm-tunnel.md](local-llm-tunnel.md) のⒸにある。
+
 ---
 
 ## 6. 発行した値の扱い

@@ -335,4 +335,16 @@ sudo systemctl start cloudflared
 
 | 日付 | 行ったこと | 結果 |
 |---|---|---|
-| | | |
+| 2026-09-23 | Ⓐ API トークンへ Access 系 6 つと Cloudflare Tunnel の**編集**を追加 | `access/organizations` が **403 → 200**。あわせて**チームドメインが既にあった**ことと（`ojos-jp`、作成 07:44:27Z）、**ID プロバイダ 1 件は組み込みのワンタイム PIN**（`type: cloudflare`）だったことが分かった |
+| 2026-09-23 | Ⓑ organization を import | 取り込み成功。差分は宣言どおり 2 つ（`name` → `ojos` / `session_duration` → `24h`） |
+| 2026-09-23 | 段 1: `-target=google_project.ojos_ops` を apply | **1 追加・0 変更・0 削除。** `ojos-ops` / 番号 `123685047211` / `ACTIVE`（組織配下）。**請求先は紐付けていない**（Console は要求しなかった） |
+| 2026-09-23 | Ⓒ 同意画面（内部）とクライアント `zero-trust-access` を Console で作成 | `client_id` の先頭が `123685047211-` で、`ojos-ops` 発行であることを確認 |
+| 2026-09-23 | 段 2: 全体を apply（1 回目） | **10 作成・1 変更・0 削除で、1 件だけ失敗。** `access_policy.dev01_ssh_operator` が **500**（`access.api.error.internal_server_error`）。依存する `access_application.dev01_ssh` も未作成 |
+| 2026-09-23 | 500 の原因を特定し、`gsuite` → `email` + `require = login_method` へ直した | **`gsuite` は Google Workspace の「グループ」を指す選択子**で、個人のアドレスを渡す場所ではなかった。**2 回再現**し、エラー本文は理由を一言も言わなかった |
+| 2026-09-23 | 段 2: 残り 2 件を apply | **2 追加・0 変更・0 削除。** 直後の `plan -detailed-exitcode` は **0（差分なし）** |
+| 2026-09-23 | リダイレクト URI の照合 | `output` と Console に登録した値が一致（`https://ojos-jp.cloudflareaccess.com/cdn-cgi/access/callback`） |
+| 2026-09-23 | DNS の実解決（1.1.1.1） | 2 本とも Cloudflare の anycast（`104.21.82.204` / `172.67.162.223`）。**プロキシ有りが効いている** |
+| 2026-09-23 | **Access の実測** | サービストークン**無し → 401**（Access が止めた）、**有り → 530**（Access は通り、**コネクタがいない**。dev01 が未設定なので正しい）。**この 2 つの違いが、認可が効いていることの証拠である** |
+
+**次は dev01 側**（上の「dev01 側の手順」）。cloudflared を常駐させると 530 が消え、
+外部層の検査 3 つが緑になるはずである。

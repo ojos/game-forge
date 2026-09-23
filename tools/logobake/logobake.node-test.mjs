@@ -78,7 +78,7 @@ test('一覧: 標準セットの種類と枚数', () => {
   const byDir = {};
   for (const v of listVariants()) byDir[v.path.split('/')[0]] = (byDir[v.path.split('/')[0]] ?? 0) + 1;
   assert.deepEqual(byDir, {
-    symbol: 14, 'app-icon': 6, 'lockup-horizontal': 8, 'lockup-stacked': 6, wordmark: 8, social: 4,
+    symbol: 14, 'app-icon': 6, 'lockup-horizontal': 8, 'lockup-stacked': 6, wordmark: 8, social: 10,
   });
 });
 

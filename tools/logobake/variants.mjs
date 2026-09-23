@@ -94,6 +94,15 @@ export function listVariants(glyphs) {
     out.push(framed(`social/ogp-1200x630-${ground}.png`, H, Math.floor((1200 * 3) / 4 / H[0].length), ground, 1200, 630));
     // プロフィール: 円く切り抜かれる前提で、シンボルの四隅が内接円に入る 16 倍（256px）にする。
     out.push(framed(`social/profile-400-${ground}.png`, SYMBOL, 16, ground, 400, 400));
+    // 帯状のヘッダー: **幅に対する割合はサービスごとに違う**（#780）。
+    // 版面より狭く切って出す側があり、OGP の 3/4 をそのまま当てると切れるためである。
+    // note は表示のときに上下が切られる（中央の 1920×340 ほどの帯だけが出る）ので、
+    // その帯へ余白ごと収まる 45% にする。X は切られないので 55%。
+    // OFUSE のカバーアートは帯そのもの（1000×150）なので、幅ではなく
+    // 高さの 3/4 で決める（アプリアイコンと同じ決め方）。
+    out.push(framed(`social/header-note-1920x1006-${ground}.png`, H, Math.floor((1920 * 0.45) / H[0].length), ground, 1920, 1006));
+    out.push(framed(`social/header-x-1500x500-${ground}.png`, H, Math.floor((1500 * 0.55) / H[0].length), ground, 1500, 500));
+    out.push(framed(`social/header-ofuse-1000x150-${ground}.png`, H, Math.floor((150 * 3) / 4 / H.length), ground, 1000, 150));
   }
   return out;
 }

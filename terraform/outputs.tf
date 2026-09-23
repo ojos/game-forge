@@ -834,3 +834,91 @@ output "ogp_viewport" {
     height = local.ogp_viewport_height
   }
 }
+
+/**
+ * dev01 の Tunnel と、その 2 つの口（#792 / M22-2）。
+ */
+
+output "dev01_tunnel_id" {
+  description = <<-EOT
+    dev01 の Tunnel の識別子。DNS の向き先（<id>.cfargotunnel.com）がこれで作られる。
+    外部層の受け入れ検査（scripts/acceptance-remote.sh）が、実際の DNS の答えと
+    突き合わせるために読む。
+  EOT
+  value       = cloudflare_zero_trust_tunnel_cloudflared.dev01.id
+}
+
+output "dev01_tunnel_token" {
+  description = <<-EOT
+    dev01 の cloudflared に渡す接続トークン。**機密である**——持っている者は
+    このトンネルのコネクタとして名乗り出られる。
+
+      terraform output -raw dev01_tunnel_token
+
+    で取り出して dev01 へ運ぶ（手順は docs/local-llm-tunnel.md）。画面へ出す経路と
+    ファイルへ落とす経路を作らないため、**このリポジトリのどこにも書き写さない。**
+  EOT
+  value       = data.cloudflare_zero_trust_tunnel_cloudflared_token.dev01.token
+  sensitive   = true
+}
+
+output "llm_endpoint" {
+  description = <<-EOT
+    チャットが呼ぶ推論の口。M22-3 でエッジの向き先になる。
+    **段 C2（#775）の後に llm.game-forge.ojos.jp へ寄せる予定**（別 issue）。
+  EOT
+  value       = "https://${local.llm_host}"
+}
+
+output "llm_service_token_client_id" {
+  description = <<-EOT
+    エッジが llm の口へ付けるサービストークンの ID（CF-Access-Client-Id）。
+    M22-3 で Pages のシークレットへ写す。機密ではないが、対になる secret は機密である。
+  EOT
+  value       = cloudflare_zero_trust_access_service_token.edge_to_llm.client_id
+}
+
+output "llm_service_token_client_secret" {
+  description = <<-EOT
+    上の対になる秘密（CF-Access-Client-Secret）。**機密である。**
+    **作成時にしか発行されない**ので、失くしたらトークンを作り直すことになる。
+  EOT
+  value       = cloudflare_zero_trust_access_service_token.edge_to_llm.client_secret
+  sensitive   = true
+}
+
+output "dev01_ssh_host" {
+  description = <<-EOT
+    dev01 へ入るための公開ホスト名。手元の ~/.ssh/config の ProxyCommand が
+    この名前を持つ（docs/local-llm-tunnel.md）。
+  EOT
+  value       = local.dev01_ssh_host
+}
+
+output "zero_trust_google_redirect_url" {
+  description = <<-EOT
+    Google の OAuth クライアントの「承認済みのリダイレクト URI」へ入れる値。
+
+    **鶏と卵になる**——クライアントを作らないと ID プロバイダを apply できず、
+    apply しないとこの値が出ない。**最初の 1 回は
+    https://<team>.cloudflareaccess.com/cdn-cgi/access/callback を手で組み立てて
+    登録する。** この output は、登録した値が合っているかを後から照合するためにある。
+  EOT
+  value       = cloudflare_zero_trust_access_identity_provider.google_workspace.config.redirect_url
+}
+
+output "gcp_ops_project_id" {
+  description = <<-EOT
+    運用向けの GCP プロジェクト（#792）。Zero Trust の OAuth クライアントの置き場。
+  EOT
+  value       = google_project.ojos_ops.project_id
+}
+
+output "gcp_ops_project_number" {
+  description = <<-EOT
+    同プロジェクトの番号。**client_id の先頭がこの番号になる**ので、
+    正しいプロジェクトで発行したクライアントかを目視で照合できる
+    （docs/gcp-oauth-setup.md 6 章が本番・開発で同じ使い方をしている）。
+  EOT
+  value       = google_project.ojos_ops.number
+}

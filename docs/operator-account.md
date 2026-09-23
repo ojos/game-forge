@@ -66,6 +66,11 @@
 `HAND_WRITTEN_RESERVED_PREFIXES`）。**ロゴの語 `forge` / `anvil` も完全一致で予約しています。**
 **運営自身もこの規則の外に居ません**——画面から名乗り直すことはできず、変えるときは 3.6 の手順を使います。
 
+> **仕様 5.10 の #778 実装注記と、版の履歴の v1.134 の行は、`gameforge_jp` を持ち X の `gameforge2026` を
+> 公開していると書いたままです**（2026-09-22 の記述）。**書き換えません**——仕様は「過去の記述は書き換えない。
+> `## 版の履歴` の各行は、書かれた時点の語のまま残す」と定めています（`docs/product-spec.md` 10663 行）。
+> **いまの綴りはこの表が持ちます。** 注記が支えている判断（接頭辞で弾く理由）は、綴りが変わっても動きません。
+
 ---
 
 ## 3. 手順
@@ -146,9 +151,24 @@ npx wrangler d1 execute DB --remote --env production \
 2. **`gameforge` で始まる名前は予約されている**（#778）。**`is_operator` を見て通す例外は作っていません**
    ——表示だけの列がハンドル名の可否まで決めることになるためです（1 章）。印の付け外しと同じく、D1 を直接書きます
 
-**書く内容は `src/handle.ts` の `changeHandle` と同じです**（履歴を積む → 手放す → 取る）。**値は実行時に
-DB から読みます**——控えた値を貼り込むと、打つまでの間に利用者の操作で古くなります（`docs/handoff.md` 3 章の #380）。
-下の `<新しいハンドル名>` と `<いまのハンドル名>` だけを置き換えてください。
+**この手順は、30 日の間隔を意図して外します。** 画面の間隔は利用者の連打（履歴と索引を何度も書く）を
+止めるためのもので、運営が年に数回打つ手順には当たりません。**ただし `claimed_at` は今の時刻になる**ので、
+**画面からの改名は、この書き込みから改めて 30 日後になります。**
+
+#### 3 つの要求は、まとめて巻き戻りません
+
+**`src/handle.ts` の `changeHandle` は 1 つの `D1.batch`** で、途中で落ちれば全部が巻き戻ります。**端末から打つ
+`wrangler d1 execute` は 1 文ずつ別の要求**なので、その保証がありません。そこで**順を「途中で止まっても
+半端が残らない」形にしてあります**——**手放す → 取る → 履歴**の順です。
+
+**`changeHandle` が履歴を先に積むのは、旧い名前を手放す前の行からしか読めないからです。** この手順では
+旧い名前を自分で打つので、**履歴を最後に回せます。** 途中で落ちたときに「起きていない改名の記録」が
+残らないのは、この順のおかげです。
+
+**値は実行時に DB から読みます**——控えた値を貼り込むと、打つまでの間に利用者の操作で古くなります
+（`docs/handoff.md` 3 章の #380）。置き換えるのは `<新しいハンドル名>` と `<いまのハンドル名>` だけです。
+
+#### 手順
 
 **先に、現状と空き具合を読み取ります**（後からは「何が在ったか」を確かめられません）。
 
@@ -162,47 +182,57 @@ npx wrangler d1 execute DB --remote --env production --json \
 **いまのハンドル名が 1 行（`released_at` が null）で、新しい名前が 0 行**であること。**新しい名前に行が
 あれば、そこで止めます**（ほかの人が持っています）。
 
-**次の 3 つを、この順で打ちます。** 順を変えると、3 番目が部分索引（`handles_user_current_idx`）で落ちます。
-
 ```bash
-# 1. 履歴を先に積む（旧い名前は、手放す前の行からしか読めない）
-npx wrangler d1 execute DB --remote --env production \
-  --command "insert into handle_changes (id, user_id, old_handle, new_handle, changed_at) select lower(hex(randomblob(16))), h.user_id, h.handle, '<新しいハンドル名>', cast(strftime('%s','now') as integer) from handles h where h.handle = '<いまのハンドル名>' and h.released_at is null and h.user_id in (select id from users where is_operator = 1 and withdrawal_started_at is null)"
-
-# 2. いまの名前を手放す（90 日の予約へ移り、旧 URL は転送になる）
+# 1. いまの名前を手放す（90 日の予約へ移り、旧 URL は転送になる）
 npx wrangler d1 execute DB --remote --env production \
   --command "update handles set released_at = cast(strftime('%s','now') as integer) where handle = '<いまのハンドル名>' and released_at is null and user_id in (select id from users where is_operator = 1 and withdrawal_started_at is null)"
 
-# 3. 新しい名前を取る
+# 2. 新しい名前を取る（手放した後でないと部分索引で落ちる）
 npx wrangler d1 execute DB --remote --env production \
   --command "insert into handles (handle, user_id, claimed_at) select '<新しいハンドル名>', h.user_id, cast(strftime('%s','now') as integer) from handles h where h.handle = '<いまのハンドル名>' and h.released_at is not null and h.user_id in (select id from users where is_operator = 1 and withdrawal_started_at is null)"
+
+# 3. 履歴を積む（新しい名前が現役になっていることを条件にする）
+npx wrangler d1 execute DB --remote --env production \
+  --command "insert into handle_changes (id, user_id, old_handle, new_handle, changed_at) select lower(hex(randomblob(16))), h.user_id, '<いまのハンドル名>', '<新しいハンドル名>', cast(strftime('%s','now') as integer) from handles h where h.handle = '<新しいハンドル名>' and h.released_at is null and h.user_id in (select id from users where is_operator = 1 and withdrawal_started_at is null)"
 ```
 
-**3 番目が `UNIQUE constraint failed: handles.user_id` で落ちたら、既に成功しています**（二重に打った合図。
-その利用者は現役の行を 1 つしか持てません）。**3 番目が別の理由で落ちたときだけ**、2 番目を取り消せます。
+#### 落ちたときの戻し方（落ちた番号で変わります）
+
+| 落ちた文 | 起きていること | やること |
+|---|---|---|
+| **1** | 何も書かれていない | そのまま止める。0 行なら、いまの名前が既に手放されている（読み取りへ戻る） |
+| **2**（`UNIQUE constraint failed: handles.handle`） | **ほかの誰かがその名前を先に取った。** 運営は現役の名前を持たない状態 | **下の取り消しで 1 を戻し、止める**（別の名前を選び直す） |
+| **2**（`UNIQUE constraint failed: handles.user_id`） | **1 が当たっていない**（別の経路で改名が起きた等）。運営は現役の名前を持っている | **取り消さずに止め、読み取りからやり直す**——戻すと現役の行が 2 つになる |
+| **3** | **行は正しい。** 履歴だけが欠けている | **`handle_changes` を読んでから、3 だけを打ち直す**——条件は新しい行を見るだけなので、**当たった後にもう一度打つと履歴が 2 行になります** |
 
 ```bash
+# 2 が handles.handle で落ちたときだけ（履歴はまだ書いていないので、これで元に戻ります）
 npx wrangler d1 execute DB --remote --env production \
-  --command "update handles set released_at = null where handle = '<いまのハンドル名>' and user_id in (select id from users where is_operator = 1)"
+  --command "update handles set released_at = null where handle = '<いまのハンドル名>' and released_at is not null and user_id in (select id from users where is_operator = 1) and not exists (select 1 from handles h2 where h2.user_id in (select id from users where is_operator = 1) and h2.released_at is null)"
 ```
 
-**確かめます。**
+**取り消しの文にも条件を置いてあります**——**運営が現役の名前を持っていないときにしか当たりません。**
+持っている状態で戻すと、部分索引（`handles_user_current_idx`）が弾くか、弾かれずに 2 つ目の現役の行を
+作ることになります。
+
+#### 確かめます
 
 ```bash
 npx wrangler d1 execute DB --remote --env production --json \
   --command "select h.handle, h.claimed_at, h.released_at from handles h join users u on u.id = h.user_id where u.is_operator = 1 order by h.claimed_at"
+npx wrangler d1 execute DB --remote --env production --json \
+  --command "select old_handle, new_handle, changed_at from handle_changes where user_id in (select id from users where is_operator = 1) order by changed_at"
 curl -sI "https://app.game-forge.ojos.jp/@<新しいハンドル名>" | head -1
 curl -sI "https://app.game-forge.ojos.jp/@<いまのハンドル名>" | grep -iE "^HTTP/|^location"
 ```
 
-**新しい名前が現役（`released_at` が null）、旧い名前に時刻が入り、`/@新` が 200、`/@旧` が 302 で `/@新` を
-指すこと。** 旧い名前の転送は 90 日で切れ、その後は 404 になります。
+**新しい名前が現役（`released_at` が null）、旧い名前に時刻が入り、履歴が 1 行だけ増え、`/@新` が 200、
+`/@旧` が 302 で `/@新` を指すこと。** 旧い名前の転送は 90 日で切れ、その後は 404 になります。
 
 **この手順は 2026-09-23 に実際に通しました**（`gameforge_jp` → `gameforgejp`）。**打つ前に、使い捨ての
-ローカル D1（`--local --persist-to`）で同じ 3 文を流し、`changeHandle` と同じ行（履歴 1 行・旧い行の予約・
-新しい行の現役）になることを確かめています。**
-
-**改名の 30 日の間隔は、この書き込みの時刻から数え直しになります**（`claimed_at` が今になるため）。
+ローカル D1（`--local --persist-to`）で同じ文を流し、`changeHandle` と同じ行（履歴 1 行・旧い行の予約・
+新しい行の現役）になることを確かめています。** **当日は履歴を先に積む順で打ちました**——上の順（履歴を
+最後）は、PR #782 の Copilot の指摘（途中で落ちると、起きていない改名の記録が残る）を受けて直したものです。
 
 ---
 

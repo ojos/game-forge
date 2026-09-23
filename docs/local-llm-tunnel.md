@@ -383,9 +383,14 @@ sudo systemctl start cloudflared
 | 2026-09-23 | 外部層の検査を通した（`scripts/acceptance-remote.sh`） | **失敗 2 件。**（a）`pages custom domain records match` — **#775 の段 C2 が未了**で、`game-forge.ojos.jp` に委譲の NS が残っているため。**この issue の範囲外で、09-28 以降に解消する。**（b）`dev01 tunnel is healthy and ingress matches` — **検査側のバグ**（下記）。**`tunnel dns records` と `tunnel access applications` は緑** |
 | 2026-09-23 | 検査のバグを直した | **Cloudflare の API は ingress を camelCase で返す**（`originRequest` / `audTag`）。宣言側（terraform のスキーマ）は snake_case なので、綴りを写した jq が**必ず空を読み、設定が入っているのに「無い」と報告していた**。実物は `required: true` で `audTag` もアプリの `aud` と一致していた |
 
+| 2026-09-23 | **接続トークンを回した**（チャットへ全文が貼られたため） | `-replace` で作り直し。**2 追加・2 変更・2 削除**（DNS 2 本は宣言が追随）。旧 `9012deb9-…` は `deleted_at: 14:12:47Z`、新 `e57dd396-…`。**コネクタが繋がったままでは削除できない**——1 回目は ingress だけ消えて止まり、`llm` が一時的に落ちた（戻して 200 を確認）。**「外す → 作り直す → 新しいトークンで入れる」の順が要る** |
+| 2026-09-23 | 回転後の通し確認 | トンネル `healthy`（4 本）／`llm.ojos.jp` は無しで 401・有りで 200／devcontainer から `ssh dev01` 成功。**Access のトークンはアプリ側に紐づくので、トンネルを作り直しても再認証は要らなかった** |
+
 **残っている宿題。**
 
-1. **接続トークンの回転。** 2026-09-23 に**チャットへ全文が貼られた**ため、秘密として扱えない。
-   `terraform apply -replace=cloudflare_zero_trust_tunnel_cloudflared.dev01` と、dev01 での入れ直し 1 回。
-2. **外部層の検査を通す**（`VERIFY_ACCEPTANCE=... bash scripts/verify.sh`）。
-3. **PR の作成**（#775 のマージ後）。
+1. **PR の作成**（#775 のマージ後。段 C2 は 09-28 16:25 JST 以降）。
+2. **プライマリのツリーを `main` へ戻す**（PR がマージされてから。いま戻すと、宣言が
+   state より足りず `terraform plan` に削除の差分が出る）。
+3. **`llm.ojos.jp` を `llm.game-forge.ojos.jp` へ寄せる**（段 C2 の後。別 issue）。
+
+**済んだもの。** 接続トークンの回転（上の記録）、外部層の検査（同）。

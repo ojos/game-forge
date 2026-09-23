@@ -124,6 +124,17 @@ test('ヘッダー: 版面ごとの倍率と、note が切られた後に収ま�
   }
 });
 
+// `left` の範囲の検査（#783）。**一覧が作る値は必ず正しいので、一覧を描くだけでは
+// この検査を消しても通る。** 不正な値をここで直接渡す。
+test('置き場所: 画像からはみ出す left を拒む', () => {
+  const grid = ['KK', 'KK'];
+  const base = { path: 'test/left.png', grid, scale: 10, ink: /** @type {const} */ ('light'), ground: /** @type {const} */ ('white'), width: 100, height: 40 };
+  assert.throws(() => renderVariant({ ...base, left: -1 }), /はみ出す/);
+  assert.throws(() => renderVariant({ ...base, left: 81 }), /はみ出す/); // 81 + 20 > 100
+  assert.doesNotThrow(() => renderVariant({ ...base, left: 0 }));
+  assert.doesNotThrow(() => renderVariant({ ...base, left: 80 })); // 右端にちょうど接する
+});
+
 test('PNG: 書いたものを復号すると同じ画素に戻る', () => {
   for (const v of listVariants().filter((x) => x.path.includes('x1-') || x.path.includes('-16-') || x.path.includes('ogp'))) {
     const img = renderVariant(v);

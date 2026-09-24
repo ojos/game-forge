@@ -1420,10 +1420,14 @@ export function workNameOf(view: WorkPageView): string {
  * （`src/ogp.ts`）。**その間だけ `summary_large_image` を名乗らない**——大きなカードを
  * 宣言しておいて画像が 404 になるより、小さなカードのほうが壊れて見えない。
  *
- * # `escapeHtml` を通すのは題名だけである
+ * # `escapeHtml` を通すのは、作者が書いた題名と説明である
  *
- * 他はこのモジュールが持つ固定の文字列か、`crypto.randomUUID()` から組み立てた URL
+ * **自由入力はこの 2 つだけである**（#795 で説明が加わった。それまでは題名だけだった）。
+ * 残りはこのモジュールが持つ固定の文字列か、`crypto.randomUUID()` から組み立てた URL
  * である（`renderWorkPage` と同じ方針）。
+ *
+ * **説明は改行を持ちうる**ので、{@link ogpDescriptionOf} が畳んでから渡す——`escapeHtml` は
+ * 改行を触らず、**属性の中の改行は escape では防げない。** 順序を入れ替えないこと。
  *
  * @param view 表示に必要な値
  * @returns メタタグ（未公開なら空文字）

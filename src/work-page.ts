@@ -1320,8 +1320,64 @@ export function ipNoticeSection(view: WorkPageView): string {
    取り出しています（<a href="/">Game Forge</a> の方針です）。この案内はあなたにだけ見えています。</p>`;
 }
 
-/** OGP の説明文（固定）。**作品ごとに変えない**——中身を説明できるのは作者だけである。 */
+/**
+ * OGP の説明文の**控え**（#795）。
+ *
+ * **作者が説明を書いていない作品にだけ出す。** #26 で置いたときは全作品がこれだったが、その根拠
+ * （「中身を説明できるのは作者だけである」）は **#388 が 2026-09-13 に作者の説明欄を入れた時点で
+ * 無効になった**——説明できる作者が、実際に説明を書けるようになったからである。2 週間遅れで
+ * 前提が消えたまま、全作品が同じ 1 文を出し続けていた。
+ */
 const OGP_DESCRIPTION = 'Game Forge で作られたゲームです。ブラウザでそのまま遊べます。';
+
+/**
+ * `og:description` の長さの上限（コードポイント）。
+ *
+ * **200 にするのは、カードを出す側が実質そのあたりで切るからである。** 説明そのものの上限
+ * （`src/games.ts` の `MAX_DESCRIPTION_LENGTH` は 1000）をそのまま流すと、**どこで切られるかを
+ * 相手任せにする**ことになり、文の途中で切れた形が共有される。**こちらで切って `…` を付ける**
+ * ほうが、切れていることが読み手に分かる。
+ *
+ * **数え方は説明の上限と同じくコードポイントである**（UTF-16 の長さではない。絵文字や結合文字を
+ * 含む説明で、見た目より早く切られるのを避ける）。
+ */
+const OGP_DESCRIPTION_MAX_LENGTH = 200;
+
+/**
+ * 作品の `og:description` を決める（#795）。
+ *
+ * **作者が書いた説明を 1 行へ畳んで出す。** 説明は `<textarea>` の自由入力で改行を持つが、
+ * **`og:description` は属性値なので改行を入れる場所ではない**——空白の連なりごと半角空白 1 つへ
+ * 畳む。
+ *
+ * **下書きの説明がここへ来ることはない。** {@link ogpMeta} が `view.published` で先に返しており、
+ * `published` は `row.status === 'published'` そのものである。作者が下書きをプレビューしている
+ * 間は `published` が false なので、**この関数は呼ばれない**（`test/work-save.test.ts` が下書きと
+ * 公開後の両方で確かめる）。
+ *
+ * @param view 表示に必要な値
+ * @returns `og:description` に入れる文（エスケープ前）
+ */
+function ogpDescriptionOf(view: WorkPageView): string {
+  // **`null` はここへ届かない。** `games.description` は NOT NULL で、**空文字が「説明が無い」**
+  // である（`migrations/0028_game_descriptions.sql`）。`WorkPageView.description` が `null` に
+  // なるのは `shown` が偽のとき——未公開か取り下げ——だけで、そのときは {@link ogpMeta} が
+  // `view.published` で先に返している。**型の上で残る枝なので、控えへ倒して閉じておく。**
+  if (view.description === null) {
+    return OGP_DESCRIPTION;
+  }
+  // **空白だけの説明も控えへ倒す。** `trim` の後に空になる説明は、書かれていないのと同じである。
+  const oneLine = view.description.replace(/\s+/gu, ' ').trim();
+  if (oneLine === '') {
+    return OGP_DESCRIPTION;
+  }
+  const points = [...oneLine];
+  if (points.length <= OGP_DESCRIPTION_MAX_LENGTH) {
+    return oneLine;
+  }
+  // **`…` の分を差し引いて切る。** 足した結果が上限を超えると、切った意味が無くなる。
+  return `${points.slice(0, OGP_DESCRIPTION_MAX_LENGTH - 1).join('')}…`;
+}
 
 /** 作品名を出せないときの表題。 */
 const FALLBACK_WORK_TITLE = 'Game Forge の作品';
@@ -1390,7 +1446,7 @@ function ogpMeta(view: WorkPageView): string {
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Game Forge">
 <meta property="og:title" content="${escapeHtml(name)}">
-<meta property="og:description" content="${OGP_DESCRIPTION}">
+<meta property="og:description" content="${escapeHtml(ogpDescriptionOf(view))}">
 <meta property="og:url" content="${view.shareUrl}">${image}`;
 }
 

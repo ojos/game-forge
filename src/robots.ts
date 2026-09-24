@@ -51,7 +51,7 @@
  */
 import { ACCOUNT_PATH } from './account-paths.js';
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';
-import { GENERATE_PAGE_PATH, INVITES_PATH } from './paths.js';
+import { INVITES_PATH } from './paths.js';
 import type { Route } from './routes.js';
 import { SITEMAP_PATH } from './sitemap.js';
 import { MY_WORKS_PATH } from './works-paths.js';
@@ -89,6 +89,13 @@ const AUTH_PREFIX = '/auth/';
  * **ここに `noindex` の画面を足さないこと**（モジュール冒頭「`robots.txt` と `noindex` を
  * 取り違えない」）。並ぶ資格があるのは、機械が読む口（`/api/`・`/auth/`）と、ログインしな
  * ければ何も返らない操作の口だけである。
+ *
+ * **`/generate` をここへ戻さないこと**（#795）。#594 では並べていたが、**あの画面は未ログイン
+ * でも 200 を返す公開ページである**（`src/generate-page.ts` の `signedOutSection`。#128 から
+ * あり、#594 より 20 日早い）。何ができる場所かを説明し、登録へ導く文面が出るので、**上の
+ * 「ログインしなければ何も返らない」に当たらない。** 残る 6 つは実測で当たっている
+ * ——`/account`・`/works/mine`・`/works/liked`・`/invites` は未ログインで 303 を返し、
+ * `/api/` と `/auth/` は機械が読む口である。
  */
 export const APP_DISALLOW_PATHS: readonly string[] = [
   API_PREFIX,
@@ -96,7 +103,6 @@ export const APP_DISALLOW_PATHS: readonly string[] = [
   ACCOUNT_PATH,
   MY_WORKS_PATH,
   LIKED_WORKS_PATH,
-  GENERATE_PAGE_PATH,
   INVITES_PATH,
 ];
 

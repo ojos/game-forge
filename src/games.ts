@@ -1692,7 +1692,9 @@ export const DESCRIPTION_CHANGE_INTERVAL_SECONDS = 60;
  *
  * **下書きに書いても、作者以外には見えない。** 作品ページ・検索・タグの一覧・作者ページ・sitemap は
  * `status = 'published'` の行しか引かず、下書きの作品ページは作者以外に 404 を返す（`src/work-page.ts`）。
- * `og:description` は固定の文言で、説明を載せない。
+ * **OGP のメタタグは 1 つも出ない**——`ogpMeta` が `view.published` で先に返す（#795 でここを
+ * 「`og:description` は固定の文言」から書き直した。**公開後は作者の説明がそのまま `og:description`
+ * になるが、下書きが漏れないことの根拠は固定文ではなく、この `published` の関門である**）。
  *
  * **変更の間隔と履歴は公開済みと同じ規則である**（`description_set_at` / `tags_set_at` と `description_changes`。
  * 同じ SQL を通る）。したがって、下書きで説明を書いた直後に公開して書き直すと、間隔の内側では断られる。

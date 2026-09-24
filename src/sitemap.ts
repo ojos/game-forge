@@ -73,6 +73,7 @@ export const SITEMAP_PATH = '/sitemap.xml';
 export const SITEMAP_STATIC_PATHS: readonly string[] = [
   HOME_PATH,
   PUBLIC_WORKS_PATH,
+  GENERATE_PAGE_PATH,
   NEWS_PATH,
   FAQ_PATH,
   TERMS_PATH,
@@ -93,12 +94,18 @@ export const SITEMAP_STATIC_PATHS: readonly string[] = [
  * 1. `robots.txt` で `Disallow` している（クロールされないものを教える意味が無い。`src/robots.ts`）
  * 2. **操作の完了画面**である（単独で検索から来ても、その人には何も起きていない）
  *
+ * **いま 1 に当たるものは 1 つも無い**（#795）。`APP_DISALLOW_PATHS` に残る口は、機械が読む口
+ * （`/api/`・`/auth/`）か、**未ログインで 303 を返す**口（`/account` など）である。後者は画面として
+ * 経路表に出てくるが、`test/sitemap.test.ts` の向き 2 が **200 以外を読み飛ばす**ため、ここへ
+ * 並べなくても落ちない——`noindex` かどうかを確かめられない画面を、載せる・載せないの判定に
+ * 使わない、という判断である。**理由 1 を消さないのは、将来「未ログインでも 200 を返すのに
+ * `Disallow` する」ものが出たときに、判断を書き直さずに済ませるためである。**
+ *
  * **`noindex` を付けるべきかどうかとは別の判断である。** 完了画面に `noindex` を付けるかは
  * それぞれの画面の所有者が決めることで、#595 では変えていない。ここが決めるのは
  * 「サイトマップで在処を教えるか」だけである。
  */
 export const SITEMAP_EXCLUDED_PATHS: readonly string[] = [
-  GENERATE_PAGE_PATH, // 1. `robots.txt` で Disallow（ログインが要る）
   WAITLIST_THANKS_PATH, // 2. 待機リストに登録した人への完了画面
   TAKEDOWN_THANKS_PATH, // 2. 削除依頼を送った人への完了画面
 ];

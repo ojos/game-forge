@@ -4,11 +4,14 @@
   別のセッションで intake を通して行う。
 - 対象の機械: **`dev01`**（手元の Ubuntu。#792 / M22-2 でトンネルを通した 1 台）
 - 実測日: **2026-09-23〜09-24**
-- 出発点: 利用者の「dev01 で CI を代替したい」という相談。そこから 3 つの案を測って取り下げ、
-  **別の設計（テンプレートの穴埋め ＋ 一工夫のフレーバー）へ着いた。**
+- 出発点: 利用者の「dev01 で CI を代替したい」という相談。**測った 3 案の判定は 3 つとも違う**
+  （1 つは**取りやめ**、1 つは**保留**——費用の問題が未解決のまま残る〈論点 F〉、1 つは**不成立**）。
+  そこから **別の設計（テンプレートの穴埋め ＋ 一工夫のフレーバー）へ着いた。**
+  **「3 案とも取り下げた」とまとめない**——保留は取り下げではない（1 章の表が正本）。
 - **この文書へ宣言や仕様を書き写さない。** ここが持つのは「測った値」と「取り下げた理由」と
   「まだ決まっていないこと」だけである。仕様の正本は `docs/product-spec.md`、
-  トンネルの手順は [local-llm-tunnel.md](local-llm-tunnel.md) が持つ。
+  トンネルの手順は `docs/local-llm-tunnel.md` が持つ——**ただしこのファイルは #793 と一緒に
+  `main` へ入る。この文書の時点では `main` に存在しないので、リンクにしていない。**
 
 ---
 
@@ -440,12 +443,22 @@ src/chat-payload.ts:182         CHAT_MAX_OUTPUT_TOKENS = 1_500
 
 ## 8. 再現手順
 
-**dev01 へは devcontainer から入れる**（[local-llm-tunnel.md](local-llm-tunnel.md)「devcontainer 側の手順」）。
+**dev01 へは devcontainer から入れる。** **この節は他の文書に依存しない形で書く**——トンネルの
+手順書（`docs/local-llm-tunnel.md`）は #793 と一緒に入るので、それが無くても再現できる必要がある。
 
 ```bash
-ssh dev01                        # ~/.ssh/config は postCreateCommand が置く
-                                 # 認証が切れていたら cloudflared access login https://dev01-ssh.ojos.jp
+ssh-add -l                                          # 鍵が見えること（ホストの agent を VS Code が転送する）
+cloudflared access login https://dev01-ssh.ojos.jp  # 初回だけ。出た URL をブラウザのある端末で開く
+ssh dev01
 ```
+
+- **`~/.ssh/config` と `cloudflared` は `postCreateCommand`（`scripts/install-cloudflared.sh`）が置く**ので、
+  コンテナを作り直しても戻る。`ProxyCommand cloudflared access ssh --hostname %h` でトンネルを回る。
+- **`~/.cloudflared/` のトークンは戻らない。** コンテナを作り直したら `access login` をもう一度通す
+  （セッションは 24 時間）。
+- **秘密鍵はコンテナに置かない。** `ssh-add -l` が空のままだと `Permission denied (publickey)` になる
+  ——トンネルや Access の問題に見えるが、原因は手元の agent である。
+- **このコンテナは LAN へ出られない**（拒否ではなくタイムアウトになる）。**トンネルを回る経路だけが通る。**
 
 計測の要点（詳細は 4 章・5 章）:
 

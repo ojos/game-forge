@@ -78,7 +78,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  check:
+  # **ジョブ名を `check` にしない。** review-gate.yml のジョブが `check` なので、
+  # 同じ名前だと `gh pr checks` に `check` が 2 行並び、どちらがどちらか読めない
+  # （実測。PR #814 で 2 つ並んだ）。commit status の context は別なので判定は
+  # 混ざらないが、**人が読む一覧で区別できないのは、気づけないことと同じ側にある。**
+  record:
     runs-on: ubuntu-latest
     # フォークからの PR は対象外にする。記録の投稿には PR への書き込みが要り、
     # フォークからの push ではそれができない。**要求されないものを「無い」と落とすと、

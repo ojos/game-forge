@@ -193,6 +193,67 @@ resolve_review_range() {
   REVIEW_NO_TARGET=1
 }
 
+# 第二意見の出力を記録へ残す（#806）。
+#
+# **実行失敗を「指摘あり」として記録しない。** `second-opinion-review.sh` は CLI の不在・
+# 分割できない差分・API の失敗でも非 0 で終わるため、終了コードだけを見ると**レビューが
+# 1 行も走っていないのに `verdict=findings` の記録が残る。** その記録は確認側を緑にするので、
+# **レビューしていない head が「レビュー済み」として通る**（PR #814 の Copilot の指摘。
+# 実測: あのスクリプトには `exit 1` の経路が 7 つあり、うち大半は実行失敗である）。
+#
+# **判定が出たことは、出力の中の完了の行で見る。** あのスクリプトは終わりに必ず
+# `[second-opinion] LGTM (...)` か `[second-opinion] findings reported in ...` を出す。
+# どちらも無ければ、途中で落ちたということなので記録しない。
+#
+# **完了の行を要求するのは既定の reviewer のときだけである。** 差し替えた reviewer
+# （`LOOP_GATE_REVIEW_CMD`）は当然この綴りを出さないので、要求すると**正常に終わった
+# レビューまで「判定に到達しなかった」として記録しなくなる**——確認側が必ず赤になり、
+# 差し替えを使う人には「回したのに回していないと言われる」形になる（PR #814 の第二意見の
+# 指摘。**私が足した 2 つの直しが互いに矛盾していた。** しかも最初の試験は、偽の reviewer に
+# 既定の印を出力させていたので通ってしまった——**通るように作った試験は、何も確かめていない**）。
+#
+# **差し替え経路では、実行失敗と指摘を区別できない。** 規範は「重大な指摘がなければ通過を
+# 示す一意な判定トークンを出力の最後の行に返すこと」としか定めておらず、その綴りは
+# プロジェクト層が決める。loop-gate からは読めないので、終了コードだけで判定する。
+# **記録の `engine` が `custom` になるので、後から見たときに区別できる。**
+#
+# 引数: 1=出力を捕まえたファイル / 2=scope / 3=終了コード（0 なら pass）
+#       4=完了の行を要求するか（1=する / 0=しない）
+# 戻り値: 常に 0（記録の失敗でゲートの判定を変えない）
+record_second_opinion() {
+  local capture="$1" scope="$2" rc="$3" require_marker="${4:-1}"
+  [[ -n "$scope" ]] || return 0
+  [[ -s "$capture" ]] || return 0
+  [[ -f "$HERE/second-opinion-record.sh" ]] || return 0
+
+  if [[ "$require_marker" -eq 1 ]] \
+    && ! grep -q -e '\[second-opinion\] LGTM ' -e '\[second-opinion\] findings reported in ' "$capture"; then
+    echo "[loop-gate] 第二意見は判定に到達しませんでした（実行失敗）。記録は残しません。" >&2
+    echo "[loop-gate] 記録が無いので、push すると確認側が赤を出します。原因を直してから回し直してください。" >&2
+    return 0
+  fi
+
+  local engine runs verdict
+  # engine と回数は**出力から読む**（環境変数から読むと、上書きされた実際の値と
+  # 食い違う。`docs/handoff.md` の「既定値から結論しない」）。
+  engine="$(sed -n 's/.*(engine=\([^,)]*\).*/\1/p' "$capture" | head -1)"
+  # 差し替え経路で出力から engine が読めないときは `custom` と記録する。**`unknown` に
+  # しない**——「読めなかった」と「差し替えた reviewer だった」は別の事実である。
+  [[ -n "$engine" || "$require_marker" -eq 1 ]] || engine=custom
+  runs="$(sed -n 's/.*runs=\([0-9]*\).*/\1/p' "$capture" | head -1)"
+  verdict=pass
+  [[ "$rc" -eq 0 ]] || verdict=findings
+
+  bash "$HERE/second-opinion-record.sh" save \
+    --engine "${engine:-unknown}" \
+    --verdict "$verdict" \
+    --scope "$scope" \
+    --runs "${runs:-1}" \
+    < "$capture" \
+    || echo "[loop-gate] WARN: 第二意見の記録を残せませんでした（ゲートの判定は変えません）" >&2
+  return 0
+}
+
 main() {
   # verify・第二意見（git diff 等）はプロジェクトルート基準で実行する。
   # scripts/ の 1 階層上がルート。任意の作業ディレクトリから起動しても不変にする。
@@ -272,22 +333,7 @@ main() {
 
       # 記録は**判定の前に**残す。指摘が出た実行も記録に値する（何が出たのかが
       # 残らないと、直したのか黙って落としたのかを後から確かめられない）。
-      if [[ -n "$so_scope" && -s "$so_capture" && -f "$HERE/second-opinion-record.sh" ]]; then
-        local so_engine so_runs so_verdict
-        # engine と回数は**出力から読む**（環境変数から読むと、上書きされた実際の値と
-        # 食い違う。`docs/handoff.md` の「既定値から結論しない」）。
-        so_engine="$(sed -n 's/.*(engine=\([^,)]*\).*/\1/p' "$so_capture" | head -1)"
-        so_runs="$(sed -n 's/.*runs=\([0-9]*\).*/\1/p' "$so_capture" | head -1)"
-        so_verdict=pass
-        [[ "$review_ok" -eq 0 ]] || so_verdict=findings
-        bash "$HERE/second-opinion-record.sh" save \
-          --engine "${so_engine:-unknown}" \
-          --verdict "$so_verdict" \
-          --scope "$so_scope" \
-          --runs "${so_runs:-1}" \
-          < "$so_capture" \
-          || echo "[loop-gate] WARN: 第二意見の記録を残せませんでした（ゲートの判定は変えません）" >&2
-      fi
+      record_second_opinion "$so_capture" "$so_scope" "$review_ok"
       rm -f "$so_capture"
 
       if [[ "$review_ok" -ne 0 ]]; then
@@ -299,13 +345,29 @@ main() {
       echo "[loop-gate] SKIP (no reviewer present)"
     fi
   elif [[ -n "$LOOP_GATE_REVIEW_CMD" ]]; then
-    if ! bash -c "$LOOP_GATE_REVIEW_CMD"; then
+    # **差し替えた reviewer でも記録を残す**（#806 / PR #814 の Copilot の指摘）。
+    # 残さないと、差し替えを使っている人はローカルのゲートを通しても**確認側が必ず赤に
+    # なる**——回したのに回していないと言われる形で、機構への信頼を壊す。
+    #
+    # **scope は `staged` とみなす。** 差し替えた側が何をレビューしたかは、ここからは
+    # 分からない。既定の reviewer の既定が `staged` で、規範も「差分を渡して非対話で実行する」
+    # と定めているので、その前提に揃える。**別の範囲をレビューする reviewer を差し替えるなら、
+    # 記録も自分で残すこと**（`scripts/second-opinion-record.sh save` を呼ぶ）。
+    local cmd_capture cmd_ok=0
+    cmd_capture="$(mktemp "${TMPDIR:-/tmp}/loop-gate-second-opinion.XXXXXX")"
+    bash -c "$LOOP_GATE_REVIEW_CMD" 2>&1 | tee "$cmd_capture" || cmd_ok=1
+    record_second_opinion "$cmd_capture" "staged" "$cmd_ok" 0
+    rm -f "$cmd_capture"
+    if [[ "$cmd_ok" -ne 0 ]]; then
       echo "[loop-gate] second opinion reported findings" >&2
       echo "GATE_FAIL"
       exit 1
     fi
   else
+    # **記録を残さない。** レビューを明示的に止めた状態なので、記録が無いのが正しい。
+    # push すれば確認側が赤を出す——**それは不具合ではなく、止めたことが見えている形である。**
     echo "[loop-gate] SKIP (disabled by LOOP_GATE_REVIEW_CMD='')"
+    echo "[loop-gate] 第二意見を止めたので記録も残しません。push すると確認側が赤を出します。"
   fi
 
   echo "GATE_PASS"

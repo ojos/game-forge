@@ -125,7 +125,7 @@ jobs:
           # 投稿より先に走る。待たずに見ると push のたびに赤が出る。
           GRACE_SEC=300
 
-          # **掃き寄せ側は、PR の作成時刻ではなく head コミットの時刻で待つ。**
+          # **掃き寄せ側は、push の時刻で待つ。**
           #
           # 最初の実装は PR の `created_at` を見ていた。**それでは、作成から 10 分以上
           # 経った PR に新しく push された直後に掃き寄せが重なると、猶予が 1 秒も効かない**
@@ -136,8 +136,19 @@ jobs:
           # `updated_at` も使えない。コメント（この仕組みが投稿する記録を含む）で動くため、
           # 活動している PR では期限が前へ逃げ続け、いつまでも判定されない。
           #
-          # **見るのは head コミットの時刻である。** 「押した中身が、投稿を待つだけの時間を
-          # 過ぎたか」を直接表す。判定の猶予は 1 つの定数（GRACE_SEC）に揃える。
+          # **コミットの時刻も使えない。** `commit.committer.date` はコミットに埋まった時刻で、
+          # **その内容が push された時刻ではない**（PR #814 の Copilot の指摘）。rebase や、
+          # 前に作ったコミットを後から push した場合、コミット時刻は過去なので age が大きくなり、
+          # **投稿の窓が開く前に赤を付ける。**
+          #
+          # **見るのは check-run の開始時刻である。** CI は push で始まるので、その最も早い
+          # 開始時刻が push 時刻の代理になる（実測: コミット時刻 15:56:59Z に対して
+          # 15:57:08Z。新しい push では近く、古いコミットの push では乖離する）。
+          # **再実行で started_at が新しくなる方向は、猶予が伸びる側＝安全側である。**
+          #
+          # **check-run が 1 つも無いときは判定しない。** CI がまだ始まっていない（＝ push
+          # 直後）か、`[skip ci]` で飛ばされたということで、どちらも「記録が無い」と断じる
+          # 根拠にならない。判定の猶予は 1 つの定数（GRACE_SEC）に揃える。
 
           # status の名前。**変えると過去の PR に付いた status と別物になる。**
           CONTEXT="second-opinion-gate"
@@ -267,20 +278,30 @@ jobs:
             # while read はパイプの右に置かない（サブシェルで failed が残らない）。
             while read -r pr sha; do
               [ -n "$pr" ] || continue
-              # head コミットの時刻を取る。**PR 1 本につき 1 回の追加の呼び出しになる**が、
-              # 掃き寄せは 20 分ごとで open な PR は数本なので、費用は問題にならない。
+              # push の時刻を、check-run の最も早い開始時刻から採る。
+              # **`select(. != null)` を外さない。** queued や skipped の check-run は
+              # `started_at` が null で、jq の型順（null < string）により **sort の先頭が必ず
+              # null になる。** `// empty` がそれを空にするので、**実行済みの check-run が
+              # あっても「まだ無い」と読んで、その PR を永久に判定しなくなる**
+              # （PR #814 の第二意見の指摘。実測で再現）。**PR 1 本につき 1 回の
+              # 追加の呼び出しになる**が、掃き寄せは 20 分ごとで open な PR は数本なので、
+              # 費用は問題にならない。
               # 読めなかったら**判定しない**（確かめられないことを「記録が無い」に混ぜない）。
-              if ! head_date="$(gh api "repos/${REPO}/commits/${sha}" --jq .commit.committer.date 2>/dev/null)"; then
-                echo "::error::PR #${pr}: head コミット（${sha:0:7}）の時刻を読めませんでした。判定を次の定期実行へ持ち越します。"
+              if ! pushed_at="$(gh api "repos/${REPO}/commits/${sha}/check-runs" --jq '[.check_runs[].started_at | select(. != null)] | sort | .[0] // empty' 2>/dev/null)"; then
+                echo "::error::PR #${pr}: head（${sha:0:7}）の check-run を読めませんでした。判定を次の定期実行へ持ち越します。"
                 failed=1
                 continue
               fi
-              age=$(( now - $(date -u -d "$head_date" +%s) ))
-              if [ "$age" -lt "$GRACE_SEC" ]; then
-                echo "PR #${pr}: head が ${age} 秒前なので、掃き寄せでは判定しません（記録の投稿を ${GRACE_SEC} 秒待ちます）"
+              if [ -z "$pushed_at" ]; then
+                echo "PR #${pr}: head（${sha:0:7}）に check-run がまだありません。掃き寄せでは判定しません。"
                 continue
               fi
-              echo "PR #${pr} を判定します（head は ${age} 秒前）"
+              age=$(( now - $(date -u -d "$pushed_at" +%s) ))
+              if [ "$age" -lt "$GRACE_SEC" ]; then
+                echo "PR #${pr}: push から ${age} 秒なので、掃き寄せでは判定しません（記録の投稿を ${GRACE_SEC} 秒待ちます）"
+                continue
+              fi
+              echo "PR #${pr} を判定します（push から ${age} 秒）"
               judge "$pr" "$sha" || failed=1
             done <<EOF
           $prs

@@ -88,6 +88,31 @@ cd "$(dirname "$HERE")"
 # `CONTEXT` を変えると過去の status と別物になるのと同じ性質）。
 readonly MARKER_PREFIX='<!-- second-opinion sha='
 
+# 生の出力に割り当てるバイト数の上限。
+#
+# **GitHub のコメントは 65,536 字が上限である。** 表・注記・フェンス・中略の断り書きに
+# 使う分を引いて、余裕を持って 50,000 バイトに置く。**超えたら中央を省き、省いたことを
+# 本文に書く**（`cmd_post`）。字数ではなくバイト数で見るのは、`wc -c` が移植性のある
+# 数え方であることと、上限を下回る側へ倒れるためである（日本語は 1 文字 3 バイト）。
+readonly OUTPUT_BUDGET=50000
+
+# 投稿の本文を書く一時ファイル。**関数ローカルにしない。**
+#
+# `local` な変数は関数を抜けた時点で消えるため、**スクリプト終了時に走る EXIT trap からは
+# 空に見える**（実測: `trap から見た v: []`）。単一引用符の trap は展開を実行時まで遅らせる
+# ので、ローカル変数と組み合わせると `rm -f ""` になり、一時ファイルが残る
+# （PR #814 の第二意見の指摘）。**trap を二重引用符にするのも駄目**——パスがシェルの
+# コードとして埋め込まれ、`TMPDIR` にアポストロフィがあると壊れる（Copilot の指摘）。
+# **両方を満たすには、trap から見えるスコープに置くしかない。**
+COMMENT_BODY=""
+# **空のときは `rm` を呼ばない。** `post` 以外のサブコマンド（`save` / `verify` / `show`）では
+# `COMMENT_BODY` が空のまま EXIT trap が走る。**GNU の `rm -f ""` は 0 を返す**（実測）ので
+# この環境では害が無いが、**このスクリプトが対象とする macOS の BSD `rm` はここで試せない。**
+# 空を弾くのは 1 行で、外れたときの損（正常なサブコマンドが終了コード 1 になる）が大きい。
+# 前提を確かめられない側へ倒す（PR #814 の第二意見の指摘。**前提は GNU では誤りだが、
+# 対処は採った**——`review-workflow.md` の「却下と採否は別に判断します」）。
+trap '[ -n "$COMMENT_BODY" ] && rm -f "$COMMENT_BODY"' EXIT
+
 fail() {
   printf '[second-opinion-record] %s\n' "$1" >&2
   exit 1
@@ -242,11 +267,8 @@ cmd_post() {
     return 0
   fi
 
-  local body
-  body="$(mktemp "${TMPDIR:-/tmp}/second-opinion-comment.XXXXXX")" \
+  COMMENT_BODY="$(mktemp "${TMPDIR:-/tmp}/second-opinion-comment.XXXXXX")" \
     || fail "一時ファイルを作れません。"
-  # shellcheck disable=SC2064
-  trap "rm -f '$body'" EXIT
 
   {
     printf '%s\n' "$marker"
@@ -283,7 +305,20 @@ cmd_post() {
     [[ "$longest" -ge 3 ]] || longest=2
     fence="$(printf '%*s' "$((longest + 1))" '' | tr ' ' '`')"
     printf '%s\n' "$fence"
-    cat "$RECORD_DIR/output"
+    # **大きすぎる出力は切り詰める。** GitHub のコメントは 65,536 字が上限で、超えると
+    # `gh pr comment` が落ちて **head に記録が付かないまま終わる**——この仕組みが検出したい
+    # 状態そのものになる（PR #814 の Copilot の指摘）。
+    #
+    # **切り詰めたことを必ず書く。** 黙って削ると、出力を改変したのと区別が付かない。
+    # **先頭と末尾を残す**——指摘は先頭に、判定（VERDICT）は末尾にあるため、どちらも要る。
+    if [ "$(wc -c < "$RECORD_DIR/output" | tr -d ' ')" -gt "$OUTPUT_BUDGET" ]; then
+      head -c "$((OUTPUT_BUDGET / 2))" "$RECORD_DIR/output"
+      printf '\n\n... 中略（全文は %s バイト。上限 %s バイトに収めるため中央を省いた）...\n\n' \
+        "$(wc -c < "$RECORD_DIR/output" | tr -d ' ')" "$OUTPUT_BUDGET"
+      tail -c "$((OUTPUT_BUDGET / 2))" "$RECORD_DIR/output"
+    else
+      cat "$RECORD_DIR/output"
+    fi
     # **末尾に改行が無い出力を、そのまま閉じない。** 無いと閉じるフェンスが最後の行へ
     # 連結され（`last line```）、Markdown がブロックを閉じない（PR #814 の第二意見の指摘。
     # 実測で再現）。**足りない改行を 1 つ足すだけで、出力の中身は変えない。**
@@ -291,9 +326,9 @@ cmd_post() {
     [ -z "$(tail -c 1 "$RECORD_DIR/output")" ] || printf '\n'
     printf '%s\n\n' "$fence"
     printf '</details>\n'
-  } > "$body"
+  } > "$COMMENT_BODY"
 
-  gh pr comment "$pr" --body-file "$body" >/dev/null \
+  gh pr comment "$pr" --body-file "$COMMENT_BODY" >/dev/null \
     || fail "PR #$pr へ投稿できませんでした。"
   printf '[second-opinion-record] PR #%s へ記録を投稿しました（%s）。\n' "$pr" "${VERIFIED_HEAD:0:12}"
 }

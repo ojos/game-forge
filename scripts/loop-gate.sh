@@ -237,6 +237,15 @@ main() {
     if [[ -f "$HERE/second-opinion-review.sh" ]]; then
       resolve_review_range
       local review_ok=0
+      # 出力を捕まえる（#806）。**回し直しでは代われない**——第二意見は非決定的で、
+      # 同じ差分でも実行のたびに結果が変わる（review-workflow.md の「第二意見の非決定性」。
+      # 実測で同一コミットの 4 回が LGTM 2 回・指摘あり 2 回に分かれた）。記録に残すべきは
+      # **push を通したその実行**なので、ここで捕まえるしかない。
+      #
+      # `tee` で通すので、利用者に見える出力は変わらない。`pipefail` が効いているため、
+      # レビュー側の終了コードは `tee` に隠れない。
+      local so_capture so_scope=""
+      so_capture="$(mktemp "${TMPDIR:-/tmp}/loop-gate-second-opinion.XXXXXX")"
       if [[ -n "$REVIEW_RANGE" ]]; then
         # 上流以外を起点に採ったなら、その理由を先に出す。黙って範囲を変えると、
         # なぜその差分がレビュー対象なのかを読み手が追えない。
@@ -244,15 +253,43 @@ main() {
           echo "[loop-gate] $REVIEW_RANGE_REASON"
         fi
         echo "[loop-gate] staged diff is empty; reviewing $REVIEW_RANGE"
-        bash "$HERE/second-opinion-review.sh" --range "$REVIEW_RANGE" || review_ok=1
+        bash "$HERE/second-opinion-review.sh" --range "$REVIEW_RANGE" 2>&1 \
+          | tee "$so_capture" || review_ok=1
+        so_scope="range:$REVIEW_RANGE"
       elif [[ "$REVIEW_NO_TARGET" -eq 1 ]]; then
         # レビューできる差分が 1 行も無い。第二意見を呼んでも対象が無いため、
         # その事実を明示したうえで通過させる（空を FAIL にすると、差分の無い
         # 状態でのゲート実行が落ちる）。黙って通すと偽の緑と区別が付かない。
+        #
+        # **記録も残さない。** レビューしていないものを「レビュー済み」として記録すると、
+        # 確認側（second-opinion-gate.yml）が偽の緑を出す。記録が無ければ赤が出るので、
+        # 気づける側へ倒す。
         echo "[loop-gate] no reviewable diff; second opinion has nothing to review"
       else
-        bash "$HERE/second-opinion-review.sh" || review_ok=1
+        bash "$HERE/second-opinion-review.sh" 2>&1 | tee "$so_capture" || review_ok=1
+        so_scope="staged"
       fi
+
+      # 記録は**判定の前に**残す。指摘が出た実行も記録に値する（何が出たのかが
+      # 残らないと、直したのか黙って落としたのかを後から確かめられない）。
+      if [[ -n "$so_scope" && -s "$so_capture" && -f "$HERE/second-opinion-record.sh" ]]; then
+        local so_engine so_runs so_verdict
+        # engine と回数は**出力から読む**（環境変数から読むと、上書きされた実際の値と
+        # 食い違う。`docs/handoff.md` の「既定値から結論しない」）。
+        so_engine="$(sed -n 's/.*(engine=\([^,)]*\).*/\1/p' "$so_capture" | head -1)"
+        so_runs="$(sed -n 's/.*runs=\([0-9]*\).*/\1/p' "$so_capture" | head -1)"
+        so_verdict=pass
+        [[ "$review_ok" -eq 0 ]] || so_verdict=findings
+        bash "$HERE/second-opinion-record.sh" save \
+          --engine "${so_engine:-unknown}" \
+          --verdict "$so_verdict" \
+          --scope "$so_scope" \
+          --runs "${so_runs:-1}" \
+          < "$so_capture" \
+          || echo "[loop-gate] WARN: 第二意見の記録を残せませんでした（ゲートの判定は変えません）" >&2
+      fi
+      rm -f "$so_capture"
+
       if [[ "$review_ok" -ne 0 ]]; then
         echo "[loop-gate] second opinion reported findings" >&2
         echo "GATE_FAIL"

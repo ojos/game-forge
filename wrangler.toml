@@ -25,10 +25,14 @@ compatibility_date = "2026-08-01"
 # ——**部品の側で取得先を絞る設定は無い**（0.10.3 の実装で確かめた）。
 #
 # **アプリ全体の `fetch()` に効く。** 変わるのは「自分のゾーンへの `fetch()` を、オリジンへ直行させずに
-# Cloudflare の表玄関から入れ直す」ことだけである（公式の互換フラグの説明）。このサイトはゾーンを
-# Cloudflare に持たず（確定17 / 確定22。DNS は Route53）、外へ出る `fetch()` は AWS（Lambda・Bedrock）・
-# Resend・Google の公開の口だけで、自分のホストを `fetch()` で呼ぶ経路は無い（#696 PR① で `src/` を洗った）。
-# **#775 でゾーンを Cloudflare へ移した後も、自分のホストへの `fetch()` は無い**（`src/` を洗い直した）。
+# Cloudflare の表玄関から入れ直す」ことだけである（公式の互換フラグの説明）。**`ojos.jp` のゾーンは
+# Cloudflare にある**（#775 / M22-1 で Route 53 とさくらから移した。確定17 の改訂）。**それでもこの旗の
+# 結論は変わらない**——外へ出る `fetch()` は AWS（Lambda・Bedrock）・Resend・Google の公開の口だけで、
+# **自分のホストを `fetch()` で呼ぶ経路は無い**（#696 PR① で `src/` を洗い、#775 で洗い直した）。
+#
+# > **#775 までの旧記述**——「このサイトはゾーンを Cloudflare に持たず（確定17 / 確定22。DNS は Route53）、
+# > 外へ出る `fetch()` は AWS（Lambda・Bedrock）・Resend・Google の公開の口だけで、自分のホストを
+# > `fetch()` で呼ぶ経路は無い」。**前提（ゾーンを持たない）だけが変わり、結論は変わっていない。**
 # **`nodejs_compat` は足さない**（部品は Node の API を使わない）。
 compatibility_flags = ["global_fetch_strictly_public"]
 

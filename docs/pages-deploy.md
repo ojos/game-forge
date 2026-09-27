@@ -15,15 +15,19 @@
 
 ## なぜ Workers ではなく Pages か
 
-`game-forge.ojos.jp` のゾーンは確定17 に従って **AWS Route53 へ NS 委譲済み**で、
-Cloudflare 上にありません。
-
-- **Workers のカスタムドメインは、ゾーンが Cloudflare 上にあることを要求します。** 使えません。
-- **Pages のカスタムドメインは、サブドメインであれば外部 DNS のまま CNAME 1 本で足ります。**
-
-ゾーンを Cloudflare へ戻す案は採りません。確定17 の委譲と 9.2 の AWS アカウント設計を
-巻き戻すことになり、DNS を Terraform で宣言的に管理する目的（さくらに DNS の API が
-無いことへの対処）を捨てることになるためです。
+> **#775 までの旧記述**——以下は、`ojos.jp` のゾーンが Cloudflare に無かった時点の前提と結論です。
+> **前提は #775 で外れました**（この節の末尾の注記）。**引用へ下げたのは、現行の手順として読まれる形で
+> 残っていたためです**（PR #812 の Copilot の指摘）。
+>
+> `game-forge.ojos.jp` のゾーンは確定17 に従って **AWS Route53 へ NS 委譲済み**で、
+> Cloudflare 上にありません。
+>
+> - **Workers のカスタムドメインは、ゾーンが Cloudflare 上にあることを要求します。** 使えません。
+> - **Pages のカスタムドメインは、サブドメインであれば外部 DNS のまま CNAME 1 本で足ります。**
+>
+> ゾーンを Cloudflare へ戻す案は採りません。確定17 の委譲と 9.2 の AWS アカウント設計を
+> 巻き戻すことになり、DNS を Terraform で宣言的に管理する目的（さくらに DNS の API が
+> 無いことへの対処）を捨てることになるためです。
 
 > **#775 注記（2026-09-22）。** その後、別の理由（Cloudflare Tunnel。M22）で **`ojos.jp` ごと Cloudflare DNS へ
 > 移しました**（確定17 の改訂。`terraform/dns-ojos-jp.tf`）。上の 2 点の前提（ゾーンが Cloudflare 上に無い）は
@@ -509,7 +513,7 @@ gh secret list --repo ojos/game-forge    # 名前と更新日時だけが読め�
 > 作った直後・消した直後の名前は `dig @1.1.1.1` で引いた IP を `curl --resolve` に渡して確かめること
 > （#775 で、これを知らずに「つながらない」と読み違えかけました）。旧記述は以下に残します。
 
-**Cloudflare 側と Route53 側の両方に作業があります。** 片方だけでは張れません。
+**Cloudflare 側と DNS 側の両方に作業があります。** 片方だけでは張れません。
 
 **ホストは 3 つあります**（`app.` / `sandbox.` / `admin.`）。**運営の管理画面
 （`admin.game-forge.ojos.jp`。仕様 2.4 / #356）の手順は
@@ -542,19 +546,28 @@ curl -s "$API" -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"   # 状態の確
 `active` へ変わり、証明書が発行されます。**先に DNS を作っても構いません**が、
 どちらか片方だけでは `active` になりません。
 
-### Route53 側（Terraform）
+### DNS 側（Terraform）
 
-**レコードは `terraform/dns.tf` が宣言します。ダッシュボードや `aws` コマンドで
-手で作らないこと**（確定17 が Route53 へ委譲した目的がそもそもこれです）。
+**レコードは `terraform/dns-ojos-jp.tf` が宣言します**（`cloudflare_dns_record.game_forge_pages`）。
+**ダッシュボードや `wrangler`・`aws` コマンドで手で作らないこと**——DNS を宣言で管理すると決めた
+目的がそもそもこれで、#775 で置き場所が Cloudflare の `ojos.jp` ゾーンへ移っても変わりません。
+
+> **#775 までの旧記述**——「**レコードは `terraform/dns.tf` が宣言します。ダッシュボードや
+> `aws` コマンドで手で作らないこと**（確定17 が Route53 へ委譲した目的がそもそもこれです）。」
+> **宣言で管理することは変わらず、宣言のファイルと置き場所（どの権威ゾーンか）が変わりました。**
 
 ```bash
 export AWS_PROFILE=game-forge-prod
+set -a; source scripts/load-project-env.sh; set +a   # CLOUDFLARE_API_TOKEN が要る
 terraform -chdir=terraform plan
 terraform -chdir=terraform apply
 ```
 
-宣言されるのは、ホストゾーン `game-forge.ojos.jp` の中の CNAME 3 本です
-（**3 本目は #356 で増えました**）。
+**`CLOUDFLARE_API_TOKEN` を載せること。** 載せ忘れると R2 のリソースの読み戻しが 9106 で落ち、
+**プロバイダの不具合に見えます**（`docs/handoff.md` 3 章。`terraform/README.md`）。
+
+宣言されるのは、Cloudflare の `ojos.jp` ゾーンの中の CNAME 3 本です
+（**3 本目は #356 で増えました**。#775 より前は Route 53 のホストゾーン `game-forge.ojos.jp` にありました）。
 
 | 名前 | 型 | 値 |
 |---|---|---|
@@ -562,9 +575,12 @@ terraform -chdir=terraform apply
 | `sandbox.game-forge.ojos.jp` | CNAME | `game-forge.pages.dev` |
 | `admin.game-forge.ojos.jp` | CNAME | `game-forge.pages.dev` |
 
-ホスト名はゾーン名から導き（`local.app_host`）、向き先は
-`var.cloudflare_pages_project` から組み立てます。完全修飾名を書き写さないのは、
+ホスト名はゾーン名から導き（`local.game_forge_domain` → `local.game_forge_pages_hosts`）、
+向き先は `local.pages_hostname` から組み立てます。完全修飾名を書き写さないのは、
 ゾーン名を変えたときに片方だけが古い名前を指さないようにするためです。
+
+**CNAME は DNS only（プロキシにしない）**——`local.game_forge_pages_proxied` が `false` で、
+段 B の実測で決めました（この章の冒頭の #775 注記）。
 
 **3 本とも外部層の検査に入っています**（`scripts/acceptance-remote.sh` の
 `pages custom domain records match` と `wrangler production hosts match dns`）。

@@ -127,42 +127,38 @@ resource "cloudflare_dns_record" "code_narrative_delegation" {
 }
 
 /**
- * game-forge.ojos.jp の委譲（段 A。#775）。
+ * game-forge.ojos.jp の委譲は、段 C2 で外した（#775。2026-09-27）。
  *
- * **Route 53 のゾーンの宣言から導く。** さくらのときは値を手で写していたが、ここでは
- * 写さない。**写し漏れると app / sandbox / admin とメール送信が全部引けなくなる**ためである。
+ * **ここには `cloudflare_dns_record.game_forge_delegation` があった。** Route 53 のゾーンの
+ * 宣言（`aws_route53_zone.game_forge.name_servers`）から NS を導き、ojos.jp のゾーンへ
+ * 4 本置くものだった。段 A でこれを置き、段 C1 で下のレコードを揃え、**段 C2 でこれを外した。**
  *
- * **段 C でこの委譲を外す**（レコードを Cloudflare のゾーンへ吸収した後）。戻すときは、
- * この宣言を戻せばよい。
+ * **戻すときはこの宣言を戻す。** 綴りは段 C2 の 1 つ前のコミットにある:
+ *
+ *   git show HEAD~1:terraform/dns-ojos-jp.tf
+ *
+ * **外した後の答えは Cloudflare が返す。** キャッシュに残った委譲（TTL 3600）を辿ってくる
+ * リゾルバには、Route 53 のゾーンが同じ答えを返し続ける（ゾーンの削除は別 issue。dns.tf）。
+ *
+ * **`aws_route53_zone.game_forge` の参照はここから消えたが、dns.tf は残る。** Route 53 の
+ * ゾーンと、そこに載ったレコードは、削除の issue まで宣言のまま残す。
  */
-resource "cloudflare_dns_record" "game_forge_delegation" {
-  for_each = toset([for ns in aws_route53_zone.game_forge.name_servers : trimsuffix(ns, ".")])
-
-  zone_id = cloudflare_zone.ojos_jp.id
-  name    = aws_route53_zone.game_forge.name
-  type    = "NS"
-  content = each.value
-  ttl     = local.ojos_jp_ttl
-
-  lifecycle {
-    precondition {
-      condition     = endswith(aws_route53_zone.game_forge.name, ".${cloudflare_zone.ojos_jp.name}")
-      error_message = "委譲するゾーン（aws_route53_zone.game_forge）が ojos.jp の下にありません。"
-    }
-  }
-}
 
 /**
  * ここから下は game-forge.ojos.jp の下のレコード（段 C。Route 53 から吸収する。#775）。
  *
  * # 置く順序（段 C1 → C2）
  *
- * **C1: 委譲（上の game_forge_delegation）を残したまま、ここのレコードを置く。**
+ * **両方とも済んだ**（C1: 2026-09-22 / **C2: 2026-09-27**）。以下は経緯と、戻すときに
+ * 何をどの順で戻すかの記録である。
+ *
+ * **C1: 委譲（上の注記にあった game_forge_delegation）を残したまま、ここのレコードを置く。**
  * 委譲がある間、Cloudflare は game-forge.ojos.jp より下の問い合わせにリファラルを返すので、
  * ここに置いたものは外から見えない（委譲の NS と同名・その下にレコードを置けることは、
  * pending のゾーンで実測した。2026-09-22）。
  *
- * **C2: 委譲の NS を外す。** 切り替わるのはこの小さな apply だけで、戻すときは委譲を戻す。
+ * **C2: 委譲の NS を外す。** 切り替わるのはこの小さな apply だけで、戻すときは委譲を戻す
+ * （綴りは上の注記が指すコミットにある）。
  * キャッシュに残った委譲（TTL 3600）を辿ってくるリゾルバには、Route 53 が同じ答えを返し続ける
  * （Route 53 のゾーンは削除の別 issue まで残す。dns.tf）。
  *

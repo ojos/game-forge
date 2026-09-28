@@ -58,7 +58,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 #### 残していること
 
-- **DNS の段 C2（#775 / PR #812）は未適用です。** 時限（2026-09-28 16:25 JST）は過ぎています。**外から引くと `game-forge.ojos.jp` の NS は Route 53 の 4 本のまま**でした。**apply は利用者の端末で**（`git checkout --detach origin/infra/775-ojos-jp-cloudflare-dns` → `terraform -chdir=terraform apply` → 戻る。**期待する plan は 4 destroy のみ**）。**PR #812 は全緑・`CLEAN` で、`main` を取り込み済み・第二意見の記録も投稿済み**です。
+- **DNS の段 C2（#775 / PR #812）は未適用です。** 時限（2026-09-28 16:25 JST）は過ぎています。**外から引くと `game-forge.ojos.jp` の NS は Route 53 の 4 本のまま**でした。**apply は利用者の端末で**（`git checkout --detach origin/infra/775-ojos-jp-cloudflare-dns` → `terraform -chdir=terraform apply` → 戻る。**期待する plan は 4 destroy のみ**）。**PR #812 は open のままです**（マージしていません。マージは apply の後）。**全緑・`CLEAN` で、枝の側へ `main` を取り込み済み**（`5a3365f`）**・第二意見の記録も投稿済み**なので、apply が済めばそのままマージできます。
 - **#793（dev01 のトンネル）は #812 の後**です。マージで base が `main` へ付け替わるので、**`docs/handoff.md` の先頭を「両方残す」で解消**してください（#815 とこの節の 2 つが相手です）。
 - **#805 の acceptance の残り**: ①**#816 をマージした後の rebuild → `codex login --device-auth` を 1 回**（`~/.codex` が volume に乗るので、以後は残ります）②`.env` を `SECOND_OPINION_ENGINE=codex` へ（**いまは antigravity に戻してあります**——rebuild で CLI が消えたため）③**1 週間の消費を測って #805 へ記録**。
 - **#807（Copilot の撤退）は 2026-10-09 ごろが締切**です。前提の 3 本（#803 / #806 / #805）は揃いました。

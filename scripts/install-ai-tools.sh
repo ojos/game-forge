@@ -113,19 +113,67 @@ disable_agy_telemetry() {
   mv "$tmp" "$AGY_SETTINGS"
   echo "[install-ai-tools] agy telemetry disabled (enableTelemetry=false)"
 }
-install_if_missing claude "@anthropic-ai/claude-code"
-# codex（Codex CLI）は npm 配布なので install_if_missing の同型に乗る。
+# codex（Codex CLI）は npm 配布だが、**install_if_missing の同型には乗らない。**
 #
-# **版が要件になる**（#805）。第二意見の既定のモデル gpt-6-sol は 0.156.0 から
-# 引けるようになった綴りで、0.154 系の CLI は一覧に出さない。npm の latest を入れる
-# ため既定では満たすが、手で古い版を固定した環境では
-# `codex debug models` に gpt-6-sol が出ないことで露見する。
+# **版が要件になる**（#805）。第二意見の既定のモデル `gpt-6-sol` は 0.156.0 から
+# 引けるようになった綴りで、それより古い CLI は一覧に出さない。`install_if_missing` は
+# 「PATH に codex が在れば飛ばす」ので、**古い版が先に入っている環境は更新されず、
+# レビューのたびに失敗する**（Copilot の指摘）。だから在るときも版を見る。
 #
 # 認証は ChatGPT アカウントの OAuth（または API キー）で、導入だけでは使えない。
 # 初回に対話で `codex login` を通す必要がある。資格情報は ~/.codex/auth.json
 # （`codex doctor` で実測）で、この devcontainer では ~/.codex が named volume
 # （codex-storage）なので rebuild しても消えない。
-install_if_missing codex "@openai/codex"
+CODEX_MIN_VERSION="0.156.0"
+
+# 版の比較。`sort -V` は BSD 系に無い版があるので使わない（規範:
+# scripts/check-shell-portability.sh）。3 つの数へ分けて桁ごとに比べる。
+#
+# **読めない綴りは「古い」として扱う**（fail-closed）。入れ替えは冪等で副作用が
+# 小さい一方、読めないまま通すと「要件を満たさない CLI で回り続ける」ことになる。
+codex_version_is_old() {
+  local have="$1" want="$2"
+  awk -v have="$have" -v want="$want" '
+    function num(s, part) { split(s, a, "."); return a[part] + 0 }
+    BEGIN {
+      if (have !~ /^[0-9]+\.[0-9]+\.[0-9]+$/) { exit 0 }   # 読めない → 古い扱い
+      for (i = 1; i <= 3; i++) {
+        h = num(have, i); w = num(want, i)
+        if (h > w) { exit 1 }
+        if (h < w) { exit 0 }
+      }
+      exit 1
+    }'
+}
+
+install_codex_if_missing() {
+  local have=""
+  if command -v codex >/dev/null 2>&1; then
+    # `codex --version` は "codex-cli 0.157.1" の形（0.157.1 で実測）。数だけを取る。
+    have="$(codex --version 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+    if ! codex_version_is_old "$have" "$CODEX_MIN_VERSION"; then
+      echo "[install-ai-tools] codex ${have} already installed (>= $CODEX_MIN_VERSION), skipping"
+      return 0
+    fi
+    echo "[install-ai-tools] codex ${have:-（版を読めません）} は $CODEX_MIN_VERSION 未満です。入れ替えます ..."
+  else
+    echo "[install-ai-tools] installing @openai/codex ..."
+  fi
+
+  npm install -g "@openai/codex@latest"
+
+  have="$(codex --version 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+  if codex_version_is_old "$have" "$CODEX_MIN_VERSION"; then
+    echo "[install-ai-tools] error: 導入後も codex の版が $CODEX_MIN_VERSION 未満です（実際: ${have:-不明}）" >&2
+    echo "                   第二意見の既定のモデル gpt-6-sol を引けません。" >&2
+    return 1
+  fi
+  echo "[install-ai-tools] codex installed: $(command -v codex) (${have})"
+  echo "[install-ai-tools] codex は認証が別です。初回は対話で 'codex login' を通してください。"
+}
+
+install_if_missing claude "@anthropic-ai/claude-code"
+install_codex_if_missing
 install_agy_if_missing
 disable_agy_telemetry
 echo "[install-ai-tools] done"

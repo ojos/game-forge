@@ -359,7 +359,8 @@ split_diff_into_chunks() {
 # 空だとリダイレクトそのものが失敗する。
 stdin_file="/dev/null"
 
-# codex の「最後のメッセージ」の置き場所。build_args が実行ごとに空へ戻す。
+# codex の「最後のメッセージ」の置き場所。**消すのは run のループの側**である
+# （build_args は 1 チャンクに 1 回しか走らないので、ここで消すだけでは足りない）。
 answer_file=""
 
 build_args() {
@@ -389,7 +390,6 @@ $PROMPT")
       # 存在しなかった）。run のループは終了コードで先に落ちるため、無いファイルを
       # 読んで「回答が空」と報告する経路には入らない。
       answer_file="$work_dir/codex-answer.txt"
-      rm -f "$answer_file"
 
       # `exec -` は指示文を標準入力から読む。差分を引数へ載せないので単一引数の
       # 上限を受けず、分割も要らない（gemini / agy との違いはここだけ）。
@@ -576,6 +576,14 @@ for chunk_file in "${chunk_files[@]}"; do
     # LGTM が指摘ありに化け、ゲートが常に赤くなる（実測: 端末の色数や ripgrep 不在の
     # 警告が stderr に出る）。判定はモデルの回答（stdout）だけで行い、stderr は失敗
     # したときの診断に回す。標準入力は渡さない（差分は引数で渡している）。
+    # **回答のファイルは呼び出しの直前に消す。** build_args は 1 チャンクに 1 回しか
+    # 走らないので、そこで消すだけでは `--runs 2` 以上のときに 2 回目が 1 回目の回答を
+    # 読む——**0 で終わりながら -o を書かなかった回が、前の回の判定で通る**（下の
+    # 「回答が無ければ失敗させる」を素通りする。Copilot の指摘。実在）。
+    if [[ "$ENGINE" == "codex" ]]; then
+      rm -f "$answer_file"
+    fi
+
     output="$($CLI "${args[@]}" <"$stdin_file" 2>"$stderr_file")" || {
       echo "error: second opinion failed (engine=$ENGINE,$chunk_label run $run/$RUNS)" >&2
       cat "$stderr_file" >&2

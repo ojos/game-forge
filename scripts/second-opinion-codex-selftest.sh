@@ -73,6 +73,13 @@ if [[ "${1-}" == "login" && "${2-}" == "status" ]]; then
   exit 1
 fi
 
+# 呼び出し回数を数える（--runs 2 以上の検査で使う）。
+calls=1
+if [[ -f "$FAKE_CODEX_RECORD/calls" ]]; then
+  calls=$(( $(cat "$FAKE_CODEX_RECORD/calls") + 1 ))
+fi
+printf '%s\n' "$calls" > "$FAKE_CODEX_RECORD/calls"
+
 # 引数をそのまま記録する（1 行 1 引数。空白を含む引数でも壊れない）。
 : > "$FAKE_CODEX_RECORD/argv"
 for a in "$@"; do
@@ -95,8 +102,14 @@ for a in "$@"; do
   prev="$a"
 done
 
-if [[ "${FAKE_CODEX_WRITE_ANSWER:-1}" != "1" ]]; then
+if [[ "${FAKE_CODEX_WRITE_ANSWER:-1}" == "0" ]]; then
   # 0 で終わりながら回答を書かない経路（被検査側が気づくべき形）。
+  exit 0
+fi
+
+if [[ "${FAKE_CODEX_WRITE_ANSWER:-1}" == "first" && "$calls" -gt 1 ]]; then
+  # 1 回目だけ回答を書く。2 回目以降は 0 で終わりながら書かない
+  # （--runs 2 で、前の回の回答が残っていると通ってしまう形）。
   exit 0
 fi
 
@@ -137,11 +150,13 @@ fail() {
 
 run_review() {
   # 被検査側を、仕込みを先に見る PATH で走らせる。標準出力と標準エラーを分けて取る。
+  # 追加の引数はそのまま被検査側へ渡す（--runs 2 の検査で使う）。
+  rm -f "$record/calls"
   (
     cd "$repo"
     PATH="$fake_bin:$PATH" \
     FAKE_CODEX_RECORD="$record" \
-      bash "$REVIEW" --engine codex --range 'HEAD~1..HEAD' \
+      bash "$REVIEW" --engine codex --range 'HEAD~1..HEAD' "$@" \
         > "$work/out" 2> "$work/err"
   )
 }
@@ -190,9 +205,32 @@ else
       fail "引数に $needed がありません"
     fi
   done
-  # モデルは必ず明示される（CLI の既定 gpt-6-astra に落とさない。#805）。
-  if ! printf '%s\n' "$argv" | grep -qx -- "--model"; then
-    fail "引数に --model がありません（CLI の既定モデルに落ちています）"
+  # モデルは必ず明示され、**綴りまで一致する**（#805。Copilot の指摘で値まで見る形へ）。
+  #
+  # **既定が gpt-6-astra へ戻ったことを検出できなければ、この検査は枠の選択を守れない。**
+  # astra の 5 時間窓は 5〜45 通で、繁忙週の需要 38/日 を下限では賄えない。
+  #
+  # SECOND_OPINION_MODEL が環境（または .env）で設定されていると、既定は上書きされる。
+  # そのときは**合格にしない**——検査が成立していない状態を緑にしないため、理由を言って落とす。
+  if [[ -n "${SECOND_OPINION_MODEL:-}" ]]; then
+    fail "SECOND_OPINION_MODEL が設定されているため、既定のモデルを検査できません（値: ${SECOND_OPINION_MODEL}）。外して再実行してください"
+  else
+    model_value="$(awk '$0 == "--model" { getline; print; exit }' "$record/argv")"
+    if [[ "$model_value" != "gpt-6-sol" ]]; then
+      fail "既定のモデルが gpt-6-sol ではありません（実際: ${model_value:-（無し）}）"
+    fi
+  fi
+
+  # --model を明示で渡したときは、そちらが使われる。
+  rm -f "$record/argv"
+  rc=0
+  FAKE_CODEX_ANSWER='VERDICT: LGTM' run_review --model gpt-6-luna || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    fail "--model を渡した回で終了コードが $rc になりました（0 を期待）"
+  fi
+  model_value="$(awk '$0 == "--model" { getline; print; exit }' "$record/argv")"
+  if [[ "$model_value" != "gpt-6-luna" ]]; then
+    fail "--model の指定が渡っていません（実際: ${model_value:-（無し）}）"
   fi
 fi
 
@@ -227,10 +265,19 @@ if [[ "$rc" -eq 0 ]]; then
   fail "回答が無いまま通過しました（判定の入力が無いのに緑になっています）"
 fi
 
+# ---- 6. --runs 2 で、前の回の回答が使い回されないこと ----
+# 1 回目は回答を書き、2 回目は 0 で終わりながら書かない。回答のファイルを呼び出しごとに
+# 消していなければ、2 回目は 1 回目の LGTM を読んで**通ってしまう**（Copilot の指摘）。
+rc=0
+FAKE_CODEX_WRITE_ANSWER=first FAKE_CODEX_ANSWER='VERDICT: LGTM' run_review --runs 2 || rc=$?
+if [[ "$rc" -eq 0 ]]; then
+  fail "--runs 2 の 2 回目が回答を書かなかったのに通過しました（前の回の回答を読んでいます）"
+fi
+
 if [[ "$failed" -ne 0 ]]; then
   echo "[codex-selftest] codex エンジンの配線が壊れています" >&2
   exit 1
 fi
 
-echo "[codex-selftest] 5 件の配線を確かめました（差分の並び / 引数 / -o からの判定 / 未ログイン / 回答なし）"
+echo "[codex-selftest] 6 件の配線を確かめました（差分の並び / 引数とモデルの綴り / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

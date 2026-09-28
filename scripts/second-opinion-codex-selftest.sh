@@ -210,10 +210,21 @@ else
   # **既定が gpt-6-astra へ戻ったことを検出できなければ、この検査は枠の選択を守れない。**
   # astra の 5 時間窓は 5〜45 通で、繁忙週の需要 38/日 を下限では賄えない。
   #
-  # SECOND_OPINION_MODEL が環境（または .env）で設定されていると、既定は上書きされる。
-  # そのときは**合格にしない**——検査が成立していない状態を緑にしないため、理由を言って落とす。
-  if [[ -n "${SECOND_OPINION_MODEL:-}" ]]; then
-    fail "SECOND_OPINION_MODEL が設定されているため、既定のモデルを検査できません（値: ${SECOND_OPINION_MODEL}）。外して再実行してください"
+  # SECOND_OPINION_MODEL が設定されていると、既定は上書きされる。そのときは**合格にしない**
+  # ——検査が成立していない状態を緑にしないため、理由を言って落とす。
+  #
+  # **自分の環境だけを見てはいけない**（第二意見の指摘。実在）。被検査側は
+  # `load-project-env.sh` で **.env をホスト env より優先して**読む。この検査の環境に
+  # 変数が無くても、`.env` に `gpt-6-sol` が入っていれば引数にはその値が現れ、
+  # **スクリプト側の既定が別のモデルへ変わっていても通ってしまう。** だから被検査側と
+  # 同じ経路で解決した値を見る。
+  effective_model="$(
+    # shellcheck source=scripts/load-project-env.sh
+    . "$ROOT/scripts/load-project-env.sh" >/dev/null 2>&1 || true
+    printf '%s' "${SECOND_OPINION_MODEL:-}"
+  )"
+  if [[ -n "$effective_model" ]]; then
+    fail "SECOND_OPINION_MODEL が設定されている（値: $effective_model。環境または .env）ため、既定のモデルを検査できません。外して再実行してください"
   else
     model_value="$(awk '$0 == "--model" { getline; print; exit }' "$record/argv")"
     if [[ "$model_value" != "gpt-6-sol" ]]; then

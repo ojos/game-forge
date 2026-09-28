@@ -9,15 +9,23 @@
 #   bash scripts/second-opinion-review.sh                      # ステージ済み差分をレビュー
 #   bash scripts/second-opinion-review.sh --range main..HEAD
 #   bash scripts/second-opinion-review.sh --engine antigravity
+#   bash scripts/second-opinion-review.sh --engine codex
 #   SECOND_OPINION_RUNS=3 bash scripts/second-opinion-review.sh
 #
 # エンジン:
-#   認証手段の違う 2 つの CLI から選べる。判定ロジックは 1 か所に集約し、エンジン
+#   認証手段の違う 3 つの CLI から選べる。判定ロジックは 1 か所に集約し、エンジン
 #   ごとに複製しない。複製すると、判定の修正が片側にしか効かない状態が生まれる。
 #   エンジンごとに違うのは「CLI の名前」「認証」「差分の渡し方」の 3 点だけである。
 #
 #   gemini       gemini CLI。API キー認証（GEMINI_API_KEY）。既定
 #   antigravity  Antigravity CLI（agy）。Google アカウントの OAuth 認証。API キー非対応
+#   codex        Codex CLI（codex exec）。ChatGPT アカウントの OAuth 認証（定額）
+#
+# 費用の形がエンジンで違う（#805）:
+#   Copilot のレビューは PR 1 本あたりの固定費が支配的で、**本数に線形に増える**
+#   （#654 の実測: 16.1 credits × PR 本数。超過 $164.60/月）。Codex Plus は定額で、
+#   枠は 5 時間窓で回復する。antigravity（Google AI Pro）の枠は週ごとで、当たると
+#   数日止まる。**危険な変更（ツール解禁など）は、回復の速い枠の上で試す。**
 #
 # 判定のぶれについて:
 #   このレビューは非決定的で、同じ差分でも実行のたびに結果が変わる。どちらの CLI にも
@@ -75,7 +83,7 @@ usage: bash scripts/second-opinion-review.sh [options]
 
 options:
   --range <git-range>   レビュー対象の差分範囲（既定: ステージ済み差分）
-  --engine <name>       レビューを実行する CLI（gemini | antigravity。既定: gemini。
+  --engine <name>       レビューを実行する CLI（gemini | antigravity | codex。既定: gemini。
                         SECOND_OPINION_ENGINE でも指定可）
   --model <name>        使用モデル（既定: 各 CLI の既定。SECOND_OPINION_MODEL でも指定可）
   --runs <n>            実行回数（既定: 1。SECOND_OPINION_RUNS でも指定可）
@@ -85,6 +93,8 @@ options:
 engines:
   gemini       gemini CLI。API キー認証（GEMINI_API_KEY）
   antigravity  Antigravity CLI（agy）。Google アカウントの OAuth 認証。API キー非対応
+  codex        Codex CLI（codex exec）。ChatGPT アカウントの OAuth 認証（定額）。
+               モデルの既定は gpt-6-sol（--model / SECOND_OPINION_MODEL で上書き可）
 EOF
 }
 
@@ -149,8 +159,36 @@ case "$ENGINE" in
     # agy は OAuth のみで API キーに対応しない。鍵の有無は検査しない。資格情報は
     # CLI が自身の保存先に持つため、このスクリプトからは可視でも制御対象でもない。
     ;;
+  codex)
+    command -v codex >/dev/null 2>&1 || {
+      echo "error: codex (Codex CLI) not found. codex を導入してログインしてから再実行してください（導入手段はプロジェクト層で定義します）" >&2
+      exit 1
+    }
+    # **資格情報の有無をここで見る。** codex は OAuth（ChatGPT アカウント）と API キーの
+    # 両方を受けるので、どちらで入っているかを知る必要はない。`codex login status` が
+    # 有無だけを終了コードで返す（実測: 未ログインで "Not logged in" と終了コード 1）。
+    #
+    # **見ないと失敗が遅い。** 未ログインのまま exec へ進むと、CLI は 5 回の再接続を
+    # 試してから 401 で落ちる（実測: `ERROR: Reconnecting... 1/5` 〜 `5/5` の後に
+    # `unexpected status 401 Unauthorized`）。レビューの前段で数十秒を捨て、しかも
+    # 出てくるのは「回答が空」に近い形なので、ログインしていないことが読み取りにくい。
+    codex login status >/dev/null 2>&1 || {
+      echo "error: codex にログインしていません。'codex login' を対話で 1 度通してから再実行してください" >&2
+      exit 1
+    }
+    # **モデルの既定を CLI に任せない。** codex の既定は gpt-6-astra で、Plus の
+    # 5 時間窓は 5〜45 通（複雑なタスクほど下限に寄る）——繁忙週の需要 38/日 を
+    # 下限では賄えない（#805）。gpt-6-sol は同じ窓で 15〜150 通ある。
+    # **既定のまま回すと、枠に当たって初めて分かる。**
+    #
+    # 綴りは `codex debug models` で実測した（認証不要で引ける。2026-09-28 /
+    # codex-cli 0.157.1 で gpt-6-astra / gpt-6-sol / gpt-6-luna が実在）。
+    if [[ -z "$MODEL" ]]; then
+      MODEL="gpt-6-sol"
+    fi
+    ;;
   *)
-    echo "error: unknown engine: $ENGINE（gemini | antigravity）" >&2
+    echo "error: unknown engine: $ENGINE（gemini | antigravity | codex）" >&2
     exit 1
     ;;
 esac
@@ -316,6 +354,15 @@ split_diff_into_chunks() {
 # 戻り値が 1 になり、`set -e` の下では**呼び出し元ごと無音で終了する**
 # （実測: 分割の告知だけを出して exit 1。どのチャンクで何が起きたのか一切出ない）。
 # 明示的に if で書き、最後に return 0 を置く。
+# 標準入力の渡し先。**codex だけがここを使う**（他の 2 つは差分を引数で渡すので
+# /dev/null のまま）。空にしない——run のループが `<"$stdin_file"` で開くため、
+# 空だとリダイレクトそのものが失敗する。
+stdin_file="/dev/null"
+
+# codex の「最後のメッセージ」の置き場所。**消すのは run のループの側**である
+# （build_args は 1 チャンクに 1 回しか走らないので、ここで消すだけでは足りない）。
+answer_file=""
+
 build_args() {
   local chunk="$1"
   case "$ENGINE" in
@@ -332,6 +379,32 @@ $PROMPT")
       if [[ -n "$MODEL" ]]; then
         args=(--model "$MODEL" "${args[@]}")
       fi
+      ;;
+    codex)
+      # 判定に使う入力を `-o`（最後のメッセージ）へ固定する。**stdout の形に頼らない**
+      # ——codex exec は見出し・設定・受け取ったプロンプトの復唱を stderr へ出すが
+      # （実測）、回答を stdout のどこへ何行で書くかは CLI の版で変わりうる。
+      # `-o` は「エージェントの最後のメッセージ」を書く明示の口なので、ここを読む。
+      #
+      # **失敗すればファイルは作られない**（実測: 401 で落ちた回は -o のファイルが
+      # 存在しなかった）。run のループは終了コードで先に落ちるため、無いファイルを
+      # 読んで「回答が空」と報告する経路には入らない。
+      answer_file="$work_dir/codex-answer.txt"
+
+      # `exec -` は指示文を標準入力から読む。差分を引数へ載せないので単一引数の
+      # 上限を受けず、分割も要らない（gemini / agy との違いはここだけ）。
+      #
+      # --sandbox read-only: モデルにツール実行は要らない（プロンプトでも禁じている）。
+      #   既定に頼らず明示する。
+      # --color never: ANSI のエスケープが混じると、判定トークンの行が一致しなくなる。
+      # --ephemeral: 会話の保存を止める。ゲートは 1 日 20〜38 回回り、差分は最大
+      #   128KB 級なので、保存すると ~/.codex（rebuild をまたぐ named volume）が
+      #   毎日数 MB 育つ。生の出力は #806 の記録が PR に残すので、失う情報は無い。
+      args=(exec - --sandbox read-only --color never --ephemeral -o "$answer_file")
+      if [[ -n "$MODEL" ]]; then
+        args+=(--model "$MODEL")
+      fi
+      stdin_file="$chunk"
       ;;
   esac
   return 0
@@ -394,6 +467,26 @@ case "$ENGINE" in
       echo "error: 分割結果が空です。検査が成立しないため失敗させます。" >&2
       exit 1
     fi
+    ;;
+  codex)
+    # codex exec は `-` を置くと**指示文そのものを標準入力から読む**（実測:
+    # `codex exec - < 入力` で、読んだ本文が復唱された）。そこで「差分が先・
+    # プロンプトが後」という gemini / agy と同じ並びのファイルを 1 つ作って流す。
+    #
+    # **プロンプトを引数に置いて差分を stdin へ流す形は採らない。** codex は
+    # 「プロンプトが引数にもあり stdin も piped なら、stdin を `<stdin>` ブロックとして
+    # **後ろへ**付ける」と決めている（`codex exec --help`）。それだと並びが逆になり、
+    # プロンプト冒頭の「上記は git の差分です」が指す先が無くなる。
+    #
+    # 引数に載せないので単一引数の上限を受けない。**分割しない**（1 チャンク）。
+    CLI="codex"
+    codex_input="$work_dir/codex-input.txt"
+    {
+      cat "$diff_file"
+      printf '\n'
+      printf '%s\n' "$PROMPT"
+    } > "$codex_input"
+    chunk_files=("$codex_input")
     ;;
 esac
 
@@ -483,12 +576,32 @@ for chunk_file in "${chunk_files[@]}"; do
     # LGTM が指摘ありに化け、ゲートが常に赤くなる（実測: 端末の色数や ripgrep 不在の
     # 警告が stderr に出る）。判定はモデルの回答（stdout）だけで行い、stderr は失敗
     # したときの診断に回す。標準入力は渡さない（差分は引数で渡している）。
-    output="$($CLI "${args[@]}" </dev/null 2>"$stderr_file")" || {
+    # **回答のファイルは呼び出しの直前に消す。** build_args は 1 チャンクに 1 回しか
+    # 走らないので、そこで消すだけでは `--runs 2` 以上のときに 2 回目が 1 回目の回答を
+    # 読む——**0 で終わりながら -o を書かなかった回が、前の回の判定で通る**（下の
+    # 「回答が無ければ失敗させる」を素通りする。Copilot の指摘。実在）。
+    if [[ "$ENGINE" == "codex" ]]; then
+      rm -f "$answer_file"
+    fi
+
+    output="$($CLI "${args[@]}" <"$stdin_file" 2>"$stderr_file")" || {
       echo "error: second opinion failed (engine=$ENGINE,$chunk_label run $run/$RUNS)" >&2
       cat "$stderr_file" >&2
       printf '%s\n' "$output" >&2
       exit 1
     }
+
+    # codex は回答を stdout ではなく -o のファイルへ取る（build_args の注記）。
+    # **無ければ失敗させる。** 0 で終わったのにファイルが無いのは、判定の入力が
+    # 無いということで、「回答が空」として指摘あり側へ倒すと理由が読めなくなる。
+    if [[ "$ENGINE" == "codex" ]]; then
+      if [[ ! -f "$answer_file" ]]; then
+        echo "error: codex が最後のメッセージを書きませんでした（-o のファイルが無い。engine=$ENGINE,$chunk_label run $run/$RUNS）" >&2
+        cat "$stderr_file" >&2
+        exit 1
+      fi
+      output="$(cat "$answer_file")"
+    fi
 
     # 回答が空でも終了コードが 0 になる経路がある。実測では、agy がツールの実行許可を
     # 求めて非対話では承認できず自動拒否し、「回答なし」を stderr へ書いて 0 で終えた。

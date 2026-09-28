@@ -262,6 +262,23 @@ else
   echo "[acceptance] (portability) skip: scripts/ not found"
 fi
 
+# 第二意見の codex エンジンの配線（#805）。
+#
+# **本物の CLI も認証も要らない。** 仕込みの codex を PATH の先へ置いて、差分の並び・
+# 引数の形・判定の入力（-o のファイル）・未ログインの事前検査を確かめる。ネットワークも
+# 外部認証も使わないので、ローカル層の契約（`.github/project-ai-rules.md`）に収まる。
+#
+# **ここに置く理由は、壊れても緑に見えるからである。** 差分の並びを逆にすると、モデルは
+# 差分を見ないまま「差分が空だ」と答え、LGTM として通る。**ゲートが通ったことと、
+# レビューされたことが別になる。**
+if [[ -f scripts/second-opinion-codex-selftest.sh ]]; then
+  echo "[acceptance] (second-opinion) scripts/second-opinion-codex-selftest.sh"
+  bash scripts/second-opinion-codex-selftest.sh
+  ran_any=1
+else
+  echo "[acceptance] (second-opinion) skip: scripts/second-opinion-codex-selftest.sh not found"
+fi
+
 # OGP 撮影の「写し」の機械照合（#26 / #235 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く。** 23 ms で終わる（実測）。外すと、宣言と実装がずれた状態がどれも

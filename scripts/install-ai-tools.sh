@@ -114,6 +114,18 @@ disable_agy_telemetry() {
   echo "[install-ai-tools] agy telemetry disabled (enableTelemetry=false)"
 }
 install_if_missing claude "@anthropic-ai/claude-code"
+# codex（Codex CLI）は npm 配布なので install_if_missing の同型に乗る。
+#
+# **版が要件になる**（#805）。第二意見の既定のモデル gpt-6-sol は 0.156.0 から
+# 引けるようになった綴りで、0.154 系の CLI は一覧に出さない。npm の latest を入れる
+# ため既定では満たすが、手で古い版を固定した環境では
+# `codex debug models` に gpt-6-sol が出ないことで露見する。
+#
+# 認証は ChatGPT アカウントの OAuth（または API キー）で、導入だけでは使えない。
+# 初回に対話で `codex login` を通す必要がある。資格情報は ~/.codex/auth.json
+# （`codex doctor` で実測）で、この devcontainer では ~/.codex が named volume
+# （codex-storage）なので rebuild しても消えない。
+install_if_missing codex "@openai/codex"
 install_agy_if_missing
 disable_agy_telemetry
 echo "[install-ai-tools] done"

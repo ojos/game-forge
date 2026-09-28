@@ -10,6 +10,7 @@ services:
       - gcloud-storage:/home/vscode/.config/gcloud
       - claude-storage:/home/vscode/.claude
       - gemini-storage:/home/vscode/.gemini
+      - codex-storage:/home/vscode/.codex
     command: sleep infinity
 volumes:
   gh-storage:
@@ -17,3 +18,4 @@ volumes:
   gcloud-storage:
   claude-storage:
   gemini-storage:
+  codex-storage:

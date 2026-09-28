@@ -1,0 +1,313 @@
+# 第二意見（ローカル事前ゲートの第 2 段）が**回されないまま PR が通ること**を塞ぐ（#806）。
+# 規範: .ai-playbook/review-workflow.md「要求されたことを別の契機で確認する」。
+#
+# **パイプライン全体で、第二意見だけが確認側を持っていなかった。**
+#
+#   ローカル層の受け入れ検証（verify.sh） … verify.yml の verify ジョブが**再実行**する
+#   第二意見                              … **無かった**（ここが埋める）
+#   リモート最終ゲート（Copilot）          … review-gate.yml が要求されたことを確かめる
+#
+# `.git/hooks/` は空で `core.hooksPath` も未設定なので、**loop-gate.sh を回さずに push できる。**
+# verify.yml の冒頭がその故障モードを名指ししている——「手元で走らせる前提の実行体で、
+# **回し忘れても何も起きない**」「**守られている外観だけが残る**」。
+#
+# ## 何を見るか
+#
+# **PR の head SHA に紐づく「第二意見の記録」のコメントが在るか**だけを見る。記録は
+# `scripts/second-opinion-record.sh post` が投稿し、本文の先頭に
+# `<!-- second-opinion sha=<full sha> -->` の印を持つ。
+#
+# **SHA で照合するのが要点である。** コメントの有無だけを見ると、修正を push した後も
+# 古いコメントで通ってしまう。**押した中身がレビューされたこと**を見たいので、印の SHA が
+# いまの head と一致することを要求する。
+#
+# ## review-gate.yml と 1 点だけ設計が逆である
+#
+# **猶予を毎回置く。** あちらは `opened` のときだけ待つ（要求側と同時に走るため）。
+# こちらは**記録が push の後に投稿される**ので、`synchronize` でも同じことが起きる
+# ——push の直後にこのワークフローが走り、投稿はその数秒〜数分後になる。待たずに見ると、
+# push のたびに赤が出る。**偽の赤はゲートへの信頼を削る**（review-workflow.md）。
+#
+# ## 要求はしない
+#
+# 第二意見を回すのは利用者の側（`scripts/loop-gate.sh`）で、ここは確かめるだけである。
+# **要求と確認を別の機構に分ける**（規範の「確認側は要求しません」）。ここが回し始めると、
+# 手元で回したものと CI で回したもののどちらが push を通したのか読めなくなる。
+#
+# ## 3 つの契機
+#
+#   1. pull_request（opened / synchronize 等） … 通常はここで片が付く
+#   2. schedule                                … 1 が届かなかった PR を拾う
+#   3. workflow_dispatch                       … 詰まったときに手で流す・受け入れ確認
+#
+# `pull_request` の `opened` が届かないことは実測されている（2 日間に開いた 6 本のうち 2 本。
+# review-workflow.md）。**同じ契機を見る 2 本目では塞げない**ので、別の契機を張る。
+#
+# ## schedule と workflow_dispatch は既定ブランチのものしか動かない
+#
+# **この 2 つは `main` にあるワークフローだけが起動する**（GitHub の仕様。PR #814 で
+# `gh workflow run` が `HTTP 422: Workflow does not have 'workflow_dispatch' trigger`
+# を返して分かった。ファイルには書いてあるのに、である）。
+#
+# したがって**このワークフローを足す・変える PR の上では、`pull_request` の契機だけが効く。**
+# 掃き寄せと手動起動の実挙動は、マージされてからでなければ確かめられない。**受け入れ確認を
+# 組むときは、そこを見込むこと**——PR 上で「掃き寄せが動かない」のは不具合ではない。
+#
+# ## required check にはしない
+#
+# 止めたいのは「回していないことに気づかないまま通ること」だけである。投稿の遅れで
+# マージが止まる副作用は要らない（review-gate.yml と同じ判断）。
+#
+# ## 何を塞がないか
+#
+# **偽造は塞がない。** 記録を投稿するのはレビューを回すのと同じ側なので、回さずに記録を
+# 作って投稿できる。**検出できるのは失念であって、迂回ではない**（#806 の scope.out）。
+# それでよいのは、verify.yml が名指しした実際の故障モードが失念だからである。
+
+name: second-opinion-gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    # 20 分ごと。pull_request が届かなかった PR を拾うための掃き寄せで、
+    # 通常経路の速さはこれに依存しない（review-gate.yml と同じ間隔にそろえる）。
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  # コメント（`/issues/{n}/comments`）を読む。**呼んでいる先の権限は宣言する。**
+  issues: read
+  # commit status を書く。これが判定の出力先である。
+  statuses: write
+
+concurrency:
+  group: second-opinion-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # **ジョブ名を `check` にしない。** review-gate.yml のジョブが `check` なので、
+  # 同じ名前だと `gh pr checks` に `check` が 2 行並び、どちらがどちらか読めない
+  # （実測。PR #814 で 2 つ並んだ）。commit status の context は別なので判定は
+  # 混ざらないが、**人が読む一覧で区別できないのは、気づけないことと同じ側にある。**
+  record:
+    runs-on: ubuntu-latest
+    # フォークからの PR は対象外にする。記録の投稿には PR への書き込みが要り、
+    # フォークからの push ではそれができない。**要求されないものを「無い」と落とすと、
+    # 恒常的に赤いだけの状態になる**（review-gate.yml と同じ扱い）。
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Check that the second opinion was actually recorded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          # **式を run の中へ直接書かない。** GitHub は run を渡す前に文字列として
+          # 置換するので、値に引用符が混ざればシェルの構文ごと変わりうる。加えて
+          # `bash -n` は `${{ ... }}` を通してしまうため、構文検査でも気づけない
+          # （review-gate.yml の同じ注記）。
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # 起動の契機になった head SHA。**待ったあとに head が動いていないかを見るために要る**
+          # （下の「待っているあいだに push が入ったら」）。
+          TRIGGER_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # 記録が投稿されるまでの猶予（秒）。
+          #
+          # **毎回置く**（review-gate.yml と逆。冒頭「1 点だけ設計が逆である」）。
+          # 記録は push の後に手元から投稿されるので、push で起動したこの実行は
+          # 投稿より先に走る。待たずに見ると push のたびに赤が出る。
+          GRACE_SEC=300
+
+          # **掃き寄せ側は、push の時刻で待つ。**
+          #
+          # 最初の実装は PR の `created_at` を見ていた。**それでは、作成から 10 分以上
+          # 経った PR に新しく push された直後に掃き寄せが重なると、猶予が 1 秒も効かない**
+          # ——`created_at` は過去なので条件をすり抜け、掃き寄せ経路には sleep が無い
+          # （PR #814 の第二意見の指摘。実在する）。**このワークフローの冒頭が「猶予を毎回
+          # 置く」と宣言しているのに、掃き寄せだけがそれを破っていた。**
+          #
+          # `updated_at` も使えない。コメント（この仕組みが投稿する記録を含む）で動くため、
+          # 活動している PR では期限が前へ逃げ続け、いつまでも判定されない。
+          #
+          # **コミットの時刻も使えない。** `commit.committer.date` はコミットに埋まった時刻で、
+          # **その内容が push された時刻ではない**（PR #814 の Copilot の指摘）。rebase や、
+          # 前に作ったコミットを後から push した場合、コミット時刻は過去なので age が大きくなり、
+          # **投稿の窓が開く前に赤を付ける。**
+          #
+          # **見るのは check-run の開始時刻である。** CI は push で始まるので、その最も早い
+          # 開始時刻が push 時刻の代理になる（実測: コミット時刻 15:56:59Z に対して
+          # 15:57:08Z。新しい push では近く、古いコミットの push では乖離する）。
+          # **再実行で started_at が新しくなる方向は、猶予が伸びる側＝安全側である。**
+          #
+          # **check-run が 1 つも無いときは判定しない。** CI がまだ始まっていない（＝ push
+          # 直後）か、`[skip ci]` で飛ばされたということで、どちらも「記録が無い」と断じる
+          # 根拠にならない。判定の猶予は 1 つの定数（GRACE_SEC）に揃える。
+
+          # status の名前。**変えると過去の PR に付いた status と別物になる。**
+          CONTEXT="second-opinion-gate"
+
+          # 記録のコメントの印。**scripts/second-opinion-record.sh と同じ綴りである。**
+          # 片方だけ変えると、投稿はされているのに確認側から見えない状態になる。
+          MARKER_PREFIX='<!-- second-opinion sha='
+
+          report() {
+            local sha="$1" state="$2" desc="$3"
+            if ! gh api --method POST "repos/${REPO}/statuses/${sha}" \
+              -f "state=${state}" \
+              -f "context=${CONTEXT}" \
+              -f "description=${desc}" \
+              -f "target_url=${RUN_URL}" >/dev/null; then
+              echo "::error::PR の head ${sha:0:7} へ status を書けませんでした。判定（${state}）は PR 上に出ていません。"
+              return 1
+            fi
+            echo "  status=${state} sha=${sha:0:7} (${desc})"
+          }
+
+          # 記録が在るかを見る。
+          #
+          #   0 — この head SHA の記録が在る
+          #   1 — 無い（＝ 落とす）
+          #   2 — **確かめられなかった**（API から読めない）
+          #
+          # **2 を 1 に混ぜない。** 読めなかったことを「記録が無い」として扱うと、
+          # GitHub が一時的に不調なだけで赤が出る。逆に握り潰して緑にすると、
+          # 確かめていないものを通したことになる（review-gate.yml と同じ考え方）。
+          has_record() {
+            local pr="$1" sha="$2" bodies
+            # **--paginate を外さない。** 外すと先頭のページしか見ないため、
+            # コメントが多い PR では、投稿されているのに「無い」と判定する。
+            if ! bodies="$(gh api --paginate "repos/${REPO}/issues/${pr}/comments" --jq '.[].body' 2>/dev/null)"; then
+              return 2
+            fi
+            # 印は「印 + SHA + ' -->'」で完全に照合する。SHA の前方一致で見ると、
+            # 別の SHA（短縮形が接頭辞になる組み合わせ）を取り違えうる。
+            case "$bodies" in
+              *"${MARKER_PREFIX}${sha} -->"*) return 0 ;;
+            esac
+            return 1
+          }
+
+          # 1 本を判定する。通らなければ 1 を返す（呼び出し側が集計する）。
+          judge() {
+            local pr="$1" sha="$2" verdict=0
+            # set -e に掛からない形で終了コードを取る。
+            has_record "$pr" "$sha" || verdict=$?
+
+            case "$verdict" in
+              0)
+                report "$sha" success "second opinion recorded for this head" || return 1
+                ;;
+              1)
+                report "$sha" failure "no second-opinion record for this head" || return 1
+                echo "::error::PR #${pr}: この head（${sha:0:7}）に紐づく第二意見の記録がありません。push の後に次を叩いてください: bash scripts/second-opinion-record.sh post"
+                return 1
+                ;;
+              *)
+                # **status を付けない。** 確かめられなかったときに赤を出すと、
+                # GitHub の一時的な不調が「記録が無い」として残る。実行だけを落とし、
+                # 判定は次の契機（20 分後の掃き寄せ）へ持ち越す。
+                echo "::error::PR #${pr}: 記録の有無を確かめられませんでした（GitHub API から読めない）。status は付けていません。次の定期実行で再判定します。"
+                return 1
+                ;;
+            esac
+          }
+
+          failed=0
+
+          if [ "$EVENT" = "pull_request" ]; then
+            # **draft は判定しない。掃き寄せ側と揃える。**
+            #
+            # 掃き寄せ側にだけ `select(.draft == false)` を書いていたため、**同じ PR が
+            # 契機によって判定されたりされなかったりした**（PR #814 の第二意見の指摘）。
+            # draft は書きかけなので、記録が無いのが普通である。**`ready_for_review` を
+            # 契機に入れてあるので、draft を外した時点で判定が走る。**
+            if [ "$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq .draft)" = "true" ]; then
+              echo "PR #${PR_NUMBER}: draft なので判定しません（ready_for_review で判定します）。"
+              exit 0
+            fi
+
+            echo "PR #${PR_NUMBER} を判定します（記録の投稿を ${GRACE_SEC} 秒待ちます）"
+            sleep "$GRACE_SEC"
+
+            # **待っているあいだに push が入ったら、判定しない。**
+            #
+            # 待った後の head を取って判定すると、**新しい push に対して猶予を 1 秒も
+            # 与えずに赤を付ける**ことになる（PR #814 の第二意見の指摘。実在する）。
+            # 逆に起動時の SHA へ付けると、それはもう head ではないので **PR の checks 欄に
+            # 何も現れないまま「判定した」ことになる。**
+            #
+            # **どちらも採らない。譲る。** 新しい push には、それ自身の実行が同じ猶予を
+            # 置いてから判定する。届かなければ掃き寄せが拾う（そちらも head の時刻で待つ）。
+            # **判定しないことを失敗にもしない**——赤でも緑でもなく、この実行の担当が
+            # 終わっただけである。
+            current="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq .head.sha)"
+            if [ "$current" != "$TRIGGER_SHA" ]; then
+              echo "PR #${PR_NUMBER}: 待っているあいだに head が ${TRIGGER_SHA:0:7} から ${current:0:7} へ動きました。"
+              echo "PR #${PR_NUMBER}: この実行は判定しません（新しい push 自身の実行が、同じ猶予を置いてから判定します）。"
+              exit 0
+            fi
+            judge "$PR_NUMBER" "$TRIGGER_SHA" || failed=1
+          else
+            echo "open な PR を掃き寄せます"
+            now="$(date -u +%s)"
+            # **全件を見る。件数で打ち切らない。** ここは最後の担保なので、上限で
+            # 切れた分は「判定されないまま status も付かない」＝ PR 上に何も現れない
+            # という、この仕組みが塞ごうとしている状態そのものになる（review-gate.yml
+            # の同じ注記）。
+            #
+            # フォークからの PR は除く。`.head.repo` の null も明示的に除く
+            # （フォーク元が削除されると null になる）。
+            if ! prs="$(gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" \
+              --jq '.[] | select(.head.repo != null and .head.repo.full_name == env.REPO)
+                    | select(.draft == false)
+                    | "\(.number) \(.head.sha)"' 2>/dev/null)"; then
+              echo "::error::open な PR の一覧を取得できませんでした。1 本も判定していません。"
+              exit 1
+            fi
+            if [ -z "$prs" ]; then
+              echo "判定対象の PR はありません"
+              exit 0
+            fi
+            # while read はパイプの右に置かない（サブシェルで failed が残らない）。
+            while read -r pr sha; do
+              [ -n "$pr" ] || continue
+              # push の時刻を、check-run の最も早い開始時刻から採る。
+              # **`select(. != null)` を外さない。** queued や skipped の check-run は
+              # `started_at` が null で、jq の型順（null < string）により **sort の先頭が必ず
+              # null になる。** `// empty` がそれを空にするので、**実行済みの check-run が
+              # あっても「まだ無い」と読んで、その PR を永久に判定しなくなる**
+              # （PR #814 の第二意見の指摘。実測で再現）。**PR 1 本につき 1 回の
+              # 追加の呼び出しになる**が、掃き寄せは 20 分ごとで open な PR は数本なので、
+              # 費用は問題にならない。
+              # 読めなかったら**判定しない**（確かめられないことを「記録が無い」に混ぜない）。
+              if ! pushed_at="$(gh api "repos/${REPO}/commits/${sha}/check-runs" --jq '[.check_runs[].started_at | select(. != null)] | sort | .[0] // empty' 2>/dev/null)"; then
+                echo "::error::PR #${pr}: head（${sha:0:7}）の check-run を読めませんでした。判定を次の定期実行へ持ち越します。"
+                failed=1
+                continue
+              fi
+              if [ -z "$pushed_at" ]; then
+                echo "PR #${pr}: head（${sha:0:7}）に check-run がまだありません。掃き寄せでは判定しません。"
+                continue
+              fi
+              age=$(( now - $(date -u -d "$pushed_at" +%s) ))
+              if [ "$age" -lt "$GRACE_SEC" ]; then
+                echo "PR #${pr}: push から ${age} 秒なので、掃き寄せでは判定しません（記録の投稿を ${GRACE_SEC} 秒待ちます）"
+                continue
+              fi
+              echo "PR #${pr} を判定します（push から ${age} 秒）"
+              judge "$pr" "$sha" || failed=1
+            done <<EOF
+          $prs
+          EOF
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi

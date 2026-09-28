@@ -99,6 +99,7 @@ date [^|;&]*%N	BSD の date に %N（ナノ秒）は無い。秒で足りるな�
 (^|[^-[:alnum:]_])(sha256sum|md5sum)	BSD 系には無い。openssl dgst -sha256 か、shasum -a 256 への分岐を書く
 sed [^|;&]*\\x[0-9A-Fa-f]	\\xNN は GNU sed の拡張。BSD sed は文字 x として扱う。ESC="$(printf '\033')" のように作って渡す
 sed +-i( +-[a-zA-Z]+)* +[^'"]	sed -i の引数の扱いが GNU と BSD で違う。一時ファイルへ書いて mv する
+sed [^|;&]*\\n	置換側の \\n は GNU sed の拡張。BSD sed は文字 n として扱う。行に分けたいなら tr -c を使う
 grep [^|;&]*(-P|--perl-regexp)	BSD の grep に -P は無い。-E で書き直す
 readlink +-f	BSD の readlink に -f は無い。cd と pwd で解決する
 base64 [^|;&]*-w	BSD の base64 に -w は無い。折り返しが要るなら fold へ渡す

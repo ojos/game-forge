@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createAdminRoutes, ADMIN_OPEN_ROUTES } from '../src/admin/routes.js';
 import { createAppRoutes } from '../src/app.js';
 import { NON_PAGE_PATHS } from '../src/page-paths.js';
+import { GENERATE_PAGE_PATH } from '../src/paths.js';
 import {
   AI_TRAINING_CRAWLERS,
   APP_DISALLOW_PATHS,
@@ -251,10 +252,39 @@ describe('Disallow の綴りが、実装から離れていない', () => {
     // 本人だけの画面は `noindex` に任せる側で、ここへ足すと索引から消せなくなる。
     // 逆に、ここに並んでよいのは機械が読む口とログインが要る操作の口だけである。
     for (const disallowed of APP_DISALLOW_PATHS) {
-      expect(['/api/', '/auth/', '/account', '/works/mine', '/works/liked', '/generate', '/invites']).toContain(
+      expect(['/api/', '/auth/', '/account', '/works/mine', '/works/liked', '/invites']).toContain(
         disallowed,
       );
     }
+  });
+
+  it('未ログインで 200 を返す画面を Disallow していない（#795）', async () => {
+    // **並ぶ資格を綴りの一覧ではなく実測で確かめる**（`src/robots.ts` の `APP_DISALLOW_PATHS`）。
+    // #594 は `/generate` をここへ並べたが、**あの画面は未ログインでも 200 を返す公開ページ**で、
+    // 「ログインしなければ何も返らない」に当たっていなかった（#795）。**上の綴りの一覧だけでは
+    // 捕まらない**——一覧は「この 6 つのどれか」しか見ず、その口が本当に何も返さないかは見ない。
+    for (const disallowed of APP_DISALLOW_PATHS) {
+      // 接頭辞（`/api/`・`/auth/`）はそれ自体が開ける画面ではない。**完全一致の口だけを見る。**
+      if (disallowed.endsWith('/')) {
+        continue;
+      }
+      const res = await SELF.fetch(`${APP_ORIGIN}${disallowed}`, { redirect: 'manual' });
+      expect(
+        res.status,
+        `${disallowed} は未ログインで ${res.status} を返す。何かを返す画面なら Disallow ではなく noindex の側である`,
+      ).not.toBe(200);
+    }
+  });
+
+  it('/generate はクロールを許している（未ログインでも中身を返す公開ページだから。#795）', async () => {
+    const robots = parseRobotsTxt((await fetchRobots(APP_ORIGIN)).body);
+    expect(isAllowed(robots, 'Googlebot', GENERATE_PAGE_PATH)).toBe(true);
+    // **許していることと、実際に中身があることの両方を見る。** 片方だけだと、
+    // 画面がログイン必須へ変わった日に `Disallow` を戻し忘れても緑のままになる。
+    const res = await SELF.fetch(`${APP_ORIGIN}${GENERATE_PAGE_PATH}`, { redirect: 'manual' });
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).not.toContain('<meta name="robots" content="noindex">');
   });
 
   it('robots.txt は画面の検査から外れている（text/plain であって画面ではない）', () => {

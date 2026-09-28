@@ -127,7 +127,7 @@ resource "cloudflare_dns_record" "code_narrative_delegation" {
 }
 
 /**
- * game-forge.ojos.jp の委譲は、段 C2 で外した（#775。2026-09-27）。
+ * game-forge.ojos.jp の委譲は、段 C2 で外した（#775。2026-09-28）。
  *
  * **ここには `cloudflare_dns_record.game_forge_delegation` があった。** Route 53 のゾーンの
  * 宣言（`aws_route53_zone.game_forge.name_servers`）から NS を導き、ojos.jp のゾーンへ
@@ -149,7 +149,7 @@ resource "cloudflare_dns_record" "code_narrative_delegation" {
  *
  * # 置く順序（段 C1 → C2）
  *
- * **両方とも済んだ**（C1: 2026-09-22 / **C2: 2026-09-27**）。以下は経緯と、戻すときに
+ * **両方とも済んだ**（C1: 2026-09-22 / **C2: 2026-09-28**）。以下は経緯と、戻すときに
  * 何をどの順で戻すかの記録である。
  *
  * **C1: 委譲（上の注記にあった game_forge_delegation）を残したまま、ここのレコードを置く。**

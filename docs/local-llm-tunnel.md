@@ -491,6 +491,8 @@ sudo fwupdmgr update <デバイス ID>                                        # 
 | 2026-09-29 | BIOS 1.30.0 → **1.35.0** | 成功。**以前の試行は古い電池で `error-pwr-evt-batt` になっていた**。Secure Boot は有効のまま、トンネルは再起動後に自動で戻った |
 | 2026-09-29 | KEK に **Microsoft Corporation KEK 2K CA 2023** を追加 | BIOS の後は `get-updates` に出ず、`update` も `No updatable devices`。**`install <ID> 2023` で入った。** 以前からの KEK CA 2011 は 2026-06-24 に期限切れ（起動には影響しない） |
 | 2026-09-29 | dbx 20260402 → **20260707**（2023 KEK で署名。New Horizon Datasys と EAZ Solution を失効） | 履歴は `expected 20260707 and got (null)` で**失敗と記録されたが、実物は 20260707**。あわせて apt の 15 件を適用し、残りは 0・再起動の要求なし |
+| 2026-09-29 | AC アダプターを 1 回抜いて挿し直した（利用者。#801） | **落ちなかった**——起動時刻は 22:21 のまま（22:37 に `up 16 min`）で、cloudflared も active のまま。**抜き挿しはログに残らない**: カーネルは AC の状態を起動時にしか出さず、upower の履歴も 80% で充電が止まった後（`pending-charge` / `Not charging`）は記録を足していなかった。**抜いた事実は利用者の目視、落ちなかった事実は起動時刻で確かめた** |
+| 2026-09-29 | 有線へ切り替えてからの観察を始めた（#800） | 起点は 21:34:34（有線が上がった時刻）。**3 日が満ちるのは 2026-10-02 21:34。** その間の `wlp59s0 completed -> disconnected` に連動した `Connection terminated` / `Serve tunnel error` が 0 回なら #800 を閉じる |
 
 **残っている宿題。**
 

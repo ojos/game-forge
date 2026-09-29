@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { SYMBOL, emboldenGlyph, scaleGrid, setText, trimGrid, wordmark } from './logo.mjs';
 import { readGlyphs } from './glyphs.mjs';
-import { listVariants } from './variants.mjs';
+import { listVariants, OFUSE_COVER } from './variants.mjs';
 import { renderVariant } from './render.mjs';
 import { encodePng, decodePng, toRgba } from './png.mjs';
 import { writeAll, checkAll } from './main.mjs';
@@ -78,8 +78,67 @@ test('一覧: 標準セットの種類と枚数', () => {
   const byDir = {};
   for (const v of listVariants()) byDir[v.path.split('/')[0]] = (byDir[v.path.split('/')[0]] ?? 0) + 1;
   assert.deepEqual(byDir, {
-    symbol: 14, 'app-icon': 6, 'lockup-horizontal': 8, 'lockup-stacked': 6, wordmark: 8, social: 4,
+    symbol: 14, 'app-icon': 6, 'lockup-horizontal': 8, 'lockup-stacked': 6, wordmark: 8, social: 10,
   });
+});
+
+// 帯状のヘッダー（#780）。**倍率そのものと、切られた後に収まることを、ここで留める。**
+// 上の 2 つのテストは「整数倍で画像に収まる」しか見ておらず、main.mjs --check は
+// コミット済みの PNG を同じ実装と比べるだけなので、**割合を変えて焼き直せば両方とも通る。**
+// 割合を選んだ理由（note は上下が切られる）は variants.mjs のコメントにあるが、
+// 理由を書いただけでは、次に触る人が値を動かしたときに止まらない。
+test('ヘッダー: 版面ごとの倍率と、note が切られた後に収まること', () => {
+  const byPath = new Map(listVariants().map((v) => [v.path, v]));
+  for (const ground of ['white', 'black']) {
+    assert.equal(byPath.get(`social/header-note-1920x1006-${ground}.png`).scale, 7);
+    assert.equal(byPath.get(`social/header-x-1500x500-${ground}.png`).scale, 6);
+    assert.equal(byPath.get(`social/header-ofuse-1000x150-${ground}.png`).scale, 4);
+
+    // OFUSE はワードマークだけを左へ置く（#788）。**留めるのは「アイコンの円に入らないこと」**
+    // であって、版面の中央ではない。#783 は中央（rightmost < 500）を代わりの線に使い、
+    // 重なる相手の実寸を測らなかったため、右端 491 で 40px 食い込んだまま緑で通った。
+    // 占有域は中央 ± OFUSE_COVER.iconClearance で、実測の根拠は variants.mjs に書いた。
+    // 上下と左の余白が等しいこと（47px）も見る。倍率が変われば、この 3 つのどれかが落ちる。
+    const ofuse = byPath.get(`social/header-ofuse-1000x150-${ground}.png`);
+    const oimg = renderVariant(ofuse);
+    const forbidden = oimg.width / 2 - OFUSE_COVER.iconClearance;
+    let leftmost = oimg.width;
+    let rightmost = -1;
+    let topmost = oimg.height;
+    for (let i = 0; i < oimg.pixels.length; i++) {
+      if (oimg.pixels[i] === 0) continue;
+      const x = i % oimg.width;
+      if (x < leftmost) leftmost = x;
+      if (x > rightmost) rightmost = x;
+      const y = Math.floor(i / oimg.width);
+      if (y < topmost) topmost = y;
+    }
+    assert.ok(rightmost < forbidden, `${ofuse.path}: ロゴがアイコンの占有域（中央 ± ${OFUSE_COVER.iconClearance}px）へ入っている（右端 ${rightmost}）`);
+    assert.equal(leftmost, topmost, `${ofuse.path}: 上と左の余白が等しくない（左 ${leftmost} / 上 ${topmost}）`);
+    assert.deepEqual(ofuse.grid, wordmark(), `${ofuse.path}: ワードマーク以外の格子が置かれている`);
+
+    // note は表示のときに中央の帯だけが出る。**その帯の外へロゴがはみ出さないこと。**
+    const v = byPath.get(`social/header-note-1920x1006-${ground}.png`);
+    const img = renderVariant(v);
+    const band = 340;
+    const top = Math.floor((img.height - band) / 2);
+    for (let y = 0; y < img.height; y++) {
+      if (y >= top && y < top + band) continue;
+      const row = img.pixels.subarray(y * img.width, (y + 1) * img.width);
+      assert.ok(row.every((p) => p === 0), `${v.path}: 帯の外の y=${y} に地ではない画素がある`);
+    }
+  }
+});
+
+// `left` の範囲の検査（#783）。**一覧が作る値は必ず正しいので、一覧を描くだけでは
+// この検査を消しても通る。** 不正な値をここで直接渡す。
+test('置き場所: 画像からはみ出す left を拒む', () => {
+  const grid = ['KK', 'KK'];
+  const base = { path: 'test/left.png', grid, scale: 10, ink: /** @type {const} */ ('light'), ground: /** @type {const} */ ('white'), width: 100, height: 40 };
+  assert.throws(() => renderVariant({ ...base, left: -1 }), /はみ出す/);
+  assert.throws(() => renderVariant({ ...base, left: 81 }), /はみ出す/); // 81 + 20 > 100
+  assert.doesNotThrow(() => renderVariant({ ...base, left: 0 }));
+  assert.doesNotThrow(() => renderVariant({ ...base, left: 80 })); // 右端にちょうど接する
 });
 
 test('PNG: 書いたものを復号すると同じ画素に戻る', () => {

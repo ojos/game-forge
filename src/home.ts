@@ -43,7 +43,11 @@
  * 寄せる判断は M2-1 以降が持ち、ここで先取りすると捨てる量が増える。
  */
 import type { SiteViewer } from './html.js';
-import { resolveSiteViewer, siteHead } from './html.js';
+import { SOCIAL_OGP_PATH, escapeHtml, resolveSiteViewer, siteHead } from './html.js';
+// カードの実寸（#786）。**1200×630 をここへ書き写さない**——作品ページの `og:image:width` /
+// `og:image:height` と同じ定数を使う（`.ai-playbook/shared-ai-rules.md` 12 章）。
+// 写した画像の実寸がこの値と一致することは `scripts/check-logo-copies.sh` が見る。
+import { OGP_IMAGE_HEIGHT, OGP_IMAGE_WIDTH } from './ogp.js';
 import { siteFooter } from './legal.js';
 import type { Route } from './routes.js';
 import { html } from './routes.js';
@@ -68,6 +72,74 @@ import { renderHomeNewsSection } from './news.js';
  * 値を二重に持っているわけではない。
  */
 export { HOME_PATH };
+
+/**
+ * トップの題名（#786）。**`<title>` と `og:title` と `og:site_name` が同じ 1 つの定数を使う。**
+ *
+ * トップは**サイトそのもの**の頁なので、3 つとも「Game Forge」である。写しを 3 つ置くと、
+ * 改名した日に片方だけが残る。
+ */
+const SITE_NAME = 'Game Forge';
+
+/**
+ * トップの説明文（#786）。**`<meta name="description">` と `og:description` が共有する。**
+ *
+ * **貼った先のカードに出る文と、検索結果に出る文を別々に持たない。** 2 つに分けると、
+ * 片方だけを直した日に「カードには古い説明、検索には新しい説明」が出る。文言は #786 以前から
+ * 出ている `<meta name="description">` のものをそのまま定数へ引き上げただけで、1 文字も変えていない。
+ */
+const HOME_DESCRIPTION =
+  'プロンプト1行で生まれるブラウザ2Dゲームと、フォーク型 UGC コミュニティ。招待制クローズドβ。';
+
+/**
+ * トップの `<head>` に足す説明と OGP のメタタグ（#786 / 仕様 11.2）。
+ *
+ * ## 作品ページと同じ部品・同じ札で組む
+ *
+ * 出す札は `src/work-page.ts` の `ogpMeta` と同じ 7 種（`og:type` / `og:site_name` /
+ * `og:title` / `og:description` / `og:url` / `og:image` ＋ `twitter:card`）で、画像の実寸は
+ * あちらと同じ定数（{@link OGP_IMAGE_WIDTH} / {@link OGP_IMAGE_HEIGHT}）から出す。
+ * **差し込む口も同じ**——`siteHead` の `extraHead` である（`<meta>` が本文より前へ出る
+ * ことは、あちらが保証している）。
+ *
+ * **`ogpMeta` そのものを借りない。** あちらの引数は `WorkPageView`（作品 1 件の表示に要る
+ * 30 以上の値）で、トップには作品が無い。**共通化するなら「公開済みか」「撮れているか」
+ * という作品側の判断を剥がすことになり、作品ページの OGP を触る**——#786 の scope.out である。
+ *
+ * ## 画像は常にある
+ *
+ * 作品の `og:image` は撮影が非同期なので「まだ無い」状態がありうる。その間は
+ * `summary_large_image` を名乗らない。**トップの画像は配信物（`SOCIAL_OGP_PATH`）なので
+ * 無い状態が無い**——出し分けを持たず、常に大きなカードを名乗る。
+ *
+ * ## ホストは要求から借りる
+ *
+ * `og:url` と `og:image` は絶対 URL でなければならない（`src/ogp.ts` の `ogpImageUrl` と
+ * 同じ事情）。スキームとホストはこの要求から借りる。**要求はここまでに `src/index.ts` が
+ * `APP_HOST` と突き合わせて通したものだけ**だが、要求由来の値を属性へ入れるので
+ * `escapeHtml` を通す（`src/html.ts` の `canonicalLink` と同じ方針）。
+ *
+ * **見ている人では 1 文字も変わらない**（このモジュールの `showHome` の「本文は
+ * ログイン状態で出し分けない」を崩さない）。
+ *
+ * @param request 受信したリクエスト（スキームとホストだけを借りる）
+ * @returns メタタグ（`extraHead` へそのまま渡せる HTML）
+ */
+function homeHeadMeta(request: Request): string {
+  const pageUrl = escapeHtml(new URL(HOME_PATH, request.url).toString());
+  const imageUrl = escapeHtml(new URL(SOCIAL_OGP_PATH, request.url).toString());
+  return `
+<meta name="description" content="${HOME_DESCRIPTION}">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="${SITE_NAME}">
+<meta property="og:title" content="${SITE_NAME}">
+<meta property="og:description" content="${HOME_DESCRIPTION}">
+<meta property="og:url" content="${pageUrl}">
+<meta property="og:image" content="${imageUrl}">
+<meta property="og:image:width" content="${OGP_IMAGE_WIDTH}">
+<meta property="og:image:height" content="${OGP_IMAGE_HEIGHT}">
+<meta name="twitter:card" content="summary_large_image">`;
+}
 
 /**
  * 「いまの状態」の告知（仕様 2.3.3 の #435 注記 / #471）。**トップのヘッダの直下に 1 つだけ置く。**
@@ -153,6 +225,12 @@ ${renderWorkCards(section.works, avatarOrigin)}
  * - 「はじめる」の登録・待機リスト・ログイン → **ヘッダの「ログイン」**（行き先を `/signup` へ集めるのは M13-8 / #472）
  * - 「参加している方へ」のあなたの作品・招待コードの発行 → **アカウントのメニュー**（#469 で足した）
  *
+ * ## OGP（#786）
+ *
+ * **説明と OGP のメタタグは {@link homeHeadMeta} が組む。** ここが渡すのは要求だけである
+ * （スキームとホストを借りて絶対 URL を作る必要があるため。理由はあちら）。
+ *
+ * @param request 受信したリクエスト（OGP の絶対 URL にスキームとホストだけを使う。#786）
  * @param sections 並べる節（空の節は既に落としてある。`src/home-feed.ts`）
  * @param news お知らせの記事（新しい順。静的な定義なので D1 は読まない）
  * @param viewer いま見ている人の状態（2.3.7 のヘッダの出し分け）
@@ -160,16 +238,16 @@ ${renderWorkCards(section.works, avatarOrigin)}
  * @returns HTML
  */
 function renderHomePage(
+  request: Request,
   sections: readonly HomeSection[],
   news: readonly NewsArticle[],
   viewer: SiteViewer,
   avatarOrigin: string | null,
 ): string {
   return `${siteHead({
-    title: 'Game Forge',
+    title: SITE_NAME,
     viewer,
-    extraHead:
-      '\n<meta name="description" content="プロンプト1行で生まれるブラウザ2Dゲームと、フォーク型 UGC コミュニティ。招待制クローズドβ。">',
+    extraHead: homeHeadMeta(request),
   })}
 <div class="gf-block gf-home-notice">
 <p>${CLOSED_BETA_NOTICE}</p>
@@ -227,7 +305,7 @@ async function homeFeed(env: Env): Promise<HomeFeedData> {
  *
  * **キャッシュが無くても、D1 が空でも、D1 が落ちていても 200 を返す**（{@link homeFeed}）。
  *
- * @param request 受信したリクエスト（**本文は出し分けない。**下記）
+ * @param request 受信したリクエスト（**見ている人では出し分けない。**下記。スキームとホストは借りる）
  * @param env バインディングと環境変数
  * @returns レスポンス
  */
@@ -241,6 +319,9 @@ async function showHome(request: Request, env: Env): Promise<Response> {
   const viewer = await resolveSiteViewer(request, env);
   return html(
     renderHomePage(
+      // OGP の `og:url` / `og:image` が絶対 URL を要る（#786）。**借りるのはスキームとホストだけ**で、
+      // 見ている人では変わらない（`sandboxOriginOf` と同じ性質）。
+      request,
       homeSections(await homeFeed(env)),
       NEWS_ARTICLES,
       viewer,

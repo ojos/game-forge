@@ -73,7 +73,7 @@ DotGothic16 で似せたものではありません**——ゲームの画面に
 | `lockup-horizontal/` | シンボル＋文字の横組み（透過） | ヘッダ、資料の表紙、横に長い場所 |
 | `lockup-stacked/` | シンボルの下に文字を置いた縦組み（透過） | 正方形に近い場所、スライドの中央 |
 | `wordmark/` | 文字だけ（透過） | シンボルが別の場所に既にあるとき |
-| `social/` | OGP（1200×630）とプロフィール画像（正方形） | SNS での共有、アカウントのアイコン |
+| `social/` | OGP（1200×630）、プロフィール画像（正方形）、口座ごとのヘッダー（帯） | SNS での共有、アカウントのアイコン、クリエイターページの上の帯 |
 
 **ファイル名の決まり:**
 
@@ -256,3 +256,16 @@ Flat vector logo for "Game Forge". Pixel-art anvil seen from the side with a cle
 5 章の「画像を 1 枚だけ使う場面では表示を添える」に従い、**利用規約（`/terms`）の末尾に書体の表示を
 置きました**（#440 の intake で利用者が選んだ。全画面のフッタから 1 手で届き、フッタの項目は増やさない）。
 文字列の正本は `src/legal.ts` の `LOGO_FONT_NOTICE` です。
+
+### 7.4 トップを貼ったときのカード画像（#786）
+
+トップページ（`/`）の `og:image` に **`social/ogp-1200x630-black.png`** を使います。
+
+| 項目 | 決めたこと | 理由 |
+|---|---|---|
+| 使う画像 | `social/ogp-1200x630-black.png`（**黒地**） | カードは明るい面に置かれることが多く（X・Slack・note）、白地はその面へ溶けてカードの輪郭が消える |
+| 置く場所 | `public/assets/social/` の**写し**（綴りは正本と同じ） | 7.2 と同じ事情。**写しが正本と一致することと、実寸が `src/ogp.ts` の `OGP_IMAGE_WIDTH` × `OGP_IMAGE_HEIGHT` と一致することは `scripts/check-logo-copies.sh` が見る** |
+| 綴りの正本 | `src/html.ts` の `SOCIAL_OGP_PATH` | 検査はこの定数からパスを導く（書き写さない） |
+| 作品の `og:image` との違い | あちらは公開時に撮る画面写真（`/ogp/<id>.png`。R2 から Worker が返す） | トップには作品 id が無い。静的な 1 枚に Worker も D1 も R2 も通さない |
+
+**4 章で書き出し直したら、`public/assets/social/` へも写します**（7.2 と同じ）。

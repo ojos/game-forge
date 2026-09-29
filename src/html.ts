@@ -140,6 +140,36 @@ export const LOGO_WIDTH = 122;
 export const LOGO_HEIGHT = 31;
 
 /**
+ * トップを外へ貼ったときのカード画像（`og:image`。#786 / 仕様 11.2）。
+ *
+ * ## なぜ `public/assets/` へ写すのか
+ *
+ * **正本は `brand/logo/social/ogp-1200x630-black.png` だが、`brand/` は配信されない**
+ * ——Pages が配るのは `public/` の下だけである（{@link LOGO_DIR} と同じ事情）。**写しが
+ * 正本とバイト単位で一致することは `scripts/check-logo-copies.sh` が見る**ので、
+ * `tools/logobake` の一覧（`tools/logobake/variants.mjs`）と二重管理にならない
+ * ——書き出し直して写し忘れれば受け入れ条件が落ちる。**綴りは正本と同じにしてある**
+ * （ディレクトリを `brand/logo/` → `public/assets/` へ読み替えるだけで照合できる）。
+ *
+ * ## `/ogp/` には載せない
+ *
+ * 作品の `og:image`（`src/ogp.ts` の `OGP_IMAGE_PREFIX`）は **R2 の実物を Worker が
+ * 返す経路**で、鍵は作品 id から引く。**トップには作品 id が無い**ので、あの経路へ
+ * 固定の 1 枚を載せるには「作品ではない鍵」を足すことになる。静的なファイル 1 枚に
+ * Worker も D1 も R2 も通さない（{@link APP_CSS_PATH} と同じ理由）。
+ *
+ * ## 黒地を選んだ理由
+ *
+ * **カードは明るい面に置かれることが多い**（X・Slack・note のいずれもカードの地は白に
+ * 近い）。白地（`ogp-1200x630-white.png`）はその面へ溶けてカードの輪郭が消えるが、
+ * 黒地はブランドの地の色（`docs/logo.md` の「地（黒）`#131517`」）のまま輪郭が立つ。
+ *
+ * **このパスが `public/_routes.json` の `exclude` に入る**ことは `test/home.test.ts` が
+ * 機械検査する（外れると、実体があっても catch-all の Functions が 404 を返す。#266 の実測）。
+ */
+export const SOCIAL_OGP_PATH = '/assets/social/ogp-1200x630-black.png';
+
+/**
  * 置く地の明るさごとの `srcset`。
  *
  * @param bg 置く地の明るさ（`docs/logo.md` 3 章の `for-light-bg` / `for-dark-bg`）

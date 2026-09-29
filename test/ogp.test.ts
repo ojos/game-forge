@@ -534,6 +534,80 @@ describe('OGP のメタタグ（#26 acceptance 3）', () => {
   });
 });
 
+describe('og:description は作者の説明から組む（#795）', () => {
+  /**
+   * 公開済みの作品に説明を入れ、`og:description` の中身を取り出す。
+   *
+   * **D1 を直に更新する。** `describeGame` を通すと変更の間隔（60 秒）と検証に掛かり、
+   * ここで見たいこと（**出し方**）とは別の関門で落ちる。
+   *
+   * @param suffix テスト内で一意な接尾辞
+   * @param description 入れる説明（空文字なら書いていない作品）
+   * @returns `og:description` の値（エスケープ済みのまま）
+   */
+  async function ogpDescription(suffix: string, description: string): Promise<string | undefined> {
+    const { id } = await seedPublishedGame(suffix);
+    await env.DB.prepare('update games set description = ? where id = ?').bind(description, id).run();
+    return /<meta property="og:description" content="([^"]*)">/u.exec(await workPage(id))?.[1];
+  }
+
+  it('作者が書いた説明がそのまま載る', async () => {
+    expect(await ogpDescription('desc-plain', 'ネコが皿を割る前に受け止めます。')).toBe(
+      'ネコが皿を割る前に受け止めます。',
+    );
+  });
+
+  it('作品ごとに違う文が出る（全作品が同じ 1 文になっていた #26 の状態へ戻らない）', async () => {
+    // **この 1 本が #795 の眼目である。** 固定文へ戻すと、ここだけが落ちる。
+    const first = await ogpDescription('desc-unique-1', 'まっすぐ落ちてくる岩をよけます。');
+    const second = await ogpDescription('desc-unique-2', '風に流される紙ヒコーキを導きます。');
+    expect(first).not.toBe(second);
+  });
+
+  it('改行と連続する空白は半角空白 1 つへ畳む（属性に改行を入れない）', async () => {
+    const folded = await ogpDescription('desc-fold', '1 行目です。\n\n2 行目です。\t\t 3 行目です。');
+    expect(folded).toBe('1 行目です。 2 行目です。 3 行目です。');
+    expect(folded).not.toContain('\n');
+  });
+
+  it('200 コードポイントを超える説明は 199 字 + … で切る', async () => {
+    const cut = await ogpDescription('desc-cut', 'あ'.repeat(250));
+    expect([...cut!].length).toBe(200);
+    expect(cut).toBe(`${'あ'.repeat(199)}…`);
+  });
+
+  it('ちょうど 200 コードポイントの説明は切らない', async () => {
+    // **境界で 1 字落とさない。** `…` を足すのは、本当に溢れたときだけである。
+    const kept = await ogpDescription('desc-edge', 'あ'.repeat(200));
+    expect(kept).toBe('あ'.repeat(200));
+    expect(kept).not.toContain('…');
+  });
+
+  it('コードポイントで数える（UTF-16 の長さではない）', async () => {
+    // 𝒜 は UTF-16 では 2 単位、コードポイントでは 1 字である。**150 字は上限内なので切らない。**
+    const kept = await ogpDescription('desc-astral', '𝒜'.repeat(150));
+    expect(kept).toBe('𝒜'.repeat(150));
+  });
+
+  it('説明が無い（空文字）・空白だけの作品は控えの固定文を出す', async () => {
+    // **`games.description` は NOT NULL で、空文字が「説明が無い」である**
+    // （`migrations/0028_game_descriptions.sql`）。null は D1 に現れない。
+    for (const [suffix, description] of [
+      ['desc-empty', ''],
+      ['desc-blank', '   \n\t  '],
+    ] as const) {
+      expect(await ogpDescription(suffix, description), suffix).toBe(
+        'Game Forge で作られたゲームです。ブラウザでそのまま遊べます。',
+      );
+    }
+  });
+
+  it('引用符や < を含む説明でも属性が壊れない', async () => {
+    const escaped = await ogpDescription('desc-escape', '「"あ" < い」で遊びます。');
+    expect(escaped).toBe('「&quot;あ&quot; &lt; い」で遊びます。');
+  });
+});
+
 describe('撮影関数の呼び出し（src/ogp-client.ts）', () => {
   /**
    * 署名済みの要求を捕まえる。

@@ -60,6 +60,30 @@ bash scripts/check-control-chars.sh
 echo "[acceptance] (hygiene) scripts/check-table-breaks.sh"
 bash scripts/check-table-breaks.sh
 
+# 追跡 Markdown の相対リンクの実在の検査（#803）。
+#
+# **上の 2 つと同じ層に置く。** どれも「読んでも気づけない壊れ方」を機械で見るもので、
+# 言語のマニフェストに依存せず、bash と awk と git しか要らない（実測 57 ms。
+# check-table-breaks.sh が 46 ms、check-control-chars.sh が 103 ms）。
+#
+# **Copilot code review が繰り返し出していた指摘の最頻出がこれだった**（#794 の「存在しない
+# 相対リンクを再度参照している」）。直近の指摘 7 件を分類すると 5 件（71%）が機械検査に
+# 落とせる種類で、リンクの実在はその中でも判定が完全に決定的な 1 件である。**機械検査へ
+# 落とすと、記録の性質（著者の操作なしに作られ、消せず、内容が著者を通らない）が
+# verify.yml の再実行から無料で付いてくる**——リモートのレビューをローカルへ寄せても
+# 失われない層はここだけである（#807）。
+#
+# **外部 URL の到達性は見ない。** ネットワークを要するのでローカル層に置けない
+# （loop-workflow.md「受け入れ条件の二層」）。アンカーの実在も見ない（#803 の scope.out）。
+#
+# **判定はスクリプト側が持つ**（何を見て何を見ないか、コードフェンスの扱い、
+# インラインコードを意図的に剥がさない理由は scripts/check-doc-links.sh の冒頭）。
+#
+# ran_any は立てない。上の 2 つと同じ理由（マニフェストに関係なく必ず走るため、
+# 立てると「テストを 1 つも実行していないのに合格」を作れてしまう）。
+echo "[acceptance] (hygiene) scripts/check-doc-links.sh"
+bash scripts/check-doc-links.sh
+
 # 書き戻しの PR を 1 本ずつに並べる判定の表（#650）。
 #
 # **判定はワークフロー（.github/workflows/writeback-serial.yml）ではなくスクリプトが持つ**ので、
@@ -236,6 +260,23 @@ if [[ -d scripts ]]; then
   ran_any=1
 else
   echo "[acceptance] (portability) skip: scripts/ not found"
+fi
+
+# 第二意見の codex エンジンの配線（#805）。
+#
+# **本物の CLI も認証も要らない。** 仕込みの codex を PATH の先へ置いて、差分の並び・
+# 引数の形・判定の入力（-o のファイル）・未ログインの事前検査を確かめる。ネットワークも
+# 外部認証も使わないので、ローカル層の契約（`.github/project-ai-rules.md`）に収まる。
+#
+# **ここに置く理由は、壊れても緑に見えるからである。** 差分の並びを逆にすると、モデルは
+# 差分を見ないまま「差分が空だ」と答え、LGTM として通る。**ゲートが通ったことと、
+# レビューされたことが別になる。**
+if [[ -f scripts/second-opinion-codex-selftest.sh ]]; then
+  echo "[acceptance] (second-opinion) scripts/second-opinion-codex-selftest.sh"
+  bash scripts/second-opinion-codex-selftest.sh
+  ran_any=1
+else
+  echo "[acceptance] (second-opinion) skip: scripts/second-opinion-codex-selftest.sh not found"
 fi
 
 # OGP 撮影の「写し」の機械照合（#26 / #235 / shared-ai-rules 12 章）。

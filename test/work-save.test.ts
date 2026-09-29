@@ -732,7 +732,12 @@ describe('下書きのままでも説明とタグを保存できる（#673）', 
     expect(edit.body).toMatch(new RegExp(`name="${WORK_TAG_FIELD}" value="${tag}"[^>]* checked`));
 
     // 作者が作品ページで開く下書きのプレビュー（#664）には出る——公開すると誰にでも見えるものを、公開前に確かめる画面である。
-    expect((await openApp(workPagePath(id), owner)).body).toContain(description);
+    const preview = await openApp(workPagePath(id), owner);
+    expect(preview.body).toContain(description);
+    // **ただし OGP のメタタグは 1 つも出ない**（#795）。`ogpMeta` が `view.published` で先に返すので、
+    // **下書きの説明が `og:description` へ漏れる経路そのものが無い。** ここが下書きを守る関門であり、
+    // 「説明の代わりに固定文を出すこと」ではない（`src/games.ts` の `WorkDetailsEditOptions`）。
+    expect(preview.body).not.toContain('<meta property="og:description"');
 
     // **作者以外（未ログイン・他人）には、作品ページにもエディットページにも説明とタグが出ない**（下書きの作品ページは
     // 未公開であることだけを出す〔#690〕。エディットページは作者以外を作品ページへ 303 で送り返す〔#690〕）。
@@ -772,8 +777,10 @@ describe('下書きのままでも説明とタグを保存できる（#673）', 
     expect(page.status).toBe(200);
     expect(page.body).toContain(description);
     expect(page.body).toContain(`href="${workTagListPath(tag)}"`);
-    // **`og:description` は固定の文言で、作者の説明を載せない**（OGP に下書きの頃の文章が漏れる経路を作らない）。
-    expect(page.body).not.toMatch(/<meta property="og:description" content="[^"]*ミズクラゲ/);
+    // **公開したら `og:description` は作者の説明になる**（#795）。#26 の固定文は、説明を書いていない
+    // 作品への控えとして残っている。**この時点で説明は公開ページに出ており**（すぐ上の `toContain`）、
+    // カードへ載せても新しく漏れるものは無い。
+    expect(page.body).toMatch(/<meta property="og:description" content="[^"]*ミズクラゲ/);
     expect((await openApp(`${PUBLIC_WORKS_PATH}?${WORK_SEARCH_FIELD}=ミズクラゲ`)).body).toContain(workPagePath(id));
     expect((await openApp(workTagListPath(tag))).body).toContain(workPagePath(id));
     expect((await openApp(SITEMAP_PATH)).body).toContain(workPagePath(id));

@@ -78,5 +78,6 @@ fix_mount "/home/vscode/.aws"
 fix_mount "/home/vscode/.config/gcloud"
 fix_mount "/home/vscode/.claude"
 fix_mount "/home/vscode/.gemini"
+fix_mount "/home/vscode/.codex"
 log "done"
 exit 0

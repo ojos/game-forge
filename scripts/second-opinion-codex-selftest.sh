@@ -320,6 +320,34 @@ elif ! grep -q '"what"' "$record/gemini-argv"; then
   fail "gemini のプロンプトに回答の形（スキーマ）が載っていません（強制できないエンジンには載せる必要があります）"
 fi
 
+# ---- 2e. 強制できないエンジンで、前置きやフェンスが付いても読めること ----
+# **ナレーションが 1 行付くだけで落ちる**形だと、acceptance が消したかった「ナレーションに
+# よる誤分類」がこの経路にだけ残る（第二意見の指摘。実在）。
+for shape in narration fence; do
+  case "$shape" in
+    narration) answer='これから確認します。
+{"findings":[]}' ;;
+    fence) answer='```json
+{"findings":[]}
+```' ;;
+  esac
+  rm -f "$record/gemini-argv"
+  rc=0
+  (
+    cd "$repo"
+    PATH="$fake_bin:$PATH" \
+    FAKE_CODEX_RECORD="$record" \
+    PROJECT_ENV_FILE="$work/empty.env" \
+    GEMINI_API_KEY=dummy-for-selftest \
+    FAKE_CODEX_ANSWER="$answer" \
+      bash "$REVIEW" --engine gemini --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
+  ) || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    fail "回答に $shape が付いた形で落ちました（指摘は 0 件なので通すべきです）"
+    tail -2 "$work/err" >&2
+  fi
+done
+
 # ---- 3. 判定は -o のファイルから取ること（stdout では判定しない） ----
 # 回答は指摘なし、stdout には落とす指摘を書かせる。stdout で判定していれば赤になる。
 rc=0
@@ -369,5 +397,5 @@ if [[ "$failed" -ne 0 ]]; then
   exit 1
 fi
 
-echo "[codex-selftest] 9 組の配線を確かめました（差分を渡さない / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡し / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
+echo "[codex-selftest] 10 組の配線を確かめました（差分を渡さない / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

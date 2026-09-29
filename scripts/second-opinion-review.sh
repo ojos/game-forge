@@ -662,24 +662,42 @@ done
 #   gemini       **強制する旗が無い**（`--json-schema` に当たるものが `gemini --help` に無い。
 #                2026-09-29 に実測）。本文から JSON を取り出す。読めなければ落とす
 extract_answer_json() {
-  local raw="$1" out=""
+  local raw="$1" candidate
   case "$ENGINE" in
     codex)
-      out="$raw"
+      printf '%s' "$raw"
+      return 0
       ;;
     antigravity)
-      out="$(printf '%s' "$raw" | jq -c '.structured_output' 2>/dev/null || true)"
-      ;;
-    *)
-      # ```json のフェンスに入れて返す形が実際にある。中身だけを取り出してから試す。
-      out="$(printf '%s' "$raw" | sed -n '/^[[:space:]]*```/,/^[[:space:]]*```/p' | sed '1d;$d')"
-      if [[ -z "${out//[[:space:]]/}" ]]; then
-        out="$raw"
-      fi
+      printf '%s' "$raw" | jq -c '.structured_output' 2>/dev/null || true
+      return 0
       ;;
   esac
-  printf '%s' "$out"
+
+  # **スキーマを強制できないエンジンは、前置きを付けて返すことがある**（第二意見の指摘。
+  # 実在）。`これから確認します。` の 1 行が先に付くだけで、回答全体を jq へ渡す形だと
+  # 解析に失敗し、**指摘が 0 件でもゲートが落ちる**——acceptance が消したかった
+  # 「ナレーションによる誤分類」が、この経路にだけ残ることになる。
+  #
+  # **3 通りを順に試し、最初に JSON として読めたものを採る。** 3 番目は「最初の `{` から
+  # 最後の `}` まで」で、awk の貪欲一致で取る（mawk / BSD awk とも `.` が改行に当たることを
+  # 実測済み）。**「読めた」の判定は 1 か所（answer_is_valid）に任せる**——ここで別の
+  # 判定を書くと、通す条件が 2 か所になる。
+  for candidate in \
+    "$raw" \
+    "$(printf '%s' "$raw" | sed -n '/^[[:space:]]*```/,/^[[:space:]]*```/p' | sed '1d;$d')" \
+    "$(printf '%s' "$raw" | awk 'BEGIN{RS="\0"} { if (match($0, /\{.*\}/)) print substr($0, RSTART, RLENGTH) }')"
+  do
+    if [[ -n "${candidate//[[:space:]]/}" ]] && answer_is_valid "$candidate"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  # どれも読めなければ、生のまま返す（呼び出し元が落として、生の出力を見せる）。
+  printf '%s' "$raw"
 }
+
 
 # 形が満たされているかを見る。**「読めなかった」を「指摘なし」にしない**——
 # 読めないまま通すと、レビューしていないものを緑として報告することになる。

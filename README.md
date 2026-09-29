@@ -101,6 +101,13 @@ bash scripts/loop-gate.sh    # push / PR 作成の前の単一入口。verify �
 - オーケストレータは手元から配ります（[docs/orchestrator.md](docs/orchestrator.md)）。ビルド関数のイメージは [.github/workflows/deploy-compiler.yml](.github/workflows/deploy-compiler.yml) が配ります。
 - AWS・GCP・DNS・GitHub の設定と R2 のライフサイクルは Terraform で宣言します。D1・R2 のバケット・Pages のプロジェクトは wrangler で作成済みで、宣言の外にあります。管理の境界は [terraform/README.md](terraform/README.md) にあります。state と tfvars は追跡していないので、プライマリの作業ツリーから回します。
 
+## 権利
+
+- **このリポジトリは閲覧のために公開しています。コードと文書の再利用（複製・改変・再配布）は許諾していません**（All rights reserved）。ライセンスのファイルを置いていないのは、そのためです。GitHub の利用規約の範囲で、閲覧と fork はできます。
+- **[brand/](brand/) のロゴ・アイコン・ロックアップは Game Forge の商標です。** コードとは別の扱いで、将来コードにライセンスを付けても、それには含めません。
+- **[third_party/dotgothic16/](third_party/dotgothic16/) のフォントは SIL Open Font License 1.1 で提供されています。** 全文と著作権の表示を同じディレクトリに同梱しています（[NOTICE.md](third_party/dotgothic16/NOTICE.md)）。
+- 利用者が生成した作品の権利は、このリポジトリではなくサービスの利用規約（`/terms`）が定めます。
+
 ## 開発の進め方
 
 - 1 issue = 1 PR です。コミットメッセージは Conventional Commits の接頭辞を付けた日本語で書きます。

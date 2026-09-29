@@ -636,60 +636,82 @@ check_actions_variable() {
 }
 
 ##
-# 宣言した Route53 ホストゾーンが実在し、ネームサーバが宣言と一致することを確認する。
+# 宣言した Cloudflare の ojos.jp ゾーンが実在し、active で、ネームサーバが宣言と一致することを
+# 確認する（#775。それまでは Route 53 のホストゾーンを見ていた）。
 #
 # ゾーン ID と期待する NS は terraform output から取る。ここへ書き写すと、宣言を
 # 変えたときに検査だけが古い値を見続ける（shared-ai-rules.md 12 章）。
 #
+# **status が active であることまで見る。** pending のままでは、登録事業者側（さくらの画面）の
+# ネームサーバが Cloudflare を向いていない。宣言と API の値は一致していても、世の中は
+# まだ旧いネームサーバに聞きに行っている。
+#
 # 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
 ##
 check_dns_zone() {
-  local zone_id zone_name expected_ns actual_ns
-  zone_id="$(tf_output dns_zone_id)" || return 1
-  zone_name="$(tf_output dns_zone_name)" || return 1
+  local zone_id zone_name expected_ns actual_ns body status actual_name
+  zone_id="$(tf_output ojos_jp_zone_id)" || return 1
+  zone_name="$(tf_output ojos_jp_zone_name)" || return 1
   if [[ -z "$zone_id" || -z "$zone_name" ]]; then
     echo "terraform output から DNS ゾーンの識別子を取得できません。apply 済みか確認すること。"
     return 1
   fi
 
-  expected_ns="$(terraform -chdir="$TF_DIR" output -json dns_zone_name_servers | jq -S 'map(ascii_downcase) | sort')" || return 1
-  actual_ns="$(aws route53 get-hosted-zone --id "$zone_id" --query 'DelegationSet.NameServers' --output json | jq -S 'map(ascii_downcase) | sort')" || return 1
-  if [[ "$expected_ns" != "$actual_ns" ]]; then
-    echo "ホストゾーンのネームサーバが宣言と一致しません: expected=${expected_ns} actual=${actual_ns}"
+  body="$(cf_api "zones/${zone_id}")" || return 1
+  actual_name="$(jq -r '.result.name' <<<"$body")"
+  status="$(jq -r '.result.status' <<<"$body")"
+  if [[ "$actual_name" != "$zone_name" ]]; then
+    echo "ゾーン ${zone_id} の名前が宣言と一致しません: expected=${zone_name} actual=${actual_name}"
     return 1
   fi
-  echo "hosted zone ${zone_name} exists (${zone_id})"
+
+  expected_ns="$(terraform -chdir="$TF_DIR" output -json ojos_jp_name_servers | jq -S 'map(ascii_downcase) | sort')" || return 1
+  actual_ns="$(jq -S '.result.name_servers | map(ascii_downcase) | sort' <<<"$body")"
+  if [[ "$expected_ns" != "$actual_ns" ]]; then
+    echo "ゾーンのネームサーバが宣言と一致しません: expected=${expected_ns} actual=${actual_ns}"
+    return 1
+  fi
+  if [[ "$status" != "active" ]]; then
+    echo "ゾーン ${zone_name} が active ではありません（status=${status}）。"
+    echo "さくらの管理画面で、ネームサーバが次の値になっているか確認すること:"
+    echo "  terraform -chdir=terraform output ojos_jp_name_servers"
+    return 1
+  fi
+  echo "zone ${zone_name} is active on Cloudflare (${zone_id})"
 }
 
 ##
-# 委譲元（さくらの ojos.jp ゾーン）から Route53 へ NS 委譲が効いていることを確認する。
+# 親ゾーン（jp）から ojos.jp のゾーンへの委譲が、Cloudflare のネームサーバを向いていることを
+# 確認する（#775。それまでは「さくらの ojos.jp から Route 53 への委譲」を見ていた）。
 #
-# これは terraform の宣言対象ではない。さくらのドメインは DNS の API を持たず、NS の
-# 登録が手動になるためである（terraform/dns.tf 参照）。宣言できないものを検査だけは
-# 置くのは、手動の 1 回が抜けたまま「宣言は正しいのに名前が引けない」状態を、
-# 実装のバグと切り分けられるようにするため。
+# これは terraform の宣言対象ではない。登録事業者は JPRS で、取次のさくらに API が無く、
+# ネームサーバの登録が手動になるためである（terraform/dns-ojos-jp.tf 参照）。宣言できないものを
+# 検査だけは置くのは、手動の 1 回が抜けた・誤ったまま「宣言は正しいのに名前が引けない」状態を、
+# 実装のバグと切り分けられるようにするため。**#775 では実際に、1 本の綴りを誤って登録しかけた。**
 #
 # 期待する NS は宣言から取り、親ゾーンの権威サーバへ直接問い合わせて委譲そのものを見る。
 # ローカルリゾルバのキャッシュ越しに見ると、委譲前の応答を掴んで誤判定しうる。
 #
-# 委譲済みサブドメインの NS を親の権威サーバへ問い合わせると、応答はリファラルになり
-# NS は ANSWER ではなく AUTHORITY セクションに入る（実測: ANSWER: 0, AUTHORITY: 4）。
-# `dig +short` は ANSWER しか出さないため、正常な委譲を「未委譲」と誤判定する。
-# +noall +authority +answer で両方を拾い、レコード型で絞る。
+# 委譲の NS を親の権威サーバへ問い合わせると、応答はリファラルになり NS は ANSWER ではなく
+# AUTHORITY セクションに入る。`dig +short` は ANSWER しか出さないため、正常な委譲を
+# 「未委譲」と誤判定する。+noall +authority +answer で両方を拾い、レコード型で絞る。
 #
-# 親ゾーン名はゾーン名の先頭ラベルを落として導く。ここへ ojos.jp と書き写すと、
+# **余分な NS が混ざっていても不合格にする。** 切り替え前の委譲には応答しない ns.ojos.jp が
+# 混ざっていた（#775）。期待する組と完全に一致することを見る。
+#
+# 親ゾーン名はゾーン名の先頭ラベルを落として導く。ここへ jp と書き写すと、
 # ゾーン名を変えたときに検査だけが古い親を見続ける（shared-ai-rules.md 12 章）。
 #
 # 戻り値: 0 = 委譲済み / 1 = 未委譲または取得失敗
 ##
 check_dns_delegation() {
   local zone_name parent_zone parent_ns expected_ns actual_ns
-  zone_name="$(tf_output dns_zone_name)" || return 1
-  expected_ns="$(terraform -chdir="$TF_DIR" output -json dns_zone_name_servers | jq -r '.[]' | sed 's/\.$//' | tr 'A-Z' 'a-z' | sort)" || return 1
+  zone_name="$(tf_output ojos_jp_zone_name)" || return 1
+  expected_ns="$(terraform -chdir="$TF_DIR" output -json ojos_jp_name_servers | jq -r '.[]' | sed 's/\.$//' | tr 'A-Z' 'a-z' | sort)" || return 1
 
   parent_zone="${zone_name#*.}"
-  if [[ -z "$parent_zone" || "$parent_zone" == "$zone_name" ]]; then
-    echo "親ゾーン名を導けません: zone=${zone_name}"
+  if [[ -z "$zone_name" || -z "$parent_zone" || "$parent_zone" == "$zone_name" ]]; then
+    echo "親ゾーン名を導けません: zone=${zone_name:-(なし)}"
     return 1
   fi
 
@@ -707,7 +729,7 @@ check_dns_delegation() {
   # サーバから返事が無いときだけ 9 を返すので、終了コードで見分ける。
   local answered="" raw
   for parent_ns in "${parent_ns_list[@]}"; do
-    if raw="$(dig +noall +authority +answer NS "$zone_name" @"$parent_ns" 2>/dev/null)"; then
+    if raw="$(dig +norec +noall +authority +answer NS "$zone_name" @"$parent_ns" 2>/dev/null)"; then
       answered="$parent_ns"
       break
     fi
@@ -719,19 +741,15 @@ check_dns_delegation() {
   fi
 
   actual_ns="$(awk '$4 == "NS" { print $5 }' <<<"$raw" | sed 's/\.$//' | tr 'A-Z' 'a-z' | sort)"
-  if [[ -z "$actual_ns" ]]; then
-    echo "委譲がまだ効いていません（${answered} に ${zone_name} の NS がありません）。"
-    echo "さくらの ${parent_zone} ゾーンへ NS レコードを登録してください。"
-    echo "登録する値: terraform -chdir=terraform output dns_zone_name_servers"
-    return 1
-  fi
   if [[ "$expected_ns" != "$actual_ns" ]]; then
-    echo "委譲先の NS が宣言と一致しません:"
+    echo "${zone_name} の委譲が宣言と一致しません（${answered} の答え）:"
     echo "  expected: $(tr '\n' ' ' <<<"$expected_ns")"
-    echo "  actual:   $(tr '\n' ' ' <<<"$actual_ns")"
+    echo "  actual:   $(tr '\n' ' ' <<<"${actual_ns:-(なし)}")"
+    echo "さくらの管理画面（Whois → ネームサーバを編集）で、次の値だけを登録すること:"
+    echo "  terraform -chdir=terraform output ojos_jp_name_servers"
     return 1
   fi
-  echo "delegation for ${zone_name} is in place"
+  echo "delegation for ${zone_name} points to Cloudflare"
 }
 
 ##
@@ -740,19 +758,32 @@ check_dns_delegation() {
 # 名前も向き先も terraform output から取る。ここへ app.game-forge.ojos.jp と書き写すと、
 # 宣言を変えたときに検査だけが古い名前を見続ける（shared-ai-rules.md 12 章）。
 #
-# ゾーン内のレコードは Route53 の API で直接読む。名前解決（dig）ではなく API を見るのは、
-# ここで確かめたいのが「宣言と実状態の一致」であって「世界中から引けること」ではないため。
-# キャッシュや委譲の遅れを、宣言の乖離として報告しない。
+# ゾーン内のレコードは Cloudflare の API で直接読む（#775 までは Route 53 の API）。名前解決
+# （dig）ではなく API を見るのは、ここで確かめたいのが「宣言と実状態の一致」であって
+# 「世界中から引けること」ではないため。キャッシュや委譲の遅れを、宣言の乖離として報告しない。
+#
+# **game-forge.ojos.jp に委譲の NS が残っていないことも見る**（#775 の段 C2）。残っていると、
+# ここに置いた CNAME は API では実在するのに、外からは引けない（Cloudflare は委譲の下の
+# 問い合わせにリファラルを返す）。**API だけを見る検査が緑のまま外れる、唯一の形である。**
 #
 # 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
 ##
 check_pages_dns_records() {
-  local zone_id target rc=0
-  zone_id="$(tf_output dns_zone_id)" || return 1
+  local zone_id target domain body delegated rc=0
+  zone_id="$(tf_output ojos_jp_zone_id)" || return 1
   target="$(tf_output pages_hostname)" || return 1
-  if [[ -z "$zone_id" || -z "$target" ]]; then
+  domain="$(tf_output game_forge_domain)" || return 1
+  if [[ -z "$zone_id" || -z "$target" || -z "$domain" ]]; then
     echo "terraform output から DNS の宣言値を取得できません。apply 済みか確認すること。"
     return 1
+  fi
+
+  body="$(cf_api "zones/${zone_id}/dns_records?type=NS&name.exact=${domain}")" || return 1
+  delegated="$(jq -r '[.result[].content] | join(" ")' <<<"$body")"
+  if [[ -n "$delegated" ]]; then
+    echo "${domain} に委譲の NS が残っています: ${delegated}"
+    echo "  この下のレコードは外から引けません（段 C2 が済んでいない）。"
+    rc=1
   fi
 
   # 3 ホストを回る（#356 で admin が増えた）。**一覧をここへ書き並べているのではなく、
@@ -766,10 +797,8 @@ check_pages_dns_records() {
       rc=1
       continue
     fi
-    # Route53 はレコード名を末尾ドット付きで返す。比較の前に両側から落とす。
-    actual="$(aws route53 list-resource-record-sets --hosted-zone-id "$zone_id" \
-      --query "ResourceRecordSets[?Name=='${host%.}.' && Type=='CNAME'].ResourceRecords[0].Value" \
-      --output text 2>/dev/null)" || actual=""
+    body="$(cf_api "zones/${zone_id}/dns_records?type=CNAME&name.exact=${host%.}")" || return 1
+    actual="$(jq -r '.result[0].content // ""' <<<"$body")"
     actual="${actual%.}"
     if [[ "$actual" != "${target%.}" ]]; then
       echo "${host%.} の CNAME が宣言と一致しません: expected=${target%.} actual=${actual:-(なし)}"
@@ -2063,14 +2092,338 @@ check_oidc_subject() {
   return 0
 }
 
+# ── dev01 の Cloudflare Tunnel（#792 / M22-2）──────────────────────────────
+#
+# 3 つに分けているのは、**落ちたときに取るべき行動が違う**ためである。
+#   1. トンネル自体   → dev01 の cloudflared が動いていない（機械側）
+#   2. DNS            → 宣言と Cloudflare のゾーンの乖離（apply のやり直し）
+#   3. Access         → 認可の宣言の乖離（**緑に見えて口が開いている最悪の形**）
+#
+# **どれも Cloudflare の API を見る。** 名前解決や実 HTTP ではない。ここで確かめたいのは
+# 宣言と実状態の一致であって、世界中から引けることではない（check_pages_dns_records と
+# 同じ理由）。実 HTTP での確認は acceptance の 3 番が別に持つ。
+
+##
+# dev01 のトンネルが実在し、コネクタが繋がっていて、ingress が宣言どおりであることを確認する。
+#
+# **status だけを見ない。** cloudflared が止まっていても宣言は残り、API は
+# 「トンネルは在る」と答える。繋がっているかは status（healthy）で見る。
+#
+# **ingress の中身も見る。** 遠隔管理（config_src = cloudflare）にした以上、口の一覧の
+# 正本は宣言である。ダッシュボードで足された口は、ここでしか見つからない。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_dev01_tunnel() {
+  cf_load_credentials
+  local tunnel_id llm_host ssh_host body status remote_config rc=0
+  tunnel_id="$(tf_output dev01_tunnel_id)" || return 1
+  llm_host="$(tf_output llm01_endpoint)" || return 1
+  llm_host="${llm_host#https://}"
+  ssh_host="$(tf_output dev01_ssh_host)" || return 1
+  if [[ -z "$tunnel_id" || -z "$llm_host" || -z "$ssh_host" ]]; then
+    echo "terraform output から dev01 のトンネルの宣言値を取得できません。apply 済みか確認すること。"
+    return 1
+  fi
+
+  body="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/${tunnel_id}")" || return 1
+  status="$(jq -r '.result.status // ""' <<<"$body")"
+  remote_config="$(jq -r '.result.remote_config // false' <<<"$body")"
+
+  if [[ "$status" != "healthy" ]]; then
+    echo "トンネルにコネクタが繋がっていません（status=${status:-(不明)}）。"
+    echo "  dev01 側で cloudflared が動いているか見ること: systemctl status cloudflared"
+    echo "  手順は docs/local-llm-tunnel.md。**宣言の乖離ではなく機械側の停止である。**"
+    rc=1
+  fi
+  if [[ "$remote_config" != "true" ]]; then
+    echo "トンネルの設定が遠隔管理になっていません（remote_config=${remote_config}）。"
+    echo "  ingress の正本が dev01 の中のファイルへ移っています（terraform/tunnel-dev01.tf の config_src）。"
+    rc=1
+  fi
+
+  body="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/${tunnel_id}/configurations")" || return 1
+
+  # **ホスト名だけを見ない（#793 の Copilot の指摘）。** 向き先（service）を
+  # ダッシュボードで書き換えられると、ホスト名の一覧は変わらないまま要求が別のところへ
+  # 流れる。規則を丸ごと（`<ホスト名>=<向き先>` の辞書順の並び）突き合わせるので、
+  # **余計な規則を足された場合もここで落ちる。**
+  local actual_ingress expected_ingress
+  actual_ingress="$(jq -r '[.result.config.ingress[] | "\(.hostname // "-")=\(.service)"] | sort | join(" ")' <<<"$body")"
+  expected_ingress="$(tf_output dev01_ingress)" || return 1
+  if [[ -z "$expected_ingress" ]]; then
+    echo "terraform output dev01_ingress が空です。apply 済みか確認すること。"
+    return 1
+  fi
+  if [[ "$actual_ingress" != "$expected_ingress" ]]; then
+    echo "ingress が宣言と一致しません（ホスト名・向き先・規則の数のいずれか）。"
+    echo "  宣言 : ${expected_ingress}"
+    echo "  実際 : ${actual_ingress}"
+    rc=1
+  fi
+
+  # 受け皿（既定の 404）が末尾にあること。無いと設定が不正になり、
+  # **知らないホスト名で来た要求の行き先が宣言から読めなくなる。**
+  local fallback
+  fallback="$(jq -r '.result.config.ingress[-1].service // ""' <<<"$body")"
+  if [[ "$fallback" != "http_status:404" ]]; then
+    echo "ingress の末尾が受け皿（http_status:404）ではありません: ${fallback:-(空)}"
+    rc=1
+  fi
+
+  # llm01 の口は、コネクタ自身にも Access を検べさせている（二重化）。
+  # **aud はアプリを作り直すと変わる。** ずれたまま required = true だと、
+  # エッジを通った要求まで dev01 の手前で落ちる。
+  #
+  # **API は camelCase で返す（originRequest / audTag）。** 宣言側（terraform の
+  # スキーマ）は snake_case なので、綴りを写すと**必ず空になり、設定が入っているのに
+  # 「無い」と報告する**（2026-09-23 に踏んだ。偽陽性で 1 回止まった）。
+  # **Host ヘッダの書き換えも見る。** Ollama は localhost 以外の Host を 403 で断るので、
+  # ここが外れると Access を通った要求まで dev01 で拒まれる。上の規則の突き合わせは
+  # ホスト名と向き先だけなので、ここで別に見る。期待値は向き先の host:port
+  # （宣言の http_host_header はそれを書き写したもの。terraform/tunnel-dev01.tf）。
+  local llm_service host_header expected_host_header
+  llm_service="$(jq -r --arg h "$llm_host" \
+    '.result.config.ingress[] | select(.hostname == $h) | .service // ""' <<<"$body")"
+  expected_host_header="${llm_service#http://}"
+  host_header="$(jq -r --arg h "$llm_host" \
+    '.result.config.ingress[] | select(.hostname == $h) | .originRequest.httpHostHeader // ""' <<<"$body")"
+  if [[ -z "$host_header" || "$host_header" != "$expected_host_header" ]]; then
+    echo "llm01 の口の Host ヘッダの書き換えが宣言と一致しません（origin_request.http_host_header）。"
+    echo "  期待 : ${expected_host_header:-(向き先が取れない)}"
+    echo "  実際 : ${host_header:-(なし)}"
+    echo "  Ollama が localhost 以外の Host を 403 で断るため、Access を通った要求まで拒まれます。"
+    rc=1
+  fi
+
+  local access_required aud_tag app_aud
+  access_required="$(jq -r --arg h "$llm_host" \
+    '.result.config.ingress[] | select(.hostname == $h) | .originRequest.access.required // false' <<<"$body")"
+  aud_tag="$(jq -r --arg h "$llm_host" \
+    '.result.config.ingress[] | select(.hostname == $h) | .originRequest.access.audTag // [] | join(" ")' <<<"$body")"
+  if [[ "$access_required" != "true" ]]; then
+    echo "llm01 の口のコネクタ側の Access 検査が無効です（origin_request.access.required）。"
+    echo "  トンネルへ直接到達する経路が、エッジの Access を迂回できます。"
+    rc=1
+  fi
+
+  # **欠落も不一致として扱う（#793 の Copilot の指摘）。** 以前は `-n "$app_aud"` を
+  # 付けており、**アプリが引けないと検査そのものが黙って省略された**——「aud を
+  # 確かめた」と「aud を確かめられなかった」が同じ緑になる。
+  app_aud="$(cf_access_app_field "$llm_host" '.aud')" || return 1
+  if [[ -z "$app_aud" ]]; then
+    echo "${llm_host} の Access アプリから aud を取得できません（アプリが無い可能性）。"
+    rc=1
+  elif [[ "$aud_tag" != "$app_aud" ]]; then
+    echo "llm01 の口の aud_tag が Access アプリと一致しません。"
+    echo "  アプリ : ${app_aud}"
+    echo "  ingress: ${aud_tag:-(空)}"
+    rc=1
+  fi
+
+  [[ $rc -eq 0 ]] && echo "tunnel ${tunnel_id} is healthy; ingress: ${actual_ingress}"
+  return $rc
+}
+
+##
+# Access のアプリを domain で 1 件引き、jq の式で 1 つの値を取り出す。
+#
+# 引数: $1 = 公開ホスト名 / $2 = jq の式（.aud など）
+# 戻り値: 0 = 取得できた（値を標準出力へ） / 1 = API の失敗
+##
+cf_access_app_field() {
+  local host="$1" expr="$2" body
+  body="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps")" || return 1
+  jq -r --arg h "$host" "[.result[] | select(.domain == \$h)] | .[0] | ${expr} // \"\"" <<<"$body"
+}
+
+##
+# 公開ホスト名の CNAME が、宣言したトンネルをプロキシ有りで指していることを確認する。
+#
+# **proxied を見るのが要点である。** DNS only にすると <id>.cfargotunnel.com は
+# 外から引けず、しかも「レコードは在る」ので存在の検査だけでは緑になる。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_tunnel_dns_records() {
+  cf_load_credentials
+  local zone_id tunnel_id expected host body count content proxied rc=0
+  zone_id="$(tf_output ojos_jp_zone_id)" || return 1
+  tunnel_id="$(tf_output dev01_tunnel_id)" || return 1
+  if [[ -z "$zone_id" || -z "$tunnel_id" ]]; then
+    echo "terraform output から zone_id / tunnel_id を取得できません。"
+    return 1
+  fi
+  expected="${tunnel_id}.cfargotunnel.com"
+
+  local output_name
+  for output_name in llm01_endpoint dev01_ssh_host; do
+    host="$(tf_output "$output_name")" || return 1
+    host="${host#https://}"
+    if [[ -z "$host" ]]; then
+      echo "terraform output ${output_name} が空です。"
+      rc=1
+      continue
+    fi
+    body="$(cf_api "zones/${zone_id}/dns_records?type=CNAME&name.exact=${host%.}")" || return 1
+    count="$(jq -r '.result | length' <<<"$body")"
+    if [[ "$count" != "1" ]]; then
+      echo "${host} の CNAME が 1 件ではありません（${count} 件）。"
+      rc=1
+      continue
+    fi
+    content="$(jq -r '.result[0].content' <<<"$body")"
+    proxied="$(jq -r '.result[0].proxied' <<<"$body")"
+    if [[ "$content" != "$expected" ]]; then
+      echo "${host} の向き先が宣言と一致しません: expected=${expected} actual=${content}"
+      rc=1
+    fi
+    if [[ "$proxied" != "true" ]]; then
+      echo "${host} がプロキシ有りではありません（proxied=${proxied}）。"
+      echo "  <id>.cfargotunnel.com は Cloudflare のエッジの中でしか解決されません。"
+      echo "  **レコードは実在するのに外からは引けない**状態です。"
+      rc=1
+    fi
+  done
+
+  [[ $rc -eq 0 ]] && echo "tunnel dns records point to ${expected} (proxied)"
+  return $rc
+}
+
+##
+# 2 つの口の Access アプリとポリシーが、宣言どおりの認可を持つことを確認する。
+#
+# **この検査が落ちる形は、他と質が違う。** トンネルも DNS も緑のまま、口だけが
+# 誰にでも開く。「繋がっている」ことは、ここでは安全の証拠にならない。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_tunnel_access_applications() {
+  cf_load_credentials
+  local llm_host ssh_host body rc=0
+  llm_host="$(tf_output llm01_endpoint)" || return 1
+  llm_host="${llm_host#https://}"
+  ssh_host="$(tf_output dev01_ssh_host)" || return 1
+
+  # **「形」ではなく「同一性」を見る（#793 の Copilot の指摘）。** 以前は
+  # include / require に**どの種類の条件が在るか**しか見ておらず、**別のサービストークンや
+  # 別の IdP へ差し替えられても `non_identity service_token` のまま緑だった。**
+  # 宣言が持つ識別子と突き合わせる。
+  local declared_token_id declared_idp_id declared_emails
+  declared_token_id="$(tf_output llm01_service_token_id)" || return 1
+  declared_idp_id="$(tf_output zero_trust_google_idp_id)" || return 1
+  declared_emails="$(tf_output zero_trust_operator_emails)" || return 1
+  if [[ -z "$declared_token_id" || -z "$declared_idp_id" || -z "$declared_emails" ]]; then
+    echo "terraform output から認可の宣言値を取得できません。apply 済みか確認すること。"
+    return 1
+  fi
+
+  body="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps")" || return 1
+
+  local host expected_decision expected_include expected_require app_id count decisions includes requires
+  # llm01 の口 = 人ではない呼び出し元（サービストークン）、ssh の口 = 人（Google Workspace）。
+  for host in "$llm_host" "$ssh_host"; do
+    if [[ "$host" == "$llm_host" ]]; then
+      expected_decision="non_identity"
+      expected_include="service_token"
+      expected_require=""
+    else
+      expected_decision="allow"
+      expected_include="email"
+      # **認証の経路も縛れていることを見る。** email だけだと、同じアドレスが
+      # 組み込みのワンタイム PIN で名乗っても通る（terraform/tunnel-dev01.tf の注記）。
+      expected_require="login_method"
+    fi
+
+    count="$(jq -r --arg h "$host" '[.result[] | select(.domain == $h)] | length' <<<"$body")"
+    if [[ "$count" != "1" ]]; then
+      echo "${host} の Access アプリが 1 件ではありません（${count} 件）。"
+      echo "  0 件なら**この口は誰でも通れます**（Access が載っていない）。"
+      rc=1
+      continue
+    fi
+    app_id="$(jq -r --arg h "$host" '[.result[] | select(.domain == $h)] | .[0].id' <<<"$body")"
+
+    local policies
+    policies="$(cf_api "accounts/${CLOUDFLARE_ACCOUNT_ID}/access/apps/${app_id}/policies")" || return 1
+    decisions="$(jq -r '[.result[].decision] | sort | join(" ")' <<<"$policies")"
+    includes="$(jq -r '[.result[].include[] | keys[]] | unique | join(" ")' <<<"$policies")"
+    requires="$(jq -r '[.result[].require // [] | .[] | keys[]] | unique | join(" ")' <<<"$policies")"
+
+    if [[ "$decisions" != "$expected_decision" ]]; then
+      echo "${host} のポリシーの決定が宣言と一致しません: expected=${expected_decision} actual=${decisions:-(無し)}"
+      rc=1
+    fi
+    if [[ "$includes" != "$expected_include" ]]; then
+      echo "${host} のポリシーの条件が宣言と一致しません: expected=${expected_include} actual=${includes:-(無し)}"
+      rc=1
+    fi
+    if [[ "$requires" != "$expected_require" ]]; then
+      echo "${host} のポリシーの必須条件が宣言と一致しません: expected=${expected_require:-(無し)} actual=${requires:-(無し)}"
+      rc=1
+    fi
+
+    # 条件の「中身」を突き合わせる。**ここが無いと、差し替えが素通りする。**
+    local actual_tokens actual_emails actual_logins actual_idps
+    if [[ "$host" == "$llm_host" ]]; then
+      actual_tokens="$(jq -r '[.result[].include[] | .service_token.token_id // empty] | unique | join(" ")' <<<"$policies")"
+      if [[ "$actual_tokens" != "$declared_token_id" ]]; then
+        echo "${host} を通すサービストークンが宣言と一致しません。"
+        echo "  宣言 : ${declared_token_id}"
+        echo "  実際 : ${actual_tokens:-(無し)}"
+        rc=1
+      fi
+    else
+      actual_emails="$(jq -r '[.result[].include[] | .email.email // empty] | sort | join(" ")' <<<"$policies")"
+      if [[ "$actual_emails" != "$declared_emails" ]]; then
+        echo "${host} へ入れる人が宣言と一致しません。"
+        echo "  宣言 : ${declared_emails}"
+        echo "  実際 : ${actual_emails:-(無し)}"
+        rc=1
+      fi
+      actual_logins="$(jq -r '[.result[].require // [] | .[] | .login_method.id // empty] | unique | join(" ")' <<<"$policies")"
+      if [[ "$actual_logins" != "$declared_idp_id" ]]; then
+        echo "${host} が必須にしている認証の経路が宣言と一致しません。"
+        echo "  宣言 : ${declared_idp_id}"
+        echo "  実際 : ${actual_logins:-(無し)}"
+        rc=1
+      fi
+      # アプリ側の入口（allowed_idps）も見る。ポリシーだけを縛っても、
+      # **入口が開いていれば別の IdP でログインの画面までは進める。**
+      actual_idps="$(jq -r --arg h "$host" '[.result[] | select(.domain == $h)] | .[0].allowed_idps // [] | sort | join(" ")' <<<"$body")"
+      if [[ "$actual_idps" != "$declared_idp_id" ]]; then
+        echo "${host} のアプリが許す ID プロバイダが宣言と一致しません。"
+        echo "  宣言 : ${declared_idp_id}"
+        echo "  実際 : ${actual_idps:-(無し)}"
+        rc=1
+      fi
+    fi
+  done
+
+  # llm01 の口は 401 を返させる（リダイレクトでは、呼ぶ側の fetch が失敗と分からない）。
+  local redirect_401
+  redirect_401="$(jq -r --arg h "$llm_host" '[.result[] | select(.domain == $h)] | .[0].service_auth_401_redirect // false' <<<"$body")"
+  if [[ "$redirect_401" != "true" ]]; then
+    echo "llm01 の口が未認証の要求をログイン画面へ送ります（service_auth_401_redirect が無効）。"
+    echo "  エッジの fetch は HTML を受け取り、失敗が遅れて現れます。"
+    rc=1
+  fi
+
+  [[ $rc -eq 0 ]] && echo "access applications match: ${llm_host} (service token), ${ssh_host} (google workspace)"
+  return $rc
+}
+
 run "repository exists and visibility matches" check_repository
 run "default branch matches" check_default_branch
 run "branch protection matches" check_branch_protection
 run "actions variable matches" check_actions_variable
 run "github oidc subject spelling matches" check_oidc_subject
-run "dns hosted zone matches" check_dns_zone
-run "dns delegation from sakura is in place" check_dns_delegation
+run "dns zone matches" check_dns_zone
+run "dns delegation from jp registry is in place" check_dns_delegation
 run "pages custom domain records match" check_pages_dns_records
+run "dev01 tunnel is healthy and ingress matches" check_dev01_tunnel
+run "tunnel dns records are proxied to the tunnel" check_tunnel_dns_records
+run "tunnel access applications match" check_tunnel_access_applications
 run "wrangler production hosts match dns" check_wrangler_production_hosts
 run "production deployment matches default branch HEAD" check_pages_production_deployment
 run "bedrock invoker permissions are minimal" check_bedrock_invoker_permissions

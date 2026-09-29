@@ -20,7 +20,7 @@
 | 要素 | 値 / 置き場 |
 |---|---|
 | ホスト名 | `admin.game-forge.ojos.jp`（`wrangler.toml` の `ADMIN_HOST`。3 環境すべて） |
-| DNS | `terraform/dns.tf` の `aws_route53_record.admin`（CNAME → `game-forge.pages.dev`） |
+| DNS | `terraform/dns-ojos-jp.tf` の `cloudflare_dns_record.game_forge_pages["admin"]`（CNAME → `game-forge.pages.dev`。**#775 で Route 53 の `aws_route53_record.admin` から移った**） |
 | 外部層の検査 | `terraform/outputs.tf` の `admin_host` → `scripts/acceptance-remote.sh`（CNAME の実在と `wrangler.toml` との一致） |
 | ローカル HTTPS | `scripts/dev-certs.sh` の SAN に入っている（**3 ホストぶん**） |
 | カスタムドメイン | Cloudflare API（`wrangler` にコマンドが無い。下記） |
@@ -99,7 +99,7 @@ https://admin.game-forge.ojos.jp/auth/google/start
 
 ```
 ① OAuth のリダイレクト URI を登録（Google Cloud Console。利用者）
-② Route53 の CNAME を apply（terraform。利用者の端末）
+② DNS の CNAME を apply（terraform。利用者の端末）
 ③ Pages のカスタムドメインを登録（Cloudflare API。利用者の端末）
 ④ Pages を配備（main へマージ → GitHub Actions。統合担当）
 ⑤ 本番 D1 へ 0025 を適用（利用者の端末）
@@ -142,10 +142,17 @@ https://admin.game-forge.ojos.jp/auth/google/callback
   > **注記（#478）。2026-09-14 までの旧記述**——「**テストユーザーの登録は要らない**（既に
   > 登録済みの運営のアカウントで入るため）。同意画面は Testing のまま運用する（仕様 8.1）。」
 
-### ② Route53 の CNAME（terraform。**宣言はこのリポジトリが持つ**）
+### ② DNS の CNAME（terraform。**宣言はこのリポジトリが持つ**）
 
-**ダッシュボードや `aws` コマンドで手で作らないこと**（確定17 が Route53 へ委譲した
-目的がそもそもこれである）。
+> **#775 注記。** CNAME の置き場所は Cloudflare の `ojos.jp` ゾーンへ移った（`terraform/dns-ojos-jp.tf` の
+> `cloudflare_dns_record.game_forge_pages["admin"]`）。**手で作らないこと・terraform で apply することは変わらない。**
+> 見出しと下の 1 文を現行へ直し、旧記述はその下の引用に残した。
+
+**ダッシュボードや `wrangler`・`aws` コマンドで手で作らないこと**（DNS を宣言で管理すると決めた
+目的がそもそもこれで、#775 で置き場所が Cloudflare の `ojos.jp` ゾーンへ移っても変わらない）。
+
+> **#775 までの旧記述**——「**ダッシュボードや `aws` コマンドで手で作らないこと**（確定17 が
+> Route53 へ委譲した目的がそもそもこれである）。」
 
 ```bash
 export AWS_PROFILE=game-forge-prod
@@ -724,7 +731,8 @@ npx wrangler d1 execute DB --remote --env production \
 `src/admin/actions.ts` にも書いてある。
 
 **カスタムドメインと OAuth の登録も、見ている範囲が違う。** `terraform plan` が見るのは
-Route53 の CNAME だけで、**Pages のカスタムドメインが `active` かどうかは見ていない。**
+DNS の CNAME だけで（#775 より前は Route 53、いまは Cloudflare の `ojos.jp` ゾーン）、
+**Pages のカスタムドメインが `active` かどうかは見ていない。**
 **OAuth クライアントは API から列挙できない**（仕様 8.1 の「Google 側の登録は API から
 列挙できない」）。
 
@@ -809,7 +817,7 @@ Route53 の CNAME だけで、**Pages のカスタムドメインが `active` �
 | 項目 | 結果 |
 |---|---|
 | ① OAuth のリダイレクト URI | **済**（2026-09-12。利用者の手作業） |
-| ② Route53 の CNAME | **済**（2026-09-12） |
+| ② DNS の CNAME | **済**（2026-09-12。当時は Route 53。#775 で Cloudflare へ移った） |
 | ③ カスタムドメイン | **済**（2026-09-12。`active`） |
 | ④ Pages の配備 | **済**（2026-09-12 / PR #359） |
 | ⑤ 0025 の適用 | **済**（2026-09-12） |

@@ -54,9 +54,9 @@ variable "required_status_checks" {
   description = <<-EOT
     既定ブランチのマージに必須とするステータスチェック名（ワークフローのジョブ名）。
 
-    review-gate は意図的に含めない。.github/workflows/review-gate.yml が
-    「required check にはしない」と定めているため（レビュー機構側の遅延や障害で
-    マージが止まる副作用を避ける）。
+    second-opinion-gate は意図的に含めない。.github/workflows/second-opinion-gate.yml が
+    「required check にはしない」と定めているため（記録の投稿の遅れでマージが止まる
+    副作用を避ける）。#807 で撤去した review-gate も同じ理由で含めていなかった。
   EOT
   type        = list(string)
   default     = ["verify", "verify-commit-identity"]

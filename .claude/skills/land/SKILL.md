@@ -35,7 +35,9 @@ gh pr view N --json number,title,state,isDraft,mergeable,headRefName,headRefOid,
 - **利用者の指示なしに始めたのに、作業ディレクトリで checkout しているブランチ（`git branch --show-current`）が `headRefName` と一致しない。** 「この会話で作った PR だけ」を、文章だけでなく確かめられる形にしたものです。別セッションは自分の worktree で作業するため、その PR のブランチはここに checkout されていません。番号を示した指示や `/land N` で始めた場合は、この条件を見ません
 - `baseRefName` が `main` でない。**この手順は、main へのマージとその配備を前提にしています。** 別のブランチ向けの PR に使うと、9 で無関係な main の実行を見届け、配備が済んだと誤って報告することになります。
 
-### 2. CI とリモート最終ゲートの完了を待つ
+### 2. CI と第二意見の確認側の完了を待つ
+
+**リモート最終ゲートはありません**（#807 で Copilot code review を撤退しました。`.github/project-ai-rules.md`「リモート最終ゲート」）。PR の上で機構が確かめるのは、CI（`verify`・`identity-guard`）と、第二意見の記録（`second-opinion-gate`）です。
 
 **利用者の入力を、再開のきっかけにしません。** これまでは PR を作った時点でターンを終えていたため、利用者が指示するまで確認そのものが始まりませんでした。このスキルが解消したいのはその点です。待つときは、終わると通知が来て自動で再開する形（Bash の `run_in_background`）を使います。
 
@@ -55,48 +57,35 @@ echo CHECKS_NOT_ATTACHED; exit 1
 
 `CHECKS_ATTACHED` が出てから watch します。`CHECKS_NOT_ATTACHED` なら、止めて報告します。
 
-check run だけを数えれば足りるのは、このリポジトリの事情によります。PR で起動する `verify`・`identity-guard`・`review-gate` はパスで絞っていないため、PR のどのコミットにも check run が付きます。commit status は `review-gate` だけで、これも check run と一緒に Actions が出しています。外部の CI はありません。それでも付かないのは、`[skip ci]` などで CI を飛ばしたコミットです。**CI を通っていないコミットを黙って通さず、止まるのが正しい動きです。**
+check run だけを数えれば足りるのは、このリポジトリの事情によります。PR で起動する `verify`・`identity-guard`・`second-opinion-gate` はパスで絞っていないため、PR のどのコミットにも check run が付きます。commit status は `second-opinion-gate` と、`docs/handoff.md` を触る PR の `writeback-serial` だけで、どちらも check run と一緒に Actions が出しています。外部の CI はありません。それでも付かないのは、`[skip ci]` などで CI を飛ばしたコミットです。**CI を通っていないコミットを黙って通さず、止まるのが正しい動きです。**
 
 ```bash
 gh pr checks N --watch --interval 30
 ```
 
-- `review-gate` は、opened のときは 120 秒の猶予を置いてから判定します。すぐに出なくても異常ではありません。
+- `second-opinion-gate` は、push のたびに 300 秒の猶予を置いてから判定します（記録は push の後に手元から投稿されるため）。すぐに出なくても異常ではありません。
 - 失敗の形は 2 つあり、**扱いが違います。**
-  - **status の `review-gate` が failure**（説明文が `Copilot code review was never requested`）: Copilot のレビューが要求されていません。**ジョブのエラー文に書かれている手順どおりに、1 回だけ手で要求します。**
-  - **ジョブの `check` だけが失敗し、status の `review-gate` が failure でない**: レビューの有無を API から読めなかっただけです（`review-gate.yml` はこのとき status を付けません）。**要求しません。** 要求済みのレビューを二重に要求すると、「1 回だけ要求する」が壊れます。3 のループで待ち、届かなければ止めて報告します。
+  - **status の `second-opinion-gate` が failure**（説明文が `no second-opinion record for this head`）: その head に紐づく第二意見の記録がありません。**この会話で作った PR なら、PR のブランチを checkout した worktree で `bash scripts/loop-gate.sh` を通し、`bash scripts/second-opinion-record.sh post` で投稿します。** 記録だけを作って投稿しません（回していないレビューを回したことにする形です）。別セッションの PR なら、止めて報告します。
+  - **ジョブの `record` だけが失敗し、status の `second-opinion-gate` が failure でない**: 記録の有無を API から読めなかっただけです（このとき status は付きません）。**投稿し直しません。** 20 分ごとの掃き寄せが判定し直すのを待ち、付かなければ止めて報告します。
 
-### 3. Copilot のレビューが届くのを待つ
+### 3. 第二意見の記録と、人間のコメントを読む
 
-`review-gate` が緑でも、それは「要求された」ことを示すだけです。**レビュー本文が届くまで待ちます。** 次のループを Bash の `run_in_background` で回します（フォアグラウンドの sleep は使えません）。
-
-```bash
-for _ in $(seq 30); do  # 30 秒 × 30 回 = 15 分
-  n="$(gh api --paginate 'repos/{owner}/{repo}/pulls/N/reviews' \
-      --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]") | .id' | wc -l)" || n=0
-  [ "$n" -gt 0 ] && { echo COPILOT_REVIEW_POSTED; exit 0; }
-  sleep 30
-done
-echo COPILOT_REVIEW_TIMEOUT; exit 1
-```
-
-- **`--paginate` を外しません。** 外すと先頭の 30 件しか見ないため、レビューが多い PR では、届いているのに待ち続けます。`--paginate` と `--jq` を組み合わせると、jq はページごとに適用されます。そのため `length` で数えず、1 件 1 行で出して `wc -l` で数えます。
-- API から読めなかった回は 0 件として扱い、そのまま待ち続けます。**「届いた」と判定してはいけません。** 読めなかったことを到着と取り違えると、レビューを読まないまま次へ進んでしまいます。
-- **`|| n=0` を外しません。** `set -e -o pipefail` のシェルで回すと、API が 1 回失敗しただけで、合図の行を何も出さずに終了します（実測）。どちらの合図も出ないまま止まると、届いたのか、時間切れなのかが分かりません。
-- **`COPILOT_REVIEW_TIMEOUT` が出たら、マージせずに止めて報告します。** レビュアー不在で最終判断できない状態は、closer の「エスカレーション条件」にあたります。
-- 指摘は review 本文と、行に付いたコメントの両方に出ます。
+`second-opinion-gate` が緑でも、それは「記録がある」ことを示すだけです。**記録の中身を読みます。** 記録は PR のコメントとして、先頭に `<!-- second-opinion sha=<head の SHA> -->` の印を持って投稿されています。
 
 ```bash
+gh api --paginate 'repos/{owner}/{repo}/issues/N/comments' --jq '.[] | {user: .user.login, created_at, body}'
 gh api --paginate 'repos/{owner}/{repo}/pulls/N/reviews' --jq '.[] | {user: .user.login, state, body}'
 gh api --paginate 'repos/{owner}/{repo}/pulls/N/comments' --jq '.[] | {user: .user.login, path, line, body}'
 ```
 
-- 人間が付けたコメントも同じ一覧に出ます。**それも指摘として扱います。**
-- Copilot は、確度の低い指摘を review 本文の「Suppressed comments」に折りたたんで出します。**これも読みます。** 行コメントと同じくらい実在することがあります。
+- **いまの head の SHA を持つ記録を読みます。** 古い head の記録は、直す前の差分に対するものです。
+- **`--paginate` を外しません。** 外すと先頭の 30 件しか見ないため、コメントが多い PR では、いまの head の記録を見落とします。
+- 記録に指摘があれば、6 で判定します。`loop-gate.sh` が `GATE_PASS` を返していても、報告対象外として出た指摘（範囲外など）が残っていることがあります。
+- 人間が付けたコメントやレビューも同じ一覧に出ます。**それも指摘として扱います。**
 
 ### 4. 自分でも差分を読む
 
-CI が緑でも、Copilot の指摘が 0 件でも、読まずにマージしません。
+**判断の要る指摘の受け皿は、この手順です**（`.github/project-ai-rules.md`「リモート最終ゲート」）。リモート最終ゲートを置いていないので、PR 本文や issue の acceptance と差分の突き合わせは、機構ではなくここで行います。CI が緑でも、第二意見の指摘が 0 件でも、読まずにマージしません。
 
 - `gh pr diff N` を読み、`pr-review.md` の順に確認します（受け入れ条件との対応、次に高リスクの観点）。
 - **その差分がこの PR のものか確かめます。** 直前のブランチに居たまま `git checkout -b` すると、前の PR のコミットが相乗りします。この場合、レビューも CI も緑のまま通ってしまいます（`docs/handoff.md`）。`commits` の見出しと `gh pr diff N --name-only`（変更したファイルの一覧）が、PR の主題と合っているかを見ます。
@@ -133,7 +122,7 @@ CI が緑でも、Copilot の指摘が 0 件でも、読まずにマージしま
 
 - **PR のブランチが checkout されている worktree で直します。** 他のセッションと共有しているプライマリの作業ツリーでは直しません。
 - push の前に `bash scripts/loop-gate.sh` を通します。identity の検査もこのゲートに入っています。
-- push したら、2 に戻って CI を待ちます。**Copilot には再要求しません。**
+- push したら、`bash scripts/second-opinion-record.sh post` で新しい head の記録を投稿し、2 に戻って CI を待ちます。
 - **次のどれかにあたれば、マージせずに止めて報告します。**
   - 直すには仕様の判断が要る。または直すと PR の範囲を超える
   - 直したあとも CI が赤い
@@ -184,6 +173,6 @@ gh pr merge N --squash --match-head-commit "$sha"
 最後に次をまとめます。closer の出力として求められている「判定根拠」にあたります。
 
 - 判定: マージしたか、どこで止めたか
-- 根拠: CI の結果、Copilot と人間の指摘の件数と、それぞれの扱い、自分で差分を読んで気づいたこと
+- 根拠: CI の結果、第二意見と人間の指摘の件数と、それぞれの扱い、自分で差分を読んで気づいたこと
 - マージコミット、閉じた issue、配備の結果
 - 止めた場合: 利用者に判断してほしいこと（1 つずつ、選択肢を添えて）

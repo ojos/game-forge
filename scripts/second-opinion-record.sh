@@ -9,7 +9,10 @@
 # |---|---|
 # | ローカル層の受け入れ検証（`verify.sh`） | `verify.yml` の verify ジョブが**再実行**する |
 # | **第二意見** | **無い** |
-# | リモート最終ゲート（Copilot） | `review-gate.yml` が要求されたことを確かめる |
+# | リモート最終ゲート（Copilot） | `review-gate.yml` が要求されたことを確かめる（**#807 で撤去**） |
+#
+# 上の表は #806 の時点のものである。**#807 で Copilot を撤退した後は、レビューの記録を機構で
+# 確かめているのはこの記録と確認側だけになった**（`.github/project-ai-rules.md`「リモート最終ゲート」）。
 #
 # `.git/hooks/` は空で `core.hooksPath` も未設定なので、**`loop-gate.sh` を回さずに push できる。**
 # そして `.github/workflows/verify.yml` の冒頭が、その故障モードを自分の言葉で書いている
@@ -84,8 +87,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$(dirname "$HERE")"
 
 # 投稿するコメントの機械可読な印。**確認側がこの綴りで探す。**
-# 変えると、過去の PR に付いたコメントが確認側から見えなくなる（`review-gate.yml` の
-# `CONTEXT` を変えると過去の status と別物になるのと同じ性質）。
+# 変えると、過去の PR に付いたコメントが確認側から見えなくなる（commit status の
+# context を変えると過去の status と別物になるのと同じ性質）。
 readonly MARKER_PREFIX='<!-- second-opinion sha='
 
 # 生の出力に割り当てるバイト数の上限。

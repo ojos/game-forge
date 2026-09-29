@@ -5,7 +5,11 @@
 #
 #   ローカル層の受け入れ検証（verify.sh） … verify.yml の verify ジョブが**再実行**する
 #   第二意見                              … **無かった**（ここが埋める）
-#   リモート最終ゲート（Copilot）          … review-gate.yml が要求されたことを確かめる
+#
+# **#807 で Copilot code review を撤退し、リモート最終ゲートは空になった。** 要求側
+# （copilot-review.yml）と確認側（review-gate.yml）は撤去したので、**レビューの記録を
+# 機構で確かめているのは、このワークフローだけである**（`.github/project-ai-rules.md`
+# 「リモート最終ゲート」）。
 #
 # `.git/hooks/` は空で `core.hooksPath` も未設定なので、**loop-gate.sh を回さずに push できる。**
 # verify.yml の冒頭がその故障モードを名指ししている——「手元で走らせる前提の実行体で、
@@ -21,9 +25,9 @@
 # 古いコメントで通ってしまう。**押した中身がレビューされたこと**を見たいので、印の SHA が
 # いまの head と一致することを要求する。
 #
-# ## review-gate.yml と 1 点だけ設計が逆である
+# ## 猶予を毎回置く
 #
-# **猶予を毎回置く。** あちらは `opened` のときだけ待つ（要求側と同時に走るため）。
+# 撤去した review-gate.yml は `opened` のときだけ待っていた（要求側と同時に走るため）。
 # こちらは**記録が push の後に投稿される**ので、`synchronize` でも同じことが起きる
 # ——push の直後にこのワークフローが走り、投稿はその数秒〜数分後になる。待たずに見ると、
 # push のたびに赤が出る。**偽の赤はゲートへの信頼を削る**（review-workflow.md）。
@@ -56,7 +60,7 @@
 # ## required check にはしない
 #
 # 止めたいのは「回していないことに気づかないまま通ること」だけである。投稿の遅れで
-# マージが止まる副作用は要らない（review-gate.yml と同じ判断）。
+# マージが止まる副作用は要らない（規範の「required check にはしません」と同じ判断）。
 #
 # ## 何を塞がないか
 #
@@ -71,7 +75,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     # 20 分ごと。pull_request が届かなかった PR を拾うための掃き寄せで、
-    # 通常経路の速さはこれに依存しない（review-gate.yml と同じ間隔にそろえる）。
+    # 通常経路の速さはこれに依存しない。
     - cron: '*/20 * * * *'
   workflow_dispatch:
 
@@ -88,15 +92,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # **ジョブ名を `check` にしない。** review-gate.yml のジョブが `check` なので、
-  # 同じ名前だと `gh pr checks` に `check` が 2 行並び、どちらがどちらか読めない
+  # **ジョブ名を `check` にしない。** 撤去した review-gate.yml（#807）のジョブが `check`
+  # で、同じ名前だと `gh pr checks` に `check` が 2 行並び、どちらがどちらか読めなかった
   # （実測。PR #814 で 2 つ並んだ）。commit status の context は別なので判定は
   # 混ざらないが、**人が読む一覧で区別できないのは、気づけないことと同じ側にある。**
   record:
     runs-on: ubuntu-latest
     # フォークからの PR は対象外にする。記録の投稿には PR への書き込みが要り、
     # フォークからの push ではそれができない。**要求されないものを「無い」と落とすと、
-    # 恒常的に赤いだけの状態になる**（review-gate.yml と同じ扱い）。
+    # 恒常的に赤いだけの状態になる**。
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -108,8 +112,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           # **式を run の中へ直接書かない。** GitHub は run を渡す前に文字列として
           # 置換するので、値に引用符が混ざればシェルの構文ごと変わりうる。加えて
-          # `bash -n` は `${{ ... }}` を通してしまうため、構文検査でも気づけない
-          # （review-gate.yml の同じ注記）。
+          # `bash -n` は `${{ ... }}` を通してしまうため、構文検査でも気づけない。
+          # 値は env を経由して渡す。
           PR_NUMBER: ${{ github.event.pull_request.number }}
           # 起動の契機になった head SHA。**待ったあとに head が動いていないかを見るために要る**
           # （下の「待っているあいだに push が入ったら」）。
@@ -120,7 +124,7 @@ jobs:
 
           # 記録が投稿されるまでの猶予（秒）。
           #
-          # **毎回置く**（review-gate.yml と逆。冒頭「1 点だけ設計が逆である」）。
+          # **毎回置く**（冒頭「猶予を毎回置く」）。
           # 記録は push の後に手元から投稿されるので、push で起動したこの実行は
           # 投稿より先に走る。待たずに見ると push のたびに赤が出る。
           GRACE_SEC=300
@@ -178,7 +182,7 @@ jobs:
           #
           # **2 を 1 に混ぜない。** 読めなかったことを「記録が無い」として扱うと、
           # GitHub が一時的に不調なだけで赤が出る。逆に握り潰して緑にすると、
-          # 確かめていないものを通したことになる（review-gate.yml と同じ考え方）。
+          # 確かめていないものを通したことになる（規範の「確認できなかったこと」と同じ考え方）。
           has_record() {
             local pr="$1" sha="$2" bodies
             # **--paginate を外さない。** 外すと先頭のページしか見ないため、
@@ -259,8 +263,7 @@ jobs:
             now="$(date -u +%s)"
             # **全件を見る。件数で打ち切らない。** ここは最後の担保なので、上限で
             # 切れた分は「判定されないまま status も付かない」＝ PR 上に何も現れない
-            # という、この仕組みが塞ごうとしている状態そのものになる（review-gate.yml
-            # の同じ注記）。
+            # という、この仕組みが塞ごうとしている状態そのものになる。
             #
             # フォークからの PR は除く。`.head.repo` の null も明示的に除く
             # （フォーク元が削除されると null になる）。

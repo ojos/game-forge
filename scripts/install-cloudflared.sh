@@ -41,8 +41,14 @@ write_ssh_config_if_missing() {
   local config="${HOME}/.ssh/config"
   mkdir -p "${HOME}/.ssh"
   chmod 700 "${HOME}/.ssh"
-  if [[ -f "$config" ]] && grep -q "$SSH_HOST" "$config"; then
-    echo "[install-cloudflared] ssh config already mentions ${SSH_HOST}, leaving it alone"
+  # **ホスト名の文字列があるかでは判定しない**（第二意見の指摘。2026-09-29）。
+  # `HostName` の行やコメントに現れるだけで「設定済み」と読み、`ssh dev01` の別名が
+  # 足されないまま終わる。見るのは自分のマーカーと、`Host` 行の別名だけ。
+  if [[ -f "$config" ]] && {
+    grep -qxF "$MARKER" "$config" ||
+      grep -qE '^[[:space:]]*Host([[:space:]]+[^[:space:]]+)*[[:space:]]+dev01([[:space:]]|$)' "$config"
+  }; then
+    echo "[install-cloudflared] ssh config already has Host dev01, leaving it alone"
     return 0
   fi
   cat >>"$config" <<EOF

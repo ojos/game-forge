@@ -134,3 +134,36 @@ import {
   to = google_project.game_forge_dev
   id = "projects/ojos-game-forge-dev"
 }
+
+/**
+ * 運用向けのプロジェクト（#792 / M22-2）。
+ *
+ * **既存の 2 つとは用途が違う。** `ojos-game-forge` と `ojos-game-forge-dev` が持つのは
+ * 「アプリを使う人のログイン」の OAuth クライアントである。このプロジェクトが持つのは
+ * **「運営が機械へ入るための認証」**——Cloudflare Zero Trust の ID プロバイダが使う
+ * クライアントで、game-forge のアプリとは一切関わらない。
+ *
+ * **なぜ既存のどちらにも置かないのか**（2026-09-23 の決定。#792）。
+ *   - 本番（`ojos-game-forge`）に置くと、SSH へ入るときの同意画面に Game Forge の
+ *     ブランドが出る。**同意画面はプロジェクトのものが出る**ため、用途と見え方がずれる。
+ *     対象が外部（External）なので、入口で ojos.jp に絞る役目も持てない。
+ *   - 開発（`ojos-game-forge-dev`）に置くと、内部（Internal）なので入口で絞れる利点はあるが、
+ *     **「ローカル開発のための入れ物」に運用の資格情報が入る。** 同じ理由で
+ *     docs/gcp-oauth-setup.md は「開発用のクライアントに本番の URI を足さない」としている。
+ *
+ * **請求先アカウントを紐付けない。** このプロジェクトが使うのは OAuth の同意画面と
+ * クライアントだけで、課金の要る API を有効にしない（既存の 2 つに紐付いているのは、
+ * 片方はブランド確認のため、もう片方は Console が作成時に自動で紐付けたためである。
+ * どちらも「課金が要る API を使っている」という意味ではない。3.3）。
+ * **Console が同意画面の設定で請求先を要求したら、そのとき紐付けてここへ記録する。**
+ *
+ * **deletion_policy は本番・開発と同じく PREVENT。** 消すと配下の OAuth クライアントも
+ * 消え、**SSH の口が黙って開かなくなる**（Access の側は「IdP が壊れた」としか言わない）。
+ */
+resource "google_project" "ojos_ops" {
+  project_id = var.gcp_ops_project_id
+  name       = var.gcp_ops_project_name
+  org_id     = var.gcp_org_id
+
+  deletion_policy = "PREVENT"
+}

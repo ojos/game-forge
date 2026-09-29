@@ -63,6 +63,7 @@ flowchart LR
 | OGP 画像 | [docker/ogp-shot/](docker/ogp-shot/) | [terraform/ogp-function.tf](terraform/ogp-function.tf) | [docs/ogp-capture.md](docs/ogp-capture.md) |
 | アイコン画像 | [lambda/avatar-encode/](lambda/avatar-encode/) | [terraform/avatar-function.tf](terraform/avatar-function.tf) | [scripts/deploy-avatar.sh](scripts/deploy-avatar.sh)（背景は宣言の冒頭コメント） |
 | Google ログイン | [src/auth/](src/auth/) | [terraform/gcp.tf](terraform/gcp.tf) | [docs/gcp-oauth-setup.md](docs/gcp-oauth-setup.md) |
+| 手元の機械（dev01）の口 | — | [terraform/tunnel-dev01.tf](terraform/tunnel-dev01.tf)・[terraform/zero-trust.tf](terraform/zero-trust.tf) | [docs/local-llm-tunnel.md](docs/local-llm-tunnel.md) |
 | メール（Resend） | [src/mail/](src/mail/) | — | — |
 | ロゴ | [tools/logobake/](tools/logobake/) | — | [docs/logo.md](docs/logo.md) |
 

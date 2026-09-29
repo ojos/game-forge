@@ -502,7 +502,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         # **式（${{ }}）を run の中へ書かない。** 置換は文字列として行われるため、
-        # 値に引用符が混ざるとシェルの構文ごと変わる（review-gate.yml の同じ注記）。
+        # 値に引用符が混ざるとシェルの構文ごと変わる（second-opinion-gate.yml の同じ注記）。
         # コミット件名は人が書くもので引用符を含みうるので、git から取る。
         run: |
           set -euo pipefail

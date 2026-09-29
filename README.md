@@ -105,5 +105,5 @@ bash scripts/loop-gate.sh    # push / PR 作成の前の単一入口。verify �
 
 - 1 issue = 1 PR です。コミットメッセージは Conventional Commits の接頭辞を付けた日本語で書きます。
 - 並行して複数のセッションが動くため、実装は専用の worktree とブランチで行います。
-- 同じリポジトリのブランチから出した PR には、GitHub Copilot のコードレビューが 1 回かかり（[copilot-review.yml](.github/workflows/copilot-review.yml)）、かかったことを [review-gate.yml](.github/workflows/review-gate.yml) が確かめます。fork からの PR はどちらの対象にもなりません。コミットの作者は [identity-guard.yml](.github/workflows/identity-guard.yml) が許可リストと照合します。
+- push の前に `bash scripts/loop-gate.sh` で、別ベンダーのモデルによる第二意見を通します。同じリポジトリのブランチから出した PR では、その head に第二意見の記録が付いていることを [second-opinion-gate.yml](.github/workflows/second-opinion-gate.yml) が確かめます。fork からの PR は対象になりません。リモートのコードレビュー（GitHub Copilot）は置いていません（#807）。コミットの作者は [identity-guard.yml](.github/workflows/identity-guard.yml) が許可リストと照合します。
 - 詳しい規約（intake、レビュー、機密と生成物の扱い）は [.github/project-ai-rules.md](.github/project-ai-rules.md) と [.ai-playbook/](.ai-playbook/) にあります。

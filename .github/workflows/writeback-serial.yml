@@ -12,7 +12,7 @@ name: writeback-serial
 # 対して決定的なので、どの契機から見ても同じ答えになる。
 #
 # **判定は各 PR の head SHA へ commit status として書く。** 起動した PR とは別の PR に
-# 結果を出す必要があるので、ジョブの成否では表せない（review-gate.yml と同じ理由）。
+# 結果を出す必要があるので、ジョブの成否では表せない（second-opinion-gate.yml と同じ理由）。
 #
 # **ジョブは判定が赤でも落とさない。** 落とすと、起動した無関係な PR のチェック欄に
 # 赤いジョブが出る。ジョブを落とすのは、一覧を読めなかったときと、status を書けなかった
@@ -99,7 +99,7 @@ jobs:
             exit 0
           fi
 
-          # status の説明は 140 文字まで。英語で短く書く（review-gate.yml と揃える）。
+          # status の説明は 140 文字まで。英語で短く書く（second-opinion-gate.yml と揃える）。
           failed=0
           while read -r num state blocker; do
             if [ "$state" = "success" ]; then

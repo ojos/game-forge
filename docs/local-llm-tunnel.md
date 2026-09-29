@@ -225,9 +225,18 @@ systemctl status cloudflared
 
 ```bash
 sudo apt-get install -y openssh-server
-sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sudo systemctl restart ssh
+printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' \
+  | sudo tee /etc/ssh/sshd_config.d/00-gameforge.conf >/dev/null
+sudo sshd -t && sudo systemctl restart ssh
+sudo sshd -T | grep -Ei '^(passwordauthentication|kbdinteractiveauthentication) '
+# → 2 行とも "no" であること
 ```
+
+**`sshd_config` 本体を `sed` で書き換えない**（第二意見の指摘。2026-09-29）。sshd は
+**同じ項目を最初に現れた値で決める**うえ、本体の先頭で `sshd_config.d/*.conf` を読み込む。
+Ubuntu では `50-cloud-init.conf` が `PasswordAuthentication yes` を置くことがあり、そのとき
+本体の書き換えは**黙って効かない**。`00-` の drop-in は辞書順で先に読まれるので、こちらが勝つ。
+**効いたかは設定ファイルではなく `sshd -T`（実効値）で確かめる。**
 
 **ルータのポート転送は設定しない。** 22 番を外へ出す必要はなく、出せばトンネルと
 Access を迂回する経路ができる。**Access は「唯一の入口」であるときにだけ意味を持つ。**

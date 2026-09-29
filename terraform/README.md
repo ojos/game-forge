@@ -22,6 +22,8 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 | 入力側モデレーションの Guardrail（8.2 / #37） | `aws_bedrock_guardrail.input_moderation`、`aws_bedrock_guardrail_version.input_moderation` | `moderation.tf`（**`bedrock-guard.tf` とは別物**。あちらは費用） |
 | GitHub Actions の OIDC 連携（9.3） | `aws_iam_openid_connect_provider.github`、`aws_iam_role.deploy_compiler` | `github-oidc.tf` |
 | R2 のライフサイクル（3.7 / 確定13 / 確定26） | `cloudflare_r2_bucket_lifecycle.artifacts` | `r2-lifecycle.tf` |
+| **`ojos.jp` の DNS ゾーン（Cloudflare。確定17 の改訂 / #775）** | `cloudflare_zone.ojos_jp`、`cloudflare_dns_record.*`（Google Workspace の MX・OAuth の TXT・code-narrative への委譲・game-forge のホスト） | `dns-ojos-jp.tf`（**組織のゾーンを預かっている**。冒頭の注記） |
+| `game-forge.ojos.jp` の Route 53 ゾーン（**#775 で使われなくなった。削除は別 issue**） | `aws_route53_zone.game_forge`、`aws_route53_record.*` | `dns.tf` |
 
 管理対象外:
 
@@ -63,6 +65,21 @@ Cloudflare の API トークンも環境変数で渡します。値は追跡外�
 ```bash
 set -a; source scripts/load-project-env.sh; set +a   # CLOUDFLARE_API_TOKEN を環境へ
 ```
+
+**トークンに要る権限（#775 で足した）。** アカウントの権限（D1・Cloudflare Pages・Workers R2 Storage・Workers KV Storage・
+Workers スクリプト。いずれも編集）に加えて、**ゾーンの権限 2 つ**が要ります。
+
+| 左端 | 権限 | 範囲 |
+|---|---|---|
+| ゾーン | ゾーン / 編集 | ゾーン リソース: 含む / アカウントにあるすべてのゾーン / 対象のアカウント |
+| ゾーン | DNS / 編集 | 同上 |
+
+- **左端を「アカウント」のまま「DNS 設定」を選ばないこと。** 名前が似ていますが、アカウント全体の DNS 設定の権限で、
+  ゾーンのレコードは編集できません（#775 で一度選びかけました）。
+- **ゾーンを 1 つに絞れないのは、ゾーンを作る権限が要ったためです。** 作った後は `ojos.jp` だけに絞っても `plan` と
+  `apply` は通るはずですが、試していません。
+- **権限が足りないと、ゾーンの一覧は空で返ります**（エラーにならない）。アカウントにゾーンが無いときと見分けが
+  付かないので、効いているかは `plan` / `apply` で確かめます。
 
 必要な権限は `repo`（リポジトリの作成・設定・ブランチ保護・Actions 変数）です。`gh auth status` で現在の scope を確認できます。
 

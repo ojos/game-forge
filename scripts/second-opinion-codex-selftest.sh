@@ -279,6 +279,47 @@ if [[ "$rc" -eq 0 ]]; then
   fail "what / why の無い回答で通過しました"
 fi
 
+# ---- 2d. 旗で強制できないエンジンには、形をプロンプトへ載せること ----
+# **gemini には `--json-schema` に当たる旗が無い**（実測）。載せないと、モデルは
+# `what` / `why` などの必要な項目を知らないまま答え、**指摘の中身に関係なく後段の検証で
+# 落ちる**（第二意見の指摘。実在）。ここは仕込みの `gemini` で見る。
+cat > "$fake_bin/gemini" <<'FAKEG'
+#!/usr/bin/env bash
+set -euo pipefail
+: > "$FAKE_CODEX_RECORD/gemini-argv"
+for a in "$@"; do
+  printf '%s\n' "$a" >> "$FAKE_CODEX_RECORD/gemini-argv"
+done
+printf '%s' "${FAKE_CODEX_ANSWER:-{\"findings\":[]\}}"
+FAKEG
+chmod +x "$fake_bin/gemini"
+
+# **空の `.env` を指す。** プロジェクトの `.env` は `GEMINI_API_KEY=`（空）を持ち、
+# `load-project-env.sh` は**ホストの環境変数より .env を優先する**ので、検査から鍵を
+# 渡しても空で上書きされる（#805 でモデルの既定を検査したときと同じ形）。
+# `PROJECT_ENV_FILE` で差し替えれば、この上書きを避けられる。
+: > "$work/empty.env"
+
+rm -f "$record/gemini-argv"
+rc=0
+(
+  cd "$repo"
+  PATH="$fake_bin:$PATH" \
+  FAKE_CODEX_RECORD="$record" \
+  PROJECT_ENV_FILE="$work/empty.env" \
+  GEMINI_API_KEY=dummy-for-selftest \
+    bash "$REVIEW" --engine gemini --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
+) || rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  fail "gemini の経路が通りませんでした（終了コード $rc）"
+  tail -3 "$work/err" >&2
+fi
+if [[ ! -f "$record/gemini-argv" ]]; then
+  fail "gemini が呼ばれていません"
+elif ! grep -q '"what"' "$record/gemini-argv"; then
+  fail "gemini のプロンプトに回答の形（スキーマ）が載っていません（強制できないエンジンには載せる必要があります）"
+fi
+
 # ---- 3. 判定は -o のファイルから取ること（stdout では判定しない） ----
 # 回答は指摘なし、stdout には落とす指摘を書かせる。stdout で判定していれば赤になる。
 rc=0
@@ -328,5 +369,5 @@ if [[ "$failed" -ne 0 ]]; then
   exit 1
 fi
 
-echo "[codex-selftest] 8 組の配線を確かめました（差分を渡さない / 引数とスキーマとモデル / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
+echo "[codex-selftest] 9 組の配線を確かめました（差分を渡さない / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡し / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

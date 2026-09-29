@@ -156,6 +156,12 @@ fi
 # したがって agy は従来どおり差分をプロンプトへ載せ、ツールは使わせない。
 ENGINE_TOOLS=0
 
+# **スキーマを CLI の旗で強制できるか。** できないエンジンには、プロンプトへ形を書いて渡す
+# （第二意見の指摘。実在）——渡さないと、モデルは `what` / `why` などの必要な項目を知らず、
+# **指摘の中身に関係なく後段の検証で落ちる**。gemini には `--json-schema` に当たる旗が無い
+# （`gemini --help` で実測。2026-09-29）。
+ENGINE_SCHEMA_FLAG=0
+
 # スキーマの置き場所。**判定はモデルに出させず、category からこちらで決める**（#804）。
 SCHEMA_FILE="$__SCRIPT_DIR/second-opinion-schema.json"
 
@@ -180,6 +186,7 @@ case "$ENGINE" in
     }
     # agy は OAuth のみで API キーに対応しない。鍵の有無は検査しない。資格情報は
     # CLI が自身の保存先に持つため、このスクリプトからは可視でも制御対象でもない。
+    ENGINE_SCHEMA_FLAG=1
     ;;
   codex)
     command -v codex >/dev/null 2>&1 || {
@@ -210,6 +217,7 @@ case "$ENGINE" in
     fi
     # codex のサンドボックスは実測で書き込みを止める（上の表）。ツールを解禁する。
     ENGINE_TOOLS=1
+    ENGINE_SCHEMA_FLAG=1
     ;;
   *)
     echo "error: unknown engine: $ENGINE（gemini | antigravity | codex）" >&2
@@ -290,6 +298,19 @@ read -r -d '' REPORT_RULES <<'EOF' || true
 - 前置きや作業の説明は書かないでください。
 EOF
 
+# **旗で強制できないエンジンには、形をプロンプトへ書いて渡す。** 正本はスキーマの
+# ファイルそのもので、ここでは中身を貼るだけ——2 か所に書かない。
+append_schema_to_rules() {
+  if [[ "$ENGINE_SCHEMA_FLAG" -eq 1 ]]; then
+    return 0
+  fi
+  REPORT_RULES="$REPORT_RULES
+
+回答の形（JSON Schema。**このエンジンは形を強制できないので、ここに載せます**）:
+
+$(cat "$SCHEMA_FILE")"
+}
+
 # ツールを解禁したときのプロンプト（#804）。差分は載せず、モデル自身に取らせる。
 build_prompt_with_tools() {
   PROMPT="このリポジトリの変更をレビューしてください。
@@ -334,6 +355,8 @@ if [[ -n "$RANGE" ]]; then
 else
   diff_cmd="git diff --cached"
 fi
+
+append_schema_to_rules
 
 if [[ "$ENGINE_TOOLS" -eq 1 ]]; then
   build_prompt_with_tools

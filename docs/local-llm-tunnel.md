@@ -267,8 +267,13 @@ brew install cloudflared
 Host dev01-ssh.ojos.jp
   ProxyCommand /opt/homebrew/bin/cloudflared access ssh --hostname %h
   User <dev01 のユーザー名>
-  IdentityFile ~/.ssh/id_ed25519
+  IdentityFile ~/.ssh/id_ed25519_ojos
+  AddKeysToAgent yes
+  UseKeychain yes
 ```
+
+`AddKeysToAgent` / `UseKeychain` は、コンテナから入るときの備えである（「devcontainer 側の
+手順」の agent の節）。
 
 最初の接続でブラウザが開き、Google（`ojos.jp`）の認証を 1 回通る。以後は
 `~/.cloudflared/` のトークンが効く（セッションは 24 時間。`session_duration`）。
@@ -312,6 +317,18 @@ ssh-add -l        # コンテナの中で。鍵が見えなければ、ホスト
 空なら、**Mac 側で** `ssh-add --apple-use-keychain ~/.ssh/id_ed25519_ojos` を実行してから
 コンテナへ入り直す。**ここが空のまま `ssh dev01` を叩くと `Permission denied (publickey)`
 になる**——トンネルや Access の問題に見えるが、原因は手元の agent である。
+
+**Mac を再起動すると agent は空に戻る。** `--apple-use-keychain` はパスフレーズを
+キーチェーンへ残すだけで、agent への登録までは残さない。「手元の Mac 側の手順」の
+`Host dev01-ssh.ojos.jp` に `AddKeysToAgent yes` / `UseKeychain yes` を入れておくと、
+**Mac で `ssh dev01-ssh.ojos.jp` を 1 回通したときに**、その鍵がキーチェーンから agent へ載る。
+
+**載せるのは、その ssh が実際に使った鍵だけである。** `id_ed25519_ojos` は既定の鍵の
+名前ではないので、`IdentityFile` を書いていない Host（`Host *` など）へ ssh しても載らない。
+再起動の直後に Mac で dev01 へ入らないままコンテナから `ssh dev01` を叩くと、やはり
+`Permission denied (publickey)` になる。そのときは Mac で
+`ssh-add --apple-use-keychain ~/.ssh/id_ed25519_ojos` をもう一度実行する
+（パスフレーズはキーチェーンから読まれるので、入力は求められない）。
 
 **コンテナを作り直すと、Access のトークン（`~/.cloudflared/`）は消える。**
 `cloudflared` と `~/.ssh/config` は `postCreateCommand` が戻すが、**認証だけは

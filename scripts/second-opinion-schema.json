@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "second-opinion-review",
+  "description": "第二意見の回答の形（#804）。判定そのものはモデルに出させない——落とすかどうかは category から scripts/second-opinion-review.sh が決める。",
+  "type": "object",
+  "properties": {
+    "findings": {
+      "type": "array",
+      "description": "見つけた指摘。無ければ空の配列。",
+      "items": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "bug / vulnerability / type-error / edge-case の 4 つだけがゲートを落とす。promise-mismatch と other は報告だけ。",
+            "enum": [
+              "bug",
+              "vulnerability",
+              "type-error",
+              "edge-case",
+              "promise-mismatch",
+              "other"
+            ]
+          },
+          "file": {
+            "type": "string",
+            "description": "該当ファイルのパス（リポジトリの根からの相対）。特定できなければ空文字。"
+          },
+          "line": {
+            "type": "integer",
+            "description": "該当行。特定できなければ 0。"
+          },
+          "what": {
+            "type": "string",
+            "description": "何が問題か。1〜2 文。"
+          },
+          "why": {
+            "type": "string",
+            "description": "なぜ問題か。再現条件や影響を具体に。"
+          }
+        },
+        "required": ["category", "file", "line", "what", "why"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["findings"],
+  "additionalProperties": false
+}

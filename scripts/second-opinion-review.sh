@@ -39,15 +39,22 @@
 #   限界: 少数回しか現れない指摘は通過する。これは意図した妥協で、レビューの
 #   位置づけは「補助」であり、主レビューを省略してよい根拠にはならない。
 #
-#   回数では消えない故障もある。モデルが回答の前に作業ナレーションを出す形は、
-#   同じ差分なら毎回同じように出るため、run を増やしても全 run が同じように落ちる。
-#   これは回数ではなく判定側で受ける（下記「通過判定」）。
+#   回数では消えない故障もあった。モデルが回答の前に作業ナレーションを出す形は、
+#   同じ差分なら毎回同じように出るため、run を増やしても全 run が同じように落ちた。
+#   **#804 で構造化出力を強制し、この故障クラスは消えた**（下記「通過判定」）。
 #
-# 通過判定:
-#   出力の最後の行に置かれた判定トークン `VERDICT: LGTM` を通過とみなす。
-#   出力全体の一致では判定しない（前置きが 1 行出ただけで偽の赤になる）。
-#   行の存在でも判定しない（指摘と併記された LGTM で偽の緑になる）。
-#   理由の詳細は is_lgtm のコメントに置く。
+# 通過判定（#804 で作り直した）:
+#   モデルには**判定を出させない。** 回答は JSON（`scripts/second-opinion-schema.json`）で、
+#   中身は指摘の配列だけである。**落とすかどうかは `category` を見てこのスクリプトが決める**
+#   ——`bug` / `vulnerability` / `type-error` / `edge-case` の 4 つだけが落とす。
+#   `promise-mismatch` と `other` は報告に出るが判定を動かさない。
+#   **JSON として読めない回答は落とす**（「読めなかった」を「指摘なし」に倒さない）。
+#
+# ツールの解禁（#804）:
+#   **codex だけ**。`--sandbox read-only` が書き込みを止めることを実測してある。
+#   agy は `--sandbox --mode plan --dangerously-skip-permissions` でも**書き込めた**ので
+#   解禁しない（詳細は下の ENGINE_TOOLS の表）。解禁したエンジンには差分を渡さず、
+#   モデル自身に `git diff` を叩かせ、差分の外も読ませる。
 #
 # 終了コード:
 #   0 = LGTM（過半数の run が指摘なし。push 可）
@@ -137,6 +144,21 @@ if [[ "$RUNS" -lt 1 ]]; then
   exit 1
 fi
 
+# **ツールを解禁するのは、サンドボックスが実測で保たれるエンジンだけ**（#804）。
+#
+# | エンジン | 旗 | 実測（2026-09-29） |
+# |---|---|---|
+# | codex | `--sandbox read-only` | **書き込みは `Read-only file system` で失敗**。`git diff` は通る |
+# | antigravity | `--sandbox --mode plan --dangerously-skip-permissions` | **書き込めた**（`probe-write-test.txt` が実際にできた。**警告も出ない**） |
+#
+# **agy は旗の名前に反して止まりません。** 止まらないまま解禁すると、**レビュアーが
+# レビュー対象の作業ツリーを書き換えられる**——「何をレビューしたか」が壊れる。
+# したがって agy は従来どおり差分をプロンプトへ載せ、ツールは使わせない。
+ENGINE_TOOLS=0
+
+# スキーマの置き場所。**判定はモデルに出させず、category からこちらで決める**（#804）。
+SCHEMA_FILE="$__SCRIPT_DIR/second-opinion-schema.json"
+
 # エンジンの検査は CLI を呼ぶ前に済ませる。未知の値をそのまま先へ流すと、
 # 「コマンドが無い」というエンジン不在のエラーに化けて、綴り間違いだと分からない。
 case "$ENGINE" in
@@ -186,12 +208,24 @@ case "$ENGINE" in
     if [[ -z "$MODEL" ]]; then
       MODEL="gpt-6-sol"
     fi
+    # codex のサンドボックスは実測で書き込みを止める（上の表）。ツールを解禁する。
+    ENGINE_TOOLS=1
     ;;
   *)
     echo "error: unknown engine: $ENGINE（gemini | antigravity | codex）" >&2
     exit 1
     ;;
 esac
+
+if [[ ! -f "$SCHEMA_FILE" ]]; then
+  echo "error: 回答のスキーマが見つかりません: $SCHEMA_FILE" >&2
+  exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "error: jq が無いため回答（JSON）を読めません。jq を導入してから再実行してください" >&2
+  exit 1
+fi
 
 if [[ -n "$RANGE" ]]; then
   diff_text="$(git diff "$RANGE")"
@@ -206,31 +240,106 @@ if [[ -z "${diff_text//[[:space:]]/}" ]]; then
   exit 0
 fi
 
-# ゲート対象は review-workflow.md の限定に合わせる。
-read -r -d '' PROMPT <<'EOF' || true
+# レビューの文脈（#804）。**ブランチ名から issue 番号を取り、scope と acceptance を
+# プロンプトへ載せる。** これが無いと、第二意見は「この変更が何を約束したか」を知らないまま
+# 差分だけを読むことになり、**Copilot が拾う「自分が破った約束」を原理的に拾えない**
+# （`docs/handoff.md` の「Copilot は自分が破った約束を拾う」）。
+#
+# **ゲートではないので、取れなくても止めません。** 取れなかったことは出力に出します
+# （黙って「文脈つきでレビューした」ことにしない）。
+issue_context=""
+resolve_issue_context() {
+  local branch num body
+  branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  # feat/804-... / fix/795-... / docs/writeback-... のような形から数字を取る。
+  # **枝の名前に数字が無ければ何もしない**（推測で別の issue を引かない）。
+  num="$(printf '%s' "$branch" | sed -n 's|^[a-z]*/\([0-9][0-9]*\)-.*|\1|p')"
+  if [[ -z "$num" ]]; then
+    echo "[second-opinion] 枝の名前から issue 番号を取れませんでした（文脈なしでレビューします）: $branch" >&2
+    return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "[second-opinion] gh が無いため issue #$num を引けません（文脈なしでレビューします）" >&2
+    return 0
+  fi
+  if ! body="$(gh issue view "$num" --json title,body --jq '"# issue #" + (.title) + "\n\n" + .body' 2>/dev/null)"; then
+    echo "[second-opinion] issue #$num を引けませんでした（文脈なしでレビューします）" >&2
+    return 0
+  fi
+  issue_context="$body"
+  echo "[second-opinion] issue #$num の scope と acceptance を文脈に載せます"
+}
+resolve_issue_context
 
-上記は git の差分です。コードレビューを行ってください。
-
-指摘対象は次の 4 点に限定します。それ以外は報告しないでください。
-- 致命バグ
-- 脆弱性
-- 型エラー
-- エッジケースの見落とし
+# 報告の規則は 1 か所にまとめる（ツールの有無で本文が分かれても、規則は分けない）。
+read -r -d '' REPORT_RULES <<'EOF' || true
+報告してよいもの（`category` の値）:
+- `bug`（致命バグ） / `vulnerability`（脆弱性） / `type-error`（型エラー） / `edge-case`（エッジケースの見落とし）
+  … **この 4 つだけがゲートを落とします。**
+- `promise-mismatch` … issue の scope や acceptance と、実際の変更が食い違う点（**報告のみ**）
+- `other` … 上記以外で、次に読む人へ伝える価値があるもの（**報告のみ**）
 
 報告しないもの:
 - 好みのリファクタリング
 - 命名や可読性の軽微な提案
-- 差分の範囲外にある既存コードの問題
+- 差分と関係のない既存コードの問題
+
+出力:
+- **JSON だけを返してください。** 形はスキーマのとおりで、指摘が無ければ `findings` は空の配列です。
+- **通す / 落とすの判定は書かないでください。** `category` を見てこちらで決めます。
+- 前置きや作業の説明は書かないでください。
+EOF
+
+# ツールを解禁したときのプロンプト（#804）。差分は載せず、モデル自身に取らせる。
+build_prompt_with_tools() {
+  PROMPT="このリポジトリの変更をレビューしてください。
+
+レビュー対象は次の差分です。**まず自分で取得してください。**
+
+    $diff_cmd
+
+**読み取りのコマンドとファイル読み取りを使ってよい**です。差分の外のファイル・テスト・
+宣言・ドキュメントも読み、**事実を確かめてから**報告してください（推測で書かない）。
+**書き込みはできません**（サンドボックスが読み取り専用です）。
+
+$REPORT_RULES"
+  if [[ -n "$issue_context" ]]; then
+    PROMPT="$PROMPT
+
+この変更が満たすべき約束（issue の本文。**scope と acceptance に注目**してください）:
+
+$issue_context"
+  fi
+}
+
+# ツールを使えないエンジンのプロンプト。差分は本文へ載せる（従来どおり）。
+build_prompt_without_tools() {
+  PROMPT="
+上記は git の差分です。コードレビューを行ってください。
 
 レビューに必要な情報はこのプロンプトに含まれています。**ファイル読み取りやコマンド実行のツールを使わないでください。** ツールの実行は非対話実行では承認できず、拒否されると回答そのものが返らなくなります。
 
-出力形式:
-- **出力の最後の行**に、次のいずれかの判定トークンを必ず 1 行で書いてください。
-  - 上記 4 点に該当する指摘が 1 件もない場合: `VERDICT: LGTM`
-  - 指摘がある場合: `VERDICT: FINDINGS`
-- 指摘がある場合は、判定トークンより前に、各指摘について「該当ファイルと行」「何が問題か」「なぜ問題か（再現条件や影響）」を簡潔に記述してください。
-- 通過判定は最後の行だけで行います。判定トークンの無い出力は指摘ありとして扱います。
-EOF
+$REPORT_RULES"
+  if [[ -n "$issue_context" ]]; then
+    PROMPT="$PROMPT
+
+この変更が満たすべき約束（issue の本文。**scope と acceptance に注目**してください）:
+
+$issue_context"
+  fi
+}
+
+if [[ -n "$RANGE" ]]; then
+  diff_cmd="git diff $RANGE"
+else
+  diff_cmd="git diff --cached"
+fi
+
+if [[ "$ENGINE_TOOLS" -eq 1 ]]; then
+  build_prompt_with_tools
+else
+  build_prompt_without_tools
+fi
 
 echo "[second-opinion] reviewing $scope (engine=$ENGINE, runs=$RUNS)"
 
@@ -374,8 +483,14 @@ $PROMPT")
       fi
       ;;
     antigravity)
+      # **構造化出力は強制できる**（`--json-schema`）。ただし `--output-format json` が
+      # 要る（実測: 付けないと `--json-schema can only be used when --output-format is
+      # 'json' or 'stream-json'` で落ちる）。回答は包みの `.structured_output` に入る。
+      #
+      # **ツールは解禁しない**（上の表。サンドボックスが書き込みを止めないため）。
+      # 差分は従来どおりプロンプトへ載せるので、分割もそのまま要る。
       args=(-p "$(cat "$chunk")
-$PROMPT")
+$PROMPT" --output-format json --json-schema "$SCHEMA_FILE")
       if [[ -n "$MODEL" ]]; then
         args=(--model "$MODEL" "${args[@]}")
       fi
@@ -389,18 +504,23 @@ $PROMPT")
       # **失敗すればファイルは作られない**（実測: 401 で落ちた回は -o のファイルが
       # 存在しなかった）。run のループは終了コードで先に落ちるため、無いファイルを
       # 読んで「回答が空」と報告する経路には入らない。
-      answer_file="$work_dir/codex-answer.txt"
+      answer_file="$work_dir/codex-answer.json"
 
-      # `exec -` は指示文を標準入力から読む。差分を引数へ載せないので単一引数の
-      # 上限を受けず、分割も要らない（gemini / agy との違いはここだけ）。
+      # `exec -` は指示文を標準入力から読む。**差分は載せない**（#804）——モデルが
+      # `git diff` を自分で叩く。引数の上限を受けないので分割も要らない。
       #
-      # --sandbox read-only: モデルにツール実行は要らない（プロンプトでも禁じている）。
-      #   既定に頼らず明示する。
-      # --color never: ANSI のエスケープが混じると、判定トークンの行が一致しなくなる。
-      # --ephemeral: 会話の保存を止める。ゲートは 1 日 20〜38 回回り、差分は最大
-      #   128KB 級なので、保存すると ~/.codex（rebuild をまたぐ named volume）が
-      #   毎日数 MB 育つ。生の出力は #806 の記録が PR に残すので、失う情報は無い。
-      args=(exec - --sandbox read-only --color never --ephemeral -o "$answer_file")
+      # --sandbox read-only: **ツールの解禁はここが担保する。** 実測で読み取りは通り、
+      #   書き込みは `Read-only file system` で失敗する（2026-09-29）。
+      # --output-schema: 回答の形を強制する。**これで「出力の最後の行の判定トークン」を
+      #   解析する仕組みが要らなくなり、ナレーション 1 行で誤分類する故障クラスが消える**
+      #   （`.ai-playbook/review-workflow.md` が「回数を増やしても消えない故障」と
+      #   名指ししていたもの。実測: 前置きを書かせても -o は純粋な JSON だった）。
+      # --color never: ANSI のエスケープが JSON に混じらないようにする。
+      # --ephemeral: 会話の保存を止める。ゲートは 1 日 20〜38 回回るので、保存すると
+      #   ~/.codex（rebuild をまたぐ named volume）が毎日育つ。生の出力は #806 の記録が
+      #   PR に残すので、失う情報は無い。
+      args=(exec - --sandbox read-only --color never --ephemeral \
+            --output-schema "$SCHEMA_FILE" -o "$answer_file")
       if [[ -n "$MODEL" ]]; then
         args+=(--model "$MODEL")
       fi
@@ -470,80 +590,88 @@ case "$ENGINE" in
     ;;
   codex)
     # codex exec は `-` を置くと**指示文そのものを標準入力から読む**（実測:
-    # `codex exec - < 入力` で、読んだ本文が復唱された）。そこで「差分が先・
-    # プロンプトが後」という gemini / agy と同じ並びのファイルを 1 つ作って流す。
+    # `codex exec - < 入力` で、読んだ本文が復唱された）。
     #
-    # **プロンプトを引数に置いて差分を stdin へ流す形は採らない。** codex は
-    # 「プロンプトが引数にもあり stdin も piped なら、stdin を `<stdin>` ブロックとして
-    # **後ろへ**付ける」と決めている（`codex exec --help`）。それだと並びが逆になり、
-    # プロンプト冒頭の「上記は git の差分です」が指す先が無くなる。
-    #
-    # 引数に載せないので単一引数の上限を受けない。**分割しない**（1 チャンク）。
+    # **差分は流さない**（#804）。モデルが `git diff` を自分で叩き、必要なら差分の外も
+    # 読む。**これがこの票の中身**で、渡す本文はプロンプトだけになる。差分の大きさが
+    # 引数にも標準入力にも効かなくなるので、**分割は要らない**（1 チャンク）。
     CLI="codex"
     codex_input="$work_dir/codex-input.txt"
-    {
-      cat "$diff_file"
-      printf '\n'
-      printf '%s\n' "$PROMPT"
-    } > "$codex_input"
+    printf '%s\n' "$PROMPT" > "$codex_input"
     chunk_files=("$codex_input")
     ;;
 esac
 
-# 通過判定は「出力の最後の行に置かれた判定トークン」で行う。
+# 通過判定は「回答の JSON の `category`」で行う（#804）。
 #
-# 出力全体が判定トークンと一致することを要求してはいけない。モデルは回答の前に
-# 「これから何をするか」という作業ナレーションを出すことがあり、それが出た瞬間に、
-# 指摘が 1 件も無くても「指摘あり」へ化ける。実測では 3 run すべてがこの形で落ちた。
-# ナレーションは同じ差分なら毎回同じように出るため、run 数を増やしても消えない。
-# 偽の赤が定常化すると、ゲートそのものが読まれなくなる。
+# **判定をモデルに出させない。** 以前は「出力の最後の行に置かれた判定トークン」を解析して
+# いたが、`.ai-playbook/review-workflow.md` が「**回数を増やしても消えない故障**」と名指しした
+# 形——モデルが回答の前に作業ナレーションを 1 行出し、**指摘が 0 件でも 3 回すべてが
+# 「指摘あり」に化けた**——は、その解析そのものに起因していた。**構造化出力を強制すれば、
+# 仕組みごと消える**（実測: 前置きを書かせても codex の回答は純粋な JSON だった）。
 #
-# 逆に「LGTM を含む」へ緩めることもしない。ファイル別に講評して途中の 1 行へ LGTM と
-# 書く形や、指摘の末尾へ **LGTM** を添える形は、モデルが自然に取る出力で実際に起きる。
-# 行の存在で判定すると、重大な指摘が同時に出ていても通過する。判定トークンを
-# `VERDICT:` 付きの専用の形にしているのはこのためで、末尾に装飾された LGTM が
-# 置かれていても判定トークンではないので通過しない。
+# **落とすのは 4 点だけ**（review-workflow.md の限定）。それ以外の category は報告に出すが、
+# 判定は動かさない。**規則はここ 1 か所に置く**——プロンプトへ書き写すと、片方だけ直る。
+BLOCKING_CATEGORIES='bug vulnerability type-error edge-case'
+
+# 回答から JSON を取り出す。エンジンごとに包みが違うのはここだけ。
 #
-# 部分一致にもしない。`VERDICT: not LGTM` の類は一致しない。
-#
-# 判定トークンが無い出力は指摘ありとして扱う（安全側）。指示に従わなかった出力を
-# 通すと、判定していないものを緑として報告することになる。
-#
-# 装飾（`**` / `` ` `` / `_` / `#`）と空白・末尾の句点は落としてから比較する。判定を
-# 厳しくした結果ゲートが常に赤くなると、無視されるようになる。
-normalize_verdict() {
-  local normalized
-  normalized="$(printf '%s' "$1" | tr -d '`*_#[:space:]')"
-  normalized="${normalized%.}"
-  normalized="${normalized%。}"
-  printf '%s' "$normalized"
+#   codex        `-o` のファイルがそのまま JSON（スキーマで強制済み）
+#   antigravity  stdout が包みで、回答は `.structured_output`（スキーマで強制済み）
+#   gemini       **強制する旗が無い**（`--json-schema` に当たるものが `gemini --help` に無い。
+#                2026-09-29 に実測）。本文から JSON を取り出す。読めなければ落とす
+extract_answer_json() {
+  local raw="$1" out=""
+  case "$ENGINE" in
+    codex)
+      out="$raw"
+      ;;
+    antigravity)
+      out="$(printf '%s' "$raw" | jq -c '.structured_output' 2>/dev/null || true)"
+      ;;
+    *)
+      # ```json のフェンスに入れて返す形が実際にある。中身だけを取り出してから試す。
+      out="$(printf '%s' "$raw" | sed -n '/^[[:space:]]*```/,/^[[:space:]]*```/p' | sed '1d;$d')"
+      if [[ -z "${out//[[:space:]]/}" ]]; then
+        out="$raw"
+      fi
+      ;;
+  esac
+  printf '%s' "$out"
 }
 
-# 最後の非空行。判定トークンの後ろに空行が続く出力を取りこぼさない。
-last_nonempty_line() {
-  printf '%s\n' "$1" | grep -v '^[[:space:]]*$' | tail -n 1
+# 形が満たされているかを見る。**「読めなかった」を「指摘なし」にしない**——
+# 読めないまま通すと、レビューしていないものを緑として報告することになる。
+answer_is_valid() {
+  printf '%s' "$1" | jq -e 'type == "object" and (.findings | type == "array")' >/dev/null 2>&1
 }
 
-is_lgtm() {
-  # 後方互換の通過経路。出力全体が LGTM だけの場合は、判定トークンが無くても通す。
-  # 「LGTM とだけ返す」旧仕様に従うモデルを、仕様変更だけで赤にしないため。
-  if [[ "$(normalize_verdict "$1")" == "" ]]; then
-    return 1
-  fi
-  if printf '%s\n' "$(normalize_verdict "$1")" | grep -qix 'LGTM'; then
-    return 0
-  fi
-  printf '%s\n' "$(normalize_verdict "$(last_nonempty_line "$1")")" | grep -qix 'VERDICT:LGTM'
+# 落とす指摘の数。
+#
+# **`paste -sd ' or '` で連結しない。** `-d` は「区切り文字の並び」を 1 文字ずつ循環して
+# 使う指定なので、`' or '` を渡すと空白・空白・`o`・`r`・空白 が順に使われ、
+# `... "type-error"o.category ...` のような壊れたフィルタになる（実測。仕込みの検査で
+# jq が構文エラーになり、全ケースが exit 3 で落ちて気づいた）。
+blocking_count() {
+  local filter="" category
+  for category in $BLOCKING_CATEGORIES; do
+    if [[ -n "$filter" ]]; then
+      filter="$filter or "
+    fi
+    filter="$filter.category == \"$category\""
+  done
+  printf '%s' "$1" | jq "[.findings[] | select($filter)] | length"
 }
 
-# 判定トークンが「無い」のか「FINDINGS だった」のかを区別して診断へ出す。無い場合、
-# モデルが出力形式に従っていない可能性があり、指摘本文を読んでも原因が分からない。
-has_verdict_token() {
-  printf '%s\n' "$(normalize_verdict "$(last_nonempty_line "$1")")" \
-    | grep -qiE '^VERDICT:(LGTM|FINDINGS)$'
+# 人が読む形にする。**報告は 4 点の外も出す**（#804 の「報告の範囲を広げる」）。
+print_findings() {
+  printf '%s' "$1" | jq -r '.findings[] |
+    "  [" + .category + "] " + (if .file == "" then "(場所の特定なし)" else .file + ":" + (.line | tostring) end) + "\n" +
+    "    何が: " + .what + "\n" +
+    "    なぜ: " + .why'
 }
 
-# 過半数。N=1 なら 1、N=2 なら 2、N=3 なら 2、N=4 なら 3。
+
 threshold=$((RUNS / 2 + 1))
 
 chunk_total="${#chunk_files[@]}"
@@ -605,27 +733,44 @@ for chunk_file in "${chunk_files[@]}"; do
 
     # 回答が空でも終了コードが 0 になる経路がある。実測では、agy がツールの実行許可を
     # 求めて非対話では承認できず自動拒否し、「回答なし」を stderr へ書いて 0 で終えた。
-    # このとき判定は（判定トークンが無いので）指摘あり側へ倒れるが、指摘本文が無いため
-    # 画面には何も出ず、原因が分からないまま赤になる。CLI の診断をここで見せる。
+    # **いまは空の回答は JSON として読めないので下で落ちる**が、原因（CLI の診断）は
+    # ここで見せておく。落ちた理由が「形が違う」だけに見えると、原因を追えない。
     if [[ -z "${output//[[:space:]]/}" && -s "$stderr_file" ]]; then
       echo "[second-opinion]$chunk_label run $run/$RUNS: モデルの回答が空です。CLI の診断:" >&2
       cat "$stderr_file" >&2
     fi
 
+    # 回答（JSON）を取り出して判定する。**形が満たされていなければ落とす**
+    # ——「読めなかった」を「指摘なし」に倒すと、レビューしていないものが緑になる。
+    answer_json="$(extract_answer_json "$output")"
+    if ! answer_is_valid "$answer_json"; then
+      echo "error: 回答を JSON として読めませんでした（engine=$ENGINE,$chunk_label run $run/$RUNS）。生の出力:" >&2
+      printf '%s\n' "$output" >&2
+      if [[ -s "$stderr_file" ]]; then
+        echo "--- CLI の診断 ---" >&2
+        cat "$stderr_file" >&2
+      fi
+      exit 1
+    fi
+
     # どの run が何を報告したかを追えるようにする。集約結果だけを出すと、
     # 過半数に届かなかった指摘が消えて確認できなくなる。
-    if is_lgtm "$output"; then
-      echo "[second-opinion]$chunk_label run $run/$RUNS: LGTM"
+    #
+    # **報告は 4 点の外も出し、判定は 4 点だけで行う**（#804）。
+    blocking="$(blocking_count "$answer_json")"
+    total="$(printf '%s' "$answer_json" | jq '.findings | length')"
+    if [[ "$blocking" -eq 0 ]]; then
+      if [[ "$total" -eq 0 ]]; then
+        echo "[second-opinion]$chunk_label run $run/$RUNS: LGTM"
+      else
+        # 落とさない指摘（promise-mismatch / other）は、通したうえで見せる。
+        echo "[second-opinion]$chunk_label run $run/$RUNS: LGTM（落とさない指摘が $total 件）"
+        print_findings "$answer_json"
+      fi
     else
       findings=$((findings + 1))
-      if has_verdict_token "$output"; then
-        echo "[second-opinion]$chunk_label run $run/$RUNS: findings"
-      else
-        # 判定トークンが無い出力を黙って「指摘あり」に数えると、モデルが形式に
-        # 従わなかっただけの赤と、実在の指摘による赤が区別できない。
-        echo "[second-opinion]$chunk_label run $run/$RUNS: findings (判定トークンが見つかりません。最後の行に VERDICT: LGTM または VERDICT: FINDINGS が必要です)"
-      fi
-      printf '%s\n' "$output"
+      echo "[second-opinion]$chunk_label run $run/$RUNS: findings（落とす $blocking 件 / 全 $total 件）"
+      print_findings "$answer_json"
     fi
   done
 

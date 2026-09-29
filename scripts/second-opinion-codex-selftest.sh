@@ -118,7 +118,7 @@ if [[ -z "$answer" ]]; then
   exit 1
 fi
 
-printf '%s\n' "${FAKE_CODEX_ANSWER:-VERDICT: LGTM}" > "$answer"
+printf '%s\n' "${FAKE_CODEX_ANSWER:-{\"findings\":[]\}}" > "$answer"
 
 # **stdout へは回答を書かない。** 書くと、-o を読まない実装でもこの検査が通る。
 printf '%s\n' "${FAKE_CODEX_STDOUT:-}"
@@ -161,103 +161,124 @@ run_review() {
   )
 }
 
-# ---- 1. 差分が加工されずに、プロンプトより前へ届くこと ----
+# ---- 1. 差分を渡さず、取り方を指示していること（#804 のツール解禁） ----
 rm -f "$record/stdin" "$record/argv"
 rc=0
-FAKE_CODEX_ANSWER='VERDICT: LGTM' run_review || rc=$?
+run_review || rc=$?
 if [[ "$rc" -ne 0 ]]; then
-  fail "LGTM の回答で終了コードが $rc になりました（0 を期待）"
+  fail "指摘なしの回答で終了コードが $rc になりました（0 を期待）"
   cat "$work/err" >&2
 fi
 
 if [[ ! -f "$record/stdin" ]]; then
-  fail "codex が標準入力を受け取っていません（差分の渡し方が壊れています）"
+  fail "codex が標準入力を受け取っていません（プロンプトの渡し方が壊れています）"
 else
-  # 差分が先にあること。
-  if ! head -n 1 "$record/stdin" | grep -q '^diff --git'; then
-    fail "標準入力の先頭が差分ではありません（プロンプトが先に来ています）"
+  # **差分そのものを渡していないこと。** 渡してしまうと、ツールを解禁した意味が薄れ、
+  # 大きい差分で引数や入力の上限に当たる形へ逆戻りする。
+  if grep -q '^diff --git' "$record/stdin"; then
+    fail "プロンプトに差分が載っています（#804 ではモデル自身に取らせます）"
   fi
-  # 差分の本文が逐語で届いていること。
-  if ! grep -q 'noreply@example.com \${ARR\[@\]}' "$record/stdin"; then
-    fail "差分の本文が加工されています（@ やブレース展開が化けました）"
+  # **取り方を指示していること。** 指示が無ければ、モデルは何をレビューするか分からない。
+  if ! grep -q 'git diff HEAD~1..HEAD' "$record/stdin"; then
+    fail "プロンプトに差分の取り方（git diff <範囲>）がありません"
   fi
-  # プロンプトが後にあること。判定トークンの指示は最後の方にある。
-  if ! grep -q 'VERDICT: LGTM' "$record/stdin"; then
-    fail "プロンプト（判定トークンの指示）が標準入力に含まれていません"
-  fi
-  # 並びの確認は「差分の行番号 < プロンプトの行番号」で見る。
-  diff_line="$(grep -n '^diff --git' "$record/stdin" | head -n 1 | cut -d: -f1)"
-  prompt_line="$(grep -n '上記は git の差分です' "$record/stdin" | head -n 1 | cut -d: -f1)"
-  if [[ -z "$prompt_line" ]]; then
-    fail "プロンプト本文が標準入力に含まれていません"
-  elif [[ "$diff_line" -ge "$prompt_line" ]]; then
-    fail "並びが逆です（差分 $diff_line 行目 / プロンプト $prompt_line 行目）"
+  # **落とす category の規則が載っていること。**
+  if ! grep -q 'edge-case' "$record/stdin"; then
+    fail "プロンプトに報告の規則（category）がありません"
   fi
 fi
 
-# ---- 2. 引数の形（読み取り専用・色なし・回答の口） ----
+# ---- 2. 引数の形（読み取り専用・スキーマ・回答の口・モデル） ----
 if [[ ! -f "$record/argv" ]]; then
   fail "引数が記録されていません"
 else
   argv="$(cat "$record/argv")"
-  for needed in exec - --sandbox read-only --color never -o; do
+  for needed in exec - --sandbox read-only --color never --ephemeral --output-schema -o; do
     if ! printf '%s\n' "$argv" | grep -qx -- "$needed"; then
       fail "引数に $needed がありません"
     fi
   done
-  # モデルは必ず明示され、**綴りまで一致する**（#805。Copilot の指摘で値まで見る形へ）。
-  #
-  # **既定が gpt-6-astra へ戻ったことを検出できなければ、この検査は枠の選択を守れない。**
-  # astra の 5 時間窓は 5〜45 通で、繁忙週の需要 38/日 を下限では賄えない。
-  #
-  # SECOND_OPINION_MODEL が設定されていると、既定は上書きされる。そのときは**合格にしない**
-  # ——検査が成立していない状態を緑にしないため、理由を言って落とす。
-  #
-  # **自分の環境だけを見てはいけない**（第二意見の指摘。実在）。被検査側は
-  # `load-project-env.sh` で **.env をホスト env より優先して**読む。この検査の環境に
-  # 変数が無くても、`.env` に `gpt-6-sol` が入っていれば引数にはその値が現れ、
-  # **スクリプト側の既定が別のモデルへ変わっていても通ってしまう。** だから被検査側と
-  # 同じ経路で解決した値を見る。
-  effective_model="$(
-    # shellcheck source=scripts/load-project-env.sh
-    . "$ROOT/scripts/load-project-env.sh" >/dev/null 2>&1 || true
-    printf '%s' "${SECOND_OPINION_MODEL:-}"
-  )"
-  if [[ -n "$effective_model" ]]; then
-    fail "SECOND_OPINION_MODEL が設定されている（値: $effective_model。環境または .env）ため、既定のモデルを検査できません。外して再実行してください"
-  else
-    model_value="$(awk '$0 == "--model" { getline; print; exit }' "$record/argv")"
-    if [[ "$model_value" != "gpt-6-sol" ]]; then
-      fail "既定のモデルが gpt-6-sol ではありません（実際: ${model_value:-（無し）}）"
-    fi
+
+  # **スキーマのファイルが実在すること。** 渡した先が無ければ、強制は効かない。
+  schema_path="$(awk '$0 == "--output-schema" { getline; print; exit }' "$record/argv")"
+  if [[ -z "$schema_path" || ! -f "$schema_path" ]]; then
+    fail "--output-schema の指す先が実在しません: ${schema_path:-（無し）}"
   fi
 
-  # --model を明示で渡したときは、そちらが使われる。
-  rm -f "$record/argv"
+  # モデルは必ず明示され、綴りまで一致する（#805）。
+  if [[ -n "${SECOND_OPINION_MODEL:-}" ]]; then
+    fail "SECOND_OPINION_MODEL が設定されているため、既定のモデルを検査できません"
+  else
+    effective_model="$(
+      # shellcheck source=scripts/load-project-env.sh
+      . "$ROOT/scripts/load-project-env.sh" >/dev/null 2>&1 || true
+      printf '%s' "${SECOND_OPINION_MODEL:-}"
+    )"
+    if [[ -n "$effective_model" ]]; then
+      fail "SECOND_OPINION_MODEL が設定されている（値: $effective_model）ため、既定のモデルを検査できません"
+    else
+      model_value="$(awk '$0 == "--model" { getline; print; exit }' "$record/argv")"
+      if [[ "$model_value" != "gpt-6-sol" ]]; then
+        fail "既定のモデルが gpt-6-sol ではありません（実際: ${model_value:-（無し）}）"
+      fi
+    fi
+  fi
+fi
+
+# ---- 2b. 落とすのは 4 点だけ（#804） ----
+# **報告は広げ、落とす判定は据え置く**という決まりが、実際にそう効くかを見る。
+rc=0
+FAKE_CODEX_ANSWER='{"findings":[{"category":"promise-mismatch","file":"a.ts","line":1,"what":"x","why":"y"},{"category":"other","file":"a.ts","line":2,"what":"x","why":"y"}]}' \
+  run_review || rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  fail "落とさない category（promise-mismatch / other）だけで落ちました（通すべきです）"
+fi
+if ! grep -q 'promise-mismatch' "$work/out"; then
+  fail "落とさない指摘が出力に出ていません（通すだけで見せないのは、報告を広げた意味がありません）"
+fi
+
+for category in bug vulnerability type-error edge-case; do
   rc=0
-  FAKE_CODEX_ANSWER='VERDICT: LGTM' run_review --model gpt-6-luna || rc=$?
-  if [[ "$rc" -ne 0 ]]; then
-    fail "--model を渡した回で終了コードが $rc になりました（0 を期待）"
+  FAKE_CODEX_ANSWER="{\"findings\":[{\"category\":\"$category\",\"file\":\"a.ts\",\"line\":1,\"what\":\"x\",\"why\":\"y\"}]}" \
+    run_review || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    fail "category=$category で通過しました（この 4 つは落とすべきです）"
   fi
-  model_value="$(awk '$0 == "--model" { getline; print; exit }' "$record/argv")"
-  if [[ "$model_value" != "gpt-6-luna" ]]; then
-    fail "--model の指定が渡っていません（実際: ${model_value:-（無し）}）"
-  fi
+done
+
+# ---- 2c. JSON として読めない回答は落とすこと ----
+rc=0
+FAKE_CODEX_ANSWER='これは JSON ではありません' run_review || rc=$?
+if [[ "$rc" -eq 0 ]]; then
+  fail "JSON として読めない回答で通過しました（読めなかったを指摘なしに倒しています）"
+elif ! grep -q 'JSON として読めませんでした' "$work/err"; then
+  fail "JSON を読めなかった理由が出力されていません"
+fi
+
+# 形は満たすが findings が配列でない回答も落とすこと。
+rc=0
+FAKE_CODEX_ANSWER='{"findings":"たくさん"}' run_review || rc=$?
+if [[ "$rc" -eq 0 ]]; then
+  fail "findings が配列でない回答で通過しました"
 fi
 
 # ---- 3. 判定は -o のファイルから取ること（stdout では判定しない） ----
-# 回答は LGTM、stdout には FINDINGS を書かせる。stdout で判定していれば赤になる。
+# 回答は指摘なし、stdout には落とす指摘を書かせる。stdout で判定していれば赤になる。
 rc=0
-FAKE_CODEX_ANSWER='VERDICT: LGTM' FAKE_CODEX_STDOUT='VERDICT: FINDINGS' run_review || rc=$?
+FAKE_CODEX_ANSWER='{"findings":[]}' \
+FAKE_CODEX_STDOUT='{"findings":[{"category":"bug","file":"a.ts","line":1,"what":"x","why":"y"}]}' \
+  run_review || rc=$?
 if [[ "$rc" -ne 0 ]]; then
-  fail "stdout の FINDINGS に引きずられました（判定が -o のファイルを見ていません）"
+  fail "stdout の指摘に引きずられました（判定が -o のファイルを見ていません）"
 fi
 
-# 逆向き。回答は FINDINGS、stdout には LGTM。stdout で判定していれば緑になる。
+# 逆向き。回答は落とす指摘、stdout は指摘なし。stdout で判定していれば緑になる。
 rc=0
-FAKE_CODEX_ANSWER='VERDICT: FINDINGS' FAKE_CODEX_STDOUT='VERDICT: LGTM' run_review || rc=$?
+FAKE_CODEX_ANSWER='{"findings":[{"category":"bug","file":"a.ts","line":1,"what":"x","why":"y"}]}' \
+FAKE_CODEX_STDOUT='{"findings":[]}' \
+  run_review || rc=$?
 if [[ "$rc" -eq 0 ]]; then
-  fail "-o の FINDINGS を見落として通過しました（stdout で判定しています）"
+  fail "-o の指摘を見落として通過しました（stdout で判定しています）"
 fi
 
 # ---- 4. 未ログインは exec の前に止まること ----
@@ -280,7 +301,7 @@ fi
 # 1 回目は回答を書き、2 回目は 0 で終わりながら書かない。回答のファイルを呼び出しごとに
 # 消していなければ、2 回目は 1 回目の LGTM を読んで**通ってしまう**（Copilot の指摘）。
 rc=0
-FAKE_CODEX_WRITE_ANSWER=first FAKE_CODEX_ANSWER='VERDICT: LGTM' run_review --runs 2 || rc=$?
+FAKE_CODEX_WRITE_ANSWER=first FAKE_CODEX_ANSWER='{"findings":[]}' run_review --runs 2 || rc=$?
 if [[ "$rc" -eq 0 ]]; then
   fail "--runs 2 の 2 回目が回答を書かなかったのに通過しました（前の回の回答を読んでいます）"
 fi
@@ -290,5 +311,5 @@ if [[ "$failed" -ne 0 ]]; then
   exit 1
 fi
 
-echo "[codex-selftest] 6 件の配線を確かめました（差分の並び / 引数とモデルの綴り / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
+echo "[codex-selftest] 8 件の配線を確かめました（差分を渡さない / 引数とスキーマとモデル / 落とすのは 4 点だけ / 読めない JSON / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

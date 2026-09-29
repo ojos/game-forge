@@ -37,6 +37,9 @@ CPU       Intel Core i7-9750H（6 コア 12 スレッド。負荷時 平均 3684
 ディスク  468 GB（空き 427 GB）
 GPU       NVIDIA GeForce GTX 1650 / 4096 MiB / Turing（TU117）
 GPU 帯域  128 GB/s ← clocks.max.memory = 4001 MHz は GDDR5 版（GDDR6 版なら 6001 MHz）
+電池      DELL 5XJ28 / 約 97 Wh（2026-09-29 に交換）
+有線      USB Type-C の LAN アダプター ASIX AX88179 / 1000 Mbps（2026-09-29 に追加。Wi-Fi は控え）
+BIOS      1.35.0（2026-09-29 に 1.30.0 から更新）
 ```
 
 **アーキテクチャは本番と同じ amd64 である。** 架構依存の検査（束のハッシュ・Go のビルド）が

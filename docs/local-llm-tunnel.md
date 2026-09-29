@@ -398,6 +398,54 @@ sudo systemctl start cloudflared
 - **サービストークン**: `client_secret_version` を上げる。**新しい secret は作成時にしか
   返らない**ので、Pages のシークレットへ写すまでを 1 回の作業にする。
 
+### Access のログインが切れたとき
+
+`ssh dev01` が **`Please open the following URL and log in`** を出して止まるのは、
+Access のトークンが切れたからで、トンネルの故障ではない。**URL に載っているトークンは、
+それを出した `cloudflared` のプロセスに紐づく。** `timeout` 付きの ssh で出した URL は
+プロセスが死ぬと使えないので、待ち受けを先に立ててから URL を渡す。
+
+```bash
+cloudflared access login https://dev01-ssh.ojos.jp &   # 出た URL を Google（ido@ojos.jp）で開く
+# 待ち受けのプロセスが消えたら取り込み済み。以後の ssh dev01 はそのまま通る
+```
+
+### 有線と Wi-Fi
+
+**有線（USB Type-C の LAN アダプター。ASIX AX88179 / `cdc_ncm` / 1000 Mbps）を既定の経路にし、
+Wi-Fi は控えとして繋いだままにしている**（NetworkManager の metric が有線 100・Wi-Fi 600）。
+アダプターを抜けば Wi-Fi へ戻り、どちらのプロファイルも autoconnect なので再起動しても同じ形で上がる。
+
+**既定の経路が切り替わると、トンネルの 4 本が一度に切れて 1〜4 秒で張り直す**
+（`datagram manager error: timeout: no recent network activity` の後に `Registered tunnel connection`）。
+QUIC の接続を作り直しているだけで、故障ではない。**確立済みの SSH セッションは切れることがある。**
+
+### ファームウェアを更新する
+
+Dell の BIOS と Secure Boot の鍵は fwupd（LVFS）で入る。**書き込みは `sudo` が要るので、
+利用者が dev01 で打つ。** 候補の確認と、再起動の後の確かめはトンネル越しにできる。
+
+```bash
+fwupdmgr refresh --force && fwupdmgr get-updates --no-unreported-check   # 読み取りだけ
+sudo fwupdmgr update <デバイス ID>                                        # 1 つずつ
+```
+
+**BIOS を先に、Secure Boot の鍵（KEK → dbx）を後に、1 つずつ再起動を挟む。**
+新しい dbx は新しい KEK で署名されているので、KEK を入れるまで候補に出ない。
+2026-09-29 の実測で踏んだことが 3 つある（下の実施の記録）。
+
+1. **`error-pwr-evt-batt` は電池の状態で BIOS が書き込みを拒んだ印である。** 古い電池のときに
+   1.35.0 への更新がこれで止まっていた。電池を替え、AC に繋いだ状態では通った。
+2. **`get-updates` が候補から外した KEK の更新も、版を指定すれば入る。** BIOS を上げた後、
+   KEK の更新だけが「利用可能なアップデートがない」側へ移り、`update <ID>` も
+   `No updatable devices` で止まった（理由はデバッグ出力にも出なかった）。
+   **`sudo fwupdmgr install <KEK の ID> 2023` は適用の条件を通って確認画面を出し、
+   そのまま入った。** 条件に当たるなら、`install` は書き込む前に理由を出して止まる。
+3. **dbx の履歴の「失敗」は、書き込めていないとは限らない。** `expected 20260707 and got (null)`
+   と記録されたが、fwupd が読む版は 20260707、`dbx-*` の変数は再起動中に書き換わっており、
+   候補からも消えていた。**履歴ではなく、`fwupdmgr get-devices` の版と実物（`mokutil --kek` / `--db` /
+   `--dbx`）で判定する。**
+
 ---
 
 ## まだ決まっていないこと
@@ -439,6 +487,12 @@ sudo systemctl start cloudflared
 | 2026-09-23 | 回転後の通し確認 | トンネル `healthy`（4 本）／`llm.ojos.jp` は無しで 401・有りで 200／devcontainer から `ssh dev01` 成功。**Access のトークンはアプリ側に紐づくので、トンネルを作り直しても再認証は要らなかった** |
 | 2026-09-23 | 外部層の検査を回し直した（回転後・検査の修正後） | **トンネル関連の 3 つとも緑。** 残る失敗は `pages custom domain records match` の 1 件で、**#775 の段 C2 が未了**であることによる（この issue の範囲外） |
 | 2026-09-23 | **`llm.ojos.jp` → `llm01.ojos.jp` へ改名**（同じ用途の口が増えうるため） | 宣言側のラベルと output も `llm01` へ揃え、**`moved` ブロックで作り直しを避けた**（plan は 0 追加・5 変更・0 削除）。**直後の 1 回だけ、トークン有りで 403 が返った**——Access のアプリとポリシーの更新の反映待ちで、数秒後から 3 回とも 200。無しは 3 回とも 401 |
+| 2026-09-29 | 電池を交換し、USB Type-C の LAN アダプターで有線を足した（利用者） | 電池は DELL 5XJ28（LGC）で、設計容量どおり約 97 Wh・サイクル 0。**AC 接続で `Charging`**（21:39 に 58%、22:03 に 78%。80% に達した後は充電の上限で `Not charging` / `pending-charge` になる）。有線は 1000 Mbps で既定の経路になり（ルータまで平均 1.9 ms。Wi-Fi は 5.7 ms）、切り替わった瞬間にトンネルが 1 回張り直した（4 本とも 1〜4 秒で復帰） |
+| 2026-09-29 | BIOS 1.30.0 → **1.35.0** | 成功。**以前の試行は古い電池で `error-pwr-evt-batt` になっていた**。Secure Boot は有効のまま、トンネルは再起動後に自動で戻った |
+| 2026-09-29 | KEK に **Microsoft Corporation KEK 2K CA 2023** を追加 | BIOS の後は `get-updates` に出ず、`update` も `No updatable devices`。**`install <ID> 2023` で入った。** 以前からの KEK CA 2011 は 2026-06-24 に期限切れ（起動には影響しない） |
+| 2026-09-29 | dbx 20260402 → **20260707**（2023 KEK で署名。New Horizon Datasys と EAZ Solution を失効） | 履歴は `expected 20260707 and got (null)` で**失敗と記録されたが、実物は 20260707**。あわせて apt の 15 件を適用し、残りは 0・再起動の要求なし |
+| 2026-09-29 | AC アダプターを 1 回抜いて挿し直した（利用者。#801） | **落ちなかった**——起動時刻は 22:21 のまま（22:37 に `up 16 min`）で、cloudflared も active のまま。**抜き挿しはログに残らない**: カーネルは AC の状態を起動時にしか出さず、upower の履歴も 80% で充電が止まった後（`pending-charge` / `Not charging`）は記録を足していなかった。**抜いた事実は利用者の目視、落ちなかった事実は起動時刻で確かめた** |
+| 2026-09-29 | 有線へ切り替えてからの観察を始めた（#800） | 起点は 21:34:34（有線が上がった時刻）。**3 日が満ちるのは 2026-10-02 21:34。** その間の `wlp59s0 completed -> disconnected` に連動した `Connection terminated` / `Serve tunnel error` が 0 回なら #800 を閉じる |
 
 **残っている宿題。**
 

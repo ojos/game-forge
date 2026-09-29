@@ -2178,6 +2178,24 @@ check_dev01_tunnel() {
   # **API は camelCase で返す（originRequest / audTag）。** 宣言側（terraform の
   # スキーマ）は snake_case なので、綴りを写すと**必ず空になり、設定が入っているのに
   # 「無い」と報告する**（2026-09-23 に踏んだ。偽陽性で 1 回止まった）。
+  # **Host ヘッダの書き換えも見る。** Ollama は localhost 以外の Host を 403 で断るので、
+  # ここが外れると Access を通った要求まで dev01 で拒まれる。上の規則の突き合わせは
+  # ホスト名と向き先だけなので、ここで別に見る。期待値は向き先の host:port
+  # （宣言の http_host_header はそれを書き写したもの。terraform/tunnel-dev01.tf）。
+  local llm_service host_header expected_host_header
+  llm_service="$(jq -r --arg h "$llm_host" \
+    '.result.config.ingress[] | select(.hostname == $h) | .service // ""' <<<"$body")"
+  expected_host_header="${llm_service#http://}"
+  host_header="$(jq -r --arg h "$llm_host" \
+    '.result.config.ingress[] | select(.hostname == $h) | .originRequest.httpHostHeader // ""' <<<"$body")"
+  if [[ -z "$host_header" || "$host_header" != "$expected_host_header" ]]; then
+    echo "llm01 の口の Host ヘッダの書き換えが宣言と一致しません（origin_request.http_host_header）。"
+    echo "  期待 : ${expected_host_header:-(向き先が取れない)}"
+    echo "  実際 : ${host_header:-(なし)}"
+    echo "  Ollama が localhost 以外の Host を 403 で断るため、Access を通った要求まで拒まれます。"
+    rc=1
+  fi
+
   local access_required aud_tag app_aud
   access_required="$(jq -r --arg h "$llm_host" \
     '.result.config.ingress[] | select(.hostname == $h) | .originRequest.access.required // false' <<<"$body")"

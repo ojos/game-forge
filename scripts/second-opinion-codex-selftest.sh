@@ -279,6 +279,31 @@ if [[ "$rc" -eq 0 ]]; then
   fail "what / why の無い回答で通過しました"
 fi
 
+# **file / line が欠けた回答も落とすこと**（Copilot の指摘。実在）。スキーマは必須に
+# しているが、**強制できないエンジンでは欠けた回答が来る。** 通すと、場所の無い指摘を
+# そのまま報告することになり、`print_findings` が壊れた表示を出す。
+#
+# **落ちた理由まで見る。** 終了コードだけを見ると、検証が外れていても
+# `print_findings` が壊れて落ちるので通ってしまう（**偶然の落ち方で合格にしない**。
+# 変異を当てて実際にそうなることを確かめた）。
+rc=0
+FAKE_CODEX_ANSWER='{"findings":[{"category":"bug","what":"x","why":"y"}]}' run_review || rc=$?
+if [[ "$rc" -eq 0 ]]; then
+  fail "file / line の無い回答で通過しました"
+elif ! grep -q 'JSON として読めませんでした' "$work/err"; then
+  fail "file / line の無い回答が、検証ではない別の理由で落ちています（検証が効いていません）"
+fi
+
+# line が数でない回答も落とすこと。
+rc=0
+FAKE_CODEX_ANSWER='{"findings":[{"category":"bug","file":"a.ts","line":"3 行目","what":"x","why":"y"}]}' \
+  run_review || rc=$?
+if [[ "$rc" -eq 0 ]]; then
+  fail "line が数でない回答で通過しました"
+elif ! grep -q 'JSON として読めませんでした' "$work/err"; then
+  fail "line が数でない回答が、検証ではない別の理由で落ちています（検証が効いていません）"
+fi
+
 # ---- 2d. 旗で強制できないエンジンには、形をプロンプトへ載せること ----
 # **gemini には `--json-schema` に当たる旗が無い**（実測）。載せないと、モデルは
 # `what` / `why` などの必要な項目を知らないまま答え、**指摘の中身に関係なく後段の検証で
@@ -348,6 +373,93 @@ for shape in narration fence; do
   fi
 done
 
+# ---- 2f. issue の scope と acceptance をプロンプトへ載せること ----
+# **枝の名前から番号を取って `gh` で引く経路は、ここでしか検査できない**（Copilot の指摘）。
+# 使い捨てのリポジトリの枝には番号が無く、仕込みの `gh` も無かったので、**この PR の中心の
+# 挙動が黙って壊れても気づけない状態**だった。
+cat > "$fake_bin/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1-}" == "issue" && "${2-}" == "view" ]]; then
+  printf '%s\n' "$FAKE_GH_ISSUE_BODY"
+  exit 0
+fi
+exit 1
+FAKEGH
+chmod +x "$fake_bin/gh"
+
+git -C "$repo" checkout -q -b feat/9999-selftest-context
+rm -f "$record/stdin"
+rc=0
+(
+  cd "$repo"
+  PATH="$fake_bin:$PATH" \
+  FAKE_CODEX_RECORD="$record" \
+  FAKE_GH_ISSUE_BODY='# issue #9999 仕込みの票
+scope.in:
+  - 仕込みの目印 SELFTEST-ISSUE-MARKER' \
+    bash "$REVIEW" --engine codex --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
+) || rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  fail "issue の文脈を載せる経路で落ちました（終了コード $rc）"
+  tail -3 "$work/err" >&2
+fi
+if [[ ! -f "$record/stdin" ]]; then
+  fail "issue の文脈の検査で codex が呼ばれていません"
+elif ! grep -q 'SELFTEST-ISSUE-MARKER' "$record/stdin"; then
+  fail "issue の本文がプロンプトに載っていません（枝の名前 → 番号 → gh の経路が壊れています）"
+fi
+if ! grep -q 'issue #9999' "$work/out"; then
+  fail "issue を載せたことが出力に出ていません（載せた / 載せなかったを読めない）"
+fi
+git -C "$repo" checkout -q -
+
+# ---- 2g. antigravity の経路（旗と包みの取り出し） ----
+# **agy は枠が小さい**（Google AI Plus）。**仕込みで確かめる**——本物を確認のために
+# 回さない。旗の綴り違いや `.structured_output` の取り違えは、本番のゲートでしか
+# 落ちない形になる（Copilot の指摘）。
+cat > "$fake_bin/agy" <<'FAKEA'
+#!/usr/bin/env bash
+set -euo pipefail
+: > "$FAKE_CODEX_RECORD/agy-argv"
+for a in "$@"; do
+  printf '%s\n' "$a" >> "$FAKE_CODEX_RECORD/agy-argv"
+done
+# 本物は包みで返し、回答は .structured_output に入る（2026-09-29 に実測）。
+printf '{"conversation_id":"x","status":"SUCCESS","response":"...","structured_output":%s}\n' \
+  "${FAKE_CODEX_ANSWER:-{\"findings\":[]\}}"
+FAKEA
+chmod +x "$fake_bin/agy"
+
+for shape in empty blocking; do
+  case "$shape" in
+    empty)    answer='{"findings":[]}'; expect=0 ;;
+    blocking) answer='{"findings":[{"category":"bug","file":"a.ts","line":1,"what":"x","why":"y"}]}'; expect=1 ;;
+  esac
+  rm -f "$record/agy-argv"
+  rc=0
+  (
+    cd "$repo"
+    PATH="$fake_bin:$PATH" \
+    FAKE_CODEX_RECORD="$record" \
+    FAKE_CODEX_ANSWER="$answer" \
+      bash "$REVIEW" --engine antigravity --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
+  ) || rc=$?
+  if [[ "$rc" -ne "$expect" ]]; then
+    fail "antigravity の $shape な回答で終了コードが $rc になりました（$expect を期待）"
+    tail -2 "$work/err" >&2
+  fi
+  if [[ ! -f "$record/agy-argv" ]]; then
+    fail "antigravity が呼ばれていません"
+  else
+    for needed in --output-format json --json-schema; do
+      if ! grep -qx -- "$needed" "$record/agy-argv"; then
+        fail "antigravity の引数に $needed がありません（--json-schema は --output-format json を要求します）"
+      fi
+    done
+  fi
+done
+
 # ---- 3. 判定は -o のファイルから取ること（stdout では判定しない） ----
 # 回答は指摘なし、stdout には落とす指摘を書かせる。stdout で判定していれば赤になる。
 rc=0
@@ -397,5 +509,5 @@ if [[ "$failed" -ne 0 ]]; then
   exit 1
 fi
 
-echo "[codex-selftest] 10 組の配線を確かめました（差分を渡さない / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
+echo "[codex-selftest] 12 組の配線を確かめました（差分を渡さない / issue の文脈 / antigravity の旗と包み / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

@@ -717,7 +717,9 @@ answer_is_valid() {
              and (.category | type == "string")
              and (.category as $c | $allowed | index($c) != null)
              and (.what | type == "string")
-             and (.why | type == "string")))
+             and (.why | type == "string")
+             and (.file | type == "string")
+             and (.line | type == "number")))
   ' >/dev/null 2>&1
 }
 

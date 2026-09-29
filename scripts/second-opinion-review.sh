@@ -614,6 +614,24 @@ esac
 # 判定は動かさない。**規則はここ 1 か所に置く**——プロンプトへ書き写すと、片方だけ直る。
 BLOCKING_CATEGORIES='bug vulnerability type-error edge-case'
 
+# **許容する category はスキーマを正本にする。** 2 か所に書くと、片方だけ直る
+# （`.ai-playbook/shared-ai-rules.md` 12 章）。スキーマはモデルへ渡す物でもあるので、
+# ここから読めば「モデルに許した値」と「こちらが受け付ける値」が必ず一致する。
+ALL_CATEGORIES="$(jq -r '.properties.findings.items.properties.category.enum[]' "$SCHEMA_FILE" 2>/dev/null || true)"
+if [[ -z "${ALL_CATEGORIES//[[:space:]]/}" ]]; then
+  echo "error: スキーマから category の一覧を読めませんでした: $SCHEMA_FILE" >&2
+  exit 1
+fi
+
+# **落とす 4 つがスキーマに無ければ止める。** 綴りを変えたときに、どちらか片方だけが
+# 変わると「落とすはずの指摘が 1 件も一致しない」形で静かに緑になる。
+for __category in $BLOCKING_CATEGORIES; do
+  if ! printf '%s\n' "$ALL_CATEGORIES" | grep -qx -- "$__category"; then
+    echo "error: 落とす category '$__category' がスキーマの enum にありません（規則とスキーマがずれています）" >&2
+    exit 1
+  fi
+done
+
 # 回答から JSON を取り出す。エンジンごとに包みが違うのはここだけ。
 #
 #   codex        `-o` のファイルがそのまま JSON（スキーマで強制済み）
@@ -642,8 +660,24 @@ extract_answer_json() {
 
 # 形が満たされているかを見る。**「読めなかった」を「指摘なし」にしない**——
 # 読めないまま通すと、レビューしていないものを緑として報告することになる。
+#
+# **category の値まで見る**（第二意見の指摘。実在）。配列であることしか見ないと、
+# **スキーマを強制できないエンジン**（gemini には `--json-schema` に当たる旗が無い）で
+# `category: "bugs"` のような綴り違いが来たときに、**検証を通ったうえで「落とす指摘 0 件」と
+# 数えられ、ゲートが緑になる。** 知らない category は「重さが分からない」ということなので、
+# 指摘なしへ倒さず、読めなかったものとして落とす。
 answer_is_valid() {
-  printf '%s' "$1" | jq -e 'type == "object" and (.findings | type == "array")' >/dev/null 2>&1
+  local allowed
+  allowed="$(printf '%s\n' "$ALL_CATEGORIES" | jq -R . | jq -s -c .)"
+  printf '%s' "$1" | jq -e --argjson allowed "$allowed" '
+    type == "object"
+    and (.findings | type == "array")
+    and (all(.findings[]; type == "object"
+             and (.category | type == "string")
+             and (.category as $c | $allowed | index($c) != null)
+             and (.what | type == "string")
+             and (.why | type == "string")))
+  ' >/dev/null 2>&1
 }
 
 # 落とす指摘の数。

@@ -262,6 +262,23 @@ if [[ "$rc" -eq 0 ]]; then
   fail "findings が配列でない回答で通過しました"
 fi
 
+# **知らない category は落とすこと**（第二意見の指摘。実在）。
+# スキーマを強制できないエンジンでは綴り違いが来うる。配列であることしか見ていないと、
+# `bugs` は「落とす 4 つ」に一致せず、**指摘があるのにゲートが緑になる。**
+rc=0
+FAKE_CODEX_ANSWER='{"findings":[{"category":"bugs","file":"a.ts","line":1,"what":"x","why":"y"}]}' \
+  run_review || rc=$?
+if [[ "$rc" -eq 0 ]]; then
+  fail "知らない category（bugs）で通過しました（重さが分からないものを指摘なしに倒しています）"
+fi
+
+# what / why が欠けた回答も落とすこと（人が読めない報告は、報告になっていない）。
+rc=0
+FAKE_CODEX_ANSWER='{"findings":[{"category":"bug","file":"a.ts","line":1}]}' run_review || rc=$?
+if [[ "$rc" -eq 0 ]]; then
+  fail "what / why の無い回答で通過しました"
+fi
+
 # ---- 3. 判定は -o のファイルから取ること（stdout では判定しない） ----
 # 回答は指摘なし、stdout には落とす指摘を書かせる。stdout で判定していれば赤になる。
 rc=0
@@ -311,5 +328,5 @@ if [[ "$failed" -ne 0 ]]; then
   exit 1
 fi
 
-echo "[codex-selftest] 8 件の配線を確かめました（差分を渡さない / 引数とスキーマとモデル / 落とすのは 4 点だけ / 読めない JSON / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
+echo "[codex-selftest] 9 件の配線を確かめました（差分を渡さない / 引数とスキーマとモデル / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

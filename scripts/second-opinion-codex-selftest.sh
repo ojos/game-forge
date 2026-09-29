@@ -328,5 +328,5 @@ if [[ "$failed" -ne 0 ]]; then
   exit 1
 fi
 
-echo "[codex-selftest] 9 件の配線を確かめました（差分を渡さない / 引数とスキーマとモデル / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
+echo "[codex-selftest] 8 組の配線を確かめました（差分を渡さない / 引数とスキーマとモデル / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

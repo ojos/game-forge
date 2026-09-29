@@ -313,6 +313,21 @@ ssh-add -l        # コンテナの中で。鍵が見えなければ、ホスト
 コンテナへ入り直す。**ここが空のまま `ssh dev01` を叩くと `Permission denied (publickey)`
 になる**——トンネルや Access の問題に見えるが、原因は手元の agent である。
 
+**Mac を再起動すると agent は空に戻る。** `--apple-use-keychain` はパスフレーズを
+キーチェーンへ残すだけで、agent への登録までは残さない。Mac 側の `~/.ssh/config` に
+次を足しておくと、再起動後に Mac で最初に ssh したときにキーチェーンから agent へ載る。
+
+```
+Host *
+  AddKeysToAgent yes
+  UseKeychain yes
+```
+
+**載るのは Mac で ssh を 1 回使った後である。** 再起動の直後にいきなりコンテナから
+`ssh dev01` を叩くと、やはり `Permission denied (publickey)` になる。そのときは
+Mac で `ssh-add --apple-use-keychain ~/.ssh/id_ed25519_ojos` をもう一度実行する
+（パスフレーズはキーチェーンから読まれるので、入力は求められない）。
+
 **コンテナを作り直すと、Access のトークン（`~/.cloudflared/`）は消える。**
 `cloudflared` と `~/.ssh/config` は `postCreateCommand` が戻すが、**認証だけは
 もう一度 `cloudflared access login` を対話で通す**必要がある。

@@ -639,6 +639,39 @@ check_repository() {
 }
 
 ##
+# 脆弱性の非公開報告の窓口（Private vulnerability reporting）が有効であることを確認する（#810）。
+#
+# **これは terraform の宣言対象ではない。** github プロバイダ（6.13.0）に対応するリソースが無く、
+# 手で有効にしている（terraform/README.md「管理対象外」）。宣言できないものを検査だけは置くのは、
+# 手で切られた・有効にし忘れたまま、SECURITY.md が「ここから報告してください」と案内し続ける
+# 状態を塞ぐためである。**案内している窓口が閉じていると、善意の発見者は public issue に書くか、
+# 黙るかの二択に戻る。**
+#
+# **期待値を「有効」に固定するのは、宣言の代わりをこの検査が持つからである。** 書き写しでは
+# ない——比べる相手の宣言が存在しない。プロバイダが対応したら宣言へ移し、この検査は
+# 宣言から期待値を取る形に変える。
+#
+# 戻り値: 0 = 有効 / 1 = 無効または取得失敗
+##
+check_private_vulnerability_reporting() {
+  local full_name enabled
+  full_name="$(tf_output repository_full_name)" || return 1
+  if [[ -z "$full_name" ]]; then
+    echo "terraform output からリポジトリ識別子を取得できません。apply 済みか確認すること。"
+    return 1
+  fi
+
+  enabled="$(gh api "repos/${full_name}/private-vulnerability-reporting" --jq '.enabled')" || return 1
+  if [[ "$enabled" != "true" ]]; then
+    echo "${full_name} の Private vulnerability reporting が有効ではありません（enabled=${enabled:-(空)}）。"
+    echo "SECURITY.md はこの窓口を案内しています。次で有効にすること（terraform/README.md「管理対象外」）:"
+    echo "  gh api -X PUT repos/${full_name}/private-vulnerability-reporting"
+    return 1
+  fi
+  echo "private vulnerability reporting is enabled for ${full_name}"
+}
+
+##
 # 既定ブランチが宣言どおりであることを確認する。
 #
 # 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
@@ -2578,6 +2611,7 @@ check_tunnel_access_applications() {
 }
 
 run "repository exists and visibility matches" check_repository
+run "private vulnerability reporting is enabled" check_private_vulnerability_reporting
 run "default branch matches" check_default_branch
 run "branch protection matches" check_branch_protection
 run "actions variable matches" check_actions_variable

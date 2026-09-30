@@ -1038,8 +1038,11 @@ docker ps >/dev/null && echo DOCKER_OK   # docker グループがコンテナか
 grep -c 'Host dev01' ~/.ssh/config 2>/dev/null || true   # 0 か、ファイルが無いこと
 ```
 
-**VS Code の窓を閉じるとコンテナは止まる**（`devcontainer.json` の `shutdownAction: stopCompose`）。窓を閉じても
-作業を続けたいときは、下の 7.7 の形（ssh と `docker exec` で tmux に入る）を使う。手を触れずに立ち上がる形は #849 が扱う。
+**VS Code の窓を閉じるとコンテナは止まり、中の tmux も一緒に消える**（`devcontainer.json` の
+`shutdownAction: stopCompose`。Mac と共通の設定なので dev01 だけ変えることはしていない）。したがって dev01 では、
+**VS Code は導入とログイン（7.5・7.6）に使い、持ち歩き中の作業は 7.7 の形（ssh から `docker start` と `docker exec` で
+tmux に入る）で回す。** tmux で作業が走っている間は、dev01 に繋いだ VS Code の窓を閉じない。
+手を触れずに立ち上がる形（systemd）は #849 が扱う。
 
 ### 7.5 `.env` と `npm ci`（コンテナの中）
 
@@ -1085,18 +1088,22 @@ tmux new -A -s main   # 無ければ作り、在れば入る
 # 抜けるときは Ctrl-b d（tmux は動き続ける）
 ```
 
-手元（Mac）から、VS Code を開かずに直接入る:
+手元（Mac）から、VS Code を開かずに直接入る（Mac の `~/.ssh/config` にあるのは `Host dev01-ssh.ojos.jp` なので、
+その名前で入る。[local-llm-tunnel.md](local-llm-tunnel.md) の「手元の Mac 側の手順」）:
 
 ```bash
-ssh -t dev01 'docker exec -it -u vscode -w /workspaces/game-forge \
-  "$(docker ps -q --filter label=com.docker.compose.service=app --filter label=devcontainer.local_folder=$HOME/game-forge)" \
-  tmux new -A -s main'
+ssh -t dev01-ssh.ojos.jp '
+  id="$(docker ps -aq --filter label=com.docker.compose.service=app --filter label=devcontainer.local_folder=$HOME/game-forge)"
+  [ -n "$id" ] || { echo "コンテナがありません。7.4 で一度立ててください" >&2; exit 1; }
+  docker start "$id" >/dev/null
+  docker exec -it -u vscode -w /workspaces/game-forge "$id" tmux new -A -s main'
 ```
 
-- `docker ps` の絞り込みは、devcontainer が付けるラベル（`devcontainer.local_folder`）と compose のサービス名で行う。
-  **1 行も返らないときは、コンテナが止まっている**（7.4 の注意。VS Code の窓を閉じると止まる）。
-- **tmux のセッションはコンテナと一緒に消える。** コンテナを作り直す・止めると、中の作業も止まる。
-  自動で戻す仕組み（systemd）とスマホからの入口は #849 の範囲である。
+- `docker ps -a` の絞り込みは、devcontainer が付けるラベル（`devcontainer.local_folder`。ホストの clone の絶対パス）と
+  compose のサービス名で行う。**止まっているコンテナも拾い、`docker start` で起こしてから入る**
+  （VS Code の窓を閉じて止まった後でも、この 1 行で戻れる。動いているコンテナへの `docker start` は何もしない）。
+- **tmux のセッションはコンテナと一緒に消える。** コンテナを作り直す・止める（VS Code の窓を閉じるのを含む）と、
+  中の作業も止まる。自動で戻す仕組み（systemd）とスマホからの入口は #849 の範囲である。
 
 ### 7.8 確かめること（#802 の acceptance との対応）
 

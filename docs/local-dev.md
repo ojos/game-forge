@@ -993,7 +993,9 @@ sudo usermod -aG docker "$USER"
 git clone https://github.com/ojos/game-forge.git ~/game-forge
 ```
 
-置き場所は任意である（コンテナの中では常に `/workspaces/game-forge` になる）。
+**以下は `~/game-forge` に置いた前提で書く。** コンテナの中では置き場所に依らず `/workspaces/game-forge` になるが、
+7.7 の attach はホストの clone の絶対パス（`devcontainer.local_folder` のラベル）でコンテナを探すので、
+別の場所に置いたときは 7.7 の `$HOME/game-forge` をそのパスへ読み替える。
 
 ### 7.3 UID を渡す（ホスト）
 

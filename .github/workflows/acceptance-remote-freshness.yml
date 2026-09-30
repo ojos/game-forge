@@ -1,0 +1,57 @@
+# 外部層の受け入れ検証（scripts/acceptance-remote.sh）が毎日走っていることを、Mac の外で確かめる（#844）。
+#
+# 外部層は state のあるプライマリ（利用者の Mac の devcontainer）でしか回せない（#808 の実測:
+# CI で回せるのは 34 件中 2 件）。そこで launchd が毎日 12:00 JST に回し、要約だけを固定の
+# issue へ投稿する。**ここは、その記録を読んで判定するだけである。** 回すのは Mac の側で、
+# 要求と確認を別の機構に分けている（second-opinion-gate と同じ形）。
+#
+# ## 何を見るか
+#
+# 判定は scripts/acceptance-record-judge.sh が持つ（**YAML へ書き写さない**）。落とすのは次のとき:
+#
+#   - 持ち主の記録が無い・最新が 3 日より古い（定期実行が止まっている）
+#   - 前提がそろって判定できた最新の回に、乖離（drift）か未完了がある
+#   - gh / aws / cloudflare / gcp のどれかで、前提が通った記録が 3 日無い（認証が切れたまま）
+#
+# **読めなかった（GitHub API の失敗・記録先の未設定）は、別の注記で落とす。** 「記録が無い」と
+# 混ぜない（scripts/acceptance-record-freshness.sh の冒頭）。
+#
+# 赤は GitHub のメールで届く。**それが通知の経路である。**
+#
+# ## required check にはしない・PR では動かない
+#
+# 契機は schedule と workflow_dispatch だけで、pull_request も push も張らない。外部の可用性
+# （利用者の Mac が起きているか、認証が切れていないか）をマージの前提へ持ち込まない
+# （`.github/project-ai-rules.md`「外部層を単一入口へ含めない理由」と同じ判断）。
+# **この 2 つの契機は既定ブランチにあるワークフローしか起動しない**ので、PR の上では判定の
+# 表（scripts/check-acceptance-remote-record.sh。verify から回る）だけが確かめる。
+
+name: acceptance-remote-freshness
+
+on:
+  schedule:
+    # 06:00 UTC（15:00 JST）。Mac の定期実行（12:00 JST）の 3 時間後。
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # コメント（`/issues/{n}/comments`）と issue のロック状態を読む。
+  issues: read
+
+concurrency:
+  group: acceptance-remote-freshness
+  cancel-in-progress: false
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    steps:
+      # 判定と記録先の番号（scripts/lib/acceptance-record.sh）を読むために取る。既定ブランチの側である。
+      - uses: actions/checkout@v4
+
+      - name: Check that the external acceptance ran recently and found no drift
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/acceptance-record-freshness.sh

@@ -101,6 +101,13 @@ bash scripts/check-second-opinion-gate-exempt.sh
 echo "[acceptance] (hygiene) scripts/check-second-opinion-gate-workflow.sh"
 bash scripts/check-second-opinion-gate-workflow.sh
 
+# 外部層の定期実行（#844）の要約・鮮度の判定・起動前の確認の表。**launchd は利用者の Mac で、
+# 定期ジョブ（acceptance-remote-freshness.yml）は既定ブランチでしか動かない**ので、判定が崩れても
+# PR の上では気づけない——上の 3 つと同じ理由でここに置く。外部層そのもの（acceptance-remote.sh）は
+# 回さない（本物の run 関数だけを取り出して偽の検査を回す）。git と jq と python3 で 1 秒ほど。
+echo "[acceptance] (hygiene) scripts/check-acceptance-remote-record.sh"
+bash scripts/check-acceptance-remote-record.sh
+
 # app.css の区画の規約と、画面幅の段の検査（#371 / 仕様 2.3.9）。
 #
 # **上の 2 つと同じ層に置く。** bash と awk しか要らず、40 ms で終わる。

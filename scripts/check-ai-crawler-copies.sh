@@ -60,8 +60,12 @@ extract() {
   ' "$file" | sort -u
 }
 
-robots="$(extract "$ROBOTS_TS" '^export const AI_TRAINING_CRAWLERS[^=]*= *\[' '^\];')"
-waf="$(extract "$WAF_TF" '^[ \t]*ai_training_crawlers[ \t]*=[ \t]*\[' '^[ \t]*\]')"
+# **角括弧は `[[]` / `[]]` と書く。`\[` と書かない。** 正規表現は `awk -v` で渡すので、awk が先に
+# 文字列のエスケープを解釈する。gawk（CI の ubuntu）は `\[` を `[` にしてから正規表現にするので
+# 壊れた式になって落ち、mawk（手元）は通す——**手元では緑、CI では赤**（PR #837 で実際に踏んだ）。
+# 角括弧式の中の `[` と、先頭の `]` は、どの awk でもバックスラッシュなしで文字そのものになる。
+robots="$(extract "$ROBOTS_TS" '^export const AI_TRAINING_CRAWLERS[^=]*= *[[]' '^[]];')"
+waf="$(extract "$WAF_TF" '^[ \t]*ai_training_crawlers[ \t]*=[ \t]*[[]' '^[ \t]*[]]')"
 
 if [[ -z "$robots" ]]; then
   echo "[ai-crawler-copies] FAIL: $ROBOTS_TS から AI_TRAINING_CRAWLERS を 1 本も拾えません（照合が成立していません）"

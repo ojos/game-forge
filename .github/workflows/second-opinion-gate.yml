@@ -30,7 +30,7 @@
 # **Dependabot の PR は記録を探さずに success を付ける**（説明文で除外だと分かるようにする）。
 # ここが検出したいのは著者の失念で、Dependabot の PR には回す著者が最初からいない。
 # 除外しないと毎回赤くなり（#832 / #833）、赤が失念の意味を失う。条件は PR の著者と
-# **すべてのコミットの author** が `dependabot[bot]` であることで、人が足したコミットが
+# **すべてのコミットの author** が `dependabot[bot]`（GitHub の署名付き）であることで、人が足したコミットが
 # 混ざれば、いつもどおり記録を求める。判定は `scripts/second-opinion-gate-exempt.sh` が持ち、
 # `scripts/check-second-opinion-gate-exempt.sh` が表で確かめる。
 #
@@ -223,10 +223,17 @@ jobs:
           is_exempt() {
             local pr="$1" input out
             [ -f scripts/second-opinion-gate-exempt.sh ] || return 1
-            # 1 行目に PR の著者、続けてコミットの author（紐づかないものは `-`）を渡す。
+            # 1 行目に PR の著者、続けてコミットの author を渡す。
+            #
+            # **author は GitHub が署名したコミットのものだけを信じる。** Git の author は作る側が
+            # 自由に書けるので、人が Dependabot 名義の author でコミットを足せば素通りする
+            # （#838 の第二意見の指摘）。Dependabot のコミットは committer が `web-flow` で、
+            # GitHub の鍵で署名されている。手元ではこの署名を作れない。満たさないコミットや、
+            # アカウントに紐づかないコミットは `-` として渡す（判定スクリプトは除外しない）。
             if ! input="$(
               gh api "repos/${REPO}/pulls/${pr}" --jq '.user.login' 2>/dev/null &&
-              gh api --paginate "repos/${REPO}/pulls/${pr}/commits" --jq '.[] | .author.login // "-"' 2>/dev/null
+              gh api --paginate "repos/${REPO}/pulls/${pr}/commits" \
+                --jq '.[] | if .committer.login == "web-flow" and .commit.verification.verified == true then (.author.login // "-") else "-" end' 2>/dev/null
             )"; then
               return 1
             fi

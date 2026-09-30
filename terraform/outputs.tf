@@ -1020,3 +1020,29 @@ output "zero_trust_operator_emails" {
   EOT
   value       = join(" ", sort(var.zero_trust_operator_emails))
 }
+
+output "game_forge_waf_hosts_expression" {
+  description = "WAF のルールが当たるホストの式（#776）。外部層の check_game_forge_waf が、マネージドルールの式と照らす。"
+  value       = local.game_forge_waf_hosts_expression
+}
+
+output "game_forge_waf_ai_training_expression" {
+  description = <<-EOT
+    学習クローラを止めるカスタムルールの式（#776）。外部層の check_game_forge_waf が、ゾーンに
+    実在するルールの式と照らす。一覧の正本は src/robots.ts（scripts/check-ai-crawler-copies.sh が照合）。
+  EOT
+  value       = local.ai_training_block_expression
+}
+
+output "cloudflare_free_managed_ruleset_id" {
+  description = "3 ホストに当てる Cloudflare Managed Free Ruleset の ID（#776）。Cloudflare が全ゾーン共通で配る固定値。"
+  value       = local.cloudflare_free_managed_ruleset_id
+}
+
+output "ojos_jp_zone_settings" {
+  description = <<-EOT
+    ojos.jp のゾーンへ宣言した設定（#776。HTML を書き換えるものと、ブラウザ以外を止めうるもの）。
+    外部層の check_ojos_jp_zone_settings が、API の実際の値と照らす。リソースの値から組み立てる。
+  EOT
+  value       = { for k, s in cloudflare_zone_setting.ojos_jp : k => s.value }
+}

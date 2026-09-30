@@ -380,6 +380,17 @@ else
   echo "[acceptance] (ojos-jp-records-output) skip: terraform/dns-ojos-jp.tf not found"
 fi
 
+# 入口で止める学習クローラの一覧（terraform/waf-ojos-jp.tf）が、robots.txt で拒否している一覧
+# （src/robots.ts）と一致すること（#776）。ずれると、robots.txt では拒否しているのに入口では
+# 素通りする（またはその逆）。宣言のテキストどうしの照合なので、ネットワークも認証も要らない。
+if [[ -f terraform/waf-ojos-jp.tf ]]; then
+  echo "[acceptance] (ai-crawler-copies) scripts/check-ai-crawler-copies.sh"
+  bash scripts/check-ai-crawler-copies.sh
+  ran_any=1
+else
+  echo "[acceptance] (ai-crawler-copies) skip: terraform/waf-ojos-jp.tf not found"
+fi
+
 # aws CLI の呼び出しが、引数の形として CLI の契約に合っていること（#160）。
 #
 # **前寄りに置く。** 1 秒強で終わり、npm test より 1 桁安い。しかも外すと

@@ -1008,6 +1008,133 @@ compare_ojos_jp_declared_records_in() {
 }
 
 ##
+# game-forge の 3 ホストに当てる WAF の 2 つのルールが、宣言どおりに実在することを確認する（#776）。
+#
+# - カスタムルール（http_request_firewall_custom）: 学習クローラを止める 1 本が、宣言の式・block・有効で在る
+# - マネージドルール（http_request_firewall_managed）: Cloudflare Managed Free Ruleset を 3 ホストに当てる 1 本が在る
+#
+# **式は output から取り、書き写さない。** 学習クローラの一覧の正本は src/robots.ts で、宣言との一致は
+# ローカル層の scripts/check-ai-crawler-copies.sh が見る。ここは「宣言したものがゾーンに在るか」を見る。
+#
+# **ルールセット ID が名前どおりのものかも見る。** 固定値を宣言に置いているので、その値が
+# Cloudflare の Free のマネージドルールセットを指していることを、ゾーンの一覧で確かめる。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_game_forge_waf() {
+  local zone_id hosts_expr ai_expr ruleset_id body rc=0
+  zone_id="$(tf_output ojos_jp_zone_id)" || return 1
+  hosts_expr="$(tf_output game_forge_waf_hosts_expression)" || return 1
+  ai_expr="$(tf_output game_forge_waf_ai_training_expression)" || return 1
+  ruleset_id="$(tf_output cloudflare_free_managed_ruleset_id)" || return 1
+  if [[ -z "$zone_id" || -z "$hosts_expr" || -z "$ai_expr" || -z "$ruleset_id" ]]; then
+    echo "terraform output から WAF の宣言値を取得できません。apply 済みか確認すること。"
+    return 1
+  fi
+
+  body="$(cf_api "zones/${zone_id}/rulesets/phases/http_request_firewall_custom/entrypoint")" || return 1
+  if ! jq -e --arg e "$ai_expr" \
+    '[.result.rules[]? | select(.action == "block" and .enabled == true and .expression == $e)] | length == 1' \
+    <<<"$body" >/dev/null; then
+    echo "学習クローラを止めるカスタムルールが、宣言の式・block・有効のいずれかで一致しません。"
+    echo "  実在するルール: $(jq -c '[.result.rules[]? | {action, enabled, description}]' <<<"$body")"
+    rc=1
+  else
+    echo "custom rule blocks AI training crawlers on game-forge hosts"
+  fi
+
+  body="$(cf_api "zones/${zone_id}/rulesets/phases/http_request_firewall_managed/entrypoint")" || return 1
+  if ! jq -e --arg e "$hosts_expr" --arg id "$ruleset_id" \
+    '[.result.rules[]? | select(.action == "execute" and .enabled == true and .expression == $e and .action_parameters.id == $id)] | length == 1' \
+    <<<"$body" >/dev/null; then
+    echo "マネージドルールの実行が、宣言の式・ルールセット・有効のいずれかで一致しません。"
+    echo "  実在するルール: $(jq -c '[.result.rules[]? | {action, enabled, id: .action_parameters.id}]' <<<"$body")"
+    rc=1
+  else
+    echo "managed ruleset ${ruleset_id} runs on game-forge hosts"
+  fi
+
+  body="$(cf_api "zones/${zone_id}/rulesets")" || return 1
+  if ! jq -e --arg id "$ruleset_id" \
+    '[.result[]? | select(.id == $id and .kind == "managed" and .phase == "http_request_firewall_managed" and .name == "Cloudflare Managed Free Ruleset")] | length == 1' \
+    <<<"$body" >/dev/null; then
+    echo "ルールセット ${ruleset_id} が、このゾーンで使える Cloudflare Managed Free Ruleset ではありません。"
+    rc=1
+  fi
+  return "$rc"
+}
+
+##
+# ojos.jp のゾーンの設定が、宣言どおりであることを確認する（#776）。
+#
+# 見るのは宣言した設定だけ（output `ojos_jp_zone_settings`）——HTML を書き換えるもの
+# （email_obfuscation など）と、ブラウザ以外を止めうるもの（browser_check / security_level）。
+# **期待値は output から取り、書き写さない。**
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_ojos_jp_zone_settings() {
+  local zone_id settings key expected actual body rc=0 count=0
+  zone_id="$(tf_output ojos_jp_zone_id)" || return 1
+  settings="$(terraform -chdir="$TF_DIR" output -json ojos_jp_zone_settings 2>/dev/null)" || {
+    echo "terraform output ojos_jp_zone_settings を読めません。apply 済みか確認すること。"
+    return 1
+  }
+  if [[ -z "$zone_id" ]] || ! jq -e 'type == "object" and length > 0' <<<"$settings" >/dev/null; then
+    echo "ゾーンの設定の宣言が空です（照合が成立していません）。"
+    return 1
+  fi
+  while IFS=$'\t' read -r key expected; do
+    count=$((count + 1))
+    body="$(cf_api "zones/${zone_id}/settings/${key}")" || return 1
+    actual="$(jq -r '.result.value | if type == "string" then . else tojson end' <<<"$body")"
+    if [[ "$actual" != "$expected" ]]; then
+      echo "ゾーンの設定 ${key} が宣言と一致しません: expected=${expected} actual=${actual}"
+      rc=1
+    fi
+  done < <(jq -r 'to_entries[] | [.key, (.value | if type == "string" then . else tojson end)] | @tsv' <<<"$settings")
+  [[ $rc -eq 0 ]] && echo "${count} zone settings match the declaration"
+  return "$rc"
+}
+
+##
+# Bot Fight Mode などのボット対策が切れていることを確認する（#776）。
+#
+# **これは宣言していない**（cloudflare_bot_management は Bot Management の Edit 権限が要り、
+# トークンには Read だけを渡している）。入れない理由は terraform/waf-ojos-jp.tf の冒頭——Bot Fight Mode は
+# データセンターの IP から来るブラウザ以外の通信を止めにかかり、**AWS の Lambda からの
+# コールバックと MCP の接続を止める恐れがある。Free では例外を作れない。**
+#
+# あわせて、ダッシュボードの AI Crawl Control での遮断（宣言の外に WAF のルールができる）と、
+# Cloudflare が robots.txt を差し替える設定（src/robots.ts と衝突する）が切れていることも見る。
+#
+# 戻り値: 0 = 切れている / 1 = どれかが有効・取得失敗
+##
+check_zone_bot_protection_off() {
+  local zone_id body rc=0
+  zone_id="$(tf_output ojos_jp_zone_id)" || return 1
+  if [[ -z "$zone_id" ]]; then
+    echo "terraform output から DNS ゾーンの ID を取得できません。"
+    return 1
+  fi
+  body="$(cf_api "zones/${zone_id}/bot_management")" || return 1
+  if [[ "$(jq -r '.result.fight_mode' <<<"$body")" != "false" ]]; then
+    echo "Bot Fight Mode が有効です。AWS からのコールバックと MCP の接続を止める恐れがあります（#776 で入れないと決めた）。"
+    rc=1
+  fi
+  if [[ "$(jq -r '.result.ai_bots_protection' <<<"$body")" != "disabled" ]]; then
+    echo "AI Crawl Control の遮断（ai_bots_protection）が有効です。宣言の外に WAF のルールができます。"
+    rc=1
+  fi
+  if [[ "$(jq -r '.result.is_robots_txt_managed' <<<"$body")" != "false" ]]; then
+    echo "Cloudflare が robots.txt を差し替える設定（is_robots_txt_managed）が有効です。src/robots.ts と衝突します。"
+    rc=1
+  fi
+  [[ $rc -eq 0 ]] && echo "bot fight mode, AI crawl control blocking and managed robots.txt are off"
+  return "$rc"
+}
+
+##
 # wrangler.toml の本番ホストが、DNS の宣言と一致していることを確認する。
 #
 # 同じホスト名が 2 か所（terraform/dns.tf と wrangler.toml）にある。**片方だけを
@@ -2620,6 +2747,9 @@ run "dns zone matches" check_dns_zone
 run "dns delegation from jp registry is in place" check_dns_delegation
 run "pages custom domain records match" check_pages_dns_records
 run "ojos.jp declared dns records exist as declared" check_ojos_jp_declared_records
+run "game-forge waf rules exist as declared" check_game_forge_waf
+run "ojos.jp zone settings match the declaration" check_ojos_jp_zone_settings
+run "bot protection that would block callbacks is off" check_zone_bot_protection_off
 run "dev01 tunnel is healthy and ingress matches" check_dev01_tunnel
 run "tunnel dns records are proxied to the tunnel" check_tunnel_dns_records
 run "tunnel access applications match" check_tunnel_access_applications

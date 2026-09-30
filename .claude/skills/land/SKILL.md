@@ -71,7 +71,7 @@ gh pr checks N --watch --interval 30
 
 ### 3. 第二意見の記録と、人間のコメントを読む
 
-`second-opinion-gate` が緑でも、それは「記録がある」ことを示すだけです。**記録の中身を読みます。** 記録は PR のコメントとして、先頭に `<!-- second-opinion sha=<head の SHA> -->` の印を持って投稿されています。
+`second-opinion-gate` が緑でも、それは「記録がある」ことを示すだけです。**記録の中身を読みます。** ただし、説明文が `Dependabot PR: second-opinion record not required` の緑は「記録を求めていない」ことを示します（#838）。読む記録は無いので、人間のコメントだけを読み、4 へ進みます。 記録は PR のコメントとして、先頭に `<!-- second-opinion sha=<head の SHA> -->` の印を持って投稿されています。
 
 ```bash
 gh api --paginate 'repos/{owner}/{repo}/issues/N/comments' --jq '.[] | {user: .user.login, created_at, body}'

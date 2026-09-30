@@ -94,6 +94,10 @@ bash scripts/check-doc-links.sh
 echo "[acceptance] (hygiene) scripts/check-writeback-serial.sh"
 bash scripts/check-writeback-serial.sh
 
+# 第二意見のゲートで記録を求めない PR の判定の表（#838）。上と同じ理由でここに置く。
+echo "[acceptance] (hygiene) scripts/check-second-opinion-gate-exempt.sh"
+bash scripts/check-second-opinion-gate-exempt.sh
+
 # app.css の区画の規約と、画面幅の段の検査（#371 / 仕様 2.3.9）。
 #
 # **上の 2 つと同じ層に置く。** bash と awk しか要らず、40 ms で終わる。

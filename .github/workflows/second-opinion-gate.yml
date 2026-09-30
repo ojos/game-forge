@@ -25,6 +25,15 @@
 # 古いコメントで通ってしまう。**押した中身がレビューされたこと**を見たいので、印の SHA が
 # いまの head と一致することを要求する。
 #
+# ## 記録を求めない PR（#838）
+#
+# **Dependabot の PR は記録を探さずに success を付ける**（説明文で除外だと分かるようにする）。
+# ここが検出したいのは著者の失念で、Dependabot の PR には回す著者が最初からいない。
+# 除外しないと毎回赤くなり（#832 / #833）、赤が失念の意味を失う。条件は PR の著者と
+# **すべてのコミットの author** が `dependabot[bot]` であることで、人が足したコミットが
+# 混ざれば、いつもどおり記録を求める。判定は `scripts/second-opinion-gate-exempt.sh` が持ち、
+# `scripts/check-second-opinion-gate-exempt.sh` が表で確かめる。
+#
 # ## 猶予を毎回置く
 #
 # 撤去した review-gate.yml は `opened` のときだけ待っていた（要求側と同時に走るため）。
@@ -105,6 +114,14 @@ jobs:
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
     steps:
+      # 除外の判定（scripts/second-opinion-gate-exempt.sh）を読むために取る。**PR の側ではなく
+      # 既定ブランチの側を取る。** PR の側を取ると、判定を書き換えた PR が自分自身を除外できる
+      # （#838）。既定ブランチにまだ無い間（この変更を入れる PR 自身）は、除外せずにいつもどおり
+      # 判定する。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
       - name: Check that the second opinion was actually recorded
         env:
           GH_TOKEN: ${{ github.token }}
@@ -198,9 +215,32 @@ jobs:
             return 1
           }
 
+          # 記録を求めない PR か（#838）。0 = 求めない / 1 = いつもどおり判定する。
+          #
+          # 判定そのものは scripts/second-opinion-gate-exempt.sh が持つ（冒頭の「何を見るか」の
+          # 例外。いまは Dependabot の PR だけ）。**読めない・判定できないときは 1 に倒す。**
+          # 確かめていないものを除外にすると、記録の無い PR を黙って通すことになる。
+          is_exempt() {
+            local pr="$1" input out
+            [ -f scripts/second-opinion-gate-exempt.sh ] || return 1
+            # 1 行目に PR の著者、続けてコミットの author（紐づかないものは `-`）を渡す。
+            if ! input="$(
+              gh api "repos/${REPO}/pulls/${pr}" --jq '.user.login' 2>/dev/null &&
+              gh api --paginate "repos/${REPO}/pulls/${pr}/commits" --jq '.[] | .author.login // "-"' 2>/dev/null
+            )"; then
+              return 1
+            fi
+            out="$(printf '%s\n' "$input" | bash scripts/second-opinion-gate-exempt.sh 2>/dev/null)" || return 1
+            [ "$out" = "exempt" ]
+          }
+
           # 1 本を判定する。通らなければ 1 を返す（呼び出し側が集計する）。
           judge() {
             local pr="$1" sha="$2" verdict=0
+            if is_exempt "$pr"; then
+              report "$sha" success "Dependabot PR: second-opinion record not required (#838)" || return 1
+              return 0
+            fi
             # set -e に掛からない形で終了コードを取る。
             has_record "$pr" "$sha" || verdict=$?
 
@@ -237,8 +277,13 @@ jobs:
               exit 0
             fi
 
-            echo "PR #${PR_NUMBER} を判定します（記録の投稿を ${GRACE_SEC} 秒待ちます）"
-            sleep "$GRACE_SEC"
+            # 記録を求めない PR は、投稿を待つ理由が無い（#838）。
+            if is_exempt "$PR_NUMBER"; then
+              echo "PR #${PR_NUMBER} は記録を求めない PR です。待たずに判定します。"
+            else
+              echo "PR #${PR_NUMBER} を判定します（記録の投稿を ${GRACE_SEC} 秒待ちます）"
+              sleep "$GRACE_SEC"
+            fi
 
             # **待っているあいだに push が入ったら、判定しない。**
             #

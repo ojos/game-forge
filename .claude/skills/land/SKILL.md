@@ -64,6 +64,7 @@ gh pr checks N --watch --interval 30
 ```
 
 - `second-opinion-gate` は、push のたびに 300 秒の猶予を置いてから判定します（記録は push の後に手元から投稿されるため）。すぐに出なくても異常ではありません。
+- **Dependabot の PR は、記録を投稿しません。** ゲートが待たずに success を付けます（説明文が `Dependabot PR: second-opinion record not required`。#838）。ただし人がコミットを足していれば、いつもどおり記録が要ります。どちらの場合も、4 で差分は読みます。
 - 失敗の形は 2 つあり、**扱いが違います。**
   - **status の `second-opinion-gate` が failure**（説明文が `no second-opinion record for this head`）: その head に紐づく第二意見の記録がありません。**この会話で作った PR なら、PR のブランチを checkout した worktree で `bash scripts/loop-gate.sh` を通し、`bash scripts/second-opinion-record.sh post` で投稿します。** 記録だけを作って投稿しません（回していないレビューを回したことにする形です）。別セッションの PR なら、止めて報告します。
   - **ジョブの `record` だけが失敗し、status の `second-opinion-gate` が failure でない**: 記録の有無を API から読めなかっただけです（このとき status は付きません）。**投稿し直しません。** 20 分ごとの掃き寄せが判定し直すのを待ち、付かなければ止めて報告します。

@@ -256,12 +256,14 @@ fi
 # **ゲートではないので、取れなくても止めません。** 取れなかったことは出力に出します
 # （黙って「文脈つきでレビューした」ことにしない）。
 issue_context=""
+branch_issue_num=""
 resolve_issue_context() {
   local branch num body
   branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   # feat/804-... / fix/795-... / docs/writeback-... のような形から数字を取る。
   # **枝の名前に数字が無ければ何もしない**（推測で別の issue を引かない）。
   num="$(printf '%s' "$branch" | sed -n 's|^[a-z]*/\([0-9][0-9]*\)-.*|\1|p')"
+  branch_issue_num="$num"
   if [[ -z "$num" ]]; then
     echo "[second-opinion] 枝の名前から issue 番号を取れませんでした（文脈なしでレビューします）: $branch" >&2
     return 0
@@ -278,6 +280,148 @@ resolve_issue_context() {
   echo "[second-opinion] issue #$num の scope と acceptance を文脈に載せます"
 }
 resolve_issue_context
+
+# 差分とコミットメッセージが参照している issue / PR の文脈（#828）。
+#
+# **Copilot が拾い、第二意見が拾えなかった指摘の約半分は「他の issue / PR の状態」を
+# 知らないと出せない種類だった**（#816〜#824 の 11 件中 5 件。「#812 は未マージ」
+# 「#776 の制約だと 1 日早い」など）。codex のサンドボックスはネットワークも止める
+# （実測: `gh` は `error connecting to api.github.com`）ので、**モデルには引けない。
+# サンドボックスの外にいるこのスクリプトが引いて載せる。**
+#
+# 絞り方（#828 のデメリットの表）:
+#   - 拾うのは**差分の追加行とコミットメッセージだけ**。削除行や文脈行の番号は、
+#     この変更が主張していることではない
+#   - **作成者がリポジトリの持ち主のものだけ**。public なので部外者の文がプロンプトへ
+#     入りうる（持ち主はリポジトリの URL から取る。呼び出しを 1 本増やさない）
+#   - issue は「状態・タイトル・acceptance の節」、PR は「状態・タイトル」だけ。本文全体は
+#     載せない（消費と、古い本文による誤検出を抑える）
+#   - **上限は REFERENCED_LIMIT 本。超えた分は捨てたと出す**
+#   - 引けなくても止めない（ゲートではない）。引けなかったことは出す
+REFERENCED_LIMIT=10
+referenced_context=""
+
+# 1 行ずつ読み、`#123` の番号だけを出す。`&#123;`（HTML の実体参照）、`#fff`、
+# URL の断片（`/#12`）、6 桁以上（色の `#000000`）は拾わない。
+# **GNU 拡張を使わない**（利用者の端末は macOS。grep の `\b` や `-P` に頼らない）。
+extract_issue_refs() {
+  awk '{
+    s = $0; lastc = ""
+    while (match(s, /#[0-9]+/)) {
+      b = (RSTART > 1) ? substr(s, RSTART - 1, 1) : lastc
+      a = substr(s, RSTART + RLENGTH, 1)
+      n = substr(s, RSTART + 1, RLENGTH - 1)
+      if (b !~ /[0-9A-Za-z_&\/#]/ && a !~ /[0-9A-Za-z_]/ && length(n) <= 5 && n + 0 > 0) print n + 0
+      lastc = substr(s, RSTART + RLENGTH - 1, 1)
+      s = substr(s, RSTART + RLENGTH)
+    }
+  }'
+}
+
+# issue の本文から acceptance の節（intake の YAML の `acceptance:` から次のキーまで）を出す。
+extract_acceptance() {
+  tr -d '\r' | awk '
+    /^acceptance:/ { on = 1; print; next }
+    on && (/^[A-Za-z_.]+:/ || /^```/) { exit }
+    on { print }
+  '
+}
+
+resolve_referenced_context() {
+  local refs nums n kept dropped rejected unreadable json owner author kind state title acc
+  # コミットメッセージを先に置く。「(#804)」のように、変更が名指しした番号が先頭に来る。
+  # **範囲（A..B）のときだけ**ログを読む。単独のリビジョンに git log を当てると
+  # 履歴の全部を読むことになる。
+  refs=""
+  if [[ "$RANGE" == *..* ]]; then
+    refs="$(git log --format=%B "$RANGE" 2>/dev/null | extract_issue_refs || true)"
+  fi
+  refs="$refs
+$(printf '%s\n' "$diff_text" | awk '/^\+/ && !/^\+\+\+ / { print substr($0, 2) }' | extract_issue_refs || true)"
+  # 出てきた順に重複を落とし、枝の issue（上で全文を載せた）を除く。
+  nums="$(printf '%s\n' "$refs" | awk -v skip="$branch_issue_num" 'NF && $0 != skip && !seen[$0]++')"
+  if [[ -z "$nums" ]]; then
+    return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "[second-opinion] gh が無いため、参照された issue / PR を引けません（文脈なしで続けます）" >&2
+    return 0
+  fi
+
+  dropped="$(printf '%s\n' "$nums" | awk -v lim="$REFERENCED_LIMIT" 'NR > lim { printf "#%s ", $0 }')"
+  nums="$(printf '%s\n' "$nums" | awk -v lim="$REFERENCED_LIMIT" 'NR <= lim')"
+  kept=""; rejected=""; unreadable=""
+  for n in $nums; do
+    # issues の API は PR も返す（`.pull_request` の有無で分かれる）。1 番号 1 呼び出し。
+    # **`.pull_request.merged_at` は issues の API にも入っている**——pulls の API を
+    # 呼び直す必要はない（実測 2026-09-30: `gh api repos/{owner}/{repo}/issues/824` の
+    # `.pull_request.merged_at` が `2026-09-30T01:14:08Z`。第二意見が「入っていない」と
+    # 誤って指摘したので、ここに根拠を残す）。
+    if ! json="$(gh api "repos/{owner}/{repo}/issues/$n" 2>/dev/null)" \
+        || ! owner="$(printf '%s' "$json" | jq -er '.repository_url | split("/") | .[-2]' 2>/dev/null)"; then
+      unreadable="$unreadable#$n "
+      continue
+    fi
+    author="$(printf '%s' "$json" | jq -r '.user.login // ""')"
+    if [[ "$author" != "$owner" ]]; then
+      rejected="$rejected#$n "
+      continue
+    fi
+    title="$(printf '%s' "$json" | jq -r '.title // ""')"
+    if printf '%s' "$json" | jq -e '.pull_request' >/dev/null 2>&1; then
+      state="$(printf '%s' "$json" | jq -r 'if .pull_request.merged_at then "merged" else .state end')"
+      referenced_context="$referenced_context
+- #$n（PR・$state）$title"
+    else
+      state="$(printf '%s' "$json" | jq -r '.state + (if .state_reason then "・" + .state_reason else "" end)')"
+      acc="$(printf '%s' "$json" | jq -r '.body // ""' | extract_acceptance)"
+      referenced_context="$referenced_context
+- #$n（issue・$state）$title"
+      if [[ -n "$acc" ]]; then
+        referenced_context="$referenced_context
+$(printf '%s\n' "$acc" | sed 's/^/    /')"
+      else
+        referenced_context="$referenced_context
+    （acceptance の節なし）"
+      fi
+    fi
+    kept="$kept#$n "
+  done
+
+  if [[ -n "$kept" ]]; then
+    echo "[second-opinion] 参照された issue / PR を文脈に載せます: ${kept% }"
+  fi
+  if [[ -n "$dropped" ]]; then
+    echo "[second-opinion] 上限 $REFERENCED_LIMIT 本を超えたため載せません: ${dropped% }"
+  fi
+  if [[ -n "$rejected" ]]; then
+    echo "[second-opinion] 作成者がリポジトリの持ち主でないため載せません: ${rejected% }"
+  fi
+  if [[ -n "$unreadable" ]]; then
+    echo "[second-opinion] 引けなかったため載せません: ${unreadable% }" >&2
+  fi
+}
+resolve_referenced_context
+
+# 文脈（枝の issue の全文と、参照された issue / PR の要約）をプロンプトの末尾へ足す。
+# ツールの有無でプロンプトの本文は分かれるが、文脈の足し方は分けない。
+append_context() {
+  if [[ -n "$issue_context" ]]; then
+    PROMPT="$PROMPT
+
+この変更が満たすべき約束（issue の本文。**scope と acceptance に注目**してください）:
+
+$issue_context"
+  fi
+  if [[ -n "$referenced_context" ]]; then
+    PROMPT="$PROMPT
+
+差分とコミットメッセージが参照している issue / PR（取得時点の状態と、issue の acceptance の節だけ。本文の全文ではありません）。
+**変更の記述（未マージ・完了・日付・acceptance の番号など）がこれと食い違っていないか**を確かめてください。
+食い違いは \`promise-mismatch\` で報告してください:
+$referenced_context"
+  fi
+}
 
 # 報告の規則は 1 か所にまとめる（ツールの有無で本文が分かれても、規則は分けない）。
 read -r -d '' REPORT_RULES <<'EOF' || true
@@ -324,13 +468,7 @@ build_prompt_with_tools() {
 **書き込みはできません**（サンドボックスが読み取り専用です）。
 
 $REPORT_RULES"
-  if [[ -n "$issue_context" ]]; then
-    PROMPT="$PROMPT
-
-この変更が満たすべき約束（issue の本文。**scope と acceptance に注目**してください）:
-
-$issue_context"
-  fi
+  append_context
 }
 
 # ツールを使えないエンジンのプロンプト。差分は本文へ載せる（従来どおり）。
@@ -341,13 +479,7 @@ build_prompt_without_tools() {
 レビューに必要な情報はこのプロンプトに含まれています。**ファイル読み取りやコマンド実行のツールを使わないでください。** ツールの実行は非対話実行では承認できず、拒否されると回答そのものが返らなくなります。
 
 $REPORT_RULES"
-  if [[ -n "$issue_context" ]]; then
-    PROMPT="$PROMPT
-
-この変更が満たすべき約束（issue の本文。**scope と acceptance に注目**してください）:
-
-$issue_context"
-  fi
+  append_context
 }
 
 if [[ -n "$RANGE" ]]; then

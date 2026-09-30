@@ -293,6 +293,35 @@ if [[ "${1:-}" == "--print-declared-invoker-policies" ]]; then
   exit 0
 fi
 
+# 検査をラベルで絞る入口（#843）。**外部層の検査を、偽物の道具（PATH の先頭に置いた
+# aws など）で非対話に回すためにある**（scripts/acceptance-remote-aws-failure-selftest.sh）。
+# 前提の確認（aws sts など）も run のラベルなので、絞れば回らない。
+#
+#   bash scripts/acceptance-remote.sh --only "<ラベル>" [--only "<ラベル>" ...]
+#
+# **外部層の合否の代わりには使わない。** 絞った実行の OK は、指定した検査だけの合否で
+# ある（最後の行にそう書く）。指定したラベルが 1 つでも実行されなかったら落とす——
+# 綴りの誤りで「何も回さずに緑」にしないため。
+ONLY_LABELS=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --only)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "[acceptance-remote] --only には検査のラベルを渡すこと。" >&2
+        exit 2
+      fi
+      ONLY_LABELS+="$2"$'\n'
+      shift 2
+      ;;
+    *)
+      echo "[acceptance-remote] 知らない引数です: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+# 絞ったときに、実際に回したラベル（指定の取りこぼしを最後に見るため）。
+ONLY_SEEN=""
+
 echo "[acceptance-remote] external state checks"
 
 # 実際に検査を 1 つでも実行したか。1 つも実行できなければ「合格」ではなく失敗にする。
@@ -330,6 +359,12 @@ warn() { printf '%s\n' "$*" >>"$WARNINGS"; }
 run() {
   local label="$1"
   shift
+  if [[ -n "$ONLY_LABELS" ]]; then
+    if ! grep -qxF -- "$label" <<<"$ONLY_LABELS"; then
+      return 0
+    fi
+    ONLY_SEEN+="$label"$'\n'
+  fi
   ran_any=1
   printf '[acceptance-remote] %s\n' "$label"
   if "$@" >"$LOG" 2>&1; then
@@ -1312,8 +1347,18 @@ check_bedrock_invoker_permissions() {
   # その中に bedrock.tf の local から入っている**ので、書き写しにはならない。
   expected="$(terraform -chdir="$TF_DIR" output -json orchestrator_role_actions | jq -S 'unique')" || return 1
 
+  # **一覧の取得を、名前への分解より先に独立に行う**（#843）。`mapfile < <(aws ...)` の
+  # 形はプロセス置換の中の失敗を拾わず、認証切れが「インラインポリシーが無い」（乖離）の
+  # 文面で出ていた。取得の失敗は前提の不成立として、別の文面で落とす。aws の標準エラーは
+  # run のログへそのまま流す（失敗したときだけ表示される）。
+  local listed
+  listed="$(aws iam list-role-policies --role-name "$role" --query 'PolicyNames[]' --output text)" || {
+    echo "${role} のインラインポリシーの一覧を取得できません（前提の不成立であって乖離ではない）。"
+    echo "  AWS の認証（aws sts get-caller-identity）と到達性を先に確かめること。"
+    return 1
+  }
   local -a policy_names=()
-  mapfile -t policy_names < <(aws iam list-role-policies --role-name "$role" --query 'PolicyNames[]' --output text | tr '\t' '\n')
+  mapfile -t policy_names < <(tr '\t' '\n' <<<"$listed")
   if [[ "${#policy_names[@]}" -eq 0 || -z "${policy_names[0]}" ]]; then
     echo "${role} にインラインポリシーがありません。Bedrock を呼べない状態です。"
     return 1
@@ -1413,8 +1458,18 @@ check_edge_bedrock_removed() {
     echo "terraform output からエッジの IAM ユーザー名を取得できません。"
     return 1
   fi
+  # **一覧の取得の失敗を拾う**（#843）。`mapfile < <(aws ...)` の形では aws が失敗しても
+  # 一覧が空になり、下の判定が「Bedrock の権限を 1 つも持たない」＝期待どおりとして
+  # **緑になっていた**（認証切れの実行で実測）。統制の検査を認証切れで黙って通さない。
+  local listed
+  listed="$(aws iam list-user-policies --user-name "$user" --query 'PolicyNames[]' --output text)" || {
+    echo "${user} のインラインポリシーの一覧を取得できません（前提の不成立であって乖離ではない）。"
+    echo "  AWS の認証（aws sts get-caller-identity）と到達性を先に確かめること。"
+    echo "  **一覧を読めない間は、エッジが Bedrock の権限を持たないことを確かめられていない。**"
+    return 1
+  }
   local -a policy_names=()
-  mapfile -t policy_names < <(aws iam list-user-policies --user-name "$user" --query 'PolicyNames[]' --output text | tr '\t' '\n')
+  mapfile -t policy_names < <(tr '\t' '\n' <<<"$listed")
   docs=""
   local name doc
   for name in "${policy_names[@]}"; do
@@ -2238,9 +2293,17 @@ check_build_invoker_permissions() {
     done
   done
 
+  # 一覧の取得の失敗を「インラインポリシーが無い」と区別する（#843。上の
+  # check_bedrock_invoker_permissions と同じ理由）。標準エラーは捨てず run のログへ流す。
+  local listed
+  listed="$(aws iam list-user-policies --user-name "$user" \
+    --query 'PolicyNames[]' --output text)" || {
+    echo "${user} のインラインポリシーの一覧を取得できません（前提の不成立であって乖離ではない）。"
+    echo "  AWS の認証（aws sts get-caller-identity）と到達性を先に確かめること。"
+    return 1
+  }
   local -a policy_names=()
-  mapfile -t policy_names < <(aws iam list-user-policies --user-name "$user" \
-    --query 'PolicyNames[]' --output text 2>/dev/null | tr '\t' '\n')
+  mapfile -t policy_names < <(tr '\t' '\n' <<<"$listed")
   if [[ "${#policy_names[@]}" -eq 0 || -z "${policy_names[0]}" ]]; then
     echo "${user} にインラインポリシーがありません。ビルド関数を呼べない状態です。"
     return 1
@@ -2832,6 +2895,16 @@ run "r2 lifecycle deletes by age only under declared prefixes" bash scripts/chec
 # 認証を要さない（公開 URL への GET）。判定はスクリプト側が持つ。
 run "sandbox delivery is correct over real HTTP (cors + encoding)" bash scripts/check-sandbox-cors.sh
 
+if [[ -n "$ONLY_LABELS" ]]; then
+  while IFS= read -r only_label; do
+    [[ -n "$only_label" ]] || continue
+    if ! grep -qxF -- "$only_label" <<<"$ONLY_SEEN"; then
+      echo "[acceptance-remote] --only で指定した検査がありません: ${only_label}" >&2
+      failed=$((failed + 1))
+    fi
+  done <<<"$ONLY_LABELS"
+fi
+
 if [[ "$ran_any" -eq 0 ]]; then
   echo "[acceptance-remote] 外部層の受け入れ条件が未定義です。検査を 1 つも実行していません。" >&2
   echo "[acceptance-remote] 宣言と実際の外部状態を照合する検査を scripts/acceptance-remote.sh へ定義してください。" >&2
@@ -2849,4 +2922,8 @@ if [[ "$failed" -gt 0 ]]; then
   exit 1
 fi
 
+if [[ -n "$ONLY_LABELS" ]]; then
+  echo "[acceptance-remote] OK（--only で絞った検査だけの合否。外部層の合格ではない）"
+  exit 0
+fi
 echo "[acceptance-remote] OK"

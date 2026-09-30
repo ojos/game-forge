@@ -200,6 +200,88 @@ declared_inline_policies() {
   ' "$dir"/*.tf
 }
 
+##
+# 宣言した DNS レコードの一覧と、ゾーンの実際のレコードの一覧を照合する（#813）。
+#
+# 引数: $1 = 宣言（output `ojos_jp_declared_records` の JSON）のファイル
+#       $2 = 実状態（Cloudflare の `dns_records` の `result` を連結した JSON 配列）のファイル
+# 出力: 宣言 1 本ごとに 1 行。**レコードの値（内容）は出さない**——名前・型と、食い違った項目名だけ。
+#       所有証明の TXT や DKIM の鍵が、公開のログや貼られた出力へ載る経路を作らないため。
+# 戻り値: 0 = すべて一致 / 1 = 1 本でも食い違う・照合が成立しない
+#
+# **照合の向きは「宣言が正」である。** 宣言した 1 本ごとに、名前・型・内容が一致する実レコードを
+# 探し、見つかったものの TTL・proxied・優先度を比べる（候補が複数あれば、どれか 1 本が全項目で
+# 一致すれば合格）。ゾーンに宣言外のレコードが増えていないかは
+# 見ない（#813 の scope.out。別の関心事）。
+#
+# **名前・内容の大小文字と末尾のドットは揃えてから比べる。** ホスト名を持つ型（CNAME / MX / NS）
+# だけで、TXT の内容はそのまま比べる（大小文字に意味がある）。
+#
+# **ネットワークにも terraform にも触れない**ので、仕込みの JSON を渡して単体で確かめられる
+# （`--compare-declared-dns-records`。scripts/ojos-jp-records-selftest.sh が回す）。
+##
+compare_declared_dns_records() {
+  local expected_file="$1" actual_file="$2" report
+  if ! report="$(jq -r -n --slurpfile exp "$expected_file" --slurpfile act "$actual_file" '
+    def host: ascii_downcase | sub("\\.$"; "");
+    def norm:
+      {
+        name: (.name | host),
+        type: .type,
+        content: (if (.type == "CNAME" or .type == "MX" or .type == "NS") then (.content | host) else .content end),
+        ttl: .ttl,
+        proxied: (.proxied // false),
+        priority: .priority
+      };
+    ($exp[0]) as $e | ($act[0]) as $a |
+    if ($e | type) != "array" or ($a | type) != "array" then
+      "ERROR\t宣言か実状態が配列ではありません（照合が成立していません）"
+    elif ($e | length) == 0 then
+      "ERROR\t宣言が 0 本です（照合が成立していません）"
+    else
+      ($a | map(norm)) as $actual |
+      [ $e | map(norm) | to_entries[] | .value as $d |
+        { d: $d, key: "\($d.name) \($d.type)" } ] as $rows |
+      $rows | to_entries[] |
+        .value.d as $d | .value.key as $key |
+        ([ $rows[:.key][] | select(.key == $key) ] | length + 1) as $nth |
+        ([ $rows[] | select(.key == $key) ] | length) as $total |
+        "\($key) (\($nth)/\($total))" as $label |
+        ([ $actual[] | select(.name == $d.name and .type == $d.type and .content == $d.content) ]) as $hits |
+        if ($hits | length) == 0 then
+          "MISMATCH\t\($label): 名前・型・内容が一致するレコードが実在しません"
+        else
+          # 候補ごとに、食い違う項目を並べる。**どれか 1 本でも全項目が一致すれば合格にする。**
+          # 先頭の 1 本だけで判定すると、同じ内容のレコードが宣言外にもう 1 本あり、それが
+          # 先に返ったときに、宣言どおりのレコードが在るのに赤になる。
+          [ $hits[] as $h |
+            [ (if $h.ttl != $d.ttl then "ttl" else empty end),
+              (if $h.proxied != $d.proxied then "proxied" else empty end),
+              (if $d.priority != null and $h.priority != $d.priority then "priority" else empty end) ] ] as $diffs |
+          if any($diffs[]; length == 0) then
+            "OK\t\($label)"
+          else
+            "MISMATCH\t\($label): \($diffs[0] | join(" / ")) が宣言と一致しません"
+          end
+        end
+    end
+  ')"; then
+    echo "宣言か実状態の JSON を読めません（照合が成立していません）"
+    return 1
+  fi
+  printf '%s\n' "$report" | sed 's/^OK\t/  ok: /; s/^MISMATCH\t/  NG: /; s/^ERROR\t/  ERROR: /'
+  if grep -q '^\(MISMATCH\|ERROR\)' <<<"$report"; then
+    return 1
+  fi
+  return 0
+}
+
+# 照合だけを見る入口（認証も terraform の状態も要らない。#813）。
+if [[ "${1:-}" == "--compare-declared-dns-records" ]]; then
+  compare_declared_dns_records "${2:?宣言の JSON のファイル}" "${3:?実状態の JSON のファイル}"
+  exit $?
+fi
+
 # 導出だけを見る入口（認証も terraform の状態も要らない）。
 # **宣言を変異させたときに期待値が動くことを、ここで単体で確かめられる。**
 if [[ "${1:-}" == "--print-declared-invoker-policies" ]]; then
@@ -789,7 +871,12 @@ check_pages_dns_records() {
   # 3 ホストを回る（#356 で admin が増えた）。**一覧をここへ書き並べているのではなく、
   # terraform output の名前を並べている**——ホスト名そのものは output から取るので、
   # 宣言を変えれば追随する。**足し忘れると、その CNAME が無くても緑のまま通る。**
-  local output_name host actual
+  local output_name host actual actual_proxied expected_proxied
+  expected_proxied="$(tf_output game_forge_pages_proxied)" || return 1
+  if [[ "$expected_proxied" != "true" && "$expected_proxied" != "false" ]]; then
+    echo "terraform output game_forge_pages_proxied が true / false ではありません: ${expected_proxied:-(空)}"
+    return 1
+  fi
   for output_name in app_host sandbox_host admin_host; do
     host="$(tf_output "$output_name")" || return 1
     if [[ -z "$host" ]]; then
@@ -805,9 +892,86 @@ check_pages_dns_records() {
       rc=1
       continue
     fi
-    echo "${host%.} CNAME -> ${actual}"
+    # **プロキシ（オレンジ雲）かどうかも宣言と照らす**（#813）。#776 で WAF を入れるときに
+    # 切り替える値で、切り替えが効いたかを、向き先と同じ場所で確かめられるようにする。
+    actual_proxied="$(jq -r '.result[0].proxied // false' <<<"$body")"
+    if [[ "$actual_proxied" != "$expected_proxied" ]]; then
+      echo "${host%.} の proxied が宣言と一致しません: expected=${expected_proxied} actual=${actual_proxied}"
+      rc=1
+      continue
+    fi
+    echo "${host%.} CNAME -> ${actual} (proxied=${actual_proxied})"
   done
   return "$rc"
+}
+
+##
+# terraform/dns-ojos-jp.tf が ojos.jp のゾーンへ宣言したレコードが、宣言どおりに実在することを
+# 確認する（#813）。
+#
+# **check_dns_zone はゾーンの同一性（名前・NS・active）しか見ておらず、中のレコードは 1 本も
+# 見ていなかった。** 見ていなかった側に、いちばん賭け金の高いもの——組織の Google Workspace の
+# MX——が入っている。値はさくらから写したもので、写し間違いを機械で見ていなかった。
+#
+# **plan の代替ではなく、plan を回さない経路の補完である。** `terraform plan` は refresh で
+# 同じドリフトを検出する。この検査の価値は、plan を回さない定期実行（#808）で同じことを見る
+# ことにある。
+#
+# **見ているのは「state に記録された宣言」と実状態の一致である。** 期待値は output から取るので、
+# **.tf を書き換えてまだ apply していない変更は、ここには現れない**（output も実状態も旧い値の
+# まま一致する）。宣言のテキストと state の食い違いは plan の役目で、この検査では拾わない。
+# 期待値を .tf から直接導かないのは、値の多くが他のリソース（Route 53 のレコードや Pages の
+# ホスト名）の属性から組み立てられていて、テキストからは決まらないためである（#813 の scope は
+# 「期待値は terraform output から導く」）。
+#
+# 期待値は output `ojos_jp_declared_records`（リソースの属性から組み立てた一覧）から取る。
+# ここへ書き写さない（shared-ai-rules.md 12 章）。output への足し忘れは、ローカル層の
+# scripts/check-ojos-jp-records-output.sh が落とす。
+#
+# **名前解決（dig）ではなく API を見る。** 見たいのは「宣言と実状態の一致」であって
+# 「世界中から引けること」ではない（check_pages_dns_records の冒頭と同じ方針）。
+#
+# **値を出力しない。** 照合（compare_declared_dns_records）は名前・型と、食い違った項目名だけを出す。
+# 宣言の JSON は一時ファイルに置き、終わったら消す。
+#
+# 戻り値: 0 = 一致 / 1 = 不一致または取得失敗
+##
+check_ojos_jp_declared_records() {
+  local zone_id tmp rc=0
+  zone_id="$(tf_output ojos_jp_zone_id)" || return 1
+  if [[ -z "$zone_id" ]]; then
+    echo "terraform output から DNS ゾーンの ID を取得できません。apply 済みか確認すること。"
+    return 1
+  fi
+
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/ojos-jp-records.XXXXXX")" || return 1
+  # **宣言の JSON には所有証明の TXT と DKIM の鍵が入る。** 失敗の経路でも必ず消すため、
+  # 本体を内側の関数へ分け、戻り値にかかわらずここで消す。`trap ... RETURN` は使わない
+  # ——関数の中で張っても抜けた後に残り、以後のすべての関数の戻りで発火する。
+  compare_ojos_jp_declared_records_in "$zone_id" "$tmp" || rc=1
+  rm -rf "$tmp"
+  return "$rc"
+}
+
+compare_ojos_jp_declared_records_in() {
+  local zone_id="$1" tmp="$2" page=1 total_pages=1 body
+  if ! terraform -chdir="$TF_DIR" output -json ojos_jp_declared_records >"$tmp/expected.json" 2>/dev/null; then
+    echo "terraform output ojos_jp_declared_records を読めません。apply 済みか確認すること。"
+    return 1
+  fi
+
+  # ゾーンのレコードを全部読む。**件数で打ち切らない**——上限で切れたレコードは「実在しない」と
+  # 報告され、偽の赤になる。
+  : >"$tmp/pages.jsonl"
+  while ((page <= total_pages)); do
+    body="$(cf_api "zones/${zone_id}/dns_records?per_page=100&page=${page}")" || return 1
+    jq -c '.result' <<<"$body" >>"$tmp/pages.jsonl" || return 1
+    total_pages="$(jq -r '.result_info.total_pages // 1' <<<"$body")" || return 1
+    page=$((page + 1))
+  done
+  jq -s 'add // []' "$tmp/pages.jsonl" >"$tmp/actual.json" || return 1
+
+  compare_declared_dns_records "$tmp/expected.json" "$tmp/actual.json"
 }
 
 ##
@@ -2421,6 +2585,7 @@ run "github oidc subject spelling matches" check_oidc_subject
 run "dns zone matches" check_dns_zone
 run "dns delegation from jp registry is in place" check_dns_delegation
 run "pages custom domain records match" check_pages_dns_records
+run "ojos.jp declared dns records exist as declared" check_ojos_jp_declared_records
 run "dev01 tunnel is healthy and ingress matches" check_dev01_tunnel
 run "tunnel dns records are proxied to the tunnel" check_tunnel_dns_records
 run "tunnel access applications match" check_tunnel_access_applications

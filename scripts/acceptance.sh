@@ -364,6 +364,22 @@ else
   echo "[acceptance] (tf-output-refs) skip: terraform/ not found"
 fi
 
+# ojos.jp のゾーンへ宣言した DNS レコードが、1 本残らず外部層の期待値の output に載っていること（#813）。
+#
+# 足し忘れると、そのレコードは外部層の照合から**黙って外れる**（#359 と同じ形）。
+# 宣言のテキストどうしの照合なので、ネットワークも認証も要らない。
+if [[ -f terraform/dns-ojos-jp.tf ]]; then
+  echo "[acceptance] (ojos-jp-records-output) scripts/check-ojos-jp-records-output.sh"
+  bash scripts/check-ojos-jp-records-output.sh
+  # 照合の本体は外部層にあり、本物のゾーン（宣言と一致している）にしか当たらない。
+  # 壊れて「何でも一致」になっても外部層は緑なので、落ちるべき形を仕込みで見る。
+  echo "[acceptance] (ojos-jp-records-output) scripts/ojos-jp-records-selftest.sh"
+  bash scripts/ojos-jp-records-selftest.sh
+  ran_any=1
+else
+  echo "[acceptance] (ojos-jp-records-output) skip: terraform/dns-ojos-jp.tf not found"
+fi
+
 # aws CLI の呼び出しが、引数の形として CLI の契約に合っていること（#160）。
 #
 # **前寄りに置く。** 1 秒強で終わり、npm test より 1 桁安い。しかも外すと

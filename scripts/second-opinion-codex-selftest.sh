@@ -380,9 +380,21 @@ done
 cat > "$fake_bin/gh" <<'FAKEGH'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_CODEX_RECORD/gh-calls"
 if [[ "${1-}" == "issue" && "${2-}" == "view" ]]; then
-  printf '%s\n' "$FAKE_GH_ISSUE_BODY"
+  printf '%s\n' "${FAKE_GH_ISSUE_BODY-}"
   exit 0
+fi
+# 本物の `gh api repos/{owner}/{repo}/issues/<n>` は issue も PR も返し、無ければ
+# 404 で非 0 に終わる。用意した JSON があれば返し、無ければ本物と同じく失敗する。
+if [[ "${1-}" == "api" && "${2-}" =~ ^repos/\{owner\}/\{repo\}/issues/([0-9]+)$ ]]; then
+  f="${FAKE_GH_DIR-}/${BASH_REMATCH[1]}.json"
+  if [[ -n "${FAKE_GH_DIR-}" && -f "$f" ]]; then
+    cat "$f"
+    exit 0
+  fi
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
 fi
 exit 1
 FAKEGH
@@ -504,10 +516,96 @@ if [[ "$rc" -eq 0 ]]; then
   fail "--runs 2 の 2 回目が回答を書かなかったのに通過しました（前の回の回答を読んでいます）"
 fi
 
+# ---- 7. 参照された issue / PR の文脈（#828） ----
+# 差分の追加行とコミットメッセージの `#N` だけを、持ち主が作ったものに限り、上限つきで載せる。
+# 仕込みの JSON は本物の issues API の形（`repository_url` / `user.login` /
+# `pull_request.merged_at` / `state_reason`）だけを持たせる。
+gh_dir="$work/gh"
+mkdir -p "$gh_dir"
+owner_url='https://api.github.com/repos/owner1/repo1'
+cat > "$gh_dir/11.json" <<EOF
+{"repository_url":"$owner_url","user":{"login":"owner1"},"state":"open","state_reason":null,"title":"コミットで名指しした票",
+ "body":"## intake\n\n\`\`\`yaml\ngoal: g\nacceptance:\n  - REF-ACCEPTANCE-MARKER\npriority: 中\n\`\`\`\nREF-OUTSIDE-ACCEPTANCE-MARKER"}
+EOF
+cat > "$gh_dir/12.json" <<EOF
+{"repository_url":"$owner_url","user":{"login":"owner1"},"state":"closed","title":"追加行の PR",
+ "pull_request":{"merged_at":"2026-09-29T00:00:00Z"},"body":"acceptance:\n  - REF-PR-BODY-MARKER"}
+EOF
+cat > "$gh_dir/13.json" <<EOF
+{"repository_url":"$owner_url","user":{"login":"owner1"},"state":"open","title":"REF-REMOVED-MARKER","body":""}
+EOF
+cat > "$gh_dir/14.json" <<EOF
+{"repository_url":"$owner_url","user":{"login":"stranger"},"state":"open","title":"REF-STRANGER-MARKER","body":"acceptance:\n  - REF-STRANGER-MARKER"}
+EOF
+cat > "$gh_dir/22.json" <<EOF
+{"repository_url":"$owner_url","user":{"login":"owner1"},"state":"open","title":"REF-OVER-LIMIT-MARKER","body":""}
+EOF
+# #15〜#21 は JSON を置かない（引けない番号。止めずに続けることを見る）。
+
+git -C "$repo" checkout -q -b refs-selftest
+printf 'old ref #13\n' > "$repo/refs.txt"
+git -C "$repo" add refs.txt
+git -C "$repo" commit -q -m "base of refs"
+# 追加行の順: #12 #14 #15 … #22。コミットメッセージの #11 が先頭に来るので、候補は 11 本で
+# 上限 10 を 1 本超え、最後の #22 が落ちる。#13 は削除行にしか無い。
+{
+  printf 'new ref #12 and #14\n'
+  for i in 15 16 17 18 19 20 21 22; do printf 'ref #%s\n' "$i"; done
+  # 拾わない形: 色・実体参照・URL の断片・6 桁。
+  printf 'color #000000 &#123; https://example.com/#99\n'
+} > "$repo/refs.txt"
+git -C "$repo" add refs.txt
+git -C "$repo" commit -q -m "refs を差し替える（#11）"
+
+rm -f "$record/stdin" "$record/gh-calls"
+rc=0
+(
+  cd "$repo"
+  PATH="$fake_bin:$PATH" \
+  FAKE_CODEX_RECORD="$record" \
+  FAKE_GH_DIR="$gh_dir" \
+    bash "$REVIEW" --engine codex --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
+) || rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  fail "参照の文脈を載せる経路で落ちました（終了コード $rc。引けない番号があっても止めないはずです）"
+  tail -3 "$work/err" >&2
+fi
+if [[ ! -f "$record/stdin" ]]; then
+  fail "参照の文脈の検査で codex が呼ばれていません"
+else
+  grep -q 'REF-ACCEPTANCE-MARKER' "$record/stdin" \
+    || fail "コミットメッセージの #11 の acceptance がプロンプトに載っていません"
+  grep -q 'REF-OUTSIDE-ACCEPTANCE-MARKER' "$record/stdin" \
+    && fail "issue の本文の acceptance の外まで載っています（載せるのは acceptance の節だけ）"
+  grep -q '#12（PR・merged）' "$record/stdin" \
+    || fail "追加行の PR #12 が状態（merged）つきで載っていません"
+  grep -q 'REF-PR-BODY-MARKER' "$record/stdin" \
+    && fail "PR の本文が載っています（PR は状態とタイトルだけ）"
+  grep -q 'REF-REMOVED-MARKER' "$record/stdin" \
+    && fail "削除行にしか無い #13 が載っています"
+  grep -q 'REF-STRANGER-MARKER' "$record/stdin" \
+    && fail "持ち主以外が作った #14 が載っています"
+  grep -q 'REF-OVER-LIMIT-MARKER' "$record/stdin" \
+    && fail "上限を超えた #22 が載っています"
+fi
+if [[ -f "$record/gh-calls" ]]; then
+  grep -q 'issues/13$' "$record/gh-calls" && fail "削除行にしか無い #13 を引きに行っています"
+  grep -q 'issues/22$' "$record/gh-calls" && fail "上限を超えた #22 を引きに行っています"
+  grep -qE 'issues/(0|99|123|000000)$' "$record/gh-calls" \
+    && fail "番号ではない # の形（色・実体参照・URL の断片）を引きに行っています"
+fi
+grep -q '上限 10 本を超えたため載せません: #22' "$work/out" \
+  || fail "上限を超えて捨てたことが出力に出ていません"
+grep -q '持ち主でないため載せません: #14' "$work/out" \
+  || fail "作成者で弾いたことが出力に出ていません"
+grep -q '引けなかったため載せません: #15' "$work/err" \
+  || fail "引けなかったことが出力に出ていません"
+git -C "$repo" checkout -q -
+
 if [[ "$failed" -ne 0 ]]; then
   echo "[codex-selftest] codex エンジンの配線が壊れています" >&2
   exit 1
 fi
 
-echo "[codex-selftest] 12 組の配線を確かめました（差分を渡さない / issue の文脈 / antigravity の旗と包み / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
+echo "[codex-selftest] 13 組の配線を確かめました（差分を渡さない / issue の文脈 / 参照された issue・PR の文脈 / antigravity の旗と包み / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

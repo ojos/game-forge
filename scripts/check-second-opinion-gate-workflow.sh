@@ -20,7 +20,7 @@ WORKFLOW="$ROOT/.github/workflows/second-opinion-gate.yml"
 
 command -v jq >/dev/null || { echo "[second-opinion-gate-workflow] jq がありません" >&2; exit 1; }
 
-WORK="$(mktemp -d)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/so-gate-wf.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 # run: | の本文を取り出す（ステップは 1 つだけで、本文は 10 桁の字下げ）。

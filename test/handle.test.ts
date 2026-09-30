@@ -255,7 +255,7 @@ describe('運営と紛らわしい名前を弾く（#778）', () => {
       'gameforgejp', // 区切りを外した綴り
       'gameforgejp', // 運営が持っているもの
       'gameforge_jp', // 運営が改名で手放し、90 日は予約している綴り
-      'gameforge2026', // 運営がプロフィールで公開している X のアカウント名
+      'gameforge2026', // 運営の X の旧アカウント名（2026-09-30 に `gameforgejp` へ改名）
       'gameforge_news',
       'game_forgejp',
       'GameForge_JP', // 小文字にした後に判定する

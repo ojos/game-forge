@@ -353,6 +353,10 @@ $(printf '%s\n' "$diff_text" | awk '/^\+/ && !/^\+\+\+ / { print substr($0, 2) }
   kept=""; rejected=""; unreadable=""
   for n in $nums; do
     # issues の API は PR も返す（`.pull_request` の有無で分かれる）。1 番号 1 呼び出し。
+    # **`.pull_request.merged_at` は issues の API にも入っている**——pulls の API を
+    # 呼び直す必要はない（実測 2026-09-30: `gh api repos/{owner}/{repo}/issues/824` の
+    # `.pull_request.merged_at` が `2026-09-30T01:14:08Z`。第二意見が「入っていない」と
+    # 誤って指摘したので、ここに根拠を残す）。
     if ! json="$(gh api "repos/{owner}/{repo}/issues/$n" 2>/dev/null)" \
         || ! owner="$(printf '%s' "$json" | jq -er '.repository_url | split("/") | .[-2]' 2>/dev/null)"; then
       unreadable="$unreadable#$n "

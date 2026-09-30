@@ -519,7 +519,8 @@ fi
 # ---- 7. 参照された issue / PR の文脈（#828） ----
 # 差分の追加行とコミットメッセージの `#N` だけを、持ち主が作ったものに限り、上限つきで載せる。
 # 仕込みの JSON は本物の issues API の形（`repository_url` / `user.login` /
-# `pull_request.merged_at` / `state_reason`）だけを持たせる。
+# `pull_request.merged_at` / `state_reason`）だけを持たせる。**`pull_request.merged_at` は
+# 本物の issues API も返す**（実測 2026-09-30、#824。本体の同じ箇所に根拠を書いた）。
 gh_dir="$work/gh"
 mkdir -p "$gh_dir"
 owner_url='https://api.github.com/repos/owner1/repo1'

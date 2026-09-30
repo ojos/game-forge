@@ -24,6 +24,8 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 | GitHub Actions の OIDC 連携（9.3） | `aws_iam_openid_connect_provider.github`、`aws_iam_role.deploy_compiler` | `github-oidc.tf` |
 | R2 のライフサイクル（3.7 / 確定13 / 確定26） | `cloudflare_r2_bucket_lifecycle.artifacts` | `r2-lifecycle.tf` |
 | **`ojos.jp` の DNS ゾーン（Cloudflare。確定17 の改訂 / #775）** | `cloudflare_zone.ojos_jp`、`cloudflare_dns_record.*`（Google Workspace の MX・OAuth の TXT・code-narrative への委譲・game-forge のホスト） | `dns-ojos-jp.tf`（**組織のゾーンを預かっている**。冒頭の注記） |
+| **game-forge の 3 ホストの WAF（#776）** | `cloudflare_ruleset.game_forge_managed`（Cloudflare Managed Free Ruleset）、`cloudflare_ruleset.game_forge_custom`（学習クローラの遮断。一覧の正本は `src/robots.ts`） | `waf-ojos-jp.tf` |
+| **`ojos.jp` のゾーンの設定（#776）** | `cloudflare_zone_setting.ojos_jp`（HTML を書き換える設定と、ブラウザ以外を止めうる設定を切る） | `waf-ojos-jp.tf` |
 | `game-forge.ojos.jp` の Route 53 ゾーン（**#775 で使われなくなった。削除は別 issue**） | `aws_route53_zone.game_forge`、`aws_route53_record.*` | `dns.tf` |
 
 管理対象外:

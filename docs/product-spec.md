@@ -12734,6 +12734,7 @@ Dev アカウントから無くなったということである。
   > - **切り替えの順序。** 段 A（`ojos.jp` を移す。`game-forge.ojos.jp` は Route 53 への委譲のまま）→ 段 B（使い捨てのホストで
   >   Pages のカスタムドメインを実測）→ 段 C（`game-forge.ojos.jp` のレコードを置き、委譲の NS を外す）。Route 53 のゾーンの削除は別 issue。
   > - **Workers のカスタムドメインも張れるようになった**（下の 3 つ目・確定22 の前提が外れた）。**配置先は Pages Functions のまま変えない。**
+  > - **#776 実装注記（2026-09-30）。3 ホストをプロキシ（オレンジ雲）にし、入口に WAF を置いた。** Cloudflare Managed Free Ruleset と、名乗って来る学習クローラ（一覧の正本は `src/robots.ts`）を 403 で止めるカスタムルールを、game-forge の 3 ホストだけに当てる（`terraform/waf-ojos-jp.tf`）。**HTML を書き換えるゾーンの設定と、ブラウザ以外を止めうる設定（Browser Integrity Check / Security Level）は切ってある。** Bot Fight Mode は入れていない（AWS の Lambda からのコールバックと MCP の接続を止める恐れがあり、Free では例外を作れない）。**名乗らないクローラは入口でも止められない。**
   - **さくらのドメインは DNS の API を持たない**ため、委譲しない限り恒久的な状態変更が手動になり、shared-ai-rules 4 章「UI やアドホックな CLI での直接作成・変更を、恒久的な状態変更の手段にしない」に反する。委譲はこの規範を満たすための手段である。
   - Cloudflare へのサブドメイン委譲（subdomain setup）は **Enterprise プラン限定**のため使えない。
   - **Cloudflare Pages のカスタムドメインは、サブドメインであれば外部 DNS のままで CNAME 1 本でよい。** ただし **Workers のカスタムドメインはゾーンが Cloudflare 上にあることを要求する**ため、API を `game-forge.ojos.jp/api/*` に置くなら Pages Functions を使う。

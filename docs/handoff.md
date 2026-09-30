@@ -3831,7 +3831,7 @@ degrade の信号は永久に立たず、黙って #24 の近似に戻る）と�
 
   ```bash
   gh pr view N --json closingIssuesReferences --jq '[.closingIssuesReferences[].number]'   # [] なら認識されていない
-  gh pr view N --json commits --jq '.commits[].messageBody' | grep -i 'closes #'            # 保険が入っているか
+  gh pr view N --json commits --jq '.commits[] | .messageHeadline, .messageBody' | grep -i 'closes #'   # 保険が入っているか
   ```
 
 - **`deploy` が success でも、配られたとは限りません**（#748 と #822 の 2 回）。**後続のマージが

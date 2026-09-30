@@ -60,6 +60,33 @@ resource "github_repository" "this" {
 }
 
 /**
+ * 依存パッケージの脆弱性の通知（Dependabot alerts）と、その修正 PR（security updates）（#810）。
+ *
+ * **public なのに、依存の脆弱性が見えていなかった**（2026-09-27 の実測で両方とも無効）。
+ * `github_repository` の `vulnerability_alerts` 属性は非推奨なので、専用のリソースで宣言する
+ * （github プロバイダ 6.13.0 の deprecation_message）。
+ *
+ * **security updates はアラートが有効でないと有効にできない。** 順序を depends_on で固定する。
+ *
+ * **version updates（依存を定期的に上げる PR）は入れない**（#810 の scope.out）。PR の本数が
+ * 増えるので別途判断する。security updates は脆弱性があるときだけ PR を出す。
+ *
+ * **Private vulnerability reporting はここに無い。** プロバイダが扱えないので手で有効にし、
+ * 外部層の check_private_vulnerability_reporting が照合する（terraform/README.md「管理対象外」）。
+ */
+resource "github_repository_vulnerability_alerts" "this" {
+  repository = github_repository.this.name
+  enabled    = true
+}
+
+resource "github_repository_dependabot_security_updates" "this" {
+  repository = github_repository.this.name
+  enabled    = true
+
+  depends_on = [github_repository_vulnerability_alerts.this]
+}
+
+/**
  * 既定ブランチ名の固定。
  *
  * auto_init が作る初期ブランチ名は、アカウント側の「新規リポジトリの既定ブランチ名」

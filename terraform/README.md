@@ -12,6 +12,7 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 | 既定ブランチ名の固定 | `github_branch_default.default` | `main.tf` |
 | 既定ブランチの保護 | `github_branch_protection.default` | `main.tf` |
 | Actions 変数 `ALLOWED_AUTHOR_EMAILS` | `github_actions_variable.allowed_author_emails` | `main.tf` |
+| Dependabot のアラートと security updates（#810） | `github_repository_vulnerability_alerts.this`、`github_repository_dependabot_security_updates.this` | `main.tf` |
 | ビルドイメージの ECR リポジトリ | `aws_ecr_repository.isolated_build` ほか | `build-function.tf` |
 | ビルド関数（確定24 / 3.8） | `aws_lambda_function.build`、実行ロール、ロググループ | `build-function.tf` |
 | 配備に要る Actions 変数 4 つ | `github_actions_variable.aws_region` ほか | `build-function.tf` |
@@ -34,6 +35,14 @@ UI や `gh` コマンドでの直接変更は、恒久的な状態変更の手�
 - **R2 の資格情報**（SSM Parameter Store の SecureString）。`aws_ssm_parameter` を宣言すると、Terraform が refresh のたびに**復号済みの値を tfstate へ書き込みます**（`aws_iam_access_key` を宣言しない理由と同じ経路）。宣言が持つのは名前と読み取り権限だけで、値の投入とローテーションは `docs/build-function.md` が持ちます。
 - **R2 バケットそのもの**（`game-forge`）と D1 / Pages プロジェクト。`wrangler` で作成済みで（`docs/pages-deploy.md` の実施記録）、宣言化するかは未決です。`r2-lifecycle.tf` は**バケットのライフサイクルだけ**を宣言します（#31）。`cloudflare_r2_bucket` を宣言すると既存バケットの作成を試みて失敗します。
 - **未公開成果物の 14 日削除**。3.7（確定13）が求める掃除ですが、**R2 のライフサイクルでは実現できません。** ライフサイクルは `games` を引けず、確定26 のとおりオブジェクトは作品をまたいで共有されるため、年齢だけで消すと公開済みの作品が壊れます（3.7 の削除規約 3）。判定は M5-4 のゴミ掃除が持ちます。理由の全文は `r2-lifecycle.tf` の冒頭にあります。
+- **Private vulnerability reporting**（脆弱性の非公開報告の窓口。#810）。github プロバイダ（6.13.0）に対応するリソースが無いので、手で有効にします。**有効であることは `scripts/acceptance-remote.sh` の `check_private_vulnerability_reporting` が照合します。** 報告の宛先としての説明は、リポジトリ直下の [SECURITY.md](../SECURITY.md) が持ちます。
+
+  ```bash
+  gh api -X PUT repos/ojos/game-forge/private-vulnerability-reporting   # 有効にする（204）
+  gh api repos/ojos/game-forge/private-vulnerability-reporting         # {"enabled":true}
+  ```
+
+  **プロバイダが対応したら宣言へ移します。** 手で変えたまま宣言が追いつかない状態を残さないための照合です。
 - リモート state backend。ローカル state（`terraform/terraform.tfstate`）を使い続けます（2026-08-11 決定）。適用者が単一で state を共有する必要が無いためで、複数人・複数環境から適用するようになった時点で再検討します。
 
 ## 認証

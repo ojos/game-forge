@@ -307,6 +307,10 @@ describe('AI の学習（#594）', () => {
     // （`src/robots.ts` の「強制力は無い」）。
     expect(answer).toContain('この表明に強制力はありません');
     expect(answer).toContain('従わないクローラを技術的に止めるものではありません');
+    // **入口で止めていること（#776）と、その限界の両方を書く。** WAF が見るのは名乗った
+    // User-Agent だけで、名乗らない相手は素通りする（terraform/waf-ojos-jp.tf）。
+    expect(answer).toContain('サイトの入口で止めています');
+    expect(answer).toContain('名乗らずに来るクローラは止められません');
     // 公開しないという選択があることまで案内する（既存の項目へ送る）。
     expect(answer).toContain('href="#no-fork"');
     expect(answer).toContain(`href="${PRIVACY_PATH}"`);

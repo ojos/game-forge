@@ -44,10 +44,17 @@
  * # 強制力は無い
  *
  * `robots.txt` はクローラ側が読んで自主的に従うものである。**従わないクローラは素通りする。**
- * 通信の入口で実際に遮断する手段（Cloudflare の WAF / Bot Fight Mode / AI Crawler Control）は
- * **このプロジェクトでは使えない**——確定17 で `game-forge.ojos.jp` を Route53 へ委譲しており、
- * これらはいずれも Cloudflare のゾーンに紐づく機能である（`terraform/dns.tf`）。
+ *
+ * **#776 から、名乗って来る学習クローラは入口（Cloudflare の WAF）で 403 にしている**
+ * （`terraform/waf-ojos-jp.tf`）。止める一覧は {@link AI_TRAINING_CRAWLERS} の写しで、
+ * `scripts/check-ai-crawler-copies.sh` が一致を照合する。**ここへ足したら、あちらにも足すこと**
+ * （足し忘れはローカル層の acceptance で落ちる）。**名乗らない相手は、入口でも止められない。**
+ * Bot Fight Mode は入れていない（AWS からのコールバックと MCP の接続を止める恐れがある）。
  * **この限界は `/faq` にも書く**（`src/faq.ts` の `ai-training`）。
+ *
+ * > **#776 注記（2026-09-30）。** この段落は「入口で遮断する手段（WAF / Bot Fight Mode /
+ * > AI Crawler Control）はこのプロジェクトでは使えない——確定17 で `game-forge.ojos.jp` を
+ * > Route53 へ委譲しており」でした。#775 でゾーンが Cloudflare へ移り、前提が消えました。
  */
 import { ACCOUNT_PATH } from './account-paths.js';
 import { LIKED_WORKS_PATH } from './liked-works-paths.js';

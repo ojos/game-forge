@@ -188,8 +188,14 @@ locals {
    *
    * **プロキシにすると、ゾーンの WAF などが効くようになる代わりに挙動が変わる。** 変えるのは
    * 別 issue（WAF / AI Crawler Control を有効にするとき）。
+   *
+   * **#776 で true（プロキシ）にした**（2026-09-30）。WAF のマネージドルールと学習クローラの
+   * 遮断（terraform/waf-ojos-jp.tf）は、プロキシを通る要求にしか効かない。**挙動を変えうる
+   * ゾーンの設定は、切り替えの前に同じファイルで切ってある**（HTML を書き換える 4 つ・
+   * Browser Integrity Check・Security Level）。**戻すときはここを false にするだけでよい**——
+   * WAF の宣言は残しても、DNS only のホストには効かない。
    */
-  game_forge_pages_proxied = false
+  game_forge_pages_proxied = true
 
   game_forge_pages_hosts = {
     app     = local.app_host

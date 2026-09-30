@@ -97,6 +97,12 @@ locals {
    * 403 に見える。**利用者の決定で両方切る（2026-09-30）**——DNS only の今の挙動にいちばん近く、
    * 止めるのは学習クローラのルールとマネージドルールだけになる。ゾーン全体の設定なので
    * トンネルの 2 本にも効くが、あちらは Access が守っている。
+   *
+   * **browser_cache_ttl は 0（元のヘッダをそのまま使う）にする。** 既定の 14400（4 時間）のままだと、
+   * 元の `max-age` がそれより短い応答で、Cloudflare がブラウザ向けの値を 4 時間へ書き換える。
+   * **2026-09-30 に 2 段目（プロキシへの切り替え）を当てた直後に実測した**——`/assets/app.css` が
+   * `max-age=0, must-revalidate` → `max-age=14400`、`/robots.txt` が 3600 → 14400。**配った CSS が
+   * 最長 4 時間届かなくなる。** HTML（`no-store`）と作品の wasm（1 年・immutable）は変わらなかった。
    */
   ojos_jp_zone_settings = {
     email_obfuscation        = "off"
@@ -106,6 +112,7 @@ locals {
     rocket_loader            = "off"
     browser_check            = "off"
     security_level           = "essentially_off"
+    browser_cache_ttl        = 0
   }
 }
 

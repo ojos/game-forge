@@ -130,11 +130,23 @@ const SONNET_4_6: Omit<GenerationModel, 'key' | 'effort'> = {
   // `anthropic.claude-sonnet-4-6` はオンデマンドで呼べない（4.1 の実測）。
   modelId: 'jp.anthropic.claude-sonnet-4-6',
   provider: 'anthropic',
+  // **`jp.`（地理スコープ）の単価は `global.` の 1.1 倍である。`global.` の値を書かない**
+  // （#847）。上の `modelId` が `jp.` を呼ぶ以上、ここも `jp.` の単価でなければ台帳の
+  // 費用が 1 割少なく出る。2026-09-29 までは `global.` の値（3 / 15 / 0.3 / 3.75）が
+  // 入っていた。
+  //
+  // 確認日 2026-09-30。AWS Pricing API の OnDemand のうち「Regional CRIS」の 4 行
+  // （入力・出力・キャッシュ読み・キャッシュ書き 5 分）。同じ応答の「Global」の行が
+  // `global.` の単価である。読み直すときは:
+  //   aws pricing get-products --region us-east-1 \
+  //     --service-code AmazonBedrockFoundationModels \
+  //     --filters Type=TERM_MATCH,Field=regionCode,Value=ap-northeast-1 \
+  //     "Type=TERM_MATCH,Field=servicename,Value=Claude Sonnet 4.6 (Amazon Bedrock Edition)"
   pricing: {
-    inputUsdPerMillion: 3,
-    outputUsdPerMillion: 15,
-    cacheReadUsdPerMillion: 0.3,
-    cacheWriteUsdPerMillion: 3.75,
+    inputUsdPerMillion: 3.3,
+    outputUsdPerMillion: 16.5,
+    cacheReadUsdPerMillion: 0.33,
+    cacheWriteUsdPerMillion: 4.125,
   },
   // 4.2 の実測は平均 4,171 トークン。**上限は費用の天井でもある**ので、必要より
   // 大きくしない。

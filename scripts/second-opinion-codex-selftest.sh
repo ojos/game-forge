@@ -529,7 +529,7 @@ cat > "$gh_dir/11.json" <<EOF
 EOF
 cat > "$gh_dir/12.json" <<EOF
 {"repository_url":"$owner_url","user":{"login":"owner1"},"state":"closed","title":"追加行の PR",
- "pull_request":{"merged_at":"2026-09-29T00:00:00Z"},"body":"acceptance:\n  - REF-PR-BODY-MARKER"}
+ "pull_request":{"merged_at":"2026-09-29T00:00:00Z"},"body":"acceptance:\n  - PRBODY-MARKER"}
 EOF
 cat > "$gh_dir/13.json" <<EOF
 {"repository_url":"$owner_url","user":{"login":"owner1"},"state":"open","title":"REF-REMOVED-MARKER","body":""}
@@ -579,7 +579,7 @@ else
     && fail "issue の本文の acceptance の外まで載っています（載せるのは acceptance の節だけ）"
   grep -q '#12（PR・merged）' "$record/stdin" \
     || fail "追加行の PR #12 が状態（merged）つきで載っていません"
-  grep -q 'REF-PR-BODY-MARKER' "$record/stdin" \
+  grep -q 'PRBODY-MARKER' "$record/stdin" \
     && fail "PR の本文が載っています（PR は状態とタイトルだけ）"
   grep -q 'REF-REMOVED-MARKER' "$record/stdin" \
     && fail "削除行にしか無い #13 が載っています"

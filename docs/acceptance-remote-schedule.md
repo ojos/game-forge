@@ -59,7 +59,7 @@ CI で回せるのは 34 件中 2 件でした（実測の表は #808 のコメ�
 | `prerequisite-failed` | gh / aws / cloudflare / gcp の前提の検査のどれかが FAIL（`prereq.<系統>: fail` を見る） | 下の「認証の切れ」 |
 | `primary-not-on-main` | プライマリがブランチか detach にある | プライマリで `git checkout main` |
 | `primary-not-at-origin-main` | プライマリの main が origin/main と一致しない（遅れている） | プライマリで `git pull --ff-only` |
-| `primary-dirty` | プライマリの追跡ファイルに手元の変更がある | 変更を片付ける |
+| `primary-dirty` | プライマリの追跡ファイルに手元の変更がある、または `terraform/` に追跡外の `*.tf`（`override.tf` など。`.gitignore` が除外している）がある | 変更を片付ける。override はプライマリに置かない |
 | `fetch-failed` | origin の main を取れない | ネットワーク・git の認証 |
 | `invocation-error` | `acceptance-remote.sh` が終了コード 2（引数の誤り。#850） | 起動側の不具合。定期実行は引数を渡さない |
 

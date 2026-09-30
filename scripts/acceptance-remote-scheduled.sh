@@ -14,7 +14,8 @@
 #
 #   1. プライマリが main にある（detach もブランチも不可）       → primary-not-on-main
 #   2. origin/main を取ってきて、HEAD がそれと一致する            → fetch-failed / primary-not-at-origin-main
-#   3. 追跡ファイルに手元の変更が無い                              → primary-dirty
+#   3. 追跡ファイルに手元の変更が無く、terraform/ に追跡外の *.tf（override を含む）が無い
+#                                                                   → primary-dirty
 #
 # **古いツリーは、宣言を誤った期待値にする。** terraform も外部層の導出も、そのツリーの
 # terraform/*.tf を正とする（docs/handoff.md 3 章「プライマリの作業ツリーは main に」。
@@ -124,6 +125,17 @@ if [ "$head" != "$(git rev-parse --verify -q refs/remotes/origin/main)" ]; then
 fi
 if ! git diff --quiet HEAD --; then
   say "プライマリの追跡ファイルに手元の変更があります。検査を回しません。"
+  deliver --precondition primary-dirty; exit $?
+fi
+# **追跡していない宣言も汚れに数える。** `git diff` は追跡外を見ないが、terraform は
+# terraform/ 直下の *.tf と *.tf.json を全部読む。`.gitignore` は `override.tf` と
+# `*_override.tf` を除外しているので、置いてあれば HEAD が origin/main と一致していても
+# plan の中身が変わる（PR の第二意見の指摘）。terraform.tfvars と state は追跡外が正なので見ない。
+# `:(glob)` にしているのは、`*` が `/` を越えて terraform/.terraform/ の中のモジュールまで拾わないため。
+untracked_tf="$(git ls-files --others -- ':(glob)terraform/*.tf' ':(glob)terraform/*.tf.json')"
+if [ -n "$untracked_tf" ]; then
+  say "プライマリの terraform/ に追跡していない宣言があります（override を含む）。検査を回しません。"
+  printf '%s\n' "$untracked_tf"
   deliver --precondition primary-dirty; exit $?
 fi
 

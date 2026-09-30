@@ -158,6 +158,11 @@ gen "" 10 > "$WORK/out-crash" || true
 summarize 1 < "$WORK/out-crash" > "$WORK/s-crash"
 ok_or_ng "$(field result "$WORK/s-crash")|$(field not-run "$WORK/s-crash")" "incomplete|$((LABEL_COUNT - 10))" "A6 途中で止まった回は incomplete"
 
+# 落ちた検査があってから止まった回は、未実行があっても drift（乖離の証拠を分類から消さない）。
+gen '^dns zone matches$' 25 > "$WORK/out-drift-crash" || true
+summarize 1 < "$WORK/out-drift-crash" > "$WORK/s-drift-crash"
+ok_or_ng "$(field result "$WORK/s-drift-crash")|$(field not-run "$WORK/s-drift-crash")" "drift|$((LABEL_COUNT - 25))" "A6 FAIL の後に止まった回は drift で、未実行の件数も残る"
+
 # 全件 PASS でも終了コードが 0 でなければ ok にしない。
 summarize 1 < "$WORK/out-ok" > "$WORK/s-rc"
 ok_or_ng "$(field result "$WORK/s-rc")" incomplete "A7 終了コードが 0 でなければ ok にしない"
@@ -312,6 +317,13 @@ G -C "$WORK/other" commit -q -am newer
 G -C "$WORK/other" push -q origin main 2>/dev/null
 sched_case "origin/main より遅れていれば回さない" "precondition|primary-not-at-origin-main" no
 G -C "$WORK/primary" merge -q --ff-only origin/main
+
+mkdir -p "$WORK/primary/terraform/.terraform/modules/m"
+echo 'resource "x" "y" {}' > "$WORK/primary/terraform/.terraform/modules/m/main.tf"
+sched_case "terraform/.terraform の中のモジュールは汚れに数えない" "ok|-" yes
+echo 'terraform {}' > "$WORK/primary/terraform/override.tf"
+sched_case "terraform/ に追跡外の override.tf があれば回さない" "precondition|primary-dirty" no
+rm "$WORK/primary/terraform/override.tf"
 
 echo "local edit" >> "$WORK/primary/README"
 sched_case "追跡ファイルに手元の変更があれば回さない" "precondition|primary-dirty" no

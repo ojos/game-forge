@@ -105,6 +105,54 @@ output "ojos_jp_zone_status" {
   value       = cloudflare_zone.ojos_jp.status
 }
 
+output "game_forge_pages_proxied" {
+  description = <<-EOT
+    Pages のカスタムドメインへ向く 3 本の CNAME をプロキシ（オレンジ雲）にしているか（#813）。
+    外部層の check_pages_dns_records が、向き先と一緒に実状態と照らす。#776 で WAF を入れるときに
+    切り替える値（terraform/dns-ojos-jp.tf の local.game_forge_pages_proxied）。
+  EOT
+  value       = local.game_forge_pages_proxied
+}
+
+output "ojos_jp_declared_records" {
+  description = <<-EOT
+    terraform/dns-ojos-jp.tf が ojos.jp のゾーンへ宣言したレコードの一覧（#813）。外部層の検査が
+    「宣言どおりに実在するか」を照合する期待値で、名前・型・内容・TTL・proxied・優先度を持つ。
+
+    **リソースの属性から組み立て、値を書き写さない。** dns-ojos-jp.tf にレコードを足したら
+    ここにも足すこと。**足し忘れは scripts/check-ojos-jp-records-output.sh（acceptance.sh から
+    回る）が落とす**——#359 で、output に無いホストが検査から黙って外れた。
+
+    **sensitive にする。** 所有証明の TXT と DKIM の鍵が plan / apply のログへ出ないようにする
+    ため（公開の PR やチャットへ貼られる経路を作らない）。検査は -json で読む。
+
+    トンネルの 2 本（tunnel-dev01.tf の llm01 / dev01_ssh）は含めない。向き先と proxied は
+    check_tunnel_dns_records が見ている。
+  EOT
+  sensitive   = true
+  value = [
+    for r in concat(
+      values(cloudflare_dns_record.ojos_jp_mx),
+      [cloudflare_dns_record.ojos_jp_google_site_verification],
+      [cloudflare_dns_record.ojos_jp_mail],
+      values(cloudflare_dns_record.code_narrative_delegation),
+      values(cloudflare_dns_record.game_forge_pages),
+      [cloudflare_dns_record.game_forge_resend_dkim],
+      [cloudflare_dns_record.game_forge_resend_spf_rsend],
+      [cloudflare_dns_record.game_forge_resend_spf_send],
+      [cloudflare_dns_record.game_forge_resend_dmarc],
+      [cloudflare_dns_record.game_forge_search_console_verification],
+      ) : {
+      name     = r.name
+      type     = r.type
+      content  = r.content
+      ttl      = r.ttl
+      proxied  = r.proxied
+      priority = r.priority
+    }
+  ]
+}
+
 output "dns_zone_name_servers" {
   description = <<-EOT
     委譲元（さくらの ojos.jp ゾーン）へ登録する NS レコードの値。

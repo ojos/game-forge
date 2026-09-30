@@ -140,6 +140,14 @@ if [ -n "$untracked_tf" ]; then
 fi
 
 # ── 検査（全体。引数は渡さない）───────────────────────────────────────────────
+#
+# **宣言の場所の差し替え（ACCEPTANCE_TF_DIR。scripts/lib/tf-dir.sh）を外す。** .env や
+# コンテナの環境に残っていると、上で確かめたプライマリの terraform/ ではなく、差し替え先の
+# 宣言と state を正として記録する（PR の第二意見の指摘）。定期実行が見るのはプライマリだけである。
+if [ -n "${ACCEPTANCE_TF_DIR:-}" ]; then
+  say "ACCEPTANCE_TF_DIR が設定されていました。定期実行ではプライマリの terraform/ を見るため外します。"
+  unset ACCEPTANCE_TF_DIR
+fi
 say "bash scripts/acceptance-remote.sh を回します（HEAD ${head}）"
 # stdout と stderr を 1 本にする。ラベルは stdout、FAIL の行は stderr に出るため。
 bash scripts/acceptance-remote.sh 2>&1 | tee "$WORK/output"

@@ -260,7 +260,8 @@ rc=0; echo '{"user": ' | bash "$JUDGE" --owner ojos --now "$NOW" > /dev/null 2>&
 # ══════════════════════════════════════════════════════════════════════════════
 #
 # 手元の bare をリモートにした作業ツリーを作り、scripts/acceptance-remote.sh には本物の run で
-# 前提 4 つと検査 2 つを回す偽物を置く。偽物は呼ばれたら引数の数を $WORK/called へ書く。
+# 前提 4 つと検査 2 つを回す偽物を置く。偽物は呼ばれたら引数の数を $WORK/called へ、
+# ACCEPTANCE_TF_DIR を $WORK/tfdir へ書く（起動側には差し替えを渡した状態で呼ぶ）。
 G() { git -c user.name=selftest -c user.email=selftest@example.invalid -c init.defaultBranch=main "$@"; }
 G init -q --bare "$WORK/origin.git"
 G clone -q "$WORK/origin.git" "$WORK/primary" 2>/dev/null
@@ -269,6 +270,7 @@ mkdir -p "$WORK/primary/scripts"
   echo '#!/usr/bin/env bash'
   echo 'set -uo pipefail'
   echo "echo \"\$#\" > '$WORK/called'"
+  echo "echo \"\${ACCEPTANCE_TF_DIR:-unset}\" > '$WORK/tfdir'"
   printf '%s\n' "$run_def"
   echo 'LOG="$(mktemp "${TMPDIR:-/tmp}/fake-remote.XXXXXX")"; ran_any=0; failed=0'
   echo 'echo "[acceptance-remote] external state checks"'
@@ -291,7 +293,7 @@ sched_case() {
   local name="$1" want="$2" want_called="$3" out rc=0 called=no
   tick
   rm -f "$WORK/called"
-  out="$(bash "$SCHEDULED" --print --repo-dir "$WORK/primary" 2>&1)" || rc=$?
+  out="$(ACCEPTANCE_TF_DIR="$WORK/elsewhere" bash "$SCHEDULED" --print --repo-dir "$WORK/primary" 2>&1)" || rc=$?
   [ -f "$WORK/called" ] && called=yes
   local got
   got="$(printf '%s\n' "$out" | sed -n 's/^result: //p')|$(printf '%s\n' "$out" | sed -n 's/^reason: //p')"
@@ -302,6 +304,7 @@ sched_case() {
 }
 
 sched_case "main が origin/main と一致し汚れていなければ回す" "ok|-" yes
+tick; [ "$(cat "$WORK/tfdir" 2>/dev/null)" = unset ] || ng "C 宣言の場所の差し替え（ACCEPTANCE_TF_DIR）を外してから回す"
 tick; [ "$(cat "$WORK/called" 2>/dev/null)" = 0 ] || ng "C acceptance-remote.sh へ引数を渡していない（#850 の exit 2 を踏まない）"
 
 G -C "$WORK/primary" checkout -q -b feat/x

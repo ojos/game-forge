@@ -11,7 +11,7 @@ services:
     # ので、付け替えはイメージのビルドで行う（.devcontainer/Dockerfile と remap-vscode-user.sh）。
     #
     # **image: を併記しない。** build と image を両方書くと、ビルド結果がベースイメージの
-    # タグ（mcr.microsoft.com/devcontainers/base:ubuntu）を上書きする。
+    # タグ（mcr.microsoft.com/devcontainers/base:noble）を上書きする。
     build:
       context: .
       dockerfile: Dockerfile

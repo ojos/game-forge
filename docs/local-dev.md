@@ -1054,7 +1054,9 @@ tmux に入る）で回す。**
 
 - **`GH_TOKEN` は Mac の値を写さず、dev01 用の PAT を別に発行して置く**（#869）。Mac 用の PAT は terraform と
   外部層のために管理者の権限まで持つので、**dev01 には持ち込まない。** 発行の手順と dev01 の権限の組（管理者・変数は
-  No access）は `.github/project-ai-rules.md`「GitHub 認証（gh）だけを例外にする理由」の表にある。置いたら
+  No access）は `.github/project-ai-rules.md`「GitHub 認証（gh）だけを例外にする理由」の表にある（Mac も PAT に
+  揃えた。#869 のコメントで scope を変えた）。置いたら、**新しいシェルを開くか `set -a; . scripts/load-project-env.sh; set +a`
+  で読み込み直してから**（`.env` を読むのは on-attach とシェルの起動時だけで、開いているシェルには反映されない）、
   `gh auth status` が `(GH_TOKEN)` と出て、`gh api user --jq .login` が `ojos` を返すことを確かめる。
 - **`gh auth login` を打たない。** `.env` の `GH_TOKEN` が優先されるのでログインの結果は使われず、それでも
   OAuth トークンが 1 本発行され、上限に達していれば**他の環境のトークンを 1 本失効させる**

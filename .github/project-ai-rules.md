@@ -44,7 +44,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 - **空でも壊れません**: `GH_TOKEN` が空の環境は従来どおり保存済み認証で動きます。
 - **設定中は `gh auth login` を実行しません**: env が優先されるためログイン結果は使われず、それでも OAuth トークンは 1 本発行されます。上限に達していれば、他環境のトークンを 1 本失効させるだけの結果になります。これは制約ではなく安全装置として扱います。
 
-発行手順と必要権限は、対象リポジトリと行う操作によって変わります。**このプロジェクトでは、環境ごとに別の PAT を置きます**（#869。2026-10-01 に利用者が決定。Mac と dev01 の 2 本。片方を失効させても、もう片方は動き続け、**dev01 に管理者の権限を持ち込まない**）。
+発行手順と必要権限は、対象リポジトリと行う操作によって変わります。**このプロジェクトでは、環境ごとに別の PAT を置きます**（#869。2026-10-01 に利用者が決定し、#869 の当初の scope.out「Mac は保存済み OAuth のまま」を取り消した——[#869 のコメント](https://github.com/ojos/game-forge/issues/869#issuecomment-5932339469)。Mac と dev01 の 2 本。片方を失効させても、もう片方は動き続け、**dev01 に管理者の権限を持ち込まない**）。
 
 - **PAT の発行手順**: GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token。Token name は環境が分かる名前（例 `game-forge-mac` / `game-forge-dev01`）、Resource owner は `ojos`、Repository access は **Only select repositories → `ojos/game-forge`**、Expiration は選べる中で最も長い期間（1 年が目安）。値はその環境の `.env` の `GH_TOKEN` にだけ置き、リポジトリにも会話の記録にも書きません。
 - **必要な権限**（Repository permissions。ここに無いものは No access）:

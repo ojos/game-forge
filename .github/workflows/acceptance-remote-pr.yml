@@ -70,7 +70,10 @@ permissions:
   statuses: write
 
 # PR ごとに直列にする。**記録の投稿と push の判定が重なっても、後に始まった判定が最後に書く。**
-# 取り消さない（途中で消すと、status を書きかけのまま終わる回ができる）。
+# 取り消さない（途中で消すと、status を書きかけのまま終わる回ができる）。掃き寄せは別の group で
+# 並行して走るので、判定側が書く直前にコメントを読み直し、変わっていれば書かずに譲る
+# （scripts/acceptance-pr-record.sh の冒頭）。1 つの group にまとめないのは、待ちの枠が 1 つしか無く、
+# 別の PR の契機が待っている判定を取り消してしまうため。
 concurrency:
   group: acceptance-remote-pr-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr || github.ref }}
   cancel-in-progress: false

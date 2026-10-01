@@ -585,6 +585,7 @@ pr_rec 0.1 out-ok 0 "$HEAD_SHA" 846 | pr_case "別の PR の記録は数えな�
 owner_rec 0.1 out-ok 0 | pr_case "定期実行の形の記録（pr: が無い）は数えない" "no-record"
 sed 's/^/> /' "$WORK/s-pr-ok" | comment ojos OWNER 0.1 | pr_case "引用した記録は数えない" "no-record"
 sed 's/^PASS dns zone matches$/DRIFT dns zone matches/' "$WORK/s-pr-ok" | comment ojos OWNER 0.1 | pr_case "result: ok でも PASS 以外の行があれば通さない" "incomplete"
+sed '/^PASS dns zone matches$/d' "$WORK/s-pr-ok" | comment ojos OWNER 0.1 | pr_case "result: ok でも行が欠けていれば通さない" "incomplete"
 sed 's/^result: ok$/result: great/' "$WORK/s-pr-ok" | comment ojos OWNER 0.1 | pr_case "形の崩れた記録は数えない" "no-record"
 sed 's/$/\r/' "$WORK/s-pr-ok" | comment ojos OWNER 0.1 | pr_case "CRLF の本文でも読む" ""
 tick
@@ -648,6 +649,8 @@ p="${path%%\?*}"
 f="$GH_FIXTURES/${p//\//__}.json"
 [ -f "$f" ] || { echo "HTTP 404: $p" >&2; exit 1; }
 if [ -n "$jqexpr" ]; then jq -r -c "$jqexpr" < "$f"; else cat "$f"; fi
+# <応答>.next があれば、次の呼び出しからはそちらを返す（判定の途中でコメントが付いた形）。
+if [ -f "$f.next" ]; then mv "$f.next" "$f"; fi
 STUB
 chmod +x "$WORK/g/bin/gh"
 FX="$WORK/g/fx"
@@ -716,6 +719,12 @@ ok_or_ng "$(posted "$HEAD_SHA")" 1 "G7 最新の status と違えば POST する
 statuses_fx "$HEAD_SHA"
 prrec 0 "--report が無ければ書かない" --pr 845
 ok_or_ng "$(posted "$HEAD_SHA")" 0 "G8 --report が無ければ status を書かない"
+# 判定の間にコメントが変わったら書かない（掃き寄せが古い一覧で、新しい記録の判定を上書きしない）。
+pr_rec 0.1 out-ok 0 | comments_fx 845
+{ pr_rec 0.1 out-ok 0; pr_rec 0.05 out-drift 1; } | jq -s '.' > "$(fx "repos/$R/issues/845/comments").next"
+prrec 0 "判定の間にコメントが変われば書かない" --pr 845 --report
+ok_or_ng "$(posted "$HEAD_SHA")" 0 "G7b 判定の間に記録が付いたら、古い一覧の判定を書かない"
+rm -f "$(fx "repos/$R/issues/845/comments").next"
 # terraform/ を触らない PR では何も求めない。
 pull_fx 900 "$NEW_HEAD"; files_fx 900 docs/handoff.md src/app.ts; : | comments_fx 900
 prrec 0 "terraform/ を触らない PR は対象外" --pr 900 --report

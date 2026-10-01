@@ -65,7 +65,7 @@
 #   drift          最新の記録が drift（乖離した検査の名前を出す）
 #   precondition   最新の記録が precondition。**検査を回せていないので、確かめていない＝失敗に数える**
 #                  （理由の綴りを出す。認証の切れなら再ログインして回し直す）
-#   incomplete     最新の記録が incomplete、または ok なのに PASS 以外の行がある
+#   incomplete     最新の記録が incomplete、または ok なのに PASS 以外の行がある・行の数が expected と合わない
 #
 # 最新の 1 件で決めるのは、同じ head で回し直した結果（認証を直して再実行・乖離を直して再実行）を
 # 反映するためである。**「最新」は投稿の順（GitHub の created_at と id）で決め、記録の time は使わない**
@@ -138,6 +138,7 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
               pr: ($kv.pr // null),
               reason: (($kv.reason // "-") | if test("^[a-z-]+$") then . else "-" end),
               drift: (($kv.drift // "0") | tonumber? // 0),
+              expected: (($kv.expected // "0") | tonumber? // 0),
               ran: (($kv.ran // "0") | tonumber? // 0),
               invoked: (($kv.exit // "-") != "-"),
               unexpected: (($kv["unexpected-fail"] // "0") | tonumber? // 0),
@@ -168,7 +169,10 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
           else
             ($at[-1]) as $r
             | "latest: \($r.at | when) result=\($r.result) reason=\($r.reason) head=\($r.head)",
-              ( if $r.result == "ok" and ($r.rows | length) > 0 and all($r.rows[]; .st == "PASS") then
+              # 行の数も見る（expected は要約が acceptance-remote.sh の run の数から書く）。行が欠けた記録を
+              # 「残りが PASS だから」で通さない（#845 の第二意見の指摘）。
+              ( if $r.result == "ok" and $r.expected > 0 and ($r.rows | length) == $r.expected
+                   and all($r.rows[]; .st == "PASS") then
                   "ok: この head の最新の記録は全 \($r.rows | length) 件 PASS です"
                 elif $r.result == "drift" then
                   "FAIL drift この head の最新の記録に乖離があります（DRIFT \($r.drift) 件・綴り不明の FAIL \($r.unexpected) 件）: \([ $r.rows[] | select(.st == "DRIFT") | .label ] | join(" / "))"

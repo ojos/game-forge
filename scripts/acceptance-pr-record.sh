@@ -34,6 +34,12 @@
 # 一時的な不調で赤が出る。緑にすると確かめていないものを通す（second-opinion-gate と同じ）。判定は
 # 次の契機（コメントの投稿・30 分ごとの掃き寄せ）へ持ち越す。
 #
+# **判定の間にコメントが変わったら書かない。** 掃き寄せ（30 分ごと）と PR ごとの契機は別の concurrency
+# group で並行して走る。掃き寄せが古いコメントで判定し、記録の投稿で起きた判定より後に書くと、
+# 誤った判定が次の掃き寄せまで残る（#845 の第二意見の指摘）。書く直前にコメントを読み直し、
+# 変わっていれば譲る——変えたコメントの契機（issue_comment）か次の掃き寄せが、新しい一覧で判定する。
+# 読み直しから書くまでは 1 秒も無く、コメントの契機はランナーの起動を挟むので、その後に始まる。
+#
 # **同じ判定が既に付いていれば書き直さない。** 掃き寄せは 30 分ごとに全件を見るので、毎回書くと
 # 1 つの commit に status が積もる（GitHub は 1 つの SHA と context に 1000 件まで）。
 #
@@ -100,7 +106,7 @@ report() {
 
 # 1 本を判定する。0 = success / 1 = failure / 2 = 読めない・書けない / 3 = 対象外（status を書かない）
 judge_one() {
-  local n="$1" sha="$2" files comments out rc=0 code reason desc
+  local n="$1" sha="$2" files comments again out rc=0 code reason desc
   # **改名の元のパスも見る**——terraform/ から外へ動かす PR も宣言を変える（writeback-serial と同じ）。
   if ! files="$(gh api --paginate "repos/${repo}/pulls/${n}/files?per_page=100" \
     --jq '.[] | .filename, (.previous_filename // empty)' 2>/dev/null)"; then
@@ -118,6 +124,16 @@ judge_one() {
   fi
   out="$(printf '%s\n' "$comments" | bash "$HERE/acceptance-record-judge.sh" --owner "$owner" --pr-head "$sha" --pr "$n")" || rc=$?
   printf '%s\n' "$out" | sed "s/^/  PR #${n}: /"
+  if [ "$report" -eq 1 ] && { [ "$rc" = 0 ] || [ "$rc" = 1 ]; }; then
+    if ! again="$(gh api --paginate "repos/${repo}/issues/${n}/comments?per_page=100" --jq '.[]' 2>/dev/null)"; then
+      echo "::error::PR #${n} のコメントを読み直せませんでした。status は付けていません（次の契機で判定し直します）。"
+      return 2
+    fi
+    if [ "$again" != "$comments" ]; then
+      echo "PR #${n}: 判定の間にコメントが変わったので書きません（新しいコメントの契機か、次の掃き寄せが判定します）。"
+      return 3
+    fi
+  fi
   case "$rc" in
     0)
       report "$sha" success "External acceptance passed at this head (all checks PASS)" || return 2

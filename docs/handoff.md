@@ -11,6 +11,47 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 ## 1. 現在地
 
+### #844 の定期実行が本番で 40 件 PASS し、#844 を閉じました。main の identity-guard が 14 回続けて赤だったのも直っています（#861 / #862。2026-10-01）
+
+| # | 何をしたか | PR / コミット | 状態 |
+|---|---|---|---|
+| #844 の残り | Mac の launchd を利用者が登録し、3 回の記録で acceptance を満たした。途中で見つかった `AWS_PROFILE` の欠けを直した | PR #861 / `bd90243`（`Refs #844`） | **#844 は閉じた**（acceptance を 1 行ずつ照らしたコメントつき） |
+| #860 | identity-guard の co-author の検査で、GitHub が squash merge で付ける `users.noreply` を許可した | PR #862 / `61a608d`（game-forge-3a） | 閉じた |
+
+どちらも main の `deploy` は success です（#861 は後続の `61a608d` に配備を譲り、そちらの `[deploy-head]` が一致）。
+
+#### #844: 1 回目は AWS だけ「前提の不成立」になり、直して 3 回目で 40 件 PASS
+
+#854 の記録の 3 件です。
+
+| 記録 | 時刻（UTC） | HEAD | 結果 |
+|---|---|---|---|
+| 1 件目（利用者が `launchctl kickstart`） | 02:30 | `2648c3a` | `precondition`。**aws の前提と、それに依存する 14 件（AWS の 13 検査と plan）だけが `FAIL-PRECONDITION`**、残り 25 件は PASS、乖離 0 |
+| 2 件目（**12:00 JST の予定どおりの自動起動**） | 03:00 | `2648c3a` | 1 件目と同じ（#861 のマージ前） |
+| 3 件目（#861 の後に `kickstart`） | 04:08 | `61a608d` | **`ok`・40 件 PASS** |
+
+**原因は、本番の AWS を `AWS_PROFILE` で選ぶ設計なのに、launchd → `docker exec` の login シェルにそれが無かったことです**（`docker exec … bash -lc 'echo $AWS_PROFILE'` が空。手で回すときは端末で export していたので、#808 の実測でも気づかなかった）。#861 で、定期実行の入口だけが、空のときに `game-forge-prod`（`scripts/lib/acceptance-record.sh` の `ACCEPTANCE_AWS_PROFILE`）を入れるようにしました。**`.env` には置いていません**（利用者の決定。`.env` を読むすべてのスクリプトで aws の既定が本番になるため）。
+
+**1 件目は失敗でしたが、acceptance の「認証を落とした記録が、乖離ではなく前提の不成立として読める」を本物の出力で満たしました**（意図して落としたのではなく、AWS の認証が実際に無い状態で回った記録です。acceptance の趣旨——認証の欠けを乖離と取り違えない——はこれで確かめられる）——AWS の系統の 15 件だけが落ち、他の 25 件は正しく PASS と読み分けています。鮮度のジョブを手で流して success（records 3、最新 `result=ok`）。**毎日 15:00 JST の赤のメールは止まりました。**
+
+#### #860 / #862: main の identity-guard が 14 回続けて赤でした（game-forge-3a から）
+
+2026-09-30 04:13Z に Dependabot の PR #833 を squash merge した `15bb95a` に、**GitHub が `Co-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>` を付けました。** co-author の検査は許可リストしか見ないので、push(main) の identity-guard（`--full` で全履歴を見る）が **`15bb95a`〜`2648c3a` の 14 回続けて赤**でした（#861 のマージ時も同じ）。**PR の検査はマージの前なので、この trailer が見えず、必須チェックは緑のまま**です。配備とマージは止まっていませんでしたが、**main の検知層が常に赤で、機能していませんでした。**
+
+#862 は、author に当てていた `is_github_authored`（committer が `noreply@github.com` で、ローカル部に `@` を含まない `*@users.noreply.github.com`）を co-author にも当てます。手元で作ったコミットには広げていません。`scripts/verify-commit-identity-selftest.sh`（11 通り）を新設し、identity-guard の検証の前に回します。修正前のスクリプトでは #833 の形が赤になることを確かめています。3a は修正の時点の main の全履歴 506 件（`2648c3a` まで）で `IDENTITY_PASS` を確かめ、**`61a608d` の push で走った identity-guard（`--full`。508 件）も success** です。
+
+#### 踏んだこと（次の人へ。どれも 1 回目）
+
+- **GitHub がマージの瞬間に付けるもの（squash の `Co-authored-by` など）は、PR の検査には見えません。** PR では緑で、main で初めて赤になります。**Dependabot の PR を squash merge するたびに起きうる形でした。** main の push で走る検査が赤のときは、PR の側が緑でも放置しないこと。
+- **定期実行の入口は、プライマリのツリーから動きます。** 直す PR をマージしたら、**手で回す前にプライマリを fast-forward しておく**（古い版が走るうえ、実行中の fast-forward がスクリプト自身を書き換える形になる）。#861 の後はそうしてから `kickstart` を頼んだ。
+- **手で回して通っていたものが、無人の経路では通らないことがあります。** 端末で export している変数（今回は `AWS_PROFILE`）は、launchd にも `docker exec` にも渡りません。
+
+#### 残していること
+
+- **波 2 の残り（#802 / #849 の実機、Mac の devcontainer の作り直し）は、別のセッションが担当しています**（2026-10-01、利用者の指示）。そのセッションは handoff に触らず、材料を game-forge-65 へ送ります。**Mac の devcontainer の作り直しは、この Mac のすべてのセッションを止めるので、全員の了承を取ってから。**
+- **#845**: terraform の変更が自然に出たときに、status が変わることを確かめる（確かめるためだけに PR を作らない）。
+- 上の節の「残していること」のうち、#844 は済みました。ほかは変わっていません。
+
 ### #808 を実測で設計し直し、外部層を毎日回す仕組みと、terraform の PR で記録を求める仕組みを入れました。dev01 はスマホから戻せる道具を置き、実機の確認を残しています（#808 / #843〜#845 / #849 / #802 と、#847 / #848 / #724 の引き継ぎ。2026-09-30〜10-01）
 
 **このウェーブでマージしたもの 7 本**（前回の書き戻し #840 からのマージは 10 本。残る 3 本は別セッションの書き戻し #841 / #842 / #846）。どれも main の `deploy` は success で、`[deploy-head]` の一致を確かめています（#852 は後続の `a2c0c42` が配った）。
@@ -77,7 +118,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 **利用者の手元の確認（このウェーブの波 2）**——どれも手順を渡す前に 3 章を grep すること。
 
-1. **#844**: Mac のホストで launchd を登録して 1 回走らせ、#854 に要約が載ること・ラベル `devcontainer.local_folder` で devcontainer が見つかること・認証を落とした本物の記録が「前提の不成立」と読めること（`docs/acceptance-remote-schedule.md`）。**済むまで毎日 15:00 JST の赤のメールが続きます。**
+1. **#844**: Mac のホストで launchd を登録して 1 回走らせ、#854 に要約が載ること・ラベル `devcontainer.local_folder` で devcontainer が見つかること・認証を落とした本物の記録が「前提の不成立」と読めること（`docs/acceptance-remote-schedule.md`）。**済むまで毎日 15:00 JST の赤のメールが続きます。**（**2026-10-01 追記: 済み。3 回目で 40 件 PASS し、#844 を閉じた。上の節**）
 2. **#802**: dev01 に Docker Engine と devcontainer を立てる（`docs/local-dev.md` 7 章）。**Mac の devcontainer の作り直し**（compose が `image:` → `build:` になったので、次の作り直しで Mac もビルドになる。UID は 1000 のまま）は、**他のセッションが動いていない時間に**。作り直すと Go のキャッシュなどが消え、最初の verify は `EBITEN_KEYS_FAIL` で止まります（3 章）。
 3. **#849**: dev01 に `dev` とユニットを入れ、Pixel 8 のタップで attach・up・auth aws を 1 回ずつ通す。再起動・`docker kill`・窓を閉じた後に戻ること、鍵の行を消すと入れなくなること（`docs/local-dev.md` 7.9）。
 4. **#845**: 最初に terraform/ を触る PR で、push 直後 failure（no record）→ apply と `--pr` の実行 → 記録のコメントを契機に success、と status が変わることを見る。
@@ -4544,6 +4585,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
+- **2026-10-01**（**#844 を閉じ、main の identity-guard の赤を書き戻した**——Mac の launchd の 1 回目は `AWS_PROFILE` が渡らず AWS の系統だけ前提の不成立（読み分けは本物の出力で働いた）、#861 で直して 3 回目で 40 件 PASS、鮮度のジョブも緑。game-forge-3a の #860 / #862（Dependabot の squash merge に GitHub が付けた co-author で、push(main) の identity-guard が 14 回続けて赤だった）を合流した。波 2 の実機は別のセッションが担当）
 - **2026-10-01**（**#808 を実測で設計し直し、外部層の定期実行（#844）と terraform の PR の記録（#845）を入れ、dev01 をスマホから戻す道具（#849）を置いた**——検査 40 件を「state・認証」の 4 通りで回し、CI で回せるのは本体 34 件中 2 件と分かったので、Mac の launchd に決めた（#808 は not planned で閉じた）。AWS の SSO は 8 時間 → 7 日、GCP は 24 時間にした（長命のキーは採らない）。#844 / #845 は開き直して利用者の確認を待つ。#802 / #849 はコード部分だけ入った。**記録先 #854 に 1 件目が載るまで、鮮度のジョブは毎日 15:00 JST に赤**。game-forge-d9（#843 / #847 / #848）と game-forge-f7（#724 の ChatGPT の分）の書き戻しを合流した。1 章の 2026-09-30 の節の「機構が確かめるのは 2 つ」を identity-guard を含む 3 つに訂正し、`.github/project-ai-rules.md` の同じ記述も直した。Bedrock の未開放の世代を候補に挙げた件を 3 章へ上げた）
 - **2026-09-30**（**`Closes` が認識されない症状を 3 章へ上げた**——#839 に続いて #841 / #842 でも `closingIssuesReferences` が空だった。Copilot の撤退の後に作られ本文に `Closes` を書いた PR 7 本のうち 4 本は認識されていて、撤退は原因ではない。**コミットメッセージに書いた `Closes` がマージコミット経由で閉じる**ことを #842 で確かめ、4 章の `Closes` の規則にも 1 行足した。1 章の #839 の記録に昇格を追記）
 - **2026-09-30**（**#777 をこの書き戻しで閉じる**——さくらの `ojos.jp` のゾーンを利用者が削除し、権威サーバが 19:51 JST から `REFUSED` を返すことと、公開リゾルバ 4 つの答えが変わらないことを確かめた。直前の確認は画面操作の後・権威サーバへの反映の前（旧ゾーンがまだ答えていた 19:45 JST）に同じ項目で取った。1 章の「残していること」に 1 行と、段 C2 の節の「残る後続」に追記）

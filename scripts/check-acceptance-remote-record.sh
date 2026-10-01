@@ -81,6 +81,8 @@ gen() {
     LOG="$(mktemp "$WORK/log.XXXXXX")"
     # shellcheck disable=SC2034
     ran_any=0 failed=0
+    # shellcheck disable=SC2034  # #850 の --only。定期実行は付けないので、本物の引数なしの状態と同じく空
+    ONLY_LABELS="" ONLY_SEEN=""
     # shellcheck disable=SC2329
     fake_ok() { printf '%s\n' "$VALUES_JOINED"; return 0; }
     # shellcheck disable=SC2329
@@ -320,6 +322,8 @@ mkdir -p "$WORK/primary/scripts"
   echo "echo \"\$#\" > '$WORK/called'"
   echo "echo \"\${ACCEPTANCE_TF_DIR:-unset}\" > '$WORK/tfdir'"
   printf '%s\n' "$run_def"
+  # run が読む変数（#850 の --only）。本物と同じく、引数なしでは空。
+  echo 'ONLY_LABELS=""; ONLY_SEEN=""'
   echo 'LOG="$(mktemp "${TMPDIR:-/tmp}/fake-remote.XXXXXX")"; ran_any=0; failed=0'
   echo 'echo "[acceptance-remote] external state checks"'
   echo 'run "prerequisite: gh authenticated" true'

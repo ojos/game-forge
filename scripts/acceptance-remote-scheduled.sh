@@ -237,6 +237,13 @@ if [ -n "${ACCEPTANCE_TF_DIR:-}" ]; then
   say "ACCEPTANCE_TF_DIR が設定されていました。定期実行ではプライマリの terraform/ を見るため外します。"
   unset ACCEPTANCE_TF_DIR
 fi
+# **本番の AWS のプロファイルを、空のときだけ入れる**（lib/acceptance-record.sh の ACCEPTANCE_AWS_PROFILE）。
+# launchd → docker exec の login シェルには AWS_PROFILE が無く、2026-10-01 の 1 回目は aws の前提が
+# 落ちた。**既に設定されていれば上書きしない**（手で --pr を回す人が別の値を選んでいることがある）。
+if [ -z "${AWS_PROFILE:-}" ]; then
+  export AWS_PROFILE="$ACCEPTANCE_AWS_PROFILE"
+  say "AWS_PROFILE が空なので ${AWS_PROFILE} を使います。"
+fi
 say "bash scripts/acceptance-remote.sh を回します（HEAD ${head}）"
 # stdout と stderr を 1 本にする。ラベルは stdout、FAIL の行は stderr に出るため。
 bash scripts/acceptance-remote.sh 2>&1 | tee "$WORK/output"

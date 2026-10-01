@@ -21,6 +21,19 @@ ACCEPTANCE_RECORD_ISSUE="854"
 # shellcheck disable=SC2034
 ACCEPTANCE_RECORD_MAX_AGE_SEC=259200
 
+# 定期実行（と --pr）で、AWS_PROFILE が空のときに入れる本番のプロファイル名（#844）。
+#
+# **本番の AWS は環境変数 AWS_PROFILE で選ぶ設計である**（terraform/providers.tf の注記。開発の側だけ
+# 宣言の profile を使う）。手で外部層を回すときは端末で export してから回すが、launchd から docker exec
+# で入る login シェルには何も設定されていない。2026-10-01 の 1 回目の記録（#854）は、これで
+# aws の前提と、それに依存する 14 件が「前提の不成立」になった。
+#
+# **.env に置かない理由**: .env を読むすべてのスクリプトで aws の既定が本番になる。いまは明示しない限り
+# どのアカウントも選ばれない（安全側）形なので、それを崩さず、この入口だけで補う。
+# profile は資格情報ではなく選択子で、実体は ~/.aws/config と SSO のキャッシュにある（秘密は入らない）。
+# shellcheck disable=SC2034
+ACCEPTANCE_AWS_PROFILE="game-forge-prod"
+
 # 記録のコメントの 1 行目。**これと完全に一致する行で始まるコメントだけを記録として読む。**
 # 版（v1）を変えるときは、読む側（acceptance-record-judge.sh）も同じ commit で直す。
 # shellcheck disable=SC2034

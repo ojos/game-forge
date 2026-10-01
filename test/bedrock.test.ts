@@ -18,6 +18,21 @@ import { EFFORT_AB_ARMS, findGenerationModel } from '../src/generation-models.js
 
 const SONNET = findGenerationModel('sonnet-4-6')!;
 const DEEPSEEK = findGenerationModel('deepseek-v3-2')!;
+const OPUS = findGenerationModel('opus-5-5')!;
+
+/**
+ * Opus 5.5 の応答に混ざりうる、本文ではないブロック（#848）。
+ *
+ * Opus 5.5 は thinking を切れず、表示の既定が omitted なので**中身が空の**思考ブロックを
+ * 返しうる。`Converse` の形（`reasoningContent` の `reasoningText` / `redactedContent`）と、
+ * Messages API の形（`type: 'thinking'`）の両方を置く——どちらが来ても本文に混ぜない。
+ */
+const OPUS_THINKING_BLOCKS: readonly Record<string, unknown>[] = [
+  { reasoningContent: { reasoningText: { text: '', signature: 'sig-omitted' } } },
+  { reasoningContent: { reasoningText: { text: '内部の思考', signature: 'sig-shown' } } },
+  { reasoningContent: { redactedContent: 'cmVkYWN0ZWQ=' } },
+  { type: 'thinking', thinking: '', signature: 'sig-raw' },
+];
 
 /**
  * テスト用の資格情報。
@@ -177,6 +192,47 @@ describe('リクエストの組み立て', () => {
   });
 });
 
+describe('Opus 5.5 で断られる項目を送らない（#848）', () => {
+  /**
+   * Opus 5.5 が Bedrock でも 400 にする項目が、本文のどこにも無いことを見る。
+   *
+   * @param body `buildConverseRequest` の戻り値
+   */
+  function expectNoOpusRejectedFields(body: Record<string, unknown>): void {
+    // サンプリング指定（temperature / topP / top_k）は inferenceConfig に入る。上限だけであること。
+    expect(body['inferenceConfig']).toEqual({ maxTokens: 33_000 });
+    // thinking（disabled / budget_tokens）はモデル固有の項目に入る。effort だけであること。
+    expect(body['additionalModelRequestFields']).toEqual({ output_config: { effort: 'medium' } });
+    // tool_choice の強制。道具そのものを送らない。
+    expect(body).not.toHaveProperty('toolConfig');
+    // prefill。messages は user の 1 件だけ。
+    const messages = body['messages'] as { role: string }[];
+    expect(messages.map((message) => message.role)).toEqual(['user']);
+    // 上のどれにも当たらない項目が増えたら、ここで気づく。
+    expect(Object.keys(body).sort()).toEqual(
+      ['additionalModelRequestFields', 'inferenceConfig', 'messages', 'system'].sort(),
+    );
+  }
+
+  it('新規生成の本文', () => {
+    expectNoOpusRejectedFields(buildConverseRequest(OPUS, stubSystemPrompt(), 'シューティング'));
+  });
+
+  it('推敲・フォーク（元のソースつき）の本文', () => {
+    const body = buildConverseRequest(OPUS, stubSystemPrompt(), '敵を増やす', 'package main\n');
+    expectNoOpusRejectedFields(body);
+    // キャッシュの課金次元を持つので、ソースの直後の区切りは残る（4.5）。
+    const content = (body['messages'] as { content: Record<string, unknown>[] }[])[0]!.content;
+    expect(content.filter((block) => 'cachePoint' in block)).toHaveLength(1);
+  });
+
+  it('Sonnet 4.6 の送り方は変わらない（effort を送らない）', () => {
+    const body = buildConverseRequest(SONNET, stubSystemPrompt(), 'x');
+    expect(body['inferenceConfig']).toEqual({ maxTokens: 33_000 });
+    expect(body).not.toHaveProperty('additionalModelRequestFields');
+  });
+});
+
 describe('usage 4 種の取得（#83 acceptance 1）', () => {
   it('4 種すべてを読む', () => {
     expect(readConverseUsage(converseResponse())).toEqual({
@@ -218,6 +274,22 @@ describe('本文の取り出し', () => {
       },
     };
     expect(readConverseText(payload)).toBe('package main');
+  });
+
+  it('Opus 5.5 の思考ブロック（中身が空のものを含む）が混ざっても本文だけを取り出す（#848）', () => {
+    const payload = {
+      output: {
+        message: {
+          content: [...OPUS_THINKING_BLOCKS, { text: 'package main\n' }, { text: 'func main() {}\n' }],
+        },
+      },
+    };
+    expect(readConverseText(payload)).toBe('package main\nfunc main() {}\n');
+  });
+
+  it('思考ブロックだけで本文が無ければ例外にする（空の文字列を Go のソースとして返さない）', () => {
+    const payload = { output: { message: { content: [...OPUS_THINKING_BLOCKS] } } };
+    expect(() => readConverseText(payload)).toThrow(BedrockResponseUnreadable);
   });
 
   it('本文が無ければ例外にする', () => {
@@ -393,6 +465,34 @@ describe('SigV4 で署名して呼ぶ（#83 acceptance 1 / M2-11）', () => {
     expect(body['inferenceConfig']).toEqual({ maxTokens: DEEPSEEK.maxTokens });
     expect(result.modelKey).toBe('deepseek-v3-2');
     expect(result.usage.cacheReadInputTokens).toBeNull();
+  });
+
+  it('opus-5-5 を選ぶと jp. の Opus 5.5 へ effort=medium で送り、思考ブロックを本文に混ぜない（#848）', async () => {
+    const stub = capturingFetch(() =>
+      Response.json(
+        converseResponse({
+          output: {
+            message: {
+              role: 'assistant',
+              content: [...OPUS_THINKING_BLOCKS, { text: 'package main\n' }],
+            },
+          },
+        }),
+      ),
+    );
+    const generate = createBedrockGenerateSource({ systemPrompt: stubSystemPrompt, fetch: stub.fetch });
+
+    const result = await generate(bedrockEnv({ GENERATION_MODEL: 'opus-5-5' }), { prompt: 'x' });
+
+    expect(stub.sent[0]!.url).toBe(
+      'https://bedrock-runtime.ap-northeast-1.amazonaws.com/model/jp.anthropic.claude-opus-5-5/converse',
+    );
+    const body = (await stub.sent[0]!.json()) as Record<string, unknown>;
+    expect(body['additionalModelRequestFields']).toEqual({ output_config: { effort: 'medium' } });
+    expect(body['inferenceConfig']).toEqual({ maxTokens: 33_000 });
+    expect(result.modelKey).toBe('opus-5-5');
+    expect(result.modelId).toBe('jp.anthropic.claude-opus-5-5');
+    expect(result.source).toBe('package main\n');
   });
 
   it('システムプロンプトはモデルごとに解決される（確定5 / 6.1）', async () => {

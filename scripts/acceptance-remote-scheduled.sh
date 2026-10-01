@@ -16,6 +16,7 @@
 #   2. プライマリが main にある（detach もブランチも不可）           → primary-not-on-main
 #   3. 追跡ファイルに手元の変更が無く、terraform/ に追跡外の *.tf（override を含む）が無い
 #                                                                       → primary-dirty
+#   3b. terraform/terraform.tfstate がある（期待値の出どころ）            → state-missing
 #   4. HEAD が origin/main と一致する。**遅れているだけなら fast-forward してから回す**
 #      分岐している（ff できない）                                   → primary-not-at-origin-main
 #      ff を試みて失敗した                                           → primary-ff-failed
@@ -141,6 +142,14 @@ if [ -n "$untracked_tf" ]; then
   say "プライマリの terraform/ に追跡していない宣言があります（override を含む）。検査を回しません。"
   printf '%s\n' "$untracked_tf"
   deliver --precondition primary-dirty; exit $?
+fi
+# **state が無ければ回さない。** 外部層の検査の多くは期待値を terraform output（＝ state）から取り、
+# state が無いと認証の前提が通っていても「output から取得できません」で落ちる（#808 の実測: state なし・
+# 認証ありで 40 件中 6 件）。それを乖離（DRIFT）として記録しない（PR #853 の第二意見の指摘）。
+# state は local backend の terraform/terraform.tfstate（terraform/versions.tf。追跡外でプライマリにだけある）。
+if [ ! -s terraform/terraform.tfstate ]; then
+  say "プライマリに terraform/terraform.tfstate がありません（空も含む）。検査を回しません。"
+  deliver --precondition state-missing; exit $?
 fi
 origin_main="$(git rev-parse --verify -q refs/remotes/origin/main)"
 if [ "$head" != "$origin_main" ]; then

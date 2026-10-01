@@ -338,6 +338,10 @@ mkdir -p "$WORK/primary/scripts"
 mkdir -p "$WORK/primary/scripts/lib"
 printf 'gh\tprerequisite: gh authenticated\naws\tprerequisite: aws authenticated\ncloudflare\tprerequisite: cloudflare api token is active\ngcp\tprerequisite: gcp adc is active\ngh,aws,cloudflare,gcp\tterraform plan: no drift\ncloudflare\tdns zone matches\n' \
   > "$WORK/primary/scripts/lib/acceptance-remote-deps.tsv"
+mkdir -p "$WORK/primary/terraform"
+# state は追跡外（本物は .gitignore）。期待値の出どころとして在ることだけを見る。
+echo '{"version": 4}' > "$WORK/primary/terraform/terraform.tfstate"
+printf 'terraform/terraform.tfstate\n' > "$WORK/primary/.gitignore"
 echo "tracked" > "$WORK/primary/README"
 G -C "$WORK/primary" add -A >/dev/null
 G -C "$WORK/primary" commit -q -m init
@@ -417,6 +421,10 @@ echo "local edit" >> "$WORK/primary/README"
 sched_case "追跡ファイルに手元の変更があれば回さない" "precondition|primary-dirty" no
 G -C "$WORK/primary" checkout -q -- README
 sched_case "戻せばまた回す" "ok|-" yes
+
+mv "$WORK/primary/terraform/terraform.tfstate" "$WORK/state.bak"
+sched_case "state が無ければ回さない（output から期待値を取れず、乖離に見えるため）" "precondition|state-missing" no
+mv "$WORK/state.bak" "$WORK/primary/terraform/terraform.tfstate"
 
 G -C "$WORK/primary" remote set-url origin "$WORK/missing.git"
 sched_case "origin を取れなければ回さない" "precondition|fetch-failed" no

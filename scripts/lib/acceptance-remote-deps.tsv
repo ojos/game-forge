@@ -51,6 +51,10 @@ aws	bedrock invoker permissions are minimal
 # Pages のシークレットを cf_api で、IAM のキーを aws で読む。
 cloudflare,aws	edge no longer holds bedrock credentials
 aws	cost guard layer 2 (burst alarm) matches
+# 開発アカウントの予算を別のプロファイル（terraform output aws_profile_dev）で読む。前提の検査は
+# 本番のプロファイルだけを見るが、2 つのプロファイルは同じ sso-session（IAM Identity Center の
+# 1 つのログイン）を共有するので、本番の前提が通った回は開発のトークンも有効である。共有しない
+# 構成に変えたら、ここは前提で守られなくなる（認証切れが DRIFT に出る）。
 aws	cost guard layer 3 (budgets) matches
 aws	build function configuration matches
 aws	build function image matches the ecr latest digest

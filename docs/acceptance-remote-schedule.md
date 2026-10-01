@@ -76,6 +76,7 @@ Cloudflare や AWS の本物の乖離が見えなくなるので、この形に�
 | `primary-not-at-origin-main` | プライマリの main が origin/main から**分岐している**（手元にだけコミットがある） | 手元のコミットを片付ける |
 | `primary-ff-failed` | 遅れていたので fast-forward を試みたが失敗した（追跡外のファイルが上書きされる等） | ログの git の出力を見る |
 | `primary-dirty` | プライマリの追跡ファイルに手元の変更がある、または `terraform/` に追跡外の `*.tf`（`override.tf` など。`.gitignore` が除外している）がある | 変更を片付ける。override はプライマリに置かない |
+| `state-missing` | プライマリに `terraform/terraform.tfstate` が無い（期待値を output から取れず、検査が乖離に見えるため回さない） | state を戻す（追跡外。プライマリにだけある） |
 | `fetch-failed` | origin の main を取れない | ネットワーク・git の認証 |
 | `invocation-error` | `acceptance-remote.sh` が終了コード 2（引数の誤り。#850） | 起動側の不具合。定期実行は引数を渡さない |
 

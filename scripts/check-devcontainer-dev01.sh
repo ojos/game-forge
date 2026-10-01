@@ -89,6 +89,15 @@ done
 grep -qE '^RUN bash /tmp/remap-vscode-user\.sh "\$\{USER_UID\}" "\$\{USER_GID\}"' "$DOCKERFILE" ||
   ng "Dockerfile が remap-vscode-user.sh へ USER_UID / USER_GID を渡していません"
 
+# ベースが浮動のタグ（ubuntu / latest / タグ無し）でないこと。`base:ubuntu` は 26.04 へ移り、
+# google-cloud-cli の feature が apt-key の不在で落ちた（#802。理由は Dockerfile の FROM の上）。
+n=$((n + 1))
+base="$(awk '$1 == "FROM" { print $2; exit }' "$DOCKERFILE")"
+tag="${base##*/}"
+if [[ "$tag" != *:* || "${tag##*:}" == ubuntu || "${tag##*:}" == latest ]]; then
+  ng "Dockerfile のベースが浮動のタグです: '${base}'（noble のように版の名前で固定する）"
+fi
+
 # ── 2. 付け替えの判定 ─────────────────────────────────────────────────────────
 FAKE="$WORK/fakebin"
 mkdir -p "$FAKE"

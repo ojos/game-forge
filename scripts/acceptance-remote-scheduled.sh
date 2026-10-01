@@ -7,6 +7,23 @@
 #
 #   bash scripts/acceptance-remote-scheduled.sh            # 回して投稿する
 #   bash scripts/acceptance-remote-scheduled.sh --print    # 回して、投稿せずに要約を表示する
+#   bash scripts/acceptance-remote-scheduled.sh --pr <N>   # terraform/ を触る PR の head で回し、その PR へ載せる（#845）
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# --pr <N>（terraform/ を触る PR の apply の後。#845）
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# apply は**マージの前に、プライマリを PR の head へ `--detach` で置いて**当てる（docs/handoff.md 3 章）。
+# その同じツリーから外部層を回し、要約を PR へ載せる。.github/workflows/acceptance-remote-pr.yml が
+# PR の head SHA と照らして判定する。手順は docs/acceptance-remote-schedule.md「terraform/ を触る PR」。
+#
+# 定期実行との違いは 3 つだけで、ほかの確認（汚れ・追跡外の宣言・state）と要約・検査は共有する。
+#
+#   - **プライマリの HEAD が PR の head と一致しなければ、回さず、投稿もしない**（終了コード 3）。
+#     一致しない HEAD で回した記録は、PR のどの head も確かめていない。head は GitHub から読む。
+#   - **プライマリを動かさない。** fetch も fast-forward もしない（定期実行と違う）。置くのは利用者で、
+#     apply を当てたツリーそのものを確かめるのが目的である。
+#   - 投稿先は固定の issue ではなく PR。要約に `pr: <N>` が付く。
 #
 # ══════════════════════════════════════════════════════════════════════════════
 # 回す前に確かめること（ずれていれば検査を回さず「前提の不成立」として記録する）
@@ -43,24 +60,30 @@
 # **acceptance-remote.sh に引数を渡さない。** `--only` などの絞り込みは外部層の合格にならず、
 # #850（2026-10-01 にマージ。428a46a）から、知らない引数は終了コード 2 で止まる。定期実行は常に全体を回す。
 #
-# 終了コード: 0 = 記録した結果が ok / 1 = 記録した結果が ok 以外 / 3 = 要約を作れない・記録先が無い /
-#             4 = 投稿に失敗した（どちらも、CI の側では「記録が古い」として見える）
+# 終了コード: 0 = 記録した結果が ok / 1 = 記録した結果が ok 以外 / 3 = 要約を作れない・記録先が無い
+#             （--pr では、PR を読めない・open でない・HEAD が PR の head と一致しない、も 3）/
+#             4 = 投稿に失敗した（どちらも、CI の側では「記録が古い」「記録が無い」として見える）
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 3
 # shellcheck source=scripts/lib/acceptance-record.sh
 . "$HERE/lib/acceptance-record.sh" || exit 3
 
-print_only=0
+print_only=0 pr=""
 # 回す対象のツリー。既定はこのスクリプトのあるツリー（＝プライマリ）。差し替えは自己試験のため。
 repo_dir="$(dirname "$HERE")"
 while [ $# -gt 0 ]; do
   case "$1" in
     --print) print_only=1; shift ;;
     --repo-dir) repo_dir="${2:-}"; shift 2 ;;
+    --pr) pr="${2:-}"; shift 2 ;;
     *) echo "[acceptance-remote-scheduled] 知らない引数です: $1" >&2; exit 3 ;;
   esac
 done
+if [ -n "$pr" ] && ! [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[acceptance-remote-scheduled] --pr は PR の番号にしてください: $pr" >&2
+  exit 3
+fi
 cd "$repo_dir" || { echo "[acceptance-remote-scheduled] $repo_dir へ移れません" >&2; exit 3; }
 
 say() { printf '[acceptance-remote-scheduled] %s\n' "$*"; }
@@ -85,7 +108,7 @@ trap 'rm -rf "$WORK"' EXIT
 deliver() {
   # ラベルと系統の対応表は、回すツリー（ff した後のプライマリ）のものを読む。2 つは同じ commit で揃う。
   if ! bash "$HERE/acceptance-remote-summary.sh" --labels-from "scripts/acceptance-remote.sh" \
-    --deps-from "scripts/lib/acceptance-remote-deps.tsv" --head "$head" --time "$when" "$@" < "$WORK/output" > "$WORK/summary"; then
+    --deps-from "scripts/lib/acceptance-remote-deps.tsv" --head "$head" --time "$when" ${pr:+--pr "$pr"} "$@" < "$WORK/output" > "$WORK/summary"; then
     say "要約を作れませんでした。記録していません。"
     return 3
   fi
@@ -93,6 +116,12 @@ deliver() {
   cat "$WORK/summary"
   if [ "$print_only" -eq 1 ]; then
     say "--print なので投稿しません。"
+  elif [ -n "$pr" ]; then
+    if ! gh pr comment "$pr" --body-file "$WORK/summary"; then
+      say "PR #${pr} への投稿に失敗しました。"
+      return 4
+    fi
+    say "PR #${pr} へ投稿しました。"
   else
     if [ -z "$ACCEPTANCE_RECORD_ISSUE" ]; then
       say "記録先の issue が未設定です（scripts/lib/acceptance-record.sh の ACCEPTANCE_RECORD_ISSUE）。記録していません。"
@@ -117,16 +146,41 @@ head=0000000000000000000000000000000000000000
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1 || ! head="$(git rev-parse --verify -q HEAD)"; then
   head=0000000000000000000000000000000000000000
   say "git の作業ツリーではありません。検査を回しません。"
+  if [ -n "$pr" ]; then
+    # PR の head を確かめる前なので、PR へは何も載せない（どの head の記録とも言えない）。
+    exit 3
+  fi
   deliver --precondition not-a-git-tree; exit $?
 fi
-if ! git fetch --quiet origin main; then
-  say "origin の main を取得できません。検査を回しません。"
-  deliver --precondition fetch-failed; exit $?
-fi
-branch="$(git symbolic-ref -q --short HEAD || true)"
-if [ "$branch" != "main" ]; then
-  say "プライマリが main にありません（${branch:-detached}）。検査を回しません。"
-  deliver --precondition primary-not-on-main; exit $?
+if [ -n "$pr" ]; then
+  # **HEAD と PR の head の一致を、回す前に確かめる。** 一致しなければ回さず、載せない。
+  # 載せた記録は確認側で head-mismatch になるだけだが、apply していないツリーの結果を
+  # その PR の記録として残す理由が無い。
+  if ! pr_info="$(gh pr view "$pr" --json state,headRefOid --jq '.state + " " + .headRefOid' 2>/dev/null)"; then
+    say "PR #${pr} を読めません（gh の認証・番号を確かめてください）。検査を回しません。"
+    exit 3
+  fi
+  pr_state="${pr_info%% *}" pr_head="${pr_info#* }"
+  if [ "$pr_state" != OPEN ] || ! [[ "$pr_head" =~ ^[0-9a-f]{40}$ ]]; then
+    say "PR #${pr} は open ではありません（${pr_state}）。検査を回しません。"
+    exit 3
+  fi
+  if [ "$head" != "$pr_head" ]; then
+    say "プライマリの HEAD（${head}）が PR #${pr} の head（${pr_head}）と一致しません。検査を回さず、投稿もしません。"
+    say "プライマリで git fetch origin → git checkout --detach ${pr_head} → apply の後に回してください（docs/acceptance-remote-schedule.md）。"
+    exit 3
+  fi
+  say "プライマリの HEAD は PR #${pr} の head と一致しています（${head}）。"
+else
+  if ! git fetch --quiet origin main; then
+    say "origin の main を取得できません。検査を回しません。"
+    deliver --precondition fetch-failed; exit $?
+  fi
+  branch="$(git symbolic-ref -q --short HEAD || true)"
+  if [ "$branch" != "main" ]; then
+    say "プライマリが main にありません（${branch:-detached}）。検査を回しません。"
+    deliver --precondition primary-not-on-main; exit $?
+  fi
 fi
 if ! git diff --quiet HEAD --; then
   say "プライマリの追跡ファイルに手元の変更があります。検査を回しません。"
@@ -151,8 +205,10 @@ if [ ! -s terraform/terraform.tfstate ]; then
   say "プライマリに terraform/terraform.tfstate がありません（空も含む）。検査を回しません。"
   deliver --precondition state-missing; exit $?
 fi
-origin_main="$(git rev-parse --verify -q refs/remotes/origin/main)"
-if [ "$head" != "$origin_main" ]; then
+# --pr では fast-forward しない（プライマリを動かさない。冒頭の「--pr <N>」）。
+origin_main=""
+[ -n "$pr" ] || origin_main="$(git rev-parse --verify -q refs/remotes/origin/main)"
+if [ -z "$pr" ] && [ "$head" != "$origin_main" ]; then
   if ! git merge-base --is-ancestor "$head" "$origin_main"; then
     say "プライマリの main が origin/main から分岐しています（fast-forward できません）。検査を回しません。"
     deliver --precondition primary-not-at-origin-main; exit $?
@@ -176,7 +232,7 @@ fi
 #
 # **宣言の場所の差し替え（ACCEPTANCE_TF_DIR。scripts/lib/tf-dir.sh）を外す。** .env や
 # コンテナの環境に残っていると、上で確かめたプライマリの terraform/ ではなく、差し替え先の
-# 宣言と state を正として記録する（PR の第二意見の指摘）。定期実行が見るのはプライマリだけである。
+# 宣言と state を正として記録する（PR の第二意見の指摘）。定期実行も --pr も、見るのはプライマリだけである。
 if [ -n "${ACCEPTANCE_TF_DIR:-}" ]; then
   say "ACCEPTANCE_TF_DIR が設定されていました。定期実行ではプライマリの terraform/ を見るため外します。"
   unset ACCEPTANCE_TF_DIR

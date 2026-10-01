@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# acceptance-record-judge.sh — 外部層の定期実行の記録が新しいか、乖離が無いかを判定する（#844）
+# acceptance-record-judge.sh — 外部層の記録を判定する（定期実行 #844 / terraform/ を触る PR #845）
+#
+# 2 つの読み方を持つ。**記録の形（印・持ち主・要約の解釈）は 1 か所（下の jq の mine / marked /
+# parse）で共有し、違うのは何を求めるかだけである。**
+#
+#   既定        固定の issue の記録。新しいか・乖離が無いか・系統ごとの前提が通っているか（下の表）
+#   --pr-head   PR のコメントの記録。**その PR の head SHA で回した最新の記録が全件 PASS か**
+#               （下の「PR の記録の判定」）
 #
 # 記録は利用者の Mac の launchd が毎日 12:00 JST に固定の issue へ投稿する
 # （scripts/acceptance-remote-scheduled.sh）。ここはそのコメントを読んで判定するだけで、
@@ -41,6 +48,30 @@
 # 記録の時刻は、記録に書いた `time` とコメントの `created_at`（GitHub が付ける）の
 # **早いほう**を使う。記録の側の時刻を未来へずらしても、鮮度は延びない。
 #
+# **`pr:` の行を持つ記録（PR 向けの記録。#845）は、ここでは数えない。** PR の head は main ではないので、
+# 固定の issue の列に混ざると、main の宣言の乖離を PR の宣言で上書きしうる。
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# PR の記録の判定（--pr-head <40 桁> --pr <番号>。#845）
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 入力は PR のコメント（形は上と同じ）。数えるのは**持ち主の記録で、`pr:` が --pr と一致するもの**
+# だけである（定期実行の形の記録・別の PR の記録は数えない）。そのうち `head` が --pr-head と完全に
+# 一致する記録の**最新の 1 件**で決める。
+#
+#   ok             最新の記録が result: ok で、ラベルの行がすべて PASS
+#   no-record      この PR の記録が 1 件も無い（apply の後に外部層を回していない）
+#   head-mismatch  記録はあるが、どれもいまの head のものではない（記録の後に push した）
+#   drift          最新の記録が drift（乖離した検査の名前を出す）
+#   precondition   最新の記録が precondition。**検査を回せていないので、確かめていない＝失敗に数える**
+#                  （理由の綴りを出す。認証の切れなら再ログインして回し直す）
+#   incomplete     最新の記録が incomplete、または ok なのに PASS 以外の行がある・行の数が expected と合わない
+#
+# 最新の 1 件で決めるのは、同じ head で回し直した結果（認証を直して再実行・乖離を直して再実行）を
+# 反映するためである。**「最新」は投稿の順（GitHub の created_at と id）で決め、記録の time は使わない**
+# （端末の時計がずれると、後から載せた乖離の記録が前の全件 PASS より古く並ぶ）。**鮮度は見ない。** apply の後に回したことを head で結んでおり、その後の外部状態の
+# 変化は定期実行（既定の読み方）が拾う。
+#
 # ══════════════════════════════════════════════════════════════════════════════
 # 入出力
 # ══════════════════════════════════════════════════════════════════════════════
@@ -49,6 +80,7 @@
 #       repos/{owner}/{repo}/issues/N/comments --jq '.[]'` の出力そのまま）。
 #
 #   bash scripts/acceptance-record-judge.sh --owner ojos [--now <epoch>] [--max-age <秒>]
+#   bash scripts/acceptance-record-judge.sh --owner ojos --pr-head <40 桁> --pr <番号>
 #
 # 出力: 判定の経過を 1 行ずつ。落とす理由は `FAIL <理由>` の行。最後の行は
 #       `verdict: ok` か `verdict: fail`。
@@ -61,23 +93,29 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 2
 
 die() { echo "[acceptance-record-judge] $*" >&2; exit 2; }
 
-owner="" now="" max_age="$ACCEPTANCE_RECORD_MAX_AGE_SEC"
+owner="" now="" max_age="$ACCEPTANCE_RECORD_MAX_AGE_SEC" pr_head="" pr=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --owner) owner="${2:-}"; shift 2 ;;
     --now) now="${2:-}"; shift 2 ;;
     --max-age) max_age="${2:-}"; shift 2 ;;
+    --pr-head) pr_head="${2:-}"; shift 2 ;;
+    --pr) pr="${2:-}"; shift 2 ;;
     *) die "知らない引数です: $1" ;;
   esac
 done
 [ -n "$owner" ] || die "--owner にリポジトリの持ち主のログイン名を渡してください"
+if [ -n "$pr_head" ] || [ -n "$pr" ]; then
+  [[ "$pr_head" =~ ^[0-9a-f]{40}$ ]] || die "--pr-head は PR の head の 40 桁の 16 進にしてください"
+  [[ "$pr" =~ ^[1-9][0-9]*$ ]] || die "--pr-head と一緒に --pr へ PR の番号を渡してください"
+fi
 [ -n "$now" ] || now="$(date -u +%s)"
 [[ "$now" =~ ^[0-9]+$ ]] || die "--now は UNIX 時刻（秒）にしてください"
 [[ "$max_age" =~ ^[0-9]+$ ]] || die "--max-age は秒数にしてください"
 command -v jq >/dev/null || die "jq がありません"
 
 out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
-  --argjson now "$now" --argjson max "$max_age" '
+  --argjson now "$now" --argjson max "$max_age" --arg pr_head "$pr_head" --arg pr "$pr" '
   def iso: test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
   def short: if test("^[0-9a-f]{40}$") then .[0:7] else "-" end;
   def days: . / 86400 | . * 10 | floor | . / 10;
@@ -95,6 +133,12 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
           and all($sys[]; . as $s | (["pass", "fail", "not-run"] | index([$kv["prereq." + $s]])) != null)
         then {at: ([($kv.time | fromdateiso8601), $c] | min), result: $kv.result,
               head: (($kv.head // "") | short),
+              full: (($kv.head // "") | if test("^[0-9a-f]{40}$") then . else null end),
+              created: $c, id: (.id // 0),
+              pr: ($kv.pr // null),
+              reason: (($kv.reason // "-") | if test("^[a-z-]+$") then . else "-" end),
+              drift: (($kv.drift // "0") | tonumber? // 0),
+              expected: (($kv.expected // "0") | tonumber? // 0),
               ran: (($kv.ran // "0") | tonumber? // 0),
               invoked: (($kv.exit // "-") != "-"),
               unexpected: (($kv["unexpected-fail"] // "0") | tonumber? // 0),
@@ -106,7 +150,41 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
     [ .[] | select(type == "object") | select(marked) ] as $marked
   | [ $marked[] | select(mine | not) ] as $foreign
   | [ $marked[] | select(mine) | parse ] as $parsed
-  | ([ $parsed[] | select(.malformed != true) ] | sort_by(.at)) as $recs
+  | ([ $parsed[] | select(.malformed != true) ] | sort_by(.at)) as $all
+  | if $pr_head != "" then
+      # ── PR の記録（#845）────────────────────────────────────────────────
+      # **並べる順は GitHub が付けた投稿の順（created_at と id）にする。** 記録の time は端末の時計で、
+      # 後から投稿した乖離の記録が、時計のずれで前の全件 PASS より古く並ぶと success を出す
+      # （#845 の第二意見の指摘）。鮮度を見ないので、time を使う理由が無い。
+      ([ $all[] | select(.pr == $pr) ] | sort_by([.created, .id])) as $mine_pr
+      | [ $mine_pr[] | select(.full == $pr_head) ] as $at
+      | "records: \($mine_pr | length)（PR #\($pr) の持ち主の記録。この head のもの \($at | length) 件。形の崩れ \([ $parsed[] | select(.malformed == true) ] | length) 件・持ち主以外の \($foreign | length) 件・ほかの PR や定期実行の形の \([ $all[] | select(.pr != $pr) ] | length) 件は数えない）",
+        ( if ($at | length) == 0 then
+            if ($mine_pr | length) > 0 then
+              ($mine_pr[-1]) as $l
+              | "FAIL head-mismatch この head（\($pr_head[0:7])）の記録がありません。最新の記録は head=\($l.head)（\($l.at | when)）で、その後に push されています"
+            else
+              "FAIL no-record PR #\($pr) に持ち主（\($owner)）の記録がありません（apply の後に外部層を回していない）"
+            end
+          else
+            ($at[-1]) as $r
+            | "latest: \($r.at | when) result=\($r.result) reason=\($r.reason) head=\($r.head)",
+              # 行の数も見る（expected は要約が acceptance-remote.sh の run の数から書く）。行が欠けた記録を
+              # 「残りが PASS だから」で通さない（#845 の第二意見の指摘）。
+              ( if $r.result == "ok" and $r.expected > 0 and ($r.rows | length) == $r.expected
+                   and all($r.rows[]; .st == "PASS") then
+                  "ok: この head の最新の記録は全 \($r.rows | length) 件 PASS です"
+                elif $r.result == "drift" then
+                  "FAIL drift この head の最新の記録に乖離があります（DRIFT \($r.drift) 件・綴り不明の FAIL \($r.unexpected) 件）: \([ $r.rows[] | select(.st == "DRIFT") | .label ] | join(" / "))"
+                elif $r.result == "precondition" then
+                  "FAIL precondition この head の最新の記録は検査を回せていません（\($r.reason)）。確かめていないので失敗に数えます"
+                else
+                  "FAIL incomplete この head の最新の記録が途中で止まっています（result=\($r.result) ran=\($r.ran)）"
+                end )
+          end )
+    else
+    # ── 定期実行の記録（#844）。PR 向けの記録（pr: の行がある）は数えない ────────────
+    ([ $all[] | select(.pr == null) ]) as $recs
   | "records: \($recs | length)（持ち主の記録。形の崩れ \([ $parsed[] | select(.malformed == true) ] | length) 件と、持ち主以外の \($foreign | length) 件は数えない）",
     ( if ($recs | length) == 0 then
         "FAIL no-record 持ち主（\($owner)）の記録が 1 件もありません"
@@ -144,6 +222,7 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
                 "system \($s): 前提が通った最後の記録 \($p.at | when)"
               end )
       end )
+    end
 ')" || die "入力を JSON として読めませんでした（記録が無いのではなく、判定できません）"
 
 printf '%s\n' "$out"

@@ -216,7 +216,54 @@ GCP は認証後に `ido@ojos.jp` であることを確かめます（別アカ�
   その回は `drift` として記録されます。翌日の回で戻れば読み流してよく、ログの plan の行で見分けられます。
 - **偽造は塞ぎません。** 記録を書くのは回すのと同じ持ち主の端末です。検出できるのは「止まった」「認証が切れた」「乖離した」
   であって、持ち主自身の迂回ではありません（second-opinion-gate と同じ線）。
-- **terraform/ を触る PR で記録を求める**のは #845 です（この仕組みに依存します）。
+- **terraform/ を触る PR で記録を求める**のは #845 です（下の「terraform/ を触る PR」。要約の形と判定はこの仕組みと共有します）。
+
+## terraform/ を触る PR（#845）
+
+**apply の後に、apply したのと同じツリーから外部層を回し、要約をその PR へ載せます。** CI
+（[`acceptance-remote-pr.yml`](../.github/workflows/acceptance-remote-pr.yml)）が、PR の head SHA に一致する
+持ち主の記録を探して commit status `acceptance-remote-pr` を付けます。毎日の定期実行はマージの後
+1 日以内に乖離を拾いますが、**apply の直後に外部層を回したかどうかは拾えない**ので、ここで結びます。
+
+### 手順（利用者の端末で。apply と続けて）
+
+apply は**マージの前に、プライマリを PR の head へ `--detach` で置いて**当てます（`docs/handoff.md` 3 章。
+worktree からは state が見えず、ブランチ名の checkout は別の worktree が握っていると断られます）。
+
+```bash
+cd /workspaces/game-forge                       # プライマリ。worktree からは回さない
+git fetch origin
+sha="$(gh pr view <N> --json headRefOid --jq .headRefOid)"
+git checkout --detach "$sha"
+terraform -chdir=terraform plan                 # destroy の件数の期待値を先に決める（3 章）
+terraform -chdir=terraform apply
+bash scripts/acceptance-remote-scheduled.sh --pr <N>   # 160 秒ほど。要約が PR #<N> へ載る
+git checkout main                               # すぐ戻す（3 章「プライマリは main に」）
+```
+
+`--pr` は定期実行と同じ確認（追跡ファイルの汚れ・`terraform/` の追跡外の宣言・state の有無）をしたうえで、
+**プライマリの HEAD が PR の head と一致しなければ、回さず、何も載せません**（終了コード 3）。定期実行と違って
+**fetch も fast-forward もしません**——apply を当てたツリーそのものを確かめるためです。全文の出力は端末にだけ
+出ます。**PR へ貼らないでください**（値を含みます。PR に載るのは要約だけです）。
+
+### status の読み方
+
+| status | 説明文 | 意味 | 次にすること |
+|---|---|---|---|
+| success | `External acceptance passed at this head (all checks PASS)` | いまの head で回した最新の記録が全件 PASS | なし |
+| failure | `No external acceptance record for this PR; …` | 記録が無い（apply の前、または回し忘れ） | 上の手順 |
+| failure | `… record is for an older head; re-run after apply` | 記録の後に push した | 新しい head で plan → 差分があれば apply → `--pr` で回し直す |
+| failure | `… found drift` | 回したが乖離があった | PR のコメントの `DRIFT` の行と端末の出力 |
+| failure | `… did not run checks (<理由>)` | 前提の不成立（認証の切れ・汚れ・state が無い） | 上の「認証の切れ」や理由の表を見て、回し直す |
+| failure | `… is incomplete` | 途中で止まった | 端末の出力を見て回し直す |
+| （無し） | — | terraform/ を触らない PR・fork の PR、または GitHub API から読めなかった | 触る PR で無いなら正常。読めなかったときはジョブのログ（次の契機で判定し直す） |
+
+**前提の不成立も failure に数えます。** 検査を回せていない記録は、apply の後の外部状態を確かめていないためです。
+
+**判定し直す契機**: 記録のコメントが付いたとき（`issue_comment`）・30 分ごとの掃き寄せ（`schedule`）・
+手で流すとき（`gh workflow run acceptance-remote-pr.yml -f pr=<N>`）。push の直後の failure は、apply の前の
+正しい状態です（猶予は置いていません。理由はワークフローの冒頭）。**required check ではありません**——赤は
+`land` の手順 5 が読みます。
 
 ## 外し方
 

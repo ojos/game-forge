@@ -57,12 +57,13 @@ echo CHECKS_NOT_ATTACHED; exit 1
 
 `CHECKS_ATTACHED` が出てから watch します。`CHECKS_NOT_ATTACHED` なら、止めて報告します。
 
-check run だけを数えれば足りるのは、このリポジトリの事情によります。PR で起動する `verify`・`identity-guard`・`second-opinion-gate` はパスで絞っていないため、PR のどのコミットにも check run が付きます。commit status は `second-opinion-gate` と、`docs/handoff.md` を触る PR の `writeback-serial` だけで、どちらも check run と一緒に Actions が出しています。外部の CI はありません。それでも付かないのは、`[skip ci]` などで CI を飛ばしたコミットです。**CI を通っていないコミットを黙って通さず、止まるのが正しい動きです。**
+check run だけを数えれば足りるのは、このリポジトリの事情によります。PR で起動する `verify`・`identity-guard`・`second-opinion-gate` はパスで絞っていないため、PR のどのコミットにも check run が付きます。commit status は `second-opinion-gate` と、`docs/handoff.md` を触る PR の `writeback-serial`、`terraform/` を触る PR の `acceptance-remote-pr` だけで、どれも check run と一緒に Actions が出しています。外部の CI はありません。それでも付かないのは、`[skip ci]` などで CI を飛ばしたコミットです。**CI を通っていないコミットを黙って通さず、止まるのが正しい動きです。**
 
 ```bash
 gh pr checks N --watch --interval 30
 ```
 
+- **`terraform/` を触る PR では、`acceptance-remote-pr` が failure のまま `--watch` が終わることがあります。** apply の後の外部層の記録が無いと failure になるのが正しい状態で、ここでは止めずに 5 で読みます（#845）。
 - `second-opinion-gate` は、push のたびに 300 秒の猶予を置いてから判定します（記録は push の後に手元から投稿されるため）。すぐに出なくても異常ではありません。
 - **Dependabot の PR は、記録を投稿しません。** ゲートが待たずに success を付けます（説明文が `Dependabot PR: second-opinion record not required`。#838）。ただし人がコミットを足していれば、いつもどおり記録が要ります。どちらの場合も、4 で差分は読みます。
 - 失敗の形は 2 つあり、**扱いが違います。**
@@ -105,6 +106,11 @@ gh api --paginate 'repos/{owner}/{repo}/pulls/N/comments' --jq '.[] | {user: .us
 
   最終行が `ORCHESTRATOR_BUNDLE_CHANGED` なら、配備が必要です。スクリプトが失敗した場合（作業ツリーが汚れている等）は、「変わっていない」とは扱いません。
 - 差分が `migrations/` に及ぶ場合は、**適用を先に済ませる必要があります。** 適用済みかどうかは、PR のブランチを checkout したツリーで `bash scripts/check-migrations-applied.sh --remote` を実行して確かめます。そのブランチが古い main から切られているなら、先に手元で main を取り込みます（確かめるためだけなので push はしません）。古いツリーで見ると、未適用を見落とします。
+- 差分が `terraform/` に及ぶ場合は、**apply と、その後の外部層の記録が先に要ります**（#845）。apply はマージの前に、プライマリを PR の head へ `--detach` で置いて利用者が当てます（`docs/handoff.md` 3 章）。済んだかどうかは commit status の `acceptance-remote-pr` で読みます。**見るのは確かめる head の status です**（`gh api "repos/{owner}/{repo}/commits/$sha/statuses" --jq '[.[] | select(.context == "acceptance-remote-pr")][0] | {state, description}'`）。
+  - success: その head で回した最新の記録が全件 PASS です。前提は済んでいます。
+  - failure: 説明文で読み分けます（`docs/acceptance-remote-schedule.md`「status の読み方」）。記録が無い・古い head のもの・前提の不成立なら、**apply と `bash scripts/acceptance-remote-scheduled.sh --pr N` の手順を渡して止めます。** 乖離（`found drift`）なら、PR のコメントの `DRIFT` の行を添えて止めます。**required check ではないので、マージそのものは通ってしまいます。** 止めるのはこの手順です。
+  - 無い: `terraform/` を触る PR なのに無いときは、GitHub API から読めなかったか、まだ判定されていません。`gh workflow run acceptance-remote-pr.yml -f pr=N` で流してから読み直します。付かなければ止めて報告します。
+  - 記録を付けたのが apply の前か後かは、機構では分かりません（記録は head で結ぶだけです）。利用者に apply の後に回したかを確かめます。
 - PR 本文や issue に「マージ前に〜」と書かれている前提も確かめます。
 
 どれも外部の状態を変える操作です。**済んでいなければ、ここで止めて利用者に伝えます。** このスキルの中では実行しません。

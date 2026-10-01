@@ -65,6 +65,13 @@
 # **stdout と stderr を 1 本にまとめて渡すこと。** acceptance-remote.sh はラベルを stdout へ、
 # FAIL の行を stderr へ出す。片方だけでは合否が決まらない。
 #
+#   # terraform/ を触る PR の head で回した記録（#845。scripts/acceptance-remote-scheduled.sh --pr）
+#   bash scripts/acceptance-remote-summary.sh ... --pr <PR 番号> < out.log
+#
+# **`--pr` を付けた要約は `pr: <番号>` の行を持つ。** 確認側は、PR では `pr:` が PR の番号と一致する
+# 記録だけを、固定の issue では `pr:` の無い記録だけを数える（scripts/acceptance-record-judge.sh）。
+# 形と分類は同じで、違うのは見出しとこの 1 行だけである（同じことを 2 か所に書かない）。
+#
 # 出力: 標準出力へコメントの本文（Markdown）。1 行目は scripts/lib/acceptance-record.sh の印。
 # 終了コード: 0 = 要約を作れた（結果の良し悪しとは無関係）/ 2 = 引数・ラベル一覧が不正で作れない
 set -uo pipefail
@@ -75,7 +82,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 2
 
 die() { echo "[acceptance-remote-summary] $*" >&2; exit 2; }
 
-labels_from="" deps_from="$HERE/lib/acceptance-remote-deps.tsv" rc="" head="" when="" precondition=""
+labels_from="" deps_from="$HERE/lib/acceptance-remote-deps.tsv" rc="" head="" when="" precondition="" pr=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --labels-from) labels_from="${2:-}"; shift 2 ;;
@@ -85,6 +92,7 @@ while [ $# -gt 0 ]; do
     --head) head="${2:-}"; shift 2 ;;
     --time) when="${2:-}"; shift 2 ;;
     --precondition) precondition="${2:-}"; shift 2 ;;
+    --pr) pr="${2:-}"; shift 2 ;;
     *) die "知らない引数です: $1" ;;
   esac
 done
@@ -92,6 +100,10 @@ done
 [ -f "$labels_from" ] || die "--labels-from に acceptance-remote.sh のパスを渡してください"
 [[ "$head" =~ ^[0-9a-f]{40}$ ]] || die "--head は 40 桁の 16 進にしてください"
 [[ "$when" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || die "--time は YYYY-MM-DDTHH:MM:SSZ（UTC）にしてください"
+# PR の番号も形を検査してから載せる（自由な文字列を公開の要約へ流す経路を作らない）。
+if [ -n "$pr" ]; then
+  [[ "$pr" =~ ^[1-9][0-9]*$ ]] || die "--pr は PR の番号（正の整数）にしてください"
+fi
 if [ -n "$precondition" ]; then
   # 起動側の理由は列挙に限る（自由な文字列を公開の要約へ流す経路を作らない）。
   case "$precondition" in
@@ -256,12 +268,17 @@ case "$result" in
 esac
 
 printf '%s\n' "$ACCEPTANCE_RECORD_MARKER"
-printf '外部層の定期実行の記録（#844）: **%s**\n\n' "$headline"
+if [ -n "$pr" ]; then
+  printf 'PR #%s の head で回した外部層の記録（#845）: **%s**\n\n' "$pr" "$headline"
+else
+  printf '外部層の定期実行の記録（#844）: **%s**\n\n' "$headline"
+fi
 printf '値は載せていません。検査の出力と plan の出力は、実行した端末のログにだけあります。\n\n'
 printf '```text\n'
 printf 'record: v1\n'
 printf 'time: %s\n' "$when"
 printf 'head: %s\n' "$head"
+[ -z "$pr" ] || printf 'pr: %s\n' "$pr"
 printf 'result: %s\n' "$result"
 printf 'reason: %s\n' "$reason"
 printf 'exit: %s\n' "${rc:--}"

@@ -64,5 +64,30 @@ EOF
   echo "[install-cloudflared] wrote ssh config for ${SSH_HOST}"
 }
 
+# **dev01 の上のコンテナでは何もしない**（#802）。
+#
+# 上の前提（コンテナはホストの LAN へ出られないので、dev01 へはトンネルを回るしかない）は
+# **ホストが Mac のときの話である。** dev01 の上で立てたコンテナでは、ホストが dev01 自身なので、
+# ここで入口を書くと「dev01 から dev01 へトンネルを回って入る」自己参照の設定になる。
+# 使い道が無いうえ、`ssh dev01` が通ってしまうぶん、どの機械にいるのかを取り違えやすい。
+# cloudflared の導入も、この入口のためだけにあるので一緒に飛ばす。
+#
+# **判定はホストからの宣言（環境変数 DEVCONTAINER_HOST）で行う。** dev01 では
+# `.devcontainer/.env`（追跡外）に `DEVCONTAINER_HOST=dev01` を書き、compose.yaml の
+# environment がコンテナへ渡す。自動の判定を採らなかった理由:
+#   - コンテナのホスト名はコンテナ ID で、ホストの名前は見えない。
+#   - `docker info` の Name はホストの名前を返すが、postCreate の時点でソケットが使える保証が無く、
+#     ホスト名を dev01 以外にした日に黙って外れる。
+#   - LAN（192.168.3.0/24）へ届くかで見る案は、Mac 側が拒否ではなくタイムアウトになるので遅く、
+#     網の設定で結果が変わる。
+# 宣言は UID の DEVCONTAINER_UID=1001 と同じファイルに並べる。UID を渡し忘れると
+# ワークスペースへ書き込めずすぐ気づくので、同じ場所の書き忘れも一緒に見つかる。
+#
+# 比べる相手は、書こうとしている Host の別名（dev01）である。
+if [[ "${DEVCONTAINER_HOST:-}" == "dev01" ]]; then
+  echo "[install-cloudflared] DEVCONTAINER_HOST=dev01: このコンテナのホストが入口の行き先そのものなので、導入も ~/.ssh/config への追記もしません"
+  exit 0
+fi
+
 install_cloudflared_if_missing
 write_ssh_config_if_missing

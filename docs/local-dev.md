@@ -952,3 +952,172 @@ M1 以降が所有する。ここで先に作らない。
 | 本番のビルド実行環境への配備の実行（イメージの GHCR への push までは M2-4 で済んでいる） | **確定24 で配備先は AWS Lambda（ECR へ push ＋ 関数更新）に決まった**（仕様書 9.3）。実際の構築は M2-9 の範囲外で、関数と ECR / VPC の宣言が要る。v1.8 までは「VPS への自動デプロイの実行 / M2-5 の前提となる VPS が要る」 |
 | ビルドの同時実行制御・タイムアウト・結果キャッシュ | M2-5 |
 | 本番の D1 / R2 と Pages プロジェクトの宣言 | 未決。手順は [pages-deploy.md](pages-deploy.md) にあるが、Terraform で宣言するかが決まっていない |
+
+---
+
+## 7. dev01 に副開発環境を立てる（#802）
+
+**Mac を持ち歩いている間も作業が進むように、dev01 に同じ devcontainer を立てる。** 全面移設ではなく分業である
+（#802 の本文）。Mac は `acceptance.sh` の反復・terraform・本番の確認を持ち、dev01 は
+`npm run check:isolated-build`（amd64 ネイティブ）・長い調査・CI とレビューの待ち・持ち歩き中の作業を持つ。
+
+**dev01 に置かないもの**: `terraform/terraform.tfvars` と `CLOUDFLARE_API_TOKEN`（terraform は Mac から回す）。
+本番への書き込みコマンドも dev01 からは打たない。
+
+dev01 への入り方（`ssh dev01-ssh.ojos.jp`。Cloudflare Tunnel と Access）は [local-llm-tunnel.md](local-llm-tunnel.md) にある。
+以下の 7.1〜7.3 は **dev01 のホスト**で、7.4 以降は **dev01 の上のコンテナの中**で行う。
+
+### 7.1 Docker Engine を入れる（ホスト）
+
+**Docker Desktop ではなく Docker Engine を入れる。** VM を挟まず、14Gi のメモリをそのまま使うためである。
+手順は Docker の公式の apt リポジトリによる導入である。
+
+```bash
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker "$USER"
+```
+
+`usermod` の後は**ログインし直す**（グループはログインのときに決まる）。入り直したら
+`docker run --rm hello-world` が sudo なしで通ることを確かめる。**docker グループは root と同等の権限を持つ**
+ので、足すのは自分のユーザーだけにする。
+
+### 7.2 clone する（ホスト）
+
+```bash
+git clone https://github.com/ojos/game-forge.git ~/game-forge
+```
+
+**以下は `~/game-forge` に置いた前提で書く。** コンテナの中では置き場所に依らず `/workspaces/game-forge` になるが、
+7.7 の attach はホストの clone の絶対パス（`devcontainer.local_folder` のラベル）でコンテナを探すので、
+別の場所に置いたときは 7.7 の `$HOME/game-forge` をそのパスへ読み替える。
+
+### 7.3 UID を渡す（ホスト）
+
+**dev01 の利用者は uid=1001（`ido`）で、コンテナの vscode は既定で 1000 である。** Docker Desktop for Mac は
+ファイル共有層が所有者を写すのでずれが表に出ないが、**ネイティブ Linux の Docker は数値の UID をそのまま通す**ため、
+そのままではコンテナからワークスペースへ書き込めない。
+
+**devcontainer.json の `updateRemoteUserUID` はこの構成には効かない**（dockerComposeFile 方式のため）。
+そこで vscode の UID/GID をイメージのビルド引数で付け替える（`.devcontainer/Dockerfile` と
+`.devcontainer/remap-vscode-user.sh`。既定は 1000 のままで、Mac の挙動は変わらない）。
+
+値は **`.devcontainer/.env`（追跡外。`.gitignore` の `.env` が効く）**に書く。
+
+```bash
+cd ~/game-forge
+printf 'DEVCONTAINER_UID=%s\nDEVCONTAINER_GID=%s\nDEVCONTAINER_HOST=dev01\n' "$(id -u)" "$(id -g)" > .devcontainer/.env
+docker compose -f .devcontainer/compose.yaml config | grep -A3 'args:'   # USER_GID / USER_UID が 1001 であること
+```
+
+- **`.devcontainer/.env` に書く理由**: compose は、compose ファイルの在るディレクトリの `.env` を既定で読む
+  （起動したときのカレントディレクトリに依らない。docker compose v5.5.1 で実測）。devcontainer CLI（0.88.0 を読んだ）は
+  `--env-file` を `dockerComposeFile` が空の配列のときにしか渡さないので、この構成では compose の既定が効く。
+  **シェルの環境変数に export しても効く**（こちらが `.env` より優先される）が、ssh の非対話のコマンドや
+  systemd からの起動では読まれないことがあるので、ファイルに置く。
+- **`DEVCONTAINER_HOST=dev01`** は、`scripts/install-cloudflared.sh` に「このコンテナのホストは dev01 自身である」と
+  伝える宣言である。値が `dev01` のとき、あのスクリプトは cloudflared の導入も `~/.ssh/config` への入口の追記もしない
+  （dev01 から dev01 へトンネルを回って入る**自己参照の入口**を作らないため。判定を自動にしなかった理由はスクリプトの末尾）。
+  UID と同じファイルに並べてあるのは、UID を渡し忘れるとワークスペースへ書き込めずすぐ気づくので、一緒に書き忘れを見つけられるためである。
+- **UID を変えたら、イメージを作り直す**（Rebuild Container）。付け替えはビルドの段で行うので、既存のコンテナには効かない。
+
+### 7.4 コンテナを立てて入る
+
+VS Code で Remote-SSH で `dev01-ssh.ojos.jp` に入り、`~/game-forge` を開いて「Reopen in Container」を選ぶ。
+`postCreateCommand` の出力に `[install-cloudflared] DEVCONTAINER_HOST=dev01: …` の行が出ていれば、7.3 の宣言が届いている。
+
+入ったら、コンテナの中で確かめる。
+
+```bash
+id                                   # uid=1001(vscode) gid=1001(vscode)
+touch .dev01-write-probe && rm .dev01-write-probe && echo WRITE_OK
+docker ps >/dev/null && echo DOCKER_OK   # docker グループがコンテナから通っていること
+grep -c 'Host dev01' ~/.ssh/config 2>/dev/null || true   # 0 か、ファイルが無いこと
+```
+
+**VS Code の窓を閉じるとコンテナは止まり、中の tmux も一緒に消える**（`devcontainer.json` の
+`shutdownAction: stopCompose`。Mac と共通の設定なので dev01 だけ変えることはしていない）。したがって dev01 では、
+**VS Code は導入とログイン（7.5・7.6）に使い、持ち歩き中の作業は 7.7 の形（ssh から `docker start` と `docker exec` で
+tmux に入る）で回す。** tmux で作業が走っている間は、dev01 に繋いだ VS Code の窓を閉じない。
+手を触れずに立ち上がる形（systemd）は #849 が扱う。
+
+### 7.5 `.env` と `npm ci`（コンテナの中）
+
+リポジトリ直下の `.env`（開発ツール向け。`GH_TOKEN`、`SECOND_OPINION_ENGINE` など）は、**Mac の `.env` から
+手で写す**（リポジトリを経由させない）。キーの一覧は `.env.example` にある。
+
+- **`gh auth login` を打たない。** `.env` の `GH_TOKEN` が優先されるのでログインの結果は使われず、それでも
+  OAuth トークンが 1 本発行され、上限に達していれば**他の環境のトークンを 1 本失効させる**
+  （`.github/project-ai-rules.md`「GitHub 認証（gh）だけを例外にする理由」）。
+- **`CLOUDFLARE_API_TOKEN` は写さない**（terraform は Mac から回す）。
+
+```bash
+npm ci                       # node_modules は実体で置く（symlink にしない）
+bash scripts/verify.sh       # VERIFY_PASS
+npm run check:isolated-build # amd64 ネイティブ。エミュレーションなし
+```
+
+最初の `verify` が `EBITEN_KEYS_FAIL` で止まったら、rebuild の直後と同じ扱いである（Go のモジュールキャッシュが空。
+`docs/handoff.md` 3 章の rebuild の項）。
+
+### 7.6 第二意見の CLI に対話でログインする（コンテナの中）
+
+`bash scripts/loop-gate.sh` は第二意見の CLI を呼ぶので、使うエンジン（`.env` の `SECOND_OPINION_ENGINE`。既定の運用は codex）へ
+**1 度だけ対話でログインする。** 資格情報は named volume（`codex-storage` / `gemini-storage`）に載るので、コンテナを作り直しても残る。
+
+```bash
+codex login          # codex のとき
+agy                  # antigravity のとき（起動して Google アカウントでログイン）
+bash scripts/post-rebuild-check.sh   # 道具と volume のマウントを一覧で確かめる
+```
+
+**ログインは VS Code の端末から行う。** どちらもブラウザでの認証の後に `localhost` へ戻ってくる形で、VS Code は
+コンテナのその口を手元のブラウザへ自動で転送する。ssh と `docker exec` だけで入っている端末からは、戻り先へ届かない。
+
+### 7.7 tmux に常駐させて attach する
+
+**作業は tmux の中で走らせる。** ssh が切れても（鞄に入れても）エージェントは止まらない。
+
+コンテナの中で（VS Code の端末でも、下の ssh からでも同じ）:
+
+```bash
+tmux new -A -s main   # 無ければ作り、在れば入る
+# 抜けるときは Ctrl-b d（tmux は動き続ける）
+```
+
+手元（Mac）から、VS Code を開かずに直接入る（Mac の `~/.ssh/config` にあるのは `Host dev01-ssh.ojos.jp` なので、
+その名前で入る。[local-llm-tunnel.md](local-llm-tunnel.md) の「手元の Mac 側の手順」）:
+
+```bash
+ssh -t dev01-ssh.ojos.jp '
+  id="$(docker ps -aq --filter label=com.docker.compose.service=app --filter label=devcontainer.local_folder=$HOME/game-forge)"
+  [ -n "$id" ] || { echo "コンテナがありません。7.4 で一度立ててください" >&2; exit 1; }
+  docker start "$id" >/dev/null
+  docker exec -it -u vscode -w /workspaces/game-forge "$id" tmux new -A -s main'
+```
+
+- `docker ps -a` の絞り込みは、devcontainer が付けるラベル（`devcontainer.local_folder`。ホストの clone の絶対パス）と
+  compose のサービス名で行う。**止まっているコンテナも拾い、`docker start` で起こしてから入る**
+  （VS Code の窓を閉じて止まった後でも、この 1 行で戻れる。動いているコンテナへの `docker start` は何もしない）。
+- **tmux のセッションはコンテナと一緒に消える。** コンテナを作り直す・止める（VS Code の窓を閉じるのを含む）と、
+  中の作業も止まる。自動で戻す仕組み（systemd）とスマホからの入口は #849 の範囲である。
+
+### 7.8 確かめること（#802 の acceptance との対応）
+
+| acceptance | 確かめ方 | 誰が |
+|---|---|---|
+| dev01 の devcontainer で VERIFY_PASS | 7.5 の `bash scripts/verify.sh` | 利用者（dev01） |
+| dev01 で `check:isolated-build` が通る | 7.5 の `npm run check:isolated-build` | 利用者（dev01） |
+| ワークスペースへ書き込める | 7.4 の `WRITE_OK` | 利用者（dev01） |
+| Mac で作り直しても VERIFY_PASS | Mac で Rebuild Container の後に `bash scripts/verify.sh`（`.devcontainer/.env` を置かないので既定の 1000） | 利用者（Mac） |
+| dev01 で自己参照の入口を書かない | 7.4 の `grep -c 'Host dev01' ~/.ssh/config` が 0 | 利用者（dev01）。分岐そのものは `scripts/check-devcontainer-dev01.sh` が毎回見る |
+| dev01 で `terraform plan` が必須変数の不足で落ちる | `terraform -chdir=terraform init && terraform -chdir=terraform plan -input=false` が `No value for required variable` で止まる（tfvars を置いていないので fail-closed） | 利用者（dev01） |
+
+**UID の既定が 1000 のままであること・dev01 の値がビルド引数へ届くこと・付け替えの判定・
+install-cloudflared.sh の分岐は、`scripts/check-devcontainer-dev01.sh`（`scripts/acceptance.sh` から回る）が
+機械で見る。** イメージの実ビルドと、実機での書き込みはそこでは見ない。

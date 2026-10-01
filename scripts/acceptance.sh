@@ -286,6 +286,26 @@ else
   echo "[acceptance] (second-opinion) skip: scripts/second-opinion-codex-selftest.sh not found"
 fi
 
+# dev01 で devcontainer を立てるための分岐（#802）。
+#
+# 見るのは、vscode の UID/GID の既定が 1000 のままであること（Mac の既存挙動）、dev01 の値が
+# `.devcontainer/.env` からビルド引数へ届くこと、付け替えの判定、そして dev01 の上では
+# scripts/install-cloudflared.sh が自己参照の入口を書かず導入にも進まないこと。
+#
+# **ここに置く理由は、壊れても手元では気づけないからである。** 既定の 1000 を崩すと、Mac で
+# 次に rebuild した日に初めてワークスペースの所有者がずれる。dev01 の分岐を崩すと、dev01 の
+# コンテナに黙って自己参照の入口が書かれる。どちらも devcontainer を作り直すまで表に出ない。
+#
+# `docker compose config`（デーモン不要）と仕込みの道具だけで、0.2 秒で終わる。ネットワークも
+# 外部認証も使わない。イメージの実ビルドと dev01 の実機での書き込みは見ない（あちらの冒頭）。
+if [[ -f .devcontainer/compose.yaml ]]; then
+  echo "[acceptance] (devcontainer) scripts/check-devcontainer-dev01.sh"
+  bash scripts/check-devcontainer-dev01.sh
+  ran_any=1
+else
+  echo "[acceptance] (devcontainer) skip: .devcontainer/compose.yaml not found"
+fi
+
 # OGP 撮影の「写し」の機械照合（#26 / #235 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く。** 23 ms で終わる（実測）。外すと、宣言と実装がずれた状態がどれも

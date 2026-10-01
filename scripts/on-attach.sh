@@ -163,7 +163,14 @@ check_gh_auth() {
     echo "[on-attach] WARN: $env_var が設定されています。gh はこの値を保存済み認証より優先します。'gh auth login' は実行しないでください（gh 自身も値が設定されているあいだはログインを拒否します）。値を空にしてログインすると OAuth トークンの上限枠を 1 つ消費し、上限に達していれば他環境の認証が 1 本失効します。" >&2
     echo "[on-attach] WARN: $env_var の値（有効期限・権限・値の取り違え）と、ネットワークへ出られるかを確認してください。" >&2
   else
-    echo "[on-attach] WARN: 未認証であれば、コンテナ内で 'gh auth login' を実行してください。ホストのトークンは注入されません。" >&2
+    # 未認証のときも 'gh auth login' を案内しない（#869）。
+    #
+    # このプロジェクトは gh の認証を PAT（.env の GH_TOKEN）に揃えている
+    # （.github/project-ai-rules.md「GitHub 認証（gh）だけを例外にする理由」）。'gh auth login' は
+    # OAuth トークンを 1 本発行し、上限（ユーザー × アプリ × scope あたり 10 本）に達していれば
+    # 他環境のトークンを 1 本失効させる。案内すると、その連鎖の 1 歩目へ誘導することになる。
+    echo "[on-attach] WARN: gh が未認証の可能性があります。.env の GH_TOKEN に、この環境用の PAT（fine-grained・このリポジトリだけ）を置いてください。発行の手順と権限は .github/project-ai-rules.md「GitHub 認証（gh）だけを例外にする理由」にあります。ホストのトークンは注入されません。" >&2
+    echo "[on-attach] WARN: 'gh auth login' は使いません（OAuth の上限の枠を消費し、上限に達していれば他環境の認証が 1 本失効します）。" >&2
   fi
 }
 

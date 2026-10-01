@@ -1052,9 +1052,13 @@ tmux に入る）で回す。**
 リポジトリ直下の `.env`（開発ツール向け。`GH_TOKEN`、`SECOND_OPINION_ENGINE` など）は、**Mac の `.env` から
 手で写す**（リポジトリを経由させない）。キーの一覧は `.env.example` にある。
 
+- **`GH_TOKEN` は Mac の値を写さず、dev01 用の PAT を別に発行して置く**（#869）。Mac 用の PAT は terraform と
+  外部層のために管理者の権限まで持つので、**dev01 には持ち込まない。** 発行の手順と dev01 の権限の組（管理者・変数は
+  No access）は `.github/project-ai-rules.md`「GitHub 認証（gh）だけを例外にする理由」の表にある。置いたら
+  `gh auth status` が `(GH_TOKEN)` と出て、`gh api user --jq .login` が `ojos` を返すことを確かめる。
 - **`gh auth login` を打たない。** `.env` の `GH_TOKEN` が優先されるのでログインの結果は使われず、それでも
   OAuth トークンが 1 本発行され、上限に達していれば**他の環境のトークンを 1 本失効させる**
-  （`.github/project-ai-rules.md`「GitHub 認証（gh）だけを例外にする理由」）。
+  （同じ節）。on-attach も、gh が使えないときは `gh auth login` ではなく `GH_TOKEN` を案内する。
 - **`CLOUDFLARE_API_TOKEN` は写さない**（terraform は Mac から回す）。
 
 ```bash

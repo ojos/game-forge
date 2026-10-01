@@ -1038,7 +1038,22 @@ id                                   # uid=1001(vscode) gid=1001(vscode)
 touch .dev01-write-probe && rm .dev01-write-probe && echo WRITE_OK
 docker ps >/dev/null && echo DOCKER_OK   # docker グループがコンテナから通っていること
 grep -c 'Host dev01' ~/.ssh/config 2>/dev/null || true   # 0 か、ファイルが無いこと
+cat /proc/self/attr/current          # unconfined（docker-default (enforce) なら compose.yaml の security_opt が効いていない）
+bwrap --ro-bind / / true && echo BWRAP_OK   # codex の read-only のサンドボックスが動くこと（#874）
 ```
+
+**codex の第二意見が差分を読めることも、作り直した後に 1 回確かめる**（#874）。dev01 の Docker は AppArmor の
+`docker-default` をコンテナに当て、その `deny mount` で codex の bwrap が止まる。`compose.yaml` の
+`security_opt: apparmor=unconfined` で外してある（理由と代償は compose.yaml の注記）。
+
+```bash
+codex sandbox -c sandbox_mode='"read-only"' -- sh -c 'git log -1 --oneline; touch .codex-probe'
+# git log が出て、touch が Read-only file system で失敗すること（書き込みは止まり、読み取りは通る）
+```
+
+ここで `/proc` の mount で失敗するなら、AppArmor を外すだけでは足りない（`systempaths=unconfined` まで要るかは、
+代償が大きいので改めて判断する）。**読めないまま答えた回は #873 のゲートが GATE_FAIL で止める**ので、
+緑のまま通ることはない。それまでは `--engine antigravity` で回す。
 
 **`devcontainer.json` は `shutdownAction: stopCompose` だが、Remote-SSH 越しに開いた dev01 の窓は、閉じてもコンテナを止めなかった**
 （2026-10-01 に 2 回。窓を閉じた後も `docker events` に stop / die が出ず、tmux も残った。Dev Containers 0.469.0。

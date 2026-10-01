@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # check-devcontainer-dev01.sh — dev01 で devcontainer を立てるための分岐を、非対話で確かめる（#802）。
 #
-# 見るのは 3 つ。
+# 見るのは 3 つ（と 1 の付け足し）。
 #
 #   1. **UID/GID の既定が 1000 のままであること**（Mac の既存挙動を壊さない）と、dev01 の値
 #      （1001）が `.devcontainer/.env` からも環境変数からもビルド引数へ届くこと。
@@ -9,6 +9,9 @@
 #      デーモンは要らない。**`--env-file` を必ず渡す**——dev01 のワークスペースには
 #      `.devcontainer/.env`（DEVCONTAINER_UID=1001）が在るので、渡さないと dev01 の上で
 #      「既定が 1000」の確認が赤くなる。
+#   1b. **AppArmor を外す宣言（`security_opt: apparmor=unconfined`）が展開後に残っていること**（#874）。
+#      消えると dev01 で codex の bwrap が `docker-default` の `deny mount` に当たり、第二意見が取れなくなる。
+#      **効くかどうか**（作り直した dev01 のコンテナで bwrap が通るか）はここでは見ない（docs/local-dev.md 7.4）。
 #   2. **付け替えの判定**（.devcontainer/remap-vscode-user.sh）。既定の値では何も呼ばず、
 #      違う値のときだけ groupmod / usermod / chown を呼び、番号の衝突と数値でない引数を落とす。
 #      id / getent / groupmod / usermod / chown は仕込みに差し替える。仕込みの id は
@@ -79,6 +82,16 @@ expect_compose ".env から dev01 の値が届く" "1001 1001 dev01" "$WORK/dev0
 expect_compose "環境変数からも届く" "1001 1001 dev01" "$WORK/empty.env" \
   DEVCONTAINER_UID=1001 DEVCONTAINER_GID=1001 DEVCONTAINER_HOST=dev01
 expect_compose "UID だけ渡せば GID は既定のまま" "1001 1000" "$WORK/empty.env" DEVCONTAINER_UID=1001
+
+# 1b. AppArmor を外す宣言（#874）。dev01 の値を渡しても渡さなくても同じであること。
+for envfile in "$WORK/empty.env" "$WORK/dev01.env"; do
+  n=$((n + 1))
+  got="$(env -u DEVCONTAINER_UID -u DEVCONTAINER_GID -u DEVCONTAINER_HOST \
+    docker compose -f "$COMPOSE" --env-file "$envfile" config --format json |
+    jq -r '(.services.app.security_opt // []) | join(" ")')" || { ng "security_opt: docker compose config が失敗しました"; continue; }
+  [[ " $got " == *" apparmor=unconfined "* ]] \
+    || ng "security_opt に apparmor=unconfined がありません（$(basename "$envfile")。dev01 で codex の bwrap が動かなくなります。#874）: '$got'"
+done
 
 # ビルド引数が Dockerfile に ARG として宣言され、付け替えへ渡っていること。
 # 名前がずれると引数は黙って捨てられ、付け替えが空の値で呼ばれる。

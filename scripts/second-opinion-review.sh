@@ -49,6 +49,11 @@
 #   ——`bug` / `vulnerability` / `type-error` / `edge-case` の 4 つだけが落とす。
 #   `promise-mismatch` と `other` は報告に出るが判定を動かさない。
 #   **JSON として読めない回答は落とす**（「読めなかった」を「指摘なし」に倒さない）。
+#   **差分を読めなかったと答えた回答（`reviewed: false`）も落とし、記録も残させない**（#873）。
+#   2026-10-01 に、devcontainer の codex がサンドボックスの失敗で `git diff` を叩けず、
+#   「レビューを実施できませんでした」を `other` の指摘 1 件として返した。`other` は判定を
+#   動かさないので **LGTM になり、loop-gate.sh が記録まで作った**。読んでいないものを
+#   レビュー済みにしないため、読めたかどうかを回答の必須の項目として答えさせる。
 #
 # ツールの解禁（#804）:
 #   **codex だけ**。`--sandbox read-only` が書き込みを止めることを実測してある。
@@ -439,6 +444,9 @@ read -r -d '' REPORT_RULES <<'EOF' || true
 出力:
 - **JSON だけを返してください。** 形はスキーマのとおりで、指摘が無ければ `findings` は空の配列です。
 - **通す / 落とすの判定は書かないでください。** `category` を見てこちらで決めます。
+- `reviewed` には、差分を実際に読んでレビューできたかを書いてください。コマンドが失敗した・
+  差分が空だったなどで**読めなかったときは `false`** にし、読めなかった理由を `other` の指摘で書いてください。
+  読めなかったのに `true` にしたり、指摘を空にして済ませたりしないでください。
 - 前置きや作業の説明は書かないでください。
 EOF
 
@@ -844,6 +852,7 @@ answer_is_valid() {
   allowed="$(printf '%s\n' "$ALL_CATEGORIES" | jq -R . | jq -s -c .)"
   printf '%s' "$1" | jq -e --argjson allowed "$allowed" '
     type == "object"
+    and (.reviewed | type == "boolean")
     and (.findings | type == "array")
     and (all(.findings[]; type == "object"
              and (.category | type == "string")
@@ -955,6 +964,20 @@ for chunk_file in "${chunk_files[@]}"; do
     if ! answer_is_valid "$answer_json"; then
       echo "error: 回答を JSON として読めませんでした（engine=$ENGINE,$chunk_label run $run/$RUNS）。生の出力:" >&2
       printf '%s\n' "$output" >&2
+      if [[ -s "$stderr_file" ]]; then
+        echo "--- CLI の診断 ---" >&2
+        cat "$stderr_file" >&2
+      fi
+      exit 1
+    fi
+
+    # **差分を読めなかった回答は、指摘の中身によらず落とす**（#873）。`other` の指摘
+    # だけを返して LGTM になると、読んでいないものがレビュー済みとして記録される。
+    # **LGTM / findings の行を出さない。** loop-gate.sh はその行が無い出力を「判定に
+    # 到達しなかった」として記録しないので、確認側（second-opinion-gate.yml）が赤を出せる。
+    if [[ "$(printf '%s' "$answer_json" | jq -r '.reviewed')" != "true" ]]; then
+      echo "error: 第二意見が差分を読めなかったと答えました（engine=$ENGINE,$chunk_label run $run/$RUNS）。レビューは成立していません:" >&2
+      print_findings "$answer_json" >&2
       if [[ -s "$stderr_file" ]]; then
         echo "--- CLI の診断 ---" >&2
         cat "$stderr_file" >&2

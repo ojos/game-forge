@@ -1,9 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "second-opinion-review",
-  "description": "第二意見の回答の形（#804）。判定そのものはモデルに出させない——落とすかどうかは category から scripts/second-opinion-review.sh が決める。",
+  "description": "第二意見の回答の形（#804）。判定そのものはモデルに出させない——落とすかどうかは category から scripts/second-opinion-review.sh が決める。reviewed が false か欠けている回答は、指摘が無くても落とす（#873）。",
   "type": "object",
   "properties": {
+    "reviewed": {
+      "type": "boolean",
+      "description": "差分を実際に読んでレビューできたか。git diff などのコマンドが失敗して差分を読めなかったときは false。false のときは、読めなかった理由を findings に other で書く。"
+    },
     "findings": {
       "type": "array",
       "description": "見つけた指摘。無ければ空の配列。",
@@ -44,6 +48,6 @@
       }
     }
   },
-  "required": ["findings"],
+  "required": ["reviewed", "findings"],
   "additionalProperties": false
 }

@@ -230,8 +230,8 @@ done
 if [ -n "$precondition" ]; then
   result=precondition reason="$precondition"
 elif [ "$rc" = 2 ]; then
-  # #850（2026-09-30 時点で未マージ）が入ると、acceptance-remote.sh は知らない引数で 2 を返す。
-  # 呼び方の誤りで、乖離ではない。入る前は 2 を返す経路が無いので、この分岐は先回りである。
+  # #850（2026-10-01 にマージ。428a46a）から、acceptance-remote.sh は知らない引数で 2 を返す。
+  # 呼び方の誤りで、乖離ではない。
   result=precondition reason=invocation-error
 elif [ "$drift" -gt 0 ] || [ "$unexpected" -gt 0 ]; then
   # 知らない綴りの FAIL は系統が分からないので、乖離の側へ倒す（合格にも前提の不成立にもしない）。

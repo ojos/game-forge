@@ -20,8 +20,8 @@ CI で回せるのは 34 件中 2 件でした（実測の表は #808 のコメ�
 |---|---|---|---|
 | 1 | Mac のホスト | launchd（[雛形](../scripts/launchd/jp.ojos.game-forge.acceptance-remote.plist)） | 毎日 12:00 に起動側を呼ぶ。スリープ中に過ぎた分は復帰時に 1 回 |
 | 2 | Mac のホスト | [`scripts/acceptance-remote-launchd.sh`](../scripts/acceptance-remote-launchd.sh) | Docker と devcontainer を起こし、`docker exec` で 3 を呼ぶ。起こした devcontainer は終わったら止め直す |
-| 3 | devcontainer | [`scripts/acceptance-remote-scheduled.sh`](../scripts/acceptance-remote-scheduled.sh) | プライマリが main で origin/main と一致し、汚れていないことを確かめてから、`acceptance-remote.sh` を**引数なしで**全体を回す |
-| 4 | devcontainer | [`scripts/acceptance-remote-summary.sh`](../scripts/acceptance-remote-summary.sh) | 出力から、公開してよい要約だけを作る |
+| 3 | devcontainer | [`scripts/acceptance-remote-scheduled.sh`](../scripts/acceptance-remote-scheduled.sh) | プライマリが main にあり汚れていないことを確かめ、origin/main より遅れていれば fast-forward してから、`acceptance-remote.sh` を**引数なしで**全体を回す |
+| 4 | devcontainer | [`scripts/acceptance-remote-summary.sh`](../scripts/acceptance-remote-summary.sh) | 出力から、公開してよい要約だけを作る。FAIL は [系統の対応表](../scripts/lib/acceptance-remote-deps.tsv) で乖離と前提の不成立に読み分ける |
 | 5 | devcontainer | `gh issue comment` | 要約を固定の issue へ投稿する |
 | 6 | GitHub Actions | [`acceptance-remote-freshness.yml`](../.github/workflows/acceptance-remote-freshness.yml)（毎日 15:00 JST） | [`scripts/acceptance-record-judge.sh`](../scripts/acceptance-record-judge.sh) で記録を判定する。赤はメールで届く |
 
@@ -36,8 +36,8 @@ CI で回せるのは 34 件中 2 件でした（実測の表は #808 のコメ�
 
 - 時刻（UTC）・プライマリの HEAD（40 桁）
 - 結果の分類（下の表）と理由（列挙した綴りだけ）
-- 件数（予定・実行・PASS・FAIL・未実行）と、系統ごとの前提の合否
-- **ラベルごとの PASS / FAIL / NOT-RUN**（ラベルは `acceptance-remote.sh` の `run "<ラベル>"` の綴り）
+- 件数（予定・実行・PASS・乖離・前提の不成立・未実行）と、系統ごとの前提の合否
+- **ラベルごとの PASS / DRIFT / FAIL-PRECONDITION / NOT-RUN**（ラベルは `acceptance-remote.sh` の `run "<ラベル>"` の綴り）
 
 **検査の出力・plan の出力（ゾーン ID・ARN・トンネル ID・TXT の値など）は載りません。** 要約は
 出力のうち `[acceptance-remote] <ラベル>` と `[acceptance-remote] FAIL: <ラベル>` の 2 種類の行しか読まず、
@@ -47,26 +47,43 @@ CI で回せるのは 34 件中 2 件でした（実測の表は #808 のコメ�
 
 ## 結果の分類
 
+**FAIL は検査ごとに、依存する認証の系統で読み分けます**（利用者の決定。PR #853）。対応は
+[`scripts/lib/acceptance-remote-deps.tsv`](../scripts/lib/acceptance-remote-deps.tsv) が 1 か所で持ちます
+（根拠は #808 のコメントの実測表と、各検査の中の `gh` / `aws` / `cf_api` / `gcloud` の呼び出し）。
+
+| ラベルの行 | 意味 |
+|---|---|
+| `PASS` | 通った |
+| `DRIFT` | 落ちた。**依存する系統の前提はすべて通っていた**（または依存が無い）ので、宣言と外部状態の乖離の疑い |
+| `FAIL-PRECONDITION` | 落ちた。依存する系統の前提のどれかが落ちていたので、**この回はこの検査を判定していない**（前提の検査そのものの FAIL もここ） |
+| `NOT-RUN` | 回らなかった |
+
+GCP の ADC は 24 時間で切れます。前提が 1 つ落ちた回をまるごと「乖離ではない」と読むと、その日は
+Cloudflare や AWS の本物の乖離が見えなくなるので、この形にしています。**検査を足したら、対応表にも
+1 行足してください。** run と対応表が 1 対 1 でなければ要約は作られず、`verify` の自己試験も赤になります。
+
 | result | 意味 | CI の扱い |
 |---|---|---|
 | `ok` | 40 件すべて PASS | 緑 |
-| `drift` | 前提の 4 つは通り、ほかの検査が FAIL。**宣言と外部状態の乖離の疑い** | 赤（`FAIL drift`） |
-| `precondition` | 前提の不成立。**検査の FAIL を乖離として読まない**（下の reason） | その回は数えない。続けば系統ごとに赤 |
+| `drift` | `DRIFT` が 1 件以上。**ほかの系統の前提が落ちていても drift** | 赤（`FAIL drift`） |
+| `precondition` | `DRIFT` は無く、前提の不成立がある（下の reason） | その回は数えない。続けば系統ごとに赤 |
 | `incomplete` | 途中で止まった・終了コードが合わない。合格にも乖離にも数えない | 赤（`FAIL incomplete`） |
 
 | reason（`precondition` のとき） | 意味 | 直し方 |
 |---|---|---|
 | `prerequisite-failed` | gh / aws / cloudflare / gcp の前提の検査のどれかが FAIL（`prereq.<系統>: fail` を見る） | 下の「認証の切れ」 |
 | `primary-not-on-main` | プライマリがブランチか detach にある | プライマリで `git checkout main` |
-| `primary-not-at-origin-main` | プライマリの main が origin/main と一致しない（遅れている） | プライマリで `git pull --ff-only` |
+| `primary-not-at-origin-main` | プライマリの main が origin/main から**分岐している**（手元にだけコミットがある） | 手元のコミットを片付ける |
+| `primary-ff-failed` | 遅れていたので fast-forward を試みたが失敗した（追跡外のファイルが上書きされる等） | ログの git の出力を見る |
 | `primary-dirty` | プライマリの追跡ファイルに手元の変更がある、または `terraform/` に追跡外の `*.tf`（`override.tf` など。`.gitignore` が除外している）がある | 変更を片付ける。override はプライマリに置かない |
 | `fetch-failed` | origin の main を取れない | ネットワーク・git の認証 |
 | `invocation-error` | `acceptance-remote.sh` が終了コード 2（引数の誤り。#850） | 起動側の不具合。定期実行は引数を渡さない |
 
-**プライマリのずれは直しません**（pull も checkout もしない）。プライマリは他のセッションも配備に
-使う場所で、無人の実行が動かすと、そちらの手順の前提が黙って変わるためです。**毎日のように
-`primary-not-at-origin-main` が続くなら、プライマリを main に揃える習慣が足りていません**
-（`docs/handoff.md` 3 章「プライマリの作業ツリーは `main` に置いてください」）。
+**遅れているだけなら fast-forward してから回します**（利用者の決定。PR #853）。条件は、main にいる・
+追跡ファイルが汚れていない・`terraform/` に追跡外の宣言が無い・HEAD が origin/main の祖先、のすべてです。
+ff したことは Mac のログに残り、要約には載りません。**checkout・reset・分岐の解消はしません**——
+プライマリは他のセッションも配備に使う場所で、無人の実行がそれ以上動かすと、そちらの手順の前提が
+黙って変わるためです（`docs/handoff.md` 3 章「プライマリの作業ツリーは `main` に置いてください」）。
 
 ## CI が赤にする条件
 
@@ -78,13 +95,14 @@ CI で回せるのは 34 件中 2 件でした（実測の表は #808 のコメ�
 |---|---|---|
 | `FAIL no-record` | 持ち主の記録が 1 件も無い | 導入が済んでいるか |
 | `FAIL stale` | 最新の記録が 3 日より古い（定期実行が止まっている） | Mac のログ（launchd.out と日ごとのログ） |
-| `FAIL drift` / `FAIL incomplete` | 前提がそろった最新の回が ok でない | その回のログの FAIL の行 |
-| `FAIL no-judgeable-record` | 前提がそろった回が 3 日無い | 系統ごとの行と reason |
+| `FAIL drift` | ラベルごとに、判定できた最新の回（`PASS` か `DRIFT` だった回）が `DRIFT`。行にラベルと回が出る | その回のログの FAIL の行 |
+| `FAIL incomplete` | 検査を回した最新の回が途中で止まっている | その回のログ |
 | `FAIL system-stale <系統>` | その系統の前提が 3 日通っていない | 下の「認証の切れ」 |
 | `外部層の記録を確かめられませんでした` | **記録が無いのではなく、読めなかった**（GitHub API の失敗・記録先の未設定） | ジョブのログ。次の日も続くなら設定 |
 
-**前提がそろった「最新の回」を見るので、乖離の翌日に認証が切れても乖離は隠れません。**
-直して `ok` の回が記録されるまで赤のままです。
+**乖離はラベルごとに「判定できた最新の回」で見ます。** 乖離の翌日にその系統の認証が切れても、
+その回は `FAIL-PRECONDITION`（判定していない）なので乖離は隠れません。直ったと数えるのは、
+そのラベルが `PASS` した回だけです。
 
 ## 導入（一度だけ）
 
@@ -101,11 +119,15 @@ CI で回せるのは 34 件中 2 件でした（実測の表は #808 のコメ�
 
 ### 2. 固定の issue を作り、ロックする
 
+**記録先は #854 で、作成とロックは済んでいます**（2026-10-01）。作り直すときの手順です。
+
 ```bash
-gh issue create --title "外部層の定期実行の記録（#844）" \
+gh issue create --title "外部層の受け入れ検証の記録（自動投稿。#844）" \
   --body "外部層の受け入れ検証の定期実行（docs/acceptance-remote-schedule.md）が、毎日の要約をここへ載せます。閉じないでください。"
-gh issue lock <番号> --reason off-topic
+gh issue lock <番号> --reason off_topic
 ```
+
+**`--reason` の綴りは `off_topic`（下線）です。** `off-topic` は gh が `invalid reason` で拒否します（実測）。
 
 **ロックすると、協力者以外はコメントできなくなります。** 判定は持ち主の記録しか数えないので、
 ロックは判定の担保ではなく、記録の列を読みやすく保つためです（CI はロックされていないと警告を出します）。

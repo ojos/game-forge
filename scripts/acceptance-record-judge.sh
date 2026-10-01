@@ -24,14 +24,16 @@
 #
 #   no-record            持ち主の記録が 1 件も無い
 #   stale                最新の記録が MAX_AGE より古い（＝定期実行が止まっている）
-#   drift / incomplete   **判定できた最新の回**（result が precondition でない回）が ok でない
-#   no-judgeable-record  判定できた回が MAX_AGE 以内に無い
+#   drift                **ラベルごとに、判定できた最新の回**（PASS か DRIFT だった回）が DRIFT
+#   incomplete           検査を回した最新の回（ran > 0）が incomplete（途中で止まった等）
 #   system-stale <系統>  gh / aws / cloudflare / gcp のそれぞれで、前提が PASS した最後の
 #                        記録が無いか MAX_AGE より古い（＝その系統の認証が 3 日切れている）
 #
-# **「判定できた最新の回」を見るのは、前提の不成立が乖離を隠さないようにするため。**
-# 乖離のあった翌日に認証が切れると、最新の回は precondition になる。最新だけを見ると、
-# 乖離が直ったかを確かめないまま緑に戻る。
+# **乖離はラベルごとに「判定できた最新の回」で見る**（PR #853 で系統ごとの読み分けに合わせた）。
+# 要約は、依存する系統の前提が落ちていた FAIL を FAIL-PRECONDITION と書く。その回はそのラベルを
+# 判定していないので、乖離が直ったとも続いているとも数えない。例えば AWS の検査で乖離が出た
+# 翌日に AWS の認証が切れても、乖離は隠れない。直ったと分かるのは、そのラベルが PASS した回だけ。
+# 判定できないまま 3 日経った系統は system-stale が拾う。
 #
 # 記録の時刻は、記録に書いた `time` とコメントの `created_at`（GitHub が付ける）の
 # **早いほう**を使う。記録の側の時刻を未来へずらしても、鮮度は延びない。
@@ -90,6 +92,8 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
           and all($sys[]; . as $s | (["pass", "fail", "not-run"] | index([$kv["prereq." + $s]])) != null)
         then {at: ([($kv.time | fromdateiso8601), $c] | min), result: $kv.result,
               head: (($kv.head // "") | short),
+              ran: (($kv.ran // "0") | tonumber? // 0),
+              rows: [ $l[] | capture("^(?<st>PASS|DRIFT|FAIL-PRECONDITION|NOT-RUN) (?<label>.+)$") ],
               prereq: (reduce $sys[] as $s ({}; .[$s] = $kv["prereq." + $s]))}
         else {malformed: true} end;
     def when: todateiso8601;
@@ -107,13 +111,17 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
           ( if ($now - $last.at) > $max then
               "FAIL stale 最新の記録が \(($now - $last.at) | days) 日前です（定期実行が止まっています）"
             else empty end ),
-          ( [ $recs[] | select(.result != "precondition") ] as $j
-            | if ($j | length) == 0 or ($now - $j[-1].at) > $max then
-                "FAIL no-judgeable-record 前提がそろって検査を判定できた回が \($max | days) 日以内にありません"
-              elif $j[-1].result != "ok" then
-                "FAIL \($j[-1].result) 判定できた最新の回（\($j[-1].at | when) head=\($j[-1].head)）が \($j[-1].result) です"
+          ( [ $recs[] | select(.ran > 0) ] as $r
+            | if ($r | length) > 0 and $r[-1].result == "incomplete" then
+                "FAIL incomplete 検査を回した最新の回（\($r[-1].at | when) head=\($r[-1].head)）が途中で止まっています"
+              else empty end ),
+          ( [ $recs[] | . as $rec | .rows[] | select(.st == "PASS" or .st == "DRIFT")
+              | {label, st, at: $rec.at, head: $rec.head} ]
+            | group_by(.label) | map(max_by(.at)) | map(select(.st == "DRIFT")) as $d
+            | if ($d | length) > 0 then
+                "FAIL drift \($d | length) 件の検査が、判定できた最新の回で乖離しています: \([ $d[] | "\(.label)（\(.at | when) head=\(.head)）" ] | join(" / "))"
               else
-                "judged: \($j[-1].at | when) result=ok"
+                "drift: ラベルごとに判定できた最新の回に乖離はありません"
               end ),
           ( $sys[] as $s
             | ([ $recs[] | select(.prereq[$s] == "pass") ] | last) as $p

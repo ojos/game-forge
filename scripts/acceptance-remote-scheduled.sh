@@ -12,17 +12,24 @@
 # 回す前に確かめること（ずれていれば検査を回さず「前提の不成立」として記録する）
 # ══════════════════════════════════════════════════════════════════════════════
 #
-#   1. プライマリが main にある（detach もブランチも不可）       → primary-not-on-main
-#   2. origin/main を取ってきて、HEAD がそれと一致する            → fetch-failed / primary-not-at-origin-main
+#   1. origin/main を取ってくる                                      → fetch-failed
+#   2. プライマリが main にある（detach もブランチも不可）           → primary-not-on-main
 #   3. 追跡ファイルに手元の変更が無く、terraform/ に追跡外の *.tf（override を含む）が無い
-#                                                                   → primary-dirty
+#                                                                       → primary-dirty
+#   4. HEAD が origin/main と一致する。**遅れているだけなら fast-forward してから回す**
+#      分岐している（ff できない）                                   → primary-not-at-origin-main
+#      ff を試みて失敗した                                           → primary-ff-failed
 #
 # **古いツリーは、宣言を誤った期待値にする。** terraform も外部層の導出も、そのツリーの
 # terraform/*.tf を正とする（docs/handoff.md 3 章「プライマリの作業ツリーは main に」。
 # 実例 4 つ）。main から遅れたまま回すと、main で直した宣言を「乖離」と報告する。
 #
-# **ここでは直さない（pull も checkout もしない）。** プライマリは他のセッションも配備に使う
-# 場所で、無人の実行が動かすと、そちらの手順の前提が黙って変わる。判定と修復は混ぜない。
+# **fast-forward だけはする**（利用者の決定。PR #853）。main には毎日マージが入るので、
+# 遅れを前提の不成立にすると、プライマリを毎日 pull しない限り定期実行が回らない。ff は
+# 「main にいて・汚れておらず・追跡外の宣言も無く・HEAD が origin/main の祖先」のときだけで、
+# 手元の作業を動かさない。ff したことはログ（要約の外）に残す。**checkout・reset・merge commit・
+# 分岐の解消はしない。** プライマリは他のセッションも配備に使う場所で、無人の実行がそれ以上
+# 動かすと、そちらの手順の前提が黙って変わる。
 #
 # ══════════════════════════════════════════════════════════════════════════════
 # 何をどこへ出すか
@@ -75,8 +82,9 @@ trap 'rm -rf "$WORK"' EXIT
 
 # 要約を作って、投稿（または表示）する。引数は acceptance-remote-summary.sh へそのまま渡す。
 deliver() {
+  # ラベルと系統の対応表は、回すツリー（ff した後のプライマリ）のものを読む。2 つは同じ commit で揃う。
   if ! bash "$HERE/acceptance-remote-summary.sh" --labels-from "scripts/acceptance-remote.sh" \
-    --head "$head" --time "$when" "$@" < "$WORK/output" > "$WORK/summary"; then
+    --deps-from "scripts/lib/acceptance-remote-deps.tsv" --head "$head" --time "$when" "$@" < "$WORK/output" > "$WORK/summary"; then
     say "要約を作れませんでした。記録していません。"
     return 3
   fi
@@ -119,10 +127,6 @@ if [ "$branch" != "main" ]; then
   say "プライマリが main にありません（${branch:-detached}）。検査を回しません。"
   deliver --precondition primary-not-on-main; exit $?
 fi
-if [ "$head" != "$(git rev-parse --verify -q refs/remotes/origin/main)" ]; then
-  say "プライマリの main が origin/main と一致しません（git pull --ff-only が要ります）。検査を回しません。"
-  deliver --precondition primary-not-at-origin-main; exit $?
-fi
 if ! git diff --quiet HEAD --; then
   say "プライマリの追跡ファイルに手元の変更があります。検査を回しません。"
   deliver --precondition primary-dirty; exit $?
@@ -137,6 +141,26 @@ if [ -n "$untracked_tf" ]; then
   say "プライマリの terraform/ に追跡していない宣言があります（override を含む）。検査を回しません。"
   printf '%s\n' "$untracked_tf"
   deliver --precondition primary-dirty; exit $?
+fi
+origin_main="$(git rev-parse --verify -q refs/remotes/origin/main)"
+if [ "$head" != "$origin_main" ]; then
+  if ! git merge-base --is-ancestor "$head" "$origin_main"; then
+    say "プライマリの main が origin/main から分岐しています（fast-forward できません）。検査を回しません。"
+    deliver --precondition primary-not-at-origin-main; exit $?
+  fi
+  # git は更新したファイルを置き換える（新しい inode）。いま動いているこのスクリプトは
+  # 古い中身のまま最後まで読まれ、ここから先で呼ぶ要約・検査は新しいツリーのものになる。
+  say "プライマリの main が origin/main より遅れているので fast-forward します（${head} → ${origin_main}）。"
+  if ! git merge --ff-only --quiet "$origin_main"; then
+    say "fast-forward に失敗しました。検査を回しません。"
+    deliver --precondition primary-ff-failed; exit $?
+  fi
+  head="$(git rev-parse --verify -q HEAD)"
+  if [ "$head" != "$origin_main" ]; then
+    say "fast-forward の後も origin/main と一致しません。検査を回しません。"
+    deliver --precondition primary-ff-failed; exit $?
+  fi
+  say "fast-forward しました（HEAD ${head}）。"
 fi
 
 # ── 検査（全体。引数は渡さない）───────────────────────────────────────────────

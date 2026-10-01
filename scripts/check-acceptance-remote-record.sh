@@ -128,7 +128,7 @@ ok_or_ng "$(grep -c '^PASS ' "$WORK/s-ok")" "$LABEL_COUNT" "A1 ラベルごと�
 gen '^dns zone matches$' > "$WORK/out-drift" || true
 summarize 1 < "$WORK/out-drift" > "$WORK/s-drift"
 ok_or_ng "$(field result "$WORK/s-drift")" drift "A2 前提が通って検査が落ちたら drift"
-ok_or_ng "$(grep -c '^FAIL dns zone matches$' "$WORK/s-drift")" 1 "A2 落ちたラベルが FAIL の行に出る"
+ok_or_ng "$(grep -c '^DRIFT dns zone matches$' "$WORK/s-drift")|$(field drift "$WORK/s-drift")" "1|1" "A2 落ちたラベルが DRIFT の行に出る"
 ok_or_ng "$(field prereq.aws "$WORK/s-drift")" pass "A2 前提は pass のまま"
 
 # 認証を落とした回（#808 の実測の形: aws の前提が落ち、aws を読む検査が軒並み落ちる）。
@@ -137,12 +137,30 @@ summarize 1 < "$WORK/out-noauth" > "$WORK/s-noauth"
 ok_or_ng "$(field result "$WORK/s-noauth")" precondition "A3 認証を落とした回は乖離ではなく前提の不成立"
 ok_or_ng "$(field reason "$WORK/s-noauth")" prerequisite-failed "A3 理由は prerequisite-failed"
 ok_or_ng "$(field prereq.aws "$WORK/s-noauth")|$(field prereq.gh "$WORK/s-noauth")" "fail|pass" "A3 系統ごとの前提が読める"
+ok_or_ng "$(field drift "$WORK/s-noauth")|$(grep -c '^FAIL[-]PRECONDITION ' "$WORK/s-noauth")|$(grep -c '^FAIL[-]PRECONDITION edge no longer holds bedrock credentials$' "$WORK/s-noauth")" \
+  "0|$(grep -c '^\[acceptance-remote\] FAIL: ' "$WORK/out-noauth")|1" "A3 aws に依存する FAIL（cloudflare+aws の検査も）はすべて FAIL-PRECONDITION"
+
+# GCP の ADC だけが切れた日（24 時間で切れる）。plan は 4 系統に依存するので判定しないが、
+# 同じ日の Cloudflare の乖離は乖離として出す（利用者の決定。PR #853）。
+gen '^prerequisite: gcp adc is active$|^terraform plan' > "$WORK/out-nogcp" || true
+summarize 1 < "$WORK/out-nogcp" > "$WORK/s-nogcp"
+ok_or_ng "$(field result "$WORK/s-nogcp")|$(field drift "$WORK/s-nogcp")|$(grep -c '^FAIL[-]PRECONDITION terraform plan: no drift$' "$WORK/s-nogcp")" \
+  "precondition|0|1" "A3b gcp だけ切れた日の plan の FAIL は前提の不成立"
+gen '^prerequisite: gcp adc is active$|^terraform plan|^dns zone matches$' > "$WORK/out-nogcp-drift" || true
+summarize 1 < "$WORK/out-nogcp-drift" > "$WORK/s-nogcp-drift"
+ok_or_ng "$(field result "$WORK/s-nogcp-drift")|$(field drift "$WORK/s-nogcp-drift")|$(grep -c '^DRIFT dns zone matches$' "$WORK/s-nogcp-drift")|$(field prereq.gcp "$WORK/s-nogcp-drift")" \
+  "drift|1|1|fail" "A3b gcp が切れた日でも Cloudflare の乖離は drift"
+# 依存の無い検査（dig だけ）の FAIL は、前提がどれだけ落ちていても乖離。
+gen '^prerequisite: |^dns delegation' > "$WORK/out-noprereq-dig" || true
+summarize 1 < "$WORK/out-noprereq-dig" > "$WORK/s-noprereq-dig"
+ok_or_ng "$(field result "$WORK/s-noprereq-dig")|$(grep -c '^DRIFT dns delegation from jp registry is in place$' "$WORK/s-noprereq-dig")" \
+  "drift|1" "A3c 依存の無い検査の FAIL は前提に関わらず drift"
 
 # 値が 1 つも載らないこと（仕込みの出力には全部が何度も出ている）。
 for v in "${VALUES[@]}"; do
   tick
   grep -qF -- "$v" "$WORK/out-drift" || ng "A4 仕込みの出力に値が出ていない（試験の前提が崩れている）: $v"
-  for s in s-ok s-drift s-noauth; do
+  for s in s-ok s-drift s-noauth s-nogcp-drift; do
     if grep -qF -- "$v" "$WORK/$s"; then ng "A4 要約（$s）に値が出ています: $v"; fi
   done
 done
@@ -186,6 +204,25 @@ printf 'run "prerequisite: gh authenticated" x\nrun "prerequisite: aws authentic
 ok_or_ng "$(rc_of bash "$SUMMARY" --labels-from "$WORK/labels-dyn.sh" --exit 0 --head "$HEAD_SHA" --time "$T0")" 2 "A10 展開を含むラベルは受け付けない"
 printf 'run "terraform init" x\n' > "$WORK/labels-noprereq.sh"
 ok_or_ng "$(rc_of bash "$SUMMARY" --labels-from "$WORK/labels-noprereq.sh" --exit 0 --head "$HEAD_SHA" --time "$T0")" 2 "A10 前提の 4 ラベルが無ければ作らない"
+
+# 系統の対応表（scripts/lib/acceptance-remote-deps.tsv）と run の 1 対 1。
+DEPS="$ROOT/scripts/lib/acceptance-remote-deps.tsv"
+deps_rc() { rc_of bash "$SUMMARY" --labels-from "$REMOTE" --deps-from "$1" --exit 0 --head "$HEAD_SHA" --time "$T0"; }
+ok_or_ng "$(deps_rc "$DEPS")" 0 "A11 本物の acceptance-remote.sh の run と本物の対応表が 1 対 1"
+grep -v $'\tdns zone matches$' "$DEPS" > "$WORK/deps-missing.tsv"
+ok_or_ng "$(deps_rc "$WORK/deps-missing.tsv")" 2 "A11 run にあって対応表に無いラベルがあれば作らない（黙って依存なしにしない）"
+{ cat "$DEPS"; printf 'aws\tsome check that was removed\n'; } > "$WORK/deps-extra.tsv"
+ok_or_ng "$(deps_rc "$WORK/deps-extra.tsv")" 2 "A11 対応表にあって run に無いラベルがあれば作らない"
+sed $'s/^cloudflare\tdns zone matches$/azure\tdns zone matches/' "$DEPS" > "$WORK/deps-badsys.tsv"
+ok_or_ng "$(deps_rc "$WORK/deps-badsys.tsv")" 2 "A11 知らない系統は受け付けない"
+sed $'s/^aws\tprerequisite: aws authenticated$/-\tprerequisite: aws authenticated/' "$DEPS" > "$WORK/deps-prereq.tsv"
+ok_or_ng "$(deps_rc "$WORK/deps-prereq.tsv")" 2 "A11 前提のラベルは自分の系統に依存させる"
+{ cat "$DEPS"; grep $'\tdns zone matches$' "$DEPS"; } > "$WORK/deps-dup.tsv"
+ok_or_ng "$(deps_rc "$WORK/deps-dup.tsv")" 2 "A11 重複した行は受け付けない"
+# #808 の実測の件数（gh 6・Cloudflare 11・AWS 13・認証不要 3。wasm_exec / plan / init / 前提は別）。
+deps_count() { awk -F'\t' -v d="$1" '$0 !~ /^#/ && NF == 2 && $1 == d && $2 !~ /^prerequisite: / && $2 !~ /^terraform / && $2 !~ /^wasm_exec /' "$DEPS" | wc -l | tr -d ' '; }
+ok_or_ng "gh=$(deps_count gh) cf=$(( $(deps_count cloudflare) + $(deps_count gh,cloudflare) )) aws=$(( $(deps_count aws) + $(deps_count cloudflare,aws) )) none=$(deps_count -)" \
+  "gh=6 cf=11 aws=13 none=3" "A11 対応表の件数が #808 の実測の表と一致する"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # B. 判定
@@ -234,20 +271,26 @@ owner_rec 0.1 out-ok 0 | judge_case "新しい全件 PASS は通す" ""
 rec_body 0.1 --exit 0 < "$WORK/out-ok" | comment someone-else NONE 0.1 | judge_case "持ち主以外の記録は数えない" "no-record"
 rec_body 0.1 --exit 0 < "$WORK/out-ok" | comment ojos CONTRIBUTOR 0.1 | judge_case "持ち主の名でも association が OWNER でなければ数えない" "no-record"
 { owner_rec 4 out-ok 0; rec_body 0.1 --exit 0 < "$WORK/out-ok" | comment someone-else NONE 0.1; } |
-  judge_case "古い持ち主の記録を、他人の新しい記録で救わない" "stale;no-judgeable-record;$ALL_SYS"
+  judge_case "古い持ち主の記録を、他人の新しい記録で救わない" "stale;$ALL_SYS"
 owner_rec 3 out-ok 0 | judge_case "ちょうど 3 日前は通す（境界）" ""
-owner_rec 3.01 out-ok 0 | judge_case "3 日を過ぎたら落とす" "stale;no-judgeable-record;$ALL_SYS"
+owner_rec 3.01 out-ok 0 | judge_case "3 日を過ぎたら落とす" "stale;$ALL_SYS"
 owner_rec 0.1 out-drift 1 | judge_case "最新に乖離があれば落とす" "drift"
 { owner_rec 1 out-ok 0; owner_rec 0.1 out-noauth 1; } | judge_case "前提の不成立は乖離に数えない（前日が ok）" ""
-{ owner_rec 1 out-drift 1; owner_rec 0.1 out-noauth 1; } | judge_case "乖離の翌日に認証が切れても乖離を隠さない" "drift"
+# aws の検査の乖離の翌日に aws の認証が切れても、そのラベルは判定されていないので乖離のまま。
+gen '^orchestrator configuration matches$' > "$WORK/out-drift-aws" || true
+{ owner_rec 1 out-drift-aws 1; owner_rec 0.1 out-noauth 1; } | judge_case "乖離の翌日に同じ系統の認証が切れても乖離を隠さない" "drift"
+# 別の系統の乖離は、翌日にその系統の検査が PASS すれば直ったと数える。
+{ owner_rec 1 out-drift 1; owner_rec 0.1 out-noauth 1; } | judge_case "乖離したラベルが翌日 PASS すれば通す" ""
+{ owner_rec 1 out-ok 0; owner_rec 0.1 out-nogcp-drift 1; } | judge_case "gcp が切れた日の Cloudflare の乖離で落とす" "drift"
+{ owner_rec 1 out-ok 0; owner_rec 0.1 out-nogcp 1; } | judge_case "gcp が切れただけの日は通す" ""
 { owner_rec 4 out-ok 0; owner_rec 3 out-noauth 1; owner_rec 2 out-noauth 1; owner_rec 1 out-noauth 1; owner_rec 0.1 out-noauth 1; } |
-  judge_case "aws の前提が 3 日を超えて通らなければ落とす" "no-judgeable-record;system-stale aws"
+  judge_case "aws の前提が 3 日を超えて通らなければ落とす" "system-stale aws"
 { owner_rec 2 out-ok 0; owner_rec 1 out-noauth 1; owner_rec 0.1 out-noauth 1; } | judge_case "aws の前提が 2 日通らないだけなら通す" ""
 owner_rec 0.1 out-crash 1 | judge_case "途中で止まった回は落とす" "incomplete"
 { owner_rec 4 out-ok 0; owner_pre 2 primary-not-on-main; owner_pre 0.1 primary-not-at-origin-main; } |
-  judge_case "プライマリのずれが続けば全系統が落ちる" "no-judgeable-record;$ALL_SYS"
+  judge_case "プライマリのずれが続けば全系統が落ちる" "$ALL_SYS"
 # 記録の time を未来へずらしても、created_at（GitHub が付ける）より新しくは数えない。
-rec_body 0 --exit 0 < "$WORK/out-ok" | comment ojos OWNER 4 | judge_case "記録の時刻で鮮度を延ばせない" "stale;no-judgeable-record;$ALL_SYS"
+rec_body 0 --exit 0 < "$WORK/out-ok" | comment ojos OWNER 4 | judge_case "記録の時刻で鮮度を延ばせない" "stale;$ALL_SYS"
 sed 's/^result: ok$/result: great/' "$WORK/s-ok" | comment ojos OWNER 0.1 | judge_case "形の崩れた記録は数えない" "no-record"
 sed 's/$/\r/' "$WORK/s-ok" | comment ojos OWNER 0.1 | judge_case "CRLF の本文でも読む" ""
 { sed 's/^/> /' "$WORK/s-ok"; } | comment ojos OWNER 0.1 | judge_case "引用した記録は数えない（印は 1 行目だけ）" "no-record"
@@ -283,17 +326,22 @@ mkdir -p "$WORK/primary/scripts"
   echo 'if [ "$failed" -gt 0 ]; then exit 1; fi'
   echo 'echo "[acceptance-remote] OK"'
 } > "$WORK/primary/scripts/acceptance-remote.sh"
+mkdir -p "$WORK/primary/scripts/lib"
+printf 'gh\tprerequisite: gh authenticated\naws\tprerequisite: aws authenticated\ncloudflare\tprerequisite: cloudflare api token is active\ngcp\tprerequisite: gcp adc is active\ngh,aws,cloudflare,gcp\tterraform plan: no drift\ncloudflare\tdns zone matches\n' \
+  > "$WORK/primary/scripts/lib/acceptance-remote-deps.tsv"
 echo "tracked" > "$WORK/primary/README"
 G -C "$WORK/primary" add -A >/dev/null
 G -C "$WORK/primary" commit -q -m init
 G -C "$WORK/primary" push -q origin main 2>/dev/null
 
-# sched_case <名前> <期待する result|reason> <検査が呼ばれるか yes/no>
+# sched_case <名前> <期待する result|reason> <検査が呼ばれるか yes/no>（出力は last_out に残す）
+last_out=""
 sched_case() {
   local name="$1" want="$2" want_called="$3" out rc=0 called=no
   tick
   rm -f "$WORK/called"
   out="$(ACCEPTANCE_TF_DIR="$WORK/elsewhere" bash "$SCHEDULED" --print --repo-dir "$WORK/primary" 2>&1)" || rc=$?
+  last_out="$out"
   [ -f "$WORK/called" ] && called=yes
   local got
   got="$(printf '%s\n' "$out" | sed -n 's/^result: //p')|$(printf '%s\n' "$out" | sed -n 's/^reason: //p')"
@@ -318,8 +366,36 @@ G clone -q "$WORK/origin.git" "$WORK/other" 2>/dev/null
 echo "newer" >> "$WORK/other/README"
 G -C "$WORK/other" commit -q -am newer
 G -C "$WORK/other" push -q origin main 2>/dev/null
-sched_case "origin/main より遅れていれば回さない" "precondition|primary-not-at-origin-main" no
-G -C "$WORK/primary" merge -q --ff-only origin/main
+# 遅れていても、汚れていれば ff もしない（手元の作業を動かさない）。
+echo "local edit" >> "$WORK/primary/README"
+sched_case "遅れていて汚れていれば ff せず回さない" "precondition|primary-dirty" no
+G -C "$WORK/primary" checkout -q -- README
+tick; [ "$(G -C "$WORK/primary" rev-parse HEAD)" != "$(G -C "$WORK/other" rev-parse HEAD)" ] || ng "C 汚れていたのに ff した"
+# 遅れているだけなら fast-forward してから回す（利用者の決定。PR #853）。
+sched_case "origin/main より遅れていれば ff して回す" "ok|-" yes
+tick; [ "$(G -C "$WORK/primary" rev-parse HEAD)" = "$(G -C "$WORK/other" rev-parse HEAD)" ] || ng "C ff の後のプライマリが origin/main と一致しない"
+tick; printf '%s\n' "$last_out" | grep -q 'fast-forward しました' || ng "C ff したことをログ（要約の外）に残す"
+tick; if sed -n '/^<!-- acceptance-remote-record/,$p' <<<"$last_out" | grep -q 'fast-forward'; then ng "C ff のことを要約へ載せない"; fi
+
+# 分岐している（手元の main にだけコミットがある）なら回さない。
+echo "local commit" >> "$WORK/primary/README"
+G -C "$WORK/primary" commit -q -am local
+echo "remote commit" >> "$WORK/other/README"
+G -C "$WORK/other" commit -q -am remote
+G -C "$WORK/other" push -q origin main 2>/dev/null
+sched_case "origin/main から分岐していれば回さない" "precondition|primary-not-at-origin-main" no
+tick; [ "$(G -C "$WORK/primary" log -1 --format=%s)" = local ] || ng "C 分岐を勝手に解消した"
+G -C "$WORK/primary" reset -q --hard origin/main
+
+# ff が失敗する（追跡外のファイルが上書きされる）なら回さない。
+echo "new" > "$WORK/other/NEWFILE"
+G -C "$WORK/other" add NEWFILE
+G -C "$WORK/other" commit -q -m newfile
+G -C "$WORK/other" push -q origin main 2>/dev/null
+echo "untracked local" > "$WORK/primary/NEWFILE"
+sched_case "ff に失敗したら回さない" "precondition|primary-ff-failed" no
+rm "$WORK/primary/NEWFILE"
+sched_case "妨げが無くなれば ff して回す" "ok|-" yes
 
 mkdir -p "$WORK/primary/terraform/.terraform/modules/m"
 echo 'resource "x" "y" {}' > "$WORK/primary/terraform/.terraform/modules/m/main.tf"
@@ -341,7 +417,7 @@ sched_case "origin を取れなければ回さない" "precondition|fetch-failed
 # ══════════════════════════════════════════════════════════════════════════════
 mkdir -p "$WORK/d/scripts/lib" "$WORK/d/bin"
 cp "$FRESHNESS" "$JUDGE" "$WORK/d/scripts/"
-sed 's/^ACCEPTANCE_RECORD_ISSUE=""$/ACCEPTANCE_RECORD_ISSUE="4242"/' "$ROOT/scripts/lib/acceptance-record.sh" > "$WORK/d/scripts/lib/acceptance-record.sh"
+sed 's/^ACCEPTANCE_RECORD_ISSUE=.*/ACCEPTANCE_RECORD_ISSUE="4242"/' "$ROOT/scripts/lib/acceptance-record.sh" > "$WORK/d/scripts/lib/acceptance-record.sh"
 cat > "$WORK/d/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 # 偽の gh。issue は locked=true、コメントは $GH_COMMENTS の行をそのまま返す。$GH_FAIL=1 なら失敗。

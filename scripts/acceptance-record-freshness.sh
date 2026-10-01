@@ -46,7 +46,7 @@ echo "記録先: ${repo}#${ACCEPTANCE_RECORD_ISSUE}（持ち主 ${owner} のコ�
 locked="$(gh api "repos/${repo}/issues/${ACCEPTANCE_RECORD_ISSUE}" --jq '.locked' 2>/dev/null)" ||
   unreadable "issue #${ACCEPTANCE_RECORD_ISSUE} を読めません（GitHub API の失敗）"
 if [ "$locked" != "true" ]; then
-  echo "::warning::issue #${ACCEPTANCE_RECORD_ISSUE} がロックされていません（gh issue lock ${ACCEPTANCE_RECORD_ISSUE} --reason off-topic）"
+  echo "::warning::issue #${ACCEPTANCE_RECORD_ISSUE} がロックされていません（gh issue lock ${ACCEPTANCE_RECORD_ISSUE} --reason off_topic）"
 fi
 
 # **--paginate を外さない。** 毎日 1 件ずつ増えるので、1 ページ（30 件）は 1 か月で埋まる。

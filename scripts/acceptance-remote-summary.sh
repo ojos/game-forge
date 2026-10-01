@@ -23,23 +23,32 @@
 # ══════════════════════════════════════════════════════════════════════════════
 #
 #   ok            全ラベルが PASS し、終了コードが 0
-#   drift         前提の 4 つが PASS し、それ以外の検査が 1 つ以上 FAIL（＝宣言と実状態の乖離の疑い）
-#   precondition  前提の不成立。検査の失敗を乖離として読まない。reason が理由:
+#   drift         **依存する系統の前提がすべて通った検査**が 1 つ以上 FAIL（＝宣言と実状態の乖離の疑い）。
+#                 ほかの系統の前提が落ちていても drift にする
+#   precondition  乖離は無く、前提の不成立がある。reason が理由:
 #                   prerequisite-failed   前提の検査（gh / aws / cloudflare / gcp）のどれかが FAIL
 #                   invocation-error      acceptance-remote.sh が終了コード 2（引数の誤り。#850）
 #                   primary-not-on-main 等 起動側（acceptance-remote-scheduled.sh）が検査を回す前に
 #                                          止めた（--precondition で渡る）
-#   incomplete    前提は FAIL していないが、回っていない検査がある・終了コードが合わない
+#   incomplete    乖離も前提の FAIL も無いが、回っていない検査がある・終了コードが合わない
 #                 （途中で落ちた等）。**合格にも乖離にも数えない。**
+#
+# ラベルごとの行は 4 種類: PASS / DRIFT（乖離）/ FAIL-PRECONDITION（依存する系統の前提が
+# 落ちていた。前提の検査そのものの FAIL もここ）/ NOT-RUN。
 #
 # **FAIL と未実行が混ざった回は drift にする**（incomplete より先に見る）。前提が通ったうえで
 # 落ちた検査は、残りが回ったかに関わらず乖離の証拠である。incomplete にすると、その回に
 # 見つかった乖離の名前が分類から消える。未実行の件数は `not-run:` に残り、CI はどちらでも赤にする。
 #
-# **前提が 1 つでも FAIL した回は、他の検査の FAIL を乖離と呼ばない。** 認証が切れると、
-# その系統の検査は軒並み落ちる（#808 の実測: 認証なしで 40 件中 4 件しか通らない）。
-# ラベルと系統の対応表を持たずに読み分けるための割り切りで、代わりに系統ごとの鮮度
-# （scripts/acceptance-record-judge.sh）が「前提が 3 日通っていない系統」を赤にする。
+# **FAIL を系統ごとに読み分ける**（scripts/lib/acceptance-remote-deps.tsv）。認証が切れると、
+# その系統の検査は軒並み落ちる（#808 の実測: 認証なしで 40 件中 4 件しか通らない）。それを
+# 乖離と呼ばないために、ある FAIL が依存する系統の前提のどれかが落ちていれば FAIL-PRECONDITION
+# とする。逆に、前提が 1 つ落ちた回をまるごと乖離でないと読むと、GCP の ADC（24 時間で切れる）が
+# 切れた日は Cloudflare や AWS の本物の乖離が見えなくなる（利用者の決定。PR #853）。
+# 前提の通っていない系統は、系統ごとの鮮度（scripts/acceptance-record-judge.sh）が 3 日で赤にする。
+#
+# **対応表と acceptance-remote.sh の run は 1 対 1 でなければ要約を作らない**（終了コード 2）。
+# 検査を足した日に、黙って「依存なし」＝ FAIL がいつも乖離、にならないようにする。
 #
 # ══════════════════════════════════════════════════════════════════════════════
 # 使い方
@@ -66,10 +75,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 2
 
 die() { echo "[acceptance-remote-summary] $*" >&2; exit 2; }
 
-labels_from="" rc="" head="" when="" precondition=""
+labels_from="" deps_from="$HERE/lib/acceptance-remote-deps.tsv" rc="" head="" when="" precondition=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --labels-from) labels_from="${2:-}"; shift 2 ;;
+    # 対応表の差し替えは自己試験のため。
+    --deps-from) deps_from="${2:-}"; shift 2 ;;
     --exit) rc="${2:-}"; shift 2 ;;
     --head) head="${2:-}"; shift 2 ;;
     --time) when="${2:-}"; shift 2 ;;
@@ -84,7 +95,7 @@ done
 if [ -n "$precondition" ]; then
   # 起動側の理由は列挙に限る（自由な文字列を公開の要約へ流す経路を作らない）。
   case "$precondition" in
-    primary-not-on-main | primary-not-at-origin-main | primary-dirty | fetch-failed | not-a-git-tree) ;;
+    primary-not-on-main | primary-not-at-origin-main | primary-ff-failed | primary-dirty | fetch-failed | not-a-git-tree) ;;
     *) die "--precondition の理由が列挙にありません: $precondition" ;;
   esac
   [ -z "$rc" ] || die "--precondition と --exit は同時に渡せません（検査を回していない）"
@@ -123,6 +134,32 @@ for s in "${systems[@]}"; do
   [ -n "${known[${prereq_label[$s]}]:-}" ] || die "前提のラベルが acceptance-remote.sh にありません: ${prereq_label[$s]}"
 done
 
+# ── 系統の対応表（scripts/lib/acceptance-remote-deps.tsv）────────────────────────
+[ -f "$deps_from" ] || die "系統の対応表がありません: $deps_from"
+declare -A deps=()
+while IFS= read -r row || [ -n "$row" ]; do
+  row="${row%$'\r'}"
+  case "$row" in '' | '#'*) continue ;; esac
+  [[ "$row" == *$'\t'* ]] || die "対応表の行にタブがありません: $row"
+  d="${row%%$'\t'*}"
+  label="${row#*$'\t'}"
+  [ -n "${known[$label]:-}" ] || die "対応表のラベルが acceptance-remote.sh の run にありません: $label"
+  [ -z "${deps[$label]:-}" ] || die "対応表のラベルが重複しています: $label"
+  if [ "$d" != "-" ]; then
+    IFS=, read -r -a parts <<<"$d"
+    for p in "${parts[@]}"; do
+      case "$p" in gh | aws | cloudflare | gcp) ;; *) die "対応表の系統が gh / aws / cloudflare / gcp / - のどれでもありません: $d（$label）" ;; esac
+    done
+  fi
+  deps[$label]="$d"
+done < "$deps_from"
+for label in "${labels[@]}"; do
+  [ -n "${deps[$label]:-}" ] || die "acceptance-remote.sh の run のラベルが対応表にありません: $label（scripts/lib/acceptance-remote-deps.tsv へ足すこと）"
+done
+for s in "${systems[@]}"; do
+  [ "${deps[${prereq_label[$s]}]}" = "$s" ] || die "前提のラベルは自分の系統だけに依存させること: ${prereq_label[$s]}"
+done
+
 # ── 出力を読む（2 種類の行だけ）───────────────────────────────────────────────
 declare -A seen=() failed_label=()
 unexpected=0
@@ -148,18 +185,6 @@ if [ -z "$precondition" ]; then
   done
 fi
 
-passed=0 failed=0 notrun=0 ran=0
-rows=()
-for label in "${labels[@]}"; do
-  if [ -n "${failed_label[$label]:-}" ]; then
-    rows+=("FAIL $label"); failed=$((failed + 1)); ran=$((ran + 1))
-  elif [ -n "${seen[$label]:-}" ]; then
-    rows+=("PASS $label"); passed=$((passed + 1)); ran=$((ran + 1))
-  else
-    rows+=("NOT-RUN $label"); notrun=$((notrun + 1))
-  fi
-done
-
 declare -A prereq_state=()
 prereq_failed=0 prereq_notrun=0
 for s in "${systems[@]}"; do
@@ -173,6 +198,34 @@ for s in "${systems[@]}"; do
   fi
 done
 
+# ある FAIL の依存する系統の前提が、すべて通っていたか（0 = 通っていた / 1 = どれかが落ちていた）。
+deps_down() {
+  local d="${deps[$1]}" p
+  [ "$d" = "-" ] && return 1
+  IFS=, read -r -a parts <<<"$d"
+  for p in "${parts[@]}"; do
+    [ "${prereq_state[$p]:-}" = pass ] || return 0
+  done
+  return 1
+}
+
+passed=0 drift=0 masked=0 notrun=0 ran=0
+rows=()
+for label in "${labels[@]}"; do
+  if [ -n "${failed_label[$label]:-}" ]; then
+    ran=$((ran + 1))
+    if deps_down "$label"; then
+      rows+=("FAIL-PRECONDITION $label"); masked=$((masked + 1))
+    else
+      rows+=("DRIFT $label"); drift=$((drift + 1))
+    fi
+  elif [ -n "${seen[$label]:-}" ]; then
+    rows+=("PASS $label"); passed=$((passed + 1)); ran=$((ran + 1))
+  else
+    rows+=("NOT-RUN $label"); notrun=$((notrun + 1))
+  fi
+done
+
 # ── 分類 ─────────────────────────────────────────────────────────────────────
 if [ -n "$precondition" ]; then
   result=precondition reason="$precondition"
@@ -180,12 +233,13 @@ elif [ "$rc" = 2 ]; then
   # #850（2026-09-30 時点で未マージ）が入ると、acceptance-remote.sh は知らない引数で 2 を返す。
   # 呼び方の誤りで、乖離ではない。入る前は 2 を返す経路が無いので、この分岐は先回りである。
   result=precondition reason=invocation-error
+elif [ "$drift" -gt 0 ] || [ "$unexpected" -gt 0 ]; then
+  # 知らない綴りの FAIL は系統が分からないので、乖離の側へ倒す（合格にも前提の不成立にもしない）。
+  result=drift reason=checks-failed
 elif [ "$prereq_failed" -eq 1 ]; then
   result=precondition reason=prerequisite-failed
 elif [ "$prereq_notrun" -eq 1 ]; then
   result=incomplete reason=not-all-checks-ran
-elif [ "$failed" -gt 0 ] || [ "$unexpected" -gt 0 ]; then
-  result=drift reason=checks-failed
 elif [ "$notrun" -gt 0 ]; then
   result=incomplete reason=not-all-checks-ran
 elif [ "$rc" != 0 ]; then
@@ -196,8 +250,8 @@ fi
 
 case "$result" in
   ok) headline="全 ${#labels[@]} 件 PASS" ;;
-  drift) headline="前提は通り、${failed} 件の検査が FAIL（宣言と実状態の乖離の疑い）" ;;
-  precondition) headline="前提の不成立（${reason}）。検査の FAIL を乖離として読まない" ;;
+  drift) headline="${drift} 件の検査が、依存する系統の前提が通ったうえで FAIL（宣言と実状態の乖離の疑い）" ;;
+  precondition) headline="前提の不成立（${reason}）。乖離は見つかっていない（前提の落ちた系統の検査は判定していない）" ;;
   *) headline="未完了（${reason}）。合格にも乖離にも数えない" ;;
 esac
 
@@ -214,7 +268,8 @@ printf 'exit: %s\n' "${rc:--}"
 printf 'expected: %s\n' "${#labels[@]}"
 printf 'ran: %s\n' "$ran"
 printf 'passed: %s\n' "$passed"
-printf 'failed: %s\n' "$failed"
+printf 'drift: %s\n' "$drift"
+printf 'failed-precondition: %s\n' "$masked"
 printf 'not-run: %s\n' "$notrun"
 printf 'unexpected-fail: %s\n' "$unexpected"
 for s in "${systems[@]}"; do

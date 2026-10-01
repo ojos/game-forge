@@ -10,6 +10,7 @@
 | 日毎の生成回数・成功率・費用（#149） | `scripts/usage-report.sh` | D1 の `generations` |
 | ビルド時間が天井へ近づいていないか（#166） | `scripts/build-time-report.sh` | CloudWatch の `REPORT` 行 |
 | 10 章の KPI（#42） | `scripts/kpi-report.sh` | D1 の `games` / `generations` / `waitlist` / `game_revisions` |
+| フォークが親の土台を継承しているか（#798） | `scripts/fork-regression-report.sh` | D1 の `games` / `source_quality_metrics` |
 | 審査待ちの作品（#40） | `scripts/report-queue.sh` | D1 の `games` / `reports` |
 | 未対応の削除依頼（#41） | `scripts/takedown-queue.sh` | D1 の `takedown_requests`（手順は [takedown.md](takedown.md)） |
 | 遮断の記録の掃除（#37） | `scripts/moderation-prune.sh` | D1 の `moderation_blocks` |
@@ -517,6 +518,50 @@ M5-4 の tombstone は行を消さず `status` だけを変えるので、`paren
 「初回の成功率」ではありません。**別物を同じ名前で出すと、10.3 の判定がその数字を根拠に
 行われます。** 出すなら、確定27 が挙げている 2 案（相関 id / `recordGeneration` の id を
 運ぶ）のどちらかを先に入れる必要があります。
+
+
+## フォークが親の土台を継承しているかを数える（#798）
+
+**フォーク中心へ寄せるかと、フォークの前置きに保存則を足すか（#798 の「続き」）を決める材料です。**
+フォーク時に親ソースへ付く前置き（`src/bedrock.ts` の `BASE_SOURCE_PREFACE`）は「編集して全文を
+出力せよ」の 1 文だけで、親の勝ち負けや状態の分割を壊すなとは書いていません。**壊れているかを、
+止める前に数えます。** 数えるだけで、止めも警告もしません。
+
+```bash
+bash scripts/fork-regression-report.sh --remote                  # 本番（読み取りのみ）
+bash scripts/fork-regression-report.sh --remote --format json
+bash scripts/fork-regression-report.sh --remote --since <時差つきの時刻>   # 子が開始の時刻より後に作られた組で数える
+```
+
+親子の組を `games.parent_id` で引き、双方の `games.source_key` で `source_quality_metrics` を
+突き合わせます。**親の現在のソースはフォークの元と同じです**（公開済みでなければフォークできず、
+公開済みは推敲できないため）。子は現在の版（フォーク後の推敲を含む）を比べます。
+
+### 退行と数えるもの・数えないもの
+
+| | 扱い |
+|---|---|
+| `has_win_text` が 1 → 0 | 退行 |
+| `has_lose_text` が 1 → 0 | 退行 |
+| `state_count` が減った | 退行 |
+| `color_count` / `sprite_count` の増減 | **退行と見なさない**（整理されただけのことがある） |
+| どちらかに指標の行が無い（`source_key` が NULL を含む） | **測れない**（退行なしに混ぜない） |
+| `rule_version` が揃わない | **測れない** |
+| 親か子が `generation_state = 'failed'` | **数えない**（10.1 / #456 と同じ） |
+
+### 読むときに必ず見るもの
+
+- **退行が 0 でも「土台が継承されている」とは言えません。** 3 項目は語と宣言の照合です。
+  アワアワイルカは「ざんねん...」が書かれていても負けの分岐が死んだ枝でした
+  （[cold-start-samples.md](cold-start-samples.md) の #617 の記録）。
+- **組の数と併せて読みます。** 母数は小さく（10 組に満たない見込み）、出力には組・測れた組・
+  測れない組の数が必ず並びます。
+- **作品の id も題名も出しません。** 下書きの子は作者にしか見えない作品なので、組ごとの行は
+  指標の数だけです（何組目かは子の作成順）。
+- **仕様 10 章の補助指標ではありません。** 撤退判定（10.3）の式にも入りません。
+
+`--since` の形は `kpi-report.sh` と同じです。両者が同じ秒に読むことは
+`scripts/report-selftest.sh` の 16 節が見ます。
 
 
 ## 審査待ちの作品を読む（#40 / M6-4）

@@ -37,6 +37,7 @@
 #   13. 参加者の人数と未使用の招待コードの読み出し（#397）
 #   14. 配備が、main の HEAD でなくなったコミットで走らないこと（#427）
 #   15. R2 のライフサイクルの判定が、宣言の外の削除規則を落とすこと（#380）
+#   16. フォークの退行の集計が、既知の行に対して期待どおりに出ること（#798）
 #
 # **この一覧は下の節見出しの写しである。** 節を足したらここへも足すこと——足し忘れると、
 # 冒頭だけを読んだ人が「検査されていない」と思って同じ検査をもう一度書く
@@ -1592,6 +1593,118 @@ expect_judge "(f) 宣言が全体の削除規則を持てば、実物と一致�
 expect_judge "未知の綴りの削除（deleteMarkerTransition）は赤" 1 "$(jq -c '.rule_ids += ["y"]' <<<"$r2_expected")" \
   "$(r2_response "$r2_abort_rule" "$r2_delete_rule" '{"id":"y","enabled":true,"conditions":{"prefix":"ogp/"},"deleteMarkerTransition":{"condition":{"maxAge":1,"type":"Age"}}}')"
 
+
+# ── 16. フォークの退行の集計が、既知の行に対して期待どおりに出ること（#798）──────
+#
+# **数えるだけの集計なので、数え方が崩れても誰も気づかない。** 退行と「測れない」を
+# 取り違えると、「測っていない」が「壊れていない」に化ける。既知の組で数え方そのものを見る。
+#
+# 仕込み（親 fp1 は 勝ち 1 / 負け 1 / 状態 3 / 色 10 / スプライト 5 / 規則の版 2。E = 境界の UNIX 秒）:
+#
+#   fc1(E-300) 勝ちの語が消えた                         … 退行（winLost）
+#   fc2(E-200) 状態の数が 3 → 2                         … 退行（statesDecreased）
+#   fc3(E ちょうど) 色 10 → 0・スプライト 5 → 0、他は同じ … 退行なし（色とスプライトは数えない）
+#   fc4(E+10)  指標の行が無い                            … 測れない（no-metrics）
+#   fc5(E+20)  規則の版が 1                              … 測れない（rule-version-mismatch）
+#   fc6(E+30)  勝ちの語が消えたが failed                 … 数えない
+#   fc7(E+40)  負けの語が消えた                          … 退行（loseLost）
+#   fx1(E+50)  failed の親 fpx のフォーク                 … 数えない
+#
+# 期待（期間なし）: 組 6 / 測れた 4 / 退行 3（勝ち 1・負け 1・状態 1）/ 測れない 2（行なし 1・版 1）。
+# 期待（期間あり）: 組 3（fc4 / fc5 / fc7。fc3 は境界ちょうどなので入らない）/ 測れた 1 / 退行 1。
+echo "[selftest] フォークの退行の集計が既知の行に対して期待どおりに出ること（#798）"
+
+FORK_SANDBOX="$KPI_SANDBOX/fork-regression"
+FORK_SINCE_AT="2031-03-15T21:07:53+09:00"
+FE="$(date -u -d "$FORK_SINCE_AT" +%s 2>/dev/null)"
+if [[ ! "$FE" =~ ^[0-9]+$ ]]; then
+  echo "  FAIL 検査用の境界を UNIX 秒へ写せません: ${FORK_SINCE_AT}" >&2
+  failed=1
+elif ! mkdir -p "$FORK_SANDBOX" || ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+     npx wrangler d1 migrations apply DB --local --persist-to "$FORK_SANDBOX" >/dev/null 2>&1; then
+  echo "  FAIL #798 用の使い捨て D1 へマイグレーションを適用できません" >&2
+  failed=1
+else
+  if ! CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false \
+       npx wrangler d1 execute DB --local --persist-to "$FORK_SANDBOX" --command "
+insert into users (id, google_sub, email, display_name, created_at) values
+  ('f1','fs1','f1@example.invalid','F1',0);
+insert into games (id, author_id, parent_id, status, title, go_version, fork_count, created_at, generation_state, source_key) values
+  ('fp1','f1',null,'published','p','1.23',7,0,'ready','q/p1'),
+  ('fc1','f1','fp1','draft','c1','1.23',0,$((FE-300)),'ready','q/c1'),
+  ('fc2','f1','fp1','draft','c2','1.23',0,$((FE-200)),'ready','q/c2'),
+  ('fc3','f1','fp1','draft','c3','1.23',0,${FE},'ready','q/c3'),
+  ('fc4','f1','fp1','draft','c4','1.23',0,$((FE+10)),'ready','q/none'),
+  ('fc5','f1','fp1','draft','c5','1.23',0,$((FE+20)),'ready','q/c5'),
+  ('fc6','f1','fp1','draft','c6','1.23',0,$((FE+30)),'failed','q/c1'),
+  ('fc7','f1','fp1','draft','c7','1.23',0,$((FE+40)),'ready','q/c7'),
+  ('fpx','f1',null,'draft','px','1.23',1,0,'failed','q/p1'),
+  ('fx1','f1','fpx','draft','x1','1.23',0,$((FE+50)),'ready','q/c1');
+insert into source_quality_metrics (source_key, has_win_text, has_lose_text, color_count, sprite_count, state_count, rule_version, extracted_at) values
+  ('q/p1',1,1,10,5,3,2,0),
+  ('q/c1',0,1,10,5,3,2,0),
+  ('q/c2',1,1,10,5,2,2,0),
+  ('q/c3',1,1,0,0,3,2,0),
+  ('q/c5',0,0,10,5,0,1,0),
+  ('q/c7',1,0,10,5,3,2,0);
+" >/dev/null 2>&1; then
+    echo "  FAIL #798 用の既知の行を入れられません" >&2
+    failed=1
+  fi
+
+  FORK_ALL="$(bash scripts/fork-regression-report.sh --persist-to "$FORK_SANDBOX" --format json 2>/dev/null)"
+  fork_all_rc=$?
+  FORK_SINCE="$(bash scripts/fork-regression-report.sh --persist-to "$FORK_SANDBOX" --since "$FORK_SINCE_AT" --format json 2>/dev/null)"
+  expect_eq "fork-regression-report.sh --format json の終了コードは 0" "0" "$fork_all_rc"
+  if [[ -z "$FORK_ALL" || -z "$FORK_SINCE" ]]; then
+    echo "  FAIL fork-regression-report.sh が JSON を返しません" >&2
+    failed=1
+  else
+    # **数を 1 行に束ねて比べる**（8b と同じ理由。合計だけだと内訳の取り違えが通る）。
+    fork_totals() { jq -r '.totals | [.pairs, .measured, .regressed, .byItem.winLost, .byItem.loseLost, .byItem.statesDecreased, .unmeasurable.total, .unmeasurable.noMetrics, .unmeasurable.ruleVersionMismatch] | map(tostring) | join(" ")' <<<"$1"; }
+    expect_eq "期間なし: 組 測れた 退行 勝ち 負け 状態 測れない 行なし 版" \
+      "6 4 3 1 1 1 2 1 1" "$(fork_totals "$FORK_ALL")"
+    expect_eq "組ごとの判定が子の作成順に並ぶ（failed の子と failed の親の組は出ない）" \
+      "regressed regressed kept unmeasurable unmeasurable regressed" \
+      "$(jq -r '[.pairs[].status] | join(" ")' <<<"$FORK_ALL")"
+    expect_eq "測れない組の理由（行なし → 版）" "no-metrics rule-version-mismatch" \
+      "$(jq -r '[.pairs[] | select(.status == "unmeasurable") | .reason] | join(" ")' <<<"$FORK_ALL")"
+    expect_eq "色とスプライトをどれだけ減らしても退行に数えない（3 組目）" "kept 10>0 5>0" \
+      "$(jq -r '.pairs[2] | "\(.status) \(.parent.colors)>\(.child.colors) \(.parent.sprites)>\(.child.sprites)"' <<<"$FORK_ALL")"
+    expect_eq "期間あり: 子が開始より後の組だけ（境界ちょうどは入らない）" \
+      "3 1 1 0 1 0 2 1 1" "$(fork_totals "$FORK_SINCE")"
+    expect_eq "出力に id を載せない（UGC を持ち出さない）" "0" \
+      "$(grep -cE '"(fp|fc|fx)[0-9x]' <<<"$FORK_ALL" || true)"
+    expect_eq "出力に「退行 0 でも継承されているとは言えない」の注意が載る" "true" \
+      "$(jq -r '.caveat | test("退行が 0 でも")' <<<"$FORK_ALL")"
+  fi
+
+  # **開始の時刻の読み方が kpi-report.sh と同じであること。** 関数を共有していない（kpi-report.sh は
+  # #798 の scope.out）ので、同じ綴りを両方へ渡して突き合わせる。片方だけ直すとここが赤くなる。
+  for spelled in "$FORK_SINCE_AT" "2031-03-15T12:07:53Z" "2031-03-15T03:37:53-08:30" "2032-02-29T00:00:00+09:00"; do
+    expect_eq "--since ${spelled} を kpi-report.sh と同じ秒に読む" \
+      "$(bash scripts/kpi-report.sh --persist-to "$FORK_SANDBOX" --since "$spelled" --format json 2>/dev/null | jq -r '.since.epoch' 2>/dev/null)" \
+      "$(bash scripts/fork-regression-report.sh --persist-to "$FORK_SANDBOX" --since "$spelled" --format json 2>/dev/null | jq -r '.since.epoch' 2>/dev/null)"
+  done
+  for bad_since in "2031-03-15" "2031-03-15T21:07:53" "2031-02-30T00:00:00Z" ""; do
+    bash scripts/fork-regression-report.sh --persist-to "$FORK_SANDBOX" --since "$bad_since" --format json >/dev/null 2>&1
+    expect_eq "--since '${bad_since}' は 2 で落ちる" "2" "$?"
+  done
+fi
+
+for missing in --format --persist-to --since; do
+  expect_missing_value_exits scripts/fork-regression-report.sh "$missing"
+done
+
+# **本番を叩く場所は 1 か所だけで、読み取りの guard を通ること**（kpi-report.sh と同じ規律）。
+fork_calls="$(grep -cF 'args+=(--remote --env production)' scripts/fork-regression-report.sh || true)"
+expect_eq "fork-regression-report.sh が本番を叩く場所は 1 か所だけ" "1" "$fork_calls"
+if grep -Fq 'select で始まらない文は送りません' scripts/fork-regression-report.sh; then
+  echo "  ok   fork-regression-report.sh に読み取りのみの guard がある"
+else
+  echo "  FAIL fork-regression-report.sh に読み取りのみの guard がありません" >&2
+  failed=1
+fi
 
 if (( failed )); then
   echo "REPORT_SELFTEST_FAIL"

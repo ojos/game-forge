@@ -27,8 +27,8 @@
 #   drift                **ラベルごとに、判定できた最新の回**（PASS か DRIFT だった回）が DRIFT
 #   incomplete           acceptance-remote.sh を起動した最新の回（exit が - でない回。1 件も回らずに
 #                        終わった回を含む）が incomplete（途中で止まった等）
-#   drift（綴り不明）    同じ回に、ラベルの一覧に無い綴りの FAIL がある（unexpected-fail。要約は
-#                        綴りを載せないので、ラベルごとの見方では拾えない）
+#   drift（綴り不明）    ラベルの一覧に無い綴りの FAIL（unexpected-fail）がある回の後に、前提が 4 つとも
+#                        通った回が無い（要約は綴りを載せないので、ラベルごとの見方では拾えない）
 #   system-stale <系統>  gh / aws / cloudflare / gcp のそれぞれで、前提が PASS した最後の
 #                        記録が無いか MAX_AGE より古い（＝その系統の認証が 3 日切れている）
 #
@@ -119,8 +119,12 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
           ( [ $recs[] | select(.invoked) ] as $r
             | if ($r | length) > 0 and $r[-1].result == "incomplete" then
                 "FAIL incomplete acceptance-remote.sh を起動した最新の回（\($r[-1].at | when) head=\($r[-1].head) ran=\($r[-1].ran)）が途中で止まっています"
-              elif ($r | length) > 0 and $r[-1].unexpected > 0 then
-                "FAIL drift acceptance-remote.sh を起動した最新の回（\($r[-1].at | when) head=\($r[-1].head)）に、ラベルの一覧に無い綴りの FAIL が \($r[-1].unexpected) 件あります"
+              else empty end ),
+          # 綴りの分からない FAIL は系統が分からないので、前提が 4 つとも通った回でしか「直った」と
+          # 数えない（翌日に認証が切れた回で消えないように。PR #853 の第二意見の指摘）。
+          ( ([ $recs[] | select(.invoked and (.unexpected > 0 or all(.prereq[]; . == "pass"))) ] | last) as $u
+            | if $u != null and $u.unexpected > 0 then
+                "FAIL drift 前提がそろって判定できた最新の回（\($u.at | when) head=\($u.head)）に、ラベルの一覧に無い綴りの FAIL が \($u.unexpected) 件あります"
               else empty end ),
           ( [ $recs[] | . as $rec | .rows[] | select(.st == "PASS" or .st == "DRIFT")
               | {label, st, at: $rec.at, head: $rec.head} ]

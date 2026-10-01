@@ -290,6 +290,8 @@ owner_rec 0.1 out-crash 1 | judge_case "途中で止まった回は落とす" "i
 : > "$WORK/out-empty"
 { owner_rec 1 out-ok 0; owner_rec 0.1 out-empty 1; } | judge_case "1 件も回らずに止まった回も落とす（ran 0）" "incomplete"
 { owner_rec 1 out-ok 0; owner_rec 0.1 out-unknown 1; } | judge_case "綴りの分からない FAIL がある回は落とす" "drift"
+{ owner_rec 2 out-ok 0; owner_rec 1 out-unknown 1; owner_rec 0.1 out-noauth 1; } | judge_case "綴りの分からない FAIL は翌日に認証が切れても消えない" "drift"
+{ owner_rec 2 out-unknown 1; owner_rec 0.1 out-ok 0; } | judge_case "綴りの分からない FAIL は前提がそろった回で直ったと数える" ""
 { owner_rec 4 out-ok 0; owner_pre 2 primary-not-on-main; owner_pre 0.1 primary-not-at-origin-main; } |
   judge_case "プライマリのずれが続けば全系統が落ちる" "$ALL_SYS"
 # 記録の time を未来へずらしても、created_at（GitHub が付ける）より新しくは数えない。

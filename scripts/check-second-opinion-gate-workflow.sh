@@ -67,6 +67,7 @@ SHA=0123456789abcdef0123456789abcdef01234567
 fail=0
 
 # commit <author> <committer> <verified>
+record_comment() { printf '{"user":{"login":"%s"},"author_association":"%s","body":"<!-- second-opinion sha=%s -->\\nLGTM"}' "$1" "$2" "$SHA"; }
 commit() { printf '{"author":{"login":"%s"},"committer":{"login":"%s"},"commit":{"verification":{"verified":%s}}}' "$1" "$2" "$3"; }
 
 # case <名前> <期待する status（無しは none）> <PR の著者> <記録があるか yes/no> <コミットの JSON...>
@@ -76,16 +77,28 @@ case_() {
   rm -rf "$fx"; mkdir -p "$fx"
   printf '{"user":{"login":"%s"},"draft":false,"head":{"sha":"%s"}}' "$author" "$SHA" > "$fx/pr.json"
   local IFS=,; printf '[%s]' "$*" > "$fx/commits.json"; unset IFS
-  if [ "$recorded" = yes ]; then
-    printf '[{"body":"<!-- second-opinion sha=%s -->\\nLGTM"}]' "$SHA" > "$fx/comments.json"
-  else
-    printf '[{"body":"関係ないコメント"}]' > "$fx/comments.json"
-  fi
+  # 記録のコメントは本物の API と同じく、著者（user.login）と author_association を持つ（#865）。
+  # REPO=o/r なので持ち主は o。
+  case "$recorded" in
+    yes) printf '[%s]' "$(record_comment o OWNER)" > "$fx/comments.json" ;;
+    stranger) printf '[%s]' "$(record_comment mallory NONE)" > "$fx/comments.json" ;;
+    collaborator) printf '[%s]' "$(record_comment helper COLLABORATOR)" > "$fx/comments.json" ;;
+    both) printf '[%s,%s]' "$(record_comment mallory NONE)" "$(record_comment o OWNER)" > "$fx/comments.json" ;;
+    *) printf '[{"user":{"login":"o"},"author_association":"OWNER","body":"関係ないコメント"}]' > "$fx/comments.json" ;;
+  esac
   ( cd "$ROOT" && PATH="$WORK/bin:$PATH" FIXTURES="$fx" GH_TOKEN=x REPO=o/r EVENT=pull_request \
-      PR_NUMBER=1 TRIGGER_SHA="$SHA" RUN_URL=u bash "$WORK/run.sh" ) >/dev/null 2>&1 || true
+      PR_NUMBER=1 TRIGGER_SHA="$SHA" RUN_URL=u bash "$WORK/run.sh" ) >"$fx/out" 2>&1 || true
   got="$(cat "$fx/statuses" 2>/dev/null || echo none)"
   if [ "$got" != "$want" ]; then
     echo "[second-opinion-gate-workflow] FAIL: $name（want=$want got=$(echo "$got" | tr '\n' ' ')）" >&2
+    fail=1
+  fi
+  # 持ち主以外の印があったときだけ警告が出る（#865。数えないが黙って捨てない）。
+  local want_warn=no got_warn=no
+  case "$recorded" in stranger|collaborator|both) want_warn=yes ;; esac
+  grep -q '持ち主（o）以外が書いたもの' "$fx/out" && got_warn=yes
+  if [ "$got_warn" != "$want_warn" ]; then
+    echo "[second-opinion-gate-workflow] FAIL: $name（持ち主以外の印の警告 want=$want_warn got=$got_warn）" >&2
     fail=1
   fi
 }
@@ -105,6 +118,13 @@ case_ "Dependabot 名義でも署名が無ければ failure" failure "$DEP" no \
 case_ "Dependabot 名義で committer が web-flow でも未検証なら failure" failure "$DEP" no \
   "$(commit "$DEP" web-flow false)"
 
+# 記録の著者（#865）。public なので誰でも印つきのコメントを書ける。数えるのは持ち主だけ。
+case_ "持ち主以外（知らない人）が書いた印だけなら failure" failure ido-ojos stranger \
+  "$(commit ido-ojos ido-ojos false)"
+case_ "協力者が書いた印だけでも failure（持ち主だけを数える）" failure ido-ojos collaborator \
+  "$(commit ido-ojos ido-ojos false)"
+case_ "持ち主の記録があれば、他人の印が混ざっていても success" success ido-ojos both \
+  "$(commit ido-ojos ido-ojos false)"
 if [ "$fail" -ne 0 ]; then
   echo "[second-opinion-gate-workflow] 判定が期待と食い違いました（上記）" >&2
   exit 1

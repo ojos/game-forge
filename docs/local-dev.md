@@ -1040,11 +1040,12 @@ docker ps >/dev/null && echo DOCKER_OK   # docker グループがコンテナか
 grep -c 'Host dev01' ~/.ssh/config 2>/dev/null || true   # 0 か、ファイルが無いこと
 ```
 
-**VS Code の窓を閉じるとコンテナは止まり、中の tmux も一緒に消える**（`devcontainer.json` の
-`shutdownAction: stopCompose`。Mac と共通の設定なので dev01 だけ変えることはしていない）。したがって dev01 では、
+**`devcontainer.json` は `shutdownAction: stopCompose` だが、Remote-SSH 越しに開いた dev01 の窓は、閉じてもコンテナを止めなかった**
+（2026-10-01 に 2 回。窓を閉じた後も `docker events` に stop / die が出ず、tmux も残った。Dev Containers 0.469.0。
+窓を閉じると先に SSH の接続が切れ、停止が dev01 まで届かないためと見ている）。**止まる前提では組まないが、止まらない前提にも頼らない**——
+拡張の版や閉じ方で変わりうるので、止まっても 7.9 のユニットが 30 秒後に戻す形にしてある。
 **VS Code は導入とログイン（7.5・7.6）に使い、持ち歩き中の作業は 7.7 の形（ssh から `docker start` と `docker exec` で
-tmux に入る）で回す。** tmux で作業が走っている間は、dev01 に繋いだ VS Code の窓を閉じない。
-手を触れずに立ち上がる形（systemd）は 7.9 にある（ユニットを有効にすると、窓を閉じて止まっても 30 秒後に戻る）。
+tmux に入る）で回す。**
 
 ### 7.5 `.env` と `npm ci`（コンテナの中）
 
@@ -1104,8 +1105,8 @@ ssh -t dev01-ssh.ojos.jp '
 - `docker ps -a` の絞り込みは、devcontainer が付けるラベル（`devcontainer.local_folder`。ホストの clone の絶対パス）と
   compose のサービス名で行う。**止まっているコンテナも拾い、`docker start` で起こしてから入る**
   （VS Code の窓を閉じて止まった後でも、この 1 行で戻れる。動いているコンテナへの `docker start` は何もしない）。
-- **tmux のセッションはコンテナと一緒に消える。** コンテナを作り直す・止める（VS Code の窓を閉じるのを含む）と、
-  中の作業も止まる。自動で戻す仕組み（systemd）とスマホからの入口は 7.9 にある。
+- **tmux のセッションはコンテナと一緒に消える。** コンテナを作り直す・止める（ユニットの `docker kill` の試験や、
+  stopCompose が届いた場合を含む）と、中の作業も止まる。自動で戻す仕組み（systemd）とスマホからの入口は 7.9 にある。
 
 ### 7.8 確かめること（#802 の acceptance との対応）
 
@@ -1116,7 +1117,7 @@ ssh -t dev01-ssh.ojos.jp '
 | ワークスペースへ書き込める | 7.4 の `WRITE_OK` | 利用者（dev01） |
 | Mac で作り直しても VERIFY_PASS | Mac で Rebuild Container の後に `bash scripts/verify.sh`（`.devcontainer/.env` を置かないので既定の 1000） | 利用者（Mac） |
 | dev01 で自己参照の入口を書かない | 7.4 の `grep -c 'Host dev01' ~/.ssh/config` が 0 | 利用者（dev01）。分岐そのものは `scripts/check-devcontainer-dev01.sh` が毎回見る |
-| dev01 で `terraform plan` が必須変数の不足で落ちる | `terraform -chdir=terraform init && terraform -chdir=terraform plan -input=false` が `No value for required variable` で止まる（tfvars を置いていないので fail-closed） | 利用者（dev01） |
+| dev01 で `terraform plan` が必須変数の不足で落ちる | `terraform -chdir=terraform init && terraform -chdir=terraform plan -input=false` が `No value for required variable` で止まる（tfvars を置いていないので fail-closed。2026-10-01 は 12 件）。**`init` は `terraform/.terraform.lock.hcl` に linux_amd64 の `h1:` を足して作業ツリーを汚す。先に `git diff --quiet -- terraform/.terraform.lock.hcl` で変更が無いことを確かめ、確かめた後に `git checkout -- terraform/.terraform.lock.hcl` で戻す**（先に変更があれば戻さない。それごと消えるため） | 利用者（dev01） |
 
 **UID の既定が 1000 のままであること・dev01 の値がビルド引数へ届くこと・付け替えの判定・
 install-cloudflared.sh の分岐は、`scripts/check-devcontainer-dev01.sh`（`scripts/acceptance.sh` から回る）が
@@ -1148,6 +1149,12 @@ systemctl --user enable --now dev-up@game-forge.service
 - `auth aws` と `ls` の AWS の欄は、**コンテナの中の `~/.aws/config`**（`aws-storage` のボリューム）に
   `[sso-session ojos]` と `game-forge-dev` のプロファイルがあることを前提にする。無ければ Mac の `~/.aws/config` を写す
   （鍵やトークンは含まない。SSO のトークンはコンテナごとのボリュームに載り、共有しない）。
+  **写すのは `[sso-session ojos]` と `[profile game-forge-dev]` の 2 節だけにする**（dev01 から本番に書き込まないので、
+  `game-forge-prod` の名前を置かない）。
+- **`sso_start_url` は新しいドメインの `https://ssoins-77588ce356c120e7.portal.ap-northeast-1.app.aws` にする。**
+  旧ドメインの `https://d-956797eff8.awsapps.com/start` のままだと、デバイスコードの画面で Google の認証を済ませた後に
+  「問題が発生しました」で止まる（2026-10-01 に Pixel 8 と Mac の両方で再現。先にアクセスポータルへ新ドメインでサインインして
+  おくと通るのは、そのセッションが残っているため）。新ドメインにすると、事前のサインインなしで `gf-auth-aws` が通った。
 - **Rebuild Container の前は `systemctl --user stop dev-up@game-forge.service`**、終わったら `start` する
   （README の「VS Code の窓を閉じたときの停止」）。
 
@@ -1159,6 +1166,7 @@ dev01 の `authorized_keys` に足す（鍵の名前は下では `id_ed25519_pho
 ```bash
 cat >> ~/.ssh/config <<'CONF'
 Host dev01
+  User ido
   HostName dev01-ssh.ojos.jp
   ProxyCommand cloudflared access ssh --hostname %h
   IdentityFile ~/.ssh/id_ed25519_phone
@@ -1172,6 +1180,12 @@ done
 chmod +x ~/.shortcuts/*
 ssh dev01 .local/bin/dev ls     # 最初の 1 回は Access の URL が出る。長押しで開いて認証する
 ```
+
+- **`User ido` を落とさない。** 無いと Termux のユーザー名（`u0_a465` のような値）で入ろうとして
+  `Permission denied (publickey)` になる（2026-10-01 に実際に踏んだ。鍵の失効と同じ表示なので取り違えやすい）。
+- **Termux に「他のアプリの上に重ねて表示」の許可が要る**（Android の設定 → アプリ → Termux）。
+  無いと、ウィジェットのボタンを押したときに許可を求める表示が出て進まない。
+- ボタンの画面は、ssh が終わると Termux:Widget が閉じる。出力を読みたいときは Termux を開いて同じ `ssh -t dev01 …` を打つ。
 
 ホーム画面に Termux:Widget を置くと、`gf-attach` / `gf-up` / `gf-auth-aws` / `dev-ls` の 4 つのボタンになる。
 

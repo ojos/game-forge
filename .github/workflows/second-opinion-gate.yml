@@ -205,9 +205,9 @@ jobs:
           # 誰でも印つきのコメントを書ける。著者を見ないと、第二意見を回していない PR が
           # 他人のコメント 1 つで緑になる。条件は #844 / #845 の確認側
           # （scripts/acceptance-record-judge.sh）と同じ綴り——`user.login` が持ち主で、かつ
-          # `author_association` が `OWNER`。fork の PR も同じで、外部の作者が自分で書いた記録は
-          # 数えない（持ち主が手元で回して投稿したものだけが通る）。持ち主自身の偽造は、
-          # 従来どおり防がない（scripts/second-opinion-record.sh の「偽造はできる」）。
+          # `author_association` が `OWNER`。持ち主自身の偽造は、従来どおり防がない
+          # （scripts/second-opinion-record.sh の「偽造はできる」）。**fork の PR はこのゲートの
+          # 対象外**である（PR の契機も掃き寄せも、同じリポジトリの PR だけを判定する）。
           has_record() {
             local pr="$1" sha="$2" owner="${REPO%%/*}" bodies others
             local mine="(.user.login // \"\") == \"${owner}\" and (.author_association // \"\") == \"OWNER\""
@@ -218,19 +218,21 @@ jobs:
             fi
             # 印は「印 + SHA + ' -->'」で完全に照合する。SHA の前方一致で見ると、
             # 別の SHA（短縮形が接頭辞になる組み合わせ）を取り違えうる。
+            local found=1
             case "$bodies" in
-              *"${MARKER_PREFIX}${sha} -->"*) return 0 ;;
+              *"${MARKER_PREFIX}${sha} -->"*) found=0 ;;
             esac
-            # 持ち主以外が書いた印つきのコメントは**数えないが、黙って捨てない。** 読めなければ
-            # 知らせないだけで、判定（1）は変えない。
+            # 持ち主以外が書いた印つきのコメントは**数えないが、黙って捨てない。** 持ち主の記録が
+            # あっても知らせる（混ざっていること自体が読めるように）。読めなければ知らせないだけで、
+            # 判定は変えない。
             if others="$(gh api --paginate "repos/${REPO}/issues/${pr}/comments" --jq ".[] | select((${mine}) | not) | .body" 2>/dev/null)"; then
               case "$others" in
                 *"${MARKER_PREFIX}${sha} -->"*)
-                  echo "::warning::PR #${pr}: この head（${sha:0:7}）の印つきコメントがありますが、持ち主（${owner}）が書いたものではないので記録として数えません（#865）。"
+                  echo "::warning::PR #${pr}: この head（${sha:0:7}）の印つきコメントに、持ち主（${owner}）以外が書いたものがあります。記録としては数えません（#865）。"
                   ;;
               esac
             fi
-            return 1
+            return "$found"
           }
 
           # 記録を求めない PR か（#838）。0 = 求めない / 1 = いつもどおり判定する。

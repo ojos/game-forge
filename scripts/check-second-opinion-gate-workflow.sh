@@ -87,10 +87,18 @@ case_() {
     *) printf '[{"user":{"login":"o"},"author_association":"OWNER","body":"関係ないコメント"}]' > "$fx/comments.json" ;;
   esac
   ( cd "$ROOT" && PATH="$WORK/bin:$PATH" FIXTURES="$fx" GH_TOKEN=x REPO=o/r EVENT=pull_request \
-      PR_NUMBER=1 TRIGGER_SHA="$SHA" RUN_URL=u bash "$WORK/run.sh" ) >/dev/null 2>&1 || true
+      PR_NUMBER=1 TRIGGER_SHA="$SHA" RUN_URL=u bash "$WORK/run.sh" ) >"$fx/out" 2>&1 || true
   got="$(cat "$fx/statuses" 2>/dev/null || echo none)"
   if [ "$got" != "$want" ]; then
     echo "[second-opinion-gate-workflow] FAIL: $name（want=$want got=$(echo "$got" | tr '\n' ' ')）" >&2
+    fail=1
+  fi
+  # 持ち主以外の印があったときだけ警告が出る（#865。数えないが黙って捨てない）。
+  local want_warn=no got_warn=no
+  case "$recorded" in stranger|collaborator|both) want_warn=yes ;; esac
+  grep -q '持ち主（o）以外が書いたもの' "$fx/out" && got_warn=yes
+  if [ "$got_warn" != "$want_warn" ]; then
+    echo "[second-opinion-gate-workflow] FAIL: $name（持ち主以外の印の警告 want=$want_warn got=$got_warn）" >&2
     fail=1
   fi
 }

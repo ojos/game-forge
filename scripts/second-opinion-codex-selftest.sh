@@ -118,7 +118,7 @@ if [[ -z "$answer" ]]; then
   exit 1
 fi
 
-printf '%s\n' "${FAKE_CODEX_ANSWER:-{\"findings\":[]\}}" > "$answer"
+printf '%s\n' "${FAKE_CODEX_ANSWER:-{\"reviewed\":true,\"findings\":[]\}}" > "$answer"
 
 # **stdout へは回答を書かない。** 書くと、-o を読まない実装でもこの検査が通る。
 printf '%s\n' "${FAKE_CODEX_STDOUT:-}"
@@ -228,7 +228,7 @@ fi
 # ---- 2b. 落とすのは 4 点だけ（#804） ----
 # **報告は広げ、落とす判定は据え置く**という決まりが、実際にそう効くかを見る。
 rc=0
-FAKE_CODEX_ANSWER='{"findings":[{"category":"promise-mismatch","file":"a.ts","line":1,"what":"x","why":"y"},{"category":"other","file":"a.ts","line":2,"what":"x","why":"y"}]}' \
+FAKE_CODEX_ANSWER='{"reviewed":true,"findings":[{"category":"promise-mismatch","file":"a.ts","line":1,"what":"x","why":"y"},{"category":"other","file":"a.ts","line":2,"what":"x","why":"y"}]}' \
   run_review || rc=$?
 if [[ "$rc" -ne 0 ]]; then
   fail "落とさない category（promise-mismatch / other）だけで落ちました（通すべきです）"
@@ -239,7 +239,7 @@ fi
 
 for category in bug vulnerability type-error edge-case; do
   rc=0
-  FAKE_CODEX_ANSWER="{\"findings\":[{\"category\":\"$category\",\"file\":\"a.ts\",\"line\":1,\"what\":\"x\",\"why\":\"y\"}]}" \
+  FAKE_CODEX_ANSWER="{\"reviewed\":true,\"findings\":[{\"category\":\"$category\",\"file\":\"a.ts\",\"line\":1,\"what\":\"x\",\"why\":\"y\"}]}" \
     run_review || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     fail "category=$category で通過しました（この 4 つは落とすべきです）"
@@ -257,7 +257,7 @@ fi
 
 # 形は満たすが findings が配列でない回答も落とすこと。
 rc=0
-FAKE_CODEX_ANSWER='{"findings":"たくさん"}' run_review || rc=$?
+FAKE_CODEX_ANSWER='{"reviewed":true,"findings":"たくさん"}' run_review || rc=$?
 if [[ "$rc" -eq 0 ]]; then
   fail "findings が配列でない回答で通過しました"
 fi
@@ -266,7 +266,7 @@ fi
 # スキーマを強制できないエンジンでは綴り違いが来うる。配列であることしか見ていないと、
 # `bugs` は「落とす 4 つ」に一致せず、**指摘があるのにゲートが緑になる。**
 rc=0
-FAKE_CODEX_ANSWER='{"findings":[{"category":"bugs","file":"a.ts","line":1,"what":"x","why":"y"}]}' \
+FAKE_CODEX_ANSWER='{"reviewed":true,"findings":[{"category":"bugs","file":"a.ts","line":1,"what":"x","why":"y"}]}' \
   run_review || rc=$?
 if [[ "$rc" -eq 0 ]]; then
   fail "知らない category（bugs）で通過しました（重さが分からないものを指摘なしに倒しています）"
@@ -274,7 +274,7 @@ fi
 
 # what / why が欠けた回答も落とすこと（人が読めない報告は、報告になっていない）。
 rc=0
-FAKE_CODEX_ANSWER='{"findings":[{"category":"bug","file":"a.ts","line":1}]}' run_review || rc=$?
+FAKE_CODEX_ANSWER='{"reviewed":true,"findings":[{"category":"bug","file":"a.ts","line":1}]}' run_review || rc=$?
 if [[ "$rc" -eq 0 ]]; then
   fail "what / why の無い回答で通過しました"
 fi
@@ -287,7 +287,7 @@ fi
 # `print_findings` が壊れて落ちるので通ってしまう（**偶然の落ち方で合格にしない**。
 # 変異を当てて実際にそうなることを確かめた）。
 rc=0
-FAKE_CODEX_ANSWER='{"findings":[{"category":"bug","what":"x","why":"y"}]}' run_review || rc=$?
+FAKE_CODEX_ANSWER='{"reviewed":true,"findings":[{"category":"bug","what":"x","why":"y"}]}' run_review || rc=$?
 if [[ "$rc" -eq 0 ]]; then
   fail "file / line の無い回答で通過しました"
 elif ! grep -q 'JSON として読めませんでした' "$work/err"; then
@@ -296,13 +296,71 @@ fi
 
 # line が数でない回答も落とすこと。
 rc=0
-FAKE_CODEX_ANSWER='{"findings":[{"category":"bug","file":"a.ts","line":"3 行目","what":"x","why":"y"}]}' \
+FAKE_CODEX_ANSWER='{"reviewed":true,"findings":[{"category":"bug","file":"a.ts","line":"3 行目","what":"x","why":"y"}]}' \
   run_review || rc=$?
 if [[ "$rc" -eq 0 ]]; then
   fail "line が数でない回答で通過しました"
 elif ! grep -q 'JSON として読めませんでした' "$work/err"; then
   fail "line が数でない回答が、検証ではない別の理由で落ちています（検証が効いていません）"
 fi
+
+# ---- 2e. 差分を読めなかった回答は落とし、記録も残させないこと（#873） ----
+# **2026-10-01 に実際に起きた形をそのまま当てる。** devcontainer の codex がサンドボックスの
+# 失敗で `git diff` を叩けず、「レビューを実施できませんでした」を `other` の指摘 1 件として
+# 返した。`other` は判定を動かさないので LGTM になり、loop-gate.sh が記録まで作った。
+unreviewed='{"reviewed":false,"findings":[{"category":"other","file":"","line":0,"what":"レビューを実施できませんでした。","why":"git diff が bwrap: Failed to make / slave: Permission denied で失敗しました。"}]}'
+rc=0
+FAKE_CODEX_ANSWER="$unreviewed" run_review || rc=$?
+if [[ "$rc" -eq 0 ]]; then
+  fail "差分を読めなかった回答（reviewed: false）で通過しました"
+elif ! grep -q '差分を読めなかったと答えました' "$work/err"; then
+  fail "差分を読めなかった回答が、その理由ではない別の理由で落ちています"
+fi
+grep -q 'bwrap' "$work/err" \
+  || fail "読めなかった理由（other の指摘）が出力に出ていません"
+# **完了の行を出さないこと。** loop-gate.sh はこの行の有無で「判定に到達したか」を見て、
+# 無ければ記録を残さない。出してしまうと、落ちても findings の記録が作られ、確認側が緑になる。
+if grep -q -e '\[second-opinion\] LGTM ' -e '\[second-opinion\] findings reported in ' "$work/out" "$work/err"; then
+  fail "差分を読めなかった回答で、完了の行（LGTM / findings reported in）が出ています"
+fi
+cat "$work/out" "$work/err" > "$work/unreviewed-capture"
+
+# reviewed が欠けた回答と、真偽値でない回答も落とすこと（「欠け」を「読めた」に倒さない）。
+for answer in '{"findings":[]}' '{"reviewed":"true","findings":[]}'; do
+  rc=0
+  FAKE_CODEX_ANSWER="$answer" run_review || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    fail "reviewed が欠けた・真偽値でない回答で通過しました: $answer"
+  fi
+done
+
+# **loop-gate.sh がこの出力から記録を作らないこと。** 記録の判断そのものを、loop-gate.sh の
+# 関数で確かめる（綴りをここへ書き写すと、片方だけ直ったときに検査が空振りする）。
+# 対照として、LGTM の出力からは記録が作られることも見る（記録の経路が壊れて「何も作られない」
+# ことで通ってしまわないように）。
+rc=0
+FAKE_CODEX_ANSWER='{"reviewed":true,"findings":[]}' run_review || rc=$?
+cat "$work/out" "$work/err" > "$work/lgtm-capture"
+#
+# **写しを使い捨てのリポジトリへ置いて呼ぶ。** second-opinion-record.sh は自分の置き場所の
+# リポジトリへ cd して記録するので、本物を呼ぶと**この検査を回した worktree の記録を
+# 上書きする**（loop-gate.sh は verify の後に第二意見を記録するが、手で回した記録は消える）。
+mkdir -p "$repo/scripts"
+cp "$ROOT/scripts/loop-gate.sh" "$ROOT/scripts/second-opinion-record.sh" "$repo/scripts/"
+record_after() {
+  (
+    cd "$repo"
+    rm -f .git/second-opinion/meta .git/second-opinion/output
+    # shellcheck source=scripts/loop-gate.sh
+    . "$repo/scripts/loop-gate.sh"
+    record_second_opinion "$1" "range:HEAD~1..HEAD" "$2" >/dev/null 2>&1
+    if [[ -f .git/second-opinion/meta ]]; then echo recorded; else echo none; fi
+  )
+}
+[[ "$(record_after "$work/lgtm-capture" 0)" == "recorded" ]] \
+  || fail "対照: LGTM の出力から loop-gate.sh が記録を作りません（記録の経路が壊れていると、下の検査が空振りします）"
+[[ "$(record_after "$work/unreviewed-capture" 1)" == "none" ]] \
+  || fail "差分を読めなかった出力から、loop-gate.sh が記録を作りました（確認側が緑になります）"
 
 # ---- 2d. 旗で強制できないエンジンには、形をプロンプトへ載せること ----
 # **gemini には `--json-schema` に当たる旗が無い**（実測）。載せないと、モデルは
@@ -315,7 +373,7 @@ set -euo pipefail
 for a in "$@"; do
   printf '%s\n' "$a" >> "$FAKE_CODEX_RECORD/gemini-argv"
 done
-printf '%s' "${FAKE_CODEX_ANSWER:-{\"findings\":[]\}}"
+printf '%s' "${FAKE_CODEX_ANSWER:-{\"reviewed\":true,\"findings\":[]\}}"
 FAKEG
 chmod +x "$fake_bin/gemini"
 
@@ -351,9 +409,9 @@ fi
 for shape in narration fence; do
   case "$shape" in
     narration) answer='これから確認します。
-{"findings":[]}' ;;
+{"reviewed":true,"findings":[]}' ;;
     fence) answer='```json
-{"findings":[]}
+{"reviewed":true,"findings":[]}
 ```' ;;
   esac
   rm -f "$record/gemini-argv"
@@ -439,14 +497,14 @@ for a in "$@"; do
 done
 # 本物は包みで返し、回答は .structured_output に入る（2026-09-29 に実測）。
 printf '{"conversation_id":"x","status":"SUCCESS","response":"...","structured_output":%s}\n' \
-  "${FAKE_CODEX_ANSWER:-{\"findings\":[]\}}"
+  "${FAKE_CODEX_ANSWER:-{\"reviewed\":true,\"findings\":[]\}}"
 FAKEA
 chmod +x "$fake_bin/agy"
 
 for shape in empty blocking; do
   case "$shape" in
-    empty)    answer='{"findings":[]}'; expect=0 ;;
-    blocking) answer='{"findings":[{"category":"bug","file":"a.ts","line":1,"what":"x","why":"y"}]}'; expect=1 ;;
+    empty)    answer='{"reviewed":true,"findings":[]}'; expect=0 ;;
+    blocking) answer='{"reviewed":true,"findings":[{"category":"bug","file":"a.ts","line":1,"what":"x","why":"y"}]}'; expect=1 ;;
   esac
   rm -f "$record/agy-argv"
   rc=0
@@ -475,8 +533,8 @@ done
 # ---- 3. 判定は -o のファイルから取ること（stdout では判定しない） ----
 # 回答は指摘なし、stdout には落とす指摘を書かせる。stdout で判定していれば赤になる。
 rc=0
-FAKE_CODEX_ANSWER='{"findings":[]}' \
-FAKE_CODEX_STDOUT='{"findings":[{"category":"bug","file":"a.ts","line":1,"what":"x","why":"y"}]}' \
+FAKE_CODEX_ANSWER='{"reviewed":true,"findings":[]}' \
+FAKE_CODEX_STDOUT='{"reviewed":true,"findings":[{"category":"bug","file":"a.ts","line":1,"what":"x","why":"y"}]}' \
   run_review || rc=$?
 if [[ "$rc" -ne 0 ]]; then
   fail "stdout の指摘に引きずられました（判定が -o のファイルを見ていません）"
@@ -484,8 +542,8 @@ fi
 
 # 逆向き。回答は落とす指摘、stdout は指摘なし。stdout で判定していれば緑になる。
 rc=0
-FAKE_CODEX_ANSWER='{"findings":[{"category":"bug","file":"a.ts","line":1,"what":"x","why":"y"}]}' \
-FAKE_CODEX_STDOUT='{"findings":[]}' \
+FAKE_CODEX_ANSWER='{"reviewed":true,"findings":[{"category":"bug","file":"a.ts","line":1,"what":"x","why":"y"}]}' \
+FAKE_CODEX_STDOUT='{"reviewed":true,"findings":[]}' \
   run_review || rc=$?
 if [[ "$rc" -eq 0 ]]; then
   fail "-o の指摘を見落として通過しました（stdout で判定しています）"
@@ -511,7 +569,7 @@ fi
 # 1 回目は回答を書き、2 回目は 0 で終わりながら書かない。回答のファイルを呼び出しごとに
 # 消していなければ、2 回目は 1 回目の LGTM を読んで**通ってしまう**（Copilot の指摘）。
 rc=0
-FAKE_CODEX_WRITE_ANSWER=first FAKE_CODEX_ANSWER='{"findings":[]}' run_review --runs 2 || rc=$?
+FAKE_CODEX_WRITE_ANSWER=first FAKE_CODEX_ANSWER='{"reviewed":true,"findings":[]}' run_review --runs 2 || rc=$?
 if [[ "$rc" -eq 0 ]]; then
   fail "--runs 2 の 2 回目が回答を書かなかったのに通過しました（前の回の回答を読んでいます）"
 fi
@@ -608,5 +666,5 @@ if [[ "$failed" -ne 0 ]]; then
   exit 1
 fi
 
-echo "[codex-selftest] 13 組の配線を確かめました（差分を渡さない / issue の文脈 / 参照された issue・PR の文脈 / antigravity の旗と包み / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
+echo "[codex-selftest] 14 組の配線を確かめました（差分を渡さない / issue の文脈 / 参照された issue・PR の文脈 / antigravity の旗と包み / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / 差分を読めなかった回答と記録 / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

@@ -122,7 +122,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 | 実装したモデルとは別ベンダー | 変わりません（codex / antigravity / gemini） |
 | 非対話で実行でき、機械的に判定できる | 変わりません（JSON を読んで判定します） |
 | 指摘があるときに通過させない | `category` が `bug` / `vulnerability` / `type-error` / `edge-case` のいずれかなら落とします |
-| 判定できない出力を通さない | **JSON として読めない回答は落とします**（「読めなかった」を「指摘なし」に倒しません） |
+| 判定できない出力を通さない | **JSON として読めない回答は落とします**（「読めなかった」を「指摘なし」に倒しません）。**差分を読めなかったと答えた回答（`reviewed: false`）も落とし、記録も残しません**（#873） |
 
 **`.ai-playbook/` は上流パッケージの写しです**（`.ai-playbook/VERSION` に `source=https://github.com/ojos/ai-playbook/…/v0.2.0.tar.gz`）。**ここを編集しても次の展開で消えるため、逸脱はこのプロジェクト層に書きます。** 規範側を変えるなら、上流の `ojos/ai-playbook` へ提案します（**未起票**）。
 

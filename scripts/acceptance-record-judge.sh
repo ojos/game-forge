@@ -25,7 +25,10 @@
 #   no-record            持ち主の記録が 1 件も無い
 #   stale                最新の記録が MAX_AGE より古い（＝定期実行が止まっている）
 #   drift                **ラベルごとに、判定できた最新の回**（PASS か DRIFT だった回）が DRIFT
-#   incomplete           検査を回した最新の回（ran > 0）が incomplete（途中で止まった等）
+#   incomplete           acceptance-remote.sh を起動した最新の回（exit が - でない回。1 件も回らずに
+#                        終わった回を含む）が incomplete（途中で止まった等）
+#   drift（綴り不明）    同じ回に、ラベルの一覧に無い綴りの FAIL がある（unexpected-fail。要約は
+#                        綴りを載せないので、ラベルごとの見方では拾えない）
 #   system-stale <系統>  gh / aws / cloudflare / gcp のそれぞれで、前提が PASS した最後の
 #                        記録が無いか MAX_AGE より古い（＝その系統の認証が 3 日切れている）
 #
@@ -93,6 +96,8 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
         then {at: ([($kv.time | fromdateiso8601), $c] | min), result: $kv.result,
               head: (($kv.head // "") | short),
               ran: (($kv.ran // "0") | tonumber? // 0),
+              invoked: (($kv.exit // "-") != "-"),
+              unexpected: (($kv["unexpected-fail"] // "0") | tonumber? // 0),
               rows: [ $l[] | capture("^(?<st>PASS|DRIFT|FAIL-PRECONDITION|NOT-RUN) (?<label>.+)$") ],
               prereq: (reduce $sys[] as $s ({}; .[$s] = $kv["prereq." + $s]))}
         else {malformed: true} end;
@@ -111,9 +116,11 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
           ( if ($now - $last.at) > $max then
               "FAIL stale 最新の記録が \(($now - $last.at) | days) 日前です（定期実行が止まっています）"
             else empty end ),
-          ( [ $recs[] | select(.ran > 0) ] as $r
+          ( [ $recs[] | select(.invoked) ] as $r
             | if ($r | length) > 0 and $r[-1].result == "incomplete" then
-                "FAIL incomplete 検査を回した最新の回（\($r[-1].at | when) head=\($r[-1].head)）が途中で止まっています"
+                "FAIL incomplete acceptance-remote.sh を起動した最新の回（\($r[-1].at | when) head=\($r[-1].head) ran=\($r[-1].ran)）が途中で止まっています"
+              elif ($r | length) > 0 and $r[-1].unexpected > 0 then
+                "FAIL drift acceptance-remote.sh を起動した最新の回（\($r[-1].at | when) head=\($r[-1].head)）に、ラベルの一覧に無い綴りの FAIL が \($r[-1].unexpected) 件あります"
               else empty end ),
           ( [ $recs[] | . as $rec | .rows[] | select(.st == "PASS" or .st == "DRIFT")
               | {label, st, at: $rec.at, head: $rec.head} ]

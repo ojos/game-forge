@@ -707,18 +707,19 @@ describe('チャットの口（仕様 5.16）', () => {
       expect(rows.results[0]!.output_tokens).toBe(400);
       // **会話の本文は台帳に残さない**（残す場所は `chat_conversations`。5.16）。
       expect(rows.results[0]!.prompt).toBe('');
-      // 4.1 の単価（入力 $3 / 出力 $15）と 150 円/ドルから、2,800 × 3 + 400 × 15 = 14,400 → 2.16 円。
-      expect(rows.results[0]!.cost_jpy).toBeCloseTo(2.16, 6);
+      // 4.1 の単価（`jp.` の入力 $3.3 / 出力 $16.5。#847）と 150 円/ドルから、
+      // 2,800 × 3.3 + 400 × 16.5 = 15,840 → 2.376 円。
+      expect(rows.results[0]!.cost_jpy).toBeCloseTo(2.376, 6);
 
       // **返すのは残りの割合だけ**（円もトークンも画面に出さない。#751）。**次の 1 回を送れる分**
-      // ——2.16 円を使った後の残り 17.84 円から、さらに次の 1 往復の見積もりを引く。
+      // ——2.376 円を使った後の残り 17.624 円から、さらに次の 1 往復の見積もりを引く。
       const body = (await response.json()) as Record<string, unknown>;
       const next = estimateChatCostJpy({
         messageCharacters: worstNextChatCharacters(ONE_TURN.messages as ChatMessage[], '【指示文】赤い玉を避けるゲーム', ''),
         workCharacters: 0,
         sourceBytes: 0,
       });
-      expect(body['remainingPercent']).toBe(chatRemainingPercent(CHAT_DAILY_COST_LIMIT_JPY - 2.16 - next));
+      expect(body['remainingPercent']).toBe(chatRemainingPercent(CHAT_DAILY_COST_LIMIT_JPY - 2.376 - next));
       // 朝いちばんでも 100% にはならない（次の 1 往復の分を先に引いている）。
       expect(body['remainingPercent']).toBeLessThan(89);
       expect(body).not.toHaveProperty('remainingTokens');

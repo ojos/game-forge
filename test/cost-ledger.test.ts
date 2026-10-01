@@ -172,16 +172,17 @@ describe('為替レートの機械照合（4.2 / #22）', () => {
 });
 
 describe('既知の usage の円換算（#22 acceptance 3）', () => {
-  it('4.2 の実測（Sonnet 4.6）が約 9.9 円になる', () => {
+  it('4.2 の実測 usage（Sonnet 4.6）が jp. の単価で約 10.9 円になる', () => {
     // 4.2 の「1 生成あたり 約 9.9 円」は入力 1,092 / 出力 4,171 の平均から出ている。
-    // **仕様書の数字を、台帳の実装で再現できることを固定する。**
+    // **その 9.9 円は `global.` の単価（3 / 15）で出した値である**（#847）。実際に呼ぶ
+    // `jp.` の単価（3.3 / 16.5。4.1）では 10.863765 円で、1.1 倍になる。
     const cost = costOfGeneration(
       generationOf('sonnet-4-6', { inputTokens: 1_092, outputTokens: 4_171 }),
     );
-    expect(cost.inputJpy).toBeCloseTo((1_092 * 3 * 150) / 1_000_000, 10);
-    expect(cost.outputJpy).toBeCloseTo((4_171 * 15 * 150) / 1_000_000, 10);
-    expect(cost.totalJpy).toBeCloseTo(9.87615, 5);
-    expect(Math.round(cost.totalJpy * 10) / 10).toBe(9.9);
+    expect(cost.inputJpy).toBeCloseTo((1_092 * 3.3 * 150) / 1_000_000, 10);
+    expect(cost.outputJpy).toBeCloseTo((4_171 * 16.5 * 150) / 1_000_000, 10);
+    expect(cost.totalJpy).toBeCloseTo(10.863765, 5);
+    expect(Math.round(cost.totalJpy * 10) / 10).toBe(10.9);
   });
 
   it('4.2 の実測（DeepSeek v3.2）が約 0.8 円になる', () => {
@@ -195,8 +196,8 @@ describe('既知の usage の円換算（#22 acceptance 3）', () => {
   it('100 万トークンちょうどが単価×為替になる', () => {
     // 端数の無い入力で、換算式そのものを固定する。
     const cost = costOfGeneration(generationOf('sonnet-4-6', { inputTokens: 1_000_000 }));
-    expect(cost.inputJpy).toBe(3 * USD_JPY_RATE);
-    expect(cost.totalJpy).toBe(450);
+    expect(cost.inputJpy).toBe(3.3 * USD_JPY_RATE);
+    expect(cost.totalJpy).toBe(495);
   });
 
   it('キャッシュ読みが単価どおりに乗る', () => {
@@ -208,7 +209,7 @@ describe('既知の usage の円換算（#22 acceptance 3）', () => {
         cacheWriteInputTokens: 0,
       }),
     );
-    expect(cost.cacheReadJpy).toBeCloseTo((4_841 * 0.3 * 150) / 1_000_000, 10);
+    expect(cost.cacheReadJpy).toBeCloseTo((4_841 * 0.33 * 150) / 1_000_000, 10);
     expect(cost.anomalies).toEqual([]);
   });
 });
@@ -219,7 +220,7 @@ describe('複数モデルの単価（#22 acceptance 4）', () => {
     const sonnet = costOfGeneration(generationOf('sonnet-4-6', usage));
     const deepseek = costOfGeneration(generationOf('deepseek-v3-2', usage));
 
-    expect(sonnet.totalJpy).toBeCloseTo(((1_000 * 3 + 2_000 * 15) * 150) / 1_000_000, 10);
+    expect(sonnet.totalJpy).toBeCloseTo(((1_000 * 3.3 + 2_000 * 16.5) * 150) / 1_000_000, 10);
     expect(deepseek.totalJpy).toBeCloseTo(((1_000 * 0.74 + 2_000 * 2.22) * 150) / 1_000_000, 10);
     expect(sonnet.totalJpy).toBeGreaterThan(deepseek.totalJpy);
   });
@@ -367,7 +368,7 @@ describe('台帳への記録（#22 acceptance 1 / 5）', () => {
     expect(row.prompt).toBe('シューティング');
     expect(row.input_tokens).toBe(1_092);
     expect(row.output_tokens).toBe(4_171);
-    expect(row.cost_jpy).toBeCloseTo(9.87615, 5);
+    expect(row.cost_jpy).toBeCloseTo(10.863765, 5);
     expect(row.succeeded).toBe(1);
     // 作品行はまだ無い（3.3-8 で作られる）。
     expect(row.game_id).toBeNull();
@@ -420,7 +421,7 @@ describe('台帳への記録（#22 acceptance 1 / 5）', () => {
     const rows = await rowsOf(userId);
     expect(rows.map((row) => row.model)).toEqual(['sonnet-4-6', 'deepseek-v3-2']);
     expect(rows[0]!.cost_jpy).toBeGreaterThan(rows[1]!.cost_jpy);
-    expect(rows[0]!.cost_jpy).toBeCloseTo(((1_000 * 3 + 2_000 * 15) * 150) / 1_000_000, 10);
+    expect(rows[0]!.cost_jpy).toBeCloseTo(((1_000 * 3.3 + 2_000 * 16.5) * 150) / 1_000_000, 10);
     expect(rows[1]!.cost_jpy).toBeCloseTo(((1_000 * 0.74 + 2_000 * 2.22) * 150) / 1_000_000, 10);
   });
 

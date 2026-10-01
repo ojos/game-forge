@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  外部層の受け入れ検証を毎日 12:00（この Mac の時刻。JST を前提にする）に回す launchd の定義（#844）。
+
+  **雛形である。** __REPO__（ホスト側のリポジトリの絶対パス）と __HOME__（ホームの絶対パス）を
+  置き換えてから ~/Library/LaunchAgents/ へ置く。launchd は ~ も $HOME も展開しない。
+  導入・外し方・ログの読み方は docs/acceptance-remote-schedule.md。
+
+  StartCalendarInterval は、スリープ中に予定時刻を過ぎた分を、復帰したときに 1 回走らせる
+  （何日分過ぎても 1 回）。電源が切れていた間の分は走らない。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>jp.ojos.game-forge.acceptance-remote</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/scripts/acceptance-remote-launchd.sh</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>12</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <!-- launchd の PATH は /usr/bin:/bin:/usr/sbin:/sbin だけで、docker が見つからない。 -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <!-- 起動側の出力だけ。検査の出力は scripts/acceptance-remote-launchd.sh が日ごとのログへ書く。 -->
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/game-forge/acceptance-remote/launchd.out</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/game-forge/acceptance-remote/launchd.out</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

@@ -1,0 +1,73 @@
+# acceptance-remote-deps.tsv — 外部層の検査のラベルが、どの認証の系統に依存するか（#844）
+#
+# 1 行 1 検査。`<系統>` タブ `<ラベル>`。系統は gh / aws / cloudflare / gcp をカンマで並べ、
+# 依存が無ければ `-`。ラベルは scripts/acceptance-remote.sh の `run "<ラベル>"` と同じ綴り。
+#
+# 使うのは scripts/acceptance-remote-summary.sh だけ。**ある FAIL が依存する系統の前提が
+# すべて通っていれば「乖離」、どれかが落ちていれば「前提の不成立」と読む。** GCP の ADC は
+# 24 時間で切れるので、前提が 1 つ落ちた回をまるごと乖離でないと読むと、その日は Cloudflare や
+# AWS の本物の乖離が見えなくなる。
+#
+# **acceptance-remote.sh の run と、ここの行は 1 対 1 でなければならない。** どちらかにしか無い
+# ラベルがあると、要約は作られず（終了コード 2）、scripts/check-acceptance-remote-record.sh が
+# 赤になる。検査を足した日に、黙って「依存なし」で数えられないようにするためである。
+#
+# 根拠は #808 のコメントの実測表（state あり・認証なしで 40 件中 4 件 PASS 等）と、各 check 関数の
+# 中身の呼び出し（gh api / aws / cf_api と CLOUDFLARE_API_TOKEN / gcloud）。前提の 4 行は自分自身の
+# 系統に依存する（その系統の前提そのもの）。
+gh	prerequisite: gh authenticated
+aws	prerequisite: aws authenticated
+cloudflare	prerequisite: cloudflare api token is active
+gcp	prerequisite: gcp adc is active
+# init はプロバイダのレジストリへ出るだけで、どの系統の認証も使わない。
+-	terraform init
+# plan は 4 系統すべてのプロバイダで refresh する（GCP は google_project など）。
+gh,aws,cloudflare,gcp	terraform plan: no drift
+# GitHub（gh api）。
+gh	repository exists and visibility matches
+gh	private vulnerability reporting is enabled
+gh	default branch matches
+gh	branch protection matches
+gh	actions variable matches
+gh	github oidc subject spelling matches
+# Cloudflare（cf_api）。
+cloudflare	dns zone matches
+# dig だけ（state の output は読むが、認証は使わない）。
+-	dns delegation from jp registry is in place
+cloudflare	pages custom domain records match
+cloudflare	ojos.jp declared dns records exist as declared
+cloudflare	game-forge waf rules exist as declared
+cloudflare	ojos.jp zone settings match the declaration
+cloudflare	bot protection that would block callbacks is off
+cloudflare	dev01 tunnel is healthy and ingress matches
+cloudflare	tunnel dns records are proxied to the tunnel
+cloudflare	tunnel access applications match
+# wrangler.toml のテキストと output の照合だけ。
+-	wrangler production hosts match dns
+# 既定ブランチの HEAD を gh api で、配備を cf_api で読む。
+gh,cloudflare	production deployment matches default branch HEAD
+# AWS（aws）。
+aws	bedrock invoker permissions are minimal
+# Pages のシークレットを cf_api で、IAM のキーを aws で読む。
+cloudflare,aws	edge no longer holds bedrock credentials
+aws	cost guard layer 2 (burst alarm) matches
+# 開発アカウントの予算を別のプロファイル（terraform output aws_profile_dev）で読む。前提の検査は
+# 本番のプロファイルだけを見るが、2 つのプロファイルは同じ sso-session（IAM Identity Center の
+# 1 つのログイン）を共有するので、本番の前提が通った回は開発のトークンも有効である。共有しない
+# 構成に変えたら、ここは前提で守られなくなる（認証切れが DRIFT に出る）。
+aws	cost guard layer 3 (budgets) matches
+aws	build function configuration matches
+aws	build function image matches the ecr latest digest
+aws	build function execution role is minimal
+aws	build invoker permissions are minimal
+aws	orchestrator configuration matches
+aws	orchestrator async invoke config matches (retries must be 0)
+aws	orchestrator failure queue exists and is empty
+aws	orchestrator code matches the local bundle
+# SSM の SecureString を aws で読む。
+aws	r2 credentials are outside the declaration
+# 本番 R2 を Cloudflare の API で読む（scripts/check-wasm-exec-objects.sh / check-r2-lifecycle.sh）。
+cloudflare	wasm_exec objects exist for every delivered go_version
+cloudflare	r2 lifecycle deletes by age only under declared prefixes
+# 公開 URL への素の HTTP。
+-	sandbox delivery is correct over real HTTP (cors + encoding)

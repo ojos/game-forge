@@ -79,6 +79,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 - 起動方法: （記載。例: `VERIFY_ACCEPTANCE=scripts/acceptance-remote.sh bash scripts/verify.sh`）
 - 検証する内容: （記載。例: 宣言の差分検出が差分なしを返すこと、宣言したリソースが実在すること）
 - 通す契機: 外部状態の宣言を変更したとき。**反復のたびに回す層ではなく、ローカル事前ゲートにも含めません**（下記「レビューの起動方法」）。
+- 定期実行（#844）: 利用者の Mac の launchd が毎日 12:00 JST に devcontainer の中のプライマリから全体を回し、要約だけを固定の issue へ載せます。鮮度と乖離は `acceptance-remote-freshness.yml` の定期ジョブが見ます（required check にしません）。手順と、公開される内容は `docs/acceptance-remote-schedule.md`。
 - 前提: 対象サービスへ認証済みであること。**この検証は認証を行いません**（資格情報をスクリプトへ書き写す経路を作らないため）。未認証やオフラインでの失敗は、宣言と外部状態の乖離ではありません。
 
 ## レビューの起動方法

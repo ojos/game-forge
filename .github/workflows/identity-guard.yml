@@ -37,6 +37,11 @@ jobs:
           # 範囲指定で履歴を辿るため全履歴が要る。
           fetch-depth: 0
 
+      # 判定そのものが壊れていないかを、仕込みのリポジトリで先に確かめる（#860）。
+      # 本物の履歴だけでは、落ちるべき形も「何でも通る」状態も見えないため。
+      - name: Identity selftest
+        run: bash scripts/verify-commit-identity-selftest.sh
+
       - name: Verify commit identity
         env:
           # 固有 email を焼き込まず、リポジトリ変数から許可 author email を渡す。

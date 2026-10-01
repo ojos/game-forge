@@ -353,6 +353,18 @@ else
   echo "[acceptance] (tf-invoker-policies) skip: scripts/acceptance-remote.sh not found"
 fi
 
+# 外部層の IAM インラインポリシーの検査 3 本が、aws の一覧取得に失敗したとき緑にならず、
+# 前提の不成立の文面で落ちること（#843）。**本物の AWS は一覧を返すので、外部層を何度回しても
+# 失敗の形は見えない。** 偽物の aws / terraform / curl を PATH に置いて回すので、認証も
+# ネットワークも要らない。
+if [[ -f scripts/acceptance-remote-aws-failure-selftest.sh ]]; then
+  echo "[acceptance] (acceptance-remote-aws-failure) scripts/acceptance-remote-aws-failure-selftest.sh"
+  bash scripts/acceptance-remote-aws-failure-selftest.sh
+  ran_any=1
+else
+  echo "[acceptance] (acceptance-remote-aws-failure) skip: scripts/acceptance-remote-aws-failure-selftest.sh not found"
+fi
+
 # チャットの「写し」の機械照合（#695 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く**（sed だけで数 ms）。外すと、関数名のずれが黙って本番へ出て、チャットが

@@ -1044,7 +1044,7 @@ grep -c 'Host dev01' ~/.ssh/config 2>/dev/null || true   # 0 か、ファイル�
 `shutdownAction: stopCompose`。Mac と共通の設定なので dev01 だけ変えることはしていない）。したがって dev01 では、
 **VS Code は導入とログイン（7.5・7.6）に使い、持ち歩き中の作業は 7.7 の形（ssh から `docker start` と `docker exec` で
 tmux に入る）で回す。** tmux で作業が走っている間は、dev01 に繋いだ VS Code の窓を閉じない。
-手を触れずに立ち上がる形（systemd）は #849 が扱う。
+手を触れずに立ち上がる形（systemd）は 7.9 にある（ユニットを有効にすると、窓を閉じて止まっても 30 秒後に戻る）。
 
 ### 7.5 `.env` と `npm ci`（コンテナの中）
 
@@ -1105,7 +1105,7 @@ ssh -t dev01-ssh.ojos.jp '
   compose のサービス名で行う。**止まっているコンテナも拾い、`docker start` で起こしてから入る**
   （VS Code の窓を閉じて止まった後でも、この 1 行で戻れる。動いているコンテナへの `docker start` は何もしない）。
 - **tmux のセッションはコンテナと一緒に消える。** コンテナを作り直す・止める（VS Code の窓を閉じるのを含む）と、
-  中の作業も止まる。自動で戻す仕組み（systemd）とスマホからの入口は #849 の範囲である。
+  中の作業も止まる。自動で戻す仕組み（systemd）とスマホからの入口は 7.9 にある。
 
 ### 7.8 確かめること（#802 の acceptance との対応）
 
@@ -1121,3 +1121,81 @@ ssh -t dev01-ssh.ojos.jp '
 **UID の既定が 1000 のままであること・dev01 の値がビルド引数へ届くこと・付け替えの判定・
 install-cloudflared.sh の分岐は、`scripts/check-devcontainer-dev01.sh`（`scripts/acceptance.sh` から回る）が
 機械で見る。** イメージの実ビルドと、実機での書き込みはそこでは見ない。
+
+### 7.9 スマホから起こし・入り・再認証する（#849）
+
+**Mac が手元に無いとき、Android（Termux）のショートカットのタップだけで、dev01 の devcontainer を起こし、
+tmux に入り、AWS を再認証できるようにする。** 道具（`dev`）とユニット（`dev-up@.service`）は
+[tools/devhost/](../tools/devhost/README.md) にあり、**プロジェクトの名前もホスト名も持たない**
+（2 つ目のプロジェクトを dev01 に載せた時点で別のリポジトリへ複写で移すため。`scripts/check-devhost.sh` が綴りを見る）。
+導入の一般の手順・stopCompose の扱いの比較・鍵の作り方と失効のさせ方はあちらの README が正本で、ここには
+このリポジトリと dev01 の値で埋めた形と、復旧の手順だけを書く。
+
+**自動で戻すのはコンテナまで。** tmux と Claude はタップで手で起こす。電源・OS（①）と、cloudflared と sshd（②）は
+この節の範囲外である（#800 / #801 と [local-llm-tunnel.md](local-llm-tunnel.md)）。
+
+#### ホスト（dev01）で 1 度だけ
+
+README の「ホストへの導入」を、次の設定ファイルで行う。
+
+```bash
+mkdir -p ~/.config/dev
+printf 'game-forge %s/game-forge aws_sso_session=ojos aws_profile=game-forge-dev\n' "$HOME" > ~/.config/dev/projects
+~/.local/bin/dev ls
+systemctl --user enable --now dev-up@game-forge.service
+```
+
+- `auth aws` と `ls` の AWS の欄は、**コンテナの中の `~/.aws/config`**（`aws-storage` のボリューム）に
+  `[sso-session ojos]` と `game-forge-dev` のプロファイルがあることを前提にする。無ければ Mac の `~/.aws/config` を写す
+  （鍵やトークンは含まない。SSO のトークンはコンテナごとのボリュームに載り、共有しない）。
+- **Rebuild Container の前は `systemctl --user stop dev-up@game-forge.service`**、終わったら `start` する
+  （README の「VS Code の窓を閉じたときの停止」）。
+
+#### スマホ（Termux）で 1 度だけ
+
+Termux と Termux:Widget を**同じ入手元（F-Droid か GitHub）**から入れ、README の「スマホ専用の鍵」で鍵を作って
+dev01 の `authorized_keys` に足す（鍵の名前は下では `id_ed25519_phone` とする）。そのうえで:
+
+```bash
+cat >> ~/.ssh/config <<'CONF'
+Host dev01
+  HostName dev01-ssh.ojos.jp
+  ProxyCommand cloudflared access ssh --hostname %h
+  IdentityFile ~/.ssh/id_ed25519_phone
+  IdentitiesOnly yes
+  ServerAliveInterval 30
+CONF
+mkdir -p ~/.shortcuts && chmod 700 ~/.shortcuts
+for b in "gf-attach:attach game-forge" "gf-up:up game-forge" "gf-auth-aws:auth aws game-forge" "dev-ls:ls"; do
+  printf '#!/data/data/com.termux/files/usr/bin/bash\nexec ssh -t dev01 .local/bin/dev %s\n' "${b#*:}" > ~/.shortcuts/"${b%%:*}"
+done
+chmod +x ~/.shortcuts/*
+ssh dev01 .local/bin/dev ls     # 最初の 1 回は Access の URL が出る。長押しで開いて認証する
+```
+
+ホーム画面に Termux:Widget を置くと、`gf-attach` / `gf-up` / `gf-auth-aws` / `dev-ls` の 4 つのボタンになる。
+
+#### 復旧の手順（どの層が落ちたら、どのボタンを押すか）
+
+| 症状 | 層 | 押すもの |
+|---|---|---|
+| どのボタンも応答せず、ssh がタイムアウトする | ① 電源・OS / ② 入口 | **範囲外。** スマホからは戻せない。帰宅後に dev01 の電源と `systemctl status cloudflared ssh` を見る |
+| URL が出て止まる | Access の認証切れ | URL を長押しで開いて認証する。そのまま続く |
+| `Permission denied (publickey)` | 鍵 | 鍵の行が `authorized_keys` に無い（失効させた・足し忘れ）。Mac から足し直す |
+| `dev-ls` の CONTAINER が `exited` / `none` | ③ devcontainer | 30 秒待って `dev-ls`。戻らなければ `gf-up` |
+| `gf-up` が失敗する | ③ | `ssh -t dev01 journalctl --user -u dev-up@game-forge -n 30` で理由を読む |
+| `dev-ls` の TMUX が `none` | ④ tmux | `gf-attach`（無ければ作って入る）。Claude はその中で手で起こす |
+| `dev-ls` の AWS が `expired` | ⑤ 認証 | `gf-auth-aws`。出た URL をブラウザで開き、コードを承認する |
+| GCP（24 時間）が切れた | ⑤ 認証 | `gf-attach` の中で `gcloud auth login --no-launch-browser`（道具は AWS だけを持つ） |
+
+#### 確かめること（#849 の acceptance との対応）
+
+| acceptance | 確かめ方 | 誰が |
+|---|---|---|
+| 道具に非対話の試験があり、変異で赤になる | `bash scripts/check-devhost.sh`（`scripts/acceptance.sh` から回る） | 機械 |
+| 道具とユニットに固有の名前・パスが無い | 同上（`tools/devhost/` の中身とファイル名の綴り） | 機械 |
+| 再起動の後、手を触れずにコンテナが立ち上がる | `sudo reboot` の後、`dev-ls` の CONTAINER が running | 利用者（dev01） |
+| `docker kill` で落とすとユニットが戻す | `docker kill <ID>` の 30 秒後に `dev-ls` が running | 利用者（dev01） |
+| Termux のタップで attach・up・auth aws を 1 回ずつ通す | 3 つのボタン（auth はデバイスコードをスマホのブラウザで承認） | 利用者（Pixel 8） |
+| 鍵の行を消すと入れなくなる | README の「失効させる」の後、ボタンが `Permission denied (publickey)` | 利用者（dev01 と Pixel 8） |
+| `bash scripts/verify.sh` が VERIFY_PASS | 手元と CI | 機械 |

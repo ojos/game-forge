@@ -1,0 +1,13 @@
+# Termux の ~/.ssh/config へ足す断片の雛形。<別名> <ホスト名> <鍵> を置き換える。
+#
+#   <別名>     ショートカットから呼ぶ短い名前（ssh <別名>）
+#   <ホスト名> Cloudflare Access の SSH のアプリのホスト名
+#   <鍵>       このスマホ専用に作った鍵（README.md の「スマホ専用の鍵」）
+#
+# %h は HostName の値に展開される。cloudflared は Termux の pkg で入れたもの（PATH にある）。
+Host <別名>
+  HostName <ホスト名>
+  ProxyCommand cloudflared access ssh --hostname %h
+  IdentityFile ~/.ssh/<鍵>
+  IdentitiesOnly yes
+  ServerAliveInterval 30

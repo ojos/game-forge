@@ -1,0 +1,31 @@
+# dev-up@<名前>.service — 登録したプロジェクトの devcontainer を、起動時と止まったときに起こす。
+#
+# **ユーザーのユニットとして置く**（~/.config/systemd/user/。root のユニットにしないのは、
+# 利用者の名前を書かずに済み、docker グループの権限で足りるため）。ログインしていない間も
+# 動かすには `loginctl enable-linger` が要る。導入の手順は README.md の「ユニットを入れる」。
+#
+# <名前> は dev の設定ファイルに書いた名前で、ここには何も書かない。**%i を使い %I を使わない**
+# （%I はインスタンス名の - を / へ戻すので、名前に - を含むと別の名前になる）。
+#
+# ExecStart の `dev supervise` は、`devcontainer up` で起こしてから `docker wait` でコンテナが
+# 止まるまで待ち、**止まった理由を問わず 0 以外で抜ける**。VS Code の窓を閉じたときの
+# stopCompose（docker から見れば意図した停止）でも、docker kill でも、デーモンの再起動でも、
+# RestartSec の後に起こし直す。判断の全文は README.md の「VS Code の窓を閉じたときの停止」。
+
+[Unit]
+Description=devcontainer を起こし、止まったら戻す（%i）
+# 起動の直後は Docker のデーモンがまだ居ないことがある（ユーザーのユニットからは
+# docker.service の順序を指定できない）。そのときは up が失敗し、RestartSec の後にやり直す。
+# 回数の上限を設けないのは、デーモンの立ち上がりが遅い日に上限へ当たって諦めるのを避けるため。
+# 設定の誤りで失敗し続けても 30 秒に 1 回の up で、journal に理由が残る。
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# devcontainer CLI の置き場所（~/.devcontainers/bin / ~/.local/bin）は dev が PATH の末尾へ足す。
+ExecStart=%h/.local/bin/dev supervise %i
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

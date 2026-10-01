@@ -126,7 +126,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 push / PR 作成後の最終ゲートを、このプロジェクトで具体化します（`.ai-playbook/review-workflow.md`「リモート最終ゲート」）。
 
 - 手段: **置きません（2026-09-30 から。#807）。** GitHub Copilot code review を撤退し、要求側（`copilot-review.yml`）と確認側（`review-gate.yml`）を撤去しました。Codex の GitHub code review などの代わりも置いていません（利用者の判断）。
-- **PR の上で機構が確かめるのは 2 つです。** `verify.yml` の verify ジョブがローカル層の受け入れ検証を再実行すること（`scripts/check-doc-links.sh` を含む。#803）と、`second-opinion-gate.yml` が head SHA に紐づく第二意見の記録を確かめること（#806）です。terraform/ を触る PR では、`acceptance-remote-pr.yml` が apply の後の外部層の記録を head SHA で確かめます（#845。差分のレビューではなく、外部状態の確認です）。
+- **PR の上で機構が確かめるのは 3 つです。** `verify.yml` の verify ジョブがローカル層の受け入れ検証を再実行すること（`scripts/check-doc-links.sh` を含む。#803）、`identity-guard.yml` がコミットの作者が許可した identity であることを確かめること、`second-opinion-gate.yml` が head SHA に紐づく第二意見の記録を確かめること（#806）です。terraform/ を触る PR では、`acceptance-remote-pr.yml` が apply の後の外部層の記録を head SHA で確かめます（#845。差分のレビューではなく、外部状態の確認です）。
 - **Dependabot の PR には、第二意見の記録を求めません（#838）。** ゲートが検出したいのは著者の失念で、Dependabot の PR には回す著者がいないためです。除外しないと毎回赤くなり、赤が失念の意味を失います。条件は PR の著者とすべてのコミットの author が `dependabot[bot]` であることで、人がコミットを足した PR は、いつもどおり記録を求めます。差分を読むのは `land` の手順 4、マージの承認はフックの確認です。
 - **判断の要る指摘の受け皿は、`land` の手順 4（自分で差分を読む）です。** 機構ではなく人間とエージェントが最後に読む、という着地を受け入れています。
 

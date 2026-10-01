@@ -5,11 +5,89 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 - 位置づけ: **現在地と、次に何をするか。** 仕様の正本は [product-spec.md](product-spec.md)、
   作業の分解は [mvp-roadmap.md](mvp-roadmap.md) が持ちます。**ここへ複製しません。**
 - 更新: セッションの終わりに、次の人が困る情報だけを書き換えます。
-- 最終更新: **2026-09-30**（要旨は [6. 更新の履歴](#6-更新の履歴) が持ちます）
+- 最終更新: **2026-10-01**（要旨は [6. 更新の履歴](#6-更新の履歴) が持ちます）
 
 ---
 
 ## 1. 現在地
+
+### #808 を実測で設計し直し、外部層を毎日回す仕組みと、terraform の PR で記録を求める仕組みを入れました。dev01 はスマホから戻せる道具を置き、実機の確認を残しています（#808 / #843〜#845 / #849 / #802 と、#847 / #848 / #724 の引き継ぎ。2026-09-30〜10-01）
+
+**このウェーブでマージしたもの 7 本**（前回の書き戻し #840 からのマージは 10 本。残る 3 本は別セッションの書き戻し #841 / #842 / #846）。どれも main の `deploy` は success で、`[deploy-head]` の一致を確かめています（#852 は後続の `a2c0c42` が配った）。
+
+| # | 何をしたか | PR / コミット | 状態 |
+|---|---|---|---|
+| #843 | `acceptance-remote.sh` の IAM の 3 検査が、aws の一覧取得の失敗で緑にならないようにした（`:1417` は **AWS が切れたまま PASS していた**） | PR #850 / `428a46a`（game-forge-d9） | 閉じた |
+| #847 | 登録簿の Sonnet 4.6 の単価を jp. 推論プロファイルの値（1.1 倍）に合わせた | PR #851 / `a2c0c42`（game-forge-d9） | 閉じた。Lambda 2 本を配り直し済み（下の引き継ぎ） |
+| #802 のコード部分 | devcontainer の UID/GID をビルド引数に（既定 1000）、dev01 では cloudflared の入口を書かない | PR #852 / `1edde3a`（`Refs #802`） | **#802 は open**（dev01 の実機と、Mac の作り直しが残る） |
+| **#844** | **外部層を Mac の launchd で毎日 12:00 JST に回し、要約を #854 へ載せる。15:00 JST の定期ジョブが鮮度と乖離を見る** | PR #853 / `858aff9` | **開き直した**（Mac での 1 回目が残る） |
+| #849 のコード部分 | `tools/devhost/`（`dev` 道具・`dev-up@.service`・Termux の雛形） | PR #857 / `6a14842`（`Refs #849`） | **#849 は open**（実機が残る） |
+| **#845** | **terraform/ を触る PR で、apply の後の外部層の記録を head SHA で確かめる commit status `acceptance-remote-pr`** | PR #858 / `4962cba` | **開き直した**（最初の terraform/ の PR で確かめる） |
+| #724 の ChatGPT の分 | ChatGPT の Web 版から本番の `/mcp` を実測し、FAQ のつなぎ方に足した（仕様 v1.135） | PR #856 / `1eb78c1`（game-forge-f7） | **#724 は閉じた**（下の引き継ぎ） |
+
+#### #808 は実測で分類し直して閉じ、後継の 3 本に分けました
+
+`acceptance-remote.sh` の `run` は **40 件**（前提 4・`terraform init`・`plan`・検査本体 34）です。#808 の本文の「28 件」から増えていました。プライマリで全体を 4 通りに回した結果です。
+
+| 条件 | PASS / 40 |
+|---|---|
+| state あり・認証すべてあり | **40**（plan も差分なし。160 秒） |
+| state なし・認証あり（CI に近い） | 6 |
+| state あり・認証なし | 4 |
+| state なし・認証なし | 2 |
+
+**CI で回せるのは本体の 34 件中 2 件**でした（state を読む 32 件は、認証を試す前に `terraform output` が空で落ちる）。そこで (a) CI では state 不要分だけ・(b) Mac の launchd・(c) リモート state の見直し、から **(b) を利用者が選びました**。#808 は not planned で閉じ、表と決定 6 つは #808 のコメントにあります。
+
+**認証の期間を延ばしました（2026-09-30、利用者が設定）。** AWS の IAM Identity Center のセッションは**既定の 8 時間 → 7 日**（09-30 に、昼の時点で切れていたことを実測）。GCP は Workspace の「Google Cloud のセッション管理」で **24 時間**（上限。「再認証を要求しない」は、持ち歩く端末に期限のない資格情報を置くので採らなかった）。**長命のアクセスキーは採っていません**（`docs/build-invocation.md` の「構成上の帰結のときだけ」。dev01 だけキーにする案も、state と tfvars を dev01 に置く必要があるので却下）。
+
+#### 入った仕組みの読み方
+
+- **#854 は記録先です。閉じない・lock 済み**（`gh issue lock 854 --reason off_topic`）。数えるのは、リポジトリの持ち主（`author_association == OWNER`）の記録だけです。
+- **Mac の launchd で 1 件目の記録が載るまで、`acceptance-remote-freshness` は毎日 15:00 JST に赤（`no-record`）で、失敗のメールが届きます。** 10-01 に手で 1 回回し、「読めなかった」ではなく `no-record` で落ちることを確かめました。
+- **定期実行は、プライマリが main にあって汚れていなければ、origin/main へ fast-forward してから回します**（利用者の決定。**機械がプライマリを動かします**）。apply のために `--detach` したままにすると、その日は前提の不成立になります。
+- **前提の不成立は認証の系統ごとに読み分けます**（利用者の決定）。対応は `scripts/lib/acceptance-remote-deps.tsv` の 1 か所だけです。**検査を足したら、この表にも足すこと**（足さないと自己試験が赤になります）。
+- **terraform/ を触る PR では、apply の後に、PR の head へ `--detach` したプライマリから `bash scripts/acceptance-remote-scheduled.sh --pr <N>` を回します。** status `acceptance-remote-pr` を `land` の手順 5 が読みます。required ではないので、止めるのは `land` の手順です。
+- `acceptance-remote.sh` は `--only "<ラベル>"` を受け付け、未知の引数は exit 2 です（#850）。**`--only` は前提の確認も絞るので、Cloudflare などの検査は `.env` を読めずに赤になります**——`--only "prerequisite: cloudflare api token is active"` を併せて渡すと通ります。
+
+#### dev01 はスマホ（Pixel 8）から戻す形にしました
+
+半永続の認証情報は置かず、**スマホから、コンテナに依存しないシェルへ入る道**を作る、と決めました（利用者）。Termux（**F-Droid か GitHub 版**。Google Play 版は更新が止まっていて Termux:Widget と連携しない）から、Mac と同じ `cloudflared access ssh` で dev01 のホストへ入ります。鍵は**スマホ専用の鍵**を `authorized_keys` に 1 行足し、紛失したらその行を消します。
+
+`tools/devhost/` は**プロジェクトの固有名を持ちません**（`scripts/check-devhost.sh` が見る）。2 つ目のプロジェクトを dev01 に載せたら ai-packages-dev へ移します（そのときに別の票。コンテナ間で認証を共有するかもそこで決める）。**devcontainer は Mac と共通の `shutdownAction: stopCompose` なので、VS Code の窓を閉じると止まります。`dev-up@<名前>` がそれも 30 秒後に戻すので、dev01 で作り直す前は `systemctl --user stop dev-up@<名前>` が要ります。**
+
+#### このウェーブで踏んだこと（次の人へ。どれも 1 回目）
+
+- **私の設計の指示が、#844 に毎日落ちる穴を 2 つ作りました。** レーンに「origin/main とずれていたら回さない」「前提が 1 つでも落ちた回は乖離と呼ばない」と指示し、その通りに作られた PR が来ました。main は毎日進み、GCP は 24 時間で切れるので、**そのままだとほぼ毎日「前提の不成立」**でした。`land` で読んで差し戻しています。**定期で回す仕組みは、指示の段で「普通の 1 日（main が進む・認証が 1 つ切れている）」に何が起きるかを確かめる。**
+- **`second-opinion-gate` は、記録のコメントの著者を見ていません**（`second-opinion-gate.yml:207`。印の有無だけ）。public なので誰でも印を書けます。#844 / #845 は持ち主だけを数える形にしました。**起票候補**です。
+- **`gh issue lock` の理由は `off_topic`（下線）と綴ります。** `off-topic` は `invalid reason` で拒否されます（API の表示は `off-topic`）。
+- **worktree の `scripts/load-project-env.sh` は、メインの `.env` を読みに行きます。** 認証を外して測ったつもりでも Cloudflare だけ通りました（#844 のレーンの実測）。認証なしを測るときは、Cloudflare のトークンを無効な値で上書きする。
+- （game-forge-d9）**レーンが push の後に `second-opinion-record.sh post` を抜かし**、#850 の `second-opinion-gate` が `no second-opinion record for this head` で落ちました。post して `gh run rerun --failed` で通りました。**レーンの起動プロンプトに post を必ず書く。**
+- （game-forge-d9）#848 の計画で「preview で実測」を組みましたが、**preview には到達できません**（仕様 9.1・確定20。ホスト検査で全経路 404、CI の配備も main 固定）。レーンの第二意見が拾いました。
+- （game-forge-d9）外部層の確認の途中で、別の PR のマージ直後に **`production deployment matches default branch HEAD` が一時的に FAIL** します（deploy の完了待ち）。2 本続けてマージすると 2 回起きます。
+
+#### 引き継いだもの（別セッションから）
+
+**#847 / #851（game-forge-d9）**: 登録簿の Sonnet 4.6 の単価を jp. 推論プロファイルの値（3.30 / 16.50 / 0.33 / 4.125。global. の 1.1 倍）に直しました。マージの前に利用者が Lambda を配り直しています（オーケストレータ `IDhuTAA3VHFUT8rXe+89rpXLMJo4pg1JK1fyoUo0E5s=`、チャット `qt0pgjmPoxtHjF80vOz2ltoxqZ0W72KEj/Sq8+sDm44=`。本番の値を読み取りで照合済み）。**台帳の円が 1.1 倍になり、チャットの 1 人 1 日の上限と月次 2 万円の判定に 1 割早く届きます**（上限の額は変えないことを利用者が了承）。過去の台帳行は再計算していません。仕様 4.2 以降の試算（1 生成あたり約 9.9 円など）は旧単価のままです（4.1 に注記）。
+
+**#848（game-forge-d9）**: 生成モデルを上げる票は **AWS の回答まで保留**です。利用者が AWS サポートにケースを起票しました（4.7 以降の世代の開放）。登録の PR #855 は **draft**。開放後の再開手順（実測 6 本 → #855 を main に揃えて束を配り直してマージ → PR② で production の `GENERATION_MODEL` を切り替え）は [#848 のコメント](https://github.com/ojos/game-forge/issues/848#issuecomment-5922795075) にあります。#855 では `highestKnownUsdPerMillion` が 16.5 → 22 に上がり、思考だけで `max_tokens` を使い切ると `BedrockResponseUnreadable` になります。`scripts/verify-effort-spelling.sh` のコメントに「$15」が残っています（範囲外）。**`lane-848` は #855 のために残す。**
+
+**#724 の ChatGPT の分（game-forge-f7。PR #856 / `1eb78c1`）**: 利用者の ChatGPT Plus（開発者モード）から本番の `/mcp` へつなぎ、**認可・`tools/list` の 9 本・`get_me` / `list_my_works` / `get_my_work`・`start_generation`（ready まで）・`update_my_work` まで通りました**。つなぎ方は、設定の「セキュリティとログイン」で開発者モードをオン →「プラグイン」（「アプリとコネクタ」から改名されていた）の「＋」から MCP アプリを作り、接続先に `https://app.game-forge.ojos.jp/mcp`。**OpenAI のヘルプは「書き込みは Business 以上」と書くが、開発者向けの文書は Plus 以上で読み書きとしていて、Plus で書き込みも通りました**（公式の記述どうしが食い違う）。**#776 の WAF の後も止まりませんでした。** 接続した Game Forge のアカウントは利用者の別のアカウント（作品 0 件）で、`list_my_works` の 0 件は正しい応答です。**利用者の判断で確かめずに閉じたもの**: Gemini 側（Antigravity）からの `start_generation`（生成枠を使うので見送り）、Codex CLI、Pro 以上の層。FAQ の変更と仕様 5.15 の注記（v1.135）は PR #856 が持ちます。
+
+#### 残していること
+
+**利用者の手元の確認（このウェーブの波 2）**——どれも手順を渡す前に 3 章を grep すること。
+
+1. **#844**: Mac のホストで launchd を登録して 1 回走らせ、#854 に要約が載ること・ラベル `devcontainer.local_folder` で devcontainer が見つかること・認証を落とした本物の記録が「前提の不成立」と読めること（`docs/acceptance-remote-schedule.md`）。**済むまで毎日 15:00 JST の赤のメールが続きます。**
+2. **#802**: dev01 に Docker Engine と devcontainer を立てる（`docs/local-dev.md` 7 章）。**Mac の devcontainer の作り直し**（compose が `image:` → `build:` になったので、次の作り直しで Mac もビルドになる。UID は 1000 のまま）は、**他のセッションが動いていない時間に**。作り直すと Go のキャッシュなどが消え、最初の verify は `EBITEN_KEYS_FAIL` で止まります（3 章）。
+3. **#849**: dev01 に `dev` とユニットを入れ、Pixel 8 のタップで attach・up・auth aws を 1 回ずつ通す。再起動・`docker kill`・窓を閉じた後に戻ること、鍵の行を消すと入れなくなること（`docs/local-dev.md` 7.9）。
+4. **#845**: 最初に terraform/ を触る PR で、push 直後 failure（no record）→ apply と `--pr` の実行 → 記録のコメントを契機に success、と status が変わることを見る。
+
+**ほか**
+
+- **起票候補（未起票）**: `second-opinion-gate` が記録の著者を見ていない件（上の「踏んだこと」）。
+- **#848**: AWS の回答待ち（上の引き継ぎ）。
+- 前の節の残り（#805 の ②③・#838 の最後の acceptance・#835・Route 53 の `game-forge.ojos.jp` のゾーンの削除・Zone Analytics）は変わっていません。
+- **worktree の片付け**: このセッションの `lane-802` / `lane-844` / `lane-845` / `lane-849` / `wb-1001` は、この書き戻しのマージの後に消してよい状態です。game-forge-d9 の `lane-843` / `lane-847` も片付けてよいと言われています。**`lane-848` は残す。**
 
 ### Copilot を撤退し、3 ホストをプロキシに通して学習クローラを入口で止めました。外部層の照合と報告の窓口も足しています（#807 / #809 / #813 / #810 / #776 と、#828・#833〜#839・#654 の引き継ぎ。2026-09-30）
 
@@ -23,7 +101,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 | #810 | SECURITY.md・Private vulnerability reporting・Dependabot のアラートと security updates | PR #830 / `71ea94b` | 閉じた |
 | **#776** | **3 ホストをプロキシにし、WAF のマネージドルール（Free）と学習クローラの遮断を入れた** | PR #837 / `8bedc63` | この書き戻しで閉じる |
 
-**#807 の後の PR には、Copilot のレビューが 1 件も付いていません**（#826〜#839 を数えた。最後のレビューは #824）。**リモート最終ゲートを置かないことは規範からの逸脱**で、理由と失う性質 (a)(b)(d) は `.github/project-ai-rules.md`「リモート最終ゲート」が持ちます。**PR の上で機構が確かめるのは `verify` と `second-opinion-gate` の 2 つだけ**になり、判断の要る指摘の受け皿は `land` の手順 4（自分で差分を読む）です。`land` の手順 2・3 も、`second-opinion-gate` と第二意見の記録を読む形に改めています。
+**#807 の後の PR には、Copilot のレビューが 1 件も付いていません**（#826〜#839 を数えた。最後のレビューは #824）。**リモート最終ゲートを置かないことは規範からの逸脱**で、理由と失う性質 (a)(b)(d) は `.github/project-ai-rules.md`「リモート最終ゲート」が持ちます。**PR の上で機構が確かめるのは `verify`・`identity-guard`（コミットの作者）・`second-opinion-gate` の 3 つだけ**になり（**2026-10-01 訂正**: 当初「`verify` と `second-opinion-gate` の 2 つだけ」と書いたが、`identity-guard` が抜けていた。terraform/ を触る PR では #845 の `acceptance-remote-pr` も加わる）、判断の要る指摘の受け皿は `land` の手順 4（自分で差分を読む）です。`land` の手順 2・3 も、`second-opinion-gate` と第二意見の記録を読む形に改めています。
 
 #### #776 は 3 回に分けて当て、切り替えの直後に 1 つ見つけて直しました
 
@@ -73,9 +151,9 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 - **#805 の ②（1 週間の消費）**: 起点 2026-09-29。**PR #829 のマージ（09-30 03:11 UTC）の前後で分けて読む**（上の +45%）。③（2 台の合算）も残り。
 - **#838 の最後の acceptance**: 次に開いた Dependabot の PR で、`second-opinion-gate` が `Dependabot PR: second-opinion record not required (#838)` の success になるか。まだ確かめていません。
 - **#835**: vitest-pool-workers の新しい版を待つ。
-- **#808（外部層の定期実行）は設計から決め直しが要ります。** 外部層の多くの検査は期待値を `terraform output`（＝ state）から取り、**state は CI に無く**、リモート state は却下済みです。**さらに `acceptance-remote.sh` は必ず `terraform plan` を回す**ので、丸ごと定期実行すると「plan を回さない経路の補完」（#813 の位置づけ）になりません。道は (a) CI では state の要らない検査だけ (b) Mac の launchd (c) リモート state の却下を見直す、のどれか。#808 のコメントに記録済み。
-- **#802（dev01 の devcontainer）**: 利用者の手元での rebuild と dev01 の実機作業が要るので未着手。
-- **起票候補（未起票）**: ①`cf_api`（`acceptance-remote.sh`）は失敗時に応答本文を表示するので、レコード一覧の取得中に失敗すると TXT / DKIM の値がログに出うる（DNS の値は公開情報で実害は小さい。13 の検査が共有する関数。#813 の第二意見 3 巡目の指摘）②Route 53 の `game-forge.ojos.jp` のゾーンの削除（早くて 2026-10-05 ごろ。下の節）。
+- **#808（外部層の定期実行）は設計から決め直しが要ります。** 外部層の多くの検査は期待値を `terraform output`（＝ state）から取り、**state は CI に無く**、リモート state は却下済みです。**さらに `acceptance-remote.sh` は必ず `terraform plan` を回す**ので、丸ごと定期実行すると「plan を回さない経路の補完」（#813 の位置づけ）になりません。道は (a) CI では state の要らない検査だけ (b) Mac の launchd (c) リモート state の却下を見直す、のどれか。#808 のコメントに記録済み。（**2026-10-01 追記: 実測で設計し直して #808 は閉じ、#843 / #844 / #845 に分けた。上の節**）
+- **#802（dev01 の devcontainer）**: 利用者の手元での rebuild と dev01 の実機作業が要るので未着手。（**2026-10-01 追記: コード部分は PR #852 で入った。実機と Mac の作り直しが残る。後続 #849。上の節**）
+- **起票候補（未起票）**: ①`cf_api`（`acceptance-remote.sh`）は失敗時に応答本文を表示するので、レコード一覧の取得中に失敗すると TXT / DKIM の値がログに出うる（DNS の値は公開情報で実害は小さい。13 の検査が共有する関数。#813 の第二意見 3 巡目の指摘）②Route 53 の `game-forge.ojos.jp` のゾーンの削除（早くて 2026-10-05 ごろ。下の節）。（**2026-10-01 追記: ① は未起票のまま。#844 / #845 は要約だけを GitHub に載せ、検査の出力は Mac の手元のログにだけ残すので、公開の経路は無くなった**）
 - **Zone Analytics: Read をトークンへ足すかは任意**（Security Events を API で読めるようになる。#808 でも使える）。
 - **worktree の片付け**: `lane-807` / `lane-809` / `lane-813` / `lane-810` / `lane-776` / `lane-828`（game-forge-65 の。片付けてよいと言われている）は、この書き戻しのマージの後に消してよい状態です。
 
@@ -537,6 +615,7 @@ CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler d1 execute DB --env pro
 |---|---|---|---|
 | **#755**（M19-6） | PR #758 / `76a409d` | **配備済み**（束は不変、マイグレーションなし）。**CLOSED** | ツール `update_my_work`（エディットページの「保存」と同じ `saveWork` を、公開設定を渡さずに呼ぶ）と scope `works:write`。ツールは 8 本 → **9 本**、scope は **3 つ**。仕様 v1.125 |
 | **#724**（M19-5）の Gemini の分 | PR #759 / `bf8ab4e`（`Refs #724`） | **配備済み**（コードは変えていない）。**#724 は OPEN のまま** | Antigravity CLI 1.2.7 から本番の `/mcp` へつなぎ、認可・`tools/list` の 9 本・読み取り・`update_my_work` まで通った。FAQ のつなぎ方に Antigravity CLI を足した。仕様 v1.126 |
+| **#724**（M19-5）の ChatGPT の分（**2026-10-01 追記**） | PR #856 / `1eb78c1`（`Closes #724`。game-forge-f7） | **配備済み・#724 は CLOSED** | ChatGPT Plus（開発者モード）から認可・`tools/list` の 9 本・読み取り・`start_generation`・`update_my_work` まで通った。FAQ のつなぎ方に足した。仕様 v1.135。詳細は 1 章の先頭の節 |
 
 #### 次の人が知っておくこと
 
@@ -549,7 +628,7 @@ CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler d1 execute DB --env pro
 #### 残していること
 
 - **#755 の最後の確認（利用者）**: claude.ai の Game Forge コネクタをつなぎ直し、同意画面に「自分の作品の情報を書き換える」が出ること。**`update_my_work` で作品名を変えられることは、本番で確かめ済みです**（作品 `5c425524-…`）。
-- **#724 の残り**: Gemini CLI そのもの（`gemini mcp add --transport http …`）での接続と、ChatGPT 側の全部。
+- **#724 の残り**: Gemini CLI そのもの（`gemini mcp add --transport http …`）での接続と、ChatGPT 側の全部。（**2026-10-01 追記: ChatGPT の分は PR #856 で済み、#724 は閉じた。Gemini CLI・Codex CLI・Pro 以上の層は利用者の判断で確かめずに閉じた。** 1 章の先頭の節）
 
 ### チャットを M21 で「使える形」まで出し、計測を始めました。途中で持ち込んだ退行は止めています（#737〜#740 / #742 / #747 / #749 / #751 / #732。2026-09-21）
 
@@ -608,7 +687,7 @@ CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false npx wrangler d1 execute DB --env pro
 - **利用者の本番での確認**: ①**#738 の実機の IME**（acceptance の最後。手順は PR #754）②**#749**（新しい会話で 4 往復以上続け、3 回目までに下書きが出て、前に決めたことを聞き直さないこと）③**#751**（2 往復目以降の台帳の `cache_read_input_tokens` が履歴の分だけ増え、1 往復の `cost_jpy` が下がること）④**#739**（1 往復して、返答が Markdown で描かれ、「下書きを欄へ入れる」で元の記号のまま入ること）⑤**M20 の 4 つ**（下の 09-20 の節）。
 - **#752 の計測**（〜 2026-09-28 16:25:45 JST）→ 集計 → **計測後の intake**（上限を超えたときの落とし方 / 下書きをサーバで持つか / 要約の要否）。
 - **起票候補（未起票）**: ①**チャットの関数に束のずれを止める関門**（`scripts/orchestrator-bundle-changed.sh` と同じ判定をチャットの束にも掛け、main の配備で本番の `CodeSha256` と突き合わせる）②**`/account/apps` 用の KV への `grant:` の書き込みが、いまも shell の二重引用符の中に JSON を持つ**（#732 と同じ壊れ方。`wrangler kv key put --path` へ）③**`docs/privacy-review.md` にチャットの会話の項目が無い**（`/privacy` 本体には #695 から載っている。#460 の前に）。
-- **いまは着手しないもの（時期つき）:** ~~#628（**1 回目実施済み。2 回目は 09-24〜25**）~~ **→ 2026-09-24 に 2 回目を実施して CLOSED。後継は #797（毎月・次回 2026-10-24 以降）**・#654（09-29 と 10-01 の後）と、#464 / #461 / #462 / #463 / #582 / #460 / #735 / #686 / #724（**2026-09-21 追記: #724 は Gemini の分だけ済んだ。ChatGPT 側は未着手のまま。** 上の #755 / #724 の節）。
+- **いまは着手しないもの（時期つき）:** ~~#628（**1 回目実施済み。2 回目は 09-24〜25**）~~ **→ 2026-09-24 に 2 回目を実施して CLOSED。後継は #797（毎月・次回 2026-10-24 以降）**・#654（09-29 と 10-01 の後）と、#464 / #461 / #462 / #463 / #582 / #460 / #735 / #686 / #724（**2026-09-21 追記: #724 は Gemini の分だけ済んだ。ChatGPT 側は未着手のまま。** 上の #755 / #724 の節。**2026-10-01 追記: ChatGPT の分も済み、#724 は CLOSED（PR #856）**）。
 
 ### 相談を「チャット」として使える形の一歩手前まで出しました。続きの 4 票は起票済みで、実装は別セッションです（#725〜#728 / #730 / #732 / #735 / #737〜#740。2026-09-20）
 
@@ -3828,6 +3907,7 @@ degrade の信号は永久に立たず、黙って #24 の近似に戻る）と�
   #842 では**マージコミット `1ee0ac5` が #777 を閉じました**（issue の ClosedEvent の closer がそのコミット）。
   コミットメッセージに書いていなかった #839 / #841 では、closer が空で手で閉じられています。
   **`land` の手順 9 で issue が閉じたかを見るのは変わりません。**
+- **Bedrock の生成モデルの候補を、価格表と ACTIVE の推論プロファイルだけで並べないこと**（2026-10-01 / #848。game-forge-d9 で踏んだ）。**4.7 以降の世代はこのアカウントに開放されておらず**、呼ぶと `AccessDenied`（not available for this account）になります。**`docs/bedrock-access.md` と仕様 1.2.9 に既に書いてあった**のに、利用者が Opus 5.5 を選び、issue・PR・実測スクリプトまで進めてから気づきました。`get-foundation-model-availability` の結果も、呼べることの証拠になりません。**候補に挙げる前に `docs/bedrock-access.md` を読み、そのモデルを実際に 1 回呼んで確かめる。**
 
   ```bash
   gh pr view N --json closingIssuesReferences --jq '[.closingIssuesReferences[].number]'   # [] なら認識されていない
@@ -4464,6 +4544,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
+- **2026-10-01**（**#808 を実測で設計し直し、外部層の定期実行（#844）と terraform の PR の記録（#845）を入れ、dev01 をスマホから戻す道具（#849）を置いた**——検査 40 件を「state・認証」の 4 通りで回し、CI で回せるのは本体 34 件中 2 件と分かったので、Mac の launchd に決めた（#808 は not planned で閉じた）。AWS の SSO は 8 時間 → 7 日、GCP は 24 時間にした（長命のキーは採らない）。#844 / #845 は開き直して利用者の確認を待つ。#802 / #849 はコード部分だけ入った。**記録先 #854 に 1 件目が載るまで、鮮度のジョブは毎日 15:00 JST に赤**。game-forge-d9（#843 / #847 / #848）と game-forge-f7（#724 の ChatGPT の分）の書き戻しを合流した。1 章の 2026-09-30 の節の「機構が確かめるのは 2 つ」を identity-guard を含む 3 つに訂正し、`.github/project-ai-rules.md` の同じ記述も直した。Bedrock の未開放の世代を候補に挙げた件を 3 章へ上げた）
 - **2026-09-30**（**`Closes` が認識されない症状を 3 章へ上げた**——#839 に続いて #841 / #842 でも `closingIssuesReferences` が空だった。Copilot の撤退の後に作られ本文に `Closes` を書いた PR 7 本のうち 4 本は認識されていて、撤退は原因ではない。**コミットメッセージに書いた `Closes` がマージコミット経由で閉じる**ことを #842 で確かめ、4 章の `Closes` の規則にも 1 行足した。1 章の #839 の記録に昇格を追記）
 - **2026-09-30**（**#777 をこの書き戻しで閉じる**——さくらの `ojos.jp` のゾーンを利用者が削除し、権威サーバが 19:51 JST から `REFUSED` を返すことと、公開リゾルバ 4 つの答えが変わらないことを確かめた。直前の確認は画面操作の後・権威サーバへの反映の前（旧ゾーンがまだ答えていた 19:45 JST）に同じ項目で取った。1 章の「残していること」に 1 行と、段 C2 の節の「残る後続」に追記）
 - **2026-09-30**（**Copilot を撤退し、3 ホストをプロキシに通して学習クローラを入口で止めた**——#807（PR #825。リモート最終ゲートを空にする逸脱を `.github/project-ai-rules.md` に記録。以後の PR に Copilot のレビューは 0 件）・#809（README の権利）・#813（ゾーンのレコード 8 群の照合）・#810（SECURITY.md・非公開報告・Dependabot。当日から動いた）・**#776**（PR #837。WAF の Free マネージドルールと学習クローラの遮断、HTML を書き換える設定と Browser Integrity Check / Security Level を切る。**3 回に分けて当て、切り替えの直後に `browser_cache_ttl` が CSS の `max-age` を 4 時間へ書き換えていたのを控えとの突き合わせで見つけて直した**。本物の学習クローラと見られる要求 4 件を入口で止めた）。**引き継ぎ 3 本**: #828（第二意見が参照先の状態を載せる。消費 +45%、#805 はマージの前後で分けて読む）・#833〜#839（Dependabot の初日。#835 は上流待ち、#838 の最後の acceptance は未確認）・#654 / #807 を閉じた（9 月の超過 $26.06 で確定、10 月は $0 の見込み）。**1 章へ 6 件**（gawk と mawk の `-v` の違い／トークンの権限不足／3 章を探さずに手順を渡した／出力の読み取りの拒否／`Closes` が認識されない／前回の出力を貼られた）、**3 章の「プライマリは main」にもう 1 例**（detach したままのプライマリから古い版の Lambda が配られた）。古くなっていた #807 の締切と #776 の「遮断できません」に追記）

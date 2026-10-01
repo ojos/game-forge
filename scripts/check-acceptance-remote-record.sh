@@ -325,6 +325,7 @@ mkdir -p "$WORK/primary/scripts"
   echo 'set -uo pipefail'
   echo "echo \"\$#\" > '$WORK/called'"
   echo "echo \"\${ACCEPTANCE_TF_DIR:-unset}\" > '$WORK/tfdir'"
+  echo "echo \"\${AWS_PROFILE:-unset}\" > '$WORK/awsprofile'"
   printf '%s\n' "$run_def"
   # run が読む変数（#850 の --only）。本物と同じく、引数なしでは空。
   echo 'ONLY_LABELS=""; ONLY_SEEN=""'
@@ -357,7 +358,7 @@ sched_case() {
   local name="$1" want="$2" want_called="$3" out rc=0 called=no
   tick
   rm -f "$WORK/called"
-  out="$(ACCEPTANCE_TF_DIR="$WORK/elsewhere" bash "$SCHEDULED" --print --repo-dir "$WORK/primary" 2>&1)" || rc=$?
+  out="$(env -u AWS_PROFILE ACCEPTANCE_TF_DIR="$WORK/elsewhere" bash "$SCHEDULED" --print --repo-dir "$WORK/primary" 2>&1)" || rc=$?
   last_out="$out"
   [ -f "$WORK/called" ] && called=yes
   local got
@@ -371,6 +372,12 @@ sched_case() {
 sched_case "main が origin/main と一致し汚れていなければ回す" "ok|-" yes
 tick; [ "$(cat "$WORK/tfdir" 2>/dev/null)" = unset ] || ng "C 宣言の場所の差し替え（ACCEPTANCE_TF_DIR）を外してから回す"
 tick; [ "$(cat "$WORK/called" 2>/dev/null)" = 0 ] || ng "C acceptance-remote.sh へ引数を渡していない（#850 の exit 2 を踏まない）"
+# AWS_PROFILE: 空なら本番のプロファイルを入れ、設定済みなら上書きしない（2026-10-01 の 1 回目で aws の前提が落ちた）。
+tick; [ "$(cat "$WORK/awsprofile" 2>/dev/null)" = game-forge-prod ] || ng "C AWS_PROFILE が空なら本番のプロファイルを入れて回す（got $(cat "$WORK/awsprofile" 2>/dev/null)）"
+tick
+rm -f "$WORK/awsprofile"
+AWS_PROFILE=chosen-by-hand ACCEPTANCE_TF_DIR="$WORK/elsewhere" bash "$SCHEDULED" --print --repo-dir "$WORK/primary" >/dev/null 2>&1 || true
+[ "$(cat "$WORK/awsprofile" 2>/dev/null)" = chosen-by-hand ] || ng "C 設定済みの AWS_PROFILE は上書きしない（got $(cat "$WORK/awsprofile" 2>/dev/null)）"
 
 G -C "$WORK/primary" checkout -q -b feat/x
 sched_case "main 以外のブランチでは回さない" "precondition|primary-not-on-main" no

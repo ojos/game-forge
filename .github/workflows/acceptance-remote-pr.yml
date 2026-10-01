@@ -1,0 +1,118 @@
+# terraform/ を触る PR で、apply の後に外部層の受け入れ検証をその PR の head から回したことを、
+# 記録の有無で確かめる（#845）。
+#
+# apply は**マージの前に、プライマリを PR の head へ --detach で置いて**当てる（docs/handoff.md 3 章）。
+# CI には state が無いので、外部層そのものはここで回せない（#808 の実測: 34 件中 2 件）。そこで、
+# apply したツリーから `bash scripts/acceptance-remote-scheduled.sh --pr <N>` で回して要約を PR へ載せ、
+# **ここはそれを読んで判定するだけである。** 回すのは利用者の端末で、要求と確認を別の機構に分けている
+# （second-opinion-gate と同じ形）。手順は docs/acceptance-remote-schedule.md「terraform/ を触る PR」。
+#
+# ## 何を見るか
+#
+# 判定は scripts/acceptance-pr-record.sh と scripts/acceptance-record-judge.sh（--pr-head）が持つ
+# （**YAML へ書き写さない**）。PR の head SHA に一致する持ち主の記録のうち最新の 1 件が全件 PASS なら
+# success、記録が無い・head がずれた・乖離・検査を回せていない・途中で止まった、で failure。
+# 読めなかったとき（GitHub API の失敗）は status を付けない。
+#
+# ## 4 つの契機
+#
+#   1. pull_request（terraform/ を触る PR だけ） … push のたびに判定する。apply の前は failure が正しい
+#   2. issue_comment（記録の印で始まるコメント）   … **記録が付いたら、すぐ判定し直す**
+#   3. schedule（30 分ごと）                       … 1 と 2 が届かなかった PR を拾う掃き寄せ
+#   4. workflow_dispatch                           … 手で流す（pr を空にすると掃き寄せ）
+#
+# **push の後の猶予は置かない**（second-opinion-gate との違い）。あちらの記録は push の数分後に
+# 投稿されるが、こちらの記録は apply の後で、push から数時間空くこともある。猶予を置いても赤は
+# 避けられず、apply の前の failure は「まだ確かめていない」という正しい状態である。代わりに、
+# 記録が付いたことを 2 の契機で拾って判定し直す。
+#
+# **2〜4 は既定ブランチにあるワークフローしか起動しない**（GitHub の仕様。second-opinion-gate の冒頭）。
+# このワークフローを足す・変える PR の上では 1 だけが効く。この PR 自身は terraform/ を触らないので、
+# 1 も起動しない。判定の表は scripts/check-acceptance-remote-record.sh（verify から回る）が押さえる。
+#
+# ## required check にはしない
+#
+# 赤は land の手順（.claude/skills/land/SKILL.md）が読む。外部の可用性（認証の切れ・利用者の端末）を
+# マージの前提へ機構として持ち込まない（.github/project-ai-rules.md「外部層を単一入口へ含めない理由」）。
+#
+# ## 何を塞がないか
+#
+# **偽造は塞がない。** 記録を書くのは apply するのと同じ持ち主の端末である。検出できるのは
+# 「apply の後に外部層を回し忘れた」「回したが乖離していた・認証が切れていた」であって、迂回ではない。
+# 持ち主以外のコメントは数えない（public なので誰でも「全件 PASS」を貼れる。#844 と同じ）。
+
+name: acceptance-remote-pr
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # **terraform/ を触らない PR では起動しない。** 判定側（scripts/acceptance-pr-record.sh）も
+    # 変更ファイルを見て、触らない PR には status を書かない（掃き寄せと揃える）。
+    paths:
+      - 'terraform/**'
+  issue_comment:
+    types: [created]
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 判定する PR の番号（空なら open な PR をすべて見る）
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  pull-requests: read
+  # コメント（`/issues/{n}/comments`）を読む。
+  issues: read
+  # commit status を書く。これが判定の出力先である。
+  statuses: write
+
+# PR ごとに直列にする。**記録の投稿と push の判定が重なっても、後に始まった判定が最後に書く。**
+# 取り消さない（途中で消すと、status を書きかけのまま終わる回ができる）。
+concurrency:
+  group: acceptance-remote-pr-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  judge:
+    runs-on: ubuntu-latest
+    # fork からの PR は対象外（記録を付けられるのは持ち主だけ。#845 の constraints）。
+    # コメントは、PR に付いた・記録の印（scripts/lib/acceptance-record.sh の ACCEPTANCE_RECORD_MARKER）で
+    # 始まるものだけ。**印の綴りは同じにしておくこと**（scripts/check-acceptance-remote-record.sh が照らす）。
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       startsWith(github.event.comment.body, '<!-- acceptance-remote-record v1 -->')) ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch'
+    steps:
+      # 判定を読むために取る。**PR の側ではなく既定ブランチの側を取る**（判定を書き換えた PR が
+      # 自分自身を通せないように。second-opinion-gate と同じ）。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Check that the external acceptance was recorded at this head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # **式を run の中へ直接書かない**（second-opinion-gate の同じ注記）。値は env を経由する。
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
+          # pull_request の契機の head。コメントの契機では空で、判定側がいまの head を読む。
+          TRIGGER_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # 終了コード 1 は「判定が failure」で、status に出ているのでジョブは落とさない（落とすと、
+        # apply の前の正しい赤が push のたびにジョブの赤として通知される）。2（読めない・status を
+        # 書けない）だけでジョブを落とす。
+        run: |
+          rc=0
+          if [ -n "$PR_NUMBER" ]; then
+            bash scripts/acceptance-pr-record.sh --report --pr "$PR_NUMBER" ${TRIGGER_SHA:+--head "$TRIGGER_SHA"} || rc=$?
+          else
+            bash scripts/acceptance-pr-record.sh --report --sweep || rc=$?
+          fi
+          [ "$rc" -le 1 ]

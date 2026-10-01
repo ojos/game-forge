@@ -11,6 +11,44 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 ## 1. 現在地
 
+### 波 2 が済み、#802 と #849 を閉じました。Mac の devcontainer を作り直し、#865 で第二意見の記録を持ち主だけに絞りました（#802 / #849 / #864 / #866 / #865 / #867。2026-10-01）
+
+| # | 何をしたか | PR / コミット | 状態 |
+|---|---|---|---|
+| #802 | dev01 に副開発環境を立て、Mac の devcontainer を作り直して確かめた | PR #864 / `b7b84ae`（ベースを `base:noble` に固定）・PR #866 / `d313be0`（docs）。game-forge-bd | **閉じた**（acceptance 6/6。[照合](https://github.com/ojos/game-forge/issues/802#issuecomment-5929556837)） |
+| #849 | dev01 の `dev` とユニットを入れ、Pixel 8 のタップで起こす・入る・再認証する | PR #866（docs）。game-forge-bd | **閉じた**（acceptance 7/7。[照合](https://github.com/ojos/game-forge/issues/849#issuecomment-5929564092)） |
+| #865 | `second-opinion-gate` で、記録のコメントは持ち主（`author_association == OWNER`）が書いたものだけを数える。持ち主以外の印は数えずに警告 | PR #867 / `be3e38d` | 閉じた |
+
+どれも main の `deploy` は success で、`[deploy-head]` の一致を確かめています。**波 2 は別のセッション（game-forge-bd）が担当し、handoff には触らず材料をこのセッションへ送りました**（利用者の指示）。#845（terraform/ の PR の記録）は、terraform の変更が自然に出たときに確かめます。
+
+#### dev01 と Mac の作り直し（game-forge-bd から）
+
+- **dev01**: Docker Engine 29.8.2 / compose 5.5.1。clone は利用者の希望で `~/Workspaces/game-forge`（docs の `~/game-forge` と違う）。`.devcontainer/.env` に UID/GID 1001・`DEVCONTAINER_HOST=dev01`。`.env` は `CLOUDFLARE_API_TOKEN` を除いて手で写した。`~/.aws/config` は `sso-session ojos` と `game-forge-dev` だけ（本番のプロファイルは置かない）。tfvars も置かず、`gh auth login` も打っていない。`terraform plan` は必須変数 12 個の不足で落ちる（#802 の本文の「21」は起票時の数で、いまは 27 変数中 default 無しが 12）。`npm run check:isolated-build` は x86_64 ネイティブで 3 分 19 秒。
+- **ホスト側（#849）**: devcontainer CLI 0.89.0、`~/.local/bin/dev`、`dev-up@game-forge` を有効化、linger あり。Termux は F-Droid 0.118.3。再起動のあと、ログインが 0 人のままユニットがコンテナを起こし、`docker kill` の 30 秒後に戻り、タップで attach・up・auth aws が通り、鍵の行を消すと preauth で拒否されることを確かめた。
+- **Mac の作り直し**: main `d313be0`（`base:noble`）で作り直し、`uid=1000(vscode)`・noble・`post-rebuild-check` 全 OK・VERIFY_PASS。作り直しの前に、このセッションは書き戻しの材料を `/tmp` から `~/.claude/projects/-workspaces-game-forge/pending/` へ移した（**`/tmp` のスクラッチは作り直しで消える**）。
+
+**Mac の AWS の start URL を新ドメインへ書き換えました**（利用者の指示。このセッションが実施）。Mac の devcontainer の `~/.aws/config`（ボリューム）の `sso_start_url` を `https://ssoins-77588ce356c120e7.portal.ap-northeast-1.app.aws` にし、device code でログインが通ること、本番と開発の両方で `sts` が通ることを確かめた。dev01 のコンテナも新ドメイン。
+
+#### #865: 第二意見の記録は持ち主のものだけを数える
+
+`has_record` の `--jq` で、`user.login` が持ち主（`REPO` の `/` の前）かつ `author_association == "OWNER"` のコメントだけを数えます（#844 / #845 の `acceptance-record-judge.sh` と同じ綴り）。持ち主以外の印つきコメントは数えず、持ち主の記録と混ざっていても `::warning::` で知らせます。**fork の PR はこのゲートの対象外**です（PR の契機も掃き寄せも同じリポジトリの PR だけ）——#865 の本文の「fork の PR は持ち主の記録だけが通る」は起票時の私の前提の誤りで、#865 にその旨を記録しました。**第二意見の 2 巡目の指摘 2 件（片方の条件だけを外す変異を試験が拾えない／fork の制約との食い違い）は、利用者の判断で却下**しています（2 つの条件が食い違うコメントは本物の GitHub では起きず、仕込むと「本物がしない入力」になる）。
+
+#### このウェーブで踏んだこと（次の人へ。EBITEN 以外はどれも 1 回目）
+
+- **`mcr.microsoft.com/devcontainers/base:ubuntu` は 2026-09-10 から Ubuntu 26.04（resolute）を指しています。** 26.04 には `apt-key` が無く、`google-cloud-cli` の feature の install.sh が exit 127 で落ちます。#852 で `image:` → `build:` にした後、新しく pull する dev01 で初めて出ました（Mac は 24.04 のキャッシュで動いていた）。#864 で `base:noble` に固定し、`check-devcontainer-dev01.sh` が浮動タグ（`:ubuntu` / `:latest` / タグ無し）を使わないことを見ます。
+- **AWS SSO の start URL が旧ドメイン（`https://d-956797eff8.awsapps.com/start`）だと、Google の認証の後に「問題が発生しました」で止まります。** 新ドメインなら通ります。SSO のキャッシュが生きている間は旧ドメインでも動くので、**次の再ログインまで気づきません。**
+- **Remote-SSH 越しの devcontainer（dev01）では、VS Code の窓を閉じてもコンテナは止まりません**（2 回確かめた）。`shutdownAction: stopCompose` が dev01 へ届かないと見ています。#859 の節の「窓を閉じると止まる」は誤りで、#866 が docs（local-dev.md 7.4 / devhost の README）を直しました。
+- **Termux の `~/.ssh/config` に `User` 行が無いと、Termux のユーザー名（`u0_a…`）で入ろうとして拒否されます。** `User ido` を足す（#866 で雛形を直した）。Termux:Widget から起こすには、Termux に「他のアプリの上に重ねて表示」の許可が要ります。
+- **dev01 のコンテナで `terraform init` を打つと、`terraform/.terraform.lock.hcl` に linux_amd64 のハッシュが足されて作業ツリーが汚れます**（#866 で手順を足した。無条件に戻すと既存の変更も消えるので、第二意見の指摘で直した）。
+- **作り直しの後の最初の verify が、`EBITEN_KEYS_FAIL` に加えて `DEPS_FAIL` で止まりました**（プライマリの node_modules が package-lock.json とずれていた。vitest 4.1.10 と 4.1.11 など 16 件。`468d823..d313be0` に lock の変更は無く、それより前からずれていた。プライマリで `npm ci` して解消）。**#844 の定期実行は毎日プライマリを fast-forward するので、lock が動いた日に同じずれが起き、`orchestrator code matches the local bundle`（手元で束を作る）が偽の乖離になりうる**——まだ起きていない。起きたら、プライマリで `npm ci` してから回し直す。
+- Mac の devcontainer を作り直すと、`~/.cloudflared` の Access のトークンが消え、`ssh dev01` で再認証が要ります（ボリュームに載っていない）。`npm ci` の prepare（wrangler types）が「Cloudflare skills を入れるか」を対話で聞きます（yes で `~/.claude/skills` などに入る。リポジトリは汚れない）。
+
+#### 残していること
+
+- **起票候補（未起票）**: ①dev01 の gh の認証をどうするか（Mac の `.env` の `GH_TOKEN` は空で、Mac は gh-storage の保存済み認証。dev01 は未認証。`gh auth login` は打たない規則なので、dev01 で PR の作業をするなら PAT を `GH_TOKEN` に置くかを利用者が決める）②on-attach が gh 未認証のとき「`gh auth login` を実行してください」と案内し、dev01 の規則と食い違う ③#844 の定期実行の後の `npm ci`（上の DEPS_FAIL。起きてから扱うか、ff の後に lock の差分を見て前提の不成立にするか）。
+- **#845**: terraform の変更が自然に出たときに確かめる（確かめるためだけに PR を作らない）。
+- **#848**: AWS の回答待ち。`lane-848` は残す。
+
 ### #844 の定期実行が本番で 40 件 PASS し、#844 を閉じました。main の identity-guard が 14 回続けて赤だったのも直っています（#861 / #862。2026-10-01）
 
 | # | 何をしたか | PR / コミット | 状態 |
@@ -94,12 +132,12 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 半永続の認証情報は置かず、**スマホから、コンテナに依存しないシェルへ入る道**を作る、と決めました（利用者）。Termux（**F-Droid か GitHub 版**。Google Play 版は更新が止まっていて Termux:Widget と連携しない）から、Mac と同じ `cloudflared access ssh` で dev01 のホストへ入ります。鍵は**スマホ専用の鍵**を `authorized_keys` に 1 行足し、紛失したらその行を消します。
 
-`tools/devhost/` は**プロジェクトの固有名を持ちません**（`scripts/check-devhost.sh` が見る）。2 つ目のプロジェクトを dev01 に載せたら ai-packages-dev へ移します（そのときに別の票。コンテナ間で認証を共有するかもそこで決める）。**devcontainer は Mac と共通の `shutdownAction: stopCompose` なので、VS Code の窓を閉じると止まります。`dev-up@<名前>` がそれも 30 秒後に戻すので、dev01 で作り直す前は `systemctl --user stop dev-up@<名前>` が要ります。**
+`tools/devhost/` は**プロジェクトの固有名を持ちません**（`scripts/check-devhost.sh` が見る）。2 つ目のプロジェクトを dev01 に載せたら ai-packages-dev へ移します（そのときに別の票。コンテナ間で認証を共有するかもそこで決める）。**devcontainer は Mac と共通の `shutdownAction: stopCompose` なので、VS Code の窓を閉じると止まります**（**2026-10-01 訂正: dev01（Remote-SSH 越し）では窓を閉じても止まらなかった。上の節**）。**`dev-up@<名前>` がそれも 30 秒後に戻すので、dev01 で作り直す前は `systemctl --user stop dev-up@<名前>` が要ります。**
 
 #### このウェーブで踏んだこと（次の人へ。どれも 1 回目）
 
 - **私の設計の指示が、#844 に毎日落ちる穴を 2 つ作りました。** レーンに「origin/main とずれていたら回さない」「前提が 1 つでも落ちた回は乖離と呼ばない」と指示し、その通りに作られた PR が来ました。main は毎日進み、GCP は 24 時間で切れるので、**そのままだとほぼ毎日「前提の不成立」**でした。`land` で読んで差し戻しています。**定期で回す仕組みは、指示の段で「普通の 1 日（main が進む・認証が 1 つ切れている）」に何が起きるかを確かめる。**
-- **`second-opinion-gate` は、記録のコメントの著者を見ていません**（`second-opinion-gate.yml:207`。印の有無だけ）。public なので誰でも印を書けます。#844 / #845 は持ち主だけを数える形にしました。**起票候補**です。
+- （**2026-10-01 追記: #865 / PR #867 で直した**）**`second-opinion-gate` は、記録のコメントの著者を見ていません**（`second-opinion-gate.yml:207`。印の有無だけ）。public なので誰でも印を書けます。#844 / #845 は持ち主だけを数える形にしました。**起票候補**です。
 - **`gh issue lock` の理由は `off_topic`（下線）と綴ります。** `off-topic` は `invalid reason` で拒否されます（API の表示は `off-topic`）。
 - **worktree の `scripts/load-project-env.sh` は、メインの `.env` を読みに行きます。** 認証を外して測ったつもりでも Cloudflare だけ通りました（#844 のレーンの実測）。認証なしを測るときは、Cloudflare のトークンを無効な値で上書きする。
 - （game-forge-d9）**レーンが push の後に `second-opinion-record.sh post` を抜かし**、#850 の `second-opinion-gate` が `no second-opinion record for this head` で落ちました。post して `gh run rerun --failed` で通りました。**レーンの起動プロンプトに post を必ず書く。**
@@ -125,7 +163,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 **ほか**
 
-- **起票候補（未起票）**: `second-opinion-gate` が記録の著者を見ていない件（上の「踏んだこと」）。
+- **起票候補（未起票）**: `second-opinion-gate` が記録の著者を見ていない件（上の「踏んだこと」）。（**2026-10-01 追記: #865 として起票し、PR #867 で直した**）
 - **#848**: AWS の回答待ち（上の引き継ぎ）。
 - 前の節の残り（#805 の ②③・#838 の最後の acceptance・#835・Route 53 の `game-forge.ojos.jp` のゾーンの削除・Zone Analytics）は変わっていません。
 - **worktree の片付け**: このセッションの `lane-802` / `lane-844` / `lane-845` / `lane-849` / `wb-1001` は、この書き戻しのマージの後に消してよい状態です。game-forge-d9 の `lane-843` / `lane-847` も片付けてよいと言われています。**`lane-848` は残す。**
@@ -3970,7 +4008,7 @@ degrade の信号は永久に立たず、黙って #24 の近似に戻る）と�
   配備を報告しないこと。**
 
 - **devcontainer を rebuild した後は、最初の `verify` が `EBITEN_KEYS_FAIL` で止まります**
-  （2026-09-28 と 09-29 の 2 回）。**Go のモジュールキャッシュ（`/go/pkg/mod`）が消える**ためで、
+  （2026-09-28 と 09-29 の 2 回。**2026-10-01 に 3 回目**——このときは `DEPS_FAIL` も一緒に出た。1 章の 10-01 の節）。**Go のモジュールキャッシュ（`/go/pkg/mod`）が消える**ためで、
   `scripts/ebiten-keys-table.mjs` は**表の中身を照合できないことを合格にしません**（fail-closed）。
   **不具合ではないので追いかけないこと。** 取得の手順はスクリプト自身が出力します。
 
@@ -4585,6 +4623,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
+- **2026-10-01**（**波 2 を合流し、#802 / #849 / #865 を閉じた**——game-forge-bd の #864（ベースを `base:noble` に固定）・#866（dev01 の実測 4 件の docs）と、Mac の作り直しの確認、このセッションの #867（第二意見の記録は持ち主のものだけ）と Mac の AWS の start URL の書き換えを書き戻した。#859 の節の「窓を閉じると止まる」を訂正し、`second-opinion-gate` の起票候補を済みにし、3 章の EBITEN に 3 回目を足した）
 - **2026-10-01**（**#844 を閉じ、main の identity-guard の赤を書き戻した**——Mac の launchd の 1 回目は `AWS_PROFILE` が渡らず AWS の系統だけ前提の不成立（読み分けは本物の出力で働いた）、#861 で直して 3 回目で 40 件 PASS、鮮度のジョブも緑。game-forge-3a の #860 / #862（Dependabot の squash merge に GitHub が付けた co-author で、push(main) の identity-guard が 14 回続けて赤だった）を合流した。波 2 の実機は別のセッションが担当）
 - **2026-10-01**（**#808 を実測で設計し直し、外部層の定期実行（#844）と terraform の PR の記録（#845）を入れ、dev01 をスマホから戻す道具（#849）を置いた**——検査 40 件を「state・認証」の 4 通りで回し、CI で回せるのは本体 34 件中 2 件と分かったので、Mac の launchd に決めた（#808 は not planned で閉じた）。AWS の SSO は 8 時間 → 7 日、GCP は 24 時間にした（長命のキーは採らない）。#844 / #845 は開き直して利用者の確認を待つ。#802 / #849 はコード部分だけ入った。**記録先 #854 に 1 件目が載るまで、鮮度のジョブは毎日 15:00 JST に赤**。game-forge-d9（#843 / #847 / #848）と game-forge-f7（#724 の ChatGPT の分）の書き戻しを合流した。1 章の 2026-09-30 の節の「機構が確かめるのは 2 つ」を identity-guard を含む 3 つに訂正し、`.github/project-ai-rules.md` の同じ記述も直した。Bedrock の未開放の世代を候補に挙げた件を 3 章へ上げた）
 - **2026-09-30**（**`Closes` が認識されない症状を 3 章へ上げた**——#839 に続いて #841 / #842 でも `closingIssuesReferences` が空だった。Copilot の撤退の後に作られ本文に `Closes` を書いた PR 7 本のうち 4 本は認識されていて、撤退は原因ではない。**コミットメッセージに書いた `Closes` がマージコミット経由で閉じる**ことを #842 で確かめ、4 章の `Closes` の規則にも 1 行足した。1 章の #839 の記録に昇格を追記）

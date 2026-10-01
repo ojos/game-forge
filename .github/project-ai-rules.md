@@ -61,7 +61,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
   | Administration | Read and write | No access | terraform（`GITHUB_TOKEN="$(gh auth token)"`。リポジトリの設定・既定のブランチ・branch protection・脆弱性アラート・Dependabot のセキュリティ更新）と、外部層の検査の読み取り |
   | Variables | Read and write | No access | terraform の Actions の変数と、外部層の検査の読み取り |
 
-  Mac の組は 2026-10-01 に実測した——外部層の gh の 7 検査（前提・リポジトリ・private vulnerability reporting・既定のブランチ・branch protection・Actions の変数・OIDC）と production deployment が PASS、terraform が読む脆弱性アラート・Dependabot のセキュリティ更新・Actions の変数・private vulnerability reporting の読み取りが通った。**書き込み（apply）は次の apply で確かめる。** dev01 は terraform も外部層も回さない（#802）ので、管理者と変数の権限を持たせません。
+  Mac の組は 2026-10-01 に実測した——外部層の gh の 7 検査（前提・リポジトリ・private vulnerability reporting・既定のブランチ・branch protection・Actions の変数・OIDC）と production deployment が PASS、terraform が読む脆弱性アラート・Dependabot のセキュリティ更新・Actions の変数・private vulnerability reporting の読み取りが通った。**書き込み（apply）は次の apply で確かめる。** dev01 では terraform も外部層も動かない形にしてある（tfvars・state・`CLOUDFLARE_API_TOKEN` を置かず、`terraform plan` は必須変数の不足で落ちることを #802 で確かめた）ので、管理者と変数の権限を持たせません。
 - **失効時・期限切れ時の再発行手順**: 上と同じ手順で同じ名前・同じ権限の PAT を発行し、その環境の `.env` の `GH_TOKEN` を差し替えます。古い PAT は GitHub の画面で削除します。**期限切れは Mac では #844 の定期実行が投稿できなくなる形で現れ、鮮度のジョブ（`acceptance-remote-freshness`）が 3 日で赤になります。** 端末を失くしたときは、その環境の PAT だけを削除します。
 
 ## 生成物の具体化

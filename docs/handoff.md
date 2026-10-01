@@ -32,13 +32,13 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 **原因は、本番の AWS を `AWS_PROFILE` で選ぶ設計なのに、launchd → `docker exec` の login シェルにそれが無かったことです**（`docker exec … bash -lc 'echo $AWS_PROFILE'` が空。手で回すときは端末で export していたので、#808 の実測でも気づかなかった）。#861 で、定期実行の入口だけが、空のときに `game-forge-prod`（`scripts/lib/acceptance-record.sh` の `ACCEPTANCE_AWS_PROFILE`）を入れるようにしました。**`.env` には置いていません**（利用者の決定。`.env` を読むすべてのスクリプトで aws の既定が本番になるため）。
 
-**1 件目は失敗でしたが、acceptance の「認証を落とした記録が、乖離ではなく前提の不成立として読める」を本物の出力で満たしました**——AWS の系統の 15 件だけが落ち、他の 25 件は正しく PASS と読み分けています。鮮度のジョブを手で流して success（records 3、最新 `result=ok`）。**毎日 15:00 JST の赤のメールは止まりました。**
+**1 件目は失敗でしたが、acceptance の「認証を落とした記録が、乖離ではなく前提の不成立として読める」を本物の出力で満たしました**（意図して落としたのではなく、AWS の認証が実際に無い状態で回った記録です。acceptance の趣旨——認証の欠けを乖離と取り違えない——はこれで確かめられる）——AWS の系統の 15 件だけが落ち、他の 25 件は正しく PASS と読み分けています。鮮度のジョブを手で流して success（records 3、最新 `result=ok`）。**毎日 15:00 JST の赤のメールは止まりました。**
 
 #### #860 / #862: main の identity-guard が 14 回続けて赤でした（game-forge-3a から）
 
 2026-09-30 04:13Z に Dependabot の PR #833 を squash merge した `15bb95a` に、**GitHub が `Co-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>` を付けました。** co-author の検査は許可リストしか見ないので、push(main) の identity-guard（`--full` で全履歴を見る）が **`15bb95a`〜`2648c3a` の 14 回続けて赤**でした（#861 のマージ時も同じ）。**PR の検査はマージの前なので、この trailer が見えず、必須チェックは緑のまま**です。配備とマージは止まっていませんでしたが、**main の検知層が常に赤で、機能していませんでした。**
 
-#862 は、author に当てていた `is_github_authored`（committer が `noreply@github.com` で、ローカル部に `@` を含まない `*@users.noreply.github.com`）を co-author にも当てます。手元で作ったコミットには広げていません。`scripts/verify-commit-identity-selftest.sh`（11 通り）を新設し、identity-guard の検証の前に回します。修正前のスクリプトでは #833 の形が赤になることを確かめています。**main の全履歴 506 件で `IDENTITY_PASS`**、`61a608d` の push で identity-guard は success です。
+#862 は、author に当てていた `is_github_authored`（committer が `noreply@github.com` で、ローカル部に `@` を含まない `*@users.noreply.github.com`）を co-author にも当てます。手元で作ったコミットには広げていません。`scripts/verify-commit-identity-selftest.sh`（11 通り）を新設し、identity-guard の検証の前に回します。修正前のスクリプトでは #833 の形が赤になることを確かめています。3a は修正の時点の main の全履歴 506 件（`2648c3a` まで）で `IDENTITY_PASS` を確かめ、**`61a608d` の push で走った identity-guard（`--full`。508 件）も success** です。
 
 #### 踏んだこと（次の人へ。どれも 1 回目）
 

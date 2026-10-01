@@ -15,7 +15,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 | # | 何をしたか | PR / コミット | 状態 |
 |---|---|---|---|
-| #802 | dev01 に副開発環境を立て、Mac の devcontainer を作り直して確かめた | PR #864 / `b7b84ae`（ベースを `base:noble` に固定）・PR #866 / `d313be0`（docs）。game-forge-bd | **閉じた**（acceptance 6/6。[照合](https://github.com/ojos/game-forge/issues/802#issuecomment-5929556837)） |
+| #802 | dev01 に副開発環境を立て、Mac の devcontainer を作り直して確かめた | PR #864 / `b7b84ae`（ベースを `base:noble` に固定）・PR #866 / `d313be0`（docs）。game-forge-bd | **閉じた**（acceptance 6/6。[照合](https://github.com/ojos/game-forge/issues/802#issuecomment-5929556837)。「`terraform plan` が必須変数の不足で落ちる」の行は、落ちることを確かめた。括弧の「27 中 21」は起票時の数で、いまは 27 中 12） |
 | #849 | dev01 の `dev` とユニットを入れ、Pixel 8 のタップで起こす・入る・再認証する | PR #866（docs）。game-forge-bd | **閉じた**（acceptance 7/7。[照合](https://github.com/ojos/game-forge/issues/849#issuecomment-5929564092)） |
 | #865 | `second-opinion-gate` で、記録のコメントは持ち主（`author_association == OWNER`）が書いたものだけを数える。持ち主以外の印は数えずに警告 | PR #867 / `be3e38d` | 閉じた |
 
@@ -132,7 +132,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 半永続の認証情報は置かず、**スマホから、コンテナに依存しないシェルへ入る道**を作る、と決めました（利用者）。Termux（**F-Droid か GitHub 版**。Google Play 版は更新が止まっていて Termux:Widget と連携しない）から、Mac と同じ `cloudflared access ssh` で dev01 のホストへ入ります。鍵は**スマホ専用の鍵**を `authorized_keys` に 1 行足し、紛失したらその行を消します。
 
-`tools/devhost/` は**プロジェクトの固有名を持ちません**（`scripts/check-devhost.sh` が見る）。2 つ目のプロジェクトを dev01 に載せたら ai-packages-dev へ移します（そのときに別の票。コンテナ間で認証を共有するかもそこで決める）。**devcontainer は Mac と共通の `shutdownAction: stopCompose` なので、VS Code の窓を閉じると止まります**（**2026-10-01 訂正: dev01（Remote-SSH 越し）では窓を閉じても止まらなかった。上の節**）。**`dev-up@<名前>` がそれも 30 秒後に戻すので、dev01 で作り直す前は `systemctl --user stop dev-up@<名前>` が要ります。**
+`tools/devhost/` は**プロジェクトの固有名を持ちません**（`scripts/check-devhost.sh` が見る）。2 つ目のプロジェクトを dev01 に載せたら ai-packages-dev へ移します（そのときに別の票。コンテナ間で認証を共有するかもそこで決める）。**devcontainer は Mac と共通の `shutdownAction: stopCompose` です。Mac では VS Code の窓を閉じると止まりますが、dev01（Remote-SSH 越し）では止まりません**（**2026-10-01 に訂正**。当初「窓を閉じると止まる」と書いていた。上の節）。**`dev-up@<名前>` は、どんな理由で止まったコンテナも 30 秒後に戻すので、dev01 で作り直す前は `systemctl --user stop dev-up@<名前>` が要ります。**
 
 #### このウェーブで踏んだこと（次の人へ。どれも 1 回目）
 

@@ -68,7 +68,8 @@
 #   incomplete     最新の記録が incomplete、または ok なのに PASS 以外の行がある
 #
 # 最新の 1 件で決めるのは、同じ head で回し直した結果（認証を直して再実行・乖離を直して再実行）を
-# 反映するためである。**鮮度は見ない。** apply の後に回したことを head で結んでおり、その後の外部状態の
+# 反映するためである。**「最新」は投稿の順（GitHub の created_at と id）で決め、記録の time は使わない**
+# （端末の時計がずれると、後から載せた乖離の記録が前の全件 PASS より古く並ぶ）。**鮮度は見ない。** apply の後に回したことを head で結んでおり、その後の外部状態の
 # 変化は定期実行（既定の読み方）が拾う。
 #
 # ══════════════════════════════════════════════════════════════════════════════
@@ -133,6 +134,7 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
         then {at: ([($kv.time | fromdateiso8601), $c] | min), result: $kv.result,
               head: (($kv.head // "") | short),
               full: (($kv.head // "") | if test("^[0-9a-f]{40}$") then . else null end),
+              created: $c, id: (.id // 0),
               pr: ($kv.pr // null),
               reason: (($kv.reason // "-") | if test("^[a-z-]+$") then . else "-" end),
               drift: (($kv.drift // "0") | tonumber? // 0),
@@ -150,7 +152,10 @@ out="$(jq -s -r --arg owner "$owner" --arg marker "$ACCEPTANCE_RECORD_MARKER" \
   | ([ $parsed[] | select(.malformed != true) ] | sort_by(.at)) as $all
   | if $pr_head != "" then
       # ── PR の記録（#845）────────────────────────────────────────────────
-      [ $all[] | select(.pr == $pr) ] as $mine_pr
+      # **並べる順は GitHub が付けた投稿の順（created_at と id）にする。** 記録の time は端末の時計で、
+      # 後から投稿した乖離の記録が、時計のずれで前の全件 PASS より古く並ぶと success を出す
+      # （#845 の第二意見の指摘）。鮮度を見ないので、time を使う理由が無い。
+      ([ $all[] | select(.pr == $pr) ] | sort_by([.created, .id])) as $mine_pr
       | [ $mine_pr[] | select(.full == $pr_head) ] as $at
       | "records: \($mine_pr | length)（PR #\($pr) の持ち主の記録。この head のもの \($at | length) 件。形の崩れ \([ $parsed[] | select(.malformed == true) ] | length) 件・持ち主以外の \($foreign | length) 件・ほかの PR や定期実行の形の \([ $all[] | select(.pr != $pr) ] | length) 件は数えない）",
         ( if ($at | length) == 0 then

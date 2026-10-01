@@ -568,6 +568,12 @@ pr_rec 0.1 out-ok 1 | pr_case "全件 PASS でも終了コードが 0 でなけ�
 # 同じ head で回し直した結果を反映する（最新の 1 件で決める）。
 { pr_rec 0.2 out-noauth 1; pr_rec 0.1 out-ok 0; } | pr_case "認証を直して回し直した全件 PASS で通す" ""
 { pr_rec 0.2 out-ok 0; pr_rec 0.1 out-drift 1; } | pr_case "全件 PASS の後の乖離で落とす" "drift"
+# 「最新」は投稿の順で決める。端末の時計が遅れて、後から載せた記録の time が前の記録より古くても、
+# 後から載せたほうを使う（第二意見の指摘）。
+{ pr_body 0.2 "$HEAD_SHA" "$PR_NUM" --exit 0 < "$WORK/out-ok" | comment ojos OWNER 0.2; pr_body 0.5 "$HEAD_SHA" "$PR_NUM" --exit 1 < "$WORK/out-drift" | comment ojos OWNER 0.1; } |
+  pr_case "時計が遅れた端末から後で載せた乖離を、前の全件 PASS で隠さない" "drift"
+{ pr_body 0.2 "$HEAD_SHA" "$PR_NUM" --exit 1 < "$WORK/out-drift" | comment ojos OWNER 0.2; pr_body 0.5 "$HEAD_SHA" "$PR_NUM" --exit 0 < "$WORK/out-ok" | comment ojos OWNER 0.1; } |
+  pr_case "時計が遅れた端末から後で載せた全件 PASS で、回し直しを反映する" ""
 # 新しい head の記録があれば、古い head の記録は見ない。
 { pr_rec 0.2 out-drift 1; pr_rec 0.1 out-ok 0 "$NEW_HEAD"; } | pr_case "新しい head で回し直した全件 PASS で通す" "" "$NEW_HEAD"
 # 誰の・どの PR の記録を数えるか。

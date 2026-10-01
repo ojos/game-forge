@@ -101,6 +101,13 @@ bash scripts/check-second-opinion-gate-exempt.sh
 echo "[acceptance] (hygiene) scripts/check-second-opinion-gate-workflow.sh"
 bash scripts/check-second-opinion-gate-workflow.sh
 
+# on-attach の gh の認証の案内（#869）。gh が使えないとき 'gh auth login' を実行させる案内を
+# 出さず、.env の GH_TOKEN（PAT）を案内する。'gh auth login' は OAuth の上限の枠を消費し、
+# 他環境の認証を失効させうる（.github/project-ai-rules.md）。on-attach は devcontainer に入る
+# たびに走るだけで、PR の上では誰も出力を見ないので、ここで機械が見る。
+echo "[acceptance] (hygiene) scripts/check-on-attach-gh-guidance.sh"
+bash scripts/check-on-attach-gh-guidance.sh
+
 # 外部層の定期実行（#844）の要約・鮮度の判定・起動前の確認の表。**launchd は利用者の Mac で、
 # 定期ジョブ（acceptance-remote-freshness.yml）は既定ブランチでしか動かない**ので、判定が崩れても
 # PR の上では気づけない——上の 3 つと同じ理由でここに置く。外部層そのもの（acceptance-remote.sh）は

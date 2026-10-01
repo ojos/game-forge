@@ -44,11 +44,25 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 - **空でも壊れません**: `GH_TOKEN` が空の環境は従来どおり保存済み認証で動きます。
 - **設定中は `gh auth login` を実行しません**: env が優先されるためログイン結果は使われず、それでも OAuth トークンは 1 本発行されます。上限に達していれば、他環境のトークンを 1 本失効させるだけの結果になります。これは制約ではなく安全装置として扱います。
 
-発行手順と必要権限は、対象リポジトリと行う操作によって変わります。**この雛形では決め打ちせず、プロジェクトごとに次を記述します。**
+発行手順と必要権限は、対象リポジトリと行う操作によって変わります。**このプロジェクトでは、環境ごとに別の PAT を置きます**（#869。2026-10-01 に利用者が決定し、#869 の当初の scope.out「Mac は保存済み OAuth のまま」を取り消した——[#869 のコメント](https://github.com/ojos/game-forge/issues/869#issuecomment-5932339469)。Mac と dev01 の 2 本。片方を失効させても、もう片方は動き続け、**dev01 に管理者の権限を持ち込まない**）。
 
-- PAT の発行手順: （種別・対象・有効期限を記載）
-- 必要な権限: （行う操作に対する最小の権限セットを記載）
-- 失効時・期限切れ時の再発行手順: （記載）
+- **PAT の発行手順**: GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token。Token name は環境が分かる名前（例 `game-forge-mac` / `game-forge-dev01`）、Resource owner は `ojos`、Repository access は **Only select repositories → `ojos/game-forge`**、Expiration は選べる中で最も長い期間（1 年が目安）。値はその環境の `.env` の `GH_TOKEN` にだけ置き、リポジトリにも会話の記録にも書きません。
+- **必要な権限**（Repository permissions。ここに無いものは No access）:
+
+  | 権限 | Mac | dev01 | 使い道 |
+  |---|---|---|---|
+  | Metadata | Read-only | Read-only | 必須 |
+  | Contents | Read and write | Read and write | git push（`credential.helper` に `gh auth git-credential`）、`gh pr merge` |
+  | Pull requests | Read and write | Read and write | PR の作成・コメント・マージ |
+  | Issues | Read and write | Read and write | 第二意見や外部層の記録のコメント、lock |
+  | Actions | Read and write | Read and write | `gh workflow run` / `gh run watch` |
+  | Workflows | Read and write | Read and write | `.github/workflows/` を変える push |
+  | Commit statuses | Read-only | Read-only | status の読み取り（`land`） |
+  | Administration | Read and write | No access | terraform（`GITHUB_TOKEN="$(gh auth token)"`。リポジトリの設定・既定のブランチ・branch protection・脆弱性アラート・Dependabot のセキュリティ更新）と、外部層の検査の読み取り |
+  | Variables | Read and write | No access | terraform の Actions の変数と、外部層の検査の読み取り |
+
+  Mac の組は 2026-10-01 に実測した——外部層の gh の 7 検査（前提・リポジトリ・private vulnerability reporting・既定のブランチ・branch protection・Actions の変数・OIDC）と production deployment が PASS、terraform が読む脆弱性アラート・Dependabot のセキュリティ更新・Actions の変数・private vulnerability reporting の読み取りが通った。**書き込み（apply）は次の apply で確かめる。** dev01 では terraform も外部層も動かない形にしてある（tfvars・state・`CLOUDFLARE_API_TOKEN` を置かず、`terraform plan` は必須変数の不足で落ちることを #802 で確かめた）ので、管理者と変数の権限を持たせません。
+- **失効時・期限切れ時の再発行手順**: 上と同じ手順で同じ名前・同じ権限の PAT を発行し、その環境の `.env` の `GH_TOKEN` を差し替えます。古い PAT は GitHub の画面で削除します。**期限切れは Mac では #844 の定期実行が投稿できなくなる形で現れ、鮮度のジョブ（`acceptance-remote-freshness`）が 3 日で赤になります。** 端末を失くしたときは、その環境の PAT だけを削除します。
 
 ## 生成物の具体化
 

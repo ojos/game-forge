@@ -11,6 +11,37 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 ## 1. 現在地
 
+### dev01 から #870 / #879 を直し、#869 を閉じました。dev01 の UID の付け替えは devcontainer CLI に任せる形に変わりました（#870 / #869 / #879。2026-10-02）
+
+このセッションは dev01 のコンテナで動き、**dev01 用の PAT で PR の作成からマージまでを通した最初のセッション**です。
+
+| # | 何をしたか | PR / コミット | 状態 |
+|---|---|---|---|
+| #870 | 定期実行が fast-forward して `package-lock.json` が変わった日だけ、プライマリで `npm ci` してから外部層を回す。失敗したら検査を回さず `npm-ci-failed`（前提の不成立）にする。打ったことは Mac のログにだけ残し、要約には載せない | PR #892 / `df18245` | 閉じた |
+| #869 | 残っていた「dev01 から PR を作るときの書き込み」を、#892 の push・作成・記録の投稿・マージで確かめた（[実測](https://github.com/ojos/game-forge/issues/869#issuecomment-5947392242)） | — | 閉じた |
+| #879 | dev01 で `updateRemoteUserUID` が compose 方式でも効くことを実測し、`.devcontainer/Dockerfile` と `remap-vscode-user.sh` を外した。`devcontainer.json` に `"updateRemoteUserUID": true` を明示し、`check-devcontainer-dev01.sh` が JSONC として読んで見る | PR #894 / `d54a15f` | 閉じた |
+
+main の `deploy` は 2 本とも success です。どちらも開発用の道具と devcontainer の変更で、本番の動きは変わりません。
+
+#### #879: #802 の前提は成り立っていませんでした
+
+- **dev01 の実際の開き方（Remote-SSH → Reopen in Container）でも、CLI の付け替えの段が走っていました。** 作業中のコンテナのイメージ名が `vsc-game-forge-…-uid` で、`docker history` に `updateUID.Dockerfile` の段（`NEW_UID=1001`）がありました。remap が先に 1001 にしていたので、この段は何もしておらず、機構が二重でした。
+- **remap を外した構成でも、vscode は 1001 になり、書き込み・docker・`npm i -g`・`go install` が通りました**（[実測](https://github.com/ojos/game-forge/issues/879#issuecomment-5947404555)）。利用者が Rebuild した後の 7.4 の確認（`id`・`WRITE_OK`・bwrap・codex の第二意見）もすべて通りました（[確認](https://github.com/ojos/game-forge/issues/879#issuecomment-5948027510)）。
+- **代償（利用者の判断で受け入れた）**: CLI の段は features の**後**に走り、`$HOME` しか chown しません。`/go`・`/usr/local/go`・nvm の所有者は 1000（`ls -l` で `UNKNOWN`）のまま残ります。setgid のグループ書き込み可なので、動作には影響しません。**`UNKNOWN` を見ても異常ではありません。**
+- dev01 の `.devcontainer/.env` は `DEVCONTAINER_HOST=dev01` の 1 行だけにしました（`DEVCONTAINER_UID` / `DEVCONTAINER_GID` は、もう何にも読まれない）。**Mac は変わりません**（macOS では CLI が付け替えを飛ばす）。
+
+#### このウェーブで踏んだこと（次の人へ。どれも 1 回目）
+
+- **devcontainer の構成は、作業中のコンテナを作り直さずに dev01 で試せます。** 追跡ファイルの写しを、**コンテナの中とホストの同じ絶対パス**（例 `/tmp/gf879`）の両方に置きます（compose は `..` をクライアント側で解決し、そのパスをホストの bind mount に渡すため）。ホスト側は `docker run -v /tmp:/htmp …` と `docker cp` で置きます。そのうえで `npx @devcontainers/cli@0.89.0 up --workspace-folder <写し> --skip-post-create` を打ちます。**フォルダ名を変えれば compose のプロジェクト名が変わり、作業中の `game-forge_devcontainer` には触れません。** 済んだら `docker compose --project-name … down -v` とイメージを片付けます。
+- **JSONC の設定を行の grep で検査すると、コメントに残った行を設定と数えます**（#894 の第二意見の指摘。実在した）。`check-devcontainer-dev01.sh` の `jsonc_get` は、文字列の外のコメントを除く段と、末尾のカンマを除く段の 2 段に分けてから `JSON.parse` します（1 段でやると、カンマと `}` の間に注記がある形を取り損ねる）。
+- **#870 の `npm ci` が失敗した翌日は、自動で打ち直しません**（lock はもう変わっていないため）。`npm-ci-failed` の記録が出たら、プライマリで手で `npm ci` を打ちます（`docs/acceptance-remote-schedule.md` の reason の表）。
+- **`second-opinion-record.sh post` は、PR の作成の直後に打ちます**（3 章の教訓どおり）。#892 と #894 は、どちらも `second-opinion-gate` が最初から緑でした。
+
+#### 残していること
+
+- **#869 の Mac 用の PAT の書き込み（terraform apply）**: 規範（`.github/project-ai-rules.md`）に「次の apply で確かめる」として残しています。次に apply するときに確かめます。
+- **起票候補**（前の節から引き継ぎ）: 第二意見の参照の抽出で、別リポジトリの番号を除く。
+
 ### ai-packages-dev から還流した 4 件のうち、#878 / #880 / #877 を直しました。#879 は待ちです（#878 / #880 / #877。2026-10-02）
 
 上流 ojos/ai-packages-dev で見つかった問題と改善を、利用者が 4 本の票（#877〜#880）にして承認しました。触るファイルが重ならない 2 本を、2 レーンで並列に直しています。着手前に、生きている 3 つのセッション（game-forge-b6 と、ai-packages-dev 側の 2 つ）に、所有するファイルを伝えました。
@@ -20,7 +51,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 | #878 | 上流が分岐点より先へ進んでいたら、第二意見の範囲の起点を分岐点の SHA にする。`origin/main` を上流にして切ったブランチで、ゲートの最中に main が進むと、他の PR を取り消す差分が範囲に混ざっていた（上流 PR #383 と同じ作り）。`scripts/loop-gate-range-selftest.sh` を足して acceptance に登録した（修正前に 3 件が赤） | PR #882 / `c3bfed1` | 閉じた |
 | #880 | codex にも差分を標準入力で渡す（差分が先、プロンプトが後）。ツールは差分の外を確かめる補助にとどめる。サンドボックスが起動しない環境でも差分を読める。共有の判定の決め事（`reviewed`）は「渡した差分を読めたか」に改めた（上流 PR #381 から、codex の呼び出し部分だけを持ち込んだ） | PR #883 / `00c7f08` | 閉じた |
 | #877 | ai-playbook を v0.2.0 から v0.5.0（`8ef795d`。上流 #364 を含む）へ取り込み、`.github/project-ai-rules.md` の「リモート最終ゲートを置かない」と「判定の形（#804）」の 2 節を、規範どおりの選択として書き換えた。gemini の経路だけは、スキーマを強制できないので規範の条件の外（意図した逸脱）と明記した。`.ai-playbook/` に手で直した箇所は無かった（v0.2.0 の tarball と一致） | PR #886 / `594cdc2` | 閉じた |
-| #879 | dev01 で `updateRemoteUserUID` が効くかを測り、`remap-vscode-user.sh` が要るかを決める | — | **待ち**: dev01 で、実際の開き方で測る |
+| #879 | dev01 で `updateRemoteUserUID` が効くかを測り、`remap-vscode-user.sh` が要るかを決める | — | **待ち**: dev01 で、実際の開き方で測る（**済み**: PR #894 で閉じた。上の節） |
 
 main の `deploy` は 3 本とも success です（#886 は `594cdc2` を配った）。#882 の実行は、後から入った #883 に配備を譲りました（`[deploy-head]` で確認）。#883 の実行が、両方を含む `00c7f08` を配っています。どちらも開発用のスクリプトだけの変更で、本番の動きは変わりません。
 
@@ -37,7 +68,7 @@ main の `deploy` は 3 本とも success です（#886 は `594cdc2` を配っ�
 #### 残していること
 
 - （**済み**）**#877**: PR #886 で v0.5.0 を取り込み、閉じました（上の表）。上流 ai-packages-dev #386（#873 の `reviewed` の考え方を雛形へ移す）が出たら、#888 で雛形と突き合わせるときに合わせて見ます。
-- **#879**: dev01 に入ったときに測ります。
+- （**済み**）**#879**: dev01 で測り、PR #894 で remap を外して閉じました（上の節）。
 - **起票候補**: 第二意見の参照の抽出で、別リポジトリの番号を除く（上記）。
 - **v0.5.0 との食い違い 4 本を起票しました**（利用者が承認。#886 の本文の一覧から）。#887（land の Closes を両側で確かめる。medium）・#888（second-opinion-gate.yml / record.sh を雛形と突き合わせる）・#889（委譲先を `.claude/agents/` で固定し、一覧と worktree の分離を書く）・#890（道具の自己検査を「実装を変えたら壊れるか」で分類する）。#887 は 3 章の「`Closes #NNN` を GitHub が認識しない」と直接つながります。
 
@@ -45,8 +76,8 @@ main の `deploy` は 3 本とも success です（#886 は `594cdc2` を配っ�
 
 | # | 何をしたか | PR / コミット | 状態 |
 |---|---|---|---|
-| #869 | gh の認証を**環境ごとの fine-grained PAT**（`game-forge-mac` / `game-forge-dev01`）に揃え、規範の「PAT の発行手順」「必要な権限」「再発行の手順」の空欄を埋め、on-attach が `gh auth login` を案内しないようにした | PR #871 / `0791fac`（`Refs #869`） | **open**（dev01 から初めて PR を作るときの書き込みを確かめて閉じる） |
-| #870 | 定期実行で fast-forward した日に `package-lock.json` が変わっていたら `npm ci` してから回す | 起票のみ（priority 低） | open |
+| #869 | gh の認証を**環境ごとの fine-grained PAT**（`game-forge-mac` / `game-forge-dev01`）に揃え、規範の「PAT の発行手順」「必要な権限」「再発行の手順」の空欄を埋め、on-attach が `gh auth login` を案内しないようにした | PR #871 / `0791fac`（`Refs #869`） | **open**（dev01 から初めて PR を作るときの書き込みを確かめて閉じる）（**済み**: 2026-10-02 に閉じた。上の節） |
+| #870 | 定期実行で fast-forward した日に `package-lock.json` が変わっていたら `npm ci` してから回す | 起票のみ（priority 低） | open（**済み**: PR #892 で閉じた。上の節） |
 
 main の `deploy` は success、`[deploy-head]` は `0791fac` で一致。**#869 は起票時の scope.out「Mac は保存済み OAuth のまま」を利用者の決定で取り消し**、Mac も PAT にしました（[#869 のコメント](https://github.com/ojos/game-forge/issues/869#issuecomment-5932339469)）。前の節の「起票候補（未起票）」3 つは、①②を #869 に、③を #870 にしました。
 
@@ -4731,6 +4762,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
+- **2026-10-02**（**dev01 から #870 / #879 を直し、#869 を閉じた**——#870 は fast-forward で lock が変わった日だけ `npm ci` してから外部層を回す（PR #892。失敗は `npm-ci-failed`）。#869 は dev01 用の PAT で PR の作成からマージまで通して閉じた。#879 は dev01 の実際の開き方でも CLI の付け替えの段が走っていたことを確かめ、remap を外して `updateRemoteUserUID` に一本化した（PR #894。features の所有者が 1000 のまま残る代償は利用者の判断で受け入れ）。作業中のコンテナに触れずに devcontainer の構成を試す手順を残した）
 - **2026-10-02**（**#877 を閉じた**——ai-playbook を v0.5.0 へ取り込み（PR #886）、リモート最終ゲートと判定の形の 2 節を規範どおりの選択に書き換えた。gemini の経路だけは意図した逸脱として残した。#885 のマージで main の deploy が Cloudflare の理由なしの失敗で落ち、再実行で通ったことを書いた。v0.5.0 との食い違い 4 本を #887〜#890 として起票した）
 - **2026-10-02**（**ai-packages-dev からの還流 4 件のうち #878 / #880 を閉じた**——第二意見の範囲の起点を分岐点にし（PR #882）、codex にも差分を標準入力で渡した（PR #883）。2 レーンの並列で、着手前に 3 つのセッションへ所有ファイルを伝えた。#877 は ai-playbook v0.5.0 が出て着手できる、#879 は dev01 の実測待ち。第二意見が別リポジトリの `#N` を文脈に載せること、`second-opinion-gate` の schedule が止まって手で流したこと、#880 の未実測の点を 1 章に書いた。**3 章へ 1 件**（レーンが post を抜かす。2 回目）。書き戻しは game-forge-b6 の #884 の後）
 - **2026-10-02**（**gh を環境ごとの PAT に揃え（#869 / PR #871）、AWS の SSO が 14 時間を超えて持つことを実測した**——Mac 用（Administration・Variables まで）と dev01 用（その 2 つは No access）を分け、Mac では terraform plan と定期実行の投稿まで PAT で通った。Identity Center は 7 日だが外部 IdP との短いほうになるので、10 分おきの計測と 12:00 JST の定期実行（`prereq.aws: pass`）で、少なくとも 14 時間は持つことを確かめた（「約 1 時間」の見立ては外れた。7 日まで持つかは未確定）。GCP は 24 時間で切れて `prereq.gcp: fail`（設定どおり）。起票候補 3 つを #869 / #870 にした）

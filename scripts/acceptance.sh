@@ -428,6 +428,17 @@ else
   echo "[acceptance] (chat) skip: terraform/chat-function.tf not found"
 fi
 
+# チャットの束の判定（#903）。main の deploy の関門が「束が変わったか」をこれで決める。
+# **壊れても緑に見える**——「変わっていない」と言い続ける判定は、関門を 1 度も起動しない。
+# 使い捨てのリポジトリで回り、AWS にもネットワークにも触れない（1 秒ほど）。
+if [[ -f scripts/chat-bundle-changed-selftest.sh ]]; then
+  echo "[acceptance] (chat-bundle-changed) scripts/chat-bundle-changed-selftest.sh"
+  bash scripts/chat-bundle-changed-selftest.sh
+  ran_any=1
+else
+  echo "[acceptance] (chat-bundle-changed) skip: scripts/chat-bundle-changed-selftest.sh not found"
+fi
+
 # 画面と文書の用語が揃っていること（#740 / 仕様 5.16「用語」）。
 #
 # **hygiene と同じく grep だけで済むので前寄りに置く。** 揃え直しは 1 回で終わるが、

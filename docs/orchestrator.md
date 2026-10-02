@@ -252,17 +252,76 @@ claim（pending → running）→ finishWithError('internal')（running → fail
   先に bash scripts/deploy-orchestrator.sh を実行してください
 ```
 
-- **登録簿に関わる差分のときだけ走る**（`wrangler.toml` / `src/generation-models.ts`）。
-  毎回 AWS を読むと、**AWS 側の不調で Worker を配れなくなる**——外部の可用性を配備の
-  前提条件へ持ち込まない
+- **オーケストレータの束が変わったときだけ走る**（`scripts/orchestrator-bundle-changed.sh` が
+  直前のコミットと束を作り比べる。#263 でファイル名の一覧から改めた）。毎回 AWS を読むと、
+  **AWS 側の不調で Worker を配れなくなる**——外部の可用性を配備の前提条件へ持ち込まない
 - **束ね直しは決定的である**（`bundle-orchestrator.sh` が時刻を固定し `zip -X` を使う）。
   macOS で束ねたものと Linux で束ねたものが**バイト一致することを実測で確かめてある**
 - 読み取りは**専用の読み取り専用ロール**で行う（`terraform/orchestrator.tf` の
-  `aws_iam_role.orchestrator_freshness`。`lambda:GetFunctionConfiguration` 1 つ・1 関数のみ）
+  `aws_iam_role.orchestrator_freshness`。`lambda:GetFunctionConfiguration` 1 つ・対象は
+  オーケストレータとチャットの 2 関数。下の「チャットの関数の関門」）
 
 **検査そのものは前からあった**（`scripts/acceptance-remote.sh` の `check_orchestrator_code`）。
 **欠けていたのは契機である**——外部層は「外部状態の宣言を変更したとき」に回す層で、
 `wrangler.toml` の変更は terraform の宣言変更ではない。**誰も回そうと思わなかった。**
+
+### チャットの関数の関門（#903）
+
+**チャットの関数（`game-forge-chat`。#695 で分けた）にも同じ関門がある。** 2026-09-21、#740 が
+チャットの束（システムプロンプトの用語。`src/chat-prompt.ts`）を変えたのに、レーンが「束は
+変わらない」と報告して配り直されず、**本番のチャットは黙って古いままだった**（#742 の配り直しで
+上書き）。それまでの頼りは「束を main と PR で比べる」という注意を人が覚えていることだけだった。
+
+いまは `deploy` ジョブが、オーケストレータの関門の直後に同じことをチャットの束にも行う。
+
+```
+::error::配備済みのチャットの関数が古いままです。このまま Worker を配ると、チャットだけが古いコードで動き続けます（#903）。
+  手元: …
+  本番: …
+  先に bash scripts/deploy-chat.sh を実行し、このジョブを再実行してください（docs/orchestrator.md「チャットの関数の関門」）。
+```
+
+- **チャットの束が、本番の Pages に居るコミットから変わったときだけ走る**（`scripts/chat-bundle-changed.sh`。
+  入口は `src/chat/handler.ts`。比較元の選び方は下）。判定はオーケストレータと**分けてある**——チャットだけを直した日に
+  オーケストレータの配り直しを求めない（逆も同じ。仕様 5.16）
+- **判定できないときは落とす**（作業ツリーが汚れている・束を作れない等）。「変わっていない」に
+  倒すと、判定できない日に関門が黙って外れる。判定は `scripts/chat-bundle-changed-selftest.sh`
+  （`scripts/acceptance.sh` が回す）が既知の差分で確かめている
+- 関数名は GitHub の変数 `CHAT_FUNCTION_NAME` から読む。**正本は `terraform/chat-function.tf` の
+  `local.chat_function_name`** で、変数は terraform（`github_actions_variable.chat_function_name`）が配る
+- 読み取りのロールはオーケストレータの関門と同じもの（上の箇条。分けない理由は
+  `terraform/orchestrator.tf` の注記）
+- **依存（`package.json` / `package-lock.json`）が変わった差分も「変わった」として扱う。** 束の作り比べは
+  比較元の側も手元の `node_modules` で束ねるので、`aws4fetch` や esbuild の版だけが変わった差分は
+  作り比べでは見えない。広めに拾い、照合は実物の `CodeSha256` で行う（束が同じなら通る）
+
+**比較元は「直前のコミット」ではなく「本番の Pages に居るコミット」である**（ここだけ
+オーケストレータの関門と違う。#903 の第二意見）。直前のコミットと比べると、次の 2 つの順序で
+束が変わったコミットの照合が 1 度も行われない。
+
+- 束を変えたコミット A の配備が、直後のマージ B に譲って何もしなかった（`deploy-head`。#427）。
+  B の配備は A と B を比べて「変わっていない」と読む
+- A の配備がこの関門で落ちたまま、配り直す前に無関係な B がマージされた。B の配備は同じく
+  「変わっていない」と読み、**Worker だけが先へ進む**
+
+Pages は同じジョブの**この関門の後ろ**で `--commit-hash` 付きで配られる（#95）ので、本番の Pages に
+居るコミットは、最後にこの関門を通ったコミットである。Cloudflare の API から読めなければ落とし
+（再実行で足りる）、本番の配備にコミットが記録されていない・汚れたツリーから配られた・そのコミットを
+取得できないときは「変わった」として照合へ回す（細部は `scripts/chat-bundle-changed.sh` の冒頭）。
+
+**オーケストレータの関門は直前のコミットと比べたままで、上の 2 つの穴がある**（#903 の範囲の外）。
+オーケストレータの束を変える PR を入れた直後は、次のマージの前に、その PR の配備が関門まで走った
+こと（緑か、落ちたなら配り直して再実行したこと）を確かめること。
+
+**チャットの束が変わる PR は「配り直し → マージ」の順になる**（オーケストレータと同じ制約）。
+止まったときは、PR の head（= main に入ったコミット）を手元に置いたツリーから
+`bash scripts/deploy-chat.sh` を叩き（**実体の `node_modules` を持つツリーから**。symlink で借りた
+ツリーで束ねると `CodeSha256` が別物になる）、落ちた `deploy` ジョブを再実行する。
+マージの前に束が変わるかを確かめるには、PR のツリーで次を打つ。
+
+```bash
+bash scripts/chat-bundle-changed.sh "$(git merge-base origin/main HEAD)"
+```
 
 ### この切り替えは生成経路を数分止める
 

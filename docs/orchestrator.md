@@ -252,17 +252,55 @@ claim（pending → running）→ finishWithError('internal')（running → fail
   先に bash scripts/deploy-orchestrator.sh を実行してください
 ```
 
-- **登録簿に関わる差分のときだけ走る**（`wrangler.toml` / `src/generation-models.ts`）。
-  毎回 AWS を読むと、**AWS 側の不調で Worker を配れなくなる**——外部の可用性を配備の
-  前提条件へ持ち込まない
+- **オーケストレータの束が変わったときだけ走る**（`scripts/orchestrator-bundle-changed.sh` が
+  直前のコミットと束を作り比べる。#263 でファイル名の一覧から改めた）。毎回 AWS を読むと、
+  **AWS 側の不調で Worker を配れなくなる**——外部の可用性を配備の前提条件へ持ち込まない
 - **束ね直しは決定的である**（`bundle-orchestrator.sh` が時刻を固定し `zip -X` を使う）。
   macOS で束ねたものと Linux で束ねたものが**バイト一致することを実測で確かめてある**
 - 読み取りは**専用の読み取り専用ロール**で行う（`terraform/orchestrator.tf` の
-  `aws_iam_role.orchestrator_freshness`。`lambda:GetFunctionConfiguration` 1 つ・1 関数のみ）
+  `aws_iam_role.orchestrator_freshness`。`lambda:GetFunctionConfiguration` 1 つ・対象は
+  オーケストレータとチャットの 2 関数。下の「チャットの関数の関門」）
 
 **検査そのものは前からあった**（`scripts/acceptance-remote.sh` の `check_orchestrator_code`）。
 **欠けていたのは契機である**——外部層は「外部状態の宣言を変更したとき」に回す層で、
 `wrangler.toml` の変更は terraform の宣言変更ではない。**誰も回そうと思わなかった。**
+
+### チャットの関数の関門（#903）
+
+**チャットの関数（`game-forge-chat`。#695 で分けた）にも同じ関門がある。** 2026-09-21、#740 が
+チャットの束（システムプロンプトの用語。`src/chat-prompt.ts`）を変えたのに、レーンが「束は
+変わらない」と報告して配り直されず、**本番のチャットは黙って古いままだった**（#742 の配り直しで
+上書き）。それまでの頼りは「束を main と PR で比べる」という注意を人が覚えていることだけだった。
+
+いまは `deploy` ジョブが、オーケストレータの関門の直後に同じことをチャットの束にも行う。
+
+```
+::error::配備済みのチャットの関数が古いままです。このまま Worker を配ると、チャットだけが古いコードで動き続けます（#903）。
+  手元: …
+  本番: …
+  先に bash scripts/deploy-chat.sh を実行し、このジョブを再実行してください（docs/orchestrator.md「チャットの関数の関門」）。
+```
+
+- **チャットの束が変わったときだけ走る**（`scripts/chat-bundle-changed.sh`。入口は
+  `src/chat/handler.ts`）。判定はオーケストレータと**分けてある**——チャットだけを直した日に
+  オーケストレータの配り直しを求めない（逆も同じ。仕様 5.16）
+- **判定できないときは落とす**（作業ツリーが汚れている・束を作れない等）。「変わっていない」に
+  倒すと、判定できない日に関門が黙って外れる。判定は `scripts/chat-bundle-changed-selftest.sh`
+  （`scripts/acceptance.sh` が回す）が既知の差分で確かめている
+- 関数名は GitHub の変数 `CHAT_FUNCTION_NAME` から読む。**正本は `terraform/chat-function.tf` の
+  `local.chat_function_name`** で、変数は terraform（`github_actions_variable.chat_function_name`）が配る
+- 読み取りのロールはオーケストレータの関門と同じもの（上の箇条。分けない理由は
+  `terraform/orchestrator.tf` の注記）
+
+**チャットの束が変わる PR は「配り直し → マージ」の順になる**（オーケストレータと同じ制約）。
+止まったときは、PR の head（= main に入ったコミット）を手元に置いたツリーから
+`bash scripts/deploy-chat.sh` を叩き（**実体の `node_modules` を持つツリーから**。symlink で借りた
+ツリーで束ねると `CodeSha256` が別物になる）、落ちた `deploy` ジョブを再実行する。
+マージの前に束が変わるかを確かめるには、PR のツリーで次を打つ。
+
+```bash
+bash scripts/chat-bundle-changed.sh "$(git merge-base origin/main HEAD)"
+```
 
 ### この切り替えは生成経路を数分止める
 

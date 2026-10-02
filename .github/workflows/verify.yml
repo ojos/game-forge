@@ -420,6 +420,78 @@ jobs:
           fi
           echo "オーケストレータは手元の束と一致しています（${local_sha}）。"
 
+      # ── チャットの関数が古くないか（#903）────────────────────────────────
+      #
+      # **2026-09-21、チャットの束が黙ってずれた。** #740 がシステムプロンプトの用語
+      # （`src/chat-prompt.ts`）を変えたのに、レーンが「束は変わらない」と報告して配り直されず、
+      # **本番のチャットは古いプロンプトのまま動いていた**（#742 の配り直しで上書き）。
+      # オーケストレータには上の関門（#241）があるのに、#695 で分けたチャットの関数には無かった。
+      #
+      # **作りは上のオーケストレータの関門と同じである。** 束を 2 回作って比べ、変わったときだけ
+      # AWS を読む（外部の可用性を配備の前提条件へ持ち込まない）。判定できないときは
+      # 「変わっていない」に倒さず落とす。**判定は分けてある**——チャットだけが変わった日に
+      # オーケストレータの配り直しを求めない（逆も同じ。仕様 5.16）。
+      - name: チャットの束が変わったか
+        if: steps.head-gate.outputs.deploy == 'true'
+        id: chat-diff
+        run: |
+          set -euo pipefail
+          # 受け方は「オーケストレータの束が変わったか」と同じ（条件式へ直に置かない・
+          # 合図の綴りを両方とも明示的に見る）。
+          if ! out="$(bash scripts/chat-bundle-changed.sh)"; then
+            echo "::error::チャットの束が変わったかを判定できませんでした（判定スクリプトが失敗）。"
+            exit 1
+          fi
+          echo "$out"
+          if printf '%s\n' "$out" | grep -q '^CHAT_BUNDLE_CHANGED$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "チャットの束が変わりました。配備の前に新しさを見ます。"
+          elif printf '%s\n' "$out" | grep -q '^CHAT_BUNDLE_UNCHANGED$'; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "チャットの束は変わっていません。AWS は読みません。"
+          else
+            echo "::error::チャットの束が変わったかを判定できませんでした（合図がありません）。"
+            exit 1
+          fi
+
+      # **ロールは上と同じものを引き受ける**（`terraform/orchestrator.tf` の
+      # `orchestrator_freshness`。対象をチャットの関数にも広げた。分けない理由はそちらの注記）。
+      # 上の段で既に引き受けていても、もう 1 度引き受けて構わない（同じ権限の取り直しになる）。
+      # 上の段の条件へ相乗りさせないのは、オーケストレータの関門の作りを動かさないため。
+      - name: AWS の読み取り権を得る（OIDC・チャット）
+        if: steps.head-gate.outputs.deploy == 'true' && steps.chat-diff.outputs.changed == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ORCHESTRATOR_FRESHNESS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: チャットの関数が手元の束と一致すること
+        if: steps.head-gate.outputs.deploy == 'true' && steps.chat-diff.outputs.changed == 'true'
+        env:
+          CHAT_FUNCTION_NAME: ${{ vars.CHAT_FUNCTION_NAME }}
+        run: |
+          set -euo pipefail
+          # **名前を決め打ちしない。** 正本は terraform の local.chat_function_name で、
+          # GitHub の変数 CHAT_FUNCTION_NAME はその写し（terraform の github_actions_variable が配る）。
+          # 空なら落とす（別の関数を読んで通らない）。
+          name="${CHAT_FUNCTION_NAME}"
+          if [[ -z "$name" ]]; then
+            echo "::error::CHAT_FUNCTION_NAME が空です（terraform の github_actions_variable が配ります）。"
+            exit 1
+          fi
+          bash scripts/bundle-chat.sh
+          local_sha="$(openssl dgst -sha256 -binary dist/chat.zip | base64)"
+          remote_sha="$(aws lambda get-function-configuration \
+            --function-name "$name" --query 'CodeSha256' --output text)"
+          if [[ "$local_sha" != "$remote_sha" ]]; then
+            echo "::error::配備済みのチャットの関数が古いままです。このまま Worker を配ると、チャットだけが古いコードで動き続けます（#903）。"
+            echo "  手元: ${local_sha}"
+            echo "  本番: ${remote_sha}"
+            echo "  先に bash scripts/deploy-chat.sh を実行し、このジョブを再実行してください（docs/orchestrator.md「チャットの関数の関門」）。"
+            exit 1
+          fi
+          echo "チャットの関数は手元の束と一致しています（${local_sha}）。"
+
       # ── マイグレーションの関門（#275）────────────────────────────────────
       #
       # **2026-09-03 に、これが無くて本番を約 10 分壊した。** #39 をマージしたとき

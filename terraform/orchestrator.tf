@@ -575,7 +575,21 @@ resource "aws_lambda_function_event_invoke_config" "orchestrator" {
  *
  * `deploy_compiler`（ECR へ押す役）へ相乗りさせない。**役割が違うものを 1 つのロールへ
  * 集めると、片方の都合でもう片方の権限が動く。** ここが要るのは
- * `lambda:GetFunctionConfiguration` 1 つで、対象も 1 関数である。
+ * `lambda:GetFunctionConfiguration` 1 つで、対象はオーケストレータとチャットの 2 関数である。
+ *
+ * # チャットの関数も同じロールで読む（#903）
+ *
+ * 2026-09-21、#740 がチャットの束を変えたのに配り直されず、**本番のチャットは黙って古いまま
+ * だった。** 同じ関門をチャットの関数（`terraform/chat-function.tf`）にも掛けるため、対象を
+ * 2 関数へ広げた。**ロールは分けない。** 分けても最小権限は狭まらないためである——2 つのロールは
+ * 同じ信頼ポリシー（`deploy_compiler_assume`。同じリポジトリの同じ主体）で引き受けることになり、
+ * **deploy ジョブはどちらも引き受けられる。** 主体から見た権限は「2 関数の構成を読める」で変わらず、
+ * 増えるのはロール・ポリシー・ARN の変数の 3 つの資源と、それを配り忘れる余地だけである。
+ * **広げたのは対象（関数の ARN）だけで、操作は `GetFunctionConfiguration` 1 つのまま**
+ * （`GetFunction` はコードの取得 URL を返すので足さない）。
+ *
+ * ロール名（`game-forge-orchestrator-freshness`）は変えない。名前を変えると置き換えになり、
+ * ARN を配る変数も作り直しになる（その間 main の deploy が引き受けに失敗する）。
  */
 resource "aws_iam_role" "orchestrator_freshness" {
   name               = "game-forge-orchestrator-freshness"
@@ -596,6 +610,15 @@ data "aws_iam_policy_document" "orchestrator_freshness" {
     actions = ["lambda:GetFunctionConfiguration"]
     # **関数を名指しする。** 「Lambda を読める」ではなく「この関数の構成を読める」。
     resources = ["arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.prod.account_id}:function:${local.orchestrator_function_name}"]
+  }
+
+  # チャットの関数（#903）。**別の文に分ける。** 1 つの resources へ並べると、どちらの関門の
+  # ための許可かが plan の差分から読めなくなる。名指しするのは上と同じ。
+  statement {
+    sid       = "ReadChatCodeSha"
+    effect    = "Allow"
+    actions   = ["lambda:GetFunctionConfiguration"]
+    resources = ["arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.prod.account_id}:function:${local.chat_function_name}"]
   }
 }
 
@@ -625,4 +648,14 @@ resource "github_actions_variable" "orchestrator_function_name" {
   repository    = github_repository.this.name
   variable_name = "ORCHESTRATOR_FUNCTION_NAME"
   value         = local.orchestrator_function_name
+}
+
+/**
+ * チャットの関数名（#903）。`orchestrator_function_name` と同じ扱いで、**ワークフローへ書き写さない。**
+ * 正本は `terraform/chat-function.tf` の `local.chat_function_name`。ワークフロー側は空なら落とす。
+ */
+resource "github_actions_variable" "chat_function_name" {
+  repository    = github_repository.this.name
+  variable_name = "CHAT_FUNCTION_NAME"
+  value         = local.chat_function_name
 }

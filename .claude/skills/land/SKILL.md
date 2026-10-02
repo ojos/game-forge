@@ -144,10 +144,14 @@ gh api --paginate 'repos/{owner}/{repo}/pulls/N/comments' --jq '.[] | {user: .us
 
 **先に、squash の本文に CI を飛ばす指示が入っていないか確かめます。** このリポジトリの squash の本文は、PR のコミットメッセージを連ねたものです（`squash_merge_commit_message: COMMIT_MESSAGES`）。どれか 1 つのメッセージに CI を飛ばす指示があれば、**main の `verify` も `deploy` も起動しません。** GitHub は、メッセージの見出しでなく本文にあっても、この指示に従います。PR #343 で実際に踏みました。説明のために書いた一文がこれに当たり、PR 側の CI が 1 本も起動しませんでした。
 
+**検査は、設定によらず PR 本文と全コミットメッセージの両方に掛けます**（ai-playbook v0.5.0 の雛形 `claude-skill-land.md` の手順 8 と同じ。#901）。今の設定では PR 本文は squash の本文に入りませんが、設定を前提に検査先を片方へ絞ると、設定が変わった日にその経路だけが古くなります。設定を読んでから検査先を切り替える形も採りません。判定を 2 経路に分けるほど、どちらかだけが古くなる余地が増えるためです。
+
 ```bash
-gh pr view N --json commits --jq '.commits[] | .messageHeadline, .messageBody' \
+gh pr view N --json body,commits --jq '.body, (.commits[] | .messageHeadline, .messageBody)' \
   | grep -n -i -E '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]|^skip-checks: *true'
 ```
+
+**PR 本文だけに当たった場合**、今の設定（`COMMIT_MESSAGES`）では、その指示は main に届きません。そのまま `--body-file` を使わずにマージしてかまいません。ただし下で `--body-file` の本文を作るときは、PR 本文を写さないこと（コミットメッセージを連ねて作る）を確かめます。写すと、その指示が main に届きます。
 
 **次に、判定根拠を出力してから、マージのコマンドを実行します。** 確認が出た時点で、利用者がそれを読んで承認するかどうかを決められるようにするためです。先にコマンドを実行すると、確認に出るのはコマンドだけです。何を確かめたのかが分からないまま、承認を求めることになります。出力する中身は、「報告」の根拠の項目（CI の結果、指摘の件数と扱い、自分で差分を読んで気づいたこと）、5 で確かめた前提、マージする head の SHA です。
 

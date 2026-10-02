@@ -236,7 +236,7 @@ push / PR 作成後の最終ゲートを、このプロジェクトで具体化�
 | implementer | `.claude/agents/implementer.md` | `opus` | Read, Grep, Glob, Bash, Edit, Write, NotebookEdit, TodoWrite | Agent の `subagent_type: "implementer"` | 承認済みの intake 票の実装を、親が切った worktree の中で PR 作成まで進める（並列レーンを含む） |
 | explorer | `.claude/agents/explorer.md` | `haiku` | Read, Grep, Glob, Bash | Agent の `subagent_type: "explorer"` | 13 章「調査を委譲する条件」の 3 条件をすべて満たす、広域で機械的な調査 |
 
-- **正本は各定義の frontmatter です。** この表はその写しで、**照合する検査はまだありません**（12 章「一覧の複製は機械照合で担保する」。#889 は `scripts/` を所有していないため、検査は別の issue で置きます）。それまでは定義を変える PR で、この表も同じ PR で直します。
+- **正本は各定義の frontmatter です。** この表はその写しで、`scripts/check-agents-list.sh` が `acceptance.sh` の衛生の検査で照合します（12 章「一覧の複製は機械照合で担保する」。#900）。定義があるのに行が無い・行があるのに定義が無い・役割 / 定義の場所 / model / tools の値が違う、のどれも赤です。検査は今の表の書式（列の順と、定義の場所と model のバッククォート）をそのまま読むので、表の書式を変えるときは検査も同じ PR で直します。定義を変える PR では、この表も同じ PR で直します。
 - **implementer を雛形の `sonnet` ではなく `opus` にしているのは、既存のレーン運用を変えないためです。** これまでのレーンは汎用のサブエージェントとして親と同じモデルで回り、第二意見の指摘が実在するか偽陽性かを実測で判定するところまでレーンが行っています（handoff 3 章の反証の表）。モデルを下げるかどうかは、レーンの結果を比べてから別の issue で決めます。
 - **explorer は、組み込みの `Explore` ではなくこちらを使います。** model と tools をこのリポジトリの定義で固定できるのは、こちらだけです。
 - **判定から外れる作業は委譲しません。** 文書の編集、設計や判断、仮説を立てながら絞り込む調査（原因不明の不具合の切り分けなど）、親が既に文脈を持っている小さな変更は、親が自分で行います（13 章「委譲の判定」「委譲の閾値」）。

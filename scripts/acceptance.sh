@@ -108,6 +108,12 @@ bash scripts/check-second-opinion-gate-workflow.sh
 echo "[acceptance] (hygiene) scripts/check-on-attach-gh-guidance.sh"
 bash scripts/check-on-attach-gh-guidance.sh
 
+# 委譲先の定義（.claude/agents/*.md の frontmatter が正本）と、project-ai-rules.md
+# 「委譲先の一覧」の表（写し）の照合（#900）。共通規範 12 章「一覧の複製は機械照合で担保する」。
+# 道具の自己検査ではなく、文書と定義の整合を見る衛生の検査として置く（#890 の分類）。
+echo "[acceptance] (hygiene) scripts/check-agents-list.sh"
+bash scripts/check-agents-list.sh
+
 # 外部層の定期実行（#844）の要約・鮮度の判定・起動前の確認の表。**launchd は利用者の Mac で、
 # 定期ジョブ（acceptance-remote-freshness.yml）は既定ブランチでしか動かない**ので、判定が崩れても
 # PR の上では気づけない——上の 3 つと同じ理由でここに置く。外部層そのもの（acceptance-remote.sh）は

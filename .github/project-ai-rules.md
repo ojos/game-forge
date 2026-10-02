@@ -124,6 +124,8 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 | 指摘があるときに通過させない | `category` が `bug` / `vulnerability` / `type-error` / `edge-case` のいずれかなら落とします |
 | 判定できない出力を通さない | **JSON として読めない回答は落とします**（「読めなかった」を「指摘なし」に倒しません）。**差分を読めなかったと答えた回答（`reviewed: false`）も落とし、記録も残しません**（#873） |
 
+**gemini の経路だけは、規範の条件の外です（意図した逸脱として残します）。** 規範はスキーマ方式を「ツールが構造化出力の強制に対応する場合」に限っています。codex（`--output-schema`）と antigravity（`--json-schema`）は強制できますが、gemini には当たる旗がありません。gemini にはプロンプトで JSON の形を指示し、返答の後にスクリプトがスキーマで検証します。形を満たさない回答は落とします（`scripts/second-opinion-review.sh` の注記）。既定の運用は codex なので、gemini を使うのはエンジンを切り替えたときだけです。
+
 **`.ai-playbook/` は上流パッケージの写しです**（`.ai-playbook/VERSION` に `source=https://github.com/ojos/ai-playbook/…/v0.5.0.tar.gz`）。**ここを編集しても次の展開で消えるため、プロジェクトの選択と具体化はこのプロジェクト層に書きます。**
 
 ### 受け入れ検証の二層

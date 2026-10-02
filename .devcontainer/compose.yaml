@@ -23,6 +23,17 @@ services:
       # DEVCONTAINER_HOST=dev01 を書く。scripts/install-cloudflared.sh はこの値が dev01 のとき、
       # dev01 自身への ssh の入口（自己参照）を書かずに抜ける。Mac では空のまま。
       DEVCONTAINER_HOST: ${DEVCONTAINER_HOST:-}
+    # codex の `--sandbox read-only`（同梱の bwrap）を dev01 で動かす（#874）。
+    #
+    # dev01（Ubuntu 26.04 のネイティブ Docker）はコンテナに AppArmor の `docker-default` を当て、
+    # その `deny mount` で bwrap が `Failed to make / slave: Permission denied` になる。すると codex は
+    # 差分を読めないまま答える（#873 でゲートは止まるようになったが、第二意見そのものが取れない）。
+    # userns の sysctl（apparmor_restrict_unprivileged_userns）は原因ではない——userns の中で
+    # ケイパビリティは揃っていた。seccomp は features がすでに unconfined にしており、docker.sock も
+    # mount しているので、**外して失う隔離は小さい**。Mac（Docker Desktop）には AppArmor が無いので
+    # 何も変わらない。**codex を danger-full-access で回す代わりにこれを選んだ**（read-only の担保を残す）。
+    security_opt:
+      - apparmor=unconfined
     volumes:
       - ..:/workspaces/game-forge:cached
       # docker-outside-of-docker feature 用（compose 利用時は feature 側の mounts が適用されないため明示）

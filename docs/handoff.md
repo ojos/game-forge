@@ -11,6 +11,52 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 ## 1. 現在地
 
+### gh の認証を Mac と dev01 の環境ごとの PAT に揃え、#865 / #869 / #870 を進めました。AWS の SSO は 14 時間を超えて持つことを実測しました（#869 / #871。2026-10-01〜02）
+
+| # | 何をしたか | PR / コミット | 状態 |
+|---|---|---|---|
+| #869 | gh の認証を**環境ごとの fine-grained PAT**（`game-forge-mac` / `game-forge-dev01`）に揃え、規範の「PAT の発行手順」「必要な権限」「再発行の手順」の空欄を埋め、on-attach が `gh auth login` を案内しないようにした | PR #871 / `0791fac`（`Refs #869`） | **open**（dev01 から初めて PR を作るときの書き込みを確かめて閉じる） |
+| #870 | 定期実行で fast-forward した日に `package-lock.json` が変わっていたら `npm ci` してから回す | 起票のみ（priority 低） | open |
+
+main の `deploy` は success、`[deploy-head]` は `0791fac` で一致。**#869 は起票時の scope.out「Mac は保存済み OAuth のまま」を利用者の決定で取り消し**、Mac も PAT にしました（[#869 のコメント](https://github.com/ojos/game-forge/issues/869#issuecomment-5932339469)）。前の節の「起票候補（未起票）」3 つは、①②を #869 に、③を #870 にしました。
+
+#### PAT の読み方
+
+- **Mac 用は Administration と Variables の書き込みまで持ちます。** terraform の GitHub プロバイダーが `GITHUB_TOKEN="$(gh auth token)"` で PAT を使い、外部層の gh の検査も PAT で読むためです。git の `credential.helper` にも `gh auth git-credential` があるので、push も PAT です。**dev01 用はその 2 つを No access にしました**（dev01 では terraform も外部層も動かない形にしてある）。権限の表は `.github/project-ai-rules.md`「GitHub 認証（gh）だけを例外にする理由」。
+- **実測**: Mac の PAT で外部層の gh の 7 検査と production deployment が PASS、terraform が読むもの（脆弱性アラート・Dependabot のセキュリティ更新・Actions の変数・private vulnerability reporting）を読めた、**`terraform plan` が `No changes`**、PR #871 の作成・記録の投稿・マージまで PAT で通った（残りは次の apply の書き込み）。**2026-10-02 12:00 JST の定期実行も PAT で #854 へ投稿できた**（無人の経路）。dev01 の PAT は `gh auth status` が `(GH_TOKEN)`・`gh api user` が `ojos`・PR の読み取りが通り、**branch protection と Actions の変数は `Resource not accessible by personal access token` で拒否**（意図どおり）。
+- **PAT を置いた後は、開いているシェルでは反映されません。** `.env` を読むのは on-attach とシェルの起動時だけなので、新しいシェルを開くか `set -a; . scripts/load-project-env.sh; set +a` で読み込み直してから確かめます（このセッションも、読み込み直さずに測ると gh が保存済み OAuth のまま動くところだった）。
+- **期限が切れると、Mac では #844 の定期実行が投稿できなくなり、鮮度のジョブが 3 日で赤になります。** 再発行は同じ名前・同じ権限で発行して `.env` を差し替えます（規範に手順）。
+
+#### AWS の SSO のセッションは、14 時間を超えて持ちました
+
+Identity Center の設定は**インタラクティブ・バックグラウンドとも 7 日**です（利用者のスクリーンショットで確認）。画面には「**外部 IdP を接続している場合、セッション期間は Identity Center の設定と IdP の設定の短いほうになる**」とあり、Google Workspace の SAML は `SessionNotOnOrAfter` を変えられないので、Google 側で短く制限されている疑いがありました。
+
+| 時刻（UTC） | 出来事 |
+|---|---|
+| 10-01 09:39 | 新ドメインでログイン |
+| 10-01 13:27 | **更新できず**（`Token has expired and refresh failed`） |
+| 10-01 13:46 | ログインし直す |
+| 10-01 14:52 | 1 時間後の更新は**通った**（「約 1 時間で切れる」の見立ては外れた） |
+| 10-02 03:00 | 12:00 JST の定期実行で `prereq.aws: pass`（ログインから約 13 時間） |
+| 10-02 03:53 | 10 分おきの計測で、まだ通っている（ログインから 14 時間 6 分。失敗 0 回） |
+
+**少なくとも 14 時間は持ちました。** 否定できたのは「約 1 時間」「約 4 時間」で切れるという見立てと、Identity Center の既定の 8 時間までです。**IdP 側に 7 日より短い上限がある可能性は、まだ否定できていません**（上限まで測り切っていない）。**10-01 の昼の失敗は、セッションの長さではなく別の出来事が原因**と見ていますが、特定できていません（その間に Mac の devcontainer の作り直しがあった）。計測は `~/.claude/projects/-workspaces-game-forge/pending/sso-lifetime-probe.log` に残しています。
+
+**GCP の ADC は 24 時間で切れるので、12:00 JST の定期実行では `prereq.gcp: fail` でした**（GCP の前提と plan の 2 件が前提の不成立。他の 38 件は PASS、乖離 0）。**決めた設定どおりの結果**で、3 日続くと鮮度のジョブが `system-stale gcp` で赤になります。plan を使う日に `gcloud auth application-default login --no-launch-browser` を通します。
+
+#### 踏んだこと（次の人へ。どれも 1 回目）
+
+- **第二意見は issue の本文しか読みません。** コメントで変えた scope（#869 の「Mac も PAT」）を「scope.out と食い違う」と 2 巡続けて指摘し、2 巡目は落とす扱いになりました。差分の側（規範の文）にそのコメントへのリンクを添えて解消しています。**scope をコメントで変えたら、差分のどこかにその根拠を書く。**
+- **GitHub の定期のワークフローは、遅れたり飛んだりします**（game-forge-82 から。`second-opinion-gate` の 20 分おきの掃き寄せが 10-02 00:48 UTC 以降走っておらず、`gh workflow run second-opinion-gate.yml` で手で流した）。**#844 の鮮度のジョブ（15:00 JST）と #845 の掃き寄せ（30 分おき）も同じ仕組み**なので、赤が来ないことを「問題なし」と読まないこと。
+- **「設定を変えたのに効かない」ときに、もっともらしい原因（IdP の制限）へ飛びつきかけました。** 1 時間後に測ると外れていた。**仮説は、それが外れたときに見える時刻で 1 回測ってから伝える。**
+
+#### 残していること
+
+- **#869**: dev01 から初めて PR を作るときの書き込み（作成・コメント）を確かめて閉じる。Mac の PAT は次の apply で書き込みを確かめる。
+- **#870**: 未着手（priority 低）。
+- **#845**: terraform の変更が自然に出たときに確かめる。
+- **#848**: AWS の回答待ち。`lane-848` は残す。
+
 ### #798 の集計を足して本番で測り、第二意見の偽の緑（#873）と dev01 の codex のサンドボックス（#874）を直しました（#798 / #873 / #874。2026-10-02）
 
 | # | 何をしたか | PR / コミット | 状態 |
@@ -72,7 +118,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 #### 残していること
 
-- **起票候補（未起票）**: ①dev01 の gh の認証をどうするか（Mac の `.env` の `GH_TOKEN` は空で、Mac は gh-storage の保存済み認証。dev01 は未認証。`gh auth login` は打たない規則なので、dev01 で PR の作業をするなら PAT を `GH_TOKEN` に置くかを利用者が決める）②on-attach が gh 未認証のとき「`gh auth login` を実行してください」と案内し、dev01 の規則と食い違う ③#844 の定期実行の後の `npm ci`（上の DEPS_FAIL。起きてから扱うか、ff の後に lock の差分を見て前提の不成立にするか）。
+- **起票候補（未起票）**: ①dev01 の gh の認証をどうするか（Mac の `.env` の `GH_TOKEN` は空で、Mac は gh-storage の保存済み認証。dev01 は未認証。`gh auth login` は打たない規則なので、dev01 で PR の作業をするなら PAT を `GH_TOKEN` に置くかを利用者が決める）②on-attach が gh 未認証のとき「`gh auth login` を実行してください」と案内し、dev01 の規則と食い違う ③#844 の定期実行の後の `npm ci`（上の DEPS_FAIL。起きてから扱うか、ff の後に lock の差分を見て前提の不成立にするか）。（**2026-10-01 追記: ①②は #869（PR #871）、③は #870 として起票した。1 章の先頭の節**）
 - **#845**: terraform の変更が自然に出たときに確かめる（確かめるためだけに PR を作らない）。
 - **#848**: AWS の回答待ち。`lane-848` は残す。
 
@@ -144,7 +190,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 **CI で回せるのは本体の 34 件中 2 件**でした（state を読む 32 件は、認証を試す前に `terraform output` が空で落ちる）。そこで (a) CI では state 不要分だけ・(b) Mac の launchd・(c) リモート state の見直し、から **(b) を利用者が選びました**。#808 は not planned で閉じ、表と決定 6 つは #808 のコメントにあります。
 
-**認証の期間を延ばしました（2026-09-30、利用者が設定）。** AWS の IAM Identity Center のセッションは**既定の 8 時間 → 7 日**（09-30 に、昼の時点で切れていたことを実測）。GCP は Workspace の「Google Cloud のセッション管理」で **24 時間**（上限。「再認証を要求しない」は、持ち歩く端末に期限のない資格情報を置くので採らなかった）。**長命のアクセスキーは採っていません**（`docs/build-invocation.md` の「構成上の帰結のときだけ」。dev01 だけキーにする案も、state と tfvars を dev01 に置く必要があるので却下）。
+**認証の期間を延ばしました（2026-09-30、利用者が設定）。** AWS の IAM Identity Center のセッションは**既定の 8 時間 → 7 日**（09-30 に、昼の時点で切れていたことを実測）（**2026-10-02 追記: 外部 IdP（Google Workspace）を使うので実際の上限は IdP との短いほう。実測では少なくとも 14 時間は持った（7 日まで持つかは未確定）。1 章の先頭の節**）。GCP は Workspace の「Google Cloud のセッション管理」で **24 時間**（上限。「再認証を要求しない」は、持ち歩く端末に期限のない資格情報を置くので採らなかった）。**長命のアクセスキーは採っていません**（`docs/build-invocation.md` の「構成上の帰結のときだけ」。dev01 だけキーにする案も、state と tfvars を dev01 に置く必要があるので却下）。
 
 #### 入った仕組みの読み方
 
@@ -4650,6 +4696,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
+- **2026-10-02**（**gh を環境ごとの PAT に揃え（#869 / PR #871）、AWS の SSO が 14 時間を超えて持つことを実測した**——Mac 用（Administration・Variables まで）と dev01 用（その 2 つは No access）を分け、Mac では terraform plan と定期実行の投稿まで PAT で通った。Identity Center は 7 日だが外部 IdP との短いほうになるので、10 分おきの計測と 12:00 JST の定期実行（`prereq.aws: pass`）で、少なくとも 14 時間は持つことを確かめた（「約 1 時間」の見立ては外れた。7 日まで持つかは未確定）。GCP は 24 時間で切れて `prereq.gcp: fail`（設定どおり）。起票候補 3 つを #869 / #870 にした）
 - **2026-10-02**（**#798 / #873 / #874 を閉じた**——フォークの退行を数える集計（PR #872）を足して本番で測り（組 3・測れた 1・退行 0）、dev01 の codex が差分を読めないまま LGTM を返していた件を、ゲートで止め（PR #875）、AppArmor を外して直した（PR #876。dev01 で作り直して確認）。最初の見立て（userns の sysctl）の誤り、この devcontainer が dev01 だったこと、`.env` の `GH_TOKEN` の読み込み、agy のログインの 60 秒、`second-opinion-record.sh` が自分のリポジトリへ cd することを書いた。`docs/local-dev.md` 7.4 に第二意見そのものを回す確認を足した（codex の指摘）。書き戻しは game-forge-b6 と順番を取り決めた）
 - **2026-10-01**（**波 2 を合流し、#802 / #849 / #865 を閉じた**——game-forge-bd の #864（ベースを `base:noble` に固定）・#866（dev01 の実測 4 件の docs）と、Mac の作り直しの確認、このセッションの #867（第二意見の記録は持ち主のものだけ）と Mac の AWS の start URL の書き換えを書き戻した。#859 の節の「窓を閉じると止まる」を訂正し、`second-opinion-gate` の起票候補を済みにし、3 章の EBITEN に 3 回目を足した）
 - **2026-10-01**（**#844 を閉じ、main の identity-guard の赤を書き戻した**——Mac の launchd の 1 回目は `AWS_PROFILE` が渡らず AWS の系統だけ前提の不成立（読み分けは本物の出力で働いた）、#861 で直して 3 回目で 40 件 PASS、鮮度のジョブも緑。game-forge-3a の #860 / #862（Dependabot の squash merge に GitHub が付けた co-author で、push(main) の identity-guard が 14 回続けて赤だった）を合流した。波 2 の実機は別のセッションが担当）

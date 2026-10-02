@@ -387,7 +387,8 @@ describe('書いてあるのは、いま実際に取得しているものだけ�
     const body = pageBodyOf((await openPrivacy()).body);
     expect(body).not.toContain('AWS 上の処理の記録（ログ）は、14 日');
     // アイコンの作り直し（#380）のロググループも 14 日（`terraform/avatar-function.tf`）。
-    expect(body).toContain('作品の生成・ビルド・紹介用の画像の撮影・アイコンの画像の作り直しの記録は 14 日');
+    // 生成の前のチャット（#695）のロググループも 14 日（`terraform/chat-function.tf`。#913 で足した）。
+    expect(body).toContain('作品の生成・ビルド・紹介用の画像の撮影・アイコンの画像の作り直し・生成の前のチャットの記録は 14 日');
     expect(body).toContain('費用の上限を監視する処理の記録は 30 日');
     expect(body).toContain('90 日を目安に削除');
   });
@@ -499,5 +500,60 @@ describe('退会（#518 / M15-3）', () => {
     expect(requests).toContain('本サービスに登録しているメールアドレスからお送りください');
     expect(requests).toContain('退会した後にご請求される場合は、この方法で確かめられません');
     expect(requests).toContain('お応えできないことがあります');
+  });
+});
+
+describe('本文を実装に合わせる（#913。#905 の確認資料の突き合わせで見つかった 3 点）', () => {
+  /**
+   * 本文の節を切り出す（見出しの `<h2>` から次の `<h2>` まで）。
+   *
+   * @param body 本文
+   * @param start 節の見出しの先頭
+   * @param end 次の節の見出しの先頭
+   * @returns 節の HTML
+   */
+  function sectionOf(body: string, start: string, end: string): string {
+    const from = body.indexOf(`<h2>${start}`);
+    const to = body.indexOf(`<h2>${end}`);
+    expect(from, `「${start}」の節が無い`).toBeGreaterThanOrEqual(0);
+    expect(to, `「${end}」の節が無い`).toBeGreaterThan(from);
+    return body.slice(from, to);
+  }
+
+  it('5 章は、フォークするチャットで他人の公開作品の題名・説明・タグを送り、最初の指示文は送らないと書く', async () => {
+    // **送るものの正本は `src/chat-target.ts` の `loadForkChatContext`**（#727）。題名・説明・タグは常に、
+    // ソースは求めたときだけ、`prompt` はいつも null。#727 から「ほかの方の作品は送りません」は事実でない。
+    const body = pageBodyOf((await openPrivacy()).body);
+    const external = sectionOf(body, '5. ', '6. ');
+    expect(external).not.toContain('ほかの方の作品は送りません');
+    expect(external).toContain('公開されている作品をフォークするチャットでは、ほかの方の作品であっても、その作品の題名・説明・タグを送ります');
+    expect(external).toContain('その作品の最初の指示文は送りません');
+    expect(external).toContain('あなたが求めたときだけ、その作品のソースコードも送ります');
+    // リフォージのチャット（`loadReviseChatContext`）が送る題名と指示文は、従来どおり書く。
+    expect(external).toContain('あなた自身の作品を直すチャットでは、<strong>その作品の題名と指示文</strong>を送ります');
+  });
+
+  it('7 章の AWS のログの 14 日に、チャットを含める', async () => {
+    // `terraform/chat-function.tf` の `aws_cloudwatch_log_group.chat` が `retention_in_days = 14`。
+    const body = pageBodyOf((await openPrivacy()).body);
+    const retention = sectionOf(body, '7. ', '8. ');
+    const awsLogs = retention.slice(retention.indexOf('AWS 上の処理の記録（ログ）'));
+    expect(awsLogs.slice(0, awsLogs.indexOf('</li>'))).toMatch(/チャットの記録は 14 日/u);
+  });
+
+  it('6 章に、プレイ画面が作品ごとの localStorage に置く仮想パッドの形と画面の向きを書く', async () => {
+    // `src/work-play.ts` の `PLAY_PAD_MEMORY_PREFIX`（`gf-pad-shape:`）と `PLAY_ORIENTATION_MEMORY_PREFIX`
+    // （`gf-orientation:`）の後ろに作品 id を付けたキーへ、切り替えたときだけ書く。サーバへは送らない。
+    const body = pageBodyOf((await openPrivacy()).body);
+    const storage = sectionOf(body, '6. ', '7. ');
+    expect(storage).toContain('<strong>ブラウザの保存領域（localStorage）</strong>');
+    expect(storage).toContain('仮想パッドの形');
+    expect(storage).toContain('画面の向き');
+    expect(storage).toContain('作品ごとに、選んだ形と向きをブラウザの localStorage に置きます');
+    expect(storage).toMatch(/localStorage[\s\S]*サーバへは送らず/u);
+    // **localStorage は Cookie に数えない。**
+    expect(storage).toContain('Cookie は次の 3 つだけです');
+    const retention = sectionOf(body, '7. ', '8. ');
+    expect(retention).toContain('ブラウザの localStorage に置く仮想パッドの形と画面の向きは、ブラウザに保存されたデータを消すまで残ります');
   });
 });

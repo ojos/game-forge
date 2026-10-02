@@ -35,7 +35,9 @@
  * | AI アプリとの接続（MCP。接続したアプリの名前・戻り先・許可した範囲・日時と、発行した鍵のハッシュ・最後に使ってから 30 日で使えなくなり、同意から 1 年で失効して記録も消える・解除と退会で消える） | `src/oauth-provider.ts`（`@cloudflare/workers-oauth-provider` 0.10.3。KV `OAUTH_KV` の `client:` / `grant:` / `token:`。トークンは `generateTokenId` の SHA-256 だけを鍵にし、props は暗号化）/ `src/oauth-authorize.ts`（同意のときに許可へ写すアプリ名と戻り先のホスト名）/ `src/account-apps.ts`（解除）/ `src/account-withdrawal.ts`（退会で消す）/ 寿命は `src/oauth-paths.ts`（#696 が同じ変更で追記した） |
  * | AI アプリとの接続の操作回数（許可と「接続中のアプリ」の、利用者ごとと全体の日ごとの回数・2 日で消す。IP アドレスは入れない） | `migrations/0048_oauth_daily_usage.sql` / `src/oauth-guard.ts`（#696 のセキュリティレビューで足した） |
  * | Cookie 3 種 | `src/session.ts`（`__Host-gf_session`、7 日）/ `src/auth/google.ts`（`__Host-gf_oauth`、10 分）/ `src/oauth-paths.ts`（`__Host-gf_mcp_authz`、10 分。#696 が足した） |
- * | AWS 上の処理の記録（生成・ビルド・撮影は 14 日 / 費用ガードは 30 日） | `terraform/orchestrator.tf`・`terraform/build-function.tf`・`terraform/ogp-function.tf` の `retention_in_days = 14` と、`terraform/bedrock-guard.tf` の `retention_in_days = 30`（**ひとまとめに 14 日と書いていた誤りを PR #400 の Copilot の指摘で分けた。値を変えたら本文も直すこと**） |
+ * | AWS 上の処理の記録（生成・ビルド・撮影・アイコンの作り直し・チャットは 14 日 / 費用ガードは 30 日） | `terraform/orchestrator.tf`・`terraform/build-function.tf`・`terraform/ogp-function.tf`・`terraform/avatar-function.tf`・`terraform/chat-function.tf` の `retention_in_days = 14` と、`terraform/bedrock-guard.tf` の `retention_in_days = 30`（**ひとまとめに 14 日と書いていた誤りを PR #400 の Copilot の指摘で分けた。値を変えたら本文も直すこと**。チャットの分は #695 から在ったが本文に無く、#913 で足した） |
+ * | チャットで Bedrock へ送るもの（対象ごと。フォーク元は他人の公開作品の題名・説明・タグと、求めたときだけソース。最初の指示文は送らない） | `src/chat.ts` の `loadChatContext` / `src/chat-target.ts` の `loadReviseChatContext` と `loadForkChatContext`（#727 から。本文の「ほかの方の作品は送りません」は #727 で事実でなくなっていたのを #913 で直した） |
+ * | ブラウザの localStorage に置く、作品ごとの仮想パッドの形と画面の向き（サーバへ送らない・消すまで残る） | `src/work-play.ts`（キーの接頭辞 `PLAY_PAD_MEMORY_PREFIX`（`gf-pad-shape:`）と `PLAY_ORIENTATION_MEMORY_PREFIX`（`gf-orientation:`）の後ろに作品 id。値は `stick` / `dpad` と `landscape` / `portrait`。仮想パッドの形は #530、画面の向きは #514 から在ったが本文に無く、#913 で足した） |
  * | 外部サービス | Cloudflare（`wrangler.toml`）/ AWS・Bedrock・Guardrails（`terraform/bedrock.tf` / `terraform/moderation.tf` / `src/generation-models.ts`）/ Google（`src/auth/google.ts`）/ Resend（`src/mail/resend.ts`） |
  *
  * **アクセス解析・広告は使っていない**（外部のスクリプトも解析の cookie も無い）。**使い始めた
@@ -221,7 +223,7 @@ export function privacyBody(contact: PrivacyContact): string {
     <ul>
       <li>生成には <strong>Amazon Bedrock</strong>（Anthropic 社の Claude モデル）を使います。指示文と、フォーク・リフォージのときは元の作品のソースコードを送ります。</li>
       <li>指示文は、生成の前に <strong>Amazon Bedrock Guardrails</strong> で有害な内容かどうかを検査します。この検査は、アジア太平洋地域の複数のリージョンで処理されることがあります。</li>
-      <li>生成の前のチャットでも、同じ <strong>Amazon Bedrock</strong> と <strong>Amazon Bedrock Guardrails</strong> を使います。送るのは、あなたがチャットで書いた文と、<strong>あなた自身の作品の題名と指示文</strong>です（あなたが求めたときだけ、あなた自身の作品のソースコードも送ります）。設定の「チャット」に<strong>いつも守ってほしいこと</strong>を書いている場合は、その文も毎回送ります。<strong>ほかの方の作品は送りません。</strong></li>
+      <li>生成の前のチャットでも、同じ <strong>Amazon Bedrock</strong> と <strong>Amazon Bedrock Guardrails</strong> を使います。送るのは、あなたがチャットで書いた文と、チャットで扱う作品の情報です。あなた自身の作品を直すチャットでは、<strong>その作品の題名と指示文</strong>を送ります。<strong>公開されている作品をフォークするチャットでは、ほかの方の作品であっても、その作品の題名・説明・タグを送ります</strong>（どれも作品ページで誰でも見られるものです。<strong>その作品の最初の指示文は送りません</strong>）。どちらのチャットでも、あなたが求めたときだけ、その作品のソースコードも送ります。設定の「チャット」に<strong>いつも守ってほしいこと</strong>を書いている場合は、その文も毎回送ります。</li>
     </ul>
   </li>
   <li><strong>Google</strong>: Google アカウントによるログイン。</li>
@@ -239,15 +241,18 @@ export function privacyBody(contact: PrivacyContact): string {
 <p><strong>ブラウザの保存領域（sessionStorage）</strong>: 同じ作品を短い時間に何度も開いたときにプレイ数を重ねて数えないよう、
    作品ページを開いたブラウザの sessionStorage に、作品ごとに最後に数えた時刻を置きます（30 分以内は数え直しません）。
    この値はサーバへは送らず、ブラウザのタブを閉じると消えます。Cookie ではありません。</p>
+<p><strong>ブラウザの保存領域（localStorage）</strong>: プレイ画面で仮想パッドの形（十字キーかスティックか）を切り替えたときや、画面の向き（縦か横か）を入れ替えたときに、
+   次に開いたときも同じ形・向きで出せるよう、作品ごとに、選んだ形と向きをブラウザの localStorage に置きます。
+   これらの値はサーバへは送らず、ブラウザに保存されたデータを消すまで残ります。Cookie ではありません。</p>
 <p><strong>アクセス解析や広告のための Cookie・外部のスクリプトは使っていません。</strong></p>
 
 <h2>7. 保存期間</h2>
 <ul>
   <li>入力の検査で止めた指示文は、90 日を目安に削除します。</li>
-  <li>AWS 上の処理の記録（ログ）のうち、作品の生成・ビルド・紹介用の画像の撮影・アイコンの画像の作り直しの記録は 14 日で、費用の上限を監視する処理の記録は 30 日で、自動的に削除されます（アイコンの作り直しの記録に画像そのものは含みません）。</li>
+  <li>AWS 上の処理の記録（ログ）のうち、作品の生成・ビルド・紹介用の画像の撮影・アイコンの画像の作り直し・生成の前のチャットの記録は 14 日で、費用の上限を監視する処理の記録は 30 日で、自動的に削除されます（アイコンの作り直しの記録に画像そのものは含みません）。</li>
   <li><strong>差し替える前・外す前のアイコンの画像は、差し替えた・外した日から ${AVATAR_HISTORY_RETENTION_DAYS} 日で自動的に削除されます</strong>（削除の処理の都合で、実際に消えるまでさらに 1 日ほどかかることがあります）。アイコンの変更の履歴（ハッシュ値と日時）は削除しません。不適切な画像を運営者が削除する場合と、アカウントの削除を希望された場合は、この期間を待たずに、いまのアイコンと前の画像の両方を削除します。</li>
   <li><strong>AI アプリとの接続は、最後に使ってから ${idleDays} 日で使えなくなります。使い続けていても、許可した日から ${maxAgeYears} 年で失効します。</strong>使えなくなった接続の記録は、アプリがもう一度使おうとしたときか、許可した日から ${maxAgeYears} 年たったときに自動的に削除されます。続けて使うには、もう一度許可してください。アプリへ発行する鍵は ${accessTokenMinutes} 分で失効します。設定の「接続中のアプリ」で解除すると、その時点で削除します。</li>
-  <li>Cookie は、上の 6 に書いた有効期間で失効します。ブラウザの sessionStorage に置く時刻は、タブを閉じると消えます。</li>
+  <li>Cookie は、上の 6 に書いた有効期間で失効します。ブラウザの sessionStorage に置く時刻は、タブを閉じると消えます。ブラウザの localStorage に置く仮想パッドの形と画面の向きは、ブラウザに保存されたデータを消すまで残ります。</li>
   <li><strong>作品は、作者が作品ページから削除すると削除します。</strong>削除できるのは、公開していない作品（下書き）です（公開中の作品は、公開をやめて下書きに戻してから削除できます）。削除すると、題名・説明・タグ・生成されたソースコード・遊ぶためのファイル・紹介用の画像と、リフォージの前の版を削除します。ただし、次の場合は作品の行（作品の識別子・作者・フォーク元・作った日時など。題名や中身は含みません）を残します。
     <ul>
       <li>その作品をフォークした作品があるとき（フォークした作品に「削除済みの作品から派生」と表示するため）</li>

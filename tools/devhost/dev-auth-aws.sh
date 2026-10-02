@@ -90,14 +90,18 @@ lookup() {
     [[ $# -gt 0 ]] || continue
     [[ $# -eq 3 ]] || usage_error "$file:$lineno: 「名前 絶対パス セッション名」の 3 つで書きます: $line"
     [[ "$2" == /* ]] || usage_error "$file:$lineno: パスは絶対パスで書きます（~ や \$HOME は展開しません）: $2"
+    case "$names " in
+      *" $1 "*) usage_error "$file:$lineno: 名前が重複しています: $1" ;;
+    esac
     names="$names $1"
+    # 一致しても読み切る。後ろの行の誤りや重複を、前に一致したことで見逃さないため。
     if [[ "$1" == "$want" ]]; then
       CONF_PATH="$2"
       CONF_SESSION="$3"
-      return 0
     fi
   done <"$file"
-  usage_error "登録されていないプロジェクトです: $want（登録済み:${names:- なし}。設定ファイル: $file）"
+  [[ -n "$CONF_PATH" ]] ||
+    usage_error "登録されていないプロジェクトです: $want（登録済み:${names:- なし}。設定ファイル: $file）"
 }
 
 need() {

@@ -284,6 +284,9 @@ bad "列が足りない" "alpha $A" "$WORK/conf/bad:1: 「名前 絶対パス �
 bad "列が多い" "alpha $A s extra" "$WORK/conf/bad:1: 「名前 絶対パス セッション名」の 3 つで書きます"
 bad "相対パス" "alpha projects/alpha s" "$WORK/conf/bad:1: パスは絶対パスで書きます"
 bad "チルダ" "alpha ~/alpha s" "$WORK/conf/bad:1: パスは絶対パスで書きます"
+# 引く名前の行が先にあっても、後ろの行の誤りと重複で止まる（一致した時点で読むのをやめない）。
+bad "一致の後ろの行の誤り" "$(printf 'alpha %s s\nbeta %s' "$A" "$B")" "$WORK/conf/bad:2: 「名前 絶対パス セッション名」の 3 つで書きます"
+bad "重複" "$(printf 'alpha %s s\n# c\nalpha %s t' "$A" "$B")" "$WORK/conf/bad:3: 名前が重複しています: alpha"
 
 # CRLF で保存した設定でも読める（行末の CR がセッション名に混ざらない）。
 printf 'alpha %s sess-a\r\n' "$A" >"$WORK/conf/crlf"

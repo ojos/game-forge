@@ -30,6 +30,10 @@
 #   ブランチの成果であって、このブランチが加えた変更ではない。範囲が既定ブランチ
 #   へ到達可能なコミットを含むときは分岐点まで戻し、なぜ範囲を変えたかを出力する。
 #
+#   上流が分岐点より先へ進んでいるとき（上流が既定ブランチの追跡枝で、別の PR が
+#   入った等）も、起点を分岐点の SHA にする。2 点間の比較のままだと、上流側だけの
+#   変更を取り消す差分が混ざる（#878）。回帰試験は scripts/loop-gate-range-selftest.sh。
+#
 # 終了コード:
 #   0 = GATE_PASS（全段通過。push 可）
 #   1 = GATE_FAIL（いずれかの段が未通過、または実行不能）
@@ -134,7 +138,27 @@ resolve_review_range() {
     elif range_includes_base_commits "$upstream" "$base"; then
       fallback_reason="upstream range $upstream..HEAD also contains commits already reachable from $base (default branch integrated into this branch)"
     else
-      REVIEW_RANGE="$upstream..HEAD"
+      # **起点は上流の先端ではなく、上流と HEAD の分岐点にする**（#878。上流
+      # ojos/ai-packages-dev の PR #383 と同じ作り）。第二意見は `git diff <範囲>` で
+      # 差分を取り、これは両端のツリーの差である。上流が分岐点より先へ進んでいると
+      # （`origin/main` を上流にして切ったブランチで、ゲートの最中に別の PR が既定
+      # ブランチへ入って fetch された等）、進んだ分が逆向きに差分へ入り、このブランチが
+      # 触っていないファイルへの指摘でゲートが落ちる。上の 2 の判定は `git log` の意味
+      # （上流に無いコミット）で見るため、この混入を検出できない。three-dot（A...B）は
+      # diff では分岐点基準になるが、第二意見が `git log` にも同じ範囲を渡すと対称差に
+      # なるので使わない。
+      #
+      # 上流が進んでいなければ分岐点は上流の先端と同じなので、従来どおり上流の名前で
+      # 範囲を書く（出力と記録の scope の表記を変えない）。
+      local upstream_mb upstream_tip
+      upstream_mb="$(git merge-base "$upstream" HEAD 2>/dev/null || true)"
+      upstream_tip="$(git rev-parse --verify --quiet "$upstream" 2>/dev/null || true)"
+      if [[ -n "$upstream_mb" && -n "$upstream_tip" && "$upstream_mb" != "$upstream_tip" ]]; then
+        REVIEW_RANGE="$upstream_mb..HEAD"
+        REVIEW_RANGE_REASON="$upstream has advanced beyond the merge-base; reviewing from the merge-base ${upstream_mb:0:12} so that changes only on $upstream are not reverted into the diff"
+      else
+        REVIEW_RANGE="$upstream..HEAD"
+      fi
       return 0
     fi
   else

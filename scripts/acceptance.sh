@@ -302,6 +302,17 @@ else
   echo "[acceptance] (second-opinion) skip: scripts/second-opinion-codex-selftest.sh not found"
 fi
 
+# 第二意見のレビュー範囲（#878）。上流が既定ブランチで、ゲートの最中にそれが進んでも、
+# 他の PR を取り消す差分が範囲へ混ざらないこと。一時リポジトリだけで回り、ネットワークも
+# 外部認証も使わない。**壊れると、触っていないファイルへの指摘でゲートが落ちる。**
+if [[ -f scripts/loop-gate-range-selftest.sh ]]; then
+  echo "[acceptance] (loop-gate-range) scripts/loop-gate-range-selftest.sh"
+  bash scripts/loop-gate-range-selftest.sh
+  ran_any=1
+else
+  echo "[acceptance] (loop-gate-range) skip: scripts/loop-gate-range-selftest.sh not found"
+fi
+
 # dev01 で devcontainer を立てるための分岐（#802）。
 #
 # 見るのは、vscode の UID/GID の既定が 1000 のままであること（Mac の既存挙動）、dev01 の値が

@@ -137,6 +137,41 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 - **外部層を単一入口へ含めない理由**: 外部認証の失効やオフラインでゲート全体が止まり、**実装が正しいのにループが止まります。** 単一入口の目的は複数の段を思い出す運用を機構で塞ぐことであって、外部の可用性をゲートの前提条件に持ち込むことではありません。
 - 外部層を通す契機: （記載。既定は外部状態の宣言を変更したとき）
 
+**道具の自己検査も、すべてローカル層（`scripts/acceptance.sh`）に置いたままにします（#890）。** 規範（`.ai-playbook/loop-workflow.md`「道具自体を見る検査の置き場所」）の基準「実装を変えたときに壊れるか」で `scripts/acceptance.sh` の検査を 1 本ずつ分けると、壊れない側（判定に使う道具を既知の入力で確かめる自己検査）は次の 13 本です。
+
+| 自己検査 | 確かめている道具 | 単独の所要 | 注記 |
+|---|---|---|---|
+| `scripts/check-writeback-serial.sh` | `scripts/writeback-serial.sh` / `writeback-serial.yml` | 0.03 秒 | |
+| `scripts/check-second-opinion-gate-exempt.sh` | `scripts/second-opinion-gate-exempt.sh` | 0.02 秒 | |
+| `scripts/check-second-opinion-gate-workflow.sh` | `second-opinion-gate.yml` の run の本文 | 0.31 秒 | 本文が呼ぶ `second-opinion-gate-exempt.sh` と、本物の `scripts/second-opinion-record.sh` の save（#888 で追加）も実行する |
+| `scripts/check-on-attach-gh-guidance.sh` | `scripts/on-attach.sh` | 0.02 秒 | |
+| `scripts/check-acceptance-remote-record.sh` | 外部層の記録・鮮度・PR の記録の道具 | 2.20 秒 | **本物の宣言を読む**: E3 が `terraform/variables.tf` の `required_status_checks` を見るので、宣言を変えると壊れうる |
+| `node scripts/lib/dev-fixture-seed-check.mjs --selftest` | 仕込みが入ったことを確かめる判定 | 0.01 秒 | |
+| `scripts/second-opinion-codex-selftest.sh` | 第二意見の codex の配線 | 0.89 秒 | |
+| `scripts/loop-gate-range-selftest.sh` | `scripts/loop-gate.sh` のレビュー範囲 | 0.08 秒 | |
+| `scripts/check-devcontainer-dev01.sh` | devcontainer の dev01 の分岐 | 0.29 秒 | |
+| `scripts/check-devhost.sh` | `tools/devhost/` | 0.18 秒 | |
+| `scripts/acceptance-remote-aws-failure-selftest.sh` | 外部層の IAM の検査 3 本 | 0.29 秒 | **本物の宣言を読む**: 本物の `scripts/acceptance-remote.sh` が `terraform/*.tf` から期待値を導くので、宣言を変えると壊れうる |
+| `scripts/ojos-jp-records-selftest.sh` | 外部層の DNS レコードの照合 | 0.06 秒 | |
+| `scripts/tile-reachability/` の `go test` | タイル地図の到達判定（運営の手元の道具） | 0.05 秒 | Go のビルドキャッシュがある状態 |
+
+所要は 2026-10-02 に devcontainer（14 コア、ロードアベレージ 4.6〜4.8）で 1 本ずつ測った値で、**合計 4.43 秒**です。同じ条件で `bash scripts/acceptance.sh` 全体は 89.7 秒だったので、**約 5% にあたります**。
+
+残りの検査は、実装・配備物・文書を変えると壊れるのでローカル層です（費用を理由に外しません）。内訳は次のとおりです。
+
+- 衛生と文書: 制御文字・表崩れ・相対リンク・app.css・トークンのコントラスト・用語・仕様 / ロードマップ / handoff の版と日付・`/waitlist`
+- 写しと宣言の照合: Go の版・Ebitengine のキー・ロゴ（`--check` と、`brand/logo/` を照合する `logobake.node-test.mjs`）とその写し・オーケストレータのリトライと束・OGP / アイコン / チャット / 学習クローラの写し・terraform の output の参照・Lambda を呼ぶ許可の導出・ojos.jp のレコードの output
+- 配備スクリプトを含む検査: シェルの移植性・aws CLI の引数の形
+- node の一式（依存・生成物・likes / cleanup の Worker・`npm test`・アイコンの再エンコード・型検査・束ね）・Worker のバインディング・`.dev.vars`・`terraform fmt`
+
+**外さない理由は 3 つです。**
+
+1. **払う費用が小さい。** 13 本を合わせても上の 4.43 秒で、ローカル層の約 5% です。
+2. **外すには新しい誤りの元が要る。** 「道具を変えた差分のときだけ回す」には、差分の起点の判定・見張るファイルの表・その表を点検する道具が必要になります。起点の取り違えは、`scripts/loop-gate.sh` が #878 で実際に踏んだ種類の誤りです。しかも上の 2 本は本物の宣言を読むので、見張るファイルに `terraform/` まで含めないと、実装を変えたときに壊れる検査を黙って外すことになります。
+3. **規範が求めるのは「契機を定めずに外さない」ことで、外さない選択は妨げません。** ローカル層に置いたままなので、道具を変えた反復でも必ず回ります（規範「この層が守らないもの」の心配が生じない）。
+
+**見直す契機**: 上の 13 本（と今後増える自己検査）の合計が、ローカル層の所要の 1 割を超えたとき。そのときは、外す検査ごとに契機を定め、それが道具を変えた PR で回ることを終了コードで確かめる検査とあわせて移します。
+
 ### リモート最終ゲート
 
 push / PR 作成後の最終ゲートを、このプロジェクトで具体化します（`.ai-playbook/review-workflow.md`「リモート最終ゲート」）。

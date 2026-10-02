@@ -1166,27 +1166,31 @@ install-cloudflared.sh の分岐は、`scripts/check-devcontainer-dev01.sh`（`s
 ### 7.9 スマホから起こし・入り・再認証する（#849）
 
 **Mac が手元に無いとき、Android（Termux）のショートカットのタップだけで、dev01 の devcontainer を起こし、
-tmux に入り、AWS を再認証できるようにする。** 道具（`dev`）とユニット（`dev-up@.service`）は
-[tools/devhost/](../tools/devhost/README.md) にあり、**プロジェクトの名前もホスト名も持たない**
-（2 つ目のプロジェクトを dev01 に載せた時点で別のリポジトリへ複写で移すため。`scripts/check-devhost.sh` が綴りを見る）。
-導入の一般の手順・stopCompose の扱いの比較・鍵の作り方と失効のさせ方はあちらの README が正本で、ここには
-このリポジトリと dev01 の値で埋めた形と、復旧の手順だけを書く。
+tmux に入り、AWS を再認証できるようにする。** 道具（`dev`）とユニット（`dev-up@.service`）は、
+**devcontainer-bootstrap（DCB）のリリースに同梱された上流の版**（v0.14.0 から。#923 で寄せた）を使い、このリポジトリには置かない。
+上流は特定のクラウドへの認証を組み込まないので、AWS SSO に入るところだけを game-forge の薄い追加
+`dev-auth-aws`（[tools/devhost/](../tools/devhost/README.md)。`scripts/check-devhost.sh` が自己試験を回す）として残している。
+導入の一般の手順・stopCompose の扱いの比較・鍵の作り方と失効のさせ方は DCB のアーカイブの `devhost/README.md` が正本で、
+game-forge 版からの移行の手順と、上流へ寄せて失ったもの（`dev ls` の AWS の列）は tools/devhost/README.md にある。
+ここには、このリポジトリと dev01 の値で埋めた形と、復旧の手順だけを書く。
 
 **自動で戻すのはコンテナまで。** tmux と Claude はタップで手で起こす。電源・OS（①）と、cloudflared と sshd（②）は
 この節の範囲外である（#800 / #801 と [local-llm-tunnel.md](local-llm-tunnel.md)）。
 
 #### ホスト（dev01）で 1 度だけ
 
-README の「ホストへの導入」を、次の設定ファイルで行う。
+上流の README の「外部の機械への導入」（DCB v0.14.0 以降のアーカイブから、マニフェストのハッシュで照合して取り出す）を、
+次の設定ファイルで行う。続けて、薄い追加 `dev-auth-aws` を tools/devhost/README.md の移行手順の 3 のとおりに置く。
 
 ```bash
 mkdir -p ~/.config/dev
-printf 'game-forge %s/game-forge aws_sso_session=ojos aws_profile=game-forge-dev\n' "$HOME" > ~/.config/dev/projects
+printf 'game-forge %s/game-forge\n' "$HOME" > ~/.config/dev/projects       # 上流の dev の設定（AWS のキーは書かない。上流は知らないキーで止まる）
+printf 'game-forge %s/game-forge ojos\n' "$HOME" > ~/.config/dev/aws-sso   # dev-auth-aws の設定（名前 パス SSO のセッション名）
 ~/.local/bin/dev ls
 systemctl --user enable --now dev-up@game-forge.service
 ```
 
-- `auth aws` と `ls` の AWS の欄は、**コンテナの中の `~/.aws/config`**（`aws-storage` のボリューム）に
+- `dev-auth-aws` は、**コンテナの中の `~/.aws/config`**（`aws-storage` のボリューム）に
   `[sso-session ojos]` と `game-forge-dev` のプロファイルがあることを前提にする。無ければ Mac の `~/.aws/config` を写す
   （鍵やトークンは含まない。SSO のトークンはコンテナごとのボリュームに載り、共有しない）。
   **写すのは `[sso-session ojos]` と `[profile game-forge-dev]` の 2 節だけにする**（dev01 から本番に書き込まないので、
@@ -1196,11 +1200,11 @@ systemctl --user enable --now dev-up@game-forge.service
   「問題が発生しました」で止まる（2026-10-01 に Pixel 8 と Mac の両方で再現。先にアクセスポータルへ新ドメインでサインインして
   おくと通るのは、そのセッションが残っているため）。新ドメインにすると、事前のサインインなしで `gf-auth-aws` が通った。
 - **Rebuild Container の前は `systemctl --user stop dev-up@game-forge.service`**、終わったら `start` する
-  （README の「VS Code の窓を閉じたときの停止」）。
+  （上流の README の「VS Code の窓を閉じたときの停止」）。
 
 #### スマホ（Termux）で 1 度だけ
 
-Termux と Termux:Widget を**同じ入手元（F-Droid か GitHub）**から入れ、README の「スマホ専用の鍵」で鍵を作って
+Termux と Termux:Widget を**同じ入手元（F-Droid か GitHub）**から入れ、上流の README の「端末専用の鍵」で鍵を作って
 dev01 の `authorized_keys` に足す（鍵の名前は下では `id_ed25519_phone` とする）。そのうえで:
 
 ```bash
@@ -1214,8 +1218,8 @@ Host dev01
   ServerAliveInterval 30
 CONF
 mkdir -p ~/.shortcuts && chmod 700 ~/.shortcuts
-for b in "gf-attach:attach game-forge" "gf-up:up game-forge" "gf-auth-aws:auth aws game-forge" "dev-ls:ls"; do
-  printf '#!/data/data/com.termux/files/usr/bin/bash\nexec ssh -t dev01 .local/bin/dev %s\n' "${b#*:}" > ~/.shortcuts/"${b%%:*}"
+for b in "gf-attach:dev attach game-forge" "gf-up:dev up game-forge" "gf-auth-aws:dev-auth-aws game-forge" "dev-ls:dev ls"; do
+  printf '#!/data/data/com.termux/files/usr/bin/bash\nexec ssh -t dev01 .local/bin/%s\n' "${b#*:}" > ~/.shortcuts/"${b%%:*}"
 done
 chmod +x ~/.shortcuts/*
 ssh dev01 .local/bin/dev ls     # 最初の 1 回は Access の URL が出る。長押しで開いて認証する
@@ -1239,17 +1243,17 @@ ssh dev01 .local/bin/dev ls     # 最初の 1 回は Access の URL が出る。
 | `dev-ls` の CONTAINER が `exited` / `none` | ③ devcontainer | 30 秒待って `dev-ls`。戻らなければ `gf-up` |
 | `gf-up` が失敗する | ③ | `ssh -t dev01 journalctl --user -u dev-up@game-forge -n 30` で理由を読む |
 | `dev-ls` の TMUX が `none` | ④ tmux | `gf-attach`（無ければ作って入る）。Claude はその中で手で起こす |
-| `dev-ls` の AWS が `expired` | ⑤ 認証 | `gf-auth-aws`。出た URL をブラウザで開き、コードを承認する |
-| GCP（24 時間）が切れた | ⑤ 認証 | `gf-attach` の中で `gcloud auth login --no-launch-browser`（道具は AWS だけを持つ） |
+| AWS の CLI が `Token has expired` で落ちる（`dev-ls` には AWS の列が無い。#923 で上流へ寄せて失った） | ⑤ 認証 | `gf-auth-aws`。出た URL をブラウザで開き、コードを承認する。切れているかだけを見るなら、`gf-attach` の中で `aws sts get-caller-identity --profile game-forge-dev` |
+| GCP（24 時間）が切れた | ⑤ 認証 | `gf-attach` の中で `gcloud auth login --no-launch-browser`（薄い追加は AWS だけを持つ） |
 
 #### 確かめること（#849 の acceptance との対応）
 
 | acceptance | 確かめ方 | 誰が |
 |---|---|---|
-| 道具に非対話の試験があり、変異で赤になる | `bash scripts/check-devhost.sh`（`scripts/acceptance.sh` から回る） | 機械 |
-| 道具とユニットに固有の名前・パスが無い | 同上（`tools/devhost/` の中身とファイル名の綴り） | 機械 |
+| 道具に非対話の試験があり、変異で赤になる | 上流の版は上流の自己試験。薄い追加は `bash scripts/check-devhost.sh`（`scripts/acceptance.sh` から回る） | 機械 |
+| 道具とユニットに固有の名前・パスが無い | 上流の版は上流の検査。薄い追加は同上（`tools/devhost/` のスクリプトの中身とファイル名の綴り。#923 から README は見ない） | 機械 |
 | 再起動の後、手を触れずにコンテナが立ち上がる | `sudo reboot` の後、`dev-ls` の CONTAINER が running | 利用者（dev01） |
 | `docker kill` で落とすとユニットが戻す | `docker kill <ID>` の 30 秒後に `dev-ls` が running | 利用者（dev01） |
-| Termux のタップで attach・up・auth aws を 1 回ずつ通す | 3 つのボタン（auth はデバイスコードをスマホのブラウザで承認） | 利用者（Pixel 8） |
-| 鍵の行を消すと入れなくなる | README の「失効させる」の後、ボタンが `Permission denied (publickey)` | 利用者（dev01 と Pixel 8） |
+| Termux のタップで attach・up・auth aws を 1 回ずつ通す | 3 つのボタン（auth はデバイスコードをスマホのブラウザで承認）。#923 で上流の版と `dev-auth-aws` に替えた後も、同じボタンで通す | 利用者（Pixel 8） |
+| 鍵の行を消すと入れなくなる | 上流の README の「失効させる」の後、ボタンが `Permission denied (publickey)` | 利用者（dev01 と Pixel 8） |
 | `bash scripts/verify.sh` が VERIFY_PASS | 手元と CI | 機械 |

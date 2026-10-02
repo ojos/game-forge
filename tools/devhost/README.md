@@ -1,180 +1,132 @@
-# devhost — 開発機のホストに置く入口の道具
+# devhost — dev01 のホストに置く道具（game-forge の差分）
 
-Linux の開発機（Docker Engine が動くホスト）に置き、**スマホ（Termux）のショートカット 1 タップで
-devcontainer を起こし、入り、再認証する**ための道具一式です。どのプロジェクトにも依存しません。
-名前・パス・ホスト名は開発機の設定ファイルに置き、ここには書きません（機械で検査しています）。
+**devhost の本体（`dev` と `dev-up@.service`、Termux と ssh の雛形）は、上流の版を使います。**
+上流は ojos/ai-packages-dev の `packages/devhost` で、[devcontainer-bootstrap（DCB）のリリース](https://github.com/ojos/devcontainer-bootstrap/releases)に
+同梱されています（同梱は [v0.14.0](https://github.com/ojos/devcontainer-bootstrap/releases/tag/v0.14.0) から）。
+導入・stopCompose の扱い・鍵の作り方と失効・Termux の設定は、**DCB のアーカイブの `devhost/README.md` が正本**です。
+入手は、その README の「devhost を入手する」のとおり、`RELEASE-MANIFEST.json` に記録された
+`PACKAGE_ARCHIVE.tar.gz` のハッシュと照合してから `./devhost` を取り出します。
 
-| ファイル | 置き場所（ホスト） | 役割 |
+**上流の版をこのリポジトリへ写しません**（二重管理を作らないため。#923）。ここに置くのは、上流に無い
+game-forge 固有の差分だけです。`scripts/check-devhost.sh` が、このディレクトリに次の 3 つ以外が無いことを見ます。
+
+| ファイル | 置き場所（dev01） | 役割 |
 |---|---|---|
-| `dev.sh` | `~/.local/bin/dev` | 入口の道具。`ls` / `up` / `attach` / `auth aws` / `supervise` |
-| `dev-up@.service` | `~/.config/systemd/user/` | 起動時と、コンテナが止まったときに起こし直すユニット |
-| `projects.example` | `~/.config/dev/projects` | 設定ファイルの雛形（名前 → パス） |
-| `termux/ssh_config.example` | スマホの `~/.ssh/config` | ssh の入口の断片 |
-| `termux/shortcut.example` | スマホの `~/.shortcuts/` | Termux:Widget のボタン 1 つ分 |
-| `selftest.sh` | （置かない） | 偽の道具で回す自己試験 |
+| `dev-auth-aws.sh` | `~/.local/bin/dev-auth-aws` | コンテナの中で AWS の SSO にデバイスコードで入る |
+| `dev-auth-aws.selftest.sh` | （置かない） | 偽の devcontainer / docker / aws で回す自己試験 |
+| `README.md` | （置かない） | この案内 |
 
-## 層と、この道具が戻すもの
+dev01 の値で埋めた導入の形と、復旧の手順は [docs/local-dev.md の 7.9](../../docs/local-dev.md) にあります。
 
-| 層 | 落ちたとき | 戻し方 |
-|---|---|---|
-| ① 電源・OS | 何も届かない | **範囲外**（物理的な対処） |
-| ② ホストの ssh の入口（トンネル・sshd） | ssh が通らない | **範囲外**（ホストの systemd が持つ） |
-| ③ devcontainer | `dev ls` の CONTAINER が running でない | **自動**（`dev-up@<名前>`）。待てないときは `dev up <名前>` |
-| ④ tmux とその中のエージェント | `dev ls` の TMUX が none | **手で**（`dev attach <名前>`。指示の無いエージェントを自動で起こしても作業は進まない） |
-| ⑤ 認証 | `dev ls` の AWS が expired | **手で**（`dev auth aws <名前>`。デバイスコードをスマホのブラウザで承認する） |
+## dev-auth-aws（AWS SSO に入る薄い追加）
 
-## ホストへの導入
-
-### devcontainer CLI を入れる
-
-公式の導入スクリプトを使います。**Node.js を同梱して `~/.devcontainers/` に入る**ので、ホストに Node を
-入れる必要がなく、ssh の非対話のコマンドや systemd のように `~/.profile` を読まない場面でも
-版がずれません（`dev` が `~/.devcontainers/bin` を PATH の末尾へ足します）。
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/devcontainers/cli/main/scripts/install.sh -o /tmp/devcontainer-install.sh
-less /tmp/devcontainer-install.sh          # 中身を読んでから回す
-sh /tmp/devcontainer-install.sh --version 0.89.0
-~/.devcontainers/bin/devcontainer --version
-```
-
-npm の `@devcontainers/cli` でも動きますが、ホストに Node 20 以上が要ります（0.89.0 の `engines`）。
-
-### dev を置く
-
-```bash
-install -D -m 0755 tools/devhost/dev.sh ~/.local/bin/dev
-mkdir -p ~/.config/dev
-cp tools/devhost/projects.example ~/.config/dev/projects   # 名前と絶対パスを書く
-~/.local/bin/dev ls
-```
-
-**リンクではなく写しで置きます。** リンクにすると、そのリポジトリのブランチを切り替えただけで
-ホストの道具が黙って変わるためです。道具を更新したら、同じ `install` をもう一度打ちます。
-
-### ユニットを入れる
-
-```bash
-install -D -m 0644 tools/devhost/dev-up@.service ~/.config/systemd/user/dev-up@.service
-systemctl --user daemon-reload
-sudo loginctl enable-linger "$USER"        # ログインしていない間も、起動時からユーザーのユニットを動かす
-systemctl --user enable --now dev-up@<名前>.service
-systemctl --user status dev-up@<名前>.service
-journalctl --user -u dev-up@<名前>.service -n 20
-```
-
-- **ユーザーのユニットにしています。** root のユニットにすると利用者の名前（`User=`）を書くことになり、
-  docker グループの権限で足りるものに root を使うことになるためです。
-- **`docker` グループへ足したのがユーザーのマネージャの起動より後なら**、マネージャは古いグループのまま
-  なので、ホストを再起動するか `sudo systemctl restart user@$(id -u).service` で起こし直します。
-- 起動の直後に Docker のデーモンが遅れても、`up` が失敗して 30 秒後にやり直します（回数の上限なし）。
-
-## VS Code の窓を閉じたときの停止（stopCompose）
-
-devcontainer.json が `shutdownAction: stopCompose` のプロジェクトでは、ホストに繋いだ VS Code の窓を
-閉じるとコンテナが止まります。**docker から見れば「意図した停止」で、異常終了ではありません。**
-これをどう戻すかの比較です。
-
-**ただし、Remote-SSH 越しに開いた窓では、閉じても止まらないことがあります**（2026-10-01 に 2 回。Dev Containers 0.469.0。
-閉じた後も `docker events` に stop / die が出ませんでした。窓を閉じると先に SSH の接続が切れ、停止がホストまで届かないためと
-見ています）。拡張の版や閉じ方で変わりうるので、止まる場合にも止まらない場合にも頼らず、下の A で戻します。
-
-| 案 | VS Code を閉じた後 | docker kill の後 | 他の端末への影響 | 採否 |
-|---|---|---|---|---|
-| **A. ユニットの ExecStart が止まるまで待ち、止まったら 0 以外で抜ける**（`dev supervise`） | 30 秒後に戻る | 30 秒後に戻る | なし（プロジェクトの定義を触らない） | **採用** |
-| B. タイマーで定期に `dev up` を打つ | 周期の分だけ遅れる | 同左 | なし | 不採用。動いている間も `up` を打ち続け、そのたびに postAttachCommand が走る |
-| C. 開発機では VS Code から繋がない運用にする | 止まる | 戻らない（別の仕組みが要る） | なし | 不採用。導入とログインで VS Code が要り、約束は 1 度閉じれば破れる |
-| D. devcontainer.json の shutdownAction を開発機だけ `none` にする | 止まらない | 戻らない（別の仕組みが要る） | 共通の定義を触る | 不採用。compose の `.env` は devcontainer.json に届かず、列挙値への置換が効くかは確かめられない。異常停止にはどのみち A が要る |
-| E. compose に `restart: unless-stopped` | 戻らない（stop は除外される） | 戻る | 共通の定義を触る | 不採用。本件（意図した停止）を解かない |
-
-**A は「止まった理由」を見ません。** `dev supervise` は `devcontainer up` の結果からコンテナの ID を取り、
-`docker wait` で止まるまで待ち、止まったら 0 以外で抜けます。ユニットの `Restart=always` は
-（0 以外で抜けるので `on-failure` でも）30 秒後に起こし直します。VS Code の停止も、docker kill も、
-デーモンの再起動も同じ扱いです。
-
-**引き換えに、意図して止めたいときはユニットを先に止めます。** Rebuild Container の前も同じです
-（止めずに Rebuild すると、30 秒後にユニットの `up` が VS Code のビルドと重なりえます）。
-
-```bash
-systemctl --user stop dev-up@<名前>.service    # 戻すのをやめる（コンテナは止めない）
-# … Rebuild や docker compose stop など …
-systemctl --user start dev-up@<名前>.service   # 再び見張る（止まっていれば起こす）
-```
-
-## 使い方
+上流は「特定のクラウドへの認証を devhost に組み込まない」方針で、game-forge 版にあった `dev auth aws` を持ちません。
+その 1 つだけを、上流の `dev` から独立した別のコマンドとして残します。
 
 ```text
-dev ls                                   NAME / CONTAINER / UNIT / TMUX / AWS を 1 行ずつ
-dev up <名前>                            devcontainer up --workspace-folder <パス>
-dev attach <名前>                        devcontainer exec --workspace-folder <パス> tmux new-session -A -s <セッション>
-dev auth aws <名前> [--sso-session <s>]  devcontainer exec ... aws sso login --sso-session <s> --no-browser --use-device-code
+dev-auth-aws <名前> [--sso-session <s>]               自前の設定ファイルの行で入る
+dev-auth-aws --workspace <絶対パス> --sso-session <s>  設定ファイルを読まずに入る
 ```
 
-- **`attach` はコンテナを起こしません。** 止まっていれば `dev up` を案内して止まります（ユニットが
-  起こし直している最中に 2 本目の `up` を重ねないため）。
-- `ls` の AWS は**期限の日時ではなく「いま通るか」**です（`aws sts get-caller-identity --profile <p>`）。
-  SSO のキャッシュの `expiresAt` はアクセストークンの短い期限で、再認証が要る日ではないためです。
-  `aws_profile` を書いていないプロジェクトは `-` です。
+- することは、game-forge 版の `dev auth aws` と同じです。コンテナが動いていることを確かめてから
+  `devcontainer exec --workspace-folder <パス> aws sso login --sso-session <s> --no-browser --use-device-code` を打ちます。
+  **コンテナは起こしません**（止まっていれば、打たずに `dev up` を案内して 1 で止まります）。
+- **上流の `dev` にも、その設定ファイル（`~/.config/dev/projects`）にも依存しません。** 上流の `dev` は
+  知らないキーで止まるので、セッション名をあちらに書けないためです。設定は自前の
+  `~/.config/dev/aws-sso`（`DEV_AUTH_AWS_FILE` で差し替えられる）に、1 行 1 つ `名前 絶対パス セッション名` で書きます。
 - 終了コードは 0 = 成功 / 1 = 実行の失敗 / 2 = 使い方か設定の誤り（未登録の名前を含む）。
+  `aws sso login` が失敗したときは、その終了コードをそのまま返します。
 
-## スマホ（Termux）
-
-### 入れるもの
-
-**Termux と Termux:Widget は同じ入手元（F-Droid か GitHub の Releases）から入れます。** 署名が入手元ごとに
-違い、混ぜると連携しません。Google Play 版は更新が止まっていて、追加アプリとも連携しません。
+### 試験
 
 ```bash
-pkg install openssh cloudflared
+bash tools/devhost/dev-auth-aws.selftest.sh   # DEV_AUTH_AWS_SELFTEST_PASS
 ```
 
-### スマホ専用の鍵
+`scripts/check-devhost.sh`（`scripts/acceptance.sh` から回る）が呼びます。「コンテナの中で `aws sso login` を
+正しい引数で呼ぶ」「コンテナが止まっている・無いときは打たずに 1 で止まる」「使い方と設定の誤りは何も呼ばずに 2」を、
+終了コードと偽物の呼び出しの記録で見ます。偽物を本物に合わせたところは、自己試験の冒頭にあります。
 
-**このスマホのためだけの鍵を作り、パスフレーズを付けます。** 他の端末の鍵は写しません。
-紛失したら、ホストの `authorized_keys` からその 1 行を消せば失効します。
+## 上流の版へ寄せて失うもの
+
+| 失うもの | 代わりの確かめ方 |
+|---|---|
+| `dev ls` の AWS の列（`aws sts get-caller-identity --profile <p>` で、いま認証が通るかを見ていた） | `dev attach <名前>` で入ってから `aws sts get-caller-identity --profile game-forge-dev`。通れば JSON、切れていれば `Token has expired` |
+| `dev auth aws <名前>` | `dev-auth-aws <名前>`（上の薄い追加） |
+| 設定ファイルの `aws_sso_session` / `aws_profile` のキー | セッション名は `~/.config/dev/aws-sso` へ。`aws_profile` は使い道が無くなる（上の行を手で打つときに名前を書く） |
+
+ホストから入らずに確かめるなら、`devcontainer exec --workspace-folder <パス> aws sts get-caller-identity --profile game-forge-dev` の
+1 行でも同じです（コンテナが動いていること）。
+
+## dev01 の移行手順（game-forge 版から上流の版へ）
+
+**作業中のコンテナを止めずに済む順序です。** 要点は 2 つです。
+
+- **上流の `dev` を置く前に、設定ファイルから AWS のキーを外します。** 上流の `dev` は知らないキーで止まります。
+  先に置くと、次にコンテナが止まったときのユニットの `dev supervise` が設定の誤りで落ち続け、コンテナが戻りません。
+  逆に、キーを外しても game-forge 版の `dev` は困りません（AWS の列が `-` になるだけ）。
+- **置き換えは `install` で行い、`cp` で上書きしません。** いま動いているユニットの `dev supervise` は bash が
+  スクリプトを少しずつ読みながら `docker wait` で待っています。`install` は新しいファイルを作って差し替えるので、
+  動いているプロセスは古い中身のまま最後まで動きます。同じファイルへ上書きすると、待ち終わった後に新しい中身の
+  途中から読みます。
 
 ```bash
-# スマホ（Termux）で
-ssh-keygen -t ed25519 -a 100 -f ~/.ssh/<鍵> -C "<見分けの付く名前>"   # パスフレーズを付ける
-cat ~/.ssh/<鍵>.pub                                                      # この 1 行をホストへ渡す
+# 0. いまの状態を控える（CONTAINER が running、UNIT が active であること）
+~/.local/bin/dev ls
+
+# 1. 上流の版を DCB v0.14.0 から取り出す（作業用のディレクトリで。手順の全文は上流の README の「devhost を入手する」）
+mkdir -p ~/dcb-v0.14.0 && cd ~/dcb-v0.14.0
+TAG=v0.14.0
+BASE="https://github.com/ojos/devcontainer-bootstrap/releases/download/${TAG}"
+curl -sSL "${BASE}/RELEASE-MANIFEST.json" -o RELEASE-MANIFEST.json
+curl -sSL "${BASE}/PACKAGE_ARCHIVE.tar.gz" -o PACKAGE_ARCHIVE.tar.gz
+jq -r '.checksums["PACKAGE_ARCHIVE.tar.gz"] + "  PACKAGE_ARCHIVE.tar.gz"' RELEASE-MANIFEST.json | sha256sum -c -   # OK であること
+tar -xzf PACKAGE_ARCHIVE.tar.gz ./devhost
+
+# 2. ユニットを比べる。v0.14.0 は game-forge 版と同じ中身なので、何も出ずに 0 で抜けるはず。
+#    同じなら入れ替えない（daemon-reload も restart もしない）。
+cmp devhost/dev-up@.service ~/.config/systemd/user/dev-up@.service && echo SAME_UNIT
+
+# 3. 薄い追加を置く（作業中のツリー ~/game-forge を触らず、main の版を取ってくる）
+curl -fsSL https://raw.githubusercontent.com/ojos/game-forge/main/tools/devhost/dev-auth-aws.sh -o dev-auth-aws.sh
+less dev-auth-aws.sh                           # 中身を読んでから置く
+install -D -m 0755 dev-auth-aws.sh ~/.local/bin/dev-auth-aws
+printf 'game-forge %s/game-forge ojos\n' "$HOME" > ~/.config/dev/aws-sso
+~/.local/bin/dev-auth-aws game-forge          # デバイスコードをブラウザで承認する（game-forge 版の dev のままでも動く）
+
+# 4. 設定ファイルから AWS のキーを外す（game-forge 版の dev のままで、ls の AWS 列が - になる）
+cp ~/.config/dev/projects ~/.config/dev/projects.bak
+sed -e 's/[[:space:]]aws_sso_session=[^[:space:]]*//g' -e 's/[[:space:]]aws_profile=[^[:space:]]*//g' \
+  ~/.config/dev/projects.bak > ~/.config/dev/projects
+grep -c 'aws_' ~/.config/dev/projects          # 0 であること
+~/.local/bin/dev ls                            # まだ game-forge 版。AWS の列が - になる
+
+# 5. 上流の dev を置く（install で差し替える。ユニットは止めない）
+install -D -m 0755 devhost/dev.sh ~/.local/bin/dev
+~/.local/bin/dev ls                            # NAME / CONTAINER / UNIT / TMUX の 4 列。設定の誤りで止まらないこと
+systemctl --user is-active dev-up@game-forge.service   # active のまま
+
+# 6. 片付け
+rm ~/.config/dev/projects.bak
+cd ~ && rm -rf ~/dcb-v0.14.0
 ```
 
-公開鍵は秘密ではないので、自分宛てのメモなどでホストに入れる端末へ渡し、ホストで足します。
+- **動いているユニットの `dev supervise` は、次にコンテナが止まるまで game-forge 版のまま**です。止まった後、
+  ユニットが起こし直すときから上流の版が動きます（ユニットの中身は同じなので、入れ替えは要りません）。
+  すぐに上流の版で見張らせたいときは、作業の切れ目で `systemctl --user restart dev-up@game-forge.service` を打ちます
+  （ユニットを止めてもコンテナは止まりません。`up` は動いているコンテナに対しては起こし直しません）。
+- **薄い追加を更新するとき**は、3 の `curl` と `install` をもう一度打ちます（リンクにしないのは、上流の `dev` と同じく、
+  ブランチの切り替えでホストの道具が黙って変わらないようにするため）。
+- **2 でユニットが違った場合**は、`install -D -m 0644 devhost/dev-up@.service ~/.config/systemd/user/dev-up@.service` と
+  `systemctl --user daemon-reload` だけを打ちます。restart はしません（次に起こし直すときから新しい中身が効きます）。
+- **スマホのボタンの `gf-auth-aws` を書き換えます**（他の 3 つはそのまま）。
 
-```bash
-# ホストで（既に入れる端末から）
-umask 077 && mkdir -p ~/.ssh
-printf '%s\n' '<公開鍵の 1 行>' >> ~/.ssh/authorized_keys
-```
+  ```bash
+  printf '#!/data/data/com.termux/files/usr/bin/bash\nexec ssh -t dev01 .local/bin/dev-auth-aws game-forge\n' > ~/.shortcuts/gf-auth-aws
+  chmod +x ~/.shortcuts/gf-auth-aws
+  ```
 
-**失効させる**（ホストで。コメントの `<見分けの付く名前>` で行を引く）:
+### 移行の後に確かめること（#923 の acceptance の 3 つ目）
 
-```bash
-cp ~/.ssh/authorized_keys ~/.ssh/authorized_keys.bak
-grep -vF '<見分けの付く名前>' ~/.ssh/authorized_keys.bak > ~/.ssh/authorized_keys
-grep -cF '<見分けの付く名前>' ~/.ssh/authorized_keys     # 0 であること
-```
-
-既存のファイルへの書き込みなので、`authorized_keys` の権限（600）はそのまま残ります。
-失効の後、スマホからの ssh は `Permission denied (publickey)` で止まります。
-
-### ssh の入口とショートカット
-
-`termux/ssh_config.example` を `~/.ssh/config` に足し、`termux/shortcut.example` を写して
-`~/.shortcuts/` にボタン 1 つにつき 1 ファイル置きます（`chmod 700 ~/.shortcuts && chmod +x ~/.shortcuts/*`）。
-ホーム画面に Termux:Widget のウィジェットを置くと、ファイル名がボタンになります。
-
-- **ボタンを押すたびに鍵のパスフレーズを聞かれます。** 紛失時の守りなので、agent に常駐させません。
-- **Access の認証が切れていると**、ssh の代わりに cloudflared が URL を出して待ちます。URL を長押しで開き、
-  ブラウザで認証すると、そのまま ssh が続きます。
-- ショートカットの `dev` は `.local/bin/dev` と書きます。ssh の非対話のコマンドではホストの `~/.profile` が
-  読まれず、`~/.local/bin` が PATH に無いためです。
-
-## 試験
-
-```bash
-bash tools/devhost/selftest.sh   # DEVHOST_SELFTEST_PASS
-```
-
-偽の devcontainer / docker / tmux / aws / systemctl を PATH に置き、組み立てるコマンド・未登録の名前の拒否・
-設定ファイルの誤り・ユニットの要の行を見ます。偽物を本物に合わせたところは `selftest.sh` の冒頭にあります。
+dev01 で、上流の版の `dev ls` / `dev up game-forge` / `dev attach game-forge` と、`dev-auth-aws game-forge` を 1 回ずつ通し、
+結果を #923 か PR に書きます。

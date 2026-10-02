@@ -339,10 +339,11 @@ else
   echo "[acceptance] (devcontainer) skip: .devcontainer/compose.yaml not found"
 fi
 
-# 開発機のホストに置く道具（tools/devhost/。#849）。
+# 開発機のホストに置く game-forge 固有の差分（tools/devhost/。#849、#923 で上流の版へ寄せた）。
 #
-# 見るのは、道具とユニットにこのプロジェクト固有の名前が無いこと（別のリポジトリへ複写で
-# 移すため）と、偽の devcontainer / docker / tmux / aws / systemctl を置いた自己試験。
+# 見るのは、tools/devhost/ に上流の版を写していないこと（README と AWS SSO の薄い追加と
+# その自己試験の 3 つだけ）、薄い追加のスクリプトにこのプロジェクト固有の名前が無いこと、
+# 偽の devcontainer / docker / aws を置いた自己試験。
 #
 # **ここに置く理由は、上の devcontainer の検査と同じく、壊れても手元では気づけないから
 # である。** 道具が動くのは開発機のホストとスマホの ssh の先だけで、Mac の作業では 1 度も

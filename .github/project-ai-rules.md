@@ -151,7 +151,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 | `scripts/second-opinion-codex-selftest.sh` | 第二意見の codex の配線 | 0.89 秒 | |
 | `scripts/loop-gate-range-selftest.sh` | `scripts/loop-gate.sh` のレビュー範囲 | 0.08 秒 | |
 | `scripts/check-devcontainer-dev01.sh` | devcontainer の dev01 の分岐 | 0.29 秒 | |
-| `scripts/check-devhost.sh` | `tools/devhost/` | 0.18 秒 | |
+| `scripts/check-devhost.sh` | `tools/devhost/`（#923 からは AWS SSO の薄い追加 `dev-auth-aws.sh` だけ） | 0.18 秒 | #923 で上流の版へ寄せて縮めた。縮めた後は約 0.07 秒（#923 のレーンが別の時点で測った値。下の合計 4.43 秒は縮める前の 0.18 秒で数えている） |
 | `scripts/acceptance-remote-aws-failure-selftest.sh` | 外部層の IAM の検査 3 本 | 0.29 秒 | **本物の宣言を読む**: 本物の `scripts/acceptance-remote.sh` が `terraform/*.tf` から期待値を導くので、宣言を変えると壊れうる |
 | `scripts/ojos-jp-records-selftest.sh` | 外部層の DNS レコードの照合 | 0.06 秒 | |
 | `scripts/chat-bundle-changed-selftest.sh` | `scripts/chat-bundle-changed.sh`（チャットの束の関門の判定。#903） | 約 1 秒 | #903 のレーンが別の時点で測った値。下の合計 4.43 秒には含まない |

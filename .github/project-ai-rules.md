@@ -187,3 +187,41 @@ push / PR 作成後の最終ゲートを、このプロジェクトで具体化�
 - **required check にはしません。** 急ぎの書き戻しまで止めたいわけではありません。赤のまま通すときは、先行する PR と衝突しないことを確かめてから通します。
 - 判定の正本は `scripts/writeback-serial.sh`、表は `scripts/check-writeback-serial.sh`（`scripts/acceptance.sh` から回ります）。**判定を YAML へ書き写しません。**
 - **束ねられるのは #656 の後だからです。** それまでは書き戻し 1 本で GitHub が `patch` を落とし、当時のリモート最終ゲート（Copilot）が読めませんでした。解体後の書き戻しは `patch` 4 KB 台（#660）です。束ねた PR も、第二意見が 1 チャンクで通る大きさ（`[second-opinion] run 1/1`）に収めてください。
+
+## 委譲先と作業ツリーの分離
+
+共通規範 13 章「実装委譲パターン」を、このプロジェクトで具体化します（#889）。**委譲先の役割・モデル・ツールは、Claude Code が読むエージェント定義（`.claude/agents/*.md` の frontmatter）で固定します。** 指示文で「haiku を使う」と書いても迂回できますが、実行環境が読む frontmatter は迂回できないためです（12 章）。
+
+### 委譲先の一覧
+
+| 役割 | 定義の場所 | model | tools | 起動 | 使う場面 |
+|---|---|---|---|---|---|
+| implementer | `.claude/agents/implementer.md` | `opus` | Read, Grep, Glob, Bash, Edit, Write, NotebookEdit, TodoWrite | Agent の `subagent_type: "implementer"` | 承認済みの intake 票の実装を、親が切った worktree の中で PR 作成まで進める（並列レーンを含む） |
+| explorer | `.claude/agents/explorer.md` | `haiku` | Read, Grep, Glob, Bash | Agent の `subagent_type: "explorer"` | 13 章「調査を委譲する条件」の 3 条件をすべて満たす、広域で機械的な調査 |
+
+- **正本は各定義の frontmatter です。** この表はその写しで、**照合する検査はまだありません**（12 章「一覧の複製は機械照合で担保する」。#889 は `scripts/` を所有していないため、検査は別の issue で置きます）。それまでは定義を変える PR で、この表も同じ PR で直します。
+- **implementer を雛形の `sonnet` ではなく `opus` にしているのは、既存のレーン運用を変えないためです。** これまでのレーンは汎用のサブエージェントとして親と同じモデルで回り、第二意見の指摘が実在するか偽陽性かを実測で判定するところまでレーンが行っています（handoff 3 章の反証の表）。モデルを下げるかどうかは、レーンの結果を比べてから別の issue で決めます。
+- **explorer は、組み込みの `Explore` ではなくこちらを使います。** model と tools をこのリポジトリの定義で固定できるのは、こちらだけです。
+- **判定から外れる作業は委譲しません。** 文書の編集、設計や判断、仮説を立てながら絞り込む調査（原因不明の不具合の切り分けなど）、親が既に文脈を持っている小さな変更は、親が自分で行います（13 章「委譲の判定」「委譲の閾値」）。
+
+### 作業ツリーの分離
+
+実装を委譲するとき（1 本でも並列でも）は、**レーンごとに専用の worktree とブランチを渡します。** プライマリ（`/workspaces/game-forge`）は `main` に置いたまま、レーンに触らせません。
+
+- **既定は、親が手で切ります。** `git fetch` の後、`git worktree add .claude/worktrees/lane-<issue> -b <branch> origin/main` で切り、`git log --oneline -1` で起点を確かめてから、パスとブランチを implementer へ渡します（`.claude/worktrees/` は `.gitignore` で除外済み）。`git worktree add` が分離されたツリーそのものを生むので、指示文ではなく機構による分離です（12 章）。
+- **手で切る理由は 3 つです。** (1) 起点を `origin/main` に固定して確かめられる（プライマリの HEAD が古いと前の変更が相乗りする。13 章「相乗りの防止」）。(2) ブランチ名と worktree の名前を issue に揃えられ、所有一覧や報告と突き合わせやすい。(3) worktree を消さずに再利用でき、`npm ci` を省ける。
+- **Agent の `isolation: "worktree"` は、PR を作らない使い捨ての試しに限ります**（差分を見るだけの試作、手元での再現など）。起点とブランチ名を親が選べず、変更が無ければ自動で片付けられるので、PR まで進めるレーンには使いません。
+- **どちらの場合も、worktree の中で `npm ci` を打って `node_modules` の実体を置きます。** プライマリの `node_modules` を symlink で借りると、束のハッシュの測定が使えず、ツリーも汚れます。
+- **スクラッチはレーンごとに分けます**（`<scratchpad>/lane-<issue>/`）。ログや一時ファイルを共有すると、別のレーンの出力を自分の結果として読みます。
+- **worktree の中で `git config` を打ちません。** identity は共有の設定から来ます（`aizu@bascule.co.jp` は禁止。上の「機密の具体化」と `scripts/verify-commit-identity.sh`）。
+- **`docs/product-spec.md` と `docs/handoff.md` はレーンに編集させません**（13 章「正本文書の扱い」）。書き加えたい文面は報告で受け取り、取り込む側が 1 本で入れます。
+- **レーンは PR を作り、`bash scripts/second-opinion-record.sh post` を打ったところで止まります。** CI と第二意見の記録を待ち、指摘を読んでから起こすのは親です。所有一覧の機械照合（`comm -12`）など、統合する側の実務は `docs/handoff.md` 4 章「並列作業のやり方」に従います。
+- 読み取り専用の explorer には、作業ツリーの分離は要りません。
+
+### 品質整理（任意の前段）の起動手段
+
+`.ai-playbook/review-workflow.md`「品質整理（任意の前段）」の起動手段は、Claude Code の組み込みの `/simplify` です（再利用・簡素化・効率化の観点で差分のコードを整理し、その場で直す。バグは探さない）。
+
+- **使うかどうかは実装者の任意です。** ゲートにせず、`scripts/loop-gate.sh` にも含めません。省いても push は妨げられません。
+- 使うときは、受け入れ条件を満たした後、`bash scripts/loop-gate.sh` の前に **1 回だけ**回します。整理で差分が変わるので、受け入れ検証は loop-gate が整理後の差分に対して改めて通します。第二意見の後には回しません。
+- **対象はコードだけです。** 規範文書・README・`docs/` の文章には使いません（規則に添えた理由が削られるため）。

@@ -41,6 +41,10 @@ if ! { command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>
   echo "[devcontainer-dev01] docker compose が見つかりません。compose.yaml を展開できないので検査が成立しません。" >&2
   exit 1
 fi
+command -v node >/dev/null 2>&1 || {
+  echo "[devcontainer-dev01] node が見つかりません（devcontainer.json を読むのに使う）。" >&2
+  exit 1
+}
 command -v jq >/dev/null 2>&1 || {
   echo "[devcontainer-dev01] jq が見つかりません。" >&2
   exit 1
@@ -96,10 +100,42 @@ fi
 [[ "$has_build" == no ]] || ng "compose.yaml に build があります（ベースの固定を見る場所が image でなくなります。#879 で外した）"
 
 # ── 2. UID の付け替えを CLI に任せていること（#879）──────────────────────────
-# devcontainer.json は JSONC（注記あり）なので jq では読まない。キーの行を見る。
+# devcontainer.json は JSONC（注記と末尾のカンマ）なので、文字列の外のコメントと末尾のカンマを除いてから
+# JSON として読む。**行の grep にしない**——コメントに残った `"updateRemoteUserUID": true` を設定と数え、
+# 実際の値が false でも通ってしまう（PR の第二意見の指摘）。読めなければ落とす。
+jsonc_get() {
+  node -e '
+    // walk(src, f): 文字列の外の位置 i ごとに f(i) を呼び、f が返した数だけ読み飛ばす（0 なら 1 文字写す）。
+    const walk = (src, f) => {
+      let out = "", i = 0, str = false;
+      while (i < src.length) {
+        const c = src[i];
+        if (str) { out += c; if (c === "\\") { out += src[i + 1] ?? ""; i += 2; continue; } if (c === "\"") str = false; i++; continue; }
+        if (c === "\"") { str = true; out += c; i++; continue; }
+        const skip = f(src, i);
+        if (skip > 0) { i += skip; continue; }
+        out += c; i++;
+      }
+      return out;
+    };
+    const src = require("fs").readFileSync(process.argv[1], "utf8");
+    // 1 段目: コメントを除く。2 段目: 末尾のカンマを除く（コメントを除いた後なので、間に挟まった注記に惑わされない）。
+    const noComments = walk(src, (s, i) => {
+      if (s[i] === "/" && s[i + 1] === "/") { const e = s.indexOf("\n", i); return (e < 0 ? s.length : e) - i; }
+      if (s[i] === "/" && s[i + 1] === "*") { const e = s.indexOf("*/", i + 2); if (e < 0) throw new Error("閉じていないコメント"); return e + 2 - i; }
+      return 0;
+    });
+    const plain = walk(noComments, (s, i) => (s[i] === "," && /^,\s*[}\]]/.test(s.slice(i)) ? 1 : 0));
+    const v = JSON.parse(plain)[process.argv[2]];
+    process.stdout.write(v === undefined ? "(none)" : JSON.stringify(v));
+  ' "$1" "$2"
+}
 n=$((n + 1))
-grep -qE '^[[:space:]]*"updateRemoteUserUID":[[:space:]]*true,?[[:space:]]*$' "$DEVCONTAINER_JSON" ||
-  ng "devcontainer.json に \"updateRemoteUserUID\": true がありません（dev01 でワークスペースへ書き込めなくなります。#879）"
+if ! uid_update="$(jsonc_get "$DEVCONTAINER_JSON" updateRemoteUserUID)"; then
+  ng "devcontainer.json を読めません（JSONC として壊れている）"
+elif [[ "$uid_update" != true ]]; then
+  ng "devcontainer.json の updateRemoteUserUID が true ではありません（${uid_update}）。dev01 でワークスペースへ書き込めなくなります（#879）"
+fi
 
 # ── 3. install-cloudflared.sh の dev01 分岐 ─────────────────────────────────
 # PATH は必要な道具だけにする。curl / sudo は呼ばれたら記録して失敗する仕込み

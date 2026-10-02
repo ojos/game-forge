@@ -61,6 +61,23 @@ fi
 
 # **束を作れなければ失敗で返す。** `$(...)` の中では `set -e` が引き継がれないので、
 # 明示的に受ける（受けないと、壊れた束の古い zip や空の値を比べてしまう）。
+# **依存（`package.json` / `package-lock.json`）が変わったら、束を作らずに CHANGED とする。**
+# 下の比較は比較元の側も**いまの `node_modules`** で束ねるので、`aws4fetch`（束に入る）や
+# esbuild（束を作る）の版だけが変わった差分では、両方が同じ版で束ねられて UNCHANGED に化ける。
+# 依存の差分は広めに拾う（束に効かない更新でも AWS を 1 回読むだけで、照合は実物の値で行うので
+# 束が同じなら関門は通る）。**逆向きの取りこぼし（依存の更新で本番だけ古いまま）は拾えない
+# 誤りなので、広いほうへ倒す。**
+dep_rc=0
+git diff --quiet "$BASE_REF" HEAD -- package.json package-lock.json || dep_rc=$?
+if [ "$dep_rc" -eq 1 ]; then
+  echo "[chat-bundle-changed] 依存（package.json / package-lock.json）が変わりました。束は作り比べず、変わったものとして扱います。"
+  echo "CHAT_BUNDLE_CHANGED"
+  exit 0
+elif [ "$dep_rc" -ne 0 ]; then
+  echo "[chat-bundle-changed] 依存の差分を読めません（git diff の終了コード ${dep_rc}）。" >&2
+  exit 1
+fi
+
 bundle_sha() {
   bash scripts/bundle-chat.sh >/dev/null || return 1
   [ -f dist/chat.zip ] || return 1

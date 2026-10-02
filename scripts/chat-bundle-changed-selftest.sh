@@ -16,6 +16,8 @@
 #   (e) 判定できないとき（作業ツリーが汚れている・比較元を解決できない・束を作れない）は
 #       非 0 で終わり、**合図を出さない**（「変わっていない」に倒さない）
 #   (f) どの場合も、判定の後の作業ツリーは HEAD のまま（利用者の変更を失わない）
+#   (g) 依存（package-lock.json）だけが変わった差分は CHANGED（比較元もいまの node_modules で
+#       束ねるので、束の作り比べでは依存の更新が見えない）
 #
 # ## どこで回すか
 #
@@ -74,7 +76,7 @@ mkdir -p "$repo/scripts"
 
 # **束に効くものだけを写す。** src/ と、esbuild が読む tsconfig.json。束ねるスクリプトと判定は
 # **作業ツリーの版**を写す（コミット前の変更を検査するため）。
-git -C "$ROOT" archive HEAD src tsconfig.json | tar -x -C "$repo"
+git -C "$ROOT" archive HEAD src tsconfig.json package.json package-lock.json | tar -x -C "$repo"
 cp "$JUDGE" "$repo/scripts/chat-bundle-changed.sh"
 cp "$BUNDLER" "$repo/scripts/bundle-chat.sh"
 ln -s "$ROOT/node_modules" "$repo/node_modules"
@@ -166,6 +168,14 @@ else
   pass "(d) 比較元にだけあるファイルは判定の後に残らない"
 fi
 expect_clean "(d)"
+
+# ── (g) 依存だけが変わった ─────────────────────────────────────────────
+# 中身は壊さず、末尾に改行を 1 つ足すだけにする（JSON として読めるまま。npm は読まない）。
+printf '\n' >> "$repo/package-lock.json"
+commit_all deps >/dev/null
+run_judge
+expect_signal "(g) package-lock.json だけを変えた" CHAT_BUNDLE_CHANGED
+expect_clean "(g)"
 
 # ── (e) 判定できない ────────────────────────────────────────────────
 printf '\n// dirty\n' >> "$repo/src/chat-prompt.ts"

@@ -5,11 +5,38 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 - 位置づけ: **現在地と、次に何をするか。** 仕様の正本は [product-spec.md](product-spec.md)、
   作業の分解は [mvp-roadmap.md](mvp-roadmap.md) が持ちます。**ここへ複製しません。**
 - 更新: セッションの終わりに、次の人が困る情報だけを書き換えます。
-- 最終更新: **2026-10-01**（要旨は [6. 更新の履歴](#6-更新の履歴) が持ちます）
+- 最終更新: **2026-10-02**（要旨は [6. 更新の履歴](#6-更新の履歴) が持ちます）
 
 ---
 
 ## 1. 現在地
+
+### #798 の集計を足して本番で測り、第二意見の偽の緑（#873）と dev01 の codex のサンドボックス（#874）を直しました（#798 / #873 / #874。2026-10-02）
+
+| # | 何をしたか | PR / コミット | 状態 |
+|---|---|---|---|
+| #798 | フォークが親の土台（勝ちの語・負けの語・状態の数）を継承しているかを数える `scripts/fork-regression-report.sh` を足し、本番で 1 回測った | PR #872 / `76d368c` | **閉じた**（[本番の結果](https://github.com/ojos/game-forge/issues/798#issuecomment-5942549751)） |
+| #873 | 第二意見の回答に必須の `reviewed`（差分を実際に読めたか）を足し、`false` か欠けなら落として記録も残さない | PR #875 / `bcc46a1` | 閉じた |
+| #874 | dev01 のコンテナの AppArmor（`docker-default` の `deny mount`）を `security_opt: apparmor=unconfined` で外し、codex の read-only のサンドボックス（bwrap）を動かす | PR #876 / `43f364b` | **閉じた**（dev01 で作り直して 4 点を確認。[照合](https://github.com/ojos/game-forge/issues/874#issuecomment-5943410700)） |
+
+3 本とも main の `deploy` は success です。
+
+**#798 の本番の結果は「組 3（測れた 1 / 測れない 2）、退行 0 / 1」です。** 測れない 2 組は、どちらも親の側に `source_quality_metrics` の行がありません。親の `source_key` が NULL（tombstone）か、埋め戻しの漏れかは確かめていません。後者なら `bash scripts/source-quality-backfill.sh --remote`（既定は読み取りのみ）で欠けとして数えられます。**母数が 1 なので、#798 の「続き」（フォークの前置きに保存則を足すか）はまだ決められません。** 組が増えたら同じコマンドで測り直します。
+
+#### このウェーブで踏んだこと（次の人へ。どれも 1 回目）
+
+- **dev01 の devcontainer では、codex の第二意見が差分を読めないまま「LGTM」を返していました。** dev01 はネイティブ Linux の Docker で、コンテナに AppArmor の `docker-default` が当たり、その `deny mount` で bwrap が `Failed to make / slave: Permission denied` になります。codex は「レビューを実施できませんでした」を `other` の指摘で返し、`other` は判定を動かさないので、**`loop-gate.sh` は GATE_PASS を返して記録まで作りました**。PR #872 では投稿する前に気づいて記録を消し、antigravity で取り直しています。#873 でゲートが止めるようにし、#874 で dev01 でも codex が動くようにしました。**9/29 の「codex の read-only は効く」という実測は Mac の Docker Desktop（AppArmor が無い）で取ったもので、dev01 には当てはまりませんでした。**
+- **最初の見立て（`kernel.apparmor_restrict_unprivileged_userns=1` が原因）は誤りでした。** userns の中でケイパビリティはそろっていて、sysctl を 0 にしても直りません。使い捨てのコンテナで比べ、`apparmor=unconfined` を足したときだけ通ることで切り分けました。
+- **この devcontainer は Mac ではなく dev01 の上で動いていました**（`DEVCONTAINER_HOST=dev01`、カーネルは `7.0.0-34-generic`）。利用者への手順を「Mac で」と書いて渡し、実際に打たれたのは dev01 の端末でした。**手順を渡す前に、`uname -s` と `DEVCONTAINER_HOST` で居場所を確かめます。**
+- **`.env` の `GH_TOKEN` は、シェルに読み込むまで効きません。** このセッションは最初、`gh` が未認証だと報告し、公開 API で issue を読んでいました。`. scripts/load-project-env.sh` で読み込むと通ります。push は `git -c credential.helper='!gh auth git-credential' push` で通りました。
+- **antigravity（`agy`）のログインは、認可コードの入力待ちが 60 秒で切れます。** 実行のたびに URL（PKCE）が変わるので、エージェントが URL を出して、利用者がチャットでコードを返す往復では間に合いません。**利用者が端末で `agy -p 'reply with OK'` を直接打ちます。** `SECOND_OPINION_ENGINE=antigravity` を環境変数で渡しても、`.env` の値が勝ちます。`--engine antigravity` を使います。
+- **`scripts/second-opinion-record.sh` は、自分の置き場所のリポジトリへ `cd` してから記録します。** 使い捨てのリポジトリの中から本物を呼ぶと、**その検査を回した worktree の記録を上書きします**（#873 の自己検査を書くときに 1 回踏み、消して作り直した）。検査では写しを使い捨てのリポジトリに置いて呼びます（`second-opinion-codex-selftest.sh` の 2e 節）。
+- **`docs/handoff.md` の書き戻しは、別セッション（game-forge-b6）と順番を取り決めました。** 先に準備ができたほうが PR を出して番号を知らせ、後のほうはマージを待って main に揃えてから出します（相乗りはしません）。
+
+#### 残していること
+
+- **#798 の続き**: 親の指標の行の欠けを `source-quality-backfill.sh --remote` で数えるか、組が増えるのを待って測り直します。
+- **上流への還流**: #873（`reviewed` の判定）と #874（ネイティブ Linux の Docker での AppArmor）は、ai-packages-dev の `.ai-playbook/templates/second-opinion-review.sh` と DCB が生成する devcontainer に還流する候補です。番号は ai-packages-dev 側のセッションへ知らせました。
 
 ### 波 2 が済み、#802 と #849 を閉じました。Mac の devcontainer を作り直し、#865 で第二意見の記録を持ち主だけに絞りました（#802 / #849 / #864 / #866 / #865 / #867。2026-10-01）
 
@@ -4623,6 +4650,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
+- **2026-10-02**（**#798 / #873 / #874 を閉じた**——フォークの退行を数える集計（PR #872）を足して本番で測り（組 3・測れた 1・退行 0）、dev01 の codex が差分を読めないまま LGTM を返していた件を、ゲートで止め（PR #875）、AppArmor を外して直した（PR #876。dev01 で作り直して確認）。最初の見立て（userns の sysctl）の誤り、この devcontainer が dev01 だったこと、`.env` の `GH_TOKEN` の読み込み、agy のログインの 60 秒、`second-opinion-record.sh` が自分のリポジトリへ cd することを書いた。`docs/local-dev.md` 7.4 に第二意見そのものを回す確認を足した（codex の指摘）。書き戻しは game-forge-b6 と順番を取り決めた）
 - **2026-10-01**（**波 2 を合流し、#802 / #849 / #865 を閉じた**——game-forge-bd の #864（ベースを `base:noble` に固定）・#866（dev01 の実測 4 件の docs）と、Mac の作り直しの確認、このセッションの #867（第二意見の記録は持ち主のものだけ）と Mac の AWS の start URL の書き換えを書き戻した。#859 の節の「窓を閉じると止まる」を訂正し、`second-opinion-gate` の起票候補を済みにし、3 章の EBITEN に 3 回目を足した）
 - **2026-10-01**（**#844 を閉じ、main の identity-guard の赤を書き戻した**——Mac の launchd の 1 回目は `AWS_PROFILE` が渡らず AWS の系統だけ前提の不成立（読み分けは本物の出力で働いた）、#861 で直して 3 回目で 40 件 PASS、鮮度のジョブも緑。game-forge-3a の #860 / #862（Dependabot の squash merge に GitHub が付けた co-author で、push(main) の identity-guard が 14 回続けて赤だった）を合流した。波 2 の実機は別のセッションが担当）
 - **2026-10-01**（**#808 を実測で設計し直し、外部層の定期実行（#844）と terraform の PR の記録（#845）を入れ、dev01 をスマホから戻す道具（#849）を置いた**——検査 40 件を「state・認証」の 4 通りで回し、CI で回せるのは本体 34 件中 2 件と分かったので、Mac の launchd に決めた（#808 は not planned で閉じた）。AWS の SSO は 8 時間 → 7 日、GCP は 24 時間にした（長命のキーは採らない）。#844 / #845 は開き直して利用者の確認を待つ。#802 / #849 はコード部分だけ入った。**記録先 #854 に 1 件目が載るまで、鮮度のジョブは毎日 15:00 JST に赤**。game-forge-d9（#843 / #847 / #848）と game-forge-f7（#724 の ChatGPT の分）の書き戻しを合流した。1 章の 2026-09-30 の節の「機構が確かめるのは 2 つ」を identity-guard を含む 3 つに訂正し、`.github/project-ai-rules.md` の同じ記述も直した。Bedrock の未開放の世代を候補に挙げた件を 3 章へ上げた）

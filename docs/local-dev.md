@@ -1051,9 +1051,19 @@ codex sandbox -c sandbox_mode='"read-only"' -- sh -c 'git log -1 --oneline; touc
 # git log が出て、touch が Read-only file system で失敗すること（書き込みは止まり、読み取りは通る）
 ```
 
-ここで `/proc` の mount で失敗するなら、AppArmor を外すだけでは足りない（`systempaths=unconfined` まで要るかは、
+続けて、**第二意見そのものが差分を読むこと**を見る（上のコマンドはサンドボックスを確かめるだけで、第二意見は回していない）。
+
+```bash
+bash scripts/second-opinion-review.sh --engine codex --range HEAD~1..HEAD
+# 「run 1/1: LGTM」か「findings」の行が出て、指摘があれば HEAD の差分の中身（ファイルと行）を名指ししていること。
+# 「差分を読めなかったと答えました」で終わるなら、codex はまだ差分を読めていない
+```
+
+2026-10-02 に dev01 で作り直した後、4 つとも期待どおりだった（`unconfined` / `BWRAP_OK` / 書き込みだけ `Read-only file system` /
+第二意見が `docs/local-dev.md` の行を名指しした回答。#874 のコメント）。`/proc` の mount は要らなかった。
+もし `/proc` の mount で失敗する版の codex が来たら、AppArmor を外すだけでは足りない（`systempaths=unconfined` まで要るかは、
 代償が大きいので改めて判断する）。**読めないまま答えた回は #873 のゲートが GATE_FAIL で止める**ので、
-緑のまま通ることはない。それまでは `--engine antigravity` で回す。
+緑のまま通ることはない。そのあいだは `--engine antigravity` で回す。
 
 **`devcontainer.json` は `shutdownAction: stopCompose` だが、Remote-SSH 越しに開いた dev01 の窓は、閉じてもコンテナを止めなかった**
 （2026-10-01 に 2 回。窓を閉じた後も `docker events` に stop / die が出ず、tmux も残った。Dev Containers 0.469.0。

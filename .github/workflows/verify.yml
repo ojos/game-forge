@@ -427,23 +427,38 @@ jobs:
       # **本番のチャットは古いプロンプトのまま動いていた**（#742 の配り直しで上書き）。
       # オーケストレータには上の関門（#241）があるのに、#695 で分けたチャットの関数には無かった。
       #
-      # **作りは上のオーケストレータの関門と同じである。** 束を 2 回作って比べ、変わったときだけ
-      # AWS を読む（外部の可用性を配備の前提条件へ持ち込まない）。判定できないときは
+      # **作りは上のオーケストレータの関門と同じである（比較元だけが違う。下）。** 束を 2 回作って
+      # 比べ、変わったときだけ AWS を読む（外部の可用性を配備の前提条件へ持ち込まない）。判定できないときは
       # 「変わっていない」に倒さず落とす。**判定は分けてある**——チャットだけが変わった日に
       # オーケストレータの配り直しを求めない（逆も同じ。仕様 5.16）。
       #
-      # **比較元は直前のコミットで、「本番に居るコミット」ではない**（オーケストレータの関門と
-      # 共通の穴）。束を変えたコミットの配備が後続のマージに譲ったときや、この関門で落ちたまま
-      # 次がマージされたときは、照合が 1 度も行われない。運用での補い方と、直し方を別の票で
-      # 扱うことは docs/orchestrator.md「チャットの関数の関門」に書いた。
+      # **比較元は直前のコミットではなく、本番の Pages に居るコミットにする**（#903 の第二意見）。
+      # 直前のコミットと比べると、束を変えたコミットの配備が後続のマージに譲ったときや、この関門で
+      # 落ちたまま次がマージされたときに、照合が 1 度も行われない。**Pages はこの関門の後ろで
+      # `--commit-hash` 付きで配られる**ので、本番の Pages に居るコミットは、最後にこの関門を
+      # 通ったコミットである（判定の細部は scripts/chat-bundle-changed.sh の冒頭）。
+      # **上のオーケストレータの関門は直前のコミットのまま**（#903 の範囲の外。同じ穴がある）。
       - name: チャットの束が変わったか
         if: steps.head-gate.outputs.deploy == 'true'
         id: chat-diff
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          # プロジェクト名は下の Pages の配備（--project-name game-forge）と同じ値。
+          # **読めなければ落とす**（「変わっていない」に倒さない。再実行で足りる）。
+          pages_json="${RUNNER_TEMP}/pages-project.json"
+          if ! curl -fsS --retry 2 \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -o "$pages_json" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/game-forge"; then
+            echo "::error::本番の Pages に居るコミットを読めませんでした（Cloudflare の API）。チャットの束が変わったかを判定できません。"
+            exit 1
+          fi
           # 受け方は「オーケストレータの束が変わったか」と同じ（条件式へ直に置かない・
           # 合図の綴りを両方とも明示的に見る）。
-          if ! out="$(bash scripts/chat-bundle-changed.sh)"; then
+          if ! out="$(bash scripts/chat-bundle-changed.sh --base-from-pages "$pages_json")"; then
             echo "::error::チャットの束が変わったかを判定できませんでした（判定スクリプトが失敗）。"
             exit 1
           fi

@@ -18,6 +18,11 @@
 #   (f) どの場合も、判定の後の作業ツリーは HEAD のまま（利用者の変更を失わない）
 #   (g) 依存（package-lock.json）だけが変わった差分は CHANGED（比較元もいまの node_modules で
 #       束ねるので、束の作り比べでは依存の更新が見えない）
+#   (h) 比較元を本番の Pages に居るコミットにする呼び方（deploy ジョブの呼び方）。そのコミットとの
+#       間に届く変更があれば CHANGED、届かない変更だけなら UNCHANGED。**直前のコミットとしか比べない
+#       と見落とす順序**（束を変えたコミットの配備が譲った・落ちたまま次がマージされた）を作って見る。
+#       記録が欠けている・汚れている・取得できないときは CHANGED、応答を読めないときは非 0
+#   (i) 比較元にだけある旧パスが改名で消えた場合も、判定の後に残らない（`git diff` の改名検出）
 #
 # ## どこで回すか
 #
@@ -46,6 +51,10 @@ for f in "$JUDGE" "$BUNDLER"; do
     exit 1
   fi
 done
+command -v jq >/dev/null 2>&1 || {
+  echo "[chat-bundle-selftest] error: jq がありません（Pages の応答を仕込むのに要ります）" >&2
+  exit 1
+}
 if [[ ! -x "$ROOT/node_modules/.bin/esbuild" ]]; then
   echo "[chat-bundle-selftest] error: esbuild がありません（npm ci を実行してください）" >&2
   exit 1
@@ -168,6 +177,72 @@ else
   pass "(d) 比較元にだけあるファイルは判定の後に残らない"
 fi
 expect_clean "(d)"
+
+# ── (h) 比較元を本番の Pages に居るコミットにする ──────────────────────────
+# Cloudflare の Pages プロジェクトの応答の形（`scripts/acceptance-remote.sh` の
+# check_pages_production_deployment が読むのと同じ場所）を仕込む。
+pages_json() { # pages_json <commit_hash> [commit_dirty]
+  jq -n --arg h "$1" --argjson d "${2:-false}" \
+    '{success: true, result: {canonical_deployment: {deployment_trigger: {metadata: {commit_hash: $h, commit_dirty: $d}}}}}' \
+    > "$work/pages.json"
+}
+
+# いまの HEAD（届かない変更 2 つ）の 1 つ前は、届く変更の後である。**直前のコミットと比べると
+# UNCHANGED になる**ことを対照として先に見る（ここが CHANGED なら、穴の再現になっていない）。
+run_judge
+expect_signal "(h) 対照: 直前のコミットとだけ比べると、届く変更を見落とす" CHAT_BUNDLE_UNCHANGED
+# 本番の Pages が届く変更の前（base）に居る = 届く変更のコミットの配備は譲ったか落ちた。
+pages_json "$base_sha"
+run_judge --base-from-pages "$work/pages.json"
+expect_signal "(h) Pages が届く変更の前に居れば、直前のコミットが同じでも" CHAT_BUNDLE_CHANGED
+expect_clean "(h)"
+pages_json "$reach_sha"
+run_judge --base-from-pages "$work/pages.json"
+expect_signal "(h) Pages が届く変更の後に居れば" CHAT_BUNDLE_UNCHANGED
+pages_json "$reach_sha" true
+run_judge --base-from-pages "$work/pages.json"
+expect_signal "(h) Pages が汚れたツリーから配られていれば" CHAT_BUNDLE_CHANGED
+pages_json ""
+run_judge --base-from-pages "$work/pages.json"
+expect_signal "(h) Pages の配備にコミットが記録されていなければ" CHAT_BUNDLE_CHANGED
+jq -n '{success: true, result: {canonical_deployment: null}}' > "$work/pages.json"
+run_judge --base-from-pages "$work/pages.json"
+expect_signal "(h) 本番の Pages に配備が無ければ" CHAT_BUNDLE_CHANGED
+# 使い捨てのリポジトリに origin は無いので、取得は必ず失敗する。
+pages_json "0123456789abcdef0123456789abcdef01234567"
+run_judge --base-from-pages "$work/pages.json"
+expect_signal "(h) Pages に居るコミットを取得できなければ" CHAT_BUNDLE_CHANGED
+expect_clean "(h) 取得できない"
+jq -n '{success: false, errors: [{code: 10000}]}' > "$work/pages.json"
+run_judge --base-from-pages "$work/pages.json"
+expect_undecided "(h) Pages の応答が失敗を示す"
+printf 'not json' > "$work/pages.json"
+run_judge --base-from-pages "$work/pages.json"
+expect_undecided "(h) Pages の応答が JSON でない"
+run_judge --base-from-pages "$work/no-such.json"
+expect_undecided "(h) Pages の応答のファイルが無い"
+run_judge --base-from-pages
+expect_undecided "(h) Pages の応答のファイルを渡していない"
+
+# ── (i) 改名で消えた旧パス ──────────────────────────────────────────────
+# 中身を十分に長くして、git が改名として検出する形にする（短いと別ファイルの追加と削除に見える）。
+seq 1 200 | sed 's/^/export const selftestRenamed = /; s/$/;/' > "$repo/src/chat-selftest-old.ts"
+commit_all add-old >/dev/null
+git -C "$repo" mv src/chat-selftest-old.ts src/chat-selftest-new.ts
+commit_all rename >/dev/null
+if git -C "$repo" diff --name-status HEAD^ HEAD | grep -q '^R'; then
+  pass "(i) 対照: git はこの差分を改名として検出する"
+else
+  fail "(i) 対照: 改名として検出されていない（この検査は何も確かめていない）"
+fi
+run_judge
+expect_signal "(i) 届かないファイルを改名した" CHAT_BUNDLE_UNCHANGED
+if [[ -e "$repo/src/chat-selftest-old.ts" ]]; then
+  fail "(i) 改名の旧パスが判定の後に残った"
+else
+  pass "(i) 改名の旧パスは判定の後に残らない"
+fi
+expect_clean "(i)"
 
 # ── (g) 依存だけが変わった ─────────────────────────────────────────────
 # 中身は壊さず、末尾に改行を 1 つ足すだけにする（JSON として読めるまま。npm は読まない）。

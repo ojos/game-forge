@@ -40,7 +40,7 @@ Identity Center の設定は**インタラクティブ・バックグラウン�
 | 10-02 03:00 | 12:00 JST の定期実行で `prereq.aws: pass`（ログインから約 13 時間） |
 | 10-02 03:53 | 10 分おきの計測で、まだ通っている（ログインから 14 時間 6 分。失敗 0 回） |
 
-**少なくとも 14 時間は持ち、Identity Center の既定の 8 時間を超えているので、7 日の設定は効いていると見ています**（上限まで測り切ってはいない）。**10-01 の昼の失敗は、セッションの長さではなく別の出来事が原因**と見ていますが、特定できていません（その間に Mac の devcontainer の作り直しがあった）。計測は `~/.claude/projects/-workspaces-game-forge/pending/sso-lifetime-probe.log` に残しています。
+**少なくとも 14 時間は持ちました。** 否定できたのは「約 1 時間」「約 4 時間」で切れるという見立てと、Identity Center の既定の 8 時間までです。**IdP 側に 7 日より短い上限がある可能性は、まだ否定できていません**（上限まで測り切っていない）。**10-01 の昼の失敗は、セッションの長さではなく別の出来事が原因**と見ていますが、特定できていません（その間に Mac の devcontainer の作り直しがあった）。計測は `~/.claude/projects/-workspaces-game-forge/pending/sso-lifetime-probe.log` に残しています。
 
 **GCP の ADC は 24 時間で切れるので、12:00 JST の定期実行では `prereq.gcp: fail` でした**（GCP の前提と plan の 2 件が前提の不成立。他の 38 件は PASS、乖離 0）。**決めた設定どおりの結果**で、3 日続くと鮮度のジョブが `system-stale gcp` で赤になります。plan を使う日に `gcloud auth application-default login --no-launch-browser` を通します。
 
@@ -190,7 +190,7 @@ Identity Center の設定は**インタラクティブ・バックグラウン�
 
 **CI で回せるのは本体の 34 件中 2 件**でした（state を読む 32 件は、認証を試す前に `terraform output` が空で落ちる）。そこで (a) CI では state 不要分だけ・(b) Mac の launchd・(c) リモート state の見直し、から **(b) を利用者が選びました**。#808 は not planned で閉じ、表と決定 6 つは #808 のコメントにあります。
 
-**認証の期間を延ばしました（2026-09-30、利用者が設定）。** AWS の IAM Identity Center のセッションは**既定の 8 時間 → 7 日**（09-30 に、昼の時点で切れていたことを実測）（**2026-10-02 追記: 外部 IdP（Google Workspace）を使うので実際の上限は IdP との短いほう。実測では 14 時間を超えて持った。1 章の先頭の節**）。GCP は Workspace の「Google Cloud のセッション管理」で **24 時間**（上限。「再認証を要求しない」は、持ち歩く端末に期限のない資格情報を置くので採らなかった）。**長命のアクセスキーは採っていません**（`docs/build-invocation.md` の「構成上の帰結のときだけ」。dev01 だけキーにする案も、state と tfvars を dev01 に置く必要があるので却下）。
+**認証の期間を延ばしました（2026-09-30、利用者が設定）。** AWS の IAM Identity Center のセッションは**既定の 8 時間 → 7 日**（09-30 に、昼の時点で切れていたことを実測）（**2026-10-02 追記: 外部 IdP（Google Workspace）を使うので実際の上限は IdP との短いほう。実測では少なくとも 14 時間は持った（7 日まで持つかは未確定）。1 章の先頭の節**）。GCP は Workspace の「Google Cloud のセッション管理」で **24 時間**（上限。「再認証を要求しない」は、持ち歩く端末に期限のない資格情報を置くので採らなかった）。**長命のアクセスキーは採っていません**（`docs/build-invocation.md` の「構成上の帰結のときだけ」。dev01 だけキーにする案も、state と tfvars を dev01 に置く必要があるので却下）。
 
 #### 入った仕組みの読み方
 
@@ -4696,7 +4696,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
-- **2026-10-02**（**gh を環境ごとの PAT に揃え（#869 / PR #871）、AWS の SSO が 14 時間を超えて持つことを実測した**——Mac 用（Administration・Variables まで）と dev01 用（その 2 つは No access）を分け、Mac では terraform plan と定期実行の投稿まで PAT で通った。Identity Center は 7 日だが外部 IdP との短いほうになる疑いを、10 分おきの計測と 12:00 JST の定期実行（`prereq.aws: pass`）で退けた。GCP は 24 時間で切れて `prereq.gcp: fail`（設定どおり）。起票候補 3 つを #869 / #870 にした）
+- **2026-10-02**（**gh を環境ごとの PAT に揃え（#869 / PR #871）、AWS の SSO が 14 時間を超えて持つことを実測した**——Mac 用（Administration・Variables まで）と dev01 用（その 2 つは No access）を分け、Mac では terraform plan と定期実行の投稿まで PAT で通った。Identity Center は 7 日だが外部 IdP との短いほうになるので、10 分おきの計測と 12:00 JST の定期実行（`prereq.aws: pass`）で、少なくとも 14 時間は持つことを確かめた（「約 1 時間」の見立ては外れた。7 日まで持つかは未確定）。GCP は 24 時間で切れて `prereq.gcp: fail`（設定どおり）。起票候補 3 つを #869 / #870 にした）
 - **2026-10-02**（**#798 / #873 / #874 を閉じた**——フォークの退行を数える集計（PR #872）を足して本番で測り（組 3・測れた 1・退行 0）、dev01 の codex が差分を読めないまま LGTM を返していた件を、ゲートで止め（PR #875）、AppArmor を外して直した（PR #876。dev01 で作り直して確認）。最初の見立て（userns の sysctl）の誤り、この devcontainer が dev01 だったこと、`.env` の `GH_TOKEN` の読み込み、agy のログインの 60 秒、`second-opinion-record.sh` が自分のリポジトリへ cd することを書いた。`docs/local-dev.md` 7.4 に第二意見そのものを回す確認を足した（codex の指摘）。書き戻しは game-forge-b6 と順番を取り決めた）
 - **2026-10-01**（**波 2 を合流し、#802 / #849 / #865 を閉じた**——game-forge-bd の #864（ベースを `base:noble` に固定）・#866（dev01 の実測 4 件の docs）と、Mac の作り直しの確認、このセッションの #867（第二意見の記録は持ち主のものだけ）と Mac の AWS の start URL の書き換えを書き戻した。#859 の節の「窓を閉じると止まる」を訂正し、`second-opinion-gate` の起票候補を済みにし、3 章の EBITEN に 3 回目を足した）
 - **2026-10-01**（**#844 を閉じ、main の identity-guard の赤を書き戻した**——Mac の launchd の 1 回目は `AWS_PROFILE` が渡らず AWS の系統だけ前提の不成立（読み分けは本物の出力で働いた）、#861 で直して 3 回目で 40 件 PASS、鮮度のジョブも緑。game-forge-3a の #860 / #862（Dependabot の squash merge に GitHub が付けた co-author で、push(main) の identity-guard が 14 回続けて赤だった）を合流した。波 2 の実機は別のセッションが担当）

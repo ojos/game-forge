@@ -95,6 +95,12 @@ permissions:
   issues: read
   # commit status を書く。これが判定の出力先である。
   statuses: write
+  # 掃き寄せで、push の時刻として check-run の開始時刻（`/commits/{sha}/check-runs`）を読む。
+  # **public のいまは宣言が無くても読めるが、宣言する**（#888。ai-playbook v0.5.0 の雛形と同じ）。
+  # `permissions` を書いた時点で、書かなかった権限は none になる。public でなくなると
+  # 403 になり、掃き寄せが毎回落ちる。上の「呼んでいる先の権限は宣言する」と同じ規律で、
+  # scripts/check-second-opinion-gate-workflow.sh が呼び先と宣言の対応を確かめる。
+  checks: read
 
 concurrency:
   group: second-opinion-gate-${{ github.event.pull_request.number || github.ref }}
@@ -167,9 +173,18 @@ jobs:
           # 15:57:08Z。新しい push では近く、古いコミットの push では乖離する）。
           # **再実行で started_at が新しくなる方向は、猶予が伸びる側＝安全側である。**
           #
-          # **check-run が 1 つも無いときは判定しない。** CI がまだ始まっていない（＝ push
-          # 直後）か、`[skip ci]` で飛ばされたということで、どちらも「記録が無い」と断じる
-          # 根拠にならない。判定の猶予は 1 つの定数（GRACE_SEC）に揃える。
+          # **check-run が 1 つも無いときは、PR の更新時刻（`updated_at`）で代える**（#888。
+          # ai-playbook v0.5.0 の雛形に揃えた）。以前は「判定しない」にしていたが、それでは
+          # **掃き寄せが拾うべき PR を永久に拾わない。** このリポジトリで PR の head に
+          # check-run を作るのは `pull_request` の契機のワークフローだけで（verify.yml /
+          # identity-guard.yml / このワークフロー。`push` の契機は main だけ）、**`opened` が
+          # 届かなかった PR では check-run が 1 つも無い。** 掃き寄せはまさにその PR のために
+          # 張ってあるのに、そこで黙って飛ばしていた。`[skip ci]` の push も同じになる。
+          #
+          # 上で「`updated_at` も使えない」と書いたのは、**主に使う時刻として**である。代わりに
+          # 使うだけなら害が無い——`updated_at` は push で必ず更新され、コメントでさらに進むので、
+          # **push の時刻より前になることはない。判定が遅れることはあっても、猶予より早まる
+          # ことはない。** 判定の猶予は 1 つの定数（GRACE_SEC）に揃える。
 
           # status の名前。**変えると過去の PR に付いた status と別物になる。**
           CONTEXT="second-opinion-gate"
@@ -342,7 +357,7 @@ jobs:
             if ! prs="$(gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" \
               --jq '.[] | select(.head.repo != null and .head.repo.full_name == env.REPO)
                     | select(.draft == false)
-                    | "\(.number) \(.head.sha)"' 2>/dev/null)"; then
+                    | "\(.number) \(.head.sha) \(.updated_at)"' 2>/dev/null)"; then
               echo "::error::open な PR の一覧を取得できませんでした。1 本も判定していません。"
               exit 1
             fi
@@ -351,7 +366,7 @@ jobs:
               exit 0
             fi
             # while read はパイプの右に置かない（サブシェルで failed が残らない）。
-            while read -r pr sha; do
+            while read -r pr sha updated_at; do
               [ -n "$pr" ] || continue
               # push の時刻を、check-run の最も早い開始時刻から採る。
               # **`select(. != null)` を外さない。** queued や skipped の check-run は
@@ -367,9 +382,15 @@ jobs:
                 failed=1
                 continue
               fi
+              # **check-run が 1 つも無いときは、PR の更新時刻で代える**（上の「check-run が
+              # 1 つも無いときは」。#888）。飛ばすと、`opened` を取りこぼした PR を永久に拾わない。
               if [ -z "$pushed_at" ]; then
-                echo "PR #${pr}: head（${sha:0:7}）に check-run がまだありません。掃き寄せでは判定しません。"
-                continue
+                if [ -z "$updated_at" ]; then
+                  echo "PR #${pr}: head（${sha:0:7}）の check-run も PR の更新時刻も読めません。掃き寄せでは判定しません。"
+                  continue
+                fi
+                echo "PR #${pr}: head（${sha:0:7}）に check-run がありません。PR の更新時刻（${updated_at}）を push の時刻の代わりに使います。"
+                pushed_at="$updated_at"
               fi
               age=$(( now - $(date -u -d "$pushed_at" +%s) ))
               if [ "$age" -lt "$GRACE_SEC" ]; then

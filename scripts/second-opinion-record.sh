@@ -169,11 +169,29 @@ cmd_save() {
     *) fail "--scope は staged か range:A..B です: $scope" ;;
   esac
 
-  cat > "$dir/output"
-  [[ -s "$dir/output" ]] || fail "第二意見の出力が空です。記録しても意味が無いため失敗させます。"
+  # **一時ファイルへ書いて確かめてから置き換える**（#888。ai-playbook v0.5.0 の雛形に揃えた）。
+  # 以前は既存の記録へ直接書いていたため、入力が空のときや書き込みに失敗したときに、
+  # **古い meta と空（または途中まで）の output の組が残った。** 古い紐づけがまだ HEAD と
+  # 一致していれば、`post` がその壊れた記録を投稿してしまう——確認側は印の SHA しか見ないので、
+  # 中身の無い記録で緑になる。scripts/check-second-opinion-gate-workflow.sh が確かめる。
+  #
+  # 一時ファイルの名前は毎回変える（`mktemp`）。固定の名前だと、同じ worktree で save が
+  # 重なったときに、片方が他方の書きかけを消せる（#888 の第二意見の指摘）。**置き場所は
+  # 記録と同じディレクトリに置く**——下の `mv` を同じファイルシステムの中の rename にするため。
+  local tmp_output tmp_meta
+  tmp_output="$(mktemp "$dir/output.tmp.XXXXXX")" || fail "一時ファイルを作れません（$dir）。既存の記録は変えていません。"
+  tmp_meta="$(mktemp "$dir/meta.tmp.XXXXXX")" || { rm -f "$tmp_output"; fail "一時ファイルを作れません（$dir）。既存の記録は変えていません。"; }
+  if ! cat > "$tmp_output"; then
+    rm -f "$tmp_output" "$tmp_meta"
+    fail "第二意見の出力を書けません（$tmp_output）。既存の記録は変えていません。"
+  fi
+  if [[ ! -s "$tmp_output" ]]; then
+    rm -f "$tmp_output" "$tmp_meta"
+    fail "第二意見の出力が空です。記録しても意味が無いため失敗させます。既存の記録は変えていません。"
+  fi
 
   # メタは KEY=VALUE の 1 行 1 項目。値に改行を含めない。
-  {
+  if ! {
     printf 'engine=%s\n' "$engine"
     printf 'verdict=%s\n' "$verdict"
     printf 'scope=%s\n' "$scope"
@@ -181,7 +199,26 @@ cmd_save() {
     printf 'bind_kind=%s\n' "$bind_kind"
     printf 'bind_value=%s\n' "$bind_value"
     printf 'saved_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$dir/meta"
+  } > "$tmp_meta"; then
+    rm -f "$tmp_output" "$tmp_meta"
+    fail "記録のメタを書けません（$tmp_meta）。既存の記録は変えていません。"
+  fi
+
+  # 置き換えは meta を先に消してから行う。途中で止まっても「meta が無い」側に倒れ、
+  # load_meta が「記録がありません」として扱う（古い meta と新しい output の組を作らない）。
+  # `mv` は同じディレクトリの中なので rename(2) で、置き換えの途中の中身は見えない。
+  #
+  # **守るのは「置き換えを始める前に失敗したら、既存の記録は残る」ことと「壊れた組を
+  # 作らない」ことの 2 つである。** 2 つのファイルを 1 回で入れ替える手段は無いので、
+  # 置き換えの最中に止まったときは記録が「無い」側へ倒す。`post` が「記録がありません」で
+  # 止まり、loop-gate.sh を回し直せば戻る——黙って古い記録を投稿するより、止まって見える
+  # ほうを採る（#888 の第二意見は「前の記録が使えなくなる」と指摘したが、それは意図した
+  # 倒し方である。雛形も同じ順序）。同じ worktree で save が重なったときに、output と
+  # meta が別々の実行から採られることも防がない。記録は worktree ごとに分けてあり
+  # （冒頭「置き場所」）、1 つの worktree では loop-gate.sh が 1 本ずつ回す前提である。
+  rm -f "$dir/meta"
+  mv -f "$tmp_output" "$dir/output" || fail "記録を置き換えられません（output）。"
+  mv -f "$tmp_meta" "$dir/meta" || fail "記録を置き換えられません（meta）。"
 
   printf '[second-opinion-record] 記録しました: %s（%s=%s）\n' "$scope" "$bind_kind" "${bind_value:0:12}"
 }

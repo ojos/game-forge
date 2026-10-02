@@ -178,6 +178,8 @@ push / PR 作成後の最終ゲートを、このプロジェクトで具体化�
 
 **戻すときは、規範の「置く場合」に従い、要求側と確認側の 2 本で 1 組にします。** 確認側だけを省くと、要求側の契機が届かなかったときに最終ゲートが黙って抜けます（規範「要求されたことを別の契機で確認する」）。撤去した 2 本は `git log --diff-filter=D -- .github/workflows/copilot-review.yml .github/workflows/review-gate.yml` で辿れます。
 
+**v0.5.0 の雛形（`templates/second-opinion-gate.yml` / `templates/second-opinion-record.sh`）とは、記録の数え方の 1 点だけを違えたまま残します（#888）。** 雛形は「書き手が PR の作者で、かつ `author_association` が `OWNER` / `MEMBER` / `COLLABORATOR`」のコメントを数えます。このプロジェクトは「書き手がリポジトリの持ち主で、かつ `OWNER`」だけを数えます（#865）。理由は 3 つです。個人所有の public リポジトリで、PR を作るのも記録を投稿するのも持ち主の gh だけなので、どちらの条件でも数えるコメントは変わりません。書き手を 1 人に固定するので、協力者を迎えたときも、その人が自分で投稿した記録では緑にならない（持ち主が回すまで赤のままの）安全な側に倒れます。そして、外部層の記録の確認側（`scripts/acceptance-record-judge.sh`。#844 / #845）と同じ綴りに揃っています。**Organization へ移すときは雛形の条件へ揃えます**——持ち主の名前（組織名）がコメントの書き手と一致することはなく、持ち主で絞ったままだと記録があっても常に赤になります。ほかの 3 点（check-run が無い PR を掃き寄せで更新時刻により判定する・`permissions` に `checks: read` を宣言する・`save` を一時ファイル経由で置き換える）は雛形に揃え、`scripts/check-second-opinion-gate-workflow.sh` が確かめます。
+
 ### 書き戻しの直列化
 
 **`docs/handoff.md` を触る open PR は、同時に 1 本までにします**（#650）。2 本目が出ると、`.github/workflows/writeback-serial.yml` が後から出たほうへ `writeback-serial` の status を failure で付けます。**同じ日の追記は、先に open している PR へ足してください。** 先の PR が閉じると、次の 1 本は自動で緑に変わります。

@@ -91,7 +91,12 @@ gh api --paginate 'repos/{owner}/{repo}/pulls/N/comments' --jq '.[] | {user: .us
 
 - `gh pr diff N` を読み、`pr-review.md` の順に確認します（受け入れ条件との対応、次に高リスクの観点）。
 - **その差分がこの PR のものか確かめます。** 直前のブランチに居たまま `git checkout -b` すると、前の PR のコミットが相乗りします。この場合、レビューも CI も緑のまま通ってしまいます（`docs/handoff.md`）。`commits` の見出しと `gh pr diff N --name-only`（変更したファイルの一覧）が、PR の主題と合っているかを見ます。
-- 本文に `Closes #NNN` があるか確かめます。書かれていないと、マージしても issue が open のまま残ります。
+- 本文とコミットメッセージ（`commits` の `messageHeadline` / `messageBody`）の**両方**に `Closes #NNN` があるか確かめます。本文に無ければ、マージしても issue が open のまま残ります。コミットメッセージ側は、PR 本文の `Closes` を GitHub が認識しないことがあるための保険です（`.ai-playbook/shared-ai-rules.md`「6. コミットメッセージ規約」の「Closes の保険」。このリポジトリでは #839 / #841 / #842 で `closingIssuesReferences` が空になりました。`docs/handoff.md` 3 章）。**コミットメッセージ側に無ければ、8 で squash の本文に `Closes #NNN` を足してマージします。** 保険のためだけにコミットを積み直して CI をやり直すことはしません。
+
+  ```bash
+  gh pr view N --json body,commits --jq '"[body]", .body, (.commits[] | "[commit \(.oid[0:7])]", .messageHeadline, .messageBody)' \
+    | grep -n -i -E '^\[|(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+'
+  ```
 
 ### 5. マージの前提を確かめる
 
@@ -154,6 +159,8 @@ gh pr merge N --squash --match-head-commit "$sha"
 
 該当する行が出たら、その指示を除いた本文をファイルに書き、`gh pr merge N --squash --match-head-commit "$sha" --body-file <そのファイル>` で本文を差し替えてマージします。
 
+4 でコミットメッセージ側に `Closes #NNN` が無かった場合も、同じく `--body-file` で本文を差し替えます。本文は、既定の squash の本文と同じくコミットメッセージを連ねたもの（`gh pr view N --json commits --jq '.commits[] | .messageHeadline + "\n\n" + .messageBody'`）に、`Closes #NNN` の行を足して作ります（CI を飛ばす指示があれば、それも除きます。`Closes` はバッククォートで囲みません）。`--body-file` で渡した本文がマージコミットのメッセージになるため、そこから issue が閉じます。**このリポジトリでは PR 本文は squash の本文に入らない**（`COMMIT_MESSAGES`）ので、本文の `Closes` を GitHub が認識しなければ、ここで足さない限りどこからも閉じません。
+
 - **確認が、この手順での承認です。** `scripts/confirm-merge-hook.sh` がマージの直前に確認を挟みます。承認されればマージが実行されます。
 - **head が動いていたためにマージが失敗したら、新しい SHA で打ち直しません。** 確かめていないコミットが入ったということなので、止めて報告します。
 - **拒否されたら、再試行しません。REST や GraphQL といった別の経路も使いません。** そこで止めて、理由を聞きます。
@@ -162,7 +169,12 @@ gh pr merge N --squash --match-head-commit "$sha"
 
 ### 9. マージ後を確かめる
 
-- `closingIssuesReferences` に挙がっている issue が閉じたかを見ます。
+- `closingIssuesReferences` に挙がっている issue と、本文・コミットメッセージの `Closes #NNN` に書かれた issue（4 で読んだもの）の**両方**が閉じたかを見ます。GitHub が `Closes` を認識しなかったときは `closingIssuesReferences` が空になるため、それだけを見ると、閉じていない issue を確かめないまま通り抜けます（#839 / #841 / #842）。閉じていなければ、マージコミットを示すコメントを付けて手で閉じ（`gh issue close NNN --comment "<マージコミットの SHA>（PR #N）で解決しました。Closes が認識されなかったため手で閉じます。"`）、報告に書きます。
+
+  ```bash
+  gh pr view N --json closingIssuesReferences --jq '[.closingIssuesReferences[].number]'
+  gh issue view NNN --json state,stateReason --jq '{state, stateReason}'
+  ```
 - main で走る `verify` の実行を、**マージコミットの SHA で特定してから**、最後まで見届けます。「main の最新の実行」で選ぶと、直後に入った別のマージの実行を見てしまい、この PR の配備を確かめたことになりません。
 
   ```bash

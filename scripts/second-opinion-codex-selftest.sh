@@ -708,10 +708,41 @@ grep -q '引けなかったため載せません: #15' "$work/err" \
   || fail "引けなかったことが出力に出ていません"
 git -C "$repo" checkout -q -
 
+# 別リポジトリの番号を拾わないこと（#902）。
+#
+# **#882 / #883 で、上流の issue 番号が game-forge の issue として文脈に載った**
+# （「上流 ojos/ai-packages-dev の #382」と書いた参照が、こちらの #382 として引かれた）。
+# 読み取りは賢くせず、別リポジトリの番号は `owner/repo#N` と繋げて書くと定めた
+# （`.github/project-ai-rules.md`「レビューの起動方法」）。**その書き方なら除外される
+# ことを、ここで固定する。** 判定を緩めて繋げた形まで拾うようになると、規則を守っても
+# 別リポジトリの番号が文脈に載る。
+#
+# 拾わない形の番号は 9xx、拾う形は 1x にして、混ざったときに出力で見分けられるようにする。
+refs_out="$(printf '%s\n' \
+  'ojos/ai-packages-dev#901 を取り込む' \
+  'ai-packages-dev#902 と repo2#903' \
+  'https://github.com/ojos/ai-packages-dev/issues/904' \
+  'https://github.com/ojos/ai-packages-dev/pull/905#issuecomment-906' \
+  '文中の #11 を見る' \
+  '#12 は行頭' \
+  'fix: 何かを直す (#13)' \
+  '全角の括弧（#14）' \
+  '上流 ojos/ai-packages-dev の #15' \
+  | bash "$REVIEW" --extract-issue-refs 2> "$work/refs-err")" || {
+  fail "--extract-issue-refs が失敗しました"
+  tail -3 "$work/refs-err" >&2
+}
+# 最後の #15 は**拾うのが正しい**（間に語を挟んだ書き方。規則が禁じている形で、
+# 拾われることが規則の理由である）。拾わなくなったら、読み取りを賢くした変更が入った。
+refs_want="$(printf '%s\n' 11 12 13 14 15)"
+if [[ "$refs_out" != "$refs_want" ]]; then
+  fail "番号の抜き出しが変わりました（owner/repo#N・repo#N・URL を拾わず、文中・行頭・括弧の中の #N を拾うはずです）: $(printf '%s' "$refs_out" | tr '\n' ' ')"
+fi
+
 if [[ "$failed" -ne 0 ]]; then
   echo "[codex-selftest] codex エンジンの配線が壊れています" >&2
   exit 1
 fi
 
-echo "[codex-selftest] 15 組の配線を確かめました（差分を標準入力で先に渡す / サンドボックスが起動しない環境 / issue の文脈 / 参照された issue・PR の文脈 / antigravity の旗と包み / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / 差分を読めなかった回答と記録 / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
+echo "[codex-selftest] 16 組の配線を確かめました（差分を標準入力で先に渡す / サンドボックスが起動しない環境 / issue の文脈 / 参照された issue・PR の文脈 / antigravity の旗と包み / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / 差分を読めなかった回答と記録 / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し / 別リポジトリの番号を拾わない）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

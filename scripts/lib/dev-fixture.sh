@@ -115,6 +115,7 @@ dev_fixture_up() {
 
   command -v node >/dev/null 2>&1 || fail "node が見つかりません。"
   command -v npx >/dev/null 2>&1 || fail "npx が見つかりません（wrangler の起動に使います）。"
+  command -v jq >/dev/null 2>&1 || fail "jq が見つかりません（KV へ置く JSON を作るのに使います。#904）。"
 
   node -e 'if (typeof WebSocket !== "function") { process.exit(1) }' 2>/dev/null ||
     fail "この Node には WebSocket が組み込まれていません（Node 22 以降が要ります）: $(node --version)"
@@ -376,10 +377,24 @@ sharp(Buffer.from(svg)).png().toFile(process.argv[1]).catch((error) => { console
   # 部品（`@cloudflare/workers-oauth-provider`）の許可の記録を KV へ直に置く——**一覧が読むのは許可の JSON だけ**
   # （`listUserGrants` は `grant:<利用者の id>:` の鍵を list して値を get する。暗号化した props は読まない）ので、
   # 同意の往復を通さずに作れる。アプリ名は 390px で折り返す長さにしてある。
+  #
+  # **値は jq で作ったファイルから `--path` で置く**（#904）。shell の二重引用符の中に JSON を書くと、
+  # 値に `"` や `\` が入った途端にエスケープが崩れる（#732。この仕込みの D1 の書き込みが同じ形で
+  # 壊れ、仕込みが入らないまま幅の検査が緑になった）。
+  # 文字列は `--arg`、数は `--argjson` で渡し、引用符の入れ子に頼らない。`-j` で末尾の改行を付けず、
+  # 以前の引数渡しと同じバイト列にしてある。ファイルは `$WORK` に置き、後始末は `dev_fixture_down` に乗る。
   GRANT_CREATED_AT="$(date +%s)"
+  jq -cjn \
+    --arg userId "$USER_ID" \
+    --arg clientName "幅の検査のための、とても長い名前を名乗る AI アプリ（Claude Desktop のコネクタ）" \
+    --argjson createdAt "$GRANT_CREATED_AT" \
+    '{id: "devFixtureGrant01", clientId: "devFixtureClient", userId: $userId,
+      scope: ["works:read", "works:write", "works:generate"],
+      metadata: {clientName: $clientName, redirectHost: "claude.ai"},
+      encryptedProps: "", createdAt: $createdAt}' >"$WORK/grant.json" ||
+    fail "検査用の接続中のアプリの値（JSON）を作れませんでした。"
   npx wrangler kv key put --local --binding OAUTH_KV --persist-to "$STATE" \
-    "grant:$USER_ID:devFixtureGrant01" \
-    "{\"id\":\"devFixtureGrant01\",\"clientId\":\"devFixtureClient\",\"userId\":\"$USER_ID\",\"scope\":[\"works:read\",\"works:write\",\"works:generate\"],\"metadata\":{\"clientName\":\"幅の検査のための、とても長い名前を名乗る AI アプリ（Claude Desktop のコネクタ）\",\"redirectHost\":\"claude.ai\"},\"encryptedProps\":\"\",\"createdAt\":$GRANT_CREATED_AT}" \
+    "grant:$USER_ID:devFixtureGrant01" --path "$WORK/grant.json" \
     >"$WORK/kv.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/kv.log" >&2; fail "検査用の接続中のアプリを KV へ置けませんでした。"; }
 

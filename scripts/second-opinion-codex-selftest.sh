@@ -12,6 +12,9 @@
 #   2. **判定が回答以外の文字列で行われる。** codex の回答は `-o` のファイルから取る。
 #      stdout を読む実装へ戻ると、見出しや進捗が判定へ混ざる。
 #
+# **差分は必ず標準入力で渡す**（#880）。差分の取得をモデルのツールに任せると、読み取り
+# 専用のサンドボックスが起動しない環境で、差分を読まないまま回答が返る（検査 1b）。
+#
 # **どちらも本物の CLI を呼ばずに確かめられる。** 仕込みの `codex` を PATH の先へ置き、
 # 受け取った標準入力と引数を記録させる。
 #
@@ -118,6 +121,26 @@ if [[ -z "$answer" ]]; then
   exit 1
 fi
 
+# サンドボックスが起動しない環境（#880）。**本物がこの環境で実際にしたことだけを真似る**:
+# ツールのコマンドは bwrap の失敗で 1 本も走らない（2026-10-01 の devcontainer と、上流の
+# ユーザー名前空間を禁じたコンテナで実測）。モデルが読めるのは標準入力に来たものだけになる。
+#   - 標準入力に差分があれば、それを読んで答える（読んだ証拠に、追加行を指摘の what へ写す）
+#   - 無ければ、2026-10-01 の本物と同じく `reviewed: false` と bwrap の失敗を返す
+# **仕込み自身は git を叩かない。** 叩くと、差分を渡さない実装でもこの検査が通る。
+if [[ "${FAKE_CODEX_SANDBOX:-ok}" == "broken" ]]; then
+  echo "bwrap: Failed to make / slave: Permission denied" >&2
+  stdin_text="$(cat "$FAKE_CODEX_RECORD/stdin")"
+  if printf '%s\n' "$stdin_text" | grep -q '^diff --git '; then
+    added="$(printf '%s\n' "$stdin_text" | awk '/^\+/ && !/^\+\+\+ / { print substr($0, 2); exit }')"
+    jq -cn --arg what "差分を読みました: $added" \
+      '{reviewed: true, findings: [{category: "other", file: "sample.txt", line: 2, what: $what, why: "差分の外はコマンドが失敗したため確かめていません"}]}' \
+      > "$answer"
+  else
+    printf '%s\n' '{"reviewed":false,"findings":[{"category":"other","file":"","line":0,"what":"レビューを実施できませんでした。","why":"git diff が bwrap: Failed to make / slave: Permission denied で失敗しました。"}]}' > "$answer"
+  fi
+  exit 0
+fi
+
 printf '%s\n' "${FAKE_CODEX_ANSWER:-{\"reviewed\":true,\"findings\":[]\}}" > "$answer"
 
 # **stdout へは回答を書かない。** 書くと、-o を読まない実装でもこの検査が通る。
@@ -161,7 +184,7 @@ run_review() {
   )
 }
 
-# ---- 1. 差分を渡さず、取り方を指示していること（#804 のツール解禁） ----
+# ---- 1. 差分を標準入力で、プロンプトより先に渡していること（#880） ----
 rm -f "$record/stdin" "$record/argv"
 rc=0
 run_review || rc=$?
@@ -173,19 +196,43 @@ fi
 if [[ ! -f "$record/stdin" ]]; then
   fail "codex が標準入力を受け取っていません（プロンプトの渡し方が壊れています）"
 else
-  # **差分そのものを渡していないこと。** 渡してしまうと、ツールを解禁した意味が薄れ、
-  # 大きい差分で引数や入力の上限に当たる形へ逆戻りする。
-  if grep -q '^diff --git' "$record/stdin"; then
-    fail "プロンプトに差分が載っています（#804 ではモデル自身に取らせます）"
+  # **差分が加工されずに、先頭に来ていること。** 後ろに置くと、プロンプト冒頭の
+  # 「上記は git の差分です」が指す先が無くなる（ヘッダの壊れ方 1）。差分には @ 参照・
+  # 配列展開・メールアドレスを入れてあり、渡し方を間違えると化ける。
+  expected_diff="$work/expected.diff"
+  git -C "$repo" diff 'HEAD~1..HEAD' > "$expected_diff"
+  expected_lines="$(wc -l < "$expected_diff" | tr -d '[:space:]')"
+  if ! head -n "$expected_lines" "$record/stdin" | cmp -s - "$expected_diff"; then
+    fail "標準入力の先頭が差分（git diff HEAD~1..HEAD）と一致しません（差分を渡していないか、並びや中身が変わっています）"
   fi
-  # **取り方を指示していること。** 指示が無ければ、モデルは何をレビューするか分からない。
+  # **どの範囲の差分かを書いていること。** モデルが差分の外を確かめるときの手がかりになる。
   if ! grep -q 'git diff HEAD~1..HEAD' "$record/stdin"; then
-    fail "プロンプトに差分の取り方（git diff <範囲>）がありません"
+    fail "プロンプトに差分の範囲（git diff <範囲>）がありません"
+  fi
+  # **差分は渡したものを読み、ツールは差分の外に使うと指示していること。**
+  if ! grep -q '差分の外を確かめるために使ってよい' "$record/stdin"; then
+    fail "プロンプトに「ツールは差分の外を確かめるために使う」の指示がありません"
   fi
   # **落とす category の規則が載っていること。**
   if ! grep -q 'edge-case' "$record/stdin"; then
     fail "プロンプトに報告の規則（category）がありません"
   fi
+fi
+
+# ---- 1b. サンドボックスが起動しない環境でも、渡した差分でレビューが通ること（#880） ----
+# ツールの `git diff` は bwrap の失敗で走らない（仕込みの注記）。差分を標準入力で渡して
+# いれば、仕込みはそれを読んで答え、**終了コード 0 で通る**。渡していなければ、
+# 2026-10-01 の本物と同じく `reviewed: false` が返り、#873 の検査で落ちる。
+rc=0
+FAKE_CODEX_SANDBOX=broken run_review || rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  fail "サンドボックスが起動しない環境で、終了コードが $rc になりました（差分を標準入力で渡していれば 0 のはずです）"
+  tail -5 "$work/err" >&2
+fi
+# **差分を読んだ回答で通ったこと**を見る。終了コードだけでは、別の理由の 0 と区別できない。
+# 仕込みは、標準入力の差分の追加行を指摘へ写す。
+if ! grep -qF '差分を読みました: noreply@example.com ${ARR[@]}' "$work/out"; then
+  fail "サンドボックスが起動しない環境の回答に、差分の追加行が出ていません（差分を読んだ回答で通っていません）"
 fi
 
 # ---- 2. 引数の形（読み取り専用・スキーマ・回答の口・モデル） ----
@@ -666,5 +713,5 @@ if [[ "$failed" -ne 0 ]]; then
   exit 1
 fi
 
-echo "[codex-selftest] 14 組の配線を確かめました（差分を渡さない / issue の文脈 / 参照された issue・PR の文脈 / antigravity の旗と包み / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / 差分を読めなかった回答と記録 / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
+echo "[codex-selftest] 15 組の配線を確かめました（差分を標準入力で先に渡す / サンドボックスが起動しない環境 / issue の文脈 / 参照された issue・PR の文脈 / antigravity の旗と包み / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / 差分を読めなかった回答と記録 / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

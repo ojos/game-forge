@@ -252,9 +252,14 @@ claim（pending → running）→ finishWithError('internal')（running → fail
   先に bash scripts/deploy-orchestrator.sh を実行してください
 ```
 
-- **オーケストレータの束が変わったときだけ走る**（`scripts/orchestrator-bundle-changed.sh` が
-  直前のコミットと束を作り比べる。#263 でファイル名の一覧から改めた）。毎回 AWS を読むと、
-  **AWS 側の不調で Worker を配れなくなる**——外部の可用性を配備の前提条件へ持ち込まない
+- **オーケストレータの束が、本番の Pages に居るコミットから変わったときだけ走る**
+  （`scripts/orchestrator-bundle-changed.sh` が束を作り比べる。#263 でファイル名の一覧から改め、
+  #925 で比較元を直前のコミットから本番の Pages に居るコミットへ改めた。理由は下の「比較元」）。
+  毎回 AWS を読むと、**AWS 側の不調で Worker を配れなくなる**——外部の可用性を配備の前提条件へ持ち込まない
+- **判定できないときは落とす**（作業ツリーが汚れている・束を作れない・Pages の応答を読めない等）。
+  判定は `scripts/orchestrator-bundle-changed-selftest.sh`（`scripts/acceptance.sh` が回す）が既知の差分で確かめている
+- **依存（`package.json` / `package-lock.json`）が変わった差分も「変わった」として扱う**（#925）。
+  理由は下のチャットの関門の箇条と同じ
 - **束ね直しは決定的である**（`bundle-orchestrator.sh` が時刻を固定し `zip -X` を使う）。
   macOS で束ねたものと Linux で束ねたものが**バイト一致することを実測で確かめてある**
 - 読み取りは**専用の読み取り専用ロール**で行う（`terraform/orchestrator.tf` の
@@ -295,8 +300,20 @@ claim（pending → running）→ finishWithError('internal')（running → fail
   比較元の側も手元の `node_modules` で束ねるので、`aws4fetch` や esbuild の版だけが変わった差分は
   作り比べでは見えない。広めに拾い、照合は実物の `CodeSha256` で行う（束が同じなら通る）
 
-**比較元は「直前のコミット」ではなく「本番の Pages に居るコミット」である**（ここだけ
-オーケストレータの関門と違う。#903 の第二意見）。直前のコミットと比べると、次の 2 つの順序で
+**チャットの束が変わる PR は「配り直し → マージ」の順になる**（オーケストレータと同じ制約）。
+止まったときは、PR の head（= main に入ったコミット）を手元に置いたツリーから
+`bash scripts/deploy-chat.sh` を叩き（**実体の `node_modules` を持つツリーから**。symlink で借りた
+ツリーで束ねると `CodeSha256` が別物になる）、落ちた `deploy` ジョブを再実行する。
+マージの前に束が変わるかを確かめるには、PR のツリーで次を打つ。
+
+```bash
+bash scripts/chat-bundle-changed.sh "$(git merge-base origin/main HEAD)"
+```
+
+### 比較元（2 つの関門で共通）
+
+**比較元は「直前のコミット」ではなく「本番の Pages に居るコミット」である**（チャットの関門で
+#903 の第二意見が見つけ、#925 でオーケストレータの関門も揃えた）。直前のコミットと比べると、次の 2 つの順序で
 束が変わったコミットの照合が 1 度も行われない。
 
 - 束を変えたコミット A の配備が、直後のマージ B に譲って何もしなかった（`deploy-head`。#427）。
@@ -307,21 +324,15 @@ claim（pending → running）→ finishWithError('internal')（running → fail
 Pages は同じジョブの**この関門の後ろ**で `--commit-hash` 付きで配られる（#95）ので、本番の Pages に
 居るコミットは、最後にこの関門を通ったコミットである。Cloudflare の API から読めなければ落とし
 （再実行で足りる）、本番の配備にコミットが記録されていない・汚れたツリーから配られた・そのコミットを
-取得できないときは「変わった」として照合へ回す（細部は `scripts/chat-bundle-changed.sh` の冒頭）。
+取得できないときは「変わった」として照合へ回す（細部は `scripts/chat-bundle-changed.sh` /
+`scripts/orchestrator-bundle-changed.sh` の冒頭）。
 
-**オーケストレータの関門は直前のコミットと比べたままで、上の 2 つの穴がある**（#903 の範囲の外）。
-オーケストレータの束を変える PR を入れた直後は、次のマージの前に、その PR の配備が関門まで走った
-こと（緑か、落ちたなら配り直して再実行したこと）を確かめること。
+**2 本の判定は写しで揃えてある**（#925。共有にしなかった理由は `scripts/orchestrator-bundle-changed.sh`
+の冒頭）。違うのは束ねるスクリプトと合図の綴りだけで、2 本の自己検査が同じ観点を確かめる。
+片方を直したら、もう片方にも同じ直しが要るかを見ること。
 
-**チャットの束が変わる PR は「配り直し → マージ」の順になる**（オーケストレータと同じ制約）。
-止まったときは、PR の head（= main に入ったコミット）を手元に置いたツリーから
-`bash scripts/deploy-chat.sh` を叩き（**実体の `node_modules` を持つツリーから**。symlink で借りた
-ツリーで束ねると `CodeSha256` が別物になる）、落ちた `deploy` ジョブを再実行する。
-マージの前に束が変わるかを確かめるには、PR のツリーで次を打つ。
-
-```bash
-bash scripts/chat-bundle-changed.sh "$(git merge-base origin/main HEAD)"
-```
+**改名した旧パスも残さない**（`--no-renames`。#925 で揃えた）。以前のオーケストレータの判定は
+削除（`D`）だけを片付けていたので、git が改名（`R`）と読んだ旧パスが作業ツリーに残っていた。
 
 ### この切り替えは生成経路を数分止める
 

@@ -347,11 +347,31 @@ jobs:
       # **登録簿に関わる差分のときだけ走らせる。** 毎回 AWS を読むと、AWS 側の不調で
       # Worker を配れなくなる——外部の可用性を配備の前提条件へ持ち込まない
       # （.github/project-ai-rules.md「外部層を単一入口へ含めない理由」と同じ線）。
+      #
+      # **比較元は直前のコミットではなく、本番の Pages に居るコミットにする**（#925。下のチャットの
+      # 関門〈#903〉と同じ）。直前のコミットと比べると、束を変えたコミットの配備が後続のマージに
+      # 譲ったときや、この関門で落ちたまま次がマージされたときに、照合が 1 度も行われず
+      # **Lambda は古いまま Worker だけが先へ進む。** Pages はこの関門の後ろで `--commit-hash`
+      # 付きで配られるので、本番の Pages に居るコミットは、最後にこの関門を通ったコミットである
+      # （判定の細部は scripts/orchestrator-bundle-changed.sh の冒頭）。
       - name: オーケストレータの束が変わったか
         if: steps.head-gate.outputs.deploy == 'true'
         id: orchestrator-diff
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          # プロジェクト名は下の Pages の配備（--project-name game-forge）と同じ値。
+          # **読めなければ落とす**（「変わっていない」に倒さない。再実行で足りる）。
+          pages_json="${RUNNER_TEMP}/pages-project-orchestrator.json"
+          if ! curl -fsS --retry 2 \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -o "$pages_json" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/game-forge"; then
+            echo "::error::本番の Pages に居るコミットを読めませんでした（Cloudflare の API）。オーケストレータの束が変わったかを判定できません。"
+            exit 1
+          fi
           # **ファイル名の一覧では決めない**（#263）。以前はここが `wrangler.toml` と
           # `src/generation-models.ts` の 2 本を見ていたが、2026-09-02 に #258 が
           # `src/orchestrator/payload.ts` でペイロードの版 3 を足したとき、一覧に無いので
@@ -369,7 +389,7 @@ jobs:
           #
           # **`set -e` の細かい挙動に頼らず、明示的に受ける。** 代入で受ければ `set -e` は
           # 効くが、条件式や `&&` の左辺へ移した日に黙って無効化される種類の依存である。
-          if ! out="$(bash scripts/orchestrator-bundle-changed.sh)"; then
+          if ! out="$(bash scripts/orchestrator-bundle-changed.sh --base-from-pages "$pages_json")"; then
             echo "::error::束が変わったかを判定できませんでした（判定スクリプトが失敗）。"
             exit 1
           fi
@@ -427,7 +447,7 @@ jobs:
       # **本番のチャットは古いプロンプトのまま動いていた**（#742 の配り直しで上書き）。
       # オーケストレータには上の関門（#241）があるのに、#695 で分けたチャットの関数には無かった。
       #
-      # **作りは上のオーケストレータの関門と同じである（比較元だけが違う。下）。** 束を 2 回作って
+      # **作りは上のオーケストレータの関門と同じである**（判定は写しで揃えてある。#925）。束を 2 回作って
       # 比べ、変わったときだけ AWS を読む（外部の可用性を配備の前提条件へ持ち込まない）。判定できないときは
       # 「変わっていない」に倒さず落とす。**判定は分けてある**——チャットだけが変わった日に
       # オーケストレータの配り直しを求めない（逆も同じ。仕様 5.16）。
@@ -437,7 +457,7 @@ jobs:
       # 落ちたまま次がマージされたときに、照合が 1 度も行われない。**Pages はこの関門の後ろで
       # `--commit-hash` 付きで配られる**ので、本番の Pages に居るコミットは、最後にこの関門を
       # 通ったコミットである（判定の細部は scripts/chat-bundle-changed.sh の冒頭）。
-      # **上のオーケストレータの関門は直前のコミットのまま**（#903 の範囲の外。同じ穴がある）。
+      # 上のオーケストレータの関門も、#925 で同じ比較元に揃えた。
       - name: チャットの束が変わったか
         if: steps.head-gate.outputs.deploy == 'true'
         id: chat-diff

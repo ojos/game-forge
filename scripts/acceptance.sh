@@ -439,6 +439,17 @@ else
   echo "[acceptance] (chat-bundle-changed) skip: scripts/chat-bundle-changed-selftest.sh not found"
 fi
 
+# オーケストレータの束の判定（#241 / #263 / #925）。上のチャットの判定と写しで揃えてあり、
+# 観点も同じ（scripts/orchestrator-bundle-changed.sh の冒頭）。**止まるのが生成なので、
+# 壊れたときの害はチャットより大きい**（2026-09-01 に 12 分止まった）。1 秒ほど。
+if [[ -f scripts/orchestrator-bundle-changed-selftest.sh ]]; then
+  echo "[acceptance] (orchestrator-bundle-changed) scripts/orchestrator-bundle-changed-selftest.sh"
+  bash scripts/orchestrator-bundle-changed-selftest.sh
+  ran_any=1
+else
+  echo "[acceptance] (orchestrator-bundle-changed) skip: scripts/orchestrator-bundle-changed-selftest.sh not found"
+fi
+
 # 画面と文書の用語が揃っていること（#740 / 仕様 5.16「用語」）。
 #
 # **hygiene と同じく grep だけで済むので前寄りに置く。** 揃え直しは 1 回で終わるが、

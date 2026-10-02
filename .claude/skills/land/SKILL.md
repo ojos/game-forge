@@ -110,6 +110,13 @@ gh api --paginate 'repos/{owner}/{repo}/pulls/N/comments' --jq '.[] | {user: .us
   ```
 
   最終行が `ORCHESTRATOR_BUNDLE_CHANGED` なら、配備が必要です。スクリプトが失敗した場合（作業ツリーが汚れている等）は、「変わっていない」とは扱いません。
+- チャットの関数の束も、同じツリーで確かめます（#903 / #925）。別の zip・別の関数なので、オーケストレータの結果からは分かりません。
+
+  ```bash
+  bash scripts/chat-bundle-changed.sh "$(git merge-base origin/main HEAD)"
+  ```
+
+  最終行が `CHAT_BUNDLE_CHANGED` なら、**マージの前に、利用者の端末で `bash scripts/deploy-chat.sh` を実行してもらう必要があります**（実体の `node_modules` を持つ、PR の head のツリーから）。スクリプトが失敗した場合は、オーケストレータと同じく「変わっていない」とは扱いません。main の deploy の関門（`.github/workflows/verify.yml`）も止めますが、それはマージの後です。ここで先に気づけば、main の deploy を止めずに済みます。
 - 差分が `migrations/` に及ぶ場合は、**適用を先に済ませる必要があります。** 適用済みかどうかは、PR のブランチを checkout したツリーで `bash scripts/check-migrations-applied.sh --remote` を実行して確かめます。そのブランチが古い main から切られているなら、先に手元で main を取り込みます（確かめるためだけなので push はしません）。古いツリーで見ると、未適用を見落とします。
 - 差分が `terraform/` に及ぶ場合は、**apply と、その後の外部層の記録が先に要ります**（#845）。apply はマージの前に、プライマリを PR の head へ `--detach` で置いて利用者が当てます（`docs/handoff.md` 3 章）。済んだかどうかは commit status の `acceptance-remote-pr` で読みます。**見るのは確かめる head の status です**（`gh api "repos/{owner}/{repo}/commits/$sha/statuses" --jq '[.[] | select(.context == "acceptance-remote-pr")][0] | {state, description}'`）。
   - success: その head で回した最新の記録が全件 PASS です。前提は済んでいます。

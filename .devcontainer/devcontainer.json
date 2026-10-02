@@ -4,6 +4,13 @@
   "service": "app",
   "workspaceFolder": "/workspaces/game-forge",
   "shutdownAction": "stopCompose",
+  // vscode の UID/GID をホストの利用者に合わせる（#879）。**既定で on だが、依存していることを明示する。**
+  // devcontainer CLI が Linux で動くとき（dev01 の Remote-SSH）、compose 方式でもコンテナを作るたびに
+  // updateUID.Dockerfile の段（`-uid` 付きのイメージ）で付け替える。ネイティブ Linux の Docker は
+  // bind mount の所有者を数値のまま通すので、これが無いと dev01（uid=1001）でワークスペースへ書き込めない。
+  // macOS では CLI が既定で飛ばし、vscode は 1000 のまま（Docker Desktop が所有者を写すので要らない）。
+  // false にすると dev01 で書き込めなくなる。scripts/check-devcontainer-dev01.sh が見る。
+  "updateRemoteUserUID": true,
   "features": {
     "ghcr.io/devcontainers/features/common-utils:1": {
       "configureZsh": true

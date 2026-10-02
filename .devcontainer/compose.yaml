@@ -1,25 +1,20 @@
 services:
   app:
-    # vscode の UID/GID をビルド引数で可変にする（#802）。
+    # **ベースは Ubuntu の版の名前（noble = 24.04）で固定する。浮動の `base:ubuntu` に戻さない。**
+    # `base:ubuntu` は 2026-09-10 に 26.04（resolute）へ移り、26.04 には `apt-key` が無いので、
+    # devcontainer.json の google-cloud-cli の feature（install.sh が `apt-key` を呼ぶ）が exit 127 で落ちる
+    # （#802 で dev01 の初回ビルドが実際に落ちた。Mac は 24.04 の古いキャッシュで動いていた）。
+    # 版を上げるときは、features がすべて新しい版で入ることを確かめてから、この行を書き換える。
     #
-    # **既定は 1000 のまま**（ベースイメージの vscode と同じ。Mac の Docker Desktop はこれで動く）。
-    # dev01（ネイティブ Linux の Docker Engine。利用者は uid=1001）では、bind mount の所有者が
-    # 数値のまま通るので、`.devcontainer/.env`（追跡外）に DEVCONTAINER_UID / DEVCONTAINER_GID を
-    # 書いて 1001 を渡す。手順は docs/local-dev.md の「dev01 に副開発環境を立てる」。
-    #
-    # **devcontainer.json の updateRemoteUserUID はこの構成（dockerComposeFile 方式）には効かない**
-    # ので、付け替えはイメージのビルドで行う（.devcontainer/Dockerfile と remap-vscode-user.sh）。
-    #
-    # **image: を併記しない。** build と image を両方書くと、ビルド結果がベースイメージの
-    # タグ（mcr.microsoft.com/devcontainers/base:noble）を上書きする。
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        USER_UID: ${DEVCONTAINER_UID:-1000}
-        USER_GID: ${DEVCONTAINER_GID:-1000}
+    # **vscode の UID/GID はここで付け替えない**（#879）。devcontainer.json の updateRemoteUserUID（既定 on）が、
+    # dev01（CLI が Linux で動く）では compose 方式でも 1001 へ付け替える。2026-10-02 に dev01 で実測した。
+    # 以前は #802 の「compose 方式には効かない」という前提でビルド引数と remap-vscode-user.sh で付け替えていたが、
+    # その前提は成り立たず、機構が二重になっていた。代償: CLI の段は features の後に走り $HOME しか
+    # chown しないので、features が置いた /go・/usr/local/go・nvm の所有者は 1000（ls で UNKNOWN）のまま残る。
+    # どれも setgid のグループ書き込み可で vscode は golang / nvm に入っているため、npm i -g・go install は通る（実測）。
+    image: mcr.microsoft.com/devcontainers/base:noble
     environment:
-      # コンテナのホストが何かを宣言する（#802）。dev01 では `.devcontainer/.env` に
+      # コンテナのホストが何かを宣言する（#802）。dev01 では `.devcontainer/.env`（追跡外）に
       # DEVCONTAINER_HOST=dev01 を書く。scripts/install-cloudflared.sh はこの値が dev01 のとき、
       # dev01 自身への ssh の入口（自己参照）を書かずに抜ける。Mac では空のまま。
       DEVCONTAINER_HOST: ${DEVCONTAINER_HOST:-}

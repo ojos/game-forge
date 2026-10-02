@@ -11,6 +11,31 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 ## 1. 現在地
 
+### ai-packages-dev から還流した 4 件のうち、#878 と #880 を直しました。#877 は着手でき、#879 は待ちです（#878 / #880。2026-10-02）
+
+上流 ojos/ai-packages-dev で見つかった問題と改善を、利用者が 4 本の票（#877〜#880）にして承認しました。触るファイルが重ならない 2 本を、2 レーンで並列に直しています。着手前に、生きている 3 つのセッション（game-forge-b6 と、ai-packages-dev 側の 2 つ）に、所有するファイルを伝えました。
+
+| # | 何をしたか | PR / コミット | 状態 |
+|---|---|---|---|
+| #878 | 上流が分岐点より先へ進んでいたら、第二意見の範囲の起点を分岐点の SHA にする。`origin/main` を上流にして切ったブランチで、ゲートの最中に main が進むと、他の PR を取り消す差分が範囲に混ざっていた（上流 PR #383 と同じ作り）。`scripts/loop-gate-range-selftest.sh` を足して acceptance に登録した（修正前に 3 件が赤） | PR #882 / `c3bfed1` | 閉じた |
+| #880 | codex にも差分を標準入力で渡す（差分が先、プロンプトが後）。ツールは差分の外を確かめる補助にとどめる。サンドボックスが起動しない環境でも差分を読める。共有の判定の決め事（`reviewed`）は「渡した差分を読めたか」に改めた（上流 PR #381 から、codex の呼び出し部分だけを持ち込んだ） | PR #883 / `00c7f08` | 閉じた |
+| #877 | 「リモート最終ゲートを置かない」を、規範どおりの選択として書き換える | — | **着手できる**: 上流 #364 を含む ai-playbook v0.5.0（`8ef795d`。2026-10-02）が出た。「リモート最終ゲート（任意の層）／置かない場合」の節があることを確かめた。devcontainer-bootstrap v0.13.0 も同時に出ている（ai-playbook v0.5.0 以降を要求） |
+| #879 | dev01 で `updateRemoteUserUID` が効くかを測り、`remap-vscode-user.sh` が要るかを決める | — | **待ち**: dev01 で、実際の開き方で測る |
+
+main の `deploy` は 2 本とも success です。#882 の実行は、後から入った #883 に配備を譲りました（`[deploy-head]` で確認）。#883 の実行が、両方を含む `00c7f08` を配っています。どちらも開発用のスクリプトだけの変更で、本番の動きは変わりません。
+
+#### このウェーブで踏んだこと（次の人へ）
+
+- **第二意見が、別のリポジトリの `#N` を、このリポジトリの issue として文脈に載せます**（1 回目。#882 と #883 の両方で起きました）。#882 では、「上流 ojos/ai-packages-dev の #382 / PR #383」と書いた参照に対して、game-forge の #382 / #383（作品の統計とソース閲覧）と食い違う、という `promise-mismatch` が出ました。**事実誤認として却下**しています（[判定](https://github.com/ojos/game-forge/pull/882#issuecomment-5944336601)）。リポジトリ名を書いても防げません。#883 でも、無関係な #381 の acceptance が文脈に載りました。**起票候補**: 参照を拾うときに、`owner/repo#N` の形や、直前にリポジトリ名がある番号を除く。
+- **`second-opinion-gate` の掃き寄せ（schedule）が、00:48 UTC から約 2 時間走りませんでした**（1 回目）。記録を post した後も、status が `no second-opinion record for this head` のまま残りました。**`gh workflow run second-opinion-gate.yml --ref main` で手で流すと、1 分で 2 本とも緑になりました。** post の後に赤が残っていたら、schedule を待たずにこれを流します。
+- **#880 の未実測の点**: 標準入力に載せる差分が codex の文脈の上限（gpt-6-sol で 272,000 トークン。`codex debug models` で実測）を超えたときに、CLI が失敗で終わるかは測っていません。main の直近 300 コミットの差分は、最大 408,140 バイト・p90 177,768 バイトです。また、`codex debug models` の `truncation_policy`（tokens, limit 10000）がツールの出力を切り詰める設定なら、#804 から #880 までの「モデル自身が `git diff` を叩く」形では、大きい差分が切り詰められていた可能性があります。**どちらも未確認の推測です。**
+
+#### 残していること
+
+- **#877**: ai-playbook v0.5.0 で `.ai-playbook` を取り込み直します。いまは v0.2.0 で、v0.5.0 との差は 21 ファイルあるので、取り込みそのものが 1 本の作業になります。そのとき `.github/project-ai-rules.md` の「リモート最終ゲートを置かないことは規範から逸脱しています」の節を書き換えます。#880 と ai-packages-dev #386（#873 の `reviewed` の考え方を雛形へ移す）も、そのときに上流の雛形と突き合わせます。
+- **#879**: dev01 に入ったときに測ります。
+- **起票候補**: 第二意見の参照の抽出で、別リポジトリの番号を除く（上記）。
+
 ### gh の認証を Mac と dev01 の環境ごとの PAT に揃え、#865 / #869 / #870 を進めました。AWS の SSO は 14 時間を超えて持つことを実測しました（#869 / #871。2026-10-01〜02）
 
 | # | 何をしたか | PR / コミット | 状態 |
@@ -213,7 +238,7 @@ Identity Center の設定は**インタラクティブ・バックグラウン�
 - （**2026-10-01 追記: #865 / PR #867 で直した**）**`second-opinion-gate` は、記録のコメントの著者を見ていません**（`second-opinion-gate.yml:207`。印の有無だけ）。public なので誰でも印を書けます。#844 / #845 は持ち主だけを数える形にしました。**起票候補**です。
 - **`gh issue lock` の理由は `off_topic`（下線）と綴ります。** `off-topic` は `invalid reason` で拒否されます（API の表示は `off-topic`）。
 - **worktree の `scripts/load-project-env.sh` は、メインの `.env` を読みに行きます。** 認証を外して測ったつもりでも Cloudflare だけ通りました（#844 のレーンの実測）。認証なしを測るときは、Cloudflare のトークンを無効な値で上書きする。
-- （game-forge-d9）**レーンが push の後に `second-opinion-record.sh post` を抜かし**、#850 の `second-opinion-gate` が `no second-opinion record for this head` で落ちました。post して `gh run rerun --failed` で通りました。**レーンの起動プロンプトに post を必ず書く。**
+- （**2026-10-02 追記: 2 回目が起きたので 3 章へ上げた**）（game-forge-d9）**レーンが push の後に `second-opinion-record.sh post` を抜かし**、#850 の `second-opinion-gate` が `no second-opinion record for this head` で落ちました。post して `gh run rerun --failed` で通りました。**レーンの起動プロンプトに post を必ず書く。**
 - （game-forge-d9）#848 の計画で「preview で実測」を組みましたが、**preview には到達できません**（仕様 9.1・確定20。ホスト検査で全経路 404、CI の配備も main 固定）。レーンの第二意見が拾いました。
 - （game-forge-d9）外部層の確認の途中で、別の PR のマージ直後に **`production deployment matches default branch HEAD` が一時的に FAIL** します（deploy の完了待ち）。2 本続けてマージすると 2 回起きます。
 
@@ -4051,6 +4076,11 @@ degrade の信号は永久に立たず、黙って #24 の近似に戻る）と�
 
 ## 3. 触るときの注意
 
+- **レーンは、push の後の `second-opinion-record.sh post` を抜かします**（#850（2026-09-30〜10-01 の波）と、2026-10-02 の #882 / #883 の 2 回。1 章の #850 の記録からの昇格）。
+  `loop-gate.sh` の GATE_PASS で記録は手元にできますが、PR へは投稿されません。`second-opinion-gate` は `no second-opinion record for this head` で赤になります。
+  **2 回目は、親（私）がレーンの起動プロンプトに post を書き忘れていました。** 1 回目の教訓「起動プロンプトに post を必ず書く」は、1 章にあったので読まれませんでした。
+  **レーンの起動プロンプトでは、push の手順の直後に `bash scripts/second-opinion-record.sh post` を書きます。** 抜けたら、PR の枝を checkout した worktree で `loop-gate.sh` を通し直し、post します。status が赤のまま残れば、`gh workflow run second-opinion-gate.yml --ref main` で判定し直させます（schedule は止まることがあります。1 章の #878 / #880 の節）。
+
 - **PR 本文の `Closes #NNN` を、GitHub が認識しないことがあります**（2026-09-30 に #839 / #841 / #842 の 3 回。1 章の #839 の記録からの昇格）。
   `gh pr view N --json closingIssuesReferences` が空のままで、**本文を保存し直しても、バッククォート（#366 / #367）が無くても起きます。**
   原因は不明です。**Copilot の撤退（#825）が原因ではありません**——撤退の後に作られ本文に `Closes` を書いた PR 7 本（#826 / #829 / #836 / #839 / #840 / #841 / #842。#827・#830・#833・#837 などは本文に `Closes` が無く母数の外）のうち、#826 / #829 / #836 / #840 は認識されました。
@@ -4696,6 +4726,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
+- **2026-10-02**（**ai-packages-dev からの還流 4 件のうち #878 / #880 を閉じた**——第二意見の範囲の起点を分岐点にし（PR #882）、codex にも差分を標準入力で渡した（PR #883）。2 レーンの並列で、着手前に 3 つのセッションへ所有ファイルを伝えた。#877 は ai-playbook v0.5.0 が出て着手できる、#879 は dev01 の実測待ち。第二意見が別リポジトリの `#N` を文脈に載せること、`second-opinion-gate` の schedule が止まって手で流したこと、#880 の未実測の点を 1 章に書いた。**3 章へ 1 件**（レーンが post を抜かす。2 回目）。書き戻しは game-forge-b6 の #884 の後）
 - **2026-10-02**（**gh を環境ごとの PAT に揃え（#869 / PR #871）、AWS の SSO が 14 時間を超えて持つことを実測した**——Mac 用（Administration・Variables まで）と dev01 用（その 2 つは No access）を分け、Mac では terraform plan と定期実行の投稿まで PAT で通った。Identity Center は 7 日だが外部 IdP との短いほうになるので、10 分おきの計測と 12:00 JST の定期実行（`prereq.aws: pass`）で、少なくとも 14 時間は持つことを確かめた（「約 1 時間」の見立ては外れた。7 日まで持つかは未確定）。GCP は 24 時間で切れて `prereq.gcp: fail`（設定どおり）。起票候補 3 つを #869 / #870 にした）
 - **2026-10-02**（**#798 / #873 / #874 を閉じた**——フォークの退行を数える集計（PR #872）を足して本番で測り（組 3・測れた 1・退行 0）、dev01 の codex が差分を読めないまま LGTM を返していた件を、ゲートで止め（PR #875）、AppArmor を外して直した（PR #876。dev01 で作り直して確認）。最初の見立て（userns の sysctl）の誤り、この devcontainer が dev01 だったこと、`.env` の `GH_TOKEN` の読み込み、agy のログインの 60 秒、`second-opinion-record.sh` が自分のリポジトリへ cd することを書いた。`docs/local-dev.md` 7.4 に第二意見そのものを回す確認を足した（codex の指摘）。書き戻しは game-forge-b6 と順番を取り決めた）
 - **2026-10-01**（**波 2 を合流し、#802 / #849 / #865 を閉じた**——game-forge-bd の #864（ベースを `base:noble` に固定）・#866（dev01 の実測 4 件の docs）と、Mac の作り直しの確認、このセッションの #867（第二意見の記録は持ち主のものだけ）と Mac の AWS の start URL の書き換えを書き戻した。#859 の節の「窓を閉じると止まる」を訂正し、`second-opinion-gate` の起票候補を済みにし、3 章の EBITEN に 3 回目を足した）

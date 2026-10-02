@@ -138,7 +138,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 - **外部層を単一入口へ含めない理由**: 外部認証の失効やオフラインでゲート全体が止まり、**実装が正しいのにループが止まります。** 単一入口の目的は複数の段を思い出す運用を機構で塞ぐことであって、外部の可用性をゲートの前提条件に持ち込むことではありません。
 - 外部層を通す契機: （記載。既定は外部状態の宣言を変更したとき）
 
-**道具の自己検査も、すべてローカル層（`scripts/acceptance.sh`）に置いたままにします（#890）。** 規範（`.ai-playbook/loop-workflow.md`「道具自体を見る検査の置き場所」）の基準「実装を変えたときに壊れるか」で `scripts/acceptance.sh` の検査を 1 本ずつ分けると、壊れない側（判定に使う道具を既知の入力で確かめる自己検査）は次の 14 本です（#890 で分類した 13 本と、#903 で足した 1 本）。
+**道具の自己検査も、すべてローカル層（`scripts/acceptance.sh`）に置いたままにします（#890）。** 規範（`.ai-playbook/loop-workflow.md`「道具自体を見る検査の置き場所」）の基準「実装を変えたときに壊れるか」で `scripts/acceptance.sh` の検査を 1 本ずつ分けると、壊れない側（判定に使う道具を既知の入力で確かめる自己検査）は次の 15 本です（#890 で分類した 13 本と、#903 と #925 で 1 本ずつ足した 2 本）。
 
 | 自己検査 | 確かめている道具 | 単独の所要 | 注記 |
 |---|---|---|---|
@@ -155,6 +155,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 | `scripts/acceptance-remote-aws-failure-selftest.sh` | 外部層の IAM の検査 3 本 | 0.29 秒 | **本物の宣言を読む**: 本物の `scripts/acceptance-remote.sh` が `terraform/*.tf` から期待値を導くので、宣言を変えると壊れうる |
 | `scripts/ojos-jp-records-selftest.sh` | 外部層の DNS レコードの照合 | 0.06 秒 | |
 | `scripts/chat-bundle-changed-selftest.sh` | `scripts/chat-bundle-changed.sh`（チャットの束の関門の判定。#903） | 約 1 秒 | #903 のレーンが別の時点で測った値。下の合計 4.43 秒には含まない |
+| `scripts/orchestrator-bundle-changed-selftest.sh` | `scripts/orchestrator-bundle-changed.sh`（オーケストレータの束の関門の判定。#925） | 約 0.9 秒 | #925 のレーンが別の時点で測った値。下の合計 4.43 秒には含まない |
 | `scripts/tile-reachability/` の `go test` | タイル地図の到達判定（運営の手元の道具） | 0.05 秒 | Go のビルドキャッシュがある状態 |
 
 所要は 2026-10-02 に devcontainer（14 コア、ロードアベレージ 4.6〜4.8）で 1 本ずつ測った値で、**合計 4.43 秒**です。同じ条件で `bash scripts/acceptance.sh` 全体は 89.7 秒だったので、**約 5% にあたります**。

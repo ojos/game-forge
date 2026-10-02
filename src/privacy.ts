@@ -37,7 +37,7 @@
  * | Cookie 3 種 | `src/session.ts`（`__Host-gf_session`、7 日）/ `src/auth/google.ts`（`__Host-gf_oauth`、10 分）/ `src/oauth-paths.ts`（`__Host-gf_mcp_authz`、10 分。#696 が足した） |
  * | AWS 上の処理の記録（生成・ビルド・撮影・アイコンの作り直し・チャットは 14 日 / 費用ガードは 30 日） | `terraform/orchestrator.tf`・`terraform/build-function.tf`・`terraform/ogp-function.tf`・`terraform/avatar-function.tf`・`terraform/chat-function.tf` の `retention_in_days = 14` と、`terraform/bedrock-guard.tf` の `retention_in_days = 30`（**ひとまとめに 14 日と書いていた誤りを PR #400 の Copilot の指摘で分けた。値を変えたら本文も直すこと**。チャットの分は #695 から在ったが本文に無く、#913 で足した） |
  * | チャットで Bedrock へ送るもの（対象ごと。フォーク元は他人の公開作品の題名・説明・タグと、求めたときだけソース。最初の指示文は送らない） | `src/chat.ts` の `loadChatContext` / `src/chat-target.ts` の `loadReviseChatContext` と `loadForkChatContext`（#727 から。本文の「ほかの方の作品は送りません」は #727 で事実でなくなっていたのを #913 で直した） |
- * | ブラウザの localStorage に置く、作品ごとの仮想パッドの形と画面の向き（サーバへ送らない・消すまで残る） | `src/work-play.ts`（キーの接頭辞 `PLAY_PAD_MEMORY_PREFIX`（`gf-pad-shape:`）と `PLAY_ORIENTATION_MEMORY_PREFIX`（`gf-orientation:`）の後ろに作品 id。値は `stick` / `dpad` と `landscape` / `portrait`。#514 / #572 から在ったが本文に無く、#913 で足した） |
+ * | ブラウザの localStorage に置く、作品ごとの仮想パッドの形と画面の向き（サーバへ送らない・消すまで残る） | `src/work-play.ts`（キーの接頭辞 `PLAY_PAD_MEMORY_PREFIX`（`gf-pad-shape:`）と `PLAY_ORIENTATION_MEMORY_PREFIX`（`gf-orientation:`）の後ろに作品 id。値は `stick` / `dpad` と `landscape` / `portrait`。仮想パッドの形は #530、画面の向きは #514 から在ったが本文に無く、#913 で足した） |
  * | 外部サービス | Cloudflare（`wrangler.toml`）/ AWS・Bedrock・Guardrails（`terraform/bedrock.tf` / `terraform/moderation.tf` / `src/generation-models.ts`）/ Google（`src/auth/google.ts`）/ Resend（`src/mail/resend.ts`） |
  *
  * **アクセス解析・広告は使っていない**（外部のスクリプトも解析の cookie も無い）。**使い始めた

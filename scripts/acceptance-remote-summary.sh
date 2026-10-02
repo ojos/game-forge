@@ -107,7 +107,7 @@ fi
 if [ -n "$precondition" ]; then
   # 起動側の理由は列挙に限る（自由な文字列を公開の要約へ流す経路を作らない）。
   case "$precondition" in
-    primary-not-on-main | primary-not-at-origin-main | primary-ff-failed | primary-dirty | state-missing | fetch-failed | not-a-git-tree) ;;
+    primary-not-on-main | primary-not-at-origin-main | primary-ff-failed | npm-ci-failed | primary-dirty | state-missing | fetch-failed | not-a-git-tree) ;;
     *) die "--precondition の理由が列挙にありません: $precondition" ;;
   esac
   [ -z "$rc" ] || die "--precondition と --exit は同時に渡せません（検査を回していない）"

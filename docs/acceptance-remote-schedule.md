@@ -20,7 +20,7 @@ CI で回せるのは 34 件中 2 件でした（実測の表は #808 のコメ�
 |---|---|---|---|
 | 1 | Mac のホスト | launchd（[雛形](../scripts/launchd/jp.ojos.game-forge.acceptance-remote.plist)） | 毎日 12:00 に起動側を呼ぶ。スリープ中に過ぎた分は復帰時に 1 回 |
 | 2 | Mac のホスト | [`scripts/acceptance-remote-launchd.sh`](../scripts/acceptance-remote-launchd.sh) | Docker と devcontainer を起こし、`docker exec` で 3 を呼ぶ。起こした devcontainer は終わったら止め直す |
-| 3 | devcontainer | [`scripts/acceptance-remote-scheduled.sh`](../scripts/acceptance-remote-scheduled.sh) | プライマリが main にあり汚れていないことを確かめ、origin/main より遅れていれば fast-forward してから、`acceptance-remote.sh` を**引数なしで**全体を回す |
+| 3 | devcontainer | [`scripts/acceptance-remote-scheduled.sh`](../scripts/acceptance-remote-scheduled.sh) | プライマリが main にあり汚れていないことを確かめ、origin/main より遅れていれば fast-forward してから（lock が変われば `npm ci` も）、`acceptance-remote.sh` を**引数なしで**全体を回す |
 | 4 | devcontainer | [`scripts/acceptance-remote-summary.sh`](../scripts/acceptance-remote-summary.sh) | 出力から、公開してよい要約だけを作る。FAIL は [系統の対応表](../scripts/lib/acceptance-remote-deps.tsv) で乖離と前提の不成立に読み分ける |
 | 5 | devcontainer | `gh issue comment` | 要約を固定の issue へ投稿する |
 | 6 | GitHub Actions | [`acceptance-remote-freshness.yml`](../.github/workflows/acceptance-remote-freshness.yml)（毎日 15:00 JST） | [`scripts/acceptance-record-judge.sh`](../scripts/acceptance-record-judge.sh) で記録を判定する。赤はメールで届く |
@@ -75,6 +75,7 @@ Cloudflare や AWS の本物の乖離が見えなくなるので、この形に�
 | `primary-not-on-main` | プライマリがブランチか detach にある | プライマリで `git checkout main` |
 | `primary-not-at-origin-main` | プライマリの main が origin/main から**分岐している**（手元にだけコミットがある） | 手元のコミットを片付ける |
 | `primary-ff-failed` | 遅れていたので fast-forward を試みたが失敗した（追跡外のファイルが上書きされる等） | ログの git の出力を見る |
+| `npm-ci-failed` | fast-forward で `package-lock.json` が変わったので `npm ci` を打ったが失敗した（#870） | ログの npm の出力を見て、プライマリで `npm ci` を打ち直す。**次の回は lock が変わらないので自動では打ちません** |
 | `primary-dirty` | プライマリの追跡ファイルに手元の変更がある、または `terraform/` に追跡外の `*.tf`（`override.tf` など。`.gitignore` が除外している）がある | 変更を片付ける。override はプライマリに置かない |
 | `state-missing` | プライマリに `terraform/terraform.tfstate` が無い（期待値を output から取れず、検査が乖離に見えるため回さない） | state を戻す（追跡外。プライマリにだけある） |
 | `fetch-failed` | origin の main を取れない | ネットワーク・git の認証 |
@@ -85,6 +86,13 @@ Cloudflare や AWS の本物の乖離が見えなくなるので、この形に�
 ff したことは Mac のログに残り、要約には載りません。**checkout・reset・分岐の解消はしません**——
 プライマリは他のセッションも配備に使う場所で、無人の実行がそれ以上動かすと、そちらの手順の前提が
 黙って変わるためです（`docs/handoff.md` 3 章「プライマリの作業ツリーは `main` に置いてください」）。
+
+**fast-forward で `package-lock.json` が変わった日だけ、プライマリで `npm ci` を打ってから回します**（#870。
+利用者の決定）。`node_modules` が古い lock のままだと、`orchestrator code matches the local bundle`（手元で
+束を作って本番の CodeSha256 と比べる）が依存の版のずれによる偽の乖離になるためです。毎日は打ちません。
+打ったことと npm の出力は Mac のログに残り、要約には載りません。失敗したら検査を回さず `npm-ci-failed` に
+します。**lock が変わらないのに `node_modules` がずれている場合**（devcontainer を作り直した後など）は
+見ません。そのときはプライマリで `npm ci` を手で打ってください。`--pr` は fast-forward しないので打ちません。
 
 ## CI が赤にする条件
 

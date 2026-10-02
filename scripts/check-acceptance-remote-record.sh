@@ -348,17 +348,30 @@ mkdir -p "$WORK/primary/terraform"
 echo '{"version": 4}' > "$WORK/primary/terraform/terraform.tfstate"
 printf 'terraform/terraform.tfstate\n' > "$WORK/primary/.gitignore"
 echo "tracked" > "$WORK/primary/README"
+echo '{"lockfileVersion": 3}' > "$WORK/primary/package-lock.json"
 G -C "$WORK/primary" add -A >/dev/null
 G -C "$WORK/primary" commit -q -m init
 G -C "$WORK/primary" push -q origin main 2>/dev/null
+
+# npm の偽物（#870）。呼ばれたら引数と場所を $WORK/npm へ書き、NPM_RC で終わる。本物の npm ci は
+# 自己試験で決して打たない（node_modules を消して入れ直す）ので、C のどの回もこれを先に置く。
+mkdir -p "$WORK/npmbin"
+cat > "$WORK/npmbin/npm" <<STUB
+#!/usr/bin/env bash
+echo "\$* @ \$(pwd)" >> '$WORK/npm'
+exit "\${NPM_RC:-0}"
+STUB
+chmod +x "$WORK/npmbin/npm"
+NPM_RC=0
 
 # sched_case <名前> <期待する result|reason> <検査が呼ばれるか yes/no>（出力は last_out に残す）
 last_out=""
 sched_case() {
   local name="$1" want="$2" want_called="$3" out rc=0 called=no
   tick
-  rm -f "$WORK/called"
-  out="$(env -u AWS_PROFILE ACCEPTANCE_TF_DIR="$WORK/elsewhere" bash "$SCHEDULED" --print --repo-dir "$WORK/primary" 2>&1)" || rc=$?
+  rm -f "$WORK/called" "$WORK/npm"
+  out="$(env -u AWS_PROFILE PATH="$WORK/npmbin:$PATH" NPM_RC="$NPM_RC" ACCEPTANCE_TF_DIR="$WORK/elsewhere" \
+    bash "$SCHEDULED" --print --repo-dir "$WORK/primary" 2>&1)" || rc=$?
   last_out="$out"
   [ -f "$WORK/called" ] && called=yes
   local got
@@ -400,6 +413,7 @@ sched_case "origin/main より遅れていれば ff して回す" "ok|-" yes
 tick; [ "$(G -C "$WORK/primary" rev-parse HEAD)" = "$(G -C "$WORK/other" rev-parse HEAD)" ] || ng "C ff の後のプライマリが origin/main と一致しない"
 tick; printf '%s\n' "$last_out" | grep -q 'fast-forward しました' || ng "C ff したことをログ（要約の外）に残す"
 tick; if sed -n '/^<!-- acceptance-remote-record/,$p' <<<"$last_out" | grep -q 'fast-forward'; then ng "C ff のことを要約へ載せない"; fi
+tick; [ ! -f "$WORK/npm" ] || ng "C lock が変わらない ff では npm ci を打たない（got $(cat "$WORK/npm")）"
 
 # 分岐している（手元の main にだけコミットがある）なら回さない。
 echo "local commit" >> "$WORK/primary/README"
@@ -420,6 +434,21 @@ echo "untracked local" > "$WORK/primary/NEWFILE"
 sched_case "ff に失敗したら回さない" "precondition|primary-ff-failed" no
 rm "$WORK/primary/NEWFILE"
 sched_case "妨げが無くなれば ff して回す" "ok|-" yes
+
+# lock が動いた ff だけ npm ci を打ってから回す（#870）。失敗したら回さず、前提の不成立にする。
+lock_bump() { echo "{\"lockfileVersion\": 3, \"n\": $1}" > "$WORK/other/package-lock.json"; G -C "$WORK/other" commit -q -am "lock $1"; G -C "$WORK/other" push -q origin main 2>/dev/null; }
+lock_bump 1
+sched_case "lock が変わる ff では npm ci を打ってから回す" "ok|-" yes
+ok_or_ng "$(cat "$WORK/npm" 2>/dev/null)" "ci @ $WORK/primary" "C npm ci をプライマリで 1 回だけ打つ"
+tick; printf '%s\n' "$last_out" | grep -q 'npm ci を打ちました' || ng "C npm ci を打ったことをログ（要約の外）に残す"
+tick; if sed -n '/^<!-- acceptance-remote-record/,$p' <<<"$last_out" | grep -q 'npm'; then ng "C npm ci のことを要約へ載せない"; fi
+sched_case "遅れていなければ npm ci を打たない" "ok|-" yes
+tick; [ ! -f "$WORK/npm" ] || ng "C 遅れていない回で npm ci を打った"
+lock_bump 2
+NPM_RC=1
+sched_case "npm ci が失敗したら回さない（乖離にしない）" "precondition|npm-ci-failed" no
+NPM_RC=0
+tick; [ "$(G -C "$WORK/primary" rev-parse HEAD)" = "$(G -C "$WORK/other" rev-parse HEAD)" ] || ng "C npm ci の失敗でも ff は戻さない"
 
 mkdir -p "$WORK/primary/terraform/.terraform/modules/m"
 echo 'resource "x" "y" {}' > "$WORK/primary/terraform/.terraform/modules/m/main.tf"

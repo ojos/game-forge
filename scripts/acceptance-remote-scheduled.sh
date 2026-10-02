@@ -37,6 +37,7 @@
 #   4. HEAD が origin/main と一致する。**遅れているだけなら fast-forward してから回す**
 #      分岐している（ff できない）                                   → primary-not-at-origin-main
 #      ff を試みて失敗した                                           → primary-ff-failed
+#   5. ff で package-lock.json が変わったら npm ci を打つ（#870）。失敗した → npm-ci-failed
 #
 # **古いツリーは、宣言を誤った期待値にする。** terraform も外部層の導出も、そのツリーの
 # terraform/*.tf を正とする（docs/handoff.md 3 章「プライマリの作業ツリーは main に」。
@@ -216,6 +217,9 @@ if [ -z "$pr" ] && [ "$head" != "$origin_main" ]; then
   # git は更新したファイルを置き換える（新しい inode）。いま動いているこのスクリプトは
   # 古い中身のまま最後まで読まれ、ここから先で呼ぶ要約・検査は新しいツリーのものになる。
   say "プライマリの main が origin/main より遅れているので fast-forward します（${head} → ${origin_main}）。"
+  # ff の前後の package-lock.json を blob で比べる（無ければ空。足された・消えたも「変わった」）。
+  lock_before="$(git rev-parse -q --verify "${head}:package-lock.json" || true)"
+  lock_after="$(git rev-parse -q --verify "${origin_main}:package-lock.json" || true)"
   if ! git merge --ff-only --quiet "$origin_main"; then
     say "fast-forward に失敗しました。検査を回しません。"
     deliver --precondition primary-ff-failed; exit $?
@@ -226,6 +230,19 @@ if [ -z "$pr" ] && [ "$head" != "$origin_main" ]; then
     deliver --precondition primary-ff-failed; exit $?
   fi
   say "fast-forward しました（HEAD ${head}）。"
+  # **lock が動いた日だけ npm ci してから回す**（#870。利用者の決定）。node_modules が古い lock の
+  # ままだと、「orchestrator code matches the local bundle」（手元で束を作って本番と比べる）が
+  # 依存の版のずれで偽の乖離になる。毎日は打たない。lock が変わらないのに node_modules が
+  # ずれている場合（devcontainer の作り直しの後など）は見ない。npm ci の出力と打ったことは
+  # ログ（要約の外）にだけ残し、失敗は乖離ではなく前提の不成立にする。
+  if [ "$lock_before" != "$lock_after" ]; then
+    say "package-lock.json が変わったので npm ci を打ちます。"
+    if ! npm ci; then
+      say "npm ci に失敗しました。検査を回しません。"
+      deliver --precondition npm-ci-failed; exit $?
+    fi
+    say "npm ci を打ちました。"
+  fi
 fi
 
 # ── 検査（全体。引数は渡さない）───────────────────────────────────────────────

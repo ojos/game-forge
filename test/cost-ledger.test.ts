@@ -225,6 +225,24 @@ describe('複数モデルの単価（#22 acceptance 4）', () => {
     expect(sonnet.totalJpy).toBeGreaterThan(deepseek.totalJpy);
   });
 
+  it('Opus 5.5 は jp. の単価で換算する（#848）', () => {
+    // `global.`（4.00 / 20.00 / 0.20 / 5.00）で割ると 1 割少なく出る（#847 と同じずれ方）。
+    // 値は 2026-10-01 に AWS Pricing API の「Standard」の行から読んだもの。
+    const opus = costOfGeneration(
+      generationOf('opus-5-5', {
+        inputTokens: 1_000,
+        outputTokens: 2_000,
+        cacheReadInputTokens: 3_000,
+        cacheWriteInputTokens: 4_000,
+      }),
+    );
+    expect(opus.inputJpy).toBeCloseTo((1_000 * 4.4 * 150) / 1_000_000, 10);
+    expect(opus.outputJpy).toBeCloseTo((2_000 * 22 * 150) / 1_000_000, 10);
+    expect(opus.cacheReadJpy).toBeCloseTo((3_000 * 0.22 * 150) / 1_000_000, 10);
+    expect(opus.cacheWriteJpy).toBeCloseTo((4_000 * 5.5 * 150) / 1_000_000, 10);
+    expect(opus.anomalies).toEqual([]);
+  });
+
   it('登録簿のすべてのモデルが換算できる', () => {
     // モデルを 1 つ足したときに、台帳側の追随を忘れていれば 0 円になる。
     for (const model of GENERATION_MODELS) {

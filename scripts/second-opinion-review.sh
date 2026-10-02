@@ -93,6 +93,33 @@ ENGINE="${SECOND_OPINION_ENGINE:-gemini}"
 MODEL="${SECOND_OPINION_MODEL:-${GEMINI_REVIEW_MODEL:-}}"
 RUNS="${SECOND_OPINION_RUNS:-${GEMINI_REVIEW_RUNS:-1}}"
 
+# 1 行ずつ読み、`#123` の番号だけを出す。`&#123;`（HTML の実体参照）、`#fff`、
+# URL の断片（`/#12`）、6 桁以上（色の `#000000`）は拾わない。
+# **別リポジトリの番号は拾わない。** 番号の直前が英数字なら除外するので、`owner/repo#N`
+# と繋げて書けば落ちる。「上流 owner/repo の #N」と間に語を挟むと拾う——読み取りは
+# 賢くせず、書き方で揃える（#902。規則は `.github/project-ai-rules.md`「レビューの起動方法」）。
+# **GNU 拡張を使わない**（利用者の端末は macOS。grep の `\b` や `-P` に頼らない）。
+extract_issue_refs() {
+  awk '{
+    s = $0; lastc = ""
+    while (match(s, /#[0-9]+/)) {
+      b = (RSTART > 1) ? substr(s, RSTART - 1, 1) : lastc
+      a = substr(s, RSTART + RLENGTH, 1)
+      n = substr(s, RSTART + 1, RLENGTH - 1)
+      if (b !~ /[0-9A-Za-z_&\/#]/ && a !~ /[0-9A-Za-z_]/ && length(n) <= 5 && n + 0 > 0) print n + 0
+      lastc = substr(s, RSTART + RLENGTH - 1, 1)
+      s = substr(s, RSTART + RLENGTH)
+    }
+  }'
+}
+
+# 自己検査から判定だけを呼ぶための入口（#902）。**エンジンや差分の検査より前で抜ける**——
+# 後ろに置くと、CLI の無い CI で判定を確かめられない。
+if [[ "${1-}" == "--extract-issue-refs" ]]; then
+  extract_issue_refs
+  exit 0
+fi
+
 usage() {
   cat <<'EOF'
 usage: bash scripts/second-opinion-review.sh [options]
@@ -104,6 +131,7 @@ options:
   --model <name>        使用モデル（既定: 各 CLI の既定。SECOND_OPINION_MODEL でも指定可）
   --runs <n>            実行回数（既定: 1。SECOND_OPINION_RUNS でも指定可）
                         指摘を報告した run が過半数に達したときだけ非 0 で終わる
+  --extract-issue-refs  標準入力から参照している番号だけを出して終わる（自己検査用。#902）
   -h, --help            ヘルプ
 
 engines:
@@ -310,22 +338,7 @@ resolve_issue_context
 REFERENCED_LIMIT=10
 referenced_context=""
 
-# 1 行ずつ読み、`#123` の番号だけを出す。`&#123;`（HTML の実体参照）、`#fff`、
-# URL の断片（`/#12`）、6 桁以上（色の `#000000`）は拾わない。
-# **GNU 拡張を使わない**（利用者の端末は macOS。grep の `\b` や `-P` に頼らない）。
-extract_issue_refs() {
-  awk '{
-    s = $0; lastc = ""
-    while (match(s, /#[0-9]+/)) {
-      b = (RSTART > 1) ? substr(s, RSTART - 1, 1) : lastc
-      a = substr(s, RSTART + RLENGTH, 1)
-      n = substr(s, RSTART + 1, RLENGTH - 1)
-      if (b !~ /[0-9A-Za-z_&\/#]/ && a !~ /[0-9A-Za-z_]/ && length(n) <= 5 && n + 0 > 0) print n + 0
-      lastc = substr(s, RSTART + RLENGTH - 1, 1)
-      s = substr(s, RSTART + RLENGTH)
-    }
-  }'
-}
+# 番号の抜き出し（extract_issue_refs）は、引数の解析より前に定義してある（#902）。
 
 # issue の本文から acceptance の節（intake の YAML の `acceptance:` から次のキーまで）を出す。
 extract_acceptance() {

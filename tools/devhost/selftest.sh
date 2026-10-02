@@ -336,6 +336,17 @@ reset_state
 T_CONF="$WORK/conf/crlf" run 0 "CRLF の設定" -- -- up alpha
 expect_calls "devcontainer [up] [--workspace-folder] [$A]"
 
+# パスの末尾の / は外して扱う（ラベルの照合で動いているコンテナを取り違えない）。
+printf 'alpha %s//\n' "$A" >"$WORK/conf/slash"
+reset_state
+T_CONF="$WORK/conf/slash" run 0 "末尾に / のあるパス: up" -- -- up alpha
+expect_calls "devcontainer [up] [--workspace-folder] [$A]"
+T_CONF="$WORK/conf/slash" run 0 "末尾に / のあるパス: attach" -- -- attach alpha
+expect_calls \
+  "docker [ps] [-a] [--filter] [label=devcontainer.local_folder=$A] [--format] [{{.ID}} {{.State}}]" \
+  "devcontainer [exec] [--workspace-folder] [$A] [tmux] [new-session] [-A] [-s] [main]" \
+  "tmux [new-session] [-A] [-s] [main]"
+
 # ── 2. 未登録のプロジェクトを拒む ─────────────────────────────────────────────
 for sub in up attach supervise; do
   reset_state

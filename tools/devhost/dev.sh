@@ -107,6 +107,9 @@ load_projects() {
     fi
     name="$1" path="$2"
     shift 2
+    # 末尾の / は外す。devcontainer のラベル（devcontainer.local_folder）は末尾に / が無いので、
+    # 残すと動いているコンテナを見つけられず、ls で none、attach で「動いていない」と取り違える。
+    while [[ "$path" == */ && "$path" != / ]]; do path="${path%/}"; done
     if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
       usage_error "$file:$lineno: 名前に使えるのは英数字と _ . - だけです（systemd のインスタンス名にもなるため）: $name"
     fi
@@ -166,8 +169,10 @@ need_project_dir() {
 # devcontainer が付けるラベル（devcontainer.local_folder = ホストのワークスペースの絶対パス）で
 # コンテナを探す。VS Code が作ったコンテナも同じラベルを持つ。
 # 出力: "<ID> <状態>"（状態は docker の State。running / exited など）。無ければ空。
+# head -n 1 は 1 行読んで閉じるため、出力が多いと docker が SIGPIPE で非 0 になり、pipefail の下で
+# 終了コードが反転しうる。sed -n '1p' は最後まで読むので書き手を途中で切らない。
 container_of() {
-  docker ps -a --filter "label=devcontainer.local_folder=$1" --format '{{.ID}} {{.State}}' | head -n 1
+  docker ps -a --filter "label=devcontainer.local_folder=$1" --format '{{.ID}} {{.State}}' | sed -n '1p'
 }
 
 is_running() {

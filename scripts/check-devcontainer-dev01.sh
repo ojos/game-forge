@@ -1,30 +1,27 @@
 #!/usr/bin/env bash
 # check-devcontainer-dev01.sh — dev01 で devcontainer を立てるための分岐を、非対話で確かめる（#802）。
 #
-# 見るのは 3 つ（と 1 の付け足し）。
+# 見るのは 3 つ。
 #
-#   1. **UID/GID の既定が 1000 のままであること**（Mac の既存挙動を壊さない）と、dev01 の値
-#      （1001）が `.devcontainer/.env` からも環境変数からもビルド引数へ届くこと。
-#      `docker compose config` で compose.yaml を実際に展開して読む（文字列の grep ではない）。
-#      デーモンは要らない。**`--env-file` を必ず渡す**——dev01 のワークスペースには
-#      `.devcontainer/.env`（DEVCONTAINER_UID=1001）が在るので、渡さないと dev01 の上で
-#      「既定が 1000」の確認が赤くなる。
-#   1b. **AppArmor を外す宣言（`security_opt: apparmor=unconfined`）が展開後に残っていること**（#874）。
-#      消えると dev01 で codex の bwrap が `docker-default` の `deny mount` に当たり、第二意見が取れなくなる。
-#      **効くかどうか**（作り直した dev01 のコンテナで bwrap が通るか）はここでは見ない（docs/local-dev.md 7.4）。
-#   2. **付け替えの判定**（.devcontainer/remap-vscode-user.sh）。既定の値では何も呼ばず、
-#      違う値のときだけ groupmod / usermod / chown を呼び、番号の衝突と数値でない引数を落とす。
-#      id / getent / groupmod / usermod / chown は仕込みに差し替える。仕込みの id は
-#      ベースイメージの実際の値（vscode = 1000:1000）を返すだけで、本物がしないことはさせない。
+#   1. **compose.yaml を展開した結果**（`docker compose config`。文字列の grep ではない。デーモンは要らない）。
+#      - DEVCONTAINER_HOST の既定が空のままであること（Mac の既存挙動を壊さない）と、dev01 の値が
+#        `.devcontainer/.env` からも環境変数からも届くこと。**`--env-file` を必ず渡す**——dev01 の
+#        ワークスペースには `.devcontainer/.env`（DEVCONTAINER_HOST=dev01）が在るので、渡さないと
+#        dev01 の上で「既定が空」の確認が赤くなる。
+#      - **AppArmor を外す宣言（`security_opt: apparmor=unconfined`）が残っていること**（#874）。
+#        消えると dev01 で codex の bwrap が `docker-default` の `deny mount` に当たり、第二意見が取れなくなる。
+#        **効くかどうか**（作り直した dev01 のコンテナで bwrap が通るか）はここでは見ない（docs/local-dev.md 7.4）。
+#      - ベースのイメージが浮動のタグでないこと（#802。理由は compose.yaml の image の上）。
+#   2. **vscode の UID の付け替えを devcontainer CLI に任せていること**（#879）。devcontainer.json に
+#      `"updateRemoteUserUID": true` が在ること。false にすると dev01（uid=1001）でワークスペースへ書き込めない。
 #   3. **scripts/install-cloudflared.sh が dev01 の上では何もしないこと。**
 #      DEVCONTAINER_HOST=dev01 のとき ~/.ssh/config を作らず、導入（curl / sudo）にも進まない。
 #      それ以外（未設定・空・別の値）では従来どおり入口を書く。HOME を一時ディレクトリへ向け、
 #      PATH は必要な道具だけを置いた一時ディレクトリにする（本物の cloudflared が入っている
 #      環境でも「導入に進まない」ことを確かめられるように）。
 #
-# **確かめないこと。** イメージを実際にビルドして uid が 1001 になるか、dev01 のワークスペースへ
-# 書き込めるかは、ネットワークと dev01 の実機が要るので、ここでは見ない（#802 の acceptance で
-# 利用者の実機で確認する）。
+# **確かめないこと。** CLI が実際に uid を 1001 へ付け替えるか、dev01 のワークスペースへ書き込めるかは、
+# ネットワークと dev01 の実機が要るので、ここでは見ない（#879 で実測した。docs/local-dev.md 7.4 で利用者が確かめる）。
 #
 # 終了コード: 0 = DEVCONTAINER_DEV01_PASS / 1 = 期待と食い違った・道具が無い
 set -euo pipefail
@@ -32,8 +29,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$HERE")"
 COMPOSE="$ROOT/.devcontainer/compose.yaml"
-DOCKERFILE="$ROOT/.devcontainer/Dockerfile"
-REMAP="$ROOT/.devcontainer/remap-vscode-user.sh"
+DEVCONTAINER_JSON="$ROOT/.devcontainer/devcontainer.json"
 INSTALL="$ROOT/scripts/install-cloudflared.sh"
 BASH_BIN="$(command -v bash)"
 
@@ -53,112 +49,57 @@ command -v jq >/dev/null 2>&1 || {
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/check-devcontainer-dev01.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-# ── 1. compose.yaml のビルド引数 ─────────────────────────────────────────────
-# compose_args <env-file> [VAR=値 ...] → "UID GID HOST" を 1 行で出す。
-# 呼び出し元の DEVCONTAINER_* は env -u で必ず外す（dev01 のシェルに export されていても結果を変えない）。
-compose_args() {
+# ── 1. compose.yaml を展開した結果 ────────────────────────────────────────────
+# compose_json <env-file> [VAR=値 ...] → 展開した compose を JSON で出す。
+# 呼び出し元の DEVCONTAINER_HOST は env -u で必ず外す（dev01 のシェルに export されていても結果を変えない）。
+compose_json() {
   local envfile="$1"
   shift
-  env -u DEVCONTAINER_UID -u DEVCONTAINER_GID -u DEVCONTAINER_HOST "$@" \
-    docker compose -f "$COMPOSE" --env-file "$envfile" config --format json |
-    jq -r '[.services.app.build.args.USER_UID, .services.app.build.args.USER_GID, (.services.app.environment.DEVCONTAINER_HOST // "")] | join(" ")'
+  env -u DEVCONTAINER_HOST "$@" docker compose -f "$COMPOSE" --env-file "$envfile" config --format json
 }
 
-expect_compose() {
+expect_host() {
   local name="$1" want="$2" got
   shift 2
   n=$((n + 1))
-  got="$(compose_args "$@")" || { ng "$name: docker compose config が失敗しました"; return; }
-  # 末尾の空白は DEVCONTAINER_HOST が空のとき。比べやすいように剥がす。
-  got="${got% }"
+  got="$(compose_json "$@" | jq -r '.services.app.environment.DEVCONTAINER_HOST // ""')" ||
+    { ng "$name: docker compose config が失敗しました"; return; }
   [[ "$got" == "$want" ]] || ng "$name: want '$want' got '$got'"
 }
 
 : >"$WORK/empty.env"
-printf 'DEVCONTAINER_UID=1001\nDEVCONTAINER_GID=1001\nDEVCONTAINER_HOST=dev01\n' >"$WORK/dev01.env"
+printf 'DEVCONTAINER_HOST=dev01\n' >"$WORK/dev01.env"
 
-expect_compose "既定は 1000:1000 でホストの宣言は空" "1000 1000" "$WORK/empty.env"
-expect_compose ".env から dev01 の値が届く" "1001 1001 dev01" "$WORK/dev01.env"
-expect_compose "環境変数からも届く" "1001 1001 dev01" "$WORK/empty.env" \
-  DEVCONTAINER_UID=1001 DEVCONTAINER_GID=1001 DEVCONTAINER_HOST=dev01
-expect_compose "UID だけ渡せば GID は既定のまま" "1001 1000" "$WORK/empty.env" DEVCONTAINER_UID=1001
+expect_host "既定ではホストの宣言は空" "" "$WORK/empty.env"
+expect_host ".env から dev01 の値が届く" "dev01" "$WORK/dev01.env"
+expect_host "環境変数からも届く" "dev01" "$WORK/empty.env" DEVCONTAINER_HOST=dev01
 
-# 1b. AppArmor を外す宣言（#874）。dev01 の値を渡しても渡さなくても同じであること。
+# AppArmor を外す宣言（#874）。dev01 の値を渡しても渡さなくても同じであること。
 for envfile in "$WORK/empty.env" "$WORK/dev01.env"; do
   n=$((n + 1))
-  got="$(env -u DEVCONTAINER_UID -u DEVCONTAINER_GID -u DEVCONTAINER_HOST \
-    docker compose -f "$COMPOSE" --env-file "$envfile" config --format json |
-    jq -r '(.services.app.security_opt // []) | join(" ")')" || { ng "security_opt: docker compose config が失敗しました"; continue; }
+  got="$(compose_json "$envfile" | jq -r '(.services.app.security_opt // []) | join(" ")')" ||
+    { ng "security_opt: docker compose config が失敗しました"; continue; }
   [[ " $got " == *" apparmor=unconfined "* ]] \
     || ng "security_opt に apparmor=unconfined がありません（$(basename "$envfile")。dev01 で codex の bwrap が動かなくなります。#874）: '$got'"
 done
 
-# ビルド引数が Dockerfile に ARG として宣言され、付け替えへ渡っていること。
-# 名前がずれると引数は黙って捨てられ、付け替えが空の値で呼ばれる。
-n=$((n + 1))
-for arg in USER_UID USER_GID; do
-  grep -qE "^ARG ${arg}\$" "$DOCKERFILE" || ng "Dockerfile に 'ARG ${arg}' がありません（既定値を持たせない。写しを作らないため）"
-done
-grep -qE '^RUN bash /tmp/remap-vscode-user\.sh "\$\{USER_UID\}" "\$\{USER_GID\}"' "$DOCKERFILE" ||
-  ng "Dockerfile が remap-vscode-user.sh へ USER_UID / USER_GID を渡していません"
-
 # ベースが浮動のタグ（ubuntu / latest / タグ無し）でないこと。`base:ubuntu` は 26.04 へ移り、
-# google-cloud-cli の feature が apt-key の不在で落ちた（#802。理由は Dockerfile の FROM の上）。
+# google-cloud-cli の feature が apt-key の不在で落ちた（#802。理由は compose.yaml の image の上）。
+# **ビルドの段を足していないこと**も見る。足すとイメージは build の結果になり、image の固定を見ても意味が無い。
 n=$((n + 1))
-base="$(awk '$1 == "FROM" { print $2; exit }' "$DOCKERFILE")"
+base="$(compose_json "$WORK/empty.env" | jq -r '.services.app.image // ""')"
+has_build="$(compose_json "$WORK/empty.env" | jq -r 'if .services.app.build then "yes" else "no" end')"
 tag="${base##*/}"
-if [[ "$tag" != *:* || "${tag##*:}" == ubuntu || "${tag##*:}" == latest ]]; then
-  ng "Dockerfile のベースが浮動のタグです: '${base}'（noble のように版の名前で固定する）"
+if [[ -z "$base" || "$tag" != *:* || "${tag##*:}" == ubuntu || "${tag##*:}" == latest ]]; then
+  ng "compose.yaml のベースが浮動のタグです: '${base}'（noble のように版の名前で固定する）"
 fi
+[[ "$has_build" == no ]] || ng "compose.yaml に build があります（ベースの固定を見る場所が image でなくなります。#879 で外した）"
 
-# ── 2. 付け替えの判定 ─────────────────────────────────────────────────────────
-FAKE="$WORK/fakebin"
-mkdir -p "$FAKE"
-cat >"$FAKE/id" <<'EOF'
-#!/usr/bin/env bash
-case "$1" in
-  -u) echo "${FAKE_CUR_UID:-1000}" ;;
-  -g) echo "${FAKE_CUR_GID:-1000}" ;;
-  *) exit 2 ;;
-esac
-EOF
-cat >"$FAKE/getent" <<'EOF'
-#!/usr/bin/env bash
-# 仕込みの表: FAKE_TAKEN_GROUP / FAKE_TAKEN_USER に番号があれば、その番号は別の名前が使っている。
-if [[ "$1" == "group" && "$2" == "${FAKE_TAKEN_GROUP:-}" ]]; then echo "other:x:$2:"; exit 0; fi
-if [[ "$1" == "passwd" && "$2" == "${FAKE_TAKEN_USER:-}" ]]; then echo "other:x:$2:$2::/home/other:/bin/sh"; exit 0; fi
-exit 2
-EOF
-for cmd in groupmod usermod chown; do
-  # shellcheck disable=SC2016  # $* と $FAKE_LOG は仕込みが動くときに展開させる
-  printf '#!/usr/bin/env bash\necho "%s $*" >>"$FAKE_LOG"\n' "$cmd" >"$FAKE/$cmd"
-done
-chmod +x "$FAKE"/*
-
-# expect_remap <名前> <期待する終了コード> <期待する呼び出し（| 区切り）> <UID> <GID> [VAR=値 ...]
-expect_remap() {
-  local name="$1" want_rc="$2" want_calls="$3" uid="$4" gid="$5" got_rc=0 got_calls
-  shift 5
-  n=$((n + 1))
-  : >"$WORK/remap.log"
-  env "$@" FAKE_LOG="$WORK/remap.log" PATH="$FAKE:$PATH" \
-    "$BASH_BIN" "$REMAP" "$uid" "$gid" >/dev/null 2>&1 || got_rc=$?
-  got_calls="$(tr '\n' '|' <"$WORK/remap.log")"
-  got_calls="${got_calls%|}"
-  if [[ "$got_rc" != "$want_rc" || "$got_calls" != "$want_calls" ]]; then
-    ng "$name: want rc=$want_rc calls='$want_calls' got rc=$got_rc calls='$got_calls'"
-  fi
-}
-
-expect_remap "既定の 1000:1000 では何も呼ばない" 0 "" 1000 1000
-expect_remap "dev01 の 1001:1001 へ付け替える" 0 \
-  "groupmod --gid 1001 vscode|usermod --uid 1001 --gid 1001 vscode|chown -R 1001:1001 /home/vscode" 1001 1001
-expect_remap "UID だけ違えば groupmod は呼ばない" 0 \
-  "usermod --uid 1001 --gid 1000 vscode|chown -R 1001:1000 /home/vscode" 1001 1000
-expect_remap "GID が使用中なら何も変えずに落ちる" 1 "" 1001 1001 FAKE_TAKEN_GROUP=1001
-expect_remap "UID が使用中なら何も変えずに落ちる" 1 "" 1001 1001 FAKE_TAKEN_USER=1001
-expect_remap "UID が空なら落ちる（ARG の渡し忘れ）" 1 "" "" 1000
-expect_remap "数値でなければ落ちる" 1 "" 1001x 1001
+# ── 2. UID の付け替えを CLI に任せていること（#879）──────────────────────────
+# devcontainer.json は JSONC（注記あり）なので jq では読まない。キーの行を見る。
+n=$((n + 1))
+grep -qE '^[[:space:]]*"updateRemoteUserUID":[[:space:]]*true,?[[:space:]]*$' "$DEVCONTAINER_JSON" ||
+  ng "devcontainer.json に \"updateRemoteUserUID\": true がありません（dev01 でワークスペースへ書き込めなくなります。#879）"
 
 # ── 3. install-cloudflared.sh の dev01 分岐 ─────────────────────────────────
 # PATH は必要な道具だけにする。curl / sudo は呼ばれたら記録して失敗する仕込み

@@ -997,22 +997,32 @@ git clone https://github.com/ojos/game-forge.git ~/game-forge
 7.7 の attach はホストの clone の絶対パス（`devcontainer.local_folder` のラベル）でコンテナを探すので、
 別の場所に置いたときは 7.7 の `$HOME/game-forge` をそのパスへ読み替える。
 
-### 7.3 UID を渡す（ホスト）
+### 7.3 ホストの宣言を置く（ホスト）
 
-**dev01 の利用者は uid=1001（`ido`）で、コンテナの vscode は既定で 1000 である。** Docker Desktop for Mac は
+**dev01 の利用者は uid=1001（`ido`）で、ベースイメージの vscode は 1000 である。** Docker Desktop for Mac は
 ファイル共有層が所有者を写すのでずれが表に出ないが、**ネイティブ Linux の Docker は数値の UID をそのまま通す**ため、
-そのままではコンテナからワークスペースへ書き込めない。
+付け替えなければコンテナからワークスペースへ書き込めない。
 
-**devcontainer.json の `updateRemoteUserUID` はこの構成には効かない**（dockerComposeFile 方式のため）。
-そこで vscode の UID/GID をイメージのビルド引数で付け替える（`.devcontainer/Dockerfile` と
-`.devcontainer/remap-vscode-user.sh`。既定は 1000 のままで、Mac の挙動は変わらない）。
+**付け替えは devcontainer CLI が行う**（`devcontainer.json` の `"updateRemoteUserUID": true`。#879）。CLI が Linux で
+動くとき（Remote-SSH で dev01 に入って開く）は、compose 方式でもコンテナを作るたびに `-uid` 付きのイメージを作り、
+vscode を開いた利用者の UID/GID（1001）へ付け替える。macOS では CLI が既定で飛ばすので、Mac は 1000 のまま変わらない。
+**ここで UID を渡す必要は無い。**
 
-値は **`.devcontainer/.env`（追跡外。`.gitignore` の `.env` が効く）**に書く。
+- 2026-10-02 に dev01 で実測した（#879 のコメント）。以前は #802 の「compose 方式には効かない」という前提で
+  `.devcontainer/Dockerfile` と `remap-vscode-user.sh` がビルド引数（`DEVCONTAINER_UID` / `DEVCONTAINER_GID`）で
+  付け替えていたが、前提が成り立たず機構が二重になっていたので外した。**既存の `.devcontainer/.env` に残った
+  `DEVCONTAINER_UID` / `DEVCONTAINER_GID` は、もう何にも読まれない**（消してよい）。
+- **代償**: CLI の段は features の後に走り、`$HOME` しか chown しない。features が置いた `/go`・`/usr/local/go`・
+  `/usr/local/share/nvm` の所有者は 1000（`ls -l` で `UNKNOWN`）のまま残る。どれも setgid のグループ書き込み可で、
+  vscode は `golang` / `nvm` のグループに入っているので、`npm i -g` も `go install` も通る（実測）。所有者の表示が
+  `UNKNOWN` なのはこのためで、異常ではない。
+
+置くのはホストの宣言だけで、**`.devcontainer/.env`（追跡外。`.gitignore` の `.env` が効く）**に書く。
 
 ```bash
 cd ~/game-forge
-printf 'DEVCONTAINER_UID=%s\nDEVCONTAINER_GID=%s\nDEVCONTAINER_HOST=dev01\n' "$(id -u)" "$(id -g)" > .devcontainer/.env
-docker compose -f .devcontainer/compose.yaml config | grep -A3 'args:'   # USER_GID / USER_UID が 1001 であること
+printf 'DEVCONTAINER_HOST=dev01\n' > .devcontainer/.env
+docker compose -f .devcontainer/compose.yaml config | grep DEVCONTAINER_HOST   # DEVCONTAINER_HOST: dev01 であること
 ```
 
 - **`.devcontainer/.env` に書く理由**: compose は、compose ファイルの在るディレクトリの `.env` を既定で読む
@@ -1023,8 +1033,7 @@ docker compose -f .devcontainer/compose.yaml config | grep -A3 'args:'   # USER_
 - **`DEVCONTAINER_HOST=dev01`** は、`scripts/install-cloudflared.sh` に「このコンテナのホストは dev01 自身である」と
   伝える宣言である。値が `dev01` のとき、あのスクリプトは cloudflared の導入も `~/.ssh/config` への入口の追記もしない
   （dev01 から dev01 へトンネルを回って入る**自己参照の入口**を作らないため。判定を自動にしなかった理由はスクリプトの末尾）。
-  UID と同じファイルに並べてあるのは、UID を渡し忘れるとワークスペースへ書き込めずすぐ気づくので、一緒に書き忘れを見つけられるためである。
-- **UID を変えたら、イメージを作り直す**（Rebuild Container）。付け替えはビルドの段で行うので、既存のコンテナには効かない。
+  書き忘れは 7.4 の `grep -c 'Host dev01' ~/.ssh/config` が 0 にならないことで分かる。
 
 ### 7.4 コンテナを立てて入る
 
@@ -1146,13 +1155,13 @@ ssh -t dev01-ssh.ojos.jp '
 | dev01 の devcontainer で VERIFY_PASS | 7.5 の `bash scripts/verify.sh` | 利用者（dev01） |
 | dev01 で `check:isolated-build` が通る | 7.5 の `npm run check:isolated-build` | 利用者（dev01） |
 | ワークスペースへ書き込める | 7.4 の `WRITE_OK` | 利用者（dev01） |
-| Mac で作り直しても VERIFY_PASS | Mac で Rebuild Container の後に `bash scripts/verify.sh`（`.devcontainer/.env` を置かないので既定の 1000） | 利用者（Mac） |
+| Mac で作り直しても VERIFY_PASS | Mac で Rebuild Container の後に `bash scripts/verify.sh`（macOS では CLI が付け替えを飛ばすので 1000 のまま） | 利用者（Mac） |
 | dev01 で自己参照の入口を書かない | 7.4 の `grep -c 'Host dev01' ~/.ssh/config` が 0 | 利用者（dev01）。分岐そのものは `scripts/check-devcontainer-dev01.sh` が毎回見る |
 | dev01 で `terraform plan` が必須変数の不足で落ちる | `terraform -chdir=terraform init && terraform -chdir=terraform plan -input=false` が `No value for required variable` で止まる（tfvars を置いていないので fail-closed。2026-10-01 は 12 件）。**`init` は `terraform/.terraform.lock.hcl` に linux_amd64 の `h1:` を足して作業ツリーを汚す。先に `git diff --quiet -- terraform/.terraform.lock.hcl` で変更が無いことを確かめ、確かめた後に `git checkout -- terraform/.terraform.lock.hcl` で戻す**（先に変更があれば戻さない。それごと消えるため） | 利用者（dev01） |
 
-**UID の既定が 1000 のままであること・dev01 の値がビルド引数へ届くこと・付け替えの判定・
+**ホストの宣言が届くこと・`updateRemoteUserUID` を外していないこと・ベースの固定・
 install-cloudflared.sh の分岐は、`scripts/check-devcontainer-dev01.sh`（`scripts/acceptance.sh` から回る）が
-機械で見る。** イメージの実ビルドと、実機での書き込みはそこでは見ない。
+機械で見る。** CLI の実際の付け替えと、実機での書き込みはそこでは見ない（7.4 の `id` と `WRITE_OK`）。
 
 ### 7.9 スマホから起こし・入り・再認証する（#849）
 

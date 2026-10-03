@@ -11,6 +11,13 @@
   // macOS では CLI が既定で飛ばし、vscode は 1000 のまま（Docker Desktop が所有者を写すので要らない）。
   // false にすると dev01 で書き込めなくなる。scripts/check-devcontainer-dev01.sh が見る。
   "updateRemoteUserUID": true,
+  // codex の `--sandbox read-only`（同梱の bwrap）が namespace を作れるよう、seccomp を外す（#929 / #933）。
+  // go の feature も同じ値を宣言するが、それに頼ると feature を外した日に dev01 でも Mac でも黙って動かなくなる。
+  // **compose.yaml の security_opt には書かない。** そこに書くと feature の上書きの compose と値が重なり、
+  // Mac の compose（2.40.3）が `security_opt items ... are equal` で起動を拒否する（#933）。ここに書いた値は、
+  // devcontainer CLI が feature の宣言と重複を除いてまとめる（CLI 0.89.0 の実装で確かめた）。
+  // 経緯は compose.yaml の security_opt の上。scripts/check-devcontainer-dev01.sh が見る。
+  "securityOpt": ["seccomp=unconfined"],
   "features": {
     "ghcr.io/devcontainers/features/common-utils:1": {
       "configureZsh": true

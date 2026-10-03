@@ -11,11 +11,13 @@
 #      - **AppArmor を外す宣言（`security_opt: apparmor=unconfined`）が残っていること**（#874）。
 #        消えると dev01 で codex の bwrap が `docker-default` の `deny mount` に当たり、第二意見が取れなくなる。
 #        **効くかどうか**（作り直した dev01 のコンテナで bwrap が通るか）はここでは見ない（docs/local-dev.md 7.4）。
-#      - **seccomp を外す宣言（`security_opt: seccomp=unconfined`）も残っていること**（#929）。go の feature も同じ値を
-#        足すが、それに頼ると feature を外した日に bwrap が namespace を作れなくなる（dev01 でも Mac でも）。
+#      - **seccomp を外す宣言（`seccomp=unconfined`）が compose.yaml に無いこと**（#933）。go の feature の上書きの
+#        compose も同じ値を足すので、ここにもあると統合後に 2 つ並び、Mac の compose（2.40.3）が起動を拒否する。
 #      - ベースのイメージが浮動のタグでないこと（#802。理由は compose.yaml の image の上）。
 #   2. **vscode の UID の付け替えを devcontainer CLI に任せていること**（#879）。devcontainer.json に
 #      `"updateRemoteUserUID": true` が在ること。false にすると dev01（uid=1001）でワークスペースへ書き込めない。
+#      あわせて、**seccomp を外す宣言が devcontainer.json の `securityOpt` に在ること**（#929 / #933）。go の feature も
+#      同じ値を足すが、それに頼ると feature を外した日に bwrap が namespace を作れなくなる（dev01 でも Mac でも）。
 #   3. **scripts/install-cloudflared.sh が dev01 の上では何もしないこと。**
 #      DEVCONTAINER_HOST=dev01 のとき ~/.ssh/config を作らず、導入（curl / sudo）にも進まない。
 #      それ以外（未設定・空・別の値）では従来どおり入口を書く。HOME を一時ディレクトリへ向け、
@@ -80,15 +82,16 @@ expect_host "既定ではホストの宣言は空" "" "$WORK/empty.env"
 expect_host ".env から dev01 の値が届く" "dev01" "$WORK/dev01.env"
 expect_host "環境変数からも届く" "dev01" "$WORK/empty.env" DEVCONTAINER_HOST=dev01
 
-# AppArmor と seccomp を外す宣言（#874 / #929）。dev01 の値を渡しても渡さなくても同じであること。
+# AppArmor を外す宣言が在り、seccomp を外す宣言が無いこと（#874 / #933）。dev01 の値を渡しても渡さなくても同じであること。
+# seccomp は devcontainer.json の securityOpt で外す（2. で見る）。ここにもあると feature の上書きの compose と重なる。
 for envfile in "$WORK/empty.env" "$WORK/dev01.env"; do
   n=$((n + 1))
   got="$(compose_json "$envfile" | jq -r '(.services.app.security_opt // []) | join(" ")')" ||
     { ng "security_opt: docker compose config が失敗しました"; continue; }
   [[ " $got " == *" apparmor=unconfined "* ]] \
     || ng "security_opt に apparmor=unconfined がありません（$(basename "$envfile")。dev01 で codex の bwrap が動かなくなります。#874）: '$got'"
-  [[ " $got " == *" seccomp=unconfined "* ]] \
-    || ng "security_opt に seccomp=unconfined がありません（$(basename "$envfile")。go の feature を外すと codex の bwrap が動かなくなります。#929）: '$got'"
+  [[ " $got " != *" seccomp=unconfined "* ]] \
+    || ng "compose.yaml の security_opt に seccomp=unconfined があります（$(basename "$envfile")。go の feature の上書きの compose と重なり、Mac の compose が起動を拒否します。devcontainer.json の securityOpt に書く。#933）: '$got'"
 done
 
 # ベースが浮動のタグ（ubuntu / latest / タグ無し）でないこと。`base:ubuntu` は 26.04 へ移り、
@@ -139,6 +142,12 @@ if ! uid_update="$(jsonc_get "$DEVCONTAINER_JSON" updateRemoteUserUID)"; then
   ng "devcontainer.json を読めません（JSONC として壊れている）"
 elif [[ "$uid_update" != true ]]; then
   ng "devcontainer.json の updateRemoteUserUID が true ではありません（${uid_update}）。dev01 でワークスペースへ書き込めなくなります（#879）"
+fi
+n=$((n + 1))
+if ! sec_opt="$(jsonc_get "$DEVCONTAINER_JSON" securityOpt)"; then
+  ng "devcontainer.json を読めません（JSONC として壊れている）"
+elif ! jq -e 'type == "array" and index("seccomp=unconfined") != null' <<<"$sec_opt" >/dev/null 2>&1; then
+  ng "devcontainer.json の securityOpt に seccomp=unconfined がありません（${sec_opt}）。go の feature を外すと codex の bwrap が動かなくなります（#929 / #933）"
 fi
 
 # ── 3. install-cloudflared.sh の dev01 分岐 ─────────────────────────────────

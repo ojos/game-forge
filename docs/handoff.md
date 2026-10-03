@@ -11,12 +11,29 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 ## 1. 現在地
 
+### #930 で Mac の devcontainer が起動しなくなっていたのを直し、#933 を閉じました（#933。2026-10-03）
+
+| # | 何をしたか | PR / コミット | 状態 |
+|---|---|---|---|
+| #933 | `seccomp=unconfined` を `.devcontainer/compose.yaml` から `devcontainer.json` の `securityOpt` へ移した。`check-devcontainer-dev01.sh` は、compose.yaml に seccomp が**無い**ことと、devcontainer.json に**在る**ことを見る（14 件 → 15 件） | PR #934 / `89f7cf4` | 閉じた（Mac と dev01 での確認の後） |
+
+- **#930 は Mac の devcontainer を壊していました。** compose.yaml の `seccomp=unconfined` と、go の feature が上書きの compose に足す同じ値が重なり、統合後の security_opt に 2 つ並びました。Mac の Docker Desktop の compose（2.40.3-desktop.1）は、`services.app.security_opt items at 1 and 3 are equal` で起動を拒否します。利用者が作り直して踏み、compose.yaml の行をコメントアウトして凌いでいました。
+- **コンテナの中で再現しても通ります。** コンテナ内の compose（v5.6.0）は、重複を黙って 1 つにまとめます。#930 の確認で気づけなかったのも、最初の再現で「原因ではない」と見えたのもこのためです。**compose の挙動を確かめるときは、起動に使う側の版（Mac はエラーログの `Docker Compose version:` の行）で見ること。**
+- **devcontainer.json に書いた値は、CLI が feature の宣言と重複を除いてまとめます。** CLI 0.89.0 の束で、まとめる関数が `[...new Set(...)]` であることを確かめ、Mac の作り直しの実物でも確かめました（metadata のラベルには `seccomp=unconfined` が 2 つあり、SecurityOpt は 1 つ）。#929 の狙い（go の feature に頼らない）はそのまま保っています。
+- **#933 は、マージで閉じないようにしました**（#923 と同じ。acceptance に Mac と dev01 の作り直しがあるため）。PR 本文を `Refs` にしてマージし、確認の後に記録を付けて手で閉じました。
+- **dev01 の確認は、親がこのコンテナから ssh で代行しました**（利用者の「進めてください」を受けて。Cloudflare Access のログインだけ利用者）。**acceptance の文言（「利用者か ssh での代行」）の範囲内です。** 手順は次のとおりで、結果は [#933 のコメント](https://github.com/ojos/game-forge/issues/933)にあります。
+  - 作り直す前に、コンテナに tmux・claude・VS Code のサーバーが無いことを確かめた
+  - dev01 の `~/Workspaces/game-forge` を main（`89f7cf4`）へ fast-forward した（**`ed84a31`〈#898〉のまま止まっていた**）
+  - `dev-up@game-forge.service` を止め、`devcontainer up --remove-existing-container` で作り直し、ユニットを戻した（active）
+  - 7.4 の確認（`unconfined`・`Seccomp: 0`・uid=1001・WRITE_OK・DOCKER_OK・BWRAP_OK）、codex の read-only のサンドボックス、`second-opinion-review.sh --engine codex` の LGTM まで、すべて期待どおりだった
+- **ai-packages-dev の DCB v0.14.0 も、`--with-codex` で compose 側に両方を明示しています**（ojos/ai-packages-dev#392 / ojos/ai-packages-dev#407）。go の feature と併せて使うと同じ重複が起きうる、という点はこちらでは追っていません（上流の問題として向こうで扱う。#933 の scope.out）。
+
 ### dev01 の devhost を上流版（DCB v0.14.0）へ移し、#923 を閉じました。#929 で seccomp を明示しています（#923 / #929。2026-10-03）
 
 | # | 何をしたか | PR / コミット | 状態 |
 |---|---|---|---|
 | #923 | `tools/devhost/` の上流と重なる部分を撤去し、README を上流への案内と game-forge 固有の差分に縮めた。`dev auth aws` は、独立した `tools/devhost/dev-auth-aws.sh`（設定は自前の `~/.config/dev/aws-sso`）として残した。`check-devhost.sh` は、置いてよいファイルを 3 つに限る | PR #928 / `7598f92` | 閉じた（dev01 での確認の後） |
-| #929 | `.devcontainer/compose.yaml` に `seccomp=unconfined` を明示した。go の feature の宣言に頼らない。`check-devcontainer-dev01.sh` が、展開した compose で確かめる | PR #930 / `f78bf3e` | 閉じた |
+| #929 | `.devcontainer/compose.yaml` に `seccomp=unconfined` を明示した。go の feature の宣言に頼らない。`check-devcontainer-dev01.sh` が、展開した compose で確かめる | PR #930 / `f78bf3e` | 閉じた（**2026-10-03 追記: Mac で起動しなくなる退行があり、#933〈PR #934〉で devcontainer.json の `securityOpt` へ移した。上の節**） |
 
 - **#923 は、マージで閉じないようにしました。** acceptance に「利用者が dev01 で通す」があり、これはマージの後でないとできないためです。PR 本文と squash の本文を `Refs` にしてマージし、dev01 での確認の後に、記録を付けて手で閉じました。
 - **dev01 の移行は、親がこのコンテナから ssh で打ちました**（利用者が任せた）。作業中のコンテナは止めていません。必要だったのは、Cloudflare Access のログインと、AWS SSO のデバイスコードの承認（利用者のブラウザ）だけです。`dev attach` は、利用者が打ちました。結果は [#923 のコメント](https://github.com/ojos/game-forge/issues/923)にあります。**acceptance の文言（「利用者が dev01 で通す」）とは、打った人が違います。** `dev ls`・`dev up`・`dev-auth-aws` は、利用者の「実行できるところはお任せします」（2026-10-03）を受けて親が打ち、利用者は認証の承認と `dev attach` だけを行いました。確かめたかった中身（上流版が dev01 で動くこと）は満たしているので、親の判断で閉じています。
@@ -4975,6 +4992,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
+- **2026-10-03**（**#930 で Mac の devcontainer が起動しなくなっていたのを直し、#933 を閉じた**——compose.yaml の `seccomp=unconfined` と go の feature の宣言が重なり、Mac の compose 2.40.3 が `security_opt items ... are equal` で拒否していた（コンテナ内の v5.6.0 は黙ってまとめるので再現しない）。PR #934 で devcontainer.json の `securityOpt` へ移した。Refs でマージし、利用者が Mac で、親が dev01 で ssh から作り直して確かめてから閉じた。dev01 のツリーは `ed84a31` から main へ進めた。#929 の行に追記した）
 - **2026-10-03**（**dev01 の devhost を上流版へ移して #923 を閉じ、#929 を閉じた**——DCB v0.14.0 で着手し（PR #928）、#923 は Refs でマージして、dev01 で親が ssh から移行した後に閉じた。#929（PR #930）で seccomp を明示した。README の移行手順のパスの決め打ちを直し、handoff の dev01 の古い記述（配り直し・問 12・`tools/devhost/` の性質）に追記した。#929 の本文の「PR #407」を記録した。game-forge-78 の待ちラベル〔PR #931〕を 1 章に書き、初めてラベルと handoff を突き合わせた〔#582・#735 は利用者の判断で wait:external に揃えた〕）
 - **2026-10-02**（**#925 を閉じ、#923 / #924 / #925 を起票し、#752 を閉じた**——残りの判断を利用者が決めた。オーケストレータの束の関門を、チャットと同じく Pages のコミットと比べる形にした（PR #926。判定は写しで揃え、自己検査は 15 本）。#752 は往復 50 件・利用者 3 人で区切る #924 へ移した。devhost は dev01 へ配り直し、上流版へ寄せる #923 は DCB v0.14.0（ojos/ai-packages-dev#409）待ち。3 章の束の関門の項を #925 に追随させ、前の節の済んだ項に追記した）
 - **2026-10-02**（**#908 を閉じた（PR #921）**——seccomp=unconfined の出どころは go の feature で、ojos/ai-packages-dev#392 の担当に問い合わせて確かめた。直前の書き戻し（#920）の「#908 は入れていない」の行に、済んだと追記した。3 章の `pgrep -f` の項に `pkill -f` の 2 例目を足した）

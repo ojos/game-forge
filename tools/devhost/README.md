@@ -87,11 +87,17 @@ tar -xzf PACKAGE_ARCHIVE.tar.gz ./devhost
 #    同じなら入れ替えない（daemon-reload も restart もしない）。
 cmp devhost/dev-up@.service ~/.config/systemd/user/dev-up@.service && echo SAME_UNIT
 
-# 3. 薄い追加を置く（作業中のツリー ~/game-forge を触らず、main の版を取ってくる）
+# 3. 薄い追加を置く（作業中のツリーを触らず、main の版を取ってくる）
 curl -fsSL https://raw.githubusercontent.com/ojos/game-forge/main/tools/devhost/dev-auth-aws.sh -o dev-auth-aws.sh
 less dev-auth-aws.sh                           # 中身を読んでから置く
 install -D -m 0755 dev-auth-aws.sh ~/.local/bin/dev-auth-aws
-printf 'game-forge %s/game-forge ojos\n' "$HOME" > ~/.config/dev/aws-sso
+# パスは決め打ちせず、いまの projects ファイルから読む（4 で外す前に）。
+# dev01 の置き場所は ~/Workspaces/game-forge で、docs の ~/game-forge と違う（#923 の移行で踏んだ）。
+# セッション名は projects の aws_sso_session から読み、無ければ（新しく導入するときは、projects に AWS のキーが無い）
+# game-forge の既定の ojos（~/.aws/config の [sso-session ojos]）を使う。
+awk -v def=ojos '$1=="game-forge"{s=def; for(i=3;i<=NF;i++) if($i ~ /^aws_sso_session=/) s=substr($i,17); print $1, $2, s}' \
+  ~/.config/dev/projects > ~/.config/dev/aws-sso
+cat ~/.config/dev/aws-sso                      # 「名前 絶対パス セッション名」の 3 列であること
 ~/.local/bin/dev-auth-aws game-forge          # デバイスコードをブラウザで承認する（game-forge 版の dev のままでも動く）
 
 # 4. 設定ファイルから AWS のキーを外す（game-forge 版の dev のままで、ls の AWS 列が - になる）

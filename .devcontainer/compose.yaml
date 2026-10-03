@@ -32,21 +32,26 @@ services:
     # （delve）のために、その devcontainer-feature.json（1.4.0）が `securityOpt: ["seccomp=unconfined"]`・
     # `capAdd: ["SYS_PTRACE"]`・`init: true` を宣言している。devcontainer CLI がそれをコンテナの
     # `devcontainer.metadata` ラベルに写し、起動時に作る上書きの compose（`docker-compose.devcontainer.
-    # containerFeatures-*.yml`）で足す（#908 の時点では、ここにも devcontainer.json にも書いていなかった。#929 でここにも明示した）。
+    # containerFeatures-*.yml`）で足す（#908 の時点では、ここにも devcontainer.json にも書いていなかった。#929 で明示し、#933 で devcontainer.json へ移した）。
     # `label=disable` は docker-outside-of-docker:1 の宣言で、AppArmor の機械では効き目が無い。
     # 2026-10-02 に、Mac と dev01 の両方で metadata のラベルを読んで確かめた（Mac は Seccomp 0。dev01 は
     # ojos/ai-packages-dev#392 の実測）。**dev01 で bwrap が通るには、apparmor と seccomp の両方を外す必要がある**
     # （apparmor だけでは `No permissions to create new namespace` で落ちる。同じ実測）。**Mac でも、
     # Docker Desktop の既定の seccomp は同じく namespace の作成を止める**（go の feature の無い
     # ai-packages-dev の Mac のコンテナで、Seccomp 2 のまま失敗した。同じ issue）。
-    # **seccomp=unconfined はここでも明示する（#929）。** go の feature に頼ると、その feature を外したり、
-    # feature 側の宣言が変わったりした日に seccomp が既定に戻り、dev01 でも Mac でも codex のサンドボックスが
-    # 黙って動かなくなる。DCB も v0.14.0 で `--with-codex` のときに両方を明示した（ojos/ai-packages-dev#392 /
-    # ojos/ai-packages-dev#407）。いまは go の feature とここの両方が同じ値を足すので、コンテナの動きは変わらない。
-    # scripts/check-devcontainer-dev01.sh が、展開した compose に両方があることを確かめる。
+    # **seccomp=unconfined は明示するが、ここではなく devcontainer.json の securityOpt に書く（#929 / #933）。**
+    # go の feature に頼ると、その feature を外したり、feature 側の宣言が変わったりした日に seccomp が既定に戻り、
+    # dev01 でも Mac でも codex のサンドボックスが黙って動かなくなる。DCB も v0.14.0 で `--with-codex` のときに
+    # 両方を明示した（ojos/ai-packages-dev#392 / ojos/ai-packages-dev#407）。
+    # **ここへ書かない理由**（#933）: #929 でここに書いたら、feature の上書きの compose も同じ値を足し、統合後の
+    # security_opt に `seccomp=unconfined` が 2 つ並んだ。Mac の Docker Desktop の compose（2.40.3-desktop.1）は
+    # `services.app.security_opt items at 1 and 3 are equal` で起動を拒否する（2026-10-03 に Mac で作り直して
+    # 落ちた）。compose v5.6.0 は黙って 1 つにまとめるので、版によっては気づけない。devcontainer.json の値は、
+    # devcontainer CLI が feature の宣言とまとめてから上書きの compose に書くので、重複しない。
+    # scripts/check-devcontainer-dev01.sh が、ここに apparmor があり seccomp が無いことと、devcontainer.json に
+    # seccomp があることを確かめる。
     security_opt:
       - apparmor=unconfined
-      - seccomp=unconfined
     volumes:
       - ..:/workspaces/game-forge:cached
       # docker-outside-of-docker feature 用（compose 利用時は feature 側の mounts が適用されないため明示）

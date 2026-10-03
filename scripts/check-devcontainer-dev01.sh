@@ -11,6 +11,8 @@
 #      - **AppArmor を外す宣言（`security_opt: apparmor=unconfined`）が残っていること**（#874）。
 #        消えると dev01 で codex の bwrap が `docker-default` の `deny mount` に当たり、第二意見が取れなくなる。
 #        **効くかどうか**（作り直した dev01 のコンテナで bwrap が通るか）はここでは見ない（docs/local-dev.md 7.4）。
+#      - **seccomp を外す宣言（`security_opt: seccomp=unconfined`）も残っていること**（#929）。go の feature も同じ値を
+#        足すが、それに頼ると feature を外した日に bwrap が namespace を作れなくなる（dev01 でも Mac でも）。
 #      - ベースのイメージが浮動のタグでないこと（#802。理由は compose.yaml の image の上）。
 #   2. **vscode の UID の付け替えを devcontainer CLI に任せていること**（#879）。devcontainer.json に
 #      `"updateRemoteUserUID": true` が在ること。false にすると dev01（uid=1001）でワークスペースへ書き込めない。
@@ -78,13 +80,15 @@ expect_host "既定ではホストの宣言は空" "" "$WORK/empty.env"
 expect_host ".env から dev01 の値が届く" "dev01" "$WORK/dev01.env"
 expect_host "環境変数からも届く" "dev01" "$WORK/empty.env" DEVCONTAINER_HOST=dev01
 
-# AppArmor を外す宣言（#874）。dev01 の値を渡しても渡さなくても同じであること。
+# AppArmor と seccomp を外す宣言（#874 / #929）。dev01 の値を渡しても渡さなくても同じであること。
 for envfile in "$WORK/empty.env" "$WORK/dev01.env"; do
   n=$((n + 1))
   got="$(compose_json "$envfile" | jq -r '(.services.app.security_opt // []) | join(" ")')" ||
     { ng "security_opt: docker compose config が失敗しました"; continue; }
   [[ " $got " == *" apparmor=unconfined "* ]] \
     || ng "security_opt に apparmor=unconfined がありません（$(basename "$envfile")。dev01 で codex の bwrap が動かなくなります。#874）: '$got'"
+  [[ " $got " == *" seccomp=unconfined "* ]] \
+    || ng "security_opt に seccomp=unconfined がありません（$(basename "$envfile")。go の feature を外すと codex の bwrap が動かなくなります。#929）: '$got'"
 done
 
 # ベースが浮動のタグ（ubuntu / latest / タグ無し）でないこと。`base:ubuntu` は 26.04 へ移り、

@@ -60,10 +60,15 @@
 #
 #   書く      claude -p --output-format json --tools "" --strict-mcp-config --no-session-persistence < prompt.txt
 #             道具は 1 つも許さない（材料はプロンプトに全部入っている）。--strict-mcp-config で MCP も読ませない
-#   置く      claude -p --tools "" --allowedTools "mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide"
+#   置く      claude -p --restricted --disallowedTools "Read,Write,Edit,NotebookEdit,Glob,Grep"
+#               --allowedTools "mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide"
 #               --output-format json '<依頼>'
-#             許す道具はこの 2 つだけ（2026-10-05 の下調べ。#936 のコメント）。下調べの形に --tools "" を
-#             足し、組み込みの道具を使えなくしてある（MCP の道具は --tools の対象外）。URL は .result から
+#             許す道具はこの 2 つだけ（2026-10-05 の下調べ。#936 のコメント）。**--tools "" は使えない**:
+#             claude 2.1.289 の実測で、--tools "" は MCP の道具まで消し、--tools に MCP の名前を渡しても
+#             効かない（どちらも「道具が無い」と返った）。代わりに --restricted でコードを走らせる道具と
+#             WebFetch を外し、利用者・プロジェクトの設定を読ませない（設定が先に許した道具が効かない）。
+#             残るファイルの道具は --disallowedTools で外す。許していない MCP の道具は -p では断られる
+#             （実測: Game Forge の get_me を頼むと permission_denials が 1 件で DENIED）。URL は .result から
 #             https://claude.ai/(code/)?artifact/… の形で抜き、**抜けなければ書き込み失敗とする**。
 #             **URL があることを成功とみなす**（下調べで決めた判定）。許す道具に読み返しが無いので、
 #             doc が本当にできたかはこの段では確かめない。人が通知の URL を開いて確かめる（docs/ops-report.md）
@@ -84,6 +89,8 @@ TEMPLATE="$ROOT/docs/ops-report-template.md"
 CLAUDE_CMD="${OPS_REPORT_CLAUDE:-claude}"
 BASE_DIR="${OPS_REPORT_DIR:-$HOME/.local/state/game-forge/ops-report}"
 DOCS_TOOLS="mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide"
+# --restricted の後にも残るファイルの道具。Docs に置く段では使わせない。
+DOCS_DENY="Read,Write,Edit,NotebookEdit,Glob,Grep"
 # 1 回の claude の上限（秒）。下調べでは置く方が 2 ターンで終わった。止まったままにしない。
 CLAUDE_TIMEOUT="${OPS_REPORT_CLAUDE_TIMEOUT:-900}"
 
@@ -313,9 +320,9 @@ $(cat "$DRAFT")
 
 echo "$PREFIX Claude Docs に置きます（${TITLE}）" >&2
 DOCS_JSON="$OUT/docs-response.json"
-# --tools "" で組み込みの道具（Bash・Read など）を 1 つも使えなくし、--allowedTools で Docs の 2 つを
-# 許す。--allowedTools は「許す」指定であって「使えるものを絞る」指定ではないので、利用者の設定が
-# 別の道具を許していると、下書きの中の文に誘導されてそれを使える余地が残る。
+# --restricted で組み込みのコードを走らせる道具と WebFetch を外し、利用者の設定を読ませない。残るファイルの
+# 道具は --disallowedTools で外し、--allowedTools で Docs の 2 つだけを許す（--tools "" は MCP の道具まで
+# 消すので使えない。冒頭の「claude の呼び方」）。
 # **--force は新しい doc を作る**（許した 2 つの道具で既存の doc を書き換える形は下調べで確かめていない）。
 # 前の doc は Docs に残るので、その URL を docs-url.previous.txt に移し、結果の理由に載せて、消すよう知らせる。
 PREVIOUS_URL=""
@@ -335,7 +342,7 @@ fi
 rm -f "$OUT/docs-url.txt"
 # 呼ぶ前に「成否不明」の印を置き、URL を受け取れたときだけ外す（落ちても印が残る）。
 printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/docs-pending.txt"
-( cd "$OUT" && run_claude -p --tools "" --allowedTools "$DOCS_TOOLS" --output-format json "$REQUEST" ) > "$DOCS_JSON"
+( cd "$OUT" && run_claude -p --restricted --disallowedTools "$DOCS_DENY" --allowedTools "$DOCS_TOOLS" --output-format json "$REQUEST" ) > "$DOCS_JSON"
 docs_rc=$?
 
 # URL は返答の**最後の空でない行**から抜く（依頼で「最後の行に URL だけ」と頼んである。下調べでも

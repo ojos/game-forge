@@ -215,14 +215,16 @@ FAKE_LOG="$TMP/fake-claude.log"
 cat > "$FAKE" <<'EOF'
 #!/usr/bin/env bash
 # 偽の claude。--allowedTools があれば「置く」、無ければ「書く」として振る舞う。
-mode=generate tools="(なし)" allowed="(なし)" strict=0
+mode=generate tools="(なし)" allowed="(なし)" denied="(なし)" strict=0 restricted=0
 prev=""
 for a in "$@"; do
   case "$prev" in
     --tools) tools="[$a]" ;;
     --allowedTools) mode=docs; allowed="$a" ;;
+    --disallowedTools) denied="$a" ;;
   esac
   [ "$a" = "--strict-mcp-config" ] && strict=1
+  [ "$a" = "--restricted" ] && restricted=1
   prev="$a"
 done
 if [ "$mode" = generate ]; then
@@ -232,7 +234,7 @@ if [ "$mode" = generate ]; then
   jq -n --rawfile r "$FAKE_DRAFT" '{type: "result", is_error: false, result: ("以下が下書きです。\n\n```markdown\n" + $r + "```\n")}'
   exit 0
 fi
-printf 'docs tools=%s allowed=%s\n' "$tools" "$allowed" >> "$FAKE_LOG"
+printf 'docs tools=%s restricted=%s denied=%s allowed=%s\n' "$tools" "$restricted" "$denied" "$allowed" >> "$FAKE_LOG"
 # 依頼（最後の引数）の囲みの印を記録する。
 for last in "$@"; do :; done
 printf 'docs-tag=%s\n' "$(printf '%s\n' "$last" | sed -n 's/^<\(draft-[0-9a-f]*\)>$/\1/p' | head -n 1)" >> "$FAKE_LOG"
@@ -281,8 +283,8 @@ else
   ng "控えの先頭か末尾に、前置きか囲みが残っています"
 fi
 if grep -qx 'generate tools=\[\] strict=1' "$FAKE_LOG" \
-   && grep -qx 'docs tools=\[\] allowed=mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide' "$FAKE_LOG"; then
-  ok "書く段は道具を許さず、置く段は組み込みの道具を外して Docs の 2 つだけを許す"
+   && grep -qx 'docs tools=(なし) restricted=1 denied=Read,Write,Edit,NotebookEdit,Glob,Grep allowed=mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide' "$FAKE_LOG"; then
+  ok "書く段は道具を許さず、置く段は --tools を使わず（MCP まで消える）--restricted と拒否で組み込みを外し、Docs の 2 つだけを許す"
 else
   ng "claude への道具の許し方が決めたとおりではありません"; sed 's/^/    /' "$FAKE_LOG" >&2
 fi

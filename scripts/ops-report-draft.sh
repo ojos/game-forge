@@ -5,7 +5,7 @@
 #   bash scripts/ops-report-draft.sh                 # 先月（JST）の分。launchd の起動側はこれを呼ぶ
 #   bash scripts/ops-report-draft.sh 2026-09
 #   bash scripts/ops-report-draft.sh 2026-09 --no-docs          # Docs に置かず、手元の控えだけ作る
-#   bash scripts/ops-report-draft.sh 2026-09 --force            # その月の doc が既にあっても作り直す
+#   bash scripts/ops-report-draft.sh 2026-09 --force            # その月の doc が既にあっても新しく作る（前の doc は手で消す）
 #   bash scripts/ops-report-draft.sh 2026-09 --material m.json  # 集め直さず、保存した材料から書く
 #   bash scripts/ops-report-draft.sh 2026-09 --local [--persist-to <dir>] --no-docs   # 手元の D1 で空回し
 #
@@ -167,8 +167,15 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     OUT=""   # 走っている側の result.txt を上書きしない
     finish 2 usage "${MONTH} の下書きは別の実行（PID ${holder:-不明}）が作っています。終わってから回してください（実行が無いのに続くなら ${LOCK} を消してください）"
   fi
-  rm -rf "$LOCK"
-  mkdir "$LOCK" 2>/dev/null || finish 2 usage "${MONTH} の実行の印（${LOCK}）を作れません"
+  # 残骸の取り除きも 1 回の操作にする（mv は原子的）。同時に残骸を見た実行のうち、mv できた 1 つだけが
+  # 消す。負けた側は mkdir にも負けるか、PID の無い新しい印を見て止まる。
+  if mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+    rm -rf "$LOCK.stale.$$"
+  fi
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    OUT=""
+    finish 2 usage "${MONTH} の下書きは別の実行が作り始めました。終わってから回してください"
+  fi
 fi
 echo "$$" > "$LOCK/pid"
 trap 'rm -rf "$LOCK"' EXIT
@@ -318,6 +325,13 @@ DOCS_JSON="$OUT/docs-response.json"
 # --tools "" で組み込みの道具（Bash・Read など）を 1 つも使えなくし、--allowedTools で Docs の 2 つを
 # 許す。--allowedTools は「許す」指定であって「使えるものを絞る」指定ではないので、利用者の設定が
 # 別の道具を許していると、下書きの中の文に誘導されてそれを使える余地が残る。
+# **--force は新しい doc を作る**（許した 2 つの道具で既存の doc を書き換える形は下調べで確かめていない）。
+# 前の doc は Docs に残るので、その URL を docs-url.previous.txt に移し、結果の理由に載せて、消すよう知らせる。
+PREVIOUS_URL=""
+if [[ -s "$OUT/docs-url.txt" ]]; then
+  PREVIOUS_URL="$(head -n 1 "$OUT/docs-url.txt")"
+  printf '%s\n' "$PREVIOUS_URL" >> "$OUT/docs-url.previous.txt"
+fi
 # 置き直すとき（--force）は、前の doc の URL を**ここで**消す。残すと、置き直しに失敗したのに次の実行が
 # 古い doc を成功として返す。集める・書く・検査のどこかで落ちたときは消さない（doc はまだ 1 本で、
 # 次の実行がそれを知っている必要がある）。--no-docs はここまで来ないので消さない。
@@ -348,4 +362,7 @@ if ! cp "$DRAFT" "$OUT/docs-draft.md" || ! cmp -s "$DRAFT" "$OUT/docs-draft.md";
   finish 2 copy-failed "Claude Docs には置きました（${TITLE}）が、同じ Markdown の控え（docs-draft.md）を残せませんでした。${DRAFT} を控えとして写してください"
 fi
 COPY="$OUT/docs-draft.md"
+if [[ -n "$PREVIOUS_URL" ]]; then
+  finish 0 ok "Claude Docs に置き直しました（${TITLE}）。前の doc（${PREVIOUS_URL}）は残っているので、Docs の一覧から消してください"
+fi
 finish 0 ok "Claude Docs に置きました（${TITLE}）"

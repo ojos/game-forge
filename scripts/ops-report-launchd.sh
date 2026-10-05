@@ -147,8 +147,14 @@ fi
 
 if [ -z "$status" ]; then
   notify "運営報告の下書き: 要対応" "結果を受け取れませんでした（終了コード ${rc}）。ログ: ${LOG}"
+elif [ "$status" = "ok" ] && [ -n "$url" ] && [ -z "$host_copy" ]; then
+  notify "運営報告 ${month} の下書き: 控えを写せませんでした" "${url} 控え: ${copy_label:-なし}"
 elif [ "$status" = "ok" ] && [ -n "$url" ]; then
-  notify "運営報告 ${month} の下書き" "${url}"
+  # 置き直したとき（--force）は、前の doc を消すよう理由に書いてあるので、それも載せる。
+  case "$reason" in
+    *前の\ doc*) notify "運営報告 ${month} の下書き" "${url} ${reason}" ;;
+    *)          notify "運営報告 ${month} の下書き" "${url}" ;;
+  esac
 elif [ "$status" = "ok" ]; then
   notify "運営報告 ${month} の下書き" "${reason} 控え: ${copy_label:-なし}"
 else

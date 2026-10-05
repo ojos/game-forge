@@ -96,7 +96,8 @@ bash scripts/ops-report-draft.sh 2026-09
 ```
 
 材料を集め直さずに書き直すときは `--material ~/.local/state/game-forge/ops-report/2026-09/material.json`、
-その月の doc を作り直すときは `--force` を付けます。
+その月の doc を作り直すときは `--force` を付けます。**`--force` は新しい doc を作ります**（前の doc は残ります）。
+前の doc の URL は結果の理由と `docs-url.previous.txt` に出るので、Docs の一覧から消してください。
 
 ### 2. launchd に登録する（Mac のホストで）
 

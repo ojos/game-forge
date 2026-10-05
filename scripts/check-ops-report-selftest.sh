@@ -339,6 +339,15 @@ else
   ng "--force で置き直せないか、印が残っています（rc=${rc}）"
 fi
 
+# 2-2b' --force で置き直したら、前の doc の URL を残し、消すよう理由で知らせる。
+prev="$(head -n 1 "$D1/2026-09/docs-url.txt")"
+run_draft "$D1" "$CLEAN" ok --force; rc=$?
+if [[ $rc -eq 0 && "$(result_of REASON)" == *"$prev"* ]] && grep -qxF "$prev" "$D1/2026-09/docs-url.previous.txt"; then
+  ok "--force で置き直したら、前の doc の URL を残して消すよう知らせる"
+else
+  ng "--force で置き直したときに、前の doc を知らせていません（rc=${rc}）"
+fi
+
 # 2-2c 返答の途中の行にだけ URL があっても、成功にしない（最後の行だけを見る）。
 D2C="$TMP/out-midurl"
 run_draft "$D2C" "$CLEAN" midurl; rc=$?

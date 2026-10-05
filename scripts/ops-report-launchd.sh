@@ -35,6 +35,7 @@
 #
 # 終了コード: draft の終了コード（0 = Docs に置けた / 1 = 検査で落ちた / 2 = 前提の不成立 /
 #             3 = Docs に置けなかった）。docker exec まで届かなければ 1。
+#             Docs には置けたが控えを Mac へ写せなければ 4。
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)" || exit 1
@@ -149,6 +150,8 @@ if [ -z "$status" ]; then
   notify "運営報告の下書き: 要対応" "結果を受け取れませんでした（終了コード ${rc}）。ログ: ${LOG}"
 elif [ "$status" = "ok" ] && [ -n "$url" ] && [ -z "$host_copy" ]; then
   notify "運営報告 ${month} の下書き: 控えを写せませんでした" "${url} 控え: ${copy_label:-なし}"
+  # Docs には置けたが、Mac に控えが無い。成功として終わらせない。
+  rc=4
 elif [ "$status" = "ok" ] && [ -n "$url" ]; then
   # 置き直したとき（--force）は、前の doc を消すよう理由に書いてあるので、それも載せる。
   case "$reason" in

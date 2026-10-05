@@ -373,8 +373,13 @@ else
   ng "--force で Docs の手前で落ちたのに、既存の doc の URL が消えています（rc=${rc}）"
 fi
 
-# 2-2f 同じ月を同時に回さない。生きている PID の印があれば 2・Docs を呼ばない。
-mkdir -p "$TMP/out-lock/2026-09/.lock" && echo "$$" > "$TMP/out-lock/2026-09/.lock/pid"
+# 2-2f 同じ月を同時に回さない。別の実行が印を握っていれば 2・Docs を呼ばない・相手の結果を上書きしない。
+#      握っていた実行が終われば（死んでも）、次の実行は回る。
+mkdir -p "$TMP/out-lock/2026-09"
+: > "$TMP/out-lock/2026-09/.lock"
+# 印を握る側は、印を開いた fd を持ったまま sleep に置き換わる（kill で確実に手放す）。
+( exec 9>>"$TMP/out-lock/2026-09/.lock"; flock 9; exec sleep 30 ) & holder=$!
+sleep 0.5
 : > "$FAKE_LOG"
 run_draft "$TMP/out-lock" "$CLEAN" ok; rc=$?
 if [[ $rc -eq 2 && ! -s "$FAKE_LOG" && ! -e "$TMP/out-lock/2026-09/result.txt" ]]; then
@@ -382,20 +387,12 @@ if [[ $rc -eq 2 && ! -s "$FAKE_LOG" && ! -e "$TMP/out-lock/2026-09/result.txt" ]
 else
   ng "同じ月の別の実行が走っていても止まりません（rc=${rc}）"
 fi
-# PID の無い印は、作った直後かもしれないので取り除かない。
-rm -f "$TMP/out-lock/2026-09/.lock/pid"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 run_draft "$TMP/out-lock" "$CLEAN" ok; rc=$?
-if [[ $rc -eq 2 && -d "$TMP/out-lock/2026-09/.lock" ]]; then
-  ok "PID の無い印は、作った直後かもしれないので取り除かずに 2"
+if [[ $rc -eq 0 ]]; then
+  ok "握っていた実行が終われば、次の実行は回る"
 else
-  ng "PID の無い印を残骸として取り除いています（rc=${rc}）"
-fi
-echo 999999 > "$TMP/out-lock/2026-09/.lock/pid"
-run_draft "$TMP/out-lock" "$CLEAN" ok; rc=$?
-if [[ $rc -eq 0 && ! -e "$TMP/out-lock/2026-09/.lock" ]]; then
-  ok "死んだ実行の印は取り除いて回し、終わったら印を外す"
-else
-  ng "死んだ実行の印で止まるか、印が残っています（rc=${rc}）"
+  ng "握っていた実行が終わっても回りません（rc=${rc}）"
 fi
 
 # 2-2d 下書きに </draft> と指示が紛れても、囲む印は回ごとの乱数なので閉じられない。

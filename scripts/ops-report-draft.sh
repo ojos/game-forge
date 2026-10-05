@@ -157,28 +157,18 @@ if [[ "$OUT/" == "$ROOT/"* ]] || git -C "$OUT" rev-parse --is-inside-work-tree >
 fi
 
 # 同じ月を同時に回さない（手での実行と launchd が重なると、両方が「doc はまだ無い」と見て 2 本作る）。
-# mkdir は在るか無いかの確認と作成を 1 回で行う。持ち主の PID を残し、死んだ実行の残骸なら取り除く。
-LOCK="$OUT/.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
-  holder="$(cat "$LOCK/pid" 2>/dev/null)"
-  # PID がまだ無い印は、作った直後（mkdir と PID の書き込みの間）かもしれないので、残骸と見なさない。
-  # 取り除くのは、PID があってその実行が死んでいるときだけ。
-  if [[ -z "$holder" ]] || kill -0 "$holder" 2>/dev/null; then
-    OUT=""   # 走っている側の result.txt を上書きしない
-    finish 2 usage "${MONTH} の下書きは別の実行（PID ${holder:-不明}）が作っています。終わってから回してください（実行が無いのに続くなら ${LOCK} を消してください）"
-  fi
-  # 残骸の取り除きも 1 回の操作にする（mv は原子的）。同時に残骸を見た実行のうち、mv できた 1 つだけが
-  # 消す。負けた側は mkdir にも負けるか、PID の無い新しい印を見て止まる。
-  if mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
-    rm -rf "$LOCK.stale.$$"
-  fi
-  if ! mkdir "$LOCK" 2>/dev/null; then
-    OUT=""
-    finish 2 usage "${MONTH} の下書きは別の実行が作り始めました。終わってから回してください"
-  fi
+# flock を使う。印の取得が 1 回の操作で、持ち主が死ねばカーネルが外すので、残骸の判定（PID を読んで
+# 消して作り直す、の間に競合が残る）が要らない。draft は devcontainer（Linux）でだけ動くので flock がある。
+if ! command -v flock >/dev/null 2>&1; then
+  OUT=""
+  finish 2 usage "flock がありません（同じ月の同時実行を止められないので回しません）"
 fi
-echo "$$" > "$LOCK/pid"
-trap 'rm -rf "$LOCK"' EXIT
+LOCK="$OUT/.lock"
+exec 9>>"$LOCK" || { OUT=""; finish 2 usage "実行の印（${LOCK}）を開けません"; }
+if ! flock -n 9; then
+  OUT=""   # 走っている側の result.txt を上書きしない
+  finish 2 usage "${MONTH} の下書きは別の実行が作っています。終わってから回してください"
+fi
 
 # その月の doc が既にあれば作り直さない（1 か月 1 本）。
 if [[ "$FORCE" -ne 1 && "$NO_DOCS" -ne 1 && -s "$OUT/docs-url.txt" ]]; then

@@ -120,11 +120,18 @@ copy="$(result COPY)"
 reason="$(result REASON)"
 
 host_copy=""
+# 通知に載せる控えの場所。Mac へ写せなかったときは devcontainer の中のパスを、そうと分かる形で載せる
+# （止め直しても消えない。VS Code で devcontainer を開けば読める。消えるのは作り直したときだけ）。
+copy_label=""
+if [ -n "$copy" ]; then
+  copy_label="devcontainer の中の ${copy}（Mac へ写せませんでした。VS Code で開くと読めます）"
+fi
 if [ -n "$copy" ] && [ -n "$month" ]; then
   dest="${COPY_BASE}/${month}"
   mkdir -p "$dest"
   if docker cp "${cid}:${copy}" "${dest}/draft.md" >> "$LOG" 2>&1; then
     host_copy="${dest}/draft.md"
+    copy_label="$host_copy"
     docker cp "${cid}:$(dirname "$copy")/result.txt" "${dest}/result.txt" >> "$LOG" 2>&1
     log "控えを写しました: ${host_copy}"
   else
@@ -143,9 +150,9 @@ if [ -z "$status" ]; then
 elif [ "$status" = "ok" ] && [ -n "$url" ]; then
   notify "運営報告 ${month} の下書き" "${url}"
 elif [ "$status" = "ok" ]; then
-  notify "運営報告 ${month} の下書き" "${reason} 控え: ${host_copy:-${copy}}"
+  notify "運営報告 ${month} の下書き" "${reason} 控え: ${copy_label:-なし}"
 else
-  notify "運営報告 ${month} の下書き: 要対応" "${reason} 控え: ${host_copy:-${copy:-なし}} ログ: ${LOG}"
+  notify "運営報告 ${month} の下書き: 要対応" "${reason} 控え: ${copy_label:-なし} ログ: ${LOG}"
 fi
 
 exit "$rc"

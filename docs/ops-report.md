@@ -132,5 +132,7 @@ rm ~/Library/LaunchAgents/jp.ojos.game-forge.ops-report.plist
 - **外部層の定期実行（毎日 12:00）と時刻をずらしてあります。** どちらも devcontainer を起こした側が終わったら止めます。
   スリープから復帰した直後に両方が同時に走ると、先に終わった側が devcontainer を止め、もう一方が途中で切れることがあります。
   その月は手で回し直してください。
+- **devcontainer の `~/.claude/settings.json` が MCP の道具（`mcp__…`）を `permissions.allow` で許していたり、`defaultMode` が `bypassPermissions` だったりすると、Docs には置かずに止まります**（`docs-failed`）。
+  `--allowedTools` は許す指定であって、設定が先に許した道具を取り消せないためです。下書きには issue / PR の題名に由来する文が入るので、Docs 以外の接続（作品の書き換えなど）を動かせる余地を残しません。
 - draft はプライマリ（`/workspaces/game-forge`）のスクリプトを使います。型を直したら main に入れてから回します。
 - 費用: Docs への書き込みは下調べで 1 回 $0.16（2 ターン）でした。下書きの生成の費用はまだ測っていません（初回の手での実行で、`generate-response.json` の `total_cost_usd` を見てください）。

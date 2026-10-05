@@ -269,6 +269,23 @@ REQUEST="${REQUEST}
 $(cat "$DRAFT")
 </draft>"
 
+# --allowedTools は「許す」指定であって、利用者の設定（~/.claude/settings.json）が先に許している
+# MCP の道具を取り消せない。下書きには issue / PR の題名に由来する文が入るので、そこへ道具を使わせる
+# 文が紛れると、Docs 以外の接続（作品の書き換えなど）を動かせてしまう。**設定が MCP の道具や
+# 許可の省略を許していたら、置かずに止める**（呼び方を下調べの形から変えずに、余地を塞ぐ）。
+CLAUDE_SETTINGS="${OPS_REPORT_CLAUDE_SETTINGS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json}"
+if [[ -f "$CLAUDE_SETTINGS" ]]; then
+  if ! risky="$(jq -r '
+      [ (.permissions.allow // [] | .[] | select(startswith("mcp__"))),
+        (if (.permissions.defaultMode // "") == "bypassPermissions" then "defaultMode=bypassPermissions" else empty end) ]
+      | join(" ")' "$CLAUDE_SETTINGS" 2>/dev/null)"; then
+    finish 3 docs-failed "claude の設定（${CLAUDE_SETTINGS}）を読めないので、Docs 以外の道具が許されていないか確かめられません。置いていません"
+  fi
+  if [[ -n "$risky" ]]; then
+    finish 3 docs-failed "claude の設定（${CLAUDE_SETTINGS}）が Docs 以外の道具を先に許しています（${risky}）。外すまで Docs には置きません"
+  fi
+fi
+
 echo "$PREFIX Claude Docs に置きます（${TITLE}）" >&2
 DOCS_JSON="$OUT/docs-response.json"
 # --tools "" で組み込みの道具（Bash・Read など）を 1 つも使えなくし、--allowedTools で Docs の 2 つを

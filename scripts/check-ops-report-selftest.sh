@@ -222,10 +222,14 @@ chmod +x "$FAKE"
 # 下書きを 1 回回す。結果の行を $TMP/run.out に、終了コードを返す。
 #
 # @param $1 控えの場所 / $2 偽の生成が返す下書き / $3 偽の Docs の振る舞い / 残り: draft への引数
+# 利用者の設定は読ませない（既定は空の設定。2-8 だけ差し替える）。
+echo '{}' > "$TMP/claude-settings.json"
+SETTINGS="$TMP/claude-settings.json"
 run_draft() {
   local dir="$1" draft="$2" docs="$3"
   shift 3
   OPS_REPORT_CLAUDE="$FAKE" OPS_REPORT_DIR="$dir" FAKE_LOG="$FAKE_LOG" \
+    OPS_REPORT_CLAUDE_SETTINGS="$SETTINGS" \
     FAKE_DRAFT="$draft" FAKE_DOCS="$docs" \
     bash "$DRAFT_SH" 2026-09 --material "$MATERIAL" "$@" > "$TMP/run.out" 2> "$TMP/run.err"
 }
@@ -337,6 +341,18 @@ if [[ $rc -eq 2 && "$(result_of STATUS)" == "usage" ]]; then
   ok "控えの場所が git の作業ツリーの中なら 2"
 else
   ng "控えの場所が作業ツリーの中でも止まりません（rc=${rc}）"
+fi
+
+# 2-8 claude の設定が MCP の道具を先に許していたら、Docs を呼ばずに 3。
+printf '%s\n' '{"permissions":{"allow":["mcp__claude_ai_Game_Forge__update_my_work"]}}' > "$TMP/risky-settings.json"
+SETTINGS="$TMP/risky-settings.json"
+: > "$FAKE_LOG"
+run_draft "$TMP/out-risky" "$CLEAN" ok; rc=$?
+SETTINGS="$TMP/claude-settings.json"
+if [[ $rc -eq 3 && "$(result_of STATUS)" == "docs-failed" ]] && ! grep -q '^docs ' "$FAKE_LOG"; then
+  ok "claude の設定が Docs 以外の MCP の道具を許していたら、置かずに 3"
+else
+  ng "claude の設定が別の MCP の道具を許していても置いています（rc=${rc}）"
 fi
 
 # 2-7 値を取る引数の値が無ければ、読み続けずに 2 で止まる。

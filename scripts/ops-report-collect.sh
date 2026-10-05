@@ -27,6 +27,7 @@
 #              build-time-report.sh は --remote を持たない（常に本番の CloudWatch を読む）。
 #              --local のときは回さない
 #   github     その月に閉じた issue（完了したものだけ）と、マージした PR の番号と題名。
+#              **入れるのは番号と題名だけ**（ラベル・本文・作った人は入れない）。kind は題名から導いた手がかり。
 #              **作った人では絞らない**（協力者の変更も、その月に入ったものとして数える）。
 #              公開リポジトリだが、ここに載るのは持ち主が「完了として閉じた」「マージした」ものだけで、
 #              誰でも書ける段階の題名は入らない。**作った人の名前は材料へ入れない**（記事に人の名前を出さない）。
@@ -180,13 +181,13 @@ SEARCH_RANGE="${FROM_DATE}T00:00:00+09:00..${LAST_DATE}T23:59:59+09:00"
 
 echo "$PREFIX gh issue list（closed:${SEARCH_RANGE}）" >&2
 ISSUES_RAW="$(gh issue list --state closed --search "closed:${SEARCH_RANGE}" --limit 1000 \
-  --json number,title,closedAt,stateReason,labels)" || {
+  --json number,title,closedAt,stateReason)" || {
   echo "$PREFIX gh issue list が失敗しました。" >&2
   exit 2
 }
 echo "$PREFIX gh pr list（merged:${SEARCH_RANGE}）" >&2
 PULLS_RAW="$(gh pr list --state merged --search "merged:${SEARCH_RANGE}" --limit 1000 \
-  --json number,title,mergedAt,labels)" || {
+  --json number,title,mergedAt)" || {
   echo "$PREFIX gh pr list が失敗しました。" >&2
   exit 2
 }
@@ -211,8 +212,8 @@ GITHUB="$(jq -n -c \
   | ($pulls | map(select(inwin(.mergedAt)))) as $pw
   | {
       closedIssues: [$iw[] | select(.stateReason == "COMPLETED")
-                     | {number, title, labels: [.labels[].name]}],
-      mergedPulls:  [$pw[] | {number, title, labels: [.labels[].name], kind: kind}],
+                     | {number, title}],
+      mergedPulls:  [$pw[] | {number, title, kind: kind}],
       excluded: {
         issuesNotCompleted: ([$iw[] | select(.stateReason != "COMPLETED")] | length)
       }

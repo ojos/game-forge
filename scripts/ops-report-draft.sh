@@ -60,14 +60,14 @@
 #
 #   書く      claude -p --output-format json --tools "" --strict-mcp-config --no-session-persistence < prompt.txt
 #             道具は 1 つも許さない（材料はプロンプトに全部入っている）。--strict-mcp-config で MCP も読ませない
-#   置く      claude -p --restricted --disallowedTools "Read,Write,Edit,NotebookEdit,Glob,Grep"
+#   置く      claude -p --restricted --disallowedTools "Read,Write,Edit,NotebookEdit,Glob,Grep,WebSearch,Agent"
 #               --allowedTools "mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide"
 #               --output-format json '<依頼>'
 #             許す道具はこの 2 つだけ（2026-10-05 の下調べ。#936 のコメント）。**--tools "" は使えない**:
 #             claude 2.1.289 の実測で、--tools "" は MCP の道具まで消し、--tools に MCP の名前を渡しても
 #             効かない（どちらも「道具が無い」と返った）。代わりに --restricted でコードを走らせる道具と
 #             WebFetch を外し、利用者・プロジェクトの設定を読ませない（設定が先に許した道具が効かない）。
-#             残るファイルの道具は --disallowedTools で外す。許していない MCP の道具は -p では断られる
+#             残るファイルの道具・WebSearch・Agent は --disallowedTools で外す。許していない MCP の道具は -p では断られる
 #             （実測: Game Forge の get_me を頼むと permission_denials が 1 件で DENIED）。URL は .result から
 #             https://claude.ai/(code/)?artifact/… の形で抜き、**抜けなければ書き込み失敗とする**。
 #             **URL があることを成功とみなす**（下調べで決めた判定）。許す道具に読み返しが無いので、
@@ -89,8 +89,8 @@ TEMPLATE="$ROOT/docs/ops-report-template.md"
 CLAUDE_CMD="${OPS_REPORT_CLAUDE:-claude}"
 BASE_DIR="${OPS_REPORT_DIR:-$HOME/.local/state/game-forge/ops-report}"
 DOCS_TOOLS="mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide"
-# --restricted の後にも残るファイルの道具。Docs に置く段では使わせない。
-DOCS_DENY="Read,Write,Edit,NotebookEdit,Glob,Grep"
+# --restricted の後にも残る道具（ファイルの道具・WebSearch・Agent）。Docs に置く段では使わせない。
+DOCS_DENY="Read,Write,Edit,NotebookEdit,Glob,Grep,WebSearch,Agent"
 # 1 回の claude の上限（秒）。下調べでは置く方が 2 ターンで終わった。止まったままにしない。
 CLAUDE_TIMEOUT="${OPS_REPORT_CLAUDE_TIMEOUT:-900}"
 

@@ -140,6 +140,9 @@ expect_violation "許可した URL の中のハンドル" "- https://github.com/
 # 境界 1d: 符号と指数表記は 1 つの数として読む（-123 を 123、1e6 を 1 と 6 にしない）。
 expect_violation "材料に無い負数"            "- 前の月から −243 件でした。"                          number
 expect_violation "指数表記"                  "- 1e6 回の生成に備えます。"                             number
+# 境界 1e: 日付の形でも、ありえない値は日付として外さない。
+expect_violation "日付の形に入れた数"        "- 2026-87 の分です。"                                  number
+expect_violation "ありえない月"              "- 13 月に始めます。"                                    number
 # 境界 2: notes の中の数字（14）を、本文の数字の出どころにしない。
 expect_violation "notes にだけある数字"      "- 保持は 14 日です。"                                  number
 # 境界 3: 月の付かない「N 日」は日付として外さない。

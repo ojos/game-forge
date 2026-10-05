@@ -322,6 +322,9 @@ if [[ -s "$OUT/docs-url.txt" ]]; then
   PREVIOUS_URL="$(head -n 1 "$OUT/docs-url.txt")"
   printf '%s\n' "$PREVIOUS_URL" >> "$OUT/docs-url.previous.txt"
 fi
+# 前の doc の控え（docs-draft.md）も**ここで**消す。残すと、新しい doc の後で写しに失敗したとき、
+# 新しい URL と古い控えが組になって残る。
+rm -f "$OUT/docs-draft.md"
 # 置き直すとき（--force）は、前の doc の URL を**ここで**消す。残すと、置き直しに失敗したのに次の実行が
 # 古い doc を成功として返す。集める・書く・検査のどこかで落ちたときは消さない（doc はまだ 1 本で、
 # 次の実行がそれを知っている必要がある）。--no-docs はここまで来ないので消さない。

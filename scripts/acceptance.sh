@@ -417,6 +417,16 @@ else
   echo "[acceptance] (acceptance-remote-aws-failure) skip: scripts/acceptance-remote-aws-failure-selftest.sh not found"
 fi
 
+# 月次の運営報告の下書きの検査と、Docs へ置く段の分岐（#936）。偽の claude で回し、本物の claude -p・
+# ネットワーク・認証を使わない。**壊れると、材料に無い数字やトークンの形が公開の下書きへ素通りする。**
+if [[ -f scripts/check-ops-report-selftest.sh ]]; then
+  echo "[acceptance] (ops-report) scripts/check-ops-report-selftest.sh"
+  bash scripts/check-ops-report-selftest.sh
+  ran_any=1
+else
+  echo "[acceptance] (ops-report) skip: scripts/check-ops-report-selftest.sh not found"
+fi
+
 # チャットの「写し」の機械照合（#695 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く**（sed だけで数 ms）。外すと、関数名のずれが黙って本番へ出て、チャットが

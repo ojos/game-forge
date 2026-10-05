@@ -106,13 +106,16 @@ finish() {
   exit "$rc"
 }
 
+# 値を取る引数に値が無ければ止める（shift 2 が失敗すると、同じ引数を読み続けて終わらない）。
+need_value() { [[ $2 -ge 2 ]] || finish 2 usage "$1 には値が要ります"; }
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-docs)    NO_DOCS=1; shift ;;
     --force)      FORCE=1; shift ;;
-    --material)   MATERIAL_IN="${2:-}"; shift 2 ;;
+    --material)   need_value "$1" $#; MATERIAL_IN="$2"; shift 2 ;;
     --local)      collect_args+=(--local); shift ;;
-    --persist-to) collect_args+=(--persist-to "${2:-}"); shift 2 ;;
+    --persist-to) need_value "$1" $#; collect_args+=(--persist-to "$2"); shift 2 ;;
     --allow-partial) collect_args+=(--allow-partial); shift ;;
     -h|--help)    sed -n '2,20p' "${BASH_SOURCE[0]}" >&2; exit 0 ;;
     -*)           finish 2 usage "不明な引数です: $1" ;;

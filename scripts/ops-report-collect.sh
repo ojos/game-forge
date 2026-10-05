@@ -58,7 +58,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --local)         SCOPE="--local"; shift ;;
     --remote)        SCOPE="--remote"; shift ;;
-    --persist-to)    PERSIST_TO="${2:-}"; shift 2 ;;
+    --persist-to)
+      # 値が無いと shift 2 が失敗し、同じ引数を読み続けて終わらない。
+      if [[ $# -lt 2 ]]; then echo "$PREFIX --persist-to には値が要ります。" >&2; exit 2; fi
+      PERSIST_TO="$2"; shift 2 ;;
     --allow-partial) ALLOW_PARTIAL=1; shift ;;
     -h|--help)       sed -n '2,15p' "${BASH_SOURCE[0]}" >&2; exit 0 ;;
     -*)              echo "$PREFIX 不明な引数です: $1" >&2; exit 2 ;;

@@ -311,6 +311,19 @@ else
   ng "控えの場所が作業ツリーの中でも止まりません（rc=${rc}）"
 fi
 
+# 2-7 値を取る引数の値が無ければ、読み続けずに 2 で止まる。
+OPS_REPORT_CLAUDE="$FAKE" OPS_REPORT_DIR="$TMP/out-noval" \
+  bash "$DRAFT_SH" 2026-09 --material > "$TMP/run.out" 2>&1 & pid=$!
+waited=0
+while kill -0 "$pid" 2>/dev/null && [[ $waited -lt 50 ]]; do sleep 0.1; waited=$((waited + 1)); done
+if kill -0 "$pid" 2>/dev/null; then
+  kill "$pid" 2>/dev/null
+  ng "--material に値が無いと終わりません"
+else
+  wait "$pid"; rc=$?
+  [[ $rc -eq 2 ]] && ok "--material に値が無ければ 2" || ng "--material に値が無いときに 2 になりません（rc=${rc}）"
+fi
+
 if [[ $FAILS -ne 0 ]]; then
   echo "[ops-report-selftest] ${FAILS} 件が期待と違います" >&2
   echo "OPS_REPORT_SELFTEST_FAIL"

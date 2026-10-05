@@ -157,13 +157,18 @@ fi
 if [[ "$FORCE" -ne 1 && "$NO_DOCS" -ne 1 && -s "$OUT/docs-url.txt" ]]; then
   URL="$(head -n 1 "$OUT/docs-url.txt")"
   [[ -f "$OUT/draft.md" ]] && COPY="$OUT/draft.md"
-  finish 0 ok "${MONTH} の doc は既にあります（作り直すなら --force）"
+  finish 0 ok "${MONTH} の doc は既にあります（手元の控えのほうが新しいことがあります。置き直すなら --force）"
 fi
 
-# ここから先は下書きを作り直す。前の doc の URL を残すと、次の実行が**作り直した下書きを
-# 置かないまま古い doc を成功として返す**（--force で Docs に失敗した・--no-docs で書き直した、など）。
-# 置けたときだけ、下の 4 で書き直す。
-rm -f "$OUT/docs-url.txt"
+# ここから先は下書きを作り直す。Docs へ置き直すとき（--force）は、前の doc の URL を先に消す。
+# 残すと、置き直しに失敗したのに次の実行が**古い doc を成功として返す**。置けたときだけ、下の 4 で書き直す。
+#
+# **--no-docs では消さない。** doc はまだ Docs にあり、1 か月 1 本を守るには次の実行がそれを知っている
+# 必要がある（消すと、手元で試し直しただけで次の実行が 2 本目を作る）。手元の控えのほうが新しく
+# なることはあるので、そのときは --force で置き直す（既にあるときの理由の文にもそう書く）。
+if [[ "$NO_DOCS" -ne 1 ]]; then
+  rm -f "$OUT/docs-url.txt"
+fi
 
 # ── 1. 集める ────────────────────────────────────────────────────────────────
 MATERIAL="$OUT/material.json"

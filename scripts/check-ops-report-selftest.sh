@@ -269,6 +269,16 @@ else
   ng "2 回目の実行で作り直しています（rc=${rc}）"
 fi
 
+# 2-2a --no-docs で試し直しても、その月の doc の URL を消さない（次の実行が 2 本目を作らない）。
+run_draft "$D1" "$CLEAN" ok --no-docs; rc=$?
+: > "$FAKE_LOG"
+run_draft "$D1" "$CLEAN" ok; rc2=$?
+if [[ $rc -eq 0 && $rc2 -eq 0 && -s "$D1/2026-09/docs-url.txt" ]] && ! grep -q '^docs ' "$FAKE_LOG"; then
+  ok "--no-docs で試し直しても、その月の doc の URL を残す（2 本目を作らない）"
+else
+  ng "--no-docs の後の実行が 2 本目を作ります（rc=${rc}/${rc2}）"
+fi
+
 # 2-2b --force で作り直して Docs に失敗したら、前の doc の URL を残さない（次の実行が古い doc を
 #      成功として返さない）。続く通常の実行は作り直して置く。
 run_draft "$D1" "$CLEAN" nourl --force; rc=$?

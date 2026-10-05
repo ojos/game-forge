@@ -26,7 +26,7 @@
 | 生成回数・成功率・AI の費用 | `scripts/usage-report.sh --remote --from <月初> --to <月末> --format json` | 月の窓で集計（JST の 0 時で切る） |
 | 作品数・フォーク率など | `scripts/kpi-report.sh --remote --format json` | **期間で絞れないので、集めた時点の累計** |
 | ビルド時間 | `scripts/build-time-report.sh --from <月初> --to <月末> --format json` | `--remote` は無い（常に本番の CloudWatch）。**保持が 14 日なので月の前半は入らない**。AWS の認証が切れていれば `unavailable` に理由を残して続ける |
-| 閉じた issue・マージした PR | `gh issue list` / `gh pr list` | 番号と題名だけ（作った人の名前は入れない）。issue は完了として閉じたものだけ |
+| 閉じた issue・マージした PR | `gh issue list` / `gh pr list` | 番号と題名と issue の閉じ方だけ（作った人の名前・ラベル・本文は入れない）。記事に使うのは完了として閉じたもの |
 
 **作品の本文・題名・プロンプト・利用者の文章は読みません。** 丸めた値は `figures` にまとめ、型は「数字は JSON からだけ取る」と指示します。
 **費用は実額を載せます**（2026-10-05 の利用者の判断）。材料にあるのは生成にかかった AI の費用だけなので、

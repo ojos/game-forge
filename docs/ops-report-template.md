@@ -47,13 +47,13 @@ Markdown だけを出してください。前置き（「以下が下書きで�
 
 # 各節に書くこと
 
-- **今月の数字**: `figures.month` の生成回数・LLM の成功率・閉じた issue とマージした変更の数、
+- **今月の数字**: `figures.month` の生成回数・LLM の成功率・完了した課題（`closedIssuesCompleted`）とマージした変更の数、
   `figures.cumulative` の作品数・フォーク率など。`figures.build` があれば、ビルドにかかった時間（中央値・p95）。
   成功率は「AI が使えるソースを返した割合」であって「作品ができた割合」ではないことを、ひとこと添えてください。
-- **入れたもの**: `github.mergedPulls` のうち `kind` が `added` のものと、`github.closedIssues` の題名から、
+- **入れたもの**: `github.mergedPulls` のうち `kind` が `added` のものと、`github.closedIssues` のうち `stateReason` が `COMPLETED` のものの題名から、
   利用者に見える新しい機能を多くて 6 個まで選び、利用者の言葉で 1 行ずつ説明します。内部の作業（文書の整理・CI・開発環境）は省くか、
   まとめて 1 行にします。題名に無いことを足さないでください。
-- **直したもの**: `kind` が `fixed` のものと、閉じた issue のうち不具合の直しにあたるものから、利用者に関係するものを多くて 6 個まで。
+- **直したもの**: `kind` が `fixed` のものと、閉じた issue（`stateReason` が `COMPLETED` のもの）のうち不具合の直しにあたるものから、利用者に関係するものを多くて 6 個まで。
 - **お金**: 次の形にしてください。
   - 生成にかかった AI の費用: `figures.month.llmCostJpy` 円（1 回あたり `figures.month.llmCostPerGenerationJpy` 円）。値は実額で書きます。
   - そのほかの費用（サーバーなど）: 【人が埋める：そのほかの費用の実額】

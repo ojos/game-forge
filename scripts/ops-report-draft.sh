@@ -354,8 +354,11 @@ if [[ $docs_rc -ne 0 || -z "$URL" ]]; then
   finish 3 docs-failed "Claude Docs に置けたか確かめられません（終了コード ${docs_rc}。返答の最後の行に doc の URL がありません）。控えから手で貼るか、Docs の一覧に「${TITLE}」が無いことを確かめてから --force で回し直してください"
 fi
 # doc はできたので、URL は控えの写しより先に残す（写しに失敗しても、次の実行が 2 本目を作らない）。
+# 成否不明の印は、URL を書けてから外す（逆だと、その間に止まったとき両方の印が無くなり、次の実行が 2 本目を作る）。
+if ! printf '%s\n' "$URL" > "$OUT/docs-url.txt"; then
+  finish 2 copy-failed "Claude Docs には置きました（${TITLE}）が、URL を docs-url.txt に残せませんでした。--force を付けずに回すと止まります（成否不明の印が残っています）"
+fi
 rm -f "$OUT/docs-pending.txt"
-printf '%s\n' "$URL" > "$OUT/docs-url.txt"
 # Docs に置いたものと同じ Markdown を、別の名前でも残す。後で --no-docs で試し直すと draft.md は
 # 書き換わるが、こちらは次に Docs へ置くまで変わらない（doc と手元の控えを同じに保つ）。
 if ! cp "$DRAFT" "$OUT/docs-draft.md" || ! cmp -s "$DRAFT" "$OUT/docs-draft.md"; then

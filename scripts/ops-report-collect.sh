@@ -26,12 +26,12 @@
 #              CloudWatch の保持は 14 日なので、**月の前半は入らない**。実際に読めた範囲を注記する。
 #              build-time-report.sh は --remote を持たない（常に本番の CloudWatch を読む）。
 #              --local のときは回さない
-#   github     その月に閉じた issue（完了したものだけ）と、マージした PR の番号と題名。
-#              **入れるのは番号と題名だけ**（ラベル・本文・作った人は入れない）。kind は題名から導いた手がかり。
+#   github     その月に閉じた issue（閉じ方を添える）と、マージした PR の番号と題名。
+#              **入れるのは番号と題名（と issue の閉じ方）だけ**（ラベル・本文・作った人は入れない）。kind は題名から導いた手がかり。
 #              **作った人では絞らない**（協力者の変更も、その月に入ったものとして数える）。
 #              公開リポジトリだが、ここに載るのは持ち主が「完了として閉じた」「マージした」ものだけで、
 #              誰でも書ける段階の題名は入らない。**作った人の名前は材料へ入れない**（記事に人の名前を出さない）。
-#              完了でなく閉じた issue（not planned など）は件数だけ残す
+#              閉じた issue は閉じ方（COMPLETED / NOT_PLANNED など）にかかわらず入れる
 #
 # **作品の本文・題名・プロンプト・利用者の文章は読まない。** 上の 3 本のレポートは、
 # どれも数だけを返す（各スクリプトの冒頭）。
@@ -211,12 +211,11 @@ GITHUB="$(jq -n -c \
   ($issues | map(select(inwin(.closedAt)))) as $iw
   | ($pulls | map(select(inwin(.mergedAt)))) as $pw
   | {
-      closedIssues: [$iw[] | select(.stateReason == "COMPLETED")
-                     | {number, title}],
+      # 閉じた issue はすべて入れ、閉じ方（COMPLETED / NOT_PLANNED など）を添える。記事の「入れたもの」
+      # 「直したもの」に使うのは COMPLETED だけ（型に書いた）。
+      closedIssues: [$iw[] | {number, title, stateReason}],
       mergedPulls:  [$pw[] | {number, title, kind: kind}],
-      excluded: {
-        issuesNotCompleted: ([$iw[] | select(.stateReason != "COMPLETED")] | length)
-      }
+      closedIssuesCompleted: ([$iw[] | select(.stateReason == "COMPLETED")] | length)
     }')" || { echo "$PREFIX gh の結果をまとめられません。" >&2; exit 2; }
 
 # ── まとめる ─────────────────────────────────────────────────────────────────
@@ -252,6 +251,7 @@ jq -n \
         llmCostJpy: ($usage.totals.costJpy | r2),
         llmCostPerGenerationJpy: (per($usage.totals.costJpy; $usage.totals.calls) | r2),
         closedIssues: ($github.closedIssues | length),
+        closedIssuesCompleted: $github.closedIssuesCompleted,
         mergedPulls: ($github.mergedPulls | length),
         mergedPullsAdded: ([$github.mergedPulls[] | select(.kind == "added")] | length),
         mergedPullsFixed: ([$github.mergedPulls[] | select(.kind == "fixed")] | length)

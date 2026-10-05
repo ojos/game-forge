@@ -27,8 +27,10 @@
 #              build-time-report.sh は --remote を持たない（常に本番の CloudWatch を読む）。
 #              --local のときは回さない
 #   github     その月に閉じた issue（完了したものだけ）と、マージした PR の番号と題名。
-#              **リポジトリの持ち主が作ったものだけ**（公開リポジトリなので、他人の題名を
-#              記事の材料に入れない。dependabot も外れる）。外した件数は残す
+#              **作った人では絞らない**（協力者の変更も、その月に入ったものとして数える）。
+#              公開リポジトリだが、ここに載るのは持ち主が「完了として閉じた」「マージした」ものだけで、
+#              誰でも書ける段階の題名は入らない。**作った人の名前は材料へ入れない**（記事に人の名前を出さない）。
+#              完了でなく閉じた issue（not planned など）は件数だけ残す
 #
 # **作品の本文・題名・プロンプト・利用者の文章は読まない。** 上の 3 本のレポートは、
 # どれも数だけを返す（各スクリプトの冒頭）。
@@ -172,24 +174,19 @@ else
 fi
 
 # ── github（必須） ────────────────────────────────────────────────────────────
-OWNER="$(gh repo view --json owner -q .owner.login 2>/dev/null)"
-if [[ -z "$OWNER" ]]; then
-  echo "$PREFIX gh でリポジトリの持ち主を読めません（gh の認証を確かめてください）。" >&2
-  exit 2
-fi
 # 検索の日付には時差を付ける（付けないと UTC の日で切られる）。取りこぼしが無いよう
 # 検索は広めに取り、窓（JST）での絞り込みは下の jq で行う。
 SEARCH_RANGE="${FROM_DATE}T00:00:00+09:00..${LAST_DATE}T23:59:59+09:00"
 
 echo "$PREFIX gh issue list（closed:${SEARCH_RANGE}）" >&2
 ISSUES_RAW="$(gh issue list --state closed --search "closed:${SEARCH_RANGE}" --limit 1000 \
-  --json number,title,closedAt,stateReason,author,labels)" || {
+  --json number,title,closedAt,stateReason,labels)" || {
   echo "$PREFIX gh issue list が失敗しました。" >&2
   exit 2
 }
 echo "$PREFIX gh pr list（merged:${SEARCH_RANGE}）" >&2
 PULLS_RAW="$(gh pr list --state merged --search "merged:${SEARCH_RANGE}" --limit 1000 \
-  --json number,title,mergedAt,author,labels)" || {
+  --json number,title,mergedAt,labels)" || {
   echo "$PREFIX gh pr list が失敗しました。" >&2
   exit 2
 }
@@ -202,7 +199,7 @@ done
 
 GITHUB="$(jq -n -c \
   --argjson issues "$ISSUES_RAW" --argjson pulls "$PULLS_RAW" \
-  --arg owner "$OWNER" --argjson from "$FROM_EPOCH" --argjson to "$TO_EPOCH" '
+  --argjson from "$FROM_EPOCH" --argjson to "$TO_EPOCH" '
   def inwin(t): (t | fromdateiso8601) as $e | $e >= $from and $e < $to;
   # 題名の先頭の Conventional Commits の型から、入れたもの / 直したものの手がかりを付ける。
   # 当たらないときに capture は何も返さない（null ではない）。配列に包んで null へ寄せないと、
@@ -213,15 +210,11 @@ GITHUB="$(jq -n -c \
   ($issues | map(select(inwin(.closedAt)))) as $iw
   | ($pulls | map(select(inwin(.mergedAt)))) as $pw
   | {
-      owner: $owner,
-      closedIssues: [$iw[] | select(.author.login == $owner and .stateReason == "COMPLETED")
+      closedIssues: [$iw[] | select(.stateReason == "COMPLETED")
                      | {number, title, labels: [.labels[].name]}],
-      mergedPulls:  [$pw[] | select(.author.login == $owner)
-                     | {number, title, labels: [.labels[].name], kind: kind}],
+      mergedPulls:  [$pw[] | {number, title, labels: [.labels[].name], kind: kind}],
       excluded: {
-        issuesNotByOwner: ([$iw[] | select(.author.login != $owner)] | length),
-        issuesNotCompleted: ([$iw[] | select(.author.login == $owner and .stateReason != "COMPLETED")] | length),
-        pullsNotByOwner: ([$pw[] | select(.author.login != $owner)] | length)
+        issuesNotCompleted: ([$iw[] | select(.stateReason != "COMPLETED")] | length)
       }
     }')" || { echo "$PREFIX gh の結果をまとめられません。" >&2; exit 2; }
 

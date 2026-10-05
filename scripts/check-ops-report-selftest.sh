@@ -81,7 +81,7 @@ cat > "$CLEAN" <<'EOF'
 
 - 生成にかかった AI の費用: 27,650 円（1 回あたり 22.4 円）
 - そのほかの費用（サーバーなど）: 【人が埋める：そのほかの費用の実額】
-- いただいた投げ銭: 【人が埋める：今月の投げ銭の額 例 3000 円】
+- いただいた投げ銭: 【人が埋める：今月の投げ銭の額】
 
 ## 来月やること
 
@@ -133,6 +133,10 @@ expect_violation "許可外の URL"             "- 詳しくは https://admin.ga
 
 # 境界 1: 許可した URL の前方一致が、名前の途中で通らない。
 expect_violation "許可した URL に似た別の名前" "- https://note.com/gameforgejpx も見てください。" url
+# 境界 1b: 人が埋める欄の中に額をこしらえたら、欄ごと照合へ回す。
+expect_violation "人が埋める欄の中の額"      "- 投げ銭: 【人が埋める：今月の投げ銭の額 3000 円】" number
+# 境界 1c: 許可した URL のパスに他人のハンドルを付けても通さない。
+expect_violation "許可した URL の中のハンドル" "- https://github.com/ojos/game-forge/@someone_else" handle
 # 境界 2: notes の中の数字（14）を、本文の数字の出どころにしない。
 expect_violation "notes にだけある数字"      "- 保持は 14 日です。"                                  number
 # 境界 3: 月の付かない「N 日」は日付として外さない。
@@ -192,7 +196,7 @@ if [ "$mode" = generate ]; then
   jq -n --rawfile r "$FAKE_DRAFT" '{type: "result", is_error: false, result: ("以下が下書きです。\n\n```markdown\n" + $r + "```\n")}'
   exit 0
 fi
-printf 'docs allowed=%s\n' "$allowed" >> "$FAKE_LOG"
+printf 'docs tools=%s allowed=%s\n' "$tools" "$allowed" >> "$FAKE_LOG"
 case "$FAKE_DOCS" in
   ok)    jq -n '{type: "result", is_error: false, result: "doc を作りました。\nhttps://claude.ai/artifact/0f1e2d3c-aaaa-bbbb-cccc-000011112222"}' ;;
   nourl) jq -n '{type: "result", is_error: false, result: "doc を作れませんでした。"}' ;;
@@ -231,8 +235,8 @@ else
   ng "控えの先頭か末尾に、前置きか囲みが残っています"
 fi
 if grep -qx 'generate tools=\[\]' "$FAKE_LOG" \
-   && grep -qx 'docs allowed=mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide' "$FAKE_LOG"; then
-  ok "書く段は道具を許さず、置く段は Docs の 2 つだけを許す"
+   && grep -qx 'docs tools=\[\] allowed=mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide' "$FAKE_LOG"; then
+  ok "書く段は道具を許さず、置く段は組み込みの道具を外して Docs の 2 つだけを許す"
 else
   ng "claude への道具の許し方が決めたとおりではありません"; sed 's/^/    /' "$FAKE_LOG" >&2
 fi

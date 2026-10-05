@@ -56,10 +56,13 @@
 #
 #   書く      claude -p --output-format json --tools "" --no-session-persistence < prompt.txt
 #             道具は 1 つも許さない（材料はプロンプトに全部入っている）
-#   置く      claude -p --allowedTools "mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide"
+#   置く      claude -p --tools "" --allowedTools "mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide"
 #               --output-format json '<依頼>'
-#             許す道具はこの 2 つだけ（2026-10-05 の下調べ。#936 のコメント）。URL は .result から
-#             https://claude.ai/(code/)?artifact/… の形で抜き、**抜けなければ書き込み失敗とする**
+#             許す道具はこの 2 つだけ（2026-10-05 の下調べ。#936 のコメント）。下調べの形に --tools "" を
+#             足し、組み込みの道具を使えなくしてある（MCP の道具は --tools の対象外）。URL は .result から
+#             https://claude.ai/(code/)?artifact/… の形で抜き、**抜けなければ書き込み失敗とする**。
+#             **URL があることを成功とみなす**（下調べで決めた判定）。許す道具に読み返しが無いので、
+#             doc が本当にできたかはこの段では確かめない。人が通知の URL を開いて確かめる（docs/ops-report.md）
 #
 # どちらも控えの場所を作業ディレクトリにして呼ぶ（リポジトリの CLAUDE.md・設定・フックを読ませない）。
 #
@@ -263,7 +266,10 @@ $(cat "$DRAFT")
 
 echo "$PREFIX Claude Docs に置きます（${TITLE}）" >&2
 DOCS_JSON="$OUT/docs-response.json"
-( cd "$OUT" && run_claude -p --allowedTools "$DOCS_TOOLS" --output-format json "$REQUEST" ) > "$DOCS_JSON"
+# --tools "" で組み込みの道具（Bash・Read など）を 1 つも使えなくし、--allowedTools で Docs の 2 つを
+# 許す。--allowedTools は「許す」指定であって「使えるものを絞る」指定ではないので、利用者の設定が
+# 別の道具を許していると、下書きの中の文に誘導されてそれを使える余地が残る。
+( cd "$OUT" && run_claude -p --tools "" --allowedTools "$DOCS_TOOLS" --output-format json "$REQUEST" ) > "$DOCS_JSON"
 docs_rc=$?
 
 URL="$(jq -r 'select(.is_error != true) | .result // empty' "$DOCS_JSON" 2>/dev/null \

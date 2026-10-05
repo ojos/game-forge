@@ -137,11 +137,17 @@ VIOLATIONS="$(jq -r -R -s \
   def numre: "[0-9]{1,3}(?:,[0-9]{3})+(?:\\.[0-9]+)?|[0-9]+(?:\\.[0-9]+)?";
   def tonum: gsub(","; "") | tonumber;
 
-  def urlre: "https?://[^\\s<>()\\[\\]{}「」『』（）【】\"'"'"'、。，]+";
+  # スキームは大文字小文字を問わない（HTTPS://… も URL として拾う）。
+  def urlre: "(?i:https?)://[^\\s<>()\\[\\]{}「」『』（）【】\"'"'"'、。，]+";
   # 文末の句読点を URL に含めない。
   def trimurl: sub("[.,;:!?]+$"; "");
-  def allowed_url($u):
-    any($allowed[]; . as $p
+  # スキームとホストを小文字へ寄せる（照合の前に。HTTPS://APP.… を一覧と同じ綴りで比べる）。
+  def lower_origin:
+    (capture("^(?<o>[A-Za-z]+://[^/?#]*)(?<r>.*)$") // {o: ., r: ""})
+    | (.o | ascii_downcase) + .r;
+  def allowed_url($raw):
+    ($raw | lower_origin) as $u
+    | any($allowed[]; . as $p
       | $u == $p
         or ($u | startswith($p + "/"))
         or ($u | startswith($p + "?"))
@@ -164,8 +170,11 @@ VIOLATIONS="$(jq -r -R -s \
   def mask: if length > 6 then .[0:6] + "…" else . end;
   # 許可外の URL は、スキームとホストだけを出す。パスやクエリにトークンが入っていても、
   # url の報告から全文がログへ流れないように（secret の報告で伏せても、ここで漏れては意味が無い）。
-  def url_mask: (capture("^(?<o>https?://[^/?#]*)") | .o) as $o
-    | if length > ($o | length) then $o + "/…" else $o end;
+  # ホストの前のユーザー情報（https://user:pass@host）も伏せる。
+  def url_mask: (capture("^(?<s>[A-Za-z]+://)(?<a>[^/?#]*)") ) as $c
+    | ($c.a | if test("@") then "…@" + (split("@") | last) else . end) as $host
+    | ($c.s + $c.a) as $o
+    | $c.s + $host + (if length > ($o | length) then "/…" else "" end);
 
   # ハンドル: 直前が英数・. _ + - ではない @ に続く名前（メールアドレスの @ を拾わない）。
   def handlere: "(?<![A-Za-z0-9._+-])@[A-Za-z0-9_]+";

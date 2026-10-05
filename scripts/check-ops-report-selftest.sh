@@ -162,6 +162,20 @@ else
   ok "許可外の URL はスキームとホストだけを出す"
 fi
 
+# スキームが大文字でも URL として拾う。許可した先は大文字の綴りでも通す（下のきれいな下書きの確認）。
+expect_violation "大文字のスキームの許可外 URL" "- HTTPS://admin.game-forge.ojos.jp/reports" url
+# ユーザー情報の「名前@ホスト」はメールアドレスの形にも当たるので、secret と url の両方で落ちる。
+expect_violation "ユーザー情報付きの URL"    "- https://SeCrEtUsEr@example.com/path" "secret,url"
+if grep -qF "SeCrEtUsEr" "$TMP/last-check.txt"; then
+  ng "許可外の URL の報告に、ユーザー情報が全文で出ています"
+else
+  ok "許可外の URL のユーザー情報を伏せる"
+fi
+{ cat "$CLEAN"; echo "- HTTPS://App.Game-Forge.ojos.jp/works"; } > "$TMP/clean-upper.md"
+got="$(run_check "$TMP/clean-upper.md" "$MATERIAL")"
+[[ "$got" == "0 " ]] && ok "許可した先は、スキームとホストの大文字小文字を問わず通す" \
+  || ng "許可した先の大文字の綴りが落ちます（${got}）"
+
 # 検査が成立しないとき。
 got="$(run_check "$CLEAN" "$TMP/no-such.json")"
 [[ "${got%% *}" == "2" ]] && ok "材料が無ければ 2" || ng "材料が無いときに 2 になりません（${got}）"

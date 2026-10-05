@@ -223,7 +223,7 @@ jq -n \
   --arg month "$MONTH" \
   --arg scope "$SCOPE" \
   --argjson window "$WINDOW" \
-  --arg collectedAt "$(jq -n --argjson now "$NOW" '$now | todate')" \
+  --arg collectedAt "$(jq -nr --argjson now "$NOW" '$now | todate')" \
   --argjson usage "$USAGE" \
   --argjson kpi "$KPI" \
   --argjson build "$BUILD" \

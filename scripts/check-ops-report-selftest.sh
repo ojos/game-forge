@@ -231,6 +231,7 @@ for last in "$@"; do :; done
 printf 'docs-tag=%s\n' "$(printf '%s\n' "$last" | sed -n 's/^<\(draft-[0-9a-f]*\)>$/\1/p' | head -n 1)" >> "$FAKE_LOG"
 case "$FAKE_DOCS" in
   ok)    jq -n '{type: "result", is_error: false, result: "doc を作りました。\nhttps://claude.ai/artifact/0f1e2d3c-aaaa-bbbb-cccc-000011112222"}' ;;
+  lastmixed) jq -n '{type: "result", is_error: false, result: "作れませんでした。既存の https://claude.ai/artifact/aaaa-bbbb を見てください。"}' ;;
   midurl) jq -n '{type: "result", is_error: false, result: "既存の https://claude.ai/artifact/aaaa-bbbb を見ました。\n作れませんでした。"}' ;;
   nourl) jq -n '{type: "result", is_error: false, result: "doc を作れませんでした。"}' ;;
   error) jq -n '{type: "result", is_error: true, result: "MCP の呼び出しに失敗しました"}'; exit 1 ;;
@@ -341,6 +342,39 @@ if [[ $rc -eq 3 && -z "$(result_of URL)" ]]; then
   ok "返答の途中の行にだけ URL があっても成功にしない"
 else
   ng "返答の途中の行の URL を成功として扱っています（rc=${rc}）"
+fi
+
+# 2-2c' 最後の行に URL があっても、その行が URL だけでなければ成功にしない。
+run_draft "$TMP/out-lastmixed" "$CLEAN" lastmixed; rc=$?
+if [[ $rc -eq 3 && -z "$(result_of URL)" ]]; then
+  ok "最後の行が URL だけでなければ成功にしない"
+else
+  ng "URL 以外の文が混ざった最後の行を成功として扱っています（rc=${rc}）"
+fi
+
+# 2-2e --force でも、Docs へ置く前に落ちたら既存の doc の URL を消さない（次の実行が 2 本目を作らない）。
+run_draft "$D1" "$CLEAN" ok --force --material "$TMP/no-such-material.json"; rc=$?
+if [[ $rc -eq 2 && -s "$D1/2026-09/docs-url.txt" ]]; then
+  ok "--force で Docs の手前で落ちても、既存の doc の URL を残す"
+else
+  ng "--force で Docs の手前で落ちたのに、既存の doc の URL が消えています（rc=${rc}）"
+fi
+
+# 2-2f 同じ月を同時に回さない。生きている PID の印があれば 2・Docs を呼ばない。
+mkdir -p "$TMP/out-lock/2026-09/.lock" && echo "$$" > "$TMP/out-lock/2026-09/.lock/pid"
+: > "$FAKE_LOG"
+run_draft "$TMP/out-lock" "$CLEAN" ok; rc=$?
+if [[ $rc -eq 2 && ! -s "$FAKE_LOG" && ! -e "$TMP/out-lock/2026-09/result.txt" ]]; then
+  ok "同じ月の別の実行が走っていれば 2（相手の結果を上書きしない）"
+else
+  ng "同じ月の別の実行が走っていても止まりません（rc=${rc}）"
+fi
+echo 999999 > "$TMP/out-lock/2026-09/.lock/pid"
+run_draft "$TMP/out-lock" "$CLEAN" ok; rc=$?
+if [[ $rc -eq 0 && ! -e "$TMP/out-lock/2026-09/.lock" ]]; then
+  ok "死んだ実行の印は取り除いて回し、終わったら印を外す"
+else
+  ng "死んだ実行の印で止まるか、印が残っています（rc=${rc}）"
 fi
 
 # 2-2d 下書きに </draft> と指示が紛れても、囲む印は回ごとの乱数なので閉じられない。

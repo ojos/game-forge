@@ -155,6 +155,21 @@ if [[ "$OUT/" == "$ROOT/"* ]] || git -C "$OUT" rev-parse --is-inside-work-tree >
   finish 2 usage "控えの場所が git の作業ツリーの中を指しています（OPS_REPORT_DIR を外へ向けてください）"
 fi
 
+# 同じ月を同時に回さない（手での実行と launchd が重なると、両方が「doc はまだ無い」と見て 2 本作る）。
+# mkdir は在るか無いかの確認と作成を 1 回で行う。持ち主の PID を残し、死んだ実行の残骸なら取り除く。
+LOCK="$OUT/.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  holder="$(cat "$LOCK/pid" 2>/dev/null)"
+  if [[ -n "$holder" ]] && kill -0 "$holder" 2>/dev/null; then
+    OUT=""   # 走っている側の result.txt を上書きしない
+    finish 2 usage "${MONTH} の下書きは別の実行（PID ${holder}）が作っています。終わってから回してください"
+  fi
+  rm -rf "$LOCK"
+  mkdir "$LOCK" 2>/dev/null || finish 2 usage "${MONTH} の実行の印（${LOCK}）を作れません"
+fi
+echo "$$" > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
+
 # その月の doc が既にあれば作り直さない（1 か月 1 本）。
 if [[ "$FORCE" -ne 1 && "$NO_DOCS" -ne 1 && -s "$OUT/docs-url.txt" ]]; then
   URL="$(head -n 1 "$OUT/docs-url.txt")"
@@ -169,16 +184,6 @@ fi
 if [[ "$FORCE" -ne 1 && "$NO_DOCS" -ne 1 && -e "$OUT/docs-pending.txt" ]]; then
   if [[ -f "$OUT/draft.md" ]]; then COPY="$OUT/draft.md"; fi
   finish 3 docs-failed "前回 Docs への書き込みが成否不明のまま終わっています。Claude Docs の一覧に「運営報告 ${MONTH}（下書き）」が無いことを確かめてから --force で回し直してください"
-fi
-
-# ここから先は下書きを作り直す。Docs へ置き直すとき（--force）は、前の doc の URL を先に消す。
-# 残すと、置き直しに失敗したのに次の実行が**古い doc を成功として返す**。置けたときだけ、下の 4 で書き直す。
-#
-# **--no-docs では消さない。** doc はまだ Docs にあり、1 か月 1 本を守るには次の実行がそれを知っている
-# 必要がある（消すと、手元で試し直しただけで次の実行が 2 本目を作る）。手元の控えのほうが新しく
-# なることはあるので、そのときは --force で置き直す（既にあるときの理由の文にもそう書く）。
-if [[ "$NO_DOCS" -ne 1 ]]; then
-  rm -f "$OUT/docs-url.txt"
 fi
 
 # ── 1. 集める ────────────────────────────────────────────────────────────────
@@ -309,6 +314,10 @@ DOCS_JSON="$OUT/docs-response.json"
 # --tools "" で組み込みの道具（Bash・Read など）を 1 つも使えなくし、--allowedTools で Docs の 2 つを
 # 許す。--allowedTools は「許す」指定であって「使えるものを絞る」指定ではないので、利用者の設定が
 # 別の道具を許していると、下書きの中の文に誘導されてそれを使える余地が残る。
+# 置き直すとき（--force）は、前の doc の URL を**ここで**消す。残すと、置き直しに失敗したのに次の実行が
+# 古い doc を成功として返す。集める・書く・検査のどこかで落ちたときは消さない（doc はまだ 1 本で、
+# 次の実行がそれを知っている必要がある）。--no-docs はここまで来ないので消さない。
+rm -f "$OUT/docs-url.txt"
 # 呼ぶ前に「成否不明」の印を置き、URL を受け取れたときだけ外す（落ちても印が残る）。
 printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUT/docs-pending.txt"
 ( cd "$OUT" && run_claude -p --tools "" --allowedTools "$DOCS_TOOLS" --output-format json "$REQUEST" ) > "$DOCS_JSON"
@@ -316,9 +325,12 @@ docs_rc=$?
 
 # URL は返答の**最後の空でない行**から抜く（依頼で「最後の行に URL だけ」と頼んである。下調べでも
 # そこに出た）。途中の行に出た URL（既存の doc に触れた、など）を、作った doc の URL と取り違えない。
+# **その行が URL だけであること**も求める（前後の空白・< >・バッククォート・* は外して見る）。
+# 「作れませんでした。既存の https://… を見てください」のような行を成功にしない。
 URL="$(jq -r 'select(.is_error != true) | .result // empty' "$DOCS_JSON" 2>/dev/null \
   | awk 'NF { last = $0 } END { print last }' \
-  | grep -oE 'https://claude\.ai/(code/)?artifact/[A-Za-z0-9_-]+' | tail -n 1)"
+  | sed -e 's/^[[:space:]<`*]*//' -e 's/[[:space:]>`*]*$//' \
+  | grep -xE 'https://claude\.ai/(code/)?artifact/[A-Za-z0-9_-]+')"
 if [[ $docs_rc -ne 0 || -z "$URL" ]]; then
   URL=""
   finish 3 docs-failed "Claude Docs に置けたか確かめられません（終了コード ${docs_rc}。返答の最後の行に doc の URL がありません）。控えから手で貼るか、Docs の一覧に「${TITLE}」が無いことを確かめてから --force で回し直してください"

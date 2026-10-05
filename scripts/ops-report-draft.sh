@@ -27,7 +27,7 @@
 # devcontainer の中からは Mac の通知を出せない。**終わるときに必ず**、次の形の行を標準出力へ出し、
 # 同じものを <控えの場所>/result.txt に書く。scripts/ops-report-launchd.sh はこの行だけを読む。
 #
-#   OPS_REPORT_STATUS=<ok|check-failed|docs-failed|collect-failed|draft-failed|check-error|unsafe-settings|usage>
+#   OPS_REPORT_STATUS=<ok|check-failed|docs-failed|collect-failed|draft-failed|check-error|unsafe-settings|copy-failed|usage>
 #   OPS_REPORT_MONTH=<YYYY-MM>
 #   OPS_REPORT_URL=<doc の URL。無ければ空>
 #   OPS_REPORT_COPY=<手元の控え（Markdown）のパス。まだ無ければ空>
@@ -339,10 +339,13 @@ if [[ $docs_rc -ne 0 || -z "$URL" ]]; then
   URL=""
   finish 3 docs-failed "Claude Docs に置けたか確かめられません（終了コード ${docs_rc}。返答の最後の行に doc の URL がありません）。控えから手で貼るか、Docs の一覧に「${TITLE}」が無いことを確かめてから --force で回し直してください"
 fi
+# doc はできたので、URL は控えの写しより先に残す（写しに失敗しても、次の実行が 2 本目を作らない）。
 rm -f "$OUT/docs-pending.txt"
 printf '%s\n' "$URL" > "$OUT/docs-url.txt"
 # Docs に置いたものと同じ Markdown を、別の名前でも残す。後で --no-docs で試し直すと draft.md は
 # 書き換わるが、こちらは次に Docs へ置くまで変わらない（doc と手元の控えを同じに保つ）。
-cp "$DRAFT" "$OUT/docs-draft.md"
+if ! cp "$DRAFT" "$OUT/docs-draft.md" || ! cmp -s "$DRAFT" "$OUT/docs-draft.md"; then
+  finish 2 copy-failed "Claude Docs には置きました（${TITLE}）が、同じ Markdown の控え（docs-draft.md）を残せませんでした。${DRAFT} を控えとして写してください"
+fi
 COPY="$OUT/docs-draft.md"
 finish 0 ok "Claude Docs に置きました（${TITLE}）"

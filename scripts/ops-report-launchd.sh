@@ -152,7 +152,7 @@ elif [ "$status" = "ok" ] && [ -n "$url" ]; then
 elif [ "$status" = "ok" ]; then
   notify "運営報告 ${month} の下書き" "${reason} 控え: ${copy_label:-なし}"
 else
-  notify "運営報告 ${month} の下書き: 要対応" "${reason} 控え: ${copy_label:-なし} ログ: ${LOG}"
+  notify "運営報告 ${month} の下書き: 要対応" "${reason} ${url:+doc: ${url} }控え: ${copy_label:-なし} ログ: ${LOG}"
 fi
 
 exit "$rc"

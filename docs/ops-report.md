@@ -47,7 +47,7 @@
 |---|---|---|---|
 | 0 | `ok` | Docs に置けた（その月の doc が既にあれば作り直さず、その URL を返す） | doc の URL |
 | 1 | `check-failed` | 検査で落ちた。Docs には置いていない | 理由（種類ごとの件数）と控えの場所 |
-| 2 | `collect-failed` / `draft-failed` / `check-error` / `unsafe-settings` / `usage` | 材料を集められない・下書きを書けない・検査が成立しない・claude の設定が MCP の道具を先に許している・引数の誤りか同じ月の別の実行が走っている | 理由と控えの場所（あれば）とログ |
+| 2 | `collect-failed` / `draft-failed` / `check-error` / `unsafe-settings` / `copy-failed` / `usage` | 材料を集められない・下書きを書けない・検査が成立しない・claude の設定が MCP の道具を先に許している・Docs には置けたが控えを写せない・引数の誤りか同じ月の別の実行が走っている | 理由と控えの場所（あれば）とログ |
 | 3 | `docs-failed` | 検査は通ったが Docs に置けなかった（応答に URL が無いことも失敗に数える） | 理由と控えの場所 |
 
 **返答に URL が無くても doc ができていることがあります。** そのときは `docs-pending.txt` が残り、次の実行は

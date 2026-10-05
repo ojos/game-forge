@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  月次の運営報告の下書きを、毎月 3 日の 9:00（この Mac の時刻。JST を前提にする）に作る launchd の定義（#936）。
+  対象は先月の分（scripts/ops-report-draft.sh の既定）。
+
+  **雛形である。** __REPO__（ホスト側のリポジトリの絶対パス）と __HOME__（ホームの絶対パス）を
+  置き換えてから ~/Library/LaunchAgents/ へ置く。launchd は ~ も $HOME も展開しない。
+  導入・外し方・ログの読み方は docs/ops-report.md。
+
+  9:00 にしているのは、外部層の定期実行（jp.ojos.game-forge.acceptance-remote、毎日 12:00）と
+  重ねないため。どちらも devcontainer を起こして、起こした側が終わったら止める。
+
+  StartCalendarInterval は、スリープ中に予定時刻を過ぎた分を、復帰したときに 1 回走らせる。
+  電源が切れていた間の分は走らない（その月は手で回す。docs/ops-report.md）。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>jp.ojos.game-forge.ops-report</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/scripts/ops-report-launchd.sh</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Day</key>
+    <integer>3</integer>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <!-- launchd の PATH は /usr/bin:/bin:/usr/sbin:/sbin だけで、docker が見つからない。 -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <!-- 起動側の出力だけ。下書きの経過は scripts/ops-report-launchd.sh が回ごとのログへ書く。 -->
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/game-forge/ops-report/launchd.out</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/game-forge/ops-report/launchd.out</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

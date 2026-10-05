@@ -45,6 +45,7 @@
 #     prompt.txt      生成へ渡したプロンプト（型 + 材料）
 #     draft.md        いちばん新しい下書き（検査に回したもの。Docs に置けなかったときの控え）
 #     docs-draft.md   Docs に置いたものと同じ Markdown（置けたときだけ。--no-docs の試し直しでは変わらない）
+#     docs-url.previous.txt / docs-draft.previous.md   --force で置き直す前の doc の URL と控え
 #     check.txt       検査の出力
 #     docs-url.txt    置けた doc の URL（あれば、次の実行は作り直さない。--force で作り直す）
 #     docs-pending.txt Docs への書き込みが成否不明のまま終わった印（あれば、--force まで置き直さない）
@@ -322,9 +323,12 @@ if [[ -s "$OUT/docs-url.txt" ]]; then
   PREVIOUS_URL="$(head -n 1 "$OUT/docs-url.txt")"
   printf '%s\n' "$PREVIOUS_URL" >> "$OUT/docs-url.previous.txt"
 fi
-# 前の doc の控え（docs-draft.md）も**ここで**消す。残すと、新しい doc の後で写しに失敗したとき、
-# 新しい URL と古い控えが組になって残る。
-rm -f "$OUT/docs-draft.md"
+# 前の doc の控え（docs-draft.md）は docs-draft.previous.md へ移す。そのまま残すと、新しい doc の後で
+# 写しに失敗したとき新しい URL と古い控えが組になって残る。消すと、置き直しに失敗したときに、Docs に
+# 残っている前の doc と同じ控えが手元から無くなる。
+if [[ -f "$OUT/docs-draft.md" ]]; then
+  mv -f "$OUT/docs-draft.md" "$OUT/docs-draft.previous.md"
+fi
 # 置き直すとき（--force）は、前の doc の URL を**ここで**消す。残すと、置き直しに失敗したのに次の実行が
 # 古い doc を成功として返す。集める・書く・検査のどこかで落ちたときは消さない（doc はまだ 1 本で、
 # 次の実行がそれを知っている必要がある）。--no-docs はここまで来ないので消さない。

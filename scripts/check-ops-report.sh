@@ -117,7 +117,7 @@ ALLOWED_URLS='[
 
 # 違反を 1 件 1 行（TSV: 種類 / 行番号 / 該当 / 説明）で出す。
 #
-# **secret の該当は伏せて出す**（先頭 6 文字だけ）。この出力は Mac のログと通知の理由へ
+# **secret の該当は伏せて出す**（先頭 6 文字だけ）。url の該当もスキームとホストだけを出す。この出力は Mac のログと通知の理由へ
 # 流れる。トークンの形をしたものをそこへ全文で写さない。
 VIOLATIONS="$(jq -r -R -s \
   --slurpfile material "$MATERIAL" \
@@ -161,6 +161,10 @@ VIOLATIONS="$(jq -r -R -s \
     ["トークンらしき長い文字列", "(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{32,}(?![A-Za-z0-9_-])"]
   ];
   def mask: if length > 6 then .[0:6] + "…" else . end;
+  # 許可外の URL は、スキームとホストだけを出す。パスやクエリにトークンが入っていても、
+  # url の報告から全文がログへ流れないように（secret の報告で伏せても、ここで漏れては意味が無い）。
+  def url_mask: (capture("^(?<o>https?://[^/?#]*)") | .o) as $o
+    | if length > ($o | length) then $o + "/…" else $o end;
 
   # ハンドル: 直前が英数・. _ + - ではない @ に続く名前（メールアドレスの @ を拾わない）。
   def handlere: "(?<![A-Za-z0-9._+-])@[A-Za-z0-9_]+";
@@ -185,7 +189,7 @@ VIOLATIONS="$(jq -r -R -s \
   # 1. URL
   | ([$line | scan(urlre) | trimurl]) as $urls
   | ($urls[] | select(allowed_url(.) | not)
-      | ["url", $n, ., "許可した一覧の外の URL"]),
+      | ["url", $n, url_mask, "許可した一覧の外の URL"]),
   # 2. ID・トークン（URL の中も見る。許可した先の URL にトークンを付けたものを通さない）
     (secret_patterns[] as $p
       | $line | [scan($p[1])][]

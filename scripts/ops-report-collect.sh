@@ -33,7 +33,7 @@
 # **作品の本文・題名・プロンプト・利用者の文章は読まない。** 上の 3 本のレポートは、
 # どれも数だけを返す（各スクリプトの冒頭）。
 #
-# figures は、記事に書く形へ丸めた値（パーセントは小数 1 桁、円は整数、秒は小数 1 桁）。
+# figures は、記事に書く形へ丸めた値（パーセントは小数 1 桁、円は小数 2 桁（実額）、秒は小数 1 桁）。
 # **下書きの数字は、この JSON の数値からだけ取る**（docs/ops-report-template.md のプロンプト）。
 # 丸めをここで済ませるのは、生成に計算させないためである（検査は数値の一致で見るので、
 # 生成が自分で丸めた値は材料に無い数字として落ちる）。
@@ -234,8 +234,8 @@ jq -n \
   --argjson github "$GITHUB" \
   --argjson unavailable "$UNAVAILABLE" \
   --argjson notes "$NOTES" '
-  def r0: if . == null then null else round end;
   def r1: if . == null then null else (. * 10 | round) / 10 end;
+  def r2: if . == null then null else (. * 100 | round) / 100 end;
   def pct(a; b): if (b // 0) == 0 then null else (a * 100 / b) | r1 end;
   def per(a; b): if (b // 0) == 0 then null else (a / b) end;
   def sec: if . == null then null else (. / 1000) | r1 end;
@@ -251,8 +251,9 @@ jq -n \
         generations: $usage.totals.calls,
         llmSucceeded: $usage.totals.llmSucceeded,
         llmSucceededPercent: pct($usage.totals.llmSucceeded; $usage.totals.calls),
-        llmCostJpy: ($usage.totals.costJpy | r0),
-        llmCostPerGenerationJpy: (per($usage.totals.costJpy; $usage.totals.calls) | r1),
+        # **費用は実額**（利用者の判断）。整数へ丸めない。usage-report.sh の表と同じ小数 2 桁。
+        llmCostJpy: ($usage.totals.costJpy | r2),
+        llmCostPerGenerationJpy: (per($usage.totals.costJpy; $usage.totals.calls) | r2),
         closedIssues: ($github.closedIssues | length),
         mergedPulls: ($github.mergedPulls | length),
         mergedPullsAdded: ([$github.mergedPulls[] | select(.kind == "added")] | length),

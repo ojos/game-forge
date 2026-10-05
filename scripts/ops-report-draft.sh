@@ -154,6 +154,11 @@ if [[ "$FORCE" -ne 1 && "$NO_DOCS" -ne 1 && -s "$OUT/docs-url.txt" ]]; then
   finish 0 ok "${MONTH} の doc は既にあります（作り直すなら --force）"
 fi
 
+# ここから先は下書きを作り直す。前の doc の URL を残すと、次の実行が**作り直した下書きを
+# 置かないまま古い doc を成功として返す**（--force で Docs に失敗した・--no-docs で書き直した、など）。
+# 置けたときだけ、下の 4 で書き直す。
+rm -f "$OUT/docs-url.txt"
+
 # ── 1. 集める ────────────────────────────────────────────────────────────────
 MATERIAL="$OUT/material.json"
 if [[ -n "$MATERIAL_IN" ]]; then

@@ -12,12 +12,12 @@
 #   - 仕込んだ違反 4 種（材料に無い数字・他人のハンドル・ARN・許可外の URL）が、
 #     **それぞれ単独で** 1 になり、その種類だけが報告されること
 #   - 境界: 許可した URL の前方一致が名前の途中で通らない / notes の中の数字を出どころにしない /
-#     トークンの該当を全文で出さない
+#     トークンの該当と許可外の URL のパス・クエリを全文で出さない
 #   - 検査が成立しないとき（材料が無い・下書きが空）は 2（0 にも 1 にもしない）
 #
 # 2 節  scripts/ops-report-draft.sh（OPS_REPORT_CLAUDE で偽の claude に差し替える）
 #   - Docs に置けた → 0・URL を結果の行と docs-url.txt に出す・道具の許し方が決めたとおり
-#   - もう一度回すと作り直さない（1 か月 1 本）
+#   - もう一度回すと作り直さない（1 か月 1 本）。--force で作り直して失敗したら前の URL を残さない
 #   - Docs の応答に URL が無い / claude が失敗した → 3・控えのパスを出す・docs-url.txt を作らない
 #   - 検査で落ちた → 1・**Docs を呼ばない**
 #   - 控えの場所が git の作業ツリーの中 → 2
@@ -150,6 +150,14 @@ else
   ok "トークンの形の該当は伏せて出す"
 fi
 
+# 許可外の URL の報告も、パスとクエリを出さない（クエリにトークンが入っていても漏らさない）。
+expect_violation "許可外の URL（クエリ付き）" "- https://example.com/cb?state=SeCrEtPaRt" url
+if grep -qF "SeCrEtPaRt" "$TMP/last-check.txt"; then
+  ng "許可外の URL の報告に、パスかクエリが全文で出ています"
+else
+  ok "許可外の URL はスキームとホストだけを出す"
+fi
+
 # 検査が成立しないとき。
 got="$(run_check "$CLEAN" "$TMP/no-such.json")"
 [[ "${got%% *}" == "2" ]] && ok "材料が無ければ 2" || ng "材料が無いときに 2 になりません（${got}）"
@@ -241,6 +249,22 @@ if [[ $rc -eq 0 && ! -s "$FAKE_LOG" && -n "$(result_of URL)" ]]; then
   ok "その月の doc があれば、claude を呼ばずに既存の URL を返す"
 else
   ng "2 回目の実行で作り直しています（rc=${rc}）"
+fi
+
+# 2-2b --force で作り直して Docs に失敗したら、前の doc の URL を残さない（次の実行が古い doc を
+#      成功として返さない）。続く通常の実行は作り直して置く。
+run_draft "$D1" "$CLEAN" nourl --force; rc=$?
+if [[ $rc -eq 3 && ! -e "$D1/2026-09/docs-url.txt" ]]; then
+  ok "--force で Docs に失敗したら、前の doc の URL を消す"
+else
+  ng "--force で Docs に失敗しても、前の doc の URL が残っています（rc=${rc}）"
+fi
+: > "$FAKE_LOG"
+run_draft "$D1" "$CLEAN" ok; rc=$?
+if [[ $rc -eq 0 ]] && grep -q '^docs ' "$FAKE_LOG"; then
+  ok "その後の通常の実行は作り直して Docs に置く"
+else
+  ng "前の doc の URL を消した後の実行が Docs に置いていません（rc=${rc}）"
 fi
 
 # 2-3 Docs の応答に URL が無い。

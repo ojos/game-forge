@@ -56,7 +56,7 @@
 
 | どこ | ファイル | 中身 |
 |---|---|---|
-| devcontainer | `~/.local/state/game-forge/ops-report/<YYYY-MM>/`（`OPS_REPORT_DIR` で変えられる） | `material.json`（材料）・`prompt.txt`・`draft.md`（控え）・`check.txt`・`docs-url.txt`・`result.txt` |
+| devcontainer | `~/.local/state/game-forge/ops-report/<YYYY-MM>/`（`OPS_REPORT_DIR` で変えられる） | `material.json`（材料）・`prompt.txt`・`draft.md`（いちばん新しい下書き）・`docs-draft.md`（Docs に置いたものと同じ控え）・`check.txt`・`docs-url.txt`・`result.txt` |
 | Mac | `~/Library/Application Support/game-forge/ops-report/<YYYY-MM>/` | `draft.md` と `result.txt` の写し |
 | Mac | `~/Library/Logs/game-forge/ops-report/<UTC の時刻>.log` | 1 回分の全文（400 日で消える） |
 | Claude Docs | 「運営報告 YYYY-MM（下書き）」 | 検査を通った下書きだけ。**材料の JSON は置かない** |

@@ -42,7 +42,8 @@
 #   ${OPS_REPORT_DIR:-$HOME/.local/state/game-forge/ops-report}/<YYYY-MM>/
 #     material.json   材料（**Docs には置かない。コミットしない**）
 #     prompt.txt      生成へ渡したプロンプト（型 + 材料）
-#     draft.md        下書き（Docs に置いたものと同じ。控え）
+#     draft.md        いちばん新しい下書き（検査に回したもの。Docs に置けなかったときの控え）
+#     docs-draft.md   Docs に置いたものと同じ Markdown（置けたときだけ。--no-docs の試し直しでは変わらない）
 #     check.txt       検査の出力
 #     docs-url.txt    置けた doc の URL（あれば、次の実行は作り直さない。--force で作り直す）
 #     result.txt      上の結果の行
@@ -156,8 +157,9 @@ fi
 # その月の doc が既にあれば作り直さない（1 か月 1 本）。
 if [[ "$FORCE" -ne 1 && "$NO_DOCS" -ne 1 && -s "$OUT/docs-url.txt" ]]; then
   URL="$(head -n 1 "$OUT/docs-url.txt")"
-  [[ -f "$OUT/draft.md" ]] && COPY="$OUT/draft.md"
-  finish 0 ok "${MONTH} の doc は既にあります（手元の控えのほうが新しいことがあります。置き直すなら --force）"
+  # 返す控えは、Docs に置いたときの写し（docs-draft.md）。draft.md は --no-docs の試し直しで変わりうる。
+  if [[ -f "$OUT/docs-draft.md" ]]; then COPY="$OUT/docs-draft.md"; fi
+  finish 0 ok "${MONTH} の doc は既にあります（控えは doc と同じもの。--no-docs で試し直した下書きを置き直すなら --force）"
 fi
 
 # ここから先は下書きを作り直す。Docs へ置き直すとき（--force）は、前の doc の URL を先に消す。
@@ -301,4 +303,8 @@ if [[ $docs_rc -ne 0 || -z "$URL" ]]; then
   finish 3 docs-failed "Claude Docs に置けませんでした（終了コード ${docs_rc}。応答に doc の URL がありません）。控えから手で貼ってください"
 fi
 printf '%s\n' "$URL" > "$OUT/docs-url.txt"
+# Docs に置いたものと同じ Markdown を、別の名前でも残す。後で --no-docs で試し直すと draft.md は
+# 書き換わるが、こちらは次に Docs へ置くまで変わらない（doc と手元の控えを同じに保つ）。
+cp "$DRAFT" "$OUT/docs-draft.md"
+COPY="$OUT/docs-draft.md"
 finish 0 ok "Claude Docs に置きました（${TITLE}）"

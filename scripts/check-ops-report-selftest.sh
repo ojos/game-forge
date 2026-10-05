@@ -176,6 +176,21 @@ got="$(run_check "$TMP/clean-upper.md" "$MATERIAL")"
 [[ "$got" == "0 " ]] && ok "許可した先は、スキームとホストの大文字小文字を問わず通す" \
   || ng "許可した先の大文字の綴りが落ちます（${got}）"
 
+# ハンドルや URL の形で現れたトークンも、全文で出さない。
+expect_violation "ハンドルの形のトークン"   "- @${fake_token}" "handle,secret"
+if grep -qF "$fake_token" "$TMP/last-check.txt"; then
+  ng "ハンドルの報告に、該当が全文で出ています"
+else
+  ok "ハンドルの報告も伏せる"
+fi
+expect_violation "ホスト名に紛れた文字列"   "- https://LeAkHoStNaMe.example.com/" url
+if grep -qF "LeAkHoStNaMe" "$TMP/last-check.txt"; then
+  ng "URL の報告に、ホスト名が全文で出ています"
+else
+  ok "URL の報告はホスト名も伏せる"
+fi
+expect_violation "http 以外のスキーム"      "- ftp://example.com/file" url
+
 # 検査が成立しないとき。
 got="$(run_check "$CLEAN" "$TMP/no-such.json")"
 [[ "${got%% *}" == "2" ]] && ok "材料が無ければ 2" || ng "材料が無いときに 2 になりません（${got}）"
@@ -241,7 +256,8 @@ D1="$TMP/out-ok"
 run_draft "$D1" "$CLEAN" ok; rc=$?
 if [[ $rc -eq 0 && "$(result_of STATUS)" == "ok" \
       && "$(result_of URL)" == "https://claude.ai/artifact/0f1e2d3c-aaaa-bbbb-cccc-000011112222" \
-      && -s "$D1/2026-09/docs-url.txt" && "$(result_of COPY)" == "$D1/2026-09/draft.md" ]]; then
+      && -s "$D1/2026-09/docs-url.txt" && "$(result_of COPY)" == "$D1/2026-09/docs-draft.md" ]] \
+   && cmp -s "$D1/2026-09/draft.md" "$D1/2026-09/docs-draft.md"; then
   ok "Docs に置けたら 0・URL と控えのパスを結果の行に出す"
 else
   ng "Docs に置けたときの結果が期待と違います（rc=${rc}）"; sed 's/^/    /' "$TMP/run.out" "$TMP/run.err" >&2
@@ -274,13 +290,20 @@ else
 fi
 
 # 2-2a --no-docs で試し直しても、その月の doc の URL を消さない（次の実行が 2 本目を作らない）。
-run_draft "$D1" "$CLEAN" ok --no-docs; rc=$?
+#      次の実行が返す控えは Docs に置いたものと同じ（試し直した draft.md ではない）。
+{ cat "$CLEAN"; echo "試し直しの 1 行です。"; } > "$TMP/clean-retry.md"
+run_draft "$D1" "$TMP/clean-retry.md" ok --no-docs; rc=$?
 : > "$FAKE_LOG"
 run_draft "$D1" "$CLEAN" ok; rc2=$?
 if [[ $rc -eq 0 && $rc2 -eq 0 && -s "$D1/2026-09/docs-url.txt" ]] && ! grep -q '^docs ' "$FAKE_LOG"; then
   ok "--no-docs で試し直しても、その月の doc の URL を残す（2 本目を作らない）"
 else
   ng "--no-docs の後の実行が 2 本目を作ります（rc=${rc}/${rc2}）"
+fi
+if [[ "$(result_of COPY)" == "$D1/2026-09/docs-draft.md" ]] && ! grep -q '試し直し' "$D1/2026-09/docs-draft.md"; then
+  ok "既にある doc を返すときの控えは、Docs に置いたものと同じ"
+else
+  ng "既にある doc を返すときの控えが、Docs に置いたものと違います"
 fi
 
 # 2-2b --force で作り直して Docs に失敗したら、前の doc の URL を残さない（次の実行が古い doc を

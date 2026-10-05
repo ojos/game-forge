@@ -118,7 +118,8 @@ ALLOWED_URLS='[
 
 # 違反を 1 件 1 行（TSV: 種類 / 行番号 / 該当 / 説明）で出す。
 #
-# **secret の該当は伏せて出す**（先頭 6 文字だけ）。url の該当もスキームとホストだけを出す。この出力は Mac のログと通知の理由へ
+# **数字以外の該当は伏せて出す**（secret と handle は先頭 6 文字、url はスキームとホストの先頭 6 文字）。
+# 「@ghp_…」のようにトークンがハンドルや URL の形で現れても、どの報告からも全文が出ないように。この出力は Mac のログと通知の理由へ
 # 流れる。トークンの形をしたものをそこへ全文で写さない。
 VIOLATIONS="$(jq -r -R -s \
   --slurpfile material "$MATERIAL" \
@@ -137,13 +138,13 @@ VIOLATIONS="$(jq -r -R -s \
   def numre: "[0-9]{1,3}(?:,[0-9]{3})+(?:\\.[0-9]+)?|[0-9]+(?:\\.[0-9]+)?";
   def tonum: gsub(","; "") | tonumber;
 
-  # スキームは大文字小文字を問わない（HTTPS://… も URL として拾う）。
-  def urlre: "(?i:https?)://[^\\s<>()\\[\\]{}「」『』（）【】\"'"'"'、。，]+";
+  # スキームは http / https に限らない（ftp:// や file:// も許可外として落とす）。大文字小文字も問わない。
+  def urlre: "[A-Za-z][A-Za-z0-9+.-]*://[^\\s<>()\\[\\]{}「」『』（）【】\"'"'"'、。，]+";
   # 文末の句読点を URL に含めない。
   def trimurl: sub("[.,;:!?]+$"; "");
   # スキームとホストを小文字へ寄せる（照合の前に。HTTPS://APP.… を一覧と同じ綴りで比べる）。
   def lower_origin:
-    (capture("^(?<o>[A-Za-z]+://[^/?#]*)(?<r>.*)$") // {o: ., r: ""})
+    (capture("^(?<o>[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*)(?<r>.*)$") // {o: ., r: ""})
     | (.o | ascii_downcase) + .r;
   def allowed_url($raw):
     ($raw | lower_origin) as $u
@@ -170,11 +171,11 @@ VIOLATIONS="$(jq -r -R -s \
   def mask: if length > 6 then .[0:6] + "…" else . end;
   # 許可外の URL は、スキームとホストだけを出す。パスやクエリにトークンが入っていても、
   # url の報告から全文がログへ流れないように（secret の報告で伏せても、ここで漏れては意味が無い）。
-  # ホストの前のユーザー情報（https://user:pass@host）も伏せる。
-  def url_mask: (capture("^(?<s>[A-Za-z]+://)(?<a>[^/?#]*)") ) as $c
-    | ($c.a | if test("@") then "…@" + (split("@") | last) else . end) as $host
-    | ($c.s + $c.a) as $o
-    | $c.s + $host + (if length > ($o | length) then "/…" else "" end);
+  # スキームと、ホストの先頭 6 文字だけを出す。ユーザー情報（https://user:pass@host）も、
+  # ホスト名に紛れた文字列も、パスやクエリも全文では出さない。
+  def url_mask: (capture("^(?<s>[A-Za-z][A-Za-z0-9+.-]*://)(?<a>[^/?#]*)")) as $c
+    | ($c.a | if test("@") then "…@" + (split("@") | last) else . end | mask) as $host
+    | $c.s + $host + (if length > (($c.s + $c.a) | length) then "/…" else "" end);
 
   # ハンドル: 直前が英数・. _ + - ではない @ に続く名前（メールアドレスの @ を拾わない）。
   def handlere: "(?<![A-Za-z0-9._+-])@[A-Za-z0-9_]+";
@@ -207,7 +208,7 @@ VIOLATIONS="$(jq -r -R -s \
   # 3. ハンドル（URL の中も見る。許可した先の URL のパスに他人のハンドルを付けたものを通さない）
     ($line | [scan(handlere)][]
       | select(ascii_downcase != "@gameforgejp")
-      | ["handle", $n, ., "@gameforgejp 以外の @ハンドル"]),
+      | ["handle", $n, mask, "@gameforgejp 以外の @ハンドル"]),
   # 4. 数字（URL・ID・ハンドル・照合しない形を除いてから）
     ($line
       | gsub(urlre; " ")

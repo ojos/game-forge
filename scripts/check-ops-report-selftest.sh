@@ -209,18 +209,19 @@ FAKE_LOG="$TMP/fake-claude.log"
 cat > "$FAKE" <<'EOF'
 #!/usr/bin/env bash
 # 偽の claude。--allowedTools があれば「置く」、無ければ「書く」として振る舞う。
-mode=generate tools="(なし)" allowed="(なし)"
+mode=generate tools="(なし)" allowed="(なし)" strict=0
 prev=""
 for a in "$@"; do
   case "$prev" in
     --tools) tools="[$a]" ;;
     --allowedTools) mode=docs; allowed="$a" ;;
   esac
+  [ "$a" = "--strict-mcp-config" ] && strict=1
   prev="$a"
 done
 if [ "$mode" = generate ]; then
   cat >/dev/null
-  printf 'generate tools=%s\n' "$tools" >> "$FAKE_LOG"
+  printf 'generate tools=%s strict=%s\n' "$tools" "$strict" >> "$FAKE_LOG"
   # 前置きとコードブロックの囲みを付けて返す（draft がそれを落とすことも見る）。
   jq -n --rawfile r "$FAKE_DRAFT" '{type: "result", is_error: false, result: ("以下が下書きです。\n\n```markdown\n" + $r + "```\n")}'
   exit 0
@@ -273,7 +274,7 @@ if [[ "$(head -n 1 "$D1/2026-09/draft.md" 2>/dev/null)" == "# Game Forge 運営�
 else
   ng "控えの先頭か末尾に、前置きか囲みが残っています"
 fi
-if grep -qx 'generate tools=\[\]' "$FAKE_LOG" \
+if grep -qx 'generate tools=\[\] strict=1' "$FAKE_LOG" \
    && grep -qx 'docs tools=\[\] allowed=mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide' "$FAKE_LOG"; then
   ok "書く段は道具を許さず、置く段は組み込みの道具を外して Docs の 2 つだけを許す"
 else
@@ -369,6 +370,14 @@ if [[ $rc -eq 2 && ! -s "$FAKE_LOG" && ! -e "$TMP/out-lock/2026-09/result.txt" ]
 else
   ng "同じ月の別の実行が走っていても止まりません（rc=${rc}）"
 fi
+# PID の無い印は、作った直後かもしれないので取り除かない。
+rm -f "$TMP/out-lock/2026-09/.lock/pid"
+run_draft "$TMP/out-lock" "$CLEAN" ok; rc=$?
+if [[ $rc -eq 2 && -d "$TMP/out-lock/2026-09/.lock" ]]; then
+  ok "PID の無い印は、作った直後かもしれないので取り除かずに 2"
+else
+  ng "PID の無い印を残骸として取り除いています（rc=${rc}）"
+fi
 echo 999999 > "$TMP/out-lock/2026-09/.lock/pid"
 run_draft "$TMP/out-lock" "$CLEAN" ok; rc=$?
 if [[ $rc -eq 0 && ! -e "$TMP/out-lock/2026-09/.lock" ]]; then
@@ -433,14 +442,14 @@ else
   ng "控えの場所が作業ツリーの中でも止まりません（rc=${rc}）"
 fi
 
-# 2-8 claude の設定が MCP の道具を先に許していたら、Docs を呼ばずに 3。
+# 2-8 claude の設定が MCP の道具を先に許していたら、書く段も含めて claude を呼ばずに 2。
 printf '%s\n' '{"permissions":{"allow":["mcp__claude_ai_Game_Forge__update_my_work"]}}' > "$TMP/risky-settings.json"
 SETTINGS="$TMP/risky-settings.json"
 : > "$FAKE_LOG"
 run_draft "$TMP/out-risky" "$CLEAN" ok; rc=$?
 SETTINGS="$TMP/claude-settings.json"
-if [[ $rc -eq 3 && "$(result_of STATUS)" == "docs-failed" ]] && ! grep -q '^docs ' "$FAKE_LOG"; then
-  ok "claude の設定が Docs 以外の MCP の道具を許していたら、置かずに 3"
+if [[ $rc -eq 2 && "$(result_of STATUS)" == "unsafe-settings" && ! -s "$FAKE_LOG" ]]; then
+  ok "claude の設定が MCP の道具を先に許していたら、claude を 1 度も呼ばずに 2"
 else
   ng "claude の設定が別の MCP の道具を許していても置いています（rc=${rc}）"
 fi

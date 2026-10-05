@@ -12,7 +12,7 @@
 | 2 | Mac のホスト | [`scripts/ops-report-launchd.sh`](../scripts/ops-report-launchd.sh) | Docker と devcontainer を起こし、`docker exec` で 3 を呼ぶ。終わったら控えを Mac へ写して通知する。起こした devcontainer は止め直す |
 | 3 | devcontainer | [`scripts/ops-report-draft.sh`](../scripts/ops-report-draft.sh) | 4 → 5 → 6 → 7 を順に回し、結果の行（`OPS_REPORT_*=`）を出す |
 | 4 | devcontainer | [`scripts/ops-report-collect.sh`](../scripts/ops-report-collect.sh) | 先月（JST の暦月）の材料を 1 つの JSON にまとめる。本番は読み取りだけ |
-| 5 | devcontainer | `claude -p`（道具は許さない） | [型](ops-report-template.md)と材料から下書きを書く |
+| 5 | devcontainer | `claude -p`（道具も MCP も使わせない） | [型](ops-report-template.md)と材料から下書きを書く |
 | 6 | devcontainer | [`scripts/check-ops-report.sh`](../scripts/check-ops-report.sh) | 下書きを検査する。落ちたら Docs に置かない |
 | 7 | devcontainer | `claude -p`（Claude Docs の 2 つの道具だけ） | 「運営報告 YYYY-MM（下書き）」の doc を新しく作り、URL を返す |
 
@@ -47,7 +47,7 @@
 |---|---|---|---|
 | 0 | `ok` | Docs に置けた（その月の doc が既にあれば作り直さず、その URL を返す） | doc の URL |
 | 1 | `check-failed` | 検査で落ちた。Docs には置いていない | 理由（種類ごとの件数）と控えの場所 |
-| 2 | `collect-failed` / `draft-failed` / `check-error` / `usage` | 材料を集められない・下書きを書けない・検査が成立しない・引数の誤り | 理由と控えの場所（あれば）とログ |
+| 2 | `collect-failed` / `draft-failed` / `check-error` / `unsafe-settings` / `usage` | 材料を集められない・下書きを書けない・検査が成立しない・claude の設定が MCP の道具を先に許している・引数の誤りか同じ月の別の実行が走っている | 理由と控えの場所（あれば）とログ |
 | 3 | `docs-failed` | 検査は通ったが Docs に置けなかった（応答に URL が無いことも失敗に数える） | 理由と控えの場所 |
 
 **返答に URL が無くても doc ができていることがあります。** そのときは `docs-pending.txt` が残り、次の実行は
@@ -136,7 +136,7 @@ rm ~/Library/LaunchAgents/jp.ojos.game-forge.ops-report.plist
 - **外部層の定期実行（毎日 12:00）と時刻をずらしてあります。** どちらも devcontainer を起こした側が終わったら止めます。
   スリープから復帰した直後に両方が同時に走ると、先に終わった側が devcontainer を止め、もう一方が途中で切れることがあります。
   その月は手で回し直してください。
-- **devcontainer の `~/.claude/settings.json` が MCP の道具（`mcp__…`）を `permissions.allow` で許していたり、`defaultMode` が `bypassPermissions` だったりすると、Docs には置かずに止まります**（`docs-failed`）。
+- **devcontainer の `~/.claude/settings.json` が MCP の道具（`mcp__…`）を `permissions.allow` で許していたり、`defaultMode` が `bypassPermissions` だったりすると、claude を 1 度も呼ばずに止まります**（`unsafe-settings`）。
   `--allowedTools` は許す指定であって、設定が先に許した道具を取り消せないためです。下書きには issue / PR の題名に由来する文が入るので、Docs 以外の接続（作品の書き換えなど）を動かせる余地を残しません。
 - draft はプライマリ（`/workspaces/game-forge`）のスクリプトを使います。型を直したら main に入れてから回します。
 - 費用: Docs への書き込みは下調べで 1 回 $0.16（2 ターン）でした。下書きの生成の費用はまだ測っていません（初回の手での実行で、`generate-response.json` の `total_cost_usd` を見てください）。

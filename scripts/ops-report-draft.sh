@@ -16,7 +16,8 @@
 # 終了コード:
 #   0 = ok            Docs に置けた（または --no-docs で控えまで作れた / その月の doc が既にある）
 #   1 = check-failed  下書きが検査で落ちた。**Docs には置いていない**（控えは残す）
-#   2 = 前提の不成立  引数の誤り・材料を集められない・下書きを書けない・検査が成立しない
+#   2 = 前提の不成立  引数の誤り・材料を集められない・下書きを書けない・検査が成立しない・
+#                     claude の設定が MCP の道具を先に許している
 #   3 = docs-failed   検査は通ったが Docs に置けなかった（控えは残す）
 #
 # ══════════════════════════════════════════════════════════════════════════════
@@ -26,7 +27,7 @@
 # devcontainer の中からは Mac の通知を出せない。**終わるときに必ず**、次の形の行を標準出力へ出し、
 # 同じものを <控えの場所>/result.txt に書く。scripts/ops-report-launchd.sh はこの行だけを読む。
 #
-#   OPS_REPORT_STATUS=<ok|check-failed|docs-failed|collect-failed|draft-failed|check-error|usage>
+#   OPS_REPORT_STATUS=<ok|check-failed|docs-failed|collect-failed|draft-failed|check-error|unsafe-settings|usage>
 #   OPS_REPORT_MONTH=<YYYY-MM>
 #   OPS_REPORT_URL=<doc の URL。無ければ空>
 #   OPS_REPORT_COPY=<手元の控え（Markdown）のパス。まだ無ければ空>
@@ -56,8 +57,8 @@
 # claude の呼び方
 # ══════════════════════════════════════════════════════════════════════════════
 #
-#   書く      claude -p --output-format json --tools "" --no-session-persistence < prompt.txt
-#             道具は 1 つも許さない（材料はプロンプトに全部入っている）
+#   書く      claude -p --output-format json --tools "" --strict-mcp-config --no-session-persistence < prompt.txt
+#             道具は 1 つも許さない（材料はプロンプトに全部入っている）。--strict-mcp-config で MCP も読ませない
 #   置く      claude -p --tools "" --allowedTools "mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide"
 #               --output-format json '<依頼>'
 #             許す道具はこの 2 つだけ（2026-10-05 の下調べ。#936 のコメント）。下調べの形に --tools "" を
@@ -160,9 +161,11 @@ fi
 LOCK="$OUT/.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
   holder="$(cat "$LOCK/pid" 2>/dev/null)"
-  if [[ -n "$holder" ]] && kill -0 "$holder" 2>/dev/null; then
+  # PID がまだ無い印は、作った直後（mkdir と PID の書き込みの間）かもしれないので、残骸と見なさない。
+  # 取り除くのは、PID があってその実行が死んでいるときだけ。
+  if [[ -z "$holder" ]] || kill -0 "$holder" 2>/dev/null; then
     OUT=""   # 走っている側の result.txt を上書きしない
-    finish 2 usage "${MONTH} の下書きは別の実行（PID ${holder}）が作っています。終わってから回してください"
+    finish 2 usage "${MONTH} の下書きは別の実行（PID ${holder:-不明}）が作っています。終わってから回してください（実行が無いのに続くなら ${LOCK} を消してください）"
   fi
   rm -rf "$LOCK"
   mkdir "$LOCK" 2>/dev/null || finish 2 usage "${MONTH} の実行の印（${LOCK}）を作れません"
@@ -230,9 +233,27 @@ run_claude() {
   fi
 }
 
+# 利用者の設定（~/.claude/settings.json）が MCP の道具を先に許していたら、claude を 1 度も呼ばずに止める。
+# --allowedTools は「許す」指定であって、設定が先に許した道具を取り消せない。--tools "" も組み込みの
+# 道具しか外さない。材料と下書きには issue / PR の題名に由来する文が入るので、そこへ道具を使わせる文が
+# 紛れると、Docs 以外の接続（作品の書き換えなど）を動かせてしまう。**書く段の前に見る**（置く段の前では
+# 遅い。書く段も同じ設定で動く）。呼び方を下調べの形から変えずに、余地を塞ぐ。
+CLAUDE_SETTINGS="${OPS_REPORT_CLAUDE_SETTINGS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json}"
+if [[ -f "$CLAUDE_SETTINGS" ]]; then
+  if ! risky="$(jq -r '
+      [ (.permissions.allow // [] | .[] | select(startswith("mcp__"))),
+        (if (.permissions.defaultMode // "") == "bypassPermissions" then "defaultMode=bypassPermissions" else empty end) ]
+      | join(" ")' "$CLAUDE_SETTINGS" 2>/dev/null)"; then
+    finish 2 unsafe-settings "claude の設定（${CLAUDE_SETTINGS}）を読めないので、許されている道具を確かめられません。claude を呼んでいません"
+  fi
+  if [[ -n "$risky" ]]; then
+    finish 2 unsafe-settings "claude の設定（${CLAUDE_SETTINGS}）が MCP の道具か許可の省略を先に許しています（${risky}）。外すまで claude を呼びません"
+  fi
+fi
+
 echo "$PREFIX 下書きを書きます（claude -p。道具は許しません）" >&2
 GEN_JSON="$OUT/generate-response.json"
-( cd "$OUT" && run_claude -p --output-format json --tools "" --no-session-persistence < "$PROMPT" ) > "$GEN_JSON"
+( cd "$OUT" && run_claude -p --output-format json --tools "" --strict-mcp-config --no-session-persistence < "$PROMPT" ) > "$GEN_JSON"
 gen_rc=$?
 if [[ $gen_rc -ne 0 ]] || ! jq -e '(.is_error != true) and (.result | type == "string")' "$GEN_JSON" >/dev/null 2>&1; then
   finish 2 draft-failed "claude -p で下書きを書けません（終了コード ${gen_rc}。${GEN_JSON} を見てください）"
@@ -291,23 +312,6 @@ REQUEST="$(printf '%s\n' \
 REQUEST="${REQUEST}
 $(cat "$DRAFT")
 </${TAG}>"
-
-# --allowedTools は「許す」指定であって、利用者の設定（~/.claude/settings.json）が先に許している
-# MCP の道具を取り消せない。下書きには issue / PR の題名に由来する文が入るので、そこへ道具を使わせる
-# 文が紛れると、Docs 以外の接続（作品の書き換えなど）を動かせてしまう。**設定が MCP の道具や
-# 許可の省略を許していたら、置かずに止める**（呼び方を下調べの形から変えずに、余地を塞ぐ）。
-CLAUDE_SETTINGS="${OPS_REPORT_CLAUDE_SETTINGS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json}"
-if [[ -f "$CLAUDE_SETTINGS" ]]; then
-  if ! risky="$(jq -r '
-      [ (.permissions.allow // [] | .[] | select(startswith("mcp__"))),
-        (if (.permissions.defaultMode // "") == "bypassPermissions" then "defaultMode=bypassPermissions" else empty end) ]
-      | join(" ")' "$CLAUDE_SETTINGS" 2>/dev/null)"; then
-    finish 3 docs-failed "claude の設定（${CLAUDE_SETTINGS}）を読めないので、Docs 以外の道具が許されていないか確かめられません。置いていません"
-  fi
-  if [[ -n "$risky" ]]; then
-    finish 3 docs-failed "claude の設定（${CLAUDE_SETTINGS}）が Docs 以外の道具を先に許しています（${risky}）。外すまで Docs には置きません"
-  fi
-fi
 
 echo "$PREFIX Claude Docs に置きます（${TITLE}）" >&2
 DOCS_JSON="$OUT/docs-response.json"

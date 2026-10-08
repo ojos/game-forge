@@ -111,7 +111,6 @@ fi
 # 足すときは、公開の記事から誰が辿ってもよい先であることを確かめてから 1 行足す。
 # 管理画面（admin.）・作品の実行面（sandbox.）は載せない。
 ALLOWED_URLS='[
-  "https://game-forge.ojos.jp",
   "https://app.game-forge.ojos.jp",
   "https://note.com/gameforgejp",
   "https://x.com/gameforgejp",

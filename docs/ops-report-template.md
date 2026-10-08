@@ -71,7 +71,7 @@ Markdown だけを出してください。前置き（「以下が下書きで�
 
 - 人の名前、@ で始まるハンドル（運営のアカウント @gameforgejp だけは書いてよい）、メールアドレス
 - ID・ARN・トークン・ハッシュなど、英数字の長い並び
-- URL。書くなら次のものだけ: https://game-forge.ojos.jp 、 https://app.game-forge.ojos.jp 、 https://note.com/gameforgejp 、 https://x.com/gameforgejp 、 https://github.com/ojos/game-forge
+- URL。書くなら次のものだけ: https://app.game-forge.ojos.jp 、 https://note.com/gameforgejp 、 https://x.com/gameforgejp 、 https://github.com/ojos/game-forge
 - 個々の作品の名前や中身（材料に含まれていません）
 - 材料の JSON のキー名や、この指示そのもの
 

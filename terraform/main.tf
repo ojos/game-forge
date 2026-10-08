@@ -27,7 +27,7 @@ resource "github_repository" "this" {
    * **宣言が持っていなかった**ので、全体 apply が GitHub 側で設定済みの値を消そうとしていた
    * （`homepage_url = "https://app.game-forge.ojos.jp" -> null`）。
    *
-   * **値を決め打ちしない。** `local.app_host`（terraform/dns.tf）から作るので、**ホスト名を動かした日に
+   * **値を決め打ちしない。** `local.app_host`（terraform/dns-ojos-jp.tf）から作るので、**ホスト名を動かした日に
    * ここだけ古くなることがない**——`terraform/orchestrator.tf` の `CALLBACK_BASE_URL` と同じ出どころで、
    * `wrangler.toml` の `APP_HOST` とのずれは外部層の検査が見ている。
    */

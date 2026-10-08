@@ -58,16 +58,6 @@ output "required_status_checks" {
   value       = tolist(github_branch_protection.default.required_status_checks[0].contexts)
 }
 
-output "dns_zone_name" {
-  description = "Route53 で管理する DNS ゾーン名。外部層の検査が実状態と突き合わせる。"
-  value       = aws_route53_zone.game_forge.name
-}
-
-output "dns_zone_id" {
-  description = "Route53 ホストゾーン ID。外部層の検査が実状態の取得に使う。"
-  value       = aws_route53_zone.game_forge.zone_id
-}
-
 output "ojos_jp_zone_id" {
   description = "Cloudflare の ojos.jp ゾーンの ID（#775）。外部層の検査が実状態の取得に使う。"
   value       = cloudflare_zone.ojos_jp.id
@@ -153,16 +143,6 @@ output "ojos_jp_declared_records" {
   ]
 }
 
-output "dns_zone_name_servers" {
-  description = <<-EOT
-    委譲元（さくらの ojos.jp ゾーン）へ登録する NS レコードの値。
-
-    さくら側の登録は手動だが、登録すべき値をここへ書き写さずに宣言から取れるように
-    しておく（shared-ai-rules.md 12 章「一覧の複製は機械照合で担保する」）。
-  EOT
-  value       = aws_route53_zone.game_forge.name_servers
-}
-
 output "gcp_project_id" {
   description = <<-EOT
     GCP プロジェクト ID。OAuth クライアントの発行先。
@@ -202,12 +182,12 @@ output "app_host" {
     wrangler.toml の [env.production.vars] APP_HOST と同じ値でなければならない。
     外部層の検査（scripts/acceptance-remote.sh）が両者を突き合わせる。
   EOT
-  value       = aws_route53_record.app.name
+  value       = local.app_host
 }
 
 output "sandbox_host" {
   description = "サンドボックス用ホスト名（#89）。SANDBOX_HOST と突き合わせる。"
-  value       = aws_route53_record.sandbox.name
+  value       = local.sandbox_host
 }
 
 output "admin_host" {
@@ -219,7 +199,7 @@ output "admin_host" {
     Copilot の指摘）。app_host / sandbox_host と同じ 2 つの検査へ入る——CNAME の実在と、
     wrangler.toml の [env.production.vars] との一致である。
   EOT
-  value       = aws_route53_record.admin.name
+  value       = local.admin_host
 }
 
 output "pages_hostname" {
@@ -666,7 +646,7 @@ output "orchestrator_callback_base_url" {
     差し替えられる者がジョブトークンの送り先を変えられないようにするため。
     src/orchestrator/payload.ts）。
 
-    値は local.app_host（terraform/dns.tf）から作るので、wrangler.toml の APP_HOST と
+    値は local.app_host（terraform/dns-ojos-jp.tf）から作るので、wrangler.toml の APP_HOST と
     ずれない。
   EOT
   value       = "https://${local.app_host}"
@@ -858,7 +838,7 @@ output "ogp_capture_base_url" {
   description = <<-EOT
     撮影対象のホスト。**ペイロードではなく宣言が持つ**（呼び出しのペイロードを
     差し替えられる者に、撮る先を決めさせないため。terraform/ogp-function.tf）。
-    値は local.sandbox_host（terraform/dns.tf）から作るので、wrangler.toml の
+    値は local.sandbox_host（terraform/dns-ojos-jp.tf）から作るので、wrangler.toml の
     SANDBOX_HOST とずれない。
   EOT
   value       = "https://${local.sandbox_host}"
@@ -867,7 +847,7 @@ output "ogp_capture_base_url" {
 output "ogp_callback_base_url" {
   description = <<-EOT
     撮れた PNG の送り先。**ペイロードではなく宣言が持つ**（orchestrator_callback_base_url
-    と同じ理由）。値は local.app_host（terraform/dns.tf）から作る。
+    と同じ理由）。値は local.app_host（terraform/dns-ojos-jp.tf）から作る。
   EOT
   value       = "https://${local.app_host}"
 }

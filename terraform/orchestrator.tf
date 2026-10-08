@@ -468,7 +468,7 @@ data "archive_file" "orchestrator_placeholder" {
  *
  * **ペイロードで受け取らない。** 呼び出しのペイロードを差し替えられる者が
  * ジョブトークンの送り先を変えられるからである（`src/orchestrator/payload.ts`）。
- * 値は `local.app_host`（`terraform/dns.tf`）から作るので、`wrangler.toml` の
+ * 値は `local.app_host`（`terraform/dns-ojos-jp.tf`）から作るので、`wrangler.toml` の
  * `APP_HOST` とずれない（外部層の検査が両者を突き合わせている）。
  */
 resource "aws_lambda_function" "orchestrator" {

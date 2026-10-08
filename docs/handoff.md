@@ -5,11 +5,34 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 - 位置づけ: **現在地と、次に何をするか。** 仕様の正本は [product-spec.md](product-spec.md)、
   作業の分解は [mvp-roadmap.md](mvp-roadmap.md) が持ちます。**ここへ複製しません。**
 - 更新: セッションの終わりに、次の人が困る情報だけを書き換えます。
-- 最終更新: **2026-10-03**（要旨は [6. 更新の履歴](#6-更新の履歴) が持ちます）
+- 最終更新: **2026-10-08**（要旨は [6. 更新の履歴](#6-更新の履歴) が持ちます）
 
 ---
 
 ## 1. 現在地
+
+### DCB v0.17.0 と規範 v0.8.1 へ追従し、本番の配備を deploy.yml へ移しました。dev01 の devhost も v0.17.0 です（#938 / #939 / #944 / #945 / #946。2026-10-07〜08）
+
+| # | 何をしたか | PR / コミット | 状態 |
+|---|---|---|---|
+| #938 | DCB v0.17.0 の `bootstrap.sh --upgrade` で、DCB の生成物と規範（ai-playbook）v0.8.1 に追従した。`.devcontainer/ORIGIN` を初めて置いた。DCB が所有するファイルは雛形を正とし、残した差分は `project-ai-rules.md`「雛形からの逸脱」の表に理由つきで並べた。プロジェクトが所有する 4 本（`acceptance.sh`・`acceptance-remote.sh`・`check-no-secrets.sh`・`project-ai-rules.md`）は中身を残して `--accept` した。並行セッションの台帳（`session-coord-hook.sh` / `session-ledger.sh`）と `AGENTS.md` が入った。**本番の配備を `verify.yml` の `deploy` ジョブから `.github/workflows/deploy.yml` へ移した**（下） | PR #940 / `3309e3d` | 閉じた（本番の配備を確かめた後） |
+| #939 | `devcontainer.json` を純粋な JSON にした（注記は新設の `.devcontainer/README.md` へ。移す段では値を変えていない。雛形に寄せる段で VS Code 拡張 `Google.gemini-cli-vscode-ide-companion` が 1 つ増えた）。`compose.yaml` に雛形の `init: true` を入れた（`security_opt` の seccomp は入れない。#930 の再発を避ける）。doctor は FAIL 0 になった | PR #948 / `54a6823` | **open**（dev01 は確認済み。**残りは Mac の作り直し**） |
+| #944 | dev01 の上流版 devhost を v0.14.0 から v0.17.0 へ上げた（`dev rebuild` / `dev doctor` / `dev help` が増えた）。版は `tools/devhost/README.md`「上流の版を上げる（dev01 の更新）」の `TAG=` の 1 行が正本 | PR #949 / `0a553d8` | 閉じた（dev01 での確認の後） |
+| #945 | `terraform/orchestrator.tf` の注記の配備の場所を deploy.yml に直した。apply で、宣言の外にあった `ojos-ops` の請求先を外した（下） | PR #947 / `fc0e2f4` | 閉じた |
+
+- **本番の配備は `deploy.yml` です**（#938）。`verify` の完了を契機とする `on: workflow_run` だけで起動し、ジョブの `if` が `verify` の成功・push・main・このリポジトリを見ます。checkout は `workflow_run.head_sha` に固定しています（`github.sha` は既定ブランチの先頭を指すので使わない）。concurrency と deploy-head の譲り合いはそのまま移しました。起動の条件は `scripts/report-selftest.sh` 14 節（d）が固定していて、崩した `deploy.yml` で赤になります。**`deploy.yml` は PR の CI では 1 度も走りません**（workflow_run は既定ブランチの定義で動く）。**配備を見るときは `gh run list --workflow deploy.yml` で、配ったコミットはログの `[deploy-head]` の行で確かめます。** #940・#949・#948・#947 のマージ後の 4 回とも、DEPLOY_IS_HEAD で配りました。
+- **次からの追従は、引数なしの `bash bootstrap.sh --upgrade` です。先に `--dry-run` で計画を見てから、外して取り込みます**（`docs/local-dev.md` 8.1）。初回だけ ORIGIN が無かったので、生成時の引数を明示して回しました。記録が無いので、DCB の生成物 35 本すべてが「手を入れた」扱いになり、`.dcb-new` が置かれました。`--accept` で記録した後に中身を書き足すと、ORIGIN のハッシュと現物がずれます（#938 で自分で踏み、第二意見が拾った）。**書き足したら `--accept` し直します。**
+- **第二意見は、雛形のコードから巡ごとに新しい指摘を出しました**（#938 は 4 巡、#944 は 4 巡）。#938 の 7 件は、直したもの 3 件・利用者の判断で雛形のまま残したもの 3 件（gemini を 3 回以上で回すとトークンの無い回答が通る・台帳が失敗した Bash で登録を消す・記録を数える条件が #865 の「持ち主」から「PR の作者」へ）・ブランチ保護の実測を添えて却下したもの 1 件（land が verify の実行の有無を見ない）です（[PR #940](https://github.com/ojos/game-forge/pull/940) の表）。#944 では「直して、次の巡は打ち切る」と先に決めてから回しました。**巡が収束しないときは、次の巡で出たものの扱いを先に決めてから回すと、往復が止まります。**
+- **`ojos-ops` の請求先を外しました**（#945 の apply。2026-10-08）。plan で宣言の外の乖離として出ました（`gcp.tf` の注記は「請求先を紐付けない」）。利用者が別件で Cloud Storage を使うつもりで紐付けたもので、使わずに済む見込みでした。外す前に、バケット 0 件・有効なサービス 0 件を確かめています（対照の dev プロジェクトは 30 件を返す）。**ojos-ops で課金の要るサービスを使うときは、先に `gcp.tf` の宣言へ請求先を足してから紐付けます**（足さずに紐付けると、次の apply で外れる）。
+- **Mac と dev01 のコンテナでは、`init: true` が #939 より前から効いていました。** go の feature（`ghcr.io/devcontainers/features/go:1`）が宣言しているためです（PID 1 は docker-init）。#939 で compose.yaml に書いたのは、雛形と揃えるためです。
+- **dev01 での作業は、親がこのコンテナから ssh で代行しました**（#944 の差し替え、#939 の作り直し）。利用者が行ったのは、Cloudflare Access のログインと、**Mac の ssh-agent への鍵の読み込み**です（ssh-agent が空で、最初は `Permission denied (publickey)` でした。Access の段は通っているので、鍵の失効と取り違えやすい）。結果は [#944](https://github.com/ojos/game-forge/issues/944) と [#939](https://github.com/ojos/game-forge/issues/939) のコメントにあります。
+- **dev01 のツリーは `89f7cf4` で止まっていました**（6 コミット遅れ）。作り直す前に `fc0e2f4` へ fast-forward しました。作り直しは `dev rebuild game-forge` です（ユニットの停止と起こし直しを含む）。
+
+#### 残していること
+
+- **#939 の Mac の作り直し**（利用者）。このセッションのコンテナなので、ほかのセッションを止めてから「Dev Containers: Rebuild Container」を実行し、`ps -p 1 -o comm=`（docker-init）と `bash scripts/verify.sh`（最初は EBITEN_KEYS_FAIL で止まる。3 章の rebuild の項）を確かめます。**結果は #939 に書いて閉じます。この節は触りません。** 確かめたいのは、`init: true` が compose.yaml と go の feature の上書きの両方に入っても、Mac の compose 2.40.3 が起動を拒否しないことです（真偽値なので、#930 のようなリストの重複は起きない見込み。未実測）。
+- **`scripts/acceptance.sh` 322〜333 行の注記**（「UID/GID の既定が 1000」「ビルド引数」）は、#879 より前の記述のままです。プロジェクトが所有するファイルで、直したら `--accept` し直します（#939 のレーンの報告）。
+- **#937（運営報告の自動化。e2e3a72）は、この handoff に載っていません。** 別セッションのウェーブで、票の #936 も open です。そちらの書き戻しで扱います。
 
 ### #930 で Mac の devcontainer が起動しなくなっていたのを直し、#933 を閉じました（#933。2026-10-03）
 
@@ -83,7 +106,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
   - `--base-from-pages`（本番の Pages に居るコミットと比べる）
   - `--no-renames`（改名の旧パスを残さない）
   - `package.json` / `package-lock.json` が変われば CHANGED
-- verify.yml の「オーケストレータの束が変わったか」の段は、Pages の API を読んで渡す形にした
+- verify.yml の「オーケストレータの束が変わったか」の段は、Pages の API を読んで渡す形にした（**2026-10-08 追記: #938 でこの段は deploy.yml へ移った**）
 - 自己検査 `scripts/orchestrator-bundle-changed-selftest.sh` を足した（35 項目・約 0.9 秒）。判定の変異 6 通りで赤になる。自己検査の表は 15 本になった
 - land の手順 5 で、オーケストレータとチャットの両方の束を確かめるようにした
 - **main で動くことを見届けた**（`f6ef483` の deploy。success）。段のログに「比較元は本番の Pages に居るコミットです: e2efe00…」と `ORCHESTRATOR_BUNDLE_UNCHANGED` が出ている
@@ -146,7 +169,7 @@ Pages は関門の後ろで `--commit-hash` 付きで配られるので、Pages 
 #### 残していること
 
 - **#904 の本文の要約に誤りがあります。**「#732 で本番の書き込みが同じ形で壊れた」と書いていますが、実際に壊れたのは本番ではなく、仕込みの D1 の書き込みでした。本文はレビュー済みで凍結しているので、ここに記録だけ残します。コードの注記は PR #915 で正しく書いています。
-- **dev01 の devhost の配り直し**（#907）は、利用者が行います（**2026-10-02 追記: 済み。上の節**）。手順は `install -D -m 0755 tools/devhost/dev.sh ~/.local/bin/dev` です。（**2026-10-03 追記: この `tools/devhost/dev.sh` は #923 で撤去した。いまの dev01 は上流版で、更新の手順は `tools/devhost/README.md`**）
+- **dev01 の devhost の配り直し**（#907）は、利用者が行います（**2026-10-02 追記: 済み。上の節**）。手順は `install -D -m 0755 tools/devhost/dev.sh ~/.local/bin/dev` です。（**2026-10-03 追記: この `tools/devhost/dev.sh` は #923 で撤去した。いまの dev01 は上流版で、更新の手順は `tools/devhost/README.md`**）（**2026-10-08 追記: 節は「上流の版を上げる（dev01 の更新）」。#944 で v0.17.0**）
 - **#460**: 前提の #905 と #913 は済みました。専門家へ渡すのは、最新の main の `src/privacy.ts` と `docs/privacy-review.md` です。
 - **#752**（**2026-10-02 追記: #924 で測り直すことにして閉じた。上の節**）: 計測は締めましたが、閉じるか、「往復が N 件たまるまで」で測り直すかが未決です（利用者の判断）。
 - **#908**（seccomp の出どころ）は、このウェーブには入れていません。Mac の分は読み取りだけで進められます。dev01 の分は、dev01 のセッションに知らせてから行います。（**2026-10-02 追記: 済み。PR #921 / `aaf2f2c` で閉じた。出どころは `ghcr.io/devcontainers/features/go:1` の宣言（delve のため）で、ojos/ai-packages-dev#392 の担当が dev01 で突き止めていた。Mac で metadata を読み、feature の定義ファイルの行を足して確かめた。**go の feature を外すと、dev01 でも Mac でも codex のサンドボックスが動かなくなる**ことを、`compose.yaml` のコメントに書いた**）
@@ -3548,6 +3571,8 @@ identity・主要な設計主張を、取り込む側が実物で確かめてい
 3. ~~Worker を配る~~ **不要でした**——**Worker は `main` へのマージで自動配備されます**
    （`.github/workflows/verify.yml` の `deploy` ジョブ。独立したワークフローではないので
    `gh run list` のワークフロー名では見えません）。**このため今日、送り側が先に出ました**（下記）
+   （**2026-10-08 追記: #938 から `.github/workflows/deploy.yml` です。`gh run list --workflow deploy.yml` で見え、
+   配ったコミットはログの `[deploy-head]` の行で確かめます。1 章**）
 4. ~~本番で実物を通す~~ **ほぼ済み**（下の節）。**残るは #36 の送信経路だけ**で、これには
    **別アカウントが要ります**（自分自身のフォークは送られないため）
 
@@ -4992,6 +5017,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
+- **2026-10-08**（**DCB v0.17.0 と規範 v0.8.1 へ追従し（#938）、本番の配備を deploy.yml〈workflow_run〉へ移した**——初回は ORIGIN が無く、引数を明示した --upgrade で 35 本に .dcb-new。DCB 所有は雛形を正とし、逸脱は project-ai-rules.md の表へ。#939 で devcontainer.json を純粋な JSON にし init: true を入れた（Mac の作り直しが残り）。#944 で dev01 の devhost を v0.17.0 へ、#945 で terraform の注記を直し、apply で宣言の外の ojos-ops の請求先を外した。dev01 の作業は親が ssh で代行した。3549 行・86 行・149 行に追記した）
 - **2026-10-03**（**#930 で Mac の devcontainer が起動しなくなっていたのを直し、#933 を閉じた**——compose.yaml の `seccomp=unconfined` と go の feature の宣言が重なり、Mac の compose 2.40.3 が `security_opt items ... are equal` で拒否していた（コンテナ内の v5.6.0 は黙ってまとめるので再現しない）。PR #934 で devcontainer.json の `securityOpt` へ移した。Refs でマージし、利用者が Mac で、親が dev01 で ssh から作り直して確かめてから閉じた。dev01 のツリーは `ed84a31` から main へ進めた。#929 の行に追記した）
 - **2026-10-03**（**dev01 の devhost を上流版へ移して #923 を閉じ、#929 を閉じた**——DCB v0.14.0 で着手し（PR #928）、#923 は Refs でマージして、dev01 で親が ssh から移行した後に閉じた。#929（PR #930）で seccomp を明示した。README の移行手順のパスの決め打ちを直し、handoff の dev01 の古い記述（配り直し・問 12・`tools/devhost/` の性質）に追記した。#929 の本文の「PR #407」を記録した。game-forge-78 の待ちラベル〔PR #931〕を 1 章に書き、初めてラベルと handoff を突き合わせた〔#582・#735 は利用者の判断で wait:external に揃えた〕）
 - **2026-10-02**（**#925 を閉じ、#923 / #924 / #925 を起票し、#752 を閉じた**——残りの判断を利用者が決めた。オーケストレータの束の関門を、チャットと同じく Pages のコミットと比べる形にした（PR #926。判定は写しで揃え、自己検査は 15 本）。#752 は往復 50 件・利用者 3 人で区切る #924 へ移した。devhost は dev01 へ配り直し、上流版へ寄せる #923 は DCB v0.14.0（ojos/ai-packages-dev#409）待ち。3 章の束の関門の項を #925 に追随させ、前の節の済んだ項に追記した）

@@ -22,7 +22,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.21.1",
-    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/client": "2.2.0",
     "sharp": "0.35.5",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11",

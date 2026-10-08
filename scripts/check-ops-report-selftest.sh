@@ -262,7 +262,7 @@ run_draft() {
     FAKE_DRAFT="$draft" FAKE_DOCS="$docs" \
     bash "$DRAFT_SH" 2026-09 --material "$MATERIAL" "$@" > "$TMP/run.out" 2> "$TMP/run.err"
 }
-result_of() { sed -n "s/^OPS_REPORT_$1=//p" "$TMP/run.out" | head -n 1; }
+result_of() { sed -n "s/^OPS_REPORT_$1=//p" "$TMP/run.out" | sed -n 1p; }
 
 # 2-1 Docs に置けた。
 : > "$FAKE_LOG"

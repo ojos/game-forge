@@ -3,7 +3,7 @@
 #
 # ## 誰が、いつ叩くか
 #
-# - **マージ後の配備**: `.github/workflows/verify.yml` の deploy ジョブが、**Pages を配る段の
+# - **マージ後の配備**: `.github/workflows/deploy.yml` の deploy ジョブが、**Pages を配る段の
 #   前**に叩く（likes Worker の隣）。同じジョブの段は上から順に走り、どれかが落ちると後ろの段は
 #   走らないので、**cleanup Worker が配れなかった日は Pages も配られない**
 # - **初回の配備**: 利用者が自分の端末で叩く（手順は `docs/cleanup-worker.md`）。エージェントの

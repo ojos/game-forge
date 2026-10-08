@@ -211,7 +211,7 @@ send_query() {
   fi
   # `with` を許すのは系統の深さが再帰 CTE を要るためである。**書き込みを伴う CTE
   # （insert / update / delete）を弾く**ので、許容を広げても読み取りのままである。
-  if printf '%s' "$sql" | tr 'A-Z' 'a-z' | grep -Eq '(^|[^a-z_])(insert|update|delete|drop|create|alter|replace)([^a-z_]|$)'; then
+  if printf '%s' "$sql" | tr 'A-Z' 'a-z' | grep -E '(^|[^a-z_])(insert|update|delete|drop|create|alter|replace)([^a-z_]|$)' >/dev/null; then
     echo "[kpi] 書き込みを伴う語が含まれています（読み取りのみ）。" >&2
     return 1
   fi

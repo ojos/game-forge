@@ -80,7 +80,7 @@ TAG=v0.14.0
 BASE="https://github.com/ojos/devcontainer-bootstrap/releases/download/${TAG}"
 curl -sSL "${BASE}/RELEASE-MANIFEST.json" -o RELEASE-MANIFEST.json
 curl -sSL "${BASE}/PACKAGE_ARCHIVE.tar.gz" -o PACKAGE_ARCHIVE.tar.gz
-jq -r '.checksums["PACKAGE_ARCHIVE.tar.gz"] + "  PACKAGE_ARCHIVE.tar.gz"' RELEASE-MANIFEST.json | sha256sum -c -   # OK であること
+jq -r '.checksums["PACKAGE_ARCHIVE.tar.gz"] + "  PACKAGE_ARCHIVE.tar.gz"' RELEASE-MANIFEST.json | sha256sum -c -   # bsd-ok: dev01（Linux）のホストで打つ手順。OK と出ること
 tar -xzf PACKAGE_ARCHIVE.tar.gz ./devhost
 
 # 2. ユニットを比べる。v0.14.0 は game-forge 版と同じ中身なので、何も出ずに 0 で抜けるはず。

@@ -1,7 +1,7 @@
 # 実行環境向け入口ファイル
 
 このファイルは、AI エージェントの実行環境が最初に読む入口です。
-実行環境ごとに 1 ファイル用意します（例: `CLAUDE.md`、`.github/copilot-instructions.md`）。
+実行環境ごとに 1 ファイル用意します（例: `CLAUDE.md`、`AGENTS.md`、`.github/copilot-instructions.md`）。
 
 ## 指示の適用順序
 

@@ -24,9 +24,10 @@
 #   committer には常に noreply@github.com を、Co-Authored-By には加えて
 #   noreply@anthropic.com を許可する（GitHub 上の squash merge / web UI コミットの
 #   committer、および AI コーディング規約の trailer に対応）。
-#   committer が noreply@github.com のコミット（GitHub がサーバ側で作ったもの）に
-#   限り、author と Co-Authored-By の <login>@users.noreply.github.com も許可する
-#   （is_github_authored。検査は scripts/verify-commit-identity-selftest.sh）。
+#   committer が noreply@github.com のコミットに限り、author と Co-Authored-By の
+#   <login>@users.noreply.github.com も許可する（is_github_authored。マージした人と
+#   PR の作者が違う squash merge で GitHub が Co-authored-by を足す形に対応。判定の
+#   自己試験は scripts/verify-commit-identity-selftest.sh）。
 #
 # 使い方:
 #   bash scripts/verify-commit-identity.sh                # origin/main..HEAD
@@ -194,6 +195,12 @@ main() {
 
   if [[ -z "$records" ]]; then
     echo "[identity] 検査対象のコミットがありません（範囲: $range）"
+    # 判定は通過のまま変えない（push 前のゲートとしては、これから push するコミットが
+    # 無いだけである）。ただ、何も検査していないことを読み取れるよう、push 済みの
+    # 履歴を確かめる手段を示す（#442）。全履歴（HEAD）で空なら案内しても意味が無い。
+    if [[ "$range" != "HEAD" ]]; then
+      echo "[identity] この範囲では何も検査していません。push 済みの履歴まで確かめるなら: bash scripts/verify-commit-identity.sh --full"
+    fi
     echo "IDENTITY_PASS"
     exit 0
   fi
@@ -241,10 +248,11 @@ main() {
       coauthor_email="${coauthor##*<}"
       coauthor_email="${coauthor_email%>*}"
       # GitHub は squash merge で、マージした人と PR の作者が違うと作者を
-      # Co-authored-by に足す（例: Dependabot の PR → dependabot[bot] の noreply。
-      # #833 の 15bb95a、#860）。PR 側のコミットには無く、マージの瞬間に付くので
-      # PR の検査では見えず、push(main) の全履歴検査だけが拾う。author と同じ
-      # is_github_authored で許可し、ローカルで作ったコミットには広げない。
+      # Co-authored-by に足す（マージの瞬間に付くため、PR の検査では見えず、
+      # push(main) の全履歴検査だけが拾う）。author と同じ is_github_authored で
+      # 許可し、ローカルで作ったコミットには広げない（is_github_authored は
+      # committer を縛っているため、ここで広がるのは GitHub がサーバ側で作った
+      # コミットに限られる）。
       if ! is_allowed "$coauthor_email" "${ALLOWED_COAUTHOR_EMAILS_ARR[@]}" \
         && ! is_github_authored "$coauthor_email" "$committer_email"; then
         echo "[identity] NG ${sha:0:8} co-author=<${coauthor_email}> — ${subject}" >&2

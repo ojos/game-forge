@@ -9,7 +9,7 @@
  * （ルートの `wrangler.toml` の `API_RATE_LIMITER`。利用者の決定 2026-09-19）。
  *
  * Worker を新しく立てずにここへ載せたのは、**Pages が既に「Pages より先に配る」順序で結線している
- * 唯一の Worker** だからである（`.github/workflows/verify.yml` の deploy ジョブ）。配る段・検査
+ * 唯一の Worker** だからである（`.github/workflows/deploy.yml` の deploy ジョブ）。配る段・検査
  * （`scripts/check-likes-worker.sh`）・トークンの権限を増やさずに済む。
  *
  * # 公開の入口ではない

@@ -378,7 +378,7 @@ bash scripts/check-wasm-exec-objects.sh --remote   # WASM_EXEC_PASS を確認す
 ## 自動配備（日常の経路。#95）
 
 **`main` へマージすると、GitHub Actions が本番へ配備します。** 実体は
-`.github/workflows/verify.yml` の `deploy` ジョブで、実行するのは次の 1 本です。
+`.github/workflows/deploy.yml` の `deploy` ジョブで、実行するのは次の 1 本です。
 
 ```bash
 npx wrangler pages deploy --project-name game-forge --branch main \
@@ -386,11 +386,22 @@ npx wrangler pages deploy --project-name game-forge --branch main \
   --commit-message "$(git log -1 --pretty=format:%s)"
 ```
 
-- **`verify` が緑のときにしか走りません。** 同じ実行の中で `needs: verify` の後段に
-  置いています。**条件式ではなく依存関係**なので、書き忘れで素通りする形になりません
-  （`workflow_run` で別ワークフローにしなかった理由は当該ジョブのコメントにあります）。
-- **契機は `push`（`main`）だけです。** PR では起動しません。fork からの PR は
-  そもそも `push` を起こせないため、構造的に届きません。
+- **`verify` が緑のときにしか走りません。** 起動は `verify` ワークフローの完了
+  （`on: workflow_run`）だけで、ジョブの `if` が `conclusion == 'success'` と
+  `event == 'push'`（`main`）とリポジトリを見ます。**`workflow_dispatch` も `push` の起動も
+  置いていません**（ゲートの外側に配備経路を作らない）。#938 までは `verify.yml` の中の
+  `needs: verify` のジョブでしたが、DCB の雛形の `verify.yml` をそのまま使うために分けました。
+  条件式になったので、**起動の条件を崩した形は `scripts/report-selftest.sh` の 14 節（d）が
+  赤にします**（CI の `verify` ジョブの「Report selftest」で回ります）。
+- **配るのは `verify` が通ったコミットです。** checkout の `ref` を
+  `github.event.workflow_run.head_sha` に固定しています。PR では起動しません
+  （PR 由来の `verify` の成功は `event == 'push'` の条件で落ちます）。
+- **`deploy.yml` を変える PR の CI では、`deploy.yml` は走りません。** `workflow_run` の
+  ワークフローは既定ブランチにある定義で動くためです。変えたら、マージ後の最初の `main` の
+  push で、`deploy` の実行・`[deploy-head]` の行・本番の Pages のコミット（下の「配備ずれの
+  検知」）を確かめます。
+- **配り直すときは、`deploy` の実行を再実行します**（契機は同じ `verify` の成功なので、
+  同じコミットを配り直します。HEAD の関門はそのまま効きます）。
 - **Pages のシークレット（`SESSION_SECRET` 等）は触りません。** ワークフローに
   `pages secret put` はありません。値の投入は上の「5. シークレットを入れる」（人手）が
   持ち続けます。`wrangler pages deploy` は既存のシークレットを上書きしません。
@@ -427,7 +438,7 @@ git ls-remote origin refs/heads/main
 不一致だったときは、まず `deploy` ジョブの実行を見ます。
 
 ```bash
-gh run list --workflow verify.yml --branch main --limit 5
+gh run list --workflow deploy.yml --branch main --limit 5
 ```
 
 ### GitHub Secrets への登録

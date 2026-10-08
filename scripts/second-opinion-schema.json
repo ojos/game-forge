@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "second-opinion-review",
-  "description": "第二意見の回答の形（#804）。判定そのものはモデルに出させない——落とすかどうかは category から scripts/second-opinion-review.sh が決める。reviewed が false か欠けている回答は、指摘が無くても落とす（#873）。",
+  "description": "第二意見（second-opinion-review.sh）の回答の形。判定そのものはモデルに出させない——落とすかどうかは category から second-opinion-review.sh が決める。reviewed が false か欠けている回答は、指摘が無くても落とす（game-forge #873）。",
   "type": "object",
   "properties": {
     "reviewed": {

@@ -36,5 +36,6 @@ command -v aws >/dev/null 2>&1 && echo "[check] aws OK" || echo "[check] aws mis
 command -v gcloud >/dev/null 2>&1 && echo "[check] gcloud OK" || echo "[check] gcloud missing"
 command -v terraform >/dev/null 2>&1 && echo "[check] terraform OK" || echo "[check] terraform missing"
 command -v claude >/dev/null 2>&1 && echo "[check] claude OK" || echo "[check] claude missing"
+command -v gemini >/dev/null 2>&1 && echo "[check] gemini OK" || echo "[check] gemini missing"
 command -v agy >/dev/null 2>&1 && echo "[check] agy OK" || echo "[check] agy missing"
 command -v codex >/dev/null 2>&1 && echo "[check] codex OK" || echo "[check] codex missing"

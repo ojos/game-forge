@@ -188,7 +188,7 @@ send_query() {
     echo "[fork-regression] select で始まらない文は送りません（読み取りのみ）。" >&2
     return 1
   fi
-  if printf '%s' "$sql" | tr 'A-Z' 'a-z' | grep -Eq '(^|[^a-z_])(insert|update|delete|drop|create|alter|replace)([^a-z_]|$)'; then
+  if printf '%s' "$sql" | tr 'A-Z' 'a-z' | grep -E '(^|[^a-z_])(insert|update|delete|drop|create|alter|replace)([^a-z_]|$)' >/dev/null; then
     echo "[fork-regression] 書き込みを伴う語が含まれています（読み取りのみ）。" >&2
     return 1
   fi

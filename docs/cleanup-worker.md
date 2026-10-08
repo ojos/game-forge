@@ -52,7 +52,7 @@ cron `*/5 * * * *` が **5 本中 1 本目**として登録されている。`wr
 | 押した要求の中の処理 | 掴む → R2（アイコン）→ 1 batch・14 文で確定 | `src/withdrawal.ts` |
 | MCP の許可（#696） | KV `OAUTH_KV`（**Pages と同じ namespace** `game-forge-oauth`）。完了の段で、その利用者の許可とトークンを消してから印を立てる | `src/oauth-grants.ts` / `src/withdrawal-purge.ts` |
 | D1 の列と索引 | `users` の 3 列 / `users_withdrawal_pending_idx` / トリガ 3 本 | `migrations/0045_user_withdrawal.sql` |
-| 配備 | `scripts/deploy-cleanup.sh`（マージ後は deploy ジョブが **Pages より前に**叩く） | `.github/workflows/verify.yml` |
+| 配備 | `scripts/deploy-cleanup.sh`（マージ後は deploy ジョブが **Pages より前に**叩く） | `.github/workflows/deploy.yml` |
 | 宣言の検査 | `scripts/check-cleanup-worker.sh`（`scripts/acceptance.sh` から呼ぶ） | — |
 | 運営の確認 | `scripts/withdrawal-status.sh`（**読み取りだけ**） | — |
 

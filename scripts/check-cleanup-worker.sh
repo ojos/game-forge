@@ -31,7 +31,7 @@
 #    しかも Pages が「存在しない DO を指す」経路が 1 本増える
 # 5. **保存先が Pages と同じ**（D1 の `database_id` / `preview_database_id`、R2 の `bucket_name`）
 #    ——片方だけ書き換えると、後続の処理が別のデータベースや別のバケットを消しに行く
-# 6. **配る順序**: `.github/workflows/verify.yml` の deploy ジョブで、この Worker を配る段が
+# 6. **配る順序**: `.github/workflows/deploy.yml` の deploy ジョブで、この Worker を配る段が
 #    Pages を配る段より前にある（likes と同じ並びに揃える）
 # 7. **束ねられる**（`wrangler deploy --dry-run`。資格情報もネットワークも要らない）。配備の段で
 #    初めて落ちる形にしない
@@ -203,7 +203,7 @@ fi
 # ── 6. 配る順序 ───────────────────────────────────────────────────────────────
 # **cleanup Worker を Pages より先に配る。** Pages はこの Worker を指さないので依存は無いが、
 # **Worker を配る段を Pages の前に集めておく**ほうが、段の読み方が 1 つで済む（likes と同じ並び）。
-WORKFLOW=".github/workflows/verify.yml"
+WORKFLOW=".github/workflows/deploy.yml"
 [[ -f "$WORKFLOW" ]] || fail "$WORKFLOW がありません。"
 # **`|| true` を付ける。** `set -euo pipefail` の下では、grep が見つけられなかった時点で
 # スクリプトが**何も言わずに**終わる——下の「段がありません」という名指しの失敗へ届かない。

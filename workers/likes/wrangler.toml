@@ -21,7 +21,7 @@
 # # 配備
 #
 # **Pages より先に配る。** Pages が存在しない DO を指さないようにするため（5.8）。
-# 順序は `.github/workflows/verify.yml` の deploy ジョブが段の並びで持ち、手順は
+# 順序は `.github/workflows/deploy.yml` の deploy ジョブが段の並びで持ち、手順は
 # `docs/likes.md` にある。
 name = "game-forge-likes"
 main = "src/index.ts"

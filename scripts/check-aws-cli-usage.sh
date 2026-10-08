@@ -150,7 +150,7 @@ check_invocation() {
     index=$((index + 1))
     if [[ $have_aws -eq 1 ]]; then
       if ! aws "$service" wait help 2>/dev/null | col -b | sed -e "s/${ESC}\[[0-9;]*[A-Za-z]//g" \
-        | grep -qE "^[[:space:]]+o[[:space:]]+${waiter}[[:space:]]*$"; then
+        | grep -E "^[[:space:]]+o[[:space:]]+${waiter}[[:space:]]*$" >/dev/null; then
         echo "[aws-usage] $file: 待機子が実在しません: aws $service wait $waiter" >&2
         failed=1
         return 0

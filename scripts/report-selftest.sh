@@ -318,7 +318,7 @@ expect_eq "2026-08-28 は 2 モデルに割れる" '["deepseek-v3-2","sonnet-4-6
 
 # 表の形（既定の出力）でも落ちないこと。**JSON だけ通って表が落ちる状態を作らない。**
 if bash scripts/usage-report.sh --persist-to "$SANDBOX" --from 2026-08-27 --to 2026-08-29 \
-     | grep -q 'USAGE_REPORT_PASS'; then
+     | grep 'USAGE_REPORT_PASS' >/dev/null; then
   echo "  ok   表の出力が通過信号を返す"
 else
   echo "  FAIL 表の出力が通過信号を返しません" >&2
@@ -920,8 +920,8 @@ for mark in 'No migrations to apply' 'Migrations to be applied'; do
 done
 
 # **配備の前に置かれていること。** 後ろにあると、壊れた Worker が出てから止まる。
-gate_line="$(grep -n '未適用のマイグレーションが無いこと' .github/workflows/verify.yml | head -1 | cut -d: -f1)"
-deploy_line="$(grep -n 'name: Deploy to Cloudflare Pages' .github/workflows/verify.yml | head -1 | cut -d: -f1)"
+gate_line="$(grep -n '未適用のマイグレーションが無いこと' .github/workflows/deploy.yml | head -1 | cut -d: -f1)"
+deploy_line="$(grep -n 'name: Deploy to Cloudflare Pages' .github/workflows/deploy.yml | head -1 | cut -d: -f1)"
 if [[ -n "$gate_line" && -n "$deploy_line" && "$gate_line" -lt "$deploy_line" ]]; then
   echo "  ok   関門が Pages 配備より前にある"
 else
@@ -999,7 +999,7 @@ else
   failed=1
 fi
 # **その 1 度が判定コマンドの中であること。** 散文に 1 度だけ書いても上は通る。
-if grep -E '0\.40|40 ?%' "$RETREAT_DOC" 2>/dev/null | grep -q 'forkRate'; then
+if grep -E '0\.40|40 ?%' "$RETREAT_DOC" 2>/dev/null | grep 'forkRate' >/dev/null; then
   echo "  ok   その 1 度は判定コマンドの中にある"
 else
   echo "  FAIL 閾値の数値が判定コマンドの外にあります" >&2
@@ -1036,7 +1036,7 @@ since="$(grep -E '^\| 開始（M7 完了の時刻' docs/retreat-review.md | grep
 SINCE_CMD
 since_cmd_hits="$(grep -cxF -- "$SINCE_CMD_EXPECTED" "$RETREAT_DOC" 2>/dev/null || true)"
 expect_eq "2.1 の since= の行が期待のコマンドの文面と完全に一致する" "1" "$since_cmd_hits"
-if grep -F 'bash scripts/kpi-report.sh --remote' "$RETREAT_DOC" 2>/dev/null | grep -qF -- '--since "$since"'; then
+if grep -F 'bash scripts/kpi-report.sh --remote' "$RETREAT_DOC" 2>/dev/null | grep -F -- '--since "$since"' >/dev/null; then
   echo "  ok   2.1 の kpi-report.sh が --since で開始の時刻を渡している"
 else
   echo "  FAIL 2.1 の kpi-report.sh が --since で開始の時刻を渡していません" >&2
@@ -1404,11 +1404,13 @@ done
 # （scripts/deploy-is-head.sh の冒頭）。関門は 2 つの部品でできていて、どちらが欠けても外れる。
 #
 #   (a) 判定: scripts/deploy-is-head.sh が HEAD と一致 / 不一致 / 判定できない、を正しく返す
-#   (b) 配線: verify.yml の deploy ジョブで、関門より後ろの**すべての段**が関門の出力を条件に持つ
+#   (b) 配線: deploy.yml の deploy ジョブで、関門より後ろの**すべての段**が関門の出力を条件に持つ
 #       ——Actions には「段からジョブを成功で終える」手段が無く、**条件を付け忘れた段は古い
 #       コミットでも走る**（段を足した日に付け忘れる種類の依存である）
 #   (c) 束の関門（オーケストレータ #241・チャット #903）が段の名前で在り、HEAD の関門の後ろで
 #       その出力を条件に持つ——(b) は「在る段」しか見ないので、段が消えても緑のままになる
+#   (d) 起動: deploy.yml の起動が verify の workflow_run だけで、verify の成功（push・main・
+#       このリポジトリ）を条件にし、verify が通ったコミットを checkout する（#938）
 #
 # **本物の GitHub には触れない。** 使い捨ての bare リポジトリを「リモート」として、git の
 # ls-remote をそのまま通す。
@@ -1441,7 +1443,7 @@ else
     echo "  FAIL HEAD の判定用のコミットを積めません" >&2
     failed=1
   else
-    # **本番の段と同じ呼び方（`--sha` を渡さない）を先に見る。** verify.yml の関門は作業ツリーの
+    # **本番の段と同じ呼び方（`--sha` を渡さない）を先に見る。** deploy.yml の関門は作業ツリーの
     # HEAD（`git rev-parse HEAD`）を比べる値にする。`--sha` を渡す検査だけだと、その既定の経路が
     # 壊れても緑のまま通る（PR #429 の Copilot の指摘）。
     head_out="$(cd "$HEAD_SANDBOX/work" && bash "$ROOT/scripts/deploy-is-head.sh" --remote "$HEAD_SANDBOX/remote.git" --branch main 2>/dev/null)"
@@ -1485,7 +1487,7 @@ done
 # (b) 配線。deploy ジョブの段を上から読み、段ごとに「関門の段か」「checkout か」「関門の出力を
 # 条件に持つか」を 1 行で出す。**YAML の構文解析器は依存に無い**ので、段の始まり
 # （6 字下げの `- `）と、その段の中の `id:` / `uses:` / `if:` だけを見る。
-WORKFLOW=".github/workflows/verify.yml"
+WORKFLOW=".github/workflows/deploy.yml"
 steps_table="$(awk -v cond="steps.head-gate.outputs.deploy == 'true'" '
   /^  deploy:[[:space:]]*$/ { in_job = 1; next }
   in_job && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { in_job = 0 }
@@ -1546,6 +1548,129 @@ else
     done
   fi
 fi
+
+# (d) 起動（#938）。**配備は verify の後にだけ走る**（#95）。#938 で deploy ジョブを verify.yml の
+# `needs: verify` から、`on: workflow_run` の別ファイルへ移したので、**この保証は依存関係ではなく
+# 条件式が持つ**（deploy.yml の冒頭）。条件式は書き忘れても緑に見えるので、形をここで固定する。
+#
+#   - 起動（`on:` の直下）は `workflow_run` だけ。`workflow_dispatch` も `push` も置かない
+#   - `workflow_run` は `workflows: [verify]` / `types: [completed]` / `branches: [main]`
+#   - ジョブは `deploy` だけで、その `if` が verify の成功・push・このリポジトリを `&&` で見る
+#     （`||` を混ぜない。どれか 1 つで通る形はゲートの外側の経路になる）
+#   - checkout はすべて `ref: ${{ github.event.workflow_run.head_sha }}`（verify が通ったコミット）
+#
+# **YAML の構文解析器は依存に無い**ので、(b) と同じく字下げで読む。読めない書き方（`on:` を
+# 1 行で書く等）は「問題あり」に倒す。崩した写しを作って赤くなることも、ここで確かめる。
+deploy_trigger_problems() {
+  awk -v want_if1="github.event.workflow_run.conclusion == 'success'" \
+      -v want_if2="github.event.workflow_run.event == 'push'" \
+      -v want_if3="github.repository == 'ojos/game-forge'" \
+      -v want_ref='ref: ${{ github.event.workflow_run.head_sha }}' '
+    function flush_step() {
+      if (step_checkout && !step_ref) { print "checkout が verify の通ったコミット（workflow_run.head_sha）に固定されていない"; }
+      step_checkout = 0; step_ref = 0
+    }
+    /^[^[:space:]#]/ {
+      top = $0; sub(/:.*/, "", top)
+      in_on = (top == "on"); in_jobs = (top == "jobs")
+      if (in_on) {
+        seen_on = 1
+        rest = $0; sub(/^on:[[:space:]]*/, "", rest)
+        if (rest != "" && rest !~ /^#/) print "on: を 1 行で書いている（起動を読めない）"
+      }
+      trig = ""
+      next
+    }
+    in_on && /^  [A-Za-z_]+:/ {
+      trig = $0; sub(/^  /, "", trig); sub(/:.*/, "", trig)
+      triggers[trig] = 1; ntrig++
+      next
+    }
+    in_on && trig == "workflow_run" && /^    [a-z]+:/ {
+      line = $0; sub(/[[:space:]]+#.*$/, "", line)
+      if (line == "    workflows: [verify]") wr_w = 1
+      else if (line == "    types: [completed]") wr_t = 1
+      else if (line == "    branches: [main]") wr_b = 1
+      else print "workflow_run に想定外の行がある: " line
+      next
+    }
+    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+      flush_step()
+      job = $0; sub(/^  /, "", job); sub(/:.*/, "", job)
+      njobs++; if (job != "deploy") print "deploy 以外のジョブがある: " job
+      in_if = 0
+      next
+    }
+    in_jobs && job == "deploy" && /^    if:/ {
+      nif++; in_if = 1
+      cond = $0; sub(/^    if:[[:space:]]*/, "", cond); sub(/^>-?[[:space:]]*$/, "", cond)
+      next
+    }
+    in_jobs && in_if && /^      [^ ]/ { cond = cond " " $0; next }
+    in_jobs && in_if && /^    [^ ]/ { in_if = 0 }
+    in_jobs && /^      - / { flush_step() }
+    in_jobs && /^      (- |  )uses: actions\/checkout@/ { step_checkout = 1 }
+    in_jobs && /^          ref: / { r = $0; sub(/^ +/, "", r); if (r == want_ref) step_ref = 1 }
+    END {
+      flush_step()
+      if (!seen_on) print "on: が無い"
+      if (ntrig != 1 || !triggers["workflow_run"]) {
+        list = ""; for (t in triggers) list = list " " t
+        print "起動が workflow_run だけではない:" list
+      }
+      if (!wr_w) print "workflow_run が verify を見ていない（workflows: [verify]）"
+      if (!wr_t) print "workflow_run が完了を見ていない（types: [completed]）"
+      if (!wr_b) print "workflow_run が main に絞られていない（branches: [main]）"
+      if (njobs == 0) print "ジョブが無い"
+      if (nif != 1) print "deploy ジョブの if が 1 つではない（" nif + 0 "）"
+      if (index(cond, "||") > 0) print "deploy ジョブの if に || がある"
+      if (index(cond, want_if1) == 0) print "deploy ジョブの if が verify の成功を見ていない"
+      if (index(cond, want_if2) == 0) print "deploy ジョブの if が push 由来に絞っていない"
+      if (index(cond, want_if3) == 0) print "deploy ジョブの if がリポジトリを見ていない"
+    }
+  ' "$1"
+}
+
+trigger_out="$(deploy_trigger_problems "$WORKFLOW")"
+if [[ -z "$trigger_out" ]]; then
+  echo "  ok   deploy.yml の起動は verify の workflow_run だけで、成功・push・このリポジトリを条件にしている"
+else
+  echo "  FAIL deploy.yml の起動の条件が崩れています（ゲートの外側に配備経路ができます。#95 / #938）:" >&2
+  printf '%s\n' "$trigger_out" | sed 's/^/       /' >&2
+  failed=1
+fi
+
+# 崩した写しが、それぞれ赤くなること（検査そのものが効いていることを確かめる）。
+# 形: <名前><TAB><awk の書き換え>
+trigger_mutants="$(cat <<'MUTANTS'
+workflow_dispatch を足す	/^on:/ { print; print "  workflow_dispatch:"; next } { print }
+push の起動を足す	/^on:/ { print; print "  push:"; print "    branches: [main]"; next } { print }
+conclusion の条件を外す	index($0, "workflow_run.conclusion == ") > 0 { next } { print }
+conclusion を success 以外でも通す	{ sub(/conclusion == .success./, "conclusion != \047cancelled\047"); print }
+event の条件を外す	index($0, "workflow_run.event == ") > 0 { next } { print }
+if に || を混ぜる	index($0, "workflow_run.conclusion == ") > 0 { print "      (github.event_name == \047workflow_dispatch\047 ||"; print; next } { print }
+checkout の ref を外す	index($0, "ref: ${{ github.event.workflow_run.head_sha }}") > 0 { next } { print }
+verify 以外の完了でも起動する	/^    workflows: \[verify\]/ { print "    workflows: [verify, identity-guard]"; next } { print }
+MUTANTS
+)"
+mutant_file="$HEAD_SANDBOX/deploy-mutant.yml"
+while IFS=$'\t' read -r mutant_name mutant_prog; do
+  [[ -n "$mutant_name" ]] || continue
+  if ! awk "$mutant_prog" "$WORKFLOW" > "$mutant_file"; then
+    echo "  FAIL 崩した写し（${mutant_name}）を作れません" >&2
+    failed=1
+    continue
+  fi
+  if cmp -s "$mutant_file" "$WORKFLOW"; then
+    echo "  FAIL 崩した写し（${mutant_name}）が元と同じです（書き換えが当たっていません）" >&2
+    failed=1
+  elif [[ -n "$(deploy_trigger_problems "$mutant_file")" ]]; then
+    echo "  ok   崩した写し（${mutant_name}）は赤になる"
+  else
+    echo "  FAIL 崩した写し（${mutant_name}）が緑のままです" >&2
+    failed=1
+  fi
+done <<<"$trigger_mutants"
 
 # ── 15. R2 のライフサイクルの判定が、宣言の外の削除規則を落とすこと（#380）──────────
 #

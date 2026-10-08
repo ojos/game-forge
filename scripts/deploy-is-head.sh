@@ -13,8 +13,8 @@
 # ── なぜ要るのか ──────────────────────────────────────────────────────────
 #
 # **2026-09-13、古いコミットの配備が、先に配り終えた新しいコミットの本番を上書きしかけた。**
-# #426（ad1da2b）と #425（8241cfc）が 6 秒差でマージされ、`.github/workflows/verify.yml` の
-# deploy ジョブは **8241cfc を先に配り終え、そのあと ad1da2b を配り始めた。** likes Worker の
+# #426（ad1da2b）と #425（8241cfc）が 6 秒差でマージされ、当時の `.github/workflows/verify.yml` の
+# deploy ジョブ（#938 から `.github/workflows/deploy.yml`）は **8241cfc を先に配り終え、そのあと ad1da2b を配り始めた。** likes Worker の
 # Durable Objects のマイグレーション（v2）の不一致で偶然止まったので本番は無事だったが、
 # 不一致が無ければ **ad1da2b の Pages が #425 を本番から消していた。**
 #
@@ -76,7 +76,7 @@ done
 
 if [[ -z "$SHA" ]]; then
   # **配る段と同じところから取る。** Pages の段は `git rev-parse HEAD` を記録するので、
-  # 比べる値もチェックアウト済みの作業ツリーから取る（verify.yml の Pages の段の注記）。
+  # 比べる値もチェックアウト済みの作業ツリーから取る（deploy.yml の Pages の段の注記）。
   if ! SHA="$(git rev-parse HEAD 2>/dev/null)"; then
     echo "[deploy-head] 手元の HEAD を取れません（git の作業ツリーではない）。" >&2
     exit 2

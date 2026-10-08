@@ -161,7 +161,7 @@ stale_seconds="$(read_ts_const "$PAGE_SRC" STALE_AFTER_SECONDS)"
 # 形が変わったら読めなくなるので、そのときは落とす（黙って古い幅で計算しない）。
 invoke_margin_seconds="$(
   grep -E '^export const BUILD_INVOKE_TIMEOUT_MS = \(BUILD_FUNCTION_TIMEOUT_SECONDS \+ [0-9]+\) \* 1000;$' \
-    "$BUILD_SRC" 2>/dev/null | head -1 | sed -E 's/^.*\+ ([0-9]+)\).*$/\1/'
+    "$BUILD_SRC" 2>/dev/null | sed -n 1p | sed -E 's/^.*\+ ([0-9]+)\).*$/\1/'
 )"
 
 budget_ok=1

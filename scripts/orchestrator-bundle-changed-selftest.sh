@@ -236,7 +236,7 @@ seq 1 200 | sed 's/^/export const selftestRenamed = /; s/$/;/' > "$repo/src/orch
 commit_all add-old >/dev/null
 git -C "$repo" mv src/orchestrator-selftest-old.ts src/orchestrator-selftest-new.ts
 commit_all rename >/dev/null
-if git -C "$repo" diff --name-status HEAD^ HEAD | grep -q '^R'; then
+if git -C "$repo" diff --name-status HEAD^ HEAD | grep '^R' >/dev/null; then
   pass "(i) 対照: git はこの差分を改名として検出する"
 else
   fail "(i) 対照: 改名として検出されていない（この検査は何も確かめていない）"

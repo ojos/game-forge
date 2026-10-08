@@ -29,7 +29,7 @@ DAYS=825
 # 証明書だけが古いホスト名のまま残り、TLS は通るのに検証対象がずれる。
 read_var() {
   local key="$1"
-  sed -nE "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" wrangler.toml | head -1
+  sed -nE "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" wrangler.toml | sed -n 1p
 }
 
 APP_HOST="$(read_var APP_HOST)"

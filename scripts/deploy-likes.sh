@@ -3,7 +3,7 @@
 #
 # ## 誰が、いつ叩くか
 #
-# - **マージ後の配備**: `.github/workflows/verify.yml` の deploy ジョブが、**Pages を配る段の
+# - **マージ後の配備**: `.github/workflows/deploy.yml` の deploy ジョブが、**Pages を配る段の
 #   直前**に叩く。同じジョブの段は上から順に走り、どれかが落ちると後ろの段は走らないので、
 #   **likes Worker が配れなかった日は Pages も配られない。** これが「DO の Worker を Pages
 #   より先に配る」（5.8）の機構である
@@ -57,7 +57,7 @@ if ! bash scripts/check-likes-worker.sh; then
   fail "宣言の検査に通らないので配りません。"
 fi
 
-# **件名だけを載せる**（`.github/workflows/verify.yml` の Pages の段と同じ。本文まで渡すと
+# **件名だけを載せる**（`.github/workflows/deploy.yml` の Pages の段と同じ。本文まで渡すと
 # 一覧で 1 行に潰れる）。どのコミットを配ったかを Cloudflare 側から辿れるようにする。
 commit_hash="$(git rev-parse HEAD)"
 commit_subject="$(git log -1 --pretty=format:%s)"

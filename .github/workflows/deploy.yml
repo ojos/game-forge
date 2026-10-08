@@ -1,0 +1,485 @@
+name: deploy
+
+# 本番への配備（#95）。**verify ワークフローが main への push で成功したときだけ**走る（#938）。
+#
+# #938 までは verify.yml の deploy ジョブ（`needs: verify`）だった。DCB の雛形の verify.yml を
+# そのまま使えるように（`bootstrap.sh --upgrade` で追従できるように）、配備をこの別ファイルへ移した。
+#
+# #95 の制約は「verify の後にだけ配備する。ゲートの外側に配備経路を作らない」である。
+# `needs` で塞いでいた形を `workflow_run` へ移すと、次の 4 つの穴が開きうる。**どれも、この
+# ファイルの形と、それを読む検査で塞ぐ。**
+#
+#   (1) 配備の可否が**書き忘れうる条件式**になる。条件を落としても、走った側は緑に見える。
+#       -> job の `if` で `github.event.workflow_run.conclusion == 'success'` を見る。
+#          **起動の条件を崩した形（workflow_dispatch・push の起動を足す、conclusion・event の
+#          条件を外す、`||` を混ぜる、checkout の ref を外す）は scripts/report-selftest.sh の
+#          14 節（d）が赤にする**（CI の verify ジョブの「Report selftest」で回る）。
+#   (2) workflow_run は **pull_request 由来の verify の成功でも発火する。** 絞り損ねると PR の
+#       頭のコミットが本番へ出る。しかも workflow_run のジョブには **fork 由来の実行に対しても
+#       Secrets が渡る**ため、事故の射程が最大になる。
+#       -> `branches: [main]` に加えて、`if` で `github.event.workflow_run.event == 'push'` と
+#          リポジトリ（実行した側と head の側の両方）を見る。fork の `main` という名前の枝からの
+#          PR は branches の絞りを通るので、event の条件は外さない。
+#   (3) checkout する ref を明示しないと既定ブランチの先端を取る。**verify が通ったコミットと、
+#       配備するコミットが別物になりうる。**
+#       -> checkout の `ref` を `github.event.workflow_run.head_sha` に固定する。
+#   (4) 手で起こす口があると、verify を通っていないコミットを配れる。
+#       -> 起動は `workflow_run` だけにする。**`workflow_dispatch` も `push` も置かない。**
+#          配り直したいときは、この deploy の実行を再実行する（契機は同じ verify の成功なので、
+#          同じコミットを配り直す。HEAD の関門はそのまま効く）。
+#
+# **workflow_run のワークフローは、既定ブランチにある定義で動く。** このファイルを変える PR の
+# CI では、このファイルは 1 度も走らない。変えたら、マージ後の最初の main の push で
+# 実行・`[deploy-head]` の行・本番の Pages のコミットを確かめる（docs/pages-deploy.md）。
+#
+# **このワークフローは Pages のシークレット（SESSION_SECRET 等）を触らない**（#95 の制約）。
+# `wrangler pages deploy` は既存のシークレットを上書きしない。`pages secret put` を
+# ここへ書かないこと。値の投入は docs/pages-deploy.md の手順（人手）が持つ。
+
+on:
+  workflow_run:
+    workflows: [verify]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # **配備の可否はこの条件が持つ**（冒頭の (1)(2)）。どれか 1 つでも外すとゲートの外側に
+    # 経路ができる。`||` で緩めない。
+    #
+    # リポジトリの限定は fork 対策でもある。fork の main へ push すると、あちらには
+    # Secrets が無いので配備は必ず失敗する。verify.yml 冒頭の基準
+    # 「スキップの根拠は『その権限では実行できない』ことに限る」に、これは当たる。
+    #
+    # **ここだけはリポジトリ名を書き写している。** ワークフローから terraform の
+    # output（repository_full_name）は読めず、github コンテキストにも「upstream か
+    # どうか」を表す値が無いためである。名前を変えたときはここも変える。
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.repository == 'ojos/game-forge' &&
+      github.event.workflow_run.head_repository.full_name == 'ojos/game-forge'
+
+    runs-on: ubuntu-latest
+
+    # **OIDC のトークンを発行するために要る**（#241）。下の「オーケストレータが古くないか」
+    # が AWS を読むために、GitHub Actions のフェデレーションで役を引き受ける。
+    # **鍵は置かない**（terraform の aws_iam_role.orchestrator_freshness。読み取り専用）。
+    permissions:
+      contents: read
+      id-token: write
+
+    # **配備は直列にする。鍵を github.sha にしない。**
+    #
+    # verify 側の鍵（push はコミットごとに別グループ）は「取り消しも待ちも起こさない」
+    # ことを狙ったもので、検査には正しい。配備では逆に働く。連続してマージすると
+    # 2 つの配備が並走し、**先に始まった古いコミットの配備が後に完了して本番が巻き
+    # 戻る**ことがある。
+    #
+    # 固定の鍵にすると、実行中の 1 本が終わるまで後続は待つ。待っているあいだに
+    # さらに新しい実行が来ると、GitHub は**待機中の古い方を取り消す**。cancel-in-progress:
+    # false は、走り出した配備を途中で切らないためである（wrangler の途中終了は成果が
+    # 中途半端になる）。
+    #
+    # **ただし、これだけでは「最後に残るのは常に最新のコミット」にならない**（#427）。
+    # このジョブが group に入る順は、コミットの順ではなく**前段の verify が終わった順**である。
+    # 2026-09-13、#426（ad1da2b）と #425（8241cfc）が 6 秒差でマージされ、**8241cfc の配備が
+    # 終わった後に ad1da2b の配備が group へ入った**——待機が重ならないので取り消されず、
+    # 古いコミットが後から走った（likes Worker の段で偶然落ち、Pages は上書きされなかった）。
+    # **そこで、下の最初の段「このコミットがいまも main の HEAD か」で、もう HEAD でなければ
+    # 以降の段をすべて飛ばす。** 判定と配備が同じ group の中にあるので、判定の後に入った
+    # マージの配備は、この配備が終わるまで待つ。
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      # **verify が通ったコミットを取る。** workflow_run の実行では `github.sha` は既定ブランチの
+      # 先端（この実行を作った時点）で、verify が見たコミットとは限らない。ref を明示しないと、
+      # **verify が通ったコミットと、配るコミットが別物になりうる**（冒頭の (3)）。
+      #
+      # **2 コミットぶん取る。** ここで git に聞くのは HEAD のハッシュと件名のほかに、
+      # **直前のコミットとの差分**（下の「登録簿に関わる差分か」。#241）である。
+      # **既定（1）だと `git diff HEAD^ HEAD` が「不明なリビジョン」で落ち、配備が
+      # 丸ごと止まる。** verify 側の全履歴までは要らない（1 コミットぶんの差分で足りる）。
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 2
+
+      # ── このコミットがいまも main の HEAD か（#427）──────────────────────────
+      #
+      # **もう HEAD でなければ、以降の段をすべて飛ばして成功で終える。** 新しいコミットの配備が
+      # このコミットの変更も含むので、古い方を配る理由は無い（上の concurrency の注記）。
+      #
+      # **以降のすべての段に `if: steps.head-gate.outputs.deploy == 'true'` を付ける。**
+      # Actions には「段からジョブを成功で終える」手段が無い。**付け忘れた段は古いコミットでも
+      # 走る**ので、`scripts/report-selftest.sh` の 14 節がこのジョブの段を読んで落とす。
+      #
+      # **判定できないとき（HEAD を取れない）は配らずに落とす。** 「HEAD である」に倒すと、
+      # GitHub の不調のたびにこの関門が黙って外れる。合図が無いときも落とす
+      # （下の「オーケストレータの束が変わったか」と同じ受け方）。
+      - name: このコミットがいまも main の HEAD か
+        id: head-gate
+        run: |
+          set -euo pipefail
+          if ! out="$(bash scripts/deploy-is-head.sh --remote origin --branch main)"; then
+            echo "::error::このコミットが main の HEAD かを判定できませんでした（判定スクリプトが失敗）。配りません。"
+            exit 1
+          fi
+          echo "$out"
+          if printf '%s\n' "$out" | grep -q '^DEPLOY_IS_HEAD$'; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$out" | grep -q '^DEPLOY_SUPERSEDED$'; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::このコミットはもう main の HEAD ではありません。新しいコミットの配備に任せ、配りません（#427）。"
+          else
+            echo "::error::このコミットが main の HEAD かを判定できませんでした（合図がありません）。配りません。"
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        if: steps.head-gate.outputs.deploy == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # wrangler は devDependencies に固定されている（package.json）。npx が
+      # レジストリから別の版を引かないよう、ここで入れたものを使う。
+      # prepare（wrangler types）は Cloudflare の資格情報を要さない。
+      - name: npm ci
+        if: steps.head-gate.outputs.deploy == 'true'
+        run: npm ci
+
+      # **未設定を skip にしない。** deploy-compiler.yml の VPS 側は「まだ存在しない
+      # 相手」なので skip が正しいが、こちらは**すでに本番が動いている**。設定漏れを
+      # skip にすると、#95 で起きたこと（マージしても本番が変わらないのに、どのゲートも
+      # 緑）をそのまま作り直すことになる。落として気づけるようにする。
+      - name: Secrets が揃っているか
+        if: steps.head-gate.outputs.deploy == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CLOUDFLARE_API_TOKEN}" || -z "${CLOUDFLARE_ACCOUNT_ID}" ]]; then
+            echo "::error::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID が Secrets に設定されていません。登録手順は docs/pages-deploy.md「GitHub Secrets への登録」にあります。"
+            exit 1
+          fi
+
+      # ── オーケストレータが古くないか（#241）────────────────────────────────
+      #
+      # **2026-09-01、本番の生成が 12 分止まった。** wrangler.toml の GENERATION_MODEL を
+      # 変えて Worker を配ったところ、**配備済みのオーケストレータがその鍵を知らず**、
+      # ペイロードを拒否した。登録簿を足した PR は repo に入っていたが、
+      # **オーケストレータは手動配備で、2.5 時間前のコードのままだった。**
+      #
+      # **検査は既にあった**（scripts/acceptance-remote.sh の check_orchestrator_code）。
+      # 欠けていたのは契機である——外部層は「外部状態の宣言を変更したとき」に回す層で、
+      # wrangler.toml の変更は terraform の宣言変更ではない。**誰も回そうと思わなかった。**
+      # **だから配備の直前という契機へ移す。**
+      #
+      # **登録簿に関わる差分のときだけ走らせる。** 毎回 AWS を読むと、AWS 側の不調で
+      # Worker を配れなくなる——外部の可用性を配備の前提条件へ持ち込まない
+      # （.github/project-ai-rules.md「外部層を単一入口へ含めない理由」と同じ線）。
+      #
+      # **比較元は直前のコミットではなく、本番の Pages に居るコミットにする**（#925。下のチャットの
+      # 関門〈#903〉と同じ）。直前のコミットと比べると、束を変えたコミットの配備が後続のマージに
+      # 譲ったときや、この関門で落ちたまま次がマージされたときに、照合が 1 度も行われず
+      # **Lambda は古いまま Worker だけが先へ進む。** Pages はこの関門の後ろで `--commit-hash`
+      # 付きで配られるので、本番の Pages に居るコミットは、最後にこの関門を通ったコミットである
+      # （判定の細部は scripts/orchestrator-bundle-changed.sh の冒頭）。
+      - name: オーケストレータの束が変わったか
+        if: steps.head-gate.outputs.deploy == 'true'
+        id: orchestrator-diff
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # プロジェクト名は下の Pages の配備（--project-name game-forge）と同じ値。
+          # **読めなければ落とす**（「変わっていない」に倒さない。再実行で足りる）。
+          pages_json="${RUNNER_TEMP}/pages-project-orchestrator.json"
+          if ! curl -fsS --retry 2 \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -o "$pages_json" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/game-forge"; then
+            echo "::error::本番の Pages に居るコミットを読めませんでした（Cloudflare の API）。オーケストレータの束が変わったかを判定できません。"
+            exit 1
+          fi
+          # **ファイル名の一覧では決めない**（#263）。以前はここが `wrangler.toml` と
+          # `src/generation-models.ts` の 2 本を見ていたが、2026-09-02 に #258 が
+          # `src/orchestrator/payload.ts` でペイロードの版 3 を足したとき、一覧に無いので
+          # **関門は 1 度も起動せず、送り側だけが版 3 を知っている窓が約 25 分開いた**
+          # （実害は 0 件。窓の間の生成が 0 行だったという偶然による）。
+          #
+          # **一覧を広げても同じことが起きる。** 束には `src/orchestrator/**` のほかに
+          # `src/bedrock.ts` や `src/generate.ts` が入っており、次に増えた依存を書き忘れた
+          # 日に同じ窓がまた開く。**束そのものを 2 回作って比べれば、一覧を維持する場所が
+          # 消える**（esbuild は 15ms）。
+          # **`if` の条件式へ直に置かない。** 条件式の中では `set -e` が効かないので、
+          # スクリプトが `exit 1`（作業ツリーが汚れている・比較元を解決できない・束を
+          # 作れない）で落ちても `else` へ落ち、**関門が黙って外れる。** スクリプト自身が
+          # 「判定できないことを『変わっていない』に倒さない」と定めている形そのものになる。
+          #
+          # **`set -e` の細かい挙動に頼らず、明示的に受ける。** 代入で受ければ `set -e` は
+          # 効くが、条件式や `&&` の左辺へ移した日に黙って無効化される種類の依存である。
+          if ! out="$(bash scripts/orchestrator-bundle-changed.sh --base-from-pages "$pages_json")"; then
+            echo "::error::束が変わったかを判定できませんでした（判定スクリプトが失敗）。"
+            exit 1
+          fi
+          echo "$out"
+          # **どちらの合図も出ていないときは落とす。** 「CHANGED でなければ UNCHANGED」と
+          # 読むと、合図の綴りを変えた日に関門が黙って外れる。
+          if printf '%s\n' "$out" | grep -q '^ORCHESTRATOR_BUNDLE_CHANGED$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "オーケストレータの束が変わりました。配備の前に新しさを見ます。"
+          elif printf '%s\n' "$out" | grep -q '^ORCHESTRATOR_BUNDLE_UNCHANGED$'; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "オーケストレータの束は変わっていません。AWS は読みません。"
+          else
+            echo "::error::束が変わったかを判定できませんでした（合図がありません）。"
+            exit 1
+          fi
+
+      - name: AWS の読み取り権を得る（OIDC）
+        if: steps.head-gate.outputs.deploy == 'true' && steps.orchestrator-diff.outputs.changed == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ORCHESTRATOR_FRESHNESS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: オーケストレータが手元の束と一致すること
+        if: steps.head-gate.outputs.deploy == 'true' && steps.orchestrator-diff.outputs.changed == 'true'
+        env:
+          ORCHESTRATOR_FUNCTION_NAME: ${{ vars.ORCHESTRATOR_FUNCTION_NAME }}
+        run: |
+          set -euo pipefail
+          # **名前を決め打ちしない。** 正本は terraform の local.orchestrator_function_name で、
+          # ここへ写すと宣言を動かした日にずれる。空なら落とす（別の関数を読んで通らない）。
+          name="${ORCHESTRATOR_FUNCTION_NAME}"
+          if [[ -z "$name" ]]; then
+            echo "::error::ORCHESTRATOR_FUNCTION_NAME が空です（terraform の github_actions_variable が配ります）。"
+            exit 1
+          fi
+          bash scripts/bundle-orchestrator.sh
+          local_sha="$(openssl dgst -sha256 -binary dist/orchestrator.zip | base64)"
+          remote_sha="$(aws lambda get-function-configuration \
+            --function-name "$name" --query 'CodeSha256' --output text)"
+          if [[ "$local_sha" != "$remote_sha" ]]; then
+            echo "::error::配備済みのオーケストレータが古いままです。Worker を配ると、生成が静かに止まります（#241）。"
+            echo "  手元: ${local_sha}"
+            echo "  本番: ${remote_sha}"
+            echo "  先に bash scripts/deploy-orchestrator.sh を実行してください（docs/orchestrator.md）。"
+            exit 1
+          fi
+          echo "オーケストレータは手元の束と一致しています（${local_sha}）。"
+
+      # ── チャットの関数が古くないか（#903）────────────────────────────────
+      #
+      # **2026-09-21、チャットの束が黙ってずれた。** #740 がシステムプロンプトの用語
+      # （`src/chat-prompt.ts`）を変えたのに、レーンが「束は変わらない」と報告して配り直されず、
+      # **本番のチャットは古いプロンプトのまま動いていた**（#742 の配り直しで上書き）。
+      # オーケストレータには上の関門（#241）があるのに、#695 で分けたチャットの関数には無かった。
+      #
+      # **作りは上のオーケストレータの関門と同じである**（判定は写しで揃えてある。#925）。束を 2 回作って
+      # 比べ、変わったときだけ AWS を読む（外部の可用性を配備の前提条件へ持ち込まない）。判定できないときは
+      # 「変わっていない」に倒さず落とす。**判定は分けてある**——チャットだけが変わった日に
+      # オーケストレータの配り直しを求めない（逆も同じ。仕様 5.16）。
+      #
+      # **比較元は直前のコミットではなく、本番の Pages に居るコミットにする**（#903 の第二意見）。
+      # 直前のコミットと比べると、束を変えたコミットの配備が後続のマージに譲ったときや、この関門で
+      # 落ちたまま次がマージされたときに、照合が 1 度も行われない。**Pages はこの関門の後ろで
+      # `--commit-hash` 付きで配られる**ので、本番の Pages に居るコミットは、最後にこの関門を
+      # 通ったコミットである（判定の細部は scripts/chat-bundle-changed.sh の冒頭）。
+      # 上のオーケストレータの関門も、#925 で同じ比較元に揃えた。
+      - name: チャットの束が変わったか
+        if: steps.head-gate.outputs.deploy == 'true'
+        id: chat-diff
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # プロジェクト名は下の Pages の配備（--project-name game-forge）と同じ値。
+          # **読めなければ落とす**（「変わっていない」に倒さない。再実行で足りる）。
+          pages_json="${RUNNER_TEMP}/pages-project.json"
+          if ! curl -fsS --retry 2 \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -o "$pages_json" \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/game-forge"; then
+            echo "::error::本番の Pages に居るコミットを読めませんでした（Cloudflare の API）。チャットの束が変わったかを判定できません。"
+            exit 1
+          fi
+          # 受け方は「オーケストレータの束が変わったか」と同じ（条件式へ直に置かない・
+          # 合図の綴りを両方とも明示的に見る）。
+          if ! out="$(bash scripts/chat-bundle-changed.sh --base-from-pages "$pages_json")"; then
+            echo "::error::チャットの束が変わったかを判定できませんでした（判定スクリプトが失敗）。"
+            exit 1
+          fi
+          echo "$out"
+          if printf '%s\n' "$out" | grep -q '^CHAT_BUNDLE_CHANGED$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "チャットの束が変わりました。配備の前に新しさを見ます。"
+          elif printf '%s\n' "$out" | grep -q '^CHAT_BUNDLE_UNCHANGED$'; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "チャットの束は変わっていません。AWS は読みません。"
+          else
+            echo "::error::チャットの束が変わったかを判定できませんでした（合図がありません）。"
+            exit 1
+          fi
+
+      # **ロールは上と同じものを引き受ける**（`terraform/orchestrator.tf` の
+      # `orchestrator_freshness`。対象をチャットの関数にも広げた。分けない理由はそちらの注記）。
+      # 上の段で既に引き受けていても、もう 1 度引き受けて構わない（同じ権限の取り直しになる）。
+      # 上の段の条件へ相乗りさせないのは、オーケストレータの関門の作りを動かさないため。
+      - name: AWS の読み取り権を得る（OIDC・チャット）
+        if: steps.head-gate.outputs.deploy == 'true' && steps.chat-diff.outputs.changed == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ORCHESTRATOR_FRESHNESS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: チャットの関数が手元の束と一致すること
+        if: steps.head-gate.outputs.deploy == 'true' && steps.chat-diff.outputs.changed == 'true'
+        env:
+          CHAT_FUNCTION_NAME: ${{ vars.CHAT_FUNCTION_NAME }}
+        run: |
+          set -euo pipefail
+          # **名前を決め打ちしない。** 正本は terraform の local.chat_function_name で、
+          # GitHub の変数 CHAT_FUNCTION_NAME はその写し（terraform の github_actions_variable が配る）。
+          # 空なら落とす（別の関数を読んで通らない）。
+          name="${CHAT_FUNCTION_NAME}"
+          if [[ -z "$name" ]]; then
+            echo "::error::CHAT_FUNCTION_NAME が空です（terraform の github_actions_variable が配ります）。"
+            exit 1
+          fi
+          bash scripts/bundle-chat.sh
+          local_sha="$(openssl dgst -sha256 -binary dist/chat.zip | base64)"
+          remote_sha="$(aws lambda get-function-configuration \
+            --function-name "$name" --query 'CodeSha256' --output text)"
+          if [[ "$local_sha" != "$remote_sha" ]]; then
+            echo "::error::配備済みのチャットの関数が古いままです。このまま Worker を配ると、チャットだけが古いコードで動き続けます（#903）。"
+            echo "  手元: ${local_sha}"
+            echo "  本番: ${remote_sha}"
+            echo "  先に bash scripts/deploy-chat.sh を実行し、このジョブを再実行してください（docs/orchestrator.md「チャットの関数の関門」）。"
+            exit 1
+          fi
+          echo "チャットの関数は手元の束と一致しています（${local_sha}）。"
+
+      # ── マイグレーションの関門（#275）────────────────────────────────────
+      #
+      # **2026-09-03 に、これが無くて本番を約 10 分壊した。** #39 をマージしたとき
+      # `migrations apply --remote` を実行せず、`insertPendingGame` が `ip_notice` を
+      # INSERT に含めるのに本番の `games` にその列が無い状態で Worker が出た。
+      # **ログイン済み利用者の生成・フォーク・推敲がすべて失敗する状態**だった。
+      # 実害 0 件は偶然である（窓の間の生成が 0 件だった）。
+      #
+      # **オーケストレータの束（上の関門）と同じ形の事故なのに、こちらだけ機構が
+      # 無かった。** `docs/handoff.md` は「忘れないこと」と警告していたが、
+      # **呼びかけでは止まらなかった。**
+      #
+      # **適用はしない。** 本番のスキーマ変更は利用者の端末に留める（`docs/handoff.md`）。
+      # ここは止めるだけで、何を当てることになるのかを出力に並べる。
+      #
+      # **常に見る**（束の関門と違って差分の `if` を付けない。付けるのは #427 の HEAD の関門だけ）。判定は本番 D1 への
+      # 読み取り 1 回で、マイグレーションを足したかどうかに関係なく**ずれは起こりうる**
+      # ——過去の PR で当て忘れたものが残っていれば、今日の PR が踏む。
+      - name: 未適用のマイグレーションが無いこと
+        if: steps.head-gate.outputs.deploy == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bash scripts/check-migrations-applied.sh --remote
+
+      # ── いいねの Worker を Pages より先に配る（#339 / 仕様 5.8）──────────────
+      #
+      # **Pages は Durable Objects のクラスを自分で持てない。** いいねの DO（`LikeHub`）は
+      # 別の Worker `game-forge-likes`（`workers/likes/`）に置き、Pages の宣言は
+      # `script_name = "game-forge-likes"` でそれを指す。**指す先が無いまま Pages を配ると、
+      # いいねの口が binding を解決できない。**
+      #
+      # **順序はこの段の位置が持つ。** 同じジョブの段は上から順に走り、どれかが落ちると
+      # 後ろの段は走らない。**likes Worker を配れなかった日は、Pages も配られない。**
+      # 別ジョブ・別ワークフローに分けると、この保証が `needs` や条件式の書き忘れ 1 つで
+      # 外れる（このワークフローの冒頭の (1) と同じ理由。段は分けない）。
+      #
+      # **マイグレーションの関門より後に置く。** likes Worker の同期は `games.like_count`
+      # （0020）を書くので、未適用のまま配ると同期が 5 分ごとに失敗し続ける。
+      #
+      # **毎回配る**（差分の有無で分けない）。配備は冪等で、「このコミットの Pages が指す
+      # likes Worker が、このコミットの宣言である」ことを毎回成り立たせるほうが、
+      # 差分の判定を 1 つ持つより壊れにくい。**配る前に公開の入口が無いことを確かめる**
+      # （`scripts/deploy-likes.sh` が `scripts/check-likes-worker.sh` を先に通す）。
+      #
+      # **PR の実行では走らない**（このジョブ全体が push(main) だけ。上の `if`）。
+      - name: Deploy likes Worker (game-forge-likes)
+        if: steps.head-gate.outputs.deploy == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bash scripts/deploy-likes.sh
+
+      # ── 退会の後続の処理の Worker を配る（#518 / #586 / 仕様 3.7）─────────────
+      #
+      # **Pages はこの Worker を指さない**（退会の口は D1 に状態を書くだけで、後続の処理は
+      # この Worker 自身の cron が起こす。#518 の J3）。**だから likes とは違い、順序そのものに
+      # 依存は無い。** それでも Pages の前に置くのは、**Worker を配る段を 1 か所に集めて、
+      # 段の読み方を 1 つに保つ**ためである（`scripts/check-cleanup-worker.sh` がこの並びを見る）。
+      #
+      # **マイグレーションの関門より後に置く。** 後続の処理は `users` の退会の 3 列（0045）を
+      # 読むので、未適用のまま配ると 5 分ごとに失敗し続ける（likes と同じ事情）。
+      #
+      # **毎回配る**（差分の有無で分けない）。配備は冪等で、cron は宣言から登録し直される。
+      # **配る前に公開の入口が無いことを確かめる**（`scripts/deploy-cleanup.sh` が
+      # `scripts/check-cleanup-worker.sh` を先に通す）——この Worker は R2 のバケット全体を
+      # 消せる資格情報を持つ。
+      - name: Deploy cleanup Worker (game-forge-cleanup)
+        if: steps.head-gate.outputs.deploy == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bash scripts/deploy-cleanup.sh
+
+      - name: Deploy to Cloudflare Pages
+        if: steps.head-gate.outputs.deploy == 'true'
+        env:
+          # wrangler がこの 2 つの名前を直接読む（.env と同じ名前・同じ値）。
+          # 保管先が 2 か所になる理由は docs/pages-deploy.md に書いてある。
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # **式（${{ }}）を run の中へ書かない。** 置換は文字列として行われるため、
+        # 値に引用符が混ざるとシェルの構文ごと変わる（second-opinion-gate.yml の同じ注記）。
+        # コミット件名は人が書くもので引用符を含みうるので、git から取る。
+        run: |
+          set -euo pipefail
+
+          # **チェックアウト済みの作業ツリーから取る。** github.sha を式で埋めるのでは
+          # なく git に聞くことで、「いま配っているファイル」と「記録するハッシュ」が
+          # 同じものであることが構造的に担保される。
+          commit_hash="$(git rev-parse HEAD)"
+          # 件名だけを取る（%s）。本文まで渡すと Cloudflare の一覧で 1 行に潰れて読めない。
+          commit_message="$(git log -1 --pretty=format:%s)"
+
+          # **--commit-hash / --commit-message は省かない**（#95）。#95 の調査で
+          # 「本番がどのコミットか」を Cloudflare 側から辿れたことが決め手になった。
+          # scripts/acceptance-remote.sh の配備ずれ検知も、この値を読んでいる。
+          #
+          # --branch main を明示する。省くと wrangler が git のブランチ名を推測し、
+          # production_branch と一致しなければ preview として配備される
+          # （docs/pages-deploy.md）。
+          #
+          # --project-name は wrangler.toml の name と同じ値である。ここがずれると
+          # 別プロジェクトへ配備され、本番は古いままになるが、その状態は
+          # acceptance-remote.sh の配備ずれ検知が拾う（あちらは terraform の
+          # 宣言側からプロジェクト名を導いている）。
+          npx wrangler pages deploy \
+            --project-name game-forge \
+            --branch main \
+            --commit-hash "$commit_hash" \
+            --commit-message "$commit_message"

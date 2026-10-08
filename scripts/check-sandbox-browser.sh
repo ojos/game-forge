@@ -231,7 +231,7 @@ fi
 # ホスト名は wrangler.toml の宣言から読む。**ここへ書き写さない**——設定を変えたときに
 # 検査だけが古いホストを見続ける（shared-ai-rules.md 12 章）。
 read_var() {
-  sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" wrangler.toml | head -1
+  sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"([^\"]+)\".*/\1/p" wrangler.toml | sed -n 1p
 }
 SANDBOX_HOST="$(read_var SANDBOX_HOST)"
 [[ -n "$SANDBOX_HOST" ]] || fail "wrangler.toml から SANDBOX_HOST を読めませんでした。"
@@ -286,7 +286,7 @@ mkdir -p "$STATE" "$WORK/gosrc"
 # できない）、そこから読めば正本に繋がる。**読めなければ落とす。既定値へ倒れない。**
 PINNED_GO_VERSION="$(
   sed -nE 's/^go[[:space:]]+([0-9]+\.[0-9]+(\.[0-9]+)?)([[:space:]].*)?$/\1/p' \
-    docker/isolated-build/template/go.mod | head -1
+    docker/isolated-build/template/go.mod | sed -n 1p
 )"
 [[ -n "$PINNED_GO_VERSION" ]] ||
   fail "docker/isolated-build/template/go.mod の go ディレクティブを読めませんでした。版の正本は docker/isolated-build/Dockerfile の ARG GO_VERSION です（#101）。両者が揃っているかを確認してください。"

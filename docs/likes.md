@@ -30,7 +30,7 @@
 | D1 の列と索引 | `games.like_count` / `games_status_like_count_idx`（部分索引）/ `users_banned_idx`（部分索引） | `migrations/0020_games_like_count.sql` |
 | 窓口 | `POST /api/like` / `POST /api/like/cancel` | `src/likes.ts`（綴りは `src/like-paths.ts`） |
 | 窓口（#377） | `POST /api/plays`（作品ページのスクリプトだけが叩く）→ 同期で `games.play_count` | `src/plays.ts` / `migrations/` の `games_play_count` |
-| 配備 | `scripts/deploy-likes.sh`（マージ後は deploy ジョブが **Pages より先に**叩く） | `.github/workflows/verify.yml` |
+| 配備 | `scripts/deploy-likes.sh`（マージ後は deploy ジョブが **Pages より先に**叩く） | `.github/workflows/deploy.yml` |
 | 宣言の検査 | `scripts/check-likes-worker.sh`（`scripts/acceptance.sh` から呼ぶ） | — |
 | 上限の入口（#699） | RPC の入口 `ApiRateLimiter`（`WorkerEntrypoint` の `allow(key)`）と Workers Rate Limiting `API_RATE_LIMIT`（**60 秒あたり 60 回**）。Pages は Service binding `API_RATE_LIMITER` で呼ぶ | `workers/likes/src/api-rate-limiter.ts` / Pages 側の窓口は `src/api-rate-limit.ts`（仕様 5.13） |
 
@@ -106,7 +106,7 @@ bash scripts/deploy-likes.sh
 
 ### 4. マージ（deploy ジョブが likes Worker → Pages の順に配る）
 
-deploy ジョブの段の並びは `.github/workflows/verify.yml`。**likes Worker の段が落ちると、
+deploy ジョブの段の並びは `.github/workflows/deploy.yml`。**likes Worker の段が落ちると、
 Pages の段は走らない。**
 
 ### 5. 本番で 1 往復通す（#339 の acceptance）
@@ -313,7 +313,7 @@ TTL は 60 秒）、**配備の直後、最大 60 秒は `likeCount` を持た�
   配備の順序が狂ったことは画面を見ても気づけない**——気づく手段はログである
 
 **それでも順序の要件は残る。** degrade は「いいねが使えない」状態であって、正しい状態では
-ない（利用者から見れば機能が消えている）。`.github/workflows/verify.yml` の段の並びが順序を
+ない（利用者から見れば機能が消えている）。`.github/workflows/deploy.yml` の段の並びが順序を
 担保しており、`scripts/check-likes-worker.sh` の 5 番がそれを機械で見る。
 
 **ローカルでも同じ degrade が起きる。** `wrangler pages dev` だけでは `game-forge-likes` が
@@ -347,7 +347,7 @@ PlayHub のアラーム（5 分ごと。写し残しがある間だけ）
 
 ### 配備（初回だけ増えるもの）
 
-**順序はいいねと同じ**（マイグレーション → likes Worker → Pages）。`.github/workflows/verify.yml` の
+**順序はいいねと同じ**（マイグレーション → likes Worker → Pages）。`.github/workflows/deploy.yml` の
 deploy ジョブが、未適用のマイグレーションがあれば止め、likes Worker を Pages の直前に配る。
 
 1. **マイグレーション `games_play_count` を本番に当てる**（上の「2.」と同じ手順。列の追加（既定値 0）と
@@ -427,7 +427,7 @@ Pages（アプリ本体）は Rate Limiting のバインディングを持てな
 
 - **公開の入口は増えていない。** 名前付きの入口は Service binding からしか呼べず、`workers_dev` / `preview_urls` /
   ルートの閉じ方は変えていない。受け取るのは数える鍵だけで、DO に書く操作は無い
-- **配る順序は DO と同じ**（likes Worker → Pages。`.github/workflows/verify.yml`）。宣言の一致と、束ねた Worker が
+- **配る順序は DO と同じ**（likes Worker → Pages。`.github/workflows/deploy.yml`）。宣言の一致と、束ねた Worker が
   入口を輸出していることは `scripts/check-likes-worker.sh` の 7 が見る
 - **Rate Limiting が Workers の無料プランで使えるかは、公式の文書に書かれていない。** 使えなければ `scripts/deploy-likes.sh`
   が落ち、**main の deploy ジョブはいいねの Worker を Pages の直前に配るので、以後の配備がすべて止まる。**

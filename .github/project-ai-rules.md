@@ -62,6 +62,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
   | Variables | Read and write | No access | terraform の Actions の変数と、外部層の検査の読み取り |
 
   Mac の組は 2026-10-01 に実測した——外部層の gh の 7 検査（前提・リポジトリ・private vulnerability reporting・既定のブランチ・branch protection・Actions の変数・OIDC）と production deployment が PASS、terraform が読む脆弱性アラート・Dependabot のセキュリティ更新・Actions の変数・private vulnerability reporting の読み取りが通った。**書き込み（apply）は次の apply で確かめる。** dev01 では terraform も外部層も動かない形にしてある（tfvars・state・`CLOUDFLARE_API_TOKEN` を置かず、`terraform plan` は必須変数の不足で落ちることを #802 で確かめた）ので、管理者と変数の権限を持たせません。
+- **Checks の権限は fine-grained PAT にありません**（ai-playbook v0.8.1 の雛形で増えた注記）。非公開リポジトリでは `commits/<sha>/check-runs` と `gh pr checks` が 403 になります。このリポジトリは public なので今は読めますが、`land` の手順 2 は Checks を使わない API（Actions: Read の `actions/runs` と、Commit statuses: Read の `commits/<sha>/status`）だけで CI を確かめます。権限の例は devcontainer-bootstrap の README「資格情報の扱い」にあります。
 - **失効時・期限切れ時の再発行手順**: 上と同じ手順で同じ名前・同じ権限の PAT を発行し、その環境の `.env` の `GH_TOKEN` を差し替えます。古い PAT は GitHub の画面で削除します。**期限切れは Mac では #844 の定期実行が投稿できなくなる形で現れ、鮮度のジョブ（`acceptance-remote-freshness`）が 3 日で赤になります。** 端末を失くしたときは、その環境の PAT だけを削除します。
 
 ## 生成物の具体化
@@ -141,9 +142,11 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 | 指摘があるときに通過させない | `category` が `bug` / `vulnerability` / `type-error` / `edge-case` のいずれかなら落とします |
 | 判定できない出力を通さない | **JSON として読めない回答は落とします**（「読めなかった」を「指摘なし」に倒しません）。**差分を読めなかったと答えた回答（`reviewed: false`）も落とし、記録も残しません**（#873） |
 
-**gemini の経路だけは、規範の条件の外です（意図した逸脱として残します）。** 規範はスキーマ方式を「ツールが構造化出力の強制に対応する場合」に限っています。codex（`--output-schema`）と antigravity（`--json-schema`）は強制できますが、gemini には当たる旗がありません。gemini にはプロンプトで JSON の形を指示し、返答の後にスクリプトがスキーマで検証します。形を満たさない回答は落とします（`scripts/second-opinion-review.sh` の注記）。既定の運用は codex なので、gemini を使うのはエンジンを切り替えたときだけです。
+**gemini の経路は判定トークン方式です（#938 で DCB v0.17.0 の雛形へ寄せました）。** 規範はスキーマ方式を「ツールが構造化出力の強制に対応する場合」に限っています。codex（`--output-schema`）と antigravity（`--json-schema`）は強制できますが、gemini には当たる旗がありません。#938 までは gemini にもプロンプトで JSON の形を指示し、返答の後にスクリプトがスキーマで検証していました（規範の条件の外の、意図した逸脱でした）。雛形は gemini を出力の最後の行の判定トークン（`VERDICT: LGTM` / `VERDICT: FINDINGS`）で判定し、トークンの無い出力は通しません。**ただし例外が 1 つあります。出力の全体が `LGTM` の 1 語だけのときは、トークンが無くても通します**（雛形の `is_lgtm` の「後方互換の通過経路」。旧仕様どおり `LGTM` とだけ返すモデルを赤にしないため）。#938 の第二意見が、この文の旧い書き方（例外を書いていなかった）との食い違いとして指摘しました。どちらも規範の内側になったので、逸脱ではなくなりました。既定の運用は codex なので、gemini を使うのはエンジンを切り替えたときだけです。配線は `scripts/second-opinion-codex-selftest.sh` が仕込みの CLI で確かめます。
 
-**`.ai-playbook/` は上流パッケージの写しです**（`.ai-playbook/VERSION` に `source=https://github.com/ojos/ai-playbook/…/v0.5.0.tar.gz`）。**ここを編集しても次の展開で消えるため、プロジェクトの選択と具体化はこのプロジェクト層に書きます。**
+**gemini を `SECOND_OPINION_RUNS` 3 以上で回しません。** 雛形の多数決は、判定トークンの無い回答を「指摘あり」の 1 票として数えます（`scripts/second-opinion-review.sh` の判定トークンの分岐）。3 回のうち 2 回が LGTM なら、残りの 1 回が形式不正でも全体は LGTM になり、記録も残ります。回数が 1 なら閾値も 1 なので、トークンの無い回答で落ちます。#938 の第二意見（codex）が指摘し、利用者の判断（2026-10-08）で雛形のまま残しました。codex と antigravity はスキーマで判定するので、この経路を通りません。
+
+**`.ai-playbook/` は上流パッケージの写しです**（`.ai-playbook/VERSION` に `source=https://github.com/ojos/ai-playbook/…/v0.8.1.tar.gz`）。**ここを編集しても次の展開で消えるため、プロジェクトの選択と具体化はこのプロジェクト層に書きます。**
 
 ### 受け入れ検証の二層
 
@@ -226,13 +229,13 @@ push / PR 作成後の最終ゲートを、このプロジェクトで具体化�
 
 **代わりに、機械検査へ落とせるものは 4 つとも無料で付きます**（`verify.yml` の再実行が供給する）。Copilot の指摘を分類すると 71% がそれにあたり（7 件中 5 件）、#803 がその層です。
 
-**偽造は防ぎません。** 第二意見を回さずに記録だけを作って投稿すれば通ります。確認側が検出できるのは失念であって迂回ではない、という規範の割り切りをそのまま受け入れます。他人が書いた記録で緑にならないよう、確認側が数えるのは持ち主の記録だけです（#865）。
+**偽造は防ぎません。** 第二意見を回さずに記録だけを作って投稿すれば通ります。確認側が検出できるのは失念であって迂回ではない、という規範の割り切りをそのまま受け入れます。他人が書いた記録で緑にならないよう、確認側が数えるのは PR の作者が書いた記録だけです（#865。#938 で雛形の条件へ揃えました）。
 
 **規範の「置く場合」の規律のうち、指摘の扱いはこのプロジェクトでも使います。** 指摘を解決済みとみなす条件・2 巡目以降は人間が却下すること・指摘の却下の記録は、第二意見と人間の指摘にそのまま当てはめます。「要求と確認を 2 本で 1 組にする」「1 回だけ要求する」「要求された ≠ 読まれた」は、置かないので当てはまりません。
 
 **戻すときは、規範の「置く場合」に従い、要求側と確認側の 2 本で 1 組にします。** 確認側だけを省くと、要求側の契機が届かなかったときに最終ゲートが黙って抜けます（規範「要求されたことを別の契機で確認する」）。撤去した 2 本は `git log --diff-filter=D -- .github/workflows/copilot-review.yml .github/workflows/review-gate.yml` で辿れます。
 
-**v0.5.0 の雛形（`templates/second-opinion-gate.yml` / `templates/second-opinion-record.sh`）とは、記録の数え方の 1 点だけを違えたまま残します（#888）。** 雛形は「書き手が PR の作者で、かつ `author_association` が `OWNER` / `MEMBER` / `COLLABORATOR`」のコメントを数えます。このプロジェクトは「書き手がリポジトリの持ち主で、かつ `OWNER`」だけを数えます（#865）。理由は 3 つです。個人所有の public リポジトリで、PR を作るのも記録を投稿するのも持ち主の gh だけなので、どちらの条件でも数えるコメントは変わりません。書き手を 1 人に固定するので、協力者を迎えたときも、その人が自分で投稿した記録では緑にならない（持ち主が回すまで赤のままの）安全な側に倒れます。そして、外部層の記録の確認側（`scripts/acceptance-record-judge.sh`。#844 / #845）と同じ綴りに揃っています。**Organization へ移すときは雛形の条件へ揃えます**——持ち主の名前（組織名）がコメントの書き手と一致することはなく、持ち主で絞ったままだと記録があっても常に赤になります。ほかの 3 点（check-run が無い PR を掃き寄せで更新時刻により判定する・`permissions` に `checks: read` を宣言する・`save` を一時ファイル経由で置き換える）は雛形に揃え、`scripts/check-second-opinion-gate-workflow.sh` が確かめます。
+**記録の数え方は、#938 で DCB v0.17.0 の雛形に揃えました。** #888 では「書き手がリポジトリの持ち主で、かつ `author_association` が `OWNER`」だけを数える条件（#865）を、雛形との違いとして残していました。v0.17.0 の雛形は「書き手が PR の作者」を数え、`second-opinion-record.sh post` も gh のアカウントが PR の作者でなければ投稿しません。個人所有の public リポジトリで、PR を作るのも記録を投稿するのも持ち主の gh だけなので、どちらの条件でも数えるコメントは今は変わりません。**変わるのは協力者を迎えたときで、協力者が自分の PR に自分で投稿した記録で緑になります**（#865 の条件では、持ち主が回すまで赤のままでした）。Organization へ移したときに持ち主の条件が常に赤になる問題は、雛形の条件では起きません。`save` の一時ファイルの名前は雛形の固定の名前に戻りました（#888 では `mktemp` で毎回変えていました）。同じ worktree で `save` が重ならない限り違いは出ません。どちらも `scripts/check-second-opinion-gate-workflow.sh` が雛形の条件で確かめます。
 
 ### 書き戻しの直列化
 
@@ -281,3 +284,75 @@ push / PR 作成後の最終ゲートを、このプロジェクトで具体化�
 - **使うかどうかは実装者の任意です。** ゲートにせず、`scripts/loop-gate.sh` にも含めません。省いても push は妨げられません。
 - 使うときは、受け入れ条件を満たした後、`bash scripts/loop-gate.sh` の前に **1 回だけ**回します。整理で差分が変わるので、受け入れ検証は loop-gate が整理後の差分に対して改めて通します。第二意見の後には回しません。
 - **対象はコードだけです。** 規範文書・README・`docs/` の文章には使いません（規則に添えた理由が削られるため）。
+
+## `land` の手順の具体化
+
+`.claude/skills/land/SKILL.md` は DCB の雛形のままです（#938）。雛形が「プロジェクト層で定義してください」と書いている所を、ここで定義します。番号は SKILL.md の手順の番号です。
+
+### 2. CI の待ち
+
+- PR で起動する `verify`・`identity-guard`・`second-opinion-gate` はパスで絞っていないので、PR のどのコミットにも実行が付きます。付かないのは `[skip ci]` などで CI を飛ばしたコミットです。**CI を通っていないコミットを黙って通さず、止まるのが正しい動きです。** 外部の CI はありません。
+- commit status は `second-opinion-gate` のほかに、`docs/handoff.md` を触る PR の `writeback-serial`（下の「書き戻しの直列化」）と、`terraform/` を触る PR の `acceptance-remote-pr` が付きます。雛形の待ちの `gates` には入れていないので、status の一覧に出たものを読みます。`writeback-serial` の failure は先行する書き戻しの PR がある合図で、衝突しないことを確かめてから通します。`acceptance-remote-pr` は 5 で読みます。
+- `second-opinion-gate` は push のたびに 300 秒の猶予を置いてから判定します。Dependabot の PR は記録を求めず、説明文が `Dependabot PR: second-opinion record not required` の success が付きます（#838）。
+
+### 4 の前に: 第二意見の記録と、人間のコメントを読む
+
+リモート最終ゲートを置かないので、雛形の 3 は行いません。**代わりに、4 の前に第二意見の記録の中身と人間のコメントを読みます。** `second-opinion-gate` の緑は「記録がある」ことしか示しません。記録は PR のコメントで、先頭に `<!-- second-opinion sha=<head の SHA> -->` の印を持ちます。
+
+```bash
+gh api --paginate 'repos/{owner}/{repo}/issues/N/comments' --jq '.[] | {user: .user.login, created_at, body}'
+gh api --paginate 'repos/{owner}/{repo}/pulls/N/reviews' --jq '.[] | {user: .user.login, state, body}'
+gh api --paginate 'repos/{owner}/{repo}/pulls/N/comments' --jq '.[] | {user: .user.login, path, line, body}'
+```
+
+- いまの head の SHA を持つ記録を読みます。`--paginate` は外しません。
+- `loop-gate.sh` が `GATE_PASS` を返していても、落とさない種別の指摘（`promise-mismatch` など）が残っていることがあります。人間のコメントも指摘として扱い、6 で判定します。
+
+### 5. マージの前提
+
+**main へマージすると、そのまま本番へ配備されます**（`.github/workflows/deploy.yml`。`verify` の成功を契機に走ります）。マージした後で順序を直す方法はありません。
+
+- **オーケストレータの束**（`docs/orchestrator.md`）。ファイル名で判断しません（束には `src/orchestrator/**` のほかに `src/bedrock.ts` や `src/generate.ts` も入る。#258）。PR のブランチを checkout したきれいな作業ツリーで、`git fetch origin main` の後に `bash scripts/orchestrator-bundle-changed.sh "$(git merge-base origin/main HEAD)"` を実行し、最終行が `ORCHESTRATOR_BUNDLE_CHANGED` なら、マージの前に Lambda の配備が要ります。スクリプトが失敗したら「変わっていない」とは扱いません。
+- **チャットの関数の束**（#903 / #925）。同じツリーで `bash scripts/chat-bundle-changed.sh "$(git merge-base origin/main HEAD)"` を実行し、`CHAT_BUNDLE_CHANGED` なら、マージの前に利用者の端末で `bash scripts/deploy-chat.sh` を実行してもらいます（実体の `node_modules` を持つ、PR の head のツリーから）。main の `deploy` の関門も止めますが、それはマージの後です。
+- **`migrations/` に及ぶ差分**は、適用を先に済ませます。PR のブランチ（古い main から切られていれば手元で main を取り込んだもの）で `bash scripts/check-migrations-applied.sh --remote` を実行して確かめます。古いツリーで見ると未適用を見落とします。
+- **`terraform/` に及ぶ差分**は、apply と、その後の外部層の記録が先に要ります（#845）。確かめる head の commit status `acceptance-remote-pr` を読みます（`gh api "repos/{owner}/{repo}/commits/$sha/statuses" --jq '[.[] | select(.context == "acceptance-remote-pr")][0] | {state, description}'`）。success なら済んでいます。failure は説明文で読み分け（`docs/acceptance-remote-schedule.md`「status の読み方」）、記録が無い・古い・前提の不成立なら apply と `bash scripts/acceptance-remote-scheduled.sh --pr N` の手順を渡して止め、乖離（`found drift`）なら `DRIFT` の行を添えて止めます。無いときは `gh workflow run acceptance-remote-pr.yml -f pr=N` で流してから読み直します。記録が apply の後かは機構では分からないので、利用者に確かめます。
+- **`.github/workflows/deploy.yml` を変える差分**は、PR の CI では 1 度も走りません（`workflow_run` は既定ブランチの定義で動く）。9 で、マージ後の最初の実行を必ず見届けます。
+
+### 9. マージ後の確かめ
+
+- 雛形の `<ワークフローファイル名>` は `verify.yml` です。マージコミットの SHA で `verify` の push の実行を特定し、`MAIN_CI_GREEN` を待ちます。
+- **続いて `deploy.yml` の実行を見届けます。** `verify` の成功を契機に、別の実行として作られます。`workflow_run` の実行の `headSha` はマージコミットにならないことがある（既定ブランチの先端を指す）ので、**ログの `[deploy-head]` の行で、配ろうとしたコミットがマージコミットであることを確かめます。**
+
+  ```bash
+  gh run list --workflow deploy.yml --event workflow_run --limit 5 --json databaseId,status,conclusion,createdAt
+  gh run view <databaseId> --log | grep -F '[deploy-head]'
+  ```
+
+  `DEPLOY_IS_HEAD` で配った実行が success なら、本番の Pages のコミットも確かめます（`docs/pages-deploy.md`「配備ずれの検知」の `curl`）。`DEPLOY_SUPERSEDED` なら、後続のマージの配備に任せたので、そちらの実行を同じ形で見届けます（#748）。
+- 作業の終わりに `bash scripts/session-ledger.sh release` で台帳の登録を外します。
+
+## 並行セッションの台帳
+
+`.ai-playbook/shared-ai-rules.md`「16. セッション間の協調」の台帳は、DCB の `scripts/session-ledger.sh` と、`.claude/settings.json` が配線する `scripts/session-coord-hook.sh` が持ちます（#938 で導入）。置き場所は `git rev-parse --git-common-dir` の配下で、同じリポジトリのすべての worktree が共有します。
+
+- **識別子はセッション（Claude Code の本体のプロセス）ごとです。** 1 つの親が起こした implementer のレーンは親と同じ識別子なので、レーンどうしでは止め合いません（レーンの分離は上の「作業ツリーの分離」が持ちます）。止め合うのは、利用者が別々に起動したセッションどうしです。
+- マージ・作業ツリーの git 操作・`verify.sh` / `loop-gate.sh` の起動は、別のセッションと重なると拒否されます。**拒否を迂回しません**（登録を消す・相手の登録を解放する、をしない）。相手の識別子と作業ツリーを確かめて調整します。
+
+## 雛形からの逸脱（DCB v0.17.0 / ai-playbook v0.8.1。#938）
+
+DCB が所有するファイルは雛形を正とし、game-forge 側の差分は、(1) 消すと既知の事故・保証の喪失が起きる、(2) プロジェクト固有の値、のどちらかに当たるものだけを残しています。残した差分は `bash bootstrap.sh --accept <パス>` で `.devcontainer/ORIGIN` に記録しています（追従の手順は `docs/local-dev.md`「DCB と規範への追従」）。**ここに無い差分を DCB の生成物へ足すときは、この表へ行を足し、`--accept` し直します。**
+
+| ファイル | 残した差分 | 基準 | 理由 |
+|---|---|---|---|
+| `.github/workflows/verify.yml` | Node.js（24）・`npm ci`・Terraform（1.15.8、wrapper なし）・Go（`scripts/tile-reachability/go.mod`）を用意する段 | (2) | `scripts/acceptance.sh` が `npm test`・型検査・`terraform fmt -check`・`go test` を回すため。雛形が「プロジェクトの前提はここへ足す」と定めた場所に足しています |
+| `.github/workflows/verify.yml` | `Report selftest` の段（`scripts/report-selftest.sh`） | (1) | 集計の自己検査（#226）と、`deploy.yml` の起動の条件の固定（14 節（d）。#938）を CI で回すため。消すと、配備がゲートの外へ出る形を誰も赤にしません |
+| `.env.example` | `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` の項と、冒頭の「例外は GitHub と Cloudflare の 2 つ」 | (2) | wrangler の対話ログインが devcontainer で完結しないため（`docs/pages-deploy.md`）。キーが無いと `check-no-secrets.sh` のキー整合が `.env` とずれます |
+| `.env.example` | `SECOND_OPINION_MODEL` に値を書くと `second-opinion-codex-selftest.sh` が落ちる、の注記 | (1) | 値を書くと既定のモデルを検査できず、ローカル層が赤になります（#805） |
+| `scripts/on-attach.sh` | gh が未認証のとき `gh auth login` を案内せず、`.env` の `GH_TOKEN`（PAT）を案内する | (1) | `gh auth login` は OAuth の枠を消費し、上限に達していれば他環境の認証を 1 本失効させます（#869。上の「GitHub 認証（gh）だけを例外にする理由」） |
+| `.claude/agents/implementer.md` | game-forge 版のまま（`model: opus`、受け取るもの・worktree とスクラッチ・触ってよい場所・PR 作成で止まる手順・戻り値） | (1)(2) | `model` はレーン運用の値です（上の「委譲先の一覧」）。本文は、identity の禁則（`aizu@bascule.co.jp`）・`node_modules` の symlink（束のハッシュが使えない）・`docs/product-spec.md` と `docs/handoff.md` の衝突・`Closes` のバッククォート・`second-opinion-record.sh post` の打ち忘れ、の実際に踏んだ事故を、レーンが最初に読む場所で塞いでいます |
+| `.claude/agents/explorer.md` | game-forge 版のまま（Bash で書き換え・git の状態変更・本番への書き込みをしない、読んだツリーとコミットを返す） | (1) | プライマリのブランチを動かすと `migrations list` や terraform が静かに誤るため。古いブランチを読むと「在る / 無い」を誤るため |
+| `.devcontainer/compose.yaml`・`devcontainer.json` | 雛形を取り込んでいない（#938 の scope.out） | (1) | 雛形の `security_opt` は #930 を再発させます（Mac の devcontainer が起動しない）。取り込みは別の票で扱います |
+
+**プロジェクトが所有するファイル**（DCB が「プロジェクトが所有・編集する」と定めるもの）は、雛形と違っていて当然なので、この表には並べません。中身を残して `--accept` しています: `scripts/acceptance.sh`・`scripts/acceptance-remote.sh`・`scripts/check-no-secrets.sh`・`.github/project-ai-rules.md`（このファイル）。
+
+**雛形に寄せて変わったこと**（逸脱として残さなかったもの）: 第二意見の記録を数える条件（上の「リモート最終ゲート」）・gemini の判定方式（上の「判定の形」）・codex を `--ephemeral` なしで呼ぶこと（会話の記録が `~/.codex` に残ります）・`install-ai-tools.sh` が gemini CLI も入れること・`check-shell-portability.sh` が `pipefail` 下の早期終了するパイプも見るようになったこと（#938 で既存の 22 行と 1 か所の README を直しました）・`check-table-breaks.sh` が引用（`>`）の中の表も見るようになったこと。

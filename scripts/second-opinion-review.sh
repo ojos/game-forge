@@ -15,22 +15,49 @@
 # エンジン:
 #   認証手段の違う 3 つの CLI から選べる。判定ロジックは 1 か所に集約し、エンジン
 #   ごとに複製しない。複製すると、判定の修正が片側にしか効かない状態が生まれる。
-#   エンジンごとに違うのは「CLI の名前」「認証」「差分の渡し方」の 3 点だけである。
 #
-#   gemini       gemini CLI。API キー認証（GEMINI_API_KEY）。既定
-#   antigravity  Antigravity CLI（agy）。Google アカウントの OAuth 認証。API キー非対応
-#   codex        Codex CLI（codex exec）。ChatGPT アカウントの OAuth 認証（定額）
+#   gemini       gemini CLI。API キー認証（GEMINI_API_KEY）。既定。構造化出力を
+#                強制する旗を持たないため、従来どおり「出力の最後の行の判定
+#                トークン」方式で判定する（下記「通過判定」）。ツールは解禁しない
+#   antigravity  Antigravity CLI（agy）。Google アカウントの OAuth 認証。API キー
+#                非対応。構造化出力を `--json-schema` で強制できるため、判定は
+#                JSON（下記「通過判定（JSON スキーマ方式）」）で行う。ツールは
+#                解禁しない（下記「ツールの解禁」）
+#   codex        Codex CLI（codex exec）。ChatGPT アカウントの OAuth 認証（または
+#                API キー）。`--output-schema` で構造化出力を強制できるため、
+#                判定は JSON で行う。**読み取り専用サンドボックスでツールを解禁する**
+#                唯一のエンジン（下記「ツールの解禁」）
 #
-# 費用の形がエンジンで違う（#805）:
-#   Copilot のレビューは PR 1 本あたりの固定費が支配的で、**本数に線形に増える**
-#   （#654 の実測: 16.1 credits × PR 本数。超過 $164.60/月）。Codex Plus は定額で、
-#   枠は 5 時間窓で回復する。antigravity（**Google AI Plus**。2026-09-29 に Pro から下げた）の枠は週ごとで、当たると
-#   数日止まる。**危険な変更（ツール解禁など）は、回復の速い枠の上で試す。**
+# ツールの解禁:
+#   ツールを解禁するのは、読み取り専用サンドボックスが実際に書き込みを止めることを
+#   確かめられたエンジンだけに限る。旗の名前（「plan」「read-only」等）だけでは
+#   実際に止まるかどうかは分からない——名前から読み取れることと実際の動作は別である。
+#
+#   codex は `--sandbox read-only` を使う。書き込み系のシステムコールを拒否し、
+#   読み取り系（`git diff` 等）だけを許可するサンドボックスで、ユーザー名前空間
+#   （Linux）や Seatbelt（macOS）といった OS 機構に依存する。ユーザー名前空間の
+#   作成を禁止する環境（コンテナの seccomp 制限等）では、サンドボックスの初期化
+#   自体が失敗し、**読み取りを含めてコマンドが一切実行できない**（fail-closed。
+#   認証不要の `codex sandbox` サブコマンドで直接確認した）。書き込みが素通りする
+#   形には振れず、動かないか止まるかのどちらかである。
+#
+#   antigravity には対応する旗が無い。`--mode plan` は名前が「計画のみ」を示すが、
+#   `--dangerously-skip-permissions` と併せて使うと実際にファイルへ書き込めた
+#   （確認用の書き込みが実際に成立した）。**止めない旗をツール解禁の根拠にはしない。**
+#   したがって antigravity は差分をプロンプトへ埋め込む従来の形を保ち、ツールは
+#   解禁しない。
+#
+#   ツールを解禁したエンジン（codex）にも、差分は標準入力で必ず渡す。ツールは
+#   差分の外のファイル・テスト・宣言を読むための補助にとどめる。読み取り専用の
+#   サンドボックスは、ユーザー名前空間を禁じたコンテナでは起動せず、読み取りの
+#   コマンドも含めて一切実行できない（実測）。差分の取得までツールに任せると、
+#   その環境では差分を見ないまま回答が返る。標準入力なので引数の上限は受けず、
+#   チャンク分割は要らない。
 #
 # 判定のぶれについて:
-#   このレビューは非決定的で、同じ差分でも実行のたびに結果が変わる。どちらの CLI にも
+#   このレビューは非決定的で、同じ差分でも実行のたびに結果が変わる。いずれの CLI にも
 #   temperature / seed に相当するオプションは無く、フラグでは決定化できない。
-#   1 回だけ実行して LGTM を通過とみなすと、見落としをそのまま通す。
+#   1 回だけ実行して通過とみなすと、見落としをそのまま通す。
 #
 #   SECOND_OPINION_RUNS で実行回数を増やすと、指摘を報告した run が過半数
 #   （floor(N/2)+1）に達したときだけ落とす。誤検出 1 回でゲートが止まるのを避けつつ、
@@ -41,32 +68,73 @@
 #
 #   回数では消えない故障もあった。モデルが回答の前に作業ナレーションを出す形は、
 #   同じ差分なら毎回同じように出るため、run を増やしても全 run が同じように落ちた。
-#   **#804 で構造化出力を強制し、この故障クラスは消えた**（下記「通過判定」）。
+#   **構造化出力を強制できるエンジン（antigravity / codex）では、判定トークンを
+#   解析する工程そのものが無いため、この故障クラスは構造的に起きない。** 強制する
+#   旗を持たない gemini では、従来どおり判定側で受ける（下記「通過判定」）。
 #
-# 通過判定（#804 で作り直した）:
-#   モデルには**判定を出させない。** 回答は JSON（`scripts/second-opinion-schema.json`）で、
-#   中身は指摘の配列だけである。**落とすかどうかは `category` を見てこのスクリプトが決める**
-#   ——`bug` / `vulnerability` / `type-error` / `edge-case` の 4 つだけが落とす。
-#   `promise-mismatch` と `other` は報告に出るが判定を動かさない。
-#   **JSON として読めない回答は落とす**（「読めなかった」を「指摘なし」に倒さない）。
-#   **差分を読めなかったと答えた回答（`reviewed: false`）も落とし、記録も残させない**（#873）。
-#   2026-10-01 に、devcontainer の codex がサンドボックスの失敗で `git diff` を叩けず、
-#   「レビューを実施できませんでした」を `other` の指摘 1 件として返した。`other` は判定を
-#   動かさないので **LGTM になり、loop-gate.sh が記録まで作った**。読んでいないものを
-#   レビュー済みにしないため、読めたかどうかを回答の必須の項目として答えさせる。
+# 分割について:
+#   antigravity は差分をコマンドライン引数へ直接載せる（gemini は一時ファイルを
+#   @<パス> で参照させるため、引数へ載るのはパス文字列だけで対象外。codex は
+#   ツールを解禁したため差分そのものを渡さない）。引数 1 個あたりには Linux の
+#   MAX_ARG_STRLEN（カーネル定数: PAGE_SIZE * 32。既定は 131,072 バイト）という
+#   固定上限があり、これは合計を制限する ARG_MAX とは別物。実測でも「10 万バイトの
+#   引数を 20 個渡す（合計 200 万バイト）」は通り、「単一引数が 131,073 バイト」は
+#   E2BIG で落ちた。合計ではなく 1 引数が基準。
 #
-# ツールの解禁（#804）:
-#   **codex だけ**。`--sandbox read-only` が書き込みを止めることを実測してある。
-#   agy は `--sandbox --mode plan --dangerously-skip-permissions` でも**書き込めた**ので
-#   解禁しない（詳細は下の ENGINE_TOOLS の表）。
-#   **解禁したエンジンにも、差分は標準入力で必ず渡す**（#880。2026-10-02 に #804 の
-#   「差分は渡さず、モデル自身に `git diff` を叩かせる」を改めた）。ツールは差分の外を
-#   確かめる補助にとどめる。読み取り専用のサンドボックスは、ユーザー名前空間を禁じた
-#   コンテナでは起動せず、`git diff` も叩けない——差分の取得までツールに任せると、
-#   その環境では差分を 1 行も読まないまま回答が返る（2026-10-01 に実際に起きた。#873）。
+#   上限を超える差分は、範囲を分けるようユーザーへ求めて終わらせない。生成物
+#   （ロックファイル等）を含む差分は、範囲を分けても 1 ファイルの差分自体が
+#   上限を超えることがあり、それだと永久にレビューできない。ファイル単位を基本に
+#   複数ファイルを 1 チャンクへ詰め、1 ファイルの差分だけで上限を超える場合に
+#   限りハンク単位へ落とす（ハンクごとにファイルヘッダを付け直す。付けないと
+#   モデルがどのファイルの変更か判断できない）。
+#
+#   分割できない単位（1 ハンクだけで上限を超える、ハンクを持たない二値・モード
+#   変更のみの差分）は黙って切り詰めない。切り詰めると、レビューしていない
+#   部分を緑として報告することになる。該当ファイル名を添えて失敗させる。
+#
+#   チャンクが複数あるときは、全チャンクの run を合算して過半数を取らない。
+#   片方のチャンクが確実に指摘していても、他方の LGTM に薄められて通過しうる。
+#   チャンクごとに過半数を取り、1 つでも指摘ありなら全体を指摘ありとする。
+#
+# 通過判定（出力の最後の行の判定トークン方式。gemini）:
+#   出力の最後の行に置かれた判定トークン `VERDICT: LGTM` を通過とみなす。
+#   出力全体の一致では判定しない（前置きが 1 行出ただけで偽の赤になる）。
+#   行の存在でも判定しない（指摘と併記された LGTM で偽の緑になる）。
+#   理由の詳細は is_lgtm のコメントに置く。
+#
+# 通過判定（JSON スキーマ方式。antigravity / codex）:
+#   モデルには**通過・不通過の判定そのものを出させない。** 回答は
+#   `scripts/second-opinion-schema.json` が強制する JSON で、中身は指摘の配列
+#   だけである。**どの指摘を落とすかは、指摘の種別（category）を見てこのスクリプト
+#   が決める。** category が `bug` / `vulnerability` / `type-error` / `edge-case`
+#   のいずれかの指摘が 1 件以上あれば落とす。この 4 点は両エンジン・両方式を通じて
+#   「両段に共通する制約」（review-workflow.md）と同じである。
+#
+#   **報告の範囲は判定の範囲より広い。** `promise-mismatch`（参照した issue / PR の
+#   状態と実際の変更の食い違い）と `other`（その他、次に読む人へ伝える価値がある
+#   指摘）は出力に表示するが、通過判定は動かさない。報告を広げても、落とす基準は
+#   4 点のまま据え置く。
+#
+#   **JSON として読めない回答、スキーマの形を満たさない回答、スキーマに無い
+#   category の回答は、いずれも「指摘なし」ではなく失敗として扱う。** 読めなかった
+#   ものを緑として報告すると、レビューしていないものを通すことになる。
+#
+#   **差分を読めなかったと答えた回答（`reviewed: false`）も、指摘の中身によらず
+#   同じ扱いにする。** `git diff` などの失敗を `other` の指摘 1 件で報告しただけの
+#   回答は、category だけを見ると判定を動かさないため LGTM になり、読んでいない
+#   ものがレビュー済みとして記録されてしまう（game-forge #873）。このときは
+#   完了の行（`[second-opinion] LGTM (...)` 等）を出さない。loop-gate.sh の記録は
+#   その行の有無で「判定に到達したか」を見るため、出さなければ記録も残らない。
+#
+# issue / PR の文脈:
+#   ブランチ名が issue 番号を含む形（`feat/123-...` 等）なら、その issue の本文
+#   （scope・acceptance を含む）をプロンプトへ載せる。加えて、差分の追加行と
+#   コミットメッセージが参照する `#番号`（リポジトリへの書き込み権を持つ人が作成したものに限り、
+#   上限件数まで）についても、状態と（issue なら）acceptance の節を取得して載せる。
+#   いずれも `gh` 経由で、取得できなくても止めない（ゲートではないため）。
 #
 # 終了コード:
-#   0 = LGTM（過半数の run が指摘なし。push 可）
+#   0 = 通過（過半数の run が指摘なし。push 可）
 #   1 = 重大な指摘あり、または実行不能
 set -euo pipefail
 
@@ -93,33 +161,6 @@ ENGINE="${SECOND_OPINION_ENGINE:-gemini}"
 MODEL="${SECOND_OPINION_MODEL:-${GEMINI_REVIEW_MODEL:-}}"
 RUNS="${SECOND_OPINION_RUNS:-${GEMINI_REVIEW_RUNS:-1}}"
 
-# 1 行ずつ読み、`#123` の番号だけを出す。`&#123;`（HTML の実体参照）、`#fff`、
-# URL の断片（`/#12`）、6 桁以上（色の `#000000`）は拾わない。
-# **別リポジトリの番号は拾わない。** 番号の直前が英数字なら除外するので、`owner/repo#N`
-# と繋げて書けば落ちる。「上流 owner/repo の #N」と間に語を挟むと拾う——読み取りは
-# 賢くせず、書き方で揃える（#902。規則は `.github/project-ai-rules.md`「レビューの起動方法」）。
-# **GNU 拡張を使わない**（利用者の端末は macOS。grep の `\b` や `-P` に頼らない）。
-extract_issue_refs() {
-  awk '{
-    s = $0; lastc = ""
-    while (match(s, /#[0-9]+/)) {
-      b = (RSTART > 1) ? substr(s, RSTART - 1, 1) : lastc
-      a = substr(s, RSTART + RLENGTH, 1)
-      n = substr(s, RSTART + 1, RLENGTH - 1)
-      if (b !~ /[0-9A-Za-z_&\/#]/ && a !~ /[0-9A-Za-z_]/ && length(n) <= 5 && n + 0 > 0) print n + 0
-      lastc = substr(s, RSTART + RLENGTH - 1, 1)
-      s = substr(s, RSTART + RLENGTH)
-    }
-  }'
-}
-
-# 自己検査から判定だけを呼ぶための入口（#902）。**エンジンや差分の検査より前で抜ける**——
-# 後ろに置くと、CLI の無い CI で判定を確かめられない。
-if [[ "${1-}" == "--extract-issue-refs" ]]; then
-  extract_issue_refs
-  exit 0
-fi
-
 usage() {
   cat <<'EOF'
 usage: bash scripts/second-opinion-review.sh [options]
@@ -131,13 +172,12 @@ options:
   --model <name>        使用モデル（既定: 各 CLI の既定。SECOND_OPINION_MODEL でも指定可）
   --runs <n>            実行回数（既定: 1。SECOND_OPINION_RUNS でも指定可）
                         指摘を報告した run が過半数に達したときだけ非 0 で終わる
-  --extract-issue-refs  標準入力から参照している番号だけを出して終わる（自己検査用。#902）
   -h, --help            ヘルプ
 
 engines:
   gemini       gemini CLI。API キー認証（GEMINI_API_KEY）
   antigravity  Antigravity CLI（agy）。Google アカウントの OAuth 認証。API キー非対応
-  codex        Codex CLI（codex exec）。ChatGPT アカウントの OAuth 認証（定額）。
+  codex        Codex CLI（codex exec）。ChatGPT アカウントの OAuth 認証（または API キー）。
                モデルの既定は gpt-6-sol（--model / SECOND_OPINION_MODEL で上書き可）
 EOF
 }
@@ -181,25 +221,14 @@ if [[ "$RUNS" -lt 1 ]]; then
   exit 1
 fi
 
-# **ツールを解禁するのは、サンドボックスが実測で保たれるエンジンだけ**（#804）。
-#
-# | エンジン | 旗 | 実測（2026-09-29） |
-# |---|---|---|
-# | codex | `--sandbox read-only` | **書き込みは `Read-only file system` で失敗**。`git diff` は通る |
-# | antigravity | `--sandbox --mode plan --dangerously-skip-permissions` | **書き込めた**（`probe-write-test.txt` が実際にできた。**警告も出ない**） |
-#
-# **agy は旗の名前に反して止まりません。** 止まらないまま解禁すると、**レビュアーが
-# レビュー対象の作業ツリーを書き換えられる**——「何をレビューしたか」が壊れる。
-# したがって agy は従来どおり差分をプロンプトへ載せ、ツールは使わせない。
+# エンジンの能力フラグ。「ツールを解禁するか」「判定を JSON スキーマ方式で
+# 行うか」はエンジンごとに固定で、利用者が選べる値ではない（上記ヘッダ「ツールの
+# 解禁」参照）。既定は両方 0（従来どおり、差分を渡し判定トークンで判定する）。
 ENGINE_TOOLS=0
+ENGINE_JSON=0
 
-# **スキーマを CLI の旗で強制できるか。** できないエンジンには、プロンプトへ形を書いて渡す
-# （第二意見の指摘。実在）——渡さないと、モデルは `what` / `why` などの必要な項目を知らず、
-# **指摘の中身に関係なく後段の検証で落ちる**。gemini には `--json-schema` に当たる旗が無い
-# （`gemini --help` で実測。2026-09-29）。
-ENGINE_SCHEMA_FLAG=0
-
-# スキーマの置き場所。**判定はモデルに出させず、category からこちらで決める**（#804）。
+# 判定を JSON で行うエンジンが強制する回答の形。判定そのものはモデルに出させず、
+# category から下の BLOCKING_CATEGORIES を見てこのスクリプトが決める。
 SCHEMA_FILE="$__SCRIPT_DIR/second-opinion-schema.json"
 
 # エンジンの検査は CLI を呼ぶ前に済ませる。未知の値をそのまま先へ流すと、
@@ -223,38 +252,38 @@ case "$ENGINE" in
     }
     # agy は OAuth のみで API キーに対応しない。鍵の有無は検査しない。資格情報は
     # CLI が自身の保存先に持つため、このスクリプトからは可視でも制御対象でもない。
-    ENGINE_SCHEMA_FLAG=1
+    #
+    # ツールは解禁しない（`--mode plan` は書き込みを止めないことを確認済み。上記
+    # ヘッダ「ツールの解禁」）。構造化出力は `--json-schema` で強制できる。
+    ENGINE_JSON=1
     ;;
   codex)
     command -v codex >/dev/null 2>&1 || {
       echo "error: codex (Codex CLI) not found. codex を導入してログインしてから再実行してください（導入手段はプロジェクト層で定義します）" >&2
       exit 1
     }
-    # **資格情報の有無をここで見る。** codex は OAuth（ChatGPT アカウント）と API キーの
-    # 両方を受けるので、どちらで入っているかを知る必要はない。`codex login status` が
-    # 有無だけを終了コードで返す（実測: 未ログインで "Not logged in" と終了コード 1）。
+    # codex は OAuth（ChatGPT アカウント）と API キーの両方を受けるため、どちらで
+    # 入っているかを問わず、資格情報の有無だけを見る。`codex login status` が
+    # 有無を終了コードで返す。
     #
-    # **見ないと失敗が遅い。** 未ログインのまま exec へ進むと、CLI は 5 回の再接続を
-    # 試してから 401 で落ちる（実測: `ERROR: Reconnecting... 1/5` 〜 `5/5` の後に
-    # `unexpected status 401 Unauthorized`）。レビューの前段で数十秒を捨て、しかも
+    # ここで見ないと失敗が遅い。未ログインのまま exec へ進むと、CLI は再接続を
+    # 試したうえで認証エラーで落ちる。レビューの前段で時間を捨て、しかも
     # 出てくるのは「回答が空」に近い形なので、ログインしていないことが読み取りにくい。
     codex login status >/dev/null 2>&1 || {
       echo "error: codex にログインしていません。'codex login' を対話で 1 度通してから再実行してください" >&2
       exit 1
     }
-    # **モデルの既定を CLI に任せない。** codex の既定は gpt-6-astra で、Plus の
-    # 5 時間窓は 5〜45 通（複雑なタスクほど下限に寄る）——繁忙週の需要 38/日 を
-    # 下限では賄えない（#805）。gpt-6-sol は同じ窓で 15〜150 通ある。
-    # **既定のまま回すと、枠に当たって初めて分かる。**
-    #
-    # 綴りは `codex debug models` で実測した（認証不要で引ける。2026-09-28 /
-    # codex-cli 0.157.1 で gpt-6-astra / gpt-6-sol / gpt-6-luna が実在）。
+    # モデルの既定を CLI に任せない。CLI 既定のモデルは Plus 等の低い枠に当たりやすく、
+    # 既定のまま回すと、枠に当たって初めて分かる。gpt-6-sol は同じ契約でも枠が広い
+    # （プロジェクト層で確かめた既定値）。
     if [[ -z "$MODEL" ]]; then
       MODEL="gpt-6-sol"
     fi
-    # codex のサンドボックスは実測で書き込みを止める（上の表）。ツールを解禁する。
+    # サンドボックスが実際に書き込みを止めることを確認済みのエンジンなので
+    # ツールを解禁する（上記ヘッダ「ツールの解禁」）。構造化出力は
+    # `--output-schema` で強制できる。
     ENGINE_TOOLS=1
-    ENGINE_SCHEMA_FLAG=1
+    ENGINE_JSON=1
     ;;
   *)
     echo "error: unknown engine: $ENGINE（gemini | antigravity | codex）" >&2
@@ -262,14 +291,34 @@ case "$ENGINE" in
     ;;
 esac
 
-if [[ ! -f "$SCHEMA_FILE" ]]; then
-  echo "error: 回答のスキーマが見つかりません: $SCHEMA_FILE" >&2
-  exit 1
-fi
+# JSON スキーマ方式のエンジンだけが、スキーマファイルと jq を要る。gemini だけを
+# 使う導入では jq も second-opinion-schema.json も要らないため、ここで無条件に
+# 要求しない。
+if [[ "$ENGINE_JSON" -eq 1 ]]; then
+  [[ -f "$SCHEMA_FILE" ]] || {
+    echo "error: 回答のスキーマが見つかりません: $SCHEMA_FILE" >&2
+    exit 1
+  }
+  command -v jq >/dev/null 2>&1 || {
+    echo "error: jq が無いため回答（JSON）を読めません。jq を導入してから再実行してください" >&2
+    exit 1
+  }
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "error: jq が無いため回答（JSON）を読めません。jq を導入してから再実行してください" >&2
-  exit 1
+  # **落とす 4 点はこのスクリプトが決め、スキーマは「モデルに許す category」を
+  # 決める。** 2 か所に書くと片方だけ直る（shared-ai-rules.md「正本は 1 つ」）ので、
+  # 許す側の一覧はスキーマから読み、落とす側の 4 点がそこに含まれることを確かめる。
+  BLOCKING_CATEGORIES='bug vulnerability type-error edge-case'
+  ALL_CATEGORIES="$(jq -r '.properties.findings.items.properties.category.enum[]' "$SCHEMA_FILE" 2>/dev/null || true)"
+  if [[ -z "${ALL_CATEGORIES//[[:space:]]/}" ]]; then
+    echo "error: スキーマから category の一覧を読めませんでした: $SCHEMA_FILE" >&2
+    exit 1
+  fi
+  for __category in $BLOCKING_CATEGORIES; do
+    if ! printf '%s\n' "$ALL_CATEGORIES" | grep -x -- "$__category" >/dev/null; then
+      echo "error: 落とす category '$__category' がスキーマの enum にありません（規則とスキーマがずれています）" >&2
+      exit 1
+    fi
+  done
 fi
 
 if [[ -n "$RANGE" ]]; then
@@ -285,20 +334,19 @@ if [[ -z "${diff_text//[[:space:]]/}" ]]; then
   exit 0
 fi
 
-# レビューの文脈（#804）。**ブランチ名から issue 番号を取り、scope と acceptance を
-# プロンプトへ載せる。** これが無いと、第二意見は「この変更が何を約束したか」を知らないまま
-# 差分だけを読むことになり、**Copilot が拾う「自分が破った約束」を原理的に拾えない**
-# （`docs/handoff.md` の「Copilot は自分が破った約束を拾う」）。
+# レビューの文脈。ブランチ名から issue 番号を取り、scope と acceptance を
+# プロンプトへ載せる。これが無いと、第二意見は「この変更が何を約束したか」を
+# 知らないまま差分だけを読むことになり、約束と食い違う変更を原理的に拾えない。
 #
-# **ゲートではないので、取れなくても止めません。** 取れなかったことは出力に出します
+# **ゲートではないので、取れなくても止めない。** 取れなかったことは出力に出す
 # （黙って「文脈つきでレビューした」ことにしない）。
 issue_context=""
 branch_issue_num=""
 resolve_issue_context() {
   local branch num body
   branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  # feat/804-... / fix/795-... / docs/writeback-... のような形から数字を取る。
-  # **枝の名前に数字が無ければ何もしない**（推測で別の issue を引かない）。
+  # feat/123-... / fix/456-... のような形から数字を取る。枝の名前に数字が無ければ
+  # 何もしない（推測で別の issue を引かない）。
   num="$(printf '%s' "$branch" | sed -n 's|^[a-z]*/\([0-9][0-9]*\)-.*|\1|p')"
   branch_issue_num="$num"
   if [[ -z "$num" ]]; then
@@ -309,7 +357,7 @@ resolve_issue_context() {
     echo "[second-opinion] gh が無いため issue #$num を引けません（文脈なしでレビューします）" >&2
     return 0
   fi
-  if ! body="$(gh issue view "$num" --json title,body --jq '"# issue #" + (.title) + "\n\n" + .body' 2>/dev/null)"; then
+  if ! body="$(gh issue view "$num" --json title,body --jq '"# issue #'"$num"' " + (.title // "") + "\n\n" + (.body // "")' 2>/dev/null)"; then
     echo "[second-opinion] issue #$num を引けませんでした（文脈なしでレビューします）" >&2
     return 0
   fi
@@ -318,29 +366,44 @@ resolve_issue_context() {
 }
 resolve_issue_context
 
-# 差分とコミットメッセージが参照している issue / PR の文脈（#828）。
+# 差分とコミットメッセージが参照している issue / PR の文脈。他の issue / PR の
+# 状態（未マージ・完了・日付等）を知らないと出せない指摘があり、`gh` はこのスクリプト
+# の外（ネットワークを遮断するサンドボックスの外）で読む必要があるため、ここで
+# 引いてプロンプトへ載せる。
 #
-# **Copilot が拾い、第二意見が拾えなかった指摘の約半分は「他の issue / PR の状態」を
-# 知らないと出せない種類だった**（#816〜#824 の 11 件中 5 件。「#812 は未マージ」
-# 「#776 の制約だと 1 日早い」など）。codex のサンドボックスはネットワークも止める
-# （実測: `gh` は `error connecting to api.github.com`）ので、**モデルには引けない。
-# サンドボックスの外にいるこのスクリプトが引いて載せる。**
-#
-# 絞り方（#828 のデメリットの表）:
+# 絞り方:
 #   - 拾うのは**差分の追加行とコミットメッセージだけ**。削除行や文脈行の番号は、
 #     この変更が主張していることではない
-#   - **作成者がリポジトリの持ち主のものだけ**。public なので部外者の文がプロンプトへ
-#     入りうる（持ち主はリポジトリの URL から取る。呼び出しを 1 本増やさない）
-#   - issue は「状態・タイトル・acceptance の節」、PR は「状態・タイトル」だけ。本文全体は
-#     載せない（消費と、古い本文による誤検出を抑える）
+#   - **作成者の author_association が OWNER / MEMBER / COLLABORATOR のものだけ**。
+#     public なので部外者の文がプロンプトへ入りうる。「リポジトリの持ち主の login と
+#     一致するか」で絞らない——組織所有のリポジトリでは持ち主は組織名で、個人の
+#     login と一致することがなく、すべての参照が除外される
+#   - issue は「状態・タイトル・acceptance の節」、PR は「状態・タイトル」だけ。
+#     本文全体は載せない（消費と、古い本文による誤検出を抑える）
 #   - **上限は REFERENCED_LIMIT 本。超えた分は捨てたと出す**
 #   - 引けなくても止めない（ゲートではない）。引けなかったことは出す
 REFERENCED_LIMIT=10
 referenced_context=""
 
-# 番号の抜き出し（extract_issue_refs）は、引数の解析より前に定義してある（#902）。
+# 1 行ずつ読み、`#123` の番号だけを出す。`&#123;`（HTML の実体参照）、`#fff`、
+# URL の断片（`/#12`）、6 桁以上（色の `#000000`）は拾わない。GNU 拡張は使わない
+# （grep の `\b` や `-P` に頼らない。配布先の端末が macOS であることがある）。
+extract_issue_refs() {
+  awk '{
+    s = $0; lastc = ""
+    while (match(s, /#[0-9]+/)) {
+      b = (RSTART > 1) ? substr(s, RSTART - 1, 1) : lastc
+      a = substr(s, RSTART + RLENGTH, 1)
+      n = substr(s, RSTART + 1, RLENGTH - 1)
+      if (b !~ /[0-9A-Za-z_&\/#]/ && a !~ /[0-9A-Za-z_]/ && length(n) <= 5 && n + 0 > 0) print n + 0
+      lastc = substr(s, RSTART + RLENGTH - 1, 1)
+      s = substr(s, RSTART + RLENGTH)
+    }
+  }'
+}
 
-# issue の本文から acceptance の節（intake の YAML の `acceptance:` から次のキーまで）を出す。
+# issue の本文から acceptance の節（intake の YAML の `acceptance:` から次のキーまで）
+# を出す。
 extract_acceptance() {
   tr -d '\r' | awk '
     /^acceptance:/ { on = 1; print; next }
@@ -350,10 +413,10 @@ extract_acceptance() {
 }
 
 resolve_referenced_context() {
-  local refs nums n kept dropped rejected unreadable json owner author kind state title acc
-  # コミットメッセージを先に置く。「(#804)」のように、変更が名指しした番号が先頭に来る。
-  # **範囲（A..B）のときだけ**ログを読む。単独のリビジョンに git log を当てると
-  # 履歴の全部を読むことになる。
+  local refs nums n kept dropped rejected unreadable json association title state acc
+  # コミットメッセージを先に置く。「(#123)」のように、変更が名指しした番号が
+  # 先頭に来る。**範囲（A..B）のときだけ**ログを読む。単独のリビジョンに git log を
+  # 当てると履歴の全部を読むことになる。
   refs=""
   if [[ "$RANGE" == *..* ]]; then
     refs="$(git log --format=%B "$RANGE" 2>/dev/null | extract_issue_refs || true)"
@@ -374,18 +437,19 @@ $(printf '%s\n' "$diff_text" | awk '/^\+/ && !/^\+\+\+ / { print substr($0, 2) }
   nums="$(printf '%s\n' "$nums" | awk -v lim="$REFERENCED_LIMIT" 'NR <= lim')"
   kept=""; rejected=""; unreadable=""
   for n in $nums; do
-    # issues の API は PR も返す（`.pull_request` の有無で分かれる）。1 番号 1 呼び出し。
-    # **`.pull_request.merged_at` は issues の API にも入っている**——pulls の API を
-    # 呼び直す必要はない（実測 2026-09-30: `gh api repos/{owner}/{repo}/issues/824` の
-    # `.pull_request.merged_at` が `2026-09-30T01:14:08Z`。第二意見が「入っていない」と
-    # 誤って指摘したので、ここに根拠を残す）。
+    # issues の API は PR も返す（`.pull_request` の有無で分かれる。`merged_at` も
+    # 同じ API に入っている）。1 番号 1 呼び出し。
     if ! json="$(gh api "repos/{owner}/{repo}/issues/$n" 2>/dev/null)" \
-        || ! owner="$(printf '%s' "$json" | jq -er '.repository_url | split("/") | .[-2]' 2>/dev/null)"; then
+        || ! association="$(printf '%s' "$json" | jq -er '.author_association' 2>/dev/null)"; then
       unreadable="$unreadable#$n "
       continue
     fi
-    author="$(printf '%s' "$json" | jq -r '.user.login // ""')"
-    if [[ "$author" != "$owner" ]]; then
+    # 書き込み権を持つ人（持ち主・組織のメンバー・共同編集者）が書いたものだけを載せる。
+    case "$association" in
+      OWNER|MEMBER|COLLABORATOR) ;;
+      *) association="" ;;
+    esac
+    if [[ -z "$association" ]]; then
       rejected="$rejected#$n "
       continue
     fi
@@ -417,7 +481,7 @@ $(printf '%s\n' "$acc" | sed 's/^/    /')"
     echo "[second-opinion] 上限 $REFERENCED_LIMIT 本を超えたため載せません: ${dropped% }"
   fi
   if [[ -n "$rejected" ]]; then
-    echo "[second-opinion] 作成者がリポジトリの持ち主でないため載せません: ${rejected% }"
+    echo "[second-opinion] 作成者がリポジトリへの書き込み権を持たないため載せません: ${rejected% }"
   fi
   if [[ -n "$unreadable" ]]; then
     echo "[second-opinion] 引けなかったため載せません: ${unreadable% }" >&2
@@ -425,8 +489,8 @@ $(printf '%s\n' "$acc" | sed 's/^/    /')"
 }
 resolve_referenced_context
 
-# 文脈（枝の issue の全文と、参照された issue / PR の要約）をプロンプトの末尾へ足す。
-# ツールの有無でプロンプトの本文は分かれるが、文脈の足し方は分けない。
+# 文脈（枝の issue の全文と、参照された issue / PR の要約）をプロンプトの末尾へ
+# 足す。エンジンによって本文は分かれるが、文脈の足し方は分けない。
 append_context() {
   if [[ -n "$issue_context" ]]; then
     PROMPT="$PROMPT
@@ -438,19 +502,26 @@ $issue_context"
   if [[ -n "$referenced_context" ]]; then
     PROMPT="$PROMPT
 
-差分とコミットメッセージが参照している issue / PR（取得時点の状態と、issue の acceptance の節だけ。本文の全文ではありません）。
-**変更の記述（未マージ・完了・日付・acceptance の番号など）がこれと食い違っていないか**を確かめてください。
-食い違いは \`promise-mismatch\` で報告してください:
+差分とコミットメッセージが参照している issue / PR（取得時点の状態と、issue の
+acceptance の節だけ。本文の全文ではありません）。**変更の記述（未マージ・完了・
+日付・acceptance の番号など）がこれと食い違っていないか**を確かめてください:
 $referenced_context"
+    if [[ "$ENGINE_JSON" -eq 1 ]]; then
+      PROMPT="$PROMPT
+
+食い違いは \`promise-mismatch\` で報告してください。"
+    fi
   fi
 }
 
-# 報告の規則は 1 か所にまとめる（ツールの有無で本文が分かれても、規則は分けない）。
-read -r -d '' REPORT_RULES <<'EOF' || true
+# JSON スキーマ方式（antigravity / codex）が共有する報告の規則。判定トークン
+# 方式（gemini）とはここで分ける——判定をモデルに出させず、報告の範囲も広げるため、
+# 本文そのものが違う。
+read -r -d '' REPORT_RULES_JSON <<'EOF' || true
 報告してよいもの（`category` の値）:
 - `bug`（致命バグ） / `vulnerability`（脆弱性） / `type-error`（型エラー） / `edge-case`（エッジケースの見落とし）
   … **この 4 つだけがゲートを落とします。**
-- `promise-mismatch` … issue の scope や acceptance と、実際の変更が食い違う点（**報告のみ**）
+- `promise-mismatch` … 文脈（issue の scope / acceptance、参照された issue・PR の状態）と、実際の変更が食い違う点（**報告のみ**）
 - `other` … 上記以外で、次に読む人へ伝える価値があるもの（**報告のみ**）
 
 報告しないもの:
@@ -459,55 +530,13 @@ read -r -d '' REPORT_RULES <<'EOF' || true
 - 差分と関係のない既存コードの問題
 
 出力:
-- **JSON だけを返してください。** 形はスキーマのとおりで、指摘が無ければ `findings` は空の配列です。
+- **JSON だけを返してください。** 指摘が無ければ `findings` は空の配列です。
 - **通す / 落とすの判定は書かないでください。** `category` を見てこちらで決めます。
-- `reviewed` には、渡した差分を実際に読んでレビューできたかを書いてください。差分が空だった・
-  途中で切れていたなどで**読めなかったときは `false`** にし、読めなかった理由を `other` の指摘で書いてください。
+- `reviewed` には、差分を実際に読んでレビューできたかを書いてください。コマンドが失敗した・
+  差分が空だったなどで**読めなかったときは `false`** にし、読めなかった理由を `other` の指摘で書いてください。
   読めなかったのに `true` にしたり、指摘を空にして済ませたりしないでください。
-  差分の外を確かめるためのコマンドが失敗しただけなら、渡した差分を読めていれば `true` です。
 - 前置きや作業の説明は書かないでください。
 EOF
-
-# **旗で強制できないエンジンには、形をプロンプトへ書いて渡す。** 正本はスキーマの
-# ファイルそのもので、ここでは中身を貼るだけ——2 か所に書かない。
-append_schema_to_rules() {
-  if [[ "$ENGINE_SCHEMA_FLAG" -eq 1 ]]; then
-    return 0
-  fi
-  REPORT_RULES="$REPORT_RULES
-
-回答の形（JSON Schema。**このエンジンは形を強制できないので、ここに載せます**）:
-
-$(cat "$SCHEMA_FILE")"
-}
-
-# ツールを解禁したときのプロンプト（#804 / #880）。**差分は標準入力で、このプロンプトの前に
-# 渡す**（codex の case の注記）。ツールは差分の外を確かめる補助で、差分の取得には使わせない
-# ——サンドボックスが起動しない環境でも、差分そのものは必ず読まれる（ヘッダ「ツールの解禁」）。
-build_prompt_with_tools() {
-  PROMPT="上記はこのリポジトリの git の差分です（\`$diff_cmd\` の出力）。コードレビューを行ってください。
-
-**レビューする差分は、上に渡したものを読んでください。** 差分を取り直す必要はありません。
-**読み取りのコマンドとファイル読み取りは、差分の外を確かめるために使ってよい**です。差分の外の
-ファイル・テスト・宣言・ドキュメントも読み、**事実を確かめてから**報告してください（推測で書かない）。
-**書き込みはできません**（サンドボックスが読み取り専用です）。
-**コマンドが実行できない環境でも、上の差分だけでレビューを完結させてください。** その場合、
-差分の外を確かめられなかったことを理由に指摘を作らないでください。
-
-$REPORT_RULES"
-  append_context
-}
-
-# ツールを使えないエンジンのプロンプト。差分は本文へ載せる（従来どおり）。
-build_prompt_without_tools() {
-  PROMPT="
-上記は git の差分です。コードレビューを行ってください。
-
-レビューに必要な情報はこのプロンプトに含まれています。**ファイル読み取りやコマンド実行のツールを使わないでください。** ツールの実行は非対話実行では承認できず、拒否されると回答そのものが返らなくなります。
-
-$REPORT_RULES"
-  append_context
-}
 
 if [[ -n "$RANGE" ]]; then
   diff_cmd="git diff $RANGE"
@@ -515,208 +544,100 @@ else
   diff_cmd="git diff --cached"
 fi
 
-append_schema_to_rules
+# ゲート対象は review-workflow.md の限定に合わせる。本文を分けるのは
+# ENGINE_JSON（判定トークン方式か JSON スキーマ方式か）と ENGINE_TOOLS
+# （ツールを解禁しているか）の 2 つの能力フラグで、エンジン名そのものでは分けない
+# ——能力が増減したらフラグ側を直せば、本文の分岐はそのまま追随する。
+if [[ "$ENGINE_JSON" -eq 0 ]]; then
+  # 判定トークン方式（gemini）。差分はプロンプトへ埋め込み、ツールは使わせない。
+  #
+  # 先頭に空行を置かない。かつては `read -r -d '' PROMPT <<'EOF'` で読んでおり、
+  # read は単一変数への読み込みで前後の IFS 空白（改行を含む）を落とす。この
+  # 代入へ変えたとき先頭に空行を残すと、$PROMPT の実体にだけ改行 1 個が増え、
+  # バイト数で境界を扱う処理（antigravity の分割）や、差分と $PROMPT の区切りを
+  # 1 個の改行に固定している箇所の前提と食い違う。
+  PROMPT="上記は git の差分です。コードレビューを行ってください。
 
-if [[ "$ENGINE_TOOLS" -eq 1 ]]; then
-  build_prompt_with_tools
+指摘対象は次の 4 点に限定します。それ以外は報告しないでください。
+- 致命バグ
+- 脆弱性
+- 型エラー
+- エッジケースの見落とし
+
+報告しないもの:
+- 好みのリファクタリング
+- 命名や可読性の軽微な提案
+- 差分の範囲外にある既存コードの問題
+
+レビューに必要な情報はこのプロンプトに含まれています。**ファイル読み取りやコマンド実行のツールを使わないでください。** ツールの実行は非対話実行では承認できず、拒否されると回答そのものが返らなくなります。
+
+出力形式:
+- **出力の最後の行**に、次のいずれかの判定トークンを必ず 1 行で書いてください。
+  - 上記 4 点に該当する指摘が 1 件もない場合: \`VERDICT: LGTM\`
+  - 指摘がある場合: \`VERDICT: FINDINGS\`
+- 指摘がある場合は、判定トークンより前に、各指摘について「該当ファイルと行」「何が問題か」「なぜ問題か（再現条件や影響）」を簡潔に記述してください。
+- 通過判定は最後の行だけで行います。判定トークンの無い出力は指摘ありとして扱います。"
+elif [[ "$ENGINE_TOOLS" -eq 0 ]]; then
+  # JSON スキーマ方式だがツールは解禁しない（antigravity）。差分はプロンプトへ
+  # 埋め込む（従来どおり分割の対象になる）。先頭に空行を置かない理由は
+  # gemini の分岐と同じ（$PROMPT の実体に不要な改行を増やさない）。
+  PROMPT="上記は git の差分です。コードレビューを行ってください。
+
+レビューに必要な情報はこのプロンプトに含まれています。**ファイル読み取りやコマンド実行のツールを使わないでください。** ツールの実行は非対話実行では承認できず、拒否されると回答そのものが返らなくなります。
+
+$REPORT_RULES_JSON"
 else
-  build_prompt_without_tools
+  # JSON スキーマ方式で、かつツールを解禁する（codex）。
+  #
+  # **差分は標準入力で必ず渡す。ツールは差分の外を読むための補助にとどめる。**
+  # 読み取り専用のサンドボックスは、実行環境によって起動しない（ユーザー名前空間の
+  # 作成を禁じたコンテナでは、サンドボックス自体が立ち上がらず、読み取りのコマンドも
+  # 含めて一切実行できない。実測）。差分の取得までモデルのツールに任せると、その
+  # 環境では差分を 1 行も見ないまま回答が返り、中身の無いレビューが通る。差分を
+  # 先に渡しておけば、ツールが使えない環境でも差分そのものは必ずレビューされる。
+  # 標準入力なので引数の上限は受けず、分割は要らない。
+  PROMPT="上記はこのリポジトリの git の差分です（\`$diff_cmd\` の出力）。コードレビューを行ってください。
+
+**読み取りのコマンドとファイル読み取りを使ってよい**です。差分の外のファイル・テスト・
+宣言・ドキュメントも読み、**事実を確かめてから**報告してください（推測で書かない）。
+**書き込みはできません**（サンドボックスが読み取り専用です）。
+**コマンドが実行できない環境でも、上の差分だけでレビューを完結させてください。**
+その場合、差分の外を確かめられなかったことを理由に指摘を作らないでください。
+
+$REPORT_RULES_JSON"
 fi
+append_context
 
 echo "[second-opinion] reviewing $scope (engine=$ENGINE, runs=$RUNS)"
 
-# 一時領域は両エンジンで使う。gemini は差分の受け渡しに、両者とも stderr の退避に。
-# テンプレートを明示する。BSD 系（macOS）の mktemp はテンプレート無しの呼び出しを
-# 受け付けず、この雛形は Linux 以外へ配布されうる。
+# 一時領域は全エンジンで使う。gemini は差分の受け渡しに、antigravity は分割した
+# チャンクの置き場に、codex は標準入力へ流すファイルと -o の回答先に、全エンジンとも
+# stderr の退避に。テンプレートを明示する。BSD 系（macOS）の mktemp はテンプレート
+# 無しの呼び出しを受け付けず、この雛形は Linux 以外へ配布されうる。
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/second-opinion.XXXXXX")"
 diff_file="$work_dir/review.diff"
 stderr_file="$work_dir/stderr"
 trap 'rm -rf "$work_dir"' EXIT
 printf '%s\n' "$diff_text" > "$diff_file"
 
-# 単一引数に載せられるバイト数の上限。
+# codex 専用の受け渡し口。他の 2 エンジンは使わないため /dev/null のまま残す。
 #
-# **`getconf ARG_MAX` ではない。** ARG_MAX は「引数と環境変数の合計」の上限で、
-# Linux にはそれとは別に **1 引数あたり `MAX_ARG_STRLEN` = 32 ページ = 131,072 バイト**
-# という固定の上限がある。差分をまるごと 1 つの `-p` 引数へ載せる以上、効くのは後者。
-#
-# 実測（Linux 6.10 / bash 5）: 単一引数 131,000 バイトは通り、131,073 バイトは E2BIG。
-# 一方、10 万バイトの引数を 20 個（合計 200 万バイト）並べても通る。合計ではなく
-# 1 引数あたりが制約であることの裏づけ。
-#
-# ARG_MAX と比較していた版では、190KB の差分がガードを素通りしてから
-# `Argument list too long` で落ち、原因が読めないまま赤になった。
-SINGLE_ARG_LIMIT=131072
-
-# バイト数を数える。`${#var}` は**文字数**であり、ロケールによってはバイト数と一致
-# しない。日本語を含む差分では 1 文字 3 バイトになり、上限判定が最大 3 倍甘くなる。
-byte_len() {
-  printf '%s' "$1" | wc -c | tr -d '[:space:]'
-}
-
-# 差分を、1 回の呼び出しで渡せる大きさの断片（チャンク）へ分ける。
-#
-# 上限超過を「範囲を分けてください」と拒否するだけでは、生成物（ロックファイル等）を
-# 含む差分が永久にレビューできない。分割して全体を見る。
-#
-# 単位はファイル単位を基本とし、1 ファイルの差分だけで上限を超える場合に限り
-# ハンク（`@@` で始まる塊）単位へ落とす。ハンク単位にしたときはファイルヘッダを
-# 毎回付け直す。付けないと、モデルはどのファイルの変更かを判断できない。
-#
-# 1 ハンクだけで上限を超える場合は分割できない。**黙って切り詰めない**
-# （レビューされていない部分を緑として報告することになる）。名指しして失敗させる。
-split_diff_into_chunks() {
-  local src="$1" outdir="$2" limit="$3"
-
-  LC_ALL=C awk -v limit="$limit" -v outdir="$outdir" '
-    function write_chunk() {
-      if (curlen > 0) {
-        n++
-        f = sprintf("%s/%04d.diff", outdir, n)
-        printf "%s", cur > f
-        close(f)
-        cur = ""
-        curlen = 0
-      }
-    }
-    function add_unit(u,   ulen, where) {
-      ulen = length(u)
-      if (ulen > limit) {
-        where = (fname != "" ? fname : "(最初の diff --git より前の行)")
-        printf "error: これ以上分割できない単位が上限を超えています: %s (%d > %d バイト)\n", \
-          where, ulen, limit > "/dev/stderr"
-        failed = 1
-        return
-      }
-      if (curlen + ulen > limit) write_chunk()
-      cur = cur u
-      curlen += ulen
-    }
-    function flush_file(   whole, i) {
-      # 判定は fname ではなく中身で行う。最初の `diff --git` より前に行があると
-      # （git diff では通常出ないが）fname が空のまま捨てられ、黙って欠落する。
-      if (hdr == "" && nhunks == 0) return
-      whole = hdr
-      for (i = 1; i <= nhunks; i++) whole = whole hunks[i]
-      if (length(whole) <= limit || nhunks == 0) {
-        # ハンクが無い差分（バイナリ、モード変更のみ等）は分割しようがない。
-        # 上限を超えていても add_unit へ渡す。else 側の for は nhunks == 0 だと
-        # 一度も回らず、**上限超過の検出も行われないまま黙って落ちる**。
-        add_unit(whole)
-      } else {
-        # ファイル単位で入らないので、ヘッダを付け直しつつハンク単位へ落とす。
-        for (i = 1; i <= nhunks; i++) add_unit(hdr hunks[i])
-      }
-      fname = ""; hdr = ""; nhunks = 0; inhunk = 0
-    }
-    /^diff --git / {
-      flush_file()
-      fname = $0
-      hdr = $0 "\n"
-      nhunks = 0
-      inhunk = 0
-      next
-    }
-    /^@@ / {
-      nhunks++
-      hunks[nhunks] = $0 "\n"
-      inhunk = 1
-      next
-    }
-    {
-      if (inhunk) hunks[nhunks] = hunks[nhunks] $0 "\n"
-      else hdr = hdr $0 "\n"
-    }
-    END {
-      flush_file()
-      write_chunk()
-      if (failed) exit 3
-      if (n == 0) {
-        print "error: 差分からチャンクを 1 つも生成できませんでした" > "/dev/stderr"
-        exit 4
-      }
-    }
-  ' "$src"
-}
-
-# チャンク 1 件分の CLI 引数を組み立てる。$args を設定する。
-#
-# 末尾を `[[ -n "$MODEL" ]] && args=(...)` の形にしないこと。MODEL が空だと関数の
-# 戻り値が 1 になり、`set -e` の下では**呼び出し元ごと無音で終了する**
-# （実測: 分割の告知だけを出して exit 1。どのチャンクで何が起きたのか一切出ない）。
-# 明示的に if で書き、最後に return 0 を置く。
-# 標準入力の渡し先。**codex だけがここを使う**（他の 2 つは差分を引数で渡すので
-# /dev/null のまま）。空にしない——run のループが `<"$stdin_file"` で開くため、
-# 空だとリダイレクトそのものが失敗する。
+# stdin_file: codex exec へ渡す標準入力の指し先。run のループが
+#   `<"$stdin_file"` で開くため、空にしない（空だとリダイレクトそのものが失敗する）。
+# answer_file: codex の「最後のメッセージ」（-o の出力）の置き場所。空なら未使用。
+#   消すのは run のループの側（build_args 相当の組み立ては 1 チャンクに 1 回しか
+#   走らないため、ここで消すだけでは --runs 2 以上のときに前の回の回答を読む）。
 stdin_file="/dev/null"
-
-# codex の「最後のメッセージ」の置き場所。**消すのは run のループの側**である
-# （build_args は 1 チャンクに 1 回しか走らないので、ここで消すだけでは足りない）。
 answer_file=""
 
-build_args() {
-  local chunk="$1"
-  case "$ENGINE" in
-    gemini)
-      args=(--skip-trust --include-directories "$work_dir" -p "@$chunk
-$PROMPT")
-      if [[ -n "$MODEL" ]]; then
-        args=(-m "$MODEL" "${args[@]}")
-      fi
-      ;;
-    antigravity)
-      # **構造化出力は強制できる**（`--json-schema`）。ただし `--output-format json` が
-      # 要る（実測: 付けないと `--json-schema can only be used when --output-format is
-      # 'json' or 'stream-json'` で落ちる）。回答は包みの `.structured_output` に入る。
-      #
-      # **ツールは解禁しない**（上の表。サンドボックスが書き込みを止めないため）。
-      # 差分は従来どおりプロンプトへ載せるので、分割もそのまま要る。
-      args=(-p "$(cat "$chunk")
-$PROMPT" --output-format json --json-schema "$SCHEMA_FILE")
-      if [[ -n "$MODEL" ]]; then
-        args=(--model "$MODEL" "${args[@]}")
-      fi
-      ;;
-    codex)
-      # 判定に使う入力を `-o`（最後のメッセージ）へ固定する。**stdout の形に頼らない**
-      # ——codex exec は見出し・設定・受け取ったプロンプトの復唱を stderr へ出すが
-      # （実測）、回答を stdout のどこへ何行で書くかは CLI の版で変わりうる。
-      # `-o` は「エージェントの最後のメッセージ」を書く明示の口なので、ここを読む。
-      #
-      # **失敗すればファイルは作られない**（実測: 401 で落ちた回は -o のファイルが
-      # 存在しなかった）。run のループは終了コードで先に落ちるため、無いファイルを
-      # 読んで「回答が空」と報告する経路には入らない。
-      answer_file="$work_dir/codex-answer.json"
-
-      # `exec -` は指示文を標準入力から読む。標準入力には「差分が先・プロンプトが後」を
-      # まとめて渡す（#880。組み立ては下の codex の case）。引数の上限を受けないので
-      # 分割も要らない。
-      #
-      # --sandbox read-only: **ツールの解禁はここが担保する。** 実測で読み取りは通り、
-      #   書き込みは `Read-only file system` で失敗する（2026-09-29）。
-      # --output-schema: 回答の形を強制する。**これで「出力の最後の行の判定トークン」を
-      #   解析する仕組みが要らなくなり、ナレーション 1 行で誤分類する故障クラスが消える**
-      #   （`.ai-playbook/review-workflow.md` が「回数を増やしても消えない故障」と
-      #   名指ししていたもの。実測: 前置きを書かせても -o は純粋な JSON だった）。
-      # --color never: ANSI のエスケープが JSON に混じらないようにする。
-      # --ephemeral: 会話の保存を止める。ゲートは 1 日 20〜38 回回るので、保存すると
-      #   ~/.codex（rebuild をまたぐ named volume）が毎日育つ。生の出力は #806 の記録が
-      #   PR に残すので、失う情報は無い。
-      args=(exec - --sandbox read-only --color never --ephemeral \
-            --output-schema "$SCHEMA_FILE" -o "$answer_file")
-      if [[ -n "$MODEL" ]]; then
-        args+=(--model "$MODEL")
-      fi
-      stdin_file="$chunk"
-      ;;
-  esac
-  return 0
-}
-
-# 差分の渡し方はエンジンごとに違う。**どちらも「差分が加工されずモデルへ届くこと」を
-# 実測で確かめたうえで選んでいる。** 片方の作法をもう片方へ流用しない。
-chunk_files=()
-
+# 差分の渡し方はエンジンごとに違う。**いずれも「差分が加工されずモデルへ届くこと」を
+# 実測で確かめたうえで選んでいる。** 1 つの作法を他へ流用しない。
+#
+# chunk_paths は「1 回の CLI 呼び出しへ渡す差分の単位」の一覧。gemini と codex は
+# 常に 1 要素（差分全体を指す一時ファイル）で、分割の対象外（gemini はファイル参照、
+# codex は標準入力で渡すため、どちらも引数長の制限を受けない）。antigravity だけが
+# 複数要素になりうる。
+chunk_paths=()
 case "$ENGINE" in
   gemini)
     # 差分を CLI の解釈対象へ載せない。stdin や -p へ差分本文を混ぜると、gemini CLI が
@@ -733,8 +654,7 @@ case "$ENGINE" in
     # モデルにツール実行は不要。信頼済みフォルダの確認は対話を要求するため、
     # 非対話実行では明示的に読み取り専用として扱う。
     CLI="gemini"
-    # ファイル参照で渡すため引数長の制限を受けない。分割せず 1 チャンクで扱う。
-    chunk_files=("$diff_file")
+    chunk_paths=("$diff_file")
     ;;
   antigravity)
     # agy は @<パス> をファイル参照として展開しない（実測: `@scripts/verify.sh` /
@@ -744,141 +664,284 @@ case "$ENGINE" in
     # 流用すると、agy にはファイル参照の手段が無いためモデルは差分を見ないまま
     # 「差分が空だ」と答える。
     #
-    # 引数へ載せる以上、差分の大きさが実行可能性に直結する。上限を超える分は
-    # 拒否せず分割してすべてレビューする（SINGLE_ARG_LIMIT の注記）。
+    # 引数へ載せる以上、差分の大きさが実行可能性に直結する。E2BIG は
+    # 「Argument list too long」としか出ず、原因が読み取れないまま赤になる。
+    #
+    # 効くのは ARG_MAX（合計）ではなく、Linux の MAX_ARG_STRLEN（1 引数あたりの
+    # 固定上限。カーネル定数: PAGE_SIZE * 32）。diff 全体を 1 つの -p 引数へ
+    # 載せる以上、ここが実際のボトルネックになる。ページサイズを動的に取り、
+    # 取得できない環境では Linux の既定値 4096 を仮定する。
+    #
+    # MAX_ARG_STRLEN は終端 NUL を含めて評価される（カーネル fs/exec.c の
+    # strnlen_user(str, MAX_ARG_STRLEN)）。渡せる実文字数はその 1 バイト少ない。
+    # 実測（Linux 6.10）: 131,070 / 131,071 バイトは通り、131,072 バイトから
+    # Argument list too long になった。131,072 をそのまま「渡せる最大」として
+    # 使うと、チャンクがちょうど境界に達したときに E2BIG で落ちる。
     CLI="agy"
+    page_size="$(getconf PAGE_SIZE 2>/dev/null || getconf PAGESIZE 2>/dev/null || echo 4096)"
+    max_arg_bytes=$((page_size * 32 - 1))
 
-    # プロンプトも同じ引数へ載る。差分に使える分はその残り。余裕を 1KB 見る。
-    prompt_bytes="$(byte_len "$PROMPT")"
-    chunk_limit=$((SINGLE_ARG_LIMIT - prompt_bytes - 1024))
-    if [[ "$chunk_limit" -le 0 ]]; then
-      echo "error: プロンプトだけで単一引数の上限（$SINGLE_ARG_LIMIT バイト）を超えます" >&2
-      exit 1
-    fi
+    # 文字数（${#var}）ではなくバイト数で測る。${#var} はロケール依存で、日本語を
+    # 含む差分では 1 文字が複数バイトになり、上限判定が実際より甘くなる
+    # （実測: 文字数 156,080 に対しバイト数 396,080）。wc -c は常にバイト数を返す。
+    prompt_bytes="$(LC_ALL=C printf '%s' "$PROMPT" | wc -c)"
+    # diff 本文とプロンプトの間に挟む改行 1 バイト分を引く（実際に渡す引数は
+    # "$chunk_text\n$PROMPT" の形）。
+    chunk_budget=$((max_arg_bytes - prompt_bytes - 1))
+    diff_bytes="$(LC_ALL=C printf '%s' "$diff_text" | wc -c)"
 
-    chunk_dir="$work_dir/chunks"
-    mkdir -p "$chunk_dir"
-    if ! split_diff_into_chunks "$diff_file" "$chunk_dir" "$chunk_limit"; then
-      echo "error: 差分を $ENGINE へ渡せる大きさへ分割できませんでした" >&2
-      exit 1
-    fi
-    while IFS= read -r chunk_path; do
-      chunk_files+=("$chunk_path")
-    done < <(find "$chunk_dir" -maxdepth 1 -name '*.diff' | sort)
+    if [[ "$diff_bytes" -le "$chunk_budget" ]]; then
+      # 分割不要。従来どおり 1 回で渡す（ログの見え方も変えない）。
+      chunk_paths=("$diff_file")
+    else
+      # 上限超過を「範囲を分けてください」と拒否して終わらせない。生成物
+      # （ロックファイル等）を含む差分は、範囲を分けても 1 ファイルの差分自体が
+      # 上限を超えることがあり、それだと永久にレビューできなくなる。
+      #
+      # ファイル単位を基本に、複数ファイルを 1 チャンクへ詰める。1 ファイルの
+      # 差分だけで上限を超える場合に限りハンク単位へ落とし、ハンクごとに
+      # ファイルヘッダを付け直す（付けないとモデルがどのファイルの変更か
+      # 判断できない）。1 ハンクだけで上限を超える、またはハンクを持たない
+      # 差分（二値・モード変更のみ）が単体で上限を超える場合は、分割できない
+      # 単位として黙って切り詰めず、該当ファイル名を添えて失敗させる。切り詰めると
+      # レビューしていない部分を緑として報告することになる。
+      #
+      # 分割そのものは awk（LC_ALL=C 固定でバイト単位の length() にする。BSD awk /
+      # gawk のどちらでも、この固定で多バイト文字を 1 バイトずつ数える）で行う。
+      # bash 側は組み立てられたチャンクファイルを集めるだけにする。
+      chunks_dir="$work_dir/chunks"
+      mkdir -p "$chunks_dir"
+      if ! LC_ALL=C awk -v budget="$chunk_budget" -v workdir="$chunks_dir" '
+        BEGIN {
+          chunk_no = 0
+          cur = ""; cur_len = 0
+          buf = ""; buf_len = 0
+          have_buf = 0
+          aborted = 0
+        }
 
-    if [[ "${#chunk_files[@]}" -eq 0 ]]; then
-      echo "error: 分割結果が空です。検査が成立しないため失敗させます。" >&2
-      exit 1
+        function chunkpath(n) {
+          return sprintf("%s/chunk-%05d.diff", workdir, n)
+        }
+
+        # 詰め合わせ中のチャンクを 1 ファイルへ書き出す。
+        function flush_cur(    fn) {
+          if (cur_len > 0) {
+            chunk_no++
+            fn = chunkpath(chunk_no)
+            printf "%s", cur > fn
+            close(fn)
+            cur = ""; cur_len = 0
+          }
+        }
+
+        # 分割できない単位を検出したときの唯一の出口。該当ファイル名を含む行を
+        # stderr へ出し、非 0 で終了する。ここまでに書き出したチャンクは残る
+        # （trap で work_dir ごと消えるため後始末は呼び出し元に任せる）。
+        function fail(msg) {
+          print "error: " msg > "/dev/stderr"
+          aborted = 1
+          exit 1
+        }
+
+        # 1 ファイル分のブロック（1 行目が "diff --git ..."）を処理する。
+        # budget に収まればチャンクへ詰め、収まらなければハンク単位へ落とす。
+        function process_file(block, block_len,
+            header, header_len, lines, n, i, line, in_hunk, hh, hh_len, first_line, fnh) {
+          if (block_len <= budget) {
+            if (cur_len + block_len <= budget) {
+              cur = cur block
+              cur_len += block_len
+            } else {
+              flush_cur()
+              cur = block
+              cur_len = block_len
+            }
+            return
+          }
+
+          # 単体で上限を超える。ファイル単位の詰め合わせとは混ぜず、ここで
+          # 現在のチャンクを確定してからハンク単位へ落とす。
+          flush_cur()
+
+          n = split(block, lines, "\n")
+          header = ""; header_len = 0
+          first_line = lines[1]
+          in_hunk = 0
+          hh = ""; hh_len = 0
+
+          for (i = 1; i <= n; i++) {
+            line = lines[i]
+            # split() は block 末尾の "\n" の分だけ空要素を最後に残す。
+            if (i == n && line == "") continue
+
+            if (!in_hunk && line ~ /^@@ -/) in_hunk = 1
+
+            if (!in_hunk) {
+              header = header line "\n"
+              header_len += length(line) + 1
+              continue
+            }
+
+            if (line ~ /^@@ -/) {
+              # 新しいハンクの開始。直前のハンクをファイルヘッダ付きで確定する。
+              if (hh_len > 0) {
+                if (header_len + hh_len > budget) {
+                  fail("チャンク分割できません（1 ハンクで上限超過）: " first_line)
+                }
+                chunk_no++
+                fnh = chunkpath(chunk_no)
+                printf "%s%s", header, hh > fnh
+                close(fnh)
+                hh = ""; hh_len = 0
+              }
+            }
+
+            hh = hh line "\n"
+            hh_len += length(line) + 1
+          }
+
+          if (!in_hunk) {
+            # 二値ファイル・モード変更のみなど、ハンクを 1 つも持たない差分が
+            # 単体で上限を超えている。これ以上は分割できない。
+            fail("チャンク分割できません（ハンクを持たない差分が上限超過）: " first_line)
+          }
+
+          if (hh_len > 0) {
+            if (header_len + hh_len > budget) {
+              fail("チャンク分割できません（1 ハンクで上限超過）: " first_line)
+            }
+            chunk_no++
+            fnh = chunkpath(chunk_no)
+            printf "%s%s", header, hh > fnh
+            close(fnh)
+          }
+        }
+
+        /^diff --git / {
+          if (have_buf) process_file(buf, buf_len)
+          buf = $0 "\n"
+          buf_len = length($0) + 1
+          have_buf = 1
+          next
+        }
+
+        { buf = buf $0 "\n"; buf_len += length($0) + 1 }
+
+        END {
+          if (aborted) exit 1
+          if (have_buf) process_file(buf, buf_len)
+          flush_cur()
+        }
+      ' "$diff_file"; then
+        # 理由（該当ファイル名を含む）は awk が stderr へ出し済み。
+        exit 1
+      fi
+
+      chunk_paths=()
+      while IFS= read -r chunk_path; do
+        chunk_paths+=("$chunk_path")
+      done < <(find "$chunks_dir" -type f -name 'chunk-*.diff' | sort)
+
+      if [[ "${#chunk_paths[@]}" -eq 0 ]]; then
+        echo "error: 差分の分割に失敗しました（チャンクが生成されませんでした）" >&2
+        exit 1
+      fi
     fi
     ;;
   codex)
-    # codex exec は `-` を置くと**指示文そのものを標準入力から読む**（実測:
-    # `codex exec - < 入力` で、読んだ本文が復唱された）。
-    #
-    # **差分は必ず流す**（#880。2026-10-02 に、#804 の「差分は流さず、モデル自身に
-    # `git diff` を叩かせる」を改めた）。読み取り専用のサンドボックスが起動しない環境
-    # （ユーザー名前空間を禁じたコンテナ）では、ツールの `git diff` が失敗し、差分を
-    # 読まないまま回答が返る。差分を先に渡しておけば、ツールが使えなくても差分は読まれる。
-    # 並びは「差分が先・プロンプトが後」——プロンプト冒頭の「上記は git の差分です」が
-    # 指す先を保つ（上流 ojos/ai-packages-dev#381 と同じ形）。
-    #
-    # **分割はしない**（1 チャンク）。標準入力なので引数の上限（SINGLE_ARG_LIMIT）を
-    # 受けない。効くのはモデルの文脈の上限で、`codex debug models` の context_window は
-    # 272,000 トークン（gpt-6-sol。codex-cli 0.159.3 で 2026-10-02 に実測）。main の直近
-    # 300 コミットの差分は最大 408,140 バイト・p90 177,768 バイトで、収まる見込み
-    # （バイトからトークンへの換算は未実測）。超えたときは CLI が失敗で終わり、run の
-    # ループが終了コードで落とす想定（黙って通さない。この経路も未実測）。
-    # agy 用の分割を流用しないのは、チャンクごとの過半数で判定が変わり、差分の外を
-    # 読める codex にはチャンクの境界が意味を持たないため。
+    # codex exec は `-` を指定すると、指示文そのものを標準入力から読む。差分と
+    # プロンプトを「差分が先・プロンプトが後」の順で 1 つのファイルにまとめて流す
+    # （上記ヘッダ「ツールの解禁」。ツールが使えない環境でも差分は必ず届く）。
+    # 引数に載せないので単一引数の上限を受けない。分割しない（1 チャンク）。
     CLI="codex"
-    codex_input="$work_dir/codex-input.txt"
-    printf '%s\n\n%s\n' "$diff_text" "$PROMPT" > "$codex_input"
-    chunk_files=("$codex_input")
+    chunk_paths=("$diff_file")
     ;;
 esac
 
-# 通過判定は「回答の JSON の `category`」で行う（#804）。
+# 通過判定は「出力の最後の行に置かれた判定トークン」で行う。
 #
-# **判定をモデルに出させない。** 以前は「出力の最後の行に置かれた判定トークン」を解析して
-# いたが、`.ai-playbook/review-workflow.md` が「**回数を増やしても消えない故障**」と名指しした
-# 形——モデルが回答の前に作業ナレーションを 1 行出し、**指摘が 0 件でも 3 回すべてが
-# 「指摘あり」に化けた**——は、その解析そのものに起因していた。**構造化出力を強制すれば、
-# 仕組みごと消える**（実測: 前置きを書かせても codex の回答は純粋な JSON だった）。
+# 出力全体が判定トークンと一致することを要求してはいけない。モデルは回答の前に
+# 「これから何をするか」という作業ナレーションを出すことがあり、それが出た瞬間に、
+# 指摘が 1 件も無くても「指摘あり」へ化ける。実測では 3 run すべてがこの形で落ちた。
+# ナレーションは同じ差分なら毎回同じように出るため、run 数を増やしても消えない。
+# 偽の赤が定常化すると、ゲートそのものが読まれなくなる。
 #
-# **落とすのは 4 点だけ**（review-workflow.md の限定）。それ以外の category は報告に出すが、
-# 判定は動かさない。**規則はここ 1 か所に置く**——プロンプトへ書き写すと、片方だけ直る。
-BLOCKING_CATEGORIES='bug vulnerability type-error edge-case'
+# 逆に「LGTM を含む」へ緩めることもしない。ファイル別に講評して途中の 1 行へ LGTM と
+# 書く形や、指摘の末尾へ **LGTM** を添える形は、モデルが自然に取る出力で実際に起きる。
+# 行の存在で判定すると、重大な指摘が同時に出ていても通過する。判定トークンを
+# `VERDICT:` 付きの専用の形にしているのはこのためで、末尾に装飾された LGTM が
+# 置かれていても判定トークンではないので通過しない。
+#
+# 部分一致にもしない。`VERDICT: not LGTM` の類は一致しない。
+#
+# 判定トークンが無い出力は指摘ありとして扱う（安全側）。指示に従わなかった出力を
+# 通すと、判定していないものを緑として報告することになる。
+#
+# 装飾（`**` / `` ` `` / `_` / `#`）と空白・末尾の句点は落としてから比較する。判定を
+# 厳しくした結果ゲートが常に赤くなると、無視されるようになる。
+normalize_verdict() {
+  local normalized
+  normalized="$(printf '%s' "$1" | tr -d '`*_#[:space:]')"
+  normalized="${normalized%.}"
+  normalized="${normalized%。}"
+  printf '%s' "$normalized"
+}
 
-# **許容する category はスキーマを正本にする。** 2 か所に書くと、片方だけ直る
-# （`.ai-playbook/shared-ai-rules.md` 12 章）。スキーマはモデルへ渡す物でもあるので、
-# ここから読めば「モデルに許した値」と「こちらが受け付ける値」が必ず一致する。
-ALL_CATEGORIES="$(jq -r '.properties.findings.items.properties.category.enum[]' "$SCHEMA_FILE" 2>/dev/null || true)"
-if [[ -z "${ALL_CATEGORIES//[[:space:]]/}" ]]; then
-  echo "error: スキーマから category の一覧を読めませんでした: $SCHEMA_FILE" >&2
-  exit 1
-fi
+# 最後の非空行。判定トークンの後ろに空行が続く出力を取りこぼさない。
+last_nonempty_line() {
+  printf '%s\n' "$1" | grep -v '^[[:space:]]*$' | tail -n 1
+}
 
-# **落とす 4 つがスキーマに無ければ止める。** 綴りを変えたときに、どちらか片方だけが
-# 変わると「落とすはずの指摘が 1 件も一致しない」形で静かに緑になる。
-for __category in $BLOCKING_CATEGORIES; do
-  if ! printf '%s\n' "$ALL_CATEGORIES" | grep -qx -- "$__category"; then
-    echo "error: 落とす category '$__category' がスキーマの enum にありません（規則とスキーマがずれています）" >&2
-    exit 1
+is_lgtm() {
+  # 後方互換の通過経路。出力全体が LGTM だけの場合は、判定トークンが無くても通す。
+  # 「LGTM とだけ返す」旧仕様に従うモデルを、仕様変更だけで赤にしないため。
+  if [[ "$(normalize_verdict "$1")" == "" ]]; then
+    return 1
   fi
-done
+  # grep へ -q を渡さない。-q は最初のマッチで終了してパイプを閉じ、まだ書き込み中の
+  # printf が SIGPIPE で死ぬ。pipefail 下ではパイプライン全体が非 0 になり、**LGTM の
+  # ときに限って**判定が反転する（偽の指摘あり）。モデル出力はパイプバッファを超えうる。
+  if printf '%s\n' "$(normalize_verdict "$1")" | grep -ix 'LGTM' >/dev/null; then
+    return 0
+  fi
+  printf '%s\n' "$(normalize_verdict "$(last_nonempty_line "$1")")" | grep -ix 'VERDICT:LGTM' >/dev/null
+}
 
-# 回答から JSON を取り出す。エンジンごとに包みが違うのはここだけ。
+# 判定トークンが「無い」のか「FINDINGS だった」のかを区別して診断へ出す。無い場合、
+# モデルが出力形式に従っていない可能性があり、指摘本文を読んでも原因が分からない。
+has_verdict_token() {
+  printf '%s\n' "$(normalize_verdict "$(last_nonempty_line "$1")")" \
+    | grep -iE '^VERDICT:(LGTM|FINDINGS)$' >/dev/null
+}
+
+# ここから JSON スキーマ方式（antigravity / codex）の判定。gemini はここを使わない。
 #
-#   codex        `-o` のファイルがそのまま JSON（スキーマで強制済み）
+# 回答から JSON を取り出す。エンジンごとに包みが違うのはここだけ。
+#   codex        -o のファイルがそのまま JSON（スキーマで強制済み）
 #   antigravity  stdout が包みで、回答は `.structured_output`（スキーマで強制済み）
-#   gemini       **強制する旗が無い**（`--json-schema` に当たるものが `gemini --help` に無い。
-#                2026-09-29 に実測）。本文から JSON を取り出す。読めなければ落とす
 extract_answer_json() {
-  local raw="$1" candidate
+  local raw="$1"
   case "$ENGINE" in
     codex)
       printf '%s' "$raw"
-      return 0
       ;;
     antigravity)
       printf '%s' "$raw" | jq -c '.structured_output' 2>/dev/null || true
-      return 0
+      ;;
+    *)
+      printf '%s' "$raw"
       ;;
   esac
-
-  # **スキーマを強制できないエンジンは、前置きを付けて返すことがある**（第二意見の指摘。
-  # 実在）。`これから確認します。` の 1 行が先に付くだけで、回答全体を jq へ渡す形だと
-  # 解析に失敗し、**指摘が 0 件でもゲートが落ちる**——acceptance が消したかった
-  # 「ナレーションによる誤分類」が、この経路にだけ残ることになる。
-  #
-  # **3 通りを順に試し、最初に JSON として読めたものを採る。** 3 番目は「最初の `{` から
-  # 最後の `}` まで」で、awk の貪欲一致で取る（mawk / BSD awk とも `.` が改行に当たることを
-  # 実測済み）。**「読めた」の判定は 1 か所（answer_is_valid）に任せる**——ここで別の
-  # 判定を書くと、通す条件が 2 か所になる。
-  for candidate in \
-    "$raw" \
-    "$(printf '%s' "$raw" | sed -n '/^[[:space:]]*```/,/^[[:space:]]*```/p' | sed '1d;$d')" \
-    "$(printf '%s' "$raw" | awk 'BEGIN{RS="\0"} { if (match($0, /\{.*\}/)) print substr($0, RSTART, RLENGTH) }')"
-  do
-    if [[ -n "${candidate//[[:space:]]/}" ]] && answer_is_valid "$candidate"; then
-      printf '%s' "$candidate"
-      return 0
-    fi
-  done
-
-  # どれも読めなければ、生のまま返す（呼び出し元が落として、生の出力を見せる）。
-  printf '%s' "$raw"
 }
 
-
-# 形が満たされているかを見る。**「読めなかった」を「指摘なし」にしない**——
-# 読めないまま通すと、レビューしていないものを緑として報告することになる。
+# 形が満たされているかを見る。**「読めなかった」を「指摘なし」にしない**
+# ——読めないまま通すと、レビューしていないものを緑として報告することになる。
 #
-# **category の値まで見る**（第二意見の指摘。実在）。配列であることしか見ないと、
-# **スキーマを強制できないエンジン**（gemini には `--json-schema` に当たる旗が無い）で
-# `category: "bugs"` のような綴り違いが来たときに、**検証を通ったうえで「落とす指摘 0 件」と
-# 数えられ、ゲートが緑になる。** 知らない category は「重さが分からない」ということなので、
-# 指摘なしへ倒さず、読めなかったものとして落とす。
+# category の値まで見る。配列であることしか見ないと、スキーマに無い綴り
+# （強制が効いていない・CLI の版差等）が来たときに「落とす指摘 0 件」と数えられ、
+# ゲートが緑になる。知らない category は「重さが分からない」ので、指摘なしへ
+# 倒さず、読めなかったものとして落とす。
 answer_is_valid() {
   local allowed
   allowed="$(printf '%s\n' "$ALL_CATEGORIES" | jq -R . | jq -s -c .)"
@@ -896,12 +959,9 @@ answer_is_valid() {
   ' >/dev/null 2>&1
 }
 
-# 落とす指摘の数。
-#
-# **`paste -sd ' or '` で連結しない。** `-d` は「区切り文字の並び」を 1 文字ずつ循環して
-# 使う指定なので、`' or '` を渡すと空白・空白・`o`・`r`・空白 が順に使われ、
-# `... "type-error"o.category ...` のような壊れたフィルタになる（実測。仕込みの検査で
-# jq が構文エラーになり、全ケースが exit 3 で落ちて気づいた）。
+# 落とす指摘の数。`paste -sd ' or '` のような区切り文字の連結は使わない——`-d` は
+# 「区切り文字の並び」を 1 文字ずつ循環して使う指定なので、複数文字の区切りを渡すと
+# 壊れた並びになる。filter は jq 式として自前で組み立てる。
 blocking_count() {
   local filter="" category
   for category in $BLOCKING_CATEGORIES; do
@@ -913,7 +973,7 @@ blocking_count() {
   printf '%s' "$1" | jq "[.findings[] | select($filter)] | length"
 }
 
-# 人が読む形にする。**報告は 4 点の外も出す**（#804 の「報告の範囲を広げる」）。
+# 人が読む形にする。報告は 4 点の外（promise-mismatch / other）も出す。
 print_findings() {
   printf '%s' "$1" | jq -r '.findings[] |
     "  [" + .category + "] " + (if .file == "" then "(場所の特定なし)" else .file + ":" + (.line | tostring) end) + "\n" +
@@ -921,60 +981,105 @@ print_findings() {
     "    なぜ: " + .why'
 }
 
-
+# 過半数。N=1 なら 1、N=2 なら 2、N=3 なら 2、N=4 なら 3。
 threshold=$((RUNS / 2 + 1))
 
-chunk_total="${#chunk_files[@]}"
-chunk_index=0
-chunks_with_findings=0
-minority_findings=0
+# チャンクが複数あるときも、全チャンクの run を合算して過半数を取らない。片方の
+# チャンクだけが確実に指摘を出していても、他方の LGTM に薄められて通過しうる。
+# チャンクごとに過半数を取り、1 つでも指摘ありなら全体を指摘ありとする
+# （findings_chunks で「指摘ありと判定されたチャンク数」を数える）。
+#
+# チャンクが 1 個（既定・分割が起きなかった場合）のログとメッセージは、分割を
+# 導入する前と完全に同じ形にする。チャンクをまたぐ言い回しを混ぜると、
+# 大半を占める「分割なし」の実行でも表示が変わってしまう。
+chunk_count=${#chunk_paths[@]}
+findings_chunks=0
+findings=0
+chunk_idx=0
+for chunk_path in "${chunk_paths[@]}"; do
+  chunk_idx=$((chunk_idx + 1))
 
-if [[ "$chunk_total" -gt 1 ]]; then
-  echo "[second-opinion] 差分が単一引数の上限を超えるため $chunk_total 個へ分割してレビューします"
-fi
+  case "$ENGINE" in
+    gemini)
+      args=(--skip-trust --include-directories "$work_dir" -p "@$chunk_path
+$PROMPT")
+      [[ -n "$MODEL" ]] && args=(-m "$MODEL" "${args[@]}")
+      ;;
+    antigravity)
+      # 分割なし（chunk_path が diff_file 本体）のときは $diff_text をそのまま使う。
+      # ファイル経由で読み直すと、コマンド置換や read が末尾の改行を落としうる。
+      if [[ "$chunk_path" == "$diff_file" ]]; then
+        chunk_text="$diff_text"
+      else
+        # read -d '' はデリミタが無いまま EOF に達すると非 0 を返すが、変数には
+        # 読み取れた内容がそのまま入る。command substitution と違い、末尾の
+        # 改行を落とさない（分割されたチャンクをバイト単位で正確に渡すため）。
+        IFS= read -r -d '' chunk_text < "$chunk_path" || true
+      fi
+      # --json-schema は構造化出力を強制する。`--output-format json` が無いと
+      # 「--json-schema can only be used when --output-format is 'json' or
+      # 'stream-json'」で落ちるため、常に併せて渡す。回答は包みの
+      # `.structured_output` に入る（下の extract_answer_json で取り出す）。
+      args=(-p "$chunk_text
+$PROMPT" --output-format json --json-schema "$SCHEMA_FILE")
+      [[ -n "$MODEL" ]] && args=(--model "$MODEL" "${args[@]}")
+      ;;
+    codex)
+      # 判定に使う入力を -o（最後のメッセージ）へ固定する。stdout の形には頼らない
+      # ——codex exec は見出し・設定・受け取ったプロンプトの復唱を stderr へ出すが、
+      # 回答を stdout のどこへ何行で書くかは CLI の版で変わりうる。-o は
+      # 「エージェントの最後のメッセージ」を書く明示の口なので、ここを読む。
+      #
+      # 失敗すれば -o のファイルは作られない。run の呼び出しが終了コードで先に
+      # 落ちるため、無いファイルを読んで「回答が空」と報告する経路には入らない。
+      answer_file="$work_dir/codex-answer.json"
 
-for chunk_file in "${chunk_files[@]}"; do
-  chunk_index=$((chunk_index + 1))
-  build_args "$chunk_file"
+      # 標準入力には「差分が先・プロンプトが後」の順で流す（プロンプト冒頭の
+      # 「上記は git の差分です」が指す先を保つ）。差分を渡す理由は PROMPT の
+      # 組み立ての注記（サンドボックスが起動しない環境）。
+      stdin_file="$work_dir/codex-input.txt"
+      printf '%s\n\n%s\n' "$diff_text" "$PROMPT" > "$stdin_file"
 
-  # 分割していないときは従来どおりの表示にする。無条件に「1/1」を出すと、
-  # 分割が起きたかどうかがログから読み取れなくなる。
-  if [[ "$chunk_total" -gt 1 ]]; then
-    chunk_label=" chunk $chunk_index/$chunk_total"
-  else
-    chunk_label=""
-  fi
+      # --sandbox read-only: ツールの解禁はここが担保する（上記ヘッダ「ツールの
+      #   解禁」）。既定に頼らず明示する。
+      # --output-schema: 回答の形を強制する。これで「出力の最後の行の判定トークン」
+      #   を解析する仕組みが要らなくなり、ナレーション 1 行で誤分類する故障クラスが
+      #   構造的に消える。
+      # --color never: ANSI のエスケープが JSON に混じらないようにする。
+      args=(exec - --sandbox read-only --color never \
+            --output-schema "$SCHEMA_FILE" -o "$answer_file")
+      [[ -n "$MODEL" ]] && args+=(--model "$MODEL")
+      ;;
+  esac
 
   findings=0
   run=0
   while [[ "$run" -lt "$RUNS" ]]; do
     run=$((run + 1))
 
+    # 回答のファイルは呼び出しの直前に消す。args の組み立ては 1 チャンクに 1 回しか
+    # 走らないので、そこで消すだけでは --runs 2 以上のときに 2 回目が 1 回目の回答を
+    # 読む——0 で終わりながら -o を書かなかった回が、前の回の判定で通ってしまう。
+    [[ "$ENGINE" == "codex" && -n "$answer_file" ]] && rm -f "$answer_file"
+
     # CLI の警告や進捗表示は「回答」ではない。判定へ混ぜると、警告が 1 行出ただけで
     # LGTM が指摘ありに化け、ゲートが常に赤くなる（実測: 端末の色数や ripgrep 不在の
-    # 警告が stderr に出る）。判定はモデルの回答（stdout）だけで行い、stderr は失敗
-    # したときの診断に回す。標準入力は codex にだけ渡す（$stdin_file の注記）。
-    # **回答のファイルは呼び出しの直前に消す。** build_args は 1 チャンクに 1 回しか
-    # 走らないので、そこで消すだけでは `--runs 2` 以上のときに 2 回目が 1 回目の回答を
-    # 読む——**0 で終わりながら -o を書かなかった回が、前の回の判定で通る**（下の
-    # 「回答が無ければ失敗させる」を素通りする。Copilot の指摘。実在）。
-    if [[ "$ENGINE" == "codex" ]]; then
-      rm -f "$answer_file"
-    fi
-
+    # 警告が stderr に出る）。判定はモデルの回答だけで行い、stderr は失敗したときの
+    # 診断に回す。gemini / antigravity は差分を引数で渡すため標準入力は渡さない。
+    # codex は標準入力に流す（stdin_file は codex 以外のとき /dev/null のまま）。
     output="$($CLI "${args[@]}" <"$stdin_file" 2>"$stderr_file")" || {
-      echo "error: second opinion failed (engine=$ENGINE,$chunk_label run $run/$RUNS)" >&2
+      echo "error: second opinion failed (engine=$ENGINE, run $run/$RUNS$( [[ "$chunk_count" -gt 1 ]] && echo ", chunk $chunk_idx/$chunk_count" ))" >&2
       cat "$stderr_file" >&2
       printf '%s\n' "$output" >&2
       exit 1
     }
 
-    # codex は回答を stdout ではなく -o のファイルへ取る（build_args の注記）。
-    # **無ければ失敗させる。** 0 で終わったのにファイルが無いのは、判定の入力が
-    # 無いということで、「回答が空」として指摘あり側へ倒すと理由が読めなくなる。
+    # codex は回答を stdout ではなく -o のファイルへ取る（上の args 組み立ての注記）。
+    # 無ければ失敗させる。0 で終わったのにファイルが無いのは判定の入力が無いという
+    # ことで、「回答が空」として指摘あり側へ倒すと理由が読めなくなる。
     if [[ "$ENGINE" == "codex" ]]; then
       if [[ ! -f "$answer_file" ]]; then
-        echo "error: codex が最後のメッセージを書きませんでした（-o のファイルが無い。engine=$ENGINE,$chunk_label run $run/$RUNS）" >&2
+        echo "error: codex が最後のメッセージを書きませんでした（-o のファイルが無い。engine=$ENGINE, run $run/$RUNS$( [[ "$chunk_count" -gt 1 ]] && echo ", chunk $chunk_idx/$chunk_count" )）" >&2
         cat "$stderr_file" >&2
         exit 1
       fi
@@ -983,84 +1088,120 @@ for chunk_file in "${chunk_files[@]}"; do
 
     # 回答が空でも終了コードが 0 になる経路がある。実測では、agy がツールの実行許可を
     # 求めて非対話では承認できず自動拒否し、「回答なし」を stderr へ書いて 0 で終えた。
-    # **いまは空の回答は JSON として読めないので下で落ちる**が、原因（CLI の診断）は
-    # ここで見せておく。落ちた理由が「形が違う」だけに見えると、原因を追えない。
+    # このとき判定は（判定トークンが無いので）指摘あり側へ倒れるが、指摘本文が無いため
+    # 画面には何も出ず、原因が分からないまま赤になる。CLI の診断をここで見せる。
     if [[ -z "${output//[[:space:]]/}" && -s "$stderr_file" ]]; then
-      echo "[second-opinion]$chunk_label run $run/$RUNS: モデルの回答が空です。CLI の診断:" >&2
+      echo "[second-opinion] run $run/$RUNS: モデルの回答が空です。CLI の診断:" >&2
       cat "$stderr_file" >&2
     fi
 
-    # 回答（JSON）を取り出して判定する。**形が満たされていなければ落とす**
-    # ——「読めなかった」を「指摘なし」に倒すと、レビューしていないものが緑になる。
-    answer_json="$(extract_answer_json "$output")"
-    if ! answer_is_valid "$answer_json"; then
-      echo "error: 回答を JSON として読めませんでした（engine=$ENGINE,$chunk_label run $run/$RUNS）。生の出力:" >&2
-      printf '%s\n' "$output" >&2
-      if [[ -s "$stderr_file" ]]; then
-        echo "--- CLI の診断 ---" >&2
-        cat "$stderr_file" >&2
-      fi
-      exit 1
-    fi
-
-    # **差分を読めなかった回答は、指摘の中身によらず落とす**（#873）。`other` の指摘
-    # だけを返して LGTM になると、読んでいないものがレビュー済みとして記録される。
-    # **LGTM / findings の行を出さない。** loop-gate.sh はその行が無い出力を「判定に
-    # 到達しなかった」として記録しないので、確認側（second-opinion-gate.yml）が赤を出せる。
-    if [[ "$(printf '%s' "$answer_json" | jq -r '.reviewed')" != "true" ]]; then
-      echo "error: 第二意見が差分を読めなかったと答えました（engine=$ENGINE,$chunk_label run $run/$RUNS）。レビューは成立していません:" >&2
-      print_findings "$answer_json" >&2
-      if [[ -s "$stderr_file" ]]; then
-        echo "--- CLI の診断 ---" >&2
-        cat "$stderr_file" >&2
-      fi
-      exit 1
-    fi
+    log_prefix="[second-opinion]"
+    [[ "$chunk_count" -gt 1 ]] && log_prefix="[second-opinion] chunk $chunk_idx/$chunk_count"
 
     # どの run が何を報告したかを追えるようにする。集約結果だけを出すと、
     # 過半数に届かなかった指摘が消えて確認できなくなる。
     #
-    # **報告は 4 点の外も出し、判定は 4 点だけで行う**（#804）。
-    blocking="$(blocking_count "$answer_json")"
-    total="$(printf '%s' "$answer_json" | jq '.findings | length')"
-    if [[ "$blocking" -eq 0 ]]; then
-      if [[ "$total" -eq 0 ]]; then
-        echo "[second-opinion]$chunk_label run $run/$RUNS: LGTM"
+    # 判定方式はエンジンで固定。gemini は出力の最後の行の判定トークン
+    # （is_lgtm / has_verdict_token）、antigravity / codex は回答の JSON の
+    # category（上記「ここから JSON スキーマ方式」）。
+    if [[ "$ENGINE_JSON" -eq 1 ]]; then
+      answer_json="$(extract_answer_json "$output")"
+      if ! answer_is_valid "$answer_json"; then
+        # **「読めなかった」を「指摘なし」に倒さない。** レビューしていないものを
+        # 緑として報告することになる。
+        echo "error: 回答を JSON として読めませんでした（engine=$ENGINE, run $run/$RUNS$( [[ "$chunk_count" -gt 1 ]] && echo ", chunk $chunk_idx/$chunk_count" )）。生の出力:" >&2
+        printf '%s\n' "$output" >&2
+        if [[ -s "$stderr_file" ]]; then
+          echo "--- CLI の診断 ---" >&2
+          cat "$stderr_file" >&2
+        fi
+        exit 1
+      fi
+
+      # **差分を読めなかった回答は、指摘の中身によらず落とす**（game-forge #873）。
+      # `other` の指摘だけを返して LGTM になると、読んでいないものがレビュー済み
+      # として記録される。**ここで完了の行（LGTM / findings reported ...）を
+      # 出さない。** loop-gate.sh の second-opinion-record.sh への記録は、出力に
+      # その行があるかどうかで「判定に到達したか」を見ているため、出さずに exit
+      # すれば記録も残らない。
+      if [[ "$(printf '%s' "$answer_json" | jq -r '.reviewed')" != "true" ]]; then
+        echo "error: 第二意見が差分を読めなかったと答えました（engine=$ENGINE, run $run/$RUNS$( [[ "$chunk_count" -gt 1 ]] && echo ", chunk $chunk_idx/$chunk_count" )）。レビューは成立していません:" >&2
+        print_findings "$answer_json" >&2
+        if [[ -s "$stderr_file" ]]; then
+          echo "--- CLI の診断 ---" >&2
+          cat "$stderr_file" >&2
+        fi
+        exit 1
+      fi
+
+      blocking="$(blocking_count "$answer_json")"
+      total="$(printf '%s' "$answer_json" | jq '.findings | length')"
+      if [[ "$blocking" -eq 0 ]]; then
+        if [[ "$total" -eq 0 ]]; then
+          echo "$log_prefix run $run/$RUNS: LGTM"
+        else
+          # 落とさない指摘（promise-mismatch / other）は、通したうえで見せる。
+          echo "$log_prefix run $run/$RUNS: LGTM（落とさない指摘が $total 件）"
+          print_findings "$answer_json"
+        fi
       else
-        # 落とさない指摘（promise-mismatch / other）は、通したうえで見せる。
-        echo "[second-opinion]$chunk_label run $run/$RUNS: LGTM（落とさない指摘が $total 件）"
+        findings=$((findings + 1))
+        echo "$log_prefix run $run/$RUNS: findings（落とす $blocking 件 / 全 $total 件）"
         print_findings "$answer_json"
       fi
     else
-      findings=$((findings + 1))
-      echo "[second-opinion]$chunk_label run $run/$RUNS: findings（落とす $blocking 件 / 全 $total 件）"
-      print_findings "$answer_json"
+      if is_lgtm "$output"; then
+        echo "$log_prefix run $run/$RUNS: LGTM"
+      else
+        findings=$((findings + 1))
+        if has_verdict_token "$output"; then
+          echo "$log_prefix run $run/$RUNS: findings"
+        else
+          # 判定トークンが無い出力を黙って「指摘あり」に数えると、モデルが形式に
+          # 従わなかっただけの赤と、実在の指摘による赤が区別できない。
+          echo "$log_prefix run $run/$RUNS: findings (判定トークンが見つかりません。最後の行に VERDICT: LGTM または VERDICT: FINDINGS が必要です)"
+        fi
+        printf '%s\n' "$output"
+      fi
     fi
   done
 
-  # 判定はチャンクごとに過半数で行い、1 つでも指摘ありなら全体を指摘ありとする。
-  # 全チャンクの run を合算して過半数を取ると、片方のチャンクだけが確実に指摘を
-  # 出していても、他方の LGTM に薄められて通過しうる。
   if [[ "$findings" -ge "$threshold" ]]; then
-    chunks_with_findings=$((chunks_with_findings + 1))
-  elif [[ "$findings" -gt 0 ]]; then
-    minority_findings=$((minority_findings + 1))
+    findings_chunks=$((findings_chunks + 1))
+  fi
+
+  # チャンクが 1 個のときは、このチャンクの集計がそのまま全体の集計になる。
+  # 後段の分岐でそのまま使うため、ここでチャンク単位のメッセージは出さない。
+  if [[ "$chunk_count" -gt 1 ]]; then
+    if [[ "$findings" -lt "$threshold" ]]; then
+      echo "[second-opinion] chunk $chunk_idx/$chunk_count: LGTM ($findings/$RUNS runs reported findings; threshold $threshold)"
+    else
+      echo "[second-opinion] chunk $chunk_idx/$chunk_count: findings reported by $findings/$RUNS runs (threshold $threshold)." >&2
+    fi
   fi
 done
 
-if [[ "$chunks_with_findings" -eq 0 ]]; then
-  if [[ "$chunk_total" -gt 1 ]]; then
-    echo "[second-opinion] LGTM ($chunk_total チャンクすべてが閾値 $threshold/$RUNS 未満)"
-  else
+if [[ "$chunk_count" -eq 1 ]]; then
+  # 分割が起きなかった場合の表示は、分割を導入する前と完全に同じ形にする。
+  if [[ "$findings" -lt "$threshold" ]]; then
     echo "[second-opinion] LGTM ($findings/$RUNS runs reported findings; threshold $threshold)"
+    # 過半数に届かなくても、指摘があった事実は伏せない。誤検出とは限らない。
+    if [[ "$findings" -gt 0 ]]; then
+      echo "[second-opinion] note: 少数の run が指摘しています。内容は上に出ています。" >&2
+    fi
+    exit 0
   fi
-  # 過半数に届かなくても、指摘があった事実は伏せない。誤検出とは限らない。
-  if [[ "$minority_findings" -gt 0 ]]; then
-    echo "[second-opinion] note: 少数の run が指摘しています。内容は上に出ています。" >&2
-  fi
+
+  echo "[second-opinion] findings reported by $findings/$RUNS runs (threshold $threshold)." >&2
+  echo "[second-opinion] fix them in a single iteration before push." >&2
+  exit 1
+fi
+
+if [[ "$findings_chunks" -eq 0 ]]; then
+  echo "[second-opinion] LGTM (all $chunk_count chunks passed chunk-wise majority)"
   exit 0
 fi
 
-echo "[second-opinion] findings reported in $chunks_with_findings/$chunk_total chunk(s) (threshold $threshold/$RUNS runs)." >&2
+echo "[second-opinion] $findings_chunks/$chunk_count chunks reported findings (chunk-wise majority)." >&2
 echo "[second-opinion] fix them in a single iteration before push." >&2
 exit 1

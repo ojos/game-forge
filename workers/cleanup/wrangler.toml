@@ -32,7 +32,7 @@
 #
 # **Pages より先に配る**（`workers/likes/` と同じ段の並びに揃える。手順は `docs/cleanup-worker.md`）。
 # Pages はこの Worker を指さないので順序に依存は無いが、**Worker を配る段を 1 か所に集めておく**
-# ほうが、段の読み方が 1 つで済む。順序は `.github/workflows/verify.yml` の deploy ジョブが持つ。
+# ほうが、段の読み方が 1 つで済む。順序は `.github/workflows/deploy.yml` の deploy ジョブが持つ。
 name = "game-forge-cleanup"
 main = "src/index.ts"
 # Pages（ルートの `wrangler.toml`）と同じ日付に揃える。呼び出し側と受け側でランタイムの

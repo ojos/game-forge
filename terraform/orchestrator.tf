@@ -569,7 +569,8 @@ resource "aws_lambda_function_event_invoke_config" "orchestrator" {
  * `wrangler.toml` の変更は terraform の宣言変更ではない。**誰も回そうと思わなかった。**
  *
  * **だから機構へ移す。** Worker を本番へ配る直前に、CI が同じ比較を行う。古ければ
- * **配備そのものを止める**（`.github/workflows/verify.yml` の deploy ジョブ）。
+ * **配備そのものを止める**（`.github/workflows/deploy.yml` の deploy ジョブ。
+ * `verify` の成功を条件とする `workflow_run` で起動する。#938）。
  *
  * # 読み取りだけの専用ロールにする
  *

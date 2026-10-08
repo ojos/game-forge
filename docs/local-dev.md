@@ -1167,11 +1167,12 @@ install-cloudflared.sh の分岐は、`scripts/check-devcontainer-dev01.sh`（`s
 
 **Mac が手元に無いとき、Android（Termux）のショートカットのタップだけで、dev01 の devcontainer を起こし、
 tmux に入り、AWS を再認証できるようにする。** 道具（`dev`）とユニット（`dev-up@.service`）は、
-**devcontainer-bootstrap（DCB）のリリースに同梱された上流の版**（v0.14.0 から。#923 で寄せた）を使い、このリポジトリには置かない。
+**devcontainer-bootstrap（DCB）のリリースに同梱された上流の版**（#923 で寄せた。dev01 に置く版は tools/devhost/README.md の
+「上流の版を上げる」の `TAG=` の行が正本）を使い、このリポジトリには置かない。
 上流は特定のクラウドへの認証を組み込まないので、AWS SSO に入るところだけを game-forge の薄い追加
 `dev-auth-aws`（[tools/devhost/](../tools/devhost/README.md)。`scripts/check-devhost.sh` が自己試験を回す）として残している。
 導入の一般の手順・stopCompose の扱いの比較・鍵の作り方と失効のさせ方は DCB のアーカイブの `devhost/README.md` が正本で、
-game-forge 版からの移行の手順と、上流へ寄せて失ったもの（`dev ls` の AWS の列）は tools/devhost/README.md にある。
+上流の版を上げる手順・game-forge 版からの移行の記録・上流へ寄せて失ったもの（`dev ls` の AWS の列）は tools/devhost/README.md にある。
 ここには、このリポジトリと dev01 の値で埋めた形と、復旧の手順だけを書く。
 
 **自動で戻すのはコンテナまで。** tmux と Claude はタップで手で起こす。電源・OS（①）と、cloudflared と sshd（②）は
@@ -1179,8 +1180,8 @@ game-forge 版からの移行の手順と、上流へ寄せて失ったもの（
 
 #### ホスト（dev01）で 1 度だけ
 
-上流の README の「外部の機械への導入」（DCB v0.14.0 以降のアーカイブから、マニフェストのハッシュで照合して取り出す）を、
-次の設定ファイルで行う。続けて、薄い追加 `dev-auth-aws` を tools/devhost/README.md の移行手順の 3 のとおりに置く。
+上流の README の「外部の機械への導入」（tools/devhost/README.md の `TAG=` の版のアーカイブから、マニフェストのハッシュで照合して取り出す）を、
+次の設定ファイルで行う。続けて、薄い追加 `dev-auth-aws` を tools/devhost/README.md の「薄い追加を置く・更新する」のとおりに置く。
 
 ```bash
 mkdir -p ~/.config/dev
@@ -1199,7 +1200,8 @@ systemctl --user enable --now dev-up@game-forge.service
   旧ドメインの `https://d-956797eff8.awsapps.com/start` のままだと、デバイスコードの画面で Google の認証を済ませた後に
   「問題が発生しました」で止まる（2026-10-01 に Pixel 8 と Mac の両方で再現。先にアクセスポータルへ新ドメインでサインインして
   おくと通るのは、そのセッションが残っているため）。新ドメインにすると、事前のサインインなしで `gf-auth-aws` が通った。
-- **Rebuild Container の前は `systemctl --user stop dev-up@game-forge.service`**、終わったら `start` する
+- **作り直しは `dev rebuild game-forge`** で行う（v0.17.0 から。ユニットの停止と起こし直しまでする）。
+  VS Code の Rebuild Container で作り直すときは、**先に `systemctl --user stop dev-up@game-forge.service`**、終わったら `start` する
   （上流の README の「VS Code の窓を閉じたときの停止」）。
 
 #### スマホ（Termux）で 1 度だけ
@@ -1232,6 +1234,8 @@ ssh dev01 .local/bin/dev ls     # 最初の 1 回は Access の URL が出る。
 - ボタンの画面は、ssh が終わると Termux:Widget が閉じる。出力を読みたいときは Termux を開いて同じ `ssh -t dev01 …` を打つ。
 
 ホーム画面に Termux:Widget を置くと、`gf-attach` / `gf-up` / `gf-auth-aws` / `dev-ls` の 4 つのボタンになる。
+`gf-doctor` / `gf-rebuild` のボタンを足すかどうかは利用者が決める（足し方と、`gf-rebuild` の誤タップで作業が消えることは
+tools/devhost/README.md の「スマホのボタンに doctor / rebuild を足す」）。
 
 #### 復旧の手順（どの層が落ちたら、どのボタンを押すか）
 
@@ -1242,6 +1246,7 @@ ssh dev01 .local/bin/dev ls     # 最初の 1 回は Access の URL が出る。
 | `Permission denied (publickey)` | 鍵 | 鍵の行が `authorized_keys` に無い（失効させた・足し忘れ）。Mac から足し直す |
 | `dev-ls` の CONTAINER が `exited` / `none` | ③ devcontainer | 30 秒待って `dev-ls`。戻らなければ `gf-up` |
 | `gf-up` が失敗する | ③ | `ssh -t dev01 journalctl --user -u dev-up@game-forge -n 30` で理由を読む |
+| `dev-ls` の CONTAINER は running なのに `gf-attach` が入れない | ③' devcontainer | Termux で `ssh -t dev01 .local/bin/dev doctor game-forge`（足していれば `gf-doctor`）。FAIL なら `dev rebuild game-forge`（中の作業は消える） |
 | `dev-ls` の TMUX が `none` | ④ tmux | `gf-attach`（無ければ作って入る）。Claude はその中で手で起こす |
 | AWS の CLI が `Token has expired` で落ちる（`dev-ls` には AWS の列が無い。#923 で上流へ寄せて失った） | ⑤ 認証 | `gf-auth-aws`。出た URL をブラウザで開き、コードを承認する。切れているかだけを見るなら、`gf-attach` の中で `aws sts get-caller-identity --profile game-forge-dev` |
 | GCP（24 時間）が切れた | ⑤ 認証 | `gf-attach` の中で `gcloud auth login --no-launch-browser`（薄い追加は AWS だけを持つ） |

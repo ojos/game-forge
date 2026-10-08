@@ -40,6 +40,7 @@
         "GoogleCloudTools.cloudcode",
         "hashicorp.terraform",
         "anthropic.claude-code",
+        "Google.gemini-cli-vscode-ide-companion",
         "ms-azuretools.vscode-containers"
       ]
     }

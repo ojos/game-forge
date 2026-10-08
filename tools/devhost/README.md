@@ -182,13 +182,15 @@ dev01 の `dev` を v0.17.0 以降へ上げる前に足すと、ボタンは `de
 
 1. 上の「上流の版を上げる」の 0〜2 で、上流の版を取り出し、ユニットを比べる（game-forge 版のユニットは上流の
    v0.14.0 以降と同じ中身でした）。
-2. 「薄い追加を置く・更新する」で `dev-auth-aws` を置く。このとき `aws-sso` は、AWS のキーを外す前の projects から作る。
-   セッション名は projects の `aws_sso_session` から読み、無ければ `ojos` を使う:
+2. 先に、AWS のキーを外す前の projects から `aws-sso` を作る（セッション名は projects の `aws_sso_session` から読み、
+   無ければ `ojos`）:
 
    ```bash
    awk -v def=ojos '$1=="game-forge"{s=def; for(i=3;i<=NF;i++) if($i ~ /^aws_sso_session=/) s=substr($i,17); print $1, $2, s}' \
      ~/.config/dev/projects > ~/.config/dev/aws-sso
    ```
+
+   続けて「薄い追加を置く・更新する」で `dev-auth-aws` を置く（`aws-sso` が既にあるので、その節の awk は何もしない）。
 
 3. 設定ファイルから AWS のキーを外す（game-forge 版の dev のままで、ls の AWS 列が - になる）:
 

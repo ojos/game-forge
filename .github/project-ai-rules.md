@@ -146,7 +146,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 
 **gemini を `SECOND_OPINION_RUNS` 3 以上で回しません。** 雛形の多数決は、判定トークンの無い回答を「指摘あり」の 1 票として数えます（`scripts/second-opinion-review.sh` の判定トークンの分岐）。3 回のうち 2 回が LGTM なら、残りの 1 回が形式不正でも全体は LGTM になり、記録も残ります。回数が 1 なら閾値も 1 なので、トークンの無い回答で落ちます。#938 の第二意見（codex）が指摘し、利用者の判断（2026-10-08）で雛形のまま残しました。codex と antigravity はスキーマで判定するので、この経路を通りません。
 
-**`.ai-playbook/` は上流パッケージの写しです**（`.ai-playbook/VERSION` に `source=https://github.com/ojos/ai-playbook/…/v0.8.1.tar.gz`）。**ここを編集しても次の展開で消えるため、プロジェクトの選択と具体化はこのプロジェクト層に書きます。**
+**`.ai-playbook/` は上流パッケージの写しです**（`.ai-playbook/VERSION` に `source=https://github.com/ojos/ai-playbook/…/v0.8.2.tar.gz`）。**ここを編集しても次の展開で消えるため、プロジェクトの選択と具体化はこのプロジェクト層に書きます。**
 
 ### 受け入れ検証の二層
 
@@ -338,7 +338,7 @@ gh api --paginate 'repos/{owner}/{repo}/pulls/N/comments' --jq '.[] | {user: .us
 - **識別子はセッション（Claude Code の本体のプロセス）ごとです。** 1 つの親が起こした implementer のレーンは親と同じ識別子なので、レーンどうしでは止め合いません（レーンの分離は上の「作業ツリーの分離」が持ちます）。止め合うのは、利用者が別々に起動したセッションどうしです。
 - マージ・作業ツリーの git 操作・`verify.sh` / `loop-gate.sh` の起動は、別のセッションと重なると拒否されます。**拒否を迂回しません**（登録を消す・相手の登録を解放する、をしない）。相手の識別子と作業ツリーを確かめて調整します。
 
-## 雛形からの逸脱（DCB v0.17.0 / ai-playbook v0.8.1。#938）
+## 雛形からの逸脱（DCB v0.18.0 / ai-playbook v0.8.2。#938・#953）
 
 DCB が所有するファイルは雛形を正とし、game-forge 側の差分は、(1) 消すと既知の事故・保証の喪失が起きる、(2) プロジェクト固有の値、のどちらかに当たるものだけを残しています。残した差分は `bash bootstrap.sh --accept <パス>` で `.devcontainer/ORIGIN` に記録しています（追従の手順は `docs/local-dev.md`「DCB と規範への追従」）。**ここに無い差分を DCB の生成物へ足すときは、この表へ行を足し、`--accept` し直します。**
 

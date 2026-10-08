@@ -2,8 +2,8 @@
 # check-devhost.sh — 開発機のホストに置く game-forge 固有の差分（tools/devhost/）を、非対話で
 # 確かめる（#849 で作り、#923 で上流の版へ寄せたのに合わせて縮めた）。
 #
-# devhost の本体（dev / dev-up@.service / 雛形）は、devcontainer-bootstrap のリリースに同梱された
-# 上流の版を使い、このリポジトリには置かない。ここに残るのは、AWS SSO に入る薄い追加
+# devhost の本体（dev / dev-up@.service / 雛形）は、ojos/devcontainer-host のリリースの上流の版を使い
+# （DCB v0.17.0 までは DCB のリリースに同梱されていた。#953）、このリポジトリには置かない。ここに残るのは、AWS SSO に入る薄い追加
 # （dev-auth-aws.sh）と、その自己試験と、README だけである。
 #
 # 見るのは 3 つ。

@@ -1,6 +1,6 @@
 # devcontainer-bootstrap が記録した生成物の由来。
 # doctor.sh はこの記録と現物を突き合わせて乖離を診断する。手で編集しないこと。
-version=v0.17.0
+version=v0.18.0
 flags=antigravity,aws,claude,codex,gcp,gemini
 inputs-format=1
 input:project-name=game-forge
@@ -11,8 +11,8 @@ input:manage-gitignore=true
 input:gitignore-targets=
 input:playbook=installed
 input:playbook-source=tag
-input:playbook-ref=v0.8.1
-hash:.ai-playbook/VERSION=88f56d4af0438e7c54577010650730427080f7558e99b0e22c37ed2de60cd340
+input:playbook-ref=v0.8.2
+hash:.ai-playbook/VERSION=a1aa98eabd6b0c88ff5334b2c8e8ab86297510a76391cb3110e84d14613a08f6
 hash:.ai-playbook/intake/REASON_CODES.md=a18fa018bc7d8715395bfef4a0ae98ebcebca8224c4550240bfc3273eea3a4da
 hash:.ai-playbook/intake/consult-template.md=b9a419f4ac97ae70efa1c6705ee76136ac4dd9054ced6db202373714518956a1
 hash:.ai-playbook/intake/intake-template.md=f9fcbf930b6055c0c48d86fd34fe9c6361f4f9f8107c26a17fd8beb5476c9ae3
@@ -81,8 +81,9 @@ hash:scripts/verify-commit-identity-selftest.sh=3b274cf66d4ae421d4e3c9a025c04a5d
 hash:scripts/verify-commit-identity.sh=62bb05d47f60c30f99a1848c231ae30f813f57cc070e0bf2058c7a53e2b5acbb
 hash:scripts/verify.sh=7d36f135e0532a2a8c04c42fe1e58a8bc63c5629f885ff5cdfe682a4acda8d14
 accepted:scripts/acceptance.sh=d976a148ce6e7bfdddcc14600359c431702a564f024bb6b8dac6951ffec011c7
-accepted:scripts/acceptance-remote.sh=4dbd7a08f5e13829a7649098d5ad253f9ff17cd6f9f82ff81dacc30eeae43e9a
+accepted:scripts/acceptance-remote.sh=9ee4d6cf43a24b31c3a3521de0cd753d708e25aad3f73f9b28fb68f58558647c
 accepted:scripts/check-no-secrets.sh=295c1bffc720a8182f565fffed94885c5319381d2caa7a6e96f726dcddc25a8f
+accepted:.github/project-ai-rules.md=23b3221383d8b06b2ca5f2d97d7751a31d813b362753d8aa2fd3518d1faf66c5
 accepted:.github/workflows/verify.yml=f357cd132264965831b762589e2ffe6d3b1579b87c4f365d6ffb582db8f1550b
 accepted:.env.example=fc939d22e91b46b0fdb48922944fa876ec7395d6a773bcedbf66d45370de4a7f
 accepted:scripts/on-attach.sh=1358dab255274a65d925caeb48e64ef67af3fbe6010f1774626bee338c57f85e
@@ -90,4 +91,3 @@ accepted:.claude/agents/implementer.md=876d9889ee0150ed6d372bb5b87a2e4d730fd32f2
 accepted:.claude/agents/explorer.md=2bee88799c470aebb6b2f737c9eca2c8bf1ac4ddf2cadcd915b760379bc9b4a5
 accepted:.devcontainer/compose.yaml=da0d493c2f9730a5b129815adf9412bb770bfe8bb1fb7ede4173df4f7d976602
 accepted:.devcontainer/devcontainer.json=29f717049ef729d76ddcea59d55588fdef0d497a5628dadfc91330fb606fd0c8
-accepted:.github/project-ai-rules.md=23b3221383d8b06b2ca5f2d97d7751a31d813b362753d8aa2fd3518d1faf66c5

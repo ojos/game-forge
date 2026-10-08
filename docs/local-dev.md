@@ -1304,7 +1304,7 @@ tools/devhost/README.md の「スマホのボタンに doctor / rebuild を足�
 5. **`.dcb-new` を 1 本ずつ片付けます。**
    - **DCB が所有するファイル**: `.dcb-new` を正として置き換え、「雛形からの逸脱」の表にある差分だけを戻します。表に無い差分を戻すなら、表へ行を足す（理由と基準つき）ところまでを同じ PR で行います。
    - **プロジェクトが所有するファイル**（`scripts/acceptance.sh`・`scripts/acceptance-remote.sh`・`scripts/check-no-secrets.sh`・`.github/project-ai-rules.md`）: 中身を残し、雛形で増えた項目があれば書き足します。
-   - **`.devcontainer/` の 2 本**: #938 の時点では取り込んでいません（表の最後の行）。取り込むときは別の票で、コンテナの作り直しまで確かめます。
+   - **`.devcontainer/` の 2 本**: #939 で雛形に寄せました（`init: true` を取り込み、`security_opt` の seccomp は入れない）。残した差分は表のとおりです。`devcontainer.json` には JSONC のコメントを書かず、注記は `.devcontainer/README.md` へ書きます（`doctor.sh` が `jq` で読むため）。取り込んだ後は、コンテナの作り直しまで確かめます。
    - 済んだら `.dcb-new` を消します。雛形に寄せて game-forge 固有の検査（`scripts/acceptance.sh` が呼ぶ `scripts/check-*.sh` など）が落ちたら、検査の側（プロジェクトの所有）で直します。
 
 6. **手を入れたファイルを取り込み済みとして記録します。** 表にあるファイルと、プロジェクトが所有するファイルを渡します（`.dcb-new` が残っていると止まります）。

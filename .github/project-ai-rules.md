@@ -144,6 +144,8 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 
 **gemini の経路は判定トークン方式です（#938 で DCB v0.17.0 の雛形へ寄せました）。** 規範はスキーマ方式を「ツールが構造化出力の強制に対応する場合」に限っています。codex（`--output-schema`）と antigravity（`--json-schema`）は強制できますが、gemini には当たる旗がありません。#938 までは gemini にもプロンプトで JSON の形を指示し、返答の後にスクリプトがスキーマで検証していました（規範の条件の外の、意図した逸脱でした）。雛形は gemini を出力の最後の行の判定トークン（`VERDICT: LGTM` / `VERDICT: FINDINGS`）で判定し、トークンの無い出力は通しません。どちらも規範の内側になったので、逸脱ではなくなりました。既定の運用は codex なので、gemini を使うのはエンジンを切り替えたときだけです。配線は `scripts/second-opinion-codex-selftest.sh` が仕込みの CLI で確かめます。
 
+**gemini を `SECOND_OPINION_RUNS` 3 以上で回しません。** 雛形の多数決は、判定トークンの無い回答を「指摘あり」の 1 票として数えます（`scripts/second-opinion-review.sh` の判定トークンの分岐）。3 回のうち 2 回が LGTM なら、残りの 1 回が形式不正でも全体は LGTM になり、記録も残ります。回数が 1 なら閾値も 1 なので、トークンの無い回答で落ちます。#938 の第二意見（codex）が指摘し、利用者の判断（2026-10-08）で雛形のまま残しました。codex と antigravity はスキーマで判定するので、この経路を通りません。
+
 **`.ai-playbook/` は上流パッケージの写しです**（`.ai-playbook/VERSION` に `source=https://github.com/ojos/ai-playbook/…/v0.8.1.tar.gz`）。**ここを編集しても次の展開で消えるため、プロジェクトの選択と具体化はこのプロジェクト層に書きます。**
 
 ### 受け入れ検証の二層

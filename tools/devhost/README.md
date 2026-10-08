@@ -114,8 +114,9 @@ cd ~ && rm -rf "$W"
   （ユニットを止めてもコンテナは止まりません。`up` は動いているコンテナに対しては起こし直しません）。
 - **2 でユニットが違った場合**は、`install -D -m 0644 devhost/dev-up@.service ~/.config/systemd/user/dev-up@.service` と
   `systemctl --user daemon-reload` だけを打ちます。restart はしません（次に起こし直すときから新しい中身が効きます）。
-- **`dev doctor` が 3（WARN だけ）で終わった場合**は、上げた作業の失敗ではありません（pids の上限に当たった回数・
-  ゾンビ・oom_kill のどれかが記録に残っている）。出た項目を読んでから判断します。1（FAIL）なら上流の README の
+- **`dev doctor` は 0 で終わることを確かめます**（#944 の acceptance）。3（WARN だけ）は `dev` の差し替えそのものの
+  失敗ではなく、コンテナの記録（pids の上限に当たった回数・ゾンビ・oom_kill）を指しますが、**0 でない間は「上げて確かめた」
+  とはしません。** 出た項目を issue に書き、原因を調べてから判断します。1（FAIL）なら上流の README の
   「dev doctor」のとおり `dev rebuild game-forge` を検討します（作業中のコンテナと tmux は消えます）。
 - **v0.17.0 で増えたもの**（v0.14.0 から）: `dev rebuild <名前> [--pull]`（ユニットを止めてから作り直し、起こし直す）、
   `dev doctor <名前>`（コンテナ・exec の疎通・プロセス数・ゾンビ・oom_kill・ユニットを 1 回で見る）、`dev help`。
@@ -156,13 +157,13 @@ v0.17.0 の上流の雛形（`devhost/termux/shortcut.example`）は、ボタン
 | `gf-doctor` | 読み取りだけ（コンテナ・exec・プロセス数・ゾンビ・oom_kill・ユニット） | 害は無い。ただし Termux:Widget はボタンの ssh が終わると閉じるので、出力を読むには Termux を開いて打つほうが早い |
 | `gf-rebuild` | **コンテナを作り直す。中の tmux と Claude の作業は消える**（ユニットの停止と起こし直しは `dev rebuild` がする） | 誤タップで作業が消える。確かめの段は無い。`--pull` は付けない（作業中のツリーで `git pull` が走る） |
 
-足すときは、Termux で次を打ちます（片方だけでもよい）。
+足すときは、Termux で足したいボタンの行だけを打ちます（1 ボタン 1 行。片方だけでもよい）。
 
 ```bash
-for b in "gf-doctor:dev doctor game-forge" "gf-rebuild:dev rebuild game-forge"; do
-  printf '#!/data/data/com.termux/files/usr/bin/bash\nexec ssh -t dev01 .local/bin/%s\n' "${b#*:}" > ~/.shortcuts/"${b%%:*}"
-done
-chmod +x ~/.shortcuts/gf-doctor ~/.shortcuts/gf-rebuild
+# gf-doctor（読み取りだけ）
+printf '#!/data/data/com.termux/files/usr/bin/bash\nexec ssh -t dev01 .local/bin/dev doctor game-forge\n' > ~/.shortcuts/gf-doctor && chmod +x ~/.shortcuts/gf-doctor
+# gf-rebuild（作り直す。中の作業は消える）
+printf '#!/data/data/com.termux/files/usr/bin/bash\nexec ssh -t dev01 .local/bin/dev rebuild game-forge\n' > ~/.shortcuts/gf-rebuild && chmod +x ~/.shortcuts/gf-rebuild
 ```
 
 dev01 の `dev` を v0.17.0 以降へ上げる前に足すと、ボタンは `dev` の使い方の誤り（2）で止まります。

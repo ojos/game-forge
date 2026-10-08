@@ -988,7 +988,7 @@ check_pages_dns_records() {
 # **見ているのは「state に記録された宣言」と実状態の一致である。** 期待値は output から取るので、
 # **.tf を書き換えてまだ apply していない変更は、ここには現れない**（output も実状態も旧い値の
 # まま一致する）。宣言のテキストと state の食い違いは plan の役目で、この検査では拾わない。
-# 期待値を .tf から直接導かないのは、値の多くが他のリソース（Route 53 のレコードや Pages の
+# 期待値を .tf から直接導かないのは、値の多くが他のリソース（ゾーンの名前や Pages の
 # ホスト名）の属性から組み立てられていて、テキストからは決まらないためである（#813 の scope は
 # 「期待値は terraform output から導く」）。
 #
@@ -1172,7 +1172,7 @@ check_zone_bot_protection_off() {
 ##
 # wrangler.toml の本番ホストが、DNS の宣言と一致していることを確認する。
 #
-# 同じホスト名が 2 か所（terraform/dns.tf と wrangler.toml）にある。**片方だけを
+# 同じホスト名が 2 か所（terraform/dns-ojos-jp.tf と wrangler.toml）にある。**片方だけを
 # 変えると、DNS は張れているのに Worker が「unknown host」で 404 を返す**という、
 # どちらの側を見ても正しく見える壊れ方をする（src/index.ts は APP_HOST /
 # SANDBOX_HOST / ADMIN_HOST と一致しないホストを通さない）。文書での呼びかけではなく

@@ -42,7 +42,7 @@ locals {
   # 機械の名前。ホスト名の部分木の根になる。
   dev01_machine_name = "dev01"
 
-  # ゾーン名から導く（dns.tf の app_host と同じ理由。書き写すと片方だけ古くなる）。
+  # ゾーン名から導く（dns-ojos-jp.tf の app_host と同じ理由。書き写すと片方だけ古くなる）。
   #
   # **機械の口をラベル 1 段に収めるのは、証明書の制約による**（2026-09-23 に実測）。
   # Cloudflare の Universal SSL（Free）が持つのは `ojos.jp` と `*.ojos.jp` だけで、

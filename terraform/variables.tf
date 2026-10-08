@@ -140,17 +140,6 @@ variable "aws_profile_dev" {
   default     = "game-forge-dev"
 }
 
-variable "dns_zone_name" {
-  description = <<-EOT
-    Route53 で管理する DNS ゾーン名（確定16 / 確定17）。
-
-    さくらのドメイン（ojos.jp）からこのゾーンへ NS 委譲する。さくら側の NS 登録だけは
-    API が無いため手動だが、委譲後の恒久的な状態は Route53 側＝この宣言が持つ。
-  EOT
-  type        = string
-  default     = "game-forge.ojos.jp"
-}
-
 variable "gcp_org_id" {
   description = <<-EOT
     GCP 組織（ojos.jp）の ID。数字のみ。

@@ -39,7 +39,7 @@
  * 送り先を決めさせない。** 載せる形は、この関数を「任意の URL を撮って任意の宛先へ
  * 送る道具」に変える。
  *
- * どちらも `local.app_host` / `local.sandbox_host`（`terraform/dns.tf`）から作るので、
+ * どちらも `local.app_host` / `local.sandbox_host`（`terraform/dns-ojos-jp.tf`）から作るので、
  * `wrangler.toml` の宣言とずれない。
  */
 

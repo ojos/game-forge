@@ -127,13 +127,14 @@ cd ~ && rm -rf "$W"
 
 作業中のツリーを触らず、main の版を取ってきます。新しく置くときも、更新するときも同じです
 （リンクにしないのは、上流の `dev` と同じく、ブランチの切り替えでホストの道具が黙って変わらないようにするため）。
+`cd` せず、別の変数 `A` で作業するので、「上流の版を上げる」の `W` の途中で打っても、そちらの作業場所を壊しません。
 
 ```bash
-W="$(mktemp -d "${TMPDIR:-/tmp}/devhost.XXXXXX")" && cd "$W"
-curl -fsSL https://raw.githubusercontent.com/ojos/game-forge/main/tools/devhost/dev-auth-aws.sh -o dev-auth-aws.sh
-less dev-auth-aws.sh                           # 中身を読んでから置く
-install -D -m 0755 dev-auth-aws.sh ~/.local/bin/dev-auth-aws
-cd ~ && rm -rf "$W"
+A="$(mktemp -d "${TMPDIR:-/tmp}/dev-auth-aws.XXXXXX")"
+curl -fsSL https://raw.githubusercontent.com/ojos/game-forge/main/tools/devhost/dev-auth-aws.sh -o "$A/dev-auth-aws.sh"
+less "$A/dev-auth-aws.sh"                      # 中身を読んでから置く
+install -D -m 0755 "$A/dev-auth-aws.sh" ~/.local/bin/dev-auth-aws
+rm -rf "$A"
 ```
 
 設定ファイル `~/.config/dev/aws-sso` が無ければ、`~/.config/dev/projects` の行から作ります。パスは決め打ちせず、

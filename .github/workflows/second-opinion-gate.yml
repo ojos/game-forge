@@ -1,19 +1,12 @@
-# 第二意見（ローカル事前ゲートの第 2 段）が**回されないまま PR が通ること**を塞ぐ（#806）。
+name: second-opinion-gate
+
+# ローカル事前ゲート（loop-gate.sh）の第二意見の段が**回されないまま PR が通ること**を塞ぐ。
 # 規範: .ai-playbook/review-workflow.md「要求されたことを別の契機で確認する」。
 #
-# **パイプライン全体で、第二意見だけが確認側を持っていなかった。**
-#
-#   ローカル層の受け入れ検証（verify.sh） … verify.yml の verify ジョブが**再実行**する
-#   第二意見                              … **無かった**（ここが埋める）
-#
-# **#807 で Copilot code review を撤退し、リモート最終ゲートは空になった。** 要求側
-# （copilot-review.yml）と確認側（review-gate.yml）は撤去したので、**レビューの記録を
-# 機構で確かめているのは、このワークフローだけである**（`.github/project-ai-rules.md`
-# 「リモート最終ゲート」）。
-#
-# `.git/hooks/` は空で `core.hooksPath` も未設定なので、**loop-gate.sh を回さずに push できる。**
-# verify.yml の冒頭がその故障モードを名指ししている——「手元で走らせる前提の実行体で、
-# **回し忘れても何も起きない**」「**守られている外観だけが残る**」。
+# **第二意見はローカルでしか走らないため、受け入れ検証（verify.sh）のように CI が
+# 再実行して確かめることができない。** `.git/hooks/` を配線していないプロジェクトでは
+# `loop-gate.sh` を回さずに push できるため、記録が無ければ「回し忘れても何も起きない」
+# 「守られている外観だけが残る」状態になる。
 #
 # ## 何を見るか
 #
@@ -25,21 +18,23 @@
 # 古いコメントで通ってしまう。**押した中身がレビューされたこと**を見たいので、印の SHA が
 # いまの head と一致することを要求する。
 #
-# ## 記録を求めない PR（#838）
+# ## 記録を求めない PR
 #
 # **Dependabot の PR は記録を探さずに success を付ける**（説明文で除外だと分かるようにする）。
 # ここが検出したいのは著者の失念で、Dependabot の PR には回す著者が最初からいない。
-# 除外しないと毎回赤くなり（#832 / #833）、赤が失念の意味を失う。条件は PR の著者と
-# **すべてのコミットの author** が `dependabot[bot]`（GitHub の署名付き）であることで、人が足したコミットが
-# 混ざれば、いつもどおり記録を求める。判定は `scripts/second-opinion-gate-exempt.sh` が持ち、
-# `scripts/check-second-opinion-gate-exempt.sh` が表で確かめる。
+# 除外しないと依存更新の PR が毎回赤くなり、赤が失念の意味を失う。条件は PR の著者と
+# **すべてのコミットの author** が `dependabot[bot]`（GitHub の署名付き）であることで、
+# 人が足したコミットが混ざれば、いつもどおり記録を求める。判定は
+# `scripts/second-opinion-gate-exempt.sh` が持つ（ワークフローへ判定を埋めない理由は
+# 下記「2 段目」と同じ）。
 #
 # ## 猶予を毎回置く
 #
-# 撤去した review-gate.yml は `opened` のときだけ待っていた（要求側と同時に走るため）。
-# こちらは**記録が push の後に投稿される**ので、`synchronize` でも同じことが起きる
-# ——push の直後にこのワークフローが走り、投稿はその数秒〜数分後になる。待たずに見ると、
-# push のたびに赤が出る。**偽の赤はゲートへの信頼を削る**（review-workflow.md）。
+# **要求側と確認側が同時に走る `review-gate.yml` 系の最終ゲートとは、ここが 1 点だけ
+# 設計が逆である。** あちらは `opened` のときだけ待つ。こちらは**記録が push の後に
+# 手元から投稿される**ので、`synchronize` でも同じことが起きる——push の直後に
+# このワークフローが走り、投稿はその数秒〜数分後になる。待たずに見ると、push のたびに
+# 赤が出る。**偽の赤はゲートへの信頼を削る**（review-workflow.md）。
 #
 # ## 要求はしない
 #
@@ -53,38 +48,34 @@
 #   2. schedule                                … 1 が届かなかった PR を拾う
 #   3. workflow_dispatch                       … 詰まったときに手で流す・受け入れ確認
 #
-# `pull_request` の `opened` が届かないことは実測されている（2 日間に開いた 6 本のうち 2 本。
-# review-workflow.md）。**同じ契機を見る 2 本目では塞げない**ので、別の契機を張る。
+# `pull_request` の `opened` が届かないことがある（ある利用プロジェクトの実運用では、
+# 連続する 2 日間に開いた 6 本のうち 2 本で起動しなかった）。**同じ契機を見る 2 本目では
+# 塞げない**ので、別の契機を張る。
 #
 # ## schedule と workflow_dispatch は既定ブランチのものしか動かない
 #
-# **この 2 つは `main` にあるワークフローだけが起動する**（GitHub の仕様。PR #814 で
-# `gh workflow run` が `HTTP 422: Workflow does not have 'workflow_dispatch' trigger`
-# を返して分かった。ファイルには書いてあるのに、である）。
-#
-# したがって**このワークフローを足す・変える PR の上では、`pull_request` の契機だけが効く。**
+# **この 2 つは `main` にあるワークフローだけが起動する**（GitHub の仕様）。したがって
+# **このワークフローを足す・変える PR の上では、`pull_request` の契機だけが効く。**
 # 掃き寄せと手動起動の実挙動は、マージされてからでなければ確かめられない。**受け入れ確認を
 # 組むときは、そこを見込むこと**——PR 上で「掃き寄せが動かない」のは不具合ではない。
 #
 # ## required check にはしない
 #
 # 止めたいのは「回していないことに気づかないまま通ること」だけである。投稿の遅れで
-# マージが止まる副作用は要らない（規範の「required check にはしません」と同じ判断）。
+# マージが止まる副作用は要らない（`review-gate.yml` と同じ判断）。
 #
 # ## 何を塞がないか
 #
 # **偽造は塞がない。** 記録を投稿するのはレビューを回すのと同じ側なので、回さずに記録を
-# 作って投稿できる。**検出できるのは失念であって、迂回ではない**（#806 の scope.out）。
-# それでよいのは、verify.yml が名指しした実際の故障モードが失念だからである。
-
-name: second-opinion-gate
+# 作って投稿できる。**検出できるのは失念であって、迂回ではない。** それでよいのは、
+# この仕組みが名指しした実際の故障モードが失念だからである。
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     # 20 分ごと。pull_request が届かなかった PR を拾うための掃き寄せで、
-    # 通常経路の速さはこれに依存しない。
+    # 通常経路の速さはこれに依存しない（review-gate.yml と同じ間隔にそろえる）。
     - cron: '*/20 * * * *'
   workflow_dispatch:
 
@@ -95,11 +86,8 @@ permissions:
   issues: read
   # commit status を書く。これが判定の出力先である。
   statuses: write
-  # 掃き寄せで、push の時刻として check-run の開始時刻（`/commits/{sha}/check-runs`）を読む。
-  # **public のいまは宣言が無くても読めるが、宣言する**（#888。ai-playbook v0.5.0 の雛形と同じ）。
-  # `permissions` を書いた時点で、書かなかった権限は none になる。public でなくなると
-  # 403 になり、掃き寄せが毎回落ちる。上の「呼んでいる先の権限は宣言する」と同じ規律で、
-  # scripts/check-second-opinion-gate-workflow.sh が呼び先と宣言の対応を確かめる。
+  # 掃き寄せで、push の時刻として check-run の開始時刻を読む。public リポジトリでは
+  # 宣言が無くても読めるが、private では宣言しないと 403 になり、掃き寄せが毎回落ちる。
   checks: read
 
 concurrency:
@@ -107,24 +95,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # **ジョブ名を `check` にしない。** 撤去した review-gate.yml（#807）のジョブが `check`
-  # で、同じ名前だと `gh pr checks` に `check` が 2 行並び、どちらがどちらか読めなかった
-  # （実測。PR #814 で 2 つ並んだ）。commit status の context は別なので判定は
-  # 混ざらないが、**人が読む一覧で区別できないのは、気づけないことと同じ側にある。**
+  # **ジョブ名を `check` にしない。** `review-gate.yml` のジョブが `check` なので、
+  # 同じ名前だと `gh pr checks` に `check` が 2 行並び、どちらがどちらか読めない。
+  # commit status の context は別なので判定は混ざらないが、**人が読む一覧で区別できないのは、
+  # 気づけないことと同じ側にある。**
   record:
     runs-on: ubuntu-latest
     # フォークからの PR は対象外にする。記録の投稿には PR への書き込みが要り、
     # フォークからの push ではそれができない。**要求されないものを「無い」と落とすと、
-    # 恒常的に赤いだけの状態になる**。
+    # 恒常的に赤いだけの状態になる**（review-gate.yml と同じ扱い）。
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
     steps:
       # 除外の判定（scripts/second-opinion-gate-exempt.sh）を読むために取る。**PR の側ではなく
-      # 既定ブランチの側を取る。** PR の側を取ると、判定を書き換えた PR が自分自身を除外できる
-      # （#838）。既定ブランチにまだ無い間（この変更を入れる PR 自身）は、除外せずにいつもどおり
-      # 判定する。
-      - uses: actions/checkout@v4
+      # 既定ブランチの側を取る。** PR の側を取ると、判定を書き換えた PR が自分自身を除外できる。
+      # 既定ブランチにまだ無い間（この変更を入れる PR 自身）は、除外せずにいつもどおり判定する。
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
 
@@ -136,7 +123,6 @@ jobs:
           # **式を run の中へ直接書かない。** GitHub は run を渡す前に文字列として
           # 置換するので、値に引用符が混ざればシェルの構文ごと変わりうる。加えて
           # `bash -n` は `${{ ... }}` を通してしまうため、構文検査でも気づけない。
-          # 値は env を経由して渡す。
           PR_NUMBER: ${{ github.event.pull_request.number }}
           # 起動の契機になった head SHA。**待ったあとに head が動いていないかを見るために要る**
           # （下の「待っているあいだに push が入ったら」）。
@@ -154,37 +140,25 @@ jobs:
 
           # **掃き寄せ側は、push の時刻で待つ。**
           #
-          # 最初の実装は PR の `created_at` を見ていた。**それでは、作成から 10 分以上
-          # 経った PR に新しく push された直後に掃き寄せが重なると、猶予が 1 秒も効かない**
-          # ——`created_at` は過去なので条件をすり抜け、掃き寄せ経路には sleep が無い
-          # （PR #814 の第二意見の指摘。実在する）。**このワークフローの冒頭が「猶予を毎回
-          # 置く」と宣言しているのに、掃き寄せだけがそれを破っていた。**
+          # PR の `created_at` を見ると、作成から 10 分以上経った PR に新しく push された
+          # 直後に掃き寄せが重なったとき、猶予が 1 秒も効かない——`created_at` は過去なので
+          # 条件をすり抜け、掃き寄せ経路には sleep が無い。
           #
           # `updated_at` も使えない。コメント（この仕組みが投稿する記録を含む）で動くため、
           # 活動している PR では期限が前へ逃げ続け、いつまでも判定されない。
           #
           # **コミットの時刻も使えない。** `commit.committer.date` はコミットに埋まった時刻で、
-          # **その内容が push された時刻ではない**（PR #814 の Copilot の指摘）。rebase や、
-          # 前に作ったコミットを後から push した場合、コミット時刻は過去なので age が大きくなり、
+          # **その内容が push された時刻ではない。** rebase や、前に作ったコミットを後から
+          # push した場合、コミット時刻は過去なので age が大きくなり、
           # **投稿の窓が開く前に赤を付ける。**
           #
           # **見るのは check-run の開始時刻である。** CI は push で始まるので、その最も早い
-          # 開始時刻が push 時刻の代理になる（実測: コミット時刻 15:56:59Z に対して
-          # 15:57:08Z。新しい push では近く、古いコミットの push では乖離する）。
-          # **再実行で started_at が新しくなる方向は、猶予が伸びる側＝安全側である。**
+          # 開始時刻が push 時刻の代理になる。**再実行で started_at が新しくなる方向は、
+          # 猶予が伸びる側＝安全側である。**
           #
-          # **check-run が 1 つも無いときは、PR の更新時刻（`updated_at`）で代える**（#888。
-          # ai-playbook v0.5.0 の雛形に揃えた）。以前は「判定しない」にしていたが、それでは
-          # **掃き寄せが拾うべき PR を永久に拾わない。** このリポジトリで PR の head に
-          # check-run を作るのは `pull_request` の契機のワークフローだけで（verify.yml /
-          # identity-guard.yml / このワークフロー。`push` の契機は main だけ）、**`opened` が
-          # 届かなかった PR では check-run が 1 つも無い。** 掃き寄せはまさにその PR のために
-          # 張ってあるのに、そこで黙って飛ばしていた。`[skip ci]` の push も同じになる。
-          #
-          # 上で「`updated_at` も使えない」と書いたのは、**主に使う時刻として**である。代わりに
-          # 使うだけなら害が無い——`updated_at` は push で必ず更新され、コメントでさらに進むので、
-          # **push の時刻より前になることはない。判定が遅れることはあっても、猶予より早まる
-          # ことはない。** 判定の猶予は 1 つの定数（GRACE_SEC）に揃える。
+          # **check-run が 1 つも無いときは判定しない。** CI がまだ始まっていない（＝ push
+          # 直後）か、`[skip ci]` で飛ばされたということで、どちらも「記録が無い」と断じる
+          # 根拠にならない。判定の猶予は 1 つの定数（GRACE_SEC）に揃える。
 
           # status の名前。**変えると過去の PR に付いた status と別物になる。**
           CONTEXT="second-opinion-gate"
@@ -210,22 +184,51 @@ jobs:
           #
           #   0 — この head SHA の記録が在る
           #   1 — 無い（＝ 落とす）
-          #   2 — **確かめられなかった**（API から読めない）
+          #   2 — **確かめられなかった**（API から読めない。PR の作者の login が
+          #       取れないときを含む）
           #
           # **2 を 1 に混ぜない。** 読めなかったことを「記録が無い」として扱うと、
           # GitHub が一時的に不調なだけで赤が出る。逆に握り潰して緑にすると、
-          # 確かめていないものを通したことになる（規範の「確認できなかったこと」と同じ考え方）。
+          # 確かめていないものを通したことになる（review-gate.yml と同じ考え方）。
           #
-          # **数えるのは、リポジトリの持ち主が書いたコメントだけである**（#865）。public なので、
-          # 誰でも印つきのコメントを書ける。著者を見ないと、第二意見を回していない PR が
-          # 他人のコメント 1 つで緑になる。条件は #844 / #845 の確認側
-          # （scripts/acceptance-record-judge.sh）と同じ綴り——`user.login` が持ち主で、かつ
-          # `author_association` が `OWNER`。持ち主自身の偽造は、従来どおり防がない
-          # （scripts/second-opinion-record.sh の「偽造はできる」）。**fork の PR はこのゲートの
-          # 対象外**である（PR の契機も掃き寄せも、同じリポジトリの PR だけを判定する）。
+          # **数えるのは、書き手が PR の作者（`pulls/{pr}` の `user.login`）と一致する
+          # コメントだけである**（#370）。public なリポジトリでは誰でも印つきのコメントを
+          # 書けるので、書き手を見ないと、第二意見を回していない PR が他人のコメント 1 つで
+          # 緑になる。
+          #
+          # **「リポジトリの持ち主」ではなく「PR の作者」で揃える。** 組織所有のリポジトリでは、
+          # コメントの書き手のアカウント名が組織名と一致することはなく、持ち主で絞ると
+          # 個人所有以外では常に赤になる。記録は
+          # PR の作者自身の gh で投稿されるので、作者で揃えれば個人所有でも組織所有でも
+          # 設定なしで動く。
+          #
+          # この判定の対象は、フォークではない同じリポジトリの PR だけである（ジョブの `if` と
+          # 掃き寄せ側の `select` が、どちらも既にフォークを除いている）。したがって
+          # 「PR の作者」は常にこのリポジトリへ push できる立場であり、作者の一致だけで
+          # 「他人のコメントで緑にしない」が保てる。
+          #
+          # **`author_association` は条件に使わない**（#436）。この値は読む側の視点で変わる。
+          # 組織所有のリポジトリで、メンバーシップを公開していない作者の記録は、login が
+          # 一致していても数えられず常に赤になった（組織メンバーの PAT で読むと `MEMBER`）。
+          # メンバーシップを公開して再実行すると緑になり、何も変えずに再実行すると赤のまま
+          # だった（実測）。この `GITHUB_TOKEN` からは、非公開のメンバーが `MEMBER` と返らない。
+          # メンバーシップの非公開は GitHub の既定なので、組織所有では多くの場合こうなる。
+          #
+          # PR の作者以外が書いた印つきコメントは**数えないが、黙って捨てない。** 作者の記録が
+          # 別にあって判定には影響しなくても、混ざっていること自体が読めるよう ::warning:: で
+          # 知らせる。**読めなければ知らせないだけで、判定（戻り値）は変えない。**
+          #
+          # **PR の作者自身による偽造は、従来どおり防がない**
+          # （scripts/second-opinion-record.sh の「偽造はできる」と同じ割り切り）。協力者が
+          # 他人の PR に push して自分の記録を投稿した場合は数えられず赤になるが、安全側に
+          # 倒れるため許容する（#370 の scope.out）。
           has_record() {
-            local pr="$1" sha="$2" owner="${REPO%%/*}" bodies others
-            local mine="(.user.login // \"\") == \"${owner}\" and (.author_association // \"\") == \"OWNER\""
+            local pr="$1" sha="$2" author bodies others found=1
+            # PR の作者の login が取れなければ、確かめられなかった側へ倒す。
+            if ! author="$(gh api "repos/${REPO}/pulls/${pr}" --jq '.user.login' 2>/dev/null)" || [ -z "$author" ]; then
+              return 2
+            fi
+            local mine="(.user.login // \"\") == \"${author}\""
             # **--paginate を外さない。** 外すと先頭のページしか見ないため、
             # コメントが多い PR では、投稿されているのに「無い」と判定する。
             if ! bodies="$(gh api --paginate "repos/${REPO}/issues/${pr}/comments" --jq ".[] | select(${mine}) | .body" 2>/dev/null)"; then
@@ -233,38 +236,37 @@ jobs:
             fi
             # 印は「印 + SHA + ' -->'」で完全に照合する。SHA の前方一致で見ると、
             # 別の SHA（短縮形が接頭辞になる組み合わせ）を取り違えうる。
-            local found=1
             case "$bodies" in
               *"${MARKER_PREFIX}${sha} -->"*) found=0 ;;
             esac
-            # 持ち主以外が書いた印つきのコメントは**数えないが、黙って捨てない。** 持ち主の記録が
-            # あっても知らせる（混ざっていること自体が読めるように）。読めなければ知らせないだけで、
-            # 判定は変えない。
+            # 数えなかったコメント（作者と一致しないもの）の中に
+            # 同じ head の印があれば知らせる。読めなければここは黙って通す（found は変えない）。
             if others="$(gh api --paginate "repos/${REPO}/issues/${pr}/comments" --jq ".[] | select((${mine}) | not) | .body" 2>/dev/null)"; then
               case "$others" in
                 *"${MARKER_PREFIX}${sha} -->"*)
-                  echo "::warning::PR #${pr}: この head（${sha:0:7}）の印つきコメントに、持ち主（${owner}）以外が書いたものがあります。記録としては数えません（#865）。"
+                  echo "::warning::PR #${pr}: この head（${sha:0:7}）の印つきコメントに、PR の作者（${author}）以外が書いたものがあります。記録としては数えません（#370）。"
                   ;;
               esac
             fi
             return "$found"
           }
 
-          # 記録を求めない PR か（#838）。0 = 求めない / 1 = いつもどおり判定する。
+          # 記録を求めない PR か。0 = 求めない / 1 = いつもどおり判定する。
           #
-          # 判定そのものは scripts/second-opinion-gate-exempt.sh が持つ（冒頭の「何を見るか」の
-          # 例外。いまは Dependabot の PR だけ）。**読めない・判定できないときは 1 に倒す。**
-          # 確かめていないものを除外にすると、記録の無い PR を黙って通すことになる。
+          # 判定そのものは scripts/second-opinion-gate-exempt.sh が持つ（冒頭の「記録を
+          # 求めない PR」の例外。いまは Dependabot の PR だけ）。**読めない・判定できない
+          # ときは 1 に倒す。** 確かめていないものを除外にすると、記録の無い PR を黙って
+          # 通すことになる。
           is_exempt() {
             local pr="$1" input out
             [ -f scripts/second-opinion-gate-exempt.sh ] || return 1
             # 1 行目に PR の著者、続けてコミットの author を渡す。
             #
-            # **author は GitHub が署名したコミットのものだけを信じる。** Git の author は作る側が
-            # 自由に書けるので、人が Dependabot 名義の author でコミットを足せば素通りする
-            # （#838 の第二意見の指摘）。Dependabot のコミットは committer が `web-flow` で、
-            # GitHub の鍵で署名されている。手元ではこの署名を作れない。満たさないコミットや、
-            # アカウントに紐づかないコミットは `-` として渡す（判定スクリプトは除外しない）。
+            # **author は GitHub が署名したコミットのものだけを信じる。** Git の author は
+            # 作る側が自由に書けるので、人が Dependabot 名義の author でコミットを足せば
+            # 素通りする。Dependabot のコミットは committer が `web-flow` で、GitHub の鍵で
+            # 署名されている。手元ではこの署名を作れない。満たさないコミットや、アカウントに
+            # 紐づかないコミットは `-` として渡す（判定スクリプトは除外しない）。
             if ! input="$(
               gh api "repos/${REPO}/pulls/${pr}" --jq '.user.login' 2>/dev/null &&
               gh api --paginate "repos/${REPO}/pulls/${pr}/commits" \
@@ -280,7 +282,7 @@ jobs:
           judge() {
             local pr="$1" sha="$2" verdict=0
             if is_exempt "$pr"; then
-              report "$sha" success "Dependabot PR: second-opinion record not required (#838)" || return 1
+              report "$sha" success "Dependabot PR: second-opinion record not required" || return 1
               return 0
             fi
             # set -e に掛からない形で終了コードを取る。
@@ -310,16 +312,16 @@ jobs:
           if [ "$EVENT" = "pull_request" ]; then
             # **draft は判定しない。掃き寄せ側と揃える。**
             #
-            # 掃き寄せ側にだけ `select(.draft == false)` を書いていたため、**同じ PR が
-            # 契機によって判定されたりされなかったりした**（PR #814 の第二意見の指摘）。
-            # draft は書きかけなので、記録が無いのが普通である。**`ready_for_review` を
-            # 契機に入れてあるので、draft を外した時点で判定が走る。**
+            # 掃き寄せ側にだけ draft を外す条件を書くと、**同じ PR が契機によって判定
+            # されたりされなかったりする。** draft は書きかけなので、記録が無いのが普通
+            # である。**`ready_for_review` を契機に入れてあるので、draft を外した時点で
+            # 判定が走る。**
             if [ "$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq .draft)" = "true" ]; then
               echo "PR #${PR_NUMBER}: draft なので判定しません（ready_for_review で判定します）。"
               exit 0
             fi
 
-            # 記録を求めない PR は、投稿を待つ理由が無い（#838）。
+            # 記録を求めない PR は、投稿を待つ理由が無い。
             if is_exempt "$PR_NUMBER"; then
               echo "PR #${PR_NUMBER} は記録を求めない PR です。待たずに判定します。"
             else
@@ -330,9 +332,8 @@ jobs:
             # **待っているあいだに push が入ったら、判定しない。**
             #
             # 待った後の head を取って判定すると、**新しい push に対して猶予を 1 秒も
-            # 与えずに赤を付ける**ことになる（PR #814 の第二意見の指摘。実在する）。
-            # 逆に起動時の SHA へ付けると、それはもう head ではないので **PR の checks 欄に
-            # 何も現れないまま「判定した」ことになる。**
+            # 与えずに赤を付ける**ことになる。逆に起動時の SHA へ付けると、それはもう head
+            # ではないので **PR の checks 欄に何も現れないまま「判定した」ことになる。**
             #
             # **どちらも採らない。譲る。** 新しい push には、それ自身の実行が同じ猶予を
             # 置いてから判定する。届かなければ掃き寄せが拾う（そちらも head の時刻で待つ）。
@@ -350,7 +351,8 @@ jobs:
             now="$(date -u +%s)"
             # **全件を見る。件数で打ち切らない。** ここは最後の担保なので、上限で
             # 切れた分は「判定されないまま status も付かない」＝ PR 上に何も現れない
-            # という、この仕組みが塞ごうとしている状態そのものになる。
+            # という、この仕組みが塞ごうとしている状態そのものになる（review-gate.yml
+            # の同じ注記）。
             #
             # フォークからの PR は除く。`.head.repo` の null も明示的に除く
             # （フォーク元が削除されると null になる）。
@@ -372,18 +374,20 @@ jobs:
               # **`select(. != null)` を外さない。** queued や skipped の check-run は
               # `started_at` が null で、jq の型順（null < string）により **sort の先頭が必ず
               # null になる。** `// empty` がそれを空にするので、**実行済みの check-run が
-              # あっても「まだ無い」と読んで、その PR を永久に判定しなくなる**
-              # （PR #814 の第二意見の指摘。実測で再現）。**PR 1 本につき 1 回の
-              # 追加の呼び出しになる**が、掃き寄せは 20 分ごとで open な PR は数本なので、
-              # 費用は問題にならない。
+              # あっても「まだ無い」と読んで、その PR を永久に判定しなくなる。** PR 1 本に
+              # つき 1 回の追加の呼び出しになるが、掃き寄せは 20 分ごとで open な PR は数本
+              # なので、費用は問題にならない。
               # 読めなかったら**判定しない**（確かめられないことを「記録が無い」に混ぜない）。
               if ! pushed_at="$(gh api "repos/${REPO}/commits/${sha}/check-runs" --jq '[.check_runs[].started_at | select(. != null)] | sort | .[0] // empty' 2>/dev/null)"; then
                 echo "::error::PR #${pr}: head（${sha:0:7}）の check-run を読めませんでした。判定を次の定期実行へ持ち越します。"
                 failed=1
                 continue
               fi
-              # **check-run が 1 つも無いときは、PR の更新時刻で代える**（上の「check-run が
-              # 1 つも無いときは」。#888）。飛ばすと、`opened` を取りこぼした PR を永久に拾わない。
+              # **check-run が 1 つも無いときは、PR の更新時刻で代える。** 飛ばし続けると、
+              # CI の無いプロジェクトや `[skip ci]` の push では、掃き寄せが永久に判定しない
+              # （pull_request の契機を取りこぼした PR を拾う、という役目を果たせない）。
+              # 更新時刻は push の時刻より後にしかならない（push で必ず更新され、コメント等で
+              # さらに進む）ので、**判定が遅れることはあっても、猶予より早まることはない。**
               if [ -z "$pushed_at" ]; then
                 if [ -z "$updated_at" ]; then
                   echo "PR #${pr}: head（${sha:0:7}）の check-run も PR の更新時刻も読めません。掃き寄せでは判定しません。"

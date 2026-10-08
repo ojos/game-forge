@@ -86,13 +86,13 @@ compare() {
 # terraform の `name = 数` を読む。
 tf_number() {
   # $1 = ファイル, $2 = local の名前
-  sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)[[:space:]]*\$/\1/p" "$1" | head -1
+  sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)[[:space:]]*\$/\1/p" "$1" | sed -n 1p
 }
 
 # terraform の `name = "文字列"` を読む。
 tf_string() {
   # $1 = ファイル, $2 = local の名前
-  sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1
+  sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | sed -n 1p
 }
 
 # TypeScript の `export const NAME = 式;` の式を読む（数と `*` と空白だけの式を計算する）。
@@ -107,7 +107,7 @@ ts_number() {
 # TypeScript の `export const NAME = '文字列';` を読む。
 ts_string() {
   # $1 = ファイル, $2 = 定数名
-  sed -n "s/^export const $2[[:space:]]*=[[:space:]]*'\([^']*\)';.*/\1/p" "$1" | head -1
+  sed -n "s/^export const $2[[:space:]]*=[[:space:]]*'\([^']*\)';.*/\1/p" "$1" | sed -n 1p
 }
 
 # ── 1. 関数名（正本は terraform、写しは wrangler.toml の 3 環境）──────────────

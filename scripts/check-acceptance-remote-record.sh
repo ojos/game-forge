@@ -412,7 +412,7 @@ tick; [ "$(G -C "$WORK/primary" rev-parse HEAD)" != "$(G -C "$WORK/other" rev-pa
 sched_case "origin/main より遅れていれば ff して回す" "ok|-" yes
 tick; [ "$(G -C "$WORK/primary" rev-parse HEAD)" = "$(G -C "$WORK/other" rev-parse HEAD)" ] || ng "C ff の後のプライマリが origin/main と一致しない"
 tick; printf '%s\n' "$last_out" | grep -q 'fast-forward しました' || ng "C ff したことをログ（要約の外）に残す"
-tick; if sed -n '/^<!-- acceptance-remote-record/,$p' <<<"$last_out" | grep -q 'fast-forward'; then ng "C ff のことを要約へ載せない"; fi
+tick; if sed -n '/^<!-- acceptance-remote-record/,$p' <<<"$last_out" | grep 'fast-forward' >/dev/null; then ng "C ff のことを要約へ載せない"; fi
 tick; [ ! -f "$WORK/npm" ] || ng "C lock が変わらない ff では npm ci を打たない（got $(cat "$WORK/npm")）"
 
 # 分岐している（手元の main にだけコミットがある）なら回さない。
@@ -441,7 +441,7 @@ lock_bump 1
 sched_case "lock が変わる ff では npm ci を打ってから回す" "ok|-" yes
 ok_or_ng "$(cat "$WORK/npm" 2>/dev/null)" "ci @ $WORK/primary" "C npm ci をプライマリで 1 回だけ打つ"
 tick; printf '%s\n' "$last_out" | grep -q 'npm ci を打ちました' || ng "C npm ci を打ったことをログ（要約の外）に残す"
-tick; if sed -n '/^<!-- acceptance-remote-record/,$p' <<<"$last_out" | grep -q 'npm'; then ng "C npm ci のことを要約へ載せない"; fi
+tick; if sed -n '/^<!-- acceptance-remote-record/,$p' <<<"$last_out" | grep 'npm' >/dev/null; then ng "C npm ci のことを要約へ載せない"; fi
 sched_case "遅れていなければ npm ci を打たない" "ok|-" yes
 tick; [ ! -f "$WORK/npm" ] || ng "C 遅れていない回で npm ci を打った"
 lock_bump 2
@@ -564,7 +564,7 @@ ok_or_ng "$(diff <(grep -v -e '^pr: ' -e '^PR #' -e '^外部層の定期実行�
 ok_or_ng "$(rc_of bash "$SUMMARY" --labels-from "$REMOTE" --exit 0 --head "$HEAD_SHA" --time "$T0" --pr "845; rm -rf /")" 2 "F1 --pr は番号だけ"
 for v in "${VALUES[@]}"; do
   tick
-  pr_body 0.1 "$HEAD_SHA" "$PR_NUM" --exit 1 < "$WORK/out-drift" | grep -qF -- "$v" && ng "F1 PR 向けの要約に値が出ています: $v"
+  pr_body 0.1 "$HEAD_SHA" "$PR_NUM" --exit 1 < "$WORK/out-drift" | grep -F -- "$v" >/dev/null && ng "F1 PR 向けの要約に値が出ています: $v"
 done
 
 # 定期実行の判定は PR 向けの記録を数えない（main の宣言の乖離を PR の宣言で上書きしない）。
@@ -720,7 +720,7 @@ pull_fx 845 "$HEAD_SHA"; files_fx 845 terraform/dns.tf docs/x.md; statuses_fx "$
 : | comments_fx 845
 prrec 1 "記録が無ければ failure" --pr 845 --report
 ok_or_ng "$(posted_state "$HEAD_SHA" | cut -d' ' -f1)" failure "G1 記録が無ければ status は failure"
-tick; posted_state "$HEAD_SHA" | grep -q 'No external acceptance record' || ng "G1 説明が「記録が無い」になっていない: $(posted_state "$HEAD_SHA")"
+tick; posted_state "$HEAD_SHA" | grep 'No external acceptance record' >/dev/null || ng "G1 説明が「記録が無い」になっていない: $(posted_state "$HEAD_SHA")"
 pr_rec 0.1 out-ok 0 | comments_fx 845
 prrec 0 "head に一致する全件 PASS は success" --pr 845 --report
 ok_or_ng "$(posted_state "$HEAD_SHA" | cut -d' ' -f1)" success "G2 全件 PASS の記録で success"
@@ -842,7 +842,7 @@ tick; rc=0; bash "$SCHEDULED" --repo-dir "$WORK/primary" --pr "845x" --print > /
 PR_WORKFLOW="$ROOT/.github/workflows/acceptance-remote-pr.yml"
 pr_on="$(awk '/^on:/{f=1;next} f && /^[^ #]/{exit} f' "$PR_WORKFLOW")"
 tick; grep -q '^  pull_request:' <<<"$pr_on" || ng "I1 pull_request で起動する"
-tick; awk '/^  pull_request:/{f=1;next} f && /^  [a-z_]+:/{exit} f' <<<"$pr_on" | grep -q "^      - 'terraform/\*\*'$" || ng "I1 pull_request は terraform/** に絞る"
+tick; awk '/^  pull_request:/{f=1;next} f && /^  [a-z_]+:/{exit} f' <<<"$pr_on" | grep "^      - 'terraform/\*\*'$" >/dev/null || ng "I1 pull_request は terraform/** に絞る"
 tick; { grep -q '^  issue_comment:' <<<"$pr_on" && grep -q '^  schedule:' <<<"$pr_on"; } || ng "I2 記録が後から付いたときの契機（issue_comment と schedule）がある"
 tick; if grep -qE '^  (pull_request_target|push|merge_group):' <<<"$pr_on"; then ng "I3 pull_request_target / push / merge_group では動かさない"; fi
 pr_job="$(awk '/^jobs:/{f=1;next} f && /^  [a-z][a-z0-9_-]*:/{sub(/:.*/,""); gsub(/ /,""); print; exit}' "$PR_WORKFLOW")"

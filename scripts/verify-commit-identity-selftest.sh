@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
-# verify-commit-identity-selftest.sh — コミット identity の検証ゲートが、通すべき形を通し、
-# 落とすべき形を落とすことを、仕込みのリポジトリで確かめる（#860）。
+# verify-commit-identity-selftest.sh — commit identity の検証ゲートが、通すべき形を
+# 通し、落とすべき形を落とすことを、仕込みのリポジトリで確かめる。
 #
 # ## なぜ要るのか
 #
-# **本物の main を検査しても、落ちるべき形はほとんど現れない。** #833 の squash merge で
-# GitHub が足した `Co-authored-by: dependabot[bot] <…@users.noreply.github.com>` は、
-# PR の検査では見えず（マージの瞬間に付く）、push(main) の全履歴検査で初めて赤になった。
-# 逆に、許可を広げた結果「何でも通る」になっても、本物の履歴だけでは気づけない。
+# **本物の main を検査しても、落ちるべき形はほとんど現れない。** GitHub は squash
+# merge で、マージした人と PR の作者が違うと（例: 別の人が書いた PR を自分が
+# マージする）、マージの瞬間に作者の Co-authored-by を足す。これは PR の検査
+# （マージ前）では見えず、push(main) の全履歴検査で初めて赤になる。逆に、許可を
+# 広げた結果「何でも通る」になっても、本物の履歴だけでは気づけない。
 #
-# そこで 1 コミットだけの仕込みのリポジトリを場合ごとに作り、スクリプトをそこへ写して
-# `--full` で回す（スクリプトは自分の置き場所のリポジトリへ cd するため）。
+# そこで 1 コミットだけの仕込みのリポジトリを場合ごとに作り、判定スクリプトを
+# そこへ写して `--full` で回す（判定スクリプトは自分の置き場所のリポジトリへ
+# cd するため）。
 #
 # ## 何を見るか
 #
 # - 通る: 許可 email の author / GitHub の squash merge（committer=noreply@github.com）で
-#   dependabot[bot] の noreply を author・co-author に持つコミット / AI の trailer
-# - 落ちる: ローカルで作ったコミット（committer が許可 email）の co-author が noreply 形式 /
-#   @ を 2 つ持つ noreply 形式 / 許可外の個人 email の co-author・author
+#   noreply 形の author・co-author を持つコミット / AI の trailer
+# - 落ちる: ローカルで作ったコミット（committer が許可 email）の co-author が
+#   noreply 形式 / @ を 2 つ持つ noreply 形式 / 許可外の個人 email の
+#   co-author・author
 #
 # 使い方:
 #   bash scripts/verify-commit-identity-selftest.sh
@@ -33,7 +36,7 @@ trap cleanup EXIT
 
 readonly ME='me@example.com'
 readonly GH='noreply@github.com'
-readonly BOT='49699333+dependabot[bot]@users.noreply.github.com'
+readonly BOT='12345+someone@users.noreply.github.com'
 
 failures=0
 n=0
@@ -73,8 +76,8 @@ check() {
 check "許可 email の author と committer" 0 "$ME" "$ME"
 check "AI の trailer" 0 "$ME" "$ME" "noreply@anthropic.com"
 check "squash merge の committer" 0 "$ME" "$GH"
-check "Dependabot の PR の squash merge（#833 の形）" 0 "$BOT" "$GH" "$BOT"
-check "人の PR を別の人が squash merge" 0 "$ME" "$GH" "12345+someone@users.noreply.github.com"
+check "GitHub 由来の author を squash merge（co-author も同じ形）" 0 "$BOT" "$GH" "$BOT"
+check "人の PR を別の人が squash merge" 0 "$ME" "$GH" "67890+other@users.noreply.github.com"
 
 # 落ちる
 check "ローカルのコミットに noreply 形式の co-author" 1 "$ME" "$ME" "$BOT"

@@ -281,7 +281,7 @@ fi
 [[ -s "$out_dir/index.js" ]] || fail "likes Worker を束ねた結果（index.js）がありません。"
 # 7. 上限の入口を輸出している（#699）。**Pages の Service binding が指す名前付きの入口が、配る束に無い**
 # 形を配らない。esbuild の束の末尾の `export {` から `};` までに、1 行 1 つで名前が並ぶ。
-if ! sed -n '/^export {/,/^};/p' "$out_dir/index.js" | grep -qE "^[[:space:]]*${RATE_LIMITER_ENTRYPOINT},?$"; then
+if ! sed -n '/^export {/,/^};/p' "$out_dir/index.js" | grep -E "^[[:space:]]*${RATE_LIMITER_ENTRYPOINT},?$" >/dev/null; then
   fail "束ねた likes Worker が ${RATE_LIMITER_ENTRYPOINT} を輸出していません（Pages の ${RATE_LIMITER_SERVICE} が指す入口）。"
 fi
 

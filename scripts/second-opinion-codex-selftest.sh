@@ -210,7 +210,8 @@ else
     fail "プロンプトに差分の範囲（git diff <範囲>）がありません"
   fi
   # **差分は渡したものを読み、ツールは差分の外に使うと指示していること。**
-  if ! grep -q '差分の外を確かめるために使ってよい' "$record/stdin"; then
+  if ! grep -q '読み取りのコマンドとファイル読み取りを使ってよい' "$record/stdin" \
+    || ! grep -q '差分の外のファイル' "$record/stdin"; then
     fail "プロンプトに「ツールは差分の外を確かめるために使う」の指示がありません"
   fi
   # **落とす category の規則が載っていること。**
@@ -240,7 +241,8 @@ if [[ ! -f "$record/argv" ]]; then
   fail "引数が記録されていません"
 else
   argv="$(cat "$record/argv")"
-  for needed in exec - --sandbox read-only --color never --ephemeral --output-schema -o; do
+  # --ephemeral は DCB v0.17.0 の雛形が渡さないので求めない（#938 で雛形へ寄せた）。
+  for needed in exec - --sandbox read-only --color never --output-schema -o; do
     if ! printf '%s\n' "$argv" | grep -qx -- "$needed"; then
       fail "引数に $needed がありません"
     fi
@@ -367,8 +369,8 @@ grep -q 'bwrap' "$work/err" \
   || fail "読めなかった理由（other の指摘）が出力に出ていません"
 # **完了の行を出さないこと。** loop-gate.sh はこの行の有無で「判定に到達したか」を見て、
 # 無ければ記録を残さない。出してしまうと、落ちても findings の記録が作られ、確認側が緑になる。
-if grep -q -e '\[second-opinion\] LGTM ' -e '\[second-opinion\] findings reported in ' "$work/out" "$work/err"; then
-  fail "差分を読めなかった回答で、完了の行（LGTM / findings reported in）が出ています"
+if grep -q -e '\[second-opinion\] LGTM ' -e '\[second-opinion\] findings reported ' -e '\[second-opinion\] [0-9]*/[0-9]* chunks reported findings' "$work/out" "$work/err"; then
+  fail "差分を読めなかった回答で、完了の行（LGTM / findings reported …）が出ています"
 fi
 cat "$work/out" "$work/err" > "$work/unreviewed-capture"
 
@@ -409,10 +411,12 @@ record_after() {
 [[ "$(record_after "$work/unreviewed-capture" 1)" == "none" ]] \
   || fail "差分を読めなかった出力から、loop-gate.sh が記録を作りました（確認側が緑になります）"
 
-# ---- 2d. 旗で強制できないエンジンには、形をプロンプトへ載せること ----
-# **gemini には `--json-schema` に当たる旗が無い**（実測）。載せないと、モデルは
-# `what` / `why` などの必要な項目を知らないまま答え、**指摘の中身に関係なく後段の検証で
-# 落ちる**（第二意見の指摘。実在）。ここは仕込みの `gemini` で見る。
+# ---- 2d. gemini は判定トークン方式で判定すること（#938 で雛形へ寄せた） ----
+# **gemini には `--json-schema` に当たる旗が無い**（実測）。DCB v0.17.0 の雛形は、gemini を
+# スキーマ方式ではなく**出力の最後の行の判定トークン**（`VERDICT: LGTM` / `VERDICT: FINDINGS`）で
+# 判定する（規範は両方を認めている。`.github/project-ai-rules.md`「判定の形」）。ここは仕込みの
+# `gemini` で、トークンの指示がプロンプトに載ること・最後の行で判定すること・トークンの無い
+# 出力を通さないことを見る。前置き（ナレーション）が付いても最後の行で読めることも見る。
 cat > "$fake_bin/gemini" <<'FAKEG'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -420,7 +424,7 @@ set -euo pipefail
 for a in "$@"; do
   printf '%s\n' "$a" >> "$FAKE_CODEX_RECORD/gemini-argv"
 done
-printf '%s' "${FAKE_CODEX_ANSWER:-{\"reviewed\":true,\"findings\":[]\}}"
+printf '%s\n' "${FAKE_GEMINI_ANSWER-VERDICT: LGTM}"
 FAKEG
 chmod +x "$fake_bin/gemini"
 
@@ -430,50 +434,44 @@ chmod +x "$fake_bin/gemini"
 # `PROJECT_ENV_FILE` で差し替えれば、この上書きを避けられる。
 : > "$work/empty.env"
 
-rm -f "$record/gemini-argv"
-rc=0
-(
-  cd "$repo"
-  PATH="$fake_bin:$PATH" \
-  FAKE_CODEX_RECORD="$record" \
-  PROJECT_ENV_FILE="$work/empty.env" \
-  GEMINI_API_KEY=dummy-for-selftest \
-    bash "$REVIEW" --engine gemini --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
-) || rc=$?
-if [[ "$rc" -ne 0 ]]; then
-  fail "gemini の経路が通りませんでした（終了コード $rc）"
-  tail -3 "$work/err" >&2
-fi
-if [[ ! -f "$record/gemini-argv" ]]; then
-  fail "gemini が呼ばれていません"
-elif ! grep -q '"what"' "$record/gemini-argv"; then
-  fail "gemini のプロンプトに回答の形（スキーマ）が載っていません（強制できないエンジンには載せる必要があります）"
-fi
-
-# ---- 2e. 強制できないエンジンで、前置きやフェンスが付いても読めること ----
-# **ナレーションが 1 行付くだけで落ちる**形だと、acceptance が消したかった「ナレーションに
-# よる誤分類」がこの経路にだけ残る（第二意見の指摘。実在）。
-for shape in narration fence; do
-  case "$shape" in
-    narration) answer='これから確認します。
-{"reviewed":true,"findings":[]}' ;;
-    fence) answer='```json
-{"reviewed":true,"findings":[]}
-```' ;;
-  esac
+run_gemini() {
   rm -f "$record/gemini-argv"
-  rc=0
   (
     cd "$repo"
     PATH="$fake_bin:$PATH" \
     FAKE_CODEX_RECORD="$record" \
     PROJECT_ENV_FILE="$work/empty.env" \
     GEMINI_API_KEY=dummy-for-selftest \
-    FAKE_CODEX_ANSWER="$answer" \
       bash "$REVIEW" --engine gemini --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
-  ) || rc=$?
-  if [[ "$rc" -ne 0 ]]; then
-    fail "回答に $shape が付いた形で落ちました（指摘は 0 件なので通すべきです）"
+  )
+}
+
+rc=0
+run_gemini || rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  fail "gemini の経路が通りませんでした（終了コード $rc）"
+  tail -3 "$work/err" >&2
+fi
+if [[ ! -f "$record/gemini-argv" ]]; then
+  fail "gemini が呼ばれていません"
+elif ! grep -q 'VERDICT: LGTM' "$record/gemini-argv"; then
+  fail "gemini のプロンプトに判定トークンの指示がありません"
+fi
+
+# gemini の回答の形ごとの期待（形 / 回答 / 期待する終了コード）。
+for shape in narration findings missing; do
+  case "$shape" in
+    narration) answer='これから確認します。
+指摘はありません。
+VERDICT: LGTM'; expect=0 ;;
+    findings)  answer='a.ts:1 で null を参照します。
+VERDICT: FINDINGS'; expect=1 ;;
+    missing)   answer='{"reviewed":true,"findings":[]}'; expect=1 ;;
+  esac
+  rc=0
+  FAKE_GEMINI_ANSWER="$answer" run_gemini || rc=$?
+  if [[ "$rc" -ne "$expect" ]]; then
+    fail "gemini の回答（$shape）で終了コードが $rc になりました（$expect を期待。トークンの無い出力は通さない）"
     tail -2 "$work/err" >&2
   fi
 done
@@ -630,21 +628,21 @@ gh_dir="$work/gh"
 mkdir -p "$gh_dir"
 owner_url='https://api.github.com/repos/owner1/repo1'
 cat > "$gh_dir/11.json" <<EOF
-{"repository_url":"$owner_url","user":{"login":"owner1"},"state":"open","state_reason":null,"title":"コミットで名指しした票",
+{"repository_url":"$owner_url","user":{"login":"owner1"},"author_association":"OWNER","state":"open","state_reason":null,"title":"コミットで名指しした票",
  "body":"## intake\n\n\`\`\`yaml\ngoal: g\nacceptance:\n  - REF-ACCEPTANCE-MARKER\npriority: 中\n\`\`\`\nREF-OUTSIDE-ACCEPTANCE-MARKER"}
 EOF
 cat > "$gh_dir/12.json" <<EOF
-{"repository_url":"$owner_url","user":{"login":"owner1"},"state":"closed","title":"追加行の PR",
+{"repository_url":"$owner_url","user":{"login":"owner1"},"author_association":"OWNER","state":"closed","title":"追加行の PR",
  "pull_request":{"merged_at":"2026-09-29T00:00:00Z"},"body":"acceptance:\n  - PRBODY-MARKER"}
 EOF
 cat > "$gh_dir/13.json" <<EOF
-{"repository_url":"$owner_url","user":{"login":"owner1"},"state":"open","title":"REF-REMOVED-MARKER","body":""}
+{"repository_url":"$owner_url","user":{"login":"owner1"},"author_association":"OWNER","state":"open","title":"REF-REMOVED-MARKER","body":""}
 EOF
 cat > "$gh_dir/14.json" <<EOF
-{"repository_url":"$owner_url","user":{"login":"stranger"},"state":"open","title":"REF-STRANGER-MARKER","body":"acceptance:\n  - REF-STRANGER-MARKER"}
+{"repository_url":"$owner_url","user":{"login":"stranger"},"author_association":"NONE","state":"open","title":"REF-STRANGER-MARKER","body":"acceptance:\n  - REF-STRANGER-MARKER"}
 EOF
 cat > "$gh_dir/22.json" <<EOF
-{"repository_url":"$owner_url","user":{"login":"owner1"},"state":"open","title":"REF-OVER-LIMIT-MARKER","body":""}
+{"repository_url":"$owner_url","user":{"login":"owner1"},"author_association":"OWNER","state":"open","title":"REF-OVER-LIMIT-MARKER","body":""}
 EOF
 # #15〜#21 は JSON を置かない（引けない番号。止めずに続けることを見る）。
 
@@ -690,7 +688,7 @@ else
   grep -q 'REF-REMOVED-MARKER' "$record/stdin" \
     && fail "削除行にしか無い #13 が載っています"
   grep -q 'REF-STRANGER-MARKER' "$record/stdin" \
-    && fail "持ち主以外が作った #14 が載っています"
+    && fail "書き込み権を持たない人が作った #14 が載っています"
   grep -q 'REF-OVER-LIMIT-MARKER' "$record/stdin" \
     && fail "上限を超えた #22 が載っています"
 fi
@@ -702,7 +700,7 @@ if [[ -f "$record/gh-calls" ]]; then
 fi
 grep -q '上限 10 本を超えたため載せません: #22' "$work/out" \
   || fail "上限を超えて捨てたことが出力に出ていません"
-grep -q '持ち主でないため載せません: #14' "$work/out" \
+grep -q '書き込み権を持たないため載せません: #14' "$work/out" \
   || fail "作成者で弾いたことが出力に出ていません"
 grep -q '引けなかったため載せません: #15' "$work/err" \
   || fail "引けなかったことが出力に出ていません"
@@ -728,8 +726,8 @@ refs_out="$(printf '%s\n' \
   'fix: 何かを直す (#13)' \
   '全角の括弧（#14）' \
   '上流 ojos/ai-packages-dev の #15' \
-  | bash "$REVIEW" --extract-issue-refs 2> "$work/refs-err")" || {
-  fail "--extract-issue-refs が失敗しました"
+  | bash -c 'eval "$(awk "/^extract_issue_refs\\(\\) \\{/{f=1} f{print} f && /^}/{exit}" "$1")"; extract_issue_refs' _ "$REVIEW" 2> "$work/refs-err")" || {
+  fail "extract_issue_refs（本体から取り出した関数）が失敗しました"
   tail -3 "$work/refs-err" >&2
 }
 # 最後の #15 は**拾うのが正しい**（間に語を挟んだ書き方。規則が禁じている形で、
@@ -744,5 +742,5 @@ if [[ "$failed" -ne 0 ]]; then
   exit 1
 fi
 
-echo "[codex-selftest] 16 組の配線を確かめました（差分を標準入力で先に渡す / サンドボックスが起動しない環境 / issue の文脈 / 参照された issue・PR の文脈 / antigravity の旗と包み / 引数とスキーマとモデル / 強制できないエンジンへの形の受け渡しと前置き・フェンスの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / 差分を読めなかった回答と記録 / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し / 別リポジトリの番号を拾わない）"
+echo "[codex-selftest] 16 組の配線を確かめました（差分を標準入力で先に渡す / サンドボックスが起動しない環境 / issue の文脈 / 参照された issue・PR の文脈 / antigravity の旗と包み / 引数とスキーマとモデル / gemini の判定トークンと前置きの吸収 / 落とすのは 4 点だけ / 読めない JSON と知らない category / 差分を読めなかった回答と記録 / -o からの判定 / 未ログイン / 回答なし / --runs 2 の使い回し / 別リポジトリの番号を拾わない）"
 echo "CODEX_ENGINE_SELFTEST_PASS"

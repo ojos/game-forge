@@ -318,7 +318,7 @@ expect_eq "2026-08-28 は 2 モデルに割れる" '["deepseek-v3-2","sonnet-4-6
 
 # 表の形（既定の出力）でも落ちないこと。**JSON だけ通って表が落ちる状態を作らない。**
 if bash scripts/usage-report.sh --persist-to "$SANDBOX" --from 2026-08-27 --to 2026-08-29 \
-     | grep -q 'USAGE_REPORT_PASS'; then
+     | grep 'USAGE_REPORT_PASS' >/dev/null; then
   echo "  ok   表の出力が通過信号を返す"
 else
   echo "  FAIL 表の出力が通過信号を返しません" >&2
@@ -999,7 +999,7 @@ else
   failed=1
 fi
 # **その 1 度が判定コマンドの中であること。** 散文に 1 度だけ書いても上は通る。
-if grep -E '0\.40|40 ?%' "$RETREAT_DOC" 2>/dev/null | grep -q 'forkRate'; then
+if grep -E '0\.40|40 ?%' "$RETREAT_DOC" 2>/dev/null | grep 'forkRate' >/dev/null; then
   echo "  ok   その 1 度は判定コマンドの中にある"
 else
   echo "  FAIL 閾値の数値が判定コマンドの外にあります" >&2
@@ -1036,7 +1036,7 @@ since="$(grep -E '^\| 開始（M7 完了の時刻' docs/retreat-review.md | grep
 SINCE_CMD
 since_cmd_hits="$(grep -cxF -- "$SINCE_CMD_EXPECTED" "$RETREAT_DOC" 2>/dev/null || true)"
 expect_eq "2.1 の since= の行が期待のコマンドの文面と完全に一致する" "1" "$since_cmd_hits"
-if grep -F 'bash scripts/kpi-report.sh --remote' "$RETREAT_DOC" 2>/dev/null | grep -qF -- '--since "$since"'; then
+if grep -F 'bash scripts/kpi-report.sh --remote' "$RETREAT_DOC" 2>/dev/null | grep -F -- '--since "$since"' >/dev/null; then
   echo "  ok   2.1 の kpi-report.sh が --since で開始の時刻を渡している"
 else
   echo "  FAIL 2.1 の kpi-report.sh が --since で開始の時刻を渡していません" >&2

@@ -113,24 +113,24 @@ disable_agy_telemetry() {
   mv "$tmp" "$AGY_SETTINGS"
   echo "[install-ai-tools] agy telemetry disabled (enableTelemetry=false)"
 }
-# codex（Codex CLI）は npm 配布だが、**install_if_missing の同型には乗らない。**
+# codex（Codex CLI）は npm 配布だが、install_if_missing の同型には乗らない。
 #
-# **版が要件になる**（#805）。第二意見の既定のモデル `gpt-6-sol` は 0.156.0 から
-# 引けるようになった綴りで、それより古い CLI は一覧に出さない。`install_if_missing` は
-# 「PATH に codex が在れば飛ばす」ので、**古い版が先に入っている環境は更新されず、
-# レビューのたびに失敗する**（Copilot の指摘）。だから在るときも版を見る。
+# 版が要件になる。第二意見レビューの既定モデル gpt-6-sol は、ある版から CLI の
+# 一覧に出るようになった綴りで、それより古い CLI は引けない。install_if_missing は
+# 「PATH に codex が在れば飛ばす」ので、古い版が先に入っている環境は更新されず、
+# レビューのたびに失敗する。だから在るときも版を見る。
 #
 # 認証は ChatGPT アカウントの OAuth（または API キー）で、導入だけでは使えない。
-# 初回に対話で `codex login` を通す必要がある。資格情報は ~/.codex/auth.json
-# （`codex doctor` で実測）で、この devcontainer では ~/.codex が named volume
-# （codex-storage）なので rebuild しても消えない。
+# 初回に対話で `codex login` を通す必要がある。資格情報は ~/.codex/auth.json に
+# 置かれ、この devcontainer では ~/.codex が named volume（codex-storage）なので
+# rebuild しても消えない。
 CODEX_MIN_VERSION="0.156.0"
 
-# 版の比較。`sort -V` は BSD 系に無い版があるので使わない（規範:
-# scripts/check-shell-portability.sh）。3 つの数へ分けて桁ごとに比べる。
+# 版の比較。`sort -V` は BSD 系に無い版があるので使わない。3 つの数へ分けて
+# 桁ごとに比べる。
 #
-# **読めない綴りは「古い」として扱う**（fail-closed）。入れ替えは冪等で副作用が
-# 小さい一方、読めないまま通すと「要件を満たさない CLI で回り続ける」ことになる。
+# 読めない綴りは「古い」として扱う（fail-closed）。入れ替えは冪等で副作用が
+# 小さい一方、読めないまま通すと、要件を満たさない CLI で回り続けることになる。
 codex_version_is_old() {
   local have="$1" want="$2"
   awk -v have="$have" -v want="$want" '
@@ -149,7 +149,7 @@ codex_version_is_old() {
 install_codex_if_missing() {
   local have=""
   if command -v codex >/dev/null 2>&1; then
-    # `codex --version` は "codex-cli 0.157.1" の形（0.157.1 で実測）。数だけを取る。
+    # `codex --version` は "codex-cli <版>" の形。数だけを取る。
     have="$(codex --version 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
     if ! codex_version_is_old "$have" "$CODEX_MIN_VERSION"; then
       echo "[install-ai-tools] codex ${have} already installed (>= $CODEX_MIN_VERSION), skipping"
@@ -171,9 +171,9 @@ install_codex_if_missing() {
   echo "[install-ai-tools] codex installed: $(command -v codex) (${have})"
   echo "[install-ai-tools] codex は認証が別です。初回は対話で 'codex login' を通してください。"
 }
-
 install_if_missing claude "@anthropic-ai/claude-code"
-install_codex_if_missing
+install_if_missing gemini "@google/gemini-cli"
 install_agy_if_missing
 disable_agy_telemetry
+install_codex_if_missing
 echo "[install-ai-tools] done"

@@ -144,7 +144,9 @@ resource "cloudflare_dns_record" "code_narrative_delegation" {
  *
  * **値と注記の正本はここである。** #906 までは Route 53 の宣言（dns.tf）から値を導いていた。
  * ゾーンを消すにあたって、値と注記をここへ移した（Cloudflare 側の答えは 1 文字も変えていない）。
- * TTL は Route 53 のときと同じ 300 にそろえている。
+ * TTL は Route 53 のときと同じ 300 にそろえている。**ただし Pages へ向く 3 件は、プロキシにして
+ * いる間は 1（自動）になる**（下の `game_forge_pages_proxied`。Cloudflare はプロキシのレコードの
+ * TTL を自動にする）。
  */
 locals {
   game_forge_domain = "game-forge.${cloudflare_zone.ojos_jp.name}"

@@ -90,10 +90,12 @@ curl -fsSL "${BASE}/RELEASE-MANIFEST.json" -o RELEASE-MANIFEST.json
 curl -fsSL "${BASE}/install.sh" -o install.sh
 verified() { jq -r '.checksums["install.sh"] + "  install.sh"' RELEASE-MANIFEST.json | sha256sum -c -; }   # bsd-ok: dev01（Linux）のホストで打つ手順
 
-# 2. 計画を読んでから入れる。照合と実行を && でつなぐ（行を分けると、照合に失敗しても次の行の install.sh が走る）。
+# 2. 計画を読んでから入れる。照合・計画・本実行を && でつなぐ（行を分けると、照合や計画が失敗しても本実行が走る）。
+#    計画（dev を置き換える / ユニットは置き換えない / projects は触らない、など）を読んで Enter、やめるなら Ctrl-C。
 #    install.sh も dev.sh などを同じマニフェストで照合し、1 つでも違えば何も置かずに止まる
-verified && bash install.sh --version "${TAG}" --dry-run
-verified && bash install.sh --version "${TAG}"
+verified && bash install.sh --version "${TAG}" --dry-run \
+  && read -r -p '計画を読んだら Enter（やめるなら Ctrl-C）: ' \
+  && verified && bash install.sh --version "${TAG}"
 
 # 3. 確かめる（どれも 0 で終わり、ユニットは active のまま）
 ~/.local/bin/dev version                       # 「dev <TAG の版>」と出ること

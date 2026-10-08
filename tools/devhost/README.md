@@ -83,16 +83,17 @@ TAG=v0.1.0
 ~/.local/bin/dev version                       # DCB 同梱の版（v0.17.0 以前）には無く、使い方の誤り（2）で止まる
 systemctl --user is-active dev-up@game-forge.service
 
-# 1. 取得して照合する（作業用の空のディレクトリで。手順の全文は上流の README の「install.sh で入れる」）
+# 1. 取得する（作業用の空のディレクトリで。手順の全文は上流の README の「install.sh で入れる」）
 W="$(mktemp -d "${TMPDIR:-/tmp}/devhost.XXXXXX")" && cd "$W"
 BASE="https://github.com/ojos/devcontainer-host/releases/download/${TAG}"
 curl -fsSL "${BASE}/RELEASE-MANIFEST.json" -o RELEASE-MANIFEST.json
 curl -fsSL "${BASE}/install.sh" -o install.sh
-jq -r '.checksums["install.sh"] + "  install.sh"' RELEASE-MANIFEST.json | sha256sum -c - && echo VERIFIED   # bsd-ok: dev01（Linux）のホストで打つ手順。VERIFIED が出なければ先へ進まない
+verified() { jq -r '.checksums["install.sh"] + "  install.sh"' RELEASE-MANIFEST.json | sha256sum -c -; }   # bsd-ok: dev01（Linux）のホストで打つ手順
 
-# 2. 計画を読んでから入れる（install.sh も dev.sh などを同じマニフェストで照合し、1 つでも違えば何も置かずに止まる）
-bash install.sh --version "${TAG}" --dry-run
-bash install.sh --version "${TAG}"
+# 2. 計画を読んでから入れる。照合と実行を && でつなぐ（行を分けると、照合に失敗しても次の行の install.sh が走る）。
+#    install.sh も dev.sh などを同じマニフェストで照合し、1 つでも違えば何も置かずに止まる
+verified && bash install.sh --version "${TAG}" --dry-run
+verified && bash install.sh --version "${TAG}"
 
 # 3. 確かめる（どれも 0 で終わり、ユニットは active のまま）
 ~/.local/bin/dev version                       # 「dev <TAG の版>」と出ること

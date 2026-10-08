@@ -1285,7 +1285,7 @@ check_pages_production_deployment() {
     # 手で `wrangler pages deploy` を打つとき --commit-hash を省くと、ここが空になる。
     # **どのコミットが本番に居るのかを、Cloudflare 側から辿れない状態**である。
     echo "本番の配備にコミットハッシュが記録されていません（${project}）。"
-    echo "  --commit-hash を渡さずに配備された可能性がある。.github/workflows/verify.yml の deploy ジョブは必ず渡す。"
+    echo "  --commit-hash を渡さずに配備された可能性がある。.github/workflows/deploy.yml の deploy ジョブは必ず渡す。"
     return 1
   fi
 
@@ -1296,7 +1296,7 @@ check_pages_production_deployment() {
     echo "  ${branch} の HEAD: ${expected}"
     echo "  本番の配備:       ${actual}（${created}）"
     echo "  これは前提の不成立ではなく、実際の乖離である（ここまでの前提の確認は通っている）。"
-    echo "  まず deploy ジョブの実行を見ること: gh run list --workflow verify.yml --branch ${branch}"
+    echo "  まず deploy ジョブの実行を見ること: gh run list --workflow deploy.yml --branch ${branch}"
     echo "  緊急時の手動配備は docs/pages-deploy.md の「6. デプロイ（初回と緊急時のみ）」にある。"
     return 1
   fi

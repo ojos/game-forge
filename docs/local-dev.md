@@ -1257,3 +1257,73 @@ ssh dev01 .local/bin/dev ls     # 最初の 1 回は Access の URL が出る。
 | Termux のタップで attach・up・auth aws を 1 回ずつ通す | 3 つのボタン（auth はデバイスコードをスマホのブラウザで承認）。#923 で上流の版と `dev-auth-aws` に替えた後も、同じボタンで通す | 利用者（Pixel 8） |
 | 鍵の行を消すと入れなくなる | 上流の README の「失効させる」の後、ボタンが `Permission denied (publickey)` | 利用者（dev01 と Pixel 8） |
 | `bash scripts/verify.sh` が VERIFY_PASS | 手元と CI | 機械 |
+
+---
+
+## 8. DCB と規範への追従（#938）
+
+`.devcontainer/`・`scripts/` の一部・`.github/workflows/` の 3 本（`verify.yml`・`identity-guard.yml`・`second-opinion-gate.yml`）・`.claude/`・`.ai-playbook/**`・入口ファイル（`CLAUDE.md`・`AGENTS.md`・`.github/copilot-instructions.md`）は、devcontainer-bootstrap（DCB）が生成するファイルです。**生成時の入力（引数）と、ファイルごとのハッシュは `.devcontainer/ORIGIN` が記録しています**（#938 で初めて置きました。v0.17.0・規範 ai-playbook v0.8.1）。次からは、引数なしの `bootstrap.sh --upgrade` で、記録から同じ入力を再現して追従できます。
+
+**どのファイルを雛形どおりにし、どの差分を残しているかは `.github/project-ai-rules.md`「雛形からの逸脱」が正本です。** 追従のたびに、表に無い差分を雛形へ戻し、表にある差分だけを残します。
+
+### 8.1 手順
+
+1. **専用の worktree とブランチで行います**（`origin/main` から切り、`npm ci` で `node_modules` の実体を置く。`.github/project-ai-rules.md`「作業ツリーの分離」）。
+2. **新しい版を、マニフェストのハッシュで照合してから展開します。** 展開先は作業ツリーの外の空のディレクトリにします。
+
+   ```bash
+   TAG=v0.17.0   # 追従先の版
+   mkdir -p ~/dcb-"$TAG" && cd ~/dcb-"$TAG"
+   BASE="https://github.com/ojos/devcontainer-bootstrap/releases/download/${TAG}"
+   curl -sSL "${BASE}/RELEASE-MANIFEST.json" -o RELEASE-MANIFEST.json
+   curl -sSL "${BASE}/PACKAGE_ARCHIVE.tar.gz" -o PACKAGE_ARCHIVE.tar.gz
+   want="$(jq -r '.checksums["PACKAGE_ARCHIVE.tar.gz"]' RELEASE-MANIFEST.json)"
+   got="$(openssl dgst -sha256 -r PACKAGE_ARCHIVE.tar.gz | cut -d' ' -f1)"
+   [ -n "$want" ] && [ "$want" = "$got" ] && echo HASH_OK   # HASH_OK が出なければ先へ進まない
+   mkdir -p x && tar -xzf PACKAGE_ARCHIVE.tar.gz -C x
+   ```
+
+3. **計画を見ます。** 作業ツリーの根で、引数なしの `--upgrade --dry-run` を打ちます（何も書きません）。規範の版を上げるときだけ `--playbook-version <tag>` を渡します（渡したものだけが記録を上書きします）。
+
+   ```bash
+   bash ~/dcb-"$TAG"/x/bootstrap.sh --upgrade --dry-run
+   ```
+
+4. **取り込みます。** 終了コード 0 なら全件を適用済み、2 なら `.dcb-new` が残っています（想定どおり。逸脱を残したファイルと、プロジェクトが所有するファイルには毎回置かれます）。
+
+   ```bash
+   bash ~/dcb-"$TAG"/x/bootstrap.sh --upgrade
+   find . -name '*.dcb-new' -not -path './node_modules/*'
+   ```
+
+5. **`.dcb-new` を 1 本ずつ片付けます。**
+   - **DCB が所有するファイル**: `.dcb-new` を正として置き換え、「雛形からの逸脱」の表にある差分だけを戻します。表に無い差分を戻すなら、表へ行を足す（理由と基準つき）ところまでを同じ PR で行います。
+   - **プロジェクトが所有するファイル**（`scripts/acceptance.sh`・`scripts/acceptance-remote.sh`・`scripts/check-no-secrets.sh`・`.github/project-ai-rules.md`）: 中身を残し、雛形で増えた項目があれば書き足します。
+   - **`.devcontainer/` の 2 本**: #938 の時点では取り込んでいません（表の最後の行）。取り込むときは別の票で、コンテナの作り直しまで確かめます。
+   - 済んだら `.dcb-new` を消します。雛形に寄せて game-forge 固有の検査（`scripts/acceptance.sh` が呼ぶ `scripts/check-*.sh` など）が落ちたら、検査の側（プロジェクトの所有）で直します。
+
+6. **手を入れたファイルを取り込み済みとして記録します。** 表にあるファイルと、プロジェクトが所有するファイルを渡します（`.dcb-new` が残っていると止まります）。
+
+   ```bash
+   bash ~/dcb-"$TAG"/x/bootstrap.sh --accept \
+     scripts/acceptance.sh scripts/acceptance-remote.sh scripts/check-no-secrets.sh \
+     .github/project-ai-rules.md .github/workflows/verify.yml .env.example scripts/on-attach.sh \
+     .claude/agents/implementer.md .claude/agents/explorer.md \
+     .devcontainer/compose.yaml .devcontainer/devcontainer.json
+   ```
+
+7. **確かめます。** 3 つとも満たしてから PR にします。
+
+   ```bash
+   bash ~/dcb-"$TAG"/x/doctor.sh                     # FAIL も WARN も出ない
+   bash ~/dcb-"$TAG"/x/bootstrap.sh --upgrade --dry-run   # keep / .dcb-new / create が 1 件も出ない
+   bash scripts/loop-gate.sh                          # GATE_PASS
+   ```
+
+8. **`.github/workflows/deploy.yml` を変えたときは、マージ後の最初の `main` の push で配備を見届けます。** `workflow_run` のワークフローは既定ブランチの定義で動くので、PR の CI では 1 度も走りません（`docs/pages-deploy.md`「自動配備」）。
+
+### 8.2 注意
+
+- **`--accept` した後でさらに手を入れると、`doctor.sh` は再び FAIL を出します。** 表にあるファイルを直したら、`--accept` し直します。
+- **dev01 の devhost（`tools/devhost/`・ホストのユニット）は、この手順の対象外です。** 版を上げるときは 7 章の手順で、別に行います。
+- 雛形そのものを変えたいとき（上流の ojos/ai-packages-dev / ojos/ai-playbook への提案）は、このリポジトリでは扱いません。ここで行うのは、逸脱の表に行を足すところまでです。

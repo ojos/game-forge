@@ -859,8 +859,8 @@ bash scripts/report-selftest.sh   # 17 秒
 coreutils の `gdate` を `date` として見せるか、**devcontainer の中で回してください。**
 CI は ubuntu-latest なので、そのまま通ります。
 
-**`verify` ジョブの段なので、これが赤いと `deploy` も起きません**（`deploy` は
-`needs: verify`）。集計を読み違える状態で本番を進めない、という意味では筋が通りますが、
+**`verify` ジョブの段なので、これが赤いと `deploy` も起きません**（`deploy.yml` は
+`verify` の成功だけを契機に走ります。#938）。集計を読み違える状態で本番を進めない、という意味では筋が通りますが、
 **影響は `scripts/verify.sh` の失敗と同じ広さになります。** 別ジョブにすればそこは切れますが、
 `checkout` と `npm ci` をもう一度払うことになるため採っていません。
 

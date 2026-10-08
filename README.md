@@ -96,7 +96,7 @@ bash scripts/loop-gate.sh    # push / PR 作成の前の単一入口。verify �
 
 ## 配備
 
-- **アプリ本体といいねの Worker は、`main` へのマージで GitHub Actions が本番へ出します**（[.github/workflows/verify.yml](.github/workflows/verify.yml)）。検証が緑のときだけ走ります。そのコミットがもう `main` の先頭でなければ配らず、後のコミットの配備に任せます。本番の D1 に未適用のマイグレーションがある場合と、そのコミットでオーケストレータの束が変わったのに配備済みの関数が手元の束と一致しない場合は、配備の段で失敗して止まります（束が変わらないコミットでは、オーケストレータを見ません）。
+- **アプリ本体といいねの Worker は、`main` へのマージで GitHub Actions が本番へ出します**（[.github/workflows/deploy.yml](.github/workflows/deploy.yml)）。検証が緑のときだけ走ります。そのコミットがもう `main` の先頭でなければ配らず、後のコミットの配備に任せます。本番の D1 に未適用のマイグレーションがある場合と、そのコミットでオーケストレータの束が変わったのに配備済みの関数が手元の束と一致しない場合は、配備の段で失敗して止まります（束が変わらないコミットでは、オーケストレータを見ません）。
 - **本番の D1 へのマイグレーションの適用は、自動配備に含まれません。** 手順は [docs/pages-deploy.md](docs/pages-deploy.md) にあります。
 - オーケストレータは手元から配ります（[docs/orchestrator.md](docs/orchestrator.md)）。ビルド関数のイメージは [.github/workflows/deploy-compiler.yml](.github/workflows/deploy-compiler.yml) が配ります。
 - AWS・GCP・DNS・GitHub の設定と R2 のライフサイクルは Terraform で宣言します。D1・R2 のバケット・Pages のプロジェクトは wrangler で作成済みで、宣言の外にあります。管理の境界は [terraform/README.md](terraform/README.md) にあります。state と tfvars は追跡していないので、プライマリの作業ツリーから回します。

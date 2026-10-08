@@ -96,7 +96,7 @@ bash scripts/check-migrations-applied.sh --remote   # MIGRATIONS_APPLIED を確�
 
 **0021 を当てる前に Worker を配ってはいけません。** 作品ページの問い合わせが
 `is_operator` を選ぶので、列が無いと**すべての作品ページが落ちます。** 配備の手前には
-`.github/workflows/verify.yml` の「未適用のマイグレーションが無いこと」の関門があり、
+`.github/workflows/deploy.yml` の「未適用のマイグレーションが無いこと」の関門があり、
 当てていなければそこで止まります。
 
 ### 3.2 運営アカウントの `users.id` を控える

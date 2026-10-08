@@ -241,7 +241,7 @@ claim（pending → running）→ finishWithError('internal')（running → fail
 変えて Worker を配ったところ、**配備済みのオーケストレータがその鍵を知らず**、ペイロードを
 拒否した。**登録簿は repo に入っていたが、Lambda は 2.5 時間前のコードのままだった。**
 
-**いまは CI が止める。** `.github/workflows/verify.yml` の `deploy` ジョブが、**Worker を
+**いまは CI が止める。** `.github/workflows/deploy.yml` の `deploy` ジョブが、**Worker を
 本番へ配る直前に**、配備済みのオーケストレータの `CodeSha256` と手元で束ね直したものを
 比べる。古ければ**配備そのものを止める。**
 

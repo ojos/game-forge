@@ -317,7 +317,7 @@ id = "acafa61986f74b19ad041bbfac9f788b"
 # 設定不足で落ちる。preview も同じ理由で宣言する（D1 と同じく本番の実体を指す）。
 #
 # **`game-forge-likes` を先に配ること。** 存在しないスクリプトを指したまま Pages を
-# 配ると、binding が解決できない（配備の順序は `.github/workflows/verify.yml` の
+# 配ると、binding が解決できない（配備の順序は `.github/workflows/deploy.yml` の
 # deploy ジョブが機構で持つ）。
 [[env.production.durable_objects.bindings]]
 name = "LIKE_HUB"
@@ -340,7 +340,7 @@ class_name = "PlayHub"
 script_name = "game-forge-likes"
 
 # 機械が読める口の上限の入口（#699）。**トップレベルの注記を参照。** 環境へ引き継がれないので両方に置く。
-# 配る順序は `LIKE_HUB` と同じ（`game-forge-likes` を先に配る。`.github/workflows/verify.yml`）。
+# 配る順序は `LIKE_HUB` と同じ（`game-forge-likes` を先に配る。`.github/workflows/deploy.yml`）。
 [[env.production.services]]
 binding = "API_RATE_LIMITER"
 service = "game-forge-likes"

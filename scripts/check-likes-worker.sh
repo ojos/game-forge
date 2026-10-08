@@ -32,7 +32,7 @@
 #      （トップレベルの `database_id`）と同じ（ずれるとローカルの同期が空の D1 へ書く。実測済み）
 # 4. **`env.LIKE_HUB` を読むのは src/likes.ts だけ、`env.PLAY_HUB` を読むのは src/plays.ts だけ**
 #    （窓口を 1 つにする。5.8 / #377）
-# 5. **配る順序**: `.github/workflows/verify.yml` の deploy ジョブで、likes Worker を配る段が
+# 5. **配る順序**: `.github/workflows/deploy.yml` の deploy ジョブで、likes Worker を配る段が
 #    Pages を配る段より前にある（5.8。Pages が存在しない DO を指さないように）
 # 6. **likes Worker が束ねられる**（`wrangler deploy --dry-run`。資格情報もネットワークも
 #    要らない）。配備の段で初めて落ちる形にしない
@@ -258,9 +258,9 @@ if [[ "$readers" != "$RATE_LIMITER_WINDOW" ]]; then
 fi
 
 # ── 5. 配る順序 ───────────────────────────────────────────────────────────────
-# **likes Worker を Pages より先に配る**（5.8）。順序は verify.yml の deploy ジョブの段の
+# **likes Worker を Pages より先に配る**（5.8）。順序は deploy.yml の deploy ジョブの段の
 # 並びが持つので、並びそのものを見る（段を入れ替えた差分は小さく、どのテストも見ない）。
-WORKFLOW=".github/workflows/verify.yml"
+WORKFLOW=".github/workflows/deploy.yml"
 [[ -f "$WORKFLOW" ]] || fail "$WORKFLOW がありません。"
 likes_line="$(grep -nF 'run: bash scripts/deploy-likes.sh' "$WORKFLOW" | head -1 | cut -d: -f1)"
 pages_line="$(grep -nF 'npx wrangler pages deploy' "$WORKFLOW" | head -1 | cut -d: -f1)"

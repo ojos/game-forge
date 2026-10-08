@@ -13,11 +13,15 @@
 #        **効くかどうか**（作り直した dev01 のコンテナで bwrap が通るか）はここでは見ない（docs/local-dev.md 7.4）。
 #      - **seccomp を外す宣言（`seccomp=unconfined`）が compose.yaml に無いこと**（#933）。go の feature の上書きの
 #        compose も同じ値を足すので、ここにもあると統合後に 2 つ並び、Mac の compose（2.40.3）が起動を拒否する。
+#      - **PID 1 を docker-init にする宣言（`init: true`）が在ること**（#939）。消えると、go の feature を外した日に
+#        孤児のプロセスが回収されず、ゾンビが溜まってエディタの接続が止まる（理由は compose.yaml の init の上）。
 #      - ベースのイメージが浮動のタグでないこと（#802。理由は compose.yaml の image の上）。
 #   2. **vscode の UID の付け替えを devcontainer CLI に任せていること**（#879）。devcontainer.json に
 #      `"updateRemoteUserUID": true` が在ること。false にすると dev01（uid=1001）でワークスペースへ書き込めない。
 #      あわせて、**seccomp を外す宣言が devcontainer.json の `securityOpt` に在ること**（#929 / #933）。go の feature も
 #      同じ値を足すが、それに頼ると feature を外した日に bwrap が namespace を作れなくなる（dev01 でも Mac でも）。
+#      さらに、**devcontainer.json が純粋な JSON であること**（#939。コメントがあると DCB の doctor.sh が FAIL を出す）と、
+#      **go の feature のオプションが空であること**（#141 / #185。版を書き写さない。理由は .devcontainer/README.md）。
 #   3. **scripts/install-cloudflared.sh が dev01 の上では何もしないこと。**
 #      DEVCONTAINER_HOST=dev01 のとき ~/.ssh/config を作らず、導入（curl / sudo）にも進まない。
 #      それ以外（未設定・空・別の値）では従来どおり入口を書く。HOME を一時ディレクトリへ向け、
@@ -45,10 +49,6 @@ if ! { command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>
   echo "[devcontainer-dev01] docker compose が見つかりません。compose.yaml を展開できないので検査が成立しません。" >&2
   exit 1
 fi
-command -v node >/dev/null 2>&1 || {
-  echo "[devcontainer-dev01] node が見つかりません（devcontainer.json を読むのに使う）。" >&2
-  exit 1
-}
 command -v jq >/dev/null 2>&1 || {
   echo "[devcontainer-dev01] jq が見つかりません。" >&2
   exit 1
@@ -106,48 +106,30 @@ if [[ -z "$base" || "$tag" != *:* || "${tag##*:}" == ubuntu || "${tag##*:}" == l
 fi
 [[ "$has_build" == no ]] || ng "compose.yaml に build があります（ベースの固定を見る場所が image でなくなります。#879 で外した）"
 
+# PID 1 を docker-init にする宣言（#939）。go の feature も宣言するが、それに頼らない。
+n=$((n + 1))
+init="$(compose_json "$WORK/empty.env" | jq -r '.services.app | if has("init") then .init else "(none)" end')"
+[[ "$init" == true ]] || ng "compose.yaml の init が true ではありません（${init}）。孤児のプロセスが回収されず、ゾンビが溜まります（#939）"
+
 # ── 2. UID の付け替えを CLI に任せていること（#879）──────────────────────────
-# devcontainer.json は JSONC（注記と末尾のカンマ）なので、文字列の外のコメントと末尾のカンマを除いてから
-# JSON として読む。**行の grep にしない**——コメントに残った `"updateRemoteUserUID": true` を設定と数え、
-# 実際の値が false でも通ってしまう（PR の第二意見の指摘）。読めなければ落とす。
-jsonc_get() {
-  node -e '
-    // walk(src, f): 文字列の外の位置 i ごとに f(i) を呼び、f が返した数だけ読み飛ばす（0 なら 1 文字写す）。
-    const walk = (src, f) => {
-      let out = "", i = 0, str = false;
-      while (i < src.length) {
-        const c = src[i];
-        if (str) { out += c; if (c === "\\") { out += src[i + 1] ?? ""; i += 2; continue; } if (c === "\"") str = false; i++; continue; }
-        if (c === "\"") { str = true; out += c; i++; continue; }
-        const skip = f(src, i);
-        if (skip > 0) { i += skip; continue; }
-        out += c; i++;
-      }
-      return out;
-    };
-    const src = require("fs").readFileSync(process.argv[1], "utf8");
-    // 1 段目: コメントを除く。2 段目: 末尾のカンマを除く（コメントを除いた後なので、間に挟まった注記に惑わされない）。
-    const noComments = walk(src, (s, i) => {
-      if (s[i] === "/" && s[i + 1] === "/") { const e = s.indexOf("\n", i); return (e < 0 ? s.length : e) - i; }
-      if (s[i] === "/" && s[i + 1] === "*") { const e = s.indexOf("*/", i + 2); if (e < 0) throw new Error("閉じていないコメント"); return e + 2 - i; }
-      return 0;
-    });
-    const plain = walk(noComments, (s, i) => (s[i] === "," && /^,\s*[}\]]/.test(s.slice(i)) ? 1 : 0));
-    const v = JSON.parse(plain)[process.argv[2]];
-    process.stdout.write(v === undefined ? "(none)" : JSON.stringify(v));
-  ' "$1" "$2"
-}
+# devcontainer.json は純粋な JSON に保つ（#939）。DCB の doctor.sh が jq で読むので、コメントがあると FAIL になる。
+# **読めなければ、その先の値も見ない**（JSONC を剥がして読み直すと、doctor.sh の FAIL を見逃す）。
+# 値は jq でキーを引く。**行の grep にしない**——注記や別のキーに残った綴りを設定と数えてしまう（#879 の第二意見の指摘）。
 n=$((n + 1))
-if ! uid_update="$(jsonc_get "$DEVCONTAINER_JSON" updateRemoteUserUID)"; then
-  ng "devcontainer.json を読めません（JSONC として壊れている）"
-elif [[ "$uid_update" != true ]]; then
-  ng "devcontainer.json の updateRemoteUserUID が true ではありません（${uid_update}）。dev01 でワークスペースへ書き込めなくなります（#879）"
-fi
-n=$((n + 1))
-if ! sec_opt="$(jsonc_get "$DEVCONTAINER_JSON" securityOpt)"; then
-  ng "devcontainer.json を読めません（JSONC として壊れている）"
-elif ! jq -e 'type == "array" and index("seccomp=unconfined") != null' <<<"$sec_opt" >/dev/null 2>&1; then
-  ng "devcontainer.json の securityOpt に seccomp=unconfined がありません（${sec_opt}）。go の feature を外すと codex の bwrap が動かなくなります（#929 / #933）"
+if ! jq -e . "$DEVCONTAINER_JSON" >/dev/null 2>&1; then
+  ng "devcontainer.json が純粋な JSON ではありません（コメントや末尾のカンマ？）。DCB の doctor.sh が FAIL を出します。注記は .devcontainer/README.md へ（#939）"
+else
+  n=$((n + 1))
+  uid_update="$(jq -c 'if has("updateRemoteUserUID") then .updateRemoteUserUID else "(none)" end' "$DEVCONTAINER_JSON")"
+  [[ "$uid_update" == true ]] \
+    || ng "devcontainer.json の updateRemoteUserUID が true ではありません（${uid_update}）。dev01 でワークスペースへ書き込めなくなります（#879）"
+  n=$((n + 1))
+  jq -e '(.securityOpt | type) == "array" and (.securityOpt | index("seccomp=unconfined")) != null' "$DEVCONTAINER_JSON" >/dev/null 2>&1 \
+    || ng "devcontainer.json の securityOpt に seccomp=unconfined がありません（$(jq -c '.securityOpt' "$DEVCONTAINER_JSON")）。go の feature を外すと codex の bwrap が動かなくなります（#929 / #933）"
+  n=$((n + 1))
+  go_opts="$(jq -c '.features["ghcr.io/devcontainers/features/go:1"] // {}' "$DEVCONTAINER_JSON")"
+  [[ "$go_opts" == "{}" ]] \
+    || ng "devcontainer.json の go の feature のオプションが空ではありません（${go_opts}）。Go の版を書き写さない。値の正本は docker/isolated-build/Dockerfile の ARG GO_VERSION（#141 / #185。.devcontainer/README.md）"
 fi
 
 # ── 3. install-cloudflared.sh の dev01 分岐 ─────────────────────────────────

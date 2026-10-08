@@ -283,7 +283,7 @@ else
   ng "控えの先頭か末尾に、前置きか囲みが残っています"
 fi
 if grep -qx 'generate tools=\[\] strict=1' "$FAKE_LOG" \
-   && grep -qx 'docs tools=(なし) restricted=1 denied=Read,Write,Edit,NotebookEdit,Glob,Grep,WebSearch,Agent allowed=mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide' "$FAKE_LOG"; then
+   && grep -qx 'docs tools=(なし) restricted=1 denied=Read,Write,Edit,NotebookEdit,Glob,Grep,WebSearch,Agent,Artifact,ArtifactComments,ArtifactData,Skill allowed=mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide' "$FAKE_LOG"; then
   ok "書く段は道具を許さず、置く段は --tools を使わず（MCP まで消える）--restricted と拒否で組み込みを外し、Docs の 2 つだけを許す"
 else
   ng "claude への道具の許し方が決めたとおりではありません"; sed 's/^/    /' "$FAKE_LOG" >&2

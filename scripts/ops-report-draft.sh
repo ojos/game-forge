@@ -60,7 +60,7 @@
 #
 #   書く      claude -p --output-format json --tools "" --strict-mcp-config --no-session-persistence < prompt.txt
 #             道具は 1 つも許さない（材料はプロンプトに全部入っている）。--strict-mcp-config で MCP も読ませない
-#   置く      claude -p --restricted --disallowedTools "Read,Write,Edit,NotebookEdit,Glob,Grep,WebSearch,Agent"
+#   置く      claude -p --restricted --disallowedTools "$DOCS_DENY"（ファイルの道具・WebSearch・Agent・Artifact の系統・Skill）
 #               --allowedTools "mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide"
 #               --output-format json '<依頼>'
 #             許す道具はこの 2 つだけ（2026-10-05 の下調べ。#936 のコメント）。**--tools "" は使えない**:
@@ -90,7 +90,10 @@ CLAUDE_CMD="${OPS_REPORT_CLAUDE:-claude}"
 BASE_DIR="${OPS_REPORT_DIR:-$HOME/.local/state/game-forge/ops-report}"
 DOCS_TOOLS="mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide"
 # --restricted の後にも残る道具（ファイルの道具・WebSearch・Agent）。Docs に置く段では使わせない。
-DOCS_DENY="Read,Write,Edit,NotebookEdit,Glob,Grep,WebSearch,Agent"
+# **Artifact の系統と Skill も外す**（2026-10-08。claude 2.1.293）。外さないと、モデルが doc を
+# Artifact の道具（Docs の型から作る呼び出し）で作ろうとし、許していないので -p では断られ、
+# doc を作らないまま終わった（返答に URL が無く docs-failed）。見えなければ Docs の batch を使う。
+DOCS_DENY="Read,Write,Edit,NotebookEdit,Glob,Grep,WebSearch,Agent,Artifact,ArtifactComments,ArtifactData,Skill"
 # 1 回の claude の上限（秒）。下調べでは置く方が 2 ターンで終わった。止まったままにしない。
 CLAUDE_TIMEOUT="${OPS_REPORT_CLAUDE_TIMEOUT:-900}"
 
@@ -307,6 +310,7 @@ fi
 REQUEST="$(printf '%s\n' \
   "Claude Docs に新しい doc を 1 本作ってください。" \
   "" \
+  "- 作るのに使う道具: Claude Docs の batch（mcp__claude_ai_Claude_Docs__batch）。ほかの道具では作らないでください。" \
   "- 題名: ${TITLE}" \
   "- 本文: 下の <${TAG}> と </${TAG}> の間の Markdown を、1 文字も変えずにそのまま本文にしてください。要約・言い換え・追記・見出しの付け替えをしないでください。" \
   "- 既存の doc を開いたり編集したりしないでください。" \

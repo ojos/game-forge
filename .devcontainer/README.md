@@ -53,7 +53,7 @@ codex の `--sandbox read-only`（同梱の bwrap）が namespace を作れる�
 - JSONC だったころは、版を書き足した行に「値の正本は `ARG GO_VERSION`」と名乗らせて
   `scripts/check-go-version-copies.sh` に照合させる、という逃げ道を注記で残していました。
   純粋な JSON では行に名乗りを付けられないので、**#939 からは `scripts/check-devcontainer-dev01.sh` が、
-  go の feature のオプションが空（`{}`）であることを確かめます。** 版を書くと落ちます。
+  go の feature が在り、そのオプションが空（`{}`）であることを確かめます。** 版を書くと落ちます。
 
 ### `postCreateCommand` の `install-cloudflared.sh`（#802）
 

@@ -21,7 +21,7 @@
 #      あわせて、**seccomp を外す宣言が devcontainer.json の `securityOpt` に在ること**（#929 / #933）。go の feature も
 #      同じ値を足すが、それに頼ると feature を外した日に bwrap が namespace を作れなくなる（dev01 でも Mac でも）。
 #      さらに、**devcontainer.json が純粋な JSON であること**（#939。コメントがあると DCB の doctor.sh が FAIL を出す）と、
-#      **go の feature のオプションが空であること**（#141 / #185。版を書き写さない。理由は .devcontainer/README.md）。
+#      **go の feature が在り、そのオプションが空であること**（#141 / #185。版を書き写さない。理由は .devcontainer/README.md）。
 #   3. **scripts/install-cloudflared.sh が dev01 の上では何もしないこと。**
 #      DEVCONTAINER_HOST=dev01 のとき ~/.ssh/config を作らず、導入（curl / sudo）にも進まない。
 #      それ以外（未設定・空・別の値）では従来どおり入口を書く。HOME を一時ディレクトリへ向け、
@@ -127,9 +127,10 @@ else
   jq -e '(.securityOpt | type) == "array" and (.securityOpt | index("seccomp=unconfined")) != null' "$DEVCONTAINER_JSON" >/dev/null 2>&1 \
     || ng "devcontainer.json の securityOpt に seccomp=unconfined がありません（$(jq -c '.securityOpt' "$DEVCONTAINER_JSON")）。go の feature を外すと codex の bwrap が動かなくなります（#929 / #933）"
   n=$((n + 1))
-  go_opts="$(jq -c '.features["ghcr.io/devcontainers/features/go:1"] // {}' "$DEVCONTAINER_JSON")"
+  # 鍵が無いときは "(none)" にして落とす（`// {}` だと feature を消しても空のオプションに見えて通る。PR の第二意見の指摘）。
+  go_opts="$(jq -c '.features | if has("ghcr.io/devcontainers/features/go:1") then .["ghcr.io/devcontainers/features/go:1"] else "(none)" end' "$DEVCONTAINER_JSON")"
   [[ "$go_opts" == "{}" ]] \
-    || ng "devcontainer.json の go の feature のオプションが空ではありません（${go_opts}）。Go の版を書き写さない。値の正本は docker/isolated-build/Dockerfile の ARG GO_VERSION（#141 / #185。.devcontainer/README.md）"
+    || ng "devcontainer.json の go の feature が無いか、オプションが空ではありません（${go_opts}）。Go の版を書き写さない。値の正本は docker/isolated-build/Dockerfile の ARG GO_VERSION（#141 / #185。.devcontainer/README.md）"
 fi
 
 # ── 3. install-cloudflared.sh の dev01 分岐 ─────────────────────────────────

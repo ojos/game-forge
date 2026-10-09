@@ -48,6 +48,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 - **dev01 の AWS のログイン（`gf-auth-aws` / `tools/devhost/dev-auth-aws.sh`）がデバイスコード方式のまま通るかは未確認です。** 上の切り分けどおりなら止まります。ssh 越しで手元のポートへ戻れないので、Mac と同じ直し方はできません。起票候補（未起票）。`--use-device-code` を案内している文書とスクリプトのコメント（`scripts/deploy-avatar.sh` / `deploy-chat.sh` / `verify-effort-spelling.sh`、`docs/acceptance-remote-schedule.md` / `ogp-capture.md` など）も、同じ票で直す。
 - **#957** は 2026-11-03 の定期実行で、下書きの印 2 つと Mac の PNG 2 枚を確かめて閉じる。**#962**（画面の画像に幅の検査の仕込みの会話が写る。撮影専用の見せ方を用意する）は 11-03 より前に入れると 11 月の記事から効く。docs-failed の回の通知にも前の回の `images/` が載る小さな不具合を、#962 のついでに直す。
+- **#964**（運営報告と一緒に X の告知文の下書きを作る。投稿は人）を起票した（2026-10-09）。2026-09 の記事は、利用者が手で X に告知する（下書きの案は会話で渡した。重みつきの長さ 262 / 280）。#957・#962 と同じ `scripts/ops-report-draft.sh` を触るので、並列にしない。
 - **dev01 の作り直しの確認**（#956 の uv と #960 のブラウザ・フォント）。次に dev01 を作り直したときに `bash scripts/post-rebuild-check.sh` の 4 行を見る。
 - launchd の運営報告は**毎月 3 日 9:00 に動く**（外し方は `docs/ops-report.md`「外し方」）。2026-09 の doc は推敲版だけを残した（推敲前・試しの doc は利用者の判断で消した）。
 - `docs/privacy-review.md` 7 行目が引けない `https://game-forge.ojos.jp/privacy` を指している（#460 の文書。未修正）。`check-sandbox-browser.sh` は、Go の実効ツールチェイン（go1.27.1）とピン留め（1.27.0）の食い違いで止まる（#960 とは無関係。未対処）。

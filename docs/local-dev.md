@@ -1167,11 +1167,11 @@ install-cloudflared.sh の分岐は、`scripts/check-devcontainer-dev01.sh`（`s
 
 **Mac が手元に無いとき、Android（Termux）のショートカットのタップだけで、dev01 の devcontainer を起こし、
 tmux に入り、AWS を再認証できるようにする。** 道具（`dev`）とユニット（`dev-up@.service`）は、
-**devcontainer-bootstrap（DCB）のリリースに同梱された上流の版**（#923 で寄せた。dev01 に置く版は tools/devhost/README.md の
+**上流の公開リポジトリ ojos/devcontainer-host のリリースの版**（#923 で上流の版へ寄せ、#953 で取得元を DCB の同梱から移した。dev01 に置く版は tools/devhost/README.md の
 「上流の版を上げる」の `TAG=` の行が正本）を使い、このリポジトリには置かない。
 上流は特定のクラウドへの認証を組み込まないので、AWS SSO に入るところだけを game-forge の薄い追加
 `dev-auth-aws`（[tools/devhost/](../tools/devhost/README.md)。`scripts/check-devhost.sh` が自己試験を回す）として残している。
-導入の一般の手順・stopCompose の扱いの比較・鍵の作り方と失効のさせ方は DCB のアーカイブの `devhost/README.md` が正本で、
+導入の一般の手順・stopCompose の扱いの比較・鍵の作り方と失効のさせ方は devcontainer-host の README が正本で、
 上流の版を上げる手順・game-forge 版からの移行の記録・上流へ寄せて失ったもの（`dev ls` の AWS の列）は tools/devhost/README.md にある。
 ここには、このリポジトリと dev01 の値で埋めた形と、復旧の手順だけを書く。
 
@@ -1180,7 +1180,7 @@ tmux に入り、AWS を再認証できるようにする。** 道具（`dev`）
 
 #### ホスト（dev01）で 1 度だけ
 
-上流の README の「外部の機械への導入」（tools/devhost/README.md の `TAG=` の版のアーカイブから、マニフェストのハッシュで照合して取り出す）を、
+上流の README の「外部の機械への導入」（tools/devhost/README.md の `TAG=` の版の `install.sh` を、マニフェストのハッシュで照合してから実行する）を、
 次の設定ファイルで行う。続けて、薄い追加 `dev-auth-aws` を tools/devhost/README.md の「薄い追加を置く・更新する」のとおりに置く。
 
 ```bash
@@ -1200,7 +1200,8 @@ systemctl --user enable --now dev-up@game-forge.service
   旧ドメインの `https://d-956797eff8.awsapps.com/start` のままだと、デバイスコードの画面で Google の認証を済ませた後に
   「問題が発生しました」で止まる（2026-10-01 に Pixel 8 と Mac の両方で再現。先にアクセスポータルへ新ドメインでサインインして
   おくと通るのは、そのセッションが残っているため）。新ドメインにすると、事前のサインインなしで `gf-auth-aws` が通った。
-- **作り直しは `dev rebuild game-forge`** で行う（v0.17.0 から。ユニットの停止と起こし直しまでする）。
+- **作り直しは `dev rebuild game-forge`** で行う（DCB v0.17.0 同梱の版から。ユニットの停止と起こし直しまでする）。
+  作り直さずに起こし直すだけなら `dev restart game-forge`（devcontainer-host v0.1.0 から）。
   VS Code の Rebuild Container で作り直すときは、**先に `systemctl --user stop dev-up@game-forge.service`**、終わったら `start` する
   （上流の README の「VS Code の窓を閉じたときの停止」）。
 
@@ -1267,7 +1268,7 @@ tools/devhost/README.md の「スマホのボタンに doctor / rebuild を足�
 
 ## 8. DCB と規範への追従（#938）
 
-`.devcontainer/`・`scripts/` の一部・`.github/workflows/` の 3 本（`verify.yml`・`identity-guard.yml`・`second-opinion-gate.yml`）・`.claude/`・`.ai-playbook/**`・入口ファイル（`CLAUDE.md`・`AGENTS.md`・`.github/copilot-instructions.md`）は、devcontainer-bootstrap（DCB）が生成するファイルです。**生成時の入力（引数）と、ファイルごとのハッシュは `.devcontainer/ORIGIN` が記録しています**（#938 で初めて置きました。v0.17.0・規範 ai-playbook v0.8.1）。次からは、引数なしの `bootstrap.sh --upgrade` で、記録から同じ入力を再現して追従できます。
+`.devcontainer/`・`scripts/` の一部・`.github/workflows/` の 3 本（`verify.yml`・`identity-guard.yml`・`second-opinion-gate.yml`）・`.claude/`・`.ai-playbook/**`・入口ファイル（`CLAUDE.md`・`AGENTS.md`・`.github/copilot-instructions.md`）は、devcontainer-bootstrap（DCB）が生成するファイルです。**生成時の入力（引数）と、ファイルごとのハッシュは `.devcontainer/ORIGIN` が記録しています**（#938 で初めて置きました。v0.17.0・規範 ai-playbook v0.8.1。#953 で v0.18.0・規範 v0.8.2 へ追従）。次からは、引数なしの `bootstrap.sh --upgrade` で、記録から同じ入力を再現して追従できます。
 
 **どのファイルを雛形どおりにし、どの差分を残しているかは `.github/project-ai-rules.md`「雛形からの逸脱」が正本です。** 追従のたびに、表に無い差分を雛形へ戻し、表にある差分だけを残します。
 
@@ -1277,7 +1278,7 @@ tools/devhost/README.md の「スマホのボタンに doctor / rebuild を足�
 2. **新しい版を、マニフェストのハッシュで照合してから展開します。** 展開先は作業ツリーの外の空のディレクトリにします。
 
    ```bash
-   TAG=v0.17.0   # 追従先の版
+   TAG=v0.18.0   # 追従先の版
    mkdir -p ~/dcb-"$TAG" && cd ~/dcb-"$TAG"
    BASE="https://github.com/ojos/devcontainer-bootstrap/releases/download/${TAG}"
    curl -sSL "${BASE}/RELEASE-MANIFEST.json" -o RELEASE-MANIFEST.json
@@ -1330,5 +1331,5 @@ tools/devhost/README.md の「スマホのボタンに doctor / rebuild を足�
 ### 8.2 注意
 
 - **`--accept` した後でさらに手を入れると、`doctor.sh` は再び FAIL を出します。** 表にあるファイルを直したら、`--accept` し直します。
-- **dev01 の devhost（`tools/devhost/`・ホストのユニット）は、この手順の対象外です。** 版を上げるときは 7 章の手順で、別に行います。
+- **dev01 の devhost（`tools/devhost/`・ホストのユニット）は、この手順の対象外です。** 版を上げるときは 7 章の手順で、別に行います。**DCB は v0.18.0 から devhost を同梱しません**（取得元は ojos/devcontainer-host。#953）。
 - 雛形そのものを変えたいとき（上流の ojos/ai-packages-dev / ojos/ai-playbook への提案）は、このリポジトリでは扱いません。ここで行うのは、逸脱の表に行を足すところまでです。

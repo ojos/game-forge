@@ -1,12 +1,13 @@
 # devhost — dev01 のホストに置く道具（game-forge の差分）
 
 **devhost の本体（`dev` と `dev-up@.service`、Termux と ssh の雛形）は、上流の版を使います。**
-上流は ojos/ai-packages-dev の `packages/devhost` で、[devcontainer-bootstrap（DCB）のリリース](https://github.com/ojos/devcontainer-bootstrap/releases)に
-同梱されています（同梱は v0.14.0 から）。**dev01 に置く版は、下の「上流の版を上げる（dev01 の更新）」の
-`TAG=` の行が正本**です（#944。いまの版の文字列はほかの節に書かず、そこを参照します）。
-導入・stopCompose の扱い・鍵の作り方と失効・Termux の設定は、**DCB のアーカイブの `devhost/README.md` が正本**です。
-入手は、その README の「devhost を入手する」のとおり、`RELEASE-MANIFEST.json` に記録された
-`PACKAGE_ARCHIVE.tar.gz` のハッシュと照合してから `./devhost` を取り出します。
+上流は、独自の版を持つ公開リポジトリ [ojos/devcontainer-host のリリース](https://github.com/ojos/devcontainer-host/releases)です
+（DCB の v0.14.0〜v0.17.0 のリリースに同梱されていましたが、DCB は v0.18.0 で同梱をやめました。#953）。
+**dev01 に置く版は、下の「上流の版を上げる（dev01 の更新）」の `TAG=` の行が正本**です（#944。いまの版の文字列は
+ほかの節に書かず、そこを参照します）。
+導入・stopCompose の扱い・鍵の作り方と失効・Termux の設定は、**devcontainer-host の README が正本**です。
+入手は、その README の「install.sh で入れる」のとおり、`RELEASE-MANIFEST.json` に記録された `install.sh` の
+ハッシュと照合してから実行します。
 
 **上流の版をこのリポジトリへ写しません**（二重管理を作らないため。#923）。ここに置くのは、上流に無い
 game-forge 固有の差分だけです。`scripts/check-devhost.sh` が、このディレクトリに次の 3 つ以外が無いことを見ます。
@@ -62,66 +63,70 @@ bash tools/devhost/dev-auth-aws.selftest.sh   # DEV_AUTH_AWS_SELFTEST_PASS
 
 ## 上流の版を上げる（dev01 の更新）
 
-**作業中のコンテナを止めずに済む順序です。** ユニット（`dev-up@.service`）は中身が変わったときだけ入れ替え、
-`dev` は `install` で差し替えます。
+**作業中のコンテナを止めずに済む順序です。** 上流の `install.sh` で上げます。
 
-- **置き換えは `install` で行い、`cp` で上書きしません。** いま動いているユニットの `dev supervise` は bash が
-  スクリプトを少しずつ読みながら `docker wait` で待っています。`install` は新しいファイルを作って差し替えるので、
-  動いているプロセスは古い中身のまま最後まで動きます。同じファイルへ上書きすると、待ち終わった後に新しい中身の
-  途中から読みます。
-- **上げる前に、アーカイブの `CHANGELOG.md` を読みます**（手順の 1 の最後）。設定ファイル（`~/.config/dev/projects`）の
-  書式が変わっていれば、3 で差し替える前にそちらを先に合わせます（上流の `dev` は知らないキーで止まる）。
+- **`install.sh` は、照合済みの `dev.sh` と `dev-up@.service` を一時ファイルから `mv` で置き換えます。** いま動いている
+  ユニットの `dev supervise` は bash がスクリプトを少しずつ読みながら `docker wait` で待っていますが、`mv` は別の
+  ファイルへ差し替えるので、動いているプロセスは古い中身のまま最後まで動きます（同じファイルへ `cp` で上書きすると、
+  待ち終わった後に新しい中身の途中から読みます）。`~/.config/dev/projects` は、あれば上書きしません。
+- **上げる前に、上流の `CHANGELOG.md` を読みます**（リリースのページか、アーカイブの中）。設定ファイル（`~/.config/dev/projects`）の
+  書式が変わっていれば、上げる前にそちらを先に合わせます（上流の `dev` は知らないキーで止まる）。
+- **`dev self-update` は使いません。** `dev` だけを上げ、ユニットのファイルは更新しない（差があれば `install.sh` の再実行を
+  案内するだけ）うえに、既定で最新を取るので `TAG=` の正本とずれます。
 - 値（ハッシュ・パス）は手順の中で読みます。ここに書き写しません。
 
 ```bash
 # 0. 上げる先の版（dev01 に置く上流の版の正本。上げるときはこの 1 行だけを書き換える）
-TAG=v0.17.0
+TAG=v0.1.0
 #    いまの状態を控える（CONTAINER が running、UNIT が active であること）
 ~/.local/bin/dev ls
-sha256sum ~/.local/bin/dev                     # bsd-ok: dev01（Linux）のホストで打つ手順。上げる前の値を控える
+~/.local/bin/dev version                       # DCB 同梱の版（v0.17.0 以前）には無く、使い方の誤り（2）で止まる
 systemctl --user is-active dev-up@game-forge.service
 
-# 1. 取り出す（作業用の空のディレクトリで。手順の全文は上流の README の「devhost を入手する」）
+# 1. 取得する（作業用の空のディレクトリで。手順の全文は上流の README の「install.sh で入れる」）
 W="$(mktemp -d "${TMPDIR:-/tmp}/devhost.XXXXXX")" && cd "$W"
-BASE="https://github.com/ojos/devcontainer-bootstrap/releases/download/${TAG}"
+BASE="https://github.com/ojos/devcontainer-host/releases/download/${TAG}"
 curl -fsSL "${BASE}/RELEASE-MANIFEST.json" -o RELEASE-MANIFEST.json
-curl -fsSL "${BASE}/PACKAGE_ARCHIVE.tar.gz" -o PACKAGE_ARCHIVE.tar.gz
-jq -r '.checksums["PACKAGE_ARCHIVE.tar.gz"] + "  PACKAGE_ARCHIVE.tar.gz"' RELEASE-MANIFEST.json | sha256sum -c -   # bsd-ok: dev01（Linux）のホストで打つ手順。OK と出ること
-tar -xzf PACKAGE_ARCHIVE.tar.gz ./devhost
-tar -xzOf PACKAGE_ARCHIVE.tar.gz ./CHANGELOG.md | less   # いまの版から上げる先までの変更を読む
+curl -fsSL "${BASE}/install.sh" -o install.sh
+verified() { jq -r '.checksums["install.sh"] + "  install.sh"' RELEASE-MANIFEST.json | sha256sum -c -; }   # bsd-ok: dev01（Linux）のホストで打つ手順
 
-# 2. ユニットを比べる。同じなら SAME_UNIT と出る。同じなら入れ替えない（daemon-reload も restart もしない）
-cmp devhost/dev-up@.service ~/.config/systemd/user/dev-up@.service && echo SAME_UNIT
+# 2. 計画を読んでから入れる。照合・計画・本実行を && でつなぐ（行を分けると、照合や計画が失敗しても本実行が走る）。
+#    計画（dev を置き換える / ユニットは置き換えない / projects は触らない、など）を読んで Enter、やめるなら Ctrl-C。
+#    install.sh も dev.sh などを同じマニフェストで照合し、1 つでも違えば何も置かずに止まる
+verified && bash install.sh --version "${TAG}" --dry-run \
+  && read -r -p '計画を読んだら Enter（やめるなら Ctrl-C）: ' \
+  && verified && bash install.sh --version "${TAG}"
 
-# 3. dev を差し替える（install で。ユニットは止めない）
-install -D -m 0755 devhost/dev.sh ~/.local/bin/dev
-cmp devhost/dev.sh ~/.local/bin/dev && echo SAME_DEV
-sha256sum devhost/dev.sh ~/.local/bin/dev      # bsd-ok: dev01（Linux）のホストで打つ手順。2 行の値が一致すること
-
-# 4. 確かめる（どれも 0 で終わり、ユニットは active のまま）
+# 3. 確かめる（どれも 0 で終わり、ユニットは active のまま）
+~/.local/bin/dev version                       # 「dev <TAG の版>」と出ること
 ~/.local/bin/dev ls; echo "ls=$?"
 ~/.local/bin/dev doctor game-forge; echo "doctor=$?"   # 0 = 問題なし / 1 = FAIL / 3 = WARN だけ
-~/.local/bin/dev help >/dev/null; echo "help=$?"
 systemctl --user is-active dev-up@game-forge.service
 
-# 5. 片付け
+# 4. 片付け
 cd ~ && rm -rf "$W"
 ```
 
+- **DCB 同梱の版（v0.17.0 以前）から移るときも、この手順のままです**（#953 で 1 度だけ行った）。古い `dev` の
+  `dev self-update` は取得先が DCB のリリースなので、終了コード 1 で何も置き換えずに止まります。上の手順で入れ直した後は、
+  `dev version` が版を出します。
 - **動いているユニットの `dev supervise` は、次にコンテナが止まるまで古い版のまま**です。止まった後、
   ユニットが起こし直すときから新しい版が動きます。すぐに新しい版で見張らせたいときは、作業の切れ目で
   `systemctl --user restart dev-up@game-forge.service` を打ちます
   （ユニットを止めてもコンテナは止まりません。`up` は動いているコンテナに対しては起こし直しません）。
-- **2 でユニットが違った場合**は、`install -D -m 0644 devhost/dev-up@.service ~/.config/systemd/user/dev-up@.service` と
-  `systemctl --user daemon-reload` だけを打ちます。restart はしません（次に起こし直すときから新しい中身が効きます）。
+- **`install.sh` はユニットのファイルを置いたあと `systemctl --user daemon-reload` を呼びます。** restart はしません
+  （次に起こし直すときから新しい中身が効きます）。devcontainer-host v0.1.0 のユニットは、DCB v0.17.0 に同梱されていたものと
+  同じ中身です（#953 で `cmp` で確かめた）。
 - **`dev doctor` は 0 で終わることを確かめます**（#944 の acceptance）。3（WARN だけ）は `dev` の差し替えそのものの
   失敗ではなく、コンテナの記録（pids の上限に当たった回数・ゾンビ・oom_kill）を指しますが、**0 でない間は「上げて確かめた」
   とはしません。** 出た項目を issue に書き、原因を調べてから判断します。1（FAIL）なら上流の README の
   「dev doctor」のとおり `dev rebuild game-forge` を検討します（作業中のコンテナと tmux は消えます）。
-- **v0.17.0 で増えたもの**（v0.14.0 から）: `dev rebuild <名前> [--pull]`（ユニットを止めてから作り直し、起こし直す）、
-  `dev doctor <名前>`（コンテナ・exec の疎通・プロセス数・ゾンビ・oom_kill・ユニットを 1 回で見る）、`dev help`。
-  ユニットの中身は v0.14.0 と同じです（#944 で `cmp` で確かめた）。**作り直しは、VS Code の Rebuild Container と
-  ユニットの手での stop / start の代わりに `dev rebuild game-forge` で行えます。**
+- **devcontainer-host v0.1.0 で増えたもの**（DCB v0.17.0 同梱の版から）: `dev restart <名前>`（作り直さずに起こし直す）、
+  `dev stop <名前>`（ユニットを止めてからコンテナを止める）、`dev enable` / `dev disable <名前>`（ユニットの有効・無効。
+  `disable` はコンテナも止める）、`dev logs <名前>`（ユニットのログ）、`dev exec <名前> -- <コマンド...>`（tmux を介さずに
+  コンテナの中で 1 つ実行する）、`dev version`。それ以前の DCB v0.17.0 で `dev rebuild <名前> [--pull]`・`dev doctor <名前>`・
+  `dev help` が増えています。**作り直しは、VS Code の Rebuild Container とユニットの手での stop / start の代わりに
+  `dev rebuild game-forge` で行えます。**
 
 ## 薄い追加を置く・更新する
 
@@ -149,7 +154,7 @@ cat ~/.config/dev/aws-sso                      # 「名前 絶対パス セッ�
 
 ## スマホのボタンに doctor / rebuild を足す（任意）
 
-v0.17.0 の上流の雛形（`devhost/termux/shortcut.example`）は、ボタンの操作に `doctor <名前>` と `rebuild <名前>` を
+上流の雛形（DCB v0.17.0 同梱の `devhost/termux/shortcut.example`。devcontainer-host では `termux/shortcut.example`）は、ボタンの操作に `doctor <名前>` と `rebuild <名前>` を
 挙げています。**足すかどうかは利用者が決めます。** 足さなくても、`gf-attach` が通らないときに Termux を開いて
 `ssh -t dev01 .local/bin/dev doctor game-forge` を打てば同じです。
 
@@ -177,12 +182,12 @@ dev01 の `dev` を v0.17.0 以降へ上げる前に足すと、ボタンは `de
 - **上流の `dev` を置く前に、設定ファイルから AWS のキーを外します。** 上流の `dev` は知らないキーで止まります。
   先に置くと、次にコンテナが止まったときのユニットの `dev supervise` が設定の誤りで落ち続け、コンテナが戻りません。
   逆に、キーを外しても game-forge 版の `dev` は困りません（AWS の列が `-` になるだけ）。
-- **置き換えは `install` で行います**（理由は「上流の版を上げる」と同じ）。
+- **置き換えは `cp` で上書きせず、別のファイルから差し替えます**（理由は「上流の版を上げる」と同じ。#923 の当時は `install` で、いまは上流の `install.sh` が `mv` で行う）。
 
 順序は次のとおりです。
 
-1. 上の「上流の版を上げる」の 0〜2 で、上流の版を取り出し、ユニットを比べる（game-forge 版のユニットは上流の
-   v0.14.0 以降と同じ中身でした）。
+1. 上流の版を取得して照合する（#923 の当時は DCB v0.14.0 のアーカイブから取り出し、ユニットを比べた。game-forge 版のユニットは
+   上流の v0.14.0 以降と同じ中身でした。いまは上の「上流の版を上げる」の 0〜1）。
 2. 先に、AWS のキーを外す前の projects から `aws-sso` を作る（セッション名は projects の `aws_sso_session` から読み、
    無ければ `ojos`）:
 
@@ -202,7 +207,7 @@ dev01 の `dev` を v0.17.0 以降へ上げる前に足すと、ボタンは `de
    grep -c 'aws_' ~/.config/dev/projects          # 0 であること
    ```
 
-4. 「上流の版を上げる」の 3〜5 で上流の `dev` を置いて確かめ、`rm ~/.config/dev/projects.bak` で片付ける。
+4. 「上流の版を上げる」の 2〜4 で上流の `dev` を置いて確かめ、`rm ~/.config/dev/projects.bak` で片付ける。
 5. スマホのボタンの `gf-auth-aws` を書き換える（他の 3 つはそのまま）:
 
    ```bash

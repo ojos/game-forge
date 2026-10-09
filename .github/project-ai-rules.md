@@ -146,7 +146,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 
 **gemini を `SECOND_OPINION_RUNS` 3 以上で回しません。** 雛形の多数決は、判定トークンの無い回答を「指摘あり」の 1 票として数えます（`scripts/second-opinion-review.sh` の判定トークンの分岐）。3 回のうち 2 回が LGTM なら、残りの 1 回が形式不正でも全体は LGTM になり、記録も残ります。回数が 1 なら閾値も 1 なので、トークンの無い回答で落ちます。#938 の第二意見（codex）が指摘し、利用者の判断（2026-10-08）で雛形のまま残しました。codex と antigravity はスキーマで判定するので、この経路を通りません。
 
-**`.ai-playbook/` は上流パッケージの写しです**（`.ai-playbook/VERSION` に `source=https://github.com/ojos/ai-playbook/…/v0.8.1.tar.gz`）。**ここを編集しても次の展開で消えるため、プロジェクトの選択と具体化はこのプロジェクト層に書きます。**
+**`.ai-playbook/` は上流パッケージの写しです**（`.ai-playbook/VERSION` に `source=https://github.com/ojos/ai-playbook/…/v0.8.2.tar.gz`）。**ここを編集しても次の展開で消えるため、プロジェクトの選択と具体化はこのプロジェクト層に書きます。**
 
 ### 受け入れ検証の二層
 
@@ -170,7 +170,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 | `scripts/second-opinion-codex-selftest.sh` | 第二意見の codex の配線 | 0.89 秒 | |
 | `scripts/loop-gate-range-selftest.sh` | `scripts/loop-gate.sh` のレビュー範囲 | 0.08 秒 | |
 | `scripts/check-devcontainer-dev01.sh` | devcontainer の dev01 の分岐 | 0.29 秒 | |
-| `scripts/check-devhost.sh` | `tools/devhost/`（#923 からは AWS SSO の薄い追加 `dev-auth-aws.sh` だけ） | 0.18 秒 | #923 で上流の版へ寄せて縮めた。縮めた後は約 0.07 秒（#923 のレーンが別の時点で測った値。下の合計 4.43 秒は縮める前の 0.18 秒で数えている） |
+| `scripts/check-devhost.sh` | `tools/devhost/`（#923 からは AWS SSO の薄い追加 `dev-auth-aws.sh` だけ。本体の `dev` は #953 から ojos/devcontainer-host のリリースの版で、dev01 の版は `tools/devhost/README.md` の `TAG=` が正本） | 0.18 秒 | #923 で上流の版へ寄せて縮めた。縮めた後は約 0.07 秒（#923 のレーンが別の時点で測った値。下の合計 4.43 秒は縮める前の 0.18 秒で数えている） |
 | `scripts/acceptance-remote-aws-failure-selftest.sh` | 外部層の IAM の検査 3 本 | 0.29 秒 | **本物の宣言を読む**: 本物の `scripts/acceptance-remote.sh` が `terraform/*.tf` から期待値を導くので、宣言を変えると壊れうる |
 | `scripts/ojos-jp-records-selftest.sh` | 外部層の DNS レコードの照合 | 0.06 秒 | |
 | `scripts/chat-bundle-changed-selftest.sh` | `scripts/chat-bundle-changed.sh`（チャットの束の関門の判定。#903） | 約 1 秒 | #903 のレーンが別の時点で測った値。下の合計 4.43 秒には含まない |
@@ -338,7 +338,7 @@ gh api --paginate 'repos/{owner}/{repo}/pulls/N/comments' --jq '.[] | {user: .us
 - **識別子はセッション（Claude Code の本体のプロセス）ごとです。** 1 つの親が起こした implementer のレーンは親と同じ識別子なので、レーンどうしでは止め合いません（レーンの分離は上の「作業ツリーの分離」が持ちます）。止め合うのは、利用者が別々に起動したセッションどうしです。
 - マージ・作業ツリーの git 操作・`verify.sh` / `loop-gate.sh` の起動は、別のセッションと重なると拒否されます。**拒否を迂回しません**（登録を消す・相手の登録を解放する、をしない）。相手の識別子と作業ツリーを確かめて調整します。
 
-## 雛形からの逸脱（DCB v0.17.0 / ai-playbook v0.8.1。#938）
+## 雛形からの逸脱（DCB v0.18.0 / ai-playbook v0.8.2。#938・#953）
 
 DCB が所有するファイルは雛形を正とし、game-forge 側の差分は、(1) 消すと既知の事故・保証の喪失が起きる、(2) プロジェクト固有の値、のどちらかに当たるものだけを残しています。残した差分は `bash bootstrap.sh --accept <パス>` で `.devcontainer/ORIGIN` に記録しています（追従の手順は `docs/local-dev.md`「DCB と規範への追従」）。**ここに無い差分を DCB の生成物へ足すときは、この表へ行を足し、`--accept` し直します。**
 

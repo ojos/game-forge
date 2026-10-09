@@ -28,7 +28,8 @@
 # 置き場所（この Mac の上）:
 #   ログ   ~/Library/Logs/game-forge/ops-report/<UTC の時刻>.log（400 日で消す。毎月 1 本）
 #   控え   ~/Library/Application Support/game-forge/ops-report/<YYYY-MM>/draft.md と result.txt
-#          （あれば refine-review.json と、記事に添える画像 images/trend.png・images/shot.png。#957）
+#          （あれば refine-review.json と、記事に添える画像 images/trend.png・images/shot.png。#957。
+#          X の告知文の下書き x-post.md。#964）
 #
 # 使い方（手で 1 回回す）: bash scripts/ops-report-launchd.sh
 #   OPS_REPORT_ARGS に draft への引数を空白区切りで渡せる（例: OPS_REPORT_ARGS="2026-09 --force"）。
@@ -121,11 +122,15 @@ url="$(result URL)"
 copy="$(result COPY)"
 reason="$(result REASON)"
 images_status="$(result IMAGES)"
+x_post_status="$(result X_POST)"
 
 host_copy=""
 # Mac へ写せなかった画像（devcontainer の中のパス）と、写せた画像の場所。通知に載せる。
 images_unsent=""
 images_sent=""
+# X の告知文の下書き（#964）。写せた場所と、写せなかったときの devcontainer の中のパス。
+x_post_sent=""
+x_post_unsent=""
 # 通知に載せる控えの場所。Mac へ写せなかったときは devcontainer の中のパスを、そうと分かる形で載せる
 # （止め直しても消えない。VS Code で devcontainer を開けば読める。消えるのは作り直したときだけ）。
 copy_label=""
@@ -176,6 +181,27 @@ if [ -n "$copy" ] && [ -n "$month" ]; then
         fi
       fi
     done
+    # X の告知文の下書き（#964）。画像と同じく、返す控えが Docs に置いたときの写しならそのときの告知文
+    # （docs-x-post.md）を、それ以外は**この回の告知文の段が作ったときだけ** x-post.md を写す。前の回の写しは先に消す。
+    rm -f "${dest}/x-post.md"
+    case "$(basename "$copy")" in
+      docs-draft.md) x_post_src="docs-x-post.md" ;;
+      *)
+        case "$x_post_status" in
+          done) x_post_src="x-post.md" ;;
+          *)    x_post_src="" ;;
+        esac ;;
+    esac
+    if [ -n "$x_post_src" ]; then
+      src="$(dirname "$copy")/${x_post_src}"
+      if docker exec "$cid" test -f "$src" >> "$LOG" 2>&1; then
+        if docker cp "${cid}:${src}" "${dest}/x-post.md" >> "$LOG" 2>&1; then
+          x_post_sent="${dest}/x-post.md"
+        else
+          x_post_unsent="$src"
+        fi
+      fi
+    fi
     log "控えを写しました: ${host_copy}"
   else
     log "控えを Mac へ写せませんでした（コンテナの中には残っています: ${copy}）。"
@@ -194,6 +220,12 @@ if [ -n "$images_sent" ]; then
 fi
 if [ -n "$images_unsent" ]; then
   reason="${reason} 画像を Mac へ写せませんでした（devcontainer の中に残っています: ${images_unsent}）。"
+fi
+if [ -n "$x_post_sent" ]; then
+  reason="${reason} X の告知文: ${x_post_sent}（note を公開したら URL を埋めて投稿する。画像を 1 枚添える）。"
+fi
+if [ -n "$x_post_unsent" ]; then
+  reason="${reason} X の告知文を Mac へ写せませんでした（devcontainer の中に残っています: ${x_post_unsent}）。"
 fi
 
 if [ -z "$status" ]; then

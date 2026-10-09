@@ -30,6 +30,10 @@
 #     置く（Docs を呼ぶのは置く 1 回だけ、道具は Docs の 2 つのまま）/ 印は検査を通る / 1 枚も作れない・結果の行なしで
 #     落ちる・PNG が無い → 画像なしで置く / 1 枚だけ → その印だけ / 節が無い → 理由に出す / --no-images → 呼ばない /
 #     --no-docs → 作って印を入れ控えに残す
+#   - X の告知文の段（#964）: 作れた → x-post.md に残し、検査を通ったものだけを使う・道具は書く段と同じ（なし）・
+#     画像を貼る場所の印を依頼に入れない・Docs に置いた回は docs-x-post.md に写す / 1 回目が検査で落ちた → 落ちた種類と長さを
+#     添えて書き直させる / 書き直しても落ちた・claude が失敗した・囲みが無い → **記事の下書きはそのまま Docs に置き**、
+#     理由を結果の行に出す（前の回の x-post.md を残さない）/ --no-x-post → 呼ばない
 #
 # 3 節  scripts/ops-report-images-selftest.mjs（推移の図を組む関数と、画面を選ぶ関数）
 #   - 図に描いた値が材料にあり、棒の数が材料の月の数と同じ。材料に無い値・一覧に無い文字・棒の欠け・題名の数字を落とす
@@ -41,6 +45,13 @@
 #   - 検査の文言の一覧が、幅の検査の仕込み（scripts/lib/dev-fixture.sh）に実際にある語を指している
 #   - dev-fixture.sh を読むと、環境に GF_FIXTURE_CONTENT=showcase が残っていても幅の検査の中身になり、
 #     showcase-fixture.sh を後から読んだときだけ撮影の見せ方になる（幅の検査が黙って弱くならない）
+#
+# 5 節  scripts/check-ops-report-x-post.sh（X の告知文の検査。#964）
+#   - 2026-09 に投稿した告知文（URL を欄に戻したもの）が 0 で、重みつきの長さが 262（X の画面と同じ）
+#   - URL は長さによらず 23・半角は 1・日本語は 2 で数える
+#   - 280 を超える・材料に無い数字・許可外の URL・他人のハンドル・#GameForge が無い・ハッシュタグが 4 個・
+#     URL の欄が無い / 2 つ・ほかの人が埋める欄・画像を貼る印が、それぞれ 1 になる
+#   - 検査が成立しないとき（告知文が空・材料が無い）は 2
 #
 # **本物の claude -p を呼ばない。** 文章の生成はループの検証の外に置く（#936 の constraints）。
 # 2 節は OPS_REPORT_CLAUDE を必ず偽のコマンドへ向けてから draft を呼ぶ。
@@ -279,7 +290,37 @@ if [ "$mode" = refine ]; then
   exit 0
 fi
 if [ "$mode" = generate ]; then
-  cat >/dev/null
+  req="$(cat)"
+  # X の告知文の段（#964）。依頼の書き出しで見分ける（呼び方は書く段と同じ）。
+  if printf '%s\n' "$req" | grep -qF 'X の公式アカウントで告知する文'; then
+    n="$(( $(cat "${FAKE_LOG}.xpost-count" 2>/dev/null || echo 0) + 1 ))"
+    printf '%s\n' "$n" > "${FAKE_LOG}.xpost-count"
+    printf 'xpost tools=%s strict=%s restricted=%s allowed=%s feedback=%s\n' "$tools" "$strict" "$restricted" "$allowed" \
+      "$(printf '%s\n' "$req" | grep -qF '前の案は機械の検査で落ちました' && echo 1 || echo 0)" >> "$FAKE_LOG"
+    printf '%s\n' "$req" > "${FAKE_LOG}.xpost-request"
+    good='Game Forge の運営報告（2026 年 9 月）を note に書きました。
+
+9 月は遊ぶ画面の改修に力を入れました。生成は 1,234 回、かかった AI の費用も実額で載せています。
+
+【人が埋める：note の記事の URL】
+
+#GameForge #個人開発 #生成AI'
+    long="$good"
+    for _ in 1 2 3; do long="${long}
+スマホでも遊びやすくなるよう、画面の細かいところを一つずつ直しました。"; done
+    behaviour="${FAKE_XPOST:-ok}"
+    # retry: 1 回目は長すぎる案、2 回目は通る案を返す。
+    if [ "$behaviour" = retry ]; then if [ "$n" -eq 1 ]; then behaviour=long; else behaviour=ok; fi; fi
+    case "$behaviour" in
+      ok)      post="$good" ;;
+      long)    post="$long" ;;
+      badnum)  post="$(printf '%s\n' "$good" | sed 's/1,234 回/999 回/')" ;;
+      nofence) jq -n --arg p "$good" '{type: "result", is_error: false, result: $p}'; exit 0 ;;
+      fail)    jq -n '{type: "result", is_error: true, result: "告知文を書けませんでした"}'; exit 1 ;;
+    esac
+    jq -n --arg p "$post" '{type: "result", is_error: false, result: ("告知文です。\n\n<x-post>\n" + $p + "\n</x-post>\n")}'
+    exit 0
+  fi
   printf 'generate tools=%s strict=%s\n' "$tools" "$strict" >> "$FAKE_LOG"
   # 前置きとコードブロックの囲みを付けて返す（draft がそれを落とすことも見る）。
   jq -n --rawfile r "$FAKE_DRAFT" '{type: "result", is_error: false, result: ("以下が下書きです。\n\n```markdown\n" + $r + "```\n")}'
@@ -793,6 +834,104 @@ else
   ng "--no-docs のときの画像の扱いが期待と違います（rc=${rc} images=$(result_of IMAGES)）"
 fi
 
+# ── X の告知文の段（#964） ───────────────────────────────────────────────────
+# 偽の claude は、依頼の書き出しで告知文の段を見分け、FAKE_XPOST で振る舞いを変える（既定は通る告知文）。
+reset_fake_log() { : > "$FAKE_LOG"; rm -f "${FAKE_LOG}.xpost-count" "${FAKE_LOG}.xpost-request"; }
+xpost_calls() { grep -c '^xpost ' "$FAKE_LOG"; }
+
+# 2-17 作れた → x-post.md に残し、Docs に置いた回は docs-x-post.md にも写す。道具は書く段と同じ（なし）。
+reset_fake_log
+X1="$TMP/out-xpost"
+FAKE_IMAGES=ok run_draft "$X1" "$CLEAN" ok; rc=$?
+if [[ $rc -eq 0 && "$(result_of STATUS)" == "ok" && "$(result_of X_POST)" == "done" \
+      && "$(result_of REASON)" == *"X の告知文を作りました（重みつきの長さ "*" / 280。$X1/2026-09/x-post.md）"* ]] \
+   && grep -qxF '【人が埋める：note の記事の URL】' "$X1/2026-09/x-post.md" \
+   && cmp -s "$X1/2026-09/x-post.md" "$X1/2026-09/docs-x-post.md" \
+   && bash "$HERE/check-ops-report-x-post.sh" "$X1/2026-09/x-post.md" "$MATERIAL" >/dev/null 2>&1 \
+   && ! grep -q '告知文です' "$X1/2026-09/x-post.md" && ! grep -q 'x-post>' "$X1/2026-09/x-post.md"; then
+  ok "告知文を作れたら、囲みの中だけを x-post.md に残し、Docs に置いた回は docs-x-post.md にも写す"
+else
+  ng "告知文を作れたときの結果が期待と違います（rc=${rc} x_post=$(result_of X_POST)）"; sed 's/^/    /' "$TMP/run.out" "$TMP/run.err" >&2
+fi
+if [[ "$(xpost_calls)" == "1" ]] && grep -qx 'xpost tools=\[\] strict=1 restricted=0 allowed=(なし) feedback=0' "$FAKE_LOG" \
+   && ! grep -q 'permission-mode' "$FAKE_LOG" \
+   && grep -q '^<draft>$' "${FAKE_LOG}.xpost-request" && grep -q '^<material>$' "${FAKE_LOG}.xpost-request" \
+   && ! grep -q '【画像を貼る' "${FAKE_LOG}.xpost-request" \
+   && ! grep -q '人が埋める：note の記事の URL' "${FAKE_LOG}.docs-request"; then
+  ok "告知文の段は道具も MCP も許さず 1 回だけ呼び、画像を貼る印は依頼に入れず、告知文は Docs に置かない"
+else
+  ng "告知文の段の呼び方が決めたとおりではありません"; sed 's/^/    /' "$FAKE_LOG" >&2
+fi
+
+# 2-18 1 回目が検査で落ちた → 落ちた種類と長さだけを添えて書き直させ、2 回目が通れば使う。
+reset_fake_log
+FAKE_XPOST=retry run_draft "$TMP/out-xpost-retry" "$CLEAN" ok --no-docs; rc=$?
+if [[ $rc -eq 0 && "$(result_of X_POST)" == "done" && "$(xpost_calls)" == "2" ]] \
+   && grep -qx 'xpost .* feedback=1' "$FAKE_LOG" \
+   && grep -q '前の案は機械の検査で落ちました（length=1。重みつきの長さ [0-9]* / 280）' "${FAKE_LOG}.xpost-request" \
+   && ! grep -q 'スマホでも遊びやすくなるよう' "${FAKE_LOG}.xpost-request" \
+   && [[ ! -e "$TMP/out-xpost-retry/2026-09/x-post.rejected.md" ]]; then
+  ok "告知文が検査で落ちたら、落ちた種類と長さだけを添えて書き直させる（前の案の中身は返さない）"
+else
+  ng "告知文の書き直しが期待と違います（rc=${rc} x_post=$(result_of X_POST) calls=$(xpost_calls)）"; sed 's/^/    /' "$FAKE_LOG" "$TMP/run.out" >&2
+fi
+
+# 2-19 書き直しても落ちた（長すぎる・材料に無い数字）→ 記事の下書きはそのまま Docs に置き、理由を出す。
+for kind in long:length badnum:number; do
+  behaviour="${kind%%:*}"; want="${kind#*:}"
+  reset_fake_log
+  d="$TMP/out-xpost-$behaviour"
+  FAKE_XPOST="$behaviour" run_draft "$d" "$CLEAN" ok; rc=$?
+  if [[ $rc -eq 0 && "$(result_of STATUS)" == "ok" && -n "$(result_of URL)" && "$(result_of X_POST)" == "rejected" \
+        && "$(result_of REASON)" == *"X の告知文が検査で落ちました（2 回とも。最後は ${want}=1"* \
+        && "$(result_of REASON)" != *"999"* && "$(xpost_calls)" == "2" ]] \
+     && [[ ! -e "$d/2026-09/x-post.md" && ! -e "$d/2026-09/docs-x-post.md" && -s "$d/2026-09/x-post.rejected.md" ]] \
+     && cmp -s "$d/2026-09/draft.md" "$d/2026-09/docs-draft.md" && grep -q '^docs ' "$FAKE_LOG"; then
+    ok "告知文が書き直しても検査で落ちたら（${want}）、記事の下書きはそのまま置き、理由を出す"
+  else
+    ng "告知文が検査で落ちたときの結果が期待と違います（${want}。rc=${rc} x_post=$(result_of X_POST)）"; sed 's/^/    /' "$TMP/run.out" >&2
+  fi
+done
+
+# 2-20 claude が失敗した・囲みが無い → 記事の下書きはそのまま置き、理由を出す。前の回の x-post.md を残さない。
+for behaviour in fail nofence; do
+  reset_fake_log
+  FAKE_XPOST="$behaviour" run_draft "$X1" "$CLEAN" ok --no-docs; rc=$?
+  case "$behaviour" in
+    fail)    want="X の告知文を作れませんでした（claude -p の終了コード 1）" ;;
+    nofence) want="X の告知文を作れませんでした（返答に <x-post> の囲みがありません）" ;;
+  esac
+  if [[ $rc -eq 0 && "$(result_of STATUS)" == "ok" && "$(result_of X_POST)" == "failed" && "$(result_of REASON)" == *"$want"* ]] \
+     && [[ ! -e "$X1/2026-09/x-post.md" && -s "$X1/2026-09/draft.md" && "$(xpost_calls)" == "1" ]]; then
+    ok "告知文の段が落ちても（${behaviour}）、記事の下書きは置き、理由を出す（前の回の告知文を残さない）"
+  else
+    ng "告知文の段が落ちたとき（${behaviour}）の結果が期待と違います（rc=${rc} x_post=$(result_of X_POST)）"; sed 's/^/    /' "$TMP/run.out" >&2
+  fi
+done
+# Docs に置いた回の告知文（docs-x-post.md）は、--no-docs の試し直しで消えない。
+if [[ -s "$X1/2026-09/docs-x-post.md" ]]; then
+  ok "Docs に置いた回の告知文（docs-x-post.md）は、--no-docs の試し直しで消えない"
+else
+  ng "--no-docs の試し直しで、Docs に置いた回の告知文が消えました"
+fi
+# claude が失敗して Docs にも置けなかった回でも、下書きの控えは残す（告知文の段は止める理由にしない）。
+reset_fake_log
+FAKE_XPOST=fail run_draft "$TMP/out-xpost-fail-docs" "$CLEAN" nourl; rc=$?
+if [[ $rc -eq 3 && "$(result_of X_POST)" == "failed" && -s "$(result_of COPY)" ]]; then
+  ok "告知文の段と Docs の両方が落ちても、下書きの控えは残し、両方の理由を出す"
+else
+  ng "告知文の段と Docs の両方が落ちたときの結果が期待と違います（rc=${rc}）"
+fi
+
+# 2-21 --no-x-post は告知文の段を呼ばない。
+reset_fake_log
+run_draft "$TMP/out-noxpost" "$CLEAN" ok --no-docs --no-x-post; rc=$?
+if [[ $rc -eq 0 && "$(result_of X_POST)" == "skipped" && "$(xpost_calls)" == "0" && ! -e "$TMP/out-noxpost/2026-09/x-post.md" ]]; then
+  ok "--no-x-post なら告知文の段を呼ばない"
+else
+  ng "--no-x-post でも告知文の段を呼んでいます（rc=${rc}）"
+fi
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 3 節  推移の図と画面の選び方（#957。scripts/ops-report-images-selftest.mjs）
 # ══════════════════════════════════════════════════════════════════════════════
@@ -865,6 +1004,88 @@ if [[ "$content" == "width-check showcase" ]]; then
 else
   ng "仕込みの中身の切り替えが期待と違います（${content}）"
 fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5 節  X の告知文の検査（#964。scripts/check-ops-report-x-post.sh）
+# ══════════════════════════════════════════════════════════════════════════════
+XCHECK="$HERE/check-ops-report-x-post.sh"
+X_MATERIAL="$TMP/x-material.json"
+jq '.figures.month.generations = 117' "$MATERIAL" > "$X_MATERIAL"
+# 2026-09 に @gameforgejp から投稿した告知文（#964 のコメント）。note の URL を欄に戻したもの。
+X_CLEAN="$TMP/x-clean.md"
+cat > "$X_CLEAN" <<'EOF'
+Game Forge の運営報告（2026 年 9 月）を note に書きました。
+
+9 月は「AI と相談しながらゲームを作る画面」と、スマホで遊びやすくする改修に力を入れました。生成は 117 回、かかった AI の費用も実額で載せています。
+
+【人が埋める：note の記事の URL】
+
+#GameForge #個人開発 #生成AI
+EOF
+
+# 終了コード・報告された種類の集合・重みつきの長さを返す（標準出力に「rc 種類,種類 長さ」）。
+run_xcheck() {
+  local out rc kinds length
+  out="$(bash "$XCHECK" "$1" "$2" 2>&1)"
+  rc=$?
+  kinds="$(printf '%s\n' "$out" | sed -n 's/^\[ops-report-x-post-check\] NG \([a-z-]*\) .*/\1/p' | sort -u | tr '\n' ',' | sed 's/,$//')"
+  length="$(printf '%s\n' "$out" | sed -n 's/^OPS_REPORT_X_POST_LENGTH=//p')"
+  printf '%s %s %s\n' "$rc" "$kinds" "$length"
+  printf '%s\n' "$out" > "$TMP/last-xcheck.txt"
+}
+
+got="$(run_xcheck "$X_CLEAN" "$X_MATERIAL")"
+if [[ "$got" == "0  262" ]]; then
+  ok "2026-09 に投稿した告知文（URL を欄に戻したもの）が 0 で、重みつきの長さは 262（X の画面と同じ）"
+else
+  ng "2026-09 の告知文の結果が期待と違います（期待「0  262」/ 実際「${got}」）"; sed 's/^/    /' "$TMP/last-xcheck.txt" >&2
+fi
+# 欄を本物の note の URL に入れ替えても、長さは同じ（URL は長さによらず 23）。
+sed 's|【人が埋める：note の記事の URL】|https://note.com/gameforgejp/n/n7e3f8e5cf7dc|' "$X_CLEAN" > "$TMP/x-url.md"
+got="$(bash "$XCHECK" "$TMP/x-url.md" "$X_MATERIAL" 2>/dev/null | sed -n 's/^OPS_REPORT_X_POST_LENGTH=//p')"
+[[ "$got" == "262" ]] && ok "URL は長さによらず 23 と数える（欄を URL に入れ替えても 262）" \
+  || ng "URL の数え方が期待と違います（${got}）"
+# 半角は 1・日本語は 2（「ab」は 2、「あい」は 4。改行 2 つ・欄 23・ハッシュタグの行 14 を足して数える）。
+printf 'ab\n【人が埋める：note の記事の URL】\n#GameForge #ab\n' > "$TMP/x-ascii.md"
+printf 'あい\n【人が埋める：note の記事の URL】\n#GameForge #ab\n' > "$TMP/x-kana.md"
+a="$(bash "$XCHECK" "$TMP/x-ascii.md" "$X_MATERIAL" 2>/dev/null | sed -n 's/^OPS_REPORT_X_POST_LENGTH=//p')"
+k="$(bash "$XCHECK" "$TMP/x-kana.md" "$X_MATERIAL" 2>/dev/null | sed -n 's/^OPS_REPORT_X_POST_LENGTH=//p')"
+[[ "$a" == "41" && "$k" == "43" ]] && ok "半角は 1、日本語は 2 と数える（${a} / ${k}）" \
+  || ng "文字の重みが期待と違います（半角 ${a} / 日本語 ${k}。期待 41 / 43）"
+
+# 1 か所だけ変えた告知文が、その種類だけで 1 になることを見る（長さ以外は 280 を超えない変え方にする）。
+#
+# @param $1 名前 / $2 sed の式 / $3 期待する種類
+X_SEQ=0
+expect_x_violation() {
+  local name="$1" expr="$2" kind="$3" file got
+  X_SEQ=$((X_SEQ + 1))
+  file="$TMP/x-bad-${X_SEQ}.md"
+  sed -e "$expr" "$X_CLEAN" > "$file"
+  got="$(run_xcheck "$file" "$X_MATERIAL")"
+  if [[ "${got% *}" == "1 ${kind}" ]]; then
+    ok "告知文: ${name} が 1（${kind} だけ）"
+  else
+    ng "告知文: ${name} が期待と違います（期待「1 ${kind}」/ 実際「${got}」）"; sed 's/^/    /' "$TMP/last-xcheck.txt" >&2
+  fi
+}
+expect_x_violation "280 を超える"           's/^9 月は/9 月は、遊んでくれた皆さんの声を聞きながら、画面の細かいところを一つずつ見直し、/' length
+expect_x_violation "材料に無い数字"         's/117 回/118 回/' number
+expect_x_violation "許可外の URL"           's| #生成AI$| https://example.com/x|' url
+expect_x_violation "他人の @ハンドル"       's/^Game Forge の/@someone_else Game Forge の/' handle
+expect_x_violation "#GameForge が無い"      's/#GameForge/#ゲーム制作/' hashtag
+expect_x_violation "ハッシュタグが 4 個"    's/#生成AI$/#生成AI #ゲーム/' hashtag
+expect_x_violation "ハッシュタグが 1 個"    's/ #個人開発 #生成AI$//' hashtag
+expect_x_violation "URL の欄が無い"         '/^【人が埋める：note の記事の URL】$/d' fill-in
+expect_x_violation "URL の欄が 2 つ"        's/ #生成AI$/ 【人が埋める：note の記事の URL】/' fill-in
+expect_x_violation "ほかの人が埋める欄"     's/かかった AI の費用も/【人が埋める：一言】費用も/' fill-in
+expect_x_violation "画像を貼る印の残り"     's/かかった AI の費用も実額で載せています。/【画像を貼る：images\/shot.png】/' fill-in
+
+: > "$TMP/x-empty.md"
+got="$(run_xcheck "$TMP/x-empty.md" "$X_MATERIAL")"
+[[ "${got%% *}" == "2" ]] && ok "告知文が空なら 2" || ng "告知文が空のときに 2 になりません（${got}）"
+got="$(run_xcheck "$X_CLEAN" "$TMP/no-such.json")"
+[[ "${got%% *}" == "2" ]] && ok "告知文の検査で材料が無ければ 2" || ng "告知文の検査で材料が無いときに 2 になりません（${got}）"
 
 # 2-7 値を取る引数の値が無ければ、読み続けずに 2 で止まる。
 OPS_REPORT_CLAUDE="$FAKE" OPS_REPORT_DIR="$TMP/out-noval" \

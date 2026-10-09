@@ -7,8 +7,10 @@
 # 作るもの（出力先に）:
 #   trend.png   数字の推移の図（月ごとの生成回数。scripts/ops-report-trend.mjs が材料の値だけから描く）
 #   shot.png    入れた機能の画面（scripts/ops-report-shot.mjs が対応表 scripts/ops-report-pages.json から選び、
-#               手元の開発用の仕込みと dev サーバで撮る。scripts/lib/dev-fixture.sh。**本番には接続しない**）
-#   trend.svg / trend-labels.md / trend-check.txt / shot-pick.json / shot.log   途中のもの（調べるとき用）
+#               手元の dev サーバで撮る。scripts/lib/dev-fixture.sh。**本番には接続しない**）。
+#               中身は撮影の見せ方（scripts/lib/showcase-fixture.sh。#962）で、幅の検査の仕込みではない
+#   trend.svg / trend-labels.md / trend-check.txt / shot-pick.json / shot-text.txt / shot.log
+#               途中のもの（調べるとき用。shot-text.txt は撮った画面の本文）
 #
 # 結果の行（標準出力の最後。scripts/ops-report-draft.sh が読む）:
 #   OPS_REPORT_IMAGE_TREND=<ok|failed>
@@ -34,6 +36,15 @@
 #
 # Chromium の実行ファイルと日本語のフォントが要る（docs/ops-report.md「画像の段の前提」）。無ければ shot は
 # failed になり、理由に出る。**本番の画面・ほかの利用者の作品や名前は写らない**（写るのは仕込みの作品と利用者）。
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# 画面の中身（#962）
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 幅の検査の仕込み（長い発言・20 通を超える履歴・長い題名）は読者に見せる中身ではないので、撮るときは
+# scripts/lib/showcase-fixture.sh の見せ方へ切り替える。**撮った画面の本文（innerText と題名）に検査の文言
+# （SHOWCASE_FORBIDDEN_WORDS）が 1 つでもあれば、shot は failed にして画像を残さない**（検査の文言が写った
+# 画像を、貼れる場所に残さない）。
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 2
@@ -54,7 +65,7 @@ fi
 mkdir -p "$OUT" || exit 2
 OUT="$(cd "$OUT" && pwd)"
 rm -f "$OUT/trend.png" "$OUT/trend.svg" "$OUT/trend-labels.md" "$OUT/trend-check.txt" \
-      "$OUT/shot.png" "$OUT/shot-pick.json" "$OUT/shot.log"
+      "$OUT/shot.png" "$OUT/shot-pick.json" "$OUT/shot-text.txt" "$OUT/shot.log"
 
 TREND=failed
 SHOT=failed
@@ -98,6 +109,9 @@ if pick="$(node "$HERE/ops-report-shot.mjs" pick "$DRAFT" 2>&1)" && printf '%s\n
     export GF_FIXTURE_PORT="${OPS_REPORT_SHOT_PORT:-8797}"
     # shellcheck source=scripts/lib/dev-fixture.sh
     . "$ROOT/scripts/lib/dev-fixture.sh"
+    # 撮影の見せ方へ切り替える（#962。dev-fixture.sh の後に読む）。
+    # shellcheck source=scripts/lib/showcase-fixture.sh
+    . "$ROOT/scripts/lib/showcase-fixture.sh"
     trap dev_fixture_down EXIT
     dev_fixture_up
 
@@ -114,9 +128,21 @@ if pick="$(node "$HERE/ops-report-shot.mjs" pick "$DRAFT" 2>&1)" && printf '%s\n
     node "$ROOT/scripts/shoot-pages.mjs" \
       --browser "$BROWSER_BIN" --base "$BASE" --out "$WORK/shots" --paths "$path" \
       --widths "$SHOT_WIDTH" --cookie "__Host-gf_session=$COOKIE_VALUE" \
-      --timeout-ms 20000 > "$WORK/shots.json" || fail "撮れませんでした"
+      --timeout-ms 20000 --body-text 1 > "$WORK/shots.json" || fail "撮れませんでした"
     jq -e '.shots | length == 1 and (.[0].status == 200) and .[0].loaded' "$WORK/shots.json" >/dev/null \
       || fail "画面が 200 で読み込み終わりませんでした（$(jq -c '[.shots[0].status, .shots[0].loaded]' "$WORK/shots.json" 2>/dev/null)）"
+    # 撮った画面の本文に、検査の文言が無いことを確かめる（#962）。本文が空なら確かめられないので落とす。
+    jq -er '.shots[0] | (.title // "") + "\n" + (.bodyText // "")' "$WORK/shots.json" > "$OUT/shot-text.txt" \
+      || fail "撮った画面の本文を読めませんでした"
+    jq -e '.shots[0].bodyText | type == "string" and length > 0' "$WORK/shots.json" >/dev/null \
+      || fail "撮った画面の本文が空です（検査の文言が無いことを確かめられません）"
+    found=()
+    for word in "${SHOWCASE_FORBIDDEN_WORDS[@]}"; do
+      if grep -qF -- "$word" "$OUT/shot-text.txt"; then found+=("$word"); fi
+    done
+    if [[ ${#found[@]} -gt 0 ]]; then
+      fail "撮った画面に検査の文言が写っています（${found[*]}。${OUT}/shot-text.txt）"
+    fi
     node "$ROOT/scripts/ops-report-shot.mjs" crop "$(jq -r '.shots[0].file' "$WORK/shots.json")" "$OUT/shot.png" \
       || fail "撮った画像を切れませんでした"
   ) > "$OUT/shot.log" 2>&1

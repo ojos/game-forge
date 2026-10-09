@@ -22,7 +22,10 @@
 //
 // 使い方:
 //   node scripts/shoot-pages.mjs --browser <path> --base <origin> \
-//     --out <dir> --paths </a,/b,...> [--widths 390,1280] [--cookie <name=value>]
+//     --out <dir> --paths </a,/b,...> [--widths 390,1280] [--cookie <name=value>] [--body-text 1]
+//
+// `--body-text 1` を渡すと、撮った時点のページの本文（`document.body.innerText`）も `bodyText` に入れる
+// （#962。運営報告の画像に検査の文言が写っていないことを確かめるため）。既定では入れない。
 //
 // 標準出力: 観測結果 1 個の JSON
 // 終了コード: 0 = 撮れた / 1 = 撮れなかった
@@ -47,7 +50,7 @@ const DEFAULT_WIDTHS = '390,1280';
  * コマンドライン引数を読む。
  *
  * @param {string[]} argv `process.argv.slice(2)`
- * @returns {{browser: string, base: string, out: string, paths: string[], widths: number[], cookie: string | null, timeoutMs: number}} 読み取った設定
+ * @returns {{browser: string, base: string, out: string, paths: string[], widths: number[], cookie: string | null, timeoutMs: number, bodyText: boolean}} 読み取った設定
  */
 function parseArgs(argv) {
   /** @type {Record<string, string>} */
@@ -81,6 +84,10 @@ function parseArgs(argv) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error(`--timeout-ms の値が不正です: ${String(values['timeout-ms'])}`);
   }
+  const bodyTextValue = values['body-text'] ?? '0';
+  if (bodyTextValue !== '0' && bodyTextValue !== '1') {
+    throw new Error(`--body-text は 0 か 1 です: ${bodyTextValue}`);
+  }
   return {
     browser: values['browser'],
     base: values['base'],
@@ -89,6 +96,7 @@ function parseArgs(argv) {
     widths,
     cookie: values['cookie'] ?? null,
     timeoutMs,
+    bodyText: bodyTextValue === '1',
   };
 }
 
@@ -116,6 +124,9 @@ const PAGE_STATE_EXPRESSION = `JSON.stringify({
   inlineStyles: document.querySelectorAll('style').length,
   viewport: document.querySelector('meta[name=viewport]')?.getAttribute('content') ?? null,
 })`;
+
+/** 撮った時点のページの本文（`--body-text 1` のときだけ評価する。#962）。 */
+const BODY_TEXT_EXPRESSION = 'document.body ? document.body.innerText : ""';
 
 const args = parseArgs(process.argv.slice(2));
 mkdirSync(args.out, { recursive: true });
@@ -229,6 +240,17 @@ try {
         sessionId,
       );
 
+      /** @type {{bodyText?: string}} */
+      const extra = {};
+      if (args.bodyText) {
+        const text = await cdp.send(
+          'Runtime.evaluate',
+          { expression: BODY_TEXT_EXPRESSION, returnByValue: true },
+          sessionId,
+        );
+        extra.bodyText = String(text.result?.value ?? '');
+      }
+
       shots.push({
         path,
         width,
@@ -238,6 +260,7 @@ try {
         status,
         responseUrl,
         ...JSON.parse(state.result.value),
+        ...extra,
       });
     }
   }

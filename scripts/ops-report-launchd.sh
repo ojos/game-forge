@@ -120,6 +120,7 @@ month="$(result MONTH)"
 url="$(result URL)"
 copy="$(result COPY)"
 reason="$(result REASON)"
+images_status="$(result IMAGES)"
 
 host_copy=""
 # Mac へ写せなかった画像（devcontainer の中のパス）と、写せた画像の場所。通知に載せる。
@@ -150,13 +151,21 @@ if [ -n "$copy" ] && [ -n "$month" ]; then
     # 記事に添える画像（#957）。下書きの印（【画像を貼る：images/trend.png】）と同じ相対の場所 images/ へ写す。
     # 作れなかった回には無い。前の回の写しは先に消す。返す控えが Docs に置いたときの写しなら、画像もそのときの
     # 写し（docs-images/）を使う。
+    # **それ以外は、この回の画像の段が作ったときだけ images/ を写す**（#962）。画像の段まで来なかった回
+    # （成否不明の印で止まった docs-failed・検査で落ちた回など）にも、前の回の images/ はコンテナの中に
+    # 残っている。それを写すと、この回の通知に前の回の画像が載る。
     rm -f "${dest}/images/trend.png" "${dest}/images/shot.png"
     mkdir -p "${dest}/images"
     case "$(basename "$copy")" in
       docs-draft.md) images_src="docs-images" ;;
-      *)             images_src="images" ;;
+      *)
+        case "$images_status" in
+          done|partial) images_src="images" ;;
+          *)            images_src="" ;;
+        esac ;;
     esac
     for png in trend.png shot.png; do
+      [ -n "$images_src" ] || break
       src="$(dirname "$copy")/${images_src}/${png}"
       # 作れた画像（コンテナの中にあるもの）を写せなかったときは、黙らずに通知へ載せる。
       if docker exec "$cid" test -f "$src" >> "$LOG" 2>&1; then

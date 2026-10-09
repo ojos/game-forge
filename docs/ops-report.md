@@ -72,7 +72,7 @@
 | 画像 | 何を | どう作るか |
 |---|---|---|
 | `trend.png` | 数字の推移の図（月ごとの生成回数の棒グラフ。対象の月の棒だけ濃い） | [`scripts/ops-report-trend.mjs`](../scripts/ops-report-trend.mjs) が材料の `trend.months` **だけ**から SVG を組み、sharp で PNG にする |
-| `shot.png` | その月に入れた機能の画面（1280×720） | [`scripts/ops-report-shot.mjs`](../scripts/ops-report-shot.mjs) が[対応表](../scripts/ops-report-pages.json)から画面を選び、[`scripts/lib/dev-fixture.sh`](../scripts/lib/dev-fixture.sh)（手元の開発用の仕込みと dev サーバ）で撮る |
+| `shot.png` | その月に入れた機能の画面（1280×720） | [`scripts/ops-report-shot.mjs`](../scripts/ops-report-shot.mjs) が[対応表](../scripts/ops-report-pages.json)から画面を選び、[`scripts/lib/dev-fixture.sh`](../scripts/lib/dev-fixture.sh)（手元の dev サーバ）で、[`scripts/lib/showcase-fixture.sh`](../scripts/lib/showcase-fixture.sh)（撮影の見せ方）の中身を撮る |
 
 - **図には材料にある数だけを描きます。** 値の札（月ごとの回数）と月の札だけを書き、目盛りの数は描きません（材料に無い数になるため）。
   描く前に、月が 1 か月ずつ並んでいること・対象の月の値が本文の生成回数（`figures.month.generations`）と同じことを確かめ、
@@ -84,6 +84,16 @@
   出た回数を数え、いちばん多い画面を撮ります（同じなら表の上。どれも 0 ならトップ）。下書きの中の URL やパスは外してから数え、選んだ path が
   dev サーバの画面の一覧（`/__dev/pages`）に無ければ撮りません。**本番には接続しません。** 写るのは仕込みの架空の利用者と作品です。
   画面を足すときは、対応表に 1 行足します（形は `scripts/ops-report-images-selftest.mjs` が確かめます）。
+- **撮る中身は、幅の検査の仕込みではなく撮影の見せ方です**（#962）。幅の検査の仕込みは、わざと長い発言・20 通を超える履歴・
+  長い題名を入れて画面の崩れを測るためのもので、2026-09 の画像には「10 往復目: …」の会話がそのまま写りました。撮るときは
+  `scripts/lib/showcase-fixture.sh` を読み込み、架空の 3 人（あおい・みなと・こはる）・公開作品 6 つと下書き 1 つ・3 往復の
+  チャット・接続中のアプリ（Claude）を、日付は撮る日の数日前で入れます。**2 つの中身は混ぜません。** 撮影の見せ方を変えても
+  幅の検査の仕込みは変わらず（`scripts/check-page-width.sh` は今までどおり幅の検査の仕込みを測る）、環境変数で切り替わることもありません。
+- **撮った画面に検査の文言が写っていないことを、撮るたびに確かめます。** 撮った時点の画面の本文（`innerText`）と題名を
+  `shot-text.txt` に残し、`SHOWCASE_FORBIDDEN_WORDS`（「幅の検査」「往復目」など）が 1 つでもあれば `shot.png` を残さず、
+  `shot` を failed にして理由に出します。撮影の見せ方の本文にその語が無いことは、ブラウザを使わずに
+  `scripts/check-ops-report-selftest.sh` の 4 節も確かめます。作品ページの遊ぶ枠は、仕込みに実際の wasm が無いので
+  「起動できませんでした」と出ます（枠の中の文は本文の確かめに入りません）。作品ページを撮った月は、貼る前に目で見てください。
 - **画像は Docs に貼りません。** 無人の `claude -p` に許す道具を Docs の 2 つ（batch と guide）に固定しておくためです（#936）。
   代わりに、下書きの「今月の数字」と「入れたもの」の節の終わりに、人が貼る場所の印を 1 行ずつ入れます
   （`【画像を貼る：images/trend.png】`・`【画像を貼る：images/shot.png】`）。印は数字を含まないので 6 の検査に掛かりません。
@@ -144,8 +154,8 @@ Docs を呼ばずに `docs-failed` で止まります（その月に 2 本目を
 
 | どこ | ファイル | 中身 |
 |---|---|---|
-| devcontainer | `~/.local/state/game-forge/ops-report/<YYYY-MM>/`（`OPS_REPORT_DIR` で変えられる） | `images/`（画像の段の出力。`trend.png`・`shot.png` と途中のもの）・`draft-unmarked.md`（貼る場所の印を入れる前の下書き）・`docs-images/`（Docs に置いた回の画像の写し）・`material.json`（材料）・`prompt.txt`・`draft-raw.md`（推敲前の下書き）・`check-raw.txt`・`refine/`（推敲の作業場所）・`refine-prompt.txt`・`refine-response.json`・`refined.md`（推敲した下書き）・`refine-review.json`（6 軸の採点と人が足すとよい箇所。推敲した下書きを使ったときだけ。検査で落ちたときは `refine-review.rejected.json`）・`check-refined.txt`・`draft.md`（使った下書き。推敲後か推敲前）・`docs-draft.md`（Docs に置いたものと同じ控え）・`docs-refine-review.json`（その下書きの採点）・`check.txt`・`docs-url.txt`・`result.txt` |
-| Mac | `~/Library/Application Support/game-forge/ops-report/<YYYY-MM>/` | `draft.md` と `result.txt` の写し（推敲できた回は、写した下書きと組の採点を `refine-review.json` として。画像を作れた回は `images/trend.png`・`images/shot.png`） |
+| devcontainer | `~/.local/state/game-forge/ops-report/<YYYY-MM>/`（`OPS_REPORT_DIR` で変えられる） | `images/`（画像の段の出力。`trend.png`・`shot.png` と途中のもの。`shot-text.txt` は撮った画面の本文）・`draft-unmarked.md`（貼る場所の印を入れる前の下書き）・`docs-images/`（Docs に置いた回の画像の写し）・`material.json`（材料）・`prompt.txt`・`draft-raw.md`（推敲前の下書き）・`check-raw.txt`・`refine/`（推敲の作業場所）・`refine-prompt.txt`・`refine-response.json`・`refined.md`（推敲した下書き）・`refine-review.json`（6 軸の採点と人が足すとよい箇所。推敲した下書きを使ったときだけ。検査で落ちたときは `refine-review.rejected.json`）・`check-refined.txt`・`draft.md`（使った下書き。推敲後か推敲前）・`docs-draft.md`（Docs に置いたものと同じ控え）・`docs-refine-review.json`（その下書きの採点）・`check.txt`・`docs-url.txt`・`result.txt` |
+| Mac | `~/Library/Application Support/game-forge/ops-report/<YYYY-MM>/` | `draft.md` と `result.txt` の写し（推敲できた回は、写した下書きと組の採点を `refine-review.json` として。画像を作れた回は `images/trend.png`・`images/shot.png`。返す控えが Docs に置いたときの写しならそれと組の画像を、それ以外は**その回の画像の段が作った画像だけ**を写す。画像の段まで来なかった回〔成否不明の印で止まった docs-failed など〕には、前の回の画像を写さない。#962） |
 | Mac | `~/Library/Logs/game-forge/ops-report/<UTC の時刻>.log` | 1 回分の全文（400 日で消える） |
 | Claude Docs | 「運営報告 YYYY-MM（下書き）」 | 検査を通った下書きだけ（画像は置かず、貼る場所の印だけが入る）。**材料の JSON は置かない** |
 

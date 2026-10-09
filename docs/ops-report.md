@@ -52,7 +52,7 @@
   下書きと材料に無い事実・動機を足さない、来月やることは約束にならない言い方、内部の作業はまとめて 1 行、
   書かないこと（[型](ops-report-template.md)と同じ）。依頼文の全文は `scripts/ops-report-draft.sh` の中にあります。
 - **推敲は止める理由にしません。** 推敲の段が失敗したとき（uv やスキルが無い・claude が失敗した・推敲した下書きを受け取れない・
-  見出しか人が埋める欄（文言まで）が変わった）と、推敲した下書きが 6 の検査で落ちたときは、**推敲前の下書き（検査を通ったもの）で続け**、
+  見出し（小見出しを含む）か人が埋める欄（文言まで）が変わった）と、推敲した下書きが 6 の検査で落ちたときは、**推敲前の下書き（検査を通ったもの）で続け**、
   結果の行（`OPS_REPORT_REFINE`）と理由に出します。どちらの場合も、Docs に置くのは検査を通った下書きだけです。
 - **6 軸の合格点（全軸 90・平均 92）に届かなくても止めません。** 「人間味・誠実さ」は運営者の一人称と動機が材料に無いので、
   推敲では埋まりません（書くと捏造になる）。届かない分は「人が足すとよい箇所」として控え（`refine-review.json`）に残り、
@@ -89,8 +89,8 @@ Docs を呼ばずに `docs-failed` で止まります（その月に 2 本目を
 
 | どこ | ファイル | 中身 |
 |---|---|---|
-| devcontainer | `~/.local/state/game-forge/ops-report/<YYYY-MM>/`（`OPS_REPORT_DIR` で変えられる） | `material.json`（材料）・`prompt.txt`・`draft-raw.md`（推敲前の下書き）・`check-raw.txt`・`refine/`（推敲の作業場所）・`refine-prompt.txt`・`refine-response.json`・`refined.md`（推敲した下書き）・`refine-review.json`（6 軸の採点と人が足すとよい箇所。推敲した下書きを使ったときだけ。検査で落ちたときは `refine-review.rejected.json`）・`check-refined.txt`・`draft.md`（使った下書き。推敲後か推敲前）・`docs-draft.md`（Docs に置いたものと同じ控え）・`check.txt`・`docs-url.txt`・`result.txt` |
-| Mac | `~/Library/Application Support/game-forge/ops-report/<YYYY-MM>/` | `draft.md` と `result.txt` の写し（推敲できた月は `refine-review.json` も） |
+| devcontainer | `~/.local/state/game-forge/ops-report/<YYYY-MM>/`（`OPS_REPORT_DIR` で変えられる） | `material.json`（材料）・`prompt.txt`・`draft-raw.md`（推敲前の下書き）・`check-raw.txt`・`refine/`（推敲の作業場所）・`refine-prompt.txt`・`refine-response.json`・`refined.md`（推敲した下書き）・`refine-review.json`（6 軸の採点と人が足すとよい箇所。推敲した下書きを使ったときだけ。検査で落ちたときは `refine-review.rejected.json`）・`check-refined.txt`・`draft.md`（使った下書き。推敲後か推敲前）・`docs-draft.md`（Docs に置いたものと同じ控え）・`docs-refine-review.json`（その下書きの採点）・`check.txt`・`docs-url.txt`・`result.txt` |
+| Mac | `~/Library/Application Support/game-forge/ops-report/<YYYY-MM>/` | `draft.md` と `result.txt` の写し（推敲できた回は、写した下書きと組の採点を `refine-review.json` として） |
 | Mac | `~/Library/Logs/game-forge/ops-report/<UTC の時刻>.log` | 1 回分の全文（400 日で消える） |
 | Claude Docs | 「運営報告 YYYY-MM（下書き）」 | 検査を通った下書きだけ。**材料の JSON は置かない** |
 

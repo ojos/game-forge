@@ -136,8 +136,13 @@ if [ -n "$copy" ] && [ -n "$month" ]; then
     docker cp "${cid}:$(dirname "$copy")/result.txt" "${dest}/result.txt" >> "$LOG" 2>&1
     # 推敲の採点と「人が足すとよい箇所」（#956）。推敲できなかった回には無いので、写せなくても止めない。
     # 前の回の写しは先に消す（残すと、推敲できなかった回の下書きに前の回の採点が組になって残る）。
+    # 返す控えが Docs に置いたときの写し（docs-draft.md）なら、採点もそのときの写しを使う。
     rm -f "${dest}/refine-review.json"
-    docker cp "${cid}:$(dirname "$copy")/refine-review.json" "${dest}/refine-review.json" >> "$LOG" 2>&1 || true
+    case "$(basename "$copy")" in
+      docs-draft.md) review_src="docs-refine-review.json" ;;
+      *)             review_src="refine-review.json" ;;
+    esac
+    docker cp "${cid}:$(dirname "$copy")/${review_src}" "${dest}/refine-review.json" >> "$LOG" 2>&1 || true
     log "控えを写しました: ${host_copy}"
   else
     log "控えを Mac へ写せませんでした（コンテナの中には残っています: ${copy}）。"

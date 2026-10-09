@@ -66,6 +66,8 @@
 #     check-refined.txt   推敲後の下書きの検査の出力
 #     draft.md        いちばん新しい下書き（推敲後か推敲前のうち、使ったほう。Docs に置けなかったときの控え）
 #     docs-draft.md   Docs に置いたものと同じ Markdown（置けたときだけ。--no-docs の試し直しでは変わらない）
+#     docs-refine-review.json  Docs に置いた下書きの採点（refine-review.json の写し。置けて、採点があったときだけ。
+#                     --no-docs の試し直しでは変わらない。launchd の起動側は、返す控えが docs-draft.md ならこちらを写す）
 #     docs-url.previous.txt / docs-draft.previous.md   --force で置き直す前の doc の URL と控え
 #     check.txt       検査の出力（draft.md に対するもの）
 #     docs-url.txt    置けた doc の URL（あれば、次の実行は作り直さない。--force で作り直す）
@@ -378,13 +380,13 @@ case "$check_rc" in
 esac
 
 # ── 4. 推敲（/natural-japanese full） ───────────────────────────────────────
-# 見出し（「# 」と「## 」の行）と、人が埋める欄（【人が埋める：…】の全文）を順に並べる。推敲の前後で
+# 見出し（「# 」から「###### 」までの行。小見出しを足しても落とす）と、人が埋める欄（【人が埋める：…】の全文）を順に並べる。推敲の前後で
 # 同じであることを求める（検査は見出しと欄の文言を見ないので、ここで確かめる。型が決めた 5 つの見出しと
 # 順番、欄の綴りと文言を推敲で崩さない。欄は数ではなく全文で比べる——数だけだと、文言を書き換えても通る）。
 #
 # @param $1 Markdown のパス / 標準出力に構成の要約
 outline_of() {
-  grep -E '^#{1,2} ' "$1"
+  grep -E '^#{1,6} ' "$1"
   grep -o '【人が埋める[^】]*】' "$1" | sed 's/^/fill-in: /'
   printf 'fill-in-open=%s\n' "$(grep -o '【人が埋める' "$1" | wc -l | tr -d ' ')"
 }
@@ -586,6 +588,9 @@ fi
 if [[ -f "$OUT/docs-draft.md" ]]; then
   mv -f "$OUT/docs-draft.md" "$OUT/docs-draft.previous.md"
 fi
+if [[ -f "$OUT/docs-refine-review.json" ]]; then
+  mv -f "$OUT/docs-refine-review.json" "$OUT/docs-refine-review.previous.json"
+fi
 # 置き直すとき（--force）は、前の doc の URL を**ここで**消す。残すと、置き直しに失敗したのに次の実行が
 # 古い doc を成功として返す。集める・書く・検査のどこかで落ちたときは消さない（doc はまだ 1 本で、
 # 次の実行がそれを知っている必要がある）。--no-docs はここまで来ないので消さない。
@@ -619,6 +624,12 @@ if ! cp "$DRAFT" "$OUT/docs-draft.md" || ! cmp -s "$DRAFT" "$OUT/docs-draft.md";
   finish 2 copy-failed "Claude Docs には置きました（${TITLE}）が、同じ Markdown の控え（docs-draft.md）を残せませんでした。${DRAFT} を控えとして写してください"
 fi
 COPY="$OUT/docs-draft.md"
+# Docs に置いた下書きの採点も、同じく別の名前で残す（--no-docs の試し直しで refine-review.json は変わる）。
+# 写せなくても止めない（採点は人への手がかりで、doc と控えはもう揃っている）。
+if [[ -f "$OUT/refine-review.json" ]]; then
+  cp "$OUT/refine-review.json" "$OUT/docs-refine-review.json" \
+    || echo "$PREFIX 採点の控え（docs-refine-review.json）を残せませんでした" >&2
+fi
 if [[ -n "$PREVIOUS_URL" ]]; then
   finish 0 ok "Claude Docs に置き直しました（${TITLE}）。前の doc（${PREVIOUS_URL}）は残っているので、Docs の一覧から消してください"
 fi

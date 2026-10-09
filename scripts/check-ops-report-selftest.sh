@@ -253,6 +253,7 @@ if [ "$mode" = refine ]; then
     noreview) { cat draft.md; echo "推敲の印です。"; } > revised.md ;;
     badnum)  { cat draft.md; echo "- 今月の利用者は 87 人でした。"; } > revised.md; printf '%s\n' "$review" > review.json ;;
     heading) sed 's/^## お金$/## 費用/' draft.md > revised.md; printf '%s\n' "$review" > review.json ;;
+    subhead) awk '{ print } /^## 入れたもの$/ { print "### 小見出し" }' draft.md > revised.md; printf '%s\n' "$review" > review.json ;;
     fillin)  sed 's/【人が埋める：今月の投げ銭の額】/【人が埋める：投げ銭】/' draft.md > revised.md; printf '%s\n' "$review" > review.json ;;
     nodone)  { cat draft.md; echo "推敲の印です。"; } > revised.md
              jq -n '{type: "result", is_error: false, result: "途中で止まりました。"}'; exit 0 ;;
@@ -550,6 +551,19 @@ else
   ng "推敲の段を足したら、書く段か置く段の道具の許し方が変わりました"; sed 's/^/    /' "$FAKE_LOG" >&2
 fi
 
+# 2-9b Docs に置いた下書きの採点は docs-refine-review.json にも残し、--no-docs の試し直しで変わらない
+#      （推敲できなかった試し直しで refine-review.json が消えても、Docs の控えと組の採点は残る）。
+if cmp -s "$R1/2026-09/refine-review.json" "$R1/2026-09/docs-refine-review.json"; then
+  FAKE_REFINE=fail run_draft "$R1" "$CLEAN" ok --no-docs; rc=$?
+  if [[ $rc -eq 0 && ! -e "$R1/2026-09/refine-review.json" && -s "$R1/2026-09/docs-refine-review.json" ]]; then
+    ok "Docs に置いた下書きの採点は docs-refine-review.json に残り、--no-docs の試し直しで消えない"
+  else
+    ng "--no-docs の試し直しで、Docs に置いた下書きの採点が消えました（rc=${rc}）"
+  fi
+else
+  ng "Docs に置いたときに、採点の控え（docs-refine-review.json）を残していません"
+fi
+
 # 2-10 推敲の段が失敗した（claude の失敗）→ 推敲前の下書きで続け、Docs に置く。
 : > "$FAKE_LOG"
 R2="$TMP/out-refine-fail"
@@ -573,9 +587,9 @@ else
   ng "uv が無いときの結果が期待と違います（rc=${rc} refine=$(result_of REFINE)）"
 fi
 
-# 2-10c 見出しが変わった・人が埋める欄の文言が変わった（数は同じ）・終わりまで進まなかった
+# 2-10c 見出しが変わった・小見出しを足した・人が埋める欄の文言が変わった（数は同じ）・終わりまで進まなかった
 #       → 推敲前の下書きで続ける。
-for kind in heading fillin nodone; do
+for kind in heading subhead fillin nodone; do
   FAKE_REFINE="$kind" run_draft "$TMP/out-refine-$kind" "$CLEAN" ok --no-docs; rc=$?
   if [[ $rc -eq 0 && "$(result_of REFINE)" == "failed" ]] && cmp -s "$CLEAN" "$TMP/out-refine-$kind/2026-09/draft.md"; then
     ok "推敲の結果が使えない（${kind}）なら、推敲前の下書きで続ける"

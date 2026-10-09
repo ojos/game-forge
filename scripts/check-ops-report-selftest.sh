@@ -601,6 +601,7 @@ if [[ $rc -eq 0 && "$(result_of STATUS)" == "ok" && "$(result_of REFINE)" == "re
       && "$(result_of REASON)" == *"number=1"* && "$(result_of REASON)" != *"87"* ]] \
    && cmp -s "$CLEAN" "$R3/2026-09/draft.md" && cmp -s "$CLEAN" "$R3/2026-09/docs-draft.md" \
    && grep -q '87 人' "$R3/2026-09/refined.md" && grep -q '^docs ' "$FAKE_LOG" \
+   && [[ ! -e "$R3/2026-09/refine-review.json" && -s "$R3/2026-09/refine-review.rejected.json" ]] \
    && bash "$CHECK" "$R3/2026-09/draft.md" "$MATERIAL" >/dev/null 2>&1; then
   ok "推敲した下書きが検査で落ちたら、推敲前の下書き（検査を通ったもの）で続ける"
 else

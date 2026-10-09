@@ -61,7 +61,8 @@
 #     refine/         推敲の段の作業場所（claude の作業ディレクトリ。draft.md・material.json の写しと、
 #                     推敲した revised.md・採点の review.json・lint などの中間ファイル。スキルの写しは終わったら消す）
 #     refine-prompt.txt / refine-response.json   推敲へ渡した依頼と、claude の応答
-#     refine-review.json  6 軸の採点と人が足すとよい箇所（推敲の段が書いたもの。読めたときだけ）
+#     refine-review.json  6 軸の採点と人が足すとよい箇所（推敲した下書きを使い、採点を読めたときだけ。
+#                         推敲した下書きが検査で落ちたときは refine-review.rejected.json に移す）
 #     check-refined.txt   推敲後の下書きの検査の出力
 #     draft.md        いちばん新しい下書き（推敲後か推敲前のうち、使ったほう。Docs に置けなかったときの控え）
 #     docs-draft.md   Docs に置いたものと同じ Markdown（置けたときだけ。--no-docs の試し直しでは変わらない）
@@ -509,7 +510,7 @@ EOF
   return 0
 }
 
-rm -f "$OUT/refined.md" "$OUT/refine-review.json" "$OUT/check-refined.txt"
+rm -f "$OUT/refined.md" "$OUT/refine-review.json" "$OUT/refine-review.rejected.json" "$OUT/check-refined.txt"
 if [[ "$NO_REFINE" -eq 1 ]]; then
   REFINE=skipped
   REFINE_NOTE="推敲は飛ばしました（--no-refine）"
@@ -526,6 +527,11 @@ elif refine_draft; then
     cp "$RAW" "$DRAFT" && cp "$OUT/check-raw.txt" "$OUT/check.txt" \
       || finish 2 draft-failed "推敲前の下書きを ${DRAFT} へ戻せません"
     REFINE=rejected
+    # 採点は使わなかった下書きのものなので、refine-review.json の名前で残さない（launchd の起動側が
+    # Mac へ写し、使った下書きの確かめ事項に見える）。調べるときのために別の名前で残す。
+    if [[ -f "$OUT/refine-review.json" ]]; then
+      mv -f "$OUT/refine-review.json" "$OUT/refine-review.rejected.json"
+    fi
     summary="$(sed -n 's/^OPS_REPORT_CHECK_FAIL //p' "$OUT/check-refined.txt" | head -n 1)"
     REFINE_NOTE="推敲した下書きが検査で落ちたので、推敲前の下書きを使いました（${summary:-検査が成立しませんでした}。${OUT}/refined.md）"
   fi

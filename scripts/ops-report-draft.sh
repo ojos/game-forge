@@ -9,13 +9,19 @@
 #   bash scripts/ops-report-draft.sh 2026-09 --material m.json  # 集め直さず、保存した材料から書く
 #   bash scripts/ops-report-draft.sh 2026-09 --local [--persist-to <dir>] --no-docs   # 手元の D1 で空回し
 #   bash scripts/ops-report-draft.sh 2026-09 --no-refine        # 推敲の段を飛ばす（推敲前の下書きをそのまま使う）
+#   bash scripts/ops-report-draft.sh 2026-09 --no-images        # 画像の段を飛ばす（画像なしで置く）
 #
 # 流れ: 集める（scripts/ops-report-collect.sh）→ 書く（claude -p）→ 検査（scripts/check-ops-report.sh）
 #       → 推敲（claude -p で /natural-japanese full。#956）→ 推敲後の検査
+#       → 画像（入れた機能の画面と数字の推移の図。scripts/ops-report-images.sh。#957）
 #       → 検査を通ったら Claude Docs に新しい doc として置く（題名「運営報告 YYYY-MM（下書き）」）
+#       → 画像があれば、下書きの「今月の数字」と「入れたもの」の節の終わりに、人が貼る場所の印を入れる
+#         （【画像を貼る：images/trend.png】の形。画像は Docs には貼らない。人が控えの PNG を note に貼る）
 # **推敲の段は止める理由にしない**（#956）。推敲が失敗したとき・推敲後の下書きが検査や構成の確かめで
 # 落ちたときは、推敲前の下書き（検査を通ったもの）で続け、その旨を結果の行に出す。6 軸の合格点に
 # 届かないことも止める理由にしない（運営者の言葉は材料に無く、人が足す）。
+# **画像の段も止める理由にしない**（#957）。作れなかった画像は、その旨を結果の行に
+# 出し、下書きは画像なしで置く。
 # 詳しくは docs/ops-report.md。
 #
 # 終了コード:
@@ -37,7 +43,8 @@
 #   OPS_REPORT_URL=<doc の URL。無ければ空>
 #   OPS_REPORT_COPY=<手元の控え（Markdown）のパス。まだ無ければ空>
 #   OPS_REPORT_REFINE=<done|failed|rejected|skipped。推敲の段まで来なければ空>
-#   OPS_REPORT_REASON=<1 行の理由。推敲の段まで来たら、推敲の結果の要約を後ろに付ける>
+#   OPS_REPORT_IMAGES=<done|partial|failed|skipped。画像の段まで来なければ空>
+#   OPS_REPORT_REASON=<1 行の理由。推敲・画像の段まで来たら、その結果の要約を後ろに付ける>
 #
 # OPS_REPORT_REFINE の値:
 #   done      推敲した下書きを使った（理由に 6 軸の平均・最低の軸・人が足すとよい箇所の件数）
@@ -45,6 +52,12 @@
 #             推敲した下書きを受け取れない・見出しか人が埋める欄が変わった）
 #   rejected  推敲した下書きが検査で落ちたので、推敲前の下書きを使った
 #   skipped   --no-refine で推敲を飛ばした
+#
+# OPS_REPORT_IMAGES の値（#957）:
+#   done      2 枚とも作った（下書きに貼る場所の印を入れ、控えの場所を理由に出す）
+#   partial   1 枚だけ作った（作れなかった理由を理由に出す）
+#   failed    1 枚も作れなかった（Chromium・日本語のフォントが無い、など）
+#   skipped   --no-images で飛ばした
 #
 # 値は 1 行に畳む（改行を空白へ）。**理由に下書きの中身やトークンを入れない**（検査の理由は
 # 種類ごとの件数だけ。scripts/check-ops-report.sh。推敲の要約は数と軸の名前だけ）。
@@ -69,6 +82,11 @@
 #     docs-refine-review.json  Docs に置いた下書きの採点（refine-review.json の写し。置けて、採点があったときだけ。
 #                     --no-docs の試し直しでは変わらない。launchd の起動側は、返す控えが docs-draft.md ならこちらを写す）
 #     docs-url.previous.txt / docs-draft.previous.md   --force で置き直す前の doc の URL と控え
+#     images/         画像の段の出力（trend.png・shot.png と途中のもの。scripts/ops-report-images.sh）。
+#     images.txt / images.log   画像の段の結果の行と、標準エラー
+#     draft-unmarked.md  画像を貼る場所の印を入れる前の下書き（印を入れたときだけ）
+#     docs-images/    Docs に置いたときの画像の写し（置けて、画像があったときだけ。--no-docs の試し直しでは変わらない。
+#                     launchd の起動側は、返す控えが docs-draft.md ならこちらを写す）
 #     check.txt       検査の出力（draft.md に対するもの）
 #     docs-url.txt    置けた doc の URL（あれば、次の実行は作り直さない。--force で作り直す）
 #     docs-pending.txt Docs への書き込みが成否不明のまま終わった印（あれば、--force まで置き直さない）
@@ -160,11 +178,16 @@ SKILL_SRC="$ROOT/.claude/skills/natural-japanese"
 # 推敲の段の前に確かめる uv のコマンド。**自己試験だけが差し替える**（CI には uv が無い。推敲の段の
 # claude も偽物なので、本物の uv は呼ばれない）。
 UV_CMD="${OPS_REPORT_UV:-uv}"
+# 画像の段（#957）。**自己試験だけが差し替える**（CI には Chromium も日本語のフォントも無い）。
+IMAGES_SH="${OPS_REPORT_IMAGES:-$HERE/ops-report-images.sh}"
+# 画像の段の上限（秒）。仕込みと dev サーバの起動を含めて、実測は 16 秒。
+IMAGES_TIMEOUT="${OPS_REPORT_IMAGES_TIMEOUT:-600}"
 
 MONTH=""
 MATERIAL_IN=""
 NO_DOCS=0
 NO_REFINE=0
+NO_IMAGES=0
 FORCE=0
 collect_args=()
 
@@ -173,6 +196,8 @@ URL=""
 COPY=""
 REFINE=""
 REFINE_NOTE=""
+IMAGES=""
+IMAGES_NOTE=""
 
 # 結果の行を出して終わる。
 #
@@ -180,10 +205,11 @@ REFINE_NOTE=""
 finish() {
   local rc="$1" status="$2" reason="$3"
   if [[ -n "$REFINE_NOTE" ]]; then reason="${reason}。${REFINE_NOTE}"; fi
+  if [[ -n "$IMAGES_NOTE" ]]; then reason="${reason}。${IMAGES_NOTE}"; fi
   reason="$(printf '%s' "$reason" | tr '\n\r\t' '   ')"
   local lines
-  lines="$(printf 'OPS_REPORT_STATUS=%s\nOPS_REPORT_MONTH=%s\nOPS_REPORT_URL=%s\nOPS_REPORT_COPY=%s\nOPS_REPORT_REFINE=%s\nOPS_REPORT_REASON=%s\n' \
-    "$status" "$MONTH" "$URL" "$COPY" "$REFINE" "$reason")"
+  lines="$(printf 'OPS_REPORT_STATUS=%s\nOPS_REPORT_MONTH=%s\nOPS_REPORT_URL=%s\nOPS_REPORT_COPY=%s\nOPS_REPORT_REFINE=%s\nOPS_REPORT_IMAGES=%s\nOPS_REPORT_REASON=%s\n' \
+    "$status" "$MONTH" "$URL" "$COPY" "$REFINE" "$IMAGES" "$reason")"
   if [[ -n "$OUT" && -d "$OUT" ]]; then
     printf '%s\n' "$lines" > "$OUT/result.txt"
   fi
@@ -198,12 +224,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-docs)    NO_DOCS=1; shift ;;
     --no-refine)  NO_REFINE=1; shift ;;
+    --no-images)  NO_IMAGES=1; shift ;;
     --force)      FORCE=1; shift ;;
     --material)   need_value "$1" $#; MATERIAL_IN="$2"; shift 2 ;;
     --local)      collect_args+=(--local); shift ;;
     --persist-to) need_value "$1" $#; collect_args+=(--persist-to "$2"); shift 2 ;;
     --allow-partial) collect_args+=(--allow-partial); shift ;;
-    -h|--help)    sed -n '2,26p' "${BASH_SOURCE[0]}" >&2; exit 0 ;;
+    -h|--help)    sed -n '2,31p' "${BASH_SOURCE[0]}" >&2; exit 0 ;;
     -*)           finish 2 usage "不明な引数です: $1" ;;
     *)
       [[ -z "$MONTH" ]] || finish 2 usage "月は 1 つだけ渡してください: $1"
@@ -542,6 +569,77 @@ else
   REFINE_NOTE="推敲できなかったので、推敲前の下書きを使いました（${REFINE_NOTE}）"
 fi
 
+# ── 6. 画像（#957） ─────────────────────────────────────────────────────────
+# 使う下書き（推敲後か推敲前）が決まってから回す。画面は「入れたもの」の節から選ぶため。
+# **落ちても止めない。** 作れた画像だけ下書きに貼る場所の印を入れ（7）、作れなかった理由を結果の行に出す。
+IMAGES_DIR="$OUT/images"
+TREND_PNG=""
+SHOT_PNG=""
+if [[ "$NO_IMAGES" -eq 1 ]]; then
+  rm -rf -- "$IMAGES_DIR"
+  IMAGES=skipped
+  IMAGES_NOTE="画像は飛ばしました（--no-images）"
+else
+  echo "$PREFIX 画像を作ります（推移の図と、入れた機能の画面）" >&2
+  timeout_cmd "$IMAGES_TIMEOUT" bash "$IMAGES_SH" "$DRAFT" "$MATERIAL" "$IMAGES_DIR" > "$OUT/images.txt" 2> "$OUT/images.log"
+  images_rc=$?
+  image_line() { sed -n "s/^OPS_REPORT_IMAGE_$1=//p" "$OUT/images.txt" | tail -n 1; }
+  # 結果の行と PNG の両方があるものだけを使う（行だけ ok で PNG が無い、を使わない）。
+  if [[ "$(image_line TREND)" == ok && -s "$IMAGES_DIR/trend.png" ]]; then TREND_PNG="$IMAGES_DIR/trend.png"; fi
+  if [[ "$(image_line SHOT)" == ok && -s "$IMAGES_DIR/shot.png" ]]; then SHOT_PNG="$IMAGES_DIR/shot.png"; fi
+  made=0
+  if [[ -n "$TREND_PNG" ]]; then made=$((made + 1)); fi
+  if [[ -n "$SHOT_PNG" ]]; then made=$((made + 1)); fi
+  detail="$(image_line NOTE)"
+  if [[ -z "$detail" && $images_rc -ne 0 ]]; then detail="画像の段が終了コード ${images_rc} で終わりました（${OUT}/images.log）"; fi
+  case "$made" in
+    2) IMAGES=done;    IMAGES_NOTE="画像を 2 枚作りました（画面: $(image_line SHOT_PAGE)）" ;;
+    1) IMAGES=partial; IMAGES_NOTE="画像を 1 枚だけ作りました（${detail}）" ;;
+    *) IMAGES=failed;  IMAGES_NOTE="画像を作れなかったので、画像なしで続けます（${detail}）" ;;
+  esac
+fi
+
+# ── 7. 人が貼る場所の印（#957） ─────────────────────────────────────────────
+# 画像は Docs に貼らない（無人の claude -p に許す道具を Docs の 2 つに固定する。#936）。代わりに、作れた画像ごとに
+# 下書きの節の終わり（次の「## 」の手前）へ印を 1 行入れ、人が控えの PNG をその位置へ貼る。推移の図は「今月の数字」、
+# 画面は「入れたもの」。印は【画像を貼る：images/<名前>.png】で、数字を含まない（検査の数字の照合に掛からない）。
+# 見出しは「## 」と、あれば先頭の番号（「1. 」）を外した文字で比べる。節が見つからなければ印を入れず、理由に出す。
+#
+# @param $1 Markdown / $2 節の見出しの文字（「## 」と番号を除く） / $3 印の行 / 標準出力に、印を入れた Markdown
+insert_marker() {
+  awk -v heading="$2" -v mark="$3" '
+    function emit() { print mark; print ""; inside = 0; done = 1 }
+    /^## / { if (inside) emit(); h = $0; sub(/^## +([0-9]+[.)] +)?/, "", h); if (h == heading && !done) inside = 1 }
+    { print }
+    END { if (inside) { print ""; print mark } }
+  ' "$1"
+}
+rm -f "$OUT/draft-unmarked.md"
+if [[ -n "$TREND_PNG$SHOT_PNG" ]]; then
+  cp "$DRAFT" "$OUT/draft-unmarked.md" || finish 2 draft-failed "下書きを ${OUT}/draft-unmarked.md へ写せません"
+  for want in "trend:今月の数字" "shot:入れたもの"; do
+    png="${want%%:*}"; section="${want#*:}"
+    if [[ "$png" == trend && -z "$TREND_PNG" ]] || [[ "$png" == shot && -z "$SHOT_PNG" ]]; then continue; fi
+    mark="【画像を貼る：images/${png}.png】"
+    if insert_marker "$DRAFT" "$section" "$mark" > "$DRAFT.tmp" && grep -qxF "$mark" "$DRAFT.tmp"; then
+      mv "$DRAFT.tmp" "$DRAFT"
+    else
+      rm -f "$DRAFT.tmp"
+      IMAGES_NOTE="${IMAGES_NOTE}。下書きに「## ${section}」の節が見つからないので、${png}.png を貼る場所の印は入れていません"
+    fi
+  done
+  # 印を入れた下書きを、もう一度検査に通す（印は数字を含まないので通るはず。通らなければ印を外して続ける）。
+  if bash "$HERE/check-ops-report.sh" "$DRAFT" "$MATERIAL" > "$OUT/check-marked.txt" 2>&1; then
+    cp "$OUT/check-marked.txt" "$OUT/check.txt" 2>/dev/null
+  else
+    cp "$OUT/draft-unmarked.md" "$DRAFT" || finish 2 draft-failed "印を外した下書きを ${DRAFT} へ戻せません"
+    IMAGES_NOTE="${IMAGES_NOTE}。印を入れた下書きが検査で落ちたので、印を外しました（${OUT}/check-marked.txt）"
+  fi
+fi
+if [[ -n "$TREND_PNG$SHOT_PNG" ]]; then
+  IMAGES_NOTE="${IMAGES_NOTE}。画像の控え: ${IMAGES_DIR}"
+fi
+
 if [[ "$NO_DOCS" -eq 1 ]]; then
   finish 0 ok "検査を通りました。--no-docs なので Docs には置いていません"
 fi
@@ -591,6 +689,10 @@ fi
 if [[ -f "$OUT/docs-refine-review.json" ]]; then
   mv -f "$OUT/docs-refine-review.json" "$OUT/docs-refine-review.previous.json"
 fi
+if [[ -d "$OUT/docs-images" ]]; then
+  rm -rf -- "$OUT/docs-images.previous"
+  mv -f "$OUT/docs-images" "$OUT/docs-images.previous"
+fi
 # 置き直すとき（--force）は、前の doc の URL を**ここで**消す。残すと、置き直しに失敗したのに次の実行が
 # 古い doc を成功として返す。集める・書く・検査のどこかで落ちたときは消さない（doc はまだ 1 本で、
 # 次の実行がそれを知っている必要がある）。--no-docs はここまで来ないので消さない。
@@ -629,6 +731,16 @@ COPY="$OUT/docs-draft.md"
 if [[ -f "$OUT/refine-review.json" ]]; then
   cp "$OUT/refine-review.json" "$OUT/docs-refine-review.json" \
     || echo "$PREFIX 採点の控え（docs-refine-review.json）を残せませんでした" >&2
+fi
+
+# Docs に置いたときの画像を、別の名前でも残す（--no-docs の試し直しで images/ は変わる。docs-draft.md の印が
+# 指す画像と組にしておく）。写せなくても止めない（doc と控えの Markdown はもう揃っている）。
+if [[ -n "$TREND_PNG$SHOT_PNG" ]]; then
+  if ! { mkdir -p "$OUT/docs-images" \
+         && { [[ -z "$TREND_PNG" ]] || cp "$TREND_PNG" "$OUT/docs-images/trend.png"; } \
+         && { [[ -z "$SHOT_PNG" ]] || cp "$SHOT_PNG" "$OUT/docs-images/shot.png"; }; }; then
+    echo "$PREFIX 画像の控え（docs-images/）を残せませんでした" >&2
+  fi
 fi
 if [[ -n "$PREVIOUS_URL" ]]; then
   finish 0 ok "Claude Docs に置き直しました（${TITLE}）。前の doc（${PREVIOUS_URL}）は残っているので、Docs の一覧から消してください"

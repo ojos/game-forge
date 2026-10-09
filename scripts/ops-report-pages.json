@@ -1,0 +1,25 @@
+{
+  "comment": "運営報告の「入れたもの」に添える画面の対応表（#957）。撮るのはこの表の path だけ。path は scripts/lib/dev-fixture.sh の dev_fixture_paths が返す一覧に載っていなければ撮らない。{GAME_ID} / {PUBLISHED_GAME_ID} / {HANDLE} は仕込みの値で埋める。keywords は下書きの「入れたもの」の節で数える語。どれも当たらなければ default の画面を撮る。scripts/ops-report-shot.mjs が読む。",
+  "width": 1280,
+  "height": 720,
+  "pages": [
+    { "key": "generate", "path": "/generate", "label": "作品を作る画面（チャット）",
+      "keywords": ["チャット", "相談", "生成画面", "指示文", "作品を作る"] },
+    { "key": "work", "path": "/works/{GAME_ID}", "label": "作品ページ",
+      "keywords": ["作品ページ", "エディットページ", "仮想パッド", "関連作品", "説明", "遊ぶ"] },
+    { "key": "works", "path": "/works", "label": "作品をさがす",
+      "keywords": ["作品をさがす", "公開作品", "検索", "タグ", "おすすめ"] },
+    { "key": "mine", "path": "/works/mine", "label": "あなたの作品",
+      "keywords": ["あなたの作品", "下書き", "一括", "削除"] },
+    { "key": "apps", "path": "/account/apps", "label": "接続中のアプリ（AI からの接続）",
+      "keywords": ["MCP", "AI からの接続", "接続中のアプリ", "コネクタ", "AI アプリ"] },
+    { "key": "author", "path": "/@{HANDLE}", "label": "作者ページ",
+      "keywords": ["作者ページ", "ハンドル名", "プロフィール"] },
+    { "key": "account", "path": "/account", "label": "設定",
+      "keywords": ["設定", "アカウント", "退会"] },
+    { "key": "news", "path": "/news", "label": "お知らせ",
+      "keywords": ["お知らせ"] },
+    { "key": "top", "path": "/", "label": "トップ", "default": true,
+      "keywords": ["トップ"] }
+  ]
+}

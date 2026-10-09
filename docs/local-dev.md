@@ -1315,7 +1315,7 @@ tools/devhost/README.md の「スマホのボタンに doctor / rebuild を足�
      scripts/acceptance.sh scripts/acceptance-remote.sh scripts/check-no-secrets.sh \
      .github/project-ai-rules.md .github/workflows/verify.yml .env.example scripts/on-attach.sh \
      .claude/agents/implementer.md .claude/agents/explorer.md \
-     .devcontainer/compose.yaml .devcontainer/devcontainer.json
+     .devcontainer/compose.yaml .devcontainer/devcontainer.json scripts/post-rebuild-check.sh
    ```
 
 7. **確かめます。** 3 つとも満たしてから PR にします。

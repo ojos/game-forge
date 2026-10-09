@@ -10,14 +10,15 @@
 |---|---|---|---|
 | 1 | Mac のホスト | launchd（[雛形](../scripts/launchd/jp.ojos.game-forge.ops-report.plist)） | 毎月 3 日の 9:00 に起動側を呼ぶ |
 | 2 | Mac のホスト | [`scripts/ops-report-launchd.sh`](../scripts/ops-report-launchd.sh) | Docker と devcontainer を起こし、`docker exec` で 3 を呼ぶ。終わったら控えを Mac へ写して通知する。起こした devcontainer は止め直す |
-| 3 | devcontainer | [`scripts/ops-report-draft.sh`](../scripts/ops-report-draft.sh) | 4 → 5 → 6 → 7 を順に回し、結果の行（`OPS_REPORT_*=`）を出す |
+| 3 | devcontainer | [`scripts/ops-report-draft.sh`](../scripts/ops-report-draft.sh) | 4 → 5 → 6 → 7 → 8 を順に回し、結果の行（`OPS_REPORT_*=`）を出す |
 | 4 | devcontainer | [`scripts/ops-report-collect.sh`](../scripts/ops-report-collect.sh) | 先月（JST の暦月）の材料を 1 つの JSON にまとめる。本番は読み取りだけ |
 | 5 | devcontainer | `claude -p`（道具も MCP も使わせない） | [型](ops-report-template.md)と材料から下書きを書く |
-| 6 | devcontainer | [`scripts/check-ops-report.sh`](../scripts/check-ops-report.sh) | 下書きを検査する。落ちたら Docs に置かない |
-| 7 | devcontainer | `claude -p`（Claude Docs の 2 つの道具だけ） | 「運営報告 YYYY-MM（下書き）」の doc を新しく作り、URL を返す |
+| 6 | devcontainer | [`scripts/check-ops-report.sh`](../scripts/check-ops-report.sh) | 推敲前の下書きを検査する。落ちたら推敲も Docs への書き込みもしない |
+| 7 | devcontainer | `claude -p` で `/natural-japanese full`（控えの場所の中のファイルの道具・サブエージェント・スキルの `uv run` だけ） | 下書きを推敲し、6 軸で採点する（下の「推敲（7）」）。推敲した下書きをもう一度 6 で検査する |
+| 8 | devcontainer | `claude -p`（Claude Docs の 2 つの道具だけ） | 「運営報告 YYYY-MM（下書き）」の doc を新しく作り、URL を返す |
 
-**文章の生成（5 と 7）はループの検証の外です。** 自己試験（[`scripts/check-ops-report-selftest.sh`](../scripts/check-ops-report-selftest.sh)）は
-偽の claude で 3 の分岐と 6 を確かめ、本物の `claude -p` を呼びません。
+**文章の生成（5・7・8）はループの検証の外です。** 自己試験（[`scripts/check-ops-report-selftest.sh`](../scripts/check-ops-report-selftest.sh)）は
+偽の claude で 3 の分岐（推敲の成功・失敗・推敲後に検査で落ちる場合を含む）と 6 を確かめ、本物の `claude -p` を呼びません。
 
 ### 材料（4）
 
@@ -41,12 +42,31 @@
 - ARN・ID・トークン・メールアドレスの形
 - 許可した一覧の外の URL（一覧はスクリプトの `ALLOWED_URLS`）
 
+### 推敲（7）
+
+書いた下書きを、[natural-japanese](../.claude/skills/natural-japanese/UPSTREAM.md)（coji/natural-japanese v1.5.0、MIT。版を固定して
+`.claude/skills/natural-japanese/` に置いた写し）の full で推敲します（#956）。構造・読みやすさ・型の照合の 3 つのレビューを
+サブエージェントで並列に回し、最後に 6 軸のルーブリックで採点します。
+
+- **依頼に「動かせない制約」を渡します**: 5 つの見出しと順番、数字は材料にある値だけ、【人が埋める：…】の綴り、
+  下書きと材料に無い事実・動機を足さない、来月やることは約束にならない言い方、内部の作業はまとめて 1 行、
+  書かないこと（[型](ops-report-template.md)と同じ）。依頼文の全文は `scripts/ops-report-draft.sh` の中にあります。
+- **推敲は止める理由にしません。** 推敲の段が失敗したとき（uv やスキルが無い・claude が失敗した・推敲した下書きを受け取れない・
+  見出し（小見出しを含む）か人が埋める欄（文言まで）が変わった）と、推敲した下書きが 6 の検査で落ちたときは、**推敲前の下書き（検査を通ったもの）で続け**、
+  結果の行（`OPS_REPORT_REFINE`）と理由に出します。どちらの場合も、Docs に置くのは検査を通った下書きだけです。
+- **6 軸の合格点（全軸 90・平均 92）に届かなくても止めません。** 「人間味・誠実さ」は運営者の一人称と動機が材料に無いので、
+  推敲では埋まりません（書くと捏造になる）。届かない分は「人が足すとよい箇所」として控え（`refine-review.json`）に残り、
+  件数が通知の理由に載ります。公開の前に、人がそこを埋めます（下のチェックリストの 2）。
+- 推敲は控えの場所の `refine/` で行い、作業ツリーには書きません。uv は devcontainer の作り直しで
+  [`scripts/install-uv.sh`](../scripts/install-uv.sh) が入れます（版とチェックサムを固定）。
+- 推敲を飛ばすときは `--no-refine` を付けます。
+
 ### 結果と終了コード（3）
 
 | 終了コード | STATUS | 意味 | 通知 |
 |---|---|---|---|
 | 0 | `ok` | Docs に置けた（その月の doc が既にあれば作り直さず、その URL を返す） | doc の URL |
-| 1 | `check-failed` | 検査で落ちた。Docs には置いていない | 理由（種類ごとの件数）と控えの場所 |
+| 1 | `check-failed` | 推敲前の下書きが検査で落ちた。推敲も Docs への書き込みもしていない | 理由（種類ごとの件数）と控えの場所 |
 | 2 | `collect-failed` / `draft-failed` / `check-error` / `unsafe-settings` / `copy-failed` / `usage` | 材料を集められない・下書きを書けない・検査が成立しない・claude の設定が MCP の道具を先に許している・Docs には置けたが控えを写せない・引数の誤りか同じ月の別の実行が走っている | 理由と控えの場所（あれば）とログ |
 | 3 | `docs-failed` | 検査は通ったが Docs に置けなかった（応答に URL が無いことも失敗に数える） | 理由と控えの場所 |
 
@@ -56,12 +76,21 @@ Docs を呼ばずに `docs-failed` で止まります（その月に 2 本目を
 
 **Docs に置けなかったときも黙って終わりません。** 控え（Markdown）は必ず残り、その場所が通知に載ります。
 
+推敲の段の結果は、終了コードとは別に `OPS_REPORT_REFINE` に出ます（推敲の段まで来なければ空）。どの値でも終了コードは変わりません。
+
+| `OPS_REPORT_REFINE` | 意味 | 理由に付くもの |
+|---|---|---|
+| `done` | 推敲した下書きを使った | 6 軸の平均・最低の軸・人が足すとよい箇所の件数（採点を読めなければ、その旨） |
+| `failed` | 推敲の段が失敗したので、推敲前の下書きを使った | 失敗の理由 |
+| `rejected` | 推敲した下書きが検査で落ちたので、推敲前の下書きを使った | 検査の種類ごとの件数と、推敲した下書き（`refined.md`）の場所 |
+| `skipped` | `--no-refine` で推敲を飛ばした | その旨 |
+
 ## 置き場所
 
 | どこ | ファイル | 中身 |
 |---|---|---|
-| devcontainer | `~/.local/state/game-forge/ops-report/<YYYY-MM>/`（`OPS_REPORT_DIR` で変えられる） | `material.json`（材料）・`prompt.txt`・`draft.md`（いちばん新しい下書き）・`docs-draft.md`（Docs に置いたものと同じ控え）・`check.txt`・`docs-url.txt`・`result.txt` |
-| Mac | `~/Library/Application Support/game-forge/ops-report/<YYYY-MM>/` | `draft.md` と `result.txt` の写し |
+| devcontainer | `~/.local/state/game-forge/ops-report/<YYYY-MM>/`（`OPS_REPORT_DIR` で変えられる） | `material.json`（材料）・`prompt.txt`・`draft-raw.md`（推敲前の下書き）・`check-raw.txt`・`refine/`（推敲の作業場所）・`refine-prompt.txt`・`refine-response.json`・`refined.md`（推敲した下書き）・`refine-review.json`（6 軸の採点と人が足すとよい箇所。推敲した下書きを使ったときだけ。検査で落ちたときは `refine-review.rejected.json`）・`check-refined.txt`・`draft.md`（使った下書き。推敲後か推敲前）・`docs-draft.md`（Docs に置いたものと同じ控え）・`docs-refine-review.json`（その下書きの採点）・`check.txt`・`docs-url.txt`・`result.txt` |
+| Mac | `~/Library/Application Support/game-forge/ops-report/<YYYY-MM>/` | `draft.md` と `result.txt` の写し（推敲できた回は、写した下書きと組の採点を `refine-review.json` として） |
 | Mac | `~/Library/Logs/game-forge/ops-report/<UTC の時刻>.log` | 1 回分の全文（400 日で消える） |
 | Claude Docs | 「運営報告 YYYY-MM（下書き）」 | 検査を通った下書きだけ。**材料の JSON は置かない** |
 
@@ -71,7 +100,8 @@ devcontainer の中の控えは作り直すと消えるので、残したいも�
 ## 人のチェックリスト（公開の前に）
 
 1. 通知の URL（または控え）を開き、全文を読む。事実と違うこと・言い過ぎ・約束に読める書き方を直す
-2. 【人が埋める：…】の欄を埋める（そのほかの費用の実額・投げ銭の額）。**欄を残したまま公開しない**
+2. 【人が埋める：…】の欄を埋める（そのほかの費用の実額・投げ銭の額）。**欄を残したまま公開しない**。
+   推敲の採点（`refine-review.json` の `human_todo`）が挙げた「人が足すとよい箇所」に、運営者の言葉（動機・実感）を足す
 3. 数字を直したら、材料（`material.json` の `figures`）と照らし直す。検査は直した後の文章を見ていない
 4. 人の名前・作品名・ID・他人のハンドル・許可外の URL が入っていないことを目で確かめる
 5. note に貼る。見出し画像は logobake の既存のものを使う（毎月作り直さない）
@@ -140,4 +170,7 @@ rm ~/Library/LaunchAgents/jp.ojos.game-forge.ops-report.plist
 - **devcontainer の `~/.claude/settings.json` が MCP の道具（`mcp__…`）を `permissions.allow` で許していたり、`defaultMode` が `bypassPermissions` だったりすると、claude を 1 度も呼ばずに止まります**（`unsafe-settings`）。
   `--allowedTools` は許す指定であって、設定が先に許した道具を取り消せないためです。下書きには issue / PR の題名に由来する文が入るので、Docs 以外の接続（作品の書き換えなど）を動かせる余地を残しません。
 - draft はプライマリ（`/workspaces/game-forge`）のスクリプトを使います。型を直したら main に入れてから回します。
-- 費用: Docs への書き込みは下調べで 1 回 $0.16（2 ターン）でした。下書きの生成の費用はまだ測っていません（初回の手での実行で、`generate-response.json` の `total_cost_usd` を見てください）。
+- 費用と時間（1 か月分）: Docs への書き込みは下調べで 1 回 $0.16（2 ターン）でした。2026-10-09 に 2026-09 の材料の写しで
+  `--no-docs` を通しで回した実測は、書く段が 35 秒・$0.50、推敲の段が 309 秒・$3.73（38 ターン）、全体で 345 秒でした
+  （どちらも `generate-response.json` / `refine-response.json` の `total_cost_usd` と `duration_ms`）。推敲の段の上限は
+  `OPS_REPORT_REFINE_TIMEOUT`（既定 1800 秒）です。

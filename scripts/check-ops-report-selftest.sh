@@ -17,6 +17,10 @@
 #
 # 2 節  scripts/ops-report-draft.sh（OPS_REPORT_CLAUDE で偽の claude に差し替える）
 #   - Docs に置けた → 0・URL を結果の行と docs-url.txt に出す・道具の許し方が決めたとおり
+#   - 推敲の段（#956）: 推敲できた → 推敲した下書きを検査して使う・採点の要約を理由に出す・道具の許し方が
+#     決めたとおり（スキルの写しは書き込みを外し、終わったら消す）/ 推敲が失敗した（claude の失敗・uv が無い・
+#     見出しが変わった・終わりまで進まない）→ 推敲前の下書きで続ける / 推敲した下書きが検査で落ちた →
+#     推敲前の下書きで続ける / --no-refine → 推敲を呼ばない / 推敲前が検査で落ちた → 推敲を呼ばない
 #   - もう一度回すと作り直さない（1 か月 1 本）。--force で作り直して失敗したら前の URL を残さない
 #   - Docs の応答に URL が無い / claude が失敗した → 3・控えのパスを出す・docs-url.txt を作らない
 #   - 検査で落ちた → 1・**Docs を呼ばない**
@@ -214,19 +218,50 @@ FAKE="$TMP/fake-claude"
 FAKE_LOG="$TMP/fake-claude.log"
 cat > "$FAKE" <<'EOF'
 #!/usr/bin/env bash
-# 偽の claude。--allowedTools があれば「置く」、無ければ「書く」として振る舞う。
-mode=generate tools="(なし)" allowed="(なし)" denied="(なし)" strict=0 restricted=0
+# 偽の claude。--plugin-dir があれば「推敲」、--allowedTools があれば「置く」、どちらも無ければ「書く」として振る舞う。
+mode=generate tools="(なし)" allowed="(なし)" denied="(なし)" strict=0 restricted=0 plugin="" effort=""
 prev=""
 for a in "$@"; do
   case "$prev" in
     --tools) tools="[$a]" ;;
-    --allowedTools) mode=docs; allowed="$a" ;;
+    --allowedTools) [ "$mode" = generate ] && mode=docs; allowed="$a" ;;
     --disallowedTools) denied="$a" ;;
+    --plugin-dir) mode=refine; plugin="$a" ;;
+    --effort) effort="$a" ;;
   esac
   [ "$a" = "--strict-mcp-config" ] && strict=1
   [ "$a" = "--restricted" ] && restricted=1
   prev="$a"
 done
+if [ "$mode" = refine ]; then
+  req="$(cat)"
+  scripts="$plugin/skills/natural-japanese/scripts"
+  # 道具の許し方・作業場所・スキルの写しの状態を記録する（推敲の段の確かめに使う）。
+  printf 'refine tools=%s restricted=%s strict=%s effort=%s\n' "$tools" "$restricted" "$strict" "$effort" >> "$FAKE_LOG"
+  printf 'refine-allowed=%s\n' "$allowed" | sed "s|$scripts|<scripts>|g" >> "$FAKE_LOG"
+  printf 'refine-denied=%s\n' "$denied" | sed "s|$plugin|<plugin>|g" >> "$FAKE_LOG"
+  printf 'refine-cwd=%s plugin-in-cwd=%s\n' "$PWD" "$([ "$plugin" = "$PWD/.natural-japanese" ] && echo 1 || echo 0)" >> "$FAKE_LOG"
+  printf 'refine-skill=%s writable=%s manifest=%s\n' \
+    "$([ -f "$plugin/skills/natural-japanese/SKILL.md" ] && echo 1 || echo 0)" \
+    "$([ -w "$plugin/skills/natural-japanese/SKILL.md" ] && echo 1 || echo 0)" \
+    "$(jq -r .name "$plugin/.claude-plugin/plugin.json" 2>/dev/null)" >> "$FAKE_LOG"
+  printf 'refine-first-line=%s\n' "$(printf '%s\n' "$req" | head -n 1)" >> "$FAKE_LOG"
+  printf 'refine-inputs=%s\n' "$([ -s draft.md ] && [ -s material.json ] && echo 1 || echo 0)" >> "$FAKE_LOG"
+  review='{"scores": {"naturalness": 93, "density": 92, "scannability": 94, "logic": 92, "humanity": 86, "self_proof": 91}, "average": 91.3, "human_todo": ["冒頭に運営者の動機", "お金の節に実感"]}'
+  case "${FAKE_REFINE:-ok}" in
+    ok)      { cat draft.md; echo "推敲の印です。"; } > revised.md; printf '%s\n' "$review" > review.json ;;
+    noreview) { cat draft.md; echo "推敲の印です。"; } > revised.md ;;
+    badnum)  { cat draft.md; echo "- 今月の利用者は 87 人でした。"; } > revised.md; printf '%s\n' "$review" > review.json ;;
+    heading) sed 's/^## お金$/## 費用/' draft.md > revised.md; printf '%s\n' "$review" > review.json ;;
+    subhead) awk '{ print } /^## 入れたもの$/ { print "### 小見出し" }' draft.md > revised.md; printf '%s\n' "$review" > review.json ;;
+    fillin)  sed 's/【人が埋める：今月の投げ銭の額】/【人が埋める：投げ銭】/' draft.md > revised.md; printf '%s\n' "$review" > review.json ;;
+    nodone)  { cat draft.md; echo "推敲の印です。"; } > revised.md
+             jq -n '{type: "result", is_error: false, result: "途中で止まりました。"}'; exit 0 ;;
+    fail)    jq -n '{type: "result", is_error: true, result: "推敲に失敗しました"}'; exit 1 ;;
+  esac
+  jq -n '{type: "result", is_error: false, result: "推敲しました。\nREFINE_DONE", permission_denials: []}'
+  exit 0
+fi
 if [ "$mode" = generate ]; then
   cat >/dev/null
   printf 'generate tools=%s strict=%s\n' "$tools" "$strict" >> "$FAKE_LOG"
@@ -254,11 +289,13 @@ chmod +x "$FAKE"
 # 利用者の設定は読ませない（既定は空の設定。2-8 だけ差し替える）。
 echo '{}' > "$TMP/claude-settings.json"
 SETTINGS="$TMP/claude-settings.json"
+# 推敲の段は既定で成功する（FAKE_REFINE で振る舞いを変える）。uv は CI に無いので、在るものとして通す
+# （OPS_REPORT_UV。偽の claude は uv を呼ばない）。
 run_draft() {
   local dir="$1" draft="$2" docs="$3"
   shift 3
   OPS_REPORT_CLAUDE="$FAKE" OPS_REPORT_DIR="$dir" FAKE_LOG="$FAKE_LOG" \
-    OPS_REPORT_CLAUDE_SETTINGS="$SETTINGS" \
+    OPS_REPORT_CLAUDE_SETTINGS="$SETTINGS" OPS_REPORT_UV="${FAKE_UV:-true}" \
     FAKE_DRAFT="$draft" FAKE_DOCS="$docs" \
     bash "$DRAFT_SH" 2026-09 --material "$MATERIAL" "$@" > "$TMP/run.out" 2> "$TMP/run.err"
 }
@@ -437,8 +474,8 @@ fi
 D5="$TMP/out-checkfail"
 run_draft "$D5" "$TMP/bad-1-number.md" ok; rc=$?
 if [[ $rc -eq 1 && "$(result_of STATUS)" == "check-failed" && -s "$(result_of COPY)" ]] \
-   && ! grep -q '^docs ' "$FAKE_LOG"; then
-  ok "検査で落ちたら 1・Docs を呼ばない・控えは残す"
+   && ! grep -q '^docs ' "$FAKE_LOG" && ! grep -q '^refine ' "$FAKE_LOG"; then
+  ok "検査で落ちたら 1・推敲も Docs も呼ばない・控えは残す"
 else
   ng "検査で落ちたときの結果が期待と違います（rc=${rc}）"; sed 's/^/    /' "$TMP/run.out" "$FAKE_LOG" >&2
 fi
@@ -467,6 +504,131 @@ if [[ $rc -eq 2 && "$(result_of STATUS)" == "unsafe-settings" && ! -s "$FAKE_LOG
   ok "claude の設定が MCP の道具を先に許していたら、claude を 1 度も呼ばずに 2"
 else
   ng "claude の設定が別の MCP の道具を許していても置いています（rc=${rc}）"
+fi
+
+# ── 推敲の段（#956） ─────────────────────────────────────────────────────────
+# 推敲前の下書き（偽の生成が返すもの）に、偽の推敲が「推敲の印です。」の 1 行を足す。
+
+# 2-9 推敲できた → 推敲した下書きを検査して使い、Docs に置く。採点の要約を理由に出す。
+: > "$FAKE_LOG"
+R1="$TMP/out-refine-ok"
+run_draft "$R1" "$CLEAN" ok; rc=$?
+if [[ $rc -eq 0 && "$(result_of STATUS)" == "ok" && "$(result_of REFINE)" == "done" ]] \
+   && grep -qx '推敲の印です。' "$R1/2026-09/draft.md" && grep -qx '推敲の印です。' "$R1/2026-09/docs-draft.md" \
+   && cmp -s "$CLEAN" "$R1/2026-09/draft-raw.md" && [[ -s "$R1/2026-09/refine-review.json" ]] \
+   && grep -q '^docs ' "$FAKE_LOG"; then
+  ok "推敲できたら、推敲した下書きを検査して Docs に置く（推敲前は draft-raw.md に残す）"
+else
+  ng "推敲できたときの結果が期待と違います（rc=${rc} refine=$(result_of REFINE)）"; sed 's/^/    /' "$TMP/run.out" "$TMP/run.err" >&2
+fi
+if [[ "$(result_of REASON)" == *"6 軸の平均 91.3・最低 86（人間味）・人が足すとよい箇所 2 件"* ]] \
+   && [[ "$(result_of REASON)" != *"冒頭に運営者の動機"* ]]; then
+  ok "推敲の要約（平均・最低の軸・人が足す件数）を理由に出し、人が足す中身は載せない"
+else
+  ng "推敲の要約が期待と違います（$(result_of REASON)）"
+fi
+exp_allowed='refine-allowed=Read,Glob,Grep,Write,Edit,Skill,Agent,Bash(uv run <scripts>/lint.py:*),Bash(uv run <scripts>/outline.py:*),Bash(uv run <scripts>/terms.py:*)'
+if grep -qx 'refine tools=\[Read,Glob,Grep,Write,Edit,Skill,Agent,Bash\] restricted=1 strict=1 effort=high' "$FAKE_LOG" \
+   && grep -qxF "$exp_allowed" "$FAKE_LOG" \
+   && grep -qxF 'refine-denied=Write(/<plugin>/**),Edit(/<plugin>/**)' "$FAKE_LOG" \
+   && grep -qx 'refine-first-line=/natural-japanese:natural-japanese full draft.md' "$FAKE_LOG"; then
+  ok "推敲の段の道具は決めたとおり（--restricted に Bash を戻し、uv run は lint / outline / terms だけ。スキルの写しへは書かせない）"
+else
+  ng "推敲の段の道具の許し方が決めたとおりではありません"; sed 's/^/    /' "$FAKE_LOG" >&2
+fi
+if grep -qx "refine-cwd=$R1/2026-09/refine plugin-in-cwd=1" "$FAKE_LOG" \
+   && grep -qx 'refine-skill=1 writable=0 manifest=natural-japanese' "$FAKE_LOG" \
+   && grep -qx 'refine-inputs=1' "$FAKE_LOG" && [[ ! -e "$R1/2026-09/refine/.natural-japanese" ]]; then
+  ok "推敲は控えの場所の refine/ で回し、スキルの写しは書き込みを外して渡し、終わったら消す"
+else
+  ng "推敲の作業場所かスキルの写しが期待と違います"; sed 's/^/    /' "$FAKE_LOG" >&2
+fi
+# 書く段と置く段の道具の許し方は、推敲の段を足しても変わらない。
+if grep -qx 'generate tools=\[\] strict=1' "$FAKE_LOG" \
+   && grep -qx 'docs tools=(なし) restricted=1 denied=Read,Write,Edit,NotebookEdit,Glob,Grep,WebSearch,Agent,Artifact,ArtifactComments,ArtifactData,Skill allowed=mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide' "$FAKE_LOG"; then
+  ok "推敲の段を足しても、書く段（道具なし）と置く段（Docs の 2 つだけ）の制限は変わらない"
+else
+  ng "推敲の段を足したら、書く段か置く段の道具の許し方が変わりました"; sed 's/^/    /' "$FAKE_LOG" >&2
+fi
+
+# 2-9b Docs に置いた下書きの採点は docs-refine-review.json にも残し、--no-docs の試し直しで変わらない
+#      （推敲できなかった試し直しで refine-review.json が消えても、Docs の控えと組の採点は残る）。
+if cmp -s "$R1/2026-09/refine-review.json" "$R1/2026-09/docs-refine-review.json"; then
+  FAKE_REFINE=fail run_draft "$R1" "$CLEAN" ok --no-docs; rc=$?
+  if [[ $rc -eq 0 && ! -e "$R1/2026-09/refine-review.json" && -s "$R1/2026-09/docs-refine-review.json" ]]; then
+    ok "Docs に置いた下書きの採点は docs-refine-review.json に残り、--no-docs の試し直しで消えない"
+  else
+    ng "--no-docs の試し直しで、Docs に置いた下書きの採点が消えました（rc=${rc}）"
+  fi
+else
+  ng "Docs に置いたときに、採点の控え（docs-refine-review.json）を残していません"
+fi
+
+# 2-10 推敲の段が失敗した（claude の失敗）→ 推敲前の下書きで続け、Docs に置く。
+: > "$FAKE_LOG"
+R2="$TMP/out-refine-fail"
+FAKE_REFINE=fail run_draft "$R2" "$CLEAN" ok; rc=$?
+if [[ $rc -eq 0 && "$(result_of STATUS)" == "ok" && "$(result_of REFINE)" == "failed" \
+      && "$(result_of REASON)" == *"推敲できなかったので、推敲前の下書きを使いました"* ]] \
+   && cmp -s "$CLEAN" "$R2/2026-09/draft.md" && cmp -s "$CLEAN" "$R2/2026-09/docs-draft.md" \
+   && grep -q '^docs ' "$FAKE_LOG" && [[ ! -e "$R2/2026-09/refine/.natural-japanese" ]]; then
+  ok "推敲の段が失敗したら、推敲前の下書きで続けて Docs に置き、結果に出す"
+else
+  ng "推敲の段が失敗したときの結果が期待と違います（rc=${rc} refine=$(result_of REFINE)）"; sed 's/^/    /' "$TMP/run.out" "$TMP/run.err" >&2
+fi
+
+# 2-10b uv が無い → 推敲の claude を呼ばずに、推敲前の下書きで続ける。
+: > "$FAKE_LOG"
+FAKE_UV=no-such-uv-for-selftest run_draft "$TMP/out-refine-nouv" "$CLEAN" ok --no-docs; rc=$?
+if [[ $rc -eq 0 && "$(result_of REFINE)" == "failed" && "$(result_of REASON)" == *"uv がありません"* ]] \
+   && ! grep -q '^refine ' "$FAKE_LOG"; then
+  ok "uv が無ければ、推敲を呼ばずに推敲前の下書きで続ける"
+else
+  ng "uv が無いときの結果が期待と違います（rc=${rc} refine=$(result_of REFINE)）"
+fi
+
+# 2-10c 見出しが変わった・小見出しを足した・人が埋める欄の文言が変わった（数は同じ）・終わりまで進まなかった
+#       → 推敲前の下書きで続ける。
+for kind in heading subhead fillin nodone; do
+  FAKE_REFINE="$kind" run_draft "$TMP/out-refine-$kind" "$CLEAN" ok --no-docs; rc=$?
+  if [[ $rc -eq 0 && "$(result_of REFINE)" == "failed" ]] && cmp -s "$CLEAN" "$TMP/out-refine-$kind/2026-09/draft.md"; then
+    ok "推敲の結果が使えない（${kind}）なら、推敲前の下書きで続ける"
+  else
+    ng "推敲の結果が使えない（${kind}）ときの結果が期待と違います（rc=${rc} refine=$(result_of REFINE)）"
+  fi
+done
+
+# 2-10d 採点が読めなくても、推敲した下書きは使う。
+FAKE_REFINE=noreview run_draft "$TMP/out-refine-noreview" "$CLEAN" ok --no-docs; rc=$?
+if [[ $rc -eq 0 && "$(result_of REFINE)" == "done" && "$(result_of REASON)" == *"採点（review.json）は読めませんでした"* ]] \
+   && grep -qx '推敲の印です。' "$TMP/out-refine-noreview/2026-09/draft.md"; then
+  ok "採点が読めなくても、推敲した下書きを使い、読めなかったことを出す"
+else
+  ng "採点が読めないときの結果が期待と違います（rc=${rc} refine=$(result_of REFINE)）"
+fi
+
+# 2-11 推敲した下書きが検査で落ちた → 推敲前の下書きで続け、Docs に置く。推敲した下書きは控えに残す。
+: > "$FAKE_LOG"
+R3="$TMP/out-refine-badnum"
+FAKE_REFINE=badnum run_draft "$R3" "$CLEAN" ok; rc=$?
+if [[ $rc -eq 0 && "$(result_of STATUS)" == "ok" && "$(result_of REFINE)" == "rejected" \
+      && "$(result_of REASON)" == *"number=1"* && "$(result_of REASON)" != *"87"* ]] \
+   && cmp -s "$CLEAN" "$R3/2026-09/draft.md" && cmp -s "$CLEAN" "$R3/2026-09/docs-draft.md" \
+   && grep -q '87 人' "$R3/2026-09/refined.md" && grep -q '^docs ' "$FAKE_LOG" \
+   && [[ ! -e "$R3/2026-09/refine-review.json" && -s "$R3/2026-09/refine-review.rejected.json" ]] \
+   && bash "$CHECK" "$R3/2026-09/draft.md" "$MATERIAL" >/dev/null 2>&1; then
+  ok "推敲した下書きが検査で落ちたら、推敲前の下書き（検査を通ったもの）で続ける"
+else
+  ng "推敲した下書きが検査で落ちたときの結果が期待と違います（rc=${rc} refine=$(result_of REFINE)）"; sed 's/^/    /' "$TMP/run.out" "$TMP/run.err" >&2
+fi
+
+# 2-12 --no-refine は推敲を呼ばない。
+: > "$FAKE_LOG"
+run_draft "$TMP/out-norefine" "$CLEAN" ok --no-docs --no-refine; rc=$?
+if [[ $rc -eq 0 && "$(result_of REFINE)" == "skipped" ]] && ! grep -q '^refine ' "$FAKE_LOG"; then
+  ok "--no-refine なら推敲を呼ばない"
+else
+  ng "--no-refine でも推敲を呼んでいます（rc=${rc}）"
 fi
 
 # 2-7 値を取る引数の値が無ければ、読み続けずに 2 で止まる。

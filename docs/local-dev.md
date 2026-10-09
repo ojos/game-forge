@@ -1202,6 +1202,12 @@ systemctl --user enable --now dev-up@game-forge.service
   旧ドメインの `https://d-956797eff8.awsapps.com/start` のままだと、デバイスコードの画面で Google の認証を済ませた後に
   「問題が発生しました」で止まる（2026-10-01 に Pixel 8 と Mac の両方で再現。先にアクセスポータルへ新ドメインでサインインして
   おくと通るのは、そのセッションが残っているため）。新ドメインにすると、事前のサインインなしで `gf-auth-aws` が通った。
+  **2026-10-08 追記: 新ドメインでも、ブラウザにセッションの無い状態からのデバイスコード方式は、SAML の受け口**
+  **（`ap-northeast-1.sso.signin.aws/platform/saml/acs/…`）で「問題が発生しました」になった**（Mac。シークレットウィンドウで再現し、
+  ポータルへのサインインは通る）。上の 10-01 の「通った」は、ブラウザに残ったセッションで SAML を通らなかった見込みである。
+  Mac の devcontainer では `--use-device-code` を付けない `aws sso login --sso-session ojos`（認可コード方式）で通した。
+  ブラウザが戻るコンテナのポートを転送させるため、Mac の VS Code のユーザー設定 `remote.autoForwardPortsSource` を `process` にする
+  （hybrid では転送されない）。dev01（ssh 越し、転送なし）の `gf-auth-aws` が通るかは未確認（handoff 1 章の残り）。
 - **作り直しは `dev rebuild game-forge`** で行う（DCB v0.17.0 同梱の版から。ユニットの停止と起こし直しまでする）。
   作り直さずに起こし直すだけなら `dev restart game-forge`（devcontainer-host v0.1.0 から）。
   VS Code の Rebuild Container で作り直すときは、**先に `systemctl --user stop dev-up@game-forge.service`**、終わったら `start` する

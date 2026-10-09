@@ -5,11 +5,52 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 - 位置づけ: **現在地と、次に何をするか。** 仕様の正本は [product-spec.md](product-spec.md)、
   作業の分解は [mvp-roadmap.md](mvp-roadmap.md) が持ちます。**ここへ複製しません。**
 - 更新: セッションの終わりに、次の人が困る情報だけを書き換えます。
-- 最終更新: **2026-10-08**（要旨は [6. 更新の履歴](#6-更新の履歴) が持ちます）
+- 最終更新: **2026-10-09**（要旨は [6. 更新の履歴](#6-更新の履歴) が持ちます）
 
 ---
 
 ## 1. 現在地
+
+### 依存の更新と Route 53 の削除を済ませ、月次の運営報告を note に初めて公開しました。推敲と画像を自動化に足しています（#941〜#943 / #906 / #805 / #936 / #956 / #957 / #960 と、別セッションの #953。2026-10-08〜09）
+
+| # | 何をしたか | PR / コミット | 状態 |
+|---|---|---|---|
+| #941 / #942 | Dependabot の 2 本。#941 は 5 コミット前の main で CI が回っていたので、main に 2 本を取り込んだ形を手元で作り、`VERIFY_PASS` と束の一致を確かめてから入れた | `9bf39b0` / `84b7495` | 配備済み |
+| #943 | Dependabot の sharp 0.35.5。根の `package.json` だけを上げて `AVATAR_COPIES_FAIL`。関数の側も揃えて #951 で出し直し、アイコン変換の関数を配り直した（CodeSha256 `+dpbPApZ2mckaDflRmjKy0K6Evhp/weKs4rfe9pbibQ=`）。本番で 1 回変換を通した（40836 → 1632 バイト、54.77 ms、Max Memory 116 MB、Init 378.84 ms。#463 の材料）。#943 は手で閉じた | PR #951 / `685197a` | 配備済み |
+| #906 | 使われなくなった Route 53 の `game-forge.ojos.jp` のゾーンを消した。Cloudflare 側の値と注記を `dns-ojos-jp.tf` へ移し、plan は `0 to add, 0 to change, 9 to destroy`。apply は利用者、外部層の記録は 40 件 PASS。消す前の 10 件は PR 本文。Cloudflare の答えは 8 件とも不変（dig） | PR #952 / `edbfde2` | 閉じた。月 $0.50 が止まった |
+| #805 | 第二意見の codex の消費。Plus では止まりがちで、利用者が 10-07 に Pro へ上げた（`plan_type: prolite`、枠は週単位、10-08 は最大 9%） | — | 閉じた |
+| #936 | 月次の運営報告。Docs に置く段で claude -p（2.1.293）が Artifact の道具を選んで断られていたのを外し、引けない `https://game-forge.ojos.jp` を許可から外した（#954）。2026-09 分を note に公開した（https://note.com/gameforgejp/n/n7e3f8e5cf7dc ）。launchd を Mac に登録し、`kickstart` の 1 回（ok）と、成否不明の分岐の 1 回（docs-failed・終了コード 3）で通知まで確かめた | PR #954 / `ff42871` | 閉じた |
+| #956 | 下書きの後に natural-japanese（coji/natural-japanese v1.5.0、MIT。`.claude/skills/natural-japanese/` に版を固定）の full で推敲する段を足した。uv 0.12.17 を postCreate で入れる | PR #958 / `5f69144` | 閉じた |
+| #957 | 入れた機能の画面と、月ごとの生成回数の図を 1 枚ずつ作る。**doc には貼らない**（下）。下書きの節の終わりに `【画像を貼る：images/…png】` の印を入れ、PNG は Mac の控えの `images/` へ | PR #959 / `22e9cb4` | `wait:date`（11-03 の定期実行で閉じる） |
+| #960 | 作り直しで Chromium（playwright-core 1.63.0 の headless shell、revision 1243）と日本語のフォントが入る。ブラウザの見つけ方を `scripts/lib/find-browser.sh` に 1 本化 | PR #961 / `7698646` | 閉じた（Mac で確認。dev01 は未確認） |
+| #953（別セッション） | DCB v0.18.0・ai-playbook v0.8.2 へ追従し、devhost を ojos/devcontainer-host v0.1.0 へ置き換えた（下の「#953 の分」） | PR #955 / `5fbf1e7` | 閉じた |
+
+- **運営報告の流れは「集める → 書く → 推敲 → 画像 → 検査 → Docs に置く」になりました。** 1 か月分で、書く段 $0.50・推敲の段 $3.73、全体で約 6 分です（2026-10-09 の実測）。推敲が落ちても、推敲後の下書きが検査で落ちても、推敲前の下書きで続けます（`OPS_REPORT_REFINE`）。推敲の 6 軸の採点は、2 回とも「人間味」だけが 58〜60 点でした。運営者の動機は材料に無く、推敲で書くと捏造になるので、人が足す欄として残します。
+- **画像を doc に貼らないのは利用者の判断です（2026-10-09）。** #957 の初版は、貼る段の `claude -p` を `--permission-mode auto` で動かし、判定器が 2 回に 1 回断るので、依頼文に「運営者の非公開の下書き…」と書き添えていました。無人の `claude -p` に許す道具を最小に固定する方針（#936）を緩め、安全の判定を言葉で迂回する形なので外しました。note へ貼るのはどのみち人です。
+- **`claude -p --restricted` の実測**（#956）: 作業ディレクトリの `.claude/skills` を読まないので、スキルは `--plugin-dir` で渡します。外される Bash は、`--tools` に名前を挙げると戻ります。ファイルの道具は作業ディレクトリの中に閉じます（外への Write が `permission_denials` になることを親が確かめた）。
+- **型が「p95」と書かせていて、検査が 95 を材料に無い数字として止めていました**（2 回続けて check-failed）。#956 で、言葉で書かせる形に直しました。
+- **AWS SSO のログインは `aws sso login --sso-session ojos` です（`--use-device-code` を付けない）。** 2026-10-08 に Mac で、デバイスコード方式がブラウザにセッションの無い状態から SAML の受け口（`ap-northeast-1.sso.signin.aws/platform/saml/acs/…`）で「問題が発生しました」になることを切り分けました（シークレットウィンドウで再現。ポータルへのサインインは通る）。認可コード方式で通すには、Mac の VS Code のユーザー設定 `remote.autoForwardPortsSource` を `process` にします（hybrid だと戻り先のポートが転送されない。利用者が変えた）。Mac のコンテナの `~/.aws/config` の末尾に `[default] use_dualstack_endpoint = true` を足しています（外して通るかは未確認）。`docs/local-dev.md` 7.9 に注記しました。
+- **Dependabot の PR に人がコミットを足すと、その PR は Dependabot の手を離れ、自動では閉じません。** 第二意見の記録も PR の作者（dependabot）しか載せられないので、`second-opinion-gate` が戻りません。#832 と同じく、自分の PR で出し直すのが正しい形です（3 章の候補。2 回目）。
+- **依存の差分では、束の判定（`orchestrator-bundle-changed.sh` / `chat-bundle-changed.sh`）が作り比べずに CHANGED を返します。** 束を作って本番の CodeSha256 と比べれば、deploy の関門と同じ比較で一致を確かめられます（#951・#941 / #942 で、どちらも一致）。
+- **squash の本文を `Refs` に替えても、PR 本文の `Closes` で issue は閉じます**（#960 で踏み、開け直した）。開けておきたい票は、PR 本文も `Refs` にします。
+- **見届けの待ちを日付の決め打ちで絞らない。** deploy の実行を `createdAt > 2026-10-09T00:00Z` で絞り、23:50Z の実行を拾えず「失敗」に見えました（#954）。起点はマージの時刻から作ります。
+
+#### #953 の分（別セッション game-forge-c8 から受け取った材料。利用者の依頼）
+
+- DCB v0.17.0 → v0.18.0、ai-playbook v0.8.1 → v0.8.2。生成物の中身は変わらず、版の記録（`.devcontainer/ORIGIN`、`.ai-playbook/VERSION`）だけが変わった。doctor は PASS=42 WARN=0 FAIL=0。deploy（run 37864768495）は `[deploy-head]` で `5fbf1e7` を確かめた。
+- #952 で `scripts/acceptance-remote.sh` を変えた後に `--accept` していなかったため、ORIGIN の取り込み済みの記録が外れていた。#955 で `--accept` し直した。**教訓: `--accept` の後にプロジェクト層の文書を編集すると doctor が FAIL**（`docs/local-dev.md` 8.2 の注意をそのまま踏んだ）。
+- devhost は DCB への同梱が廃止され、ojos/devcontainer-host（v0.1.0）から取る形になった。`tools/devhost/README.md`「上流の版を上げる」はマニフェストで照合した install.sh を実行する手順に書き直した。`TAG=v0.1.0` が dev01 に置く版の正本。
+- **dev01（Dell XPS）は 2026-10-08 に install.sh v0.1.0 で入れ直した。実行者は Claude（ssh で代行）で、acceptance の「利用者が通す」とは実行者が違う。** dev version → v0.1.0、`dev ls` と `dev doctor game-forge` が 0、`dev-up@game-forge` と `dev-up@ai-packages-dev` は active のまま。ユニットのファイルは v0.17.0 同梱と同じで置き換えていない。dev01 の `~/Workspaces/game-forge` は `5fbf1e7` まで進めた。
+- dev01 で動いている `dev supervise` は 10-08 18:00 JST に起動した古い dev のまま。次にコンテナが止まったときに新しい版へ替わる。すぐ替えるなら `systemctl --user restart dev-up@game-forge.service`（コンテナは止まらない）。古い dev の `dev self-update` は DCB を見ていて使えなかった（今は使える）が、版の正本は README の `TAG=` なので、上げるときは install.sh を使う。
+- スマホのボタンに restart / exec などを足すかは、利用者が後で決める（#953 の範囲外）。第二意見の指摘は 3 巡で 4 件、すべて修正した。
+
+#### 残していること
+
+- **dev01 の AWS のログイン（`gf-auth-aws` / `tools/devhost/dev-auth-aws.sh`）がデバイスコード方式のまま通るかは未確認です。** 上の切り分けどおりなら止まります。ssh 越しで手元のポートへ戻れないので、Mac と同じ直し方はできません。起票候補（未起票）。`--use-device-code` を案内している文書とスクリプトのコメント（`scripts/deploy-avatar.sh` / `deploy-chat.sh` / `verify-effort-spelling.sh`、`docs/acceptance-remote-schedule.md` / `ogp-capture.md` など）も、同じ票で直す。
+- **#957** は 2026-11-03 の定期実行で、下書きの印 2 つと Mac の PNG 2 枚を確かめて閉じる。**#962**（画面の画像に幅の検査の仕込みの会話が写る。撮影専用の見せ方を用意する）は 11-03 より前に入れると 11 月の記事から効く。docs-failed の回の通知にも前の回の `images/` が載る小さな不具合を、#962 のついでに直す。
+- **dev01 の作り直しの確認**（#956 の uv と #960 のブラウザ・フォント）。次に dev01 を作り直したときに `bash scripts/post-rebuild-check.sh` の 4 行を見る。
+- launchd の運営報告は**毎月 3 日 9:00 に動く**（外し方は `docs/ops-report.md`「外し方」）。2026-09 の doc は推敲版だけを残した（推敲前・試しの doc は利用者の判断で消した）。
+- `docs/privacy-review.md` 7 行目が引けない `https://game-forge.ojos.jp/privacy` を指している（#460 の文書。未修正）。`check-sandbox-browser.sh` は、Go の実効ツールチェイン（go1.27.1）とピン留め（1.27.0）の食い違いで止まる（#960 とは無関係。未対処）。
 
 ### DCB v0.17.0 と規範 v0.8.1 へ追従し、本番の配備を deploy.yml へ移しました。dev01 の devhost も v0.17.0 です（#938 / #939 / #944 / #945 / #946。2026-10-07〜08）
 
@@ -30,9 +71,9 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 #### 残していること
 
-- **#939 の Mac の作り直し**（利用者）。このセッションのコンテナなので、ほかのセッションを止めてから「Dev Containers: Rebuild Container」を実行し、`ps -p 1 -o comm=`（docker-init）と `bash scripts/verify.sh`（最初は EBITEN_KEYS_FAIL で止まる。3 章の rebuild の項）を確かめます。**結果は #939 に書いて閉じます。この節は触りません。** 確かめたいのは、`init: true` が compose.yaml と go の feature の上書きの両方に入っても、Mac の compose 2.40.3 が起動を拒否しないことです（真偽値なので、#930 のようなリストの重複は起きない見込み。未実測）。
+- ~~**#939 の Mac の作り直し**（利用者）。~~（**2026-10-09 追記: 利用者が作り直し、post-rebuild-check が通った。上の節の #960**）このセッションのコンテナなので、ほかのセッションを止めてから「Dev Containers: Rebuild Container」を実行し、`ps -p 1 -o comm=`（docker-init）と `bash scripts/verify.sh`（最初は EBITEN_KEYS_FAIL で止まる。3 章の rebuild の項）を確かめます。**結果は #939 に書いて閉じます。この節は触りません。** 確かめたいのは、`init: true` が compose.yaml と go の feature の上書きの両方に入っても、Mac の compose 2.40.3 が起動を拒否しないことです（真偽値なので、#930 のようなリストの重複は起きない見込み。未実測）。
 - **`scripts/acceptance.sh` 322〜333 行の注記**（「UID/GID の既定が 1000」「ビルド引数」）は、#879 より前の記述のままです。プロジェクトが所有するファイルで、直したら `--accept` し直します（#939 のレーンの報告）。
-- **#937（運営報告の自動化。e2e3a72）は、この handoff に載っていません。** 別セッションのウェーブで、票の #936 も open です。そちらの書き戻しで扱います。
+- ~~**#937（運営報告の自動化。e2e3a72）は、この handoff に載っていません。**~~（**2026-10-09 追記: 上の節の #936 で扱った**） 別セッションのウェーブで、票の #936 も open です。そちらの書き戻しで扱います。
 
 ### #930 で Mac の devcontainer が起動しなくなっていたのを直し、#933 を閉じました（#933。2026-10-03）
 
@@ -5017,6 +5058,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
+- **2026-10-09**（**依存の更新・Route 53 の削除・運営報告の初公開と自動化の拡張**——Dependabot 3 本（#943 は関数の側も揃えて #951 で出し直し、avatar を配り直した）、#906 で Route 53 のゾーンを消した（0/0/9 destroy、Cloudflare の答えは不変）、#805 を閉じた（10-07 に Pro へ）。#936 は Docs の段の道具と引けない URL を直し（#954）、2026-09 分を note に公開し、launchd を登録して ok と docs-failed の 2 回で通知まで確かめて閉じた。#956 で natural-japanese の推敲、#957 で画像 2 枚（doc には貼らない。auto モードを外した）、#960 で作り直しのブラウザとフォント。AWS SSO はデバイスコード方式が SAML で止まるので認可コード方式へ（dev01 は未確認）。別セッションの #953（DCB v0.18.0・devcontainer-host v0.1.0）も同じ節に書いた）
 - **2026-10-08**（**DCB v0.17.0 と規範 v0.8.1 へ追従し（#938）、本番の配備を deploy.yml〈workflow_run〉へ移した**——初回は ORIGIN が無く、引数を明示した --upgrade で 35 本に .dcb-new。DCB 所有は雛形を正とし、逸脱は project-ai-rules.md の表へ。#939 で devcontainer.json を純粋な JSON にし init: true を入れた（Mac の作り直しが残り）。#944 で dev01 の devhost を v0.17.0 へ、#945 で terraform の注記を直し、apply で宣言の外の ojos-ops の請求先を外した。dev01 の作業は親が ssh で代行した。3549 行・86 行・149 行に追記した）
 - **2026-10-03**（**#930 で Mac の devcontainer が起動しなくなっていたのを直し、#933 を閉じた**——compose.yaml の `seccomp=unconfined` と go の feature の宣言が重なり、Mac の compose 2.40.3 が `security_opt items ... are equal` で拒否していた（コンテナ内の v5.6.0 は黙ってまとめるので再現しない）。PR #934 で devcontainer.json の `securityOpt` へ移した。Refs でマージし、利用者が Mac で、親が dev01 で ssh から作り直して確かめてから閉じた。dev01 のツリーは `ed84a31` から main へ進めた。#929 の行に追記した）
 - **2026-10-03**（**dev01 の devhost を上流版へ移して #923 を閉じ、#929 を閉じた**——DCB v0.14.0 で着手し（PR #928）、#923 は Refs でマージして、dev01 で親が ssh から移行した後に閉じた。#929（PR #930）で seccomp を明示した。README の移行手順のパスの決め打ちを直し、handoff の dev01 の古い記述（配り直し・問 12・`tools/devhost/` の性質）に追記した。#929 の本文の「PR #407」を記録した。game-forge-78 の待ちラベル〔PR #931〕を 1 章に書き、初めてラベルと handoff を突き合わせた〔#582・#735 は利用者の判断で wait:external に揃えた〕）

@@ -21,7 +21,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 | #805 | 第二意見の codex の消費。Plus では止まりがちで、利用者が 10-07 に Pro へ上げた（`plan_type: prolite`、枠は週単位、10-08 は最大 9%） | — | 閉じた |
 | #936 | 月次の運営報告。Docs に置く段で claude -p（2.1.293）が Artifact の道具を選んで断られていたのを外し、引けない `https://game-forge.ojos.jp` を許可から外した（#954）。2026-09 分を note に公開した（https://note.com/gameforgejp/n/n7e3f8e5cf7dc ）。launchd を Mac に登録し、`kickstart` の 1 回（ok）と、成否不明の分岐の 1 回（docs-failed・終了コード 3）で通知まで確かめた | PR #954 / `ff42871` | 閉じた |
 | #956 | 下書きの後に natural-japanese（coji/natural-japanese v1.5.0、MIT。`.claude/skills/natural-japanese/` に版を固定）の full で推敲する段を足した。uv 0.12.17 を postCreate で入れる | PR #958 / `5f69144` | 閉じた |
-| #957 | 入れた機能の画面と、月ごとの生成回数の図を 1 枚ずつ作る。**doc には貼らない**（下）。下書きの節の終わりに `【画像を貼る：images/…png】` の印を入れ、PNG は Mac の控えの `images/` へ | PR #959 / `22e9cb4` | `wait:date`（11-03 の定期実行で閉じる） |
+| #957 | 入れた機能の画面と、月ごとの生成回数の図を 1 枚ずつ作る。**doc には貼らない**（下）。下書きの節の終わりに `【画像を貼る：images/…png】` の印を入れ、PNG は Mac の控えの `images/` へ。acceptance の「doc に 2 枚」は「下書きに印 2 つ・Mac の控えに PNG 2 枚」と読み替える（#957 のコメント） | PR #959 / `22e9cb4` | `wait:date`（11-03 の定期実行で閉じる） |
 | #960 | 作り直しで Chromium（playwright-core 1.63.0 の headless shell、revision 1243）と日本語のフォントが入る。ブラウザの見つけ方を `scripts/lib/find-browser.sh` に 1 本化 | PR #961 / `7698646` | 閉じた（Mac で確認。dev01 は未確認） |
 | #953（別セッション） | DCB v0.18.0・ai-playbook v0.8.2 へ追従し、devhost を ojos/devcontainer-host v0.1.0 へ置き換えた（下の「#953 の分」） | PR #955 / `5fbf1e7` | 閉じた |
 
@@ -71,7 +71,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 #### 残していること
 
-- ~~**#939 の Mac の作り直し**（利用者）。~~（**2026-10-09 追記: 利用者が作り直し、post-rebuild-check が通った。上の節の #960**）このセッションのコンテナなので、ほかのセッションを止めてから「Dev Containers: Rebuild Container」を実行し、`ps -p 1 -o comm=`（docker-init）と `bash scripts/verify.sh`（最初は EBITEN_KEYS_FAIL で止まる。3 章の rebuild の項）を確かめます。**結果は #939 に書いて閉じます。この節は触りません。** 確かめたいのは、`init: true` が compose.yaml と go の feature の上書きの両方に入っても、Mac の compose 2.40.3 が起動を拒否しないことです（真偽値なので、#930 のようなリストの重複は起きない見込み。未実測）。
+- ~~**#939 の Mac の作り直し**（利用者）。~~（**2026-10-09 追記: 済み。** 利用者が作り直し、compose に拒否されずに起動した。`ps -p 1 -o comm=` は `docker-init`、`verify` は最初の `EBITEN_KEYS_FAIL` の後に通り、post-rebuild-check も全行 OK。結果は #939 にコメントした。以下は当時の記述）このセッションのコンテナなので、ほかのセッションを止めてから「Dev Containers: Rebuild Container」を実行し、`ps -p 1 -o comm=`（docker-init）と `bash scripts/verify.sh`（最初は EBITEN_KEYS_FAIL で止まる。3 章の rebuild の項）を確かめます。**結果は #939 に書いて閉じます。この節は触りません。** 確かめたいのは、`init: true` が compose.yaml と go の feature の上書きの両方に入っても、Mac の compose 2.40.3 が起動を拒否しないことです（真偽値なので、#930 のようなリストの重複は起きない見込み。未実測）。
 - **`scripts/acceptance.sh` 322〜333 行の注記**（「UID/GID の既定が 1000」「ビルド引数」）は、#879 より前の記述のままです。プロジェクトが所有するファイルで、直したら `--accept` し直します（#939 のレーンの報告）。
 - ~~**#937（運営報告の自動化。e2e3a72）は、この handoff に載っていません。**~~（**2026-10-09 追記: 上の節の #936 で扱った**） 別セッションのウェーブで、票の #936 も open です。そちらの書き戻しで扱います。
 

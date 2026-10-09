@@ -28,6 +28,7 @@
 # 置き場所（この Mac の上）:
 #   ログ   ~/Library/Logs/game-forge/ops-report/<UTC の時刻>.log（400 日で消す。毎月 1 本）
 #   控え   ~/Library/Application Support/game-forge/ops-report/<YYYY-MM>/draft.md と result.txt
+#          （あれば refine-review.json と、記事に添える画像 images/trend.png・images/shot.png。#957）
 #
 # 使い方（手で 1 回回す）: bash scripts/ops-report-launchd.sh
 #   OPS_REPORT_ARGS に draft への引数を空白区切りで渡せる（例: OPS_REPORT_ARGS="2026-09 --force"）。
@@ -121,6 +122,9 @@ copy="$(result COPY)"
 reason="$(result REASON)"
 
 host_copy=""
+# Mac へ写せなかった画像（devcontainer の中のパス）と、写せた画像の場所。通知に載せる。
+images_unsent=""
+images_sent=""
 # 通知に載せる控えの場所。Mac へ写せなかったときは devcontainer の中のパスを、そうと分かる形で載せる
 # （止め直しても消えない。VS Code で devcontainer を開けば読める。消えるのは作り直したときだけ）。
 copy_label=""
@@ -143,6 +147,26 @@ if [ -n "$copy" ] && [ -n "$month" ]; then
       *)             review_src="refine-review.json" ;;
     esac
     docker cp "${cid}:$(dirname "$copy")/${review_src}" "${dest}/refine-review.json" >> "$LOG" 2>&1 || true
+    # 記事に添える画像（#957）。下書きの印（【画像を貼る：images/trend.png】）と同じ相対の場所 images/ へ写す。
+    # 作れなかった回には無い。前の回の写しは先に消す。返す控えが Docs に置いたときの写しなら、画像もそのときの
+    # 写し（docs-images/）を使う。
+    rm -f "${dest}/images/trend.png" "${dest}/images/shot.png"
+    mkdir -p "${dest}/images"
+    case "$(basename "$copy")" in
+      docs-draft.md) images_src="docs-images" ;;
+      *)             images_src="images" ;;
+    esac
+    for png in trend.png shot.png; do
+      src="$(dirname "$copy")/${images_src}/${png}"
+      # 作れた画像（コンテナの中にあるもの）を写せなかったときは、黙らずに通知へ載せる。
+      if docker exec "$cid" test -f "$src" >> "$LOG" 2>&1; then
+        if docker cp "${cid}:${src}" "${dest}/images/${png}" >> "$LOG" 2>&1; then
+          images_sent="${dest}/images"
+        else
+          images_unsent="${images_unsent}${images_unsent:+ }${src}"
+        fi
+      fi
+    done
     log "控えを写しました: ${host_copy}"
   else
     log "控えを Mac へ写せませんでした（コンテナの中には残っています: ${copy}）。"
@@ -153,6 +177,14 @@ if [ "$started_here" -eq 1 ]; then
   # 起こしたのがこの実行なら、元の状態（止まっている）へ戻す。docker cp の後に止める。
   log "起こした devcontainer を止め直します。"
   docker stop "$cid" >> "$LOG" 2>&1
+fi
+
+# 画像を Mac へ写せなかったときは、どの通知でも理由の後ろに足す（成功の通知でも黙らない）。
+if [ -n "$images_sent" ]; then
+  reason="${reason} 画像: ${images_sent}（下書きの【画像を貼る：…】の位置へ貼る）。"
+fi
+if [ -n "$images_unsent" ]; then
+  reason="${reason} 画像を Mac へ写せませんでした（devcontainer の中に残っています: ${images_unsent}）。"
 fi
 
 if [ -z "$status" ]; then

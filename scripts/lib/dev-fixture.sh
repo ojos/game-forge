@@ -133,7 +133,9 @@ dev_fixture_up() {
       printf '%s\n' \
         /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome \
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      # 新しい playwright（1.5x）は headless shell を chrome-headless-shell-linux64/ か -linux-arm64/ に置く（#957 で実測）。
       ls -1d "${HOME}"/.cache/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell \
+        "${HOME}"/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux*/chrome-headless-shell \
         "${HOME}"/.cache/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | sort -r
     )
   fi

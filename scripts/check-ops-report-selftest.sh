@@ -25,6 +25,16 @@
 #   - Docs の応答に URL が無い / claude が失敗した → 3・控えのパスを出す・docs-url.txt を作らない
 #   - 検査で落ちた → 1・**Docs を呼ばない**
 #   - 控えの場所が git の作業ツリーの中 → 2
+#   - 画像の段（#957。OPS_REPORT_IMAGES で偽の画像の段に差し替える）: 2 枚とも作れた → 「今月の数字」と
+#     「入れたもの」の節の終わりに人が貼る場所の印（【画像を貼る：images/…】）を入れ、印の入った下書きを検査に通して
+#     置く（Docs を呼ぶのは置く 1 回だけ、道具は Docs の 2 つのまま）/ 印は検査を通る / 1 枚も作れない・結果の行なしで
+#     落ちる・PNG が無い → 画像なしで置く / 1 枚だけ → その印だけ / 節が無い → 理由に出す / --no-images → 呼ばない /
+#     --no-docs → 作って印を入れ控えに残す
+#
+# 3 節  scripts/ops-report-images-selftest.mjs（推移の図を組む関数と、画面を選ぶ関数）
+#   - 図に描いた値が材料にあり、棒の数が材料の月の数と同じ。材料に無い値・一覧に無い文字・棒の欠け・題名の数字を落とす
+#   - 図に描いた文字が下書きの検査（1 節の check-ops-report.sh）を通り、値を書き換えると number で落ちる
+#   - 画面は対応表の中からだけ選ぶ。対応表の形の確かめ（スキーム・//・クエリ・..・知らない埋め字）
 #
 # **本物の claude -p を呼ばない。** 文章の生成はループの検証の外に置く（#936 の constraints）。
 # 2 節は OPS_REPORT_CLAUDE を必ず偽のコマンドへ向けてから draft を呼ぶ。
@@ -273,6 +283,8 @@ printf 'docs tools=%s restricted=%s denied=%s allowed=%s\n' "$tools" "$restricte
 # 依頼（最後の引数）の囲みの印を記録する。
 for last in "$@"; do :; done
 printf 'docs-tag=%s\n' "$(printf '%s\n' "$last" | sed -n 's/^<\(draft-[0-9a-f]*\)>$/\1/p' | head -n 1)" >> "$FAKE_LOG"
+# 依頼の全文も残す（#957。画像を貼る場所の印が Docs に置く本文に入っていることを確かめる）。
+printf '%s\n' "$last" > "${FAKE_LOG}.docs-request"
 case "$FAKE_DOCS" in
   ok)    jq -n '{type: "result", is_error: false, result: "doc を作りました。\nhttps://claude.ai/artifact/0f1e2d3c-aaaa-bbbb-cccc-000011112222"}' ;;
   lastmixed) jq -n '{type: "result", is_error: false, result: "作れませんでした。既存の https://claude.ai/artifact/aaaa-bbbb を見てください。"}' ;;
@@ -282,6 +294,28 @@ case "$FAKE_DOCS" in
 esac
 EOF
 chmod +x "$FAKE"
+
+# 偽の画像の段（#957）。FAKE_IMAGES で振る舞いを変える（既定は 1 枚も作れない。下書きに印が入らないので、
+# 画像の段の外の試験は下書きをそのまま比べられる）。本物は Chromium と日本語の
+# フォントを要るので、ここでは呼ばない（図を組む部分は 3 節で、本物の関数を試す）。
+FAKE_IMAGES_SH="$TMP/fake-images.sh"
+cat > "$FAKE_IMAGES_SH" <<'EOF'
+#!/usr/bin/env bash
+# 偽の scripts/ops-report-images.sh。引数は <下書き> <材料> <出力先>。
+printf 'images draft=%s\n' "$([ -s "$1" ] && echo 1 || echo 0)" >> "$FAKE_LOG"
+mkdir -p "$3"
+rm -f "$3/trend.png" "$3/shot.png"
+case "${FAKE_IMAGES:-none}" in
+  ok)      printf 'png' > "$3/trend.png"; printf 'png' > "$3/shot.png"
+           printf 'OPS_REPORT_IMAGE_TREND=ok\nOPS_REPORT_IMAGE_SHOT=ok\nOPS_REPORT_IMAGE_SHOT_PAGE=generate\nOPS_REPORT_IMAGE_NOTE=\n'; exit 0 ;;
+  trend)   printf 'png' > "$3/trend.png"
+           printf 'OPS_REPORT_IMAGE_TREND=ok\nOPS_REPORT_IMAGE_SHOT=failed\nOPS_REPORT_IMAGE_SHOT_PAGE=generate\nOPS_REPORT_IMAGE_NOTE=画面を撮れません（Chromium がありません）\n'; exit 1 ;;
+  none)    printf 'OPS_REPORT_IMAGE_TREND=failed\nOPS_REPORT_IMAGE_SHOT=failed\nOPS_REPORT_IMAGE_SHOT_PAGE=\nOPS_REPORT_IMAGE_NOTE=日本語のフォントがありません\n'; exit 1 ;;
+  liar)    printf 'OPS_REPORT_IMAGE_TREND=ok\nOPS_REPORT_IMAGE_SHOT=ok\nOPS_REPORT_IMAGE_SHOT_PAGE=generate\nOPS_REPORT_IMAGE_NOTE=\n'; exit 0 ;;
+  crash)   exit 7 ;;
+esac
+EOF
+chmod +x "$FAKE_IMAGES_SH"
 
 # 下書きを 1 回回す。結果の行を $TMP/run.out に、終了コードを返す。
 #
@@ -296,6 +330,7 @@ run_draft() {
   shift 3
   OPS_REPORT_CLAUDE="$FAKE" OPS_REPORT_DIR="$dir" FAKE_LOG="$FAKE_LOG" \
     OPS_REPORT_CLAUDE_SETTINGS="$SETTINGS" OPS_REPORT_UV="${FAKE_UV:-true}" \
+    OPS_REPORT_IMAGES="$FAKE_IMAGES_SH" \
     FAKE_DRAFT="$draft" FAKE_DOCS="$docs" \
     bash "$DRAFT_SH" 2026-09 --material "$MATERIAL" "$@" > "$TMP/run.out" 2> "$TMP/run.err"
 }
@@ -629,6 +664,152 @@ if [[ $rc -eq 0 && "$(result_of REFINE)" == "skipped" ]] && ! grep -q '^refine '
   ok "--no-refine なら推敲を呼ばない"
 else
   ng "--no-refine でも推敲を呼んでいます（rc=${rc}）"
+fi
+
+# ── 画像の段（#957） ────────────────────────────────────────────────────────
+#
+# 画像は Docs に貼らない（無人の claude -p に許す道具を Docs の 2 つに固定する。#936）。下書きの節の終わりに
+# 人が貼る場所の印（【画像を貼る：images/<名前>.png】）を入れ、その下書きを控えにも Docs にも置く。
+
+MARK_TREND='【画像を貼る：images/trend.png】'
+MARK_SHOT='【画像を貼る：images/shot.png】'
+# 印の行が、その節の見出しより後で、次の「## 」より前にあるか。
+#
+# @param $1 Markdown / $2 節の見出しの文字（番号を除く） / $3 印の行
+mark_in_section() {
+  awk -v heading="$2" -v mark="$3" '
+    /^## / { h = $0; sub(/^## +([0-9]+[.)] +)?/, "", h); inside = (h == heading) }
+    $0 == mark { if (inside) found = 1; else bad = 1 }
+    END { exit !(found && !bad) }
+  ' "$1"
+}
+
+# 2-13 2 枚とも作れた → 「今月の数字」と「入れたもの」の節の終わりに印を入れ、その下書きを検査に通して Docs に置く。
+#      Docs に置く段の道具の許し方は画像が無いときと同じ（Artifact を見せず、Docs の 2 つだけ）。
+: > "$FAKE_LOG"
+I1="$TMP/out-images"
+FAKE_IMAGES=ok run_draft "$I1" "$CLEAN" ok; rc=$?
+d="$I1/2026-09/draft.md"
+if [[ $rc -eq 0 && "$(result_of STATUS)" == "ok" && "$(result_of IMAGES)" == "done" \
+      && "$(result_of REASON)" == *"画像の控え: $I1/2026-09/images"* ]] \
+   && mark_in_section "$d" "今月の数字" "$MARK_TREND" && mark_in_section "$d" "入れたもの" "$MARK_SHOT" \
+   && cmp -s "$d" "$I1/2026-09/docs-draft.md" && cmp -s "$I1/2026-09/refined.md" "$I1/2026-09/draft-unmarked.md" \
+   && grep -qxF "$MARK_TREND" "${FAKE_LOG}.docs-request" && grep -qxF "$MARK_SHOT" "${FAKE_LOG}.docs-request" \
+   && bash "$CHECK" "$d" "$MATERIAL" >/dev/null 2>&1 \
+   && [[ -s "$I1/2026-09/docs-images/trend.png" && -s "$I1/2026-09/docs-images/shot.png" ]]; then
+  ok "2 枚とも作れたら、節の終わりに人が貼る場所の印を入れ、印の入った下書きを検査に通して置く（画像の控えの場所を出す）"
+else
+  ng "2 枚とも作れたときの結果が期待と違います（rc=${rc} images=$(result_of IMAGES)）"; sed 's/^/    /' "$TMP/run.out" >&2
+fi
+if [[ "$(grep -c '^docs ' "$FAKE_LOG")" == "1" ]] \
+   && grep -qx 'docs tools=(なし) restricted=1 denied=Read,Write,Edit,NotebookEdit,Glob,Grep,WebSearch,Agent,Artifact,ArtifactComments,ArtifactData,Skill allowed=mcp__claude_ai_Claude_Docs__batch,mcp__claude_ai_Claude_Docs__guide' "$FAKE_LOG" \
+   && ! grep -q 'permission-mode\|Artifact,' <(grep -v '^docs tools=' "$FAKE_LOG"); then
+  ok "画像があっても、Docs を呼ぶのは置く 1 回だけで、許す道具は Docs の 2 つのまま"
+else
+  ng "画像があるときの claude の呼び方が決めたとおりではありません"; sed 's/^/    /' "$FAKE_LOG" >&2
+fi
+# 型どおりの番号の無い見出しでも、印は節の終わりに入る。
+sed 's/^## 1\. 今月の数字$/## 今月の数字/' "$CLEAN" > "$TMP/clean-plain.md"
+FAKE_IMAGES=ok run_draft "$TMP/out-images-plain" "$TMP/clean-plain.md" ok --no-docs; rc=$?
+if [[ $rc -eq 0 ]] && mark_in_section "$TMP/out-images-plain/2026-09/draft.md" "今月の数字" "$MARK_TREND"; then
+  ok "番号の無い見出しでも、印は「今月の数字」の節の終わりに入る"
+else
+  ng "番号の無い見出しのときの印の位置が期待と違います（rc=${rc}）"
+fi
+
+# 2-13a 印は下書きの検査（1 節）と食い違わない: 数字を含まないので照合に掛からない。
+{ cat "$CLEAN"; printf '%s\n%s\n' "$MARK_TREND" "$MARK_SHOT"; } > "$TMP/clean-marks.md"
+got="$(run_check "$TMP/clean-marks.md" "$MATERIAL")"
+[[ "$got" == "0 " ]] && ok "人が貼る場所の印は検査を通る" || ng "人が貼る場所の印が検査で落ちます（${got}）"
+
+# 2-14 画像を 1 枚も作れなくても、下書きは画像なしで Docs に置く（印は入れない）。
+: > "$FAKE_LOG"
+FAKE_IMAGES=none run_draft "$TMP/out-images-none" "$CLEAN" ok; rc=$?
+if [[ $rc -eq 0 && "$(result_of STATUS)" == "ok" && -n "$(result_of URL)" && "$(result_of IMAGES)" == "failed" \
+      && "$(result_of REASON)" == *"画像を作れなかったので、画像なしで続けます（日本語のフォントがありません）"* ]] \
+   && ! grep -q '【画像を貼る' "$TMP/out-images-none/2026-09/draft.md" && ! grep -q '【画像を貼る' "${FAKE_LOG}.docs-request"; then
+  ok "画像の段が落ちても、下書きは画像なしで置き、理由を出す"
+else
+  ng "画像の段が落ちたときの結果が期待と違います（rc=${rc} images=$(result_of IMAGES)）"; sed 's/^/    /' "$TMP/run.out" >&2
+fi
+# 2-14a 画像の段が結果の行を出さずに落ちても（終了コード 7）、同じく画像なしで置く。
+FAKE_IMAGES=crash run_draft "$TMP/out-images-crash" "$CLEAN" ok; rc=$?
+if [[ $rc -eq 0 && -n "$(result_of URL)" && "$(result_of IMAGES)" == "failed" && "$(result_of REASON)" == *"終了コード 7"* ]]; then
+  ok "画像の段が結果の行を出さずに落ちても、画像なしで置く"
+else
+  ng "画像の段が落ちたとき（結果の行なし）の結果が期待と違います（rc=${rc}）"
+fi
+# 2-14b 結果の行が ok でも PNG が無ければ、作れなかったとみなす（印を入れない）。
+FAKE_IMAGES=liar run_draft "$TMP/out-images-liar" "$CLEAN" ok; rc=$?
+if [[ $rc -eq 0 && "$(result_of IMAGES)" == "failed" ]] && ! grep -q '【画像を貼る' "$TMP/out-images-liar/2026-09/draft.md"; then
+  ok "結果の行が ok でも PNG が無ければ、作れなかったとみなす"
+else
+  ng "PNG の無い画像を作れたとみなしています（rc=${rc} images=$(result_of IMAGES)）"
+fi
+
+# 2-15 1 枚だけ作れた → その 1 枚の印だけを入れる。
+FAKE_IMAGES=trend run_draft "$TMP/out-images-trend" "$CLEAN" ok --no-docs; rc=$?
+d="$TMP/out-images-trend/2026-09/draft.md"
+if [[ $rc -eq 0 && "$(result_of IMAGES)" == "partial" && "$(result_of REASON)" == *"Chromium がありません"* ]] \
+   && mark_in_section "$d" "今月の数字" "$MARK_TREND" && ! grep -qF "$MARK_SHOT" "$d"; then
+  ok "1 枚だけ作れたら、その 1 枚の印だけを入れる"
+else
+  ng "1 枚だけ作れたときの結果が期待と違います（rc=${rc} images=$(result_of IMAGES)）"
+fi
+
+# 2-15a 節の見出しが型と違って印を入れられない画像は、黙って飛ばさず理由に出す（もう 1 枚の印は入れる）。
+sed 's/^## 1\. 今月の数字$/## 今月の数字（まとめ）/' "$CLEAN" > "$TMP/clean-odd-heading.md"
+FAKE_IMAGES=ok run_draft "$TMP/out-images-oddheading" "$TMP/clean-odd-heading.md" ok --no-docs; rc=$?
+d="$TMP/out-images-oddheading/2026-09/draft.md"
+if [[ $rc -eq 0 && "$(result_of REASON)" == *"「## 今月の数字」の節が見つからないので、trend.png を貼る場所の印は入れていません"* ]] \
+   && ! grep -qF "$MARK_TREND" "$d" && mark_in_section "$d" "入れたもの" "$MARK_SHOT"; then
+  ok "節が見つからず印を入れられない画像は、理由に出す（もう 1 枚の印は入れる）"
+else
+  ng "節が見つからないときの結果が期待と違います（rc=${rc}）"; sed 's/^/    /' "$TMP/run.out" >&2
+fi
+
+# 2-16 --no-images は画像の段を呼ばず、印も入れない。--no-docs でも画像は作り、印を入れて控えに残す。
+: > "$FAKE_LOG"
+FAKE_IMAGES=ok run_draft "$TMP/out-noimages" "$CLEAN" ok --no-images; rc=$?
+if [[ $rc -eq 0 && "$(result_of IMAGES)" == "skipped" ]] && ! grep -q '^images ' "$FAKE_LOG" \
+   && ! grep -q '【画像を貼る' "$TMP/out-noimages/2026-09/draft.md"; then
+  ok "--no-images なら画像の段を呼ばず、印も入れない"
+else
+  ng "--no-images でも画像の段を呼んでいます（rc=${rc}）"
+fi
+: > "$FAKE_LOG"
+FAKE_IMAGES=ok run_draft "$TMP/out-images-nodocs" "$CLEAN" ok --no-docs; rc=$?
+if [[ $rc -eq 0 && "$(result_of IMAGES)" == "done" && -s "$TMP/out-images-nodocs/2026-09/images/trend.png" ]] \
+   && grep -qx 'images draft=1' "$FAKE_LOG" && ! grep -q '^docs ' "$FAKE_LOG" \
+   && grep -qxF "$MARK_SHOT" "$TMP/out-images-nodocs/2026-09/draft.md"; then
+  ok "--no-docs でも画像は作り、印を入れて控えに残す"
+else
+  ng "--no-docs のときの画像の扱いが期待と違います（rc=${rc} images=$(result_of IMAGES)）"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3 節  推移の図と画面の選び方（#957。scripts/ops-report-images-selftest.mjs）
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 図を組む関数と画面の選び方を、偽の材料・偽の下書きで試す（PNG にはしない。CI に日本語のフォントが無い）。
+# 図に描いた文字は、下書きと同じ検査（scripts/check-ops-report.sh）にも通す。
+if node "$HERE/ops-report-images-selftest.mjs" "$TMP/images-selftest" > "$TMP/images-selftest.log" 2>&1; then
+  sed 's/^/  /' "$TMP/images-selftest.log"
+  ok "推移の図と画面の選び方の自己試験（scripts/ops-report-images-selftest.mjs）"
+else
+  ng "推移の図と画面の選び方の自己試験が落ちました"; sed 's/^/    /' "$TMP/images-selftest.log" >&2
+fi
+got="$(run_check "$TMP/images-selftest/trend-labels.md" "$TMP/images-selftest/material.json")"
+if [[ "$got" == "0 " ]]; then
+  ok "図に描いた文字（値・月・題名）は、下書きの検査を通る"
+else
+  ng "図に描いた文字が下書きの検査で落ちます（${got}）"; sed 's/^/    /' "$TMP/last-check.txt" >&2
+fi
+got="$(run_check "$TMP/images-selftest/trend-labels-tampered.md" "$TMP/images-selftest/material.json")"
+if [[ "$got" == "1 number" ]]; then
+  ok "材料に無い数を描いた図の文字は、下書きの検査で落ちる"
+else
+  ng "材料に無い数を描いた図の文字が、下書きの検査を通ります（${got}）"
 fi
 
 # 2-7 値を取る引数の値が無ければ、読み続けずに 2 で止まる。

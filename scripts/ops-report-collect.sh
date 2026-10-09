@@ -26,6 +26,12 @@
 #              CloudWatch の保持は 14 日なので、**月の前半は入らない**。実際に読めた範囲を注記する。
 #              build-time-report.sh は --remote を持たない（常に本番の CloudWatch を読む）。
 #              --local のときは回さない
+#   trend      月ごとの生成回数（**サービスが始まった月から対象の月まで**。推移の図の材料。#957）。
+#              scripts/usage-report.sh --from <TREND_FROM> --to <月末> --format json（**任意**。集められなければ
+#              unavailable に理由を残して null にし、続ける。図が作れないだけで下書きは届ける）の日ごとの行を、
+#              JST の暦月で足し上げる（日の境界は usage と同じ。**集計の綴りを別に持たない**）。
+#              始まりは、生成の台帳に行がある最初の月（それより前の 0 の月は入れない）。途中の 0 の月は入れる。
+#              最後の月の値は figures.month.generations と同じになる（同じ窓・同じ数え方）
 #   github     その月に閉じた issue（閉じ方を添える）と、マージした PR の番号と題名。
 #              **入れるのは番号と題名（と issue の閉じ方）だけ**（ラベル・本文・作った人は入れない）。kind は題名から導いた手がかり。
 #              **作った人では絞らない**（協力者の変更も、その月に入ったものとして数える）。
@@ -151,6 +157,38 @@ if ! jq -e '.forkRate | type == "object"' <<<"$KPI" >/dev/null 2>&1; then
   echo "$PREFIX kpi-report の出力の形が想定と違います。" >&2
   exit 2
 fi
+# ── trend（任意。月ごとの生成回数。#957） ─────────────────────────────────────
+# 推移の図にだけ使う。**集められなくても材料集めを止めない**（画像の段が落ちても下書きは届ける。#957 の
+# constraints）。unavailable に理由を残し、trend は null にする（画像の段は「推移が無い」で図を作らない）。
+#
+# 台帳の始まりより前から数える（TREND_FROM）。リポジトリの最初のコミットが 2026-08-11 なので、
+# それより前に generations の行は無い。0 の月は下で先頭から落とすので、早めに置いても図は変わらない。
+TREND_FROM="2026-08-01"
+TREND='null'
+echo "$PREFIX usage-report ${SCOPE} ${TREND_FROM}..${LAST_DATE}（月ごとの推移）" >&2
+if ! TREND_USAGE="$(bash "$HERE/usage-report.sh" "$SCOPE" --from "$TREND_FROM" --to "$LAST_DATE" \
+     --format json ${persist_args[@]+"${persist_args[@]}"})"; then
+  add_unavailable "trend" "usage-report.sh（${TREND_FROM} から ${LAST_DATE} まで）が失敗した（標準エラーはログにある）"
+elif ! TREND="$(jq -c --arg from "${TREND_FROM%-*}" --arg to "$MONTH" '
+  # 日ごとの行（day は JST の YYYY-MM-DD）を月で足す。
+  (reduce (.rows // [])[] as $r ({}; .[$r.day[0:7]] += $r.calls)) as $by
+  # from から to までの月を 1 つずつ並べる（途中の 0 の月も入れる）。
+  | def next: split("-") | map(tonumber) as [$y, $m]
+      | (if $m == 12 then [$y + 1, 1] else [$y, $m + 1] end) as [$ny, $nm]
+      | "\($ny)-\(if $nm < 10 then "0" else "" end)\($nm)";
+    [ $from | recurse(if . < $to then next else empty end) ]
+  | map({month: ., generations: ($by[.] // 0)})
+  # 台帳に行がある最初の月から（サービスが始まった月から）。1 件も無ければ対象の月だけ残す。
+  | (map(.generations > 0) | index(true)) as $first
+  | if $first == null then [last] else .[$first:] end
+  | {metric: "generations", unit: "回", boundary: "jst-midnight", months: .}
+' <<<"$TREND_USAGE")" || [[ "$(jq -r '.months | last | .month' <<<"$TREND" 2>/dev/null)" != "$MONTH" ]]; then
+  TREND='null'
+  add_unavailable "trend" "月ごとの推移をまとめられない（最後の月が ${MONTH} にならない、など）"
+else
+  add_note "trend.months は月ごとの生成回数（usage と同じ数え方）。サービスが始まった月から並べてあり、推移の図の材料にする。"
+fi
+
 add_note "kpi は期間で絞れないため、集めた時点の累計である（scripts/kpi-report.sh）。「今月の」と書かない。"
 
 # ── buildTime（任意） ────────────────────────────────────────────────────────
@@ -228,6 +266,7 @@ jq -n \
   --argjson kpi "$KPI" \
   --argjson build "$BUILD" \
   --argjson github "$GITHUB" \
+  --argjson trend "$TREND" \
   --argjson unavailable "$UNAVAILABLE" \
   --argjson notes "$NOTES" '
   def r1: if . == null then null else (. * 10 | round) / 10 end;
@@ -279,6 +318,7 @@ jq -n \
     kpi: $kpi,
     buildTime: $build,
     github: $github,
+    trend: $trend,
     unavailable: $unavailable,
     notes: $notes
   }'

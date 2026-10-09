@@ -134,7 +134,9 @@ if [ -n "$copy" ] && [ -n "$month" ]; then
     host_copy="${dest}/draft.md"
     copy_label="$host_copy"
     docker cp "${cid}:$(dirname "$copy")/result.txt" "${dest}/result.txt" >> "$LOG" 2>&1
-    # 推敲の採点と「人が足すとよい箇所」（#956）。推敲できなかった月には無いので、写せなくても止めない。
+    # 推敲の採点と「人が足すとよい箇所」（#956）。推敲できなかった回には無いので、写せなくても止めない。
+    # 前の回の写しは先に消す（残すと、推敲できなかった回の下書きに前の回の採点が組になって残る）。
+    rm -f "${dest}/refine-review.json"
     docker cp "${cid}:$(dirname "$copy")/refine-review.json" "${dest}/refine-review.json" >> "$LOG" 2>&1 || true
     log "控えを写しました: ${host_copy}"
   else

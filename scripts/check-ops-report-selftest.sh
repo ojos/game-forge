@@ -253,6 +253,7 @@ if [ "$mode" = refine ]; then
     noreview) { cat draft.md; echo "推敲の印です。"; } > revised.md ;;
     badnum)  { cat draft.md; echo "- 今月の利用者は 87 人でした。"; } > revised.md; printf '%s\n' "$review" > review.json ;;
     heading) sed 's/^## お金$/## 費用/' draft.md > revised.md; printf '%s\n' "$review" > review.json ;;
+    fillin)  sed 's/【人が埋める：今月の投げ銭の額】/【人が埋める：投げ銭】/' draft.md > revised.md; printf '%s\n' "$review" > review.json ;;
     nodone)  { cat draft.md; echo "推敲の印です。"; } > revised.md
              jq -n '{type: "result", is_error: false, result: "途中で止まりました。"}'; exit 0 ;;
     fail)    jq -n '{type: "result", is_error: true, result: "推敲に失敗しました"}'; exit 1 ;;
@@ -572,8 +573,9 @@ else
   ng "uv が無いときの結果が期待と違います（rc=${rc} refine=$(result_of REFINE)）"
 fi
 
-# 2-10c 見出しが変わった・終わりまで進まなかった → 推敲前の下書きで続ける。
-for kind in heading nodone; do
+# 2-10c 見出しが変わった・人が埋める欄の文言が変わった（数は同じ）・終わりまで進まなかった
+#       → 推敲前の下書きで続ける。
+for kind in heading fillin nodone; do
   FAKE_REFINE="$kind" run_draft "$TMP/out-refine-$kind" "$CLEAN" ok --no-docs; rc=$?
   if [[ $rc -eq 0 && "$(result_of REFINE)" == "failed" ]] && cmp -s "$CLEAN" "$TMP/out-refine-$kind/2026-09/draft.md"; then
     ok "推敲の結果が使えない（${kind}）なら、推敲前の下書きで続ける"

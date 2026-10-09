@@ -476,13 +476,15 @@ amd64 のイメージでも同じ値）。**だからといって片方をもう
 ネットワークが要ります。** `wasm_exec.js` と `go_version` は、**切り替え後の**
 実効ツールチェインから引きます（外で引くと 3.5 の版ずれをこの検査自身が踏みます）。
 
-```bash
-# この devcontainer で実測した入手手順
-npm i playwright-core && npx playwright install chromium-headless-shell
-sudo npx playwright install-deps chromium-headless-shell   # システムパッケージ
+**ブラウザは devcontainer の作り直しで入ります**（#960）。postCreateCommand の
+[`scripts/install-browser.sh`](../scripts/install-browser.sh) が、playwright-core の版（公開から 2 週間以上たったもの）と
+tarball のチェックサムを固定して headless shell を `~/.cache/ms-playwright/` へ入れ、`playwright install-deps` が挙げる
+システムのパッケージ（日本語のフォントを含む）を足りないときだけ sudo で入れます。検査は
+`scripts/lib/find-browser.sh` で playwright のキャッシュも探すので、`GF_BROWSER_BIN` は要りません。
 
-GF_BROWSER_BIN="$(node -e "console.log(require('playwright-core').chromium.executablePath())")" \
-  bash scripts/check-sandbox-browser.sh
+```bash
+bash scripts/install-browser.sh --check   # 入っているか（post-rebuild-check にも同じ行が出る）
+bash scripts/check-sandbox-browser.sh     # 別のブラウザを使うときだけ GF_BROWSER_BIN=/path/to/chrome を付ける
 ```
 
 **`scripts/verify.sh` には含めていません。** ローカル層の契約は「ネットワークも外部認証も
@@ -536,8 +538,8 @@ bash scripts/shoot-pages.sh
 の中で `scripts/check-app-css.sh` が機械照合する——**ブラウザが要らない側だけを単一入口へ
 載せてある。**
 
-**ブラウザの実行ファイルが要る。** 入手手順は `scripts/check-page-width.sh` の冒頭に
-書いてある（`npx playwright install chromium-headless-shell`）。見つからなければ
+**ブラウザの実行ファイルが要る。** devcontainer の作り直しで `scripts/install-browser.sh` が入れる
+（#960。上の `check-sandbox-browser.sh` の節）。見つからなければ
 **赤で落ちる**——「道具が無いので飛ばした」を成功にしない。
 
 ## 5. 既知の制約と注意

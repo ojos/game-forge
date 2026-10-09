@@ -91,18 +91,21 @@
   下書きにその節の見出し（先頭の番号は問わない）が無いときは、その画像の印は入れずに理由に出します。
 - 画像を飛ばすときは `--no-images` を付けます。
 
-#### 画像の段の前提（devcontainer に一度入れる）
+#### 画像の段の前提（devcontainer の作り直しで入る）
 
 Chromium の実行ファイルと日本語のフォントが要ります。**無いと `shot.png` は撮れず、`trend.png` も豆腐（□）になるので作りません**
-（`scripts/ops-report-trend.mjs` が描く前に確かめます）。どちらも devcontainer を作り直すと消えるので、作り直したら入れ直します。
+（`scripts/ops-report-trend.mjs` が描く前に確かめます）。どちらも devcontainer の作り直しで
+[`scripts/install-browser.sh`](../scripts/install-browser.sh) が入れます（#960。postCreateCommand。playwright-core の版を固定した
+headless shell と、`playwright install-deps` が挙げるシステムのパッケージ。日本語のフォントはその中にあります）。
+手で入れる手順はありません。入っているかは次で確かめます（`bash scripts/post-rebuild-check.sh` にも同じ行が出ます）。
 
 ```bash
-cd "$(mktemp -d "${TMPDIR:-/tmp}/playwright.XXXXXX")" && npm init -y >/dev/null && npm i playwright-core
-npx playwright install chromium-headless-shell
-sudo env "PATH=$PATH" npx playwright install-deps chromium-headless-shell   # システムのパッケージ（日本語のフォントを含む）
+bash scripts/install-browser.sh --check   # headless shell・システムのパッケージ・日本語のフォントの OK が 3 行出れば足りている
+bash scripts/install-browser.sh           # 足りなければ入れる（入っていれば何もしない）
 ```
 
-`scripts/lib/dev-fixture.sh` は、playwright のキャッシュ（`~/.cache/ms-playwright/`）にある headless shell を自分で見つけます。
+`scripts/lib/dev-fixture.sh` は、playwright のキャッシュ（`~/.cache/ms-playwright/`）にある headless shell を自分で見つけます
+（見つけ方は `scripts/lib/find-browser.sh`）。
 
 ### 結果と終了コード（3）
 

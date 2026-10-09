@@ -22,7 +22,7 @@
 //
 // PNG にする sharp（librsvg）は、システムのフォントで文字を描く。日本語のフォントが無い devcontainer では
 // 文字が豆腐（□）になり、それでも PNG はできてしまう。**描く前に、日本語の 1 文字と私用領域の 1 文字を
-// 描き比べ、同じ絵になったら（どちらも豆腐なら）落ちる。** 入れ方は docs/ops-report.md「画像の段の前提」。
+// 描き比べ、同じ絵になったら（どちらも豆腐なら）落ちる。** 入れ方は docs/ops-report.md「画像の段の前提」（作り直しで scripts/install-browser.sh が入れる）。
 //
 // 自己試験は scripts/ops-report-images-selftest.mjs（scripts/check-ops-report-selftest.sh から回る）。
 // PNG にする部分は試さない（CI にフォントが無い）。SVG を組む部分は純粋な関数で、そこを試す。
@@ -371,7 +371,7 @@ async function main(argv) {
   /** @type {typeof import('sharp')} */
   const sharp = require('sharp');
   if (!(await canDrawJapanese(sharp))) {
-    throw new Error('日本語のフォントがありません（文字が豆腐になります）。docs/ops-report.md「画像の段の前提」で入れてください');
+    throw new Error('日本語のフォントがありません（文字が豆腐になります）。bash scripts/install-browser.sh で入れてください（docs/ops-report.md「画像の段の前提」）');
   }
 
   mkdirSync(outDir, { recursive: true });

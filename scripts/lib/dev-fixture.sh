@@ -99,6 +99,10 @@
 # シェルの関数として読み込む前提なので `set -euo pipefail` はここで宣言しない
 # （呼ぶ側の設定を上書きしない）。
 
+# ブラウザの見つけ方は scripts/lib/find-browser.sh が持つ（#960。check-sandbox-browser.sh と同じものを使う）。
+# shellcheck source=scripts/lib/find-browser.sh
+. "$(dirname "${BASH_SOURCE[0]}")/find-browser.sh"
+
 : "${GF_FIXTURE_LABEL:=[dev-fixture]}"
 : "${GF_FIXTURE_PORT:=8793}"
 
@@ -120,27 +124,15 @@ dev_fixture_up() {
   node -e 'if (typeof WebSocket !== "function") { process.exit(1) }' 2>/dev/null ||
     fail "この Node には WebSocket が組み込まれていません（Node 22 以降が要ります）: $(node --version)"
 
+  # 既知の場所（システムの Chromium と playwright のキャッシュ）は scripts/lib/find-browser.sh が見る（#960）。
+  # **playwright のキャッシュも見る**——scripts/install-browser.sh（postCreateCommand）がそこへ置くため、
+  # 作り直した後に GF_BROWSER_BIN を書く羽目にならない。
   BROWSER_BIN="${GF_BROWSER_BIN:-}"
   if [[ -z "$BROWSER_BIN" ]]; then
-    # 既知の場所を順に見る。**playwright のキャッシュも見る**——冒頭の入手手順が
-    # そこへ置くため、手順どおりに入れた人が毎回 GF_BROWSER_BIN を書く羽目にならない。
-    while IFS= read -r candidate; do
-      if [[ -n "$candidate" && -x "$candidate" ]]; then
-        BROWSER_BIN="$candidate"
-        break
-      fi
-    done < <(
-      printf '%s\n' \
-        /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome \
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-      # 新しい playwright（1.5x）は headless shell を chrome-headless-shell-linux64/ か -linux-arm64/ に置く（#957 で実測）。
-      ls -1d "${HOME}"/.cache/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell \
-        "${HOME}"/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux*/chrome-headless-shell \
-        "${HOME}"/.cache/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | sort -r
-    )
+    BROWSER_BIN="$(find_browser_bin || true)"
   fi
   [[ -n "$BROWSER_BIN" && -x "$BROWSER_BIN" ]] ||
-    fail "Chromium の実行ファイルが見つかりません。GF_BROWSER_BIN で渡してください（入手手順はこのファイルの冒頭）。"
+    fail "Chromium の実行ファイルが見つかりません。bash scripts/install-browser.sh で入れるか、GF_BROWSER_BIN で渡してください。"
   note "browser: $BROWSER_BIN"
 
   # ホスト名は wrangler.toml の宣言から読む。**ここへ書き写さない**——設定を変えたときに

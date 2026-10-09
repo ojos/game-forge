@@ -162,16 +162,18 @@
 # 使い方:
 #   GF_BROWSER_BIN=/path/to/headless_shell bash scripts/check-sandbox-browser.sh
 #
-# Chromium の入手（この devcontainer で実測した手順）:
-#   npm i playwright-core && npx playwright install chromium-headless-shell
-#   sudo npx playwright install-deps chromium-headless-shell
-#   GF_BROWSER_BIN="$(node -e "console.log(require('playwright-core').chromium.executablePath())")"
+# Chromium の入手: devcontainer では postCreateCommand の `bash scripts/install-browser.sh` が入れる（#960。
+# 版を固定した headless shell と、日本語のフォントを含むシステムのパッケージ）。作り直しの後も手で入れる必要はない。
+# 入っているかは `bash scripts/install-browser.sh --check`。見つけ方は scripts/lib/find-browser.sh
+# （playwright のキャッシュも見るので、GF_BROWSER_BIN は要らない）。
 #
 # 終了コード: 0 = 実ブラウザでプレイ経路が通った / 非0 = 通らなかった・検査不能
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$(dirname "$HERE")"
+# shellcheck source=scripts/lib/find-browser.sh
+. scripts/lib/find-browser.sh
 
 PORT="${GF_BROWSER_CHECK_PORT:-8791}"
 TIMEOUT_MS="${GF_BROWSER_CHECK_TIMEOUT_MS:-45000}"
@@ -210,19 +212,13 @@ LAST_LAYER="$(sed -nE 's/^#   層 ([0-9]+)  .*/\1/p' "${BASH_SOURCE[0]}" | tail 
 
 BROWSER_BIN=""
 if [[ "$SKIP_BROWSER" != "1" ]]; then
+  # 既知の場所（システムの Chromium と playwright のキャッシュ）は scripts/lib/find-browser.sh が見る（#960）。
   BROWSER_BIN="${GF_BROWSER_BIN:-}"
   if [[ -z "$BROWSER_BIN" ]]; then
-    for candidate in \
-      /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome \
-      /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome; do
-      if [[ -x "$candidate" ]]; then
-        BROWSER_BIN="$candidate"
-        break
-      fi
-    done
+    BROWSER_BIN="$(find_browser_bin || true)"
   fi
   [[ -n "$BROWSER_BIN" && -x "$BROWSER_BIN" ]] ||
-    fail "Chromium の実行ファイルが見つかりません。GF_BROWSER_BIN で渡すか、層 0 だけなら GF_SKIP_BROWSER=1 を付けてください（入手手順はこのファイルの冒頭）。"
+    fail "Chromium の実行ファイルが見つかりません。bash scripts/install-browser.sh で入れるか、GF_BROWSER_BIN で渡すか、層 0 だけなら GF_SKIP_BROWSER=1 を付けてください。"
   note "browser: $BROWSER_BIN"
 else
   note "GF_SKIP_BROWSER=1: 層 0（HTTP）だけを見ます"

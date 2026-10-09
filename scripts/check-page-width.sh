@@ -41,9 +41,10 @@
 #   - Node.js 22 以降（`WebSocket` が組み込みであること。CDP を素で話す）
 #   - Chromium 系の実行ファイル。`GF_BROWSER_BIN` で渡すか、既知の場所に置く
 #
-# Chromium の入手（この devcontainer で実測した手順）:
-#   npm i playwright-core && npx playwright install chromium-headless-shell
-#   sudo npx playwright install-deps chromium-headless-shell
+# Chromium の入手: devcontainer では postCreateCommand の `bash scripts/install-browser.sh` が入れる（#960。
+# 版を固定した headless shell と、日本語のフォントを含むシステムのパッケージ）。作り直しの後も手で入れる必要はない。
+# 入っているかは `bash scripts/install-browser.sh --check`。見つけ方は scripts/lib/find-browser.sh
+# （playwright のキャッシュも見るので、GF_BROWSER_BIN は要らない）。
 #
 # ══════════════════════════════════════════════════════════════════════════════
 # なぜ 3 つの幅で回すのか（#371）

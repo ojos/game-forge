@@ -43,3 +43,9 @@ command -v codex >/dev/null 2>&1 && echo "[check] codex OK" || echo "[check] cod
 uv_want="$(sed -n 's/^readonly UV_VERSION="\(.*\)"$/\1/p' "$(dirname "${BASH_SOURCE[0]}")/install-uv.sh" 2>/dev/null || true)"
 uv_got="$(uv --version 2>/dev/null | awk '{ print $2 }' || true)"
 [[ -n "$uv_got" && "$uv_got" == "$uv_want" ]] && echo "[check] uv OK ($uv_got)" || echo "[check] uv missing or not ${uv_want:-the pinned version} (got: ${uv_got:-none})"
+# Chromium（headless shell）と日本語のフォントは scripts/install-browser.sh が入れる（#960。運営報告の画像の段と
+# 実ブラウザの検査が使う）。判定はそのスクリプトの --check に任せ、固定した revision の headless shell が動くかまで見る。
+browser_state="$(bash "$(dirname "${BASH_SOURCE[0]}")/install-browser.sh" --check 2>&1 || true)"
+while IFS= read -r line; do
+  if [[ -n "$line" ]]; then echo "[check] ${line#\[install-browser\] }"; fi
+done <<<"$browser_state"

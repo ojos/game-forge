@@ -30,7 +30,7 @@
   "remoteEnv": {
     "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
   },
-  "postCreateCommand": "bash scripts/fix-mount-owner.sh && bash scripts/install-ai-tools.sh && bash scripts/install-cloudflared.sh && bash scripts/install-uv.sh",
+  "postCreateCommand": "bash scripts/fix-mount-owner.sh && bash scripts/install-ai-tools.sh && bash scripts/install-cloudflared.sh && bash scripts/install-uv.sh && bash scripts/install-browser.sh",
   "postAttachCommand": "bash scripts/on-attach.sh",
   "customizations": {
     "vscode": {

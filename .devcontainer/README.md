@@ -68,6 +68,17 @@ uv を `~/.local/bin` へ入れます。月次の運営報告の推敲の段（`
 ないので、作り直すたびに入れ直します。入ったかは `scripts/post-rebuild-check.sh` の `[check] uv OK (<版>)` で確かめます。
 DCB の雛形には無い、このプロジェクト固有の段です（`.github/project-ai-rules.md`「雛形からの逸脱」）。
 
+### `postCreateCommand` の `install-browser.sh`（#960）
+
+Chromium（headless shell）を `~/.cache/ms-playwright/` へ入れ、その依存のシステムのパッケージ（日本語のフォントを含む）を
+足りないときだけ sudo で入れます。月次の運営報告の画像の段（#957）と、実ブラウザの検査（`scripts/check-page-width.sh`・
+`scripts/check-sandbox-browser.sh`・`scripts/shoot-pages.sh`）が使うためです。playwright-core の版（公開から 2 週間以上たったもの）と
+npm の tarball のチェックサムを `scripts/install-browser.sh` に固定し、合わなければ使いません。sudo で入れるのは
+`playwright install-deps` が挙げるパッケージだけです。`~/.cache` も apt で入れたものも volume ではないので、作り直すたびに
+入れ直します（取得は headless shell が約 115 MB、apt が約 85 MB。空の noble で aarch64 が 33 秒、x86_64 がエミュレーションで 45 秒）。
+入ったかは `scripts/post-rebuild-check.sh` の `[check] headless shell OK (…)` と `[check] japanese font OK (…)` で確かめます。
+DCB の雛形には無い、このプロジェクト固有の段です（`.github/project-ai-rules.md`「雛形からの逸脱」）。
+
 ## `compose.yaml` の `init: true`（#939）
 
 DCB の雛形に合わせて、PID 1 を Docker の組み込みの init（docker-init）にし、孤児になったプロセスを回収させます

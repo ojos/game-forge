@@ -60,6 +60,14 @@ codex の `--sandbox read-only`（同梱の bwrap）が namespace を作れる�
 dev01 へ ssh で入る入口（cloudflared）を用意します。`DEVCONTAINER_HOST=dev01`（`.devcontainer/.env`、追跡外）の
 ときは、dev01 自身への入口（自己参照）を書かずに抜けます。DCB の雛形には無い、このプロジェクト固有の段です。
 
+### `postCreateCommand` の `install-uv.sh`（#956）
+
+uv を `~/.local/bin` へ入れます。月次の運営報告の推敲の段（`scripts/ops-report-draft.sh`）が、
+`.claude/skills/natural-japanese/` の lint を `uv run` で動かすためです。版（公開から 2 週間以上たったもの）と
+アーキテクチャごとのチェックサムを `scripts/install-uv.sh` に固定し、合わなければ置きません。`~/.local` は volume では
+ないので、作り直すたびに入れ直します。入ったかは `scripts/post-rebuild-check.sh` の `[check] uv OK (<版>)` で確かめます。
+DCB の雛形には無い、このプロジェクト固有の段です（`.github/project-ai-rules.md`「雛形からの逸脱」）。
+
 ## `compose.yaml` の `init: true`（#939）
 
 DCB の雛形に合わせて、PID 1 を Docker の組み込みの init（docker-init）にし、孤児になったプロセスを回収させます

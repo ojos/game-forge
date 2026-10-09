@@ -134,6 +134,8 @@ if [ -n "$copy" ] && [ -n "$month" ]; then
     host_copy="${dest}/draft.md"
     copy_label="$host_copy"
     docker cp "${cid}:$(dirname "$copy")/result.txt" "${dest}/result.txt" >> "$LOG" 2>&1
+    # 推敲の採点と「人が足すとよい箇所」（#956）。推敲できなかった月には無いので、写せなくても止めない。
+    docker cp "${cid}:$(dirname "$copy")/refine-review.json" "${dest}/refine-review.json" >> "$LOG" 2>&1 || true
     log "控えを写しました: ${host_copy}"
   else
     log "控えを Mac へ写せませんでした（コンテナの中には残っています: ${copy}）。"
@@ -153,11 +155,9 @@ elif [ "$status" = "ok" ] && [ -n "$url" ] && [ -z "$host_copy" ]; then
   # Docs には置けたが、Mac に控えが無い。成功として終わらせない。
   rc=4
 elif [ "$status" = "ok" ] && [ -n "$url" ]; then
-  # 置き直したとき（--force）は、前の doc を消すよう理由に書いてあるので、それも載せる。
-  case "$reason" in
-    *前の\ doc*) notify "運営報告 ${month} の下書き" "${url} ${reason}" ;;
-    *)          notify "運営報告 ${month} の下書き" "${url}" ;;
-  esac
+  # 理由も載せる。推敲の結果（採点の要約・推敲前で続けたこと。#956）と、置き直したとき（--force）に
+  # 前の doc を消すよう知らせる文が、理由に入っている。
+  notify "運営報告 ${month} の下書き" "${url} ${reason}"
 elif [ "$status" = "ok" ]; then
   notify "運営報告 ${month} の下書き" "${reason} 控え: ${copy_label:-なし}"
 else

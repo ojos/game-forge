@@ -39,3 +39,7 @@ command -v claude >/dev/null 2>&1 && echo "[check] claude OK" || echo "[check] c
 command -v gemini >/dev/null 2>&1 && echo "[check] gemini OK" || echo "[check] gemini missing"
 command -v agy >/dev/null 2>&1 && echo "[check] agy OK" || echo "[check] agy missing"
 command -v codex >/dev/null 2>&1 && echo "[check] codex OK" || echo "[check] codex missing"
+# uv は scripts/install-uv.sh が版を固定して入れる（#956。運営報告の推敲の段が使う）。固定した版かまで見る。
+uv_want="$(sed -n 's/^readonly UV_VERSION="\(.*\)"$/\1/p' "$(dirname "${BASH_SOURCE[0]}")/install-uv.sh" 2>/dev/null || true)"
+uv_got="$(uv --version 2>/dev/null | awk '{ print $2 }' || true)"
+[[ -n "$uv_got" && "$uv_got" == "$uv_want" ]] && echo "[check] uv OK ($uv_got)" || echo "[check] uv missing or not ${uv_want:-the pinned version} (got: ${uv_got:-none})"

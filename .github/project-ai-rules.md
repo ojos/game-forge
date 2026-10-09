@@ -357,6 +357,8 @@ DCB が所有するファイルは雛形を正とし、game-forge 側の差分�
 | `.devcontainer/devcontainer.json` | `"updateRemoteUserUID": true` | (1) | 既定で on ですが、依存を明示します。false にすると dev01（uid=1001）でワークスペースへ書き込めません（#879） |
 | `.devcontainer/devcontainer.json` | `"securityOpt": ["seccomp=unconfined"]` | (1) | codex の bwrap が namespace を作るために要ります。go の feature の宣言に頼ると、feature を外した日に黙って動かなくなります（#929 / #933）。雛形は compose.yaml に置きますが、そこだと上の行の退行になります |
 | `.devcontainer/devcontainer.json` | `postCreateCommand` の `bash scripts/install-cloudflared.sh` | (2) | dev01 へ ssh で入る入口（cloudflared）を用意します（#802） |
+| `.devcontainer/devcontainer.json` | `postCreateCommand` の `bash scripts/install-uv.sh` | (2) | 月次の運営報告の推敲の段（`scripts/ops-report-draft.sh`）が、`.claude/skills/natural-japanese/` の lint を `uv run` で動かします。版（公開から 2 週間以上たったもの）とチェックサムを固定して入れます（#956） |
+| `scripts/post-rebuild-check.sh` | 末尾の uv の確認（`scripts/install-uv.sh` の固定した版を返すか） | (2) | 作り直しの後に、上の行の uv が固定した版で入ったことを確かめます（#956） |
 
 **プロジェクトが所有するファイル**（DCB が「プロジェクトが所有・編集する」と定めるもの）は、雛形と違っていて当然なので、この表には並べません。中身を残して `--accept` しています: `scripts/acceptance.sh`・`scripts/acceptance-remote.sh`・`scripts/check-no-secrets.sh`・`.github/project-ai-rules.md`（このファイル）。
 

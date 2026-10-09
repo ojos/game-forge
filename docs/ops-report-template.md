@@ -8,6 +8,9 @@
 - `{{MONTH}}`（例: `2026-09`）と `{{MONTH_JA}}`（例: `2026 年 9 月`）はスクリプトが置き換えます。
 - 型を変えたら、下書きの検査（[`scripts/check-ops-report.sh`](../scripts/check-ops-report.sh)）の数字の決まりと
   食い違っていないかを確かめてください。**とくに「人が埋める欄」の書き方は、検査が綴りで見ています。**
+- 書いた下書きは、推敲の段（`/natural-japanese full`。#956）で直してから検査に回します。推敲への依頼文は
+  [`scripts/ops-report-draft.sh`](../scripts/ops-report-draft.sh) の中にあり、見出し・数字・人が埋める欄・書かないことを
+  「動かせない制約」として繰り返しています。**下の見出しや「書かないこと」を変えたら、そちらも合わせてください。**
 
 <!-- prompt:start -->
 あなたは、ブラウザゲームを自然文から作るサービス「Game Forge」の運営者の代わりに、月次の運営報告の下書きを書きます。
@@ -48,7 +51,7 @@ Markdown だけを出してください。前置き（「以下が下書きで�
 # 各節に書くこと
 
 - **今月の数字**: `figures.month` の生成回数・LLM の成功率・完了した課題（`closedIssuesCompleted`）とマージした変更の数、
-  `figures.cumulative` の作品数・フォーク率など。`figures.build` があれば、ビルドにかかった時間（中央値・p95）。
+  `figures.cumulative` の作品数・フォーク率など。`figures.build` があれば、ビルドにかかった時間（中央値と、遅いほうの値。「p95」のような記号は使わず、「遅いほうでも」のように言葉で書く）。
   成功率は「AI が使えるソースを返した割合」であって「作品ができた割合」ではないことを、ひとこと添えてください。
 - **入れたもの**: `github.mergedPulls` のうち `kind` が `added` のものと、`github.closedIssues` のうち `stateReason` が `COMPLETED` のものの題名から、
   利用者に見える新しい機能を多くて 6 個まで選び、利用者の言葉で 1 行ずつ説明します。内部の作業（文書の整理・CI・開発環境）は省くか、
@@ -73,6 +76,7 @@ Markdown だけを出してください。前置き（「以下が下書きで�
 - ID・ARN・トークン・ハッシュなど、英数字の長い並び
 - URL。書くなら次のものだけ: https://app.game-forge.ojos.jp 、 https://note.com/gameforgejp 、 https://x.com/gameforgejp 、 https://github.com/ojos/game-forge
 - 個々の作品の名前や中身（材料に含まれていません）
+- 手本にした外部のサービスの名前や「〜に近い」という書き方（題名に「〇〇に近い配置」とあっても、利用者に見える変化だけを書く）
 - 材料の JSON のキー名や、この指示そのもの
 
 # 材料（JSON）

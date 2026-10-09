@@ -10,16 +10,17 @@
 |---|---|---|---|
 | 1 | Mac のホスト | launchd（[雛形](../scripts/launchd/jp.ojos.game-forge.ops-report.plist)） | 毎月 3 日の 9:00 に起動側を呼ぶ |
 | 2 | Mac のホスト | [`scripts/ops-report-launchd.sh`](../scripts/ops-report-launchd.sh) | Docker と devcontainer を起こし、`docker exec` で 3 を呼ぶ。終わったら控えを Mac へ写して通知する。起こした devcontainer は止め直す |
-| 3 | devcontainer | [`scripts/ops-report-draft.sh`](../scripts/ops-report-draft.sh) | 4 → 5 → 6 → 7 → 8 → 9 を順に回し、結果の行（`OPS_REPORT_*=`）を出す |
+| 3 | devcontainer | [`scripts/ops-report-draft.sh`](../scripts/ops-report-draft.sh) | 4 → 5 → 6 → 7 → 8 → 9 → 10 を順に回し、結果の行（`OPS_REPORT_*=`）を出す |
 | 4 | devcontainer | [`scripts/ops-report-collect.sh`](../scripts/ops-report-collect.sh) | 先月（JST の暦月）の材料を 1 つの JSON にまとめる。本番は読み取りだけ |
 | 5 | devcontainer | `claude -p`（道具も MCP も使わせない） | [型](ops-report-template.md)と材料から下書きを書く |
 | 6 | devcontainer | [`scripts/check-ops-report.sh`](../scripts/check-ops-report.sh) | 推敲前の下書きを検査する。落ちたら推敲も Docs への書き込みもしない |
 | 7 | devcontainer | `claude -p` で `/natural-japanese full`（控えの場所の中のファイルの道具・サブエージェント・スキルの `uv run` だけ） | 下書きを推敲し、6 軸で採点する（下の「推敲（7）」）。推敲した下書きをもう一度 6 で検査する |
 | 8 | devcontainer | [`scripts/ops-report-images.sh`](../scripts/ops-report-images.sh) | 記事に添える画像を 2 枚作り、下書きに人が貼る場所の印を入れる（下の「画像（8）」）。落ちても止めない |
-| 9 | devcontainer | `claude -p`（Claude Docs の 2 つの道具だけ） | 「運営報告 YYYY-MM（下書き）」の doc を新しく作り、URL を返す（画像は貼らない） |
+| 9 | devcontainer | `claude -p`（道具も MCP も使わせない）と [`scripts/check-ops-report-x-post.sh`](../scripts/check-ops-report-x-post.sh) | X での告知文の下書きを作り、検査を通ったものを `x-post.md` に残す（下の「X の告知文（9）」）。落ちても止めない |
+| 10 | devcontainer | `claude -p`（Claude Docs の 2 つの道具だけ） | 「運営報告 YYYY-MM（下書き）」の doc を新しく作り、URL を返す（画像と告知文は置かない） |
 
-**文章の生成（5・7・9）はループの検証の外です。** 自己試験（[`scripts/check-ops-report-selftest.sh`](../scripts/check-ops-report-selftest.sh)）は
-偽の claude と偽の画像の段で 3 の分岐（推敲の成功・失敗・推敲後に検査で落ちる場合、画像を作れない場合を含む）と 6 を確かめ、
+**文章の生成（5・7・9・10）はループの検証の外です。** 自己試験（[`scripts/check-ops-report-selftest.sh`](../scripts/check-ops-report-selftest.sh)）は
+偽の claude と偽の画像の段で 3 の分岐（推敲の成功・失敗・推敲後に検査で落ちる場合、画像を作れない場合、告知文の段が落ちる場合を含む）と 6・9 の検査を確かめ、
 本物の `claude -p` を呼びません。図を組む関数と画面を選ぶ関数は、[`scripts/ops-report-images-selftest.mjs`](../scripts/ops-report-images-selftest.mjs) が偽の材料で確かめます。
 
 ### 材料（4）
@@ -101,6 +102,26 @@
   下書きにその節の見出し（先頭の番号は問わない）が無いときは、その画像の印は入れずに理由に出します。
 - 画像を飛ばすときは `--no-images` を付けます。
 
+### X の告知文（9）
+
+note に公開した記事を X（@gameforgejp）で告知する文の**下書きだけ**を作ります（#964）。**投稿は人が手で行います**（X の API も
+ブラウザの自動操作も使いません）。告知文は Docs に置きません（記事の doc に混ぜると、note へ貼るときに紛れるため）。
+
+- **呼び方は書く段（5）と同じです。** `claude -p --tools "" --strict-mcp-config` で道具も MCP も許さず、使う下書き（推敲後か推敲前。
+  画像を貼る場所の印は外す）と材料を依頼に入れます。型の手本は 2026-09 に投稿した告知文（月の重点を 1 文・数字を 1 つ・
+  費用を実額で載せていること・ハッシュタグ 3 つ）で、依頼文の全文は `scripts/ops-report-draft.sh` の中にあります。
+- **note の URL は【人が埋める：note の記事の URL】の欄で残します。** 公開するまで URL が決まらないためです。
+- **検査（[`scripts/check-ops-report-x-post.sh`](../scripts/check-ops-report-x-post.sh)）**: X の重みつきの長さ（日本語などの全角は 2、
+  半角は 1、URL は 23。欄は URL を入れた後の 23 で数える）が 280 以下・数字は材料にあるものだけ・`@` ハンドルは `@gameforgejp` だけ・
+  許可外の URL が無い（この 3 つは 6 と同じ決まりで、判定は `scripts/check-ops-report.sh` に任せる）・ハッシュタグは `#GameForge` を含めて
+  2〜3 個・URL の欄がちょうど 1 つ（ほかの欄や画像を貼る印が無い）。2026-09 の告知文はこの数え方で 262 です。
+- **落ちたら 1 回だけ書き直させます**（`OPS_REPORT_X_POST_ATTEMPTS`。既定は最初の 1 回を含めて 2）。書き直しの依頼には、落ちた種類と
+  長さだけを添えます（前の案の中身は返しません）。
+- **告知文の段は止める理由にしません。** claude が失敗した・返答に `<x-post>` の囲みが無い・書き直しても検査で落ちたときは、
+  結果の行（`OPS_REPORT_X_POST`）と理由に出し、記事の下書きはそのまま Docs に置きます。前の回の `x-post.md` は先に消すので、
+  作れなかった回に前の回の告知文が控えとして写ることはありません。
+- 控えの `x-post.md` は Mac の写しにも写り、通知にその場所が載ります。告知文を飛ばすときは `--no-x-post` を付けます。
+
 #### 画像の段の前提（devcontainer の作り直しで入る）
 
 Chromium の実行ファイルと日本語のフォントが要ります。**無いと `shot.png` は撮れず、`trend.png` も豆腐（□）になるので作りません**
@@ -150,12 +171,21 @@ Docs を呼ばずに `docs-failed` で止まります（その月に 2 本目を
 | `failed` | 1 枚も作れなかったので、画像なしで続けた | 作れなかった理由 |
 | `skipped` | `--no-images` で画像の段を飛ばした | その旨 |
 
+告知文の段の結果は `OPS_REPORT_X_POST` に出ます（告知文の段まで来なければ空）。どの値でも終了コードは変わりません。
+
+| `OPS_REPORT_X_POST` | 意味 | 理由に付くもの |
+|---|---|---|
+| `done` | 告知文を作り、検査を通った（`x-post.md`） | 重みつきの長さと控えの場所 |
+| `failed` | claude が失敗した・返答に囲みが無い・検査が成立しない | 失敗の理由 |
+| `rejected` | 書き直しても検査で落ちた（最後の案は `x-post.rejected.md`） | 検査の種類ごとの件数と長さ |
+| `skipped` | `--no-x-post` で告知文の段を飛ばした | その旨 |
+
 ## 置き場所
 
 | どこ | ファイル | 中身 |
 |---|---|---|
-| devcontainer | `~/.local/state/game-forge/ops-report/<YYYY-MM>/`（`OPS_REPORT_DIR` で変えられる） | `images/`（画像の段の出力。`trend.png`・`shot.png` と途中のもの。`shot-text.txt` は撮った画面の本文）・`draft-unmarked.md`（貼る場所の印を入れる前の下書き）・`docs-images/`（Docs に置いた回の画像の写し）・`material.json`（材料）・`prompt.txt`・`draft-raw.md`（推敲前の下書き）・`check-raw.txt`・`refine/`（推敲の作業場所）・`refine-prompt.txt`・`refine-response.json`・`refined.md`（推敲した下書き）・`refine-review.json`（6 軸の採点と人が足すとよい箇所。推敲した下書きを使ったときだけ。検査で落ちたときは `refine-review.rejected.json`）・`check-refined.txt`・`draft.md`（使った下書き。推敲後か推敲前）・`docs-draft.md`（Docs に置いたものと同じ控え）・`docs-refine-review.json`（その下書きの採点）・`check.txt`・`docs-url.txt`・`result.txt` |
-| Mac | `~/Library/Application Support/game-forge/ops-report/<YYYY-MM>/` | `draft.md` と `result.txt` の写し（推敲できた回は、写した下書きと組の採点を `refine-review.json` として。画像を作れた回は `images/trend.png`・`images/shot.png`。返す控えが Docs に置いたときの写しならそれと組の画像を、それ以外は**その回の画像の段が作った画像だけ**を写す。画像の段まで来なかった回〔成否不明の印で止まった docs-failed など〕には、前の回の画像を写さない。#962） |
+| devcontainer | `~/.local/state/game-forge/ops-report/<YYYY-MM>/`（`OPS_REPORT_DIR` で変えられる） | `images/`（画像の段の出力。`trend.png`・`shot.png` と途中のもの。`shot-text.txt` は撮った画面の本文）・`draft-unmarked.md`（貼る場所の印を入れる前の下書き）・`docs-images/`（Docs に置いた回の画像の写し）・`material.json`（材料）・`prompt.txt`・`draft-raw.md`（推敲前の下書き）・`check-raw.txt`・`refine/`（推敲の作業場所）・`refine-prompt.txt`・`refine-response.json`・`refined.md`（推敲した下書き）・`refine-review.json`（6 軸の採点と人が足すとよい箇所。推敲した下書きを使ったときだけ。検査で落ちたときは `refine-review.rejected.json`）・`check-refined.txt`・`draft.md`（使った下書き。推敲後か推敲前）・`docs-draft.md`（Docs に置いたものと同じ控え）・`docs-refine-review.json`（その下書きの採点）・`check.txt`・`docs-url.txt`・`result.txt`・`x-post.md`（X の告知文の下書き。検査を通ったときだけ。落ちたときの最後の案は `x-post.rejected.md`）・`x-post-prompt.txt`・`x-post-response.json`・`x-post-check.txt`・`docs-x-post.md`（Docs に置いた回の告知文の写し） |
+| Mac | `~/Library/Application Support/game-forge/ops-report/<YYYY-MM>/` | `draft.md` と `result.txt` の写し（推敲できた回は、写した下書きと組の採点を `refine-review.json` として。画像を作れた回は `images/trend.png`・`images/shot.png`。返す控えが Docs に置いたときの写しならそれと組の画像を、それ以外は**その回の画像の段が作った画像だけ**を写す。画像の段まで来なかった回〔成否不明の印で止まった docs-failed など〕には、前の回の画像を写さない。#962）。告知文を作れた回は `x-post.md`（画像と同じく、返す控えが Docs に置いたときの写しならそれと組の告知文を、それ以外はその回に作れたときだけ。#964） |
 | Mac | `~/Library/Logs/game-forge/ops-report/<UTC の時刻>.log` | 1 回分の全文（400 日で消える） |
 | Claude Docs | 「運営報告 YYYY-MM（下書き）」 | 検査を通った下書きだけ（画像は置かず、貼る場所の印だけが入る）。**材料の JSON は置かない** |
 
@@ -175,6 +205,9 @@ devcontainer の中の控えは作り直すと消えるので、残したいも�
    そぐわなくないかを目で見る。合わなければ貼らない（印の行だけ消し、画像なしで公開してよい）
 7. **note の公開設定で「AI 学習への提供」がオフになっていることを確かめる**
 8. 公開する。Claude Docs の下書きは、公開後に不要なら消す
+9. **note を公開したら、Mac の控えの `x-post.md` の【人が埋める：note の記事の URL】を公開した記事の URL に置き換え、X（@gameforgejp）に投稿する。
+   画像を 1 枚添える**（控えの `images/` から。2026-09 は `shot.png`）。記事を直して数字が変わったら、告知文の数字も合わせる。
+   告知文が無い回（通知に「X の告知文を作れませんでした」など）は、手本（[#964](https://github.com/ojos/game-forge/issues/964) のコメント）の形で手で書く
 
 ## 導入（一度だけ。Mac で）
 
@@ -244,3 +277,6 @@ rm ~/Library/LaunchAgents/jp.ojos.game-forge.ops-report.plist
   `OPS_REPORT_REFINE_TIMEOUT`（既定 1800 秒）です。
 - 画像（#957。2026-10-09 に 2026-09 の材料の写しで実測）: 画像の段は 16 秒（仕込みと dev サーバの起動を含む。claude を
   呼ばないので費用は無い）。画像の段の上限は `OPS_REPORT_IMAGES_TIMEOUT`（既定 600 秒）です。
+- X の告知文（#964。2026-10-09 に 2026-09 の材料と Docs に置いた下書きの写しで、告知文の段だけを本物の `claude -p` で実測）:
+  1 回目で検査を通り、20 秒・$0.48（1 ターン）。重みつきの長さは 252 / 280 でした。告知文の段の上限は書く段と同じ
+  `OPS_REPORT_CLAUDE_TIMEOUT`（既定 900 秒）です。

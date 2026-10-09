@@ -11,6 +11,8 @@
 - 書いた下書きは、推敲の段（`/natural-japanese full`。#956）で直してから検査に回します。推敲への依頼文は
   [`scripts/ops-report-draft.sh`](../scripts/ops-report-draft.sh) の中にあり、見出し・数字・人が埋める欄・書かないことを
   「動かせない制約」として繰り返しています。**下の見出しや「書かないこと」を変えたら、そちらも合わせてください。**
+- X の告知文（#964）の依頼文も [`scripts/ops-report-draft.sh`](../scripts/ops-report-draft.sh) の中にあります（この型は使いません）。
+  検査は [`scripts/check-ops-report-x-post.sh`](../scripts/check-ops-report-x-post.sh) です。
 
 <!-- prompt:start -->
 あなたは、ブラウザゲームを自然文から作るサービス「Game Forge」の運営者の代わりに、月次の運営報告の下書きを書きます。

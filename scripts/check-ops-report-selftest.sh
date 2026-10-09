@@ -36,6 +36,12 @@
 #   - 図に描いた文字が下書きの検査（1 節の check-ops-report.sh）を通り、値を書き換えると number で落ちる
 #   - 画面は対応表の中からだけ選ぶ。対応表の形の確かめ（スキーム・//・クエリ・..・知らない埋め字）
 #
+# 4 節  撮影の見せ方（#962。scripts/lib/showcase-fixture.sh。ブラウザも dev サーバも使わない）
+#   - 撮影の見せ方の seed.sql に、検査の文言（SHOWCASE_FORBIDDEN_WORDS）が 1 つも無い
+#   - 検査の文言の一覧が、幅の検査の仕込み（scripts/lib/dev-fixture.sh）に実際にある語を指している
+#   - dev-fixture.sh を読むと、環境に GF_FIXTURE_CONTENT=showcase が残っていても幅の検査の中身になり、
+#     showcase-fixture.sh を後から読んだときだけ撮影の見せ方になる（幅の検査が黙って弱くならない）
+#
 # **本物の claude -p を呼ばない。** 文章の生成はループの検証の外に置く（#936 の constraints）。
 # 2 節は OPS_REPORT_CLAUDE を必ず偽のコマンドへ向けてから draft を呼ぶ。
 set -uo pipefail
@@ -810,6 +816,54 @@ if [[ "$got" == "1 number" ]]; then
   ok "材料に無い数を描いた図の文字は、下書きの検査で落ちる"
 else
   ng "材料に無い数を描いた図の文字が、下書きの検査を通ります（${got}）"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4 節  撮影の見せ方（#962。scripts/lib/showcase-fixture.sh）
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 撮った画面の本文の確かめ（scripts/ops-report-images.sh）はブラウザが要るので、ここでは本文の手前を見る。
+FIXTURE_LIB="$HERE/lib/dev-fixture.sh"
+SHOWCASE_LIB="$HERE/lib/showcase-fixture.sh"
+if ( set -euo pipefail
+     note() { :; }
+     fail() { echo "$*" >&2; exit 1; }
+     # shellcheck source=scripts/lib/showcase-fixture.sh
+     . "$SHOWCASE_LIB"
+     # dev_fixture_up の中で決まる値の代わり（seed.sql に埋まるだけ）。
+     PLAIN_USER_ID=p GAME_ID=g PUBLISHED_GAME_ID=pg DRAFT_PREVIEW_KEY=k SOURCE_KEY=s WASM_KEY=w SOURCE_SHA=h OGP_KEY=o
+     showcase_fixture_write_seed "$TMP/showcase-seed.sql"
+     [[ -s "$TMP/showcase-seed.sql" ]]
+     printf '%s\n' "${SHOWCASE_FORBIDDEN_WORDS[@]}" > "$TMP/showcase-forbidden.txt"
+     printf '%s\n' "$SHOWCASE_GRANT_CLIENT_NAME" "$HANDLE" "$USER_ID" "$PLAIN_USER_ID" >> "$TMP/showcase-seed.sql"
+   ) 2> "$TMP/showcase.err"; then
+  hits="$(grep -oF -f "$TMP/showcase-forbidden.txt" "$TMP/showcase-seed.sql" | sort -u | tr '\n' ' ')"
+  if [[ -z "$hits" ]]; then
+    ok "撮影の見せ方の仕込みに、検査の文言が無い"
+  else
+    ng "撮影の見せ方の仕込みに検査の文言があります（${hits}）"
+  fi
+  missing=""
+  while IFS= read -r word; do
+    grep -qF -- "$word" "$FIXTURE_LIB" || missing="${missing}${word} "
+  done < <(head -n 2 "$TMP/showcase-forbidden.txt")
+  if [[ -z "$missing" ]]; then
+    ok "検査の文言の一覧（先頭の 2 語）は、幅の検査の仕込みに実際にある語を指している"
+  else
+    ng "検査の文言の一覧が、幅の検査の仕込みに無い語を指しています（${missing}）"
+  fi
+else
+  ng "撮影の見せ方の seed.sql を書けませんでした"; sed 's/^/    /' "$TMP/showcase.err" >&2
+fi
+content="$( GF_FIXTURE_CONTENT=showcase; export GF_FIXTURE_CONTENT
+            # shellcheck source=scripts/lib/dev-fixture.sh
+            . "$FIXTURE_LIB"; printf '%s ' "$GF_FIXTURE_CONTENT"
+            # shellcheck source=scripts/lib/showcase-fixture.sh
+            . "$SHOWCASE_LIB"; printf '%s' "$GF_FIXTURE_CONTENT" )"
+if [[ "$content" == "width-check showcase" ]]; then
+  ok "環境の GF_FIXTURE_CONTENT では撮影の見せ方にならず、showcase-fixture.sh を読んだときだけなる"
+else
+  ng "仕込みの中身の切り替えが期待と違います（${content}）"
 fi
 
 # 2-7 値を取る引数の値が無ければ、読み続けずに 2 で止まる。

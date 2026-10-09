@@ -94,6 +94,12 @@
 #   trap dev_fixture_down EXIT
 #   dev_fixture_up
 #
+# **仕込みの中身は 2 通りある**（#962）。既定は幅の検査の仕込み（下の seed.sql）で、わざと長い発言・20 通を超える
+# 履歴・長い題名を入れて、画面が崩れないかを測る。運営報告の画像（`scripts/ops-report-images.sh`）は、
+# 読者に見せる中身で撮りたいので、`dev_fixture_up` の前に `scripts/lib/showcase-fixture.sh` を読み込んで
+# 撮影の見せ方へ切り替える。**2 つは混ぜない**——撮影の見せ方を整えても幅の検査の仕込みは変わらず、
+# 幅の検査の仕込みを足しても撮影の画面には写らない。
+#
 # **`fail` と `note` は呼ぶ側が定義する。** 文言の接頭辞をそれぞれの道具が持つため。
 #
 # シェルの関数として読み込む前提なので `set -euo pipefail` はここで宣言しない
@@ -105,6 +111,10 @@
 
 : "${GF_FIXTURE_LABEL:=[dev-fixture]}"
 : "${GF_FIXTURE_PORT:=8793}"
+# 仕込みの中身（#962。冒頭の「使い方」）。**環境変数からは受け取らない**——読み込むたびに幅の検査へ戻し、
+# 撮影の見せ方へは `scripts/lib/showcase-fixture.sh` を読み込んだときだけ切り替わる。環境に残った値で
+# 幅の検査が撮影の見せ方を測り、検査が黙って弱くなることを防ぐ。
+GF_FIXTURE_CONTENT=width-check
 
 ##
 # 下ごしらえを行う。
@@ -116,6 +126,13 @@ dev_fixture_up() {
   #
   # **満たされないなら赤で落とす。** 「道具が無いので飛ばした」を緑にすると、
   # 検査していないことと、検査して通ったことが区別できなくなる。
+
+  case "$GF_FIXTURE_CONTENT" in
+    width-check) ;;
+    showcase) declare -F showcase_fixture_write_seed >/dev/null ||
+      fail "撮影の見せ方の関数がありません（scripts/lib/showcase-fixture.sh を読み込んでください）。" ;;
+    *) fail "仕込みの中身が不明です: ${GF_FIXTURE_CONTENT}" ;;
+  esac
 
   command -v node >/dev/null 2>&1 || fail "node が見つかりません。"
   command -v npx >/dev/null 2>&1 || fail "npx が見つかりません（wrangler の起動に使います）。"
@@ -220,7 +237,9 @@ dev_fixture_up() {
   BUCKET_NAME="$(sed -nE 's/^[[:space:]]*bucket_name[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' wrangler.toml | head -1)"
   [[ -n "$BUCKET_NAME" ]] || fail "wrangler.toml から R2 の bucket_name を読めませんでした。"
 
-  note "seeding an admin user, six games (draft + published + queued + working + stalled + failed), the keys those games read, a report, a history row and a takedown request"
+  if [[ "$GF_FIXTURE_CONTENT" == width-check ]]; then
+    note "seeding an admin user, six games (draft + published + queued + working + stalled + failed), the keys those games read, a report, a history row and a takedown request"
+  fi
   # **SQL はファイルで渡す**（#732）。`--command` の引数で渡していたころは、SQL 全体が
   # **shell の二重引用符 1 つの中**にあり、**逃がし忘れた引用符がその場で文字列を閉じた。**
   # 語が割れると `--command` は別のコマンドとして実行され、`||` が受け取る終了コードは
@@ -230,6 +249,11 @@ dev_fixture_up() {
   #
   # **それでも、入ったことは別に確かめる**（下の `dev_fixture_verify_seed`）。渡し方を直すのは
   # 既知の壊れ方を 1 つ塞ぐだけで、「仕込みが入らないまま緑」を塞ぐのは**行を数えるほう**である。
+  # 撮影の見せ方（#962）では、この本文の代わりに scripts/lib/showcase-fixture.sh が seed.sql を書く。
+  # 確かめ（dev_fixture_verify_seed）は同じく本文から導くので、どちらの中身でも行を数える。
+  if [[ "$GF_FIXTURE_CONTENT" == showcase ]]; then
+    showcase_fixture_write_seed "$WORK/seed.sql"
+  else
   cat >"$WORK/seed.sql" <<SQL
     insert into users (id, google_sub, email, display_name, created_at, bio, profile_links)
       values ('$USER_ID', 'sub-$USER_ID', '$USER_ID@example.invalid', '幅の検査', 1,
@@ -321,6 +345,7 @@ dev_fixture_up() {
               'width-check-related-tag', 'rhythm-sound');
     update games set tag1 = 'puzzle' where id = '$GAME_ID';
 SQL
+  fi
   npx wrangler d1 execute DB --local --persist-to "$STATE" --file "$WORK/seed.sql" >"$WORK/seed.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/seed.log" >&2; fail "検査用の行を作れませんでした。"; }
 
@@ -365,6 +390,10 @@ sharp(Buffer.from(svg)).png().toFile(process.argv[1]).catch((error) => { console
   npx wrangler r2 object put "$BUCKET_NAME/$OGP_KEY" --local --persist-to "$STATE" \
     --file "$WORK/ogp.png" --content-type 'image/png' >"$WORK/r2-ogp.log" 2>&1 ||
     { sed 's/^/    /' "$WORK/r2-ogp.log" >&2; fail "検査用の紹介用の画像を R2 へ置けませんでした。"; }
+  # 撮影の見せ方（#962）は、ほかの公開作品にも紹介用の画像を置く（「画面の準備中」の枠を並べない）。
+  if [[ "$GF_FIXTURE_CONTENT" == showcase ]]; then
+    showcase_fixture_put_assets
+  fi
 
   # **接続中のアプリを 1 件仕込む**（#696 / 仕様 5.15。`/account/apps`）。仕込まないと、接続の行（アプリ名・許可した範囲・
   # 日時・「接続を解除」のボタン）が 1 度も描かれないまま幅の検査が緑になり、「接続中のアプリはありません」の 1 行だけを測る。
@@ -378,9 +407,13 @@ sharp(Buffer.from(svg)).png().toFile(process.argv[1]).catch((error) => { console
   # 文字列は `--arg`、数は `--argjson` で渡し、引用符の入れ子に頼らない。`-j` で末尾の改行を付けず、
   # 以前の引数渡しと同じバイト列にしてある。ファイルは `$WORK` に置き、後始末は `dev_fixture_down` に乗る。
   GRANT_CREATED_AT="$(date +%s)"
+  GRANT_CLIENT_NAME="幅の検査のための、とても長い名前を名乗る AI アプリ（Claude Desktop のコネクタ）"
+  if [[ "$GF_FIXTURE_CONTENT" == showcase ]]; then
+    GRANT_CLIENT_NAME="$SHOWCASE_GRANT_CLIENT_NAME"   # scripts/lib/showcase-fixture.sh が決める（#962）
+  fi
   jq -cjn \
     --arg userId "$USER_ID" \
-    --arg clientName "幅の検査のための、とても長い名前を名乗る AI アプリ（Claude Desktop のコネクタ）" \
+    --arg clientName "$GRANT_CLIENT_NAME" \
     --argjson createdAt "$GRANT_CREATED_AT" \
     '{id: "devFixtureGrant01", clientId: "devFixtureClient", userId: $userId,
       scope: ["works:read", "works:write", "works:generate"],

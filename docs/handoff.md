@@ -57,7 +57,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 | # | 何をしたか | PR / コミット | 状態 |
 |---|---|---|---|
 | #938 | DCB v0.17.0 の `bootstrap.sh --upgrade` で、DCB の生成物と規範（ai-playbook）v0.8.1 に追従した。`.devcontainer/ORIGIN` を初めて置いた。DCB が所有するファイルは雛形を正とし、残した差分は `project-ai-rules.md`「雛形からの逸脱」の表に理由つきで並べた。プロジェクトが所有する 4 本（`acceptance.sh`・`acceptance-remote.sh`・`check-no-secrets.sh`・`project-ai-rules.md`）は中身を残して `--accept` した。並行セッションの台帳（`session-coord-hook.sh` / `session-ledger.sh`）と `AGENTS.md` が入った。**本番の配備を `verify.yml` の `deploy` ジョブから `.github/workflows/deploy.yml` へ移した**（下） | PR #940 / `3309e3d` | 閉じた（本番の配備を確かめた後） |
-| #939 | `devcontainer.json` を純粋な JSON にした（注記は新設の `.devcontainer/README.md` へ。移す段では値を変えていない。雛形に寄せる段で VS Code 拡張 `Google.gemini-cli-vscode-ide-companion` が 1 つ増えた）。`compose.yaml` に雛形の `init: true` を入れた（`security_opt` の seccomp は入れない。#930 の再発を避ける）。doctor は FAIL 0 になった | PR #948 / `54a6823` | **open**（dev01 は確認済み。**残りは Mac の作り直し**） |
+| #939 | `devcontainer.json` を純粋な JSON にした（注記は新設の `.devcontainer/README.md` へ。移す段では値を変えていない。雛形に寄せる段で VS Code 拡張 `Google.gemini-cli-vscode-ide-companion` が 1 つ増えた）。`compose.yaml` に雛形の `init: true` を入れた（`security_opt` の seccomp は入れない。#930 の再発を避ける）。doctor は FAIL 0 になった | PR #948 / `54a6823` | ~~**open**（dev01 は確認済み。**残りは Mac の作り直し**）~~ **閉じた**（2026-10-09 に Mac も確認。#939 のコメント） |
 | #944 | dev01 の上流版 devhost を v0.14.0 から v0.17.0 へ上げた（`dev rebuild` / `dev doctor` / `dev help` が増えた）。版は `tools/devhost/README.md`「上流の版を上げる（dev01 の更新）」の `TAG=` の 1 行が正本 | PR #949 / `0a553d8` | 閉じた（dev01 での確認の後） |
 | #945 | `terraform/orchestrator.tf` の注記の配備の場所を deploy.yml に直した。apply で、宣言の外にあった `ojos-ops` の請求先を外した（下） | PR #947 / `fc0e2f4` | 閉じた |
 
@@ -73,7 +73,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 
 - ~~**#939 の Mac の作り直し**（利用者）。~~（**2026-10-09 追記: 済み。** 利用者が作り直し、compose に拒否されずに起動した。`ps -p 1 -o comm=` は `docker-init`、`verify` は最初の `EBITEN_KEYS_FAIL` の後に通り、post-rebuild-check も全行 OK。結果は #939 にコメントした。以下は当時の記述）このセッションのコンテナなので、ほかのセッションを止めてから「Dev Containers: Rebuild Container」を実行し、`ps -p 1 -o comm=`（docker-init）と `bash scripts/verify.sh`（最初は EBITEN_KEYS_FAIL で止まる。3 章の rebuild の項）を確かめます。**結果は #939 に書いて閉じます。この節は触りません。** 確かめたいのは、`init: true` が compose.yaml と go の feature の上書きの両方に入っても、Mac の compose 2.40.3 が起動を拒否しないことです（真偽値なので、#930 のようなリストの重複は起きない見込み。未実測）。
 - **`scripts/acceptance.sh` 322〜333 行の注記**（「UID/GID の既定が 1000」「ビルド引数」）は、#879 より前の記述のままです。プロジェクトが所有するファイルで、直したら `--accept` し直します（#939 のレーンの報告）。
-- ~~**#937（運営報告の自動化。e2e3a72）は、この handoff に載っていません。**~~（**2026-10-09 追記: 上の節の #936 で扱った**） 別セッションのウェーブで、票の #936 も open です。そちらの書き戻しで扱います。
+- ~~**#937（運営報告の自動化。e2e3a72）は、この handoff に載っていません。** 別セッションのウェーブで、票の #936 も open です。そちらの書き戻しで扱います。~~（**2026-10-09 追記: 上の節の #936 で扱い、#936 は閉じた**）
 
 ### #930 で Mac の devcontainer が起動しなくなっていたのを直し、#933 を閉じました（#933。2026-10-03）
 

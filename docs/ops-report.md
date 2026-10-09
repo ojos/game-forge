@@ -100,7 +100,7 @@ headless shell と、`playwright install-deps` が挙げるシステムのパッ
 手で入れる手順はありません。入っているかは次で確かめます（`bash scripts/post-rebuild-check.sh` にも同じ行が出ます）。
 
 ```bash
-bash scripts/install-browser.sh --check   # headless shell と日本語のフォントの OK が 2 行出れば足りている
+bash scripts/install-browser.sh --check   # headless shell・システムのパッケージ・日本語のフォントの OK が 3 行出れば足りている
 bash scripts/install-browser.sh           # 足りなければ入れる（入っていれば何もしない）
 ```
 

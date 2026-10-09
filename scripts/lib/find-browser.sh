@@ -10,6 +10,7 @@
 # headless shell を playwright のキャッシュへ入れるので、片方だけが見つけられる状態を作らない。
 #
 # 見る順:
+#   0. scripts/install-browser.sh が固定した revision の headless shell（その revision はそのファイルから読む）
 #   1. システムの Chromium / Chrome（/usr/bin/…、Mac の Google Chrome）
 #   2. playwright のキャッシュ（PLAYWRIGHT_BROWSERS_PATH があればそこ、無ければ ~/.cache/ms-playwright）の
 #      headless shell。revision の新しいものから。新しい playwright（1.5x 以降）は
@@ -23,13 +24,20 @@
 # @return 標準出力に実行ファイルのパス。終了コード 0 = 見つけた / 1 = 見つからない
 find_browser_bin() {
   local cache="${PLAYWRIGHT_BROWSERS_PATH:-${HOME}/.cache/ms-playwright}"
-  local candidate
+  local candidate pinned
+  # scripts/install-browser.sh が固定した revision を、ほかのものより先に見る。ほかの版の playwright が
+  # 入れた revision（手で入れたものを含む）が残っていても、検査が固定した版で走るようにするため。
+  pinned="$(sed -n 's/^readonly HEADLESS_SHELL_REVISION="\([0-9]*\)"$/\1/p' \
+    "$(dirname "${BASH_SOURCE[0]}")/../install-browser.sh" 2>/dev/null || true)"
   while IFS= read -r candidate; do
     if [[ -n "$candidate" && -x "$candidate" ]]; then
       printf '%s\n' "$candidate"
       return 0
     fi
   done < <(
+    if [[ -n "$pinned" ]]; then
+      ls -1d "$cache/chromium_headless_shell-${pinned}"/chrome-headless-shell-linux*/chrome-headless-shell 2>/dev/null
+    fi
     printf '%s\n' \
       /usr/bin/chromium /usr/bin/chromium-browser /usr/bin/google-chrome \
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"

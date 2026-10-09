@@ -360,7 +360,7 @@ DCB が所有するファイルは雛形を正とし、game-forge 側の差分�
 | `.devcontainer/devcontainer.json` | `postCreateCommand` の `bash scripts/install-uv.sh` | (2) | 月次の運営報告の推敲の段（`scripts/ops-report-draft.sh`）が、`.claude/skills/natural-japanese/` の lint を `uv run` で動かします。版（公開から 2 週間以上たったもの）とチェックサムを固定して入れます（#956） |
 | `.devcontainer/devcontainer.json` | `postCreateCommand` の `bash scripts/install-browser.sh` | (2) | 月次の運営報告の画像の段（#957）と実ブラウザの検査（`scripts/check-page-width.sh`・`scripts/check-sandbox-browser.sh`）が、Chromium（headless shell）と日本語のフォントを使います。playwright-core の版（公開から 2 週間以上たったもの）と tarball のチェックサムを固定し、sudo で入れるのは `playwright install-deps` が挙げるパッケージだけです（#960） |
 | `scripts/post-rebuild-check.sh` | 末尾の uv の確認（`scripts/install-uv.sh` の固定した版を返すか） | (2) | 作り直しの後に、上の行の uv が固定した版で入ったことを確かめます（#956） |
-| `scripts/post-rebuild-check.sh` | 末尾の headless shell と日本語のフォントの確認（`scripts/install-browser.sh --check`） | (2) | 作り直しの後に、上の行の headless shell が固定した revision で動き、日本語のフォントがあることを確かめます（#960） |
+| `scripts/post-rebuild-check.sh` | 末尾の headless shell と日本語のフォントの確認（`scripts/install-browser.sh --check`） | (2) | 作り直しの後に、上の行の headless shell が固定した revision で動き、`install-deps` が挙げるシステムのパッケージが揃い、日本語のフォントがあることを確かめます（#960） |
 
 **プロジェクトが所有するファイル**（DCB が「プロジェクトが所有・編集する」と定めるもの）は、雛形と違っていて当然なので、この表には並べません。中身を残して `--accept` しています: `scripts/acceptance.sh`・`scripts/acceptance-remote.sh`・`scripts/check-no-secrets.sh`・`.github/project-ai-rules.md`（このファイル）。
 

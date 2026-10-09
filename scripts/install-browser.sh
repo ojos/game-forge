@@ -92,7 +92,18 @@ japanese_font_name() {
   printf '%s' "${fonts%%$'\n'*}"
 }
 
-# 入っているかを 2 行で書き、両方そろっていれば 0 を返す。
+# システムのパッケージ（install-deps が挙げるもの）が揃っているかを返す。前に展開した playwright-core の
+# `install-deps --dry-run`（apt の simulate。sudo 不要）に任せる。展開したものが無ければ判定できないので「足りない」。
+# headless shell の --version が通っても、実行時に読み込むライブラリやフォントの不足は分からないため、これも見る。
+#
+# @return 0 = 揃っている / 1 = 足りないか判定できない
+system_deps_ok() {
+  [[ -f "$PKG_DIR/cli.js" ]] || return 1
+  command -v node >/dev/null 2>&1 || return 1
+  node "$PKG_DIR/cli.js" install-deps --dry-run chromium-headless-shell >/dev/null 2>&1
+}
+
+# 入っているかを 3 行で書き、すべてそろっていれば 0 を返す。
 #
 # @return 0 = 入っている / 1 = 足りない
 report_state() {
@@ -105,6 +116,15 @@ report_state() {
     ok=1
   else
     echo "$PREFIX headless shell missing (revision ${HEADLESS_SHELL_REVISION} under $BROWSERS_DIR)"
+    ok=1
+  fi
+  if system_deps_ok; then
+    echo "$PREFIX system packages OK (playwright install-deps --dry-run)"
+  elif [[ -f "$PKG_DIR/cli.js" ]]; then
+    echo "$PREFIX system packages missing (node $PKG_DIR/cli.js install-deps --dry-run chromium-headless-shell lists them)"
+    ok=1
+  else
+    echo "$PREFIX system packages unknown (playwright-core ${PW_VERSION} is not unpacked at $PKG_DIR)"
     ok=1
   fi
   font="$(japanese_font_name)"
@@ -123,7 +143,7 @@ if [[ "$check_only" == "1" ]]; then
 fi
 
 if report_state >/dev/null; then
-  echo "$PREFIX headless shell (revision ${HEADLESS_SHELL_REVISION}) and a japanese font are already installed, skipping"
+  echo "$PREFIX headless shell (revision ${HEADLESS_SHELL_REVISION}), system packages and a japanese font are already installed, skipping"
   exit 0
 fi
 

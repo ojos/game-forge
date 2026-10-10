@@ -67,7 +67,7 @@ flowchart LR
 | メール（Resend） | [src/mail/](src/mail/) | — | — |
 | ロゴ | [tools/logobake/](tools/logobake/) | — | [docs/logo.md](docs/logo.md) |
 
-運営が回す手順は、削除依頼の対応が [docs/takedown.md](docs/takedown.md)、集計が [docs/usage-report.md](docs/usage-report.md)、撤退条件の判定が [docs/retreat-review.md](docs/retreat-review.md) にあります。
+運営が回す手順は、削除依頼の対応が [docs/takedown.md](docs/takedown.md)、集計が [docs/usage-report.md](docs/usage-report.md)、撤退条件の判定が [docs/retreat-review.md](docs/retreat-review.md) にあります。当面の方針（何に時間を使うか）は [docs/strategy.md](docs/strategy.md) にあります。
 
 ## 手元で動かす
 

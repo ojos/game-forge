@@ -79,6 +79,18 @@ npm の tarball のチェックサムを `scripts/install-browser.sh` に固定�
 入ったかは `scripts/post-rebuild-check.sh` の `[check] headless shell OK (…)`・`[check] system packages OK (…)`・`[check] japanese font OK (…)` で確かめます。
 DCB の雛形には無い、このプロジェクト固有の段です（`.github/project-ai-rules.md`「雛形からの逸脱」）。
 
+## `onCreateCommand` と `claudeCode.claudeProcessWrapper`（#968）
+
+DCB v0.19.0 の雛形どおりの値です（逸脱ではありません）。`onCreateCommand` が `scripts/on-attach.sh --install-launcher` で
+起動役 `~/.local/bin/claude-session-launcher` を作業ツリーの外へ置き、VS Code の設定 `claudeCode.claudeProcessWrapper` がそれを指します。
+起動役は、起動したときの作業ツリーに `scripts/claude-session-wrapper.sh` があればそれを経由し、無ければそのまま Claude Code を起動します。
+ラッパーは `.env` の `SESSION_HOST_LABEL` があれば、セッションの宛先名を `<ラベル>-<作業ツリー名>-<PID の16進>` にします（`/peers` で使う）。
+
+- **`devcontainer.json` と `scripts/on-attach.sh` は同じ版にそろえます。** `devcontainer.json` だけが新しいと、起動役が置かれず、
+  存在しないパスを指すので Claude Code が起動しません（DCB v0.19.0 の CHANGELOG「移行」）。
+- 配線は作り直しで効きます。作り直したら `test -x ~/.local/bin/claude-session-launcher` で起動役が置かれたことを確かめます。
+- **万一 Claude Code が起動しなくなったら**、VS Code のリモートの設定で `claudeCode.claudeProcessWrapper` を空にすれば元に戻ります。
+
 ## `compose.yaml` の `init: true`（#939）
 
 DCB の雛形に合わせて、PID 1 を Docker の組み込みの init（docker-init）にし、孤児になったプロセスを回収させます

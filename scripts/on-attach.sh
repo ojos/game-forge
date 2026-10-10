@@ -1,11 +1,61 @@
 #!/usr/bin/env bash
 set -euo pipefail
-echo "[on-attach] bootstrap active"
 
 # スクリプト自身の位置から解決する（起動時 CWD に依存しない）。scripts/ 直下に
 # load-project-env.sh / setup-git-identity.sh が並ぶ。
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELPER="$HERE/load-project-env.sh"
+
+# Claude Code の起動役を、作業ツリーの外の固定パスへ設置する（冪等）。
+#
+# VS Code の設定 claudeCode.claudeProcessWrapper は、この起動役を指す。作業ツリーの
+# scripts/claude-session-wrapper.sh を直接指すと、そのファイルが無いブランチへ切り替えた
+# だけで Claude Code が一切起動しなくなるため、作業ツリーの外に置いた極小の sh を挟む。
+# 起動役は、ラッパーが実行可能ならそれを exec し、無ければ何もせずに引数をそのまま exec する。
+# 起動役の内容は作業ツリーに依存しない固定の内容にする（共通のパスを複数の作業ツリーから
+# 設置しても内容が変わらず、互いを上書きしない）。作業ツリーは起動したときの cwd から
+# git rev-parse --show-toplevel で求め、その scripts/claude-session-wrapper.sh を呼ぶ。
+# ラッパーを配っていない構成（--with-claude なし）では何もしない。
+# 設置先は CLAUDE_SESSION_LAUNCHER で変えられる（試験用）。失敗しても on-attach は落とさない。
+# `--install-launcher` で起動役の設置だけを行える。devcontainer.json の onCreateCommand が、
+# 新しいコンテナへ初めて接続する前（Dev Containers は onCreateCommand の完了を待つ）に呼ぶ。
+install_claude_session_launcher() {
+  local wrapper dest dir content current tmp
+  wrapper="$(cd "$HERE/.." && pwd)/scripts/claude-session-wrapper.sh"
+  [[ -f "$wrapper" ]] || return 0
+  dest="${CLAUDE_SESSION_LAUNCHER:-$HOME/.local/bin/claude-session-launcher}"
+  content="$(printf '%s\n' \
+    '#!/bin/sh' \
+    '# scripts/on-attach.sh が設置する Claude Code の起動役。手で編集しない（接続のたびに書き直される）。' \
+    '# 起動したときの cwd の作業ツリーのラッパーが実行可能ならそれを、求められない・無いときは' \
+    '# 引数をそのまま exec する。' \
+    't="$(git rev-parse --show-toplevel 2>/dev/null)" || t=""' \
+    'if [ -n "$t" ] && [ -x "$t/scripts/claude-session-wrapper.sh" ]; then' \
+    '  exec "$t/scripts/claude-session-wrapper.sh" "$@"' \
+    'fi' \
+    'exec "$@"')"
+  current="$(cat "$dest" 2>/dev/null || true)"
+  if [[ "$current" == "$content" && -x "$dest" ]]; then
+    return 0
+  fi
+  dir="$(dirname "$dest")"
+  tmp="$dest.on-attach.tmp"
+  if mkdir -p "$dir" 2>/dev/null \
+    && printf '%s\n' "$content" >"$tmp" 2>/dev/null \
+    && chmod 755 "$tmp" 2>/dev/null \
+    && mv "$tmp" "$dest" 2>/dev/null; then
+    echo "[on-attach] installed Claude Code launcher: $dest"
+  else
+    rm -f "$tmp" 2>/dev/null || true
+    echo "[on-attach] WARN: Claude Code の起動役を設置できませんでした: $dest" >&2
+  fi
+}
+if [[ "${1:-}" == "--install-launcher" ]]; then
+  install_claude_session_launcher
+  exit 0
+fi
+
+echo "[on-attach] bootstrap active"
 
 # このスクリプト自身にもプロジェクト .env を効かせる。
 #
@@ -80,6 +130,9 @@ strip_docker_creds_store() {
   fi
 }
 strip_docker_creds_store
+
+# 起動役の設置（定義は冒頭）。
+install_claude_session_launcher
 
 # gh の認証状態を確認する。
 #

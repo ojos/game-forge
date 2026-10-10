@@ -32,12 +32,14 @@
 ## 完了定義
 
 - 実行順序、担当、受け入れ条件が矛盾なく定義されている。
+- 複数の issue をまとめる計画、または 1 つの issue を複数のレーンへ分ける計画では、委譲する前に [plan-review](../task-playbooks/plan-review.md) の観点 B を通過している。
 - 実行フェーズへ渡す判断根拠が記録されている。
 
 ## 推奨タスクプレイブック
 
 - `../task-playbooks/issue-triage.md`
 - `../task-playbooks/plan-breakdown.md`
+- `../task-playbooks/plan-review.md`
 
 ## 基本原則
 

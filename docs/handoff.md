@@ -5,11 +5,27 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 - 位置づけ: **現在地と、次に何をするか。** 仕様の正本は [product-spec.md](product-spec.md)、
   作業の分解は [mvp-roadmap.md](mvp-roadmap.md) が持ちます。**ここへ複製しません。**
 - 更新: セッションの終わりに、次の人が困る情報だけを書き換えます。
-- 最終更新: **2026-10-09**（要旨は [6. 更新の履歴](#6-更新の履歴) が持ちます）
+- 最終更新: **2026-10-10**（要旨は [6. 更新の履歴](#6-更新の履歴) が持ちます）
 
 ---
 
 ## 1. 現在地
+
+### DCB v0.19.0・規範 ai-playbook v0.9.0 へ追従し、同じコンテナの別セッションへ送る `/peers` を入れました（#968。2026-10-10）
+
+| # | 何をしたか | PR / コミット | 状態 |
+|---|---|---|---|
+| #968 | `bootstrap.sh --upgrade --playbook-version v0.9.0`（DCB v0.19.0 は `--with-claude` で規範 v0.9.0 を必須にする）。新しく `/peers` スキル・`scripts/session-peers.sh`（同じコンテナ・同じリポジトリのセッションを台帳の issue つきで一覧し、宛先を解決する）・`scripts/claude-session-wrapper.sh`（`.env` の `SESSION_HOST_LABEL` があれば宛先名を `<ラベル>-<作業ツリー名>-<PID の16進>` にする）・起動役 `~/.local/bin/claude-session-launcher` が入った。規範は intake の承認の後・issue 化の前に `plan-review.md` の観点 A を通す手順が増えた。`.dcb-new` の 3 本（`devcontainer.json`・`on-attach.sh`・`.env.example`）は新しい版を正にして逸脱の表の差分だけを戻した。第二意見の指摘（起動役の設置に失敗しても `onCreateCommand` が `\|\| true` で通る）は、雛形の fail-soft を残して `post-rebuild-check.sh` に起動役の確認を足して直した | PR #969 / `bdc64cd` | 閉じた（配備済み。DEPLOY_IS_HEAD）。Mac・dev01 とも作り直して `claude launcher OK` |
+
+- **`devcontainer.json` と `scripts/on-attach.sh` は同じ版にそろえます。** `devcontainer.json` だけが新しいと起動役が置かれず、Claude Code が起動しなくなります（DCB の CHANGELOG「移行」）。起動しなくなったら、VS Code のリモートの設定で `claudeCode.claudeProcessWrapper` を空にすると戻ります（`.devcontainer/README.md`）。
+- **宛先名のラベルは Claude Code を起動したときに読みます。** `.env` を書き換えた後は、セッションを開き直すまで宛先名が変わりません（Mac で実際に 1 度そうなった。開き直すと `mac-main-game-forge-1852` になった）。Bash から見える `CLAUDE_CODE_SESSION_NAME` は空のままで、確かめるのは `bash scripts/session-peers.sh whoami` です。
+- **各環境の `.env` に `SESSION_HOST_LABEL` を置きました**（Mac は `mac-main`、dev01 は `dev01`。利用者が設定）。`/peers` の一覧は同じコンテナのセッションだけなので、Mac と dev01 は互いに並びません。
+- **#968 は起票した後に観点 A を当てました**（起票は v0.8.2 の手順で、v0.9.0 の手順は取り込んだ後に知った）。acceptance に起動役の試しを 1 項目足して承認し直してもらい、issue のコメントに残しています。
+- **dev01 の作り直しの確認は、親が Mac から `ssh dev01` で `dev exec game-forge -- bash scripts/post-rebuild-check.sh` を打って代行しました**（作り直しは利用者）。uv・headless shell・システムのパッケージ・日本語のフォント・起動役がすべて OK で、前の節の「dev01 の作り直しの確認」もこれで済みました。ssh の非ログインシェルでは `dev` が PATH に無いので `~/.local/bin/dev` で呼び、`dev exec` は `--` の後ろにコマンドを置きます。
+
+#### 残していること
+
+- dev01 で Claude Code を新しく開いたときに、`bash scripts/session-peers.sh whoami` が `dev01-game-forge-<16進>` を返すかは未確認です（確かめる必要が出たときでよい）。
 
 ### 運営報告の画面の画像を撮影専用の見せ方で撮るようにし、X の告知文の下書きを流れに足しました（#962 / #964。2026-10-09）
 
@@ -66,7 +82,7 @@ AI エージェントのセッションを跨ぐための文書です。**新し
 - **dev01 の AWS のログイン（`gf-auth-aws` / `tools/devhost/dev-auth-aws.sh`）がデバイスコード方式のまま通るかは未確認です。** 上の切り分けどおりなら止まります。ssh 越しで手元のポートへ戻れないので、Mac と同じ直し方はできません。起票候補（未起票）。`--use-device-code` を案内している文書とスクリプトのコメント（`scripts/deploy-avatar.sh` / `deploy-chat.sh` / `verify-effort-spelling.sh`、`docs/acceptance-remote-schedule.md` / `ogp-capture.md` など）も、同じ票で直す。
 - **#957** は 2026-11-03 の定期実行で、下書きの印 2 つと Mac の PNG 2 枚を確かめて閉じる。**#962**（画面の画像に幅の検査の仕込みの会話が写る。撮影専用の見せ方を用意する）は 11-03 より前に入れると 11 月の記事から効く。docs-failed の回の通知にも前の回の `images/` が載る小さな不具合を、#962 のついでに直す。（**2026-10-09 追記: #962 は PR #965 で閉じ、通知の不具合も同じ PR で直した。** 上の節を参照）
 - **#964**（運営報告と一緒に X の告知文の下書きを作る。投稿は人）を起票した（2026-10-09）。2026-09 の記事は、利用者が手で X に告知する（下書きの案は会話で渡した。重みつきの長さ 262 / 280）。#957・#962 と同じ `scripts/ops-report-draft.sh` を触るので、並列にしない。（**2026-10-09 追記: PR #966 で入れた。** #964 は `wait:date` で 11-03 まで残す。上の節を参照）
-- **dev01 の作り直しの確認**（#956 の uv と #960 のブラウザ・フォント）。次に dev01 を作り直したときに `bash scripts/post-rebuild-check.sh` の 4 行を見る。
+- **dev01 の作り直しの確認**（#956 の uv と #960 のブラウザ・フォント）。次に dev01 を作り直したときに `bash scripts/post-rebuild-check.sh` の 4 行を見る。（**2026-10-10 追記: #968 の作り直しで確かめた。** 4 行とも OK。上の節を参照）
 - launchd の運営報告は**毎月 3 日 9:00 に動く**（外し方は `docs/ops-report.md`「外し方」）。2026-09 の doc は推敲版だけを残した（推敲前・試しの doc は利用者の判断で消した）。
 - `docs/privacy-review.md` 7 行目が引けない `https://game-forge.ojos.jp/privacy` を指している（#460 の文書。未修正）。`check-sandbox-browser.sh` は、Go の実効ツールチェイン（go1.27.1）とピン留め（1.27.0）の食い違いで止まる（#960 とは無関係。未対処）。
 
@@ -5076,6 +5092,7 @@ $ grep -c 'a\$b' /tmp/t   # → 1（エスケープすれば当たる）
 
 ### 更新ごとの要旨
 
+- **2026-10-10**（**DCB v0.19.0・規範 v0.9.0 へ追従し、`/peers` を入れた（#968 / PR #969）**——`devcontainer.json` と `on-attach.sh` の `.dcb-new` を同じコミットで取り込み、第二意見の指摘で `post-rebuild-check.sh` に起動役の確認を足した。Mac・dev01 とも作り直して `claude launcher OK`、`.env` の `SESSION_HOST_LABEL` で宛先名に場所が入ることを Mac で確かめた。規範の plan-review の観点 A は起票の後に当てた。dev01 の確認は親が ssh で代行した。前の節の「dev01 の作り直しの確認」に追記した）
 - **2026-10-09**（**運営報告の画面の画像を撮影専用の見せ方で撮り（#962 / PR #965）、X の告知文の下書きを流れに足した（#964 / PR #966）**——#962 は撮った本文に検査の文言があれば落とし、通知に前の回の images/ が載る不具合も直して閉じた。#964 は道具なしの claude -p で x-post.md を作り、2026-09 の材料で 252 / 280。PR 本文も Refs にして wait:date で 11-03 まで残した。同じスクリプトを触るので直列に回した。前の節の #962・#964 の行に追記した）
 - **2026-10-09**（**依存の更新・Route 53 の削除・運営報告の初公開と自動化の拡張**——Dependabot 3 本（#943 は関数の側も揃えて #951 で出し直し、avatar を配り直した）、#906 で Route 53 のゾーンを消した（0/0/9 destroy、Cloudflare の答えは不変）、#805 を閉じた（10-07 に Pro へ）。#936 は Docs の段の道具と引けない URL を直し（#954）、2026-09 分を note に公開し、launchd を登録して ok と docs-failed の 2 回で通知まで確かめて閉じた。#956 で natural-japanese の推敲、#957 で画像 2 枚（doc には貼らない。auto モードを外した）、#960 で作り直しのブラウザとフォント。AWS SSO はデバイスコード方式が SAML で止まるので認可コード方式へ（dev01 は未確認）。別セッションの #953（DCB v0.18.0・devcontainer-host v0.1.0）も同じ節に書いた）
 - **2026-10-08**（**DCB v0.17.0 と規範 v0.8.1 へ追従し（#938）、本番の配備を deploy.yml〈workflow_run〉へ移した**——初回は ORIGIN が無く、引数を明示した --upgrade で 35 本に .dcb-new。DCB 所有は雛形を正とし、逸脱は project-ai-rules.md の表へ。#939 で devcontainer.json を純粋な JSON にし init: true を入れた（Mac の作り直しが残り）。#944 で dev01 の devhost を v0.17.0 へ、#945 で terraform の注記を直し、apply で宣言の外の ojos-ops の請求先を外した。dev01 の作業は親が ssh で代行した。3549 行・86 行・149 行に追記した）

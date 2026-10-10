@@ -1,4 +1,4 @@
 # devcontainer-bootstrap が記録した ai-playbook のソース情報。
 # version は --playbook-version 指定時のタグ。未指定なら (unspecified)。
-version=v0.8.2
-source=https://github.com/ojos/ai-playbook/archive/refs/tags/v0.8.2.tar.gz
+version=v0.9.0
+source=https://github.com/ojos/ai-playbook/archive/refs/tags/v0.9.0.tar.gz

@@ -32,6 +32,7 @@
 ## 完了定義
 
 - 必須 intake 構造が充足し、ユーザー承認が取得されている。
+- issue 化の前に、[plan-review](../task-playbooks/plan-review.md) の観点 A を通過している（見つかった問題を直した場合は、修正後の intake 票を承認し直してもらっている）。
 - 引き渡し条件が満たされている。
 
 ## 権限境界
@@ -70,6 +71,7 @@
 ## 推奨タスクプレイブック
 
 - `../task-playbooks/issue-triage.md`
+- `../task-playbooks/plan-review.md`
 
 ## 関連
 

@@ -34,6 +34,7 @@
 
 - タスク粒度、依存順、受け入れ条件が整合している。
 - 実装ロールが着手可能な計画粒度になっている。
+- 複数の issue をまとめる計画、または 1 つの issue を複数のレーンへ分ける計画では、[plan-review](../task-playbooks/plan-review.md) の観点 B を通過している。
 
 ## 並列化を前提とした分解
 
@@ -44,6 +45,7 @@
 ## 推奨タスクプレイブック
 
 - `../task-playbooks/plan-breakdown.md`
+- `../task-playbooks/plan-review.md`
 - `../task-playbooks/issue-triage.md`
 
 ---

@@ -14,7 +14,11 @@
  *
  * 画面を開く（GET）たびには書かない。1 人あたりの書き込みは 9 文（同意・録画の準備・触り終えた・2〜5 問・
  * 答え終えた・アンケート）で、3.6 の書き込みの上限に触れない。
+ *
+ * **録画（#978）は別の表に書く**（`src/trial-recording-store.ts`）。断片 1 つにつき 1 文（5 秒ごと。60 分で 720 文）で、
+ * 試用者は数人なので、1 日の書き込みは数千文に収まる。
  */
+import { sweepExpiredTrialRecordings } from './trial-recording-store.js';
 
 /** 段（列 `stage` の値。並びが進む順である）。 */
 export const TRIAL_STAGES = [
@@ -306,9 +310,13 @@ export async function completeTrialSurvey(
  *
  * **行ごと消すので、印も消える**（試用は終わっている）。件数は縛らない——試用者は数人で、桁で増える経路が無い。
  *
+ * **録画の目録（`trial_recordings`。#978）も、始めてから同じ日数で消す**（`src/trial-recording-store.ts` の
+ * `sweepExpiredTrialRecordings`）。録画の断片そのものは R2 のライフサイクルが、それより前に消す（terraform/trial-recordings.tf）。2 つの表は互いを参照しない
+ * ので、どちらを先に消しても外部キーに触れない。
+ *
  * @param db D1
  * @param now 時刻（UNIX 秒）
- * @returns 消した行数
+ * @returns 消した行数（試用者の行と録画の目録の行の合計）
  */
 export async function sweepExpiredTrialRecords(db: D1Database, now: number): Promise<number> {
   const cutoff = now - TRIAL_RETENTION_DAYS * 24 * 60 * 60;
@@ -316,5 +324,6 @@ export async function sweepExpiredTrialRecords(db: D1Database, now: number): Pro
     .prepare('delete from trial_participants where coalesce(consented_at, marked_at) < ?')
     .bind(cutoff)
     .run();
-  return result.meta.changes ?? 0;
+  const recordings = await sweepExpiredTrialRecordings(db, now, TRIAL_RETENTION_DAYS);
+  return (result.meta.changes ?? 0) + recordings;
 }

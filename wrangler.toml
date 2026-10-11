@@ -164,6 +164,13 @@ migrations_dir = "migrations"
 binding = "BUCKET"
 bucket_name = "game-forge-local"
 
+# 試用の録画（#978）。**作品の成果物とは別の、非公開のバケット**である（理由は terraform/trial-recordings.tf）。
+# 書くのは `src/trial-recording.ts`、読むのは管理画面の `src/admin/trials.ts` だけ。
+# **ブロックの中は `binding` → `bucket_name` の順に並べる**——本番の名前を terraform が正規表現で読む。
+[[r2_buckets]]
+binding = "TRIAL_RECORDINGS"
+bucket_name = "game-forge-trial-recordings-local"
+
 # MCP の認可の保存先（#696 / 仕様 5.15）。**`@cloudflare/workers-oauth-provider` が `OAUTH_KV` の名前で必須とする。**
 # 載るのはクライアントの登録（DCR）・許可（grant）・トークンの記録で、**トークンはハッシュでだけ**保存される
 # （許可の props は暗号化され、鍵はトークンでしか解けない）。ローカルとテストは Miniflare の KV で、id は使われない。
@@ -285,6 +292,13 @@ migrations_dir = "migrations"
 binding = "BUCKET"
 bucket_name = "game-forge"
 
+# 試用の録画の本番のバケット（#978）。**terraform/trial-recordings.tf が作る**（名前はこの行から読む）。
+# **apply してバケットが在るようになってから配る**——無いバケットを指したまま Pages を配ると、束縛が解決できない。
+# **`BUCKET` のブロックより後ろに置く**——`BUCKET` の名前を読むスクリプトの一部は、この見出しの最初のブロックを読む。
+[[env.production.r2_buckets]]
+binding = "TRIAL_RECORDINGS"
+bucket_name = "game-forge-trial-recordings"
+
 # MCP の認可の保存先（#696）。namespace は `game-forge-oauth`（利用者が 2026-09-19 に作った）。
 # 本番とプレビューは同じ namespace を指す（D1 / R2 と同じ扱い）。
 [[env.production.kv_namespaces]]
@@ -305,6 +319,11 @@ migrations_dir = "migrations"
 [[env.preview.r2_buckets]]
 binding = "BUCKET"
 bucket_name = "game-forge"
+
+# 試用の録画（#978）。プレビューも本番と同じバケットを指す（D1 / R2 と同じ扱い。プレビューは全経路が 404）。
+[[env.preview.r2_buckets]]
+binding = "TRIAL_RECORDINGS"
+bucket_name = "game-forge-trial-recordings"
 
 # MCP の認可の保存先（#696）。namespace は `game-forge-oauth`（利用者が 2026-09-19 に作った）。
 # 本番とプレビューは同じ namespace を指す（D1 / R2 と同じ扱い）。

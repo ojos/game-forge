@@ -2873,6 +2873,12 @@ run "wasm_exec objects exist for every delivered go_version" bash scripts/check-
 # **#380 で名前を変えた。** 年齢で消す規則が 1 つ（`avatars/history/` の 30 日）宣言されたので、
 # 「1 つも無い」ではなく「宣言した接頭辞の外に無い」を見る（判定は scripts/lib/r2-lifecycle-judge.sh）。
 run "r2 lifecycle deletes by age only under declared prefixes" bash scripts/check-r2-lifecycle.sh
+# 試用の録画のバケット（#978）。**在ること・r2.dev も独自ドメインも閉じていること・置いたものが 90 日で
+# 消えること**を見る（判定は scripts/check-trial-recordings-bucket.sh）。
+#
+#   trial recordings … `terraform -chdir=terraform apply` を通すと緑になる（terraform/trial-recordings.tf）。
+#                      **apply する前に Pages を配ると、束縛 TRIAL_RECORDINGS が解決できない。**
+run "trial recordings bucket is private and expires in 90 days" bash scripts/check-trial-recordings-bucket.sh
 
 # ── 配信の実物検査（#180 / #181）─────────────────────────────────────────────
 #

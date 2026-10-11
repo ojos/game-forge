@@ -226,9 +226,10 @@ ok_or_ng "$(deps_rc "$WORK/deps-prereq.tsv")" 2 "A11 前提のラベルは自分
 { cat "$DEPS"; grep $'\tdns zone matches$' "$DEPS"; } > "$WORK/deps-dup.tsv"
 ok_or_ng "$(deps_rc "$WORK/deps-dup.tsv")" 2 "A11 重複した行は受け付けない"
 # #808 の実測の件数（gh 6・Cloudflare 11・AWS 13・認証不要 3。wasm_exec / plan / init / 前提は別）。
+# #978 で Cloudflare に 1 件（試用の録画のバケット）を足して 12。
 deps_count() { awk -F'\t' -v d="$1" '$0 !~ /^#/ && NF == 2 && $1 == d && $2 !~ /^prerequisite: / && $2 !~ /^terraform / && $2 !~ /^wasm_exec /' "$DEPS" | wc -l | tr -d ' '; }
 ok_or_ng "gh=$(deps_count gh) cf=$(( $(deps_count cloudflare) + $(deps_count gh,cloudflare) )) aws=$(( $(deps_count aws) + $(deps_count cloudflare,aws) )) none=$(deps_count -)" \
-  "gh=6 cf=11 aws=13 none=3" "A11 対応表の件数が #808 の実測の表と一致する"
+  "gh=6 cf=12 aws=13 none=3" "A11 対応表の件数が #808 の実測の表と一致する"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # B. 判定

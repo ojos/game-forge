@@ -90,7 +90,7 @@ bash scripts/trial-timeline.sh --remote --handle <試用者のハンドル> > ~/
 観察シートの下書きは、管理画面から落とした録画と、上の `--format json` の出力から作れます（#974）。`--started-at` には、`/trials` に出る録画の「始めた」の時刻（日本時間）を渡します。録画を始めた時刻と振り返りの各問の時刻は同じ時計なので、差がそのまま録画の中の秒になります。共有を止めて再開すると、録画は 2 本に分かれます。音声は手元で文字起こしし、Claude へ渡すのは文字起こし・静止画・操作の種類と時刻だけです（お題の文面は渡しません）。
 
 ```bash
-bash scripts/trial-analyze.sh <録画> --out ~/game-forge-trial/p1/analysis --participant p1 --timeline ~/game-forge-trial/p1/timeline.json
+bash scripts/trial-analyze.sh <録画> --out ~/game-forge-trial/p1/analysis --participant p1 --timeline ~/game-forge-trial/p1/timeline.json --started-at '<録画を始めた時刻（/trials の表示のまま）>'
 ```
 
 ## 6. 観察シート

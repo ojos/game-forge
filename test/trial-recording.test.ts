@@ -6,17 +6,21 @@ import { dispatch } from '../src/routes.js';
 import { buildSessionCookie, signSession } from '../src/session.js';
 import { createTrialRoutes, renderTrialBody } from '../src/trial.js';
 import {
+  ADMIN_TRIAL_RECORDINGS_DELETE_PATH,
   ADMIN_TRIAL_RECORDING_PATH,
   TRIAL_CONSENT_AGREE,
   TRIAL_CONSENT_FIELD,
   TRIAL_FROM_FIELD,
   TRIAL_PATH,
   TRIAL_RECORDING_CHUNK_API_PATH,
+  TRIAL_RECORDING_DELETE_CONFIRM_FIELD,
+  TRIAL_RECORDING_DELETE_CONFIRM_VALUE,
   TRIAL_RECORDING_ID_PARAM,
   TRIAL_RECORDING_PART_PARAM,
   TRIAL_RECORDING_SEQ_PARAM,
   TRIAL_RECORDING_START_API_PATH,
   TRIAL_RECORDING_STOP_API_PATH,
+  TRIAL_RECORDING_USER_FIELD,
   TRIAL_STEP_API_PATH,
 } from '../src/trial-paths.js';
 import { trialRecorderConfig } from '../src/trial-recorder-script.js';
@@ -439,6 +443,18 @@ describe('連番の重複と抜け', () => {
     expect(await recordingRow(id)).toMatchObject({ next_seq: 3, total_bytes: 5 + 6 + 5, last_chunk_at: NOW });
   });
 
+  it('R2 に同じ番号の断片が先に在れば、後から届いた中身で置き換えず、在るほうで目録を進める', async () => {
+    const who = await participant('race');
+    const { data } = await start(who);
+    const id = data.recordingId!;
+    // 前の試みが R2 に書けて目録で落ちた・同じ番号が同時に届いた、のどちらかで先に在る断片。
+    await env.TRIAL_RECORDINGS.put(trialRecordingChunkKey(who.userId, id, 0), 'winner');
+    const result = await send(who, id, 0, bytes('loser!!!'));
+    expect(result).toEqual({ status: 200, data: { ok: true, nextSeq: 1 } });
+    expect(await chunkText(who.userId, id, 0)).toBe('winner');
+    expect(await recordingRow(id)).toMatchObject({ next_seq: 1, total_bytes: 'winner'.length });
+  });
+
   it('形の読めない番号・id は 400、空の断片は 400', async () => {
     const who = await participant('bad-seq');
     const { data } = await start(who);
@@ -622,6 +638,87 @@ describe('管理画面から録画を落とす', () => {
       );
       expect(response.status).toBe(404);
     }
+  });
+
+  it('試用者に頼まれたら、確かめのチェックつきで、その人の録画を R2 と目録からすべて消せる', async () => {
+    const operator = await insertUser('operator-delete');
+    await env.DB.prepare('update users set is_admin = 1 where id = ?').bind(operator).run();
+    const operatorCookie = await cookieFor(operator);
+    const who = await participant('delete-me');
+    const keep = await participant('keep-me');
+    const ids: string[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const id = (await start(who)).data.recordingId!;
+      ids.push(id);
+      await send(who, id, 0, bytes('a'));
+      await send(who, id, 1, bytes('b'));
+    }
+    // 目録で落ちた断片（next_seq の番号）も消える。
+    await env.TRIAL_RECORDINGS.put(trialRecordingChunkKey(who.userId, ids[0]!, 2), 'orphan');
+    const kept = (await start(keep)).data.recordingId!;
+    await send(keep, kept, 0, bytes('k'));
+
+    /**
+     * 消す口へ POST する。
+     *
+     * @param fields フォームの項目
+     * @param cookie cookie
+     * @returns レスポンス
+     */
+    async function post(fields: Record<string, string>, cookie: string | undefined): Promise<Response> {
+      const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' };
+      if (cookie !== undefined) headers.cookie = cookie;
+      return await handleAdminRequest(
+        new Request(`${ADMIN_ORIGIN}${ADMIN_TRIAL_RECORDINGS_DELETE_PATH}`, {
+          method: 'POST',
+          headers,
+          body: new URLSearchParams(fields).toString(),
+        }),
+        testEnv(),
+      );
+    }
+
+    // admin 以外は 404、確かめのチェックが無ければ消さない。
+    for (const cookie of [undefined, who.cookie]) {
+      const refused = await post(
+        { [TRIAL_RECORDING_USER_FIELD]: who.userId, [TRIAL_RECORDING_DELETE_CONFIRM_FIELD]: TRIAL_RECORDING_DELETE_CONFIRM_VALUE },
+        cookie,
+      );
+      expect(refused.status).toBe(404);
+    }
+    const unconfirmed = await post({ [TRIAL_RECORDING_USER_FIELD]: who.userId }, operatorCookie);
+    expect(unconfirmed.status).toBe(303);
+    expect(unconfirmed.headers.get('location')).toContain('deleted=invalid');
+    expect(await chunkText(who.userId, ids[0]!, 0)).toBe('a');
+
+    const done = await post(
+      { [TRIAL_RECORDING_USER_FIELD]: who.userId, [TRIAL_RECORDING_DELETE_CONFIRM_FIELD]: TRIAL_RECORDING_DELETE_CONFIRM_VALUE },
+      operatorCookie,
+    );
+    expect(done.status).toBe(303);
+    expect(done.headers.get('location')).toBe(`${ADMIN_TRIALS_PATH}?deleted=2`);
+    for (const id of ids) {
+      for (const seq of [0, 1, 2]) {
+        expect(await chunkText(who.userId, id, seq), `${id} ${seq}`).toBeNull();
+      }
+      expect(await recordingRow(id)).toBeNull();
+    }
+    // ほかの試用者の録画は残る。
+    expect(await chunkText(keep.userId, kept, 0)).toBe('k');
+    expect(await recordingRow(kept)).not.toBeNull();
+  });
+
+  it('印を先に消した試用者の録画も、一覧に並べて消せるようにする', async () => {
+    const operator = await insertUser('operator-orphan');
+    await env.DB.prepare('update users set is_admin = 1 where id = ?').bind(operator).run();
+    const who = await participant('orphan');
+    const id = (await start(who)).data.recordingId!;
+    await send(who, id, 0, bytes('x'));
+    await env.DB.prepare('delete from trial_participants where user_id = ?').bind(who.userId).run();
+    const page = await (await admin(ADMIN_TRIALS_PATH, await cookieFor(operator))).text();
+    expect(page).toContain('印の無い試用者の録画');
+    expect(page).toContain(`data-trial-download="${id}"`);
+    expect(page).toContain(`name="${TRIAL_RECORDING_USER_FIELD}" value="${who.userId}"`);
   });
 
   it('断片が欠けていたら、つないだ流れを途中で壊す（黙って飛ばさない）', async () => {

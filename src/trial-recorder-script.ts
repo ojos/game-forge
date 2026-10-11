@@ -203,22 +203,32 @@ const TRIAL_RECORDER_SCRIPT = `
     return { status: response.status, data: data };
   }
 
+  /** 止まった知らせを送る。送れなかった（通信・5xx・401・429）ら false。 */
   async function flushStops() {
     while (pendingStops.length > 0) {
       var stop = pendingStops[0];
-      if (queue.some(function (item) { return item.recordingId === stop.recordingId; })) { return; }
+      if (queue.some(function (item) { return item.recordingId === stop.recordingId; })) { return true; }
       try {
         var result = await postJson(config.stopPath, stop);
-        if (result.status >= 500) { return; }
-      } catch (error) { return; }
+        if (result.status >= 500 || result.status === 401 || result.status === 429) { return false; }
+      } catch (error) { return false; }
       pendingStops.shift();
     }
+    return true;
   }
+
+  /**
+   * まだ終わっていないものがあるか（録画中・止めた直後で最後の断片が来ていない・送れていない断片・
+   * 送れていない止まった知らせ）。**recorder.stop() は状態を先に inactive にし、最後の断片と stop の合図は
+   * 後から届く**ので、録画の状態ではなく、stop の合図で片付ける session の有無で見る。
+   */
+  function busy() { return session !== null || queue.length > 0 || pendingStops.length > 0; }
 
   /** 溜まった断片を、連番の順に 1 つずつ送る。 */
   async function pump() {
     if (sending) { return; }
     sending = true;
+    var stopsSent = true;
     try {
       while (queue.length > 0) {
         var item = queue[0];
@@ -272,16 +282,23 @@ const TRIAL_RECORDER_SCRIPT = `
         }
         renderPending();
       }
-      await flushStops();
+      stopsSent = await flushStops();
     } finally {
       sending = false;
     }
     renderPending();
-    if (queue.length === 0) {
-      onDrained();
-    } else {
+    if (queue.length > 0) {
       void pump();
+      return;
     }
+    if (!stopsSent && pendingStops.length > 0) {
+      // 止まった知らせだけが残った。断片と同じ間隔で送り直す（断片が来なくても送り直す）。
+      retryDelay = retryDelay === 0 ? 2000 : Math.min(retryDelay * 2, 30000);
+      setTimeout(function () { void pump(); }, retryDelay);
+      return;
+    }
+    retryDelay = 0;
+    onDrained();
   }
 
   function reject(recordingId) {
@@ -471,7 +488,7 @@ const TRIAL_RECORDER_SCRIPT = `
     var skip = document.getElementById('${TRIAL_SURVEY_SKIP_ID}');
     if (!form) { return; }
     form.addEventListener('submit', function (event) {
-      if (queue.length === 0 && !recording()) { leaving = true; return; }
+      if (!busy()) { leaving = true; return; }
       event.preventDefault();
       submitSurveyWhenDrained = true;
       setState(M.surveyWaiting);
@@ -487,7 +504,7 @@ const TRIAL_RECORDER_SCRIPT = `
   }
 
   function onDrained() {
-    if (submitSurveyWhenDrained && !recording()) {
+    if (submitSurveyWhenDrained && !busy()) {
       var form = document.getElementById('${TRIAL_SURVEY_FORM_ID}');
       if (form) { leaving = true; form.submit(); }
     }
@@ -536,7 +553,7 @@ const TRIAL_RECORDER_SCRIPT = `
   }
 
   window.addEventListener('beforeunload', function (event) {
-    if (leaving || (!recording() && queue.length === 0)) { return; }
+    if (leaving || !busy()) { return; }
     event.preventDefault();
     event.returnValue = '';
   });

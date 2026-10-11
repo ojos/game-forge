@@ -76,3 +76,23 @@ export const ADMIN_TRIAL_RECORDING_PATH = '/api/trials/recording';
 
 /** 管理画面の口で、何番目の部分（断片の束）を返すかを載せる問い合わせの名前（0 から）。 */
 export const TRIAL_RECORDING_PART_PARAM = 'part';
+
+/**
+ * 管理画面（admin ホスト）で、試用者 1 人の録画をすべて消す口（`POST`。#978）。
+ *
+ * 試用者に頼まれたとき（同意の文面の「録画の削除は、いつでも頼めます」）に使う。フォームに
+ * {@link TRIAL_RECORDING_USER_FIELD} と {@link TRIAL_RECORDING_DELETE_CONFIRM_FIELD} を載せる。
+ */
+export const ADMIN_TRIAL_RECORDINGS_DELETE_PATH = '/api/trials/recordings/delete';
+
+/** 録画を消す口で、試用者の id を載せる項目。 */
+export const TRIAL_RECORDING_USER_FIELD = 'user';
+
+/** 録画を消す口で、確かめたことを載せる項目（値は {@link TRIAL_RECORDING_DELETE_CONFIRM_VALUE}）。 */
+export const TRIAL_RECORDING_DELETE_CONFIRM_FIELD = 'confirm';
+
+/** {@link TRIAL_RECORDING_DELETE_CONFIRM_FIELD} の値。 */
+export const TRIAL_RECORDING_DELETE_CONFIRM_VALUE = 'delete';
+
+/** 録画を消した後の一覧で、結果を載せる問い合わせの名前（消した本数か `invalid`）。 */
+export const TRIAL_RECORDING_DELETED_QUERY = 'deleted';

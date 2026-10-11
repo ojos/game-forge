@@ -493,6 +493,77 @@ export async function listTrialRecordings(
 }
 
 /**
+ * 試用者の印が無い（印を消した）利用者の録画を引く（管理画面。始めた順）。
+ *
+ * **印を先に消すと、録画は試用者の一覧から辿れなくなる**（一覧は印から引く）。断片は R2 に残るので、
+ * 管理画面が別に並べて、消せるようにする。
+ *
+ * @param db D1
+ * @param limit 取得件数の上限
+ * @returns 利用者の id → 録画の行
+ */
+export async function listOrphanTrialRecordings(
+  db: D1Database,
+  limit: number,
+): Promise<ReadonlyMap<string, readonly TrialRecordingRow[]>> {
+  const result = await db
+    .prepare(
+      `select ${RECORDING_COLUMNS} from trial_recordings
+        where user_id not in (select user_id from trial_participants)
+        order by started_at asc, id asc
+        limit ?`,
+    )
+    .bind(limit)
+    .all<TrialRecordingRow>();
+  const byUser = new Map<string, TrialRecordingRow[]>();
+  for (const row of result.results) {
+    const list = byUser.get(row.user_id) ?? [];
+    list.push(row);
+    byUser.set(row.user_id, list);
+  }
+  return byUser;
+}
+
+/**
+ * 利用者の録画の目録を引く（始めた順）。
+ *
+ * @param db D1
+ * @param userId 利用者の id
+ * @returns 行
+ */
+export async function listTrialRecordingsOf(db: D1Database, userId: string): Promise<readonly TrialRecordingRow[]> {
+  const result = await db
+    .prepare(`select ${RECORDING_COLUMNS} from trial_recordings where user_id = ? order by started_at asc, id asc`)
+    .bind(userId)
+    .all<TrialRecordingRow>();
+  return result.results;
+}
+
+/**
+ * 利用者の録画の目録の行を、指定した id だけ消す（断片を消した後に呼ぶ）。
+ *
+ * @param db D1
+ * @param userId 利用者の id
+ * @param recordingIds 消す録画の id
+ * @returns 消した行数
+ */
+export async function deleteTrialRecordingRows(
+  db: D1Database,
+  userId: string,
+  recordingIds: readonly string[],
+): Promise<number> {
+  if (recordingIds.length === 0) {
+    return 0;
+  }
+  const placeholders = recordingIds.map(() => '?').join(', ');
+  const result = await db
+    .prepare(`delete from trial_recordings where user_id = ? and id in (${placeholders})`)
+    .bind(userId, ...recordingIds)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+/**
  * 始めてから `retentionDays` 日を過ぎた録画の目録を消す（`src/trial-store.ts` の後片付けが呼ぶ）。
  *
  * **断片そのものは R2 のライフサイクルが、置いてから同じ日数で消す**（terraform/trial-recordings.tf）。

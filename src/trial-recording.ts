@@ -14,8 +14,9 @@
  * **連番の順に 1 つずつ**受け取る。
  *
  *   - `seq = next_seq` … R2 へ書いてから、目録の `next_seq` を 1 つ進める（条件付き UPDATE）。**R2 を先に書く**
- *     ——目録を先に進めて R2 で落ちると、抜けた番号のまま次へ進む。R2 に書けて目録で落ちたときは、送り直しが
- *     同じ番号で同じ断片を書き直す（上書きになるが、中身は同じ断片である）。
+ *     ——目録を先に進めて R2 で落ちると、抜けた番号のまま次へ進む。**R2 へは「無いときだけ」書く**
+ *     （`If-None-Match: *`）。R2 に書けて目録で落ちたときの送り直しや、同じ番号が同時に 2 度届いたときは、
+ *     先に在る断片を正として目録を進め、後から届いた中身で置き換えない。
  *   - `seq < next_seq` … **受け取り済み。書かずに 200 を返す**（冪等。送り直しで同じ断片が 2 度届くのは平常の形）。
  *     **上書きしない**——受け取った断片を、後から届いた別の中身で置き換えさせない。
  *   - `seq > next_seq` … **抜けがあるので 409 で断り、次に要る番号を返す。** 抜けたまま進めると、つないだ録画が
@@ -52,10 +53,12 @@ import {
   canStartTrialRecording,
   commitTrialRecordingChunk,
   createTrialRecording,
+  deleteTrialRecordingRows,
   detectTrialBrowser,
   endTrialRecording,
   findTrialRecording,
   isTrialRecordingId,
+  listTrialRecordingsOf,
   parseChunkSeq,
   parseDisplaySurface,
   parseRecordingMimeType,
@@ -206,6 +209,39 @@ async function readLimitedBytes(request: Request, limit: number): Promise<BytesR
 }
 
 /**
+ * 断片を、その鍵がまだ無いときだけ R2 へ書く（`If-None-Match: *`）。
+ *
+ * **条件つきの書き込みそのものが断られたとき（例外）は、条件なしで書き直す**——ローカル（Miniflare）では効くことを
+ * `test/trial-recording.test.ts` が見ているが、本番が条件を受け付けない日に、すべての断片が 500 になるのを避ける。
+ * そのときは、同じ番号が同時に 2 度届いた場合だけ後の中身で置き換わりうる（ログに残す）。
+ *
+ * @param env バインディングと環境変数
+ * @param key 鍵
+ * @param bytes 中身
+ * @param container 入れ物
+ * @returns 書いたオブジェクト（既に在って書かなかったら null）
+ */
+async function putChunkIfAbsent(
+  env: Env,
+  key: string,
+  bytes: Uint8Array,
+  container: TrialRecordingRow['container'],
+): Promise<R2Object | null> {
+  const httpMetadata = { contentType: container === 'mp4' ? 'video/mp4' : 'video/webm' };
+  try {
+    return await env.TRIAL_RECORDINGS.put(key, bytes, {
+      httpMetadata,
+      onlyIf: new Headers({ 'if-none-match': '*' }),
+    });
+  } catch (error) {
+    console.error(
+      `[trial-recording] 条件つきで書けなかったので、条件なしで書きます: ${error instanceof Error ? error.name : 'unknown'}`,
+    );
+    return await env.TRIAL_RECORDINGS.put(key, bytes, { httpMetadata });
+  }
+}
+
+/**
  * 録画を始める（`POST /api/trial/recording/start`）。
  *
  * 本文: `{ "mimeType": "video/webm;codecs=vp9,opus", "displaySurface": "browser" }`。
@@ -323,14 +359,24 @@ async function handleChunk(request: Request, env: Env, now: () => number): Promi
     if (recorded + read.bytes.byteLength > TRIAL_RECORDING_MAX_PARTICIPANT_BYTES) {
       return reject('recording-too-large', 413);
     }
-    await env.TRIAL_RECORDINGS.put(trialRecordingChunkKey(access.userId, recordingId, seq), read.bytes, {
-      httpMetadata: { contentType: recording.container === 'mp4' ? 'video/mp4' : 'video/webm' },
-    });
+    const key = trialRecordingChunkKey(access.userId, recordingId, seq);
+    // **無いときだけ書く**（`If-None-Match: *`）。同じ番号が同時に 2 度届いても、先に書いた断片を後から
+    // 別の中身で置き換えさせない。在れば、在るほうを正として目録を進める（前の試みが R2 に書けて目録で
+    // 落ちた・同じ番号が同時に届いた、のどちらか）。
+    const written = await putChunkIfAbsent(env, key, read.bytes, recording.container);
+    let size = read.bytes.byteLength;
+    if (written === null) {
+      const existing = await env.TRIAL_RECORDINGS.head(key);
+      if (existing === null) {
+        return reject('storage-failed', 500);
+      }
+      size = existing.size;
+    }
     const committed = await commitTrialRecordingChunk(env.DB, {
       userId: access.userId,
       recordingId,
       seq,
-      bytes: read.bytes.byteLength,
+      bytes: size,
       now: at,
     });
     if (!committed) {
@@ -431,6 +477,40 @@ export function streamTrialRecordingPart(
   };
   void pump();
   return readable;
+}
+
+/** R2 の `delete` に 1 回で渡せる鍵の数の上限。 */
+const R2_DELETE_BATCH = 1000;
+
+/**
+ * 利用者の録画をすべて消す（断片を R2 から消してから、目録の行を消す。管理画面）。
+ *
+ * **鍵は目録から導く**（`trial/<利用者>/<録画>/<連番>` の連番は 0 から `next_seq` まで。`next_seq` の番号も消す
+ * ——R2 に書けて目録で落ちた断片がそこに残りうる）。1 本は最大 {@link TRIAL_RECORDING_MAX_CHUNKS} 個なので、
+ * R2 の `delete` を 1 本につき 1 回で済む。**断片を消し損ねたら目録を消さない**（消し損ねた録画を一覧から
+ * 辿れなくしない。もう一度押せば続きから消える）。
+ *
+ * @param env バインディングと環境変数
+ * @param userId 利用者の id
+ * @returns 消した録画の本数と、消すよう頼んだ鍵の数
+ */
+export async function deleteTrialRecordingsOf(
+  env: Env,
+  userId: string,
+): Promise<{ readonly recordings: number; readonly keys: number }> {
+  const rows = await listTrialRecordingsOf(env.DB, userId);
+  let keys = 0;
+  const deleted: string[] = [];
+  for (const row of rows) {
+    const all = Array.from({ length: row.next_seq + 1 }, (_, seq) => trialRecordingChunkKey(userId, row.id, seq));
+    for (let start = 0; start < all.length; start += R2_DELETE_BATCH) {
+      await env.TRIAL_RECORDINGS.delete(all.slice(start, start + R2_DELETE_BATCH));
+    }
+    keys += all.length;
+    deleted.push(row.id);
+  }
+  const recordings = await deleteTrialRecordingRows(env.DB, userId, deleted);
+  return { recordings, keys };
 }
 
 /**

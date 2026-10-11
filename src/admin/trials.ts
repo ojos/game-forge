@@ -1,7 +1,10 @@
 /**
  * 試用者の一覧（`/trials`。#977）——試用者ごとの段の時刻・同意・アンケートの答えを読む。
  *
- * **読むだけの画面である。** 印を付ける・記録を消すのは D1 への直接の SQL で行う（`docs/user-trial.md`）。
+ * **ほぼ読むだけの画面である。** 印を付ける・記録を消すのは D1 への直接の SQL で行う（`docs/user-trial.md`）。
+ * **例外は録画を消す口だけ**（#978）——録画の断片は R2 にあり、SQL では消せない。試用者に頼まれたときに、
+ * 試用者 1 人の録画をすべて消す（{@link ADMIN_TRIAL_RECORDINGS_DELETE_PATH}）。**印を消す前に押す**（印を先に
+ * 消した録画も「印の無い試用者の録画」として並べ、消せるようにしてある）。
  *
  * **録画（#978）は、断片をつないだ 1 本として落とせる。** 口（{@link ADMIN_TRIAL_RECORDING_PATH}）は断片を
  * 40 個ずつつないだ「部分」を返し、この画面のスクリプトが部分を順に取ってブラウザの中で 1 本につなぐ
@@ -18,13 +21,23 @@ import { ADMIN_TRIALS_PATH } from '../admin-paths.js';
 import { escapeHtml } from '../html.js';
 import { toIsoTimestamp } from '../jst.js';
 import type { Route } from '../routes.js';
-import { html } from '../routes.js';
-import { ADMIN_TRIAL_RECORDING_PATH, TRIAL_RECORDING_ID_PARAM, TRIAL_RECORDING_PART_PARAM } from '../trial-paths.js';
-import { streamTrialRecordingPart } from '../trial-recording.js';
+import { html, readLimitedText } from '../routes.js';
+import {
+  ADMIN_TRIAL_RECORDINGS_DELETE_PATH,
+  ADMIN_TRIAL_RECORDING_PATH,
+  TRIAL_RECORDING_DELETED_QUERY,
+  TRIAL_RECORDING_DELETE_CONFIRM_FIELD,
+  TRIAL_RECORDING_DELETE_CONFIRM_VALUE,
+  TRIAL_RECORDING_ID_PARAM,
+  TRIAL_RECORDING_PART_PARAM,
+  TRIAL_RECORDING_USER_FIELD,
+} from '../trial-paths.js';
+import { deleteTrialRecordingsOf, streamTrialRecordingPart } from '../trial-recording.js';
 import type { TrialRecordingEndReason, TrialRecordingRow } from '../trial-recording-store.js';
 import {
   findTrialRecordingById,
   isTrialRecordingId,
+  listOrphanTrialRecordings,
   listTrialRecordings,
   trialRecordingPartCount,
 } from '../trial-recording-store.js';
@@ -126,19 +139,77 @@ function renderRecording(recording: TrialRecordingRow): string {
 }
 
 /**
+ * 1 人ぶんの録画をすべて消すフォーム（試用者に頼まれたとき）。
+ *
+ * **取り消せないので、確かめのチェックを要る項目にする**（押し間違いで消さない）。
+ *
+ * @param userId 利用者の id
+ * @returns HTML
+ */
+function renderDeleteForm(userId: string): string {
+  const id = escapeHtml(userId);
+  return `<form method="post" action="${ADMIN_TRIAL_RECORDINGS_DELETE_PATH}">
+    <input type="hidden" name="${TRIAL_RECORDING_USER_FIELD}" value="${id}">
+    <label><input type="checkbox" name="${TRIAL_RECORDING_DELETE_CONFIRM_FIELD}" value="${TRIAL_RECORDING_DELETE_CONFIRM_VALUE}" required> 試用者に頼まれたので、この人の録画をすべて消す（取り消せません）</label>
+    <button type="submit" class="gf-button gf-button-secondary">この人の録画をすべて消す</button>
+  </form>`;
+}
+
+/**
  * 1 人ぶんの録画の一覧。
  *
+ * @param userId 利用者の id
  * @param recordings 録画の目録の行（始めた順）
  * @returns HTML
  */
-function renderRecordings(recordings: readonly TrialRecordingRow[]): string {
+function renderRecordings(userId: string, recordings: readonly TrialRecordingRow[]): string {
   if (recordings.length === 0) {
     return '<p>録画: —</p>';
   }
   return `<p>録画（${recordings.length} 本。始めた時刻は振り返りの時刻と同じ時計で、録画の頭にあたる）:</p>
   <ul>
 ${recordings.map(renderRecording).join('\n')}
-  </ul>`;
+  </ul>
+  ${renderDeleteForm(userId)}`;
+}
+
+/**
+ * 印の無い（印を先に消した）試用者の録画。
+ *
+ * @param orphans 利用者の id → 録画
+ * @returns HTML（無ければ空）
+ */
+function renderOrphans(orphans: ReadonlyMap<string, readonly TrialRecordingRow[]>): string {
+  if (orphans.size === 0) {
+    return '';
+  }
+  const items = [...orphans.entries()].map(
+    ([userId, recordings]) => `<li class="gf-block gf-admin-row">
+  <p class="gf-admin-meta"><code>${escapeHtml(userId)}</code></p>
+  ${renderRecordings(userId, recordings)}
+</li>`,
+  );
+  return `<h2>印の無い試用者の録画（${orphans.size} 人）</h2>
+<p class="gf-admin-note">印（試用の記録）を先に消した試用者の録画です。録画は置いてから ${TRIAL_RETENTION_DAYS} 日で消えますが、頼まれて消すときはここから消してください。</p>
+<ul class="gf-admin-list">
+${items.join('\n')}
+</ul>`;
+}
+
+/**
+ * 録画を消した結果の知らせ。
+ *
+ * @param raw 問い合わせの値
+ * @returns HTML（無ければ空）
+ */
+function renderDeletedNotice(raw: string | null): string {
+  if (raw === null) {
+    return '';
+  }
+  if (/^\d+$/u.test(raw)) {
+    return `<p class="gf-block" role="status">録画を ${Number(raw)} 本消しました。</p>`;
+  }
+  return '<p class="gf-block" role="alert">録画を消せませんでした（確かめのチェックが無いか、試用者が分かりません）。</p>';
 }
 
 /**
@@ -174,7 +245,7 @@ ${times.map(([label, at]) => `    <li>${label}: ${timeCell(at)}</li>`).join('\n'
   <p>ブラウザ: ${answerCell(row.survey_browser)}</p>
   <p>AI の経験: ${answerCell(row.survey_ai_experience)}</p>
   <p>言い損ねたこと: ${answerCell(row.survey_missed)}</p>
-  ${renderRecordings(recordings)}
+  ${renderRecordings(row.user_id, recordings)}
 </li>`;
 }
 
@@ -184,18 +255,21 @@ ${times.map(([label, at]) => `    <li>${label}: ${timeCell(at)}</li>`).join('\n'
  * @param env バインディングと環境変数
  * @returns レスポンス
  */
-async function showTrials(env: Env): Promise<Response> {
+async function showTrials(request: Request, env: Env): Promise<Response> {
   const rows = await listTrialParticipants(env.DB, ADMIN_LIST_LIMIT);
   const recordings = await listTrialRecordings(
     env.DB,
     rows.map((row) => row.user_id),
   );
+  const orphans = await listOrphanTrialRecordings(env.DB, ADMIN_LIST_LIMIT);
+  const deleted = new URL(request.url).searchParams.get(TRIAL_RECORDING_DELETED_QUERY);
   return html(`${adminHead('試用')}
 <h1>試用</h1>
+${renderDeletedNotice(deleted)}
 <div class="gf-block gf-admin-intro">
 <p>印を付けた試用者ごとに、各段に入った時刻（日本時間・秒まで）・同意・アンケートの答えを出します。振り返りの時刻は、その質問を画面に出した時刻です。</p>
 <p>印を付ける・記録を消すのは、この画面ではなく D1 への SQL で行います。記録は同意した日（同意していなければ印を付けた日）から ${TRIAL_RETENTION_DAYS} 日で自動的に消えます。</p>
-<p>録画は「録画を落とす」で、断片をつないだ 1 本（WebM か MP4）として保存できます。録画は置いてから ${TRIAL_RETENTION_DAYS} 日で消えます。</p>
+<p>録画は「録画を落とす」で、断片をつないだ 1 本（WebM か MP4）として保存できます。録画は置いてから ${TRIAL_RETENTION_DAYS} 日で消えます。試用者に頼まれて消すときは、<strong>印を消す前に</strong>「この人の録画をすべて消す」を押してください（録画は SQL では消せません）。</p>
 </div>
 <h2>印を付けた新しい順（${rows.length} 件）</h2>
 ${
@@ -205,6 +279,7 @@ ${
 ${rows.map((row) => renderParticipant(row, recordings.get(row.user_id) ?? [])).join('\n')}
 </ul>`
 }
+${renderOrphans(orphans)}
 <script>${DOWNLOAD_SCRIPT}</script>
 ${adminFooter()}`);
 }
@@ -287,14 +362,63 @@ async function downloadRecordingPart(request: Request, env: Env): Promise<Respon
 }
 
 /**
+ * 試用者 1 人の録画をすべて消す（`POST /api/trials/recordings/delete`）。終わったら一覧へ 303 で戻す。
+ *
+ * **権限はここで確かめない**（`handleAdminRequest` が守る。下の経路の注記）。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function deleteRecordings(request: Request, env: Env): Promise<Response> {
+  const back = (value: string): Response =>
+    new Response(null, {
+      status: 303,
+      headers: {
+        location: `${ADMIN_TRIALS_PATH}?${TRIAL_RECORDING_DELETED_QUERY}=${value}`,
+        'cache-control': 'no-store',
+      },
+    });
+  const mediaType = (request.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+  if (mediaType !== 'application/x-www-form-urlencoded') {
+    return back('invalid');
+  }
+  const read = await readLimitedText(request, 2_000);
+  if (!read.ok) {
+    return back('invalid');
+  }
+  const fields = new URLSearchParams(read.text);
+  const userId = fields.get(TRIAL_RECORDING_USER_FIELD) ?? '';
+  if (
+    userId === '' ||
+    userId.length > 200 ||
+    fields.get(TRIAL_RECORDING_DELETE_CONFIRM_FIELD) !== TRIAL_RECORDING_DELETE_CONFIRM_VALUE
+  ) {
+    return back('invalid');
+  }
+  try {
+    const result = await deleteTrialRecordingsOf(env, userId);
+    // **利用者の id はログに出さない。** 数だけを残す。
+    console.log(`[admin] trial-recordings-deleted: recordings=${result.recordings} keys=${result.keys}`);
+    return back(String(result.recordings));
+  } catch (error) {
+    console.error(`[admin] 録画を消せませんでした: ${error instanceof Error ? error.name : 'unknown'}`);
+    return back('invalid');
+  }
+}
+
+/**
  * 試用者の一覧の経路。
  *
  * @returns 経路
  */
 export function adminTrialsRoutes(): readonly Route[] {
   return [
-    { method: 'GET', path: ADMIN_TRIALS_PATH, handler: (_request, env) => showTrials(env) },
+    { method: 'GET', path: ADMIN_TRIALS_PATH, handler: (request, env) => showTrials(request, env) },
     // 録画の部分（#978）。`/api/` の下なので画面の検査の対象外（`src/page-paths.ts`）。
     { method: 'GET', path: ADMIN_TRIAL_RECORDING_PATH, handler: downloadRecordingPart },
+    // 録画を消す口（#978）。**この画面で唯一の書き込み**（モジュール冒頭）。権限は `handleAdminRequest` が
+    // 経路表を引く前に確かめる（既定は「閉」。未ログイン・admin 以外は経路に届かず 404）。
+    { method: 'POST', path: ADMIN_TRIAL_RECORDINGS_DELETE_PATH, handler: deleteRecordings },
   ];
 }

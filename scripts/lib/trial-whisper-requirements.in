@@ -1,0 +1,5 @@
+# 試用の録画の文字起こし（scripts/lib/trial-transcribe.py）と静止画の切り出し（imageio-ffmpeg が持つ ffmpeg）に使う
+# Python の依存（#974）。版を上げるときは scripts/install-whisper.sh の冒頭の手順で
+# trial-whisper-requirements.txt を作り直す（ハッシュつき・公開から 2 週間以上たった版だけ）。
+faster-whisper==1.2.1
+imageio-ffmpeg==0.6.0

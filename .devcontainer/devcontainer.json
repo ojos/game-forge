@@ -31,7 +31,7 @@
     "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
   },
   "onCreateCommand": "bash scripts/on-attach.sh --install-launcher || true",
-  "postCreateCommand": "bash scripts/fix-mount-owner.sh && bash scripts/install-ai-tools.sh && bash scripts/install-cloudflared.sh && bash scripts/install-uv.sh && bash scripts/install-browser.sh",
+  "postCreateCommand": "bash scripts/fix-mount-owner.sh && bash scripts/install-ai-tools.sh && bash scripts/install-cloudflared.sh && bash scripts/install-uv.sh && bash scripts/install-browser.sh && bash scripts/install-whisper.sh",
   "postAttachCommand": "bash scripts/on-attach.sh",
   "customizations": {
     "vscode": {

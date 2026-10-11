@@ -55,10 +55,12 @@ npx wrangler d1 execute DB --remote --env production --command \
   "insert into trial_participants (user_id, marked_at)
    select user_id, unixepoch() from handles where handle = '<ハンドル>' and released_at is null"
 
-# 試用者に頼まれたら、すぐ消す（印ごと消える）
+# 試用者に頼まれたら、すぐ消す（印ごと消える）。<利用者の id> は /trials の各行に出る id を、その場で写す
 npx wrangler d1 execute DB --remote --env production --command \
-  "delete from trial_participants where user_id = (select user_id from handles where handle = '<ハンドル>' and released_at is null)"
+  "delete from trial_participants where user_id = '<利用者の id>'"
 ```
+
+**消すときはハンドルではなく、`/trials` に出る利用者の id で指定します。** 退会や改名でハンドルを手放した人は、ハンドルからは引けず、0 件のまま成功してしまうためです。実行した後、出力の `changes` が 1 であること、`/trials` からその行が消えたことを確かめます。
 
 - **頼まれなくても、同意した日から 90 日で消えます**（後片付けの cron。[cleanup-worker.md](cleanup-worker.md)）。
 - 消すように頼まれたら、上の SQL に加えて、録画（#978 の非公開の保存場所）と、そこから作った文字起こし・静止画・観察シート（控えのフォルダ）も消します。

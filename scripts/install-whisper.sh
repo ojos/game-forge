@@ -90,16 +90,18 @@ expected_stamp() {
   printf 'requirements=%s\nmodel=%s@%s\n' "$(sha256_of "$REQUIREMENTS")" "$MODEL_REPO" "$MODEL_REV"
 }
 
-# モデルのファイルが、決めた大きさで揃っているか（--check では 1.6 GB の sha256 を取り直さない。
-# sha256 は置くときに確かめている）。
+# モデルのファイルが、決めた大きさと sha256 で揃っているか。--check でも sha256 を取り直す（1.6 GB で
+# 約 1.4 秒。2026-10-11 の aarch64）。大きさだけだと、置いた後で壊れたファイルを「入っている」と見て
+# 入れ直さず、文字起こしの時まで気づけない。
 #
-# @return 0 = 揃っている / 1 = 足りない
+# @return 0 = 揃っている / 1 = 足りないか壊れている
 model_ok() {
-  local name size _sum got
-  while read -r name size _sum; do
+  local name size want got
+  while read -r name size want; do
     [[ -f "$MODEL_DIR/$name" ]] || return 1
     got="$(wc -c < "$MODEL_DIR/$name" | tr -d ' ')"
     [[ "$got" == "$size" ]] || return 1
+    [[ "$(sha256_of "$MODEL_DIR/$name")" == "$want" ]] || return 1
   done <<<"$MODEL_FILES"
 }
 
@@ -133,7 +135,7 @@ report_state() {
   if model_ok; then
     echo "$PREFIX model OK (${MODEL_REPO}@${MODEL_REV:0:7}: $MODEL_DIR)"
   else
-    echo "$PREFIX model missing or incomplete ($MODEL_DIR)"
+    echo "$PREFIX model missing, incomplete or corrupted ($MODEL_DIR)"
     ok=1
   fi
   ff="$WHISPER_HOME/bin/ffmpeg"

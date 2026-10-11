@@ -26,6 +26,7 @@ import {
 import { trialRecorderConfig } from '../src/trial-recorder-script.js';
 import {
   TRIAL_RECORDING_ACCEPT_SECONDS,
+  TRIAL_RECORDING_LIFECYCLE_LAG_DAYS,
   TRIAL_RECORDING_MAX_BYTES,
   TRIAL_RECORDING_MAX_CHUNKS,
   TRIAL_RECORDING_MAX_CHUNK_BYTES,
@@ -741,19 +742,22 @@ describe('管理画面から録画を落とす', () => {
 });
 
 describe('90 日', () => {
-  it('始めてから 90 日を過ぎた録画の目録を、試用の記録の後片付けが消す', async () => {
+  it('録画の目録は、始めてから 90 日＋R2 の遅れの 1 日を過ぎたら、試用の記録の後片付けが消す', async () => {
     const who = await participant('sweep');
     clock = NOW;
     const old = (await start(who)).data.recordingId!;
     clock = NOW + 10 * 24 * 60 * 60;
     const recent = (await start(who)).data.recordingId!;
-    const at = NOW + TRIAL_RETENTION_DAYS * 24 * 60 * 60 + 1;
-    await sweepExpiredTrialRecords(env.DB, at);
+    const day = 24 * 60 * 60;
+    // 90 日ちょうどでは、まだ消さない（断片が R2 に残りうる間は、目録から辿れるようにする）。
+    await sweepExpiredTrialRecords(env.DB, NOW + TRIAL_RETENTION_DAYS * day + 1);
+    expect(await recordingRow(old)).not.toBeNull();
+    await sweepExpiredTrialRecords(env.DB, NOW + (TRIAL_RETENTION_DAYS + TRIAL_RECORDING_LIFECYCLE_LAG_DAYS) * day + 1);
     expect(await recordingRow(old)).toBeNull();
     expect(await recordingRow(recent)).not.toBeNull();
   });
 
-  it('バケットのライフサイクルの日数（terraform）は、同意の文面と /privacy が読む日数と同じ', () => {
+  it('バケットのライフサイクルの日数（terraform）は、同意の文面と /privacy が読む日数から R2 の遅れを引いた日数', () => {
     const sources = (
       import.meta as unknown as {
         readonly glob: (
@@ -765,6 +769,6 @@ describe('90 日', () => {
     const declaration = sources['../terraform/trial-recordings.tf'];
     expect(declaration).toBeDefined();
     const days = /trial_recordings_retention_days\s*=\s*(\d+)/u.exec(declaration!);
-    expect(Number(days?.[1])).toBe(TRIAL_RETENTION_DAYS);
+    expect(Number(days?.[1]) + TRIAL_RECORDING_LIFECYCLE_LAG_DAYS).toBe(TRIAL_RETENTION_DAYS);
   });
 });

@@ -310,8 +310,9 @@ export async function completeTrialSurvey(
  *
  * **行ごと消すので、印も消える**（試用は終わっている）。件数は縛らない——試用者は数人で、桁で増える経路が無い。
  *
- * **録画の目録（`trial_recordings`。#978）も、始めてから同じ日数で消す**（`src/trial-recording-store.ts`）。
- * 録画の断片そのものは R2 のライフサイクルが消す（terraform/trial-recordings.tf）。2 つの表は互いを参照しない
+ * **録画の目録（`trial_recordings`。#978）も消す**——始めてから同じ日数に R2 の遅れの 1 日を足して
+ * （`src/trial-recording-store.ts` の `sweepExpiredTrialRecordings`）。録画の断片そのものは R2 のライフサイクルが
+ * 消す（terraform/trial-recordings.tf）。2 つの表は互いを参照しない
  * ので、どちらを先に消しても外部キーに触れない。
  *
  * @param db D1

@@ -209,6 +209,9 @@ function renderDeletedNotice(raw: string | null): string {
   if (/^\d+$/u.test(raw)) {
     return `<p class="gf-block" role="status">録画を ${Number(raw)} 本消しました。</p>`;
   }
+  if (raw === 'remaining') {
+    return '<p class="gf-block" role="alert">録画を消している途中です（1 回で消しきれませんでした）。もう一度「この人の録画をすべて消す」を押してください。</p>';
+  }
   return '<p class="gf-block" role="alert">録画を消せませんでした（確かめのチェックが無いか、試用者が分かりません）。</p>';
 }
 
@@ -399,8 +402,10 @@ async function deleteRecordings(request: Request, env: Env): Promise<Response> {
   try {
     const result = await deleteTrialRecordingsOf(env, userId);
     // **利用者の id はログに出さない。** 数だけを残す。
-    console.log(`[admin] trial-recordings-deleted: recordings=${result.recordings} keys=${result.keys}`);
-    return back(String(result.recordings));
+    console.log(
+      `[admin] trial-recordings-deleted: recordings=${result.recordings} objects=${result.objects} remaining=${result.remaining}`,
+    );
+    return back(result.remaining ? 'remaining' : String(result.recordings));
   } catch (error) {
     console.error(`[admin] 録画を消せませんでした: ${error instanceof Error ? error.name : 'unknown'}`);
     return back('invalid');

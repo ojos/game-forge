@@ -65,6 +65,15 @@ export const TRIAL_RECORDING_AUDIO_BPS = 64_000;
  */
 export const TRIAL_RECORDING_PART_CHUNKS = 40;
 
+/**
+ * R2 のライフサイクルが、期限を過ぎてから実際に消すまでの遅れ（日。最大でおよそ 1 日）。
+ *
+ * **バケットの規則は 90 日からこの日数を引いて置き**（terraform/trial-recordings.tf。同意の文面の 90 日を超えない）、
+ * **目録はこの日数を足して消す**（{@link sweepExpiredTrialRecordings}。目録を断片より後まで残し、頼まれて消すときに
+ * 管理画面が録画を見つけられるようにする）。
+ */
+export const TRIAL_RECORDING_LIFECYCLE_LAG_DAYS = 1;
+
 /** 断片を置く鍵の接頭辞。 */
 export const TRIAL_RECORDING_KEY_PREFIX = 'trial/';
 
@@ -525,57 +534,31 @@ export async function listOrphanTrialRecordings(
 }
 
 /**
- * 利用者の録画の目録を引く（始めた順）。
+ * 利用者の録画の目録の行をすべて消す（断片を消した後に呼ぶ）。
  *
  * @param db D1
  * @param userId 利用者の id
- * @returns 行
- */
-export async function listTrialRecordingsOf(db: D1Database, userId: string): Promise<readonly TrialRecordingRow[]> {
-  const result = await db
-    .prepare(`select ${RECORDING_COLUMNS} from trial_recordings where user_id = ? order by started_at asc, id asc`)
-    .bind(userId)
-    .all<TrialRecordingRow>();
-  return result.results;
-}
-
-/**
- * 利用者の録画の目録の行を、指定した id だけ消す（断片を消した後に呼ぶ）。
- *
- * @param db D1
- * @param userId 利用者の id
- * @param recordingIds 消す録画の id
  * @returns 消した行数
  */
-export async function deleteTrialRecordingRows(
-  db: D1Database,
-  userId: string,
-  recordingIds: readonly string[],
-): Promise<number> {
-  if (recordingIds.length === 0) {
-    return 0;
-  }
-  const placeholders = recordingIds.map(() => '?').join(', ');
-  const result = await db
-    .prepare(`delete from trial_recordings where user_id = ? and id in (${placeholders})`)
-    .bind(userId, ...recordingIds)
-    .run();
+export async function deleteTrialRecordingRows(db: D1Database, userId: string): Promise<number> {
+  const result = await db.prepare('delete from trial_recordings where user_id = ?').bind(userId).run();
   return result.meta.changes ?? 0;
 }
 
 /**
- * 始めてから `retentionDays` 日を過ぎた録画の目録を消す（`src/trial-store.ts` の後片付けが呼ぶ）。
+ * 始めてから `retentionDays` 日＋{@link TRIAL_RECORDING_LIFECYCLE_LAG_DAYS} 日を過ぎた録画の目録を消す
+ * （`src/trial-store.ts` の後片付けが呼ぶ）。
  *
- * **断片そのものは R2 のライフサイクルが、置いてから同じ日数で消す**（terraform/trial-recordings.tf）。
- * 目録の行は始めた時刻から数えるので、断片より先に消えることはあっても、後まで残ることはない。
+ * **断片そのものは R2 のライフサイクルが、置いてから `retentionDays − 遅れ` 日で消す**（terraform/trial-recordings.tf）。
+ * 断片は始めてから 60 分＋猶予のうちに置かれるので、目録は断片が消えた後に消える。
  *
  * @param db D1
  * @param now 時刻（UNIX 秒）
- * @param retentionDays 残す日数
+ * @param retentionDays 残す日数（同意の文面の日数）
  * @returns 消した行数
  */
 export async function sweepExpiredTrialRecordings(db: D1Database, now: number, retentionDays: number): Promise<number> {
-  const cutoff = now - retentionDays * 24 * 60 * 60;
+  const cutoff = now - (retentionDays + TRIAL_RECORDING_LIFECYCLE_LAG_DAYS) * 24 * 60 * 60;
   const result = await db.prepare('delete from trial_recordings where started_at < ?').bind(cutoff).run();
   return result.meta.changes ?? 0;
 }

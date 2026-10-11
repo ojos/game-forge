@@ -423,7 +423,18 @@ const TRIAL_RECORDER_SCRIPT = `
     if (video) {
       video.addEventListener('ended', function () { stopRecording('share-ended', M.shareEnded); });
     }
-    recorder.start(info.chunkMs);
+    try {
+      recorder.start(info.chunkMs);
+    } catch (error) {
+      // 始められなかった。取り込みを止め、録画を片付けて、口へ「止まった」を伝える（目録の行は作ってある）。
+      session = null;
+      stopTracks(stream);
+      pendingStops.push({ recordingId: current.recordingId, reason: 'error' });
+      void pump();
+      setState(M.startFailed);
+      renderRestart();
+      return false;
+    }
     current.limit = setTimeout(function () { stopRecording('time-limit', M.timeLimit); }, current.maxMs);
     panel.setAttribute('data-trial-recording', 'active');
     panel.removeAttribute('data-trial-end-reason');
@@ -471,8 +482,15 @@ const TRIAL_RECORDER_SCRIPT = `
     toggle(start, true);
     start.addEventListener('click', async function () {
       start.disabled = true;
-      var ok = await startRecording();
-      start.disabled = false;
+      var ok = false;
+      try {
+        ok = await startRecording();
+      } catch (error) {
+        ok = false;
+        setState(M.startFailed);
+      } finally {
+        start.disabled = false;
+      }
       if (!ok) { return; }
       var after = document.querySelectorAll('[${TRIAL_AFTER_RECORDING_ATTR}]');
       for (var i = 0; i < after.length; i += 1) { after[i].hidden = false; }
@@ -546,9 +564,14 @@ const TRIAL_RECORDER_SCRIPT = `
   if (restartButton) {
     restartButton.addEventListener('click', async function () {
       restartButton.disabled = true;
-      await startRecording();
-      restartButton.disabled = false;
-      renderRestart();
+      try {
+        await startRecording();
+      } catch (error) {
+        setState(M.startFailed);
+      } finally {
+        restartButton.disabled = false;
+        renderRestart();
+      }
     });
   }
 

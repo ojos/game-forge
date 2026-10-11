@@ -46,13 +46,17 @@ locals {
   trial_recordings_bucket_name = regex("\\[\\[env\\.production\\.r2_buckets\\]\\]\\s*\\nbinding\\s*=\\s*\"TRIAL_RECORDINGS\"\\s*\\nbucket_name\\s*=\\s*\"([^\"]+)\"", file("${path.module}/../wrangler.toml"))[0]
 
   /**
-   * 録画を残す日数（**90 日**）。
+   * 録画を消すまでの日数（**89 日**。置いてから数える）。
    *
-   * **`src/trial-store.ts` の `TRIAL_RETENTION_DAYS` と同じ値でなければならない。** 同意の文面と `/privacy` は
-   * あちらを読む。突き合わせは `test/trial-recording.test.ts` が、この行を読んで行う（書き写しを機械で照合する）。
-   * R2 のライフサイクルは期限を過ぎてから 24 時間ほどのうちに消すので、実際に消えるのは 90〜91 日目である。
+   * **同意の文面と `/privacy` の「受け取ってから 90 日で消します」から、R2 の遅れ（期限を過ぎてから最大で
+   * 1 日ほどのうちに消す）を引いた値である。** 90 日を置くと、実際に消えるのは 90〜91 日目になり、文面を超える。
+   * 突き合わせは `test/trial-recording.test.ts` が、この行と `src/trial-store.ts` の `TRIAL_RETENTION_DAYS`・
+   * `src/trial-recording-store.ts` の `TRIAL_RECORDING_LIFECYCLE_LAG_DAYS` を読んで行う。
+   *
+   * 録画の目録（D1）は、始めてから 90 日＋遅れの 1 日で消す（`sweepExpiredTrialRecordings`）。**目録は断片より
+   * 後まで残る**——頼まれて消すとき、管理画面が目録から録画を見つけられるようにするため。
    */
-  trial_recordings_retention_days    = 90
+  trial_recordings_retention_days    = 89
   trial_recordings_retention_seconds = local.trial_recordings_retention_days * 24 * 60 * 60
 
   /**
@@ -141,7 +145,7 @@ output "trial_recordings_bucket_name" {
 }
 
 output "trial_recordings_retention_seconds" {
-  description = "録画を消すまでの秒数（90 日）。外部層の検査が実物の削除規則と突き合わせる。"
+  description = "録画を消すまでの秒数（89 日。90 日から R2 の遅れの 1 日を引いた）。外部層の検査が実物の削除規則と突き合わせる。"
   value       = local.trial_recordings_retention_seconds
 }
 

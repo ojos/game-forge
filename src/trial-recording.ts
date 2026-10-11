@@ -53,12 +53,12 @@ import {
   canStartTrialRecording,
   commitTrialRecordingChunk,
   createTrialRecording,
+  TRIAL_RECORDING_KEY_PREFIX,
   deleteTrialRecordingRows,
   detectTrialBrowser,
   endTrialRecording,
   findTrialRecording,
   isTrialRecordingId,
-  listTrialRecordingsOf,
   parseChunkSeq,
   parseDisplaySurface,
   parseRecordingMimeType,
@@ -211,9 +211,8 @@ async function readLimitedBytes(request: Request, limit: number): Promise<BytesR
 /**
  * 断片を、その鍵がまだ無いときだけ R2 へ書く（`If-None-Match: *`）。
  *
- * **条件つきの書き込みそのものが断られたとき（例外）は、条件なしで書き直す**——ローカル（Miniflare）では効くことを
- * `test/trial-recording.test.ts` が見ているが、本番が条件を受け付けない日に、すべての断片が 500 になるのを避ける。
- * そのときは、同じ番号が同時に 2 度届いた場合だけ後の中身で置き換わりうる（ログに残す）。
+ * **条件つきの書き込みが例外になっても、条件なしで書き直さない**——同じ番号が同時に 2 度届いていると、先に
+ * 書かれた断片を置き換えうる。例外は呼ぶ側で 500 になり、ブラウザが同じ番号を送り直す。
  *
  * @param env バインディングと環境変数
  * @param key 鍵
@@ -227,18 +226,10 @@ async function putChunkIfAbsent(
   bytes: Uint8Array,
   container: TrialRecordingRow['container'],
 ): Promise<R2Object | null> {
-  const httpMetadata = { contentType: container === 'mp4' ? 'video/mp4' : 'video/webm' };
-  try {
-    return await env.TRIAL_RECORDINGS.put(key, bytes, {
-      httpMetadata,
-      onlyIf: new Headers({ 'if-none-match': '*' }),
-    });
-  } catch (error) {
-    console.error(
-      `[trial-recording] 条件つきで書けなかったので、条件なしで書きます: ${error instanceof Error ? error.name : 'unknown'}`,
-    );
-    return await env.TRIAL_RECORDINGS.put(key, bytes, { httpMetadata });
-  }
+  return await env.TRIAL_RECORDINGS.put(key, bytes, {
+    httpMetadata: { contentType: container === 'mp4' ? 'video/mp4' : 'video/webm' },
+    onlyIf: new Headers({ 'if-none-match': '*' }),
+  });
 }
 
 /**
@@ -479,38 +470,43 @@ export function streamTrialRecordingPart(
   return readable;
 }
 
-/** R2 の `delete` に 1 回で渡せる鍵の数の上限。 */
-const R2_DELETE_BATCH = 1000;
+/**
+ * 1 回の呼び出しで読む R2 の一覧の上限（ページ数）。1 ページ 1,000 個なので 20 ページで 20,000 個——1 人の上限
+ * （10 本 × 744 個）を収め、一覧と削除を合わせてもサブリクエストの上限（50）に収まる。
+ */
+const R2_DELETE_MAX_PAGES = 20;
 
 /**
- * 利用者の録画をすべて消す（断片を R2 から消してから、目録の行を消す。管理画面）。
+ * 利用者の録画をすべて消す（R2 の `trial/<利用者>/` の下をすべて消してから、目録の行を消す。管理画面）。
  *
- * **鍵は目録から導く**（`trial/<利用者>/<録画>/<連番>` の連番は 0 から `next_seq` まで。`next_seq` の番号も消す
- * ——R2 に書けて目録で落ちた断片がそこに残りうる）。1 本は最大 {@link TRIAL_RECORDING_MAX_CHUNKS} 個なので、
- * R2 の `delete` を 1 本につき 1 回で済む。**断片を消し損ねたら目録を消さない**（消し損ねた録画を一覧から
- * 辿れなくしない。もう一度押せば続きから消える）。
+ * **消す鍵は R2 の一覧から取る**（目録から導かない）。目録の行が先に消えた断片（後片付けの順序・目録で落ちた
+ * 書き込み）も残さない。1 ページ（最大 1,000 個）ずつ一覧して、そのまま消す。**一覧を読み切れなかったら
+ * 目録を消さない**（消し損ねた録画を一覧から辿れなくしない。もう一度押せば続きから消える）。
  *
  * @param env バインディングと環境変数
  * @param userId 利用者の id
- * @returns 消した録画の本数と、消すよう頼んだ鍵の数
+ * @returns 消した録画の本数と断片の数、読み切れずに残ったか
  */
 export async function deleteTrialRecordingsOf(
   env: Env,
   userId: string,
-): Promise<{ readonly recordings: number; readonly keys: number }> {
-  const rows = await listTrialRecordingsOf(env.DB, userId);
-  let keys = 0;
-  const deleted: string[] = [];
-  for (const row of rows) {
-    const all = Array.from({ length: row.next_seq + 1 }, (_, seq) => trialRecordingChunkKey(userId, row.id, seq));
-    for (let start = 0; start < all.length; start += R2_DELETE_BATCH) {
-      await env.TRIAL_RECORDINGS.delete(all.slice(start, start + R2_DELETE_BATCH));
+): Promise<{ readonly recordings: number; readonly objects: number; readonly remaining: boolean }> {
+  const prefix = `${TRIAL_RECORDING_KEY_PREFIX}${userId}/`;
+  let objects = 0;
+  let cursor: string | undefined;
+  for (let page = 0; page < R2_DELETE_MAX_PAGES; page += 1) {
+    const listed = await env.TRIAL_RECORDINGS.list({ prefix, cursor, limit: 1000 });
+    if (listed.objects.length > 0) {
+      await env.TRIAL_RECORDINGS.delete(listed.objects.map((object) => object.key));
+      objects += listed.objects.length;
     }
-    keys += all.length;
-    deleted.push(row.id);
+    if (!listed.truncated) {
+      const recordings = await deleteTrialRecordingRows(env.DB, userId);
+      return { recordings, objects, remaining: false };
+    }
+    cursor = listed.cursor;
   }
-  const recordings = await deleteTrialRecordingRows(env.DB, userId, deleted);
-  return { recordings, keys };
+  return { recordings: 0, objects, remaining: true };
 }
 
 /**

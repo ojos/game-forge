@@ -265,7 +265,10 @@ describe('同意の前は何も記録しない', () => {
       consent_version: TRIAL_CONSENT_VERSION,
     });
     const body = await (await call(TRIAL_PATH, { cookie })).text();
-    expect(body).toContain('今回は録画をせずに進みます');
+    // 録画の準備の段（#978）。PC の Chrome なので、録画を始めるボタンとスクリプトが出る。
+    expect(body).toContain('録画の準備');
+    expect(body).toContain('録画を始める');
+    expect(body).toContain('window.__trialRecorderConfig');
   });
 });
 
@@ -376,8 +379,8 @@ describe('最後まで通す', () => {
       expect(page).toContain(`振り返り（${index + 1} / 5）`);
       expect(page).toContain(question);
     }
-    // 新しいタブで開くボタン（段 3）。
-    expect(seen[2]).toContain('target="_blank"');
+    // 新しいタブで開くボタン（段 3）。録画の準備の段で開いたタブと同じ名前のタブを開く（#978）。
+    expect(seen[2]).toContain('target="gameforge-trial"');
     expect(seen[2]).toContain('Game Forge を新しいタブで開く');
 
     // 終わった後に押し直しても、何も変わらない。
@@ -393,6 +396,9 @@ describe('最後まで通す', () => {
   it('どの段の画面にも、フォークのことを書かない', () => {
     for (const stage of TRIAL_STAGES) {
       expect(renderTrialStage(stage), stage).not.toContain('フォーク');
+      for (const browser of ['chrome', 'edge', 'safari', 'firefox'] as const) {
+        expect(renderTrialStage(stage, undefined, browser), `${stage} ${browser}`).not.toContain('フォーク');
+      }
     }
   });
 });

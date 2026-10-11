@@ -54,3 +54,61 @@ export const TRIAL_QUESTIONS: readonly [string, string, string, string, string] 
   'いちばんがっかりしたのは、どの瞬間でしたか。',
   '次に使うとしたら、どんなときですか。「たぶん使わない」でもかまいません。',
 ];
+
+/**
+ * 録画の段の案内（#978）。**Chrome・Edge はタブ、Safari・Firefox はウィンドウを選ぶ**よう案内する。
+ *
+ * Chrome・Edge のタブの取り込みは、選んだタブだけを録る——**この試用のタブではなく、Game Forge のタブを選んでもらう**
+ * （振り返りはこのタブで声で答えるので、声は録れている）。そのために、先に Game Forge のタブを開いてもらう。
+ * Safari と Firefox はタブを選べないので、ブラウザのウィンドウを選んでもらう（どちらのタブにいても映る）。
+ *
+ * @param browser 録画に使うブラウザ（`src/trial-recording-store.ts` の `detectTrialBrowser`）
+ * @returns 案内の HTML（静的。利用者の値を含まない）
+ */
+export function trialRecordingGuideHtml(browser: 'chrome' | 'edge' | 'safari' | 'firefox'): string {
+  const pick =
+    browser === 'chrome' || browser === 'edge'
+      ? '<li>「録画を始める」を押すと、共有するものを選ぶ窓が出ます。<strong>「タブ」から「Game Forge」のタブを選んで</strong>「共有」を押してください（このページのタブではありません）。</li>'
+      : '<li>「録画を始める」を押すと、共有するものを聞かれます。<strong>このブラウザのウィンドウを選んで</strong>許可してください（画面全体ではなく、ウィンドウを選んでください）。</li>';
+  return `<ol>
+  <li>下の「Game Forge を新しいタブで開く」で、Game Forge を別のタブに開いておいてください。</li>
+  ${pick}
+  <li>マイクの使用を聞かれたら、許可してください。</li>
+</ol>
+<ul>
+  <li>録画するのは、選んだ画面と、マイクの声です。</li>
+  <li>録画は数秒ごとに送ります。通信が途切れても、戻ったときに送り直します。</li>
+  <li>録画は、振り返りの質問に答え終えて、アンケートへ進むときに自動で止まります。途中でやめたいときは、ブラウザの「共有を停止」を押してください。</li>
+  <li>録画している間は、<strong>このタブを閉じたり、読み込み直したりしないでください。</strong></li>
+  <li>ほかの人に見られたくないもの（メールや通知など）が映らないように、気をつけてください。</li>
+</ul>`;
+}
+
+/** 録画に対応しないブラウザで開いたときの案内（#978）。 */
+export const TRIAL_RECORDING_UNSUPPORTED_HTML = `<p><strong>このブラウザでは録画できません。</strong>PC の Chrome・Edge・Safari・Firefox のどれかで、このページを開き直してください。</p>`;
+
+/**
+ * 録画の状態の文言（#978。`src/trial-recorder-script.ts` が画面に出す）。
+ *
+ * **文言はすべてここに置く**（スクリプトの中に書かない）。`{pending}` と `{size}` と `{elapsed}` はスクリプトが差し込む。
+ */
+export const TRIAL_RECORDER_MESSAGES = {
+  idle: 'まだ録画していません。',
+  starting: '録画の準備をしています…',
+  recording: '● 録画しています（画面と声）{elapsed}',
+  displayDenied: '画面の共有が許可されませんでした。もう一度「録画を始める」を押して、共有するものを選んでください。',
+  micDenied: 'マイクが使えませんでした。ブラウザの設定でマイクを許可してから、もう一度「録画を始める」を押してください。',
+  startFailed: '録画を始められませんでした。少し待ってから、もう一度押してください。',
+  shareEnded: '画面の共有が止まりました。録画を続けるときは「録画を再開する」を押してください。',
+  timeLimit: '録画が 60 分に達したので止めました。このまま進んでください。',
+  finished: '録画を止めました。',
+  error: 'ブラウザの録画が止まりました。「録画を再開する」を押してください。',
+  rejected: '録画の一部を送れませんでした（上限に達したか、受け付けられませんでした）。このまま進んでください。',
+  stopped: '録画していません。録画を続けるときは「録画を再開する」を押してください。',
+  pending: '送れていない録画: {pending} 件（{size}）。通信が戻ると自動で送り直します。',
+  sending: '録画を送っています: 残り {pending} 件（{size}）。',
+  allSent: '録画はすべて送りました。',
+  surveyWaiting: '録画の残りを送っています。送り終えたら、アンケートを自動で送ります。',
+  stepFailed: '次へ進めませんでした。通信を確かめて、もう一度押してください。',
+  unsupported: 'このブラウザでは録画できません。PC の Chrome・Edge・Safari・Firefox のどれかで、このページを開き直してください。',
+} as const;

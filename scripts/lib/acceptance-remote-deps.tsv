@@ -69,5 +69,7 @@ aws	r2 credentials are outside the declaration
 # 本番 R2 を Cloudflare の API で読む（scripts/check-wasm-exec-objects.sh / check-r2-lifecycle.sh）。
 cloudflare	wasm_exec objects exist for every delivered go_version
 cloudflare	r2 lifecycle deletes by age only under declared prefixes
+# 試用の録画のバケット（#978。scripts/check-trial-recordings-bucket.sh）。Cloudflare の API だけを読む。
+cloudflare	trial recordings bucket is private and expires in 90 days
 # 公開 URL への素の HTTP。
 -	sandbox delivery is correct over real HTTP (cors + encoding)

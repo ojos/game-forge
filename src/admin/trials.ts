@@ -2,6 +2,10 @@
  * 試用者の一覧（`/trials`。#977）——試用者ごとの段の時刻・同意・アンケートの答えを読む。
  *
  * **読むだけの画面である。** 印を付ける・記録を消すのは D1 への直接の SQL で行う（`docs/user-trial.md`）。
+ *
+ * **録画（#978）は、断片をつないだ 1 本として落とせる。** 口（{@link ADMIN_TRIAL_RECORDING_PATH}）は断片を
+ * 40 個ずつつないだ「部分」を返し、この画面のスクリプトが部分を順に取ってブラウザの中で 1 本につなぐ
+ * （1 回の呼び出しで R2 を読める回数に上限があるため。`src/trial-recording-store.ts` の `TRIAL_RECORDING_PART_CHUNKS`）。
  * 運営は数人の試用者のために口を足すより、手順で足りる（`is_operator` の付け外しを画面に置かないのと同じ向き。
  * `src/admin/users.ts`）。
  *
@@ -15,6 +19,15 @@ import { escapeHtml } from '../html.js';
 import { toIsoTimestamp } from '../jst.js';
 import type { Route } from '../routes.js';
 import { html } from '../routes.js';
+import { ADMIN_TRIAL_RECORDING_PATH, TRIAL_RECORDING_ID_PARAM, TRIAL_RECORDING_PART_PARAM } from '../trial-paths.js';
+import { streamTrialRecordingPart } from '../trial-recording.js';
+import type { TrialRecordingEndReason, TrialRecordingRow } from '../trial-recording-store.js';
+import {
+  findTrialRecordingById,
+  isTrialRecordingId,
+  listTrialRecordings,
+  trialRecordingPartCount,
+} from '../trial-recording-store.js';
 import type { TrialParticipantListRow, TrialStage } from '../trial-store.js';
 import { TRIAL_RETENTION_DAYS, listTrialParticipants } from '../trial-store.js';
 import { ADMIN_LIST_LIMIT } from './actions.js';
@@ -80,13 +93,62 @@ function answerCell(value: string | null): string {
   return escapeHtml(value).replaceAll('\n', '<br>');
 }
 
+/** 録画が止まった理由の札。 */
+const END_REASON_LABELS: Readonly<Record<TrialRecordingEndReason, string>> = {
+  finished: 'アンケートへ進んで止めた',
+  'share-ended': '試用者が共有を止めた',
+  'time-limit': '60 分に達して止めた',
+  error: 'ブラウザの録画が止まった・送れなかった',
+};
+
+/**
+ * 録画 1 本ぶんを組み立てる。**D1 から来る値（形式・ブラウザ・面）はすべてエスケープする。**
+ *
+ * @param recording 録画の目録の行
+ * @returns HTML
+ */
+function renderRecording(recording: TrialRecordingRow): string {
+  const megabytes = (recording.total_bytes / (1024 * 1024)).toFixed(1);
+  const ended =
+    recording.ended_at === null
+      ? '止まった知らせは届いていない'
+      : `${timeCell(recording.ended_at)}（${recording.end_reason === null ? '理由なし' : END_REASON_LABELS[recording.end_reason]}）`;
+  const parts = trialRecordingPartCount(recording.next_seq);
+  const download =
+    parts === 0
+      ? '<span class="gf-admin-note">断片が 1 つも届いていません。</span>'
+      : `<button type="button" class="gf-button gf-button-secondary" data-trial-download="${escapeHtml(recording.id)}" data-parts="${parts}" data-container="${recording.container}">録画を落とす（${recording.container === 'mp4' ? 'MP4' : 'WebM'}）</button> <span data-trial-download-status></span>`;
+  return `    <li data-trial-recording="${escapeHtml(recording.id)}">
+      <p>始めた: ${timeCell(recording.started_at)} ／ 断片 ${recording.next_seq} 個・${megabytes} MB ／ 止まった: ${ended}</p>
+      <p class="gf-admin-meta">形式: <code>${escapeHtml(recording.mime_type)}</code> ／ ブラウザ: ${escapeHtml(recording.browser ?? '不明')} ／ 取り込んだ面: ${escapeHtml(recording.display_surface ?? '不明')} ／ <code>${escapeHtml(recording.id)}</code></p>
+      <p>${download}</p>
+    </li>`;
+}
+
+/**
+ * 1 人ぶんの録画の一覧。
+ *
+ * @param recordings 録画の目録の行（始めた順）
+ * @returns HTML
+ */
+function renderRecordings(recordings: readonly TrialRecordingRow[]): string {
+  if (recordings.length === 0) {
+    return '<p>録画: —</p>';
+  }
+  return `<p>録画（${recordings.length} 本。始めた時刻は振り返りの時刻と同じ時計で、録画の頭にあたる）:</p>
+  <ul>
+${recordings.map(renderRecording).join('\n')}
+  </ul>`;
+}
+
 /**
  * 1 人ぶんを組み立てる。**D1 から来る値（表示名・id・答え）はすべてエスケープする。**
  *
  * @param row 試用者の行
+ * @param recordings その試用者の録画（始めた順）
  * @returns HTML
  */
-function renderParticipant(row: TrialParticipantListRow): string {
+function renderParticipant(row: TrialParticipantListRow, recordings: readonly TrialRecordingRow[]): string {
   const chip =
     row.stage === 'done'
       ? `<span class="gf-chip">${STAGE_LABELS[row.stage]}</span>`
@@ -112,6 +174,7 @@ ${times.map(([label, at]) => `    <li>${label}: ${timeCell(at)}</li>`).join('\n'
   <p>ブラウザ: ${answerCell(row.survey_browser)}</p>
   <p>AI の経験: ${answerCell(row.survey_ai_experience)}</p>
   <p>言い損ねたこと: ${answerCell(row.survey_missed)}</p>
+  ${renderRecordings(recordings)}
 </li>`;
 }
 
@@ -123,21 +186,104 @@ ${times.map(([label, at]) => `    <li>${label}: ${timeCell(at)}</li>`).join('\n'
  */
 async function showTrials(env: Env): Promise<Response> {
   const rows = await listTrialParticipants(env.DB, ADMIN_LIST_LIMIT);
+  const recordings = await listTrialRecordings(
+    env.DB,
+    rows.map((row) => row.user_id),
+  );
   return html(`${adminHead('試用')}
 <h1>試用</h1>
 <div class="gf-block gf-admin-intro">
 <p>印を付けた試用者ごとに、各段に入った時刻（日本時間・秒まで）・同意・アンケートの答えを出します。振り返りの時刻は、その質問を画面に出した時刻です。</p>
 <p>印を付ける・記録を消すのは、この画面ではなく D1 への SQL で行います。記録は同意した日（同意していなければ印を付けた日）から ${TRIAL_RETENTION_DAYS} 日で自動的に消えます。</p>
+<p>録画は「録画を落とす」で、断片をつないだ 1 本（WebM か MP4）として保存できます。録画は置いてから ${TRIAL_RETENTION_DAYS} 日で消えます。</p>
 </div>
 <h2>印を付けた新しい順（${rows.length} 件）</h2>
 ${
   rows.length === 0
     ? '<p class="gf-admin-note">試用者がいません。</p>'
     : `<ul class="gf-admin-list">
-${rows.map(renderParticipant).join('\n')}
+${rows.map((row) => renderParticipant(row, recordings.get(row.user_id) ?? [])).join('\n')}
 </ul>`
 }
+<script>${DOWNLOAD_SCRIPT}</script>
 ${adminFooter()}`);
+}
+
+/**
+ * 録画を落とすスクリプト。部分を順に取り、ブラウザの中で 1 本につないで保存させる。
+ *
+ * **つないだ 1 本はリンク（`data-trial-download-url`）としても残す**——ブラウザが自動の保存を止めたときに押せるように。
+ */
+const DOWNLOAD_SCRIPT = `
+(function () {
+  'use strict';
+  document.addEventListener('click', async function (event) {
+    var button = event.target instanceof Element ? event.target.closest('[data-trial-download]') : null;
+    if (!button) { return; }
+    var id = button.getAttribute('data-trial-download');
+    var parts = Number(button.getAttribute('data-parts'));
+    var container = button.getAttribute('data-container') === 'mp4' ? 'mp4' : 'webm';
+    var status = button.parentElement.querySelector('[data-trial-download-status]');
+    button.disabled = true;
+    var blobs = [];
+    try {
+      for (var part = 0; part < parts; part += 1) {
+        status.textContent = '取得しています（' + (part + 1) + ' / ' + parts + '）…';
+        var response = await fetch('${ADMIN_TRIAL_RECORDING_PATH}?${TRIAL_RECORDING_ID_PARAM}=' + encodeURIComponent(id)
+          + '&${TRIAL_RECORDING_PART_PARAM}=' + part, { credentials: 'same-origin' });
+        if (!response.ok) { throw new Error('HTTP ' + response.status); }
+        blobs.push(await response.blob());
+      }
+    } catch (error) {
+      status.textContent = '取得できませんでした（' + String(error && error.message ? error.message : error) + '）。';
+      button.disabled = false;
+      return;
+    }
+    var file = new Blob(blobs, { type: container === 'mp4' ? 'video/mp4' : 'video/webm' });
+    var url = URL.createObjectURL(file);
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = 'trial-' + id + '.' + container;
+    link.textContent = '保存する（' + (file.size / (1024 * 1024)).toFixed(1) + ' MB）';
+    link.setAttribute('data-trial-download-url', url);
+    status.textContent = '';
+    status.appendChild(link);
+    button.disabled = false;
+    link.click();
+  });
+})();
+`;
+
+/**
+ * 録画の部分を返す（`GET /api/trials/recording?recording=<id>&part=<n>`）。
+ *
+ * 返すのは断片を連番の順につないだバイト列で、**部分を 0 から順に並べると 1 本の録画になる**。
+ *
+ * @param request 受信したリクエスト
+ * @param env バインディングと環境変数
+ * @returns レスポンス
+ */
+async function downloadRecordingPart(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const id = url.searchParams.get(TRIAL_RECORDING_ID_PARAM) ?? '';
+  const rawPart = url.searchParams.get(TRIAL_RECORDING_PART_PARAM) ?? '';
+  if (!isTrialRecordingId(id) || !/^(?:0|[1-9]\d{0,4})$/u.test(rawPart)) {
+    return new Response('not found', { status: 404, headers: { 'cache-control': 'no-store' } });
+  }
+  const recording = await findTrialRecordingById(env.DB, id);
+  const stream = recording === null ? null : streamTrialRecordingPart(env, recording, Number(rawPart));
+  if (recording === null || stream === null) {
+    return new Response('not found', { status: 404, headers: { 'cache-control': 'no-store' } });
+  }
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'content-type': 'application/octet-stream',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+      'x-trial-recording-parts': String(trialRecordingPartCount(recording.next_seq)),
+    },
+  });
 }
 
 /**
@@ -146,5 +292,9 @@ ${adminFooter()}`);
  * @returns 経路
  */
 export function adminTrialsRoutes(): readonly Route[] {
-  return [{ method: 'GET', path: ADMIN_TRIALS_PATH, handler: (_request, env) => showTrials(env) }];
+  return [
+    { method: 'GET', path: ADMIN_TRIALS_PATH, handler: (_request, env) => showTrials(env) },
+    // 録画の部分（#978）。`/api/` の下なので画面の検査の対象外（`src/page-paths.ts`）。
+    { method: 'GET', path: ADMIN_TRIAL_RECORDING_PATH, handler: downloadRecordingPart },
+  ];
 }

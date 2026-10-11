@@ -23,15 +23,22 @@
  *
  * **同意の前には何も書かない。** 同意しない人は画面を閉じるだけで、口を呼ばない。
  *
- * ## 録画（#978）の継ぎ目
+ * ## 録画（#978）
  *
- * 録画そのもの（画面と声の取り込み・受け口）は #978 が足す。いまは {@link renderRecordingStage} が「録画の段を
- * 飛ばす」旨を出し、{@link recordingStopNotice} が空を返す。#978 はこの 2 つを差し替える（段と列は変えない）。
+ * 録画の準備の段（{@link renderRecordingStage}）で、画面とマイクの録画を始める。録画はアンケートの段に入るまで続く。
+ * 録画の口は `src/trial-recording.ts`、ブラウザ側は `src/trial-recorder-script.ts` が持つ。**段の部分を
+ * `#trial-stage` で包む**——録画の間は、スクリプトが段を進めるフォームを `fetch` で送り、返ってきたこの画面から
+ * 段の部分だけを差し替える（ページを読み込み直すと録画が止まるため）。録画の状態の欄（`#trial-recorder`）と
+ * スクリプトは、包みの外に置く。
+ *
+ * **録画に対応するブラウザ（PC の Chrome・Edge・Safari・Firefox）は User-Agent で見る**（`detectTrialBrowser`）。
+ * 対応しなければ、録画の準備の段に「対応するブラウザで開き直す」案内を出し、先へ進むボタンを出さない。
+ * 画面の取り込みや MediaRecorder を持たないことは、ブラウザの中でスクリプトが確かめる。
  *
  * ## CSRF と JavaScript
  *
- * 素の `<form method="post">` で送る（`src/account.ts` と同じ。JavaScript を要求しない）。CSRF はセッション cookie の
- * `SameSite=Lax` が受ける。
+ * 素の `<form method="post">` で送る（`src/account.ts` と同じ）。CSRF はセッション cookie の `SameSite=Lax` が受ける。
+ * **録画には JavaScript が要る**（同意の段・アンケートの送信・録画の後の段は、JavaScript が無くても進める）。
  */
 import { LOGIN_PATH } from './auth/google.js';
 import { siteFooter } from './legal.js';
@@ -42,6 +49,19 @@ import type { Route } from './routes.js';
 import { html, readLimitedText } from './routes.js';
 import { CONTACT_EMAIL, CONTACT_MAILTO } from './service-contact.js';
 import { resolveSessionUser } from './session-user.js';
+import { createTrialRecordingRoutes } from './trial-recording.js';
+import type { TrialBrowser } from './trial-recording-store.js';
+import { detectTrialBrowser, isTrialRecordingStage } from './trial-recording-store.js';
+import {
+  TRIAL_AFTER_RECORDING_ATTR,
+  TRIAL_RECORDER_ELEMENT_ID,
+  TRIAL_RECORD_RESTART_ID,
+  TRIAL_RECORD_START_ID,
+  TRIAL_STAGE_ELEMENT_ID,
+  TRIAL_SURVEY_FORM_ID,
+  TRIAL_SURVEY_SKIP_ID,
+  trialRecorderScript,
+} from './trial-recorder-script.js';
 import {
   TRIAL_CONSENT_AGREE,
   TRIAL_CONSENT_FIELD,
@@ -63,7 +83,14 @@ import {
   isTrialStage,
   validateTrialSurvey,
 } from './trial-store.js';
-import { TRIAL_CONSENT_HTML, TRIAL_CONSENT_VERSION, TRIAL_INTRO_HTML, TRIAL_QUESTIONS } from './trial-text.js';
+import {
+  TRIAL_CONSENT_HTML,
+  TRIAL_CONSENT_VERSION,
+  TRIAL_INTRO_HTML,
+  TRIAL_QUESTIONS,
+  TRIAL_RECORDING_UNSUPPORTED_HTML,
+  trialRecordingGuideHtml,
+} from './trial-text.js';
 
 /** 受け付けるフォームの形式。 */
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
@@ -81,7 +108,8 @@ const TRIAL_TITLE = 'Game Forge の試用 - Game Forge';
  * User-Agent がスマホ・タブレットのブラウザを名乗っているか。
  *
  * **Android はタブレットも含めて断る**（Android の Chrome にも画面の取り込みが無い）。iPad の
- * 「デスクトップ用サイト」は Mac を名乗るので通る——そこで録画が始められないことは #978 の画面が受ける。
+ * 「デスクトップ用サイト」は Mac を名乗るので通る——そこで録画が始められないことは、録画の準備の段で
+ * スクリプトが確かめて案内する（#978。`src/trial-recorder-script.ts`）。
  *
  * @param userAgent `User-Agent` ヘッダの値
  * @returns スマホ・タブレットなら true
@@ -165,20 +193,44 @@ ${stepForm('consent', '同意して始める', `\n  <input type="hidden" name="$
 }
 
 /**
- * 段 2: 録画の準備（**#978 が差し替える継ぎ目**）。
+ * Game Forge を開くタブの名前（録画の準備の段と自由に触る段で同じタブを使う）。
  *
- * いまは録画の機能が無いので、録画の段を飛ばす旨だけを出す。
+ * Chrome・Edge では、録画の準備の段で開いたこのタブを録画する。自由に触る段のボタンも同じ名前のタブを開くので、
+ * 開き直してもタブが増えない（録っていないタブで触ることにならない）。
+ */
+const GAME_FORGE_TAB_NAME = 'gameforge-trial';
+
+/**
+ * 段 2: 録画の準備（#978）。
  *
+ * 対応するブラウザなら、案内・Game Forge を開くボタン・「録画を始める」を出す。「次へ」は録画を始めるまで隠し、
+ * 録画が始まるとスクリプトが自由に触る段へ進める。**対応しないブラウザでは、先へ進むボタンを出さない。**
+ *
+ * @param browser 録画に使うブラウザ（対応しなければ null）
  * @returns 本文
  */
-export function renderRecordingStage(): string {
+export function renderRecordingStage(browser: TrialBrowser | null = null): string {
+  if (browser === null) {
+    return `<section class="gf-block gf-block-rows" aria-label="録画の準備">
+<div>
+<h2>録画の準備</h2>
+${TRIAL_RECORDING_UNSUPPORTED_HTML}
+</div>
+</section>`;
+  }
   return `<section class="gf-block gf-block-rows" aria-label="録画の準備">
 <div>
 <h2>録画の準備</h2>
-<p>録画の機能はまだ準備中です。<strong>今回は録画をせずに進みます。</strong></p>
+<p>このあと Game Forge を触っている間の<strong>画面と声</strong>を録画します。次の順に進めてください。</p>
+${trialRecordingGuideHtml(browser)}
+<p><a class="gf-button gf-button-secondary" href="${HOME_PATH}" target="${GAME_FORGE_TAB_NAME}">Game Forge を新しいタブで開く</a></p>
+<p data-trial-toggle hidden><button type="button" id="${TRIAL_RECORD_START_ID}" class="gf-button gf-button-primary">録画を始める</button></p>
+<noscript><p><strong>録画には JavaScript が要ります。</strong>JavaScript を有効にしてから、このページを開き直してください。</p></noscript>
 </div>
 </section>
-${stepForm('recording', '次へ')}`;
+<div ${TRIAL_AFTER_RECORDING_ATTR} hidden>
+${stepForm('recording', '次へ')}
+</div>`;
 }
 
 /**
@@ -190,9 +242,9 @@ function renderExploreStage(): string {
   return `<section class="gf-block gf-block-rows" aria-label="自由に触る">
 <div>
 <h2>自由に触ってください</h2>
-<p>下のボタンで Game Forge を新しいタブで開き、自由に触ってください。20〜30 分くらいが目安です。思ったことは声に出してください。</p>
+<p>Game Forge のタブで、自由に触ってください（タブを閉じてしまったときは、下のボタンで開き直せます）。20〜30 分くらいが目安です。思ったことは声に出してください。</p>
 <p>触り終えたら、このタブに戻って「触り終えた」を押してください。</p>
-<p><a class="gf-button gf-button-secondary" href="${HOME_PATH}" target="_blank" rel="noopener">Game Forge を新しいタブで開く</a></p>
+<p><a class="gf-button gf-button-secondary" href="${HOME_PATH}" target="${GAME_FORGE_TAB_NAME}">Game Forge を新しいタブで開く</a></p>
 </div>
 </section>
 ${stepForm('explore', '触り終えた')}`;
@@ -218,12 +270,21 @@ ${stepForm(stage, last ? '答え終えた' : '次の質問へ')}`;
 }
 
 /**
- * 録画を止める案内（**#978 が差し替える継ぎ目**。いまは録画が無いので空）。
+ * 録画を止めた案内（アンケートの段の頭。#978）。
+ *
+ * 録画はこの段に入ったときにスクリプトが止める。残りを送り終えるまでアンケートの送信を待たせ、待たずに送る
+ * ボタンも置く（スクリプトが、送れていない断片があるときだけ出す）。
  *
  * @returns HTML
  */
 export function recordingStopNotice(): string {
-  return '';
+  return `<section class="gf-block gf-block-rows" aria-label="録画の終わり">
+<div>
+<h2>録画を止めました</h2>
+<p>ここで録画を止めます。録画の残りを送り終えるまで、このページを閉じないでください（送れていない量は、上の欄に出ます）。</p>
+</div>
+</section>
+`;
 }
 
 /** アンケートの画面へ戻す値と、断りの文。 */
@@ -252,7 +313,7 @@ function renderSurveyStage(state: SurveyFormState): string {
 <p>文字で答えてください。</p>
 </div>
 </section>
-${error}<form method="post" action="${TRIAL_SURVEY_API_PATH}">
+${error}<form id="${TRIAL_SURVEY_FORM_ID}" method="post" action="${TRIAL_SURVEY_API_PATH}">
   <label for="trial-browser">使ったブラウザ（例: Chrome、Safari、Edge）</label>
   <input id="trial-browser" name="${TRIAL_SURVEY_BROWSER_FIELD}" type="text" required maxlength="${TRIAL_SURVEY_LIMITS.browser}" value="${escapeHtml(state.browser)}">
   <label for="trial-ai">AI でゲームや何かを作った経験（例: ChatGPT で何度か作った・作ったことはない）</label>
@@ -260,7 +321,8 @@ ${error}<form method="post" action="${TRIAL_SURVEY_API_PATH}">
   <label for="trial-missed">声で言い損ねたこと（任意）</label>
   <textarea id="trial-missed" name="${TRIAL_SURVEY_MISSED_FIELD}" maxlength="${TRIAL_SURVEY_LIMITS.missed}">${escapeHtml(state.missed)}</textarea>
   <button type="submit" class="gf-button gf-button-primary">送る</button>
-</form>`;
+</form>
+<p data-trial-toggle hidden><button type="button" id="${TRIAL_SURVEY_SKIP_ID}" class="gf-button gf-button-secondary">録画の残りを待たずに送る</button></p>`;
 }
 
 /**
@@ -284,14 +346,19 @@ function renderDoneStage(): string {
  *
  * @param stage いまの段
  * @param survey アンケートの段で戻す値
+ * @param browser 録画に使うブラウザ（対応しなければ null）
  * @returns 本文
  */
-export function renderTrialStage(stage: TrialStage, survey: SurveyFormState = EMPTY_SURVEY): string {
+export function renderTrialStage(
+  stage: TrialStage,
+  survey: SurveyFormState = EMPTY_SURVEY,
+  browser: TrialBrowser | null = null,
+): string {
   switch (stage) {
     case 'consent':
       return renderConsentStage();
     case 'recording':
-      return renderRecordingStage();
+      return renderRecordingStage(browser);
     case 'explore':
       return renderExploreStage();
     case 'q1':
@@ -305,6 +372,52 @@ export function renderTrialStage(stage: TrialStage, survey: SurveyFormState = EM
     case 'done':
       return renderDoneStage();
   }
+}
+
+/**
+ * 録画の状態の欄（録画の準備〜アンケートの段。段の部分の外に置き、段を差し替えても残る）。
+ *
+ * 文はスクリプトが入れる（JavaScript が無ければ、状態は出ない）。
+ *
+ * @returns HTML
+ */
+function renderRecorderPanel(): string {
+  return `<section id="${TRIAL_RECORDER_ELEMENT_ID}" class="gf-block gf-block-rows" aria-label="録画の状態">
+<div>
+<p role="status" aria-live="polite" data-trial-recorder-state></p>
+<p aria-live="polite" data-trial-recorder-pending></p>
+<div data-trial-recorder-unsupported hidden>${TRIAL_RECORDING_UNSUPPORTED_HTML}</div>
+<p data-trial-toggle hidden><button type="button" id="${TRIAL_RECORD_RESTART_ID}" class="gf-button gf-button-primary">録画を再開する</button></p>
+</div>
+</section>`;
+}
+
+/**
+ * 試用の画面の本文（段の部分・録画の状態の欄・録画のスクリプト）。
+ *
+ * **段の部分を `#trial-stage` で包む**（モジュール冒頭の「録画」）。録画の状態の欄とスクリプトは、録画の準備〜
+ * アンケートの段で、対応するブラウザのときだけ出す。
+ *
+ * @param stage いまの段
+ * @param browser 録画に使うブラウザ（対応しなければ null）
+ * @param survey アンケートの段で戻す値
+ * @returns 本文
+ */
+export function renderTrialBody(
+  stage: TrialStage,
+  browser: TrialBrowser | null,
+  survey: SurveyFormState = EMPTY_SURVEY,
+): string {
+  const stageHtml = `<div id="${TRIAL_STAGE_ELEMENT_ID}" data-trial-stage="${stage}">
+${renderTrialStage(stage, survey, browser)}
+</div>`;
+  const recorder = browser !== null && (isTrialRecordingStage(stage) || stage === 'survey');
+  if (!recorder) {
+    return stageHtml;
+  }
+  return `${renderRecorderPanel()}
+${stageHtml}
+${trialRecorderScript(browser)}`;
 }
 
 /**
@@ -376,7 +489,8 @@ async function showTrial(request: Request, env: Env): Promise<Response> {
   if (!access.ok) {
     return access.response;
   }
-  return html(trialPage(access.viewer, renderTrialStage(access.row.stage)));
+  const browser = detectTrialBrowser(request.headers.get('user-agent'));
+  return html(trialPage(access.viewer, renderTrialBody(access.row.stage, browser)));
 }
 
 /**
@@ -477,11 +591,12 @@ async function handleSurvey(request: Request, env: Env, now: () => number): Prom
   if (access.row.stage !== 'survey') {
     return backToTrial();
   }
+  const browser = detectTrialBrowser(request.headers.get('user-agent'));
   const form = await readTrialForm(request);
   if (!form.ok) {
     if (form.reason === 'body-too-large') {
       return html(
-        trialPage(access.viewer, renderSurveyStage({ ...EMPTY_SURVEY, error: SURVEY_ERRORS['too-long'] })),
+        trialPage(access.viewer, renderTrialBody('survey', browser, { ...EMPTY_SURVEY, error: SURVEY_ERRORS['too-long'] })),
         400,
       );
     }
@@ -495,7 +610,7 @@ async function handleSurvey(request: Request, env: Env, now: () => number): Prom
   const validated = validateTrialSurvey(raw);
   if (!validated.ok) {
     return html(
-      trialPage(access.viewer, renderSurveyStage({ ...raw, error: SURVEY_ERRORS[validated.reason] })),
+      trialPage(access.viewer, renderTrialBody('survey', browser, { ...raw, error: SURVEY_ERRORS[validated.reason] })),
       400,
     );
   }
@@ -506,7 +621,10 @@ async function handleSurvey(request: Request, env: Env, now: () => number): Prom
     return html(
       trialPage(
         access.viewer,
-        renderSurveyStage({ ...raw, error: '記録できませんでした。少し待ってから、もう一度送ってください。' }),
+        renderTrialBody('survey', browser, {
+          ...raw,
+          error: '記録できませんでした。少し待ってから、もう一度送ってください。',
+        }),
       ),
       500,
     );
@@ -526,6 +644,8 @@ export function createTrialRoutes(options: { readonly now?: () => number } = {})
     { method: 'GET', path: TRIAL_PATH, handler: showTrial },
     { method: 'POST', path: TRIAL_STEP_API_PATH, handler: (request, env) => handleStep(request, env, now) },
     { method: 'POST', path: TRIAL_SURVEY_API_PATH, handler: (request, env) => handleSurvey(request, env, now) },
+    // 録画の口（#978）。時計は同じものを渡す（録画を始めた時刻と、各問を出した時刻を同じ物差しにする）。
+    ...createTrialRecordingRoutes({ now }),
   ];
 }
 

@@ -137,6 +137,8 @@ describe('Worker の env に宣言外の値が混入しない', () => {
       // プレイ数の DO（#377）。いいねと同じ Worker の別クラスで、**秘密ではなく結線**である。
       'PLAY_HUB',
       'SANDBOX_HOST',
+      // 試用の録画の非公開のバケット（#978）。**秘密ではなく結線**なので wrangler.toml が宣言する。
+      'TRIAL_RECORDINGS',
     ]);
   });
 });

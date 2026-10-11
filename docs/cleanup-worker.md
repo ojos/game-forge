@@ -48,7 +48,7 @@ cron `*/5 * * * *` が **5 本中 1 本目**として登録されている。`wr
 | DO | `WithdrawalHub`（**SQLite 版**。インスタンスは `withdrawal` の 1 個。DO のマイグレーションはタグ `v1`） | `workers/cleanup/src/hub.ts` |
 | 起こし方 | **cron `*/5 * * * *`** → `scheduled()` が DO のアラームを立て、**同じ回で止まった生成・推敲の行を畳む**（#681） | `workers/cleanup/wrangler.toml` の `[triggers]` |
 | 止まった行の畳み | 開始から 1 時間を過ぎた `pending` / `running` の `games` 行と `game_revision_jobs` 行を `failed` に（条件付き UPDATE 2 本・表ごとに 25 行まで） | `src/stale-generation-sweep.ts` |
-| 試用の記録の掃除（#977） | 同意した日（同意していなければ印を付けた日）から 90 日を過ぎた `trial_participants` の行を消す（DELETE 1 本） | `src/trial-store.ts` の `sweepExpiredTrialRecords` |
+| 試用の記録の掃除（#977 / #978） | 同意した日（同意していなければ印を付けた日）から 90 日を過ぎた `trial_participants` の行と、始めてから 90 日を過ぎた録画の目録（`trial_recordings`）の行を消す（DELETE 2 本。録画の断片は R2 のライフサイクルが消す） | `src/trial-store.ts` の `sweepExpiredTrialRecords` |
 | 進め方 | アラーム 1 回で作品 2 件（進んだら 1 秒後・待ちだけなら 30 分後・何も無ければ立てない） | `src/withdrawal-purge.ts` |
 | 押した要求の中の処理 | 掴む → R2（アイコン）→ 1 batch・14 文で確定 | `src/withdrawal.ts` |
 | MCP の許可（#696） | KV `OAUTH_KV`（**Pages と同じ namespace** `game-forge-oauth`）。完了の段で、その利用者の許可とトークンを消してから印を立てる | `src/oauth-grants.ts` / `src/withdrawal-purge.ts` |
@@ -144,8 +144,9 @@ npx wrangler d1 execute DB --remote --env production --command \
 
 ```
 cron（5 分ごと）→ scheduled()
-          並べて sweepExpiredTrialRecords（D1 の DELETE 1 本）
+          並べて sweepExpiredTrialRecords（D1 の DELETE 2 本）
             trial_participants  coalesce(consented_at, marked_at) が 90 日より前 → 行ごと消す（印も消える）
+            trial_recordings    started_at が 90 日より前 → 録画の目録の行を消す（#978）
           消したときだけ `trial-record-sweep: deleted=N` をログへ出す（利用者の id も答えも出さない）
 ```
 
@@ -155,6 +156,10 @@ cron（5 分ごと）→ scheduled()
 - **権限は足していない**（D1 の DELETE だけ）。**ほかの 3 つとは互いを止めない**（`Promise.allSettled`。失敗は
   最後に投げ直す）。
 - **試用者に頼まれてすぐ消すときは、cron を待たずに D1 で消す**（手順は `docs/user-trial.md`）。
+- **録画の断片（R2）は、この Worker では消さない**（#978）。録画は専用の非公開のバケット `TRIAL_RECORDINGS` に
+  置き、**バケットのライフサイクル（置いてから 90 日で消す。`terraform/trial-recordings.tf`）が消す。** バケットには
+  録画しか置かないので、年齢だけで消してよい。この Worker にバケットの束縛を足す必要が無く、持つ権限も増えない。
+  目録の行は始めた時刻から数えるので、断片より先に消えることはあっても、後まで残ることはない。
 
 ## 初回の配備（利用者の端末で行う）
 

@@ -72,6 +72,12 @@ export const ADMIN_BAN_API_PATH = '/api/ban';
 /** 削除依頼の一覧と、措置の記録（#406。仕様 2.3.1 の admin の表の綴り）。 */
 export const ADMIN_TAKEDOWNS_PATH = '/takedowns';
 
+/**
+ * 試用者の一覧（#977）。段の時刻・同意・アンケートの答えを読むだけの画面で、操作の口を持たない
+ * （印を付ける・記録を消すのは D1 で行う。`docs/user-trial.md`）。
+ */
+export const ADMIN_TRIALS_PATH = '/trials';
+
 /** 削除依頼に措置を記録する口（#406）。 */
 export const ADMIN_TAKEDOWN_API_PATH = '/api/takedown';
 

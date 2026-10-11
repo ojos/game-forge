@@ -86,6 +86,12 @@ bash scripts/trial-timeline.sh --remote --handle <試用者のハンドル> > ~/
 - **出力には試用者のお題の文面が載るので、リポジトリの外へ保存します。** 上の例のように、控えのフォルダへ書き出します。
 - `--format json` で、分析の段（#974）へ渡す形でも出せます。
 
+観察シートの下書きは、管理画面から落とした録画と、上の `--format json` の出力から作れます（#974）。音声は手元で文字起こしし、Claude へ渡すのは文字起こし・静止画・操作の種類と時刻だけです（お題の文面は渡しません）。
+
+```bash
+bash scripts/trial-analyze.sh <録画> --out ~/game-forge-trial/p1/analysis --participant p1 --timeline ~/game-forge-trial/p1/timeline.json
+```
+
 ## 6. 観察シート
 
 録画を見ながら、1 人に 1 枚埋めます（控えのフォルダに置きます）。分析の段（#974）が下書きを作る場合も、この項目に沿います。

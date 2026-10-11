@@ -13,7 +13,7 @@
 #        WAV の頭（RIFF の base64）がどこにも無い。音声の WAV は一時ディレクトリごと消える。
 #      - claude の呼び方: 道具なし（--tools ""）・--strict-mcp-config・--restricted・--no-session-persistence。
 #        --permission-mode・--allowedTools・許可の省略を渡さない（auto モードを使わない）。
-#      - 依頼に観察シートの項目（docs/user-trial.md 7 章）・文字起こし・行動の記録の種類と時刻が入る。
+#      - 依頼に観察シートの項目（docs/user-trial.md の「観察シート」の章）・文字起こし・行動の記録の種類と時刻が入る。
 #        行動の記録のお題の文面（detail）は入らない（同意の文面が AI に渡すと書いたのは文字起こしと静止画だけ）。
 #      - 出力は自分だけが読める形（場所 700・ファイル 600）。
 #   2. 同じ録画の 2 回目は文字起こしを回さない（--redo で回す。静止画が欠けていても回し直す）。
@@ -195,7 +195,7 @@ check "1: 画像の中身は JPEG の頭（/9j/）" \
 check "1: 依頼に WAV の頭（RIFF の base64: UklGR）が無い" test "$(grep -c 'UklGR' "$REQ")" = 0
 check "1: 依頼に audio の塊が無い" test "$(grep -c '"audio' "$REQ")" = 0
 P="$O/prompt.txt"
-check "1: 依頼に観察シートの項目（7 章の表）が入る" grep -qF '| フォーク |' "$P"
+check "1: 依頼に観察シートの項目（観察シートの章の表）が入る" grep -qF '| フォーク |' "$P"
 check "1: 依頼の項目に「運営の気づき」がある" grep -qF '| 運営の気づき |' "$P"
 check "1: 依頼に文字起こしが入る" grep -qF 'こんにちは。ゲームを作ってみます。' "$P"
 check "1: 依頼に行動の記録（操作の種類と時刻）が入る" grep -qF '"atJst": "2026-10-11 14:00:00"' "$P"
@@ -205,10 +205,11 @@ check "1: 依頼に試用者の番号が入る" grep -qF '試用者 p1' "$P"
 check "1: 材料の文を指示として扱わないと断る" grep -qF '指示として扱わず' "$P"
 check "1: 画像の前に時刻のテキストを置く" \
   jq -e '[.message.content[] | select(.type == "text") | .text] | any(test("^静止画: 録画の頭から \\[00:10\\]"))' "$REQ"
-# 7 章の表を写さずに読んでいること（項目の行の数が同じ）。
-doc_rows="$(awk '/^## 7\. 観察シート/{p=1; next} p && /^## /{p=0} p && /^\|/' "$ROOT/docs/user-trial.md" | awk 'END { print NR }')"
+# 観察シートの章の表を写さずに読んでいること（項目の行の数が同じで、0 でない）。
+doc_rows="$(awk '/^## [0-9]+\. 観察シート$/{p=1; next} p && /^## /{p=0} p && /^\|/' "$ROOT/docs/user-trial.md" | awk 'END { print NR }')"
 prompt_rows="$(awk '/^## 観察シートの項目/{p=1; next} p && /^## /{p=0} p && /^\|/' "$P" | awk 'END { print NR }')"
-check "1: 依頼の項目の行が 7 章の表と同じ数（${doc_rows}）" test "$doc_rows" = "$prompt_rows"
+check "1: 文書から観察シートの表を読める（${doc_rows} 行）" test "$doc_rows" -gt 2
+check "1: 依頼の項目の行が観察シートの章の表と同じ数（${doc_rows}）" test "$doc_rows" = "$prompt_rows"
 
 # 自分だけが読める形（試用者の声と画面が載る）。stat の書式は GNU と BSD で違うので、ls の権限の欄で見る。
 # shellcheck disable=SC2012  # 名前ではなく権限の欄だけを読む

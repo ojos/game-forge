@@ -157,7 +157,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 - **外部層を単一入口へ含めない理由**: 外部認証の失効やオフラインでゲート全体が止まり、**実装が正しいのにループが止まります。** 単一入口の目的は複数の段を思い出す運用を機構で塞ぐことであって、外部の可用性をゲートの前提条件に持ち込むことではありません。
 - 外部層を通す契機: （記載。既定は外部状態の宣言を変更したとき）
 
-**道具の自己検査も、すべてローカル層（`scripts/acceptance.sh`）に置いたままにします（#890）。** 規範（`.ai-playbook/loop-workflow.md`「道具自体を見る検査の置き場所」）の基準「実装を変えたときに壊れるか」で `scripts/acceptance.sh` の検査を 1 本ずつ分けると、壊れない側（判定に使う道具を既知の入力で確かめる自己検査）は次の 15 本です（#890 で分類した 13 本と、#903 と #925 で 1 本ずつ足した 2 本）。
+**道具の自己検査も、すべてローカル層（`scripts/acceptance.sh`）に置いたままにします（#890）。** 規範（`.ai-playbook/loop-workflow.md`「道具自体を見る検査の置き場所」）の基準「実装を変えたときに壊れるか」で `scripts/acceptance.sh` の検査を 1 本ずつ分けると、壊れない側（判定に使う道具を既知の入力で確かめる自己検査）は次の 16 本です（#890 で分類した 13 本と、#903・#925・#974 で 1 本ずつ足した 3 本）。
 
 | 自己検査 | 確かめている道具 | 単独の所要 | 注記 |
 |---|---|---|---|
@@ -175,6 +175,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 | `scripts/ojos-jp-records-selftest.sh` | 外部層の DNS レコードの照合 | 0.06 秒 | |
 | `scripts/chat-bundle-changed-selftest.sh` | `scripts/chat-bundle-changed.sh`（チャットの束の関門の判定。#903） | 約 1 秒 | #903 のレーンが別の時点で測った値。下の合計 4.43 秒には含まない |
 | `scripts/orchestrator-bundle-changed-selftest.sh` | `scripts/orchestrator-bundle-changed.sh`（オーケストレータの束の関門の判定。#925） | 約 0.9 秒 | #925 のレーンが別の時点で測った値。下の合計 4.43 秒には含まない |
+| `scripts/trial-analyze-selftest.sh` | `scripts/trial-analyze.sh`（試用の録画の分析の段のつながりと、Claude への依頼に音声が入らないこと。#974） | 約 0.56 秒 | #974 のレーンが別の時点で測った値（3 回で 0.556〜0.589 秒）。下の合計 4.43 秒には含まない |
 | `scripts/tile-reachability/` の `go test` | タイル地図の到達判定（運営の手元の道具） | 0.05 秒 | Go のビルドキャッシュがある状態 |
 
 所要は 2026-10-02 に devcontainer（14 コア、ロードアベレージ 4.6〜4.8）で 1 本ずつ測った値で、**合計 4.43 秒**です。同じ条件で `bash scripts/acceptance.sh` 全体は 89.7 秒だったので、**約 5% にあたります**。
@@ -360,8 +361,10 @@ DCB が所有するファイルは雛形を正とし、game-forge 側の差分�
 | `.devcontainer/devcontainer.json` | `postCreateCommand` の `bash scripts/install-cloudflared.sh` | (2) | dev01 へ ssh で入る入口（cloudflared）を用意します（#802） |
 | `.devcontainer/devcontainer.json` | `postCreateCommand` の `bash scripts/install-uv.sh` | (2) | 月次の運営報告の推敲の段（`scripts/ops-report-draft.sh`）が、`.claude/skills/natural-japanese/` の lint を `uv run` で動かします。版（公開から 2 週間以上たったもの）とチェックサムを固定して入れます（#956） |
 | `.devcontainer/devcontainer.json` | `postCreateCommand` の `bash scripts/install-browser.sh` | (2) | 月次の運営報告の画像の段（#957）と実ブラウザの検査（`scripts/check-page-width.sh`・`scripts/check-sandbox-browser.sh`）が、Chromium（headless shell）と日本語のフォントを使います。playwright-core の版（公開から 2 週間以上たったもの）と tarball のチェックサムを固定し、sudo で入れるのは `playwright install-deps` が挙げるパッケージだけです（#960） |
+| `.devcontainer/devcontainer.json` | `postCreateCommand` の `bash scripts/install-whisper.sh` | (2) | 試用の録画の分析（`scripts/trial-analyze.sh`）が、手元の文字起こし（faster-whisper と whisper large-v3-turbo のモデル）と ffmpeg を使います。音声を外部へ送らないためです（同意の文面。`src/trial-text.ts`）。Python の依存はハッシュつきの要件のファイル（公開から 2 週間以上たった版）で、モデルは commit とファイルごとの sha256 で固定します（#974） |
 | `scripts/post-rebuild-check.sh` | 末尾の uv の確認（`scripts/install-uv.sh` の固定した版を返すか） | (2) | 作り直しの後に、上の行の uv が固定した版で入ったことを確かめます（#956） |
 | `scripts/post-rebuild-check.sh` | 末尾の headless shell と日本語のフォントの確認（`scripts/install-browser.sh --check`） | (2) | 作り直しの後に、上の行の headless shell が固定した revision で動き、`install-deps` が挙げるシステムのパッケージが揃い、日本語のフォントがあることを確かめます（#960） |
+| `scripts/post-rebuild-check.sh` | 末尾の文字起こしの道具と ffmpeg の確認（`scripts/install-whisper.sh --check`） | (2) | 作り直しの後に、上の行の faster-whisper・モデル（sha256 まで）・ffmpeg が入ったことを確かめます（#974） |
 | `scripts/post-rebuild-check.sh` | 末尾の Claude Code の起動役の確認（`~/.local/bin/claude-session-launcher` が実行可能か） | (1) | 起動役の設置に失敗しても `onCreateCommand` は `\|\| true` で通り、`claudeCode.claudeProcessWrapper` が存在しないパスを指して Claude Code が起動しなくなります。作り直しの後に見つけるためです（#968 の第二意見） |
 
 **プロジェクトが所有するファイル**（DCB が「プロジェクトが所有・編集する」と定めるもの）は、雛形と違っていて当然なので、この表には並べません。中身を残して `--accept` しています: `scripts/acceptance.sh`・`scripts/acceptance-remote.sh`・`scripts/check-no-secrets.sh`・`.github/project-ai-rules.md`（このファイル）。

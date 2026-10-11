@@ -21,11 +21,11 @@
 # 外へ出すもの
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# **音声は外部へ送らない**（docs/user-trial.md 3 章の同意の文面）。Anthropic へ渡すのは、
+# **音声は外部へ送らない**（同意の文面。正本は src/trial-text.ts の TRIAL_CONSENT_HTML）。Anthropic へ渡すのは、
 #   - 縮めた静止画（長い辺 640 px の JPEG。--max-frames 枚まで）
 #   - 文字起こし（手元の機械で作ったテキスト）
 #   - 行動の記録のうち、操作の種類・時刻・作品の id だけ（--timeline を渡したときだけ）と、観察シートの項目
-#     （docs/user-trial.md 7 章）
+#     （docs/user-trial.md の「観察シート」の章）
 # だけである。**行動の記録のお題の文面と作品名（detail）は渡さない。** 同意の文面が AI に渡すと書いたのは
 # 文字起こしと静止画だけで、お題は試用者がサイトに書いた文章だから（画面に映った分は静止画として渡る）。
 # お題は人が行動の記録（timeline.txt）から観察シートへ写す。音声の WAV は一時ディレクトリに置き、文字起こしが終わったら消す。録画そのものは読むだけで、
@@ -346,10 +346,11 @@ while IFS=$'\t' read -r _idx _sec _label name; do
 done < "$WORK/sent.tsv"
 
 # ── 4. 依頼を組む ────────────────────────────────────────────────────────────
-# 観察シートの項目は docs/user-trial.md 7 章の表をそのまま渡す（写しを持たない。項目が増えれば下書きも追う）。
-SHEET_TABLE="$(awk '/^## 7\. 観察シート/{p=1; next} p && /^## /{p=0} p && /^\|/' "$SHEET_DOC" 2>/dev/null)"
+# 観察シートの項目は docs/user-trial.md の「観察シート」の章の表をそのまま渡す（写しを持たない。項目が増えれば下書きも追う）。
+# **章の番号では探さない**（見出しの名前で探す）。文書の章を組み直しても読めるようにするためである（#979 で 7 章が 6 章になった）。
+SHEET_TABLE="$(awk '/^## [0-9]+\. 観察シート$/{p=1; next} p && /^## /{p=0} p && /^\|/' "$SHEET_DOC" 2>/dev/null)"
 if [[ "$(printf '%s\n' "$SHEET_TABLE" | awk 'END { print NR }')" -lt 5 ]]; then
-  finish 2 usage "観察シートの項目を docs/user-trial.md の 7 章から読めません"
+  finish 2 usage "観察シートの項目を docs/user-trial.md の「観察シート」の章から読めません"
 fi
 DURATION="$(jq -r '.duration // empty' "$OUT/transcript.json")"
 

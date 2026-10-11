@@ -79,6 +79,10 @@ npm の tarball のチェックサムを `scripts/install-browser.sh` に固定�
 入ったかは `scripts/post-rebuild-check.sh` の `[check] headless shell OK (…)`・`[check] system packages OK (…)`・`[check] japanese font OK (…)` で確かめます。
 DCB の雛形には無い、このプロジェクト固有の段です（`.github/project-ai-rules.md`「雛形からの逸脱」）。
 
+### `postCreateCommand` の `install-whisper.sh`（#974）
+
+試用の録画の文字起こしの道具（faster-whisper と whisper large-v3-turbo のモデル）と ffmpeg を `~/.local/share/game-forge/whisper/` へ入れます。`scripts/trial-analyze.sh` が使うためです。版（公開から 2 週間以上たったもの）とハッシュは、`scripts/lib/trial-whisper-requirements.txt` とモデルの commit・sha256（`scripts/install-whisper.sh`）で固定し、合わなければ入れません。`~/.local` は volume ではないので、作り直すたびに入れ直します（取得は約 1.9 GB で、aarch64 で 1 分 28 秒）。入ったかは `scripts/post-rebuild-check.sh` の `[check] stamp OK`・`faster-whisper OK`・`model OK`・`ffmpeg OK` で確かめます。DCB の雛形には無い、このプロジェクト固有の段です（`.github/project-ai-rules.md`「雛形からの逸脱」）。
+
 ## `onCreateCommand` と `claudeCode.claudeProcessWrapper`（#968）
 
 DCB v0.19.0 の雛形どおりの値です（逸脱ではありません）。`onCreateCommand` が `scripts/on-attach.sh --install-launcher` で

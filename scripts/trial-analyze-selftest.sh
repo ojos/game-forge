@@ -16,7 +16,7 @@
 #      - 依頼に観察シートの項目（docs/user-trial.md 7 章）・文字起こし・行動の記録の種類と時刻が入る。
 #        行動の記録のお題の文面（detail）は入らない（同意の文面が AI に渡すと書いたのは文字起こしと静止画だけ）。
 #      - 出力は自分だけが読める形（場所 700・ファイル 600）。
-#   2. 同じ録画の 2 回目は文字起こしを回さない（--redo で回す）。
+#   2. 同じ録画の 2 回目は文字起こしを回さない（--redo で回す。静止画が欠けていても回し直す）。
 #   3. --max-frames で等間隔に間引く（頭の 1 枚は入る）。再利用したときも縮めた静止画を作り直す。
 #   4. 音声の無い録画: 文字起こしを呼ばず、空の文字起こしで続ける。
 #   5. --no-draft: claude を呼ばない。
@@ -228,6 +228,11 @@ check "2: 2 回目も 3 枚を渡す（縮めた静止画を作り直す）" \
 reset_log
 run "$TMP/rec.webm" --out "$O" --participant p1 --redo --no-draft
 check "2: --redo なら文字起こしを回す" test "$(calls python)" = 1
+rm -f "$O/frames/000002.jpg"
+reset_log
+run "$TMP/rec.webm" --out "$O" --participant p1 --no-draft
+check "2: 静止画が欠けていたら使わずに作り直す" test "$(calls python):$(status)" = "1:ok"
+check "2: 作り直した静止画が在る" test -s "$O/frames/000002.jpg"
 
 # ── 3. 間引き ────────────────────────────────────────────────────────────────
 reset_log

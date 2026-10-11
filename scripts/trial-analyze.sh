@@ -236,9 +236,18 @@ fmt_time() {
 # ── 0. 前回の結果を使えるか ──────────────────────────────────────────────────
 SRC_SUM="$(openssl dgst -sha256 -r "$INPUT" | awk '{ print $1 }')" || finish 2 usage "録画を読めません: $INPUT"
 SOURCE_LINE="$(printf 'sha256=%s interval=%s language=%s' "$SRC_SUM" "$INTERVAL" "$LANGUAGE")"
+# frames.tsv に挙げた静止画がすべて在るか（前の実行の後で消えた・欠けたものがあれば、使わずに作り直す）。
+#
+# @return 0 = すべて在る / 1 = 欠けている
+frames_complete() {
+  local _idx _sec _label name
+  while IFS=$'\t' read -r _idx _sec _label name; do
+    [[ -n "$name" && -s "$OUT/frames/$name" ]] || return 1
+  done < "$OUT/frames.tsv"
+}
 REUSE=0
 if [[ "$REDO" -ne 1 && -f "$OUT/source.txt" && -s "$OUT/transcript.json" && -s "$OUT/frames.tsv" ]] \
-   && [[ "$(sed -n 2p "$OUT/source.txt")" == "$SOURCE_LINE" ]]; then
+   && [[ "$(sed -n 2p "$OUT/source.txt")" == "$SOURCE_LINE" ]] && frames_complete; then
   REUSE=1
   echo "$PREFIX 同じ録画の文字起こしと静止画があるので使います（作り直すなら --redo）" >&2
 fi

@@ -85,13 +85,14 @@ DCB の雛形には無い、このプロジェクト固有の段です（`.githu
 
 ## `onCreateCommand` と `claudeCode.claudeProcessWrapper`（#968）
 
-DCB v0.19.0 の雛形どおりの値です（逸脱ではありません）。`onCreateCommand` が `scripts/on-attach.sh --install-launcher` で
-起動役 `~/.local/bin/claude-session-launcher` を作業ツリーの外へ置き、VS Code の設定 `claudeCode.claudeProcessWrapper` がそれを指します。
+DCB v0.19.2 の雛形どおりの値です（逸脱ではありません）。`onCreateCommand` が起動役 `~/.local/bin/claude-session-launcher` を
+作業ツリーの外へ直接書き出し（DCB v0.19.1 から。`scripts/on-attach.sh` を呼ばない）、接続のたびに `scripts/on-attach.sh` も同じ中身で置き直します。VS Code の設定 `claudeCode.claudeProcessWrapper` がそれを指します。
 起動役は、起動したときの作業ツリーに `scripts/claude-session-wrapper.sh` があればそれを経由し、無ければそのまま Claude Code を起動します。
 ラッパーは `.env` の `SESSION_HOST_LABEL` があれば、セッションの宛先名を `<ラベル>-<作業ツリー名>-<PID の16進>` にします（`/peers` で使う）。
 
-- **`devcontainer.json` と `scripts/on-attach.sh` は同じ版にそろえます。** `devcontainer.json` だけが新しいと、起動役が置かれず、
-  存在しないパスを指すので Claude Code が起動しません（DCB v0.19.0 の CHANGELOG「移行」）。
+- **`devcontainer.json` に `.dcb-new` を残したまま作り直しません。** v0.19.1 からは設置と配線（`claudeCode.claudeProcessWrapper`）が
+  同じファイルにあるので片方だけが新しい状態は起きませんが、`devcontainer.json` が v0.19.0 のまま残ると、設置を
+  `on-attach.sh --install-launcher` に頼る形に戻ります（DCB v0.19.1 の CHANGELOG「移行」）。
 - 配線は作り直しで効きます。作り直したら `test -x ~/.local/bin/claude-session-launcher` で起動役が置かれたことを確かめます。
 - **万一 Claude Code が起動しなくなったら**、VS Code のリモートの設定で `claudeCode.claudeProcessWrapper` を空にすれば元に戻ります。
 

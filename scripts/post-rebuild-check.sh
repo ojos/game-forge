@@ -56,8 +56,8 @@ whisper_state="$(bash "$(dirname "${BASH_SOURCE[0]}")/install-whisper.sh" --chec
 while IFS= read -r line; do
   if [[ -n "$line" ]]; then echo "[check] ${line#\[install-whisper\] }"; fi
 done <<<"$whisper_state"
-# Claude Code の起動役は onCreateCommand（on-attach.sh --install-launcher）が置く（#968。DCB v0.19.0）。設置に
-# 失敗しても onCreateCommand は `|| true` で通り、claudeCode.claudeProcessWrapper が存在しないパスを指したまま
+# Claude Code の起動役は onCreateCommand が直接書き出す（#968・#982。DCB v0.19.1 から on-attach.sh を呼ばない）。設置に
+# 失敗しても onCreateCommand は警告を出して `true` で通り、claudeCode.claudeProcessWrapper が存在しないパスを指したまま
 # Claude Code が起動しなくなるので、作り直しの後にここで見る。戻し方は .devcontainer/README.md。
 launcher="${CLAUDE_SESSION_LAUNCHER:-$HOME/.local/bin/claude-session-launcher}"
 [[ -x "$launcher" ]] && echo "[check] claude launcher OK ($launcher)" || echo "[check] claude launcher missing ($launcher): claudeCode.claudeProcessWrapper を空にすれば Claude Code は起動する"

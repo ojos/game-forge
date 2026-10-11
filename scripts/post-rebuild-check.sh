@@ -50,6 +50,12 @@ browser_state="$(bash "$(dirname "${BASH_SOURCE[0]}")/install-browser.sh" --chec
 while IFS= read -r line; do
   if [[ -n "$line" ]]; then echo "[check] ${line#\[install-browser\] }"; fi
 done <<<"$browser_state"
+# 試用の録画の文字起こしの道具（faster-whisper とモデル）と ffmpeg は scripts/install-whisper.sh が入れる（#974。
+# scripts/trial-analyze.sh が使う）。判定はそのスクリプトの --check に任せる（印・faster-whisper・モデルの大きさ・ffmpeg）。
+whisper_state="$(bash "$(dirname "${BASH_SOURCE[0]}")/install-whisper.sh" --check 2>&1 || true)"
+while IFS= read -r line; do
+  if [[ -n "$line" ]]; then echo "[check] ${line#\[install-whisper\] }"; fi
+done <<<"$whisper_state"
 # Claude Code の起動役は onCreateCommand（on-attach.sh --install-launcher）が置く（#968。DCB v0.19.0）。設置に
 # 失敗しても onCreateCommand は `|| true` で通り、claudeCode.claudeProcessWrapper が存在しないパスを指したまま
 # Claude Code が起動しなくなるので、作り直しの後にここで見る。戻し方は .devcontainer/README.md。

@@ -427,6 +427,17 @@ else
   echo "[acceptance] (ops-report) skip: scripts/check-ops-report-selftest.sh not found"
 fi
 
+# 試用の録画の分析（#974）。偽の ffmpeg・文字起こし・claude で段のつながりを回し、本物の道具も claude -p も
+# ネットワークも使わない（1 秒未満）。**壊れると、Claude への依頼に音声が紛れても、同意の文面（AI へ渡すのは
+# 文字起こしと静止画だけ）と食い違ったまま気づけない。**
+if [[ -f scripts/trial-analyze-selftest.sh ]]; then
+  echo "[acceptance] (trial-analyze) scripts/trial-analyze-selftest.sh"
+  bash scripts/trial-analyze-selftest.sh
+  ran_any=1
+else
+  echo "[acceptance] (trial-analyze) skip: scripts/trial-analyze-selftest.sh not found"
+fi
+
 # チャットの「写し」の機械照合（#695 / shared-ai-rules 12 章）。
 #
 # **前寄りに置く**（sed だけで数 ms）。外すと、関数名のずれが黙って本番へ出て、チャットが

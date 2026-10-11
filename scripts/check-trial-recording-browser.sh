@@ -140,6 +140,11 @@ if ((probe.errors ?? []).length > 0) {
   for (const error of probe.errors) console.log(`    ${error}`);
 }
 process.exit(failed === 0 ? 0 : 1);
-' "$WORK/probe.json" "$WORK/recordings.json" "$WORK/participant.json" || fail "判定に落ちた項目があります（上の FAIL）。"
+' "$WORK/probe.json" "$WORK/recordings.json" "$WORK/participant.json" || {
+  # 落ちたときは、口が何を返していたかを出す（dev サーバのログは後片付けで消える）。
+  echo "[trial-recording-browser] dev サーバのログ（録画の口と例外。最後の 30 行）:" >&2
+  grep -E '/api/trial/|trial-recording|Error' "$WORK/dev.log" | tail -n 30 | sed 's/^/    /' >&2 || true
+  fail "判定に落ちた項目があります（上の FAIL）。"
+}
 
 echo "TRIAL_RECORDING_BROWSER_PASS"

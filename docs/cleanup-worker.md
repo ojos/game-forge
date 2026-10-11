@@ -48,6 +48,7 @@ cron `*/5 * * * *` が **5 本中 1 本目**として登録されている。`wr
 | DO | `WithdrawalHub`（**SQLite 版**。インスタンスは `withdrawal` の 1 個。DO のマイグレーションはタグ `v1`） | `workers/cleanup/src/hub.ts` |
 | 起こし方 | **cron `*/5 * * * *`** → `scheduled()` が DO のアラームを立て、**同じ回で止まった生成・推敲の行を畳む**（#681） | `workers/cleanup/wrangler.toml` の `[triggers]` |
 | 止まった行の畳み | 開始から 1 時間を過ぎた `pending` / `running` の `games` 行と `game_revision_jobs` 行を `failed` に（条件付き UPDATE 2 本・表ごとに 25 行まで） | `src/stale-generation-sweep.ts` |
+| 試用の記録の掃除（#977） | 同意した日（同意していなければ印を付けた日）から 90 日を過ぎた `trial_participants` の行を消す（DELETE 1 本） | `src/trial-store.ts` の `sweepExpiredTrialRecords` |
 | 進め方 | アラーム 1 回で作品 2 件（進んだら 1 秒後・待ちだけなら 30 分後・何も無ければ立てない） | `src/withdrawal-purge.ts` |
 | 押した要求の中の処理 | 掴む → R2（アイコン）→ 1 batch・14 文で確定 | `src/withdrawal.ts` |
 | MCP の許可（#696） | KV `OAUTH_KV`（**Pages と同じ namespace** `game-forge-oauth`）。完了の段で、その利用者の許可とトークンを消してから印を立てる | `src/oauth-grants.ts` / `src/withdrawal-purge.ts` |
@@ -135,6 +136,25 @@ npx wrangler d1 execute DB --remote --env production --command \
 配備から 5 分を過ぎれば、どちらも 0 になっているはずである（公開中の `pending` / `running` の作品が
 あれば `games` の側に残るが、その経路は無い。残っていたら人が見る）。**1 回に畳むのは表ごとに 25 行**なので、
 溜まっていた分が多いときは数回の cron に分かれる。
+
+## 試用の記録を消す（#977）
+
+**試用モード（`/trial`。`src/trial.ts`）の記録は、同意した日から 90 日で消す**（試用の同意の文面と `/privacy` の約束）。
+同じ cron の `scheduled()` が、ほかの処理と並べて `sweepExpiredTrialRecords` を呼ぶ。
+
+```
+cron（5 分ごと）→ scheduled()
+          並べて sweepExpiredTrialRecords（D1 の DELETE 1 本）
+            trial_participants  coalesce(consented_at, marked_at) が 90 日より前 → 行ごと消す（印も消える）
+          消したときだけ `trial-record-sweep: deleted=N` をログへ出す（利用者の id も答えも出さない）
+```
+
+- **数える起点は同意した日である。** 同意していない行（印だけ）は印を付けた日から数えるので、始めなかった人の印も
+  90 日で消える。
+- **件数は縛らない。** 試用者は数人で、桁で増える経路が無い（`sweepExpiredChatConversations` と同じ判断）。
+- **権限は足していない**（D1 の DELETE だけ）。**ほかの 3 つとは互いを止めない**（`Promise.allSettled`。失敗は
+  最後に投げ直す）。
+- **試用者に頼まれてすぐ消すときは、cron を待たずに D1 で消す**（手順は `docs/user-trial.md`）。
 
 ## 初回の配備（利用者の端末で行う）
 

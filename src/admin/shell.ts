@@ -40,6 +40,7 @@ import {
   ADMIN_ACTIONS_PATH,
   ADMIN_HOME_PATH,
   ADMIN_TAKEDOWNS_PATH,
+  ADMIN_TRIALS_PATH,
   ADMIN_USERS_PATH,
 } from '../admin-paths.js';
 
@@ -69,6 +70,7 @@ const ADMIN_NAV: readonly { readonly path: string; readonly label: string }[] = 
   { path: ADMIN_USERS_PATH, label: '利用者' },
   { path: ADMIN_TAKEDOWNS_PATH, label: '削除依頼' },
   { path: ADMIN_ACTIONS_PATH, label: '操作の履歴' },
+  { path: ADMIN_TRIALS_PATH, label: '試用' },
 ];
 
 /**

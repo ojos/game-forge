@@ -48,6 +48,7 @@ import { reviseRoutes } from './revise.js';
 import type { Route } from './routes.js';
 import { dispatch, html, json } from './routes.js';
 import { signupRoutes } from './signup.js';
+import { trialRoutes } from './trial.js';
 import { waitlistRoutes } from './waitlist.js';
 // **作品ページはエディットページ（#664）を渡した形で連結する**（`src/work-page.ts` の `workPageRoutes` は単体テスト用）。
 import { workRoutes } from './work-edit.js';
@@ -385,6 +386,8 @@ function assembleAppRoutes(includeDevRoutes: boolean, accountHandleRoutes: reado
     ...ogpRoutes,
     ...ogpRecaptureRoutes,
     ...inviteRoutes,
+    // 試用モード（#977）。**印のある、ログイン中の利用者だけ**に画面を出し、それ以外は 404（`src/trial.ts`）。
+    ...trialRoutes,
   ];
 }
 

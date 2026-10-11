@@ -1,7 +1,7 @@
 /**
  * `game-forge-cleanup` の入口（#518 / M15-3。土台は #586 / M15-3a）。
  *
- * **この Worker の仕事は 3 つだけである。**
+ * **この Worker の仕事は 5 つだけである。**
  *
  * 1. Durable Object {@link WithdrawalHub} を載せる（**Pages は DO のクラスを自分で持てない**。
  *    `docs/likes.md` と同じ事情）
@@ -11,6 +11,8 @@
  * 4. **同じ cron で、最後に使ってから 30 日を過ぎたチャットの会話を消す**（#695 / 仕様 5.16。
  *    `src/chat-conversation.ts`。D1 の DELETE 1 本だけ。`/privacy` に書いた保存期間を守るのは
  *    この 1 本である）
+ * 5. **同じ cron で、同意から 90 日を過ぎた試用の記録を消す**（#977。`src/trial-store.ts`。D1 の DELETE 1 本だけ。
+ *    試用の同意の文面と `/privacy` に書いた保存期間を守るのはこの 1 本である）
  *
  * # `fetch` は何も受け取らない
  *
@@ -31,6 +33,7 @@
  */
 import { sweepExpiredChatConversations } from '../../../src/chat-conversation.js';
 import { sweepStaleGenerations } from '../../../src/stale-generation-sweep.js';
+import { sweepExpiredTrialRecords } from '../../../src/trial-store.js';
 import { WITHDRAWAL_HUB_INSTANCE } from './hub.js';
 import type { CleanupEnv } from './hub.js';
 
@@ -63,12 +66,14 @@ export default {
   async scheduled(controller: ScheduledController, env: CleanupEnv): Promise<void> {
     const id = env.WITHDRAWAL_HUB.idFromName(WITHDRAWAL_HUB_INSTANCE);
     const at = Math.floor(controller.scheduledTime / 1000);
-    // **3 つは互いを止めない**（下の投げ直しの順序が担保する）。チャットの会話の掃除は
+    // **4 つは互いを止めない**（下の投げ直しの順序が担保する）。チャットの会話の掃除は
     // 退会の後続の処理とも、止まった行の畳みとも無関係である。
-    const [woken, swept, chats] = await Promise.allSettled([
+    // 試用の記録の掃除（#977）も同じく、ほかのどれとも無関係である。
+    const [woken, swept, chats, trials] = await Promise.allSettled([
       env.WITHDRAWAL_HUB.get(id).wake(),
       sweepStaleGenerations(env, at),
       sweepExpiredChatConversations(env.DB, at),
+      sweepExpiredTrialRecords(env.DB, at),
     ]);
     if (swept.status === 'fulfilled' && (swept.value.games > 0 || swept.value.revisionJobs > 0)) {
       // **畳んだときだけ出す**（平常時は 0 件で何も出さない。`wrangler tail` で見る）。
@@ -80,6 +85,10 @@ export default {
       // **消したときだけ出す**（平常時は 0 件）。**利用者の id も本文も出さない**（1.2.54）。
       console.log(`chat-conversation-sweep: deleted=${chats.value}`);
     }
+    if (trials.status === 'fulfilled' && trials.value > 0) {
+      // **消したときだけ出す**（平常時は 0 件）。**利用者の id も答えも出さない。**
+      console.log(`trial-record-sweep: deleted=${trials.value}`);
+    }
     if (woken.status === 'rejected') {
       throw woken.reason;
     }
@@ -88,6 +97,9 @@ export default {
     }
     if (chats.status === 'rejected') {
       throw chats.reason;
+    }
+    if (trials.status === 'rejected') {
+      throw trials.reason;
     }
   },
 } satisfies ExportedHandler<CleanupEnv>;

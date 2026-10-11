@@ -14,12 +14,14 @@
 #      - claude の呼び方: 道具なし（--tools ""）・--strict-mcp-config・--restricted・--no-session-persistence。
 #        --permission-mode・--allowedTools・許可の省略を渡さない（auto モードを使わない）。
 #      - 依頼に観察シートの項目（docs/user-trial.md 7 章）・文字起こし・行動の記録が入る。
+#      - 出力は自分だけが読める形（場所 700・ファイル 600）。
 #   2. 同じ録画の 2 回目は文字起こしを回さない（--redo で回す）。
 #   3. --max-frames で等間隔に間引く（頭の 1 枚は入る）。再利用したときも縮めた静止画を作り直す。
 #   4. 音声の無い録画: 文字起こしを呼ばず、空の文字起こしで続ける。
 #   5. --no-draft: claude を呼ばない。
 #   6. 失敗の分岐: claude の失敗・見出しの無い返答（1）、文字起こしの失敗・静止画の失敗・
 #      作業ツリーの中の --out（作らずに止める）・形の違う --timeline・名前に見える --participant（2）。
+#      通った場所で回し直して claude が落ちたら、前の下書きを残さない。
 #
 # 終了コード: 0 = TRIAL_ANALYZE_SELFTEST_PASS / 1 = どれかが落ちた
 set -uo pipefail
@@ -206,6 +208,14 @@ doc_rows="$(awk '/^## 7\. 観察シート/{p=1; next} p && /^## /{p=0} p && /^\|
 prompt_rows="$(awk '/^## 観察シートの項目/{p=1; next} p && /^## /{p=0} p && /^\|/' "$P" | awk 'END { print NR }')"
 check "1: 依頼の項目の行が 7 章の表と同じ数（${doc_rows}）" test "$doc_rows" = "$prompt_rows"
 
+# 自分だけが読める形（試用者の声と画面が載る）。stat の書式は GNU と BSD で違うので、ls の権限の欄で見る。
+# shellcheck disable=SC2012  # 名前ではなく権限の欄だけを読む
+perm() { ls -ld "$1" | cut -c 1-10; }
+check "1: 出力の場所は 700（実際 $(perm "$O")）" test "$(perm "$O")" = "drwx------"
+check "1: 文字起こしは 600" test "$(perm "$O/transcript.txt")" = "-rw-------"
+check "1: 下書きは 600" test "$(perm "$O/sheet-draft.md")" = "-rw-------"
+check "1: 静止画は 600" test "$(perm "$O/frames/000001.jpg")" = "-rw-------"
+
 # ── 2. 同じ録画の 2 回目 ─────────────────────────────────────────────────────
 reset_log
 run "$TMP/rec.webm" --out "$O" --participant p1
@@ -248,6 +258,16 @@ for mode in exit error noheading; do
   check "6: claude が ${mode} でも文字起こしは残る" test -s "$TMP/out6-$mode/transcript.txt"
   check "6: claude が ${mode} なら下書きを指さない" grep -qx 'TRIAL_ANALYZE_SHEET=' "$TMP/last.txt"
 done
+
+# 前の実行の下書きが残っていると、今回の失敗を取り違える。通った場所で回し直して claude が落ちたら、下書きは無い。
+mkdir -p "$TMP/out-stale"; chmod 755 "$TMP/out-stale"
+reset_log
+run "$TMP/rec.webm" --out "$TMP/out-stale"
+check "6: 前置き（1 回目は ok）" test "$(status)" = ok
+check "6: 既にあった場所も 700 にそろえる" test "$(perm "$TMP/out-stale")" = "drwx------"
+FAKE_CLAUDE=error run "$TMP/rec.webm" --out "$TMP/out-stale"
+check "6: 2 回目の claude が落ちたら draft-failed" test "$(status)" = draft-failed
+check "6: 2 回目の claude が落ちたら前の下書きを残さない" test ! -e "$TMP/out-stale/sheet-draft.md"
 
 reset_log
 FAKE_TRANSCRIBE_FAIL=1 run "$TMP/rec.webm" --out "$TMP/out7"

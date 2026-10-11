@@ -47,6 +47,9 @@
 #
 # **リポジトリの中を指したら止める。** 文字起こしと静止画には試用者の声と画面が載る。
 # リポジトリは public である（docs/user-trial.md の冒頭）。
+# **自分だけが読める形で置く**（<out> は 700、作るファイルは umask 077 で 600）。
+# **下書き・依頼・応答・結果の行は、実行のたびに消してから作る**（--no-draft でも消す）。文字起こしと静止画は、
+# 同じ録画・同じ指定なら残して使う。
 #
 # 結果の行（終わるときに標準出力へ出し、<out>/result.txt にも書く）:
 #   TRIAL_ANALYZE_STATUS=<ok|draft-failed|usage|tools-missing|transcribe-failed|frames-failed>
@@ -83,6 +86,9 @@
 #
 # devcontainer（Linux）でだけ動かす（道具は scripts/install-whisper.sh が Linux の devcontainer へ入れる）。
 set -uo pipefail
+# 作るものはすべて自分だけが読める形にする（ディレクトリ 700・ファイル 600）。文字起こしと静止画には試用者の声と
+# 画面が載り、同意の文面は「運営だけが読める場所に置く」と約束している（docs/user-trial.md 3 章）。
+umask 077
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 2
 ROOT="$(dirname "$HERE")"
@@ -201,6 +207,11 @@ if inside_worktree "$OUT_ABS"; then
   finish 2 usage "出力の置き場所が git の作業ツリーの中を指しています（リポジトリの外へ向けてください）: $OUT_ABS"
 fi
 OUT="$OUT_ABS"
+# 既にあった場所（umask の外で作られたもの）も、自分だけが読める形にそろえる。
+chmod 700 "$OUT" || finish 2 usage "出力の置き場所の権限を絞れません: $OUT"
+# 前の実行の下書きと依頼を先に消す。残すと、今回の下書きが作れなかったときに、前の録画や前の指定の
+# 下書きを今回のものと取り違える（結果の行の TRIAL_ANALYZE_SHEET が空でも、ファイルは残っている）。
+rm -f -- "$OUT/sheet-draft.md" "$OUT/response.jsonl" "$OUT/prompt.txt" "$OUT/sent-frames.txt" "$OUT/result.txt"
 
 command -v "$FFMPEG" >/dev/null 2>&1 || finish 2 tools-missing "ffmpeg がありません（bash scripts/install-whisper.sh）: $FFMPEG"
 

@@ -66,13 +66,14 @@ export const TRIAL_RECORDING_AUDIO_BPS = 64_000;
 export const TRIAL_RECORDING_PART_CHUNKS = 40;
 
 /**
- * R2 のライフサイクルが、期限を過ぎてから実際に消すまでの遅れ（日。最大でおよそ 1 日）。
+ * R2 のライフサイクルの日数を、同意の文面の日数（90 日）より短くする幅（日）。
  *
- * **バケットの規則は 90 日からこの日数を引いて置き**（terraform/trial-recordings.tf。同意の文面の 90 日を超えない）、
- * **目録はこの日数を足して消す**（{@link sweepExpiredTrialRecordings}。目録を断片より後まで残し、頼まれて消すときに
- * 管理画面が録画を見つけられるようにする）。
+ * **2 日にする。** R2 は期限を過ぎてから 1 日ほどのうちに消す（遅れの 1 日）。断片は録画を始めてから 60 分＋猶予
+ * （最大 75 分）のうちに置かれる（余裕の 1 日）。バケットの規則を `90 − 2 = 88` 日にすれば、断片は始めてから
+ * 90 日より前に消え、**目録の行（始めてから 90 日で消す）は断片より後まで残る**——頼まれて消すときに、管理画面が
+ * 目録から録画を見つけられる。どちらも同意の文面と `/privacy` の 90 日を超えない。
  */
-export const TRIAL_RECORDING_LIFECYCLE_LAG_DAYS = 1;
+export const TRIAL_RECORDING_LIFECYCLE_MARGIN_DAYS = 2;
 
 /** 断片を置く鍵の接頭辞。 */
 export const TRIAL_RECORDING_KEY_PREFIX = 'trial/';
@@ -546,11 +547,10 @@ export async function deleteTrialRecordingRows(db: D1Database, userId: string): 
 }
 
 /**
- * 始めてから `retentionDays` 日＋{@link TRIAL_RECORDING_LIFECYCLE_LAG_DAYS} 日を過ぎた録画の目録を消す
- * （`src/trial-store.ts` の後片付けが呼ぶ）。
+ * 始めてから `retentionDays` 日を過ぎた録画の目録を消す（`src/trial-store.ts` の後片付けが呼ぶ）。
  *
- * **断片そのものは R2 のライフサイクルが、置いてから `retentionDays − 遅れ` 日で消す**（terraform/trial-recordings.tf）。
- * 断片は始めてから 60 分＋猶予のうちに置かれるので、目録は断片が消えた後に消える。
+ * **断片そのものは R2 のライフサイクルが、置いてから `retentionDays − 2` 日で消す**（terraform/trial-recordings.tf。
+ * {@link TRIAL_RECORDING_LIFECYCLE_MARGIN_DAYS}）。目録は断片が消えた後に消える。
  *
  * @param db D1
  * @param now 時刻（UNIX 秒）
@@ -558,7 +558,7 @@ export async function deleteTrialRecordingRows(db: D1Database, userId: string): 
  * @returns 消した行数
  */
 export async function sweepExpiredTrialRecordings(db: D1Database, now: number, retentionDays: number): Promise<number> {
-  const cutoff = now - (retentionDays + TRIAL_RECORDING_LIFECYCLE_LAG_DAYS) * 24 * 60 * 60;
+  const cutoff = now - retentionDays * 24 * 60 * 60;
   const result = await db.prepare('delete from trial_recordings where started_at < ?').bind(cutoff).run();
   return result.meta.changes ?? 0;
 }

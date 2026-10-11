@@ -21,10 +21,10 @@
 --
 -- ## 90 日で消える
 --
--- 断片は R2 のライフサイクルが、置いてから 89 日（90 日から R2 の遅れの 1 日を引いた日数）で消す
--- （terraform/trial-recordings.tf）。この表の行は `game-forge-cleanup` の cron が、始めてから 91 日（90 日＋遅れ）を
--- 過ぎたものを消す（`src/trial-store.ts` の `sweepExpiredTrialRecords`）。**行は断片より後まで残る**——頼まれて
--- 消すとき、管理画面が行から録画を見つけられるようにするため。
+-- 断片は R2 のライフサイクルが、置いてから 88 日（90 日から、R2 の遅れと送り終えるまでの余裕の 2 日を引いた日数）で
+-- 消す（terraform/trial-recordings.tf）。この表の行は `game-forge-cleanup` の cron が、始めてから 90 日を過ぎたものを
+-- 消す（`src/trial-store.ts` の `sweepExpiredTrialRecords`）。**行は断片より後まで残る**——頼まれて消すとき、
+-- 管理画面が行から録画を見つけられるようにするため。
 CREATE TABLE trial_recordings (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),

@@ -373,7 +373,13 @@ async function handleChunk(request: Request, env: Env, now: () => number): Promi
     if (!committed) {
       // 同じ番号が同時に 2 度届いた（片方が先に進めた）か、合計の上限に触れた。読み直して分ける。
       const again = await findTrialRecording(env.DB, access.userId, recordingId);
-      if (again !== null && again.next_seq > seq) {
+      if (again === null) {
+        // 目録を読んだ後に、管理画面が録画を消した（頼まれた削除）。**いま書いた断片も消す**——残すと、
+        // 管理画面から辿れない断片が R2 に残る。
+        await env.TRIAL_RECORDINGS.delete(key);
+        return reject('recording-not-found', 404);
+      }
+      if (again.next_seq > seq) {
         return json({ ok: true, duplicate: true, nextSeq: again.next_seq });
       }
       return reject('recording-too-large', 413);
@@ -471,17 +477,49 @@ export function streamTrialRecordingPart(
 }
 
 /**
- * 1 回の呼び出しで読む R2 の一覧の上限（ページ数）。1 ページ 1,000 個なので 20 ページで 20,000 個——1 人の上限
+ * R2 の接頭辞の下を、1 ページ（最大 1,000 個）ずつ一覧して消す。
+ *
+ * @param env バインディングと環境変数
+ * @param prefix 接頭辞
+ * @param maxPages 読むページの上限
+ * @returns 消した数と、読み切れたか
+ */
+async function deletePrefix(
+  env: Env,
+  prefix: string,
+  maxPages: number,
+): Promise<{ readonly objects: number; readonly complete: boolean }> {
+  let objects = 0;
+  let cursor: string | undefined;
+  for (let page = 0; page < maxPages; page += 1) {
+    const listed = await env.TRIAL_RECORDINGS.list({ prefix, cursor, limit: 1000 });
+    if (listed.objects.length > 0) {
+      await env.TRIAL_RECORDINGS.delete(listed.objects.map((object) => object.key));
+      objects += listed.objects.length;
+    }
+    if (!listed.truncated) {
+      return { objects, complete: true };
+    }
+    cursor = listed.cursor;
+  }
+  return { objects, complete: false };
+}
+
+/**
+ * 1 回の呼び出しで読む R2 の一覧の上限（ページ数。2 回の一覧の合計）。1 ページ 1,000 個なので、1 人の上限
  * （10 本 × 744 個）を収め、一覧と削除を合わせてもサブリクエストの上限（50）に収まる。
  */
 const R2_DELETE_MAX_PAGES = 20;
 
 /**
- * 利用者の録画をすべて消す（R2 の `trial/<利用者>/` の下をすべて消してから、目録の行を消す。管理画面）。
+ * 利用者の録画をすべて消す（R2 の `trial/<利用者>/` の下を消し、目録の行を消し、もう一度 R2 を消す。管理画面）。
  *
- * **消す鍵は R2 の一覧から取る**（目録から導かない）。目録の行が先に消えた断片（後片付けの順序・目録で落ちた
- * 書き込み）も残さない。1 ページ（最大 1,000 個）ずつ一覧して、そのまま消す。**一覧を読み切れなかったら
- * 目録を消さない**（消し損ねた録画を一覧から辿れなくしない。もう一度押せば続きから消える）。
+ * **消す鍵は R2 の一覧から取る**（目録から導かない）。目録の行が先に消えた断片も残さない。
+ *
+ * **録画している最中に消しても、断片を残さない。** 断片の口が目録を読んだ後に一覧を読み終えると、その後に書かれた
+ * 断片は 1 回目の一覧に載らない。そこで、目録を消した後にもう一度一覧して消す。2 回目の一覧より後に書かれた断片は、
+ * 目録が無いので断片の口が自分で消す（{@link handleChunk}）。**一覧を読み切れなかったら目録を消さない**
+ * （消し損ねた録画を一覧から辿れなくしない。もう一度押せば続きから消える）。
  *
  * @param env バインディングと環境変数
  * @param userId 利用者の id
@@ -492,21 +530,13 @@ export async function deleteTrialRecordingsOf(
   userId: string,
 ): Promise<{ readonly recordings: number; readonly objects: number; readonly remaining: boolean }> {
   const prefix = `${TRIAL_RECORDING_KEY_PREFIX}${userId}/`;
-  let objects = 0;
-  let cursor: string | undefined;
-  for (let page = 0; page < R2_DELETE_MAX_PAGES; page += 1) {
-    const listed = await env.TRIAL_RECORDINGS.list({ prefix, cursor, limit: 1000 });
-    if (listed.objects.length > 0) {
-      await env.TRIAL_RECORDINGS.delete(listed.objects.map((object) => object.key));
-      objects += listed.objects.length;
-    }
-    if (!listed.truncated) {
-      const recordings = await deleteTrialRecordingRows(env.DB, userId);
-      return { recordings, objects, remaining: false };
-    }
-    cursor = listed.cursor;
+  const first = await deletePrefix(env, prefix, R2_DELETE_MAX_PAGES - 1);
+  if (!first.complete) {
+    return { recordings: 0, objects: first.objects, remaining: true };
   }
-  return { recordings: 0, objects, remaining: true };
+  const recordings = await deleteTrialRecordingRows(env.DB, userId);
+  const second = await deletePrefix(env, prefix, 1);
+  return { recordings, objects: first.objects + second.objects, remaining: !second.complete };
 }
 
 /**

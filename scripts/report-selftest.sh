@@ -38,6 +38,7 @@
 #   14. 配備が、main の HEAD でなくなったコミットで走らないこと（#427）
 #   15. R2 のライフサイクルの判定が、宣言の外の削除規則を落とすこと（#380）
 #   16. フォークの退行の集計が、既知の行に対して期待どおりに出ること（#798）
+#   17. 試用者の行動の時系列が、既知の行に対して期待どおりに出ること（#972）
 #
 # **この一覧は下の節見出しの写しである。** 節を足したらここへも足すこと——足し忘れると、
 # 冒頭だけを読んだ人が「検査されていない」と思って同じ検査をもう一度書く
@@ -1846,6 +1847,19 @@ if grep -Fq 'select で始まらない文は送りません' scripts/fork-regres
   echo "  ok   fork-regression-report.sh に読み取りのみの guard がある"
 else
   echo "  FAIL fork-regression-report.sh に読み取りのみの guard がありません" >&2
+  failed=1
+fi
+
+# ── 17. 試用者の行動の時系列が、既知の行に対して期待どおりに出ること（#972）──────
+#
+# **見ることの一覧と仕込みは scripts/trial-timeline-selftest.sh が持つ**（ここへ書き写さない）。
+# 上の 16 節と同じく使い捨ての D1 を立てるので 15 秒ほどかかり、ローカル層ではなくここで回す
+# （.github/workflows/verify.yml の Report selftest の段の注記と同じ理由）。
+echo "[selftest] 試用者の行動の時系列（#972）"
+if bash scripts/trial-timeline-selftest.sh; then
+  echo "  ok   scripts/trial-timeline-selftest.sh"
+else
+  echo "  FAIL scripts/trial-timeline-selftest.sh" >&2
   failed=1
 fi
 

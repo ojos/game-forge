@@ -17,23 +17,29 @@ HELPER="$HERE/load-project-env.sh"
 # git rev-parse --show-toplevel で求め、その scripts/claude-session-wrapper.sh を呼ぶ。
 # ラッパーを配っていない構成（--with-claude なし）では何もしない。
 # 設置先は CLAUDE_SESSION_LAUNCHER で変えられる（試験用）。失敗しても on-attach は落とさない。
-# `--install-launcher` で起動役の設置だけを行える。devcontainer.json の onCreateCommand が、
-# 新しいコンテナへ初めて接続する前（Dev Containers は onCreateCommand の完了を待つ）に呼ぶ。
+# `--install-launcher` で起動役の設置だけを行える。v0.19.0 の devcontainer.json の
+# onCreateCommand が呼ぶため、後方互換として残す。いまの onCreateCommand は、このスクリプトを
+# 呼ばずに同じ中身を直接書き出す（on-attach.sh の版に左右されないため）。動きは同じではなく、
+# onCreateCommand はラッパーの有無によらず設置し、ここはラッパーが無ければ設置しない。
+# 起動役の中身の正本は下の LAUNCHER ヒアドキュメント（1 か所）。devcontainer.json の
+# onCreateCommand へは、bootstrap.sh の claude_launcher_lines がここから取り出して書き出す。
 install_claude_session_launcher() {
   local wrapper dest dir content current tmp
   wrapper="$(cd "$HERE/.." && pwd)/scripts/claude-session-wrapper.sh"
   [[ -f "$wrapper" ]] || return 0
   dest="${CLAUDE_SESSION_LAUNCHER:-$HOME/.local/bin/claude-session-launcher}"
-  content="$(printf '%s\n' \
-    '#!/bin/sh' \
-    '# scripts/on-attach.sh が設置する Claude Code の起動役。手で編集しない（接続のたびに書き直される）。' \
-    '# 起動したときの cwd の作業ツリーのラッパーが実行可能ならそれを、求められない・無いときは' \
-    '# 引数をそのまま exec する。' \
-    't="$(git rev-parse --show-toplevel 2>/dev/null)" || t=""' \
-    'if [ -n "$t" ] && [ -x "$t/scripts/claude-session-wrapper.sh" ]; then' \
-    '  exec "$t/scripts/claude-session-wrapper.sh" "$@"' \
-    'fi' \
-    'exec "$@"')"
+  content="$(cat <<'LAUNCHER'
+#!/bin/sh
+# Claude Code の起動役。コンテナの作成時と接続時に設置される。手で編集しない（書き直される）。
+# 起動したときの cwd の作業ツリーのラッパーが実行可能ならそれを、求められない・無いときは
+# 引数をそのまま exec する。
+t="$(git rev-parse --show-toplevel 2>/dev/null)" || t=""
+if [ -n "$t" ] && [ -x "$t/scripts/claude-session-wrapper.sh" ]; then
+  exec "$t/scripts/claude-session-wrapper.sh" "$@"
+fi
+exec "$@"
+LAUNCHER
+)"
   current="$(cat "$dest" 2>/dev/null || true)"
   if [[ "$current" == "$content" && -x "$dest" ]]; then
     return 0

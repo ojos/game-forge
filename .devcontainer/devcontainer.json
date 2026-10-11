@@ -30,7 +30,7 @@
   "remoteEnv": {
     "LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
   },
-  "onCreateCommand": "bash scripts/on-attach.sh --install-launcher || true",
+  "onCreateCommand": "f=\"/home/vscode/.local/bin/claude-session-launcher\"; t=\"$f.oncreate.tmp\"; { mkdir -p \"${f%/*}\" && printf '%s\\n' '#!/bin/sh' '# Claude Code の起動役。コンテナの作成時と接続時に設置される。手で編集しない（書き直される）。' '# 起動したときの cwd の作業ツリーのラッパーが実行可能ならそれを、求められない・無いときは' '# 引数をそのまま exec する。' 't=\"$(git rev-parse --show-toplevel 2>/dev/null)\" || t=\"\"' 'if [ -n \"$t\" ] && [ -x \"$t/scripts/claude-session-wrapper.sh\" ]; then' '  exec \"$t/scripts/claude-session-wrapper.sh\" \"$@\"' 'fi' 'exec \"$@\"' >\"$t\" && chmod 755 \"$t\" && mv -f \"$t\" \"$f\"; } || { rm -f \"$t\"; echo \"[onCreate] WARN: Claude Code の起動役を設置できませんでした: $f\" >&2; }; true",
   "postCreateCommand": "bash scripts/fix-mount-owner.sh && bash scripts/install-ai-tools.sh && bash scripts/install-cloudflared.sh && bash scripts/install-uv.sh && bash scripts/install-browser.sh && bash scripts/install-whisper.sh",
   "postAttachCommand": "bash scripts/on-attach.sh",
   "customizations": {

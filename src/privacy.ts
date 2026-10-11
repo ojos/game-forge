@@ -21,6 +21,7 @@
  * | 招待関係 | `migrations/0001_init.sql`（`invites` / `users.invited_by`）/ `src/invites.ts` |
  * | 指示文・生成の記録 | `src/cost-ledger.ts`（`generations.prompt`）/ `migrations/0009_game_revisions.sql` / `migrations/0047_games_prompt.sql`（最初の指示を作品と結び付けた写し。作者本人にだけ `src/works-api.ts` が返す。削除・退会・入力の検査での止めで消える。#694 が同じ変更で追記した） |
  * | チャットの会話（30 日） | `src/chat-conversation.ts`（`chat_conversations`。本人だけが読める・本人が消せる・cron が 30 日で消す・退会の段3 で消える。#695 が同じ変更で追記した） |
+ * | 試用の記録（同意した試用参加者だけ。90 日） | `migrations/0053_trial_participants.sql`（`trial_participants`）/ `src/trial-store.ts`（運営が印を付けた人だけ。同意の前は書かない・cron が同意から 90 日で消す）/ `src/trial.ts`。#977 が同じ変更で追記した |
  * | 遮断された指示文（90 日） | `migrations/0016_moderation_blocks.sql` / `scripts/moderation-prune.sh` |
  * | 作品・題名の変更履歴 | `migrations/0001_init.sql`（`games`）/ `migrations/0027_title_changes.sql` / R2 |
  * | 作者による作品の削除（下書きと取り下げた作品だけ・子や運営の記録があれば行と履歴を残す・指示文と生成の記録は残る） | `src/game-deletion.ts` の `deleteGame`（行を残す条件・消す表）/ `migrations/0041_game_deletion.sql`（`purged_at`）/ `src/work-page.ts` の `POST /api/works/delete`（作者の確認）/ `generations` は作品と結び付けていない（確定27）（#517 が同じ変更で追記した） |
@@ -66,6 +67,7 @@ import { CONTACT_EMAIL, CONTACT_MAILTO, OPERATOR_NAME } from './service-contact.
 import { OAUTH_COOKIE_MAX_AGE, SESSION_MAX_AGE } from './auth/google.js';
 import { AVATAR_HISTORY_RETENTION_DAYS, AVATAR_OUTPUT_SIZE } from './avatar.js';
 import { HANDLE_RESERVATION_DAYS } from './handle.js';
+import { TRIAL_RETENTION_DAYS } from './trial-store.js';
 import { WITHDRAWN_DISPLAY_NAME } from './withdrawal.js';
 import {
   ACCESS_TOKEN_TTL_SECONDS,
@@ -158,6 +160,7 @@ export function privacyBody(contact: PrivacyContact): string {
   <li><strong>作品の説明</strong>: 作者が作品に書く説明（遊び方やクレジットなど）と、その変更の履歴（変える前と後の説明、変えた日時）。説明は下書きのうちから書けます。下書きのあいだは作者にだけ見え、公開すると作品ページで誰でも見られます。変更の履歴は書き換えず、追記だけで残します。どちらも Cloudflare のデータベース（D1）に保存します</li>
   <li><strong>いいね</strong>: どの作品にいいねしたかと、その日時</li>
   <li><strong>通報</strong>: 通報した作品と、書いていただいた理由</li>
+  <li><strong>試用の記録</strong>（運営がお願いした試用に参加し、試用のページで同意した方だけ）: 同意した日時と同意した文面の版、試用のページで各段に進んだ時刻と質問を出した時刻、アンケートの答え（使ったブラウザ・AI でものを作った経験・声で言い損ねたこと）。サービスの改善のために運営者が読むもので、公開しません。<strong>同意する前は何も記録しません。</strong>Cloudflare のデータベース（D1）に保存します</li>
 </ul>
 
 <h3>利用に伴って記録する情報</h3>
@@ -261,6 +264,7 @@ export function privacyBody(contact: PrivacyContact): string {
     作品と結び付けて保存した指示文も、作品と一緒に削除します。
     <strong>作品を削除しても、生成の記録に残る、作品を作るときの指示文と生成の記録は削除しません</strong>（1 人あたりの生成枠とサービス全体の費用の上限を管理するため）。<strong>退会したときだけは指示文を削除します</strong>（生成の記録の行・費用・日時は残します。下の「退会」）。</li>
   <li><strong>生成の前のチャットの会話は、最後に使ってから ${CHAT_RETENTION_DAYS} 日で自動的に削除します</strong>（削除の処理は 5 分ごとに動きます）。生成画面の「チャットの記録を消す」を押すと、その時点で削除します。退会したときも削除します（下の「退会」）。<strong>チャットにかかった費用の記録（日時・処理した文字量・費用）は残します</strong>（チャットの 1 日の上限とサービス全体の費用の上限を管理するため。会話の本文は含みません）。</li>
+  <li><strong>試用の記録は、同意した日から ${TRIAL_RETENTION_DAYS} 日で自動的に削除します</strong>（削除の処理は 5 分ごとに動きます）。それより前でも、お問い合わせの窓口へご連絡いただければ削除します。</li>
   <li><strong>チャットのときに、いつも守ってほしいことは、期限を定めた自動の削除を行いません</strong>（設定として置き続けるものです）。設定の「チャット」で空にすると、その時点で削除します。退会したときも削除します（下の「退会」）。</li>
   <li>それ以外の情報は、期限を定めた自動の削除を行っておらず、本サービスの提供に必要なあいだ保存します。</li>
 </ul>
@@ -287,6 +291,7 @@ export function privacyBody(contact: PrivacyContact): string {
 <ul>
   <li>いいね・通報（通報した記録）・招待の記録（誰が誰を招待したか）・運営者の措置の記録・入力の検査で止めた記録（上のとおり 90 日を目安に削除します）。<strong>いずれも、匿名化した行に紐づくだけになります。</strong>これらを消すと、他の利用者の招待枠の計算や、対応済みの通報の確かめができなくなるためです。</li>
   <li>生成の記録（回数・費用・日時）。1 人あたりの生成枠とサービス全体の費用の上限を管理するために残します。</li>
+  <li>試用の記録（上のとおり、同意した日から ${TRIAL_RETENTION_DAYS} 日で削除します）。</li>
   <li>あなたの作品をフォークして作られた作品。フォークした作品の側では、元の作品が「削除済みの作品から派生」と表示されます。</li>
   <li>通報・削除依頼・運営者の措置があった方については、対応を確かめられるように、上の変更の履歴を残します（公開しません）。このとき、匿名化したことも履歴に残します。</li>
   <li>ハンドル名は、退会してから ${HANDLE_RESERVATION_DAYS} 日のあいだ、ほかの方が使えません（ハンドル名を変えたときと同じ扱いです）。</li>

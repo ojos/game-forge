@@ -12,6 +12,7 @@ import {
   ADMIN_TAKEDOWN_ACTION_FIELD,
   ADMIN_TAKEDOWN_API_PATH,
   ADMIN_TAKEDOWN_ID_FIELD,
+  ADMIN_TRIALS_PATH,
   ADMIN_USERS_PATH,
   ADMIN_USER_ID_FIELD,
 } from '../src/admin-paths.js';
@@ -244,6 +245,8 @@ describe('足した経路は、権限が無いと 404 になる（2.4.2 / ADMIN_
     { method: 'POST', path: ADMIN_BAN_API_PATH },
     { method: 'GET', path: ADMIN_TAKEDOWNS_PATH },
     { method: 'POST', path: ADMIN_TAKEDOWN_API_PATH },
+    // 試用者の一覧（#977）。
+    { method: 'GET', path: ADMIN_TRIALS_PATH },
   ];
 
   it('足した経路が、本当に経路表に登録されている', () => {
@@ -307,12 +310,12 @@ describe('足した経路は、権限が無いと 404 になる（2.4.2 / ADMIN_
 });
 
 describe('画面が経路表から導かれる（2.4.5。一覧を書き写さない）', () => {
-  it('導出した画面が 4 枚あり、綴りが正本と一致する', () => {
+  it('導出した画面が 5 枚あり、綴りが正本と一致する（#977 で試用を足した）', () => {
     // **`ssrPagePaths` は `test/admin-page-shell.test.ts` が外枠の検査に使う導出である。**
     // ここでは「M10-3 の 3 枚と #406 の削除依頼がその網に入った」ことだけを見る
     // （`/api/*` の 3 本は POST なので、画面としては導かれない）。
     expect(ssrPagePaths(createAdminRoutes()).sort()).toEqual(
-      [ADMIN_HOME_PATH, ADMIN_USERS_PATH, ADMIN_TAKEDOWNS_PATH, ADMIN_ACTIONS_PATH].sort(),
+      [ADMIN_HOME_PATH, ADMIN_USERS_PATH, ADMIN_TAKEDOWNS_PATH, ADMIN_ACTIONS_PATH, ADMIN_TRIALS_PATH].sort(),
     );
   });
 });

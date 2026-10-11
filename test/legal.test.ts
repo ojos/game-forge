@@ -182,6 +182,11 @@ describe('削除依頼フォームが全ページのフッターから到達で�
       `insert or ignore into users (id, google_sub, email, display_name, created_at, banned_at)
        values ('legal-user', 'sub-legal-user', 'legal@example.invalid', 'legal', 0, null)`,
     ).run();
+    // **試用者の印も付ける**（#977）。`/trial` は印の無い人に 404 を返すので、付けないと試用の画面の
+    // フッタを 1 度も見ないまま「本文を出さなかった画面」になる。
+    await env.DB.prepare(
+      `insert or ignore into trial_participants (user_id, marked_at) values ('legal-user', 0)`,
+    ).run();
     const cookie = await cookieFor('legal-user');
 
     const pages = ROUTES.filter(

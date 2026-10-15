@@ -23,23 +23,28 @@
 #   差し替えたコマンドへは、解決した範囲を環境変数 LOOP_GATE_REVIEW_RANGE で渡す
 #   （ステージ済みがあるとき・対象が無いときは空）。
 #
-#   second-opinion-review.sh の既定対象はステージ済み差分で、空なら「レビュー対象なし」
-#   として 0 を返す。commit 後（ステージが空）にこのゲートを回すと、第二意見が
-#   実質スキップされたまま GATE_PASS が出ることになる。push 前ゲートとしては
-#   偽の緑なので、ステージが空のときは commit 済み範囲を対象に切り替える。
+#   **既定の対象は PR 全体にする。** 第二意見のエンジンは差分をプロンプトへ埋め込み、
+#   差分の外を読まない形を基本にする。修正を重ねた後の小さな差分（ステージ済みだけ、
+#   上流からだけ）を渡すと、差分に現れない既存のコードについて誤った前提を立てて落ちる。
+#   そこで起点を、既定ブランチ（origin/HEAD → origin/main → origin/master の順）と
+#   HEAD の分岐点にする。
+#     - ステージ済み差分があるとき: --base <起点> で、起点から索引までを渡す
+#       （コミット済みの分とステージ済みの分の両方が入る）。
+#     - ステージ済みが空のとき: --range <起点>..HEAD を渡す。上流があっても、
+#       上流からではなく起点から。
+#   起点に分岐点（merge-base）を使うのは、既定ブランチ側に進んだコミットを
+#   「打ち消し」として差分へ混ぜないため。既定ブランチを取り込んでいれば分岐点が
+#   取り込み地点まで進むので、取り込んだ他ブランチの成果は範囲から外れる。
+#   既定ブランチの追跡枝は fetch しない（手元の追跡枝が古ければ古い起点になる）。
 #
-#   切り替えた先が空になる経路も塞ぐ。push 済みのブランチでは上流と HEAD が
-#   同じコミットを指すため @{upstream}..HEAD の差分が空になり、同じ偽の緑が
-#   復活する。範囲は「解決できたか」ではなく「実際に差分があるか」で選び、
-#   無ければ既定ブランチとの分岐点まで戻してブランチ全体を対象にする。
-#   それでも差分が無いときは、レビュー対象が無いことを明示したうえで通過する
-#   （空を一律 FAIL にすると、差分の無い状態でのゲート実行が落ちるため）。
+#   既定ブランチを解決できないときだけ、従来の決め方に戻る。ステージ済みがあれば
+#   reviewer の既定（ステージ済み差分）に委ね、空なら「上流 → HEAD」、上流も無ければ
+#   空ツリーからのリポジトリ全体を対象にする。
 #
-#   上流との差分が空でなくても、その範囲が他ブランチの成果を巻き込むことがある。
-#   @{upstream}..HEAD は 2 点間の比較なので、既定ブランチを取り込んだ直後は
-#   取り込んだ側のコミットがまるごと差分に入る。それは既にレビューを通った他
-#   ブランチの成果であって、このブランチが加えた変更ではない。範囲が既定ブランチ
-#   へ到達可能なコミットを含むときは分岐点まで戻し、なぜ範囲を変えたかを出力する。
+#   範囲が空（起点と HEAD に差分が無い）のときは、レビュー対象が無いことを明示した
+#   うえで通過する（空を一律 FAIL にすると、差分の無い状態でのゲート実行が落ちるため）。
+#   ステージ済みが空のまま reviewer の既定へ流すと、空の差分を見て「対象なし」で
+#   通る偽の緑になるので、commit 済み範囲を必ず明示して渡す。
 #
 # 第二意見の記録:
 #   第二意見は手元でしか走らず、受け入れ検証のように CI が再実行して確かめられない。
@@ -58,10 +63,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 既定の reviewer へ渡す引数を決める。
 #
-# ステージ済み差分があるときは何も渡さない（reviewer 側の既定に委ねる）。
-# 空のときだけ commit 済み範囲へ切り替える。git リポジトリでない場合や範囲を
-# 解決できない場合は、従来どおり引数なしで呼ぶ。範囲を解決できないことは
-# reviewer を呼べない理由にならないため、ここでは落とさない。
+# 既定ブランチとの分岐点が解決できれば、それを起点にする（冒頭「既定の対象は PR 全体」）。
+# ステージ済みがあれば REVIEW_BASE（--base の値）、空なら REVIEW_RANGE（--range の値）。
+# 既定ブランチを解決できないときだけ従来の決め方に戻り、ステージ済みがあれば何も
+# 渡さず（reviewer 側の既定に委ねる）、空なら上流 → 空ツリーの順に範囲を決める。
+# git リポジトリでない場合や範囲を解決できない場合は、従来どおり引数なしで呼ぶ。
+# 範囲を解決できないことは reviewer を呼べない理由にならないため、ここでは落とさない。
 #
 # なお、git 管理外ではこの関数へ到達する前に、先行する段で必ず落ちる。commit
 # identity 検査（step 1）は git log を、verify.sh が呼ぶ機密混入検査（step 2 の中、
@@ -69,12 +76,15 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 合格にしないため。この関数が git 外の経路を持つのは、範囲解決を単体で使える
 # ようにしておくためである。
 REVIEW_RANGE=""
+# ステージ済み差分があるときの起点（reviewer の --base へ渡す）。REVIEW_RANGE とは
+# 排他で、どちらか一方だけが入る。
+REVIEW_BASE=""
 # 範囲は解決できたが差分が空だった（= レビューできる対象が無い）状態を表す。
 # REVIEW_RANGE="" とは区別する。この状態を reviewer の既定へ流すと、空の
 # ステージ済み差分を見せることになり、塞いだはずの素通りへ戻るため。
 REVIEW_NO_TARGET=0
-# 上流以外を起点に採ったときの理由。黙って範囲を変えると、なぜその差分が
-# レビュー対象なのかを読み手が追えないため、採用時に 1 行出力する。
+# 起点をどう決めたかの説明。黙って範囲を変えると、なぜその差分がレビュー対象なのかを
+# 読み手が追えないため、採用時に 1 行出力する。
 REVIEW_RANGE_REASON=""
 
 # 範囲が実際に差分を持つか。git diff --quiet は差分ありで 1 を返す。
@@ -89,9 +99,7 @@ range_has_diff() {
 # 既定ブランチの追跡枝を解決し、名前を標準出力へ返す。見つからなければ 1 を返す。
 # 既定ブランチ名は決め打ちせず origin/HEAD → origin/main → origin/master の順で探す。
 #
-# 解決を 1 箇所へ集約するのは、範囲の汚染判定と分岐点の算出とで**同じ枝**を見る
-# 必要があるため。別々に決めると、「汚染ありと判定した枝」と「分岐点を取った枝」が
-# 別物になりうる。
+# 追跡枝は fetch しない。手元の追跡枝が古ければ、起点も古くなる。
 resolve_integration_base() {
   local base
   for base in origin/HEAD origin/main origin/master; do
@@ -103,110 +111,29 @@ resolve_integration_base() {
   return 1
 }
 
-# 範囲 <from>..HEAD が、既に既定ブランチ <base> へ到達可能なコミットを含むか。
+# 既定ブランチを解決できないときの決め方（従来の決め方）。ステージ済みが空のときだけ呼ぶ。
 #
-#   all = <from>..HEAD の総数
-#   own = そのうち <base> から到達できないもの（= このブランチが加えた分）
-#   all != own なら、他ブランチの成果を巻き込んでいる
-#
-# 「マージコミットを含むか」では判定しない。取り込み方によって現れる形が違い、
-# 形ごとに書き分けるほど取りこぼす。到達可能性で見れば取り込み方に依らない。
-#
-# <base> が空（既定ブランチの追跡枝が無い）なら判定できない。ここで真を返すと
-# 分岐点も取れないまま範囲を失うため、偽を返して従来どおり上流を使わせる。
-range_includes_base_commits() {
-  local from="$1" base="$2" all own
-  [[ -n "$base" ]] || return 1
-  all="$(git rev-list --count "$from..HEAD" 2>/dev/null || true)"
-  own="$(git rev-list --count "$from..HEAD" "^$base" 2>/dev/null || true)"
-  # どちらかが数えられなければ判定不能。汚染なし扱いにして上流を使わせる。
-  [[ -n "$all" && -n "$own" ]] || return 1
-  [[ "$all" != "$own" ]]
-}
-
-resolve_review_range() {
-  command -v git >/dev/null 2>&1 || return 0
-  git rev-parse --git-dir >/dev/null 2>&1 || return 0
-  # ステージ済みがあるなら reviewer の既定に委ねる。
-  git diff --cached --quiet || return 0
-  # コミットが 1 件も無ければ比較の起点を作れない。
-  git rev-parse --verify --quiet HEAD >/dev/null || return 0
-
-  # 汚染判定と分岐点の算出は、ここで解決した 1 つの枝だけを見る。
-  local base=""
-  base="$(resolve_integration_base || true)"
-
-  # 上流を起点にできない理由。分岐点を採ったときにそのまま出力する。
-  local fallback_reason=""
-
-  # 上流が設定されていればそこからの差分。未 push のコミットがそのまま対象になる。
-  # ただし採用条件は 2 つある。
-  #   1. 差分が空でないこと。push 済みだと上流 == HEAD で空になり、第二意見が
-  #      一度も差分を見ないまま通過する（偽の緑）。
-  #   2. 範囲が既定ブランチへ到達可能なコミットを含まないこと。含むなら、その
-  #      分は他ブランチが加えた既レビュー済みの成果であって、このブランチの
-  #      変更ではない。
-  local upstream
+# 上流が設定されていればそこからの差分。未 push のコミットがそのまま対象になる。
+# push 済みで上流 == HEAD だと差分が空になる。remote があるのに既定ブランチの追跡枝が
+# 無いなら、空ツリー（= リポジトリ全体）へは広げずレビュー対象なしとして扱う。
+resolve_review_range_without_base() {
+  local upstream upstream_empty=0
   upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
   if [[ -n "$upstream" ]]; then
-    if ! range_has_diff "$upstream..HEAD"; then
-      fallback_reason="upstream range $upstream..HEAD has no diff (branch already pushed)"
-    elif range_includes_base_commits "$upstream" "$base"; then
-      fallback_reason="upstream range $upstream..HEAD also contains commits already reachable from $base (default branch integrated into this branch)"
-    else
-      # **起点は上流の先端ではなく、上流と HEAD の分岐点にする。** 第二意見は
-      # `git diff <範囲>` で差分を取り、これは両端のツリーの差である。上流が
-      # 分岐点より先へ進んでいると（ゲートの最中に既定ブランチへ別の PR が入った等）、
-      # 進んだ分が逆向きに差分へ入り、このブランチが触っていないファイルへの指摘で
-      # ゲートが落ちる。上の 2 の判定は `git log` の意味（上流に無いコミット）で見るため、
-      # この混入を検出できない。three-dot（A...B）は diff では分岐点基準になるが、
-      # 第二意見が `git log` にも同じ範囲を渡すと対称差になるので使わない。
-      #
-      # 上流が進んでいなければ分岐点は上流の先端と同じなので、従来どおり上流の名前で
-      # 範囲を書く（出力と記録の範囲の表記を変えない）。
-      local upstream_mb upstream_tip
-      upstream_mb="$(git merge-base "$upstream" HEAD 2>/dev/null || true)"
-      upstream_tip="$(git rev-parse --verify --quiet "$upstream" 2>/dev/null || true)"
-      if [[ -n "$upstream_mb" && -n "$upstream_tip" && "$upstream_mb" != "$upstream_tip" ]]; then
-        REVIEW_RANGE="$upstream_mb..HEAD"
-        REVIEW_RANGE_REASON="$upstream has advanced beyond the merge-base; reviewing from the merge-base ${upstream_mb:0:12} so that changes only on $upstream are not reverted into the diff"
-      else
-        REVIEW_RANGE="$upstream..HEAD"
-      fi
+    # **起点は上流の先端ではなく、上流と HEAD の分岐点にする。** 範囲は両端のツリーの
+    # 差になるので、上流が分岐点より先へ進んでいると、上流側だけの変更を取り消す差分が
+    # 混ざる。
+    local upstream_mb
+    upstream_mb="$(git merge-base "$upstream" HEAD 2>/dev/null || true)"
+    [[ -n "$upstream_mb" ]] || upstream_mb="$upstream"
+    if range_has_diff "$upstream_mb..HEAD"; then
+      REVIEW_RANGE="$upstream_mb..HEAD"
+      REVIEW_RANGE_REASON="no default branch tracking ref was found; reviewing from the merge-base ${upstream_mb:0:12} with the upstream $upstream"
       return 0
     fi
-  else
-    fallback_reason="no upstream is configured for this branch"
-  fi
-
-  # 既定ブランチの追跡枝との分岐点を起点にし、ブランチ全体をレビュー対象にする。
-  #
-  # 分岐点（merge-base）を使うのは、base..HEAD が 2 点間の比較であり、base 側に
-  # 進んだコミットを「打ち消し」として差分へ混ぜるため。ブランチが加えた変更
-  # だけを対象にする。既定ブランチを取り込んでいる場合は分岐点が取り込み地点まで
-  # 進むので、取り込んだ成果は範囲から外れる。
-  if [[ -n "$base" ]]; then
-    local mb
-    mb="$(git merge-base "$base" HEAD 2>/dev/null || true)"
-    # 履歴が繋がっていない（分岐点が無い）場合の受け皿。
-    [[ -n "$mb" ]] || mb="$base"
-    if range_has_diff "$mb..HEAD"; then
-      REVIEW_RANGE="$mb..HEAD"
-      REVIEW_RANGE_REASON="$fallback_reason; reviewing from the merge-base with $base instead"
-      return 0
-    fi
-    # 既定ブランチの追跡枝が見つかった時点で起点は確定する。そこと差分が無いのは
-    # 「レビュー対象が無い」であって、空ツリーまで戻してリポジトリ全体を対象に
-    # すべき状況ではない。
-    REVIEW_NO_TARGET=1
-    return 0
-  fi
-
-  # 上流はあるが既定ブランチの追跡枝が無い場合。remote は存在するので、下の
-  # 空ツリー（= リポジトリ全体）へは広げずレビュー対象なしとして扱う。
-  if [[ -n "$upstream" ]]; then
-    REVIEW_NO_TARGET=1
-    return 0
+    # 上流との差分が空（push 済み）。ここで対象なしとして通すと、第二意見が一度も
+    # 差分を見ないまま通る偽の緑になる。以前と同じく、下の空ツリーからの全体へ戻る。
+    upstream_empty=1
   fi
 
   # remote が無いプロジェクト。起点が無いので空ツリーからの全体を対象にする。
@@ -223,12 +150,59 @@ resolve_review_range() {
   empty_tree="$(git hash-object -t tree /dev/null 2>/dev/null || true)"
   if [[ -n "$empty_tree" ]] && range_has_diff "$empty_tree..HEAD"; then
     REVIEW_RANGE="$empty_tree..HEAD"
-    REVIEW_RANGE_REASON="$fallback_reason; no default branch tracking ref either, reviewing the whole history"
+    if [[ "$upstream_empty" -eq 1 ]]; then
+      REVIEW_RANGE_REASON="no default branch tracking ref was found and the upstream range has no diff (branch already pushed); reviewing the whole history"
+    else
+      REVIEW_RANGE_REASON="no default branch tracking ref and no upstream; reviewing the whole history"
+    fi
     return 0
   fi
 
   # 空ツリーとの差分すら無い（実質空のリポジトリ）。
   REVIEW_NO_TARGET=1
+}
+
+resolve_review_range() {
+  command -v git >/dev/null 2>&1 || return 0
+  git rev-parse --git-dir >/dev/null 2>&1 || return 0
+  local staged=0
+  git diff --cached --quiet || staged=1
+  # コミットが 1 件も無ければ比較の起点を作れない。
+  git rev-parse --verify --quiet HEAD >/dev/null || return 0
+
+  # 既定ブランチとの分岐点を起点にして、PR 全体を対象にする。
+  local base mb
+  base="$(resolve_integration_base || true)"
+  if [[ -n "$base" ]]; then
+    mb="$(git merge-base "$base" HEAD 2>/dev/null || true)"
+    if [[ -n "$mb" ]]; then
+      REVIEW_RANGE_REASON="reviewing the whole PR from the merge-base ${mb:0:12} with $base"
+      if [[ "$staged" -eq 1 ]]; then
+        if git diff --cached --quiet "$mb" -- 2>/dev/null; then
+          # 起点から索引までの差が空（コミットした変更を索引で取り消した等）。
+          # reviewer を呼ぶと「対象なし」を返し、対象が実在すると見なして落ちる。
+          REVIEW_RANGE_REASON=""
+          REVIEW_NO_TARGET=1
+        else
+          REVIEW_BASE="$mb"
+        fi
+      elif range_has_diff "$mb..HEAD"; then
+        REVIEW_RANGE="$mb..HEAD"
+      else
+        # 既定ブランチの追跡枝が見つかった時点で起点は確定する。そこと差分が無いのは
+        # 「レビュー対象が無い」であって、空ツリーまで戻してリポジトリ全体を対象に
+        # すべき状況ではない。
+        REVIEW_RANGE_REASON=""
+        REVIEW_NO_TARGET=1
+      fi
+      return 0
+    fi
+  fi
+
+  # 既定ブランチを解決できない（または履歴が繋がっていない）。従来の決め方に戻る。
+  # ステージ済みがあれば reviewer の既定（ステージ済み差分）に委ねる。
+  [[ "$staged" -eq 0 ]] || return 0
+  resolve_review_range_without_base
 }
 
 # 第二意見の出力を記録へ残す。
@@ -336,8 +310,17 @@ main() {
       # レビュー側の終了コードは `tee` に隠れない。
       local so_capture so_scope=""
       so_capture="$(mktemp "${TMPDIR:-/tmp}/loop-gate-second-opinion.XXXXXX")"
-      if [[ -n "$REVIEW_RANGE" ]]; then
-        # 上流以外を起点に採ったなら、その理由を先に出す。黙って範囲を変えると、
+      if [[ -n "$REVIEW_BASE" ]]; then
+        # ステージ済みがあるときは、起点から索引までを渡す（コミット済みとステージ済みの両方）。
+        if [[ -n "$REVIEW_RANGE_REASON" ]]; then
+          echo "[loop-gate] $REVIEW_RANGE_REASON"
+        fi
+        echo "[loop-gate] staged diff exists; reviewing from $REVIEW_BASE to the index"
+        bash "$HERE/second-opinion-review.sh" --base "$REVIEW_BASE" 2>&1 \
+          | tee "$so_capture" || review_ok=1
+        so_scope="base:$REVIEW_BASE+staged"
+      elif [[ -n "$REVIEW_RANGE" ]]; then
+        # どう起点を決めたかを先に出す。黙って範囲を変えると、
         # なぜその差分がレビュー対象なのかを読み手が追えない。
         if [[ -n "$REVIEW_RANGE_REASON" ]]; then
           echo "[loop-gate] $REVIEW_RANGE_REASON"

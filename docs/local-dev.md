@@ -1276,7 +1276,7 @@ tools/devhost/README.md の「スマホのボタンに doctor / rebuild を足�
 
 ## 8. DCB と規範への追従（#938）
 
-`.devcontainer/`・`scripts/` の一部・`.github/workflows/` の 3 本（`verify.yml`・`identity-guard.yml`・`second-opinion-gate.yml`）・`.claude/`・`.ai-playbook/**`・入口ファイル（`CLAUDE.md`・`AGENTS.md`・`.github/copilot-instructions.md`）は、devcontainer-bootstrap（DCB）が生成するファイルです。**生成時の入力（引数）と、ファイルごとのハッシュは `.devcontainer/ORIGIN` が記録しています**（#938 で初めて置きました。v0.17.0・規範 ai-playbook v0.8.1。#953 で v0.18.0・規範 v0.8.2、#968 で v0.19.0・規範 v0.9.0、#982 で v0.19.2・規範 v0.9.2 へ追従）。次からは、引数なしの `bootstrap.sh --upgrade` で、記録から同じ入力を再現して追従できます。
+`.devcontainer/`・`scripts/` の一部・`.github/workflows/` の 3 本（`verify.yml`・`identity-guard.yml`・`second-opinion-gate.yml`）・`.claude/`・`.ai-playbook/**`・入口ファイル（`CLAUDE.md`・`AGENTS.md`・`.github/copilot-instructions.md`）は、devcontainer-bootstrap（DCB）が生成するファイルです。**生成時の入力（引数）と、ファイルごとのハッシュは `.devcontainer/ORIGIN` が記録しています**（#938 で初めて置きました。v0.17.0・規範 ai-playbook v0.8.1。#953 で v0.18.0・規範 v0.8.2、#968 で v0.19.0・規範 v0.9.0、#982 で v0.19.2・規範 v0.9.2、#985 で v0.22.1・規範 v0.12.1 へ追従）。次からは、引数なしの `bootstrap.sh --upgrade` で、記録から同じ入力を再現して追従できます。
 
 **どのファイルを雛形どおりにし、どの差分を残しているかは `.github/project-ai-rules.md`「雛形からの逸脱」が正本です。** 追従のたびに、表に無い差分を雛形へ戻し、表にある差分だけを残します。
 
@@ -1286,7 +1286,7 @@ tools/devhost/README.md の「スマホのボタンに doctor / rebuild を足�
 2. **新しい版を、マニフェストのハッシュで照合してから展開します。** 展開先は作業ツリーの外の空のディレクトリにします。
 
    ```bash
-   TAG=v0.19.2   # 追従先の版
+   TAG=v0.22.1   # 追従先の版
    mkdir -p ~/dcb-"$TAG" && cd ~/dcb-"$TAG"
    BASE="https://github.com/ojos/devcontainer-bootstrap/releases/download/${TAG}"
    curl -sSL "${BASE}/RELEASE-MANIFEST.json" -o RELEASE-MANIFEST.json
@@ -1313,7 +1313,7 @@ tools/devhost/README.md の「スマホのボタンに doctor / rebuild を足�
 5. **`.dcb-new` を 1 本ずつ片付けます。**
    - **DCB が所有するファイル**: `.dcb-new` を正として置き換え、「雛形からの逸脱」の表にある差分だけを戻します。表に無い差分を戻すなら、表へ行を足す（理由と基準つき）ところまでを同じ PR で行います。
    - **プロジェクトが所有するファイル**（`scripts/acceptance.sh`・`scripts/acceptance-remote.sh`・`scripts/check-no-secrets.sh`・`.github/project-ai-rules.md`）: 中身を残し、雛形で増えた項目があれば書き足します。
-   - **`.devcontainer/` の 2 本**: #939 で雛形に寄せました（`init: true` を取り込み、`security_opt` の seccomp は入れない）。残した差分は表のとおりです。`devcontainer.json` には JSONC のコメントを書かず、注記は `.devcontainer/README.md` へ書きます（`doctor.sh` が `jq` で読むため）。取り込んだ後は、コンテナの作り直しまで確かめます。
+   - **`.devcontainer/` の 2 本**: #939 で雛形に寄せ、#985 で codex の緩和（AppArmor・seccomp）の置き場所も雛形どおり `devcontainer.json` の `securityOpt` へ移しました（`compose.yaml` に `security_opt` を置かない）。残した差分は表のとおりです。`devcontainer.json` は DCB v0.21.0 から JSONC になりえます。雛形のコメントはそのまま取り込み、game-forge の注記は `.devcontainer/README.md` へ書きます。取り込んだ後は、コンテナの作り直しまで確かめます。
    - 済んだら `.dcb-new` を消します。雛形に寄せて game-forge 固有の検査（`scripts/acceptance.sh` が呼ぶ `scripts/check-*.sh` など）が落ちたら、検査の側（プロジェクトの所有）で直します。
 
 6. **手を入れたファイルを取り込み済みとして記録します。** 表にあるファイルと、プロジェクトが所有するファイルを渡します（`.dcb-new` が残っていると止まります）。

@@ -131,8 +131,12 @@ is_allowed() {
 # committer は常に noreply@github.com。ローカルの identity 適用漏れとは発生経路が
 # 別で、許可リストに個別の email を足して回っても、メンバーが増えるたびに同じ穴が開く。
 #
-# 許可は「committer が noreply@github.com であること」に縛る。GitHub 自身が作成した
-# コミットに限定され、ローカルで作ったコミットには適用されない。
+# 許可は「committer が noreply@github.com であること」に縛る。ただし committer / author の
+# email はどちらもローカルで自由に設定できるメタデータなので、この縛りは偽装を
+# 防がない（ローカルで作ったコミットでも、この 2 つを GitHub の形に設定すれば通る）。
+# 縛る目的は、ローカルの identity 適用漏れ（別アカウントの email の混入）が、この許可で
+# 通ってしまう範囲を狭めることに限る。意図的な偽装への対策は、書き込み権限の管理と、
+# 必要なら署名の検証（GitHub の verified な web-flow の署名）が担う。
 #
 # トレードオフ: リポジトリへの書き込み権限を持つアカウントであれば、その GitHub
 # アカウントが Contributors に現れることを許容する。この検知層が塞ぐのはローカルの
@@ -250,9 +254,8 @@ main() {
       # GitHub は squash merge で、マージした人と PR の作者が違うと作者を
       # Co-authored-by に足す（マージの瞬間に付くため、PR の検査では見えず、
       # push(main) の全履歴検査だけが拾う）。author と同じ is_github_authored で
-      # 許可し、ローカルで作ったコミットには広げない（is_github_authored は
-      # committer を縛っているため、ここで広がるのは GitHub がサーバ側で作った
-      # コミットに限られる）。
+      # 許可する。committer を縛っても email はローカルで設定できるため、偽装は
+      # 防がない（上の is_github_authored の説明と同じ。適用漏れの検出が目的）。
       if ! is_allowed "$coauthor_email" "${ALLOWED_COAUTHOR_EMAILS_ARR[@]}" \
         && ! is_github_authored "$coauthor_email" "$committer_email"; then
         echo "[identity] NG ${sha:0:8} co-author=<${coauthor_email}> — ${subject}" >&2

@@ -9,8 +9,13 @@
 #           式もそのまま確かめる。** status の投稿（POST statuses）は state を記録するだけ
 #   sleep … 何もしない（猶予の 300 秒を待たない）
 #
-# pull_request の経路と、掃き寄せ（schedule）の経路の両方を回す。掃き寄せは push の時刻を
+# pull_request の経路と、掃き寄せ（手動実行 workflow_dispatch）の経路の両方を回す。掃き寄せは push の時刻を
 # check-run から採り、無ければ PR の更新時刻で代える（#888）。
+#
+# **DCB v0.20.0〜v0.22.1（#985）で、pull_request の経路は記録が無いと status を書かずに見送る**ようになった。
+# failure を書くのは掃き寄せ（`second-opinion-record.sh post` が起こす手動実行と、`land` のマージ直前の再判定）で、
+# 定期実行（schedule）は無くなった。例外は既定ブランチにこのワークフローがまだ無いとき（導入する PR）で、
+# そのときだけ従来どおり猶予を待ってから判定する（`contents/...?ref=<既定ブランチ>` が 404 のとき）。
 #
 # 同じ所で、ゲートと対になる 2 つも確かめる（#888。新しい検査スクリプトを増やさないため、
 # 確認側の検査にまとめる）。
@@ -66,6 +71,10 @@ case "$path" in
   */pulls/*/commits) file=commits.json ;;
   */pulls/*) file=pr.json ;;
   */issues/*/comments) file=comments.json ;;
+  */contents/*)
+    # 既定ブランチにワークフローが在るか（DEFAULT_ABSENT があれば 404 を返す）。
+    if [ -f "$FIXTURES/default-absent" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+    echo second-opinion-gate.yml; exit 0 ;;
   *) echo "gh stub: 知らない path: $path" >&2; exit 1 ;;
 esac
 [ -f "$FIXTURES/$file" ] || exit 1
@@ -100,8 +109,9 @@ case_() {
   # 掃き寄せの経路（SWEEP_* が設定されているとき）。本物の API と同じ形で、PR の一覧には
   # updated_at が、check-runs には total_count と check_runs が入る（check-run が無ければ空配列）。
   local event=pull_request
+  [ -z "${DEFAULT_ABSENT:-}" ] || : >"$fx/default-absent"
   if [ -n "${SWEEP_UPDATED_AT+x}" ]; then
-    event=schedule
+    event=workflow_dispatch
     printf '[{"number":1,"draft":false,"head":{"sha":"%s","repo":{"full_name":"o/r"}},"updated_at":"%s"}]' \
       "$SHA" "$SWEEP_UPDATED_AT" > "$fx/pulls.json"
     if [ -n "$SWEEP_CHECK_RUN_STARTED_AT" ]; then
@@ -112,7 +122,7 @@ case_() {
     fi
   fi
   ( cd "$ROOT" && PATH="$WORK/bin:$PATH" FIXTURES="$fx" GH_TOKEN=x REPO=o/r EVENT="$event" \
-      PR_NUMBER=1 TRIGGER_SHA="$SHA" RUN_URL=u bash "$WORK/run.sh" ) >"$fx/out" 2>&1 || true
+      PR_NUMBER=1 TRIGGER_SHA="$SHA" RUN_URL=u DEFAULT_BRANCH=main bash "$WORK/run.sh" ) >"$fx/out" 2>&1 || true
   got="$(cat "$fx/statuses" 2>/dev/null || echo none)"
   if [ "$got" != "$want" ]; then
     echo "[second-opinion-gate-workflow] FAIL: $name（want=$want got=$(echo "$got" | tr '\n' ' ')）" >&2
@@ -131,27 +141,36 @@ case_() {
 DEP='dependabot[bot]'
 case_ "Dependabot の PR は記録が無くても success" success "$DEP" no \
   "$(commit "$DEP" web-flow true)"
-case_ "人の PR で記録が無ければ failure" failure ido-ojos no \
+# pull_request の経路は、記録が無ければ status を書かない（failure は掃き寄せが書く。#985）。
+case_ "人の PR で記録が無ければ、pull_request では status を書かない" none ido-ojos no \
   "$(commit ido-ojos ido-ojos false)"
 case_ "人の PR で記録があれば success" success ido-ojos yes \
   "$(commit ido-ojos ido-ojos false)"
-case_ "Dependabot の PR に人のコミットが混ざり記録が無ければ failure" failure "$DEP" no \
+case_ "Dependabot の PR に人のコミットが混ざり記録が無ければ、status を書かない" none "$DEP" no \
   "$(commit "$DEP" web-flow true)" "$(commit ido-ojos ido-ojos false)"
 # author は作る側が書ける。GitHub の署名が無ければ Dependabot 名義でも信じない。
-case_ "Dependabot 名義でも署名が無ければ failure" failure "$DEP" no \
+case_ "Dependabot 名義でも署名が無ければ記録を求める（status を書かない）" none "$DEP" no \
   "$(commit "$DEP" web-flow true)" "$(commit "$DEP" ido-ojos false)"
-case_ "Dependabot 名義で committer が web-flow でも未検証なら failure" failure "$DEP" no \
+case_ "Dependabot 名義で committer が web-flow でも未検証なら記録を求める（status を書かない）" none "$DEP" no \
   "$(commit "$DEP" web-flow false)"
 
 # 記録の著者（#865）。public なので誰でも印つきのコメントを書ける。数えるのは PR の作者だけ。
-case_ "作者以外（知らない人）が書いた印だけなら failure" failure ido-ojos stranger \
+case_ "作者以外（知らない人）が書いた印だけなら記録とみなさない（status を書かない）" none ido-ojos stranger \
   "$(commit ido-ojos ido-ojos false)"
-case_ "協力者が書いた印だけでも failure（PR の作者だけを数える）" failure ido-ojos collaborator \
+case_ "協力者が書いた印だけでも記録とみなさない（PR の作者だけを数える）" none ido-ojos collaborator \
   "$(commit ido-ojos ido-ojos false)"
 case_ "作者の記録があれば、他人の印が混ざっていても success" success ido-ojos both \
   "$(commit ido-ojos ido-ojos false)"
 
-# ── 掃き寄せ（schedule）の経路（#888）────────────────────────────────────────
+# 既定ブランチにこのワークフローがまだ無い PR（導入する PR）は、猶予を待ってから従来どおり判定する（#985）。
+DEFAULT_ABSENT=1 case_ "既定ブランチに無いときは猶予の後に判定し、記録が無ければ failure" failure ido-ojos no \
+  "$(commit ido-ojos ido-ojos false)"
+DEFAULT_ABSENT=1 case_ "既定ブランチに無いとき、作者以外の印だけなら failure" failure ido-ojos stranger \
+  "$(commit ido-ojos ido-ojos false)"
+DEFAULT_ABSENT=1 case_ "既定ブランチに無いときも、Dependabot 名義で署名が無ければ failure" failure "$DEP" no \
+  "$(commit "$DEP" web-flow true)" "$(commit "$DEP" ido-ojos false)"
+
+# ── 掃き寄せ（手動実行）の経路（#888）────────────────────────────────────────
 # check-run が 1 つも無い PR は、pull_request の契機が届かなかった PR である（このリポジトリで
 # PR の head に check-run を作るのは pull_request の契機のワークフローだけ）。掃き寄せが
 # 拾うべきなのはまさにその PR なので、更新時刻で代えて判定する。猶予（300 秒）は守る。
@@ -166,6 +185,8 @@ sweep "$OLD" "" "掃き寄せ: check-run が無く、更新から猶予を過ぎ
 sweep "$OLD" "" "掃き寄せ: check-run が無く、更新から猶予を過ぎ、記録があれば success" success ido-ojos yes \
   "$(commit ido-ojos ido-ojos false)"
 sweep "$NOW" "" "掃き寄せ: check-run が無く、更新が猶予の内なら判定しない" none ido-ojos no \
+  "$(commit ido-ojos ido-ojos false)"
+sweep "$NOW" "" "掃き寄せ: 猶予の内でも、記録があれば success（#985）" success ido-ojos yes \
   "$(commit ido-ojos ido-ojos false)"
 sweep "$OLD" "$OLD" "掃き寄せ: check-run の開始から猶予を過ぎ、記録が無ければ failure" failure ido-ojos no \
   "$(commit ido-ojos ido-ojos false)"

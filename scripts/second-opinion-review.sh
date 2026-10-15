@@ -25,34 +25,33 @@
 #                解禁しない（下記「ツールの解禁」）
 #   codex        Codex CLI（codex exec）。ChatGPT アカウントの OAuth 認証（または
 #                API キー）。`--output-schema` で構造化出力を強制できるため、
-#                判定は JSON で行う。**読み取り専用サンドボックスでツールを解禁する**
-#                唯一のエンジン（下記「ツールの解禁」）
+#                判定は JSON で行う。ツールは解禁せず、起動する環境も絞る
+#                （下記「ツールの解禁」「codex の実行環境」）
 #
 # ツールの解禁:
-#   ツールを解禁するのは、読み取り専用サンドボックスが実際に書き込みを止めることを
-#   確かめられたエンジンだけに限る。旗の名前（「plan」「read-only」等）だけでは
-#   実際に止まるかどうかは分からない——名前から読み取れることと実際の動作は別である。
+#   どのエンジンにもツールを解禁しない。差分はプロンプトへ埋め込み、モデルには
+#   ファイルも環境も触らせない。
 #
-#   codex は `--sandbox read-only` を使う。書き込み系のシステムコールを拒否し、
-#   読み取り系（`git diff` 等）だけを許可するサンドボックスで、ユーザー名前空間
-#   （Linux）や Seatbelt（macOS）といった OS 機構に依存する。ユーザー名前空間の
-#   作成を禁止する環境（コンテナの seccomp 制限等）では、サンドボックスの初期化
-#   自体が失敗し、**読み取りを含めてコマンドが一切実行できない**（fail-closed。
-#   認証不要の `codex sandbox` サブコマンドで直接確認した）。書き込みが素通りする
-#   形には振れず、動かないか止まるかのどちらかである。
+#   書き込みを止められることだけでは、ツールを解禁してよい根拠にならない。
+#   モデルにはファイルも環境も触らせず、実行環境を最小にする方針で、ツールそのものを
+#   無効にする。差分の外を読ませる補助は、この方針を優先して手放した。
 #
-#   antigravity には対応する旗が無い。`--mode plan` は名前が「計画のみ」を示すが、
-#   `--dangerously-skip-permissions` と併せて使うと実際にファイルへ書き込めた
+#   antigravity も同じ理由でツールを解禁しない。`--mode plan` は名前が「計画のみ」を
+#   示すが、`--dangerously-skip-permissions` と併せて使うと実際にファイルへ書き込めた
 #   （確認用の書き込みが実際に成立した）。**止めない旗をツール解禁の根拠にはしない。**
-#   したがって antigravity は差分をプロンプトへ埋め込む従来の形を保ち、ツールは
-#   解禁しない。
 #
-#   ツールを解禁したエンジン（codex）にも、差分は標準入力で必ず渡す。ツールは
-#   差分の外のファイル・テスト・宣言を読むための補助にとどめる。読み取り専用の
-#   サンドボックスは、ユーザー名前空間を禁じたコンテナでは起動せず、読み取りの
-#   コマンドも含めて一切実行できない（実測）。差分の取得までツールに任せると、
-#   その環境では差分を見ないまま回答が返る。標準入力なので引数の上限は受けず、
-#   チャンク分割は要らない。
+#   差分は codex にも標準入力で渡す。標準入力なので引数の上限は受けず、チャンク
+#   分割は要らない。
+#
+# codex の実行環境:
+#   codex は、渡す環境変数・作業場所・ツールを最小にして起動する。
+#   - 環境変数: `.env` を読み込む前の値から、許可リスト（下記 CODEX_ENV_ALLOW）の
+#     変数だけを控え、`env -i` で起動した codex へその分だけ渡す。`.env` にだけある
+#     変数は渡らない。`.env` に書いたプロキシも渡らない（読み込む前の値だけを渡す）。
+#   - 作業場所: 秘密を置かない使い捨てのディレクトリ。
+#   - ツール: `shell_environment_policy.inherit=none`、各ツールの `--disable`、
+#     `web_search` の無効化、`--ignore-user-config`（~/.codex/config.toml を効かせない）。
+#     旗の名前は codex の版に依存する。受け付けられない版では codex が失敗して止まる。
 #
 # 判定のぶれについて:
 #   このレビューは非決定的で、同じ差分でも実行のたびに結果が変わる。いずれの CLI にも
@@ -75,7 +74,7 @@
 # 分割について:
 #   antigravity は差分をコマンドライン引数へ直接載せる（gemini は一時ファイルを
 #   @<パス> で参照させるため、引数へ載るのはパス文字列だけで対象外。codex は
-#   ツールを解禁したため差分そのものを渡さない）。引数 1 個あたりには Linux の
+#   標準入力で渡すため対象外）。引数 1 個あたりには Linux の
 #   MAX_ARG_STRLEN（カーネル定数: PAGE_SIZE * 32。既定は 131,072 バイト）という
 #   固定上限があり、これは合計を制限する ARG_MAX とは別物。実測でも「10 万バイトの
 #   引数を 20 個渡す（合計 200 万バイト）」は通り、「単一引数が 131,073 バイト」は
@@ -127,8 +126,11 @@
 #   その行の有無で「判定に到達したか」を見るため、出さなければ記録も残らない。
 #
 # issue / PR の文脈:
-#   ブランチ名が issue 番号を含む形（`feat/123-...` 等）なら、その issue の本文
-#   （scope・acceptance を含む）をプロンプトへ載せる。加えて、差分の追加行と
+#   ブランチ名が issue 番号を含む形（`feat/123-x`・`123-x`・`issue-123`・`gh-123_x` 等。
+#   規則はセッション協調のフックと同じ BRANCH_ISSUE_RE）なら、その issue の本文
+#   （scope・acceptance を含む）をプロンプトへ載せる。**限界として、日付や版を含む名前
+#   （`2026-10-14-hotfix` など）も番号として読む。** その番号の issue があれば、関係の無い
+#   issue が文脈に載る（フックも同じ名前を同じく読む。規則を揃えることを優先した。#593）。加えて、差分の追加行と
 #   コミットメッセージが参照する `#番号`（リポジトリへの書き込み権を持つ人が作成したものに限り、
 #   上限件数まで）についても、状態と（issue なら）acceptance の節を取得して載せる。
 #   いずれも `gh` 経由で、取得できなくても止めない（ゲートではないため）。
@@ -145,6 +147,31 @@ set -euo pipefail
 # SECOND_OPINION_MODEL が既に確定した変数に負けて、設定したつもりで効かない。
 # 検証もすり抜けるため、不正な値がそのまま走ることになる。
 __SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# codex へ渡してよい環境変数の許可リスト。値は **.env を読み込む前** の環境から
+# 控える（読み込んだ後だと、.env にだけある変数や .env が書き換えた値が混ざる）。
+# 必要最小限だけを挙げる:
+#   HOME / CODEX_HOME   認証情報の置き場所（codex login の状態）を見つけるため
+#   PATH                codex 自身の起動（node 等）に要る
+#   LANG / LC_*         文字コード
+#   TMPDIR              一時ファイルの置き場所
+#   TERM                端末の判定（出力の装飾）
+#   *_PROXY / *_proxy   外のモデルへ届く経路。.env に書いた値は届かない
+#   SSL_CERT_FILE 等    プロキシ越しの証明書
+CODEX_ENV_ALLOW=(
+  HOME CODEX_HOME PATH LANG LANGUAGE LC_ALL LC_CTYPE LC_MESSAGES TMPDIR TERM
+  HTTPS_PROXY HTTP_PROXY ALL_PROXY NO_PROXY
+  https_proxy http_proxy all_proxy no_proxy
+  SSL_CERT_FILE SSL_CERT_DIR
+)
+CODEX_ENV_PASS=()
+for __name in "${CODEX_ENV_ALLOW[@]}"; do
+  if [[ -n "${!__name+x}" ]]; then
+    CODEX_ENV_PASS+=("$__name=${!__name}")
+  fi
+done
+unset __name
+
 if [[ -f "$__SCRIPT_DIR/load-project-env.sh" ]]; then
   # shellcheck source=scripts/load-project-env.sh
   . "$__SCRIPT_DIR/load-project-env.sh"
@@ -156,9 +183,20 @@ fi
 # 環境変数は SECOND_OPINION_* を正とし、旧名 GEMINI_REVIEW_* も受理する。旧名は
 # エンジン名を含むため、エンジンを選べるようになった時点で名前が事実と合わなくなる。
 # ただし取り込み済みの利用側が .env を書き換えるまでゲートが止まるのは避ける。
+#
+# モデル名の旧名（GEMINI_REVIEW_MODEL）だけは、エンジンが gemini のときに限って引き継ぐ。
+# 旧名は gemini 用のモデル名で、codex / antigravity へ渡すとそのエンジンでは解決できず、
+# 実行できなくなる。エンジンは --engine の引数解析の後で確定するため、引き継ぎは
+# 引数解析の後で行う（下記）。
 RANGE=""
+# --base <rev>: 索引と <rev> の差（コミット済みとステージ済みの両方）を対象にする。
+BASE=""
 ENGINE="${SECOND_OPINION_ENGINE:-gemini}"
-MODEL="${SECOND_OPINION_MODEL:-${GEMINI_REVIEW_MODEL:-}}"
+# エンジンが --engine / SECOND_OPINION_ENGINE のどちらでも指定されたか。既定の gemini に
+# 落ちたことを、ほかの CLI が入っている環境で知らせるために使う（下記）。
+ENGINE_SPECIFIED=0
+[[ -n "${SECOND_OPINION_ENGINE:-}" ]] && ENGINE_SPECIFIED=1
+MODEL="${SECOND_OPINION_MODEL:-}"
 RUNS="${SECOND_OPINION_RUNS:-${GEMINI_REVIEW_RUNS:-1}}"
 
 usage() {
@@ -167,6 +205,8 @@ usage: bash scripts/second-opinion-review.sh [options]
 
 options:
   --range <git-range>   レビュー対象の差分範囲（既定: ステージ済み差分）
+  --base <rev>          索引と <rev> の差（コミット済み + ステージ済み）をレビュー対象にする。
+                        PR 全体を渡したいときに使う。--range とは併用できない
   --engine <name>       レビューを実行する CLI（gemini | antigravity | codex。既定: gemini。
                         SECOND_OPINION_ENGINE でも指定可）
   --model <name>        使用モデル（既定: 各 CLI の既定。SECOND_OPINION_MODEL でも指定可）
@@ -195,13 +235,26 @@ need_value() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --range)  need_value "$1" "${2-}"; RANGE="$2";  shift 2 ;;
-    --engine) need_value "$1" "${2-}"; ENGINE="$2"; shift 2 ;;
+    --base)   need_value "$1" "${2-}"; BASE="$2";   shift 2 ;;
+    --engine) need_value "$1" "${2-}"; ENGINE="$2"; ENGINE_SPECIFIED=1; shift 2 ;;
     --model)  need_value "$1" "${2-}"; MODEL="$2";  shift 2 ;;
     --runs)   need_value "$1" "${2-}"; RUNS="$2";   shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown option: $1" >&2; usage; exit 1 ;;
   esac
 done
+
+if [[ -n "$RANGE" && -n "$BASE" ]]; then
+  echo "error: --range と --base は併用できません" >&2
+  usage >&2
+  exit 1
+fi
+
+# 旧名のモデル名は gemini のときだけ使う（上記）。--model / SECOND_OPINION_MODEL が
+# あればそちらが勝つ。codex / antigravity では空のまま、各エンジンの既定に任せる。
+if [[ -z "$MODEL" && "$ENGINE" == "gemini" ]]; then
+  MODEL="${GEMINI_REVIEW_MODEL:-}"
+fi
 
 # 不正な回数で黙って 1 回に落とすと、増やしたつもりのゲートが実際には
 # 効いていない状態になる。着手前に止める。
@@ -221,15 +274,32 @@ if [[ "$RUNS" -lt 1 ]]; then
   exit 1
 fi
 
-# エンジンの能力フラグ。「ツールを解禁するか」「判定を JSON スキーマ方式で
-# 行うか」はエンジンごとに固定で、利用者が選べる値ではない（上記ヘッダ「ツールの
-# 解禁」参照）。既定は両方 0（従来どおり、差分を渡し判定トークンで判定する）。
-ENGINE_TOOLS=0
+# エンジンの能力フラグ。「判定を JSON スキーマ方式で行うか」はエンジンごとに固定で、
+# 利用者が選べる値ではない。既定は 0（差分を渡し判定トークンで判定する）。
+# ツールはどのエンジンにも解禁しない（上記ヘッダ「ツールの解禁」）。
 ENGINE_JSON=0
 
 # 判定を JSON で行うエンジンが強制する回答の形。判定そのものはモデルに出させず、
 # category から下の BLOCKING_CATEGORIES を見てこのスクリプトが決める。
 SCHEMA_FILE="$__SCRIPT_DIR/second-opinion-schema.json"
+
+# エンジンの指定が無いまま既定の gemini を使うとき、ほかのエンジンの CLI が入っていれば
+# 知らせる。両方を入れた構成で、.env を写し忘れた作業ツリーなどが黙って gemini で回るのを
+# 気づけるようにするため。gemini だけの構成では出さない（ノイズを増やさない）。
+# 判定（終了コード・LGTM）は変えない。文面に `(engine=` の形を含めない（loop-gate.sh が
+# 出力の最初の `(engine=` からエンジン名を読んで記録に残すため）。
+#
+# 回数の検査の後、エンジンの検査の前に置く。回数の誤りで止まる実行では出さず、gemini の
+# CLI やキーが無くて止まる実行では、止まった理由（指定が無く gemini に落ちた）を先に示すため。
+if [[ "$ENGINE_SPECIFIED" -eq 0 && "$ENGINE" == "gemini" ]]; then
+  __other_clis=""
+  command -v agy >/dev/null 2>&1 && __other_clis="agy"
+  command -v codex >/dev/null 2>&1 && __other_clis="${__other_clis:+$__other_clis / }codex"
+  if [[ -n "$__other_clis" ]]; then
+    echo "[second-opinion] notice: エンジンの指定が無いので既定の gemini を使います（$__other_clis の CLI も見つかっています）。" >&2
+    echo "[second-opinion] notice: 別のエンジンで回すには --engine <gemini|antigravity|codex> か、.env の SECOND_OPINION_ENGINE で指定してください。" >&2
+  fi
+fi
 
 # エンジンの検査は CLI を呼ぶ前に済ませる。未知の値をそのまま先へ流すと、
 # 「コマンドが無い」というエンジン不在のエラーに化けて、綴り間違いだと分からない。
@@ -279,10 +349,8 @@ case "$ENGINE" in
     if [[ -z "$MODEL" ]]; then
       MODEL="gpt-6-sol"
     fi
-    # サンドボックスが実際に書き込みを止めることを確認済みのエンジンなので
-    # ツールを解禁する（上記ヘッダ「ツールの解禁」）。構造化出力は
+    # ツールは解禁しない（上記ヘッダ「ツールの解禁」）。構造化出力は
     # `--output-schema` で強制できる。
-    ENGINE_TOOLS=1
     ENGINE_JSON=1
     ;;
   *)
@@ -305,7 +373,7 @@ if [[ "$ENGINE_JSON" -eq 1 ]]; then
   }
 
   # **落とす 4 点はこのスクリプトが決め、スキーマは「モデルに許す category」を
-  # 決める。** 2 か所に書くと片方だけ直る（shared-ai-rules.md「正本は 1 つ」）ので、
+  # 決める。** 2 か所に書くと片方だけ直る（shared-ai-rules.md 12 章「一覧の複製は機械照合で担保する」）ので、
   # 許す側の一覧はスキーマから読み、落とす側の 4 点がそこに含まれることを確かめる。
   BLOCKING_CATEGORIES='bug vulnerability type-error edge-case'
   ALL_CATEGORIES="$(jq -r '.properties.findings.items.properties.category.enum[]' "$SCHEMA_FILE" 2>/dev/null || true)"
@@ -324,6 +392,10 @@ fi
 if [[ -n "$RANGE" ]]; then
   diff_text="$(git diff "$RANGE")"
   scope="$RANGE"
+elif [[ -n "$BASE" ]]; then
+  # 索引と <rev> の差。<rev> 以降のコミット済みの変更と、ステージ済みの変更の両方が入る。
+  diff_text="$(git diff --cached "$BASE" --)"
+  scope="base:$BASE+staged"
 else
   diff_text="$(git diff --cached)"
   scope="staged"
@@ -342,23 +414,35 @@ fi
 # （黙って「文脈つきでレビューした」ことにしない）。
 issue_context=""
 branch_issue_num=""
+# ブランチ名から issue 番号を取る規則。セッション協調のフック（session-coord-hook.sh の
+# ISSUE_BRANCH_RE）と同じ規則にそろえてある。利用者がどちらの形で枝を切っても、2 つの
+# 仕組みが同じ番号を読むようにするため。番号は 3 つ目の括弧（BASH_REMATCH[3]）に入る。
+# 先頭は 0 を許さず 6 桁まで、直後は - か _ か末尾。複数箇所に一致するときは最初の一致を使う。
+BRANCH_ISSUE_RE='(^|/)(issue-|gh-)?([1-9][0-9]{0,5})([-_]|$)'
 resolve_issue_context() {
   local branch num body
   branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  # feat/123-... / fix/456-... のような形から数字を取る。枝の名前に数字が無ければ
-  # 何もしない（推測で別の issue を引かない）。
-  num="$(printf '%s' "$branch" | sed -n 's|^[a-z]*/\([0-9][0-9]*\)-.*|\1|p')"
+  # feat/123-x・123-x・issue-123・gh-123_x のような形から数字を取る。枝の名前に数字が
+  # 無ければ何もしない（推測で別の issue を引かない）。
+  num=""
+  if [[ "$branch" =~ $BRANCH_ISSUE_RE ]]; then
+    num="${BASH_REMATCH[3]}"
+  fi
   branch_issue_num="$num"
   if [[ -z "$num" ]]; then
-    echo "[second-opinion] 枝の名前から issue 番号を取れませんでした（文脈なしでレビューします）: $branch" >&2
+    echo "[second-opinion] 枝の名前から issue 番号を取れませんでした（文脈なしでレビューします）: $branch（feat/123-x・123-x・issue-123 のように番号を含めると読めます）" >&2
     return 0
   fi
+  # 引けなかったときは branch_issue_num を空に戻す。下の「参照された issue」は、この番号を
+  # 二重に載せないよう一覧から外すため、残したままだと、本文も状態も載らなくなる。
   if ! command -v gh >/dev/null 2>&1; then
     echo "[second-opinion] gh が無いため issue #$num を引けません（文脈なしでレビューします）" >&2
+    branch_issue_num=""
     return 0
   fi
   if ! body="$(gh issue view "$num" --json title,body --jq '"# issue #'"$num"' " + (.title // "") + "\n\n" + (.body // "")' 2>/dev/null)"; then
     echo "[second-opinion] issue #$num を引けませんでした（文脈なしでレビューします）" >&2
+    branch_issue_num=""
     return 0
   fi
   issue_context="$body"
@@ -378,6 +462,14 @@ resolve_issue_context
 #     public なので部外者の文がプロンプトへ入りうる。「リポジトリの持ち主の login と
 #     一致するか」で絞らない——組織所有のリポジトリでは持ち主は組織名で、個人の
 #     login と一致することがなく、すべての参照が除外される
+#   - **パッケージが配置したファイルの追加行は拾わない。** DCB の `.devcontainer/ORIGIN`
+#     に `hash:<パス>=<sha256>` の記録があるパスが該当する。そこにある番号は、例示や
+#     上流（パッケージ側）の issue 番号で、利用側のリポジトリの番号ではない。ただし
+#     `owned:<パス>=1` の記録もあるパス（プロジェクトが所有・編集するファイル）は外さない。
+#     中身は利用側が書いたもので、そこにある番号は本物の参照のため。ORIGIN が無い・読め
+#     ないときは従来どおり、すべての追加行から拾う（DCB 無しでも使える）。差分の見出しの
+#     パスが引用符付き（git が特殊な文字を符号化した形）のときは一致を判定できないため、
+#     外さずに拾う（取りこぼすより従来どおり載せるほうへ倒す）。外したときは件数を出す
 #   - issue は「状態・タイトル・acceptance の節」、PR は「状態・タイトル」だけ。
 #     本文全体は載せない（消費と、古い本文による誤検出を抑える）
 #   - **上限は REFERENCED_LIMIT 本。超えた分は捨てたと出す**
@@ -402,27 +494,147 @@ extract_issue_refs() {
   }'
 }
 
-# issue の本文から acceptance の節（intake の YAML の `acceptance:` から次のキーまで）
-# を出す。
+# issue の本文から acceptance の節を出す。次の 2 つの形を拾い、本文で先に現れたほうを使う。
+#   - intake の YAML: 行頭の `acceptance:` から、次のキーかコードのフェンスまで。
+#     フェンスの外の `acceptance:` は採る。フェンスの中の `acceptance:` は、同じフェンスの
+#     中でそれより前に行頭の `goal:` があったときだけ採る（intake の票は goal → … → acceptance の
+#     順で、フェンスの中に書く。goal: の無いフェンスは本文中のコード例とみなして採らない）。
+#     限界: goal: が acceptance: より後ろにある票、goal: と acceptance: を別々のフェンスに分けた
+#     票は拾わない。intake の雛形そのもの（goal: を含む）を引用したコード例は、本物として採る
+#   - Markdown の見出し: 文言が acceptance の見出し（# の数と大文字小文字は問わない）から、
+#     次の同じ深さ以上の見出しの手前まで。見出しの判定はコードのフェンス（```）の外に限る
+# macOS の awk でも動くよう、GNU 拡張（IGNORECASE・match の配列引数など）に頼らない。
 extract_acceptance() {
   tr -d '\r' | awk '
-    /^acceptance:/ { on = 1; print; next }
-    on && (/^[A-Za-z_.]+:/ || /^```/) { exit }
-    on { print }
+    # コードのフェンス（行頭に 0〜3 個の空白を付けた、3 個以上の ` か ~ の並び）か。
+    # そうなら fch に文字、flen に並びの長さ、frest に並びの後ろを入れて 1 を返す
+    function fenceline(s,   t) {
+      if (s !~ /^ ? ? ?(```|~~~)/) return 0
+      t = s; sub(/^ +/, "", t); fch = substr(t, 1, 1)
+      if (fch == "`") match(t, /^`+/); else match(t, /^~+/)
+      flen = RLENGTH; frest = substr(t, RLENGTH + 1)
+      return 1
+    }
+    # ATX 見出しの深さ（行頭に 0〜3 個の空白、# が 1〜6 個、その後に空白か行末）。見出しでなければ 0
+    function depth(s,   t) {
+      if (s !~ /^ ? ? ?#+([ \t]|$)/) return 0
+      t = s; sub(/^ +/, "", t); match(t, /^#+/)
+      return (RLENGTH <= 6) ? RLENGTH : 0
+    }
+    # 見出しの文言（先頭の # と、末尾の空白・閉じの # の並びを除く）
+    function htext(s,   t) {
+      t = s; sub(/^ +/, "", t); sub(/^#+/, "", t)
+      sub(/[ \t]+$/, "", t); sub(/^[ \t]+/, "", t)
+      sub(/(^|[ \t]+)#+$/, "", t); sub(/[ \t]+$/, "", t)
+      return t
+    }
+    # フェンスの開閉。開いた文字と並びの長さを覚え、同じ文字で、同じかそれより長い並びが
+    # 空白だけを後ろに置いたときに閉じる
+    function track(s) {
+      if (fence == "") { fence = fch; fencelen = flen; seengoal = 0 }
+      else if (fch == fence && flen >= fencelen && frest ~ /^[ \t]*$/) fence = ""
+    }
+    mode == 0 {
+      if (fenceline($0)) { track($0); next }
+      if (fence != "" && $0 ~ /^goal:/) seengoal = 1
+      if ($0 ~ /^acceptance:/ && (fence == "" || seengoal)) { mode = 1; print; next }
+      if (fence == "" && depth($0) > 0) {
+        t = tolower(htext($0)); sub(/:$/, "", t)
+        if (t == "acceptance") { mode = 2; d = depth($0); fence = ""; print; next }
+      }
+      next
+    }
+    mode == 1 {
+      # 節の終わりは、次のキーか、フェンスの行（``` と ~~~、0〜3 個の字下げを含む。fenceline と同じ判定）。
+      # 票がフェンスの中にあるときは、そのフェンスを閉じる行（track と同じ規則）でだけ終える。
+      # 別の記号や短い並びの行は閉じないので、acceptance の中身（`acceptance: |` の本文など）として残す
+      if ($0 ~ /^[A-Za-z_.]+:/) exit
+      if (fenceline($0)) {
+        if (fence == "") exit
+        if (fch == fence && flen >= fencelen && frest ~ /^[ \t]*$/) exit
+      }
+      print; next
+    }
+    mode == 2 {
+      if (fenceline($0)) { track($0); print; next }
+      if (fence == "" && depth($0) > 0 && depth($0) <= d) exit
+      print
+    }
   '
 }
 
+# 差分（標準入力）から、追加行（先頭の `+` を外したもの）か、外したファイルの件数を出す。
+# 環境変数 PKG_PATHS（改行区切りのパス）に挙がったファイルの追加行は外す。
+# 引数 "lines": 追加行を出す / "count": 追加行を実際に外したファイルの件数を出す。
+# 見出しの判定は diff --git から最初の @@ までに限る（追加行の内容が `+++ ` で始まっても、
+# 見出しとは取り違えない）。GNU 拡張は使わない。
+added_lines_of_diff() {
+  PKG_PATHS="${PKG_PATHS-}" awk -v mode="$1" '
+    BEGIN {
+      n = split(ENVIRON["PKG_PATHS"], arr, "\n")
+      for (i = 1; i <= n; i++) if (arr[i] != "") pk[arr[i]] = 1
+    }
+    /^diff --git / { inhdr = 1; skip = 0; next }
+    inhdr && /^@@/ { inhdr = 0 }
+    inhdr && /^\+\+\+ / {
+      p = substr($0, 5)
+      # 引用符付き・/dev/null など、b/ で始まらない形は判定できない。外さない
+      if (substr(p, 1, 2) == "b/") {
+        p = substr(p, 3)
+        sub(/\t.*$/, "", p)
+        if (p in pk) { skip = 1; curp = p }
+      }
+      next
+    }
+    # 件数は、追加行を実際に外したファイルだけ数える（削除だけの差分は数えない）
+    mode == "count" && !inhdr && skip && /^\+/ && !(curp in seen) { seen[curp] = 1; cnt++ }
+    mode == "lines" && !inhdr && !skip && /^\+/ { print substr($0, 2) }
+    END { if (mode == "count") print cnt + 0 }
+  '
+}
+
+# DCB の ORIGIN から「パッケージが配置し、プロジェクトの所有でもないファイル」のパスを
+# 改行区切りで出す。hash: の記録のうち、owned: の記録があるものを除く。行の文法は
+# `<種別>:<パス>=<値>`（パスに = を含みうるので、最後の = で区切る）。
+# ORIGIN が無い・読めないときは何も出さない。
+package_owned_paths() {
+  local root origin
+  root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "$root" ]] || root="."
+  origin="$root/.devcontainer/ORIGIN"
+  [[ -r "$origin" ]] || return 0
+  awk '
+    function path_of(line, pre,   s, k) {
+      s = substr(line, length(pre) + 1)
+      for (k = length(s); k > 1; k--) if (substr(s, k, 1) == "=") return substr(s, 1, k - 1)
+      return ""
+    }
+    /^hash:/  { p = path_of($0, "hash:");  if (p != "") hp[++nh] = p }
+    /^owned:/ { p = path_of($0, "owned:"); if (p != "") own[p] = 1 }
+    END { for (j = 1; j <= nh; j++) if (!(hp[j] in own)) print hp[j] }
+  ' "$origin" 2>/dev/null || true
+}
+
 resolve_referenced_context() {
-  local refs nums n kept dropped rejected unreadable json association title state acc
+  local refs nums n kept dropped rejected unreadable json association title state acc pkg_paths skipped_files
   # コミットメッセージを先に置く。「(#123)」のように、変更が名指しした番号が
   # 先頭に来る。**範囲（A..B）のときだけ**ログを読む。単独のリビジョンに git log を
   # 当てると履歴の全部を読むことになる。
   refs=""
   if [[ "$RANGE" == *..* ]]; then
     refs="$(git log --format=%B "$RANGE" 2>/dev/null | extract_issue_refs || true)"
+  elif [[ -n "$BASE" ]]; then
+    refs="$(git log --format=%B "$BASE..HEAD" 2>/dev/null | extract_issue_refs || true)"
+  fi
+  pkg_paths="$(package_owned_paths)"
+  if [[ -n "$pkg_paths" ]]; then
+    skipped_files="$(printf '%s\n' "$diff_text" | PKG_PATHS="$pkg_paths" added_lines_of_diff count || true)"
+    if [[ "${skipped_files:-0}" -gt 0 ]]; then
+      echo "[second-opinion] パッケージが配置したファイル ${skipped_files} 件の追加行は、参照の抽出から外しました"
+    fi
   fi
   refs="$refs
-$(printf '%s\n' "$diff_text" | awk '/^\+/ && !/^\+\+\+ / { print substr($0, 2) }' | extract_issue_refs || true)"
+$(printf '%s\n' "$diff_text" | PKG_PATHS="$pkg_paths" added_lines_of_diff lines | extract_issue_refs || true)"
   # 出てきた順に重複を落とし、枝の issue（上で全文を載せた）を除く。
   nums="$(printf '%s\n' "$refs" | awk -v skip="$branch_issue_num" 'NF && $0 != skip && !seen[$0]++')"
   if [[ -z "$nums" ]]; then
@@ -538,16 +750,10 @@ read -r -d '' REPORT_RULES_JSON <<'EOF' || true
 - 前置きや作業の説明は書かないでください。
 EOF
 
-if [[ -n "$RANGE" ]]; then
-  diff_cmd="git diff $RANGE"
-else
-  diff_cmd="git diff --cached"
-fi
-
 # ゲート対象は review-workflow.md の限定に合わせる。本文を分けるのは
-# ENGINE_JSON（判定トークン方式か JSON スキーマ方式か）と ENGINE_TOOLS
-# （ツールを解禁しているか）の 2 つの能力フラグで、エンジン名そのものでは分けない
-# ——能力が増減したらフラグ側を直せば、本文の分岐はそのまま追随する。
+# ENGINE_JSON（判定トークン方式か JSON スキーマ方式か）の能力フラグで、エンジン名
+# そのものでは分けない——能力が増減したらフラグ側を直せば、本文の分岐はそのまま
+# 追随する。
 if [[ "$ENGINE_JSON" -eq 0 ]]; then
   # 判定トークン方式（gemini）。差分はプロンプトへ埋め込み、ツールは使わせない。
   #
@@ -577,32 +783,13 @@ if [[ "$ENGINE_JSON" -eq 0 ]]; then
   - 指摘がある場合: \`VERDICT: FINDINGS\`
 - 指摘がある場合は、判定トークンより前に、各指摘について「該当ファイルと行」「何が問題か」「なぜ問題か（再現条件や影響）」を簡潔に記述してください。
 - 通過判定は最後の行だけで行います。判定トークンの無い出力は指摘ありとして扱います。"
-elif [[ "$ENGINE_TOOLS" -eq 0 ]]; then
-  # JSON スキーマ方式だがツールは解禁しない（antigravity）。差分はプロンプトへ
-  # 埋め込む（従来どおり分割の対象になる）。先頭に空行を置かない理由は
+else
+  # JSON スキーマ方式（antigravity / codex）。ツールは解禁しない。差分はプロンプトへ
+  # 埋め込む（antigravity は分割の対象になる。codex は標準入力で渡す）。先頭に空行を置かない理由は
   # gemini の分岐と同じ（$PROMPT の実体に不要な改行を増やさない）。
   PROMPT="上記は git の差分です。コードレビューを行ってください。
 
 レビューに必要な情報はこのプロンプトに含まれています。**ファイル読み取りやコマンド実行のツールを使わないでください。** ツールの実行は非対話実行では承認できず、拒否されると回答そのものが返らなくなります。
-
-$REPORT_RULES_JSON"
-else
-  # JSON スキーマ方式で、かつツールを解禁する（codex）。
-  #
-  # **差分は標準入力で必ず渡す。ツールは差分の外を読むための補助にとどめる。**
-  # 読み取り専用のサンドボックスは、実行環境によって起動しない（ユーザー名前空間の
-  # 作成を禁じたコンテナでは、サンドボックス自体が立ち上がらず、読み取りのコマンドも
-  # 含めて一切実行できない。実測）。差分の取得までモデルのツールに任せると、その
-  # 環境では差分を 1 行も見ないまま回答が返り、中身の無いレビューが通る。差分を
-  # 先に渡しておけば、ツールが使えない環境でも差分そのものは必ずレビューされる。
-  # 標準入力なので引数の上限は受けず、分割は要らない。
-  PROMPT="上記はこのリポジトリの git の差分です（\`$diff_cmd\` の出力）。コードレビューを行ってください。
-
-**読み取りのコマンドとファイル読み取りを使ってよい**です。差分の外のファイル・テスト・
-宣言・ドキュメントも読み、**事実を確かめてから**報告してください（推測で書かない）。
-**書き込みはできません**（サンドボックスが読み取り専用です）。
-**コマンドが実行できない環境でも、上の差分だけでレビューを完結させてください。**
-その場合、差分の外を確かめられなかったことを理由に指摘を作らないでください。
 
 $REPORT_RULES_JSON"
 fi
@@ -629,6 +816,9 @@ printf '%s\n' "$diff_text" > "$diff_file"
 #   走らないため、ここで消すだけでは --runs 2 以上のときに前の回の回答を読む）。
 stdin_file="/dev/null"
 answer_file=""
+# 起動する作業場所と、コマンドの前置き（codex だけが絞る。他は現在の場所・そのまま）。
+run_cwd="$PWD"
+run_prefix=()
 
 # 差分の渡し方はエンジンごとに違う。**いずれも「差分が加工されずモデルへ届くこと」を
 # 実測で確かめたうえで選んでいる。** 1 つの作法を他へ流用しない。
@@ -852,7 +1042,7 @@ case "$ENGINE" in
   codex)
     # codex exec は `-` を指定すると、指示文そのものを標準入力から読む。差分と
     # プロンプトを「差分が先・プロンプトが後」の順で 1 つのファイルにまとめて流す
-    # （上記ヘッダ「ツールの解禁」。ツールが使えない環境でも差分は必ず届く）。
+    # （上記ヘッダ「ツールの解禁」。ツールは使わせないので差分はここでしか届かない）。
     # 引数に載せないので単一引数の上限を受けない。分割しない（1 チャンク）。
     CLI="codex"
     chunk_paths=("$diff_file")
@@ -1035,20 +1225,35 @@ $PROMPT" --output-format json --json-schema "$SCHEMA_FILE")
       answer_file="$work_dir/codex-answer.json"
 
       # 標準入力には「差分が先・プロンプトが後」の順で流す（プロンプト冒頭の
-      # 「上記は git の差分です」が指す先を保つ）。差分を渡す理由は PROMPT の
-      # 組み立ての注記（サンドボックスが起動しない環境）。
+      # 「上記は git の差分です」が指す先を保つ）。ツールは使わせないので、
+      # 差分はここでしか届かない。
       stdin_file="$work_dir/codex-input.txt"
       printf '%s\n\n%s\n' "$diff_text" "$PROMPT" > "$stdin_file"
 
-      # --sandbox read-only: ツールの解禁はここが担保する（上記ヘッダ「ツールの
-      #   解禁」）。既定に頼らず明示する。
+      # --sandbox read-only: 既定に頼らず明示する（ツールは下で無効にする）。
       # --output-schema: 回答の形を強制する。これで「出力の最後の行の判定トークン」
       #   を解析する仕組みが要らなくなり、ナレーション 1 行で誤分類する故障クラスが
       #   構造的に消える。
       # --color never: ANSI のエスケープが JSON に混じらないようにする。
-      args=(exec - --sandbox read-only --color never \
+      # 以降は実行環境を絞る旗（上記ヘッダ「codex の実行環境」）:
+      # --skip-git-repo-check: 作業場所は git のリポジトリではない使い捨ての場所。
+      # --ignore-user-config: ~/.codex/config.toml を効かせない。
+      # inherit=none: codex が起動するコマンドへ環境変数を引き継がない。
+      # --disable: シェル・ブラウザ・画像・アプリ等の経路を閉じる。
+      # web_search="disabled": 外への検索の経路を閉じる。
+      args=(exec - --sandbox read-only --color never --skip-git-repo-check \
+            --ignore-user-config \
+            -c 'shell_environment_policy.inherit=none' \
+            -c 'web_search="disabled"' \
+            --disable shell_tool --disable browser_use --disable in_app_browser \
+            --disable computer_use --disable apps --disable code_mode_host \
+            --disable view_image --disable goals --disable image_generation \
             --output-schema "$SCHEMA_FILE" -o "$answer_file")
       [[ -n "$MODEL" ]] && args+=(--model "$MODEL")
+      # 秘密の無い使い捨ての作業場所で、許可リストの環境変数だけを渡して起動する。
+      run_cwd="$work_dir/codex-cwd"
+      mkdir -p "$run_cwd"
+      run_prefix=(env -i ${CODEX_ENV_PASS[@]+"${CODEX_ENV_PASS[@]}"})
       ;;
   esac
 
@@ -1067,7 +1272,9 @@ $PROMPT" --output-format json --json-schema "$SCHEMA_FILE")
     # 警告が stderr に出る）。判定はモデルの回答だけで行い、stderr は失敗したときの
     # 診断に回す。gemini / antigravity は差分を引数で渡すため標準入力は渡さない。
     # codex は標準入力に流す（stdin_file は codex 以外のとき /dev/null のまま）。
-    output="$($CLI "${args[@]}" <"$stdin_file" 2>"$stderr_file")" || {
+    # codex は秘密の無い作業場所で、許可リストの環境変数だけを渡して起動する
+    # （run_cwd / run_prefix。他のエンジンは現在の場所・そのまま）。
+    output="$(cd "$run_cwd" && ${run_prefix[@]+"${run_prefix[@]}"} "$CLI" "${args[@]}" <"$stdin_file" 2>"$stderr_file")" || {
       echo "error: second opinion failed (engine=$ENGINE, run $run/$RUNS$( [[ "$chunk_count" -gt 1 ]] && echo ", chunk $chunk_idx/$chunk_count" ))" >&2
       cat "$stderr_file" >&2
       printf '%s\n' "$output" >&2

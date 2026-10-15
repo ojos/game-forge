@@ -4,14 +4,16 @@
 雛形との差分のうち残しているものの一覧は `.github/project-ai-rules.md`「雛形からの逸脱」が正本で、
 このファイルは各値の理由と経緯を持ちます。追従の手順は `docs/local-dev.md`「DCB と規範への追従」です。
 
-## `devcontainer.json` は純粋な JSON に保つ（#939）
+## `devcontainer.json` のコメントは雛形のものだけにする（#939 / DCB v0.21.0）
 
-**コメントを書かないでください。** DCB の `doctor.sh` は `jq` で読むので、JSONC のコメントが 1 行でもあると
-`devcontainer.json invalid JSON` の FAIL になります（#938 で 1 件だけ満たせなかった acceptance）。
-#939 で、それまでこのファイルにコメントで書いていた注記をこの README へ移しました（値は 1 つも変えていません）。
-`scripts/check-devcontainer-dev01.sh`（`scripts/acceptance.sh` から回る）が `jq` で読めることを確かめます。
+**DCB v0.21.0 から、`devcontainer.json` は JSONC（コメント付き）になりえます**（ojos/ai-packages-dev#571）。
+`doctor.sh` はコメントを除いてから `jq` で読みます。#939 では、当時の `doctor.sh` がコメントで FAIL を出したので
+純粋な JSON に保ち、注記をこの README へ移しました。v0.22.1 への追従で、雛形が `securityOpt` の上に置く
+コメントだけを取り込んでいます。
 
-注記を足したいときは、このファイルへ書きます。
+**game-forge の注記は、これまでどおりこのファイルへ書きます。** `devcontainer.json` に足すと、雛形との差分が増え、
+追従のたびに `.dcb-new` で突き合わせる行が増えます。
+`scripts/check-devcontainer-dev01.sh`（`scripts/acceptance.sh` から回る）は、`doctor.sh` と同じ方法でコメントを除いてから読みます。
 
 ### `"updateRemoteUserUID": true`（#879）
 
@@ -26,18 +28,30 @@ vscode の UID/GID をホストの利用者に合わせます。**既定で on �
 compose.yaml 側で付け替えない理由と、付け替えの代償（features が置いたディレクトリの所有者）は、
 compose.yaml の `image` の上の注記にあります。
 
-### `"securityOpt": ["seccomp=unconfined"]`（#929 / #933）
+### `"securityOpt": ["apparmor=unconfined", "seccomp=unconfined"]`（#874 / #929 / #933）
 
-codex の `--sandbox read-only`（同梱の bwrap）が namespace を作れるよう、seccomp を外します。
+codex の `--sandbox read-only`（同梱の bwrap）を動かすために、AppArmor と seccomp の既定の制限を外します。
+**v0.22.1 への追従で、DCB の雛形の置き場所（両方を `devcontainer.json` の `securityOpt`。ojos/ai-packages-dev#543）へ寄せました。**
+それまでは AppArmor を compose.yaml の `security_opt` に、seccomp をここに置いていました（雛形からの逸脱でした）。
 
-- go の feature（`ghcr.io/devcontainers/features/go:1`）も同じ値を宣言しますが、それに頼ると、
-  feature を外した日や feature 側の宣言が変わった日に、dev01 でも Mac でも黙って動かなくなります。
+- **AppArmor**（#874）: dev01（Ubuntu 26.04 のネイティブ Docker）はコンテナに AppArmor の `docker-default` を当て、
+  その `deny mount` で bwrap が `Failed to make / slave: Permission denied` になります。codex は差分を読めないまま答えます
+  （#873 でゲートは止まるようになりましたが、第二意見そのものが取れません）。Mac（Docker Desktop）には AppArmor が無いので
+  何も変わりません。**codex を danger-full-access で回す代わりにこれを選びました**（read-only の担保を残す）。
+- **seccomp**（#929）: Docker の既定の seccomp は namespace の作成を止めます（Mac の Docker Desktop でも同じ。
+  ojos/ai-packages-dev#392 の実測）。**dev01 で bwrap が通るには両方を外す必要があります**（AppArmor だけでは
+  `No permissions to create new namespace` で落ちる。同じ実測）。
+- go の feature（`ghcr.io/devcontainers/features/go:1`。devcontainer-feature.json 1.4.0）も、delve のために
+  `securityOpt: ["seccomp=unconfined"]`・`capAdd: ["SYS_PTRACE"]`・`init: true` を宣言しています。devcontainer CLI が
+  それを上書きの compose（`docker-compose.devcontainer.containerFeatures-*.yml`）で足します。それに頼ると、
+  feature を外した日や feature 側の宣言が変わった日に、dev01 でも Mac でも黙って動かなくなるので明示します。
 - **compose.yaml の `security_opt` には書きません。** そこに書くと feature の上書きの compose と値が重なり、
   Mac の compose（2.40.3）が `security_opt items ... are equal` で起動を拒否します（#933。#929 で書いて
-  2026-10-03 に Mac で落ちた）。ここに書いた値は、devcontainer CLI が feature の宣言と重複を除いてまとめます
-  （CLI 0.89.0 の実装で確かめた）。DCB の雛形は compose.yaml に書くので、ここは雛形からの逸脱です。
-- 経緯（AppArmor を外す理由と、両方を外す必要がある実測）は compose.yaml の `security_opt` の上にあります。
-  `scripts/check-devcontainer-dev01.sh` が、compose.yaml に seccomp が**無い**ことと、ここに**在る**ことを見ます。
+  2026-10-03 に Mac で落ちた。compose v5.6.0 は黙って 1 つにまとめるので、版によっては気づけません）。
+  ここに書いた値は、devcontainer CLI が feature の宣言と重複を除いてまとめます（CLI 0.89.0 の実装で確かめた）。
+- 外して失う隔離は小さいと判断しています（docker.sock も mount している）。
+- `scripts/check-devcontainer-dev01.sh` が、compose.yaml に `security_opt` が**無い**ことと、ここに両方が**在る**ことを見ます。
+  **効くかどうか**（作り直した dev01 のコンテナで bwrap が通るか）は作り直して確かめます（`docs/local-dev.md` 7.4）。
 
 ### `"ghcr.io/devcontainers/features/go:1": {}` に版を書かない（#141 / #185）
 
@@ -50,10 +64,10 @@ codex の `--sandbox read-only`（同梱の bwrap）が namespace を作れる�
   理由・帰結・踏んだときの直しかたは `docs/local-dev.md` 5.11 にあります。
 - **`GOTOOLCHAIN` を `local` に固定しないこと。** あれはビルドイメージ側の要求（CVE-2023-39320 の系統）で、
   開発環境で同じ値にすると上の切り替えが止まり、ハンドラのテストが手元で回らなくなります。
-- JSONC だったころは、版を書き足した行に「値の正本は `ARG GO_VERSION`」と名乗らせて
+- #939 より前は、版を書き足した行に「値の正本は `ARG GO_VERSION`」と名乗らせて
   `scripts/check-go-version-copies.sh` に照合させる、という逃げ道を注記で残していました。
-  純粋な JSON では行に名乗りを付けられないので、**#939 からは `scripts/check-devcontainer-dev01.sh` が、
-  go の feature が在り、そのオプションが空（`{}`）であることを確かめます。** 版を書くと落ちます。
+  **#939 からは `scripts/check-devcontainer-dev01.sh` が、go の feature が在り、そのオプションが空（`{}`）であることを
+  確かめます。** 版を書くと落ちます（DCB v0.21.0 でコメントを書けるようになった後も、この形のままにしています）。
 
 ### `postCreateCommand` の `install-cloudflared.sh`（#802）
 
@@ -85,10 +99,10 @@ DCB の雛形には無い、このプロジェクト固有の段です（`.githu
 
 ## `onCreateCommand` と `claudeCode.claudeProcessWrapper`（#968）
 
-DCB v0.19.2 の雛形どおりの値です（逸脱ではありません）。`onCreateCommand` が起動役 `~/.local/bin/claude-session-launcher` を
+DCB v0.22.1 の雛形どおりの値です（逸脱ではありません）。`onCreateCommand` が起動役 `~/.local/bin/claude-session-launcher` を
 作業ツリーの外へ直接書き出し（DCB v0.19.1 から。`scripts/on-attach.sh` を呼ばない）、接続のたびに `scripts/on-attach.sh` も同じ中身で置き直します。VS Code の設定 `claudeCode.claudeProcessWrapper` がそれを指します。
 起動役は、起動したときの作業ツリーに `scripts/claude-session-wrapper.sh` があればそれを経由し、無ければそのまま Claude Code を起動します。
-ラッパーは `.env` の `SESSION_HOST_LABEL` があれば、セッションの宛先名を `<ラベル>-<作業ツリー名>-<PID の16進>` にします（`/peers` で使う）。
+ラッパーは `.env` の `SESSION_HOST_LABEL` があれば、セッションの宛先名を `<ラベル>-<作業ツリー名>-<末尾>` にします（`/peers` で使う）。末尾は、DCB v0.21.0 から会話の識別子の先頭 8 桁です（起動の引数に `--resume` が無いときは従来どおり PID の 16 進。ojos/ai-packages-dev#577）。
 
 - **`devcontainer.json` に `.dcb-new` を残したまま作り直しません。** v0.19.1 からは設置と配線（`claudeCode.claudeProcessWrapper`）が
   同じファイルにあるので片方だけが新しい状態は起きませんが、`devcontainer.json` が v0.19.0 のまま残ると、設置を

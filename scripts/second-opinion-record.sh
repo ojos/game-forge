@@ -43,6 +43,7 @@
 # | レビューの対象 | 記録するもの | 投稿時の照合 |
 # |---|---|---|
 # | ステージ済み差分 | `git write-tree` の結果（索引のツリー） | `HEAD^{tree}` と一致すること |
+# | 起点から索引まで（`base:<rev>+staged`） | 同上（索引のツリー。起点は紐づけに使わない） | 同上 |
 # | コミット済みの範囲 | 範囲の終端の SHA | `HEAD` と一致すること |
 #
 # **一致しなければ投稿しない。** レビューの後に中身が変わったということなので、記録を
@@ -55,7 +56,7 @@
 # ## 使い方
 #
 #   bash scripts/second-opinion-record.sh save --engine <名前> --verdict <pass|findings> \
-#        --scope <staged|range:A..B> --runs <N> < 出力
+#        --scope <staged|base:<rev>+staged|range:A..B> --runs <N> < 出力
 #   bash scripts/second-opinion-record.sh show      # 記録を表示する
 #   bash scripts/second-opinion-record.sh verify     # 記録が HEAD に紐づくかを確かめる
 #   bash scripts/second-opinion-record.sh post       # PR へ投稿する（verify を通してから）
@@ -65,6 +66,14 @@
 #   PR を作る → bash scripts/second-opinion-record.sh post）。PR が無いうちの post は
 #   失敗する。修正を push し直したら post もし直す。
 #   記録は head SHA に紐づくので、古い head への投稿では確認側を通らない。
+#
+#   **post は投稿の直後に、確認側（second-opinion-gate.yml）を既定ブランチで手動実行する**
+#   （`gh workflow run`）。コメントの投稿では PR の契機が起きないので、手動実行を
+#   起こさなければ判定結果（commit status）が緑に変わらない。定期実行は持たない。
+#   手動実行を起こせなかったときは、手で起こすコマンドを示して失敗する（記録の投稿は
+#   済んでいる）。確認側は push から数分以内の PR を猶予のため見送るが、記録が在れば
+#   猶予の中でも緑を付けるので、投稿の直後に起こしても判定される。起こすには Actions の
+#   書き込み権限が要る。
 #
 # 終了コード: 0 = 成功 / 1 = 失敗（理由を標準エラーへ）
 #
@@ -126,7 +135,7 @@ cmd_save() {
   done
   [[ -n "$engine" ]]  || fail "save には --engine が要ります。"
   [[ -n "$verdict" ]] || fail "save には --verdict が要ります（pass | findings）。"
-  [[ -n "$scope" ]]   || fail "save には --scope が要ります（staged | range:A..B）。"
+  [[ -n "$scope" ]]   || fail "save には --scope が要ります（staged | base:<rev>+staged | range:A..B）。"
   [[ "$verdict" == "pass" || "$verdict" == "findings" ]] \
     || fail "--verdict は pass か findings です: $verdict"
 
@@ -137,7 +146,7 @@ cmd_save() {
   # 紐づけの材料を、レビューの対象に応じて採る（冒頭「SHA の紐づけ」）。
   local bind_kind bind_value
   case "$scope" in
-    staged)
+    staged|base:?*+staged)
       bind_kind="tree"
       # 索引をツリーとして書く。ref は動かない。
       bind_value="$(git write-tree)" || fail "索引のツリーを書けません（git write-tree）。"
@@ -152,7 +161,7 @@ cmd_save() {
       bind_value="$(git rev-parse --verify "$end" 2>/dev/null)" \
         || fail "範囲の終端を解決できません: $end"
       ;;
-    *) fail "--scope は staged か range:A..B です: $scope" ;;
+    *) fail "--scope は staged か base:<rev>+staged か range:A..B です: $scope" ;;
   esac
 
   # **一時ファイルへ書いて確かめてから置き換える。** 既存の記録へ直接書くと、入力が空の
@@ -255,6 +264,46 @@ cmd_verify() {
 }
 
 # ── post ─────────────────────────────────────────────────────────────────────
+
+# 確認側の手動実行を、既定ブランチで起こす。
+#
+# **ref は既定ブランチにする。** 判定ロジックを既定ブランチの版で動かすため
+# （PR 側のワークフローの書き換えが判定に届かない）。起こせなければ、手で起こす
+# コマンドを示して非 0 で終わる。記録の投稿は済んでいるので、それも伝える。
+dispatch_gate() {
+  local default_branch manual
+  default_branch="$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null || true)"
+  if [[ -z "$default_branch" ]]; then
+    manual="gh workflow run second-opinion-gate.yml --ref <既定ブランチ>"
+    fail "記録は投稿しましたが、既定ブランチを読めず、確認側を手動実行できませんでした。手で起こしてください: $manual"
+  fi
+  manual="gh workflow run second-opinion-gate.yml --ref $default_branch"
+  # **確認側がまだ既定ブランチに無いなら、起こさずに成功で終わる。** 確認側を初めて
+  # 入れる PR では、手動実行できるワークフローが既定ブランチにまだ無い。ここで失敗に
+  # すると、導入の PR が post で必ず止まる。その PR の判定は、PR を契機にした実行が担う。
+  # 404 以外の読めなさ（権限・通信）は、下の手動実行の失敗として扱う。
+  local probe
+  if ! probe="$(gh api "repos/{owner}/{repo}/contents/.github/workflows/second-opinion-gate.yml?ref=$default_branch" --jq .name 2>&1)"; then
+    case "$probe" in
+      *"HTTP 404"*)
+        printf '[second-opinion-record] 確認側（second-opinion-gate.yml）が既定ブランチ（%s）にまだ無いので、手動実行は起こしません。この PR の判定は、PR を契機にした実行が担います。\n' "$default_branch"
+        return 0
+        ;;
+    esac
+  fi
+  if ! gh workflow run second-opinion-gate.yml --ref "$default_branch" >/dev/null 2>&1; then
+    # **無効化されているワークフローは手動実行も拒まれる。** 権限を疑って遠回りしないよう、
+    # state を読んで、active でなければ無効だと伝える。読めない・active のときは候補に足す。
+    local wf_state
+    wf_state="$(gh api "repos/{owner}/{repo}/actions/workflows/second-opinion-gate.yml" --jq .state 2>/dev/null || true)"
+    if [[ -n "$wf_state" && "$wf_state" != "active" ]]; then
+      fail "記録は投稿しましたが、確認側（second-opinion-gate.yml）のワークフローが無効（${wf_state}）です。gh workflow enable second-opinion-gate.yml で有効にしてから、手で起こしてください: $manual"
+    fi
+    fail "記録は投稿しましたが、確認側を手動実行できませんでした（Actions の書き込み権限が無い、ワークフローが既定ブランチに無い、またはワークフローが無効化されている可能性）。手で起こしてください: $manual"
+  fi
+  printf '[second-opinion-record] 確認側を手動実行しました（ref=%s）。\n' "$default_branch"
+}
+
 cmd_post() {
   cmd_verify
 
@@ -287,6 +336,8 @@ cmd_post() {
     --jq '.[] | select((.user.login // "") == "'"$author"'" and (.body | contains("'"$marker"'"))) | .id' 2>/dev/null | head -1 || true)"
   if [[ -n "$existing" ]]; then
     printf '[second-opinion-record] この SHA の記録は既に投稿されています（comment %s）。\n' "$existing"
+    # 判定結果が緑になっていないことがあるので、確認側の手動実行は起こし直す。
+    dispatch_gate
     return 0
   fi
 
@@ -350,6 +401,7 @@ cmd_post() {
   gh pr comment "$pr" --body-file "$COMMENT_BODY" >/dev/null \
     || fail "PR #$pr へ投稿できませんでした。"
   printf '[second-opinion-record] PR #%s へ記録を投稿しました（%s）。\n' "$pr" "${VERIFIED_HEAD:0:12}"
+  dispatch_gate
 }
 
 case "${1-}" in

@@ -67,6 +67,15 @@ cat > "$fake_bin/codex" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 振る舞いの切り替え（FAKE_CODEX_*）は、検査側が呼ぶ直前に書き出したファイルから読む。
+# second-opinion-review.sh は codex を `env -i` と許可リストの環境変数だけで起動する
+# （DCB v0.21.0 の雛形。#985）ので、環境変数のままでは届かない。
+fake_env="$(dirname "$0")/../fake-codex.env"
+if [[ -f "$fake_env" ]]; then
+  # shellcheck source=/dev/null
+  . "$fake_env"
+fi
+
 if [[ "${1-}" == "login" && "${2-}" == "status" ]]; then
   if [[ "${FAKE_CODEX_LOGGED_IN:-1}" == "1" ]]; then
     echo "Logged in"
@@ -166,6 +175,18 @@ git -C "$repo" commit -q -m "change"
 
 failed=0
 
+# 被検査側を呼ぶ。呼ぶ直前に、いまの FAKE_CODEX_* を仕込みが読むファイルへ書き出す
+# （仕込みの冒頭の注記。被検査側は codex へ環境変数を渡さない）。呼び出しの前置きで
+# 設定した値も、関数の中からは環境変数として見える。
+review_bash() {
+  local v
+  : > "$work/fake-codex.env"
+  for v in $(compgen -v FAKE_CODEX_); do
+    printf '%s=%q\n' "$v" "${!v}" >> "$work/fake-codex.env"
+  done
+  bash "$REVIEW" "$@"
+}
+
 fail() {
   echo "[codex-selftest] FAIL: $1" >&2
   failed=1
@@ -179,7 +200,7 @@ run_review() {
     cd "$repo"
     PATH="$fake_bin:$PATH" \
     FAKE_CODEX_RECORD="$record" \
-      bash "$REVIEW" --engine codex --range 'HEAD~1..HEAD' "$@" \
+      review_bash --engine codex --range 'HEAD~1..HEAD' "$@" \
         > "$work/out" 2> "$work/err"
   )
 }
@@ -205,14 +226,11 @@ else
   if ! head -n "$expected_lines" "$record/stdin" | cmp -s - "$expected_diff"; then
     fail "標準入力の先頭が差分（git diff HEAD~1..HEAD）と一致しません（差分を渡していないか、並びや中身が変わっています）"
   fi
-  # **どの範囲の差分かを書いていること。** モデルが差分の外を確かめるときの手がかりになる。
-  if ! grep -q 'git diff HEAD~1..HEAD' "$record/stdin"; then
-    fail "プロンプトに差分の範囲（git diff <範囲>）がありません"
-  fi
-  # **差分は渡したものを読み、ツールは差分の外に使うと指示していること。**
-  if ! grep -q '読み取りのコマンドとファイル読み取りを使ってよい' "$record/stdin" \
-    || ! grep -q '差分の外のファイル' "$record/stdin"; then
-    fail "プロンプトに「ツールは差分の外を確かめるために使う」の指示がありません"
+  # **ツールを使わせる指示が無いこと。** DCB v0.21.0 の雛形から、codex にもツールを解禁しない
+  # （差分の外を読ませる補助は手放した。#985）。古い指示が残ると、モデルは走らないコマンドを試し、
+  # 確かめていないことを確かめたように答える。
+  if grep -q '読み取りのコマンドとファイル読み取りを使ってよい' "$record/stdin"; then
+    fail "プロンプトに、解禁していないツールを使わせる指示が残っています"
   fi
   # **落とす category の規則が載っていること。**
   if ! grep -q 'edge-case' "$record/stdin"; then
@@ -442,7 +460,7 @@ run_gemini() {
     FAKE_CODEX_RECORD="$record" \
     PROJECT_ENV_FILE="$work/empty.env" \
     GEMINI_API_KEY=dummy-for-selftest \
-      bash "$REVIEW" --engine gemini --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
+      review_bash --engine gemini --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
   )
 }
 
@@ -513,7 +531,7 @@ rc=0
   FAKE_GH_ISSUE_BODY='# issue #9999 仕込みの票
 scope.in:
   - 仕込みの目印 SELFTEST-ISSUE-MARKER' \
-    bash "$REVIEW" --engine codex --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
+    review_bash --engine codex --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
 ) || rc=$?
 if [[ "$rc" -ne 0 ]]; then
   fail "issue の文脈を載せる経路で落ちました（終了コード $rc）"
@@ -558,7 +576,7 @@ for shape in empty blocking; do
     PATH="$fake_bin:$PATH" \
     FAKE_CODEX_RECORD="$record" \
     FAKE_CODEX_ANSWER="$answer" \
-      bash "$REVIEW" --engine antigravity --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
+      review_bash --engine antigravity --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
   ) || rc=$?
   if [[ "$rc" -ne "$expect" ]]; then
     fail "antigravity の $shape な回答で終了コードが $rc になりました（$expect を期待）"
@@ -668,7 +686,7 @@ rc=0
   PATH="$fake_bin:$PATH" \
   FAKE_CODEX_RECORD="$record" \
   FAKE_GH_DIR="$gh_dir" \
-    bash "$REVIEW" --engine codex --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
+    review_bash --engine codex --range 'HEAD~1..HEAD' > "$work/out" 2> "$work/err"
 ) || rc=$?
 if [[ "$rc" -ne 0 ]]; then
   fail "参照の文脈を載せる経路で落ちました（終了コード $rc。引けない番号があっても止めないはずです）"

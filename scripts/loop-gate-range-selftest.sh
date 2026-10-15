@@ -13,8 +13,10 @@
 # この混入（端点の**ツリー**の差）を検出できない。ここではその状態を一時リポジトリに作り、
 # 範囲の差分に既定ブランチ側だけの変更が入らないことを確かめる。
 #
-# 対照として、上流が自分のブランチの追跡枝である通常の場合と、上流が進んでいない場合は
-# 今までどおり `<upstream>..HEAD` になることも確かめる（表記を変えると記録の scope が変わる）。
+# **DCB v0.21.0（ojos/ai-packages-dev#585。#985 で追従）から、範囲は上流によらず「既定ブランチとの分岐点..HEAD」**
+# （PR 全体）になった。上流が既定ブランチで進んでいない場合も、上流が自分のブランチの追跡枝の
+# 場合も、起点は分岐点の SHA で、理由の行は `reviewing the whole PR from the merge-base ...` になる
+# ことを確かめる（上流の先端からの差分へ戻ると、修正分だけの小さな差分になる）。
 #
 # ## 対照の検査を外さない
 #
@@ -108,10 +110,12 @@ fi
   git commit -q -m own
 )
 out="$(run_resolve "$repo")"
-if [[ "$(field "$out" RANGE)" == "origin/main..HEAD" && -z "$(field "$out" REASON)" ]]; then
-  pass "上流（既定ブランチ）が進んでいなければ origin/main..HEAD のまま"
+mb1="$(cd "$repo" && git merge-base origin/main HEAD)"
+if [[ "$(field "$out" RANGE)" == "$mb1..HEAD" ]] \
+  && printf '%s' "$(field "$out" REASON)" | grep -q 'reviewing the whole PR from the merge-base'; then
+  pass "上流（既定ブランチ）が進んでいなくても、起点は分岐点の SHA（PR 全体）"
 else
-  fail "上流が進んでいないのに範囲が変わった: $out"
+  fail "上流が進んでいないときの範囲が分岐点..HEAD でない（$mb1）: $out"
 fi
 
 # ── 2. ゲートの最中に、別の PR が既定ブランチへ入って fetch された ─────────────
@@ -161,7 +165,7 @@ else
   fail "範囲の起点が分岐点（$mb）でない: $range"
 fi
 
-if printf '%s' "$reason" | grep -q 'has advanced beyond the merge-base'; then
+if printf '%s' "$reason" | grep -q 'reviewing the whole PR from the merge-base'; then
   pass "起点を変えた理由を出力する"
 else
   fail "起点を変えた理由が出ていない: ${reason:-（空）}"
@@ -180,10 +184,13 @@ fi
   git commit -q -m more
 )
 out="$(run_resolve "$repo")"
-if [[ "$(field "$out" RANGE)" == "origin/own-branch..HEAD" && -z "$(field "$out" REASON)" ]]; then
-  pass "上流が自分の追跡枝なら origin/own-branch..HEAD のまま"
+mb3="$(cd "$repo" && git merge-base origin/main HEAD)"
+names3="$(cd "$repo" && git diff --name-only "$(field "$out" RANGE)" 2>/dev/null | tr '\n' ',')"
+if [[ "$(field "$out" RANGE)" == "$mb3..HEAD" ]] && printf '%s' "$names3" | grep -q 'mine.txt' \
+  && printf '%s' "$names3" | grep -q 'more.txt'; then
+  pass "上流が自分の追跡枝でも、起点は分岐点の SHA で、push 済みの変更（mine.txt）も範囲に入る"
 else
-  fail "上流が自分の追跡枝なのに範囲が変わった: $out"
+  fail "上流が自分の追跡枝のときの範囲が分岐点..HEAD でない（$mb3）: $out / $names3"
 fi
 
 if [[ "$failures" -ne 0 ]]; then

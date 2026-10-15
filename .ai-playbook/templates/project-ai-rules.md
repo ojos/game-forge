@@ -64,7 +64,7 @@ bash scripts/check-no-secrets.sh   # 終了コード 0 / 標準出力 SECRETS_PA
 
 - PAT の発行手順: （種別・対象・有効期限を記載。**既定はありません**）
 - 必要な権限: （行う操作に対する最小の権限セットを記載。**既定はありません**）
-  - fine-grained PAT には Checks の権限がなく、非公開リポジトリでは `commits/<sha>/check-runs` と `gh pr checks` が 403 になります。CI の確認は Actions: Read と Commit statuses: Read で行います。権限の例は、devcontainer-bootstrap の README「資格情報の扱い」にあります。
+  - fine-grained PAT には Checks の権限がなく、非公開リポジトリでは `commits/<sha>/check-runs` と `gh pr checks` が 403 になります。CI の確認は Actions: Read と Commit statuses: Read で行います。ゲートの手動実行（`gh workflow run`。`second-opinion-record.sh post` と `/land` のマージ直前の再判定）には Actions: Read and write が要ります。権限の例は、devcontainer-bootstrap の README「資格情報の扱い」にあります。
 - 失効時・期限切れ時の再発行手順: （記載。**既定はありません**）
 
 ## 生成物の具体化

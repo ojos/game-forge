@@ -5,7 +5,17 @@
   "workspaceFolder": "/workspaces/game-forge",
   "shutdownAction": "stopCompose",
   "updateRemoteUserUID": true,
-  "securityOpt": ["seccomp=unconfined"],
+  // codex のサンドボックス（bwrap）のために、AppArmor と seccomp の既定の制限を外す。
+  // Docker の既定の seccomp が namespace の作成を止め（Docker Desktop でも同じ）、
+  // ネイティブ Linux ではさらに AppArmor が mount を止める（片方だけ外しても動かない）。
+  // コンテナの中から namespace の作成や mount ができるようになり、隔離が弱まる。
+  // codex を使わなくなったら消してよい。
+  // compose.yaml の security_opt に置かないこと。go などの feature が同じ値を足すため、
+  // Compose が重複を拒否してコンテナが起動しなくなる。
+  "securityOpt": [
+    "apparmor=unconfined",
+    "seccomp=unconfined"
+  ],
   "features": {
     "ghcr.io/devcontainers/features/common-utils:1": {
       "configureZsh": true

@@ -3,7 +3,9 @@
 # することを機械で検査する
 #
 # 位置づけ:
-#   判定はこのスクリプトが持ち、scripts/acceptance.sh は呼ぶだけ。
+#   判定はこのスクリプトが持ち、scripts/acceptance.sh は呼ぶだけ。生成時の雛形の
+#   acceptance.sh はこれを呼ぶ。既存の出力先は acceptance.sh がプロジェクトの
+#   所有物なので、プロジェクト側で配線する（doctor.sh が未配線を WARN で知らせる）。
 #   scripts/check-control-chars.sh / scripts/check-table-breaks.sh と同じ形にそろえる。
 #
 # なぜ機構で押さえるか:
@@ -17,6 +19,13 @@
 #   対象の形は `](...)` で、画像（`![alt](path)`）も同じ綴りなので一緒に見る。
 #
 #   「追跡対象として実在する」の判定に、作業ツリーの有無（test -e）を使わない。
+#   判定の母集合は `git ls-files` の集合から、`git ls-files --deleted`（作業ツリーで
+#   消してまだステージしていないもの）を除いたものとする。除いたファイルは、走査の
+#   対象からも、リンク先の集合からも外し、件数として報告する（消した文書へのリンクは
+#   壊れたリンクになる）。作業ツリーの有無を test -e で見ないので、sparse-checkout や
+#   skip-worktree で置いていないだけのファイルは、追跡対象として実在する扱いのまま
+#   である。壊れたシンボリックリンクも `--deleted` に出ないので、従来どおり走査に
+#   進めて失敗させる。追跡していないファイルを数えない意図は変えない。
 #   **配布されるのは追跡ファイルだけ**なので、ローカルにだけある生成物や無視
 #   されたファイルへのリンクは、手元では開けても配布された文書では 404 になる。
 #   判定は `git ls-files` から作った集合への所属で行う（ディレクトリは、追跡
@@ -135,6 +144,7 @@ trap 'rm -rf "$WORK"' EXIT
 EXTRACT="$WORK/extract.awk"
 ALLOWED="$WORK/allowed"
 TRACKED="$WORK/tracked.z"
+ABSENT="$WORK/absent.z"
 MD_LIST="$WORK/md.z"
 TARGETS="$WORK/targets"
 WANTED="$WORK/wanted"
@@ -329,9 +339,42 @@ tracked_count="${tracked_count:-0}"
 [ "$tracked_count" -gt 0 ] \
   || fail "追跡ファイルが 1 件もありません。検査していないことと、リンクが壊れていないことは別なので失敗させます。"
 
+# 作業ツリーで消してまだステージしていないもの（--deleted）は集合から外す。
+# test -e では見ない（sparse-checkout / skip-worktree で置いていないだけのファイルを
+# 消したものと誤認しないため。壊れたシンボリックリンクも --deleted には出ない）。
+git ls-files -z --deleted > "$ABSENT" \
+  || fail "git ls-files --deleted に失敗しました。作業ツリーで消したファイルを列挙できません。"
+absent_count="$(tr -cd '\000' < "$ABSENT" | wc -c | tr -d ' ')"
+absent_count="${absent_count:-0}"
+NL=$'\n'
+# パスの中の \ と改行を書き換える（\ → \\、改行 → \n）。改行区切りの文字列で集合を持つので、
+# 書き換えないと、改行を含む名前（例: `x<改行>foo.md<改行>y`）が、実在する別のパス（`foo.md`）を
+# 消したものに見せてしまう。比べる側も同じ規則で書き換える。
+esc_path() {
+  local s="${1//\\/\\\\}"
+  printf '%s' "${s//$NL/\\n}"
+}
+absent_nl=""
+if [ "$absent_count" -gt 0 ]; then
+  # 所属判定を bash の組み込みだけで行うため、書き換えたパスを改行区切りの文字列にして持つ。
+  while IFS= read -r -d '' path; do
+    absent_nl="$absent_nl$NL$(esc_path "$path")"
+  done < "$ABSENT"
+fi
+
+# 消した（--deleted の）パスか。判定をここ 1 か所にする。
+is_absent() {
+  [ -n "$absent_nl" ] || return 1
+  case "$absent_nl$NL" in
+    *"$NL$(esc_path "$1")$NL"*) return 0 ;;
+  esac
+  return 1
+}
+
 # 祖先はシェルの文字列操作だけで削る（dirname を 1 件ごとに呼ぶとプロセスが
 # 追跡件数 × 階層ぶん起きるため）。
 while IFS= read -r -d '' path; do
+  is_absent "$path" && continue
   printf '%s\n' "$path"
   dir="$path"
   while [ "$dir" != "${dir%/*}" ]; do
@@ -373,8 +416,20 @@ git ls-files -z '*.md' > "$MD_LIST" \
 
 md_count=0
 excluded_count=0
+unplaced_count=0
 : > "$TARGETS"
 while IFS= read -r -d '' md; do
+  # 作業ツリーで消した（--deleted の）ものは走査しない。件数は追跡全体で数え済み。
+  if is_absent "$md"; then
+    continue
+  fi
+  # sparse-checkout / skip-worktree で置いていない追跡 md は、リンク先としては実在する
+  # 扱いのまま、読めないので走査だけ飛ばす（awk が開けず止まるのを避ける）。黙って
+  # 検査を弱めないよう、飛ばした件数を集計の行に出す。
+  if [ ! -e "$md" ] && [ ! -L "$md" ]; then
+    unplaced_count=$((unplaced_count + 1))
+    continue
+  fi
   if is_excluded "$md"; then
     excluded_count=$((excluded_count + 1))
     continue
@@ -398,8 +453,8 @@ done < "$MD_LIST"
 # プロジェクトの実体に Markdown が実在するかどうかとは別に、起動時の自己診断
 # （合成した入力で壊れたリンクを必ず検出できることを毎回確かめる）が独立に検出する。
 if [ "$md_count" -eq 0 ]; then
-  printf '[doc-links] 検査対象の Markdown がありません（除外 %s 件）。検証対象が無いため合格として扱います。\n' \
-    "$excluded_count"
+  printf '[doc-links] 検査対象の Markdown がありません（除外 %s 件、実体なし %s 件、作業ツリーに置いていない md %s 件）。検証対象が無いため合格として扱います。\n' \
+    "$excluded_count" "$absent_count" "$unplaced_count"
   echo "DOC_LINKS_PASS"
   exit 0
 fi
@@ -449,13 +504,15 @@ comm -23 "$WANTED" "$ALLOWED" > "$MISSING"
 unique_count="$(wc -l < "$WANTED" | tr -d ' ')"
 missing_count="$(wc -l < "$MISSING" | tr -d ' ')"
 
-printf '[doc-links] 検査したパス: 追跡 md %s 件（除外 %s 件）/ 相対リンク %s 本（ユニークな行き先 %s 件）\n' \
-  "$md_count" "$excluded_count" "$link_count" "$unique_count"
+printf '[doc-links] 検査したパス: 追跡 md %s 件（除外 %s 件、作業ツリーに置いていない %s 件）/ 実体なし %s 件（追跡全体。作業ツリーで消したもの）/ 相対リンク %s 本（ユニークな行き先 %s 件）\n' \
+  "$md_count" "$excluded_count" "$unplaced_count" "$absent_count" "$link_count" "$unique_count"
 
 if [ "${missing_count:-0}" -gt 0 ]; then
   printf '[doc-links] 追跡対象として実在しない行き先を %s 件検出しました。\n' "$missing_count" >&2
   while IFS= read -r miss; do
-    if [ -e "$miss" ]; then
+    if is_absent "$miss"; then
+      printf '[doc-links]   %s（作業ツリーで消した追跡ファイル。git rm するかリンクを直す）\n' "$miss" >&2
+    elif [ -e "$miss" ]; then
       printf '[doc-links]   %s（作業ツリーにはあるが追跡されていない）\n' "$miss" >&2
     else
       printf '[doc-links]   %s（存在しない）\n' "$miss" >&2

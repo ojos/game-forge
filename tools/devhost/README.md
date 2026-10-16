@@ -77,7 +77,7 @@ bash tools/devhost/dev-auth-aws.selftest.sh   # DEV_AUTH_AWS_SELFTEST_PASS
 
 ```bash
 # 0. 上げる先の版（dev01 に置く上流の版の正本。上げるときはこの 1 行だけを書き換える）
-TAG=v0.1.0
+TAG=v0.4.0
 #    いまの状態を控える（CONTAINER が running、UNIT が active であること）
 ~/.local/bin/dev ls
 ~/.local/bin/dev version                       # DCB 同梱の版（v0.17.0 以前）には無く、使い方の誤り（2）で止まる
@@ -121,6 +121,10 @@ cd ~ && rm -rf "$W"
   失敗ではなく、コンテナの記録（pids の上限に当たった回数・ゾンビ・oom_kill）を指しますが、**0 でない間は「上げて確かめた」
   とはしません。** 出た項目を issue に書き、原因を調べてから判断します。1（FAIL）なら上流の README の
   「dev doctor」のとおり `dev rebuild game-forge` を検討します（作業中のコンテナと tmux は消えます）。
+- **devcontainer-host v0.2.0〜v0.4.0 で増えたもの**は、自前の GitHub Actions ランナー（`dev runner`・`dev-runner@.service`・
+  `runner.Dockerfile`）だけです。game-forge は使っていないので、`dev-up@` の動きは変わりません。dev01 は
+  2026-10-16 に ojos/ai-packages-dev 側の作業で v0.4.0 へ上がっていました（`dev version` が `dev v0.4.0`、
+  `dev doctor game-forge` が 0。game-forge のセッションが ssh で確かめ、`TAG=` を追随させた）。
 - **devcontainer-host v0.1.0 で増えたもの**（DCB v0.17.0 同梱の版から）: `dev restart <名前>`（作り直さずに起こし直す）、
   `dev stop <名前>`（ユニットを止めてからコンテナを止める）、`dev enable` / `dev disable <名前>`（ユニットの有効・無効。
   `disable` はコンテナも止める）、`dev logs <名前>`（ユニットのログ）、`dev exec <名前> -- <コマンド...>`（tmux を介さずに

@@ -102,7 +102,7 @@ DCB の雛形には無い、このプロジェクト固有の段です（`.githu
 
 ## `onCreateCommand` と `claudeCode.claudeProcessWrapper`（#968）
 
-DCB v0.23.3 の雛形どおりの値です（逸脱ではありません）。`onCreateCommand` が起動役 `~/.local/bin/claude-session-launcher` を
+DCB v0.23.4 の雛形どおりの値です（逸脱ではありません）。`onCreateCommand` が起動役 `~/.local/bin/claude-session-launcher` を
 作業ツリーの外へ直接書き出し（DCB v0.19.1 から。`scripts/on-attach.sh` を呼ばない）、接続のたびに `scripts/on-attach.sh` も同じ中身で置き直します。VS Code の設定 `claudeCode.claudeProcessWrapper` がそれを指します。
 起動役は、起動したときの作業ツリーに `scripts/claude-session-wrapper.sh` があればそれを経由し、無ければそのまま Claude Code を起動します。
 ラッパーは `.env` の `SESSION_HOST_LABEL` があれば、セッションの宛先名を `<ラベル>-<作業ツリー名>-<末尾>` にします（`/peers` で使う）。末尾は、DCB v0.21.0 から会話の識別子の先頭 8 桁です（起動の引数に `--resume` が無いときは従来どおり PID の 16 進。ojos/ai-packages-dev#577）。

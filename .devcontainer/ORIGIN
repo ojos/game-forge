@@ -1,6 +1,6 @@
 # devcontainer-bootstrap が記録した生成物の由来。
 # doctor.sh はこの記録と現物を突き合わせて乖離を診断する。手で編集しないこと。
-version=v0.23.3
+version=v0.23.4
 flags=antigravity,aws,claude,codex,gcp,gemini
 inputs-format=1
 input:project-name=game-forge
@@ -65,7 +65,7 @@ hash:scripts/acceptance.sh=dee4a30793acd219365a418048726018aa17132eabf72895c46a3
 hash:scripts/check-control-chars.sh=14e957afe55a76fbd128c409c35f145baf5561604055dc65bac80ea1a309fa51
 hash:scripts/check-deps-installed.sh=5f8a25dbafb1edbd36e45a61c2a4dba71c7abeb4c208beac9d7dc2aef31a7625
 hash:scripts/check-doc-links.sh=2682195d91f7b64027530bb17898a9a08690385821c48dfde23cf064a25c60c9
-hash:scripts/check-no-secrets.sh=6b5ba5fe75860041a5b67c24771415dc93d7fa7edc7cdaca01fb7fdfb4d038bc
+hash:scripts/check-no-secrets.sh=04102a55ef64840cf1b7245beaf7eaac094dd28627ba82b59890b9fc3974a10e
 hash:scripts/check-shell-portability.sh=59bb33ea09abc7736e58329c5a1f33f2ffc1226f730ae9f307909559deeb1f1a
 hash:scripts/check-table-breaks.sh=945da35cb7afedbe0d342f64f92117327748d273c1c696c5107ff799e9bcab48
 hash:scripts/claude-session-wrapper.sh=3ec9dfc6c14a19a6636c054b4688d69524026a465dc3d8af728263d7403032a7
@@ -92,8 +92,8 @@ owned:scripts/acceptance.sh=1
 owned:scripts/acceptance-remote.sh=1
 accepted:scripts/acceptance.sh=d405d449abca63a0c07f737b8245e034728f0c9a72ecd3a0715599fc5c91ecf8
 accepted:scripts/acceptance-remote.sh=1d5ff7b7fa826741c61a6585e319992b3ed94f4f557e34240ab101823f78e8f8
-accepted:scripts/check-no-secrets.sh=82ead806404973d63aa1717d7aab7330f613ff23a0f30df822e68b972472857e
-accepted:.github/project-ai-rules.md=035143545ddeea1035930311b04c98f6e656b094b49d5ef70f3fa120091b1004
+accepted:scripts/check-no-secrets.sh=d67394fb76065afc5d321d45c6187729102a94e83e7f84bb7e6219035dee4aa6
+accepted:.github/project-ai-rules.md=cab020ab929d229ad6372484c143af9bbd590716d02a2ae0019cc1e6e3b92278
 accepted:.github/workflows/verify.yml=fed2d5275bd73d2e0f1da847f0a9ebbacf8700cd1b8217df32a194e94b002703
 accepted:.env.example=b952d316002ed18dd8b69dd0bc124706fed0aa27fe5d95d791481cb9c1330236
 accepted:scripts/on-attach.sh=86d0bd8990ce6eb95f0e94be05affdfae38398821df7872a1061b5469cf9b33f

@@ -468,10 +468,27 @@ else
     <(printf '%s\n' "$env_keys" | sort) \
     <(printf '%s\n' "$example_keys" | sort))"
 
+  # 値が空のキーは NOTICE に留めて通す。雛形から作り直しても欠けて困る値が無いため（雛形から
+  # キーを消した版へ追従した直後に、.env に空の行が残っているだけでゲートを止めない）。
+  env_valued=""
+  if ! env_valued="$(cns_probe valued "")"; then
+    fatal ".env の値を検査できませんでした。"
+  fi
+  only_env_valued="$(comm -12 \
+    <(printf '%s\n' "$only_env" | sort) \
+    <(printf '%s\n' "$env_valued" | sort))"
+  only_env_empty="$(comm -23 \
+    <(printf '%s\n' "$only_env" | sort) \
+    <(printf '%s\n' "$env_valued" | sort))"
+
   while IFS= read -r key; do
     [[ -n "$key" ]] || continue
     ng ".env にあるキーが $ENV_EXAMPLE に無い（雛形から作り直した環境で黙って欠ける）: $key"
-  done <<<"$only_env"
+  done <<<"$only_env_valued"
+  while IFS= read -r key; do
+    [[ -n "$key" ]] || continue
+    printf '[secrets] NOTICE .env にある値の空のキーが %s に無い（使っていなければ .env から消してよい）: %s\n' "$ENV_EXAMPLE" "$key"
+  done <<<"$only_env_empty"
 
   # 逆向き（雛形にあって .env に無い）は失敗にしない。
   #

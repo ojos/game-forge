@@ -1,0 +1,581 @@
+#!/usr/bin/env bash
+# update-check.sh — devcontainer-bootstrap（DCB）と ai-playbook の新しい安定版を知らせ、
+# 対話のシェルで yes と答えたときだけ、bootstrap.sh --upgrade で追従する。
+#
+# サブコマンド:
+#   notify   on-attach.sh が呼ぶ。1 日 1 回だけ最新の安定版を問い合わせ（認証なし）、新しい版が
+#            あれば通知を 1 行だけ出す。聞かない。失敗は黙って通す。
+#   prompt   対話のシェルの rc が呼ぶ。端末が付いているときだけ、キャッシュを読んで
+#            「追従しますか？ [y/N]」と聞く。ネットワークには出ない。
+#   upgrade  最新を問い合わせ、新しい版があれば追従する（prompt の y と同じ処理）。
+#
+# 追従の処理: 新しい bootstrap.sh と SHA256SUMS を取得して照合し、既定ブランチの上なら作業用の
+# ブランチを切ってから、ORIGIN を引き継ぐ --upgrade を流す。差分を作業ツリーに残して止め、
+# 変わったファイルと次の手順を出す。コミット・push・PR はしない。
+#
+# 何もしない条件（黙って 0 で終わる）:
+#   - 環境変数 UPDATE_CHECK が off（0 / false / no / disabled も同じ）
+#   - ORIGIN（.devcontainer/ORIGIN）が無い、または input:update-check=off が記録されている
+#   - ORIGIN の version= が vX.Y.Z の形でない（リリースから取得した版ではない）
+#   - 端末が付いていない（prompt のみ。notify は標準出力へ 1 行出すだけで、聞かない）
+#
+# キャッシュ: ${XDG_CACHE_HOME:-~/.cache}/dcb-update-check/<プロジェクトごとの鍵>/ 。コミットしない。
+# 試験用の上書き: UPDATE_CHECK_CACHE_DIR（キャッシュ）/ UPDATE_CHECK_TODAY（今日の日付）/
+# UPDATE_CHECK_ASSUME_TTY=1（端末が付いている扱い。標準入力から答えを読む）。
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+ORIGIN="$ROOT/.devcontainer/ORIGIN"
+HELPER="$HERE/load-project-env.sh"
+
+# 配布元のリポジトリ。ai-playbook は、ORIGIN に記録した取得元の URL に owner があればそれを使う。
+DCB_SLUG="ojos/devcontainer-bootstrap"
+PB_DEFAULT_SLUG="ojos/ai-playbook"
+LOG_PREFIX="[update-check]"
+
+# .env の UPDATE_CHECK を効かせる（ローダーは source 専用・冪等。無ければ何もしない）。
+# ローダーは .env の値で既存の環境変数を上書きするので、環境で設定した値（例: off）は読む前に
+# 退避し、読んだあとで戻す（環境の値を優先する。.env の空の行で打ち消されない）。
+ENV_UPDATE_CHECK="${UPDATE_CHECK-}"
+if [[ -f "$HELPER" ]]; then
+  # shellcheck source=/dev/null
+  . "$HELPER" 2>/dev/null || true
+fi
+if [[ -n "$ENV_UPDATE_CHECK" ]]; then
+  UPDATE_CHECK="$ENV_UPDATE_CHECK"
+fi
+
+# UPDATE_CHECK が止める値なら 0 を返す（止めない値なら 1）。
+disabled_by_env() {
+  case "$(printf '%s' "${UPDATE_CHECK:-}" | tr '[:upper:]' '[:lower:]')" in
+    off|0|false|no|disabled) return 0 ;;
+  esac
+  return 1
+}
+
+# ORIGIN の値を 1 つ出す（無ければ 1）。値の符号化は、このスクリプトが読む範囲では不要。
+origin_get() {
+  [[ -f "$ORIGIN" ]] || return 1
+  awk -v k="$1=" 'index($0, k) == 1 { print substr($0, length(k) + 1); found = 1; exit } END { exit !found }' "$ORIGIN"
+}
+
+# vX.Y.Z の形かを判定する。
+is_semver() {
+  [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+# 版 $1 が版 $2 より古ければ 0。どちらかが vX.Y.Z でなければ 1（比べられないので新しいとは言わない）。
+ver_lt() {
+  local a="$1" b="$2" i
+  is_semver "$a" && is_semver "$b" || return 1
+  a="${a#v}"; b="${b#v}"
+  local -a pa pb
+  IFS=. read -r -a pa <<< "$a"
+  IFS=. read -r -a pb <<< "$b"
+  for i in 0 1 2; do
+    if (( 10#${pa[$i]} < 10#${pb[$i]} )); then return 0; fi
+    if (( 10#${pa[$i]} > 10#${pb[$i]} )); then return 1; fi
+  done
+  return 1
+}
+
+CUR_DCB="" CUR_PB="" PB_SLUG="$PB_DEFAULT_SLUG"
+# PB_KIND: 規範の取得元の種類（tag / url）。PB_REPRO: 取得した bootstrap.sh で生成を再現できるか（ok / no）。
+PB_KIND="" PB_REPRO="ok"
+
+# ORIGIN から、今の版を読む。DCB の版が読めなければ 1（何もしない）。
+load_origin() {
+  local v src ref
+  [[ -f "$ORIGIN" ]] || return 1
+  v="$(origin_get version)" || return 1
+  is_semver "$v" || return 1
+  CUR_DCB="$v"
+  CUR_PB="" PB_SLUG="$PB_DEFAULT_SLUG" PB_KIND="" PB_REPRO="ok"
+  if [[ "$(origin_get input:playbook 2>/dev/null)" == "installed" ]]; then
+    src="$(origin_get input:playbook-source 2>/dev/null)" || src=""
+    ref="$(origin_get input:playbook-ref 2>/dev/null)" || ref=""
+    case "$src" in
+      tag)
+        if is_semver "$ref"; then CUR_PB="$ref"; PB_KIND="tag"; fi
+        ;;
+      url)
+        # リリースのタグの tarball の URL だけを、リリースから取得した版として扱う。
+        if [[ "$ref" =~ ^https://github\.com/([A-Za-z0-9_.-]+)/ai-playbook/archive/refs/tags/(v[0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz$ ]]; then
+          PB_SLUG="${BASH_REMATCH[1]}/ai-playbook"
+          CUR_PB="${BASH_REMATCH[2]}"
+          PB_KIND="url"
+        elif [[ -z "$ref" ]]; then
+          PB_REPRO="no"
+        fi
+        ;;
+      adjacent|local)
+        PB_REPRO="no"
+        ;;
+    esac
+  fi
+  return 0
+}
+
+# ORIGIN が無効化を記録していれば 0。
+disabled_by_origin() {
+  local v
+  v="$(origin_get input:update-check 2>/dev/null)" || return 1
+  [[ "$v" == "off" ]]
+}
+
+comp_cur()   { case "$1" in dcb) printf '%s' "$CUR_DCB" ;; playbook) printf '%s' "$CUR_PB" ;; esac; }
+comp_repo()  { case "$1" in dcb) printf 'devcontainer-bootstrap' ;; playbook) printf 'ai-playbook' ;; esac; }
+comp_slug()  { case "$1" in dcb) printf '%s' "$DCB_SLUG" ;; playbook) printf '%s' "$PB_SLUG" ;; esac; }
+
+# キャッシュの置き場所。プロジェクトごとに分ける（1 つのコンテナに複数のプロジェクトがありうる）。
+cache_dir() {
+  local key
+  if [[ -n "${UPDATE_CHECK_CACHE_DIR:-}" ]]; then
+    printf '%s' "$UPDATE_CHECK_CACHE_DIR"
+    return 0
+  fi
+  key="$(printf '%s' "$ROOT" | cksum | awk '{ print $1 }')"
+  printf '%s/dcb-update-check/%s' "${XDG_CACHE_HOME:-$HOME/.cache}" "$key"
+}
+
+# URL を取得して $2 へ書く。認証なし・短いタイムアウト。$3 は全体の秒数（既定 3）。
+# https だけを許し、リダイレクト先も https に限る。失敗は curl の終了コード（curl が無ければ 127）。
+fetch() {
+  local url="$1" out="$2" max="${3:-3}"
+  command -v curl >/dev/null 2>&1 || return 127
+  curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 2 --max-time "$max" \
+    -H 'Accept: application/vnd.github+json' -H 'User-Agent: dcb-update-check' \
+    "$url" -o "$out" 2>/dev/null
+}
+
+# リリースの JSON から tag_name を 1 つ出す。
+json_tag_name() {
+  awk '
+    match($0, /"tag_name"[ ]*:[ ]*"[^"]*"/) {
+      s = substr($0, RSTART, RLENGTH)
+      sub(/^"tag_name"[ ]*:[ ]*"/, "", s)
+      sub(/"$/, "", s)
+      print s
+      exit
+    }
+  ' "$1"
+}
+
+# 配布先の CHANGELOG.md から、「### 移行」の節を持つ版（「## vX.Y.Z」の節）を出す。
+# リリースの本文は「Release vX.Y.Z」の 1 行でリリースノートを含まないため、CHANGELOG.md を読む。
+changelog_migration_tags() {
+  awk '
+    /^## / { tag = ""; if ($2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+/) { tag = $2; sub(/\r$/, "", tag) } }
+    /^### 移行/ { if (tag != "") print tag }
+  ' "$1"
+}
+
+# 通信ができない（名前を引けない・つながらない・時間切れ・curl が無い）ことを表す curl の終了コードか。
+# このとき、残りの問い合わせは試さない（遅らせない）。HTTP の失敗などは、部品ごとの失敗として扱う。
+is_offline_rc() {
+  case "$1" in 6|7|28|127) return 0 ;; esac
+  return 1
+}
+
+# 最新の安定版を問い合わせ、キャッシュへ書く。部品ごとの失敗は、もう片方の確認を止めない。
+# 通信ができないと分かったときだけ、残りを試さない。
+# 今日の取得に失敗した部品の、前の日のキャッシュは使わない（先に消す）。
+refresh_cache() {
+  local dir c cur slug tmp tag t list rc
+  dir="$(cache_dir)"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  # 先に今日の印を書く。失敗しても、同じ日にもう一度問い合わせない（1 日 1 回）。
+  printf '%s\n' "${UPDATE_CHECK_TODAY:-$(date +%Y-%m-%d)}" > "$dir/checked" 2>/dev/null || return 0
+  rm -f "$dir"/latest-* "$dir"/migrations-* 2>/dev/null
+  tmp="$(mktemp "${TMPDIR:-/tmp}/dcb-update-check.XXXXXX" 2>/dev/null)" || return 0
+  for c in dcb playbook; do
+    cur="$(comp_cur "$c")"
+    [[ -n "$cur" ]] || continue
+    slug="$(comp_slug "$c")"
+    fetch "https://api.github.com/repos/$slug/releases/latest" "$tmp" 3
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+      if is_offline_rc "$rc"; then
+        rm -f "$tmp"
+        return 0
+      fi
+      continue
+    fi
+    tag="$(json_tag_name "$tmp")"
+    # プレリリース・draft は latest に出ないはずだが、形の合わない値も取り込まない。
+    is_semver "$tag" || continue
+    printf '%s\n' "$tag" > "$dir/latest-$c" 2>/dev/null || continue
+    # 新しいときだけ、飛び越える版のうち「移行」の節がある版を、最新のタグの CHANGELOG.md から調べる
+    # （読めなければ印を消し、案内に留める）。
+    if ver_lt "$cur" "$tag" && fetch "https://raw.githubusercontent.com/$slug/$tag/CHANGELOG.md" "$tmp" 5; then
+      list=""
+      while IFS= read -r t; do
+        [[ -n "$t" ]] || continue
+        if ver_lt "$cur" "$t" && ! ver_lt "$tag" "$t"; then list="$list $t"; fi
+      done < <(changelog_migration_tags "$tmp")
+      printf '%s\n' "${list# }" > "$dir/migrations-$c" 2>/dev/null || true
+    fi
+  done
+  rm -f "$tmp"
+  return 0
+}
+
+# 追従の候補（今より新しく、N と答えていない版。引数があれば N の版も含める）を、"dcb" "playbook" の空白区切りで出す。
+pending_components() {
+  local ignore_declined="${1:-}" dir c cur latest declined out=""
+  dir="$(cache_dir)"
+  for c in dcb playbook; do
+    cur="$(comp_cur "$c")"
+    [[ -n "$cur" && -f "$dir/latest-$c" ]] || continue
+    latest="$(cat "$dir/latest-$c" 2>/dev/null)" || continue
+    ver_lt "$cur" "$latest" || continue
+    if [[ -z "$ignore_declined" ]]; then
+      declined="$(cat "$dir/declined-$c" 2>/dev/null || true)"
+      [[ "$declined" != "$latest" ]] || continue
+    fi
+    out="$out $c"
+  done
+  printf '%s' "${out# }"
+}
+
+# 今日まだ問い合わせていなければ問い合わせ、追従の候補があれば通知を 1 行だけ出す（聞かない）。
+cmd_notify() {
+  local dir pend c line="" cur latest
+  dir="$(cache_dir)"
+  if [[ "$(cat "$dir/checked" 2>/dev/null || true)" != "${UPDATE_CHECK_TODAY:-$(date +%Y-%m-%d)}" ]]; then
+    refresh_cache
+  fi
+  pend="$(pending_components)"
+  [[ -n "$pend" ]] || return 0
+  for c in $pend; do
+    cur="$(comp_cur "$c")"
+    latest="$(cat "$dir/latest-$c")"
+    line="${line:+$line, }$(comp_repo "$c") $cur -> $latest"
+  done
+  echo "$LOG_PREFIX 新しい版があります: $line。対話のシェルで追従できます（bash scripts/update-check.sh upgrade でも追従できます）。止めるには UPDATE_CHECK=off（.env）"
+  return 0
+}
+
+# 端末が付いているか。
+tty_ok() {
+  [[ -n "${UPDATE_CHECK_ASSUME_TTY:-}" ]] && return 0
+  [[ -t 0 && -t 1 ]]
+}
+
+# 排他を取る。複数の端末が同時に開いても、聞く・追従するのは 1 つだけにする。取れなければ 1。
+# flock があれば flock -n（プロセスの終了で解放される）。無ければロックのディレクトリで簡易に
+# 排他する（持ち主の pid が消えていれば奪う）。UPDATE_CHECK_NO_FLOCK=1 は試験用。
+LOCK_DIR=""
+acquire_lock() {
+  local dir pid
+  dir="$(cache_dir)"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  if [[ -z "${UPDATE_CHECK_NO_FLOCK:-}" ]] && command -v flock >/dev/null 2>&1; then
+    exec 9>"$dir/lock"
+    flock -n 9
+    return $?
+  fi
+  if ! mkdir "$dir/lock.d" 2>/dev/null; then
+    pid="$(cat "$dir/lock.d/pid" 2>/dev/null || true)"
+    if [[ -n "$pid" ]]; then
+      # pid があって、そのプロセスが無いときだけ奪う。
+      if kill -0 "$pid" 2>/dev/null; then
+        return 1
+      fi
+    elif [[ -z "$(find "$dir/lock.d" -maxdepth 0 -mmin +1 2>/dev/null)" ]]; then
+      # pid がまだ無い（作った直後で、書くまでのあいだ）。十分古くなるまでは持ち主ありとみなす。
+      return 1
+    fi
+    # 奪うのは名前の変更で 1 つだけを成功させる（rm してから作り直すと、同時に奪いに来た端末が、
+    # 先に奪った側の新しいロックまで消せるため）。変えた先の pid が、古いと判断したものと違えば
+    # （判断のあとに別の端末が奪って作り直した）、そのロックは生きているので戻して諦める。
+    mv "$dir/lock.d" "$dir/lock.d.stale.$$" 2>/dev/null || return 1
+    if [[ "$(cat "$dir/lock.d.stale.$$/pid" 2>/dev/null || true)" != "$pid" ]]; then
+      mv "$dir/lock.d.stale.$$" "$dir/lock.d" 2>/dev/null || rm -rf "$dir/lock.d.stale.$$"
+      return 1
+    fi
+    rm -rf "$dir/lock.d.stale.$$"
+    mkdir "$dir/lock.d" 2>/dev/null || return 1
+  fi
+  echo $$ > "$dir/lock.d/pid"
+  LOCK_DIR="$dir/lock.d"
+  trap 'rm -rf "$LOCK_DIR"' EXIT
+  return 0
+}
+
+# 作業用のブランチを切る（既定ブランチの上にいるときだけ）。切ったら名前を $BRANCH_MADE へ、
+# 元のブランチを $BRANCH_ORIG へ入れる。
+BRANCH_MADE=""
+BRANCH_ORIG=""
+prepare_branch() {
+  local want="$1" cur def n name
+  git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  cur="$(git -C "$ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null)" || return 0
+  def="$(git -C "$ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || def=""
+  def="${def#origin/}"
+  # origin/HEAD が無ければ、手元に main / master のブランチがあれば、それを既定ブランチとみなす。
+  if [[ -z "$def" ]]; then
+    local b
+    for b in main master; do
+      if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$b"; then def="$b"; break; fi
+    done
+  fi
+  # それでも判定できない（origin/HEAD が無く、main / master のブランチも無い）ときは、念のため作業用のブランチを切る
+  # （切って困ることは無く、切らずに既定ブランチの作業ツリーへ差分を置くほうが困るため）。
+  [[ -z "$def" || "$cur" == "$def" ]] || return 0
+  name="$want"; n=1
+  while git -C "$ROOT" show-ref --verify --quiet "refs/heads/$name"; do
+    n=$((n + 1)); name="$want-$n"
+  done
+  if ! git -C "$ROOT" switch -c "$name" >/dev/null 2>&1; then
+    echo "$LOG_PREFIX 作業用のブランチ $name を切れませんでした。何も変えずに止めます。" >&2
+    return 1
+  fi
+  BRANCH_MADE="$name"
+  BRANCH_ORIG="$cur"
+  echo "$LOG_PREFIX 既定ブランチ（${def:-判定できないため念のため}）の上だったので、作業用のブランチ $name を切りました。"
+  return 0
+}
+
+# 切った作業用のブランチから元のブランチへ戻し、空のブランチを消す（失敗したときに残さない）。
+restore_branch() {
+  [[ -n "$BRANCH_MADE" ]] || return 0
+  if git -C "$ROOT" switch -q "$BRANCH_ORIG" 2>/dev/null; then
+    git -C "$ROOT" branch -D "$BRANCH_MADE" >/dev/null 2>&1 || true
+    echo "$LOG_PREFIX 作業用のブランチ $BRANCH_MADE を消し、$BRANCH_ORIG へ戻しました。" >&2
+  else
+    echo "$LOG_PREFIX 元のブランチ $BRANCH_ORIG へ戻せませんでした。作業用のブランチ $BRANCH_MADE に居ます。" >&2
+  fi
+  BRANCH_MADE=""
+}
+
+# sha256 を計算する（GNU の sha256sum が無ければ shasum -a 256）。
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{ print $1 }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  else
+    return 1
+  fi
+}
+
+# 取得した bootstrap.sh では追従できない構成なら、その理由を出す（追従できるなら何も出さない）。
+# 規範の取得元が adjacent / local / 記録のない url のとき、取得した bootstrap.sh は一時ディレクトリから
+# 動くため、規範の置き場所を見つけられず --upgrade が必ず失敗する。
+follow_blocker() {
+  if [[ "$PB_REPRO" == "no" ]]; then
+    echo "規範（ai-playbook）の取得元がリリースの版を指していない（adjacent / local / 記録のない url）ため、取得した bootstrap.sh からは生成を再現できません。手元の bootstrap.sh（規範の置き場所が見える場所のもの）で --upgrade してください。"
+  fi
+}
+
+# 追従する。$1 は追従する部品（"dcb" "playbook" の空白区切り。聞いて y と答えたもの）。
+# 失敗は 1（何も実行していないか、止めた理由を出している）。
+# DCB を上げないとき（N と答えた・すでに最新・最新より新しい）は、今の版の bootstrap.sh を使い、
+# 生成物の DCB の版を動かさない。
+do_upgrade() {
+  local want="$1" dir latest_dcb="" latest_pb="" want_dcb="" want_pb="" use_tag blocker
+  local work base wantbranch expected actual rc branch_hint changed
+  local -a pbargs
+  pbargs=()
+  dir="$(cache_dir)"
+  load_origin || { echo "$LOG_PREFIX ORIGIN から今の版を読めないため、追従しません。" >&2; return 1; }
+  case " $want " in *" dcb "*) want_dcb="yes" ;; esac
+  case " $want " in *" playbook "*) want_pb="yes" ;; esac
+  if [[ -z "$want_dcb" && -z "$want_pb" ]]; then
+    echo "$LOG_PREFIX すでに最新です（devcontainer-bootstrap $CUR_DCB）。"
+    return 0
+  fi
+  blocker="$(follow_blocker)"
+  if [[ -n "$blocker" ]]; then
+    echo "$LOG_PREFIX $blocker" >&2
+    return 1
+  fi
+  use_tag="$CUR_DCB"
+  if [[ -n "$want_dcb" ]]; then
+    latest_dcb="$(cat "$dir/latest-dcb" 2>/dev/null)" || latest_dcb=""
+    is_semver "$latest_dcb" || { echo "$LOG_PREFIX 最新の版がまだ分かりません（問い合わせに失敗した）。あとでもう一度試してください。" >&2; return 1; }
+    use_tag="$latest_dcb"
+  fi
+  if [[ -n "$want_pb" ]]; then
+    latest_pb="$(cat "$dir/latest-playbook" 2>/dev/null)" || latest_pb=""
+    is_semver "$latest_pb" || { echo "$LOG_PREFIX ai-playbook の最新の版がまだ分かりません。あとでもう一度試してください。" >&2; return 1; }
+    # 取得元の種類と、フォークの owner を保つ（--playbook-version は既定の配布元の URL に展開されるため）。
+    case "$PB_KIND" in
+      tag) pbargs=(--playbook-version "$latest_pb") ;;
+      url) pbargs=(--playbook-from "https://github.com/$PB_SLUG/archive/refs/tags/$latest_pb.tar.gz") ;;
+      *) echo "$LOG_PREFIX 規範の取得元を読めないため、追従しません。" >&2; return 1 ;;
+    esac
+  fi
+  # 差分を読めるよう、作業ツリーが汚れているときは止める（追従の差分と混ざるため）。
+  if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    && [[ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]]; then
+    echo "$LOG_PREFIX 作業ツリーに未コミットの変更があるため、追従しません（差分が混ざるため）。コミットか退避をしてからやり直してください。" >&2
+    return 1
+  fi
+
+  work="$(mktemp -d "${TMPDIR:-/tmp}/dcb-update-upgrade.XXXXXX" 2>/dev/null)" || return 1
+  base="https://github.com/$DCB_SLUG/releases/download/$use_tag"
+  if ! fetch "$base/bootstrap.sh" "$work/bootstrap.sh" 60 || ! fetch "$base/SHA256SUMS" "$work/SHA256SUMS" 60; then
+    echo "$LOG_PREFIX $use_tag の bootstrap.sh か SHA256SUMS を取得できませんでした。何も変えずに止めます。" >&2
+    rm -rf "$work"
+    return 1
+  fi
+  expected="$(awk '$2 == "bootstrap.sh" || $2 == "*bootstrap.sh" { print $1; exit }' "$work/SHA256SUMS")"
+  actual="$(sha256_of "$work/bootstrap.sh")" || actual=""
+  if [[ -z "$expected" || -z "$actual" || "$expected" != "$actual" ]]; then
+    echo "$LOG_PREFIX bootstrap.sh のハッシュが SHA256SUMS と一致しません（または照合できません）。実行せずに止めます。" >&2
+    rm -rf "$work"
+    return 1
+  fi
+  echo "$LOG_PREFIX bootstrap.sh $use_tag を取得し、SHA256SUMS と照合しました。"
+
+  if [[ -n "$want_dcb" ]]; then
+    wantbranch="chore/update-dcb-$latest_dcb"
+    [[ -z "$want_pb" ]] || wantbranch="$wantbranch-playbook-$latest_pb"
+  else
+    wantbranch="chore/update-playbook-$latest_pb"
+  fi
+  if ! prepare_branch "$wantbranch"; then
+    rm -rf "$work"
+    return 1
+  fi
+
+  echo "$LOG_PREFIX bootstrap.sh --upgrade を実行します。"
+  bash "$work/bootstrap.sh" --upgrade --output-dir "$ROOT" ${pbargs[@]+"${pbargs[@]}"}
+  rc=$?
+  rm -rf "$work"
+  if [[ $rc -ne 0 && $rc -ne 2 ]]; then
+    echo "$LOG_PREFIX --upgrade が失敗しました（終了コード $rc）。出力を確かめてください。" >&2
+    # 途中で書かれたファイルを自動では戻さない（作業ツリー全体を戻すと、追従のあいだに別の端末で編集したものまで消しうるため）。
+    # 何も書かれていなければ、切った作業用のブランチを消して元のブランチへ戻す。書かれていれば、作業用のブランチに留まり
+    # （既定ブランチの作業ツリーを汚さない）、戻し方を案内する。
+    if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      && [[ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]]; then
+      if [[ -n "$BRANCH_MADE" ]]; then
+        echo "$LOG_PREFIX 途中で書かれたファイルがあるため、作業用のブランチ $BRANCH_MADE に留まります（$BRANCH_ORIG には戻していません）。" >&2
+      else
+        echo "$LOG_PREFIX 途中で書かれたファイルが、今のブランチの作業ツリーに残っています。" >&2
+      fi
+      echo "$LOG_PREFIX 差分を読んで、要らなければ git restore . と git clean -fd（消す前に git clean -nd で確かめる）で戻してください。" >&2
+      BRANCH_MADE=""
+    else
+      restore_branch
+    fi
+    return 1
+  fi
+  branch_hint=""
+  [[ -z "$BRANCH_MADE" ]] || branch_hint="（作業用のブランチ $BRANCH_MADE に切り替え済みです）"
+  if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    changed="$(git -C "$ROOT" status --short 2>/dev/null | sed -n '1,40p')"
+    echo "$LOG_PREFIX 追従の差分を作業ツリーに残しました。コミット・push・PR はしていません$branch_hint。"
+    echo "変わったファイル:"
+    if [[ -n "$changed" ]]; then printf '%s\n' "$changed" | sed 's/^/  /'; else echo "  （変わったファイルはありません）"; fi
+  else
+    echo "$LOG_PREFIX 追従の差分を残しました（git の作業ツリーではないため、変わったファイルの一覧は出しません）。"
+  fi
+  if [[ $rc -eq 2 ]]; then
+    echo "  手を入れたファイルの隣に .dcb-new が置かれました。差分を見て取り込んでください（--upgrade の出力を参照）。"
+  fi
+  echo "次の手順:"
+  echo "  1) 差分を読む（git diff。リリースノートの「移行」も読む）"
+  echo "  2) bash scripts/verify.sh"
+  echo "  3) コミットする"
+  echo "  4) PR を作る"
+  return 0
+}
+
+# 端末で聞く。聞くのは表示した部品だけで、y で上げるのも、その部品だけ。
+cmd_prompt() {
+  local dir pend c cur latest mig n ans blocker
+  tty_ok || return 0
+  # ほかの端末が聞いている・追従しているあいだは、この端末では聞かない。
+  acquire_lock || return 0
+  dir="$(cache_dir)"
+  pend="$(pending_components)"
+  [[ -n "$pend" ]] || return 0
+  echo "$LOG_PREFIX 新しい版があります。"
+  for c in $pend; do
+    cur="$(comp_cur "$c")"
+    latest="$(cat "$dir/latest-$c")"
+    echo "  $(comp_repo "$c"): $cur -> $latest"
+    if [[ -f "$dir/migrations-$c" ]]; then
+      mig="$(cat "$dir/migrations-$c" 2>/dev/null)"
+      n="$(printf '%s\n' "$mig" | wc -w | tr -d ' ')"
+      if [[ "$n" -ge 2 ]]; then
+        echo "  [注意] 「移行」の節がある版を $n 個飛び越えます（$mig）。リリースノート（CHANGELOG.md）の「移行」を読んでから追従してください。"
+      elif [[ "$n" -eq 1 ]]; then
+        echo "  「移行」の節がある版: $mig"
+      fi
+    else
+      echo "  リリースノート（移行の節）を読んでください: https://github.com/$(comp_slug "$c")/releases"
+    fi
+  done
+  blocker="$(follow_blocker)"
+  if [[ -n "$blocker" ]]; then
+    # 自動では追従できない。案内を 1 回出し、この版のあいだは聞かない。
+    echo "  [自動では追従できません] $blocker"
+    for c in $pend; do
+      cat "$dir/latest-$c" > "$dir/declined-$c" 2>/dev/null || true
+    done
+    return 0
+  fi
+  printf '追従しますか？ [y/N] '
+  ans=""
+  read -r ans || ans=""
+  case "$ans" in
+    y|Y|yes|YES|Yes)
+      do_upgrade "$pend" || true
+      ;;
+    *)
+      # N の版は、その版のあいだ聞かない。
+      for c in $pend; do
+        cat "$dir/latest-$c" > "$dir/declined-$c" 2>/dev/null || true
+      done
+      echo "$LOG_PREFIX 追従しません。この版のあいだは聞きません（あとで追従するときは bash scripts/update-check.sh upgrade）。"
+      ;;
+  esac
+  return 0
+}
+
+# 手で追従する。N と答えた版も含め、今より新しいものすべてを対象にする。
+cmd_upgrade() {
+  load_origin || { echo "$LOG_PREFIX ORIGIN から今の版を読めないため、追従しません。" >&2; return 1; }
+  if ! acquire_lock; then
+    echo "$LOG_PREFIX ほかの端末が聞いている、または追従しているため、追従しません。" >&2
+    return 1
+  fi
+  refresh_cache
+  # 最新の版を取得できなかったら、「すでに最新」と言わずに失敗で終える（取得できない日は、追従するか判断できない）。
+  # どちらか一方でも取得できていれば、取得できたほうで判断する（片方の失敗で、もう片方の追従を止めない）。
+  if [[ ! -s "$(cache_dir)/latest-dcb" && ! -s "$(cache_dir)/latest-playbook" ]]; then
+    echo "$LOG_PREFIX 最新の版を取得できなかったため、追従するか判断できません（オフライン・GitHub の不調・API の制限）。時間をおいて、もう一度実行してください。" >&2
+    return 1
+  fi
+  do_upgrade "$(pending_components all)"
+}
+
+main() {
+  local sub="${1:-}"
+  case "$sub" in
+    notify|prompt)
+      # 何もしない条件。起動・対話シェルの開始を止めないよう、失敗は黙って 0 で終わる。
+      disabled_by_env && return 0
+      load_origin || return 0
+      disabled_by_origin && return 0
+      if [[ "$sub" == "notify" ]]; then cmd_notify; else cmd_prompt; fi
+      return 0
+      ;;
+    upgrade)
+      cmd_upgrade
+      return $?
+      ;;
+    *)
+      echo "usage: bash scripts/update-check.sh <notify|prompt|upgrade>" >&2
+      return 2
+      ;;
+  esac
+}
+
+main "$@"

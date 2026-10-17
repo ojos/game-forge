@@ -1276,17 +1276,19 @@ tools/devhost/README.md の「スマホのボタンに doctor / rebuild を足�
 
 ## 8. DCB と規範への追従（#938）
 
-`.devcontainer/`・`scripts/` の一部・`.github/workflows/` の 3 本（`verify.yml`・`identity-guard.yml`・`second-opinion-gate.yml`）・`.claude/`・`.ai-playbook/**`・入口ファイル（`CLAUDE.md`・`AGENTS.md`・`.github/copilot-instructions.md`）は、devcontainer-bootstrap（DCB）が生成するファイルです。**生成時の入力（引数）と、ファイルごとのハッシュは `.devcontainer/ORIGIN` が記録しています**（#938 で初めて置きました。v0.17.0・規範 ai-playbook v0.8.1。#953 で v0.18.0・規範 v0.8.2、#968 で v0.19.0・規範 v0.9.0、#982 で v0.19.2・規範 v0.9.2、#985 で v0.22.1・規範 v0.12.1 へ追従）。次からは、引数なしの `bootstrap.sh --upgrade` で、記録から同じ入力を再現して追従できます。
+`.devcontainer/`・`scripts/` の一部・`.github/workflows/` の 3 本（`verify.yml`・`identity-guard.yml`・`second-opinion-gate.yml`）・`.claude/`・`.ai-playbook/**`・入口ファイル（`CLAUDE.md`・`AGENTS.md`・`.github/copilot-instructions.md`）は、devcontainer-bootstrap（DCB）が生成するファイルです。**生成時の入力（引数）と、ファイルごとのハッシュは `.devcontainer/ORIGIN` が記録しています**（#938 で初めて置きました。v0.17.0・規範 ai-playbook v0.8.1。#953 で v0.18.0・規範 v0.8.2、#968 で v0.19.0・規範 v0.9.0、#982 で v0.19.2・規範 v0.9.2、#985 で v0.22.1・規範 v0.12.1、#988 で v0.23.0 へ追従）。次からは、引数なしの `bootstrap.sh --upgrade` で、記録から同じ入力を再現して追従できます。
 
 **どのファイルを雛形どおりにし、どの差分を残しているかは `.github/project-ai-rules.md`「雛形からの逸脱」が正本です。** 追従のたびに、表に無い差分を雛形へ戻し、表にある差分だけを残します。
 
 ### 8.1 手順
 
+**DCB v0.23.0 から、接続時に `scripts/update-check.sh` が新しい安定版を 1 行で知らせます**（#988）。対話のシェルで y と答えると、照合した `bootstrap.sh` で 2〜4 にあたる `--upgrade` を流し、差分を作業ツリーに残して止まります（コミット・push・PR はしない）。y で進めた場合も、**専用の worktree で行うこと（1）と、5〜7 の片付け・記録・確認は、この手順のとおりに行います。** プライマリで y と答えないでください（プライマリは main に置く）。手で流すときは `bash scripts/update-check.sh upgrade` です。生成の入力（`--claude-remote-control`・`--second-opinion-engine codex` など）は ORIGIN が記録しているので、`--upgrade` に付け直す必要はありません。
+
 1. **専用の worktree とブランチで行います**（`origin/main` から切り、`npm ci` で `node_modules` の実体を置く。`.github/project-ai-rules.md`「作業ツリーの分離」）。
 2. **新しい版を、マニフェストのハッシュで照合してから展開します。** 展開先は作業ツリーの外の空のディレクトリにします。
 
    ```bash
-   TAG=v0.22.1   # 追従先の版
+   TAG=v0.23.0   # 追従先の版
    mkdir -p ~/dcb-"$TAG" && cd ~/dcb-"$TAG"
    BASE="https://github.com/ojos/devcontainer-bootstrap/releases/download/${TAG}"
    curl -sSL "${BASE}/RELEASE-MANIFEST.json" -o RELEASE-MANIFEST.json

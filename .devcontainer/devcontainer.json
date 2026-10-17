@@ -10,6 +10,8 @@
   // ネイティブ Linux ではさらに AppArmor が mount を止める（片方だけ外しても動かない）。
   // コンテナの中から namespace の作成や mount ができるようになり、隔離が弱まる。
   // codex を使わなくなったら消してよい。
+  // 第二意見のようにツールを無効にした起動でも、codex は起動のたびに bwrap を
+  // 能力の確認として起動するので、codex を使う限りこの設定は残す。
   // compose.yaml の security_opt に置かないこと。go などの feature が同じ値を足すため、
   // Compose が重複を拒否してコンテナが起動しなくなる。
   "securityOpt": [

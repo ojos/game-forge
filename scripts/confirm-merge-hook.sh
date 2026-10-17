@@ -324,7 +324,13 @@ set -uo pipefail
 for_each_clause() {
   local handler="$1" text="$2"
   local i n c
-  local word="" have_word=0 word_quoted=0 word_start=-1
+  # ${text:i:1} は 1 回ごとに先頭から i まで数えるため、1 文字ずつ取り出すと走査全体が
+  # 長さの 2 乗になる（#647。LC_ALL=C でも同じ）。そこで text から 512 文字の塊 blk を
+  # 切り出し、塊の中の位置 k で 1 文字を読む。塊の取り直しは 500 文字ごとなので、
+  # 塊の中を読む費用は一定で、先読み（k + 1）も塊の中に収まる。ロケールは変えない
+  # （文字コードによっては、バイト単位で数えると 2 バイト目を区切りと取り違える）。
+  local blk="" blk_start=0 k=0 word_raw=""
+  local word="" have_word=0 word_quoted=0
   local in_squote=0 in_dquote=0
 
   clause_words=()
@@ -334,10 +340,16 @@ for_each_clause() {
   n=${#text}
 
   for ((i = 0; i < n; i++)); do
-    c="${text:i:1}"
+    if ((i == 0 || i - blk_start >= 500)); then
+      blk_start=$i
+      blk="${text:i:512}"
+    fi
+    k=$((i - blk_start))
+    c="${blk:k:1}"
 
     if [[ $in_squote -eq 1 ]]; then
       clause_text+="$c"
+      word_raw+="$c"
       if [[ "$c" == "'" ]]; then
         in_squote=0
       else
@@ -348,15 +360,18 @@ for_each_clause() {
       continue
     fi
     if [[ $in_dquote -eq 1 ]]; then
+      word_raw+="$c"
       if [[ "$c" == '"' ]]; then
         in_dquote=0
         clause_text+="$c"
       elif [[ "$c" == $'\\' ]]; then
         clause_text+="$c"
         i=$((i + 1))
+        k=$((k + 1))
         if [[ $i -lt $n ]]; then
-          clause_text+="${text:i:1}"
-          word+="${text:i:1}"
+          clause_text+="${blk:k:1}"
+          word_raw+="${blk:k:1}"
+          word+="${blk:k:1}"
           have_word=1
           word_quoted=1
         fi
@@ -371,43 +386,32 @@ for_each_clause() {
 
     case "$c" in
       "'")
-        # クォートが開いた時点で「語が始まった」ことを記録する。空クォート
-        # （'' / ""）は中身の文字を 1 つも追加しないため、内容が付くときにだけ
-        # have_word を立てる実装だと、空クォートだけの語はいつまでも
-        # have_word=0 のまま扱われる（実測）。その結果、空白や区切り文字に
-        # 達しても「語を確定させて word_start をリセットする」処理
-        # （下の空白・区切り文字の分岐、いずれも have_word -eq 1 を条件にする）
-        # が走らず、word_start が空クォートの開始位置に残り続ける。次の語の
-        # 先頭でも word_start が -1 に戻っていないため上書きされず、
-        # clause_word_raw の切り出しに直前の空クォートや区切り文字まで
-        # 巻き込んでしまい、環境変数代入の判定（^[A-Za-z_][A-Za-z0-9_]*=）が
-        # raw の先頭に来るはずの文字の前へ無関係な文字が挟まって外れる
-        # （実測: `echo '' ; FOO=bar gh pr merge 1` が素通りしていた）。逆に
-        # `'' gh pr merge 1` では、空クォートが語として clause_words に入らない
-        # ため gh が誤って先頭語として扱われ、逆方向の誤検知も起きていた
-        # （実測）。クォートが開いた瞬間に have_word と word_quoted を立てる
-        # ことで、中身が空でも「クォートで作った語」を 1 つの語として確定
-        # できるようにする。
-        [[ $word_start -eq -1 ]] && word_start=$i
+        # クォートが開いた時点で have_word と word_quoted を立てる。空クォート
+        # （'' / ""）は中身の文字を足さないため、内容が付くときにだけ立てる実装だと、
+        # 空クォートだけの語が確定されず、次の語と混ざる（実測: `echo '' ; FOO=bar gh pr merge 1`
+        # が素通りし、`'' gh pr merge 1` では gh が誤って先頭語になっていた）。
         have_word=1
         word_quoted=1
         in_squote=1
         clause_text+="$c"
+        word_raw+="$c"
         ;;
       '"')
-        [[ $word_start -eq -1 ]] && word_start=$i
         have_word=1
         word_quoted=1
         in_dquote=1
         clause_text+="$c"
+        word_raw+="$c"
         ;;
       $'\\')
-        [[ $word_start -eq -1 ]] && word_start=$i
         clause_text+="$c"
+        word_raw+="$c"
         i=$((i + 1))
+        k=$((k + 1))
         if [[ $i -lt $n ]]; then
-          clause_text+="${text:i:1}"
-          word+="${text:i:1}"
+          clause_text+="${blk:k:1}"
+          word_raw+="${blk:k:1}"
+          word+="${blk:k:1}"
           have_word=1
           word_quoted=1
         fi
@@ -417,11 +421,11 @@ for_each_clause() {
         if [[ $have_word -eq 1 ]]; then
           clause_words+=("$word")
           clause_word_quoted+=("$word_quoted")
-          clause_word_raw+=("${text:word_start:i-word_start}")
+          clause_word_raw+=("$word_raw")
+          word_raw=""
           word=""
           have_word=0
           word_quoted=0
-          word_start=-1
         fi
         ;;
       '{')
@@ -436,13 +440,13 @@ for_each_clause() {
         # の引数でしかなく実際には実行されない）のような無害な文字列まで拾って
         # しまう（実測）。
         if [[ $have_word -eq 0 ]] && _clause_prefix_is_reserved_only \
-          && { [[ "${text:$((i + 1)):1}" == ' ' ]] \
-            || [[ "${text:$((i + 1)):1}" == $'\t' ]] \
-            || [[ "${text:$((i + 1)):1}" == $'\n' ]]; }; then
+          && { [[ "${blk:k+1:1}" == ' ' ]] \
+            || [[ "${blk:k+1:1}" == $'\t' ]] \
+            || [[ "${blk:k+1:1}" == $'\n' ]]; }; then
           :
         else
-          [[ $word_start -eq -1 ]] && word_start=$i
           clause_text+="$c"
+          word_raw+="$c"
           word+="$c"
           have_word=1
         fi
@@ -451,11 +455,11 @@ for_each_clause() {
         if [[ $have_word -eq 1 ]]; then
           clause_words+=("$word")
           clause_word_quoted+=("$word_quoted")
-          clause_word_raw+=("${text:word_start:i-word_start}")
+          clause_word_raw+=("$word_raw")
+          word_raw=""
           word=""
           have_word=0
           word_quoted=0
-          word_start=-1
         fi
         if [[ -n "$clause_text" || ${#clause_words[@]} -gt 0 ]]; then
           "$handler"
@@ -466,13 +470,13 @@ for_each_clause() {
         clause_text=""
         # && / || の 2 文字目は読み飛ばす（境界としては 1 回でよい）。
         if { [[ "$c" == '&' ]] || [[ "$c" == '|' ]]; } \
-          && [[ "${text:$((i + 1)):1}" == "$c" ]]; then
+          && [[ "${blk:k+1:1}" == "$c" ]]; then
           i=$((i + 1))
         fi
         ;;
       *)
-        [[ $word_start -eq -1 ]] && word_start=$i
         clause_text+="$c"
+        word_raw+="$c"
         word+="$c"
         have_word=1
         ;;
@@ -482,7 +486,8 @@ for_each_clause() {
   if [[ $have_word -eq 1 ]]; then
     clause_words+=("$word")
     clause_word_quoted+=("$word_quoted")
-    clause_word_raw+=("${text:word_start:n-word_start}")
+    clause_word_raw+=("$word_raw")
+    word_raw=""
   fi
   if [[ -n "$clause_text" || ${#clause_words[@]} -gt 0 ]]; then
     "$handler"
@@ -787,6 +792,16 @@ squash_ci_skip_check() {
   squash_ci_skip_detail="$overall_detail"
 }
 
+# 走査の前の素通しに使う判定。クォートとバックスラッシュを取り除いた文字列に merge が
+# あるかを返す（0 = ある、1 = 無い）。バイト単位の照合でよいので LC_ALL=C にする。
+# 取り除く文字が何バイト目に現れても、取りこぼす側（merge を見落とす側）には
+# 振れない。local なので関数を抜ければ元のロケールへ戻る。
+may_contain_merge() {
+  local LC_ALL=C
+  local stripped="${1//[\'\"\\]/}"
+  [[ "$stripped" == *merge* ]]
+}
+
 payload="$(cat)"
 
 reason=""
@@ -813,7 +828,9 @@ else
     target="$payload"
   fi
 
-  # バックスラッシュ行継続（\ + 改行）だけを空白へ正規化する。判定にのみ使い、
+  # バックスラッシュ行継続（\ + 改行）だけを取り除く（空白には置き換えない。bash は
+  # この 2 文字を何も無かったものとして扱うので、`gh pr mer\<改行>ge` は `gh pr merge`
+  # として走る。空白にすると `mer ge` に割れて検知を抜ける）。判定にのみ使い、
   # payload・target 自体や理由文は書き換えない。長い REST 呼び出しを \ で複数行に
   # 分けるのは普通の書き方で、-XPUT / --method=PUT と同じ「うっかり実行」側にあたる。
   # 分けて書くと pulls/<n>/merge と PUT が別行になり、REST 判定の同一節条件が外れて
@@ -826,8 +843,20 @@ else
   # CRLF を先に処理する。LF だけを落とすと \ + CR が残り、CR が語末境界として働いて
   # 判定が外れる。CRLF がこのフックへ届く経路は実測できていないが、置換 1 行で
   # 恒久的に問いを消せるため入れておく。
-  norm_target="${target//$'\\\r\n'/ }"
-  norm_target="${norm_target//$'\\\n'/ }"
+  norm_target="${target//$'\\\r\n'/}"
+  norm_target="${norm_target//$'\\\n'/}"
+
+  # 走査の前の素通し（#647）。検知する 3 つの綴り（gh pr merge / pulls/<n>/merge と
+  # PUT / mergePullRequest）はどれも、語として merge を含む。語はクォートと
+  # バックスラッシュを剥がして作られる（m"er"ge、m\erge も merge になる）ので、
+  # それらを取り除いた文字列に merge が無ければ、解析しても何も見つからない。
+  # 取りこぼさない側に倒すため、迷う形（クォートで割った綴りなど）は取り除いて
+  # 照合し、merge が見つかれば走査へ進む。ペイロード全体を対象にする場合
+  # （extracted=no）も、照合する綴りは merge を含むので同じ条件で足りる。
+  # バイト単位で照合するので長いコマンドでも線形で終わる。
+  if ! may_contain_merge "$norm_target"; then
+    exit 0
+  fi
 
   # 語末の境界。空白か行末だけにすると、JSON の引用符（"gh pr merge"）に隣接した形を
   # 取りこぼす。逆に境界を置かないと gh pr mergequeue のような別サブコマンドまで拾う。

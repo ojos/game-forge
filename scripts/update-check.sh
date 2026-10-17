@@ -39,24 +39,21 @@ DCB_SLUG="ojos/devcontainer-bootstrap"
 PB_DEFAULT_SLUG="ojos/ai-playbook"
 LOG_PREFIX="[update-check]"
 
-# .env の UPDATE_CHECK を効かせる（ローダーは source 専用・冪等。無ければ何もしない）。
-# ローダーは .env の値で既存の環境変数を上書きするので、環境で設定した値（例: off）は読む前に
-# 退避し、読んだあとで戻す（環境の値を優先する。.env の空の行で打ち消されない）。
-# 対話シェルでは、rc の自動読み込み（load-project-env.sh）が先に .env で UPDATE_CHECK を上書きしている。
-# そのため、ローダーが読み込み前に退避した DCB_ENV_UPDATE_CHECK が空でなければ、それを環境の値とする。
-# ただし、今の UPDATE_CHECK がローダーの読んだ直後の値（DCB_ENV_UPDATE_CHECK_LOADED）と違えば、
-# このコマンドで利用者が明示したものとして今の値を採る（ローダーが退避し直す条件と同じ考え方）。
-if [[ -n "${DCB_ENV_UPDATE_CHECK-}" && "${UPDATE_CHECK-}" == "${DCB_ENV_UPDATE_CHECK_LOADED-}" ]]; then
-  ENV_UPDATE_CHECK="$DCB_ENV_UPDATE_CHECK"
-else
-  ENV_UPDATE_CHECK="${UPDATE_CHECK-}"
-fi
+# .env を読み込む（ローダーは source 専用・冪等。無ければ何もしない）。HTTPS_PROXY や GIT_IDENTITY_* など、
+# curl や子の bootstrap.sh --upgrade が使う値を届けるため、UPDATE_CHECK の有無によらず常に読む。
+# ローダーは UPDATE_CHECK を常に読み飛ばすので、読み込みは UPDATE_CHECK の優先順位を変えない。
 if [[ -f "$HELPER" ]]; then
   # shellcheck source=/dev/null
   . "$HELPER" 2>/dev/null || true
 fi
-if [[ -n "$ENV_UPDATE_CHECK" ]]; then
-  UPDATE_CHECK="$ENV_UPDATE_CHECK"
+# UPDATE_CHECK の優先順位: UPDATE_CHECK に値（空でない）があればそれを採る（環境の値、またはコマンドで
+# 明示した値）。無いときだけ、ローダーの値取得の関数で .env の UPDATE_CHECK を読む（読み方はローダーと
+# 同じ。変数は変えない）。値の比較による推測はしない。
+if [[ -z "${UPDATE_CHECK-}" ]] && declare -F __load_project_env_value >/dev/null 2>&1; then
+  ENV_UPDATE_CHECK="$(__load_project_env_value UPDATE_CHECK 2>/dev/null)" || ENV_UPDATE_CHECK=""
+  if [[ -n "$ENV_UPDATE_CHECK" ]]; then
+    UPDATE_CHECK="$ENV_UPDATE_CHECK"
+  fi
 fi
 
 # UPDATE_CHECK が止める値なら 0 を返す（止めない値なら 1）。
@@ -256,10 +253,12 @@ is_offline_rc() {
 # ai-playbook はタグだけを打って Release を作らないため、タグの一覧から vX.Y.Z の最大を取る。
 # latest-<部品> は版だけの 1 行。migrations-<部品> は「<版>=<移行の節がある版の空白区切り>」で、
 # 読む側は latest の版と一致するときだけ使う（rename は別々でも、組み合わせを読み違えない）。
+# 第 1 引数が preserve なら、失敗しても既存のキャッシュと今日の印を消さない（upgrade は今回取得できた部品
+# だけを使うので、古いキャッシュを使う心配が無い。直前に notify が取得した内容を消さないため）。
 REFRESHED=""
 refresh_cache() {
   local dir c cur slug tag t list rc offline="" failed="" today
-  local keep="" drop=""
+  local keep="" drop="" preserve="${1-}"
   REFRESHED=""
   dir="$(cache_dir)"
   mkdir -p "$dir" 2>/dev/null || return 1
@@ -320,7 +319,7 @@ refresh_cache() {
     mv -f "$RC_STAGE/latest-$c" "$dir/latest-$c" 2>/dev/null || rm -f "$dir/latest-$c"
   done
   for c in $drop; do
-    rm -f "$dir/latest-$c" "$dir/migrations-$c" 2>/dev/null
+    [[ "$preserve" == preserve ]] || rm -f "$dir/latest-$c" "$dir/migrations-$c" 2>/dev/null
   done
   rm -rf "$RC_TMP" "$RC_STAGE"
   RC_TMP="" RC_STAGE=""
@@ -328,7 +327,7 @@ refresh_cache() {
   # 成功した notify の印が残ると、失敗で消した部品を、その日のうちに取り直さないため。
   # 前の日の印は、どのみち今日の取り直しを止めないので、そのままにする。
   if [[ -n "$offline" || -n "$failed" ]]; then
-    if [[ "$(cat "$dir/checked" 2>/dev/null)" == "$today" ]]; then rm -f "$dir/checked" 2>/dev/null; fi
+    if [[ "$preserve" != preserve && "$(cat "$dir/checked" 2>/dev/null)" == "$today" ]]; then rm -f "$dir/checked" 2>/dev/null; fi
     [[ -z "$offline" ]] || return 1
     return 0
   fi
@@ -366,14 +365,19 @@ pend_names() {
 
 # 今日まだ問い合わせていなければ問い合わせ、追従の候補があれば通知を 1 行だけ出す（聞かない）。
 cmd_notify() {
-  local dir pend t c line="" cur latest
+  local dir pend t c line="" cur latest today
   dir="$(cache_dir)"
-  if [[ "$(cat "$dir/checked" 2>/dev/null || true)" != "${UPDATE_CHECK_TODAY:-$(date +%Y-%m-%d)}" ]]; then
+  # 今日の日付は 1 度だけ求め、外側の確認とロックの後の読み直しで同じ値を使う（日付をまたいで食い違わないように）。
+  today="${UPDATE_CHECK_TODAY:-$(date +%Y-%m-%d)}"
+  if [[ "$(cat "$dir/checked" 2>/dev/null || true)" != "$today" ]]; then
     # 更新は更新用の排他（refresh-lock）を取って行う（待たずに試し、取れなければ飛ばす。checked を書かないので、
     # 次の接続で取り直す）。聞く側のロック（lock）は取らないので、prompt が問いかけ中でも更新でき、更新中でも
     # prompt は問いかけられる。飛ばすのは更新だけで、通知は出す（キャッシュを読んで知らせるだけで、
     # 更新は rename 差し替えなので、ほかの端末が更新・問いかけの最中でも一貫した状態を読める）。
-    if acquire_lock refresh-lock 8; then
+    # ロックを取ったあとで checked を読み直す。ほかの notify が、こちらの確認とロックのあいだに更新を
+    # 終えていれば、同じ日に取り直さない（取り直して失敗すると、相手が取得したキャッシュと今日の印を消すため）。
+    if acquire_lock refresh-lock 8 \
+      && [[ "$(cat "$dir/checked" 2>/dev/null || true)" != "$today" ]]; then
       refresh_cache || true
     fi
   fi
@@ -384,7 +388,7 @@ cmd_notify() {
     cur="$(comp_cur "$c")"
     line="${line:+$line, }$(comp_repo "$c") $cur -> $latest"
   done
-  echo "$LOG_PREFIX 新しい版があります: $line。対話のシェルで追従できます（bash scripts/update-check.sh upgrade でも追従できます）。止めるには UPDATE_CHECK=off（.env）"
+  echo "$LOG_PREFIX 新しい版があります: $line。対話のシェルで追従できます（bash scripts/update-check.sh upgrade でも追従できます）。止めるには UPDATE_CHECK=off（環境の値。無ければ .env の値）"
   return 0
 }
 
@@ -453,14 +457,31 @@ acquire_lock() {
   return 0
 }
 
-# 作業用のブランチを切る（既定ブランチの上にいるときだけ）。切ったら名前を $BRANCH_MADE へ、
-# 元のブランチを $BRANCH_ORIG へ入れる。
-BRANCH_MADE=""
-BRANCH_ORIG=""
-prepare_branch() {
-  local want="$1" cur def n name why=""
+# 作業用のブランチの名前の元（追従する版から決める）。$1 = DCB の版（上げないなら空）、$2 = ai-playbook の版（同）。
+# 問いかけ・手で呼ぶ upgrade の案内・prepare_branch が同じ名前を使うよう、決め方はここにだけ置く。
+follow_branch_name() {
+  local ver_dcb="$1" ver_pb="$2" bname
+  if [[ -n "$ver_dcb" ]]; then
+    bname="chore/update-dcb-$ver_dcb"
+    [[ -z "$ver_pb" ]] || bname="$bname-playbook-$ver_pb"
+  else
+    bname="chore/update-playbook-$ver_pb"
+  fi
+  printf '%s' "$bname"
+}
+
+# 追従で作業用のブランチを切るかを決める（git は変えない）。結果:
+#   BRANCH_PLAN     = make（切る）/ stay（今のブランチの上で追従する）/ none（git のブランチの上ではない）
+#   BRANCH_PLAN_CUR = 今のブランチ
+#   BRANCH_PLAN_WHY = 切る理由（make のとき）
+# 既定ブランチの判断（origin/HEAD が無いときの扱い。#634）は、prepare_branch と問いかけで共有する。
+BRANCH_PLAN="" BRANCH_PLAN_CUR="" BRANCH_PLAN_WHY=""
+plan_branch() {
+  local cur def
+  BRANCH_PLAN="none" BRANCH_PLAN_CUR="" BRANCH_PLAN_WHY=""
   git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   cur="$(git -C "$ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null)" || return 0
+  BRANCH_PLAN_CUR="$cur"
   def="$(git -C "$ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || def=""
   def="${def#origin/}"
   # origin/HEAD が無ければ、既定ブランチを推定しない（main と master が両方あると取り違えるため。
@@ -472,28 +493,58 @@ prepare_branch() {
     for b in main master; do
       if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$b"; then has_default="yes"; fi
     done
-    [[ -z "$has_default" || "$cur" == main || "$cur" == master ]] || return 0
+    if [[ -n "$has_default" && "$cur" != main && "$cur" != master ]]; then BRANCH_PLAN="stay"; return 0; fi
+    BRANCH_PLAN="make"
     if [[ -n "$has_default" ]]; then
-      why="origin/HEAD が無いため、main / master の上を既定ブランチの上とみなして"
+      BRANCH_PLAN_WHY="origin/HEAD が無いため、main / master の上を既定ブランチの上とみなして"
     else
-      why="既定ブランチを判断できなかった（origin/HEAD も main / master も無い）ため、念のため"
+      BRANCH_PLAN_WHY="既定ブランチを判断できなかった（origin/HEAD も main / master も無い）ため、念のため"
     fi
   elif [[ "$cur" != "$def" ]]; then
-    return 0
+    BRANCH_PLAN="stay"
   else
-    why="既定ブランチ（$def）の上だったので"
+    BRANCH_PLAN="make"
+    BRANCH_PLAN_WHY="既定ブランチ（$def）の上だったので"
   fi
-  name="$want"; n=1
+  return 0
+}
+
+# 切るブランチの実際の名前（$1 = 名前の元。同名が既にあれば -2, -3 を付ける）。
+unique_branch_name() {
+  local want="$1" name n=1
+  name="$want"
   while git -C "$ROOT" show-ref --verify --quiet "refs/heads/$name"; do
     n=$((n + 1)); name="$want-$n"
   done
+  printf '%s' "$name"
+}
+
+# 追従で何が起きるかを 1 文で出す（作業ツリーのパスと、切るブランチ／追従するブランチ）。$1 = 名前の元。
+branch_plan_text() {
+  plan_branch
+  case "$BRANCH_PLAN" in
+    make) printf '作業ツリー %s で、作業用のブランチ %s を切って追従します' "$ROOT" "$(unique_branch_name "$1")" ;;
+    stay) printf '作業ツリー %s で、今のブランチ %s の上で追従します' "$ROOT" "$BRANCH_PLAN_CUR" ;;
+    *)    printf '作業ツリー %s で、ブランチは切らずに追従します（git のブランチの上ではありません）' "$ROOT" ;;
+  esac
+}
+
+# 作業用のブランチを切る（既定ブランチの上にいるときだけ）。切ったら名前を $BRANCH_MADE へ、
+# 元のブランチを $BRANCH_ORIG へ入れる。
+BRANCH_MADE=""
+BRANCH_ORIG=""
+prepare_branch() {
+  local want="$1" name
+  plan_branch
+  [[ "$BRANCH_PLAN" == make ]] || return 0
+  name="$(unique_branch_name "$want")"
   if ! git -C "$ROOT" switch -c "$name" >/dev/null 2>&1; then
     echo "$LOG_PREFIX 作業用のブランチ $name を切れませんでした。何も変えずに止めます。" >&2
     return 1
   fi
   BRANCH_MADE="$name"
-  BRANCH_ORIG="$cur"
-  echo "$LOG_PREFIX ${why}、作業用のブランチ $name を切りました。"
+  BRANCH_ORIG="$BRANCH_PLAN_CUR"
+  echo "$LOG_PREFIX ${BRANCH_PLAN_WHY}、作業用のブランチ $name を切りました。"
   return 0
 }
 
@@ -597,12 +648,10 @@ do_upgrade() {
   fi
   echo "$LOG_PREFIX bootstrap.sh $use_tag を取得し、SHA256SUMS と照合しました。"
 
-  if [[ -n "$want_dcb" ]]; then
-    wantbranch="chore/update-dcb-$latest_dcb"
-    [[ -z "$want_pb" ]] || wantbranch="$wantbranch-playbook-$latest_pb"
-  else
-    wantbranch="chore/update-playbook-$latest_pb"
-  fi
+  # 名前には、追従する部品の版だけを入れる（追従しない部品の最新版を入れると、問いかけで示した名前と食い違う）。
+  wantbranch="$(follow_branch_name "${want_dcb:+$latest_dcb}" "${want_pb:+$latest_pb}")"
+  # 問いかけを経ない（手で呼ぶ upgrade）ときは、追従を始める前に何が起きるかを 1 行出す。
+  [[ -n "$from_prompt" ]] || echo "$LOG_PREFIX $(branch_plan_text "$wantbranch")。"
   if ! prepare_branch "$wantbranch"; then
     rm -rf "$work"
     return 1
@@ -701,7 +750,8 @@ cmd_prompt() {
     done
     return 0
   fi
-  printf '追従しますか？ [y/N] '
+  # 追従する作業ツリーと、切る（または乗る）ブランチを問いかけの文に含める。名前は prepare_branch と同じ関数で決める。
+  printf '%s。追従しますか？ [y/N] ' "$(branch_plan_text "$(follow_branch_name "$shown_dcb" "$shown_playbook")")"
   ans=""
   read -r ans || ans=""
   case "$ans" in
@@ -732,7 +782,7 @@ cmd_upgrade() {
   fi
   # 取得の結果は部品ごとに見る。今回取得できた部品だけを対象にする（取得できなかった部品は、
   # 前の日・同じ日のキャッシュがあっても使わない）。どちらも取得できなければ、「すでに最新」と言わずに失敗で終える。
-  refresh_cache || true
+  refresh_cache preserve || true
   if [[ -z "$REFRESHED" ]]; then
     echo "$LOG_PREFIX 最新の版を取得できなかったため、追従するか判断できません（オフライン・GitHub の不調・API の制限）。時間をおいて、もう一度実行してください。" >&2
     return 1

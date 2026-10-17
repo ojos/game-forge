@@ -336,19 +336,25 @@ CNS_PROBE='
     printf "%s\n" "$before"
     exit 0
   fi
-  # ローダーが内部用に export する DCB_ENV_UPDATE_CHECK（.env を読む前の UPDATE_CHECK の退避）は、
-  # .env のキーではない。ソース前の一覧へ足して、差分に現れないようにする。
-  before="$(printf "%s\n" "$before" DCB_ENV_UPDATE_CHECK DCB_ENV_UPDATE_CHECK_LOADED | sort -u)"
   . "$loader" || exit 3
   after="$(compgen -e | sort)"
   keys="$(comm -13 <(printf "%s\n" "$before") <(printf "%s\n" "$after"))"
+  # ローダーは UPDATE_CHECK を読み飛ばす（変数が変わらず、差分に現れない）。.env / .env.example に
+  # あるキーとして数えるため、ローダーの値取得の関数で読む。
+  uc=""; uc_found=0
+  if uc="$(__load_project_env_value UPDATE_CHECK)"; then
+    uc_found=1
+    if [ -n "$keys" ]; then keys="$keys
+UPDATE_CHECK"; else keys="UPDATE_CHECK"; fi
+  fi
   if [ "$mode" = keys ]; then
     printf "%s\n" "$keys"
     exit 0
   fi
   printf "%s\n" "$keys" | while IFS= read -r k; do
     [ -n "$k" ] || continue
-    if [ -n "${!k}" ]; then printf "%s\n" "$k"; fi
+    if [ "$k" = UPDATE_CHECK ] && [ "$uc_found" = 1 ]; then v="$uc"; else v="${!k}"; fi
+    if [ -n "$v" ]; then printf "%s\n" "$k"; fi
   done
   exit 0
 '

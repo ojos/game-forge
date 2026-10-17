@@ -15,23 +15,18 @@
 #   - .env は source せず安全にパースする（KEY=VALUE のみ export、任意コードは実行しない）。
 #     これにより、壊れた .env が対話シェルの初期化ごと落とす事故を防ぐ。
 #   - CRLF・=前後や値前後の空白など、実務的な .env の揺れを吸収する。
+#   - UPDATE_CHECK だけは .env の値で上書きしない（環境の値・コマンドで明示した値を優先する）。
+#     読み飛ばすのは常にで、合図の変数は無い。.env の UPDATE_CHECK を知りたい update-check.sh は、
+#     __load_project_env_value UPDATE_CHECK で値だけを標準出力へ受け取る（変数は変えない）。
+#   - __load_project_env_value KEY: .env の KEY の値（後勝ち）を標準出力へ返す。見つかれば 0、
+#     無ければ 1。解釈は読み込み本体と同じ処理を共有する（引数に KEY を渡した __load_project_env）。
 #
 # 冪等: 複数回 source しても安全。.env が無ければ何もしない。
 
 __load_project_env() {
   local project_root env_file line key val src
-  # .env で UPDATE_CHECK を上書きする前の値（環境で設定した値）を、最上位のシェルで一度だけ退避する。
-  # 対話シェルでは rc の自動読み込みが先に .env で上書きするため、update-check.sh は退避が無いと
-  # 環境の値を知れない。export するので、入れ子のシェル（tmux・bash）や子プロセスも同じ値を受け継ぎ、
-  # 子の読み込みで .env の値を退避し直すことが無い（${DCB_ENV_UPDATE_CHECK+x} が空のときだけ退避する）。
-  # 退避し直す条件: 退避が無いとき、または今の UPDATE_CHECK がローダーが前回読んだ直後の値
-  # （DCB_ENV_UPDATE_CHECK_LOADED）と違うとき（親が未設定のまま、利用者が UPDATE_CHECK=off bash の
-  # ように明示して入れ子のシェルを開いたとき）。同じなら親の .env の値を受け継いだだけなので退避し直さない。
-  if [ -z "${DCB_ENV_UPDATE_CHECK+x}" ] || [ "${UPDATE_CHECK-}" != "${DCB_ENV_UPDATE_CHECK_LOADED-}" ]; then
-    export DCB_ENV_UPDATE_CHECK="${UPDATE_CHECK-}"
-  fi
-  # .env が DCB_ENV_UPDATE_CHECK を書いていても上書きされないよう、読んだあとで戻す。
-  local saved_update_check="$DCB_ENV_UPDATE_CHECK"
+  # 引数があれば値の取得モード: その KEY の値を標準出力へ返すだけで、何も export しない。
+  local want_key="${1-}" result="" found=1
   # ソース中ファイルのパスを bash / zsh 双方で解決する。zsh には BASH_SOURCE が無いため
   # ${BASH_SOURCE[0]} は空になり CWD 依存へ化ける。実行シェルを判定して回避する。
   if [ -n "${BASH_VERSION:-}" ]; then
@@ -71,7 +66,7 @@ __load_project_env() {
   fi
 
   if [[ ! -f "$env_file" ]]; then
-    export DCB_ENV_UPDATE_CHECK_LOADED="${UPDATE_CHECK-}"
+    [[ -z "$want_key" ]] || return 1
     return 0
   fi
 
@@ -104,11 +99,27 @@ __load_project_env() {
     elif [[ ${#val} -ge 2 && "$val" == \'*\' ]]; then
       val="${val:1:${#val}-2}"
     fi
+    # 値の取得モード: 変数は変えず、後勝ちで値だけを控える。
+    if [[ -n "$want_key" ]]; then
+      if [[ "$key" == "$want_key" ]]; then result="$val"; found=0; fi
+      continue
+    fi
+    # UPDATE_CHECK は上書きしない（シェルの値は、環境の値か、コマンドで明示した値のまま）。
+    # 「明示した値」と「.env が上書きした値」を後から推測しなくて済むようにするため。
+    [[ "$key" != UPDATE_CHECK ]] || continue
     # 後勝ちで既存の環境変数（remoteEnv 由来のホスト値）を上書きする。
     export "$key=$val"
   done < "$env_file"
-  export DCB_ENV_UPDATE_CHECK="$saved_update_check"
-  export DCB_ENV_UPDATE_CHECK_LOADED="${UPDATE_CHECK-}"
+  if [[ -n "$want_key" ]]; then
+    printf '%s' "$result"
+    return "$found"
+  fi
+  return 0
+}
+
+# .env の KEY の値だけを標準出力へ返す（変数は変えない。見つかれば 0、無ければ 1）。
+__load_project_env_value() {
+  __load_project_env "$1"
 }
 
 __load_project_env

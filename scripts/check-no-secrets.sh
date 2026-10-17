@@ -336,6 +336,9 @@ CNS_PROBE='
     printf "%s\n" "$before"
     exit 0
   fi
+  # ローダーが内部用に export する DCB_ENV_UPDATE_CHECK（.env を読む前の UPDATE_CHECK の退避）は、
+  # .env のキーではない。ソース前の一覧へ足して、差分に現れないようにする。
+  before="$(printf "%s\n" "$before" DCB_ENV_UPDATE_CHECK DCB_ENV_UPDATE_CHECK_LOADED | sort -u)"
   . "$loader" || exit 3
   after="$(compgen -e | sort)"
   keys="$(comm -13 <(printf "%s\n" "$before") <(printf "%s\n" "$after"))"

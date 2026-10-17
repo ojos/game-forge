@@ -206,7 +206,10 @@ need() {
     read) ok='(read|write)' ;;
     write) ok='write' ;;
   esac
-  if ! printf '%s\n' "$perms" | grep -Eq "^  ${perm}: ${ok}\$"; then
+  # パイプにせず、ヒアストリングで渡す。DCB v0.23.2 への追従のゲートで、宣言してある issues: read を
+  # 「無い」と 1 回だけ判定した（同じツリーで 23 回回して再現せず、原因は特定できていない）。
+  # pipefail の下のパイプ（printf | grep -q）が関わる経路を無くしておく。
+  if ! grep -Eq "^  ${perm}: ${ok}\$" <<<"$perms"; then
     echo "[second-opinion-gate-workflow] FAIL: run が ${callee} を呼ぶのに、permissions に ${perm}: ${level} がありません" >&2
     fail=1
   fi

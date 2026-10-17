@@ -19,6 +19,11 @@
 #   - ORIGIN の version= が vX.Y.Z の形でない（リリースから取得した版ではない）
 #   - 端末が付いていない（prompt のみ。notify は標準出力へ 1 行出すだけで、聞かない）
 #
+# 問い合わせは 1 日 1 回。**取得をすべて終えた日だけ**その日の印（checked）を書く。どの部品の取得が
+# どんな理由（通信ができない・HTTP のエラー・形の不一致・CHANGELOG.md の取得の失敗）で失敗した日も、
+# 印を書かず、次の接続で取り直す。失敗した部品の前の日のキャッシュは消す。オフラインのマシンでは
+# 接続のたびに問い合わせる（最大 2 秒）。
+#
 # キャッシュ: ${XDG_CACHE_HOME:-~/.cache}/dcb-update-check/<プロジェクトごとの鍵>/ 。コミットしない。
 # 試験用の上書き: UPDATE_CHECK_CACHE_DIR（キャッシュ）/ UPDATE_CHECK_TODAY（今日の日付）/
 # UPDATE_CHECK_ASSUME_TTY=1（端末が付いている扱い。標準入力から答えを読む）。
@@ -37,7 +42,15 @@ LOG_PREFIX="[update-check]"
 # .env の UPDATE_CHECK を効かせる（ローダーは source 専用・冪等。無ければ何もしない）。
 # ローダーは .env の値で既存の環境変数を上書きするので、環境で設定した値（例: off）は読む前に
 # 退避し、読んだあとで戻す（環境の値を優先する。.env の空の行で打ち消されない）。
-ENV_UPDATE_CHECK="${UPDATE_CHECK-}"
+# 対話シェルでは、rc の自動読み込み（load-project-env.sh）が先に .env で UPDATE_CHECK を上書きしている。
+# そのため、ローダーが読み込み前に退避した DCB_ENV_UPDATE_CHECK が空でなければ、それを環境の値とする。
+# ただし、今の UPDATE_CHECK がローダーの読んだ直後の値（DCB_ENV_UPDATE_CHECK_LOADED）と違えば、
+# このコマンドで利用者が明示したものとして今の値を採る（ローダーが退避し直す条件と同じ考え方）。
+if [[ -n "${DCB_ENV_UPDATE_CHECK-}" && "${UPDATE_CHECK-}" == "${DCB_ENV_UPDATE_CHECK_LOADED-}" ]]; then
+  ENV_UPDATE_CHECK="$DCB_ENV_UPDATE_CHECK"
+else
+  ENV_UPDATE_CHECK="${UPDATE_CHECK-}"
+fi
 if [[ -f "$HELPER" ]]; then
   # shellcheck source=/dev/null
   . "$HELPER" 2>/dev/null || true
@@ -162,6 +175,55 @@ json_tag_name() {
   ' "$1"
 }
 
+# タグの一覧の JSON から、"name" の値をすべて出す（1 行に並んでいても読める）。
+json_tag_names() {
+  awk '
+    {
+      s = $0
+      while (match(s, /"name"[ ]*:[ ]*"[^"]*"/)) {
+        m = substr(s, RSTART, RLENGTH)
+        s = substr(s, RSTART + RLENGTH)
+        sub(/^"name"[ ]*:[ ]*"/, "", m)
+        sub(/"$/, "", m)
+        print m
+      }
+    }
+  ' "$1"
+}
+
+# タグの一覧の JSON から、vX.Y.Z の形（プレリリースの形を除く）のうち最大の版を出す。無ければ何も出さない。
+max_semver_tag() {
+  local t best=""
+  while IFS= read -r t; do
+    is_semver "$t" || continue
+    if [[ -z "$best" ]] || ver_lt "$best" "$t"; then best="$t"; fi
+  done < <(json_tag_names "$1")
+  printf '%s' "$best"
+}
+
+# ai-playbook の最新の版を、タグの一覧から取り、$LATEST_TAG へ入れる。
+# GitHub の並びが semver の順である保証は無いので、100 件より多いときはページをたどる
+# （100 件未満のページが来るまで。上限 10 ページ）。1 ページでも取得に失敗したら、その失敗を返す。
+LATEST_TAG=""
+fetch_latest_tag_from_tags() { # <slug> <作業ファイル>
+  local slug="$1" out="$2" page=1 url cand best="" n rc
+  LATEST_TAG=""
+  while [[ $page -le 10 ]]; do
+    url="https://api.github.com/repos/$slug/tags?per_page=100"
+    [[ $page -eq 1 ]] || url="$url&page=$page"
+    fetch "$url" "$out" 3
+    rc=$?
+    [[ $rc -eq 0 ]] || return "$rc"
+    cand="$(max_semver_tag "$out")"
+    if [[ -n "$cand" ]] && { [[ -z "$best" ]] || ver_lt "$best" "$cand"; }; then best="$cand"; fi
+    n="$(json_tag_names "$out" | wc -l | tr -d ' ')"
+    [[ "$n" -ge 100 ]] || break
+    page=$((page + 1))
+  done
+  LATEST_TAG="$best"
+  return 0
+}
+
 # 配布先の CHANGELOG.md から、「### 移行」の節を持つ版（「## vX.Y.Z」の節）を出す。
 # リリースの本文は「Release vX.Y.Z」の 1 行でリリースノートを含まないため、CHANGELOG.md を読む。
 changelog_migration_tags() {
@@ -180,48 +242,104 @@ is_offline_rc() {
 
 # 最新の安定版を問い合わせ、キャッシュへ書く。部品ごとの失敗は、もう片方の確認を止めない。
 # 通信ができないと分かったときだけ、残りを試さない。
-# 今日の取得に失敗した部品の、前の日のキャッシュは使わない（先に消す）。
+# 取得の結果は、いったん作業用のディレクトリへ集め、最後に rename で差し替える。
+# 取得のあいだ、prompt は古い（または新しい）キャッシュを一貫して読める（先に消さない）。
+# 今日の取得に失敗した部品・記録が無くなった部品の、前の日のキャッシュは使わない（最後に消す）。
+# 「今日の印」(checked) は、取得をすべて終えたときだけ最後に書く。理由によらず、どれかの取得
+# （最新の版・タグ・CHANGELOG.md）が失敗したときは書かず（次の notify で取り直す）、
+# 取得できなかった部品の前の日のキャッシュを消す。
+# 呼び出し側は排他（acquire_lock）を取ってから呼ぶ（並行する更新が、成功した側のキャッシュを消さないため）。
+# $REFRESHED には、今回の呼び出しで最新の版を取得できた部品を入れる（"dcb playbook" の空白区切り）。
+# 取得できなかった部品は、前の日・同じ日のキャッシュがあっても使わない（upgrade はこれで判断する）。
+# 戻り値: 0 = 通信は通った / 1 = 通信ができずに抜けた、または作業用の場所を作れなかった。
+# 最新の版の取得先は部品で分ける。DCB は Release の最新（releases/latest）、
+# ai-playbook はタグだけを打って Release を作らないため、タグの一覧から vX.Y.Z の最大を取る。
+# latest-<部品> は版だけの 1 行。migrations-<部品> は「<版>=<移行の節がある版の空白区切り>」で、
+# 読む側は latest の版と一致するときだけ使う（rename は別々でも、組み合わせを読み違えない）。
+REFRESHED=""
 refresh_cache() {
-  local dir c cur slug tmp tag t list rc
+  local dir c cur slug tag t list rc offline="" failed="" today
+  local keep="" drop=""
+  REFRESHED=""
   dir="$(cache_dir)"
-  mkdir -p "$dir" 2>/dev/null || return 0
-  # 先に今日の印を書く。失敗しても、同じ日にもう一度問い合わせない（1 日 1 回）。
-  printf '%s\n' "${UPDATE_CHECK_TODAY:-$(date +%Y-%m-%d)}" > "$dir/checked" 2>/dev/null || return 0
-  rm -f "$dir"/latest-* "$dir"/migrations-* 2>/dev/null
-  tmp="$(mktemp "${TMPDIR:-/tmp}/dcb-update-check.XXXXXX" 2>/dev/null)" || return 0
+  mkdir -p "$dir" 2>/dev/null || return 1
+  # 中断で残った作業用のファイルのうち、1 日より古いものを片づける（動いている別の取得のものは残す）。
+  find "$dir" -maxdepth 1 \( -name '.fetch.*' -o -name '.stage.*' \) -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+  RC_TMP="$(mktemp "$dir/.fetch.XXXXXX" 2>/dev/null)" || { RC_TMP=""; return 1; }
+  RC_STAGE="$(mktemp -d "$dir/.stage.XXXXXX" 2>/dev/null)" || { RC_STAGE=""; rm -f "$RC_TMP"; RC_TMP=""; return 1; }
   for c in dcb playbook; do
     cur="$(comp_cur "$c")"
-    [[ -n "$cur" ]] || continue
+    if [[ -z "$cur" || -n "$offline" ]]; then drop="$drop $c"; continue; fi
     slug="$(comp_slug "$c")"
-    fetch "https://api.github.com/repos/$slug/releases/latest" "$tmp" 3
-    rc=$?
+    case "$c" in
+      playbook) fetch_latest_tag_from_tags "$slug" "$RC_TMP"; rc=$? ;;
+      *)        fetch "https://api.github.com/repos/$slug/releases/latest" "$RC_TMP" 3; rc=$? ;;
+    esac
     if [[ $rc -ne 0 ]]; then
-      if is_offline_rc "$rc"; then
-        rm -f "$tmp"
-        return 0
-      fi
+      if is_offline_rc "$rc"; then offline="yes"; fi
+      failed="yes"
+      drop="$drop $c"
       continue
     fi
-    tag="$(json_tag_name "$tmp")"
+    case "$c" in
+      playbook) tag="$LATEST_TAG" ;;
+      *)        tag="$(json_tag_name "$RC_TMP")" ;;
+    esac
     # プレリリース・draft は latest に出ないはずだが、形の合わない値も取り込まない。
-    is_semver "$tag" || continue
-    printf '%s\n' "$tag" > "$dir/latest-$c" 2>/dev/null || continue
+    if ! is_semver "$tag"; then failed="yes"; drop="$drop $c"; continue; fi
+    if ! printf '%s\n' "$tag" > "$RC_STAGE/latest-$c" 2>/dev/null; then failed="yes"; drop="$drop $c"; continue; fi
+    keep="$keep $c"
     # 新しいときだけ、飛び越える版のうち「移行」の節がある版を、最新のタグの CHANGELOG.md から調べる
     # （読めなければ印を消し、案内に留める）。
-    if ver_lt "$cur" "$tag" && fetch "https://raw.githubusercontent.com/$slug/$tag/CHANGELOG.md" "$tmp" 5; then
-      list=""
-      while IFS= read -r t; do
-        [[ -n "$t" ]] || continue
-        if ver_lt "$cur" "$t" && ! ver_lt "$tag" "$t"; then list="$list $t"; fi
-      done < <(changelog_migration_tags "$tmp")
-      printf '%s\n' "${list# }" > "$dir/migrations-$c" 2>/dev/null || true
+    if ver_lt "$cur" "$tag"; then
+      fetch "https://raw.githubusercontent.com/$slug/$tag/CHANGELOG.md" "$RC_TMP" 5
+      rc=$?
+      if [[ $rc -eq 0 ]]; then
+        list=""
+        while IFS= read -r t; do
+          [[ -n "$t" ]] || continue
+          if ver_lt "$cur" "$t" && ! ver_lt "$tag" "$t"; then list="$list $t"; fi
+        done < <(changelog_migration_tags "$RC_TMP")
+        printf '%s=%s\n' "$tag" "${list# }" > "$RC_STAGE/migrations-$c" 2>/dev/null || rm -f "$RC_STAGE/migrations-$c"
+      else
+        # 取得の失敗として扱う（checked を書かない）。移行の印は作らず、案内に留める。
+        failed="yes"
+        if is_offline_rc "$rc"; then offline="yes"; fi
+      fi
     fi
   done
-  rm -f "$tmp"
+  today="${UPDATE_CHECK_TODAY:-$(date +%Y-%m-%d)}"
+  REFRESHED="${keep# }"
+  # 差し替え。取得できた部品は rename で置き換え、消すべき部品だけを最後に消す。
+  for c in $keep; do
+    if [[ -f "$RC_STAGE/migrations-$c" ]]; then
+      mv -f "$RC_STAGE/migrations-$c" "$dir/migrations-$c" 2>/dev/null || rm -f "$dir/migrations-$c"
+    else
+      rm -f "$dir/migrations-$c"
+    fi
+    mv -f "$RC_STAGE/latest-$c" "$dir/latest-$c" 2>/dev/null || rm -f "$dir/latest-$c"
+  done
+  for c in $drop; do
+    rm -f "$dir/latest-$c" "$dir/migrations-$c" 2>/dev/null
+  done
+  rm -rf "$RC_TMP" "$RC_STAGE"
+  RC_TMP="" RC_STAGE=""
+  # 失敗があった日は印を書かず、すでにある今日の印も消す（次の接続で取り直す）。同じ日に先に
+  # 成功した notify の印が残ると、失敗で消した部品を、その日のうちに取り直さないため。
+  # 前の日の印は、どのみち今日の取り直しを止めないので、そのままにする。
+  if [[ -n "$offline" || -n "$failed" ]]; then
+    if [[ "$(cat "$dir/checked" 2>/dev/null)" == "$today" ]]; then rm -f "$dir/checked" 2>/dev/null; fi
+    [[ -z "$offline" ]] || return 1
+    return 0
+  fi
+  # 今日の印は、取得をすべて終えたあとに最後に書く。
+  printf '%s\n' "$today" > "$dir/checked" 2>/dev/null || true
   return 0
 }
 
-# 追従の候補（今より新しく、N と答えていない版。引数があれば N の版も含める）を、"dcb" "playbook" の空白区切りで出す。
+# 追従の候補（今より新しく、N と答えていない版。引数があれば N の版も含める）を、
+# "<部品>=<版>" の空白区切り（部品は dcb / playbook）で出す。読んだ版を一緒に返すので、
+# 呼び出し側は latest-* を読み直さない（読み直すと、そのあいだに消える・替わることがある）。
 pending_components() {
   local ignore_declined="${1:-}" dir c cur latest declined out=""
   dir="$(cache_dir)"
@@ -234,23 +352,36 @@ pending_components() {
       declined="$(cat "$dir/declined-$c" 2>/dev/null || true)"
       [[ "$declined" != "$latest" ]] || continue
     fi
-    out="$out $c"
+    out="$out $c=$latest"
   done
+  printf '%s' "${out# }"
+}
+
+# pending_components の出力から、部品の名前だけを "dcb playbook" の空白区切りで出す。
+pend_names() {
+  local t out=""
+  for t in $1; do out="$out ${t%%=*}"; done
   printf '%s' "${out# }"
 }
 
 # 今日まだ問い合わせていなければ問い合わせ、追従の候補があれば通知を 1 行だけ出す（聞かない）。
 cmd_notify() {
-  local dir pend c line="" cur latest
+  local dir pend t c line="" cur latest
   dir="$(cache_dir)"
   if [[ "$(cat "$dir/checked" 2>/dev/null || true)" != "${UPDATE_CHECK_TODAY:-$(date +%Y-%m-%d)}" ]]; then
-    refresh_cache
+    # 更新は更新用の排他（refresh-lock）を取って行う（待たずに試し、取れなければ飛ばす。checked を書かないので、
+    # 次の接続で取り直す）。聞く側のロック（lock）は取らないので、prompt が問いかけ中でも更新でき、更新中でも
+    # prompt は問いかけられる。飛ばすのは更新だけで、通知は出す（キャッシュを読んで知らせるだけで、
+    # 更新は rename 差し替えなので、ほかの端末が更新・問いかけの最中でも一貫した状態を読める）。
+    if acquire_lock refresh-lock 8; then
+      refresh_cache || true
+    fi
   fi
   pend="$(pending_components)"
   [[ -n "$pend" ]] || return 0
-  for c in $pend; do
+  for t in $pend; do
+    c="${t%%=*}" latest="${t#*=}"
     cur="$(comp_cur "$c")"
-    latest="$(cat "$dir/latest-$c")"
     line="${line:+$line, }$(comp_repo "$c") $cur -> $latest"
   done
   echo "$LOG_PREFIX 新しい版があります: $line。対話のシェルで追従できます（bash scripts/update-check.sh upgrade でも追従できます）。止めるには UPDATE_CHECK=off（.env）"
@@ -264,43 +395,61 @@ tty_ok() {
 }
 
 # 排他を取る。複数の端末が同時に開いても、聞く・追従するのは 1 つだけにする。取れなければ 1。
+# $1 はロックの名前（既定 lock。聞く・追従する側）、$2 は flock の fd。キャッシュの更新（refresh_cache）は
+# 別の名前（refresh-lock）で排他する。更新のあいだに prompt が問いかけられなくなるのを避けるため
+# （prompt は更新の rename 差し替えのおかげで、更新中でも一貫したキャッシュを読める）。
 # flock があれば flock -n（プロセスの終了で解放される）。無ければロックのディレクトリで簡易に
 # 排他する（持ち主の pid が消えていれば奪う）。UPDATE_CHECK_NO_FLOCK=1 は試験用。
-LOCK_DIR=""
+LOCK_DIRS=()
+# refresh_cache の作業用のファイル。中断（Ctrl-C・接続の打ち切り）でも片づける。
+RC_TMP="" RC_STAGE=""
+cleanup_exit() {
+  local d
+  for d in ${LOCK_DIRS[@]+"${LOCK_DIRS[@]}"}; do rm -rf "$d" 2>/dev/null; done
+  [[ -z "$RC_TMP" ]] || rm -rf "$RC_TMP" 2>/dev/null
+  [[ -z "$RC_STAGE" ]] || rm -rf "$RC_STAGE" 2>/dev/null
+  return 0
+}
+trap cleanup_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 acquire_lock() {
-  local dir pid
+  local name="${1:-lock}" fd="${2:-9}" dir pid
   dir="$(cache_dir)"
   mkdir -p "$dir" 2>/dev/null || return 1
   if [[ -z "${UPDATE_CHECK_NO_FLOCK:-}" ]] && command -v flock >/dev/null 2>&1; then
-    exec 9>"$dir/lock"
-    flock -n 9
+    # fd は 9（lock）か 8（refresh-lock）。
+    case "$fd" in
+      8) exec 8>"$dir/$name" ;;
+      *) exec 9>"$dir/$name" ;;
+    esac
+    flock -n "$fd"
     return $?
   fi
-  if ! mkdir "$dir/lock.d" 2>/dev/null; then
-    pid="$(cat "$dir/lock.d/pid" 2>/dev/null || true)"
+  if ! mkdir "$dir/$name.d" 2>/dev/null; then
+    pid="$(cat "$dir/$name.d/pid" 2>/dev/null || true)"
     if [[ -n "$pid" ]]; then
       # pid があって、そのプロセスが無いときだけ奪う。
       if kill -0 "$pid" 2>/dev/null; then
         return 1
       fi
-    elif [[ -z "$(find "$dir/lock.d" -maxdepth 0 -mmin +1 2>/dev/null)" ]]; then
+    elif [[ -z "$(find "$dir/$name.d" -maxdepth 0 -mmin +1 2>/dev/null)" ]]; then
       # pid がまだ無い（作った直後で、書くまでのあいだ）。十分古くなるまでは持ち主ありとみなす。
       return 1
     fi
     # 奪うのは名前の変更で 1 つだけを成功させる（rm してから作り直すと、同時に奪いに来た端末が、
     # 先に奪った側の新しいロックまで消せるため）。変えた先の pid が、古いと判断したものと違えば
     # （判断のあとに別の端末が奪って作り直した）、そのロックは生きているので戻して諦める。
-    mv "$dir/lock.d" "$dir/lock.d.stale.$$" 2>/dev/null || return 1
-    if [[ "$(cat "$dir/lock.d.stale.$$/pid" 2>/dev/null || true)" != "$pid" ]]; then
-      mv "$dir/lock.d.stale.$$" "$dir/lock.d" 2>/dev/null || rm -rf "$dir/lock.d.stale.$$"
+    mv "$dir/$name.d" "$dir/$name.d.stale.$$" 2>/dev/null || return 1
+    if [[ "$(cat "$dir/$name.d.stale.$$/pid" 2>/dev/null || true)" != "$pid" ]]; then
+      mv "$dir/$name.d.stale.$$" "$dir/$name.d" 2>/dev/null || rm -rf "$dir/$name.d.stale.$$"
       return 1
     fi
-    rm -rf "$dir/lock.d.stale.$$"
-    mkdir "$dir/lock.d" 2>/dev/null || return 1
+    rm -rf "$dir/$name.d.stale.$$"
+    mkdir "$dir/$name.d" 2>/dev/null || return 1
   fi
-  echo $$ > "$dir/lock.d/pid"
-  LOCK_DIR="$dir/lock.d"
-  trap 'rm -rf "$LOCK_DIR"' EXIT
+  echo $$ > "$dir/$name.d/pid"
+  LOCK_DIRS+=("$dir/$name.d")
   return 0
 }
 
@@ -309,21 +458,31 @@ acquire_lock() {
 BRANCH_MADE=""
 BRANCH_ORIG=""
 prepare_branch() {
-  local want="$1" cur def n name
+  local want="$1" cur def n name why=""
   git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   cur="$(git -C "$ROOT" symbolic-ref --quiet --short HEAD 2>/dev/null)" || return 0
   def="$(git -C "$ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || def=""
   def="${def#origin/}"
-  # origin/HEAD が無ければ、手元に main / master のブランチがあれば、それを既定ブランチとみなす。
-  if [[ -z "$def" ]]; then
-    local b
-    for b in main master; do
-      if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$b"; then def="$b"; break; fi
-    done
-  fi
-  # それでも判定できない（origin/HEAD が無く、main / master のブランチも無い）ときは、念のため作業用のブランチを切る
+  # origin/HEAD が無ければ、既定ブランチを推定しない（main と master が両方あると取り違えるため。
+  # リモートへ問い合わせて通信を増やすこともしない）。main / master のどちらかの上にいれば、
+  # 作業用のブランチを切る。どちらも手元に無いときも、念のため切る
   # （切って困ることは無く、切らずに既定ブランチの作業ツリーへ差分を置くほうが困るため）。
-  [[ -z "$def" || "$cur" == "$def" ]] || return 0
+  if [[ -z "$def" ]]; then
+    local b has_default=""
+    for b in main master; do
+      if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$b"; then has_default="yes"; fi
+    done
+    [[ -z "$has_default" || "$cur" == main || "$cur" == master ]] || return 0
+    if [[ -n "$has_default" ]]; then
+      why="origin/HEAD が無いため、main / master の上を既定ブランチの上とみなして"
+    else
+      why="既定ブランチを判断できなかった（origin/HEAD も main / master も無い）ため、念のため"
+    fi
+  elif [[ "$cur" != "$def" ]]; then
+    return 0
+  else
+    why="既定ブランチ（$def）の上だったので"
+  fi
   name="$want"; n=1
   while git -C "$ROOT" show-ref --verify --quiet "refs/heads/$name"; do
     n=$((n + 1)); name="$want-$n"
@@ -334,7 +493,7 @@ prepare_branch() {
   fi
   BRANCH_MADE="$name"
   BRANCH_ORIG="$cur"
-  echo "$LOG_PREFIX 既定ブランチ（${def:-判定できないため念のため}）の上だったので、作業用のブランチ $name を切りました。"
+  echo "$LOG_PREFIX ${why}、作業用のブランチ $name を切りました。"
   return 0
 }
 
@@ -374,8 +533,11 @@ follow_blocker() {
 # 失敗は 1（何も実行していないか、止めた理由を出している）。
 # DCB を上げないとき（N と答えた・すでに最新・最新より新しい）は、今の版の bootstrap.sh を使い、
 # 生成物の DCB の版を動かさない。
+# $2 / $3 は、利用者に見せた DCB / ai-playbook の版。$4 が "prompt" のとき（prompt から呼ぶとき）は、
+# キャッシュへ戻らず、その版だけで追従する（追従する部品の版が空なら止める）。
+# prompt 以外（手で呼ぶ upgrade）は、キャッシュの最新を読む。
 do_upgrade() {
-  local want="$1" dir latest_dcb="" latest_pb="" want_dcb="" want_pb="" use_tag blocker
+  local want="$1" shown_dcb="${2:-}" shown_pb="${3:-}" from_prompt="${4:-}" dir latest_dcb="" latest_pb="" want_dcb="" want_pb="" use_tag blocker
   local work base wantbranch expected actual rc branch_hint changed
   local -a pbargs
   pbargs=()
@@ -387,6 +549,10 @@ do_upgrade() {
     echo "$LOG_PREFIX すでに最新です（devcontainer-bootstrap $CUR_DCB）。"
     return 0
   fi
+  if [[ -n "$from_prompt" ]] && { [[ -n "$want_dcb" && -z "$shown_dcb" ]] || [[ -n "$want_pb" && -z "$shown_pb" ]]; }; then
+    echo "$LOG_PREFIX 見せた版を特定できないため、追従しません。あとでもう一度試してください。" >&2
+    return 1
+  fi
   blocker="$(follow_blocker)"
   if [[ -n "$blocker" ]]; then
     echo "$LOG_PREFIX $blocker" >&2
@@ -394,12 +560,12 @@ do_upgrade() {
   fi
   use_tag="$CUR_DCB"
   if [[ -n "$want_dcb" ]]; then
-    latest_dcb="$(cat "$dir/latest-dcb" 2>/dev/null)" || latest_dcb=""
+    if [[ -n "$from_prompt" ]]; then latest_dcb="$shown_dcb"; else latest_dcb="$(cat "$dir/latest-dcb" 2>/dev/null)" || latest_dcb=""; fi
     is_semver "$latest_dcb" || { echo "$LOG_PREFIX 最新の版がまだ分かりません（問い合わせに失敗した）。あとでもう一度試してください。" >&2; return 1; }
     use_tag="$latest_dcb"
   fi
   if [[ -n "$want_pb" ]]; then
-    latest_pb="$(cat "$dir/latest-playbook" 2>/dev/null)" || latest_pb=""
+    if [[ -n "$from_prompt" ]]; then latest_pb="$shown_pb"; else latest_pb="$(cat "$dir/latest-playbook" 2>/dev/null)" || latest_pb=""; fi
     is_semver "$latest_pb" || { echo "$LOG_PREFIX ai-playbook の最新の版がまだ分かりません。あとでもう一度試してください。" >&2; return 1; }
     # 取得元の種類と、フォークの owner を保つ（--playbook-version は既定の配布元の URL に展開されるため）。
     case "$PB_KIND" in
@@ -486,9 +652,17 @@ do_upgrade() {
   return 0
 }
 
+# 表示した部品 $1 の版（cmd_prompt の shown_<部品>）を、declined へ書く。キャッシュは読み直さない。
+decline_shown() {
+  local v="shown_$1" dir
+  dir="$(cache_dir)"
+  printf '%s\n' "${!v}" > "$dir/declined-$1" 2>/dev/null || true
+}
+
 # 端末で聞く。聞くのは表示した部品だけで、y で上げるのも、その部品だけ。
 cmd_prompt() {
-  local dir pend c cur latest mig n ans blocker
+  local dir pend names t c cur latest mig mig_line n ans blocker
+  local shown_dcb="" shown_playbook=""
   tty_ok || return 0
   # ほかの端末が聞いている・追従しているあいだは、この端末では聞かない。
   acquire_lock || return 0
@@ -496,12 +670,18 @@ cmd_prompt() {
   pend="$(pending_components)"
   [[ -n "$pend" ]] || return 0
   echo "$LOG_PREFIX 新しい版があります。"
-  for c in $pend; do
+  names="$(pend_names "$pend")"
+  for t in $pend; do
+    c="${t%%=*}" latest="${t#*=}"
     cur="$(comp_cur "$c")"
-    latest="$(cat "$dir/latest-$c")"
+    # 見せた版を持つ。以後の declined への記録と追従は、キャッシュを読み直さずこの版を使う
+    # （待っているあいだに、別の接続の notify が latest を書き換えうるため）。
+    printf -v "shown_$c" '%s' "$latest"
     echo "  $(comp_repo "$c"): $cur -> $latest"
-    if [[ -f "$dir/migrations-$c" ]]; then
-      mig="$(cat "$dir/migrations-$c" 2>/dev/null)"
+    # 移行の節の一覧は、見せた版のものだけを使う（別の版のものなら、案内に留める）。
+    mig_line="$(cat "$dir/migrations-$c" 2>/dev/null)" || mig_line=""
+    if [[ "$mig_line" == "$latest="* ]]; then
+      mig="${mig_line#*=}"
       n="$(printf '%s\n' "$mig" | wc -w | tr -d ' ')"
       if [[ "$n" -ge 2 ]]; then
         echo "  [注意] 「移行」の節がある版を $n 個飛び越えます（$mig）。リリースノート（CHANGELOG.md）の「移行」を読んでから追従してください。"
@@ -516,8 +696,8 @@ cmd_prompt() {
   if [[ -n "$blocker" ]]; then
     # 自動では追従できない。案内を 1 回出し、この版のあいだは聞かない。
     echo "  [自動では追従できません] $blocker"
-    for c in $pend; do
-      cat "$dir/latest-$c" > "$dir/declined-$c" 2>/dev/null || true
+    for c in $names; do
+      decline_shown "$c"
     done
     return 0
   fi
@@ -526,12 +706,12 @@ cmd_prompt() {
   read -r ans || ans=""
   case "$ans" in
     y|Y|yes|YES|Yes)
-      do_upgrade "$pend" || true
+      do_upgrade "$names" "$shown_dcb" "$shown_playbook" prompt || true
       ;;
     *)
       # N の版は、その版のあいだ聞かない。
-      for c in $pend; do
-        cat "$dir/latest-$c" > "$dir/declined-$c" 2>/dev/null || true
+      for c in $names; do
+        decline_shown "$c"
       done
       echo "$LOG_PREFIX 追従しません。この版のあいだは聞きません（あとで追従するときは bash scripts/update-check.sh upgrade）。"
       ;;
@@ -546,14 +726,30 @@ cmd_upgrade() {
     echo "$LOG_PREFIX ほかの端末が聞いている、または追従しているため、追従しません。" >&2
     return 1
   fi
-  refresh_cache
-  # 最新の版を取得できなかったら、「すでに最新」と言わずに失敗で終える（取得できない日は、追従するか判断できない）。
-  # どちらか一方でも取得できていれば、取得できたほうで判断する（片方の失敗で、もう片方の追従を止めない）。
-  if [[ ! -s "$(cache_dir)/latest-dcb" && ! -s "$(cache_dir)/latest-playbook" ]]; then
+  if ! acquire_lock refresh-lock 8; then
+    echo "$LOG_PREFIX ほかの端末が最新の版を問い合わせているため、追従しません。時間をおいて、もう一度実行してください。" >&2
+    return 1
+  fi
+  # 取得の結果は部品ごとに見る。今回取得できた部品だけを対象にする（取得できなかった部品は、
+  # 前の日・同じ日のキャッシュがあっても使わない）。どちらも取得できなければ、「すでに最新」と言わずに失敗で終える。
+  refresh_cache || true
+  if [[ -z "$REFRESHED" ]]; then
     echo "$LOG_PREFIX 最新の版を取得できなかったため、追従するか判断できません（オフライン・GitHub の不調・API の制限）。時間をおいて、もう一度実行してください。" >&2
     return 1
   fi
-  do_upgrade "$(pending_components all)"
+  local c names="" skipped=""
+  for c in $(pend_names "$(pending_components all)"); do
+    case " $REFRESHED " in *" $c "*) names="$names $c" ;; esac
+  done
+  for c in dcb playbook; do
+    [[ -n "$(comp_cur "$c")" ]] || continue
+    case " $REFRESHED " in *" $c "*) ;; *) skipped="$skipped $(comp_repo "$c")" ;; esac
+  done
+  if [[ -n "$skipped" ]]; then
+    echo "$LOG_PREFIX 最新の版を取得できなかったため、追従しません:${skipped}（時間をおいて、もう一度実行してください）。" >&2
+    [[ -n "$names" ]] || return 1
+  fi
+  do_upgrade "${names# }"
 }
 
 main() {

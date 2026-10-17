@@ -20,6 +20,18 @@
 
 __load_project_env() {
   local project_root env_file line key val src
+  # .env で UPDATE_CHECK を上書きする前の値（環境で設定した値）を、最上位のシェルで一度だけ退避する。
+  # 対話シェルでは rc の自動読み込みが先に .env で上書きするため、update-check.sh は退避が無いと
+  # 環境の値を知れない。export するので、入れ子のシェル（tmux・bash）や子プロセスも同じ値を受け継ぎ、
+  # 子の読み込みで .env の値を退避し直すことが無い（${DCB_ENV_UPDATE_CHECK+x} が空のときだけ退避する）。
+  # 退避し直す条件: 退避が無いとき、または今の UPDATE_CHECK がローダーが前回読んだ直後の値
+  # （DCB_ENV_UPDATE_CHECK_LOADED）と違うとき（親が未設定のまま、利用者が UPDATE_CHECK=off bash の
+  # ように明示して入れ子のシェルを開いたとき）。同じなら親の .env の値を受け継いだだけなので退避し直さない。
+  if [ -z "${DCB_ENV_UPDATE_CHECK+x}" ] || [ "${UPDATE_CHECK-}" != "${DCB_ENV_UPDATE_CHECK_LOADED-}" ]; then
+    export DCB_ENV_UPDATE_CHECK="${UPDATE_CHECK-}"
+  fi
+  # .env が DCB_ENV_UPDATE_CHECK を書いていても上書きされないよう、読んだあとで戻す。
+  local saved_update_check="$DCB_ENV_UPDATE_CHECK"
   # ソース中ファイルのパスを bash / zsh 双方で解決する。zsh には BASH_SOURCE が無いため
   # ${BASH_SOURCE[0]} は空になり CWD 依存へ化ける。実行シェルを判定して回避する。
   if [ -n "${BASH_VERSION:-}" ]; then
@@ -58,7 +70,10 @@ __load_project_env() {
     fi
   fi
 
-  [[ -f "$env_file" ]] || return 0
+  if [[ ! -f "$env_file" ]]; then
+    export DCB_ENV_UPDATE_CHECK_LOADED="${UPDATE_CHECK-}"
+    return 0
+  fi
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     # CRLF 対策: Windows ホストでクローンされた .env の CR を除去。
@@ -92,6 +107,8 @@ __load_project_env() {
     # 後勝ちで既存の環境変数（remoteEnv 由来のホスト値）を上書きする。
     export "$key=$val"
   done < "$env_file"
+  export DCB_ENV_UPDATE_CHECK="$saved_update_check"
+  export DCB_ENV_UPDATE_CHECK_LOADED="${UPDATE_CHECK-}"
 }
 
 __load_project_env

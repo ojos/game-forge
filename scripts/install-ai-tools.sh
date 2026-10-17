@@ -171,9 +171,83 @@ install_codex_if_missing() {
   echo "[install-ai-tools] codex installed: $(command -v codex) (${have})"
   echo "[install-ai-tools] codex は認証が別です。初回は対話で 'codex login' を通してください。"
 }
+# Claude Code の Remote Control を常に有効にする（remoteControlAtStartup）。
+# キーが無いときだけ true を足す。利用者が明示した値（false を含む）は覆さない。
+CLAUDE_USER_SETTINGS="$HOME/.claude/settings.json"
+
+enable_claude_remote_control() {
+  local dir tmp mode
+  dir="$(dirname "$CLAUDE_USER_SETTINGS")"
+
+  # この関数は set -e の下で動く。どの失敗でも警告して 0 を返し、コンテナの作成を止めない。
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "[install-ai-tools] warning: jq が無いため Remote Control の設定を飛ばします（remoteControlAtStartup は未設定のまま）" >&2
+    return 0
+  fi
+
+  # シンボリックリンクは書き換えない（mv が通常のファイルで置き換え、利用者の dotfiles を壊す）。
+  if [[ -L "$CLAUDE_USER_SETTINGS" ]]; then
+    echo "[install-ai-tools] warning: シンボリックリンクのため Remote Control の設定を飛ばします: $CLAUDE_USER_SETTINGS" >&2
+    return 0
+  fi
+  if [[ -e "$CLAUDE_USER_SETTINGS" && ! -f "$CLAUDE_USER_SETTINGS" ]]; then
+    echo "[install-ai-tools] warning: 通常のファイルでないため Remote Control の設定を飛ばします: $CLAUDE_USER_SETTINGS" >&2
+    return 0
+  fi
+
+  if ! mkdir -p "$dir" 2>/dev/null; then
+    echo "[install-ai-tools] warning: $dir を作れないため Remote Control の設定を飛ばします" >&2
+    return 0
+  fi
+
+  mode=""
+  if [[ -f "$CLAUDE_USER_SETTINGS" ]]; then
+    # 壊れた JSON、オブジェクトでない JSON、複数の値を連結した JSON を黙って置き換えない
+    # （-s で全体を配列として読み、値がちょうど 1 つのオブジェクトであることを確かめる）。
+    if ! jq -e -s 'length == 1 and (.[0] | type == "object")' "$CLAUDE_USER_SETTINGS" >/dev/null 2>&1; then
+      echo "[install-ai-tools] warning: JSON のオブジェクトとして読めないため Remote Control の設定を飛ばします: $CLAUDE_USER_SETTINGS" >&2
+      return 0
+    fi
+    # 冪等。キーがあれば（false でも）触らない。
+    if jq -e 'has("remoteControlAtStartup")' "$CLAUDE_USER_SETTINGS" >/dev/null 2>&1; then
+      echo "[install-ai-tools] remoteControlAtStartup already set, skipping"
+      return 0
+    fi
+    # 利用者が読み取り専用にしたファイルは、親ディレクトリに書けても mv で置き換えない。
+    if [[ ! -w "$CLAUDE_USER_SETTINGS" ]]; then
+      echo "[install-ai-tools] warning: 書き込めないため Remote Control の設定を飛ばします: $CLAUDE_USER_SETTINGS" >&2
+      return 0
+    fi
+    # 既存のファイルは元の権限を保つ（stat は GNU / BSD で書式が違う）。
+    mode="$(stat -c %a "$CLAUDE_USER_SETTINGS" 2>/dev/null || stat -f %Lp "$CLAUDE_USER_SETTINGS" 2>/dev/null || true)"
+  fi
+
+  # 一時ファイルへ書いて mv で差し替える（同じディレクトリに作る。理由は agy の設定と同じ）。
+  if ! tmp="$(mktemp "$dir/.settings.json.XXXXXX" 2>/dev/null)"; then
+    echo "[install-ai-tools] warning: $dir に一時ファイルを作れないため Remote Control の設定を飛ばします" >&2
+    return 0
+  fi
+  # ファイルが無ければ新規（600）。あれば既存のキーを保ってマージする。
+  if [[ -f "$CLAUDE_USER_SETTINGS" ]]; then
+    jq '.remoteControlAtStartup = true' "$CLAUDE_USER_SETTINGS" > "$tmp" 2>/dev/null
+  else
+    jq -n '{remoteControlAtStartup: true}' > "$tmp" 2>/dev/null
+  fi || {
+    rm -f "$tmp"
+    echo "[install-ai-tools] warning: settings.json の書き換えに失敗したため Remote Control の設定を飛ばします: $CLAUDE_USER_SETTINGS" >&2
+    return 0
+  }
+  if ! chmod "${mode:-600}" "$tmp" 2>/dev/null || ! mv "$tmp" "$CLAUDE_USER_SETTINGS" 2>/dev/null; then
+    rm -f "$tmp"
+    echo "[install-ai-tools] warning: settings.json を置き換えられないため Remote Control の設定を飛ばします: $CLAUDE_USER_SETTINGS" >&2
+    return 0
+  fi
+  echo "[install-ai-tools] Claude Code Remote Control enabled (remoteControlAtStartup=true)"
+}
 install_if_missing claude "@anthropic-ai/claude-code"
 install_if_missing gemini "@google/gemini-cli"
 install_agy_if_missing
 disable_agy_telemetry
 install_codex_if_missing
+enable_claude_remote_control
 echo "[install-ai-tools] done"

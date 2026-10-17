@@ -97,13 +97,41 @@ inject_env_autoload() {
   {
     echo ""
     echo "$marker"
-    echo "if [[ -f \"$HELPER\" ]]; then . \"$HELPER\"; fi"
+    # パスは printf %q で引用する（$(...) などを含むパスが rc の起動時にコマンドにならないように）。
+    printf '%s\n' "if [[ -f $(printf '%q' "$HELPER") ]]; then . $(printf '%q' "$HELPER"); fi"
     echo "# <<< project .env autoload <<<"
   } >> "$rc"
   echo "[on-attach] injected project .env autoload into $rc"
 }
 inject_env_autoload "$HOME/.bashrc"
 inject_env_autoload "$HOME/.zshrc"
+
+# 新しい版の確認（update-check.sh）の問いかけを、対話シェルの rc へ注入する（冪等）。
+# 端末が付いている対話のシェルで、今いるディレクトリがこのプロジェクトの中のときだけ聞く
+# （AI エージェント・CI・スクリプトのシェルでは何も出ない）。印はプロジェクトごと
+# （同じコンテナの 2 つ目のプロジェクトも注入される）。update-check.sh が無い構成では何もしない。
+UPDATE_CHECK_SCRIPT="$HERE/update-check.sh"
+UPDATE_CHECK_PROJECT="$(cd "$HERE/.." && pwd)"
+# パスは rc にシェルの語として書かれるので、printf %q で引用する（空白・引用符・$(...) を含むパスが
+# 対話シェルの起動時にコマンドとして解釈されないように。印のコメントの行も同じ）。
+inject_update_check_prompt() {
+  local rc="$1" q_proj q_script marker
+  [[ -f "$UPDATE_CHECK_SCRIPT" ]] || return 0
+  q_proj="$(printf '%q' "$UPDATE_CHECK_PROJECT")"
+  q_script="$(printf '%q' "$UPDATE_CHECK_SCRIPT")"
+  marker="# >>> dcb update check: $q_proj >>>"
+  [[ -f "$rc" ]] || touch "$rc"
+  grep -qxF -- "$marker" "$rc" && return 0
+  {
+    echo ""
+    printf '%s\n' "$marker"
+    printf '%s\n' "case \"\$-\" in *i*) case \"\$PWD/\" in $q_proj/*) if [ -t 0 ] && [ -t 1 ] && [ -f $q_script ]; then bash $q_script prompt || true; fi ;; esac ;; esac"
+    echo "# <<< dcb update check <<<"
+  } >> "$rc"
+  echo "[on-attach] injected update check prompt into $rc"
+}
+inject_update_check_prompt "$HOME/.bashrc"
+inject_update_check_prompt "$HOME/.zshrc"
 
 # ホストの Docker 資格情報ヘルパーを打ち消す。
 #
@@ -235,4 +263,10 @@ check_gh_auth() {
 
 if command -v gh >/dev/null 2>&1; then
   check_gh_auth
+fi
+
+# DCB と ai-playbook の新しい安定版があれば、通知の 1 行を出す（聞かない）。1 日 1 回、失敗は
+# 黙って通す（短いタイムアウト）。止め方は --no-update-check か UPDATE_CHECK=off。
+if [[ -f "$UPDATE_CHECK_SCRIPT" ]]; then
+  bash "$UPDATE_CHECK_SCRIPT" notify || true
 fi

@@ -262,6 +262,12 @@ export function buildConverseRequest(
       ? [{ text: prompt }]
       : baseSourceContent(model, baseSource, prompt);
 
+  // **ここへ足さないもの**（#848）。Opus 5.5 は Bedrock でも次を 400 で断る:
+  // thinking の `{type: "disabled"}` と `budget_tokens`、`inferenceConfig` の
+  // `temperature` / `topP`（と `top_k`）、`toolConfig.toolChoice` の `any` / `tool`、
+  // **最後が assistant の `messages`（prefill）。** この本文はどれも送っておらず、
+  // `messages` は user の 1 件だけである。足すときはモデルで分けること
+  // （`test/bedrock.test.ts` の「Opus 5.5 で断られる項目を送らない」が落とす）。
   const body: Record<string, unknown> = {
     messages: [{ role: 'user', content }],
     inferenceConfig: { maxTokens: model.maxTokens },
@@ -325,7 +331,8 @@ export function readConverseUsage(payload: unknown): GenerationUsage {
  * 応答から生成された本文を取り出す。
  *
  * `content` は複数ブロックになりうる（thinking を返す構成では `reasoningContent` が
- * 混ざる）。**`text` を持つブロックだけを順に連結する。** 取り出した文字列を Go の
+ * 混ざる。Opus 5.5 は thinking を切れず、表示の既定が omitted なので中身が空の
+ * `reasoningContent` を返しうる。#848）。**`text` を持つブロックだけを順に連結する。** 取り出した文字列を Go の
  * ソースとして扱うのは後段（5.2-5 の検査、3.3-5 のビルド）で、ここでは整形しない。
  *
  * @param payload `Converse` の応答

@@ -43,6 +43,7 @@ export const INFERENCE_PROFILE_PREFIXES: readonly string[] = ['jp.', 'global.', 
  */
 export type GenerationModelKey =
   | 'sonnet-4-6'
+  | 'opus-5-5'
   | 'deepseek-v3-2'
   | `sonnet-4-6-${(typeof EFFORT_AB_ARMS)[number]}`;
 
@@ -175,6 +176,49 @@ const SONNET_4_6: Omit<GenerationModel, 'key' | 'effort'> = {
   maxTokens: 33_000,
 };
 
+/**
+ * Claude Opus 5.5（`jp.`）。**#848 で登録した。本番ではまだ使っていない**（既定も
+ * `wrangler.toml` の `GENERATION_MODEL` も `sonnet-4-6` のまま）。段取りは、利用者の端末から Bedrock を直接呼んで実測し（速度・出力トークン数）、収まれば PR② で本番を切り替え、台帳の記録は本番で確かめる
+ * （PR②）。preview は仕様 9.1（確定20）のとおり到達できないので、測る場所にしない。
+ *
+ * **Sonnet 4.6 と送れる項目が違う。** Opus 5.5 は Bedrock でも次を 400 で断る
+ * ——thinking の `{type: "disabled"}` と `budget_tokens`、`temperature` / `top_p` /
+ * `top_k`、`tool_choice` の `any` / `tool`、assistant の prefill。
+ * **`src/bedrock.ts` の生成の本文はこのどれも送っていない**（#848 で点検した）。
+ * thinking は送らなければ adaptive で動き、考える量は `effort` だけで決まる。
+ */
+const OPUS_5_5: Omit<GenerationModel, 'key' | 'effort'> = {
+  // `jp.` の推論プロファイル（東京・大阪）。2026-09-30 / 2026-10-01 の
+  // `get-inference-profile` / `list-inference-profiles` で ACTIVE。**実生成は未確認**
+  // （利用者の端末から Bedrock を直接呼んで確かめる。#848）。
+  modelId: 'jp.anthropic.claude-opus-5-5',
+  provider: 'anthropic',
+  // **`jp.` の単価を書く**（`global.` は 4.00 / 20.00 / 0.20 / 5.00。#847 と同じ線）。
+  //
+  // 確認日 2026-10-01。AWS Pricing API の OnDemand のうち「Standard」（「Standard, Global」で
+  // ない側）の 4 行（入力・出力・キャッシュ読み・キャッシュ書き 5 分）。読み直すときは:
+  //   aws pricing get-products --region us-east-1 \
+  //     --service-code AmazonBedrockFoundationModels \
+  //     --filters Type=TERM_MATCH,Field=regionCode,Value=ap-northeast-1 \
+  //     "Type=TERM_MATCH,Field=servicename,Value=Claude Opus 5.5 (Amazon Bedrock Edition)"
+  pricing: {
+    inputUsdPerMillion: 4.4,
+    outputUsdPerMillion: 22,
+    cacheReadUsdPerMillion: 0.22,
+    cacheWriteUsdPerMillion: 5.5,
+  },
+  // **当面は Sonnet 4.6 と同じ 33,000 を置く。** 64KB のソースを出し切るのに要る
+  // 32,768 トークンを満たす値である。
+  //
+  // **ただし時間予算の帯（32,768 〜 33,638）は Sonnet 4.6 の生成速度（実測 119.8 tok/s）から
+  // 解いた値で、Opus 5.5 の速度は未測定である。** 遅ければ同じ 33,000 トークンが
+  // `orchestrator_generation_seconds`（297 秒）に収まらない。トークナイザも違う
+  // （同じ入力で Sonnet 4.6 の約 1〜1.35 倍）ので、2.0 バイト/output token の換算も
+  // そのままは使えない。**利用者の端末からの実測で帯を解き直し、収まらなければ本番へは
+  // 切り替えない**（#848 の acceptance）。
+  maxTokens: 33_000,
+};
+
 const DEEPSEEK_V3_2: Omit<GenerationModel, 'key' | 'effort'> = {
   // **こちらは推論プロファイルではない。** `deepseek.` は提供者の接頭辞で、素の ID の
   // まま東京で実生成できることを実測している（4.1 / #79）。同じ「接頭辞つき」でも
@@ -204,6 +248,15 @@ export const GENERATION_MODELS: readonly GenerationModel[] = [
     // 採用値を決める前に全生成が片方の群になる。値を入れれば送る経路は
     // `src/bedrock.ts` にあり、テストで固定してある。
     effort: null,
+  },
+  {
+    key: 'opus-5-5',
+    ...OPUS_5_5,
+    // **`medium` を明示して送る。** Opus 5.5 の既定も `medium` だが、送らなければ台帳の
+    // `effort` は `'none'` になり、**実際に何で考えたかが行から読めない**（Sonnet 4.6 の
+    // 既定は `high` で、既定どうしを比べると別の値を比べることになる）。綴りは A/B と
+    // 同じ `output_config.effort`（`src/bedrock.ts`）。
+    effort: 'medium',
   },
   {
     key: 'deepseek-v3-2',

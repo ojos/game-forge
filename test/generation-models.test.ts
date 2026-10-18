@@ -203,6 +203,50 @@ describe('モデルごとの設定', () => {
   it('既定のモデルが登録簿にある', () => {
     expect(findGenerationModel(DEFAULT_GENERATION_MODEL_KEY)).not.toBeNull();
   });
+
+  it('既定の鍵は sonnet-4-6 のまま（#848 の PR① は登録だけで、本番を切り替えない）', () => {
+    // 既定はチャット（`CHAT_MODEL_KEY`）と、`GENERATION_MODEL` が未宣言の経路が使う。
+    // #848 の範囲外で、Opus 5.5 を足しても動かさない。
+    expect(DEFAULT_GENERATION_MODEL_KEY).toBe('sonnet-4-6');
+  });
+});
+
+describe('Opus 5.5（jp.）の登録（#848）', () => {
+  it('jp. の推論プロファイルと jp. の単価を持つ', () => {
+    // 単価は 2026-10-01 に AWS Pricing API の「Standard」（「Standard, Global」でない側）から
+    // 読んだ値。`global.` の値（4.00 / 20.00 / 0.20 / 5.00）を書くと台帳が 1 割少なく出る。
+    const opus = findGenerationModel('opus-5-5');
+    expect(opus).not.toBeNull();
+    expect(opus!.modelId).toBe('jp.anthropic.claude-opus-5-5');
+    expect(opus!.provider).toBe('anthropic');
+    expect(opus!.pricing).toEqual({
+      inputUsdPerMillion: 4.4,
+      outputUsdPerMillion: 22,
+      cacheReadUsdPerMillion: 0.22,
+      cacheWriteUsdPerMillion: 5.5,
+    });
+    expect(supportsPromptCaching(opus!)).toBe(true);
+  });
+
+  it('effort は medium を明示し、台帳にも medium が残る', () => {
+    // 送らなければ台帳は 'none' になり、何で考えたかが行から読めない。
+    const opus = findGenerationModel('opus-5-5')!;
+    expect(opus.effort).toBe('medium');
+    expect(ledgerEffortOf(opus)).toBe('medium');
+  });
+
+  it('出力上限は当面 Sonnet 4.6 と同じ 33,000', () => {
+    // Opus 5.5 の生成速度は未測定。帯（32,768 〜 33,638）は Sonnet 4.6 の速度から解いた値で、
+    // 利用者の端末から Bedrock を直接呼んだ実測で解き直す（#848 の acceptance）。
+    expect(findGenerationModel('opus-5-5')!.maxTokens).toBe(33_000);
+  });
+
+  it('GENERATION_MODEL を opus-5-5 にすると宛先と effort が切り替わる', () => {
+    const model = selectGenerationModel(envWithModel('opus-5-5'));
+    expect(model.key).toBe('opus-5-5');
+    expect(model.modelId).toBe('jp.anthropic.claude-opus-5-5');
+    expect(model.effort).toBe('medium');
+  });
 });
 
 describe('モデル選択の経路（#83 acceptance 2）', () => {

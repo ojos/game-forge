@@ -90,12 +90,19 @@ agreement 未承諾の Sonnet 4.6 は動いた。**
 |---|---|---|
 | `jp.anthropic.claude-sonnet-4-6` | 未承諾 | **動く** |
 | `claude-sonnet-5` | **承諾済み** | 不可 |
+| `jp.anthropic.claude-opus-5-5`（#848） | 未確認 | **未確認**。推論プロファイルは ACTIVE（2026-09-30 の `list-inference-profiles`）、実生成は未確認 |
 
 **`get-foundation-model-availability` が 3 つとも `AVAILABLE` を返していても、呼び出しは
 拒否されうる。** 状態 API を根拠に「使える」と判断しないこと。
 
 use case の申請とアカウント検証は通過しているが、**4.7 以降の世代がアカウントに開放されて
 いない**（仕様 1.2.9）。エラーが案内する `contact AWS Sales` の経路を通るかは未定。
+
+**Opus 5.5（`jp.anthropic.claude-opus-5-5`）は #848 で登録簿に足した（本番ではまだ使っていない）。**
+推論プロファイルが ACTIVE であることは読み取りで確かめたが（上の表）、**それは呼べることを意味しない**
+（この節の冒頭）。利用者の端末から Bedrock を直接呼んで実測し（速度・出力トークン数）、収まれば PR② で本番を切り替え、台帳の記録は本番で確かめる（preview は仕様 9.1〈確定20〉のとおり到達できない）。呼び出しの許可は実行ロールの `resources = ["*"]`（`terraform/orchestrator.tf`）で
+足りており、IAM は変えていない。確かめるときは上の `converse` の `--model-id` を差し替える
+（**`--inference-config` に `temperature` / `topP` を足さない**。Opus 5.5 は 400 で断る）。
 
 ### use case の申請内容（構築時）
 

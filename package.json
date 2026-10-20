@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "0.10.3",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/server": "2.3.0",
     "aws4fetch": "^1.0.20",
     "zod": "4.4.3"
   }

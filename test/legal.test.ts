@@ -156,6 +156,27 @@ describe('規約に、仕様が名指しした条項が含まれている（5.6 
     expect(body).toContain('正確性を独自に確認');
   });
 
+  it('2 条に、AI を使う 4 つの機能は 18 歳未満が利用できないことがある（#984 / Anthropic 利用ポリシー 2026-11-12 版）', async () => {
+    const { body } = await get(TERMS_PATH);
+    // **2 条の中だけで見る。** 条項の番号は他の文書が参照しているので、新設ではなく 2 条へ足した（#984 の観点 A）。
+    const start = body.indexOf('<h2>2. 招待制と利用資格</h2>');
+    expect(start, '2 条の見出しがある').toBeGreaterThanOrEqual(0);
+    const end = body.indexOf('<h2>3. ', start);
+    expect(end, '3 条が 2 条の後に続く').toBeGreaterThan(start);
+    const article2 = body.slice(start, end);
+    expect(article2).toContain('18 歳未満');
+    for (const feature of ['生成', 'リフォージ', 'チャット', 'MCP']) {
+      expect(article2, feature).toContain(feature);
+    }
+    // 遊ぶことと URL の共有は対象外（Claude を介さない）。
+    expect(article2).toContain('この制限の対象ではありません');
+    // **周知の記事は日付の付いた写しなので、年齢の数字を規約の本文と突き合わせる**（src/news-articles.ts の「記事を足すとき」）。
+    const notice = NEWS_ARTICLES.find((item) => item.id === 'terms-age-18');
+    expect(notice, '改定を周知する記事がある').toBeDefined();
+    expect(notice!.title).toContain('18 歳以上');
+    expect(article2).toContain('18 歳以上');
+  });
+
   it('専門家の確認を受けていないことが画面に出る', async () => {
     // **読む人が「確認済みのもの」と誤解しないようにする。**
     const { body } = await get(TERMS_PATH);

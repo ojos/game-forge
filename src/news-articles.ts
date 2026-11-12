@@ -71,7 +71,7 @@ export interface NewsArticle {
  */
 export const NEWS_ARTICLES: readonly NewsArticle[] = [
   {
-    // 規約の 2 条の変更（#984）の周知。年齢の数字は規約の本文と一致させる（test/news.test.ts）。
+    // 規約の 2 条の変更（#984）の周知。年齢の数字は規約の本文と一致させる（test/legal.test.ts）。
     id: 'terms-age-18',
     publishedOn: '2026-11-12',
     category: 'service',

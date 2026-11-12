@@ -170,6 +170,11 @@ describe('規約に、仕様が名指しした条項が含まれている（5.6 
     }
     // 遊ぶことと URL の共有は対象外（Claude を介さない）。
     expect(article2).toContain('この制限の対象ではありません');
+    // **周知の記事は日付の付いた写しなので、年齢の数字を規約の本文と突き合わせる**（src/news-articles.ts の「記事を足すとき」）。
+    const notice = NEWS_ARTICLES.find((item) => item.id === 'terms-age-18');
+    expect(notice, '改定を周知する記事がある').toBeDefined();
+    expect(notice!.title).toContain('18 歳以上');
+    expect(article2).toContain('18 歳以上');
   });
 
   it('専門家の確認を受けていないことが画面に出る', async () => {

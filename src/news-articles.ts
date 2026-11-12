@@ -71,6 +71,20 @@ export interface NewsArticle {
  */
 export const NEWS_ARTICLES: readonly NewsArticle[] = [
   {
+    // 規約の 2 条の変更（#984）の周知。年齢の数字は規約の本文と一致させる（test/news.test.ts）。
+    id: 'terms-age-18',
+    publishedOn: '2026-11-12',
+    category: 'service',
+    title: '利用規約を改定しました（AI を使う機能は 18 歳以上）',
+    body: [
+      '2026 年 11 月 12 日に利用規約の 2 条を改め、AI を使う機能は 18 歳以上の方に限って利用できることを明記しました。',
+      'AI を使う機能とは、作品の生成、作品のリフォージ、AI とのチャット、外部の AI ツールからの接続（MCP）です。' +
+        '公開されている作品を遊ぶことと、作品の URL を共有することは、これまでどおり年齢を問わずご利用いただけます。',
+      'Game Forge が使っている AI の提供元の利用ポリシーが改定され、未成年の方が直接使えるサービスに追加の取り組みを求めるようになったためです。' +
+        '改定後の全文は利用規約をご覧ください。',
+    ],
+  },
+  {
     id: 'ai-connect',
     publishedOn: '2026-09-20',
     category: 'service',
